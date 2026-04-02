@@ -46,7 +46,7 @@ zig build -Doptimize=ReleaseFast
 
 ```json
 {
-  "edge": "top",
+  "dock_position": "top",
   "width": 40,
   "length": 100,
   "offset": 0,
@@ -57,7 +57,7 @@ zig build -Doptimize=ReleaseFast
 
 | 항목 | 타입 | 범위 | 기본값 | 설명 |
 |------|------|------|--------|------|
-| edge | string | top, bottom, left, right | "top" | 화면 가장자리 |
+| dock_position | string | top, bottom, left, right | "top" | 도킹 위치 |
 | width | int | 10~100 | 40 | edge 수직 방향 크기 (화면 %) |
 | length | int | 10~100 | 100 | edge 평행 방향 크기 (화면 %) |
 | offset | int | 0~100 | 0 | 위치 (0=시작, 50=중앙, 100=끝) |
@@ -67,16 +67,16 @@ zig build -Doptimize=ReleaseFast
 ### 위치 예시
 
 ```
-edge: "top", width: 40, length: 100, offset: 0
+dock_position: "top", width: 40, length: 100, offset: 0
  -> 화면 상단, 높이 40%, 전체 폭, 왼쪽 끝
 
-edge: "top", width: 40, length: 60, offset: 50
+dock_position: "top", width: 40, length: 60, offset: 50
  -> 화면 상단, 높이 40%, 폭 60%, 중앙
 
-edge: "top", width: 40, length: 60, offset: 100
+dock_position: "top", width: 40, length: 60, offset: 100
  -> 화면 상단, 높이 40%, 폭 60%, 오른쪽 끝에 붙음
 
-edge: "left", width: 30, length: 80, offset: 50
+dock_position: "left", width: 30, length: 80, offset: 50
  -> 화면 왼쪽, 너비 30%, 높이 80%, 세로 중앙
 ```
 

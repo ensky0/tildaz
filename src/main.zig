@@ -103,7 +103,7 @@ fn run() !void {
     defer app.window.deinit();
 
     // Apply position from config
-    app.window.setPosition(config.edge, config.width, config.length, config.offset);
+    app.window.setPosition(config.dock_position, config.width, config.length, config.offset);
 
     // Start PTY read thread
     try app.pty.startReadThread(App.onPtyOutput, &app);

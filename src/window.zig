@@ -309,7 +309,7 @@ pub const Window = struct {
         if (self.visible) self.hide() else self.show();
     }
 
-    pub fn setPosition(self: *Window, edge: Edge, width_pct: u8, length_pct: u8, offset_pct: u8) void {
+    pub fn setPosition(self: *Window, dock: DockPosition, width_pct: u8, length_pct: u8, offset_pct: u8) void {
         var cursor_pos: POINT = .{ .x = 0, .y = 0 };
         _ = GetCursorPos(&cursor_pos);
 
@@ -328,7 +328,7 @@ pub const Window = struct {
         var w: c_int = undefined;
         var h: c_int = undefined;
 
-        switch (edge) {
+        switch (dock) {
             .top => {
                 w = @divTrunc(sw * @as(c_int, length_pct), 100);
                 h = @divTrunc(sh * @as(c_int, width_pct), 100);
@@ -543,5 +543,5 @@ pub const Window = struct {
         }
     }
 
-    pub const Edge = enum { top, bottom, left, right };
+    pub const DockPosition = enum { top, bottom, left, right };
 };
