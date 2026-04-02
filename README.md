@@ -7,6 +7,13 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
 ## 기능
 
 - **F1** 글로벌 핫키로 터미널 show/hide 토글
+- **탭 지원**: 독립 터미널 세션을 가진 다중 탭
+  - Ctrl+Shift+T 새 탭 생성
+  - Ctrl+Shift+W 현재 탭 닫기
+  - Alt+1~9 탭 전환
+  - 마우스 클릭으로 탭 선택, X 버튼으로 탭 닫기
+  - 마우스 드래그로 탭 순서 변경
+  - 마지막 탭을 닫으면 앱 종료
 - 화면 가장자리(top/bottom/left/right)에 붙는 드롭다운 윈도우
 - 크기/위치를 화면 비율(%)로 설정
 - Windows 로그인 시 자동 시작
@@ -90,6 +97,9 @@ zig build -Doptimize=ReleaseFast
 | 키 | 동작 |
 |----|------|
 | F1 | 터미널 show/hide 토글 |
+| Ctrl+Shift+T | 새 탭 생성 |
+| Ctrl+Shift+W | 현재 탭 닫기 |
+| Alt+1~9 | 탭 전환 |
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
 
 ## 알려진 제한사항
