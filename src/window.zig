@@ -135,6 +135,17 @@ extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) BOOL;
 extern "kernel32" fn GetModuleHandleW(?[*:0]const WCHAR) callconv(.c) HINSTANCE;
+extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.c) void;
+extern "kernel32" fn GlobalLock(?*anyopaque) callconv(.c) ?[*]const WCHAR;
+extern "kernel32" fn GlobalUnlock(?*anyopaque) callconv(.c) BOOL;
+extern "user32" fn OpenClipboard(HWND) callconv(.c) BOOL;
+extern "user32" fn CloseClipboard() callconv(.c) BOOL;
+extern "user32" fn GetClipboardData(UINT) callconv(.c) ?*anyopaque;
+extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+
+const CF_UNICODETEXT: UINT = 13;
+const VK_CONTROL: c_int = 0x11;
+const VK_SHIFT: c_int = 0x10;
 
 // GDI functions
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
@@ -147,6 +158,12 @@ extern "gdi32" fn TextOutW(HDC, c_int, c_int, [*]const WCHAR, c_int) callconv(.c
 extern "gdi32" fn GetTextMetricsW(HDC, *TEXTMETRICW) callconv(.c) BOOL;
 extern "gdi32" fn CreateSolidBrush(COLORREF) callconv(.c) HBRUSH;
 extern "gdi32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.c) c_int;
+extern "gdi32" fn CreateCompatibleDC(HDC) callconv(.c) HDC;
+extern "gdi32" fn CreateCompatibleBitmap(HDC, c_int, c_int) callconv(.c) HGDIOBJ;
+extern "gdi32" fn BitBlt(HDC, c_int, c_int, c_int, c_int, HDC, c_int, c_int, DWORD) callconv(.c) BOOL;
+extern "gdi32" fn DeleteDC(HDC) callconv(.c) BOOL;
+
+const SRCCOPY: DWORD = 0x00CC0020;
 
 const TEXTMETRICW = extern struct {
     tmHeight: LONG,
@@ -181,7 +198,7 @@ pub const Window = struct {
     font: HFONT = null,
     cell_width: c_int = 8,
     cell_height: c_int = 16,
-    render_fn: ?*const fn (*Window) void = null,
+    render_fn: ?*const fn (*Window, HDC) void = null,
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
 
@@ -239,7 +256,7 @@ pub const Window = struct {
 
         // Register F1 global hotkey
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, 0, VK_F1) == 0) {
-            std.debug.print("WARNING: Failed to register F1 hotkey\n", .{});
+            OutputDebugStringA("WARNING: Failed to register F1 hotkey\n");
         }
 
         // Create monospace font
@@ -372,6 +389,11 @@ pub const Window = struct {
             WM_CHAR => {
                 if (self.write_fn) |write_fn| {
                     const cp: u21 = @intCast(wParam);
+                    // Backspace: send DEL (0x7F) instead of BS (0x08)
+                    if (cp == 8) {
+                        write_fn("\x7f", self.userdata);
+                        return 0;
+                    }
                     var buf: [4]u8 = undefined;
                     const len = std.unicode.utf8Encode(cp, &buf) catch return 0;
                     write_fn(buf[0..len], self.userdata);
@@ -379,26 +401,40 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYDOWN => {
-                // Handle special keys
+                // Ctrl+Shift+V: paste from clipboard
+                if (wParam == 0x56) { // VK_V
+                    if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
+                        if (self.write_fn) |write_fn| {
+                            self.pasteClipboard(write_fn);
+                        }
+                        return 0;
+                    }
+                }
+
+                // Only handle keys that do NOT generate WM_CHAR
                 if (self.write_fn) |write_fn| {
-                    const vk_return: WPARAM = 0x0D;
-                    const vk_back: WPARAM = 0x08;
-                    const vk_tab: WPARAM = 0x09;
-                    const vk_escape: WPARAM = 0x1B;
                     const vk_up: WPARAM = 0x26;
                     const vk_down: WPARAM = 0x28;
                     const vk_left: WPARAM = 0x25;
                     const vk_right: WPARAM = 0x27;
+                    const vk_home: WPARAM = 0x24;
+                    const vk_end: WPARAM = 0x23;
+                    const vk_delete: WPARAM = 0x2E;
+                    const vk_insert: WPARAM = 0x2D;
+                    const vk_prior: WPARAM = 0x21; // Page Up
+                    const vk_next: WPARAM = 0x22; // Page Down
 
                     switch (wParam) {
-                        vk_return => write_fn("\r", self.userdata),
-                        vk_back => write_fn("\x7f", self.userdata),
-                        vk_tab => write_fn("\t", self.userdata),
-                        vk_escape => write_fn("\x1b", self.userdata),
                         vk_up => write_fn("\x1b[A", self.userdata),
                         vk_down => write_fn("\x1b[B", self.userdata),
-                        vk_left => write_fn("\x1b[D", self.userdata),
                         vk_right => write_fn("\x1b[C", self.userdata),
+                        vk_left => write_fn("\x1b[D", self.userdata),
+                        vk_home => write_fn("\x1b[H", self.userdata),
+                        vk_end => write_fn("\x1b[F", self.userdata),
+                        vk_delete => write_fn("\x1b[3~", self.userdata),
+                        vk_insert => write_fn("\x1b[2~", self.userdata),
+                        vk_prior => write_fn("\x1b[5~", self.userdata),
+                        vk_next => write_fn("\x1b[6~", self.userdata),
                         else => {},
                     }
                 }
@@ -426,29 +462,84 @@ pub const Window = struct {
 
         if (hdc == null) return;
 
-        // Fill background with dark color
         var client_rect: RECT = undefined;
         _ = GetClientRect(self.hwnd, &client_rect);
+        const w = client_rect.right - client_rect.left;
+        const h = client_rect.bottom - client_rect.top;
+
+        // Double buffering: create off-screen DC
+        const mem_dc = CreateCompatibleDC(hdc);
+        if (mem_dc == null) return;
+        defer _ = DeleteDC(mem_dc);
+
+        const mem_bmp = CreateCompatibleBitmap(hdc, w, h);
+        if (mem_bmp == null) return;
+        const old_bmp = SelectObject(mem_dc, mem_bmp);
+        defer {
+            _ = SelectObject(mem_dc, old_bmp);
+            _ = DeleteObject(mem_bmp);
+        }
+
+        // Draw everything to memory DC
         const bg_brush = CreateSolidBrush(rgb(30, 30, 30));
-        _ = FillRect(hdc, &client_rect, bg_brush);
+        _ = FillRect(mem_dc, &client_rect, bg_brush);
         _ = DeleteObject(bg_brush);
 
-        // Select font
-        const old_font = SelectObject(hdc, self.font);
-        defer _ = SelectObject(hdc, old_font);
+        const old_font = SelectObject(mem_dc, self.font);
+        defer _ = SelectObject(mem_dc, old_font);
 
         // Get font metrics for cell size
         var tm: TEXTMETRICW = undefined;
-        _ = GetTextMetricsW(hdc, &tm);
+        _ = GetTextMetricsW(mem_dc, &tm);
         self.cell_width = tm.tmAveCharWidth;
         self.cell_height = tm.tmHeight;
 
-        _ = SetBkMode(hdc, TRANSPARENT);
-        _ = SetTextColor(hdc, rgb(204, 204, 204));
+        _ = SetBkMode(mem_dc, TRANSPARENT);
+        _ = SetTextColor(mem_dc, rgb(204, 204, 204));
 
-        // Call render callback
+        // Render terminal content to memory DC
         if (self.render_fn) |render_fn| {
-            render_fn(self);
+            render_fn(self, mem_dc);
+        }
+
+        // Copy to screen in one operation
+        _ = BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
+    }
+
+    fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
+        if (OpenClipboard(self.hwnd) == 0) return;
+        defer _ = CloseClipboard();
+
+        const handle = GetClipboardData(CF_UNICODETEXT) orelse return;
+        const wide_ptr = GlobalLock(handle) orelse return;
+        defer _ = GlobalUnlock(handle);
+
+        // Find length of null-terminated UTF-16 string
+        var len: usize = 0;
+        while (wide_ptr[len] != 0) : (len += 1) {
+            if (len >= 65536) break; // safety limit
+        }
+        if (len == 0) return;
+
+        // Convert UTF-16 to UTF-8 and send to PTY
+        var buf: [4]u8 = undefined;
+        var i: usize = 0;
+        while (i < len) {
+            const unit = wide_ptr[i];
+            i += 1;
+            var cp: u21 = undefined;
+            if (unit >= 0xD800 and unit <= 0xDBFF) {
+                // Surrogate pair
+                if (i < len) {
+                    const low = wide_ptr[i];
+                    i += 1;
+                    cp = @intCast((@as(u21, unit - 0xD800) << 10) + @as(u21, low - 0xDC00) + 0x10000);
+                } else break;
+            } else {
+                cp = @intCast(unit);
+            }
+            const n = std.unicode.utf8Encode(cp, &buf) catch continue;
+            write_fn(buf[0..n], self.userdata);
         }
     }
 

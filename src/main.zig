@@ -6,10 +6,12 @@ const render = @import("renderer.zig");
 const Config = @import("config.zig").Config;
 const autostart = @import("autostart.zig");
 
-extern "user32" fn GetDC(?*anyopaque) callconv(.c) ?*anyopaque;
-extern "user32" fn ReleaseDC(?*anyopaque, ?*anyopaque) callconv(.c) c_int;
-extern "gdi32" fn SelectObject(?*anyopaque, ?*anyopaque) callconv(.c) ?*anyopaque;
-extern "gdi32" fn SetBkMode(?*anyopaque, c_int) callconv(.c) c_int;
+const HDC = ?*anyopaque;
+const WCHAR = u16;
+
+extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
+const MB_OK: c_uint = 0x0;
+const MB_ICONERROR: c_uint = 0x10;
 
 const App = struct {
     terminal: ghostty.Terminal,
@@ -31,15 +33,8 @@ const App = struct {
         _ = self.pty.write(data) catch {};
     }
 
-    fn onRender(window: *Window) void {
+    fn onRender(window: *Window, hdc: HDC) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
-
-        const hdc = GetDC(window.hwnd);
-        if (hdc == null) return;
-        defer _ = ReleaseDC(window.hwnd, hdc);
-
-        _ = SelectObject(hdc, window.font);
-        _ = SetBkMode(hdc, 1); // TRANSPARENT
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -47,7 +42,15 @@ const App = struct {
     }
 };
 
-pub fn main() !void {
+pub fn main() void {
+    run() catch {
+        const msg = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ 실행 중 오류가 발생했습니다.");
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Error");
+        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
+    };
+}
+
+fn run() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
