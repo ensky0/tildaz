@@ -502,7 +502,7 @@ fn run() !void {
     if (config.auto_start) {
         autostart.enable() catch {};
     } else {
-        autostart.disable() catch {};
+        autostart.disable();
     }
 
     var app = App{
