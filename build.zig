@@ -10,8 +10,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Link libghostty-vt (simd=false to avoid MSVC/Windows SDK requirement for C++ deps)
-    if (b.lazyDependency("ghostty", .{ .simd = false })) |dep| {
+    // SIMD: enable with -Dsimd=true (requires MSVC + Windows SDK)
+    const simd = b.option(bool, "simd", "Enable SIMD acceleration (requires MSVC + Windows SDK)") orelse false;
+
+    if (b.lazyDependency("ghostty", .{ .simd = simd })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
 
@@ -19,6 +21,7 @@ pub fn build(b: *std.Build) void {
         .name = "tildaz",
         .root_module = exe_mod,
     });
+    exe.subsystem = .Windows;
     b.installArtifact(exe);
 
     // Run step

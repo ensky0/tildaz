@@ -1,0 +1,8 @@
+{
+  "edge": "top",
+  "size": 40,
+  "length": 100,
+  "offset": 0,
+  "shell": "cmd.exe",
+  "autostart": false
+}
