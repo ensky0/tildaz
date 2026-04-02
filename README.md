@@ -82,6 +82,10 @@ dock_position: "left", width: 30, height: 80, offset: 50
 | F1 | 터미널 show/hide 토글 |
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
 
+## 알려진 제한사항
+
+- **F1 핫키가 관리자 권한 앱 위에서 동작하지 않음**: 작업관리자, regedit 등 관리자 권한(elevated)으로 실행된 앱이 포커스된 상태에서는 F1 토글이 동작하지 않습니다. Windows UIPI(User Interface Privilege Isolation) 보안 정책에 의한 제한으로, TildaZ를 관리자 권한으로 실행하면 해결되지만 권장하지 않습니다.
+
 ## 기술 스택
 
 | 구성요소 | 선택 |
@@ -90,7 +94,7 @@ dock_position: "left", width: 30, height: 80, offset: 50
 | 터미널 에뮬레이션 | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
 | PTY | Windows ConPTY |
 | 윈도우 | Win32 API (보더리스 팝업) |
-| 렌더링 | GDI (TextOutW + 더블 버퍼링) |
+| 렌더링 | OpenGL 1.1 + 폰트 아틀라스 (WGL) |
 
 ## 라이선스
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
+const gl = @import("opengl.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
@@ -29,6 +30,7 @@ const WS_VISIBLE: DWORD = 0x10000000;
 const WS_EX_TOPMOST: DWORD = 0x00000008;
 const WS_EX_TOOLWINDOW: DWORD = 0x00000080;
 const WS_EX_LAYERED: DWORD = 0x00080000;
+const CS_OWNDC: UINT = 0x0020;
 
 // Window Messages
 const WM_CLOSE: UINT = 0x0010;
@@ -208,11 +210,14 @@ pub const Window = struct {
     font: HFONT = null,
     cell_width: c_int = 8,
     cell_height: c_int = 16,
-    render_fn: ?*const fn (*Window, HDC) void = null,
+    render_fn: ?*const fn (*Window) void = null,
     resize_fn: ?*const fn (u16, u16, ?*anyopaque) void = null,
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     shell_exited: bool = false,
+    // OpenGL state
+    hglrc: gl.HGLRC = null,
+    gl_dc: HDC = null,
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -224,7 +229,7 @@ pub const Window = struct {
 
         const wc = WNDCLASSEXW{
             .cbSize = @sizeOf(WNDCLASSEXW),
-            .style = 0,
+            .style = CS_OWNDC,
             .lpfnWndProc = wndProc,
             .cbClsExtra = 0,
             .cbWndExtra = 0,
@@ -271,7 +276,7 @@ pub const Window = struct {
             OutputDebugStringA("WARNING: Failed to register F1 hotkey\n");
         }
 
-        // Create monospace font
+        // Create monospace font (used for measuring cell metrics)
         self.font = CreateFontW(
             16,
             0,
@@ -290,25 +295,47 @@ pub const Window = struct {
         );
 
         // Measure cell metrics from font
-        const hdc = GetDC(self.hwnd);
-        if (hdc != null) {
-            const old_f = SelectObject(hdc, self.font);
+        self.gl_dc = GetDC(self.hwnd);
+        if (self.gl_dc != null) {
+            const old_f = SelectObject(self.gl_dc, self.font);
             var tm: TEXTMETRICW = undefined;
-            _ = GetTextMetricsW(hdc, &tm);
+            _ = GetTextMetricsW(self.gl_dc, &tm);
             self.cell_width = tm.tmAveCharWidth;
             self.cell_height = tm.tmHeight;
-            _ = SelectObject(hdc, old_f);
-            _ = ReleaseDC(self.hwnd, hdc);
+            _ = SelectObject(self.gl_dc, old_f);
         }
+
+        // Set up OpenGL pixel format
+        var pfd = gl.PIXELFORMATDESCRIPTOR{
+            .dwFlags = gl.PFD_DRAW_TO_WINDOW | gl.PFD_SUPPORT_OPENGL | gl.PFD_DOUBLEBUFFER,
+            .iPixelType = gl.PFD_TYPE_RGBA,
+            .cColorBits = 32,
+            .cAlphaBits = 8,
+            .iLayerType = gl.PFD_MAIN_PLANE,
+        };
+        const pf = gl.ChoosePixelFormat(self.gl_dc, &pfd);
+        if (pf == 0) return error.ChoosePixelFormatFailed;
+        if (gl.SetPixelFormat(self.gl_dc, pf, &pfd) == 0) return error.SetPixelFormatFailed;
+
+        // Create and activate WGL context
+        self.hglrc = gl.wglCreateContext(self.gl_dc);
+        if (self.hglrc == null) return error.WglCreateContextFailed;
+        if (gl.wglMakeCurrent(self.gl_dc, self.hglrc) == 0) return error.WglMakeCurrentFailed;
 
         // Start render timer (60fps)
         _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
     }
 
     pub fn deinit(self: *Window) void {
+        if (self.hglrc) |_| {
+            _ = gl.wglMakeCurrent(null, null);
+            _ = gl.wglDeleteContext(self.hglrc);
+            self.hglrc = null;
+        }
         if (self.hwnd) |hwnd| {
             _ = KillTimer(hwnd, RENDER_TIMER_ID);
             _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+            if (self.gl_dc) |dc| _ = ReleaseDC(hwnd, dc);
             _ = DestroyWindow(hwnd);
         }
         if (self.font) |f| _ = DeleteObject(f);
@@ -385,12 +412,20 @@ pub const Window = struct {
             },
             WM_TIMER => {
                 if (wParam == RENDER_TIMER_ID) {
-                    _ = InvalidateRect(hwnd, null, 0);
+                    if (self.render_fn) |render_fn| {
+                        render_fn(self);
+                    }
+                    if (self.gl_dc) |dc| {
+                        _ = gl.SwapBuffers(dc);
+                    }
                 }
                 return 0;
             },
             WM_PAINT => {
-                self.paint();
+                // With OpenGL, just validate the paint region
+                var ps: PAINTSTRUCT = undefined;
+                _ = BeginPaint(self.hwnd, &ps);
+                _ = EndPaint(self.hwnd, &ps);
                 return 0;
             },
             WM_CHAR => {
@@ -484,55 +519,11 @@ pub const Window = struct {
         return @ptrFromInt(@as(usize, @intCast(ptr)));
     }
 
-    fn paint(self: *Window) void {
-        var ps: PAINTSTRUCT = undefined;
-        const hdc = BeginPaint(self.hwnd, &ps);
-        defer _ = EndPaint(self.hwnd, &ps);
-
-        if (hdc == null) return;
-
-        var client_rect: RECT = undefined;
-        _ = GetClientRect(self.hwnd, &client_rect);
-        const w = client_rect.right - client_rect.left;
-        const h = client_rect.bottom - client_rect.top;
-
-        // Double buffering: create off-screen DC
-        const mem_dc = CreateCompatibleDC(hdc);
-        if (mem_dc == null) return;
-        defer _ = DeleteDC(mem_dc);
-
-        const mem_bmp = CreateCompatibleBitmap(hdc, w, h);
-        if (mem_bmp == null) return;
-        const old_bmp = SelectObject(mem_dc, mem_bmp);
-        defer {
-            _ = SelectObject(mem_dc, old_bmp);
-            _ = DeleteObject(mem_bmp);
-        }
-
-        // Draw everything to memory DC
-        const bg_brush = CreateSolidBrush(rgb(30, 30, 30));
-        _ = FillRect(mem_dc, &client_rect, bg_brush);
-        _ = DeleteObject(bg_brush);
-
-        const old_font = SelectObject(mem_dc, self.font);
-        defer _ = SelectObject(mem_dc, old_font);
-
-        // Get font metrics for cell size
-        var tm: TEXTMETRICW = undefined;
-        _ = GetTextMetricsW(mem_dc, &tm);
-        self.cell_width = tm.tmAveCharWidth;
-        self.cell_height = tm.tmHeight;
-
-        _ = SetBkMode(mem_dc, TRANSPARENT);
-        _ = SetTextColor(mem_dc, rgb(204, 204, 204));
-
-        // Render terminal content to memory DC
-        if (self.render_fn) |render_fn| {
-            render_fn(self, mem_dc);
-        }
-
-        // Copy to screen in one operation
-        _ = BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
+    pub fn getClientSize(self: *const Window) struct { w: c_int, h: c_int } {
+        if (self.hwnd == null) return .{ .w = 800, .h = 400 };
+        var rect: RECT = undefined;
+        _ = GetClientRect(self.hwnd, &rect);
+        return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
