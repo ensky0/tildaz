@@ -79,7 +79,7 @@ pub const FontAtlas = struct {
     cell_height: u32,
     glyph_uvs: [GLYPH_COUNT]GlyphUV = undefined,
 
-    pub fn init(font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
+    pub fn init(font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
         var self = FontAtlas{
             .atlas_width = COLS_PER_ROW * cell_w,
             .atlas_height = GLYPH_ROWS * cell_h,
@@ -116,7 +116,7 @@ pub const FontAtlas = struct {
             font_height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN,
-            std.unicode.utf8ToUtf16LeStringLiteral("Consolas"),
+            font_family,
         );
         if (atlas_font == null) return error.CreateFontFailed;
         defer _ = DeleteObject(atlas_font);

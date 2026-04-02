@@ -41,37 +41,47 @@ zig build -Doptimize=ReleaseFast
 
 ```json
 {
-  "dock_position": "top",
-  "width": 50,
-  "height": 100,
-  "offset": 100,
-  "shell": "wsl.exe -d Debian",
-  "autostart": false
+  "window": {
+    "dock_position": "top",
+    "width": 50,
+    "height": 100,
+    "offset": 100
+  },
+  "font": {
+    "family": "Consolas",
+    "size": 16
+  },
+  "shell": "wsl.exe -d Debian --cd ~",
+  "auto_start": false,
+  "hidden_start": false
 }
 ```
 
-| 항목 | 타입 | 범위 | 기본값 | 설명 |
-|------|------|------|--------|------|
-| dock_position | string | top, bottom, left, right | "top" | 도킹 위치 |
-| width | int | 10~100 | 40 | 가로 크기 (화면 %) |
-| height | int | 10~100 | 100 | 세로 크기 (화면 %) |
-| offset | int | 0~100 | 0 | 위치 (0=시작, 50=중앙, 100=끝) |
-| shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
-| autostart | bool | true, false | false | Windows 로그인 시 자동 시작 |
+| 섹션 | 항목 | 타입 | 범위 | 기본값 | 설명 |
+|------|------|------|------|--------|------|
+| window | dock_position | string | top, bottom, left, right | "top" | 도킹 위치 |
+| window | width | int | 10~100 | 40 | 가로 크기 (화면 %) |
+| window | height | int | 10~100 | 100 | 세로 크기 (화면 %) |
+| window | offset | int | 0~100 | 0 | 위치 (0=시작, 50=중앙, 100=끝) |
+| font | family | string | - | "Consolas" | 폰트 이름 |
+| font | size | int | 8~72 | 16 | 폰트 크기 (px) |
+| - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
+| - | auto_start | bool | true, false | false | Windows 로그인 시 자동 시작 |
+| - | hidden_start | bool | true, false | false | 숨김 상태로 시작 |
 
 ### 위치 예시
 
 ```
-dock_position: "top", width: 100, height: 40, offset: 0
+"window": { "dock_position": "top", "width": 100, "height": 40, "offset": 0 }
  -> 화면 상단, 전체 폭, 높이 40%, 왼쪽 끝
 
-dock_position: "top", width: 60, height: 40, offset: 50
+"window": { "dock_position": "top", "width": 60, "height": 40, "offset": 50 }
  -> 화면 상단, 폭 60%, 높이 40%, 중앙
 
-dock_position: "top", width: 50, height: 100, offset: 100
+"window": { "dock_position": "top", "width": 50, "height": 100, "offset": 100 }
  -> 화면 상단, 폭 50%, 전체 높이, 오른쪽 끝에 붙음
 
-dock_position: "left", width: 30, height: 80, offset: 50
+"window": { "dock_position": "left", "width": 30, "height": 80, "offset": 50 }
  -> 화면 왼쪽, 너비 30%, 높이 80%, 세로 중앙
 ```
 

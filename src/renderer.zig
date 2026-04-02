@@ -16,9 +16,9 @@ pub const GlRenderer = struct {
     const CURSOR_G: gl.GLfloat = 180.0 / 255.0;
     const CURSOR_B: gl.GLfloat = 180.0 / 255.0;
 
-    pub fn init(font_height: c_int, cell_w: u32, cell_h: u32) !GlRenderer {
+    pub fn init(font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32) !GlRenderer {
         return .{
-            .atlas = try FontAtlas.init(font_height, cell_w, cell_h),
+            .atlas = try FontAtlas.init(font_family, font_height, cell_w, cell_h),
         };
     }
 

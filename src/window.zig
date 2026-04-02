@@ -224,7 +224,7 @@ pub const Window = struct {
     const VK_F1: UINT = 0x70;
     const RENDER_TIMER_ID: usize = 1;
 
-    pub fn init(self: *Window) !void {
+    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int) !void {
         const hInstance = GetModuleHandleW(null);
 
         const wc = WNDCLASSEXW{
@@ -278,7 +278,7 @@ pub const Window = struct {
 
         // Create monospace font (used for measuring cell metrics)
         self.font = CreateFontW(
-            16,
+            font_size,
             0,
             0,
             0,
@@ -291,7 +291,7 @@ pub const Window = struct {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            std.unicode.utf8ToUtf16LeStringLiteral("Consolas"),
+            font_family,
         );
 
         // Measure cell metrics from font

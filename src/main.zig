@@ -143,11 +143,13 @@ fn run() !void {
     app.window.write_fn = App.onKeyInput;
     app.window.render_fn = App.onRender;
     app.window.resize_fn = App.onResize;
-    try app.window.init();
+    const font_family_w = config.fontFamilyUtf16();
+    const font_size: c_int = @intCast(config.font_size);
+    try app.window.init(font_family_w, font_size);
     defer app.window.deinit();
 
     // Initialize OpenGL renderer (must be after window.init which creates the GL context)
-    app.gl_renderer = GlRenderer.init(16, @intCast(app.window.cell_width), @intCast(app.window.cell_height)) catch null;
+    app.gl_renderer = GlRenderer.init(font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height)) catch null;
     defer if (app.gl_renderer) |*r| r.deinit();
 
     // Apply position from config
