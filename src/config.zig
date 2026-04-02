@@ -7,13 +7,27 @@ extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, 
 const MB_OK: c_uint = 0x0;
 const MB_ICONERROR: c_uint = 0x10;
 
+const err_invalid_key = std.unicode.utf8ToUtf16LeStringLiteral(
+    "config.json: invalid key\n\n\"edge\" -> \"dock_position\"\n\"size\" -> \"width\"",
+);
+const err_width = std.unicode.utf8ToUtf16LeStringLiteral(
+    "config.json: \"width\" out of range\n\nAllowed: 10 ~ 100",
+);
+const err_length = std.unicode.utf8ToUtf16LeStringLiteral(
+    "config.json: \"length\" out of range\n\nAllowed: 10 ~ 100",
+);
+const err_offset = std.unicode.utf8ToUtf16LeStringLiteral(
+    "config.json: \"offset\" out of range\n\nAllowed: 0 ~ 100\n(0=start, 50=center, 100=end)",
+);
+
 pub const Config = struct {
-    edge: Window.Edge = .top,
+    dock_position: Window.DockPosition = .top,
     width: u8 = 40,
     length: u8 = 100,
     offset: u8 = 0,
     shell: []const u8 = "cmd.exe",
     autostart: bool = false,
+    has_invalid_key: bool = false,
 
     pub fn load(allocator: std.mem.Allocator) Config {
         const path = getConfigPath(allocator) catch return .{};
@@ -29,18 +43,10 @@ pub const Config = struct {
     }
 
     pub fn validate(self: *const Config) ?[*:0]const WCHAR {
-        if (self.width < 10 or self.width > 100)
-            return std.unicode.utf8ToUtf16LeStringLiteral(
-                "config.json \xec\x98\xa4\xeb\xa5\x98: \"width\" \xea\xb0\x92\xec\x9d\xb4 \xeb\xb2\x94\xec\x9c\x84\xeb\xa5\xbc \xeb\xb2\x97\xec\x96\xb4\xeb\x82\xa8\n\n\xed\x97\x88\xec\x9a\xa9 \xeb\xb2\x94\xec\x9c\x84: 10 ~ 100\n\xed\x99\x94\xeb\xa9\xb4 \xeb\x8c\x80\xeb\xb9\x84 % \xeb\x8b\xa8\xec\x9c\x84",
-            );
-        if (self.length < 10 or self.length > 100)
-            return std.unicode.utf8ToUtf16LeStringLiteral(
-                "config.json \xec\x98\xa4\xeb\xa5\x98: \"length\" \xea\xb0\x92\xec\x9d\xb4 \xeb\xb2\x94\xec\x9c\x84\xeb\xa5\xbc \xeb\xb2\x97\xec\x96\xb4\xeb\x82\xa8\n\n\xed\x97\x88\xec\x9a\xa9 \xeb\xb2\x94\xec\x9c\x84: 10 ~ 100\n\xed\x99\x94\xeb\xa9\xb4 \xeb\x8c\x80\xeb\xb9\x84 % \xeb\x8b\xa8\xec\x9c\x84",
-            );
-        if (self.offset > 100)
-            return std.unicode.utf8ToUtf16LeStringLiteral(
-                "config.json \xec\x98\xa4\xeb\xa5\x98: \"offset\" \xea\xb0\x92\xec\x9d\xb4 \xeb\xb2\x94\xec\x9c\x84\xeb\xa5\xbc \xeb\xb2\x97\xec\x96\xb4\xeb\x82\xa8\n\n\xed\x97\x88\xec\x9a\xa9 \xeb\xb2\x94\xec\x9c\x84: 0 ~ 100\n\xec\x9c\x84\xec\xb9\x98 % (0=\xec\x8b\x9c\xec\x9e\x91, 50=\xec\xa4\x91\xec\x95\x99, 100=\xeb\x81\x9d)",
-            );
+        if (self.has_invalid_key) return err_invalid_key;
+        if (self.width < 10 or self.width > 100) return err_width;
+        if (self.length < 10 or self.length > 100) return err_length;
+        if (self.offset > 100) return err_offset;
         return null;
     }
 
@@ -61,7 +67,7 @@ pub const Config = struct {
 
         const json = try std.fmt.allocPrint(allocator,
             \\{{
-            \\  "edge": "{s}",
+            \\  "dock_position": "{s}",
             \\  "width": {d},
             \\  "length": {d},
             \\  "offset": {d},
@@ -69,7 +75,7 @@ pub const Config = struct {
             \\  "autostart": {s}
             \\}}
         , .{
-            @tagName(self.edge),
+            @tagName(self.dock_position),
             self.width,
             self.length,
             self.offset,
@@ -84,15 +90,17 @@ pub const Config = struct {
         var config = Config{};
 
         // Simple JSON parsing for our known fields
-        if (findStringValue(content, "edge")) |edge_str| {
-            if (std.mem.eql(u8, edge_str, "top")) config.edge = .top
-            else if (std.mem.eql(u8, edge_str, "bottom")) config.edge = .bottom
-            else if (std.mem.eql(u8, edge_str, "left")) config.edge = .left
-            else if (std.mem.eql(u8, edge_str, "right")) config.edge = .right;
+        if (findStringValue(content, "dock_position")) |dp_str| {
+            if (std.mem.eql(u8, dp_str, "top")) config.dock_position = .top
+            else if (std.mem.eql(u8, dp_str, "bottom")) config.dock_position = .bottom
+            else if (std.mem.eql(u8, dp_str, "left")) config.dock_position = .left
+            else if (std.mem.eql(u8, dp_str, "right")) config.dock_position = .right;
         }
 
+        // Detect deprecated/invalid keys
+        config.has_invalid_key = findStringValue(content, "edge") != null or findIntValue(content, "size") != null;
+
         if (findIntValue(content, "width")) |v| config.width = @intCast(std.math.clamp(v, 1, 255));
-        if (findIntValue(content, "size")) |v| config.width = @intCast(std.math.clamp(v, 1, 255)); // backwards compat
         if (findIntValue(content, "length")) |v| config.length = @intCast(std.math.clamp(v, 1, 255));
         if (findIntValue(content, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
 
