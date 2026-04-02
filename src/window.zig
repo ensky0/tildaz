@@ -44,6 +44,12 @@ const WM_TIMER: UINT = 0x0113;
 const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
 pub const WM_PTY_OUTPUT: UINT = WM_USER + 1;
+const WM_TAB_CLOSED: UINT = WM_USER + 2;
+const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_LBUTTONDOWN: UINT = 0x0201;
+const WM_LBUTTONUP: UINT = 0x0202;
+const WM_MOUSEMOVE: UINT = 0x0200;
+const MK_LBUTTON: WPARAM = 0x0001;
 
 // Other constants
 const SW_SHOW: c_int = 5;
@@ -70,7 +76,7 @@ const FIXED_PITCH: DWORD = 1;
 const FF_MODERN: DWORD = 0x30;
 
 const POINT = extern struct { x: LONG, y: LONG };
-const RECT = extern struct { left: LONG, top: LONG, right: LONG, bottom: LONG };
+pub const RECT = extern struct { left: LONG, top: LONG, right: LONG, bottom: LONG };
 const MONITORINFO = extern struct {
     cbSize: DWORD,
     rcMonitor: RECT,
@@ -149,6 +155,8 @@ extern "user32" fn CloseClipboard() callconv(.c) BOOL;
 extern "user32" fn GetClipboardData(UINT) callconv(.c) ?*anyopaque;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn MessageBoxW(HWND, [*:0]const WCHAR, [*:0]const WCHAR, UINT) callconv(.c) c_int;
+extern "user32" fn SetCapture(HWND) callconv(.c) HWND;
+extern "user32" fn ReleaseCapture() callconv(.c) BOOL;
 
 const MB_YESNO: UINT = 0x04;
 const MB_ICONQUESTION: UINT = 0x20;
@@ -214,6 +222,7 @@ pub const Window = struct {
     resize_fn: ?*const fn (u16, u16, ?*anyopaque) void = null,
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
+    app_msg_fn: ?*const fn (UINT, WPARAM, LPARAM, ?*anyopaque) bool = null,
     shell_exited: bool = false,
     // OpenGL state
     hglrc: gl.HGLRC = null,
@@ -443,9 +452,24 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYDOWN => {
-                // Ctrl+Shift+V: paste from clipboard
-                if (wParam == 0x56) { // VK_V
-                    if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
+                // Ctrl+Shift shortcuts
+                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
+                    // Ctrl+Shift+T: new tab
+                    if (wParam == 0x54) {
+                        if (self.app_msg_fn) |f| {
+                            _ = f(WM_KEYDOWN, wParam, lParam, self.userdata);
+                        }
+                        return 0;
+                    }
+                    // Ctrl+Shift+W: close active tab
+                    if (wParam == 0x57) {
+                        if (self.app_msg_fn) |f| {
+                            _ = f(WM_KEYDOWN, wParam, lParam, self.userdata);
+                        }
+                        return 0;
+                    }
+                    // Ctrl+Shift+V: paste from clipboard
+                    if (wParam == 0x56) {
                         if (self.write_fn) |write_fn| {
                             self.pasteClipboard(write_fn);
                         }
@@ -506,6 +530,44 @@ pub const Window = struct {
             },
             WM_DESTROY => {
                 PostQuitMessage(0);
+                return 0;
+            },
+            WM_SYSKEYDOWN => {
+                // Alt+1 through Alt+9: switch tabs
+                if (wParam >= 0x31 and wParam <= 0x39) {
+                    if (self.app_msg_fn) |f| {
+                        _ = f(msg, wParam, lParam, self.userdata);
+                    }
+                    return 0;
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+            },
+            WM_LBUTTONDOWN => {
+                if (self.app_msg_fn) |f| {
+                    if (f(msg, wParam, lParam, self.userdata)) {
+                        _ = SetCapture(hwnd);
+                    }
+                }
+                return 0;
+            },
+            WM_MOUSEMOVE => {
+                if (self.app_msg_fn) |f| {
+                    _ = f(msg, wParam, lParam, self.userdata);
+                }
+                return 0;
+            },
+            WM_LBUTTONUP => {
+                if (self.app_msg_fn) |f| {
+                    if (f(msg, wParam, lParam, self.userdata)) {
+                        _ = ReleaseCapture();
+                    }
+                }
+                return 0;
+            },
+            WM_TAB_CLOSED => {
+                if (self.app_msg_fn) |f| {
+                    _ = f(msg, wParam, lParam, self.userdata);
+                }
                 return 0;
             },
             else => {},
