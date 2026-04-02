@@ -40,12 +40,14 @@ zig build -Doptimize=ReleaseFast
 
 ## 설정
 
-설정 파일: `%APPDATA%\TildaZ\config.json` (첫 실행 시 자동 생성)
+설정 파일 경로 (우선순위):
+1. `tildaz.exe`와 같은 디렉토리의 `config.json` (portable mode)
+2. `%APPDATA%\TildaZ\config.json` (첫 실행 시 자동 생성)
 
 ```json
 {
   "edge": "top",
-  "size": 40,
+  "width": 40,
   "length": 100,
   "offset": 0,
   "shell": "cmd.exe",
@@ -53,26 +55,29 @@ zig build -Doptimize=ReleaseFast
 }
 ```
 
-| 항목 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| edge | string | "top" | 화면 가장자리: top, bottom, left, right |
-| size | int | 40 | edge 수직 방향 크기 (화면 %) |
-| length | int | 100 | edge 평행 방향 크기 (화면 %) |
-| offset | int | 0 | edge 평행 방향 위치 (화면 %) |
-| shell | string | "cmd.exe" | 실행할 쉘: cmd.exe, powershell.exe, pwsh.exe |
-| autostart | bool | false | Windows 로그인 시 자동 시작 |
+| 항목 | 타입 | 범위 | 기본값 | 설명 |
+|------|------|------|--------|------|
+| edge | string | top, bottom, left, right | "top" | 화면 가장자리 |
+| width | int | 10~100 | 40 | edge 수직 방향 크기 (화면 %) |
+| length | int | 10~100 | 100 | edge 평행 방향 크기 (화면 %) |
+| offset | int | 0~100 | 0 | 위치 (0=시작, 50=중앙, 100=끝) |
+| shell | string | cmd.exe, powershell.exe, pwsh.exe | "cmd.exe" | 실행할 쉘 |
+| autostart | bool | true, false | false | Windows 로그인 시 자동 시작 |
 
 ### 위치 예시
 
 ```
-edge: "top", size: 40, length: 100, offset: 0
- -> 화면 상단, 높이 40%, 전체 폭
+edge: "top", width: 40, length: 100, offset: 0
+ -> 화면 상단, 높이 40%, 전체 폭, 왼쪽 끝
 
-edge: "top", size: 40, length: 60, offset: 20
- -> 화면 상단, 높이 40%, 폭 60%, 왼쪽에서 20% 지점부터
+edge: "top", width: 40, length: 60, offset: 50
+ -> 화면 상단, 높이 40%, 폭 60%, 중앙
 
-edge: "left", size: 30, length: 80, offset: 10
- -> 화면 왼쪽, 너비 30%, 높이 80%, 위에서 10% 지점부터
+edge: "top", width: 40, length: 60, offset: 100
+ -> 화면 상단, 높이 40%, 폭 60%, 오른쪽 끝에 붙음
+
+edge: "left", width: 30, length: 80, offset: 50
+ -> 화면 왼쪽, 너비 30%, 높이 80%, 세로 중앙
 ```
 
 ## 단축키

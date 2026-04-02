@@ -309,7 +309,7 @@ pub const Window = struct {
         if (self.visible) self.hide() else self.show();
     }
 
-    pub fn setPosition(self: *Window, edge: Edge, size_pct: u8, length_pct: u8, offset_pct: u8) void {
+    pub fn setPosition(self: *Window, edge: Edge, width_pct: u8, length_pct: u8, offset_pct: u8) void {
         var cursor_pos: POINT = .{ .x = 0, .y = 0 };
         _ = GetCursorPos(&cursor_pos);
 
@@ -330,28 +330,28 @@ pub const Window = struct {
 
         switch (edge) {
             .top => {
-                x = sx + @divTrunc(sw * @as(c_int, offset_pct), 100);
-                y = sy;
                 w = @divTrunc(sw * @as(c_int, length_pct), 100);
-                h = @divTrunc(sh * @as(c_int, size_pct), 100);
+                h = @divTrunc(sh * @as(c_int, width_pct), 100);
+                x = sx + @divTrunc((sw - w) * @as(c_int, offset_pct), 100);
+                y = sy;
             },
             .bottom => {
-                x = sx + @divTrunc(sw * @as(c_int, offset_pct), 100);
-                y = sy + sh - @divTrunc(sh * @as(c_int, size_pct), 100);
                 w = @divTrunc(sw * @as(c_int, length_pct), 100);
-                h = @divTrunc(sh * @as(c_int, size_pct), 100);
+                h = @divTrunc(sh * @as(c_int, width_pct), 100);
+                x = sx + @divTrunc((sw - w) * @as(c_int, offset_pct), 100);
+                y = sy + sh - h;
             },
             .left => {
-                x = sx;
-                y = sy + @divTrunc(sh * @as(c_int, offset_pct), 100);
-                w = @divTrunc(sw * @as(c_int, size_pct), 100);
+                w = @divTrunc(sw * @as(c_int, width_pct), 100);
                 h = @divTrunc(sh * @as(c_int, length_pct), 100);
+                x = sx;
+                y = sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100);
             },
             .right => {
-                x = sx + sw - @divTrunc(sw * @as(c_int, size_pct), 100);
-                y = sy + @divTrunc(sh * @as(c_int, offset_pct), 100);
-                w = @divTrunc(sw * @as(c_int, size_pct), 100);
+                w = @divTrunc(sw * @as(c_int, width_pct), 100);
                 h = @divTrunc(sh * @as(c_int, length_pct), 100);
+                x = sx + sw - w;
+                y = sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100);
             },
         }
 

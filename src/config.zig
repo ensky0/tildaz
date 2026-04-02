@@ -2,9 +2,14 @@ const std = @import("std");
 const windows = std.os.windows;
 const Window = @import("window.zig").Window;
 
+const WCHAR = u16;
+extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
+const MB_OK: c_uint = 0x0;
+const MB_ICONERROR: c_uint = 0x10;
+
 pub const Config = struct {
     edge: Window.Edge = .top,
-    size: u8 = 40,
+    width: u8 = 40,
     length: u8 = 100,
     offset: u8 = 0,
     shell: []const u8 = "cmd.exe",
@@ -21,6 +26,22 @@ pub const Config = struct {
         defer allocator.free(content);
 
         return parse(content);
+    }
+
+    pub fn validate(self: *const Config) ?[*:0]const WCHAR {
+        if (self.width < 10 or self.width > 100)
+            return std.unicode.utf8ToUtf16LeStringLiteral(
+                "config.json \xec\x98\xa4\xeb\xa5\x98: \"width\" \xea\xb0\x92\xec\x9d\xb4 \xeb\xb2\x94\xec\x9c\x84\xeb\xa5\xbc \xeb\xb2\x97\xec\x96\xb4\xeb\x82\xa8\n\n\xed\x97\x88\xec\x9a\xa9 \xeb\xb2\x94\xec\x9c\x84: 10 ~ 100\n\xed\x99\x94\xeb\xa9\xb4 \xeb\x8c\x80\xeb\xb9\x84 % \xeb\x8b\xa8\xec\x9c\x84",
+            );
+        if (self.length < 10 or self.length > 100)
+            return std.unicode.utf8ToUtf16LeStringLiteral(
+                "config.json \xec\x98\xa4\xeb\xa5\x98: \"length\" \xea\xb0\x92\xec\x9d\xb4 \xeb\xb2\x94\xec\x9c\x84\xeb\xa5\xbc \xeb\xb2\x97\xec\x96\xb4\xeb\x82\xa8\n\n\xed\x97\x88\xec\x9a\xa9 \xeb\xb2\x94\xec\x9c\x84: 10 ~ 100\n\xed\x99\x94\xeb\xa9\xb4 \xeb\x8c\x80\xeb\xb9\x84 % \xeb\x8b\xa8\xec\x9c\x84",
+            );
+        if (self.offset > 100)
+            return std.unicode.utf8ToUtf16LeStringLiteral(
+                "config.json \xec\x98\xa4\xeb\xa5\x98: \"offset\" \xea\xb0\x92\xec\x9d\xb4 \xeb\xb2\x94\xec\x9c\x84\xeb\xa5\xbc \xeb\xb2\x97\xec\x96\xb4\xeb\x82\xa8\n\n\xed\x97\x88\xec\x9a\xa9 \xeb\xb2\x94\xec\x9c\x84: 0 ~ 100\n\xec\x9c\x84\xec\xb9\x98 % (0=\xec\x8b\x9c\xec\x9e\x91, 50=\xec\xa4\x91\xec\x95\x99, 100=\xeb\x81\x9d)",
+            );
+        return null;
     }
 
     pub fn save(self: *const Config, allocator: std.mem.Allocator) !void {
@@ -41,7 +62,7 @@ pub const Config = struct {
         const json = try std.fmt.allocPrint(allocator,
             \\{{
             \\  "edge": "{s}",
-            \\  "size": {d},
+            \\  "width": {d},
             \\  "length": {d},
             \\  "offset": {d},
             \\  "shell": "{s}",
@@ -49,7 +70,7 @@ pub const Config = struct {
             \\}}
         , .{
             @tagName(self.edge),
-            self.size,
+            self.width,
             self.length,
             self.offset,
             self.shell,
@@ -70,11 +91,21 @@ pub const Config = struct {
             else if (std.mem.eql(u8, edge_str, "right")) config.edge = .right;
         }
 
-        if (findIntValue(content, "size")) |v| config.size = @intCast(std.math.clamp(v, 10, 100));
-        if (findIntValue(content, "length")) |v| config.length = @intCast(std.math.clamp(v, 10, 100));
-        if (findIntValue(content, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 100));
+        if (findIntValue(content, "width")) |v| config.width = @intCast(std.math.clamp(v, 1, 255));
+        if (findIntValue(content, "size")) |v| config.width = @intCast(std.math.clamp(v, 1, 255)); // backwards compat
+        if (findIntValue(content, "length")) |v| config.length = @intCast(std.math.clamp(v, 1, 255));
+        if (findIntValue(content, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
 
         if (findBoolValue(content, "autostart")) |v| config.autostart = v;
+
+        if (findStringValue(content, "shell")) |shell_str| {
+            if (std.mem.eql(u8, shell_str, "cmd.exe") or
+                std.mem.eql(u8, shell_str, "powershell.exe") or
+                std.mem.eql(u8, shell_str, "pwsh.exe"))
+            {
+                config.shell = shell_str;
+            }
+        }
 
         return config;
     }
@@ -197,7 +228,6 @@ pub const Config = struct {
     }
 
     pub fn shellUtf16(self: *const Config) [*:0]const u16 {
-        // For MVP, we only support cmd.exe and powershell.exe
         if (std.mem.eql(u8, self.shell, "powershell.exe")) {
             return std.unicode.utf8ToUtf16LeStringLiteral("powershell.exe");
         }
