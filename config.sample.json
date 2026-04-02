@@ -11,5 +11,6 @@
   },
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
-  "hidden_start": true
+  "hidden_start": true,
+  "max_scroll_lines": 1000000
 }

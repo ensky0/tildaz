@@ -141,10 +141,68 @@ extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD)
 
 extern "kernel32" fn GetLastError() callconv(.c) DWORD;
 
+extern "kernel32" fn CreateNamedPipeW(
+    lpName: [*:0]const WCHAR,
+    dwOpenMode: DWORD,
+    dwPipeMode: DWORD,
+    nMaxInstances: DWORD,
+    nOutBufferSize: DWORD,
+    nInBufferSize: DWORD,
+    nDefaultTimeOut: DWORD,
+    lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
+) callconv(.c) HANDLE;
+
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const WCHAR,
+    dwDesiredAccess: DWORD,
+    dwShareMode: DWORD,
+    lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
+    dwCreationDisposition: DWORD,
+    dwFlagsAndAttributes: DWORD,
+    hTemplateFile: ?HANDLE,
+) callconv(.c) HANDLE;
+
+extern "kernel32" fn GetOverlappedResult(
+    hFile: HANDLE,
+    lpOverlapped: *OVERLAPPED,
+    lpNumberOfBytesTransferred: *DWORD,
+    bWait: BOOL,
+) callconv(.c) BOOL;
+
+extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(.c) BOOL;
+
+extern "kernel32" fn CreateEventW(
+    lpEventAttributes: ?*anyopaque,
+    bManualReset: BOOL,
+    bInitialState: BOOL,
+    lpName: ?[*:0]const WCHAR,
+) callconv(.c) ?HANDLE;
+
+extern "kernel32" fn GetCurrentProcessId() callconv(.c) DWORD;
+
+const OVERLAPPED = extern struct {
+    Internal: usize = 0,
+    InternalHigh: usize = 0,
+    Offset: DWORD = 0,
+    OffsetHigh: DWORD = 0,
+    hEvent: ?HANDLE = null,
+};
+
+const PIPE_ACCESS_INBOUND: DWORD = 0x00000001;
+const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
+const PIPE_TYPE_BYTE: DWORD = 0x00000000;
+const PIPE_WAIT: DWORD = 0x00000000;
+const GENERIC_WRITE: DWORD = 0x40000000;
+const OPEN_EXISTING: DWORD = 3;
+const WAIT_OBJECT_0: DWORD = 0;
+const WAIT_TIMEOUT: DWORD = 0x102;
+const ERROR_IO_PENDING: DWORD = 997;
+
 pub const ConPty = struct {
     hpc: HPCON,
-    pipe_in: HANDLE, // write to this → goes to ConPTY input
+    pipe_in: HANDLE, // write to this → goes to ConPTY input (overlapped)
     pipe_out: HANDLE, // read from this → ConPTY output
+    write_event: HANDLE, // event for overlapped write
     process_info: PROCESS_INFORMATION,
     attr_list_buf: []u8,
     read_thread: ?std.Thread = null,
@@ -156,18 +214,60 @@ pub const ConPty = struct {
 
     pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR) !ConPty {
         // Create pipes for ConPTY
-        var pty_input_read: HANDLE = INVALID_HANDLE_VALUE;
-        var pty_input_write: HANDLE = INVALID_HANDLE_VALUE;
+        // Input pipe: overlapped named pipe (write side) so WriteFile won't block UI
         var pty_output_read: HANDLE = INVALID_HANDLE_VALUE;
         var pty_output_write: HANDLE = INVALID_HANDLE_VALUE;
 
-        if (CreatePipe(&pty_input_read, &pty_input_write, null, 0) == 0) {
-            return error.CreatePipeFailed;
+        const S = struct {
+            var counter: u32 = 0;
+        };
+        const pid = GetCurrentProcessId();
+        const seq = @atomicRmw(u32, &S.counter, .Add, 1, .monotonic);
+        var pipe_name_buf: [128]WCHAR = undefined;
+        const pipe_name_str = std.fmt.bufPrint(
+            @as(*[256]u8, @ptrCast(&pipe_name_buf)),
+            "\\\\.\\pipe\\tildaz_{d}_{d}\x00",
+            .{ pid, seq },
+        ) catch return error.CreatePipeFailed;
+        // Convert ASCII to WCHAR in-place (backwards to avoid overwrite)
+        var pipe_name: [128]WCHAR = undefined;
+        var pi: usize = pipe_name_str.len;
+        while (pi > 0) {
+            pi -= 1;
+            pipe_name[pi] = pipe_name_str[pi];
         }
-        errdefer {
-            _ = CloseHandle(pty_input_read);
-            _ = CloseHandle(pty_input_write);
-        }
+        const pipe_name_z: [*:0]const WCHAR = @ptrCast(pipe_name[0 .. pipe_name_str.len - 1 :0]);
+
+        // Server side (read end) — synchronous, given to ConPTY
+        const pty_input_read = CreateNamedPipeW(
+            pipe_name_z,
+            PIPE_ACCESS_INBOUND, // read-only server
+            PIPE_TYPE_BYTE | PIPE_WAIT,
+            1,
+            4096,
+            4096,
+            0,
+            null,
+        );
+        if (pty_input_read == INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
+        errdefer _ = CloseHandle(pty_input_read);
+
+        // Client side (write end) — overlapped
+        const pty_input_write = CreateFileW(
+            pipe_name_z,
+            GENERIC_WRITE,
+            0,
+            null,
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            null,
+        );
+        if (pty_input_write == INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
+        errdefer _ = CloseHandle(pty_input_write);
+
+        // Event for overlapped writes
+        const write_event = CreateEventW(null, 1, 0, null) orelse return error.CreateEventFailed;
+        errdefer _ = CloseHandle(write_event);
 
         // Large output buffer to prevent WSL from blocking during startup
         if (CreatePipe(&pty_output_read, &pty_output_write, null, 256 * 1024) == 0) {
@@ -249,6 +349,7 @@ pub const ConPty = struct {
             .hpc = hpc,
             .pipe_in = pty_input_write,
             .pipe_out = pty_output_read,
+            .write_event = write_event,
             .process_info = process_info,
             .attr_list_buf = attr_list_buf,
             .allocator = allocator,
@@ -273,6 +374,7 @@ pub const ConPty = struct {
         // Close remaining handles
         if (self.pipe_out != INVALID_HANDLE_VALUE) _ = CloseHandle(self.pipe_out);
         _ = CloseHandle(self.pipe_in);
+        _ = CloseHandle(self.write_event);
         _ = CloseHandle(self.process_info.hProcess);
         _ = CloseHandle(self.process_info.hThread);
 
@@ -281,17 +383,32 @@ pub const ConPty = struct {
     }
 
     pub fn write(self: *ConPty, data: []const u8) !usize {
+        var overlapped = OVERLAPPED{ .hEvent = self.write_event };
         var bytes_written: DWORD = 0;
-        if (WriteFile(
+
+        const result = WriteFile(
             self.pipe_in,
             data.ptr,
             @intCast(data.len),
             &bytes_written,
-            null,
-        ) == 0) {
-            return error.WriteFailed;
+            @ptrCast(&overlapped),
+        );
+
+        if (result != 0) return @intCast(bytes_written);
+
+        // WriteFile이 비동기 시작됨 — 100ms 타임아웃으로 대기
+        if (GetLastError() != ERROR_IO_PENDING) return error.WriteFailed;
+
+        const wait = WaitForSingleObject(self.write_event, 100);
+        if (wait == WAIT_OBJECT_0) {
+            _ = GetOverlappedResult(self.pipe_in, &overlapped, &bytes_written, 0);
+            return @intCast(bytes_written);
         }
-        return @intCast(bytes_written);
+
+        // 타임아웃 — write 취소하고 다음 write로 넘어감
+        _ = CancelIo(self.pipe_in);
+        _ = GetOverlappedResult(self.pipe_in, &overlapped, &bytes_written, 1);
+        return error.WriteTimeout;
     }
 
     pub fn resize(self: *ConPty, cols: u16, rows: u16) !void {

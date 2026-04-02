@@ -52,6 +52,7 @@ const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_MBUTTONDOWN: UINT = 0x0207;
+const WM_MOUSEWHEEL: UINT = 0x020A;
 const MK_LBUTTON: WPARAM = 0x0001;
 
 // Other constants
@@ -489,6 +490,17 @@ pub const Window = struct {
                     }
                 }
 
+                const vk_prior: WPARAM = 0x21; // Page Up
+                const vk_next: WPARAM = 0x22; // Page Down
+
+                // Shift+PageUp/Down: scroll viewport
+                if (GetKeyState(VK_SHIFT) < 0 and (wParam == vk_prior or wParam == vk_next)) {
+                    if (self.app_msg_fn) |f| {
+                        _ = f(WM_MOUSEWHEEL, wParam, 0, self.userdata);
+                    }
+                    return 0;
+                }
+
                 // Only handle keys that do NOT generate WM_CHAR
                 if (self.write_fn) |write_fn| {
                     const vk_up: WPARAM = 0x26;
@@ -499,8 +511,6 @@ pub const Window = struct {
                     const vk_end: WPARAM = 0x23;
                     const vk_delete: WPARAM = 0x2E;
                     const vk_insert: WPARAM = 0x2D;
-                    const vk_prior: WPARAM = 0x21; // Page Up
-                    const vk_next: WPARAM = 0x22; // Page Down
 
                     switch (wParam) {
                         vk_up => write_fn("\x1b[A", self.userdata),
@@ -578,6 +588,12 @@ pub const Window = struct {
                     _ = f(msg, wParam, lParam, self.userdata);
                 }
                 _ = ReleaseCapture();
+                return 0;
+            },
+            WM_MOUSEWHEEL => {
+                if (self.app_msg_fn) |f| {
+                    _ = f(msg, wParam, lParam, self.userdata);
+                }
                 return 0;
             },
             WM_MBUTTONDOWN => {

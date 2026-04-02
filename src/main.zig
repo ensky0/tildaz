@@ -28,35 +28,165 @@ const MB_OK: c_uint = 0x0;
 const MB_ICONERROR: c_uint = 0x10;
 const MB_ICONINFORMATION: c_uint = 0x40;
 const WM_LBUTTONDBLCLK: c_uint = 0x0203;
+const WM_MOUSEWHEEL: c_uint = 0x020A;
 pub const WM_TAB_CLOSED: c_uint = 0x0402; // WM_USER + 2
+
+/// Lock-free 링버퍼 (단일 생산자, 단일 소비자)
+const RingBuffer = struct {
+    buf: [64 * 1024]u8 = undefined, // 64KB
+    head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0), // 쓰기 위치 (생산자)
+    tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0), // 읽기 위치 (소비자)
+
+    const SIZE = 64 * 1024;
+
+    /// 생산자: 데이터 추가 (읽기 스레드에서 호출)
+    fn push(self: *RingBuffer, data: []const u8) void {
+        const h = self.head.load(.acquire);
+        const t = self.tail.load(.acquire);
+        var pos = h;
+        for (data) |byte| {
+            const next = (pos + 1) % SIZE;
+            if (next == t) break; // 가득 차면 drop
+            self.buf[pos] = byte;
+            pos = next;
+        }
+        self.head.store(pos, .release);
+    }
+
+    /// 소비자: 데이터 꺼내기 (UI 스레드에서 호출)
+    fn pop(self: *RingBuffer, out: []u8) usize {
+        const h = self.head.load(.acquire);
+        var t = self.tail.load(.acquire);
+        var n: usize = 0;
+        while (t != h and n < out.len) {
+            out[n] = self.buf[t];
+            t = (t + 1) % SIZE;
+            n += 1;
+        }
+        self.tail.store(t, .release);
+        return n;
+    }
+};
+
+/// PTY write용 큐 (UI → write 스레드)
+const WriteQueue = struct {
+    buf: [4096]u8 = undefined,
+    head: usize = 0,
+    tail: usize = 0,
+    mutex: std.Thread.Mutex = .{},
+    event: std.Thread.ResetEvent = .{},
+    closed: bool = false,
+
+    fn push(self: *WriteQueue, data: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (data) |byte| {
+            const next = (self.head + 1) % self.buf.len;
+            if (next == self.tail) continue;
+            self.buf[self.head] = byte;
+            self.head = next;
+        }
+        self.event.set();
+    }
+
+    fn pop(self: *WriteQueue, out: []u8) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var n: usize = 0;
+        while (self.tail != self.head and n < out.len) {
+            out[n] = self.buf[self.tail];
+            self.tail = (self.tail + 1) % self.buf.len;
+            n += 1;
+        }
+        return n;
+    }
+
+    fn close(self: *WriteQueue) void {
+        self.mutex.lock();
+        self.closed = true;
+        self.mutex.unlock();
+        self.event.set();
+    }
+
+    fn isClosed(self: *WriteQueue) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.closed;
+    }
+};
 
 const Tab = struct {
     terminal: ghostty.Terminal,
     stream: ghostty.TerminalStream,
     pty: ConPty,
-    mutex: std.Thread.Mutex = .{},
     title: [64]u8 = undefined,
     title_len: usize = 0,
     alive: bool = true,
     owner: *App,
+    // PTY 출력 버퍼: 읽기 스레드 → UI 스레드 (lock-free)
+    output_ring: RingBuffer = .{},
+    // PTY 입력 큐: UI 스레드 → write 스레드
+    write_queue: WriteQueue = .{},
+    write_thread: ?std.Thread = null,
 
     fn init(alloc: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const u16, owner: *App) !*Tab {
         const tab = try alloc.create(Tab);
         errdefer alloc.destroy(tab);
         tab.* = .{
-            .terminal = try ghostty.Terminal.init(alloc, .{ .cols = cols, .rows = rows }),
+            .terminal = try ghostty.Terminal.init(alloc, .{
+                .cols = cols,
+                .rows = rows,
+                .max_scrollback = owner.max_scroll_lines,
+            }),
             .stream = undefined,
             .pty = try ConPty.init(alloc, cols, rows, shell),
             .owner = owner,
         };
         tab.stream = tab.terminal.vtStream();
+        tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
         return tab;
     }
 
     fn deinit(tab: *Tab, alloc: std.mem.Allocator) void {
+        tab.write_queue.close();
+        if (tab.write_thread) |t| {
+            t.join();
+            tab.write_thread = null;
+        }
         tab.pty.deinit();
         tab.terminal.deinit(alloc);
         alloc.destroy(tab);
+    }
+
+    fn queueWrite(tab: *Tab, data: []const u8) void {
+        tab.write_queue.push(data);
+    }
+
+    /// UI 스레드에서 호출: 버퍼에 쌓인 PTY 출력을 VT 파서로 처리
+    fn drainOutput(tab: *Tab) void {
+        var buf: [4096]u8 = undefined;
+        // 16ms 프레임 내에 처리할 수 있는 만큼만 (최대 ~64KB)
+        var total: usize = 0;
+        while (total < 64 * 1024) {
+            const n = tab.output_ring.pop(&buf);
+            if (n == 0) break;
+            tab.stream.nextSlice(buf[0..n]);
+            total += n;
+        }
+    }
+
+    fn writeLoop(tab: *Tab) void {
+        var buf: [256]u8 = undefined;
+        while (true) {
+            tab.write_queue.event.wait();
+            tab.write_queue.event.reset();
+            while (true) {
+                const n = tab.write_queue.pop(&buf);
+                if (n == 0) break;
+                _ = tab.pty.write(buf[0..n]) catch {};
+            }
+            if (tab.write_queue.isClosed()) break;
+        }
     }
 
     fn setTitle(tab: *Tab, index: usize) void {
@@ -72,14 +202,15 @@ const App = struct {
     allocator: std.mem.Allocator,
     gl_renderer: ?GlRenderer = null,
     shell_utf16: [*:0]const u16,
+    max_scroll_lines: usize = 10_000,
     dragging: bool = false,
     drag_tab_index: usize = 0,
     drag_start_x: c_int = 0,
     drag_current_x: c_int = 0,
     tab_drag_active: bool = false, // true = drag started in tab bar
     selecting: bool = false, // true = terminal text selection in progress
-    select_start_x: u16 = 0,
-    select_start_y: u32 = 0,
+    scrollbar_dragging: bool = false, // true = scrollbar drag in progress
+    select_start_pin: ?ghostty.PageList.Pin = null,
 
     // Word boundary characters for double-click selection
     const word_boundaries = [_]u21{ ' ', '\t', '"', '\'', '`', '|', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '<', '>' };
@@ -89,6 +220,7 @@ const App = struct {
     const TAB_WIDTH: c_int = 150;
     const CLOSE_BTN_SIZE: c_int = 14;
     const TAB_PADDING: c_int = 6;
+    const SCROLLBAR_W: c_int = 8;
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
@@ -148,9 +280,8 @@ const App = struct {
 
     fn onPtyOutputTab(data: []const u8, userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
-        tab.mutex.lock();
-        defer tab.mutex.unlock();
-        tab.stream.nextSlice(data);
+        // 링버퍼에 넣기만 함 (lock-free, 즉시 반환)
+        tab.output_ring.push(data);
     }
 
     fn onPtyExitTab(userdata: ?*anyopaque) void {
@@ -166,7 +297,8 @@ const App = struct {
     fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         if (self.activeTabPtr()) |tab| {
-            _ = tab.pty.write(data) catch {};
+            tab.queueWrite(data);
+            tab.terminal.scrollViewport(.{ .bottom = {} });
         }
     }
 
@@ -174,8 +306,6 @@ const App = struct {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         const grid = self.getTerminalGridSize();
         for (self.tabs.items) |tab| {
-            tab.mutex.lock();
-            defer tab.mutex.unlock();
             tab.terminal.resize(self.allocator, grid.cols, grid.rows) catch {};
             tab.pty.resize(grid.cols, grid.rows) catch {};
         }
@@ -201,10 +331,9 @@ const App = struct {
                 if (self.dragging) self.drag_current_x else 0,
             );
 
-            // Render active tab's terminal content (offset by tab bar)
+            // VT 처리 + 렌더링 (둘 다 UI 스레드에서 — mutex 경합 없음)
             if (self.activeTabPtr()) |tab| {
-                tab.mutex.lock();
-                defer tab.mutex.unlock();
+                tab.drainOutput();
                 r.renderTerminal(
                     &tab.terminal,
                     window.cell_width,
@@ -242,6 +371,58 @@ const App = struct {
     pub fn handleSwitchTab(self: *App, index: usize) void {
         if (index < self.tabs.items.len and index != self.active_tab) {
             self.active_tab = index;
+            if (self.gl_renderer) |*r| r.invalidate();
+        }
+    }
+
+    pub fn handleScroll(self: *App, wParam: usize) void {
+        const tab = self.activeTabPtr() orelse return;
+        const vk_prior: usize = 0x21;
+        const vk_next: usize = 0x22;
+
+        // Shift+PageUp/Down: wParam is the VK code
+        if (wParam == vk_prior or wParam == vk_next) {
+            const rows: isize = @intCast(self.getTerminalGridSize().rows);
+            const delta: isize = if (wParam == vk_prior) -rows else rows;
+            tab.terminal.scrollViewport(.{ .delta = delta });
+            if (self.gl_renderer) |*r| r.invalidate();
+            return;
+        }
+
+        // Mouse wheel: wParam high word is wheel delta (120 = one notch)
+        const raw: i16 = @bitCast(@as(u16, @truncate(wParam >> 16)));
+        const delta: isize = @divTrunc(@as(isize, raw), 40); // ~3 lines per notch
+        tab.terminal.scrollViewport(.{ .delta = -delta });
+        if (self.gl_renderer) |*r| r.invalidate();
+    }
+
+    fn scrollToY(self: *App, mouse_y: c_int) void {
+        const tab = self.activeTabPtr() orelse return;
+        const screen = tab.terminal.screens.active;
+        const sb = screen.pages.scrollbar();
+        if (sb.total <= sb.len) return;
+
+        // 터미널 영역 내 Y 비율 → 스크롤 위치
+        var client_h: c_int = 0;
+        if (self.window.hwnd) |hwnd| {
+            var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+            _ = GetClientRect(hwnd, &rect);
+            client_h = rect.bottom;
+        }
+        const track_h = client_h - TAB_BAR_HEIGHT;
+        if (track_h <= 0) return;
+
+        const rel_y = @max(0, mouse_y - TAB_BAR_HEIGHT);
+        const clamped_y = @min(rel_y, track_h);
+        const ratio = @as(f64, @floatFromInt(clamped_y)) / @as(f64, @floatFromInt(track_h));
+        const target_row: usize = @intFromFloat(ratio * @as(f64, @floatFromInt(sb.total - sb.len)));
+
+        // delta = target - current offset
+        const current: isize = @intCast(sb.offset);
+        const target: isize = @intCast(target_row);
+        const delta = target - current;
+        if (delta != 0) {
+            tab.terminal.scrollViewport(.{ .delta = delta });
             if (self.gl_renderer) |*r| r.invalidate();
         }
     }
@@ -319,28 +500,39 @@ const App = struct {
 
     fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         const cell = self.mouseToCell(mouse_x, mouse_y);
-        self.select_start_x = cell.col;
-        self.select_start_y = cell.row;
         self.selecting = true;
 
         if (self.activeTabPtr()) |tab| {
-            tab.mutex.lock();
-            defer tab.mutex.unlock();
             const screen: *ghostty.Screen = tab.terminal.screens.active;
             screen.clearSelection();
+            // Pin으로 저장 — viewport가 스크롤돼도 위치 유지
+            self.select_start_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } });
         }
     }
 
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         if (!self.selecting) return;
+        const start_pin = self.select_start_pin orelse return;
         const tab = self.activeTabPtr() orelse return;
 
+        // 터미널 영역 위/아래로 드래그 시 자동 스크롤
+        const term_y = mouse_y - TAB_BAR_HEIGHT;
+        var client_h: c_int = 0;
+        if (self.window.hwnd) |hwnd| {
+            var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+            _ = GetClientRect(hwnd, &rect);
+            client_h = rect.bottom;
+        }
+        const term_h = client_h - TAB_BAR_HEIGHT;
+        if (term_y < 0) {
+            tab.terminal.scrollViewport(.{ .delta = -3 });
+        } else if (term_y > term_h) {
+            tab.terminal.scrollViewport(.{ .delta = 3 });
+        }
+
         const cell = self.mouseToCell(mouse_x, mouse_y);
-        tab.mutex.lock();
-        defer tab.mutex.unlock();
         const screen: *ghostty.Screen = tab.terminal.screens.active;
 
-        const start_pin = screen.pages.pin(.{ .viewport = .{ .x = self.select_start_x, .y = self.select_start_y } }) orelse return;
         const end_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
 
         const sel = ghostty.Selection.init(start_pin, end_pin, false);
@@ -352,8 +544,6 @@ const App = struct {
         self.selecting = false;
 
         const tab = self.activeTabPtr() orelse return;
-        tab.mutex.lock();
-        defer tab.mutex.unlock();
         const screen: *ghostty.Screen = tab.terminal.screens.active;
 
         const sel = screen.selection orelse return;
@@ -368,8 +558,6 @@ const App = struct {
         const tab = self.activeTabPtr() orelse return;
         const cell = self.mouseToCell(mouse_x, mouse_y);
 
-        tab.mutex.lock();
-        defer tab.mutex.unlock();
         const screen: *ghostty.Screen = tab.terminal.screens.active;
 
         const pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
@@ -411,11 +599,26 @@ const App = struct {
                 if (y < TAB_BAR_HEIGHT) {
                     self.tab_drag_active = true;
                     self.selecting = false;
+                    self.scrollbar_dragging = false;
                     self.handleTabClick(x, y);
                     self.handleDragStart(x);
                 } else {
-                    self.tab_drag_active = false;
-                    self.startTerminalSelection(x, y);
+                    var client_w: c_int = 0;
+                    if (self.window.hwnd) |hwnd| {
+                        var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+                        _ = GetClientRect(hwnd, &rect);
+                        client_w = rect.right;
+                    }
+                    if (x >= client_w - SCROLLBAR_W) {
+                        self.scrollbar_dragging = true;
+                        self.tab_drag_active = false;
+                        self.selecting = false;
+                        self.scrollToY(y);
+                    } else {
+                        self.tab_drag_active = false;
+                        self.scrollbar_dragging = false;
+                        self.startTerminalSelection(x, y);
+                    }
                 }
                 return true;
             },
@@ -429,7 +632,9 @@ const App = struct {
             },
             WM_MOUSEMOVE => {
                 if (wParam & MK_LBUTTON != 0) {
-                    if (self.tab_drag_active) {
+                    if (self.scrollbar_dragging) {
+                        self.scrollToY(getYParam(lParam));
+                    } else if (self.tab_drag_active) {
                         self.handleDragMove(getXParam(lParam));
                     } else if (self.selecting) {
                         self.updateTerminalSelection(getXParam(lParam), getYParam(lParam));
@@ -438,12 +643,18 @@ const App = struct {
                 return true;
             },
             WM_LBUTTONUP => {
-                if (self.tab_drag_active) {
+                if (self.scrollbar_dragging) {
+                    self.scrollbar_dragging = false;
+                } else if (self.tab_drag_active) {
                     self.handleDragEnd();
                     self.tab_drag_active = false;
                 } else {
                     self.finishTerminalSelection();
                 }
+                return true;
+            },
+            WM_MOUSEWHEEL => {
+                self.handleScroll(wParam);
                 return true;
             },
             WM_TAB_CLOSED => {
@@ -510,6 +721,7 @@ fn run() !void {
         .window = .{},
         .allocator = alloc,
         .shell_utf16 = config.shellUtf16(),
+        .max_scroll_lines = config.max_scroll_lines,
     };
     defer {
         for (app.tabs.items) |tab| tab.deinit(alloc);
