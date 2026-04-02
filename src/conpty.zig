@@ -256,25 +256,22 @@ pub const ConPty = struct {
     }
 
     pub fn deinit(self: *ConPty) void {
-        // Join wait thread (process already exited or will exit soon)
+        // Close pseudoconsole FIRST — this breaks the output pipe,
+        // unblocking ReadFile in the read thread (Microsoft-recommended pattern)
+        ClosePseudoConsole(self.hpc);
+
+        // Join threads (read thread exits because pipe is broken)
+        if (self.read_thread) |t| {
+            t.join();
+            self.read_thread = null;
+        }
         if (self.wait_thread) |t| {
             t.join();
             self.wait_thread = null;
         }
 
-        if (self.read_thread) |t| {
-            // Close pipe_out first to unblock the read thread
-            _ = CloseHandle(self.pipe_out);
-            self.pipe_out = INVALID_HANDLE_VALUE;
-            t.join();
-            self.read_thread = null;
-        }
-
-        if (self.pipe_out != INVALID_HANDLE_VALUE) {
-            _ = CloseHandle(self.pipe_out);
-        }
-
-        ClosePseudoConsole(self.hpc);
+        // Close remaining handles
+        if (self.pipe_out != INVALID_HANDLE_VALUE) _ = CloseHandle(self.pipe_out);
         _ = CloseHandle(self.pipe_in);
         _ = CloseHandle(self.process_info.hProcess);
         _ = CloseHandle(self.process_info.hThread);

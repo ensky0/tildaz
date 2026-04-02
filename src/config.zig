@@ -23,8 +23,10 @@ pub const Config = struct {
     height: u8 = 100,
     offset: u8 = 0,
     shell: []const u8 = "cmd.exe",
-    autostart: bool = false,
+    auto_start: bool = false,
+    hidden_start: bool = false,
     has_invalid_key: bool = false,
+    _alloc: ?std.mem.Allocator = null,
 
     pub fn load(allocator: std.mem.Allocator) Config {
         const path = getConfigPath(allocator) catch return .{};
@@ -37,6 +39,12 @@ pub const Config = struct {
         defer allocator.free(content);
 
         return parse(allocator, content);
+    }
+
+    pub fn deinit(self: *const Config) void {
+        if (self._alloc) |alloc| {
+            alloc.free(self.shell);
+        }
     }
 
     pub fn validate(self: *const Config) ?[*:0]const WCHAR {
@@ -66,11 +74,15 @@ pub const Config = struct {
         if (findIntValue(content, "height")) |v| config.height = @intCast(std.math.clamp(v, 1, 255));
         if (findIntValue(content, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
 
-        if (findBoolValue(content, "autostart")) |v| config.autostart = v;
+        if (findBoolValue(content, "auto_start")) |v| config.auto_start = v;
+        if (findBoolValue(content, "hidden_start")) |v| config.hidden_start = v;
 
         if (findStringValue(content, "shell")) |shell_str| {
             if (shell_str.len > 0) {
-                config.shell = allocator.dupe(u8, shell_str) catch "cmd.exe";
+                if (allocator.dupe(u8, shell_str)) |duped| {
+                    config.shell = duped;
+                    config._alloc = allocator;
+                } else |_| {}
             }
         }
 

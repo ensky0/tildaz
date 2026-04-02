@@ -23,7 +23,7 @@ const MB_ICONINFORMATION: c_uint = 0x40;
 const App = struct {
     terminal: *ghostty.Terminal,
     stream: ghostty.TerminalStream,
-    pty: ConPty,
+    pty: *ConPty,
     window: Window,
     mutex: std.Thread.Mutex = .{},
     allocator: std.mem.Allocator,
@@ -94,6 +94,7 @@ fn run() !void {
 
     // Load configuration
     var config = Config.load(alloc);
+    defer config.deinit();
 
     // Validate config values
     if (config.validate()) |err_msg| {
@@ -104,7 +105,7 @@ fn run() !void {
 
 
     // Handle autostart
-    if (config.autostart) {
+    if (config.auto_start) {
         autostart.enable() catch {};
     } else {
         autostart.disable() catch {};
@@ -121,11 +122,11 @@ fn run() !void {
     var pty = try ConPty.init(alloc, 120, 30, config.shellUtf16());
     defer pty.deinit();
 
-    // Create app state (terminal by pointer — stream captures &terminal internally)
+    // Create app state (terminal and pty by pointer to avoid copy bugs)
     var app = App{
         .terminal = &terminal,
         .stream = terminal.vtStream(),
-        .pty = pty,
+        .pty = &pty,
         .window = .{},
         .allocator = alloc,
     };
@@ -150,7 +151,9 @@ fn run() !void {
     try terminal.resize(alloc, grid.cols, grid.rows);
     try app.pty.resize(grid.cols, grid.rows);
 
-    // Show window and enter message loop
-    app.window.show();
+    // Show window unless configured to start hidden (F1 to toggle)
+    if (!config.hidden_start) {
+        app.window.show();
+    }
     app.window.messageLoop();
 }
