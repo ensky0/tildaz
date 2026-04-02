@@ -49,9 +49,9 @@ zig build -Doptimize=ReleaseFast
 
 ## 설정
 
-설정 파일 경로 (우선순위):
-1. `tildaz.exe`와 같은 디렉토리의 `config.json` (portable mode)
-2. `%APPDATA%\TildaZ\config.json` (첫 실행 시 자동 생성)
+설정 파일 경로: `tildaz.exe`와 같은 디렉토리의 `config.json`
+
+설정 파일이 없으면 첫 실행 시 기본값으로 자동 생성된다.
 
 ```json
 {
@@ -63,25 +63,25 @@ zig build -Doptimize=ReleaseFast
   },
   "font": {
     "family": "Consolas",
-    "size": 16
+    "size": 20
   },
   "shell": "wsl.exe -d Debian --cd ~",
-  "auto_start": false,
-  "hidden_start": false
+  "auto_start": true,
+  "hidden_start": true
 }
 ```
 
 | 섹션 | 항목 | 타입 | 범위 | 기본값 | 설명 |
 |------|------|------|------|--------|------|
 | window | dock_position | string | top, bottom, left, right | "top" | 도킹 위치 |
-| window | width | int | 10~100 | 40 | 가로 크기 (화면 %) |
+| window | width | int | 10~100 | 50 | 가로 크기 (화면 %) |
 | window | height | int | 10~100 | 100 | 세로 크기 (화면 %) |
-| window | offset | int | 0~100 | 0 | 위치 (0=시작, 50=중앙, 100=끝) |
+| window | offset | int | 0~100 | 100 | 위치 (0=시작, 50=중앙, 100=끝) |
 | font | family | string | - | "Consolas" | 폰트 이름 |
-| font | size | int | 8~72 | 16 | 폰트 크기 (px) |
+| font | size | int | 8~72 | 20 | 폰트 크기 (px) |
 | - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
-| - | auto_start | bool | true, false | false | Windows 로그인 시 자동 시작 |
-| - | hidden_start | bool | true, false | false | 숨김 상태로 시작 |
+| - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
+| - | hidden_start | bool | true, false | true | 숨김 상태로 시작 |
 
 ### 위치 예시
 
