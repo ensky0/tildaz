@@ -145,12 +145,52 @@ pub const Config = struct {
     }
 
     fn getConfigDir(allocator: std.mem.Allocator) ![]const u8 {
+        // If portable config exists (exe directory), use that directory
+        if (getExeDir(allocator)) |exe_dir| {
+            const portable_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir}) catch {
+                allocator.free(exe_dir);
+                return getAppdataDir(allocator);
+            };
+            defer allocator.free(portable_path);
+            std.fs.accessAbsolute(portable_path, .{}) catch {
+                allocator.free(exe_dir);
+                return getAppdataDir(allocator);
+            };
+            return exe_dir;
+        } else |_| {
+            return getAppdataDir(allocator);
+        }
+    }
+
+    fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
+        // 1. Check exe directory first (portable mode)
+        if (getExeDir(allocator)) |exe_dir| {
+            defer allocator.free(exe_dir);
+            const portable_path = try std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir});
+            std.fs.accessAbsolute(portable_path, .{}) catch {
+                allocator.free(portable_path);
+                return getAppdataPath(allocator);
+            };
+            return portable_path;
+        } else |_| {}
+
+        // 2. Fallback to %APPDATA%\TildaZ\config.json
+        return getAppdataPath(allocator);
+    }
+
+    fn getExeDir(allocator: std.mem.Allocator) ![]const u8 {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const exe_path = std.fs.selfExeDirPath(&buf) catch return error.NoExeDir;
+        return allocator.dupe(u8, exe_path);
+    }
+
+    fn getAppdataDir(allocator: std.mem.Allocator) ![]const u8 {
         const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch return error.NoAppData;
         defer allocator.free(appdata);
         return std.fmt.allocPrint(allocator, "{s}\\TildaZ", .{appdata});
     }
 
-    fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
+    fn getAppdataPath(allocator: std.mem.Allocator) ![]const u8 {
         const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch return error.NoAppData;
         defer allocator.free(appdata);
         return std.fmt.allocPrint(allocator, "{s}\\TildaZ\\config.json", .{appdata});
