@@ -1,9 +1,15 @@
 {
-  "dock_position": "top",
-  "width": 50,
-  "height": 100,
-  "offset": 100,
+  "window": {
+    "dock_position": "top",
+    "width": 50,
+    "height": 100,
+    "offset": 100
+  },
+  "font": {
+    "family": "Consolas",
+    "size": 16
+  },
   "shell": "wsl.exe -d Debian --cd ~",
-  "hidden_start": true,
-  "auto_start": true
+  "auto_start": true,
+  "hidden_start": true
 }
