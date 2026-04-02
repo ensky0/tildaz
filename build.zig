@@ -10,8 +10,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // SIMD: enable with -Dsimd=true (requires MSVC + Windows SDK)
-    const simd = b.option(bool, "simd", "Enable SIMD acceleration (requires MSVC + Windows SDK)") orelse false;
+    // SIMD: disable with -Dsimd=false if MSVC/Windows SDK is not installed
+    const simd = b.option(bool, "simd", "SIMD acceleration (disable with -Dsimd=false if no MSVC)") orelse true;
 
     if (b.lazyDependency("ghostty", .{ .simd = simd })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
