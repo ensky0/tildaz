@@ -58,6 +58,13 @@ fn run() !void {
     // Load configuration
     var config = Config.load(alloc);
 
+    // Validate config values
+    if (config.validate()) |err_msg| {
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
+        _ = MessageBoxW(null, err_msg, title, MB_OK | MB_ICONERROR);
+        return;
+    }
+
     // Save default config if it doesn't exist
     config.save(alloc) catch {};
 
@@ -96,7 +103,7 @@ fn run() !void {
     defer app.window.deinit();
 
     // Apply position from config
-    app.window.setPosition(config.edge, config.size, config.length, config.offset);
+    app.window.setPosition(config.edge, config.width, config.length, config.offset);
 
     // Start PTY read thread
     try app.pty.startReadThread(App.onPtyOutput, &app);
