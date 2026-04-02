@@ -1,5 +1,13 @@
 const std = @import("std");
 
+// Build:
+//   zig build                  -- SIMD enabled (requires MSVC Build Tools)
+//   zig build -Dsimd=false     -- SIMD disabled (no MSVC needed)
+//   zig build -Doptimize=ReleaseFast  -- optimized release build
+//
+// MSVC Build Tools install (for SIMD):
+//   winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"
+//
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
