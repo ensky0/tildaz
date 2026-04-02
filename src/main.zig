@@ -7,14 +7,16 @@ const Config = @import("config.zig").Config;
 const autostart = @import("autostart.zig");
 
 const HDC = ?*anyopaque;
+const HWND = ?*anyopaque;
 const WCHAR = u16;
-
 extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
+extern "user32" fn PostMessageW(HWND, c_uint, usize, isize) callconv(.c) c_int;
+const WM_CLOSE: c_uint = 0x0010;
 const MB_OK: c_uint = 0x0;
 const MB_ICONERROR: c_uint = 0x10;
 
 const App = struct {
-    terminal: ghostty.Terminal,
+    terminal: *ghostty.Terminal,
     stream: ghostty.TerminalStream,
     pty: ConPty,
     window: Window,
@@ -28,9 +30,26 @@ const App = struct {
         self.stream.nextSlice(data);
     }
 
+    fn onPtyExit(userdata: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        // Shell exited — close window without confirmation prompt
+        self.window.shell_exited = true;
+        if (self.window.hwnd) |hwnd| {
+            _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+
     fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         _ = self.pty.write(data) catch {};
+    }
+
+    fn onResize(cols: u16, rows: u16, userdata: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.terminal.resize(self.allocator, cols, rows) catch {};
+        self.pty.resize(cols, rows) catch {};
     }
 
     fn onRender(window: *Window, hdc: HDC) void {
@@ -38,7 +57,7 @@ const App = struct {
 
         self.mutex.lock();
         defer self.mutex.unlock();
-        render.renderTerminal(hdc, &self.terminal, self.allocator, window.cell_width, window.cell_height);
+        render.renderTerminal(hdc, self.terminal, self.allocator, window.cell_width, window.cell_height);
     }
 };
 
@@ -65,8 +84,6 @@ fn run() !void {
         return;
     }
 
-    // Save default config if it doesn't exist
-    config.save(alloc) catch {};
 
     // Handle autostart
     if (config.autostart) {
@@ -86,27 +103,34 @@ fn run() !void {
     var pty = try ConPty.init(alloc, 120, 30, config.shellUtf16());
     defer pty.deinit();
 
-    // Create app state
+    // Create app state (terminal by pointer — stream captures &terminal internally)
     var app = App{
-        .terminal = terminal,
+        .terminal = &terminal,
         .stream = terminal.vtStream(),
         .pty = pty,
         .window = .{},
         .allocator = alloc,
     };
 
+    // Start PTY read thread early — before window init so WSL output
+    // doesn't block on a full pipe while we set up the window
+    try app.pty.startReadThread(App.onPtyOutput, App.onPtyExit, &app);
+
     // Set up window
     app.window.userdata = &app;
     app.window.write_fn = App.onKeyInput;
     app.window.render_fn = App.onRender;
+    app.window.resize_fn = App.onResize;
     try app.window.init();
     defer app.window.deinit();
 
     // Apply position from config
-    app.window.setPosition(config.dock_position, config.width, config.length, config.offset);
+    app.window.setPosition(config.dock_position, config.width, config.height, config.offset);
 
-    // Start PTY read thread
-    try app.pty.startReadThread(App.onPtyOutput, &app);
+    // Resize terminal and PTY to match actual window size
+    const grid = app.window.getGridSize();
+    try terminal.resize(alloc, grid.cols, grid.rows);
+    try app.pty.resize(grid.cols, grid.rows);
 
     // Show window and enter message loop
     app.window.show();

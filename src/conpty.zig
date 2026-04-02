@@ -148,9 +148,11 @@ pub const ConPty = struct {
     process_info: PROCESS_INFORMATION,
     attr_list_buf: []u8,
     read_thread: ?std.Thread = null,
+    wait_thread: ?std.Thread = null,
     allocator: std.mem.Allocator,
 
     pub const ReadCallback = *const fn (data: []const u8, userdata: ?*anyopaque) void;
+    pub const ExitCallback = *const fn (userdata: ?*anyopaque) void;
 
     pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR) !ConPty {
         // Create pipes for ConPTY
@@ -167,7 +169,8 @@ pub const ConPty = struct {
             _ = CloseHandle(pty_input_write);
         }
 
-        if (CreatePipe(&pty_output_read, &pty_output_write, null, 0) == 0) {
+        // Large output buffer to prevent WSL from blocking during startup
+        if (CreatePipe(&pty_output_read, &pty_output_write, null, 256 * 1024) == 0) {
             return error.CreatePipeFailed;
         }
         errdefer {
@@ -253,6 +256,12 @@ pub const ConPty = struct {
     }
 
     pub fn deinit(self: *ConPty) void {
+        // Join wait thread (process already exited or will exit soon)
+        if (self.wait_thread) |t| {
+            t.join();
+            self.wait_thread = null;
+        }
+
         if (self.read_thread) |t| {
             // Close pipe_out first to unblock the read thread
             _ = CloseHandle(self.pipe_out);
@@ -296,8 +305,10 @@ pub const ConPty = struct {
         }
     }
 
-    pub fn startReadThread(self: *ConPty, callback: ReadCallback, userdata: ?*anyopaque) !void {
+    pub fn startReadThread(self: *ConPty, callback: ReadCallback, exit_cb: ExitCallback, userdata: ?*anyopaque) !void {
         self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out, callback, userdata });
+        // Separate thread: wait for shell process to exit, then notify
+        self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.process_info.hProcess, exit_cb, userdata });
     }
 
     fn readLoop(pipe_out: HANDLE, callback: ReadCallback, userdata: ?*anyopaque) void {
@@ -310,6 +321,11 @@ pub const ConPty = struct {
             if (bytes_read == 0) break;
             callback(buf[0..bytes_read], userdata);
         }
+    }
+
+    fn processWaitLoop(process_handle: HANDLE, exit_cb: ExitCallback, userdata: ?*anyopaque) void {
+        _ = WaitForSingleObject(process_handle, 0xFFFFFFFF); // INFINITE
+        exit_cb(userdata);
     }
 
     pub fn isProcessAlive(self: *ConPty) bool {

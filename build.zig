@@ -1,12 +1,9 @@
 const std = @import("std");
 
 // Build:
-//   zig build                  -- SIMD enabled (requires MSVC Build Tools)
-//   zig build -Dsimd=false     -- SIMD disabled (no MSVC needed)
+//   zig build                  -- default build (SIMD disabled)
+//   zig build -Dsimd=true      -- SIMD enabled (currently broken on Windows, Zig 0.15 issue)
 //   zig build -Doptimize=ReleaseFast  -- optimized release build
-//
-// MSVC Build Tools install (for SIMD):
-//   winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"
 //
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -18,8 +15,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // SIMD: disable with -Dsimd=false if MSVC/Windows SDK is not installed
-    const simd = b.option(bool, "simd", "SIMD acceleration (disable with -Dsimd=false if no MSVC)") orelse true;
+    // SIMD: currently broken on Windows — Zig 0.15 build system doesn't pass C++ stdlib
+    // include paths to ghostty's SIMD C++ sources (highway, simdutf).
+    // Keep default false until Zig upstream fixes this.
+    const simd = b.option(bool, "simd", "SIMD acceleration (broken on Windows/Zig 0.15)") orelse false;
 
     if (b.lazyDependency("ghostty", .{ .simd = simd })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
