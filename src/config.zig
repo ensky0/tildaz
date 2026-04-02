@@ -99,10 +99,7 @@ pub const Config = struct {
         if (findBoolValue(content, "autostart")) |v| config.autostart = v;
 
         if (findStringValue(content, "shell")) |shell_str| {
-            if (std.mem.eql(u8, shell_str, "cmd.exe") or
-                std.mem.eql(u8, shell_str, "powershell.exe") or
-                std.mem.eql(u8, shell_str, "pwsh.exe"))
-            {
+            if (shell_str.len > 0) {
                 config.shell = shell_str;
             }
         }
@@ -228,12 +225,37 @@ pub const Config = struct {
     }
 
     pub fn shellUtf16(self: *const Config) [*:0]const u16 {
-        if (std.mem.eql(u8, self.shell, "powershell.exe")) {
+        // Known shells: return comptime literals
+        if (std.mem.eql(u8, self.shell, "cmd.exe"))
+            return std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
+        if (std.mem.eql(u8, self.shell, "powershell.exe"))
             return std.unicode.utf8ToUtf16LeStringLiteral("powershell.exe");
-        }
-        if (std.mem.eql(u8, self.shell, "pwsh.exe")) {
+        if (std.mem.eql(u8, self.shell, "pwsh.exe"))
             return std.unicode.utf8ToUtf16LeStringLiteral("pwsh.exe");
+
+        // Arbitrary shell: runtime UTF-8 to UTF-16 conversion into static buffer
+        const S = struct {
+            var buf: [512]u16 = undefined;
+        };
+        var i: usize = 0;
+        var utf8_iter = std.unicode.Utf8View.init(self.shell) catch return std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
+        var cp_iter = utf8_iter.iterator();
+        while (cp_iter.nextCodepoint()) |cp| {
+            if (i >= S.buf.len - 1) break;
+            if (cp <= 0xFFFF) {
+                S.buf[i] = @intCast(cp);
+                i += 1;
+            } else {
+                const adj = cp - 0x10000;
+                S.buf[i] = @intCast(0xD800 + (adj >> 10));
+                i += 1;
+                if (i < S.buf.len - 1) {
+                    S.buf[i] = @intCast(0xDC00 + (adj & 0x3FF));
+                    i += 1;
+                }
+            }
         }
-        return std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
+        S.buf[i] = 0;
+        return @ptrCast(&S.buf);
     }
 };
