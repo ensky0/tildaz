@@ -3,18 +3,15 @@ const windows = std.os.windows;
 const Window = @import("window.zig").Window;
 
 const WCHAR = u16;
-extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
-const MB_OK: c_uint = 0x0;
-const MB_ICONERROR: c_uint = 0x10;
 
 const err_invalid_key = std.unicode.utf8ToUtf16LeStringLiteral(
-    "config.json: invalid key\n\n\"edge\" -> \"dock_position\"\n\"size\" -> \"width\"",
+    "config.json: invalid key\n\n\"edge\" -> \"dock_position\"\n\"size\" -> \"width\"\n\"length\" -> \"height\"",
 );
 const err_width = std.unicode.utf8ToUtf16LeStringLiteral(
     "config.json: \"width\" out of range\n\nAllowed: 10 ~ 100",
 );
-const err_length = std.unicode.utf8ToUtf16LeStringLiteral(
-    "config.json: \"length\" out of range\n\nAllowed: 10 ~ 100",
+const err_height = std.unicode.utf8ToUtf16LeStringLiteral(
+    "config.json: \"height\" out of range\n\nAllowed: 10 ~ 100",
 );
 const err_offset = std.unicode.utf8ToUtf16LeStringLiteral(
     "config.json: \"offset\" out of range\n\nAllowed: 0 ~ 100\n(0=start, 50=center, 100=end)",
@@ -23,7 +20,7 @@ const err_offset = std.unicode.utf8ToUtf16LeStringLiteral(
 pub const Config = struct {
     dock_position: Window.DockPosition = .top,
     width: u8 = 40,
-    length: u8 = 100,
+    height: u8 = 100,
     offset: u8 = 0,
     shell: []const u8 = "cmd.exe",
     autostart: bool = false,
@@ -39,54 +36,19 @@ pub const Config = struct {
         const content = file.readToEndAlloc(allocator, 4096) catch return .{};
         defer allocator.free(content);
 
-        return parse(content);
+        return parse(allocator, content);
     }
 
     pub fn validate(self: *const Config) ?[*:0]const WCHAR {
         if (self.has_invalid_key) return err_invalid_key;
         if (self.width < 10 or self.width > 100) return err_width;
-        if (self.length < 10 or self.length > 100) return err_length;
+        if (self.height < 10 or self.height > 100) return err_height;
         if (self.offset > 100) return err_offset;
         return null;
     }
 
-    pub fn save(self: *const Config, allocator: std.mem.Allocator) !void {
-        const dir_path = try getConfigDir(allocator);
-        defer allocator.free(dir_path);
 
-        // Ensure directory exists
-        std.fs.makeDirAbsolute(dir_path) catch |err| {
-            if (err != error.PathAlreadyExists) return err;
-        };
-
-        const path = try getConfigPath(allocator);
-        defer allocator.free(path);
-
-        const file = try std.fs.createFileAbsolute(path, .{});
-        defer file.close();
-
-        const json = try std.fmt.allocPrint(allocator,
-            \\{{
-            \\  "dock_position": "{s}",
-            \\  "width": {d},
-            \\  "length": {d},
-            \\  "offset": {d},
-            \\  "shell": "{s}",
-            \\  "autostart": {s}
-            \\}}
-        , .{
-            @tagName(self.dock_position),
-            self.width,
-            self.length,
-            self.offset,
-            self.shell,
-            if (self.autostart) "true" else "false",
-        });
-        defer allocator.free(json);
-        try file.writeAll(json);
-    }
-
-    fn parse(content: []const u8) Config {
+    fn parse(allocator: std.mem.Allocator, content: []const u8) Config {
         var config = Config{};
 
         // Simple JSON parsing for our known fields
@@ -98,17 +60,17 @@ pub const Config = struct {
         }
 
         // Detect deprecated/invalid keys
-        config.has_invalid_key = findStringValue(content, "edge") != null or findIntValue(content, "size") != null;
+        config.has_invalid_key = findStringValue(content, "edge") != null or findIntValue(content, "size") != null or findIntValue(content, "length") != null;
 
         if (findIntValue(content, "width")) |v| config.width = @intCast(std.math.clamp(v, 1, 255));
-        if (findIntValue(content, "length")) |v| config.length = @intCast(std.math.clamp(v, 1, 255));
+        if (findIntValue(content, "height")) |v| config.height = @intCast(std.math.clamp(v, 1, 255));
         if (findIntValue(content, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
 
         if (findBoolValue(content, "autostart")) |v| config.autostart = v;
 
         if (findStringValue(content, "shell")) |shell_str| {
             if (shell_str.len > 0) {
-                config.shell = shell_str;
+                config.shell = allocator.dupe(u8, shell_str) catch "cmd.exe";
             }
         }
 
@@ -180,23 +142,6 @@ pub const Config = struct {
         return null;
     }
 
-    fn getConfigDir(allocator: std.mem.Allocator) ![]const u8 {
-        // If portable config exists (exe directory), use that directory
-        if (getExeDir(allocator)) |exe_dir| {
-            const portable_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir}) catch {
-                allocator.free(exe_dir);
-                return getAppdataDir(allocator);
-            };
-            defer allocator.free(portable_path);
-            std.fs.accessAbsolute(portable_path, .{}) catch {
-                allocator.free(exe_dir);
-                return getAppdataDir(allocator);
-            };
-            return exe_dir;
-        } else |_| {
-            return getAppdataDir(allocator);
-        }
-    }
 
     fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
         // 1. Check exe directory first (portable mode)
@@ -220,11 +165,6 @@ pub const Config = struct {
         return allocator.dupe(u8, exe_path);
     }
 
-    fn getAppdataDir(allocator: std.mem.Allocator) ![]const u8 {
-        const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch return error.NoAppData;
-        defer allocator.free(appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\TildaZ", .{appdata});
-    }
 
     fn getAppdataPath(allocator: std.mem.Allocator) ![]const u8 {
         const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch return error.NoAppData;

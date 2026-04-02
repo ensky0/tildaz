@@ -31,6 +31,7 @@ const WS_EX_TOOLWINDOW: DWORD = 0x00000080;
 const WS_EX_LAYERED: DWORD = 0x00080000;
 
 // Window Messages
+const WM_CLOSE: UINT = 0x0010;
 const WM_DESTROY: UINT = 0x0002;
 const WM_PAINT: UINT = 0x000F;
 const WM_KEYDOWN: UINT = 0x0100;
@@ -38,6 +39,7 @@ const WM_KEYUP: UINT = 0x0101;
 const WM_CHAR: UINT = 0x0102;
 const WM_HOTKEY: UINT = 0x0312;
 const WM_TIMER: UINT = 0x0113;
+const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
 pub const WM_PTY_OUTPUT: UINT = WM_USER + 1;
 
@@ -134,6 +136,8 @@ extern "user32" fn LoadCursorW(HINSTANCE, [*:0]const WCHAR) callconv(.c) HCURSOR
 extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) BOOL;
+extern "user32" fn GetDC(HWND) callconv(.c) HDC;
+extern "user32" fn ReleaseDC(HWND, HDC) callconv(.c) c_int;
 extern "kernel32" fn GetModuleHandleW(?[*:0]const WCHAR) callconv(.c) HINSTANCE;
 extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.c) void;
 extern "kernel32" fn GlobalLock(?*anyopaque) callconv(.c) ?[*]const WCHAR;
@@ -142,6 +146,12 @@ extern "user32" fn OpenClipboard(HWND) callconv(.c) BOOL;
 extern "user32" fn CloseClipboard() callconv(.c) BOOL;
 extern "user32" fn GetClipboardData(UINT) callconv(.c) ?*anyopaque;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+extern "user32" fn MessageBoxW(HWND, [*:0]const WCHAR, [*:0]const WCHAR, UINT) callconv(.c) c_int;
+
+const MB_YESNO: UINT = 0x04;
+const MB_ICONQUESTION: UINT = 0x20;
+const MB_DEFBUTTON2: UINT = 0x100;
+const IDYES: c_int = 6;
 
 const CF_UNICODETEXT: UINT = 13;
 const VK_CONTROL: c_int = 0x11;
@@ -199,8 +209,10 @@ pub const Window = struct {
     cell_width: c_int = 8,
     cell_height: c_int = 16,
     render_fn: ?*const fn (*Window, HDC) void = null,
+    resize_fn: ?*const fn (u16, u16, ?*anyopaque) void = null,
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
+    shell_exited: bool = false,
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -277,6 +289,18 @@ pub const Window = struct {
             std.unicode.utf8ToUtf16LeStringLiteral("Consolas"),
         );
 
+        // Measure cell metrics from font
+        const hdc = GetDC(self.hwnd);
+        if (hdc != null) {
+            const old_f = SelectObject(hdc, self.font);
+            var tm: TEXTMETRICW = undefined;
+            _ = GetTextMetricsW(hdc, &tm);
+            self.cell_width = tm.tmAveCharWidth;
+            self.cell_height = tm.tmHeight;
+            _ = SelectObject(hdc, old_f);
+            _ = ReleaseDC(self.hwnd, hdc);
+        }
+
         // Start render timer (60fps)
         _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
     }
@@ -309,7 +333,7 @@ pub const Window = struct {
         if (self.visible) self.hide() else self.show();
     }
 
-    pub fn setPosition(self: *Window, dock: DockPosition, width_pct: u8, length_pct: u8, offset_pct: u8) void {
+    pub fn setPosition(self: *Window, dock: DockPosition, width_pct: u8, height_pct: u8, offset_pct: u8) void {
         var cursor_pos: POINT = .{ .x = 0, .y = 0 };
         _ = GetCursorPos(&cursor_pos);
 
@@ -323,37 +347,20 @@ pub const Window = struct {
         const sx = mi.rcWork.left;
         const sy = mi.rcWork.top;
 
-        var x: c_int = undefined;
-        var y: c_int = undefined;
-        var w: c_int = undefined;
-        var h: c_int = undefined;
+        // width = always horizontal %, height = always vertical %
+        const w = @divTrunc(sw * @as(c_int, width_pct), 100);
+        const h = @divTrunc(sh * @as(c_int, height_pct), 100);
 
-        switch (dock) {
-            .top => {
-                w = @divTrunc(sw * @as(c_int, length_pct), 100);
-                h = @divTrunc(sh * @as(c_int, width_pct), 100);
-                x = sx + @divTrunc((sw - w) * @as(c_int, offset_pct), 100);
-                y = sy;
-            },
-            .bottom => {
-                w = @divTrunc(sw * @as(c_int, length_pct), 100);
-                h = @divTrunc(sh * @as(c_int, width_pct), 100);
-                x = sx + @divTrunc((sw - w) * @as(c_int, offset_pct), 100);
-                y = sy + sh - h;
-            },
-            .left => {
-                w = @divTrunc(sw * @as(c_int, width_pct), 100);
-                h = @divTrunc(sh * @as(c_int, length_pct), 100);
-                x = sx;
-                y = sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100);
-            },
-            .right => {
-                w = @divTrunc(sw * @as(c_int, width_pct), 100);
-                h = @divTrunc(sh * @as(c_int, length_pct), 100);
-                x = sx + sw - w;
-                y = sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100);
-            },
-        }
+        const x: c_int = switch (dock) {
+            .left => sx,
+            .right => sx + sw - w,
+            .top, .bottom => sx + @divTrunc((sw - w) * @as(c_int, offset_pct), 100),
+        };
+        const y: c_int = switch (dock) {
+            .top => sy,
+            .bottom => sy + sh - h,
+            .left, .right => sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100),
+        };
 
         _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, 0);
     }
@@ -437,6 +444,28 @@ pub const Window = struct {
                         vk_next => write_fn("\x1b[6~", self.userdata),
                         else => {},
                     }
+                }
+                return 0;
+            },
+            WM_SIZE => {
+                if (self.resize_fn) |resize_fn| {
+                    const grid = self.getGridSize();
+                    resize_fn(grid.cols, grid.rows, self.userdata);
+                }
+                return 0;
+            },
+            WM_CLOSE => {
+                // Shell already exited — close without prompt
+                if (self.shell_exited) {
+                    _ = DestroyWindow(hwnd);
+                    return 0;
+                }
+                // User-initiated close (Alt+F4) — confirm
+                const msg_text = std.unicode.utf8ToUtf16LeStringLiteral("Are you sure you want to quit TildaZ?");
+                const msg_title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ");
+                const result = MessageBoxW(hwnd, msg_text, msg_title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
+                if (result == IDYES) {
+                    _ = DestroyWindow(hwnd);
                 }
                 return 0;
             },
@@ -541,6 +570,17 @@ pub const Window = struct {
             const n = std.unicode.utf8Encode(cp, &buf) catch continue;
             write_fn(buf[0..n], self.userdata);
         }
+    }
+
+    pub fn getGridSize(self: *const Window) struct { cols: u16, rows: u16 } {
+        if (self.hwnd == null) return .{ .cols = 120, .rows = 30 };
+        var rect: RECT = undefined;
+        _ = GetClientRect(self.hwnd, &rect);
+        const w = rect.right - rect.left;
+        const h = rect.bottom - rect.top;
+        const cols: u16 = if (self.cell_width > 0) @intCast(@max(1, @divTrunc(w, self.cell_width))) else 120;
+        const rows: u16 = if (self.cell_height > 0) @intCast(@max(1, @divTrunc(h, self.cell_height))) else 30;
+        return .{ .cols = cols, .rows = rows };
     }
 
     pub const DockPosition = enum { top, bottom, left, right };

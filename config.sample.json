@@ -1,8 +1,8 @@
 {
   "dock_position": "top",
-  "width": 40,
-  "length": 100,
-  "offset": 0,
-  "shell": "cmd.exe",
+  "width": 50,
+  "height": 100,
+  "offset": 100,
+  "shell": "wsl.exe -d Debian",
   "autostart": false
 }
