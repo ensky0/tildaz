@@ -5,19 +5,10 @@ const FontAtlas = @import("font_atlas.zig").FontAtlas;
 
 pub const GlRenderer = struct {
     atlas: FontAtlas,
+    alloc: std.mem.Allocator,
+    render_state: ghostty.RenderState = .empty,
 
-    // Terminal colors
-    const BG_R: gl.GLclampf = 30.0 / 255.0;
-    const BG_G: gl.GLclampf = 30.0 / 255.0;
-    const BG_B: gl.GLclampf = 30.0 / 255.0;
-    const TEXT_R: gl.GLfloat = 204.0 / 255.0;
-    const TEXT_G: gl.GLfloat = 204.0 / 255.0;
-    const TEXT_B: gl.GLfloat = 204.0 / 255.0;
-    const CURSOR_R: gl.GLfloat = 180.0 / 255.0;
-    const CURSOR_G: gl.GLfloat = 180.0 / 255.0;
-    const CURSOR_B: gl.GLfloat = 180.0 / 255.0;
-
-    // Tab bar colors
+    // Tab bar colors (keep hardcoded — not from terminal state)
     const TAB_BAR_R: gl.GLfloat = 20.0 / 255.0;
     const TAB_BAR_G: gl.GLfloat = 20.0 / 255.0;
     const TAB_BAR_B: gl.GLfloat = 20.0 / 255.0;
@@ -28,13 +19,27 @@ pub const GlRenderer = struct {
     const TAB_TEXT_G: gl.GLfloat = 180.0 / 255.0;
     const TAB_TEXT_B: gl.GLfloat = 180.0 / 255.0;
 
-    pub fn init(font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32) !GlRenderer {
+    // Default terminal colors (used before first RenderState update and for clear color)
+    const DEFAULT_BG_R: gl.GLclampf = 30.0 / 255.0;
+    const DEFAULT_BG_G: gl.GLclampf = 30.0 / 255.0;
+    const DEFAULT_BG_B: gl.GLclampf = 30.0 / 255.0;
+
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32) !GlRenderer {
         return .{
-            .atlas = try FontAtlas.init(font_family, font_height, cell_w, cell_h),
+            .atlas = try FontAtlas.init(alloc, font_family, font_height, cell_w, cell_h),
+            .alloc = alloc,
         };
     }
 
+    /// Force a full redraw on next renderTerminal call (e.g. after tab switch)
+    pub fn invalidate(self: *GlRenderer) void {
+        self.render_state.rows = 0;
+        self.render_state.cols = 0;
+        self.render_state.viewport_pin = null;
+    }
+
     pub fn deinit(self: *GlRenderer) void {
+        self.render_state.deinit(self.alloc);
         self.atlas.deinit();
     }
 
@@ -60,7 +65,6 @@ pub const GlRenderer = struct {
         const cell_w: gl.GLfloat = @floatFromInt(self.atlas.cell_width);
         const cell_h: gl.GLfloat = @floatFromInt(self.atlas.cell_height);
 
-        // Full-window projection (top-left origin, y-down)
         gl.glViewport(0, 0, client_w, client_h);
         gl.glMatrixMode(gl.GL_PROJECTION);
         gl.glLoadIdentity();
@@ -68,8 +72,7 @@ pub const GlRenderer = struct {
         gl.glMatrixMode(gl.GL_MODELVIEW);
         gl.glLoadIdentity();
 
-        // Clear entire background
-        gl.glClearColor(BG_R, BG_G, BG_B, 1.0);
+        gl.glClearColor(DEFAULT_BG_R, DEFAULT_BG_G, DEFAULT_BG_B, 1.0);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
         gl.glEnable(gl.GL_BLEND);
@@ -87,6 +90,16 @@ pub const GlRenderer = struct {
 
         _ = h_f;
 
+        // Pre-cache tab title glyphs before any glBegin/glEnd
+        for (0..tab_count) |i| {
+            var pre_buf: [16]u8 = undefined;
+            const pre_title = std.fmt.bufPrint(&pre_buf, "Tab {d}", .{i + 1}) catch unreachable;
+            for (pre_title) |ch| {
+                _ = self.atlas.getOrRenderGlyph(ch, false);
+            }
+        }
+        _ = self.atlas.getOrRenderGlyph('x', false); // close button
+
         for (0..tab_count) |i| {
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: gl.GLfloat = if (is_dragged)
@@ -94,12 +107,11 @@ pub const GlRenderer = struct {
             else
                 @as(gl.GLfloat, @floatFromInt(i)) * tw;
 
-            // Tab background
             gl.glDisable(gl.GL_TEXTURE_2D);
             if (i == active_tab) {
                 gl.glColor3f(TAB_ACTIVE_R, TAB_ACTIVE_G, TAB_ACTIVE_B);
             } else {
-                gl.glColor3f(BG_R, BG_G, BG_B);
+                gl.glColor3f(DEFAULT_BG_R, DEFAULT_BG_G, DEFAULT_BG_B);
             }
             gl.glBegin(gl.GL_QUADS);
             gl.glVertex2f(tab_x + 1, 2);
@@ -155,7 +167,6 @@ pub const GlRenderer = struct {
     pub fn renderTerminal(
         self: *GlRenderer,
         terminal: *ghostty.Terminal,
-        alloc: std.mem.Allocator,
         cell_w: c_int,
         cell_h: c_int,
         vp_w: c_int,
@@ -164,70 +175,212 @@ pub const GlRenderer = struct {
     ) void {
         _ = vp_w;
         _ = vp_h;
-        const y_off: gl.GLfloat = @floatFromInt(y_offset);
 
-        gl.glEnable(gl.GL_TEXTURE_2D);
-        gl.glEnable(gl.GL_BLEND);
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.atlas.texture_id);
+        self.render_state.update(self.alloc, terminal) catch return;
 
-        const text = terminal.plainString(alloc) catch return;
-        defer alloc.free(text);
+        const rows = self.render_state.rows;
+        const cols = self.render_state.cols;
+        const colors = self.render_state.colors;
+        const row_slice = self.render_state.row_data.slice();
 
         const cw: gl.GLfloat = @floatFromInt(cell_w);
         const ch: gl.GLfloat = @floatFromInt(cell_h);
+        const y_off: gl.GLfloat = @floatFromInt(y_offset);
 
-        gl.glColor3f(TEXT_R, TEXT_G, TEXT_B);
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+
+        const all_cells = row_slice.items(.cells);
+
+        // --- Pre-pass: cache all glyphs BEFORE glBegin (glTexSubImage2D is illegal inside glBegin/glEnd) ---
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+
+            for (0..cols) |x| {
+                if (x >= raws.len) break;
+                const raw = raws[x];
+                if (!raw.hasText()) continue;
+                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
+                const cp = raw.codepoint();
+                if (cp == 0) continue;
+                _ = self.atlas.getOrRenderGlyph(cp, raw.wide == .wide);
+            }
+        }
+
+        const all_sels = row_slice.items(.selection);
+
+        // --- 1st pass: background colors ---
+        gl.glDisable(gl.GL_TEXTURE_2D);
         gl.glBegin(gl.GL_QUADS);
 
-        var row: gl.GLfloat = 0;
-        var iter = std.mem.splitSequence(u8, text, "\n");
-        while (iter.next()) |line| {
-            if (line.len == 0) {
-                row += 1;
-                continue;
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+
+            // Selection range for this row (if any)
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+
+            for (0..cols) |x| {
+                if (x >= raws.len) break;
+                const raw = raws[x];
+                if (raw.wide == .spacer_tail) continue;
+
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const is_inverse = style.flags.inverse;
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+
+                // Resolve background color
+                const bg_rgb = blk: {
+                    if (is_selected) {
+                        // Selection highlight: swap fg/bg for visual feedback
+                        break :blk style.fg(.{
+                            .default = colors.foreground,
+                            .palette = &colors.palette,
+                        });
+                    } else if (is_inverse) {
+                        // Inverse: bg becomes fg
+                        break :blk style.fg(.{
+                            .default = colors.foreground,
+                            .palette = &colors.palette,
+                        });
+                    } else {
+                        break :blk style.bg(&raw, &colors.palette) orelse continue;
+                    }
+                };
+
+                // Skip if same as default background (but never skip selection)
+                if (!is_selected and
+                    bg_rgb.r == colors.background.r and
+                    bg_rgb.g == colors.background.g and
+                    bg_rgb.b == colors.background.b) continue;
+
+                const width: gl.GLfloat = if (raw.wide == .wide) 2.0 * cw else cw;
+                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw;
+                const fy: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(y)) * ch + y_off;
+
+                gl.glColor3f(
+                    @as(gl.GLfloat, @floatFromInt(bg_rgb.r)) / 255.0,
+                    @as(gl.GLfloat, @floatFromInt(bg_rgb.g)) / 255.0,
+                    @as(gl.GLfloat, @floatFromInt(bg_rgb.b)) / 255.0,
+                );
+                gl.glVertex2f(fx, fy);
+                gl.glVertex2f(fx + width, fy);
+                gl.glVertex2f(fx + width, fy + ch);
+                gl.glVertex2f(fx, fy + ch);
             }
-
-            var col: gl.GLfloat = 0;
-            var utf8_view = std.unicode.Utf8View.init(line) catch {
-                row += 1;
-                continue;
-            };
-            var cp_iter = utf8_view.iterator();
-            while (cp_iter.nextCodepoint()) |cp| {
-                const uv = self.atlas.getUV(cp);
-                const x0 = col * cw;
-                const y0 = row * ch + y_off;
-
-                gl.glTexCoord2f(uv.u0, uv.v0);
-                gl.glVertex2f(x0, y0);
-                gl.glTexCoord2f(uv.u1, uv.v0);
-                gl.glVertex2f(x0 + cw, y0);
-                gl.glTexCoord2f(uv.u1, uv.v1);
-                gl.glVertex2f(x0 + cw, y0 + ch);
-                gl.glTexCoord2f(uv.u0, uv.v1);
-                gl.glVertex2f(x0, y0 + ch);
-
-                col += 1;
-            }
-            row += 1;
         }
         gl.glEnd();
 
-        // Cursor
-        gl.glDisable(gl.GL_TEXTURE_2D);
-        const cursor_x: gl.GLfloat = @floatFromInt(terminal.screens.active.cursor.x);
-        const cursor_y: gl.GLfloat = @floatFromInt(terminal.screens.active.cursor.y);
-        const cx0 = cursor_x * cw;
-        const cy0 = cursor_y * ch + y_off;
-
-        gl.glColor4f(CURSOR_R, CURSOR_G, CURSOR_B, 0.7);
+        // --- 2nd pass: text with per-cell foreground colors ---
+        gl.glEnable(gl.GL_TEXTURE_2D);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.atlas.texture_id);
         gl.glBegin(gl.GL_QUADS);
-        gl.glVertex2f(cx0, cy0);
-        gl.glVertex2f(cx0 + cw, cy0);
-        gl.glVertex2f(cx0 + cw, cy0 + ch);
-        gl.glVertex2f(cx0, cy0 + ch);
+
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+
+            for (0..cols) |x| {
+                if (x >= raws.len) break;
+                const raw = raws[x];
+
+                if (!raw.hasText()) continue;
+                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
+
+                const cp = raw.codepoint();
+                if (cp == 0) continue;
+                const is_wide = raw.wide == .wide;
+
+                const glyph = self.atlas.getOrRenderGlyph(cp, is_wide);
+
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const is_inverse = style.flags.inverse;
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+
+                // Resolve foreground color
+                const fg_rgb = blk: {
+                    if (is_selected) {
+                        // Selection: fg becomes bg for contrast
+                        break :blk style.bg(&raw, &colors.palette) orelse colors.background;
+                    } else if (is_inverse) {
+                        // Inverse: fg becomes bg
+                        break :blk style.bg(&raw, &colors.palette) orelse colors.background;
+                    } else {
+                        break :blk style.fg(.{
+                            .default = colors.foreground,
+                            .palette = &colors.palette,
+                            .bold = .bright,
+                        });
+                    }
+                };
+
+                gl.glColor3f(
+                    @as(gl.GLfloat, @floatFromInt(fg_rgb.r)) / 255.0,
+                    @as(gl.GLfloat, @floatFromInt(fg_rgb.g)) / 255.0,
+                    @as(gl.GLfloat, @floatFromInt(fg_rgb.b)) / 255.0,
+                );
+
+                const width: gl.GLfloat = if (is_wide) 2.0 * cw else cw;
+                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw;
+                const fy: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(y)) * ch + y_off;
+                const uv = glyph.uv;
+
+                gl.glTexCoord2f(uv.u0, uv.v0);
+                gl.glVertex2f(fx, fy);
+                gl.glTexCoord2f(uv.u1, uv.v0);
+                gl.glVertex2f(fx + width, fy);
+                gl.glTexCoord2f(uv.u1, uv.v1);
+                gl.glVertex2f(fx + width, fy + ch);
+                gl.glTexCoord2f(uv.u0, uv.v1);
+                gl.glVertex2f(fx, fy + ch);
+            }
+        }
         gl.glEnd();
+
+        // --- Cursor ---
+        if (self.render_state.cursor.visible) {
+            if (self.render_state.cursor.viewport) |vp| {
+                gl.glDisable(gl.GL_TEXTURE_2D);
+                var cursor_x: gl.GLfloat = @floatFromInt(vp.x);
+                const cursor_y: gl.GLfloat = @floatFromInt(vp.y);
+
+                if (vp.wide_tail and vp.x > 0) {
+                    cursor_x -= 1.0;
+                }
+
+                const cx0 = cursor_x * cw;
+                const cy0 = cursor_y * ch + y_off;
+
+                // Use terminal cursor color if set, otherwise default
+                if (colors.cursor) |cc| {
+                    gl.glColor4f(
+                        @as(gl.GLfloat, @floatFromInt(cc.r)) / 255.0,
+                        @as(gl.GLfloat, @floatFromInt(cc.g)) / 255.0,
+                        @as(gl.GLfloat, @floatFromInt(cc.b)) / 255.0,
+                        0.7,
+                    );
+                } else {
+                    gl.glColor4f(180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 0.7);
+                }
+
+                gl.glBegin(gl.GL_QUADS);
+                gl.glVertex2f(cx0, cy0);
+                gl.glVertex2f(cx0 + cw, cy0);
+                gl.glVertex2f(cx0 + cw, cy0 + ch);
+                gl.glVertex2f(cx0, cy0 + ch);
+                gl.glEnd();
+            }
+        }
 
         gl.glDisable(gl.GL_BLEND);
     }

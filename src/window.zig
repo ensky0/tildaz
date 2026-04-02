@@ -31,6 +31,7 @@ const WS_EX_TOPMOST: DWORD = 0x00000008;
 const WS_EX_TOOLWINDOW: DWORD = 0x00000080;
 const WS_EX_LAYERED: DWORD = 0x00080000;
 const CS_OWNDC: UINT = 0x0020;
+const CS_DBLCLKS: UINT = 0x0008;
 
 // Window Messages
 const WM_CLOSE: UINT = 0x0010;
@@ -46,9 +47,11 @@ const WM_USER: UINT = 0x0400;
 pub const WM_PTY_OUTPUT: UINT = WM_USER + 1;
 const WM_TAB_CLOSED: UINT = WM_USER + 2;
 const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
+const WM_MBUTTONDOWN: UINT = 0x0207;
 const MK_LBUTTON: WPARAM = 0x0001;
 
 // Other constants
@@ -148,7 +151,7 @@ extern "user32" fn GetDC(HWND) callconv(.c) HDC;
 extern "user32" fn ReleaseDC(HWND, HDC) callconv(.c) c_int;
 extern "kernel32" fn GetModuleHandleW(?[*:0]const WCHAR) callconv(.c) HINSTANCE;
 extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.c) void;
-extern "kernel32" fn GlobalLock(?*anyopaque) callconv(.c) ?[*]const WCHAR;
+extern "kernel32" fn GlobalLock(?*anyopaque) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GlobalUnlock(?*anyopaque) callconv(.c) BOOL;
 extern "user32" fn OpenClipboard(HWND) callconv(.c) BOOL;
 extern "user32" fn CloseClipboard() callconv(.c) BOOL;
@@ -157,6 +160,10 @@ extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn MessageBoxW(HWND, [*:0]const WCHAR, [*:0]const WCHAR, UINT) callconv(.c) c_int;
 extern "user32" fn SetCapture(HWND) callconv(.c) HWND;
 extern "user32" fn ReleaseCapture() callconv(.c) BOOL;
+extern "user32" fn EmptyClipboard() callconv(.c) BOOL;
+extern "user32" fn SetClipboardData(UINT, ?*anyopaque) callconv(.c) ?*anyopaque;
+extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.c) ?*anyopaque;
+const GMEM_MOVEABLE: UINT = 0x0002;
 
 const MB_YESNO: UINT = 0x04;
 const MB_ICONQUESTION: UINT = 0x20;
@@ -238,7 +245,7 @@ pub const Window = struct {
 
         const wc = WNDCLASSEXW{
             .cbSize = @sizeOf(WNDCLASSEXW),
-            .style = CS_OWNDC,
+            .style = CS_OWNDC | CS_DBLCLKS,
             .lpfnWndProc = wndProc,
             .cbClsExtra = 0,
             .cbWndExtra = 0,
@@ -310,7 +317,7 @@ pub const Window = struct {
             var tm: TEXTMETRICW = undefined;
             _ = GetTextMetricsW(self.gl_dc, &tm);
             self.cell_width = tm.tmAveCharWidth;
-            self.cell_height = tm.tmHeight;
+            self.cell_height = tm.tmHeight + tm.tmExternalLeading;
             _ = SelectObject(self.gl_dc, old_f);
         }
 
@@ -438,6 +445,11 @@ pub const Window = struct {
                 return 0;
             },
             WM_CHAR => {
+                // Ignore WM_CHAR generated from Ctrl+Shift shortcuts
+                // (e.g. Ctrl+Shift+W sends 0x17 which would kill-word in shell)
+                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
+                    return 0;
+                }
                 if (self.write_fn) |write_fn| {
                     const cp: u21 = @intCast(wParam);
                     // Backspace: send DEL (0x7F) instead of BS (0x08)
@@ -544,9 +556,14 @@ pub const Window = struct {
             },
             WM_LBUTTONDOWN => {
                 if (self.app_msg_fn) |f| {
-                    if (f(msg, wParam, lParam, self.userdata)) {
-                        _ = SetCapture(hwnd);
-                    }
+                    _ = f(msg, wParam, lParam, self.userdata);
+                }
+                _ = SetCapture(hwnd);
+                return 0;
+            },
+            WM_LBUTTONDBLCLK => {
+                if (self.app_msg_fn) |f| {
+                    _ = f(msg, wParam, lParam, self.userdata);
                 }
                 return 0;
             },
@@ -558,9 +575,14 @@ pub const Window = struct {
             },
             WM_LBUTTONUP => {
                 if (self.app_msg_fn) |f| {
-                    if (f(msg, wParam, lParam, self.userdata)) {
-                        _ = ReleaseCapture();
-                    }
+                    _ = f(msg, wParam, lParam, self.userdata);
+                }
+                _ = ReleaseCapture();
+                return 0;
+            },
+            WM_MBUTTONDOWN => {
+                if (self.write_fn) |write_fn| {
+                    self.pasteClipboard(write_fn);
                 }
                 return 0;
             },
@@ -593,8 +615,9 @@ pub const Window = struct {
         defer _ = CloseClipboard();
 
         const handle = GetClipboardData(CF_UNICODETEXT) orelse return;
-        const wide_ptr = GlobalLock(handle) orelse return;
+        const raw_ptr = GlobalLock(handle) orelse return;
         defer _ = GlobalUnlock(handle);
+        const wide_ptr: [*]const WCHAR = @ptrCast(@alignCast(raw_ptr));
 
         // Find length of null-terminated UTF-16 string
         var len: usize = 0;
@@ -623,6 +646,55 @@ pub const Window = struct {
             const n = std.unicode.utf8Encode(cp, &buf) catch continue;
             write_fn(buf[0..n], self.userdata);
         }
+    }
+
+    pub fn copyToClipboard(self: *Window, text: [:0]const u8) void {
+        if (text.len == 0) return;
+        if (OpenClipboard(self.hwnd) == 0) return;
+        defer _ = CloseClipboard();
+
+        _ = EmptyClipboard();
+
+        // Convert UTF-8 to UTF-16
+        // Count required UTF-16 units
+        var utf16_len: usize = 0;
+        var view = std.unicode.Utf8View.init(text) catch return;
+        var iter = view.iterator();
+        while (iter.nextCodepoint()) |cp| {
+            if (cp > 0xFFFF) {
+                utf16_len += 2; // surrogate pair
+            } else {
+                utf16_len += 1;
+            }
+        }
+
+        // Allocate global memory (UTF-16 + null terminator)
+        const alloc_size = (utf16_len + 1) * 2;
+        const hmem = GlobalAlloc(GMEM_MOVEABLE, alloc_size) orelse return;
+        const raw_lock = GlobalLock(hmem) orelse return;
+        const ptr: [*]u8 = @ptrCast(raw_lock);
+
+        // Write UTF-16 data
+        var wide_ptr: [*]u16 = @ptrCast(@alignCast(ptr));
+        var view2 = std.unicode.Utf8View.init(text) catch return;
+        var iter2 = view2.iterator();
+        var idx: usize = 0;
+        while (iter2.nextCodepoint()) |cp| {
+            if (cp > 0xFFFF) {
+                const adj = cp - 0x10000;
+                wide_ptr[idx] = @intCast(0xD800 + (adj >> 10));
+                idx += 1;
+                wide_ptr[idx] = @intCast(0xDC00 + (adj & 0x3FF));
+                idx += 1;
+            } else {
+                wide_ptr[idx] = @intCast(cp);
+                idx += 1;
+            }
+        }
+        wide_ptr[idx] = 0; // null terminator
+
+        _ = GlobalUnlock(hmem);
+        _ = SetClipboardData(CF_UNICODETEXT, hmem);
     }
 
     pub fn getGridSize(self: *const Window) struct { cols: u16, rows: u16 } {
