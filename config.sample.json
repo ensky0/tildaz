@@ -3,7 +3,7 @@
   "width": 50,
   "height": 100,
   "offset": 100,
-  "shell": "wsl.exe -d Debian",
+  "shell": "wsl.exe -d Debian --cd ~",
   "hidden_start": true,
   "auto_start": true
 }

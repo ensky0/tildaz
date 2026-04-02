@@ -2,11 +2,10 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const ConPty = @import("conpty.zig").ConPty;
 const Window = @import("window.zig").Window;
-const render = @import("renderer.zig");
+const GlRenderer = @import("renderer.zig").GlRenderer;
 const Config = @import("config.zig").Config;
 const autostart = @import("autostart.zig");
 
-const HDC = ?*anyopaque;
 const HWND = ?*anyopaque;
 const WCHAR = u16;
 extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
@@ -27,6 +26,7 @@ const App = struct {
     window: Window,
     mutex: std.Thread.Mutex = .{},
     allocator: std.mem.Allocator,
+    gl_renderer: ?GlRenderer = null,
 
     fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
@@ -57,12 +57,15 @@ const App = struct {
         self.pty.resize(cols, rows) catch {};
     }
 
-    fn onRender(window: *Window, hdc: HDC) void {
+    fn onRender(window: *Window) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
 
         self.mutex.lock();
         defer self.mutex.unlock();
-        render.renderTerminal(hdc, self.terminal, self.allocator, window.cell_width, window.cell_height);
+        if (self.gl_renderer) |*r| {
+            const size = window.getClientSize();
+            r.render(self.terminal, self.allocator, window.cell_width, window.cell_height, size.w, size.h);
+        }
     }
 };
 
@@ -142,6 +145,10 @@ fn run() !void {
     app.window.resize_fn = App.onResize;
     try app.window.init();
     defer app.window.deinit();
+
+    // Initialize OpenGL renderer (must be after window.init which creates the GL context)
+    app.gl_renderer = GlRenderer.init(16, @intCast(app.window.cell_width), @intCast(app.window.cell_height)) catch null;
+    defer if (app.gl_renderer) |*r| r.deinit();
 
     // Apply position from config
     app.window.setPosition(config.dock_position, config.width, config.height, config.offset);
