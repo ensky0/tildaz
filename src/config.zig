@@ -20,23 +20,26 @@ const err_font_size = std.unicode.utf8ToUtf16LeStringLiteral(
 pub const Config = struct {
     // window
     dock_position: Window.DockPosition = .top,
-    width: u8 = 40,
+    width: u8 = 50,
     height: u8 = 100,
-    offset: u8 = 0,
+    offset: u8 = 100,
     // font
     font_family: []const u8 = "Consolas",
-    font_size: u8 = 16,
+    font_size: u8 = 20,
     // top-level
     shell: []const u8 = "cmd.exe",
-    auto_start: bool = false,
-    hidden_start: bool = false,
+    auto_start: bool = true,
+    hidden_start: bool = true,
     _alloc: ?std.mem.Allocator = null,
 
     pub fn load(allocator: std.mem.Allocator) Config {
         const path = getConfigPath(allocator) catch return .{};
         defer allocator.free(path);
 
-        const file = std.fs.openFileAbsolute(path, .{}) catch return .{};
+        const file = std.fs.openFileAbsolute(path, .{}) catch {
+            createDefaultConfig(path);
+            return .{};
+        };
         defer file.close();
 
         const content = file.readToEndAlloc(allocator, 16384) catch return .{};
@@ -153,17 +156,9 @@ pub const Config = struct {
     // -- Config path resolution --
 
     fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
-        if (getExeDir(allocator)) |exe_dir| {
-            defer allocator.free(exe_dir);
-            const portable_path = try std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir});
-            std.fs.accessAbsolute(portable_path, .{}) catch {
-                allocator.free(portable_path);
-                return getAppdataPath(allocator);
-            };
-            return portable_path;
-        } else |_| {}
-
-        return getAppdataPath(allocator);
+        const exe_dir = try getExeDir(allocator);
+        defer allocator.free(exe_dir);
+        return std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir});
     }
 
     fn getExeDir(allocator: std.mem.Allocator) ![]const u8 {
@@ -172,10 +167,28 @@ pub const Config = struct {
         return allocator.dupe(u8, exe_path);
     }
 
-    fn getAppdataPath(allocator: std.mem.Allocator) ![]const u8 {
-        const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch return error.NoAppData;
-        defer allocator.free(appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\TildaZ\\config.json", .{appdata});
+    fn createDefaultConfig(path: []const u8) void {
+        const default_json =
+            \\{
+            \\  "window": {
+            \\    "dock_position": "top",
+            \\    "width": 50,
+            \\    "height": 100,
+            \\    "offset": 100
+            \\  },
+            \\  "font": {
+            \\    "family": "Consolas",
+            \\    "size": 20
+            \\  },
+            \\  "shell": "cmd.exe",
+            \\  "auto_start": true,
+            \\  "hidden_start": true
+            \\}
+            \\
+        ;
+        const f = std.fs.createFileAbsolute(path, .{}) catch return;
+        defer f.close();
+        f.writeAll(default_json) catch {};
     }
 
     pub fn shellUtf16(self: *const Config) [*:0]const u16 {

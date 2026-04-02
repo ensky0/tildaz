@@ -7,7 +7,7 @@
   },
   "font": {
     "family": "Consolas",
-    "size": 16
+    "size": 20
   },
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
