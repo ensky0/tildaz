@@ -173,9 +173,6 @@ pub const GlRenderer = struct {
         vp_h: c_int,
         y_offset: c_int,
     ) void {
-        _ = vp_w;
-        _ = vp_h;
-
         self.render_state.update(self.alloc, terminal) catch return;
 
         const rows = self.render_state.rows;
@@ -382,6 +379,31 @@ pub const GlRenderer = struct {
             }
         }
 
+        // --- Scrollbar ---
+        const sb = terminal.screens.active.pages.scrollbar();
+        if (sb.total > sb.len) {
+            const track_h: gl.GLfloat = @floatFromInt(vp_h - y_offset);
+            const track_x: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(vp_w)) - SCROLLBAR_W;
+
+            const ratio = track_h / @as(gl.GLfloat, @floatFromInt(sb.total));
+            const thumb_h = @max(SCROLLBAR_MIN_H, ratio * @as(gl.GLfloat, @floatFromInt(sb.len)));
+            const thumb_y = y_off + @as(gl.GLfloat, @floatFromInt(sb.offset)) * ratio;
+
+            gl.glDisable(gl.GL_TEXTURE_2D);
+
+            // Thumb
+            gl.glColor4f(1.0, 1.0, 1.0, 0.3);
+            gl.glBegin(gl.GL_QUADS);
+            gl.glVertex2f(track_x, thumb_y);
+            gl.glVertex2f(track_x + SCROLLBAR_W, thumb_y);
+            gl.glVertex2f(track_x + SCROLLBAR_W, thumb_y + thumb_h);
+            gl.glVertex2f(track_x, thumb_y + thumb_h);
+            gl.glEnd();
+        }
+
         gl.glDisable(gl.GL_BLEND);
     }
+
+    const SCROLLBAR_W: gl.GLfloat = 8.0;
+    const SCROLLBAR_MIN_H: gl.GLfloat = 16.0;
 };

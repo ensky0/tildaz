@@ -30,6 +30,7 @@ pub const Config = struct {
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
     hidden_start: bool = true,
+    max_scroll_lines: u32 = 1_000_000,
     _alloc: ?std.mem.Allocator = null,
 
     pub fn load(allocator: std.mem.Allocator) Config {
@@ -120,6 +121,7 @@ pub const Config = struct {
         }
         if (getBool(root, "auto_start")) |v| config.auto_start = v;
         if (getBool(root, "hidden_start")) |v| config.hidden_start = v;
+        if (getIntField(root, "max_scroll_lines")) |v| config.max_scroll_lines = @intCast(std.math.clamp(v, 0, 1_000_000));
 
         return config;
     }
@@ -182,7 +184,8 @@ pub const Config = struct {
             \\  },
             \\  "shell": "cmd.exe",
             \\  "auto_start": true,
-            \\  "hidden_start": true
+            \\  "hidden_start": true,
+            \\  "max_scroll_lines": 1000000
             \\}
             \\
         ;
