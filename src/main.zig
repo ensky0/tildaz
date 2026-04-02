@@ -11,9 +11,14 @@ const HWND = ?*anyopaque;
 const WCHAR = u16;
 extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
 extern "user32" fn PostMessageW(HWND, c_uint, usize, isize) callconv(.c) c_int;
+extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
+extern "kernel32" fn GetLastError() callconv(.c) u32;
+extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
+const ERROR_ALREADY_EXISTS: u32 = 183;
 const WM_CLOSE: c_uint = 0x0010;
 const MB_OK: c_uint = 0x0;
 const MB_ICONERROR: c_uint = 0x10;
+const MB_ICONINFORMATION: c_uint = 0x40;
 
 const App = struct {
     terminal: *ghostty.Terminal,
@@ -70,6 +75,19 @@ pub fn main() void {
 }
 
 fn run() !void {
+    // Single instance check
+    const mutex = CreateMutexW(null, 0, std.unicode.utf8ToUtf16LeStringLiteral("Global\\TildaZ_SingleInstance"));
+    if (mutex != null and GetLastError() == ERROR_ALREADY_EXISTS) {
+        _ = CloseHandle(mutex);
+        const msg = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ is already running.");
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ");
+        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    defer if (mutex != null) {
+        _ = CloseHandle(mutex);
+    };
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
