@@ -1,0 +1,8 @@
+zig-out/
+zig-cache/
+.zig-cache/
+*.exe
+*.obj
+*.o
+*.pdb
+.claude/
