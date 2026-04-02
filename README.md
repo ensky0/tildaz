@@ -14,6 +14,13 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
   - 마우스 클릭으로 탭 선택, X 버튼으로 탭 닫기
   - 마우스 드래그로 탭 순서 변경
   - 마지막 탭을 닫으면 앱 종료
+- **유니코드 전체 지원**: 한글, CJK, 이모지 등 전각/반각 문자 정상 렌더링
+- **ANSI 색상**: 16색/256색/TrueColor 전경·배경색, bold-is-bright, inverse 지원
+- **텍스트 선택 및 복사**:
+  - 클릭+드래그로 텍스트 선택 (선택 영역 반전 표시)
+  - 더블클릭으로 단어 선택
+  - 마우스 버튼 놓으면 자동 클립보드 복사
+  - 마우스 휠 클릭으로 붙여넣기
 - 화면 가장자리(top/bottom/left/right)에 붙는 드롭다운 윈도우
 - 크기/위치를 화면 비율(%)로 설정
 - Windows 로그인 시 자동 시작
@@ -101,6 +108,9 @@ zig build -Doptimize=ReleaseFast
 | Ctrl+Shift+W | 현재 탭 닫기 |
 | Alt+1~9 | 탭 전환 |
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
+| 마우스 드래그 | 텍스트 선택 + 자동 복사 |
+| 더블클릭 | 단어 선택 + 자동 복사 |
+| 마우스 휠 클릭 | 클립보드 붙여넣기 |
 
 ## 알려진 제한사항
 
@@ -114,7 +124,8 @@ zig build -Doptimize=ReleaseFast
 | 터미널 에뮬레이션 | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
 | PTY | Windows ConPTY |
 | 윈도우 | Win32 API (보더리스 팝업) |
-| 렌더링 | OpenGL 1.1 + 폰트 아틀라스 (WGL) |
+| 렌더링 | OpenGL 1.1 + 동적 폰트 아틀라스 (WGL) |
+| 폰트 래스터라이즈 | Windows GDI (ANTIALIASED_QUALITY) |
 
 ## 라이선스
 

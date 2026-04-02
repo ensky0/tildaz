@@ -21,7 +21,7 @@ const BITMAPINFOHEADER = extern struct {
     biHeight: LONG = 0,
     biPlanes: u16 = 1,
     biBitCount: u16 = 0,
-    biCompression: DWORD = 0, // BI_RGB
+    biCompression: DWORD = 0,
     biSizeImage: DWORD = 0,
     biXPelsPerMeter: LONG = 0,
     biYPelsPerMeter: LONG = 0,
@@ -36,7 +36,7 @@ const BITMAPINFO = extern struct {
 
 const DIB_RGB_COLORS: c_uint = 0;
 const TRANSPARENT: c_int = 1;
-const CLEARTYPE_QUALITY: DWORD = 5;
+const ANTIALIASED_QUALITY: DWORD = 4;
 const FW_NORMAL: c_int = 400;
 const DEFAULT_CHARSET: DWORD = 1;
 const OUT_DEFAULT_PRECIS: DWORD = 0;
@@ -67,136 +67,105 @@ pub const GlyphUV = struct {
     v1: f32,
 };
 
-const GLYPH_COUNT = 95; // ASCII 32..126
-const COLS_PER_ROW = 16;
-const GLYPH_ROWS = (GLYPH_COUNT + COLS_PER_ROW - 1) / COLS_PER_ROW; // 6
+pub const GlyphInfo = struct {
+    uv: GlyphUV,
+    cell_count: u8, // 1 = narrow, 2 = wide
+};
+
+const ATLAS_SIZE: u32 = 2048;
 
 pub const FontAtlas = struct {
     texture_id: gl.GLuint = 0,
-    atlas_width: u32,
-    atlas_height: u32,
     cell_width: u32,
     cell_height: u32,
-    glyph_uvs: [GLYPH_COUNT]GlyphUV = undefined,
 
-    pub fn init(font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
+    // Dynamic glyph cache
+    glyph_map: std.AutoHashMap(u21, GlyphInfo),
+    fallback_glyph: GlyphInfo = undefined,
+
+    // Packing cursor
+    pack_x: u32 = 0,
+    pack_y: u32 = 0,
+
+    // Persistent GDI resources for on-demand rasterization
+    scratch_dc: HDC = null,
+    scratch_bmp: HBITMAP = null,
+    scratch_bits: ?[*]BYTE = null,
+    scratch_font: HFONT = null,
+    scratch_old_bmp: HGDIOBJ = null,
+    scratch_old_font: HGDIOBJ = null,
+    scratch_width: u32 = 0, // 2 * cell_width
+    black_brush: HBRUSH = null,
+
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
         var self = FontAtlas{
-            .atlas_width = COLS_PER_ROW * cell_w,
-            .atlas_height = GLYPH_ROWS * cell_h,
             .cell_width = cell_w,
             .cell_height = cell_h,
+            .glyph_map = std.AutoHashMap(u21, GlyphInfo).init(alloc),
+            .scratch_width = 2 * cell_w,
         };
+        errdefer self.glyph_map.deinit();
 
-        const aw: f32 = @floatFromInt(self.atlas_width);
-        const ah: f32 = @floatFromInt(self.atlas_height);
-
-        // Create GDI DIB section for rasterizing glyphs
+        // Create scratch DIB for individual glyph rasterization (wide = 2 * cell_w)
         var bmi = BITMAPINFO{
             .bmiHeader = .{
-                .biWidth = @intCast(self.atlas_width),
-                .biHeight = -@as(LONG, @intCast(self.atlas_height)), // top-down
+                .biWidth = @intCast(self.scratch_width),
+                .biHeight = -@as(LONG, @intCast(cell_h)), // top-down
                 .biBitCount = 32,
             },
         };
 
-        var bits_ptr: ?[*]BYTE = null;
-        const hbmp = CreateDIBSection(null, &bmi, DIB_RGB_COLORS, &bits_ptr, null, 0);
-        if (hbmp == null) return error.CreateDIBSectionFailed;
-        defer _ = DeleteObject(hbmp);
+        self.scratch_bmp = CreateDIBSection(null, &bmi, DIB_RGB_COLORS, &self.scratch_bits, null, 0);
+        if (self.scratch_bmp == null) return error.CreateDIBSectionFailed;
+        errdefer _ = DeleteObject(self.scratch_bmp);
 
-        const dc = CreateCompatibleDC(null);
-        if (dc == null) return error.CreateDCFailed;
-        defer _ = DeleteDC(dc);
+        self.scratch_dc = CreateCompatibleDC(null);
+        if (self.scratch_dc == null) return error.CreateDCFailed;
+        errdefer _ = DeleteDC(self.scratch_dc);
 
-        const old_bmp = SelectObject(dc, hbmp);
-        defer _ = SelectObject(dc, old_bmp);
+        self.scratch_old_bmp = SelectObject(self.scratch_dc, self.scratch_bmp);
 
-        // Create font with grayscale antialiasing (not ClearType — avoids color fringes in atlas)
-        const atlas_font = CreateFontW(
+        // Create font with grayscale antialiasing
+        self.scratch_font = CreateFontW(
             font_height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN,
+            ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
             font_family,
         );
-        if (atlas_font == null) return error.CreateFontFailed;
-        defer _ = DeleteObject(atlas_font);
+        if (self.scratch_font == null) return error.CreateFontFailed;
+        errdefer _ = DeleteObject(self.scratch_font);
 
-        const old_font = SelectObject(dc, atlas_font);
-        defer _ = SelectObject(dc, old_font);
+        self.scratch_old_font = SelectObject(self.scratch_dc, self.scratch_font);
 
-        // Fill background black
-        const fill_rect = RECT{
-            .left = 0,
-            .top = 0,
-            .right = @intCast(self.atlas_width),
-            .bottom = @intCast(self.atlas_height),
-        };
-        const black_brush = CreateSolidBrush(rgb(0, 0, 0));
-        _ = FillRect(dc, &fill_rect, black_brush);
-        _ = DeleteObject(black_brush);
+        _ = SetBkMode(self.scratch_dc, TRANSPARENT);
+        _ = SetTextColor(self.scratch_dc, rgb(255, 255, 255));
 
-        _ = SetBkMode(dc, TRANSPARENT);
-        _ = SetTextColor(dc, rgb(255, 255, 255));
+        self.black_brush = CreateSolidBrush(rgb(0, 0, 0));
 
-        // Render each ASCII glyph
-        for (0..GLYPH_COUNT) |i| {
-            const c: u16 = @intCast(i + 32);
-            const col: u32 = @intCast(i % COLS_PER_ROW);
-            const row: u32 = @intCast(i / COLS_PER_ROW);
-            const x: c_int = @intCast(col * cell_w);
-            const y: c_int = @intCast(row * cell_h);
-
-            var wchar: [1]WCHAR = .{c};
-            _ = TextOutW(dc, x, y, &wchar, 1);
-
-            // Compute UV coordinates
-            const fx: f32 = @floatFromInt(col * cell_w);
-            const fy: f32 = @floatFromInt(row * cell_h);
-            const fw: f32 = @floatFromInt(cell_w);
-            const fh: f32 = @floatFromInt(cell_h);
-            self.glyph_uvs[i] = .{
-                .u0 = fx / aw,
-                .v0 = fy / ah,
-                .u1 = (fx + fw) / aw,
-                .v1 = (fy + fh) / ah,
-            };
-        }
-
-        // Convert BGRA → RGBA and compute alpha from ClearType subpixels
-        // ClearType renders separate R/G/B coverage. We use max(R,G,B) as
-        // the alpha to preserve sharpness while avoiding color fringes.
-        const pixel_data: [*]BYTE = bits_ptr.?;
-        const total_bytes = self.atlas_width * self.atlas_height * 4;
-        var idx: usize = 0;
-        while (idx < total_bytes) : (idx += 4) {
-            const b = pixel_data[idx];
-            const g = pixel_data[idx + 1];
-            const r = pixel_data[idx + 2];
-            const alpha = @max(r, @max(g, b));
-            pixel_data[idx] = 255; // R (white — tinted by glColor at render time)
-            pixel_data[idx + 1] = 255; // G
-            pixel_data[idx + 2] = 255; // B
-            pixel_data[idx + 3] = alpha; // A = max coverage
-        }
-
-        // Upload as GL texture
+        // Create empty GL texture (2048x2048)
         gl.glGenTextures(1, @ptrCast(&self.texture_id));
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP);
         gl.glTexImage2D(
             gl.GL_TEXTURE_2D,
             0,
             gl.GL_RGBA,
-            @intCast(self.atlas_width),
-            @intCast(self.atlas_height),
+            ATLAS_SIZE,
+            ATLAS_SIZE,
             0,
             @intCast(gl.GL_RGBA),
             gl.GL_UNSIGNED_BYTE,
-            @ptrCast(pixel_data),
+            null, // empty texture
         );
+
+        // Pre-render fallback '?' glyph
+        self.fallback_glyph = self.renderGlyph('?', false) orelse GlyphInfo{
+            .uv = .{ .u0 = 0, .v0 = 0, .u1 = 0, .v1 = 0 },
+            .cell_count = 1,
+        };
 
         return self;
     }
@@ -206,13 +175,143 @@ pub const FontAtlas = struct {
             gl.glDeleteTextures(1, @ptrCast(&self.texture_id));
             self.texture_id = 0;
         }
+        // Restore and free GDI resources
+        if (self.scratch_dc != null) {
+            if (self.scratch_old_font != null) _ = SelectObject(self.scratch_dc, self.scratch_old_font);
+            if (self.scratch_old_bmp != null) _ = SelectObject(self.scratch_dc, self.scratch_old_bmp);
+            _ = DeleteDC(self.scratch_dc);
+        }
+        if (self.scratch_font != null) _ = DeleteObject(self.scratch_font);
+        if (self.scratch_bmp != null) _ = DeleteObject(self.scratch_bmp);
+        if (self.black_brush != null) _ = DeleteObject(self.black_brush);
+        self.glyph_map.deinit();
     }
 
-    pub fn getUV(self: *const FontAtlas, codepoint: u21) GlyphUV {
-        if (codepoint >= 32 and codepoint <= 126) {
-            return self.glyph_uvs[codepoint - 32];
+    /// Get or render a glyph. Returns GlyphInfo with UV coordinates and cell count.
+    pub fn getOrRenderGlyph(self: *FontAtlas, codepoint: u21, is_wide: bool) GlyphInfo {
+        if (self.glyph_map.get(codepoint)) |info| return info;
+        return self.renderGlyph(codepoint, is_wide) orelse self.fallback_glyph;
+    }
+
+    /// Backward-compatible getUV for tab bar (always narrow)
+    pub fn getUV(self: *FontAtlas, codepoint: u21) GlyphUV {
+        return self.getOrRenderGlyph(codepoint, false).uv;
+    }
+
+    fn renderGlyph(self: *FontAtlas, codepoint: u21, is_wide: bool) ?GlyphInfo {
+        const cell_w = self.cell_width;
+        const cell_h = self.cell_height;
+        const glyph_width: u32 = if (is_wide) 2 * cell_w else cell_w;
+
+        // Check packing space
+        if (self.pack_x + glyph_width > ATLAS_SIZE) {
+            self.pack_x = 0;
+            self.pack_y += cell_h;
         }
-        // Fallback: '?' glyph
-        return self.glyph_uvs['?' - 32];
+        if (self.pack_y + cell_h > ATLAS_SIZE) {
+            return null; // atlas full
+        }
+
+        // Clear scratch DIB region
+        const clear_rect = RECT{
+            .left = 0,
+            .top = 0,
+            .right = @intCast(glyph_width),
+            .bottom = @intCast(cell_h),
+        };
+        _ = FillRect(self.scratch_dc, &clear_rect, self.black_brush);
+
+        // Encode codepoint as UTF-16
+        var wchar_buf: [2]WCHAR = undefined;
+        var wchar_len: c_int = undefined;
+        if (codepoint <= 0xFFFF) {
+            wchar_buf[0] = @intCast(codepoint);
+            wchar_len = 1;
+        } else {
+            // Surrogate pair for U+10000+
+            const cp = codepoint - 0x10000;
+            wchar_buf[0] = @intCast(0xD800 + (cp >> 10));
+            wchar_buf[1] = @intCast(0xDC00 + (cp & 0x3FF));
+            wchar_len = 2;
+        }
+
+        // Render glyph via GDI
+        _ = TextOutW(self.scratch_dc, 0, 0, &wchar_buf, wchar_len);
+
+        // Convert BGRA → white+alpha in scratch buffer
+        const bits = self.scratch_bits orelse return null;
+        const stride = self.scratch_width * 4;
+        var row_idx: u32 = 0;
+        while (row_idx < cell_h) : (row_idx += 1) {
+            var col_idx: u32 = 0;
+            while (col_idx < glyph_width) : (col_idx += 1) {
+                const idx = row_idx * stride + col_idx * 4;
+                const b = bits[idx];
+                const g = bits[idx + 1];
+                const r = bits[idx + 2];
+                const alpha = @max(r, @max(g, b));
+                bits[idx] = 255;
+                bits[idx + 1] = 255;
+                bits[idx + 2] = 255;
+                bits[idx + 3] = alpha;
+            }
+        }
+
+        // Upload to GL texture via glTexSubImage2D
+        // We need to upload row-by-row or use a contiguous buffer.
+        // Since scratch_width may be wider than glyph_width, we upload the exact region.
+        // glTexSubImage2D reads from contiguous memory with the given width,
+        // but our scratch DIB has stride = scratch_width. For narrow glyphs (glyph_width < scratch_width),
+        // we need to account for the stride.
+        if (glyph_width == self.scratch_width) {
+            // Full width of scratch, upload directly
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
+            gl.glTexSubImage2D(
+                gl.GL_TEXTURE_2D,
+                0,
+                @intCast(self.pack_x),
+                @intCast(self.pack_y),
+                @intCast(glyph_width),
+                @intCast(cell_h),
+                @intCast(gl.GL_RGBA),
+                gl.GL_UNSIGNED_BYTE,
+                @ptrCast(bits),
+            );
+        } else {
+            // Upload row by row for narrow glyphs (scratch is wider than glyph)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
+            var y: u32 = 0;
+            while (y < cell_h) : (y += 1) {
+                const row_ptr: [*]const BYTE = bits + y * stride;
+                gl.glTexSubImage2D(
+                    gl.GL_TEXTURE_2D,
+                    0,
+                    @intCast(self.pack_x),
+                    @intCast(self.pack_y + y),
+                    @intCast(glyph_width),
+                    1,
+                    @intCast(gl.GL_RGBA),
+                    gl.GL_UNSIGNED_BYTE,
+                    @ptrCast(row_ptr),
+                );
+            }
+        }
+
+        // Compute UV coordinates
+        const atlas_f: f32 = @floatFromInt(ATLAS_SIZE);
+        const info = GlyphInfo{
+            .uv = .{
+                .u0 = @as(f32, @floatFromInt(self.pack_x)) / atlas_f,
+                .v0 = @as(f32, @floatFromInt(self.pack_y)) / atlas_f,
+                .u1 = @as(f32, @floatFromInt(self.pack_x + glyph_width)) / atlas_f,
+                .v1 = @as(f32, @floatFromInt(self.pack_y + cell_h)) / atlas_f,
+            },
+            .cell_count = if (is_wide) 2 else 1,
+        };
+
+        self.glyph_map.put(codepoint, info) catch {};
+        self.pack_x += glyph_width;
+
+        return info;
     }
 };

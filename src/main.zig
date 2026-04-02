@@ -27,6 +27,7 @@ const MK_LBUTTON: usize = 0x0001;
 const MB_OK: c_uint = 0x0;
 const MB_ICONERROR: c_uint = 0x10;
 const MB_ICONINFORMATION: c_uint = 0x40;
+const WM_LBUTTONDBLCLK: c_uint = 0x0203;
 pub const WM_TAB_CLOSED: c_uint = 0x0402; // WM_USER + 2
 
 const Tab = struct {
@@ -75,6 +76,13 @@ const App = struct {
     drag_tab_index: usize = 0,
     drag_start_x: c_int = 0,
     drag_current_x: c_int = 0,
+    tab_drag_active: bool = false, // true = drag started in tab bar
+    selecting: bool = false, // true = terminal text selection in progress
+    select_start_x: u16 = 0,
+    select_start_y: u32 = 0,
+
+    // Word boundary characters for double-click selection
+    const word_boundaries = [_]u21{ ' ', '\t', '"', '\'', '`', '|', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '<', '>' };
 
     // Tab bar constants
     const TAB_BAR_HEIGHT: c_int = 28;
@@ -90,6 +98,7 @@ const App = struct {
         tab.setTitle(self.tabs.items.len);
         try self.tabs.append(self.allocator, tab);
         self.active_tab = self.tabs.items.len - 1;
+        if (self.gl_renderer) |*r| r.invalidate();
 
         try tab.pty.startReadThread(onPtyOutputTab, onPtyExitTab, tab);
     }
@@ -113,6 +122,8 @@ const App = struct {
             if (self.active_tab >= self.tabs.items.len) {
                 self.active_tab = self.tabs.items.len - 1;
             }
+            // Force full redraw so the new active tab's content is rendered
+            if (self.gl_renderer) |*r| r.invalidate();
         }
         tab.deinit(self.allocator);
     }
@@ -196,7 +207,6 @@ const App = struct {
                 defer tab.mutex.unlock();
                 r.renderTerminal(
                     &tab.terminal,
-                    self.allocator,
                     window.cell_width,
                     window.cell_height,
                     size.w,
@@ -230,8 +240,9 @@ const App = struct {
     }
 
     pub fn handleSwitchTab(self: *App, index: usize) void {
-        if (index < self.tabs.items.len) {
+        if (index < self.tabs.items.len and index != self.active_tab) {
             self.active_tab = index;
+            if (self.gl_renderer) |*r| r.invalidate();
         }
     }
 
@@ -255,7 +266,10 @@ const App = struct {
             return;
         }
 
-        self.active_tab = tab_index;
+        if (tab_index != self.active_tab) {
+            self.active_tab = tab_index;
+            if (self.gl_renderer) |*r| r.invalidate();
+        }
     }
 
     pub fn handleDragStart(self: *App, mouse_x: c_int) void {
@@ -293,6 +307,83 @@ const App = struct {
         self.dragging = false;
     }
 
+    fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) struct { col: u16, row: u16 } {
+        const cw = self.window.cell_width;
+        const ch = self.window.cell_height;
+        const grid = self.getTerminalGridSize();
+        const term_y = mouse_y - TAB_BAR_HEIGHT;
+        const col: u16 = if (cw > 0 and mouse_x >= 0) @intCast(@min(@divTrunc(mouse_x, cw), @as(c_int, grid.cols) - 1)) else 0;
+        const row: u16 = if (ch > 0 and term_y >= 0) @intCast(@min(@divTrunc(term_y, ch), @as(c_int, grid.rows) - 1)) else 0;
+        return .{ .col = col, .row = row };
+    }
+
+    fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+        const cell = self.mouseToCell(mouse_x, mouse_y);
+        self.select_start_x = cell.col;
+        self.select_start_y = cell.row;
+        self.selecting = true;
+
+        if (self.activeTabPtr()) |tab| {
+            tab.mutex.lock();
+            defer tab.mutex.unlock();
+            const screen: *ghostty.Screen = tab.terminal.screens.active;
+            screen.clearSelection();
+        }
+    }
+
+    fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+        if (!self.selecting) return;
+        const tab = self.activeTabPtr() orelse return;
+
+        const cell = self.mouseToCell(mouse_x, mouse_y);
+        tab.mutex.lock();
+        defer tab.mutex.unlock();
+        const screen: *ghostty.Screen = tab.terminal.screens.active;
+
+        const start_pin = screen.pages.pin(.{ .viewport = .{ .x = self.select_start_x, .y = self.select_start_y } }) orelse return;
+        const end_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
+
+        const sel = ghostty.Selection.init(start_pin, end_pin, false);
+        screen.select(sel) catch {};
+    }
+
+    fn finishTerminalSelection(self: *App) void {
+        if (!self.selecting) return;
+        self.selecting = false;
+
+        const tab = self.activeTabPtr() orelse return;
+        tab.mutex.lock();
+        defer tab.mutex.unlock();
+        const screen: *ghostty.Screen = tab.terminal.screens.active;
+
+        const sel = screen.selection orelse return;
+        const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
+        defer self.allocator.free(text);
+        if (text.len > 0) {
+            self.window.copyToClipboard(text);
+        }
+    }
+
+    fn selectWordAt(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+        const tab = self.activeTabPtr() orelse return;
+        const cell = self.mouseToCell(mouse_x, mouse_y);
+
+        tab.mutex.lock();
+        defer tab.mutex.unlock();
+        const screen: *ghostty.Screen = tab.terminal.screens.active;
+
+        const pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
+        const sel = screen.selectWord(pin, &word_boundaries) orelse return;
+        screen.select(sel) catch {};
+
+        // Copy word to clipboard
+        const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
+        defer self.allocator.free(text);
+        if (text.len > 0) {
+            self.window.copyToClipboard(text);
+        }
+    }
+
     fn onAppMessage(msg: c_uint, wParam: usize, lParam: isize, userdata: ?*anyopaque) bool {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         switch (msg) {
@@ -318,20 +409,41 @@ const App = struct {
                 const x = getXParam(lParam);
                 const y = getYParam(lParam);
                 if (y < TAB_BAR_HEIGHT) {
+                    self.tab_drag_active = true;
+                    self.selecting = false;
                     self.handleTabClick(x, y);
                     self.handleDragStart(x);
-                    return true;
+                } else {
+                    self.tab_drag_active = false;
+                    self.startTerminalSelection(x, y);
                 }
-                return false;
+                return true;
+            },
+            WM_LBUTTONDBLCLK => {
+                const x = getXParam(lParam);
+                const y = getYParam(lParam);
+                if (y >= TAB_BAR_HEIGHT) {
+                    self.selectWordAt(x, y);
+                }
+                return true;
             },
             WM_MOUSEMOVE => {
                 if (wParam & MK_LBUTTON != 0) {
-                    self.handleDragMove(getXParam(lParam));
+                    if (self.tab_drag_active) {
+                        self.handleDragMove(getXParam(lParam));
+                    } else if (self.selecting) {
+                        self.updateTerminalSelection(getXParam(lParam), getYParam(lParam));
+                    }
                 }
                 return true;
             },
             WM_LBUTTONUP => {
-                self.handleDragEnd();
+                if (self.tab_drag_active) {
+                    self.handleDragEnd();
+                    self.tab_drag_active = false;
+                } else {
+                    self.finishTerminalSelection();
+                }
                 return true;
             },
             WM_TAB_CLOSED => {
@@ -416,7 +528,7 @@ fn run() !void {
     defer app.window.deinit();
 
     // Initialize OpenGL renderer
-    app.gl_renderer = GlRenderer.init(font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height)) catch null;
+    app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height)) catch null;
     defer if (app.gl_renderer) |*r| r.deinit();
 
     // Apply position from config
