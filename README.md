@@ -26,7 +26,7 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
 - Windows 로그인 시 자동 시작
 - Ctrl+Shift+V 클립보드 붙여넣기
 - 반투명(설정 가능) always-on-top 윈도우
-- **17가지 내장 컬러 테마**: Tilda, Ghostty, Dracula, Catppuccin 등
+- **18가지 내장 컬러 테마**: Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin 등
 
 ## 빌드
 
@@ -122,7 +122,7 @@ zig build -Doptimize=ReleaseFast
 
 ## 테마
 
-17가지 내장 컬러 테마를 지원한다. `config.json`에서 `"theme"` 값으로 테마 이름을 지정하면 터미널 전경/배경색과 ANSI 16색 팔레트가 적용된다.
+18가지 내장 컬러 테마를 지원한다. `config.json`에서 `"theme"` 값으로 테마 이름을 지정하면 터미널 전경/배경색과 ANSI 16색 팔레트가 적용된다.
 
 ### Classic
 
@@ -130,6 +130,7 @@ zig build -Doptimize=ReleaseFast
 |------|------|------|----------------|
 | **Tilda** | ![](https://placehold.co/16x16/000000/000000) `#000000` | ![](https://placehold.co/16x16/ffffff/ffffff) `#FFFFFF` | ![](https://placehold.co/12x12/cc0000/cc0000) ![](https://placehold.co/12x12/4e9a06/4e9a06) ![](https://placehold.co/12x12/c4a000/c4a000) ![](https://placehold.co/12x12/3465a4/3465a4) ![](https://placehold.co/12x12/75507b/75507b) ![](https://placehold.co/12x12/06989a/06989a) |
 | **Ghostty** | ![](https://placehold.co/16x16/1d1f21/1d1f21) `#1D1F21` | ![](https://placehold.co/16x16/c5c8c6/c5c8c6) `#C5C8C6` | ![](https://placehold.co/12x12/cc6666/cc6666) ![](https://placehold.co/12x12/b5bd68/b5bd68) ![](https://placehold.co/12x12/f0c674/f0c674) ![](https://placehold.co/12x12/81a2be/81a2be) ![](https://placehold.co/12x12/b294bb/b294bb) ![](https://placehold.co/12x12/8abeb7/8abeb7) |
+| **Windows Terminal** | ![](https://placehold.co/16x16/0c0c0c/0c0c0c) `#0C0C0C` | ![](https://placehold.co/16x16/cccccc/cccccc) `#CCCCCC` | ![](https://placehold.co/12x12/c50f1f/c50f1f) ![](https://placehold.co/12x12/13a10e/13a10e) ![](https://placehold.co/12x12/c19c00/c19c00) ![](https://placehold.co/12x12/0037da/0037da) ![](https://placehold.co/12x12/881798/881798) ![](https://placehold.co/12x12/3a96dd/3a96dd) |
 
 ### Dark 테마
 
