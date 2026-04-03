@@ -119,7 +119,7 @@ zig build -Doptimize=ReleaseFast
 
 ## 테마
 
-16가지 내장 컬러 테마를 지원한다. `config.json`에서 `"theme"` 값으로 테마 이름을 지정하면 터미널 전경/배경색과 ANSI 16색 팔레트가 적용된다.
+17가지 내장 컬러 테마를 지원한다. `config.json`에서 `"theme"` 값으로 테마 이름을 지정하면 터미널 전경/배경색과 ANSI 16색 팔레트가 적용된다.
 
 ### Classic
 
