@@ -55,6 +55,7 @@ extern "gdi32" fn TextOutW(HDC, c_int, c_int, [*]const WCHAR, c_int) callconv(.c
 extern "gdi32" fn CreateSolidBrush(COLORREF) callconv(.c) HBRUSH;
 extern "gdi32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.c) c_int;
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
+extern "gdi32" fn GetTextFaceW(HDC, c_int, [*]WCHAR) callconv(.c) c_int;
 
 fn rgb(r: u8, g: u8, b: u8) COLORREF {
     return @as(COLORREF, r) | (@as(COLORREF, g) << 8) | (@as(COLORREF, b) << 16);
@@ -73,6 +74,7 @@ pub const GlyphInfo = struct {
 };
 
 const ATLAS_SIZE: u32 = 2048;
+const MAX_FALLBACKS = 7;
 
 pub const FontAtlas = struct {
     texture_id: gl.GLuint = 0,
@@ -96,6 +98,10 @@ pub const FontAtlas = struct {
     scratch_old_font: HGDIOBJ = null,
     scratch_width: u32 = 0, // 2 * cell_width
     black_brush: HBRUSH = null,
+
+    // Fallback fonts for glyphs missing in primary font
+    fallback_fonts: [MAX_FALLBACKS]HFONT = .{null} ** MAX_FALLBACKS,
+    fallback_count: u8 = 0,
 
     pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
         var self = FontAtlas{
@@ -184,7 +190,58 @@ pub const FontAtlas = struct {
         if (self.scratch_font != null) _ = DeleteObject(self.scratch_font);
         if (self.scratch_bmp != null) _ = DeleteObject(self.scratch_bmp);
         if (self.black_brush != null) _ = DeleteObject(self.black_brush);
+        for (self.fallback_fonts) |fb| {
+            if (fb != null) _ = DeleteObject(fb);
+        }
         self.glyph_map.deinit();
+    }
+
+    /// Add a fallback font for glyphs missing in primary font.
+    pub fn addFallbackFont(self: *FontAtlas, family: [*:0]const WCHAR, font_height: c_int) void {
+        if (self.fallback_count >= MAX_FALLBACKS) return;
+        const fb_font = CreateFontW(
+            font_height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
+            family,
+        );
+        if (fb_font != null) {
+            self.fallback_fonts[self.fallback_count] = fb_font;
+            self.fallback_count += 1;
+        }
+    }
+
+    /// Check if a font family is installed on the system.
+    pub fn isFontAvailable(family: [*:0]const WCHAR) bool {
+        const dc = CreateCompatibleDC(null);
+        if (dc == null) return false;
+        defer _ = DeleteDC(dc);
+
+        const font = CreateFontW(
+            16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
+            family,
+        );
+        if (font == null) return false;
+        defer _ = DeleteObject(font);
+
+        const old = SelectObject(dc, font);
+        defer _ = SelectObject(dc, old);
+
+        var face_buf: [64]WCHAR = undefined;
+        const len = GetTextFaceW(dc, 64, &face_buf);
+        if (len <= 0) return false;
+
+        const face_name = face_buf[0..@intCast(len - 1)]; // exclude null terminator
+        // Compare requested name with actual face name
+        var req_len: usize = 0;
+        while (family[req_len] != 0) : (req_len += 1) {}
+        if (face_name.len != req_len) return false;
+        for (face_name, family[0..req_len]) |a, b| {
+            if (a != b) return false;
+        }
+        return true;
     }
 
     /// Get or render a glyph. Returns GlyphInfo with UV coordinates and cell count.
@@ -238,9 +295,23 @@ pub const FontAtlas = struct {
         // Render glyph via GDI
         _ = TextOutW(self.scratch_dc, 0, 0, &wchar_buf, wchar_len);
 
-        // Convert BGRA → white+alpha in scratch buffer
         const bits = self.scratch_bits orelse return null;
         const stride = self.scratch_width * 4;
+
+        // Check if primary font produced a visible glyph
+        if (!self.hasVisiblePixels(bits, stride, glyph_width, cell_h)) {
+            // Try fallback fonts
+            for (self.fallback_fonts[0..self.fallback_count]) |fb_font| {
+                _ = SelectObject(self.scratch_dc, fb_font);
+                _ = FillRect(self.scratch_dc, &clear_rect, self.black_brush);
+                _ = TextOutW(self.scratch_dc, 0, 0, &wchar_buf, wchar_len);
+                if (self.hasVisiblePixels(bits, stride, glyph_width, cell_h)) break;
+            }
+            // Restore primary font
+            _ = SelectObject(self.scratch_dc, self.scratch_font);
+        }
+
+        // Convert BGRA → white+alpha in scratch buffer
         var row_idx: u32 = 0;
         while (row_idx < cell_h) : (row_idx += 1) {
             var col_idx: u32 = 0;
@@ -313,5 +384,18 @@ pub const FontAtlas = struct {
         self.pack_x += glyph_width;
 
         return info;
+    }
+
+    fn hasVisiblePixels(self: *const FontAtlas, bits: [*]const BYTE, stride: u32, width: u32, height: u32) bool {
+        _ = self;
+        var y: u32 = 0;
+        while (y < height) : (y += 1) {
+            var x: u32 = 0;
+            while (x < width) : (x += 1) {
+                const idx = y * stride + x * 4;
+                if (bits[idx] != 0 or bits[idx + 1] != 0 or bits[idx + 2] != 0) return true;
+            }
+        }
+        return false;
     }
 };
