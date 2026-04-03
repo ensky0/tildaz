@@ -36,7 +36,7 @@ pub const Config = struct {
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
     hidden_start: bool = true,
-    max_scroll_lines: u32 = 1_000_000,
+    max_scroll_lines: u32 = 10_000,
     _alloc: ?std.mem.Allocator = null,
 
     pub fn load(allocator: std.mem.Allocator) Config {
@@ -134,7 +134,12 @@ pub const Config = struct {
         }
         if (getBool(root, "auto_start")) |v| config.auto_start = v;
         if (getBool(root, "hidden_start")) |v| config.hidden_start = v;
-        if (getIntField(root, "max_scroll_lines")) |v| config.max_scroll_lines = @intCast(std.math.clamp(v, 0, 1_000_000));
+        if (getIntField(root, "max_scroll_lines")) |v| {
+            if (v < 100 or v > 100_000) {
+                showRangeError("max_scroll_lines", 100, 100_000);
+            }
+            config.max_scroll_lines = @intCast(v);
+        }
 
         return config;
     }
@@ -159,6 +164,19 @@ pub const Config = struct {
     fn getInt(obj: std.json.Value) ?i64 {
         _ = obj;
         return null;
+    }
+
+    fn showRangeError(comptime field: []const u8, comptime min: i64, comptime max: i64) void {
+        const MB_OK = 0;
+        const MB_ICONERROR = 0x10;
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
+        const msg = std.unicode.utf8ToUtf16LeStringLiteral(
+            "config.json: \"" ++ field ++ "\" must be between " ++
+            std.fmt.comptimePrint("{}", .{min}) ++ " and " ++
+            std.fmt.comptimePrint("{}", .{max}),
+        );
+        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
+        ExitProcess(1);
     }
 
     fn showThemeError(name: []const u8) void {
@@ -247,7 +265,7 @@ pub const Config = struct {
             \\  "shell": "cmd.exe",
             \\  "auto_start": true,
             \\  "hidden_start": true,
-            \\  "max_scroll_lines": 1000000
+            \\  "max_scroll_lines": 10000
             \\}
             \\
         ;

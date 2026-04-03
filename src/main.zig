@@ -143,7 +143,7 @@ const Tab = struct {
             .terminal = try ghostty.Terminal.init(alloc, .{
                 .cols = cols,
                 .rows = rows,
-                .max_scrollback = owner.max_scroll_lines,
+                .max_scrollback = owner.max_scroll_lines * (@as(usize, cols) + 1) * 8,
                 .colors = term_colors,
             }),
             .stream = undefined,
@@ -591,6 +591,14 @@ const App = struct {
                 }
                 if (wParam == 0x57) { // Ctrl+Shift+W
                     self.handleCloseActiveTab();
+                    return true;
+                }
+                if (wParam == 0x52) { // Ctrl+Shift+R
+                    if (self.activeTabPtr()) |tab| {
+                        tab.terminal.fullReset();
+                        if (self.gl_renderer) |*r| r.invalidate();
+                        tab.write_queue.push("\x0c");
+                    }
                     return true;
                 }
                 return false;
