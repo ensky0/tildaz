@@ -4,6 +4,8 @@ const Window = @import("window.zig").Window;
 const themes = @import("themes.zig");
 
 const WCHAR = u16;
+extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
+extern "kernel32" fn ExitProcess(c_uint) callconv(.c) noreturn;
 
 const err_width = std.unicode.utf8ToUtf16LeStringLiteral(
     "config.json: \"window.width\" out of range\n\nAllowed: 10 ~ 100",
@@ -125,7 +127,10 @@ pub const Config = struct {
             }
         }
         if (getString(root, "theme")) |name| {
-            config.theme = themes.findTheme(name);
+            if (name.len > 0) {
+                config.theme = themes.findTheme(name);
+                if (config.theme == null) showThemeError(name);
+            }
         }
         if (getBool(root, "auto_start")) |v| config.auto_start = v;
         if (getBool(root, "hidden_start")) |v| config.hidden_start = v;
@@ -154,6 +159,53 @@ pub const Config = struct {
     fn getInt(obj: std.json.Value) ?i64 {
         _ = obj;
         return null;
+    }
+
+    fn showThemeError(name: []const u8) void {
+        const MB_OK = 0;
+        const MB_ICONERROR = 0x10;
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
+        var buf: [512]WCHAR = undefined;
+        var pos: usize = 0;
+        const prefix = std.unicode.utf8ToUtf16LeStringLiteral("config.json: unknown theme \"");
+        for (prefix[0..27]) |c| {
+            if (pos < buf.len - 1) {
+                buf[pos] = c;
+                pos += 1;
+            }
+        }
+        for (name) |c| {
+            if (pos < buf.len - 1) {
+                buf[pos] = c;
+                pos += 1;
+            }
+        }
+        const suffix = std.unicode.utf8ToUtf16LeStringLiteral("\"\n\nAvailable themes:\n");
+        for (suffix[0..20]) |c| {
+            if (pos < buf.len - 1) {
+                buf[pos] = c;
+                pos += 1;
+            }
+        }
+        for (themes.themes, 0..) |t, i| {
+            if (i > 0) {
+                for (std.unicode.utf8ToUtf16LeStringLiteral(", ")[0..2]) |c| {
+                    if (pos < buf.len - 1) {
+                        buf[pos] = c;
+                        pos += 1;
+                    }
+                }
+            }
+            for (t.name) |c| {
+                if (pos < buf.len - 1) {
+                    buf[pos] = c;
+                    pos += 1;
+                }
+            }
+        }
+        buf[pos] = 0;
+        _ = MessageBoxW(null, @ptrCast(&buf), title, MB_OK | MB_ICONERROR);
+        ExitProcess(1);
     }
 
     fn getBool(obj: std.json.Value, key: []const u8) ?bool {
