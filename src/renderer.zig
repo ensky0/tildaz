@@ -209,6 +209,7 @@ pub const GlRenderer = struct {
                 if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
                 const cp = raw.codepoint();
                 if (cp == 0) continue;
+                if (isBlockElement(cp)) continue;
                 _ = self.atlas.getOrRenderGlyph(cp, raw.wide == .wide);
             }
         }
@@ -302,6 +303,7 @@ pub const GlRenderer = struct {
 
                 const cp = raw.codepoint();
                 if (cp == 0) continue;
+                if (isBlockElement(cp)) continue;
                 const is_wide = raw.wide == .wide;
 
                 const glyph = self.atlas.getOrRenderGlyph(cp, is_wide);
@@ -347,6 +349,71 @@ pub const GlRenderer = struct {
                 gl.glVertex2f(fx + width, fy + ch);
                 gl.glTexCoord2f(uv.u0, uv.v1);
                 gl.glVertex2f(fx, fy + ch);
+            }
+        }
+        gl.glEnd();
+
+        // --- 3rd pass: block element characters (U+2580-U+2595) ---
+        gl.glDisable(gl.GL_TEXTURE_2D);
+        gl.glBegin(gl.GL_QUADS);
+
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+
+            for (0..cols) |x| {
+                if (x >= raws.len) break;
+                const raw = raws[x];
+
+                if (!raw.hasText()) continue;
+                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
+
+                const cp = raw.codepoint();
+                const rect = blockElementRect(cp) orelse continue;
+
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const is_inverse = style.flags.inverse;
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+
+                const fg_rgb = blk: {
+                    if (is_selected) {
+                        break :blk style.bg(&raw, &colors.palette) orelse colors.background;
+                    } else if (is_inverse) {
+                        break :blk style.bg(&raw, &colors.palette) orelse colors.background;
+                    } else {
+                        break :blk style.fg(.{
+                            .default = colors.foreground,
+                            .palette = &colors.palette,
+                            .bold = .bright,
+                        });
+                    }
+                };
+
+                gl.glColor4f(
+                    @as(gl.GLfloat, @floatFromInt(fg_rgb.r)) / 255.0,
+                    @as(gl.GLfloat, @floatFromInt(fg_rgb.g)) / 255.0,
+                    @as(gl.GLfloat, @floatFromInt(fg_rgb.b)) / 255.0,
+                    rect.alpha,
+                );
+
+                const width: gl.GLfloat = if (raw.wide == .wide) 2.0 * cw else cw;
+                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw;
+                const fy: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(y)) * ch + y_off;
+
+                const qx0 = fx + rect.x0 * width;
+                const qy0 = fy + rect.y0 * ch;
+                const qx1 = fx + rect.x1 * width;
+                const qy1 = fy + rect.y1 * ch;
+
+                gl.glVertex2f(qx0, qy0);
+                gl.glVertex2f(qx1, qy0);
+                gl.glVertex2f(qx1, qy1);
+                gl.glVertex2f(qx0, qy1);
             }
         }
         gl.glEnd();
@@ -413,4 +480,38 @@ pub const GlRenderer = struct {
 
     const SCROLLBAR_W: gl.GLfloat = 8.0;
     const SCROLLBAR_MIN_H: gl.GLfloat = 16.0;
+
+    const BlockRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32 };
+
+    fn isBlockElement(cp: u21) bool {
+        return cp >= 0x2580 and cp <= 0x2595;
+    }
+
+    fn blockElementRect(cp: u21) ?BlockRect {
+        return switch (cp) {
+            0x2580 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 0.5, .alpha = 1 }, // ▀ upper half
+            0x2581 => .{ .x0 = 0, .y0 = 7.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▁ lower 1/8
+            0x2582 => .{ .x0 = 0, .y0 = 6.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▂ lower 1/4
+            0x2583 => .{ .x0 = 0, .y0 = 5.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▃ lower 3/8
+            0x2584 => .{ .x0 = 0, .y0 = 4.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▄ lower half
+            0x2585 => .{ .x0 = 0, .y0 = 3.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▅ lower 5/8
+            0x2586 => .{ .x0 = 0, .y0 = 2.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▆ lower 3/4
+            0x2587 => .{ .x0 = 0, .y0 = 1.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▇ lower 7/8
+            0x2588 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 }, // █ full block
+            0x2589 => .{ .x0 = 0, .y0 = 0, .x1 = 7.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▉ left 7/8
+            0x258A => .{ .x0 = 0, .y0 = 0, .x1 = 6.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▊ left 3/4
+            0x258B => .{ .x0 = 0, .y0 = 0, .x1 = 5.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▋ left 5/8
+            0x258C => .{ .x0 = 0, .y0 = 0, .x1 = 4.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▌ left half
+            0x258D => .{ .x0 = 0, .y0 = 0, .x1 = 3.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▍ left 3/8
+            0x258E => .{ .x0 = 0, .y0 = 0, .x1 = 2.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▎ left 1/4
+            0x258F => .{ .x0 = 0, .y0 = 0, .x1 = 1.0 / 8.0, .y1 = 1, .alpha = 1 }, // ▏ left 1/8
+            0x2590 => .{ .x0 = 0.5, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▐ right half
+            0x2591 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.25 }, // ░ light shade
+            0x2592 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.5 }, // ▒ medium shade
+            0x2593 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.75 }, // ▓ dark shade
+            0x2594 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1.0 / 8.0, .alpha = 1 }, // ▔ upper 1/8
+            0x2595 => .{ .x0 = 7.0 / 8.0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 }, // ▕ right 1/8
+            else => null,
+        };
+    }
 };

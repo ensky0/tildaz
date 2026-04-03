@@ -816,7 +816,38 @@ fn run() !void {
     app.window.render_fn = App.onRender;
     app.window.resize_fn = App.onResize;
     app.window.app_msg_fn = App.onAppMessage;
-    const font_family_w = config.fontFamilyUtf16();
+    const FontAtlas = @import("font_atlas.zig").FontAtlas;
+
+    // Validate all font families exist on the system
+    for (0..config.font_family_count) |i| {
+        const idx: u8 = @intCast(i);
+        const fam_w = config.fontFamilyUtf16(idx);
+        if (!FontAtlas.isFontAvailable(fam_w)) {
+            var msg_buf: [256]WCHAR = undefined;
+            var pos: usize = 0;
+            const prefix = std.unicode.utf8ToUtf16LeStringLiteral("Font not found: \"");
+            for (prefix[0..17]) |c| {
+                if (pos < msg_buf.len - 2) {
+                    msg_buf[pos] = c;
+                    pos += 1;
+                }
+            }
+            const fam = config.font_families[i];
+            for (fam) |c| {
+                if (pos < msg_buf.len - 2) {
+                    msg_buf[pos] = c;
+                    pos += 1;
+                }
+            }
+            msg_buf[pos] = '"';
+            pos += 1;
+            msg_buf[pos] = 0;
+            _ = MessageBoxW(null, @ptrCast(&msg_buf), std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error"), MB_OK | MB_ICONERROR);
+            return;
+        }
+    }
+
+    const font_family_w = config.fontFamilyUtf16(0);
     const font_size: c_int = @intCast(config.font_size);
     try app.window.init(font_family_w, font_size, config.opacity);
     defer app.window.deinit();
@@ -825,6 +856,13 @@ fn run() !void {
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
     app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
     defer if (app.gl_renderer) |*r| r.deinit();
+
+    // Add fallback fonts from config
+    if (app.gl_renderer) |*r| {
+        for (1..config.font_family_count) |i| {
+            r.atlas.addFallbackFont(config.fontFamilyUtf16(@intCast(i)), font_size);
+        }
+    }
 
     // Apply position from config
     app.window.setPosition(config.dock_position, config.width, config.height, config.offset);

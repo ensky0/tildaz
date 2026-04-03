@@ -7,7 +7,7 @@
     "opacity": 100
   },
   "font": {
-    "family": "Consolas",
+    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
     "size": 20
   },
   "theme": "Tilda",

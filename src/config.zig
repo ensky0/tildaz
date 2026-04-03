@@ -20,6 +20,8 @@ const err_font_size = std.unicode.utf8ToUtf16LeStringLiteral(
     "config.json: \"font.size\" out of range\n\nAllowed: 8 ~ 72",
 );
 
+pub const MAX_FONT_FAMILIES = 8;
+
 pub const Config = struct {
     // window
     dock_position: Window.DockPosition = .top,
@@ -27,7 +29,8 @@ pub const Config = struct {
     height: u8 = 100,
     offset: u8 = 100,
     // font
-    font_family: []const u8 = "Consolas",
+    font_families: [MAX_FONT_FAMILIES][]const u8 = .{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" } ++ .{""} ** (MAX_FONT_FAMILIES - 3),
+    font_family_count: u8 = 3,
     font_size: u8 = 20,
     // appearance
     opacity: u8 = 255,
@@ -59,8 +62,17 @@ pub const Config = struct {
         if (self._alloc) |alloc| {
             if (!isDefaultString(self.shell, "cmd.exe"))
                 alloc.free(self.shell);
-            if (!isDefaultString(self.font_family, "Consolas"))
-                alloc.free(self.font_family);
+            const defaults = [_][]const u8{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" };
+            for (self.font_families[0..self.font_family_count]) |fam| {
+                var is_default = false;
+                for (defaults) |d| {
+                    if (isDefaultString(fam, d)) {
+                        is_default = true;
+                        break;
+                    }
+                }
+                if (!is_default and fam.len > 0) alloc.free(fam);
+            }
         }
     }
 
@@ -107,11 +119,30 @@ pub const Config = struct {
         // font section
         if (root.object.get("font")) |fnt| {
             if (fnt == .object) {
-                if (getString(fnt, "family")) |family| {
-                    if (family.len > 0) {
-                        if (allocator.dupe(u8, family)) |duped| {
-                            config.font_family = duped;
-                        } else |_| {}
+                if (fnt.object.get("family")) |fam_val| {
+                    switch (fam_val) {
+                        .string => |s| {
+                            if (s.len > 0) {
+                                if (allocator.dupe(u8, s)) |duped| {
+                                    config.font_families[0] = duped;
+                                    config.font_family_count = 1;
+                                } else |_| {}
+                            }
+                        },
+                        .array => |arr| {
+                            var count: u8 = 0;
+                            for (arr.items) |item| {
+                                if (count >= MAX_FONT_FAMILIES) break;
+                                if (item == .string and item.string.len > 0) {
+                                    if (allocator.dupe(u8, item.string)) |duped| {
+                                        config.font_families[count] = duped;
+                                        count += 1;
+                                    } else |_| {}
+                                }
+                            }
+                            if (count > 0) config.font_family_count = count;
+                        },
+                        else => {},
                     }
                 }
                 if (getIntField(fnt, "size")) |v| config.font_size = @intCast(std.math.clamp(v, 1, 255));
@@ -258,7 +289,7 @@ pub const Config = struct {
             \\    "opacity": 100
             \\  },
             \\  "font": {
-            \\    "family": "Consolas",
+            \\    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
             \\    "size": 20
             \\  },
             \\  "theme": "Tilda",
@@ -307,29 +338,36 @@ pub const Config = struct {
         return @ptrCast(&S.buf);
     }
 
-    /// Convert font_family to null-terminated UTF-16 for Win32 CreateFontW
-    pub fn fontFamilyUtf16(self: *const Config) [*:0]const u16 {
-        if (std.mem.eql(u8, self.font_family, "Consolas"))
+    /// Convert font family at given index to null-terminated UTF-16 for Win32 CreateFontW
+    pub fn fontFamilyUtf16(self: *const Config, index: u8) [*:0]const u16 {
+        const family = if (index < self.font_family_count) self.font_families[index] else "Consolas";
+        if (std.mem.eql(u8, family, "Consolas"))
             return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
-        if (std.mem.eql(u8, self.font_family, "Cascadia Code"))
+        if (std.mem.eql(u8, family, "Cascadia Code"))
             return std.unicode.utf8ToUtf16LeStringLiteral("Cascadia Code");
-        if (std.mem.eql(u8, self.font_family, "Cascadia Mono"))
+        if (std.mem.eql(u8, family, "Cascadia Mono"))
             return std.unicode.utf8ToUtf16LeStringLiteral("Cascadia Mono");
+        if (std.mem.eql(u8, family, "Segoe UI Symbol"))
+            return std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI Symbol");
+        if (std.mem.eql(u8, family, "Segoe UI Emoji"))
+            return std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI Emoji");
+        if (std.mem.eql(u8, family, "Malgun Gothic"))
+            return std.unicode.utf8ToUtf16LeStringLiteral("Malgun Gothic");
 
         const S = struct {
-            var buf: [64]u16 = undefined;
+            var bufs: [MAX_FONT_FAMILIES][64]u16 = undefined;
         };
         var i: usize = 0;
-        var utf8_iter = std.unicode.Utf8View.init(self.font_family) catch return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
+        var utf8_iter = std.unicode.Utf8View.init(family) catch return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
         var cp_iter = utf8_iter.iterator();
         while (cp_iter.nextCodepoint()) |cp| {
-            if (i >= S.buf.len - 1) break;
+            if (i >= 63) break;
             if (cp <= 0xFFFF) {
-                S.buf[i] = @intCast(cp);
+                S.bufs[index][i] = @intCast(cp);
                 i += 1;
             }
         }
-        S.buf[i] = 0;
-        return @ptrCast(&S.buf);
+        S.bufs[index][i] = 0;
+        return @ptrCast(&S.bufs[index]);
     }
 };
