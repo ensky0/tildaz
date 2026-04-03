@@ -30,7 +30,7 @@ pub const Config = struct {
     font_family: []const u8 = "Consolas",
     font_size: u8 = 20,
     // appearance
-    opacity: u8 = 230,
+    opacity: u8 = 255,
     theme: ?*const themes.Theme = null,
     // top-level
     shell: []const u8 = "cmd.exe",
@@ -237,7 +237,7 @@ pub const Config = struct {
             \\    "width": 50,
             \\    "height": 100,
             \\    "offset": 100,
-            \\    "opacity": 90
+            \\    "opacity": 100
             \\  },
             \\  "font": {
             \\    "family": "Consolas",

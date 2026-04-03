@@ -43,7 +43,42 @@ pub fn buildPalette(base16: [16]RGB) Palette {
 }
 
 pub const themes = [_]Theme{
-    // ── Dark themes ──────────────────────────────────────────
+    // ── Classic ─────────────────────────────────────────────
+    .{
+        .name = "Tilda",
+        .foreground = rgb(0xffffff),
+        .background = rgb(0x000000),
+        .palette = .{
+            // VTE Tango palette (Linux Tilda default)
+            rgb(0x2e3436), rgb(0xcc0000), rgb(0x4e9a06), rgb(0xc4a000),
+            rgb(0x3465a4), rgb(0x75507b), rgb(0x06989a), rgb(0xd3d7cf),
+            rgb(0x555753), rgb(0xef2929), rgb(0x8ae234), rgb(0xfce94f),
+            rgb(0x729fcf), rgb(0xad7fa8), rgb(0x34e2e2), rgb(0xeeeeec),
+        },
+    },
+    .{
+        .name = "Ghostty",
+        .foreground = rgb(0xc5c8c6),
+        .background = rgb(0x1d1f21),
+        .palette = .{
+            rgb(0x1d1f21), rgb(0xcc6666), rgb(0xb5bd68), rgb(0xf0c674),
+            rgb(0x81a2be), rgb(0xb294bb), rgb(0x8abeb7), rgb(0xc5c8c6),
+            rgb(0x666666), rgb(0xd54e53), rgb(0xb9ca4a), rgb(0xe7c547),
+            rgb(0x7aa6da), rgb(0xc397d8), rgb(0x70c0b1), rgb(0xeaeaea),
+        },
+    },
+    // ── Dark themes (인기순) ─────────────────────────────────
+    .{
+        .name = "Catppuccin Mocha",
+        .foreground = rgb(0xcdd6f4),
+        .background = rgb(0x1e1e2e),
+        .palette = .{
+            rgb(0x45475a), rgb(0xf38ba8), rgb(0xa6e3a1), rgb(0xf9e2af),
+            rgb(0x89b4fa), rgb(0xf5c2e7), rgb(0x94e2d5), rgb(0xa6adc8),
+            rgb(0x585b70), rgb(0xf37799), rgb(0x89d88b), rgb(0xebd391),
+            rgb(0x74a8fc), rgb(0xf2aede), rgb(0x6bd7ca), rgb(0xbac2de),
+        },
+    },
     .{
         .name = "Dracula",
         .foreground = rgb(0xf8f8f2),
@@ -53,17 +88,6 @@ pub const themes = [_]Theme{
             rgb(0xbd93f9), rgb(0xff79c6), rgb(0x8be9fd), rgb(0xf8f8f2),
             rgb(0x6272a4), rgb(0xff6e6e), rgb(0x69ff94), rgb(0xffffa5),
             rgb(0xd6acff), rgb(0xff92df), rgb(0xa4ffff), rgb(0xffffff),
-        },
-    },
-    .{
-        .name = "Nord",
-        .foreground = rgb(0xd8dee9),
-        .background = rgb(0x2e3440),
-        .palette = .{
-            rgb(0x3b4252), rgb(0xbf616a), rgb(0xa3be8c), rgb(0xebcb8b),
-            rgb(0x81a1c1), rgb(0xb48ead), rgb(0x88c0d0), rgb(0xe5e9f0),
-            rgb(0x596377), rgb(0xbf616a), rgb(0xa3be8c), rgb(0xebcb8b),
-            rgb(0x81a1c1), rgb(0xb48ead), rgb(0x8fbcbb), rgb(0xeceff4),
         },
     },
     .{
@@ -78,28 +102,6 @@ pub const themes = [_]Theme{
         },
     },
     .{
-        .name = "Solarized Dark",
-        .foreground = rgb(0x9cc2c3),
-        .background = rgb(0x001e27),
-        .palette = .{
-            rgb(0x002831), rgb(0xd11c24), rgb(0x6cbe6c), rgb(0xa57706),
-            rgb(0x2176c7), rgb(0xc61c6f), rgb(0x259286), rgb(0xeae3cb),
-            rgb(0x006488), rgb(0xf5163b), rgb(0x51ef84), rgb(0xb27e28),
-            rgb(0x178ec8), rgb(0xe24d8e), rgb(0x00b39e), rgb(0xfcf4dc),
-        },
-    },
-    .{
-        .name = "Catppuccin Mocha",
-        .foreground = rgb(0xcdd6f4),
-        .background = rgb(0x1e1e2e),
-        .palette = .{
-            rgb(0x45475a), rgb(0xf38ba8), rgb(0xa6e3a1), rgb(0xf9e2af),
-            rgb(0x89b4fa), rgb(0xf5c2e7), rgb(0x94e2d5), rgb(0xa6adc8),
-            rgb(0x585b70), rgb(0xf37799), rgb(0x89d88b), rgb(0xebd391),
-            rgb(0x74a8fc), rgb(0xf2aede), rgb(0x6bd7ca), rgb(0xbac2de),
-        },
-    },
-    .{
         .name = "Tokyo Night",
         .foreground = rgb(0xc0caf5),
         .background = rgb(0x1a1b26),
@@ -111,6 +113,17 @@ pub const themes = [_]Theme{
         },
     },
     .{
+        .name = "Nord",
+        .foreground = rgb(0xd8dee9),
+        .background = rgb(0x2e3440),
+        .palette = .{
+            rgb(0x3b4252), rgb(0xbf616a), rgb(0xa3be8c), rgb(0xebcb8b),
+            rgb(0x81a1c1), rgb(0xb48ead), rgb(0x88c0d0), rgb(0xe5e9f0),
+            rgb(0x596377), rgb(0xbf616a), rgb(0xa3be8c), rgb(0xebcb8b),
+            rgb(0x81a1c1), rgb(0xb48ead), rgb(0x8fbcbb), rgb(0xeceff4),
+        },
+    },
+    .{
         .name = "One Half Dark",
         .foreground = rgb(0xdcdfe4),
         .background = rgb(0x282c34),
@@ -119,6 +132,17 @@ pub const themes = [_]Theme{
             rgb(0x61afef), rgb(0xc678dd), rgb(0x56b6c2), rgb(0xdcdfe4),
             rgb(0x5d677a), rgb(0xe06c75), rgb(0x98c379), rgb(0xe5c07b),
             rgb(0x61afef), rgb(0xc678dd), rgb(0x56b6c2), rgb(0xdcdfe4),
+        },
+    },
+    .{
+        .name = "Solarized Dark",
+        .foreground = rgb(0x9cc2c3),
+        .background = rgb(0x001e27),
+        .palette = .{
+            rgb(0x002831), rgb(0xd11c24), rgb(0x6cbe6c), rgb(0xa57706),
+            rgb(0x2176c7), rgb(0xc61c6f), rgb(0x259286), rgb(0xeae3cb),
+            rgb(0x006488), rgb(0xf5163b), rgb(0x51ef84), rgb(0xb27e28),
+            rgb(0x178ec8), rgb(0xe24d8e), rgb(0x00b39e), rgb(0xfcf4dc),
         },
     },
     .{
@@ -144,17 +168,6 @@ pub const themes = [_]Theme{
         },
     },
     .{
-        .name = "Everforest Dark",
-        .foreground = rgb(0xd3c6aa),
-        .background = rgb(0x1e2326),
-        .palette = .{
-            rgb(0x7a8478), rgb(0xe67e80), rgb(0xa7c080), rgb(0xdbbc7f),
-            rgb(0x7fbbb3), rgb(0xd699b6), rgb(0x83c092), rgb(0xf2efdf),
-            rgb(0xa6b0a0), rgb(0xf85552), rgb(0x8da101), rgb(0xdfa000),
-            rgb(0x3a94c5), rgb(0xdf69ba), rgb(0x35a77c), rgb(0xfffbef),
-        },
-    },
-    .{
         .name = "Kanagawa",
         .foreground = rgb(0xdcd7ba),
         .background = rgb(0x1f1f28),
@@ -165,16 +178,27 @@ pub const themes = [_]Theme{
             rgb(0x7fb4ca), rgb(0x938aa9), rgb(0x7aa89f), rgb(0xdcd7ba),
         },
     },
-    // ── Light themes ─────────────────────────────────────────
     .{
-        .name = "Gruvbox Light",
-        .foreground = rgb(0x3c3836),
-        .background = rgb(0xfbf1c7),
+        .name = "Everforest Dark",
+        .foreground = rgb(0xd3c6aa),
+        .background = rgb(0x1e2326),
         .palette = .{
-            rgb(0xfbf1c7), rgb(0xcc241d), rgb(0x98971a), rgb(0xd79921),
-            rgb(0x458588), rgb(0xb16286), rgb(0x689d6a), rgb(0x7c6f64),
-            rgb(0x928374), rgb(0x9d0006), rgb(0x79740e), rgb(0xb57614),
-            rgb(0x076678), rgb(0x8f3f71), rgb(0x427b58), rgb(0x3c3836),
+            rgb(0x7a8478), rgb(0xe67e80), rgb(0xa7c080), rgb(0xdbbc7f),
+            rgb(0x7fbbb3), rgb(0xd699b6), rgb(0x83c092), rgb(0xf2efdf),
+            rgb(0xa6b0a0), rgb(0xf85552), rgb(0x8da101), rgb(0xdfa000),
+            rgb(0x3a94c5), rgb(0xdf69ba), rgb(0x35a77c), rgb(0xfffbef),
+        },
+    },
+    // ── Light themes (인기순) ────────────────────────────────
+    .{
+        .name = "Catppuccin Latte",
+        .foreground = rgb(0x4c4f69),
+        .background = rgb(0xeff1f5),
+        .palette = .{
+            rgb(0x5c5f77), rgb(0xd20f39), rgb(0x40a02b), rgb(0xdf8e1d),
+            rgb(0x1e66f5), rgb(0xea76cb), rgb(0x179299), rgb(0xacb0be),
+            rgb(0x6c6f85), rgb(0xde293e), rgb(0x49af3d), rgb(0xeea02d),
+            rgb(0x456eff), rgb(0xfe85d8), rgb(0x2d9fa8), rgb(0xbcc0cc),
         },
     },
     .{
@@ -189,14 +213,14 @@ pub const themes = [_]Theme{
         },
     },
     .{
-        .name = "Catppuccin Latte",
-        .foreground = rgb(0x4c4f69),
-        .background = rgb(0xeff1f5),
+        .name = "Gruvbox Light",
+        .foreground = rgb(0x3c3836),
+        .background = rgb(0xfbf1c7),
         .palette = .{
-            rgb(0x5c5f77), rgb(0xd20f39), rgb(0x40a02b), rgb(0xdf8e1d),
-            rgb(0x1e66f5), rgb(0xea76cb), rgb(0x179299), rgb(0xacb0be),
-            rgb(0x6c6f85), rgb(0xde293e), rgb(0x49af3d), rgb(0xeea02d),
-            rgb(0x456eff), rgb(0xfe85d8), rgb(0x2d9fa8), rgb(0xbcc0cc),
+            rgb(0xfbf1c7), rgb(0xcc241d), rgb(0x98971a), rgb(0xd79921),
+            rgb(0x458588), rgb(0xb16286), rgb(0x689d6a), rgb(0x7c6f64),
+            rgb(0x928374), rgb(0x9d0006), rgb(0x79740e), rgb(0xb57614),
+            rgb(0x076678), rgb(0x8f3f71), rgb(0x427b58), rgb(0x3c3836),
         },
     },
     .{
