@@ -1,61 +1,20 @@
 const std = @import("std");
 const gl = @import("opengl.zig");
+const dw = @import("directwrite.zig");
 
 const BOOL = std.os.windows.BOOL;
-const DWORD = std.os.windows.DWORD;
 const BYTE = std.os.windows.BYTE;
 const WCHAR = u16;
 const LONG = c_long;
 const HDC = ?*anyopaque;
-const HBITMAP = ?*anyopaque;
-const HGDIOBJ = ?*anyopaque;
-const HFONT = ?*anyopaque;
 const HBRUSH = ?*anyopaque;
-const COLORREF = DWORD;
+const COLORREF = u32;
 
 const RECT = extern struct { left: LONG, top: LONG, right: LONG, bottom: LONG };
 
-const BITMAPINFOHEADER = extern struct {
-    biSize: DWORD = @sizeOf(BITMAPINFOHEADER),
-    biWidth: LONG = 0,
-    biHeight: LONG = 0,
-    biPlanes: u16 = 1,
-    biBitCount: u16 = 0,
-    biCompression: DWORD = 0,
-    biSizeImage: DWORD = 0,
-    biXPelsPerMeter: LONG = 0,
-    biYPelsPerMeter: LONG = 0,
-    biClrUsed: DWORD = 0,
-    biClrImportant: DWORD = 0,
-};
-
-const BITMAPINFO = extern struct {
-    bmiHeader: BITMAPINFOHEADER,
-    bmiColors: [1]DWORD = .{0},
-};
-
-const DIB_RGB_COLORS: c_uint = 0;
-const TRANSPARENT: c_int = 1;
-const ANTIALIASED_QUALITY: DWORD = 4;
-const FW_NORMAL: c_int = 400;
-const DEFAULT_CHARSET: DWORD = 1;
-const OUT_DEFAULT_PRECIS: DWORD = 0;
-const CLIP_DEFAULT_PRECIS: DWORD = 0;
-const FIXED_PITCH: DWORD = 1;
-const FF_MODERN: DWORD = 0x30;
-
-extern "gdi32" fn CreateCompatibleDC(HDC) callconv(.c) HDC;
-extern "gdi32" fn DeleteDC(HDC) callconv(.c) BOOL;
-extern "gdi32" fn SelectObject(HDC, HGDIOBJ) callconv(.c) HGDIOBJ;
-extern "gdi32" fn DeleteObject(HGDIOBJ) callconv(.c) BOOL;
-extern "gdi32" fn CreateDIBSection(HDC, *const BITMAPINFO, c_uint, *?[*]BYTE, ?*anyopaque, DWORD) callconv(.c) HBITMAP;
-extern "gdi32" fn SetTextColor(HDC, COLORREF) callconv(.c) COLORREF;
-extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.c) c_int;
-extern "gdi32" fn TextOutW(HDC, c_int, c_int, [*]const WCHAR, c_int) callconv(.c) BOOL;
+extern "gdi32" fn DeleteObject(?*anyopaque) callconv(.c) BOOL;
 extern "gdi32" fn CreateSolidBrush(COLORREF) callconv(.c) HBRUSH;
-extern "gdi32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.c) c_int;
-extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
-extern "gdi32" fn GetTextFaceW(HDC, c_int, [*]WCHAR) callconv(.c) c_int;
+extern "user32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.c) c_int;
 
 fn rgb(r: u8, g: u8, b: u8) COLORREF {
     return @as(COLORREF, r) | (@as(COLORREF, g) << 8) | (@as(COLORREF, b) << 16);
@@ -74,7 +33,6 @@ pub const GlyphInfo = struct {
 };
 
 const ATLAS_SIZE: u32 = 2048;
-const MAX_FALLBACKS = 7;
 
 pub const FontAtlas = struct {
     texture_id: gl.GLuint = 0,
@@ -89,22 +47,29 @@ pub const FontAtlas = struct {
     pack_x: u32 = 0,
     pack_y: u32 = 0,
 
-    // Persistent GDI resources for on-demand rasterization
+    // GDI resources (used with DirectWrite render target)
     scratch_dc: HDC = null,
-    scratch_bmp: HBITMAP = null,
     scratch_bits: ?[*]BYTE = null,
-    scratch_font: HFONT = null,
-    scratch_old_bmp: HGDIOBJ = null,
-    scratch_old_font: HGDIOBJ = null,
     scratch_width: u32 = 0, // 2 * cell_width
     black_brush: HBRUSH = null,
 
     // Gamma correction LUT for font thickening (like Ghostty's font-thicken)
     gamma_lut: [256]u8 = undefined,
 
-    // Fallback fonts for glyphs missing in primary font
-    fallback_fonts: [MAX_FALLBACKS]HFONT = .{null} ** MAX_FALLBACKS,
-    fallback_count: u8 = 0,
+    // DirectWrite resources
+    dw_factory: ?*dw.IDWriteFactory = null,
+    dw_factory2: ?*dw.IDWriteFactory2 = null,
+    dw_font_collection: ?*dw.IDWriteFontCollection = null,
+    dw_gdi_interop: ?*dw.IDWriteGdiInterop = null,
+    dw_render_target: ?*dw.IDWriteBitmapRenderTarget = null,
+    dw_rendering_params: ?*dw.IDWriteRenderingParams = null,
+    dw_font_fallback: ?*dw.IDWriteFontFallback = null,
+    dw_number_sub: ?*dw.IUnknown = null,
+    dw_primary_font_face: ?*dw.IDWriteFontFace = null,
+    dw_primary_family_name: [64]WCHAR = undefined,
+    dw_primary_family_len: u32 = 0,
+    dw_font_em_size: f32 = 0,
+    dw_ascent_px: f32 = 0,
 
     pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32, font_thicken: f32) !FontAtlas {
         var self = FontAtlas{
@@ -123,39 +88,116 @@ pub const FontAtlas = struct {
         }
         errdefer self.glyph_map.deinit();
 
-        // Create scratch DIB for individual glyph rasterization (wide = 2 * cell_w)
-        var bmi = BITMAPINFO{
-            .bmiHeader = .{
-                .biWidth = @intCast(self.scratch_width),
-                .biHeight = -@as(LONG, @intCast(cell_h)), // top-down
-                .biBitCount = 32,
-            },
-        };
+        // --- DirectWrite initialization ---
 
-        self.scratch_bmp = CreateDIBSection(null, &bmi, DIB_RGB_COLORS, &self.scratch_bits, null, 0);
-        if (self.scratch_bmp == null) return error.CreateDIBSectionFailed;
-        errdefer _ = DeleteObject(self.scratch_bmp);
+        // 1. Create DWrite factory
+        var factory: ?*dw.IDWriteFactory = null;
+        if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0)
+            return error.DWriteFactoryFailed;
+        self.dw_factory = factory;
+        errdefer {
+            _ = factory.?.vtable.Release(factory.?);
+            self.dw_factory = null;
+        }
 
-        self.scratch_dc = CreateCompatibleDC(null);
-        if (self.scratch_dc == null) return error.CreateDCFailed;
-        errdefer _ = DeleteDC(self.scratch_dc);
+        // 2. Get system font collection
+        var collection: ?*dw.IDWriteFontCollection = null;
+        if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return error.FontCollectionFailed;
+        self.dw_font_collection = collection;
 
-        self.scratch_old_bmp = SelectObject(self.scratch_dc, self.scratch_bmp);
+        // 3. Find and create primary font face
+        var family_index: dw.UINT32 = 0;
+        var exists: BOOL = 0;
+        if (collection.?.FindFamilyName(font_family, &family_index, &exists) < 0 or exists == 0)
+            return error.FontNotFound;
 
-        // Create font with grayscale antialiasing
-        self.scratch_font = CreateFontW(
-            font_height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
-            font_family,
-        );
-        if (self.scratch_font == null) return error.CreateFontFailed;
-        errdefer _ = DeleteObject(self.scratch_font);
+        var font_family_obj: ?*dw.IDWriteFontFamily = null;
+        if (collection.?.GetFontFamily(family_index, &font_family_obj) < 0) return error.FontFamilyFailed;
+        defer _ = font_family_obj.?.vtable.Release(font_family_obj.?);
 
-        self.scratch_old_font = SelectObject(self.scratch_dc, self.scratch_font);
+        var dw_font: ?*dw.IDWriteFont = null;
+        if (font_family_obj.?.GetFirstMatchingFont(
+            dw.DWRITE_FONT_WEIGHT_NORMAL,
+            dw.DWRITE_FONT_STRETCH_NORMAL,
+            dw.DWRITE_FONT_STYLE_NORMAL,
+            &dw_font,
+        ) < 0) return error.FontMatchFailed;
+        defer _ = dw_font.?.vtable.Release(dw_font.?);
 
-        _ = SetBkMode(self.scratch_dc, TRANSPARENT);
-        _ = SetTextColor(self.scratch_dc, rgb(255, 255, 255));
+        var font_face: ?*dw.IDWriteFontFace = null;
+        if (dw_font.?.CreateFontFace(&font_face) < 0) return error.FontFaceFailed;
+        self.dw_primary_font_face = font_face;
+
+        // Store family name for MapCharacters
+        var i: u32 = 0;
+        while (font_family[i] != 0) : (i += 1) {
+            if (i >= 63) break;
+            self.dw_primary_family_name[i] = font_family[i];
+        }
+        self.dw_primary_family_name[i] = 0;
+        self.dw_primary_family_len = i;
+
+        // 4. Calculate em size from font metrics
+        var metrics: dw.DWRITE_FONT_METRICS = undefined;
+        font_face.?.GetMetrics(&metrics);
+        const du_per_em: f32 = @floatFromInt(metrics.designUnitsPerEm);
+        const ascent: f32 = @floatFromInt(metrics.ascent);
+        const descent: f32 = @floatFromInt(metrics.descent);
+        const abs_height: f32 = @floatFromInt(if (font_height < 0) -font_height else font_height);
+        self.dw_font_em_size = abs_height * du_per_em / (ascent + descent);
+        self.dw_ascent_px = abs_height * ascent / (ascent + descent);
+
+        // 5. Get IDWriteFactory2 for system font fallback
+        var factory2: ?*dw.IDWriteFactory2 = null;
+        if (factory.?.QueryInterface(&dw.IID_IDWriteFactory2, @ptrCast(&factory2)) >= 0) {
+            self.dw_factory2 = factory2;
+            var fallback: ?*dw.IDWriteFontFallback = null;
+            if (factory2.?.GetSystemFontFallback(&fallback) >= 0) {
+                self.dw_font_fallback = fallback;
+            }
+        }
+
+        // 6. Create GDI interop + bitmap render target
+        var gdi_interop: ?*dw.IDWriteGdiInterop = null;
+        if (factory.?.GetGdiInterop(&gdi_interop) < 0) return error.GdiInteropFailed;
+        self.dw_gdi_interop = gdi_interop;
+
+        var render_target: ?*dw.IDWriteBitmapRenderTarget = null;
+        if (gdi_interop.?.CreateBitmapRenderTarget(null, self.scratch_width, cell_h, &render_target) < 0)
+            return error.RenderTargetFailed;
+        self.dw_render_target = render_target;
+
+        // 7. Create rendering params (grayscale AA: clearTypeLevel=0)
+        var rendering_params: ?*dw.IDWriteRenderingParams = null;
+        if (factory.?.CreateCustomRenderingParams(
+            1.0, // gamma
+            0.0, // enhancedContrast
+            0.0, // clearTypeLevel — 0 = grayscale AA
+            dw.DWRITE_PIXEL_GEOMETRY_FLAT,
+            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+            &rendering_params,
+        ) < 0) return error.RenderingParamsFailed;
+        self.dw_rendering_params = rendering_params;
+
+        // 8. Create number substitution (for MapCharacters callback)
+        const locale = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
+        var number_sub: ?*dw.IUnknown = null;
+        _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, 0, &number_sub);
+        self.dw_number_sub = number_sub;
+
+        // 9. Extract DC and bitmap pointer from render target
+        self.scratch_dc = render_target.?.GetMemoryDC();
+        if (self.scratch_dc == null) return error.GetMemoryDCFailed;
+
+        // Get bitmap bits from the render target's DC
+        const hbmp = dw.GetCurrentObject(self.scratch_dc, dw.OBJ_BITMAP);
+        if (hbmp) |bmp_handle| {
+            var bmp: dw.BITMAP = undefined;
+            if (dw.GetObjectW(bmp_handle, @sizeOf(dw.BITMAP), @ptrCast(&bmp)) > 0) {
+                self.scratch_bits = @ptrCast(bmp.bmBits);
+            }
+        }
+        if (self.scratch_bits == null) return error.BitmapBitsFailed;
 
         self.black_brush = CreateSolidBrush(rgb(0, 0, 0));
 
@@ -192,84 +234,42 @@ pub const FontAtlas = struct {
             gl.glDeleteTextures(1, @ptrCast(&self.texture_id));
             self.texture_id = 0;
         }
-        // Restore and free GDI resources
-        if (self.scratch_dc != null) {
-            if (self.scratch_old_font != null) _ = SelectObject(self.scratch_dc, self.scratch_old_font);
-            if (self.scratch_old_bmp != null) _ = SelectObject(self.scratch_dc, self.scratch_old_bmp);
-            _ = DeleteDC(self.scratch_dc);
-        }
-        if (self.scratch_font != null) _ = DeleteObject(self.scratch_font);
-        if (self.scratch_bmp != null) _ = DeleteObject(self.scratch_bmp);
+        // Release DirectWrite COM resources
+        if (self.dw_render_target) |rt| _ = rt.vtable.Release(rt);
+        if (self.dw_rendering_params) |rp| _ = rp.Release();
+        if (self.dw_gdi_interop) |gi| _ = gi.vtable.Release(gi);
+        if (self.dw_font_fallback) |fb| _ = fb.vtable.Release(fb);
+        if (self.dw_number_sub) |ns| _ = ns.Release();
+        if (self.dw_primary_font_face) |ff| _ = ff.vtable.Release(ff);
+        if (self.dw_font_collection) |fc| _ = fc.vtable.Release(fc);
+        if (self.dw_factory2) |f2| _ = f2.Release();
+        if (self.dw_factory) |f| _ = f.Release();
+        // scratch_dc is owned by render target — don't DeleteDC
         if (self.black_brush != null) _ = DeleteObject(self.black_brush);
-        for (self.fallback_fonts) |fb| {
-            if (fb != null) _ = DeleteObject(fb);
-        }
         self.glyph_map.deinit();
     }
 
-    /// Add a fallback font for glyphs missing in primary font.
+    /// No-op: DirectWrite MapCharacters handles system font fallback automatically.
     pub fn addFallbackFont(self: *FontAtlas, family: [*:0]const WCHAR, font_height: c_int) void {
-        if (self.fallback_count >= MAX_FALLBACKS) return;
-        const fb_font = CreateFontW(
-            font_height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
-            family,
-        );
-        if (fb_font != null) {
-            self.fallback_fonts[self.fallback_count] = fb_font;
-            self.fallback_count += 1;
-        }
+        _ = self;
+        _ = family;
+        _ = font_height;
     }
 
-    /// Check if a font family is installed on the system.
-    /// Compares the face name from the requested font against a dummy font's face name.
-    /// If GDI returns the same fallback for both, the requested font doesn't exist.
+    /// Check if a font family is installed on the system via DirectWrite.
     pub fn isFontAvailable(family: [*:0]const WCHAR) bool {
-        const dc = CreateCompatibleDC(null);
-        if (dc == null) return false;
-        defer _ = DeleteDC(dc);
+        var factory: ?*dw.IDWriteFactory = null;
+        if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0) return false;
+        defer _ = factory.?.vtable.Release(factory.?);
 
-        const DEFAULT_QUALITY: DWORD = 0;
+        var collection: ?*dw.IDWriteFontCollection = null;
+        if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return false;
+        defer _ = collection.?.vtable.Release(collection.?);
 
-        // Create font with the requested name
-        const font = CreateFontW(
-            16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY, 0, family,
-        );
-        if (font == null) return false;
-        defer _ = DeleteObject(font);
-
-        // Create font with a name that definitely doesn't exist
-        const dummy_name = std.unicode.utf8ToUtf16LeStringLiteral("_NoSuchFont_TildaZ_Check_");
-        const dummy_font = CreateFontW(
-            16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY, 0, dummy_name,
-        );
-        if (dummy_font == null) return false;
-        defer _ = DeleteObject(dummy_font);
-
-        // Get face name of requested font
-        var face_req: [64]WCHAR = undefined;
-        const old1 = SelectObject(dc, font);
-        const len1 = GetTextFaceW(dc, 64, &face_req);
-        _ = SelectObject(dc, old1);
-
-        // Get face name of dummy font (= GDI's default fallback)
-        var face_dummy: [64]WCHAR = undefined;
-        const old2 = SelectObject(dc, dummy_font);
-        const len2 = GetTextFaceW(dc, 64, &face_dummy);
-        _ = SelectObject(dc, old2);
-
-        if (len1 <= 0) return false;
-
-        // If both resolve to the same face, the requested font wasn't found
-        if (len1 == len2 and std.mem.eql(WCHAR, face_req[0..@intCast(len1)], face_dummy[0..@intCast(len2)])) {
-            return false;
-        }
-        return true;
+        var index: dw.UINT32 = 0;
+        var exists: std.os.windows.BOOL = 0;
+        if (collection.?.FindFamilyName(family, &index, &exists) < 0) return false;
+        return exists != 0;
     }
 
     /// Get or render a glyph. Returns GlyphInfo with UV coordinates and cell count.
@@ -297,7 +297,7 @@ pub const FontAtlas = struct {
             return null; // atlas full
         }
 
-        // Clear scratch DIB region
+        // Clear scratch bitmap region
         const clear_rect = RECT{
             .left = 0,
             .top = 0,
@@ -306,38 +306,102 @@ pub const FontAtlas = struct {
         };
         _ = FillRect(self.scratch_dc, &clear_rect, self.black_brush);
 
-        // Encode codepoint as UTF-16
-        var wchar_buf: [2]WCHAR = undefined;
-        var wchar_len: c_int = undefined;
-        if (codepoint <= 0xFFFF) {
-            wchar_buf[0] = @intCast(codepoint);
-            wchar_len = 1;
-        } else {
-            // Surrogate pair for U+10000+
-            const cp = codepoint - 0x10000;
-            wchar_buf[0] = @intCast(0xD800 + (cp >> 10));
-            wchar_buf[1] = @intCast(0xDC00 + (cp & 0x3FF));
-            wchar_len = 2;
+        const render_target = self.dw_render_target orelse return null;
+        const rendering_params = self.dw_rendering_params orelse return null;
+        const primary_face = self.dw_primary_font_face orelse return null;
+
+        // Get glyph index from primary font
+        const cp32: dw.UINT32 = codepoint;
+        var glyph_index: dw.UINT16 = 0;
+        _ = primary_face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
+
+        var face_to_use: *dw.IDWriteFontFace = primary_face;
+        var fallback_face: ?*dw.IDWriteFontFace = null;
+        defer {
+            if (fallback_face) |ff| _ = ff.vtable.Release(ff);
         }
 
-        // Render glyph via GDI
-        _ = TextOutW(self.scratch_dc, 0, 0, &wchar_buf, wchar_len);
+        // If primary font doesn't have the glyph, use MapCharacters for fallback
+        if (glyph_index == 0) {
+            if (self.dw_font_fallback) |fallback| {
+                // Encode codepoint as UTF-16 for MapCharacters
+                var wchar_buf: [2]WCHAR = undefined;
+                var wchar_len: dw.UINT32 = undefined;
+                if (codepoint <= 0xFFFF) {
+                    wchar_buf[0] = @intCast(codepoint);
+                    wchar_len = 1;
+                } else {
+                    const cp = codepoint - 0x10000;
+                    wchar_buf[0] = @intCast(0xD800 + (cp >> 10));
+                    wchar_buf[1] = @intCast(0xDC00 + (cp & 0x3FF));
+                    wchar_len = 2;
+                }
+
+                var source = dw.SimpleTextAnalysisSource.create(&wchar_buf, wchar_len, self.dw_number_sub);
+                var mapped_length: dw.UINT32 = 0;
+                var mapped_font: ?*dw.IDWriteFont = null;
+                var scale: dw.FLOAT = 1.0;
+                const family_ptr: ?[*:0]const WCHAR = @ptrCast(&self.dw_primary_family_name);
+
+                if (fallback.MapCharacters(
+                    @ptrCast(&source),
+                    0,
+                    wchar_len,
+                    self.dw_font_collection,
+                    family_ptr,
+                    dw.DWRITE_FONT_WEIGHT_NORMAL,
+                    dw.DWRITE_FONT_STYLE_NORMAL,
+                    dw.DWRITE_FONT_STRETCH_NORMAL,
+                    &mapped_length,
+                    &mapped_font,
+                    &scale,
+                ) >= 0) {
+                    if (mapped_font) |mf| {
+                        defer _ = mf.vtable.Release(mf);
+                        var mf_face: ?*dw.IDWriteFontFace = null;
+                        if (mf.CreateFontFace(&mf_face) >= 0) {
+                            if (mf_face) |face| {
+                                _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
+                                if (glyph_index != 0) {
+                                    fallback_face = face;
+                                    face_to_use = face;
+                                } else {
+                                    _ = face.vtable.Release(face);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no font has the glyph, return null → shows '?' fallback instead of .notdef box
+        if (glyph_index == 0) return null;
+
+        // Construct glyph run and render via DirectWrite
+        var glyph_run = dw.DWRITE_GLYPH_RUN{
+            .fontFace = face_to_use,
+            .fontEmSize = self.dw_font_em_size,
+            .glyphCount = 1,
+            .glyphIndices = @ptrCast(&glyph_index),
+            .glyphAdvances = null,
+            .glyphOffsets = null,
+            .isSideways = 0,
+            .bidiLevel = 0,
+        };
+
+        _ = render_target.DrawGlyphRun(
+            0.0,
+            self.dw_ascent_px,
+            dw.DWRITE_MEASURING_MODE_NATURAL,
+            &glyph_run,
+            rendering_params,
+            0x00FFFFFF, // white text
+            null,
+        );
 
         const bits = self.scratch_bits orelse return null;
         const stride = self.scratch_width * 4;
-
-        // Check if primary font produced a visible glyph
-        if (!self.hasVisiblePixels(bits, stride, glyph_width, cell_h)) {
-            // Try fallback fonts
-            for (self.fallback_fonts[0..self.fallback_count]) |fb_font| {
-                _ = SelectObject(self.scratch_dc, fb_font);
-                _ = FillRect(self.scratch_dc, &clear_rect, self.black_brush);
-                _ = TextOutW(self.scratch_dc, 0, 0, &wchar_buf, wchar_len);
-                if (self.hasVisiblePixels(bits, stride, glyph_width, cell_h)) break;
-            }
-            // Restore primary font
-            _ = SelectObject(self.scratch_dc, self.scratch_font);
-        }
 
         // Convert BGRA → white+alpha in scratch buffer
         var row_idx: u32 = 0;
@@ -414,16 +478,4 @@ pub const FontAtlas = struct {
         return info;
     }
 
-    fn hasVisiblePixels(self: *const FontAtlas, bits: [*]const BYTE, stride: u32, width: u32, height: u32) bool {
-        _ = self;
-        var y: u32 = 0;
-        while (y < height) : (y += 1) {
-            var x: u32 = 0;
-            while (x < width) : (x += 1) {
-                const idx = y * stride + x * 4;
-                if (bits[idx] != 0 or bits[idx + 1] != 0 or bits[idx + 2] != 0) return true;
-            }
-        }
-        return false;
-    }
 };
