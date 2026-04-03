@@ -70,7 +70,8 @@ zig build -Doptimize=ReleaseFast
   "theme": "Tilda",
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
-  "hidden_start": true
+  "hidden_start": true,
+  "max_scroll_lines": 10000
 }
 ```
 
@@ -87,6 +88,7 @@ zig build -Doptimize=ReleaseFast
 | - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
 | - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
 | - | hidden_start | bool | true, false | true | 숨김 상태로 시작 |
+| - | max_scroll_lines | int | 100~100,000 | 10,000 | 스크롤백 버퍼 (라인 수) |
 
 ### 위치 예시
 
@@ -112,6 +114,7 @@ zig build -Doptimize=ReleaseFast
 | Ctrl+Shift+T | 새 탭 생성 |
 | Ctrl+Shift+W | 현재 탭 닫기 |
 | Alt+1~9 | 탭 전환 |
+| Ctrl+Shift+R | 터미널 초기화 (바이너리 cat 등으로 깨졌을 때) |
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
 | 마우스 드래그 | 텍스트 선택 + 자동 복사 |
 | 더블클릭 | 단어 선택 + 자동 복사 |

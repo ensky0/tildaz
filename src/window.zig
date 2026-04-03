@@ -487,6 +487,13 @@ pub const Window = struct {
                         }
                         return 0;
                     }
+                    // Ctrl+Shift+R: reset terminal
+                    if (wParam == 0x52) {
+                        if (self.app_msg_fn) |f| {
+                            _ = f(WM_KEYDOWN, wParam, lParam, self.userdata);
+                        }
+                        return 0;
+                    }
                 }
 
                 const vk_prior: WPARAM = 0x21; // Page Up
