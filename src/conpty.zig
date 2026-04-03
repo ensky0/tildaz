@@ -426,7 +426,7 @@ pub const ConPty = struct {
     }
 
     fn readLoop(pipe_out: HANDLE, callback: ReadCallback, userdata: ?*anyopaque) void {
-        var buf: [4096]u8 = undefined;
+        var buf: [65536]u8 = undefined;
         while (true) {
             var bytes_read: DWORD = 0;
             if (ReadFile(pipe_out, &buf, buf.len, &bytes_read, null) == 0) {

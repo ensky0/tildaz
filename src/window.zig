@@ -231,6 +231,7 @@ pub const Window = struct {
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_msg_fn: ?*const fn (UINT, WPARAM, LPARAM, ?*anyopaque) bool = null,
+    skip_swap: bool = false,
     shell_exited: bool = false,
     // OpenGL state
     hglrc: gl.HGLRC = null,
@@ -431,9 +432,12 @@ pub const Window = struct {
                     if (self.render_fn) |render_fn| {
                         render_fn(self);
                     }
-                    if (self.gl_dc) |dc| {
-                        _ = gl.SwapBuffers(dc);
+                    if (!self.skip_swap) {
+                        if (self.gl_dc) |dc| {
+                            _ = gl.SwapBuffers(dc);
+                        }
                     }
+                    self.skip_swap = false;
                 }
                 return 0;
             },
