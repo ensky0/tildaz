@@ -31,8 +31,7 @@ pub const Config = struct {
     // font
     font_families: [MAX_FONT_FAMILIES][]const u8 = .{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" } ++ .{""} ** (MAX_FONT_FAMILIES - 3),
     font_family_count: u8 = 3,
-    font_size: u8 = 22,
-    font_thicken: f32 = 0.8,
+    font_size: u8 = 20,
     // appearance
     opacity: u8 = 255,
     theme: ?*const themes.Theme = themes.findTheme("Tilda"),
@@ -40,7 +39,7 @@ pub const Config = struct {
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
     hidden_start: bool = true,
-    max_scroll_lines: u32 = 10_000,
+    max_scroll_lines: u32 = 100_000,
     _alloc: ?std.mem.Allocator = null,
 
     pub fn load(allocator: std.mem.Allocator) Config {
@@ -93,7 +92,10 @@ pub const Config = struct {
         var config = Config{};
         config._alloc = allocator;
 
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return config;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
+            showJsonError(content, err);
+            return config;
+        };
         defer parsed.deinit();
 
         const root = parsed.value;
@@ -147,7 +149,6 @@ pub const Config = struct {
                     }
                 }
                 if (getIntField(fnt, "size")) |v| config.font_size = @intCast(std.math.clamp(v, 1, 255));
-                if (getFloatField(fnt, "thicken")) |v| config.font_thicken = std.math.clamp(v, 0.5, 2.0);
             }
         }
 
@@ -189,17 +190,6 @@ pub const Config = struct {
     fn getIntField(obj: std.json.Value, key: []const u8) ?i64 {
         if (obj.object.get(key)) |val| {
             if (val == .integer) return val.integer;
-        }
-        return null;
-    }
-
-    fn getFloatField(obj: std.json.Value, key: []const u8) ?f32 {
-        if (obj.object.get(key)) |val| {
-            return switch (val) {
-                .float => @floatCast(val.float),
-                .integer => @floatFromInt(val.integer),
-                else => null,
-            };
         }
         return null;
     }
@@ -270,6 +260,66 @@ pub const Config = struct {
         ExitProcess(1);
     }
 
+    fn showJsonError(content: []const u8, err: anyerror) void {
+        const MB_OK = 0;
+        const MB_ICONERROR = 0x10;
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
+
+        // Find error position by re-scanning with a throwaway allocator-backed scanner
+        var line: usize = 1;
+        var col: usize = 1;
+        var scanner = std.json.Scanner.initCompleteInput(std.heap.page_allocator, content);
+        defer scanner.deinit();
+        while (true) {
+            const token = scanner.next() catch break;
+            if (token == .end_of_document) break;
+        }
+        // Count lines up to where scanner stopped
+        const err_pos = @min(scanner.cursor, content.len);
+        for (content[0..err_pos]) |c| {
+            if (c == '\n') {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+
+        var buf: [256]WCHAR = undefined;
+        var pos: usize = 0;
+        const prefix = "config.json: invalid JSON at line ";
+        for (prefix) |c| {
+            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
+        }
+        // Write line number
+        var line_buf: [10]u8 = undefined;
+        const line_str = std.fmt.bufPrint(&line_buf, "{}", .{line}) catch "?";
+        for (line_str) |c| {
+            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
+        }
+        const mid = ", column ";
+        for (mid) |c| {
+            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
+        }
+        var col_buf: [10]u8 = undefined;
+        const col_str = std.fmt.bufPrint(&col_buf, "{}", .{col}) catch "?";
+        for (col_str) |c| {
+            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
+        }
+        // Error name
+        const err_prefix = "\n\nError: ";
+        for (err_prefix) |c| {
+            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
+        }
+        const err_name = @errorName(err);
+        for (err_name) |c| {
+            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
+        }
+        buf[pos] = 0;
+        _ = MessageBoxW(null, @ptrCast(&buf), title, MB_OK | MB_ICONERROR);
+        ExitProcess(1);
+    }
+
     fn getBool(obj: std.json.Value, key: []const u8) ?bool {
         if (obj.object.get(key)) |val| {
             if (val == .bool) return val.bool;
@@ -303,14 +353,13 @@ pub const Config = struct {
             \\  },
             \\  "font": {
             \\    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
-            \\    "size": 22,
-            \\    "thicken": 0.8
+            \\    "size": 20
             \\  },
             \\  "theme": "Tilda",
             \\  "shell": "cmd.exe",
             \\  "auto_start": true,
             \\  "hidden_start": true,
-            \\  "max_scroll_lines": 10000
+            \\  "max_scroll_lines": 100000
             \\}
             \\
         ;
