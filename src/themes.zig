@@ -67,6 +67,17 @@ pub const themes = [_]Theme{
             rgb(0x7aa6da), rgb(0xc397d8), rgb(0x70c0b1), rgb(0xeaeaea),
         },
     },
+    .{
+        .name = "Windows Terminal",
+        .foreground = rgb(0xcccccc),
+        .background = rgb(0x0c0c0c),
+        .palette = .{
+            rgb(0x0c0c0c), rgb(0xc50f1f), rgb(0x13a10e), rgb(0xc19c00),
+            rgb(0x0037da), rgb(0x881798), rgb(0x3a96dd), rgb(0xcccccc),
+            rgb(0x767676), rgb(0xe74856), rgb(0x16c60c), rgb(0xf9f1a5),
+            rgb(0x3b78ff), rgb(0xb4009e), rgb(0x61d6d6), rgb(0xf2f2f2),
+        },
+    },
     // ── Dark themes (인기순) ─────────────────────────────────
     .{
         .name = "Catppuccin Mocha",
