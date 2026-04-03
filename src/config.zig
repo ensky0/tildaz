@@ -31,7 +31,7 @@ pub const Config = struct {
     font_size: u8 = 20,
     // appearance
     opacity: u8 = 255,
-    theme: ?*const themes.Theme = null,
+    theme: ?*const themes.Theme = themes.findTheme("Tilda"),
     // top-level
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
@@ -243,7 +243,7 @@ pub const Config = struct {
             \\    "family": "Consolas",
             \\    "size": 20
             \\  },
-            \\  "theme": "Gruvbox Dark",
+            \\  "theme": "Tilda",
             \\  "shell": "cmd.exe",
             \\  "auto_start": true,
             \\  "hidden_start": true,

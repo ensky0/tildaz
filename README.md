@@ -67,7 +67,7 @@ zig build -Doptimize=ReleaseFast
     "family": "Consolas",
     "size": 20
   },
-  "theme": "Gruvbox Dark",
+  "theme": "Tilda",
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
   "hidden_start": true
@@ -83,7 +83,7 @@ zig build -Doptimize=ReleaseFast
 | window | opacity | int | 0~100 | 100 | 윈도우 투명도 (%) |
 | font | family | string | - | "Consolas" | 폰트 이름 |
 | font | size | int | 8~72 | 20 | 폰트 크기 (px) |
-| - | theme | string | [테마 목록](#테마) 참조 | - | 컬러 테마 (미지정 시 기본 팔레트) |
+| - | theme | string | [테마 목록](#테마) 참조 | "Tilda" | 컬러 테마 |
 | - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
 | - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
 | - | hidden_start | bool | true, false | true | 숨김 상태로 시작 |
@@ -153,7 +153,7 @@ zig build -Doptimize=ReleaseFast
 | **Gruvbox Light** | ![](https://placehold.co/16x16/fbf1c7/fbf1c7) `#FBF1C7` | ![](https://placehold.co/16x16/3c3836/3c3836) `#3C3836` | ![](https://placehold.co/12x12/cc241d/cc241d) ![](https://placehold.co/12x12/98971a/98971a) ![](https://placehold.co/12x12/d79921/d79921) ![](https://placehold.co/12x12/458588/458588) ![](https://placehold.co/12x12/b16286/b16286) ![](https://placehold.co/12x12/689d6a/689d6a) |
 | **One Half Light** | ![](https://placehold.co/16x16/fafafa/fafafa) `#FAFAFA` | ![](https://placehold.co/16x16/383a42/383a42) `#383A42` | ![](https://placehold.co/12x12/e45649/e45649) ![](https://placehold.co/12x12/50a14f/50a14f) ![](https://placehold.co/12x12/c18401/c18401) ![](https://placehold.co/12x12/0184bc/0184bc) ![](https://placehold.co/12x12/a626a4/a626a4) ![](https://placehold.co/12x12/0997b3/0997b3) |
 
-> 테마를 지정하지 않으면 libghostty-vt 기본 팔레트가 사용된다.
+> 테마를 지정하지 않으면 Tilda 팔레트가 사용된다.
 
 ## 알려진 제한사항
 
