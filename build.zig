@@ -1,13 +1,17 @@
 const std = @import("std");
 
 // Build:
-//   zig build                  -- default build (SIMD disabled)
+//   zig build                  -- default build (ReleaseFast, SIMD disabled)
 //   zig build -Dsimd=true      -- SIMD enabled (currently broken on Windows, Zig 0.15 issue)
-//   zig build -Doptimize=ReleaseFast  -- optimized release build
+//   zig build -Doptimize=Debug -- debug build
 //
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "optimize",
+        "Prioritize performance, safety, or binary size",
+    ) orelse .ReleaseFast;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

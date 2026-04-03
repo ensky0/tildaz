@@ -8,7 +8,8 @@
   },
   "font": {
     "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
-    "size": 20
+    "size": 22,
+    "thicken": 0.8
   },
   "theme": "Tilda",
   "shell": "wsl.exe -d Debian --cd ~",

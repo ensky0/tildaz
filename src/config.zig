@@ -31,7 +31,8 @@ pub const Config = struct {
     // font
     font_families: [MAX_FONT_FAMILIES][]const u8 = .{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" } ++ .{""} ** (MAX_FONT_FAMILIES - 3),
     font_family_count: u8 = 3,
-    font_size: u8 = 20,
+    font_size: u8 = 22,
+    font_thicken: f32 = 0.8,
     // appearance
     opacity: u8 = 255,
     theme: ?*const themes.Theme = themes.findTheme("Tilda"),
@@ -146,6 +147,7 @@ pub const Config = struct {
                     }
                 }
                 if (getIntField(fnt, "size")) |v| config.font_size = @intCast(std.math.clamp(v, 1, 255));
+                if (getFloatField(fnt, "thicken")) |v| config.font_thicken = std.math.clamp(v, 0.5, 2.0);
             }
         }
 
@@ -187,6 +189,17 @@ pub const Config = struct {
     fn getIntField(obj: std.json.Value, key: []const u8) ?i64 {
         if (obj.object.get(key)) |val| {
             if (val == .integer) return val.integer;
+        }
+        return null;
+    }
+
+    fn getFloatField(obj: std.json.Value, key: []const u8) ?f32 {
+        if (obj.object.get(key)) |val| {
+            return switch (val) {
+                .float => @floatCast(val.float),
+                .integer => @floatFromInt(val.integer),
+                else => null,
+            };
         }
         return null;
     }
@@ -290,7 +303,8 @@ pub const Config = struct {
             \\  },
             \\  "font": {
             \\    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
-            \\    "size": 20
+            \\    "size": 22,
+            \\    "thicken": 0.8
             \\  },
             \\  "theme": "Tilda",
             \\  "shell": "cmd.exe",

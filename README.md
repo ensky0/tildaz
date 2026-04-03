@@ -37,11 +37,11 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
 ### 빌드 명령
 
 ```bash
-# 기본 빌드
+# 기본 빌드 (ReleaseFast)
 zig build
 
-# 릴리즈 빌드
-zig build -Doptimize=ReleaseFast
+# 디버그 빌드
+zig build -Doptimize=Debug
 ```
 
 > **참고**: SIMD 가속 옵션(`-Dsimd=true`)은 현재 Windows에서 동작하지 않습니다.
@@ -65,7 +65,8 @@ zig build -Doptimize=ReleaseFast
   },
   "font": {
     "family": "Consolas",
-    "size": 20
+    "size": 22,
+    "thicken": 0.8
   },
   "theme": "Tilda",
   "shell": "wsl.exe -d Debian --cd ~",
@@ -83,7 +84,8 @@ zig build -Doptimize=ReleaseFast
 | window | offset | int | 0~100 | 100 | 위치 (0=시작, 50=중앙, 100=끝) |
 | window | opacity | int | 0~100 | 100 | 윈도우 투명도 (%) |
 | font | family | string | - | "Consolas" | 폰트 이름 |
-| font | size | int | 8~72 | 20 | 폰트 크기 (px) |
+| font | size | int | 8~72 | 22 | 폰트 크기 (px) |
+| font | thicken | float | 0.5~2.0 | 0.8 | 글자 두께 (1.0 미만=두껍게, 1.0 초과=가늘게) |
 | - | theme | string | [테마 목록](#테마) 참조 | "Tilda" | 컬러 테마 |
 | - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
 | - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
@@ -176,4 +178,4 @@ zig build -Doptimize=ReleaseFast
 
 ## 라이선스
 
-MIT
+GPL-3.0 + Commons Clause

@@ -99,17 +99,28 @@ pub const FontAtlas = struct {
     scratch_width: u32 = 0, // 2 * cell_width
     black_brush: HBRUSH = null,
 
+    // Gamma correction LUT for font thickening (like Ghostty's font-thicken)
+    gamma_lut: [256]u8 = undefined,
+
     // Fallback fonts for glyphs missing in primary font
     fallback_fonts: [MAX_FALLBACKS]HFONT = .{null} ** MAX_FALLBACKS,
     fallback_count: u8 = 0,
 
-    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32, font_thicken: f32) !FontAtlas {
         var self = FontAtlas{
             .cell_width = cell_w,
             .cell_height = cell_h,
             .glyph_map = std.AutoHashMap(u21, GlyphInfo).init(alloc),
             .scratch_width = 2 * cell_w,
         };
+
+        // Build gamma LUT: pow(i/255, font_thicken) * 255
+        // font_thicken < 1.0 = thicker text, > 1.0 = thinner text
+        for (0..256) |i| {
+            const normalized: f32 = @as(f32, @floatFromInt(i)) / 255.0;
+            const corrected = std.math.pow(f32, normalized, font_thicken);
+            self.gamma_lut[i] = @intFromFloat(std.math.clamp(corrected * 255.0, 0.0, 255.0));
+        }
         errdefer self.glyph_map.deinit();
 
         // Create scratch DIB for individual glyph rasterization (wide = 2 * cell_w)
@@ -151,8 +162,8 @@ pub const FontAtlas = struct {
         // Create empty GL texture (2048x2048)
         gl.glGenTextures(1, @ptrCast(&self.texture_id));
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP);
         gl.glTexImage2D(
@@ -212,34 +223,51 @@ pub const FontAtlas = struct {
     }
 
     /// Check if a font family is installed on the system.
+    /// Compares the face name from the requested font against a dummy font's face name.
+    /// If GDI returns the same fallback for both, the requested font doesn't exist.
     pub fn isFontAvailable(family: [*:0]const WCHAR) bool {
         const dc = CreateCompatibleDC(null);
         if (dc == null) return false;
         defer _ = DeleteDC(dc);
 
+        const DEFAULT_QUALITY: DWORD = 0;
+
+        // Create font with the requested name
         const font = CreateFontW(
             16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
-            family,
+            DEFAULT_QUALITY, 0, family,
         );
         if (font == null) return false;
         defer _ = DeleteObject(font);
 
-        const old = SelectObject(dc, font);
-        defer _ = SelectObject(dc, old);
+        // Create font with a name that definitely doesn't exist
+        const dummy_name = std.unicode.utf8ToUtf16LeStringLiteral("_NoSuchFont_TildaZ_Check_");
+        const dummy_font = CreateFontW(
+            16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY, 0, dummy_name,
+        );
+        if (dummy_font == null) return false;
+        defer _ = DeleteObject(dummy_font);
 
-        var face_buf: [64]WCHAR = undefined;
-        const len = GetTextFaceW(dc, 64, &face_buf);
-        if (len <= 0) return false;
+        // Get face name of requested font
+        var face_req: [64]WCHAR = undefined;
+        const old1 = SelectObject(dc, font);
+        const len1 = GetTextFaceW(dc, 64, &face_req);
+        _ = SelectObject(dc, old1);
 
-        const face_name = face_buf[0..@intCast(len - 1)]; // exclude null terminator
-        // Compare requested name with actual face name
-        var req_len: usize = 0;
-        while (family[req_len] != 0) : (req_len += 1) {}
-        if (face_name.len != req_len) return false;
-        for (face_name, family[0..req_len]) |a, b| {
-            if (a != b) return false;
+        // Get face name of dummy font (= GDI's default fallback)
+        var face_dummy: [64]WCHAR = undefined;
+        const old2 = SelectObject(dc, dummy_font);
+        const len2 = GetTextFaceW(dc, 64, &face_dummy);
+        _ = SelectObject(dc, old2);
+
+        if (len1 <= 0) return false;
+
+        // If both resolve to the same face, the requested font wasn't found
+        if (len1 == len2 and std.mem.eql(WCHAR, face_req[0..@intCast(len1)], face_dummy[0..@intCast(len2)])) {
+            return false;
         }
         return true;
     }
@@ -320,7 +348,7 @@ pub const FontAtlas = struct {
                 const b = bits[idx];
                 const g = bits[idx + 1];
                 const r = bits[idx + 2];
-                const alpha = @max(r, @max(g, b));
+                const alpha = self.gamma_lut[@max(r, @max(g, b))];
                 bits[idx] = 255;
                 bits[idx + 1] = 255;
                 bits[idx + 2] = 255;
