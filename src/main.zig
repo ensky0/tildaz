@@ -34,37 +34,53 @@ pub const WM_TAB_CLOSED: c_uint = 0x0402; // WM_USER + 2
 
 /// Lock-free 링버퍼 (단일 생산자, 단일 소비자)
 const RingBuffer = struct {
-    buf: [64 * 1024]u8 = undefined, // 64KB
+    buf: [SIZE]u8 align(64) = undefined,
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0), // 쓰기 위치 (생산자)
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0), // 읽기 위치 (소비자)
 
-    const SIZE = 64 * 1024;
+    const SIZE = 4 * 1024 * 1024; // 4MB
 
     /// 생산자: 데이터 추가 (읽기 스레드에서 호출)
+    /// 버퍼가 가득 차면 소비자가 빼줄 때까지 대기 (backpressure)
     fn push(self: *RingBuffer, data: []const u8) void {
-        const h = self.head.load(.acquire);
-        const t = self.tail.load(.acquire);
-        var pos = h;
-        for (data) |byte| {
-            const next = (pos + 1) % SIZE;
-            if (next == t) break; // 가득 차면 drop
-            self.buf[pos] = byte;
-            pos = next;
+        var i: usize = 0;
+        while (i < data.len) {
+            const pos = self.head.load(.monotonic);
+            const t = self.tail.load(.acquire);
+            const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
+            if (free == 0) {
+                std.Thread.yield() catch {};
+                continue;
+            }
+            const batch = @min(data.len - i, free);
+            // 링 버퍼 경계를 넘는 경우 2번에 나눠서 memcpy
+            const first = @min(batch, SIZE - pos);
+            @memcpy(self.buf[pos..][0..first], data[i..][0..first]);
+            if (batch > first) {
+                @memcpy(self.buf[0..batch - first], data[i + first ..][0 .. batch - first]);
+            }
+            self.head.store((pos + batch) % SIZE, .release);
+            i += batch;
         }
-        self.head.store(pos, .release);
+    }
+
+    fn isEmpty(self: *RingBuffer) bool {
+        return self.head.load(.acquire) == self.tail.load(.acquire);
     }
 
     /// 소비자: 데이터 꺼내기 (UI 스레드에서 호출)
     fn pop(self: *RingBuffer, out: []u8) usize {
         const h = self.head.load(.acquire);
-        var t = self.tail.load(.acquire);
-        var n: usize = 0;
-        while (t != h and n < out.len) {
-            out[n] = self.buf[t];
-            t = (t + 1) % SIZE;
-            n += 1;
+        const t = self.tail.load(.monotonic);
+        if (t == h) return 0;
+        const avail = if (h >= t) (h - t) else (SIZE - t + h);
+        const n = @min(avail, out.len);
+        const first = @min(n, SIZE - t);
+        @memcpy(out[0..first], self.buf[t..][0..first]);
+        if (n > first) {
+            @memcpy(out[first..n], self.buf[0 .. n - first]);
         }
-        self.tail.store(t, .release);
+        self.tail.store((t + n) % SIZE, .release);
         return n;
     }
 };
@@ -172,14 +188,13 @@ const Tab = struct {
 
     /// UI 스레드에서 호출: 버퍼에 쌓인 PTY 출력을 VT 파서로 처리
     fn drainOutput(tab: *Tab) void {
-        var buf: [4096]u8 = undefined;
-        // 16ms 프레임 내에 처리할 수 있는 만큼만 (최대 ~64KB)
-        var total: usize = 0;
-        while (total < 64 * 1024) {
+        var buf: [65536]u8 = undefined;
+        const start = std.time.milliTimestamp();
+        while (true) {
             const n = tab.output_ring.pop(&buf);
             if (n == 0) break;
             tab.stream.nextSlice(buf[0..n]);
-            total += n;
+            if (std.time.milliTimestamp() - start >= 30) break;
         }
     }
 
@@ -212,6 +227,7 @@ const App = struct {
     shell_utf16: [*:0]const u16,
     max_scroll_lines: usize = 10_000,
     theme: ?*const themes.Theme = null,
+    last_render_ms: i64 = 0,
     dragging: bool = false,
     drag_tab_index: usize = 0,
     drag_start_x: c_int = 0,
@@ -326,31 +342,46 @@ const App = struct {
         if (self.gl_renderer) |*r| {
             const size = window.getClientSize();
 
-            // Render tab bar
-            r.renderTabBar(
-                self.tabs.items.len,
-                self.active_tab,
-                TAB_BAR_HEIGHT,
-                size.w,
-                size.h,
-                TAB_WIDTH,
-                CLOSE_BTN_SIZE,
-                TAB_PADDING,
-                if (self.dragging) self.drag_tab_index else null,
-                if (self.dragging) self.drag_current_x else 0,
-            );
-
-            // VT 처리 + 렌더링 (둘 다 UI 스레드에서 — mutex 경합 없음)
+            // VT 처리 (UI 스레드에서 — mutex 경합 없음)
+            var should_render = true;
             if (self.activeTabPtr()) |tab| {
                 tab.drainOutput();
-                r.renderTerminal(
-                    &tab.terminal,
-                    window.cell_width,
-                    window.cell_height,
+                const now = std.time.milliTimestamp();
+                const has_more = !tab.output_ring.isEmpty();
+                // 데이터가 계속 들어오는 중이면 100ms마다만 렌더, 아니면 매 프레임 렌더
+                if (has_more and now - self.last_render_ms < 200) {
+                    should_render = false;
+                } else {
+                    self.last_render_ms = now;
+                }
+            }
+
+            if (should_render) {
+                // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함)
+                r.renderTabBar(
+                    self.tabs.items.len,
+                    self.active_tab,
+                    TAB_BAR_HEIGHT,
                     size.w,
                     size.h,
-                    TAB_BAR_HEIGHT,
+                    TAB_WIDTH,
+                    CLOSE_BTN_SIZE,
+                    TAB_PADDING,
+                    if (self.dragging) self.drag_tab_index else null,
+                    if (self.dragging) self.drag_current_x else 0,
                 );
+                if (self.activeTabPtr()) |tab| {
+                    r.renderTerminal(
+                        &tab.terminal,
+                        window.cell_width,
+                        window.cell_height,
+                        size.w,
+                        size.h,
+                        TAB_BAR_HEIGHT,
+                    );
+                }
+            } else {
+                window.skip_swap = true;
             }
         }
     }
