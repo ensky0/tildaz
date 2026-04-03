@@ -59,8 +59,10 @@ pub const DWRITE_MEASURING_MODE_NATURAL: u32 = 0;
 pub const DWRITE_PIXEL_GEOMETRY_FLAT: u32 = 0;
 pub const DWRITE_PIXEL_GEOMETRY_RGB: u32 = 1;
 
-pub const DWRITE_RENDERING_MODE_NATURAL: u32 = 3;
-pub const DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC: u32 = 4;
+pub const DWRITE_RENDERING_MODE_NATURAL: u32 = 4;
+pub const DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC: u32 = 5;
+
+pub const DWRITE_TEXTURE_CLEARTYPE_3x1: u32 = 1;
 
 pub const DWRITE_READING_DIRECTION_LEFT_TO_RIGHT: u32 = 0;
 
@@ -147,7 +149,7 @@ pub const IDWriteFactory = extern struct {
         CreateFontFileReference: *const anyopaque,
         CreateCustomFontFileReference: *const anyopaque,
         CreateFontFace: *const anyopaque,
-        CreateRenderingParams: *const anyopaque,
+        CreateRenderingParams: *const fn (*IDWriteFactory, *?*IDWriteRenderingParams) callconv(.c) HRESULT,
         CreateMonitorRenderingParams: *const anyopaque,
         CreateCustomRenderingParams: *const fn (*IDWriteFactory, FLOAT, FLOAT, FLOAT, u32, u32, *?*IDWriteRenderingParams) callconv(.c) HRESULT,
         RegisterFontFileLoader: *const anyopaque,
@@ -160,7 +162,7 @@ pub const IDWriteFactory = extern struct {
         CreateEllipsisTrimmingSign: *const anyopaque,
         CreateTextAnalyzer: *const anyopaque,
         CreateNumberSubstitution: *const fn (*IDWriteFactory, u32, [*:0]const WCHAR, BOOL, *?*IUnknown) callconv(.c) HRESULT,
-        CreateGlyphRunAnalysis: *const anyopaque,
+        CreateGlyphRunAnalysis: *const fn (*IDWriteFactory, *const DWRITE_GLYPH_RUN, FLOAT, ?*const DWRITE_MATRIX, u32, u32, FLOAT, FLOAT, *?*IDWriteGlyphRunAnalysis) callconv(.c) HRESULT,
     };
 
     pub fn Release(self: *IDWriteFactory) u32 {
@@ -175,6 +177,10 @@ pub const IDWriteFactory = extern struct {
         return self.vtable.GetSystemFontCollection(self, collection, check_for_updates);
     }
 
+    pub fn CreateRenderingParams(self: *IDWriteFactory, params: *?*IDWriteRenderingParams) HRESULT {
+        return self.vtable.CreateRenderingParams(self, params);
+    }
+
     pub fn CreateCustomRenderingParams(self: *IDWriteFactory, gamma: FLOAT, enhanced_contrast: FLOAT, clear_type_level: FLOAT, pixel_geometry: u32, rendering_mode: u32, params: *?*IDWriteRenderingParams) HRESULT {
         return self.vtable.CreateCustomRenderingParams(self, gamma, enhanced_contrast, clear_type_level, pixel_geometry, rendering_mode, params);
     }
@@ -185,6 +191,10 @@ pub const IDWriteFactory = extern struct {
 
     pub fn CreateNumberSubstitution(self: *IDWriteFactory, method: u32, locale: [*:0]const WCHAR, ignore_user_override: BOOL, number_sub: *?*IUnknown) HRESULT {
         return self.vtable.CreateNumberSubstitution(self, method, locale, ignore_user_override, number_sub);
+    }
+
+    pub fn CreateGlyphRunAnalysis(self: *IDWriteFactory, glyph_run: *const DWRITE_GLYPH_RUN, pixels_per_dip: FLOAT, transform: ?*const DWRITE_MATRIX, rendering_mode: u32, measuring_mode: u32, baseline_x: FLOAT, baseline_y: FLOAT, analysis: *?*IDWriteGlyphRunAnalysis) HRESULT {
+        return self.vtable.CreateGlyphRunAnalysis(self, glyph_run, pixels_per_dip, transform, rendering_mode, measuring_mode, baseline_x, baseline_y, analysis);
     }
 };
 
@@ -401,7 +411,7 @@ pub const IDWriteFontFace = extern struct {
         TryGetFontTable: *const anyopaque,
         ReleaseFontTable: *const anyopaque,
         GetGlyphRunOutline: *const anyopaque,
-        GetRecommendedRenderingMode: *const anyopaque,
+        GetRecommendedRenderingMode: *const fn (*IDWriteFontFace, FLOAT, FLOAT, u32, ?*IDWriteRenderingParams, *u32) callconv(.c) HRESULT,
         GetGdiCompatibleMetrics: *const anyopaque,
         GetGdiCompatibleGlyphMetrics: *const anyopaque,
     };
@@ -416,6 +426,10 @@ pub const IDWriteFontFace = extern struct {
 
     pub fn GetGlyphIndices(self: *IDWriteFontFace, codepoints: [*]const UINT32, count: UINT32, glyph_indices: [*]UINT16) HRESULT {
         return self.vtable.GetGlyphIndices(self, codepoints, count, glyph_indices);
+    }
+
+    pub fn GetRecommendedRenderingMode(self: *IDWriteFontFace, em_size: FLOAT, pixels_per_dip: FLOAT, measuring_mode: u32, rendering_params: ?*IDWriteRenderingParams, rendering_mode: *u32) HRESULT {
+        return self.vtable.GetRecommendedRenderingMode(self, em_size, pixels_per_dip, measuring_mode, rendering_params, rendering_mode);
     }
 };
 
@@ -497,15 +511,57 @@ pub const IDWriteRenderingParams = extern struct {
         QueryInterface: *const fn (*IDWriteRenderingParams, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
         AddRef: *const fn (*IDWriteRenderingParams) callconv(.c) u32,
         Release: *const fn (*IDWriteRenderingParams) callconv(.c) u32,
-        GetGamma: *const anyopaque,
-        GetEnhancedContrast: *const anyopaque,
-        GetClearTypeLevel: *const anyopaque,
-        GetPixelGeometry: *const anyopaque,
-        GetRenderingMode: *const anyopaque,
+        GetGamma: *const fn (*IDWriteRenderingParams) callconv(.c) FLOAT,
+        GetEnhancedContrast: *const fn (*IDWriteRenderingParams) callconv(.c) FLOAT,
+        GetClearTypeLevel: *const fn (*IDWriteRenderingParams) callconv(.c) FLOAT,
+        GetPixelGeometry: *const fn (*IDWriteRenderingParams) callconv(.c) u32,
+        GetRenderingMode: *const fn (*IDWriteRenderingParams) callconv(.c) u32,
     };
 
     pub fn Release(self: *IDWriteRenderingParams) u32 {
         return self.vtable.Release(self);
+    }
+
+    pub fn GetGamma(self: *IDWriteRenderingParams) FLOAT {
+        return self.vtable.GetGamma(self);
+    }
+
+    pub fn GetEnhancedContrast(self: *IDWriteRenderingParams) FLOAT {
+        return self.vtable.GetEnhancedContrast(self);
+    }
+
+    pub fn GetRenderingMode(self: *IDWriteRenderingParams) u32 {
+        return self.vtable.GetRenderingMode(self);
+    }
+};
+
+// --- IDWriteGlyphRunAnalysis ---
+// IUnknown (3) + 3 own = 6
+
+pub const IDWriteGlyphRunAnalysis = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const fn (*IDWriteGlyphRunAnalysis, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteGlyphRunAnalysis) callconv(.c) u32,
+        Release: *const fn (*IDWriteGlyphRunAnalysis) callconv(.c) u32,
+        // IDWriteGlyphRunAnalysis (3)
+        GetAlphaTextureBounds: *const fn (*IDWriteGlyphRunAnalysis, u32, *RECT) callconv(.c) HRESULT,
+        CreateAlphaTexture: *const fn (*IDWriteGlyphRunAnalysis, u32, *const RECT, [*]u8, UINT32) callconv(.c) HRESULT,
+        GetAlphaBlendParams: *const fn (*IDWriteGlyphRunAnalysis, *IDWriteRenderingParams, *FLOAT, *FLOAT, *FLOAT) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDWriteGlyphRunAnalysis) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn GetAlphaTextureBounds(self: *IDWriteGlyphRunAnalysis, texture_type: u32, bounds: *RECT) HRESULT {
+        return self.vtable.GetAlphaTextureBounds(self, texture_type, bounds);
+    }
+
+    pub fn CreateAlphaTexture(self: *IDWriteGlyphRunAnalysis, texture_type: u32, bounds: *const RECT, alpha_values: [*]u8, buffer_size: UINT32) HRESULT {
+        return self.vtable.CreateAlphaTexture(self, texture_type, bounds, alpha_values, buffer_size);
     }
 };
 
