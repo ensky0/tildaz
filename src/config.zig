@@ -1,6 +1,7 @@
 const std = @import("std");
 const windows = std.os.windows;
 const Window = @import("window.zig").Window;
+const themes = @import("themes.zig");
 
 const WCHAR = u16;
 
@@ -26,6 +27,9 @@ pub const Config = struct {
     // font
     font_family: []const u8 = "Consolas",
     font_size: u8 = 20,
+    // appearance
+    opacity: u8 = 230,
+    theme: ?*const themes.Theme = null,
     // top-level
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
@@ -93,6 +97,7 @@ pub const Config = struct {
                     if (getIntField(win, "width")) |v| config.width = @intCast(std.math.clamp(v, 1, 255));
                     if (getIntField(win, "height")) |v| config.height = @intCast(std.math.clamp(v, 1, 255));
                     if (getIntField(win, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
+                    if (getIntField(win, "opacity")) |v| config.opacity = @intCast(std.math.clamp(@divFloor(v * 255, 100), 0, 255));
                 }
             }
         }
@@ -118,6 +123,9 @@ pub const Config = struct {
                     config.shell = duped;
                 } else |_| {}
             }
+        }
+        if (getString(root, "theme")) |name| {
+            config.theme = themes.findTheme(name);
         }
         if (getBool(root, "auto_start")) |v| config.auto_start = v;
         if (getBool(root, "hidden_start")) |v| config.hidden_start = v;
@@ -176,12 +184,14 @@ pub const Config = struct {
             \\    "dock_position": "top",
             \\    "width": 50,
             \\    "height": 100,
-            \\    "offset": 100
+            \\    "offset": 100,
+            \\    "opacity": 90
             \\  },
             \\  "font": {
             \\    "family": "Consolas",
             \\    "size": 20
             \\  },
+            \\  "theme": "Gruvbox Dark",
             \\  "shell": "cmd.exe",
             \\  "auto_start": true,
             \\  "hidden_start": true,

@@ -7,6 +7,10 @@ pub const GlRenderer = struct {
     atlas: FontAtlas,
     alloc: std.mem.Allocator,
     render_state: ghostty.RenderState = .empty,
+    // Default terminal background (configurable via theme)
+    default_bg_r: gl.GLclampf,
+    default_bg_g: gl.GLclampf,
+    default_bg_b: gl.GLclampf,
 
     // Tab bar colors (keep hardcoded — not from terminal state)
     const TAB_BAR_R: gl.GLfloat = 20.0 / 255.0;
@@ -19,15 +23,18 @@ pub const GlRenderer = struct {
     const TAB_TEXT_G: gl.GLfloat = 180.0 / 255.0;
     const TAB_TEXT_B: gl.GLfloat = 180.0 / 255.0;
 
-    // Default terminal colors (used before first RenderState update and for clear color)
-    const DEFAULT_BG_R: gl.GLclampf = 30.0 / 255.0;
-    const DEFAULT_BG_G: gl.GLclampf = 30.0 / 255.0;
-    const DEFAULT_BG_B: gl.GLclampf = 30.0 / 255.0;
+    fn colorF(v: u8) gl.GLclampf {
+        return @as(gl.GLclampf, @floatFromInt(v)) / 255.0;
+    }
 
-    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32) !GlRenderer {
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !GlRenderer {
+        const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
         return .{
             .atlas = try FontAtlas.init(alloc, font_family, font_height, cell_w, cell_h),
             .alloc = alloc,
+            .default_bg_r = colorF(bg[0]),
+            .default_bg_g = colorF(bg[1]),
+            .default_bg_b = colorF(bg[2]),
         };
     }
 
@@ -72,7 +79,7 @@ pub const GlRenderer = struct {
         gl.glMatrixMode(gl.GL_MODELVIEW);
         gl.glLoadIdentity();
 
-        gl.glClearColor(DEFAULT_BG_R, DEFAULT_BG_G, DEFAULT_BG_B, 1.0);
+        gl.glClearColor(self.default_bg_r, self.default_bg_g, self.default_bg_b, 1.0);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
         gl.glEnable(gl.GL_BLEND);
@@ -111,7 +118,7 @@ pub const GlRenderer = struct {
             if (i == active_tab) {
                 gl.glColor3f(TAB_ACTIVE_R, TAB_ACTIVE_G, TAB_ACTIVE_B);
             } else {
-                gl.glColor3f(DEFAULT_BG_R, DEFAULT_BG_G, DEFAULT_BG_B);
+                gl.glColor3f(self.default_bg_r, self.default_bg_g, self.default_bg_b);
             }
             gl.glBegin(gl.GL_QUADS);
             gl.glVertex2f(tab_x + 1, 2);

@@ -241,7 +241,7 @@ pub const Window = struct {
     const VK_F1: UINT = 0x70;
     const RENDER_TIMER_ID: usize = 1;
 
-    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int) !void {
+    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8) !void {
         const hInstance = GetModuleHandleW(null);
 
         const wc = WNDCLASSEXW{
@@ -285,8 +285,7 @@ pub const Window = struct {
         // Store self pointer in window userdata
         _ = SetWindowLongPtrW(self.hwnd, GWL_USERDATA, @intCast(@intFromPtr(self)));
 
-        // Set transparency (90% opaque)
-        _ = SetLayeredWindowAttributes(self.hwnd, 0, 230, LWA_ALPHA);
+        _ = SetLayeredWindowAttributes(self.hwnd, 0, opacity, LWA_ALPHA);
 
         // Register F1 global hotkey
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, 0, VK_F1) == 0) {
