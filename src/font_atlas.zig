@@ -6,19 +6,6 @@ const BOOL = std.os.windows.BOOL;
 const BYTE = std.os.windows.BYTE;
 const WCHAR = u16;
 const LONG = c_long;
-const HDC = ?*anyopaque;
-const HBRUSH = ?*anyopaque;
-const COLORREF = u32;
-
-const RECT = extern struct { left: LONG, top: LONG, right: LONG, bottom: LONG };
-
-extern "gdi32" fn DeleteObject(?*anyopaque) callconv(.c) BOOL;
-extern "gdi32" fn CreateSolidBrush(COLORREF) callconv(.c) HBRUSH;
-extern "user32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.c) c_int;
-
-fn rgb(r: u8, g: u8, b: u8) COLORREF {
-    return @as(COLORREF, r) | (@as(COLORREF, g) << 8) | (@as(COLORREF, b) << 16);
-}
 
 pub const GlyphUV = struct {
     u0: f32,
@@ -47,22 +34,13 @@ pub const FontAtlas = struct {
     pack_x: u32 = 0,
     pack_y: u32 = 0,
 
-    // GDI resources (used with DirectWrite render target)
-    scratch_dc: HDC = null,
-    scratch_bits: ?[*]BYTE = null,
-    scratch_width: u32 = 0, // 2 * cell_width
-    black_brush: HBRUSH = null,
-
-    // Alpha LUT (identity — DirectWrite handles gamma internally)
+    // Alpha LUT (sRGB blending correction)
     alpha_lut: [256]u8 = undefined,
 
     // DirectWrite resources
     dw_factory: ?*dw.IDWriteFactory = null,
     dw_factory2: ?*dw.IDWriteFactory2 = null,
     dw_font_collection: ?*dw.IDWriteFontCollection = null,
-    dw_gdi_interop: ?*dw.IDWriteGdiInterop = null,
-    dw_render_target: ?*dw.IDWriteBitmapRenderTarget = null,
-    dw_rendering_params: ?*dw.IDWriteRenderingParams = null,
     dw_font_fallback: ?*dw.IDWriteFontFallback = null,
     dw_number_sub: ?*dw.IUnknown = null,
     dw_primary_font_face: ?*dw.IDWriteFontFace = null,
@@ -76,13 +54,8 @@ pub const FontAtlas = struct {
             .cell_width = cell_w,
             .cell_height = cell_h,
             .glyph_map = std.AutoHashMap(u21, GlyphInfo).init(alloc),
-            .scratch_width = 2 * cell_w,
         };
 
-        // Identity LUT — DirectWrite rendering params handle gamma
-        for (0..256) |i| {
-            self.alpha_lut[i] = @intCast(i);
-        }
         errdefer self.glyph_map.deinit();
 
         // --- DirectWrite initialization ---
@@ -155,51 +128,34 @@ pub const FontAtlas = struct {
             }
         }
 
-        // 6. Create GDI interop + bitmap render target
-        var gdi_interop: ?*dw.IDWriteGdiInterop = null;
-        if (factory.?.GetGdiInterop(&gdi_interop) < 0) return error.GdiInteropFailed;
-        self.dw_gdi_interop = gdi_interop;
+        // 6. Read system gamma for sRGB blending correction LUT
+        var sys_gamma: dw.FLOAT = 1.8;
+        {
+            var sys_params: ?*dw.IDWriteRenderingParams = null;
+            if (factory.?.CreateRenderingParams(&sys_params) >= 0) {
+                if (sys_params) |sp| {
+                    sys_gamma = sp.GetGamma();
+                    _ = sp.Release();
+                }
+            }
+        }
 
-        var render_target: ?*dw.IDWriteBitmapRenderTarget = null;
-        if (gdi_interop.?.CreateBitmapRenderTarget(null, self.scratch_width, cell_h, &render_target) < 0)
-            return error.RenderTargetFailed;
-        self.dw_render_target = render_target;
+        // Thinning LUT: counteract sRGB blending alpha amplification.
+        const srgb_correction = 2.2 / sys_gamma;
+        for (0..256) |lut_i| {
+            const normalized: f32 = @as(f32, @floatFromInt(lut_i)) / 255.0;
+            const corrected = std.math.pow(f32, normalized, srgb_correction);
+            const result: u32 = @intFromFloat(corrected * 255.0 + 0.5);
+            self.alpha_lut[lut_i] = @intCast(@min(result, 255));
+        }
 
-        // 7. Create rendering params (grayscale AA: clearTypeLevel=0)
-        var rendering_params: ?*dw.IDWriteRenderingParams = null;
-        if (factory.?.CreateCustomRenderingParams(
-            1.0, // gamma
-            0.0, // enhancedContrast
-            0.0, // clearTypeLevel — 0 = grayscale AA
-            dw.DWRITE_PIXEL_GEOMETRY_FLAT,
-            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
-            &rendering_params,
-        ) < 0) return error.RenderingParamsFailed;
-        self.dw_rendering_params = rendering_params;
-
-        // 8. Create number substitution (for MapCharacters callback)
+        // 7. Create number substitution (for MapCharacters callback)
         const locale = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
         var number_sub: ?*dw.IUnknown = null;
         _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, 0, &number_sub);
         self.dw_number_sub = number_sub;
 
-        // 9. Extract DC and bitmap pointer from render target
-        self.scratch_dc = render_target.?.GetMemoryDC();
-        if (self.scratch_dc == null) return error.GetMemoryDCFailed;
-
-        // Get bitmap bits from the render target's DC
-        const hbmp = dw.GetCurrentObject(self.scratch_dc, dw.OBJ_BITMAP);
-        if (hbmp) |bmp_handle| {
-            var bmp: dw.BITMAP = undefined;
-            if (dw.GetObjectW(bmp_handle, @sizeOf(dw.BITMAP), @ptrCast(&bmp)) > 0) {
-                self.scratch_bits = @ptrCast(bmp.bmBits);
-            }
-        }
-        if (self.scratch_bits == null) return error.BitmapBitsFailed;
-
-        self.black_brush = CreateSolidBrush(rgb(0, 0, 0));
-
-        // Create empty GL texture (2048x2048)
+        // 8. Create empty GL texture (2048x2048)
         gl.glGenTextures(1, @ptrCast(&self.texture_id));
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
@@ -233,17 +189,12 @@ pub const FontAtlas = struct {
             self.texture_id = 0;
         }
         // Release DirectWrite COM resources
-        if (self.dw_render_target) |rt| _ = rt.vtable.Release(rt);
-        if (self.dw_rendering_params) |rp| _ = rp.Release();
-        if (self.dw_gdi_interop) |gi| _ = gi.vtable.Release(gi);
         if (self.dw_font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.dw_number_sub) |ns| _ = ns.Release();
         if (self.dw_primary_font_face) |ff| _ = ff.vtable.Release(ff);
         if (self.dw_font_collection) |fc| _ = fc.vtable.Release(fc);
         if (self.dw_factory2) |f2| _ = f2.Release();
         if (self.dw_factory) |f| _ = f.Release();
-        // scratch_dc is owned by render target — don't DeleteDC
-        if (self.black_brush != null) _ = DeleteObject(self.black_brush);
         self.glyph_map.deinit();
     }
 
@@ -295,17 +246,7 @@ pub const FontAtlas = struct {
             return null; // atlas full
         }
 
-        // Clear scratch bitmap region
-        const clear_rect = RECT{
-            .left = 0,
-            .top = 0,
-            .right = @intCast(glyph_width),
-            .bottom = @intCast(cell_h),
-        };
-        _ = FillRect(self.scratch_dc, &clear_rect, self.black_brush);
-
-        const render_target = self.dw_render_target orelse return null;
-        const rendering_params = self.dw_rendering_params orelse return null;
+        const factory = self.dw_factory orelse return null;
         const primary_face = self.dw_primary_font_face orelse return null;
 
         // Get glyph index from primary font
@@ -322,7 +263,6 @@ pub const FontAtlas = struct {
         // If primary font doesn't have the glyph, use MapCharacters for fallback
         if (glyph_index == 0) {
             if (self.dw_font_fallback) |fallback| {
-                // Encode codepoint as UTF-16 for MapCharacters
                 var wchar_buf: [2]WCHAR = undefined;
                 var wchar_len: dw.UINT32 = undefined;
                 if (codepoint <= 0xFFFF) {
@@ -373,10 +313,9 @@ pub const FontAtlas = struct {
             }
         }
 
-        // If no font has the glyph, return null → shows '?' fallback instead of .notdef box
         if (glyph_index == 0) return null;
 
-        // Construct glyph run and render via DirectWrite
+        // Construct glyph run
         var glyph_run = dw.DWRITE_GLYPH_RUN{
             .fontFace = face_to_use,
             .fontEmSize = self.dw_font_em_size,
@@ -388,75 +327,86 @@ pub const FontAtlas = struct {
             .bidiLevel = 0,
         };
 
-        _ = render_target.DrawGlyphRun(
-            0.0,
-            self.dw_ascent_px,
-            dw.DWRITE_MEASURING_MODE_NATURAL,
+        // Create glyph run analysis — direct alpha extraction from rasterizer
+        var analysis: ?*dw.IDWriteGlyphRunAnalysis = null;
+        if (factory.CreateGlyphRunAnalysis(
             &glyph_run,
-            rendering_params,
-            0x00FFFFFF, // white text
-            null,
+            1.0, // pixelsPerDip
+            null, // no transform
+            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+            dw.DWRITE_MEASURING_MODE_NATURAL,
+            0.0, // baselineOriginX
+            self.dw_ascent_px, // baselineOriginY
+            &analysis,
+        ) < 0) return null;
+        defer _ = analysis.?.Release();
+
+        // Get actual glyph bounds from rasterizer (may extend beyond cell)
+        var tex_bounds: dw.RECT = undefined;
+        const has_pixels = analysis.?.GetAlphaTextureBounds(dw.DWRITE_TEXTURE_CLEARTYPE_3x1, &tex_bounds) >= 0 and
+            tex_bounds.left < tex_bounds.right and tex_bounds.top < tex_bounds.bottom;
+
+        // RGBA output buffer (cell-sized, transparent background)
+        var rgba_buf: [4 * 128 * 128]u8 = undefined;
+        const rgba_size = 4 * glyph_width * cell_h;
+        @memset(rgba_buf[0..rgba_size], 0);
+
+        if (has_pixels) {
+            const tex_w: u32 = @intCast(tex_bounds.right - tex_bounds.left);
+            const tex_h: u32 = @intCast(tex_bounds.bottom - tex_bounds.top);
+            const ct_buf_size: u32 = 3 * tex_w * tex_h;
+            var ct_buf: [3 * 256 * 256]u8 = undefined;
+            if (ct_buf_size <= ct_buf.len) {
+                if (analysis.?.CreateAlphaTexture(
+                    dw.DWRITE_TEXTURE_CLEARTYPE_3x1,
+                    &tex_bounds,
+                    &ct_buf,
+                    ct_buf_size,
+                ) >= 0) {
+                    // Map glyph pixels into cell-sized output, clipping to cell area
+                    const cell_w_i: i32 = @intCast(glyph_width);
+                    const cell_h_i: i32 = @intCast(cell_h);
+
+                    var ty: u32 = 0;
+                    while (ty < tex_h) : (ty += 1) {
+                        const cy: i32 = tex_bounds.top + @as(i32, @intCast(ty));
+                        if (cy < 0 or cy >= cell_h_i) continue;
+
+                        var tx: u32 = 0;
+                        while (tx < tex_w) : (tx += 1) {
+                            const cx: i32 = tex_bounds.left + @as(i32, @intCast(tx));
+                            if (cx < 0 or cx >= cell_w_i) continue;
+
+                            const src = (ty * tex_w + tx) * 3;
+                            const r = ct_buf[src];
+                            const g = ct_buf[src + 1];
+                            const b = ct_buf[src + 2];
+                            const alpha = self.alpha_lut[@max(r, @max(g, b))];
+
+                            const dst = (@as(u32, @intCast(cy)) * glyph_width + @as(u32, @intCast(cx))) * 4;
+                            rgba_buf[dst] = 255;
+                            rgba_buf[dst + 1] = 255;
+                            rgba_buf[dst + 2] = 255;
+                            rgba_buf[dst + 3] = alpha;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Upload to GL texture
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
+        gl.glTexSubImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            @intCast(self.pack_x),
+            @intCast(self.pack_y),
+            @intCast(glyph_width),
+            @intCast(cell_h),
+            @intCast(gl.GL_RGBA),
+            gl.GL_UNSIGNED_BYTE,
+            @ptrCast(&rgba_buf),
         );
-
-        const bits = self.scratch_bits orelse return null;
-        const stride = self.scratch_width * 4;
-
-        // Convert BGRA → white+alpha in scratch buffer
-        var row_idx: u32 = 0;
-        while (row_idx < cell_h) : (row_idx += 1) {
-            var col_idx: u32 = 0;
-            while (col_idx < glyph_width) : (col_idx += 1) {
-                const idx = row_idx * stride + col_idx * 4;
-                const b = bits[idx];
-                const g = bits[idx + 1];
-                const r = bits[idx + 2];
-                const alpha = self.alpha_lut[@max(r, @max(g, b))];
-                bits[idx] = 255;
-                bits[idx + 1] = 255;
-                bits[idx + 2] = 255;
-                bits[idx + 3] = alpha;
-            }
-        }
-
-        // Upload to GL texture via glTexSubImage2D
-        // We need to upload row-by-row or use a contiguous buffer.
-        // Since scratch_width may be wider than glyph_width, we upload the exact region.
-        // glTexSubImage2D reads from contiguous memory with the given width,
-        // but our scratch DIB has stride = scratch_width. For narrow glyphs (glyph_width < scratch_width),
-        // we need to account for the stride.
-        if (glyph_width == self.scratch_width) {
-            // Full width of scratch, upload directly
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
-            gl.glTexSubImage2D(
-                gl.GL_TEXTURE_2D,
-                0,
-                @intCast(self.pack_x),
-                @intCast(self.pack_y),
-                @intCast(glyph_width),
-                @intCast(cell_h),
-                @intCast(gl.GL_RGBA),
-                gl.GL_UNSIGNED_BYTE,
-                @ptrCast(bits),
-            );
-        } else {
-            // Upload row by row for narrow glyphs (scratch is wider than glyph)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
-            var y: u32 = 0;
-            while (y < cell_h) : (y += 1) {
-                const row_ptr: [*]const BYTE = bits + y * stride;
-                gl.glTexSubImage2D(
-                    gl.GL_TEXTURE_2D,
-                    0,
-                    @intCast(self.pack_x),
-                    @intCast(self.pack_y + y),
-                    @intCast(glyph_width),
-                    1,
-                    @intCast(gl.GL_RGBA),
-                    gl.GL_UNSIGNED_BYTE,
-                    @ptrCast(row_ptr),
-                );
-            }
-        }
 
         // Compute UV coordinates
         const atlas_f: f32 = @floatFromInt(ATLAS_SIZE);
