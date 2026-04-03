@@ -10,7 +10,7 @@
     "family": "Consolas",
     "size": 20
   },
-  "theme": "Gruvbox Dark",
+  "theme": "Tilda",
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
   "hidden_start": true,
