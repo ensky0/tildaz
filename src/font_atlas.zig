@@ -53,8 +53,8 @@ pub const FontAtlas = struct {
     scratch_width: u32 = 0, // 2 * cell_width
     black_brush: HBRUSH = null,
 
-    // Gamma correction LUT for font thickening (like Ghostty's font-thicken)
-    gamma_lut: [256]u8 = undefined,
+    // Alpha LUT (identity — DirectWrite handles gamma internally)
+    alpha_lut: [256]u8 = undefined,
 
     // DirectWrite resources
     dw_factory: ?*dw.IDWriteFactory = null,
@@ -71,7 +71,7 @@ pub const FontAtlas = struct {
     dw_font_em_size: f32 = 0,
     dw_ascent_px: f32 = 0,
 
-    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32, font_thicken: f32) !FontAtlas {
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !FontAtlas {
         var self = FontAtlas{
             .cell_width = cell_w,
             .cell_height = cell_h,
@@ -79,12 +79,9 @@ pub const FontAtlas = struct {
             .scratch_width = 2 * cell_w,
         };
 
-        // Build gamma LUT: pow(i/255, font_thicken) * 255
-        // font_thicken < 1.0 = thicker text, > 1.0 = thinner text
+        // Identity LUT — DirectWrite rendering params handle gamma
         for (0..256) |i| {
-            const normalized: f32 = @as(f32, @floatFromInt(i)) / 255.0;
-            const corrected = std.math.pow(f32, normalized, font_thicken);
-            self.gamma_lut[i] = @intFromFloat(std.math.clamp(corrected * 255.0, 0.0, 255.0));
+            self.alpha_lut[i] = @intCast(i);
         }
         errdefer self.glyph_map.deinit();
 
@@ -138,6 +135,7 @@ pub const FontAtlas = struct {
         self.dw_primary_family_len = i;
 
         // 4. Calculate em size from font metrics
+        // Match GDI cell height: emSize so that ascent+descent fits in abs_height pixels.
         var metrics: dw.DWRITE_FONT_METRICS = undefined;
         font_face.?.GetMetrics(&metrics);
         const du_per_em: f32 = @floatFromInt(metrics.designUnitsPerEm);
@@ -412,7 +410,7 @@ pub const FontAtlas = struct {
                 const b = bits[idx];
                 const g = bits[idx + 1];
                 const r = bits[idx + 2];
-                const alpha = self.gamma_lut[@max(r, @max(g, b))];
+                const alpha = self.alpha_lut[@max(r, @max(g, b))];
                 bits[idx] = 255;
                 bits[idx + 1] = 255;
                 bits[idx + 2] = 255;

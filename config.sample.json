@@ -8,12 +8,11 @@
   },
   "font": {
     "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
-    "size": 22,
-    "thicken": 0.8
+    "size": 20
   },
   "theme": "Tilda",
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
   "hidden_start": true,
-  "max_scroll_lines": 10000
+  "max_scroll_lines": 100000
 }

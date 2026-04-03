@@ -27,10 +27,10 @@ pub const GlRenderer = struct {
         return @as(gl.GLclampf, @floatFromInt(v)) / 255.0;
     }
 
-    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8, font_thicken: f32) !GlRenderer {
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !GlRenderer {
         const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
         return .{
-            .atlas = try FontAtlas.init(alloc, font_family, font_height, cell_w, cell_h, font_thicken),
+            .atlas = try FontAtlas.init(alloc, font_family, font_height, cell_w, cell_h),
             .alloc = alloc,
             .default_bg_r = colorF(bg[0]),
             .default_bg_g = colorF(bg[1]),
