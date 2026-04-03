@@ -461,7 +461,9 @@ pub const GlRenderer = struct {
 
             const ratio = track_h / @as(gl.GLfloat, @floatFromInt(sb.total));
             const thumb_h = @max(SCROLLBAR_MIN_H, ratio * @as(gl.GLfloat, @floatFromInt(sb.len)));
-            const thumb_y = y_off + @as(gl.GLfloat, @floatFromInt(sb.offset)) * ratio;
+            const available = track_h - thumb_h;
+            const max_offset: gl.GLfloat = @floatFromInt(sb.total - sb.len);
+            const thumb_y = y_off + if (max_offset > 0) @as(gl.GLfloat, @floatFromInt(sb.offset)) / max_offset * available else 0;
 
             gl.glDisable(gl.GL_TEXTURE_2D);
 

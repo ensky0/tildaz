@@ -160,7 +160,11 @@ const Tab = struct {
             .terminal = try ghostty.Terminal.init(alloc, .{
                 .cols = cols,
                 .rows = rows,
-                .max_scrollback = owner.max_scroll_lines * (@as(usize, cols) + 1) * 8,
+                .max_scrollback = owner.max_scroll_lines * blk: {
+                    const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
+                        break :blk (@as(usize, cols) + 1) * 8;
+                    break :blk ghostty.Page.layout(cap).total_size / cap.rows;
+                },
                 .colors = term_colors,
             }),
             .stream = undefined,
@@ -474,9 +478,14 @@ const App = struct {
         if (track_h <= 0) return;
 
         const rel_y = @max(0, mouse_y - TAB_BAR_HEIGHT);
-        const clamped_y = @min(rel_y, track_h);
-        const ratio = @as(f64, @floatFromInt(clamped_y)) / @as(f64, @floatFromInt(track_h));
-        const target_row: usize = @intFromFloat(ratio * @as(f64, @floatFromInt(sb.total - sb.len)));
+        const track_hf = @as(f64, @floatFromInt(track_h));
+        const ratio_px = track_hf / @as(f64, @floatFromInt(sb.total));
+        const thumb_h = @max(16.0, ratio_px * @as(f64, @floatFromInt(sb.len)));
+        const available = track_hf - thumb_h;
+        if (available <= 0) return;
+        const clamped_y = @min(@as(f64, @floatFromInt(rel_y)), available);
+        const scroll_ratio = clamped_y / available;
+        const target_row: usize = @intFromFloat(scroll_ratio * @as(f64, @floatFromInt(sb.total - sb.len)));
 
         // delta = target - current offset
         const current: isize = @intCast(sb.offset);
