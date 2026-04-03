@@ -12,6 +12,7 @@ const autostart = @import("autostart.zig");
 const HWND = ?*anyopaque;
 const WCHAR = u16;
 extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
+extern "user32" fn MessageBoxA(?*anyopaque, [*:0]const u8, [*:0]const u8, c_uint) callconv(.c) c_int;
 extern "user32" fn PostMessageW(HWND, c_uint, usize, isize) callconv(.c) c_int;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) c_int;
 extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
@@ -228,6 +229,8 @@ const App = struct {
     max_scroll_lines: usize = 10_000,
     theme: ?*const themes.Theme = null,
     last_render_ms: i64 = 0,
+    last_shell_restart_ms: i64 = 0,
+    shell_restart_count: u32 = 0,
     dragging: bool = false,
     drag_tab_index: usize = 0,
     drag_start_x: c_int = 0,
@@ -270,10 +273,28 @@ const App = struct {
         }
 
         if (self.tabs.items.len == 0) {
-            // Last tab closed — exit
-            self.window.shell_exited = true;
-            if (self.window.hwnd) |hwnd| {
-                _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            // 마지막 탭의 셸이 종료됨 — 새 셸 자동 재시작 (무한 루프 방지)
+            const now = std.time.milliTimestamp();
+            if (now - self.last_shell_restart_ms < 3000) {
+                self.shell_restart_count += 1;
+            } else {
+                self.shell_restart_count = 0;
+            }
+            self.last_shell_restart_ms = now;
+
+            if (self.shell_restart_count >= 3) {
+                // 3초 내 3회 이상 재시작 → 무한 루프로 판단, 앱 종료
+                self.window.shell_exited = true;
+                if (self.window.hwnd) |hwnd| {
+                    _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                }
+            } else {
+                self.createTab() catch {
+                    self.window.shell_exited = true;
+                    if (self.window.hwnd) |hwnd| {
+                        _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    }
+                };
             }
         } else {
             if (self.active_tab >= self.tabs.items.len) {
@@ -721,6 +742,18 @@ const App = struct {
         return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lp)) >> 16))));
     }
 };
+
+/// ReleaseFast에서도 crash 원인을 표시하는 panic handler
+pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    var buf: [512]u8 = undefined;
+    const addr = ret_addr orelse @returnAddress();
+    const text = std.fmt.bufPrint(&buf, "panic: {s}\nreturn address: 0x{x}", .{ msg, addr }) catch "panic (format failed)";
+    var msgbuf: [512:0]u8 = std.mem.zeroes([512:0]u8);
+    const copy_len = @min(text.len, 511);
+    @memcpy(msgbuf[0..copy_len], text[0..copy_len]);
+    _ = MessageBoxA(null, &msgbuf, "TildaZ Crash", MB_OK | MB_ICONERROR);
+    std.process.exit(1);
+}
 
 pub fn main() void {
     run() catch {

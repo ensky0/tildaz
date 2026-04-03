@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     // Keep default false until Zig upstream fixes this.
     const simd = b.option(bool, "simd", "SIMD acceleration (broken on Windows/Zig 0.15)") orelse false;
 
-    if (b.lazyDependency("ghostty", .{ .simd = simd })) |dep| {
+    if (b.lazyDependency("ghostty", .{ .simd = simd, .optimize = optimize })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
 
