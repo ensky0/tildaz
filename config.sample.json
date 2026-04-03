@@ -3,12 +3,14 @@
     "dock_position": "top",
     "width": 50,
     "height": 100,
-    "offset": 100
+    "offset": 100,
+    "opacity": 90
   },
   "font": {
     "family": "Consolas",
     "size": 20
   },
+  "theme": "Gruvbox Dark",
   "shell": "wsl.exe -d Debian --cd ~",
   "auto_start": true,
   "hidden_start": true,

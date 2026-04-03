@@ -6,6 +6,7 @@ const Window = window_mod.Window;
 const RECT = window_mod.RECT;
 const GlRenderer = @import("renderer.zig").GlRenderer;
 const Config = @import("config.zig").Config;
+const themes = @import("themes.zig");
 const autostart = @import("autostart.zig");
 
 const HWND = ?*anyopaque;
@@ -132,11 +133,18 @@ const Tab = struct {
     fn init(alloc: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const u16, owner: *App) !*Tab {
         const tab = try alloc.create(Tab);
         errdefer alloc.destroy(tab);
+        const term_colors = if (owner.theme) |t| ghostty.Terminal.Colors{
+            .foreground = ghostty.color.DynamicRGB.init(t.foreground),
+            .background = ghostty.color.DynamicRGB.init(t.background),
+            .cursor = .unset,
+            .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
+        } else ghostty.Terminal.Colors.default;
         tab.* = .{
             .terminal = try ghostty.Terminal.init(alloc, .{
                 .cols = cols,
                 .rows = rows,
                 .max_scrollback = owner.max_scroll_lines,
+                .colors = term_colors,
             }),
             .stream = undefined,
             .pty = try ConPty.init(alloc, cols, rows, shell),
@@ -203,6 +211,7 @@ const App = struct {
     gl_renderer: ?GlRenderer = null,
     shell_utf16: [*:0]const u16,
     max_scroll_lines: usize = 10_000,
+    theme: ?*const themes.Theme = null,
     dragging: bool = false,
     drag_tab_index: usize = 0,
     drag_start_x: c_int = 0,
@@ -722,6 +731,7 @@ fn run() !void {
         .allocator = alloc,
         .shell_utf16 = config.shellUtf16(),
         .max_scroll_lines = config.max_scroll_lines,
+        .theme = config.theme,
     };
     defer {
         for (app.tabs.items) |tab| tab.deinit(alloc);
@@ -736,11 +746,12 @@ fn run() !void {
     app.window.app_msg_fn = App.onAppMessage;
     const font_family_w = config.fontFamilyUtf16();
     const font_size: c_int = @intCast(config.font_size);
-    try app.window.init(font_family_w, font_size);
+    try app.window.init(font_family_w, font_size, config.opacity);
     defer app.window.deinit();
 
     // Initialize OpenGL renderer
-    app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height)) catch null;
+    const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
+    app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
     defer if (app.gl_renderer) |*r| r.deinit();
 
     // Apply position from config
