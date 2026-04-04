@@ -253,6 +253,7 @@ const App = struct {
     const CLOSE_BTN_SIZE: c_int = 14;
     const TAB_PADDING: c_int = 6;
     const SCROLLBAR_W: c_int = 8;
+    const TERMINAL_PADDING: c_int = 8;
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
@@ -314,9 +315,9 @@ const App = struct {
         if (self.window.hwnd == null) return .{ .cols = 120, .rows = 30 };
         var rect: RECT = undefined;
         _ = GetClientRect(self.window.hwnd, &rect);
-        const w = rect.right - rect.left;
-        const h = rect.bottom - rect.top - TAB_BAR_HEIGHT;
-        const cols: u16 = if (self.window.cell_width > 0) @intCast(@max(1, @divTrunc(w, self.window.cell_width))) else 120;
+        const w = rect.right - rect.left - 2 * TERMINAL_PADDING;
+        const h = rect.bottom - rect.top - TAB_BAR_HEIGHT - 2 * TERMINAL_PADDING;
+        const cols: u16 = if (self.window.cell_width > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width))) else 120;
         const rows: u16 = if (self.window.cell_height > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height))) else 30;
         return .{ .cols = cols, .rows = rows };
     }
@@ -403,6 +404,7 @@ const App = struct {
                         size.w,
                         size.h,
                         TAB_BAR_HEIGHT,
+                        TERMINAL_PADDING,
                     );
                 }
             } else {
@@ -474,10 +476,10 @@ const App = struct {
             _ = GetClientRect(hwnd, &rect);
             client_h = rect.bottom;
         }
-        const track_h = client_h - TAB_BAR_HEIGHT;
+        const track_h = client_h - TAB_BAR_HEIGHT - 2 * TERMINAL_PADDING;
         if (track_h <= 0) return;
 
-        const rel_y = @max(0, mouse_y - TAB_BAR_HEIGHT);
+        const rel_y = @max(0, mouse_y - TAB_BAR_HEIGHT - TERMINAL_PADDING);
         const track_hf = @as(f64, @floatFromInt(track_h));
         const ratio_px = track_hf / @as(f64, @floatFromInt(sb.total));
         const thumb_h = @max(16.0, ratio_px * @as(f64, @floatFromInt(sb.len)));
@@ -562,8 +564,9 @@ const App = struct {
         const cw = self.window.cell_width;
         const ch = self.window.cell_height;
         const grid = self.getTerminalGridSize();
-        const term_y = mouse_y - TAB_BAR_HEIGHT;
-        const col: u16 = if (cw > 0 and mouse_x >= 0) @intCast(@min(@divTrunc(mouse_x, cw), @as(c_int, grid.cols) - 1)) else 0;
+        const term_x = mouse_x - TERMINAL_PADDING;
+        const term_y = mouse_y - TAB_BAR_HEIGHT - TERMINAL_PADDING;
+        const col: u16 = if (cw > 0 and term_x >= 0) @intCast(@min(@divTrunc(term_x, cw), @as(c_int, grid.cols) - 1)) else 0;
         const row: u16 = if (ch > 0 and term_y >= 0) @intCast(@min(@divTrunc(term_y, ch), @as(c_int, grid.rows) - 1)) else 0;
         return .{ .col = col, .row = row };
     }
@@ -586,14 +589,14 @@ const App = struct {
         const tab = self.activeTabPtr() orelse return;
 
         // 터미널 영역 위/아래로 드래그 시 자동 스크롤
-        const term_y = mouse_y - TAB_BAR_HEIGHT;
+        const term_y = mouse_y - TAB_BAR_HEIGHT - TERMINAL_PADDING;
         var client_h: c_int = 0;
         if (self.window.hwnd) |hwnd| {
             var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
             _ = GetClientRect(hwnd, &rect);
             client_h = rect.bottom;
         }
-        const term_h = client_h - TAB_BAR_HEIGHT;
+        const term_h = client_h - TAB_BAR_HEIGHT - 2 * TERMINAL_PADDING;
         if (term_y < 0) {
             tab.terminal.scrollViewport(.{ .delta = -3 });
         } else if (term_y > term_h) {
