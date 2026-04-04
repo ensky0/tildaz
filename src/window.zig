@@ -243,7 +243,7 @@ pub const Window = struct {
     const VK_F1: UINT = 0x70;
     const RENDER_TIMER_ID: usize = 1;
 
-    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8) !void {
+    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32) !void {
         const hInstance = GetModuleHandleW(null);
 
         const wc = WNDCLASSEXW{
@@ -318,8 +318,10 @@ pub const Window = struct {
             const old_f = SelectObject(self.gl_dc, self.font);
             var tm: TEXTMETRICW = undefined;
             _ = GetTextMetricsW(self.gl_dc, &tm);
-            self.cell_width = tm.tmAveCharWidth;
-            self.cell_height = tm.tmHeight + tm.tmExternalLeading;
+            const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
+            const base_h: f32 = @floatFromInt(tm.tmHeight + tm.tmExternalLeading);
+            self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * cell_width_scale))));
+            self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * line_height_scale))));
             _ = SelectObject(self.gl_dc, old_f);
         }
 

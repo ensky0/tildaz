@@ -22,6 +22,9 @@ const err_font_size = std.unicode.utf8ToUtf16LeStringLiteral(
 
 pub const MAX_FONT_FAMILIES = 8;
 
+const DEFAULT_THEME = "Tilda";
+const DEFAULT_FONT_FAMILIES = [_][]const u8{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" };
+
 pub const Config = struct {
     // window
     dock_position: Window.DockPosition = .top,
@@ -29,16 +32,18 @@ pub const Config = struct {
     height: u8 = 100,
     offset: u8 = 100,
     // font
-    font_families: [MAX_FONT_FAMILIES][]const u8 = .{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" } ++ .{""} ** (MAX_FONT_FAMILIES - 3),
-    font_family_count: u8 = 3,
+    font_families: [MAX_FONT_FAMILIES][]const u8 = DEFAULT_FONT_FAMILIES ++ .{""} ** (MAX_FONT_FAMILIES - DEFAULT_FONT_FAMILIES.len),
+    font_family_count: u8 = DEFAULT_FONT_FAMILIES.len,
     font_size: u8 = 20,
+    line_height: f32 = 0.95,
+    cell_width: f32 = 1.2,
     // appearance
     opacity: u8 = 255,
-    theme: ?*const themes.Theme = themes.findTheme("Tilda"),
+    theme: ?*const themes.Theme = themes.findTheme(DEFAULT_THEME),
     // top-level
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
-    hidden_start: bool = true,
+    hidden_start: bool = false,
     max_scroll_lines: u32 = 100_000,
     _alloc: ?std.mem.Allocator = null,
 
@@ -148,7 +153,15 @@ pub const Config = struct {
                         else => {},
                     }
                 }
-                if (getIntField(fnt, "size")) |v| config.font_size = @intCast(std.math.clamp(v, 1, 255));
+                if (fnt.object.get("size")) |size_val| {
+                    switch (size_val) {
+                        .integer => |v| config.font_size = @intCast(std.math.clamp(v, 1, 255)),
+                        .float => showTypeError("font.size", "integer (not float)"),
+                        else => {},
+                    }
+                }
+                if (getFloatField(fnt, "line_height")) |v| config.line_height = std.math.clamp(v, 0.1, 10.0);
+                if (getFloatField(fnt, "cell_width")) |v| config.cell_width = std.math.clamp(v, 0.1, 10.0);
             }
         }
 
@@ -168,11 +181,17 @@ pub const Config = struct {
         }
         if (getBool(root, "auto_start")) |v| config.auto_start = v;
         if (getBool(root, "hidden_start")) |v| config.hidden_start = v;
-        if (getIntField(root, "max_scroll_lines")) |v| {
-            if (v < 100 or v > 100_000) {
-                showRangeError("max_scroll_lines", 100, 100_000);
+        if (root.object.get("max_scroll_lines")) |msv| {
+            switch (msv) {
+                .integer => |v| {
+                    if (v < 100 or v > 100_000) {
+                        showRangeError("max_scroll_lines", 100, 100_000);
+                    }
+                    config.max_scroll_lines = @intCast(v);
+                },
+                .float => showTypeError("max_scroll_lines", "integer (not float)"),
+                else => {},
             }
-            config.max_scroll_lines = @intCast(v);
         }
 
         return config;
@@ -194,10 +213,32 @@ pub const Config = struct {
         return null;
     }
 
+    fn getFloatField(obj: std.json.Value, key: []const u8) ?f32 {
+        if (obj.object.get(key)) |val| {
+            return switch (val) {
+                .float => @floatCast(val.float),
+                .integer => @floatFromInt(val.integer),
+                else => null,
+            };
+        }
+        return null;
+    }
+
     // Unused but kept for consistency
     fn getInt(obj: std.json.Value) ?i64 {
         _ = obj;
         return null;
+    }
+
+    fn showTypeError(comptime field: []const u8, comptime expected: []const u8) void {
+        const MB_OK = 0;
+        const MB_ICONERROR = 0x10;
+        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
+        const msg = std.unicode.utf8ToUtf16LeStringLiteral(
+            "config.json: \"" ++ field ++ "\" must be " ++ expected,
+        );
+        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
+        ExitProcess(1);
     }
 
     fn showRangeError(comptime field: []const u8, comptime min: i64, comptime max: i64) void {
@@ -342,30 +383,52 @@ pub const Config = struct {
     }
 
     fn createDefaultConfig(path: []const u8) void {
-        const default_json =
-            \\{
-            \\  "window": {
-            \\    "dock_position": "top",
-            \\    "width": 50,
-            \\    "height": 100,
-            \\    "offset": 100,
-            \\    "opacity": 100
-            \\  },
-            \\  "font": {
-            \\    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
-            \\    "size": 20
-            \\  },
-            \\  "theme": "Tilda",
-            \\  "shell": "cmd.exe",
-            \\  "auto_start": true,
-            \\  "hidden_start": true,
-            \\  "max_scroll_lines": 100000
-            \\}
+        const d = Config{};
+        const t = "true";
+        const f = "false";
+        const default_json = std.fmt.comptimePrint(
+            \\{{
+            \\  "window": {{
+            \\    "dock_position": "{s}",
+            \\    "width": {d},
+            \\    "height": {d},
+            \\    "offset": {d},
+            \\    "opacity": {d}
+            \\  }},
+            \\  "font": {{
+            \\    "family": ["{s}", "{s}", "{s}"],
+            \\    "size": {d},
+            \\    "line_height": {d},
+            \\    "cell_width": {d}
+            \\  }},
+            \\  "theme": "{s}",
+            \\  "shell": "{s}",
+            \\  "auto_start": {s},
+            \\  "hidden_start": {s},
+            \\  "max_scroll_lines": {d}
+            \\}}
             \\
-        ;
-        const f = std.fs.createFileAbsolute(path, .{}) catch return;
-        defer f.close();
-        f.writeAll(default_json) catch {};
+        , .{
+            @tagName(d.dock_position),
+            d.width,
+            d.height,
+            d.offset,
+            @as(u32, d.opacity) * 100 / 255,
+            DEFAULT_FONT_FAMILIES[0],
+            DEFAULT_FONT_FAMILIES[1],
+            DEFAULT_FONT_FAMILIES[2],
+            d.font_size,
+            d.line_height,
+            d.cell_width,
+            DEFAULT_THEME,
+            d.shell,
+            if (d.auto_start) t else f,
+            if (d.hidden_start) t else f,
+            d.max_scroll_lines,
+        });
+        const file = std.fs.createFileAbsolute(path, .{}) catch return;
+        defer file.close();
+        file.writeAll(default_json) catch {};
     }
 
     pub fn shellUtf16(self: *const Config) [*:0]const u16 {
