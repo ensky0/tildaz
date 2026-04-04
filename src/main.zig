@@ -101,7 +101,7 @@ const WriteQueue = struct {
         defer self.mutex.unlock();
         for (data) |byte| {
             const next = (self.head + 1) % self.buf.len;
-            if (next == self.tail) continue;
+            if (next == self.tail) break;
             self.buf[self.head] = byte;
             self.head = next;
         }
@@ -213,7 +213,7 @@ const Tab = struct {
             while (true) {
                 const n = tab.write_queue.pop(&buf);
                 if (n == 0) break;
-                _ = tab.pty.write(buf[0..n]) catch {};
+                _ = tab.pty.write(buf[0..n]) catch break;
             }
             if (tab.write_queue.isClosed()) break;
         }
@@ -512,7 +512,7 @@ const App = struct {
 
         // Check if click is on close button
         const tab_x = @as(c_int, @intCast(tab_index)) * TAB_WIDTH;
-        const close_x = tab_x + TAB_WIDTH - CLOSE_BTN_SIZE - 6;
+        const close_x = tab_x + TAB_WIDTH - CLOSE_BTN_SIZE - TAB_PADDING;
         const close_y = @divTrunc(TAB_BAR_HEIGHT - CLOSE_BTN_SIZE, 2);
         if (mouse_x >= close_x and mouse_x <= close_x + CLOSE_BTN_SIZE and
             mouse_y >= close_y and mouse_y <= close_y + CLOSE_BTN_SIZE)
@@ -551,7 +551,10 @@ const App = struct {
             const target: usize = @intCast(target_raw);
             if (target != self.drag_tab_index) {
                 const tab = self.tabs.orderedRemove(self.drag_tab_index);
-                self.tabs.insert(self.allocator, target, tab) catch {};
+                self.tabs.insert(self.allocator, target, tab) catch {
+                    self.tabs.appendAssumeCapacity(tab);
+                    self.active_tab = self.tabs.items.len - 1;
+                };
                 self.active_tab = target;
                 // Renumber
                 for (self.tabs.items, 0..) |t, i| {

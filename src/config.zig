@@ -115,12 +115,10 @@ pub const Config = struct {
                     else if (std.mem.eql(u8, dp, "left")) config.dock_position = .left
                     else if (std.mem.eql(u8, dp, "right")) config.dock_position = .right;
                 }
-                if (getInt(win)) |_| {} else {
-                    if (getIntField(win, "width")) |v| config.width = @intCast(std.math.clamp(v, 1, 255));
-                    if (getIntField(win, "height")) |v| config.height = @intCast(std.math.clamp(v, 1, 255));
-                    if (getIntField(win, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
-                    if (getIntField(win, "opacity")) |v| config.opacity = @intCast(std.math.clamp(@divFloor(v * 255, 100), 0, 255));
-                }
+                if (getIntField(win, "width")) |v| config.width = @intCast(std.math.clamp(v, 1, 255));
+                if (getIntField(win, "height")) |v| config.height = @intCast(std.math.clamp(v, 1, 255));
+                if (getIntField(win, "offset")) |v| config.offset = @intCast(std.math.clamp(v, 0, 255));
+                if (getIntField(win, "opacity")) |v| config.opacity = @intCast(std.math.clamp(@divFloor(v * 255, 100), 0, 255));
             }
         }
 
@@ -221,12 +219,6 @@ pub const Config = struct {
                 else => null,
             };
         }
-        return null;
-    }
-
-    // Unused but kept for consistency
-    fn getInt(obj: std.json.Value) ?i64 {
-        _ = obj;
         return null;
     }
 
@@ -446,7 +438,7 @@ pub const Config = struct {
         var utf8_iter = std.unicode.Utf8View.init(self.shell) catch return std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
         var cp_iter = utf8_iter.iterator();
         while (cp_iter.nextCodepoint()) |cp| {
-            if (i >= S.buf.len - 1) break;
+            if (i >= S.buf.len - 3) break;
             if (cp <= 0xFFFF) {
                 S.buf[i] = @intCast(cp);
                 i += 1;
@@ -487,9 +479,15 @@ pub const Config = struct {
         var utf8_iter = std.unicode.Utf8View.init(family) catch return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
         var cp_iter = utf8_iter.iterator();
         while (cp_iter.nextCodepoint()) |cp| {
-            if (i >= 63) break;
+            if (i >= 62) break;
             if (cp <= 0xFFFF) {
                 S.bufs[index][i] = @intCast(cp);
+                i += 1;
+            } else {
+                const adj = cp - 0x10000;
+                S.bufs[index][i] = @intCast(0xD800 + (adj >> 10));
+                i += 1;
+                S.bufs[index][i] = @intCast(0xDC00 + (adj & 0x3FF));
                 i += 1;
             }
         }
