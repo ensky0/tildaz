@@ -452,23 +452,6 @@ pub const GlRenderer = struct {
         const dbg_g = colorF(colors.background.g);
         const dbg_b = colorF(colors.background.b);
 
-        // Pre-cache all glyphs
-        for (0..rows) |y| {
-            if (y >= all_cells.len) break;
-            const cell_slice = all_cells[y].slice();
-            const raws = cell_slice.items(.raw);
-            for (0..cols) |x| {
-                if (x >= raws.len) break;
-                const raw = raws[x];
-                if (!raw.hasText()) continue;
-                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
-                const cp = raw.codepoint();
-                if (cp == 0) continue;
-                if (isBlockElement(cp)) continue;
-                _ = self.atlas.getOrRenderGlyph(cp, raw.wide == .wide);
-            }
-        }
-
         // --- Build vertex buffers ---
         var bg_count: usize = 0;
         var text_count: usize = 0;
