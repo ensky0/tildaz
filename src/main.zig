@@ -194,14 +194,13 @@ const Tab = struct {
     }
 
     /// UI 스레드에서 호출: 버퍼에 쌓인 PTY 출력을 VT 파서로 처리
+    /// 렌더 스킵 중(should_render=false)에는 전체 drain, 렌더 프레임에서는 제한
     fn drainOutput(tab: *Tab) void {
         var buf: [65536]u8 = undefined;
-        const start = std.time.milliTimestamp();
         while (true) {
             const n = tab.output_ring.pop(&buf);
             if (n == 0) break;
             tab.stream.nextSlice(buf[0..n]);
-            if (std.time.milliTimestamp() - start >= 30) break;
         }
     }
 
@@ -333,7 +332,6 @@ const App = struct {
 
     fn onPtyOutputTab(data: []const u8, userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
-        // 링버퍼에 넣기만 함 (lock-free, 즉시 반환)
         tab.output_ring.push(data);
     }
 
@@ -374,14 +372,16 @@ const App = struct {
             var should_render = true;
             if (self.activeTabPtr()) |tab| {
                 tab.drainOutput();
-                const now = std.time.milliTimestamp();
-                const has_more = !tab.output_ring.isEmpty();
-                // 데이터가 계속 들어오는 중이면 100ms마다만 렌더, 아니면 매 프레임 렌더
-                if (has_more and now - self.last_render_ms < 200) {
-                    should_render = false;
-                } else {
-                    self.last_render_ms = now;
+                if (!tab.output_ring.isEmpty()) {
+                    // 링버퍼에 데이터 남음 — 아직 출력 진행 중이므로 렌더 스로틀
+                    const now = std.time.milliTimestamp();
+                    if (now - self.last_render_ms < 8) {
+                        should_render = false;
+                    } else {
+                        self.last_render_ms = now;
+                    }
                 }
+                // 링버퍼 비었으면 항상 렌더 — 출력 종료 직후 즉시 화면 갱신
             }
 
             if (should_render) {
