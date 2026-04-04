@@ -90,6 +90,16 @@ pub const DWRITE_GLYPH_OFFSET = extern struct {
     ascenderOffset: FLOAT,
 };
 
+pub const DWRITE_GLYPH_METRICS = extern struct {
+    leftSideBearing: INT32,
+    advanceWidth: UINT32,
+    rightSideBearing: INT32,
+    topSideBearing: INT32,
+    advanceHeight: UINT32,
+    bottomSideBearing: INT32,
+    verticalOriginY: INT32,
+};
+
 pub const DWRITE_GLYPH_RUN = extern struct {
     fontFace: ?*IDWriteFontFace,
     fontEmSize: FLOAT,
@@ -406,7 +416,7 @@ pub const IDWriteFontFace = extern struct {
         IsSymbolFont: *const anyopaque,
         GetMetrics: *const fn (*IDWriteFontFace, *DWRITE_FONT_METRICS) callconv(.c) void,
         GetGlyphCount: *const anyopaque,
-        GetDesignGlyphMetrics: *const anyopaque,
+        GetDesignGlyphMetrics: *const fn (*IDWriteFontFace, [*]const UINT16, UINT32, [*]DWRITE_GLYPH_METRICS, BOOL) callconv(.c) HRESULT,
         GetGlyphIndices: *const fn (*IDWriteFontFace, [*]const UINT32, UINT32, [*]UINT16) callconv(.c) HRESULT,
         TryGetFontTable: *const anyopaque,
         ReleaseFontTable: *const anyopaque,
@@ -426,6 +436,10 @@ pub const IDWriteFontFace = extern struct {
 
     pub fn GetGlyphIndices(self: *IDWriteFontFace, codepoints: [*]const UINT32, count: UINT32, glyph_indices: [*]UINT16) HRESULT {
         return self.vtable.GetGlyphIndices(self, codepoints, count, glyph_indices);
+    }
+
+    pub fn GetDesignGlyphMetrics(self: *IDWriteFontFace, glyph_indices: [*]const UINT16, count: UINT32, metrics: [*]DWRITE_GLYPH_METRICS, is_sideways: BOOL) HRESULT {
+        return self.vtable.GetDesignGlyphMetrics(self, glyph_indices, count, metrics, is_sideways);
     }
 
     pub fn GetRecommendedRenderingMode(self: *IDWriteFontFace, em_size: FLOAT, pixels_per_dip: FLOAT, measuring_mode: u32, rendering_params: ?*IDWriteRenderingParams, rendering_mode: *u32) HRESULT {
@@ -530,6 +544,14 @@ pub const IDWriteRenderingParams = extern struct {
         return self.vtable.GetEnhancedContrast(self);
     }
 
+    pub fn GetClearTypeLevel(self: *IDWriteRenderingParams) FLOAT {
+        return self.vtable.GetClearTypeLevel(self);
+    }
+
+    pub fn GetPixelGeometry(self: *IDWriteRenderingParams) u32 {
+        return self.vtable.GetPixelGeometry(self);
+    }
+
     pub fn GetRenderingMode(self: *IDWriteRenderingParams) u32 {
         return self.vtable.GetRenderingMode(self);
     }
@@ -562,6 +584,10 @@ pub const IDWriteGlyphRunAnalysis = extern struct {
 
     pub fn CreateAlphaTexture(self: *IDWriteGlyphRunAnalysis, texture_type: u32, bounds: *const RECT, alpha_values: [*]u8, buffer_size: UINT32) HRESULT {
         return self.vtable.CreateAlphaTexture(self, texture_type, bounds, alpha_values, buffer_size);
+    }
+
+    pub fn GetAlphaBlendParams(self: *IDWriteGlyphRunAnalysis, rendering_params: *IDWriteRenderingParams, blend_gamma: *FLOAT, blend_enhanced_contrast: *FLOAT, blend_clear_type_level: *FLOAT) HRESULT {
+        return self.vtable.GetAlphaBlendParams(self, rendering_params, blend_gamma, blend_enhanced_contrast, blend_clear_type_level);
     }
 };
 

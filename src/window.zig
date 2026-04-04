@@ -236,6 +236,7 @@ pub const Window = struct {
     // OpenGL state
     hglrc: gl.HGLRC = null,
     gl_dc: HDC = null,
+    gl: ?gl.GlFuncs = null, // GL 3.3 runtime-loaded functions
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -334,10 +335,43 @@ pub const Window = struct {
         if (pf == 0) return error.ChoosePixelFormatFailed;
         if (gl.SetPixelFormat(self.gl_dc, pf, &pfd) == 0) return error.SetPixelFormatFailed;
 
-        // Create and activate WGL context
-        self.hglrc = gl.wglCreateContext(self.gl_dc);
-        if (self.hglrc == null) return error.WglCreateContextFailed;
+        // Create GL 3.3 Core Profile context via temporary legacy context
+        {
+            // 1. Create temporary legacy context to load WGL extensions
+            const tmp_ctx = gl.wglCreateContext(self.gl_dc);
+            if (tmp_ctx == null) return error.WglCreateContextFailed;
+            if (gl.wglMakeCurrent(self.gl_dc, tmp_ctx) == 0) {
+                _ = gl.wglDeleteContext(tmp_ctx);
+                return error.WglMakeCurrentFailed;
+            }
+
+            // 2. Load wglCreateContextAttribsARB
+            const wglCreateCtxAttribs = gl.loadWglCreateContextAttribsARB();
+
+            // 3. Delete temporary context
+            _ = gl.wglMakeCurrent(null, null);
+            _ = gl.wglDeleteContext(tmp_ctx);
+
+            if (wglCreateCtxAttribs) |createCtx| {
+                // 4. Create GL 3.3 context (compatibility profile to keep legacy tab bar working)
+                const attribs = [_]c_int{
+                    gl.WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+                    gl.WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+                    0, // terminator — no profile mask = compatibility profile
+                };
+                self.hglrc = createCtx(self.gl_dc, null, &attribs);
+            }
+
+            if (self.hglrc == null) {
+                // Fallback: legacy context (GL 1.1 path — shouldn't happen on modern hardware)
+                self.hglrc = gl.wglCreateContext(self.gl_dc);
+                if (self.hglrc == null) return error.WglCreateContextFailed;
+            }
+        }
         if (gl.wglMakeCurrent(self.gl_dc, self.hglrc) == 0) return error.WglMakeCurrentFailed;
+
+        // Load GL 3.3 functions
+        self.gl = gl.GlFuncs.load() catch null;
 
         // Start render timer (60fps)
         _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
