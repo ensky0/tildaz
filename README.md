@@ -15,18 +15,23 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
   - 마우스 드래그로 탭 순서 변경
   - 마지막 탭을 닫으면 앱 종료
 - **유니코드 전체 지원**: 한글, CJK, 이모지 등 전각/반각 문자 정상 렌더링
+- **폰트 폴백 체인**: 최대 8개 폰트 지정 가능, 글리프를 못 찾으면 다음 폰트로 자동 폴백
+- **ClearType 서브픽셀 렌더링**: DirectWrite + OpenGL 3.3 셰이더 기반 고품질 텍스트 렌더링
 - **ANSI 색상**: 16색/256색/TrueColor 전경·배경색, bold-is-bright, inverse 지원
+- **18가지 내장 컬러 테마**: Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin 등
 - **텍스트 선택 및 복사**:
   - 클릭+드래그로 텍스트 선택 (선택 영역 반전 표시)
   - 더블클릭으로 단어 선택
   - 마우스 버튼 놓으면 자동 클립보드 복사
   - 마우스 휠 클릭으로 붙여넣기
+- **스크롤백**: 마우스 휠 스크롤, 스크롤바 드래그, 최대 100,000줄 버퍼
+- **vim dark/light 감지**: 테마 배경 밝기에 따라 `COLORFGBG` 환경변수 자동 설정 (WSL 포함)
 - 화면 가장자리(top/bottom/left/right)에 붙는 드롭다운 윈도우
 - 크기/위치를 화면 비율(%)로 설정
-- Windows 로그인 시 자동 시작
-- Ctrl+Shift+V 클립보드 붙여넣기
 - 반투명(설정 가능) always-on-top 윈도우
-- **18가지 내장 컬러 테마**: Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin 등
+- Ctrl+Shift+V 클립보드 붙여넣기
+- Ctrl+Shift+R 터미널 초기화 (바이너리 cat 등으로 깨졌을 때)
+- Windows 로그인 시 자동 시작
 
 ## 빌드
 
@@ -64,15 +69,16 @@ zig build -Doptimize=Debug
     "opacity": 100
   },
   "font": {
-    "family": "Consolas",
-    "size": 22,
-    "thicken": 0.8
+    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
+    "size": 20,
+    "line_height": 0.95,
+    "cell_width": 1.2
   },
   "theme": "Tilda",
-  "shell": "wsl.exe -d Debian --cd ~",
+  "shell": "cmd.exe",
   "auto_start": true,
-  "hidden_start": true,
-  "max_scroll_lines": 10000
+  "hidden_start": false,
+  "max_scroll_lines": 100000
 }
 ```
 
@@ -83,14 +89,15 @@ zig build -Doptimize=Debug
 | window | height | int | 10~100 | 100 | 세로 크기 (화면 %) |
 | window | offset | int | 0~100 | 100 | 위치 (0=시작, 50=중앙, 100=끝) |
 | window | opacity | int | 0~100 | 100 | 윈도우 투명도 (%) |
-| font | family | string | - | "Consolas" | 폰트 이름 |
-| font | size | int | 8~72 | 22 | 폰트 크기 (px) |
-| font | thicken | float | 0.5~2.0 | 0.8 | 글자 두께 (1.0 미만=두껍게, 1.0 초과=가늘게) |
+| font | family | string 또는 string[] | - | ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"] | 폰트 (배열 시 폴백 체인, 최대 8개) |
+| font | size | int | 8~72 | 20 | 폰트 크기 (px) |
+| font | line_height | float | 0.1~10.0 | 0.95 | 줄 높이 배율 (1.0 = 기본 행간) |
+| font | cell_width | float | 0.1~10.0 | 1.2 | 셀 너비 배율 (1.0 = 기본 자간) |
 | - | theme | string | [테마 목록](#테마) 참조 | "Tilda" | 컬러 테마 |
 | - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
 | - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
-| - | hidden_start | bool | true, false | true | 숨김 상태로 시작 |
-| - | max_scroll_lines | int | 100~100,000 | 10,000 | 스크롤백 버퍼 (라인 수) |
+| - | hidden_start | bool | true, false | false | 숨김 상태로 시작 |
+| - | max_scroll_lines | int | 100~100,000 | 100,000 | 스크롤백 버퍼 (라인 수) |
 
 ### 위치 예시
 
@@ -120,6 +127,7 @@ zig build -Doptimize=Debug
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
 | 마우스 드래그 | 텍스트 선택 + 자동 복사 |
 | 더블클릭 | 단어 선택 + 자동 복사 |
+| 마우스 휠 | 스크롤 |
 | 마우스 휠 클릭 | 클립보드 붙여넣기 |
 
 ## 테마
@@ -173,8 +181,8 @@ zig build -Doptimize=Debug
 | 터미널 에뮬레이션 | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
 | PTY | Windows ConPTY |
 | 윈도우 | Win32 API (보더리스 팝업) |
-| 렌더링 | OpenGL 1.1 + 동적 폰트 아틀라스 (WGL) |
-| 폰트 래스터라이즈 | Windows GDI (ANTIALIASED_QUALITY) |
+| 렌더링 | OpenGL 3.3 + GLSL 셰이더 (ClearType 서브픽셀 블렌딩) |
+| 폰트 래스터라이즈 | DirectWrite (동적 폰트 아틀라스 + 시스템 폰트 폴백) |
 
 ## 라이선스
 
