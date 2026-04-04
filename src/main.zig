@@ -866,7 +866,7 @@ fn run() !void {
 
     // Initialize OpenGL renderer
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
+    app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg, app.window.gl) catch null;
     defer if (app.gl_renderer) |*r| r.deinit();
 
     // Add fallback fonts from config

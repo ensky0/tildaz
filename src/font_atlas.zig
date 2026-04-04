@@ -17,6 +17,12 @@ pub const GlyphUV = struct {
 pub const GlyphInfo = struct {
     uv: GlyphUV,
     cell_count: u8, // 1 = narrow, 2 = wide
+    // Pixel offset from cell origin to actual glyph top-left
+    offset_x: i8 = 0,
+    offset_y: i8 = 0,
+    // Actual glyph pixel dimensions (may differ from cell size)
+    pixel_w: u8 = 0,
+    pixel_h: u8 = 0,
 };
 
 const ATLAS_SIZE: u32 = 2048;
@@ -30,12 +36,16 @@ pub const FontAtlas = struct {
     glyph_map: std.AutoHashMap(u21, GlyphInfo),
     fallback_glyph: GlyphInfo = undefined,
 
-    // Packing cursor
+    // Packing cursor (variable row height for tight glyph bounds)
     pack_x: u32 = 0,
     pack_y: u32 = 0,
+    pack_row_h: u32 = 0,
 
-    // Alpha LUT (sRGB blending correction)
+    // Alpha LUT (blend gamma correction from GetAlphaBlendParams)
     alpha_lut: [256]u8 = undefined,
+
+    // DirectWrite rendering params (needed for GetAlphaBlendParams per glyph)
+    dw_rendering_params: ?*dw.IDWriteRenderingParams = null,
 
     // DirectWrite resources
     dw_factory: ?*dw.IDWriteFactory = null,
@@ -128,25 +138,17 @@ pub const FontAtlas = struct {
             }
         }
 
-        // 6. Read system gamma for sRGB blending correction LUT
-        var sys_gamma: dw.FLOAT = 1.8;
+        // 6. Get system rendering params (kept alive for GetAlphaBlendParams per glyph)
         {
             var sys_params: ?*dw.IDWriteRenderingParams = null;
             if (factory.?.CreateRenderingParams(&sys_params) >= 0) {
-                if (sys_params) |sp| {
-                    sys_gamma = sp.GetGamma();
-                    _ = sp.Release();
-                }
+                self.dw_rendering_params = sys_params;
             }
         }
 
-        // Thinning LUT: counteract sRGB blending alpha amplification.
-        const srgb_correction = 2.2 / sys_gamma;
+        // Default identity LUT — will be overwritten by first GetAlphaBlendParams call
         for (0..256) |lut_i| {
-            const normalized: f32 = @as(f32, @floatFromInt(lut_i)) / 255.0;
-            const corrected = std.math.pow(f32, normalized, srgb_correction);
-            const result: u32 = @intFromFloat(corrected * 255.0 + 0.5);
-            self.alpha_lut[lut_i] = @intCast(@min(result, 255));
+            self.alpha_lut[lut_i] = @intCast(lut_i);
         }
 
         // 7. Create number substitution (for MapCharacters callback)
@@ -155,21 +157,22 @@ pub const FontAtlas = struct {
         _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, 0, &number_sub);
         self.dw_number_sub = number_sub;
 
-        // 8. Create empty GL texture (2048x2048)
+        // 8. Create empty GL texture (2048x2048, RGB for ClearType subpixel data)
         gl.glGenTextures(1, @ptrCast(&self.texture_id));
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1);
         gl.glTexImage2D(
             gl.GL_TEXTURE_2D,
             0,
-            gl.GL_RGBA,
+            gl.GL_RGB,
             ATLAS_SIZE,
             ATLAS_SIZE,
             0,
-            @intCast(gl.GL_RGBA),
+            @intCast(gl.GL_RGB),
             gl.GL_UNSIGNED_BYTE,
             null, // empty texture
         );
@@ -189,6 +192,7 @@ pub const FontAtlas = struct {
             self.texture_id = 0;
         }
         // Release DirectWrite COM resources
+        if (self.dw_rendering_params) |rp| _ = rp.Release();
         if (self.dw_font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.dw_number_sub) |ns| _ = ns.Release();
         if (self.dw_primary_font_face) |ff| _ = ff.vtable.Release(ff);
@@ -233,18 +237,6 @@ pub const FontAtlas = struct {
     }
 
     fn renderGlyph(self: *FontAtlas, codepoint: u21, is_wide: bool) ?GlyphInfo {
-        const cell_w = self.cell_width;
-        const cell_h = self.cell_height;
-        const glyph_width: u32 = if (is_wide) 2 * cell_w else cell_w;
-
-        // Check packing space
-        if (self.pack_x + glyph_width > ATLAS_SIZE) {
-            self.pack_x = 0;
-            self.pack_y += cell_h;
-        }
-        if (self.pack_y + cell_h > ATLAS_SIZE) {
-            return null; // atlas full
-        }
 
         const factory = self.dw_factory orelse return null;
         const primary_face = self.dw_primary_font_face orelse return null;
@@ -333,7 +325,7 @@ pub const FontAtlas = struct {
             &glyph_run,
             1.0, // pixelsPerDip
             null, // no transform
-            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+            dw.DWRITE_RENDERING_MODE_NATURAL,
             dw.DWRITE_MEASURING_MODE_NATURAL,
             0.0, // baselineOriginX
             self.dw_ascent_px, // baselineOriginY
@@ -346,15 +338,58 @@ pub const FontAtlas = struct {
         const has_pixels = analysis.?.GetAlphaTextureBounds(dw.DWRITE_TEXTURE_CLEARTYPE_3x1, &tex_bounds) >= 0 and
             tex_bounds.left < tex_bounds.right and tex_bounds.top < tex_bounds.bottom;
 
-        // RGBA output buffer (cell-sized, transparent background)
-        var rgba_buf: [4 * 128 * 128]u8 = undefined;
-        const rgba_size = 4 * glyph_width * cell_h;
-        @memset(rgba_buf[0..rgba_size], 0);
+        // Get blend parameters from DirectWrite for accurate gamma correction
+        var blend_lut: [256]u8 = undefined;
+        const ct_level: f32 = 0.5; // Reduce ClearType color fringing (0=grayscale, 1=full ClearType)
+        if (self.dw_rendering_params) |rp| {
+            var blend_gamma: dw.FLOAT = 1.8;
+            var blend_enhanced_contrast: dw.FLOAT = 0.5;
+            var blend_clear_type_level: dw.FLOAT = 1.0;
+            _ = analysis.?.GetAlphaBlendParams(rp, &blend_gamma, &blend_enhanced_contrast, &blend_clear_type_level);
+
+            // Build LUT: enhanced contrast + inverse blend gamma for sRGB blending
+            const inv_gamma = 1.0 / blend_gamma;
+            for (0..256) |i| {
+                var a: f32 = @as(f32, @floatFromInt(i)) / 255.0;
+                a = @min(a + a * blend_enhanced_contrast, 1.0);
+                a = std.math.pow(f32, a, inv_gamma);
+                blend_lut[i] = @intCast(@min(@as(u32, @intFromFloat(a * 255.0 + 0.5)), 255));
+            }
+        } else {
+            for (0..256) |i| blend_lut[i] = @intCast(i);
+        }
+
+        // Use actual glyph bounds from DirectWrite — no clipping
+        var glyph_w: u32 = 1;
+        var glyph_h: u32 = 1;
+        var glyph_off_x: i32 = 0;
+        var glyph_off_y: i32 = 0;
 
         if (has_pixels) {
-            const tex_w: u32 = @intCast(tex_bounds.right - tex_bounds.left);
-            const tex_h: u32 = @intCast(tex_bounds.bottom - tex_bounds.top);
-            const ct_buf_size: u32 = 3 * tex_w * tex_h;
+            glyph_w = @intCast(tex_bounds.right - tex_bounds.left);
+            glyph_h = @intCast(tex_bounds.bottom - tex_bounds.top);
+            glyph_off_x = tex_bounds.left;
+            glyph_off_y = tex_bounds.top;
+        }
+
+        // Check packing space with actual glyph dimensions
+        if (self.pack_x + glyph_w > ATLAS_SIZE) {
+            self.pack_x = 0;
+            self.pack_y += self.pack_row_h;
+            self.pack_row_h = 0;
+        }
+        if (self.pack_y + glyph_h > ATLAS_SIZE) {
+            return null; // atlas full
+        }
+        if (glyph_h > self.pack_row_h) self.pack_row_h = glyph_h;
+
+        // RGB output buffer — exact glyph size, no wasted space
+        var rgb_buf: [3 * 256 * 256]u8 = undefined;
+        const rgb_size = 3 * glyph_w * glyph_h;
+        @memset(rgb_buf[0..rgb_size], 0);
+
+        if (has_pixels) {
+            const ct_buf_size: u32 = rgb_size; // ClearType 3x1 = same as RGB
             var ct_buf: [3 * 256 * 256]u8 = undefined;
             if (ct_buf_size <= ct_buf.len) {
                 if (analysis.?.CreateAlphaTexture(
@@ -363,65 +398,59 @@ pub const FontAtlas = struct {
                     &ct_buf,
                     ct_buf_size,
                 ) >= 0) {
-                    // Map glyph pixels into cell-sized output, clipping to cell area
-                    const cell_w_i: i32 = @intCast(glyph_width);
-                    const cell_h_i: i32 = @intCast(cell_h);
-
-                    var ty: u32 = 0;
-                    while (ty < tex_h) : (ty += 1) {
-                        const cy: i32 = tex_bounds.top + @as(i32, @intCast(ty));
-                        if (cy < 0 or cy >= cell_h_i) continue;
-
-                        var tx: u32 = 0;
-                        while (tx < tex_w) : (tx += 1) {
-                            const cx: i32 = tex_bounds.left + @as(i32, @intCast(tx));
-                            if (cx < 0 or cx >= cell_w_i) continue;
-
-                            const src = (ty * tex_w + tx) * 3;
-                            const r = ct_buf[src];
-                            const g = ct_buf[src + 1];
-                            const b = ct_buf[src + 2];
-                            const alpha = self.alpha_lut[@max(r, @max(g, b))];
-
-                            const dst = (@as(u32, @intCast(cy)) * glyph_width + @as(u32, @intCast(cx))) * 4;
-                            rgba_buf[dst] = 255;
-                            rgba_buf[dst + 1] = 255;
-                            rgba_buf[dst + 2] = 255;
-                            rgba_buf[dst + 3] = alpha;
-                        }
+                    // Apply enhanced contrast LUT, then mix ClearType with grayscale
+                    var i: u32 = 0;
+                    while (i + 2 < rgb_size) : (i += 3) {
+                        const r = blend_lut[ct_buf[i]];
+                        const g = blend_lut[ct_buf[i + 1]];
+                        const b = blend_lut[ct_buf[i + 2]];
+                        // Grayscale alpha (average of R,G,B)
+                        const gray: u8 = @intCast((@as(u16, r) + @as(u16, g) + @as(u16, b)) / 3);
+                        // Mix: final = gray * (1 - ct_level) + channel * ct_level
+                        const rf: f32 = @as(f32, @floatFromInt(gray)) * (1.0 - ct_level) + @as(f32, @floatFromInt(r)) * ct_level;
+                        const gf: f32 = @as(f32, @floatFromInt(gray)) * (1.0 - ct_level) + @as(f32, @floatFromInt(g)) * ct_level;
+                        const bf: f32 = @as(f32, @floatFromInt(gray)) * (1.0 - ct_level) + @as(f32, @floatFromInt(b)) * ct_level;
+                        rgb_buf[i] = @intFromFloat(@min(rf, 255.0));
+                        rgb_buf[i + 1] = @intFromFloat(@min(gf, 255.0));
+                        rgb_buf[i + 2] = @intFromFloat(@min(bf, 255.0));
                     }
                 }
             }
         }
 
-        // Upload to GL texture
+        // Upload actual glyph pixels to atlas (tight bounds)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1);
         gl.glTexSubImage2D(
             gl.GL_TEXTURE_2D,
             0,
             @intCast(self.pack_x),
             @intCast(self.pack_y),
-            @intCast(glyph_width),
-            @intCast(cell_h),
-            @intCast(gl.GL_RGBA),
+            @intCast(glyph_w),
+            @intCast(glyph_h),
+            @intCast(gl.GL_RGB),
             gl.GL_UNSIGNED_BYTE,
-            @ptrCast(&rgba_buf),
+            @ptrCast(&rgb_buf),
         );
 
-        // Compute UV coordinates
+        // UV and offset info for renderer
         const atlas_f: f32 = @floatFromInt(ATLAS_SIZE);
         const info = GlyphInfo{
             .uv = .{
                 .u0 = @as(f32, @floatFromInt(self.pack_x)) / atlas_f,
                 .v0 = @as(f32, @floatFromInt(self.pack_y)) / atlas_f,
-                .u1 = @as(f32, @floatFromInt(self.pack_x + glyph_width)) / atlas_f,
-                .v1 = @as(f32, @floatFromInt(self.pack_y + cell_h)) / atlas_f,
+                .u1 = @as(f32, @floatFromInt(self.pack_x + glyph_w)) / atlas_f,
+                .v1 = @as(f32, @floatFromInt(self.pack_y + glyph_h)) / atlas_f,
             },
             .cell_count = if (is_wide) 2 else 1,
+            .offset_x = @intCast(std.math.clamp(glyph_off_x, -128, 127)),
+            .offset_y = @intCast(std.math.clamp(glyph_off_y, -128, 127)),
+            .pixel_w = @intCast(@min(glyph_w, 255)),
+            .pixel_h = @intCast(@min(glyph_h, 255)),
         };
 
         self.glyph_map.put(codepoint, info) catch {};
-        self.pack_x += glyph_width;
+        self.pack_x += glyph_w;
 
         return info;
     }
