@@ -179,6 +179,7 @@ pub const GlRenderer = struct {
         vp_w: c_int,
         vp_h: c_int,
         y_offset: c_int,
+        padding: c_int,
     ) void {
         self.render_state.update(self.alloc, terminal) catch return;
 
@@ -189,7 +190,8 @@ pub const GlRenderer = struct {
 
         const cw: gl.GLfloat = @floatFromInt(cell_w);
         const ch: gl.GLfloat = @floatFromInt(cell_h);
-        const y_off: gl.GLfloat = @floatFromInt(y_offset);
+        const y_off: gl.GLfloat = @floatFromInt(y_offset + padding);
+        const x_pad: gl.GLfloat = @floatFromInt(padding);
 
         gl.glEnable(gl.GL_BLEND);
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
@@ -265,7 +267,7 @@ pub const GlRenderer = struct {
                     bg_rgb.b == colors.background.b) continue;
 
                 const width: gl.GLfloat = if (raw.wide == .wide) 2.0 * cw else cw;
-                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw;
+                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw + x_pad;
                 const fy: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(y)) * ch + y_off;
 
                 gl.glColor3f(
@@ -337,7 +339,7 @@ pub const GlRenderer = struct {
                 );
 
                 const width: gl.GLfloat = if (is_wide) 2.0 * cw else cw;
-                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw;
+                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw + x_pad;
                 const fy: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(y)) * ch + y_off;
                 const uv = glyph.uv;
 
@@ -402,7 +404,7 @@ pub const GlRenderer = struct {
                 );
 
                 const width: gl.GLfloat = if (raw.wide == .wide) 2.0 * cw else cw;
-                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw;
+                const fx: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(x)) * cw + x_pad;
                 const fy: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(y)) * ch + y_off;
 
                 const qx0 = fx + rect.x0 * width;
@@ -429,7 +431,7 @@ pub const GlRenderer = struct {
                     cursor_x -= 1.0;
                 }
 
-                const cx0 = cursor_x * cw;
+                const cx0 = cursor_x * cw + x_pad;
                 const cy0 = cursor_y * ch + y_off;
 
                 // Use terminal cursor color if set, otherwise default
@@ -456,8 +458,8 @@ pub const GlRenderer = struct {
         // --- Scrollbar ---
         const sb = terminal.screens.active.pages.scrollbar();
         if (sb.total > sb.len) {
-            const track_h: gl.GLfloat = @floatFromInt(vp_h - y_offset);
-            const track_x: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(vp_w)) - SCROLLBAR_W;
+            const track_h: gl.GLfloat = @floatFromInt(vp_h - y_offset - padding);
+            const track_x: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(vp_w - padding)) - SCROLLBAR_W;
 
             const ratio = track_h / @as(gl.GLfloat, @floatFromInt(sb.total));
             const thumb_h = @max(SCROLLBAR_MIN_H, ratio * @as(gl.GLfloat, @floatFromInt(sb.len)));
