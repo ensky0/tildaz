@@ -253,7 +253,7 @@ const App = struct {
     const CLOSE_BTN_SIZE: c_int = 14;
     const TAB_PADDING: c_int = 6;
     const SCROLLBAR_W: c_int = 8;
-    const TERMINAL_PADDING: c_int = 8;
+    const TERMINAL_PADDING: c_int = 6;
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
@@ -861,7 +861,7 @@ fn run() !void {
 
     const font_family_w = config.fontFamilyUtf16(0);
     const font_size: c_int = @intCast(config.font_size);
-    try app.window.init(font_family_w, font_size, config.opacity);
+    try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
     defer app.window.deinit();
 
     // Initialize OpenGL renderer
