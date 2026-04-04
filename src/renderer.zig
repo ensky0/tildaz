@@ -459,7 +459,7 @@ pub const GlRenderer = struct {
         const sb = terminal.screens.active.pages.scrollbar();
         if (sb.total > sb.len) {
             const track_h: gl.GLfloat = @floatFromInt(vp_h - y_offset - padding);
-            const track_x: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(vp_w - padding)) - SCROLLBAR_W;
+            const track_x: gl.GLfloat = @as(gl.GLfloat, @floatFromInt(vp_w)) - SCROLLBAR_W;
 
             const ratio = track_h / @as(gl.GLfloat, @floatFromInt(sb.total));
             const thumb_h = @max(SCROLLBAR_MIN_H, ratio * @as(gl.GLfloat, @floatFromInt(sb.len)));
