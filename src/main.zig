@@ -234,8 +234,6 @@ const App = struct {
     max_scroll_lines: usize = 10_000,
     theme: ?*const themes.Theme = null,
     last_render_ms: i64 = 0,
-    last_shell_restart_ms: i64 = 0,
-    shell_restart_count: u32 = 0,
     dragging: bool = false,
     drag_tab_index: usize = 0,
     drag_start_x: c_int = 0,
@@ -279,28 +277,10 @@ const App = struct {
         }
 
         if (self.tabs.items.len == 0) {
-            // 마지막 탭의 셸이 종료됨 — 새 셸 자동 재시작 (무한 루프 방지)
-            const now = std.time.milliTimestamp();
-            if (now - self.last_shell_restart_ms < 3000) {
-                self.shell_restart_count += 1;
-            } else {
-                self.shell_restart_count = 0;
-            }
-            self.last_shell_restart_ms = now;
-
-            if (self.shell_restart_count >= 3) {
-                // 3초 내 3회 이상 재시작 → 무한 루프로 판단, 앱 종료
-                self.window.shell_exited = true;
-                if (self.window.hwnd) |hwnd| {
-                    _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                }
-            } else {
-                self.createTab() catch {
-                    self.window.shell_exited = true;
-                    if (self.window.hwnd) |hwnd| {
-                        _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                    }
-                };
+            // 마지막 탭 닫힘 — 창 종료
+            self.window.shell_exited = true;
+            if (self.window.hwnd) |hwnd| {
+                _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
             }
         } else {
             if (self.active_tab >= self.tabs.items.len) {
