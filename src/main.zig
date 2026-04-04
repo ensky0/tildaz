@@ -18,6 +18,7 @@ extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) c_int;
 extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GetLastError() callconv(.c) u32;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
+extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const WM_CLOSE: c_uint = 0x0010;
 const WM_KEYDOWN: c_uint = 0x0100;
@@ -156,6 +157,7 @@ const Tab = struct {
             .cursor = .unset,
             .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
         } else ghostty.Terminal.Colors.default;
+
         tab.* = .{
             .terminal = try ghostty.Terminal.init(alloc, .{
                 .cols = cols,
@@ -168,7 +170,7 @@ const Tab = struct {
                 .colors = term_colors,
             }),
             .stream = undefined,
-            .pty = try ConPty.init(alloc, cols, rows, shell),
+            .pty = try ConPty.init(alloc, cols, rows, shell, envVarsForTheme(owner.theme)),
             .owner = owner,
         };
         tab.stream = tab.terminal.vtStream();
@@ -754,6 +756,48 @@ const App = struct {
         return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lp)) >> 16))));
     }
 };
+
+/// 테마 배경 밝기에 따라 COLORFGBG 환경변수를 설정.
+/// vim 등이 dark/light background를 올바르게 감지하도록 함.
+/// WSLENV에도 COLORFGBG를 추가하여 WSL 환경으로 전달되게 함.
+fn envVarsForTheme(theme: ?*const themes.Theme) ?[]const ConPty.EnvVar {
+    const S = struct {
+        const dark_val = std.unicode.utf8ToUtf16LeStringLiteral("15;0");
+        const light_val = std.unicode.utf8ToUtf16LeStringLiteral("0;15");
+        const colorfgbg_name = std.unicode.utf8ToUtf16LeStringLiteral("COLORFGBG");
+        const wslenv_name = std.unicode.utf8ToUtf16LeStringLiteral("WSLENV");
+        var vars: [2]ConPty.EnvVar = undefined;
+        // WSLENV 값 버퍼: 기존값 + ":COLORFGBG\0"
+        var wslenv_buf: [512]u16 = undefined;
+    };
+    const t = theme orelse return null;
+    const lum = @as(u32, t.background.r) * 299 +
+        @as(u32, t.background.g) * 587 +
+        @as(u32, t.background.b) * 114;
+    S.vars[0] = .{
+        .name = S.colorfgbg_name,
+        .value = if (lum < 128_000) S.dark_val else S.light_val,
+    };
+    // WSLENV: 기존 값에 ":COLORFGBG" 추가 (기존 값이 없으면 "COLORFGBG"만)
+    const suffix = std.unicode.utf8ToUtf16LeStringLiteral("COLORFGBG");
+    var pos: usize = 0;
+    const existing = GetEnvironmentVariableW(S.wslenv_name, &S.wslenv_buf, S.wslenv_buf.len);
+    if (existing > 0 and existing < S.wslenv_buf.len - suffix.len - 1) {
+        pos = existing;
+        S.wslenv_buf[pos] = ':';
+        pos += 1;
+    }
+    for (suffix) |c| {
+        S.wslenv_buf[pos] = c;
+        pos += 1;
+    }
+    S.wslenv_buf[pos] = 0;
+    S.vars[1] = .{
+        .name = S.wslenv_name,
+        .value = @ptrCast(S.wslenv_buf[0..pos :0]),
+    };
+    return &S.vars;
+}
 
 /// ReleaseFast에서도 crash 원인을 표시하는 panic handler
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {

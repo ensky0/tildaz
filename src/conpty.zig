@@ -179,6 +179,8 @@ extern "kernel32" fn CreateEventW(
 ) callconv(.c) ?HANDLE;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) DWORD;
+extern "kernel32" fn SetEnvironmentVariableW([*:0]const u16, ?[*:0]const u16) callconv(.c) c_int;
+extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, DWORD) callconv(.c) DWORD;
 
 const OVERLAPPED = extern struct {
     Internal: usize = 0,
@@ -211,8 +213,9 @@ pub const ConPty = struct {
 
     pub const ReadCallback = *const fn (data: []const u8, userdata: ?*anyopaque) void;
     pub const ExitCallback = *const fn (userdata: ?*anyopaque) void;
+    pub const EnvVar = struct { name: [*:0]const u16, value: [*:0]const u16 };
 
-    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR) !ConPty {
+    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR, extra_env: ?[]const EnvVar) !ConPty {
         // Create pipes for ConPTY
         // Input pipe: overlapped named pipe (write side) so WriteFile won't block UI
         var pty_output_read: HANDLE = INVALID_HANDLE_VALUE;
@@ -330,6 +333,30 @@ pub const ConPty = struct {
         }
         cmd_buf[i] = 0;
 
+        // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
+        const MAX_EXTRA_ENV = 4;
+        var saved_vals: [MAX_EXTRA_ENV][256]u16 = undefined;
+        var saved_lens: [MAX_EXTRA_ENV]u32 = .{0} ** MAX_EXTRA_ENV;
+        if (extra_env) |vars| {
+            for (vars, 0..) |v, vi| {
+                saved_lens[vi] = GetEnvironmentVariableW(v.name, &saved_vals[vi], saved_vals[vi].len);
+                _ = SetEnvironmentVariableW(v.name, v.value);
+            }
+        }
+
+        const restore_env = struct {
+            fn restore(vars: ?[]const EnvVar, s_vals: *[MAX_EXTRA_ENV][256]u16, s_lens: *[MAX_EXTRA_ENV]u32) void {
+                if (vars) |vs| for (vs, 0..) |v, vi| {
+                    if (s_lens[vi] > 0 and s_lens[vi] < s_vals[vi].len) {
+                        s_vals[vi][s_lens[vi]] = 0;
+                        _ = SetEnvironmentVariableW(v.name, @ptrCast(s_vals[vi][0..s_lens[vi] :0]));
+                    } else {
+                        _ = SetEnvironmentVariableW(v.name, null);
+                    }
+                };
+            }
+        }.restore;
+
         if (CreateProcessW(
             null,
             @ptrCast(&cmd_buf),
@@ -342,8 +369,11 @@ pub const ConPty = struct {
             &startup_info,
             &process_info,
         ) == 0) {
+            restore_env(extra_env, &saved_vals, &saved_lens);
             return error.CreateProcessFailed;
         }
+
+        restore_env(extra_env, &saved_vals, &saved_lens);
 
         return .{
             .hpc = hpc,
@@ -451,7 +481,7 @@ pub const ConPty = struct {
 // Simple test: verify ConPTY can be created and destroyed
 test "conpty create and destroy" {
     const shell = std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
-    var pty = try ConPty.init(std.testing.allocator, 80, 24, shell);
+    var pty = try ConPty.init(std.testing.allocator, 80, 24, shell, null);
     defer pty.deinit();
     try std.testing.expect(pty.isProcessAlive());
 }
