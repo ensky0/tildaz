@@ -328,7 +328,7 @@ pub const ConPty = struct {
         // We need a mutable copy of the shell command line
         var cmd_buf: [256]WCHAR = undefined;
         var i: usize = 0;
-        while (shell[i] != 0) : (i += 1) {
+        while (shell[i] != 0 and i < cmd_buf.len - 1) : (i += 1) {
             cmd_buf[i] = shell[i];
         }
         cmd_buf[i] = 0;
