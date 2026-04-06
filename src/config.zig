@@ -34,9 +34,9 @@ pub const Config = struct {
     // font
     font_families: [MAX_FONT_FAMILIES][]const u8 = DEFAULT_FONT_FAMILIES ++ .{""} ** (MAX_FONT_FAMILIES - DEFAULT_FONT_FAMILIES.len),
     font_family_count: u8 = DEFAULT_FONT_FAMILIES.len,
-    font_size: u8 = 20,
+    font_size: u8 = 19,
     line_height: f32 = 0.95,
-    cell_width: f32 = 1.2,
+    cell_width: f32 = 1.1,
     // appearance
     opacity: u8 = 255,
     theme: ?*const themes.Theme = themes.findTheme(DEFAULT_THEME),
