@@ -253,7 +253,7 @@ pub const Config = struct {
         var buf: [512]WCHAR = undefined;
         var pos: usize = 0;
         const prefix = std.unicode.utf8ToUtf16LeStringLiteral("config.json: unknown theme \"");
-        for (prefix[0..27]) |c| {
+        for (prefix) |c| {
             if (pos < buf.len - 1) {
                 buf[pos] = c;
                 pos += 1;
@@ -266,7 +266,7 @@ pub const Config = struct {
             }
         }
         const suffix = std.unicode.utf8ToUtf16LeStringLiteral("\"\n\nAvailable themes:\n");
-        for (suffix[0..20]) |c| {
+        for (suffix) |c| {
             if (pos < buf.len - 1) {
                 buf[pos] = c;
                 pos += 1;
@@ -274,7 +274,7 @@ pub const Config = struct {
         }
         for (themes.themes, 0..) |t, i| {
             if (i > 0) {
-                for (std.unicode.utf8ToUtf16LeStringLiteral(", ")[0..2]) |c| {
+                for (std.unicode.utf8ToUtf16LeStringLiteral(", ")) |c| {
                     if (pos < buf.len - 1) {
                         buf[pos] = c;
                         pos += 1;
