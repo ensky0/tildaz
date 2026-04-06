@@ -325,7 +325,7 @@ pub const FontAtlas = struct {
             &glyph_run,
             1.0, // pixelsPerDip
             null, // no transform
-            dw.DWRITE_RENDERING_MODE_NATURAL,
+            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
             dw.DWRITE_MEASURING_MODE_NATURAL,
             0.0, // baselineOriginX
             self.dw_ascent_px, // baselineOriginY
@@ -340,7 +340,7 @@ pub const FontAtlas = struct {
 
         // Get blend parameters from DirectWrite for accurate gamma correction
         var blend_lut: [256]u8 = undefined;
-        const ct_level: f32 = 0.5; // Reduce ClearType color fringing (0=grayscale, 1=full ClearType)
+        const ct_level: f32 = 1.0; // Full ClearType subpixel rendering
         if (self.dw_rendering_params) |rp| {
             var blend_gamma: dw.FLOAT = 1.8;
             var blend_enhanced_contrast: dw.FLOAT = 0.5;
