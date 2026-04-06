@@ -164,6 +164,7 @@ extern "user32" fn GetDpiForWindow(HWND) callconv(.c) UINT;
 extern "user32" fn EmptyClipboard() callconv(.c) BOOL;
 extern "user32" fn SetClipboardData(UINT, ?*anyopaque) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.c) ?*anyopaque;
+extern "kernel32" fn GlobalFree(?*anyopaque) callconv(.c) ?*anyopaque;
 const GMEM_MOVEABLE: UINT = 0x0002;
 
 const MB_YESNO: UINT = 0x04;
@@ -683,12 +684,19 @@ pub const Window = struct {
         // Allocate global memory (UTF-16 + null terminator)
         const alloc_size = (utf16_len + 1) * 2;
         const hmem = GlobalAlloc(GMEM_MOVEABLE, alloc_size) orelse return;
-        const raw_lock = GlobalLock(hmem) orelse return;
+        const raw_lock = GlobalLock(hmem) orelse {
+            _ = GlobalFree(hmem);
+            return;
+        };
         const ptr: [*]u8 = @ptrCast(raw_lock);
 
         // Write UTF-16 data
         var wide_ptr: [*]u16 = @ptrCast(@alignCast(ptr));
-        var view2 = std.unicode.Utf8View.init(text) catch return;
+        var view2 = std.unicode.Utf8View.init(text) catch {
+            _ = GlobalUnlock(hmem);
+            _ = GlobalFree(hmem);
+            return;
+        };
         var iter2 = view2.iterator();
         var idx: usize = 0;
         while (iter2.nextCodepoint()) |cp| {

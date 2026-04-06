@@ -473,41 +473,6 @@ pub const D3d11Renderer = struct {
         var text_instances: [512]TextInstance = undefined;
         var text_count: u32 = 0;
 
-        for (0..tab_count) |i| {
-            const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
-            const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
-
-            // Tab title from stored name
-            const title = tab_titles[i].ptr[0..tab_titles[i].len];
-            // Baseline Y for vertical centering: place baseline so text is centered in tab bar
-            const baseline_y = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
-
-            for (title) |ch_byte| {
-                if (text_count >= 512) break;
-                const result = self.font.resolveGlyph(ch_byte) orelse continue;
-                if (result.owned) _ = result.face.vtable.Release(result.face);
-                const entry = self.atlas.getOrInsert(result.face, result.index) orelse continue;
-                if (entry.w == 0 or entry.h == 0) {
-                    // space — just advance
-                } else {
-                    const gx = tab_x + pad + @as(f32, @floatFromInt(text_count)) * cw + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = baseline_y + @as(f32, @floatFromInt(entry.bearing_y));
-                    text_instances[text_count] = .{
-                        .pos = .{ gx, gy },
-                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
-                    };
-                }
-                text_count += 1;
-            }
-            // Reset text_count for x position tracking — we're building a flat array
-            // Actually, we need to track x position separately for tab text
-        }
-
-        // Simpler approach: rebuild text instances properly with x tracking
-        text_count = 0;
         var cursor_instances: [1]BgInstance = undefined;
         var cursor_count: u32 = 0;
         for (0..tab_count) |i| {
@@ -527,8 +492,14 @@ pub const D3d11Renderer = struct {
             var byte_idx: usize = 0;
             var truncated = false;
             const rename_cursor_pos: ?usize = if (is_renaming) rename_state.?.cursor else null;
-            for (title) |ch_byte| {
+            var view = std.unicode.Utf8View.init(title) catch {
+                // Invalid UTF-8 — skip this tab's text
+                continue;
+            };
+            var cp_iter = view.iterator();
+            while (cp_iter.nextCodepoint()) |codepoint| {
                 if (text_count >= 510) break;
+                const cp_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
                 // Truncate with "..." if text would overflow
                 if (needs_truncate and x_off + cw > max_text_w - ellipsis_w) {
                     // Render "..."
@@ -565,8 +536,8 @@ pub const D3d11Renderer = struct {
                         cursor_count = 1;
                     }
                 }
-                byte_idx += 1;
-                const result = self.font.resolveGlyph(ch_byte) orelse {
+                byte_idx += cp_len;
+                const result = self.font.resolveGlyph(codepoint) orelse {
                     x_off += cw;
                     continue;
                 };
