@@ -19,6 +19,9 @@ extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv
 extern "kernel32" fn GetLastError() callconv(.c) u32;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
+extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
+extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
+const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const WM_CLOSE: c_uint = 0x0010;
 const WM_KEYDOWN: c_uint = 0x0100;
@@ -243,16 +246,17 @@ const App = struct {
     scrollbar_dragging: bool = false, // true = scrollbar drag in progress
     select_start_pin: ?ghostty.PageList.Pin = null,
 
+    // DPI-scaled values (initialized in run())
+    dpi_scale: f32 = 1.0,
+    TAB_BAR_HEIGHT: c_int = 28,
+    TAB_WIDTH: c_int = 150,
+    CLOSE_BTN_SIZE: c_int = 14,
+    TAB_PADDING: c_int = 6,
+    SCROLLBAR_W: c_int = 8,
+    TERMINAL_PADDING: c_int = 6,
+
     // Word boundary characters for double-click selection
     const word_boundaries = [_]u21{ ' ', '\t', '"', '\'', '`', '|', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '<', '>' };
-
-    // Tab bar constants
-    const TAB_BAR_HEIGHT: c_int = 28;
-    const TAB_WIDTH: c_int = 150;
-    const CLOSE_BTN_SIZE: c_int = 14;
-    const TAB_PADDING: c_int = 6;
-    const SCROLLBAR_W: c_int = 8;
-    const TERMINAL_PADDING: c_int = 6;
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
@@ -296,8 +300,8 @@ const App = struct {
         if (self.window.hwnd == null) return .{ .cols = 120, .rows = 30 };
         var rect: RECT = undefined;
         _ = GetClientRect(self.window.hwnd, &rect);
-        const w = rect.right - rect.left - 2 * TERMINAL_PADDING;
-        const h = rect.bottom - rect.top - TAB_BAR_HEIGHT - 2 * TERMINAL_PADDING;
+        const w = rect.right - rect.left - 2 * self.TERMINAL_PADDING;
+        const h = rect.bottom - rect.top - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
         const cols: u16 = if (self.window.cell_width > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width))) else 120;
         const rows: u16 = if (self.window.cell_height > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height))) else 30;
         return .{ .cols = cols, .rows = rows };
@@ -374,12 +378,12 @@ const App = struct {
                 r.renderTabBar(
                     self.tabs.items.len,
                     self.active_tab,
-                    TAB_BAR_HEIGHT,
+                    self.TAB_BAR_HEIGHT,
                     size.w,
                     size.h,
-                    TAB_WIDTH,
-                    CLOSE_BTN_SIZE,
-                    TAB_PADDING,
+                    self.TAB_WIDTH,
+                    self.CLOSE_BTN_SIZE,
+                    self.TAB_PADDING,
                     if (self.dragging) self.drag_tab_index else null,
                     if (self.dragging) self.drag_current_x else 0,
                 );
@@ -390,8 +394,8 @@ const App = struct {
                         window.cell_height,
                         size.w,
                         size.h,
-                        TAB_BAR_HEIGHT,
-                        TERMINAL_PADDING,
+                        self.TAB_BAR_HEIGHT,
+                        self.TERMINAL_PADDING,
                     );
                 }
             } else {
@@ -463,10 +467,10 @@ const App = struct {
             _ = GetClientRect(hwnd, &rect);
             client_h = rect.bottom;
         }
-        const track_h = client_h - TAB_BAR_HEIGHT - 2 * TERMINAL_PADDING;
+        const track_h = client_h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
         if (track_h <= 0) return;
 
-        const rel_y = @max(0, mouse_y - TAB_BAR_HEIGHT - TERMINAL_PADDING);
+        const rel_y = @max(0, mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING);
         const track_hf = @as(f64, @floatFromInt(track_h));
         const ratio_px = track_hf / @as(f64, @floatFromInt(sb.total));
         const thumb_h = @max(16.0, ratio_px * @as(f64, @floatFromInt(sb.len)));
@@ -487,20 +491,20 @@ const App = struct {
     }
 
     pub fn handleTabClick(self: *App, mouse_x: c_int, mouse_y: c_int) void {
-        if (mouse_y >= TAB_BAR_HEIGHT) return; // Below tab bar
+        if (mouse_y >= self.TAB_BAR_HEIGHT) return; // Below tab bar
         if (self.tabs.items.len == 0) return;
 
-        const tab_index_raw = @divTrunc(mouse_x, TAB_WIDTH);
+        const tab_index_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
         if (tab_index_raw < 0) return;
         const tab_index: usize = @intCast(tab_index_raw);
         if (tab_index >= self.tabs.items.len) return;
 
         // Check if click is on close button
-        const tab_x = @as(c_int, @intCast(tab_index)) * TAB_WIDTH;
-        const close_x = tab_x + TAB_WIDTH - CLOSE_BTN_SIZE - TAB_PADDING;
-        const close_y = @divTrunc(TAB_BAR_HEIGHT - CLOSE_BTN_SIZE, 2);
-        if (mouse_x >= close_x and mouse_x <= close_x + CLOSE_BTN_SIZE and
-            mouse_y >= close_y and mouse_y <= close_y + CLOSE_BTN_SIZE)
+        const tab_x = @as(c_int, @intCast(tab_index)) * self.TAB_WIDTH;
+        const close_x = tab_x + self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING;
+        const close_y = @divTrunc(self.TAB_BAR_HEIGHT - self.CLOSE_BTN_SIZE, 2);
+        if (mouse_x >= close_x and mouse_x <= close_x + self.CLOSE_BTN_SIZE and
+            mouse_y >= close_y and mouse_y <= close_y + self.CLOSE_BTN_SIZE)
         {
             self.closeTab(tab_index);
             return;
@@ -514,7 +518,7 @@ const App = struct {
 
     pub fn handleDragStart(self: *App, mouse_x: c_int) void {
         self.dragging = false;
-        const idx_raw = @divTrunc(mouse_x, TAB_WIDTH);
+        const idx_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
         if (idx_raw < 0) return;
         const idx: usize = @intCast(idx_raw);
         if (idx >= self.tabs.items.len) return;
@@ -531,7 +535,7 @@ const App = struct {
 
     pub fn handleDragEnd(self: *App) void {
         if (self.dragging and self.tabs.items.len > 1 and self.drag_tab_index < self.tabs.items.len) {
-            var target_raw = @divTrunc(self.drag_current_x, TAB_WIDTH);
+            var target_raw = @divTrunc(self.drag_current_x, self.TAB_WIDTH);
             target_raw = @max(0, @min(target_raw, @as(c_int, @intCast(self.tabs.items.len - 1))));
             const target: usize = @intCast(target_raw);
             if (target != self.drag_tab_index) {
@@ -554,8 +558,8 @@ const App = struct {
         const cw = self.window.cell_width;
         const ch = self.window.cell_height;
         const grid = self.getTerminalGridSize();
-        const term_x = mouse_x - TERMINAL_PADDING;
-        const term_y = mouse_y - TAB_BAR_HEIGHT - TERMINAL_PADDING;
+        const term_x = mouse_x - self.TERMINAL_PADDING;
+        const term_y = mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING;
         const col: u16 = if (cw > 0 and term_x >= 0) @intCast(@min(@divTrunc(term_x, cw), @as(c_int, grid.cols) - 1)) else 0;
         const row: u16 = if (ch > 0 and term_y >= 0) @intCast(@min(@divTrunc(term_y, ch), @as(c_int, grid.rows) - 1)) else 0;
         return .{ .col = col, .row = row };
@@ -579,14 +583,14 @@ const App = struct {
         const tab = self.activeTabPtr() orelse return;
 
         // 터미널 영역 위/아래로 드래그 시 자동 스크롤
-        const term_y = mouse_y - TAB_BAR_HEIGHT - TERMINAL_PADDING;
+        const term_y = mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING;
         var client_h: c_int = 0;
         if (self.window.hwnd) |hwnd| {
             var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
             _ = GetClientRect(hwnd, &rect);
             client_h = rect.bottom;
         }
-        const term_h = client_h - TAB_BAR_HEIGHT - 2 * TERMINAL_PADDING;
+        const term_h = client_h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
         if (term_y < 0) {
             tab.terminal.scrollViewport(.{ .delta = -3 });
         } else if (term_y > term_h) {
@@ -667,7 +671,7 @@ const App = struct {
             WM_LBUTTONDOWN => {
                 const x = getXParam(lParam);
                 const y = getYParam(lParam);
-                if (y < TAB_BAR_HEIGHT) {
+                if (y < self.TAB_BAR_HEIGHT) {
                     self.tab_drag_active = true;
                     self.selecting = false;
                     self.scrollbar_dragging = false;
@@ -680,7 +684,7 @@ const App = struct {
                         _ = GetClientRect(hwnd, &rect);
                         client_w = rect.right;
                     }
-                    if (x >= client_w - SCROLLBAR_W) {
+                    if (x >= client_w - self.SCROLLBAR_W) {
                         self.scrollbar_dragging = true;
                         self.tab_drag_active = false;
                         self.selecting = false;
@@ -696,7 +700,7 @@ const App = struct {
             WM_LBUTTONDBLCLK => {
                 const x = getXParam(lParam);
                 const y = getYParam(lParam);
-                if (y >= TAB_BAR_HEIGHT) {
+                if (y >= self.TAB_BAR_HEIGHT) {
                     self.selectWordAt(x, y);
                 }
                 return true;
@@ -808,6 +812,9 @@ pub fn main() void {
 }
 
 fn run() !void {
+    // Enable per-monitor DPI awareness (must be before any window/GDI calls)
+    _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     // Single instance check
     const mutex = CreateMutexW(null, 0, std.unicode.utf8ToUtf16LeStringLiteral("Global\\TildaZ_SingleInstance"));
     if (mutex != null and GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -895,6 +902,24 @@ fn run() !void {
     const font_size: c_int = @intCast(config.font_size);
     try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
     defer app.window.deinit();
+
+    // Scale tab bar constants by DPI
+    const dpi = GetDpiForWindow(app.window.hwnd);
+    if (dpi > 96) {
+        const scale: f32 = @as(f32, @floatFromInt(dpi)) / 96.0;
+        app.dpi_scale = scale;
+        app.TAB_BAR_HEIGHT = @intFromFloat(@round(28.0 * scale));
+        app.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
+        app.CLOSE_BTN_SIZE = @intFromFloat(@round(14.0 * scale));
+        app.TAB_PADDING = @intFromFloat(@round(6.0 * scale));
+        app.SCROLLBAR_W = @intFromFloat(@round(8.0 * scale));
+        app.TERMINAL_PADDING = @intFromFloat(@round(6.0 * scale));
+    }
+    // Ensure tab bar is tall enough for the font (cell_height + 4px padding)
+    const min_tab_bar_h: c_int = @as(c_int, @intCast(app.window.cell_height)) + 4;
+    if (app.TAB_BAR_HEIGHT < min_tab_bar_h) {
+        app.TAB_BAR_HEIGHT = min_tab_bar_h;
+    }
 
     // Initialize D3D11 renderer
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;

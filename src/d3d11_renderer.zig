@@ -11,6 +11,7 @@ const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
 
 const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
+extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 
 // --- Instance data layouts ---
 
@@ -38,6 +39,7 @@ const Constants = extern struct {
     _pad1: f32 = 0,
     _pad2: f32 = 0,
     _pad3: f32 = 0,
+    gamma_ratios: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 // --- HLSL Shaders ---
@@ -53,7 +55,7 @@ const bg_shader_src =
 ;
 
 const text_shader_src =
-    \\cbuffer CB : register(b0) { float4 sa; float4 p; };
+    \\cbuffer CB : register(b0) { float4 sa; float4 p; float4 gr; };
     \\Texture2D atlas : register(t0);
     \\SamplerState smp : register(s0);
     \\struct I { float2 pos: IPOS; float2 sz: ISZ; float2 uvp: IUVP; float2 uvs: IUVS;
@@ -65,8 +67,15 @@ const text_shader_src =
     \\  O o; o.pos = float4(px.x, -px.y, 0, 1);
     \\  o.uv = (i.uvp + c * i.uvs) / sa.zw; o.fg = i.fg; return o; }
     \\float enh(float a, float k) { return a * (k + 1.0) / (a * k + 1.0); }
+    \\float gammaCorr(float a, float f, float4 g) {
+    \\  return a + a * (1.0 - a) * ((g.x * f + g.y) * a + (g.z * f + g.w)); }
+    \\float lodAdj(float k, float3 c) {
+    \\  return k * saturate(dot(c, float3(0.30, 0.59, 0.11) * -4.0) + 3.0); }
     \\P text_ps(O i) : SV_Target { float3 g = atlas.Sample(smp, i.uv).rgb;
-    \\  float3 ct = float3(enh(g.r, p.x), enh(g.g, p.x), enh(g.b, p.x));
+    \\  float k = lodAdj(p.x, i.fg.rgb);
+    \\  float3 ct = float3(enh(g.r, k), enh(g.g, k), enh(g.b, k));
+    \\  ct = float3(gammaCorr(ct.r, i.fg.r, gr), gammaCorr(ct.g, i.fg.g, gr),
+    \\              gammaCorr(ct.b, i.fg.b, gr));
     \\  P o; o.c0 = float4(i.fg.rgb * ct, 1); o.c1 = float4(1 - ct, 1); return o; }
 ;
 
@@ -104,6 +113,10 @@ pub const D3d11Renderer = struct {
 
     // Default background
     default_bg: [3]f32,
+
+    // ClearType tuning (from system settings)
+    sys_enhanced_contrast: f32,
+    gamma_ratios: [4]f32,
 
     // Viewport dimensions
     vp_width: u32 = 0,
@@ -160,8 +173,13 @@ pub const D3d11Renderer = struct {
         var font_ctx = try DWriteFontContext.init(font_family, font_height, cell_w, cell_h);
         errdefer font_ctx.deinit();
 
-        // 3. Init glyph atlas
-        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, device.?, ctx.?);
+        // 3. Init glyph atlas (with DPI-aware pixelsPerDip)
+        const dpi = GetDpiForWindow(hwnd);
+        const pixels_per_dip: f32 = if (dpi > 0) @as(f32, @floatFromInt(dpi)) / 96.0 else 1.0;
+        // Scale ascent_px to match actual rendered glyph pixels (font_em_size is unscaled,
+        // but CreateGlyphRunAnalysis renders at font_em_size * pixels_per_dip)
+        font_ctx.ascent_px *= pixels_per_dip;
+        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, device.?, ctx.?);
         errdefer atlas.deinit();
 
         // 4. Compile shaders
@@ -277,7 +295,18 @@ pub const D3d11Renderer = struct {
         }, null, &cb) < 0) return error.BufferFailed;
         errdefer _ = cb.?.Release();
 
-        // 11. Create initial render target view
+        // 11. Read system ClearType settings (gamma, enhanced contrast)
+        var sys_enhanced_contrast: f32 = 0.5; // default
+        var sys_gamma: f32 = 1.8; // default
+        var default_rp: ?*dw.IDWriteRenderingParams = null;
+        if (font_ctx.factory.CreateRenderingParams(&default_rp) >= 0) {
+            sys_enhanced_contrast = default_rp.?.GetEnhancedContrast();
+            sys_gamma = default_rp.?.GetGamma();
+            _ = default_rp.?.Release();
+        }
+        const gamma_ratios = computeGammaRatios(sys_gamma);
+
+        // 12. Create initial render target view
         var self = D3d11Renderer{
             .alloc = alloc,
             .font = font_ctx,
@@ -298,6 +327,8 @@ pub const D3d11Renderer = struct {
             .text_buffer = text_buffer.?,
             .cb = cb.?,
             .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
+            .sys_enhanced_contrast = sys_enhanced_contrast,
+            .gamma_ratios = gamma_ratios,
         };
 
         self.createRTV();
@@ -438,7 +469,8 @@ pub const D3d11Renderer = struct {
             // "Tab N" title
             var title_buf: [16]u8 = undefined;
             const title = std.fmt.bufPrint(&title_buf, "Tab {d}", .{i + 1}) catch unreachable;
-            const text_y = (tbh - ch) / 2.0;
+            // Baseline Y for vertical centering: place baseline so text is centered in tab bar
+            const baseline_y = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
             for (title) |ch_byte| {
                 if (text_count >= 512) break;
@@ -449,7 +481,7 @@ pub const D3d11Renderer = struct {
                     // space — just advance
                 } else {
                     const gx = tab_x + pad + @as(f32, @floatFromInt(text_count)) * cw + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = text_y + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+                    const gy = baseline_y + @as(f32, @floatFromInt(entry.bearing_y));
                     text_instances[text_count] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -472,7 +504,7 @@ pub const D3d11Renderer = struct {
 
             var title_buf: [16]u8 = undefined;
             const title = std.fmt.bufPrint(&title_buf, "Tab {d}", .{i + 1}) catch unreachable;
-            const text_y = (tbh - ch) / 2.0;
+            const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
             var x_off: f32 = 0;
             for (title) |ch_byte| {
@@ -488,7 +520,7 @@ pub const D3d11Renderer = struct {
                 };
                 if (entry.w > 0 and entry.h > 0) {
                     const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = text_y + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+                    const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
                     text_instances[text_count] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -513,7 +545,8 @@ pub const D3d11Renderer = struct {
                 const entry = self.atlas.getOrInsert(result.face, result.index) orelse continue;
                 if (entry.w > 0 and entry.h > 0) {
                     const gx = close_x + (cbs - cw) / 2.0 + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = close_y + (cbs - ch) / 2.0 + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+                    const close_baseline = close_y + (cbs + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
+                    const gy = close_baseline + @as(f32, @floatFromInt(entry.bearing_y));
                     text_instances[text_count] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -759,7 +792,8 @@ pub const D3d11Renderer = struct {
                 .screen_h = @floatFromInt(self.vp_height),
                 .atlas_w = @floatFromInt(ATLAS_SIZE),
                 .atlas_h = @floatFromInt(ATLAS_SIZE),
-                .enhanced_contrast = 1.5,
+                .enhanced_contrast = self.sys_enhanced_contrast,
+                .gamma_ratios = self.gamma_ratios,
             };
             self.ctx.Unmap(@ptrCast(self.cb), 0);
         }
@@ -915,6 +949,45 @@ pub const D3d11Renderer = struct {
             0x2594 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1.0 / 8.0, .alpha = 1 },
             0x2595 => .{ .x0 = 7.0 / 8.0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
             else => null,
+        };
+    }
+
+    /// Compute gamma ratio coefficients from system gamma, exactly matching
+    /// Windows Terminal's DWrite_GetGammaRatios (dwrite_helpers.cpp).
+    /// Raw table values are divided by 4, then multiplied by norm13/norm24.
+    fn computeGammaRatios(gamma: f32) [4]f32 {
+        // Raw coefficient table from WT source (values / 4.0)
+        const raw = [13][4]f32{
+            .{ 0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0 }, // 1.0
+            .{ 0.0166 / 4.0, -0.0807 / 4.0, 0.2227 / 4.0, -0.0751 / 4.0 }, // 1.1
+            .{ 0.0350 / 4.0, -0.1760 / 4.0, 0.4325 / 4.0, -0.1370 / 4.0 }, // 1.2
+            .{ 0.0543 / 4.0, -0.2821 / 4.0, 0.6302 / 4.0, -0.1876 / 4.0 }, // 1.3
+            .{ 0.0739 / 4.0, -0.3963 / 4.0, 0.8167 / 4.0, -0.2287 / 4.0 }, // 1.4
+            .{ 0.0933 / 4.0, -0.5161 / 4.0, 0.9926 / 4.0, -0.2616 / 4.0 }, // 1.5
+            .{ 0.1121 / 4.0, -0.6395 / 4.0, 1.1588 / 4.0, -0.2877 / 4.0 }, // 1.6
+            .{ 0.1300 / 4.0, -0.7649 / 4.0, 1.3159 / 4.0, -0.3080 / 4.0 }, // 1.7
+            .{ 0.1469 / 4.0, -0.8911 / 4.0, 1.4644 / 4.0, -0.3234 / 4.0 }, // 1.8
+            .{ 0.1627 / 4.0, -1.0170 / 4.0, 1.6051 / 4.0, -0.3347 / 4.0 }, // 1.9
+            .{ 0.1773 / 4.0, -1.1420 / 4.0, 1.7385 / 4.0, -0.3426 / 4.0 }, // 2.0
+            .{ 0.1908 / 4.0, -1.2652 / 4.0, 1.8650 / 4.0, -0.3476 / 4.0 }, // 2.1
+            .{ 0.2031 / 4.0, -1.3864 / 4.0, 1.9851 / 4.0, -0.3501 / 4.0 }, // 2.2
+        };
+
+        // Normalization constants (from WT source)
+        const norm13: f32 = @floatCast(@as(f64, 0x10000) / (255.0 * 255.0) * 4.0);
+        const norm24: f32 = @floatCast(@as(f64, 0x100) / 255.0 * 4.0);
+
+        // WT uses nearest-index rounding: clamp(gamma*10 + 0.5, 10, 22) - 10
+        const idx_raw = @as(i32, @intFromFloat(gamma * 10.0 + 0.5));
+        const idx_clamped = @max(10, @min(22, idx_raw)) - 10;
+        const idx: usize = @intCast(idx_clamped);
+        const r = raw[idx];
+
+        return .{
+            norm13 * r[0],
+            norm24 * r[1],
+            norm13 * r[2],
+            norm24 * r[3],
         };
     }
 };
