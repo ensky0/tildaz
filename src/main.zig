@@ -4,7 +4,7 @@ const ConPty = @import("conpty.zig").ConPty;
 const window_mod = @import("window.zig");
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
-const GlRenderer = @import("renderer.zig").GlRenderer;
+const D2dRenderer = @import("d2d_renderer.zig").D2dRenderer;
 const Config = @import("config.zig").Config;
 const themes = @import("themes.zig");
 const autostart = @import("autostart.zig");
@@ -229,7 +229,7 @@ const App = struct {
     active_tab: usize = 0,
     window: Window,
     allocator: std.mem.Allocator,
-    gl_renderer: ?GlRenderer = null,
+    d2d_renderer: ?D2dRenderer = null,
     shell_utf16: [*:0]const u16,
     max_scroll_lines: usize = 10_000,
     theme: ?*const themes.Theme = null,
@@ -262,7 +262,7 @@ const App = struct {
         tab.setTitle(self.tabs.items.len);
         try self.tabs.append(self.allocator, tab);
         self.active_tab = self.tabs.items.len - 1;
-        if (self.gl_renderer) |*r| r.invalidate();
+        if (self.d2d_renderer) |*r| r.invalidate();
 
         try tab.pty.startReadThread(onPtyOutputTab, onPtyExitTab, tab);
     }
@@ -287,7 +287,7 @@ const App = struct {
                 self.active_tab = self.tabs.items.len - 1;
             }
             // Force full redraw so the new active tab's content is rendered
-            if (self.gl_renderer) |*r| r.invalidate();
+            if (self.d2d_renderer) |*r| r.invalidate();
         }
         tab.deinit(self.allocator);
     }
@@ -335,6 +335,11 @@ const App = struct {
 
     fn onResize(_: u16, _: u16, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
+        // Resize D2D render target to match new window size
+        if (self.d2d_renderer) |*r| {
+            const size = self.window.getClientSize();
+            r.resize(@intCast(@max(1, size.w)), @intCast(@max(1, size.h)));
+        }
         const grid = self.getTerminalGridSize();
         for (self.tabs.items) |tab| {
             tab.terminal.resize(self.allocator, grid.cols, grid.rows) catch {};
@@ -345,7 +350,7 @@ const App = struct {
     fn onRender(window: *Window) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
 
-        if (self.gl_renderer) |*r| {
+        if (self.d2d_renderer) |*r| {
             const size = window.getClientSize();
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
@@ -420,7 +425,7 @@ const App = struct {
     pub fn handleSwitchTab(self: *App, index: usize) void {
         if (index < self.tabs.items.len and index != self.active_tab) {
             self.active_tab = index;
-            if (self.gl_renderer) |*r| r.invalidate();
+            if (self.d2d_renderer) |*r| r.invalidate();
         }
     }
 
@@ -434,7 +439,7 @@ const App = struct {
             const rows: isize = @intCast(self.getTerminalGridSize().rows);
             const delta: isize = if (wParam == vk_prior) -rows else rows;
             tab.terminal.scrollViewport(.{ .delta = delta });
-            if (self.gl_renderer) |*r| r.invalidate();
+            if (self.d2d_renderer) |*r| r.invalidate();
             return;
         }
 
@@ -442,7 +447,7 @@ const App = struct {
         const raw: i16 = @bitCast(@as(u16, @truncate(wParam >> 16)));
         const delta: isize = @divTrunc(@as(isize, raw), 40); // ~3 lines per notch
         tab.terminal.scrollViewport(.{ .delta = -delta });
-        if (self.gl_renderer) |*r| r.invalidate();
+        if (self.d2d_renderer) |*r| r.invalidate();
     }
 
     fn scrollToY(self: *App, mouse_y: c_int) void {
@@ -477,7 +482,7 @@ const App = struct {
         const delta = target - current;
         if (delta != 0) {
             tab.terminal.scrollViewport(.{ .delta = delta });
-            if (self.gl_renderer) |*r| r.invalidate();
+            if (self.d2d_renderer) |*r| r.invalidate();
         }
     }
 
@@ -503,7 +508,7 @@ const App = struct {
 
         if (tab_index != self.active_tab) {
             self.active_tab = tab_index;
-            if (self.gl_renderer) |*r| r.invalidate();
+            if (self.d2d_renderer) |*r| r.invalidate();
         }
     }
 
@@ -645,7 +650,7 @@ const App = struct {
                 if (wParam == 0x52) { // Ctrl+Shift+R
                     if (self.activeTabPtr()) |tab| {
                         tab.terminal.fullReset();
-                        if (self.gl_renderer) |*r| r.invalidate();
+                        if (self.d2d_renderer) |*r| r.invalidate();
                         tab.write_queue.push("\x0c");
                     }
                     return true;
@@ -855,13 +860,13 @@ fn run() !void {
     app.window.render_fn = App.onRender;
     app.window.resize_fn = App.onResize;
     app.window.app_msg_fn = App.onAppMessage;
-    const FontAtlas = @import("font_atlas.zig").FontAtlas;
+    const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system
     for (0..config.font_family_count) |i| {
         const idx: u8 = @intCast(i);
         const fam_w = config.fontFamilyUtf16(idx);
-        if (!FontAtlas.isFontAvailable(fam_w)) {
+        if (!DWriteFontCtx.isFontAvailable(fam_w)) {
             var msg_buf: [256]WCHAR = undefined;
             var pos: usize = 0;
             const prefix = std.unicode.utf8ToUtf16LeStringLiteral("Font not found: \"");
@@ -891,17 +896,10 @@ fn run() !void {
     try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
     defer app.window.deinit();
 
-    // Initialize OpenGL renderer
+    // Initialize Direct2D renderer
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.gl_renderer = GlRenderer.init(alloc, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg, app.window.gl) catch null;
-    defer if (app.gl_renderer) |*r| r.deinit();
-
-    // Add fallback fonts from config
-    if (app.gl_renderer) |*r| {
-        for (1..config.font_family_count) |i| {
-            r.atlas.addFallbackFont(config.fontFamilyUtf16(@intCast(i)), font_size);
-        }
-    }
+    app.d2d_renderer = D2dRenderer.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
+    defer if (app.d2d_renderer) |*r| r.deinit();
 
     // Apply position from config
     app.window.setPosition(config.dock_position, config.width, config.height, config.offset);
