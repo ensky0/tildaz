@@ -1,6 +1,5 @@
 const std = @import("std");
 const windows = std.os.windows;
-const gl = @import("opengl.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
@@ -233,10 +232,7 @@ pub const Window = struct {
     app_msg_fn: ?*const fn (UINT, WPARAM, LPARAM, ?*anyopaque) bool = null,
     skip_swap: bool = false,
     shell_exited: bool = false,
-    // OpenGL state
-    hglrc: gl.HGLRC = null,
-    gl_dc: HDC = null,
-    gl: ?gl.GlFuncs = null, // GL 3.3 runtime-loaded functions
+    dc: HDC = null, // DC for GDI font measurement
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -313,82 +309,27 @@ pub const Window = struct {
         );
 
         // Measure cell metrics from font
-        self.gl_dc = GetDC(self.hwnd);
-        if (self.gl_dc != null) {
-            const old_f = SelectObject(self.gl_dc, self.font);
+        self.dc = GetDC(self.hwnd);
+        if (self.dc != null) {
+            const old_f = SelectObject(self.dc, self.font);
             var tm: TEXTMETRICW = undefined;
-            _ = GetTextMetricsW(self.gl_dc, &tm);
+            _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
             const base_h: f32 = @floatFromInt(tm.tmHeight + tm.tmExternalLeading);
             self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * cell_width_scale))));
             self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * line_height_scale))));
-            _ = SelectObject(self.gl_dc, old_f);
+            _ = SelectObject(self.dc, old_f);
         }
-
-        // Set up OpenGL pixel format
-        var pfd = gl.PIXELFORMATDESCRIPTOR{
-            .dwFlags = gl.PFD_DRAW_TO_WINDOW | gl.PFD_SUPPORT_OPENGL | gl.PFD_DOUBLEBUFFER,
-            .iPixelType = gl.PFD_TYPE_RGBA,
-            .cColorBits = 32,
-            .cAlphaBits = 8,
-            .iLayerType = gl.PFD_MAIN_PLANE,
-        };
-        const pf = gl.ChoosePixelFormat(self.gl_dc, &pfd);
-        if (pf == 0) return error.ChoosePixelFormatFailed;
-        if (gl.SetPixelFormat(self.gl_dc, pf, &pfd) == 0) return error.SetPixelFormatFailed;
-
-        // Create GL 3.3 Core Profile context via temporary legacy context
-        {
-            // 1. Create temporary legacy context to load WGL extensions
-            const tmp_ctx = gl.wglCreateContext(self.gl_dc);
-            if (tmp_ctx == null) return error.WglCreateContextFailed;
-            if (gl.wglMakeCurrent(self.gl_dc, tmp_ctx) == 0) {
-                _ = gl.wglDeleteContext(tmp_ctx);
-                return error.WglMakeCurrentFailed;
-            }
-
-            // 2. Load wglCreateContextAttribsARB
-            const wglCreateCtxAttribs = gl.loadWglCreateContextAttribsARB();
-
-            // 3. Delete temporary context
-            _ = gl.wglMakeCurrent(null, null);
-            _ = gl.wglDeleteContext(tmp_ctx);
-
-            if (wglCreateCtxAttribs) |createCtx| {
-                // 4. Create GL 3.3 context (compatibility profile to keep legacy tab bar working)
-                const attribs = [_]c_int{
-                    gl.WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-                    gl.WGL_CONTEXT_MINOR_VERSION_ARB, 3,
-                    0, // terminator — no profile mask = compatibility profile
-                };
-                self.hglrc = createCtx(self.gl_dc, null, &attribs);
-            }
-
-            if (self.hglrc == null) {
-                // Fallback: legacy context (GL 1.1 path — shouldn't happen on modern hardware)
-                self.hglrc = gl.wglCreateContext(self.gl_dc);
-                if (self.hglrc == null) return error.WglCreateContextFailed;
-            }
-        }
-        if (gl.wglMakeCurrent(self.gl_dc, self.hglrc) == 0) return error.WglMakeCurrentFailed;
-
-        // Load GL 3.3 functions
-        self.gl = gl.GlFuncs.load() catch null;
 
         // Start render timer (60fps)
         _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
     }
 
     pub fn deinit(self: *Window) void {
-        if (self.hglrc) |_| {
-            _ = gl.wglMakeCurrent(null, null);
-            _ = gl.wglDeleteContext(self.hglrc);
-            self.hglrc = null;
-        }
         if (self.hwnd) |hwnd| {
             _ = KillTimer(hwnd, RENDER_TIMER_ID);
             _ = UnregisterHotKey(hwnd, HOTKEY_ID);
-            if (self.gl_dc) |dc| _ = ReleaseDC(hwnd, dc);
+            if (self.dc) |dc| _ = ReleaseDC(hwnd, dc);
             _ = DestroyWindow(hwnd);
         }
         if (self.font) |f| _ = DeleteObject(f);
@@ -468,17 +409,12 @@ pub const Window = struct {
                     if (self.render_fn) |render_fn| {
                         render_fn(self);
                     }
-                    if (!self.skip_swap) {
-                        if (self.gl_dc) |dc| {
-                            _ = gl.SwapBuffers(dc);
-                        }
-                    }
                     self.skip_swap = false;
                 }
                 return 0;
             },
             WM_PAINT => {
-                // With OpenGL, just validate the paint region
+                // Validate the paint region (D2D handles rendering via timer)
                 var ps: PAINTSTRUCT = undefined;
                 _ = BeginPaint(self.hwnd, &ps);
                 _ = EndPaint(self.hwnd, &ps);
