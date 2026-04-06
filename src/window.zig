@@ -427,6 +427,10 @@ pub const Window = struct {
                 return 0;
             },
             WM_CHAR => {
+                // Let app handle first (e.g. tab rename mode)
+                if (self.app_msg_fn) |f| {
+                    if (f(msg, wParam, lParam, self.userdata)) return 0;
+                }
                 // Ignore WM_CHAR generated from Ctrl+Shift shortcuts
                 // (e.g. Ctrl+Shift+W sends 0x17 which would kill-word in shell)
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
@@ -446,6 +450,10 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYDOWN => {
+                // Let app handle first (e.g. tab rename mode)
+                if (self.app_msg_fn) |f| {
+                    if (f(msg, wParam, lParam, self.userdata)) return 0;
+                }
                 // Ctrl+Shift shortcuts
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
                     // Ctrl+Shift+T: new tab

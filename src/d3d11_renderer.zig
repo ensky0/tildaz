@@ -399,6 +399,13 @@ pub const D3d11Renderer = struct {
 
     pub const TabTitle = struct { ptr: [*]const u8, len: usize };
 
+    pub const RenameState = struct {
+        tab_index: usize,
+        text: [*]const u8,
+        text_len: usize,
+        cursor: usize,
+    };
+
     pub fn renderTabBar(
         self: *D3d11Renderer,
         tab_titles: []const TabTitle,
@@ -411,6 +418,7 @@ pub const D3d11Renderer = struct {
         tab_padding: c_int,
         dragged_tab: ?usize,
         drag_x: c_int,
+        rename_state: ?RenameState,
     ) void {
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
@@ -500,16 +508,33 @@ pub const D3d11Renderer = struct {
 
         // Simpler approach: rebuild text instances properly with x tracking
         text_count = 0;
+        var cursor_instances: [1]BgInstance = undefined;
+        var cursor_count: u32 = 0;
         for (0..tab_count) |i| {
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
 
-            const title = tab_titles[i].ptr[0..tab_titles[i].len];
+            const is_renaming = if (rename_state) |rs| (i == rs.tab_index) else false;
+            const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i].ptr[0..tab_titles[i].len];
             const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
             var x_off: f32 = 0;
+            var byte_idx: usize = 0;
+            const rename_cursor_pos: ?usize = if (is_renaming) rename_state.?.cursor else null;
             for (title) |ch_byte| {
                 if (text_count >= 510) break;
+                // Draw cursor before this character if cursor is at this byte position
+                if (rename_cursor_pos) |cp| {
+                    if (byte_idx == cp and cursor_count == 0) {
+                        cursor_instances[0] = .{
+                            .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                            .size = .{ 1, ch - 2 },
+                            .color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                        };
+                        cursor_count = 1;
+                    }
+                }
+                byte_idx += 1;
                 const result = self.font.resolveGlyph(ch_byte) orelse {
                     x_off += cw;
                     continue;
@@ -532,6 +557,17 @@ pub const D3d11Renderer = struct {
                     text_count += 1;
                 }
                 x_off += cw;
+            }
+            // Cursor at end of text
+            if (rename_cursor_pos) |cp| {
+                if (cp >= title.len and cursor_count == 0) {
+                    cursor_instances[0] = .{
+                        .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                        .size = .{ 1, ch - 2 },
+                        .color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                    };
+                    cursor_count = 1;
+                }
             }
 
             // Close button "x"
@@ -562,6 +598,9 @@ pub const D3d11Renderer = struct {
 
         if (text_count > 0) {
             self.drawTextInstances(text_instances[0..text_count]);
+        }
+        if (cursor_count > 0) {
+            self.drawBgInstances(cursor_instances[0..cursor_count]);
         }
 
         // Don't present — renderTerminal will continue
