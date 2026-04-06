@@ -4,7 +4,7 @@ const ConPty = @import("conpty.zig").ConPty;
 const window_mod = @import("window.zig");
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
-const D2dRenderer = @import("d2d_renderer.zig").D2dRenderer;
+const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
 const Config = @import("config.zig").Config;
 const themes = @import("themes.zig");
 const autostart = @import("autostart.zig");
@@ -229,7 +229,7 @@ const App = struct {
     active_tab: usize = 0,
     window: Window,
     allocator: std.mem.Allocator,
-    d2d_renderer: ?D2dRenderer = null,
+    d3d_renderer: ?D3d11Renderer = null,
     shell_utf16: [*:0]const u16,
     max_scroll_lines: usize = 10_000,
     theme: ?*const themes.Theme = null,
@@ -262,7 +262,7 @@ const App = struct {
         tab.setTitle(self.tabs.items.len);
         try self.tabs.append(self.allocator, tab);
         self.active_tab = self.tabs.items.len - 1;
-        if (self.d2d_renderer) |*r| r.invalidate();
+        if (self.d3d_renderer) |*r| r.invalidate();
 
         try tab.pty.startReadThread(onPtyOutputTab, onPtyExitTab, tab);
     }
@@ -287,7 +287,7 @@ const App = struct {
                 self.active_tab = self.tabs.items.len - 1;
             }
             // Force full redraw so the new active tab's content is rendered
-            if (self.d2d_renderer) |*r| r.invalidate();
+            if (self.d3d_renderer) |*r| r.invalidate();
         }
         tab.deinit(self.allocator);
     }
@@ -335,8 +335,8 @@ const App = struct {
 
     fn onResize(_: u16, _: u16, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        // Resize D2D render target to match new window size
-        if (self.d2d_renderer) |*r| {
+        // Resize D3D11 render target to match new window size
+        if (self.d3d_renderer) |*r| {
             const size = self.window.getClientSize();
             r.resize(@intCast(@max(1, size.w)), @intCast(@max(1, size.h)));
         }
@@ -350,7 +350,7 @@ const App = struct {
     fn onRender(window: *Window) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
 
-        if (self.d2d_renderer) |*r| {
+        if (self.d3d_renderer) |*r| {
             const size = window.getClientSize();
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
@@ -425,7 +425,7 @@ const App = struct {
     pub fn handleSwitchTab(self: *App, index: usize) void {
         if (index < self.tabs.items.len and index != self.active_tab) {
             self.active_tab = index;
-            if (self.d2d_renderer) |*r| r.invalidate();
+            if (self.d3d_renderer) |*r| r.invalidate();
         }
     }
 
@@ -439,7 +439,7 @@ const App = struct {
             const rows: isize = @intCast(self.getTerminalGridSize().rows);
             const delta: isize = if (wParam == vk_prior) -rows else rows;
             tab.terminal.scrollViewport(.{ .delta = delta });
-            if (self.d2d_renderer) |*r| r.invalidate();
+            if (self.d3d_renderer) |*r| r.invalidate();
             return;
         }
 
@@ -447,7 +447,7 @@ const App = struct {
         const raw: i16 = @bitCast(@as(u16, @truncate(wParam >> 16)));
         const delta: isize = @divTrunc(@as(isize, raw), 40); // ~3 lines per notch
         tab.terminal.scrollViewport(.{ .delta = -delta });
-        if (self.d2d_renderer) |*r| r.invalidate();
+        if (self.d3d_renderer) |*r| r.invalidate();
     }
 
     fn scrollToY(self: *App, mouse_y: c_int) void {
@@ -482,7 +482,7 @@ const App = struct {
         const delta = target - current;
         if (delta != 0) {
             tab.terminal.scrollViewport(.{ .delta = delta });
-            if (self.d2d_renderer) |*r| r.invalidate();
+            if (self.d3d_renderer) |*r| r.invalidate();
         }
     }
 
@@ -508,7 +508,7 @@ const App = struct {
 
         if (tab_index != self.active_tab) {
             self.active_tab = tab_index;
-            if (self.d2d_renderer) |*r| r.invalidate();
+            if (self.d3d_renderer) |*r| r.invalidate();
         }
     }
 
@@ -650,7 +650,7 @@ const App = struct {
                 if (wParam == 0x52) { // Ctrl+Shift+R
                     if (self.activeTabPtr()) |tab| {
                         tab.terminal.fullReset();
-                        if (self.d2d_renderer) |*r| r.invalidate();
+                        if (self.d3d_renderer) |*r| r.invalidate();
                         tab.write_queue.push("\x0c");
                     }
                     return true;
@@ -896,10 +896,10 @@ fn run() !void {
     try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
     defer app.window.deinit();
 
-    // Initialize Direct2D renderer
+    // Initialize D3D11 renderer
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.d2d_renderer = D2dRenderer.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
-    defer if (app.d2d_renderer) |*r| r.deinit();
+    app.d3d_renderer = D3d11Renderer.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
+    defer if (app.d3d_renderer) |*r| r.deinit();
 
     // Apply position from config
     app.window.setPosition(config.dock_position, config.width, config.height, config.offset);
