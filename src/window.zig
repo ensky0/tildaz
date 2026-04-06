@@ -160,6 +160,7 @@ extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn MessageBoxW(HWND, [*:0]const WCHAR, [*:0]const WCHAR, UINT) callconv(.c) c_int;
 extern "user32" fn SetCapture(HWND) callconv(.c) HWND;
 extern "user32" fn ReleaseCapture() callconv(.c) BOOL;
+extern "user32" fn GetDpiForWindow(HWND) callconv(.c) UINT;
 extern "user32" fn EmptyClipboard() callconv(.c) BOOL;
 extern "user32" fn SetClipboardData(UINT, ?*anyopaque) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.c) ?*anyopaque;
@@ -290,9 +291,14 @@ pub const Window = struct {
             OutputDebugStringA("WARNING: Failed to register F1 hotkey\n");
         }
 
+        // Scale font_size by DPI (config value is in logical pixels at 96 DPI)
+        const dpi = GetDpiForWindow(self.hwnd);
+        const effective_dpi: f32 = if (dpi > 0) @floatFromInt(dpi) else 96.0;
+        const scaled_font_size: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(font_size)) * effective_dpi / 96.0));
+
         // Create monospace font (used for measuring cell metrics)
         self.font = CreateFontW(
-            font_size,
+            scaled_font_size,
             0,
             0,
             0,

@@ -34,7 +34,9 @@ pub const GlyphAtlas = struct {
     // DWrite resources for rasterization
     dw_factory: *dw.IDWriteFactory,
     rendering_params: *dw.IDWriteRenderingParams,
+    rendering_mode: u32,
     font_em_size: f32,
+    pixels_per_dip: f32,
 
     // D3D11 texture
     texture: *d3d.ID3D11Texture2D,
@@ -48,18 +50,31 @@ pub const GlyphAtlas = struct {
         alloc: std.mem.Allocator,
         dw_factory: *dw.IDWriteFactory,
         font_em_size: f32,
+        pixels_per_dip: f32,
         device: *d3d.ID3D11Device,
         ctx: *d3d.ID3D11DeviceContext,
     ) !GlyphAtlas {
-        // Create custom rendering params: gamma=1.0, contrast=0.0, cleartype=1.0
-        // This gives raw coverage data — the shader applies its own contrast/gamma.
+        // Read system default rendering params for cleartype_level, pixel_geometry, rendering_mode.
+        // Then create custom params with gamma=1.0, contrast=0.0 (shader handles those).
+        // This matches Windows Terminal's DWrite_GetRenderParams approach.
+        var sys_cleartype_level: f32 = 1.0;
+        var sys_pixel_geometry: u32 = dw.DWRITE_PIXEL_GEOMETRY_RGB;
+        var sys_rendering_mode: u32 = dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
+        var sys_rp: ?*dw.IDWriteRenderingParams = null;
+        if (dw_factory.CreateRenderingParams(&sys_rp) >= 0) {
+            sys_cleartype_level = sys_rp.?.GetClearTypeLevel();
+            sys_pixel_geometry = sys_rp.?.GetPixelGeometry();
+            sys_rendering_mode = sys_rp.?.GetRenderingMode();
+            _ = sys_rp.?.Release();
+        }
+
         var rp: ?*dw.IDWriteRenderingParams = null;
         if (dw_factory.CreateCustomRenderingParams(
-            1.0, // gamma (linear)
+            1.0, // gamma (linear — shader applies gamma correction)
             0.0, // enhanced contrast (none — shader handles it)
-            1.0, // cleartype level (full)
-            dw.DWRITE_PIXEL_GEOMETRY_RGB,
-            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+            sys_cleartype_level,
+            sys_pixel_geometry,
+            sys_rendering_mode,
             &rp,
         ) < 0) return error.RenderingParamsFailed;
         errdefer _ = rp.?.vtable.Release(rp.?);
@@ -88,7 +103,9 @@ pub const GlyphAtlas = struct {
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
             .dw_factory = dw_factory,
             .rendering_params = rp.?,
+            .rendering_mode = sys_rendering_mode,
             .font_em_size = font_em_size,
+            .pixels_per_dip = pixels_per_dip,
             .texture = tex.?,
             .srv = srv.?,
             .d3d_ctx = ctx,
@@ -139,13 +156,19 @@ pub const GlyphAtlas = struct {
             .bidiLevel = 0,
         };
 
-        // Create glyph run analysis
+        // Create glyph run analysis using system rendering mode
+        // Fall back to NATURAL_SYMMETRIC if system returns DEFAULT(0) or unsupported mode
+        const render_mode = if (self.rendering_mode >= 3 and self.rendering_mode <= 6)
+            self.rendering_mode
+        else
+            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
+
         var analysis: ?*dw.IDWriteGlyphRunAnalysis = null;
         if (self.dw_factory.CreateGlyphRunAnalysis(
             &glyph_run,
-            1.0, // pixelsPerDip
+            self.pixels_per_dip,
             null, // transform
-            dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+            render_mode,
             dw.DWRITE_MEASURING_MODE_NATURAL,
             0, // baselineOriginX
             0, // baselineOriginY
