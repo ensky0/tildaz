@@ -21,9 +21,13 @@ extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
 extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
+extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+const VK_CONTROL: c_int = 0x11;
+const VK_SHIFT: c_int = 0x10;
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const WM_CLOSE: c_uint = 0x0010;
+const WM_CHAR: c_uint = 0x0102;
 const WM_KEYDOWN: c_uint = 0x0100;
 const WM_SYSKEYDOWN: c_uint = 0x0104;
 const WM_LBUTTONDOWN: c_uint = 0x0201;
@@ -245,6 +249,11 @@ const App = struct {
     selecting: bool = false, // true = terminal text selection in progress
     scrollbar_dragging: bool = false, // true = scrollbar drag in progress
     select_start_pin: ?ghostty.PageList.Pin = null,
+    // Tab rename state
+    renaming_tab: ?usize = null, // index of tab being renamed, null = not renaming
+    rename_buf: [64]u8 = undefined,
+    rename_len: usize = 0,
+    rename_cursor: usize = 0,
 
     // DPI-scaled values (initialized in run())
     dpi_scale: f32 = 1.0,
@@ -380,6 +389,12 @@ const App = struct {
                 for (self.tabs.items[0..n], 0..) |t, i| {
                     tab_titles[i] = .{ .ptr = &t.title, .len = t.title_len };
                 }
+                const rs: ?D3d11Renderer.RenameState = if (self.renaming_tab) |ri| .{
+                    .tab_index = ri,
+                    .text = &self.rename_buf,
+                    .text_len = self.rename_len,
+                    .cursor = self.rename_cursor,
+                } else null;
                 r.renderTabBar(
                     tab_titles[0..n],
                     self.active_tab,
@@ -391,6 +406,7 @@ const App = struct {
                     self.TAB_PADDING,
                     if (self.dragging) self.drag_tab_index else null,
                     if (self.dragging) self.drag_current_x else 0,
+                    rs,
                 );
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(
@@ -555,6 +571,113 @@ const App = struct {
         self.dragging = false;
     }
 
+    fn startRename(self: *App, tab_index: usize) void {
+        if (tab_index >= self.tabs.items.len) return;
+        const tab = self.tabs.items[tab_index];
+        self.renaming_tab = tab_index;
+        @memcpy(self.rename_buf[0..tab.title_len], tab.title[0..tab.title_len]);
+        self.rename_len = tab.title_len;
+        self.rename_cursor = tab.title_len;
+        if (self.d3d_renderer) |*r| r.invalidate();
+    }
+
+    fn commitRename(self: *App) void {
+        const idx = self.renaming_tab orelse return;
+        if (idx < self.tabs.items.len and self.rename_len > 0) {
+            const tab = self.tabs.items[idx];
+            @memcpy(tab.title[0..self.rename_len], self.rename_buf[0..self.rename_len]);
+            tab.title_len = self.rename_len;
+        }
+        self.renaming_tab = null;
+        if (self.d3d_renderer) |*r| r.invalidate();
+    }
+
+    fn cancelRename(self: *App) void {
+        self.renaming_tab = null;
+        if (self.d3d_renderer) |*r| r.invalidate();
+    }
+
+    fn handleRenameChar(self: *App, cp: u21) void {
+        if (self.renaming_tab == null) return;
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+        if (self.rename_len + len > 63) return; // keep within buffer
+        // Shift right to make room at cursor
+        if (self.rename_cursor < self.rename_len) {
+            std.mem.copyBackwards(u8, self.rename_buf[self.rename_cursor + len .. self.rename_len + len], self.rename_buf[self.rename_cursor..self.rename_len]);
+        }
+        @memcpy(self.rename_buf[self.rename_cursor .. self.rename_cursor + len], buf[0..len]);
+        self.rename_len += len;
+        self.rename_cursor += len;
+        if (self.d3d_renderer) |*r| r.invalidate();
+    }
+
+    fn handleRenameKey(self: *App, vk: usize) bool {
+        if (self.renaming_tab == null) return false;
+        const vk_return: usize = 0x0D;
+        const vk_escape: usize = 0x1B;
+        const vk_back: usize = 0x08;
+        const vk_left: usize = 0x25;
+        const vk_right: usize = 0x27;
+        const vk_home: usize = 0x24;
+        const vk_end: usize = 0x23;
+        const vk_delete: usize = 0x2E;
+
+        switch (vk) {
+            vk_return => self.commitRename(),
+            vk_escape => self.cancelRename(),
+            vk_back => {
+                if (self.rename_cursor > 0) {
+                    // Find start of previous UTF-8 char
+                    var prev = self.rename_cursor - 1;
+                    while (prev > 0 and self.rename_buf[prev] & 0xC0 == 0x80) prev -= 1;
+                    const char_len = self.rename_cursor - prev;
+                    std.mem.copyForwards(u8, self.rename_buf[prev..self.rename_len - char_len], self.rename_buf[self.rename_cursor..self.rename_len]);
+                    self.rename_len -= char_len;
+                    self.rename_cursor = prev;
+                    if (self.d3d_renderer) |*r| r.invalidate();
+                }
+            },
+            vk_delete => {
+                if (self.rename_cursor < self.rename_len) {
+                    // Find length of current UTF-8 char
+                    const b = self.rename_buf[self.rename_cursor];
+                    const char_len: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
+                    const end = @min(self.rename_cursor + char_len, self.rename_len);
+                    const actual_len = end - self.rename_cursor;
+                    std.mem.copyForwards(u8, self.rename_buf[self.rename_cursor..self.rename_len - actual_len], self.rename_buf[end..self.rename_len]);
+                    self.rename_len -= actual_len;
+                    if (self.d3d_renderer) |*r| r.invalidate();
+                }
+            },
+            vk_left => {
+                if (self.rename_cursor > 0) {
+                    self.rename_cursor -= 1;
+                    while (self.rename_cursor > 0 and self.rename_buf[self.rename_cursor] & 0xC0 == 0x80) self.rename_cursor -= 1;
+                    if (self.d3d_renderer) |*r| r.invalidate();
+                }
+            },
+            vk_right => {
+                if (self.rename_cursor < self.rename_len) {
+                    const b = self.rename_buf[self.rename_cursor];
+                    const char_len: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
+                    self.rename_cursor = @min(self.rename_cursor + char_len, self.rename_len);
+                    if (self.d3d_renderer) |*r| r.invalidate();
+                }
+            },
+            vk_home => {
+                self.rename_cursor = 0;
+                if (self.d3d_renderer) |*r| r.invalidate();
+            },
+            vk_end => {
+                self.rename_cursor = self.rename_len;
+                if (self.d3d_renderer) |*r| r.invalidate();
+            },
+            else => return false,
+        }
+        return true;
+    }
+
     fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) struct { col: u16, row: u16 } {
         const cw = self.window.cell_width;
         const ch = self.window.cell_height;
@@ -643,7 +766,20 @@ const App = struct {
     fn onAppMessage(msg: c_uint, wParam: usize, lParam: isize, userdata: ?*anyopaque) bool {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         switch (msg) {
+            WM_CHAR => {
+                if (self.renaming_tab != null) {
+                    const cp: u21 = @intCast(wParam);
+                    if (cp >= 0x20) { // printable characters only
+                        self.handleRenameChar(cp);
+                    }
+                    return true;
+                }
+                return false;
+            },
             WM_KEYDOWN => {
+                if (self.handleRenameKey(wParam)) return true;
+                if (self.renaming_tab != null) return true; // swallow all keys during rename
+                if (GetKeyState(VK_CONTROL) >= 0 or GetKeyState(VK_SHIFT) >= 0) return false;
                 if (wParam == 0x54) { // Ctrl+Shift+T
                     self.handleNewTab();
                     return true;
@@ -670,6 +806,7 @@ const App = struct {
                 return false;
             },
             WM_LBUTTONDOWN => {
+                if (self.renaming_tab != null) self.commitRename();
                 const x = getXParam(lParam);
                 const y = getYParam(lParam);
                 if (y < self.TAB_BAR_HEIGHT) {
@@ -701,7 +838,15 @@ const App = struct {
             WM_LBUTTONDBLCLK => {
                 const x = getXParam(lParam);
                 const y = getYParam(lParam);
-                if (y >= self.TAB_BAR_HEIGHT) {
+                if (y < self.TAB_BAR_HEIGHT) {
+                    const tab_index_raw = @divTrunc(x, self.TAB_WIDTH);
+                    if (tab_index_raw >= 0) {
+                        const tab_index: usize = @intCast(tab_index_raw);
+                        if (tab_index < self.tabs.items.len) {
+                            self.startRename(tab_index);
+                        }
+                    }
+                } else {
                     self.selectWordAt(x, y);
                 }
                 return true;
