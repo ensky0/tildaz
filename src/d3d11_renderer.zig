@@ -397,9 +397,11 @@ pub const D3d11Renderer = struct {
 
     // === Tab bar rendering ===
 
+    pub const TabTitle = struct { ptr: [*]const u8, len: usize };
+
     pub fn renderTabBar(
         self: *D3d11Renderer,
-        tab_count: usize,
+        tab_titles: []const TabTitle,
         active_tab: usize,
         tab_bar_height: c_int,
         client_w: c_int,
@@ -410,6 +412,7 @@ pub const D3d11Renderer = struct {
         dragged_tab: ?usize,
         drag_x: c_int,
     ) void {
+        const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
 
         const tbh: f32 = @floatFromInt(tab_bar_height);
@@ -466,9 +469,8 @@ pub const D3d11Renderer = struct {
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
 
-            // "Tab N" title
-            var title_buf: [16]u8 = undefined;
-            const title = std.fmt.bufPrint(&title_buf, "Tab {d}", .{i + 1}) catch unreachable;
+            // Tab title from stored name
+            const title = tab_titles[i].ptr[0..tab_titles[i].len];
             // Baseline Y for vertical centering: place baseline so text is centered in tab bar
             const baseline_y = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
@@ -502,8 +504,7 @@ pub const D3d11Renderer = struct {
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
 
-            var title_buf: [16]u8 = undefined;
-            const title = std.fmt.bufPrint(&title_buf, "Tab {d}", .{i + 1}) catch unreachable;
+            const title = tab_titles[i].ptr[0..tab_titles[i].len];
             const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
             var x_off: f32 = 0;

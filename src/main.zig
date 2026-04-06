@@ -375,8 +375,13 @@ const App = struct {
 
             if (should_render) {
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함)
+                var tab_titles: [32]D3d11Renderer.TabTitle = undefined;
+                const n = @min(self.tabs.items.len, 32);
+                for (self.tabs.items[0..n], 0..) |t, i| {
+                    tab_titles[i] = .{ .ptr = &t.title, .len = t.title_len };
+                }
                 r.renderTabBar(
-                    self.tabs.items.len,
+                    tab_titles[0..n],
                     self.active_tab,
                     self.TAB_BAR_HEIGHT,
                     size.w,
@@ -545,10 +550,6 @@ const App = struct {
                     self.active_tab = self.tabs.items.len - 1;
                 };
                 self.active_tab = target;
-                // Renumber
-                for (self.tabs.items, 0..) |t, i| {
-                    t.setTitle(i);
-                }
             }
         }
         self.dragging = false;
