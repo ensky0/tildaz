@@ -1,0 +1,993 @@
+// D3D11 terminal renderer with custom HLSL ClearType shader pipeline.
+// Replaces D2D DrawGlyphRun with: DWrite glyph atlas + D3D11 instanced quads + dual-source ClearType blending.
+
+const std = @import("std");
+const ghostty = @import("ghostty-vt");
+const d3d = @import("d3d11.zig");
+const dw = @import("directwrite.zig");
+const DWriteFontContext = @import("dwrite_font.zig").DWriteFontContext;
+const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
+const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
+
+const WCHAR = u16;
+const MAX_INSTANCES: u32 = 32768;
+extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
+
+// --- Instance data layouts ---
+
+const BgInstance = extern struct {
+    pos: [2]f32,
+    size: [2]f32,
+    color: [4]f32,
+};
+
+const TextInstance = extern struct {
+    pos: [2]f32,
+    size: [2]f32,
+    uv_pos: [2]f32,
+    uv_size: [2]f32,
+    fg_color: [4]f32,
+};
+
+// Constant buffer (must be 16-byte aligned, multiple of 16 bytes)
+const Constants = extern struct {
+    screen_w: f32,
+    screen_h: f32,
+    atlas_w: f32,
+    atlas_h: f32,
+    enhanced_contrast: f32,
+    _pad1: f32 = 0,
+    _pad2: f32 = 0,
+    _pad3: f32 = 0,
+    gamma_ratios: [4]f32 = .{ 0, 0, 0, 0 },
+};
+
+// --- HLSL Shaders ---
+
+const bg_shader_src =
+    \\cbuffer CB : register(b0) { float4 sa; float4 p; };
+    \\struct I { float2 pos: IPOS; float2 sz: ISZ; float4 col: ICOL; uint vid: SV_VertexID; };
+    \\struct O { float4 pos: SV_POSITION; float4 col: COLOR; };
+    \\O bg_vs(I i) { float2 c = float2(i.vid & 1, i.vid >> 1);
+    \\  float2 px = (i.pos + c * i.sz) / sa.xy * 2.0 - 1.0;
+    \\  O o; o.pos = float4(px.x, -px.y, 0, 1); o.col = i.col; return o; }
+    \\float4 bg_ps(O i) : SV_Target { return i.col; }
+;
+
+const text_shader_src =
+    \\cbuffer CB : register(b0) { float4 sa; float4 p; float4 gr; };
+    \\Texture2D atlas : register(t0);
+    \\SamplerState smp : register(s0);
+    \\struct I { float2 pos: IPOS; float2 sz: ISZ; float2 uvp: IUVP; float2 uvs: IUVS;
+    \\  float4 fg: IFG; uint vid: SV_VertexID; };
+    \\struct O { float4 pos: SV_POSITION; float2 uv: TEXCOORD; float4 fg: COLOR; };
+    \\struct P { float4 c0: SV_Target0; float4 c1: SV_Target1; };
+    \\O text_vs(I i) { float2 c = float2(i.vid & 1, i.vid >> 1);
+    \\  float2 px = (i.pos + c * i.sz) / sa.xy * 2.0 - 1.0;
+    \\  O o; o.pos = float4(px.x, -px.y, 0, 1);
+    \\  o.uv = (i.uvp + c * i.uvs) / sa.zw; o.fg = i.fg; return o; }
+    \\float enh(float a, float k) { return a * (k + 1.0) / (a * k + 1.0); }
+    \\float gammaCorr(float a, float f, float4 g) {
+    \\  return a + a * (1.0 - a) * ((g.x * f + g.y) * a + (g.z * f + g.w)); }
+    \\float lodAdj(float k, float3 c) {
+    \\  return k * saturate(dot(c, float3(0.30, 0.59, 0.11) * -4.0) + 3.0); }
+    \\P text_ps(O i) : SV_Target { float3 g = atlas.Sample(smp, i.uv).rgb;
+    \\  float k = lodAdj(p.x, i.fg.rgb);
+    \\  float3 ct = float3(enh(g.r, k), enh(g.g, k), enh(g.b, k));
+    \\  ct = float3(gammaCorr(ct.r, i.fg.r, gr), gammaCorr(ct.g, i.fg.g, gr),
+    \\              gammaCorr(ct.b, i.fg.b, gr));
+    \\  P o; o.c0 = float4(i.fg.rgb * ct, 1); o.c1 = float4(1 - ct, 1); return o; }
+;
+
+// --- Renderer ---
+
+pub const D3d11Renderer = struct {
+    alloc: std.mem.Allocator,
+    font: DWriteFontContext,
+    atlas: GlyphAtlas,
+    render_state: ghostty.RenderState = .empty,
+
+    // D3D11 core
+    device: *d3d.ID3D11Device,
+    ctx: *d3d.ID3D11DeviceContext,
+    swap_chain: *d3d.IDXGISwapChain,
+    rtv: ?*d3d.ID3D11RenderTargetView = null,
+
+    // Shaders
+    bg_vs: *d3d.ID3D11VertexShader,
+    bg_ps: *d3d.ID3D11PixelShader,
+    bg_layout: *d3d.ID3D11InputLayout,
+    text_vs: *d3d.ID3D11VertexShader,
+    text_ps: *d3d.ID3D11PixelShader,
+    text_layout: *d3d.ID3D11InputLayout,
+
+    // State objects
+    sampler: *d3d.ID3D11SamplerState,
+    alpha_blend: *d3d.ID3D11BlendState,
+    ct_blend: *d3d.ID3D11BlendState,
+
+    // Buffers
+    bg_buffer: *d3d.ID3D11Buffer,
+    text_buffer: *d3d.ID3D11Buffer,
+    cb: *d3d.ID3D11Buffer,
+
+    // Default background
+    default_bg: [3]f32,
+
+    // ClearType tuning (from system settings)
+    sys_enhanced_contrast: f32,
+    gamma_ratios: [4]f32,
+
+    // Viewport dimensions
+    vp_width: u32 = 0,
+    vp_height: u32 = 0,
+
+    // Tab bar colors
+    const TAB_BAR_R: f32 = 20.0 / 255.0;
+    const TAB_BAR_G: f32 = 20.0 / 255.0;
+    const TAB_BAR_B: f32 = 20.0 / 255.0;
+    const TAB_ACTIVE_R: f32 = 50.0 / 255.0;
+    const TAB_TEXT_R: f32 = 180.0 / 255.0;
+
+    fn colorF(v: u8) f32 {
+        return @as(f32, @floatFromInt(v)) / 255.0;
+    }
+
+    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
+        const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
+
+        // 1. Create D3D11 device + swap chain
+        var sc_desc = d3d.DXGI_SWAP_CHAIN_DESC{
+            .BufferDesc = .{ .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM },
+            .SampleDesc = .{ .Count = 1 },
+            .BufferUsage = d3d.DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            .BufferCount = 1,
+            .OutputWindow = hwnd,
+            .Windowed = 1,
+            .SwapEffect = d3d.DXGI_SWAP_EFFECT_DISCARD,
+        };
+        var device: ?*d3d.ID3D11Device = null;
+        var ctx: ?*d3d.ID3D11DeviceContext = null;
+        var swap_chain: ?*d3d.IDXGISwapChain = null;
+        if (d3d.D3D11CreateDeviceAndSwapChain(
+            null,
+            d3d.D3D_DRIVER_TYPE_HARDWARE,
+            null,
+            0,
+            null,
+            0,
+            d3d.D3D11_SDK_VERSION,
+            &sc_desc,
+            &swap_chain,
+            &device,
+            null,
+            &ctx,
+        ) < 0) return error.D3D11CreateFailed;
+        errdefer {
+            _ = ctx.?.Release();
+            _ = swap_chain.?.Release();
+            _ = device.?.Release();
+        }
+
+        // 2. Init font context
+        var font_ctx = try DWriteFontContext.init(font_family, font_height, cell_w, cell_h);
+        errdefer font_ctx.deinit();
+
+        // 3. Init glyph atlas (with DPI-aware pixelsPerDip)
+        const dpi = GetDpiForWindow(hwnd);
+        const pixels_per_dip: f32 = if (dpi > 0) @as(f32, @floatFromInt(dpi)) / 96.0 else 1.0;
+        // Scale ascent_px to match actual rendered glyph pixels (font_em_size is unscaled,
+        // but CreateGlyphRunAnalysis renders at font_em_size * pixels_per_dip)
+        font_ctx.ascent_px *= pixels_per_dip;
+        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, device.?, ctx.?);
+        errdefer atlas.deinit();
+
+        // 4. Compile shaders
+        const bg_vs_blob = try compileShader(bg_shader_src, "bg_vs", "vs_4_0");
+        defer _ = bg_vs_blob.Release();
+        const bg_ps_blob = try compileShader(bg_shader_src, "bg_ps", "ps_4_0");
+        defer _ = bg_ps_blob.Release();
+        const text_vs_blob = try compileShader(text_shader_src, "text_vs", "vs_4_0");
+        defer _ = text_vs_blob.Release();
+        const text_ps_blob = try compileShader(text_shader_src, "text_ps", "ps_4_0");
+        defer _ = text_ps_blob.Release();
+
+        // 5. Create shader objects
+        var bg_vs: ?*d3d.ID3D11VertexShader = null;
+        if (device.?.CreateVertexShader(bg_vs_blob.GetBufferPointer(), bg_vs_blob.GetBufferSize(), null, &bg_vs) < 0) return error.ShaderFailed;
+        errdefer _ = bg_vs.?.Release();
+
+        var bg_ps: ?*d3d.ID3D11PixelShader = null;
+        if (device.?.CreatePixelShader(bg_ps_blob.GetBufferPointer(), bg_ps_blob.GetBufferSize(), null, &bg_ps) < 0) return error.ShaderFailed;
+        errdefer _ = bg_ps.?.Release();
+
+        var text_vs: ?*d3d.ID3D11VertexShader = null;
+        if (device.?.CreateVertexShader(text_vs_blob.GetBufferPointer(), text_vs_blob.GetBufferSize(), null, &text_vs) < 0) return error.ShaderFailed;
+        errdefer _ = text_vs.?.Release();
+
+        var text_ps: ?*d3d.ID3D11PixelShader = null;
+        if (device.?.CreatePixelShader(text_ps_blob.GetBufferPointer(), text_ps_blob.GetBufferSize(), null, &text_ps) < 0) return error.ShaderFailed;
+        errdefer _ = text_ps.?.Release();
+
+        // 6. Input layouts
+        const bg_elems = [_]d3d.D3D11_INPUT_ELEMENT_DESC{
+            .{ .SemanticName = "IPOS", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 0, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "ISZ", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 8, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "ICOL", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32B32A32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 16, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+        };
+        var bg_layout: ?*d3d.ID3D11InputLayout = null;
+        if (device.?.CreateInputLayout(&bg_elems, bg_elems.len, bg_vs_blob.GetBufferPointer(), bg_vs_blob.GetBufferSize(), &bg_layout) < 0) return error.LayoutFailed;
+        errdefer _ = bg_layout.?.Release();
+
+        const text_elems = [_]d3d.D3D11_INPUT_ELEMENT_DESC{
+            .{ .SemanticName = "IPOS", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 0, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "ISZ", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 8, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "IUVP", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 16, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "IUVS", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 24, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "IFG", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32B32A32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 32, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+        };
+        var text_layout: ?*d3d.ID3D11InputLayout = null;
+        if (device.?.CreateInputLayout(&text_elems, text_elems.len, text_vs_blob.GetBufferPointer(), text_vs_blob.GetBufferSize(), &text_layout) < 0) return error.LayoutFailed;
+        errdefer _ = text_layout.?.Release();
+
+        // 7. Sampler state (point filtering for pixel-perfect glyphs)
+        var sampler: ?*d3d.ID3D11SamplerState = null;
+        if (device.?.CreateSamplerState(&.{}, &sampler) < 0) return error.SamplerFailed;
+        errdefer _ = sampler.?.Release();
+
+        // 8. Blend states
+        // Alpha blend for backgrounds (standard SrcAlpha)
+        var alpha_desc = d3d.D3D11_BLEND_DESC{};
+        alpha_desc.RenderTarget[0] = .{
+            .BlendEnable = 1,
+            .SrcBlend = d3d.D3D11_BLEND_SRC_ALPHA,
+            .DestBlend = d3d.D3D11_BLEND_INV_SRC_ALPHA,
+            .BlendOp = d3d.D3D11_BLEND_OP_ADD,
+            .SrcBlendAlpha = d3d.D3D11_BLEND_ONE,
+            .DestBlendAlpha = d3d.D3D11_BLEND_INV_SRC_ALPHA,
+            .BlendOpAlpha = d3d.D3D11_BLEND_OP_ADD,
+        };
+        var alpha_blend: ?*d3d.ID3D11BlendState = null;
+        if (device.?.CreateBlendState(&alpha_desc, &alpha_blend) < 0) return error.BlendFailed;
+        errdefer _ = alpha_blend.?.Release();
+
+        // ClearType dual-source blend: dest * src1 + src0
+        var ct_desc = d3d.D3D11_BLEND_DESC{};
+        ct_desc.RenderTarget[0] = .{
+            .BlendEnable = 1,
+            .SrcBlend = d3d.D3D11_BLEND_ONE,
+            .DestBlend = d3d.D3D11_BLEND_SRC1_COLOR,
+            .BlendOp = d3d.D3D11_BLEND_OP_ADD,
+            .SrcBlendAlpha = d3d.D3D11_BLEND_ONE,
+            .DestBlendAlpha = d3d.D3D11_BLEND_ONE,
+            .BlendOpAlpha = d3d.D3D11_BLEND_OP_ADD,
+        };
+        var ct_blend: ?*d3d.ID3D11BlendState = null;
+        if (device.?.CreateBlendState(&ct_desc, &ct_blend) < 0) return error.BlendFailed;
+        errdefer _ = ct_blend.?.Release();
+
+        // 9. Instance buffers (dynamic, pre-allocated)
+        var bg_buffer: ?*d3d.ID3D11Buffer = null;
+        if (device.?.CreateBuffer(&.{
+            .ByteWidth = MAX_INSTANCES * @sizeOf(BgInstance),
+            .Usage = d3d.D3D11_USAGE_DYNAMIC,
+            .BindFlags = d3d.D3D11_BIND_VERTEX_BUFFER,
+            .CPUAccessFlags = d3d.D3D11_CPU_ACCESS_WRITE,
+        }, null, &bg_buffer) < 0) return error.BufferFailed;
+        errdefer _ = bg_buffer.?.Release();
+
+        var text_buffer: ?*d3d.ID3D11Buffer = null;
+        if (device.?.CreateBuffer(&.{
+            .ByteWidth = MAX_INSTANCES * @sizeOf(TextInstance),
+            .Usage = d3d.D3D11_USAGE_DYNAMIC,
+            .BindFlags = d3d.D3D11_BIND_VERTEX_BUFFER,
+            .CPUAccessFlags = d3d.D3D11_CPU_ACCESS_WRITE,
+        }, null, &text_buffer) < 0) return error.BufferFailed;
+        errdefer _ = text_buffer.?.Release();
+
+        // 10. Constant buffer
+        var cb: ?*d3d.ID3D11Buffer = null;
+        if (device.?.CreateBuffer(&.{
+            .ByteWidth = @sizeOf(Constants),
+            .Usage = d3d.D3D11_USAGE_DYNAMIC,
+            .BindFlags = d3d.D3D11_BIND_CONSTANT_BUFFER,
+            .CPUAccessFlags = d3d.D3D11_CPU_ACCESS_WRITE,
+        }, null, &cb) < 0) return error.BufferFailed;
+        errdefer _ = cb.?.Release();
+
+        // 11. Read system ClearType settings (gamma, enhanced contrast)
+        var sys_enhanced_contrast: f32 = 0.5; // default
+        var sys_gamma: f32 = 1.8; // default
+        var default_rp: ?*dw.IDWriteRenderingParams = null;
+        if (font_ctx.factory.CreateRenderingParams(&default_rp) >= 0) {
+            sys_enhanced_contrast = default_rp.?.GetEnhancedContrast();
+            sys_gamma = default_rp.?.GetGamma();
+            _ = default_rp.?.Release();
+        }
+        const gamma_ratios = computeGammaRatios(sys_gamma);
+
+        // 12. Create initial render target view
+        var self = D3d11Renderer{
+            .alloc = alloc,
+            .font = font_ctx,
+            .atlas = atlas,
+            .device = device.?,
+            .ctx = ctx.?,
+            .swap_chain = swap_chain.?,
+            .bg_vs = bg_vs.?,
+            .bg_ps = bg_ps.?,
+            .bg_layout = bg_layout.?,
+            .text_vs = text_vs.?,
+            .text_ps = text_ps.?,
+            .text_layout = text_layout.?,
+            .sampler = sampler.?,
+            .alpha_blend = alpha_blend.?,
+            .ct_blend = ct_blend.?,
+            .bg_buffer = bg_buffer.?,
+            .text_buffer = text_buffer.?,
+            .cb = cb.?,
+            .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
+            .sys_enhanced_contrast = sys_enhanced_contrast,
+            .gamma_ratios = gamma_ratios,
+        };
+
+        self.createRTV();
+
+        // Set topology once (triangle strip for all draws)
+        ctx.?.IASetPrimitiveTopology(d3d.D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+        return self;
+    }
+
+    pub fn deinit(self: *D3d11Renderer) void {
+        self.render_state.deinit(self.alloc);
+        _ = self.cb.Release();
+        _ = self.text_buffer.Release();
+        _ = self.bg_buffer.Release();
+        _ = self.ct_blend.Release();
+        _ = self.alpha_blend.Release();
+        _ = self.sampler.Release();
+        _ = self.text_layout.Release();
+        _ = self.text_ps.Release();
+        _ = self.text_vs.Release();
+        _ = self.bg_layout.Release();
+        _ = self.bg_ps.Release();
+        _ = self.bg_vs.Release();
+        if (self.rtv) |r| _ = r.Release();
+        self.atlas.deinit();
+        self.font.deinit();
+        _ = self.swap_chain.Release();
+        _ = self.ctx.Release();
+        _ = self.device.Release();
+    }
+
+    pub fn invalidate(self: *D3d11Renderer) void {
+        self.render_state.rows = 0;
+        self.render_state.cols = 0;
+        self.render_state.viewport_pin = null;
+    }
+
+    pub fn resize(self: *D3d11Renderer, width: u32, height: u32) void {
+        if (self.rtv) |r| {
+            _ = r.Release();
+            self.rtv = null;
+        }
+        // Unbind render target before resize
+        self.ctx.OMSetRenderTargets(0, null, null);
+        _ = self.swap_chain.ResizeBuffers(0, width, height, 0, 0);
+        self.createRTV();
+        self.vp_width = width;
+        self.vp_height = height;
+    }
+
+    fn createRTV(self: *D3d11Renderer) void {
+        var back_buffer: ?*anyopaque = null;
+        if (self.swap_chain.GetBuffer(0, &d3d.IID_ID3D11Texture2D, &back_buffer) >= 0) {
+            if (back_buffer) |bb| {
+                var rtv: ?*d3d.ID3D11RenderTargetView = null;
+                if (self.device.CreateRenderTargetView(bb, null, &rtv) >= 0) {
+                    self.rtv = rtv;
+                }
+                // Release the back buffer texture (RTV holds a ref)
+                const tex: *d3d.ID3D11Texture2D = @ptrCast(@alignCast(bb));
+                _ = tex.Release();
+            }
+        }
+    }
+
+    // === Tab bar rendering ===
+
+    pub fn renderTabBar(
+        self: *D3d11Renderer,
+        tab_count: usize,
+        active_tab: usize,
+        tab_bar_height: c_int,
+        client_w: c_int,
+        client_h: c_int,
+        tab_width: c_int,
+        close_btn_size: c_int,
+        tab_padding: c_int,
+        dragged_tab: ?usize,
+        drag_x: c_int,
+    ) void {
+        const rtv = self.rtv orelse return;
+
+        const tbh: f32 = @floatFromInt(tab_bar_height);
+        const tw: f32 = @floatFromInt(tab_width);
+        const cbs: f32 = @floatFromInt(close_btn_size);
+        const pad: f32 = @floatFromInt(tab_padding);
+        const cw: f32 = @floatFromInt(self.font.cell_width);
+        const ch: f32 = @floatFromInt(self.font.cell_height);
+        const w_f: f32 = @floatFromInt(client_w);
+
+        // Ensure viewport dimensions are set
+        if (self.vp_width == 0 or self.vp_height == 0) {
+            self.vp_width = @intCast(@max(1, client_w));
+            self.vp_height = @intCast(@max(1, client_h));
+        }
+
+        // Update viewport and constant buffer
+        self.setupFrame(rtv);
+
+        // Clear with default background
+        const clear_color = [4]d3d.FLOAT{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
+        self.ctx.ClearRenderTargetView(rtv, &clear_color);
+
+        // Build background instances for tab bar
+        var bg_instances: [128]BgInstance = undefined;
+        var bg_count: u32 = 0;
+
+        // Tab bar background
+        bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = .{ TAB_BAR_R, TAB_BAR_G, TAB_BAR_B, 1 } };
+        bg_count += 1;
+
+        // Tab backgrounds
+        for (0..tab_count) |i| {
+            if (bg_count >= 128) break;
+            const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
+            const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
+            const c = if (i == active_tab) TAB_ACTIVE_R else self.default_bg[0];
+            bg_instances[bg_count] = .{
+                .pos = .{ tab_x + 1, 2 },
+                .size = .{ tw - 2, tbh - 2 },
+                .color = .{ c, c, c, 1 },
+            };
+            bg_count += 1;
+        }
+
+        // Draw backgrounds
+        self.drawBgInstances(bg_instances[0..bg_count]);
+
+        // Tab title text + close buttons via glyph atlas
+        var text_instances: [512]TextInstance = undefined;
+        var text_count: u32 = 0;
+
+        for (0..tab_count) |i| {
+            const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
+            const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
+
+            // "Tab N" title
+            var title_buf: [16]u8 = undefined;
+            const title = std.fmt.bufPrint(&title_buf, "Tab {d}", .{i + 1}) catch unreachable;
+            // Baseline Y for vertical centering: place baseline so text is centered in tab bar
+            const baseline_y = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
+
+            for (title) |ch_byte| {
+                if (text_count >= 512) break;
+                const result = self.font.resolveGlyph(ch_byte) orelse continue;
+                if (result.owned) _ = result.face.vtable.Release(result.face);
+                const entry = self.atlas.getOrInsert(result.face, result.index) orelse continue;
+                if (entry.w == 0 or entry.h == 0) {
+                    // space — just advance
+                } else {
+                    const gx = tab_x + pad + @as(f32, @floatFromInt(text_count)) * cw + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = baseline_y + @as(f32, @floatFromInt(entry.bearing_y));
+                    text_instances[text_count] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                    };
+                }
+                text_count += 1;
+            }
+            // Reset text_count for x position tracking — we're building a flat array
+            // Actually, we need to track x position separately for tab text
+        }
+
+        // Simpler approach: rebuild text instances properly with x tracking
+        text_count = 0;
+        for (0..tab_count) |i| {
+            const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
+            const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
+
+            var title_buf: [16]u8 = undefined;
+            const title = std.fmt.bufPrint(&title_buf, "Tab {d}", .{i + 1}) catch unreachable;
+            const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
+
+            var x_off: f32 = 0;
+            for (title) |ch_byte| {
+                if (text_count >= 510) break;
+                const result = self.font.resolveGlyph(ch_byte) orelse {
+                    x_off += cw;
+                    continue;
+                };
+                if (result.owned) _ = result.face.vtable.Release(result.face);
+                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                    x_off += cw;
+                    continue;
+                };
+                if (entry.w > 0 and entry.h > 0) {
+                    const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
+                    text_instances[text_count] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                    };
+                    text_count += 1;
+                }
+                x_off += cw;
+            }
+
+            // Close button "x"
+            if (text_count < 512) {
+                const close_x = tab_x + tw - cbs - pad;
+                const close_y = (tbh - cbs) / 2.0;
+                const tab_bg_c = if (i == active_tab) TAB_ACTIVE_R else self.default_bg[0];
+                const close_c = TAB_TEXT_R * 0.6 + tab_bg_c * 0.4;
+
+                const result = self.font.resolveGlyph('x') orelse continue;
+                if (result.owned) _ = result.face.vtable.Release(result.face);
+                const entry = self.atlas.getOrInsert(result.face, result.index) orelse continue;
+                if (entry.w > 0 and entry.h > 0) {
+                    const gx = close_x + (cbs - cw) / 2.0 + @as(f32, @floatFromInt(entry.bearing_x));
+                    const close_baseline = close_y + (cbs + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
+                    const gy = close_baseline + @as(f32, @floatFromInt(entry.bearing_y));
+                    text_instances[text_count] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = .{ close_c, close_c, close_c, 1 },
+                    };
+                    text_count += 1;
+                }
+            }
+        }
+
+        if (text_count > 0) {
+            self.drawTextInstances(text_instances[0..text_count]);
+        }
+
+        // Don't present — renderTerminal will continue
+    }
+
+    // === Terminal rendering ===
+
+    pub fn renderTerminal(
+        self: *D3d11Renderer,
+        terminal: *ghostty.Terminal,
+        cell_w: c_int,
+        cell_h: c_int,
+        vp_w: c_int,
+        vp_h: c_int,
+        y_offset: c_int,
+        padding: c_int,
+    ) void {
+        self.render_state.update(self.alloc, terminal) catch return;
+
+        const rows = self.render_state.rows;
+        const cols = self.render_state.cols;
+        const colors = self.render_state.colors;
+        const row_slice = self.render_state.row_data.slice();
+
+        const cw: f32 = @floatFromInt(cell_w);
+        const ch: f32 = @floatFromInt(cell_h);
+        const y_off: f32 = @floatFromInt(y_offset + padding);
+        const x_pad: f32 = @floatFromInt(padding);
+
+        const all_cells = row_slice.items(.cells);
+        const all_sels = row_slice.items(.selection);
+
+        const dbg_r = colorF(colors.background.r);
+        const dbg_g = colorF(colors.background.g);
+        const dbg_b = colorF(colors.background.b);
+
+        // Instance buffers — 4096 cells covers ~200x20 terminals (stack ~200KB each)
+        const MAX_CELLS = 4096;
+        var bg_buf: [MAX_CELLS]BgInstance = undefined;
+        var bg_count: u32 = 0;
+        var text_buf: [MAX_CELLS]TextInstance = undefined;
+        var text_count: u32 = 0;
+
+        // --- Background pass ---
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+
+            for (0..cols) |x| {
+                if (x >= raws.len) break;
+                const raw = raws[x];
+                if (raw.wide == .spacer_tail) continue;
+
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const is_inverse = style.flags.inverse;
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+
+                const is_custom_bg = is_selected or is_inverse or (style.bg(&raw, &colors.palette) != null);
+                if (!is_custom_bg) continue;
+
+                if (bg_count >= MAX_CELLS) break;
+                const width: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
+                const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
+
+                const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, dbg_r, dbg_g, dbg_b);
+                bg_buf[bg_count] = .{
+                    .pos = .{ fx, fy },
+                    .size = .{ width, ch },
+                    .color = .{ cell_bg[0], cell_bg[1], cell_bg[2], 1 },
+                };
+                bg_count += 1;
+            }
+        }
+
+        // Draw backgrounds
+        if (bg_count > 0) {
+            self.drawBgInstances(bg_buf[0..bg_count]);
+        }
+
+        // Reuse bg_buf for block elements (start from 0)
+        var block_count: u32 = 0;
+
+        // --- Text pass ---
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+
+            const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
+
+            for (0..cols) |x| {
+                if (x >= raws.len) break;
+                const raw = raws[x];
+
+                const is_text = raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0;
+                if (!is_text) continue;
+
+                const cp = raw.codepoint();
+
+                // Block elements: draw as colored rectangle
+                if (isBlockElement(cp)) {
+                    if (block_count >= MAX_CELLS) continue;
+                    const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                    const is_inverse = style.flags.inverse;
+                    const x16: u16 = @intCast(x);
+                    const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                    const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
+                    const rect = blockElementRect(cp) orelse continue;
+                    const width: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
+                    const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+
+                    bg_buf[block_count] = .{
+                        .pos = .{ fx + rect.x0 * width, fy + rect.y0 * ch },
+                        .size = .{ (rect.x1 - rect.x0) * width, (rect.y1 - rect.y0) * ch },
+                        .color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), rect.alpha },
+                    };
+                    block_count += 1;
+                    continue;
+                }
+
+                if (text_count >= MAX_CELLS) continue;
+
+                // Resolve glyph
+                const result = self.font.resolveGlyph(cp) orelse continue;
+                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    continue;
+                };
+                if (result.owned) _ = result.face.vtable.Release(result.face);
+
+                if (entry.w == 0 or entry.h == 0) continue; // empty glyph (space)
+
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const is_inverse = style.flags.inverse;
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
+
+                const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
+                const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+
+                text_buf[text_count] = .{
+                    .pos = .{ gx, gy },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
+                };
+                text_count += 1;
+            }
+        }
+
+        // Draw text glyphs
+        if (text_count > 0) {
+            self.drawTextInstances(text_buf[0..text_count]);
+        }
+
+        // Draw block elements
+        if (block_count > 0) {
+            self.drawBgInstances(bg_buf[0..block_count]);
+        }
+
+        // --- Cursor ---
+        if (self.render_state.cursor.visible) {
+            if (self.render_state.cursor.viewport) |vp| {
+                var cursor_x: f32 = @floatFromInt(vp.x);
+                const cursor_y: f32 = @floatFromInt(vp.y);
+                if (vp.wide_tail and vp.x > 0) cursor_x -= 1.0;
+                const cx0 = cursor_x * cw + x_pad;
+                const cy0 = cursor_y * ch + y_off;
+                var cursor_color: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 0.7 };
+                if (colors.cursor) |cc| {
+                    cursor_color = .{ colorF(cc.r), colorF(cc.g), colorF(cc.b), 0.7 };
+                }
+                const cursor_inst = [1]BgInstance{.{
+                    .pos = .{ cx0, cy0 },
+                    .size = .{ cw, ch },
+                    .color = cursor_color,
+                }};
+                self.drawBgInstances(&cursor_inst);
+            }
+        }
+
+        // --- Scrollbar ---
+        const sb = terminal.screens.active.pages.scrollbar();
+        if (sb.total > sb.len) {
+            const vp_hf: f32 = @floatFromInt(vp_h);
+            const vp_wf: f32 = @floatFromInt(vp_w);
+            const track_h: f32 = vp_hf - @as(f32, @floatFromInt(y_offset + padding));
+            const track_x: f32 = vp_wf - SCROLLBAR_W;
+            const ratio = track_h / @as(f32, @floatFromInt(sb.total));
+            const thumb_h = @max(SCROLLBAR_MIN_H, ratio * @as(f32, @floatFromInt(sb.len)));
+            const available = track_h - thumb_h;
+            const max_offset: f32 = @floatFromInt(sb.total - sb.len);
+            const thumb_y = y_off + if (max_offset > 0) @as(f32, @floatFromInt(sb.offset)) / max_offset * available else 0;
+            const scrollbar_inst = [1]BgInstance{.{
+                .pos = .{ track_x, thumb_y },
+                .size = .{ SCROLLBAR_W, thumb_h },
+                .color = .{ 1, 1, 1, 0.3 },
+            }};
+            self.drawBgInstances(&scrollbar_inst);
+        }
+
+        // Present
+        _ = self.swap_chain.Present(1, 0);
+    }
+
+    // --- Internal draw helpers ---
+
+    fn setupFrame(self: *D3d11Renderer, rtv: *d3d.ID3D11RenderTargetView) void {
+        // Bind render target
+        const rtvs = [1]?*d3d.ID3D11RenderTargetView{rtv};
+        self.ctx.OMSetRenderTargets(1, &rtvs, null);
+
+        // Update constant buffer
+        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
+        if (self.ctx.Map(@ptrCast(self.cb), 0, d3d.D3D11_MAP_WRITE_DISCARD, 0, &mapped) >= 0) {
+            const cb_data: *Constants = @ptrCast(@alignCast(mapped.pData));
+            cb_data.* = .{
+                .screen_w = @floatFromInt(self.vp_width),
+                .screen_h = @floatFromInt(self.vp_height),
+                .atlas_w = @floatFromInt(ATLAS_SIZE),
+                .atlas_h = @floatFromInt(ATLAS_SIZE),
+                .enhanced_contrast = self.sys_enhanced_contrast,
+                .gamma_ratios = self.gamma_ratios,
+            };
+            self.ctx.Unmap(@ptrCast(self.cb), 0);
+        }
+
+        // Bind constant buffer to both VS and PS
+        const cbs = [1]?*d3d.ID3D11Buffer{self.cb};
+        self.ctx.VSSetConstantBuffers(0, 1, &cbs);
+        self.ctx.PSSetConstantBuffers(0, 1, &cbs);
+
+        // Set viewport
+        const vp = [1]d3d.D3D11_VIEWPORT{.{
+            .Width = @floatFromInt(self.vp_width),
+            .Height = @floatFromInt(self.vp_height),
+        }};
+        self.ctx.RSSetViewports(1, &vp);
+    }
+
+    fn drawBgInstances(self: *D3d11Renderer, instances: []const BgInstance) void {
+        if (instances.len == 0) return;
+
+        // Upload instance data
+        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
+        if (self.ctx.Map(@ptrCast(self.bg_buffer), 0, d3d.D3D11_MAP_WRITE_DISCARD, 0, &mapped) < 0) return;
+        const dst: [*]BgInstance = @ptrCast(@alignCast(mapped.pData));
+        @memcpy(dst[0..instances.len], instances);
+        self.ctx.Unmap(@ptrCast(self.bg_buffer), 0);
+
+        // Set pipeline state
+        self.ctx.IASetInputLayout(self.bg_layout);
+        const strides = [1]u32{@sizeOf(BgInstance)};
+        const offsets = [1]u32{0};
+        const bufs = [1]?*d3d.ID3D11Buffer{self.bg_buffer};
+        self.ctx.IASetVertexBuffers(0, 1, &bufs, &strides, &offsets);
+        self.ctx.VSSetShader(self.bg_vs);
+        self.ctx.PSSetShader(self.bg_ps);
+        self.ctx.OMSetBlendState(self.alpha_blend, null, 0xffffffff);
+
+        // Draw
+        self.ctx.DrawInstanced(4, @intCast(instances.len), 0, 0);
+    }
+
+    fn drawTextInstances(self: *D3d11Renderer, instances: []const TextInstance) void {
+        if (instances.len == 0) return;
+
+        // Upload instance data
+        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
+        if (self.ctx.Map(@ptrCast(self.text_buffer), 0, d3d.D3D11_MAP_WRITE_DISCARD, 0, &mapped) < 0) return;
+        const dst: [*]TextInstance = @ptrCast(@alignCast(mapped.pData));
+        @memcpy(dst[0..instances.len], instances);
+        self.ctx.Unmap(@ptrCast(self.text_buffer), 0);
+
+        // Set pipeline state
+        self.ctx.IASetInputLayout(self.text_layout);
+        const strides = [1]u32{@sizeOf(TextInstance)};
+        const offsets = [1]u32{0};
+        const bufs = [1]?*d3d.ID3D11Buffer{self.text_buffer};
+        self.ctx.IASetVertexBuffers(0, 1, &bufs, &strides, &offsets);
+        self.ctx.VSSetShader(self.text_vs);
+        self.ctx.PSSetShader(self.text_ps);
+        self.ctx.OMSetBlendState(self.ct_blend, null, 0xffffffff);
+
+        // Bind atlas texture
+        const srvs = [1]?*d3d.ID3D11ShaderResourceView{self.atlas.srv};
+        self.ctx.PSSetShaderResources(0, 1, &srvs);
+        const samplers = [1]?*d3d.ID3D11SamplerState{self.sampler};
+        self.ctx.PSSetSamplers(0, 1, &samplers);
+
+        // Draw
+        self.ctx.DrawInstanced(4, @intCast(instances.len), 0, 0);
+    }
+
+    fn compileShader(src: []const u8, entry: [*:0]const u8, target: [*:0]const u8) !*d3d.ID3DBlob {
+        var code: ?*d3d.ID3DBlob = null;
+        var errors: ?*d3d.ID3DBlob = null;
+        if (d3d.D3DCompile(
+            src.ptr,
+            src.len,
+            null,
+            null,
+            null,
+            entry,
+            target,
+            0,
+            0,
+            &code,
+            &errors,
+        ) < 0) {
+            if (errors) |e| _ = e.Release();
+            return error.ShaderCompileFailed;
+        }
+        if (errors) |e| _ = e.Release();
+        return code.?;
+    }
+
+    // --- Color helpers ---
+
+    fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool, dbg_r: f32, dbg_g: f32, dbg_b: f32) [3]f32 {
+        if (is_selected or is_inverse) {
+            const rgb = style.fg(.{
+                .default = colors.foreground,
+                .palette = &colors.palette,
+            });
+            return .{ colorF(rgb.r), colorF(rgb.g), colorF(rgb.b) };
+        }
+        if (style.bg(raw, &colors.palette)) |rgb| {
+            return .{ colorF(rgb.r), colorF(rgb.g), colorF(rgb.b) };
+        }
+        return .{ dbg_r, dbg_g, dbg_b };
+    }
+
+    fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool) ghostty.color.RGB {
+        if (is_selected or is_inverse) {
+            return style.bg(raw, &colors.palette) orelse colors.background;
+        }
+        return style.fg(.{
+            .default = colors.foreground,
+            .palette = &colors.palette,
+            .bold = .bright,
+        });
+    }
+
+    const SCROLLBAR_W: f32 = 8.0;
+    const SCROLLBAR_MIN_H: f32 = 16.0;
+
+    const BlockRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32 };
+
+    fn isBlockElement(cp: u21) bool {
+        return cp >= 0x2580 and cp <= 0x2595;
+    }
+
+    fn blockElementRect(cp: u21) ?BlockRect {
+        return switch (cp) {
+            0x2580 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 0.5, .alpha = 1 },
+            0x2581 => .{ .x0 = 0, .y0 = 7.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2582 => .{ .x0 = 0, .y0 = 6.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2583 => .{ .x0 = 0, .y0 = 5.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2584 => .{ .x0 = 0, .y0 = 4.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2585 => .{ .x0 = 0, .y0 = 3.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2586 => .{ .x0 = 0, .y0 = 2.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2587 => .{ .x0 = 0, .y0 = 1.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2588 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2589 => .{ .x0 = 0, .y0 = 0, .x1 = 7.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x258A => .{ .x0 = 0, .y0 = 0, .x1 = 6.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x258B => .{ .x0 = 0, .y0 = 0, .x1 = 5.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x258C => .{ .x0 = 0, .y0 = 0, .x1 = 4.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x258D => .{ .x0 = 0, .y0 = 0, .x1 = 3.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x258E => .{ .x0 = 0, .y0 = 0, .x1 = 2.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x258F => .{ .x0 = 0, .y0 = 0, .x1 = 1.0 / 8.0, .y1 = 1, .alpha = 1 },
+            0x2590 => .{ .x0 = 0.5, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            0x2591 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.25 },
+            0x2592 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.5 },
+            0x2593 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.75 },
+            0x2594 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1.0 / 8.0, .alpha = 1 },
+            0x2595 => .{ .x0 = 7.0 / 8.0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
+            else => null,
+        };
+    }
+
+    /// Compute gamma ratio coefficients from system gamma, exactly matching
+    /// Windows Terminal's DWrite_GetGammaRatios (dwrite_helpers.cpp).
+    /// Raw table values are divided by 4, then multiplied by norm13/norm24.
+    fn computeGammaRatios(gamma: f32) [4]f32 {
+        // Raw coefficient table from WT source (values / 4.0)
+        const raw = [13][4]f32{
+            .{ 0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0 }, // 1.0
+            .{ 0.0166 / 4.0, -0.0807 / 4.0, 0.2227 / 4.0, -0.0751 / 4.0 }, // 1.1
+            .{ 0.0350 / 4.0, -0.1760 / 4.0, 0.4325 / 4.0, -0.1370 / 4.0 }, // 1.2
+            .{ 0.0543 / 4.0, -0.2821 / 4.0, 0.6302 / 4.0, -0.1876 / 4.0 }, // 1.3
+            .{ 0.0739 / 4.0, -0.3963 / 4.0, 0.8167 / 4.0, -0.2287 / 4.0 }, // 1.4
+            .{ 0.0933 / 4.0, -0.5161 / 4.0, 0.9926 / 4.0, -0.2616 / 4.0 }, // 1.5
+            .{ 0.1121 / 4.0, -0.6395 / 4.0, 1.1588 / 4.0, -0.2877 / 4.0 }, // 1.6
+            .{ 0.1300 / 4.0, -0.7649 / 4.0, 1.3159 / 4.0, -0.3080 / 4.0 }, // 1.7
+            .{ 0.1469 / 4.0, -0.8911 / 4.0, 1.4644 / 4.0, -0.3234 / 4.0 }, // 1.8
+            .{ 0.1627 / 4.0, -1.0170 / 4.0, 1.6051 / 4.0, -0.3347 / 4.0 }, // 1.9
+            .{ 0.1773 / 4.0, -1.1420 / 4.0, 1.7385 / 4.0, -0.3426 / 4.0 }, // 2.0
+            .{ 0.1908 / 4.0, -1.2652 / 4.0, 1.8650 / 4.0, -0.3476 / 4.0 }, // 2.1
+            .{ 0.2031 / 4.0, -1.3864 / 4.0, 1.9851 / 4.0, -0.3501 / 4.0 }, // 2.2
+        };
+
+        // Normalization constants (from WT source)
+        const norm13: f32 = @floatCast(@as(f64, 0x10000) / (255.0 * 255.0) * 4.0);
+        const norm24: f32 = @floatCast(@as(f64, 0x100) / 255.0 * 4.0);
+
+        // WT uses nearest-index rounding: clamp(gamma*10 + 0.5, 10, 22) - 10
+        const idx_raw = @as(i32, @intFromFloat(gamma * 10.0 + 0.5));
+        const idx_clamped = @max(10, @min(22, idx_raw)) - 10;
+        const idx: usize = @intCast(idx_clamped);
+        const r = raw[idx];
+
+        return .{
+            norm13 * r[0],
+            norm24 * r[1],
+            norm13 * r[2],
+            norm24 * r[3],
+        };
+    }
+};
