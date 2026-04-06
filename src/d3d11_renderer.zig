@@ -518,11 +518,42 @@ pub const D3d11Renderer = struct {
             const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i].ptr[0..tab_titles[i].len];
             const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
+            // Max text width: tab width - close button - padding on both sides - gap before close btn
+            const max_text_w = tw - cbs - pad * 3;
+            const ellipsis_w = cw * 3; // width of "..."
+            const needs_truncate = !is_renaming and (@as(f32, @floatFromInt(title.len)) * cw > max_text_w);
+
             var x_off: f32 = 0;
             var byte_idx: usize = 0;
+            var truncated = false;
             const rename_cursor_pos: ?usize = if (is_renaming) rename_state.?.cursor else null;
             for (title) |ch_byte| {
                 if (text_count >= 510) break;
+                // Truncate with "..." if text would overflow
+                if (needs_truncate and x_off + cw > max_text_w - ellipsis_w) {
+                    // Render "..."
+                    for (0..3) |_| {
+                        if (text_count >= 512) break;
+                        const dot_result = self.font.resolveGlyph('.') orelse break;
+                        if (dot_result.owned) _ = dot_result.face.vtable.Release(dot_result.face);
+                        const dot_entry = self.atlas.getOrInsert(dot_result.face, dot_result.index) orelse break;
+                        if (dot_entry.w > 0 and dot_entry.h > 0) {
+                            const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(dot_entry.bearing_x));
+                            const gy = baseline_y2 + @as(f32, @floatFromInt(dot_entry.bearing_y));
+                            text_instances[text_count] = .{
+                                .pos = .{ gx, gy },
+                                .size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
+                                .uv_pos = .{ @floatFromInt(dot_entry.x), @floatFromInt(dot_entry.y) },
+                                .uv_size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
+                                .fg_color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                            };
+                            text_count += 1;
+                        }
+                        x_off += cw;
+                    }
+                    truncated = true;
+                    break;
+                }
                 // Draw cursor before this character if cursor is at this byte position
                 if (rename_cursor_pos) |cp| {
                     if (byte_idx == cp and cursor_count == 0) {
@@ -558,15 +589,17 @@ pub const D3d11Renderer = struct {
                 }
                 x_off += cw;
             }
-            // Cursor at end of text
-            if (rename_cursor_pos) |cp| {
-                if (cp >= title.len and cursor_count == 0) {
-                    cursor_instances[0] = .{
-                        .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
-                        .size = .{ 1, ch - 2 },
-                        .color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
-                    };
-                    cursor_count = 1;
+            // Cursor at end of text (only if not truncated)
+            if (!truncated) {
+                if (rename_cursor_pos) |cp| {
+                    if (cp >= title.len and cursor_count == 0) {
+                        cursor_instances[0] = .{
+                            .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                            .size = .{ 1, ch - 2 },
+                            .color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                        };
+                        cursor_count = 1;
+                    }
                 }
             }
 
