@@ -669,7 +669,10 @@ pub const D3d11Renderer = struct {
                 const is_custom_bg = is_selected or is_inverse or (style.bg(&raw, &colors.palette) != null);
                 if (!is_custom_bg) continue;
 
-                if (bg_count >= MAX_CELLS) break;
+                if (bg_count >= MAX_CELLS) {
+                    self.drawBgInstances(bg_buf[0..bg_count]);
+                    bg_count = 0;
+                }
                 const width: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                 const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                 const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
@@ -713,7 +716,10 @@ pub const D3d11Renderer = struct {
 
                 // Block elements: draw as colored rectangle
                 if (isBlockElement(cp)) {
-                    if (block_count >= MAX_CELLS) continue;
+                    if (block_count >= MAX_CELLS) {
+                        self.drawBgInstances(bg_buf[0..block_count]);
+                        block_count = 0;
+                    }
                     const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                     const is_inverse = style.flags.inverse;
                     const x16: u16 = @intCast(x);
@@ -732,7 +738,10 @@ pub const D3d11Renderer = struct {
                     continue;
                 }
 
-                if (text_count >= MAX_CELLS) continue;
+                if (text_count >= MAX_CELLS) {
+                    self.drawTextInstances(text_buf[0..text_count]);
+                    text_count = 0;
+                }
 
                 // Resolve glyph
                 const result = self.font.resolveGlyph(cp) orelse continue;
