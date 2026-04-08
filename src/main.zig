@@ -1,27 +1,74 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
-const ConPty = @import("windows/conpty.zig").ConPty;
-const window_mod = @import("windows/window.zig");
+
+// ─── 플랫폼별 모듈 ────────────────────────────────────────────────
+const platform_pty = switch (builtin.os.tag) {
+    .windows => @import("windows/conpty.zig"),
+    .macos, .linux => @import("macos/pty.zig"),
+    else => @compileError("Unsupported platform"),
+};
+const ConPty = platform_pty.ConPty;
+
+const window_mod = switch (builtin.os.tag) {
+    .windows => @import("windows/window.zig"),
+    .macos => @import("macos/window.zig"),
+    else => @compileError("Unsupported platform"),
+};
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
-const D3d11Renderer = @import("windows/renderer.zig").D3d11Renderer;
+
+const platform_renderer = switch (builtin.os.tag) {
+    .windows => @import("windows/renderer.zig"),
+    .macos => @import("macos/renderer.zig"),
+    else => @compileError("Unsupported platform"),
+};
+const D3d11Renderer = switch (builtin.os.tag) {
+    .windows => platform_renderer.D3d11Renderer,
+    .macos => platform_renderer.MetalRenderer,
+    else => @compileError("Unsupported platform"),
+};
+
+const autostart = switch (builtin.os.tag) {
+    .windows => @import("windows/autostart.zig"),
+    .macos => @import("macos/autostart.zig"),
+    else => @compileError("Unsupported platform"),
+};
+
 const Config = @import("config.zig").Config;
 const themes = @import("themes.zig");
-const autostart = @import("windows/autostart.zig");
 
+// ─── Windows 전용 API ────────────────────────────────────────────
+// comptime 분기로 macOS/Linux 빌드에서는 컴파일 제외됨
 const HWND = ?*anyopaque;
 const WCHAR = u16;
-extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
-extern "user32" fn MessageBoxA(?*anyopaque, [*:0]const u8, [*:0]const u8, c_uint) callconv(.c) c_int;
-extern "user32" fn PostMessageW(HWND, c_uint, usize, isize) callconv(.c) c_int;
-extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) c_int;
-extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
-extern "kernel32" fn GetLastError() callconv(.c) u32;
-extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
-extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
-extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
-extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
-extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+const windows_api = if (builtin.os.tag == .windows) struct {
+    extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
+    extern "user32" fn MessageBoxA(?*anyopaque, [*:0]const u8, [*:0]const u8, c_uint) callconv(.c) c_int;
+    extern "user32" fn PostMessageW(HWND, c_uint, usize, isize) callconv(.c) c_int;
+    extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) c_int;
+    extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
+    extern "kernel32" fn GetLastError() callconv(.c) u32;
+    extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
+    extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
+    extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
+    extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
+    extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+} else struct {};
+
+// Windows API 전역 바인딩 (Windows에서만 사용)
+const MessageBoxW = if (builtin.os.tag == .windows) windows_api.MessageBoxW else {};
+const MessageBoxA = if (builtin.os.tag == .windows) windows_api.MessageBoxA else {};
+const PostMessageW = if (builtin.os.tag == .windows) windows_api.PostMessageW else {};
+const GetClientRect = if (builtin.os.tag == .windows) windows_api.GetClientRect else {};
+const CreateMutexW = if (builtin.os.tag == .windows) windows_api.CreateMutexW else {};
+const GetLastError = if (builtin.os.tag == .windows) windows_api.GetLastError else {};
+const CloseHandle = if (builtin.os.tag == .windows) windows_api.CloseHandle else {};
+const GetKeyState = if (builtin.os.tag == .windows) windows_api.GetKeyState else {};
+const GetEnvironmentVariableW = if (builtin.os.tag == .windows) windows_api.GetEnvironmentVariableW else {};
+const SetProcessDpiAwarenessContext = if (builtin.os.tag == .windows) windows_api.SetProcessDpiAwarenessContext else {};
+const GetDpiForWindow = if (builtin.os.tag == .windows) windows_api.GetDpiForWindow else {};
+
 const VK_CONTROL: c_int = 0x11;
 const VK_SHIFT: c_int = 0x10;
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;

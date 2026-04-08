@@ -52,6 +52,23 @@ pub fn build(b: *std.Build) void {
             exe.linkFramework("CoreGraphics");
             exe.linkFramework("CoreFoundation");
             exe.linkFramework("ApplicationServices");
+            exe.linkFramework("Carbon");
+            exe.linkLibC();
+
+            // Objective-C 브릿지 파일 컴파일 (.m)
+            // Zig은 .m (Objective-C) 파일을 직접 컴파일할 수 있다.
+            exe_mod.addCSourceFiles(.{
+                .files = &.{
+                    "src/macos/bridge.m",
+                    "src/macos/metal_bridge.m",
+                },
+                .flags = &.{
+                    "-fobjc-arc", // ARC (Automatic Reference Counting)
+                    "-fmodules",
+                    "-std=c11",
+                },
+            });
+            exe_mod.addIncludePath(b.path("src"));
         },
         .linux => {
             exe.linkSystemLibrary("gtk-4");
