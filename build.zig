@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
     // Keep default false until Zig upstream fixes this.
     const simd = b.option(bool, "simd", "SIMD acceleration (broken on Windows/Zig 0.15)") orelse false;
 
-    if (b.lazyDependency("ghostty", .{ .simd = simd, .optimize = optimize })) |dep| {
+    if (b.lazyDependency("ghostty", .{ .simd = simd, .optimize = optimize, .@"emit-lib-vt" = true })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
 
@@ -32,7 +32,25 @@ pub fn build(b: *std.Build) void {
         .name = "tildaz",
         .root_module = exe_mod,
     });
-    exe.subsystem = .Windows;
+
+    const os_tag = target.query.os_tag orelse @import("builtin").os.tag;
+
+    // Platform-specific configuration
+    switch (os_tag) {
+        .windows => {
+            exe.subsystem = .Windows;
+        },
+        .macos => {
+            exe_mod.linkFramework("AppKit", .{});
+            exe_mod.linkFramework("Metal", .{});
+            exe_mod.linkFramework("CoreText", .{});
+            exe_mod.linkFramework("CoreGraphics", .{});
+            exe_mod.linkFramework("QuartzCore", .{});
+            exe_mod.linkSystemLibrary("c", .{});
+        },
+        else => {},
+    }
+
     b.installArtifact(exe);
 
     // Run step

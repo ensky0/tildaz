@@ -728,5 +728,5 @@ pub const Window = struct {
         return .{ .cols = cols, .rows = rows };
     }
 
-    pub const DockPosition = enum { top, bottom, left, right };
+    pub const DockPosition = @import("../config.zig").DockPosition;
 };
