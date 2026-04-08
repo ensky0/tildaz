@@ -5,8 +5,15 @@ const std = @import("std");
 //   zig build -Dsimd=true      -- SIMD enabled (currently broken on Windows, Zig 0.15 issue)
 //   zig build -Doptimize=Debug -- debug build
 //
+// Cross-platform targets:
+//   zig build -Dtarget=x86_64-windows      -- Windows (default)
+//   zig build -Dtarget=aarch64-macos       -- macOS ARM (M1/M2/M3)
+//   zig build -Dtarget=x86_64-macos        -- macOS Intel
+//   zig build -Dtarget=x86_64-linux-gnu    -- Linux x86_64
+//
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const os = target.result.os.tag;
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
@@ -32,7 +39,30 @@ pub fn build(b: *std.Build) void {
         .name = "tildaz",
         .root_module = exe_mod,
     });
-    exe.subsystem = .Windows;
+
+    switch (os) {
+        .windows => {
+            exe.subsystem = .Windows;
+        },
+        .macos => {
+            exe.linkFramework("Cocoa");
+            exe.linkFramework("Metal");
+            exe.linkFramework("MetalKit");
+            exe.linkFramework("CoreText");
+            exe.linkFramework("CoreGraphics");
+            exe.linkFramework("CoreFoundation");
+            exe.linkFramework("ApplicationServices");
+        },
+        .linux => {
+            exe.linkSystemLibrary("gtk-4");
+            exe.linkSystemLibrary("gl");
+            exe.linkSystemLibrary("fontconfig");
+            exe.linkSystemLibrary("freetype2");
+            exe.linkLibC();
+        },
+        else => @panic("Unsupported target OS"),
+    }
+
     b.installArtifact(exe);
 
     // Run step

@@ -1,13 +1,13 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
-const ConPty = @import("conpty.zig").ConPty;
-const window_mod = @import("window.zig");
+const ConPty = @import("windows/conpty.zig").ConPty;
+const window_mod = @import("windows/window.zig");
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
-const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
+const D3d11Renderer = @import("windows/renderer.zig").D3d11Renderer;
 const Config = @import("config.zig").Config;
 const themes = @import("themes.zig");
-const autostart = @import("autostart.zig");
+const autostart = @import("windows/autostart.zig");
 
 const HWND = ?*anyopaque;
 const WCHAR = u16;
@@ -1013,7 +1013,7 @@ fn run() !void {
     app.window.render_fn = App.onRender;
     app.window.resize_fn = App.onResize;
     app.window.app_msg_fn = App.onAppMessage;
-    const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
+    const DWriteFontCtx = @import("windows/font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system
     for (0..config.font_family_count) |i| {
