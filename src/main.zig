@@ -265,7 +265,7 @@ const App = struct {
     TERMINAL_PADDING: c_int = 6,
 
     // Word boundary characters for double-click selection
-    const word_boundaries = [_]u21{ ' ', '\t', '"', '\'', '`', '|', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '<', '>' };
+    const word_boundaries = [_]u21{ ' ', '\t', '"', '`', '|', ':', ';', '(', ')', '[', ']', '{', '}', '<', '>' };
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
