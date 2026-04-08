@@ -5,7 +5,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const d3d = @import("d3d11.zig");
 const dw = @import("directwrite.zig");
-const DWriteFontContext = @import("dwrite_font.zig").DWriteFontContext;
+const DWriteFontContext = @import("font.zig").DWriteFontContext;
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
 
