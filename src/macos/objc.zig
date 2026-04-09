@@ -35,6 +35,8 @@ extern "objc" fn objc_msgSend() callconv(.c) void;
 extern "objc" fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, extra_bytes: usize) ?Class;
 extern "objc" fn objc_registerClassPair(cls: Class) void;
 extern "objc" fn class_addMethod(cls: Class, name: SEL, imp: *const anyopaque, types: [*:0]const u8) bool;
+pub extern "objc" fn objc_getProtocol(name: [*:0]const u8) ?*anyopaque;
+pub extern "objc" fn class_addProtocol(cls: Class, protocol: *anyopaque) bool;
 extern "objc" fn object_setInstanceVariable(obj: id, name: [*:0]const u8, value: ?*anyopaque) *anyopaque;
 extern "objc" fn object_getInstanceVariable(obj: id, name: [*:0]const u8, out: *?*anyopaque) *anyopaque;
 

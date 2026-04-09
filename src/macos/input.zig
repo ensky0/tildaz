@@ -1,6 +1,6 @@
-// Keyboard + mouse input handling for macOS terminal.
+// Keyboard + mouse + IME input handling for macOS terminal.
 // Creates a custom NSView subclass at runtime that intercepts key/mouse/scroll
-// events and forwards them to the App via global callbacks.
+// events and uses NSTextInputClient for proper IME support (Korean, Japanese, etc.).
 
 const std = @import("std");
 const objc = @import("objc.zig");
@@ -18,6 +18,16 @@ pub const PasteCallback = *const fn () void;
 var g_input_callback: ?InputCallback = null;
 var g_scroll_callback: ?ScrollCallback = null;
 var g_paste_callback: ?PasteCallback = null;
+
+/// IME marked text state (for composing characters like Korean/Japanese)
+var g_marked_len: usize = 0; // number of Unicode characters in current marked text
+
+const NSRange = extern struct {
+    location: usize,
+    length: usize,
+};
+
+const NSNotFound: usize = @as(usize, @bitCast(@as(isize, -1)));
 
 pub fn setInputCallback(cb: InputCallback) void {
     g_input_callback = cb;
@@ -48,8 +58,26 @@ pub fn getViewClass() objc.Class {
     _ = objc.addMethod(cls, objc.sel("flagsChanged:"), @ptrCast(&flagsChanged), "v@:@");
     _ = objc.addMethod(cls, objc.sel("canBecomeKeyView"), @ptrCast(&canBecomeKeyView), "c@:");
 
+    // NSTextInputClient protocol methods (for IME: Korean, Japanese, Chinese, etc.)
+    _ = objc.addMethod(cls, objc.sel("insertText:replacementRange:"), @ptrCast(&imeInsertText), "v@:@{_NSRange=QQ}");
+    _ = objc.addMethod(cls, objc.sel("setMarkedText:selectedRange:replacementRange:"), @ptrCast(&imeSetMarkedText), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
+    _ = objc.addMethod(cls, objc.sel("unmarkText"), @ptrCast(&imeUnmarkText), "v@:");
+    _ = objc.addMethod(cls, objc.sel("hasMarkedText"), @ptrCast(&imeHasMarkedText), "c@:");
+    _ = objc.addMethod(cls, objc.sel("markedRange"), @ptrCast(&imeMarkedRange), "{_NSRange=QQ}@:");
+    _ = objc.addMethod(cls, objc.sel("selectedRange"), @ptrCast(&imeSelectedRange), "{_NSRange=QQ}@:");
+    _ = objc.addMethod(cls, objc.sel("validAttributesForMarkedText"), @ptrCast(&imeValidAttributes), "@@:");
+    _ = objc.addMethod(cls, objc.sel("attributedSubstringForProposedRange:actualRange:"), @ptrCast(&imeAttrSubstring), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = objc.addMethod(cls, objc.sel("characterIndexForPoint:"), @ptrCast(&imeCharIndex), "Q@:{CGPoint=dd}");
+    _ = objc.addMethod(cls, objc.sel("firstRectForCharacterRange:actualRange:"), @ptrCast(&imeFirstRect), "{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = objc.addMethod(cls, objc.sel("doCommandBySelector:"), @ptrCast(&imeDoCommand), "v@::");
+
     // Mouse scroll
     _ = objc.addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&scrollWheel), "v@:@");
+
+    // Adopt NSTextInputClient protocol so inputContext recognizes this view
+    if (objc.objc_getProtocol("NSTextInputClient")) |protocol| {
+        _ = objc.class_addProtocol(cls, protocol);
+    }
 
     objc.registerClass(cls);
     registered = true;
@@ -57,7 +85,7 @@ pub fn getViewClass() objc.Class {
 }
 
 // ---------------------------------------------------------------------------
-// ObjC method implementations (called by the runtime via objc_msgSend)
+// ObjC method implementations
 // ---------------------------------------------------------------------------
 
 fn acceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) objc.BOOL {
@@ -68,28 +96,22 @@ fn canBecomeKeyView(_: objc.id, _: objc.SEL) callconv(.c) objc.BOOL {
     return objc.YES;
 }
 
-fn keyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     const cb = g_input_callback orelse return;
 
     // Get modifier flags
     const flags = objc.msgSendUint(event, objc.sel("modifierFlags"));
     const keycode = getKeyCode(event);
 
-    // NSEventModifierFlagControl = 1 << 18
     const ctrl = (flags & (1 << 18)) != 0;
-    // NSEventModifierFlagOption/Alt = 1 << 19
     const alt = (flags & (1 << 19)) != 0;
-    // NSEventModifierFlagCommand = 1 << 20
     const cmd = (flags & (1 << 20)) != 0;
 
     // Cmd+V → paste from clipboard
-    if (cmd and keycode == 9) { // keycode 9 = 'V'
+    if (cmd and keycode == 9) {
         if (g_paste_callback) |paste_cb| paste_cb();
         return;
     }
-
-    // Cmd+C → for now, send SIGINT-like behavior (same as Ctrl+C when no selection)
-    // TODO: copy selection to clipboard when selection exists
 
     // Handle Ctrl+key combos → send control character
     if (ctrl) {
@@ -99,25 +121,40 @@ fn keyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     // Handle special keys (arrows, enter, backspace, tab, escape, etc.)
     if (handleSpecialKey(cb, keycode, flags)) return;
 
-    // For regular characters, get the NSString from the event
-    const chars = objc.msgSend(event, objc.sel("characters"));
-    if (@intFromPtr(chars) == 0) return;
-
-    const length = objc.msgSendUint(chars, objc.sel("length"));
-    if (length == 0) return;
-
-    // Get UTF-8 representation
-    const utf8 = objc.msgSend(chars, objc.sel("UTF8String"));
-    if (@intFromPtr(utf8) == 0) return;
-
-    const cstr: [*:0]const u8 = @ptrCast(utf8);
-    const len = std.mem.len(cstr);
-    if (len > 0) {
-        // Option/Alt key: send ESC prefix for alt+key combos
-        if (alt and len == 1) {
-            cb("\x1b");
+    // Alt+key → ESC prefix + character (bypass IME)
+    if (alt) {
+        const chars = objc.msgSend(event, objc.sel("characters"));
+        if (@intFromPtr(chars) != 0) {
+            const utf8 = objc.msgSend(chars, objc.sel("UTF8String"));
+            if (@intFromPtr(utf8) != 0) {
+                const cstr: [*:0]const u8 = @ptrCast(utf8);
+                const len = std.mem.len(cstr);
+                if (len > 0) {
+                    cb("\x1b");
+                    cb(cstr[0..len]);
+                }
+            }
         }
-        cb(cstr[0..len]);
+        return;
+    }
+
+    // Normal character input → delegate to IME via inputContext.handleEvent:
+    // This routes through the macOS input method system, calling back
+    // insertText:replacementRange: or setMarkedText: for composing input (Korean, etc.)
+    const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
+    if (@intFromPtr(input_ctx) != 0) {
+        if (objc.msgSendBool1(input_ctx, objc.sel("handleEvent:"), event)) return;
+    }
+
+    // Fallback: direct character input (if IME not available)
+    const chars = objc.msgSend(event, objc.sel("characters"));
+    if (@intFromPtr(chars) != 0) {
+        const utf8 = objc.msgSend(chars, objc.sel("UTF8String"));
+        if (@intFromPtr(utf8) != 0) {
+            const cstr: [*:0]const u8 = @ptrCast(utf8);
+            const len = std.mem.len(cstr);
+            if (len > 0) cb(cstr[0..len]);
+        }
     }
 }
 
@@ -125,16 +162,170 @@ fn flagsChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     // Modifier-only key changes — generally no output for terminals
 }
 
+// ---------------------------------------------------------------------------
+// NSTextInputClient implementation — IME support
+// ---------------------------------------------------------------------------
+
+/// Called when text input is finalized (e.g., after composing Korean characters)
+fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
+    const cb = g_input_callback orelse return;
+
+    // Delete previous marked text by sending DEL characters
+    eraseMarkedText(cb);
+
+    // Get the finalized text string
+    const str = getStringFromInput(text);
+    if (@intFromPtr(str) == 0) return;
+
+    const utf8 = objc.msgSend(str, objc.sel("UTF8String"));
+    if (@intFromPtr(utf8) == 0) return;
+
+    const cstr: [*:0]const u8 = @ptrCast(utf8);
+    const len = std.mem.len(cstr);
+    if (len > 0) cb(cstr[0..len]);
+}
+
+/// Called during text composition (e.g., typing Korean jamo that form a syllable)
+fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange, _: NSRange) callconv(.c) void {
+    const cb = g_input_callback orelse return;
+
+    // Delete previous marked text
+    eraseMarkedText(cb);
+
+    // Get new marked text
+    const str = getStringFromInput(text);
+    if (@intFromPtr(str) == 0) {
+        g_marked_len = 0;
+        return;
+    }
+
+    const new_len = objc.msgSendUint(str, objc.sel("length"));
+    g_marked_len = new_len;
+
+    if (new_len == 0) return;
+
+    // Send the composing text to PTY so the user can see what they're typing
+    const utf8 = objc.msgSend(str, objc.sel("UTF8String"));
+    if (@intFromPtr(utf8) == 0) return;
+
+    const cstr: [*:0]const u8 = @ptrCast(utf8);
+    const slen = std.mem.len(cstr);
+    if (slen > 0) cb(cstr[0..slen]);
+}
+
+fn imeUnmarkText(_: objc.id, _: objc.SEL) callconv(.c) void {
+    g_marked_len = 0;
+}
+
+fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) objc.BOOL {
+    return if (g_marked_len > 0) objc.YES else objc.NO;
+}
+
+fn imeMarkedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
+    if (g_marked_len > 0) {
+        return .{ .location = 0, .length = g_marked_len };
+    }
+    return .{ .location = NSNotFound, .length = 0 };
+}
+
+fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
+    return .{ .location = NSNotFound, .length = 0 };
+}
+
+fn imeValidAttributes(_: objc.id, _: objc.SEL) callconv(.c) objc.id {
+    // Return empty NSArray
+    return objc.msgSend(objc.getClass("NSArray"), objc.sel("array"));
+}
+
+fn imeAttrSubstring(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) ?objc.id {
+    return null; // nil
+}
+
+fn imeCharIndex(_: objc.id, _: objc.SEL, _: objc.CGFloat, _: objc.CGFloat) callconv(.c) usize {
+    return NSNotFound;
+}
+
+const CGRect = extern struct {
+    x: objc.CGFloat,
+    y: objc.CGFloat,
+    w: objc.CGFloat,
+    h: objc.CGFloat,
+};
+
+fn imeFirstRect(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
+    return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+}
+
+/// Called by interpretKeyEvents: for action commands (e.g., arrow keys in some contexts)
+fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
+    // Most special keys are already handled in keyDown: before interpretKeyEvents:
+    // This handles edge cases where the input method sends commands
+    const cb = g_input_callback orelse return;
+
+    // Map common selectors to escape sequences
+    if (cmd_sel == objc.sel("insertNewline:")) {
+        cb("\r");
+    } else if (cmd_sel == objc.sel("insertTab:")) {
+        cb("\t");
+    } else if (cmd_sel == objc.sel("deleteBackward:")) {
+        cb("\x7f");
+    } else if (cmd_sel == objc.sel("moveUp:")) {
+        cb("\x1b[A");
+    } else if (cmd_sel == objc.sel("moveDown:")) {
+        cb("\x1b[B");
+    } else if (cmd_sel == objc.sel("moveRight:")) {
+        cb("\x1b[C");
+    } else if (cmd_sel == objc.sel("moveLeft:")) {
+        cb("\x1b[D");
+    } else if (cmd_sel == objc.sel("cancelOperation:")) {
+        cb("\x1b");
+    } else if (cmd_sel == objc.sel("deleteForward:")) {
+        cb("\x1b[3~");
+    }
+    // noop: and other selectors are silently ignored
+}
+
+// ---------------------------------------------------------------------------
+// IME helpers
+// ---------------------------------------------------------------------------
+
+/// Erase previous marked text by sending DEL (0x7f) for each character
+fn eraseMarkedText(cb: InputCallback) void {
+    for (0..g_marked_len) |_| {
+        cb("\x7f");
+    }
+    g_marked_len = 0;
+}
+
+/// Extract NSString from input (could be NSString or NSAttributedString)
+fn getStringFromInput(text: objc.id) objc.id {
+    if (@intFromPtr(text) == 0) return text;
+
+    // Check if it's an NSAttributedString by checking for 'string' method
+    const attr_str_class = objc.getClass("NSAttributedString");
+    const is_attr: objc.BOOL = blk: {
+        const f: *const fn (objc.id, objc.SEL, objc.Class) callconv(.c) objc.BOOL = @ptrCast(objc.msgSend_raw);
+        break :blk f(text, objc.sel("isKindOfClass:"), attr_str_class);
+    };
+
+    if (is_attr != 0) {
+        return objc.msgSend(text, objc.sel("string"));
+    }
+    return text;
+}
+
+// ---------------------------------------------------------------------------
+// Scroll wheel
+// ---------------------------------------------------------------------------
+
 fn scrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     const scroll_cb = g_scroll_callback orelse return;
 
-    // Get scroll delta Y (continuous scrolling on trackpad, discrete on mouse wheel)
     const deltaY: objc.CGFloat = blk: {
         const f: *const fn (objc.id, objc.SEL) callconv(.c) objc.CGFloat = @ptrCast(objc.msgSend_raw);
         break :blk f(event, objc.sel("scrollingDeltaY"));
     };
 
-    // Check if this is a precise (trackpad) or line-based (mouse wheel) scroll
     const hasPreciseDeltas: bool = blk: {
         const f: *const fn (objc.id, objc.SEL) callconv(.c) objc.BOOL = @ptrCast(objc.msgSend_raw);
         break :blk f(event, objc.sel("hasPreciseScrollingDeltas")) != 0;
@@ -143,7 +334,6 @@ fn scrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (hasPreciseDeltas) {
         // Trackpad: accumulate pixel deltas, convert to lines (~18px per line)
         const line_height = 18.0;
-        // Use a static accumulator for smooth scrolling
         const S = struct {
             var accum: f64 = 0;
         };
@@ -151,10 +341,10 @@ fn scrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
         if (@abs(S.accum) >= line_height) {
             const lines: i32 = @intFromFloat(S.accum / line_height);
             S.accum -= @as(f64, @floatFromInt(lines)) * line_height;
-            if (lines != 0) scroll_cb(-lines); // negate: deltaY>0 = scroll up (content moves down)
+            if (lines != 0) scroll_cb(-lines);
         }
     } else {
-        // Mouse wheel: deltaY is in lines (usually ±1 or ±3)
+        // Mouse wheel
         const lines: i32 = @intFromFloat(-deltaY * 3);
         if (lines != 0) scroll_cb(lines);
     }
@@ -180,11 +370,9 @@ fn handleCtrlKey(cb: InputCallback, keycode: u16, alt: bool) bool {
         3 => 0x06, // Ctrl+F
         5 => 0x07, // Ctrl+G
         4 => 0x08, // Ctrl+H (backspace)
-        // Ctrl+I = Tab (0x09) — handled as special key
         38 => 0x0A, // Ctrl+J
         40 => 0x0B, // Ctrl+K
         37 => 0x0C, // Ctrl+L
-        // Ctrl+M = Enter (0x0D) — handled as special key
         45 => 0x0E, // Ctrl+N
         31 => 0x0F, // Ctrl+O
         35 => 0x10, // Ctrl+P
@@ -215,41 +403,23 @@ fn handleCtrlKey(cb: InputCallback, keycode: u16, alt: bool) bool {
 
 /// Handle special keys: arrows, function keys, enter, backspace, etc.
 fn handleSpecialKey(cb: InputCallback, keycode: u16, flags: usize) bool {
-    const shift = (flags & (1 << 17)) != 0;
-    _ = shift;
+    _ = flags;
 
     const seq: ?[]const u8 = switch (keycode) {
-        // Arrow keys
         126 => "\x1b[A", // Up
         125 => "\x1b[B", // Down
         124 => "\x1b[C", // Right
         123 => "\x1b[D", // Left
-
-        // Enter / Return
-        36 => "\r",
+        36 => "\r", // Enter
         76 => "\r", // Numpad Enter
-
-        // Backspace (Delete key on Mac)
-        51 => "\x7f",
-
-        // Tab
-        48 => "\t",
-
-        // Escape
-        53 => "\x1b",
-
-        // Delete forward
-        117 => "\x1b[3~",
-
-        // Home / End
+        51 => "\x7f", // Backspace
+        48 => "\t", // Tab
+        53 => "\x1b", // Escape
+        117 => "\x1b[3~", // Delete forward
         115 => "\x1b[H", // Home
         119 => "\x1b[F", // End
-
-        // Page Up / Down
-        116 => "\x1b[5~",
-        121 => "\x1b[6~",
-
-        // Function keys
+        116 => "\x1b[5~", // Page Up
+        121 => "\x1b[6~", // Page Down
         122 => "\x1bOP", // F1
         120 => "\x1bOQ", // F2
         99 => "\x1bOR", // F3
@@ -262,7 +432,6 @@ fn handleSpecialKey(cb: InputCallback, keycode: u16, flags: usize) bool {
         109 => "\x1b[21~", // F10
         103 => "\x1b[23~", // F11
         111 => "\x1b[24~", // F12
-
         else => null,
     };
 
