@@ -136,6 +136,30 @@ const App = struct {
     fn writeInput(self: *App, data: []const u8) void {
         _ = self.pty.write(data) catch {};
     }
+
+    fn handleScroll(self: *App, delta: i32) void {
+        self.terminal.scrollViewport(.{ .delta = @as(isize, delta) });
+    }
+
+    fn pasteFromClipboard(self: *App) void {
+        // Get general pasteboard
+        const pb_class = objc.getClass("NSPasteboard");
+        const pb = objc.msgSend(pb_class, objc.sel("generalPasteboard"));
+        if (@intFromPtr(pb) == 0) return;
+
+        // Get string from pasteboard
+        const str = objc.msgSend1(pb, objc.sel("stringForType:"), objc.nsString("public.utf8-plain-text"));
+        if (@intFromPtr(str) == 0) return;
+
+        const utf8 = objc.msgSend(str, objc.sel("UTF8String"));
+        if (@intFromPtr(utf8) == 0) return;
+
+        const cstr: [*:0]const u8 = @ptrCast(utf8);
+        const len = std.mem.len(cstr);
+        if (len > 0) {
+            _ = self.pty.write(cstr[0..len]) catch {};
+        }
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -157,11 +181,28 @@ fn onKeyInput(data: []const u8) void {
     }
 }
 
-/// PTY exit callback
+/// Scroll callback → scroll terminal viewport
+fn onScroll(delta: i32) void {
+    if (g_app) |app| {
+        app.handleScroll(delta);
+    }
+}
+
+/// Paste callback → read clipboard and write to PTY
+fn onPaste() void {
+    if (g_app) |app| {
+        app.pasteFromClipboard();
+    }
+}
+
+/// Flag set by PTY exit callback (from read thread) — checked in render loop (main thread)
+var g_pty_exited = std.atomic.Value(bool).init(false);
+
+/// PTY exit callback — set flag for main thread to handle
 fn onPtyExit(userdata: ?*anyopaque) void {
     _ = userdata;
     std.log.info("Shell process exited", .{});
-    // TODO: 창 닫기 or 재시작
+    g_pty_exited.store(true, .release);
 }
 
 // ---------------------------------------------------------------------------
@@ -283,8 +324,10 @@ fn run() !void {
     };
     g_app = &app;
 
-    // Setup keyboard input callback
+    // Setup input callbacks
     input_mod.setInputCallback(&onKeyInput);
+    input_mod.setScrollCallback(&onScroll);
+    input_mod.setPasteCallback(&onPaste);
     defer {
         g_app = null;
         app.pty.deinit();
@@ -350,6 +393,14 @@ fn setupRenderTimer() void {
 }
 
 fn renderTimerCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    // Check if shell exited → terminate app
+    if (g_pty_exited.load(.acquire)) {
+        const app_class = objc.getClass("NSApplication");
+        const app = objc.msgSend(app_class, objc.sel("sharedApplication"));
+        objc.msgSendVoid1(app, objc.sel("terminate:"), @as(?objc.id, null));
+        return;
+    }
+
     if (g_app) |app| {
         app.render();
     }

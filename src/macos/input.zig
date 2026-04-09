@@ -1,6 +1,6 @@
-// Keyboard input handling for macOS terminal.
-// Creates a custom NSView subclass at runtime that intercepts key events
-// and forwards them to the PTY via the global App singleton.
+// Keyboard + mouse input handling for macOS terminal.
+// Creates a custom NSView subclass at runtime that intercepts key/mouse/scroll
+// events and forwards them to the App via global callbacks.
 
 const std = @import("std");
 const objc = @import("objc.zig");
@@ -8,11 +8,27 @@ const objc = @import("objc.zig");
 /// Callback type for writing input data to PTY
 pub const InputCallback = *const fn (data: []const u8) void;
 
-/// Global callback — set by main.zig before creating the view
+/// Callback type for scroll events (delta in lines, negative = scroll up)
+pub const ScrollCallback = *const fn (delta: i32) void;
+
+/// Callback type for paste (write clipboard text to PTY)
+pub const PasteCallback = *const fn () void;
+
+/// Global callbacks — set by main.zig before creating the view
 var g_input_callback: ?InputCallback = null;
+var g_scroll_callback: ?ScrollCallback = null;
+var g_paste_callback: ?PasteCallback = null;
 
 pub fn setInputCallback(cb: InputCallback) void {
     g_input_callback = cb;
+}
+
+pub fn setScrollCallback(cb: ScrollCallback) void {
+    g_scroll_callback = cb;
+}
+
+pub fn setPasteCallback(cb: PasteCallback) void {
+    g_paste_callback = cb;
 }
 
 /// Register and return the TildaZView class (NSView subclass).
@@ -26,17 +42,14 @@ pub fn getViewClass() objc.Class {
     view_class = objc.createClass("TildaZView", "NSView");
     const cls = view_class orelse @panic("Failed to create TildaZView class");
 
-    // acceptsFirstResponder → YES (required to receive key events)
+    // Key events
     _ = objc.addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&acceptsFirstResponder), "c@:");
-
-    // keyDown: → forward characters to PTY
     _ = objc.addMethod(cls, objc.sel("keyDown:"), @ptrCast(&keyDown), "v@:@");
-
-    // flagsChanged: → handle modifier key events (for standalone modifiers)
     _ = objc.addMethod(cls, objc.sel("flagsChanged:"), @ptrCast(&flagsChanged), "v@:@");
-
-    // canBecomeKeyView → YES
     _ = objc.addMethod(cls, objc.sel("canBecomeKeyView"), @ptrCast(&canBecomeKeyView), "c@:");
+
+    // Mouse scroll
+    _ = objc.addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&scrollWheel), "v@:@");
 
     objc.registerClass(cls);
     registered = true;
@@ -66,6 +79,17 @@ fn keyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     const ctrl = (flags & (1 << 18)) != 0;
     // NSEventModifierFlagOption/Alt = 1 << 19
     const alt = (flags & (1 << 19)) != 0;
+    // NSEventModifierFlagCommand = 1 << 20
+    const cmd = (flags & (1 << 20)) != 0;
+
+    // Cmd+V → paste from clipboard
+    if (cmd and keycode == 9) { // keycode 9 = 'V'
+        if (g_paste_callback) |paste_cb| paste_cb();
+        return;
+    }
+
+    // Cmd+C → for now, send SIGINT-like behavior (same as Ctrl+C when no selection)
+    // TODO: copy selection to clipboard when selection exists
 
     // Handle Ctrl+key combos → send control character
     if (ctrl) {
@@ -99,6 +123,41 @@ fn keyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
 
 fn flagsChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     // Modifier-only key changes — generally no output for terminals
+}
+
+fn scrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    const scroll_cb = g_scroll_callback orelse return;
+
+    // Get scroll delta Y (continuous scrolling on trackpad, discrete on mouse wheel)
+    const deltaY: objc.CGFloat = blk: {
+        const f: *const fn (objc.id, objc.SEL) callconv(.c) objc.CGFloat = @ptrCast(objc.msgSend_raw);
+        break :blk f(event, objc.sel("scrollingDeltaY"));
+    };
+
+    // Check if this is a precise (trackpad) or line-based (mouse wheel) scroll
+    const hasPreciseDeltas: bool = blk: {
+        const f: *const fn (objc.id, objc.SEL) callconv(.c) objc.BOOL = @ptrCast(objc.msgSend_raw);
+        break :blk f(event, objc.sel("hasPreciseScrollingDeltas")) != 0;
+    };
+
+    if (hasPreciseDeltas) {
+        // Trackpad: accumulate pixel deltas, convert to lines (~18px per line)
+        const line_height = 18.0;
+        // Use a static accumulator for smooth scrolling
+        const S = struct {
+            var accum: f64 = 0;
+        };
+        S.accum += deltaY;
+        if (@abs(S.accum) >= line_height) {
+            const lines: i32 = @intFromFloat(S.accum / line_height);
+            S.accum -= @as(f64, @floatFromInt(lines)) * line_height;
+            if (lines != 0) scroll_cb(-lines); // negate: deltaY>0 = scroll up (content moves down)
+        }
+    } else {
+        // Mouse wheel: deltaY is in lines (usually ±1 or ±3)
+        const lines: i32 = @intFromFloat(-deltaY * 3);
+        if (lines != 0) scroll_cb(lines);
+    }
 }
 
 // ---------------------------------------------------------------------------
