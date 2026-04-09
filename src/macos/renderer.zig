@@ -121,7 +121,7 @@ pub const MetalRenderer = struct {
         const cmd_queue = objc.msgSend(device, objc.sel("newCommandQueue"));
 
         // 2. Init font context
-        var font_ctx = try CoreTextFontContext.init(font_family, font_size, cell_w, cell_h);
+        var font_ctx = try CoreTextFontContext.init(font_family, font_size, cell_w, cell_h, scale);
         errdefer font_ctx.deinit();
 
         // 3. Init glyph atlas (CPU-side, uploads to Metal texture)
@@ -389,12 +389,14 @@ pub const MetalRenderer = struct {
                 const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
 
                 const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
-                const gx = fx + @as(f32, @floatFromInt(entry.bearing_x)) / self.scale;
-                const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y)) / self.scale;
+                // All values are in pixel units: bearing_x/y from atlas (pixel),
+                // ascent_px (pixel), entry.w/h (pixel)
+                const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
+                const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
 
                 text_buf[text_count] = .{
                     .pos = .{ gx, gy },
-                    .size = .{ @as(f32, @floatFromInt(entry.w)) / self.scale, @as(f32, @floatFromInt(entry.h)) / self.scale },
+                    .size = .{ @as(f32, @floatFromInt(entry.w)), @as(f32, @floatFromInt(entry.h)) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
@@ -473,8 +475,8 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
 
         // Draw instanced triangle strip (4 vertices per quad)
-        // MTLPrimitiveTypeTriangleStrip = 3
-        msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 3), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
+        // MTLPrimitiveTypeTriangleStrip = 4 (NOT 3, which is Triangle)
+        msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
     }
 
     fn drawTextInstances(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance) void {
@@ -488,7 +490,8 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
         objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
 
-        msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 3), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
+        // MTLPrimitiveTypeTriangleStrip = 4 (4 vertices → 1 quad)
+        msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
     }
 
     // --- Helpers ---

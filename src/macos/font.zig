@@ -18,7 +18,7 @@ pub const CoreTextFontContext = struct {
     cell_width: u32,
     cell_height: u32,
 
-    pub fn init(font_family: []const u8, font_size: f32, cell_w: u32, cell_h: u32) !CoreTextFontContext {
+    pub fn init(font_family: []const u8, font_size: f32, cell_w: u32, cell_h: u32, retina_scale: f32) !CoreTextFontContext {
         // Create CFString from font family name
         const family_str = ct.CFStringCreateWithBytes(
             null,
@@ -32,15 +32,15 @@ pub const CoreTextFontContext = struct {
         // Create CTFont with the specified family and size
         const font = ct.CTFontCreateWithName(family_str, @floatCast(font_size), null) orelse return error.FontCreateFailed;
 
+        // CoreText returns point units; convert to pixel by multiplying scale
         const ascent: f32 = @floatCast(ct.CTFontGetAscent(font));
         const descent: f32 = @floatCast(ct.CTFontGetDescent(font));
-        _ = descent;
 
         return .{
             .primary_font = font,
             .font_em_size = font_size,
-            .ascent_px = ascent,
-            .descent_px = @floatCast(ct.CTFontGetDescent(font)),
+            .ascent_px = ascent * retina_scale,
+            .descent_px = descent * retina_scale,
             .cell_width = cell_w,
             .cell_height = cell_h,
         };

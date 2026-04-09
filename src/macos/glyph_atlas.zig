@@ -133,45 +133,39 @@ pub const GlyphAtlas = struct {
 
         if (gw > 256 or gh > 256) return null;
 
-        // Create CGBitmapContext for rasterization (RGBA, 8bpc)
-        const color_space = ct.CGColorSpaceCreateDeviceRGB() orelse return null;
-        defer ct.CGColorSpaceRelease(color_space);
-
-        const bytes_per_row = gw * 4;
+        // Create alpha-only bitmap context (kCGImageAlphaOnly).
+        // Following ghostty's approach: null colorspace + alpha-only format.
+        // Apple docs: for alpha-only, colorspace must be null.
+        // This gives us direct glyph coverage as alpha values (0=transparent, 255=opaque).
+        const bytes_per_row = gw;
         const ctx = ct.CGBitmapContextCreate(
             self.temp_buf.ptr,
             gw,
             gh,
             8, // bits per component
             bytes_per_row,
-            color_space,
-            ct.kCGImageAlphaPremultipliedFirst | ct.kCGBitmapByteOrder32Host,
+            null, // alpha-only: no color space needed
+            ct.kCGImageAlphaOnly, // alpha-only: 1 byte/pixel = glyph coverage
         ) orelse return null;
         defer ct.CGContextRelease(ctx);
 
-        // Clear to black transparent
-        ct.CGContextSetRGBFillColor(ctx, 0, 0, 0, 0);
-        ct.CGContextFillRect(ctx, .{
-            .origin = .{ .x = 0, .y = 0 },
-            .size = .{ .width = @floatFromInt(gw), .height = @floatFromInt(gh) },
-        });
+        // Clear to transparent (alpha=0)
+        @memset(self.temp_buf[0 .. gw * gh], 0);
 
         // Enable antialiasing, disable subpixel smoothing
-        ct.CGContextSetShouldAntialias(ctx, true);
+        ct.CGContextSetAllowsFontSmoothing(ctx, true);
         ct.CGContextSetShouldSmoothFonts(ctx, false);
-        ct.CGContextSetAllowsFontSmoothing(ctx, false);
+        ct.CGContextSetShouldAntialias(ctx, true);
 
-        // Scale CTM for Retina — CTFontDrawGlyphs works in user-space (points),
-        // but our context is pixel-sized (points * scale). Without this, a 19pt
-        // font renders at 19px in a 38px context, filling only 1/4 of the area.
+        // Set fill color (alpha=1 for full coverage where glyph is drawn)
+        ct.CGContextSetGrayFillColor(ctx, 1, 1);
+
+        // Scale CTM: Retina factor. The bitmap is pixel-sized (gw x gh),
+        // but CTFontDrawGlyphs works in point coordinates.
         ct.CGContextScaleCTM(ctx, @floatCast(s), @floatCast(s));
 
-        // Set fill color to WHITE — we extract the alpha channel after drawing,
-        // so the glyph must be opaque white for alpha coverage to be non-zero.
-        ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
-
-        // Draw glyph at position in POINT coordinates (not pixels).
-        // CTM will scale them to pixel coordinates.
+        // Draw glyph at negated origin (point coordinates).
+        // This positions the glyph so its bounding box bottom-left aligns to (0,0).
         const positions = [1]ct.CGPoint{.{
             .x = -bounding_rect.origin.x,
             .y = -bounding_rect.origin.y,
@@ -184,22 +178,14 @@ pub const GlyphAtlas = struct {
             break :blk self.packGlyph(gw, gh) orelse return null;
         };
 
-        // Extract alpha channel from RGBA temp_buf → single-channel atlas pixels
+        // Copy alpha pixels from temp_buf → atlas (no flip, following ghostty's approach).
+        // CG Y-up storage is compensated by bearing_y in the renderer.
         const atlas_x = pos[0];
         const atlas_y = pos[1];
         for (0..gh) |row| {
-            for (0..gw) |col| {
-                // ARGB premultiplied: bytes are [A, R, G, B] or platform-dependent
-                // With kCGImageAlphaPremultipliedFirst + kCGBitmapByteOrder32Host on ARM:
-                // Memory layout is BGRA (little-endian ARGB stored as B,G,R,A)
-                // We want luminance: approximate with green channel (offset 1) or compute
-                const src_off = row * bytes_per_row + col * 4;
-                // For white-on-black rendering: use the alpha channel (offset 3 for BGRA)
-                // Since we render white text on transparent black, alpha = coverage
-                const alpha = self.temp_buf[src_off + 3];
-                const dst_off = (atlas_y + @as(u32, @intCast(row))) * ATLAS_SIZE + (atlas_x + @as(u32, @intCast(col)));
-                self.pixels[dst_off] = alpha;
-            }
+            const src_start = @as(u32, @intCast(row)) * bytes_per_row;
+            const dst_start = (atlas_y + @as(u32, @intCast(row))) * ATLAS_SIZE + atlas_x;
+            @memcpy(self.pixels[dst_start..][0..gw], self.temp_buf[src_start..][0..gw]);
         }
 
         // Mark dirty region
@@ -207,13 +193,17 @@ pub const GlyphAtlas = struct {
         if (atlas_y < self.dirty_min_y) self.dirty_min_y = atlas_y;
         if (atlas_y + gh > self.dirty_max_y) self.dirty_max_y = atlas_y + gh;
 
+        // bearing_x: baseline에서 glyph left까지 (pixel, 양수=오른쪽)
+        // bearing_y: baseline에서 glyph TOP까지 (pixel, 화면 Y-down 좌표)
+        //   CG 좌표: y0 = baseline에서 glyph bottom (양수=위)
+        //   화면 좌표: glyph top = -(y0 + gh) (음수=위)
         return AtlasEntry{
             .x = @intCast(atlas_x),
             .y = @intCast(atlas_y),
             .w = @intCast(gw),
             .h = @intCast(gh),
             .bearing_x = @intFromFloat(x0),
-            .bearing_y = @intFromFloat(y0),
+            .bearing_y = -@as(i16, @intFromFloat(y0)) - @as(i16, @intCast(gh)),
         };
     }
 

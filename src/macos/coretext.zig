@@ -52,6 +52,7 @@ pub const CGBitmapInfo = u32;
 pub const kCGBitmapAlphaInfoMask: u32 = 0x1F;
 pub const kCGImageAlphaNoneSkipLast: u32 = 5;
 pub const kCGImageAlphaPremultipliedFirst: u32 = 2;
+pub const kCGImageAlphaOnly: u32 = 7;
 pub const kCGBitmapByteOrder32Host: u32 = 0;
 
 // --- CoreText types ---
@@ -129,11 +130,17 @@ pub extern "CoreGraphics" fn CGBitmapContextCreate(
     height: usize,
     bitsPerComponent: usize,
     bytesPerRow: usize,
-    space: CGColorSpaceRef,
+    space: ?CGColorSpaceRef,
     bitmapInfo: CGBitmapInfo,
 ) ?CGContextRef;
 
 pub extern "CoreGraphics" fn CGContextRelease(ctx: CGContextRef) void;
+
+pub extern "CoreGraphics" fn CGContextSetGrayFillColor(
+    ctx: CGContextRef,
+    gray: CGFloat,
+    alpha: CGFloat,
+) void;
 
 pub extern "CoreGraphics" fn CGContextSetRGBFillColor(
     ctx: CGContextRef,

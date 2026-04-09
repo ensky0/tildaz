@@ -97,8 +97,9 @@ const App = struct {
         self.renderer.resize(size[0], size[1]);
 
         // Check for resize → update terminal grid + PTY
-        const new_cols: u16 = @intCast(@max(1, size[0] / self.cell_w));
-        const new_rows: u16 = @intCast(@max(1, size[1] / self.cell_h));
+        // Clamp to min 2 (ghostty doesn't support 0 cols/rows) and max 500
+        const new_cols: u16 = @intCast(@min(500, @max(2, size[0] / self.cell_w)));
+        const new_rows: u16 = @intCast(@min(300, @max(2, size[1] / self.cell_h)));
         if (new_cols != self.last_cols or new_rows != self.last_rows) {
             self.last_cols = new_cols;
             self.last_rows = new_rows;
@@ -203,9 +204,10 @@ fn run() !void {
 
     std.log.info("Window created, Metal device ready, scale={d:.1}", .{win.scale});
 
-    // Calculate cell dimensions
+    // Calculate cell dimensions (in PIXELS — point × Retina scale)
     const font_size: f32 = @floatFromInt(config.font_size);
-    var font_ctx = try CoreTextFontContext.init(config.font_families[0], font_size, 0, 0);
+    const scale: f32 = win.scale;
+    var font_ctx = try CoreTextFontContext.init(config.font_families[0], font_size, 0, 0, scale);
 
     var m_glyph: [1]ct.CGGlyph = .{0};
     var m_utf16: [1]u16 = .{'M'};
@@ -213,8 +215,12 @@ fn run() !void {
     var advance: ct.CGSize = .{ .width = 0, .height = 0 };
     _ = ct.CTFontGetAdvancesForGlyphs(font_ctx.primary_font, ct.kCTFontOrientationDefault, &m_glyph, @ptrCast(&advance), 1);
 
-    const cell_w: u32 = @intFromFloat(@ceil(advance.width));
-    const cell_h: u32 = @intFromFloat(@ceil(font_ctx.ascent_px + font_ctx.descent_px + @as(f32, @floatCast(ct.CTFontGetLeading(font_ctx.primary_font)))));
+    // CoreText returns point units; multiply by scale for pixel units.
+    // font_ctx.ascent_px/descent_px are already in pixels (scale applied in font.zig).
+    // CTFontGetLeading returns points, so we scale it here.
+    const leading_px: f32 = @as(f32, @floatCast(ct.CTFontGetLeading(font_ctx.primary_font))) * scale;
+    const cell_w: u32 = @intFromFloat(@ceil(@as(f32, @floatCast(advance.width)) * scale));
+    const cell_h: u32 = @intFromFloat(@ceil(font_ctx.ascent_px + font_ctx.descent_px + leading_px));
     font_ctx.deinit();
 
     std.log.info("Cell size: {d}x{d}, font_size={d:.1}", .{ cell_w, cell_h, font_size });

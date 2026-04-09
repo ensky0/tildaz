@@ -38,7 +38,7 @@ pub const Window = struct {
         objc.msgSendVoid1(ns_window, objc.sel("setTitle:"), objc.nsString("TildaZ"));
 
         // Set minimum window size to prevent crashes from tiny windows
-        const min_size = objc.NSSize{ .width = 200, .height = 100 };
+        const min_size = objc.NSSize{ .width = 300, .height = 200 };
         const setMinSizeFn: *const fn (objc.id, objc.SEL, objc.NSSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         setMinSizeFn(ns_window, objc.sel("setMinSize:"), min_size);
 
@@ -90,11 +90,13 @@ pub const Window = struct {
     }
 
     pub fn getSize(self: *Window) [2]u32 {
-        // Get the content view's frame size (in points)
+        // Get the content view's frame size (in points), convert to pixels
         const frame = self.getContentFrame();
+        const w = frame.size.width * @as(objc.CGFloat, @floatCast(self.scale));
+        const h = frame.size.height * @as(objc.CGFloat, @floatCast(self.scale));
         return .{
-            @intFromFloat(frame.size.width * @as(objc.CGFloat, @floatCast(self.scale))),
-            @intFromFloat(frame.size.height * @as(objc.CGFloat, @floatCast(self.scale))),
+            if (w > 0) @as(u32, @intFromFloat(w)) else 1,
+            if (h > 0) @as(u32, @intFromFloat(h)) else 1,
         };
     }
 
