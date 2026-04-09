@@ -113,13 +113,10 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
         return;
     }
 
-    // Handle Ctrl+key combos → send control character
+    // Handle Ctrl+key combos → send control character (bypass IME)
     if (ctrl) {
         if (handleCtrlKey(cb, keycode, alt)) return;
     }
-
-    // Handle special keys (arrows, enter, backspace, tab, escape, etc.)
-    if (handleSpecialKey(cb, keycode, flags)) return;
 
     // Alt+key → ESC prefix + character (bypass IME)
     if (alt) {
@@ -138,24 +135,24 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
         return;
     }
 
-    // Normal character input → delegate to IME via inputContext.handleEvent:
-    // This routes through the macOS input method system, calling back
-    // insertText:replacementRange: or setMarkedText: for composing input (Korean, etc.)
+    // F-keys, Home, End, PageUp, PageDown, Delete forward → bypass IME
+    // These have no corresponding doCommandBySelector: mapping
+    if (handleFunctionKey(cb, keycode)) return;
+
+    // All other keys (including Enter, Tab, Backspace, Arrows, normal chars)
+    // → delegate to IME. This ensures:
+    //   1. Korean/Japanese composing works correctly
+    //   2. Enter/Backspace first commits any marked text, THEN executes the action
+    //   3. inputContext is properly initialized even on first keypress
     const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
     if (@intFromPtr(input_ctx) != 0) {
         if (objc.msgSendBool1(input_ctx, objc.sel("handleEvent:"), event)) return;
     }
 
-    // Fallback: direct character input (if IME not available)
-    const chars = objc.msgSend(event, objc.sel("characters"));
-    if (@intFromPtr(chars) != 0) {
-        const utf8 = objc.msgSend(chars, objc.sel("UTF8String"));
-        if (@intFromPtr(utf8) != 0) {
-            const cstr: [*:0]const u8 = @ptrCast(utf8);
-            const len = std.mem.len(cstr);
-            if (len > 0) cb(cstr[0..len]);
-        }
-    }
+    // Fallback: use interpretKeyEvents: (works even if inputContext is nil)
+    const array_class = objc.getClass("NSArray");
+    const array = objc.msgSend1(array_class, objc.sel("arrayWithObject:"), event);
+    objc.msgSendVoid1(self_view, objc.sel("interpretKeyEvents:"), array);
 }
 
 fn flagsChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
@@ -401,19 +398,10 @@ fn handleCtrlKey(cb: InputCallback, keycode: u16, alt: bool) bool {
     return false;
 }
 
-/// Handle special keys: arrows, function keys, enter, backspace, etc.
-fn handleSpecialKey(cb: InputCallback, keycode: u16, flags: usize) bool {
-    _ = flags;
-
+/// Handle keys that IME doesn't map to doCommandBySelector:
+/// (F-keys, Home, End, PageUp, PageDown, Delete forward, Escape)
+fn handleFunctionKey(cb: InputCallback, keycode: u16) bool {
     const seq: ?[]const u8 = switch (keycode) {
-        126 => "\x1b[A", // Up
-        125 => "\x1b[B", // Down
-        124 => "\x1b[C", // Right
-        123 => "\x1b[D", // Left
-        36 => "\r", // Enter
-        76 => "\r", // Numpad Enter
-        51 => "\x7f", // Backspace
-        48 => "\t", // Tab
         53 => "\x1b", // Escape
         117 => "\x1b[3~", // Delete forward
         115 => "\x1b[H", // Home
