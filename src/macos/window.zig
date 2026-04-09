@@ -37,6 +37,11 @@ pub const Window = struct {
         // Set window title
         objc.msgSendVoid1(ns_window, objc.sel("setTitle:"), objc.nsString("TildaZ"));
 
+        // Set minimum window size to prevent crashes from tiny windows
+        const min_size = objc.NSSize{ .width = 200, .height = 100 };
+        const setMinSizeFn: *const fn (objc.id, objc.SEL, objc.NSSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        setMinSizeFn(ns_window, objc.sel("setMinSize:"), min_size);
+
         // Create custom TildaZView (NSView subclass with key event handling)
         const ns_view_class = input.getViewClass();
         const ns_view = objc.msgSend(objc.msgSend(ns_view_class, objc.sel("alloc")), objc.sel("init"));

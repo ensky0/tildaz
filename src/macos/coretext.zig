@@ -145,6 +145,8 @@ pub extern "CoreGraphics" fn CGContextSetRGBFillColor(
 
 pub extern "CoreGraphics" fn CGContextFillRect(ctx: CGContextRef, rect: CGRect) void;
 
+pub extern "CoreGraphics" fn CGContextScaleCTM(ctx: CGContextRef, sx: CGFloat, sy: CGFloat) void;
+
 pub extern "CoreGraphics" fn CGContextSetShouldAntialias(ctx: CGContextRef, shouldAntialias: bool) void;
 pub extern "CoreGraphics" fn CGContextSetShouldSmoothFonts(ctx: CGContextRef, shouldSmoothFonts: bool) void;
 pub extern "CoreGraphics" fn CGContextSetAllowsFontSmoothing(ctx: CGContextRef, allowsFontSmoothing: bool) void;

@@ -161,14 +161,20 @@ pub const GlyphAtlas = struct {
         ct.CGContextSetShouldSmoothFonts(ctx, false);
         ct.CGContextSetAllowsFontSmoothing(ctx, false);
 
+        // Scale CTM for Retina — CTFontDrawGlyphs works in user-space (points),
+        // but our context is pixel-sized (points * scale). Without this, a 19pt
+        // font renders at 19px in a 38px context, filling only 1/4 of the area.
+        ct.CGContextScaleCTM(ctx, @floatCast(s), @floatCast(s));
+
         // Set fill color to WHITE — we extract the alpha channel after drawing,
         // so the glyph must be opaque white for alpha coverage to be non-zero.
         ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
 
-        // Draw glyph at position that accounts for bounding rect origin
+        // Draw glyph at position in POINT coordinates (not pixels).
+        // CTM will scale them to pixel coordinates.
         const positions = [1]ct.CGPoint{.{
-            .x = -x0,
-            .y = -y0,
+            .x = -bounding_rect.origin.x,
+            .y = -bounding_rect.origin.y,
         }};
         ct.CTFontDrawGlyphs(font, &glyphs, &positions, 1, ctx);
 
