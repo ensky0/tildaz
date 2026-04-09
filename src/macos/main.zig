@@ -96,6 +96,17 @@ const App = struct {
 
         self.renderer.resize(size[0], size[1]);
 
+        // Always update CAMetalLayer drawable size to match window pixel size.
+        // Without this, resizing the window leaves blank areas where Metal
+        // still renders to the old, smaller drawable.
+        const DrawableSize = extern struct { width: objc.CGFloat, height: objc.CGFloat };
+        const ds = DrawableSize{
+            .width = @floatFromInt(size[0]),
+            .height = @floatFromInt(size[1]),
+        };
+        const setDS: *const fn (objc.id, objc.SEL, DrawableSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        setDS(self.win.metal_layer, objc.sel("setDrawableSize:"), ds);
+
         // Check for resize → update terminal grid + PTY
         // Clamp to min 2 (ghostty doesn't support 0 cols/rows) and max 500
         const new_cols: u16 = @intCast(@min(500, @max(2, size[0] / self.cell_w)));
@@ -105,18 +116,6 @@ const App = struct {
             self.last_rows = new_rows;
             self.terminal.resize(self.alloc, new_cols, new_rows) catch {};
             self.pty.resize(new_cols, new_rows) catch {};
-
-            // Update CAMetalLayer drawable size
-            const drawableSize = extern struct {
-                width: objc.CGFloat,
-                height: objc.CGFloat,
-            };
-            const ds = drawableSize{
-                .width = @floatFromInt(size[0]),
-                .height = @floatFromInt(size[1]),
-            };
-            const f: *const fn (objc.id, objc.SEL, @TypeOf(ds)) callconv(.c) void = @ptrCast(objc.msgSend_raw);
-            f(self.win.metal_layer, objc.sel("setDrawableSize:"), ds);
         }
 
         // Drain PTY output → VT parser
