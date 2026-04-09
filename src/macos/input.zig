@@ -60,6 +60,7 @@ pub fn getViewClass() objc.Class {
 
     // NSTextInputClient protocol methods (for IME: Korean, Japanese, Chinese, etc.)
     _ = objc.addMethod(cls, objc.sel("insertText:replacementRange:"), @ptrCast(&imeInsertText), "v@:@{_NSRange=QQ}");
+    _ = objc.addMethod(cls, objc.sel("insertText:"), @ptrCast(&imeInsertTextSimple), "v@:@");
     _ = objc.addMethod(cls, objc.sel("setMarkedText:selectedRange:replacementRange:"), @ptrCast(&imeSetMarkedText), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
     _ = objc.addMethod(cls, objc.sel("unmarkText"), @ptrCast(&imeUnmarkText), "v@:");
     _ = objc.addMethod(cls, objc.sel("hasMarkedText"), @ptrCast(&imeHasMarkedText), "c@:");
@@ -162,6 +163,23 @@ fn flagsChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
 // ---------------------------------------------------------------------------
 // NSTextInputClient implementation — IME support
 // ---------------------------------------------------------------------------
+
+/// NSResponder's insertText: (1-arg version) — called by some input methods
+/// during input source switching (e.g., English → Korean transition)
+fn imeInsertTextSimple(_: objc.id, _: objc.SEL, text: objc.id) callconv(.c) void {
+    const cb = g_input_callback orelse return;
+    eraseMarkedText(cb);
+
+    const str = getStringFromInput(text);
+    if (@intFromPtr(str) == 0) return;
+
+    const utf8 = objc.msgSend(str, objc.sel("UTF8String"));
+    if (@intFromPtr(utf8) == 0) return;
+
+    const cstr: [*:0]const u8 = @ptrCast(utf8);
+    const len = std.mem.len(cstr);
+    if (len > 0) cb(cstr[0..len]);
+}
 
 /// Called when text input is finalized (e.g., after composing Korean characters)
 fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
