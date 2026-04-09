@@ -12,6 +12,8 @@ const ghostty = @import("ghostty-vt");
 
 const MAX_INSTANCES: u32 = 32768;
 
+const MTLClearColor = extern struct { r: f64, g: f64, b: f64, a: f64 };
+
 // --- Instance data layouts (must match MSL structs) ---
 
 const BgInstance = extern struct {
@@ -216,17 +218,12 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid1(att0, objc.sel("setStoreAction:"), @as(objc.NSUInteger, 1));
 
         // Set clear color to default background
-        // MTLClearColor is a struct { double r, g, b, a }
-        const ClearColor = extern struct { r: f64, g: f64, b: f64, a: f64 };
-        const clear = ClearColor{
+        const clear = MTLClearColor{
             .r = @floatCast(self.default_bg[0]),
             .g = @floatCast(self.default_bg[1]),
             .b = @floatCast(self.default_bg[2]),
             .a = 1.0,
         };
-        const set_clear: *const fn (objc.id, objc.SEL, ClearColor) callconv(.c) void = @ptrCast(objc.msgSend_raw);
-        _ = set_clear;
-        // Use setClearColor: which takes a struct
         setClearColor(att0, clear);
 
         // Create encoder
@@ -477,7 +474,7 @@ pub const MetalRenderer = struct {
 
         // Draw instanced triangle strip (4 vertices per quad)
         // MTLPrimitiveTypeTriangleStrip = 3
-        objc.msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 3), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
+        msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 3), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
     }
 
     fn drawTextInstances(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance) void {
@@ -491,7 +488,7 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
         objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
 
-        objc.msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 3), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
+        msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 3), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
     }
 
     // --- Helpers ---
@@ -560,20 +557,18 @@ pub const MetalRenderer = struct {
 };
 
 // --- setClearColor helper (passes struct by value) ---
-fn setClearColor(att: objc.id, color: extern struct { r: f64, g: f64, b: f64, a: f64 }) void {
+fn setClearColor(att: objc.id, color: MTLClearColor) void {
     const f: *const fn (objc.id, objc.SEL, @TypeOf(color)) callconv(.c) void = @ptrCast(objc.msgSend_raw);
     f(att, objc.sel("setClearColor:"), color);
 }
 
 // --- Color resolution (matches windows/renderer.zig) ---
 
-fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell.Raw, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool, dbg_r: f32, dbg_g: f32, dbg_b: f32) [3]f32 {
+fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool, dbg_r: f32, dbg_g: f32, dbg_b: f32) [3]f32 {
     if (is_selected) return .{ 0.25, 0.45, 0.75 };
     if (is_inverse) {
-        if (style.fg(raw, &colors.palette)) |fg| {
-            return .{ MetalRenderer.colorF(fg.r), MetalRenderer.colorF(fg.g), MetalRenderer.colorF(fg.b) };
-        }
-        return .{ MetalRenderer.colorF(colors.foreground.r), MetalRenderer.colorF(colors.foreground.g), MetalRenderer.colorF(colors.foreground.b) };
+        const fg = style.fg(.{ .default = colors.foreground, .palette = &colors.palette });
+        return .{ MetalRenderer.colorF(fg.r), MetalRenderer.colorF(fg.g), MetalRenderer.colorF(fg.b) };
     }
     if (style.bg(raw, &colors.palette)) |bg_col| {
         return .{ MetalRenderer.colorF(bg_col.r), MetalRenderer.colorF(bg_col.g), MetalRenderer.colorF(bg_col.b) };
@@ -581,14 +576,13 @@ fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell.Raw, colors: *const 
     return .{ dbg_r, dbg_g, dbg_b };
 }
 
-fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell.Raw, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool) ghostty.Color {
+fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool) ghostty.color.RGB {
     if (is_selected) return colors.foreground;
     if (is_inverse) {
         if (style.bg(raw, &colors.palette)) |bg_col| return bg_col;
         return colors.background;
     }
-    if (style.fg(raw, &colors.palette)) |fg_col| return fg_col;
-    return colors.foreground;
+    return style.fg(.{ .default = colors.foreground, .palette = &colors.palette });
 }
 
 fn isBlockElement(cp: u21) bool {

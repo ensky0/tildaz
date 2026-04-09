@@ -32,6 +32,11 @@ pub const NSSize = extern struct {
 extern "objc" fn objc_getClass(name: [*:0]const u8) ?Class;
 extern "objc" fn sel_registerName(name: [*:0]const u8) SEL;
 extern "objc" fn objc_msgSend() callconv(.c) void;
+extern "objc" fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, extra_bytes: usize) ?Class;
+extern "objc" fn objc_registerClassPair(cls: Class) void;
+extern "objc" fn class_addMethod(cls: Class, name: SEL, imp: *const anyopaque, types: [*:0]const u8) bool;
+extern "objc" fn object_setInstanceVariable(obj: id, name: [*:0]const u8, value: ?*anyopaque) *anyopaque;
+extern "objc" fn object_getInstanceVariable(obj: id, name: [*:0]const u8, out: *?*anyopaque) *anyopaque;
 
 /// Raw pointer to objc_msgSend for custom @ptrCast calls.
 /// Use this when you need a non-standard signature (struct args, etc.)
@@ -133,6 +138,31 @@ pub fn nsString(comptime str: [:0]const u8) id {
 pub fn nsStringRuntime(str: [*:0]const u8) id {
     const cls = getClass("NSString");
     return msgSend1(cls, sel("stringWithUTF8String:"), str);
+}
+
+/// Send message with 1 arg, returning BOOL
+pub fn msgSendBool1(target: anytype, s: SEL, a1: anytype) bool {
+    const f: *const fn (@TypeOf(target), SEL, @TypeOf(a1)) callconv(.c) BOOL = @ptrCast(&objc_msgSend);
+    return f(target, s, a1) != 0;
+}
+
+// --- Runtime class creation ---
+
+/// Create a new ObjC class at runtime (subclass of given superclass).
+pub fn createClass(name: [*:0]const u8, superclass_name: [*:0]const u8) ?Class {
+    const super = objc_getClass(superclass_name) orelse return null;
+    return objc_allocateClassPair(super, name, 0);
+}
+
+/// Register a class created with createClass.
+pub fn registerClass(cls: Class) void {
+    objc_registerClassPair(cls);
+}
+
+/// Add a method to an ObjC class. `imp` should be a C-callable function pointer.
+/// `types` is the ObjC type encoding string (e.g., "v@:" for void method with no extra args).
+pub fn addMethod(cls: Class, name: SEL, imp: *const anyopaque, types: [*:0]const u8) bool {
+    return class_addMethod(cls, name, imp, types);
 }
 
 // --- Metal C function ---

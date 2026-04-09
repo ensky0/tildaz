@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const objc = @import("objc.zig");
+const input = @import("input.zig");
 
 pub const Window = struct {
     ns_window: objc.id,
@@ -36,8 +37,8 @@ pub const Window = struct {
         // Set window title
         objc.msgSendVoid1(ns_window, objc.sel("setTitle:"), objc.nsString("TildaZ"));
 
-        // Create NSView
-        const ns_view_class = objc.getClass("NSView");
+        // Create custom TildaZView (NSView subclass with key event handling)
+        const ns_view_class = input.getViewClass();
         const ns_view = objc.msgSend(objc.msgSend(ns_view_class, objc.sel("alloc")), objc.sel("init"));
 
         // Create CAMetalLayer
@@ -78,6 +79,9 @@ pub const Window = struct {
 
         // Center on screen
         objc.msgSendVoid(self.ns_window, objc.sel("center"));
+
+        // Make the view first responder so it receives key events
+        _ = objc.msgSendBool1(self.ns_window, objc.sel("makeFirstResponder:"), self.ns_view);
     }
 
     pub fn getSize(self: *Window) [2]u32 {
