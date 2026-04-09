@@ -39,7 +39,10 @@ pub const Config = struct {
     // font
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
     font_family_count: u8 = @intCast(DEFAULT_FONT_FAMILIES.len),
-    font_size: u8 = 19,
+    font_size: u8 = switch (builtin.os.tag) {
+        .macos => 14,
+        else => 19,
+    },
     line_height: f32 = 0.95,
     cell_width: f32 = 1.1,
     // appearance

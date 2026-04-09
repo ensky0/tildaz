@@ -252,18 +252,26 @@ fn run() !void {
     var m_glyph: [1]ct.CGGlyph = .{0};
     var m_utf16: [1]u16 = .{'M'};
     _ = ct.CTFontGetGlyphsForCharacters(font_ctx.primary_font, &m_utf16, &m_glyph, 1);
-    var advance: ct.CGSize = .{ .width = 0, .height = 0 };
-    _ = ct.CTFontGetAdvancesForGlyphs(font_ctx.primary_font, ct.kCTFontOrientationDefault, &m_glyph, @ptrCast(&advance), 1);
+
+    // CTFontGetAdvancesForGlyphs returns total advance (CGFloat).
+    // We use that directly as the single-glyph advance (since count=1).
+    const total_advance: f32 = @floatCast(ct.CTFontGetAdvancesForGlyphs(
+        font_ctx.primary_font,
+        ct.kCTFontOrientationDefault,
+        &m_glyph,
+        null, // don't need per-glyph array, total return is enough
+        1,
+    ));
 
     // CoreText returns point units; multiply by scale for pixel units.
     // font_ctx.ascent_px/descent_px are already in pixels (scale applied in font.zig).
     // CTFontGetLeading returns points, so we scale it here.
     const leading_px: f32 = @as(f32, @floatCast(ct.CTFontGetLeading(font_ctx.primary_font))) * scale;
-    const cell_w: u32 = @intFromFloat(@ceil(@as(f32, @floatCast(advance.width)) * scale));
+    const cell_w: u32 = @intFromFloat(@ceil(total_advance * scale));
     const cell_h: u32 = @intFromFloat(@ceil(font_ctx.ascent_px + font_ctx.descent_px + leading_px));
     font_ctx.deinit();
 
-    std.log.info("Cell size: {d}x{d}, font_size={d:.1}", .{ cell_w, cell_h, font_size });
+    std.log.info("Cell size: {d}x{d}, font_size={d:.1}, advance={d:.2}pt", .{ cell_w, cell_h, font_size, total_advance });
 
     // Get theme colors
     const bg_rgb: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
