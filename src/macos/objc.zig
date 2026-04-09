@@ -108,6 +108,12 @@ pub fn msgSendVoid3(target: anytype, s: SEL, a1: anytype, a2: anytype, a3: anyty
     f(target, s, a1, a2, a3);
 }
 
+/// Send message with 4 args, returning void
+pub fn msgSendVoid4(target: anytype, s: SEL, a1: anytype, a2: anytype, a3: anytype, a4: anytype) void {
+    const f: *const fn (@TypeOf(target), SEL, @TypeOf(a1), @TypeOf(a2), @TypeOf(a3), @TypeOf(a4)) callconv(.c) void = @ptrCast(&objc_msgSend);
+    f(target, s, a1, a2, a3, a4);
+}
+
 /// Send message returning BOOL
 pub fn msgSendBool(target: anytype, s: SEL) bool {
     const f: *const fn (@TypeOf(target), SEL) callconv(.c) BOOL = @ptrCast(&objc_msgSend);

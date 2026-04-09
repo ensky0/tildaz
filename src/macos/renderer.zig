@@ -203,6 +203,7 @@ pub const MetalRenderer = struct {
 
         // Create command buffer
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
+        if (@intFromPtr(cmd_buf) == 0) return;
 
         // Create render pass descriptor
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
@@ -257,6 +258,15 @@ pub const MetalRenderer = struct {
         y_offset: i32,
         padding: i32,
     ) void {
+        // Clear stale selection data before update. Without this, when dragging
+        // right-to-left, non-dirty rows keep previous frame's selection bounds,
+        // causing the leftmost character to not be highlighted.
+        {
+            const slice = self.render_state.row_data.slice();
+            for (slice.items(.selection)) |*s| s.* = null;
+        }
+        self.render_state.selection_cache = null;
+
         self.render_state.update(self.alloc, terminal) catch return;
 
         const rows = self.render_state.rows;

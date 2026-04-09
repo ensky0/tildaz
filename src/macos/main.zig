@@ -89,11 +89,10 @@ const App = struct {
     }
 
     fn render(self: *App) void {
-        // Update viewport size
         const size = self.win.getSize();
 
-        // Need at least 2 cells in each dimension to avoid ghostty assertion failures.
-        // This prevents crashes when window is minimized or resized very small.
+        // Need at least 2 cells in each dimension. Skip everything (including
+        // setDrawableSize) to avoid Metal instability with tiny drawables.
         if (size[0] < self.cell_w * 2 or size[1] < self.cell_h * 2) return;
 
         self.renderer.resize(size[0], size[1]);
@@ -111,16 +110,16 @@ const App = struct {
         const new_cols: u16 = @intCast(@min(500, @max(2, size[0] / self.cell_w)));
         const new_rows: u16 = @intCast(@min(300, @max(2, size[1] / self.cell_h)));
         if (new_cols != self.last_cols or new_rows != self.last_rows) {
+            // Invalidate render state BEFORE resize to prevent reading
+            // stale data during terminal reflow
+            self.renderer.render_state.rows = 0;
+            self.renderer.render_state.cols = 0;
+            self.renderer.render_state.viewport_pin = null;
+
             self.last_cols = new_cols;
             self.last_rows = new_rows;
             self.terminal.resize(self.alloc, new_cols, new_rows) catch {};
             self.pty.resize(new_cols, new_rows) catch {};
-
-            // Invalidate render state cache so next frame re-reads terminal data.
-            // Without this, resized terminal content can appear blank.
-            self.renderer.render_state.rows = 0;
-            self.renderer.render_state.cols = 0;
-            self.renderer.render_state.viewport_pin = null;
         }
 
         // Drain PTY output → VT parser
@@ -412,6 +411,9 @@ fn run() !void {
     input_mod.setPasteCallback(&onPaste);
     input_mod.setCopyCallback(&onCopy);
     input_mod.setMouseCallback(&onMouse);
+
+    // Register for input source change notifications (Korean/English switching)
+    input_mod.registerInputSourceObserver(win.ns_view);
     defer {
         g_app = null;
         app.pty.deinit();

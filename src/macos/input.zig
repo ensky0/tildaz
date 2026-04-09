@@ -97,6 +97,9 @@ pub fn getViewClass() objc.Class {
     _ = objc.addMethod(cls, objc.sel("mouseDragged:"), @ptrCast(&mouseDragged), "v@:@");
     _ = objc.addMethod(cls, objc.sel("mouseUp:"), @ptrCast(&mouseUp), "v@:@");
 
+    // Input source change notification handler (for Korean/English switching)
+    _ = objc.addMethod(cls, objc.sel("inputSourceChanged:"), @ptrCast(&inputSourceChanged), "v@:@");
+
     // Adopt NSTextInputClient protocol so inputContext recognizes this view
     if (objc.objc_getProtocol("NSTextInputClient")) |protocol| {
         _ = objc.class_addProtocol(cls, protocol);
@@ -169,13 +172,48 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (handleFunctionKey(cb, keycode)) return;
 
     // All other keys (including Enter, Tab, Backspace, Arrows, normal chars)
-    // → delegate to IME via interpretKeyEvents:
-    // This uses the NSResponder chain which correctly tracks the current
-    // input source, even immediately after switching (e.g., English → Korean).
-    // inputContext.handleEvent: can lag behind input source changes.
+    // → delegate to IME. Try inputContext.handleEvent: first (tracks real-time
+    // input source state), then fall back to interpretKeyEvents:.
+    const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
+    if (@intFromPtr(input_ctx) != 0) {
+        if (objc.msgSendBool1(input_ctx, objc.sel("handleEvent:"), event)) return;
+    }
+
+    // Fallback: interpretKeyEvents: (NSResponder chain)
     const array_class = objc.getClass("NSArray");
     const array = objc.msgSend1(array_class, objc.sel("arrayWithObject:"), event);
     objc.msgSendVoid1(self_view, objc.sel("interpretKeyEvents:"), array);
+}
+
+/// Called when macOS input source changes (e.g., English → Korean via Cmd+Space)
+fn inputSourceChanged(self_view: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    // Reset IME state so next keyDown uses the new input source
+    const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
+    if (@intFromPtr(input_ctx) != 0) {
+        objc.msgSendVoid(input_ctx, objc.sel("discardMarkedText"));
+        objc.msgSendVoid(input_ctx, objc.sel("invalidateCharacterCoordinates"));
+    }
+    g_marked_len = 0;
+}
+
+/// Register for input source change notifications (call after view is added to window)
+pub fn registerInputSourceObserver(view: objc.id) void {
+    const center = objc.msgSend(
+        objc.getClass("NSDistributedNotificationCenter"),
+        objc.sel("defaultCenter"),
+    );
+    if (@intFromPtr(center) == 0) return;
+
+    const name = objc.nsString("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged");
+    // addObserver:selector:name:object:
+    objc.msgSendVoid4(
+        center,
+        objc.sel("addObserver:selector:name:object:"),
+        view,
+        objc.sel("inputSourceChanged:"),
+        name,
+        @as(?objc.id, null),
+    );
 }
 
 fn flagsChanged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
