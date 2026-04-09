@@ -161,6 +161,10 @@ pub const GlyphAtlas = struct {
         ct.CGContextSetShouldSmoothFonts(ctx, false);
         ct.CGContextSetAllowsFontSmoothing(ctx, false);
 
+        // Set fill color to WHITE — we extract the alpha channel after drawing,
+        // so the glyph must be opaque white for alpha coverage to be non-zero.
+        ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
+
         // Draw glyph at position that accounts for bounding rect origin
         const positions = [1]ct.CGPoint{.{
             .x = -x0,

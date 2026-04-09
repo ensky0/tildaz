@@ -90,6 +90,10 @@ const App = struct {
     fn render(self: *App) void {
         // Update viewport size
         const size = self.win.getSize();
+
+        // Skip rendering if window is too small (minimized or being resized)
+        if (size[0] < self.cell_w or size[1] < self.cell_h) return;
+
         self.renderer.resize(size[0], size[1]);
 
         // Check for resize → update terminal grid + PTY
