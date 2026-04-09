@@ -14,10 +14,21 @@ pub const ScrollCallback = *const fn (delta: i32) void;
 /// Callback type for paste (write clipboard text to PTY)
 pub const PasteCallback = *const fn () void;
 
+/// Callback type for copy (selection → clipboard)
+pub const CopyCallback = *const fn () void;
+
+/// Mouse action types
+pub const MouseAction = enum { down, dragged, up };
+
+/// Callback for mouse events (action, pixel_x, pixel_y)
+pub const MouseCallback = *const fn (action: MouseAction, px: i32, py: i32) void;
+
 /// Global callbacks — set by main.zig before creating the view
 var g_input_callback: ?InputCallback = null;
 var g_scroll_callback: ?ScrollCallback = null;
 var g_paste_callback: ?PasteCallback = null;
+var g_copy_callback: ?CopyCallback = null;
+var g_mouse_callback: ?MouseCallback = null;
 
 /// IME marked text state (for composing characters like Korean/Japanese)
 var g_marked_len: usize = 0; // number of Unicode characters in current marked text
@@ -39,6 +50,14 @@ pub fn setScrollCallback(cb: ScrollCallback) void {
 
 pub fn setPasteCallback(cb: PasteCallback) void {
     g_paste_callback = cb;
+}
+
+pub fn setCopyCallback(cb: CopyCallback) void {
+    g_copy_callback = cb;
+}
+
+pub fn setMouseCallback(cb: MouseCallback) void {
+    g_mouse_callback = cb;
 }
 
 /// Register and return the TildaZView class (NSView subclass).
@@ -72,8 +91,11 @@ pub fn getViewClass() objc.Class {
     _ = objc.addMethod(cls, objc.sel("firstRectForCharacterRange:actualRange:"), @ptrCast(&imeFirstRect), "{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}");
     _ = objc.addMethod(cls, objc.sel("doCommandBySelector:"), @ptrCast(&imeDoCommand), "v@::");
 
-    // Mouse scroll
+    // Mouse events
     _ = objc.addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&scrollWheel), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("mouseDown:"), @ptrCast(&mouseDown), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("mouseDragged:"), @ptrCast(&mouseDragged), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("mouseUp:"), @ptrCast(&mouseUp), "v@:@");
 
     // Adopt NSTextInputClient protocol so inputContext recognizes this view
     if (objc.objc_getProtocol("NSTextInputClient")) |protocol| {
@@ -114,6 +136,12 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
         return;
     }
 
+    // Cmd+C → copy selection to clipboard
+    if (cmd and keycode == 8) {
+        if (g_copy_callback) |copy_cb| copy_cb();
+        return;
+    }
+
     // Handle Ctrl+key combos → send control character (bypass IME)
     if (ctrl) {
         if (handleCtrlKey(cb, keycode, alt)) return;
@@ -141,23 +169,22 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (handleFunctionKey(cb, keycode)) return;
 
     // All other keys (including Enter, Tab, Backspace, Arrows, normal chars)
-    // → delegate to IME. This ensures:
-    //   1. Korean/Japanese composing works correctly
-    //   2. Enter/Backspace first commits any marked text, THEN executes the action
-    //   3. inputContext is properly initialized even on first keypress
-    const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
-    if (@intFromPtr(input_ctx) != 0) {
-        if (objc.msgSendBool1(input_ctx, objc.sel("handleEvent:"), event)) return;
-    }
-
-    // Fallback: use interpretKeyEvents: (works even if inputContext is nil)
+    // → delegate to IME via interpretKeyEvents:
+    // This uses the NSResponder chain which correctly tracks the current
+    // input source, even immediately after switching (e.g., English → Korean).
+    // inputContext.handleEvent: can lag behind input source changes.
     const array_class = objc.getClass("NSArray");
     const array = objc.msgSend1(array_class, objc.sel("arrayWithObject:"), event);
     objc.msgSendVoid1(self_view, objc.sel("interpretKeyEvents:"), array);
 }
 
-fn flagsChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
-    // Modifier-only key changes — generally no output for terminals
+fn flagsChanged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    // Forward modifier changes to inputContext so it tracks input source switches
+    // (e.g., Caps Lock toggles Korean/English on macOS Korean keyboard).
+    const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
+    if (@intFromPtr(input_ctx) != 0) {
+        _ = objc.msgSendBool1(input_ctx, objc.sel("handleEvent:"), event);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +354,57 @@ fn getStringFromInput(text: objc.id) objc.id {
         return objc.msgSend(text, objc.sel("string"));
     }
     return text;
+}
+
+// ---------------------------------------------------------------------------
+// Mouse events (selection)
+// ---------------------------------------------------------------------------
+
+fn getMousePixelPos(self_view: objc.id, event: objc.id) [2]i32 {
+    // locationInWindow returns NSPoint in window coordinates (Y-up from bottom)
+    const GetLoc = *const fn (objc.id, objc.SEL) callconv(.c) objc.NSPoint;
+    const loc: objc.NSPoint = @as(GetLoc, @ptrCast(objc.msgSend_raw))(event, objc.sel("locationInWindow"));
+
+    // Convert to view coordinates
+    const ConvertPt = *const fn (objc.id, objc.SEL, objc.NSPoint, ?objc.id) callconv(.c) objc.NSPoint;
+    const view_pt: objc.NSPoint = @as(ConvertPt, @ptrCast(objc.msgSend_raw))(self_view, objc.sel("convertPoint:fromView:"), loc, @as(?objc.id, null));
+
+    // Get view height for Y-flip (NSView is Y-up, terminal is Y-down)
+    const GetFrame = *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect;
+    const frame: objc.NSRect = @as(GetFrame, @ptrCast(objc.msgSend_raw))(self_view, objc.sel("frame"));
+
+    // Get backing scale factor from window
+    const window = objc.msgSend(self_view, objc.sel("window"));
+    var scale_factor: objc.CGFloat = 2.0;
+    if (@intFromPtr(window) != 0) {
+        const screen = objc.msgSend(window, objc.sel("screen"));
+        if (@intFromPtr(screen) != 0) {
+            scale_factor = objc.msgSendFloat(screen, objc.sel("backingScaleFactor"));
+        }
+    }
+
+    // Convert to pixel coordinates (point × scale) with Y-flip
+    const px_x: i32 = @intFromFloat(view_pt.x * scale_factor);
+    const px_y: i32 = @intFromFloat((frame.size.height - view_pt.y) * scale_factor);
+    return .{ px_x, px_y };
+}
+
+fn mouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    const mouse_cb = g_mouse_callback orelse return;
+    const pos = getMousePixelPos(self_view, event);
+    mouse_cb(.down, pos[0], pos[1]);
+}
+
+fn mouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    const mouse_cb = g_mouse_callback orelse return;
+    const pos = getMousePixelPos(self_view, event);
+    mouse_cb(.dragged, pos[0], pos[1]);
+}
+
+fn mouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    const mouse_cb = g_mouse_callback orelse return;
+    const pos = getMousePixelPos(self_view, event);
+    mouse_cb(.up, pos[0], pos[1]);
 }
 
 // ---------------------------------------------------------------------------

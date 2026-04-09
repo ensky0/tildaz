@@ -77,6 +77,7 @@ const App = struct {
     padding: i32 = 4,
     last_cols: u16 = 0,
     last_rows: u16 = 0,
+    select_start_pin: ?ghostty.PageList.Pin = null,
 
     fn drainOutput(self: *App) void {
         var buf: [65536]u8 = undefined;
@@ -91,14 +92,13 @@ const App = struct {
         // Update viewport size
         const size = self.win.getSize();
 
-        // Skip rendering if window is too small (minimized or being resized)
-        if (size[0] < self.cell_w or size[1] < self.cell_h) return;
+        // Need at least 2 cells in each dimension to avoid ghostty assertion failures.
+        // This prevents crashes when window is minimized or resized very small.
+        if (size[0] < self.cell_w * 2 or size[1] < self.cell_h * 2) return;
 
         self.renderer.resize(size[0], size[1]);
 
-        // Always update CAMetalLayer drawable size to match window pixel size.
-        // Without this, resizing the window leaves blank areas where Metal
-        // still renders to the old, smaller drawable.
+        // Update CAMetalLayer drawable size to match window pixel size.
         const DrawableSize = extern struct { width: objc.CGFloat, height: objc.CGFloat };
         const ds = DrawableSize{
             .width = @floatFromInt(size[0]),
@@ -108,7 +108,6 @@ const App = struct {
         setDS(self.win.metal_layer, objc.sel("setDrawableSize:"), ds);
 
         // Check for resize → update terminal grid + PTY
-        // Clamp to min 2 (ghostty doesn't support 0 cols/rows) and max 500
         const new_cols: u16 = @intCast(@min(500, @max(2, size[0] / self.cell_w)));
         const new_rows: u16 = @intCast(@min(300, @max(2, size[1] / self.cell_h)));
         if (new_cols != self.last_cols or new_rows != self.last_rows) {
@@ -116,6 +115,12 @@ const App = struct {
             self.last_rows = new_rows;
             self.terminal.resize(self.alloc, new_cols, new_rows) catch {};
             self.pty.resize(new_cols, new_rows) catch {};
+
+            // Invalidate render state cache so next frame re-reads terminal data.
+            // Without this, resized terminal content can appear blank.
+            self.renderer.render_state.rows = 0;
+            self.renderer.render_state.cols = 0;
+            self.renderer.render_state.viewport_pin = null;
         }
 
         // Drain PTY output → VT parser
@@ -138,6 +143,62 @@ const App = struct {
 
     fn handleScroll(self: *App, delta: i32) void {
         self.terminal.scrollViewport(.{ .delta = @as(isize, delta) });
+    }
+
+    fn handleMouse(self: *App, action: input_mod.MouseAction, px: i32, py: i32) void {
+        const cw: i32 = @intCast(self.cell_w);
+        const ch: i32 = @intCast(self.cell_h);
+        const pad = self.padding;
+
+        // Convert pixel → cell coordinates
+        const term_x = px - pad;
+        const term_y = py - pad;
+        const col: u16 = if (cw > 0 and term_x >= 0) @intCast(@min(@divTrunc(term_x, cw), @as(i32, self.last_cols) - 1)) else 0;
+        const row: u16 = if (ch > 0 and term_y >= 0) @intCast(@min(@divTrunc(term_y, ch), @as(i32, self.last_rows) - 1)) else 0;
+
+        const screen: *ghostty.Screen = self.terminal.screens.active;
+
+        switch (action) {
+            .down => {
+                screen.clearSelection();
+                self.select_start_pin = screen.pages.pin(.{ .viewport = .{ .x = col, .y = row } });
+            },
+            .dragged => {
+                const start_pin = self.select_start_pin orelse return;
+                const end_pin = screen.pages.pin(.{ .viewport = .{ .x = col, .y = row } }) orelse return;
+                const sel = ghostty.Selection.init(start_pin, end_pin, false);
+                screen.select(sel) catch {};
+            },
+            .up => {
+                // Selection stays active for Cmd+C
+            },
+        }
+    }
+
+    fn copyToClipboard(self: *App) void {
+        const screen: *ghostty.Screen = self.terminal.screens.active;
+        const sel = screen.selection orelse return;
+        const text = screen.selectionString(self.alloc, .{ .sel = sel }) catch return;
+        defer self.alloc.free(text);
+        if (text.len == 0) return;
+
+        // Write to NSPasteboard
+        const pb_class = objc.getClass("NSPasteboard");
+        const pb = objc.msgSend(pb_class, objc.sel("generalPasteboard"));
+        if (@intFromPtr(pb) == 0) return;
+
+        objc.msgSendVoid(pb, objc.sel("clearContents"));
+
+        // selectionString returns [:0]const u8 (null-terminated)
+        const ns_str = objc.msgSend1(
+            objc.getClass("NSString"),
+            objc.sel("stringWithUTF8String:"),
+            @as([*:0]const u8, text.ptr),
+        );
+        if (@intFromPtr(ns_str) == 0) return;
+
+        const type_str = objc.nsString("public.utf8-plain-text");
+        _ = objc.msgSend2(pb, objc.sel("setString:forType:"), ns_str, type_str);
     }
 
     fn pasteFromClipboard(self: *App) void {
@@ -191,6 +252,20 @@ fn onScroll(delta: i32) void {
 fn onPaste() void {
     if (g_app) |app| {
         app.pasteFromClipboard();
+    }
+}
+
+/// Copy callback → selection to clipboard
+fn onCopy() void {
+    if (g_app) |app| {
+        app.copyToClipboard();
+    }
+}
+
+/// Mouse callback → text selection
+fn onMouse(action: input_mod.MouseAction, px: i32, py: i32) void {
+    if (g_app) |app| {
+        app.handleMouse(action, px, py);
     }
 }
 
@@ -335,6 +410,8 @@ fn run() !void {
     input_mod.setInputCallback(&onKeyInput);
     input_mod.setScrollCallback(&onScroll);
     input_mod.setPasteCallback(&onPaste);
+    input_mod.setCopyCallback(&onCopy);
+    input_mod.setMouseCallback(&onMouse);
     defer {
         g_app = null;
         app.pty.deinit();
