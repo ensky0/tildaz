@@ -141,6 +141,12 @@ pub const Pty = struct {
         };
         const rc = c.ioctl(self.master_fd, TIOCSWINSZ, &ws);
         if (rc < 0) return error.ResizeFailed;
+
+        // Explicitly send SIGWINCH to the child's process group.
+        // On macOS aarch64, TIOCSWINSZ via C varargs ioctl may not
+        // reliably deliver SIGWINCH to the foreground process group.
+        // kill(-pid, sig) sends to the process group led by pid.
+        _ = std.c.kill(-self.child_pid, posix.SIG.WINCH);
     }
 
     pub fn startReadThread(self: *Pty, callback: ReadCallback, exit_cb: ExitCallback, userdata: ?*anyopaque) !void {

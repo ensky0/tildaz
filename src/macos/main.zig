@@ -115,26 +115,33 @@ const App = struct {
     }
 
     fn render(self: *App) void {
-        // CAMetalLayer is a sublayer with autoresizing — bounds track view size.
-        // Read actual pixel size from layer.bounds × contentsScale.
+        // Sync layer geometry to view bounds and request matching drawable size.
         const size = self.getLayerPixelSize();
 
-        if (size[0] < self.cell_w * 2 or size[1] < self.cell_h * 2) return;
-
-        // Explicitly set drawable size so Metal's nextDrawable() returns a
-        // texture matching the current view dimensions. Without this, the
-        // drawable stays at its initial size after window resize.
+        // Tell CAMetalLayer what drawable size we want. The actual drawable
+        // may lag behind during resize (drawable pool), so we acquire it
+        // next and use the ACTUAL texture dimensions for everything.
         const SetDrawableSize: *const fn (objc.id, objc.SEL, objc.NSSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         SetDrawableSize(self.win.metal_layer, objc.sel("setDrawableSize:"), .{
             .width = @floatFromInt(size[0]),
             .height = @floatFromInt(size[1]),
         });
 
-        self.renderer.resize(size[0], size[1]);
+        // Acquire the next drawable and read its ACTUAL texture dimensions.
+        // This is the ground truth — cols/rows and shader coordinate transform
+        // must both be based on these dimensions to stay in sync.
+        const acquired = self.renderer.acquireDrawable(self.win.metal_layer) orelse return;
+        const actual_w = acquired.width;
+        const actual_h = acquired.height;
 
-        // Check for resize → update terminal grid + PTY
-        const new_cols: u16 = @intCast(@min(500, @max(2, size[0] / self.cell_w)));
-        const new_rows: u16 = @intCast(@min(300, @max(2, size[1] / self.cell_h)));
+        if (actual_w < self.cell_w * 2 or actual_h < self.cell_h * 2) return;
+
+        // Check for resize using actual drawable dimensions
+        const pad2: u32 = @intCast(@as(i32, self.padding) * 2);
+        const content_w = if (actual_w > pad2) actual_w - pad2 else actual_w;
+        const content_h = if (actual_h > pad2) actual_h - pad2 else actual_h;
+        const new_cols: u16 = @intCast(@min(500, @max(2, content_w / self.cell_w)));
+        const new_rows: u16 = @intCast(@min(300, @max(2, content_h / self.cell_h)));
         if (new_cols != self.last_cols or new_rows != self.last_rows) {
             // Invalidate render state BEFORE resize to prevent reading
             // stale data during terminal reflow
@@ -151,9 +158,10 @@ const App = struct {
         // Drain PTY output → VT parser
         self.drainOutput();
 
-        // Render terminal to Metal layer
+        // Render terminal to Metal layer using the acquired drawable
         self.renderer.renderFrame(
-            self.win.metal_layer,
+            acquired.drawable,
+            acquired.texture,
             &self.terminal,
             @intCast(self.cell_w),
             @intCast(self.cell_h),
@@ -425,10 +433,13 @@ fn run() !void {
         .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
     } else ghostty.Terminal.Colors.default;
 
-    // Terminal grid size
+    // Terminal grid size (subtract padding from both sides)
     const size = win.getSize();
-    const cols: u16 = @intCast(@max(1, size[0] / cell_w));
-    const rows: u16 = @intCast(@max(1, size[1] / cell_h));
+    const pad2: u32 = 4 * 2; // padding on both sides
+    const content_w = if (size[0] > pad2) size[0] - pad2 else size[0];
+    const content_h = if (size[1] > pad2) size[1] - pad2 else size[1];
+    const cols: u16 = @intCast(@max(1, content_w / cell_w));
+    const rows: u16 = @intCast(@max(1, content_h / cell_h));
 
     // Initialize Metal renderer
     var renderer = try MetalRenderer.init(

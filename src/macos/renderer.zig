@@ -193,15 +193,24 @@ pub const MetalRenderer = struct {
         self.vp_height = height;
     }
 
-    /// Render a full frame to the given CAMetalLayer.
-    pub fn renderFrame(self: *MetalRenderer, layer: objc.id, terminal: *ghostty.Terminal, cell_w: i32, cell_h: i32, y_offset: i32, padding: i32, preedit: ?[]const u8) void {
-        // Get next drawable
+    /// Acquire the next drawable from the layer and return its actual texture
+    /// dimensions. This must be called before renderFrame so the caller can
+    /// use the real drawable size for cols/rows calculations, ensuring the
+    /// terminal grid matches the actual render target.
+    pub fn acquireDrawable(self: *MetalRenderer, layer: objc.id) ?struct { drawable: objc.id, texture: objc.id, width: u32, height: u32 } {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
-        if (@intFromPtr(drawable) == 0) return;
-
+        if (@intFromPtr(drawable) == 0) return null;
         const texture = objc.msgSend(drawable, objc.sel("texture"));
-        if (@intFromPtr(texture) == 0) return;
+        if (@intFromPtr(texture) == 0) return null;
+        const w: u32 = @intCast(objc.msgSendUint(texture, objc.sel("width")));
+        const h: u32 = @intCast(objc.msgSendUint(texture, objc.sel("height")));
+        self.vp_width = w;
+        self.vp_height = h;
+        return .{ .drawable = drawable, .texture = texture, .width = w, .height = h };
+    }
 
+    /// Render a full frame using a pre-acquired drawable.
+    pub fn renderFrame(self: *MetalRenderer, drawable: objc.id, texture: objc.id, terminal: *ghostty.Terminal, cell_w: i32, cell_h: i32, y_offset: i32, padding: i32, preedit: ?[]const u8) void {
         // Create command buffer
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
         if (@intFromPtr(cmd_buf) == 0) return;
