@@ -71,6 +71,9 @@ pub fn getViewClass() objc.Class {
     view_class = objc.createClass("TildaZView", "NSView");
     const cls = view_class orelse @panic("Failed to create TildaZView class");
 
+    // Layout: sync layer bounds with view bounds (layer-hosting view)
+    _ = objc.addMethod(cls, objc.sel("layout"), @ptrCast(&viewLayout), "v@:");
+
     // Key events
     _ = objc.addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&acceptsFirstResponder), "c@:");
     _ = objc.addMethod(cls, objc.sel("keyDown:"), @ptrCast(&keyDown), "v@:@");
@@ -113,6 +116,27 @@ pub fn getViewClass() objc.Class {
 // ---------------------------------------------------------------------------
 // ObjC method implementations
 // ---------------------------------------------------------------------------
+
+/// Called by AppKit during layout — sync layer bounds with view bounds.
+/// In a layer-hosting view, layer bounds don't auto-resize with the view.
+/// This is how ghostty handles it (via Swift layout() override).
+fn viewLayout(self_view: objc.id, _: objc.SEL) callconv(.c) void {
+    // Call [super layout]
+    const super_class = objc.getClass("NSView");
+    const sup = objc.ObjcSuper{ .receiver = self_view, .super_class = super_class };
+    const superLayoutFn: *const fn (*const objc.ObjcSuper, objc.SEL) callconv(.c) void = @ptrCast(objc.msgSendSuper_raw);
+    superLayoutFn(&sup, objc.sel("layout"));
+
+    // Sync layer.bounds = view.bounds
+    const layer = objc.msgSend(self_view, objc.sel("layer"));
+    if (@intFromPtr(layer) == 0) return;
+
+    const GetBounds: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
+    const bounds = GetBounds(self_view, objc.sel("bounds"));
+
+    const SetBounds: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+    SetBounds(layer, objc.sel("setBounds:"), bounds);
+}
 
 fn acceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) objc.BOOL {
     return objc.YES;
@@ -171,15 +195,8 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     // These have no corresponding doCommandBySelector: mapping
     if (handleFunctionKey(cb, keycode)) return;
 
-    // All other keys (including Enter, Tab, Backspace, Arrows, normal chars)
-    // → delegate to IME. Try inputContext.handleEvent: first (tracks real-time
-    // input source state), then fall back to interpretKeyEvents:.
-    const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
-    if (@intFromPtr(input_ctx) != 0) {
-        if (objc.msgSendBool1(input_ctx, objc.sel("handleEvent:"), event)) return;
-    }
-
-    // Fallback: interpretKeyEvents: (NSResponder chain)
+    // All other keys → delegate to IME via interpretKeyEvents: (ghostty approach).
+    // Do NOT use inputContext.handleEvent: — it swallows key repeat events.
     const array_class = objc.getClass("NSArray");
     const array = objc.msgSend1(array_class, objc.sel("arrayWithObject:"), event);
     objc.msgSendVoid1(self_view, objc.sel("interpretKeyEvents:"), array);
@@ -229,11 +246,10 @@ fn flagsChanged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) vo
 // NSTextInputClient implementation — IME support
 // ---------------------------------------------------------------------------
 
-/// NSResponder's insertText: (1-arg version) — called by some input methods
-/// during input source switching (e.g., English → Korean transition)
+/// NSResponder's insertText: (1-arg version)
 fn imeInsertTextSimple(_: objc.id, _: objc.SEL, text: objc.id) callconv(.c) void {
     const cb = g_input_callback orelse return;
-    eraseMarkedText(cb);
+    g_marked_len = 0; // Marked text is replaced by final text
 
     const str = getStringFromInput(text);
     if (@intFromPtr(str) == 0) return;
@@ -249,9 +265,7 @@ fn imeInsertTextSimple(_: objc.id, _: objc.SEL, text: objc.id) callconv(.c) void
 /// Called when text input is finalized (e.g., after composing Korean characters)
 fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
     const cb = g_input_callback orelse return;
-
-    // Delete previous marked text by sending DEL characters
-    eraseMarkedText(cb);
+    g_marked_len = 0; // Marked text is replaced by final text
 
     // Get the finalized text string
     const str = getStringFromInput(text);
@@ -266,31 +280,15 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
 }
 
 /// Called during text composition (e.g., typing Korean jamo that form a syllable)
+/// Following ghostty: do NOT send marked text to PTY. Only track state.
+/// TODO: implement preedit rendering to show composing text on screen.
 fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange, _: NSRange) callconv(.c) void {
-    const cb = g_input_callback orelse return;
-
-    // Delete previous marked text
-    eraseMarkedText(cb);
-
-    // Get new marked text
     const str = getStringFromInput(text);
     if (@intFromPtr(str) == 0) {
         g_marked_len = 0;
         return;
     }
-
-    const new_len = objc.msgSendUint(str, objc.sel("length"));
-    g_marked_len = new_len;
-
-    if (new_len == 0) return;
-
-    // Send the composing text to PTY so the user can see what they're typing
-    const utf8 = objc.msgSend(str, objc.sel("UTF8String"));
-    if (@intFromPtr(utf8) == 0) return;
-
-    const cstr: [*:0]const u8 = @ptrCast(utf8);
-    const slen = std.mem.len(cstr);
-    if (slen > 0) cb(cstr[0..slen]);
+    g_marked_len = objc.msgSendUint(str, objc.sel("length"));
 }
 
 fn imeUnmarkText(_: objc.id, _: objc.SEL) callconv(.c) void {
@@ -368,14 +366,6 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
 // ---------------------------------------------------------------------------
 // IME helpers
 // ---------------------------------------------------------------------------
-
-/// Erase previous marked text by sending DEL (0x7f) for each character
-fn eraseMarkedText(cb: InputCallback) void {
-    for (0..g_marked_len) |_| {
-        cb("\x7f");
-    }
-    g_marked_len = 0;
-}
 
 /// Extract NSString from input (could be NSString or NSAttributedString)
 fn getStringFromInput(text: objc.id) objc.id {

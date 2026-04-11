@@ -49,16 +49,31 @@ pub const Window = struct {
         // Create CAMetalLayer
         const layer_class = objc.getClass("CAMetalLayer");
         const metal_layer = objc.msgSend(layer_class, objc.sel("layer"));
-
-        // Configure layer
         objc.msgSendVoid1(metal_layer, objc.sel("setDevice:"), device);
-        // MTLPixelFormatBGRA8Unorm = 80
-        objc.msgSendVoid1(metal_layer, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80));
-        objc.msgSendVoid1(metal_layer, objc.sel("setContentsScale:"), @as(objc.CGFloat, 2.0));
+        objc.msgSendVoid1(metal_layer, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
 
-        // Set view's layer
+        // Get backing scale factor
+        const init_screen = objc.msgSend(ns_window, objc.sel("screen"));
+        const init_scale: objc.CGFloat = if (@intFromPtr(init_screen) != 0)
+            objc.msgSendFloat(init_screen, objc.sel("backingScaleFactor"))
+        else
+            2.0;
+        objc.msgSendVoid1(metal_layer, objc.sel("setContentsScale:"), init_scale);
+
+        // Layer-backed view: wantsLayer creates a default CALayer.
+        // Add CAMetalLayer as sublayer with autoresizing so it tracks view size.
         objc.msgSendVoid1(ns_view, objc.sel("setWantsLayer:"), objc.YES);
-        objc.msgSendVoid1(ns_view, objc.sel("setLayer:"), metal_layer);
+        const base_layer = objc.msgSend(ns_view, objc.sel("layer"));
+        objc.msgSendVoid1(base_layer, objc.sel("addSublayer:"), metal_layer);
+
+        // kCALayerWidthSizable(2) | kCALayerHeightSizable(16) = 18
+        objc.msgSendVoid1(metal_layer, objc.sel("setAutoresizingMask:"), @as(objc.NSUInteger, 18));
+
+        // Initialize metal_layer frame to current view bounds
+        const GetBounds: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
+        const initial_bounds = GetBounds(base_layer, objc.sel("bounds"));
+        const SetFrame: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        SetFrame(metal_layer, objc.sel("setFrame:"), initial_bounds);
 
         // Set content view
         objc.msgSendVoid1(ns_window, objc.sel("setContentView:"), ns_view);
@@ -100,7 +115,7 @@ pub const Window = struct {
         };
     }
 
-    fn getContentFrame(self: *Window) objc.NSRect {
+    pub fn getContentFrame(self: *Window) objc.NSRect {
         const f: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
         return f(self.ns_view, objc.sel("frame"));
     }

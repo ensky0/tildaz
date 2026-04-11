@@ -12,11 +12,13 @@ const c = struct {
     ) c_int;
     extern "c" fn setsid() std.c.pid_t;
     extern "c" fn login_tty(fd: posix.fd_t) c_int;
+    // Use proper macOS ioctl signature (unsigned long request, not int)
+    extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 };
 
-// TIOCSWINSZ: not defined in Zig stdlib for macOS, define manually
-// IOW('t', 103, struct winsize) = 0x80000000 | (sizeof(winsize) << 16) | ('t' << 8) | 103
-const TIOCSWINSZ: c_int = @bitCast(@as(u32, 0x80000000 | (@as(u32, @sizeOf(posix.winsize)) << 16) | (@as(u32, 't') << 8) | 103));
+// macOS ioctl requests for terminal window size
+const TIOCSWINSZ: c_ulong = 0x80087467; // _IOW('t', 103, struct winsize) — set size
+const TIOCGWINSZ: c_ulong = 0x40087468; // _IOR('t', 104, struct winsize) — get size
 
 pub const Pty = struct {
     master_fd: posix.fd_t,
@@ -137,7 +139,7 @@ pub const Pty = struct {
             .xpixel = 0,
             .ypixel = 0,
         };
-        const rc = std.c.ioctl(self.master_fd, TIOCSWINSZ, @intFromPtr(&ws));
+        const rc = c.ioctl(self.master_fd, TIOCSWINSZ, &ws);
         if (rc < 0) return error.ResizeFailed;
     }
 

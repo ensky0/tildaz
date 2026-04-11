@@ -79,6 +79,19 @@ const App = struct {
     last_rows: u16 = 0,
     select_start_pin: ?ghostty.PageList.Pin = null,
 
+    /// Get layer pixel size from bounds × contentsScale (ghostty approach).
+    fn getLayerPixelSize(self: *App) [2]u32 {
+        const GetBounds: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
+        const bounds = GetBounds(self.win.metal_layer, objc.sel("bounds"));
+        const scale = objc.msgSendFloat(self.win.metal_layer, objc.sel("contentsScale"));
+        const w = bounds.size.width * scale;
+        const h = bounds.size.height * scale;
+        return .{
+            if (w > 0) @as(u32, @intFromFloat(w)) else 1,
+            if (h > 0) @as(u32, @intFromFloat(h)) else 1,
+        };
+    }
+
     fn drainOutput(self: *App) void {
         var buf: [65536]u8 = undefined;
         while (true) {
@@ -89,22 +102,13 @@ const App = struct {
     }
 
     fn render(self: *App) void {
-        const size = self.win.getSize();
+        // CAMetalLayer is a sublayer with autoresizing — bounds track view size.
+        // Read actual pixel size from layer.bounds × contentsScale.
+        const size = self.getLayerPixelSize();
 
-        // Need at least 2 cells in each dimension. Skip everything (including
-        // setDrawableSize) to avoid Metal instability with tiny drawables.
         if (size[0] < self.cell_w * 2 or size[1] < self.cell_h * 2) return;
 
         self.renderer.resize(size[0], size[1]);
-
-        // Update CAMetalLayer drawable size to match window pixel size.
-        const DrawableSize = extern struct { width: objc.CGFloat, height: objc.CGFloat };
-        const ds = DrawableSize{
-            .width = @floatFromInt(size[0]),
-            .height = @floatFromInt(size[1]),
-        };
-        const setDS: *const fn (objc.id, objc.SEL, DrawableSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
-        setDS(self.win.metal_layer, objc.sel("setDrawableSize:"), ds);
 
         // Check for resize → update terminal grid + PTY
         const new_cols: u16 = @intCast(@min(500, @max(2, size[0] / self.cell_w)));

@@ -200,6 +200,7 @@ pub const MetalRenderer = struct {
         if (@intFromPtr(drawable) == 0) return;
 
         const texture = objc.msgSend(drawable, objc.sel("texture"));
+        if (@intFromPtr(texture) == 0) return;
 
         // Create command buffer
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
@@ -231,7 +232,7 @@ pub const MetalRenderer = struct {
         const encoder = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
         if (@intFromPtr(encoder) == 0) return;
 
-        // Update constants
+        // Update constants (uses actual texture dimensions)
         self.updateConstants();
 
         // Upload atlas if dirty
@@ -271,6 +272,7 @@ pub const MetalRenderer = struct {
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
+
         const colors = self.render_state.colors;
         const row_slice = self.render_state.row_data.slice();
 
@@ -281,6 +283,7 @@ pub const MetalRenderer = struct {
 
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
+
 
         const dbg_r = colorF(colors.background.r);
         const dbg_g = colorF(colors.background.g);
@@ -470,22 +473,31 @@ pub const MetalRenderer = struct {
         );
     }
 
+    /// Get current constants as inline bytes (avoids GPU buffer sync issues)
+    fn getConstants(self: *MetalRenderer) [4]f32 {
+        return .{
+            @floatFromInt(if (self.vp_width > 0) self.vp_width else 1),
+            @floatFromInt(if (self.vp_height > 0) self.vp_height else 1),
+            @floatFromInt(ATLAS_SIZE),
+            @floatFromInt(ATLAS_SIZE),
+        };
+    }
+
     fn drawBgInstances(self: *MetalRenderer, encoder: objc.id, instances: []const BgInstance) void {
         if (instances.len == 0) return;
 
-        // Upload to buffer
         const contents: [*]BgInstance = @ptrCast(@alignCast(objc.msgSend(self.bg_buffer, objc.sel("contents"))));
         @memcpy(contents[0..instances.len], instances);
 
-        // Set pipeline
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.bg_pipeline);
-
-        // Set vertex buffers
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.bg_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 0));
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
 
-        // Draw instanced triangle strip (4 vertices per quad)
-        // MTLPrimitiveTypeTriangleStrip = 4 (NOT 3, which is Triangle)
+        // Use setVertexBytes instead of buffer to ensure current viewport values
+        // are used every frame (avoids CPU/GPU buffer sync issues with shared storage)
+        var constants = self.getConstants();
+        const setBytesVoid: *const fn (objc.id, objc.SEL, [*]const u8, objc.NSUInteger, objc.NSUInteger) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        setBytesVoid(encoder, objc.sel("setVertexBytes:length:atIndex:"), @as([*]const u8, @ptrCast(&constants)), @sizeOf([4]f32), @as(objc.NSUInteger, 1));
+
         msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
     }
 
@@ -497,10 +509,12 @@ pub const MetalRenderer = struct {
 
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 0));
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
-        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
 
-        // MTLPrimitiveTypeTriangleStrip = 4 (4 vertices → 1 quad)
+        var constants = self.getConstants();
+        const setBytesVoid: *const fn (objc.id, objc.SEL, [*]const u8, objc.NSUInteger, objc.NSUInteger) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        setBytesVoid(encoder, objc.sel("setVertexBytes:length:atIndex:"), @as([*]const u8, @ptrCast(&constants)), @sizeOf([4]f32), @as(objc.NSUInteger, 1));
+
+        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
         msgSendVoid4(encoder, objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 4), @as(objc.NSUInteger, instances.len));
     }
 

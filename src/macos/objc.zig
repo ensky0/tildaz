@@ -32,6 +32,14 @@ pub const NSSize = extern struct {
 extern "objc" fn objc_getClass(name: [*:0]const u8) ?Class;
 extern "objc" fn sel_registerName(name: [*:0]const u8) SEL;
 extern "objc" fn objc_msgSend() callconv(.c) void;
+extern "objc" fn objc_msgSendSuper() callconv(.c) void;
+
+pub const ObjcSuper = extern struct {
+    receiver: id,
+    super_class: Class,
+};
+
+pub const msgSendSuper_raw = &objc_msgSendSuper;
 extern "objc" fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, extra_bytes: usize) ?Class;
 extern "objc" fn objc_registerClassPair(cls: Class) void;
 extern "objc" fn class_addMethod(cls: Class, name: SEL, imp: *const anyopaque, types: [*:0]const u8) bool;
