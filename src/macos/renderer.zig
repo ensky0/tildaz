@@ -194,7 +194,7 @@ pub const MetalRenderer = struct {
     }
 
     /// Render a full frame to the given CAMetalLayer.
-    pub fn renderFrame(self: *MetalRenderer, layer: objc.id, terminal: *ghostty.Terminal, cell_w: i32, cell_h: i32, y_offset: i32, padding: i32) void {
+    pub fn renderFrame(self: *MetalRenderer, layer: objc.id, terminal: *ghostty.Terminal, cell_w: i32, cell_h: i32, y_offset: i32, padding: i32, preedit: ?[]const u8) void {
         // Get next drawable
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (@intFromPtr(drawable) == 0) return;
@@ -243,6 +243,11 @@ pub const MetalRenderer = struct {
 
         // Render terminal content
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding);
+
+        // Render preedit (IME composing text) overlay at cursor position
+        if (preedit) |text| {
+            self.renderPreeditOverlay(encoder, text, cell_w, cell_h, y_offset, padding);
+        }
 
         // End encoding, present, commit
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
@@ -445,6 +450,117 @@ pub const MetalRenderer = struct {
                 self.drawBgInstances(encoder, &cursor_inst);
             }
         }
+    }
+
+    /// Render preedit (IME composing) text overlay at the terminal cursor position.
+    fn renderPreeditOverlay(
+        self: *MetalRenderer,
+        encoder: objc.id,
+        preedit_utf8: []const u8,
+        cell_w: i32,
+        cell_h: i32,
+        y_offset: i32,
+        padding: i32,
+    ) void {
+        // Render at cursor position regardless of cursor blink state
+        const vp = self.render_state.cursor.viewport orelse return;
+
+        const cw: f32 = @floatFromInt(cell_w);
+        const ch: f32 = @floatFromInt(cell_h);
+        const x_pad: f32 = @floatFromInt(padding);
+        const y_off: f32 = @floatFromInt(y_offset + padding);
+        var cursor_x: f32 = @floatFromInt(vp.x);
+        const cursor_y: f32 = @floatFromInt(vp.y);
+
+        // Decode preedit UTF-8 to codepoints and render each
+        var bg_instances: [8]BgInstance = undefined;
+        var text_instances: [8]TextInstance = undefined;
+        var bg_count: u32 = 0;
+        var text_count: u32 = 0;
+
+        var i: usize = 0;
+        while (i < preedit_utf8.len) {
+            const byte_len: u3 = std.unicode.utf8ByteSequenceLength(preedit_utf8[i]) catch break;
+            if (i + byte_len > preedit_utf8.len) break;
+            const cp: u21 = switch (byte_len) {
+                1 => @intCast(preedit_utf8[i]),
+                2 => std.unicode.utf8Decode2(preedit_utf8[i..][0..2].*) catch break,
+                3 => std.unicode.utf8Decode3(preedit_utf8[i..][0..3].*) catch break,
+                4 => std.unicode.utf8Decode4(preedit_utf8[i..][0..4].*) catch break,
+                else => break,
+            };
+            i += byte_len;
+
+            if (cp == 0) continue;
+
+            // Determine character cell width (CJK/Hangul = 2 cells)
+            const char_cells: f32 = if (isWide(cp)) 2.0 else 1.0;
+            const fx = cursor_x * cw + x_pad;
+            const fy = cursor_y * ch + y_off;
+
+            // Background: subtle underline indicator for composing text
+            if (bg_count < bg_instances.len) {
+                bg_instances[bg_count] = .{
+                    .pos = .{ fx, fy + ch - 2 }, // underline at bottom of cell
+                    .size = .{ char_cells * cw, 2 },
+                    .color = .{ 0.7, 0.7, 0.7, 0.9 },
+                };
+                bg_count += 1;
+            }
+
+            // Text glyph
+            if (text_count < text_instances.len) {
+                const result = self.font.resolveGlyph(cp) orelse {
+                    cursor_x += char_cells;
+                    continue;
+                };
+                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    if (result.owned) ct.CFRelease(result.font);
+                    cursor_x += char_cells;
+                    continue;
+                };
+                if (result.owned) ct.CFRelease(result.font);
+
+                if (entry.w > 0 and entry.h > 0) {
+                    const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+
+                    const colors = self.render_state.colors;
+                    const fg = colors.foreground;
+
+                    text_instances[text_count] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = .{ colorF(fg.r), colorF(fg.g), colorF(fg.b), 1 },
+                    };
+                    text_count += 1;
+                }
+            }
+
+            cursor_x += char_cells;
+        }
+
+        // Upload atlas if new glyphs were rasterized during preedit
+        if (self.atlas.dirty) {
+            self.uploadAtlas();
+            self.atlas.dirty = false;
+        }
+
+        if (bg_count > 0) self.drawBgInstances(encoder, bg_instances[0..bg_count]);
+        if (text_count > 0) self.drawTextInstances(encoder, text_instances[0..text_count]);
+    }
+
+    fn isWide(cp: u21) bool {
+        // Hangul Jamo, Hangul Syllables, CJK Unified Ideographs, fullwidth forms
+        return (cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo
+            (cp >= 0x2E80 and cp <= 0x9FFF) or // CJK
+            (cp >= 0xAC00 and cp <= 0xD7AF) or // Hangul Syllables
+            (cp >= 0xF900 and cp <= 0xFAFF) or // CJK Compatibility
+            (cp >= 0xFE30 and cp <= 0xFE6F) or // CJK Compatibility Forms
+            (cp >= 0xFF01 and cp <= 0xFF60) or // Fullwidth Forms
+            (cp >= 0x20000 and cp <= 0x2FFFF); // CJK Extension B+
     }
 
     fn updateConstants(self: *MetalRenderer) void {

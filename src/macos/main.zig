@@ -79,13 +79,26 @@ const App = struct {
     last_rows: u16 = 0,
     select_start_pin: ?ghostty.PageList.Pin = null,
 
-    /// Get layer pixel size from bounds × contentsScale (ghostty approach).
+    /// Get pixel size from VIEW bounds (not layer — layer-hosting view doesn't
+    /// auto-sync layer bounds). Also syncs layer geometry.
     fn getLayerPixelSize(self: *App) [2]u32 {
         const GetBounds: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
-        const bounds = GetBounds(self.win.metal_layer, objc.sel("bounds"));
-        const scale = objc.msgSendFloat(self.win.metal_layer, objc.sel("contentsScale"));
+        // Read from the VIEW, which AppKit keeps in sync with window size
+        const bounds = GetBounds(self.win.ns_view, objc.sel("bounds"));
+        const scale: objc.CGFloat = @floatCast(self.win.scale);
         const w = bounds.size.width * scale;
         const h = bounds.size.height * scale;
+
+        // Sync layer bounds and drawable size to match view
+        const SetBounds: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        SetBounds(self.win.metal_layer, objc.sel("setBounds:"), bounds);
+
+        const SetFrame: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        SetFrame(self.win.metal_layer, objc.sel("setFrame:"), .{
+            .origin = .{ .x = 0, .y = 0 },
+            .size = bounds.size,
+        });
+
         return .{
             if (w > 0) @as(u32, @intFromFloat(w)) else 1,
             if (h > 0) @as(u32, @intFromFloat(h)) else 1,
@@ -107,6 +120,15 @@ const App = struct {
         const size = self.getLayerPixelSize();
 
         if (size[0] < self.cell_w * 2 or size[1] < self.cell_h * 2) return;
+
+        // Explicitly set drawable size so Metal's nextDrawable() returns a
+        // texture matching the current view dimensions. Without this, the
+        // drawable stays at its initial size after window resize.
+        const SetDrawableSize: *const fn (objc.id, objc.SEL, objc.NSSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        SetDrawableSize(self.win.metal_layer, objc.sel("setDrawableSize:"), .{
+            .width = @floatFromInt(size[0]),
+            .height = @floatFromInt(size[1]),
+        });
 
         self.renderer.resize(size[0], size[1]);
 
@@ -137,7 +159,50 @@ const App = struct {
             @intCast(self.cell_h),
             0, // no tab bar
             self.padding,
+            input_mod.getPreeditText(),
         );
+
+        // Update IME cursor rect for candidate window positioning
+        self.updateIMECursorRect();
+    }
+
+    /// Convert cursor position to screen coordinates for IME candidate window.
+    fn updateIMECursorRect(self: *App) void {
+        const vp = self.renderer.render_state.cursor.viewport orelse return;
+        const cw: f32 = @floatFromInt(self.cell_w);
+        const ch: f32 = @floatFromInt(self.cell_h);
+        const pad: f32 = @floatFromInt(self.padding);
+        const scale: f32 = self.win.scale;
+
+        // Cursor position in view coordinates (points, Y-down from top)
+        const view_x = (@as(f32, @floatFromInt(vp.x)) * cw + pad) / scale;
+        const view_y = (@as(f32, @floatFromInt(vp.y)) * ch + pad) / scale;
+        const cell_w_pt = cw / scale;
+        const cell_h_pt = ch / scale;
+
+        // Get view frame height for Y-flip (AppKit is Y-up from bottom)
+        const GetFrame: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
+        const frame = GetFrame(self.win.ns_view, objc.sel("frame"));
+        const flipped_y = frame.size.height - view_y - cell_h_pt;
+
+        // Convert view rect to window coordinates
+        const view_rect = objc.NSRect{
+            .origin = .{ .x = @floatCast(view_x), .y = @floatCast(flipped_y) },
+            .size = .{ .width = @floatCast(cell_w_pt), .height = @floatCast(cell_h_pt) },
+        };
+        const ConvertRect: *const fn (objc.id, objc.SEL, objc.NSRect, ?objc.id) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
+        const win_rect = ConvertRect(self.win.ns_view, objc.sel("convertRect:toView:"), view_rect, @as(?objc.id, null));
+
+        // Convert window rect to screen coordinates
+        const ConvertToScreen: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
+        const screen_rect = ConvertToScreen(self.win.ns_window, objc.sel("convertRectToScreen:"), win_rect);
+
+        input_mod.setIMECursorRect(.{
+            .x = screen_rect.origin.x,
+            .y = screen_rect.origin.y,
+            .w = screen_rect.size.width,
+            .h = screen_rect.size.height,
+        });
     }
 
     fn writeInput(self: *App, data: []const u8) void {
@@ -432,6 +497,15 @@ fn run() !void {
 
     // Show window
     win.show();
+
+    // Pre-activate the input context to establish IME server connection.
+    // Without this, the first keystroke may bypass IME composition because
+    // the IMK mach port isn't ready yet (produces "error messaging the mach
+    // port for IMKCFRunLoopWakeUpReliable").
+    const input_ctx = objc.msgSend(win.ns_view, objc.sel("inputContext"));
+    if (@intFromPtr(input_ctx) != 0) {
+        objc.msgSendVoid(input_ctx, objc.sel("activate"));
+    }
 
     // Create render timer (NSTimer, 16ms ≈ 60fps)
     setupRenderTimer();

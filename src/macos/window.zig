@@ -60,20 +60,11 @@ pub const Window = struct {
             2.0;
         objc.msgSendVoid1(metal_layer, objc.sel("setContentsScale:"), init_scale);
 
-        // Layer-backed view: wantsLayer creates a default CALayer.
-        // Add CAMetalLayer as sublayer with autoresizing so it tracks view size.
+        // Layer-hosting view (ghostty pattern): set the CAMetalLayer as the
+        // view's own layer BEFORE enabling wantsLayer. This makes [view layer]
+        // return our metal layer directly, so viewLayout can manage its size.
+        objc.msgSendVoid1(ns_view, objc.sel("setLayer:"), metal_layer);
         objc.msgSendVoid1(ns_view, objc.sel("setWantsLayer:"), objc.YES);
-        const base_layer = objc.msgSend(ns_view, objc.sel("layer"));
-        objc.msgSendVoid1(base_layer, objc.sel("addSublayer:"), metal_layer);
-
-        // kCALayerWidthSizable(2) | kCALayerHeightSizable(16) = 18
-        objc.msgSendVoid1(metal_layer, objc.sel("setAutoresizingMask:"), @as(objc.NSUInteger, 18));
-
-        // Initialize metal_layer frame to current view bounds
-        const GetBounds: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSRect = @ptrCast(objc.msgSend_raw);
-        const initial_bounds = GetBounds(base_layer, objc.sel("bounds"));
-        const SetFrame: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) void = @ptrCast(objc.msgSend_raw);
-        SetFrame(metal_layer, objc.sel("setFrame:"), initial_bounds);
 
         // Set content view
         objc.msgSendVoid1(ns_window, objc.sel("setContentView:"), ns_view);

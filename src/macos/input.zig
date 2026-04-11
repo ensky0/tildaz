@@ -33,6 +33,30 @@ var g_mouse_callback: ?MouseCallback = null;
 /// IME marked text state (for composing characters like Korean/Japanese)
 var g_marked_len: usize = 0; // number of Unicode characters in current marked text
 
+/// Preedit text buffer — stores UTF-8 of the current composing text for rendering
+var g_preedit_buf: [64]u8 = undefined;
+var g_preedit_len: usize = 0;
+
+/// Tracks whether the input source just changed. Used to detect and work around
+/// the macOS IMK mach port timing bug where the first keystroke after switching
+/// input sources gets committed directly instead of entering composition mode.
+var g_source_just_changed: bool = false;
+/// Set to true when we suppressed a jamo insertText and need to replay the key event.
+var g_needs_replay: bool = false;
+
+/// Returns the current preedit (composing) text, or null if not composing.
+pub fn getPreeditText() ?[]const u8 {
+    if (g_preedit_len == 0) return null;
+    return g_preedit_buf[0..g_preedit_len];
+}
+
+/// IME cursor rect in screen coordinates (for candidate window positioning)
+var g_ime_cursor_rect: CGRect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+
+pub fn setIMECursorRect(rect: CGRect) void {
+    g_ime_cursor_rect = rect;
+}
+
 const NSRange = extern struct {
     location: usize,
     length: usize,
@@ -117,9 +141,9 @@ pub fn getViewClass() objc.Class {
 // ObjC method implementations
 // ---------------------------------------------------------------------------
 
-/// Called by AppKit during layout — sync layer bounds with view bounds.
-/// In a layer-hosting view, layer bounds don't auto-resize with the view.
-/// This is how ghostty handles it (via Swift layout() override).
+/// Called by AppKit during layout — sync layer geometry with view bounds.
+/// With layer-hosting view, [view layer] IS the CAMetalLayer, so we update
+/// its bounds and drawableSize directly.
 fn viewLayout(self_view: objc.id, _: objc.SEL) callconv(.c) void {
     // Call [super layout]
     const super_class = objc.getClass("NSView");
@@ -127,7 +151,7 @@ fn viewLayout(self_view: objc.id, _: objc.SEL) callconv(.c) void {
     const superLayoutFn: *const fn (*const objc.ObjcSuper, objc.SEL) callconv(.c) void = @ptrCast(objc.msgSendSuper_raw);
     superLayoutFn(&sup, objc.sel("layout"));
 
-    // Sync layer.bounds = view.bounds
+    // [view layer] is our CAMetalLayer (layer-hosting view)
     const layer = objc.msgSend(self_view, objc.sel("layer"));
     if (@intFromPtr(layer) == 0) return;
 
@@ -136,6 +160,18 @@ fn viewLayout(self_view: objc.id, _: objc.SEL) callconv(.c) void {
 
     const SetBounds: *const fn (objc.id, objc.SEL, objc.NSRect) callconv(.c) void = @ptrCast(objc.msgSend_raw);
     SetBounds(layer, objc.sel("setBounds:"), bounds);
+
+    // Update Metal drawable size to match pixel dimensions
+    const scale = objc.msgSendFloat(layer, objc.sel("contentsScale"));
+    const pw = bounds.size.width * scale;
+    const ph = bounds.size.height * scale;
+    if (pw > 0 and ph > 0) {
+        const SetDrawableSize: *const fn (objc.id, objc.SEL, objc.NSSize) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        SetDrawableSize(layer, objc.sel("setDrawableSize:"), .{
+            .width = pw,
+            .height = ph,
+        });
+    }
 }
 
 fn acceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) objc.BOOL {
@@ -195,22 +231,36 @@ fn keyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     // These have no corresponding doCommandBySelector: mapping
     if (handleFunctionKey(cb, keycode)) return;
 
-    // All other keys → delegate to IME via interpretKeyEvents: (ghostty approach).
-    // Do NOT use inputContext.handleEvent: — it swallows key repeat events.
     const array_class = objc.getClass("NSArray");
     const array = objc.msgSend1(array_class, objc.sel("arrayWithObject:"), event);
     objc.msgSendVoid1(self_view, objc.sel("interpretKeyEvents:"), array);
+
+    // Replay mechanism for IMK mach port timing bug:
+    // If the first keystroke after input source switch was incorrectly committed
+    // (insertText instead of setMarkedText), we suppressed it and retry here.
+    // The first attempt triggers the mach port setup; the retry should compose.
+    if (g_needs_replay) {
+        g_needs_replay = false;
+        // The first interpretKeyEvents triggered the mach port setup;
+        // this retry enters composition mode correctly.
+        const array2 = objc.msgSend1(array_class, objc.sel("arrayWithObject:"), event);
+        objc.msgSendVoid1(self_view, objc.sel("interpretKeyEvents:"), array2);
+    }
 }
 
 /// Called when macOS input source changes (e.g., English → Korean via Cmd+Space)
 fn inputSourceChanged(self_view: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
-    // Reset IME state so next keyDown uses the new input source
     const input_ctx = objc.msgSend(self_view, objc.sel("inputContext"));
     if (@intFromPtr(input_ctx) != 0) {
-        objc.msgSendVoid(input_ctx, objc.sel("discardMarkedText"));
+        // Only discard if we actually have marked text.
+        if (g_marked_len > 0) {
+            objc.msgSendVoid(input_ctx, objc.sel("discardMarkedText"));
+        }
         objc.msgSendVoid(input_ctx, objc.sel("invalidateCharacterCoordinates"));
     }
     g_marked_len = 0;
+    g_preedit_len = 0;
+    g_source_just_changed = true;
 }
 
 /// Register for input source change notifications (call after view is added to window)
@@ -246,10 +296,21 @@ fn flagsChanged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) vo
 // NSTextInputClient implementation — IME support
 // ---------------------------------------------------------------------------
 
+/// Returns true if the UTF-8 bytes encode a single Hangul Compatibility Jamo
+/// (ㄱ-ㅎ U+3131..U+314E, ㅏ-ㅣ U+314F..U+3163) — characters that should be
+/// composing but the IME incorrectly committed.
+fn isHangulJamo(bytes: []const u8) bool {
+    if (bytes.len != 3) return false;
+    // Hangul Compatibility Jamo: U+3131..U+3163, UTF-8: E3 84 B1..E3 85 A3
+    if (bytes[0] != 0xE3) return false;
+    if (bytes[1] == 0x84 and bytes[2] >= 0xB1) return true; // U+3131..U+313F
+    if (bytes[1] == 0x85 and bytes[2] <= 0xA3) return true; // U+3140..U+3163
+    return false;
+}
+
 /// NSResponder's insertText: (1-arg version)
 fn imeInsertTextSimple(_: objc.id, _: objc.SEL, text: objc.id) callconv(.c) void {
     const cb = g_input_callback orelse return;
-    g_marked_len = 0; // Marked text is replaced by final text
 
     const str = getStringFromInput(text);
     if (@intFromPtr(str) == 0) return;
@@ -259,13 +320,29 @@ fn imeInsertTextSimple(_: objc.id, _: objc.SEL, text: objc.id) callconv(.c) void
 
     const cstr: [*:0]const u8 = @ptrCast(utf8);
     const len = std.mem.len(cstr);
-    if (len > 0) cb(cstr[0..len]);
+    if (len == 0) return;
+
+    // Workaround: if this is the first key after input source switch and the
+    // text is a Hangul jamo, suppress it and request a replay. The first
+    // interpretKeyEvents call triggered the mach port setup; the replay will
+    // enter composition mode correctly.
+    if (g_source_just_changed and isHangulJamo(cstr[0..len])) {
+        g_source_just_changed = false;
+        g_needs_replay = true;
+        g_marked_len = 0;
+        g_preedit_len = 0;
+        return;
+    }
+    g_source_just_changed = false;
+    g_marked_len = 0;
+    g_preedit_len = 0;
+
+    cb(cstr[0..len]);
 }
 
 /// Called when text input is finalized (e.g., after composing Korean characters)
 fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
     const cb = g_input_callback orelse return;
-    g_marked_len = 0; // Marked text is replaced by final text
 
     // Get the finalized text string
     const str = getStringFromInput(text);
@@ -276,23 +353,52 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
 
     const cstr: [*:0]const u8 = @ptrCast(utf8);
     const len = std.mem.len(cstr);
-    if (len > 0) cb(cstr[0..len]);
+    if (len == 0) return;
+
+    // Workaround for IMK mach port timing bug (same as insertTextSimple)
+    if (g_source_just_changed and isHangulJamo(cstr[0..len])) {
+        g_source_just_changed = false;
+        g_needs_replay = true;
+        g_marked_len = 0;
+        g_preedit_len = 0;
+        return;
+    }
+    g_source_just_changed = false;
+    g_marked_len = 0;
+    g_preedit_len = 0;
+
+    cb(cstr[0..len]);
 }
 
-/// Called during text composition (e.g., typing Korean jamo that form a syllable)
-/// Following ghostty: do NOT send marked text to PTY. Only track state.
-/// TODO: implement preedit rendering to show composing text on screen.
+/// Called during text composition (e.g., typing Korean jamo that form a syllable).
+/// Stores composing text for preedit rendering; does NOT send to PTY.
 fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange, _: NSRange) callconv(.c) void {
+    // If setMarkedText is called, composition started successfully — no replay needed.
+    g_source_just_changed = false;
     const str = getStringFromInput(text);
     if (@intFromPtr(str) == 0) {
         g_marked_len = 0;
+        g_preedit_len = 0;
         return;
     }
     g_marked_len = objc.msgSendUint(str, objc.sel("length"));
+
+    // Store UTF-8 for preedit rendering
+    const utf8 = objc.msgSend(str, objc.sel("UTF8String"));
+    if (@intFromPtr(utf8) != 0) {
+        const cstr: [*:0]const u8 = @ptrCast(utf8);
+        const len = std.mem.len(cstr);
+        const copy_len = @min(len, g_preedit_buf.len);
+        @memcpy(g_preedit_buf[0..copy_len], cstr[0..copy_len]);
+        g_preedit_len = copy_len;
+    } else {
+        g_preedit_len = 0;
+    }
 }
 
 fn imeUnmarkText(_: objc.id, _: objc.SEL) callconv(.c) void {
     g_marked_len = 0;
+    g_preedit_len = 0;
 }
 
 fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) objc.BOOL {
@@ -307,7 +413,9 @@ fn imeMarkedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
 }
 
 fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
-    return .{ .location = NSNotFound, .length = 0 };
+    // Return {0, 0} (empty selection at start) instead of NSNotFound.
+    // Some IMEs (including Korean) expect a valid range here.
+    return .{ .location = 0, .length = 0 };
 }
 
 fn imeValidAttributes(_: objc.id, _: objc.SEL) callconv(.c) objc.id {
@@ -323,7 +431,7 @@ fn imeCharIndex(_: objc.id, _: objc.SEL, _: objc.CGFloat, _: objc.CGFloat) callc
     return NSNotFound;
 }
 
-const CGRect = extern struct {
+pub const CGRect = extern struct {
     x: objc.CGFloat,
     y: objc.CGFloat,
     w: objc.CGFloat,
@@ -331,7 +439,7 @@ const CGRect = extern struct {
 };
 
 fn imeFirstRect(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
-    return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    return g_ime_cursor_rect;
 }
 
 /// Called by interpretKeyEvents: for action commands (e.g., arrow keys in some contexts)
