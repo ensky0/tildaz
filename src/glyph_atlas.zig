@@ -43,8 +43,12 @@ pub const GlyphAtlas = struct {
     srv: *d3d.ID3D11ShaderResourceView,
     d3d_ctx: *d3d.ID3D11DeviceContext,
 
-    // Temporary buffer for glyph rasterization (reused)
-    temp_buf: []u8,
+    // Temporary buffers for glyph rasterization (reused, heap-allocated)
+    temp_buf: []u8, // RGBA output: 256*256*4 bytes
+    ct_buf: []u8,   // ClearType 3x1 input: 256*256*3 bytes
+
+    // Set to true when getOrInsert finds the atlas full; caller must flush, call reset(), then retry.
+    is_full: bool = false,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -95,8 +99,10 @@ pub const GlyphAtlas = struct {
             return error.AtlasSrvFailed;
         errdefer _ = srv.?.Release();
 
-        // Allocate temp buffer for max glyph size (256x256 * 4 bytes RGBA)
-        const temp_buf = try alloc.alloc(u8, 256 * 256 * 4);
+        // Allocate temp buffers for max glyph size (256x256)
+        const temp_buf = try alloc.alloc(u8, 256 * 256 * 4); // RGBA
+        errdefer alloc.free(temp_buf);
+        const ct_buf = try alloc.alloc(u8, 256 * 256 * 3); // ClearType 3x1 RGB
 
         return .{
             .alloc = alloc,
@@ -110,10 +116,12 @@ pub const GlyphAtlas = struct {
             .srv = srv.?,
             .d3d_ctx = ctx,
             .temp_buf = temp_buf,
+            .ct_buf = ct_buf,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
+        self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
         self.cache.deinit();
         _ = self.srv.Release();
@@ -121,24 +129,26 @@ pub const GlyphAtlas = struct {
         _ = self.rendering_params.Release();
     }
 
-    /// Look up or rasterize a glyph. Returns null if rasterization fails.
+    /// Look up or rasterize a glyph.
+    /// Returns null in two cases:
+    ///   - is_full=true:  atlas is full; caller must drawTextInstances, call reset(), then retry.
+    ///   - is_full=false: DirectWrite rasterization failed; skip this glyph.
     pub fn getOrInsert(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
         const key = GlyphKey{ .face = @intFromPtr(face), .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
-        // Rasterize
         const entry = self.rasterize(face, glyph_index) orelse return null;
-
         self.cache.put(key, entry) catch return null;
         return entry;
     }
 
-    /// Reset the atlas (clear cache and packing state).
+    /// Reset the atlas (clear cache and packing state). Call only after flushing all pending draws.
     pub fn reset(self: *GlyphAtlas) void {
         self.cache.clearRetainingCapacity();
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
+        self.is_full = false;
     }
 
     fn rasterize(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
@@ -203,11 +213,10 @@ pub const GlyphAtlas = struct {
 
         // Get ClearType alpha texture (3 bytes per pixel: R, G, B)
         const ct_size: u32 = w * h * 3;
-        var ct_buf: [256 * 256 * 3]u8 = undefined;
         if (analysis.?.CreateAlphaTexture(
             dw.DWRITE_TEXTURE_CLEARTYPE_3x1,
             &bounds,
-            &ct_buf,
+            self.ct_buf.ptr,
             ct_size,
         ) < 0) return null;
 
@@ -217,18 +226,17 @@ pub const GlyphAtlas = struct {
             for (0..w) |col| {
                 const src_off = row * w * 3 + col * 3;
                 const dst_off = row * rgba_pitch + col * 4;
-                self.temp_buf[dst_off + 0] = ct_buf[src_off + 0]; // R
-                self.temp_buf[dst_off + 1] = ct_buf[src_off + 1]; // G
-                self.temp_buf[dst_off + 2] = ct_buf[src_off + 2]; // B
+                self.temp_buf[dst_off + 0] = self.ct_buf[src_off + 0]; // R
+                self.temp_buf[dst_off + 1] = self.ct_buf[src_off + 1]; // G
+                self.temp_buf[dst_off + 2] = self.ct_buf[src_off + 2]; // B
                 self.temp_buf[dst_off + 3] = 0xFF; // A (opaque)
             }
         }
 
-        // Pack into atlas
-        const pos = self.packGlyph(w, h) orelse blk: {
-            // Atlas full — reset and retry
-            self.reset();
-            break :blk self.packGlyph(w, h) orelse return null;
+        // Pack into atlas; if full, signal caller to flush+reset+retry before we overwrite anything
+        const pos = self.packGlyph(w, h) orelse {
+            self.is_full = true;
+            return null;
         };
 
         // Upload to GPU texture via UpdateSubresource
