@@ -13,7 +13,13 @@ pub const GlyphResult = struct {
     owned: bool, // true = caller must Release face
 };
 
+const CachedGlyph = struct {
+    face: *dw.IDWriteFontFace,
+    index: u16,
+};
+
 pub const DWriteFontContext = struct {
+    alloc: std.mem.Allocator,
     factory: *dw.IDWriteFactory,
     factory2: ?*dw.IDWriteFactory2 = null,
     font_collection: *dw.IDWriteFontCollection,
@@ -27,8 +33,11 @@ pub const DWriteFontContext = struct {
     ascent_px: f32 = 0,
     cell_width: u32,
     cell_height: u32,
+    // Caches (codepoint → face/index). Keeps fallback faces alive so atlas
+    // cache keys — which use the face pointer — remain stable.
+    glyph_map: std.AutoHashMap(u21, CachedGlyph),
 
-    pub fn init(font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !DWriteFontContext {
+    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !DWriteFontContext {
         // 1. Create DWrite factory
         var factory: ?*dw.IDWriteFactory = null;
         if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0)
@@ -62,11 +71,13 @@ pub const DWriteFontContext = struct {
         if (dw_font.?.CreateFontFace(&font_face) < 0) return error.FontFaceFailed;
 
         var self = DWriteFontContext{
+            .alloc = alloc,
             .factory = factory.?,
             .font_collection = collection.?,
             .primary_font_face = font_face.?,
             .cell_width = cell_w,
             .cell_height = cell_h,
+            .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
         };
 
         // Store family name for MapCharacters
@@ -116,6 +127,13 @@ pub const DWriteFontContext = struct {
     }
 
     pub fn deinit(self: *DWriteFontContext) void {
+        // Release all fallback faces retained in the glyph cache. Primary face
+        // is never stored in the cache, so no double-release risk.
+        var it = self.glyph_map.valueIterator();
+        while (it.next()) |v| {
+            _ = v.face.vtable.Release(v.face);
+        }
+        self.glyph_map.deinit();
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
@@ -126,13 +144,22 @@ pub const DWriteFontContext = struct {
     }
 
     /// Resolve a codepoint to (font_face, glyph_index). Uses system font fallback.
-    /// If `owned` is true in the result, caller must Release the face when done.
+    /// Faces are cached for process lifetime so their pointer addresses remain
+    /// stable — the glyph atlas keys on face pointer, so pointer reuse after
+    /// Release would cause false cache hits across different fonts.
+    /// `owned` is always false; the context retains ownership.
     pub fn resolveGlyph(self: *DWriteFontContext, codepoint: u21) ?GlyphResult {
+        if (self.glyph_map.get(codepoint)) |c| {
+            return .{ .face = c.face, .index = c.index, .owned = false };
+        }
+
         const cp32: dw.UINT32 = codepoint;
         var glyph_index: dw.UINT16 = 0;
         _ = self.primary_font_face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
 
         if (glyph_index != 0) {
+            // Primary face is stable (never freed), so skip cache to avoid
+            // double-Release in deinit.
             return .{ .face = self.primary_font_face, .index = glyph_index, .owned = false };
         }
 
@@ -176,7 +203,13 @@ pub const DWriteFontContext = struct {
                         if (mf_face) |face| {
                             _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
                             if (glyph_index != 0) {
-                                return .{ .face = face, .index = glyph_index, .owned = true };
+                                // Retain the face in the cache; ownership stays with the context.
+                                // This keeps the face pointer stable for the atlas cache key.
+                                self.glyph_map.put(codepoint, .{ .face = face, .index = glyph_index }) catch {
+                                    // On put failure, release to avoid leak and return owned.
+                                    return .{ .face = face, .index = glyph_index, .owned = true };
+                                };
+                                return .{ .face = face, .index = glyph_index, .owned = false };
                             }
                             _ = face.vtable.Release(face);
                         }
