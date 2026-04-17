@@ -94,7 +94,7 @@ zig build -Doptimize=Debug
 | font | line_height | float | 0.1~10.0 | 0.95 | 줄 높이 배율 (1.0 = 기본 행간) |
 | font | cell_width | float | 0.1~10.0 | 1.2 | 셀 너비 배율 (1.0 = 기본 자간) |
 | - | theme | string | [테마 목록](#테마) 참조 | "Tilda" | 컬러 테마 |
-| - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe 등 가능) |
+| - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe -d Debian --cd ~ 등 가능) |
 | - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
 | - | hidden_start | bool | true, false | false | 숨김 상태로 시작 |
 | - | max_scroll_lines | int | 100~100,000 | 100,000 | 스크롤백 버퍼 (라인 수) |
