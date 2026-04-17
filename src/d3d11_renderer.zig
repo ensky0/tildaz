@@ -170,7 +170,7 @@ pub const D3d11Renderer = struct {
         }
 
         // 2. Init font context
-        var font_ctx = try DWriteFontContext.init(font_family, font_height, cell_w, cell_h);
+        var font_ctx = try DWriteFontContext.init(alloc, font_family, font_height, cell_w, cell_h);
         errdefer font_ctx.deinit();
 
         // 3. Init glyph atlas (with DPI-aware pixelsPerDip)
@@ -506,8 +506,11 @@ pub const D3d11Renderer = struct {
                     for (0..3) |_| {
                         if (text_count >= 512) break;
                         const dot_result = self.font.resolveGlyph('.') orelse break;
+                        const dot_entry = self.atlas.getOrInsert(dot_result.face, dot_result.index) orelse {
+                            if (dot_result.owned) _ = dot_result.face.vtable.Release(dot_result.face);
+                            break;
+                        };
                         if (dot_result.owned) _ = dot_result.face.vtable.Release(dot_result.face);
-                        const dot_entry = self.atlas.getOrInsert(dot_result.face, dot_result.index) orelse break;
                         if (dot_entry.w > 0 and dot_entry.h > 0) {
                             const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(dot_entry.bearing_x));
                             const gy = baseline_y2 + @as(f32, @floatFromInt(dot_entry.bearing_y));
@@ -541,11 +544,12 @@ pub const D3d11Renderer = struct {
                     x_off += cw;
                     continue;
                 };
-                if (result.owned) _ = result.face.vtable.Release(result.face);
                 const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
                     x_off += cw;
                     continue;
                 };
+                if (result.owned) _ = result.face.vtable.Release(result.face);
                 if (entry.w > 0 and entry.h > 0) {
                     const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(entry.bearing_x));
                     const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
@@ -582,8 +586,11 @@ pub const D3d11Renderer = struct {
                 const close_c = TAB_TEXT_R * 0.6 + tab_bg_c * 0.4;
 
                 const result = self.font.resolveGlyph('x') orelse continue;
+                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    continue;
+                };
                 if (result.owned) _ = result.face.vtable.Release(result.face);
-                const entry = self.atlas.getOrInsert(result.face, result.index) orelse continue;
                 if (entry.w > 0 and entry.h > 0) {
                     const gx = close_x + (cbs - cw) / 2.0 + @as(f32, @floatFromInt(entry.bearing_x));
                     const close_baseline = close_y + (cbs + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
@@ -745,7 +752,24 @@ pub const D3d11Renderer = struct {
 
                 // Resolve glyph
                 const result = self.font.resolveGlyph(cp) orelse continue;
-                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                var entry_opt = self.atlas.getOrInsert(result.face, result.index);
+
+                // Atlas full: flush pending draws BEFORE reset so queued UV coords stay valid,
+                // then reset and retry once.
+                if (entry_opt == null and self.atlas.is_full) {
+                    if (text_count > 0) {
+                        self.drawTextInstances(text_buf[0..text_count]);
+                        text_count = 0;
+                    }
+                    if (block_count > 0) {
+                        self.drawBgInstances(bg_buf[0..block_count]);
+                        block_count = 0;
+                    }
+                    self.atlas.reset();
+                    entry_opt = self.atlas.getOrInsert(result.face, result.index);
+                }
+
+                const entry = entry_opt orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
                 };
