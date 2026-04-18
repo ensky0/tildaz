@@ -6,3 +6,8 @@ zig-cache/
 *.o
 *.pdb
 .claude/
+build.zig.tmp.*
+
+# vendored ConPTY runtime (MS MIT) — shipped alongside tildaz.exe
+!vendor/conpty/OpenConsole.exe
+!vendor/conpty/conpty.dll

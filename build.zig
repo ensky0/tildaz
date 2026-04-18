@@ -35,6 +35,13 @@ pub fn build(b: *std.Build) void {
     exe.subsystem = .Windows;
     b.installArtifact(exe);
 
+    // Bundled ConPTY runtime (Microsoft.Windows.Console.ConPTY).
+    // tildaz.exe 와 같은 폴더로 복사되어 conpty.dll 의 ConptyCreatePseudoConsole
+    // 이 sibling OpenConsole.exe 를 찾아 스폰합니다. 누락 시 src/conpty.zig 가
+    // kernel32 CreatePseudoConsole 로 fallback 합니다.
+    b.getInstallStep().dependOn(&b.addInstallBinFile(b.path("vendor/conpty/conpty.dll"), "conpty.dll").step);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(b.path("vendor/conpty/OpenConsole.exe"), "OpenConsole.exe").step);
+
     // Run step
     const run_step = b.step("run", "Run TildaZ");
     const run_cmd = b.addRunArtifact(exe);
