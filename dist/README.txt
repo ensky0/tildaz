@@ -93,12 +93,18 @@ conpty.dll 이나 OpenConsole.exe 가 누락되면 tildaz 는 kernel32 의
 라이선스
 ================================================================
 
-    tildaz       저장소 LICENSE 참조
-    conpty.dll   microsoft/terminal, MIT
-    OpenConsole  microsoft/terminal, MIT
+    tildaz.exe       저장소 LICENSE 참조 (GPL-3.0 + Commons Clause)
+                     (libghostty-vt MIT 를 static link
+                      — ghostty-org/ghostty)
+    conpty.dll       microsoft/terminal, MIT
+    OpenConsole.exe  microsoft/terminal, MIT
 
-번들 바이너리는 Microsoft.Windows.Console.ConPTY nuget 1.24.260303001
-에서 추출한 것이며, MIT 라이선스로 재배포됩니다.
+OpenConsole / conpty 번들 바이너리는 Microsoft.Windows.Console.ConPTY
+nuget 1.24.260303001 에서 추출한 것이며, MIT 라이선스로 재배포됩니다.
+
+MIT 원문 전체:
+    https://github.com/ghostty-org/ghostty/blob/main/LICENSE
+    저장소의 vendor/conpty/LICENSE.txt
 
 ================================================================
 저장소 · 피드백
