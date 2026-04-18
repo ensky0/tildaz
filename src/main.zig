@@ -167,23 +167,29 @@ const Tab = struct {
             .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
         } else ghostty.Terminal.Colors.default;
 
+        const terminal = try ghostty.Terminal.init(alloc, .{
+            .cols = cols,
+            .rows = rows,
+            .max_scrollback = owner.max_scroll_lines * blk: {
+                const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
+                    break :blk (@as(usize, cols) + 1) * 8;
+                break :blk ghostty.Page.layout(cap).total_size / cap.rows;
+            },
+            .colors = term_colors,
+        });
+
+        const pty = try ConPty.init(alloc, cols, rows, shell, envVarsForTheme(owner.theme));
+
         tab.* = .{
-            .terminal = try ghostty.Terminal.init(alloc, .{
-                .cols = cols,
-                .rows = rows,
-                .max_scrollback = owner.max_scroll_lines * blk: {
-                    const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
-                        break :blk (@as(usize, cols) + 1) * 8;
-                    break :blk ghostty.Page.layout(cap).total_size / cap.rows;
-                },
-                .colors = term_colors,
-            }),
+            .terminal = terminal,
             .stream = undefined,
-            .pty = try ConPty.init(alloc, cols, rows, shell, envVarsForTheme(owner.theme)),
+            .pty = pty,
             .owner = owner,
         };
         tab.stream = tab.terminal.vtStream();
+
         tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
+
         return tab;
     }
 

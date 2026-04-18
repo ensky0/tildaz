@@ -95,11 +95,13 @@ extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const 
 const ConptyCreateFn = *const fn (COORD, HANDLE, HANDLE, DWORD, *HPCON) callconv(.c) HRESULT;
 const ConptyResizeFn = *const fn (HPCON, COORD) callconv(.c) HRESULT;
 const ConptyCloseFn = *const fn (HPCON) callconv(.c) void;
+const ConptyShowHideFn = *const fn (HPCON, BOOL) callconv(.c) HRESULT;
 
 var conpty_dll_loaded: bool = false;
 var conpty_create_fn: ?ConptyCreateFn = null;
 var conpty_resize_fn: ?ConptyResizeFn = null;
 var conpty_close_fn: ?ConptyCloseFn = null;
+var conpty_show_hide_fn: ?ConptyShowHideFn = null;
 
 fn ensureConptyDll() void {
     if (conpty_dll_loaded) return;
@@ -112,11 +114,16 @@ fn ensureConptyDll() void {
     conpty_create_fn = @ptrCast(GetProcAddress(mod, "ConptyCreatePseudoConsole"));
     conpty_resize_fn = @ptrCast(GetProcAddress(mod, "ConptyResizePseudoConsole"));
     conpty_close_fn = @ptrCast(GetProcAddress(mod, "ConptyClosePseudoConsole"));
+    // ShowHide 는 optional — 실패해도 fatal 아님. Windows Terminal 이 호출하는
+    // 순서를 따라 CreateProcessW 전에 호출해 OpenConsole 의 pseudo window 를
+    // 활성화한다.
+    conpty_show_hide_fn = @ptrCast(GetProcAddress(mod, "ConptyShowHidePseudoConsole"));
     if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null) {
         perf.log("[conpty] conpty.dll loaded but symbols missing — falling back to kernel32\n", .{});
         conpty_create_fn = null;
         conpty_resize_fn = null;
         conpty_close_fn = null;
+        conpty_show_hide_fn = null;
         return;
     }
     perf.log("[conpty] conpty.dll loaded, using bundled OpenConsole\n", .{});
@@ -321,21 +328,19 @@ pub const ConPty = struct {
         const create_fn = conpty_create_fn;
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
         var hpc: HPCON = undefined;
-        // 0x8 = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES (Win11). 미지원 시 0.
+        // 0x8 = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES (Win11). 미지원 시 0 으로 fallback.
         var hr: HRESULT = if (create_fn) |f|
             f(size, pipe_in_read, pipe_out_write, 0x8, &hpc)
         else
             CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0x8, &hpc);
-        var flags_used: u32 = 0x8;
         if (hr < 0) {
-            flags_used = 0;
             hr = if (create_fn) |f|
                 f(size, pipe_in_read, pipe_out_write, 0, &hpc)
             else
                 CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0, &hpc);
+            const backend: []const u8 = if (create_fn != null) "conpty.dll" else "kernel32";
+            perf.log("[conpty] CreatePseudoConsole flags=0x8 failed, retried with 0x0 (backend={s}, hr=0x{x})\n", .{ backend, @as(u32, @bitCast(hr)) });
         }
-        const backend: []const u8 = if (create_fn != null) "conpty.dll" else "kernel32";
-        perf.log("[conpty] CreatePseudoConsole backend={s} flags=0x{x} hr=0x{x} cols={d} rows={d}\n", .{ backend, flags_used, @as(u32, @bitCast(hr)), cols, rows });
 
         // CreatePseudoConsole 는 handle 을 내부 duplicate — 우리 쪽 사본은 닫아야 한다.
         _ = CloseHandle(pipe_in_read);
@@ -344,6 +349,17 @@ pub const ConPty = struct {
         if (hr < 0) return error.CreatePseudoConsoleFailed;
         errdefer {
             if (conpty_close_fn) |f| f(hpc) else ClosePseudoConsole(hpc);
+        }
+
+        // ── ShowHide: pseudo window 를 "visible" 로 마킹 (Windows Terminal 순서 복제)
+        // microsoft/terminal `ConptyConnection::Start()` 가 CreateProcessW 전에
+        //   ConptyShowHidePseudoConsole(hpc, TRUE)
+        // 을 호출한다. `PtySignalInputThread::_DoShowHide` 가 이 값을 연결 전에
+        // 보존했다가 ConnectConsole 직후 `SetPseudoWindowVisibility(true)` 로
+        // 적용한다. 호출하지 않으면 pseudo window 가 기본 hidden 상태로 남아
+        // 일부 초기 처리가 지연될 수 있다.
+        if (conpty_show_hide_fn) |f| {
+            _ = f(hpc, 1);
         }
 
         // ── STARTUPINFOEX + attribute list
@@ -424,6 +440,32 @@ pub const ConPty = struct {
         }
 
         restore_env(extra_env, &saved_vals, &saved_lens);
+
+        // ── DA1 pre-response (번들 OpenConsole 3초 지연 회피)
+        //
+        // microsoft/terminal `src/host/VtIo.cpp` 의 `StartIfNeeded()` 는 기동 시
+        //   writer.WriteUTF8("\x1b[c" ...);  // DA1 query
+        //   _deviceAttributes = _pVtInputThread->WaitUntilDA1(3000);
+        // 로 최대 3초 동안 터미널의 DA1 응답을 기다린다. 우리가 응답을 주지
+        // 않으면 정확히 3초 후 타임아웃으로 풀리기 때문에 번들 OpenConsole 경로
+        // 에서 첫 프롬프트가 ~3.9초 늦게 나타난다. Windows Terminal 의
+        // ConptyConnection 은 자체 VT parser 가 `\x1b[c` 를 파싱해 응답을
+        // input pipe 로 돌려주기 때문에 지연이 없다.
+        //
+        // 시스템 conhost (kernel32) 경로는 이 핸드셰이크가 없는(또는 더 짧은
+        // fallback) 구 버전이라 regression 이 Phase C (번들 OpenConsole) 에만
+        // 보였다.
+        //
+        // 해결: 프로세스 생성 직후 DA1 응답을 input pipe 에 **미리** 써 둔다.
+        // OpenConsole 의 `InputStateMachineEngine::WaitUntilDA1` 은 atomic
+        // `_deviceAttributes` flag 만 확인하므로 query 전에 응답이 도착해도
+        // 파서가 바이트를 소비하면서 flag 를 set → WaitUntilDA1 이 즉시 반환.
+        // race-free. 최소 유효 응답: `\x1b[?61c` (VT500 conformance level).
+        if (create_fn != null) {
+            const da1 = "\x1b[?61c";
+            var da1_written: DWORD = 0;
+            _ = WriteFile(pipe_in_write, da1.ptr, @intCast(da1.len), &da1_written, null);
+        }
 
         return .{
             .hpc = hpc,
