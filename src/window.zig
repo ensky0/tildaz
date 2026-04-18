@@ -52,6 +52,10 @@ const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_MBUTTONDOWN: UINT = 0x0207;
 const WM_MOUSEWHEEL: UINT = 0x020A;
+const WM_DISPLAYCHANGE: UINT = 0x007E;
+const WM_DPICHANGED: UINT = 0x02E0;
+const WM_SETTINGCHANGE: UINT = 0x001A;
+const SPI_SETWORKAREA: WPARAM = 0x002F;
 const MK_LBUTTON: WPARAM = 0x0001;
 
 // Other constants
@@ -236,6 +240,15 @@ pub const Window = struct {
     shell_exited: bool = false,
     dc: HDC = null, // DC for GDI font measurement
 
+    // Last position parameters — re-applied on WM_DISPLAYCHANGE / WM_DPICHANGED /
+    // WM_SETTINGCHANGE(SPI_SETWORKAREA) and on show(), so the window tracks the
+    // current monitor's work area when resolution, DPI, or taskbar changes.
+    dock: DockPosition = .top,
+    width_pct: u8 = 50,
+    height_pct: u8 = 100,
+    offset_pct: u8 = 100,
+    position_set: bool = false,
+
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
     const VK_F1: UINT = 0x70;
@@ -344,6 +357,11 @@ pub const Window = struct {
 
     pub fn show(self: *Window) void {
         if (self.hwnd) |hwnd| {
+            // Re-apply position before showing so the drop-down follows the
+            // current cursor monitor and fits the current work area
+            // (handles the case where resolution or monitor configuration
+            // changed while the window was hidden).
+            self.repositionFromSaved();
             _ = ShowWindow(hwnd, SW_SHOW);
             _ = SetForegroundWindow(hwnd);
             self.visible = true;
@@ -362,6 +380,15 @@ pub const Window = struct {
     }
 
     pub fn setPosition(self: *Window, dock: DockPosition, width_pct: u8, height_pct: u8, offset_pct: u8) void {
+        // Remember parameters so WM_DISPLAYCHANGE / WM_DPICHANGED /
+        // WM_SETTINGCHANGE(SPI_SETWORKAREA) and show() can re-apply them on
+        // resolution / monitor / DPI / taskbar changes.
+        self.dock = dock;
+        self.width_pct = width_pct;
+        self.height_pct = height_pct;
+        self.offset_pct = offset_pct;
+        self.position_set = true;
+
         var cursor_pos: POINT = .{ .x = 0, .y = 0 };
         _ = GetCursorPos(&cursor_pos);
 
@@ -391,6 +418,15 @@ pub const Window = struct {
         };
 
         _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, 0);
+    }
+
+    /// Re-apply the last `setPosition` parameters. Used by display/DPI/work-area
+    /// change handlers and by `show()` so the window tracks the current monitor
+    /// and re-fits after resolution / taskbar / monitor-configuration changes.
+    /// No-op if `setPosition` was never called.
+    pub fn repositionFromSaved(self: *Window) void {
+        if (!self.position_set) return;
+        self.setPosition(self.dock, self.width_pct, self.height_pct, self.offset_pct);
     }
 
     pub fn messageLoop(_: *Window) void {
@@ -531,6 +567,31 @@ pub const Window = struct {
                     resize_fn(grid.cols, grid.rows, self.userdata);
                 }
                 return 0;
+            },
+            WM_DISPLAYCHANGE => {
+                // Resolution / bit-depth / monitor configuration changed —
+                // re-fit to the current monitor's work area using the last
+                // saved percentages. SetWindowPos will cascade into WM_SIZE,
+                // which re-flows the PTY / terminal grid to the new size.
+                self.repositionFromSaved();
+                return 0;
+            },
+            WM_DPICHANGED => {
+                // System or per-monitor DPI changed (e.g. moved between an
+                // internal 150% panel and an external 100% monitor). Ignore
+                // the suggested rect in lParam and re-compute from our own
+                // percentages so the drop-down keeps its shape on the new
+                // monitor. Returning 0 prevents the default proc from
+                // auto-resizing to the suggested rect.
+                self.repositionFromSaved();
+                return 0;
+            },
+            WM_SETTINGCHANGE => {
+                // Taskbar / work-area changed (e.g. auto-hide toggled).
+                if (wParam == SPI_SETWORKAREA) {
+                    self.repositionFromSaved();
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_CLOSE => {
                 // Shell already exited — close without prompt
