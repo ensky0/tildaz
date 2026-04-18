@@ -257,8 +257,14 @@ WSL Debian.
 
 ## 라이선스
 
-GPL-3.0 + Commons Clause
+tildaz 자체는 **GPL-3.0 + Commons Clause** — 전체 조항은 [`LICENSE`](./LICENSE) 참고.
 
-번들 바이너리 (`vendor/conpty/OpenConsole.exe`, `vendor/conpty/conpty.dll`) 는
-[microsoft/terminal](https://github.com/microsoft/terminal) 의 빌드 산출물로
-MIT 라이선스. `vendor/conpty/LICENSE.txt` 참고.
+### 동봉 / 링크된 서드파티
+
+| 구성요소 | 라이선스 | 출처 | 비고 |
+|---------|----------|------|------|
+| `libghostty-vt` | MIT | [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) | `build.zig.zon` 의 `ghostty` dep 로 소스 가져와 `tildaz.exe` 에 static link |
+| `OpenConsole.exe` | MIT | [microsoft/terminal](https://github.com/microsoft/terminal) (Microsoft.Windows.Console.ConPTY nuget 1.24.260303001) | 릴리즈 zip 에 동봉 — `vendor/conpty/LICENSE.txt` |
+| `conpty.dll` | MIT | 동일 | 동일 |
+
+MIT 원문 전체는 각 upstream 저장소 / 번들 `LICENSE.txt` 참고.
