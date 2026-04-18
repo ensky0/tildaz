@@ -4,6 +4,14 @@ Windows용 Quake-style 드롭다운 터미널. Zig + libghostty-vt 기반.
 
 Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 Windows에서 제공한다.
 
+> **v0.2.6 — 퍼포먼스 개선 릴리즈**
+>
+> 번들 OpenConsole + DA1 핸드셰이크 수정으로 대량 출력이 같은 조건의
+> Windows Terminal 보다 **1.26배 빠르다** (`time cat` 1.14 MiB CJK, 화면
+> 왼쪽 절반: tildaz 0.074s vs WT 0.093s). WSL 새 탭 프롬프트 도착도
+> ~548ms 로, 순수 `wsl + bash interactive` 하한 (~480ms) 에 근접.
+> 자세한 내용은 [퍼포먼스](#퍼포먼스) 참고.
+
 ## 기능
 
 - **F1** 글로벌 핫키로 터미널 show/hide 토글
@@ -16,7 +24,8 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
   - 마지막 탭을 닫으면 앱 종료
 - **유니코드 전체 지원**: 한글, CJK, 이모지 등 전각/반각 문자 정상 렌더링
 - **폰트 폴백 체인**: 최대 8개 폰트 지정 가능, 글리프를 못 찾으면 다음 폰트로 자동 폴백
-- **ClearType 서브픽셀 렌더링**: DirectWrite + OpenGL 3.3 셰이더 기반 고품질 텍스트 렌더링
+- **ClearType 서브픽셀 렌더링**: DirectWrite + Direct3D 11 셰이더 기반 고품질 텍스트 렌더링
+- **번들 OpenConsole**: `OpenConsole.exe` + `conpty.dll` 동봉으로 시스템 `conhost.exe` 우회. 대량 출력 throughput 2.2x, 번들 파일이 없으면 시스템 conhost 로 자동 fallback
 - **ANSI 색상**: 16색/256색/TrueColor 전경·배경색, bold-is-bright, inverse 지원
 - **18가지 내장 컬러 테마**: Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin 등
 - **텍스트 선택 및 복사**:
@@ -31,6 +40,7 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
 - 반투명(설정 가능) always-on-top 윈도우
 - Ctrl+Shift+V 클립보드 붙여넣기
 - Ctrl+Shift+R 터미널 초기화 (바이너리 cat 등으로 깨졌을 때)
+- Ctrl+Shift+P 퍼포먼스 스냅샷 덤프 (`C:\tildaz_win\perf.log` 에 push / drain / parse / render / present 단계별 ms·bytes·calls 기록)
 - Windows 로그인 시 자동 시작
 
 ## 빌드
@@ -52,6 +62,27 @@ zig build -Doptimize=Debug
 > **참고**: SIMD 가속 옵션(`-Dsimd=true`)은 현재 Windows에서 동작하지 않습니다.
 > Zig 0.15 빌드 시스템이 ghostty의 C++ SIMD 소스에 C++ 표준 라이브러리 경로를
 > 전달하지 않는 문제입니다. Zig upstream 수정이 필요합니다.
+
+### 배포 (릴리즈)
+
+v0.2.6 부터는 3-file 번들을 단일 zip 으로 배포한다.
+
+```
+tildaz-v<ver>-win-x64.zip
+  tildaz-v<ver>-win-x64/
+    tildaz.exe        본체
+    conpty.dll        번들 ConPTY 런타임 (MIT, microsoft/terminal)
+    OpenConsole.exe   번들 PTY 호스트     (MIT, microsoft/terminal)
+    README.txt        (dist/README.txt)
+```
+
+세 파일은 **같은 폴더에** 두어야 번들 경로가 동작한다. `conpty.dll` 또는
+`OpenConsole.exe` 가 누락되면 tildaz 는 시스템 `kernel32` conhost 로 자동
+fallback 하며, 이 경우 기본 동작은 정상이지만 대량 출력 throughput 이 번들
+경로 대비 약 절반 수준이 된다.
+
+번들 zip 생성 자동화 (`zig build package`) 및 CI 릴리즈 파이프라인은 #80
+에서 추적.
 
 ## 설정
 
@@ -125,6 +156,7 @@ zig build -Doptimize=Debug
 | Alt+1~9 | 탭 전환 |
 | Ctrl+Shift+R | 터미널 초기화 (바이너리 cat 등으로 깨졌을 때) |
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
+| Ctrl+Shift+P | 퍼포먼스 스냅샷 덤프 (`C:\tildaz_win\perf.log`) |
 | 마우스 드래그 | 텍스트 선택 + 자동 복사 |
 | 더블클릭 | 단어 선택 + 자동 복사 |
 | 마우스 휠 | 스크롤 |
@@ -180,10 +212,53 @@ zig build -Doptimize=Debug
 | 언어 | Zig 0.15.2 |
 | 터미널 에뮬레이션 | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
 | PTY | Windows ConPTY |
+| PTY 호스트 | 번들 `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT) · 누락 시 시스템 conhost 로 fallback |
 | 윈도우 | Win32 API (보더리스 팝업) |
-| 렌더링 | OpenGL 3.3 + GLSL 셰이더 (ClearType 서브픽셀 블렌딩) |
+| 렌더링 | Direct3D 11 + HLSL 셰이더 (ClearType 서브픽셀 블렌딩) |
 | 폰트 래스터라이즈 | DirectWrite (동적 폰트 아틀라스 + 시스템 폰트 폴백) |
+
+## 퍼포먼스
+
+v0.2.6 기준 측정. 모든 수치는 화면 왼쪽 절반 스냅 (Windows Terminal 과 동일 grid)
+에서 `time cat ~/repo/s2t/bitext_eng_kor.vocab` (1.14 MiB CJK) 3회 median,
+WSL Debian.
+
+| 경로 | `time cat` real | throughput | vs WT |
+|------|-----------------|------------|-------|
+| baseline v0.2.5 (시스템 conhost) | 0.293s | ~4.7 MiB/s | 3.2x 느림 |
+| #77 overlapped 128KB read | 0.266s | ~5.2 MiB/s | 2.9x 느림 |
+| #78 번들 OpenConsole (회귀 포함) | 0.133s | ~10.5 MiB/s | 1.4x 느림 |
+| **v0.2.6 (#77 + #78 + #79)** | **0.074s** | **~15.4 MiB/s** | **1.26x 빠름** |
+| Windows Terminal (참고, 동일 grid) | 0.093s | ~12.3 MiB/s | 1.0x |
+
+- **#77** — ConPTY output 파이프를 named pipe + `FILE_FLAG_OVERLAPPED` 로 교체,
+  128KB overlapped `ReadFile` + `GetOverlappedResult` 패턴. 단계별 atomic
+  counter (`src/perf.zig`) 상시 수집, Ctrl+Shift+P 스냅샷.
+- **#78** — `vendor/conpty/` 에 Microsoft.Windows.Console.ConPTY nuget
+  `1.24.260303001` 의 `OpenConsole.exe` (1.04 MB) + `conpty.dll` (110 KB) 동봉.
+  시작 시 `LoadLibraryW("conpty.dll")` → 성공 시 `ConptyCreatePseudoConsole`
+  등을 kernel32 대신 사용. DLL 미존재 시 kernel32 경로로 자동 fallback. 시스템
+  conhost 의 내부 flush 타이밍이 실제 병목이었음을 확증.
+- **#79** — 번들 OpenConsole 의 `VtIo::StartIfNeeded` 가 기동 시 DA1 (`\x1b[c`)
+  를 3초 타임아웃 대기하던 회귀를 수정. (a) `CreateProcessW` 직후 input pipe
+  에 `\x1b[?61c` (VT500 conformance) pre-write, (b) `CreateProcessW` 전에
+  `ConptyShowHidePseudoConsole(true)` 호출. 탭 시작 ~3997ms → **~548ms**, 부수
+  효과로 `time cat` 도 0.133s → 0.074s (VT engine 이 DA1 대기 중 완전
+  초기화되지 않아 data path 에 지연이 전파되던 구간 제거).
+
+탭 시작 측정 (`wsl.exe -d Debian --cd ~`, warm):
+
+| 경로 | 프롬프트 도착 |
+|------|---------------|
+| baseline (kernel32, 시스템 conhost) | ~860 ms |
+| #78 직후 (번들 OpenConsole, 회귀) | ~3997 ms |
+| **v0.2.6 (#78 + #79)** | **~548 ms** |
+| 순수 `wsl + bash interactive` 하한 | ~480 ms |
 
 ## 라이선스
 
 GPL-3.0 + Commons Clause
+
+번들 바이너리 (`vendor/conpty/OpenConsole.exe`, `vendor/conpty/conpty.dll`) 는
+[microsoft/terminal](https://github.com/microsoft/terminal) 의 빌드 산출물로
+MIT 라이선스. `vendor/conpty/LICENSE.txt` 참고.
