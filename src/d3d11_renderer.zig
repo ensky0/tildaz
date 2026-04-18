@@ -8,6 +8,7 @@ const dw = @import("directwrite.zig");
 const DWriteFontContext = @import("dwrite_font.zig").DWriteFontContext;
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
+const perf = @import("perf.zig");
 
 const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
@@ -629,6 +630,7 @@ pub const D3d11Renderer = struct {
         y_offset: c_int,
         padding: c_int,
     ) void {
+        const render_t0 = perf.now();
         self.render_state.update(self.alloc, terminal) catch return;
 
         const rows = self.render_state.rows;
@@ -849,8 +851,12 @@ pub const D3d11Renderer = struct {
             self.drawBgInstances(&scrollbar_inst);
         }
 
+        perf.addTimed(&perf.render, render_t0);
+
         // Present
+        const present_t0 = perf.now();
         _ = self.swap_chain.Present(1, 0);
+        perf.addTimed(&perf.present, present_t0);
     }
 
     // --- Internal draw helpers ---
