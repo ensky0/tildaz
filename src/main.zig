@@ -8,6 +8,7 @@ const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
 const Config = @import("config.zig").Config;
 const themes = @import("themes.zig");
 const autostart = @import("autostart.zig");
+const perf = @import("perf.zig");
 
 const HWND = ?*anyopaque;
 const WCHAR = u16;
@@ -58,6 +59,7 @@ const RingBuffer = struct {
             const t = self.tail.load(.acquire);
             const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
             if (free == 0) {
+                perf.incExtra(&perf.push);
                 std.Thread.yield() catch {};
                 continue;
             }
@@ -203,12 +205,18 @@ const Tab = struct {
     /// UI 스레드에서 호출: 버퍼에 쌓인 PTY 출력을 VT 파서로 처리
     /// 렌더 스킵 중(should_render=false)에는 전체 drain, 렌더 프레임에서는 제한
     fn drainOutput(tab: *Tab) void {
+        const drain_t0 = perf.now();
         var buf: [65536]u8 = undefined;
+        var total_bytes: u64 = 0;
         while (true) {
             const n = tab.output_ring.pop(&buf);
             if (n == 0) break;
+            const parse_t0 = perf.now();
             tab.stream.nextSlice(buf[0..n]);
+            perf.addTimed(&perf.parse, parse_t0);
+            total_bytes += n;
         }
+        perf.addTimedBytes(&perf.drain, drain_t0, total_bytes);
     }
 
     fn writeLoop(tab: *Tab) void {
@@ -325,7 +333,9 @@ const App = struct {
 
     fn onPtyOutputTab(data: []const u8, userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
+        const t0 = perf.now();
         tab.output_ring.push(data);
+        perf.addTimedBytes(&perf.push, t0, data.len);
     }
 
     fn onPtyExitTab(userdata: ?*anyopaque) void {
@@ -362,6 +372,8 @@ const App = struct {
 
     fn onRender(window: *Window) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
+        const onrender_t0 = perf.now();
+        defer perf.addTimed(&perf.onrender, onrender_t0);
 
         if (self.d3d_renderer) |*r| {
             const size = window.getClientSize();
@@ -421,6 +433,7 @@ const App = struct {
                 }
             } else {
                 window.skip_swap = true;
+                perf.incExtra(&perf.onrender);
             }
         }
     }
@@ -796,6 +809,10 @@ const App = struct {
                     }
                     return true;
                 }
+                if (wParam == 0x50) { // Ctrl+Shift+P — dump & reset perf stats
+                    perf.dumpAndReset("snapshot");
+                    return true;
+                }
                 return false;
             },
             WM_SYSKEYDOWN => {
@@ -958,6 +975,8 @@ pub fn main() void {
 }
 
 fn run() !void {
+    perf.init();
+
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
+const perf = @import("perf.zig");
 
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
@@ -169,8 +170,6 @@ extern "kernel32" fn GetOverlappedResult(
     bWait: BOOL,
 ) callconv(.c) BOOL;
 
-extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(.c) BOOL;
-
 extern "kernel32" fn CreateEventW(
     lpEventAttributes: ?*anyopaque,
     bManualReset: BOOL,
@@ -197,14 +196,17 @@ const PIPE_WAIT: DWORD = 0x00000000;
 const GENERIC_WRITE: DWORD = 0x40000000;
 const OPEN_EXISTING: DWORD = 3;
 const WAIT_OBJECT_0: DWORD = 0;
-const WAIT_TIMEOUT: DWORD = 0x102;
 const ERROR_IO_PENDING: DWORD = 997;
+const READ_BUF_SIZE: usize = 128 * 1024;
 
 pub const ConPty = struct {
     hpc: HPCON,
-    pipe_in: HANDLE, // write to this → goes to ConPTY input (overlapped)
-    pipe_out: HANDLE, // read from this → ConPTY output
-    write_event: HANDLE, // event for overlapped write
+    // 두 개의 파이프:
+    //   input:  우리가 write (keystrokes) → conhost reads.      익명 파이프, 동기.
+    //   output: conhost writes (display)  → 우리가 overlapped read. named pipe, 우리 쪽 OVERLAPPED.
+    pipe_in_write: HANDLE, // 키보드: sync write
+    pipe_out_read: HANDLE, // 디스플레이: overlapped read
+    read_event: HANDLE,
     process_info: PROCESS_INFORMATION,
     attr_list_buf: []u8,
     read_thread: ?std.Thread = null,
@@ -216,85 +218,88 @@ pub const ConPty = struct {
     pub const EnvVar = struct { name: [*:0]const u16, value: [*:0]const u16 };
 
     pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR, extra_env: ?[]const EnvVar) !ConPty {
-        // Create pipes for ConPTY
-        // Input pipe: overlapped named pipe (write side) so WriteFile won't block UI
-        var pty_output_read: HANDLE = INVALID_HANDLE_VALUE;
-        var pty_output_write: HANDLE = INVALID_HANDLE_VALUE;
+        // ── Input pipe (익명, sync): 우리 = write, conhost = read
+        var pipe_in_read: HANDLE = undefined;
+        var pipe_in_write: HANDLE = undefined;
+        if (CreatePipe(&pipe_in_read, &pipe_in_write, null, 0) == 0) return error.CreatePipeFailed;
+        errdefer _ = CloseHandle(pipe_in_write);
+        // pipe_in_read 는 CreatePseudoConsole 후에 닫음
 
+        // ── Output pipe (named, 우리 쪽만 overlapped): conhost = write(sync), 우리 = read(overlapped)
         const S = struct {
             var counter: u32 = 0;
         };
         const pid = GetCurrentProcessId();
         const seq = @atomicRmw(u32, &S.counter, .Add, 1, .monotonic);
-        var pipe_name_buf: [128]WCHAR = undefined;
+        var pipe_name_u8: [256]u8 = undefined;
         const pipe_name_str = std.fmt.bufPrint(
-            @as(*[256]u8, @ptrCast(&pipe_name_buf)),
-            "\\\\.\\pipe\\tildaz_{d}_{d}\x00",
+            &pipe_name_u8,
+            "\\\\.\\pipe\\tildaz_{d}_{d}",
             .{ pid, seq },
         ) catch return error.CreatePipeFailed;
-        // Convert ASCII to WCHAR in-place (backwards to avoid overwrite)
         var pipe_name: [128]WCHAR = undefined;
-        var pi: usize = pipe_name_str.len;
-        while (pi > 0) {
-            pi -= 1;
-            pipe_name[pi] = pipe_name_str[pi];
-        }
-        const pipe_name_z: [*:0]const WCHAR = @ptrCast(pipe_name[0 .. pipe_name_str.len - 1 :0]);
+        for (pipe_name_str, 0..) |c, i| pipe_name[i] = c;
+        pipe_name[pipe_name_str.len] = 0;
+        const pipe_name_z: [*:0]const WCHAR = @ptrCast(pipe_name[0..pipe_name_str.len :0]);
 
-        // Server side (read end) — synchronous, given to ConPTY
-        const pty_input_read = CreateNamedPipeW(
+        const pipe_out_read = CreateNamedPipeW(
             pipe_name_z,
-            PIPE_ACCESS_INBOUND, // read-only server
+            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_WAIT,
             1,
-            4096,
-            4096,
+            READ_BUF_SIZE, // out buffer (INBOUND 이라 unused)
+            READ_BUF_SIZE, // in buffer — conhost 가 여기 써주고 우리가 읽음
             0,
             null,
         );
-        if (pty_input_read == INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
-        errdefer _ = CloseHandle(pty_input_read);
+        if (pipe_out_read == INVALID_HANDLE_VALUE) {
+            _ = CloseHandle(pipe_in_read);
+            return error.CreatePipeFailed;
+        }
+        errdefer _ = CloseHandle(pipe_out_read);
 
-        // Client side (write end) — overlapped
-        const pty_input_write = CreateFileW(
+        const pipe_out_write = CreateFileW(
             pipe_name_z,
             GENERIC_WRITE,
             0,
             null,
             OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED,
+            0, // conhost 쪽은 overlapped 불필요 (동기 write)
             null,
         );
-        if (pty_input_write == INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
-        errdefer _ = CloseHandle(pty_input_write);
-
-        // Event for overlapped writes
-        const write_event = CreateEventW(null, 1, 0, null) orelse return error.CreateEventFailed;
-        errdefer _ = CloseHandle(write_event);
-
-        // Large output buffer to prevent WSL from blocking during startup
-        if (CreatePipe(&pty_output_read, &pty_output_write, null, 256 * 1024) == 0) {
+        if (pipe_out_write == INVALID_HANDLE_VALUE) {
+            _ = CloseHandle(pipe_in_read);
             return error.CreatePipeFailed;
         }
-        errdefer {
-            _ = CloseHandle(pty_output_read);
-            _ = CloseHandle(pty_output_write);
-        }
+        // pipe_out_write 는 CreatePseudoConsole 후에 닫음
 
-        // Create pseudo console
+        const read_event = CreateEventW(null, 1, 0, null) orelse {
+            _ = CloseHandle(pipe_in_read);
+            _ = CloseHandle(pipe_out_write);
+            return error.CreateEventFailed;
+        };
+        errdefer _ = CloseHandle(read_event);
+
+        // ── Pseudo console
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
         var hpc: HPCON = undefined;
-        const hr = CreatePseudoConsole(size, pty_input_read, pty_output_write, 0, &hpc);
+        // 0x8 = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES (Win11). 미지원 시 0.
+        var hr = CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0x8, &hpc);
+        var flags_used: u32 = 0x8;
         if (hr < 0) {
-            return error.CreatePseudoConsoleFailed;
+            flags_used = 0;
+            hr = CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0, &hpc);
         }
+        perf.log("[conpty] CreatePseudoConsole flags=0x{x} hr=0x{x} cols={d} rows={d}\n", .{ flags_used, @as(u32, @bitCast(hr)), cols, rows });
+
+        // CreatePseudoConsole 는 handle 을 내부 duplicate — 우리 쪽 사본은 닫아야 한다.
+        _ = CloseHandle(pipe_in_read);
+        _ = CloseHandle(pipe_out_write);
+
+        if (hr < 0) return error.CreatePseudoConsoleFailed;
         errdefer ClosePseudoConsole(hpc);
 
-        // Close the handles that ConPTY now owns
-        _ = CloseHandle(pty_input_read);
-        _ = CloseHandle(pty_output_write);
-
-        // Prepare STARTUPINFOEX with attribute list
+        // ── STARTUPINFOEX + attribute list
         var attr_list_size: usize = 0;
         _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_list_size);
 
@@ -318,14 +323,12 @@ pub const ConPty = struct {
             return error.UpdateProcThreadAttributeFailed;
         }
 
-        // Create process
         var startup_info = std.mem.zeroes(STARTUPINFOEXW);
         startup_info.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
         startup_info.lpAttributeList = attr_list;
 
         var process_info: PROCESS_INFORMATION = undefined;
 
-        // We need a mutable copy of the shell command line
         var cmd_buf: [256]WCHAR = undefined;
         var i: usize = 0;
         while (shell[i] != 0 and i < cmd_buf.len - 1) : (i += 1) {
@@ -362,7 +365,7 @@ pub const ConPty = struct {
             @ptrCast(&cmd_buf),
             null,
             null,
-            0, // FALSE
+            0,
             EXTENDED_STARTUPINFO_PRESENT,
             null,
             null,
@@ -377,9 +380,9 @@ pub const ConPty = struct {
 
         return .{
             .hpc = hpc,
-            .pipe_in = pty_input_write,
-            .pipe_out = pty_output_read,
-            .write_event = write_event,
+            .pipe_in_write = pipe_in_write,
+            .pipe_out_read = pipe_out_read,
+            .read_event = read_event,
             .process_info = process_info,
             .attr_list_buf = attr_list_buf,
             .allocator = allocator,
@@ -387,11 +390,9 @@ pub const ConPty = struct {
     }
 
     pub fn deinit(self: *ConPty) void {
-        // Close pseudoconsole FIRST — this breaks the output pipe,
-        // unblocking ReadFile in the read thread (Microsoft-recommended pattern)
+        // ClosePseudoConsole 가 output pipe 를 끊어주므로 readLoop 가 빠져나옴
         ClosePseudoConsole(self.hpc);
 
-        // Join threads (read thread exits because pipe is broken)
         if (self.read_thread) |t| {
             t.join();
             self.read_thread = null;
@@ -401,10 +402,9 @@ pub const ConPty = struct {
             self.wait_thread = null;
         }
 
-        // Close remaining handles
-        if (self.pipe_out != INVALID_HANDLE_VALUE) _ = CloseHandle(self.pipe_out);
-        _ = CloseHandle(self.pipe_in);
-        _ = CloseHandle(self.write_event);
+        _ = CloseHandle(self.pipe_in_write);
+        _ = CloseHandle(self.pipe_out_read);
+        _ = CloseHandle(self.read_event);
         _ = CloseHandle(self.process_info.hProcess);
         _ = CloseHandle(self.process_info.hThread);
 
@@ -413,68 +413,54 @@ pub const ConPty = struct {
     }
 
     pub fn write(self: *ConPty, data: []const u8) !usize {
-        var overlapped = OVERLAPPED{ .hEvent = self.write_event };
         var bytes_written: DWORD = 0;
-
-        const result = WriteFile(
-            self.pipe_in,
+        if (WriteFile(
+            self.pipe_in_write,
             data.ptr,
             @intCast(data.len),
             &bytes_written,
-            @ptrCast(&overlapped),
-        );
-
-        if (result != 0) return @intCast(bytes_written);
-
-        // WriteFile이 비동기 시작됨 — 100ms 타임아웃으로 대기
-        if (GetLastError() != ERROR_IO_PENDING) return error.WriteFailed;
-
-        const wait = WaitForSingleObject(self.write_event, 100);
-        if (wait == WAIT_OBJECT_0) {
-            _ = GetOverlappedResult(self.pipe_in, &overlapped, &bytes_written, 0);
-            return @intCast(bytes_written);
-        }
-
-        // 타임아웃 — write 취소하고 다음 write로 넘어감
-        _ = CancelIo(self.pipe_in);
-        _ = GetOverlappedResult(self.pipe_in, &overlapped, &bytes_written, 1);
-        return error.WriteTimeout;
+            null, // 익명 파이프, 동기
+        ) == 0) return error.WriteFailed;
+        return @intCast(bytes_written);
     }
 
     pub fn resize(self: *ConPty, cols: u16, rows: u16) !void {
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
         const hr = ResizePseudoConsole(self.hpc, size);
-        if (hr < 0) {
-            return error.ResizeFailed;
-        }
+        if (hr < 0) return error.ResizeFailed;
     }
 
     pub fn startReadThread(self: *ConPty, callback: ReadCallback, exit_cb: ExitCallback, userdata: ?*anyopaque) !void {
-        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out, callback, userdata });
-        // Separate thread: wait for shell process to exit, then notify
+        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out_read, self.read_event, callback, userdata });
         self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.process_info.hProcess, exit_cb, userdata });
     }
 
-    fn readLoop(pipe_out: HANDLE, callback: ReadCallback, userdata: ?*anyopaque) void {
-        var buf: [65536]u8 = undefined;
+    fn readLoop(pipe: HANDLE, read_event: HANDLE, callback: ReadCallback, userdata: ?*anyopaque) void {
+        var buf: [READ_BUF_SIZE]u8 = undefined;
         while (true) {
+            var overlapped = OVERLAPPED{ .hEvent = read_event };
             var bytes_read: DWORD = 0;
-            if (ReadFile(pipe_out, &buf, buf.len, &bytes_read, null) == 0) {
-                break; // pipe closed or error
+            const t0 = perf.now();
+            const ok = ReadFile(pipe, &buf, buf.len, &bytes_read, @ptrCast(&overlapped));
+            if (ok == 0) {
+                const err = GetLastError();
+                if (err != ERROR_IO_PENDING) break;
+                if (GetOverlappedResult(pipe, &overlapped, &bytes_read, 1) == 0) break;
             }
+            perf.addTimedBytes(&perf.readloop, t0, @intCast(bytes_read));
             if (bytes_read == 0) break;
             callback(buf[0..bytes_read], userdata);
         }
     }
 
     fn processWaitLoop(process_handle: HANDLE, exit_cb: ExitCallback, userdata: ?*anyopaque) void {
-        _ = WaitForSingleObject(process_handle, 0xFFFFFFFF); // INFINITE
+        _ = WaitForSingleObject(process_handle, 0xFFFFFFFF);
         exit_cb(userdata);
     }
 
     pub fn isProcessAlive(self: *ConPty) bool {
         const result = WaitForSingleObject(self.process_info.hProcess, 0);
-        return result != 0; // WAIT_OBJECT_0 = 0 means process exited
+        return result != 0;
     }
 };
 
