@@ -86,6 +86,42 @@ extern "kernel32" fn ClosePseudoConsole(
     hPC: HPCON,
 ) callconv(.c) void;
 
+extern "kernel32" fn LoadLibraryW(lpLibFileName: [*:0]const WCHAR) callconv(.c) ?*anyopaque;
+extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.c) ?*const anyopaque;
+
+// conpty.dll (Microsoft.Windows.Console.ConPTY nupkg) 의 함수 포인터.
+// tildaz.exe 와 같은 폴더에 conpty.dll 이 있으면 LoadLibrary 로 해결되고,
+// 없으면 null 로 남아 kernel32 CreatePseudoConsole 로 자동 fallback.
+const ConptyCreateFn = *const fn (COORD, HANDLE, HANDLE, DWORD, *HPCON) callconv(.c) HRESULT;
+const ConptyResizeFn = *const fn (HPCON, COORD) callconv(.c) HRESULT;
+const ConptyCloseFn = *const fn (HPCON) callconv(.c) void;
+
+var conpty_dll_loaded: bool = false;
+var conpty_create_fn: ?ConptyCreateFn = null;
+var conpty_resize_fn: ?ConptyResizeFn = null;
+var conpty_close_fn: ?ConptyCloseFn = null;
+
+fn ensureConptyDll() void {
+    if (conpty_dll_loaded) return;
+    conpty_dll_loaded = true;
+    const name = std.unicode.utf8ToUtf16LeStringLiteral("conpty.dll");
+    const mod = LoadLibraryW(name) orelse {
+        perf.log("[conpty] conpty.dll not found — falling back to kernel32\n", .{});
+        return;
+    };
+    conpty_create_fn = @ptrCast(GetProcAddress(mod, "ConptyCreatePseudoConsole"));
+    conpty_resize_fn = @ptrCast(GetProcAddress(mod, "ConptyResizePseudoConsole"));
+    conpty_close_fn = @ptrCast(GetProcAddress(mod, "ConptyClosePseudoConsole"));
+    if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null) {
+        perf.log("[conpty] conpty.dll loaded but symbols missing — falling back to kernel32\n", .{});
+        conpty_create_fn = null;
+        conpty_resize_fn = null;
+        conpty_close_fn = null;
+        return;
+    }
+    perf.log("[conpty] conpty.dll loaded, using bundled OpenConsole\n", .{});
+}
+
 extern "kernel32" fn InitializeProcThreadAttributeList(
     lpAttributeList: ?LPPROC_THREAD_ATTRIBUTE_LIST,
     dwAttributeCount: DWORD,
@@ -281,23 +317,34 @@ pub const ConPty = struct {
         errdefer _ = CloseHandle(read_event);
 
         // ── Pseudo console
+        ensureConptyDll();
+        const create_fn = conpty_create_fn;
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
         var hpc: HPCON = undefined;
         // 0x8 = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES (Win11). 미지원 시 0.
-        var hr = CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0x8, &hpc);
+        var hr: HRESULT = if (create_fn) |f|
+            f(size, pipe_in_read, pipe_out_write, 0x8, &hpc)
+        else
+            CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0x8, &hpc);
         var flags_used: u32 = 0x8;
         if (hr < 0) {
             flags_used = 0;
-            hr = CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0, &hpc);
+            hr = if (create_fn) |f|
+                f(size, pipe_in_read, pipe_out_write, 0, &hpc)
+            else
+                CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0, &hpc);
         }
-        perf.log("[conpty] CreatePseudoConsole flags=0x{x} hr=0x{x} cols={d} rows={d}\n", .{ flags_used, @as(u32, @bitCast(hr)), cols, rows });
+        const backend: []const u8 = if (create_fn != null) "conpty.dll" else "kernel32";
+        perf.log("[conpty] CreatePseudoConsole backend={s} flags=0x{x} hr=0x{x} cols={d} rows={d}\n", .{ backend, flags_used, @as(u32, @bitCast(hr)), cols, rows });
 
         // CreatePseudoConsole 는 handle 을 내부 duplicate — 우리 쪽 사본은 닫아야 한다.
         _ = CloseHandle(pipe_in_read);
         _ = CloseHandle(pipe_out_write);
 
         if (hr < 0) return error.CreatePseudoConsoleFailed;
-        errdefer ClosePseudoConsole(hpc);
+        errdefer {
+            if (conpty_close_fn) |f| f(hpc) else ClosePseudoConsole(hpc);
+        }
 
         // ── STARTUPINFOEX + attribute list
         var attr_list_size: usize = 0;
@@ -391,7 +438,7 @@ pub const ConPty = struct {
 
     pub fn deinit(self: *ConPty) void {
         // ClosePseudoConsole 가 output pipe 를 끊어주므로 readLoop 가 빠져나옴
-        ClosePseudoConsole(self.hpc);
+        if (conpty_close_fn) |f| f(self.hpc) else ClosePseudoConsole(self.hpc);
 
         if (self.read_thread) |t| {
             t.join();
@@ -426,7 +473,7 @@ pub const ConPty = struct {
 
     pub fn resize(self: *ConPty, cols: u16, rows: u16) !void {
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
-        const hr = ResizePseudoConsole(self.hpc, size);
+        const hr = if (conpty_resize_fn) |f| f(self.hpc, size) else ResizePseudoConsole(self.hpc, size);
         if (hr < 0) return error.ResizeFailed;
     }
 
