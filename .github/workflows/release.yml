@@ -42,7 +42,11 @@ jobs:
 
       # Zig 공식 URL 에서 직접 다운로드. setup-zig 액션은 mirror 404 로 깨진 전적이
       # 있고, 릴리즈 워크플로우는 자주 돌지 않아 캐싱 이득도 작음. 의존성 0.
-      # curl + tar 둘 다 windows-2022 러너 기본 제공 (tar 는 bsdtar 라 zip 압축 해제 가능).
+      #
+      # tar 는 Windows System32 의 bsdtar 를 명시적으로 사용. Git Bash 의 기본
+      # `tar` 는 GNU tar 라 Windows 경로의 콜론 (`D:\...`) 을 `host:path` 로
+      # 오해해서 `Cannot connect to D:` 로 터짐. System32 의 bsdtar 는 Windows
+      # 네이티브라 그 문제 없음.
       - name: Setup Zig 0.15.2
         shell: bash
         run: |
@@ -51,10 +55,11 @@ jobs:
           ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-windows-${ZIG_VERSION}.zip"
           ZIG_ZIP="${RUNNER_TEMP}/zig.zip"
           ZIG_ROOT="C:/zig"
+          WIN_TAR="/c/Windows/System32/tar.exe"
           echo "Downloading $ZIG_URL"
           curl -fsSL --retry 3 -o "$ZIG_ZIP" "$ZIG_URL"
           mkdir -p "$ZIG_ROOT"
-          tar -xf "$ZIG_ZIP" -C "$ZIG_ROOT"
+          "$WIN_TAR" -xf "$ZIG_ZIP" -C "$ZIG_ROOT"
           ZIG_BIN="${ZIG_ROOT}/zig-x86_64-windows-${ZIG_VERSION}"
           if [[ ! -x "$ZIG_BIN/zig.exe" ]]; then
             echo "ERROR: zig.exe not found at $ZIG_BIN" >&2
