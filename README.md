@@ -2,7 +2,7 @@
 
 Windows용 Quake-style 드롭다운 터미널. Zig + libghostty-vt 기반.
 
-Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 Windows에서 제공한다.
+Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 유사한 UX를 Windows에서 제공한다.
 
 > **v0.2.6 — 퍼포먼스 개선 릴리즈**
 >
@@ -45,8 +45,11 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
 - 반투명(설정 가능) always-on-top 윈도우
 - Ctrl+Shift+V 클립보드 붙여넣기
 - Ctrl+Shift+R 터미널 초기화 (바이너리 cat 등으로 깨졌을 때)
-- Ctrl+Shift+P 퍼포먼스 스냅샷 덤프 (`C:\tildaz_win\perf.log` 에 push / drain / parse / render / present 단계별 ms·bytes·calls 기록)
-- Windows 로그인 시 자동 시작
+- **Ctrl+Shift+I** About 다이얼로그 — 현재 실행 중인 tildaz 의 버전 · exe 풀 경로 · pid 를 MessageBox 로 표시. 창에 타이틀바가 없어서 실행 중인 exe 를 식별하기 어려운 문제를 해결
+- **PE VERSIONINFO** — `tildaz.exe` 우클릭 → 속성 → 자세히 에서 버전 확인 가능
+- **통합 로그** `%APPDATA%\tildaz\tildaz.log` — 부팅 / 종료 / ConPTY 초기화 / autostart 에러 / perf 스냅샷이 같은 타임라인에 쌓임. 기존 `C:\tildaz_win\perf.log` 하드코딩 경로 대체
+- Ctrl+Shift+P 퍼포먼스 스냅샷 덤프 (`tildaz.log` 에 push / drain / parse / render / present 단계별 ms·bytes·calls 기록)
+- **Windows 로그인 시 자동 시작** — HKCU\Software\Microsoft\Windows\CurrentVersion\Run 레지스트리 값으로 등록. (v0.2.7 까지는 Task Scheduler 기반이었으나 Group Policy / UAC 설정에 따라 `schtasks /create` 가 거부되어 stale 엔트리가 영구히 남는 사고가 있어 v0.2.8 에서 Registry Run 으로 단일화)
 
 ## 빌드
 
