@@ -9,6 +9,9 @@ const Config = @import("config.zig").Config;
 const themes = @import("themes.zig");
 const autostart = @import("autostart.zig");
 const perf = @import("perf.zig");
+const tildaz_log = @import("tildaz_log.zig");
+const about = @import("about.zig");
+const build_options = @import("build_options");
 
 const HWND = ?*anyopaque;
 const WCHAR = u16;
@@ -875,6 +878,10 @@ const App = struct {
                     perf.dumpAndReset("snapshot");
                     return true;
                 }
+                if (wParam == 0x49) { // Ctrl+Shift+I — About / 버전 확인
+                    about.showAboutDialog(self.window.hwnd);
+                    return true;
+                }
                 return false;
             },
             WM_SYSKEYDOWN => {
@@ -1055,6 +1062,11 @@ fn run() !void {
         _ = CloseHandle(mutex);
     };
 
+    // %APPDATA%\tildaz\tildaz.log 에 부팅 / 종료 라인을 남긴다.
+    // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
+    tildaz_log.logStart(build_options.version);
+    defer tildaz_log.logStop(build_options.version);
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -1070,7 +1082,9 @@ fn run() !void {
     }
 
     if (config.auto_start) {
-        autostart.enable() catch {};
+        autostart.enable() catch |err| {
+            tildaz_log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
+        };
     } else {
         autostart.disable();
     }
