@@ -236,9 +236,22 @@ pub const Window = struct {
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_msg_fn: ?*const fn (UINT, WPARAM, LPARAM, ?*anyopaque) bool = null,
+    /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
+    /// layout) can re-raster glyphs and rescale DPI-dependent constants
+    /// before `SetWindowPos` cascades into `WM_SIZE`.
+    font_change_fn: ?*const fn (*Window, ?*anyopaque) void = null,
     skip_swap: bool = false,
     shell_exited: bool = false,
     dc: HDC = null, // DC for GDI font measurement
+
+    // Font-creation parameters — remembered so `rebuildFontForDpi` can
+    // recreate the GDI font and re-measure cell metrics at the new DPI
+    // when `WM_DPICHANGED` fires.
+    font_family: [*:0]const WCHAR = undefined,
+    font_size: c_int = 14,
+    cell_width_scale: f32 = 1.0,
+    line_height_scale: f32 = 1.0,
+    current_dpi: UINT = 96,
 
     // Last position parameters — re-applied on WM_DISPLAYCHANGE / WM_DPICHANGED /
     // WM_SETTINGCHANGE(SPI_SETWORKAREA) and on show(), so the window tracks the
@@ -305,12 +318,41 @@ pub const Window = struct {
             OutputDebugStringA("WARNING: Failed to register F1 hotkey\n");
         }
 
-        // Scale font_size by DPI (config value is in logical pixels at 96 DPI)
-        const dpi = GetDpiForWindow(self.hwnd);
-        const effective_dpi: f32 = if (dpi > 0) @floatFromInt(dpi) else 96.0;
-        const scaled_font_size: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(font_size)) * effective_dpi / 96.0));
+        // Remember font-creation parameters so `rebuildFontForDpi` can
+        // recreate the font + re-measure cell metrics on DPI changes.
+        self.font_family = font_family;
+        self.font_size = font_size;
+        self.cell_width_scale = cell_width_scale;
+        self.line_height_scale = line_height_scale;
 
-        // Create monospace font (used for measuring cell metrics)
+        // DC must exist before `rebuildFontForDpi` measures cell metrics.
+        self.dc = GetDC(self.hwnd);
+
+        const dpi = GetDpiForWindow(self.hwnd);
+        const init_dpi: UINT = if (dpi > 0) dpi else 96;
+        self.rebuildFontForDpi(init_dpi);
+
+        // Start render timer (60fps)
+        _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
+    }
+
+    /// (Re)create the GDI font at `new_dpi` and re-measure cell metrics.
+    ///
+    /// Called from `init` for the first build, and from the `WM_DPICHANGED`
+    /// handler when the window moves between monitors with different DPI
+    /// scales so glyphs are rasterized at the new monitor's pixel density
+    /// instead of the init-time monitor's.
+    ///
+    /// After this returns, `cell_width` / `cell_height` reflect the new DPI;
+    /// call `font_change_fn` so the renderer can rebuild its DirectWrite
+    /// font context + glyph atlas at the matching `pixels_per_dip`.
+    pub fn rebuildFontForDpi(self: *Window, new_dpi: UINT) void {
+        // Release previous font (if any) before creating a replacement.
+        if (self.font) |prev| _ = DeleteObject(prev);
+
+        const effective_dpi: f32 = if (new_dpi > 0) @floatFromInt(new_dpi) else 96.0;
+        const scaled_font_size: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(self.font_size)) * effective_dpi / 96.0));
+
         self.font = CreateFontW(
             scaled_font_size,
             0,
@@ -325,24 +367,21 @@ pub const Window = struct {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            font_family,
+            self.font_family,
         );
 
-        // Measure cell metrics from font
-        self.dc = GetDC(self.hwnd);
-        if (self.dc != null) {
+        if (self.dc != null and self.font != null) {
             const old_f = SelectObject(self.dc, self.font);
             var tm: TEXTMETRICW = undefined;
             _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
             const base_h: f32 = @floatFromInt(tm.tmHeight + tm.tmExternalLeading);
-            self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * cell_width_scale))));
-            self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * line_height_scale))));
+            self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_scale))));
+            self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_scale))));
             _ = SelectObject(self.dc, old_f);
         }
 
-        // Start render timer (60fps)
-        _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
+        self.current_dpi = new_dpi;
     }
 
     pub fn deinit(self: *Window) void {
@@ -424,9 +463,27 @@ pub const Window = struct {
     /// change handlers and by `show()` so the window tracks the current monitor
     /// and re-fits after resolution / taskbar / monitor-configuration changes.
     /// No-op if `setPosition` was never called.
+    ///
+    /// After `SetWindowPos` we explicitly invoke `resize_fn` to guarantee the
+    /// terminal grid reflows. `SetWindowPos` skips `WM_SIZE` when the new rect
+    /// matches the current one — which happens when:
+    ///   - an external monitor is disconnected and Windows has already
+    ///     auto-moved the window to the primary monitor, so the saved-%
+    ///     rect we compute equals the rect the window is already at
+    ///   - DPI changes between monitors of identical pixel resolution (the
+    ///     saved % yields the same pixel dimensions)
+    /// In those cases `cell_width` / `cell_height` may have changed under
+    /// the window but the terminal grid stays stuck at the old rows/cols.
+    /// Calling `resize_fn` unconditionally is idempotent: when `WM_SIZE`
+    /// does fire, the second invocation hits no-op fast paths in
+    /// terminal.resize / pty.resize / swapchain resize.
     pub fn repositionFromSaved(self: *Window) void {
         if (!self.position_set) return;
         self.setPosition(self.dock, self.width_pct, self.height_pct, self.offset_pct);
+        if (self.resize_fn) |resize_fn| {
+            const grid = self.getGridSize();
+            resize_fn(grid.cols, grid.rows, self.userdata);
+        }
     }
 
     pub fn messageLoop(_: *Window) void {
@@ -578,11 +635,25 @@ pub const Window = struct {
             },
             WM_DPICHANGED => {
                 // System or per-monitor DPI changed (e.g. moved between an
-                // internal 150% panel and an external 100% monitor). Ignore
-                // the suggested rect in lParam and re-compute from our own
-                // percentages so the drop-down keeps its shape on the new
-                // monitor. Returning 0 prevents the default proc from
-                // auto-resizing to the suggested rect.
+                // internal 150% panel and an external 100% monitor).
+                //
+                // Handling order matters:
+                //   1. Rebuild the GDI font at the new DPI so `cell_width` /
+                //      `cell_height` are in the new monitor's physical px.
+                //   2. Let the app rebuild its DirectWrite font + glyph atlas
+                //      at the matching `pixels_per_dip` — otherwise glyphs
+                //      stay rasterized at the old DPI and look tiny / blurry.
+                //   3. Re-apply the saved percentages via `repositionFromSaved`
+                //      which calls `SetWindowPos`, cascading into `WM_SIZE`.
+                //      `resize_fn` there re-reflows the terminal grid using
+                //      the freshly updated `cell_width` / `cell_height`.
+                //
+                // The suggested rect in lParam is intentionally ignored and
+                // returning 0 prevents the default proc from auto-resizing
+                // to it, so our own percentage-based layout wins.
+                const new_dpi: UINT = @intCast(wParam & 0xFFFF);
+                self.rebuildFontForDpi(new_dpi);
+                if (self.font_change_fn) |f| f(self, self.userdata);
                 self.repositionFromSaved();
                 return 0;
             },
