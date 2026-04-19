@@ -40,10 +40,33 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.15.2
+      # Zig 공식 URL 에서 직접 다운로드. setup-zig 액션은 mirror 404 로 깨진 전적이
+      # 있고, 릴리즈 워크플로우는 자주 돌지 않아 캐싱 이득도 작음. 의존성 0.
+      # curl + tar 둘 다 windows-2022 러너 기본 제공 (tar 는 bsdtar 라 zip 압축 해제 가능).
+      - name: Setup Zig 0.15.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIG_VERSION=0.15.2
+          ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-windows-${ZIG_VERSION}.zip"
+          ZIG_ZIP="${RUNNER_TEMP}/zig.zip"
+          ZIG_ROOT="C:/zig"
+          echo "Downloading $ZIG_URL"
+          curl -fsSL --retry 3 -o "$ZIG_ZIP" "$ZIG_URL"
+          mkdir -p "$ZIG_ROOT"
+          tar -xf "$ZIG_ZIP" -C "$ZIG_ROOT"
+          ZIG_BIN="${ZIG_ROOT}/zig-x86_64-windows-${ZIG_VERSION}"
+          if [[ ! -x "$ZIG_BIN/zig.exe" ]]; then
+            echo "ERROR: zig.exe not found at $ZIG_BIN" >&2
+            ls -la "$ZIG_ROOT" || true
+            exit 1
+          fi
+          echo "$ZIG_BIN" >> "$GITHUB_PATH"
+          echo "zig bin : $ZIG_BIN"
+
+      - name: Verify Zig
+        shell: bash
+        run: zig version
 
       - name: Sanity checks (version / release notes)
         shell: bash
