@@ -1,0 +1,11 @@
+# Keep shell scripts in LF even on Windows autocrlf=true — Git Bash / Actions
+# Windows runner both execute these, and CR in the shebang breaks them.
+*.sh text eol=lf
+
+# Resource / build scripts are edited from Windows editors too;
+# normalize but allow CRLF in the working tree (default behavior).
+*.zig text
+*.rc  text
+*.md  text
+*.yml text
+*.yaml text

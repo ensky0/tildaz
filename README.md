@@ -77,11 +77,10 @@ v0.2.6 부터는 3-file 번들을 단일 zip 으로 배포한다.
 
 ```
 tildaz-v<ver>-win-x64.zip
-  tildaz-v<ver>-win-x64/
-    tildaz.exe        본체
-    conpty.dll        번들 ConPTY 런타임 (MIT, microsoft/terminal)
-    OpenConsole.exe   번들 PTY 호스트     (MIT, microsoft/terminal)
-    README.txt        (dist/README.txt)
+  tildaz.exe        본체
+  conpty.dll        번들 ConPTY 런타임 (MIT, microsoft/terminal)
+  OpenConsole.exe   번들 PTY 호스트     (MIT, microsoft/terminal)
+  README.txt        (dist/windows/README.txt)
 ```
 
 세 파일은 **같은 폴더에** 두어야 번들 경로가 동작한다. `conpty.dll` 또는
@@ -89,8 +88,38 @@ tildaz-v<ver>-win-x64.zip
 fallback 하며, 이 경우 기본 동작은 정상이지만 대량 출력 throughput 이 번들
 경로 대비 약 절반 수준이 된다.
 
-번들 zip 생성 자동화 (`zig build package`) 및 CI 릴리즈 파이프라인은 #80
-에서 추적.
+#### 번들 빌드 — `zig build package`
+
+```bash
+zig build package
+# → zig-out/release/tildaz-v<ver>-win-x64.zip
+# → zig-out/release/tildaz-v<ver>-win-x64.zip.sha256   (sha256sum -c 호환)
+```
+
+내부적으로 `bash dist/windows/package.sh --version <ver>` 를 호출하며,
+Windows Git Bash / macOS / Linux 어디서든 동작. zip 압축은 Windows 에서
+PowerShell `Compress-Archive`, mac/linux 에서는 `zip` 을 쓴다 (각 OS
+기본 도구만 사용, Python/Node/외부 의존성 없음).
+
+#### 태깅 + 릴리즈 — `dist/release.sh`
+
+`.` 에서 한 줄로 태깅 + GitHub Release 생성:
+
+```bash
+# 사전: build.zig 의 tildaz_version 을 원하는 버전으로 먼저 bump + commit
+dist/release.sh --version 0.2.9              # 정상 플로우 (tag push → Actions)
+dist/release.sh --version 0.2.9 --dry-run    # 빌드/패키지만 리허설, tag push 안 함
+dist/release.sh --version 0.2.9 --local-upload   # Actions 없이 로컬에서 직접 gh release
+```
+
+태그가 push 되면 `.github/workflows/release.yml` (Windows runner) 이
+`zig build package` → zip + sha256 업로드 → `dist/release-notes/v<ver>.md`
+를 Release body 로 첨부하는 과정을 자동화한다. 수동 재시도가 필요하면
+Actions 의 `workflow_dispatch` 로 태그를 넣어 재실행 가능.
+
+릴리즈 노트는 **태그를 push 하기 전에** `dist/release-notes/v<ver>.md` 로
+repo 에 체크인되어 있어야 한다 (`release.sh` 의 pre-flight check 가
+파일 존재를 강제).
 
 ## 설정
 
@@ -164,7 +193,8 @@ fallback 하며, 이 경우 기본 동작은 정상이지만 대량 출력 throu
 | Alt+1~9 | 탭 전환 |
 | Ctrl+Shift+R | 터미널 초기화 (바이너리 cat 등으로 깨졌을 때) |
 | Ctrl+Shift+V | 클립보드 붙여넣기 |
-| Ctrl+Shift+P | 퍼포먼스 스냅샷 덤프 (`C:\tildaz_win\perf.log`) |
+| Ctrl+Shift+I | About — 버전 · exe 풀 경로 · pid MessageBox |
+| Ctrl+Shift+P | 퍼포먼스 스냅샷 덤프 (`%APPDATA%\tildaz\tildaz.log`) |
 | 마우스 드래그 | 텍스트 선택 + 자동 복사 |
 | 더블클릭 | 단어 선택 + 자동 복사 |
 | 마우스 휠 | 스크롤 |
