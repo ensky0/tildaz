@@ -89,6 +89,27 @@ jobs:
           echo "build.zig version : $BZIG_VER"
           echo "release notes     : $NOTES"
 
+      # Zig 0.15 의 Windows HTTP client 가 github.com 에서 transitive deps
+      # (ghostty 아래 imgui, vaxis 아래 zigimg / uucode 등) 를 받을 때 가끔
+      # `HttpConnectionClosing` / `WriteFailed` 로 깨짐. fetch 만 선행 + 재시도
+      # 해서 네트워크 플래키함을 흡수하고, 이후 build 는 캐시된 상태로 한 번에.
+      - name: Prefetch dependencies (retry on transient HTTP fail)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if zig build --fetch=all; then
+              echo "All dependencies fetched (attempt $i)"
+              exit 0
+            fi
+            if [[ $i -eq 5 ]]; then
+              echo "ERROR: dependency fetch failed after 5 attempts" >&2
+              exit 1
+            fi
+            echo "Fetch attempt $i failed; retrying in 10s..."
+            sleep 10
+          done
+
       - name: Build + package
         shell: bash
         run: zig build package
