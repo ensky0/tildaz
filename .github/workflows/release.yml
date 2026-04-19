@@ -47,6 +47,13 @@ jobs:
       # `tar` 는 GNU tar 라 Windows 경로의 콜론 (`D:\...`) 을 `host:path` 로
       # 오해해서 `Cannot connect to D:` 로 터짐. System32 의 bsdtar 는 Windows
       # 네이티브라 그 문제 없음.
+      #
+      # Zig 설치와 글로벌 캐시를 모두 D: 드라이브 (RUNNER_TEMP) 로 강제.
+      # windows-2022 러너는 checkout 이 D: 에 떨어지는데 기본 zig global cache 는
+      # `C:\Users\runneradmin\AppData\Local\zig` 라 크로스 드라이브. 그러면
+      # `std.fs.path.relative(C:\...\, D:\...)` 가 상대경로를 못 만들고 absolute
+      # 를 리턴해서 Zig 의 Run step (`convertPathArg` 내부 assert) 이 터짐.
+      # 동일 드라이브로 통일해 해결.
       - name: Setup Zig 0.15.2
         shell: bash
         run: |
@@ -54,7 +61,7 @@ jobs:
           ZIG_VERSION=0.15.2
           ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-windows-${ZIG_VERSION}.zip"
           ZIG_ZIP="${RUNNER_TEMP}/zig.zip"
-          ZIG_ROOT="C:/zig"
+          ZIG_ROOT="${RUNNER_TEMP}/zig"
           WIN_TAR="/c/Windows/System32/tar.exe"
           echo "Downloading $ZIG_URL"
           curl -fsSL --retry 3 -o "$ZIG_ZIP" "$ZIG_URL"
@@ -67,7 +74,9 @@ jobs:
             exit 1
           fi
           echo "$ZIG_BIN" >> "$GITHUB_PATH"
-          echo "zig bin : $ZIG_BIN"
+          echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global-cache" >> "$GITHUB_ENV"
+          echo "zig bin           : $ZIG_BIN"
+          echo "zig global cache  : ${RUNNER_TEMP}/zig-global-cache"
 
       - name: Verify Zig
         shell: bash
