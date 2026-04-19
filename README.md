@@ -33,11 +33,15 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 동일한 UX를 W
   - 더블클릭으로 단어 선택
   - 마우스 버튼 놓으면 자동 클립보드 복사
   - 마우스 휠 클릭으로 붙여넣기
-- **스크롤백**: 마우스 휠 스크롤, 스크롤바 드래그, 최대 100,000줄 버퍼
+- **스크롤백**: 마우스 휠 스크롤, 스크롤바 드래그, 최대 100,000줄 버퍼. 스크롤백이 많아도 thumb 이 최소 크기 (32px × DPI scale) 를 유지해 드래그 가능
 - **vim dark/light 감지**: 테마 배경 밝기에 따라 `COLORFGBG` 환경변수 자동 설정 (WSL 포함)
 - 화면 가장자리(top/bottom/left/right)에 붙는 드롭다운 윈도우
 - 크기/위치를 화면 비율(%)로 설정
-- **멀티 모니터 자동 추적**: F1 로 토글할 때마다 **현재 마우스 커서가 있는 모니터** 에 드롭다운이 등장. 해당 모니터의 work area (작업 표시줄 제외) 기준으로 폭·높이·offset 을 매번 재계산해서 맞춤. 해상도 변경 / 외부 모니터 연결·해제 / 작업 표시줄 자동 숨김 토글 / per-monitor DPI 변경도 자동 감지해서 즉시 재배치 (`WM_DISPLAYCHANGE` / `WM_DPICHANGED` / `WM_SETTINGCHANGE`)
+- **멀티 모니터 자동 추적**:
+  - F1 로 토글할 때마다 **현재 마우스 커서가 있는 모니터** 에 드롭다운이 등장. 해당 모니터의 work area (작업 표시줄 제외) 기준으로 폭·높이·offset 을 매번 재계산해서 맞춤
+  - 해상도 변경 / 외부 모니터 연결·해제 / 작업 표시줄 자동 숨김 토글 / per-monitor DPI 변경도 자동 감지해서 즉시 재배치 (`WM_DISPLAYCHANGE` / `WM_DPICHANGED` / `WM_SETTINGCHANGE`)
+  - DPI 가 다른 모니터로 이동하면 GDI 폰트 · cell 크기 · DirectWrite glyph atlas 를 새 DPI 로 재raster 해서 글자가 모니터 배율에 맞춰 다시 그려짐
+  - 외부 모니터 해제처럼 창 rect 이 동일해 `WM_SIZE` 가 발생하지 않는 경우에도 terminal grid 를 직접 reflow 해서 새 cell 크기로 화면 전체를 채움
 - 반투명(설정 가능) always-on-top 윈도우
 - Ctrl+Shift+V 클립보드 붙여넣기
 - Ctrl+Shift+R 터미널 초기화 (바이너리 cat 등으로 깨졌을 때)

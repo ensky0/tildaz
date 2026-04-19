@@ -276,6 +276,11 @@ const App = struct {
     CLOSE_BTN_SIZE: c_int = 14,
     TAB_PADDING: c_int = 6,
     SCROLLBAR_W: c_int = 8,
+    // Minimum scrollback thumb height — clamps the thumb so a deeply scrolled
+    // buffer (e.g. 10k lines visible 30) doesn't shrink the thumb below a
+    // draggable size. Must stay in sync between renderer (draw size) and the
+    // hit-test / drag math in main.zig.
+    SCROLLBAR_MIN_THUMB_H: c_int = 32,
     TERMINAL_PADDING: c_int = 6,
 
     // Word boundary characters for double-click selection
@@ -376,6 +381,52 @@ const App = struct {
         }
     }
 
+    /// Recompute DPI-dependent UI constants (tab bar / close button / padding /
+    /// scrollbar) from `new_dpi`. Called at startup and whenever the window
+    /// moves between monitors with different DPI scales.
+    fn applyDpiScale(self: *App, new_dpi: c_uint) void {
+        const effective: f32 = if (new_dpi > 0) @as(f32, @floatFromInt(new_dpi)) else 96.0;
+        const scale: f32 = effective / 96.0;
+        self.dpi_scale = scale;
+        self.TAB_BAR_HEIGHT = @intFromFloat(@round(28.0 * scale));
+        self.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
+        self.CLOSE_BTN_SIZE = @intFromFloat(@round(14.0 * scale));
+        self.TAB_PADDING = @intFromFloat(@round(6.0 * scale));
+        self.SCROLLBAR_W = @intFromFloat(@round(8.0 * scale));
+        self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(32.0 * scale));
+        self.TERMINAL_PADDING = @intFromFloat(@round(6.0 * scale));
+        const min_tab_bar_h: c_int = @as(c_int, @intCast(self.window.cell_height)) + 4;
+        if (self.TAB_BAR_HEIGHT < min_tab_bar_h) {
+            self.TAB_BAR_HEIGHT = min_tab_bar_h;
+        }
+    }
+
+    /// WM_DPICHANGED path (called from `window.wndProc` after
+    /// `rebuildFontForDpi` has updated `cell_width` / `cell_height`).
+    ///
+    /// Rebuilds the D3D renderer's font context + glyph atlas at the new
+    /// DPI so glyphs are rasterized at the new monitor's pixel density,
+    /// then rescales the tab bar / scrollbar / padding constants. This
+    /// happens before the subsequent `SetWindowPos` → `WM_SIZE` cascade,
+    /// so `onResize` computes the terminal grid from the freshly updated
+    /// metrics in one step.
+    fn onFontChange(window: *Window, userdata: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        if (self.d3d_renderer) |*r| {
+            r.rebuildFont(
+                window.hwnd,
+                window.font_family,
+                window.font_size,
+                @intCast(window.cell_width),
+                @intCast(window.cell_height),
+            ) catch {
+                // Leave the renderer as-is; glyphs will stay at the old DPI
+                // but the app keeps running. User can restart to recover.
+            };
+        }
+        self.applyDpiScale(window.current_dpi);
+    }
+
     fn onRender(window: *Window) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
         const onrender_t0 = perf.now();
@@ -435,6 +486,8 @@ const App = struct {
                         size.h,
                         self.TAB_BAR_HEIGHT,
                         self.TERMINAL_PADDING,
+                        self.SCROLLBAR_W,
+                        self.SCROLLBAR_MIN_THUMB_H,
                     );
                 }
             } else {
@@ -513,7 +566,10 @@ const App = struct {
         const rel_y = @max(0, mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING);
         const track_hf = @as(f64, @floatFromInt(track_h));
         const ratio_px = track_hf / @as(f64, @floatFromInt(sb.total));
-        const thumb_h = @max(16.0, ratio_px * @as(f64, @floatFromInt(sb.len)));
+        // Must match the renderer's `scrollbar_min_thumb_h` so the thumb the
+        // user clicks covers the same Y range the drag math walks over.
+        const min_thumb: f64 = @floatFromInt(self.SCROLLBAR_MIN_THUMB_H);
+        const thumb_h = @max(min_thumb, ratio_px * @as(f64, @floatFromInt(sb.len)));
         const available = track_hf - thumb_h;
         if (available <= 0) return;
         const clamped_y = @min(@as(f64, @floatFromInt(rel_y)), available);
@@ -1037,6 +1093,7 @@ fn run() !void {
     app.window.write_fn = App.onKeyInput;
     app.window.render_fn = App.onRender;
     app.window.resize_fn = App.onResize;
+    app.window.font_change_fn = App.onFontChange;
     app.window.app_msg_fn = App.onAppMessage;
     const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
 
@@ -1074,23 +1131,10 @@ fn run() !void {
     try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
     defer app.window.deinit();
 
-    // Scale tab bar constants by DPI
-    const dpi = GetDpiForWindow(app.window.hwnd);
-    if (dpi > 96) {
-        const scale: f32 = @as(f32, @floatFromInt(dpi)) / 96.0;
-        app.dpi_scale = scale;
-        app.TAB_BAR_HEIGHT = @intFromFloat(@round(28.0 * scale));
-        app.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
-        app.CLOSE_BTN_SIZE = @intFromFloat(@round(14.0 * scale));
-        app.TAB_PADDING = @intFromFloat(@round(6.0 * scale));
-        app.SCROLLBAR_W = @intFromFloat(@round(8.0 * scale));
-        app.TERMINAL_PADDING = @intFromFloat(@round(6.0 * scale));
-    }
-    // Ensure tab bar is tall enough for the font (cell_height + 4px padding)
-    const min_tab_bar_h: c_int = @as(c_int, @intCast(app.window.cell_height)) + 4;
-    if (app.TAB_BAR_HEIGHT < min_tab_bar_h) {
-        app.TAB_BAR_HEIGHT = min_tab_bar_h;
-    }
+    // Scale tab bar / scrollbar / padding constants by the startup DPI.
+    // The same computation runs again via `App.onFontChange` whenever the
+    // window moves to a monitor with a different DPI.
+    app.applyDpiScale(GetDpiForWindow(app.window.hwnd));
 
     // Initialize D3D11 renderer
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;

@@ -368,6 +368,47 @@ pub const D3d11Renderer = struct {
         self.render_state.viewport_pin = null;
     }
 
+    /// Rebuild the DirectWrite font context + glyph atlas at the window's
+    /// current DPI. Called after `window.rebuildFontForDpi` has updated
+    /// `cell_w` / `cell_h`, so the atlas rasterizes glyphs at the new
+    /// monitor's physical pixel density instead of the init-time DPI.
+    ///
+    /// On failure the renderer is left in a broken state (old resources
+    /// already released, new ones not yet created). Callers treat any
+    /// error as fatal.
+    pub fn rebuildFont(
+        self: *D3d11Renderer,
+        hwnd: ?*anyopaque,
+        font_family: [*:0]const u16,
+        font_height: c_int,
+        cell_w: u32,
+        cell_h: u32,
+    ) !void {
+        // Release old font + atlas first — the atlas texture is bound to
+        // the init-time `pixels_per_dip` and the font metrics were scaled
+        // for the init-time DPI, so neither can be reused.
+        self.atlas.deinit();
+        self.font.deinit();
+
+        var font_ctx = try DWriteFontContext.init(self.alloc, font_family, font_height, cell_w, cell_h);
+        errdefer font_ctx.deinit();
+
+        const dpi = GetDpiForWindow(hwnd);
+        const pixels_per_dip: f32 = if (dpi > 0) @as(f32, @floatFromInt(dpi)) / 96.0 else 1.0;
+        // Match the scaling done in `init` so glyphs positioned using
+        // `ascent_px` line up with the DPI-scaled raster.
+        font_ctx.ascent_px *= pixels_per_dip;
+
+        const atlas = try GlyphAtlas.init(self.alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, self.device, self.ctx);
+
+        self.font = font_ctx;
+        self.atlas = atlas;
+
+        // Grid state was computed against the old cell metrics — force a
+        // full redraw so every cell re-rasterizes through the new atlas.
+        self.invalidate();
+    }
+
     pub fn resize(self: *D3d11Renderer, width: u32, height: u32) void {
         if (self.rtv) |r| {
             _ = r.Release();
@@ -629,6 +670,8 @@ pub const D3d11Renderer = struct {
         vp_h: c_int,
         y_offset: c_int,
         padding: c_int,
+        scrollbar_w: c_int,
+        scrollbar_min_thumb_h: c_int,
     ) void {
         const render_t0 = perf.now();
         self.render_state.update(self.alloc, terminal) catch return;
@@ -832,20 +875,27 @@ pub const D3d11Renderer = struct {
         }
 
         // --- Scrollbar ---
+        // `scrollbar_w` / `scrollbar_min_thumb_h` are DPI-scaled by the
+        // caller so the thumb stays visible and draggable across monitor
+        // DPI changes. The same `scrollbar_min_thumb_h` is used by the
+        // drag hit-test in `main.zig` to keep click → offset mapping
+        // consistent with what's drawn.
         const sb = terminal.screens.active.pages.scrollbar();
         if (sb.total > sb.len) {
+            const sbw: f32 = @floatFromInt(scrollbar_w);
+            const sb_min: f32 = @floatFromInt(scrollbar_min_thumb_h);
             const vp_hf: f32 = @floatFromInt(vp_h);
             const vp_wf: f32 = @floatFromInt(vp_w);
             const track_h: f32 = vp_hf - @as(f32, @floatFromInt(y_offset + padding));
-            const track_x: f32 = vp_wf - SCROLLBAR_W;
+            const track_x: f32 = vp_wf - sbw;
             const ratio = track_h / @as(f32, @floatFromInt(sb.total));
-            const thumb_h = @max(SCROLLBAR_MIN_H, ratio * @as(f32, @floatFromInt(sb.len)));
+            const thumb_h = @max(sb_min, ratio * @as(f32, @floatFromInt(sb.len)));
             const available = track_h - thumb_h;
             const max_offset: f32 = @floatFromInt(sb.total - sb.len);
             const thumb_y = y_off + if (max_offset > 0) @as(f32, @floatFromInt(sb.offset)) / max_offset * available else 0;
             const scrollbar_inst = [1]BgInstance{.{
                 .pos = .{ track_x, thumb_y },
-                .size = .{ SCROLLBAR_W, thumb_h },
+                .size = .{ sbw, thumb_h },
                 .color = .{ 1, 1, 1, 0.3 },
             }};
             self.drawBgInstances(&scrollbar_inst);
@@ -997,9 +1047,6 @@ pub const D3d11Renderer = struct {
             .bold = .bright,
         });
     }
-
-    const SCROLLBAR_W: f32 = 8.0;
-    const SCROLLBAR_MIN_H: f32 = 16.0;
 
     const BlockRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32 };
 
