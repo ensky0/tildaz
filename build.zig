@@ -4,10 +4,12 @@ const std = @import("std");
 //   zig build                  -- default build (ReleaseFast, SIMD disabled)
 //   zig build -Dsimd=true      -- SIMD enabled (currently broken on Windows, Zig 0.15 issue)
 //   zig build -Doptimize=Debug -- debug build
+//   zig build package          -- build + create zig-out/release/tildaz-v<ver>-win-x64.zip + .sha256
 //
-// 릴리즈 버전. 태그 / dist/README.txt / GitHub Release 와 동기화 필요.
-// src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도 같이 갱신.
-const tildaz_version = "0.2.8";
+// 릴리즈 버전. 태그 / dist/windows/README.txt / GitHub Release / dist/release-notes/
+// 와 동기화 필요. src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도
+// 같이 갱신.
+const tildaz_version = "0.2.9";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -65,4 +67,26 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     const exe_tests = b.addTest(.{ .root_module = exe_mod });
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+
+    // Package step — 릴리즈용 번들 zip + SHA256 sidecar 생성.
+    //
+    //   zig build package
+    //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + conpty.dll + OpenConsole.exe
+    //     → bash dist/windows/package.sh --version <tildaz_version>
+    //        → zig-out/release/tildaz-v<ver>-win-x64.zip
+    //        → zig-out/release/tildaz-v<ver>-win-x64.zip.sha256
+    //
+    // bash 는 PATH 에서 해석돼요:
+    //   Windows — Git for Windows 의 C:\Program Files\Git\usr\bin\bash.exe
+    //   macOS / Linux — 시스템 기본 bash
+    const package_cmd = b.addSystemCommand(&.{
+        "bash",
+        "dist/windows/package.sh",
+        "--version",
+        tildaz_version,
+    });
+    package_cmd.step.dependOn(b.getInstallStep());
+
+    const package_step = b.step("package", "Create release zip bundle + SHA256 sidecar in zig-out/release/");
+    package_step.dependOn(&package_cmd.step);
 }
