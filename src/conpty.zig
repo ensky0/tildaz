@@ -1,6 +1,7 @@
 const std = @import("std");
 const windows = std.os.windows;
 const perf = @import("perf.zig");
+const tildaz_log = @import("tildaz_log.zig");
 
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
@@ -108,7 +109,7 @@ fn ensureConptyDll() void {
     conpty_dll_loaded = true;
     const name = std.unicode.utf8ToUtf16LeStringLiteral("conpty.dll");
     const mod = LoadLibraryW(name) orelse {
-        perf.log("[conpty] conpty.dll not found — falling back to kernel32\n", .{});
+        tildaz_log.appendLine("conpty", "conpty.dll not found — falling back to kernel32", .{});
         return;
     };
     conpty_create_fn = @ptrCast(GetProcAddress(mod, "ConptyCreatePseudoConsole"));
@@ -119,14 +120,14 @@ fn ensureConptyDll() void {
     // 활성화한다.
     conpty_show_hide_fn = @ptrCast(GetProcAddress(mod, "ConptyShowHidePseudoConsole"));
     if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null) {
-        perf.log("[conpty] conpty.dll loaded but symbols missing — falling back to kernel32\n", .{});
+        tildaz_log.appendLine("conpty", "conpty.dll loaded but symbols missing — falling back to kernel32", .{});
         conpty_create_fn = null;
         conpty_resize_fn = null;
         conpty_close_fn = null;
         conpty_show_hide_fn = null;
         return;
     }
-    perf.log("[conpty] conpty.dll loaded, using bundled OpenConsole\n", .{});
+    tildaz_log.appendLine("conpty", "conpty.dll loaded, using bundled OpenConsole", .{});
 }
 
 extern "kernel32" fn InitializeProcThreadAttributeList(
@@ -339,7 +340,7 @@ pub const ConPty = struct {
             else
                 CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0, &hpc);
             const backend: []const u8 = if (create_fn != null) "conpty.dll" else "kernel32";
-            perf.log("[conpty] CreatePseudoConsole flags=0x8 failed, retried with 0x0 (backend={s}, hr=0x{x})\n", .{ backend, @as(u32, @bitCast(hr)) });
+            tildaz_log.appendLine("conpty", "CreatePseudoConsole flags=0x8 failed, retried with 0x0 (backend={s}, hr=0x{x})", .{ backend, @as(u32, @bitCast(hr)) });
         }
 
         // CreatePseudoConsole 는 handle 을 내부 duplicate — 우리 쪽 사본은 닫아야 한다.

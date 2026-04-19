@@ -5,6 +5,10 @@ const std = @import("std");
 //   zig build -Dsimd=true      -- SIMD enabled (currently broken on Windows, Zig 0.15 issue)
 //   zig build -Doptimize=Debug -- debug build
 //
+// 릴리즈 버전. 태그 / dist/README.txt / GitHub Release 와 동기화 필요.
+// src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도 같이 갱신.
+const tildaz_version = "0.2.8";
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.option(
@@ -19,6 +23,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // 컴파일 타임 상수 — About 다이얼로그 / tildaz.log 의 boot 엔트리에서 사용.
+    const build_opts = b.addOptions();
+    build_opts.addOption([]const u8, "version", tildaz_version);
+    exe_mod.addOptions("build_options", build_opts);
+
     // SIMD: currently broken on Windows — Zig 0.15 build system doesn't pass C++ stdlib
     // include paths to ghostty's SIMD C++ sources (highway, simdutf).
     // Keep default false until Zig upstream fixes this.
@@ -27,6 +36,9 @@ pub fn build(b: *std.Build) void {
     if (b.lazyDependency("ghostty", .{ .simd = simd, .optimize = optimize })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
+
+    // PE VERSIONINFO 리소스 (Explorer 속성 / Task Manager 에서 버전 표시).
+    exe_mod.addWin32ResourceFile(.{ .file = b.path("src/tildaz.rc") });
 
     const exe = b.addExecutable(.{
         .name = "tildaz",

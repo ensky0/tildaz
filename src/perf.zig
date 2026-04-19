@@ -1,7 +1,8 @@
 // Throughput instrumentation — atomic counters + file logger.
-// Writes to C:\tildaz_win\perf.log on dumpAndReset().
+// Writes snapshots to %APPDATA%\tildaz\tildaz.log via tildaz_log on dumpAndReset().
 
 const std = @import("std");
+const tildaz_log = @import("tildaz_log.zig");
 
 pub const Counter = struct {
     calls: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -66,15 +67,6 @@ fn snapshot(c: *Counter) [4]u64 {
     };
 }
 
-pub fn log(comptime fmt: []const u8, args: anytype) void {
-    var buf: [1024]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    const f = std.fs.createFileAbsolute("C:\\tildaz_win\\perf.log", .{ .truncate = false, .read = false }) catch return;
-    defer f.close();
-    f.seekFromEnd(0) catch {};
-    f.writeAll(text) catch {};
-}
-
 pub fn dumpAndReset(label: []const u8) void {
     const rl = snapshot(&readloop);
     const pu = snapshot(&push);
@@ -109,8 +101,5 @@ pub fn dumpAndReset(label: []const u8) void {
         },
     ) catch return;
 
-    const f = std.fs.createFileAbsolute("C:\\tildaz_win\\perf.log", .{ .truncate = false, .read = false }) catch return;
-    defer f.close();
-    f.seekFromEnd(0) catch {};
-    f.writeAll(text) catch {};
+    tildaz_log.appendBlock(text);
 }
