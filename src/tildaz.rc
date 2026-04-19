@@ -1,0 +1,38 @@
+// tildaz PE VERSIONINFO resource.
+//
+// 릴리즈마다 FILEVERSION / PRODUCTVERSION 네 숫자와 FileVersion / ProductVersion
+// 문자열을 갱신. build.zig 의 tildaz_version 상수와 동기화 유지.
+//
+// winver.h / winres.h 를 include 하지 않도록 VS_VERSION_INFO = 1 을 직접 사용하고,
+// FILEOS / FILETYPE 상수도 리터럴로 박는다. llvm-rc + Zig 크로스 빌드 호환.
+
+#pragma code_page(65001)
+
+1 VERSIONINFO
+ FILEVERSION    0,2,8,0
+ PRODUCTVERSION 0,2,8,0
+ FILEFLAGSMASK  0x3FL
+ FILEFLAGS      0x0L
+ FILEOS         0x00040004L   // VOS_NT_WINDOWS32
+ FILETYPE       0x00000001L   // VFT_APP
+ FILESUBTYPE    0x00000000L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"  // U.S. English (0x0409), Unicode (1200 = 0x04b0)
+        BEGIN
+            VALUE "CompanyName",      "ensky0"
+            VALUE "FileDescription",  "tildaz - Windows drop-down terminal"
+            VALUE "FileVersion",      "0.2.8"
+            VALUE "InternalName",     "tildaz"
+            VALUE "LegalCopyright",   "(c) 2026 ensky0. GPL-3.0 + Commons Clause."
+            VALUE "OriginalFilename", "tildaz.exe"
+            VALUE "ProductName",      "tildaz"
+            VALUE "ProductVersion",   "0.2.8"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
