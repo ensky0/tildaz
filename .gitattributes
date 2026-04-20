@@ -1,11 +1,3 @@
-# Keep shell scripts in LF even on Windows autocrlf=true — Git Bash / Actions
-# Windows runner both execute these, and CR in the shebang breaks them.
-*.sh text eol=lf
-
-# Resource / build scripts are edited from Windows editors too;
-# normalize but allow CRLF in the working tree (default behavior).
-*.zig text
-*.rc  text
-*.md  text
-*.yml text
-*.yaml text
+# 모든 텍스트 파일은 LF 로 정규화. working tree 도 LF 로 강제 (eol=lf).
+# 바이너리는 text=auto 가 내용 기반으로 자동 감지해서 제외 (vendor/conpty/*.{dll,exe}).
+* text=auto eol=lf
