@@ -82,21 +82,43 @@ jobs:
         shell: bash
         run: zig version
 
-      - name: Sanity checks (version / release notes)
+      - name: Sanity checks (version / release notes / pinned deps)
         shell: bash
         run: |
+          set -euo pipefail
+
           BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
           if [[ "$BZIG_VER" != "${{ steps.vars.outputs.version }}" ]]; then
             echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag version (${{ steps.vars.outputs.version }})"
             exit 1
           fi
+
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
           if [[ ! -f "$NOTES" ]]; then
             echo "ERROR: release notes missing at $NOTES"
             exit 1
           fi
+
+          # build.zig.zon 의 github archive URL 은 전부 특정 SHA 로 pin 되어야 함.
+          # refs/heads/ · refs/tags/ 같은 rolling reference 는 upstream 이 움직이면
+          # CI fetch 가 해시 불일치로 터지므로 금지. (과거 c41a9ef → e7c3942 회귀로
+          # 한 번 깨진 뒤 v0.2.10 에서 다시 핀 + 이 check 추가)
+          BAD=$(grep -E '\.url[[:space:]]*=[[:space:]]*"https://github\.com/' build.zig.zon | grep -v -E '/archive/[0-9a-f]{40}\.tar\.gz"' || true)
+          if [[ -n "$BAD" ]]; then
+            echo "ERROR: build.zig.zon 에 rolling / non-SHA dependency URL 이 있음:"
+            echo "$BAD"
+            echo ""
+            echo "github archive URL 은 반드시"
+            echo "  https://github.com/<org>/<repo>/archive/<40-hex-sha>.tar.gz"
+            echo "형식이어야 합니다. refs/heads/ 나 refs/tags/ 는 금지."
+            echo ""
+            echo "갱신하려면: ./dist/update-ghostty.sh"
+            exit 1
+          fi
+
           echo "build.zig version : $BZIG_VER"
           echo "release notes     : $NOTES"
+          echo "pinned deps       : OK"
 
       # Zig 0.15 의 Windows HTTP client 가 github.com 에서 transitive deps
       # (ghostty 아래 imgui, vaxis 아래 zigimg / uucode 등) 를 받을 때 가끔
