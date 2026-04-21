@@ -55,6 +55,10 @@ const WM_MOUSEWHEEL: UINT = 0x020A;
 const WM_DISPLAYCHANGE: UINT = 0x007E;
 const WM_DPICHANGED: UINT = 0x02E0;
 const WM_SETTINGCHANGE: UINT = 0x001A;
+const WM_WINDOWPOSCHANGING: UINT = 0x0046;
+const WM_WINDOWPOSCHANGED: UINT = 0x0047;
+const WM_NCCALCSIZE: UINT = 0x0083;
+const WM_ERASEBKGND: UINT = 0x0014;
 const SPI_SETWORKAREA: WPARAM = 0x002F;
 const MK_LBUTTON: WPARAM = 0x0001;
 
@@ -62,16 +66,35 @@ const MK_LBUTTON: WPARAM = 0x0001;
 const SW_SHOW: c_int = 5;
 const SW_HIDE: c_int = 0;
 const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+const SWP_NOSIZE: UINT = 0x0001;
+const SWP_NOMOVE: UINT = 0x0002;
 const SWP_NOACTIVATE: UINT = 0x0010;
+const SWP_FRAMECHANGED: UINT = 0x0020;
 const SWP_SHOWWINDOW: UINT = 0x0040;
+const SWP_NOCOPYBITS: UINT = 0x0100;
+/// Fullscreen / dock rect 전환 시 DWM 이 이전 surface 를 캐시해 두고 logical
+/// rect 만 바꾸는 상태 (터미널 grid 는 new rect 로 reflow 됐지만 visible frame
+/// 은 old rect 에 고정) 를 방어. SWP_NOCOPYBITS 는 이전 client 영역 bit 를
+/// 재사용하지 않고 전부 repaint 하도록 강제하고, SWP_FRAMECHANGED 는 DWM 에
+/// non-client (window frame) 재계산을 요청 — 이 둘이 같이 들어가야 WS_POPUP +
+/// WS_EX_LAYERED 조합에서 visual rect 가 logical rect 를 따라감.
+const SWP_REPAINT: UINT = SWP_NOCOPYBITS | SWP_FRAMECHANGED;
 const CW_USEDEFAULT: c_int = @bitCast(@as(c_uint, 0x80000000));
 const COLOR_WINDOW: c_int = 5;
 const IDC_ARROW: [*:0]const WCHAR = @ptrFromInt(32512);
 const GWL_USERDATA: c_int = -21;
 const TRANSPARENT: c_int = 1;
 const LWA_ALPHA: DWORD = 0x00000002;
+/// DwmSetWindowAttribute 의 attribute id. Windows 에 "이 창은 transition 애니
+/// 메이션 (hide/show/resize 시 shrink/grow 효과) 을 사용하지 말라" 고 알림.
+/// WS_POPUP + WS_EX_TOPMOST + WS_EX_LAYERED 창이 Alt+Enter 로 rect 가 바뀐
+/// 직후 SW_HIDE 하면 DWM 이 "이전 rect 로 shrink" 애니메이션을 재생하는 것
+/// 으로 관측됨 — 그 중간 프레임이 사용자 눈에 "F1 눌렀는데 잠깐 이전 사이즈로
+/// 보이는" 글리치로 잡힘.
+const DWMWA_TRANSITIONS_FORCEDISABLED: DWORD = 3;
 
 const MONITOR_DEFAULTTOPRIMARY: DWORD = 0x00000001;
+const MONITOR_DEFAULTTONEAREST: DWORD = 0x00000002;
 
 // GDI constants
 const FW_NORMAL: c_int = 400;
@@ -98,6 +121,18 @@ const PAINTSTRUCT = extern struct {
     fRestore: BOOL,
     fIncUpdate: BOOL,
     rgbReserved: [32]u8,
+};
+
+/// `WM_WINDOWPOSCHANGING` / `WM_WINDOWPOSCHANGED` 의 `lParam` 이 가리키는
+/// 구조체. 윈도우 매니저가 실제 적용하려는 rect 과 flag 를 관측하는 용도.
+const WINDOWPOS = extern struct {
+    hwnd: HWND,
+    hwndInsertAfter: HWND,
+    x: c_int,
+    y: c_int,
+    cx: c_int,
+    cy: c_int,
+    flags: UINT,
 };
 
 const MSG = extern struct {
@@ -143,14 +178,18 @@ extern "user32" fn RegisterHotKey(HWND, c_int, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn UnregisterHotKey(HWND, c_int) callconv(.c) BOOL;
 extern "user32" fn GetCursorPos(*POINT) callconv(.c) BOOL;
 extern "user32" fn MonitorFromPoint(POINT, DWORD) callconv(.c) ?*anyopaque;
+extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn GetMonitorInfoW(?*anyopaque, *MONITORINFO) callconv(.c) BOOL;
 extern "user32" fn SetLayeredWindowAttributes(HWND, COLORREF, u8, DWORD) callconv(.c) BOOL;
+extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.c) std.os.windows.HRESULT;
+extern "dwmapi" fn DwmFlush() callconv(.c) std.os.windows.HRESULT;
 extern "user32" fn SetWindowLongPtrW(HWND, c_int, isize) callconv(.c) isize;
 extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
 extern "user32" fn LoadCursorW(HINSTANCE, [*:0]const WCHAR) callconv(.c) HCURSOR;
 extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) BOOL;
+extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.c) BOOL;
 extern "user32" fn GetDC(HWND) callconv(.c) HDC;
 extern "user32" fn ReleaseDC(HWND, HDC) callconv(.c) c_int;
 extern "kernel32" fn GetModuleHandleW(?[*:0]const WCHAR) callconv(.c) HINSTANCE;
@@ -262,9 +301,38 @@ pub const Window = struct {
     offset_pct: u8 = 100,
     position_set: bool = false,
 
+    // Alt+Enter 로 토글되는 fullscreen 상태. `show()` / `WM_DISPLAYCHANGE` /
+    // `WM_DPICHANGED` / `WM_SETTINGCHANGE(SPI_SETWORKAREA)` 핸들러가
+    // 이 값을 보고 `applyFullscreen` (현재 모니터 rcMonitor 전체) 혹은
+    // `repositionFromSaved` (저장된 dock/pct) 중 하나로 분기. F1 hide 는
+    // 이 값을 유지 — 다시 F1 show 하면 fullscreen 이 복원됨.
+    fullscreen: bool = false,
+
+    // WM_DISPLAYCHANGE dedupe — 사용자 환경에 따라 Alt 키 단독 press 같은
+    // 이벤트에서도 WM_DISPLAYCHANGE 가 spurious 하게 broadcast 되는 경우가
+    // 있음 (Display-Fusion/Nvidia nView 류 유틸 훅 의심). lParam 의 해상도
+    // (LOWORD=w, HIWORD=h) 를 캐시해서 실제 해상도가 바뀐 경우에만
+    // applyLayout 을 호출 — 그래야 Alt+Enter 직후 spurious WM_DISPLAYCHANGE
+    // 가 fullscreen/dock 전환을 시각적으로 취소하는 race 를 피할 수 있음.
+    last_display_w: u32 = 0,
+    last_display_h: u32 = 0,
+
+    // 우리가 의도한 window rect. `applyRect` 가 매번 갱신. `WM_WINDOWPOSCHANGING`
+    // 핸들러가 이 값과 다른 rect 로 이동/리사이즈를 요청받으면 강제로 이 값으로
+    // 덮어써서 외부 프로그램 (Alt 키에 반응해 WS_EX_TOPMOST 창을 rcMonitor 전체로
+    // 확장시키는 display utility 류) 의 간섭을 차단. `expected_set` 은 최초
+    // `setPosition` 호출 전 CreateWindowExW 단계의 내부 resize 는 간섭하지 않기
+    // 위한 가드.
+    expected_x: c_int = 0,
+    expected_y: c_int = 0,
+    expected_w: c_int = 0,
+    expected_h: c_int = 0,
+    expected_set: bool = false,
+
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
     const VK_F1: UINT = 0x70;
+    const VK_RETURN: WPARAM = 0x0D;
     const RENDER_TIMER_ID: usize = 1;
 
     pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32) !void {
@@ -312,6 +380,17 @@ pub const Window = struct {
         _ = SetWindowLongPtrW(self.hwnd, GWL_USERDATA, @intCast(@intFromPtr(self)));
 
         _ = SetLayeredWindowAttributes(self.hwnd, 0, opacity, LWA_ALPHA);
+
+        // DWM window transition 애니메이션 비활성화. Alt+Enter 로 fullscreen ↔
+        // dock rect 전환 직후 F1 로 SW_HIDE 하면, DWM 이 "현재 rect 에서 이전
+        // rect 로 shrink" 애니메이션을 재생하면서 중간 프레임의 WM_SIZE 를
+        // broadcast 하는 현상이 관측됨. 예: fullscreen 상태에서 hide → WM_SIZE
+        // 1440x1704 (직전 dock 사이즈) 가 hide 100ms 후 들어옴. 사용자 눈엔
+        // "F1 눌렀는데 반화면이 잠깐 나타났다 사라짐" 으로 보임.
+        // 이 속성을 켜면 DWM 이 transition 애니메이션을 건너뛰고 상태 전환이
+        // 즉시 반영됨.
+        const disable: BOOL = 1;
+        _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
         // Register F1 global hotkey
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, 0, VK_F1) == 0) {
@@ -394,28 +473,65 @@ pub const Window = struct {
         if (self.font) |f| _ = DeleteObject(f);
     }
 
+    /// F1 hide 에서 돌아오는 show. Windows visibility 를 `SW_SHOW` 로 전환하고,
+    /// `self.fullscreen` 상태에 따라 fullscreen rect 또는 저장된 dock 설정으로
+    /// layout 을 재적용한다.
+    ///
+    /// `SW_SHOW` 를 쓰는 이유: 과거 한때 `DWMWA_CLOAK` 기반 cloak/uncloak 로
+    /// visibility 를 토글한 적이 있는데, cloak 은 DWM compositor 레벨에서만
+    /// 보였다/안 보였다를 바꾸고 Windows shell 의 visibility state (external
+    /// window manager 들이 enum 할 때 참조하는) 와는 sync 되지 않아서,
+    /// "Alt+Enter → F1 hide → F1 show → Alt+Enter" 순서에서 shell state 가
+    /// 고착돼 다음 rect 전환이 stale surface 위에 composite 되는 버그가
+    /// 있었음 (#87). `SW_SHOW` / `SW_HIDE` 는 Windows 가 공식 인정하는
+    /// visibility 전환이라 shell state 가 매 전환마다 clean 하게 재계산됨.
+    ///
+    /// 과거 `SW_HIDE` 에서 보이던 "shrink transition animation" glitch 는
+    /// `init()` 에서 설정한 `DWMWA_TRANSITIONS_FORCEDISABLED` 로 DWM 이
+    /// 애니메이션 자체를 skip 하므로 재현되지 않음.
     pub fn show(self: *Window) void {
         if (self.hwnd) |hwnd| {
-            // Re-apply position before showing so the drop-down follows the
-            // current cursor monitor and fits the current work area
-            // (handles the case where resolution or monitor configuration
-            // changed while the window was hidden).
-            self.repositionFromSaved();
-            _ = ShowWindow(hwnd, SW_SHOW);
-            _ = SetForegroundWindow(hwnd);
             self.visible = true;
+            _ = ShowWindow(hwnd, SW_SHOW);
+
+            // fullscreen 상태였으면 fullscreen 을 복원, 아니면 dock 설정 복원.
+            // F1 hide 는 fullscreen 필드를 건드리지 않으므로 "Alt+Enter → F1
+            // hide → F1 show" 는 여전히 fullscreen 상태로 돌아옴.
+            self.applyLayout();
+
+            _ = SetForegroundWindow(hwnd);
+
+            // `applyLayout` 의 SetWindowPos 가 현재 rect 과 동일해서 WM_SIZE
+            // 를 생략한 경우 대비 safety net — swap chain / terminal grid 를
+            // idempotent 하게 재동기화.
+            if (self.resize_fn) |resize_fn| {
+                const grid = self.getGridSize();
+                resize_fn(grid.cols, grid.rows, self.userdata);
+            }
+            if (self.render_fn) |render_fn| render_fn(self);
+            _ = DwmFlush();
         }
     }
 
+    /// F1 으로 호출되는 hide. `SW_HIDE` 로 Windows 가 창을 공식적으로 hidden
+    /// 으로 인식하게 한다 — external window manager (FancyZones 등) 가 창을
+    /// enum 에서 빼고 간섭을 멈추며, shell state 도 clean 해짐.
+    ///
+    /// `self.fullscreen` 은 건드리지 않음 — 다음 `show()` 에서 `applyLayout` 이
+    /// fullscreen 을 그대로 복원한다.
     pub fn hide(self: *Window) void {
         if (self.hwnd) |hwnd| {
-            _ = ShowWindow(hwnd, SW_HIDE);
             self.visible = false;
+            _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
 
     pub fn toggle(self: *Window) void {
-        if (self.visible) self.hide() else self.show();
+        if (self.visible) {
+            self.hide();
+        } else {
+            self.show();
+        }
     }
 
     pub fn setPosition(self: *Window, dock: DockPosition, width_pct: u8, height_pct: u8, offset_pct: u8) void {
@@ -456,7 +572,7 @@ pub const Window = struct {
             .left, .right => sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100),
         };
 
-        _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, 0);
+        self.applyRect(x, y, w, h);
     }
 
     /// Re-apply the last `setPosition` parameters. Used by display/DPI/work-area
@@ -484,6 +600,87 @@ pub const Window = struct {
             const grid = self.getGridSize();
             resize_fn(grid.cols, grid.rows, self.userdata);
         }
+    }
+
+    /// `applyFullscreen` / `setPosition` 이 공유하는 단일 rect 적용 경로.
+    ///
+    /// 하는 일:
+    /// 1. `expected_*` 필드를 새 rect 로 갱신 — `WM_WINDOWPOSCHANGING` 핸들러가
+    ///    이 값을 source-of-truth 로 삼아 외부 프로그램 (display utility / window
+    ///    manager 류) 의 rect 간섭을 clamp 한다.
+    /// 2. `SetWindowPos(HWND_TOPMOST, ..., SWP_REPAINT)` 호출 — WS_POPUP +
+    ///    WS_EX_LAYERED 조합에서 visual rect 가 logical rect 를 따라가도록
+    ///    `SWP_NOCOPYBITS | SWP_FRAMECHANGED` 를 같이 걸어 DWM 이 이전 surface
+    ///    를 재사용하지 않고 non-client 영역도 재계산하게 강제.
+    ///
+    /// 모든 rect 변경 경로 (dock 재배치 / fullscreen 토글 / display 변경 후
+    /// 재적용) 가 이 함수를 지나게 해서 "커지는 방향 / 줄어드는 방향" 동작을
+    /// 대칭으로 유지.
+    fn applyRect(self: *Window, x: c_int, y: c_int, w: c_int, h: c_int) void {
+        const hwnd = self.hwnd orelse return;
+        self.expected_x = x;
+        self.expected_y = y;
+        self.expected_w = w;
+        self.expected_h = h;
+        self.expected_set = true;
+        _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_REPAINT);
+    }
+
+    /// 현재 창이 올라가 있는 모니터의 `rcWork` (작업 표시줄 제외) 전체로 창을
+    /// 확장. `setPosition` 과 달리 저장된 dock 파라미터 (`dock` / `width_pct` /
+    /// `height_pct` / `offset_pct`) 는 건드리지 않아서 fullscreen 해제시
+    /// `repositionFromSaved` 로 그대로 복원 가능.
+    ///
+    /// **`rcMonitor` 가 아닌 `rcWork` 를 쓰는 이유**: WS_POPUP + WS_EX_TOPMOST
+    /// 창의 rect 가 monitor rect 와 정확히 일치하면 DWM 이 direct-flip 을
+    /// engage (compositor 우회 경로) 해서, 이후 rect 가 다시 줄어들 때 캐시된
+    /// 이전 fullscreen surface 가 새 frame 위에 겹쳐 보이는 glitch 가 유발됨.
+    /// `rcWork` 는 작업 표시줄 높이만큼 작아서 monitor rect 와 불일치 →
+    /// direct-flip 이 engage 되지 않고 일반 composition 경로로만 동작.
+    ///
+    /// 창이 이미 동일 rect 이면 `SetWindowPos` 가 `WM_SIZE` 를 생략하므로
+    /// `resize_fn` 을 명시적으로 한 번 호출해서 터미널 grid 가 idempotent 하게
+    /// reflow 되도록 한다 (repositionFromSaved 패턴과 동일).
+    pub fn applyFullscreen(self: *Window) void {
+        const hwnd = self.hwnd orelse return;
+        const monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        var mi: MONITORINFO = undefined;
+        mi.cbSize = @sizeOf(MONITORINFO);
+        _ = GetMonitorInfoW(monitor, &mi);
+
+        const x = mi.rcWork.left;
+        const y = mi.rcWork.top;
+        const w = mi.rcWork.right - mi.rcWork.left;
+        const h = mi.rcWork.bottom - mi.rcWork.top;
+
+        self.applyRect(x, y, w, h);
+
+        if (self.resize_fn) |resize_fn| {
+            const grid = self.getGridSize();
+            resize_fn(grid.cols, grid.rows, self.userdata);
+        }
+    }
+
+    /// `self.fullscreen` 분기 도우미. `show()` 와 display / DPI / workarea
+    /// 이벤트 핸들러가 공통으로 사용 — fullscreen 상태가 모든 rect 재계산
+    /// 경로에서 일관되게 보존됨.
+    pub fn applyLayout(self: *Window) void {
+        if (self.fullscreen) self.applyFullscreen() else self.repositionFromSaved();
+    }
+
+    /// Alt+Enter 로 호출. fullscreen 진입/해제 토글. 해제시엔 `applyLayout` 이
+    /// 저장된 dock 설정 (`width_pct` / `height_pct` / `offset_pct`) 으로 복원.
+    ///
+    /// 과거 구현에서는 여기서 `SW_HIDE → applyLayout → SW_SHOW` 로 DWM refresh
+    /// 를 강제했는데, 이 hide/show dance 가 spurious `WM_DISPLAYCHANGE` cascade
+    /// 를 유발하고, `SW_SHOW` 가 hide 직전의 surface 를 DWM cache 에서 복원하는
+    /// 쪽으로 동작해서 오히려 "rect 가 새 값으로 번쩍였다 이전 값으로 되돌아
+    /// 가는" 현상이 났음. `applyFullscreen` 이 `rcWork` 를 쓰므로 direct-flip
+    /// 이 engage 되지 않고, 단순 `SetWindowPos` 하나로도 rect 가 안정적으로
+    /// 반영된다 — hide/show 가 필요 없음.
+    pub fn toggleFullscreen(self: *Window) void {
+        self.fullscreen = !self.fullscreen;
+        self.applyLayout();
     }
 
     pub fn messageLoop(_: *Window) void {
@@ -519,6 +716,38 @@ pub const Window = struct {
                 _ = BeginPaint(self.hwnd, &ps);
                 _ = EndPaint(self.hwnd, &ps);
                 return 0;
+            },
+            WM_WINDOWPOSCHANGING => {
+                // 외부 프로그램 (Alt 키에 반응해 WS_EX_TOPMOST 창을 rcMonitor
+                // 전체로 확장시키는 display utility 류 — Display Fusion /
+                // nView / Dual Monitor Tools / FancyZones 등) 의 rect 간섭을
+                // 차단. 이런 변경을 방치하면 창이 순간적으로 rcMonitor 와
+                // 일치해 DWM direct-flip 이 engage 됐다가, 다음 rect 전환에서
+                // stale fullscreen surface 위에 새 프레임이 stretch 되어
+                // 보이는 glitch 로 이어짐.
+                //
+                // `expected_*` 는 `applyRect` 에서만 갱신 → 우리가 의도한
+                // rect 가 single source of truth. 우리 자신의 `SetWindowPos`
+                // 호출도 이 핸들러를 거치지만 rect 이 이미 `expected_*` 와
+                // 같으니 overwrite 는 no-op.
+                //
+                // - Z-order / activation 만 바꾸는 요청 (SWP_NOMOVE |
+                //   SWP_NOSIZE) 은 건드리지 않고 통과.
+                // - `visible=false` 동안엔 external 이 창을 enumerate 조차
+                //   못 하지만 `ShowWindow(SW_SHOW)` 가 보내는 초기 메시지
+                //   순서 때문에 방어적으로 `visible=true` 에서만 clamp.
+                const wp: *WINDOWPOS = @ptrFromInt(@as(usize, @bitCast(lParam)));
+                if (self.expected_set and self.visible) {
+                    if ((wp.flags & SWP_NOMOVE) == 0 and (wp.x != self.expected_x or wp.y != self.expected_y)) {
+                        wp.x = self.expected_x;
+                        wp.y = self.expected_y;
+                    }
+                    if ((wp.flags & SWP_NOSIZE) == 0 and (wp.cx != self.expected_w or wp.cy != self.expected_h)) {
+                        wp.cx = self.expected_w;
+                        wp.cy = self.expected_h;
+                    }
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_CHAR => {
                 // Let app handle first (e.g. tab rename mode)
@@ -623,14 +852,50 @@ pub const Window = struct {
                     const grid = self.getGridSize();
                     resize_fn(grid.cols, grid.rows, self.userdata);
                 }
+                // `resize_fn` 이 D3D11 swap chain 을 `ResizeBuffers` 로 새
+                // 크기에 맞춘 직후, 같은 WM_SIZE 턴에서 곧바로 새 크기
+                // backbuffer 를 Present 하고, `DwmFlush` 로 DWM compositor 가
+                // 지금까지 제출된 모든 composition 을 동기화하도록 block.
+                //
+                // DXGI BitBlt-model swap chain (`DXGI_SWAP_EFFECT_DISCARD` +
+                // `BufferCount=1`) + WS_EX_LAYERED 조합은 rect 변경 직후 이전
+                // window bounds 에 backbuffer 를 stretch 매핑해 "반화면을 늘린
+                // 전체화면" 아티팩트를 만들기 쉬운데, 같은 턴에서 Present +
+                // DwmFlush 를 강제하면 compositor 가 새 rect 로 바로 업데이트됨.
+                //
+                // `visible=false` 이면 skip — `show()` 가 어차피 layout 재적용
+                // 후 첫 render tick 에서 present 하므로.
+                if (self.visible) {
+                    if (self.render_fn) |render_fn| render_fn(self);
+                    _ = DwmFlush();
+                }
                 return 0;
             },
             WM_DISPLAYCHANGE => {
-                // Resolution / bit-depth / monitor configuration changed —
-                // re-fit to the current monitor's work area using the last
-                // saved percentages. SetWindowPos will cascade into WM_SIZE,
-                // which re-flows the PTY / terminal grid to the new size.
-                self.repositionFromSaved();
+                // 해상도 / bit-depth / monitor configuration 변경 — fullscreen
+                // 이면 fullscreen rect, 아니면 저장된 dock % 로 re-fit.
+                // `applyLayout` → `SetWindowPos` → `WM_SIZE` 로 PTY / 터미널
+                // grid 가 reflow 됨.
+                //
+                // lParam = LOWORD(width) | HIWORD(height). 사용자 환경에 따라
+                // 실제 해상도 변화가 없는 spurious broadcast 가 오는 케이스가
+                // 있는데 (display utility 훅 의심 — Alt 키 press 만으로도
+                // 발생), Alt+Enter 직후 그 spurious 메시지에서 `applyLayout`
+                // 을 다시 돌리면 방금 적용한 rect 를 DWM 이 이전 surface 로
+                // 덮어쓰는 race 가 생김. 따라서 실제 해상도가 바뀐 경우에만
+                // 재적용.
+                //
+                // 숨겨진 창이면 건너뜀 — `show()` 가 다음에 어차피 `applyLayout`
+                // 을 호출해 재적용.
+                const new_w: u32 = @intCast(lParam & 0xFFFF);
+                const new_h: u32 = @intCast((lParam >> 16) & 0xFFFF);
+                if (new_w == self.last_display_w and new_h == self.last_display_h) {
+                    // 같은 해상도 — spurious broadcast. skip.
+                    return 0;
+                }
+                self.last_display_w = new_w;
+                self.last_display_h = new_h;
+                if (self.visible) self.applyLayout();
                 return 0;
             },
             WM_DPICHANGED => {
@@ -643,24 +908,31 @@ pub const Window = struct {
                 //   2. Let the app rebuild its DirectWrite font + glyph atlas
                 //      at the matching `pixels_per_dip` — otherwise glyphs
                 //      stay rasterized at the old DPI and look tiny / blurry.
-                //   3. Re-apply the saved percentages via `repositionFromSaved`
-                //      which calls `SetWindowPos`, cascading into `WM_SIZE`.
-                //      `resize_fn` there re-reflows the terminal grid using
-                //      the freshly updated `cell_width` / `cell_height`.
+                //   3. Re-apply the layout via `applyLayout` — fullscreen
+                //      rect if active, else saved dock percentages. Calls
+                //      `SetWindowPos` which cascades into `WM_SIZE`, and
+                //      `resize_fn` re-reflows the terminal grid using the
+                //      freshly updated `cell_width` / `cell_height`.
                 //
                 // The suggested rect in lParam is intentionally ignored and
                 // returning 0 prevents the default proc from auto-resizing
-                // to it, so our own percentage-based layout wins.
+                // to it, so our own layout wins.
                 const new_dpi: UINT = @intCast(wParam & 0xFFFF);
                 self.rebuildFontForDpi(new_dpi);
                 if (self.font_change_fn) |f| f(self, self.userdata);
-                self.repositionFromSaved();
+                // 숨겨진 창이면 applyLayout 건너뜀 — `show()` 에서 재적용.
+                if (self.visible) self.applyLayout();
                 return 0;
             },
             WM_SETTINGCHANGE => {
-                // Taskbar / work-area changed (e.g. auto-hide toggled).
+                // 작업 표시줄 / work-area 변경 (예: auto-hide 토글). dock
+                // 파라미터는 `rcWork` 기준으로 계산되므로 work-area 가 바뀌면
+                // 재적용해 줘야 현재 taskbar 공간을 정확히 비켜감. fullscreen
+                // 상태에서도 `applyFullscreen` 이 최신 `rcWork` 로 재계산해
+                // 일관성 유지.
                 if (wParam == SPI_SETWORKAREA) {
-                    self.repositionFromSaved();
+                    // 숨겨진 창이면 applyLayout 건너뜀 — `show()` 에서 재적용.
+                    if (self.visible) self.applyLayout();
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
@@ -684,7 +956,14 @@ pub const Window = struct {
                 return 0;
             },
             WM_SYSKEYDOWN => {
-                // Alt+1 through Alt+9: switch tabs
+                // Alt+Enter: fullscreen 토글. `DefWindowProcW` 로 위임하지
+                // 않음 — Windows 기본 경로가 어떤 SC_ 명령을 생성하든 우리가
+                // 정의한 동작 (현재 모니터 `rcWork` ↔ 저장된 dock) 으로 가게.
+                if (wParam == VK_RETURN) {
+                    self.toggleFullscreen();
+                    return 0;
+                }
+                // Alt+1 ~ Alt+9: 탭 전환.
                 if (wParam >= 0x31 and wParam <= 0x39) {
                     if (self.app_msg_fn) |f| {
                         _ = f(msg, wParam, lParam, self.userdata);
