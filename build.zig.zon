@@ -33,8 +33,10 @@
     // internet connectivity.
     .dependencies = .{
         .ghostty = .{
-            .url = "https://github.com/ghostty-org/ghostty/archive/refs/heads/main.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBC-0ZDwVNPdtwPI95Qh9_oSarVQdUxaSsGhMT7Zj-",
+            // 특정 커밋으로 고정. `refs/heads/main.tar.gz` 는 upstream main 이
+            // 움직이면 CI 프리페치가 해시 불일치로 실패 (c41a9ef 참고).
+            .url = "https://github.com/ghostty-org/ghostty/archive/3a1482d1a2794801b4ac9a168da21a4d7dc0cfda.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBCwJhDwXKvqJMn5MW8l69OO6F66w7RqdkKHanV2TG",
         },
     },
     .paths = .{
