@@ -40,19 +40,12 @@ conpty.dll 이나 OpenConsole.exe 가 누락되면 tildaz 는 kernel32 의
 처음 실행하면 %APPDATA%\tildaz\config.json 이 생성됩니다.
 셸 · 폰트 · 테마 · 키바인딩 등을 직접 수정할 수 있습니다.
 
-주요 키:
-    F1                  창 show/hide 토글
-    Ctrl+Shift+T        새 탭
-    Ctrl+Tab            탭 전환
-    Ctrl+Shift+W        탭 닫기
-    Ctrl+Shift+R        터미널 리셋 (fullReset)
-    Ctrl+Shift+I        About / 버전 · exe 경로 · pid 확인
-    Ctrl+Shift+P        tildaz.log 에 perf 스냅샷 덤프
-    Ctrl+Shift+C / V    복사 / 붙여넣기 (마우스 선택은 자동 복사)
-    Ctrl+Shift+←/→      탭 이동
+기본 단축키 · 기능 전체 목록은 GitHub README 를 참고하세요:
+
+    https://github.com/ensky0/tildaz#단축키
 
 로그 파일:
-    %APPDATA%	ildaz	ildaz.log
+    %APPDATA%\tildaz\tildaz.log
     부팅 · 종료 · ConPTY 초기화 · autostart 에러 · perf 스냅샷이
     같은 타임라인에 쌓입니다. 예전 버전이 자동 실행되는 등 이상 동작이
     있을 때 사후 추적용.

@@ -15,6 +15,7 @@ Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 유사한 UX를 W
 ## 기능
 
 - **F1** 글로벌 핫키로 터미널 show/hide 토글
+- **Alt+Enter** 로 현재 모니터 전체 화면 토글 (작업 영역 = taskbar 제외 전체). F1 hide → F1 show 사이클에서도 전체 화면 상태를 유지, 디스플레이/DPI/작업 영역 변경 시 현재 상태에 맞춰 재배치
 - **탭 지원**: 독립 터미널 세션을 가진 다중 탭
   - Ctrl+Shift+T 새 탭 생성
   - Ctrl+Shift+W 현재 탭 닫기
@@ -187,7 +188,8 @@ repo 에 체크인되어 있어야 한다 (`release.sh` 의 pre-flight check 가
 
 | 키 | 동작 |
 |----|------|
-| F1 | 터미널 show/hide 토글 |
+| F1 | 터미널 show/hide 토글 (fullscreen 상태는 그대로 유지) |
+| Alt+Enter | 현재 모니터 전체 화면 토글 (작업 영역 기준) |
 | Ctrl+Shift+T | 새 탭 생성 |
 | Ctrl+Shift+W | 현재 탭 닫기 |
 | Alt+1~9 | 탭 전환 |
