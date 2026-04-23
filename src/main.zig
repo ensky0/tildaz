@@ -4,6 +4,7 @@ const app_event = @import("app_event.zig");
 const session_core = @import("session_core.zig");
 const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
+const tab_interaction = @import("tab_interaction.zig");
 const window_mod = @import("window.zig");
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
@@ -39,19 +40,10 @@ const App = struct {
     allocator: std.mem.Allocator,
     d3d_renderer: ?D3d11Renderer = null,
     last_render_ms: i64 = 0,
-    dragging: bool = false,
-    drag_tab_index: usize = 0,
-    drag_start_x: c_int = 0,
-    drag_current_x: c_int = 0,
-    tab_drag_active: bool = false, // true = drag started in tab bar
+    tab_interaction: tab_interaction.TabInteraction = .{},
     selecting: bool = false, // true = terminal text selection in progress
     scrollbar_dragging: bool = false, // true = scrollbar drag in progress
     select_start_pin: ?ghostty.PageList.Pin = null,
-    // Tab rename state
-    renaming_tab: ?usize = null, // index of tab being renamed, null = not renaming
-    rename_buf: [64]u8 = undefined,
-    rename_len: usize = 0,
-    rename_cursor: usize = 0,
 
     // DPI-scaled values (initialized in run())
     dpi_scale: f32 = 1.0,
@@ -198,12 +190,13 @@ const App = struct {
                 for (tabs[0..n], 0..) |t, i| {
                     tab_titles[i] = .{ .ptr = &t.title, .len = t.title_len };
                 }
-                const rs: ?D3d11Renderer.RenameState = if (self.renaming_tab) |ri| .{
-                    .tab_index = ri,
-                    .text = &self.rename_buf,
-                    .text_len = self.rename_len,
-                    .cursor = self.rename_cursor,
+                const rs: ?D3d11Renderer.RenameState = if (self.tab_interaction.rename.view()) |rename| .{
+                    .tab_index = rename.tab_index,
+                    .text = rename.text,
+                    .text_len = rename.text_len,
+                    .cursor = rename.cursor,
                 } else null;
+                const drag = self.tab_interaction.drag.view();
                 r.renderTabBar(
                     tab_titles[0..n],
                     self.session.activeIndex(),
@@ -213,8 +206,8 @@ const App = struct {
                     self.TAB_WIDTH,
                     self.CLOSE_BTN_SIZE,
                     self.TAB_PADDING,
-                    if (self.dragging) self.drag_tab_index else null,
-                    if (self.dragging) self.drag_current_x else 0,
+                    if (drag) |d| d.tab_index else null,
+                    if (drag) |d| d.current_x else 0,
                     rs,
                 );
                 if (self.activeTabPtr()) |tab| {
@@ -341,142 +334,74 @@ const App = struct {
     }
 
     pub fn handleDragStart(self: *App, mouse_x: c_int) void {
-        self.dragging = false;
-        const idx_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
-        if (idx_raw < 0) return;
-        const idx: usize = @intCast(idx_raw);
-        if (idx >= self.session.count()) return;
-        self.drag_tab_index = idx;
-        self.drag_start_x = mouse_x;
-        self.drag_current_x = mouse_x;
+        _ = self.tab_interaction.drag.begin(mouse_x, self.TAB_WIDTH, self.session.count());
     }
 
     pub fn handleDragMove(self: *App, mouse_x: c_int) void {
-        const delta = if (mouse_x > self.drag_start_x) mouse_x - self.drag_start_x else self.drag_start_x - mouse_x;
-        if (delta > 5) self.dragging = true;
-        self.drag_current_x = mouse_x;
+        _ = self.tab_interaction.drag.move(mouse_x);
     }
 
     pub fn handleDragEnd(self: *App) void {
-        if (self.dragging and self.session.count() > 1 and self.drag_tab_index < self.session.count()) {
-            var target_raw = @divTrunc(self.drag_current_x, self.TAB_WIDTH);
-            target_raw = @max(0, @min(target_raw, @as(c_int, @intCast(self.session.count() - 1))));
-            const target: usize = @intCast(target_raw);
-            if (target != self.drag_tab_index) {
-                if (self.session.reorderTabs(self.drag_tab_index, target) catch false) {
-                    if (self.d3d_renderer) |*r| r.invalidate();
-                }
+        if (self.tab_interaction.drag.finish(self.TAB_WIDTH, self.session.count())) |request| {
+            if (self.session.reorderTabs(request.from, request.to) catch false) {
+                if (self.d3d_renderer) |*r| r.invalidate();
             }
         }
-        self.dragging = false;
     }
 
     fn startRename(self: *App, tab_index: usize) void {
         const tab = self.session.tabAt(tab_index) orelse return;
-        self.renaming_tab = tab_index;
-        @memcpy(self.rename_buf[0..tab.title_len], tab.title[0..tab.title_len]);
-        self.rename_len = tab.title_len;
-        self.rename_cursor = tab.title_len;
+        self.tab_interaction.rename.begin(tab_index, tab.title[0..tab.title_len]);
         if (self.d3d_renderer) |*r| r.invalidate();
     }
 
     fn commitRename(self: *App) void {
-        const idx = self.renaming_tab orelse return;
-        if (self.rename_len > 0) {
-            const tab = self.session.tabAt(idx) orelse {
-                self.renaming_tab = null;
-                return;
-            };
-            tab.setCustomTitle(self.rename_buf[0..self.rename_len]);
+        const request = self.tab_interaction.rename.commitRequest() orelse return;
+        if (request.title.len > 0) {
+            if (self.session.tabAt(request.tab_index)) |tab| {
+                tab.setCustomTitle(request.title);
+            }
         }
-        self.renaming_tab = null;
+        self.tab_interaction.rename.clear();
         if (self.d3d_renderer) |*r| r.invalidate();
     }
 
     fn cancelRename(self: *App) void {
-        self.renaming_tab = null;
+        self.tab_interaction.rename.clear();
         if (self.d3d_renderer) |*r| r.invalidate();
     }
 
     fn handleRenameChar(self: *App, cp: u21) void {
-        if (self.renaming_tab == null) return;
-        var buf: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-        if (self.rename_len + len > 63) return; // keep within buffer
-        // Shift right to make room at cursor
-        if (self.rename_cursor < self.rename_len) {
-            std.mem.copyBackwards(u8, self.rename_buf[self.rename_cursor + len .. self.rename_len + len], self.rename_buf[self.rename_cursor..self.rename_len]);
+        if (self.tab_interaction.rename.insertCodepoint(cp)) {
+            if (self.d3d_renderer) |*r| r.invalidate();
         }
-        @memcpy(self.rename_buf[self.rename_cursor .. self.rename_cursor + len], buf[0..len]);
-        self.rename_len += len;
-        self.rename_cursor += len;
-        if (self.d3d_renderer) |*r| r.invalidate();
     }
 
-    fn handleRenameKey(self: *App, vk: usize) bool {
-        if (self.renaming_tab == null) return false;
-        const vk_return: usize = 0x0D;
-        const vk_escape: usize = 0x1B;
-        const vk_back: usize = 0x08;
-        const vk_left: usize = 0x25;
-        const vk_right: usize = 0x27;
-        const vk_home: usize = 0x24;
-        const vk_end: usize = 0x23;
-        const vk_delete: usize = 0x2E;
+    fn handleRenameKey(self: *App, key: app_event.KeyInput) bool {
+        const rename_key: tab_interaction.RenameKey = switch (key) {
+            .enter => .enter,
+            .escape => .escape,
+            .backspace => .backspace,
+            .left => .left,
+            .right => .right,
+            .home => .home,
+            .end => .end,
+            .delete => .delete,
+        };
 
-        switch (vk) {
-            vk_return => self.commitRename(),
-            vk_escape => self.cancelRename(),
-            vk_back => {
-                if (self.rename_cursor > 0) {
-                    // Find start of previous UTF-8 char
-                    var prev = self.rename_cursor - 1;
-                    while (prev > 0 and self.rename_buf[prev] & 0xC0 == 0x80) prev -= 1;
-                    const char_len = self.rename_cursor - prev;
-                    std.mem.copyForwards(u8, self.rename_buf[prev .. self.rename_len - char_len], self.rename_buf[self.rename_cursor..self.rename_len]);
-                    self.rename_len -= char_len;
-                    self.rename_cursor = prev;
-                    if (self.d3d_renderer) |*r| r.invalidate();
-                }
-            },
-            vk_delete => {
-                if (self.rename_cursor < self.rename_len) {
-                    // Find length of current UTF-8 char
-                    const b = self.rename_buf[self.rename_cursor];
-                    const char_len: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
-                    const end = @min(self.rename_cursor + char_len, self.rename_len);
-                    const actual_len = end - self.rename_cursor;
-                    std.mem.copyForwards(u8, self.rename_buf[self.rename_cursor .. self.rename_len - actual_len], self.rename_buf[end..self.rename_len]);
-                    self.rename_len -= actual_len;
-                    if (self.d3d_renderer) |*r| r.invalidate();
-                }
-            },
-            vk_left => {
-                if (self.rename_cursor > 0) {
-                    self.rename_cursor -= 1;
-                    while (self.rename_cursor > 0 and self.rename_buf[self.rename_cursor] & 0xC0 == 0x80) self.rename_cursor -= 1;
-                    if (self.d3d_renderer) |*r| r.invalidate();
-                }
-            },
-            vk_right => {
-                if (self.rename_cursor < self.rename_len) {
-                    const b = self.rename_buf[self.rename_cursor];
-                    const char_len: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
-                    self.rename_cursor = @min(self.rename_cursor + char_len, self.rename_len);
-                    if (self.d3d_renderer) |*r| r.invalidate();
-                }
-            },
-            vk_home => {
-                self.rename_cursor = 0;
+        switch (self.tab_interaction.rename.handleKey(rename_key)) {
+            .none => return false,
+            .changed => {
                 if (self.d3d_renderer) |*r| r.invalidate();
             },
-            vk_end => {
-                self.rename_cursor = self.rename_len;
-                if (self.d3d_renderer) |*r| r.invalidate();
-            },
-            else => return false,
+            .commit => self.commitRename(),
+            .cancel => self.cancelRename(),
         }
         return true;
+    }
+
+    fn isRenaming(self: *const App) bool {
+        return self.tab_interaction.rename.isActive();
     }
 
     fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) struct { col: u16, row: u16 } {
@@ -568,7 +493,7 @@ const App = struct {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         switch (event) {
             .text_input => |cp| {
-                if (self.renaming_tab != null) {
+                if (self.isRenaming()) {
                     if (cp >= 0x20) { // printable characters only
                         self.handleRenameChar(cp);
                     }
@@ -577,18 +502,8 @@ const App = struct {
                 return false;
             },
             .key_input => |key| {
-                const vk: usize = switch (key) {
-                    .enter => 0x0D,
-                    .escape => 0x1B,
-                    .backspace => 0x08,
-                    .left => 0x25,
-                    .right => 0x27,
-                    .home => 0x24,
-                    .end => 0x23,
-                    .delete => 0x2E,
-                };
-                if (self.handleRenameKey(vk)) return true;
-                if (self.renaming_tab != null) return true; // swallow rename editing keys
+                if (self.handleRenameKey(key)) return true;
+                if (self.isRenaming()) return true; // swallow rename editing keys
                 return false;
             },
             .shortcut => |shortcut| {
@@ -622,9 +537,8 @@ const App = struct {
                 }
             },
             .mouse_down => |mouse| {
-                if (self.renaming_tab != null) self.commitRename();
+                if (self.isRenaming()) self.commitRename();
                 if (mouse.y < self.TAB_BAR_HEIGHT) {
-                    self.tab_drag_active = true;
                     self.selecting = false;
                     self.scrollbar_dragging = false;
                     self.handleTabClick(mouse.x, mouse.y);
@@ -639,12 +553,12 @@ const App = struct {
                 }
                 if (mouse.x >= client_w - self.SCROLLBAR_W) {
                     self.scrollbar_dragging = true;
-                    self.tab_drag_active = false;
+                    self.tab_interaction.drag.reset();
                     self.selecting = false;
                     self.scrollToY(mouse.y);
                     return true;
                 }
-                self.tab_drag_active = false;
+                self.tab_interaction.drag.reset();
                 self.scrollbar_dragging = false;
                 self.startTerminalSelection(mouse.x, mouse.y);
                 return true;
@@ -667,7 +581,7 @@ const App = struct {
                 if (mouse.left_button) {
                     if (self.scrollbar_dragging) {
                         self.scrollToY(mouse.y);
-                    } else if (self.tab_drag_active) {
+                    } else if (self.tab_interaction.drag.active) {
                         self.handleDragMove(mouse.x);
                     } else if (self.selecting) {
                         self.updateTerminalSelection(mouse.x, mouse.y);
@@ -678,9 +592,8 @@ const App = struct {
             .mouse_up => |_| {
                 if (self.scrollbar_dragging) {
                     self.scrollbar_dragging = false;
-                } else if (self.tab_drag_active) {
+                } else if (self.tab_interaction.drag.active) {
                     self.handleDragEnd();
-                    self.tab_drag_active = false;
                 } else {
                     self.finishTerminalSelection();
                 }
