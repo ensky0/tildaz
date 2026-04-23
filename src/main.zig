@@ -1,12 +1,14 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
-const ConPty = @import("conpty.zig").ConPty;
+const app_event = @import("app_event.zig");
+const session_core = @import("session_core.zig");
+const SessionCore = session_core.SessionCore;
+const SessionTab = session_core.Tab;
 const window_mod = @import("window.zig");
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
 const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
 const Config = @import("config.zig").Config;
-const themes = @import("themes.zig");
 const autostart = @import("autostart.zig");
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
@@ -22,272 +24,20 @@ extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) c_int;
 extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GetLastError() callconv(.c) u32;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
-extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
 extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
-extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
-const VK_CONTROL: c_int = 0x11;
-const VK_SHIFT: c_int = 0x10;
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const WM_CLOSE: c_uint = 0x0010;
-const WM_CHAR: c_uint = 0x0102;
-const WM_KEYDOWN: c_uint = 0x0100;
-const WM_SYSKEYDOWN: c_uint = 0x0104;
-const WM_LBUTTONDOWN: c_uint = 0x0201;
-const WM_LBUTTONUP: c_uint = 0x0202;
-const WM_MOUSEMOVE: c_uint = 0x0200;
-const MK_LBUTTON: usize = 0x0001;
 const MB_OK: c_uint = 0x0;
 const MB_ICONERROR: c_uint = 0x10;
 const MB_ICONINFORMATION: c_uint = 0x40;
-const WM_LBUTTONDBLCLK: c_uint = 0x0203;
-const WM_MOUSEWHEEL: c_uint = 0x020A;
-pub const WM_TAB_CLOSED: c_uint = 0x0402; // WM_USER + 2
-
-/// Lock-free 링버퍼 (단일 생산자, 단일 소비자)
-const RingBuffer = struct {
-    buf: [SIZE]u8 align(64) = undefined,
-    head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0), // 쓰기 위치 (생산자)
-    tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0), // 읽기 위치 (소비자)
-
-    const SIZE = 4 * 1024 * 1024; // 4MB
-
-    /// 생산자: 데이터 추가 (읽기 스레드에서 호출)
-    /// 버퍼가 가득 차면 소비자가 빼줄 때까지 대기 (backpressure)
-    fn push(self: *RingBuffer, data: []const u8) void {
-        var i: usize = 0;
-        while (i < data.len) {
-            const pos = self.head.load(.monotonic);
-            const t = self.tail.load(.acquire);
-            const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
-            if (free == 0) {
-                perf.incExtra(&perf.push);
-                std.Thread.yield() catch {};
-                continue;
-            }
-            const batch = @min(data.len - i, free);
-            // 링 버퍼 경계를 넘는 경우 2번에 나눠서 memcpy
-            const first = @min(batch, SIZE - pos);
-            @memcpy(self.buf[pos..][0..first], data[i..][0..first]);
-            if (batch > first) {
-                @memcpy(self.buf[0 .. batch - first], data[i + first ..][0 .. batch - first]);
-            }
-            self.head.store((pos + batch) % SIZE, .release);
-            i += batch;
-        }
-    }
-
-    fn isEmpty(self: *RingBuffer) bool {
-        return self.head.load(.acquire) == self.tail.load(.acquire);
-    }
-
-    /// 소비자: 데이터 꺼내기 (UI 스레드에서 호출)
-    fn pop(self: *RingBuffer, out: []u8) usize {
-        const h = self.head.load(.acquire);
-        const t = self.tail.load(.monotonic);
-        if (t == h) return 0;
-        const avail = if (h >= t) (h - t) else (SIZE - t + h);
-        const n = @min(avail, out.len);
-        const first = @min(n, SIZE - t);
-        @memcpy(out[0..first], self.buf[t..][0..first]);
-        if (n > first) {
-            @memcpy(out[first..n], self.buf[0 .. n - first]);
-        }
-        self.tail.store((t + n) % SIZE, .release);
-        return n;
-    }
-};
-
-/// PTY write용 큐 (UI → write 스레드)
-const WriteQueue = struct {
-    buf: [64 * 1024]u8 = undefined,
-    head: usize = 0,
-    tail: usize = 0,
-    mutex: std.Thread.Mutex = .{},
-    event: std.Thread.ResetEvent = .{},
-    closed: bool = false,
-
-    fn freeSpace(self: *const WriteQueue) usize {
-        return if (self.tail <= self.head)
-            self.buf.len - self.head + self.tail - 1
-        else
-            self.tail - self.head - 1;
-    }
-
-    fn push(self: *WriteQueue, data: []const u8) void {
-        var i: usize = 0;
-        while (i < data.len) {
-            self.mutex.lock();
-            if (self.closed) {
-                self.mutex.unlock();
-                return;
-            }
-
-            const free = self.freeSpace();
-            if (free == 0) {
-                self.mutex.unlock();
-                std.Thread.yield() catch {};
-                continue;
-            }
-
-            const batch = @min(data.len - i, free);
-            const first = @min(batch, self.buf.len - self.head);
-            @memcpy(self.buf[self.head..][0..first], data[i..][0..first]);
-            if (batch > first) {
-                @memcpy(self.buf[0 .. batch - first], data[i + first ..][0 .. batch - first]);
-            }
-            self.head = (self.head + batch) % self.buf.len;
-            self.mutex.unlock();
-            self.event.set();
-            i += batch;
-        }
-    }
-
-    fn pop(self: *WriteQueue, out: []u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        var n: usize = 0;
-        while (self.tail != self.head and n < out.len) {
-            out[n] = self.buf[self.tail];
-            self.tail = (self.tail + 1) % self.buf.len;
-            n += 1;
-        }
-        return n;
-    }
-
-    fn close(self: *WriteQueue) void {
-        self.mutex.lock();
-        self.closed = true;
-        self.mutex.unlock();
-        self.event.set();
-    }
-
-    fn isClosed(self: *WriteQueue) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.closed;
-    }
-};
-
-const Tab = struct {
-    terminal: ghostty.Terminal,
-    stream: ghostty.TerminalStream,
-    pty: ConPty,
-    title: [64]u8 = undefined,
-    title_len: usize = 0,
-    alive: bool = true,
-    owner: *App,
-    // PTY 출력 버퍼: 읽기 스레드 → UI 스레드 (lock-free)
-    output_ring: RingBuffer = .{},
-    // PTY 입력 큐: UI 스레드 → write 스레드
-    write_queue: WriteQueue = .{},
-    write_thread: ?std.Thread = null,
-
-    fn init(alloc: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const u16, owner: *App) !*Tab {
-        const tab = try alloc.create(Tab);
-        errdefer alloc.destroy(tab);
-        const term_colors = if (owner.theme) |t| ghostty.Terminal.Colors{
-            .foreground = ghostty.color.DynamicRGB.init(t.foreground),
-            .background = ghostty.color.DynamicRGB.init(t.background),
-            .cursor = .unset,
-            .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
-        } else ghostty.Terminal.Colors.default;
-
-        const terminal = try ghostty.Terminal.init(alloc, .{
-            .cols = cols,
-            .rows = rows,
-            .max_scrollback = owner.max_scroll_lines * blk: {
-                const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
-                    break :blk (@as(usize, cols) + 1) * 8;
-                break :blk ghostty.Page.layout(cap).total_size / cap.rows;
-            },
-            .colors = term_colors,
-        });
-
-        const pty = try ConPty.init(alloc, cols, rows, shell, envVarsForTheme(owner.theme));
-
-        tab.* = .{
-            .terminal = terminal,
-            .stream = undefined,
-            .pty = pty,
-            .owner = owner,
-        };
-        tab.stream = tab.terminal.vtStream();
-
-        tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
-
-        return tab;
-    }
-
-    fn deinit(tab: *Tab, alloc: std.mem.Allocator) void {
-        tab.write_queue.close();
-        if (tab.write_thread) |t| {
-            t.join();
-            tab.write_thread = null;
-        }
-        tab.pty.deinit();
-        tab.terminal.deinit(alloc);
-        alloc.destroy(tab);
-    }
-
-    fn queueWrite(tab: *Tab, data: []const u8) void {
-        tab.write_queue.push(data);
-    }
-
-    /// UI 스레드에서 호출: 버퍼에 쌓인 PTY 출력을 VT 파서로 처리
-    /// 렌더 스킵 중(should_render=false)에는 전체 drain, 렌더 프레임에서는 제한
-    fn drainOutput(tab: *Tab) void {
-        const drain_t0 = perf.now();
-        var buf: [65536]u8 = undefined;
-        var total_bytes: u64 = 0;
-        while (true) {
-            const n = tab.output_ring.pop(&buf);
-            if (n == 0) break;
-            const parse_t0 = perf.now();
-            tab.stream.nextSlice(buf[0..n]);
-            perf.addTimed(&perf.parse, parse_t0);
-            total_bytes += n;
-        }
-        perf.addTimedBytes(&perf.drain, drain_t0, total_bytes);
-    }
-
-    fn writeLoop(tab: *Tab) void {
-        var buf: [256]u8 = undefined;
-        while (true) {
-            tab.write_queue.event.wait();
-            tab.write_queue.event.reset();
-            while (true) {
-                const n = tab.write_queue.pop(&buf);
-                if (n == 0) break;
-                _ = tab.pty.write(buf[0..n]) catch break;
-            }
-            if (tab.write_queue.isClosed()) break;
-        }
-    }
-
-    fn setTitle(tab: *Tab, title_id: usize) void {
-        const result = std.fmt.bufPrint(&tab.title, "Tab {d}", .{title_id}) catch "Tab";
-        tab.title_len = result.len;
-    }
-
-    fn setCustomTitle(tab: *Tab, title: []const u8) void {
-        const len = @min(title.len, tab.title.len);
-        @memcpy(tab.title[0..len], title[0..len]);
-        tab.title_len = len;
-    }
-};
 
 const App = struct {
-    tabs: std.ArrayList(*Tab),
-    active_tab: usize = 0,
-    next_tab_id: usize = 1,
+    session: SessionCore,
     window: Window,
     allocator: std.mem.Allocator,
     d3d_renderer: ?D3d11Renderer = null,
-    shell_utf16: [*:0]const u16,
-    max_scroll_lines: usize = 10_000,
-    theme: ?*const themes.Theme = null,
     last_render_ms: i64 = 0,
     dragging: bool = false,
     drag_tab_index: usize = 0,
@@ -322,36 +72,25 @@ const App = struct {
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
-        const tab = try Tab.init(self.allocator, grid.cols, grid.rows, self.shell_utf16, self);
-        errdefer tab.deinit(self.allocator);
-
-        tab.setTitle(self.next_tab_id);
-        self.next_tab_id += 1;
-        try tab.pty.startReadThread(onPtyOutputTab, onPtyExitTab, tab);
-        try self.tabs.append(self.allocator, tab);
-        self.active_tab = self.tabs.items.len - 1;
+        try self.session.createTab(grid.cols, grid.rows);
         if (self.d3d_renderer) |*r| r.invalidate();
     }
 
     fn closeTab(self: *App, index: usize) void {
-        if (index >= self.tabs.items.len) return;
-        const tab = self.tabs.orderedRemove(index);
-
-        if (self.tabs.items.len == 0) {
-            // 마지막 탭 닫힘 — 창 종료
-            tildaz_log.appendLine("tab", "last tab closed: posting WM_CLOSE", .{});
-            self.window.shell_exited = true;
-            if (self.window.hwnd) |hwnd| {
-                _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            }
-        } else {
-            if (self.active_tab >= self.tabs.items.len) {
-                self.active_tab = self.tabs.items.len - 1;
-            }
-            // Force full redraw so the new active tab's content is rendered
-            if (self.d3d_renderer) |*r| r.invalidate();
+        switch (self.session.closeTab(index)) {
+            .none => return,
+            .closed_last => {
+                tildaz_log.appendLine("tab", "last tab closed: posting WM_CLOSE", .{});
+                self.window.shell_exited = true;
+                if (self.window.hwnd) |hwnd| {
+                    _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                }
+            },
+            .changed => {
+                // Force full redraw so the new active tab's content is rendered
+                if (self.d3d_renderer) |*r| r.invalidate();
+            },
         }
-        tab.deinit(self.allocator);
     }
 
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
@@ -365,26 +104,14 @@ const App = struct {
         return .{ .cols = cols, .rows = rows };
     }
 
-    fn activeTabPtr(self: *App) ?*Tab {
-        if (self.active_tab < self.tabs.items.len) return self.tabs.items[self.active_tab];
-        return null;
+    fn activeTabPtr(self: *App) ?*SessionTab {
+        return self.session.activeTab();
     }
 
-    // --- Callbacks for ConPTY (userdata = *Tab) ---
-
-    fn onPtyOutputTab(data: []const u8, userdata: ?*anyopaque) void {
-        const tab: *Tab = @ptrCast(@alignCast(userdata.?));
-        const t0 = perf.now();
-        tab.output_ring.push(data);
-        perf.addTimedBytes(&perf.push, t0, data.len);
-    }
-
-    fn onPtyExitTab(userdata: ?*anyopaque) void {
-        const tab: *Tab = @ptrCast(@alignCast(userdata.?));
-        tab.alive = false;
-        tildaz_log.appendLine("tab", "shell exited: title={s}", .{tab.title[0..tab.title_len]});
-        if (tab.owner.window.hwnd) |hwnd| {
-            _ = PostMessageW(hwnd, WM_TAB_CLOSED, @intFromPtr(tab), 0);
+    fn onSessionTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        if (self.window.hwnd) |hwnd| {
+            _ = PostMessageW(hwnd, window_mod.WM_TAB_CLOSED, tab_ptr, 0);
         }
     }
 
@@ -392,10 +119,7 @@ const App = struct {
 
     fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        if (self.activeTabPtr()) |tab| {
-            tab.queueWrite(data);
-            tab.terminal.scrollViewport(.{ .bottom = {} });
-        }
+        self.session.queueInputToActive(data);
     }
 
     fn onResize(_: u16, _: u16, userdata: ?*anyopaque) void {
@@ -406,10 +130,7 @@ const App = struct {
             r.resize(@intCast(@max(1, size.w)), @intCast(@max(1, size.h)));
         }
         const grid = self.getTerminalGridSize();
-        for (self.tabs.items) |tab| {
-            tab.terminal.resize(self.allocator, grid.cols, grid.rows) catch {};
-            tab.pty.resize(grid.cols, grid.rows) catch {};
-        }
+        self.session.resizeAll(grid.cols, grid.rows);
     }
 
     /// Recompute DPI-dependent UI constants (tab bar / close button / padding /
@@ -467,26 +188,14 @@ const App = struct {
             const size = window.getClientSize();
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
-            var should_render = true;
-            if (self.activeTabPtr()) |tab| {
-                tab.drainOutput();
-                if (!tab.output_ring.isEmpty()) {
-                    // 링버퍼에 데이터 남음 — 아직 출력 진행 중이므로 렌더 스로틀
-                    const now = std.time.milliTimestamp();
-                    if (now - self.last_render_ms < 8) {
-                        should_render = false;
-                    } else {
-                        self.last_render_ms = now;
-                    }
-                }
-                // 링버퍼 비었으면 항상 렌더 — 출력 종료 직후 즉시 화면 갱신
-            }
+            const should_render = self.session.prepareActiveFrame(&self.last_render_ms);
 
             if (should_render) {
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함)
                 var tab_titles: [32]D3d11Renderer.TabTitle = undefined;
-                const n = @min(self.tabs.items.len, 32);
-                for (self.tabs.items[0..n], 0..) |t, i| {
+                const tabs = self.session.tabsSlice();
+                const n = @min(tabs.len, 32);
+                for (tabs[0..n], 0..) |t, i| {
                     tab_titles[i] = .{ .ptr = &t.title, .len = t.title_len };
                 }
                 const rs: ?D3d11Renderer.RenameState = if (self.renaming_tab) |ri| .{
@@ -497,7 +206,7 @@ const App = struct {
                 } else null;
                 r.renderTabBar(
                     tab_titles[0..n],
-                    self.active_tab,
+                    self.session.activeIndex(),
                     self.TAB_BAR_HEIGHT,
                     size.w,
                     size.h,
@@ -522,7 +231,6 @@ const App = struct {
                     );
                 }
             } else {
-                window.skip_swap = true;
                 perf.incExtra(&perf.onrender);
             }
         }
@@ -531,12 +239,18 @@ const App = struct {
     // --- Tab management from window messages ---
 
     pub fn handleTabClosed(self: *App, tab_ptr: usize) void {
-        const needle: *Tab = @ptrFromInt(tab_ptr);
-        for (self.tabs.items, 0..) |t, i| {
-            if (t == needle) {
-                self.closeTab(i);
-                return;
-            }
+        switch (self.session.closeTabByPtr(tab_ptr)) {
+            .none => return,
+            .closed_last => {
+                tildaz_log.appendLine("tab", "last tab closed: posting WM_CLOSE", .{});
+                self.window.shell_exited = true;
+                if (self.window.hwnd) |hwnd| {
+                    _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                }
+            },
+            .changed => {
+                if (self.d3d_renderer) |*r| r.invalidate();
+            },
         }
     }
 
@@ -545,37 +259,21 @@ const App = struct {
     }
 
     pub fn handleCloseActiveTab(self: *App) void {
-        if (self.tabs.items.len > 0) {
-            self.closeTab(self.active_tab);
+        if (self.session.count() > 0) {
+            self.closeTab(self.session.activeIndex());
         }
     }
 
     pub fn handleSwitchTab(self: *App, index: usize) void {
-        if (index < self.tabs.items.len and index != self.active_tab) {
-            self.active_tab = index;
+        if (self.session.setActiveTab(index)) {
             if (self.d3d_renderer) |*r| r.invalidate();
         }
     }
 
-    pub fn handleScroll(self: *App, wParam: usize) void {
-        const tab = self.activeTabPtr() orelse return;
-        const vk_prior: usize = 0x21;
-        const vk_next: usize = 0x22;
-
-        // Shift+PageUp/Down: wParam is the VK code
-        if (wParam == vk_prior or wParam == vk_next) {
-            const rows: isize = @intCast(self.getTerminalGridSize().rows);
-            const delta: isize = if (wParam == vk_prior) -rows else rows;
-            tab.terminal.scrollViewport(.{ .delta = delta });
+    pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
+        if (self.session.scrollActive(event, self.getTerminalGridSize().rows)) {
             if (self.d3d_renderer) |*r| r.invalidate();
-            return;
         }
-
-        // Mouse wheel: wParam high word is wheel delta (120 = one notch)
-        const raw: i16 = @bitCast(@as(u16, @truncate(wParam >> 16)));
-        const delta: isize = @divTrunc(@as(isize, raw), 40); // ~3 lines per notch
-        tab.terminal.scrollViewport(.{ .delta = -delta });
-        if (self.d3d_renderer) |*r| r.invalidate();
     }
 
     fn scrollToY(self: *App, mouse_y: c_int) void {
@@ -619,12 +317,12 @@ const App = struct {
 
     pub fn handleTabClick(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         if (mouse_y >= self.TAB_BAR_HEIGHT) return; // Below tab bar
-        if (self.tabs.items.len == 0) return;
+        if (self.session.count() == 0) return;
 
         const tab_index_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
         if (tab_index_raw < 0) return;
         const tab_index: usize = @intCast(tab_index_raw);
-        if (tab_index >= self.tabs.items.len) return;
+        if (tab_index >= self.session.count()) return;
 
         // Check if click is on close button
         const tab_x = @as(c_int, @intCast(tab_index)) * self.TAB_WIDTH;
@@ -637,8 +335,7 @@ const App = struct {
             return;
         }
 
-        if (tab_index != self.active_tab) {
-            self.active_tab = tab_index;
+        if (self.session.setActiveTab(tab_index)) {
             if (self.d3d_renderer) |*r| r.invalidate();
         }
     }
@@ -648,7 +345,7 @@ const App = struct {
         const idx_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
         if (idx_raw < 0) return;
         const idx: usize = @intCast(idx_raw);
-        if (idx >= self.tabs.items.len) return;
+        if (idx >= self.session.count()) return;
         self.drag_tab_index = idx;
         self.drag_start_x = mouse_x;
         self.drag_current_x = mouse_x;
@@ -661,25 +358,21 @@ const App = struct {
     }
 
     pub fn handleDragEnd(self: *App) void {
-        if (self.dragging and self.tabs.items.len > 1 and self.drag_tab_index < self.tabs.items.len) {
+        if (self.dragging and self.session.count() > 1 and self.drag_tab_index < self.session.count()) {
             var target_raw = @divTrunc(self.drag_current_x, self.TAB_WIDTH);
-            target_raw = @max(0, @min(target_raw, @as(c_int, @intCast(self.tabs.items.len - 1))));
+            target_raw = @max(0, @min(target_raw, @as(c_int, @intCast(self.session.count() - 1))));
             const target: usize = @intCast(target_raw);
             if (target != self.drag_tab_index) {
-                const tab = self.tabs.orderedRemove(self.drag_tab_index);
-                self.tabs.insert(self.allocator, target, tab) catch {
-                    self.tabs.appendAssumeCapacity(tab);
-                    self.active_tab = self.tabs.items.len - 1;
-                };
-                self.active_tab = target;
+                if (self.session.reorderTabs(self.drag_tab_index, target) catch false) {
+                    if (self.d3d_renderer) |*r| r.invalidate();
+                }
             }
         }
         self.dragging = false;
     }
 
     fn startRename(self: *App, tab_index: usize) void {
-        if (tab_index >= self.tabs.items.len) return;
-        const tab = self.tabs.items[tab_index];
+        const tab = self.session.tabAt(tab_index) orelse return;
         self.renaming_tab = tab_index;
         @memcpy(self.rename_buf[0..tab.title_len], tab.title[0..tab.title_len]);
         self.rename_len = tab.title_len;
@@ -689,8 +382,11 @@ const App = struct {
 
     fn commitRename(self: *App) void {
         const idx = self.renaming_tab orelse return;
-        if (idx < self.tabs.items.len and self.rename_len > 0) {
-            const tab = self.tabs.items[idx];
+        if (self.rename_len > 0) {
+            const tab = self.session.tabAt(idx) orelse {
+                self.renaming_tab = null;
+                return;
+            };
             tab.setCustomTitle(self.rename_buf[0..self.rename_len]);
         }
         self.renaming_tab = null;
@@ -868,12 +564,11 @@ const App = struct {
         }
     }
 
-    fn onAppMessage(msg: c_uint, wParam: usize, lParam: isize, userdata: ?*anyopaque) bool {
+    fn onAppEvent(event: app_event.Event, userdata: ?*anyopaque) bool {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        switch (msg) {
-            WM_CHAR => {
+        switch (event) {
+            .text_input => |cp| {
                 if (self.renaming_tab != null) {
-                    const cp: u21 = @intCast(wParam);
                     if (cp >= 0x20) { // printable characters only
                         self.handleRenameChar(cp);
                     }
@@ -881,102 +576,106 @@ const App = struct {
                 }
                 return false;
             },
-            WM_KEYDOWN => {
-                if (self.handleRenameKey(wParam)) return true;
-                if (self.renaming_tab != null) return true; // swallow all keys during rename
-                if (GetKeyState(VK_CONTROL) >= 0 or GetKeyState(VK_SHIFT) >= 0) return false;
-                if (wParam == 0x54) { // Ctrl+Shift+T
-                    self.handleNewTab();
-                    return true;
-                }
-                if (wParam == 0x57) { // Ctrl+Shift+W
-                    self.handleCloseActiveTab();
-                    return true;
-                }
-                if (wParam == 0x52) { // Ctrl+Shift+R
-                    if (self.activeTabPtr()) |tab| {
-                        tab.terminal.fullReset();
-                        if (self.d3d_renderer) |*r| r.invalidate();
-                        tab.write_queue.push("\x0c");
-                    }
-                    return true;
-                }
-                if (wParam == 0x50) { // Ctrl+Shift+P — dump & reset perf stats
-                    perf.dumpAndReset("snapshot");
-                    return true;
-                }
-                if (wParam == 0x49) { // Ctrl+Shift+I — About / 버전 확인
-                    about.showAboutDialog(self.window.hwnd);
-                    return true;
-                }
+            .key_input => |key| {
+                const vk: usize = switch (key) {
+                    .enter => 0x0D,
+                    .escape => 0x1B,
+                    .backspace => 0x08,
+                    .left => 0x25,
+                    .right => 0x27,
+                    .home => 0x24,
+                    .end => 0x23,
+                    .delete => 0x2E,
+                };
+                if (self.handleRenameKey(vk)) return true;
+                if (self.renaming_tab != null) return true; // swallow rename editing keys
                 return false;
             },
-            WM_SYSKEYDOWN => {
-                if (wParam >= 0x31 and wParam <= 0x39) { // Alt+1..9
-                    self.handleSwitchTab(wParam - 0x31);
-                    return true;
+            .shortcut => |shortcut| {
+                switch (shortcut) {
+                    .new_tab => {
+                        self.handleNewTab();
+                        return true;
+                    },
+                    .close_active_tab => {
+                        self.handleCloseActiveTab();
+                        return true;
+                    },
+                    .reset_terminal => {
+                        if (self.session.resetActive()) {
+                            if (self.d3d_renderer) |*r| r.invalidate();
+                        }
+                        return true;
+                    },
+                    .dump_perf => {
+                        perf.dumpAndReset("snapshot");
+                        return true;
+                    },
+                    .show_about => {
+                        about.showAboutDialog(self.window.hwnd);
+                        return true;
+                    },
+                    .switch_tab => |index| {
+                        self.handleSwitchTab(index);
+                        return true;
+                    },
                 }
-                return false;
             },
-            WM_LBUTTONDOWN => {
+            .mouse_down => |mouse| {
                 if (self.renaming_tab != null) self.commitRename();
-                const x = getXParam(lParam);
-                const y = getYParam(lParam);
-                if (y < self.TAB_BAR_HEIGHT) {
+                if (mouse.y < self.TAB_BAR_HEIGHT) {
                     self.tab_drag_active = true;
                     self.selecting = false;
                     self.scrollbar_dragging = false;
-                    self.handleTabClick(x, y);
-                    self.handleDragStart(x);
-                } else {
-                    var client_w: c_int = 0;
-                    if (self.window.hwnd) |hwnd| {
-                        var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
-                        _ = GetClientRect(hwnd, &rect);
-                        client_w = rect.right;
-                    }
-                    if (x >= client_w - self.SCROLLBAR_W) {
-                        self.scrollbar_dragging = true;
-                        self.tab_drag_active = false;
-                        self.selecting = false;
-                        self.scrollToY(y);
-                    } else {
-                        self.tab_drag_active = false;
-                        self.scrollbar_dragging = false;
-                        self.startTerminalSelection(x, y);
-                    }
+                    self.handleTabClick(mouse.x, mouse.y);
+                    self.handleDragStart(mouse.x);
+                    return true;
                 }
+                var client_w: c_int = 0;
+                if (self.window.hwnd) |hwnd| {
+                    var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+                    _ = GetClientRect(hwnd, &rect);
+                    client_w = rect.right;
+                }
+                if (mouse.x >= client_w - self.SCROLLBAR_W) {
+                    self.scrollbar_dragging = true;
+                    self.tab_drag_active = false;
+                    self.selecting = false;
+                    self.scrollToY(mouse.y);
+                    return true;
+                }
+                self.tab_drag_active = false;
+                self.scrollbar_dragging = false;
+                self.startTerminalSelection(mouse.x, mouse.y);
                 return true;
             },
-            WM_LBUTTONDBLCLK => {
-                const x = getXParam(lParam);
-                const y = getYParam(lParam);
-                if (y < self.TAB_BAR_HEIGHT) {
-                    const tab_index_raw = @divTrunc(x, self.TAB_WIDTH);
+            .mouse_double_click => |mouse| {
+                if (mouse.y < self.TAB_BAR_HEIGHT) {
+                    const tab_index_raw = @divTrunc(mouse.x, self.TAB_WIDTH);
                     if (tab_index_raw >= 0) {
                         const tab_index: usize = @intCast(tab_index_raw);
-                        if (tab_index < self.tabs.items.len) {
+                        if (tab_index < self.session.count()) {
                             self.startRename(tab_index);
                         }
                     }
                 } else {
-                    self.selectWordAt(x, y);
+                    self.selectWordAt(mouse.x, mouse.y);
                 }
                 return true;
             },
-            WM_MOUSEMOVE => {
-                if (wParam & MK_LBUTTON != 0) {
+            .mouse_move => |mouse| {
+                if (mouse.left_button) {
                     if (self.scrollbar_dragging) {
-                        self.scrollToY(getYParam(lParam));
+                        self.scrollToY(mouse.y);
                     } else if (self.tab_drag_active) {
-                        self.handleDragMove(getXParam(lParam));
+                        self.handleDragMove(mouse.x);
                     } else if (self.selecting) {
-                        self.updateTerminalSelection(getXParam(lParam), getYParam(lParam));
+                        self.updateTerminalSelection(mouse.x, mouse.y);
                     }
                 }
                 return true;
             },
-            WM_LBUTTONUP => {
+            .mouse_up => |_| {
                 if (self.scrollbar_dragging) {
                     self.scrollbar_dragging = false;
                 } else if (self.tab_drag_active) {
@@ -987,68 +686,17 @@ const App = struct {
                 }
                 return true;
             },
-            WM_MOUSEWHEEL => {
-                self.handleScroll(wParam);
+            .scroll => |scroll_event| {
+                self.handleScroll(scroll_event);
                 return true;
             },
-            WM_TAB_CLOSED => {
-                self.handleTabClosed(wParam);
+            .tab_closed => |tab_ptr| {
+                self.handleTabClosed(tab_ptr);
                 return true;
             },
-            else => return false,
         }
     }
-
-    fn getXParam(lp: isize) c_int {
-        return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lp))))));
-    }
-
-    fn getYParam(lp: isize) c_int {
-        return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lp)) >> 16))));
-    }
 };
-
-/// 테마 배경 밝기에 따라 COLORFGBG 환경변수를 설정.
-/// vim 등이 dark/light background를 올바르게 감지하도록 함.
-/// WSLENV에도 COLORFGBG를 추가하여 WSL 환경으로 전달되게 함.
-fn envVarsForTheme(theme: ?*const themes.Theme) ?[]const ConPty.EnvVar {
-    const S = struct {
-        const dark_val = std.unicode.utf8ToUtf16LeStringLiteral("15;0");
-        const light_val = std.unicode.utf8ToUtf16LeStringLiteral("0;15");
-        const colorfgbg_name = std.unicode.utf8ToUtf16LeStringLiteral("COLORFGBG");
-        const wslenv_name = std.unicode.utf8ToUtf16LeStringLiteral("WSLENV");
-        var vars: [2]ConPty.EnvVar = undefined;
-        // WSLENV 값 버퍼: 기존값 + ":COLORFGBG\0"
-        var wslenv_buf: [512]u16 = undefined;
-    };
-    const t = theme orelse return null;
-    const lum = @as(u32, t.background.r) * 299 +
-        @as(u32, t.background.g) * 587 +
-        @as(u32, t.background.b) * 114;
-    S.vars[0] = .{
-        .name = S.colorfgbg_name,
-        .value = if (lum < 128_000) S.dark_val else S.light_val,
-    };
-    // WSLENV: 기존 값에 ":COLORFGBG" 추가 (기존 값이 없으면 "COLORFGBG"만)
-    const suffix = std.unicode.utf8ToUtf16LeStringLiteral("COLORFGBG");
-    var pos: usize = 0;
-    const existing = GetEnvironmentVariableW(S.wslenv_name, &S.wslenv_buf, S.wslenv_buf.len);
-    if (existing > 0 and existing < S.wslenv_buf.len - suffix.len - 1) {
-        pos = existing;
-        S.wslenv_buf[pos] = ':';
-        pos += 1;
-    }
-    for (suffix) |c| {
-        S.wslenv_buf[pos] = c;
-        pos += 1;
-    }
-    S.wslenv_buf[pos] = 0;
-    S.vars[1] = .{
-        .name = S.wslenv_name,
-        .value = @ptrCast(S.wslenv_buf[0..pos :0]),
-    };
-    return &S.vars;
-}
 
 /// ReleaseFast에서도 crash 원인을 표시하는 panic handler
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
@@ -1123,17 +771,19 @@ fn run() !void {
     }
 
     var app = App{
-        .tabs = .{},
+        .session = undefined,
         .window = .{},
         .allocator = alloc,
-        .shell_utf16 = config.shellUtf16(),
-        .max_scroll_lines = config.max_scroll_lines,
-        .theme = config.theme,
     };
-    defer {
-        for (app.tabs.items) |tab| tab.deinit(alloc);
-        app.tabs.deinit(alloc);
-    }
+    app.session = SessionCore.init(
+        alloc,
+        config.shellUtf16(),
+        config.max_scroll_lines,
+        config.theme,
+        App.onSessionTabExit,
+        &app,
+    );
+    defer app.session.deinit();
 
     // Set up window
     app.window.userdata = &app;
@@ -1141,7 +791,7 @@ fn run() !void {
     app.window.render_fn = App.onRender;
     app.window.resize_fn = App.onResize;
     app.window.font_change_fn = App.onFontChange;
-    app.window.app_msg_fn = App.onAppMessage;
+    app.window.app_event_fn = App.onAppEvent;
     const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system
@@ -1202,7 +852,7 @@ fn run() !void {
 
     // Create initial tab
     try app.createTab();
-    tildaz_log.appendLine("startup", "initial tab created: count={d}", .{app.tabs.items.len});
+    tildaz_log.appendLine("startup", "initial tab created: count={d}", .{app.session.count()});
 
     if (!config.hidden_start) {
         tildaz_log.appendLine("startup", "show window", .{});

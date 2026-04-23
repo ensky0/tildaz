@@ -1,5 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
+const app_event = @import("app_event.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
@@ -43,7 +44,7 @@ const WM_TIMER: UINT = 0x0113;
 const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
 pub const WM_PTY_OUTPUT: UINT = WM_USER + 1;
-const WM_TAB_CLOSED: UINT = WM_USER + 2;
+pub const WM_TAB_CLOSED: UINT = WM_USER + 2;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
@@ -277,12 +278,11 @@ pub const Window = struct {
     resize_fn: ?*const fn (u16, u16, ?*anyopaque) void = null,
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
-    app_msg_fn: ?*const fn (UINT, WPARAM, LPARAM, ?*anyopaque) bool = null,
+    app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
     /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
     /// before `SetWindowPos` cascades into `WM_SIZE`.
     font_change_fn: ?*const fn (*Window, ?*anyopaque) void = null,
-    skip_swap: bool = false,
     shell_exited: bool = false,
     dc: HDC = null, // DC for GDI font measurement
 
@@ -338,6 +338,7 @@ pub const Window = struct {
     const VK_F1: UINT = 0x70;
     const VK_RETURN: WPARAM = 0x0D;
     const RENDER_TIMER_ID: usize = 1;
+    const LayoutMonitorTarget = enum { cursor, window };
 
     pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32) !void {
         const hInstance = GetModuleHandleW(null);
@@ -529,7 +530,9 @@ pub const Window = struct {
             // fullscreen 상태였으면 fullscreen 을 복원, 아니면 dock 설정 복원.
             // F1 hide 는 fullscreen 필드를 건드리지 않으므로 "Alt+Enter → F1
             // hide → F1 show" 는 여전히 fullscreen 상태로 돌아옴.
-            self.applyLayout();
+            // show() 만 cursor-follow 를 유지하고, visible 상태의 relayout 은
+            // 창이 이미 올라가 있는 모니터를 기준으로 재계산한다.
+            self.applyLayoutFor(.cursor);
             self.syncLayout();
 
             _ = SetForegroundWindow(hwnd);
@@ -577,15 +580,29 @@ pub const Window = struct {
         self.height_pct = height_pct;
         self.offset_pct = offset_pct;
         self.position_set = true;
+        self.applyDockedRect(dock, width_pct, height_pct, offset_pct, .cursor);
+    }
 
-        var cursor_pos: POINT = .{ .x = 0, .y = 0 };
-        _ = GetCursorPos(&cursor_pos);
+    fn applyDockedRect(
+        self: *Window,
+        dock: DockPosition,
+        width_pct: u8,
+        height_pct: u8,
+        offset_pct: u8,
+        target: LayoutMonitorTarget,
+    ) void {
+        const mi = self.monitorInfoFor(target) orelse return;
+        const rect = dockRectForMonitor(dock, width_pct, height_pct, offset_pct, &mi);
+        self.applyRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+    }
 
-        const monitor = MonitorFromPoint(cursor_pos, MONITOR_DEFAULTTOPRIMARY);
-        var mi: MONITORINFO = undefined;
-        mi.cbSize = @sizeOf(MONITORINFO);
-        _ = GetMonitorInfoW(monitor, &mi);
-
+    fn dockRectForMonitor(
+        dock: DockPosition,
+        width_pct: u8,
+        height_pct: u8,
+        offset_pct: u8,
+        mi: *const MONITORINFO,
+    ) RECT {
         const sw = mi.rcWork.right - mi.rcWork.left;
         const sh = mi.rcWork.bottom - mi.rcWork.top;
         const sx = mi.rcWork.left;
@@ -606,7 +623,12 @@ pub const Window = struct {
             .left, .right => sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100),
         };
 
-        self.applyRect(x, y, w, h);
+        return .{
+            .left = x,
+            .top = y,
+            .right = x + w,
+            .bottom = y + h,
+        };
     }
 
     /// Re-apply the last `setPosition` parameters. Used by display/DPI/work-area
@@ -626,10 +648,10 @@ pub const Window = struct {
     /// the window but the terminal grid stays stuck at the old rows/cols.
     /// Calling `resize_fn` unconditionally is idempotent: when `WM_SIZE`
     /// does fire, the second invocation hits no-op fast paths in
-    /// terminal.resize / pty.resize / swapchain resize.
+    /// terminal resize / backend resize / swapchain resize.
     pub fn repositionFromSaved(self: *Window) void {
         if (!self.position_set) return;
-        self.setPosition(self.dock, self.width_pct, self.height_pct, self.offset_pct);
+        self.applyDockedRect(self.dock, self.width_pct, self.height_pct, self.offset_pct, .window);
         if (!self.layout_transition_active) {
             if (self.resize_fn) |resize_fn| {
                 const grid = self.getGridSize();
@@ -705,9 +727,18 @@ pub const Window = struct {
         return rect;
     }
 
-    fn currentMonitorInfo(self: *const Window) ?MONITORINFO {
-        const hwnd = self.hwnd orelse return null;
-        const monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+    fn monitorInfoFor(self: *const Window, target: LayoutMonitorTarget) ?MONITORINFO {
+        const monitor = switch (target) {
+            .cursor => blk: {
+                var cursor_pos: POINT = .{ .x = 0, .y = 0 };
+                _ = GetCursorPos(&cursor_pos);
+                break :blk MonitorFromPoint(cursor_pos, MONITOR_DEFAULTTOPRIMARY);
+            },
+            .window => blk: {
+                const hwnd = self.hwnd orelse return null;
+                break :blk MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+            },
+        };
         var mi: MONITORINFO = undefined;
         mi.cbSize = @sizeOf(MONITORINFO);
         if (GetMonitorInfoW(monitor, &mi) == 0) return null;
@@ -725,7 +756,7 @@ pub const Window = struct {
 
     fn breakMonitorFullscreenSurface(self: *Window) void {
         if (!self.visible or self.fullscreen_mode != .monitor) return;
-        const mi = self.currentMonitorInfo() orelse return;
+        const mi = self.monitorInfoFor(.window) orelse return;
         self.commitTransitionRect(transitionSafeMonitorRect(&mi));
     }
 
@@ -747,7 +778,11 @@ pub const Window = struct {
     /// Apply the active fullscreen mode.
     /// `.monitor` uses `rcMonitor`; `.workarea` uses the taskbar-safe work area.
     pub fn applyFullscreen(self: *Window) void {
-        const mi = self.currentMonitorInfo() orelse return;
+        self.applyFullscreenFor(.window);
+    }
+
+    fn applyFullscreenFor(self: *Window, target: LayoutMonitorTarget) void {
+        const mi = self.monitorInfoFor(target) orelse return;
 
         const rect = switch (self.fullscreen_mode) {
             .monitor => mi.rcMonitor,
@@ -774,9 +809,16 @@ pub const Window = struct {
     /// 경로에서 일관되게 보존됨.
     /// Shared layout branch for show/display/DPI/work-area events.
     pub fn applyLayout(self: *Window) void {
+        self.applyLayoutFor(.window);
+    }
+
+    fn applyLayoutFor(self: *Window, target: LayoutMonitorTarget) void {
         switch (self.fullscreen_mode) {
-            .none => self.repositionFromSaved(),
-            .monitor, .workarea => self.applyFullscreen(),
+            .none => switch (target) {
+                .cursor => self.applyDockedRect(self.dock, self.width_pct, self.height_pct, self.offset_pct, .cursor),
+                .window => self.repositionFromSaved(),
+            },
+            .monitor, .workarea => self.applyFullscreenFor(target),
         }
     }
 
@@ -822,6 +864,28 @@ pub const Window = struct {
         self.setFullscreenMode(if (self.fullscreen_mode == .none) mode else .none);
     }
 
+    fn dispatchAppEvent(self: *Window, event: app_event.Event) bool {
+        if (self.app_event_fn) |f| {
+            return f(event, self.userdata);
+        }
+        return false;
+    }
+
+    fn getMouseX(lParam: LPARAM) c_int {
+        const raw: u16 = @truncate(@as(usize, @bitCast(lParam)));
+        return @as(c_int, @intCast(@as(i16, @bitCast(raw))));
+    }
+
+    fn getMouseY(lParam: LPARAM) c_int {
+        const raw: u16 = @truncate(@as(usize, @bitCast(lParam)) >> 16);
+        return @as(c_int, @intCast(@as(i16, @bitCast(raw))));
+    }
+
+    fn getWheelDelta(wParam: WPARAM) i16 {
+        const raw: u16 = @truncate(wParam >> 16);
+        return @as(i16, @bitCast(raw));
+    }
+
     pub fn messageLoop(_: *Window) void {
         var msg: MSG = undefined;
         while (GetMessageW(&msg, null, 0, 0) != 0) {
@@ -846,7 +910,6 @@ pub const Window = struct {
                     if (self.render_fn) |render_fn| {
                         render_fn(self);
                     }
-                    self.skip_swap = false;
                 }
                 return 0;
             },
@@ -896,10 +959,7 @@ pub const Window = struct {
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_CHAR => {
-                // Let app handle first (e.g. tab rename mode)
-                if (self.app_msg_fn) |f| {
-                    if (f(msg, wParam, lParam, self.userdata)) return 0;
-                }
+                if (self.dispatchAppEvent(.{ .text_input = @intCast(wParam) })) return 0;
                 // Ignore WM_CHAR generated from Ctrl+Shift shortcuts
                 // (e.g. Ctrl+Shift+W sends 0x17 which would kill-word in shell)
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
@@ -919,24 +979,30 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYDOWN => {
-                // Let app handle first (e.g. tab rename mode)
-                if (self.app_msg_fn) |f| {
-                    if (f(msg, wParam, lParam, self.userdata)) return 0;
+                const maybe_key: ?app_event.KeyInput = switch (wParam) {
+                    0x0D => .enter,
+                    0x1B => .escape,
+                    0x08 => .backspace,
+                    0x25 => .left,
+                    0x27 => .right,
+                    0x24 => .home,
+                    0x23 => .end,
+                    0x2E => .delete,
+                    else => null,
+                };
+                if (maybe_key) |key| {
+                    if (self.dispatchAppEvent(.{ .key_input = key })) return 0;
                 }
                 // Ctrl+Shift shortcuts
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
                     // Ctrl+Shift+T: new tab
                     if (wParam == 0x54) {
-                        if (self.app_msg_fn) |f| {
-                            _ = f(WM_KEYDOWN, wParam, lParam, self.userdata);
-                        }
+                        _ = self.dispatchAppEvent(.{ .shortcut = .new_tab });
                         return 0;
                     }
                     // Ctrl+Shift+W: close active tab
                     if (wParam == 0x57) {
-                        if (self.app_msg_fn) |f| {
-                            _ = f(WM_KEYDOWN, wParam, lParam, self.userdata);
-                        }
+                        _ = self.dispatchAppEvent(.{ .shortcut = .close_active_tab });
                         return 0;
                     }
                     // Ctrl+Shift+V: paste from clipboard
@@ -948,9 +1014,17 @@ pub const Window = struct {
                     }
                     // Ctrl+Shift+R: reset terminal
                     if (wParam == 0x52) {
-                        if (self.app_msg_fn) |f| {
-                            _ = f(WM_KEYDOWN, wParam, lParam, self.userdata);
-                        }
+                        _ = self.dispatchAppEvent(.{ .shortcut = .reset_terminal });
+                        return 0;
+                    }
+                    // Ctrl+Shift+P: dump perf snapshot
+                    if (wParam == 0x50) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .dump_perf });
+                        return 0;
+                    }
+                    // Ctrl+Shift+I: show About dialog
+                    if (wParam == 0x49) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .show_about });
                         return 0;
                     }
                 }
@@ -960,9 +1034,11 @@ pub const Window = struct {
 
                 // Shift+PageUp/Down: scroll viewport
                 if (GetKeyState(VK_SHIFT) < 0 and (wParam == vk_prior or wParam == vk_next)) {
-                    if (self.app_msg_fn) |f| {
-                        _ = f(WM_MOUSEWHEEL, wParam, 0, self.userdata);
-                    }
+                    _ = self.dispatchAppEvent(.{
+                        .scroll = .{
+                            .page = if (wParam == vk_prior) .up else .down,
+                        },
+                    });
                     return 0;
                 }
 
@@ -1115,43 +1191,60 @@ pub const Window = struct {
                 }
                 // Alt+1 ~ Alt+9: 탭 전환.
                 if (wParam >= 0x31 and wParam <= 0x39) {
-                    if (self.app_msg_fn) |f| {
-                        _ = f(msg, wParam, lParam, self.userdata);
-                    }
+                    _ = self.dispatchAppEvent(.{
+                        .shortcut = .{
+                            .switch_tab = wParam - 0x31,
+                        },
+                    });
                     return 0;
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_LBUTTONDOWN => {
-                if (self.app_msg_fn) |f| {
-                    _ = f(msg, wParam, lParam, self.userdata);
-                }
+                _ = self.dispatchAppEvent(.{
+                    .mouse_down = .{
+                        .x = getMouseX(lParam),
+                        .y = getMouseY(lParam),
+                    },
+                });
                 _ = SetCapture(hwnd);
                 return 0;
             },
             WM_LBUTTONDBLCLK => {
-                if (self.app_msg_fn) |f| {
-                    _ = f(msg, wParam, lParam, self.userdata);
-                }
+                _ = self.dispatchAppEvent(.{
+                    .mouse_double_click = .{
+                        .x = getMouseX(lParam),
+                        .y = getMouseY(lParam),
+                    },
+                });
                 return 0;
             },
             WM_MOUSEMOVE => {
-                if (self.app_msg_fn) |f| {
-                    _ = f(msg, wParam, lParam, self.userdata);
-                }
+                _ = self.dispatchAppEvent(.{
+                    .mouse_move = .{
+                        .x = getMouseX(lParam),
+                        .y = getMouseY(lParam),
+                        .left_button = (wParam & MK_LBUTTON) != 0,
+                    },
+                });
                 return 0;
             },
             WM_LBUTTONUP => {
-                if (self.app_msg_fn) |f| {
-                    _ = f(msg, wParam, lParam, self.userdata);
-                }
+                _ = self.dispatchAppEvent(.{
+                    .mouse_up = .{
+                        .x = getMouseX(lParam),
+                        .y = getMouseY(lParam),
+                    },
+                });
                 _ = ReleaseCapture();
                 return 0;
             },
             WM_MOUSEWHEEL => {
-                if (self.app_msg_fn) |f| {
-                    _ = f(msg, wParam, lParam, self.userdata);
-                }
+                _ = self.dispatchAppEvent(.{
+                    .scroll = .{
+                        .wheel = getWheelDelta(wParam),
+                    },
+                });
                 return 0;
             },
             WM_MBUTTONDOWN => {
@@ -1161,9 +1254,7 @@ pub const Window = struct {
                 return 0;
             },
             WM_TAB_CLOSED => {
-                if (self.app_msg_fn) |f| {
-                    _ = f(msg, wParam, lParam, self.userdata);
-                }
+                _ = self.dispatchAppEvent(.{ .tab_closed = wParam });
                 return 0;
             },
             else => {},
