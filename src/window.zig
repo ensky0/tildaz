@@ -29,7 +29,6 @@ const WS_VISIBLE: DWORD = 0x10000000;
 const WS_EX_TOPMOST: DWORD = 0x00000008;
 const WS_EX_TOOLWINDOW: DWORD = 0x00000080;
 const WS_EX_LAYERED: DWORD = 0x00080000;
-const CS_OWNDC: UINT = 0x0020;
 const CS_DBLCLKS: UINT = 0x0008;
 
 // Window Messages
@@ -68,6 +67,7 @@ const SW_HIDE: c_int = 0;
 const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 const SWP_NOSIZE: UINT = 0x0001;
 const SWP_NOMOVE: UINT = 0x0002;
+const SWP_NOREDRAW: UINT = 0x0008;
 const SWP_NOACTIVATE: UINT = 0x0010;
 const SWP_FRAMECHANGED: UINT = 0x0020;
 const SWP_SHOWWINDOW: UINT = 0x0040;
@@ -92,7 +92,6 @@ const LWA_ALPHA: DWORD = 0x00000002;
 /// 으로 관측됨 — 그 중간 프레임이 사용자 눈에 "F1 눌렀는데 잠깐 이전 사이즈로
 /// 보이는" 글리치로 잡힘.
 const DWMWA_TRANSITIONS_FORCEDISABLED: DWORD = 3;
-
 const MONITOR_DEFAULTTOPRIMARY: DWORD = 0x00000001;
 const MONITOR_DEFAULTTONEAREST: DWORD = 0x00000002;
 
@@ -200,6 +199,7 @@ extern "user32" fn OpenClipboard(HWND) callconv(.c) BOOL;
 extern "user32" fn CloseClipboard() callconv(.c) BOOL;
 extern "user32" fn GetClipboardData(UINT) callconv(.c) ?*anyopaque;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+extern "user32" fn GetAsyncKeyState(c_int) callconv(.c) i16;
 extern "user32" fn MessageBoxW(HWND, [*:0]const WCHAR, [*:0]const WCHAR, UINT) callconv(.c) c_int;
 extern "user32" fn SetCapture(HWND) callconv(.c) HWND;
 extern "user32" fn ReleaseCapture() callconv(.c) BOOL;
@@ -264,7 +264,10 @@ fn rgb(r: u8, g: u8, b: u8) COLORREF {
     return @as(COLORREF, r) | (@as(COLORREF, g) << 8) | (@as(COLORREF, b) << 16);
 }
 
+pub const FullscreenMode = enum { none, monitor, workarea };
+
 pub const Window = struct {
+    owner_hwnd: HWND = null,
     hwnd: HWND = null,
     visible: bool = false,
     font: HFONT = null,
@@ -306,7 +309,7 @@ pub const Window = struct {
     // 이 값을 보고 `applyFullscreen` (현재 모니터 rcMonitor 전체) 혹은
     // `repositionFromSaved` (저장된 dock/pct) 중 하나로 분기. F1 hide 는
     // 이 값을 유지 — 다시 F1 show 하면 fullscreen 이 복원됨.
-    fullscreen: bool = false,
+    fullscreen_mode: FullscreenMode = .none,
 
     // WM_DISPLAYCHANGE dedupe — 사용자 환경에 따라 Alt 키 단독 press 같은
     // 이벤트에서도 WM_DISPLAYCHANGE 가 spurious 하게 broadcast 되는 경우가
@@ -328,6 +331,7 @@ pub const Window = struct {
     expected_w: c_int = 0,
     expected_h: c_int = 0,
     expected_set: bool = false,
+    layout_transition_active: bool = false,
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -340,7 +344,7 @@ pub const Window = struct {
 
         const wc = WNDCLASSEXW{
             .cbSize = @sizeOf(WNDCLASSEXW),
-            .style = CS_OWNDC | CS_DBLCLKS,
+            .style = CS_DBLCLKS,
             .lpfnWndProc = wndProc,
             .cbClsExtra = 0,
             .cbWndExtra = 0,
@@ -357,6 +361,25 @@ pub const Window = struct {
             return error.RegisterClassFailed;
         }
 
+        self.owner_hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            CLASS_NAME,
+            std.unicode.utf8ToUtf16LeStringLiteral("TildaZOwner"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            null,
+            null,
+            hInstance,
+            null,
+        );
+
+        if (self.owner_hwnd == null) {
+            return error.CreateWindowFailed;
+        }
+
         self.hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             CLASS_NAME,
@@ -366,13 +389,15 @@ pub const Window = struct {
             0,
             800,
             400,
-            null,
+            self.owner_hwnd,
             null,
             hInstance,
             null,
         );
 
         if (self.hwnd == null) {
+            _ = DestroyWindow(self.owner_hwnd);
+            self.owner_hwnd = null;
             return error.CreateWindowFailed;
         }
 
@@ -470,6 +495,9 @@ pub const Window = struct {
             if (self.dc) |dc| _ = ReleaseDC(hwnd, dc);
             _ = DestroyWindow(hwnd);
         }
+        if (self.owner_hwnd) |owner_hwnd| {
+            _ = DestroyWindow(owner_hwnd);
+        }
         if (self.font) |f| _ = DeleteObject(f);
     }
 
@@ -489,8 +517,12 @@ pub const Window = struct {
     /// 과거 `SW_HIDE` 에서 보이던 "shrink transition animation" glitch 는
     /// `init()` 에서 설정한 `DWMWA_TRANSITIONS_FORCEDISABLED` 로 DWM 이
     /// 애니메이션 자체를 skip 하므로 재현되지 않음.
+    /// Restore a window hidden by F1.
+    /// The saved fullscreen mode is preserved while hidden.
     pub fn show(self: *Window) void {
         if (self.hwnd) |hwnd| {
+            self.layout_transition_active = true;
+            defer self.layout_transition_active = false;
             self.visible = true;
             _ = ShowWindow(hwnd, SW_SHOW);
 
@@ -498,18 +530,16 @@ pub const Window = struct {
             // F1 hide 는 fullscreen 필드를 건드리지 않으므로 "Alt+Enter → F1
             // hide → F1 show" 는 여전히 fullscreen 상태로 돌아옴.
             self.applyLayout();
+            self.syncLayout();
 
             _ = SetForegroundWindow(hwnd);
 
             // `applyLayout` 의 SetWindowPos 가 현재 rect 과 동일해서 WM_SIZE
             // 를 생략한 경우 대비 safety net — swap chain / terminal grid 를
             // idempotent 하게 재동기화.
-            if (self.resize_fn) |resize_fn| {
-                const grid = self.getGridSize();
-                resize_fn(grid.cols, grid.rows, self.userdata);
-            }
-            if (self.render_fn) |render_fn| render_fn(self);
-            _ = DwmFlush();
+            self.presentNow();
+
+            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
         }
     }
 
@@ -519,10 +549,14 @@ pub const Window = struct {
     ///
     /// `self.fullscreen` 은 건드리지 않음 — 다음 `show()` 에서 `applyLayout` 이
     /// fullscreen 을 그대로 복원한다.
+    /// Hide the window without changing the saved fullscreen mode.
     pub fn hide(self: *Window) void {
         if (self.hwnd) |hwnd| {
+            self.breakMonitorFullscreenSurface();
+            _ = KillTimer(hwnd, RENDER_TIMER_ID);
             self.visible = false;
             _ = ShowWindow(hwnd, SW_HIDE);
+            _ = DwmFlush();
         }
     }
 
@@ -596,9 +630,11 @@ pub const Window = struct {
     pub fn repositionFromSaved(self: *Window) void {
         if (!self.position_set) return;
         self.setPosition(self.dock, self.width_pct, self.height_pct, self.offset_pct);
-        if (self.resize_fn) |resize_fn| {
-            const grid = self.getGridSize();
-            resize_fn(grid.cols, grid.rows, self.userdata);
+        if (!self.layout_transition_active) {
+            if (self.resize_fn) |resize_fn| {
+                const grid = self.getGridSize();
+                resize_fn(grid.cols, grid.rows, self.userdata);
+            }
         }
     }
 
@@ -623,7 +659,74 @@ pub const Window = struct {
         self.expected_w = w;
         self.expected_h = h;
         self.expected_set = true;
-        _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_REPAINT);
+        const flags: UINT = if (self.layout_transition_active) SWP_REPAINT | SWP_NOREDRAW else SWP_REPAINT;
+        _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, flags);
+    }
+
+    fn shellSafeFullscreenRect(mi: *const MONITORINFO) RECT {
+        var rect = mi.rcWork;
+        const work_w = rect.right - rect.left;
+        const work_h = rect.bottom - rect.top;
+        const monitor_w = mi.rcMonitor.right - mi.rcMonitor.left;
+        const monitor_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+        // If the work area still spans an entire monitor axis, inset that axis
+        // symmetrically by 1 px per edge so Windows keeps treating the taskbar
+        // as a separate appbar instead of collapsing it under a "fullscreen"
+        // popup.
+        if (work_w == monitor_w and work_w > 2) {
+            rect.left += 1;
+            rect.right -= 1;
+        }
+        if (work_h == monitor_h and work_h > 2) {
+            rect.top += 1;
+            rect.bottom -= 1;
+        }
+
+        return rect;
+    }
+
+    fn transitionSafeMonitorRect(mi: *const MONITORINFO) RECT {
+        var rect = mi.rcMonitor;
+        const monitor_w = rect.right - rect.left;
+        const monitor_h = rect.bottom - rect.top;
+
+        // Break the exact monitor-sized rect match by a single px per edge so
+        // DWM leaves the special fullscreen path before we hide or restore.
+        if (monitor_w > 2) {
+            rect.left += 1;
+            rect.right -= 1;
+        }
+        if (monitor_h > 2) {
+            rect.top += 1;
+            rect.bottom -= 1;
+        }
+
+        return rect;
+    }
+
+    fn currentMonitorInfo(self: *const Window) ?MONITORINFO {
+        const hwnd = self.hwnd orelse return null;
+        const monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        var mi: MONITORINFO = undefined;
+        mi.cbSize = @sizeOf(MONITORINFO);
+        if (GetMonitorInfoW(monitor, &mi) == 0) return null;
+        return mi;
+    }
+
+    fn commitTransitionRect(self: *Window, rect: RECT) void {
+        const previous_transition = self.layout_transition_active;
+        self.layout_transition_active = true;
+        defer self.layout_transition_active = previous_transition;
+        self.applyRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+        self.syncLayout();
+        self.presentNow();
+    }
+
+    fn breakMonitorFullscreenSurface(self: *Window) void {
+        if (!self.visible or self.fullscreen_mode != .monitor) return;
+        const mi = self.currentMonitorInfo() orelse return;
+        self.commitTransitionRect(transitionSafeMonitorRect(&mi));
     }
 
     /// 현재 창이 올라가 있는 모니터의 `rcWork` (작업 표시줄 제외) 전체로 창을
@@ -641,31 +744,53 @@ pub const Window = struct {
     /// 창이 이미 동일 rect 이면 `SetWindowPos` 가 `WM_SIZE` 를 생략하므로
     /// `resize_fn` 을 명시적으로 한 번 호출해서 터미널 grid 가 idempotent 하게
     /// reflow 되도록 한다 (repositionFromSaved 패턴과 동일).
+    /// Apply the active fullscreen mode.
+    /// `.monitor` uses `rcMonitor`; `.workarea` uses the taskbar-safe work area.
     pub fn applyFullscreen(self: *Window) void {
-        const hwnd = self.hwnd orelse return;
-        const monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        var mi: MONITORINFO = undefined;
-        mi.cbSize = @sizeOf(MONITORINFO);
-        _ = GetMonitorInfoW(monitor, &mi);
+        const mi = self.currentMonitorInfo() orelse return;
 
-        const x = mi.rcWork.left;
-        const y = mi.rcWork.top;
-        const w = mi.rcWork.right - mi.rcWork.left;
-        const h = mi.rcWork.bottom - mi.rcWork.top;
+        const rect = switch (self.fullscreen_mode) {
+            .monitor => mi.rcMonitor,
+            .workarea => shellSafeFullscreenRect(&mi),
+            .none => return,
+        };
+        const x = rect.left;
+        const y = rect.top;
+        const w = rect.right - rect.left;
+        const h = rect.bottom - rect.top;
 
         self.applyRect(x, y, w, h);
 
-        if (self.resize_fn) |resize_fn| {
-            const grid = self.getGridSize();
-            resize_fn(grid.cols, grid.rows, self.userdata);
+        if (!self.layout_transition_active) {
+            if (self.resize_fn) |resize_fn| {
+                const grid = self.getGridSize();
+                resize_fn(grid.cols, grid.rows, self.userdata);
+            }
         }
     }
 
     /// `self.fullscreen` 분기 도우미. `show()` 와 display / DPI / workarea
     /// 이벤트 핸들러가 공통으로 사용 — fullscreen 상태가 모든 rect 재계산
     /// 경로에서 일관되게 보존됨.
+    /// Shared layout branch for show/display/DPI/work-area events.
     pub fn applyLayout(self: *Window) void {
-        if (self.fullscreen) self.applyFullscreen() else self.repositionFromSaved();
+        switch (self.fullscreen_mode) {
+            .none => self.repositionFromSaved(),
+            .monitor, .workarea => self.applyFullscreen(),
+        }
+    }
+
+    fn syncLayout(self: *Window) void {
+        if (self.resize_fn) |resize_fn| {
+            const grid = self.getGridSize();
+            resize_fn(grid.cols, grid.rows, self.userdata);
+        }
+    }
+
+    fn presentNow(self: *Window) void {
+        if (!self.visible) return;
+        if (self.render_fn) |render_fn| render_fn(self);
+        _ = DwmFlush();
     }
 
     /// Alt+Enter 로 호출. fullscreen 진입/해제 토글. 해제시엔 `applyLayout` 이
@@ -678,9 +803,23 @@ pub const Window = struct {
     /// 가는" 현상이 났음. `applyFullscreen` 이 `rcWork` 를 쓰므로 direct-flip
     /// 이 engage 되지 않고, 단순 `SetWindowPos` 하나로도 rect 가 안정적으로
     /// 반영된다 — hide/show 가 필요 없음.
-    pub fn toggleFullscreen(self: *Window) void {
-        self.fullscreen = !self.fullscreen;
+    /// Set a concrete fullscreen mode, or `.none` to restore the saved docked rect.
+    pub fn setFullscreenMode(self: *Window, mode: FullscreenMode) void {
+        const previous_mode = self.fullscreen_mode;
+        if (self.visible and previous_mode == .monitor and mode != .monitor) {
+            self.breakMonitorFullscreenSurface();
+        }
+        self.fullscreen_mode = mode;
+        if (!self.visible) return;
+        self.layout_transition_active = true;
+        defer self.layout_transition_active = false;
         self.applyLayout();
+        self.syncLayout();
+        self.presentNow();
+    }
+
+    pub fn toggleFullscreenMode(self: *Window, mode: FullscreenMode) void {
+        self.setFullscreenMode(if (self.fullscreen_mode == .none) mode else .none);
     }
 
     pub fn messageLoop(_: *Window) void {
@@ -703,6 +842,7 @@ pub const Window = struct {
             },
             WM_TIMER => {
                 if (wParam == RENDER_TIMER_ID) {
+                    if (!self.visible or self.layout_transition_active) return 0;
                     if (self.render_fn) |render_fn| {
                         render_fn(self);
                     }
@@ -716,6 +856,12 @@ pub const Window = struct {
                 _ = BeginPaint(self.hwnd, &ps);
                 _ = EndPaint(self.hwnd, &ps);
                 return 0;
+            },
+            WM_ERASEBKGND => {
+                // During fullscreen rect transitions we repaint explicitly from
+                // D3D. Letting DefWindowProc erase first can expose a blank
+                // intermediate frame, which reads as a flash.
+                return 1;
             },
             WM_WINDOWPOSCHANGING => {
                 // 외부 프로그램 (Alt 키에 반응해 WS_EX_TOPMOST 창을 rcMonitor
@@ -848,9 +994,11 @@ pub const Window = struct {
                 return 0;
             },
             WM_SIZE => {
-                if (self.resize_fn) |resize_fn| {
-                    const grid = self.getGridSize();
-                    resize_fn(grid.cols, grid.rows, self.userdata);
+                if (!self.layout_transition_active) {
+                    if (self.resize_fn) |resize_fn| {
+                        const grid = self.getGridSize();
+                        resize_fn(grid.cols, grid.rows, self.userdata);
+                    }
                 }
                 // `resize_fn` 이 D3D11 swap chain 을 `ResizeBuffers` 로 새
                 // 크기에 맞춘 직후, 같은 WM_SIZE 턴에서 곧바로 새 크기
@@ -865,7 +1013,7 @@ pub const Window = struct {
                 //
                 // `visible=false` 이면 skip — `show()` 가 어차피 layout 재적용
                 // 후 첫 render tick 에서 present 하므로.
-                if (self.visible) {
+                if (self.visible and !self.layout_transition_active) {
                     if (self.render_fn) |render_fn| render_fn(self);
                     _ = DwmFlush();
                 }
@@ -956,11 +1104,13 @@ pub const Window = struct {
                 return 0;
             },
             WM_SYSKEYDOWN => {
+                // Alt+Enter => monitor fullscreen.
+                // Shift+Alt+Enter => work-area fullscreen that keeps taskbar visible.
                 // Alt+Enter: fullscreen 토글. `DefWindowProcW` 로 위임하지
                 // 않음 — Windows 기본 경로가 어떤 SC_ 명령을 생성하든 우리가
                 // 정의한 동작 (현재 모니터 `rcWork` ↔ 저장된 dock) 으로 가게.
                 if (wParam == VK_RETURN) {
-                    self.toggleFullscreen();
+                    self.toggleFullscreenMode(if (GetAsyncKeyState(VK_SHIFT) < 0) .workarea else .monitor);
                     return 0;
                 }
                 // Alt+1 ~ Alt+9: 탭 전환.
