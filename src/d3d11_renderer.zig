@@ -9,10 +9,14 @@ const DWriteFontContext = @import("dwrite_font.zig").DWriteFontContext;
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("perf.zig");
+const tildaz_log = @import("tildaz_log.zig");
 
 const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
+extern "user32" fn GetWindowLongPtrW(?*anyopaque, c_int) callconv(.c) isize;
+const GWL_EXSTYLE: c_int = -20;
+const WS_EX_LAYERED: isize = 0x00080000;
 
 // --- Instance data layouts ---
 
@@ -134,6 +138,20 @@ pub const D3d11Renderer = struct {
         return @as(f32, @floatFromInt(v)) / 255.0;
     }
 
+    fn isLayeredWindow(hwnd: ?*anyopaque) bool {
+        const handle = hwnd orelse return false;
+        return (GetWindowLongPtrW(handle, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+    }
+
+    fn swapEffectName(swap_effect: u32) []const u8 {
+        return switch (swap_effect) {
+            d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD => "flip_discard",
+            d3d.DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL => "flip_sequential",
+            d3d.DXGI_SWAP_EFFECT_DISCARD => "discard",
+            else => "unknown",
+        };
+    }
+
     pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
         const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
 
@@ -142,28 +160,68 @@ pub const D3d11Renderer = struct {
             .BufferDesc = .{ .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM },
             .SampleDesc = .{ .Count = 1 },
             .BufferUsage = d3d.DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            .BufferCount = 1,
             .OutputWindow = hwnd,
             .Windowed = 1,
-            .SwapEffect = d3d.DXGI_SWAP_EFFECT_DISCARD,
         };
         var device: ?*d3d.ID3D11Device = null;
         var ctx: ?*d3d.ID3D11DeviceContext = null;
         var swap_chain: ?*d3d.IDXGISwapChain = null;
-        if (d3d.D3D11CreateDeviceAndSwapChain(
-            null,
-            d3d.D3D_DRIVER_TYPE_HARDWARE,
-            null,
-            0,
-            null,
-            0,
-            d3d.D3D11_SDK_VERSION,
-            &sc_desc,
-            &swap_chain,
-            &device,
-            null,
-            &ctx,
-        ) < 0) return error.D3D11CreateFailed;
+        const layered_window = isLayeredWindow(hwnd);
+        const layered_swap_effects = [_]u32{d3d.DXGI_SWAP_EFFECT_DISCARD};
+        const standard_swap_effects = [_]u32{
+            d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            d3d.DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            d3d.DXGI_SWAP_EFFECT_DISCARD,
+        };
+        const swap_effects: []const u32 = if (layered_window) &layered_swap_effects else &standard_swap_effects;
+        var create_hr: d3d.HRESULT = -1;
+        var selected_swap_effect: u32 = d3d.DXGI_SWAP_EFFECT_DISCARD;
+        for (swap_effects) |swap_effect| {
+            sc_desc.BufferCount = if (swap_effect == d3d.DXGI_SWAP_EFFECT_DISCARD) 1 else 2;
+            sc_desc.SwapEffect = swap_effect;
+            create_hr = d3d.D3D11CreateDeviceAndSwapChain(
+                null,
+                d3d.D3D_DRIVER_TYPE_HARDWARE,
+                null,
+                0,
+                null,
+                0,
+                d3d.D3D11_SDK_VERSION,
+                &sc_desc,
+                &swap_chain,
+                &device,
+                null,
+                &ctx,
+            );
+            if (create_hr >= 0) {
+                selected_swap_effect = swap_effect;
+                break;
+            }
+            if (ctx) |c| {
+                _ = c.Release();
+                ctx = null;
+            }
+            if (swap_chain) |sc| {
+                _ = sc.Release();
+                swap_chain = null;
+            }
+            if (device) |dev| {
+                _ = dev.Release();
+                device = null;
+            }
+        }
+        if (create_hr < 0) {
+            tildaz_log.appendLine("d3d", "swap chain create failed: layered={} hr=0x{x}", .{
+                layered_window,
+                @as(u32, @bitCast(create_hr)),
+            });
+            return error.D3D11CreateFailed;
+        }
+        tildaz_log.appendLine("d3d", "swap chain created: layered={} effect={s} buffers={d}", .{
+            layered_window,
+            swapEffectName(selected_swap_effect),
+            sc_desc.BufferCount,
+        });
         errdefer {
             _ = ctx.?.Release();
             _ = swap_chain.?.Release();

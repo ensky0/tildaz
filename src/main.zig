@@ -71,7 +71,7 @@ const RingBuffer = struct {
             const first = @min(batch, SIZE - pos);
             @memcpy(self.buf[pos..][0..first], data[i..][0..first]);
             if (batch > first) {
-                @memcpy(self.buf[0..batch - first], data[i + first ..][0 .. batch - first]);
+                @memcpy(self.buf[0 .. batch - first], data[i + first ..][0 .. batch - first]);
             }
             self.head.store((pos + batch) % SIZE, .release);
             i += batch;
@@ -101,23 +101,47 @@ const RingBuffer = struct {
 
 /// PTY write용 큐 (UI → write 스레드)
 const WriteQueue = struct {
-    buf: [4096]u8 = undefined,
+    buf: [64 * 1024]u8 = undefined,
     head: usize = 0,
     tail: usize = 0,
     mutex: std.Thread.Mutex = .{},
     event: std.Thread.ResetEvent = .{},
     closed: bool = false,
 
+    fn freeSpace(self: *const WriteQueue) usize {
+        return if (self.tail <= self.head)
+            self.buf.len - self.head + self.tail - 1
+        else
+            self.tail - self.head - 1;
+    }
+
     fn push(self: *WriteQueue, data: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (data) |byte| {
-            const next = (self.head + 1) % self.buf.len;
-            if (next == self.tail) break;
-            self.buf[self.head] = byte;
-            self.head = next;
+        var i: usize = 0;
+        while (i < data.len) {
+            self.mutex.lock();
+            if (self.closed) {
+                self.mutex.unlock();
+                return;
+            }
+
+            const free = self.freeSpace();
+            if (free == 0) {
+                self.mutex.unlock();
+                std.Thread.yield() catch {};
+                continue;
+            }
+
+            const batch = @min(data.len - i, free);
+            const first = @min(batch, self.buf.len - self.head);
+            @memcpy(self.buf[self.head..][0..first], data[i..][0..first]);
+            if (batch > first) {
+                @memcpy(self.buf[0 .. batch - first], data[i + first ..][0 .. batch - first]);
+            }
+            self.head = (self.head + batch) % self.buf.len;
+            self.mutex.unlock();
+            self.event.set();
+            i += batch;
         }
-        self.event.set();
     }
 
     fn pop(self: *WriteQueue, out: []u8) usize {
@@ -242,15 +266,22 @@ const Tab = struct {
         }
     }
 
-    fn setTitle(tab: *Tab, index: usize) void {
-        const result = std.fmt.bufPrint(&tab.title, "Tab {d}", .{index + 1}) catch "Tab";
+    fn setTitle(tab: *Tab, title_id: usize) void {
+        const result = std.fmt.bufPrint(&tab.title, "Tab {d}", .{title_id}) catch "Tab";
         tab.title_len = result.len;
+    }
+
+    fn setCustomTitle(tab: *Tab, title: []const u8) void {
+        const len = @min(title.len, tab.title.len);
+        @memcpy(tab.title[0..len], title[0..len]);
+        tab.title_len = len;
     }
 };
 
 const App = struct {
     tabs: std.ArrayList(*Tab),
     active_tab: usize = 0,
+    next_tab_id: usize = 1,
     window: Window,
     allocator: std.mem.Allocator,
     d3d_renderer: ?D3d11Renderer = null,
@@ -294,25 +325,21 @@ const App = struct {
         const tab = try Tab.init(self.allocator, grid.cols, grid.rows, self.shell_utf16, self);
         errdefer tab.deinit(self.allocator);
 
-        tab.setTitle(self.tabs.items.len);
+        tab.setTitle(self.next_tab_id);
+        self.next_tab_id += 1;
+        try tab.pty.startReadThread(onPtyOutputTab, onPtyExitTab, tab);
         try self.tabs.append(self.allocator, tab);
         self.active_tab = self.tabs.items.len - 1;
         if (self.d3d_renderer) |*r| r.invalidate();
-
-        try tab.pty.startReadThread(onPtyOutputTab, onPtyExitTab, tab);
     }
 
     fn closeTab(self: *App, index: usize) void {
         if (index >= self.tabs.items.len) return;
         const tab = self.tabs.orderedRemove(index);
 
-        // Renumber remaining tabs
-        for (self.tabs.items, 0..) |t, i| {
-            t.setTitle(i);
-        }
-
         if (self.tabs.items.len == 0) {
             // 마지막 탭 닫힘 — 창 종료
+            tildaz_log.appendLine("tab", "last tab closed: posting WM_CLOSE", .{});
             self.window.shell_exited = true;
             if (self.window.hwnd) |hwnd| {
                 _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
@@ -355,6 +382,7 @@ const App = struct {
     fn onPtyExitTab(userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
         tab.alive = false;
+        tildaz_log.appendLine("tab", "shell exited: title={s}", .{tab.title[0..tab.title_len]});
         if (tab.owner.window.hwnd) |hwnd| {
             _ = PostMessageW(hwnd, WM_TAB_CLOSED, @intFromPtr(tab), 0);
         }
@@ -663,8 +691,7 @@ const App = struct {
         const idx = self.renaming_tab orelse return;
         if (idx < self.tabs.items.len and self.rename_len > 0) {
             const tab = self.tabs.items[idx];
-            @memcpy(tab.title[0..self.rename_len], self.rename_buf[0..self.rename_len]);
-            tab.title_len = self.rename_len;
+            tab.setCustomTitle(self.rename_buf[0..self.rename_len]);
         }
         self.renaming_tab = null;
         if (self.d3d_renderer) |*r| r.invalidate();
@@ -710,7 +737,7 @@ const App = struct {
                     var prev = self.rename_cursor - 1;
                     while (prev > 0 and self.rename_buf[prev] & 0xC0 == 0x80) prev -= 1;
                     const char_len = self.rename_cursor - prev;
-                    std.mem.copyForwards(u8, self.rename_buf[prev..self.rename_len - char_len], self.rename_buf[self.rename_cursor..self.rename_len]);
+                    std.mem.copyForwards(u8, self.rename_buf[prev .. self.rename_len - char_len], self.rename_buf[self.rename_cursor..self.rename_len]);
                     self.rename_len -= char_len;
                     self.rename_cursor = prev;
                     if (self.d3d_renderer) |*r| r.invalidate();
@@ -723,7 +750,7 @@ const App = struct {
                     const char_len: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
                     const end = @min(self.rename_cursor + char_len, self.rename_len);
                     const actual_len = end - self.rename_cursor;
-                    std.mem.copyForwards(u8, self.rename_buf[self.rename_cursor..self.rename_len - actual_len], self.rename_buf[end..self.rename_len]);
+                    std.mem.copyForwards(u8, self.rename_buf[self.rename_cursor .. self.rename_len - actual_len], self.rename_buf[end..self.rename_len]);
                     self.rename_len -= actual_len;
                     if (self.d3d_renderer) |*r| r.invalidate();
                 }
@@ -1036,7 +1063,8 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) nor
 }
 
 pub fn main() void {
-    run() catch {
+    run() catch |err| {
+        tildaz_log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
         const msg = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ 실행 중 오류가 발생했습니다.");
         const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Error");
         _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
@@ -1080,6 +1108,11 @@ fn run() !void {
         _ = MessageBoxW(null, err_msg, title, MB_OK | MB_ICONERROR);
         return;
     }
+    tildaz_log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
+        config.hidden_start,
+        config.auto_start,
+        config.shell,
+    });
 
     if (config.auto_start) {
         autostart.enable() catch |err| {
@@ -1143,6 +1176,11 @@ fn run() !void {
     const font_family_w = config.fontFamilyUtf16(0);
     const font_size: c_int = @intCast(config.font_size);
     try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
+    tildaz_log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
+        app.window.current_dpi,
+        app.window.cell_width,
+        app.window.cell_height,
+    });
     defer app.window.deinit();
 
     // Scale tab bar / scrollbar / padding constants by the startup DPI.
@@ -1152,7 +1190,11 @@ fn run() !void {
 
     // Initialize D3D11 renderer
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.d3d_renderer = D3d11Renderer.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch null;
+    app.d3d_renderer = D3d11Renderer.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
+        tildaz_log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
+        break :blk null;
+    };
+    tildaz_log.appendLine("startup", "renderer active={}", .{app.d3d_renderer != null});
     defer if (app.d3d_renderer) |*r| r.deinit();
 
     // Apply position from config
@@ -1160,9 +1202,13 @@ fn run() !void {
 
     // Create initial tab
     try app.createTab();
+    tildaz_log.appendLine("startup", "initial tab created: count={d}", .{app.tabs.items.len});
 
     if (!config.hidden_start) {
+        tildaz_log.appendLine("startup", "show window", .{});
         app.window.show();
     }
+    tildaz_log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();
+    tildaz_log.appendLine("startup", "message loop exited", .{});
 }
