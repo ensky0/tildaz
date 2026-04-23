@@ -5,6 +5,7 @@ const session_core = @import("session_core.zig");
 const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
+const terminal_interaction = @import("terminal_interaction.zig");
 const window_mod = @import("window.zig");
 const Window = window_mod.Window;
 const RECT = window_mod.RECT;
@@ -41,9 +42,7 @@ const App = struct {
     d3d_renderer: ?D3d11Renderer = null,
     last_render_ms: i64 = 0,
     tab_interaction: tab_interaction.TabInteraction = .{},
-    selecting: bool = false, // true = terminal text selection in progress
-    scrollbar_dragging: bool = false, // true = scrollbar drag in progress
-    select_start_pin: ?ghostty.PageList.Pin = null,
+    terminal_interaction: terminal_interaction.TerminalInteraction = .{},
 
     // DPI-scaled values (initialized in run())
     dpi_scale: f32 = 1.0,
@@ -58,9 +57,6 @@ const App = struct {
     // hit-test / drag math in main.zig.
     SCROLLBAR_MIN_THUMB_H: c_int = 32,
     TERMINAL_PADDING: c_int = 6,
-
-    // Word boundary characters for double-click selection
-    const word_boundaries = [_]u21{ ' ', '\t', '"', '`', '|', ':', ';', '(', ')', '[', ']', '{', '}', '<', '>' };
 
     fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
@@ -404,7 +400,7 @@ const App = struct {
         return self.tab_interaction.rename.isActive();
     }
 
-    fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) struct { col: u16, row: u16 } {
+    fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) terminal_interaction.Cell {
         const cw = self.window.cell_width;
         const ch = self.window.cell_height;
         const grid = self.getTerminalGridSize();
@@ -417,19 +413,15 @@ const App = struct {
 
     fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         const cell = self.mouseToCell(mouse_x, mouse_y);
-        self.selecting = true;
 
         if (self.activeTabPtr()) |tab| {
             const screen: *ghostty.Screen = tab.terminal.screens.active;
-            screen.clearSelection();
-            // Pin으로 저장 — viewport가 스크롤돼도 위치 유지
-            self.select_start_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } });
+            self.terminal_interaction.selection.begin(screen, cell);
         }
     }
 
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
-        if (!self.selecting) return;
-        const start_pin = self.select_start_pin orelse return;
+        if (!self.terminal_interaction.selection.active) return;
         const tab = self.activeTabPtr() orelse return;
 
         // 터미널 영역 위/아래로 드래그 시 자동 스크롤
@@ -449,16 +441,11 @@ const App = struct {
 
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
-
-        const end_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
-
-        const sel = ghostty.Selection.init(start_pin, end_pin, false);
-        screen.select(sel) catch {};
+        self.terminal_interaction.selection.update(screen, cell);
     }
 
     fn finishTerminalSelection(self: *App) void {
-        if (!self.selecting) return;
-        self.selecting = false;
+        if (!self.terminal_interaction.selection.finish()) return;
 
         const tab = self.activeTabPtr() orelse return;
         const screen: *ghostty.Screen = tab.terminal.screens.active;
@@ -476,12 +463,10 @@ const App = struct {
         const cell = self.mouseToCell(mouse_x, mouse_y);
 
         const screen: *ghostty.Screen = tab.terminal.screens.active;
-
-        const pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
-        const sel = screen.selectWord(pin, &word_boundaries) orelse return;
-        screen.select(sel) catch {};
+        if (!terminal_interaction.selectWord(screen, cell)) return;
 
         // Copy word to clipboard
+        const sel = screen.selection orelse return;
         const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
         defer self.allocator.free(text);
         if (text.len > 0) {
@@ -539,8 +524,7 @@ const App = struct {
             .mouse_down => |mouse| {
                 if (self.isRenaming()) self.commitRename();
                 if (mouse.y < self.TAB_BAR_HEIGHT) {
-                    self.selecting = false;
-                    self.scrollbar_dragging = false;
+                    self.terminal_interaction.cancelPointerModes();
                     self.handleTabClick(mouse.x, mouse.y);
                     self.handleDragStart(mouse.x);
                     return true;
@@ -552,14 +536,14 @@ const App = struct {
                     client_w = rect.right;
                 }
                 if (mouse.x >= client_w - self.SCROLLBAR_W) {
-                    self.scrollbar_dragging = true;
+                    self.terminal_interaction.scrollbar.begin();
                     self.tab_interaction.drag.reset();
-                    self.selecting = false;
+                    self.terminal_interaction.selection.cancel();
                     self.scrollToY(mouse.y);
                     return true;
                 }
                 self.tab_interaction.drag.reset();
-                self.scrollbar_dragging = false;
+                self.terminal_interaction.scrollbar.end();
                 self.startTerminalSelection(mouse.x, mouse.y);
                 return true;
             },
@@ -579,19 +563,19 @@ const App = struct {
             },
             .mouse_move => |mouse| {
                 if (mouse.left_button) {
-                    if (self.scrollbar_dragging) {
+                    if (self.terminal_interaction.scrollbar.active) {
                         self.scrollToY(mouse.y);
                     } else if (self.tab_interaction.drag.active) {
                         self.handleDragMove(mouse.x);
-                    } else if (self.selecting) {
+                    } else if (self.terminal_interaction.selection.active) {
                         self.updateTerminalSelection(mouse.x, mouse.y);
                     }
                 }
                 return true;
             },
             .mouse_up => |_| {
-                if (self.scrollbar_dragging) {
-                    self.scrollbar_dragging = false;
+                if (self.terminal_interaction.scrollbar.active) {
+                    self.terminal_interaction.scrollbar.end();
                 } else if (self.tab_interaction.drag.active) {
                     self.handleDragEnd();
                 } else {
