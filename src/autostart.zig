@@ -68,7 +68,6 @@ const PROCESS_INFORMATION = extern struct {
 };
 
 const CREATE_NO_WINDOW: DWORD = 0x08000000;
-const INFINITE: DWORD = 0xFFFFFFFF;
 
 extern "kernel32" fn CreateProcessW(
     ?[*:0]const WCHAR,
@@ -82,7 +81,6 @@ extern "kernel32" fn CreateProcessW(
     *STARTUPINFOW,
     *PROCESS_INFORMATION,
 ) callconv(.c) BOOL;
-extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.c) DWORD;
 
 /// 기존 버전이 만든 Task Scheduler "TildaZ" 엔트리를 조용히 제거.
 /// 없으면 에러 무시. 있으면 삭제. schtasks 자체가 막힌 환경이면 어차피
@@ -109,7 +107,9 @@ fn removeLegacyTaskScheduler() void {
         &pi,
     ) == 0) return;
 
-    _ = WaitForSingleObject(pi.hProcess, INFINITE);
+    // Best-effort migration cleanup only. Do not block startup/shutdown on an
+    // external schtasks.exe process that might hang behind policy or shell
+    // initialization.
     windows.CloseHandle(pi.hProcess);
     windows.CloseHandle(pi.hThread);
 }
