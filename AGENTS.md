@@ -17,13 +17,21 @@
 특히 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에는 사실 판단의 근거가 되는 공식 문서, 이슈, 코드, 커밋, 로그 등의 링크를 포함해요.
 이 원칙은 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에 모두 동일하게 적용해요.
 
+# 메시지 언어
+
+커밋 메시지, GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 에이전트와의 대화는 항상 한국어로 작성해요.
+
+예외: 프로그램 안에서 사용자에게 직접 표시되는 메시지는 영어로 작성해요. 예를 들어 MessageBox, 오류 다이얼로그, 사용자 안내 문구처럼 최종 사용자가 앱 안에서 보는 텍스트는 영어를 기본으로 해요.
+
 # 실행 환경
 
 Windows 환경에서 작업 중이면 **모든 명령은 WSL에서 실행하는 것을 먼저 고려**해요.
 `git`, `gh`, 파일 조작 등은 `.gitconfig`, SSH 키, 기타 설정이 WSL 쪽에 있는 경우가 많아서 Windows 셸에서 직접 실행하면 인증이나 환경 차이로 불안한 문제가 생길 수 있어요.
 
 예외: `tildaz.exe` 자체는 **Windows 프로그램**이므로 빌드와 실행은 Windows 쪽에서 해야 해요.
-`zig build`는 Windows 셸에서 실행하되, 소스는 UNC 경로(`\\wsl.localhost\Debian\...`)로 접근하고 캐시는 `C:/ziglang/tildaz-cache` 같은 Windows 로컬 경로를 사용해요.
+`zig build`는 Windows 셸에서 실행하되, 소스는 UNC 경로(`\\wsl$\Debian\...`)로 접근하고 캐시는 `C:/ziglang/tildaz-cache` 같은 Windows 로컬 경로를 사용해요.
+
+WSL 파일을 Windows 경로로 접근해야 할 때는 반드시 `\\wsl$\Debian\...` 형식을 사용해요. `\\wsl.localhost\Debian\...`는 사용하지 않아요.
 
 # 릴리즈
 
