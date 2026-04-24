@@ -38,21 +38,26 @@ pub const App = struct {
     pub fn createTab(self: *App) !void {
         const grid = self.getTerminalGridSize();
         try self.session.createTab(grid.cols, grid.rows);
+        self.invalidateRenderer();
+    }
+
+    fn invalidateRenderer(self: *App) void {
         if (self.d3d_renderer) |*r| r.invalidate();
     }
 
-    fn closeTab(self: *App, index: usize) void {
-        switch (self.session.closeTab(index)) {
+    fn handleCloseResult(self: *App, result: SessionCore.CloseResult) void {
+        switch (result) {
             .none => return,
             .closed_last => {
                 tildaz_log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
                 self.window.closeAfterShellExit();
             },
-            .changed => {
-                // Force full redraw so the new active tab's content is rendered
-                if (self.d3d_renderer) |*r| r.invalidate();
-            },
+            .changed => self.invalidateRenderer(),
         }
+    }
+
+    fn closeTab(self: *App, index: usize) void {
+        self.handleCloseResult(self.session.closeTab(index));
     }
 
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
@@ -199,16 +204,7 @@ pub const App = struct {
     // --- Tab management from window messages ---
 
     pub fn handleTabClosed(self: *App, tab_ptr: usize) void {
-        switch (self.session.closeTabByPtr(tab_ptr)) {
-            .none => return,
-            .closed_last => {
-                tildaz_log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
-                self.window.closeAfterShellExit();
-            },
-            .changed => {
-                if (self.d3d_renderer) |*r| r.invalidate();
-            },
-        }
+        self.handleCloseResult(self.session.closeTabByPtr(tab_ptr));
     }
 
     pub fn handleNewTab(self: *App) void {
@@ -223,13 +219,13 @@ pub const App = struct {
 
     pub fn handleSwitchTab(self: *App, index: usize) void {
         if (self.session.setActiveTab(index)) {
-            if (self.d3d_renderer) |*r| r.invalidate();
+            self.invalidateRenderer();
         }
     }
 
     pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
         if (self.session.scrollActive(event, self.getTerminalGridSize().rows)) {
-            if (self.d3d_renderer) |*r| r.invalidate();
+            self.invalidateRenderer();
         }
     }
 
@@ -264,7 +260,7 @@ pub const App = struct {
         const delta = target - current;
         if (delta != 0) {
             tab.terminal.scrollViewport(.{ .delta = delta });
-            if (self.d3d_renderer) |*r| r.invalidate();
+            self.invalidateRenderer();
         }
     }
 
@@ -289,7 +285,7 @@ pub const App = struct {
         }
 
         if (self.session.setActiveTab(tab_index)) {
-            if (self.d3d_renderer) |*r| r.invalidate();
+            self.invalidateRenderer();
         }
     }
 
@@ -304,7 +300,7 @@ pub const App = struct {
     pub fn handleDragEnd(self: *App) void {
         if (self.tab_interaction.drag.finish(self.TAB_WIDTH, self.session.count())) |request| {
             if (self.session.reorderTabs(request.from, request.to) catch false) {
-                if (self.d3d_renderer) |*r| r.invalidate();
+                self.invalidateRenderer();
             }
         }
     }
@@ -312,7 +308,7 @@ pub const App = struct {
     fn startRename(self: *App, tab_index: usize) void {
         const tab = self.session.tabAt(tab_index) orelse return;
         self.tab_interaction.rename.begin(tab_index, tab.title[0..tab.title_len]);
-        if (self.d3d_renderer) |*r| r.invalidate();
+        self.invalidateRenderer();
     }
 
     fn commitRename(self: *App) void {
@@ -323,17 +319,17 @@ pub const App = struct {
             }
         }
         self.tab_interaction.rename.clear();
-        if (self.d3d_renderer) |*r| r.invalidate();
+        self.invalidateRenderer();
     }
 
     fn cancelRename(self: *App) void {
         self.tab_interaction.rename.clear();
-        if (self.d3d_renderer) |*r| r.invalidate();
+        self.invalidateRenderer();
     }
 
     fn handleRenameChar(self: *App, cp: u21) void {
         if (self.tab_interaction.rename.insertCodepoint(cp)) {
-            if (self.d3d_renderer) |*r| r.invalidate();
+            self.invalidateRenderer();
         }
     }
 
@@ -351,9 +347,7 @@ pub const App = struct {
 
         switch (self.tab_interaction.rename.handleKey(rename_key)) {
             .none => return false,
-            .changed => {
-                if (self.d3d_renderer) |*r| r.invalidate();
-            },
+            .changed => self.invalidateRenderer(),
             .commit => self.commitRename(),
             .cancel => self.cancelRename(),
         }
@@ -463,7 +457,7 @@ pub const App = struct {
                     },
                     .reset_terminal => {
                         if (self.session.resetActive()) {
-                            if (self.d3d_renderer) |*r| r.invalidate();
+                            self.invalidateRenderer();
                         }
                         return true;
                     },
