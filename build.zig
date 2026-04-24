@@ -9,7 +9,7 @@ const std = @import("std");
 // 릴리즈 버전. 태그 / dist/windows/README.txt / GitHub Release / dist/release-notes/
 // 와 동기화 필요. src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도
 // 같이 갱신.
-const tildaz_version = "0.2.11";
+const tildaz_version = "0.2.12";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});

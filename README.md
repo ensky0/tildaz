@@ -4,13 +4,14 @@ Windows용 Quake-style 드롭다운 터미널. Zig + libghostty-vt 기반.
 
 Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 유사한 UX를 Windows에서 제공한다.
 
-> **v0.2.6 — 퍼포먼스 개선 릴리즈**
+> **v0.2.12 — 동작 구조 정리 릴리즈**
 >
-> 번들 OpenConsole + DA1 핸드셰이크 수정으로 대량 출력이 같은 조건의
-> Windows Terminal 보다 **1.26배 빠르다** (`time cat` 1.14 MiB CJK, 화면
-> 왼쪽 절반: tildaz 0.074s vs WT 0.093s). WSL 새 탭 프롬프트 도착도
-> ~548ms 로, 순수 `wsl + bash interactive` 하한 (~480ms) 에 근접.
-> 자세한 내용은 [퍼포먼스](#퍼포먼스) 참고.
+> Windows Terminal / WezTerm 과 비교한 동작 구조 리뷰를 바탕으로
+> 입력 이벤트, 세션/탭, 터미널 backend, Windows host, 빌드 target,
+> renderer backend 경계를 정리했다. Windows 쪽 핵심 선택인
+> **OpenConsole/ConPTY + ghostty VT + Direct3D 11 renderer** 조합은 유지하면서,
+> macOS/Linux backend 를 나중에 추가할 수 있도록 선택 지점을 분리했다.
+> 자세한 내용은 [동작 구조](#동작-구조) 참고.
 
 ## 기능
 
@@ -71,6 +72,11 @@ zig build -Doptimize=Debug
 > **참고**: SIMD 가속 옵션(`-Dsimd=true`)은 현재 Windows에서 동작하지 않습니다.
 > Zig 0.15 빌드 시스템이 ghostty의 C++ SIMD 소스에 C++ 표준 라이브러리 경로를
 > 전달하지 않는 문제입니다. Zig upstream 수정이 필요합니다.
+
+Windows에서 WSL checkout을 빌드할 때는 `\\wsl$\Debian\...` UNC 경로를
+사용한다. `\\wsl.localhost\Debian\...` 경로는 보안 제품이나 Windows 네트워크
+경로 처리 차이로 실행 파일 접근이 막힐 수 있다. 빌드 산출물은 기본값인
+`zig-out/bin`에 둔다.
 
 ### 배포 (릴리즈)
 
@@ -245,15 +251,87 @@ repo 에 체크인되어 있어야 한다 (`release.sh` 의 pre-flight check 가
 
 - **F1 핫키가 관리자 권한 앱 위에서 동작하지 않음**: 작업관리자, regedit 등 관리자 권한(elevated)으로 실행된 앱이 포커스된 상태에서는 F1 토글이 동작하지 않습니다. Windows UIPI(User Interface Privilege Isolation) 보안 정책에 의한 제한으로, TildaZ를 관리자 권한으로 실행하면 해결되지만 권장하지 않습니다.
 
+## 동작 구조
+
+TildaZ의 현재 구조는 “Windows에서 효율적으로 동작하는 terminal host”와
+“나중에 macOS/Linux backend를 붙일 수 있는 경계”를 동시에 목표로 한다.
+구조 리뷰와 리팩터링 기록은 [#91](https://github.com/ensky0/tildaz/issues/91)에
+남겨 두었다.
+
+### Windows 파이프라인
+
+Windows 실행 경로는 아래 흐름으로 동작한다.
+
+1. `windows_host.zig`가 DPI awareness, single instance, 설정, autostart,
+   window, renderer, 초기 tab을 준비한다.
+2. `window.zig`가 Win32 메시지를 해석해 `app_event.zig`의 앱 이벤트로 변환한다.
+3. `app_controller.zig`가 앱 이벤트를 받아 tab/session/selection/rename/scroll
+   정책을 처리한다.
+4. `session_core.zig`가 tab 목록, active tab, scrollback, VT drain, PTY input
+   queue를 관리한다.
+5. `terminal_backend.zig`가 OS별 PTY backend를 선택한다. Windows에서는
+   `conpty.zig`의 ConPTY backend를 사용하고, 비-Windows는 아직 unsupported
+   placeholder다.
+6. `conpty.zig`는 bundled `conpty.dll`/`OpenConsole.exe`를 우선 사용하고,
+   누락되면 `kernel32 CreatePseudoConsole`로 fallback한다.
+7. PTY output은 read thread에서 lock-free ring buffer로 들어가고, render
+   callback에서 ghostty VT parser가 drain한다.
+8. `renderer_backend.zig`가 OS별 renderer를 선택한다. Windows에서는
+   `d3d11_renderer.zig`의 Direct3D 11 renderer를 사용하고, 비-Windows는 아직
+   unsupported placeholder다.
+
+### 선택의 이유
+
+**ConPTY / OpenConsole**
+
+Windows에서 기존 Console API 기반 앱과 VT 기반 앱을 외부 terminal window에
+붙이는 표준 경로는 ConPTY다. TildaZ는 `conpty.dll`이 있으면 bundled
+OpenConsole 경로를 사용해 시스템 conhost 차이를 줄이고, 번들 파일이 없으면
+시스템 `kernel32` ConPTY로 자동 fallback한다. 이 방식은 배포 안정성과 호환성을
+둘 다 잡기 위한 선택이다.
+
+**pipe / thread 구조**
+
+ConPTY input은 synchronous write pipe로 단순하게 유지하고, output은 overlapped
+read가 가능한 named pipe로 받는다. read thread와 process wait thread를 분리해
+pipe가 꽉 찼을 때 UI thread가 직접 막히는 위험을 줄인다. `session_core.zig`의
+ring buffer는 ConPTY read thread와 UI/render thread 사이를 분리하는 완충층이다.
+
+**Direct3D 11 renderer**
+
+Windows renderer는 DirectWrite로 glyph를 rasterize하고 Direct3D 11/HLSL로
+cell과 glyph atlas를 그린다. 매 프레임 GDI로 텍스트를 다시 그리는 방식보다
+대량 출력과 scrollback에서 유리하며, Windows Terminal/WezTerm 같은 현대 terminal
+emulator의 GPU 가속 방향과 같다.
+
+**플랫폼 경계**
+
+Phase 1~12에서 입력 이벤트, session core, terminal backend, app controller,
+Windows host, build target, renderer backend를 순서대로 분리했다. 현재 Windows
+동작은 유지하면서도 macOS/Linux를 추가할 때는 `unsupported_host.zig`,
+`terminal_backend.zig`, `renderer_backend.zig`, window host 계층을 교체하는
+방향으로 확장할 수 있다.
+
+### 남은 구조적 과제
+
+- macOS/Linux 실제 host와 POSIX PTY backend는 아직 구현되지 않았다.
+- Metal/OpenGL/Vulkan/Skia 같은 비-Windows renderer는 아직 없다.
+- renderer init 실패 시 실제 software renderer fallback은 아직 없다.
+- OpenConsole 내부 동작을 따라가는 `ShowHide`, DA1 pre-response 경로는
+  버전 업데이트 때 회귀 테스트가 필요하다.
+- 대량 출력, resize storm, tab close 중 output pipe full, WSL/nvim/mouse,
+  CJK/emoji/combining marks는 별도 stress test로 잠그는 것이 좋다.
+
 ## 기술 스택
 
 | 구성요소 | 선택 |
 |---------|------|
 | 언어 | Zig 0.15.2 |
 | 터미널 에뮬레이션 | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
-| PTY | Windows ConPTY |
+| PTY backend | `terminal_backend.zig` — Windows ConPTY, 비-Windows placeholder |
 | PTY 호스트 | 번들 `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT) · 누락 시 시스템 conhost 로 fallback |
 | 윈도우 | Win32 API (보더리스 팝업) |
+| renderer backend | `renderer_backend.zig` — Windows Direct3D 11, 비-Windows placeholder |
 | 렌더링 | Direct3D 11 + HLSL 셰이더 (ClearType 서브픽셀 블렌딩) |
 | 폰트 래스터라이즈 | DirectWrite (동적 폰트 아틀라스 + 시스템 폰트 폴백) |
 
