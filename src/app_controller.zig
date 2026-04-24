@@ -7,7 +7,8 @@ const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const Window = @import("window.zig").Window;
-const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
+const renderer_backend = @import("renderer_backend.zig");
+const RendererBackend = renderer_backend.RendererBackend;
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
 const about = @import("about.zig");
@@ -16,7 +17,7 @@ pub const App = struct {
     session: SessionCore,
     window: Window,
     allocator: std.mem.Allocator,
-    d3d_renderer: ?D3d11Renderer = null,
+    renderer: ?RendererBackend = null,
     last_render_ms: i64 = 0,
     tab_interaction: tab_interaction.TabInteraction = .{},
     terminal_interaction: terminal_interaction.TerminalInteraction = .{},
@@ -42,7 +43,7 @@ pub const App = struct {
     }
 
     fn invalidateRenderer(self: *App) void {
-        if (self.d3d_renderer) |*r| r.invalidate();
+        if (self.renderer) |*r| r.invalidate();
     }
 
     fn handleCloseResult(self: *App, result: SessionCore.CloseResult) void {
@@ -88,8 +89,7 @@ pub const App = struct {
 
     pub fn onResize(_: u16, _: u16, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        // Resize D3D11 render target to match new window size
-        if (self.d3d_renderer) |*r| {
+        if (self.renderer) |*r| {
             const size = self.window.getClientSize();
             r.resize(@intCast(@max(1, size.w)), @intCast(@max(1, size.h)));
         }
@@ -128,7 +128,7 @@ pub const App = struct {
     /// metrics in one step.
     pub fn onFontChange(window: *Window, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        if (self.d3d_renderer) |*r| {
+        if (self.renderer) |*r| {
             r.rebuildFont(
                 window.hwnd,
                 window.font_family,
@@ -148,7 +148,7 @@ pub const App = struct {
         const onrender_t0 = perf.now();
         defer perf.addTimed(&perf.onrender, onrender_t0);
 
-        if (self.d3d_renderer) |*r| {
+        if (self.renderer) |*r| {
             const size = window.getClientSize();
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
@@ -156,13 +156,13 @@ pub const App = struct {
 
             if (should_render) {
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함)
-                var tab_titles: [32]D3d11Renderer.TabTitle = undefined;
+                var tab_titles: [32]renderer_backend.TabTitle = undefined;
                 const tabs = self.session.tabsSlice();
                 const n = @min(tabs.len, 32);
                 for (tabs[0..n], 0..) |t, i| {
                     tab_titles[i] = .{ .ptr = &t.title, .len = t.title_len };
                 }
-                const rs: ?D3d11Renderer.RenameState = if (self.tab_interaction.rename.view()) |rename| .{
+                const rs: ?renderer_backend.RenameState = if (self.tab_interaction.rename.view()) |rename| .{
                     .tab_index = rename.tab_index,
                     .text = rename.text,
                     .text_len = rename.text_len,
