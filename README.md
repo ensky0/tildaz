@@ -1,138 +1,139 @@
 # TildaZ
 
-Windows용 Quake-style 드롭다운 터미널. Zig + libghostty-vt 기반.
+Quake-style drop-down terminal for Windows, built on Zig and libghostty-vt.
 
-Linux의 [Tilda](https://github.com/lanoxx/tilda) 터미널과 유사한 UX를 Windows에서 제공한다.
+Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows.
 
-> **v0.2.12 — 동작 구조 정리 릴리즈**
+**Website**: https://ensky0.github.io/tildaz/
+
+> **v0.2.12 — architecture cleanup release**
 >
-> Windows Terminal / WezTerm 과 비교한 동작 구조 리뷰를 바탕으로
-> 입력 이벤트, 세션/탭, 터미널 backend, Windows host, 빌드 target,
-> renderer backend 경계를 정리했다. Windows 쪽 핵심 선택인
-> **OpenConsole/ConPTY + ghostty VT + Direct3D 11 renderer** 조합은 유지하면서,
-> macOS/Linux backend 를 나중에 추가할 수 있도록 선택 지점을 분리했다.
-> 자세한 내용은 [동작 구조](#동작-구조) 참고.
+> Reviewed TildaZ against Windows Terminal and WezTerm and separated the
+> boundaries for input events, session/tab, terminal backend, Windows host,
+> build target, and renderer backend. The core Windows choice —
+> **OpenConsole/ConPTY + ghostty VT + Direct3D 11 renderer** — stays the same,
+> but the seams are now in place to add macOS/Linux backends later.
+> See [Architecture](#architecture) for details.
 
-## 기능
+## Features
 
-- **F1** 글로벌 핫키로 터미널 show/hide 토글
-- **Alt+Enter** 로 현재 모니터 전체 화면 토글 (작업 영역 = taskbar 제외 전체). F1 hide → F1 show 사이클에서도 전체 화면 상태를 유지, 디스플레이/DPI/작업 영역 변경 시 현재 상태에 맞춰 재배치
-- **탭 지원**: 독립 터미널 세션을 가진 다중 탭
-  - Ctrl+Shift+T 새 탭 생성
-  - Ctrl+Shift+W 현재 탭 닫기
-  - Alt+1~9 탭 전환
-  - 마우스 클릭으로 탭 선택, X 버튼으로 탭 닫기
-  - 마우스 드래그로 탭 순서 변경
-  - 마지막 탭을 닫으면 앱 종료
-- **유니코드 전체 지원**: 한글, CJK, 이모지 등 전각/반각 문자 정상 렌더링
-- **폰트 폴백 체인**: 최대 8개 폰트 지정 가능, 글리프를 못 찾으면 다음 폰트로 자동 폴백
-- **ClearType 서브픽셀 렌더링**: DirectWrite + Direct3D 11 셰이더 기반 고품질 텍스트 렌더링
-- **번들 OpenConsole**: `OpenConsole.exe` + `conpty.dll` 동봉으로 시스템 `conhost.exe` 우회. 대량 출력 throughput 2.2x, 번들 파일이 없으면 시스템 conhost 로 자동 fallback
-- **ANSI 색상**: 16색/256색/TrueColor 전경·배경색, bold-is-bright, inverse 지원
-- **18가지 내장 컬러 테마**: Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin 등
-- **텍스트 선택 및 복사**:
-  - 클릭+드래그로 텍스트 선택 (선택 영역 반전 표시)
-  - 더블클릭으로 단어 선택
-  - 마우스 버튼 놓으면 자동 클립보드 복사
-  - 마우스 휠 클릭으로 붙여넣기
-- **스크롤백**: 마우스 휠 스크롤, 스크롤바 드래그, 최대 100,000줄 버퍼. 스크롤백이 많아도 thumb 이 최소 크기 (32px × DPI scale) 를 유지해 드래그 가능
-- **vim dark/light 감지**: 테마 배경 밝기에 따라 `COLORFGBG` 환경변수 자동 설정 (WSL 포함)
-- 화면 가장자리(top/bottom/left/right)에 붙는 드롭다운 윈도우
-- 크기/위치를 화면 비율(%)로 설정
-- **멀티 모니터 자동 추적**:
-  - F1 로 토글할 때마다 **현재 마우스 커서가 있는 모니터** 에 드롭다운이 등장. 해당 모니터의 work area (작업 표시줄 제외) 기준으로 폭·높이·offset 을 매번 재계산해서 맞춤
-  - 해상도 변경 / 외부 모니터 연결·해제 / 작업 표시줄 자동 숨김 토글 / per-monitor DPI 변경도 자동 감지해서 즉시 재배치 (`WM_DISPLAYCHANGE` / `WM_DPICHANGED` / `WM_SETTINGCHANGE`)
-  - DPI 가 다른 모니터로 이동하면 GDI 폰트 · cell 크기 · DirectWrite glyph atlas 를 새 DPI 로 재raster 해서 글자가 모니터 배율에 맞춰 다시 그려짐
-  - 외부 모니터 해제처럼 창 rect 이 동일해 `WM_SIZE` 가 발생하지 않는 경우에도 terminal grid 를 직접 reflow 해서 새 cell 크기로 화면 전체를 채움
-- 반투명(설정 가능) always-on-top 윈도우
-- Ctrl+Shift+V 클립보드 붙여넣기
-- Ctrl+Shift+R 터미널 초기화 (바이너리 cat 등으로 깨졌을 때)
-- **Ctrl+Shift+I** About 다이얼로그 — 현재 실행 중인 tildaz 의 버전 · exe 풀 경로 · pid 를 MessageBox 로 표시. 창에 타이틀바가 없어서 실행 중인 exe 를 식별하기 어려운 문제를 해결
-- **PE VERSIONINFO** — `tildaz.exe` 우클릭 → 속성 → 자세히 에서 버전 확인 가능
-- **통합 로그** `%APPDATA%\tildaz\tildaz.log` — 부팅 / 종료 / ConPTY 초기화 / autostart 에러 / perf 스냅샷이 같은 타임라인에 쌓임. 기존 `C:\tildaz_win\perf.log` 하드코딩 경로 대체
-- Ctrl+Shift+P 퍼포먼스 스냅샷 덤프 (`tildaz.log` 에 push / drain / parse / render / present 단계별 ms·bytes·calls 기록)
-- **Windows 로그인 시 자동 시작** — HKCU\Software\Microsoft\Windows\CurrentVersion\Run 레지스트리 값으로 등록. (v0.2.7 까지는 Task Scheduler 기반이었으나 Group Policy / UAC 설정에 따라 `schtasks /create` 가 거부되어 stale 엔트리가 영구히 남는 사고가 있어 v0.2.8 에서 Registry Run 으로 단일화)
+- **F1** global hotkey toggles the terminal show/hide
+- **Alt+Enter** toggles current-monitor fullscreen (work area = excluding taskbar). Fullscreen state is preserved across F1 hide → F1 show cycles and re-applied on display / DPI / work-area changes
+- **Tabs** — multiple independent terminal sessions
+  - Ctrl+Shift+T to open a new tab
+  - Ctrl+Shift+W to close the active tab
+  - Alt+1~9 to switch between tabs
+  - Click to select, X button to close
+  - Drag to reorder
+  - Closing the last tab quits the app
+- **Full Unicode support** — correct rendering for Hangul, CJK, emoji and other wide/narrow character sets
+- **Font fallback chain** — up to 8 font families; falls through to the next family when a glyph is missing
+- **ClearType subpixel rendering** — high-quality text via DirectWrite + Direct3D 11 shaders
+- **Bundled OpenConsole** — ships `OpenConsole.exe` + `conpty.dll` to bypass the system `conhost.exe`. Bulk output throughput is 2.2× over system conhost; falls back to system conhost automatically when the bundled files are missing
+- **ANSI colors** — 16 / 256 / TrueColor foreground and background, bold-is-bright, inverse
+- **18 built-in color themes** — Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin, and more
+- **Text selection and copy**
+  - Click-drag to select (selection inverted in place)
+  - Double-click to select a word
+  - Release mouse button → automatic clipboard copy
+  - Middle-click to paste
+- **Scrollback** — mouse wheel, scrollbar drag, up to 100,000 lines. Thumb stays at least 32px × DPI scale so it remains draggable even with deep scrollback
+- **Vim dark/light detection** — sets `COLORFGBG` based on theme background luminance (propagated into WSL too)
+- Drop-down docks to any screen edge (top/bottom/left/right)
+- Size and offset specified as percentages of the screen
+- **Multi-monitor follow**
+  - Each F1 toggle drops onto **the monitor containing the mouse cursor**. Width / height / offset are recomputed against that monitor's work area (excluding the taskbar)
+  - Resolution change / external monitor connect-disconnect / taskbar auto-hide toggle / per-monitor DPI change are all detected and re-applied immediately (`WM_DISPLAYCHANGE` / `WM_DPICHANGED` / `WM_SETTINGCHANGE`)
+  - Moving to a different-DPI monitor re-rasters the GDI font, cell metrics, and DirectWrite glyph atlas at the new DPI so glyphs are drawn at the new monitor's pixel density
+  - When the window rect is unchanged (e.g. unplugging an external monitor), the terminal grid is reflowed directly even though `WM_SIZE` never fires, so the full client area stays in sync with the new cell size
+- Translucent (configurable), always-on-top window
+- Ctrl+Shift+V to paste from clipboard
+- Ctrl+Shift+R to reset the terminal (e.g. after `cat`-ing a binary)
+- **Ctrl+Shift+I** About dialog — shows version / exe full path / pid in a MessageBox. Useful because the borderless window has no title bar to identify the running exe from
+- **PE VERSIONINFO** — right-click `tildaz.exe` → Properties → Details shows the version
+- **Unified log** `%APPDATA%\tildaz\tildaz.log` — boot / exit / ConPTY init / autostart errors / perf snapshots share a single timeline. Replaces the previous hard-coded `C:\tildaz_win\perf.log`
+- Ctrl+Shift+P dumps a perf snapshot (ms / bytes / call counts per push / drain / parse / render / present stage) into `tildaz.log`
+- **Auto-start on Windows login** — registers via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. (Through v0.2.7 this used Task Scheduler, but Group Policy / UAC settings caused `schtasks /create` to be denied and left stale entries behind permanently. v0.2.8 consolidated on Registry Run.)
 
-## 빌드
+## Build
 
-### 필수 요구사항
+### Requirements
 
 - [Zig 0.15.2](https://ziglang.org/download/)
 
-### 빌드 명령
+### Build commands
 
 ```bash
-# 기본 빌드 (ReleaseFast)
+# default build (ReleaseFast)
 zig build
 
-# 디버그 빌드
+# debug build
 zig build -Doptimize=Debug
 ```
 
-> **참고**: SIMD 가속 옵션(`-Dsimd=true`)은 현재 Windows에서 동작하지 않습니다.
-> Zig 0.15 빌드 시스템이 ghostty의 C++ SIMD 소스에 C++ 표준 라이브러리 경로를
-> 전달하지 않는 문제입니다. Zig upstream 수정이 필요합니다.
+> **Note**: the SIMD option (`-Dsimd=true`) currently does not work on Windows.
+> Zig 0.15's build system does not pass C++ stdlib include paths through to
+> ghostty's C++ SIMD sources. Upstream fix required.
 
-Windows에서 WSL checkout을 빌드할 때는 `\\wsl$\Debian\...` UNC 경로를
-사용한다. `\\wsl.localhost\Debian\...` 경로는 보안 제품이나 Windows 네트워크
-경로 처리 차이로 실행 파일 접근이 막힐 수 있다. 빌드 산출물은 기본값인
-`zig-out/bin`에 둔다.
+When building a WSL checkout from Windows, use the `\\wsl$\Debian\...` UNC
+path. `\\wsl.localhost\Debian\...` can trip security products or exhibit
+different Windows network-path behavior that blocks the executable. Build
+output stays at the default `zig-out/bin`.
 
-### 배포 (릴리즈)
+### Packaging (release zip)
 
-v0.2.6 부터는 3-file 번들을 단일 zip 으로 배포한다.
+Starting with v0.2.6 the release is a single zip with three files:
 
 ```
 tildaz-v<ver>-win-x64.zip
-  tildaz.exe        본체
-  conpty.dll        번들 ConPTY 런타임 (MIT, microsoft/terminal)
-  OpenConsole.exe   번들 PTY 호스트     (MIT, microsoft/terminal)
+  tildaz.exe        the binary
+  conpty.dll        bundled ConPTY runtime (MIT, microsoft/terminal)
+  OpenConsole.exe   bundled PTY host        (MIT, microsoft/terminal)
   README.txt        (dist/windows/README.txt)
 ```
 
-세 파일은 **같은 폴더에** 두어야 번들 경로가 동작한다. `conpty.dll` 또는
-`OpenConsole.exe` 가 누락되면 tildaz 는 시스템 `kernel32` conhost 로 자동
-fallback 하며, 이 경우 기본 동작은 정상이지만 대량 출력 throughput 이 번들
-경로 대비 약 절반 수준이 된다.
+All three files must live in the **same folder** for the bundled path to
+activate. If `conpty.dll` or `OpenConsole.exe` is missing, TildaZ falls back
+to the system `kernel32` conhost — baseline behavior still works, but bulk
+output throughput is roughly half of the bundled path.
 
-#### 번들 빌드 — `zig build package`
+#### Bundle build — `zig build package`
 
 ```bash
 zig build package
 # → zig-out/release/tildaz-v<ver>-win-x64.zip
-# → zig-out/release/tildaz-v<ver>-win-x64.zip.sha256   (sha256sum -c 호환)
+# → zig-out/release/tildaz-v<ver>-win-x64.zip.sha256   (compatible with `sha256sum -c`)
 ```
 
-내부적으로 `bash dist/windows/package.sh --version <ver>` 를 호출하며,
-Windows Git Bash / macOS / Linux 어디서든 동작. zip 압축은 Windows 에서
-PowerShell `Compress-Archive`, mac/linux 에서는 `zip` 을 쓴다 (각 OS
-기본 도구만 사용, Python/Node/외부 의존성 없음).
+Internally this calls `bash dist/windows/package.sh --version <ver>` and works
+under Git Bash on Windows, macOS, and Linux. Zip compression uses PowerShell
+`Compress-Archive` on Windows and `zip` on macOS/Linux — only first-party
+OS tools, no Python / Node / external dependencies.
 
-#### 태깅 + 릴리즈 — `dist/release.sh`
+#### Tag + release — `dist/release.sh`
 
-`.` 에서 한 줄로 태깅 + GitHub Release 생성:
+Tag and create a GitHub Release in one command from the repo root:
 
 ```bash
-# 사전: build.zig 의 tildaz_version 을 원하는 버전으로 먼저 bump + commit
-dist/release.sh --version 0.2.9              # 정상 플로우 (tag push → Actions)
-dist/release.sh --version 0.2.9 --dry-run    # 빌드/패키지만 리허설, tag push 안 함
-dist/release.sh --version 0.2.9 --local-upload   # Actions 없이 로컬에서 직접 gh release
+# pre-req: bump tildaz_version in build.zig first, commit it
+dist/release.sh --version 0.2.9              # normal flow (tag push → Actions)
+dist/release.sh --version 0.2.9 --dry-run    # build/package rehearsal, no tag push
+dist/release.sh --version 0.2.9 --local-upload   # skip Actions, gh release directly
 ```
 
-태그가 push 되면 `.github/workflows/release.yml` (Windows runner) 이
-`zig build package` → zip + sha256 업로드 → `dist/release-notes/v<ver>.md`
-를 Release body 로 첨부하는 과정을 자동화한다. 수동 재시도가 필요하면
-Actions 의 `workflow_dispatch` 로 태그를 넣어 재실행 가능.
+A tag push triggers `.github/workflows/release.yml` on a Windows runner,
+which runs `zig build package` → uploads the zip + sha256 → attaches
+`dist/release-notes/v<ver>.md` as the Release body. For manual retries,
+`workflow_dispatch` accepts the tag name directly.
 
-릴리즈 노트는 **태그를 push 하기 전에** `dist/release-notes/v<ver>.md` 로
-repo 에 체크인되어 있어야 한다 (`release.sh` 의 pre-flight check 가
-파일 존재를 강제).
+The release-notes file **must exist on the tag** — `release.sh`'s pre-flight
+check fails if `dist/release-notes/v<ver>.md` is missing.
 
-## 설정
+## Configuration
 
-설정 파일 경로: `tildaz.exe`와 같은 디렉토리의 `config.json`
+Config file path: `config.json` in the same directory as `tildaz.exe`.
 
-설정 파일이 없으면 첫 실행 시 기본값으로 자동 생성된다.
+If missing, it is auto-created with defaults on first launch.
 
 ```json
 {
@@ -157,73 +158,73 @@ repo 에 체크인되어 있어야 한다 (`release.sh` 의 pre-flight check 가
 }
 ```
 
-| 섹션 | 항목 | 타입 | 범위 | 기본값 | 설명 |
-|------|------|------|------|--------|------|
-| window | dock_position | string | top, bottom, left, right | "top" | 도킹 위치 |
-| window | width | int | 10~100 | 50 | 가로 크기 (화면 %) |
-| window | height | int | 10~100 | 100 | 세로 크기 (화면 %) |
-| window | offset | int | 0~100 | 100 | 위치 (0=시작, 50=중앙, 100=끝) |
-| window | opacity | int | 0~100 | 100 | 윈도우 투명도 (%) |
-| font | family | string 또는 string[] | - | ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"] | 폰트 (배열 시 폴백 체인, 최대 8개) |
-| font | size | int | 8~72 | 20 | 폰트 크기 (px) |
-| font | line_height | float | 0.1~10.0 | 0.95 | 줄 높이 배율 (1.0 = 기본 행간) |
-| font | cell_width | float | 0.1~10.0 | 1.2 | 셀 너비 배율 (1.0 = 기본 자간) |
-| - | theme | string | [테마 목록](#테마) 참조 | "Tilda" | 컬러 테마 |
-| - | shell | string | - | "cmd.exe" | 실행할 쉘 (wsl.exe -d Debian --cd ~ 등 가능) |
-| - | auto_start | bool | true, false | true | Windows 로그인 시 자동 시작 |
-| - | hidden_start | bool | true, false | false | 숨김 상태로 시작 |
-| - | max_scroll_lines | int | 100~100,000 | 100,000 | 스크롤백 버퍼 (라인 수) |
+| Section | Key | Type | Range | Default | Description |
+|---------|-----|------|-------|---------|-------------|
+| window | dock_position | string | top, bottom, left, right | "top" | Dock edge |
+| window | width | int | 10–100 | 50 | Width (% of screen) |
+| window | height | int | 10–100 | 100 | Height (% of screen) |
+| window | offset | int | 0–100 | 100 | Position along the edge (0 = start, 50 = center, 100 = end) |
+| window | opacity | int | 0–100 | 100 | Window opacity (%) |
+| font | family | string or string[] | — | ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"] | Font (array becomes a fallback chain, max 8) |
+| font | size | int | 8–72 | 20 | Font size (px) |
+| font | line_height | float | 0.1–10.0 | 0.95 | Line-height multiplier (1.0 = default leading) |
+| font | cell_width | float | 0.1–10.0 | 1.2 | Cell-width multiplier (1.0 = default advance) |
+| — | theme | string | see [Themes](#themes) | "Tilda" | Color theme |
+| — | shell | string | — | "cmd.exe" | Shell to spawn (e.g. `"wsl.exe -d Debian --cd ~"`) |
+| — | auto_start | bool | true, false | true | Start on Windows login |
+| — | hidden_start | bool | true, false | false | Start hidden |
+| — | max_scroll_lines | int | 100–100,000 | 100,000 | Scrollback buffer (lines) |
 
-### 위치 예시
+### Position examples
 
 ```
 "window": { "dock_position": "top", "width": 100, "height": 40, "offset": 0 }
- -> 화면 상단, 전체 폭, 높이 40%, 왼쪽 끝
+ -> top of screen, full width, 40% height, flush to the left edge
 
 "window": { "dock_position": "top", "width": 60, "height": 40, "offset": 50 }
- -> 화면 상단, 폭 60%, 높이 40%, 중앙
+ -> top of screen, 60% width, 40% height, centered horizontally
 
 "window": { "dock_position": "top", "width": 50, "height": 100, "offset": 100 }
- -> 화면 상단, 폭 50%, 전체 높이, 오른쪽 끝에 붙음
+ -> top of screen, 50% width, full height, flush to the right edge
 
 "window": { "dock_position": "left", "width": 30, "height": 80, "offset": 50 }
- -> 화면 왼쪽, 너비 30%, 높이 80%, 세로 중앙
+ -> left side of screen, 30% width, 80% height, vertically centered
 ```
 
-## 단축키
+## Keybindings
 
-| 키 | 동작 |
-|----|------|
-| F1 | 터미널 show/hide 토글 (fullscreen 상태는 그대로 유지) |
-| Alt+Enter | 현재 모니터 전체 화면 토글 (작업 영역 기준) |
-| Ctrl+Shift+T | 새 탭 생성 |
-| Ctrl+Shift+W | 현재 탭 닫기 |
-| Alt+1~9 | 탭 전환 |
-| Ctrl+Shift+R | 터미널 초기화 (바이너리 cat 등으로 깨졌을 때) |
-| Ctrl+Shift+V | 클립보드 붙여넣기 |
-| Ctrl+Shift+I | About — 버전 · exe 풀 경로 · pid MessageBox |
-| Ctrl+Shift+P | 퍼포먼스 스냅샷 덤프 (`%APPDATA%\tildaz\tildaz.log`) |
-| 마우스 드래그 | 텍스트 선택 + 자동 복사 |
-| 더블클릭 | 단어 선택 + 자동 복사 |
-| 마우스 휠 | 스크롤 |
-| 마우스 휠 클릭 | 클립보드 붙여넣기 |
+| Key | Action |
+|-----|--------|
+| F1 | Toggle terminal show/hide (fullscreen state is preserved) |
+| Alt+Enter | Toggle current-monitor fullscreen (work area) |
+| Ctrl+Shift+T | Open a new tab |
+| Ctrl+Shift+W | Close the active tab |
+| Alt+1–9 | Switch tab |
+| Ctrl+Shift+R | Reset the terminal (recover from broken state, e.g. after `cat` on a binary) |
+| Ctrl+Shift+V | Paste from clipboard |
+| Ctrl+Shift+I | About — version / exe full path / pid MessageBox |
+| Ctrl+Shift+P | Dump a perf snapshot to `%APPDATA%\tildaz\tildaz.log` |
+| Mouse drag | Select text + auto-copy |
+| Double click | Select word + auto-copy |
+| Mouse wheel | Scroll |
+| Middle click | Paste from clipboard |
 
-## 테마
+## Themes
 
-18가지 내장 컬러 테마를 지원한다. `config.json`에서 `"theme"` 값으로 테마 이름을 지정하면 터미널 전경/배경색과 ANSI 16색 팔레트가 적용된다.
+18 built-in color themes. Set `"theme"` in `config.json` to apply foreground/background and the ANSI 16-color palette.
 
 ### Classic
 
-| 테마 | 배경 | 전경 | 팔레트 미리보기 |
-|------|------|------|----------------|
+| Theme | Background | Foreground | Palette preview |
+|-------|------------|------------|-----------------|
 | **Tilda** | ![](https://placehold.co/16x16/000000/000000) `#000000` | ![](https://placehold.co/16x16/ffffff/ffffff) `#FFFFFF` | ![](https://placehold.co/12x12/cc0000/cc0000) ![](https://placehold.co/12x12/4e9a06/4e9a06) ![](https://placehold.co/12x12/c4a000/c4a000) ![](https://placehold.co/12x12/3465a4/3465a4) ![](https://placehold.co/12x12/75507b/75507b) ![](https://placehold.co/12x12/06989a/06989a) |
 | **Ghostty** | ![](https://placehold.co/16x16/1d1f21/1d1f21) `#1D1F21` | ![](https://placehold.co/16x16/c5c8c6/c5c8c6) `#C5C8C6` | ![](https://placehold.co/12x12/cc6666/cc6666) ![](https://placehold.co/12x12/b5bd68/b5bd68) ![](https://placehold.co/12x12/f0c674/f0c674) ![](https://placehold.co/12x12/81a2be/81a2be) ![](https://placehold.co/12x12/b294bb/b294bb) ![](https://placehold.co/12x12/8abeb7/8abeb7) |
 | **Windows Terminal** | ![](https://placehold.co/16x16/0c0c0c/0c0c0c) `#0C0C0C` | ![](https://placehold.co/16x16/cccccc/cccccc) `#CCCCCC` | ![](https://placehold.co/12x12/c50f1f/c50f1f) ![](https://placehold.co/12x12/13a10e/13a10e) ![](https://placehold.co/12x12/c19c00/c19c00) ![](https://placehold.co/12x12/0037da/0037da) ![](https://placehold.co/12x12/881798/881798) ![](https://placehold.co/12x12/3a96dd/3a96dd) |
 
-### Dark 테마
+### Dark
 
-| 테마 | 배경 | 전경 | 팔레트 미리보기 |
-|------|------|------|----------------|
+| Theme | Background | Foreground | Palette preview |
+|-------|------------|------------|-----------------|
 | **Catppuccin Mocha** | ![](https://placehold.co/16x16/1e1e2e/1e1e2e) `#1E1E2E` | ![](https://placehold.co/16x16/cdd6f4/cdd6f4) `#CDD6F4` | ![](https://placehold.co/12x12/f38ba8/f38ba8) ![](https://placehold.co/12x12/a6e3a1/a6e3a1) ![](https://placehold.co/12x12/f9e2af/f9e2af) ![](https://placehold.co/12x12/89b4fa/89b4fa) ![](https://placehold.co/12x12/f5c2e7/f5c2e7) ![](https://placehold.co/12x12/94e2d5/94e2d5) |
 | **Dracula** | ![](https://placehold.co/16x16/282a36/282a36) `#282A36` | ![](https://placehold.co/16x16/f8f8f2/f8f8f2) `#F8F8F2` | ![](https://placehold.co/12x12/ff5555/ff5555) ![](https://placehold.co/12x12/50fa7b/50fa7b) ![](https://placehold.co/12x12/f1fa8c/f1fa8c) ![](https://placehold.co/12x12/bd93f9/bd93f9) ![](https://placehold.co/12x12/ff79c6/ff79c6) ![](https://placehold.co/12x12/8be9fd/8be9fd) |
 | **Gruvbox Dark** | ![](https://placehold.co/16x16/282828/282828) `#282828` | ![](https://placehold.co/16x16/ebdbb2/ebdbb2) `#EBDBB2` | ![](https://placehold.co/12x12/cc241d/cc241d) ![](https://placehold.co/12x12/98971a/98971a) ![](https://placehold.co/12x12/d79921/d79921) ![](https://placehold.co/12x12/458588/458588) ![](https://placehold.co/12x12/b16286/b16286) ![](https://placehold.co/12x12/689d6a/689d6a) |
@@ -236,153 +237,162 @@ repo 에 체크인되어 있어야 한다 (`release.sh` 의 pre-flight check 가
 | **Kanagawa** | ![](https://placehold.co/16x16/1f1f28/1f1f28) `#1F1F28` | ![](https://placehold.co/16x16/dcd7ba/dcd7ba) `#DCD7BA` | ![](https://placehold.co/12x12/c34043/c34043) ![](https://placehold.co/12x12/76946a/76946a) ![](https://placehold.co/12x12/c0a36e/c0a36e) ![](https://placehold.co/12x12/7e9cd8/7e9cd8) ![](https://placehold.co/12x12/957fb8/957fb8) ![](https://placehold.co/12x12/6a9589/6a9589) |
 | **Everforest Dark** | ![](https://placehold.co/16x16/1e2326/1e2326) `#1E2326` | ![](https://placehold.co/16x16/d3c6aa/d3c6aa) `#D3C6AA` | ![](https://placehold.co/12x12/e67e80/e67e80) ![](https://placehold.co/12x12/a7c080/a7c080) ![](https://placehold.co/12x12/dbbc7f/dbbc7f) ![](https://placehold.co/12x12/7fbbb3/7fbbb3) ![](https://placehold.co/12x12/d699b6/d699b6) ![](https://placehold.co/12x12/83c092/83c092) |
 
-### Light 테마
+### Light
 
-| 테마 | 배경 | 전경 | 팔레트 미리보기 |
-|------|------|------|----------------|
+| Theme | Background | Foreground | Palette preview |
+|-------|------------|------------|-----------------|
 | **Catppuccin Latte** | ![](https://placehold.co/16x16/eff1f5/eff1f5) `#EFF1F5` | ![](https://placehold.co/16x16/4c4f69/4c4f69) `#4C4F69` | ![](https://placehold.co/12x12/d20f39/d20f39) ![](https://placehold.co/12x12/40a02b/40a02b) ![](https://placehold.co/12x12/df8e1d/df8e1d) ![](https://placehold.co/12x12/1e66f5/1e66f5) ![](https://placehold.co/12x12/ea76cb/ea76cb) ![](https://placehold.co/12x12/179299/179299) |
 | **Solarized Light** | ![](https://placehold.co/16x16/fdf6e3/fdf6e3) `#FDF6E3` | ![](https://placehold.co/16x16/657b83/657b83) `#657B83` | ![](https://placehold.co/12x12/dc322f/dc322f) ![](https://placehold.co/12x12/859900/859900) ![](https://placehold.co/12x12/b58900/b58900) ![](https://placehold.co/12x12/268bd2/268bd2) ![](https://placehold.co/12x12/d33682/d33682) ![](https://placehold.co/12x12/2aa198/2aa198) |
 | **Gruvbox Light** | ![](https://placehold.co/16x16/fbf1c7/fbf1c7) `#FBF1C7` | ![](https://placehold.co/16x16/3c3836/3c3836) `#3C3836` | ![](https://placehold.co/12x12/cc241d/cc241d) ![](https://placehold.co/12x12/98971a/98971a) ![](https://placehold.co/12x12/d79921/d79921) ![](https://placehold.co/12x12/458588/458588) ![](https://placehold.co/12x12/b16286/b16286) ![](https://placehold.co/12x12/689d6a/689d6a) |
 | **One Half Light** | ![](https://placehold.co/16x16/fafafa/fafafa) `#FAFAFA` | ![](https://placehold.co/16x16/383a42/383a42) `#383A42` | ![](https://placehold.co/12x12/e45649/e45649) ![](https://placehold.co/12x12/50a14f/50a14f) ![](https://placehold.co/12x12/c18401/c18401) ![](https://placehold.co/12x12/0184bc/0184bc) ![](https://placehold.co/12x12/a626a4/a626a4) ![](https://placehold.co/12x12/0997b3/0997b3) |
 
-> 테마를 지정하지 않으면 Tilda 팔레트가 사용된다.
+> If no theme is set, the Tilda palette is used.
 
-## 알려진 제한사항
+## Known limitations
 
-- **F1 핫키가 관리자 권한 앱 위에서 동작하지 않음**: 작업관리자, regedit 등 관리자 권한(elevated)으로 실행된 앱이 포커스된 상태에서는 F1 토글이 동작하지 않습니다. Windows UIPI(User Interface Privilege Isolation) 보안 정책에 의한 제한으로, TildaZ를 관리자 권한으로 실행하면 해결되지만 권장하지 않습니다.
+- **F1 hotkey does not fire over elevated apps**: while an elevated (Admin) app like Task Manager or regedit has focus, F1 has no effect. This is enforced by Windows UIPI (User Interface Privilege Isolation). Running TildaZ elevated works around it, but is not recommended.
 
-## 동작 구조
+## Architecture
 
-TildaZ의 현재 구조는 “Windows에서 효율적으로 동작하는 terminal host”와
-“나중에 macOS/Linux backend를 붙일 수 있는 경계”를 동시에 목표로 한다.
-구조 리뷰와 리팩터링 기록은 [#91](https://github.com/ensky0/tildaz/issues/91)에
-남겨 두었다.
+TildaZ targets two goals at once: run efficiently as a Windows terminal host
+today, and keep the boundary in place where a macOS/Linux backend can slot in
+later. The review and refactoring history lives in
+[#91](https://github.com/ensky0/tildaz/issues/91).
 
-### Windows 파이프라인
+### Windows pipeline
 
-Windows 실행 경로는 아래 흐름으로 동작한다.
+The Windows execution path flows as follows:
 
-1. `windows_host.zig`가 DPI awareness, single instance, 설정, autostart,
-   window, renderer, 초기 tab을 준비한다.
-2. `window.zig`가 Win32 메시지를 해석해 `app_event.zig`의 앱 이벤트로 변환한다.
-3. `app_controller.zig`가 앱 이벤트를 받아 tab/session/selection/rename/scroll
-   정책을 처리한다.
-4. `session_core.zig`가 tab 목록, active tab, scrollback, VT drain, PTY input
-   queue를 관리한다.
-5. `terminal_backend.zig`가 OS별 PTY backend를 선택한다. Windows에서는
-   `conpty.zig`의 ConPTY backend를 사용하고, 비-Windows는 아직 unsupported
-   placeholder다.
-6. `conpty.zig`는 bundled `conpty.dll`/`OpenConsole.exe`를 우선 사용하고,
-   누락되면 `kernel32 CreatePseudoConsole`로 fallback한다.
-7. PTY output은 read thread에서 lock-free ring buffer로 들어가고, render
-   callback에서 ghostty VT parser가 drain한다.
-8. `renderer_backend.zig`가 OS별 renderer를 선택한다. Windows에서는
-   `d3d11_renderer.zig`의 Direct3D 11 renderer를 사용하고, 비-Windows는 아직
-   unsupported placeholder다.
+1. `windows_host.zig` sets up DPI awareness, single-instance enforcement,
+   config, autostart, window, renderer, and the initial tab.
+2. `window.zig` translates Win32 messages into the app events defined in
+   `app_event.zig`.
+3. `app_controller.zig` receives app events and drives tab / session /
+   selection / rename / scroll policy.
+4. `session_core.zig` manages the tab list, the active tab, scrollback, VT
+   drain, and the PTY input queue.
+5. `terminal_backend.zig` selects the PTY backend per OS. On Windows, the
+   ConPTY backend in `conpty.zig` is used; non-Windows platforms currently
+   have an unsupported placeholder.
+6. `conpty.zig` prefers bundled `conpty.dll` / `OpenConsole.exe` and falls
+   back to `kernel32 CreatePseudoConsole` when the bundle is missing.
+7. PTY output enters a lock-free ring buffer on the read thread; the render
+   callback drains it through the ghostty VT parser.
+8. `renderer_backend.zig` selects the renderer per OS. Windows uses the
+   Direct3D 11 renderer in `d3d11_renderer.zig`; non-Windows platforms
+   currently have an unsupported placeholder.
 
-### 선택의 이유
+### Why these choices
 
 **ConPTY / OpenConsole**
 
-Windows에서 기존 Console API 기반 앱과 VT 기반 앱을 외부 terminal window에
-붙이는 표준 경로는 ConPTY다. TildaZ는 `conpty.dll`이 있으면 bundled
-OpenConsole 경로를 사용해 시스템 conhost 차이를 줄이고, 번들 파일이 없으면
-시스템 `kernel32` ConPTY로 자동 fallback한다. 이 방식은 배포 안정성과 호환성을
-둘 다 잡기 위한 선택이다.
+ConPTY is the standard way to attach both legacy Console-API apps and VT-based
+apps to an external terminal window on Windows. TildaZ uses the bundled
+OpenConsole path when `conpty.dll` is available (to flatten out
+version-to-version differences in the system conhost) and falls back to the
+system `kernel32` ConPTY otherwise. This trades a small amount of bundle
+weight for deployment stability and compatibility coverage.
 
-**pipe / thread 구조**
+**Pipe / thread structure**
 
-ConPTY input은 synchronous write pipe로 단순하게 유지하고, output은 overlapped
-read가 가능한 named pipe로 받는다. read thread와 process wait thread를 분리해
-pipe가 꽉 찼을 때 UI thread가 직접 막히는 위험을 줄인다. `session_core.zig`의
-ring buffer는 ConPTY read thread와 UI/render thread 사이를 분리하는 완충층이다.
+ConPTY input stays as a synchronous write pipe for simplicity; output is read
+through a named pipe that supports overlapped I/O. The read thread and the
+process-wait thread are separated so a full pipe cannot block the UI thread
+directly. The ring buffer in `session_core.zig` is the buffer that decouples
+the ConPTY read thread from the UI/render thread.
 
 **Direct3D 11 renderer**
 
-Windows renderer는 DirectWrite로 glyph를 rasterize하고 Direct3D 11/HLSL로
-cell과 glyph atlas를 그린다. 매 프레임 GDI로 텍스트를 다시 그리는 방식보다
-대량 출력과 scrollback에서 유리하며, Windows Terminal/WezTerm 같은 현대 terminal
-emulator의 GPU 가속 방향과 같다.
+The Windows renderer rasterizes glyphs through DirectWrite and draws cells
+and the glyph atlas through Direct3D 11 / HLSL. This outperforms
+redrawing text through GDI every frame under bulk output and deep scrollback,
+and matches the GPU-accelerated direction modern terminal emulators like
+Windows Terminal and WezTerm have taken.
 
-**플랫폼 경계**
+**Platform seams**
 
-Phase 1~12에서 입력 이벤트, session core, terminal backend, app controller,
-Windows host, build target, renderer backend를 순서대로 분리했다. 현재 Windows
-동작은 유지하면서도 macOS/Linux를 추가할 때는 `unsupported_host.zig`,
-`terminal_backend.zig`, `renderer_backend.zig`, window host 계층을 교체하는
-방향으로 확장할 수 있다.
+Phases 1–12 sequentially split out input events, session core, terminal
+backend, app controller, Windows host, build target, and renderer backend.
+Current Windows behavior is preserved, and adding macOS/Linux later is a
+matter of swapping `unsupported_host.zig`, `terminal_backend.zig`,
+`renderer_backend.zig`, and the window host layer.
 
-### 남은 구조적 과제
+### Open structural work
 
-- macOS/Linux 실제 host와 POSIX PTY backend는 아직 구현되지 않았다.
-- Metal/OpenGL/Vulkan/Skia 같은 비-Windows renderer는 아직 없다.
-- renderer init 실패 시 실제 software renderer fallback은 아직 없다.
-- OpenConsole 내부 동작을 따라가는 `ShowHide`, DA1 pre-response 경로는
-  버전 업데이트 때 회귀 테스트가 필요하다.
-- 대량 출력, resize storm, tab close 중 output pipe full, WSL/nvim/mouse,
-  CJK/emoji/combining marks는 별도 stress test로 잠그는 것이 좋다.
+- Real macOS/Linux hosts and a POSIX PTY backend are not yet implemented.
+- No non-Windows renderer (Metal / OpenGL / Vulkan / Skia) exists yet.
+- No software renderer fallback when renderer init fails.
+- The `ShowHide` and DA1 pre-response paths that track OpenConsole internals
+  need regression tests whenever the bundled version is bumped.
+- Stress tests for bulk output, resize storms, output-pipe-full during tab
+  close, WSL/nvim/mouse, and CJK/emoji/combining marks should be pinned down
+  separately.
 
-## 기술 스택
+## Tech stack
 
-| 구성요소 | 선택 |
-|---------|------|
-| 언어 | Zig 0.15.2 |
-| 터미널 에뮬레이션 | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
-| PTY backend | `terminal_backend.zig` — Windows ConPTY, 비-Windows placeholder |
-| PTY 호스트 | 번들 `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT) · 누락 시 시스템 conhost 로 fallback |
-| 윈도우 | Win32 API (보더리스 팝업) |
-| renderer backend | `renderer_backend.zig` — Windows Direct3D 11, 비-Windows placeholder |
-| 렌더링 | Direct3D 11 + HLSL 셰이더 (ClearType 서브픽셀 블렌딩) |
-| 폰트 래스터라이즈 | DirectWrite (동적 폰트 아틀라스 + 시스템 폰트 폴백) |
+| Component | Choice |
+|-----------|--------|
+| Language | Zig 0.15.2 |
+| Terminal emulation | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
+| PTY backend | `terminal_backend.zig` — Windows ConPTY, non-Windows placeholder |
+| PTY host | Bundled `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT) · falls back to system conhost when missing |
+| Window | Win32 API (borderless popup) |
+| Renderer backend | `renderer_backend.zig` — Windows Direct3D 11, non-Windows placeholder |
+| Rendering | Direct3D 11 + HLSL shaders (ClearType dual-source subpixel blending) |
+| Font rasterizer | DirectWrite (dynamic glyph atlas + system font fallback) |
 
-## 퍼포먼스
+## Performance
 
-v0.2.6 기준 측정. 모든 수치는 화면 왼쪽 절반 스냅 (Windows Terminal 과 동일 grid)
-에서 `time cat ~/repo/s2t/bitext_eng_kor.vocab` (1.14 MiB CJK) 3회 median,
-WSL Debian.
+Measured at v0.2.6. All numbers are median of 3 runs of
+`time cat ~/repo/s2t/bitext_eng_kor.vocab` (1.14 MiB CJK) inside WSL Debian,
+with the window snapped to the left half of the screen (same grid as Windows
+Terminal for comparability).
 
-| 경로 | `time cat` real | throughput | vs WT |
+| Path | `time cat` real | Throughput | vs WT |
 |------|-----------------|------------|-------|
-| baseline v0.2.5 (시스템 conhost) | 0.293s | ~4.7 MiB/s | 3.2x 느림 |
-| #77 overlapped 128KB read | 0.266s | ~5.2 MiB/s | 2.9x 느림 |
-| #78 번들 OpenConsole (회귀 포함) | 0.133s | ~10.5 MiB/s | 1.4x 느림 |
-| **v0.2.6 (#77 + #78 + #79)** | **0.074s** | **~15.4 MiB/s** | **1.26x 빠름** |
-| Windows Terminal (참고, 동일 grid) | 0.093s | ~12.3 MiB/s | 1.0x |
+| baseline v0.2.5 (system conhost) | 0.293s | ~4.7 MiB/s | 3.2× slower |
+| #77 overlapped 128KB read | 0.266s | ~5.2 MiB/s | 2.9× slower |
+| #78 bundled OpenConsole (with regression) | 0.133s | ~10.5 MiB/s | 1.4× slower |
+| **v0.2.6 (#77 + #78 + #79)** | **0.074s** | **~15.4 MiB/s** | **1.26× faster** |
+| Windows Terminal (reference, same grid) | 0.093s | ~12.3 MiB/s | 1.0× |
 
-- **#77** — ConPTY output 파이프를 named pipe + `FILE_FLAG_OVERLAPPED` 로 교체,
-  128KB overlapped `ReadFile` + `GetOverlappedResult` 패턴. 단계별 atomic
-  counter (`src/perf.zig`) 상시 수집, Ctrl+Shift+P 스냅샷.
-- **#78** — `vendor/conpty/` 에 Microsoft.Windows.Console.ConPTY nuget
-  `1.24.260303001` 의 `OpenConsole.exe` (1.04 MB) + `conpty.dll` (110 KB) 동봉.
-  시작 시 `LoadLibraryW("conpty.dll")` → 성공 시 `ConptyCreatePseudoConsole`
-  등을 kernel32 대신 사용. DLL 미존재 시 kernel32 경로로 자동 fallback. 시스템
-  conhost 의 내부 flush 타이밍이 실제 병목이었음을 확증.
-- **#79** — 번들 OpenConsole 의 `VtIo::StartIfNeeded` 가 기동 시 DA1 (`\x1b[c`)
-  를 3초 타임아웃 대기하던 회귀를 수정. (a) `CreateProcessW` 직후 input pipe
-  에 `\x1b[?61c` (VT500 conformance) pre-write, (b) `CreateProcessW` 전에
-  `ConptyShowHidePseudoConsole(true)` 호출. 탭 시작 ~3997ms → **~548ms**, 부수
-  효과로 `time cat` 도 0.133s → 0.074s (VT engine 이 DA1 대기 중 완전
-  초기화되지 않아 data path 에 지연이 전파되던 구간 제거).
+- **#77** — Replace ConPTY output pipe with a named pipe + `FILE_FLAG_OVERLAPPED`, 128KB overlapped `ReadFile` + `GetOverlappedResult` pattern. Per-stage atomic counters in `src/perf.zig` collected continuously; snapshot via Ctrl+Shift+P.
+- **#78** — Ship `OpenConsole.exe` (1.04 MB) + `conpty.dll` (110 KB) from Microsoft.Windows.Console.ConPTY nuget `1.24.260303001` under `vendor/conpty/`. At startup, `LoadLibraryW("conpty.dll")` is tried; on success `ConptyCreatePseudoConsole` replaces the kernel32 version. Missing DLL falls back to kernel32. This pinned down that the actual bottleneck was system conhost's internal flush timing.
+- **#79** — Fix a regression where the bundled OpenConsole's `VtIo::StartIfNeeded` waits up to 3 seconds for a DA1 response (`\x1b[c`) at startup. (a) Pre-write `\x1b[?61c` (VT500 conformance) to the input pipe immediately after `CreateProcessW`, (b) call `ConptyShowHidePseudoConsole(true)` before `CreateProcessW`. Tab cold start ~3997ms → **~548ms**; as a side effect `time cat` improved from 0.133s → 0.074s (the VT engine was not fully initialized during the DA1 wait, propagating delay into the data path).
 
-탭 시작 측정 (`wsl.exe -d Debian --cd ~`, warm):
+Tab startup time (`"wsl.exe -d Debian --cd ~"`, warm):
 
-| 경로 | 프롬프트 도착 |
-|------|---------------|
-| baseline (kernel32, 시스템 conhost) | ~860 ms |
-| #78 직후 (번들 OpenConsole, 회귀) | ~3997 ms |
+| Path | Prompt visible |
+|------|----------------|
+| baseline (kernel32, system conhost) | ~860 ms |
+| right after #78 (bundled OpenConsole, regression) | ~3997 ms |
 | **v0.2.6 (#78 + #79)** | **~548 ms** |
-| 순수 `wsl + bash interactive` 하한 | ~480 ms |
+| lower bound for raw `wsl + bash interactive` | ~480 ms |
 
-## 라이선스
+## Distribution and code signing
 
-tildaz 자체는 **GPL-3.0 + Commons Clause** — 전체 조항은 [`LICENSE`](./LICENSE) 참고.
+Current state: **unsigned build**
 
-### 동봉 / 링크된 서드파티
+Through v0.2.13, GitHub Release binaries are not Authenticode-signed. Some Windows Defender / Endpoint Security products (CrowdStrike, SentinelOne, etc.) flag the combination of unsigned binary + ConPTY-based child process spawn + multi-threading as suspicious behavior and can block execution.
 
-| 구성요소 | 라이선스 | 출처 | 비고 |
-|---------|----------|------|------|
-| `libghostty-vt` | MIT | [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) | `build.zig.zon` 의 `ghostty` dep 로 소스 가져와 `tildaz.exe` 에 static link |
-| `OpenConsole.exe` | MIT | [microsoft/terminal](https://github.com/microsoft/terminal) (Microsoft.Windows.Console.ConPTY nuget 1.24.260303001) | 릴리즈 zip 에 동봉 — `vendor/conpty/LICENSE.txt` |
-| `conpty.dll` | MIT | 동일 | 동일 |
+**If your AV/EDR flags `tildaz.exe`**:
 
-MIT 원문 전체는 각 upstream 저장소 / 번들 `LICENSE.txt` 참고.
+- With admin rights, add a SHA256 allowlist exception in your EDR
+- On a corporate-managed PC, file a false-positive report with your security team
+- Or copy the binary to a local-disk path (e.g. `%LOCALAPPDATA%\Programs\tildaz\`) before running — execution from UNC paths is scored as more suspicious
+
+**Plan**: applying to the [SignPath Foundation open-source code-signing program](https://about.signpath.io/foundation). Once approved, future releases will ship with an Authenticode-signed `tildaz.exe`, which should eliminate most EDR false positives. This section will track the progress.
+
+## License
+
+TildaZ is **AGPL-3.0-or-later** — see [`LICENSE`](./LICENSE) for the full text. The network clause (AGPL §13) means that offering TildaZ as a network-accessible service also requires source availability under the same license.
+
+### Bundled / linked third-party
+
+| Component | License | Source | Notes |
+|-----------|---------|--------|-------|
+| `libghostty-vt` | MIT | [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) | Fetched as the `ghostty` dep in `build.zig.zon` and statically linked into `tildaz.exe` |
+| `OpenConsole.exe` | MIT | [microsoft/terminal](https://github.com/microsoft/terminal) (Microsoft.Windows.Console.ConPTY nuget 1.24.260303001) | Bundled in the release zip — `vendor/conpty/LICENSE.txt` |
+| `conpty.dll` | MIT | same | same |
+
+Full MIT text lives in each upstream repo and in the bundled `LICENSE.txt`.
