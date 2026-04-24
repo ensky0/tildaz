@@ -6,18 +6,11 @@ const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
-const window_mod = @import("window.zig");
-const Window = window_mod.Window;
-const RECT = window_mod.RECT;
+const Window = @import("window.zig").Window;
 const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
 const about = @import("about.zig");
-
-const HWND = ?*anyopaque;
-extern "user32" fn PostMessageW(HWND, c_uint, usize, isize) callconv(.c) c_int;
-extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) c_int;
-const WM_CLOSE: c_uint = 0x0010;
 
 pub const App = struct {
     session: SessionCore,
@@ -52,11 +45,8 @@ pub const App = struct {
         switch (self.session.closeTab(index)) {
             .none => return,
             .closed_last => {
-                tildaz_log.appendLine("tab", "last tab closed: posting WM_CLOSE", .{});
-                self.window.shell_exited = true;
-                if (self.window.hwnd) |hwnd| {
-                    _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                }
+                tildaz_log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
+                self.window.closeAfterShellExit();
             },
             .changed => {
                 // Force full redraw so the new active tab's content is rendered
@@ -67,10 +57,9 @@ pub const App = struct {
 
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
         if (self.window.hwnd == null) return .{ .cols = 120, .rows = 30 };
-        var rect: RECT = undefined;
-        _ = GetClientRect(self.window.hwnd, &rect);
-        const w = rect.right - rect.left - 2 * self.TERMINAL_PADDING;
-        const h = rect.bottom - rect.top - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
+        const size = self.window.getClientSize();
+        const w = size.w - 2 * self.TERMINAL_PADDING;
+        const h = size.h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
         const cols: u16 = if (self.window.cell_width > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width))) else 120;
         const rows: u16 = if (self.window.cell_height > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height))) else 30;
         return .{ .cols = cols, .rows = rows };
@@ -82,9 +71,7 @@ pub const App = struct {
 
     pub fn onSessionTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        if (self.window.hwnd) |hwnd| {
-            _ = PostMessageW(hwnd, window_mod.WM_TAB_CLOSED, tab_ptr, 0);
-        }
+        self.window.postTabClosed(tab_ptr);
     }
 
     // --- Window callbacks (userdata = *App) ---
@@ -215,11 +202,8 @@ pub const App = struct {
         switch (self.session.closeTabByPtr(tab_ptr)) {
             .none => return,
             .closed_last => {
-                tildaz_log.appendLine("tab", "last tab closed: posting WM_CLOSE", .{});
-                self.window.shell_exited = true;
-                if (self.window.hwnd) |hwnd| {
-                    _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                }
+                tildaz_log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
+                self.window.closeAfterShellExit();
             },
             .changed => {
                 if (self.d3d_renderer) |*r| r.invalidate();
@@ -256,12 +240,8 @@ pub const App = struct {
         if (sb.total <= sb.len) return;
 
         // 터미널 영역 내 Y 비율 → 스크롤 위치
-        var client_h: c_int = 0;
-        if (self.window.hwnd) |hwnd| {
-            var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
-            _ = GetClientRect(hwnd, &rect);
-            client_h = rect.bottom;
-        }
+        if (self.window.hwnd == null) return;
+        const client_h = self.window.getClientSize().h;
         const track_h = client_h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
         if (track_h <= 0) return;
 
@@ -410,12 +390,8 @@ pub const App = struct {
 
         // 터미널 영역 위/아래로 드래그 시 자동 스크롤
         const term_y = mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING;
-        var client_h: c_int = 0;
-        if (self.window.hwnd) |hwnd| {
-            var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
-            _ = GetClientRect(hwnd, &rect);
-            client_h = rect.bottom;
-        }
+        if (self.window.hwnd == null) return;
+        const client_h = self.window.getClientSize().h;
         const term_h = client_h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
         if (term_y < 0) {
             tab.terminal.scrollViewport(.{ .delta = -3 });
@@ -513,12 +489,7 @@ pub const App = struct {
                     self.handleDragStart(mouse.x);
                     return true;
                 }
-                var client_w: c_int = 0;
-                if (self.window.hwnd) |hwnd| {
-                    var rect: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
-                    _ = GetClientRect(hwnd, &rect);
-                    client_w = rect.right;
-                }
+                const client_w = self.window.getClientSize().w;
                 if (mouse.x >= client_w - self.SCROLLBAR_W) {
                     self.terminal_interaction.scrollbar.begin();
                     self.tab_interaction.drag.reset();
