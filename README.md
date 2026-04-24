@@ -383,6 +383,20 @@ Through v0.2.13, GitHub Release binaries are not Authenticode-signed. Some Windo
 
 **Plan**: applying to the [SignPath Foundation open-source code-signing program](https://about.signpath.io/foundation). Once approved, future releases will ship with an Authenticode-signed `tildaz.exe`, which should eliminate most EDR false positives. This section will track the progress.
 
+## Privacy
+
+TildaZ does not collect, transmit, or store any user data.
+
+- No telemetry, analytics, or crash reporting
+- No automatic update checks
+- No network requests of any kind from `tildaz.exe` itself
+- All state is local only:
+  - Config: `%APPDATA%\tildaz\config.json`
+  - Log: `%APPDATA%\tildaz\tildaz.log` (boot / exit / errors / perf snapshots; never transmitted)
+- Optional autostart adds an entry to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, read locally by the Windows shell
+
+Child shells spawned by TildaZ (cmd, PowerShell, wsl, etc.) are independent processes; their own network and data behavior is governed by the user's operating system and shell configuration, not by TildaZ.
+
 ## License
 
 TildaZ is **AGPL-3.0-or-later** — see [`LICENSE`](./LICENSE) for the full text. The network clause (AGPL §13) means that offering TildaZ as a network-accessible service also requires source availability under the same license.
