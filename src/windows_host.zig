@@ -1,7 +1,7 @@
 const std = @import("std");
 const App = @import("app_controller.zig").App;
 const SessionCore = @import("session_core.zig").SessionCore;
-const D3d11Renderer = @import("d3d11_renderer.zig").D3d11Renderer;
+const RendererBackend = @import("renderer_backend.zig").RendererBackend;
 const Config = @import("config.zig").Config;
 const autostart = @import("autostart.zig");
 const perf = @import("perf.zig");
@@ -159,14 +159,14 @@ pub fn run() !void {
     // window moves to a monitor with a different DPI.
     app.applyDpiScale(GetDpiForWindow(app.window.hwnd));
 
-    // Initialize D3D11 renderer
+    // Initialize renderer backend
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.d3d_renderer = D3d11Renderer.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
+    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
         tildaz_log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
         break :blk null;
     };
-    tildaz_log.appendLine("startup", "renderer active={}", .{app.d3d_renderer != null});
-    defer if (app.d3d_renderer) |*r| r.deinit();
+    tildaz_log.appendLine("startup", "renderer active={}", .{app.renderer != null});
+    defer if (app.renderer) |*r| r.deinit();
 
     // Apply position from config
     app.window.setPosition(config.dock_position, config.width, config.height, config.offset);
