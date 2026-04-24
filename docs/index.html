@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TildaZ — Quake-style drop-down terminal for Windows</title>
+  <meta name="description" content="Press F1 to drop down a fast, Windows-native terminal. Zig + ghostty VT + Direct3D 11 ClearType rendering, tabs, 18 built-in themes, multi-monitor DPI tracking.">
+  <meta property="og:title" content="TildaZ — Quake-style drop-down terminal for Windows">
+  <meta property="og:description" content="Press F1 to drop down a fast, Windows-native terminal.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ensky0.github.io/tildaz/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="#" class="brand">
+        <span class="brand-prompt">~</span><span class="brand-name">tildaz</span><span class="brand-cursor"></span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#quickstart">Quick start</a>
+        <a href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="hero-badge">
+        <span class="hero-badge-dot"></span>
+        Windows · Zig 0.15 · AGPL-3.0
+      </div>
+      <h1 class="hero-title">
+        <span class="hero-keycap">F1</span>
+        <span class="hero-title-text">drops a terminal<br>right where you're working</span>
+      </h1>
+      <p class="hero-sub">
+        A Quake-style drop-down terminal for Windows.<br>
+        ghostty VT core, Direct3D 11 ClearType rendering, bundled OpenConsole ConPTY.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">
+          Download latest release
+          <span class="btn-arrow">→</span>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">
+          Source on GitHub
+        </a>
+      </div>
+
+      <div class="terminal-demo" aria-hidden="true">
+        <div class="terminal-bar">
+          <div class="terminal-tabs">
+            <div class="terminal-tab active"><span>~/project</span><span class="tab-close">×</span></div>
+            <div class="terminal-tab"><span>wsl · logs</span><span class="tab-close">×</span></div>
+            <div class="terminal-tab"><span>db</span><span class="tab-close">×</span></div>
+          </div>
+        </div>
+        <div class="terminal-body">
+          <div class="terminal-line"><span class="term-prompt">ensky0 ~/tildaz</span> <span class="term-cmd">zig build</span></div>
+          <div class="terminal-line term-dim">Build Summary: 15/15 steps succeeded</div>
+          <div class="terminal-line"><span class="term-prompt">ensky0 ~/tildaz</span> <span class="term-cmd">./zig-out/bin/tildaz.exe</span></div>
+          <div class="terminal-line term-dim">[startup] renderer active=true</div>
+          <div class="terminal-line term-dim">[startup] initial tab created: count=1</div>
+          <div class="terminal-line"><span class="term-prompt">ensky0 ~/tildaz</span> <span class="term-cursor"></span></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section id="features" class="features">
+    <div class="section-inner">
+      <h2 class="section-title">Fast, focused, native to Windows</h2>
+      <p class="section-sub">Built around the things a drop-down terminal has to get right.</p>
+
+      <div class="feature-grid">
+        <article class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <h3>F1 global hotkey</h3>
+          <p>Drop down from any app with one key. Press again to hide. Alt+Enter toggles monitor fullscreen.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">📑</div>
+          <h3>Tabs, drag, rename</h3>
+          <p>Ctrl+Shift+T to open, Alt+1–9 to switch, drag to reorder, double-click the tab to rename.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">🎨</div>
+          <h3>D3D11 ClearType rendering</h3>
+          <p>DirectWrite glyph atlas + HLSL dual-source blending. Subpixel anti-aliasing that actually survives.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">🚀</div>
+          <h3>Bundled OpenConsole (2.2×)</h3>
+          <p>Ships Microsoft's ConPTY runtime so conhost is out of the path. Bulk output throughput more than doubles.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">🖥️</div>
+          <h3>Multi-monitor, DPI-aware</h3>
+          <p>Drops onto whichever monitor the cursor is on. Reacts instantly to resolution, DPI, and taskbar changes.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">🌏</div>
+          <h3>Unicode, CJK, emoji</h3>
+          <p>Correct wide-character rendering out of the box. Font fallback chain up to 8 deep — no tofu.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">🎭</div>
+          <h3>18 built-in themes</h3>
+          <p>Ghostty, Windows Terminal, Dracula, Catppuccin, Tokyo Night and more. COLORFGBG is set automatically so vim picks the right scheme.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">🪟</div>
+          <h3>Translucent, always on top</h3>
+          <p>Docks to any screen edge (top/bottom/left/right). Size and offset are specified as percentages of the monitor.</p>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">📋</div>
+          <h3>Select to copy</h3>
+          <p>Drag to select, release to copy. Double-click for word, middle-click to paste.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="quickstart" class="quickstart">
+    <div class="section-inner">
+      <h2 class="section-title">Quick start</h2>
+
+      <div class="qs-steps">
+        <div class="qs-step">
+          <div class="qs-step-num">1</div>
+          <div class="qs-step-content">
+            <h3>Download</h3>
+            <p>Grab <code>tildaz-vX.Y.Z-win-x64.zip</code> from the Releases page.</p>
+            <a class="btn btn-primary btn-sm" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Releases →</a>
+          </div>
+        </div>
+
+        <div class="qs-step">
+          <div class="qs-step-num">2</div>
+          <div class="qs-step-content">
+            <h3>Extract</h3>
+            <p>Unzip anywhere. Keep <code>tildaz.exe</code>, <code>conpty.dll</code>, and <code>OpenConsole.exe</code> together — the bundled ConPTY runtime only activates when all three sit in the same folder.</p>
+          </div>
+        </div>
+
+        <div class="qs-step">
+          <div class="qs-step-num">3</div>
+          <div class="qs-step-content">
+            <h3>Run and hit <kbd>F1</kbd></h3>
+            <p>First launch writes <code>%APPDATA%\tildaz\config.json</code> with defaults. Shell, theme, font, and drop-down geometry live there.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="qs-note">
+        <strong>Heads up on EDR false positives:</strong> the current <code>tildaz.exe</code> is not yet Authenticode-signed.
+        Some endpoint security products (SentinelOne, CrowdStrike, etc.) flag unsigned ConPTY-spawning binaries by behavior alone.
+        Code signing via the SignPath Foundation OSS program is in progress. <a href="https://github.com/ensky0/tildaz#배포와-코드-서명">Details →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="build">
+    <div class="section-inner">
+      <h2 class="section-title">Build it yourself</h2>
+      <p class="section-sub">Install Zig 0.15.2 and you're one command away.</p>
+      <pre class="code-block"><code><span class="code-comment"># default — ReleaseFast</span>
+<span class="code-cmd">zig build</span>
+
+<span class="code-comment"># debug</span>
+<span class="code-cmd">zig build -Doptimize=Debug</span>
+
+<span class="code-comment"># release zip + SHA256</span>
+<span class="code-cmd">zig build package</span></code></pre>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <h4>Project</h4>
+        <a href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">GitHub repo</a>
+        <a href="https://github.com/ensky0/tildaz/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/ensky0/tildaz/issues" target="_blank" rel="noopener">Issues</a>
+      </div>
+      <div class="footer-col">
+        <h4>Docs</h4>
+        <a href="https://github.com/ensky0/tildaz#readme" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/ensky0/tildaz/blob/main/LICENSE" target="_blank" rel="noopener">License (AGPL-3.0)</a>
+        <a href="https://github.com/ensky0/tildaz/blob/main/SECURITY.md" target="_blank" rel="noopener">Security policy</a>
+      </div>
+      <div class="footer-col">
+        <h4>Built on</h4>
+        <a href="https://ziglang.org/" target="_blank" rel="noopener">Zig</a>
+        <a href="https://github.com/ghostty-org/ghostty" target="_blank" rel="noopener">ghostty-vt</a>
+        <a href="https://github.com/microsoft/terminal" target="_blank" rel="noopener">OpenConsole (microsoft/terminal)</a>
+      </div>
+      <div class="footer-col">
+        <h4>Maintainer</h4>
+        <a href="https://github.com/ensky0" target="_blank" rel="noopener">@ensky0</a>
+        <span class="footer-muted">© 2026 ensky0</span>
+        <span class="footer-muted">AGPL-3.0-or-later</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
