@@ -166,6 +166,7 @@ extern "user32" fn ShowWindow(HWND, c_int) callconv(.c) BOOL;
 extern "user32" fn DestroyWindow(HWND) callconv(.c) BOOL;
 extern "user32" fn PostQuitMessage(c_int) callconv(.c) void;
 extern "user32" fn DefWindowProcW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
+extern "user32" fn PostMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) BOOL;
 extern "user32" fn GetMessageW(*MSG, HWND, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn TranslateMessage(*const MSG) callconv(.c) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(.c) LRESULT;
@@ -1273,6 +1274,19 @@ pub const Window = struct {
         var rect: RECT = undefined;
         _ = GetClientRect(self.hwnd, &rect);
         return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
+    }
+
+    pub fn closeAfterShellExit(self: *Window) void {
+        self.shell_exited = true;
+        if (self.hwnd) |hwnd| {
+            _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+
+    pub fn postTabClosed(self: *const Window, tab_ptr: usize) void {
+        if (self.hwnd) |hwnd| {
+            _ = PostMessageW(hwnd, WM_TAB_CLOSED, tab_ptr, 0);
+        }
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
