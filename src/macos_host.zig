@@ -22,6 +22,7 @@ const macos_config = @import("macos_config.zig");
 const macos_pty = @import("macos_pty.zig");
 const ghostty = @import("ghostty-vt");
 const macos_metal = @import("macos_metal.zig");
+const ui_metrics = @import("ui_metrics.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -227,10 +228,9 @@ const FONT_SIZE_PT: f32 = 14.0;
 // padding + 빽빽한 줄간격.
 const CELL_WIDTH_SCALE: f32 = 1.1;
 const LINE_HEIGHT_SCALE: f32 = 0.95;
-// 터미널 영역 안쪽 padding (logical points). Windows 의 `TERMINAL_PADDING`
-// (app_controller) 과 동일 의미 — 글자가 윈도우 모서리에 딱 붙지 않도록.
-// pixel 단위로는 init 시 retina scale 곱해 사용.
-const TERMINAL_PADDING_PT: u32 = 6;
+// 터미널 영역 안쪽 padding — `ui_metrics.zig` 의 공통 상수. Windows /
+// macOS 동일 값으로 시각적 일관성 유지. pixel 변환은 init 시 retina scale 곱.
+const TERMINAL_PADDING_PT = ui_metrics.TERMINAL_PADDING_PT;
 
 // NSWindow subclass — `canBecomeKeyWindow` 를 YES 로 override 해서 borderless
 // styleMask 에서도 key window 가능하게. Default NSWindow 는 borderless 면
@@ -333,6 +333,31 @@ fn tildazKeyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     };
 }
 
+/// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
+/// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
+/// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
+fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (!g_terminal_initialized) return;
+    if (event == null) return;
+
+    const get_delta = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const delta_y = get_delta(event, objc.sel("scrollingDeltaY"));
+    if (delta_y == 0) return;
+
+    // ceil/floor 로 작은 값도 1 line 으로. multiplier 1.0 이면 약간 느려서
+    // 평소 trackpad 사용감 기준 multiplier ~2.
+    const scaled = delta_y * 2.0;
+    const lines: isize = if (scaled > 0)
+        @as(isize, @intFromFloat(@ceil(scaled)))
+    else
+        @as(isize, @intFromFloat(@floor(scaled)));
+    if (lines == 0) return;
+
+    // delta 부호: 양수 deltaY (위로) → scrollback 위쪽 (older) = delta 음수
+    // (ghostty `scrollViewport(.{.delta = -N})` 가 위쪽).
+    g_terminal.scrollViewport(.{ .delta = -lines });
+}
+
 fn registerTildazViewClass() !objc.Class {
     const NSView = objc.getClass("NSView");
     const cls = objc.objc_allocateClassPair(NSView, "TildazView", 0) orelse
@@ -341,6 +366,8 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&tildazScrollWheel), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     objc.objc_registerClassPair(cls);
     return cls;

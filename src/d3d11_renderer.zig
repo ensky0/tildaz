@@ -6,6 +6,7 @@ const ghostty = @import("ghostty-vt");
 const d3d = @import("d3d11.zig");
 const dw = @import("directwrite.zig");
 const DWriteFontContext = @import("dwrite_font.zig").DWriteFontContext;
+const ui_metrics = @import("ui_metrics.zig");
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("perf.zig");
@@ -954,7 +955,7 @@ pub const D3d11Renderer = struct {
             const scrollbar_inst = [1]BgInstance{.{
                 .pos = .{ track_x, thumb_y },
                 .size = .{ sbw, thumb_h },
-                .color = .{ 1, 1, 1, 0.3 },
+                .color = ui_metrics.SCROLLBAR_COLOR,
             }};
             self.drawBgInstances(&scrollbar_inst);
         }
