@@ -210,6 +210,11 @@ var g_terminal: ghostty.Terminal = undefined;
 var g_stream: ghostty.TerminalStream = undefined;
 var g_terminal_initialized: bool = false;
 var g_pty_bytes_received: u64 = 0;
+/// PTY child process 종료 flag. PTY read thread 에서 set, main thread 의
+/// render timer 가 검사 후 안전하게 NSApp.terminate. NSApp.terminate 는
+/// main thread 에서 호출해야 안전 (Windows 의 PostMessageW thread-safe 와
+/// 다름).
+var g_shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
@@ -642,14 +647,26 @@ fn onPtyOutput(data: []const u8, _: ?*anyopaque) void {
 
 /// PTY 자식 (셸) 이 종료되면 호출 — 우리도 같이 종료.
 fn onPtyExit(_: ?*anyopaque) void {
-    std.debug.print("\n[pty] shell exited, terminating tildaz.\n", .{});
-    const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    terminate(g_app, objc.sel("terminate:"), null);
+    // PTY read thread 에서 호출. NSApp.terminate 는 main thread 호출 안전성
+    // 보장 안 되므로 atomic flag 만 set 하고 main thread 의 render timer 가
+    // 처리. Windows 의 closeAfterShellExit → WM_CLOSE post 와 동일 효과
+    // (Windows 는 PostMessageW 가 thread-safe 라 직접 post).
+    g_shell_exited.store(true, .release);
 }
 
 /// 60fps render timer callback. 윈도우 hidden 이거나 renderer 미초기화면 skip.
 /// cell_w/h 는 font 가 측정한 pixel 단위 (Retina backing scale 이미 적용됨).
 fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    // Shell exit flag 검사 — PTY thread 가 set 한 것을 main thread 에서 처리.
+    // Windows 의 `마지막 탭 종료 → closeAfterShellExit → 앱 종료` 흐름과 동일.
+    // (macOS 는 단일 탭 단계라 곧바로 앱 종료.)
+    if (g_shell_exited.load(.acquire)) {
+        std.debug.print("\n[pty] shell exited, terminating tildaz.\n", .{});
+        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        terminate(g_app, objc.sel("terminate:"), null);
+        return;
+    }
+
     if (!g_visible) return;
     if (g_renderer == null) return;
     if (!g_terminal_initialized) return;
