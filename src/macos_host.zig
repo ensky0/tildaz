@@ -21,6 +21,14 @@ const objc = @import("macos_objc.zig");
 const macos_config = @import("macos_config.zig");
 const macos_pty = @import("macos_pty.zig");
 const ghostty = @import("ghostty-vt");
+// M5.2 — 폰트 / 글리프 아틀라스 모듈. 실제 사용은 M5.3 (Metal 렌더) 부터지만
+// 빌드 검증을 위해 import 해 두면 unused public decl 도 컴파일된다.
+const macos_font = @import("macos_font.zig");
+const macos_glyph_atlas = @import("macos_glyph_atlas.zig");
+comptime {
+    _ = macos_font;
+    _ = macos_glyph_atlas;
+}
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
