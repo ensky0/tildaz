@@ -217,7 +217,8 @@ pub const MetalRenderer = struct {
         self.vp_height = height;
     }
 
-    /// 한 프레임 렌더 — drawable 획득 → 배경 + 텍스트 + 커서 그리기 → present.
+    /// 한 프레임 렌더 — drawable 획득 → 배경 + 텍스트 + 커서 + preedit (IME
+    /// 조합 중) 그리기 → present.
     pub fn renderFrame(
         self: *MetalRenderer,
         layer: objc.id,
@@ -226,6 +227,7 @@ pub const MetalRenderer = struct {
         cell_h: i32,
         y_offset: i32,
         padding: i32,
+        preedit_utf8: []const u8,
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
@@ -263,7 +265,7 @@ pub const MetalRenderer = struct {
             self.atlas.dirty = false;
         }
 
-        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding);
+        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -278,6 +280,7 @@ pub const MetalRenderer = struct {
         cell_h: i32,
         y_offset: i32,
         padding: i32,
+        preedit_utf8: []const u8,
     ) void {
         self.render_state.update(self.alloc, terminal) catch return;
 
@@ -492,6 +495,78 @@ pub const MetalRenderer = struct {
                 .color = ui_metrics.SCROLLBAR_COLOR,
             }};
             self.drawBgInstances(encoder, &scrollbar_inst);
+        }
+
+        // --- IME preedit (조합 중) overlay ---
+        // cursor 위치부터 preedit_utf8 의 각 codepoint 를 그림. 배경 강조 +
+        // 글자 + 아래 underline. PTY 에는 안 들어가지만 사용자가 조합 중인
+        // 자모 / 음절을 볼 수 있게.
+        if (preedit_utf8.len > 0 and self.render_state.cursor.viewport != null) {
+            const vp = self.render_state.cursor.viewport.?;
+            var pre_col: f32 = @floatFromInt(vp.x);
+            const pre_row: f32 = @floatFromInt(vp.y);
+            const pre_y = pre_row * ch + y_off;
+
+            var pre_bg_buf: [16]BgInstance = undefined;
+            var pre_text_buf: [16]TextInstance = undefined;
+            var pre_bg_n: usize = 0;
+            var pre_text_n: usize = 0;
+            const fg = colors.foreground;
+            const fg_color: [4]f32 = .{ colorF(fg.r), colorF(fg.g), colorF(fg.b), 1 };
+            // preedit 배경 색 — 약간 진한 회색 / 강조.
+            const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
+
+            // UTF-8 codepoint iteration.
+            var utf8_iter = std.unicode.Utf8Iterator{ .bytes = preedit_utf8, .i = 0 };
+            while (utf8_iter.nextCodepoint()) |cp| {
+                if (pre_bg_n >= pre_bg_buf.len) break;
+                const result = self.font.resolveGlyph(@intCast(cp)) orelse continue;
+                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    if (result.owned) ct.CFRelease(result.font);
+                    continue;
+                };
+                if (result.owned) ct.CFRelease(result.font);
+
+                // wide char (CJK) 는 2 cell 차지.
+                const is_wide = cp >= 0x1100 and (cp <= 0x115F or
+                    (cp >= 0x2E80 and cp <= 0x9FFF) or
+                    (cp >= 0xA000 and cp <= 0xA4CF) or
+                    (cp >= 0xAC00 and cp <= 0xD7A3) or
+                    (cp >= 0xF900 and cp <= 0xFAFF) or
+                    (cp >= 0xFE30 and cp <= 0xFE4F) or
+                    (cp >= 0xFF00 and cp <= 0xFF60) or
+                    (cp >= 0xFFE0 and cp <= 0xFFE6));
+                const w_cells: f32 = if (is_wide) 2 else 1;
+
+                const cell_x = pre_col * cw + x_pad;
+                pre_bg_buf[pre_bg_n] = .{
+                    .pos = .{ cell_x, pre_y },
+                    .size = .{ w_cells * cw, ch },
+                    .color = pre_bg_color,
+                };
+                pre_bg_n += 1;
+
+                if (entry.w > 0 and entry.h > 0 and pre_text_n < pre_text_buf.len) {
+                    const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = pre_y + self.font.ascent_px
+                        - @as(f32, @floatFromInt(entry.bearing_y))
+                        - @as(f32, @floatFromInt(entry.h));
+                    pre_text_buf[pre_text_n] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = fg_color,
+                    };
+                    pre_text_n += 1;
+                }
+
+                pre_col += w_cells;
+            }
+
+            if (pre_bg_n > 0) self.drawBgInstances(encoder, pre_bg_buf[0..pre_bg_n]);
+            // atlas 가 dirty 면 다음 frame 에 업로드 — 한 frame 늦은 표시.
+            if (pre_text_n > 0) self.drawTextInstances(encoder, pre_text_buf[0..pre_text_n]);
         }
     }
 

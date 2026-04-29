@@ -65,6 +65,19 @@ pub const Pty = struct {
             return error.OpenPtyFailed;
         }
 
+        // termios 의 IUTF8 (= 0x4000) 활성화 — 한글 / 일본어 / 중국어 등
+        // multi-byte UTF-8 입력 / cooked-mode editing 정확히 처리. macOS
+        // default 는 IUTF8 OFF 라 multi-byte 가 단일 byte 로 처리되어 backspace
+        // 등이 한 byte 만 지우거나 echo 가 누락되는 문제. tcsetattr 로
+        // slave_fd 에 set.
+        var tio: std.c.termios = undefined;
+        if (std.c.tcgetattr(slave_fd, &tio) == 0) {
+            const c_iflag_int: u64 = @bitCast(tio.iflag);
+            const new_iflag: u64 = c_iflag_int | 0x4000; // IUTF8
+            tio.iflag = @bitCast(new_iflag);
+            _ = std.c.tcsetattr(slave_fd, .NOW, &tio);
+        }
+
         // 셸 경로를 NUL-terminated 로. execve 가 `argv[0]` 으로 사용.
         const shell_z = try allocator.dupeZ(u8, shell);
         defer allocator.free(shell_z);

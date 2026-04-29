@@ -36,6 +36,12 @@ pub extern fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, ext
 pub extern fn class_addMethod(cls: Class, sel_: SEL, imp: *const anyopaque, types: [*:0]const u8) bool;
 pub extern fn objc_registerClassPair(cls: Class) void;
 
+// Protocol — IME (NSTextInputClient) 같은 Objective-C protocol 을 동적 등록한
+// 클래스에 채택시킬 때.
+pub const Protocol = *anyopaque;
+pub extern fn objc_getProtocol(name: [*:0]const u8) ?Protocol;
+pub extern fn class_addProtocol(cls: Class, protocol: Protocol) bool;
+
 /// `objc_msgSend` 의 raw 함수 포인터. 표준 helper 들 (msgSend, msgSendVoid,
 /// ...) 이 처리 못 하는 시그니처 (예: struct by value, double 반환) 는
 /// callsite 가 직접 `@ptrCast(macos_objc.msgSend_raw)` 로 cast 해서 쓴다.

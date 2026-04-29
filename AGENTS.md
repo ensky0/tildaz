@@ -17,6 +17,30 @@
 특히 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에는 사실 판단의 근거가 되는 공식 문서, 이슈, 코드, 커밋, 로그 등의 링크를 포함해요.
 이 원칙은 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에 모두 동일하게 적용해요.
 
+# 한글 IME 동작 스펙
+
+한글 (한국어 / 일본어 / 중국어 IME 일반) 입력 시 다음 동작이 정의된 스펙이에요.
+플랫폼별 OS API 차이는 있지만 사용자 시각 동작은 동일해야 해요.
+
+- **조합 중 (preedit)** 표시: 자모 / 미완성 음절을 cursor 위치에 강조 배경 (보라색
+  계열) + 글자로 inline 표시. 별도 candidate window 안 띄움.
+- **음절 단위 backspace**: 조합 중에 backspace → IME 가 자모 단위로 되돌리고
+  화면도 대응해 갱신.
+- **화살표 / 영문 / space / Enter 등 IME 가 모르는 키**: IME 가 현재 음절을 즉시
+  commit (확정) 한 후 그 키를 PTY 로 전달. 즉 `'하'` 까지 친 상태에서 →
+  화살표 누르면 `'하'` 가 commit 되고 cursor 가 한 칸 이동.
+- **commit 트리거**: 위 키 외에도 음절이 더 이상 확장 안 되는 자모 시퀀스 (예:
+  `'한'` 다음 추가 자음) 가 와도 IME 가 자동 commit.
+
+플랫폼 구현:
+- **macOS**: NSTextInputClient protocol — `interpretKeyEvents:` → `setMarkedText:`
+  (조합 중) / `insertText:` (commit) / `doCommandBySelector:` (special key) 콜백.
+  preedit overlay 는 우리 metal renderer 가 `cursor.viewport` 위치에 직접 그림.
+- **Windows**: 현재 (2026-04 기준) preedit overlay 미구현 — OS IME 자체 candidate
+  window 가 commit 만 `WM_CHAR` 로 전달. macOS 와 동일한 inline preedit 으로
+  맞추려면 `ImmGetCompositionStringW` 로 candidate string 수신 + 직접 그리기 필요
+  (후속 milestone).
+
 # 메시지 언어
 
 **내부 협업 기록은 한국어**로 작성해요. 커밋 메시지, GitHub 이슈 / 이슈 코멘트 / PR, 릴리즈 노트, 에이전트와의 대화가 여기에 해당해요. 유지 보수 문맥이 한국어로 쌓여야 작업 기억의 효율이 좋아요.
