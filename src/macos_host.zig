@@ -19,6 +19,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const objc = @import("macos_objc.zig");
 const macos_config = @import("macos_config.zig");
+const macos_pty = @import("macos_pty.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -172,6 +173,7 @@ var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: macos_config.Config = .{};
 var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+var g_pty: ?macos_pty.Pty = null;
 
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
@@ -264,12 +266,38 @@ pub fn run() !void {
     // 5. CGEventTap 으로 글로벌 키 hotkey 등록 — F1 (toggle), Cmd+Q (terminate).
     //    Carbon RegisterEventHotKey 는 우리 환경 (macOS Tahoe + ad-hoc sign) 에서
     //    silently fail 하므로 Apple DTS 권장 modern API 인 CGEventTap 사용.
-    //    Input Monitoring 권한 필요 — 사용자가 시스템 설정에서 활성화.
+    //    Input Monitoring 권한 필요 — 사용자 가 시스템 설정에서 활성화.
     try installEventTap();
 
-    // 6. 이벤트 루프.
+    // 6. PTY (M5.0) — 사용자의 로그인 셸 (`$SHELL`, 없으면 macOS default
+    //    `/bin/zsh`) spawn + read thread 가 받은 데이터 stderr 로 dump.
+    //    ghostty-vt 연결 / 텍스트 렌더링은 후속 sub-milestone (M5.1+).
+    const allocator = g_gpa.allocator();
+    const shell_env = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
+    defer if (shell_env) |s| allocator.free(s);
+    const shell_path = if (shell_env) |s| s else "/bin/zsh";
+
+    var pty = try macos_pty.Pty.init(allocator, 120, 30, shell_path, null);
+    g_pty = pty;
+    try pty.startReadThread(onPtyOutput, onPtyExit, null);
+    std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, pty.child_pid });
+
+    // 7. 이벤트 루프.
     const runApp = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
     runApp(g_app, objc.sel("run"));
+}
+
+/// PTY read thread 의 콜백 — 받은 데이터를 stderr 로 그대로 dump (M5.0 검증용).
+/// M5.1 부터 ghostty-vt Terminal 의 stream parser 로 라우팅 예정.
+fn onPtyOutput(data: []const u8, _: ?*anyopaque) void {
+    std.debug.print("{s}", .{data});
+}
+
+/// PTY 자식 (셸) 이 종료되면 호출 — 우리도 같이 종료.
+fn onPtyExit(_: ?*anyopaque) void {
+    std.debug.print("\n[pty] shell exited, terminating tildaz.\n", .{});
+    const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    terminate(g_app, objc.sel("terminate:"), null);
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
