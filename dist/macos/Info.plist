@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>tildaz</string>
+	<key>CFBundleIdentifier</key>
+	<string>me.ensky0.tildaz</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>TildaZ</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.13</string>
+	<key>CFBundleVersion</key>
+	<string>0.2.13</string>
+	<!-- LSUIElement=true: drop-down 터미널 정체성에 맞춰 Dock / Cmd+Tab / 메뉴바
+	     에 tildaz 안 보이게 한다. background utility 앱 (Bartender, Magnet, ...)
+	     과 같은 스타일. macOS 의 \"정식 앱 라이프사이클\" 진입을 위해 .app 번들
+	     + Info.plist 가 필수 — Carbon RegisterEventHotKey 가 unsigned CLI binary
+	     환경에서 silently fail 하던 막힘을 푸는 핵심. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>
