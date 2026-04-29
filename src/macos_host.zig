@@ -21,14 +21,7 @@ const objc = @import("macos_objc.zig");
 const macos_config = @import("macos_config.zig");
 const macos_pty = @import("macos_pty.zig");
 const ghostty = @import("ghostty-vt");
-// M5.2 — 폰트 / 글리프 아틀라스 모듈. 실제 사용은 M5.3 (Metal 렌더) 부터지만
-// 빌드 검증을 위해 import 해 두면 unused public decl 도 컴파일된다.
-const macos_font = @import("macos_font.zig");
-const macos_glyph_atlas = @import("macos_glyph_atlas.zig");
-comptime {
-    _ = macos_font;
-    _ = macos_glyph_atlas;
-}
+const macos_metal = @import("macos_metal.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -73,6 +66,7 @@ pub fn showConfigErrorAndExit(msg: []const u8) noreturn {
 }
 
 // AppKit / Metal 상수.
+const NSWindowStyleMaskBorderless: c_ulong = 0;
 const NSWindowStyleMaskTitled: c_ulong = 1 << 0;
 const NSWindowStyleMaskFullSizeContentView: c_ulong = 1 << 15;
 const NSBackingStoreBuffered: c_ulong = 2;
@@ -163,6 +157,24 @@ extern fn CFMachPortCreateRunLoopSource(
 extern fn CFRunLoopGetMain() CFRunLoopRef;
 extern fn CFRunLoopAddSource(runloop: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
 
+// 렌더 timer 용 CFRunLoopTimer FFI. NSTimer 보다 가벼움 — ObjC class /
+// selector 등록 없이 C function pointer 그대로 사용.
+const CFAbsoluteTime = f64;
+const CFTimeInterval = f64;
+const CFRunLoopTimerRef = ?*anyopaque;
+const CFRunLoopTimerCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
+extern fn CFAbsoluteTimeGetCurrent() CFAbsoluteTime;
+extern fn CFRunLoopTimerCreate(
+    allocator: ?*anyopaque,
+    fireDate: CFAbsoluteTime,
+    interval: CFTimeInterval,
+    flags: u32,
+    order: isize,
+    callout: CFRunLoopTimerCallback,
+    context: ?*anyopaque,
+) CFRunLoopTimerRef;
+extern fn CFRunLoopAddTimer(runloop: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef) void;
+
 // kCFRunLoopCommonModes 는 CFString 상수 (Apple 의 CFRunLoop.h). Zig 의
 // extern var 로 받아 쓴다.
 extern const kCFRunLoopCommonModes: CFStringRef;
@@ -170,6 +182,12 @@ extern const kCFRunLoopCommonModes: CFStringRef;
 // Input Monitoring 권한 (macOS 10.15+).
 extern fn CGPreflightListenEventAccess() bool;
 extern fn CGRequestListenEventAccess() bool;
+
+// Accessibility (손쉬운 사용) 권한 — `kCGEventTapOptionDefault` (active tap)
+// 으로 이벤트 변경 / 삼키기 시 macOS 가 추가로 요구. ListenOnly 면 Input
+// Monitoring 만으로 충분하지만, 우리는 F1/Cmd+Q 를 다른 앱에 전달 안 되게
+// consume 해야 하므로 active 가 필수.
+extern fn AXIsProcessTrusted() bool;
 
 extern fn MTLCreateSystemDefaultDevice() objc.id;
 
@@ -192,6 +210,54 @@ var g_stream: ghostty.TerminalStream = undefined;
 var g_terminal_initialized: bool = false;
 var g_pty_bytes_received: u64 = 0;
 
+// M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
+// 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
+// font_family 는 config 통합 전까지 hardcoded.
+var g_metal_layer: objc.id = null;
+var g_renderer: ?macos_metal.MetalRenderer = null;
+var g_render_timer: CFRunLoopTimerRef = null;
+// Menlo — macOS 기본 등록된 monospace. SF Mono 는 system font 라
+// CTFontCreateWithName 에서 family 매칭이 안 되면 proportional fallback 으로
+// 떨어져 글자 폭이 들쭉날쭉 해진다. 추후 menlo 로 동작 확인되면 SF Mono 는
+// CTFontCreateUIFontForLanguage 같은 별도 경로로 다시 시도.
+const FONT_FAMILY = "Menlo";
+const FONT_SIZE_PT: f32 = 14.0;
+// Windows config 의 cell_width / line_height default 와 동일. config 통합
+// 후 사용자 설정 가능. 1.0 / 1.0 이면 폰트 그대로, 1.1 / 0.95 는 약간의 가로
+// padding + 빽빽한 줄간격.
+const CELL_WIDTH_SCALE: f32 = 1.1;
+const LINE_HEIGHT_SCALE: f32 = 0.95;
+// 터미널 영역 안쪽 padding (logical points). Windows 의 `TERMINAL_PADDING`
+// (app_controller) 과 동일 의미 — 글자가 윈도우 모서리에 딱 붙지 않도록.
+// pixel 단위로는 init 시 retina scale 곱해 사용.
+const TERMINAL_PADDING_PT: u32 = 6;
+
+// NSWindow subclass — `canBecomeKeyWindow` 를 YES 로 override 해서 borderless
+// styleMask 에서도 key window 가능하게. Default NSWindow 는 borderless 면
+// canBecomeKey=NO 라 mainMenu Cmd+Q 등이 dispatch 안 됨. ghostty Quick Terminal
+// 의 `class QuickTerminalWindow: NSPanel { override var canBecomeKey: Bool { true } }`
+// 와 동일 효과.
+fn tildazCanBecomeKey(_: objc.id, _: objc.SEL) callconv(.c) bool {
+    return true;
+}
+
+fn tildazCanBecomeMain(_: objc.id, _: objc.SEL) callconv(.c) bool {
+    return true;
+}
+
+fn registerTildazWindowClass() !objc.Class {
+    const NSWindow = objc.getClass("NSWindow");
+    const cls = objc.objc_allocateClassPair(NSWindow, "TildazWindow", 0) orelse
+        return error.WindowSubclassAllocFailed;
+    // Method signature: "B@:" = bool 반환, self (id) + _cmd (SEL) 만 인자.
+    if (!objc.class_addMethod(cls, objc.sel("canBecomeKeyWindow"), @ptrCast(&tildazCanBecomeKey), "B@:"))
+        return error.WindowSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("canBecomeMainWindow"), @ptrCast(&tildazCanBecomeMain), "B@:"))
+        return error.WindowSubclassAddMethodFailed;
+    objc.objc_registerClassPair(cls);
+    return cls;
+}
+
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
 
@@ -209,19 +275,20 @@ pub fn run() !void {
 
     try buildMainMenu(g_app);
 
-    // 2. NSWindow — Titled + FullSizeContentView + traffic-light 버튼 / 타이틀
-    //    숨김 패턴 (ghostty Quick Terminal 동일). \"진짜 borderless\"
-    //    (styleMask = 0) 로 가면 \`canBecomeKeyWindow == NO\` 라서 mainMenu
-    //    Cmd+Q 가 dispatch 안 되는 문제가 있어 Titled 를 유지한다. Resizable
-    //    빼고 setMovable:NO 로 사용자 드래그 / 이동 OS 차단은 그대로.
-    const NSWindow = objc.getClass("NSWindow");
+    // 2. NSWindow (TildazWindow subclass) — borderless styleMask. Default
+    //    NSWindow 가 borderless 일 때 `canBecomeKeyWindow == NO` 라서 mainMenu
+    //    Cmd+Q 가 dispatch 안 되는 문제가 있는데, subclass 에서 그 method 를
+    //    YES 로 override 해 우회. titlebar 자체가 없어 위쪽 32pt offset 도
+    //    사라진다 (이게 위 padding 비대칭의 진짜 원인 — Titled mask 가 위쪽
+    //    titlebar 영역의 layer drawing 을 시스템이 막던 것).
+    const TildazWindow = try registerTildazWindowClass();
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const window_alloc = alloc(NSWindow, objc.sel("alloc")) orelse return error.NSWindowAllocFailed;
+    const window_alloc = alloc(TildazWindow, objc.sel("alloc")) orelse return error.NSWindowAllocFailed;
 
     const initWindow = objc.objcSend(fn (objc.id, objc.SEL, NSRect, c_ulong, c_ulong, bool) callconv(.c) objc.id);
     // 초기 rect 는 placeholder — 곧이어 dock rect 로 덮어쓴다.
     const placeholder = NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 800, .height = 400 } };
-    const style_mask = NSWindowStyleMaskTitled | NSWindowStyleMaskFullSizeContentView;
+    const style_mask = NSWindowStyleMaskBorderless;
     g_window = initWindow(
         window_alloc,
         objc.sel("initWithContentRect:styleMask:backing:defer:"),
@@ -234,27 +301,56 @@ pub fn run() !void {
     // 사용자 드래그 / 이동 OS 차단.
     const setMovable = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     setMovable(g_window, objc.sel("setMovable:"), false);
+    // shadow 끄기 — borderless window 의 default shadow 가 위쪽에 inset 효과.
+    const setHasShadow = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setHasShadow(g_window, objc.sel("setHasShadow:"), false);
+    // Window level = popUpMenu (101) — dock + menu bar + 다른 앱 위에 표시.
+    // floating(3) 은 dock 보다 낮아서 dock 이 우리 윈도우 좌측 (또는 dock
+    // 위치) 일부를 가려 padding 비대칭으로 보임. ghostty QuickTerminal 도
+    // 동일 이유로 popUpMenu 사용 (QuickTerminalController.swift:435 주석
+    // "only popUpMenu and above do what we want").
+    const NSPopUpMenuWindowLevel: c_int = 101;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    setLevel(g_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
 
-    // 타이틀바 영역까지 contentView 가 차지하도록 + 타이틀 / traffic-light 숨김.
-    const setTitlebarTransparent = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    setTitlebarTransparent(g_window, objc.sel("setTitlebarAppearsTransparent:"), true);
-    const setTitleVisibility = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
-    setTitleVisibility(g_window, objc.sel("setTitleVisibility:"), NSWindowTitleHidden);
+    // 윈도우 자체를 opaque=NO + backgroundColor=clear 로 — borderless 라
+    // titlebar 자체는 없지만 system 의 default window background (흰색) 가
+    // 보일 수 있다. clear 로 하면 metal layer 가 윈도우 전체에 그대로 보임.
+    const setOpaque = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setOpaque(g_window, objc.sel("setOpaque:"), false);
+    const NSColor = objc.getClass("NSColor");
+    const clearColor_get = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const clear_color = clearColor_get(NSColor, objc.sel("clearColor"));
+    const setBackgroundColor = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setBackgroundColor(g_window, objc.sel("setBackgroundColor:"), clear_color);
 
-    const standardWindowButton = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) objc.id);
-    const setHidden = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    inline for ([_]c_long{ NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton }) |btn_id| {
-        if (standardWindowButton(g_window, objc.sel("standardWindowButton:"), btn_id)) |btn| {
-            setHidden(btn, objc.sel("setHidden:"), true);
-        }
-    }
-
-    // 3. CAMetalLayer (M2 와 동일).
+    // 3. CAMetalLayer + Metal 렌더러. ghostty 의 layer-hosting 패턴 차용:
+    //    `setLayer:` 를 먼저 호출하고 그 *다음* `setWantsLayer:YES` — 이러면
+    //    NSView 가 우리 layer 를 직접 host (자동 backing layer 안 만들고).
+    //
+    //    **위쪽 32pt offset 의 진짜 원인**: macOS Sequoia/Tahoe 의 NSWindow 는
+    //    Titled + FullSizeContentView 모드에서 contentView 에 titlebar 영역
+    //    만큼 (~32pt) safeAreaInsets.top 을 자동 적용한다. layer 가 cv_bounds
+    //    전체에 frame 을 잡아도 시스템 drawing 시 safe area 안쪽 영역만 effective
+    //    하게 사용되어 위쪽 32pt 가 가려진다. ghostty 의 SurfaceScrollView 는
+    //    `override var safeAreaInsets: NSEdgeInsets { .zero }` 로 우회. 우리는
+    //    NSView subclass 안 만들고 `additionalSafeAreaInsets` 를 시스템 inset
+    //    의 *negative* 로 설정해 effective inset 을 0 으로 만든다.
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const content_view = contentView_get(g_window, objc.sel("contentView")) orelse return error.ContentViewMissing;
 
-    const setWantsLayer = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    setWantsLayer(content_view, objc.sel("setWantsLayer:"), true);
+    // safeAreaInsets 무력화: 시스템이 적용한 top inset 을 negative additional
+    // inset 으로 정확히 상쇄.
+    const NSEdgeInsets = extern struct { top: CGFloat, left: CGFloat, bottom: CGFloat, right: CGFloat };
+    const get_insets = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSEdgeInsets);
+    const sys_insets = get_insets(content_view, objc.sel("safeAreaInsets"));
+    const set_addl_insets = objc.objcSend(fn (objc.id, objc.SEL, NSEdgeInsets) callconv(.c) void);
+    set_addl_insets(content_view, objc.sel("setAdditionalSafeAreaInsets:"), .{
+        .top = -sys_insets.top,
+        .left = -sys_insets.left,
+        .bottom = -sys_insets.bottom,
+        .right = -sys_insets.right,
+    });
 
     const CAMetalLayer = objc.getClass("CAMetalLayer");
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
@@ -262,23 +358,37 @@ pub fn run() !void {
     const layer = init_obj(layer_alloc, objc.sel("init")) orelse return error.MetalLayerInitFailed;
 
     const device = MTLCreateSystemDefaultDevice() orelse return error.MetalDeviceMissing;
-    const setDevice = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setDevice(layer, objc.sel("setDevice:"), device);
-
-    const setPixelFormat = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
-    setPixelFormat(layer, objc.sel("setPixelFormat:"), MTLPixelFormatBGRA8Unorm);
-
-    const bg = createCGColor(0.10, 0.10, 0.12, 1.0);
-    defer CGColorRelease(bg);
-    const setBgColor = objc.objcSend(fn (objc.id, objc.SEL, ?*anyopaque) callconv(.c) void);
-    setBgColor(layer, objc.sel("setBackgroundColor:"), bg);
 
     const setLayer = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setLayer(content_view, objc.sel("setLayer:"), layer);
+    const setWantsLayer = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setWantsLayer(content_view, objc.sel("setWantsLayer:"), true);
+    // layer 가 view bounds 를 넘으면 자르기 — drawable 이 view 보다 살짝
+    // 커도 화면 밖으로 그려지지 않게 (ghostty Metal.zig 패턴).
+    const setClipsToBounds = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setClipsToBounds(content_view, objc.sel("setClipsToBounds:"), true);
+    g_metal_layer = layer;
 
     // 4. 첫 dock rect 적용 후 표시.
     repositionWindow();
     showWindow();
+
+    // layer geometry 동기화. additionalSafeAreaInsets 로 시스템 inset 무력화
+    // 했으므로 layer 가 cv_bounds 전체 (titlebar 영역 포함) 를 그대로 사용.
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const cv_bounds = get_rect(content_view, objc.sel("bounds"));
+    const set_layer_frame = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) void);
+    set_layer_frame(layer, objc.sel("setFrame:"), cv_bounds);
+
+    const backing_scale = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const scale_pt = backing_scale(g_window, objc.sel("backingScaleFactor"));
+    const set_contents_scale = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
+    set_contents_scale(layer, objc.sel("setContentsScale:"), scale_pt);
+    const set_drawable_size = objc.objcSend(fn (objc.id, objc.SEL, NSSize) callconv(.c) void);
+    set_drawable_size(layer, objc.sel("setDrawableSize:"), .{
+        .width = cv_bounds.size.width * scale_pt,
+        .height = cv_bounds.size.height * scale_pt,
+    });
 
     // 5. CGEventTap 으로 글로벌 키 hotkey 등록 — F1 (toggle), Cmd+Q (terminate).
     //    Carbon RegisterEventHotKey 는 우리 환경 (macOS Tahoe + ad-hoc sign) 에서
@@ -286,18 +396,57 @@ pub fn run() !void {
     //    Input Monitoring 권한 필요 — 사용자 가 시스템 설정에서 활성화.
     try installEventTap();
 
-    // 6. PTY + ghostty-vt Terminal (M5.0 + M5.1).
-    //    - 사용자 로그인 셸 (`$SHELL`, fallback `/bin/zsh`) spawn.
-    //    - PTY read thread 가 받은 데이터를 ghostty-vt Terminal 의 vtStream 으로
-    //      바로 parse. M5.0 의 stderr dump 는 제거 (stream parser 가 받음).
-    //    - 화면 렌더링은 M5.3 (Metal) 부터. 지금은 grid 가 메모리에만 존재.
     const allocator = g_gpa.allocator();
+
+    // 6. Metal 렌더러 (font 측정 포함). 폰트의 'M' advance + ascent/descent/
+    //    leading 으로 cell_width/height 자동 계산 — Windows 의 GetTextMetricsW
+    //    + cell_width_scale/line_height_scale 패턴과 동일. config 통합 전까지
+    //    `TILDAZ_FONT` 환경변수로 빠르게 다른 폰트 시험 가능 (Monaco / Courier
+    //    / "SF Mono" 등).
+    const tildaz_font_env = std.process.getEnvVarOwned(allocator, "TILDAZ_FONT") catch null;
+    defer if (tildaz_font_env) |s| allocator.free(s);
+    const font_family: []const u8 = tildaz_font_env orelse FONT_FAMILY;
+    std.debug.print("[font] family={s}\n", .{font_family});
+
+    g_renderer = try macos_metal.MetalRenderer.init(
+        allocator,
+        device,
+        layer,
+        font_family,
+        FONT_SIZE_PT,
+        CELL_WIDTH_SCALE,
+        LINE_HEIGHT_SCALE,
+        null, // 기본 배경색 (Metal renderer 의 default).
+        @floatCast(scale_pt),
+    );
+    // viewport / cell metrics 모두 pixel 단위로 통일 — pt/px mixing 시 글리프
+    // 가 cell 일부만 차지해 깨져 보이는 문제 회피 (#75 댓글 6 의 정정 패턴).
+    const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
+    const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
+    g_renderer.?.resize(vp_w_px, vp_h_px);
+
+    const cell_w_px: u32 = g_renderer.?.font.cell_width;
+    const cell_h_px: u32 = g_renderer.?.font.cell_height;
+    const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
+    std.debug.print("[metal] renderer init: vp={d}x{d} px, scale={d}, cell={d}x{d} px, pad={d} px (font measured)\n", .{
+        vp_w_px,
+        vp_h_px,
+        scale_pt,
+        cell_w_px,
+        cell_h_px,
+        pad_px,
+    });
+
+    // 7. PTY + ghostty-vt Terminal (M5.0 + M5.1). cols/rows 는 (viewport −
+    //    좌우 padding) ÷ cell. Windows app_controller 의 size − 2*pad 패턴.
     const shell_env = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
     defer if (shell_env) |s| allocator.free(s);
     const shell_path = if (shell_env) |s| s else "/bin/zsh";
 
-    const term_cols: u16 = 120;
-    const term_rows: u16 = 30;
+    const usable_w = if (vp_w_px > 2 * pad_px) vp_w_px - 2 * pad_px else cell_w_px;
+    const usable_h = if (vp_h_px > 2 * pad_px) vp_h_px - 2 * pad_px else cell_h_px;
+    const term_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
+    const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
     // Terminal init — Windows session_core 의 max_scrollback 계산식 차용.
     // (라인 수 × 한 라인의 byte size 추정값). config 통합은 후속.
@@ -318,9 +467,22 @@ pub fn run() !void {
     std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
 
     var pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, null);
-    g_pty = pty;
     try pty.startReadThread(onPtyOutput, onPtyExit, null);
+    g_pty = pty; // startReadThread 후에 복사 — read_thread / wait_thread 필드도 같이.
     std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, pty.child_pid });
+
+    // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
+    // 주기적으로 fire. callback 은 C 함수 — selector / ObjC class 등록 불필요.
+    g_render_timer = CFRunLoopTimerCreate(
+        null,
+        CFAbsoluteTimeGetCurrent(),
+        1.0 / 60.0,
+        0,
+        0,
+        renderTimerFire,
+        null,
+    );
+    CFRunLoopAddTimer(CFRunLoopGetMain(), g_render_timer, kCFRunLoopCommonModes);
 
     // 7. 이벤트 루프.
     const runApp = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
@@ -353,24 +515,51 @@ fn onPtyExit(_: ?*anyopaque) void {
     terminate(g_app, objc.sel("terminate:"), null);
 }
 
+/// 60fps render timer callback. 윈도우 hidden 이거나 renderer 미초기화면 skip.
+/// cell_w/h 는 font 가 측정한 pixel 단위 (Retina backing scale 이미 적용됨).
+fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    if (!g_visible) return;
+    if (g_renderer == null) return;
+    if (!g_terminal_initialized) return;
+    const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
+    const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
+    const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
+    g_renderer.?.renderFrame(g_metal_layer, &g_terminal, cell_w_px, cell_h_px, 0, pad_px);
+}
+
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
 /// tap 없이 진행 (mainMenu Cmd+Q 는 동작).
 fn installEventTap() !void {
-    if (!CGPreflightListenEventAccess()) {
-        _ = CGRequestListenEventAccess();
+    // active CGEventTap 은 두 권한이 모두 필요: Input Monitoring (preflight) +
+    // Accessibility (이벤트 consume / 변조). 한쪽만 있으면 CGEventTapCreate 가
+    // null 반환.
+    const has_input = CGPreflightListenEventAccess();
+    const has_ax = AXIsProcessTrusted();
+    if (!has_input or !has_ax) {
+        if (!has_input) _ = CGRequestListenEventAccess();
         std.debug.print(
             \\
-            \\[Input Monitoring 권한 필요]
+            \\[Permission required for global hotkeys]
             \\
-            \\글로벌 핫키 (F1 토글 / Cmd+Q 종료) 가 동작하려면 시스템 권한 필요해요.
+            \\F1 toggle and Cmd+Q quit (system-wide) need TWO permissions:
             \\
-            \\  1. 시스템 설정 → 개인정보 보호 및 보안 → 입력 모니터링
-            \\  2. 목록에서 \"tildaz\" 토글 ON (없으면 + 버튼으로 .app 추가)
-            \\  3. tildaz 다시 실행
+            \\  1. System Settings → Privacy & Security → Input Monitoring
+            \\     → toggle "tildaz" ON (or click + and add the .app)
+            \\  2. System Settings → Privacy & Security → Accessibility
+            \\     → toggle "tildaz" ON (or click + and add the .app)
             \\
-            \\(개발 단계: ad-hoc 서명이라 매 빌드마다 권한 갱신 필요. 별도 후속 이슈로 자동화 검토 중.)
+            \\Both are required because tildaz needs to *consume* hotkey events
+            \\so they don't leak to other apps. After granting, re-run tildaz.
             \\
-        , .{});
+            \\(Dev-mode note: ad-hoc signed builds get a new identity on each
+            \\rebuild, so the permissions must be renewed.)
+            \\
+            \\Status: Input Monitoring={s}, Accessibility={s}
+            \\
+        , .{
+            if (has_input) "OK" else "missing",
+            if (has_ax) "OK" else "missing",
+        });
         return;
     }
 
@@ -384,7 +573,7 @@ fn installEventTap() !void {
         null,
     );
     if (g_event_tap == null) {
-        std.debug.print("CGEventTapCreate 실패 — 권한 갱신 후 재시도 필요.\n", .{});
+        std.debug.print("CGEventTapCreate failed - permissions may need to be renewed.\n", .{});
         return;
     }
 

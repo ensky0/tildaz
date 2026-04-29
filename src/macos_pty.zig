@@ -115,8 +115,11 @@ pub const Pty = struct {
             // redirect 까지 한 번에 (login_tty(3)).
             _ = c.login_tty(slave_fd);
 
-            // 셸 실행. argv[0] = shell, argv[1] = null.
-            const argv = [_:null]?[*:0]const u8{ shell_z.ptr, null };
+            // 셸 실행. login shell 모드 (`-l` flag) 로 — "Last login: ..."
+            // 출력 + ~/.bash_profile / ~/.zprofile 로드. macOS Terminal.app
+            // 와 동일 동작. login shell 안 쓰면 row 0 가 비어 있어 첫 글자가
+            // row 1 부터 시작 → 위쪽 padding 이 좌측보다 한 줄 더 커 보임.
+            const argv = [_:null]?[*:0]const u8{ shell_z.ptr, "-l", null };
             _ = std.c.execve(shell_z.ptr, &argv, envp);
 
             // execve 실패 — 보통 셸 경로 잘못. exit code 127 (POSIX \"command
