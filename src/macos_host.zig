@@ -258,6 +258,94 @@ fn registerTildazWindowClass() !objc.Class {
     return cls;
 }
 
+// TildazView = NSView subclass — keyDown / acceptsFirstResponder override.
+// `acceptsFirstResponder` YES 안 하면 NSWindow 가 firstResponder 로 안 잡아
+// 키 이벤트가 view 에 안 옴. keyDown: 에서 NSEvent.characters 추출 → PTY 로
+// write. 특수 키 (화살표, F-key) 는 별도 escape sequence 매핑 필요 (M5.4b).
+fn tildazAcceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) bool {
+    return true;
+}
+
+const NSEventTypeKeyDown: c_long = 10;
+const NSUTF8StringEncoding: usize = 4;
+
+/// macOS hardware keyCode 별 xterm-compatible escape sequence. macOS 의
+/// NSEvent.characters 는 화살표 / F-key 를 NSFunctionKey private codepoint
+/// (U+F700~) 으로 보내는데 bash / vim / less 등은 표준 xterm escape sequence
+/// 만 인식하므로 keyCode 직접 매핑이 필요.
+fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
+    return switch (keycode) {
+        // 화살표
+        126 => "\x1b[A", // up
+        125 => "\x1b[B", // down
+        124 => "\x1b[C", // right
+        123 => "\x1b[D", // left
+        // 네비게이션
+        115 => "\x1b[H", // home
+        119 => "\x1b[F", // end
+        116 => "\x1b[5~", // pgup
+        121 => "\x1b[6~", // pgdn
+        117 => "\x1b[3~", // forward delete
+        // F-keys
+        122 => "\x1bOP", // F1 (CGEventTap 이 가로채니 사실 도달 안 함)
+        120 => "\x1bOQ", // F2
+        99 => "\x1bOR", // F3
+        118 => "\x1bOS", // F4
+        96 => "\x1b[15~", // F5
+        97 => "\x1b[17~", // F6
+        98 => "\x1b[18~", // F7
+        100 => "\x1b[19~", // F8
+        101 => "\x1b[20~", // F9
+        109 => "\x1b[21~", // F10
+        103 => "\x1b[23~", // F11
+        111 => "\x1b[24~", // F12
+        else => null,
+    };
+}
+
+fn tildazKeyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (g_pty == null) return;
+    if (event == null) return;
+
+    const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+    const keycode = get_keycode(event, objc.sel("keyCode"));
+
+    // function / arrow / nav key 면 escape sequence 우선.
+    if (keyCodeToEscape(keycode)) |esc| {
+        _ = g_pty.?.write(esc) catch |err| {
+            std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
+        };
+        return;
+    }
+
+    // ASCII / IME 입력. NSEvent.characters 그대로 forward — Tab / Return /
+    // Backspace / Esc 는 이미 적절한 ASCII byte 로 들어옴.
+    const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const chars = get_chars(event, objc.sel("characters")) orelse return;
+    const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+    const len = get_len(chars, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+    if (len == 0) return;
+    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+    const cstr = get_utf8(chars, objc.sel("UTF8String"));
+
+    _ = g_pty.?.write(cstr[0..len]) catch |err| {
+        std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
+    };
+}
+
+fn registerTildazViewClass() !objc.Class {
+    const NSView = objc.getClass("NSView");
+    const cls = objc.objc_allocateClassPair(NSView, "TildazView", 0) orelse
+        return error.ViewSubclassAllocFailed;
+    if (!objc.class_addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&tildazAcceptsFirstResponder), "B@:"))
+        return error.ViewSubclassAddMethodFailed;
+    // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
+    if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    objc.objc_registerClassPair(cls);
+    return cls;
+}
+
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
 
@@ -336,6 +424,17 @@ pub fn run() !void {
     //    `override var safeAreaInsets: NSEdgeInsets { .zero }` 로 우회. 우리는
     //    NSView subclass 안 만들고 `additionalSafeAreaInsets` 를 시스템 inset
     //    의 *negative* 로 설정해 effective inset 을 0 으로 만든다.
+    // contentView 를 TildazView 로 교체 — keyDown 받아 PTY 로 forwarding.
+    // default NSView 는 keyDown override 안 되어 키 입력 처리 불가. NSWindow
+    // 의 default contentView 는 setContentView: 로 바꿀 수 있다.
+    const TildazView = try registerTildazViewClass();
+    const view_alloc = alloc(TildazView, objc.sel("alloc")) orelse return error.ViewAllocFailed;
+    const view_init = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) objc.id);
+    const tildaz_view = view_init(view_alloc, objc.sel("initWithFrame:"), placeholder) orelse
+        return error.ViewInitFailed;
+    const setContentView = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setContentView(g_window, objc.sel("setContentView:"), tildaz_view);
+
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const content_view = contentView_get(g_window, objc.sel("contentView")) orelse return error.ContentViewMissing;
 
@@ -466,7 +565,13 @@ pub fn run() !void {
     g_terminal_initialized = true;
     std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
 
-    var pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, null);
+    // TERM 환경변수: .app launch 시 부모 environ 에 없을 수 있어 명시적 설정.
+    // xterm-256color 는 우리가 send 하는 escape sequence (CSI / SS3 ↑ F1~F12
+    // 등) 와 256-color SGR 을 인식하는 표준. 안 설정하면 bash readline 의
+    // keymap 이 ESC O P 같은 SS3 시퀀스를 모름 (F1~F4 가 P/Q/R/S 로 보임).
+    var pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, &.{
+        .{ .name = "TERM", .value = "xterm-256color" },
+    });
     try pty.startReadThread(onPtyOutput, onPtyExit, null);
     g_pty = pty; // startReadThread 후에 복사 — read_thread / wait_thread 필드도 같이.
     std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, pty.child_pid });
@@ -677,6 +782,13 @@ fn showWindow() void {
     makeKeyAndOrderFront(g_window, objc.sel("makeKeyAndOrderFront:"), null);
     const activate = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     activate(g_app, objc.sel("activateIgnoringOtherApps:"), true);
+    // contentView (TildazView) 를 firstResponder 로 — keyDown 이 view 에 옴.
+    const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const cv = contentView_get(g_window, objc.sel("contentView"));
+    if (cv != null) {
+        const makeFirstResponder = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) bool);
+        _ = makeFirstResponder(g_window, objc.sel("makeFirstResponder:"), cv);
+    }
     g_visible = true;
 }
 
