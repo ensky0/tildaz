@@ -308,34 +308,172 @@ fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
     };
 }
 
-fn tildazKeyDown(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (g_pty == null) return;
     if (event == null) return;
 
-    const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
-    const keycode = get_keycode(event, objc.sel("keyCode"));
-
-    // function / arrow / nav key 면 escape sequence 우선.
-    if (keyCodeToEscape(keycode)) |esc| {
-        _ = g_pty.?.write(esc) catch |err| {
-            std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
-        };
-        return;
+    // IME 가 조합 중이 아니면 화살표 / F-key / nav 는 직접 escape sequence
+    // (성능 + 정확성). 조합 중이면 interpretKeyEvents 로 보내 IME 가 음절
+    // commit 후 doCommandBySelector 로 우리에게 위임 — 우리 imeDoCommand 가
+    // escape sequence write.
+    if (g_marked_len == 0) {
+        const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+        const keycode = get_keycode(event, objc.sel("keyCode"));
+        if (keyCodeToEscape(keycode)) |esc| {
+            _ = g_pty.?.write(esc) catch {};
+            return;
+        }
     }
 
-    // ASCII / IME 입력. NSEvent.characters 그대로 forward — Tab / Return /
-    // Backspace / Esc 는 이미 적절한 ASCII byte 로 들어옴.
-    const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-    const chars = get_chars(event, objc.sel("characters")) orelse return;
-    const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
-    const len = get_len(chars, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
-    if (len == 0) return;
-    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
-    const cstr = get_utf8(chars, objc.sel("UTF8String"));
+    const NSArray = objc.getClass("NSArray");
+    const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
+    const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
+    const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
+}
 
+// IME (NSTextInputClient) 상태 — 조합 중 (preedit) 텍스트 buffer.
+const NSRange = extern struct { location: usize, length: usize };
+const NSNotFound: usize = @as(usize, @bitCast(@as(isize, -1)));
+var g_marked_len: usize = 0;
+var g_preedit_buf: [128]u8 = undefined;
+var g_preedit_len: usize = 0;
+
+/// NSAttributedString 이거나 NSString 인 input → NSString 추출.
+fn imeStringFromInput(text: objc.id) objc.id {
+    if (text == null) return text;
+    const NSAttributedString = objc.getClass("NSAttributedString");
+    const isKindOf = objc.objcSend(fn (objc.id, objc.SEL, objc.Class) callconv(.c) bool);
+    if (isKindOf(text, objc.sel("isKindOfClass:"), NSAttributedString)) {
+        const get_str = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        return get_str(text, objc.sel("string"));
+    }
+    return text;
+}
+
+/// IME 가 글자 commit 시 호출 (한글 음절 완성, 일본어 conversion 확정 등).
+/// PTY 로 write + preedit buffer clear.
+fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
+    if (g_pty == null) return;
+    const str = imeStringFromInput(text);
+    if (str == null) {
+        g_marked_len = 0;
+        g_preedit_len = 0;
+        return;
+    }
+    const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+    const len = get_len(str, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+    if (len == 0) {
+        g_marked_len = 0;
+        g_preedit_len = 0;
+        return;
+    }
+    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+    const cstr = get_utf8(str, objc.sel("UTF8String"));
+
+    g_marked_len = 0;
+    g_preedit_len = 0;
     _ = g_pty.?.write(cstr[0..len]) catch |err| {
         std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
     };
+}
+
+/// NSResponder 의 1-arg insertText: (legacy). 일부 IME 가 이걸 호출.
+fn imeInsertTextSimple(self_view: objc.id, sel_: objc.SEL, text: objc.id) callconv(.c) void {
+    imeInsertText(self_view, sel_, text, .{ .location = NSNotFound, .length = 0 });
+}
+
+/// IME 조합 중 텍스트 — preedit buffer 에 저장. PTY 에는 안 보냄. metal
+/// renderer 가 cursor 위치 위에 overlay (M6.2).
+fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange, _: NSRange) callconv(.c) void {
+    const str = imeStringFromInput(text);
+    if (str == null) {
+        g_marked_len = 0;
+        g_preedit_len = 0;
+        return;
+    }
+    const get_length = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
+    g_marked_len = get_length(str, objc.sel("length"));
+
+    const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+    const len = get_len(str, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+    if (len == 0) {
+        g_preedit_len = 0;
+        return;
+    }
+    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+    const cstr = get_utf8(str, objc.sel("UTF8String"));
+    const copy_len = @min(len, g_preedit_buf.len);
+    @memcpy(g_preedit_buf[0..copy_len], cstr[0..copy_len]);
+    g_preedit_len = copy_len;
+}
+
+fn imeUnmarkText(_: objc.id, _: objc.SEL) callconv(.c) void {
+    g_marked_len = 0;
+    g_preedit_len = 0;
+}
+
+fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) bool {
+    return g_marked_len > 0;
+}
+
+fn imeMarkedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
+    if (g_marked_len > 0) return .{ .location = 0, .length = g_marked_len };
+    return .{ .location = NSNotFound, .length = 0 };
+}
+
+fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
+    return .{ .location = 0, .length = 0 };
+}
+
+fn imeValidAttributes(_: objc.id, _: objc.SEL) callconv(.c) objc.id {
+    const NSArray = objc.getClass("NSArray");
+    const array = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    return array(NSArray, objc.sel("array"));
+}
+
+fn imeAttrSubstring(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) objc.id {
+    return null;
+}
+
+fn imeCharIndex(_: objc.id, _: objc.SEL, _: f64, _: f64) callconv(.c) usize {
+    return NSNotFound;
+}
+
+const CGRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
+fn imeFirstRect(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
+    return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+}
+
+/// IME 가 모르는 special key (Return, Backspace, Tab, 화살표 등) 을
+/// interpretKeyEvents 가 selector 형태로 보냄. escape sequence 매핑.
+fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
+    if (g_pty == null) return;
+    const bytes: ?[]const u8 = if (cmd_sel == objc.sel("insertNewline:"))
+        "\r"
+    else if (cmd_sel == objc.sel("insertTab:"))
+        "\t"
+    else if (cmd_sel == objc.sel("insertBacktab:"))
+        "\x1b[Z"
+    else if (cmd_sel == objc.sel("deleteBackward:"))
+        "\x7f"
+    else if (cmd_sel == objc.sel("deleteForward:"))
+        "\x1b[3~"
+    else if (cmd_sel == objc.sel("cancelOperation:"))
+        "\x1b"
+    else if (cmd_sel == objc.sel("moveUp:"))
+        "\x1b[A"
+    else if (cmd_sel == objc.sel("moveDown:"))
+        "\x1b[B"
+    else if (cmd_sel == objc.sel("moveLeft:"))
+        "\x1b[D"
+    else if (cmd_sel == objc.sel("moveRight:"))
+        "\x1b[C"
+    else
+        null;
+    if (bytes) |b| {
+        _ = g_pty.?.write(b) catch {};
+    }
 }
 
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
@@ -374,6 +512,45 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&tildazScrollWheel), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
+
+    // NSTextInputClient protocol — IME (한글 / 일본어 / 중국어). 등록한 13
+    // 메서드는 ghostty / Terminal.app / 표준 NSView terminal 패턴. `NSRange`
+    // = `{_NSRange=QQ}` (location, length 둘 다 unsigned long). `CGRect`
+    // = `{CGRect={CGPoint=dd}{CGSize=dd}}`.
+    if (!objc.class_addMethod(cls, objc.sel("insertText:replacementRange:"), @ptrCast(&imeInsertText), "v@:@{_NSRange=QQ}"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("insertText:"), @ptrCast(&imeInsertTextSimple), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("setMarkedText:selectedRange:replacementRange:"), @ptrCast(&imeSetMarkedText), "v@:@{_NSRange=QQ}{_NSRange=QQ}"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("unmarkText"), @ptrCast(&imeUnmarkText), "v@:"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("hasMarkedText"), @ptrCast(&imeHasMarkedText), "B@:"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("markedRange"), @ptrCast(&imeMarkedRange), "{_NSRange=QQ}@:"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("selectedRange"), @ptrCast(&imeSelectedRange), "{_NSRange=QQ}@:"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("validAttributesForMarkedText"), @ptrCast(&imeValidAttributes), "@@:"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("attributedSubstringForProposedRange:actualRange:"), @ptrCast(&imeAttrSubstring), "@@:{_NSRange=QQ}^{_NSRange=QQ}"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("characterIndexForPoint:"), @ptrCast(&imeCharIndex), "Q@:{CGPoint=dd}"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("firstRectForCharacterRange:actualRange:"), @ptrCast(&imeFirstRect), "{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("doCommandBySelector:"), @ptrCast(&imeDoCommand), "v@::"))
+        return error.ViewSubclassAddMethodFailed;
+
+    // protocol 채택 — 이거 안 하면 inputContext 가 view 를 NSTextInputClient
+    // 로 인식 안 해서 interpretKeyEvents 가 routing 안 됨.
+    if (objc.objc_getProtocol("NSTextInputClient")) |proto| {
+        const ok = objc.class_addProtocol(cls, proto);
+        std.debug.print("[ime] NSTextInputClient protocol added: {}\n", .{ok});
+    } else {
+        std.debug.print("[ime] WARNING: NSTextInputClient protocol not found\n", .{});
+    }
+
     objc.objc_registerClassPair(cls);
     return cls;
 }
@@ -597,12 +774,14 @@ pub fn run() !void {
     g_terminal_initialized = true;
     std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
 
-    // TERM 환경변수: .app launch 시 부모 environ 에 없을 수 있어 명시적 설정.
-    // xterm-256color 는 우리가 send 하는 escape sequence (CSI / SS3 ↑ F1~F12
-    // 등) 와 256-color SGR 을 인식하는 표준. 안 설정하면 bash readline 의
-    // keymap 이 ESC O P 같은 SS3 시퀀스를 모름 (F1~F4 가 P/Q/R/S 로 보임).
+    // TERM / LANG 환경변수: .app launch 시 부모 environ 에 없을 수 있어
+    // 명시적 설정. TERM=xterm-256color 는 escape sequence + 256-color 표준.
+    // LANG=en_US.UTF-8 은 bash readline 의 multi-byte 처리 활성화 — 안 하면
+    // 한글 / 일본어 byte 를 받아도 echo 안 함 (ASCII 모드).
     var pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, &.{
         .{ .name = "TERM", .value = "xterm-256color" },
+        .{ .name = "LANG", .value = "en_US.UTF-8" },
+        .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
     });
     try pty.startReadThread(onPtyOutput, onPtyExit, null);
     g_pty = pty; // startReadThread 후에 복사 — read_thread / wait_thread 필드도 같이.
@@ -673,7 +852,8 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
-    g_renderer.?.renderFrame(g_metal_layer, &g_terminal, cell_w_px, cell_h_px, 0, pad_px);
+    const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
+    g_renderer.?.renderFrame(g_metal_layer, &g_terminal, cell_w_px, cell_h_px, 0, pad_px, preedit);
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
