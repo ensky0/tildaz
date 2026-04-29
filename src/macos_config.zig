@@ -160,25 +160,25 @@ pub const Config = struct {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
-                "config.json 파싱 실패: {s}\n\n경로: ~/Library/Application Support/tildaz/config.json",
+                "config.json parse failed: {s}\n\nPath: ~/Library/Application Support/tildaz/config.json",
                 .{@errorName(err)},
-            ) catch "config.json 파싱 실패";
+            ) catch "config.json parse failed";
             on_error(msg);
         };
         defer parsed.deinit();
 
         const root = parsed.value;
-        if (root != .object) on_error("config.json: 최상위가 object 가 아닙니다.");
+        if (root != .object) on_error("config.json: top-level must be a JSON object.");
 
         if (root.object.get("dock_position")) |v| {
-            if (v != .string) on_error("config.json: \"dock_position\" 은 문자열이어야 합니다.");
+            if (v != .string) on_error("config.json: \"dock_position\" must be a string.");
             if (DockPosition.fromString(v.string)) |dp| {
                 config.dock_position = dp;
             } else {
                 var buf: [256]u8 = undefined;
                 const msg = std.fmt.bufPrint(
                     &buf,
-                    "config.json: \"dock_position\" 값 \"{s}\" 알 수 없음.\n\n허용: top, bottom, left, right",
+                    "config.json: unknown \"dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right",
                     .{v.string},
                 ) catch "config.json: dock_position invalid";
                 on_error(msg);
@@ -186,31 +186,31 @@ pub const Config = struct {
         }
         if (root.object.get("width")) |v| {
             if (v != .integer or v.integer < 1 or v.integer > 100) {
-                on_error("config.json: \"width\" 는 1..100 범위 정수여야 합니다.");
+                on_error("config.json: \"width\" must be an integer in 1..100.");
             }
             config.width_pct = @intCast(v.integer);
         }
         if (root.object.get("height")) |v| {
             if (v != .integer or v.integer < 1 or v.integer > 100) {
-                on_error("config.json: \"height\" 는 1..100 범위 정수여야 합니다.");
+                on_error("config.json: \"height\" must be an integer in 1..100.");
             }
             config.height_pct = @intCast(v.integer);
         }
         if (root.object.get("offset")) |v| {
             if (v != .integer or v.integer < 0 or v.integer > 100) {
-                on_error("config.json: \"offset\" 은 0..100 범위 정수여야 합니다.");
+                on_error("config.json: \"offset\" must be an integer in 0..100.");
             }
             config.offset_pct = @intCast(v.integer);
         }
         if (root.object.get("hotkey")) |v| {
-            if (v != .string) on_error("config.json: \"hotkey\" 는 문자열이어야 합니다.");
+            if (v != .string) on_error("config.json: \"hotkey\" must be a string.");
             if (Hotkey.fromString(v.string)) |h| {
                 config.hotkey = h;
             } else {
                 var buf: [384]u8 = undefined;
                 const msg = std.fmt.bufPrint(
                     &buf,
-                    "config.json: \"hotkey\" 값 \"{s}\" 파싱 실패.\n\n예: \"f1\", \"cmd+space\", \"ctrl+grave\", \"cmd+shift+t\"",
+                    "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"cmd+space\", \"ctrl+grave\", \"cmd+shift+t\"",
                     .{v.string},
                 ) catch "config.json: hotkey invalid";
                 on_error(msg);
