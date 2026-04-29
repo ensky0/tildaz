@@ -101,9 +101,27 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&install_macos_exe.step);
         const install_macos_plist = b.addInstallFile(b.path("dist/macos/Info.plist"), "TildaZ.app/Contents/Info.plist");
         b.getInstallStep().dependOn(&install_macos_plist.step);
-        // ad-hoc 코드 서명 — 인증서 없이 signature 만 부착. macOS 가 \"unsigned\"
-        // 가 아닌 \"locally signed\" 로 인식해 일부 system API 거부를 우회.
-        const sign = b.addSystemCommand(&.{ "codesign", "--force", "--sign", "-", "zig-out/TildaZ.app" });
+        // 코드 서명 identity. default `-` = ad-hoc (인증서 없이). macOS TCC
+        // (Privacy & Security 권한 데이터베이스) 는 "signing identity + bundle
+        // identifier" 로 앱 식별 — ad-hoc 은 매 빌드마다 hash 가 변경되어 동일
+        // 앱으로 인식 안 되어서, 사용자가 매번 Input Monitoring + Accessibility
+        // 권한 재부여해야 함.
+        //
+        // 로컬 개발 시 `-Dmacos-sign-identity="tildaz Local"` 로 self-signed
+        // code-signing 인증서 사용 → identity stable → 권한 한 번만 부여하면
+        // 다음 빌드에도 유지. self-signed 인증서 만드는 법: dist/macos/README.md.
+        const sign_identity = b.option(
+            []const u8,
+            "macos-sign-identity",
+            "macOS codesign identity. default `-` (ad-hoc). 로컬에서 권한 유지 용 self-signed cert 사용 시 그 이름 (예: \"tildaz Local\").",
+        ) orelse "-";
+        const sign = b.addSystemCommand(&.{
+            "codesign",
+            "--force",
+            "--sign",
+            sign_identity,
+            "zig-out/TildaZ.app",
+        });
         sign.step.dependOn(&install_macos_exe.step);
         sign.step.dependOn(&install_macos_plist.step);
         b.getInstallStep().dependOn(&sign.step);
