@@ -11,6 +11,7 @@ const objc = @import("macos_objc.zig");
 const ct = @import("macos_coretext.zig");
 const CoreTextFontContext = @import("macos_font.zig").CoreTextFontContext;
 const macos_glyph_atlas = @import("macos_glyph_atlas.zig");
+const ui_metrics = @import("ui_metrics.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
@@ -465,6 +466,32 @@ pub const MetalRenderer = struct {
                 }};
                 self.drawBgInstances(encoder, &cursor_inst);
             }
+        }
+
+        // --- Scrollbar (Windows d3d11_renderer 와 동일 패턴) ---
+        // pixel 단위. self.scale 곱해 retina pixel 로.
+        const sb = terminal.screens.active.pages.scrollbar();
+        if (sb.total > sb.len) {
+            const sbw: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * self.scale;
+            const sb_min: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * self.scale;
+            const vp_hf: f32 = @floatFromInt(self.vp_height);
+            const vp_wf: f32 = @floatFromInt(self.vp_width);
+            const track_h: f32 = vp_hf - @as(f32, @floatFromInt(y_offset + padding));
+            const track_x: f32 = vp_wf - sbw;
+            const ratio = track_h / @as(f32, @floatFromInt(sb.total));
+            const thumb_h = @max(sb_min, ratio * @as(f32, @floatFromInt(sb.len)));
+            const available = track_h - thumb_h;
+            const max_offset: f32 = @floatFromInt(sb.total - sb.len);
+            const thumb_y = y_off + if (max_offset > 0)
+                @as(f32, @floatFromInt(sb.offset)) / max_offset * available
+            else
+                0;
+            const scrollbar_inst = [1]BgInstance{.{
+                .pos = .{ track_x, thumb_y },
+                .size = .{ sbw, thumb_h },
+                .color = ui_metrics.SCROLLBAR_COLOR,
+            }};
+            self.drawBgInstances(encoder, &scrollbar_inst);
         }
     }
 
