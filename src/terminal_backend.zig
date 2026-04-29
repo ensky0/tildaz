@@ -83,7 +83,7 @@ const WindowsConPtyBackend = if (builtin.os.tag == .windows) struct {
 
         const suffix = std.unicode.utf8ToUtf16LeStringLiteral("COLORFGBG");
         var pos: usize = 0;
-        const existing = getEnvironmentVariableW(S.wslenv_name, &S.wslenv_buf, S.wslenv_buf.len);
+        const existing = getEnvironmentVariableW(S.wslenv_name, &S.wslenv_buf);
         if (existing > 0 and existing < S.wslenv_buf.len - suffix.len - 1) {
             pos = existing;
             S.wslenv_buf[pos] = ':';
@@ -103,8 +103,7 @@ const WindowsConPtyBackend = if (builtin.os.tag == .windows) struct {
 
     extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.c) u32;
 
-    fn getEnvironmentVariableW(name: [*:0]const u16, buf: []u16, len: usize) u32 {
-        _ = len;
+    fn getEnvironmentVariableW(name: [*:0]const u16, buf: []u16) u32 {
         return GetEnvironmentVariableW(name, buf.ptr, @intCast(buf.len));
     }
 } else struct {};

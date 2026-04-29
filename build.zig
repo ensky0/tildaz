@@ -37,7 +37,17 @@ pub fn build(b: *std.Build) void {
     // 전달하지 못하는 문제가 있어, upstream 수정 전까지 기본값을 false 로 둡니다.
     const simd = b.option(bool, "simd", "SIMD 가속 활성화 (Windows / Zig 0.15 에서는 동작하지 않음)") orelse false;
 
-    if (b.lazyDependency("ghostty", .{ .simd = simd, .optimize = optimize })) |dep| {
+    // ghostty 의 build.zig 는 macOS 타겟이면 기본적으로 xcframework / macOS app
+    // 까지 빌드하려고 들어서 (`Config.zig` 의 `emit_xcframework` / `emit_macos_app`
+    // 기본값 참고) tildaz 처럼 ghostty-vt 모듈만 필요한 의존자를 panic 시킨다.
+    // `emit-lib-vt = true` 가 정확히 그 케이스를 위한 ghostty 옵션 — xcframework /
+    // macOS app / docs 빌드를 모두 끄고 vt 모듈만 빌드한다. Windows 에서는 어차피
+    // 기본값이 false 라 동작에 변화가 없다.
+    if (b.lazyDependency("ghostty", .{
+        .simd = simd,
+        .optimize = optimize,
+        .@"emit-lib-vt" = true,
+    })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
 
