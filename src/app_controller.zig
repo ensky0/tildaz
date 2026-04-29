@@ -12,6 +12,7 @@ const RendererBackend = renderer_backend.RendererBackend;
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
 const about = @import("about.zig");
+const ui_metrics = @import("ui_metrics.zig");
 
 pub const App = struct {
     session: SessionCore,
@@ -108,9 +109,9 @@ pub const App = struct {
         self.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
         self.CLOSE_BTN_SIZE = @intFromFloat(@round(14.0 * scale));
         self.TAB_PADDING = @intFromFloat(@round(6.0 * scale));
-        self.SCROLLBAR_W = @intFromFloat(@round(8.0 * scale));
-        self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(32.0 * scale));
-        self.TERMINAL_PADDING = @intFromFloat(@round(6.0 * scale));
+        self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
+        self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
+        self.TERMINAL_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TERMINAL_PADDING_PT)) * scale));
         const min_tab_bar_h: c_int = @as(c_int, @intCast(self.window.cell_height)) + 4;
         if (self.TAB_BAR_HEIGHT < min_tab_bar_h) {
             self.TAB_BAR_HEIGHT = min_tab_bar_h;
