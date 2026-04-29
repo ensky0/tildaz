@@ -476,6 +476,73 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     }
 }
 
+/// 모니터 / DPI / dock auto-hide / 해상도 변경 시 호출. NSApplicationDidChange
+/// ScreenParameters / NSWindowDidChangeScreen / NSWindowDidChangeBackingProperties
+/// notification 모두 같은 handler. 윈도우 frame 재계산 + layer / drawable /
+/// renderer / Terminal / PTY 의 cols/rows 재동기화.
+fn tildazScreenChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    syncGeometryAfterScreenChange();
+}
+
+fn syncGeometryAfterScreenChange() void {
+    if (g_renderer == null) return;
+    if (!g_terminal_initialized) return;
+
+    // 1. 새 visibleFrame 기준으로 윈도우 위치 / 크기 재설정.
+    repositionWindow();
+
+    // 2. contentView bounds + backingScaleFactor 다시 읽기 (DPI 변경 시 scale
+    //    바뀜). layer.frame / contentsScale / drawableSize 갱신.
+    const get_cv = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const content_view = get_cv(g_window, objc.sel("contentView")) orelse return;
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const cv_bounds = get_rect(content_view, objc.sel("bounds"));
+    const get_double = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const scale_pt = get_double(g_window, objc.sel("backingScaleFactor"));
+
+    const set_layer_frame = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) void);
+    set_layer_frame(g_metal_layer, objc.sel("setFrame:"), cv_bounds);
+    const set_contents_scale = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
+    set_contents_scale(g_metal_layer, objc.sel("setContentsScale:"), scale_pt);
+    const set_drawable_size = objc.objcSend(fn (objc.id, objc.SEL, NSSize) callconv(.c) void);
+    set_drawable_size(g_metal_layer, objc.sel("setDrawableSize:"), .{
+        .width = cv_bounds.size.width * scale_pt,
+        .height = cv_bounds.size.height * scale_pt,
+    });
+
+    // 3. Renderer viewport + scale 갱신. font cell_width/height 는 init 시
+    //    측정한 값 유지 — 같은 모니터에서 DPI 만 바뀐 경우 (드물지만 가능)
+    //    엔 cell metric 도 재측정해야 정확한데 그건 큰 변경이라 후속 작업.
+    const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
+    const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
+    g_renderer.?.resize(vp_w_px, vp_h_px);
+
+    // 4. 새 viewport 에 맞춰 cols/rows 재계산. cell 크기 같으면 viewport 만
+    //    변경. ghostty Terminal + PTY 도 같은 cols/rows 로 resize.
+    const cell_w_px = g_renderer.?.font.cell_width;
+    const cell_h_px = g_renderer.?.font.cell_height;
+    const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
+    const usable_w = if (vp_w_px > 2 * pad_px) vp_w_px - 2 * pad_px else cell_w_px;
+    const usable_h = if (vp_h_px > 2 * pad_px) vp_h_px - 2 * pad_px else cell_h_px;
+    const new_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
+    const new_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
+
+    if (new_cols != g_terminal.cols or new_rows != g_terminal.rows) {
+        g_terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+            std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+        if (g_pty) |*pty| {
+            pty.resize(new_cols, new_rows) catch |err| {
+                std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
+            };
+        }
+        std.debug.print("[geom] screen changed: vp={d}x{d} px, scale={d}, cols={d} rows={d}\n", .{
+            vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
+        });
+    }
+}
+
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
 /// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
 /// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
@@ -511,6 +578,9 @@ fn registerTildazViewClass() !objc.Class {
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&tildazScrollWheel), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // 모니터 / DPI / dock auto-hide 등 screen parameter 변경 알림 handler.
+    if (!objc.class_addMethod(cls, objc.sel("screenChanged:"), @ptrCast(&tildazScreenChanged), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
 
     // NSTextInputClient protocol — IME (한글 / 일본어 / 중국어). 등록한 13
@@ -680,6 +750,33 @@ pub fn run() !void {
     // 4. 첫 dock rect 적용 후 표시.
     repositionWindow();
     showWindow();
+
+    // 4.5. screen parameter 변경 알림 등록 — 모니터 추가/제거, 해상도 변경,
+    //      DPI 변경, dock auto-hide 토글 모두 syncGeometryAfterScreenChange
+    //      한 곳에서 처리.
+    {
+        const NSNotificationCenter = objc.getClass("NSNotificationCenter");
+        const get_center = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+        const center = get_center(NSNotificationCenter, objc.sel("defaultCenter"));
+        if (center != null) {
+            const notif_names = [_][:0]const u8{
+                "NSApplicationDidChangeScreenParametersNotification",
+                "NSWindowDidChangeScreenNotification",
+                "NSWindowDidChangeBackingPropertiesNotification",
+            };
+            for (notif_names) |name| {
+                const ns_name = objc.nsString(name);
+                objc.msgSendVoid4(
+                    center,
+                    objc.sel("addObserver:selector:name:object:"),
+                    tildaz_view,
+                    objc.sel("screenChanged:"),
+                    ns_name,
+                    @as(objc.id, null),
+                );
+            }
+        }
+    }
 
     // layer geometry 동기화. additionalSafeAreaInsets 로 시스템 inset 무력화
     // 했으므로 layer 가 cv_bounds 전체 (titlebar 영역 포함) 를 그대로 사용.
