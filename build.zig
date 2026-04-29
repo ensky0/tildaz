@@ -143,7 +143,7 @@ pub fn build(b: *std.Build) void {
     // bash 는 PATH 에서 해석돼요:
     //   Windows - Git for Windows 의 C:\Program Files\Git\usr\bin\bash.exe
     //   macOS / Linux - 시스템 기본 bash
-    const package_step = b.step("package", "Windows 릴리즈 zip 번들과 SHA256 sidecar 생성");
+    const package_step = b.step("package", "릴리즈 zip 번들과 SHA256 sidecar 생성 (Windows / macOS)");
     if (is_windows_target) {
         const package_cmd = b.addSystemCommand(&.{
             "bash",
@@ -153,8 +153,20 @@ pub fn build(b: *std.Build) void {
         });
         package_cmd.step.dependOn(b.getInstallStep());
         package_step.dependOn(&package_cmd.step);
+    } else if (is_macos_target) {
+        // macOS — `ditto -c -k --keepParent` 로 .app 의 codesign / extended
+        // attributes 보존하며 zip. ad-hoc 서명이라 사용자 첫 실행 시 quarantine
+        // 우회 + 권한 한 번 부여 필요 (README 안내).
+        const package_cmd = b.addSystemCommand(&.{
+            "bash",
+            "dist/macos/package.sh",
+            "--version",
+            tildaz_version,
+        });
+        package_cmd.step.dependOn(b.getInstallStep());
+        package_step.dependOn(&package_cmd.step);
     } else {
-        const package_fail = b.addFail("package step은 현재 Windows 릴리즈 번들 전용입니다. Windows 대상에서 실행해 주세요.");
+        const package_fail = b.addFail("package step은 Windows 또는 macOS 대상에서만 동작합니다.");
         package_step.dependOn(&package_fail.step);
     }
 }
