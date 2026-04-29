@@ -56,6 +56,19 @@ pub fn build(b: *std.Build) void {
         exe_mod.addWin32ResourceFile(.{ .file = b.path("src/tildaz.rc") });
     }
 
+    const is_macos_target = target_os == .macos;
+    if (is_macos_target) {
+        // macos_host 가 사용하는 프레임워크 (M2 = AppKit + Metal + QuartzCore +
+        // CoreGraphics + CoreFoundation, libobjc 는 `extern "objc"` 의 링크 대상).
+        // 이후 milestone (CoreText, IOSurface 등) 에서 추가될 예정.
+        exe_mod.linkSystemLibrary("objc", .{});
+        exe_mod.linkFramework("AppKit", .{});
+        exe_mod.linkFramework("Metal", .{});
+        exe_mod.linkFramework("QuartzCore", .{});
+        exe_mod.linkFramework("CoreGraphics", .{});
+        exe_mod.linkFramework("CoreFoundation", .{});
+    }
+
     const exe = b.addExecutable(.{
         .name = "tildaz",
         .root_module = exe_mod,
