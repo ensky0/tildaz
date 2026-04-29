@@ -20,6 +20,7 @@ const build_options = @import("build_options");
 const objc = @import("macos_objc.zig");
 const macos_config = @import("macos_config.zig");
 const macos_pty = @import("macos_pty.zig");
+const ghostty = @import("ghostty-vt");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -174,6 +175,14 @@ var g_visible: bool = false;
 var g_config: macos_config.Config = .{};
 var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 var g_pty: ?macos_pty.Pty = null;
+// ghostty-vt Terminal + stream — PTY read thread 가 nextSlice 호출.
+// thread safety: 현재 단계 (M5.1) 에서는 UI thread 가 terminal 을 안 읽으므로
+// PTY read thread 가 직접 stream parsing 해도 race 없음. M5.3 (Metal 렌더링)
+// 에서 UI thread 가 grid 를 읽기 시작하면 ring buffer + drain 패턴 도입.
+var g_terminal: ghostty.Terminal = undefined;
+var g_stream: ghostty.TerminalStream = undefined;
+var g_terminal_initialized: bool = false;
+var g_pty_bytes_received: u64 = 0;
 
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
@@ -269,15 +278,38 @@ pub fn run() !void {
     //    Input Monitoring 권한 필요 — 사용자 가 시스템 설정에서 활성화.
     try installEventTap();
 
-    // 6. PTY (M5.0) — 사용자의 로그인 셸 (`$SHELL`, 없으면 macOS default
-    //    `/bin/zsh`) spawn + read thread 가 받은 데이터 stderr 로 dump.
-    //    ghostty-vt 연결 / 텍스트 렌더링은 후속 sub-milestone (M5.1+).
+    // 6. PTY + ghostty-vt Terminal (M5.0 + M5.1).
+    //    - 사용자 로그인 셸 (`$SHELL`, fallback `/bin/zsh`) spawn.
+    //    - PTY read thread 가 받은 데이터를 ghostty-vt Terminal 의 vtStream 으로
+    //      바로 parse. M5.0 의 stderr dump 는 제거 (stream parser 가 받음).
+    //    - 화면 렌더링은 M5.3 (Metal) 부터. 지금은 grid 가 메모리에만 존재.
     const allocator = g_gpa.allocator();
     const shell_env = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
     defer if (shell_env) |s| allocator.free(s);
     const shell_path = if (shell_env) |s| s else "/bin/zsh";
 
-    var pty = try macos_pty.Pty.init(allocator, 120, 30, shell_path, null);
+    const term_cols: u16 = 120;
+    const term_rows: u16 = 30;
+
+    // Terminal init — Windows session_core 의 max_scrollback 계산식 차용.
+    // (라인 수 × 한 라인의 byte size 추정값). config 통합은 후속.
+    const max_scroll_lines: usize = 100_000;
+    const cap = ghostty.page.std_capacity.adjust(.{ .cols = term_cols }) catch
+        @as(ghostty.page.Capacity, .{ .cols = term_cols + 1, .rows = 8, .styles = 16, .grapheme_bytes = 0 });
+    const bytes_per_row = ghostty.Page.layout(cap).total_size / cap.rows;
+    const max_scrollback = max_scroll_lines * bytes_per_row;
+
+    g_terminal = try ghostty.Terminal.init(allocator, .{
+        .cols = term_cols,
+        .rows = term_rows,
+        .max_scrollback = max_scrollback,
+        .colors = ghostty.Terminal.Colors.default,
+    });
+    g_stream = g_terminal.vtStream();
+    g_terminal_initialized = true;
+    std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
+
+    var pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, null);
     g_pty = pty;
     try pty.startReadThread(onPtyOutput, onPtyExit, null);
     std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, pty.child_pid });
@@ -287,10 +319,23 @@ pub fn run() !void {
     runApp(g_app, objc.sel("run"));
 }
 
-/// PTY read thread 의 콜백 — 받은 데이터를 stderr 로 그대로 dump (M5.0 검증용).
-/// M5.1 부터 ghostty-vt Terminal 의 stream parser 로 라우팅 예정.
+/// PTY read thread 의 콜백 — 받은 데이터를 ghostty-vt Terminal stream parser 로
+/// 라우팅. M5.1 의 핵심. 사용자 화면 렌더링은 M5.3 부터.
+///
+/// thread safety: 이 콜백은 PTY read thread 에서 호출. 현재 단계에선 UI thread
+/// 가 g_terminal 을 안 읽으므로 race 없음. M5.3 부터 ring buffer + drain 패턴
+/// 도입 예정.
 fn onPtyOutput(data: []const u8, _: ?*anyopaque) void {
-    std.debug.print("{s}", .{data});
+    if (!g_terminal_initialized) return;
+    g_stream.nextSlice(data);
+    g_pty_bytes_received += data.len;
+
+    // 검증용: 100KB 마다 stderr 로 진행 상황. M5.3 에서 제거 예정.
+    const prev_bucket = (g_pty_bytes_received - data.len) / 100_000;
+    const curr_bucket = g_pty_bytes_received / 100_000;
+    if (curr_bucket != prev_bucket) {
+        std.debug.print("[vt] {d} bytes parsed.\n", .{g_pty_bytes_received});
+    }
 }
 
 /// PTY 자식 (셸) 이 종료되면 호출 — 우리도 같이 종료.
