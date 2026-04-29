@@ -35,9 +35,20 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 
 pub fn showFatalRunError(err: anyerror) void {
     tildaz_log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
-    const msg = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ 실행 중 오류가 발생했습니다.");
+
+    var u8_buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(
+        &u8_buf,
+        "TildaZ failed to start.\n\nError: {s}",
+        .{@errorName(err)},
+    ) catch "TildaZ failed to start.";
+
+    var w_buf: [512:0]WCHAR = std.mem.zeroes([512:0]WCHAR);
+    const w_len = std.unicode.utf8ToUtf16Le(&w_buf, text) catch 0;
+    if (w_len < w_buf.len) w_buf[w_len] = 0;
+
     const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Error");
-    _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
+    _ = MessageBoxW(null, &w_buf, title, MB_OK | MB_ICONERROR);
 }
 
 pub fn run() !void {
