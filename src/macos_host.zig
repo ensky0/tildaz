@@ -18,6 +18,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const objc = @import("macos_objc.zig");
+const macos_config = @import("macos_config.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -26,6 +27,39 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 
 pub fn showFatalRunError(err: anyerror) void {
     std.debug.print("TildaZ failed to start.\n\nError: {s}\n", .{@errorName(err)});
+}
+
+/// config.json 의 잘못된 값 발견 시 `osascript` 로 다이얼로그 띄우고 즉시 종료.
+/// Windows host 의 `MessageBoxW + ExitProcess` 와 동일 정책. Accessory 모드라
+/// NSAlert 직접 호출은 NSApp 부트스트랩 / activate 없이 어색하므로 macOS 표준
+/// `osascript` 로 dialog 표시 — NSApp 무관하게 동기 modal.
+pub fn showConfigErrorAndExit(msg: []const u8) noreturn {
+    // stderr 에도 같은 메시지 (`open --stderr=...` 으로 redirect 해 둔 경우 흔적).
+    std.debug.print("[config error] {s}\n", .{msg});
+
+    // AppleScript 의 `display dialog` 텍스트는 큰따옴표 / 백슬래시를 escape 해야
+    // 한다. 우리 메시지는 control 메시지 위주라 큰따옴표만 escape.
+    var alloc_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&alloc_buf);
+    const w = fbs.writer();
+    w.writeAll("display dialog \"") catch {};
+    for (msg) |c| {
+        switch (c) {
+            '"' => w.writeAll("\\\"") catch {},
+            '\\' => w.writeAll("\\\\") catch {},
+            else => w.writeByte(c) catch {},
+        }
+    }
+    w.writeAll("\" buttons {\"OK\"} default button \"OK\" with icon stop with title \"TildaZ Config Error\"") catch {};
+    const script = fbs.getWritten();
+
+    var child = std.process.Child.init(
+        &.{ "/usr/bin/osascript", "-e", script },
+        std.heap.page_allocator,
+    );
+    _ = child.spawnAndWait() catch {};
+
+    std.process.exit(1);
 }
 
 // AppKit / Metal 상수.
@@ -45,8 +79,8 @@ const NSWindowZoomButton: c_long = 2;
 // `setTitleVisibility:` 의 NSWindowTitleHidden = 1.
 const NSWindowTitleHidden: c_long = 1;
 
-// 키 코드 (Apple 의 `Events.h` `kVK_*`).
-const kVK_F1: i64 = 0x7A;
+// 키 코드 (Apple 의 `Events.h` `kVK_*`). Cmd+Q 는 hardcoded — config 의
+// hotkey 와 별개로 macOS native 종료 단축키 그대로.
 const kVK_ANSI_Q: i64 = 0x0C;
 
 // CGEventFlags modifier 마스크 (CGEventTypes.h). Carbon modifier (1<<8 등) 와
@@ -56,12 +90,6 @@ const kCGEventFlagMaskShift: u64 = 0x00020000;
 const kCGEventFlagMaskAlternate: u64 = 0x00080000; // = Option
 const kCGEventFlagMaskControl: u64 = 0x00040000;
 const kCGEventFlagsAllModifiers: u64 = kCGEventFlagMaskCommand | kCGEventFlagMaskShift | kCGEventFlagMaskAlternate | kCGEventFlagMaskControl;
-
-// hardcoded dock 파라미터 — config 통합은 M3.5 에서.
-// Windows tildaz 의 config.zig default 와 같음 (top / 50% / 100% / 100%).
-const DOCK_WIDTH_PCT: f64 = 50;
-const DOCK_HEIGHT_PCT: f64 = 100;
-const DOCK_OFFSET_PCT: f64 = 100;
 
 const CGFloat = f64;
 const NSRect = extern struct { origin: NSPoint, size: NSSize };
@@ -135,16 +163,22 @@ extern fn CGRequestListenEventAccess() bool;
 
 extern fn MTLCreateSystemDefaultDevice() objc.id;
 
-// 글로벌 toggle 상태 — Carbon 핫키 콜백 (C 시그니처) 이 NSApp / window 에
-// 접근하려면 어딘가 보관해야 함. M3 단계에서 host 가 한 인스턴스만 띄우므로
-// 모듈 전역으로 충분. M5 이후 multi-window / multi-tab 으로 확장 시
-// userdata 포인터 패턴으로 옮길 예정.
+// 글로벌 toggle 상태 — CGEventTap 콜백 (C 시그니처) 이 NSApp / window / config
+// 에 접근하려면 어딘가 보관해야 함. M3 단계에서 host 가 한 인스턴스만 띄우므로
+// 모듈 전역으로 충분. M5 이후 multi-window / multi-tab 으로 확장 시 userdata
+// 포인터 패턴으로 옮길 예정.
 var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
+var g_config: macos_config.Config = .{};
+var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
+
+    // 0. Config 읽기 — 잘못된 값 발견 시 `showConfigErrorAndExit` 가 다이얼로그
+    //    띄우고 즉시 종료 (Windows host 와 동일 정책).
+    g_config = macos_config.Config.load(g_gpa.allocator(), showConfigErrorAndExit);
 
     // 1. NSApplication.
     const NSApplication = objc.getClass("NSApplication");
@@ -280,25 +314,26 @@ fn installEventTap() !void {
     CGEventTapEnable(g_event_tap, true);
 }
 
-/// CGEventTap 콜백 — keycode + modifier 검사해서 우리 hotkey 면 \"이벤트 삼킴\"
-/// (null 반환), 아니면 그대로 passthrough (event 반환).
+/// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 또는 Cmd+Q 면
+/// \"이벤트 삼킴\" (null 반환), 아니면 그대로 passthrough (event 반환).
 fn eventTapCallback(
     _: ?*anyopaque,
     _: CGEventType,
     event: CGEventRef,
     _: ?*anyopaque,
 ) callconv(.c) CGEventRef {
-    const keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    const keycode_i64 = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
     const flags = CGEventGetFlags(event);
     const mods = flags & kCGEventFlagsAllModifiers;
+    const keycode: u32 = @intCast(keycode_i64);
 
-    // F1 (modifier 없음).
-    if (keycode == kVK_F1 and mods == 0) {
+    // 사용자 toggle hotkey (config.hotkey).
+    if (keycode == g_config.hotkey.keycode and mods == g_config.hotkey.modifiers) {
         toggleWindow();
         return null;
     }
-    // Cmd+Q.
-    if (keycode == kVK_ANSI_Q and mods == kCGEventFlagMaskCommand) {
+    // Cmd+Q — macOS native 종료 단축키. config 와 별개로 hardcoded.
+    if (keycode_i64 == kVK_ANSI_Q and mods == kCGEventFlagMaskCommand) {
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
         return null;
@@ -307,7 +342,8 @@ fn eventTapCallback(
     return event; // passthrough.
 }
 
-/// 현재 메인 스크린의 dock rect 를 계산해 윈도우에 적용. macOS 좌표계는
+/// 현재 메인 스크린의 dock rect 를 `g_config` 의 `dock_position` / `width` /
+/// `height` / `offset` 으로 계산해 윈도우에 적용. macOS 좌표계는
 /// **bottom-up** — top dock 은 y = (usable max y) - h.
 ///
 /// Dock 처리:
@@ -333,22 +369,33 @@ fn repositionWindow() void {
     const dock_visible_at_bottom = dock_bottom_height >= 10.0;
 
     // 사용 가능한 세로 영역 — 메뉴바는 항상 빼고, Dock 은 보일 때만 빼기.
-    const menubar_height = (frame.origin.y + frame.size.height) - (visible.origin.y + visible.size.height);
     const usable_max_y = visible.origin.y + visible.size.height; // = frame.maxY - menubarH
     const usable_min_y = if (dock_visible_at_bottom) visible.origin.y else frame.origin.y;
     const usable_height = usable_max_y - usable_min_y;
-    _ = menubar_height; // 위 식으로 이미 반영됨; 변수는 의도 명시 용도로 남김.
 
     // 가로는 visibleFrame 그대로 — 좌/우 dock 의 경우 visibleFrame.width 가
     // 자동으로 줄어 있음.
     const sw = visible.size.width;
     const sx = visible.origin.x;
 
-    const w = sw * DOCK_WIDTH_PCT / 100.0;
-    const h = usable_height * DOCK_HEIGHT_PCT / 100.0;
-    const x = sx + (sw - w) * DOCK_OFFSET_PCT / 100.0;
-    // dock = top: usable 영역의 위쪽 끝에 부착.
-    const y = usable_max_y - h;
+    const width_pct: f64 = @floatFromInt(g_config.width_pct);
+    const height_pct: f64 = @floatFromInt(g_config.height_pct);
+    const offset_pct: f64 = @floatFromInt(g_config.offset_pct);
+
+    const w = sw * width_pct / 100.0;
+    const h = usable_height * height_pct / 100.0;
+
+    // dock_position 별로 x / y 결정. macOS 의 bottom-up 좌표계 주의.
+    const x: f64 = switch (g_config.dock_position) {
+        .left => sx,
+        .right => sx + sw - w,
+        .top, .bottom => sx + (sw - w) * offset_pct / 100.0,
+    };
+    const y: f64 = switch (g_config.dock_position) {
+        .top => usable_max_y - h,
+        .bottom => usable_min_y,
+        .left, .right => usable_min_y + (usable_height - h) * offset_pct / 100.0,
+    };
 
     const rect = NSRect{ .origin = .{ .x = x, .y = y }, .size = .{ .width = w, .height = h } };
     const setFrameDisplay = objc.objcSend(fn (objc.id, objc.SEL, NSRect, bool) callconv(.c) void);
