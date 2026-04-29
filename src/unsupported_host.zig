@@ -6,7 +6,7 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    std.debug.print("TildaZ 실행 host가 아직 이 플랫폼을 지원하지 않습니다: {s}\n", .{@errorName(err)});
+    std.debug.print("TildaZ failed to start.\n\nError: {s}\n", .{@errorName(err)});
 }
 
 pub fn run() !void {
