@@ -23,6 +23,7 @@ const macos_pty = @import("macos_pty.zig");
 const ghostty = @import("ghostty-vt");
 const macos_metal = @import("macos_metal.zig");
 const ui_metrics = @import("ui_metrics.zig");
+const terminal_interaction = @import("terminal_interaction.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -210,6 +211,9 @@ var g_terminal: ghostty.Terminal = undefined;
 var g_stream: ghostty.TerminalStream = undefined;
 var g_terminal_initialized: bool = false;
 var g_pty_bytes_received: u64 = 0;
+/// 마우스 드래그 텍스트 선택 상태. Windows `terminal_interaction.zig` 와
+/// 동일 모듈 — cell 좌표 기준 selection 시작/업데이트/종료.
+var g_interaction: terminal_interaction.TerminalInteraction = .{};
 /// PTY child process 종료 flag. PTY read thread 에서 set, main thread 의
 /// render timer 가 검사 후 안전하게 NSApp.terminate. NSApp.terminate 는
 /// main thread 에서 호출해야 안전 (Windows 의 PostMessageW thread-safe 와
@@ -311,6 +315,28 @@ fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (g_pty == null) return;
     if (event == null) return;
+
+    // Cmd+C / Cmd+V 우선 — IME 와 무관하게 처리.
+    const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
+    const flags = get_flags(event, objc.sel("modifierFlags"));
+    const NSEventModifierFlagCommand: c_ulong = 1 << 20;
+    const cmd = (flags & NSEventModifierFlagCommand) != 0;
+    if (cmd) {
+        const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+        const kc = get_kc(event, objc.sel("keyCode"));
+        // keyCode 8 = 'c', 9 = 'v'.
+        if (kc == 8) {
+            handleCopy();
+            return;
+        }
+        if (kc == 9) {
+            handlePaste();
+            return;
+        }
+        // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
+        // PTY 로 forward 안 함.
+        return;
+    }
 
     // IME 가 조합 중이 아니면 화살표 / F-key / nav 는 직접 escape sequence
     // (성능 + 정확성). 조합 중이면 interpretKeyEvents 로 보내 IME 가 음절
@@ -543,9 +569,127 @@ fn syncGeometryAfterScreenChange() void {
     }
 }
 
+/// NSEvent 의 window 좌표 (Y-up) → terminal grid cell 좌표.
+/// `null` = window 밖 또는 padding 영역.
+fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
+    if (g_renderer == null) return null;
+    if (!g_terminal_initialized) return null;
+
+    // event.locationInWindow → view 좌표 (Y-up, point 단위).
+    const get_loc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSPoint);
+    const win_loc = get_loc(event, objc.sel("locationInWindow"));
+    const convertPoint = objc.objcSend(fn (objc.id, objc.SEL, NSPoint, objc.id) callconv(.c) NSPoint);
+    const view_loc = convertPoint(self_view, objc.sel("convertPoint:fromView:"), win_loc, @as(objc.id, null));
+
+    // view height (point) → Y 뒤집어 top-down.
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const cv_bounds = get_rect(self_view, objc.sel("bounds"));
+    const view_h_pt = cv_bounds.size.height;
+
+    const scale = g_renderer.?.scale;
+    const cell_w_px = g_renderer.?.font.cell_width;
+    const cell_h_px = g_renderer.?.font.cell_height;
+    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * scale;
+
+    // pixel 단위로 변환. y 는 top-down 으로 뒤집기.
+    const px: f32 = @as(f32, @floatCast(view_loc.x)) * scale;
+    const py: f32 = @as(f32, @floatCast(view_h_pt - view_loc.y)) * scale;
+
+    // padding 안쪽 영역만 cell. 밖이면 null.
+    if (px < pad_px or py < pad_px) return null;
+    const x_in: f32 = px - pad_px;
+    const y_in: f32 = py - pad_px;
+
+    const col_f = x_in / @as(f32, @floatFromInt(cell_w_px));
+    const row_f = y_in / @as(f32, @floatFromInt(cell_h_px));
+    if (col_f < 0 or row_f < 0) return null;
+
+    const cols = g_terminal.cols;
+    const rows = g_terminal.rows;
+    const col: u16 = @intCast(@min(@as(u32, @intFromFloat(col_f)), @as(u32, cols) - 1));
+    const row: u16 = @intCast(@min(@as(u32, @intFromFloat(row_f)), @as(u32, rows) - 1));
+    return .{ .col = col, .row = row };
+}
+
+fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (event == null) return;
+    const cell = eventToCell(self_view, event) orelse return;
+    // double-click → word selection.
+    const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    const click_count = get_count(event, objc.sel("clickCount"));
+    if (click_count >= 2) {
+        _ = terminal_interaction.selectWord(g_terminal.screens.active, cell);
+        g_interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
+        return;
+    }
+    g_interaction.selection.begin(g_terminal.screens.active, cell);
+}
+
+fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (event == null) return;
+    if (!g_interaction.selection.active) return;
+    const cell = eventToCell(self_view, event) orelse return;
+    g_interaction.selection.update(g_terminal.screens.active, cell);
+}
+
+fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    _ = g_interaction.selection.finish();
+}
+
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
 /// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
 /// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
+fn handleCopy() void {
+    if (!g_terminal_initialized) return;
+    const screen: *ghostty.Screen = g_terminal.screens.active;
+    const sel = screen.selection orelse return;
+    const alloc = g_gpa.allocator();
+    const text = screen.selectionString(alloc, .{ .sel = sel }) catch return;
+    defer alloc.free(text);
+    if (text.len == 0) return;
+
+    // NSPasteboard.general → clearContents → setString:forType: NSPasteboardTypeString.
+    const NSPasteboard = objc.getClass("NSPasteboard");
+    const get_general = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const pb = get_general(NSPasteboard, objc.sel("generalPasteboard"));
+    if (pb == null) return;
+    const clear = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    _ = clear(pb, objc.sel("clearContents"));
+
+    const NSString = objc.getClass("NSString");
+    const stringWithUTF8 = objc.objcSend(fn (objc.Class, objc.SEL, [*:0]const u8) callconv(.c) objc.id);
+    const ns_text = stringWithUTF8(NSString, objc.sel("stringWithUTF8String:"), text.ptr);
+    if (ns_text == null) return;
+
+    const setString = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.id) callconv(.c) bool);
+    const ns_type = objc.nsString("public.utf8-plain-text"); // = NSPasteboardTypeString
+    _ = setString(pb, objc.sel("setString:forType:"), ns_text, ns_type);
+}
+
+fn handlePaste() void {
+    if (g_pty == null) return;
+    const NSPasteboard = objc.getClass("NSPasteboard");
+    const get_general = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const pb = get_general(NSPasteboard, objc.sel("generalPasteboard"));
+    if (pb == null) return;
+
+    const stringForType = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+    const ns_type = objc.nsString("public.utf8-plain-text");
+    const ns_text = stringForType(pb, objc.sel("stringForType:"), ns_type);
+    if (ns_text == null) return;
+
+    const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+    const len = get_len(ns_text, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+    if (len == 0) return;
+
+    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+    const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
+
+    _ = g_pty.?.write(cstr[0..len]) catch |err| {
+        std.debug.print("[paste] PTY write failed: {s}\n", .{@errorName(err)});
+    };
+}
+
 fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (!g_terminal_initialized) return;
     if (event == null) return;
@@ -578,6 +722,13 @@ fn registerTildazViewClass() !objc.Class {
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&tildazScrollWheel), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // 마우스 selection (drag).
+    if (!objc.class_addMethod(cls, objc.sel("mouseDown:"), @ptrCast(&tildazMouseDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("mouseDragged:"), @ptrCast(&tildazMouseDragged), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("mouseUp:"), @ptrCast(&tildazMouseUp), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     // 모니터 / DPI / dock auto-hide 등 screen parameter 변경 알림 handler.
     if (!objc.class_addMethod(cls, objc.sel("screenChanged:"), @ptrCast(&tildazScreenChanged), "v@:@"))
@@ -615,8 +766,7 @@ fn registerTildazViewClass() !objc.Class {
     // protocol 채택 — 이거 안 하면 inputContext 가 view 를 NSTextInputClient
     // 로 인식 안 해서 interpretKeyEvents 가 routing 안 됨.
     if (objc.objc_getProtocol("NSTextInputClient")) |proto| {
-        const ok = objc.class_addProtocol(cls, proto);
-        std.debug.print("[ime] NSTextInputClient protocol added: {}\n", .{ok});
+        _ = objc.class_addProtocol(cls, proto);
     } else {
         std.debug.print("[ime] WARNING: NSTextInputClient protocol not found\n", .{});
     }
@@ -912,13 +1062,6 @@ fn onPtyOutput(data: []const u8, _: ?*anyopaque) void {
     if (!g_terminal_initialized) return;
     g_stream.nextSlice(data);
     g_pty_bytes_received += data.len;
-
-    // 검증용: 100KB 마다 stderr 로 진행 상황. M5.3 에서 제거 예정.
-    const prev_bucket = (g_pty_bytes_received - data.len) / 100_000;
-    const curr_bucket = g_pty_bytes_received / 100_000;
-    if (curr_bucket != prev_bucket) {
-        std.debug.print("[vt] {d} bytes parsed.\n", .{g_pty_bytes_received});
-    }
 }
 
 /// PTY 자식 (셸) 이 종료되면 호출 — 우리도 같이 종료.

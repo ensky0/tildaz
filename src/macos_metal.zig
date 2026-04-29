@@ -102,6 +102,13 @@ pub const MetalRenderer = struct {
     atlas_texture: objc.id,
     constants_buffer: objc.id,
 
+    // frame 내 누적된 instance 수. 매 drawBgInstances / drawTextInstances 호출이
+    // 같은 buffer 의 *다음 offset* 에 쓰고 setVertexBuffer offset 도 그에 맞게.
+    // 같은 frame 안에서 여러 호출 (cell bg → cursor → scrollbar → preedit) 의
+    // 데이터가 buffer 안에서 서로 덮어쓰지 않게. renderFrame 시작 시 0 reset.
+    bg_used: u32 = 0,
+    text_used: u32 = 0,
+
     // 기본 배경색 (theme 미설정 시).
     default_bg: [3]f32,
 
@@ -231,6 +238,10 @@ pub const MetalRenderer = struct {
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
+
+        // frame 내 buffer overwrite 방지 — 매 frame 시작 시 누적 offset 리셋.
+        self.bg_used = 0;
+        self.text_used = 0;
 
         const texture = objc.msgSend(drawable, objc.sel("texture"));
 
@@ -421,34 +432,6 @@ pub const MetalRenderer = struct {
 
         if (text_count > 0) self.drawTextInstances(encoder, text_buf[0..text_count]);
 
-        // === M5.3 진단 ===
-        // 1초 (~60 frame) 마다 stderr 로 프레임 / 카운트 / 커서 / 첫 row 의 codepoint
-        // dump. 화면에 글자 안 보일 때 어디서 끊겼는지 구별 (text=0 이면 grid 비어
-        // 있음; cursor=null 이면 vt 가 cursor 안 갱신; codepoint=0 이면 grid 미수신).
-        {
-            const S = struct {
-                var frame_count: u32 = 0;
-            };
-            S.frame_count += 1;
-            if (S.frame_count % 60 == 0) {
-                const cur_x: i32 = if (self.render_state.cursor.viewport) |v| @intCast(v.x) else -1;
-                const cur_y: i32 = if (self.render_state.cursor.viewport) |v| @intCast(v.y) else -1;
-                std.debug.print(
-                    "[render] frame={d} vp={d}x{d} rows={d} cols={d} text={d} bg={d} cursor=({d},{d}) atlas_dirty={}\n",
-                    .{ S.frame_count, self.vp_width, self.vp_height, rows, cols, text_count, bg_count, cur_x, cur_y, self.atlas.dirty },
-                );
-                if (rows > 0 and all_cells.len > 0) {
-                    const cell_slice = all_cells[0].slice();
-                    const raws = cell_slice.items(.raw);
-                    std.debug.print("[render] row0 cp:", .{});
-                    var i: usize = 0;
-                    while (i < @min(raws.len, 20)) : (i += 1) {
-                        std.debug.print(" {x}", .{raws[i].codepoint()});
-                    }
-                    std.debug.print("\n", .{});
-                }
-            }
-        }
 
         // --- Cursor (단순 박스) ---
         if (self.render_state.cursor.visible) {
@@ -598,17 +581,22 @@ pub const MetalRenderer = struct {
 
     fn drawBgInstances(self: *MetalRenderer, encoder: objc.id, instances: []const BgInstance) void {
         if (instances.len == 0) return;
+        if (self.bg_used + instances.len > MAX_INSTANCES) return;
 
         const contents_ptr = objc.msgSend(self.bg_buffer, objc.sel("contents")) orelse return;
         const contents: [*]BgInstance = @ptrCast(@alignCast(contents_ptr));
-        @memcpy(contents[0..instances.len], instances);
+        // 같은 frame 의 이전 호출들이 쓴 데이터 뒤에 append. 첫 selected cell
+        // 이 cursor / scrollbar 호출에 의해 instance[0] 위치에서 overwrite
+        // 되던 buffer race 해결.
+        @memcpy(contents[self.bg_used..][0..instances.len], instances);
+
+        const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, self.bg_used) * @sizeOf(BgInstance);
 
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.bg_pipeline);
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.bg_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 0));
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.bg_buffer, offset_bytes, @as(objc.NSUInteger, 0));
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
 
-        // MTLPrimitiveTypeTriangleStrip = 4 (3 은 Triangle 이라 단일 3-vertex
-        // triangle 만 그림 → quad 가 절반만 보임). #75 댓글 6 에서 정정된 값.
+        // MTLPrimitiveTypeTriangleStrip = 4.
         objc.msgSendVoid4(
             encoder,
             objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
@@ -617,17 +605,22 @@ pub const MetalRenderer = struct {
             @as(objc.NSUInteger, 4),
             @as(objc.NSUInteger, instances.len),
         );
+
+        self.bg_used += @intCast(instances.len);
     }
 
     fn drawTextInstances(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance) void {
         if (instances.len == 0) return;
+        if (self.text_used + instances.len > MAX_INSTANCES) return;
 
         const contents_ptr = objc.msgSend(self.text_buffer, objc.sel("contents")) orelse return;
         const contents: [*]TextInstance = @ptrCast(@alignCast(contents_ptr));
-        @memcpy(contents[0..instances.len], instances);
+        @memcpy(contents[self.text_used..][0..instances.len], instances);
+
+        const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, self.text_used) * @sizeOf(TextInstance);
 
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 0));
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, offset_bytes, @as(objc.NSUInteger, 0));
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
         objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
 
@@ -639,6 +632,8 @@ pub const MetalRenderer = struct {
             @as(objc.NSUInteger, 4),
             @as(objc.NSUInteger, instances.len),
         );
+
+        self.text_used += @intCast(instances.len);
     }
 
     // --- Helpers ---
