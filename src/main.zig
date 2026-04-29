@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const host = switch (builtin.os.tag) {
     .windows => @import("windows_host.zig"),
+    .macos => @import("macos_host.zig"),
     else => @import("unsupported_host.zig"),
 };
 
