@@ -67,6 +67,9 @@ pub fn build(b: *std.Build) void {
         exe_mod.linkFramework("QuartzCore", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
         exe_mod.linkFramework("CoreFoundation", .{});
+        // 참고: 이전엔 Carbon HIToolbox 의 RegisterEventHotKey 를 썼으나 macOS
+        // Tahoe + ad-hoc sign 환경에서 silently fail 해서 CGEventTap (Apple DTS
+        // 권장 modern API, CoreGraphics) 으로 전환. Carbon 프레임워크 링크 불필요.
     }
 
     const exe = b.addExecutable(.{
@@ -76,7 +79,33 @@ pub fn build(b: *std.Build) void {
     if (is_windows_target) {
         exe.subsystem = .Windows;
     }
-    b.installArtifact(exe);
+
+    if (is_macos_target) {
+        // macOS 는 일반 zig-out/bin/tildaz CLI 가 아니라 .app 번들 형태로 install.
+        // unsigned CLI binary 가 macOS Tahoe (26+) 의 정식 앱 라이프사이클에 안
+        // 들어가서 Carbon `RegisterEventHotKey` 가 silently fail 하는 막힘을 푸는
+        // 핵심 — Info.plist + .app 폴더 구조 + ad-hoc 서명 셋이 갖춰져야 macOS
+        // 가 우리를 \"정식 앱\" 으로 인식해 글로벌 핫키 dispatch 가 동작.
+        //
+        // 결과 경로:
+        //   zig-out/TildaZ.app/Contents/MacOS/tildaz
+        //   zig-out/TildaZ.app/Contents/Info.plist
+        //
+        // 실행: `./zig-out/TildaZ.app/Contents/MacOS/tildaz` (터미널 attach,
+        // Ctrl+C 로 종료) 또는 `open ./zig-out/TildaZ.app` (LaunchServices).
+        const install_macos_exe = b.addInstallFile(exe.getEmittedBin(), "TildaZ.app/Contents/MacOS/tildaz");
+        b.getInstallStep().dependOn(&install_macos_exe.step);
+        const install_macos_plist = b.addInstallFile(b.path("dist/macos/Info.plist"), "TildaZ.app/Contents/Info.plist");
+        b.getInstallStep().dependOn(&install_macos_plist.step);
+        // ad-hoc 코드 서명 — 인증서 없이 signature 만 부착. macOS 가 \"unsigned\"
+        // 가 아닌 \"locally signed\" 로 인식해 일부 system API 거부를 우회.
+        const sign = b.addSystemCommand(&.{ "codesign", "--force", "--sign", "-", "zig-out/TildaZ.app" });
+        sign.step.dependOn(&install_macos_exe.step);
+        sign.step.dependOn(&install_macos_plist.step);
+        b.getInstallStep().dependOn(&sign.step);
+    } else {
+        b.installArtifact(exe);
+    }
 
     if (is_windows_target) {
         // 번들 ConPTY 런타임(Microsoft.Windows.Console.ConPTY).
