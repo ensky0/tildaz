@@ -67,6 +67,10 @@ pub fn build(b: *std.Build) void {
         exe_mod.linkFramework("QuartzCore", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
         exe_mod.linkFramework("CoreFoundation", .{});
+        // ApplicationServices — `AXIsProcessTrusted` (Accessibility 권한 체크).
+        // active CGEventTap 은 Input Monitoring 외에 Accessibility 권한도
+        // 필요하므로 사용자 안내용으로 사전 체크.
+        exe_mod.linkFramework("ApplicationServices", .{});
         // 참고: 이전엔 Carbon HIToolbox 의 RegisterEventHotKey 를 썼으나 macOS
         // Tahoe + ad-hoc sign 환경에서 silently fail 해서 CGEventTap (Apple DTS
         // 권장 modern API, CoreGraphics) 으로 전환. Carbon 프레임워크 링크 불필요.

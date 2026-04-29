@@ -136,40 +136,42 @@ pub const GlyphAtlas = struct {
 
         if (gw > 256 or gh > 256) return null; // temp_buf 한계.
 
-        // CGBitmapContext (RGBA premultiplied, 8bpc) 으로 라스터. macOS arm64
-        // 에서는 byte order 32-bit host (little-endian) 이라 바이트 순서가
-        // BGRA. alpha 만 추출하므로 실제 채널 위치는 무관.
-        const color_space = ct.CGColorSpaceCreateDeviceRGB() orelse return null;
-        defer ct.CGColorSpaceRelease(color_space);
-
-        const bytes_per_row = gw * 4;
+        // alpha-only CGBitmapContext (kCGImageAlphaOnly + colorspace=null).
+        // 1 byte per pixel = glyph coverage. ghostty / #75 nostalgic-edison
+        // 패턴 그대로.
+        const bytes_per_row = gw;
         const ctx = ct.CGBitmapContextCreate(
             self.temp_buf.ptr,
             gw,
             gh,
             8,
             bytes_per_row,
-            color_space,
-            ct.kCGImageAlphaPremultipliedFirst | ct.kCGBitmapByteOrder32Host,
+            null,
+            ct.kCGImageAlphaOnly,
         ) orelse return null;
         defer ct.CGContextRelease(ctx);
 
-        // 투명 검정으로 초기화.
-        ct.CGContextSetRGBFillColor(ctx, 0, 0, 0, 0);
-        ct.CGContextFillRect(ctx, .{
-            .origin = .{ .x = 0, .y = 0 },
-            .size = .{ .width = @floatFromInt(gw), .height = @floatFromInt(gh) },
-        });
+        // 0 으로 clear (alpha-only 라 byte 단위 memset 충분).
+        @memset(self.temp_buf[0 .. gw * gh], 0);
 
-        // grayscale antialias 활성, subpixel smoothing 비활성 (macOS Mojave+).
-        ct.CGContextSetShouldAntialias(ctx, true);
+        ct.CGContextSetAllowsFontSmoothing(ctx, true);
         ct.CGContextSetShouldSmoothFonts(ctx, false);
-        ct.CGContextSetAllowsFontSmoothing(ctx, false);
+        ct.CGContextSetShouldAntialias(ctx, true);
 
-        // bounding rect origin 보정해 그리기.
+        // alpha-only 컨텍스트엔 grayscale fill color (RGB 무의미). alpha=1 로
+        // 두면 글리프가 그려진 픽셀에 1 (= 255) 가 기록된다.
+        ct.CGContextSetGrayFillColor(ctx, 1, 1);
+
+        // CTM scale = Retina factor. bitmap 은 gw x gh pixel 인데
+        // CTFontDrawGlyphs 는 point 좌표로 그리므로 scale 보정 없으면 글리프가
+        // 1/scale 크기로 작게 들어간다 (#75 nostalgic-edison 의 결정적 fix).
+        ct.CGContextScaleCTM(ctx, @floatCast(s), @floatCast(s));
+
+        // bounding rect origin (point 좌표, raw — CTM scale 이 곱해진다) 만큼
+        // 음수로 보정해 글리프 좌하단을 (0,0) 에 정렬.
         const positions = [1]ct.CGPoint{.{
-            .x = -x0,
-            .y = -y0,
+            .x = -bounding_rect.origin.x,
+            .y = -bounding_rect.origin.y,
         }};
         ct.CTFontDrawGlyphs(font, &glyphs, &positions, 1, ctx);
 
@@ -179,18 +181,13 @@ pub const GlyphAtlas = struct {
             break :blk self.packGlyph(gw, gh) orelse return null;
         };
 
-        // RGBA temp_buf 의 alpha 채널만 atlas (R8) 로 추출.
+        // alpha-only temp_buf (1 byte per pixel) 을 atlas (R8) 로 row 단위 복사.
         const atlas_x = pos[0];
         const atlas_y = pos[1];
         for (0..gh) |row| {
-            for (0..gw) |col| {
-                const src_off = row * bytes_per_row + col * 4;
-                // BGRA layout (kCGImageAlphaPremultipliedFirst + ByteOrder32Host
-                // 의 little-endian 메모리). alpha 는 offset 3.
-                const alpha = self.temp_buf[src_off + 3];
-                const dst_off = (atlas_y + @as(u32, @intCast(row))) * ATLAS_SIZE + (atlas_x + @as(u32, @intCast(col)));
-                self.pixels[dst_off] = alpha;
-            }
+            const src_off = row * bytes_per_row;
+            const dst_off = (atlas_y + @as(u32, @intCast(row))) * ATLAS_SIZE + atlas_x;
+            @memcpy(self.pixels[dst_off..][0..gw], self.temp_buf[src_off..][0..gw]);
         }
 
         // dirty 영역 마킹.
