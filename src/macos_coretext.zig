@@ -53,6 +53,7 @@ pub const CGBitmapInfo = u32;
 pub const kCGBitmapAlphaInfoMask: u32 = 0x1F;
 pub const kCGImageAlphaNoneSkipLast: u32 = 5;
 pub const kCGImageAlphaPremultipliedFirst: u32 = 2;
+pub const kCGImageAlphaOnly: u32 = 7;
 pub const kCGBitmapByteOrder32Host: u32 = 0;
 
 // --- CoreText 타입 ---
@@ -98,6 +99,9 @@ pub extern "CoreText" fn CTFontGetGlyphsForCharacters(
 pub extern "CoreText" fn CTFontGetAscent(font: CTFontRef) CGFloat;
 pub extern "CoreText" fn CTFontGetDescent(font: CTFontRef) CGFloat;
 pub extern "CoreText" fn CTFontGetLeading(font: CTFontRef) CGFloat;
+// 대문자 글자의 visible top 까지 거리 (baseline 부터). ascent 보다 작아서
+// (ascent - cap_height) 가 폰트의 위쪽 internal leading.
+pub extern "CoreText" fn CTFontGetCapHeight(font: CTFontRef) CGFloat;
 
 pub extern "CoreText" fn CTFontGetAdvancesForGlyphs(
     font: CTFontRef,
@@ -130,7 +134,10 @@ pub extern "CoreGraphics" fn CGBitmapContextCreate(
     height: usize,
     bitsPerComponent: usize,
     bytesPerRow: usize,
-    space: CGColorSpaceRef,
+    // alpha-only (`kCGImageAlphaOnly`) 포맷에서는 colorspace 가 null 이어야
+    // 한다 — non-null 넘기면 CG 가 다른 포맷으로 reinterpret 해서 픽셀 데이터
+    // 가 깨진다 (#75 댓글 6 의 정정 사항).
+    space: ?CGColorSpaceRef,
     bitmapInfo: CGBitmapInfo,
 ) ?CGContextRef;
 
@@ -142,6 +149,23 @@ pub extern "CoreGraphics" fn CGContextSetRGBFillColor(
     green: CGFloat,
     blue: CGFloat,
     alpha: CGFloat,
+) void;
+
+// alpha-only 컨텍스트에는 grayscale + alpha 만 의미있음. RGB fill color 호출은
+// CG 가 무시 또는 잘못된 값으로 처리할 수 있어 grayscale 전용 API 사용.
+pub extern "CoreGraphics" fn CGContextSetGrayFillColor(
+    ctx: CGContextRef,
+    gray: CGFloat,
+    alpha: CGFloat,
+) void;
+
+// CTM (current transformation matrix) scale — bitmap 이 pixel-sized 인데
+// CTFontDrawGlyphs 는 point 좌표로 그리는 mismatch 를 보정. Retina scale 을
+// CTM 에 곱해 둬야 글리프가 비트맵 가득 차게 그려진다.
+pub extern "CoreGraphics" fn CGContextScaleCTM(
+    ctx: CGContextRef,
+    sx: CGFloat,
+    sy: CGFloat,
 ) void;
 
 pub extern "CoreGraphics" fn CGContextFillRect(ctx: CGContextRef, rect: CGRect) void;
