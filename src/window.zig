@@ -50,7 +50,7 @@ const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
-const WM_MBUTTONDOWN: UINT = 0x0207;
+const WM_RBUTTONDOWN: UINT = 0x0204;
 const WM_MOUSEWHEEL: UINT = 0x020A;
 const WM_DISPLAYCHANGE: UINT = 0x007E;
 const WM_DPICHANGED: UINT = 0x02E0;
@@ -1248,7 +1248,10 @@ pub const Window = struct {
                 });
                 return 0;
             },
-            WM_MBUTTONDOWN => {
+            // 우클릭 paste (#119) — cmd.exe console 표준 패턴. 이전 가운데 버튼
+            // (WM_MBUTTONDOWN) 은 deprecated. macOS 의 tildazRightMouseDown 과
+            // 동등. SPEC.md §3 / §11 참고.
+            WM_RBUTTONDOWN => {
                 if (self.write_fn) |write_fn| {
                     self.pasteClipboard(write_fn);
                 }
