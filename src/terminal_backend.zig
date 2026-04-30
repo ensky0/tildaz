@@ -73,12 +73,9 @@ const WindowsConPtyBackend = if (builtin.os.tag == .windows) struct {
             var wslenv_buf: [512]u16 = undefined;
         };
         const t = theme orelse return null;
-        const lum = @as(u32, t.background.r) * 299 +
-            @as(u32, t.background.g) * 587 +
-            @as(u32, t.background.b) * 114;
         S.vars[0] = .{
             .name = S.colorfgbg_name,
-            .value = if (lum < 128_000) S.dark_val else S.light_val,
+            .value = if (themes.isDark(t)) S.dark_val else S.light_val,
         };
 
         const suffix = std.unicode.utf8ToUtf16LeStringLiteral("COLORFGBG");

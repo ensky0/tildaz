@@ -12,6 +12,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const macos_pty = @import("macos_pty.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const themes = @import("themes.zig");
 
 /// 한 탭 = PTY 1 + ghostty Terminal 1 + stream + 마우스 selection 상태.
 /// per-tab 자원만 들고 shared (Metal device, glyph atlas, font, NSWindow) 는
@@ -80,9 +81,19 @@ pub const SessionCore = struct {
         extra_env: ?[]const macos_pty.Pty.EnvVar,
         pty_output_cb: macos_pty.Pty.ReadCallback,
         pty_exit_cb: macos_pty.Pty.ExitCallback,
+        theme: ?*const themes.Theme,
     ) !*Tab {
         const tab = try self.allocator.create(Tab);
         errdefer self.allocator.destroy(tab);
+
+        // theme 의 fg / bg / 16-color palette 적용. null 이면 ghostty default.
+        // Windows session_core 의 createTab 과 동일 패턴.
+        const term_colors = if (theme) |t| ghostty.Terminal.Colors{
+            .foreground = ghostty.color.DynamicRGB.init(t.foreground),
+            .background = ghostty.color.DynamicRGB.init(t.background),
+            .cursor = .unset,
+            .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
+        } else ghostty.Terminal.Colors.default;
 
         tab.* = .{
             .pty = undefined,
@@ -90,7 +101,7 @@ pub const SessionCore = struct {
                 .cols = cols,
                 .rows = rows,
                 .max_scrollback = max_scrollback,
-                .colors = ghostty.Terminal.Colors.default,
+                .colors = term_colors,
             }),
             .stream = undefined,
             .interaction = .{},
