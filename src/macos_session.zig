@@ -43,11 +43,6 @@ pub const SessionCore = struct {
         self.tabs.deinit(self.allocator);
     }
 
-    /// 새 탭을 컬렉션 끝에 붙임. 활성 탭 변경은 호출처가 결정.
-    pub fn appendTab(self: *SessionCore, tab: *Tab) !void {
-        try self.tabs.append(self.allocator, tab);
-    }
-
     pub fn activeTab(self: *SessionCore) ?*Tab {
         if (self.active_tab >= self.tabs.items.len) return null;
         return self.tabs.items[self.active_tab];
@@ -55,5 +50,68 @@ pub const SessionCore = struct {
 
     pub fn count(self: *const SessionCore) usize {
         return self.tabs.items.len;
+    }
+
+    /// 새 Tab 한 개를 만들고 (PTY + Terminal + read thread 시작) 컬렉션에
+    /// append, 활성 탭으로 전환. 실패 시 부분 init 한 자원 모두 정리.
+    pub fn createTab(
+        self: *SessionCore,
+        cols: u16,
+        rows: u16,
+        max_scrollback: usize,
+        shell_path: []const u8,
+        extra_env: ?[]const macos_pty.Pty.EnvVar,
+        pty_output_cb: macos_pty.Pty.ReadCallback,
+        pty_exit_cb: macos_pty.Pty.ExitCallback,
+    ) !*Tab {
+        const tab = try self.allocator.create(Tab);
+        errdefer self.allocator.destroy(tab);
+
+        tab.* = .{
+            .pty = undefined,
+            .terminal = try ghostty.Terminal.init(self.allocator, .{
+                .cols = cols,
+                .rows = rows,
+                .max_scrollback = max_scrollback,
+                .colors = ghostty.Terminal.Colors.default,
+            }),
+            .stream = undefined,
+            .interaction = .{},
+        };
+        errdefer tab.terminal.deinit(self.allocator);
+        tab.stream = tab.terminal.vtStream();
+
+        tab.pty = try macos_pty.Pty.init(self.allocator, cols, rows, shell_path, extra_env);
+        errdefer tab.pty.deinit();
+
+        // userdata = *Tab — 콜백이 어느 탭 출력 / 종료인지 식별.
+        try tab.pty.startReadThread(pty_output_cb, pty_exit_cb, tab);
+
+        try self.tabs.append(self.allocator, tab);
+        self.active_tab = self.tabs.items.len - 1;
+
+        return tab;
+    }
+
+    /// 활성 탭을 인덱스로 직접 변경. 변경됐으면 true.
+    pub fn setActiveTab(self: *SessionCore, index: usize) bool {
+        if (index >= self.tabs.items.len) return false;
+        if (self.active_tab == index) return false;
+        self.active_tab = index;
+        return true;
+    }
+
+    /// 다음 탭으로 (마지막이면 첫 탭으로 wrap). 탭이 1 개 이하면 false.
+    pub fn activateNext(self: *SessionCore) bool {
+        if (self.tabs.items.len <= 1) return false;
+        self.active_tab = (self.active_tab + 1) % self.tabs.items.len;
+        return true;
+    }
+
+    /// 이전 탭으로 (첫 탭이면 마지막 탭으로 wrap). 탭이 1 개 이하면 false.
+    pub fn activatePrev(self: *SessionCore) bool {
+        if (self.tabs.items.len <= 1) return false;
+        self.active_tab = if (self.active_tab == 0) self.tabs.items.len - 1 else self.active_tab - 1;
+        return true;
     }
 };
