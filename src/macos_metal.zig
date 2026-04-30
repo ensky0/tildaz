@@ -86,6 +86,12 @@ const shader_source =
 
 // --- Renderer ---
 
+/// rename 시각 정보 — drawTabBar 가 활성 탭 title 대신 이 텍스트를 그림.
+pub const TabRenameView = struct {
+    tab_index: usize,
+    text: []const u8,
+};
+
 pub const MetalRenderer = struct {
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,
@@ -239,6 +245,9 @@ pub const MetalRenderer = struct {
         /// 으로 보고 cell grid 가 풀 화면 사용.
         tab_titles: []const []const u8,
         active_tab: usize,
+        /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림 (#111 M11.6b).
+        /// null = rename 비활성.
+        rename_view: ?TabRenameView,
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
@@ -282,7 +291,7 @@ pub const MetalRenderer = struct {
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
-        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab);
+        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -573,6 +582,7 @@ pub const MetalRenderer = struct {
         encoder: objc.id,
         tab_titles: []const []const u8,
         active_tab: usize,
+        rename_view: ?TabRenameView,
     ) void {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
@@ -615,11 +625,16 @@ pub const MetalRenderer = struct {
         // close 버튼 자리 + 양쪽 padding 빼고 남은 영역만 텍스트.
         const max_text_w_px = tab_w_px - close_size_px - tab_pad_px * 3;
 
-        for (tab_titles, 0..) |title, i| {
+        for (tab_titles, 0..) |orig_title, i| {
             const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
             const text_x_start = tab_x + tab_pad_px;
             var text_x = text_x_start;
 
+            // rename 진행 중인 탭이면 그 buf 의 텍스트를 대신 표시.
+            const title = if (rename_view) |rv|
+                (if (rv.tab_index == i) rv.text else orig_title)
+            else
+                orig_title;
             var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
             while (iter.nextCodepoint()) |cp| {
                 if (text_n >= MAX_TEXT) break;
