@@ -1,4 +1,6 @@
-// macOS mini config — `~/Library/Application Support/tildaz/config.json`.
+// macOS mini config — `~/.config/tildaz/config.json` (XDG, ghostty/alacritty
+// 와 같은 패턴). 구버전 (`~/Library/Application Support/tildaz/`) 에 파일이
+// 있고 신규 위치에 없으면 자동 1회 마이그레이션 (#128).
 //
 // `src/config.zig` 와 schema 는 같게 (`dock_position` / `width` / `height` /
 // `offset` 같은 필드명) 두지만 platform-leak 정리 (`Window.DockPosition` 의존)
@@ -21,6 +23,7 @@ const std = @import("std");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const themes = @import("themes.zig");
+const paths = @import("paths.zig");
 
 const DEFAULT_THEME = "Tilda";
 
@@ -149,29 +152,44 @@ pub const Config = struct {
     /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
     /// 정책).
     pub fn load(allocator: std.mem.Allocator) Config {
-        const path = configPath(allocator) catch return .{};
+        const path = paths.configPath(allocator) catch return .{};
         defer allocator.free(path);
 
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        // 신규 위치에 파일 없으면 구버전 (`~/Library/Application Support/tildaz/`)
+        // 에서 1회 마이그레이션. 구버전 파일 보존 (rename 실패 / 사용자 직접 백업
+        // 모두 대응) — 신규 위치에 copy 만.
+        if (std.fs.openFileAbsolute(path, .{})) |file| {
+            defer file.close();
+            const content = file.readToEndAlloc(allocator, 64 * 1024) catch return .{};
+            defer allocator.free(content);
+            return parse(allocator, content);
+        } else |_| {
+            if (paths.legacyMacConfigPath(allocator)) |legacy| {
+                defer allocator.free(legacy);
+                if (std.fs.copyFileAbsolute(legacy, path, .{})) |_| {
+                    if (std.fs.openFileAbsolute(path, .{})) |file2| {
+                        defer file2.close();
+                        const content = file2.readToEndAlloc(allocator, 64 * 1024) catch return .{};
+                        defer allocator.free(content);
+                        return parse(allocator, content);
+                    } else |_| {}
+                } else |_| {}
+            }
             createDefault(path);
             return .{};
-        };
-        defer file.close();
-
-        const content = file.readToEndAlloc(allocator, 64 * 1024) catch return .{};
-        defer allocator.free(content);
-
-        return parse(allocator, content);
+        }
     }
 
     fn parse(allocator: std.mem.Allocator, content: []const u8) Config {
         var config = Config{};
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
+            const path_buf = paths.configPath(allocator) catch null;
+            defer if (path_buf) |p| allocator.free(p);
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
-                "config.json parse failed: {s}\n\nPath: ~/Library/Application Support/tildaz/config.json",
-                .{@errorName(err)},
+                "config.json parse failed: {s}\n\nPath: {s}",
+                .{ @errorName(err), path_buf orelse "(unknown)" },
             ) catch "config.json parse failed";
             dialog.showFatal(messages.config_error_title, msg);
         };
@@ -273,21 +291,6 @@ pub const Config = struct {
     }
 };
 
-/// `~/Library/Application Support/tildaz/config.json` 의 절대 경로.
-/// 디렉토리 자동 생성 (이미 있으면 EEXIST 무시).
-fn configPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHome;
-    defer allocator.free(home);
-
-    const dir = try std.fmt.allocPrint(allocator, "{s}/Library/Application Support/tildaz", .{home});
-    defer allocator.free(dir);
-    std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-
-    return std.fmt.allocPrint(allocator, "{s}/config.json", .{dir});
-}
 
 test "Hotkey.fromString basic" {
     try std.testing.expectEqual(

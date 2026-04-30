@@ -15,9 +15,13 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const paths = @import("paths.zig");
 
 /// About 다이얼로그 표시. 호출 환경: F1 토글 후 Ctrl+Shift+I (Windows) /
 /// Shift+Cmd+I (macOS) 등 일반 사용자 trigger.
+///
+/// 표시 경로는 모두 절대 경로 (`~` / `%APPDATA%` 같은 단축 안 씀) — SPEC.md
+/// §11.3. 사용자가 그대로 vim / explorer 명령에 paste 가능 + 환경 ambiguity 제거.
 pub fn showAboutDialog() void {
     var path_buf: [1024]u8 = undefined;
     const exe_path = currentExePath(&path_buf) catch "(unknown)";
@@ -27,11 +31,19 @@ pub fn showAboutDialog() void {
         else => std.c.getpid(),
     });
 
+    var heap_buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&heap_buf);
+    const alloc = fba.allocator();
+    const config_path = paths.configPath(alloc) catch "(unknown)";
+    const log_path = paths.logPath(alloc) catch "(unknown)";
+
     var msg_buf: [2048]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, messages.about_format, .{
         build_options.version,
         exe_path,
         pid,
+        config_path,
+        log_path,
     }) catch return;
 
     dialog.showInfo(messages.about_title, msg);
