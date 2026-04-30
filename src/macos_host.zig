@@ -215,11 +215,43 @@ const LINE_HEIGHT_SCALE: f32 = 0.95;
 const TERMINAL_PADDING_PT = ui_metrics.TERMINAL_PADDING_PT;
 const TAB_BAR_HEIGHT_PT = ui_metrics.TAB_BAR_HEIGHT_PT;
 
-/// 탭바가 차지하는 픽셀 높이. 탭이 0/1 개여도 항상 reserve — 새 탭 생성으로
-/// 멀티탭 전환 시 cols/rows 재계산을 안 해도 cell grid 가 흔들리지 않게.
-/// 단일 탭이면 그 영역에 탭바를 그리지 않아 default 배경색만 보임.
+/// 탭바가 현재 차지하는 픽셀 높이. 탭이 ≤ 1 개면 0 (자리 안 띄움) — 단일 탭
+/// 사용자가 위쪽 빈 공간 거슬려 함 (#111 M11.4 사용자 보고).
+/// 탭 ≥ 2 개로 전환 시 자리 등장 + 모든 탭 cols/rows 재계산은 호출처 책임
+/// (`syncTerminalGeometry` 가 통합 처리).
 fn tabBarHeightPx(scale: f32) i32 {
+    if (g_session.count() < 2) return 0;
     return @intFromFloat(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale);
+}
+
+/// 현재 viewport / cell 크기 + 탭 수에 따른 cols/rows 재계산 후 모든 탭의
+/// terminal + pty 동기화. 탭 1↔2 전환 시 탭바 등장/사라짐으로 cell 영역이
+/// 변하므로 호출 필요. screen change / 탭 추가 / 탭 닫기 모두 같은 함수 사용.
+fn syncTerminalGeometry() void {
+    if (g_renderer == null) return;
+    if (g_session.count() == 0) return;
+
+    const r = &g_renderer.?;
+    const cell_w = r.font.cell_width;
+    const cell_h = r.font.cell_height;
+    const pad: u32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale);
+    const tab_bar: u32 = @intCast(tabBarHeightPx(r.scale));
+    const top_reserved = pad + tab_bar;
+    const usable_w = if (r.vp_width > 2 * pad) r.vp_width - 2 * pad else cell_w;
+    const usable_h = if (r.vp_height > top_reserved + pad) r.vp_height - top_reserved - pad else cell_h;
+    const new_cols: u16 = @intCast(@max(1, usable_w / cell_w));
+    const new_rows: u16 = @intCast(@max(1, usable_h / cell_h));
+
+    for (g_session.tabs.items) |t| {
+        if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
+        t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+            std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
+            continue;
+        };
+        t.pty.resize(new_cols, new_rows) catch |err| {
+            std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
+        };
+    }
 }
 
 // NSWindow subclass — `canBecomeKeyWindow` 를 YES 로 override 해서 borderless
@@ -307,10 +339,6 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const kc = get_kc(event, objc.sel("keyCode"));
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
         const shift = (flags & NSEventModifierFlagShift) != 0;
-
-        // 진단 로그 (#111 M11.3 fix): Cmd+W 가 정말 도달하는지 keycode 로 확인.
-        // 사용자 환경 검증 통과 후 제거 예정.
-        std.debug.print("[key] Cmd+kc=0x{X:0>2} shift={}\n", .{ kc, shift });
 
         // keyCode 8 = 'c', 9 = 'v'.
         if (kc == 8) {
@@ -690,11 +718,14 @@ fn handleCloseActiveTab() void {
         std.debug.print("[tab] last tab closed via Cmd+W, terminating tildaz.\n", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
+        return;
     }
+    // 2 → 1 전환 시 탭바 사라져 cell 영역 늘어남. 모든 탭 cols/rows 재동기화.
+    syncTerminalGeometry();
 }
 
-/// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성. createTab 이 새
-/// 탭을 활성으로 전환하므로 별도 setActiveTab 불필요.
+/// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
+/// 가 1 → 2 전환 시 탭바 등장으로 줄어드는 cell 영역에 맞춰 모든 탭 resize.
 fn handleNewTab() void {
     const active = g_session.activeTab() orelse return;
     const cols = active.terminal.cols;
@@ -709,7 +740,10 @@ fn handleNewTab() void {
         onPtyExit,
     ) catch |err| {
         std.debug.print("[tab] new tab failed: {s}\n", .{@errorName(err)});
+        return;
     };
+    // 1 → 2 전환 시 탭바 등장 → cell 영역 줄어듦. 모든 탭 resize.
+    syncTerminalGeometry();
 }
 
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
@@ -1140,12 +1174,14 @@ fn onPtyExit(userdata: ?*anyopaque) void {
 /// 정리. 마지막 탭이 닫히면 NSApp.terminate. main thread 에서 호출되므로
 /// closeTab → Tab.deinit → pty read_thread.join 이 deadlock 없이 정상 진행.
 fn drainExitedTabs() bool {
+    var any_closed = false;
     var i: usize = 0;
     while (i < g_session.tabs.items.len) {
         const t = g_session.tabs.items[i];
         if (t.exit_flag.load(.acquire)) {
             std.debug.print("[pty] tab {d} ('{s}') exited, closing.\n", .{ i, t.title() });
             g_session.closeTab(i);
+            any_closed = true;
             // closeTab 후 인덱스가 시프트되므로 i 증가 안 함 — 다음 element 가
             // 같은 i 위치에 있어요.
         } else {
@@ -1157,6 +1193,10 @@ fn drainExitedTabs() bool {
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
         return true;
+    }
+    if (any_closed) {
+        // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남. 모든 탭 resize.
+        syncTerminalGeometry();
     }
     return false;
 }
