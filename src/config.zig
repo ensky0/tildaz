@@ -2,23 +2,15 @@ const std = @import("std");
 const windows = std.os.windows;
 const Window = @import("window.zig").Window;
 const themes = @import("themes.zig");
+const dialog = @import("dialog.zig");
+const messages = @import("messages.zig");
 
 const WCHAR = u16;
-extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
-extern "kernel32" fn ExitProcess(c_uint) callconv(.c) noreturn;
 
-const err_width = std.unicode.utf8ToUtf16LeStringLiteral(
-    "config.json: \"window.width\" out of range\n\nAllowed: 10 ~ 100",
-);
-const err_height = std.unicode.utf8ToUtf16LeStringLiteral(
-    "config.json: \"window.height\" out of range\n\nAllowed: 10 ~ 100",
-);
-const err_offset = std.unicode.utf8ToUtf16LeStringLiteral(
-    "config.json: \"window.offset\" out of range\n\nAllowed: 0 ~ 100\n(0=start, 50=center, 100=end)",
-);
-const err_font_size = std.unicode.utf8ToUtf16LeStringLiteral(
-    "config.json: \"font.size\" out of range\n\nAllowed: 8 ~ 72",
-);
+const err_width = "config.json: \"window.width\" out of range\n\nAllowed: 10 ~ 100";
+const err_height = "config.json: \"window.height\" out of range\n\nAllowed: 10 ~ 100";
+const err_offset = "config.json: \"window.offset\" out of range\n\nAllowed: 0 ~ 100\n(0=start, 50=center, 100=end)";
+const err_font_size = "config.json: \"font.size\" out of range\n\nAllowed: 8 ~ 72";
 
 pub const MAX_FONT_FAMILIES = 8;
 
@@ -85,7 +77,7 @@ pub const Config = struct {
         return s.ptr == default.ptr;
     }
 
-    pub fn validate(self: *const Config) ?[*:0]const WCHAR {
+    pub fn validate(self: *const Config) ?[]const u8 {
         if (self.width < 10 or self.width > 100) return err_width;
         if (self.height < 10 or self.height > 100) return err_height;
         if (self.offset > 100) return err_offset;
@@ -222,83 +214,36 @@ pub const Config = struct {
         return null;
     }
 
-    fn showTypeError(comptime field: []const u8, comptime expected: []const u8) void {
-        const MB_OK = 0;
-        const MB_ICONERROR = 0x10;
-        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
-        const msg = std.unicode.utf8ToUtf16LeStringLiteral(
+    fn showTypeError(comptime field: []const u8, comptime expected: []const u8) noreturn {
+        dialog.showFatal(
+            messages.config_error_title,
             "config.json: \"" ++ field ++ "\" must be " ++ expected,
         );
-        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
-        ExitProcess(1);
     }
 
-    fn showRangeError(comptime field: []const u8, comptime min: i64, comptime max: i64) void {
-        const MB_OK = 0;
-        const MB_ICONERROR = 0x10;
-        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
-        const msg = std.unicode.utf8ToUtf16LeStringLiteral(
+    fn showRangeError(comptime field: []const u8, comptime min: i64, comptime max: i64) noreturn {
+        dialog.showFatal(
+            messages.config_error_title,
             "config.json: \"" ++ field ++ "\" must be between " ++
-            std.fmt.comptimePrint("{}", .{min}) ++ " and " ++
-            std.fmt.comptimePrint("{}", .{max}),
+                std.fmt.comptimePrint("{}", .{min}) ++ " and " ++
+                std.fmt.comptimePrint("{}", .{max}),
         );
-        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONERROR);
-        ExitProcess(1);
     }
 
-    fn showThemeError(name: []const u8) void {
-        const MB_OK = 0;
-        const MB_ICONERROR = 0x10;
-        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
-        var buf: [512]WCHAR = undefined;
-        var pos: usize = 0;
-        const prefix = std.unicode.utf8ToUtf16LeStringLiteral("config.json: unknown theme \"");
-        for (prefix) |c| {
-            if (pos < buf.len - 1) {
-                buf[pos] = c;
-                pos += 1;
-            }
-        }
-        for (name) |c| {
-            if (pos < buf.len - 1) {
-                buf[pos] = c;
-                pos += 1;
-            }
-        }
-        const suffix = std.unicode.utf8ToUtf16LeStringLiteral("\"\n\nAvailable themes:\n");
-        for (suffix) |c| {
-            if (pos < buf.len - 1) {
-                buf[pos] = c;
-                pos += 1;
-            }
-        }
+    fn showThemeError(name: []const u8) noreturn {
+        var buf: [512]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buf);
+        const w = fbs.writer();
+        w.print("config.json: unknown theme \"{s}\"\n\nAvailable themes:\n", .{name}) catch {};
         for (themes.themes, 0..) |t, i| {
-            if (i > 0) {
-                for (std.unicode.utf8ToUtf16LeStringLiteral(", ")) |c| {
-                    if (pos < buf.len - 1) {
-                        buf[pos] = c;
-                        pos += 1;
-                    }
-                }
-            }
-            for (t.name) |c| {
-                if (pos < buf.len - 1) {
-                    buf[pos] = c;
-                    pos += 1;
-                }
-            }
+            if (i > 0) w.writeAll(", ") catch {};
+            w.writeAll(t.name) catch {};
         }
-        buf[pos] = 0;
-        _ = MessageBoxW(null, @ptrCast(&buf), title, MB_OK | MB_ICONERROR);
-        ExitProcess(1);
+        dialog.showFatal(messages.config_error_title, fbs.getWritten());
     }
 
-    fn showJsonError(content: []const u8, err: anyerror) void {
-        const MB_OK = 0;
-        const MB_ICONERROR = 0x10;
-        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
-
-        // Find error position by re-scanning with a throwaway allocator-backed scanner
+    fn showJsonError(content: []const u8, err: anyerror) noreturn {
+        // Find error position by re-scanning with a throwaway allocator-backed scanner.
         var line: usize = 1;
         var col: usize = 1;
         var scanner = std.json.Scanner.initCompleteInput(std.heap.page_allocator, content);
@@ -307,7 +252,6 @@ pub const Config = struct {
             const token = scanner.next() catch break;
             if (token == .end_of_document) break;
         }
-        // Count lines up to where scanner stopped
         const err_pos = @min(scanner.cursor, content.len);
         for (content[0..err_pos]) |c| {
             if (c == '\n') {
@@ -318,39 +262,11 @@ pub const Config = struct {
             }
         }
 
-        var buf: [256]WCHAR = undefined;
-        var pos: usize = 0;
-        const prefix = "config.json: invalid JSON at line ";
-        for (prefix) |c| {
-            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
-        }
-        // Write line number
-        var line_buf: [10]u8 = undefined;
-        const line_str = std.fmt.bufPrint(&line_buf, "{}", .{line}) catch "?";
-        for (line_str) |c| {
-            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
-        }
-        const mid = ", column ";
-        for (mid) |c| {
-            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
-        }
-        var col_buf: [10]u8 = undefined;
-        const col_str = std.fmt.bufPrint(&col_buf, "{}", .{col}) catch "?";
-        for (col_str) |c| {
-            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
-        }
-        // Error name
-        const err_prefix = "\n\nError: ";
-        for (err_prefix) |c| {
-            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
-        }
-        const err_name = @errorName(err);
-        for (err_name) |c| {
-            if (pos < buf.len - 1) { buf[pos] = c; pos += 1; }
-        }
-        buf[pos] = 0;
-        _ = MessageBoxW(null, @ptrCast(&buf), title, MB_OK | MB_ICONERROR);
-        ExitProcess(1);
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "config.json: invalid JSON at line {d}, column {d}\n\nError: {s}", .{
+            line, col, @errorName(err),
+        }) catch "config.json: invalid JSON";
+        dialog.showFatal(messages.config_error_title, msg);
     }
 
     fn getBool(obj: std.json.Value, key: []const u8) ?bool {

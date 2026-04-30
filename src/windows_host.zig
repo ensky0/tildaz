@@ -6,11 +6,11 @@ const Config = @import("config.zig").Config;
 const autostart = @import("autostart.zig");
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
+const dialog = @import("dialog.zig");
+const messages = @import("messages.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
-extern "user32" fn MessageBoxW(?*anyopaque, [*:0]const WCHAR, [*:0]const WCHAR, c_uint) callconv(.c) c_int;
-extern "user32" fn MessageBoxA(?*anyopaque, [*:0]const u8, [*:0]const u8, c_uint) callconv(.c) c_int;
 extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GetLastError() callconv(.c) u32;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
@@ -19,36 +19,24 @@ extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 const ERROR_ALREADY_EXISTS: u32 = 183;
-const MB_OK: c_uint = 0x0;
-const MB_ICONERROR: c_uint = 0x10;
-const MB_ICONINFORMATION: c_uint = 0x40;
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     var buf: [512]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "panic: {s}\nreturn address: 0x{x}", .{ msg, addr }) catch "panic (format failed)";
-    var msgbuf: [512:0]u8 = std.mem.zeroes([512:0]u8);
-    const copy_len = @min(text.len, 511);
-    @memcpy(msgbuf[0..copy_len], text[0..copy_len]);
-    _ = MessageBoxA(null, &msgbuf, "TildaZ Crash", MB_OK | MB_ICONERROR);
+    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch "panic (format failed)";
+    dialog.showError(messages.crash_title, text);
     std.process.exit(1);
 }
 
 pub fn showFatalRunError(err: anyerror) void {
     tildaz_log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
 
-    var u8_buf: [256]u8 = undefined;
+    var buf: [256]u8 = undefined;
     const text = std.fmt.bufPrint(
-        &u8_buf,
-        "TildaZ failed to start.\n\nError: {s}",
+        &buf,
+        messages.run_failed_format,
         .{@errorName(err)},
     ) catch "TildaZ failed to start.";
-
-    var w_buf: [512:0]WCHAR = std.mem.zeroes([512:0]WCHAR);
-    const w_len = std.unicode.utf8ToUtf16Le(&w_buf, text) catch 0;
-    if (w_len < w_buf.len) w_buf[w_len] = 0;
-
-    const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Error");
-    _ = MessageBoxW(null, &w_buf, title, MB_OK | MB_ICONERROR);
+    dialog.showError(messages.error_title, text);
 }
 
 pub fn run() !void {
@@ -61,9 +49,7 @@ pub fn run() !void {
     const mutex = CreateMutexW(null, 0, std.unicode.utf8ToUtf16LeStringLiteral("Global\\TildaZ_SingleInstance"));
     if (mutex != null and GetLastError() == ERROR_ALREADY_EXISTS) {
         _ = CloseHandle(mutex);
-        const msg = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ is already running.");
-        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ");
-        _ = MessageBoxW(null, msg, title, MB_OK | MB_ICONINFORMATION);
+        dialog.showInfo(messages.info_title, messages.already_running_msg);
         return;
     }
     defer if (mutex != null) {
@@ -84,8 +70,7 @@ pub fn run() !void {
     defer config.deinit();
 
     if (config.validate()) |err_msg| {
-        const title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error");
-        _ = MessageBoxW(null, err_msg, title, MB_OK | MB_ICONERROR);
+        dialog.showError(messages.config_error_title, err_msg);
         return;
     }
     tildaz_log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
@@ -131,26 +116,10 @@ pub fn run() !void {
         const idx: u8 = @intCast(i);
         const fam_w = config.fontFamilyUtf16(idx);
         if (!DWriteFontCtx.isFontAvailable(fam_w)) {
-            var msg_buf: [256]WCHAR = undefined;
-            var pos: usize = 0;
-            const prefix = std.unicode.utf8ToUtf16LeStringLiteral("Font not found: \"");
-            for (prefix[0..17]) |c| {
-                if (pos < msg_buf.len - 2) {
-                    msg_buf[pos] = c;
-                    pos += 1;
-                }
-            }
+            var msg_buf: [256]u8 = undefined;
             const fam = config.font_families[i];
-            for (fam) |c| {
-                if (pos < msg_buf.len - 2) {
-                    msg_buf[pos] = c;
-                    pos += 1;
-                }
-            }
-            msg_buf[pos] = '"';
-            pos += 1;
-            msg_buf[pos] = 0;
-            _ = MessageBoxW(null, @ptrCast(&msg_buf), std.unicode.utf8ToUtf16LeStringLiteral("TildaZ Config Error"), MB_OK | MB_ICONERROR);
+            const msg = std.fmt.bufPrint(&msg_buf, messages.font_not_found_format, .{fam}) catch "Font not found";
+            dialog.showError(messages.config_error_title, msg);
             return;
         }
     }
