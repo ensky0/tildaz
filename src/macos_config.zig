@@ -49,7 +49,7 @@ pub const Hotkey = struct {
     keycode: u32,
     modifiers: u64,
 
-    /// "f1", "cmd+space", "ctrl+grave", "cmd+shift+t" 같은 string 을 keycode +
+    /// "f1", "cmd+space", "ctrl+grave", "shift+cmd+t" 같은 string 을 keycode +
     /// modifier 로 변환. 알 수 없는 토큰이면 null. macOS `Events.h` 의
     /// `kVK_*` 와 CGEventFlags 매핑.
     fn fromString(s: []const u8) ?Hotkey {
@@ -244,7 +244,7 @@ pub const Config = struct {
                 var buf: [384]u8 = undefined;
                 const msg = std.fmt.bufPrint(
                     &buf,
-                    "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"cmd+space\", \"ctrl+grave\", \"cmd+shift+t\"",
+                    "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"cmd+space\", \"ctrl+grave\", \"shift+cmd+t\"",
                     .{v.string},
                 ) catch "config.json: hotkey invalid";
                 dialog.showFatal(messages.config_error_title, msg);
@@ -304,7 +304,7 @@ test "Hotkey.fromString basic" {
     );
     try std.testing.expectEqual(
         Hotkey{ .keycode = 0x11, .modifiers = kCGEventFlagMaskCommand | kCGEventFlagMaskShift },
-        Hotkey.fromString("cmd+shift+t").?,
+        Hotkey.fromString("shift+cmd+t").?,
     );
     try std.testing.expectEqual(@as(?Hotkey, null), Hotkey.fromString("nope"));
 }
