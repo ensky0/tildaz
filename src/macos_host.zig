@@ -900,7 +900,12 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
         return;
     }
 
-    _ = tab.interaction.selection.finish();
+    // 셀 selection finish — Windows `selection.finish()` → `copyToClipboard`
+    // 패턴 (#122). selection 변화 있었으면 자동 clipboard copy. Cmd+C 없이도
+    // 드래그 후 즉시 paste 가능.
+    if (tab.interaction.selection.finish()) {
+        handleCopy();
+    }
 }
 
 /// macOS keycode (kVK_ANSI_*) 의 1..9 → 0-base 탭 인덱스. 1 → 0, 2 → 1 식.
