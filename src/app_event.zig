@@ -16,6 +16,8 @@ pub const Shortcut = union(enum) {
     reset_terminal: void,
     dump_perf: void,
     show_about: void,
+    open_config: void,
+    open_log: void,
     switch_tab: usize,
 };
 

@@ -4,6 +4,7 @@ const Window = @import("window.zig").Window;
 const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const paths = @import("paths.zig");
 
 const WCHAR = u16;
 
@@ -40,19 +41,32 @@ pub const Config = struct {
     _alloc: ?std.mem.Allocator = null,
 
     pub fn load(allocator: std.mem.Allocator) Config {
-        const path = getConfigPath(allocator) catch return .{};
+        const path = paths.configPath(allocator) catch return .{};
         defer allocator.free(path);
 
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        // 신규 위치 (`%APPDATA%\tildaz\config.json`) 우선. 없으면 구버전
+        // (`<exe_dir>\config.json`) 에서 1회 마이그레이션 (#128). 구버전 파일은
+        // 보존 — 신규 위치에 copy 만.
+        if (std.fs.openFileAbsolute(path, .{})) |file| {
+            defer file.close();
+            const content = file.readToEndAlloc(allocator, 16384) catch return .{};
+            defer allocator.free(content);
+            return parse(allocator, content);
+        } else |_| {
+            if (paths.legacyWindowsConfigPath(allocator)) |legacy| {
+                defer allocator.free(legacy);
+                if (std.fs.copyFileAbsolute(legacy, path, .{})) |_| {
+                    if (std.fs.openFileAbsolute(path, .{})) |file2| {
+                        defer file2.close();
+                        const content = file2.readToEndAlloc(allocator, 16384) catch return .{};
+                        defer allocator.free(content);
+                        return parse(allocator, content);
+                    } else |_| {}
+                } else |_| {}
+            }
             createDefaultConfig(path);
             return .{};
-        };
-        defer file.close();
-
-        const content = file.readToEndAlloc(allocator, 16384) catch return .{};
-        defer allocator.free(content);
-
-        return parse(allocator, content);
+        }
     }
 
     pub fn deinit(self: *const Config) void {
@@ -276,19 +290,7 @@ pub const Config = struct {
         return null;
     }
 
-    // -- Config path resolution --
-
-    fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
-        const exe_dir = try getExeDir(allocator);
-        defer allocator.free(exe_dir);
-        return std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir});
-    }
-
-    fn getExeDir(allocator: std.mem.Allocator) ![]const u8 {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const exe_path = std.fs.selfExeDirPath(&buf) catch return error.NoExeDir;
-        return allocator.dupe(u8, exe_path);
-    }
+    // -- Config path resolution → `paths.configPath` (cross-platform) --
 
     fn createDefaultConfig(path: []const u8) void {
         const d = Config{};
