@@ -996,6 +996,11 @@ pub const Window = struct {
                 }
                 // Ctrl+Shift shortcuts
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
+                    // Ctrl+Shift+C: copy current selection (#120)
+                    if (wParam == 0x43) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .copy_selection });
+                        return 0;
+                    }
                     // Ctrl+Shift+T: new tab
                     if (wParam == 0x54) {
                         _ = self.dispatchAppEvent(.{ .shortcut = .new_tab });

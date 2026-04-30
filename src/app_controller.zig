@@ -524,6 +524,20 @@ pub const App = struct {
                         if (self.session.activatePrev()) self.invalidateRenderer();
                         return true;
                     },
+                    .copy_selection => {
+                        // Ctrl+Shift+C — 현재 highlight 된 selection 을 clipboard 로
+                        // (#120). 드래그 직후 finishTerminalSelection 이 자동 copy
+                        // 하지만, 그 후 사용자가 키로 다시 트리거하고 싶을 때.
+                        if (self.activeTabPtr()) |tab| {
+                            const screen: *ghostty.Screen = tab.terminal.screens.active;
+                            if (screen.selection) |sel| {
+                                const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return true;
+                                defer self.allocator.free(text);
+                                if (text.len > 0) self.window.copyToClipboard(text);
+                            }
+                        }
+                        return true;
+                    },
                 }
             },
             .mouse_down => |mouse| {
