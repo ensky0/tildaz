@@ -151,15 +151,35 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
-        // 사용자가 자식 셸을 종료시킨 게 아니라 우리가 탭을 닫는 경우 (Cmd+W /
-        // 마지막 탭 NSApp.terminate) 자식이 살아 있을 수 있어요. master fd close
-        // 만으론 셸이 즉시 안 죽을 수도 있어 SIGHUP 명시적 송신 — controlling
-        // tty 가 끊긴 것처럼 보여 셸이 정상 hangup 처리 후 exit.
+        // POSIX 는 close() 가 다른 thread 의 blocking read() 를 깨우는 것을
+        // *보장 안* 함. macOS 도 깨워주지 않아 master fd close 만으로는 read
+        // thread.join() 이 영원히 안 끝나는 deadlock 위험 (#111 M11.3 hang
+        // 보고). 안전하게 끝내려면 자식 process group 을 확실히 죽인 후 read
+        // 가 EIO 받고 자연 종료할 때까지 대기.
         if (self.child_pid > 0) {
-            _ = std.c.kill(self.child_pid, std.posix.SIG.HUP);
+            // -pid = process group. login_tty 가 새 session leader 만들었으니
+            // child_pid == pgid. 자식이 fork 한 손자도 같이 hangup.
+            _ = std.c.kill(-self.child_pid, std.posix.SIG.HUP);
+
+            // SIGHUP 받고 죽기를 잠시 기다림 — bash / zsh 등 일반 셸은 즉시
+            // 종료. 200ms 내에 안 죽으면 SIGKILL 강제.
+            var status: c_int = 0;
+            const max_polls: u32 = 20; // 20 × 10ms = 200ms
+            var p: u32 = 0;
+            while (p < max_polls) : (p += 1) {
+                const rc = std.c.waitpid(self.child_pid, &status, std.c.W.NOHANG);
+                if (rc > 0) break; // 죽음
+                std.Thread.sleep(10 * std.time.ns_per_ms);
+            }
+            if (p >= max_polls) {
+                std.debug.print("[pty] child {d} did not exit on SIGHUP, sending SIGKILL\n", .{self.child_pid});
+                _ = std.c.kill(-self.child_pid, std.posix.SIG.KILL);
+                _ = std.c.waitpid(self.child_pid, &status, 0); // blocking — 반드시 죽음
+            }
         }
 
-        // master fd close → read 가 EOF 받고 readLoop 빠져나옴.
+        // 자식 죽음 → master fd 의 read 가 EIO 받고 readLoop 종료. close 는
+        // join 후로 미뤄도 되지만 빨리 close 해도 이 시점엔 안전.
         posix.close(self.master_fd);
 
         if (self.read_thread) |t| {
@@ -170,9 +190,6 @@ pub const Pty = struct {
             t.join();
             self.wait_thread = null;
         }
-
-        // 자식이 이미 죽었으면 zombie 회수, 안 죽었으면 NOHANG 으로 즉시 리턴.
-        _ = posix.waitpid(self.child_pid, std.c.W.NOHANG);
     }
 
     pub fn write(self: *Pty, data: []const u8) !usize {

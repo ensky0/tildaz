@@ -308,6 +308,10 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
         const shift = (flags & NSEventModifierFlagShift) != 0;
 
+        // 진단 로그 (#111 M11.3 fix): Cmd+W 가 정말 도달하는지 keycode 로 확인.
+        // 사용자 환경 검증 통과 후 제거 예정.
+        std.debug.print("[key] Cmd+kc=0x{X:0>2} shift={}\n", .{ kc, shift });
+
         // keyCode 8 = 'c', 9 = 'v'.
         if (kc == 8) {
             handleCopy();
