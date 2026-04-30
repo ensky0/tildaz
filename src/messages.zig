@@ -12,8 +12,10 @@ pub const info_title = "TildaZ";
 pub const about_format =
     \\TildaZ v{s}
     \\
-    \\exe : {s}
-    \\pid : {d}
+    \\exe   : {s}
+    \\pid   : {d}
+    \\config: {s}
+    \\log   : {s}
     \\
     \\https://github.com/ensky0/tildaz
 ;

@@ -13,6 +13,8 @@ const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
 const about = @import("about.zig");
 const ui_metrics = @import("ui_metrics.zig");
+const paths = @import("paths.zig");
+const system_open = @import("system_open.zig");
 
 pub const App = struct {
     session: SessionCore,
@@ -468,6 +470,18 @@ pub const App = struct {
                     },
                     .show_about => {
                         about.showAboutDialog();
+                        return true;
+                    },
+                    .open_config => {
+                        const path = paths.configPath(self.allocator) catch return true;
+                        defer self.allocator.free(path);
+                        system_open.openInDefaultApp(self.allocator, path);
+                        return true;
+                    },
+                    .open_log => {
+                        const path = paths.logPath(self.allocator) catch return true;
+                        defer self.allocator.free(path);
+                        system_open.openInDefaultApp(self.allocator, path);
                         return true;
                     },
                     .switch_tab => |index| {

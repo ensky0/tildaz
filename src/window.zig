@@ -1018,8 +1018,19 @@ pub const Window = struct {
                         _ = self.dispatchAppEvent(.{ .shortcut = .reset_terminal });
                         return 0;
                     }
-                    // Ctrl+Shift+P: dump perf snapshot
+                    // Ctrl+Shift+P: open config in default editor (#128)
                     if (wParam == 0x50) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .open_config });
+                        return 0;
+                    }
+                    // Ctrl+Shift+L: open log in default editor (#128)
+                    if (wParam == 0x4C) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .open_log });
+                        return 0;
+                    }
+                    // Ctrl+Shift+F12: dump perf snapshot (dev tool — moved
+                    // from Ctrl+Shift+P which is now Open Config #128)
+                    if (wParam == 0x7B) {
                         _ = self.dispatchAppEvent(.{ .shortcut = .dump_perf });
                         return 0;
                     }

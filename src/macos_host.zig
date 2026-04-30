@@ -1803,17 +1803,45 @@ fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callcon
     about.showAboutDialog();
 }
 
+/// Shift+Cmd+P — config.json 을 default editor 로 열기 (#128). About 와 같은
+/// NSApplication-level selector 패턴.
+fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
+    _ = self;
+    _ = _sel;
+    _ = sender;
+    const allocator = g_gpa.allocator();
+    const path = @import("paths.zig").configPath(allocator) catch return;
+    defer allocator.free(path);
+    @import("system_open.zig").openInDefaultApp(allocator, path);
+}
+
+/// Shift+Cmd+L — tildaz.log 를 default editor 로 열기 (#128).
+fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
+    _ = self;
+    _ = _sel;
+    _ = sender;
+    const allocator = g_gpa.allocator();
+    const path = @import("paths.zig").logPath(allocator) catch return;
+    defer allocator.free(path);
+    @import("system_open.zig").openInDefaultApp(allocator, path);
+}
+
 fn buildMainMenu(app: objc.id) !void {
     const NSMenu = objc.getClass("NSMenu");
     const NSMenuItem = objc.getClass("NSMenuItem");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
 
-    // About 핸들러를 NSApplication 인스턴스 메서드로 등록 — Quit (`terminate:`)
-    // 과 같은 패턴. 윈도우 hide 상태라도 NSApp 에서 dispatch.
+    // About / Open Config / Open Log 핸들러를 NSApplication 인스턴스 메서드로
+    // 등록 — Quit (`terminate:`) 과 같은 패턴. 윈도우 hide 상태라도 NSApp
+    // 에서 dispatch.
     const NSApplication = objc.getClass("NSApplication");
     if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowAbout:"), @ptrCast(&tildazShowAboutAction), "v@:@"))
         return error.AddAboutMethodFailed;
+    if (!objc.class_addMethod(NSApplication, objc.sel("tildazOpenConfig:"), @ptrCast(&tildazOpenConfigAction), "v@:@"))
+        return error.AddOpenConfigMethodFailed;
+    if (!objc.class_addMethod(NSApplication, objc.sel("tildazOpenLog:"), @ptrCast(&tildazOpenLogAction), "v@:@"))
+        return error.AddOpenLogMethodFailed;
 
     const main_menu = init_obj(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("init")) orelse return error.MenuInitFailed;
 
@@ -1843,6 +1871,30 @@ fn buildMainMenu(app: objc.id) !void {
     const setMask = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
     setMask(about_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), about_item);
+
+    // Shift+Cmd+P — Open Config (#128). About 와 같은 NSApp-level dispatch.
+    const config_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
+    const config_item = initItem(
+        config_alloc,
+        objc.sel("initWithTitle:action:keyEquivalent:"),
+        nsString("Open Config"),
+        objc.sel("tildazOpenConfig:"),
+        nsString("p"),
+    ) orelse return error.OpenConfigItemInitFailed;
+    setMask(config_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
+    addItem(app_menu, objc.sel("addItem:"), config_item);
+
+    // Shift+Cmd+L — Open Log (#128).
+    const log_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
+    const log_item = initItem(
+        log_alloc,
+        objc.sel("initWithTitle:action:keyEquivalent:"),
+        nsString("Open Log"),
+        objc.sel("tildazOpenLog:"),
+        nsString("l"),
+    ) orelse return error.OpenLogItemInitFailed;
+    setMask(log_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
+    addItem(app_menu, objc.sel("addItem:"), log_item);
 
     // separator
     const NSMenuItem_class = objc.getClass("NSMenuItem");
