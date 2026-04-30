@@ -40,8 +40,15 @@ pub const App = struct {
     TERMINAL_PADDING: c_int = 6,
 
     pub fn createTab(self: *App) !void {
+        const before: usize = self.session.count();
         const grid = self.getTerminalGridSize();
         try self.session.createTab(grid.cols, grid.rows);
+        // 1 → 2 전환에서 탭바가 새로 나타나며 cell 영역이 줄어든다 (#127).
+        // 새 grid 로 모든 탭 동기화. 다른 count 변화는 그대로.
+        if (before == 1) {
+            const new_grid = self.getTerminalGridSize();
+            self.session.resizeAll(new_grid.cols, new_grid.rows);
+        }
         self.invalidateRenderer();
     }
 
@@ -56,7 +63,14 @@ pub const App = struct {
                 tildaz_log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
                 self.window.closeAfterShellExit();
             },
-            .changed => self.invalidateRenderer(),
+            .changed => {
+                // 2 → 1 전환에서 탭바가 사라지며 cell 영역이 늘어난다 (#127).
+                if (self.session.count() == 1) {
+                    const grid = self.getTerminalGridSize();
+                    self.session.resizeAll(grid.cols, grid.rows);
+                }
+                self.invalidateRenderer();
+            },
         }
     }
 
@@ -64,11 +78,18 @@ pub const App = struct {
         self.handleCloseResult(self.session.closeTab(index));
     }
 
+    /// 탭이 1개 이하면 탭바 자체를 그리지 않으므로 layout 에서도 0 으로 취급
+    /// (#127). count 가 1↔2 로 바뀌면 createTab / handleCloseResult 가 즉시
+    /// resizeAll 을 호출해 모든 탭 grid 동기화.
+    fn effectiveTabBarHeight(self: *const App) c_int {
+        return if (self.session.count() > 1) self.TAB_BAR_HEIGHT else 0;
+    }
+
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
         if (self.window.hwnd == null) return .{ .cols = 120, .rows = 30 };
         const size = self.window.getClientSize();
         const w = size.w - 2 * self.TERMINAL_PADDING;
-        const h = size.h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
+        const h = size.h - self.effectiveTabBarHeight() - 2 * self.TERMINAL_PADDING;
         const cols: u16 = if (self.window.cell_width > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width))) else 120;
         const rows: u16 = if (self.window.cell_height > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height))) else 30;
         return .{ .cols = cols, .rows = rows };
@@ -158,7 +179,10 @@ pub const App = struct {
             const should_render = self.session.prepareActiveFrame(&self.last_render_ms);
 
             if (should_render) {
-                // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함)
+                // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함).
+                // count<=1 이면 tab_bar_h=0 → 렌더러가 탭바 자체를 그리지 않고
+                // 터미널 영역만 (#127 — 단일 탭에서 cell 영역 reserve 안 함).
+                const tab_bar_h = self.effectiveTabBarHeight();
                 var tab_titles: [32]renderer_backend.TabTitle = undefined;
                 const tabs = self.session.tabsSlice();
                 const n = @min(tabs.len, 32);
@@ -175,7 +199,7 @@ pub const App = struct {
                 r.renderTabBar(
                     tab_titles[0..n],
                     self.session.activeIndex(),
-                    self.TAB_BAR_HEIGHT,
+                    tab_bar_h,
                     size.w,
                     size.h,
                     self.TAB_WIDTH,
@@ -192,7 +216,7 @@ pub const App = struct {
                         window.cell_height,
                         size.w,
                         size.h,
-                        self.TAB_BAR_HEIGHT,
+                        tab_bar_h,
                         self.TERMINAL_PADDING,
                         self.SCROLLBAR_W,
                         self.SCROLLBAR_MIN_THUMB_H,
@@ -241,10 +265,11 @@ pub const App = struct {
         // 터미널 영역 내 Y 비율 → 스크롤 위치
         if (self.window.hwnd == null) return;
         const client_h = self.window.getClientSize().h;
-        const track_h = client_h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
+        const tbh = self.effectiveTabBarHeight();
+        const track_h = client_h - tbh - 2 * self.TERMINAL_PADDING;
         if (track_h <= 0) return;
 
-        const rel_y = @max(0, mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING);
+        const rel_y = @max(0, mouse_y - tbh - self.TERMINAL_PADDING);
         const track_hf = @as(f64, @floatFromInt(track_h));
         const ratio_px = track_hf / @as(f64, @floatFromInt(sb.total));
         // Must match the renderer's `scrollbar_min_thumb_h` so the thumb the
@@ -268,7 +293,9 @@ pub const App = struct {
     }
 
     pub fn handleTabClick(self: *App, mouse_x: c_int, mouse_y: c_int) void {
-        if (mouse_y >= self.TAB_BAR_HEIGHT) return; // Below tab bar
+        // 단일 탭이면 effectiveTabBarHeight==0 → 모든 클릭이 below 로 분류
+        // (탭 클릭 자체가 의미 없음). count<=1 일 때 내부 분기에서 빨리 종료.
+        if (mouse_y >= self.effectiveTabBarHeight()) return; // Below tab bar
         if (self.session.count() == 0) return;
 
         const tab_index_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
@@ -366,7 +393,7 @@ pub const App = struct {
         const ch = self.window.cell_height;
         const grid = self.getTerminalGridSize();
         const term_x = mouse_x - self.TERMINAL_PADDING;
-        const term_y = mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING;
+        const term_y = mouse_y - self.effectiveTabBarHeight() - self.TERMINAL_PADDING;
         const col: u16 = if (cw > 0 and term_x >= 0) @intCast(@min(@divTrunc(term_x, cw), @as(c_int, grid.cols) - 1)) else 0;
         const row: u16 = if (ch > 0 and term_y >= 0) @intCast(@min(@divTrunc(term_y, ch), @as(c_int, grid.rows) - 1)) else 0;
         return .{ .col = col, .row = row };
@@ -386,10 +413,11 @@ pub const App = struct {
         const tab = self.activeTabPtr() orelse return;
 
         // 터미널 영역 위/아래로 드래그 시 자동 스크롤
-        const term_y = mouse_y - self.TAB_BAR_HEIGHT - self.TERMINAL_PADDING;
+        const tbh = self.effectiveTabBarHeight();
+        const term_y = mouse_y - tbh - self.TERMINAL_PADDING;
         if (self.window.hwnd == null) return;
         const client_h = self.window.getClientSize().h;
-        const term_h = client_h - self.TAB_BAR_HEIGHT - 2 * self.TERMINAL_PADDING;
+        const term_h = client_h - tbh - 2 * self.TERMINAL_PADDING;
         if (term_y < 0) {
             tab.terminal.scrollViewport(.{ .delta = -3 });
         } else if (term_y > term_h) {
@@ -492,7 +520,9 @@ pub const App = struct {
             },
             .mouse_down => |mouse| {
                 if (self.isRenaming()) self.commitRename();
-                if (mouse.y < self.TAB_BAR_HEIGHT) {
+                // count<=1 면 effectiveTabBarHeight==0 → 탭바 영역 자체가 없으므로
+                // 모든 클릭이 터미널/스크롤바 라우팅으로 흘러간다 (#127).
+                if (mouse.y < self.effectiveTabBarHeight()) {
                     self.terminal_interaction.cancelPointerModes();
                     self.handleTabClick(mouse.x, mouse.y);
                     self.handleDragStart(mouse.x);
@@ -512,7 +542,7 @@ pub const App = struct {
                 return true;
             },
             .mouse_double_click => |mouse| {
-                if (mouse.y < self.TAB_BAR_HEIGHT) {
+                if (mouse.y < self.effectiveTabBarHeight()) {
                     const tab_index_raw = @divTrunc(mouse.x, self.TAB_WIDTH);
                     if (tab_index_raw >= 0) {
                         const tab_index: usize = @intCast(tab_index_raw);
