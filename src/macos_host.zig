@@ -908,6 +908,12 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     }
 }
 
+/// 우클릭 paste (#119). cmd.exe console 표준 패턴 — Windows 의 WM_RBUTTONDOWN
+/// (변경 후) 와 동일.
+fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    handlePaste();
+}
+
 /// macOS keycode (kVK_ANSI_*) 의 1..9 → 0-base 탭 인덱스. 1 → 0, 2 → 1 식.
 /// 키보드 row 가 keycode 순서가 아니라 매핑이 비균일 (`0x12, 0x13, 0x14,
 /// 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19`).
@@ -1060,6 +1066,9 @@ fn registerTildazViewClass() !objc.Class {
     if (!objc.class_addMethod(cls, objc.sel("mouseDragged:"), @ptrCast(&tildazMouseDragged), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("mouseUp:"), @ptrCast(&tildazMouseUp), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // 우클릭 paste (#119) — cmd.exe console 표준 패턴.
+    if (!objc.class_addMethod(cls, objc.sel("rightMouseDown:"), @ptrCast(&tildazRightMouseDown), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     // 모니터 / DPI / dock auto-hide 등 screen parameter 변경 알림 handler.
     if (!objc.class_addMethod(cls, objc.sel("screenChanged:"), @ptrCast(&tildazScreenChanged), "v@:@"))
