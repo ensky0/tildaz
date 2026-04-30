@@ -21,11 +21,24 @@ pub const Tab = struct {
     terminal: ghostty.Terminal,
     stream: ghostty.TerminalStream,
     interaction: terminal_interaction.TerminalInteraction = .{},
+    /// 탭바에 표시할 제목. 현재는 default "Tab N" — rename 은 후속 milestone.
+    title_buf: [64]u8 = [_]u8{0} ** 64,
+    title_len: usize = 0,
 
     pub fn deinit(self: *Tab, allocator: std.mem.Allocator) void {
         self.pty.deinit();
         self.terminal.deinit(allocator);
         // stream 은 terminal 의 view (vtStream) 라 별도 deinit 없음.
+    }
+
+    pub fn title(self: *const Tab) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+
+    pub fn setTitle(self: *Tab, s: []const u8) void {
+        const n = @min(s.len, self.title_buf.len);
+        @memcpy(self.title_buf[0..n], s[0..n]);
+        self.title_len = n;
     }
 };
 
@@ -78,6 +91,10 @@ pub const SessionCore = struct {
             .stream = undefined,
             .interaction = .{},
         };
+        // default 제목: "Tab N" — N 은 1-base 인덱스 (현재 컬렉션 길이 + 1).
+        var name_buf: [16]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "Tab {d}", .{self.tabs.items.len + 1}) catch "Tab";
+        tab.setTitle(name);
         errdefer tab.terminal.deinit(self.allocator);
         tab.stream = tab.terminal.vtStream();
 

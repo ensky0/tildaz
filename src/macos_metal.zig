@@ -235,6 +235,10 @@ pub const MetalRenderer = struct {
         y_offset: i32,
         padding: i32,
         preedit_utf8: []const u8,
+        /// 멀티탭 (#111). 길이 ≥ 2 일 때만 탭바 그림. 길이 0 / 1 이면 single-tab
+        /// 으로 보고 cell grid 가 풀 화면 사용.
+        tab_titles: []const []const u8,
+        active_tab: usize,
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
@@ -277,6 +281,8 @@ pub const MetalRenderer = struct {
         }
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
+
+        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -551,6 +557,93 @@ pub const MetalRenderer = struct {
             // atlas 가 dirty 면 다음 frame 에 업로드 — 한 frame 늦은 표시.
             if (pre_text_n > 0) self.drawTextInstances(encoder, pre_text_buf[0..pre_text_n]);
         }
+    }
+
+    /// 윈도우 상단 탭바 (#111 M11.4). cell grid 와 같은 metal pipeline 사용 —
+    /// BgInstance / TextInstance + 글리프 atlas 재사용.
+    /// y=0..TAB_BAR_HEIGHT_PT*scale 영역에 그림. cell grid 는 호출처가
+    /// `y_offset = TAB_BAR_HEIGHT_PT*scale` 으로 그 아래에 배치.
+    fn drawTabBar(
+        self: *MetalRenderer,
+        encoder: objc.id,
+        tab_titles: []const []const u8,
+        active_tab: usize,
+    ) void {
+        const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
+        const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
+        const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
+
+        const MAX_BG: usize = 64;
+        const MAX_TEXT: usize = 512;
+        var bg_buf: [MAX_BG]BgInstance = undefined;
+        var bg_n: usize = 0;
+        var text_buf: [MAX_TEXT]TextInstance = undefined;
+        var text_n: usize = 0;
+
+        // 1. 탭바 전체 배경 (탭 영역 밖).
+        bg_buf[bg_n] = .{
+            .pos = .{ 0, 0 },
+            .size = .{ @floatFromInt(self.vp_width), tab_bar_h_px },
+            .color = ui_metrics.TAB_BAR_BG,
+        };
+        bg_n += 1;
+
+        // 2. 각 탭 배경 (활성 / 비활성). 1px 우측 gap 으로 시각 구분.
+        for (tab_titles, 0..) |_, i| {
+            if (bg_n >= MAX_BG) break;
+            const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
+            const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else ui_metrics.TAB_INACTIVE_BG;
+            bg_buf[bg_n] = .{
+                .pos = .{ tab_x, 0 },
+                .size = .{ @max(tab_w_px - 1, 1), tab_bar_h_px },
+                .color = color,
+            };
+            bg_n += 1;
+        }
+
+        // 3. 각 탭 제목 텍스트.
+        const cw: f32 = @floatFromInt(self.font.cell_width);
+        const ch: f32 = @floatFromInt(self.font.cell_height);
+        const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
+        const max_text_w_px = tab_w_px - 2 * tab_pad_px;
+
+        for (tab_titles, 0..) |title, i| {
+            const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
+            const text_x_start = tab_x + tab_pad_px;
+            var text_x = text_x_start;
+
+            var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+            while (iter.nextCodepoint()) |cp| {
+                if (text_n >= MAX_TEXT) break;
+                if (text_x - text_x_start + cw > max_text_w_px) break;
+
+                const result = self.font.resolveGlyph(@intCast(cp)) orelse continue;
+                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    if (result.owned) ct.CFRelease(result.font);
+                    continue;
+                };
+                if (result.owned) ct.CFRelease(result.font);
+
+                if (entry.w > 0 and entry.h > 0) {
+                    const gx = text_x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = text_y_top + self.font.ascent_px
+                        - @as(f32, @floatFromInt(entry.bearing_y))
+                        - @as(f32, @floatFromInt(entry.h));
+                    text_buf[text_n] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                    };
+                    text_n += 1;
+                }
+                text_x += cw;
+            }
+        }
+
+        if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
+        if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);
     }
 
     fn updateConstants(self: *MetalRenderer) void {
