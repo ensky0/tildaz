@@ -479,6 +479,10 @@ pub const ConPty = struct {
         };
     }
 
+    /// Tab / 앱 종료 시 자식 셸 정리. macOS 의 `macos_pty.Pty.deinit` 과 흐름
+    /// 비교 노트가 그쪽 주석에 자세히. 요약: Windows 는 `ClosePseudoConsole` 한
+    /// 호출이 자식 정리까지 OS API 추상화. macOS 는 fd 직접 다루므로 시그널
+    /// (`kill(-pid, SIGHUP)`) 로 자식 종료를 직접 trigger 해야 함.
     pub fn deinit(self: *ConPty) void {
         // ClosePseudoConsole 가 output pipe 를 끊어주므로 readLoop 가 빠져나옴
         if (conpty_close_fn) |f| f(self.hpc) else ClosePseudoConsole(self.hpc);
