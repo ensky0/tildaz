@@ -615,23 +615,32 @@ fn syncGeometryAfterScreenChange() void {
     }
 }
 
+/// NSEvent 위치 → 윈도우 좌상단 기준 pixel 좌표 (top-down). 탭바 / cell hit
+/// test 에서 공용. 윈도우 밖이면 그대로 반환 (호출처가 음수 / 초과 처리).
+fn eventToWindowPx(self_view: objc.id, event: objc.id) struct { x: f32, y: f32 } {
+    const get_loc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSPoint);
+    const win_loc = get_loc(event, objc.sel("locationInWindow"));
+    const convertPoint = objc.objcSend(fn (objc.id, objc.SEL, NSPoint, objc.id) callconv(.c) NSPoint);
+    const view_loc = convertPoint(self_view, objc.sel("convertPoint:fromView:"), win_loc, @as(objc.id, null));
+
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const cv_bounds = get_rect(self_view, objc.sel("bounds"));
+    const view_h_pt = cv_bounds.size.height;
+    const scale = if (g_renderer) |*r| r.scale else 1.0;
+
+    return .{
+        .x = @as(f32, @floatCast(view_loc.x)) * scale,
+        .y = @as(f32, @floatCast(view_h_pt - view_loc.y)) * scale,
+    };
+}
+
 /// NSEvent 의 window 좌표 (Y-up) → terminal grid cell 좌표.
 /// `null` = window 밖 또는 padding 영역.
 fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     if (g_renderer == null) return null;
     const tab = g_session.activeTab() orelse return null;
 
-    // event.locationInWindow → view 좌표 (Y-up, point 단위).
-    const get_loc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSPoint);
-    const win_loc = get_loc(event, objc.sel("locationInWindow"));
-    const convertPoint = objc.objcSend(fn (objc.id, objc.SEL, NSPoint, objc.id) callconv(.c) NSPoint);
-    const view_loc = convertPoint(self_view, objc.sel("convertPoint:fromView:"), win_loc, @as(objc.id, null));
-
-    // view height (point) → Y 뒤집어 top-down.
-    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
-    const cv_bounds = get_rect(self_view, objc.sel("bounds"));
-    const view_h_pt = cv_bounds.size.height;
-
+    const xy = eventToWindowPx(self_view, event);
     const scale = g_renderer.?.scale;
     const cell_w_px = g_renderer.?.font.cell_width;
     const cell_h_px = g_renderer.?.font.cell_height;
@@ -639,15 +648,10 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
     const cell_top_px = pad_px + tab_bar_px;
 
-    // pixel 단위로 변환. y 는 top-down 으로 뒤집기.
-    const px: f32 = @as(f32, @floatCast(view_loc.x)) * scale;
-    const py: f32 = @as(f32, @floatCast(view_h_pt - view_loc.y)) * scale;
-
-    // 탭바 영역 + padding 안쪽만 cell. 밖이면 null (탭바 클릭은 M11.5 에서
-    // 별도 dispatch).
-    if (px < pad_px or py < cell_top_px) return null;
-    const x_in: f32 = px - pad_px;
-    const y_in: f32 = py - cell_top_px;
+    // 탭바 영역 + padding 안쪽만 cell. 밖이면 null (탭바 클릭은 별도 dispatch).
+    if (xy.x < pad_px or xy.y < cell_top_px) return null;
+    const x_in: f32 = xy.x - pad_px;
+    const y_in: f32 = xy.y - cell_top_px;
 
     const col_f = x_in / @as(f32, @floatFromInt(cell_w_px));
     const row_f = y_in / @as(f32, @floatFromInt(cell_h_px));
@@ -660,9 +664,64 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     return .{ .col = col, .row = row };
 }
 
+const TabBarHit = struct { tab_index: usize, on_close: bool };
+
+/// 탭바 영역 픽셀 좌표 → (탭 인덱스, close 버튼 hit 여부). 탭바 그리기 공식
+/// (`drawTabBar`) 의 좌표와 정확히 같은 hit rect 사용.
+fn tabBarHitTest(px: f32, py: f32) ?TabBarHit {
+    if (g_renderer == null) return null;
+    const r = &g_renderer.?;
+    const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
+    const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
+    const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
+    const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
+
+    if (px < 0 or py < 0 or py >= tab_bar_h) return null;
+    const tab_index_f = px / tab_w_px;
+    const tab_index = @as(usize, @intFromFloat(tab_index_f));
+    if (tab_index >= g_session.count()) return null; // 탭 옆 빈 영역.
+
+    // close 버튼 hit rect — drawTabBar 의 close_x/close_y 와 동일 공식.
+    const tab_x = @as(f32, @floatFromInt(tab_index)) * tab_w_px;
+    const close_x_min = tab_x + tab_w_px - close_size_px - tab_pad_px;
+    const close_x_max = close_x_min + close_size_px;
+    const close_y_min = (tab_bar_h - close_size_px) * 0.5;
+    const close_y_max = close_y_min + close_size_px;
+    const on_close = (px >= close_x_min and px <= close_x_max and
+        py >= close_y_min and py <= close_y_max);
+
+    return .{ .tab_index = tab_index, .on_close = on_close };
+}
+
+/// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
+fn handleTabBarClick(hit: TabBarHit) void {
+    if (hit.on_close) {
+        g_session.closeTab(hit.tab_index);
+        if (g_session.count() == 0) {
+            std.debug.print("[tab] last tab closed via close button, terminating tildaz.\n", .{});
+            const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+            terminate(g_app, objc.sel("terminate:"), null);
+            return;
+        }
+        // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남.
+        syncTerminalGeometry();
+        return;
+    }
+    _ = g_session.setActiveTab(hit.tab_index);
+}
+
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
+
+    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close. cell selection 보다 우선.
+    if (g_session.count() >= 2 and g_renderer != null) {
+        const xy = eventToWindowPx(self_view, event);
+        if (tabBarHitTest(xy.x, xy.y)) |hit| {
+            handleTabBarClick(hit);
+            return;
+        }
+    }
     const cell = eventToCell(self_view, event) orelse return;
     // double-click → word selection.
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
