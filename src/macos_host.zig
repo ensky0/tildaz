@@ -189,6 +189,10 @@ var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 /// 위험하므로 후속 milestone 에서 join 처리.
 var g_session: macos_session.SessionCore = undefined;
 var g_pty_bytes_received: u64 = 0;
+/// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
+var g_shell_path: []const u8 = "";
+var g_max_scrollback: usize = 0;
+var g_extra_env: [3]macos_pty.Pty.EnvVar = undefined;
 /// PTY child process 종료 flag. PTY read thread 에서 set, main thread 의
 /// render timer 가 검사 후 안전하게 NSApp.terminate. NSApp.terminate 는
 /// main thread 에서 호출해야 안전 (Windows 의 PostMessageW thread-safe 와
@@ -299,6 +303,9 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     if (cmd) {
         const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const kc = get_kc(event, objc.sel("keyCode"));
+        const NSEventModifierFlagShift: c_ulong = 1 << 17;
+        const shift = (flags & NSEventModifierFlagShift) != 0;
+
         // keyCode 8 = 'c', 9 = 'v'.
         if (kc == 8) {
             handleCopy();
@@ -306,6 +313,25 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
         if (kc == 9) {
             handlePaste();
+            return;
+        }
+        // Cmd+T = 새 탭 (kc 0x11 = 'T'). M11.2.
+        if (kc == 0x11 and !shift) {
+            handleNewTab();
+            return;
+        }
+        // Cmd+1..9 = 해당 인덱스 탭 활성화. M11.2.
+        if (keycodeToTabIndex(kc)) |idx| {
+            _ = g_session.setActiveTab(idx);
+            return;
+        }
+        // Cmd+Shift+[ / Cmd+Shift+] = 이전 / 다음 탭. M11.2.
+        if (shift and kc == 0x21) {
+            _ = g_session.activatePrev();
+            return;
+        }
+        if (shift and kc == 0x1E) {
+            _ = g_session.activateNext();
             return;
         }
         // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
@@ -613,6 +639,43 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
 fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
     _ = tab.interaction.selection.finish();
+}
+
+/// macOS keycode (kVK_ANSI_*) 의 1..9 → 0-base 탭 인덱스. 1 → 0, 2 → 1 식.
+/// 키보드 row 가 keycode 순서가 아니라 매핑이 비균일 (`0x12, 0x13, 0x14,
+/// 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19`).
+fn keycodeToTabIndex(kc: c_ushort) ?usize {
+    return switch (kc) {
+        0x12 => 0, // 1
+        0x13 => 1, // 2
+        0x14 => 2, // 3
+        0x15 => 3, // 4
+        0x17 => 4, // 5
+        0x16 => 5, // 6
+        0x1A => 6, // 7
+        0x1C => 7, // 8
+        0x19 => 8, // 9
+        else => null,
+    };
+}
+
+/// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성. createTab 이 새
+/// 탭을 활성으로 전환하므로 별도 setActiveTab 불필요.
+fn handleNewTab() void {
+    const active = g_session.activeTab() orelse return;
+    const cols = active.terminal.cols;
+    const rows = active.terminal.rows;
+    _ = g_session.createTab(
+        cols,
+        rows,
+        g_max_scrollback,
+        g_shell_path,
+        &g_extra_env,
+        onPtyOutput,
+        onPtyExit,
+    ) catch |err| {
+        std.debug.print("[tab] new tab failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
@@ -974,37 +1037,29 @@ pub fn run() !void {
 
     g_session = .{ .allocator = allocator };
 
-    // 첫 (현재 단계엔 유일한) 탭 생성. 멀티탭 createTab/closeTab 은 후속 milestone.
-    const tab = try allocator.create(macos_session.Tab);
-    tab.* = .{
-        .pty = undefined,
-        .terminal = try ghostty.Terminal.init(allocator, .{
-            .cols = term_cols,
-            .rows = term_rows,
-            .max_scrollback = max_scrollback,
-            .colors = ghostty.Terminal.Colors.default,
-        }),
-        .stream = undefined,
-        .interaction = .{},
-    };
-    tab.stream = tab.terminal.vtStream();
-    std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
-
     // TERM / LANG 환경변수: .app launch 시 부모 environ 에 없을 수 있어
     // 명시적 설정. TERM=xterm-256color 는 escape sequence + 256-color 표준.
     // LANG=en_US.UTF-8 은 bash readline 의 multi-byte 처리 활성화 — 안 하면
     // 한글 / 일본어 byte 를 받아도 echo 안 함 (ASCII 모드).
-    tab.pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, &.{
+    g_extra_env = .{
         .{ .name = "TERM", .value = "xterm-256color" },
         .{ .name = "LANG", .value = "en_US.UTF-8" },
         .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
-    });
-    // userdata = *Tab — 콜백이 어느 탭의 출력 / 종료인지 식별. 멀티탭에서
-    // 결정적 (지금은 단일 탭이라 사실상 g_session.activeTab() 와 동일).
-    try tab.pty.startReadThread(onPtyOutput, onPtyExit, tab);
-    std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, tab.pty.child_pid });
+    };
+    g_max_scrollback = max_scrollback;
+    g_shell_path = try allocator.dupe(u8, shell_path);
 
-    try g_session.appendTab(tab);
+    const tab = try g_session.createTab(
+        term_cols,
+        term_rows,
+        max_scrollback,
+        g_shell_path,
+        &g_extra_env,
+        onPtyOutput,
+        onPtyExit,
+    );
+    std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
+    std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, tab.pty.child_pid });
 
     // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
     // 주기적으로 fire. callback 은 C 함수 — selector / ObjC class 등록 불필요.
