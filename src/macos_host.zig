@@ -26,6 +26,7 @@ const ui_metrics = @import("ui_metrics.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const tab_interaction = @import("tab_interaction.zig");
 const macos_session = @import("macos_session.zig");
+const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const about = @import("about.zig");
@@ -200,7 +201,7 @@ var g_pty_bytes_received: u64 = 0;
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
 var g_max_scrollback: usize = 0;
-var g_extra_env: [3]macos_pty.Pty.EnvVar = undefined;
+var g_extra_env: [4]macos_pty.Pty.EnvVar = undefined;
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 // font_family 는 config 통합 전까지 hardcoded.
@@ -912,6 +913,7 @@ fn handleNewTab() void {
         &g_extra_env,
         onPtyOutput,
         onPtyExit,
+        g_config.theme,
     ) catch |err| {
         std.debug.print("[tab] new tab failed: {s}\n", .{@errorName(err)});
         return;
@@ -1245,6 +1247,9 @@ pub fn run() !void {
     const font_family: []const u8 = tildaz_font_env orelse FONT_FAMILY;
     std.debug.print("[font] family={s}\n", .{font_family});
 
+    // theme 의 background 를 metal renderer 의 default_bg 로 — clear pass color
+    // (cell 이 그리지 않는 영역) + 비활성 탭 BG 에 사용.
+    const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
     g_renderer = try macos_metal.MetalRenderer.init(
         allocator,
         device,
@@ -1253,7 +1258,7 @@ pub fn run() !void {
         FONT_SIZE_PT,
         CELL_WIDTH_SCALE,
         LINE_HEIGHT_SCALE,
-        null, // 기본 배경색 (Metal renderer 의 default).
+        theme_bg,
         @floatCast(scale_pt),
     );
     // viewport / cell metrics 모두 pixel 단위로 통일 — pt/px mixing 시 글리프
@@ -1301,10 +1306,20 @@ pub fn run() !void {
     // 명시적 설정. TERM=xterm-256color 는 escape sequence + 256-color 표준.
     // LANG=en_US.UTF-8 은 bash readline 의 multi-byte 처리 활성화 — 안 하면
     // 한글 / 일본어 byte 를 받아도 echo 안 함 (ASCII 모드).
+    //
+    // COLORFGBG: vim / less / tmux 같은 TUI 가 자동으로 dark / light
+    // colorscheme 선택할 때 보는 표준 환경변수. theme.background 의 luminance
+    // 로 판별 (Windows `terminal_backend.envVarsForTheme` 와 같은 helper
+    // `themes.isDark` 사용). dark = "15;0", light = "0;15".
+    const colorfgbg_value: []const u8 = if (g_config.theme) |t|
+        (if (themes.isDark(t)) "15;0" else "0;15")
+    else
+        "15;0";
     g_extra_env = .{
         .{ .name = "TERM", .value = "xterm-256color" },
         .{ .name = "LANG", .value = "en_US.UTF-8" },
         .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
+        .{ .name = "COLORFGBG", .value = colorfgbg_value },
     };
     g_max_scrollback = max_scrollback;
     g_shell_path = try allocator.dupe(u8, shell_path);
@@ -1317,6 +1332,7 @@ pub fn run() !void {
         &g_extra_env,
         onPtyOutput,
         onPtyExit,
+        g_config.theme,
     );
     std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
     std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, tab.pty.child_pid });
