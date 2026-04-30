@@ -559,10 +559,15 @@ pub const MetalRenderer = struct {
         }
     }
 
-    /// 윈도우 상단 탭바 (#111 M11.4). cell grid 와 같은 metal pipeline 사용 —
-    /// BgInstance / TextInstance + 글리프 atlas 재사용.
-    /// y=0..TAB_BAR_HEIGHT_PT*scale 영역에 그림. cell grid 는 호출처가
-    /// `y_offset = TAB_BAR_HEIGHT_PT*scale` 으로 그 아래에 배치.
+    /// 윈도우 상단 탭바 (#111 M11.4 + M11.4-fix). Windows `D3d11Renderer.renderTabBar`
+    /// 와 같은 시각 디자인:
+    ///   - 탭바 BG 는 매우 어둡게 (TAB_BAR_BG = 20/255).
+    ///   - 비활성 탭 BG = renderer 의 `default_bg` (terminal 배경) → cell grid 와
+    ///     자연스럽게 이어짐.
+    ///   - 활성 탭 BG = TAB_ACTIVE_BG (50/255) → 어두운 BG 대비 두드러짐.
+    ///   - 탭 placement: 좌우 1px + 상하 2px gap 을 두고 sandwich → 그 gap 으로
+    ///     TAB_BAR_BG 가 보여 탭의 명확한 윤곽선 역할.
+    ///   - 우측 끝에 'x' 글리프 (close 버튼) — dim 회색. 클릭 처리는 M11.5.
     fn drawTabBar(
         self: *MetalRenderer,
         encoder: objc.id,
@@ -572,6 +577,8 @@ pub const MetalRenderer = struct {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
         const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
+        const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * self.scale;
+        const inactive_bg: [4]f32 = .{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
 
         const MAX_BG: usize = 64;
         const MAX_TEXT: usize = 512;
@@ -580,7 +587,7 @@ pub const MetalRenderer = struct {
         var text_buf: [MAX_TEXT]TextInstance = undefined;
         var text_n: usize = 0;
 
-        // 1. 탭바 전체 배경 (탭 영역 밖).
+        // 1. 탭바 전체 배경.
         bg_buf[bg_n] = .{
             .pos = .{ 0, 0 },
             .size = .{ @floatFromInt(self.vp_width), tab_bar_h_px },
@@ -588,24 +595,25 @@ pub const MetalRenderer = struct {
         };
         bg_n += 1;
 
-        // 2. 각 탭 배경 (활성 / 비활성). 1px 우측 gap 으로 시각 구분.
+        // 2. 각 탭 배경 — 좌우 1px + 상하 2px sandwich (Windows 패턴).
         for (tab_titles, 0..) |_, i| {
             if (bg_n >= MAX_BG) break;
             const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
-            const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else ui_metrics.TAB_INACTIVE_BG;
+            const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
-                .pos = .{ tab_x, 0 },
-                .size = .{ @max(tab_w_px - 1, 1), tab_bar_h_px },
+                .pos = .{ tab_x + 1, 2 },
+                .size = .{ @max(tab_w_px - 2, 1), @max(tab_bar_h_px - 4, 1) },
                 .color = color,
             };
             bg_n += 1;
         }
 
-        // 3. 각 탭 제목 텍스트.
+        // 3. 각 탭 제목 텍스트 + close 버튼 (× 글리프).
         const cw: f32 = @floatFromInt(self.font.cell_width);
         const ch: f32 = @floatFromInt(self.font.cell_height);
         const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
-        const max_text_w_px = tab_w_px - 2 * tab_pad_px;
+        // close 버튼 자리 + 양쪽 padding 빼고 남은 영역만 텍스트.
+        const max_text_w_px = tab_w_px - close_size_px - tab_pad_px * 3;
 
         for (tab_titles, 0..) |title, i| {
             const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
@@ -639,6 +647,38 @@ pub const MetalRenderer = struct {
                     text_n += 1;
                 }
                 text_x += cw;
+            }
+
+            // close 버튼 'x' — 우측 끝 + tab_pad 위치. 색은 텍스트 60% + 탭
+            // 배경 40% (Windows 와 동일 — 너무 강조되지 않게 dim).
+            if (text_n < MAX_TEXT) {
+                const tab_bg = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
+                const close_c: [4]f32 = .{
+                    ui_metrics.TAB_TEXT_COLOR[0] * 0.6 + tab_bg[0] * 0.4,
+                    ui_metrics.TAB_TEXT_COLOR[1] * 0.6 + tab_bg[1] * 0.4,
+                    ui_metrics.TAB_TEXT_COLOR[2] * 0.6 + tab_bg[2] * 0.4,
+                    1.0,
+                };
+                const close_x = tab_x + tab_w_px - close_size_px - tab_pad_px;
+                const close_y = (tab_bar_h_px - close_size_px) * 0.5;
+                if (self.font.resolveGlyph('x')) |result| {
+                    if (self.atlas.getOrInsert(result.font, @intCast(result.index))) |entry| {
+                        if (result.owned) ct.CFRelease(result.font);
+                        if (entry.w > 0 and entry.h > 0) {
+                            const gx = close_x + (close_size_px - cw) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
+                            const close_baseline = close_y + (close_size_px + self.font.ascent_px - (ch - self.font.ascent_px)) * 0.5;
+                            const gy = close_baseline - @as(f32, @floatFromInt(entry.bearing_y));
+                            text_buf[text_n] = .{
+                                .pos = .{ gx, gy },
+                                .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                                .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                                .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                                .fg_color = close_c,
+                            };
+                            text_n += 1;
+                        }
+                    } else if (result.owned) ct.CFRelease(result.font);
+                }
             }
         }
 

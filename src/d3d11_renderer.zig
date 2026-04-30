@@ -129,11 +129,8 @@ pub const D3d11Renderer = struct {
     vp_height: u32 = 0,
 
     // Tab bar colors
-    const TAB_BAR_R: f32 = 20.0 / 255.0;
-    const TAB_BAR_G: f32 = 20.0 / 255.0;
-    const TAB_BAR_B: f32 = 20.0 / 255.0;
-    const TAB_ACTIVE_R: f32 = 50.0 / 255.0;
-    const TAB_TEXT_R: f32 = 180.0 / 255.0;
+    // 탭 색상은 `ui_metrics.zig` 의 cross-platform 상수 사용 (macOS 와 같은 값).
+    // 모두 회색 (R == G == B) 이라 단일 채널 [0] 으로 단축 사용 가능.
 
     fn colorF(v: u8) f32 {
         return @as(f32, @floatFromInt(v)) / 255.0;
@@ -550,7 +547,7 @@ pub const D3d11Renderer = struct {
         var bg_count: u32 = 0;
 
         // Tab bar background
-        bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = .{ TAB_BAR_R, TAB_BAR_G, TAB_BAR_B, 1 } };
+        bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = ui_metrics.TAB_BAR_BG };
         bg_count += 1;
 
         // Tab backgrounds
@@ -558,7 +555,7 @@ pub const D3d11Renderer = struct {
             if (bg_count >= 128) break;
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
-            const c = if (i == active_tab) TAB_ACTIVE_R else self.default_bg[0];
+            const c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
             bg_instances[bg_count] = .{
                 .pos = .{ tab_x + 1, 2 },
                 .size = .{ tw - 2, tbh - 2 },
@@ -620,7 +617,7 @@ pub const D3d11Renderer = struct {
                                 .size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
                                 .uv_pos = .{ @floatFromInt(dot_entry.x), @floatFromInt(dot_entry.y) },
                                 .uv_size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
-                                .fg_color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                                .fg_color = ui_metrics.TAB_TEXT_COLOR,
                             };
                             text_count += 1;
                         }
@@ -635,7 +632,7 @@ pub const D3d11Renderer = struct {
                         cursor_instances[0] = .{
                             .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
                             .size = .{ 1, ch - 2 },
-                            .color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                            .color = ui_metrics.TAB_TEXT_COLOR,
                         };
                         cursor_count = 1;
                     }
@@ -659,7 +656,7 @@ pub const D3d11Renderer = struct {
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                        .fg_color = ui_metrics.TAB_TEXT_COLOR,
                     };
                     text_count += 1;
                 }
@@ -672,7 +669,7 @@ pub const D3d11Renderer = struct {
                         cursor_instances[0] = .{
                             .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
                             .size = .{ 1, ch - 2 },
-                            .color = .{ TAB_TEXT_R, TAB_TEXT_R, TAB_TEXT_R, 1 },
+                            .color = ui_metrics.TAB_TEXT_COLOR,
                         };
                         cursor_count = 1;
                     }
@@ -683,8 +680,8 @@ pub const D3d11Renderer = struct {
             if (text_count < 512) {
                 const close_x = tab_x + tw - cbs - pad;
                 const close_y = (tbh - cbs) / 2.0;
-                const tab_bg_c = if (i == active_tab) TAB_ACTIVE_R else self.default_bg[0];
-                const close_c = TAB_TEXT_R * 0.6 + tab_bg_c * 0.4;
+                const tab_bg_c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
+                const close_c = ui_metrics.TAB_TEXT_COLOR[0] * 0.6 + tab_bg_c * 0.4;
 
                 const result = self.font.resolveGlyph('x') orelse continue;
                 const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
