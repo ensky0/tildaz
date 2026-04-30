@@ -77,6 +77,29 @@
 
 panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요.
 
+# 터미널 환경변수 (TUI dark/light colorscheme)
+
+자식 셸 process 에 다음 환경변수를 *항상* 넘겨요. 한쪽 platform 에 빠지면 사용자가 *터미널 cell 색은 같지만 vim 안 텍스트 색이 다르다* 같은 미묘한 차이를 보고할 가능성이 높아요. macOS 포팅 중 실제 발생 (#113 M13.2) — Windows tildaz 가 매일 보던 vim 색과 macOS 가 달라 보이는 원인이 이 환경변수였음.
+
+| 환경변수 | 역할 | 값 결정 |
+|---|---|---|
+| `TERM` | escape sequence + 256-color 표준 | `xterm-256color` (양쪽 동일) |
+| `LANG` | bash readline 의 multi-byte 처리 | `en_US.UTF-8` (양쪽 동일) |
+| `LC_CTYPE` | ditto, 일부 셸이 `LANG` 안 봄 | `en_US.UTF-8` (양쪽 동일) |
+| `COLORFGBG` | vim / less / tmux 가 자동 dark/light colorscheme 선택 | theme.background luminance 로 `"15;0"` (dark) / `"0;15"` (light) |
+| `WSLENV` | WSL 안 process 에 위 변수들 전달 (Windows 전용) | `COLORFGBG` 추가 |
+
+**`COLORFGBG` 는 표준 환경변수**로 vim 의 `:set background?` 가 자동 결정하는 근거. tmux / less 도 비슷. 우리 theme 의 background 가 dark 인지 light 인지 OS API query 가 아니라 **theme.background 의 luminance 로 직접 판별**해요 — `themes.isDark(theme: *const Theme) bool` (cross-platform helper, Rec. BT.601 weights 299/587/114, `lum < 128_000` dark).
+
+**구현 위치:**
+- 양쪽 공통: [`src/themes.zig`](src/themes.zig) `isDark()` — luminance 계산.
+- Windows: [`src/terminal_backend.zig`](src/terminal_backend.zig) `envVarsForTheme` 가 ConPty 생성 시 `extra_env` 로 전달.
+- macOS: [`src/macos_host.zig`](src/macos_host.zig) `g_extra_env` 에 추가, PTY 생성 시 `extra_env` 로 전달.
+
+**새 platform 포팅 시 체크리스트:**
+- TUI 가 dark BG 인식하는지 확인 — `echo $COLORFGBG` 출력 / `vim` 띄워서 colorscheme 자동 적용 여부.
+- 안 되면 `themes.isDark` 로 PTY env 에 `COLORFGBG` 추가.
+
 # 메시지 언어
 
 **내부 협업 기록은 한국어**로 작성해요. 커밋 메시지, GitHub 이슈 / 이슈 코멘트 / PR, 릴리즈 노트, 에이전트와의 대화가 여기에 해당해요. 유지 보수 문맥이 한국어로 쌓여야 작업 기억의 효율이 좋아요.
