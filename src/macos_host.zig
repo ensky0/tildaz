@@ -409,6 +409,24 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     if (g_marked_len == 0) {
         const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const keycode = get_keycode(event, objc.sel("keyCode"));
+
+        // Shift+PgUp / Shift+PgDn — viewport scrollback. Windows
+        // `session_core.scrollActive` 와 같은 *한 페이지 (visible rows)* 단위.
+        // PTY 로 안 흘림.
+        const NSEventModifierFlagShift: c_ulong = 1 << 17;
+        const shift = (flags & NSEventModifierFlagShift) != 0;
+        if (shift) {
+            const rows: isize = @intCast(tab.terminal.rows);
+            if (keycode == 116) { // kVK_PageUp — 위쪽 (older).
+                tab.terminal.scrollViewport(.{ .delta = -rows });
+                return;
+            }
+            if (keycode == 121) { // kVK_PageDown — 아래쪽 (newer).
+                tab.terminal.scrollViewport(.{ .delta = rows });
+                return;
+            }
+        }
+
         if (keyCodeToEscape(keycode)) |esc| {
             _ = tab.pty.write(esc) catch {};
             return;
