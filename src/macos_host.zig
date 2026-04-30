@@ -24,6 +24,7 @@ const ghostty = @import("ghostty-vt");
 const macos_metal = @import("macos_metal.zig");
 const ui_metrics = @import("ui_metrics.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const macos_session = @import("macos_session.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const about = @import("about.zig");
@@ -178,18 +179,16 @@ var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: macos_config.Config = .{};
 var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-var g_pty: ?macos_pty.Pty = null;
-// ghostty-vt Terminal + stream — PTY read thread 가 nextSlice 호출.
-// thread safety: 현재 단계 (M5.1) 에서는 UI thread 가 terminal 을 안 읽으므로
-// PTY read thread 가 직접 stream parsing 해도 race 없음. M5.3 (Metal 렌더링)
-// 에서 UI thread 가 grid 를 읽기 시작하면 ring buffer + drain 패턴 도입.
-var g_terminal: ghostty.Terminal = undefined;
-var g_stream: ghostty.TerminalStream = undefined;
-var g_terminal_initialized: bool = false;
+/// 멀티탭 컬렉션 (#111 M11.1). 현재 단계는 데이터 모델만 도입 — 실제로는
+/// 단일 탭만 생성. PTY / Terminal / Stream / 마우스 selection 은 모두 활성
+/// 탭의 필드. host 코드는 `g_session.activeTab().?.{pty,terminal,...}` 로 access.
+///
+/// thread safety (M5.1 노트): UI thread 가 terminal 을 안 읽으므로 PTY read
+/// thread 가 직접 stream parsing 해도 race 없음. 멀티탭 도입해도 활성 탭만
+/// 렌더링 + 입력 받으니 동일 — 단 closeTab 은 read thread 가 살아 있을 때
+/// 위험하므로 후속 milestone 에서 join 처리.
+var g_session: macos_session.SessionCore = undefined;
 var g_pty_bytes_received: u64 = 0;
-/// 마우스 드래그 텍스트 선택 상태. Windows `terminal_interaction.zig` 와
-/// 동일 모듈 — cell 좌표 기준 selection 시작/업데이트/종료.
-var g_interaction: terminal_interaction.TerminalInteraction = .{};
 /// PTY child process 종료 flag. PTY read thread 에서 set, main thread 의
 /// render timer 가 검사 후 안전하게 NSApp.terminate. NSApp.terminate 는
 /// main thread 에서 호출해야 안전 (Windows 의 PostMessageW thread-safe 와
@@ -289,7 +288,7 @@ fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
 }
 
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
-    if (g_pty == null) return;
+    const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
     // Cmd+C / Cmd+V 우선 — IME 와 무관하게 처리.
@@ -322,7 +321,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const keycode = get_keycode(event, objc.sel("keyCode"));
         if (keyCodeToEscape(keycode)) |esc| {
-            _ = g_pty.?.write(esc) catch {};
+            _ = tab.pty.write(esc) catch {};
             return;
         }
     }
@@ -356,7 +355,7 @@ fn imeStringFromInput(text: objc.id) objc.id {
 /// IME 가 글자 commit 시 호출 (한글 음절 완성, 일본어 conversion 확정 등).
 /// PTY 로 write + preedit buffer clear.
 fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
-    if (g_pty == null) return;
+    const tab = g_session.activeTab() orelse return;
     const str = imeStringFromInput(text);
     if (str == null) {
         g_marked_len = 0;
@@ -375,7 +374,7 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
 
     g_marked_len = 0;
     g_preedit_len = 0;
-    _ = g_pty.?.write(cstr[0..len]) catch |err| {
+    _ = tab.pty.write(cstr[0..len]) catch |err| {
         std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
     };
 }
@@ -450,7 +449,7 @@ fn imeFirstRect(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) 
 /// IME 가 모르는 special key (Return, Backspace, Tab, 화살표 등) 을
 /// interpretKeyEvents 가 selector 형태로 보냄. escape sequence 매핑.
 fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
-    if (g_pty == null) return;
+    const tab = g_session.activeTab() orelse return;
     const bytes: ?[]const u8 = if (cmd_sel == objc.sel("insertNewline:"))
         "\r"
     else if (cmd_sel == objc.sel("insertTab:"))
@@ -474,7 +473,7 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     else
         null;
     if (bytes) |b| {
-        _ = g_pty.?.write(b) catch {};
+        _ = tab.pty.write(b) catch {};
     }
 }
 
@@ -488,7 +487,7 @@ fn tildazScreenChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
 
 fn syncGeometryAfterScreenChange() void {
     if (g_renderer == null) return;
-    if (!g_terminal_initialized) return;
+    const tab = g_session.activeTab() orelse return;
 
     // 1. 새 visibleFrame 기준으로 윈도우 위치 / 크기 재설정.
     repositionWindow();
@@ -529,16 +528,17 @@ fn syncGeometryAfterScreenChange() void {
     const new_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
     const new_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
-    if (new_cols != g_terminal.cols or new_rows != g_terminal.rows) {
-        g_terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+    // M11.x: 멀티탭 도입 후엔 모든 탭의 terminal+pty 를 같이 resize 해야 해요
+    //         (보이지 않는 탭의 grid 도 같은 cols/rows 유지). M11.1 단계는 단일
+    //         탭이라 활성 탭만 처리.
+    if (new_cols != tab.terminal.cols or new_rows != tab.terminal.rows) {
+        tab.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
             std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
             return;
         };
-        if (g_pty) |*pty| {
-            pty.resize(new_cols, new_rows) catch |err| {
-                std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
-            };
-        }
+        tab.pty.resize(new_cols, new_rows) catch |err| {
+            std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
+        };
         std.debug.print("[geom] screen changed: vp={d}x{d} px, scale={d}, cols={d} rows={d}\n", .{
             vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
         });
@@ -549,7 +549,7 @@ fn syncGeometryAfterScreenChange() void {
 /// `null` = window 밖 또는 padding 영역.
 fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     if (g_renderer == null) return null;
-    if (!g_terminal_initialized) return null;
+    const tab = g_session.activeTab() orelse return null;
 
     // event.locationInWindow → view 좌표 (Y-up, point 단위).
     const get_loc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSPoint);
@@ -580,8 +580,8 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     const row_f = y_in / @as(f32, @floatFromInt(cell_h_px));
     if (col_f < 0 or row_f < 0) return null;
 
-    const cols = g_terminal.cols;
-    const rows = g_terminal.rows;
+    const cols = tab.terminal.cols;
+    const rows = tab.terminal.rows;
     const col: u16 = @intCast(@min(@as(u32, @intFromFloat(col_f)), @as(u32, cols) - 1));
     const row: u16 = @intCast(@min(@as(u32, @intFromFloat(row_f)), @as(u32, rows) - 1));
     return .{ .col = col, .row = row };
@@ -589,35 +589,38 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
 
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
+    const tab = g_session.activeTab() orelse return;
     const cell = eventToCell(self_view, event) orelse return;
     // double-click → word selection.
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     const click_count = get_count(event, objc.sel("clickCount"));
     if (click_count >= 2) {
-        _ = terminal_interaction.selectWord(g_terminal.screens.active, cell);
-        g_interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
+        _ = terminal_interaction.selectWord(tab.terminal.screens.active, cell);
+        tab.interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
         return;
     }
-    g_interaction.selection.begin(g_terminal.screens.active, cell);
+    tab.interaction.selection.begin(tab.terminal.screens.active, cell);
 }
 
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
-    if (!g_interaction.selection.active) return;
+    const tab = g_session.activeTab() orelse return;
+    if (!tab.interaction.selection.active) return;
     const cell = eventToCell(self_view, event) orelse return;
-    g_interaction.selection.update(g_terminal.screens.active, cell);
+    tab.interaction.selection.update(tab.terminal.screens.active, cell);
 }
 
 fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
-    _ = g_interaction.selection.finish();
+    const tab = g_session.activeTab() orelse return;
+    _ = tab.interaction.selection.finish();
 }
 
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
 /// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
 /// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
 fn handleCopy() void {
-    if (!g_terminal_initialized) return;
-    const screen: *ghostty.Screen = g_terminal.screens.active;
+    const tab = g_session.activeTab() orelse return;
+    const screen: *ghostty.Screen = tab.terminal.screens.active;
     const sel = screen.selection orelse return;
     const alloc = g_gpa.allocator();
     const text = screen.selectionString(alloc, .{ .sel = sel }) catch return;
@@ -643,7 +646,7 @@ fn handleCopy() void {
 }
 
 fn handlePaste() void {
-    if (g_pty == null) return;
+    const tab = g_session.activeTab() orelse return;
     const NSPasteboard = objc.getClass("NSPasteboard");
     const get_general = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const pb = get_general(NSPasteboard, objc.sel("generalPasteboard"));
@@ -661,13 +664,13 @@ fn handlePaste() void {
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
 
-    _ = g_pty.?.write(cstr[0..len]) catch |err| {
+    _ = tab.pty.write(cstr[0..len]) catch |err| {
         std.debug.print("[paste] PTY write failed: {s}\n", .{@errorName(err)});
     };
 }
 
 fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
-    if (!g_terminal_initialized) return;
+    const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
     const get_delta = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
@@ -685,7 +688,7 @@ fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void 
 
     // delta 부호: 양수 deltaY (위로) → scrollback 위쪽 (older) = delta 음수
     // (ghostty `scrollViewport(.{.delta = -N})` 가 위쪽).
-    g_terminal.scrollViewport(.{ .delta = -lines });
+    tab.terminal.scrollViewport(.{ .delta = -lines });
 }
 
 fn registerTildazViewClass() !objc.Class {
@@ -969,28 +972,39 @@ pub fn run() !void {
     const bytes_per_row = ghostty.Page.layout(cap).total_size / cap.rows;
     const max_scrollback = max_scroll_lines * bytes_per_row;
 
-    g_terminal = try ghostty.Terminal.init(allocator, .{
-        .cols = term_cols,
-        .rows = term_rows,
-        .max_scrollback = max_scrollback,
-        .colors = ghostty.Terminal.Colors.default,
-    });
-    g_stream = g_terminal.vtStream();
-    g_terminal_initialized = true;
+    g_session = .{ .allocator = allocator };
+
+    // 첫 (현재 단계엔 유일한) 탭 생성. 멀티탭 createTab/closeTab 은 후속 milestone.
+    const tab = try allocator.create(macos_session.Tab);
+    tab.* = .{
+        .pty = undefined,
+        .terminal = try ghostty.Terminal.init(allocator, .{
+            .cols = term_cols,
+            .rows = term_rows,
+            .max_scrollback = max_scrollback,
+            .colors = ghostty.Terminal.Colors.default,
+        }),
+        .stream = undefined,
+        .interaction = .{},
+    };
+    tab.stream = tab.terminal.vtStream();
     std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
 
     // TERM / LANG 환경변수: .app launch 시 부모 environ 에 없을 수 있어
     // 명시적 설정. TERM=xterm-256color 는 escape sequence + 256-color 표준.
     // LANG=en_US.UTF-8 은 bash readline 의 multi-byte 처리 활성화 — 안 하면
     // 한글 / 일본어 byte 를 받아도 echo 안 함 (ASCII 모드).
-    var pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, &.{
+    tab.pty = try macos_pty.Pty.init(allocator, term_cols, term_rows, shell_path, &.{
         .{ .name = "TERM", .value = "xterm-256color" },
         .{ .name = "LANG", .value = "en_US.UTF-8" },
         .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
     });
-    try pty.startReadThread(onPtyOutput, onPtyExit, null);
-    g_pty = pty; // startReadThread 후에 복사 — read_thread / wait_thread 필드도 같이.
-    std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, pty.child_pid });
+    // userdata = *Tab — 콜백이 어느 탭의 출력 / 종료인지 식별. 멀티탭에서
+    // 결정적 (지금은 단일 탭이라 사실상 g_session.activeTab() 와 동일).
+    try tab.pty.startReadThread(onPtyOutput, onPtyExit, tab);
+    std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, tab.pty.child_pid });
+
+    try g_session.appendTab(tab);
 
     // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
     // 주기적으로 fire. callback 은 C 함수 — selector / ObjC class 등록 불필요.
@@ -1011,18 +1025,20 @@ pub fn run() !void {
 }
 
 /// PTY read thread 의 콜백 — 받은 데이터를 ghostty-vt Terminal stream parser 로
-/// 라우팅. M5.1 의 핵심. 사용자 화면 렌더링은 M5.3 부터.
+/// 라우팅. userdata 는 *Tab — 어느 탭의 출력인지 식별 (멀티탭 단계에서 의미).
 ///
 /// thread safety: 이 콜백은 PTY read thread 에서 호출. 현재 단계에선 UI thread
-/// 가 g_terminal 을 안 읽으므로 race 없음. M5.3 부터 ring buffer + drain 패턴
-/// 도입 예정.
-fn onPtyOutput(data: []const u8, _: ?*anyopaque) void {
-    if (!g_terminal_initialized) return;
-    g_stream.nextSlice(data);
+/// 가 terminal 을 안 읽으므로 race 없음. 후속 milestone 에서 ring buffer +
+/// drain 패턴 도입 예정.
+fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
+    const tab: *macos_session.Tab = @ptrCast(@alignCast(userdata orelse return));
+    tab.stream.nextSlice(data);
     g_pty_bytes_received += data.len;
 }
 
-/// PTY 자식 (셸) 이 종료되면 호출 — 우리도 같이 종료.
+/// PTY 자식 (셸) 이 종료되면 호출.
+/// M11.1: 단일 탭 단계라 어느 탭이든 종료되면 앱도 종료 (= 현재 동작 유지).
+/// M11.3: userdata 의 *Tab 을 받아 그 탭만 close, 마지막 탭이면 앱 종료.
 fn onPtyExit(_: ?*anyopaque) void {
     // PTY read thread 에서 호출. NSApp.terminate 는 main thread 호출 안전성
     // 보장 안 되므로 atomic flag 만 set 하고 main thread 의 render timer 가
@@ -1046,12 +1062,12 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
 
     if (!g_visible) return;
     if (g_renderer == null) return;
-    if (!g_terminal_initialized) return;
+    const tab = g_session.activeTab() orelse return;
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
     const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
-    g_renderer.?.renderFrame(g_metal_layer, &g_terminal, cell_w_px, cell_h_px, 0, pad_px, preedit);
+    g_renderer.?.renderFrame(g_metal_layer, &tab.terminal, cell_w_px, cell_h_px, 0, pad_px, preedit);
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
