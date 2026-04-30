@@ -4,13 +4,13 @@
 //! 은 여기서 정의하고 실제 표시는 호출처가 `dialog.zig` 로 위임.
 
 pub const config_error_title = "TildaZ Config Error";
-pub const about_title = "About tildaz";
+pub const about_title = "About TildaZ";
 pub const error_title = "TildaZ Error";
 pub const crash_title = "TildaZ Crash";
 pub const info_title = "TildaZ";
 
 pub const about_format =
-    \\tildaz v{s}
+    \\TildaZ v{s}
     \\
     \\exe : {s}
     \\pid : {d}

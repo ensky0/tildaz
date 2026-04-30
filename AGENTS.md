@@ -36,10 +36,10 @@
 - **macOS**: NSTextInputClient protocol — `interpretKeyEvents:` → `setMarkedText:`
   (조합 중) / `insertText:` (commit) / `doCommandBySelector:` (special key) 콜백.
   preedit overlay 는 우리 metal renderer 가 `cursor.viewport` 위치에 직접 그림.
-- **Windows**: 현재 (2026-04 기준) preedit overlay 미구현 — OS IME 자체 candidate
-  window 가 commit 만 `WM_CHAR` 로 전달. macOS 와 동일한 inline preedit 으로
-  맞추려면 `ImmGetCompositionStringW` 로 candidate string 수신 + 직접 그리기 필요
-  (후속 milestone).
+- **Windows**: OS IME 자체 candidate window 가 표시 + commit 만 `WM_CHAR` 로 전달.
+  *의도된 platform 차이* (#110 close 사유, SPEC.md §5) — Windows 사용자가 OS
+  candidate window 에 익숙 + IMM 통합 시 모든 IME 종류 (한글 / 일본어 / 중국어
+  / 베트남어 등) 책임지는 부담 회피. cross-platform 동등성 룰의 명시 예외.
 
 # 근본 해결 원칙
 
@@ -79,7 +79,7 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 # 터미널 환경변수 (TUI dark/light colorscheme)
 
-자식 셸 process 에 다음 환경변수를 *항상* 넘겨요. 한쪽 platform 에 빠지면 사용자가 *터미널 cell 색은 같지만 vim 안 텍스트 색이 다르다* 같은 미묘한 차이를 보고할 가능성이 높아요. macOS 포팅 중 실제 발생 (#113 M13.2) — Windows tildaz 가 매일 보던 vim 색과 macOS 가 달라 보이는 원인이 이 환경변수였음.
+자식 셸 process 에 다음 환경변수를 *항상* 넘겨요. 한쪽 platform 에 빠지면 사용자가 *터미널 cell 색은 같지만 vim 안 텍스트 색이 다르다* 같은 미묘한 차이를 보고할 가능성이 높아요. macOS 포팅 중 실제 발생 (#113 M13.2) — Windows TildaZ 가 매일 보던 vim 색과 macOS 가 달라 보이는 원인이 이 환경변수였음.
 
 | 환경변수 | 역할 | 값 결정 |
 |---|---|---|
@@ -102,12 +102,13 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 # 메시지 언어
 
-**내부 협업 기록은 한국어**로 작성해요. 커밋 메시지, GitHub 이슈 / 이슈 코멘트 / PR, 릴리즈 노트, 에이전트와의 대화가 여기에 해당해요. 유지 보수 문맥이 한국어로 쌓여야 작업 기억의 효율이 좋아요.
+**내부 협업 기록은 한국어**로 작성해요. 커밋 메시지, GitHub 이슈 / 이슈 코멘트 / PR, 에이전트와의 대화가 여기에 해당해요. 유지 보수 문맥이 한국어로 쌓여야 작업 기억의 효율이 좋아요.
 
 **외부에 공개되는 텍스트는 영어**로 작성해요. 다음이 여기에 해당해요.
 
 - `README.md`, `SECURITY.md` 등 저장소 최상단 문서
 - `docs/` 의 GitHub Pages 사이트
+- **릴리즈 노트 (`dist/release-notes/*.md`)** — end-user 가 GitHub Release 페이지에서 직접 봄. 이전 v0.2.13 까지 한국어였지만 앞으로 영어.
 - 프로그램 안에서 사용자에게 직접 표시되는 메시지 (MessageBox, 오류 다이얼로그, About 다이얼로그 등 최종 사용자가 앱 안에서 보는 텍스트)
 
 공개 레포의 정문과 앱 UI 는 국제 방문자가 바로 읽을 수 있는 언어 (= 영어) 에 맞추는 게 기본값이고, 내부 기록은 한국어로 남겨서 두 역할을 분리해요.
