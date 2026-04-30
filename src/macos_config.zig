@@ -1,9 +1,9 @@
 // macOS mini config — `~/Library/Application Support/tildaz/config.json`.
 //
 // `src/config.zig` 와 schema 는 같게 (`dock_position` / `width` / `height` /
-// `offset` 같은 필드명) 두지만 platform-leak 정리 (`Window.DockPosition` 의존
-// + `MessageBoxW` / `ExitProcess` 직접 호출) 가 안 끝나서 통합은 후속 milestone
-// 으로 미루고 macOS 는 일단 자기 모듈을 쓴다 — #108 M3.5.
+// `offset` 같은 필드명) 두지만 platform-leak 정리 (`Window.DockPosition` 의존)
+// 가 안 끝나서 통합은 후속 milestone 으로 미루고 macOS 는 일단 자기 모듈을
+// 쓴다 — #108 M3.5. 에러 표시는 cross-platform `dialog.showFatal` 사용.
 //
 // schema:
 //   {
@@ -18,6 +18,8 @@
 // 자동 생성.
 
 const std = @import("std");
+const dialog = @import("dialog.zig");
+const messages = @import("messages.zig");
 
 pub const DockPosition = enum {
     top,
@@ -125,10 +127,6 @@ pub const Hotkey = struct {
     }
 };
 
-/// 잘못된 config 발견 시 호출되는 콜백. Windows host 와 동일 정책으로 다이얼
-/// 로그 띄우고 즉시 종료해야 한다 (`noreturn`).
-pub const ErrorReporter = *const fn (msg: []const u8) noreturn;
-
 pub const Config = struct {
     dock_position: DockPosition = .top,
     width_pct: u8 = 50,
@@ -137,8 +135,9 @@ pub const Config = struct {
     hotkey: Hotkey = .{ .keycode = 0x7A, .modifiers = 0 }, // F1
 
     /// 파일이 없으면 default + 자동 생성. JSON 파싱 실패 / 필드 값 오류 발견 시
-    /// `on_error` 콜백 호출 — 콜백은 다이얼로그 띄우고 종료해야 한다.
-    pub fn load(allocator: std.mem.Allocator, on_error: ErrorReporter) Config {
+    /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
+    /// 정책).
+    pub fn load(allocator: std.mem.Allocator) Config {
         const path = configPath(allocator) catch return .{};
         defer allocator.free(path);
 
@@ -151,10 +150,10 @@ pub const Config = struct {
         const content = file.readToEndAlloc(allocator, 64 * 1024) catch return .{};
         defer allocator.free(content);
 
-        return parse(allocator, content, on_error);
+        return parse(allocator, content);
     }
 
-    fn parse(allocator: std.mem.Allocator, content: []const u8, on_error: ErrorReporter) Config {
+    fn parse(allocator: std.mem.Allocator, content: []const u8) Config {
         var config = Config{};
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
             var buf: [512]u8 = undefined;
@@ -163,15 +162,15 @@ pub const Config = struct {
                 "config.json parse failed: {s}\n\nPath: ~/Library/Application Support/tildaz/config.json",
                 .{@errorName(err)},
             ) catch "config.json parse failed";
-            on_error(msg);
+            dialog.showFatal(messages.config_error_title, msg);
         };
         defer parsed.deinit();
 
         const root = parsed.value;
-        if (root != .object) on_error("config.json: top-level must be a JSON object.");
+        if (root != .object) dialog.showFatal(messages.config_error_title, "config.json: top-level must be a JSON object.");
 
         if (root.object.get("dock_position")) |v| {
-            if (v != .string) on_error("config.json: \"dock_position\" must be a string.");
+            if (v != .string) dialog.showFatal(messages.config_error_title, "config.json: \"dock_position\" must be a string.");
             if (DockPosition.fromString(v.string)) |dp| {
                 config.dock_position = dp;
             } else {
@@ -181,29 +180,29 @@ pub const Config = struct {
                     "config.json: unknown \"dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right",
                     .{v.string},
                 ) catch "config.json: dock_position invalid";
-                on_error(msg);
+                dialog.showFatal(messages.config_error_title, msg);
             }
         }
         if (root.object.get("width")) |v| {
             if (v != .integer or v.integer < 1 or v.integer > 100) {
-                on_error("config.json: \"width\" must be an integer in 1..100.");
+                dialog.showFatal(messages.config_error_title, "config.json: \"width\" must be an integer in 1..100.");
             }
             config.width_pct = @intCast(v.integer);
         }
         if (root.object.get("height")) |v| {
             if (v != .integer or v.integer < 1 or v.integer > 100) {
-                on_error("config.json: \"height\" must be an integer in 1..100.");
+                dialog.showFatal(messages.config_error_title, "config.json: \"height\" must be an integer in 1..100.");
             }
             config.height_pct = @intCast(v.integer);
         }
         if (root.object.get("offset")) |v| {
             if (v != .integer or v.integer < 0 or v.integer > 100) {
-                on_error("config.json: \"offset\" must be an integer in 0..100.");
+                dialog.showFatal(messages.config_error_title, "config.json: \"offset\" must be an integer in 0..100.");
             }
             config.offset_pct = @intCast(v.integer);
         }
         if (root.object.get("hotkey")) |v| {
-            if (v != .string) on_error("config.json: \"hotkey\" must be a string.");
+            if (v != .string) dialog.showFatal(messages.config_error_title, "config.json: \"hotkey\" must be a string.");
             if (Hotkey.fromString(v.string)) |h| {
                 config.hotkey = h;
             } else {
@@ -213,7 +212,7 @@ pub const Config = struct {
                     "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"cmd+space\", \"ctrl+grave\", \"cmd+shift+t\"",
                     .{v.string},
                 ) catch "config.json: hotkey invalid";
-                on_error(msg);
+                dialog.showFatal(messages.config_error_title, msg);
             }
         }
 
