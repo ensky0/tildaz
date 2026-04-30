@@ -24,6 +24,10 @@ pub const Tab = struct {
     /// 탭바에 표시할 제목. 현재는 default "Tab N" — rename 은 후속 milestone.
     title_buf: [64]u8 = [_]u8{0} ** 64,
     title_len: usize = 0,
+    /// PTY 자식이 종료됐을 때 read thread 가 set, main thread 의 render timer
+    /// 가 검사 후 안전하게 closeTab 호출. main thread 외에서 closeTab / deinit
+    /// 부르면 read thread 자기 자신을 join 하려는 deadlock 위험.
+    exit_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn deinit(self: *Tab, allocator: std.mem.Allocator) void {
         self.pty.deinit();
@@ -108,6 +112,33 @@ pub const SessionCore = struct {
         self.active_tab = self.tabs.items.len - 1;
 
         return tab;
+    }
+
+    /// 인덱스의 탭을 닫음. Tab 의 PTY / Terminal 정리 후 컬렉션에서 제거. 활성
+    /// 탭 인덱스를 자동 조정 (Windows `SessionCore.nextActiveIndexAfterClose`
+    /// 와 동일 정책).
+    /// **반드시 main thread 에서만 호출** — Tab.deinit 이 read thread join 을
+    /// 부르므로 read thread 자체에서 부르면 deadlock.
+    pub fn closeTab(self: *SessionCore, index: usize) void {
+        if (index >= self.tabs.items.len) return;
+        const tab = self.tabs.items[index];
+        _ = self.tabs.orderedRemove(index);
+
+        // 활성 인덱스 조정.
+        if (self.tabs.items.len == 0) {
+            self.active_tab = 0;
+        } else if (self.active_tab > index) {
+            // 닫힌 탭이 활성보다 앞 → 인덱스 한 칸 당김 (활성 탭 자체는 그대로).
+            self.active_tab -= 1;
+        } else if (self.active_tab >= self.tabs.items.len) {
+            // 활성이 마지막 탭이었고 그게 닫힌 경우 → 한 칸 앞 (= 새 마지막).
+            self.active_tab = self.tabs.items.len - 1;
+        }
+        // else: 닫힌 탭이 활성보다 뒤거나 같음 (같은 경우는 위 first branch
+        // 에서 길이로 이미 처리). active_tab 인덱스 유효.
+
+        tab.deinit(self.allocator);
+        self.allocator.destroy(tab);
     }
 
     /// 활성 탭을 인덱스로 직접 변경. 변경됐으면 true.
