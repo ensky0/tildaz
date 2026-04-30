@@ -87,9 +87,20 @@ const shader_source =
 // --- Renderer ---
 
 /// rename 시각 정보 — drawTabBar 가 활성 탭 title 대신 이 텍스트를 그림.
+/// `cursor` byte offset 위치에 1px vertical bar (Windows 와 동일 always-visible).
+/// `preedit` 는 IME composition 중 자모 / 미완성 음절 — cursor 뒤에 inline 표시.
 pub const TabRenameView = struct {
     tab_index: usize,
     text: []const u8,
+    cursor: usize,
+    preedit: []const u8,
+};
+
+/// drag 시각 정보 — drag 중인 탭 위치를 마우스 따라 (`current_x_px - tab_w/2`)
+/// 그림. Windows `d3d11_renderer.zig:560` 와 동일 패턴.
+pub const TabDragView = struct {
+    tab_index: usize,
+    current_x_px: f32,
 };
 
 pub const MetalRenderer = struct {
@@ -248,6 +259,9 @@ pub const MetalRenderer = struct {
         /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림 (#111 M11.6b).
         /// null = rename 비활성.
         rename_view: ?TabRenameView,
+        /// drag 진행 중이면 그 탭을 마우스 위치 (`current_x_px`) 따라 이동시켜
+        /// 그림. null = drag 안 함 또는 5px 임계 미만.
+        drag_view: ?TabDragView,
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
@@ -291,7 +305,7 @@ pub const MetalRenderer = struct {
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
-        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view);
+        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, drag_view);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -583,6 +597,7 @@ pub const MetalRenderer = struct {
         tab_titles: []const []const u8,
         active_tab: usize,
         rename_view: ?TabRenameView,
+        drag_view: ?TabDragView,
     ) void {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
@@ -605,10 +620,21 @@ pub const MetalRenderer = struct {
         };
         bg_n += 1;
 
-        // 2. 각 탭 배경 — 좌우 1px + 상하 2px sandwich (Windows 패턴).
+        // 각 탭의 좌상단 x 좌표 — drag 중인 탭은 마우스 위치 따라감 (`current_x_px
+        // - tab_w/2` 가 좌상단). Windows `d3d11_renderer.zig:560` 패턴.
+        const tabXFor = struct {
+            fn f(i: usize, w: f32, dv: ?TabDragView) f32 {
+                if (dv) |d| if (d.tab_index == i) return d.current_x_px - w * 0.5;
+                return @as(f32, @floatFromInt(i)) * w;
+            }
+        }.f;
+
+        // 2. 각 탭 배경 — 좌우 1px + 상하 2px sandwich (Windows 패턴). drag 탭은
+        //    마지막에 그려서 다른 탭 위에 올라오게.
         for (tab_titles, 0..) |_, i| {
             if (bg_n >= MAX_BG) break;
-            const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
+            if (drag_view) |d| if (d.tab_index == i) continue;
+            const tab_x = tabXFor(i, tab_w_px, drag_view);
             const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -617,6 +643,17 @@ pub const MetalRenderer = struct {
             };
             bg_n += 1;
         }
+        // drag 중인 탭 BG (다른 탭 위에 그려지도록 마지막).
+        if (drag_view) |d| if (d.tab_index < tab_titles.len and bg_n < MAX_BG) {
+            const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view);
+            const color = if (d.tab_index == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
+            bg_buf[bg_n] = .{
+                .pos = .{ tab_x + 1, 2 },
+                .size = .{ @max(tab_w_px - 2, 1), @max(tab_bar_h_px - 4, 1) },
+                .color = color,
+            };
+            bg_n += 1;
+        };
 
         // 3. 각 탭 제목 텍스트 + close 버튼 (× 글리프).
         const cw: f32 = @floatFromInt(self.font.cell_width);
@@ -624,25 +661,51 @@ pub const MetalRenderer = struct {
         const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
         // close 버튼 자리 + 양쪽 padding 빼고 남은 영역만 텍스트.
         const max_text_w_px = tab_w_px - close_size_px - tab_pad_px * 3;
+        // rename preedit 배경색 (cell preedit 과 동일 — 보라 회색).
+        const preedit_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1.0 };
 
         for (tab_titles, 0..) |orig_title, i| {
-            const tab_x = @as(f32, @floatFromInt(i)) * tab_w_px;
+            const tab_x = tabXFor(i, tab_w_px, drag_view);
             const text_x_start = tab_x + tab_pad_px;
             var text_x = text_x_start;
 
-            // rename 진행 중인 탭이면 그 buf 의 텍스트를 대신 표시.
-            const title = if (rename_view) |rv|
-                (if (rv.tab_index == i) rv.text else orig_title)
-            else
-                orig_title;
+            // rename 진행 중인 탭이면 그 buf 의 텍스트를 대신 표시 + cursor +
+            // preedit (IME 자모) 인라인.
+            const renaming_this = if (rename_view) |rv| (rv.tab_index == i) else false;
+            const title = if (renaming_this) rename_view.?.text else orig_title;
+            const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
+            const preedit_text: []const u8 = if (renaming_this) rename_view.?.preedit else &.{};
+
+            var byte_idx: usize = 0;
+            var cursor_drawn = false;
             var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
             while (iter.nextCodepoint()) |cp| {
                 if (text_n >= MAX_TEXT) break;
                 if (text_x - text_x_start + cw > max_text_w_px) break;
 
-                const result = self.font.resolveGlyph(@intCast(cp)) orelse continue;
+                // cursor 가 이 byte 위치에 와 있으면 1px vertical bar.
+                if (cursor_byte) |cb| {
+                    if (byte_idx == cb and !cursor_drawn and bg_n < MAX_BG) {
+                        bg_buf[bg_n] = .{
+                            .pos = .{ text_x, text_y_top + 2 },
+                            .size = .{ 1, ch - 4 },
+                            .color = ui_metrics.TAB_TEXT_COLOR,
+                        };
+                        bg_n += 1;
+                        cursor_drawn = true;
+                    }
+                }
+
+                const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+                byte_idx += cp_len;
+
+                const result = self.font.resolveGlyph(@intCast(cp)) orelse {
+                    text_x += cw;
+                    continue;
+                };
                 const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                     if (result.owned) ct.CFRelease(result.font);
+                    text_x += cw;
                     continue;
                 };
                 if (result.owned) ct.CFRelease(result.font);
@@ -662,6 +725,62 @@ pub const MetalRenderer = struct {
                     text_n += 1;
                 }
                 text_x += cw;
+            }
+
+            // 끝에 cursor (text 가 cursor 위치를 안 지났을 때 — 예: cursor == title.len).
+            if (renaming_this and !cursor_drawn and bg_n < MAX_BG) {
+                if (cursor_byte) |cb| if (cb >= title.len) {
+                    bg_buf[bg_n] = .{
+                        .pos = .{ text_x, text_y_top + 2 },
+                        .size = .{ 1, ch - 4 },
+                        .color = ui_metrics.TAB_TEXT_COLOR,
+                    };
+                    bg_n += 1;
+                };
+            }
+
+            // preedit (IME composition) 인라인 — cursor 뒤에 보라 배경 + 글자.
+            if (renaming_this and preedit_text.len > 0) {
+                var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
+                while (pre_iter.nextCodepoint()) |cp| {
+                    if (text_n >= MAX_TEXT or bg_n >= MAX_BG) break;
+                    if (text_x - text_x_start + cw > max_text_w_px) break;
+
+                    // 보라색 배경 (cell preedit 과 같은 색).
+                    bg_buf[bg_n] = .{
+                        .pos = .{ text_x, text_y_top },
+                        .size = .{ cw, ch },
+                        .color = preedit_bg_color,
+                    };
+                    bg_n += 1;
+
+                    const result = self.font.resolveGlyph(@intCast(cp)) orelse {
+                        text_x += cw;
+                        continue;
+                    };
+                    const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                        if (result.owned) ct.CFRelease(result.font);
+                        text_x += cw;
+                        continue;
+                    };
+                    if (result.owned) ct.CFRelease(result.font);
+
+                    if (entry.w > 0 and entry.h > 0) {
+                        const gx = text_x + @as(f32, @floatFromInt(entry.bearing_x));
+                        const gy = text_y_top + self.font.ascent_px
+                            - @as(f32, @floatFromInt(entry.bearing_y))
+                            - @as(f32, @floatFromInt(entry.h));
+                        text_buf[text_n] = .{
+                            .pos = .{ gx, gy },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                        };
+                        text_n += 1;
+                    }
+                    text_x += cw;
+                }
             }
 
             // close 버튼 'x' — 우측 끝 + tab_pad 위치. 색은 텍스트 60% + 탭
