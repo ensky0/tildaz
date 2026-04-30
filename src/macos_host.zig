@@ -427,6 +427,28 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             }
         }
 
+        // Ctrl+key (#121) — ASCII control char (예: Ctrl+C = 0x03 SIGINT).
+        // Windows `WM_CHAR` 가 자동 변환하는 패턴을 macOS 는 직접. NSEvent
+        // 의 `characters` 가 modifier 적용된 char 를 가짐 — Ctrl+C 누르면
+        // characters = "\x03". interpretKeyEvents 위임 시 IME 가 일부 흡수
+        // 가능성 있어 직접 PTY write.
+        const NSEventModifierFlagControl: c_ulong = 1 << 18;
+        const ctrl = (flags & NSEventModifierFlagControl) != 0;
+        if (ctrl) {
+            const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+            const chars = get_chars(event, objc.sel("characters"));
+            if (chars != null) {
+                const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+                const len = get_len(chars, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+                if (len > 0) {
+                    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+                    const cstr = get_utf8(chars, objc.sel("UTF8String"));
+                    _ = tab.pty.write(cstr[0..len]) catch {};
+                    return;
+                }
+            }
+        }
+
         if (keyCodeToEscape(keycode)) |esc| {
             _ = tab.pty.write(esc) catch {};
             return;
