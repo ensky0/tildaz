@@ -24,6 +24,7 @@ const ghostty = @import("ghostty-vt");
 const macos_metal = @import("macos_metal.zig");
 const ui_metrics = @import("ui_metrics.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const tab_interaction = @import("tab_interaction.zig");
 const macos_session = @import("macos_session.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
@@ -188,6 +189,9 @@ var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 /// 렌더링 + 입력 받으니 동일 — 단 closeTab 은 read thread 가 살아 있을 때
 /// 위험하므로 후속 milestone 에서 join 처리.
 var g_session: macos_session.SessionCore = undefined;
+/// 탭 drag-and-drop reorder state (#111 M11.6a). Windows `tab_interaction.DragState`
+/// 그대로 사용 — cross-platform 모듈.
+var g_drag: tab_interaction.DragState = .{};
 var g_pty_bytes_received: u64 = 0;
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
@@ -714,11 +718,20 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
-    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close. cell selection 보다 우선.
+    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin. cell selection
+    // 보다 우선.
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
         if (tabBarHitTest(xy.x, xy.y)) |hit| {
-            handleTabBarClick(hit);
+            if (hit.on_close) {
+                handleTabBarClick(hit);
+                return;
+            }
+            // 본체 클릭 → 즉시 활성 전환 + drag-begin. drag 가 5px 이상 이동
+            // 안 하면 mouseUp 에서 그냥 click 으로 처리 (= 활성 전환만 효과).
+            _ = g_session.setActiveTab(hit.tab_index);
+            const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale);
+            _ = g_drag.begin(@intFromFloat(xy.x), tab_w_int, g_session.count());
             return;
         }
     }
@@ -737,6 +750,14 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
+
+    // 탭 drag (#111 M11.6a) 가 활성이면 drag 만 처리 — cell selection 무관.
+    if (g_drag.active) {
+        const xy = eventToWindowPx(self_view, event);
+        _ = g_drag.move(@intFromFloat(xy.x));
+        return;
+    }
+
     if (!tab.interaction.selection.active) return;
     const cell = eventToCell(self_view, event) orelse return;
     tab.interaction.selection.update(tab.terminal.screens.active, cell);
@@ -744,6 +765,22 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
 
 fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
+
+    // 탭 drag 완료 (#111 M11.6a). dragging 임계 (5px) 넘었으면 reorder.
+    if (g_drag.active) {
+        if (g_renderer) |*r| {
+            const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale);
+            if (g_drag.finish(tab_w_int, g_session.count())) |req| {
+                _ = g_session.reorderTabs(req.from, req.to) catch |err| {
+                    std.debug.print("[tab] reorder failed: {s}\n", .{@errorName(err)});
+                };
+            }
+        } else {
+            g_drag.reset();
+        }
+        return;
+    }
+
     _ = tab.interaction.selection.finish();
 }
 
