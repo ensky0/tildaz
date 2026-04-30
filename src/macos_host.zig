@@ -193,12 +193,6 @@ var g_pty_bytes_received: u64 = 0;
 var g_shell_path: []const u8 = "";
 var g_max_scrollback: usize = 0;
 var g_extra_env: [3]macos_pty.Pty.EnvVar = undefined;
-/// PTY child process 종료 flag. PTY read thread 에서 set, main thread 의
-/// render timer 가 검사 후 안전하게 NSApp.terminate. NSApp.terminate 는
-/// main thread 에서 호출해야 안전 (Windows 의 PostMessageW thread-safe 와
-/// 다름).
-var g_shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 // font_family 는 config 통합 전까지 hardcoded.
@@ -326,6 +320,12 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // Cmd+T = 새 탭 (kc 0x11 = 'T'). M11.2.
         if (kc == 0x11 and !shift) {
             handleNewTab();
+            return;
+        }
+        // Cmd+W = 활성 탭 닫기 (kc 0x0D = 'W'). M11.3. 마지막 탭이면 앱 종료
+        // (drainExitedTabs 가 다음 frame 에 처리).
+        if (kc == 0x0D and !shift) {
+            handleCloseActiveTab();
             return;
         }
         // Cmd+1..9 = 해당 인덱스 탭 활성화. M11.2.
@@ -672,6 +672,21 @@ fn keycodeToTabIndex(kc: c_ushort) ?usize {
         0x19 => 8, // 9
         else => null,
     };
+}
+
+/// Cmd+W — 활성 탭을 즉시 정리. PTY 자식이 살아 있어도 deinit 의 SIGHUP +
+/// fd close 로 정상 hangup 후 종료. 마지막 탭이 닫혔는지는 다음 frame 의
+/// drainExitedTabs 가 검사 (closeTab 이 컬렉션에서 즉시 제거하므로 사실 이번
+/// frame 끝에 count == 0 일 수 있음 — drainExitedTabs 의 빈 컬렉션 분기로
+/// 통일).
+fn handleCloseActiveTab() void {
+    if (g_session.activeTab() == null) return;
+    g_session.closeTab(g_session.active_tab);
+    if (g_session.count() == 0) {
+        std.debug.print("[tab] last tab closed via Cmd+W, terminating tildaz.\n", .{});
+        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        terminate(g_app, objc.sel("terminate:"), null);
+    }
 }
 
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성. createTab 이 새
@@ -1108,29 +1123,46 @@ fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
     g_pty_bytes_received += data.len;
 }
 
-/// PTY 자식 (셸) 이 종료되면 호출.
-/// M11.1: 단일 탭 단계라 어느 탭이든 종료되면 앱도 종료 (= 현재 동작 유지).
-/// M11.3: userdata 의 *Tab 을 받아 그 탭만 close, 마지막 탭이면 앱 종료.
-fn onPtyExit(_: ?*anyopaque) void {
-    // PTY read thread 에서 호출. NSApp.terminate 는 main thread 호출 안전성
-    // 보장 안 되므로 atomic flag 만 set 하고 main thread 의 render timer 가
-    // 처리. Windows 의 closeAfterShellExit → WM_CLOSE post 와 동일 효과
-    // (Windows 는 PostMessageW 가 thread-safe 라 직접 post).
-    g_shell_exited.store(true, .release);
+/// PTY 자식 (셸) 이 종료되면 read thread 가 호출. main thread 에서 부르는
+/// closeTab / NSApp.terminate 와 race 를 피하기 위해 per-tab atomic flag 만
+/// set. 실제 정리는 render timer 가 검사 후 처리.
+/// userdata 는 *Tab — createTab 에서 startReadThread 시 전달됐어요.
+fn onPtyExit(userdata: ?*anyopaque) void {
+    const tab: *macos_session.Tab = @ptrCast(@alignCast(userdata orelse return));
+    tab.exit_flag.store(true, .release);
+}
+
+/// 매 프레임 시작 시 모든 탭의 exit_flag 를 검사, set 된 탭은 closeTab 으로
+/// 정리. 마지막 탭이 닫히면 NSApp.terminate. main thread 에서 호출되므로
+/// closeTab → Tab.deinit → pty read_thread.join 이 deadlock 없이 정상 진행.
+fn drainExitedTabs() bool {
+    var i: usize = 0;
+    while (i < g_session.tabs.items.len) {
+        const t = g_session.tabs.items[i];
+        if (t.exit_flag.load(.acquire)) {
+            std.debug.print("[pty] tab {d} ('{s}') exited, closing.\n", .{ i, t.title() });
+            g_session.closeTab(i);
+            // closeTab 후 인덱스가 시프트되므로 i 증가 안 함 — 다음 element 가
+            // 같은 i 위치에 있어요.
+        } else {
+            i += 1;
+        }
+    }
+    if (g_session.count() == 0) {
+        std.debug.print("[pty] last tab closed, terminating tildaz.\n", .{});
+        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        terminate(g_app, objc.sel("terminate:"), null);
+        return true;
+    }
+    return false;
 }
 
 /// 60fps render timer callback. 윈도우 hidden 이거나 renderer 미초기화면 skip.
 /// cell_w/h 는 font 가 측정한 pixel 단위 (Retina backing scale 이미 적용됨).
 fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
-    // Shell exit flag 검사 — PTY thread 가 set 한 것을 main thread 에서 처리.
-    // Windows 의 `마지막 탭 종료 → closeAfterShellExit → 앱 종료` 흐름과 동일.
-    // (macOS 는 단일 탭 단계라 곧바로 앱 종료.)
-    if (g_shell_exited.load(.acquire)) {
-        std.debug.print("\n[pty] shell exited, terminating tildaz.\n", .{});
-        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-        terminate(g_app, objc.sel("terminate:"), null);
-        return;
-    }
+    // Per-tab PTY exit 처리 — 마지막 탭이 정리되면 NSApp.terminate (이번 frame
+    // 은 더 진행 안 함).
+    if (drainExitedTabs()) return;
 
     if (!g_visible) return;
     if (g_renderer == null) return;
