@@ -219,6 +219,14 @@ const LINE_HEIGHT_SCALE: f32 = 0.95;
 // 터미널 영역 안쪽 padding — `ui_metrics.zig` 의 공통 상수. Windows /
 // macOS 동일 값으로 시각적 일관성 유지. pixel 변환은 init 시 retina scale 곱.
 const TERMINAL_PADDING_PT = ui_metrics.TERMINAL_PADDING_PT;
+const TAB_BAR_HEIGHT_PT = ui_metrics.TAB_BAR_HEIGHT_PT;
+
+/// 탭바가 차지하는 픽셀 높이. 탭이 0/1 개여도 항상 reserve — 새 탭 생성으로
+/// 멀티탭 전환 시 cols/rows 재계산을 안 해도 cell grid 가 흔들리지 않게.
+/// 단일 탭이면 그 영역에 탭바를 그리지 않아 default 배경색만 보임.
+fn tabBarHeightPx(scale: f32) i32 {
+    return @intFromFloat(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale);
+}
 
 // NSWindow subclass — `canBecomeKeyWindow` 를 YES 로 override 해서 borderless
 // styleMask 에서도 key window 가능하게. Default NSWindow 는 borderless 면
@@ -549,22 +557,26 @@ fn syncGeometryAfterScreenChange() void {
     const cell_w_px = g_renderer.?.font.cell_width;
     const cell_h_px = g_renderer.?.font.cell_height;
     const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
+    const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
+    const top_reserved = pad_px + tab_bar_px;
     const usable_w = if (vp_w_px > 2 * pad_px) vp_w_px - 2 * pad_px else cell_w_px;
-    const usable_h = if (vp_h_px > 2 * pad_px) vp_h_px - 2 * pad_px else cell_h_px;
+    const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
     const new_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
     const new_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
-    // M11.x: 멀티탭 도입 후엔 모든 탭의 terminal+pty 를 같이 resize 해야 해요
-    //         (보이지 않는 탭의 grid 도 같은 cols/rows 유지). M11.1 단계는 단일
-    //         탭이라 활성 탭만 처리.
-    if (new_cols != tab.terminal.cols or new_rows != tab.terminal.rows) {
-        tab.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
-            std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
-            return;
-        };
-        tab.pty.resize(new_cols, new_rows) catch |err| {
-            std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
-        };
+    // 모든 탭의 terminal+pty 를 같이 resize 해야 해요 — 보이지 않는 탭의 grid
+    // 도 같은 cols/rows 로 유지 (탭 전환 시 화면 깨짐 방지).
+    const active_terminal = tab.terminal;
+    if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
+        for (g_session.tabs.items) |t| {
+            t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+                std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
+                continue;
+            };
+            t.pty.resize(new_cols, new_rows) catch |err| {
+                std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
+            };
+        }
         std.debug.print("[geom] screen changed: vp={d}x{d} px, scale={d}, cols={d} rows={d}\n", .{
             vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
         });
@@ -592,15 +604,18 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     const cell_w_px = g_renderer.?.font.cell_width;
     const cell_h_px = g_renderer.?.font.cell_height;
     const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * scale;
+    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
+    const cell_top_px = pad_px + tab_bar_px;
 
     // pixel 단위로 변환. y 는 top-down 으로 뒤집기.
     const px: f32 = @as(f32, @floatCast(view_loc.x)) * scale;
     const py: f32 = @as(f32, @floatCast(view_h_pt - view_loc.y)) * scale;
 
-    // padding 안쪽 영역만 cell. 밖이면 null.
-    if (px < pad_px or py < pad_px) return null;
+    // 탭바 영역 + padding 안쪽만 cell. 밖이면 null (탭바 클릭은 M11.5 에서
+    // 별도 dispatch).
+    if (px < pad_px or py < cell_top_px) return null;
     const x_in: f32 = px - pad_px;
-    const y_in: f32 = py - pad_px;
+    const y_in: f32 = py - cell_top_px;
 
     const col_f = x_in / @as(f32, @floatFromInt(cell_w_px));
     const row_f = y_in / @as(f32, @floatFromInt(cell_h_px));
@@ -1022,8 +1037,10 @@ pub fn run() !void {
     defer if (shell_env) |s| allocator.free(s);
     const shell_path = if (shell_env) |s| s else "/bin/zsh";
 
+    const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
+    const top_reserved = pad_px + tab_bar_px;
     const usable_w = if (vp_w_px > 2 * pad_px) vp_w_px - 2 * pad_px else cell_w_px;
-    const usable_h = if (vp_h_px > 2 * pad_px) vp_h_px - 2 * pad_px else cell_h_px;
+    const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
     const term_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
     const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
@@ -1121,8 +1138,28 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
+    const tab_bar_px = tabBarHeightPx(g_renderer.?.scale);
     const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
-    g_renderer.?.renderFrame(g_metal_layer, &tab.terminal, cell_w_px, cell_h_px, 0, pad_px, preedit);
+
+    // 탭 제목 stack-allocated slice. 매 프레임 만들지만 alloc 없음 (16 개 한도).
+    var titles_buf: [16][]const u8 = undefined;
+    const tab_count = @min(g_session.count(), titles_buf.len);
+    for (g_session.tabs.items[0..tab_count], 0..) |t, i| {
+        titles_buf[i] = t.title();
+    }
+    const titles = titles_buf[0..tab_count];
+
+    g_renderer.?.renderFrame(
+        g_metal_layer,
+        &tab.terminal,
+        cell_w_px,
+        cell_h_px,
+        tab_bar_px,
+        pad_px,
+        preedit,
+        titles,
+        g_session.active_tab,
+    );
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
