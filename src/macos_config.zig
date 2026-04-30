@@ -20,6 +20,9 @@
 const std = @import("std");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const themes = @import("themes.zig");
+
+const DEFAULT_THEME = "Tilda";
 
 pub const DockPosition = enum {
     top,
@@ -137,6 +140,10 @@ pub const Config = struct {
     /// 퍼센트 — Windows config.zig 와 동일 의미. 100 = 완전 불투명, 0 = 완전
     /// 투명. parse 시 0..100 → 0..255 매핑.
     opacity: u8 = 255,
+    /// 색상 테마 (foreground / background / 16-color ANSI palette). Windows
+    /// config.zig 와 동일 — `themes.findTheme(name)` 결과. null 이면 ghostty
+    /// default (사용자가 default 의도한 명시 없음 등 fallback).
+    theme: ?*const themes.Theme = themes.findTheme(DEFAULT_THEME),
 
     /// 파일이 없으면 default + 자동 생성. JSON 파싱 실패 / 필드 값 오류 발견 시
     /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
@@ -205,6 +212,23 @@ pub const Config = struct {
             }
             config.offset_pct = @intCast(v.integer);
         }
+        if (root.object.get("theme")) |v| {
+            if (v != .string) dialog.showFatal(messages.config_error_title, "config.json: \"theme\" must be a string.");
+            if (v.string.len > 0) {
+                config.theme = themes.findTheme(v.string);
+                if (config.theme == null) {
+                    var buf: [512]u8 = undefined;
+                    var fbs = std.io.fixedBufferStream(&buf);
+                    const w = fbs.writer();
+                    w.print("config.json: unknown theme \"{s}\"\n\nAvailable themes:\n", .{v.string}) catch {};
+                    for (themes.themes, 0..) |t, i| {
+                        if (i > 0) w.writeAll(", ") catch {};
+                        w.writeAll(t.name) catch {};
+                    }
+                    dialog.showFatal(messages.config_error_title, fbs.getWritten());
+                }
+            }
+        }
         if (root.object.get("opacity")) |v| {
             if (v != .integer or v.integer < 0 or v.integer > 100) {
                 dialog.showFatal(messages.config_error_title, "config.json: \"opacity\" must be an integer in 0..100 (percent).");
@@ -238,6 +262,7 @@ pub const Config = struct {
             \\  "height": 100,
             \\  "offset": 100,
             \\  "opacity": 100,
+            \\  "theme": "Tilda",
             \\  "hotkey": "f1"
             \\}
             \\
