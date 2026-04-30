@@ -829,6 +829,19 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     // commit 후 새 rename begin (clear → begin 순서) 라 영향 없음.
     commitOrCancelRename(true);
 
+    // 스크롤바 영역 클릭 (#123) — Windows app_controller.zig:488-498 패턴.
+    // cell selection / 탭바 클릭보다 우선.
+    if (g_renderer != null) {
+        const xy = eventToWindowPx(self_view, event);
+        const sbw_px: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * g_renderer.?.scale;
+        const vp_w_f: f32 = @floatFromInt(g_renderer.?.vp_width);
+        if (xy.x >= vp_w_f - sbw_px) {
+            tab.interaction.scrollbar.begin();
+            scrollbarScrollToY(xy.y);
+            return;
+        }
+    }
+
     // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin / rename.
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
@@ -870,6 +883,14 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
+    // 스크롤바 drag (#123) — mouseDown 에서 begin 했으면 mouseDragged 마다
+    // scrollToY 로 thumb 위치 동기화.
+    if (tab.interaction.scrollbar.active) {
+        const xy = eventToWindowPx(self_view, event);
+        scrollbarScrollToY(xy.y);
+        return;
+    }
+
     // 탭 drag (#111 M11.6a) 가 활성이면 drag 만 처리 — cell selection 무관.
     if (g_drag.active) {
         const xy = eventToWindowPx(self_view, event);
@@ -884,6 +905,12 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
 
 fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
+
+    // 스크롤바 drag 종료 (#123).
+    if (tab.interaction.scrollbar.active) {
+        tab.interaction.scrollbar.end();
+        return;
+    }
 
     // 탭 drag 완료 (#111 M11.6a). dragging 임계 (5px) 넘었으면 reorder.
     if (g_drag.active) {
@@ -912,6 +939,44 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
 /// (변경 후) 와 동일.
 fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     handlePaste();
+}
+
+/// 스크롤바 클릭 / 드래그 시 thumb 위치 따라 viewport scroll (#123).
+/// Windows app_controller.zig:233-266 `scrollToY` 패턴 그대로.
+/// `mouse_y_px` 는 윈도우 좌상 기준 top-down pixel.
+fn scrollbarScrollToY(mouse_y_px: f32) void {
+    const tab = g_session.activeTab() orelse return;
+    if (g_renderer == null) return;
+    const r = &g_renderer.?;
+
+    const screen = tab.terminal.screens.active;
+    const sb = screen.pages.scrollbar();
+    if (sb.total <= sb.len) return;
+
+    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale;
+    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
+    const cell_top_px = pad_px + tab_bar_px;
+    const vp_h_f: f32 = @floatFromInt(r.vp_height);
+    const track_h: f32 = vp_h_f - cell_top_px;
+    if (track_h <= 0) return;
+
+    const sb_min: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * r.scale;
+    const ratio_px = track_h / @as(f32, @floatFromInt(sb.total));
+    const thumb_h = @max(sb_min, ratio_px * @as(f32, @floatFromInt(sb.len)));
+    const available = track_h - thumb_h;
+    if (available <= 0) return;
+
+    const rel_y = @max(0, mouse_y_px - cell_top_px);
+    const clamped_y = @min(rel_y, available);
+    const scroll_ratio = clamped_y / available;
+    const target_row: usize = @intFromFloat(scroll_ratio * @as(f32, @floatFromInt(sb.total - sb.len)));
+
+    const current: isize = @intCast(sb.offset);
+    const target: isize = @intCast(target_row);
+    const delta = target - current;
+    if (delta != 0) {
+        tab.terminal.scrollViewport(.{ .delta = delta });
+    }
 }
 
 /// macOS keycode (kVK_ANSI_*) 의 1..9 → 0-base 탭 인덱스. 1 → 0, 2 → 1 식.
