@@ -337,25 +337,14 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
-    // rename (#111 M11.6b) 진행 중이면 키를 모두 interpretKeyEvents 로 보냄
-    // → IME / NSResponder 가 imeInsertText / imeDoCommand 콜백 호출 → 거기서
-    //   RenameState 로 라우팅. PTY 로는 아무 것도 안 흘려.
-    //   Cmd 단축키도 rename 진행 중엔 무시 — 의도치 않은 부수효과 방지.
-    if (g_rename.isActive()) {
-        const NSArray = objc.getClass("NSArray");
-        const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
-        const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
-        const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-        interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
-        return;
-    }
-
     // Cmd+C / Cmd+V 우선 — IME 와 무관하게 처리.
     const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
     const flags = get_flags(event, objc.sel("modifierFlags"));
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const cmd = (flags & NSEventModifierFlagCommand) != 0;
     if (cmd) {
+        // Windows 패턴 — Cmd 단축키는 진행 중 rename 우선 commit 후 처리.
+        if (g_rename.isActive()) commitOrCancelRename(true);
         const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const kc = get_kc(event, objc.sel("keyCode"));
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
@@ -397,6 +386,18 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
         // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
         // PTY 로 forward 안 함.
+        return;
+    }
+
+    // rename (#111 M11.6b) 진행 중이면 비-Cmd 키는 모두 interpretKeyEvents 로
+    // 위임 → IME / NSResponder 가 imeInsertText / imeDoCommand 콜백 호출 →
+    // 거기서 RenameState 로 라우팅. PTY 로 안 흘림.
+    if (g_rename.isActive()) {
+        const NSArray = objc.getClass("NSArray");
+        const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
+        const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
+        const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
         return;
     }
 
@@ -783,23 +784,23 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
-    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin / rename. cell
-    // selection 보다 우선.
+    // Windows 패턴 — 어떤 클릭이든 진행 중 rename 우선 commit. 더블클릭의 경우
+    // commit 후 새 rename begin (clear → begin 순서) 라 영향 없음.
+    commitOrCancelRename(true);
+
+    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin / rename.
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
         if (tabBarHitTest(xy.x, xy.y)) |hit| {
-            // 더블클릭 (#111 M11.6b) → rename 시작. close 버튼 영역 외에서만.
             const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
             const click_count = get_count(event, objc.sel("clickCount"));
+            // 더블클릭 (close 버튼 외) → rename 시작.
             if (click_count >= 2 and !hit.on_close) {
                 if (hit.tab_index < g_session.count()) {
                     g_rename.begin(hit.tab_index, g_session.tabs.items[hit.tab_index].title());
                 }
                 return;
             }
-            // 일반 클릭이면 진행 중 rename 은 commit + 종료 (Windows 패턴).
-            commitOrCancelRename(true);
-
             if (hit.on_close) {
                 handleTabBarClick(hit);
                 return;
@@ -812,9 +813,6 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             return;
         }
     }
-
-    // 탭바 외 클릭 시 rename 진행 중이면 commit + 종료.
-    commitOrCancelRename(true);
     const cell = eventToCell(self_view, event) orelse return;
     // double-click → word selection.
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
@@ -1391,7 +1389,6 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
     const tab_bar_px = tabBarHeightPx(g_renderer.?.scale);
-    const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
 
     // 탭 제목 stack-allocated slice. 매 프레임 만들지만 alloc 없음 (16 개 한도).
     var titles_buf: [16][]const u8 = undefined;
@@ -1401,8 +1398,23 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     }
     const titles = titles_buf[0..tab_count];
 
+    // IME preedit (`g_preedit_buf`) 라우팅 — rename 활성 시 탭바 cursor 옆에
+    // 인라인 표시, 아니면 cell grid 의 cursor 위치에. 둘 동시에 안 나오게.
+    const preedit_slice: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
+    const cell_preedit: []const u8 = if (g_rename.isActive()) &.{} else preedit_slice;
+
     const rename_for_render: ?macos_metal.TabRenameView = if (g_rename.view()) |rv|
-        .{ .tab_index = rv.tab_index, .text = rv.text[0..rv.text_len] }
+        .{
+            .tab_index = rv.tab_index,
+            .text = rv.text[0..rv.text_len],
+            .cursor = rv.cursor,
+            .preedit = preedit_slice,
+        }
+    else
+        null;
+
+    const drag_for_render: ?macos_metal.TabDragView = if (g_drag.view()) |dv|
+        .{ .tab_index = dv.tab_index, .current_x_px = @floatFromInt(dv.current_x) }
     else
         null;
 
@@ -1413,10 +1425,11 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         cell_h_px,
         tab_bar_px,
         pad_px,
-        preedit,
+        cell_preedit,
         titles,
         g_session.active_tab,
         rename_for_render,
+        drag_for_render,
     );
 }
 
