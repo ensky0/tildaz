@@ -376,7 +376,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             _ = g_session.setActiveTab(idx);
             return;
         }
-        // Cmd+Shift+[ / Cmd+Shift+] = 이전 / 다음 탭. M11.2.
+        // Shift+Cmd+[ / Shift+Cmd+] = 이전 / 다음 탭. M11.2.
         if (shift and kc == 0x21) {
             _ = g_session.activatePrev();
             return;
@@ -1697,7 +1697,7 @@ fn buildMainMenu(app: objc.id) !void {
     const initItem = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
 
     const about_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    // Cmd+Shift+I — macOS 표준 modifier (Cmd) + 다른 탭 단축키 (Cmd+T/W/숫자/[/])
+    // Shift+Cmd+I — macOS 표준 modifier (Cmd) + 다른 탭 단축키 (Cmd+T/W/숫자/[/])
     // 와 일관. Accessory mode 라 메뉴바 UI 는 안 보이지만 NSApp 의
     // `performKeyEquivalent:` 가 mainMenu 를 훑어 dispatch 하므로 키만으로
     // 동작 (Cmd+Q 와 같은 메커니즘).
