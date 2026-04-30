@@ -150,46 +150,64 @@ pub const Pty = struct {
         };
     }
 
+    /// Tab / 앱 종료 시 자식 셸 정리. Windows ConPTY 의 deinit (`src/conpty.zig`
+    /// `ConPty.deinit`) 과 흐름이 다름 — 비교 노트.
+    ///
+    /// === Windows ConPTY 흐름 ===
+    /// 1. `ClosePseudoConsole(hpc)` — 한 호출이 input/output pipe 끊고 자식
+    ///    process 도 OS 가 정리 (내부적으로 console signal 송신 추정).
+    /// 2. `read_thread.join()` — output pipe 끊겨 ReadFile 에러 → break.
+    /// 3. `wait_thread.join()` — `WaitForSingleObject(hProc, INFINITE)` 가
+    ///    자식 종료 즉시 깨어남.
+    /// 4. `CloseHandle` (pipe / event / process / thread).
+    ///
+    /// === macOS PTY 흐름 (이 함수) ===
+    /// 1. `kill(-pid, SIGHUP)` — POSIX 시그널을 process group 으로 송신.
+    ///    `login_tty` 가 만든 새 session leader 라 child_pid == pgid, 자식이
+    ///    fork 한 손자까지 같이 hangup.
+    /// 2. `wait_thread.join()` — `waitpid(pid, 0)` blocking 이 자식 종료 즉시
+    ///    깨어남.
+    /// 3. `read_thread.join()` — 자식 죽음으로 master fd EIO → read 에러 →
+    ///    readLoop break.
+    /// 4. `close(master_fd)`.
+    ///
+    /// === 본질 차이 ===
+    /// - Windows 는 `ClosePseudoConsole` 가 자식 정리를 OS API 한 번에 추상화.
+    ///   우리 코드는 핸들 close 만.
+    /// - macOS 의 PTY master 는 그냥 fd 라 자식에게 *직접* 시그널 보내야 함.
+    ///   `close(fd)` 만으로는 다른 thread 의 blocking read 를 깨우는 게 POSIX
+    ///   에 보장 안 됨 + 자식이 stdin EOF 처리 안 하는 셸도 있음 → 시그널 필수.
+    /// - Windows 의 `WaitForSingleObject` 와 macOS 의 blocking `waitpid` 는
+    ///   같은 역할 (자식 종료까지 thread blocking).
+    ///
+    /// === 폴링 안 하는 이유 ===
+    /// 이전 구현 (#111 M11.3 첫 시도) 은 SIGHUP 후 `waitpid(NOHANG)` 폴링 +
+    /// 10ms sleep × 20 으로 자식 죽음 확인했는데 사용자 환경에서 약 10~30ms
+    /// 인지 가능 지연 보고. wait_thread 가 이미 blocking `waitpid` 으로 자식을
+    /// 기다리는 중이므로 그 thread.join 만으로 sleep 없이 즉시 동기화 가능.
+    ///
+    /// === 한계 ===
+    /// SIGHUP 을 무시하는 셸 (`nohup` wrapper 안 / `trap '' HUP` 한 셸 / 무한
+    /// 루프 background process) 은 영원히 hang. 일반 bash / zsh / fish / sh
+    /// 환경에서 무관. SIGKILL fallback 은 별도 후속 milestone (#111 후속) —
+    /// 추가 시 `wait_thread.join` 에 timeout 필요한데 std.Thread 에 timed_join
+    /// 없음. dispatch_after / kqueue 같은 macOS 표준 timer 도입 검토.
     pub fn deinit(self: *Pty) void {
-        // POSIX 는 close() 가 다른 thread 의 blocking read() 를 깨우는 것을
-        // *보장 안* 함. macOS 도 깨워주지 않아 master fd close 만으로는 read
-        // thread.join() 이 영원히 안 끝나는 deadlock 위험 (#111 M11.3 hang
-        // 보고). 안전하게 끝내려면 자식 process group 을 확실히 죽인 후 read
-        // 가 EIO 받고 자연 종료할 때까지 대기.
         if (self.child_pid > 0) {
-            // -pid = process group. login_tty 가 새 session leader 만들었으니
-            // child_pid == pgid. 자식이 fork 한 손자도 같이 hangup.
             _ = std.c.kill(-self.child_pid, std.posix.SIG.HUP);
-
-            // SIGHUP 받고 죽기를 잠시 기다림 — bash / zsh 등 일반 셸은 즉시
-            // 종료. 200ms 내에 안 죽으면 SIGKILL 강제.
-            var status: c_int = 0;
-            const max_polls: u32 = 20; // 20 × 10ms = 200ms
-            var p: u32 = 0;
-            while (p < max_polls) : (p += 1) {
-                const rc = std.c.waitpid(self.child_pid, &status, std.c.W.NOHANG);
-                if (rc > 0) break; // 죽음
-                std.Thread.sleep(10 * std.time.ns_per_ms);
-            }
-            if (p >= max_polls) {
-                std.debug.print("[pty] child {d} did not exit on SIGHUP, sending SIGKILL\n", .{self.child_pid});
-                _ = std.c.kill(-self.child_pid, std.posix.SIG.KILL);
-                _ = std.c.waitpid(self.child_pid, &status, 0); // blocking — 반드시 죽음
-            }
         }
 
-        // 자식 죽음 → master fd 의 read 가 EIO 받고 readLoop 종료. close 는
-        // join 후로 미뤄도 되지만 빨리 close 해도 이 시점엔 안전.
-        posix.close(self.master_fd);
+        if (self.wait_thread) |t| {
+            t.join();
+            self.wait_thread = null;
+        }
 
         if (self.read_thread) |t| {
             t.join();
             self.read_thread = null;
         }
-        if (self.wait_thread) |t| {
-            t.join();
-            self.wait_thread = null;
-        }
+
+        posix.close(self.master_fd);
     }
 
     pub fn write(self: *Pty, data: []const u8) !usize {
