@@ -148,6 +148,12 @@ pub const Config = struct {
     /// default (사용자가 default 의도한 명시 없음 등 fallback).
     theme: ?*const themes.Theme = themes.findTheme(DEFAULT_THEME),
 
+    /// 사용자 로그인 시 자동 실행 (LaunchAgent). Windows `auto_start` 동등.
+    auto_start: bool = true,
+    /// 부팅 시 윈도우 hidden 상태 — F1/hotkey 로 처음 toggle 할 때 첫 표시.
+    /// Windows `hidden_start` 동등.
+    hidden_start: bool = false,
+
     /// 파일이 없으면 default + 자동 생성. JSON 파싱 실패 / 필드 값 오류 발견 시
     /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
     /// 정책).
@@ -268,6 +274,14 @@ pub const Config = struct {
                 dialog.showFatal(messages.config_error_title, msg);
             }
         }
+        if (root.object.get("auto_start")) |v| {
+            if (v != .bool) dialog.showFatal(messages.config_error_title, "config.json: \"auto_start\" must be a boolean.");
+            config.auto_start = v.bool;
+        }
+        if (root.object.get("hidden_start")) |v| {
+            if (v != .bool) dialog.showFatal(messages.config_error_title, "config.json: \"hidden_start\" must be a boolean.");
+            config.hidden_start = v.bool;
+        }
 
         return config;
     }
@@ -281,7 +295,9 @@ pub const Config = struct {
             \\  "offset": 100,
             \\  "opacity": 100,
             \\  "theme": "Tilda",
-            \\  "hotkey": "f1"
+            \\  "hotkey": "f1",
+            \\  "auto_start": true,
+            \\  "hidden_start": false
             \\}
             \\
         ;

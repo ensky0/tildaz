@@ -31,6 +31,7 @@ const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const about = @import("about.zig");
 const macos_log = @import("macos_log.zig");
+const macos_autostart = @import("macos_autostart.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -1193,11 +1194,24 @@ pub fn run() !void {
     // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
     g_config = macos_config.Config.load(g_gpa.allocator());
-    macos_log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s}", .{
+    macos_log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
         g_config.opacity,
         @tagName(g_config.dock_position),
         if (g_config.theme) |_| "set" else "default",
+        g_config.auto_start,
+        g_config.hidden_start,
     });
+
+    // Auto-start (LaunchAgent) — Windows `autostart.enable/disable` 동등.
+    // 사용자 로그인 시 launchd 가 plist 따라 자동 실행. 매 부팅마다 enable
+    // / disable 을 sync 해 사용자가 config 끄면 즉시 효과.
+    if (g_config.auto_start) {
+        macos_autostart.enable(g_gpa.allocator()) catch |err| {
+            macos_log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
+        };
+    } else {
+        macos_autostart.disable(g_gpa.allocator());
+    }
 
     // 1. NSApplication.
     const NSApplication = objc.getClass("NSApplication");
@@ -1312,9 +1326,13 @@ pub fn run() !void {
     setClipsToBounds(content_view, objc.sel("setClipsToBounds:"), true);
     g_metal_layer = layer;
 
-    // 4. 첫 dock rect 적용 후 표시.
+    // 4. 첫 dock rect 적용 후 표시 (hidden_start 면 표시 생략 — 첫 hotkey 까지
+    //    윈도우는 unmapped, F1 처음 눌렀을 때 첫 노출. Windows windows_host.run
+    //    의 `if (!config.hidden_start) app.window.show();` 와 동등).
     repositionWindow();
-    showWindow();
+    if (!g_config.hidden_start) {
+        showWindow();
+    }
 
     // 4.5. screen parameter 변경 알림 등록 — 모니터 추가/제거, 해상도 변경,
     //      DPI 변경, dock auto-hide 토글 모두 syncGeometryAfterScreenChange
