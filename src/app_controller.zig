@@ -467,7 +467,7 @@ pub const App = struct {
                         return true;
                     },
                     .show_about => {
-                        about.showAboutDialog(self.window.hwnd);
+                        about.showAboutDialog();
                         return true;
                     },
                     .switch_tab => |index| {

@@ -24,47 +24,23 @@ const ghostty = @import("ghostty-vt");
 const macos_metal = @import("macos_metal.zig");
 const ui_metrics = @import("ui_metrics.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const dialog = @import("dialog.zig");
+const messages = @import("messages.zig");
+const about = @import("about.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
+    var buf: [512]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch "panic (format failed)";
+    dialog.showError(messages.crash_title, text);
     std.process.exit(1);
 }
 
 pub fn showFatalRunError(err: anyerror) void {
     std.debug.print("TildaZ failed to start.\n\nError: {s}\n", .{@errorName(err)});
-}
-
-/// config.json 의 잘못된 값 발견 시 `osascript` 로 다이얼로그 띄우고 즉시 종료.
-/// Windows host 의 `MessageBoxW + ExitProcess` 와 동일 정책. Accessory 모드라
-/// NSAlert 직접 호출은 NSApp 부트스트랩 / activate 없이 어색하므로 macOS 표준
-/// `osascript` 로 dialog 표시 — NSApp 무관하게 동기 modal.
-pub fn showConfigErrorAndExit(msg: []const u8) noreturn {
-    // stderr 에도 같은 메시지 (`open --stderr=...` 으로 redirect 해 둔 경우 흔적).
-    std.debug.print("[config error] {s}\n", .{msg});
-
-    // AppleScript 의 `display dialog` 텍스트는 큰따옴표 / 백슬래시를 escape 해야
-    // 한다. 우리 메시지는 control 메시지 위주라 큰따옴표만 escape.
-    var alloc_buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&alloc_buf);
-    const w = fbs.writer();
-    w.writeAll("display dialog \"") catch {};
-    for (msg) |c| {
-        switch (c) {
-            '"' => w.writeAll("\\\"") catch {},
-            '\\' => w.writeAll("\\\\") catch {},
-            else => w.writeByte(c) catch {},
-        }
-    }
-    w.writeAll("\" buttons {\"OK\"} default button \"OK\" with icon stop with title \"TildaZ Config Error\"") catch {};
-    const script = fbs.getWritten();
-
-    var child = std.process.Child.init(
-        &.{ "/usr/bin/osascript", "-e", script },
-        std.heap.page_allocator,
-    );
-    _ = child.spawnAndWait() catch {};
-
-    std.process.exit(1);
+    var buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch "TildaZ failed to start.";
+    dialog.showError(messages.error_title, text);
 }
 
 // AppKit / Metal 상수.
@@ -778,9 +754,9 @@ fn registerTildazViewClass() !objc.Class {
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
 
-    // 0. Config 읽기 — 잘못된 값 발견 시 `showConfigErrorAndExit` 가 다이얼로그
-    //    띄우고 즉시 종료 (Windows host 와 동일 정책).
-    g_config = macos_config.Config.load(g_gpa.allocator(), showConfigErrorAndExit);
+    // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
+    //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
+    g_config = macos_config.Config.load(g_gpa.allocator());
 
     // 1. NSApplication.
     const NSApplication = objc.getClass("NSApplication");
@@ -1277,11 +1253,27 @@ fn toggleWindow() void {
 var g_event_tap: CFMachPortRef = null;
 var g_runloop_source: CFRunLoopSourceRef = null;
 
+/// `About TildaZ` menu item action. Selector 는 NSApplication 에 등록되어
+/// responder chain 의 마지막 단계 (NSApp) 에서 항상 dispatch 된다 — 윈도우가
+/// hide 상태여도 동작.
+fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
+    _ = self;
+    _ = _sel;
+    _ = sender;
+    about.showAboutDialog();
+}
+
 fn buildMainMenu(app: objc.id) !void {
     const NSMenu = objc.getClass("NSMenu");
     const NSMenuItem = objc.getClass("NSMenuItem");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+
+    // About 핸들러를 NSApplication 인스턴스 메서드로 등록 — Quit (`terminate:`)
+    // 과 같은 패턴. 윈도우 hide 상태라도 NSApp 에서 dispatch.
+    const NSApplication = objc.getClass("NSApplication");
+    if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowAbout:"), @ptrCast(&tildazShowAboutAction), "v@:@"))
+        return error.AddAboutMethodFailed;
 
     const main_menu = init_obj(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("init")) orelse return error.MenuInitFailed;
 
@@ -1292,6 +1284,31 @@ fn buildMainMenu(app: objc.id) !void {
     const app_menu = init_obj(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("init")) orelse return error.MenuInitFailed;
 
     const initItem = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+
+    const about_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
+    // Ctrl+Shift+I — Windows host 와 동일 키바인딩. Accessory mode 라 메뉴바
+    // UI 는 안 보이지만 NSApp 의 `performKeyEquivalent:` 가 mainMenu 를 훑어
+    // dispatch 하므로 키만으로 동작 (Cmd+Q 와 같은 메커니즘).
+    // shift modifier 가 있으면 keyEquivalent 는 lowercase 로 둠 (Apple HIG).
+    const about_item = initItem(
+        about_alloc,
+        objc.sel("initWithTitle:action:keyEquivalent:"),
+        nsString("About TildaZ"),
+        objc.sel("tildazShowAbout:"),
+        nsString("i"),
+    ) orelse return error.AboutItemInitFailed;
+    const NSEventModifierFlagShift: c_ulong = 1 << 17;
+    const NSEventModifierFlagControl: c_ulong = 1 << 18;
+    const setMask = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
+    setMask(about_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagControl | NSEventModifierFlagShift);
+    addItem(app_menu, objc.sel("addItem:"), about_item);
+
+    // separator
+    const NSMenuItem_class = objc.getClass("NSMenuItem");
+    const separatorItem = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const sep = separatorItem(NSMenuItem_class, objc.sel("separatorItem")) orelse return error.SeparatorFailed;
+    addItem(app_menu, objc.sel("addItem:"), sep);
+
     const item_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
     const quit_item = initItem(
         item_alloc,
