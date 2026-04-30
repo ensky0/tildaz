@@ -521,6 +521,17 @@ pub const D3d11Renderer = struct {
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
 
+        // tab_bar_height == 0 면 탭바 자체를 그리지 않고 clear 만 하고 종료
+        // (#127 — 단일 탭에서는 app_controller.effectiveTabBarHeight() 가 0).
+        // clear 는 항상 필요 — renderTerminal 보다 먼저 불려서 default_bg 로
+        // 채우는 역할.
+        if (tab_bar_height <= 0) {
+            self.setupFrame(rtv);
+            const clear_color = [4]d3d.FLOAT{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
+            self.ctx.ClearRenderTargetView(rtv, &clear_color);
+            return;
+        }
+
         const tbh: f32 = @floatFromInt(tab_bar_height);
         const tw: f32 = @floatFromInt(tab_width);
         const cbs: f32 = @floatFromInt(close_btn_size);
