@@ -156,6 +156,26 @@ pub const SessionCore = struct {
         return true;
     }
 
+    /// `from` 인덱스의 탭을 `to` 위치로 옮김 (drag-and-drop reorder).
+    /// 활성 탭은 같은 *Tab 을 따라가도록 인덱스만 갱신.
+    pub fn reorderTabs(self: *SessionCore, from: usize, to: usize) !bool {
+        if (from >= self.tabs.items.len or to >= self.tabs.items.len or from == to) return false;
+
+        const active_ptr = self.activeTab();
+        const moved = self.tabs.orderedRemove(from);
+        try self.tabs.insert(self.allocator, to, moved);
+
+        if (active_ptr) |active| {
+            for (self.tabs.items, 0..) |t, i| {
+                if (t == active) {
+                    self.active_tab = i;
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
     /// 이전 탭으로 (첫 탭이면 마지막 탭으로 wrap). 탭이 1 개 이하면 false.
     pub fn activatePrev(self: *SessionCore) bool {
         if (self.tabs.items.len <= 1) return false;
