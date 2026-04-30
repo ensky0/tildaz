@@ -192,6 +192,10 @@ var g_session: macos_session.SessionCore = undefined;
 /// 탭 drag-and-drop reorder state (#111 M11.6a). Windows `tab_interaction.DragState`
 /// 그대로 사용 — cross-platform 모듈.
 var g_drag: tab_interaction.DragState = .{};
+/// 탭 이름 변경 state (#111 M11.6b). 더블클릭으로 시작, Enter commit / Escape cancel.
+/// 활성화 동안 모든 키 입력 / 텍스트 입력 (IME insertText 포함) 이 PTY 대신
+/// 이쪽으로 라우팅.
+var g_rename: tab_interaction.RenameState = .{};
 var g_pty_bytes_received: u64 = 0;
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
@@ -333,6 +337,19 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
+    // rename (#111 M11.6b) 진행 중이면 키를 모두 interpretKeyEvents 로 보냄
+    // → IME / NSResponder 가 imeInsertText / imeDoCommand 콜백 호출 → 거기서
+    //   RenameState 로 라우팅. PTY 로는 아무 것도 안 흘려.
+    //   Cmd 단축키도 rename 진행 중엔 무시 — 의도치 않은 부수효과 방지.
+    if (g_rename.isActive()) {
+        const NSArray = objc.getClass("NSArray");
+        const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
+        const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
+        const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
+        return;
+    }
+
     // Cmd+C / Cmd+V 우선 — IME 와 무관하게 처리.
     const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
     const flags = get_flags(event, objc.sel("modifierFlags"));
@@ -444,6 +461,17 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
 
     g_marked_len = 0;
     g_preedit_len = 0;
+
+    // rename (#111 M11.6b) 진행 중이면 PTY 대신 rename buf 로 라우팅.
+    // codepoint 단위 iter 후 각각 insertCodepoint — 한글 등 multi-byte 도 지원.
+    if (g_rename.isActive()) {
+        var iter = std.unicode.Utf8Iterator{ .bytes = cstr[0..len], .i = 0 };
+        while (iter.nextCodepoint()) |cp| {
+            _ = g_rename.insertCodepoint(cp);
+        }
+        return;
+    }
+
     _ = tab.pty.write(cstr[0..len]) catch |err| {
         std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
     };
@@ -520,6 +548,30 @@ fn imeFirstRect(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) 
 /// interpretKeyEvents 가 selector 형태로 보냄. escape sequence 매핑.
 fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
+
+    // rename (#111 M11.6b) 진행 중이면 PTY 로 안 보내고 RenameState 로 라우팅.
+    if (g_rename.isActive()) {
+        const key: ?tab_interaction.RenameKey =
+            if (cmd_sel == objc.sel("insertNewline:")) .enter
+            else if (cmd_sel == objc.sel("cancelOperation:")) .escape
+            else if (cmd_sel == objc.sel("deleteBackward:")) .backspace
+            else if (cmd_sel == objc.sel("deleteForward:")) .delete
+            else if (cmd_sel == objc.sel("moveLeft:")) .left
+            else if (cmd_sel == objc.sel("moveRight:")) .right
+            else if (cmd_sel == objc.sel("moveToBeginningOfLine:")) .home
+            else if (cmd_sel == objc.sel("moveToEndOfLine:")) .end
+            else null;
+        if (key) |k| {
+            switch (g_rename.handleKey(k)) {
+                .commit => commitOrCancelRename(true),
+                .cancel => commitOrCancelRename(false),
+                else => {},
+            }
+        }
+        // rename 진행 중엔 다른 selector 모두 무시 (Tab key 등이 PTY 로 안 가게).
+        return;
+    }
+
     const bytes: ?[]const u8 = if (cmd_sel == objc.sel("insertNewline:"))
         "\r"
     else if (cmd_sel == objc.sel("insertTab:"))
@@ -697,6 +749,19 @@ fn tabBarHitTest(px: f32, py: f32) ?TabBarHit {
     return .{ .tab_index = tab_index, .on_close = on_close };
 }
 
+/// rename 진행 중이면 종료. `commit=true` 면 buf 의 텍스트를 그 탭의 title 로
+/// 적용, false 면 단순 cancel.
+fn commitOrCancelRename(commit: bool) void {
+    if (commit) {
+        if (g_rename.commitRequest()) |req| {
+            if (req.tab_index < g_session.count()) {
+                g_session.tabs.items[req.tab_index].setTitle(req.title);
+            }
+        }
+    }
+    g_rename.clear();
+}
+
 /// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
 fn handleTabBarClick(hit: TabBarHit) void {
     if (hit.on_close) {
@@ -718,11 +783,23 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
-    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin. cell selection
-    // 보다 우선.
+    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin / rename. cell
+    // selection 보다 우선.
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
         if (tabBarHitTest(xy.x, xy.y)) |hit| {
+            // 더블클릭 (#111 M11.6b) → rename 시작. close 버튼 영역 외에서만.
+            const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+            const click_count = get_count(event, objc.sel("clickCount"));
+            if (click_count >= 2 and !hit.on_close) {
+                if (hit.tab_index < g_session.count()) {
+                    g_rename.begin(hit.tab_index, g_session.tabs.items[hit.tab_index].title());
+                }
+                return;
+            }
+            // 일반 클릭이면 진행 중 rename 은 commit + 종료 (Windows 패턴).
+            commitOrCancelRename(true);
+
             if (hit.on_close) {
                 handleTabBarClick(hit);
                 return;
@@ -735,6 +812,9 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             return;
         }
     }
+
+    // 탭바 외 클릭 시 rename 진행 중이면 commit + 종료.
+    commitOrCancelRename(true);
     const cell = eventToCell(self_view, event) orelse return;
     // double-click → word selection.
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
@@ -1321,6 +1401,11 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     }
     const titles = titles_buf[0..tab_count];
 
+    const rename_for_render: ?macos_metal.TabRenameView = if (g_rename.view()) |rv|
+        .{ .tab_index = rv.tab_index, .text = rv.text[0..rv.text_len] }
+    else
+        null;
+
     g_renderer.?.renderFrame(
         g_metal_layer,
         &tab.terminal,
@@ -1331,6 +1416,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         preedit,
         titles,
         g_session.active_tab,
+        rename_for_render,
     );
 }
 
