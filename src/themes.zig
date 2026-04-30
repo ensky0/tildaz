@@ -254,6 +254,17 @@ pub fn findTheme(name: []const u8) ?*const Theme {
     return null;
 }
 
+/// Theme 의 background 가 dark 한지 light 한지 판별. Rec. BT.601 luma weights
+/// (299, 587, 114) 사용 — `lum < 128_000` (mid-range) 면 dark, 아니면 light.
+/// vim / less / tmux 같은 TUI 가 자동으로 dark / light colorscheme 선택할 때
+/// `COLORFGBG` 환경변수 set 에 사용. cross-platform — Windows / macOS 모두.
+pub fn isDark(theme: *const Theme) bool {
+    const lum = @as(u32, theme.background.r) * 299 +
+        @as(u32, theme.background.g) * 587 +
+        @as(u32, theme.background.b) * 114;
+    return lum < 128_000;
+}
+
 fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
