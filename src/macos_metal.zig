@@ -665,9 +665,19 @@ pub const MetalRenderer = struct {
                     if (self.atlas.getOrInsert(result.font, @intCast(result.index))) |entry| {
                         if (result.owned) ct.CFRelease(result.font);
                         if (entry.w > 0 and entry.h > 0) {
-                            const gx = close_x + (close_size_px - cw) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
+                            // close 박스 (close_size_px × close_size_px) 안에 cell
+                            // (cw × ch) 를 중앙 정렬한 가상 cell 의 baseline.
                             const close_baseline = close_y + (close_size_px + self.font.ascent_px - (ch - self.font.ascent_px)) * 0.5;
-                            const gy = close_baseline - @as(f32, @floatFromInt(entry.bearing_y));
+                            const gx = close_x + (close_size_px - cw) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
+                            // macOS 좌표계 (cell 글리프와 동일 패턴):
+                            //   gy = baseline − bearing_y − h
+                            // Windows 는 `+ bearing_y` 인데 그건 DirectWrite 의
+                            // bearing_y 부호 정의가 달라서. CoreText 는 baseline
+                            // 위쪽이 양수 bearing_y 이고 atlas 의 entry.h 가
+                            // 글리프 height 라 위로 올라가야 top.
+                            const gy = close_baseline
+                                - @as(f32, @floatFromInt(entry.bearing_y))
+                                - @as(f32, @floatFromInt(entry.h));
                             text_buf[text_n] = .{
                                 .pos = .{ gx, gy },
                                 .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
