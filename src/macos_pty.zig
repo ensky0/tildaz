@@ -151,6 +151,14 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
+        // 사용자가 자식 셸을 종료시킨 게 아니라 우리가 탭을 닫는 경우 (Cmd+W /
+        // 마지막 탭 NSApp.terminate) 자식이 살아 있을 수 있어요. master fd close
+        // 만으론 셸이 즉시 안 죽을 수도 있어 SIGHUP 명시적 송신 — controlling
+        // tty 가 끊긴 것처럼 보여 셸이 정상 hangup 처리 후 exit.
+        if (self.child_pid > 0) {
+            _ = std.c.kill(self.child_pid, std.posix.SIG.HUP);
+        }
+
         // master fd close → read 가 EOF 받고 readLoop 빠져나옴.
         posix.close(self.master_fd);
 
