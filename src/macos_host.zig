@@ -30,6 +30,7 @@ const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const about = @import("about.zig");
+const macos_log = @import("macos_log.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
@@ -1183,9 +1184,20 @@ fn registerTildazViewClass() !objc.Class {
 pub fn run() !void {
     std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
 
+    // `~/Library/Logs/tildaz.log` 에 boot/exit 라인을 남긴다 (Windows
+    // `tildaz_log.logStart` 와 동등). Console.app 이 `~/Library/Logs` 를
+    // 자동 인덱싱해 GUI 에서 바로 열람 가능.
+    macos_log.logStart(build_options.version);
+    defer macos_log.logStop(build_options.version);
+
     // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
     g_config = macos_config.Config.load(g_gpa.allocator());
+    macos_log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s}", .{
+        g_config.opacity,
+        @tagName(g_config.dock_position),
+        if (g_config.theme) |_| "set" else "default",
+    });
 
     // 1. NSApplication.
     const NSApplication = objc.getClass("NSApplication");
@@ -1397,6 +1409,14 @@ pub fn run() !void {
         cell_h_px,
         pad_px,
     });
+    macos_log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px font={s}", .{
+        vp_w_px,
+        vp_h_px,
+        scale_pt,
+        cell_w_px,
+        cell_h_px,
+        font_family,
+    });
 
     // 7. PTY + ghostty-vt Terminal (M5.0 + M5.1). cols/rows 는 (viewport −
     //    좌우 padding) ÷ cell. Windows app_controller 의 size − 2*pad 패턴.
@@ -1455,6 +1475,12 @@ pub fn run() !void {
     );
     std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
     std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, tab.pty.child_pid });
+    macos_log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d}", .{
+        shell_path,
+        term_cols,
+        term_rows,
+        tab.pty.child_pid,
+    });
 
     // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
     // 주기적으로 fire. callback 은 C 함수 — selector / ObjC class 등록 불필요.
@@ -1470,8 +1496,10 @@ pub fn run() !void {
     CFRunLoopAddTimer(CFRunLoopGetMain(), g_render_timer, kCFRunLoopCommonModes);
 
     // 7. 이벤트 루프.
+    macos_log.appendLine("startup", "enter NSApp run loop", .{});
     const runApp = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
     runApp(g_app, objc.sel("run"));
+    macos_log.appendLine("startup", "NSApp run loop exited", .{});
 }
 
 /// PTY read thread 의 콜백 — 받은 데이터를 ghostty-vt Terminal stream parser 로
