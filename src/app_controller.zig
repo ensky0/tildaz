@@ -516,6 +516,14 @@ pub const App = struct {
                         self.handleSwitchTab(index);
                         return true;
                     },
+                    .next_tab => {
+                        if (self.session.activateNext()) self.invalidateRenderer();
+                        return true;
+                    },
+                    .prev_tab => {
+                        if (self.session.activatePrev()) self.invalidateRenderer();
+                        return true;
+                    },
                 }
             },
             .mouse_down => |mouse| {
