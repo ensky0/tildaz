@@ -66,6 +66,17 @@
 모든 commit author 는 사람으로 통일해요. 도구 사용 사실은 코드 / 이슈 본문
 / 댓글 등 다른 곳에 충분히 남아 있어요.
 
+# 사용자 표시 텍스트 / 다이얼로그
+
+앱이 사용자에게 보여주는 모든 텍스트와 다이얼로그는 두 모듈을 반드시 거쳐요.
+
+- **`src/messages.zig`**: 사용자에게 노출되는 모든 텍스트 상수 / format string 의 단일 진입점. 새 메시지가 필요하면 여기 먼저 추가하고 호출처는 이 상수만 import 해요. 같은 의미의 메시지를 platform 별로 두 번 작성하지 않아요.
+- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` 만 호출해요. comptime 으로 `dialog_windows.zig` (`MessageBoxW`) 또는 `dialog_macos.zig` (`osascript display dialog`) 가 선택돼요.
+
+**금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
+
+panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요.
+
 # 메시지 언어
 
 **내부 협업 기록은 한국어**로 작성해요. 커밋 메시지, GitHub 이슈 / 이슈 코멘트 / PR, 릴리즈 노트, 에이전트와의 대화가 여기에 해당해요. 유지 보수 문맥이 한국어로 쌓여야 작업 기억의 효율이 좋아요.
