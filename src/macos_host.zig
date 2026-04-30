@@ -1130,6 +1130,14 @@ pub fn run() !void {
     const setBackgroundColor = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setBackgroundColor(g_window, objc.sel("setBackgroundColor:"), clear_color);
 
+    // config.opacity (0..255) → NSWindow.alphaValue (0.0..1.0). Windows
+    // tildaz 의 layered window alpha 와 동일 의미 — 윈도우 전체 (cell grid +
+    // 탭바) 가 그 alpha 만큼 반투명. opacity = 255 (default) 면 alpha = 1.0
+    // 완전 불투명.
+    const alpha_value: f64 = @as(f64, @floatFromInt(g_config.opacity)) / 255.0;
+    const setAlphaValue = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
+    setAlphaValue(g_window, objc.sel("setAlphaValue:"), alpha_value);
+
     // 3. CAMetalLayer + Metal 렌더러. ghostty 의 layer-hosting 패턴 차용:
     //    `setLayer:` 를 먼저 호출하고 그 *다음* `setWantsLayer:YES` — 이러면
     //    NSView 가 우리 layer 를 직접 host (자동 backing layer 안 만들고).

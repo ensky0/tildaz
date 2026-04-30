@@ -133,6 +133,10 @@ pub const Config = struct {
     height_pct: u8 = 100,
     offset_pct: u8 = 100,
     hotkey: Hotkey = .{ .keycode = 0x7A, .modifiers = 0 }, // F1
+    /// 윈도우 불투명도 (internal 0..255). config json 의 `opacity` 는 0..100
+    /// 퍼센트 — Windows config.zig 와 동일 의미. 100 = 완전 불투명, 0 = 완전
+    /// 투명. parse 시 0..100 → 0..255 매핑.
+    opacity: u8 = 255,
 
     /// 파일이 없으면 default + 자동 생성. JSON 파싱 실패 / 필드 값 오류 발견 시
     /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
@@ -201,6 +205,13 @@ pub const Config = struct {
             }
             config.offset_pct = @intCast(v.integer);
         }
+        if (root.object.get("opacity")) |v| {
+            if (v != .integer or v.integer < 0 or v.integer > 100) {
+                dialog.showFatal(messages.config_error_title, "config.json: \"opacity\" must be an integer in 0..100 (percent).");
+            }
+            // 0..100 퍼센트 → 0..255 internal. Windows config.zig 와 동일 매핑.
+            config.opacity = @intCast(@divFloor(v.integer * 255, 100));
+        }
         if (root.object.get("hotkey")) |v| {
             if (v != .string) dialog.showFatal(messages.config_error_title, "config.json: \"hotkey\" must be a string.");
             if (Hotkey.fromString(v.string)) |h| {
@@ -226,6 +237,7 @@ pub const Config = struct {
             \\  "width": 50,
             \\  "height": 100,
             \\  "offset": 100,
+            \\  "opacity": 100,
             \\  "hotkey": "f1"
             \\}
             \\
