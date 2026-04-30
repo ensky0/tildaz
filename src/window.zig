@@ -1043,6 +1043,18 @@ pub const Window = struct {
 
                 const vk_prior: WPARAM = 0x21; // Page Up
                 const vk_next: WPARAM = 0x22; // Page Down
+                const vk_tab: WPARAM = 0x09;
+
+                // Ctrl+Tab / Ctrl+Shift+Tab: 다음 / 이전 탭 (Windows Terminal 컨벤션,
+                // macOS Shift+Cmd+] / [ 와 동등 — #125).
+                if (wParam == vk_tab and GetKeyState(VK_CONTROL) < 0) {
+                    const shortcut: app_event.Shortcut = if (GetKeyState(VK_SHIFT) < 0)
+                        .prev_tab
+                    else
+                        .next_tab;
+                    _ = self.dispatchAppEvent(.{ .shortcut = shortcut });
+                    return 0;
+                }
 
                 // Shift+PageUp/Down: scroll viewport
                 if (GetKeyState(VK_SHIFT) < 0 and (wParam == vk_prior or wParam == vk_next)) {

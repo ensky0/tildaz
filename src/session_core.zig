@@ -377,6 +377,21 @@ pub const SessionCore = struct {
         return true;
     }
 
+    /// 다음 탭 (마지막이면 0 으로 wrap). 탭이 1 개 이하면 false. macOS
+    /// `macos_session.activateNext` 동등 — Ctrl+Tab 핸들러용 (#125).
+    pub fn activateNext(self: *SessionCore) bool {
+        if (self.tabs.items.len <= 1) return false;
+        self.active_tab = (self.active_tab + 1) % self.tabs.items.len;
+        return true;
+    }
+
+    /// 이전 탭 (0 이면 마지막으로 wrap). 탭이 1 개 이하면 false.
+    pub fn activatePrev(self: *SessionCore) bool {
+        if (self.tabs.items.len <= 1) return false;
+        self.active_tab = if (self.active_tab == 0) self.tabs.items.len - 1 else self.active_tab - 1;
+        return true;
+    }
+
     pub fn reorderTabs(self: *SessionCore, from: usize, to: usize) !bool {
         if (from >= self.tabs.items.len or to >= self.tabs.items.len or from == to) return false;
 

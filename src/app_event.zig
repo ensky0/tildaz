@@ -19,6 +19,8 @@ pub const Shortcut = union(enum) {
     open_config: void,
     open_log: void,
     switch_tab: usize,
+    next_tab: void,
+    prev_tab: void,
 };
 
 pub const KeyInput = enum {
