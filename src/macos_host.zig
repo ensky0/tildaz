@@ -1074,6 +1074,10 @@ pub fn run() !void {
     const setActivationPolicy = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) bool);
     _ = setActivationPolicy(g_app, objc.sel("setActivationPolicy:"), NSApplicationActivationPolicyAccessory);
 
+    // dialog_macos 가 NSAlert path 쓰도록 — 이 시점부터 우리 NSApp 안에서
+    // alert 띄울 때 popup level 보다 위에 올바르게 표시.
+    @import("dialog_macos.zig").markNSAppReady();
+
     try buildMainMenu(g_app);
 
     // 2. NSWindow (TildazWindow subclass) — borderless styleMask. Default
@@ -1110,6 +1114,10 @@ pub fn run() !void {
     const NSPopUpMenuWindowLevel: c_int = 101;
     const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
     setLevel(g_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
+
+    // dialog_macos 가 alert 띄울 때 우리 윈도우 level 을 잠깐 normal 로 낮추도록
+    // 등록 (alert 가 popup 위에 표시되도록).
+    @import("dialog_macos.zig").setHostWindow(g_window);
 
     // 윈도우 자체를 opaque=NO + backgroundColor=clear 로 — borderless 라
     // titlebar 자체는 없지만 system 의 default window background (흰색) 가
@@ -1647,9 +1655,10 @@ fn buildMainMenu(app: objc.id) !void {
     const initItem = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
 
     const about_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    // Ctrl+Shift+I — Windows host 와 동일 키바인딩. Accessory mode 라 메뉴바
-    // UI 는 안 보이지만 NSApp 의 `performKeyEquivalent:` 가 mainMenu 를 훑어
-    // dispatch 하므로 키만으로 동작 (Cmd+Q 와 같은 메커니즘).
+    // Cmd+Shift+I — macOS 표준 modifier (Cmd) + 다른 탭 단축키 (Cmd+T/W/숫자/[/])
+    // 와 일관. Accessory mode 라 메뉴바 UI 는 안 보이지만 NSApp 의
+    // `performKeyEquivalent:` 가 mainMenu 를 훑어 dispatch 하므로 키만으로
+    // 동작 (Cmd+Q 와 같은 메커니즘).
     // shift modifier 가 있으면 keyEquivalent 는 lowercase 로 둠 (Apple HIG).
     const about_item = initItem(
         about_alloc,
@@ -1659,9 +1668,9 @@ fn buildMainMenu(app: objc.id) !void {
         nsString("i"),
     ) orelse return error.AboutItemInitFailed;
     const NSEventModifierFlagShift: c_ulong = 1 << 17;
-    const NSEventModifierFlagControl: c_ulong = 1 << 18;
+    const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const setMask = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
-    setMask(about_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagControl | NSEventModifierFlagShift);
+    setMask(about_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), about_item);
 
     // separator
