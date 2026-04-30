@@ -794,9 +794,6 @@ pub fn run() !void {
     // 사용자 드래그 / 이동 OS 차단.
     const setMovable = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     setMovable(g_window, objc.sel("setMovable:"), false);
-    // shadow 끄기 — borderless window 의 default shadow 가 위쪽에 inset 효과.
-    const setHasShadow = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    setHasShadow(g_window, objc.sel("setHasShadow:"), false);
     // Window level = popUpMenu (101) — dock + menu bar + 다른 앱 위에 표시.
     // floating(3) 은 dock 보다 낮아서 dock 이 우리 윈도우 좌측 (또는 dock
     // 위치) 일부를 가려 padding 비대칭으로 보임. ghostty QuickTerminal 도
@@ -821,17 +818,15 @@ pub fn run() !void {
     //    `setLayer:` 를 먼저 호출하고 그 *다음* `setWantsLayer:YES` — 이러면
     //    NSView 가 우리 layer 를 직접 host (자동 backing layer 안 만들고).
     //
-    //    **위쪽 32pt offset 의 진짜 원인**: macOS Sequoia/Tahoe 의 NSWindow 는
-    //    Titled + FullSizeContentView 모드에서 contentView 에 titlebar 영역
-    //    만큼 (~32pt) safeAreaInsets.top 을 자동 적용한다. layer 가 cv_bounds
-    //    전체에 frame 을 잡아도 시스템 drawing 시 safe area 안쪽 영역만 effective
-    //    하게 사용되어 위쪽 32pt 가 가려진다. ghostty 의 SurfaceScrollView 는
-    //    `override var safeAreaInsets: NSEdgeInsets { .zero }` 로 우회. 우리는
-    //    NSView subclass 안 만들고 `additionalSafeAreaInsets` 를 시스템 inset
-    //    의 *negative* 로 설정해 effective inset 을 0 으로 만든다.
-    // contentView 를 TildazView 로 교체 — keyDown 받아 PTY 로 forwarding.
-    // default NSView 는 keyDown override 안 되어 키 입력 처리 불가. NSWindow
-    // 의 default contentView 는 setContentView: 로 바꿀 수 있다.
+    //    contentView 를 TildazView 로 교체 — keyDown 받아 PTY 로 forwarding.
+    //    default NSView 는 keyDown override 안 되어 키 입력 처리 불가. NSWindow
+    //    의 default contentView 는 setContentView: 로 바꿀 수 있다.
+    //
+    //    참고 — 위쪽 32pt 패딩 비대칭의 진짜 원인은 **PTY non-login shell +
+    //    `~/.hushlogin` → row 0 empty** 였고 `argv = {shell, "-l"}` 로 해결됨
+    //    (`macos_pty.zig`). Borderless styleMask + safeAreaInsets workaround
+    //    는 그 때 무관한 회피책이었어서 이번에 정리. Borderless 라 시스템 top
+    //    inset 자체가 0 이라 `additionalSafeAreaInsets` 무력화 코드 불필요.
     const TildazView = try registerTildazViewClass();
     const view_alloc = alloc(TildazView, objc.sel("alloc")) orelse return error.ViewAllocFailed;
     const view_init = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) objc.id);
@@ -842,19 +837,6 @@ pub fn run() !void {
 
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const content_view = contentView_get(g_window, objc.sel("contentView")) orelse return error.ContentViewMissing;
-
-    // safeAreaInsets 무력화: 시스템이 적용한 top inset 을 negative additional
-    // inset 으로 정확히 상쇄.
-    const NSEdgeInsets = extern struct { top: CGFloat, left: CGFloat, bottom: CGFloat, right: CGFloat };
-    const get_insets = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSEdgeInsets);
-    const sys_insets = get_insets(content_view, objc.sel("safeAreaInsets"));
-    const set_addl_insets = objc.objcSend(fn (objc.id, objc.SEL, NSEdgeInsets) callconv(.c) void);
-    set_addl_insets(content_view, objc.sel("setAdditionalSafeAreaInsets:"), .{
-        .top = -sys_insets.top,
-        .left = -sys_insets.left,
-        .bottom = -sys_insets.bottom,
-        .right = -sys_insets.right,
-    });
 
     const CAMetalLayer = objc.getClass("CAMetalLayer");
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
