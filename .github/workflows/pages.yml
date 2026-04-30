@@ -1,0 +1,41 @@
+name: Pages
+
+# `docs/` 가 바뀔 때만 GitHub Pages 를 다시 빌드/배포해요.
+# 기존 builtin Pages (Settings → Pages → Source: main /docs) 는 main push
+# 마다 무조건 돌아서 src/ 만 고친 commit 도 트리거됐어요. 이걸 끄려면
+# Pages source 를 `Deploy from a branch` 에서 `GitHub Actions` 로 바꿔야
+# 해요. 자동화: `gh api -X PUT repos/<owner>/<repo>/pages -f build_type=workflow`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 동시 배포 1 개로 제한 — 같은 main 에 빠르게 두 번 push 되면 뒤에 들어온
+# run 이 앞 run 을 끊지 않고 큐에서 기다려요.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/
+      - id: deployment
+        uses: actions/deploy-pages@v4
