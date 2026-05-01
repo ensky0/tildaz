@@ -152,6 +152,13 @@ pub const Config = struct {
     /// 부팅 시 윈도우 hidden 상태 — F1/hotkey 로 처음 toggle 할 때 첫 표시.
     /// Windows `hidden_start` 동등.
     hidden_start: bool = false,
+    /// PTY child 로 spawn 할 셸 경로. Windows config.shell (`cmd.exe` default) 와
+    /// 동등. null 또는 빈 문자열이면 host 가 `$SHELL` env 사용, 그도 없으면
+    /// `/bin/zsh` fallback.
+    shell: ?[]const u8 = null,
+    /// scrollback 라인 수. ghostty Terminal 의 max byte 계산에 사용
+    /// (`lines × bytes_per_row`). Windows config.max_scroll_lines 동등.
+    max_scroll_lines: usize = 100_000,
 
     /// 파일이 없으면 default + 자동 생성. JSON 파싱 실패 / 필드 값 오류 발견 시
     /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
@@ -268,6 +275,19 @@ pub const Config = struct {
             if (v != .bool) dialog.showFatal(messages.config_error_title, "config.json: \"hidden_start\" must be a boolean.");
             config.hidden_start = v.bool;
         }
+        if (root.object.get("shell")) |v| {
+            if (v != .string) dialog.showFatal(messages.config_error_title, "config.json: \"shell\" must be a string.");
+            // 빈 문자열은 default ($SHELL env / /bin/zsh) 그대로 두기 위해 null 유지.
+            if (v.string.len > 0) {
+                config.shell = allocator.dupe(u8, v.string) catch null;
+            }
+        }
+        if (root.object.get("max_scroll_lines")) |v| {
+            if (v != .integer or v.integer < 100 or v.integer > 10_000_000) {
+                dialog.showFatal(messages.config_error_title, "config.json: \"max_scroll_lines\" must be an integer in 100..10_000_000.");
+            }
+            config.max_scroll_lines = @intCast(v.integer);
+        }
 
         return config;
     }
@@ -283,7 +303,9 @@ pub const Config = struct {
             \\  "theme": "Tilda",
             \\  "hotkey": "f1",
             \\  "auto_start": true,
-            \\  "hidden_start": false
+            \\  "hidden_start": false,
+            \\  "shell": "",
+            \\  "max_scroll_lines": 100000
             \\}
             \\
         ;

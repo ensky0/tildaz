@@ -87,7 +87,10 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 | `LANG` | bash readline 의 multi-byte 처리 | `en_US.UTF-8` (양쪽 동일) |
 | `LC_CTYPE` | ditto, 일부 셸이 `LANG` 안 봄 | `en_US.UTF-8` (양쪽 동일) |
 | `COLORFGBG` | vim / less / tmux 가 자동 dark/light colorscheme 선택 | theme.background luminance 로 `"15;0"` (dark) / `"0;15"` (light) |
+| `SHELL` | 자식 셸이 자기 path 를 봐야 하는 경우 (`echo $SHELL`, oh-my-zsh detect 등) | spawn 한 셸 path 와 일치하게 설정 |
 | `WSLENV` | WSL 안 process 에 위 변수들 전달 (Windows 전용) | `COLORFGBG` 추가 |
+
+**환경변수 override 정책:** macOS `pty.spawn` 의 environ 머지는 *extra_env 우선 + 같은 key 부모값 skip*. 부모 environ 의 `SHELL=/bin/bash` 가 우리가 spawn 한 zsh 의 자식 환경에 그대로 전달되면 prompt 와 `$SHELL` 이 어긋나는 #118 이슈 회피. POSIX `getenv` 가 first-match 라 extra_env 를 뒤에 두면 부모값이 wins → 명시 키만 부모에서 빼는 패턴.
 
 **`COLORFGBG` 는 표준 환경변수**로 vim 의 `:set background?` 가 자동 결정하는 근거. tmux / less 도 비슷. 우리 theme 의 background 가 dark 인지 light 인지 OS API query 가 아니라 **theme.background 의 luminance 로 직접 판별**해요 — `themes.isDark(theme: *const Theme) bool` (cross-platform helper, Rec. BT.601 weights 299/587/114, `lum < 128_000` dark).
 
