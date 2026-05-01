@@ -321,7 +321,7 @@ Windows 도 동일 — `C:\Users\yongjun\AppData\Roaming\tildaz\config.json` 같
 | 마우스 우클릭 paste (양쪽 변경) | 🟡 critical | #119 | Windows 현재 가운데 버튼 (`WM_MBUTTONDOWN`, deprecated) → 우클릭 (`WM_RBUTTONDOWN`) 으로 변경. macOS 우클릭 추가. |
 | 스크롤바 마우스 클릭 + 드래그 | ✅ | #123 | `scrollbarScrollToY` (Windows `scrollToY` 패턴 그대로). cross-platform `ScrollbarDragState` + ghostty `Pin` 기반 selection 으로 viewport 이동해도 selection 유지. |
 | autostart (LaunchAgent) | ✅ | #126 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등 |
-| 로그 시스템 (`~/Library/Logs/tildaz.log`) | 🟡 | #124 | Windows `tildaz_log.zig` 동등 |
+| 로그 시스템 (`~/Library/Logs/tildaz.log`) | ✅ | #124 | Windows `tildaz_log.zig` 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
 | Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback ad-hoc |
 
 ### A.2 Windows 미구현 (macOS 기능 → Windows 추가)

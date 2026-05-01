@@ -171,6 +171,14 @@ extern fn CGRequestListenEventAccess() bool;
 // Monitoring 만으로 충분하지만, 우리는 F1/Cmd+Q 를 다른 앱에 전달 안 되게
 // consume 해야 하므로 active 가 필수.
 extern fn AXIsProcessTrusted() bool;
+extern "c" fn atexit(func: *const fn () callconv(.c) void) c_int;
+
+/// `atexit` 핸들러 — Cmd+Q (NSApp `terminate:`) 가 defer 거치지 않고 `exit()`
+/// 직행하므로 run() 의 `defer logStop` 이 안 불린다. `atexit` 는 `exit()`
+/// 호출되면 동작하니 여기서 [exit] 라인 기록.
+fn atExitLogStop() callconv(.c) void {
+    macos_log.logStop(build_options.version);
+}
 
 extern fn MTLCreateSystemDefaultDevice() objc.id;
 
@@ -1208,7 +1216,8 @@ pub fn run() !void {
     // `tildaz_log.logStart` 와 동등). Console.app 이 `~/Library/Logs` 를
     // 자동 인덱싱해 GUI 에서 바로 열람 가능.
     macos_log.logStart(build_options.version);
-    defer macos_log.logStop(build_options.version);
+    // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
+    _ = atexit(&atExitLogStop);
 
     // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
