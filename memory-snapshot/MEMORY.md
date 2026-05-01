@@ -9,3 +9,4 @@
 - [config schema 는 Windows / macOS 동일 통합](feedback_config_schema_unified.md) — 같은 필드 이름 / 구조. font / shell 같은 OS-specific 만 default 값 platform 별 다름.
 - [cross-platform 앱이지만 platform native 동작 우선](feedback_platform_native_first.md) — modifier 순서 / 단축키 표기 / config 위치 모두 각 platform 표준. cross-platform 일관성 < native 자연스러움.
 - [macOS Cocoa quirks (시연 중 발견 패턴 모음)](project_macos_cocoa_quirks.md) — atexit / PressAndHold / IME ctrl / NSAlert TextView 자동 copy / ghostty wide char selectWord. 향후 macOS 작업 재참고.
+- [amend + force push 자유롭게 OK (main 포함)](feedback_amend_force_push_ok.md) — 같은 이슈 follow-up 은 amend 권장. push sandbox 도 dangerouslyDisableSandbox 로 우회 OK.
