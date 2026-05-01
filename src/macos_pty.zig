@@ -38,6 +38,9 @@ pub const Pty = struct {
     child_pid: posix.pid_t,
     read_thread: ?std.Thread = null,
     wait_thread: ?std.Thread = null,
+    /// 자식 종료 감지 flag — `processWaitLoop` 의 `waitpid` 가 깨어나면 set.
+    /// `deinit` 의 SIGHUP fallback (#129) 이 polling 으로 검사.
+    child_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     allocator: std.mem.Allocator,
 
     pub const ReadCallback = *const fn (data: []const u8, userdata: ?*anyopaque) void;
@@ -186,15 +189,41 @@ pub const Pty = struct {
     /// 인지 가능 지연 보고. wait_thread 가 이미 blocking `waitpid` 으로 자식을
     /// 기다리는 중이므로 그 thread.join 만으로 sleep 없이 즉시 동기화 가능.
     ///
-    /// === 한계 ===
-    /// SIGHUP 을 무시하는 셸 (`nohup` wrapper 안 / `trap '' HUP` 한 셸 / 무한
-    /// 루프 background process) 은 영원히 hang. 일반 bash / zsh / fish / sh
-    /// 환경에서 무관. SIGKILL fallback 은 별도 후속 milestone (#111 후속) —
-    /// 추가 시 `wait_thread.join` 에 timeout 필요한데 std.Thread 에 timed_join
-    /// 없음. dispatch_after / kqueue 같은 macOS 표준 timer 도입 검토.
+    /// === SIGHUP 무시 셸 fallback (#129) ===
+    /// `nohup` wrapper / `trap '' HUP` 셸은 SIGHUP 그냥 흘려보냄 → wait_thread
+    /// 의 `waitpid(pid, 0)` 가 영원히 안 깨어남 → `wait_thread.join()` hang.
+    /// 우리 앱 종료 / 탭 닫기가 영원히 안 끝남.
+    ///
+    /// 회피: SIGHUP 송신 후 grace period (500ms) 동안 `child_exited` atomic
+    /// flag polling. `processWaitLoop` 가 `waitpid` 깨어나면서 flag set →
+    /// loop 즉시 break → 일반 케이스 인지 지연 ≤ step_ms (5ms). grace
+    /// 안 끝나면 (= 셸이 SIGHUP 무시) SIGKILL 으로 강제 종료. SIGKILL 은
+    /// 무시 못 함 → wait_thread 즉시 깨어남.
+    ///
+    /// std.Thread 에 timed_join 이 없어서 polling 우회. step_ms = 5ms 로
+    /// 정상 케이스 지연 거의 0 (이전 200ms polling 과 차원이 다름).
     pub fn deinit(self: *Pty) void {
         if (self.child_pid > 0) {
             _ = std.c.kill(-self.child_pid, std.posix.SIG.HUP);
+
+            // grace period: 자식이 SIGHUP 으로 정상 종료하길 기다림.
+            const grace_ms: u64 = 500;
+            const step_ms: u64 = 5;
+            var elapsed: u64 = 0;
+            while (elapsed < grace_ms) : (elapsed += step_ms) {
+                if (self.child_exited.load(.acquire)) break;
+                std.Thread.sleep(step_ms * std.time.ns_per_ms);
+            }
+
+            // SIGHUP 무시 셸 — SIGKILL 으로 강제 종료. 로그 한 줄 남김.
+            if (!self.child_exited.load(.acquire)) {
+                _ = std.c.kill(-self.child_pid, std.posix.SIG.KILL);
+                @import("macos_log.zig").appendLine(
+                    "pty",
+                    "SIGHUP ignored after {d}ms, sent SIGKILL pgid={d}",
+                    .{ grace_ms, self.child_pid },
+                );
+            }
         }
 
         if (self.wait_thread) |t| {
@@ -235,7 +264,7 @@ pub const Pty = struct {
         userdata: ?*anyopaque,
     ) !void {
         self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.master_fd, callback, userdata });
-        self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.child_pid, exit_cb, userdata });
+        self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.child_pid, &self.child_exited, exit_cb, userdata });
     }
 
     fn readLoop(master_fd: posix.fd_t, callback: ReadCallback, userdata: ?*anyopaque) void {
@@ -247,8 +276,12 @@ pub const Pty = struct {
         }
     }
 
-    fn processWaitLoop(child_pid: posix.pid_t, exit_cb: ExitCallback, userdata: ?*anyopaque) void {
+    fn processWaitLoop(child_pid: posix.pid_t, child_exited: *std.atomic.Value(bool), exit_cb: ExitCallback, userdata: ?*anyopaque) void {
         _ = posix.waitpid(child_pid, 0);
+        // deinit 의 SIGHUP fallback polling 이 검사하는 flag 를 먼저 set
+        // (#129). exit_cb 보다 먼저 — exit_cb 가 길게 걸려도 deinit 가 즉시
+        // grace loop break 하도록.
+        child_exited.store(true, .release);
         exit_cb(userdata);
     }
 
