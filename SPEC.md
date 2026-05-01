@@ -295,6 +295,11 @@ Windows 도 동일 — `C:\Users\yongjun\AppData\Roaming\tildaz\config.json` 같
 
 사용자가 단축키 까먹어도 Shift+Cmd+I / Ctrl+Shift+I 로 About → 경로 확인 → 우리 터미널 안에서 `vim /Users/yongjun/.config/tildaz/config.json` 으로 편집.
 
+**텍스트 selection / copy:**
+- **Windows**: `MessageBoxW` 가 표준 dialog — Ctrl+C 자체 동작 (윈도우 내장).
+- **macOS**: `NSAlert.accessoryView` 의 `NSTextView` (selectable / monospace) 로 본문 표시. 그리고 selection 변경 시 자동 clipboard copy (NSTextView delegate 의 `textViewDidChangeSelection:`) — 우리 터미널의 selection finish auto-copy (#122) 와 같은 패턴.
+  - **왜 자동 copy?**: NSAlert 의 modal panel 안에서 NSTextView 가 firstResponder 를 안정적으로 못 잡음 → Cmd+C 의 `copy:` 액션이 OK 버튼 쪽으로 라우팅되어 클립보드에 안 들어감. 우클릭 contextual menu Copy 는 firstResponder 와 무관한 path 라 동작은 했지만 사용자 흐름상 어색. selection auto-copy 가 (a) 라우팅 우회 (b) 터미널 동작과 일관 두 가지 모두 해결.
+
 ### 11.4 config error 시 dialog 경로 안내
 
 잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *해당 config 파일 경로* 명시 — 사용자가 어디 고쳐야 할지 즉시 알게.
