@@ -211,7 +211,7 @@ var g_pty_bytes_received: u64 = 0;
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
 var g_max_scrollback: usize = 0;
-var g_extra_env: [4]macos_pty.Pty.EnvVar = undefined;
+var g_extra_env: [5]macos_pty.Pty.EnvVar = undefined;
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 // font_family 는 config 통합 전까지 hardcoded.
@@ -1471,9 +1471,17 @@ pub fn run() !void {
 
     // 7. PTY + ghostty-vt Terminal (M5.0 + M5.1). cols/rows 는 (viewport −
     //    좌우 padding) ÷ cell. Windows app_controller 의 size − 2*pad 패턴.
+    // shell 결정 우선순위 (#118): config.shell 명시값 > $SHELL env > "/bin/zsh".
+    // config.shell == null/빈 문자열이면 env fallback — 사용자가 따로 지정하지
+    // 않은 경우 시스템 기본값 따름.
     const shell_env = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
     defer if (shell_env) |s| allocator.free(s);
-    const shell_path = if (shell_env) |s| s else "/bin/zsh";
+    const shell_path: []const u8 = if (g_config.shell) |s|
+        s
+    else if (shell_env) |s|
+        s
+    else
+        "/bin/zsh";
 
     const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
     const top_reserved = pad_px + tab_bar_px;
@@ -1483,12 +1491,11 @@ pub fn run() !void {
     const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
     // Terminal init — Windows session_core 의 max_scrollback 계산식 차용.
-    // (라인 수 × 한 라인의 byte size 추정값). config 통합은 후속.
-    const max_scroll_lines: usize = 100_000;
+    // (라인 수 × 한 라인의 byte size 추정값). config.max_scroll_lines (#118).
     const cap = ghostty.page.std_capacity.adjust(.{ .cols = term_cols }) catch
         @as(ghostty.page.Capacity, .{ .cols = term_cols + 1, .rows = 8, .styles = 16, .grapheme_bytes = 0 });
     const bytes_per_row = ghostty.Page.layout(cap).total_size / cap.rows;
-    const max_scrollback = max_scroll_lines * bytes_per_row;
+    const max_scrollback = g_config.max_scroll_lines * bytes_per_row;
 
     g_session = .{ .allocator = allocator };
 
@@ -1505,11 +1512,15 @@ pub fn run() !void {
         (if (themes.isDark(t)) "15;0" else "0;15")
     else
         "15;0";
+    // SHELL: 우리가 spawn 한 셸 path. 부모 environ 의 SHELL (사용자가 .app 을
+    // 띄운 컨텍스트의 셸) 이 자식에 그대로 전달되면 prompt 와 $SHELL 이 어긋나는
+    // 이슈 방지 — pty.spawn 의 environ 머지 logic 이 extra_env 우선 적용.
     g_extra_env = .{
         .{ .name = "TERM", .value = "xterm-256color" },
         .{ .name = "LANG", .value = "en_US.UTF-8" },
         .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
         .{ .name = "COLORFGBG", .value = colorfgbg_value },
+        .{ .name = "SHELL", .value = shell_path },
     };
     g_max_scrollback = max_scrollback;
     g_shell_path = try allocator.dupe(u8, shell_path);
@@ -1524,12 +1535,12 @@ pub fn run() !void {
         onPtyExit,
         g_config.theme,
     );
-    macos_log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d} max_scrollback={d}", .{
+    macos_log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d} max_scroll_lines={d}", .{
         shell_path,
         term_cols,
         term_rows,
         tab.pty.child_pid,
-        max_scrollback,
+        g_config.max_scroll_lines,
     });
 
     // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
@@ -1715,6 +1726,11 @@ fn installEventTap() !void {
             if (has_ax) "OK" else "missing",
         });
         dialog.showInfo("TildaZ — Permission required", msg);
+        // dialog 가 keyWindow 를 빼앗아 갔다가 닫으면서 우리 윈도우로 안
+        // 돌려줌 → 사용자가 직접 클릭해야 keyboard 입력 가능. showWindow 의
+        // makeKeyAndOrderFront + activateIgnoringOtherApps + makeFirstResponder
+        // 셋 다 다시 호출해서 강제 복원.
+        showWindow();
         return;
     }
 
@@ -1832,14 +1848,20 @@ fn showWindow() void {
     makeKeyAndOrderFront(g_window, objc.sel("makeKeyAndOrderFront:"), null);
     const activate = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     activate(g_app, objc.sel("activateIgnoringOtherApps:"), true);
-    // contentView (TildazView) 를 firstResponder 로 — keyDown 이 view 에 옴.
+    restoreContentViewFocus();
+    g_visible = true;
+}
+
+/// contentView (TildazView) 를 firstResponder 로 강제. NSAlert.runModal 후
+/// firstResponder 가 dialog OK 버튼에 잡혀 우리 view 로 안 돌아오는 케이스
+/// 회피 — 권한 dialog 닫고 사용자가 마우스 클릭 안 해도 바로 타이핑 가능.
+fn restoreContentViewFocus() void {
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const cv = contentView_get(g_window, objc.sel("contentView"));
     if (cv != null) {
         const makeFirstResponder = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) bool);
         _ = makeFirstResponder(g_window, objc.sel("makeFirstResponder:"), cv);
     }
-    g_visible = true;
 }
 
 fn hideWindow() void {
