@@ -32,6 +32,16 @@ const TextInstance = extern struct {
     uv_pos: [2]f32,
     uv_size: [2]f32,
     fg_color: [4]f32,
+    /// 0 = 일반 글리프 (atlas × fg 로 색 입힘), 1 = 컬러 글리프 (SBIX/COLR — atlas
+    /// 그대로 출력, fg 무시). MSL 의 분기에서 0.5 임계값으로 판단. f32 인 이유는
+    /// MSL struct 의 alignment 단순화 + vertex output interpolation.
+    color_flag: f32,
+    /// MSL 의 `float4` 는 16-byte aligned. struct 사이즈가 16 의 배수가 아니면
+    /// MSL 은 그 다음 배수로 padding 한 stride 로 inst[iid] 인덱싱 (e.g., 52 bytes
+    /// 작성 → 64 bytes 로 읽음 → instance[1] 부터 모든 필드 깨짐).
+    /// 기존 5-field TextInstance (48 bytes) 는 16 배수라 padding 불필요했지만
+    /// color_flag 추가로 52 bytes 가 되어 12 bytes 명시적 padding 필요.
+    _pad: [3]f32 = .{ 0, 0, 0 },
 };
 
 // --- MSL 셰이더 ---
@@ -52,6 +62,15 @@ const TextInstance = extern struct {
 // 으로 회피 가능할 수 있으나 미검증. follow-up 으로 추적.
 //
 // === Shader ===
+// Atlas 가 BGRA8 premultiplied 라 fragment 출력도 모두 premultiplied 로 통일.
+// blend mode 도 (One, OneMinusSourceAlpha) — `createPipeline` 참조.
+//
+// - bg_fs: input color 는 plain (r,g,b,a). premultiply 해서 출력.
+// - text_fs: atlas sample 이 이미 premult.
+//   - 일반 글리프 (color_flag = 0): atlas = (a, a, a, a) 흰색 premult. fg 와 곱
+//     → (a*fg.r, a*fg.g, a*fg.b, a*fg.a) = premult 결과.
+//   - 컬러 글리프 (color_flag = 1, Apple Color Emoji 등): atlas = SBIX 의 본래
+//     색깔 premult. fg 무시하고 그대로 출력.
 const shader_source =
     \\#include <metal_stdlib>
     \\using namespace metal;
@@ -65,22 +84,28 @@ const shader_source =
     \\    float2 px = (inst[iid].pos + c * inst[iid].size) / sa.xy * 2.0 - 1.0;
     \\    BgOut o; o.position = float4(px.x, -px.y, 0, 1); o.color = inst[iid].color; return o;
     \\}
-    \\fragment float4 bg_fs(BgOut in [[stage_in]]) { return in.color; }
+    \\fragment float4 bg_fs(BgOut in [[stage_in]]) {
+    \\    return float4(in.color.rgb * in.color.a, in.color.a);
+    \\}
     \\
-    \\struct TxInst { float2 pos; float2 size; float2 uvp; float2 uvs; float4 fg; };
-    \\struct TxOut { float4 position [[position]]; float2 uv; float4 fg; };
+    \\struct TxInst { float2 pos; float2 size; float2 uvp; float2 uvs; float4 fg; float color_flag; };
+    \\struct TxOut { float4 position [[position]]; float2 uv; float4 fg; float color_flag; };
     \\
     \\vertex TxOut text_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
     \\    const device TxInst* inst [[buffer(0)]], constant float4& sa [[buffer(1)]]) {
     \\    float2 c = float2(vid & 1, vid >> 1);
     \\    float2 px = (inst[iid].pos + c * inst[iid].size) / sa.xy * 2.0 - 1.0;
     \\    TxOut o; o.position = float4(px.x, -px.y, 0, 1);
-    \\    o.uv = (inst[iid].uvp + c * inst[iid].uvs) / sa.zw; o.fg = inst[iid].fg; return o;
+    \\    o.uv = (inst[iid].uvp + c * inst[iid].uvs) / sa.zw;
+    \\    o.fg = inst[iid].fg;
+    \\    o.color_flag = inst[iid].color_flag;
+    \\    return o;
     \\}
     \\fragment float4 text_fs(TxOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
     \\    constexpr sampler smp(mag_filter::nearest, min_filter::nearest);
-    \\    float a = atlas.sample(smp, in.uv).r;
-    \\    return float4(in.fg.rgb, in.fg.a * a);
+    \\    float4 s = atlas.sample(smp, in.uv);
+    \\    if (in.color_flag > 0.5) return s;
+    \\    return s * in.fg;
     \\}
 ;
 
@@ -454,6 +479,7 @@ pub const MetalRenderer = struct {
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
+                    .color_flag = if (entry.is_color) 1 else 0,
                 };
                 text_count += 1;
             }
@@ -569,6 +595,7 @@ pub const MetalRenderer = struct {
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .fg_color = fg_color,
+                        .color_flag = if (entry.is_color) 1 else 0,
                     };
                     pre_text_n += 1;
                 }
@@ -721,6 +748,7 @@ pub const MetalRenderer = struct {
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                        .color_flag = if (entry.is_color) 1 else 0,
                     };
                     text_n += 1;
                 }
@@ -776,6 +804,7 @@ pub const MetalRenderer = struct {
                             .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                             .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                             .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                            .color_flag = if (entry.is_color) 1 else 0,
                         };
                         text_n += 1;
                     }
@@ -818,6 +847,7 @@ pub const MetalRenderer = struct {
                                 .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                                 .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                                 .fg_color = close_c,
+                                .color_flag = if (entry.is_color) 1 else 0,
                             };
                             text_n += 1;
                         }
@@ -852,7 +882,7 @@ pub const MetalRenderer = struct {
             region,
             0,
             self.atlas.pixels.ptr,
-            ATLAS_SIZE,
+            ATLAS_SIZE * 4, // BGRA8 = 4 bytes per pixel.
         );
     }
 
@@ -926,11 +956,13 @@ pub const MetalRenderer = struct {
         const att0 = objc.msgSend1(attachments, objc.sel("objectAtIndexedSubscript:"), @as(objc.NSUInteger, 0));
         objc.msgSendVoid1(att0, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
 
-        // 텍스트 + 배경 둘 다 alpha 블렌딩 (커서 / 셀 투명도용).
+        // 텍스트 + 배경 둘 다 alpha 블렌딩 (커서 / 셀 투명도 + 컬러 emoji 용).
+        // Premultiplied output → blend factor (One, OneMinusSourceAlpha).
+        // Atlas 가 BGRA premult 라 셰이더 출력도 premult 로 통일 (#132).
         objc.msgSendVoid1(att0, objc.sel("setBlendingEnabled:"), objc.YES);
-        objc.msgSendVoid1(att0, objc.sel("setSourceRGBBlendFactor:"), @as(objc.NSUInteger, 4)); // SourceAlpha
+        objc.msgSendVoid1(att0, objc.sel("setSourceRGBBlendFactor:"), @as(objc.NSUInteger, 1)); // One
         objc.msgSendVoid1(att0, objc.sel("setDestinationRGBBlendFactor:"), @as(objc.NSUInteger, 5)); // OneMinusSourceAlpha
-        objc.msgSendVoid1(att0, objc.sel("setSourceAlphaBlendFactor:"), @as(objc.NSUInteger, 4));
+        objc.msgSendVoid1(att0, objc.sel("setSourceAlphaBlendFactor:"), @as(objc.NSUInteger, 1));
         objc.msgSendVoid1(att0, objc.sel("setDestinationAlphaBlendFactor:"), @as(objc.NSUInteger, 5));
 
         var err: objc.id = null;
@@ -960,7 +992,9 @@ pub const MetalRenderer = struct {
         const desc_class = objc.getClass("MTLTextureDescriptor");
         const desc = objc.msgSend(objc.msgSend(desc_class, objc.sel("alloc")), objc.sel("init"));
 
-        objc.msgSendVoid1(desc, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 10)); // R8Unorm
+        // BGRA8Unorm — atlas 가 premultiplied BGRA. 일반 글리프엔 (a,a,a,a) 가
+        // 들어가고 컬러 글리프엔 본래 색이 들어감 (#132).
+        objc.msgSendVoid1(desc, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
         objc.msgSendVoid1(desc, objc.sel("setWidth:"), @as(objc.NSUInteger, ATLAS_SIZE));
         objc.msgSendVoid1(desc, objc.sel("setHeight:"), @as(objc.NSUInteger, ATLAS_SIZE));
         objc.msgSendVoid1(desc, objc.sel("setUsage:"), @as(objc.NSUInteger, 1)); // ShaderRead

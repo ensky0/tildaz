@@ -52,3 +52,28 @@
 - [ ] `auto_start: true` → 다음 로그인 자동 실행 (HKCU\...\Run\TildaZ 에 entry)
 - [ ] `auto_start: false` → entry 자동 삭제
 - [ ] `hidden_start: true` → 부팅 시 윈도우 hidden, F1 첫 누름에 표시
+
+## #132 emoji 렌더링 (macOS 작업 — Windows 동등성 확인)
+
+macOS 에서 R8 alpha-only atlas 가 Apple Color Emoji silhouette 만 표시하는 문제를 BGRA8 atlas 로 fix. Windows 는 ClearType 용 R8G8B8A8 atlas 라 *색깔 자체*는 처음부터 OK 일 가능성 높지만, **grapheme cluster 단위 처리** (VS-16, skin tone modifier, ZWJ 시퀀스) 는 별개 문제로 Windows 도 깨질 가능성 큼.
+
+Windows 의 emoji picker 는 `Win+.` (또는 `Win+;`).
+
+- [ ] **단순 컬러 emoji**: picker 에서 😂 🌀 🐱 🚀 클릭 → 셀에 컬러 글리프 정상 (검은 silhouette 아님)
+- [ ] **`echo` 직접 출력**: `echo 😂🌀🐱🚀` → 위와 동일 컬러
+- [ ] **VS-16 emoji presentation** (text-default codepoint + U+FE0F):
+  - picker 의 ❤️ (HEAVY BLACK HEART + VS-16) → 빨간 하트 emoji (작은 검은 ♥ 아님)
+  - ☀️ ☁️ ☕ ✌️ ✈️ — 모두 컬러 emoji presentation
+- [ ] **Skin tone modifier** (base + U+1F3FB-U+1F3FF):
+  - 👍🏻 👍🏽 👍🏿 — 톤별 갈색 thumbs-up 단일 글리프 (yellow 👍 + 갈색 사각형 분리 X)
+  - 👋🏼 ✋🏾 — 손 emoji 도 동일
+- [ ] **ZWJ 시퀀스** (U+200D 결합):
+  - 👨‍👩‍👧 → 가족 emoji 단일 글리프
+  - 👩‍🚀 🧑‍💻 — 직업/역할 합성
+  - 🏳️‍🌈 — 무지개 깃발 (깃발 + VS-16 + ZWJ + 무지개)
+- [ ] **vim / 다른 셸 안 emoji** — `vim` 열고 emoji 입력 / paste → 동일하게 정상
+- [ ] **복사/붙여넣기 round-trip** — 셀의 emoji 드래그 → Cmd+C → 다른 곳 paste → emoji 가 깨지지 않고 그대로 (codepoint 시퀀스 유지)
+
+회귀 체크:
+- [ ] 일반 텍스트 (영문/한글/숫자) 색상 정상
+- [ ] 커서 / 선택 / 탭바 색상 정상

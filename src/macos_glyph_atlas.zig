@@ -1,11 +1,16 @@
-// 글리프 텍스처 아틀라스 — CoreText 로 글리프 라스터 + 2D atlas (R8 단일 채널)
-// 에 캐시. macOS Mojave 이후 subpixel/ClearType 미지원 → grayscale antialiasing.
-// Metal 텍스처에 그대로 업로드 가능한 R8 (single-channel alpha) 형식.
+// 글리프 텍스처 아틀라스 — CoreText 로 글리프 라스터 + 2D atlas (BGRA8) 에 캐시.
+// macOS Mojave 이후 subpixel/ClearType 미지원이라 일반 텍스트는 grayscale alpha
+// 로 충분하지만, Apple Color Emoji (SBIX) 같은 컬러 글리프는 BGRA premultiplied
+// 비트맵이 필요해 atlas 자체를 BGRA8 로 통일 (#132). Metal 텍스처는 BGRA8Unorm.
 //
-// Windows 의 `src/glyph_atlas.zig` (R8G8B8A8 ClearType subpixel) 와 다른 점은
-// macOS 가 grayscale 라 single-channel 로 충분. 셰이더도 단순.
+// 라스터 path 단일화: 모든 글리프를 RGBA premultiplied + 흰색 fill 로 그림.
+// - 일반 글리프: antialiased 흰색 → atlas 픽셀 = (a, a, a, a). 셰이더가 fg 와 곱해 tint.
+// - 컬러 글리프 (CTFontGetSymbolicTraits & kCTFontTraitColorGlyphs): SBIX bitmap
+//   이 fill 색깔 무시하고 그대로 합성 → atlas 픽셀 = 본래 색 premultiplied. 셰이더
+//   는 fg 무시하고 atlas 그대로 출력.
+// AtlasEntry.is_color 가 셰이더 path 결정 — TextInstance 의 color_flag 로 전달.
 //
-// #75 (claude/infallible-swartz) 패턴 그대로 차용.
+// #75 (claude/infallible-swartz) 패턴 + #132 컬러 emoji 확장.
 
 const std = @import("std");
 const ct = @import("macos_coretext.zig");
@@ -19,6 +24,9 @@ pub const AtlasEntry = struct {
     h: u16,
     bearing_x: i16, // cell origin 에서 글리프 좌상단까지 offset.
     bearing_y: i16,
+    /// SBIX/COLR 컬러 글리프 (Apple Color Emoji 등). 셰이더가 fg 무시하고 atlas
+    /// 그대로 출력하는 분기 트리거.
+    is_color: bool,
 };
 
 const GlyphKey = struct {
@@ -39,7 +47,8 @@ pub const GlyphAtlas = struct {
     font_size: f32,
     scale: f32, // Retina backing scale (1.0 / 2.0).
 
-    // 아틀라스 픽셀 데이터 (R8 — alpha only).
+    // 아틀라스 픽셀 데이터 (BGRA8 — 4 bytes per pixel, premultiplied alpha).
+    // 일반 글리프는 (a, a, a, a) (흰색 premult), 컬러 글리프는 (B*a, G*a, R*a, a).
     pixels: []u8,
 
     // Metal 업로드를 위한 dirty 영역 트래킹.
@@ -55,7 +64,8 @@ pub const GlyphAtlas = struct {
         font_size: f32,
         scale: f32,
     ) !GlyphAtlas {
-        const pixels = try alloc.alloc(u8, ATLAS_SIZE * ATLAS_SIZE);
+        // BGRA8 = 4 bytes per pixel.
+        const pixels = try alloc.alloc(u8, ATLAS_SIZE * ATLAS_SIZE * 4);
         @memset(pixels, 0);
 
         const temp_buf = try alloc.alloc(u8, 256 * 256 * 4);
@@ -109,6 +119,11 @@ pub const GlyphAtlas = struct {
             1,
         );
 
+        // 폰트 트레이트 — SBIX/COLR (Apple Color Emoji 등) 면 컬러 글리프.
+        // 같은 RGBA path 로 그리지만 셰이더 분기를 위해 entry 에 플래그 저장.
+        const traits = ct.CTFontGetSymbolicTraits(font);
+        const is_color = (traits & ct.kCTFontTraitColorGlyphs) != 0;
+
         // Retina 스케일 적용 + 정수 픽셀 align.
         const s = self.scale;
         const x0 = @floor(bounding_rect.origin.x * s);
@@ -128,6 +143,7 @@ pub const GlyphAtlas = struct {
                 .h = 0,
                 .bearing_x = @intFromFloat(x0),
                 .bearing_y = @intFromFloat(y0),
+                .is_color = is_color,
             };
         }
 
@@ -136,31 +152,37 @@ pub const GlyphAtlas = struct {
 
         if (gw > 256 or gh > 256) return null; // temp_buf 한계.
 
-        // alpha-only CGBitmapContext (kCGImageAlphaOnly + colorspace=null).
-        // 1 byte per pixel = glyph coverage. ghostty / #75 nostalgic-edison
-        // 패턴 그대로.
-        const bytes_per_row = gw;
+        // BGRA premultiplied CGBitmapContext.
+        // PremultipliedFirst + ByteOrder32Little = 메모리 레이아웃 BGRA →
+        // Metal BGRA8Unorm 텍스처와 직접 매칭.
+        // - 일반 글리프: 흰색 fill 로 antialiased 라스터 → 픽셀 = (a, a, a, a).
+        //   셰이더가 fg 와 곱해 색 입힘.
+        // - 컬러 글리프 (SBIX): fill 색 무시되고 본래 비트맵 합성 → 픽셀 = 본래 색
+        //   premultiplied. 셰이더는 atlas 그대로 출력.
+        const bytes_per_row = gw * 4;
+        const colorspace = ct.CGColorSpaceCreateDeviceRGB() orelse return null;
+        defer ct.CGColorSpaceRelease(colorspace);
         const ctx = ct.CGBitmapContextCreate(
             self.temp_buf.ptr,
             gw,
             gh,
             8,
             bytes_per_row,
-            null,
-            ct.kCGImageAlphaOnly,
+            colorspace,
+            ct.kCGImageAlphaPremultipliedFirst | ct.kCGBitmapByteOrder32Little,
         ) orelse return null;
         defer ct.CGContextRelease(ctx);
 
-        // 0 으로 clear (alpha-only 라 byte 단위 memset 충분).
-        @memset(self.temp_buf[0 .. gw * gh], 0);
+        // 매 글리프마다 temp_buf 의 사용 영역 (gw*gh*4 bytes) 만 0 으로 clear.
+        @memset(self.temp_buf[0 .. gw * gh * 4], 0);
 
         ct.CGContextSetAllowsFontSmoothing(ctx, true);
         ct.CGContextSetShouldSmoothFonts(ctx, false);
         ct.CGContextSetShouldAntialias(ctx, true);
 
-        // alpha-only 컨텍스트엔 grayscale fill color (RGB 무의미). alpha=1 로
-        // 두면 글리프가 그려진 픽셀에 1 (= 255) 가 기록된다.
-        ct.CGContextSetGrayFillColor(ctx, 1, 1);
+        // 흰색 opaque fill — 일반 글리프엔 흰색 antialiased 마스크가 그려짐.
+        // 컬러 글리프는 이 색깔 무시되고 SBIX bitmap 의 본래 색이 들어감.
+        ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
 
         // CTM scale = Retina factor. bitmap 은 gw x gh pixel 인데
         // CTFontDrawGlyphs 는 point 좌표로 그리므로 scale 보정 없으면 글리프가
@@ -181,13 +203,14 @@ pub const GlyphAtlas = struct {
             break :blk self.packGlyph(gw, gh) orelse return null;
         };
 
-        // alpha-only temp_buf (1 byte per pixel) 을 atlas (R8) 로 row 단위 복사.
+        // BGRA temp_buf (4 bytes per pixel) 를 atlas (BGRA8) 로 row 단위 복사.
         const atlas_x = pos[0];
         const atlas_y = pos[1];
+        const atlas_row_bytes = ATLAS_SIZE * 4;
         for (0..gh) |row| {
             const src_off = row * bytes_per_row;
-            const dst_off = (atlas_y + @as(u32, @intCast(row))) * ATLAS_SIZE + atlas_x;
-            @memcpy(self.pixels[dst_off..][0..gw], self.temp_buf[src_off..][0..gw]);
+            const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
+            @memcpy(self.pixels[dst_off..][0..bytes_per_row], self.temp_buf[src_off..][0..bytes_per_row]);
         }
 
         // dirty 영역 마킹.
@@ -202,6 +225,7 @@ pub const GlyphAtlas = struct {
             .h = @intCast(gh),
             .bearing_x = @intFromFloat(x0),
             .bearing_y = @intFromFloat(y0),
+            .is_color = is_color,
         };
     }
 
