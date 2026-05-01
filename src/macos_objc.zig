@@ -51,7 +51,7 @@ pub const msgSend_raw = &objc_msgSend;
 /// AppKit / Metal 표준이라 부재 시 link / loader 단계에서 잡혀야 정상.
 pub fn getClass(name: [*:0]const u8) Class {
     return objc_getClass(name) orelse {
-        std.debug.print("objc class not found: {s}\n", .{name});
+        @import("macos_log.zig").appendLine("objc", "class not found: {s} — exiting", .{name});
         std.process.exit(1);
     };
 }

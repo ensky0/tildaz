@@ -95,9 +95,9 @@ pub const CoreTextFontContext = struct {
         for (probe_adv[1..], probes[1..]) |a, ch| {
             const w: f32 = @floatCast(a.width);
             if (@abs(w - advance_pt) > 0.01) {
-                std.debug.print(
-                    "[font] WARNING: '{c}' advance ({d}) != 'M' advance ({d}). " ++
-                        "'{s}' is not monospace — terminal layout will look broken.\n",
+                @import("macos_log.zig").appendLine(
+                    "font",
+                    "WARNING: '{c}' advance ({d}) != 'M' advance ({d}). '{s}' is not monospace — terminal layout will look broken.",
                     .{ @as(u8, @intCast(ch)), w, advance_pt, font_family },
                 );
                 break;
