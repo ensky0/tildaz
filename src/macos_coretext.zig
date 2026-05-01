@@ -53,8 +53,12 @@ pub const CGBitmapInfo = u32;
 pub const kCGBitmapAlphaInfoMask: u32 = 0x1F;
 pub const kCGImageAlphaNoneSkipLast: u32 = 5;
 pub const kCGImageAlphaPremultipliedFirst: u32 = 2;
+pub const kCGImageAlphaPremultipliedLast: u32 = 1;
 pub const kCGImageAlphaOnly: u32 = 7;
 pub const kCGBitmapByteOrder32Host: u32 = 0;
+// PremultipliedFirst + ByteOrder32Little = BGRA in memory (B, G, R, A).
+// Metal BGRA8Unorm 텍스처와 매칭.
+pub const kCGBitmapByteOrder32Little: u32 = 2 << 12;
 
 // --- CoreText 타입 ---
 pub const CTFontRef = *anyopaque;
@@ -134,6 +138,13 @@ pub extern "CoreText" fn CTFontGetBoundingRectsForGlyphs(
 // CTFontOrientation
 pub const kCTFontOrientationDefault: u32 = 0;
 pub const kCTFontOrientationHorizontal: u32 = 1;
+
+// CTFontSymbolicTraits — CTFontGetSymbolicTraits 결과의 비트필드. Apple Color
+// Emoji 같이 SBIX/COLR 컬러 글리프를 가진 폰트는 ColorGlyphs 트레이트가 켜짐.
+// 라스터 시 이 비트로 컬러 path / 알파 path 분기 (#132).
+pub const kCTFontTraitColorGlyphs: u32 = 1 << 13; // 0x2000
+
+pub extern "CoreText" fn CTFontGetSymbolicTraits(font: CTFontRef) u32;
 
 // --- CoreGraphics 함수 ---
 pub extern "CoreGraphics" fn CGColorSpaceCreateDeviceGray() ?CGColorSpaceRef;
