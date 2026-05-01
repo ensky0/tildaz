@@ -44,29 +44,16 @@ pub const Config = struct {
         const path = paths.configPath(allocator) catch return .{};
         defer allocator.free(path);
 
-        // 신규 위치 (`%APPDATA%\tildaz\config.json`) 우선. 없으면 구버전
-        // (`<exe_dir>\config.json`) 에서 1회 마이그레이션 (#128). 구버전 파일은
-        // 보존 — 신규 위치에 copy 만.
-        if (std.fs.openFileAbsolute(path, .{})) |file| {
-            defer file.close();
-            const content = file.readToEndAlloc(allocator, 16384) catch return .{};
-            defer allocator.free(content);
-            return parse(allocator, content);
-        } else |_| {
-            if (paths.legacyWindowsConfigPath(allocator)) |legacy| {
-                defer allocator.free(legacy);
-                if (std.fs.copyFileAbsolute(legacy, path, .{})) |_| {
-                    if (std.fs.openFileAbsolute(path, .{})) |file2| {
-                        defer file2.close();
-                        const content = file2.readToEndAlloc(allocator, 16384) catch return .{};
-                        defer allocator.free(content);
-                        return parse(allocator, content);
-                    } else |_| {}
-                } else |_| {}
-            }
+        const file = std.fs.openFileAbsolute(path, .{}) catch {
             createDefaultConfig(path);
             return .{};
-        }
+        };
+        defer file.close();
+
+        const content = file.readToEndAlloc(allocator, 16384) catch return .{};
+        defer allocator.free(content);
+
+        return parse(allocator, content);
     }
 
     pub fn deinit(self: *const Config) void {
