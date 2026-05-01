@@ -351,6 +351,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // Cmd+C / Cmd+V 우선 — IME 와 무관하게 처리.
     const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
     const flags = get_flags(event, objc.sel("modifierFlags"));
+
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const cmd = (flags & NSEventModifierFlagCommand) != 0;
     if (cmd) {
@@ -423,8 +424,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // 의 interpretKeyEvents 로 흘러 SIGINT 안 갔음.)
     const NSEventModifierFlagControl: c_ulong = 1 << 18;
     const NSEventModifierFlagCommandKD: c_ulong = 1 << 20;
+    const NSEventModifierFlagShiftKD: c_ulong = 1 << 17;
     const ctrl = (flags & NSEventModifierFlagControl) != 0;
     const cmd_too = (flags & NSEventModifierFlagCommandKD) != 0;
+    const shift_too = (flags & NSEventModifierFlagShiftKD) != 0;
+
+    _ = shift_too; // emoji shortcut 은 mainMenu 의 menu item keyEquivalent 로 라우팅.
+
     // Cmd 가 같이 눌린 ctrl+cmd 조합은 system shortcut (예: Ctrl+Cmd+Space =
     // emoji picker) 일 가능성 — PTY 로 안 흘리고 super 로 넘김. 일반 Ctrl+C
     // (Cmd 없음) 는 그대로 동작.
@@ -1867,6 +1873,12 @@ fn repositionWindow() void {
 }
 
 fn showWindow() void {
+    // popup level 복구 — emoji picker / dialog 같은 path 가 잠시 normal 로
+    // 낮춘 후 다음 toggle 시 popup 으로 자동 복귀.
+    const NSPopUpMenuWindowLevel: c_int = 101;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    setLevel(g_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
+
     const makeKeyAndOrderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     makeKeyAndOrderFront(g_window, objc.sel("makeKeyAndOrderFront:"), null);
     const activate = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
@@ -1941,6 +1953,23 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     @import("system_open.zig").openInDefaultApp(allocator, path);
 }
 
+/// Ctrl+Cmd+Space / Ctrl+Shift+Space — emoji & symbols picker (#130). 우리
+/// popup-level (101) 윈도우가 emoji panel 위에 가리는 문제 회피 위해 잠시
+/// normal level 로 낮춤. 다음 toggle (F1 / hotkey) 시 `showWindow` 가
+/// popup 으로 복구.
+fn tildazShowEmojiAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
+    _ = self;
+    _ = _sel;
+    _ = sender;
+    const NSNormalWindowLevel: c_int = 0;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    setLevel(g_window, objc.sel("setLevel:"), NSNormalWindowLevel);
+    const activate = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    activate(g_app, objc.sel("activateIgnoringOtherApps:"), true);
+    const orderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    orderFront(g_app, objc.sel("orderFrontCharacterPalette:"), null);
+}
+
 fn buildMainMenu(app: objc.id) !void {
     const NSMenu = objc.getClass("NSMenu");
     const NSMenuItem = objc.getClass("NSMenuItem");
@@ -1957,6 +1986,8 @@ fn buildMainMenu(app: objc.id) !void {
         return error.AddOpenConfigMethodFailed;
     if (!objc.class_addMethod(NSApplication, objc.sel("tildazOpenLog:"), @ptrCast(&tildazOpenLogAction), "v@:@"))
         return error.AddOpenLogMethodFailed;
+    if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowEmoji:"), @ptrCast(&tildazShowEmojiAction), "v@:@"))
+        return error.AddShowEmojiMethodFailed;
 
     const main_menu = init_obj(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("init")) orelse return error.MenuInitFailed;
 
@@ -2042,19 +2073,36 @@ fn buildMainMenu(app: objc.id) !void {
     const edit_menu_init = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
     const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), nsString("Edit")) orelse return error.MenuInitFailed;
 
-    // Emoji & Symbols. selector `orderFrontCharacterPalette:` 는 NSApp 표준
-    // 메서드 — system 이 그 menu item 을 인식하면 user-configured shortcut
-    // (System Settings → Keyboard → Keyboard Shortcuts → Input Sources)
-    // 이 자동 동작.
-    const emoji_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    const emoji_item = initItem(
-        emoji_alloc,
-        objc.sel("initWithTitle:action:keyEquivalent:"),
-        nsString("Emoji & Symbols"),
-        objc.sel("orderFrontCharacterPalette:"),
-        nsString(""),
-    ) orelse return error.EmojiItemInitFailed;
-    addItem(edit_menu, objc.sel("addItem:"), emoji_item);
+    // Emoji & Symbols — 두 menu item, 같은 우리 selector (`tildazShowEmoji:`).
+    // keyEquivalent 두 변형 (Ctrl+Cmd+Space + Ctrl+Shift+Space) 등록 → NSApp 의
+    // sendEvent 단계에서 menu shortcut 매칭 자동 라우팅. 우리 view keyDown
+    // 까지 안 와서 PTY 안 흘림. selector 동작 시점에 popup-level 잠시 낮춤
+    // (orderFrontCharacterPalette: 보다 더 한 일 처리).
+    const NSEventModifierFlagCtrl: c_ulong = 1 << 18;
+    {
+        const emoji_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
+        const item = initItem(
+            emoji_alloc,
+            objc.sel("initWithTitle:action:keyEquivalent:"),
+            nsString("Emoji & Symbols"),
+            objc.sel("tildazShowEmoji:"),
+            nsString(" "),
+        ) orelse return error.EmojiItemInitFailed;
+        setMask(item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCtrl | NSEventModifierFlagCommand);
+        addItem(edit_menu, objc.sel("addItem:"), item);
+    }
+    {
+        const emoji_alloc2 = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
+        const item = initItem(
+            emoji_alloc2,
+            objc.sel("initWithTitle:action:keyEquivalent:"),
+            nsString("Emoji & Symbols (Ctrl+Shift+Space)"),
+            objc.sel("tildazShowEmoji:"),
+            nsString(" "),
+        ) orelse return error.EmojiItemInitFailed;
+        setMask(item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCtrl | NSEventModifierFlagShift);
+        addItem(edit_menu, objc.sel("addItem:"), item);
+    }
 
     setSubmenu(edit_item, objc.sel("setSubmenu:"), edit_menu);
 
