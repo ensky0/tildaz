@@ -47,6 +47,19 @@ pub const Pty = struct {
     pub const ExitCallback = *const fn (userdata: ?*anyopaque) void;
     pub const EnvVar = struct { name: []const u8, value: []const u8 };
 
+    /// 부모 environ 의 한 entry (`KEY=VALUE` 형태 NUL-terminated) 가 extra_env
+    /// 의 어떤 key 와 일치하면 true. spawn 시 같은 key 부모값을 skip 하기 위함.
+    fn extraEnvHasKey(extra: ?[]const EnvVar, entry: [*:0]const u8) bool {
+        const ev = extra orelse return false;
+        const slice = std.mem.span(entry);
+        const eq = std.mem.indexOfScalar(u8, slice, '=') orelse return false;
+        const entry_key = slice[0..eq];
+        for (ev) |v| {
+            if (std.mem.eql(u8, v.name, entry_key)) return true;
+        }
+        return false;
+    }
+
     pub fn init(
         allocator: std.mem.Allocator,
         cols: u16,
@@ -85,18 +98,13 @@ pub const Pty = struct {
         const shell_z = try allocator.dupeZ(u8, shell);
         defer allocator.free(shell_z);
 
-        // 자식의 환경변수 — 부모 environ 복사 + extra_env 추가.
+        // 자식의 환경변수 — extra_env 먼저 추가하고, 부모 environ 은 *같은
+        // key 가 없는 경우만* 복사. POSIX `getenv` 가 first-match 반환이라
+        // extra_env 를 뒤에 두면 부모값이 wins → 우리가 set 한 SHELL 이
+        // 무시되는 등 (PTY 가 zsh 띄웠는데 부모의 SHELL=/bin/bash 그대로
+        // 자식에 전달되는 #118 이슈).
         var env_buf: [256]?[*:0]const u8 = @splat(null);
         var env_count: usize = 0;
-
-        const environ: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-        {
-            var i: usize = 0;
-            while (environ[i] != null and env_count < env_buf.len - 2) : (i += 1) {
-                env_buf[env_count] = environ[i].?;
-                env_count += 1;
-            }
-        }
 
         var extra_env_strs: [16][:0]u8 = undefined;
         var extra_env_count: usize = 0;
@@ -116,6 +124,20 @@ pub const Pty = struct {
             }
         }
         defer for (extra_env_strs[0..extra_env_count]) |s| allocator.free(s);
+
+        const environ: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+        {
+            var i: usize = 0;
+            while (environ[i] != null and env_count < env_buf.len - 2) : (i += 1) {
+                const entry = environ[i].?;
+                // entry 의 key (= '=' 앞부분) 가 extra_env 와 겹치면 skip.
+                if (extraEnvHasKey(extra_env, entry)) {
+                    continue;
+                }
+                env_buf[env_count] = entry;
+                env_count += 1;
+            }
+        }
 
         // env_buf[env_count] 는 @splat 으로 이미 null — sentinel 끝.
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(&env_buf);
