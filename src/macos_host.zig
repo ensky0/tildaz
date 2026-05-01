@@ -887,11 +887,13 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         }
     }
     const cell = eventToCell(self_view, event) orelse return;
-    // double-click → word selection.
+    // double-click → word selection + 자동 copy (Windows `selectWordAt` 와 동등).
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     const click_count = get_count(event, objc.sel("clickCount"));
     if (click_count >= 2) {
-        _ = terminal_interaction.selectWord(tab.terminal.screens.active, cell);
+        if (terminal_interaction.selectWord(tab.terminal.screens.active, cell)) {
+            handleCopy();
+        }
         tab.interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
         return;
     }
