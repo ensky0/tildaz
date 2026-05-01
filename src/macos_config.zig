@@ -1,6 +1,5 @@
 // macOS mini config — `~/.config/tildaz/config.json` (XDG, ghostty/alacritty
-// 와 같은 패턴). 구버전 (`~/Library/Application Support/tildaz/`) 에 파일이
-// 있고 신규 위치에 없으면 자동 1회 마이그레이션 (#128).
+// 와 같은 패턴). 파일이 없으면 default 자동 생성.
 //
 // `src/config.zig` 와 schema 는 같게 (`dock_position` / `width` / `height` /
 // `offset` 같은 필드명) 두지만 platform-leak 정리 (`Window.DockPosition` 의존)
@@ -161,29 +160,16 @@ pub const Config = struct {
         const path = paths.configPath(allocator) catch return .{};
         defer allocator.free(path);
 
-        // 신규 위치에 파일 없으면 구버전 (`~/Library/Application Support/tildaz/`)
-        // 에서 1회 마이그레이션. 구버전 파일 보존 (rename 실패 / 사용자 직접 백업
-        // 모두 대응) — 신규 위치에 copy 만.
-        if (std.fs.openFileAbsolute(path, .{})) |file| {
-            defer file.close();
-            const content = file.readToEndAlloc(allocator, 64 * 1024) catch return .{};
-            defer allocator.free(content);
-            return parse(allocator, content);
-        } else |_| {
-            if (paths.legacyMacConfigPath(allocator)) |legacy| {
-                defer allocator.free(legacy);
-                if (std.fs.copyFileAbsolute(legacy, path, .{})) |_| {
-                    if (std.fs.openFileAbsolute(path, .{})) |file2| {
-                        defer file2.close();
-                        const content = file2.readToEndAlloc(allocator, 64 * 1024) catch return .{};
-                        defer allocator.free(content);
-                        return parse(allocator, content);
-                    } else |_| {}
-                } else |_| {}
-            }
+        const file = std.fs.openFileAbsolute(path, .{}) catch {
             createDefault(path);
             return .{};
-        }
+        };
+        defer file.close();
+
+        const content = file.readToEndAlloc(allocator, 64 * 1024) catch return .{};
+        defer allocator.free(content);
+
+        return parse(allocator, content);
     }
 
     fn parse(allocator: std.mem.Allocator, content: []const u8) Config {
