@@ -83,6 +83,18 @@ pub extern "CoreText" fn CTFontCreateWithName(
     matrix: ?*const CGAffineTransform,
 ) ?CTFontRef;
 
+/// 폰트의 실제 family name 반환. `CTFontCreateWithName` 이 lookup 실패 시 system
+/// substitute (대개 `.SF NS Mono`) 를 반환해도 family name 은 그대로 보고하므로
+/// 우리가 요청한 이름과 비교해 substitute 인지 판별 가능.
+pub extern "CoreText" fn CTFontCopyFamilyName(font: CTFontRef) CFStringRef;
+
+/// CFString 비교. 0 = equal, -1/1 = less/greater. compareOptions = 0 = literal binary 비교.
+pub extern "CoreFoundation" fn CFStringCompare(
+    theString1: CFStringRef,
+    theString2: CFStringRef,
+    compareOptions: u32,
+) i32;
+
 pub extern "CoreText" fn CTFontCreateForString(
     currentFont: CTFontRef,
     string: CFStringRef,

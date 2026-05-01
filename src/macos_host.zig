@@ -1429,27 +1429,44 @@ pub fn run() !void {
 
     // 6. Metal 렌더러 (font 측정 포함). 폰트의 'M' advance + ascent/descent/
     //    leading 으로 cell_width/height 자동 계산 — Windows 의 GetTextMetricsW
-    //    + cell_width_scale/line_height_scale 패턴과 동일. config 통합 전까지
-    //    `TILDAZ_FONT` 환경변수로 빠르게 다른 폰트 시험 가능 (Monaco / Courier
-    //    / "SF Mono" 등).
+    //    + cell_width_scale/line_height_scale 패턴과 동일.
+    //
+    //    `TILDAZ_FONT` 환경변수로 config 보다 우선 — 빠르게 다른 폰트 시험.
+    //    config.font.family 는 *glyph fallback chain* (codepoint 별로 chain 순회).
     const tildaz_font_env = std.process.getEnvVarOwned(allocator, "TILDAZ_FONT") catch null;
     defer if (tildaz_font_env) |s| allocator.free(s);
-    const font_family: []const u8 = tildaz_font_env orelse FONT_FAMILY;
+    var env_chain: [1][]const u8 = undefined;
+    const font_family_slice: []const []const u8 = if (tildaz_font_env) |s| blk: {
+        env_chain[0] = s;
+        break :blk env_chain[0..1];
+    } else g_config.font_families[0..g_config.font_family_count];
 
     // theme 의 background 를 metal renderer 의 default_bg 로 — clear pass color
     // (cell 이 그리지 않는 영역) + 비활성 탭 BG 에 사용.
     const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    g_renderer = try macos_metal.MetalRenderer.init(
+    g_renderer = macos_metal.MetalRenderer.init(
         allocator,
         device,
         layer,
-        font_family,
-        FONT_SIZE_PT,
-        CELL_WIDTH_SCALE,
-        LINE_HEIGHT_SCALE,
+        font_family_slice,
+        @floatFromInt(g_config.font_size),
+        g_config.cell_width_scale,
+        g_config.line_height_scale,
         theme_bg,
         @floatCast(scale_pt),
-    );
+    ) catch |err| switch (err) {
+        // chain 모두 lookup 실패 — 시도한 폰트 list 명시 (Windows 의
+        // `font_not_found_format` 와 같은 의도, multi-font 메시지).
+        error.FontCreateFailed => {
+            var buf: [1024]u8 = undefined;
+            var fbs = std.io.fixedBufferStream(&buf);
+            const w = fbs.writer();
+            w.writeAll(messages.font_chain_all_failed_msg) catch {};
+            for (font_family_slice) |fam| w.print("\n  - {s}", .{fam}) catch {};
+            dialog.showFatal(messages.config_error_title, fbs.getWritten());
+        },
+        else => return err,
+    };
     // viewport / cell metrics 모두 pixel 단위로 통일 — pt/px mixing 시 글리프
     // 가 cell 일부만 차지해 깨져 보이는 문제 회피 (#75 댓글 6 의 정정 패턴).
     const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
@@ -1466,7 +1483,7 @@ pub fn run() !void {
         cell_w_px,
         cell_h_px,
         pad_px,
-        font_family,
+        g_renderer.?.font.font_family,
     });
 
     // 7. PTY + ghostty-vt Terminal (M5.0 + M5.1). cols/rows 는 (viewport −

@@ -25,6 +25,15 @@ pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
 pub const already_running_msg = "TildaZ is already running.";
 pub const font_not_found_format = "Font not found: \"{s}\"";
 
+/// glyph fallback chain 의 모든 명시 폰트 lookup 실패 — chain 비어있는 케이스
+/// (사용자가 모두 잘못된 이름 명시) 등 edge. strict 검증 path 는 한 개 이름을
+/// `font_not_found_format` 으로 표시 (Windows 동등).
+pub const font_chain_all_failed_msg =
+    \\None of the configured font families are available on this system.
+    \\
+    \\Tried:
+;
+
 pub const config_dir_create_failed_format =
     \\Failed to create config directory.
     \\

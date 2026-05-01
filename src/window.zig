@@ -341,7 +341,7 @@ pub const Window = struct {
     const RENDER_TIMER_ID: usize = 1;
     const LayoutMonitorTarget = enum { cursor, window };
 
-    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32) !void {
+    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
         const hInstance = GetModuleHandleW(null);
 
         const wc = WNDCLASSEXW{
@@ -419,9 +419,9 @@ pub const Window = struct {
         const disable: BOOL = 1;
         _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
-        // Register F1 global hotkey
-        if (RegisterHotKey(self.hwnd, HOTKEY_ID, 0, VK_F1) == 0) {
-            OutputDebugStringA("WARNING: Failed to register F1 hotkey\n");
+        // Register global hotkey from config (default = F1, modifiers=0).
+        if (RegisterHotKey(self.hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
+            OutputDebugStringA("WARNING: Failed to register configured hotkey\n");
         }
 
         // Remember font-creation parameters so `rebuildFontForDpi` can
