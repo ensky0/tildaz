@@ -404,6 +404,45 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         return;
     }
 
+    // Ctrl+key (#121) — ASCII control char (예: Ctrl+C = 0x03 SIGINT).
+    // Windows `WM_CHAR` 가 자동 변환하는 패턴을 macOS 는 직접. NSEvent 의
+    // `characters` 가 modifier 적용된 char — Ctrl+C 누르면 characters="\x03".
+    //
+    // **IME 조합 중에도** Ctrl+key 는 그대로 PTY 로 보낸다 — shell 의 Ctrl+C
+    // 는 "현재 입력 라인 버리기" 의도라 한글 조합도 같이 버리는 게 자연스러움.
+    // IME 의 markedText 는 `discardMarkedText` 로 reset 한 후 PTY write.
+    // (이전 분기는 g_marked_len==0 일 때만 했어서 한글 조합 중 Ctrl+C 가 IME
+    // 의 interpretKeyEvents 로 흘러 SIGINT 안 갔음.)
+    const NSEventModifierFlagControl: c_ulong = 1 << 18;
+    const ctrl = (flags & NSEventModifierFlagControl) != 0;
+    if (ctrl) {
+        const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        const chars = get_chars(event, objc.sel("characters"));
+        if (chars != null) {
+            const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+            const len = get_len(chars, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+            if (len > 0) {
+                if (g_marked_len > 0) {
+                    const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+                    const ic = get_ic(self_view, objc.sel("inputContext"));
+                    if (ic != null) {
+                        const discard = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
+                        discard(ic, objc.sel("discardMarkedText"));
+                    }
+                    // 우리 overlay buffer 도 같이 비워야 다음 frame 에서
+                    // markedText 가 화면에서 사라진다 (`g_preedit_buf` 는
+                    // metal renderer 가 cursor 위에 그리는 preedit overlay).
+                    g_marked_len = 0;
+                    g_preedit_len = 0;
+                }
+                const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+                const cstr = get_utf8(chars, objc.sel("UTF8String"));
+                _ = tab.pty.write(cstr[0..len]) catch {};
+                return;
+            }
+        }
+    }
+
     // IME 가 조합 중이 아니면 화살표 / F-key / nav 는 직접 escape sequence
     // (성능 + 정확성). 조합 중이면 interpretKeyEvents 로 보내 IME 가 음절
     // commit 후 doCommandBySelector 로 우리에게 위임 — 우리 imeDoCommand 가
@@ -426,28 +465,6 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             if (keycode == 121) { // kVK_PageDown — 아래쪽 (newer).
                 tab.terminal.scrollViewport(.{ .delta = rows });
                 return;
-            }
-        }
-
-        // Ctrl+key (#121) — ASCII control char (예: Ctrl+C = 0x03 SIGINT).
-        // Windows `WM_CHAR` 가 자동 변환하는 패턴을 macOS 는 직접. NSEvent
-        // 의 `characters` 가 modifier 적용된 char 를 가짐 — Ctrl+C 누르면
-        // characters = "\x03". interpretKeyEvents 위임 시 IME 가 일부 흡수
-        // 가능성 있어 직접 PTY write.
-        const NSEventModifierFlagControl: c_ulong = 1 << 18;
-        const ctrl = (flags & NSEventModifierFlagControl) != 0;
-        if (ctrl) {
-            const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-            const chars = get_chars(event, objc.sel("characters"));
-            if (chars != null) {
-                const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
-                const len = get_len(chars, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
-                if (len > 0) {
-                    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
-                    const cstr = get_utf8(chars, objc.sel("UTF8String"));
-                    _ = tab.pty.write(cstr[0..len]) catch {};
-                    return;
-                }
             }
         }
 
@@ -1220,6 +1237,21 @@ pub fn run() !void {
 
     const setActivationPolicy = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) bool);
     _ = setActivationPolicy(g_app, objc.sel("setActivationPolicy:"), NSApplicationActivationPolicyAccessory);
+
+    // macOS "Press and Hold" 기능 끔 — 영어 키 길게 눌러도 accent picker
+    // (à á â) 안 뜨고 정상 key repeat 발생. 한글 자모는 IME 경로라 영향
+    // 없지만, 영어/숫자/기호는 system 이 repeat 을 막아 *키 한 번* 만 들어옴.
+    // ghostty / iTerm2 / Alacritty 모두 같은 방식 — 우리 앱 도메인의
+    // NSUserDefaults 에 false 로 set.
+    {
+        const NSUserDefaults = objc.getClass("NSUserDefaults");
+        const stdDefaults = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+        const defaults = stdDefaults(NSUserDefaults, objc.sel("standardUserDefaults"));
+        if (defaults != null) {
+            const setBoolForKey = objc.objcSend(fn (objc.id, objc.SEL, bool, objc.id) callconv(.c) void);
+            setBoolForKey(defaults, objc.sel("setBool:forKey:"), false, objc.nsString("ApplePressAndHoldEnabled"));
+        }
+    }
 
     // dialog_macos 가 NSAlert path 쓰도록 — 이 시점부터 우리 NSApp 안에서
     // alert 띄울 때 popup level 보다 위에 올바르게 표시.
