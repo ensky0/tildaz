@@ -144,7 +144,7 @@ pub const MetalRenderer = struct {
         alloc: std.mem.Allocator,
         device: objc.id,
         layer: objc.id,
-        font_family: []const u8,
+        font_families: []const []const u8,
         font_size: f32,
         /// Windows config 와 동일한 미적 보정. 폰트 변경 시 cell 크기는
         /// font 가 자체 측정 (advance + ascent/descent/leading).
@@ -158,7 +158,7 @@ pub const MetalRenderer = struct {
         const cmd_queue = objc.msgSend(device, objc.sel("newCommandQueue"));
 
         var font_ctx = try CoreTextFontContext.init(
-            font_family,
+            font_families,
             font_size,
             scale,
             cell_width_scale,

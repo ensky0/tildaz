@@ -126,7 +126,7 @@ pub fn run() !void {
 
     const font_family_w = config.fontFamilyUtf16(0);
     const font_size: c_int = @intCast(config.font_size);
-    try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height);
+    try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height, config.hotkey.vkey, config.hotkey.modifiers);
     tildaz_log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,
         app.window.cell_width,
