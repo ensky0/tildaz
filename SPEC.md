@@ -342,7 +342,6 @@ Windows 도 동일 — `C:\Users\yongjun\AppData\Roaming\tildaz\config.json` 같
 | quirk | 영향 | 우회 / 대안 |
 |---|---|---|
 | macOS Metal layer (0,0) 픽셀 미렌더링 | 좌상 1px corner 안 그려짐 | `TERMINAL_PADDING_PT >= 1` 이라 인지 거의 없음 |
-| SIGHUP 무시 셸 → deinit hang | `nohup` wrapper / `trap '' HUP` 같은 rare 케이스 | bash / zsh / fish / sh 무관. SIGKILL fallback 별도 후속 |
 | 한영 jamo replay (IMK mach port timing) | 한영 전환 직후 첫 jamo 가 두 번 처리 | 사용자 환경 미발생 |
 
 ---
