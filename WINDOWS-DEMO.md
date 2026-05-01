@@ -1,5 +1,7 @@
 # Windows 머신 시연 체크리스트 (임시 — 검증 후 삭제)
 
+> 검증 끝나면 **`WINDOWS-DEMO.md` + `memory-snapshot/`** 두 디렉토리 모두 삭제 commit.
+
 `git pull origin main` 후 `zig build` → `zig-out\tildaz.exe` 실행.
 
 ---
