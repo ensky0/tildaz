@@ -1,0 +1,11 @@
+- [macOS 포팅 접근 방식](feedback_macos_porting_approach.md) — 작은 milestone + 매번 main 머지 + 막힘 발견 시 즉시 옵션 B로 escalation. 큰 phase 단위 거부.
+- [macOS 포팅 과거 시도 이력](project_macos_port_history.md) — #75 에서 통과한 영역(PTY/CoreText/Metal/IME)과 막힌 영역(드래그 리사이즈, layout 콜백) 정리.
+- [ghostty Quick Terminal 코드 위치](reference_ghostty_quake_terminal.md) — ghostty 의 drop-down 터미널 (`macos/Sources/Features/QuickTerminal/`) — tildaz macOS 포팅의 직접 참조처.
+- [macOS M3 통과로 검증된 옵션 D 패턴 + 환경 학습](project_macos_m3_learnings.md) — Carbon→CGEventTap, .app 번들, Accessory mode, Titled+FullSizeContentView. M4+ 에서 재참고.
+- [macOS 포팅 트래킹 이슈는 큰 묶음 끝까지 open](feedback_macos_tracking_issue.md) — #108 은 sub-milestone 마다 close 안 함. 매 commit 후 댓글 + 표 업데이트.
+- [tildaz commit 에 Co-Authored-By 트레일러 금지](feedback_no_coauthor_trailer.md) — 모든 commit 메시지에서 `Co-Authored-By` 절대 안 넣음. AGENTS.md 에도 명시됨.
+- [검증 안 끝난 작업을 "완료" 로 적지 않음](feedback_no_premature_completed.md) — 빌드/smoke 통과만으로 "M11.x 완료" 같은 표현 금지. 사용자 손으로 시연 OK 후에만 "완료". commit/amend/force-push 도 검증 후만.
+- [Windows 기능은 macOS 도 모두 동등 구현](feedback_windows_features_must_port.md) — 'optional' / '마우스로 충분' 같이 macOS 만 빠지는 정당화 금지. 우선순위 적어도 🟡 이상.
+- [config schema 는 Windows / macOS 동일 통합](feedback_config_schema_unified.md) — 같은 필드 이름 / 구조. font / shell 같은 OS-specific 만 default 값 platform 별 다름.
+- [cross-platform 앱이지만 platform native 동작 우선](feedback_platform_native_first.md) — modifier 순서 / 단축키 표기 / config 위치 모두 각 platform 표준. cross-platform 일관성 < native 자연스러움.
+- [macOS Cocoa quirks (시연 중 발견 패턴 모음)](project_macos_cocoa_quirks.md) — atexit / PressAndHold / IME ctrl / NSAlert TextView 자동 copy / ghostty wide char selectWord. 향후 macOS 작업 재참고.
