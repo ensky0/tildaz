@@ -132,6 +132,17 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 6. **`~/Library/LaunchAgents` root 소유 환경 (회사 노트북).** pulsesecure (회사 VPN) 같은 패키지가 root 권한으로 디렉토리 만들어 사용자 owner 빼앗음. LaunchAgent plist 작성 실패 (`AccessDenied`) — graceful fail 로 앱은 정상. 복구: `sudo chown -R $(whoami):staff ~/Library/LaunchAgents` (회사 plist owner 도 같이 바뀌니 신중).
 
+# macOS — emoji 입력 테스트 방법
+
+`Ctrl+Cmd+Space` / `Ctrl+Shift+Space` 같은 system shortcut 이 우리 앱에선 안 떠 ([#130](https://github.com/ensky0/tildaz/issues/130)). 우회 방법:
+
+```sh
+echo "🎉 안녕 ABC"                       # source 에 emoji 직접 (다른 앱에서 복사 → 우클릭 paste)
+python3 -c "print('🎉 안녕 ABC')"
+printf '\xf0\x9f\x8e\x89\n'              # UTF-8 byte 직접 (🎉 = F0 9F 8E 89)
+zsh -c "echo \$'\\U0001F389'"            # zsh unicode escape (macOS bash 3.2 미지원)
+```
+
 # 도구 실행
 
 **모든 도구 호출에 timeout 은 1분 (60000ms) 을 명시적으로 걸어요.** Bash, PowerShell, Agent 같은 도구의 기본 timeout (2~10 분) 에 의존하지 말고 매 호출마다 `timeout: 60000` 을 직접 넣어요. 사용자가 1 분 넘게 아무 응답도 받지 못하는 상황을 피하기 위한 규칙.
