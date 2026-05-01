@@ -44,23 +44,6 @@ pub fn logPath(allocator: std.mem.Allocator) ![]u8 {
     }
 }
 
-/// 구버전 (`~/Library/Application Support/tildaz/config.json`) 위치 — macOS 만 의미
-/// 있음. 신규 위치에 파일 없을 때 1회 migration 용도.
-pub fn legacyMacConfigPath(allocator: std.mem.Allocator) ?[]u8 {
-    if (builtin.os.tag != .macos) return null;
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/Library/Application Support/tildaz/config.json", .{home}) catch null;
-}
-
-/// 구버전 (`<exe_dir>\config.json`) 위치 — Windows 만 의미. 신규 위치에 파일 없을 때 migration.
-pub fn legacyWindowsConfigPath(allocator: std.mem.Allocator) ?[]u8 {
-    if (builtin.os.tag != .windows) return null;
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_dir = std.fs.selfExeDirPath(&buf) catch return null;
-    return std.fmt.allocPrint(allocator, "{s}\\config.json", .{exe_dir}) catch null;
-}
-
 fn configDir(allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
         const appdata = try std.process.getEnvVarOwned(allocator, "APPDATA");
