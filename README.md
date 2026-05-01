@@ -1,65 +1,75 @@
 # TildaZ
 
-Quake-style drop-down terminal for Windows, built on Zig and libghostty-vt.
+Quake-style drop-down terminal for Windows and macOS, built on Zig and libghostty-vt.
 
-Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows.
+Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and macOS.
 
 **Website**: https://ensky0.github.io/tildaz/
 
-> **v0.2.12 — architecture cleanup release**
+> **v0.2.13 — macOS support**
 >
-> Reviewed TildaZ against Windows Terminal and WezTerm and separated the
-> boundaries for input events, session/tab, terminal backend, Windows host,
-> build target, and renderer backend. The core Windows choice —
-> **OpenConsole/ConPTY + ghostty VT + Direct3D 11 renderer** — stays the same,
-> but the seams are now in place to add macOS/Linux backends later.
-> See [Architecture](#architecture) for details.
+> macOS native backend lands: PTY via `login_tty` + IUTF8 termios, CoreText
+> + Metal renderer, NSWindow drop-down at popUpMenu level, CGEventTap for
+> the global hotkey, NSTextInputClient for IME (Korean / Japanese / Chinese
+> composition with inline pre-edit). Cross-platform behavior is tracked in
+> [SPEC.md](SPEC.md). The same `zig build` produces `tildaz.exe` on Windows
+> and `TildaZ.app` on macOS.
 
 ## Features
 
-- **F1** global hotkey toggles the terminal show/hide
-- **Alt+Enter** toggles current-monitor fullscreen (work area = excluding taskbar). Fullscreen state is preserved across F1 hide → F1 show cycles and re-applied on display / DPI / work-area changes
+- **Global hotkey** — toggles the terminal show/hide system-wide. Default F1 (configurable on both platforms via `config.hotkey`)
+- **Fullscreen** — Alt+Enter on Windows, current-monitor work area (excluding taskbar / Dock). Fullscreen state is preserved across hide → show cycles and re-applied on display / DPI changes
 - **Tabs** — multiple independent terminal sessions
-  - Ctrl+Shift+T to open a new tab
-  - Ctrl+Shift+W to close the active tab
-  - Alt+1~9 to switch between tabs
-  - Click to select, X button to close
-  - Drag to reorder
+  - New tab: Ctrl+Shift+T (Windows) / Cmd+T (macOS)
+  - Close active: Ctrl+Shift+W (Windows) / Cmd+W (macOS)
+  - Switch by index: Alt+1–9 (Windows) / Cmd+1–9 (macOS)
+  - Prev / next tab: Ctrl+Shift+Tab / Ctrl+Tab (Windows) — Shift+Cmd+[ / Shift+Cmd+] (macOS)
+  - Click to select, X button to close, drag to reorder, double-click to rename
   - Closing the last tab quits the app
-- **Full Unicode support** — correct rendering for Hangul, CJK, emoji and other wide/narrow character sets
-- **Font glyph fallback chain** — up to 8 font families; *per-codepoint* lookup walks the chain to find a font that has the glyph (e.g. Latin → Cascadia Mono, Hangul → Malgun Gothic, symbols → Segoe UI Symbol)
-- **ClearType subpixel rendering** — high-quality text via DirectWrite + Direct3D 11 shaders
-- **Bundled OpenConsole** — ships `OpenConsole.exe` + `conpty.dll` to bypass the system `conhost.exe`. Bulk output throughput is 2.2× over system conhost; falls back to system conhost automatically when the bundled files are missing
+- **Full Unicode support** — Hangul, CJK, emoji, combining marks, wide / narrow cells
+- **Font glyph fallback chain** — up to 8 font families; *per-codepoint* lookup walks the chain to find a font with the glyph (e.g. Latin → Cascadia Mono / Menlo, Hangul → Malgun Gothic / Apple SD Gothic Neo, symbols → Segoe UI Symbol / Apple Symbols). All listed families must exist on the system.
+  - macOS additionally falls through to the system auto fallback (CoreText `CTFontCreateForString`) for codepoints not in the chain (Apple Color Emoji, etc.) — a single `["Menlo"]` is enough for most cases.
+- **GPU-accelerated rendering**
+  - Windows: ClearType subpixel via DirectWrite + Direct3D 11 / HLSL shaders
+  - macOS: Metal + CoreText, retina (2x) glyph atlas
+- **Bundled OpenConsole** (Windows) — ships `OpenConsole.exe` + `conpty.dll` to bypass the system `conhost.exe`. Bulk output throughput is 2.2× over system conhost; falls back to system conhost automatically when the bundled files are missing
+- **POSIX PTY** (macOS) — `openpty` + `login_tty` + IUTF8 termios. SIGHUP-ignoring shells (`nohup`, `trap '' HUP`) are killed with SIGKILL after a 500 ms grace, so closing a tab never hangs
 - **ANSI colors** — 16 / 256 / TrueColor foreground and background, bold-is-bright, inverse
 - **18 built-in color themes** — Tilda, Ghostty, Windows Terminal, Dracula, Catppuccin, and more
 - **Text selection and copy**
   - Click-drag to select (selection inverted in place)
-  - Double-click to select a word
+  - Double-click to select a word (boundary chars: space / tab / `" \` | : ; ( ) [ ] { } < >`)
   - Release mouse button → automatic clipboard copy
-  - Middle-click to paste
-- **Scrollback** — mouse wheel, scrollbar drag, up to 100,000 lines. Thumb stays at least 32px × DPI scale so it remains draggable even with deep scrollback
-- **Vim dark/light detection** — sets `COLORFGBG` based on theme background luminance (propagated into WSL too)
-- Drop-down docks to any screen edge (top/bottom/left/right)
-- Size and offset specified as percentages of the screen
+  - Right-click to paste (clipboard)
+  - Cross-platform shortcut: Ctrl+Shift+C (Windows) / Cmd+C (macOS) for explicit copy of current selection
+- **Scrollback** — mouse wheel, scrollbar drag (configurable lines, up to 10 M). Thumb stays at least 32 px × DPI scale so it remains draggable even with deep scrollback. Selection survives viewport movement (ghostty `Pin` based)
+- **IME (Korean / Japanese / Chinese)** — inline pre-edit on the cursor; commit via Enter or syllable boundary; Ctrl+key during composition discards the pre-edit and is sent to the PTY (so Ctrl+C aborts cleanly even mid-composition)
+- **Vim dark/light detection** — sets `COLORFGBG` based on theme background luminance (propagated into WSL on Windows)
+- **Drop-down** — docks to any screen edge (top / bottom / left / right). Size and offset as percentages of the screen
 - **Multi-monitor follow**
-  - Each F1 toggle drops onto **the monitor containing the mouse cursor**. Width / height / offset are recomputed against that monitor's work area (excluding the taskbar)
-  - Resolution change / external monitor connect-disconnect / taskbar auto-hide toggle / per-monitor DPI change are all detected and re-applied immediately (`WM_DISPLAYCHANGE` / `WM_DPICHANGED` / `WM_SETTINGCHANGE`)
-  - Moving to a different-DPI monitor re-rasters the GDI font, cell metrics, and DirectWrite glyph atlas at the new DPI so glyphs are drawn at the new monitor's pixel density
-  - When the window rect is unchanged (e.g. unplugging an external monitor), the terminal grid is reflowed directly even though `WM_SIZE` never fires, so the full client area stays in sync with the new cell size
-- Translucent (configurable), always-on-top window
-- Ctrl+Shift+V to paste from clipboard
-- Ctrl+Shift+R to reset the terminal (e.g. after `cat`-ing a binary)
-- **Ctrl+Shift+I** About dialog — shows version / exe full path / pid in a MessageBox. Useful because the borderless window has no title bar to identify the running exe from
-- **PE VERSIONINFO** — right-click `tildaz.exe` → Properties → Details shows the version
-- **Unified log** `%APPDATA%\tildaz\tildaz.log` — boot / exit / ConPTY init / autostart errors / perf snapshots share a single timeline. Replaces the previous hard-coded `C:\tildaz_win\perf.log`
-- Ctrl+Shift+P dumps a perf snapshot (ms / bytes / call counts per push / drain / parse / render / present stage) into `tildaz.log`
-- **Auto-start on Windows login** — registers via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. (Through v0.2.7 this used Task Scheduler, but Group Policy / UAC settings caused `schtasks /create` to be denied and left stale entries behind permanently. v0.2.8 consolidated on Registry Run.)
+  - Toggle drops onto the monitor containing the mouse cursor; size / offset are recomputed against that monitor's work area
+  - Resolution change / external monitor connect-disconnect / taskbar (Dock) auto-hide / per-monitor DPI change are all detected and re-applied immediately
+  - Moving to a different-DPI monitor re-rasters the font + cell metrics + glyph atlas at the new DPI
+- **Translucent**, always-on-top window (configurable opacity)
+- **Ctrl+Shift+V** (Windows) / Cmd+V (macOS) — paste
+- **Ctrl+Shift+R** (Windows) / TBD (macOS) — reset the terminal
+- **About dialog** — Ctrl+Shift+I (Windows) / Shift+Cmd+I (macOS). Shows version / exe full path / pid / config path / log path. Selection auto-copies to clipboard (terminal-style) for easy paste of paths
+- **Open config / log shortcuts** — Ctrl+Shift+P / Ctrl+Shift+L (Windows), Shift+Cmd+P / Shift+Cmd+L (macOS) — opens the file in the system default editor
+- **Unified log**
+  - Windows: `%APPDATA%\tildaz\tildaz.log`
+  - macOS: `~/Library/Logs/tildaz.log` (Console.app auto-indexed)
+  - boot / exit / autostart / PTY events / perf snapshots share a single timeline
+- Perf snapshot — Ctrl+Shift+F12 (Windows) — appends ms / bytes / call counts per push / drain / parse / render / present stage to the log
+- **Auto-start on login**
+  - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (consolidated from Task Scheduler in v0.2.8 — GPO / UAC blocked `schtasks /create` and left stale entries)
+  - macOS: `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad)
 
 ## Build
 
 ### Requirements
 
 - [Zig 0.15.2](https://ziglang.org/download/)
+- macOS only: Xcode Command Line Tools (`xcode-select --install`) for the codesigning step
 
 ### Build commands
 
@@ -71,18 +81,30 @@ zig build
 zig build -Doptimize=Debug
 ```
 
+Output:
+- Windows: `zig-out/bin/tildaz.exe`
+- macOS: `zig-out/TildaZ.app` (codesigned ad-hoc — see Distribution)
+
 > **Note**: the SIMD option (`-Dsimd=true`) currently does not work on Windows.
 > Zig 0.15's build system does not pass C++ stdlib include paths through to
 > ghostty's C++ SIMD sources. Upstream fix required.
 
 When building a WSL checkout from Windows, use the `\\wsl$\Debian\...` UNC
 path. `\\wsl.localhost\Debian\...` can trip security products or exhibit
-different Windows network-path behavior that blocks the executable. Build
-output stays at the default `zig-out/bin`.
+different Windows network-path behavior that blocks the executable.
 
-### Packaging (release zip)
+### macOS — first-run permissions
 
-Starting with v0.2.6 the release is a single zip with three files:
+The global hotkey (default F1) and Cmd+Q quit need two macOS permissions:
+**Input Monitoring** and **Accessibility**. On first launch (and after each
+ad-hoc rebuild — the codesign identity changes per build) TildaZ shows a
+step-by-step dialog. Open System Settings → Privacy & Security and enable
+*both* for `tildaz`. Without these, the window still works but global
+hotkeys do not.
+
+### Packaging (release zip — Windows)
+
+Starting with v0.2.6 the Windows release is a single zip with three files:
 
 ```
 tildaz-v<ver>-win-x64.zip
@@ -141,7 +163,9 @@ Config file path (per OS standard):
 
 If missing, it is auto-created with defaults on first launch.
 
-> **Schema status**: Windows and macOS schemas are being unified ([issue #118](https://github.com/ensky0/tildaz/issues/118)). The example below reflects the Windows schema. macOS currently uses a *flat* top-level (e.g. `"dock_position"` directly instead of `"window.dock_position"`); both will converge. See [SPEC.md §7](SPEC.md) for the up-to-date matrix.
+> **Schema status**: Windows and macOS schemas are being unified ([issue #118](https://github.com/ensky0/tildaz/issues/118)). Windows currently uses a *nested* top-level (`"window.dock_position"`), macOS uses *flat*. Both examples are shown below; the keys / types / ranges are otherwise identical. See [SPEC.md §7](SPEC.md) for the up-to-date matrix.
+
+### Windows example (nested)
 
 ```json
 {
@@ -154,34 +178,60 @@ If missing, it is auto-created with defaults on first launch.
   },
   "font": {
     "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
-    "size": 20,
+    "size": 19,
     "line_height": 0.95,
-    "cell_width": 1.2
+    "cell_width": 1.1
   },
   "theme": "Tilda",
   "shell": "cmd.exe",
+  "hotkey": "f1",
   "auto_start": true,
   "hidden_start": false,
   "max_scroll_lines": 100000
 }
 ```
 
-| Section | Key | Type | Range | Default | Description |
-|---------|-----|------|-------|---------|-------------|
-| window | dock_position | string | top, bottom, left, right | "top" | Dock edge |
-| window | width | int | 10–100 | 50 | Width (% of screen) |
-| window | height | int | 10–100 | 100 | Height (% of screen) |
-| window | offset | int | 0–100 | 100 | Position along the edge (0 = start, 50 = center, 100 = end) |
-| window | opacity | int | 0–100 | 100 | Window opacity (%) |
-| font | family | string or string[] | — | ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"] | Font families (array = *glyph fallback chain* — per-codepoint lookup walks the list to find a font with the glyph; max 8). All listed families must exist on the system. |
-| font | size | int | 8–72 | 20 | Font size (px) |
-| font | line_height | float | 0.1–10.0 | 0.95 | Line-height multiplier (1.0 = default leading) |
-| font | cell_width | float | 0.1–10.0 | 1.2 | Cell-width multiplier (1.0 = default advance) |
-| — | theme | string | see [Themes](#themes) | "Tilda" | Color theme |
-| — | shell | string | — | "cmd.exe" | Shell to spawn (e.g. `"wsl.exe -d Debian --cd ~"`) |
-| — | auto_start | bool | true, false | true | Start on Windows login |
-| — | hidden_start | bool | true, false | false | Start hidden |
-| — | max_scroll_lines | int | 100–100,000 | 100,000 | Scrollback buffer (lines) |
+### macOS example (flat)
+
+```json
+{
+  "dock_position": "top",
+  "width": 50,
+  "height": 100,
+  "offset": 100,
+  "opacity": 100,
+  "theme": "Tilda",
+  "hotkey": "f1",
+  "auto_start": true,
+  "hidden_start": false,
+  "shell": "",
+  "max_scroll_lines": 100000,
+  "font": {
+    "family": ["Menlo"],
+    "size": 15,
+    "cell_width": 1.0,
+    "line_height": 1.1
+  }
+}
+```
+
+| Key | Type | Range | Windows default | macOS default | Description |
+|-----|------|-------|-----------------|---------------|-------------|
+| dock_position | string | top / bottom / left / right | "top" | "top" | Edge to dock to |
+| width | int | 1–100 | 50 | 50 | Width (% of screen) |
+| height | int | 1–100 | 100 | 100 | Height (% of screen) |
+| offset | int | 0–100 | 100 | 100 | Position along edge (0 = start, 50 = center, 100 = end) |
+| opacity | int | 0–100 | 100 | 100 | Window opacity (%) |
+| font.family | string \| string[] | — | `["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"]` | `["Menlo"]` | Font families (array = *glyph fallback chain* — per-codepoint lookup, max 8). **All listed families must exist on the system.** macOS additionally falls back to the system font for glyphs not in the chain. |
+| font.size | int | 8–72 | 19 | 15 | Font size (pt) |
+| font.line_height | float | 0.1–10.0 (Win) / 0.5–2.0 (mac) | 0.95 | 1.1 | Line-height multiplier (1.0 = default leading) |
+| font.cell_width | float | 0.1–10.0 (Win) / 0.5–2.0 (mac) | 1.1 | 1.0 | Cell-width multiplier (1.0 = default advance) |
+| theme | string | see [Themes](#themes) | "Tilda" | "Tilda" | Color theme |
+| shell | string | — | "cmd.exe" | "" (= `$SHELL` env / `/bin/zsh`) | Shell to spawn |
+| hotkey | string | "f1", "ctrl+space", "shift+cmd+t", … | "f1" | "f1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS. |
+| auto_start | bool | — | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS) |
+| hidden_start | bool | — | false | false | Start hidden (first toggle reveals) |
+| max_scroll_lines | int | 100–10,000,000 | 100,000 | 100,000 | Scrollback buffer (lines) |
 
 ### Position examples
 
@@ -201,21 +251,36 @@ If missing, it is auto-created with defaults on first launch.
 
 ## Keybindings
 
-| Key | Action |
-|-----|--------|
-| F1 | Toggle terminal show/hide (fullscreen state is preserved) |
-| Alt+Enter | Toggle current-monitor fullscreen (work area) |
-| Ctrl+Shift+T | Open a new tab |
-| Ctrl+Shift+W | Close the active tab |
-| Alt+1–9 | Switch tab |
-| Ctrl+Shift+R | Reset the terminal (recover from broken state, e.g. after `cat` on a binary) |
-| Ctrl+Shift+V | Paste from clipboard |
-| Ctrl+Shift+I | About — version / exe full path / pid MessageBox |
-| Ctrl+Shift+P | Dump a perf snapshot to `%APPDATA%\tildaz\tildaz.log` |
-| Mouse drag | Select text + auto-copy |
-| Double click | Select word + auto-copy |
-| Mouse wheel | Scroll |
-| Middle click | Paste from clipboard |
+Cross-platform shortcut convention: each platform follows its native modifier (Apple HIG order Shift+Cmd on macOS, Ctrl+Shift on Windows).
+
+| Action | Windows | macOS |
+|--------|---------|-------|
+| Toggle terminal show/hide | F1 (configurable) | F1 (configurable) |
+| Fullscreen | Alt+Enter | (TBD) |
+| New tab | Ctrl+Shift+T | Cmd+T |
+| Close active tab | Ctrl+Shift+W | Cmd+W |
+| Switch tab by index | Alt+1–9 | Cmd+1–9 |
+| Previous tab | Ctrl+Shift+Tab | Shift+Cmd+[ |
+| Next tab | Ctrl+Tab | Shift+Cmd+] |
+| Copy selection (explicit) | Ctrl+Shift+C | Cmd+C |
+| Paste from clipboard | Ctrl+Shift+V | Cmd+V |
+| Reset terminal | Ctrl+Shift+R | (TBD) |
+| About dialog | Ctrl+Shift+I | Shift+Cmd+I |
+| Open config in editor | Ctrl+Shift+P | Shift+Cmd+P |
+| Open log in editor | Ctrl+Shift+L | Shift+Cmd+L |
+| Perf snapshot to log | Ctrl+Shift+F12 | (dev tool, Win-only) |
+| Quit | (close last tab) | Cmd+Q |
+| Scrollback page up / down | Shift+PgUp / PgDn | Shift+PgUp / PgDn |
+
+Mouse:
+
+| Action | Both platforms |
+|--------|----------------|
+| Drag-select text | Auto-copy on release |
+| Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` | : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
+| Mouse wheel | Scroll viewport |
+| Right-click | Paste from clipboard |
+| Scrollbar click / drag | Jump or follow viewport |
 
 ## Themes
 
@@ -258,96 +323,92 @@ If missing, it is auto-created with defaults on first launch.
 
 ## Known limitations
 
+### Windows
 - **F1 hotkey does not fire over elevated apps**: while an elevated (Admin) app like Task Manager or regedit has focus, F1 has no effect. This is enforced by Windows UIPI (User Interface Privilege Isolation). Running TildaZ elevated works around it, but is not recommended.
+
+### macOS
+- **Ad-hoc codesign reissues identity per rebuild** — Input Monitoring / Accessibility grants must be re-enabled after each rebuild during development. Notarized releases ([#109](https://github.com/ensky0/tildaz/issues/109)) will fix this.
+- **`IMKCFRunLoopWakeUpReliable` stderr noise** — macOS IMK (Input Method Kit) emits this line via the system framework. Cannot be suppressed without redirecting all stderr; harmless. Same line appears in Ghostty, iTerm2, etc.
+- **`SF Mono` not registered by default** — Apple's user-facing "SF Mono" font is shipped with Xcode. Without Xcode (or manual install from the Apple Developer Fonts download), `["SF Mono"]` resolves to a substitute via CoreText; TildaZ rejects substitutes (strict family-name validation) so the config error is surfaced cleanly. The default chain `["Menlo"]` always works.
+- **macOS-specific glyph fallback** — codepoints outside the configured font.family chain still resolve via CoreText system auto fallback (Apple Color Emoji, Apple SD Gothic Neo, Apple Symbols, etc.). On Windows the chain must explicitly include a font for every script you want to display.
 
 ## Architecture
 
-TildaZ targets two goals at once: run efficiently as a Windows terminal host
-today, and keep the boundary in place where a macOS/Linux backend can slot in
-later. The review and refactoring history lives in
-[#91](https://github.com/ensky0/tildaz/issues/91).
+TildaZ runs as a native host on Windows and macOS, sharing cross-platform
+session / VT / config / dialog / themes / terminal-interaction / tab-interaction
+modules. Platform seams are the host (`windows_host.zig` / `macos_host.zig`),
+the PTY backend (ConPTY / POSIX), the window layer (Win32 / NSWindow), and the
+renderer (Direct3D 11 / Metal). The architecture review history lives in
+[#91](https://github.com/ensky0/tildaz/issues/91); the cross-platform behavior
+matrix lives in [SPEC.md](SPEC.md).
 
 ### Windows pipeline
 
-The Windows execution path flows as follows:
+1. `windows_host.zig` — DPI awareness, single-instance, config, autostart, window, renderer, initial tab
+2. `window.zig` — Win32 messages → `app_event.zig`
+3. `app_controller.zig` — event → tab / session / selection / rename / scroll
+4. `session_core.zig` — tab list, active tab, scrollback, VT drain, PTY queue
+5. `terminal_backend.zig` → `conpty.zig` (bundled `conpty.dll` / `OpenConsole.exe`, fallback to `kernel32 CreatePseudoConsole`)
+6. PTY read thread → lock-free ring buffer → render callback drains through ghostty VT parser
+7. `renderer_backend.zig` → `d3d11_renderer.zig` (DirectWrite + Direct3D 11 / HLSL, dynamic glyph atlas)
 
-1. `windows_host.zig` sets up DPI awareness, single-instance enforcement,
-   config, autostart, window, renderer, and the initial tab.
-2. `window.zig` translates Win32 messages into the app events defined in
-   `app_event.zig`.
-3. `app_controller.zig` receives app events and drives tab / session /
-   selection / rename / scroll policy.
-4. `session_core.zig` manages the tab list, the active tab, scrollback, VT
-   drain, and the PTY input queue.
-5. `terminal_backend.zig` selects the PTY backend per OS. On Windows, the
-   ConPTY backend in `conpty.zig` is used; non-Windows platforms currently
-   have an unsupported placeholder.
-6. `conpty.zig` prefers bundled `conpty.dll` / `OpenConsole.exe` and falls
-   back to `kernel32 CreatePseudoConsole` when the bundle is missing.
-7. PTY output enters a lock-free ring buffer on the read thread; the render
-   callback drains it through the ghostty VT parser.
-8. `renderer_backend.zig` selects the renderer per OS. Windows uses the
-   Direct3D 11 renderer in `d3d11_renderer.zig`; non-Windows platforms
-   currently have an unsupported placeholder.
+### macOS pipeline
+
+1. `macos_host.zig` — NSApplication accessory mode, NSWindow at popUpMenu level (101), CGEventTap for global hotkey, render timer via CFRunLoopTimer
+2. `macos_pty.zig` — POSIX PTY (`openpty` + `login_tty` + IUTF8). SIGHUP-ignoring shells get SIGKILL after a 500 ms grace
+3. Same cross-platform `session_core` analog (`macos_session.zig`) — schema-compatible with Windows `session_core`
+4. `macos_metal.zig` — Metal renderer (CAMetalLayer + MTLCommandQueue), retina-aware glyph atlas
+5. `macos_font.zig` — CoreText with explicit *glyph fallback chain* (config.font.family) + system auto fallback (`CTFontCreateForString`) for codepoints outside the chain
+6. NSTextInputClient implementation for IME (Korean / Japanese / Chinese composition) — inline pre-edit overlay, syllable-boundary commit
+7. macOS quirks tracked in [AGENTS.md § macOS Cocoa quirks](AGENTS.md): `atexit()` for `[exit]` log line (NSApp `terminate:` skips `defer`), `ApplePressAndHoldEnabled = false` for English key repeat, NSAlert TextView selection-auto-copy for Cmd+C routing, etc.
 
 ### Why these choices
 
-**ConPTY / OpenConsole**
+**ConPTY / OpenConsole** (Windows). ConPTY is the standard for attaching both
+legacy Console-API apps and VT-based apps to an external terminal window. TildaZ
+bundles OpenConsole to flatten out system-conhost version variance and falls back
+to `kernel32 CreatePseudoConsole` when the bundle is missing.
 
-ConPTY is the standard way to attach both legacy Console-API apps and VT-based
-apps to an external terminal window on Windows. TildaZ uses the bundled
-OpenConsole path when `conpty.dll` is available (to flatten out
-version-to-version differences in the system conhost) and falls back to the
-system `kernel32` ConPTY otherwise. This trades a small amount of bundle
-weight for deployment stability and compatibility coverage.
+**POSIX PTY + login_tty** (macOS). `login_tty` makes the child a new session
+leader so `kill(-pid, SIGHUP)` cleans up the whole process group on tab close.
+IUTF8 termios bit is set so multi-byte input does not mangle Korean / Japanese
+keystrokes.
 
-**Pipe / thread structure**
+**Direct3D 11 / Metal**. GPU-accelerated rendering is necessary for bulk output
++ deep scrollback to keep up with modern terminals (Windows Terminal, WezTerm,
+Ghostty, Alacritty). Both backends rasterize through the platform's native
+text engine (DirectWrite / CoreText), atlas glyphs once, and re-blit textured
+quads per frame.
 
-ConPTY input stays as a synchronous write pipe for simplicity; output is read
-through a named pipe that supports overlapped I/O. The read thread and the
-process-wait thread are separated so a full pipe cannot block the UI thread
-directly. The ring buffer in `session_core.zig` is the buffer that decouples
-the ConPTY read thread from the UI/render thread.
-
-**Direct3D 11 renderer**
-
-The Windows renderer rasterizes glyphs through DirectWrite and draws cells
-and the glyph atlas through Direct3D 11 / HLSL. This outperforms
-redrawing text through GDI every frame under bulk output and deep scrollback,
-and matches the GPU-accelerated direction modern terminal emulators like
-Windows Terminal and WezTerm have taken.
-
-**Platform seams**
-
-Phases 1–12 sequentially split out input events, session core, terminal
-backend, app controller, Windows host, build target, and renderer backend.
-Current Windows behavior is preserved, and adding macOS/Linux later is a
-matter of swapping `unsupported_host.zig`, `terminal_backend.zig`,
-`renderer_backend.zig`, and the window host layer.
+**Cross-platform native first**. Each OS's modifiers / shortcut order /
+config-file conventions follow the platform standard rather than a forced
+identical UX (Apple HIG `Shift+Cmd` order on macOS, Windows `Ctrl+Shift`;
+`%APPDATA%\tildaz\` on Windows, XDG `~/.config/tildaz/` on macOS). See
+[AGENTS.md § cross-platform 앱이지만 platform native 동작 우선](AGENTS.md).
 
 ### Open structural work
 
-- Real macOS/Linux hosts and a POSIX PTY backend are not yet implemented.
-- No non-Windows renderer (Metal / OpenGL / Vulkan / Skia) exists yet.
-- No software renderer fallback when renderer init fails.
-- The `ShowHide` and DA1 pre-response paths that track OpenConsole internals
-  need regression tests whenever the bundled version is bumped.
-- Stress tests for bulk output, resize storms, output-pipe-full during tab
-  close, WSL/nvim/mouse, and CJK/emoji/combining marks should be pinned down
-  separately.
+- Cross-platform `config.zig` unification ([#118](https://github.com/ensky0/tildaz/issues/118)) — schemas already compatible at the field level, the parser file is still split.
+- macOS Developer ID code signing + notarization ([#109](https://github.com/ensky0/tildaz/issues/109)) — currently ad-hoc signed; per-rebuild identity changes invalidate Input Monitoring / Accessibility grants.
+- Linux backend (Wayland / X11) — not yet started.
+- Stress tests for bulk output, resize storms, output-pipe-full during tab close, WSL/nvim/mouse, and CJK/emoji/combining marks should be pinned down separately.
 
 ## Tech stack
 
-| Component | Choice |
-|-----------|--------|
-| Language | Zig 0.15.2 |
-| Terminal emulation | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
-| PTY backend | `terminal_backend.zig` — Windows ConPTY, non-Windows placeholder |
-| PTY host | Bundled `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT) · falls back to system conhost when missing |
-| Window | Win32 API (borderless popup) |
-| Renderer backend | `renderer_backend.zig` — Windows Direct3D 11, non-Windows placeholder |
-| Rendering | Direct3D 11 + HLSL shaders (ClearType dual-source subpixel blending) |
-| Font rasterizer | DirectWrite (dynamic glyph atlas + system font fallback) |
+| Component | Windows | macOS |
+|-----------|---------|-------|
+| Language | Zig 0.15.2 | Zig 0.15.2 |
+| Terminal emulation | [libghostty-vt](https://github.com/ghostty-org/ghostty) | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
+| PTY backend | ConPTY (`conpty.zig`) | POSIX (`macos_pty.zig`) — `openpty` + `login_tty` + IUTF8 |
+| PTY host | Bundled `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT); falls back to system conhost | (kernel) |
+| Window | Win32 API (borderless popup) | NSWindow (popUpMenu level 101) |
+| Hotkey | `RegisterHotKey` | CGEventTap (Input Monitoring + Accessibility) |
+| Renderer | Direct3D 11 + HLSL (ClearType subpixel) | Metal + CoreText |
+| Font | DirectWrite — explicit glyph fallback chain | CoreText — explicit glyph fallback chain + system auto fallback |
+| IME | Win32 IMM | NSTextInputClient (markedText pre-edit) |
+| Autostart | HKCU `Run` registry entry | LaunchAgent plist (`~/Library/LaunchAgents/com.tildaz.app.plist`) |
+| Log path | `%APPDATA%\tildaz\tildaz.log` | `~/Library/Logs/tildaz.log` (Console.app indexed) |
+| Config path | `%APPDATA%\tildaz\config.json` | `~/.config/tildaz/config.json` (XDG) |
 
 ## Performance
 
@@ -379,17 +440,21 @@ Tab startup time (`"wsl.exe -d Debian --cd ~"`, warm):
 
 ## Distribution and code signing
 
-Current state: **unsigned build**
+### Windows — current state: **unsigned build**
 
-Through v0.2.13, GitHub Release binaries are not Authenticode-signed. Some Windows Defender / Endpoint Security products (CrowdStrike, SentinelOne, etc.) flag the combination of unsigned binary + ConPTY-based child process spawn + multi-threading as suspicious behavior and can block execution.
+Through v0.2.13, GitHub Release Windows binaries are not Authenticode-signed. Some Windows Defender / Endpoint Security products (CrowdStrike, SentinelOne, etc.) flag the combination of unsigned binary + ConPTY-based child process spawn + multi-threading as suspicious behavior and can block execution.
 
-**If your AV/EDR flags `tildaz.exe`**:
+If your AV/EDR flags `tildaz.exe`:
 
 - With admin rights, add a SHA256 allowlist exception in your EDR
 - On a corporate-managed PC, file a false-positive report with your security team
 - Or copy the binary to a local-disk path (e.g. `%LOCALAPPDATA%\Programs\tildaz\`) before running — execution from UNC paths is scored as more suspicious
 
-**Plan**: applying to the [SignPath Foundation open-source code-signing program](https://about.signpath.io/foundation). Once approved, future releases will ship with an Authenticode-signed `tildaz.exe`, which should eliminate most EDR false positives. This section will track the progress.
+Plan: applying to the [SignPath Foundation open-source code-signing program](https://about.signpath.io/foundation). Once approved, future releases will ship with an Authenticode-signed `tildaz.exe`.
+
+### macOS — current state: **ad-hoc signed build**
+
+The Zig build runs `codesign --sign - --force --timestamp=none` on `TildaZ.app`. This is enough for the app to launch from `/usr/bin/open`, but Apple Developer ID signing + notarization (which would let users skip the Gatekeeper warning) is blocked by corporate keychain policy in the current build environment ([#109](https://github.com/ensky0/tildaz/issues/109)). When unblocked, releases will ship as a signed + notarized `.app` (zip or dmg) and Input Monitoring / Accessibility grants will persist across rebuilds (instead of being invalidated by the per-build ad-hoc identity).
 
 ## Privacy
 
@@ -397,13 +462,15 @@ TildaZ does not collect, transmit, or store any user data.
 
 - No telemetry, analytics, or crash reporting
 - No automatic update checks
-- No network requests of any kind from `tildaz.exe` itself
+- No network requests of any kind from `tildaz.exe` / `tildaz` itself
 - All state is local only:
-  - Config: `%APPDATA%\tildaz\config.json`
-  - Log: `%APPDATA%\tildaz\tildaz.log` (boot / exit / errors / perf snapshots; never transmitted)
-- Optional autostart adds an entry to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, read locally by the Windows shell
+  - Config: `%APPDATA%\tildaz\config.json` (Windows) · `~/.config/tildaz/config.json` (macOS)
+  - Log: `%APPDATA%\tildaz\tildaz.log` (Windows) · `~/Library/Logs/tildaz.log` (macOS) — boot / exit / errors / perf snapshots; never transmitted
+- Optional autostart:
+  - Windows: HKCU `Run` entry, read locally by the Windows shell
+  - macOS: LaunchAgent plist, read locally by `launchd`
 
-Child shells spawned by TildaZ (cmd, PowerShell, wsl, etc.) are independent processes; their own network and data behavior is governed by the user's operating system and shell configuration, not by TildaZ.
+Child shells spawned by TildaZ (cmd, PowerShell, wsl, bash, zsh, etc.) are independent processes; their own network and data behavior is governed by the user's operating system and shell configuration, not by TildaZ.
 
 ## License
 
