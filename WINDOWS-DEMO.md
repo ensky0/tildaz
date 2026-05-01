@@ -2,7 +2,18 @@
 
 > 검증 끝나면 **`WINDOWS-DEMO.md` + `memory-snapshot/`** 두 디렉토리 모두 삭제 commit.
 
-`git pull origin main` 후 `zig build` → `zig-out\tildaz.exe` 실행.
+`git pull origin main` 후 `zig build` → `zig-out\bin\tildaz.exe` 실행.
+
+> ⚠️ macOS 작업 + #118 진행 중 코드 변경이 누적됨. 기존 동작 regression 도 같이 점검.
+
+---
+
+## #118 추가 sub: Windows hotkey config (방금 추가)
+- [ ] config 의 `"hotkey": "f1"` default 자동 생성 (`%APPDATA%\tildaz\config.json`)
+- [ ] `"hotkey": "ctrl+space"` 로 변경 후 재시작 → Ctrl+Space 가 toggle 트리거
+- [ ] `"hotkey": "shift+win+t"` 로 변경 후 재시작 → Shift+Win+T 가 toggle (그 사이 F1 은 동작 X)
+- [ ] `"hotkey": "noSuchKey"` → fatal dialog "failed to parse hotkey value"
+- [ ] f1..f12, space, grave, alphanumeric (e.g. `"ctrl+a"`) 모두 동작
 
 ---
 
