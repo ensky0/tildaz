@@ -34,7 +34,7 @@ const macos_log = @import("macos_log.zig");
 const macos_autostart = @import("macos_autostart.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
-    std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
+    macos_log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch "panic (format failed)";
     dialog.showError(messages.crash_title, text);
@@ -42,7 +42,7 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    std.debug.print("TildaZ failed to start.\n\nError: {s}\n", .{@errorName(err)});
+    macos_log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
     var buf: [256]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch "TildaZ failed to start.";
     dialog.showError(messages.error_title, text);
@@ -264,11 +264,11 @@ fn syncTerminalGeometry() void {
     for (g_session.tabs.items) |t| {
         if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
         t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
-            std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
+            macos_log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
             continue;
         };
         t.pty.resize(new_cols, new_rows) catch |err| {
-            std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
+            macos_log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
         };
     }
 }
@@ -542,7 +542,7 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
     }
 
     _ = tab.pty.write(cstr[0..len]) catch |err| {
-        std.debug.print("[pty] write failed: {s}\n", .{@errorName(err)});
+        macos_log.appendLine("pty", "write failed: {s}", .{@errorName(err)});
     };
 }
 
@@ -727,14 +727,14 @@ fn syncGeometryAfterScreenChange() void {
     if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
         for (g_session.tabs.items) |t| {
             t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
-                std.debug.print("[geom] terminal resize failed: {s}\n", .{@errorName(err)});
+                macos_log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
                 continue;
             };
             t.pty.resize(new_cols, new_rows) catch |err| {
-                std.debug.print("[geom] pty resize failed: {s}\n", .{@errorName(err)});
+                macos_log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
             };
         }
-        std.debug.print("[geom] screen changed: vp={d}x{d} px, scale={d}, cols={d} rows={d}\n", .{
+        macos_log.appendLine("geom", "screen changed: vp={d}x{d}px scale={d:.2} cols={d} rows={d}", .{
             vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
         });
     }
@@ -836,7 +836,7 @@ fn handleTabBarClick(hit: TabBarHit) void {
     if (hit.on_close) {
         g_session.closeTab(hit.tab_index);
         if (g_session.count() == 0) {
-            std.debug.print("[tab] last tab closed via close button, terminating tildaz.\n", .{});
+            macos_log.appendLine("tab", "last tab closed via close button, terminating tildaz", .{});
             const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
             terminate(g_app, objc.sel("terminate:"), null);
             return;
@@ -947,7 +947,7 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
             const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale);
             if (g_drag.finish(tab_w_int, g_session.count())) |req| {
                 _ = g_session.reorderTabs(req.from, req.to) catch |err| {
-                    std.debug.print("[tab] reorder failed: {s}\n", .{@errorName(err)});
+                    macos_log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
                 };
             }
         } else {
@@ -1035,7 +1035,7 @@ fn handleCloseActiveTab() void {
     if (g_session.activeTab() == null) return;
     g_session.closeTab(g_session.active_tab);
     if (g_session.count() == 0) {
-        std.debug.print("[tab] last tab closed via Cmd+W, terminating tildaz.\n", .{});
+        macos_log.appendLine("tab", "last tab closed via Cmd+W, terminating tildaz", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
         return;
@@ -1060,7 +1060,7 @@ fn handleNewTab() void {
         onPtyExit,
         g_config.theme,
     ) catch |err| {
-        std.debug.print("[tab] new tab failed: {s}\n", .{@errorName(err)});
+        macos_log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
         return;
     };
     // 1 → 2 전환 시 탭바 등장 → cell 영역 줄어듦. 모든 탭 resize.
@@ -1117,7 +1117,7 @@ fn handlePaste() void {
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
 
     _ = tab.pty.write(cstr[0..len]) catch |err| {
-        std.debug.print("[paste] PTY write failed: {s}\n", .{@errorName(err)});
+        macos_log.appendLine("paste", "PTY write failed: {s}", .{@errorName(err)});
     };
 }
 
@@ -1202,7 +1202,7 @@ fn registerTildazViewClass() !objc.Class {
     if (objc.objc_getProtocol("NSTextInputClient")) |proto| {
         _ = objc.class_addProtocol(cls, proto);
     } else {
-        std.debug.print("[ime] WARNING: NSTextInputClient protocol not found\n", .{});
+        macos_log.appendLine("ime", "WARNING: NSTextInputClient protocol not found", .{});
     }
 
     objc.objc_registerClassPair(cls);
@@ -1210,8 +1210,6 @@ fn registerTildazViewClass() !objc.Class {
 }
 
 pub fn run() !void {
-    std.debug.print("TildaZ macOS v{s} — drop-down terminal (M3).\n", .{build_options.version});
-
     // `~/Library/Logs/tildaz.log` 에 boot/exit 라인을 남긴다 (Windows
     // `tildaz_log.logStart` 와 동등). Console.app 이 `~/Library/Logs` 를
     // 자동 인덱싱해 GUI 에서 바로 열람 가능.
@@ -1437,7 +1435,6 @@ pub fn run() !void {
     const tildaz_font_env = std.process.getEnvVarOwned(allocator, "TILDAZ_FONT") catch null;
     defer if (tildaz_font_env) |s| allocator.free(s);
     const font_family: []const u8 = tildaz_font_env orelse FONT_FAMILY;
-    std.debug.print("[font] family={s}\n", .{font_family});
 
     // theme 의 background 를 metal renderer 의 default_bg 로 — clear pass color
     // (cell 이 그리지 않는 영역) + 비활성 탭 BG 에 사용.
@@ -1462,20 +1459,13 @@ pub fn run() !void {
     const cell_w_px: u32 = g_renderer.?.font.cell_width;
     const cell_h_px: u32 = g_renderer.?.font.cell_height;
     const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
-    std.debug.print("[metal] renderer init: vp={d}x{d} px, scale={d}, cell={d}x{d} px, pad={d} px (font measured)\n", .{
+    macos_log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px pad={d}px font={s}", .{
         vp_w_px,
         vp_h_px,
         scale_pt,
         cell_w_px,
         cell_h_px,
         pad_px,
-    });
-    macos_log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px font={s}", .{
-        vp_w_px,
-        vp_h_px,
-        scale_pt,
-        cell_w_px,
-        cell_h_px,
         font_family,
     });
 
@@ -1534,13 +1524,12 @@ pub fn run() !void {
         onPtyExit,
         g_config.theme,
     );
-    std.debug.print("[vt] Terminal init: {d}x{d}, max_scrollback={d} bytes\n", .{ term_cols, term_rows, max_scrollback });
-    std.debug.print("[pty] {s} spawned, child_pid={d}\n", .{ shell_path, tab.pty.child_pid });
-    macos_log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d}", .{
+    macos_log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d} max_scrollback={d}", .{
         shell_path,
         term_cols,
         term_rows,
         tab.pty.child_pid,
+        max_scrollback,
     });
 
     // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
@@ -1593,7 +1582,7 @@ fn drainExitedTabs() bool {
     while (i < g_session.tabs.items.len) {
         const t = g_session.tabs.items[i];
         if (t.exit_flag.load(.acquire)) {
-            std.debug.print("[pty] tab {d} ('{s}') exited, closing.\n", .{ i, t.title() });
+            macos_log.appendLine("pty", "tab {d} ('{s}') exited, closing", .{ i, t.title() });
             g_session.closeTab(i);
             any_closed = true;
             // closeTab 후 인덱스가 시프트되므로 i 증가 안 함 — 다음 element 가
@@ -1603,7 +1592,7 @@ fn drainExitedTabs() bool {
         }
     }
     if (g_session.count() == 0) {
-        std.debug.print("[pty] last tab closed, terminating tildaz.\n", .{});
+        macos_log.appendLine("pty", "last tab closed, terminating tildaz", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
         return true;
@@ -1683,29 +1672,49 @@ fn installEventTap() !void {
     const has_ax = AXIsProcessTrusted();
     if (!has_input or !has_ax) {
         if (!has_input) _ = CGRequestListenEventAccess();
-        std.debug.print(
+        // 다이얼로그로 사용자에게 안내 + 로그 한 줄. stdout 으로 안 찍어 — 사용자가
+        // .app 으로 띄우면 stdout 안 보고 다이얼로그를 봐야 함.
+        var msg_buf: [2048]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf,
+            \\TildaZ needs two macOS permissions to work.
+            \\Without them the F1 hotkey and Cmd+Q quit won't respond.
             \\
-            \\[Permission required for global hotkeys]
+            \\Please follow these steps:
             \\
-            \\F1 toggle and Cmd+Q quit (system-wide) need TWO permissions:
+            \\Step 1 — Input Monitoring
+            \\  1. Open the Apple menu  →  System Settings.
+            \\  2. In the sidebar, click "Privacy & Security".
+            \\  3. Scroll down and click "Input Monitoring".
+            \\  4. Look for "tildaz" in the list:
+            \\       • If it is there, turn the switch ON.
+            \\       • If not, click the "+" button at the bottom,
+            \\         find TildaZ.app, click Open, then turn it ON.
             \\
-            \\  1. System Settings → Privacy & Security → Input Monitoring
-            \\     → toggle "tildaz" ON (or click + and add the .app)
-            \\  2. System Settings → Privacy & Security → Accessibility
-            \\     → toggle "tildaz" ON (or click + and add the .app)
+            \\Step 2 — Accessibility
+            \\  1. Click "< Privacy & Security" to go back.
+            \\  2. Click "Accessibility" instead.
+            \\  3. Same as above: turn "tildaz" ON,
+            \\     or click "+" to add TildaZ.app and then turn it ON.
             \\
-            \\Both are required because tildaz needs to *consume* hotkey events
-            \\so they don't leak to other apps. After granting, re-run tildaz.
+            \\Step 3 — Restart TildaZ
+            \\  Quit and relaunch this app for the new permissions to take effect.
             \\
-            \\(Dev-mode note: ad-hoc signed builds get a new identity on each
-            \\rebuild, so the permissions must be renewed.)
+            \\Current status:
+            \\  Input Monitoring : {s}
+            \\  Accessibility    : {s}
             \\
-            \\Status: Input Monitoring={s}, Accessibility={s}
-            \\
+            \\(Developer note: ad-hoc signed builds get a new identity on each
+            \\rebuild, so permissions must be re-granted after every rebuild.)
         , .{
+            if (has_input) "GRANTED" else "MISSING",
+            if (has_ax) "GRANTED" else "MISSING",
+        }) catch "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
+
+        macos_log.appendLine("perm", "missing — input_monitoring={s} accessibility={s}", .{
             if (has_input) "OK" else "missing",
             if (has_ax) "OK" else "missing",
         });
+        dialog.showInfo("TildaZ — Permission required", msg);
         return;
     }
 
@@ -1719,7 +1728,7 @@ fn installEventTap() !void {
         null,
     );
     if (g_event_tap == null) {
-        std.debug.print("CGEventTapCreate failed - permissions may need to be renewed.\n", .{});
+        macos_log.appendLine("perm", "CGEventTapCreate failed — permissions may need to be renewed", .{});
         return;
     }
 
