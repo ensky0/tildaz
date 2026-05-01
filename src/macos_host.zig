@@ -18,7 +18,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const objc = @import("macos_objc.zig");
-const macos_config = @import("macos_config.zig");
+const config = @import("config.zig");
 const macos_pty = @import("macos_pty.zig");
 const ghostty = @import("ghostty-vt");
 const macos_metal = @import("macos_metal.zig");
@@ -189,7 +189,7 @@ extern fn MTLCreateSystemDefaultDevice() objc.id;
 var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
-var g_config: macos_config.Config = .{};
+var g_config: config.Config = .{};
 var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 /// 멀티탭 컬렉션 (#111 M11.1). 현재 단계는 데이터 모델만 도입 — 실제로는
 /// 단일 탭만 생성. PTY / Terminal / Stream / 마우스 selection 은 모두 활성
@@ -422,8 +422,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // (이전 분기는 g_marked_len==0 일 때만 했어서 한글 조합 중 Ctrl+C 가 IME
     // 의 interpretKeyEvents 로 흘러 SIGINT 안 갔음.)
     const NSEventModifierFlagControl: c_ulong = 1 << 18;
+    const NSEventModifierFlagCommandKD: c_ulong = 1 << 20;
     const ctrl = (flags & NSEventModifierFlagControl) != 0;
-    if (ctrl) {
+    const cmd_too = (flags & NSEventModifierFlagCommandKD) != 0;
+    // Cmd 가 같이 눌린 ctrl+cmd 조합은 system shortcut (예: Ctrl+Cmd+Space =
+    // emoji picker) 일 가능성 — PTY 로 안 흘리고 super 로 넘김. 일반 Ctrl+C
+    // (Cmd 없음) 는 그대로 동작.
+    if (ctrl and !cmd_too) {
         const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
         const chars = get_chars(event, objc.sel("characters"));
         if (chars != null) {
@@ -1219,7 +1224,7 @@ pub fn run() !void {
 
     // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
-    g_config = macos_config.Config.load(g_gpa.allocator());
+    g_config = config.Config.load(g_gpa.allocator());
     macos_log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
         g_config.opacity,
         @tagName(g_config.dock_position),
@@ -1450,8 +1455,8 @@ pub fn run() !void {
         layer,
         font_family_slice,
         @floatFromInt(g_config.font_size),
-        g_config.cell_width_scale,
-        g_config.line_height_scale,
+        g_config.cell_width,
+        g_config.line_height,
         theme_bg,
         @floatCast(scale_pt),
     ) catch |err| switch (err) {
@@ -1489,12 +1494,13 @@ pub fn run() !void {
     // 7. PTY + ghostty-vt Terminal (M5.0 + M5.1). cols/rows 는 (viewport −
     //    좌우 padding) ÷ cell. Windows app_controller 의 size − 2*pad 패턴.
     // shell 결정 우선순위 (#118): config.shell 명시값 > $SHELL env > "/bin/zsh".
-    // config.shell == null/빈 문자열이면 env fallback — 사용자가 따로 지정하지
-    // 않은 경우 시스템 기본값 따름.
+    // config.shell == "" (빈 문자열) 이면 env fallback — 사용자가 따로 지정하지
+    // 않은 경우 시스템 기본값 따름. cross-platform Config 라 shell 은 []const u8
+    // 통일 (Windows 는 default "cmd.exe", macOS 는 default "").
     const shell_env = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
     defer if (shell_env) |s| allocator.free(s);
-    const shell_path: []const u8 = if (g_config.shell) |s|
-        s
+    const shell_path: []const u8 = if (g_config.shell.len > 0)
+        g_config.shell
     else if (shell_env) |s|
         s
     else
@@ -1836,9 +1842,9 @@ fn repositionWindow() void {
     const sw = visible.size.width;
     const sx = visible.origin.x;
 
-    const width_pct: f64 = @floatFromInt(g_config.width_pct);
-    const height_pct: f64 = @floatFromInt(g_config.height_pct);
-    const offset_pct: f64 = @floatFromInt(g_config.offset_pct);
+    const width_pct: f64 = @floatFromInt(g_config.width);
+    const height_pct: f64 = @floatFromInt(g_config.height);
+    const offset_pct: f64 = @floatFromInt(g_config.offset);
 
     const w = sw * width_pct / 100.0;
     const h = usable_height * height_pct / 100.0;
@@ -2023,6 +2029,34 @@ fn buildMainMenu(app: objc.id) !void {
 
     const setSubmenu = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setSubmenu(app_item, objc.sel("setSubmenu:"), app_menu);
+
+    // Edit menu — `orderFrontCharacterPalette:` selector 의 menu item 추가하면
+    // macOS 의 "Show Emoji & Symbols" system shortcut (default Ctrl+Cmd+Space,
+    // 사용자 환경에 따라 Ctrl+Shift+Space 등) 이 NSApp 의 firstResponder
+    // chain 으로 라우팅 → emoji picker 표시. Edit menu 자체가 NSApp 의 표준
+    // Cut/Copy/Paste action 라우팅도 활성화 (보너스). Terminal.app / ghostty
+    // 모두 같은 패턴.
+    const edit_item = init_obj(alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed, objc.sel("init")) orelse return error.MenuItemInitFailed;
+    addItem(main_menu, objc.sel("addItem:"), edit_item);
+
+    const edit_menu_init = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+    const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), nsString("Edit")) orelse return error.MenuInitFailed;
+
+    // Emoji & Symbols. selector `orderFrontCharacterPalette:` 는 NSApp 표준
+    // 메서드 — system 이 그 menu item 을 인식하면 user-configured shortcut
+    // (System Settings → Keyboard → Keyboard Shortcuts → Input Sources)
+    // 이 자동 동작.
+    const emoji_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
+    const emoji_item = initItem(
+        emoji_alloc,
+        objc.sel("initWithTitle:action:keyEquivalent:"),
+        nsString("Emoji & Symbols"),
+        objc.sel("orderFrontCharacterPalette:"),
+        nsString(""),
+    ) orelse return error.EmojiItemInitFailed;
+    addItem(edit_menu, objc.sel("addItem:"), emoji_item);
+
+    setSubmenu(edit_item, objc.sel("setSubmenu:"), edit_menu);
 
     const setMainMenu = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setMainMenu(app, objc.sel("setMainMenu:"), main_menu);

@@ -65,14 +65,10 @@ pub fn run() !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    // Load configuration
+    // Load configuration. parse() 가 schema (validateStructure) + 각 필드
+    // range 모두 fatal 처리 — 별도 validate() 호출 불필요.
     var config = Config.load(alloc);
     defer config.deinit();
-
-    if (config.validate()) |err_msg| {
-        dialog.showError(messages.config_error_title, err_msg);
-        return;
-    }
     tildaz_log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
         config.hidden_start,
         config.auto_start,

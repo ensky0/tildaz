@@ -1425,5 +1425,6 @@ pub const Window = struct {
         return .{ .cols = cols, .rows = rows };
     }
 
-    pub const DockPosition = enum { top, bottom, left, right };
+    /// Re-export — config.DockPosition 이 cross-platform single source.
+    pub const DockPosition = @import("config.zig").DockPosition;
 };

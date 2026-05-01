@@ -191,29 +191,33 @@ If missing, it is auto-created with defaults on first launch.
 }
 ```
 
-### macOS example (flat)
+### macOS example (nested — same schema as Windows)
 
 ```json
 {
-  "dock_position": "top",
-  "width": 50,
-  "height": 100,
-  "offset": 100,
-  "opacity": 100,
-  "theme": "Tilda",
-  "hotkey": "f1",
-  "auto_start": true,
-  "hidden_start": false,
-  "shell": "",
-  "max_scroll_lines": 100000,
+  "window": {
+    "dock_position": "top",
+    "width": 50,
+    "height": 100,
+    "offset": 100,
+    "opacity": 100
+  },
   "font": {
     "family": ["Menlo"],
     "size": 15,
     "cell_width": 1.0,
     "line_height": 1.1
-  }
+  },
+  "theme": "Tilda",
+  "shell": "",
+  "hotkey": "f1",
+  "auto_start": true,
+  "hidden_start": false,
+  "max_scroll_lines": 100000
 }
 ```
+
+> **macOS schema validation is strict** — every key is required, unknown keys are rejected, and type mismatches are fatal. The `DEFAULT_CONFIG_JSON` constant in source serves as the single source of truth (used both for first-run file creation and for validating user config). Windows is currently graceful (missing keys fall back to defaults); both will converge on strict.
 
 | Key | Type | Range | Windows default | macOS default | Description |
 |-----|------|-------|-----------------|---------------|-------------|
@@ -227,7 +231,7 @@ If missing, it is auto-created with defaults on first launch.
 | font.line_height | float | 0.1–10.0 (Win) / 0.5–2.0 (mac) | 0.95 | 1.1 | Line-height multiplier (1.0 = default leading) |
 | font.cell_width | float | 0.1–10.0 (Win) / 0.5–2.0 (mac) | 1.1 | 1.0 | Cell-width multiplier (1.0 = default advance) |
 | theme | string | see [Themes](#themes) | "Tilda" | "Tilda" | Color theme |
-| shell | string | — | "cmd.exe" | "" (= `$SHELL` env / `/bin/zsh`) | Shell to spawn |
+| shell | string | — | "cmd.exe" | "" (= `$SHELL` env / `/bin/zsh`) | Shell to spawn. Windows accepts arguments — e.g. `"wsl.exe -d Debian --cd ~"` to drop straight into a WSL home prompt. macOS expects an absolute binary path; for argv beyond the binary, set up your shell to handle it via `~/.zshrc` etc. |
 | hotkey | string | "f1", "ctrl+space", "shift+cmd+t", … | "f1" | "f1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS. |
 | auto_start | bool | — | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS) |
 | hidden_start | bool | — | false | false | Start hidden (first toggle reveals) |
