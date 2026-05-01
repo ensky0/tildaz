@@ -6,6 +6,8 @@
 
 const std = @import("std");
 const ct = @import("macos_coretext.zig");
+const dialog = @import("dialog.zig");
+const messages = @import("messages.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -13,6 +15,8 @@ pub const GlyphResult = struct {
     /// true 면 caller 가 CFRelease 책임. fallback font 생성 후 cache 안 할 때.
     owned: bool,
 };
+
+pub const MAX_FALLBACK_FONTS = 8;
 
 pub const CoreTextFontContext = struct {
     primary_font: ct.CTFontRef,
@@ -29,9 +33,15 @@ pub const CoreTextFontContext = struct {
     /// 글자 사이 공백 / 줄 높이 가 자동 맞춰진다.
     cell_width: u32,
     cell_height: u32,
+    /// 실제 lookup 성공한 primary 폰트 family name (debug / 로그 용).
+    font_family: []const u8,
+    /// config.font.family 의 *모든* chain 폰트 — codepoint 별 글리프 fallback
+    /// 에 사용 (Windows DWriteFontContext 와 동등). [0] 은 primary 와 동일.
+    fallback_fonts: [MAX_FALLBACK_FONTS]ct.CTFontRef,
+    fallback_count: usize,
 
     pub fn init(
-        font_family: []const u8,
+        font_families: []const []const u8,
         font_size: f32,
         retina_scale: f32,
         /// Windows 의 `config.cell_width` 와 동일 의미 — 측정된 advance 에
@@ -41,17 +51,53 @@ pub const CoreTextFontContext = struct {
         /// 에 곱해 줄 높이 조절. 0.95 정도면 약간 빽빽.
         line_height_scale: f32,
     ) !CoreTextFontContext {
-        // family 이름을 CFString 으로.
-        const family_str = ct.CFStringCreateWithBytes(
-            null,
-            font_family.ptr,
-            @intCast(font_family.len),
-            ct.kCFStringEncodingUTF8,
-            0,
-        ) orelse return error.FontNameFailed;
-        defer ct.CFRelease(family_str);
-
-        const font = ct.CTFontCreateWithName(family_str, @floatCast(font_size), null) orelse return error.FontCreateFailed;
+        // Font *glyph fallback chain* — config.font.family 의 모든 폰트가
+        // system 에 있어야 한다 (Windows DWriteFontContext 와 동등 strict 정책).
+        // `CTFontCreateWithName` 은 lookup 실패 시 system substitute (대개
+        // `.SF NS Mono`) 를 반환하니 `CTFontCopyFamilyName` 으로 *실제 family
+        // name* 검증 → 우리 요청과 다르면 사용자가 명시한 폰트가 시스템에 없는
+        // 것 → fatal `Font not found: "Foo"` (Windows messages 와 동일).
+        //
+        // 모든 chain 폰트를 fallback_fonts 에 저장 → resolveGlyph 가 codepoint
+        // 별로 순회 (primary → secondary → ... → system auto fallback).
+        var fallback_fonts: [MAX_FALLBACK_FONTS]ct.CTFontRef = undefined;
+        var fallback_count: usize = 0;
+        var font: ct.CTFontRef = undefined;
+        var font_family: []const u8 = "";
+        for (font_families) |family| {
+            if (family.len == 0) continue;
+            if (fallback_count >= MAX_FALLBACK_FONTS) break;
+            const family_str = ct.CFStringCreateWithBytes(
+                null,
+                family.ptr,
+                @intCast(family.len),
+                ct.kCFStringEncodingUTF8,
+                0,
+            ) orelse {
+                showFontNotFound(family);
+                unreachable;
+            };
+            defer ct.CFRelease(family_str);
+            const candidate = ct.CTFontCreateWithName(family_str, @floatCast(font_size), null) orelse {
+                showFontNotFound(family);
+                unreachable;
+            };
+            const actual_family = ct.CTFontCopyFamilyName(candidate);
+            const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
+            ct.CFRelease(actual_family);
+            if (!matched) {
+                ct.CFRelease(candidate);
+                showFontNotFound(family);
+                unreachable;
+            }
+            fallback_fonts[fallback_count] = candidate;
+            if (fallback_count == 0) {
+                font = candidate;
+                font_family = family;
+            }
+            fallback_count += 1;
+        }
+        if (fallback_count == 0) return error.FontCreateFailed;
 
         // CoreText 의 ascent / descent / leading 은 point 단위. atlas /
         // renderer 가 모두 pixel 단위로 동작하므로 init 시 scale 곱해 통일.
@@ -124,16 +170,30 @@ pub const CoreTextFontContext = struct {
             .top_pad_px = top_pad_pt * retina_scale,
             .cell_width = cell_w_px,
             .cell_height = cell_h_px,
+            .font_family = font_family,
+            .fallback_fonts = fallback_fonts,
+            .fallback_count = fallback_count,
         };
     }
 
-    pub fn deinit(self: *CoreTextFontContext) void {
-        ct.CFRelease(self.primary_font);
+    /// chain 의 한 폰트가 system 에 없을 때 — Windows `messages.font_not_found_format`
+    /// 와 동일 phrasing 으로 fatal dialog. dialog.showFatal 가 process.exit.
+    fn showFontNotFound(family: []const u8) noreturn {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, messages.font_not_found_format, .{family}) catch "Font not found";
+        dialog.showFatal(messages.config_error_title, msg);
     }
 
-    /// codepoint → (font, glyph_index) 해석. primary 에 없으면 CTFontCreateFor
-    /// String 으로 시스템 fallback 시도 (Apple Color Emoji / Apple SD Gothic
-    /// Neo 등). fallback 결과는 `owned = true` — caller 가 CFRelease 책임.
+    pub fn deinit(self: *CoreTextFontContext) void {
+        for (self.fallback_fonts[0..self.fallback_count]) |f| {
+            ct.CFRelease(f);
+        }
+    }
+
+    /// codepoint → (font, glyph_index) 해석. config.font.family chain 순회 →
+    /// 첫 번째 글리프 가진 폰트 사용 (Windows DWriteFontContext 와 동등). chain
+    /// 모두 없으면 `CTFontCreateForString` 의 system auto fallback (Apple Color
+    /// Emoji 등). system fallback 결과는 `owned = true` — caller 가 CFRelease.
     pub fn resolveGlyph(self: *CoreTextFontContext, codepoint: u21) ?GlyphResult {
         // codepoint 를 UTF-16 surrogate pair (또는 single unit) 으로.
         var utf16_buf: [2]u16 = undefined;
@@ -148,15 +208,18 @@ pub const CoreTextFontContext = struct {
             utf16_len = 2;
         }
 
-        // 1. primary font 에서 시도.
-        var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
-        if (ct.CTFontGetGlyphsForCharacters(self.primary_font, &utf16_buf, &glyphs, @intCast(utf16_len))) {
-            if (glyphs[0] != 0) {
-                return .{ .font = self.primary_font, .index = glyphs[0], .owned = false };
+        // 1. chain 순회 — 글리프 가진 첫 폰트 사용.
+        for (self.fallback_fonts[0..self.fallback_count]) |f| {
+            var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
+            if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
+                if (glyphs[0] != 0) {
+                    return .{ .font = f, .index = glyphs[0], .owned = false };
+                }
             }
         }
 
-        // 2. 시스템 fallback. CTFontCreateForString 이 알맞은 폰트 찾아 반환.
+        // 2. chain 모두 없으면 system auto fallback (CTFontCreateForString).
+        //    Apple Color Emoji 같이 chain 에 명시 안 한 폰트 자동 찾음.
         const str = ct.CFStringCreateWithCharacters(null, &utf16_buf, @intCast(utf16_len)) orelse return null;
         defer ct.CFRelease(str);
 

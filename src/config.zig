@@ -18,6 +18,67 @@ pub const MAX_FONT_FAMILIES = 8;
 const DEFAULT_THEME = "Tilda";
 const DEFAULT_FONT_FAMILIES = [_][]const u8{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" };
 
+pub const Hotkey = struct {
+    /// Win32 virtual-key code (`VK_*`). 예: VK_F1=0x70, VK_SPACE=0x20.
+    vkey: u32,
+    /// `RegisterHotKey` 의 modifier flags — `MOD_ALT`(1) | `MOD_CONTROL`(2) |
+    /// `MOD_SHIFT`(4) | `MOD_WIN`(8). cross-platform string parse 시
+    /// `cmd` 는 Windows 의 Win 키로 매핑 (가장 가까운 의미).
+    modifiers: u32,
+
+    pub fn fromString(s: []const u8) ?Hotkey {
+        var modifiers: u32 = 0;
+        var keycode: ?u32 = null;
+        var iter = std.mem.tokenizeScalar(u8, s, '+');
+        while (iter.next()) |raw| {
+            const tok = std.mem.trim(u8, raw, " \t");
+            if (eqIc(tok, "ctrl") or eqIc(tok, "control")) {
+                modifiers |= 0x2;
+            } else if (eqIc(tok, "shift")) {
+                modifiers |= 0x4;
+            } else if (eqIc(tok, "alt")) {
+                modifiers |= 0x1;
+            } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd")) {
+                modifiers |= 0x8;
+            } else {
+                if (vkeyFromName(tok)) |k| keycode = k else return null;
+            }
+        }
+        return .{ .vkey = keycode orelse return null, .modifiers = modifiers };
+    }
+
+    fn eqIc(a: []const u8, b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+
+    fn vkeyFromName(name: []const u8) ?u32 {
+        const map = [_]struct { name: []const u8, code: u32 }{
+            .{ .name = "f1", .code = 0x70 },     .{ .name = "f2", .code = 0x71 },
+            .{ .name = "f3", .code = 0x72 },     .{ .name = "f4", .code = 0x73 },
+            .{ .name = "f5", .code = 0x74 },     .{ .name = "f6", .code = 0x75 },
+            .{ .name = "f7", .code = 0x76 },     .{ .name = "f8", .code = 0x77 },
+            .{ .name = "f9", .code = 0x78 },     .{ .name = "f10", .code = 0x79 },
+            .{ .name = "f11", .code = 0x7A },    .{ .name = "f12", .code = 0x7B },
+            .{ .name = "space", .code = 0x20 },
+            .{ .name = "grave", .code = 0xC0 }, // VK_OEM_3 — Backtick / Tilde
+            .{ .name = "tab", .code = 0x09 },
+            .{ .name = "escape", .code = 0x1B }, .{ .name = "esc", .code = 0x1B },
+            .{ .name = "enter", .code = 0x0D }, .{ .name = "return", .code = 0x0D },
+        };
+        for (map) |entry| {
+            if (eqIc(name, entry.name)) return entry.code;
+        }
+        // 단일 알파벳 / 숫자: 'A'..'Z' = 0x41..0x5A, '0'..'9' = 0x30..0x39 — Win32 가
+        // ASCII 와 같음.
+        if (name.len == 1) {
+            const c = std.ascii.toUpper(name[0]);
+            if (c >= 'A' and c <= 'Z') return c;
+            if (c >= '0' and c <= '9') return c;
+        }
+        return null;
+    }
+};
+
 pub const Config = struct {
     // window
     dock_position: Window.DockPosition = .top,
@@ -33,6 +94,10 @@ pub const Config = struct {
     // appearance
     opacity: u8 = 255,
     theme: ?*const themes.Theme = themes.findTheme(DEFAULT_THEME),
+    /// Global hotkey (RegisterHotKey). default = F1 (vkey=0x70, modifiers=0).
+    /// macOS hotkey 와 같은 string 형식 (`"f1"` / `"ctrl+space"` / ...).
+    /// `cmd` 토큰은 Win 키로 매핑.
+    hotkey: Hotkey = .{ .vkey = 0x70, .modifiers = 0 },
     // top-level
     shell: []const u8 = "cmd.exe",
     auto_start: bool = true,
@@ -172,6 +237,20 @@ pub const Config = struct {
         }
         if (getBool(root, "auto_start")) |v| config.auto_start = v;
         if (getBool(root, "hidden_start")) |v| config.hidden_start = v;
+        if (root.object.get("hotkey")) |hkv| {
+            if (hkv != .string) showTypeError("hotkey", "string");
+            if (Hotkey.fromString(hkv.string)) |h| {
+                config.hotkey = h;
+            } else {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(
+                    &buf,
+                    "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"ctrl+space\", \"ctrl+grave\", \"shift+win+t\"",
+                    .{hkv.string},
+                ) catch "config.json: hotkey invalid";
+                dialog.showFatal(messages.config_error_title, msg);
+            }
+        }
         if (root.object.get("max_scroll_lines")) |msv| {
             switch (msv) {
                 .integer => |v| {
@@ -300,6 +379,7 @@ pub const Config = struct {
             \\  }},
             \\  "theme": "{s}",
             \\  "shell": "{s}",
+            \\  "hotkey": "f1",
             \\  "auto_start": {s},
             \\  "hidden_start": {s},
             \\  "max_scroll_lines": {d}

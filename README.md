@@ -27,7 +27,7 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows.
   - Drag to reorder
   - Closing the last tab quits the app
 - **Full Unicode support** — correct rendering for Hangul, CJK, emoji and other wide/narrow character sets
-- **Font fallback chain** — up to 8 font families; falls through to the next family when a glyph is missing
+- **Font glyph fallback chain** — up to 8 font families; *per-codepoint* lookup walks the chain to find a font that has the glyph (e.g. Latin → Cascadia Mono, Hangul → Malgun Gothic, symbols → Segoe UI Symbol)
 - **ClearType subpixel rendering** — high-quality text via DirectWrite + Direct3D 11 shaders
 - **Bundled OpenConsole** — ships `OpenConsole.exe` + `conpty.dll` to bypass the system `conhost.exe`. Bulk output throughput is 2.2× over system conhost; falls back to system conhost automatically when the bundled files are missing
 - **ANSI colors** — 16 / 256 / TrueColor foreground and background, bold-is-bright, inverse
@@ -131,9 +131,17 @@ check fails if `dist/release-notes/v<ver>.md` is missing.
 
 ## Configuration
 
-Config file path: `config.json` in the same directory as `tildaz.exe`.
+Config file path (per OS standard):
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\tildaz\config.json` |
+| macOS | `~/.config/tildaz/config.json` (XDG, ghostty / alacritty pattern) |
+| Linux | `~/.config/tildaz/config.json` |
 
 If missing, it is auto-created with defaults on first launch.
+
+> **Schema status**: Windows and macOS schemas are being unified ([issue #118](https://github.com/ensky0/tildaz/issues/118)). The example below reflects the Windows schema. macOS currently uses a *flat* top-level (e.g. `"dock_position"` directly instead of `"window.dock_position"`); both will converge. See [SPEC.md §7](SPEC.md) for the up-to-date matrix.
 
 ```json
 {
@@ -165,7 +173,7 @@ If missing, it is auto-created with defaults on first launch.
 | window | height | int | 10–100 | 100 | Height (% of screen) |
 | window | offset | int | 0–100 | 100 | Position along the edge (0 = start, 50 = center, 100 = end) |
 | window | opacity | int | 0–100 | 100 | Window opacity (%) |
-| font | family | string or string[] | — | ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"] | Font (array becomes a fallback chain, max 8) |
+| font | family | string or string[] | — | ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"] | Font families (array = *glyph fallback chain* — per-codepoint lookup walks the list to find a font with the glyph; max 8). All listed families must exist on the system. |
 | font | size | int | 8–72 | 20 | Font size (px) |
 | font | line_height | float | 0.1–10.0 | 0.95 | Line-height multiplier (1.0 = default leading) |
 | font | cell_width | float | 0.1–10.0 | 1.2 | Cell-width multiplier (1.0 = default advance) |

@@ -26,6 +26,16 @@ const paths = @import("paths.zig");
 
 const DEFAULT_THEME = "Tilda";
 
+pub const MAX_FONT_FAMILIES = 8;
+/// macOS default — Menlo 단일. 한글 / 기호 / emoji 등 다른 글리프는 CoreText
+/// 의 system auto fallback (Apple SD Gothic Neo / Apple Color Emoji / Apple
+/// Symbols 자동) 이 처리. Windows 와 큰 차이: Windows 는 자동 fallback 이
+/// 약해서 chain 명시 필수, macOS 는 단일로 충분.
+///
+/// "SF Mono" 는 macOS 표준이지만 사용자 환경에 따라 register 안 됨 (Xcode
+/// 미설치 환경 등). Menlo 는 모든 macOS 에 항상 register 되어 있어 안전.
+const DEFAULT_FONT_FAMILIES = [_][]const u8{ "Menlo" };
+
 pub const DockPosition = enum {
     top,
     bottom,
@@ -159,6 +169,23 @@ pub const Config = struct {
     /// scrollback 라인 수. ghostty Terminal 의 max byte 계산에 사용
     /// (`lines × bytes_per_row`). Windows config.max_scroll_lines 동등.
     max_scroll_lines: usize = 100_000,
+    /// 폰트 크기 (pt). default 15 — macOS retina + 자연 metric 폰트 (Menlo /
+    /// SF Mono) 에 시각적으로 적정. Windows 19pt 는 Cascadia Mono 좁은 metric
+    /// + 96 DPI 표준 가정.
+    font_size: u8 = 15,
+    /// cell 가로 너비 스케일. default 1.0 — Menlo / SF Mono 의 metric 이
+    /// 자연스러워 보정 불필요. Windows 1.1 은 Cascadia Mono 좁은 글리프 보정.
+    cell_width_scale: f32 = 1.0,
+    /// cell 세로 높이 스케일. default 1.1 — Apple HIG 의 line-spacing 컨벤션
+    /// 따른 약간 여유 있는 줄 간격. Windows 0.95 는 화면 라인 수 늘리는 빽빽 보정.
+    line_height_scale: f32 = 1.1,
+    /// Font *glyph fallback chain* — codepoint 별로 chain 순회해 글리프 가진
+    /// 첫 폰트 사용 (Windows DWriteFontContext 와 동일 의미). 모든 명시 폰트가
+    /// system 에 register 되어 있어야 함 (한 개라도 없으면 fatal).
+    /// macOS 는 chain 에 없는 codepoint (한글 / emoji / 기호 등) 도 CoreText 의
+    /// system auto fallback 으로 자동 표시되므로 단일 폰트로 충분.
+    font_families: [MAX_FONT_FAMILIES][]const u8 = DEFAULT_FONT_FAMILIES ++ .{""} ** (MAX_FONT_FAMILIES - DEFAULT_FONT_FAMILIES.len),
+    font_family_count: u8 = DEFAULT_FONT_FAMILIES.len,
 
     /// 파일이 없으면 default + 자동 생성. JSON 파싱 실패 / 필드 값 오류 발견 시
     /// `dialog.showFatal` 로 다이얼로그 띄우고 즉시 종료 (Windows host 와 동일
@@ -288,8 +315,70 @@ pub const Config = struct {
             }
             config.max_scroll_lines = @intCast(v.integer);
         }
+        // font 섹션은 항상 있어야 하고 그 안에 family 도 명시 필수.
+        const fv_opt = root.object.get("font");
+        if (fv_opt == null) dialog.showFatal(messages.config_error_title, "config.json: \"font\" object is required.");
+        const fv = fv_opt.?;
+        if (fv != .object) dialog.showFatal(messages.config_error_title, "config.json: \"font\" must be an object.");
+        if (fv.object.get("family") == null) {
+            dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" is required (string or array of strings).");
+        }
+        {
+            if (fv.object.get("size")) |v| {
+                if (v != .integer or v.integer < 8 or v.integer > 72) {
+                    dialog.showFatal(messages.config_error_title, "config.json: \"font.size\" must be an integer in 8..72.");
+                }
+                config.font_size = @intCast(v.integer);
+            }
+            if (fv.object.get("cell_width")) |v| {
+                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width\" must be a number.");
+                if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width\" must be in 0.5..2.0.");
+                config.cell_width_scale = f;
+            }
+            if (fv.object.get("line_height")) |v| {
+                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height\" must be a number.");
+                if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height\" must be in 0.5..2.0.");
+                config.line_height_scale = f;
+            }
+            if (fv.object.get("family")) |v| {
+                // string 또는 array of strings 둘 다 허용. 단일 string 이면
+                // 1개짜리 chain 으로 취급.
+                var count: usize = 0;
+                if (v == .string) {
+                    if (v.string.len == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must not be empty.");
+                    config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
+                    count = 1;
+                } else if (v == .array) {
+                    if (v.array.items.len == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" array must not be empty.");
+                    for (v.array.items) |item| {
+                        if (count >= MAX_FONT_FAMILIES) break;
+                        if (item != .string) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" array elements must be strings.");
+                        if (item.string.len == 0) continue;
+                        config.font_families[count] = allocator.dupe(u8, item.string) catch item.string;
+                        count += 1;
+                    }
+                    if (count == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must contain at least one non-empty string.");
+                } else {
+                    dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must be a string or an array of strings.");
+                }
+                // 초과한 자리는 빈 문자열로.
+                var i = count;
+                while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
+                config.font_family_count = @intCast(count);
+            }
+        }
 
         return config;
+    }
+
+    /// JSON value (integer 또는 float) → f32. ghostty config 의 line_height /
+    /// cell_width 같이 "1" 또는 "1.0" 둘 다 받기 위함.
+    fn parseFloat(v: std.json.Value) ?f32 {
+        return switch (v) {
+            .integer => |i| @floatFromInt(i),
+            .float => |f| @floatCast(f),
+            else => null,
+        };
     }
 
     fn createDefault(path: []const u8) void {
@@ -305,7 +394,13 @@ pub const Config = struct {
             \\  "auto_start": true,
             \\  "hidden_start": false,
             \\  "shell": "",
-            \\  "max_scroll_lines": 100000
+            \\  "max_scroll_lines": 100000,
+            \\  "font": {
+            \\    "family": ["Menlo"],
+            \\    "size": 15,
+            \\    "cell_width": 1.0,
+            \\    "line_height": 1.1
+            \\  }
             \\}
             \\
         ;
