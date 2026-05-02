@@ -285,8 +285,11 @@ pub const MetalRenderer = struct {
         /// null = rename 비활성.
         rename_view: ?TabRenameView,
         /// drag 진행 중이면 그 탭을 마우스 위치 (`current_x_px`) 따라 이동시켜
-        /// 그림. null = drag 안 함 또는 5px 임계 미만.
+        /// 그림. null = drag 안 함 또는 5px 임계 미만. `current_x_px` 는 *world*
+        /// 좌표 (#117) — 화면 위치는 `current_x_px - tab_scroll_x_px`.
         drag_view: ?TabDragView,
+        /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x = world - 이 값.
+        tab_scroll_x_px: f32,
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
@@ -330,7 +333,7 @@ pub const MetalRenderer = struct {
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
-        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, drag_view);
+        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, drag_view, tab_scroll_x_px);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -639,6 +642,10 @@ pub const MetalRenderer = struct {
         active_tab: usize,
         rename_view: ?TabRenameView,
         drag_view: ?TabDragView,
+        /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x =
+        /// `world_x - tab_scroll_x_px`. world 좌표 (`i × tab_w_px`) 에서 이 값
+        /// 빼서 그림.
+        tab_scroll_x_px: f32,
     ) void {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
@@ -662,11 +669,13 @@ pub const MetalRenderer = struct {
         bg_n += 1;
 
         // 각 탭의 좌상단 x 좌표 — drag 중인 탭은 마우스 위치 따라감 (`current_x_px
-        // - tab_w/2` 가 좌상단). Windows `d3d11_renderer.zig:560` 패턴.
+        // - tab_w/2` 가 좌상단). Windows `d3d11_renderer.zig:560` 패턴. world 좌표
+        // (`i × tab_w_px`) 에서 `tab_scroll_x_px` 빼서 화면 좌표로 변환 (#117).
+        // drag.current_x_px 자체가 *world* 라 같은 변환.
         const tabXFor = struct {
-            fn f(i: usize, w: f32, dv: ?TabDragView) f32 {
-                if (dv) |d| if (d.tab_index == i) return d.current_x_px - w * 0.5;
-                return @as(f32, @floatFromInt(i)) * w;
+            fn f(i: usize, w: f32, dv: ?TabDragView, sx: f32) f32 {
+                if (dv) |d| if (d.tab_index == i) return d.current_x_px - w * 0.5 - sx;
+                return @as(f32, @floatFromInt(i)) * w - sx;
             }
         }.f;
 
@@ -675,7 +684,7 @@ pub const MetalRenderer = struct {
         for (tab_titles, 0..) |_, i| {
             if (bg_n >= MAX_BG) break;
             if (drag_view) |d| if (d.tab_index == i) continue;
-            const tab_x = tabXFor(i, tab_w_px, drag_view);
+            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px);
             const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -686,7 +695,7 @@ pub const MetalRenderer = struct {
         }
         // drag 중인 탭 BG (다른 탭 위에 그려지도록 마지막).
         if (drag_view) |d| if (d.tab_index < tab_titles.len and bg_n < MAX_BG) {
-            const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view);
+            const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view, tab_scroll_x_px);
             const color = if (d.tab_index == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -706,7 +715,7 @@ pub const MetalRenderer = struct {
         const preedit_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1.0 };
 
         for (tab_titles, 0..) |orig_title, i| {
-            const tab_x = tabXFor(i, tab_w_px, drag_view);
+            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px);
             const text_x_start = tab_x + tab_pad_px;
             var text_x = text_x_start;
 
