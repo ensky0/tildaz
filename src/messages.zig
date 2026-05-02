@@ -8,6 +8,11 @@ pub const about_title = "About TildaZ";
 pub const error_title = "TildaZ Error";
 pub const crash_title = "TildaZ Crash";
 pub const info_title = "TildaZ";
+pub const quit_confirm_title = "Quit TildaZ?";
+
+/// 종료 확인 (#116). 한 번에 사라지는 탭 수를 본문에 박아 사용자가 잃을
+/// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
+pub const quit_confirm_format = "This will close {d} open tab{s}.";
 
 pub const about_format =
     \\TildaZ v{s}

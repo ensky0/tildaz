@@ -202,7 +202,6 @@ extern "user32" fn CloseClipboard() callconv(.c) BOOL;
 extern "user32" fn GetClipboardData(UINT) callconv(.c) ?*anyopaque;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn GetAsyncKeyState(c_int) callconv(.c) i16;
-extern "user32" fn MessageBoxW(HWND, [*:0]const WCHAR, [*:0]const WCHAR, UINT) callconv(.c) c_int;
 extern "user32" fn SetCapture(HWND) callconv(.c) HWND;
 extern "user32" fn ReleaseCapture() callconv(.c) BOOL;
 extern "user32" fn GetDpiForWindow(HWND) callconv(.c) UINT;
@@ -211,11 +210,6 @@ extern "user32" fn SetClipboardData(UINT, ?*anyopaque) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GlobalFree(?*anyopaque) callconv(.c) ?*anyopaque;
 const GMEM_MOVEABLE: UINT = 0x0002;
-
-const MB_YESNO: UINT = 0x04;
-const MB_ICONQUESTION: UINT = 0x20;
-const MB_DEFBUTTON2: UINT = 0x100;
-const IDYES: c_int = 6;
 
 const CF_UNICODETEXT: UINT = 13;
 const VK_CONTROL: c_int = 0x11;
@@ -280,6 +274,11 @@ pub const Window = struct {
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
+    /// 사용자가 윈도우 닫기를 요청 (Alt+F4 / 시스템 메뉴 / WM_CLOSE) 했을 때
+    /// 호출. true 반환 = 종료 진행 (DestroyWindow), false 반환 = 종료 취소.
+    /// macOS `applicationShouldTerminate:` 와 같은 역할 (#116). 다중 탭 confirm
+    /// 다이얼로그는 app 측에서 띄우고 결과만 반환.
+    quit_request_fn: ?*const fn (?*anyopaque) bool = null,
     /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
     /// before `SetWindowPos` cascades into `WM_SIZE`.
@@ -1190,18 +1189,19 @@ pub const Window = struct {
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_CLOSE => {
-                // Shell already exited — close without prompt
+                // Shell already exited (마지막 탭 PTY 종료 후 자동 close 요청) —
+                // confirm 없이 즉시 종료. closeAfterShellExit 가 set.
                 if (self.shell_exited) {
                     _ = DestroyWindow(hwnd);
                     return 0;
                 }
-                // User-initiated close (Alt+F4) — confirm
-                const msg_text = std.unicode.utf8ToUtf16LeStringLiteral("Are you sure you want to quit TildaZ?");
-                const msg_title = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ");
-                const result = MessageBoxW(hwnd, msg_text, msg_title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
-                if (result == IDYES) {
-                    _ = DestroyWindow(hwnd);
+                // 사용자 발생 close (Alt+F4 / 시스템 메뉴) — app 에 결정 위임.
+                // 단일 탭 skip / 다중 탭 confirm 다이얼로그 (#116) 정책은
+                // app_controller 측에서 통일 처리.
+                if (self.quit_request_fn) |f| {
+                    if (!f(self.userdata)) return 0;
                 }
+                _ = DestroyWindow(hwnd);
                 return 0;
             },
             WM_DESTROY => {

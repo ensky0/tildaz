@@ -180,6 +180,49 @@ fn atExitLogStop() callconv(.c) void {
     macos_log.logStop(build_options.version);
 }
 
+// NSApplication delegate — `applicationShouldTerminate:` 한 메서드만 구현.
+// 모든 `terminate:` 호출 (Cmd+Q / 메뉴 / 마지막 탭 종료) 가 진입하기 전에
+// macOS 가 이 hook 을 거치게 해 사용자에게 confirm 을 물음 (#116).
+const NSTerminateCancel: c_long = 0;
+const NSTerminateNow: c_long = 1;
+
+/// 종료 직전 confirm. count == 0 (마지막 탭 PTY exit 후 자동 종료) 만 skip —
+/// 이미 사용자 의도된 종료 path. 단일 탭 (count==1) 도 confirm — 사용자 정책.
+fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) c_long {
+    const n = g_session.count();
+    if (n == 0) return NSTerminateNow;
+    const plural: []const u8 = if (n == 1) "" else "s";
+    var msg_buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, messages.quit_confirm_format, .{ n, plural }) catch
+        return NSTerminateNow;
+    return if (dialog.showConfirm(messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
+}
+
+var g_app_delegate_class: ?objc.Class = null;
+var g_app_delegate_instance: objc.id = null;
+
+fn installAppDelegate() !void {
+    if (g_app_delegate_instance != null) return;
+    const NSObject = objc.getClass("NSObject");
+    const cls = objc.objc_allocateClassPair(NSObject, "TildazAppDelegate", 0) orelse
+        return error.AppDelegateAllocFailed;
+    // 시그니처: 반환 NSApplicationTerminateReply (NSUInteger 호환 c_long),
+    //         self (id) + _cmd (SEL) + sender (NSApplication id).
+    if (!objc.class_addMethod(cls, objc.sel("applicationShouldTerminate:"), @ptrCast(&applicationShouldTerminate), "Q@:@"))
+        return error.AppDelegateAddMethodFailed;
+    objc.objc_registerClassPair(cls);
+    g_app_delegate_class = cls;
+
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const inst = init_obj(alloc(cls, objc.sel("alloc")) orelse return error.AppDelegateInitFailed, objc.sel("init")) orelse
+        return error.AppDelegateInitFailed;
+    g_app_delegate_instance = inst;
+
+    const setDelegate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setDelegate(g_app, objc.sel("setDelegate:"), inst);
+}
+
 extern fn MTLCreateSystemDefaultDevice() objc.id;
 
 // 글로벌 toggle 상태 — CGEventTap 콜백 (C 시그니처) 이 NSApp / window / config
@@ -1278,6 +1321,13 @@ pub fn run() !void {
     @import("dialog_macos.zig").markNSAppReady();
 
     try buildMainMenu(g_app);
+
+    // applicationShouldTerminate: hook (#116) — 다중 탭에서 Cmd+Q / 메뉴 Quit
+    // 시 confirm 다이얼로그. NSApp.terminate 모든 path 를 한 곳에서 가로챔
+    // (CGEventTap 의 Cmd+Q + mainMenu 의 Quit). 마지막 탭 종료 후 자동 호출되는
+    // path (drainExitedTabs / handleCloseActiveTab / handleTabBarClick) 는
+    // count == 0 이라 자동 통과.
+    try installAppDelegate();
 
     // 2. NSWindow (TildazWindow subclass) — borderless styleMask. Default
     //    NSWindow 가 borderless 일 때 `canBecomeKeyWindow == NO` 라서 mainMenu
