@@ -246,6 +246,11 @@ var g_session: macos_session.SessionCore = undefined;
 /// 탭 drag-and-drop reorder state (#111 M11.6a). Windows `tab_interaction.DragState`
 /// 그대로 사용 — cross-platform 모듈.
 var g_drag: tab_interaction.DragState = .{};
+/// 탭바 스크롤 오프셋 (픽셀, #117). 탭바 총 너비가 viewport 너비를 초과하면
+/// 활성 탭이 보이도록 자동 이동. Windows `App.tab_scroll_x` 와 동일 정책 — 매
+/// frame `renderTimerFire` 에서 `ensureActiveTabVisible` 가 갱신, drag 중에는
+/// `tildazMouseDragged` 가 직접 갱신.
+var g_tab_scroll_x_px: f32 = 0;
 /// 탭 이름 변경 state (#111 M11.6b). 더블클릭으로 시작, Enter commit / Escape cancel.
 /// 활성화 동안 모든 키 입력 / 텍스트 입력 (IME insertText 포함) 이 PTY 대신
 /// 이쪽으로 라우팅.
@@ -284,6 +289,43 @@ const TAB_BAR_HEIGHT_PT = ui_metrics.TAB_BAR_HEIGHT_PT;
 fn tabBarHeightPx(scale: f32) i32 {
     if (g_session.count() < 2) return 0;
     return @intFromFloat(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale);
+}
+
+/// 픽셀 단위 탭 너비 (DPI scale 적용). hit-test / drag / scroll 모두 같은 값.
+fn tabWidthPx() f32 {
+    if (g_renderer == null) return 0;
+    return @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale;
+}
+
+/// 활성 탭이 viewport 안에 보이도록 `g_tab_scroll_x_px` 갱신 (#117). 정책 (b):
+/// 이미 보이면 그대로, 안 보이면 보이는 가장 가까운 위치로 minimum 이동. drag
+/// 중에는 호출 안 함 — `tildazMouseDragged` 의 auto-scroll 이 직접 갱신.
+fn ensureActiveTabVisible() void {
+    const n = g_session.count();
+    if (n == 0 or g_renderer == null) {
+        g_tab_scroll_x_px = 0;
+        return;
+    }
+    const tab_w = tabWidthPx();
+    const total = tab_w * @as(f32, @floatFromInt(n));
+    const vp = @as(f32, @floatFromInt(g_renderer.?.vp_width));
+    if (vp <= 0 or total <= vp) {
+        g_tab_scroll_x_px = 0;
+        return;
+    }
+    const active_f = @as(f32, @floatFromInt(g_session.active_tab));
+    const tab_l = active_f * tab_w;
+    const tab_r = tab_l + tab_w;
+    var sx = g_tab_scroll_x_px;
+    if (tab_l < sx) {
+        sx = tab_l;
+    } else if (tab_r > sx + vp) {
+        sx = tab_r - vp;
+    }
+    const max_sx = total - vp;
+    if (sx < 0) sx = 0;
+    if (sx > max_sx) sx = max_sx;
+    g_tab_scroll_x_px = sx;
 }
 
 /// 현재 viewport / cell 크기 + 탭 수에 따른 cols/rows 재계산 후 모든 탭의
@@ -855,18 +897,20 @@ fn tabBarHitTest(px: f32, py: f32) ?TabBarHit {
     const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
     const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
 
+    // #117 — world 좌표로 hit-test (스크롤 적용된 탭바). 화면 px → world_x.
+    const world_x = px + g_tab_scroll_x_px;
     if (px < 0 or py < 0 or py >= tab_bar_h) return null;
-    const tab_index_f = px / tab_w_px;
+    const tab_index_f = world_x / tab_w_px;
     const tab_index = @as(usize, @intFromFloat(tab_index_f));
     if (tab_index >= g_session.count()) return null; // 탭 옆 빈 영역.
 
-    // close 버튼 hit rect — drawTabBar 의 close_x/close_y 와 동일 공식.
+    // close 버튼 hit rect — drawTabBar 의 close_x/close_y 와 동일 공식. world 기준.
     const tab_x = @as(f32, @floatFromInt(tab_index)) * tab_w_px;
     const close_x_min = tab_x + tab_w_px - close_size_px - tab_pad_px;
     const close_x_max = close_x_min + close_size_px;
     const close_y_min = (tab_bar_h - close_size_px) * 0.5;
     const close_y_max = close_y_min + close_size_px;
-    const on_close = (px >= close_x_min and px <= close_x_max and
+    const on_close = (world_x >= close_x_min and world_x <= close_x_max and
         py >= close_y_min and py <= close_y_max);
 
     return .{ .tab_index = tab_index, .on_close = on_close };
@@ -942,9 +986,10 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             }
             // 본체 클릭 → 즉시 활성 전환 + drag-begin. drag 가 5px 이상 이동
             // 안 하면 mouseUp 에서 그냥 click 으로 처리 (= 활성 전환만 효과).
+            // #117 — DragState 는 world 좌표 (`xy.x + tab_scroll_x`) 사용.
             _ = g_session.setActiveTab(hit.tab_index);
             const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale);
-            _ = g_drag.begin(@intFromFloat(xy.x), tab_w_int, g_session.count());
+            _ = g_drag.begin(@intFromFloat(xy.x + g_tab_scroll_x_px), tab_w_int, g_session.count());
             return;
         }
     }
@@ -977,7 +1022,24 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     // 탭 drag (#111 M11.6a) 가 활성이면 drag 만 처리 — cell selection 무관.
     if (g_drag.active) {
         const xy = eventToWindowPx(self_view, event);
-        _ = g_drag.move(@intFromFloat(xy.x));
+        // #117 drag auto-scroll. mouse_x 가 viewport 좌/우 끝 가까이면 scroll
+        // 한 step 이동. drag.move 에는 *갱신된* world 좌표 (`mouse + scroll`).
+        if (g_renderer) |*r| {
+            const tab_w = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
+            const total = tab_w * @as(f32, @floatFromInt(g_session.count()));
+            const vp = @as(f32, @floatFromInt(r.vp_width));
+            if (vp > 0 and total > vp) {
+                const max_sx = total - vp;
+                const edge: f32 = 32 * r.scale;
+                const step: f32 = 16 * r.scale;
+                if (xy.x < edge and g_tab_scroll_x_px > 0) {
+                    g_tab_scroll_x_px = @max(0, g_tab_scroll_x_px - step);
+                } else if (xy.x > vp - edge and g_tab_scroll_x_px < max_sx) {
+                    g_tab_scroll_x_px = @min(max_sx, g_tab_scroll_x_px + step);
+                }
+            }
+        }
+        _ = g_drag.move(@intFromFloat(xy.x + g_tab_scroll_x_px));
         return;
     }
 
@@ -1704,6 +1766,10 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     if (!g_visible) return;
     if (g_renderer == null) return;
     const tab = g_session.activeTab() orelse return;
+
+    // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중에는 skip
+    // (`tildazMouseDragged` 의 auto-scroll 이 직접 갱신).
+    if (!g_drag.active) ensureActiveTabVisible();
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
@@ -1749,6 +1815,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         g_session.active_tab,
         rename_for_render,
         drag_for_render,
+        g_tab_scroll_x_px,
     );
 }
 

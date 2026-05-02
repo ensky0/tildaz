@@ -27,6 +27,12 @@ pub const App = struct {
     tab_interaction: tab_interaction.TabInteraction = .{},
     terminal_interaction: terminal_interaction.TerminalInteraction = .{},
 
+    /// 탭바 스크롤 오프셋 (픽셀, #117). 탭바 총 너비 (`count × TAB_WIDTH`) 가
+    /// 윈도우 너비를 초과하면 활성 탭이 보이도록 viewport 자동 이동. 매 frame
+    /// `onRender` 에서 `ensureActiveTabVisible` 가 갱신 — drag 중일 때만 skip
+    /// (`handleDragMove` 가 자체 auto-scroll 로 직접 갱신).
+    tab_scroll_x: c_int = 0,
+
     // DPI-scaled values (initialized in run())
     dpi_scale: f32 = 1.0,
     TAB_BAR_HEIGHT: c_int = 28,
@@ -85,6 +91,41 @@ pub const App = struct {
     /// resizeAll 을 호출해 모든 탭 grid 동기화.
     fn effectiveTabBarHeight(self: *const App) c_int {
         return if (self.session.count() > 1) self.TAB_BAR_HEIGHT else 0;
+    }
+
+    fn tabBarTotalWidth(self: *const App) c_int {
+        return @as(c_int, @intCast(self.session.count())) * self.TAB_WIDTH;
+    }
+
+    /// 활성 탭이 viewport 안에 보이도록 `tab_scroll_x` 갱신 (#117). 정책 (b):
+    /// 이미 보이면 그대로, 안 보일 때만 보이는 가장 가까운 위치로 minimum 이동.
+    /// 양 끝 clamp 로 viewport 가 비는 일 없음. drag 중에는 호출 안 함 —
+    /// `handleDragMove` 의 auto-scroll 이 직접 갱신.
+    fn ensureActiveTabVisible(self: *App) void {
+        const n = self.session.count();
+        if (n == 0) {
+            self.tab_scroll_x = 0;
+            return;
+        }
+        const total = self.tabBarTotalWidth();
+        const vp = self.window.getClientSize().w;
+        if (vp <= 0 or total <= vp) {
+            self.tab_scroll_x = 0;
+            return;
+        }
+        const active = @as(c_int, @intCast(self.session.activeIndex()));
+        const tab_l = active * self.TAB_WIDTH;
+        const tab_r = tab_l + self.TAB_WIDTH;
+        var sx = self.tab_scroll_x;
+        if (tab_l < sx) {
+            sx = tab_l;
+        } else if (tab_r > sx + vp) {
+            sx = tab_r - vp;
+        }
+        const max_sx = total - vp;
+        if (sx < 0) sx = 0;
+        if (sx > max_sx) sx = max_sx;
+        self.tab_scroll_x = sx;
     }
 
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
@@ -195,6 +236,11 @@ pub const App = struct {
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
             const should_render = self.session.prepareActiveFrame(&self.last_render_ms);
 
+            // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중인 동안은
+            // handleDragMove 가 직접 auto-scroll 하므로 skip (그 결과를 ensure 가
+            // 활성 탭 기준으로 되돌리지 않게).
+            if (!self.tab_interaction.drag.active) self.ensureActiveTabVisible();
+
             if (should_render) {
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함).
                 // count<=1 이면 tab_bar_h=0 → 렌더러가 탭바 자체를 그리지 않고
@@ -225,6 +271,7 @@ pub const App = struct {
                     if (drag) |d| d.tab_index else null,
                     if (drag) |d| d.current_x else 0,
                     rs,
+                    self.tab_scroll_x,
                 );
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(
@@ -315,16 +362,19 @@ pub const App = struct {
         if (mouse_y >= self.effectiveTabBarHeight()) return; // Below tab bar
         if (self.session.count() == 0) return;
 
-        const tab_index_raw = @divTrunc(mouse_x, self.TAB_WIDTH);
+        // #117 — 마우스 좌표 (화면) → world 좌표로 보정. 탭 인덱스 + close 버튼
+        // hit rect 모두 world 기준.
+        const world_x = mouse_x + self.tab_scroll_x;
+        const tab_index_raw = @divTrunc(world_x, self.TAB_WIDTH);
         if (tab_index_raw < 0) return;
         const tab_index: usize = @intCast(tab_index_raw);
         if (tab_index >= self.session.count()) return;
 
-        // Check if click is on close button
+        // Check if click is on close button (world 좌표).
         const tab_x = @as(c_int, @intCast(tab_index)) * self.TAB_WIDTH;
         const close_x = tab_x + self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING;
         const close_y = @divTrunc(self.TAB_BAR_HEIGHT - self.CLOSE_BTN_SIZE, 2);
-        if (mouse_x >= close_x and mouse_x <= close_x + self.CLOSE_BTN_SIZE and
+        if (world_x >= close_x and world_x <= close_x + self.CLOSE_BTN_SIZE and
             mouse_y >= close_y and mouse_y <= close_y + self.CLOSE_BTN_SIZE)
         {
             self.closeTab(tab_index);
@@ -337,11 +387,26 @@ pub const App = struct {
     }
 
     pub fn handleDragStart(self: *App, mouse_x: c_int) void {
-        _ = self.tab_interaction.drag.begin(mouse_x, self.TAB_WIDTH, self.session.count());
+        // #117 — DragState 는 world 좌표 (`mouse_x + scroll_x`) 로 통일.
+        _ = self.tab_interaction.drag.begin(mouse_x + self.tab_scroll_x, self.TAB_WIDTH, self.session.count());
     }
 
     pub fn handleDragMove(self: *App, mouse_x: c_int) void {
-        _ = self.tab_interaction.drag.move(mouse_x);
+        // #117 — drag auto-scroll. mouse_x 가 viewport 좌/우 끝 가까이면 scroll
+        // 한 step 이동 후 drag.move 에 *갱신된* world 좌표 전달.
+        const edge: c_int = 32;
+        const step: c_int = 16;
+        const vp = self.window.getClientSize().w;
+        const total = self.tabBarTotalWidth();
+        if (vp > 0 and total > vp) {
+            const max_sx = total - vp;
+            if (mouse_x < edge and self.tab_scroll_x > 0) {
+                self.tab_scroll_x = @max(0, self.tab_scroll_x - step);
+            } else if (mouse_x > vp - edge and self.tab_scroll_x < max_sx) {
+                self.tab_scroll_x = @min(max_sx, self.tab_scroll_x + step);
+            }
+        }
+        _ = self.tab_interaction.drag.move(mouse_x + self.tab_scroll_x);
     }
 
     pub fn handleDragEnd(self: *App) void {
@@ -582,7 +647,8 @@ pub const App = struct {
             },
             .mouse_double_click => |mouse| {
                 if (mouse.y < self.effectiveTabBarHeight()) {
-                    const tab_index_raw = @divTrunc(mouse.x, self.TAB_WIDTH);
+                    // #117 — world 좌표로 hit-test (스크롤 적용된 탭바).
+                    const tab_index_raw = @divTrunc(mouse.x + self.tab_scroll_x, self.TAB_WIDTH);
                     if (tab_index_raw >= 0) {
                         const tab_index: usize = @intCast(tab_index_raw);
                         if (tab_index < self.session.count()) {
