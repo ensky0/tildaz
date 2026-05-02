@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.14-rc1</string>
+	<string>0.2.14-rc2</string>
 	<key>CFBundleVersion</key>
-	<string>0.2.14-rc1</string>
+	<string>0.2.14-rc2</string>
 	<!-- LSUIElement=true: drop-down 터미널 정체성에 맞춰 Dock / Cmd+Tab / 메뉴바
 	     에 tildaz 안 보이게 한다. background utility 앱 (Bartender, Magnet, ...)
 	     과 같은 스타일. macOS 의 \"정식 앱 라이프사이클\" 진입을 위해 .app 번들
