@@ -214,6 +214,47 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     _ = runModal(alert, objc.sel("runModal"));
 }
 
+/// OK / Cancel 두 버튼의 확인 다이얼로그 (#116). default 는 Cancel —
+/// 사용자가 무심코 Enter 만 눌러도 종료가 진행되지 않게. 반환: OK → true.
+///
+/// NSAlert 의 첫 번째 추가 버튼이 NSAlertFirstButtonReturn (1000), 두 번째가
+/// NSAlertSecondButtonReturn (1001). default 버튼은 첫 번째 — Cancel 을 먼저
+/// 추가해 default 로 두고, OK 는 두 번째.
+pub fn showConfirm(title: []const u8, message: []const u8) bool {
+    if (!nsapp_ready) return false; // bootstrap 단계엔 confirm 의미 없음.
+
+    const NSAlert = objc.getClass("NSAlert");
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+
+    const alert_alloc = alloc(NSAlert, objc.sel("alloc")) orelse return false;
+    const alert = init_obj(alert_alloc, objc.sel("init")) orelse return false;
+
+    const setText = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setText(alert, objc.sel("setMessageText:"), nsStringFromSlice(title));
+    setText(alert, objc.sel("setInformativeText:"), nsStringFromSlice(message));
+
+    const setStyle = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+    setStyle(alert, objc.sel("setAlertStyle:"), 1); // Informational
+
+    // default 버튼 = Cancel — 사용자가 Enter 만 눌러도 종료 안 되게 (HIG 패턴).
+    const addBtn = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+    _ = addBtn(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice("Cancel"));
+    _ = addBtn(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice("Quit"));
+
+    // host popup level → normal (NSAlert 가 위에 표시되도록), 끝나면 복구.
+    const NSPopUpMenuWindowLevel: c_int = 101;
+    const NSNormalWindowLevel: c_int = 0;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSNormalWindowLevel);
+    defer if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
+
+    const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    const result = runModal(alert, objc.sel("runModal"));
+    // NSAlertSecondButtonReturn = 1001 (= Quit, 두 번째 추가 버튼).
+    return result == 1001;
+}
+
 /// AppleScript fallback — NSApp 무관, config 에러 같이 부트스트랩 실패 시.
 fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     var script_buf: [8192]u8 = undefined;

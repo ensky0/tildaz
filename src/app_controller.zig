@@ -15,6 +15,8 @@ const about = @import("about.zig");
 const ui_metrics = @import("ui_metrics.zig");
 const paths = @import("paths.zig");
 const system_open = @import("system_open.zig");
+const dialog = @import("dialog.zig");
+const messages = @import("messages.zig");
 
 pub const App = struct {
     session: SessionCore,
@@ -102,6 +104,21 @@ pub const App = struct {
     pub fn onSessionTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         self.window.postTabClosed(tab_ptr);
+    }
+
+    /// Alt+F4 / 시스템 close — confirm 다이얼로그 (#116). true 반환 = 종료
+    /// 진행, false = 취소. count == 0 (PTY 자동 종료 path) 만 skip — 마지막
+    /// 탭 자동 종료는 `closeAfterShellExit` 의 `shell_exited` 분기로 이미
+    /// 처리되지만 안전 가드. macOS `applicationShouldTerminate:` 와 같은 정책.
+    pub fn onQuitRequest(userdata: ?*anyopaque) bool {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        const n = self.session.count();
+        if (n == 0) return true;
+        const plural: []const u8 = if (n == 1) "" else "s";
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, messages.quit_confirm_format, .{ n, plural }) catch
+            return true;
+        return dialog.showConfirm(messages.quit_confirm_title, msg);
     }
 
     // --- Window callbacks (userdata = *App) ---

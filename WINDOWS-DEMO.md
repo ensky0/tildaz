@@ -8,6 +8,22 @@
 
 ---
 
+## #116 Alt+F4 종료 confirm 다이얼로그
+
+macOS 에서 `applicationShouldTerminate:` 로 Cmd+Q 가로채 confirm 띄움. Windows 동등은 WM_CLOSE 핸들러 — `MessageBoxW` 인라인 호출을 `dialog.showConfirm` (cross-platform) 으로 교체 + 단축어 통일.
+
+- [ ] **단일 탭 + Alt+F4** → "Quit TildaZ?" 다이얼로그 + 본문 "This will close 1 open tab." + Cancel(default) / OK 버튼
+- [ ] Cancel 누름 → 윈도우 그대로, 탭 유지
+- [ ] OK 누름 → 종료
+- [ ] **탭 2 개 + Alt+F4** → 본문 "This will close 2 open tabs." (`s` 붙음)
+- [ ] **탭 3+ Alt+F4** → "This will close 3 open tabs."
+- [ ] **시스템 메뉴 (창 좌상단 ☰) → Close** 클릭 → 같은 confirm
+- [ ] **Enter 만 눌러도 종료 안 됨** — default 버튼이 Cancel 이라 무심코 Enter 가 종료 안 트리거
+- [ ] **마지막 탭 셸 `exit`** → confirm 없이 즉시 종료 (PTY exit 자동 종료 path, `shell_exited` 분기)
+- [ ] **탭바 X 클릭으로 마지막 탭 닫기** → confirm 없이 즉시 종료
+
+---
+
 ## #118 추가 sub: Windows hotkey config (방금 추가)
 - [ ] config 의 `"hotkey": "f1"` default 자동 생성 (`%APPDATA%\tildaz\config.json`)
 - [ ] `"hotkey": "ctrl+space"` 로 변경 후 재시작 → Ctrl+Space 가 toggle 트리거
