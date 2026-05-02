@@ -190,6 +190,94 @@ pub const CoreTextFontContext = struct {
         }
     }
 
+    /// grapheme cluster (base + extras) 통째 shape → 첫 run 의 첫 glyph 반환.
+    /// VS-16 / skin tone / ZWJ 시퀀스 처리 (#132 B). CTLine 이 font fallback +
+    /// glyph substitution 모두 자동 → cluster 가 단일 컬러 emoji 글리프로 reduce.
+    ///
+    /// `cps` 는 [base_cp, extras...] 의 codepoint 배열. UTF-16 으로 변환 후
+    /// CFAttributedString (primary font 속성) → CTLine → 첫 CTRun 사용.
+    /// 결과의 `font` 는 CTLine 이 fallback 으로 픽한 것 (Apple Color Emoji 등) —
+    /// 우리가 따로 retain 안 했지만 CTLine 이 살아있는 동안만 유효. Caller 는
+    /// 즉시 atlas getOrInsert 호출해 글리프 라스터 후 결과 사용 안 함.
+    /// `owned = false` (CT 가 관리). 실패 시 null → caller 가 base codepoint 만
+    /// 으로 fallback.
+    pub fn resolveGrapheme(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
+        if (cps.len == 0) return null;
+
+        // UTF-16 buffer — 각 codepoint 가 1~2 unit. 최대 16 cp 까지 지원 (긴
+        // ZWJ 시퀀스는 보통 ≤ 8 cp). overflow 시 truncate.
+        var utf16_buf: [32]u16 = undefined;
+        var utf16_len: usize = 0;
+        for (cps) |cp| {
+            if (cp <= 0xFFFF) {
+                if (utf16_len + 1 > utf16_buf.len) break;
+                utf16_buf[utf16_len] = @intCast(cp);
+                utf16_len += 1;
+            } else {
+                if (utf16_len + 2 > utf16_buf.len) break;
+                const offset = cp - 0x10000;
+                utf16_buf[utf16_len] = @intCast(0xD800 + (offset >> 10));
+                utf16_buf[utf16_len + 1] = @intCast(0xDC00 + (offset & 0x3FF));
+                utf16_len += 2;
+            }
+        }
+        if (utf16_len == 0) return null;
+
+        const cf_str = ct.CFStringCreateWithCharacters(null, &utf16_buf, @intCast(utf16_len)) orelse return null;
+        defer ct.CFRelease(cf_str);
+
+        // CFDictionary { kCTFontAttributeName: primary_font } — CT 가 shaping
+        // 시 이 font 부터 시작해 emoji 자동 fallback.
+        const keys = [1]?*const anyopaque{@ptrCast(ct.kCTFontAttributeName)};
+        const values = [1]?*const anyopaque{@ptrCast(self.primary_font)};
+        const attrs = ct.CFDictionaryCreate(
+            null,
+            &keys,
+            &values,
+            1,
+            @ptrCast(&ct.kCFTypeDictionaryKeyCallBacks),
+            @ptrCast(&ct.kCFTypeDictionaryValueCallBacks),
+        ) orelse return null;
+        defer ct.CFRelease(attrs);
+
+        const attr_str = ct.CFAttributedStringCreate(null, cf_str, attrs) orelse return null;
+        defer ct.CFRelease(attr_str);
+
+        const line = ct.CTLineCreateWithAttributedString(attr_str) orelse return null;
+        defer ct.CFRelease(line);
+
+        const runs = ct.CTLineGetGlyphRuns(line);
+        const run_count = ct.CFArrayGetCount(runs);
+        if (run_count == 0) return null;
+
+        // 첫 run — 대부분 grapheme cluster 가 1 run + 1 glyph 으로 shape 됨.
+        const run_ptr = ct.CFArrayGetValueAtIndex(runs, 0) orelse return null;
+        const run: ct.CTRunRef = @constCast(run_ptr);
+
+        const glyph_count = ct.CTRunGetGlyphCount(run);
+        if (glyph_count == 0) return null;
+
+        var glyph: ct.CGGlyph = 0;
+        if (ct.CTRunGetGlyphsPtr(run)) |ptr| {
+            glyph = ptr[0];
+        } else {
+            ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = 1 }, @ptrCast(&glyph));
+        }
+        if (glyph == 0) return null;
+
+        // run 의 실제 사용 폰트 — CT 가 fallback 으로 골라준 것 (Apple Color Emoji 등).
+        // GetAttributes 와 GetValue 는 non-owning reference 라 line 이 release 되면
+        // 무효. CFRetain 으로 caller 에게 ownership 넘김 → resolveGlyph 의 시스템
+        // fallback path (`owned = true`) 와 같은 패턴 → renderer 가 atlas
+        // getOrInsert 후 CFRelease.
+        const run_attrs = ct.CTRunGetAttributes(run);
+        const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse return null;
+        const run_font: ct.CTFontRef = @constCast(font_val);
+        _ = ct.CFRetain(run_font);
+
+        return .{ .font = run_font, .index = glyph, .owned = true };
+    }
+
     /// codepoint → (font, glyph_index) 해석. config.font.family chain 순회 →
     /// 첫 번째 글리프 가진 폰트 사용 (Windows DWriteFontContext 와 동등). chain
     /// 모두 없으면 `CTFontCreateForString` 의 system auto fallback (Apple Color
