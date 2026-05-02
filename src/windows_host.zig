@@ -105,6 +105,7 @@ pub fn run() !void {
     app.window.resize_fn = App.onResize;
     app.window.font_change_fn = App.onFontChange;
     app.window.app_event_fn = App.onAppEvent;
+    app.window.quit_request_fn = App.onQuitRequest;
     const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system
