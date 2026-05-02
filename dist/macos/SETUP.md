@@ -112,7 +112,13 @@ CLI 시도가 막히면 옵션 B 로 fallback.
 
 ## CI 빌드 (`.github/workflows/release.yml`)
 
-GitHub Actions runner 에는 self-signed cert 없으므로 default `-` (ad-hoc)
-사용. release 다운로드 사용자가 첫 실행 시 quarantine 우회 + 권한 한 번 부여
-필요. CI 빌드의 ad-hoc identity 는 빌드 환경 hash 가 같은 release zip 안에서
-일정해 release 끼리는 권한 유지 안 되지만 *같은 release 내* 에서는 일정.
+GitHub Actions `macos-15` runner 에서 `zig build package` 실행 — `dist/macos/package.sh` 가:
+1. `aarch64-macos` 빌드 (Apple Silicon)
+2. `x86_64-macos` 빌드 (Intel) — Apple Silicon runner 에서 cross-compile, build.zig 가 `-Dmacos-sdk=$(xcrun --show-sdk-path)` 받음
+3. `lipo -create` 로 universal binary 합침
+4. `.app` 번들 조립 + 재 codesign (ad-hoc — runner 에 self-signed cert 없음)
+5. `hdiutil create` 로 DMG (volume 안에 `.app` + `Applications` symlink)
+
+산출물: `tildaz-vX.Y.Z-macos.dmg` 한 파일 — Apple Silicon / Intel Mac 모두 동작 (#133).
+
+사용자 첫 실행: DMG 더블클릭 → 마운트된 디스크에서 `.app` 을 `Applications` 폴더로 드래그 → ad-hoc 서명이라 macOS 가 차단 시 우클릭 \"Open\" 또는 `xattr -d com.apple.quarantine /Applications/TildaZ.app` → Input Monitoring + Accessibility 권한 한 번 부여. CI 빌드의 ad-hoc identity 는 빌드 환경 hash 가 같은 DMG 안에서 일정해 release 끼리는 권한 유지 안 되지만 *같은 DMG 내* 에서는 일정.
