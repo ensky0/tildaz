@@ -128,6 +128,21 @@ pub const TabDragView = struct {
     current_x_px: f32,
 };
 
+/// 탭바 layout (#117 Firefox 패턴) — `<` `>` 화살표 + `+` 버튼이 탭 viewport
+/// 영역을 깎음. 호출처 (macos_host) 가 계산해서 넘김.
+pub const TabBarLayout = struct {
+    tab_area_x: f32,
+    tab_area_w: f32,
+    arrows_visible: bool,
+    arrow_w: f32,
+    plus_w: f32,
+    plus_x: f32,
+    left_arrow_x: f32,
+    right_arrow_x: f32,
+    left_enabled: bool,
+    right_enabled: bool,
+};
+
 pub const MetalRenderer = struct {
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,
@@ -286,10 +301,13 @@ pub const MetalRenderer = struct {
         rename_view: ?TabRenameView,
         /// drag 진행 중이면 그 탭을 마우스 위치 (`current_x_px`) 따라 이동시켜
         /// 그림. null = drag 안 함 또는 5px 임계 미만. `current_x_px` 는 *world*
-        /// 좌표 (#117) — 화면 위치는 `current_x_px - tab_scroll_x_px`.
+        /// 좌표 (#117) — 화면 위치는 `current_x_px - tab_scroll_x_px + tab_area_x`.
         drag_view: ?TabDragView,
-        /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x = world - 이 값.
+        /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x = world -
+        /// 이 값 + tab_area_x.
         tab_scroll_x_px: f32,
+        /// 탭바 layout — `<` `>` `+` 버튼 위치, 탭 viewport 영역.
+        tab_bar_layout: TabBarLayout,
     ) void {
         const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
         if (drawable == null) return;
@@ -333,7 +351,7 @@ pub const MetalRenderer = struct {
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
-        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, drag_view, tab_scroll_x_px);
+        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, drag_view, tab_scroll_x_px, tab_bar_layout);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -643,9 +661,10 @@ pub const MetalRenderer = struct {
         rename_view: ?TabRenameView,
         drag_view: ?TabDragView,
         /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x =
-        /// `world_x - tab_scroll_x_px`. world 좌표 (`i × tab_w_px`) 에서 이 값
-        /// 빼서 그림.
+        /// `world_x - tab_scroll_x_px + tab_area_x`.
         tab_scroll_x_px: f32,
+        /// `<` `>` `+` 버튼 layout. tab_area_x = 화살표 있을 때 ARROW_W.
+        layout: TabBarLayout,
     ) void {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
@@ -668,14 +687,14 @@ pub const MetalRenderer = struct {
         };
         bg_n += 1;
 
-        // 각 탭의 좌상단 x 좌표 — drag 중인 탭은 마우스 위치 따라감 (`current_x_px
-        // - tab_w/2` 가 좌상단). Windows `d3d11_renderer.zig:560` 패턴. world 좌표
-        // (`i × tab_w_px`) 에서 `tab_scroll_x_px` 빼서 화면 좌표로 변환 (#117).
-        // drag.current_x_px 자체가 *world* 라 같은 변환.
+        // 각 탭의 좌상단 x 좌표 — world (`i × tab_w_px`) - scroll + tab_area_x.
+        // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
+        // drag.current_x_px 도 *world* 라 같은 변환.
+        const tax = layout.tab_area_x;
         const tabXFor = struct {
-            fn f(i: usize, w: f32, dv: ?TabDragView, sx: f32) f32 {
-                if (dv) |d| if (d.tab_index == i) return d.current_x_px - w * 0.5 - sx;
-                return @as(f32, @floatFromInt(i)) * w - sx;
+            fn f(i: usize, w: f32, dv: ?TabDragView, sx: f32, tax_: f32) f32 {
+                if (dv) |d| if (d.tab_index == i) return d.current_x_px - w * 0.5 - sx + tax_;
+                return @as(f32, @floatFromInt(i)) * w - sx + tax_;
             }
         }.f;
 
@@ -684,7 +703,7 @@ pub const MetalRenderer = struct {
         for (tab_titles, 0..) |_, i| {
             if (bg_n >= MAX_BG) break;
             if (drag_view) |d| if (d.tab_index == i) continue;
-            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px);
+            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -695,7 +714,7 @@ pub const MetalRenderer = struct {
         }
         // drag 중인 탭 BG (다른 탭 위에 그려지도록 마지막).
         if (drag_view) |d| if (d.tab_index < tab_titles.len and bg_n < MAX_BG) {
-            const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view, tab_scroll_x_px);
+            const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const color = if (d.tab_index == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -715,7 +734,7 @@ pub const MetalRenderer = struct {
         const preedit_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1.0 };
 
         for (tab_titles, 0..) |orig_title, i| {
-            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px);
+            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const text_x_start = tab_x + tab_pad_px;
             var text_x = text_x_start;
 
@@ -878,6 +897,72 @@ pub const MetalRenderer = struct {
                 }
             }
         }
+
+        // 1차 batch — 탭 BG / 텍스트 / cursor / close 글리프 그림.
+        if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
+        if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);
+
+        // #117 — 2차 batch: 화살표 / + 영역. 탭 BG / 텍스트 *후* 에 별도 batch 로
+        // 그려야 viewport 끝에서 잘리는 첫/마지막 탭의 글자가 화살표 영역에 침범
+        // 한 부분이 덮여 가려짐 (사용자 제안: 탭 너비 줄이는 효과).
+        bg_n = 0;
+        text_n = 0;
+        if (layout.arrows_visible) {
+            bg_buf[bg_n] = .{
+                .pos = .{ layout.left_arrow_x, 0 },
+                .size = .{ layout.arrow_w, tab_bar_h_px },
+                .color = ui_metrics.TAB_BAR_BG,
+            };
+            bg_n += 1;
+            bg_buf[bg_n] = .{
+                .pos = .{ layout.right_arrow_x, 0 },
+                .size = .{ layout.arrow_w, tab_bar_h_px },
+                .color = ui_metrics.TAB_BAR_BG,
+            };
+            bg_n += 1;
+        }
+        bg_buf[bg_n] = .{
+            .pos = .{ layout.plus_x, 0 },
+            .size = .{ layout.plus_w, tab_bar_h_px },
+            .color = ui_metrics.TAB_BAR_BG,
+        };
+        bg_n += 1;
+
+        // 글리프 `<` `>` `+` — 박스 안 cw × ch 가운데 정렬. 활성 / 비활성 색 분리.
+        const drawCtrlGlyph = struct {
+            fn run(rself: *MetalRenderer, codepoint: u21, box_x: f32, box_w: f32, tbh: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
+                if (n.* >= buf.len) return;
+                const result = rself.font.resolveGlyph(@intCast(codepoint)) orelse return;
+                const entry = rself.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    if (result.owned) ct.CFRelease(result.font);
+                    return;
+                };
+                if (result.owned) ct.CFRelease(result.font);
+                if (entry.w == 0 or entry.h == 0) return;
+                const baseline_top = (tbh - ch_) * 0.5;
+                const gx = box_x + (box_w - cw_) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
+                const gy = baseline_top + rself.font.ascent_px
+                    - @as(f32, @floatFromInt(entry.bearing_y))
+                    - @as(f32, @floatFromInt(entry.h));
+                buf[n.*] = .{
+                    .pos = .{ gx, gy },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = color,
+                    .color_flag = if (entry.is_color) 1 else 0,
+                };
+                n.* += 1;
+            }
+        }.run;
+
+        if (layout.arrows_visible) {
+            const left_color = if (layout.left_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+            const right_color = if (layout.right_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+            drawCtrlGlyph(self, '<', layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, cw, ch, left_color, &text_buf, &text_n);
+            drawCtrlGlyph(self, '>', layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, cw, ch, right_color, &text_buf, &text_n);
+        }
+        drawCtrlGlyph(self, '+', layout.plus_x, layout.plus_w, tab_bar_h_px, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
 
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);
