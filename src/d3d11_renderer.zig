@@ -504,6 +504,21 @@ pub const D3d11Renderer = struct {
         cursor: usize,
     };
 
+    /// 탭바 layout (#117 Firefox 패턴) — `<` `>` 화살표 + `+` 버튼이 탭 viewport
+    /// 영역을 양쪽에서 깎음. App.tabBarLayout 와 동일 구조.
+    pub const TabBarLayout = struct {
+        tab_area_x: c_int,
+        tab_area_w: c_int,
+        arrows_visible: bool,
+        arrow_w: c_int,
+        plus_w: c_int,
+        plus_x: c_int,
+        left_arrow_x: c_int,
+        right_arrow_x: c_int,
+        left_enabled: bool,
+        right_enabled: bool,
+    };
+
     pub fn renderTabBar(
         self: *D3d11Renderer,
         tab_titles: []const TabTitle,
@@ -515,11 +530,14 @@ pub const D3d11Renderer = struct {
         close_btn_size: c_int,
         tab_padding: c_int,
         dragged_tab: ?usize,
-        /// world 좌표 (#117). 화면 좌표는 `drag_x - tab_scroll_x`.
+        /// world 좌표 (#117). 화면 좌표는 `drag_x - tab_scroll_x + tab_area_x`.
         drag_x: c_int,
         rename_state: ?RenameState,
-        /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값.
+        /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값
+        /// + tab_area_x 오프셋.
         tab_scroll_x: c_int,
+        /// 화살표 / + 버튼 layout. arrows_visible == false 면 + 만 표시.
+        layout: TabBarLayout,
     ) void {
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
@@ -564,20 +582,19 @@ pub const D3d11Renderer = struct {
         bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = ui_metrics.TAB_BAR_BG };
         bg_count += 1;
 
-        // #117 — 모든 탭 x 는 *world* 좌표 (`i × tw` 또는 drag 시 mouse world)
-        // 에서 `tab_scroll_x` 를 빼서 화면 좌표로 변환. drag_x 는 호출처가 이미
-        // world 로 보낸다 (mouse_x + scroll 형태로). viewport 밖 탭은 음수 x /
-        // client_w 초과 x 로 그대로 그리고 GPU 가 clip.
+        // #117 — 모든 탭 x = world(`i × tw` or drag world) - scroll + tab_area_x.
+        // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
         const sx: f32 = @floatFromInt(tab_scroll_x);
+        const tax: f32 = @floatFromInt(layout.tab_area_x);
 
         // Tab backgrounds
         for (0..tab_count) |i| {
             if (bg_count >= 128) break;
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: f32 = if (is_dragged)
-                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx
+                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx + tax
             else
-                @as(f32, @floatFromInt(i)) * tw - sx;
+                @as(f32, @floatFromInt(i)) * tw - sx + tax;
             const c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
             bg_instances[bg_count] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -599,9 +616,9 @@ pub const D3d11Renderer = struct {
         for (0..tab_count) |i| {
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
             const tab_x: f32 = if (is_dragged)
-                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx
+                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx + tax
             else
-                @as(f32, @floatFromInt(i)) * tw - sx;
+                @as(f32, @floatFromInt(i)) * tw - sx + tax;
 
             const is_renaming = if (rename_state) |rs| (i == rs.tab_index) else false;
             const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i].ptr[0..tab_titles[i].len];
@@ -737,6 +754,73 @@ pub const D3d11Renderer = struct {
         if (cursor_count > 0) {
             self.drawBgInstances(cursor_instances[0..cursor_count]);
         }
+
+        // #117 — 화살표 / + 영역. 탭 BG / 텍스트 그린 *후* 별도 batch 로 그려야
+        // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:
+        // 탭 너비 줄이는 효과). 색은 활성 (밝은 흰색) / 비활성 (어두운 회색)
+        // 명확히 구분.
+        var ctrl_bg_buf: [3]BgInstance = undefined;
+        var ctrl_bg_n: u32 = 0;
+        if (layout.arrows_visible) {
+            ctrl_bg_buf[ctrl_bg_n] = .{
+                .pos = .{ @floatFromInt(layout.left_arrow_x), 0 },
+                .size = .{ @floatFromInt(layout.arrow_w), tbh },
+                .color = ui_metrics.TAB_BAR_BG,
+            };
+            ctrl_bg_n += 1;
+            ctrl_bg_buf[ctrl_bg_n] = .{
+                .pos = .{ @floatFromInt(layout.right_arrow_x), 0 },
+                .size = .{ @floatFromInt(layout.arrow_w), tbh },
+                .color = ui_metrics.TAB_BAR_BG,
+            };
+            ctrl_bg_n += 1;
+        }
+        ctrl_bg_buf[ctrl_bg_n] = .{
+            .pos = .{ @floatFromInt(layout.plus_x), 0 },
+            .size = .{ @floatFromInt(layout.plus_w), tbh },
+            .color = ui_metrics.TAB_BAR_BG,
+        };
+        ctrl_bg_n += 1;
+        self.drawBgInstances(ctrl_bg_buf[0..ctrl_bg_n]);
+
+        // 글리프 `<` `>` `+`. 박스 안에 cw × ch 글자 가운데 정렬. 활성 / 비활성
+        // 색 분리.
+        var ctrl_text_buf: [3]TextInstance = undefined;
+        var ctrl_text_n: u32 = 0;
+        const drawCtrlGlyph = struct {
+            fn run(rself: *D3d11Renderer, codepoint: u21, box_x: c_int, box_w: c_int, tbh_: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
+                if (n.* >= buf.len) return;
+                const result = rself.font.resolveGlyph(codepoint) orelse return;
+                const entry = rself.atlas.getOrInsert(result.face, result.index) orelse {
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    return;
+                };
+                if (result.owned) _ = result.face.vtable.Release(result.face);
+                if (entry.w == 0 or entry.h == 0) return;
+                const bx: f32 = @floatFromInt(box_x);
+                const bw: f32 = @floatFromInt(box_w);
+                const gx = bx + (bw - cw_) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
+                const baseline = (tbh_ + rself.font.ascent_px - (ch_ - rself.font.ascent_px)) * 0.5;
+                const gy = baseline + @as(f32, @floatFromInt(entry.bearing_y));
+                buf[n.*] = .{
+                    .pos = .{ gx, gy },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = color,
+                };
+                n.* += 1;
+            }
+        }.run;
+
+        if (layout.arrows_visible) {
+            const left_color = if (layout.left_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+            const right_color = if (layout.right_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+            drawCtrlGlyph(self, '<', layout.left_arrow_x, layout.arrow_w, tbh, cw, ch, left_color, &ctrl_text_buf, &ctrl_text_n);
+            drawCtrlGlyph(self, '>', layout.right_arrow_x, layout.arrow_w, tbh, cw, ch, right_color, &ctrl_text_buf, &ctrl_text_n);
+        }
+        drawCtrlGlyph(self, '+', layout.plus_x, layout.plus_w, tbh, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
+        if (ctrl_text_n > 0) self.drawTextInstances(ctrl_text_buf[0..ctrl_text_n]);
 
         // Don't present — renderTerminal will continue
     }

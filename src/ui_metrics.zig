@@ -34,3 +34,19 @@ pub const TAB_TEXT_COLOR: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.
 // 이어지고 활성 탭만 두드러지는 효과 — Windows 패턴.
 // 탭 placement 도 Windows 와 동일: 좌우 1px + 상하 2px gap 을 두고 sandwich.
 // 그 gap 으로 TAB_BAR_BG 가 보여 탭의 명확한 윤곽선 역할.
+
+// 탭바 컨트롤 버튼 (#117 — Firefox 패턴). 모두 정사각형 (탭바 height 와 비슷).
+/// `<` / `>` 좌우 스크롤 화살표. 탭 viewport 가 가득 차야 (`total_w + plus_w >
+/// vp_w`) 양 끝에 등장. 한 번 클릭에 1 탭 너비씩 viewport 이동.
+pub const TAB_ARROW_W_PT: u32 = 36;
+/// `+` 새 탭 버튼. 항상 표시. layout `[<][tabs][+][>]` — `+` 는 `>` 바로
+/// 왼쪽 안쪽, 또는 화살표 없을 때는 마지막 탭 바로 옆.
+pub const TAB_PLUS_W_PT: u32 = 36;
+/// 컨트롤 버튼 (`<` `>` `+`) 과 탭 영역 사이 시각 분리 gap. 박스 사이가 같은
+/// 어두운 색이라 붙어 있으면 사용자가 "겹친다" 인식.
+pub const TAB_CTRL_GAP_PT: u32 = 8;
+/// 활성 화살표 / `+` 색 — 탭 텍스트보다 더 밝게 (강조).
+pub const TAB_CTRL_ACTIVE_COLOR: [4]f32 = .{ 0.95, 0.95, 0.95, 1.0 };
+/// 비활성 화살표 (더 갈 곳 없음) 의 색 — 활성과 명확히 구분되도록 어둡지만
+/// 너무 어둡지 않게. Firefox 의 disabled chevron 과 동등 시각.
+pub const TAB_ARROW_DISABLED_COLOR: [4]f32 = .{ 0.4, 0.4, 0.4, 1.0 };
