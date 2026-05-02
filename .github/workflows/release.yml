@@ -244,15 +244,17 @@ jobs:
 
       - name: Verify artifacts
         run: |
-          ZIP="zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos-aarch64.zip"
-          SHA="$ZIP.sha256"
-          if [[ ! -f "$ZIP" || ! -f "$SHA" ]]; then
+          DMG="zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos.dmg"
+          SHA="$DMG.sha256"
+          if [[ ! -f "$DMG" || ! -f "$SHA" ]]; then
             echo "ERROR: expected artifacts missing"
             ls -la zig-out/release/ || true
             exit 1
           fi
-          echo "zip    : $ZIP ($(stat -f %z "$ZIP") bytes)"
+          echo "dmg    : $DMG ($(stat -f %z "$DMG") bytes)"
           echo "sha256 : $(cat "$SHA")"
+          echo "universal binary architectures:"
+          lipo -info "zig-out/TildaZ.app/Contents/MacOS/tildaz"
 
       # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
       # softprops/action-gh-release 의 default 동작.
@@ -262,8 +264,8 @@ jobs:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
           files: |
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos-aarch64.zip
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos-aarch64.zip.sha256
+            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos.dmg
+            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos.dmg.sha256
           draft: false
           prerelease: false
           fail_on_unmatched_files: true

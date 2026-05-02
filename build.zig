@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
     // macOS app / docs 빌드를 모두 끄고 vt 모듈만 빌드한다. Windows 에서는 어차피
     // 기본값이 false 라 동작에 변화가 없다.
     if (b.lazyDependency("ghostty", .{
+        .target = target,
         .simd = simd,
         .optimize = optimize,
         .@"emit-lib-vt" = true,
@@ -74,6 +75,22 @@ pub fn build(b: *std.Build) void {
         // 참고: 이전엔 Carbon HIToolbox 의 RegisterEventHotKey 를 썼으나 macOS
         // Tahoe + ad-hoc sign 환경에서 silently fail 해서 CGEventTap (Apple DTS
         // 권장 modern API, CoreGraphics) 으로 전환. Carbon 프레임워크 링크 불필요.
+
+        // Cross-compile (host arch ≠ target arch — 예: Apple Silicon dev /
+        // CI runner 에서 x86_64-macos 빌드 / #133 universal binary) 시 zig 가
+        // SDK 의 library / framework path 를 자동 검색 안 해서 `-lobjc` 같이
+        // searched paths: none 으로 실패. `-Dmacos-sdk=` 로 받음 (CI 는
+        // `xcrun --show-sdk-path` 결과 주입). native 빌드는 미지정 → zig 자동
+        // 검색에 위임 (현재 동작 유지).
+        const sdk_root = b.option(
+            []const u8,
+            "macos-sdk",
+            "macOS SDK root (cross-compile 시 필수, native 는 비워둠). 예: $(xcrun --show-sdk-path)",
+        ) orelse "";
+        if (sdk_root.len > 0) {
+            exe_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{sdk_root}) });
+            exe_mod.addSystemFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk_root}) });
+        }
     }
 
     const exe = b.addExecutable(.{
@@ -115,12 +132,16 @@ pub fn build(b: *std.Build) void {
             "macos-sign-identity",
             "macOS codesign identity. default `-` (ad-hoc). 로컬에서 권한 유지 용 self-signed cert 사용 시 그 이름 (예: \"tildaz Local\").",
         ) orelse "-";
+        // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
+        // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133
+        // universal 작업 중 두 prefix 로 install 할 때 mismatch 원인.
+        const app_path = b.fmt("{s}/TildaZ.app", .{b.install_path});
         const sign = b.addSystemCommand(&.{
             "codesign",
             "--force",
             "--sign",
             sign_identity,
-            "zig-out/TildaZ.app",
+            app_path,
         });
         sign.step.dependOn(&install_macos_exe.step);
         sign.step.dependOn(&install_macos_plist.step);
@@ -172,16 +193,16 @@ pub fn build(b: *std.Build) void {
         package_cmd.step.dependOn(b.getInstallStep());
         package_step.dependOn(&package_cmd.step);
     } else if (is_macos_target) {
-        // macOS — `ditto -c -k --keepParent` 로 .app 의 codesign / extended
-        // attributes 보존하며 zip. ad-hoc 서명이라 사용자 첫 실행 시 quarantine
-        // 우회 + 권한 한 번 부여 필요 (README 안내).
+        // macOS (#133) — package.sh 가 두 target (arm64 + x86_64) 자체 빌드 +
+        // lipo 로 universal binary + .app 조립 + codesign + hdiutil 로 DMG 까지
+        // 처리. install step 에 dependOn 안 함 — package.sh 가 단일 target 빌드
+        // 산출물 (zig-out/TildaZ.app) 을 사용 안 하고 자기 prefix 로 새로 빌드.
         const package_cmd = b.addSystemCommand(&.{
             "bash",
             "dist/macos/package.sh",
             "--version",
             tildaz_version,
         });
-        package_cmd.step.dependOn(b.getInstallStep());
         package_step.dependOn(&package_cmd.step);
     } else {
         const package_fail = b.addFail("package step은 Windows 또는 macOS 대상에서만 동작합니다.");
