@@ -16,6 +16,13 @@ on:
 permissions:
   contents: write   # gh release create 에 필요
 
+# Node.js 20 deprecation (2026-09-16 제거 예정) 회피. actions/checkout@v4 와
+# softprops/action-gh-release@v2 가 아직 Node 20 번들이라 runner 가 강제 Node
+# 24 로 실행. 2026-06-02 부터 default 가 24 로 바뀌면 이 env 는 redundant
+# 이지만 그때까지 deprecation 경고 + 호환성 보장 위한 안전한 사전 적용.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   release-windows:
     runs-on: windows-2022
