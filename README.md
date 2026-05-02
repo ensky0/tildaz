@@ -64,12 +64,20 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
   - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (consolidated from Task Scheduler in v0.2.8 — GPO / UAC blocked `schtasks /create` and left stale entries)
   - macOS: `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad)
 
+## System requirements (running TildaZ)
+
+| Platform | Minimum |
+|---|---|
+| **Windows** | Windows 10 (1903) or later, x64. ARM64 is not yet supported. |
+| **macOS** | macOS 13 Ventura or later. The release DMG ships a universal binary that runs natively on Apple Silicon (M1/M2/M3/...) and Intel Macs. |
+
 ## Build
 
 ### Requirements
 
 - [Zig 0.15.2](https://ziglang.org/download/)
-- macOS only: Xcode Command Line Tools (`xcode-select --install`) for the codesigning step
+- **macOS** — Xcode Command Line Tools (`xcode-select --install`). Provides the macOS SDK (linked via `xcrun --show-sdk-path`), `codesign` (ad-hoc signing), and `lipo` (universal binary). Full Xcode is *not* required.
+- **Windows** — no extra toolchain. Zig bundles its own MSVC ABI clang + LLD. The release pipeline builds on a `windows-2022` GitHub Actions runner; cross-compiling from macOS / Linux is technically possible but not part of the official release flow.
 
 ### Build commands
 
