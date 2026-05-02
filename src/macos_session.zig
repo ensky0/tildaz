@@ -106,6 +106,12 @@ pub const SessionCore = struct {
             .stream = undefined,
             .interaction = .{},
         };
+        // Mode 2027 (grapheme cluster) — VS-16 / skin tone modifier (U+1F3FB-FF)
+        // / ZWJ 시퀀스 (U+200D) 가 같은 cell 의 grapheme 으로 묶이게. 기본 OFF
+        // 라 ❤️ 가 [U+2764, U+FE0F] 두 cell 에 분리되고 cell 폭도 narrow 로
+        // 남음. ON 시 base cell 의 `cell.grapheme` 에 extras 가 저장 + VS-16
+        // 일 때 cell 자동으로 wide. renderer 가 이 grapheme 을 CTLine 으로 shape.
+        tab.terminal.modes.set(.grapheme_cluster, true);
         // default 제목: "Tab N" — N 은 1-base 인덱스 (현재 컬렉션 길이 + 1).
         var name_buf: [16]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "Tab {d}", .{self.tabs.items.len + 1}) catch "Tab";

@@ -65,6 +65,7 @@ pub const CTFontRef = *anyopaque;
 
 // --- Core Foundation 함수 ---
 pub extern "CoreFoundation" fn CFRelease(cf: CFTypeRef) void;
+pub extern "CoreFoundation" fn CFRetain(cf: CFTypeRef) CFTypeRef;
 
 pub extern "CoreFoundation" fn CFStringCreateWithBytes(
     alloc: CFAllocatorRef,
@@ -145,6 +146,62 @@ pub const kCTFontOrientationHorizontal: u32 = 1;
 pub const kCTFontTraitColorGlyphs: u32 = 1 << 13; // 0x2000
 
 pub extern "CoreText" fn CTFontGetSymbolicTraits(font: CTFontRef) u32;
+
+// --- CoreText shaping (CTLine) — grapheme cluster shaping (#132 B) ---
+//
+// emoji presentation (VS-16 = U+FE0F), skin tone modifier (U+1F3FB-FF), ZWJ
+// 시퀀스 (U+200D) 같은 multi-codepoint grapheme cluster 는 단순
+// CTFontGetGlyphsForCharacters (1:1 매핑) 로 안 되고 *shaping* 이 필요.
+// CTLineCreateWithAttributedString 이 font fallback + glyph substitution 모두
+// 처리 → CTRun 별로 (font, glyphs[]) 반환.
+//
+// 흐름: UTF-16 string → CFAttributedString (font 속성) → CTLine → CTRun 배열 →
+// 첫 run 의 첫 glyph 사용 (대부분 emoji cluster 가 1 glyph 으로 reduce).
+
+pub const CFAttributedStringRef = *anyopaque;
+pub const CFArrayRef = *anyopaque;
+pub const CFDictionaryRef = *anyopaque;
+pub const CTLineRef = *anyopaque;
+pub const CTRunRef = *anyopaque;
+
+// kCFTypeDictionaryKeyCallBacks / kCFTypeDictionaryValueCallBacks 는
+// CFDictionary 의 retain/release 콜백 구조체. Dictionary 가 CFType 값을
+// 자동 retain 하게 두는 표준 콜백. 우리는 주소만 넘겨주면 됨.
+pub extern "CoreFoundation" const kCFTypeDictionaryKeyCallBacks: opaque {};
+pub extern "CoreFoundation" const kCFTypeDictionaryValueCallBacks: opaque {};
+
+// CT 의 font 속성 키 (CFStringRef 글로벌). CFAttributedString 에 font 를
+// 매다는 데 사용.
+pub extern "CoreText" const kCTFontAttributeName: CFStringRef;
+
+pub extern "CoreFoundation" fn CFDictionaryCreate(
+    alloc: CFAllocatorRef,
+    keys: [*]const ?*const anyopaque,
+    values: [*]const ?*const anyopaque,
+    numValues: CFIndex,
+    keyCallBacks: ?*const anyopaque,
+    valueCallBacks: ?*const anyopaque,
+) ?CFDictionaryRef;
+
+pub extern "CoreFoundation" fn CFAttributedStringCreate(
+    alloc: CFAllocatorRef,
+    str: CFStringRef,
+    attributes: CFDictionaryRef,
+) ?CFAttributedStringRef;
+
+pub extern "CoreText" fn CTLineCreateWithAttributedString(str: CFAttributedStringRef) ?CTLineRef;
+pub extern "CoreText" fn CTLineGetGlyphRuns(line: CTLineRef) CFArrayRef;
+
+pub extern "CoreFoundation" fn CFArrayGetCount(arr: CFArrayRef) CFIndex;
+pub extern "CoreFoundation" fn CFArrayGetValueAtIndex(arr: CFArrayRef, idx: CFIndex) ?*const anyopaque;
+
+pub extern "CoreText" fn CTRunGetGlyphCount(run: CTRunRef) CFIndex;
+// `Ptr` 변형은 internal storage 직접 노출. null 이면 GetGlyphs 로 buffer 복사.
+pub extern "CoreText" fn CTRunGetGlyphsPtr(run: CTRunRef) ?[*]const CGGlyph;
+pub extern "CoreText" fn CTRunGetGlyphs(run: CTRunRef, range: CFRange, buffer: [*]CGGlyph) void;
+pub extern "CoreText" fn CTRunGetAttributes(run: CTRunRef) CFDictionaryRef;
+
+pub extern "CoreFoundation" fn CFDictionaryGetValue(dict: CFDictionaryRef, key: ?*const anyopaque) ?*const anyopaque;
 
 // --- CoreGraphics 함수 ---
 pub extern "CoreGraphics" fn CGColorSpaceCreateDeviceGray() ?CGColorSpaceRef;
