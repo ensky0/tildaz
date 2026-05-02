@@ -425,6 +425,7 @@ pub const MetalRenderer = struct {
             const cell_slice = all_cells[y].slice();
             const raws = cell_slice.items(.raw);
             const styles = cell_slice.items(.style);
+            const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
 
             const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
@@ -443,7 +444,20 @@ pub const MetalRenderer = struct {
                     text_count = 0;
                 }
 
-                const result = self.font.resolveGlyph(cp) orelse continue;
+                // grapheme cluster (VS-16 / skin tone modifier / ZWJ 시퀀스) 면 CTLine
+                // 으로 shape — 단일 컬러 emoji 글리프로 reduce. 일반 cell 은 빠른
+                // single-codepoint path 그대로.
+                const result = blk: {
+                    if (raw.hasGrapheme() and x < graphemes.len) {
+                        var cluster: [16]u21 = undefined;
+                        cluster[0] = cp;
+                        const extras = graphemes[x];
+                        const take = @min(extras.len, cluster.len - 1);
+                        @memcpy(cluster[1..][0..take], extras[0..take]);
+                        if (self.font.resolveGrapheme(cluster[0 .. 1 + take])) |r| break :blk r;
+                    }
+                    break :blk self.font.resolveGlyph(cp) orelse continue;
+                };
                 const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                     if (result.owned) ct.CFRelease(result.font);
                     continue;
