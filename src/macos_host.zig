@@ -251,6 +251,10 @@ var g_drag: tab_interaction.DragState = .{};
 /// frame `renderTimerFire` 에서 `ensureActiveTabVisible` 가 갱신, drag 중에는
 /// `tildazMouseDragged` 가 직접 갱신.
 var g_tab_scroll_x_px: f32 = 0;
+/// 사용자가 `<` / `>` 화살표를 눌러 viewport 를 옮긴 상태 (#117). 이 동안
+/// `ensureActiveTabVisible` skip — 활성 탭 가려져도 그대로 (Firefox).
+/// 활성 탭 변경 / drag reorder 끝 / 새 탭 생성 시 false 로 리셋.
+var g_tab_scroll_user_override: bool = false;
 /// 탭 이름 변경 state (#111 M11.6b). 더블클릭으로 시작, Enter commit / Escape cancel.
 /// 활성화 동안 모든 키 입력 / 텍스트 입력 (IME insertText 포함) 이 PTY 대신
 /// 이쪽으로 라우팅.
@@ -297,9 +301,72 @@ fn tabWidthPx() f32 {
     return @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale;
 }
 
+/// 탭바 layout (#117 Firefox 패턴) — `<` / `>` 화살표 + `+` 버튼이 탭 viewport
+/// 영역을 깎음. Windows `App.TabBarLayout` 와 동일 구조.
+const TabBarLayout = struct {
+    tab_area_x: f32,
+    tab_area_w: f32,
+    arrows_visible: bool,
+    arrow_w: f32,
+    plus_w: f32,
+    plus_x: f32,
+    left_arrow_x: f32 = 0,
+    right_arrow_x: f32 = 0,
+    left_enabled: bool = false,
+    right_enabled: bool = false,
+};
+
+fn tabBarLayout() TabBarLayout {
+    if (g_renderer == null) return .{
+        .tab_area_x = 0,
+        .tab_area_w = 0,
+        .arrows_visible = false,
+        .arrow_w = 0,
+        .plus_w = 0,
+        .plus_x = 0,
+    };
+    const r = &g_renderer.?;
+    const arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale;
+    const plus_w = @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale;
+    const gap = @as(f32, @floatFromInt(ui_metrics.TAB_CTRL_GAP_PT)) * r.scale;
+    const tab_w = tabWidthPx();
+    const total = tab_w * @as(f32, @floatFromInt(g_session.count()));
+    const vp = @as(f32, @floatFromInt(r.vp_width));
+    const arrows_visible = total + plus_w + gap > vp;
+    if (!arrows_visible) {
+        return .{
+            .tab_area_x = 0,
+            .tab_area_w = @max(0, vp - plus_w - gap),
+            .arrows_visible = false,
+            .arrow_w = arrow_w,
+            .plus_w = plus_w,
+            .plus_x = total + gap, // 마지막 탭 옆 (gap)
+        };
+    }
+    // layout: `[<][gap][tabs][gap][+][>]` — 양 끝 화살표, `+` 는 `>` 바로 왼쪽.
+    const tab_area_x = arrow_w + gap;
+    const tab_area_w = @max(0, vp - arrow_w * 2 - plus_w - gap * 2);
+    const right_arrow_x = vp - arrow_w;
+    const plus_x = right_arrow_x - plus_w;
+    const left_enabled = g_tab_scroll_x_px > 0;
+    const right_enabled = g_tab_scroll_x_px + tab_area_w < total;
+    return .{
+        .tab_area_x = tab_area_x,
+        .tab_area_w = tab_area_w,
+        .arrows_visible = true,
+        .arrow_w = arrow_w,
+        .plus_w = plus_w,
+        .plus_x = plus_x,
+        .left_arrow_x = 0,
+        .right_arrow_x = right_arrow_x,
+        .left_enabled = left_enabled,
+        .right_enabled = right_enabled,
+    };
+}
+
 /// 활성 탭이 viewport 안에 보이도록 `g_tab_scroll_x_px` 갱신 (#117). 정책 (b):
-/// 이미 보이면 그대로, 안 보이면 보이는 가장 가까운 위치로 minimum 이동. drag
-/// 중에는 호출 안 함 — `tildazMouseDragged` 의 auto-scroll 이 직접 갱신.
+/// 이미 보이면 그대로, 안 보이면 보이는 가장 가까운 위치로 minimum 이동.
+/// drag / 사용자 화살표 override 중에는 호출 안 함.
 fn ensureActiveTabVisible() void {
     const n = g_session.count();
     if (n == 0 or g_renderer == null) {
@@ -308,7 +375,8 @@ fn ensureActiveTabVisible() void {
     }
     const tab_w = tabWidthPx();
     const total = tab_w * @as(f32, @floatFromInt(n));
-    const vp = @as(f32, @floatFromInt(g_renderer.?.vp_width));
+    const layout = tabBarLayout();
+    const vp = layout.tab_area_w;
     if (vp <= 0 or total <= vp) {
         g_tab_scroll_x_px = 0;
         return;
@@ -326,6 +394,26 @@ fn ensureActiveTabVisible() void {
     if (sx < 0) sx = 0;
     if (sx > max_sx) sx = max_sx;
     g_tab_scroll_x_px = sx;
+}
+
+/// `<` / `>` 화살표 클릭 처리 (#117). viewport 한 step (= 1 탭 너비) 이동 +
+/// user_override 활성. 양 끝 clamp.
+fn scrollTabsByArrow(dir: enum { left, right }) void {
+    if (g_renderer == null) return;
+    const tab_w = tabWidthPx();
+    const total = tab_w * @as(f32, @floatFromInt(g_session.count()));
+    const layout = tabBarLayout();
+    const vp = layout.tab_area_w;
+    if (vp <= 0 or total <= vp) return;
+    const max_sx = total - vp;
+    var sx = g_tab_scroll_x_px;
+    switch (dir) {
+        .left => sx = @max(0, sx - tab_w),
+        .right => sx = @min(max_sx, sx + tab_w),
+    }
+    if (sx == g_tab_scroll_x_px) return;
+    g_tab_scroll_x_px = sx;
+    g_tab_scroll_user_override = true;
 }
 
 /// 현재 viewport / cell 크기 + 탭 수에 따른 cols/rows 재계산 후 모든 탭의
@@ -469,16 +557,16 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
         // Cmd+1..9 = 해당 인덱스 탭 활성화. M11.2.
         if (keycodeToTabIndex(kc)) |idx| {
-            _ = g_session.setActiveTab(idx);
+            if (g_session.setActiveTab(idx)) g_tab_scroll_user_override = false; // #117
             return;
         }
         // Shift+Cmd+[ / Shift+Cmd+] = 이전 / 다음 탭. M11.2.
         if (shift and kc == 0x21) {
-            _ = g_session.activatePrev();
+            if (g_session.activatePrev()) g_tab_scroll_user_override = false; // #117
             return;
         }
         if (shift and kc == 0x1E) {
-            _ = g_session.activateNext();
+            if (g_session.activateNext()) g_tab_scroll_user_override = false; // #117
             return;
         }
         // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
@@ -886,10 +974,29 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
 }
 
 const TabBarHit = struct { tab_index: usize, on_close: bool };
+const TabBarArea = enum { left_arrow, right_arrow, plus, tab_area, none };
 
-/// 탭바 영역 픽셀 좌표 → (탭 인덱스, close 버튼 hit 여부). 탭바 그리기 공식
-/// (`drawTabBar`) 의 좌표와 정확히 같은 hit rect 사용.
-fn tabBarHitTest(px: f32, py: f32) ?TabBarHit {
+/// 탭바 영역 hit-area 분기 (#117). 화살표 / + 영역에서는 별도 처리, tab_area
+/// 안에서는 `tabBarTabHitTest` 가 탭 인덱스 + close 버튼 hit 여부 계산.
+fn tabBarHitArea(px: f32, py: f32, layout: TabBarLayout) TabBarArea {
+    if (g_renderer == null) return .none;
+    const r = &g_renderer.?;
+    const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
+    if (px < 0 or py < 0 or py >= tab_bar_h) return .none;
+    if (layout.arrows_visible) {
+        if (px >= layout.left_arrow_x and px < layout.left_arrow_x + layout.arrow_w)
+            return .left_arrow;
+        if (px >= layout.right_arrow_x and px < layout.right_arrow_x + layout.arrow_w)
+            return .right_arrow;
+    }
+    if (px >= layout.plus_x and px < layout.plus_x + layout.plus_w) return .plus;
+    if (px >= layout.tab_area_x and px < layout.tab_area_x + layout.tab_area_w) return .tab_area;
+    return .none;
+}
+
+/// tab_area 안에서 px → (탭 인덱스, close 버튼 hit). 호출자가 먼저 hit-area 가
+/// `.tab_area` 인지 검사.
+fn tabBarTabHitTest(px: f32, py: f32, layout: TabBarLayout) ?TabBarHit {
     if (g_renderer == null) return null;
     const r = &g_renderer.?;
     const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
@@ -897,14 +1004,14 @@ fn tabBarHitTest(px: f32, py: f32) ?TabBarHit {
     const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
     const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
 
-    // #117 — world 좌표로 hit-test (스크롤 적용된 탭바). 화면 px → world_x.
-    const world_x = px + g_tab_scroll_x_px;
-    if (px < 0 or py < 0 or py >= tab_bar_h) return null;
+    // 탭 영역 좌표계: world_x = (px - tab_area_x) + scroll.
+    const local_x = px - layout.tab_area_x;
+    const world_x = local_x + g_tab_scroll_x_px;
+    if (world_x < 0) return null;
     const tab_index_f = world_x / tab_w_px;
     const tab_index = @as(usize, @intFromFloat(tab_index_f));
-    if (tab_index >= g_session.count()) return null; // 탭 옆 빈 영역.
+    if (tab_index >= g_session.count()) return null;
 
-    // close 버튼 hit rect — drawTabBar 의 close_x/close_y 와 동일 공식. world 기준.
     const tab_x = @as(f32, @floatFromInt(tab_index)) * tab_w_px;
     const close_x_min = tab_x + tab_w_px - close_size_px - tab_pad_px;
     const close_x_max = close_x_min + close_size_px;
@@ -967,30 +1074,54 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         }
     }
 
-    // 탭바 영역 클릭 (멀티탭 시) → 탭 전환 / close / drag-begin / rename.
+    // 탭바 영역 클릭 (멀티탭 시) → 화살표 / + / 탭 전환 / close / drag-begin /
+    // rename.
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
-        if (tabBarHitTest(xy.x, xy.y)) |hit| {
-            const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
-            const click_count = get_count(event, objc.sel("clickCount"));
-            // 더블클릭 (close 버튼 외) → rename 시작.
-            if (click_count >= 2 and !hit.on_close) {
-                if (hit.tab_index < g_session.count()) {
-                    g_rename.begin(hit.tab_index, g_session.tabs.items[hit.tab_index].title());
+        const layout = tabBarLayout();
+        switch (tabBarHitArea(xy.x, xy.y, layout)) {
+            .left_arrow => {
+                if (layout.left_enabled) scrollTabsByArrow(.left);
+                return;
+            },
+            .right_arrow => {
+                if (layout.right_enabled) scrollTabsByArrow(.right);
+                return;
+            },
+            .plus => {
+                handleNewTab();
+                return;
+            },
+            .none => {
+                // 탭바 영역인데 어떤 버튼/탭에도 속하지 않음 (이론상 거의 없음). 무시.
+                return;
+            },
+            .tab_area => {
+                if (tabBarTabHitTest(xy.x, xy.y, layout)) |hit| {
+                    const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+                    const click_count = get_count(event, objc.sel("clickCount"));
+                    // 더블클릭 (close 버튼 외) → rename 시작.
+                    if (click_count >= 2 and !hit.on_close) {
+                        if (hit.tab_index < g_session.count()) {
+                            g_rename.begin(hit.tab_index, g_session.tabs.items[hit.tab_index].title());
+                        }
+                        return;
+                    }
+                    if (hit.on_close) {
+                        handleTabBarClick(hit);
+                        return;
+                    }
+                    // 본체 클릭 → 활성 전환 + drag-begin. DragState world 좌표.
+                    _ = g_session.setActiveTab(hit.tab_index);
+                    g_tab_scroll_user_override = false;
+                    const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale);
+                    const world_x: f32 = (xy.x - layout.tab_area_x) + g_tab_scroll_x_px;
+                    _ = g_drag.begin(@intFromFloat(world_x), tab_w_int, g_session.count());
+                    return;
                 }
+                // tab_area 안인데 탭에는 안 맞음 (마지막 탭 우측 빈 공간 등). 무시.
                 return;
-            }
-            if (hit.on_close) {
-                handleTabBarClick(hit);
-                return;
-            }
-            // 본체 클릭 → 즉시 활성 전환 + drag-begin. drag 가 5px 이상 이동
-            // 안 하면 mouseUp 에서 그냥 click 으로 처리 (= 활성 전환만 효과).
-            // #117 — DragState 는 world 좌표 (`xy.x + tab_scroll_x`) 사용.
-            _ = g_session.setActiveTab(hit.tab_index);
-            const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale);
-            _ = g_drag.begin(@intFromFloat(xy.x + g_tab_scroll_x_px), tab_w_int, g_session.count());
-            return;
+            },
         }
     }
     const cell = eventToCell(self_view, event) orelse return;
@@ -1022,24 +1153,27 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     // 탭 drag (#111 M11.6a) 가 활성이면 drag 만 처리 — cell selection 무관.
     if (g_drag.active) {
         const xy = eventToWindowPx(self_view, event);
-        // #117 drag auto-scroll. mouse_x 가 viewport 좌/우 끝 가까이면 scroll
-        // 한 step 이동. drag.move 에는 *갱신된* world 좌표 (`mouse + scroll`).
+        // #117 drag auto-scroll. mouse_x 가 *탭 영역* 의 좌/우 끝 가까이면 scroll
+        // 한 step 이동. drag.move 에는 *갱신된* world 좌표 (= local + scroll).
+        const layout = tabBarLayout();
         if (g_renderer) |*r| {
-            const tab_w = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
+            const tab_w = tabWidthPx();
             const total = tab_w * @as(f32, @floatFromInt(g_session.count()));
-            const vp = @as(f32, @floatFromInt(r.vp_width));
+            const vp = layout.tab_area_w;
             if (vp > 0 and total > vp) {
                 const max_sx = total - vp;
                 const edge: f32 = 32 * r.scale;
                 const step: f32 = 16 * r.scale;
-                if (xy.x < edge and g_tab_scroll_x_px > 0) {
+                const local_x = xy.x - layout.tab_area_x;
+                if (local_x < edge and g_tab_scroll_x_px > 0) {
                     g_tab_scroll_x_px = @max(0, g_tab_scroll_x_px - step);
-                } else if (xy.x > vp - edge and g_tab_scroll_x_px < max_sx) {
+                } else if (local_x > vp - edge and g_tab_scroll_x_px < max_sx) {
                     g_tab_scroll_x_px = @min(max_sx, g_tab_scroll_x_px + step);
                 }
             }
         }
-        _ = g_drag.move(@intFromFloat(xy.x + g_tab_scroll_x_px));
+        const world_x = (xy.x - layout.tab_area_x) + g_tab_scroll_x_px;
+        _ = g_drag.move(@intFromFloat(world_x));
         return;
     }
 
@@ -1065,6 +1199,8 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
                 _ = g_session.reorderTabs(req.from, req.to) catch |err| {
                     macos_log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
                 };
+                // drag reorder 끝 — 활성 탭 위치 변경, ensure 재가동 (#117).
+                g_tab_scroll_user_override = false;
             }
         } else {
             g_drag.reset();
@@ -1181,6 +1317,8 @@ fn handleNewTab() void {
     };
     // 1 → 2 전환 시 탭바 등장 → cell 영역 줄어듦. 모든 탭 resize.
     syncTerminalGeometry();
+    // 새 탭이 활성됨 — ensure 재가동 (#117).
+    g_tab_scroll_user_override = false;
 }
 
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
@@ -1767,9 +1905,9 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     if (g_renderer == null) return;
     const tab = g_session.activeTab() orelse return;
 
-    // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중에는 skip
-    // (`tildazMouseDragged` 의 auto-scroll 이 직접 갱신).
-    if (!g_drag.active) ensureActiveTabVisible();
+    // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag / 사용자 화살표
+    // override 중에는 skip.
+    if (!g_drag.active and !g_tab_scroll_user_override) ensureActiveTabVisible();
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
@@ -1803,6 +1941,19 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     else
         null;
 
+    const layout = tabBarLayout();
+    const layout_for_render: macos_metal.TabBarLayout = .{
+        .tab_area_x = layout.tab_area_x,
+        .tab_area_w = layout.tab_area_w,
+        .arrows_visible = layout.arrows_visible,
+        .arrow_w = layout.arrow_w,
+        .plus_w = layout.plus_w,
+        .plus_x = layout.plus_x,
+        .left_arrow_x = layout.left_arrow_x,
+        .right_arrow_x = layout.right_arrow_x,
+        .left_enabled = layout.left_enabled,
+        .right_enabled = layout.right_enabled,
+    };
     g_renderer.?.renderFrame(
         g_metal_layer,
         &tab.terminal,
@@ -1816,6 +1967,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         rename_for_render,
         drag_for_render,
         g_tab_scroll_x_px,
+        layout_for_render,
     );
 }
 
