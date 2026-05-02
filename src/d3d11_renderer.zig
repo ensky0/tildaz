@@ -515,8 +515,11 @@ pub const D3d11Renderer = struct {
         close_btn_size: c_int,
         tab_padding: c_int,
         dragged_tab: ?usize,
+        /// world 좌표 (#117). 화면 좌표는 `drag_x - tab_scroll_x`.
         drag_x: c_int,
         rename_state: ?RenameState,
+        /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값.
+        tab_scroll_x: c_int,
     ) void {
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
@@ -561,11 +564,20 @@ pub const D3d11Renderer = struct {
         bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = ui_metrics.TAB_BAR_BG };
         bg_count += 1;
 
+        // #117 — 모든 탭 x 는 *world* 좌표 (`i × tw` 또는 drag 시 mouse world)
+        // 에서 `tab_scroll_x` 를 빼서 화면 좌표로 변환. drag_x 는 호출처가 이미
+        // world 로 보낸다 (mouse_x + scroll 형태로). viewport 밖 탭은 음수 x /
+        // client_w 초과 x 로 그대로 그리고 GPU 가 clip.
+        const sx: f32 = @floatFromInt(tab_scroll_x);
+
         // Tab backgrounds
         for (0..tab_count) |i| {
             if (bg_count >= 128) break;
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
-            const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
+            const tab_x: f32 = if (is_dragged)
+                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx
+            else
+                @as(f32, @floatFromInt(i)) * tw - sx;
             const c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
             bg_instances[bg_count] = .{
                 .pos = .{ tab_x + 1, 2 },
@@ -586,7 +598,10 @@ pub const D3d11Renderer = struct {
         var cursor_count: u32 = 0;
         for (0..tab_count) |i| {
             const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
-            const tab_x: f32 = if (is_dragged) @as(f32, @floatFromInt(drag_x)) - tw / 2.0 else @as(f32, @floatFromInt(i)) * tw;
+            const tab_x: f32 = if (is_dragged)
+                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx
+            else
+                @as(f32, @floatFromInt(i)) * tw - sx;
 
             const is_renaming = if (rename_state) |rs| (i == rs.tab_index) else false;
             const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i].ptr[0..tab_titles[i].len];
