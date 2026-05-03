@@ -463,24 +463,32 @@ pub const Config = struct {
         // 해도 no-op).
     }
 
-    /// Windows 만 사용하는 helper — UTF-16 family name (Win32 CreateFontW 등).
+    /// Windows 만 사용하는 helper — UTF-8 `font_families[index]` 를 Win32 가
+    /// 받는 UTF-16 null-terminated string 으로 변환. chain entry 별 별도 static
+    /// buffer 라 process 전체 lifetime 동안 안정적인 포인터 (호출처가 보관해도
+    /// 안전). DWriteFontContext / 검증 loop 가 이 포인터를 들고 있어도 OK.
+    ///
+    /// 이전 버전은 6 개 hardcoded 폰트 이름만 if-eql 로 인식하고 그 외엔 모두
+    /// `"Consolas"` literal 반환 — 사용자가 `"JetBrains Mono"` 같은 일반 코딩
+    /// 폰트를 적어도 시스템에 설치되어 있는지와 무관하게 결과는 Consolas. 같은
+    /// 패턴이 `shellUtf16` 에도 있었고 commit `6c2e243` 에서 fix. font 도 같이.
     pub fn fontFamilyUtf16(self: *const Config, index: u8) [*:0]const WCHAR {
         if (!is_windows) @compileError("fontFamilyUtf16 is Windows-only");
-        const family = if (index < self.font_family_count) self.font_families[index] else "Consolas";
-        if (std.mem.eql(u8, family, "Consolas"))
+        const S = struct {
+            var bufs: [MAX_FONT_FAMILIES][512]u16 = undefined;
+        };
+        if (index >= self.font_family_count or index >= MAX_FONT_FAMILIES) {
             return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
-        if (std.mem.eql(u8, family, "Cascadia Code"))
-            return std.unicode.utf8ToUtf16LeStringLiteral("Cascadia Code");
-        if (std.mem.eql(u8, family, "Cascadia Mono"))
-            return std.unicode.utf8ToUtf16LeStringLiteral("Cascadia Mono");
-        if (std.mem.eql(u8, family, "Segoe UI Symbol"))
-            return std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI Symbol");
-        if (std.mem.eql(u8, family, "Segoe UI Emoji"))
-            return std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI Emoji");
-        if (std.mem.eql(u8, family, "Malgun Gothic"))
-            return std.unicode.utf8ToUtf16LeStringLiteral("Malgun Gothic");
-        // 기타 — fallback 으로 Consolas. 진짜 dynamic UTF-16 변환은 host 가 별도.
-        return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
+        }
+        const family = self.font_families[index];
+        const buf = &S.bufs[index];
+        const reserve_for_null = 1;
+        const max_in = buf.len - reserve_for_null;
+        const written = std.unicode.utf8ToUtf16Le(buf[0..max_in], family) catch {
+            return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
+        };
+        buf[written] = 0;
+        return buf[0..written :0].ptr;
     }
 
     /// Windows 만 — `config.shell` (UTF-8) 을 `CreateProcessW` 가 받는 UTF-16
