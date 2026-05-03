@@ -333,6 +333,13 @@ pub const Window = struct {
     expected_set: bool = false,
     layout_transition_active: bool = false,
 
+    /// WM_KEYDOWN 가 소비한 키가 TranslateMessage 로 동시에 WM_CHAR (Enter `\r`,
+    /// Escape `\x1b`, Backspace `\x08`) 를 큐에 넣는다. KEYDOWN 핸들러의 `return 0`
+    /// 만으로는 그 WM_CHAR 가 막히지 않아 PTY 로 새어 들어감 (예: 탭바 rename
+    /// commit 후 prompt 에 빈 줄 입력). KEYDOWN 에서 해당 키를 소비하면 이 flag
+    /// 를 set, WM_CHAR 진입 즉시 swallow + clear.
+    swallow_next_wm_char: bool = false,
+
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
     const VK_F1: UINT = 0x70;
@@ -959,6 +966,13 @@ pub const Window = struct {
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_CHAR => {
+                // KEYDOWN 가 같은 키를 소비했으면 짝꿍 WM_CHAR 도 swallow.
+                // (rename Enter / Escape commit/cancel 후 PTY 로 \r / \x1b 새는
+                // 사고 방지 — 소비자 입장에선 한 번의 keypress.)
+                if (self.swallow_next_wm_char) {
+                    self.swallow_next_wm_char = false;
+                    return 0;
+                }
                 if (self.dispatchAppEvent(.{ .text_input = @intCast(wParam) })) return 0;
                 // Ignore WM_CHAR generated from Ctrl+Shift shortcuts
                 // (e.g. Ctrl+Shift+W sends 0x17 which would kill-word in shell)
@@ -991,7 +1005,16 @@ pub const Window = struct {
                     else => null,
                 };
                 if (maybe_key) |key| {
-                    if (self.dispatchAppEvent(.{ .key_input = key })) return 0;
+                    if (self.dispatchAppEvent(.{ .key_input = key })) {
+                        // Enter / Escape / Backspace 는 TranslateMessage 가
+                        // 짝꿍 WM_CHAR 를 큐에 넣는다 — 소비된 keydown 의 의도가
+                        // PTY 로 새지 않도록 다음 WM_CHAR 1 회 swallow.
+                        switch (wParam) {
+                            0x0D, 0x1B, 0x08 => self.swallow_next_wm_char = true,
+                            else => {},
+                        }
+                        return 0;
+                    }
                 }
                 // Ctrl+Shift shortcuts
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
