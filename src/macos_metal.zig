@@ -15,6 +15,7 @@ const ui_metrics = @import("ui_metrics.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
+const display_width = @import("display_width.zig");
 
 const MAX_INSTANCES: u32 = 32768;
 
@@ -750,7 +751,11 @@ pub const MetalRenderer = struct {
             var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
             while (iter.nextCodepoint()) |cp| {
                 if (text_n >= MAX_TEXT) break;
-                if (text_x - text_x_start + cw > max_text_w_px) break;
+                // wide char (한글/CJK/Fullwidth/주요 emoji) 는 cell 2 개. 다음
+                // 글리프와 겹치지 않도록 codepoint 마다 advance 갱신.
+                const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
+                const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
+                if (text_x - text_x_start + advance > max_text_w_px) break;
 
                 // cursor 가 이 byte 위치에 와 있으면 1px vertical bar.
                 if (cursor_byte) |cb| {
@@ -769,12 +774,12 @@ pub const MetalRenderer = struct {
                 byte_idx += cp_len;
 
                 const result = self.font.resolveGlyph(@intCast(cp)) orelse {
-                    text_x += cw;
+                    text_x += advance;
                     continue;
                 };
                 const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                     if (result.owned) ct.CFRelease(result.font);
-                    text_x += cw;
+                    text_x += advance;
                     continue;
                 };
                 if (result.owned) ct.CFRelease(result.font);
@@ -794,7 +799,7 @@ pub const MetalRenderer = struct {
                     };
                     text_n += 1;
                 }
-                text_x += cw;
+                text_x += advance;
             }
 
             // 끝에 cursor (text 가 cursor 위치를 안 지났을 때 — 예: cursor == title.len).
@@ -814,23 +819,26 @@ pub const MetalRenderer = struct {
                 var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
                 while (pre_iter.nextCodepoint()) |cp| {
                     if (text_n >= MAX_TEXT or bg_n >= MAX_BG) break;
-                    if (text_x - text_x_start + cw > max_text_w_px) break;
+                    const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
+                    const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
+                    if (text_x - text_x_start + advance > max_text_w_px) break;
 
-                    // 보라색 배경 (cell preedit 과 같은 색).
+                    // 보라색 배경 (cell preedit 과 같은 색). wide char 는 advance
+                    // 폭 (2 cell) 으로 배경도 같이 늘림.
                     bg_buf[bg_n] = .{
                         .pos = .{ text_x, text_y_top },
-                        .size = .{ cw, ch },
+                        .size = .{ advance, ch },
                         .color = preedit_bg_color,
                     };
                     bg_n += 1;
 
                     const result = self.font.resolveGlyph(@intCast(cp)) orelse {
-                        text_x += cw;
+                        text_x += advance;
                         continue;
                     };
                     const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                         if (result.owned) ct.CFRelease(result.font);
-                        text_x += cw;
+                        text_x += advance;
                         continue;
                     };
                     if (result.owned) ct.CFRelease(result.font);
@@ -850,7 +858,7 @@ pub const MetalRenderer = struct {
                         };
                         text_n += 1;
                     }
-                    text_x += cw;
+                    text_x += advance;
                 }
             }
 

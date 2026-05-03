@@ -11,6 +11,7 @@ const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
+const display_width = @import("display_width.zig");
 
 const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
@@ -627,7 +628,10 @@ pub const D3d11Renderer = struct {
             // Max text width: tab width - close button - padding on both sides - gap before close btn
             const max_text_w = tw - cbs - pad * 3;
             const ellipsis_w = cw * 3; // width of "..."
-            const needs_truncate = !is_renaming and (@as(f32, @floatFromInt(title.len)) * cw > max_text_w);
+            // 탭 제목의 실제 시각 폭 — wide char (한글/CJK/Fullwidth/주요 emoji)
+            // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
+            const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
+            const needs_truncate = !is_renaming and (total_text_w > max_text_w);
 
             var x_off: f32 = 0;
             var byte_idx: usize = 0;
@@ -641,8 +645,10 @@ pub const D3d11Renderer = struct {
             while (cp_iter.nextCodepoint()) |codepoint| {
                 if (text_count >= 510) break;
                 const cp_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
+                const cp_w_cells: u8 = display_width.codepointWidth(codepoint);
+                const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
                 // Truncate with "..." if text would overflow
-                if (needs_truncate and x_off + cw > max_text_w - ellipsis_w) {
+                if (needs_truncate and x_off + advance > max_text_w - ellipsis_w) {
                     // Render "..."
                     for (0..3) |_| {
                         if (text_count >= 512) break;
@@ -682,12 +688,12 @@ pub const D3d11Renderer = struct {
                 }
                 byte_idx += cp_len;
                 const result = self.font.resolveGlyph(codepoint) orelse {
-                    x_off += cw;
+                    x_off += advance;
                     continue;
                 };
                 const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
-                    x_off += cw;
+                    x_off += advance;
                     continue;
                 };
                 if (result.owned) _ = result.face.vtable.Release(result.face);
@@ -703,7 +709,7 @@ pub const D3d11Renderer = struct {
                     };
                     text_count += 1;
                 }
-                x_off += cw;
+                x_off += advance;
             }
             // Cursor at end of text (only if not truncated)
             if (!truncated) {
