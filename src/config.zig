@@ -17,7 +17,6 @@ const paths = @import("paths.zig");
 
 const WCHAR = u16;
 
-const DEFAULT_THEME = "Tilda";
 pub const MAX_FONT_FAMILIES = 8;
 
 const is_windows = builtin.os.tag == .windows;
@@ -169,75 +168,127 @@ fn eqIc(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
 }
 
-const DEFAULT_HOTKEY: Hotkey = if (is_windows)
-    .{ .vkey = 0x70, .modifiers = 0 }
-else
-    .{ .keycode = 0x7A, .modifiers = 0 };
+// =============================================================================
+// Defaults — config 의 *모든* default 값 단일 source of truth.
+//
+// Win 과 Mac 에서 schema (키 set / 중첩 구조 / value type) 는 동일하고 *값* 만
+// 일부 OS-specific (font.family / font.size / cell_width / line_height /
+// shell). 두 OS 의 default 를 같은 struct 의 if-else 분기 + 같은 필드 순서로
+// 나란히 두어서 한눈에 비교 / 편집 가능.
+//
+// 이 한 곳만 고치면:
+//   (a) `DEFAULT_CONFIG_JSON` — `std.fmt.comptimePrint` 로 자동 생성. 첫 실행
+//       시 디스크 (`%APPDATA%\tildaz\config.json` 등) 에 저장됨 + parse() 의
+//       `validateStructure` 가 schema 검증 ground truth 로 사용.
+//   (b) `Config` struct 의 field initializer 가 참조하는 `default_*` const 도
+//       모두 같은 Defaults 에서 derive — disk 와 memory 가 자동 sync.
+//
+// 이전엔 JSON literal + `DEFAULT_FONT_FAMILIES` + `default_font_size` /
+// `default_shell` 등 6+ 곳에 default 값이 흩어져 한쪽만 고치면 disk vs memory
+// default 가 어긋나는 잠재 버그.
+// =============================================================================
 
-// --- DEFAULT_CONFIG_JSON (per-OS) ---
+const Defaults = if (is_windows) struct {
+    pub const dock_position: []const u8 = "top";
+    pub const width: u8 = 50;
+    pub const height: u8 = 100;
+    pub const offset: u8 = 100;
+    /// JSON 은 0..100 percent. 메모리 alpha (0..255) 변환은 default_opacity_alpha 가 처리.
+    pub const opacity_pct: u8 = 100;
+    pub const font_family: []const []const u8 = &.{"Cascadia Code"};
+    pub const font_size: u8 = 19;
+    pub const cell_width: f32 = 1.1;
+    pub const line_height: f32 = 0.95;
+    pub const theme: []const u8 = "Tilda";
+    pub const shell: []const u8 = "cmd.exe";
+    pub const hotkey: []const u8 = "f1";
+    pub const auto_start: bool = true;
+    pub const hidden_start: bool = false;
+    pub const max_scroll_lines: u32 = 100_000;
+} else struct {
+    pub const dock_position: []const u8 = "top";
+    pub const width: u8 = 50;
+    pub const height: u8 = 100;
+    pub const offset: u8 = 100;
+    pub const opacity_pct: u8 = 100;
+    pub const font_family: []const []const u8 = &.{"Menlo"};
+    pub const font_size: u8 = 15;
+    pub const cell_width: f32 = 1.0;
+    pub const line_height: f32 = 1.1;
+    pub const theme: []const u8 = "Tilda";
+    /// 빈 문자열 = host 가 `$SHELL` env / `/bin/zsh` fallback.
+    pub const shell: []const u8 = "";
+    pub const hotkey: []const u8 = "f1";
+    pub const auto_start: bool = true;
+    pub const hidden_start: bool = false;
+    pub const max_scroll_lines: u32 = 100_000;
+};
 
-/// Single source of truth — schema 의 키 / 중첩 구조 / value type 모두 이
-/// 한 JSON 이 정의. Windows 와 macOS 는 default *값* 만 다름 (font.family /
-/// font.size / cell_width / line_height / shell). schema 자체는 동일.
-pub const DEFAULT_CONFIG_JSON: []const u8 = if (is_windows)
-    \\{
-    \\  "window": {
-    \\    "dock_position": "top",
-    \\    "width": 50,
-    \\    "height": 100,
-    \\    "offset": 100,
-    \\    "opacity": 100
-    \\  },
-    \\  "font": {
-    \\    "family": ["Cascadia Code", "Malgun Gothic", "Segoe UI Symbol"],
-    \\    "size": 19,
-    \\    "cell_width": 1.1,
-    \\    "line_height": 0.95
-    \\  },
-    \\  "theme": "Tilda",
-    \\  "shell": "cmd.exe",
-    \\  "hotkey": "f1",
-    \\  "auto_start": true,
-    \\  "hidden_start": false,
-    \\  "max_scroll_lines": 100000
-    \\}
-    \\
-else
-    \\{
-    \\  "window": {
-    \\    "dock_position": "top",
-    \\    "width": 50,
-    \\    "height": 100,
-    \\    "offset": 100,
-    \\    "opacity": 100
-    \\  },
-    \\  "font": {
-    \\    "family": ["Menlo"],
-    \\    "size": 15,
-    \\    "cell_width": 1.0,
-    \\    "line_height": 1.1
-    \\  },
-    \\  "theme": "Tilda",
-    \\  "shell": "",
-    \\  "hotkey": "f1",
-    \\  "auto_start": true,
-    \\  "hidden_start": false,
-    \\  "max_scroll_lines": 100000
-    \\}
-    \\
-;
+/// `Defaults` 로부터 자동 생성된 JSON 템플릿. 첫 실행 시 디스크에 저장 + schema
+/// 검증 (`validateStructure`) ground truth.
+pub const DEFAULT_CONFIG_JSON: []const u8 = blk: {
+    @setEvalBranchQuota(100_000);
+    // font.family JSON array literal — comptime concat.
+    var family_json: []const u8 = "[";
+    for (Defaults.font_family, 0..) |f, i| {
+        if (i > 0) family_json = family_json ++ ", ";
+        family_json = family_json ++ "\"" ++ f ++ "\"";
+    }
+    family_json = family_json ++ "]";
+    break :blk std.fmt.comptimePrint(
+        \\{{
+        \\  "window": {{
+        \\    "dock_position": "{s}",
+        \\    "width": {d},
+        \\    "height": {d},
+        \\    "offset": {d},
+        \\    "opacity": {d}
+        \\  }},
+        \\  "font": {{
+        \\    "family": {s},
+        \\    "size": {d},
+        \\    "cell_width": {d},
+        \\    "line_height": {d}
+        \\  }},
+        \\  "theme": "{s}",
+        \\  "shell": "{s}",
+        \\  "hotkey": "{s}",
+        \\  "auto_start": {},
+        \\  "hidden_start": {},
+        \\  "max_scroll_lines": {d}
+        \\}}
+        \\
+    , .{
+        Defaults.dock_position,
+        Defaults.width,
+        Defaults.height,
+        Defaults.offset,
+        Defaults.opacity_pct,
+        family_json,
+        Defaults.font_size,
+        Defaults.cell_width,
+        Defaults.line_height,
+        Defaults.theme,
+        Defaults.shell,
+        Defaults.hotkey,
+        Defaults.auto_start,
+        Defaults.hidden_start,
+        Defaults.max_scroll_lines,
+    });
+};
 
-// --- Config struct ---
-
-const default_font_size: u8 = if (is_windows) 19 else 15;
-const default_cell_width: f32 = if (is_windows) 1.1 else 1.0;
-const default_line_height: f32 = if (is_windows) 0.95 else 1.1;
-const default_shell: []const u8 = if (is_windows) "cmd.exe" else "";
-
-const DEFAULT_FONT_FAMILIES: []const []const u8 = if (is_windows)
-    &[_][]const u8{ "Cascadia Code", "Malgun Gothic", "Segoe UI Symbol" }
-else
-    &[_][]const u8{"Menlo"};
+// `Defaults` 의 string / int 값을 Config struct 가 보관하는 native type 으로
+// 변환 (DockPosition enum / Hotkey struct / Theme pointer / alpha u8).
+const default_dock_position: DockPosition = DockPosition.fromString(Defaults.dock_position) orelse unreachable;
+/// JSON 은 percent (0..100), 메모리는 alpha (0..255). `100` percent → `255` alpha.
+const default_opacity_alpha: u8 = @intCast(@as(u32, Defaults.opacity_pct) * 255 / 100);
+const default_theme: ?*const themes.Theme = themes.findTheme(Defaults.theme);
+const default_hotkey: Hotkey = Hotkey.fromString(Defaults.hotkey) orelse unreachable;
+const default_font_size: u8 = Defaults.font_size;
+const default_cell_width: f32 = Defaults.cell_width;
+const default_line_height: f32 = Defaults.line_height;
+const default_shell: []const u8 = Defaults.shell;
+const DEFAULT_FONT_FAMILIES: []const []const u8 = Defaults.font_family;
 
 fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
     var arr: [MAX_FONT_FAMILIES][]const u8 = undefined;
@@ -248,20 +299,20 @@ fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
 }
 
 pub const Config = struct {
-    dock_position: DockPosition = .top,
-    width: u8 = 50,
-    height: u8 = 100,
-    offset: u8 = 100,
-    /// internal 0..255. JSON `window.opacity` 는 0..100 percent — parse 시 매핑.
-    opacity: u8 = 255,
-    theme: ?*const themes.Theme = themes.findTheme(DEFAULT_THEME),
-    hotkey: Hotkey = DEFAULT_HOTKEY,
+    dock_position: DockPosition = default_dock_position,
+    width: u8 = Defaults.width,
+    height: u8 = Defaults.height,
+    offset: u8 = Defaults.offset,
+    /// internal 0..255 alpha. JSON `window.opacity` 는 0..100 percent — parse 시 매핑.
+    opacity: u8 = default_opacity_alpha,
+    theme: ?*const themes.Theme = default_theme,
+    hotkey: Hotkey = default_hotkey,
     /// Shell path. macOS 는 빈 문자열이면 host 가 `$SHELL` env / `/bin/zsh` fallback.
     /// Windows 는 default `cmd.exe`.
     shell: []const u8 = default_shell,
-    auto_start: bool = true,
-    hidden_start: bool = false,
-    max_scroll_lines: u32 = 100_000,
+    auto_start: bool = Defaults.auto_start,
+    hidden_start: bool = Defaults.hidden_start,
+    max_scroll_lines: u32 = Defaults.max_scroll_lines,
     font_size: u8 = default_font_size,
     /// cell width scale (was `cell_width` on Windows / `cell_width_scale` on macOS).
     cell_width: f32 = default_cell_width,
