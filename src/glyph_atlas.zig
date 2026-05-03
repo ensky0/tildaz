@@ -68,6 +68,9 @@ pub const GlyphAtlas = struct {
     d2d_factory: ?*d2d.ID2D1Factory = null,
     atlas_dxgi_surface: ?*d3d.IDXGISurface = null,
     atlas_d2d_rt: ?*d2d.ID2D1RenderTarget = null,
+    /// Win Terminal 동등 — color emoji layer 마다 brush 새로 만들지 않고 atlas
+    /// init 시 1번 흰색으로 만든 brush 를 SetColor 로 layer color 갱신해서 재사용.
+    atlas_brush: ?*d2d.ID2D1SolidColorBrush = null,
 
     // Temporary buffers for glyph rasterization (reused, heap-allocated)
     temp_buf: []u8, // RGBA output: 256*256*4 bytes
@@ -176,6 +179,16 @@ pub const GlyphAtlas = struct {
             _ = s.Release();
         };
 
+        // Reusable solid brush (#137-6) — atlas init 시 흰색으로 한 번 생성,
+        // layer 마다 SetColor 만 호출해서 재사용. brush 매번 생성/release 비용
+        // 제거. Win Terminal `_emojiBrush` (BackendD3D.cpp:892) 동등.
+        var atlas_brush: ?*d2d.ID2D1SolidColorBrush = null;
+        if (atlas_d2d_rt) |rt| {
+            const white = d2d.D2D1_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 1 };
+            _ = d2d.renderTargetCreateSolidColorBrush(rt, &white, &atlas_brush);
+        }
+        errdefer if (atlas_brush) |b| d2d.brushRelease(b);
+
         return .{
             .alloc = alloc,
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
@@ -193,10 +206,12 @@ pub const GlyphAtlas = struct {
             .d2d_factory = d2d_factory,
             .atlas_dxgi_surface = atlas_dxgi,
             .atlas_d2d_rt = atlas_d2d_rt,
+            .atlas_brush = atlas_brush,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
+        if (self.atlas_brush) |b| d2d.brushRelease(b);
         if (self.atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
         if (self.atlas_dxgi_surface) |s| _ = s.Release();
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
@@ -370,8 +385,9 @@ pub const GlyphAtlas = struct {
     /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
     /// `rasterize` (mono ClearType) 로 fall-through.
     fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        // atlas D2D RT + IDWriteFactory2 둘 다 있어야 컬러 path 가능.
+        // atlas D2D RT + brush + IDWriteFactory2 셋 다 있어야 컬러 path 가능.
         const atlas_rt = self.atlas_d2d_rt orelse return null;
+        const brush = self.atlas_brush orelse return null;
         var factory2: ?*dw.IDWriteFactory2 = null;
         if (self.dw_factory.QueryInterface(&dw.IID_IDWriteFactory2, @ptrCast(&factory2)) < 0) return null;
         defer _ = factory2.?.Release();
@@ -503,16 +519,15 @@ pub const GlyphAtlas = struct {
 
                 // layer 색. NO_PALETTE 면 사용자 fg 사용해야 하지만 atlas cache
                 // 는 fg-independent 라 흰색 대체 (대부분 emoji 는 모든 layer 에
-                // palette 색 정의).
+                // palette 색 정의). brush 는 atlas init 시 생성한 것 SetColor 로
+                // 재사용.
                 const layer_color = d2d.D2D1_COLOR_F{
                     .r = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.r,
                     .g = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.g,
                     .b = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.b,
                     .a = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.a,
                 };
-                var brush: ?*d2d.ID2D1SolidColorBrush = null;
-                if (d2d.renderTargetCreateSolidColorBrush(atlas_rt, &layer_color, &brush) < 0 or brush == null) continue;
-                defer d2d.brushRelease(brush.?);
+                d2d.brushSetColor(brush, &layer_color);
 
                 const layer_baseline = d2d.D2D_POINT_2F{
                     .x = base_x + cr.baseline_origin_x,
@@ -522,7 +537,7 @@ pub const GlyphAtlas = struct {
                     atlas_rt,
                     layer_baseline,
                     @ptrCast(&cr.glyph_run),
-                    d2d.brushAsBrush(brush.?),
+                    d2d.brushAsBrush(brush),
                     dw.DWRITE_MEASURING_MODE_NATURAL,
                 );
             }

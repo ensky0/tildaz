@@ -261,18 +261,36 @@ pub fn renderTargetPopAxisAlignedClip(self: *ID2D1RenderTarget) void {
     vt.*.PopAxisAlignedClip(self);
 }
 
-// ID2D1SolidColorBrush extends ID2D1Brush — Release 만 사용.
-const ID2D1BrushVTable = extern struct {
+// ID2D1SolidColorBrush extends ID2D1Brush extends ID2D1Resource extends IUnknown.
+// vtable order: 0..2 IUnknown, 3 GetFactory (Resource), 4 SetOpacity (Brush),
+// 5 SetTransform, 6 GetOpacity, 7 GetTransform, 8 SetColor (SolidColorBrush),
+// 9 GetColor.
+const ID2D1SolidColorBrushVTable = extern struct {
     QueryInterface: *const anyopaque,
     AddRef: *const anyopaque,
-    Release: *const fn (*ID2D1Brush) callconv(.c) u32,
+    Release: *const fn (*ID2D1SolidColorBrush) callconv(.c) u32,
+    GetFactory: *const anyopaque,
+    SetOpacity: *const anyopaque,
+    SetTransform: *const anyopaque,
+    GetOpacity: *const anyopaque,
+    GetTransform: *const anyopaque,
+    /// 8: SetColor(*const D2D1_COLOR_F)
+    SetColor: *const fn (*ID2D1SolidColorBrush, *const D2D1_COLOR_F) callconv(.c) void,
+    GetColor: *const anyopaque,
 };
 
 pub fn brushRelease(self: *ID2D1SolidColorBrush) void {
-    const vt: *const *const ID2D1BrushVTable = @ptrCast(@alignCast(self));
-    _ = vt.*.Release(@ptrCast(self));
+    const vt: *const *const ID2D1SolidColorBrushVTable = @ptrCast(@alignCast(self));
+    _ = vt.*.Release(self);
 }
 
 pub fn brushAsBrush(self: *ID2D1SolidColorBrush) *ID2D1Brush {
     return @ptrCast(self);
+}
+
+/// SolidColorBrush 의 색을 변경 (재사용용). Win Terminal 처럼 brush 한 번 만들고
+/// layer 마다 SetColor 만 호출.
+pub fn brushSetColor(self: *ID2D1SolidColorBrush, color: *const D2D1_COLOR_F) void {
+    const vt: *const *const ID2D1SolidColorBrushVTable = @ptrCast(@alignCast(self));
+    vt.*.SetColor(self, color);
 }
