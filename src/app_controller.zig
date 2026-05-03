@@ -409,6 +409,11 @@ pub const App = struct {
 
     pub fn handleSwitchTab(self: *App, index: usize) void {
         if (self.session.setActiveTab(index)) {
+            // 활성 탭 변경 — 사용자 화살표 override 해제. 이 시점부터
+            // ensureActiveTabVisible 가 다시 동작해 viewport 가 활성 탭을
+            // 따라감 (Alt+N 으로 화살표 너머의 탭으로 이동했을 때 viewport
+            // 가 그 탭이 보이는 위치로 minimum 이동). handleTabClick 동일 패턴.
+            self.tab_scroll_user_override = false;
             self.invalidateRenderer();
         }
     }
@@ -748,11 +753,17 @@ pub const App = struct {
                         return true;
                     },
                     .next_tab => {
-                        if (self.session.activateNext()) self.invalidateRenderer();
+                        if (self.session.activateNext()) {
+                            self.tab_scroll_user_override = false; // #117 — 활성 탭 보이도록 ensure 재가동
+                            self.invalidateRenderer();
+                        }
                         return true;
                     },
                     .prev_tab => {
-                        if (self.session.activatePrev()) self.invalidateRenderer();
+                        if (self.session.activatePrev()) {
+                            self.tab_scroll_user_override = false;
+                            self.invalidateRenderer();
+                        }
                         return true;
                     },
                     .copy_selection => {
