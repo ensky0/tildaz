@@ -1043,22 +1043,20 @@ pub const Window = struct {
                         _ = self.dispatchAppEvent(.{ .shortcut = .show_about });
                         return 0;
                     }
+                    // Ctrl+Shift+[ (VK_OEM_4) / Ctrl+Shift+] (VK_OEM_6):
+                    // 이전 / 다음 탭 (#125 — macOS Shift+Cmd+[ / ] 와 동등 키 pair).
+                    if (wParam == 0xDB) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .prev_tab });
+                        return 0;
+                    }
+                    if (wParam == 0xDD) {
+                        _ = self.dispatchAppEvent(.{ .shortcut = .next_tab });
+                        return 0;
+                    }
                 }
 
                 const vk_prior: WPARAM = 0x21; // Page Up
                 const vk_next: WPARAM = 0x22; // Page Down
-                const vk_tab: WPARAM = 0x09;
-
-                // Ctrl+Tab / Ctrl+Shift+Tab: 다음 / 이전 탭 (Windows Terminal 컨벤션,
-                // macOS Shift+Cmd+] / [ 와 동등 — #125).
-                if (wParam == vk_tab and GetKeyState(VK_CONTROL) < 0) {
-                    const shortcut: app_event.Shortcut = if (GetKeyState(VK_SHIFT) < 0)
-                        .prev_tab
-                    else
-                        .next_tab;
-                    _ = self.dispatchAppEvent(.{ .shortcut = shortcut });
-                    return 0;
-                }
 
                 // Shift+PageUp/Down: scroll viewport
                 if (GetKeyState(VK_SHIFT) < 0 and (wParam == vk_prior or wParam == vk_next)) {
