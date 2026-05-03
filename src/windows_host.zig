@@ -114,7 +114,11 @@ pub fn run() !void {
     app.window.quit_request_fn = App.onQuitRequest;
     const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
 
-    // Validate all font families exist on the system
+    // Validate all font families exist on the system. 하나라도 미설치면 즉시
+    // fatal — 사용자가 명시한 chain 전체가 시스템에 있어야 한다는 의도 (macOS
+    // 동등). 이전엔 showError + return 이었지만 (a) macOS 는 showFatal 로 통일
+    // 되어 있었음, (b) showError + return 은 caller 가 종료 path 를 신경 써야
+    // 하는 implicit 흐름. showFatal (noreturn) 이 의도에 더 명시적.
     for (0..config.font_family_count) |i| {
         const idx: u8 = @intCast(i);
         const fam_w = config.fontFamilyUtf16(idx);
@@ -122,8 +126,7 @@ pub fn run() !void {
             var msg_buf: [256]u8 = undefined;
             const fam = config.font_families[i];
             const msg = std.fmt.bufPrint(&msg_buf, messages.font_not_found_format, .{fam}) catch "Font not found";
-            dialog.showError(messages.config_error_title, msg);
-            return;
+            dialog.showFatal(messages.config_error_title, msg);
         }
     }
 
