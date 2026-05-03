@@ -28,6 +28,10 @@ pub const DWriteFontContext = struct {
     factory2: ?*dw.IDWriteFactory2 = null,
     font_collection: *dw.IDWriteFontCollection,
     font_fallback: ?*dw.IDWriteFontFallback = null,
+    /// Grapheme cluster shaping (#134) — VS-16 / skin tone modifier / ZWJ
+    /// 시퀀스를 OpenType GSUB 로 단일 cluster glyph 로 reduce. macOS 의 CTLine
+    /// 동등.
+    text_analyzer: ?*dw.IDWriteTextAnalyzer = null,
     /// font.family chain — `[0]` 이 primary (cell metric / MapCharacters 의 base).
     /// chain entry 마다 IDWriteFontFace 보관, resolveGlyph 가 codepoint 별로
     /// 순회해서 글리프 가진 첫 face 반환. 모든 face 는 process 전체 lifetime
@@ -161,6 +165,11 @@ pub const DWriteFontContext = struct {
         _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, 0, &number_sub);
         self.number_sub = number_sub;
 
+        // 8. Create text analyzer (for grapheme cluster shaping — #134).
+        var analyzer: ?*dw.IDWriteTextAnalyzer = null;
+        _ = factory.?.CreateTextAnalyzer(&analyzer);
+        self.text_analyzer = analyzer;
+
         return self;
     }
 
@@ -176,6 +185,7 @@ pub const DWriteFontContext = struct {
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
+        if (self.text_analyzer) |ta| _ = ta.Release();
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             if (maybe_face) |f| _ = f.vtable.Release(f);
         }
@@ -268,6 +278,123 @@ pub const DWriteFontContext = struct {
         }
 
         return null;
+    }
+
+    /// Resolve a *grapheme cluster* (multiple codepoints that combine via ZWJ /
+    /// VS-16 / skin tone modifier 등) to single shaped glyph. macOS 의
+    /// `CTLineCreateWithAttributedString` 동등 — DirectWrite `IDWriteTextAnalyzer.GetGlyphs`
+    /// 가 OpenType GSUB 를 적용해 cluster 를 단일 glyph 로 reduce.
+    ///
+    /// `cps[0]` 은 base codepoint, `cps[1..]` 은 modifier (VS-16 / skin tone /
+    /// ZWJ + secondary base 등). chain 순회 → system fallback 순. 첫 face 가
+    /// non-zero glyph 를 만들면 그걸 반환.
+    pub fn resolveGrapheme(self: *DWriteFontContext, cps: []const u21) ?GlyphResult {
+        if (cps.len == 0 or self.text_analyzer == null) return null;
+
+        // UTF-21 codepoint slice → UTF-16 buffer (surrogate pair 처리).
+        var u16_buf: [32]WCHAR = undefined;
+        var u16_len: dw.UINT32 = 0;
+        for (cps) |cp| {
+            if (u16_len + 1 >= u16_buf.len) break;
+            if (cp <= 0xFFFF) {
+                u16_buf[u16_len] = @intCast(cp);
+                u16_len += 1;
+            } else {
+                const off = cp - 0x10000;
+                u16_buf[u16_len] = @intCast(0xD800 + (off >> 10));
+                u16_buf[u16_len + 1] = @intCast(0xDC00 + (off & 0x3FF));
+                u16_len += 2;
+            }
+        }
+        if (u16_len == 0) return null;
+
+        // 1. user chain 순회 — face 별로 cluster shape 시도.
+        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
+            const face = maybe_face orelse continue;
+            if (self.shapeOnFace(face, &u16_buf, u16_len)) |idx| {
+                return .{ .face = face, .index = idx, .owned = false };
+            }
+        }
+
+        // 2. system fallback — base codepoint 로 face 찾고 그 face 로 cluster shape.
+        if (self.font_fallback) |fallback| {
+            var source = dw.SimpleTextAnalysisSource.create(&u16_buf, u16_len, self.number_sub);
+            var mapped_length: dw.UINT32 = 0;
+            var mapped_font: ?*dw.IDWriteFont = null;
+            var scale: dw.FLOAT = 1.0;
+            const family_ptr: ?[*:0]const WCHAR = @ptrCast(&self.primary_family_name);
+            if (fallback.MapCharacters(
+                @ptrCast(&source),
+                0,
+                u16_len,
+                self.font_collection,
+                family_ptr,
+                dw.DWRITE_FONT_WEIGHT_NORMAL,
+                dw.DWRITE_FONT_STYLE_NORMAL,
+                dw.DWRITE_FONT_STRETCH_NORMAL,
+                &mapped_length,
+                &mapped_font,
+                &scale,
+            ) >= 0) {
+                if (mapped_font) |mf| {
+                    defer _ = mf.vtable.Release(mf);
+                    var face_ptr: ?*dw.IDWriteFontFace = null;
+                    if (mf.CreateFontFace(&face_ptr) >= 0) {
+                        if (face_ptr) |face| {
+                            if (self.shapeOnFace(face, &u16_buf, u16_len)) |idx| {
+                                // owned=true — 호출처가 face 사용 후 Release.
+                                // (resolveGlyph 의 single-codepoint cache 패턴과
+                                // 다름 — cluster 를 cache key 로 쓰려면 hash 필요해
+                                // 일단 매번 새 face. 자주 호출되는 cluster 는 atlas
+                                // cache key 가 face 포인터라 cache miss 가능. 향후
+                                // 최적화 후보.)
+                                return .{ .face = face, .index = idx, .owned = true };
+                            }
+                            _ = face.vtable.Release(face);
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// `face` 로 cluster 를 OpenType shape — non-zero (`.notdef` 아님) 첫 glyph
+    /// 반환. cluster 가 .notdef 또는 빈 결과면 null (다음 face / system fallback
+    /// 으로 넘어가도록).
+    fn shapeOnFace(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32) ?u16 {
+        const analyzer = self.text_analyzer orelse return null;
+
+        var cluster_map: [32]u16 = undefined;
+        var text_props: [32]dw.DWRITE_SHAPING_TEXT_PROPERTIES = undefined;
+        var glyph_indices: [64]u16 = undefined;
+        var glyph_props: [64]dw.DWRITE_SHAPING_GLYPH_PROPERTIES = undefined;
+        var actual_count: dw.UINT32 = 0;
+
+        const sa = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
+        const hr = analyzer.GetGlyphs(
+            text,
+            text_len,
+            face,
+            0, // is_sideways
+            0, // is_right_to_left
+            &sa,
+            null, // locale_name
+            null, // number_substitution
+            null, // features
+            null, // feature_range_lengths
+            0, // feature_ranges
+            glyph_indices.len,
+            &cluster_map,
+            &text_props,
+            &glyph_indices,
+            &glyph_props,
+            &actual_count,
+        );
+        if (hr < 0 or actual_count == 0) return null;
+        if (glyph_indices[0] == 0) return null; // .notdef
+        return glyph_indices[0];
     }
 
     /// Check if a font family is installed on the system via DirectWrite.

@@ -172,7 +172,7 @@ pub const IDWriteFactory = extern struct {
         CreateTextLayout: *const anyopaque,
         CreateGdiCompatibleTextLayout: *const anyopaque,
         CreateEllipsisTrimmingSign: *const anyopaque,
-        CreateTextAnalyzer: *const anyopaque,
+        CreateTextAnalyzer: *const fn (*IDWriteFactory, *?*IDWriteTextAnalyzer) callconv(.c) HRESULT,
         CreateNumberSubstitution: *const fn (*IDWriteFactory, u32, [*:0]const WCHAR, BOOL, *?*IUnknown) callconv(.c) HRESULT,
         CreateGlyphRunAnalysis: *const fn (*IDWriteFactory, *const DWRITE_GLYPH_RUN, FLOAT, ?*const DWRITE_MATRIX, u32, u32, FLOAT, FLOAT, *?*IDWriteGlyphRunAnalysis) callconv(.c) HRESULT,
     };
@@ -207,6 +207,125 @@ pub const IDWriteFactory = extern struct {
 
     pub fn CreateGlyphRunAnalysis(self: *IDWriteFactory, glyph_run: *const DWRITE_GLYPH_RUN, pixels_per_dip: FLOAT, transform: ?*const DWRITE_MATRIX, rendering_mode: u32, measuring_mode: u32, baseline_x: FLOAT, baseline_y: FLOAT, analysis: *?*IDWriteGlyphRunAnalysis) HRESULT {
         return self.vtable.CreateGlyphRunAnalysis(self, glyph_run, pixels_per_dip, transform, rendering_mode, measuring_mode, baseline_x, baseline_y, analysis);
+    }
+
+    pub fn CreateTextAnalyzer(self: *IDWriteFactory, analyzer: *?*IDWriteTextAnalyzer) HRESULT {
+        return self.vtable.CreateTextAnalyzer(self, analyzer);
+    }
+};
+
+// --- DirectWrite shaping structs (for IDWriteTextAnalyzer.GetGlyphs) ---
+
+/// Per-cluster script + shape kind. `script` 는 OpenType script tag (예: 0=common,
+/// 22=hangul, 8=arabic, etc.), `shapes` 는 0=DEFAULT / 1=NO_VISUAL (control chars
+/// 같이 시각 글리프 없는 cluster). 우리는 grapheme cluster 단위 shaping 만
+/// 필요하고 분석은 default 면 충분 — emoji 의 ZWJ / VS-16 / skin tone 은
+/// OpenType GSUB 가 알아서 cluster 결합 처리.
+pub const DWRITE_SCRIPT_ANALYSIS = extern struct {
+    script: UINT16 = 0,
+    shapes: UINT32 = 0,
+};
+
+/// 16 bits packed flags. `isShapedAlone:1` / `reserved1:1` / `canBreakShapingAfter:1` /
+/// `reserved:13`. 우리는 read-only, 0 으로 init.
+pub const DWRITE_SHAPING_TEXT_PROPERTIES = extern struct {
+    bits: UINT16 = 0,
+};
+
+/// 16 bits packed flags. `justification:4` / `isClusterStart:1` / `isDiacritic:1` /
+/// `isZeroWidthSpace:1` / `reserved:9`. `isClusterStart` 비트로 cluster 의
+/// *첫* glyph 식별 가능 (ZWJ 결합 후엔 cluster 가 1 개 glyph 로 줄지만 일반
+/// case 에는 cluster start glyph 만 사용).
+pub const DWRITE_SHAPING_GLYPH_PROPERTIES = extern struct {
+    bits: UINT16 = 0,
+};
+
+// --- IDWriteTextAnalyzer ---
+// IUnknown (3) + 4 analyze methods + GetGlyphs + GetGlyphPlacements +
+// GetGdiCompatibleGlyphPlacements = 10 vtable slots.
+
+pub const IDWriteTextAnalyzer = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const fn (*IDWriteTextAnalyzer, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteTextAnalyzer) callconv(.c) u32,
+        Release: *const fn (*IDWriteTextAnalyzer) callconv(.c) u32,
+        // 4 analyze methods (we don't use them — opaque)
+        AnalyzeScript: *const anyopaque,
+        AnalyzeBidi: *const anyopaque,
+        AnalyzeNumberSubstitution: *const anyopaque,
+        AnalyzeLineBreakpoints: *const anyopaque,
+        // GetGlyphs — 우리가 cluster shaping 으로 호출. signature 그대로 매칭.
+        GetGlyphs: *const fn (
+            *IDWriteTextAnalyzer,
+            text_string: [*]const WCHAR,
+            text_length: UINT32,
+            font_face: *IDWriteFontFace,
+            is_sideways: BOOL,
+            is_right_to_left: BOOL,
+            script_analysis: *const DWRITE_SCRIPT_ANALYSIS,
+            locale_name: ?[*:0]const WCHAR,
+            number_substitution: ?*IUnknown,
+            features: ?[*]const ?*const anyopaque, // DWRITE_TYPOGRAPHIC_FEATURES** — null 로 OK
+            feature_range_lengths: ?[*]const UINT32,
+            feature_ranges: UINT32,
+            max_glyph_count: UINT32,
+            cluster_map: [*]UINT16,
+            text_props: [*]DWRITE_SHAPING_TEXT_PROPERTIES,
+            glyph_indices: [*]UINT16,
+            glyph_props: [*]DWRITE_SHAPING_GLYPH_PROPERTIES,
+            actual_glyph_count: *UINT32,
+        ) callconv(.c) HRESULT,
+        GetGlyphPlacements: *const anyopaque,
+        GetGdiCompatibleGlyphPlacements: *const anyopaque,
+    };
+
+    pub fn Release(self: *IDWriteTextAnalyzer) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn GetGlyphs(
+        self: *IDWriteTextAnalyzer,
+        text_string: [*]const WCHAR,
+        text_length: UINT32,
+        font_face: *IDWriteFontFace,
+        is_sideways: BOOL,
+        is_right_to_left: BOOL,
+        script_analysis: *const DWRITE_SCRIPT_ANALYSIS,
+        locale_name: ?[*:0]const WCHAR,
+        number_substitution: ?*IUnknown,
+        features: ?[*]const ?*const anyopaque,
+        feature_range_lengths: ?[*]const UINT32,
+        feature_ranges: UINT32,
+        max_glyph_count: UINT32,
+        cluster_map: [*]UINT16,
+        text_props: [*]DWRITE_SHAPING_TEXT_PROPERTIES,
+        glyph_indices: [*]UINT16,
+        glyph_props: [*]DWRITE_SHAPING_GLYPH_PROPERTIES,
+        actual_glyph_count: *UINT32,
+    ) HRESULT {
+        return self.vtable.GetGlyphs(
+            self,
+            text_string,
+            text_length,
+            font_face,
+            is_sideways,
+            is_right_to_left,
+            script_analysis,
+            locale_name,
+            number_substitution,
+            features,
+            feature_range_lengths,
+            feature_ranges,
+            max_glyph_count,
+            cluster_map,
+            text_props,
+            glyph_indices,
+            glyph_props,
+            actual_glyph_count,
+        );
     }
 };
 
