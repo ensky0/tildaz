@@ -925,6 +925,7 @@ pub const D3d11Renderer = struct {
             const cell_slice = all_cells[y].slice();
             const raws = cell_slice.items(.raw);
             const styles = cell_slice.items(.style);
+            const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
 
             const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
@@ -967,8 +968,21 @@ pub const D3d11Renderer = struct {
                     text_count = 0;
                 }
 
-                // Resolve glyph
-                const result = self.font.resolveGlyph(cp) orelse continue;
+                // Resolve glyph. grapheme cluster (VS-16 / skin tone modifier
+                // / ZWJ 시퀀스) 면 IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
+                // shape — 단일 (컬러 emoji) 글리프로 reduce. 일반 cell 은 빠른
+                // single-codepoint path 그대로. macOS resolveGrapheme 와 동등 패턴.
+                const result = blk: {
+                    if (raw.hasGrapheme() and x < graphemes.len) {
+                        var cluster: [16]u21 = undefined;
+                        cluster[0] = cp;
+                        const extras = graphemes[x];
+                        const take = @min(extras.len, cluster.len - 1);
+                        @memcpy(cluster[1..][0..take], extras[0..take]);
+                        if (self.font.resolveGrapheme(cluster[0 .. 1 + take])) |r| break :blk r;
+                    }
+                    break :blk self.font.resolveGlyph(cp) orelse continue;
+                };
                 var entry_opt = self.atlas.getOrInsert(result.face, result.index);
 
                 // Atlas full: flush pending draws BEFORE reset so queued UV coords stay valid,
