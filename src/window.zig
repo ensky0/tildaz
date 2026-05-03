@@ -347,6 +347,14 @@ pub const Window = struct {
     expected_set: bool = false,
     layout_transition_active: bool = false,
 
+    /// BMP 밖 codepoint (이모지 U+1F300+ 등) 입력 시 Windows 가 UTF-16 surrogate
+    /// pair 로 두 번 WM_CHAR 를 보냄 — 첫 번째 high surrogate (0xD800..0xDBFF)
+    /// 는 단독으론 invalid codepoint 라 PTY 전송 / rename 입력 둘 다 실패. 첫
+    /// surrogate 를 보관 → 두 번째 (low surrogate, 0xDC00..0xDFFF) 도착하면
+    /// 결합해 단일 u21 codepoint 로 dispatch. emoji picker (`Win+.`) 입력이
+    /// 안 되던 사고 (시연 중 발견 — 2026-05-03).
+    pending_high_surrogate: u16 = 0,
+
     /// WM_KEYDOWN 가 소비한 키가 TranslateMessage 로 동시에 WM_CHAR (Enter `\r`,
     /// Escape `\x1b`, Backspace `\x08`) 를 큐에 넣는다. KEYDOWN 핸들러의 `return 0`
     /// 만으로는 그 WM_CHAR 가 막히지 않아 PTY 로 새어 들어감 (예: 탭바 rename
@@ -1058,16 +1066,42 @@ pub const Window = struct {
                 // 사고 방지 — 소비자 입장에선 한 번의 keypress.)
                 if (self.swallow_next_wm_char) {
                     self.swallow_next_wm_char = false;
+                    self.pending_high_surrogate = 0; // 안전 — 잘못 매달린 surrogate 잡힘
                     return 0;
                 }
-                if (self.dispatchAppEvent(.{ .text_input = @intCast(wParam) })) return 0;
+
+                // UTF-16 surrogate pair → single u21 codepoint 결합. 이모지 같은
+                // BMP 밖 codepoint (U+10000+) 는 high (0xD800..0xDBFF) + low
+                // (0xDC00..0xDFFF) 두 WM_CHAR 로 따로 도착. high 단독은 invalid
+                // codepoint 라 utf8Encode 실패해 PTY 전송 / rename 입력 안 됨
+                // (`Win+.` 이모지 picker 가 ❤️ 같은 BMP 외엔 다 누락하던 사고).
+                const w16: u16 = @intCast(wParam);
+                const cp: u21 = blk: {
+                    if (w16 >= 0xD800 and w16 <= 0xDBFF) {
+                        // high surrogate — 보관 후 짝꿍 기다림.
+                        self.pending_high_surrogate = w16;
+                        return 0;
+                    }
+                    if (w16 >= 0xDC00 and w16 <= 0xDFFF) {
+                        const high = self.pending_high_surrogate;
+                        self.pending_high_surrogate = 0;
+                        if (high == 0) return 0; // 잘못된 lone low — 무시
+                        const high_off: u32 = @as(u32, high) - 0xD800;
+                        const low_off: u32 = @as(u32, w16) - 0xDC00;
+                        break :blk @intCast(0x10000 + (high_off << 10) + low_off);
+                    }
+                    // 그 외 일반 BMP — 이전 high surrogate 가 매달려 있으면 정리.
+                    self.pending_high_surrogate = 0;
+                    break :blk w16;
+                };
+
+                if (self.dispatchAppEvent(.{ .text_input = cp })) return 0;
                 // Ignore WM_CHAR generated from Ctrl+Shift shortcuts
                 // (e.g. Ctrl+Shift+W sends 0x17 which would kill-word in shell)
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
                     return 0;
                 }
                 if (self.write_fn) |write_fn| {
-                    const cp: u21 = @intCast(wParam);
                     // Backspace: send DEL (0x7F) instead of BS (0x08)
                     if (cp == 8) {
                         write_fn("\x7f", self.userdata);
