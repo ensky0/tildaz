@@ -23,7 +23,7 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
   - New tab: Ctrl+Shift+T (Windows) / Cmd+T (macOS)
   - Close active: Ctrl+Shift+W (Windows) / Cmd+W (macOS)
   - Switch by index: Alt+1–9 (Windows) / Cmd+1–9 (macOS)
-  - Prev / next tab: Ctrl+Shift+Tab / Ctrl+Tab (Windows) — Shift+Cmd+[ / Shift+Cmd+] (macOS)
+  - Prev / next tab: Ctrl+Shift+[ / Ctrl+Shift+] (Windows) — Shift+Cmd+[ / Shift+Cmd+] (macOS)
   - Click to select, X button to close, drag to reorder, double-click to rename
   - Closing the last tab quits the app
 - **Full Unicode support** — Hangul, CJK, emoji, combining marks, wide / narrow cells
@@ -272,8 +272,8 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | New tab | Ctrl+Shift+T | Cmd+T |
 | Close active tab | Ctrl+Shift+W | Cmd+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 |
-| Previous tab | Ctrl+Shift+Tab | Shift+Cmd+[ |
-| Next tab | Ctrl+Tab | Shift+Cmd+] |
+| Previous tab | Ctrl+Shift+[ | Shift+Cmd+[ |
+| Next tab | Ctrl+Shift+] | Shift+Cmd+] |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V |
 | Reset terminal | Ctrl+Shift+R | (TBD) |

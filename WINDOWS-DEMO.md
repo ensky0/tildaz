@@ -81,10 +81,13 @@ macOS 에서 `applicationShouldTerminate:` 로 Cmd+Q 가로채 confirm 띄움. W
 - [ ] **Ctrl+Shift+T** 새 탭 → 탭바 등장 + 모든 탭 grid 새 크기로 reflow (vim 띄워두면 자연스럽게)
 - [ ] 탭 닫아 1개 → 탭바 사라지고 cell 영역 다시 늘어남
 
-## #125 Ctrl+Tab / Ctrl+Shift+Tab 다음/이전 탭
-- [ ] 탭 2개 이상 → **Ctrl+Tab** 다음 (마지막→0 wrap)
-- [ ] **Ctrl+Shift+Tab** 이전 (0→마지막 wrap)
-- [ ] PTY 에 Tab 문자 안 감 (bash prompt 에 탭 입력 안 됨)
+## #125 Ctrl+Shift+[ / Ctrl+Shift+] 이전/다음 탭
+
+macOS Shift+Cmd+[/] 와 동일 키 pair. Windows 는 modifier 만 네이티브 (Ctrl+Shift). Ctrl+Tab / Ctrl+Shift+Tab 은 더 이상 지원 안 함 (cross-platform 단일 키 pair 로 통일).
+
+- [ ] 탭 2개 이상 → **Ctrl+Shift+]** 다음 (마지막→0 wrap)
+- [ ] **Ctrl+Shift+[** 이전 (0→마지막 wrap)
+- [ ] PTY 에 `[` `]` 문자 안 감 (bash prompt 에 입력 안 됨)
 - [ ] **Alt+1~9** 인덱스 점프 그대로 동작
 
 ## #120 Ctrl+Shift+C selection 복사

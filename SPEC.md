@@ -69,8 +69,8 @@ TildaZ 가 Windows 와 macOS 에서 *어떻게 동작해야 하는가* 와 *현�
 | 새 탭 | Ctrl+Shift+T | Cmd+T | ✅ | ✅ |
 | 활성 탭 닫기 | Ctrl+Shift+W | Cmd+W | ✅ | ✅ |
 | 인덱스 점프 (1..9) | Alt+1..9 ([`window.zig:1194-1200`](src/window.zig#L1194-L1200)) | Cmd+1..9 | ✅ | ✅ |
-| 이전 탭 | Ctrl+Shift+Tab (Windows Terminal 컨벤션) | Shift+Cmd+[ | ✅ | ✅ |
-| 다음 탭 | Ctrl+Tab | Shift+Cmd+] | ✅ | ✅ |
+| 이전 탭 | Ctrl+Shift+[ | Shift+Cmd+[ | ✅ | ✅ |
+| 다음 탭 | Ctrl+Shift+] | Shift+Cmd+] | ✅ | ✅ |
 
 ### 2.3 클립보드
 
@@ -338,7 +338,7 @@ Windows 도 동일 — `C:\Users\yongjun\AppData\Roaming\tildaz\config.json` 같
 
 | 항목 | 우선순위 | 이슈 | 비고 |
 |---|---|---|---|
-| 이전 / 다음 탭 단축키 | 🟢 | #125 | macOS Shift+Cmd+[/]. Windows 는 Ctrl+Tab / Ctrl+Shift+Tab 표준 권장. |
+| 이전 / 다음 탭 단축키 | ✅ | #125 | Windows: Ctrl+Shift+[ / Ctrl+Shift+] (macOS Shift+Cmd+[/] 와 동일 키 pair, modifier 만 Windows 네이티브). macOS: Shift+Cmd+[/]. |
 | 단일 탭 시 탭바 자리 reserve 버그 | ✅ | #127 | `App.effectiveTabBarHeight()` + count 1↔2 전환 시 `resizeAll`. d3d11_renderer 도 height==0 면 탭바 skip. |
 
 ---
