@@ -8,6 +8,7 @@ const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const shell_validate = @import("shell_validate.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
@@ -74,6 +75,11 @@ pub fn run() !void {
         config.auto_start,
         config.shell,
     });
+
+    // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
+    // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
+    // 뒤 generic 에러로 끝남 — 사용자에게 어디 고쳐야 할지 안내 안 됨.
+    shell_validate.validateOrFatal(alloc, config.shell);
 
     if (config.auto_start) {
         autostart.enable() catch |err| {

@@ -1482,6 +1482,11 @@ pub fn run() !void {
         g_config.hidden_start,
     });
 
+    // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
+    // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
+    // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
+    @import("shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
+
     // Auto-start (LaunchAgent) — Windows `autostart.enable/disable` 동등.
     // 사용자 로그인 시 launchd 가 plist 따라 자동 실행. 매 부팅마다 enable
     // / disable 을 sync 해 사용자가 config 끄면 즉시 효과.
