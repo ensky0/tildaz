@@ -37,6 +37,11 @@ pub fn showAboutDialog() void {
     const config_path = paths.configPath(alloc) catch "(unknown)";
     const log_path = paths.logPath(alloc) catch "(unknown)";
 
+    // Tip 라인의 단축키 — platform native modifier (SPEC §0 #2). body 구조는
+    // 양쪽 동일하고 토큰만 다름.
+    const open_config_key: []const u8 = if (builtin.os.tag == .windows) "Ctrl+Shift+P" else "Shift+Cmd+P";
+    const open_log_key: []const u8 = if (builtin.os.tag == .windows) "Ctrl+Shift+L" else "Shift+Cmd+L";
+
     var msg_buf: [2048]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, messages.about_format, .{
         build_options.version,
@@ -44,6 +49,8 @@ pub fn showAboutDialog() void {
         pid,
         config_path,
         log_path,
+        open_config_key,
+        open_log_key,
     }) catch return;
 
     // macOS 는 NSAlert.accessoryView 의 NSTextView 로 표시 — informativeText
