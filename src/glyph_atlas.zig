@@ -1,15 +1,17 @@
 // Glyph texture atlas — rasterizes glyphs via DirectWrite, caches in a 2D atlas.
-// Two glyph rasterization paths share the same R8G8B8A8 atlas:
+// Two glyph rasterization paths share the same R8G8B8A8 atlas (`BIND_SHADER_RESOURCE`
+// + `BIND_RENDER_TARGET`):
 //   - Mono / ClearType: `DWRITE_TEXTURE_CLEARTYPE_3x1` 3 bytes/pixel (subpixel
-//     R/G/B alpha). Atlas RGB = subpixel masks, A = 0xFF. Shader applies fg
-//     color via dual-source ClearType blend.
-//   - Color emoji (#134/#136): D3D11 backed D2D RT (per-glyph BGRA texture →
-//     `IDXGISurface` → `CreateDxgiSurfaceRenderTarget`) 에 layer 별
-//     `DrawGlyphRun` (GRAYSCALE antialias) + 2x super-sampling. staging texture
-//     로 `CopyResource` → CPU `Map(READ)` → byte swap (B↔R) + 4-pixel block 평균
-//     다운샘플 → atlas RGBA *premultiplied* 그대로 저장 (depremult 안 함).
-//     shader 의 color path 가 atlas.rgba 를 SRC0 (premult), atlas.aaaa 를 SRC1
-//     로 dual-source blend. Win Terminal `BackendD3D` 동등 path.
+//     R/G/B alpha) + `UpdateSubresource`. Atlas RGB = subpixel masks, A = 0xFF.
+//     Shader applies fg color via dual-source ClearType blend.
+//   - Color emoji (#134/#136/#137): atlas 자체에 D2D RT 만들어 (atlas init 시
+//     1번, `IDXGISurface` QI → `CreateDxgiSurfaceRenderTarget`) layer 별
+//     `DrawGlyphRun` (GRAYSCALE antialias + custom rendering params 일치). 매
+//     글리프마다 `BeginDraw` + `PushAxisAlignedClip(packed_rect)` + `Clear` +
+//     layer composite + `EndDraw`. atlas RGBA premult 그대로 D2D 가 직접 채움 —
+//     CPU staging / depremult / byte swap 불필요. shader color path 가
+//     atlas.rgba (premult) 를 SRC0, atlas.aaaa 를 SRC1 로 dual-source blend.
+//     Win Terminal `BackendD3D` 동등 path.
 
 const std = @import("std");
 const dw = @import("directwrite.zig");
@@ -58,8 +60,14 @@ pub const GlyphAtlas = struct {
     d3d_device: *d3d.ID3D11Device,
     d3d_ctx: *d3d.ID3D11DeviceContext,
 
-    // Direct2D factory — D3D backed RT (per-glyph) 생성용. null 이면 mono path 만.
+    // Direct2D — atlas 자체에 D2D RT 만들어서 glyph 영역에 직접 그림 (Win
+    // Terminal `BackendD3D` 동등). per-glyph staging texture + CopyResource
+    // 폐기. byte swap 도 자동 — atlas RGBA + D2D RT RGBA. atlas init 시 1번
+    // 생성, deinit 시 release. 둘 중 하나라도 null 이면 color emoji path
+    // disable, mono fallback.
     d2d_factory: ?*d2d.ID2D1Factory = null,
+    atlas_dxgi_surface: ?*d3d.IDXGISurface = null,
+    atlas_d2d_rt: ?*d2d.ID2D1RenderTarget = null,
 
     // Temporary buffers for glyph rasterization (reused, heap-allocated)
     temp_buf: []u8, // RGBA output: 256*256*4 bytes
@@ -101,13 +109,15 @@ pub const GlyphAtlas = struct {
         ) < 0) return error.RenderingParamsFailed;
         errdefer _ = rp.?.vtable.Release(rp.?);
 
-        // Create atlas texture (D3D11_USAGE_DEFAULT for UpdateSubresource)
+        // Create atlas texture — BIND_SHADER_RESOURCE (shader sample) +
+        // BIND_RENDER_TARGET (D2D 가 atlas 의 packed 위치에 직접 그림).
+        // USAGE_DEFAULT 라 mono path 의 UpdateSubresource 도 그대로 동작.
         var tex: ?*d3d.ID3D11Texture2D = null;
         if (device.CreateTexture2D(&.{
             .Width = ATLAS_SIZE,
             .Height = ATLAS_SIZE,
             .Format = d3d.DXGI_FORMAT_R8G8B8A8_UNORM,
-            .BindFlags = d3d.D3D11_BIND_SHADER_RESOURCE,
+            .BindFlags = d3d.D3D11_BIND_SHADER_RESOURCE | d3d.D3D11_BIND_RENDER_TARGET,
         }, null, &tex) < 0) return error.AtlasTextureFailed;
         errdefer _ = tex.?.Release();
 
@@ -122,12 +132,49 @@ pub const GlyphAtlas = struct {
         errdefer alloc.free(temp_buf);
         const ct_buf = try alloc.alloc(u8, 256 * 256 * 3); // ClearType 3x1 RGB
 
-        // D2D factory — per-glyph D3D11 backed RT 생성용 (#136 컬러 emoji
-        // hardware antialias). 실패해도 init 자체는 성공 — color emoji 가 mono
-        // path 로 떨어지면서 baseline (1-bit alpha) 결과만 보임.
+        // D2D factory + atlas D2D RT 한 번 생성. per-glyph staging 폐기 — atlas
+        // 자체에 D2D RT 만들고 layer 마다 PushAxisAlignedClip + DrawGlyphRun 으로
+        // packed 위치에 직접 그림. atlas RGBA + D2D RT RGBA 같은 format 이라
+        // byte swap 자동 해결. 실패해도 init 성공 — d2d_factory==null 이면
+        // color emoji path disable, mono fallback.
         var d2d_factory: ?*d2d.ID2D1Factory = null;
         _ = d2d.D2D1CreateFactory(d2d.D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d.IID_ID2D1Factory, null, &d2d_factory);
         errdefer if (d2d_factory) |f| d2d.factoryRelease(f);
+
+        var atlas_dxgi: ?*d3d.IDXGISurface = null;
+        var atlas_d2d_rt: ?*d2d.ID2D1RenderTarget = null;
+        if (d2d_factory) |fac| {
+            var dxgi_ptr: ?*anyopaque = null;
+            if (tex.?.QueryInterface(&d3d.IID_IDXGISurface, &dxgi_ptr) >= 0 and dxgi_ptr != null) {
+                atlas_dxgi = @ptrCast(@alignCast(dxgi_ptr));
+                // atlas D2D RT — RGBA format (atlas 와 동일) + PREMULTIPLIED.
+                // dpi=96 으로 두면 1 DIP = 1 device pixel — bounds (device px)
+                // 좌표를 그대로 baseline DIP 로 줘도 일치 (high DPI 정밀도는
+                // 별도 작업 — SetUnitMode(PIXELS) 도입 시).
+                const rt_props = d2d.D2D1_RENDER_TARGET_PROPERTIES{
+                    .type = d2d.D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    .pixelFormat = .{ .format = d2d.DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = d2d.D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    .dpiX = 96.0,
+                    .dpiY = 96.0,
+                    .usage = d2d.D2D1_RENDER_TARGET_USAGE_NONE,
+                    .minLevel = d2d.D2D1_FEATURE_LEVEL_DEFAULT,
+                };
+                // RGBA atlas 에 BGRA RT 연결 — pixelFormat.format 은 R8G8B8A8 이어야
+                // atlas 와 일치. 위 props 의 format 도 R8G8B8A8 으로 변경 필요.
+                var props_rgba = rt_props;
+                props_rgba.pixelFormat.format = d3d.DXGI_FORMAT_R8G8B8A8_UNORM;
+                if (d2d.factoryCreateDxgiSurfaceRenderTarget(fac, @ptrCast(atlas_dxgi.?), &props_rgba, &atlas_d2d_rt) >= 0 and atlas_d2d_rt != null) {
+                    // 한 번만 antialias mode + rendering params 설정 (BeginDraw
+                    // 와 무관한 RT state).
+                    d2d.renderTargetSetTextAntialiasMode(atlas_d2d_rt.?, d2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+                    d2d.renderTargetSetTextRenderingParams(atlas_d2d_rt.?, @ptrCast(rp.?));
+                }
+            }
+        }
+        errdefer if (atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
+        errdefer if (atlas_dxgi) |s| {
+            _ = s.Release();
+        };
 
         return .{
             .alloc = alloc,
@@ -144,10 +191,14 @@ pub const GlyphAtlas = struct {
             .temp_buf = temp_buf,
             .ct_buf = ct_buf,
             .d2d_factory = d2d_factory,
+            .atlas_dxgi_surface = atlas_dxgi,
+            .atlas_d2d_rt = atlas_d2d_rt,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
+        if (self.atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
+        if (self.atlas_dxgi_surface) |s| _ = s.Release();
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
@@ -298,26 +349,29 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// 컬러 emoji 글리프 라스터화 (#134/#136) — D3D11 backed D2D RT path.
+    /// 컬러 emoji 글리프 라스터화 (#134/#136/#137) — atlas direct draw path.
     ///
-    /// 흐름:
+    /// 흐름 (Win Terminal `BackendD3D::_drawGlyph` 동등):
     ///   1) `IDWriteFactory2::TranslateColorGlyphRun` 으로 layer enumerator
     ///   2) Pass 1: layer 별 ALIASED bounds union → atlas size (w,h) 결정
-    ///   3) per-glyph 임시 `ID3D11Texture2D` (BGRA, BIND_RENDER_TARGET) 생성
-    ///   4) `IDXGISurface` QI → `D2D Factory.CreateDxgiSurfaceRenderTarget` —
-    ///      Win Terminal 과 동일한 hardware antialias path
-    ///   5) `BeginDraw` + `SetTextAntialiasMode(GRAYSCALE)` + `Clear(transparent)`
-    ///      + layer 마다 `CreateSolidColorBrush(layer.runColor)` + `DrawGlyphRun`
-    ///   6) `EndDraw` 후 staging tex 로 `CopyResource` + `Map(READ)` 픽셀 가져옴
-    ///   7) BGRA premult → RGBA depremult byte swap into temp_buf →
-    ///      atlas `UpdateSubresource`
+    ///   3) `packGlyph` 으로 atlas 안 packed 위치 (pos.x, pos.y) 결정
+    ///   4) atlas 자체에 만들어진 D2D RT (init 시 1번 생성) 의 `BeginDraw` +
+    ///      `PushAxisAlignedClip(pos.x, pos.y, pos.x+w, pos.y+h)` 으로 영역
+    ///      제한 → `Clear(transparent)` 으로 packed 영역만 초기화
+    ///   5) layer 마다 `CreateSolidColorBrush(layer.runColor)` + `DrawGlyphRun`
+    ///      (baseline = atlas 좌표계로 `(pos.x - bounds.left, pos.y - bounds.top)`)
+    ///   6) `PopAxisAlignedClip` + `EndDraw` — D2D 가 atlas RGBA premult 픽셀을
+    ///      직접 그림. CPU staging / depremult / byte swap 없음.
+    ///
+    /// shader color path 가 atlas.rgba (premult) 를 SRC0, atlas.aaaa 를 SRC1 로
+    /// 사용 — 가장자리 antialias gradient 그대로.
     ///
     /// is_color=true 인 AtlasEntry 반환. 컬러 글리프 아닌 경우
     /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
     /// `rasterize` (mono ClearType) 로 fall-through.
     fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        // D2D factory + IDWriteFactory2 둘 다 있어야 컬러 path 가능.
-        const d2d_fac = self.d2d_factory orelse return null;
+        // atlas D2D RT + IDWriteFactory2 둘 다 있어야 컬러 path 가능.
+        const atlas_rt = self.atlas_d2d_rt orelse return null;
         var factory2: ?*dw.IDWriteFactory2 = null;
         if (self.dw_factory.QueryInterface(&dw.IID_IDWriteFactory2, @ptrCast(&factory2)) < 0) return null;
         defer _ = factory2.?.Release();
@@ -398,61 +452,34 @@ pub const GlyphAtlas = struct {
         const h: u32 = @intCast(gh);
         if (w > 256 or h > 256) return null;
 
-        // 2x super-sampling — D2D RT 사이즈 (w*2, h*2), DPI 도 2배 → D2D 가
-        // 글리프를 2배 device pixel 그리드에 그림. 이후 4 픽셀 (2×2 block) 평균
-        // 으로 다운샘플 → atlas 의 native (w, h) 사이즈에 grayscale antialiased
-        // 결과. 작은 cell (9×18) 에서 vector outline 가장자리의 거침을 효과적
-        // 으로 부드럽게 함.
-        const ss: u32 = 2; // super-sample factor
-        const rt_w = w * ss;
-        const rt_h = h * ss;
-
-        var rt_tex: ?*d3d.ID3D11Texture2D = null;
-        if (self.d3d_device.CreateTexture2D(&.{
-            .Width = rt_w,
-            .Height = rt_h,
-            .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM,
-            .Usage = d3d.D3D11_USAGE_DEFAULT,
-            .BindFlags = d3d.D3D11_BIND_RENDER_TARGET,
-        }, null, &rt_tex) < 0 or rt_tex == null) return null;
-        defer _ = rt_tex.?.Release();
-
-        // IDXGISurface QI — D2D 가 backing 으로 사용할 표면.
-        var dxgi_surf_ptr: ?*anyopaque = null;
-        if (rt_tex.?.QueryInterface(&d3d.IID_IDXGISurface, &dxgi_surf_ptr) < 0 or dxgi_surf_ptr == null) return null;
-        const dxgi_surf: *d3d.IDXGISurface = @ptrCast(@alignCast(dxgi_surf_ptr));
-        defer _ = dxgi_surf.Release();
-
-        // D2D RT — DPI = sys_dpi × ss. baseline DIP 좌표 (-bounds.left, -bounds.top)
-        // 가 RT 의 device pixel (-bounds.left × ss, -bounds.top × ss) 위치 에 매핑
-        // → 글리프 outline 이 RT 의 (0, 0) ~ (rt_w, rt_h) 에 ss 배 크기로 들어감.
-        const sys_dpi: f32 = 96.0 * self.pixels_per_dip;
-        const rt_dpi: f32 = sys_dpi * @as(f32, @floatFromInt(ss));
-        const rt_props = d2d.D2D1_RENDER_TARGET_PROPERTIES{
-            .type = d2d.D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            .pixelFormat = .{ .format = d2d.DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = d2d.D2D1_ALPHA_MODE_PREMULTIPLIED },
-            .dpiX = rt_dpi,
-            .dpiY = rt_dpi,
-            .usage = d2d.D2D1_RENDER_TARGET_USAGE_NONE,
-            .minLevel = d2d.D2D1_FEATURE_LEVEL_DEFAULT,
+        const pos = self.packGlyph(w, h) orelse {
+            self.is_full = true;
+            return null;
         };
-        var rt: ?*d2d.ID2D1RenderTarget = null;
-        if (d2d.factoryCreateDxgiSurfaceRenderTarget(d2d_fac, @ptrCast(dxgi_surf), &rt_props, &rt) < 0 or rt == null) return null;
-        defer d2d.renderTargetRelease(rt.?);
 
-        d2d.renderTargetBeginDraw(rt.?);
-        d2d.renderTargetSetTextAntialiasMode(rt.?, d2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        // Win Terminal 동등: D2D RT 에 우리 mono path 와 동일한 rendering params
-        // (gamma=1.0, contrast=0, clearTypeLevel=0) 적용. 안 하면 D2D 가 system
-        // default 사용 → antialias gradient 의 visual 결과 다름.
-        d2d.renderTargetSetTextRenderingParams(rt.?, @ptrCast(self.rendering_params));
+        // atlas D2D RT 의 packed 영역에 직접 그림. dpi=96 (init 시 설정) 라 1 DIP =
+        // 1 device pixel — pos / bounds (device pixel) 좌표를 baseline 에 그대로
+        // 사용. PushAxisAlignedClip 으로 영역 제한 → 다른 글리프 invade 방지.
+        const fpos_x: f32 = @floatFromInt(pos[0]);
+        const fpos_y: f32 = @floatFromInt(pos[1]);
+        const fw: f32 = @floatFromInt(w);
+        const fh: f32 = @floatFromInt(h);
+        const clip_rect = d2d.D2D1_RECT_F{
+            .left = fpos_x,
+            .top = fpos_y,
+            .right = fpos_x + fw,
+            .bottom = fpos_y + fh,
+        };
+
+        d2d.renderTargetBeginDraw(atlas_rt);
+        d2d.renderTargetPushAxisAlignedClip(atlas_rt, &clip_rect, d2d.D2D1_ANTIALIAS_MODE_ALIASED);
         const transparent = d2d.D2D1_COLOR_F{ .r = 0, .g = 0, .b = 0, .a = 0 };
-        d2d.renderTargetClear(rt.?, &transparent);
+        d2d.renderTargetClear(atlas_rt, &transparent);
 
-        // baseline = (-bounds.left, -bounds.top) — 글리프 outline 이 RT 의
-        // (0,0)..(w,h) 에 들어옴.
-        const base_x: f32 = @as(f32, @floatFromInt(-bounds.left));
-        const base_y: f32 = @as(f32, @floatFromInt(-bounds.top));
+        // baseline (atlas 좌표) = (pos.x - bounds.left, pos.y - bounds.top) —
+        // 글리프 outline 이 atlas 의 (pos.x, pos.y) ~ (pos.x+w, pos.y+h) 에 들어감.
+        const base_x: f32 = fpos_x - @as(f32, @floatFromInt(bounds.left));
+        const base_y: f32 = fpos_y - @as(f32, @floatFromInt(bounds.top));
 
         // Pass 2: layer 별 DrawGlyphRun. enumerator 새로 열어서 iterate.
         var enumerator: ?*dw.IDWriteColorGlyphRunEnumerator = null;
@@ -484,7 +511,7 @@ pub const GlyphAtlas = struct {
                     .a = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.a,
                 };
                 var brush: ?*d2d.ID2D1SolidColorBrush = null;
-                if (d2d.renderTargetCreateSolidColorBrush(rt.?, &layer_color, &brush) < 0 or brush == null) continue;
+                if (d2d.renderTargetCreateSolidColorBrush(atlas_rt, &layer_color, &brush) < 0 or brush == null) continue;
                 defer d2d.brushRelease(brush.?);
 
                 const layer_baseline = d2d.D2D_POINT_2F{
@@ -492,7 +519,7 @@ pub const GlyphAtlas = struct {
                     .y = base_y + cr.baseline_origin_y,
                 };
                 d2d.renderTargetDrawGlyphRun(
-                    rt.?,
+                    atlas_rt,
                     layer_baseline,
                     @ptrCast(&cr.glyph_run),
                     d2d.brushAsBrush(brush.?),
@@ -501,82 +528,8 @@ pub const GlyphAtlas = struct {
             }
         }
 
-        if (d2d.renderTargetEndDraw(rt.?) < 0) return null;
-
-        // staging texture (CPU read) — super-sample 사이즈 그대로 (rt_w × rt_h).
-        var staging_tex: ?*d3d.ID3D11Texture2D = null;
-        if (self.d3d_device.CreateTexture2D(&.{
-            .Width = rt_w,
-            .Height = rt_h,
-            .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM,
-            .Usage = d3d.D3D11_USAGE_STAGING,
-            .BindFlags = 0,
-            .CPUAccessFlags = d3d.D3D11_CPU_ACCESS_READ,
-        }, null, &staging_tex) < 0 or staging_tex == null) return null;
-        defer _ = staging_tex.?.Release();
-
-        self.d3d_ctx.CopyResource(@ptrCast(staging_tex.?), @ptrCast(rt_tex.?));
-
-        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
-        if (self.d3d_ctx.Map(@ptrCast(staging_tex.?), 0, d3d.D3D11_MAP_READ, 0, &mapped) < 0) return null;
-        defer self.d3d_ctx.Unmap(@ptrCast(staging_tex.?), 0);
-
-        const src_bytes: [*]const u8 = @ptrCast(mapped.pData orelse return null);
-        const stride = mapped.RowPitch;
-
-        // ss×ss block 평균 (premultiplied 공간) → byte swap (B↔R) 만 해서 atlas
-        // RGBA **premultiplied 그대로** 저장. Win Terminal 동등: D2D 가 그린 premult
-        // 픽셀을 atlas 에 보존, shader 가 atlas.rgba 를 SRC0 (premult) 로 사용 +
-        // atlas.aaaa 를 SRC1 로. depremult 안 함.
-        var py: u32 = 0;
-        while (py < h) : (py += 1) {
-            var px: u32 = 0;
-            while (px < w) : (px += 1) {
-                var sum_b: u32 = 0;
-                var sum_g: u32 = 0;
-                var sum_r: u32 = 0;
-                var sum_a: u32 = 0;
-                var dy: u32 = 0;
-                while (dy < ss) : (dy += 1) {
-                    const sy = py * ss + dy;
-                    var dx: u32 = 0;
-                    while (dx < ss) : (dx += 1) {
-                        const sx = px * ss + dx;
-                        const src_off: usize = sy * stride + sx * 4;
-                        sum_b += src_bytes[src_off + 0];
-                        sum_g += src_bytes[src_off + 1];
-                        sum_r += src_bytes[src_off + 2];
-                        sum_a += src_bytes[src_off + 3];
-                    }
-                }
-                const n = ss * ss;
-                const dst_off: usize = (py * w + px) * 4;
-                self.temp_buf[dst_off + 0] = @intCast(sum_r / n); // R
-                self.temp_buf[dst_off + 1] = @intCast(sum_g / n); // G
-                self.temp_buf[dst_off + 2] = @intCast(sum_b / n); // B
-                self.temp_buf[dst_off + 3] = @intCast(sum_a / n); // A
-            }
-        }
-
-        const pos = self.packGlyph(w, h) orelse {
-            self.is_full = true;
-            return null;
-        };
-        const rgba_pitch = w * 4;
-        const box = d3d.D3D11_BOX{
-            .left = pos[0],
-            .top = pos[1],
-            .right = pos[0] + w,
-            .bottom = pos[1] + h,
-        };
-        self.d3d_ctx.UpdateSubresource(
-            @ptrCast(self.texture),
-            0,
-            &box,
-            @ptrCast(self.temp_buf.ptr),
-            rgba_pitch,
-            0,
-        );
+        d2d.renderTargetPopAxisAlignedClip(atlas_rt);
+        if (d2d.renderTargetEndDraw(atlas_rt) < 0) return null;
 
         return AtlasEntry{
             .x = @intCast(pos[0]),
