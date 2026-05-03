@@ -483,12 +483,28 @@ pub const Config = struct {
         return std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
     }
 
-    /// Windows 만 — `shellUtf16` 변환은 windows_host 가 자체 처리. 여기는 raw 만.
+    /// Windows 만 — `config.shell` (UTF-8) 을 `CreateProcessW` 가 받는 UTF-16
+    /// null-terminated string 으로 변환. 함수-local static buffer 에 한 번 변환
+    /// 후 그 포인터 반환 — process 전체 lifetime. 단일 startup 콜만 가정 (host
+    /// 가 SessionCore.init 에 한 번 넘김), 이후 SessionCore 가 그 포인터 보관.
+    ///
+    /// 이전 버전은 `_ = self;` + literal "cmd.exe" 만 반환해서 사용자가 config
+    /// 의 `"shell"` 값을 바꿔도 적용 안 되는 사고 (시연 중 발견 — `"wsl.exe -d
+    /// Debian --cd ~"` 무시되고 cmd 만 떴음).
     pub fn shellUtf16(self: *const Config) [*:0]const WCHAR {
-        _ = self;
         if (!is_windows) @compileError("shellUtf16 is Windows-only");
-        // 단순화 — windows_host 가 동적 변환 알아서 처리. 여긴 placeholder.
-        return std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
+        const S = struct {
+            var buf: [1024]u16 = undefined;
+        };
+        const reserve_for_null = 1;
+        const max_in = S.buf.len - reserve_for_null;
+        const written = std.unicode.utf8ToUtf16Le(S.buf[0..max_in], self.shell) catch {
+            // 비정상 UTF-8 (JSON parser 가 이미 막지만 방어). cmd.exe 로 fallback —
+            // 적어도 윈도우는 떠 있게.
+            return std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
+        };
+        S.buf[written] = 0;
+        return S.buf[0..written :0].ptr;
     }
 };
 
