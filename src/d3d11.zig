@@ -24,6 +24,7 @@ pub const IID_ID3D11Texture2D = GUID{
 pub const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
 pub const D3D11_SDK_VERSION: u32 = 7;
 pub const D3D11_CREATE_DEVICE_DEBUG: u32 = 0x2;
+pub const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
 
 pub const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
 pub const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
@@ -38,13 +39,17 @@ pub const DXGI_SWAP_EFFECT_FLIP_DISCARD: u32 = 4;
 
 pub const D3D11_USAGE_DEFAULT: u32 = 0;
 pub const D3D11_USAGE_DYNAMIC: u32 = 2;
+pub const D3D11_USAGE_STAGING: u32 = 3;
 
 pub const D3D11_BIND_VERTEX_BUFFER: u32 = 0x1;
 pub const D3D11_BIND_CONSTANT_BUFFER: u32 = 0x4;
 pub const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
+pub const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
 
 pub const D3D11_CPU_ACCESS_WRITE: u32 = 0x10000;
+pub const D3D11_CPU_ACCESS_READ: u32 = 0x20000;
 
+pub const D3D11_MAP_READ: u32 = 1;
 pub const D3D11_MAP_WRITE_DISCARD: u32 = 4;
 
 pub const D3D11_INPUT_PER_VERTEX_DATA: u32 = 0;
@@ -206,11 +211,35 @@ pub const ID3D11Buffer = extern struct {
 
 pub const ID3D11Texture2D = extern struct {
     vtable: *const extern struct {
-        QueryInterface: *const anyopaque,
+        QueryInterface: *const fn (*ID3D11Texture2D, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
         AddRef: *const anyopaque,
         Release: *const fn (*ID3D11Texture2D) callconv(.c) u32,
     },
     pub fn Release(self: *ID3D11Texture2D) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn QueryInterface(self: *ID3D11Texture2D, riid: *const GUID, ppv: *?*anyopaque) HRESULT {
+        return self.vtable.QueryInterface(self, riid, ppv);
+    }
+};
+
+// IDXGISurface — D3D11 texture 를 D2D RT 의 backing 으로 사용하기 위해 ID3D11Texture2D
+// 에서 QueryInterface 로 받음. D2D `CreateDxgiSurfaceRenderTarget` 의 인자.
+// {CAFCB56C-6AC3-4889-BF47-9E23BBD260EC}
+pub const IID_IDXGISurface = GUID{
+    .Data1 = 0xCAFCB56C,
+    .Data2 = 0x6AC3,
+    .Data3 = 0x4889,
+    .Data4 = .{ 0xBF, 0x47, 0x9E, 0x23, 0xBB, 0xD2, 0x60, 0xEC },
+};
+
+pub const IDXGISurface = extern struct {
+    vtable: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDXGISurface) callconv(.c) u32,
+    },
+    pub fn Release(self: *IDXGISurface) u32 {
         return self.vtable.Release(self);
     }
 };
@@ -563,8 +592,8 @@ pub const ID3D11DeviceContext = extern struct {
         RSSetState: *const anyopaque, // 43
         RSSetViewports: *const fn (*ID3D11DeviceContext, u32, [*]const D3D11_VIEWPORT) callconv(.c) void, // 44
         RSSetScissorRects: *const anyopaque, // 45
-        CopySubresourceRegion: *const anyopaque, // 46
-        CopyResource: *const anyopaque, // 47
+        CopySubresourceRegion: *const fn (*ID3D11DeviceContext, *anyopaque, u32, u32, u32, u32, *anyopaque, u32, ?*const D3D11_BOX) callconv(.c) void, // 46
+        CopyResource: *const fn (*ID3D11DeviceContext, *anyopaque, *anyopaque) callconv(.c) void, // 47
         UpdateSubresource: *const fn (*ID3D11DeviceContext, *anyopaque, u32, ?*const D3D11_BOX, *const anyopaque, u32, u32) callconv(.c) void, // 48
         CopyStructureCount: *const anyopaque, // 49
         ClearRenderTargetView: *const fn (*ID3D11DeviceContext, *ID3D11RenderTargetView, *const [4]FLOAT) callconv(.c) void, // 50
@@ -624,6 +653,12 @@ pub const ID3D11DeviceContext = extern struct {
     }
     pub fn UpdateSubresource(self: *ID3D11DeviceContext, resource: *anyopaque, subresource: u32, box: ?*const D3D11_BOX, data: *const anyopaque, row_pitch: u32, depth_pitch: u32) void {
         self.vtable.UpdateSubresource(self, resource, subresource, box, data, row_pitch, depth_pitch);
+    }
+    pub fn CopySubresourceRegion(self: *ID3D11DeviceContext, dst: *anyopaque, dst_subresource: u32, dst_x: u32, dst_y: u32, dst_z: u32, src: *anyopaque, src_subresource: u32, src_box: ?*const D3D11_BOX) void {
+        self.vtable.CopySubresourceRegion(self, dst, dst_subresource, dst_x, dst_y, dst_z, src, src_subresource, src_box);
+    }
+    pub fn CopyResource(self: *ID3D11DeviceContext, dst: *anyopaque, src: *anyopaque) void {
+        self.vtable.CopyResource(self, dst, src);
     }
     pub fn ClearRenderTargetView(self: *ID3D11DeviceContext, rtv: *ID3D11RenderTargetView, color: *const [4]FLOAT) void {
         self.vtable.ClearRenderTargetView(self, rtv, color);

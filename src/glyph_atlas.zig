@@ -3,14 +3,18 @@
 //   - Mono / ClearType: `DWRITE_TEXTURE_CLEARTYPE_3x1` 3 bytes/pixel (subpixel
 //     R/G/B alpha). Atlas RGB = subpixel masks, A = 0xFF. Shader applies fg
 //     color via dual-source ClearType blend.
-//   - Color emoji (#134): `IDWriteFactory2.TranslateColorGlyphRun` 으로 layer
-//     enumerator. layer 별로 alpha mask + layer color premultiply 해서
-//     accumulator 에 src-over composite, 마지막에 depremult → atlas RGB = 컬러,
-//     A = alpha. shader 가 `is_color` 분기로 mask 대신 색 직접 출력.
+//   - Color emoji (#134/#136): D3D11 backed D2D RT (per-glyph BGRA texture →
+//     `IDXGISurface` → `CreateDxgiSurfaceRenderTarget`) 에 layer 별
+//     `DrawGlyphRun` (GRAYSCALE antialias) + 2x super-sampling. staging texture
+//     로 `CopyResource` → CPU `Map(READ)` → byte swap (B↔R) + 4-pixel block 평균
+//     다운샘플 → atlas RGBA *premultiplied* 그대로 저장 (depremult 안 함).
+//     shader 의 color path 가 atlas.rgba 를 SRC0 (premult), atlas.aaaa 를 SRC1
+//     로 dual-source blend. Win Terminal `BackendD3D` 동등 path.
 
 const std = @import("std");
 const dw = @import("directwrite.zig");
 const d3d = @import("d3d11.zig");
+const d2d = @import("direct2d.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
@@ -51,7 +55,11 @@ pub const GlyphAtlas = struct {
     // D3D11 texture
     texture: *d3d.ID3D11Texture2D,
     srv: *d3d.ID3D11ShaderResourceView,
+    d3d_device: *d3d.ID3D11Device,
     d3d_ctx: *d3d.ID3D11DeviceContext,
+
+    // Direct2D factory — D3D backed RT (per-glyph) 생성용. null 이면 mono path 만.
+    d2d_factory: ?*d2d.ID2D1Factory = null,
 
     // Temporary buffers for glyph rasterization (reused, heap-allocated)
     temp_buf: []u8, // RGBA output: 256*256*4 bytes
@@ -114,6 +122,13 @@ pub const GlyphAtlas = struct {
         errdefer alloc.free(temp_buf);
         const ct_buf = try alloc.alloc(u8, 256 * 256 * 3); // ClearType 3x1 RGB
 
+        // D2D factory — per-glyph D3D11 backed RT 생성용 (#136 컬러 emoji
+        // hardware antialias). 실패해도 init 자체는 성공 — color emoji 가 mono
+        // path 로 떨어지면서 baseline (1-bit alpha) 결과만 보임.
+        var d2d_factory: ?*d2d.ID2D1Factory = null;
+        _ = d2d.D2D1CreateFactory(d2d.D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d.IID_ID2D1Factory, null, &d2d_factory);
+        errdefer if (d2d_factory) |f| d2d.factoryRelease(f);
+
         return .{
             .alloc = alloc,
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
@@ -124,13 +139,16 @@ pub const GlyphAtlas = struct {
             .pixels_per_dip = pixels_per_dip,
             .texture = tex.?,
             .srv = srv.?,
+            .d3d_device = device,
             .d3d_ctx = ctx,
             .temp_buf = temp_buf,
             .ct_buf = ct_buf,
+            .d2d_factory = d2d_factory,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
+        if (self.d2d_factory) |f| d2d.factoryRelease(f);
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
         self.cache.deinit();
@@ -280,15 +298,26 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// 컬러 emoji 글리프 라스터화 (#134) — `IDWriteFactory2.TranslateColorGlyphRun`
-    /// 으로 layer 분해 → 각 layer 의 alpha mask × 색을 premultiplied src-over 로
-    /// accumulator (temp_buf) 에 누적 → 마지막에 depremultiply → atlas 에 RGBA
-    /// (RGB=색, A=alpha) 로 업로드. is_color=true 인 AtlasEntry 반환.
+    /// 컬러 emoji 글리프 라스터화 (#134/#136) — D3D11 backed D2D RT path.
     ///
-    /// 컬러 글리프 아닌 경우 (TranslateColorGlyphRun 가 DWRITE_E_NOCOLOR /
-    /// 그 외 실패 반환) null 반환 → caller 가 일반 `rasterize` 로 fall-through.
+    /// 흐름:
+    ///   1) `IDWriteFactory2::TranslateColorGlyphRun` 으로 layer enumerator
+    ///   2) Pass 1: layer 별 ALIASED bounds union → atlas size (w,h) 결정
+    ///   3) per-glyph 임시 `ID3D11Texture2D` (BGRA, BIND_RENDER_TARGET) 생성
+    ///   4) `IDXGISurface` QI → `D2D Factory.CreateDxgiSurfaceRenderTarget` —
+    ///      Win Terminal 과 동일한 hardware antialias path
+    ///   5) `BeginDraw` + `SetTextAntialiasMode(GRAYSCALE)` + `Clear(transparent)`
+    ///      + layer 마다 `CreateSolidColorBrush(layer.runColor)` + `DrawGlyphRun`
+    ///   6) `EndDraw` 후 staging tex 로 `CopyResource` + `Map(READ)` 픽셀 가져옴
+    ///   7) BGRA premult → RGBA depremult byte swap into temp_buf →
+    ///      atlas `UpdateSubresource`
+    ///
+    /// is_color=true 인 AtlasEntry 반환. 컬러 글리프 아닌 경우
+    /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
+    /// `rasterize` (mono ClearType) 로 fall-through.
     fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        // IDWriteFactory2 가 있어야 컬러 path 가능 (Windows 8.1+).
+        // D2D factory + IDWriteFactory2 둘 다 있어야 컬러 path 가능.
+        const d2d_fac = self.d2d_factory orelse return null;
         var factory2: ?*dw.IDWriteFactory2 = null;
         if (self.dw_factory.QueryInterface(&dw.IID_IDWriteFactory2, @ptrCast(&factory2)) < 0) return null;
         defer _ = factory2.?.Release();
@@ -356,6 +385,12 @@ pub const GlyphAtlas = struct {
             }
         }
 
+        // 1px padding — D2D antialias 가 ALIASED bounds 약간 밖까지 그릴 수 있음.
+        bounds.left -= 1;
+        bounds.top -= 1;
+        bounds.right += 1;
+        bounds.bottom += 1;
+
         const gw: i32 = bounds.right - bounds.left;
         const gh: i32 = bounds.bottom - bounds.top;
         if (gw <= 0 or gh <= 0) return null;
@@ -363,7 +398,63 @@ pub const GlyphAtlas = struct {
         const h: u32 = @intCast(gh);
         if (w > 256 or h > 256) return null;
 
-        // Pass 2: composite layers into accumulator.
+        // 2x super-sampling — D2D RT 사이즈 (w*2, h*2), DPI 도 2배 → D2D 가
+        // 글리프를 2배 device pixel 그리드에 그림. 이후 4 픽셀 (2×2 block) 평균
+        // 으로 다운샘플 → atlas 의 native (w, h) 사이즈에 grayscale antialiased
+        // 결과. 작은 cell (9×18) 에서 vector outline 가장자리의 거침을 효과적
+        // 으로 부드럽게 함.
+        const ss: u32 = 2; // super-sample factor
+        const rt_w = w * ss;
+        const rt_h = h * ss;
+
+        var rt_tex: ?*d3d.ID3D11Texture2D = null;
+        if (self.d3d_device.CreateTexture2D(&.{
+            .Width = rt_w,
+            .Height = rt_h,
+            .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM,
+            .Usage = d3d.D3D11_USAGE_DEFAULT,
+            .BindFlags = d3d.D3D11_BIND_RENDER_TARGET,
+        }, null, &rt_tex) < 0 or rt_tex == null) return null;
+        defer _ = rt_tex.?.Release();
+
+        // IDXGISurface QI — D2D 가 backing 으로 사용할 표면.
+        var dxgi_surf_ptr: ?*anyopaque = null;
+        if (rt_tex.?.QueryInterface(&d3d.IID_IDXGISurface, &dxgi_surf_ptr) < 0 or dxgi_surf_ptr == null) return null;
+        const dxgi_surf: *d3d.IDXGISurface = @ptrCast(@alignCast(dxgi_surf_ptr));
+        defer _ = dxgi_surf.Release();
+
+        // D2D RT — DPI = sys_dpi × ss. baseline DIP 좌표 (-bounds.left, -bounds.top)
+        // 가 RT 의 device pixel (-bounds.left × ss, -bounds.top × ss) 위치 에 매핑
+        // → 글리프 outline 이 RT 의 (0, 0) ~ (rt_w, rt_h) 에 ss 배 크기로 들어감.
+        const sys_dpi: f32 = 96.0 * self.pixels_per_dip;
+        const rt_dpi: f32 = sys_dpi * @as(f32, @floatFromInt(ss));
+        const rt_props = d2d.D2D1_RENDER_TARGET_PROPERTIES{
+            .type = d2d.D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            .pixelFormat = .{ .format = d2d.DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = d2d.D2D1_ALPHA_MODE_PREMULTIPLIED },
+            .dpiX = rt_dpi,
+            .dpiY = rt_dpi,
+            .usage = d2d.D2D1_RENDER_TARGET_USAGE_NONE,
+            .minLevel = d2d.D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+        var rt: ?*d2d.ID2D1RenderTarget = null;
+        if (d2d.factoryCreateDxgiSurfaceRenderTarget(d2d_fac, @ptrCast(dxgi_surf), &rt_props, &rt) < 0 or rt == null) return null;
+        defer d2d.renderTargetRelease(rt.?);
+
+        d2d.renderTargetBeginDraw(rt.?);
+        d2d.renderTargetSetTextAntialiasMode(rt.?, d2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        // Win Terminal 동등: D2D RT 에 우리 mono path 와 동일한 rendering params
+        // (gamma=1.0, contrast=0, clearTypeLevel=0) 적용. 안 하면 D2D 가 system
+        // default 사용 → antialias gradient 의 visual 결과 다름.
+        d2d.renderTargetSetTextRenderingParams(rt.?, @ptrCast(self.rendering_params));
+        const transparent = d2d.D2D1_COLOR_F{ .r = 0, .g = 0, .b = 0, .a = 0 };
+        d2d.renderTargetClear(rt.?, &transparent);
+
+        // baseline = (-bounds.left, -bounds.top) — 글리프 outline 이 RT 의
+        // (0,0)..(w,h) 에 들어옴.
+        const base_x: f32 = @as(f32, @floatFromInt(-bounds.left));
+        const base_y: f32 = @as(f32, @floatFromInt(-bounds.top));
+
+        // Pass 2: layer 별 DrawGlyphRun. enumerator 새로 열어서 iterate.
         var enumerator: ?*dw.IDWriteColorGlyphRunEnumerator = null;
         if (factory2.?.TranslateColorGlyphRun(
             0,
@@ -374,116 +465,96 @@ pub const GlyphAtlas = struct {
             null,
             0,
             &enumerator,
-        ) < 0 or enumerator == null) return null;
-        defer _ = enumerator.?.Release();
+        ) >= 0 and enumerator != null) {
+            defer _ = enumerator.?.Release();
+            while (true) {
+                var has_run: dw.BOOL = 0;
+                if (enumerator.?.MoveNext(&has_run) < 0 or has_run == 0) break;
+                var cr_ptr: ?*const dw.IDWriteColorGlyphRun = null;
+                if (enumerator.?.GetCurrentRun(&cr_ptr) < 0) continue;
+                const cr = cr_ptr orelse continue;
 
-        // accumulator 를 transparent (0,0,0,0) 로 초기화. premult 공간.
-        const acc_size = w * h * 4;
-        @memset(self.temp_buf[0..acc_size], 0);
+                // layer 색. NO_PALETTE 면 사용자 fg 사용해야 하지만 atlas cache
+                // 는 fg-independent 라 흰색 대체 (대부분 emoji 는 모든 layer 에
+                // palette 색 정의).
+                const layer_color = d2d.D2D1_COLOR_F{
+                    .r = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.r,
+                    .g = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.g,
+                    .b = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.b,
+                    .a = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.a,
+                };
+                var brush: ?*d2d.ID2D1SolidColorBrush = null;
+                if (d2d.renderTargetCreateSolidColorBrush(rt.?, &layer_color, &brush) < 0 or brush == null) continue;
+                defer d2d.brushRelease(brush.?);
 
-        // layer 순회 — bottom-to-top 순서로 enumerator 가 반환.
-        while (true) {
-            var has_run: dw.BOOL = 0;
-            if (enumerator.?.MoveNext(&has_run) < 0 or has_run == 0) break;
-
-            var color_run_ptr: ?*const dw.IDWriteColorGlyphRun = null;
-            if (enumerator.?.GetCurrentRun(&color_run_ptr) < 0) continue;
-            const cr = color_run_ptr orelse continue;
-
-            // layer 색. paletteIndex == 0xFFFF (NO_PALETTE) 이면 사용자 fg
-            // 사용해야 하는 layer — atlas cache 는 fg-independent 라 흰색으로
-            // 대체 (대부분 emoji 는 모든 layer 에 palette 색 정의).
-            const lr: f32 = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.r;
-            const lg: f32 = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.g;
-            const lb: f32 = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.b;
-            const la: f32 = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.a;
-
-            // layer 의 alpha mask 라스터.
-            var layer_analysis: ?*dw.IDWriteGlyphRunAnalysis = null;
-            if (self.dw_factory.CreateGlyphRunAnalysis(
-                &cr.glyph_run,
-                self.pixels_per_dip,
-                null,
-                dw.DWRITE_RENDERING_MODE_ALIASED,
-                dw.DWRITE_MEASURING_MODE_NATURAL,
-                cr.baseline_origin_x,
-                cr.baseline_origin_y,
-                &layer_analysis,
-            ) < 0) continue;
-            defer _ = layer_analysis.?.Release();
-
-            var layer_bounds: dw.RECT = undefined;
-            if (layer_analysis.?.GetAlphaTextureBounds(dw.DWRITE_TEXTURE_ALIASED_1x1, &layer_bounds) < 0) continue;
-            const lw: i32 = layer_bounds.right - layer_bounds.left;
-            const lh: i32 = layer_bounds.bottom - layer_bounds.top;
-            if (lw <= 0 or lh <= 0) continue;
-            const lwu: u32 = @intCast(lw);
-            const lhu: u32 = @intCast(lh);
-            if (lwu > 256 or lhu > 256) continue;
-            const layer_size = lwu * lhu;
-            if (layer_analysis.?.CreateAlphaTexture(
-                dw.DWRITE_TEXTURE_ALIASED_1x1,
-                &layer_bounds,
-                self.ct_buf.ptr,
-                layer_size,
-            ) < 0) continue;
-
-            // composite layer onto accumulator (premultiplied src-over).
-            const offset_x: i32 = layer_bounds.left - bounds.left;
-            const offset_y: i32 = layer_bounds.top - bounds.top;
-            var ly: u32 = 0;
-            while (ly < lhu) : (ly += 1) {
-                const ay_i: i32 = @as(i32, @intCast(ly)) + offset_y;
-                if (ay_i < 0 or ay_i >= @as(i32, @intCast(h))) continue;
-                const ay: u32 = @intCast(ay_i);
-                var lx: u32 = 0;
-                while (lx < lwu) : (lx += 1) {
-                    const ax_i: i32 = @as(i32, @intCast(lx)) + offset_x;
-                    if (ax_i < 0 or ax_i >= @as(i32, @intCast(w))) continue;
-                    const ax: u32 = @intCast(ax_i);
-                    const layer_mask: f32 = @as(f32, @floatFromInt(self.ct_buf[ly * lwu + lx])) / 255.0;
-                    if (layer_mask == 0) continue;
-                    const eff_a: f32 = layer_mask * la;
-                    if (eff_a <= 0) continue;
-                    // Premultiplied src.
-                    const src_r = lr * eff_a;
-                    const src_g = lg * eff_a;
-                    const src_b = lb * eff_a;
-                    const src_a = eff_a;
-                    const acc_off = (ay * w + ax) * 4;
-                    const dst_r: f32 = @as(f32, @floatFromInt(self.temp_buf[acc_off + 0])) / 255.0;
-                    const dst_g: f32 = @as(f32, @floatFromInt(self.temp_buf[acc_off + 1])) / 255.0;
-                    const dst_b: f32 = @as(f32, @floatFromInt(self.temp_buf[acc_off + 2])) / 255.0;
-                    const dst_a: f32 = @as(f32, @floatFromInt(self.temp_buf[acc_off + 3])) / 255.0;
-                    const inv_a = 1.0 - src_a;
-                    const out_r = src_r + dst_r * inv_a;
-                    const out_g = src_g + dst_g * inv_a;
-                    const out_b = src_b + dst_b * inv_a;
-                    const out_a = src_a + dst_a * inv_a;
-                    self.temp_buf[acc_off + 0] = @intFromFloat(@min(out_r * 255.0, 255.0));
-                    self.temp_buf[acc_off + 1] = @intFromFloat(@min(out_g * 255.0, 255.0));
-                    self.temp_buf[acc_off + 2] = @intFromFloat(@min(out_b * 255.0, 255.0));
-                    self.temp_buf[acc_off + 3] = @intFromFloat(@min(out_a * 255.0, 255.0));
-                }
+                const layer_baseline = d2d.D2D_POINT_2F{
+                    .x = base_x + cr.baseline_origin_x,
+                    .y = base_y + cr.baseline_origin_y,
+                };
+                d2d.renderTargetDrawGlyphRun(
+                    rt.?,
+                    layer_baseline,
+                    @ptrCast(&cr.glyph_run),
+                    d2d.brushAsBrush(brush.?),
+                    dw.DWRITE_MEASURING_MODE_NATURAL,
+                );
             }
         }
 
-        // depremultiply: shader 가 atlas.rgb 를 색으로, atlas.a 를 alpha mask
-        // 로 사용 (ClearType blend 의 SRC1_COLOR 에 atlas.aaa 전달). non-premult
-        // RGB 가 필요.
+        if (d2d.renderTargetEndDraw(rt.?) < 0) return null;
+
+        // staging texture (CPU read) — super-sample 사이즈 그대로 (rt_w × rt_h).
+        var staging_tex: ?*d3d.ID3D11Texture2D = null;
+        if (self.d3d_device.CreateTexture2D(&.{
+            .Width = rt_w,
+            .Height = rt_h,
+            .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM,
+            .Usage = d3d.D3D11_USAGE_STAGING,
+            .BindFlags = 0,
+            .CPUAccessFlags = d3d.D3D11_CPU_ACCESS_READ,
+        }, null, &staging_tex) < 0 or staging_tex == null) return null;
+        defer _ = staging_tex.?.Release();
+
+        self.d3d_ctx.CopyResource(@ptrCast(staging_tex.?), @ptrCast(rt_tex.?));
+
+        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
+        if (self.d3d_ctx.Map(@ptrCast(staging_tex.?), 0, d3d.D3D11_MAP_READ, 0, &mapped) < 0) return null;
+        defer self.d3d_ctx.Unmap(@ptrCast(staging_tex.?), 0);
+
+        const src_bytes: [*]const u8 = @ptrCast(mapped.pData orelse return null);
+        const stride = mapped.RowPitch;
+
+        // ss×ss block 평균 (premultiplied 공간) → byte swap (B↔R) 만 해서 atlas
+        // RGBA **premultiplied 그대로** 저장. Win Terminal 동등: D2D 가 그린 premult
+        // 픽셀을 atlas 에 보존, shader 가 atlas.rgba 를 SRC0 (premult) 로 사용 +
+        // atlas.aaaa 를 SRC1 로. depremult 안 함.
         var py: u32 = 0;
         while (py < h) : (py += 1) {
             var px: u32 = 0;
             while (px < w) : (px += 1) {
-                const off = (py * w + px) * 4;
-                const a = self.temp_buf[off + 3];
-                if (a > 0) {
-                    const af: f32 = @as(f32, @floatFromInt(a)) / 255.0;
-                    const inv = 1.0 / af;
-                    self.temp_buf[off + 0] = @intFromFloat(@min(@as(f32, @floatFromInt(self.temp_buf[off + 0])) * inv, 255.0));
-                    self.temp_buf[off + 1] = @intFromFloat(@min(@as(f32, @floatFromInt(self.temp_buf[off + 1])) * inv, 255.0));
-                    self.temp_buf[off + 2] = @intFromFloat(@min(@as(f32, @floatFromInt(self.temp_buf[off + 2])) * inv, 255.0));
+                var sum_b: u32 = 0;
+                var sum_g: u32 = 0;
+                var sum_r: u32 = 0;
+                var sum_a: u32 = 0;
+                var dy: u32 = 0;
+                while (dy < ss) : (dy += 1) {
+                    const sy = py * ss + dy;
+                    var dx: u32 = 0;
+                    while (dx < ss) : (dx += 1) {
+                        const sx = px * ss + dx;
+                        const src_off: usize = sy * stride + sx * 4;
+                        sum_b += src_bytes[src_off + 0];
+                        sum_g += src_bytes[src_off + 1];
+                        sum_r += src_bytes[src_off + 2];
+                        sum_a += src_bytes[src_off + 3];
+                    }
                 }
+                const n = ss * ss;
+                const dst_off: usize = (py * w + px) * 4;
+                self.temp_buf[dst_off + 0] = @intCast(sum_r / n); // R
+                self.temp_buf[dst_off + 1] = @intCast(sum_g / n); // G
+                self.temp_buf[dst_off + 2] = @intCast(sum_b / n); // B
+                self.temp_buf[dst_off + 3] = @intCast(sum_a / n); // A
             }
         }
 
