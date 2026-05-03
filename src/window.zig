@@ -68,6 +68,7 @@ const MK_LBUTTON: WPARAM = 0x0001;
 const SW_SHOW: c_int = 5;
 const SW_HIDE: c_int = 0;
 const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
 const SWP_NOSIZE: UINT = 0x0001;
 const SWP_NOMOVE: UINT = 0x0002;
 const SWP_NOREDRAW: UINT = 0x0008;
@@ -629,6 +630,18 @@ pub const Window = struct {
             self.visible = false;
             _ = ShowWindow(hwnd, SW_HIDE);
             _ = DwmFlush();
+        }
+    }
+
+    /// `WS_EX_TOPMOST` 를 잠시 해제 — TildaZ 는 그대로 보이지만 z-order 가
+    /// normal 그룹으로 내려가서, 새로 launch 되는 editor (config / log 의 default
+    /// app) 가 자연스럽게 우리 위로 올라옴. config / log 단축키 (Ctrl+Shift+P/L)
+    /// 직후 사용자가 editor 를 즉시 보도록 (시연 중 발견 — editor 가 우리 창
+    /// 뒤로 가려져 안 보였던 사고). 사용자가 F1 toggle 해 다시 show() 가 호출
+    /// 되면 `applyRect` 의 `HWND_TOPMOST` 가 다시 topmost 로 복귀시킴.
+    pub fn yieldTopmostUntilNextShow(self: *Window) void {
+        if (self.hwnd) |hwnd| {
+            _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 
