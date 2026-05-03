@@ -34,6 +34,9 @@ const TextInstance = extern struct {
     uv_pos: [2]f32,
     uv_size: [2]f32,
     fg_color: [4]f32,
+    /// 0 = mono / ClearType (atlas RGB = subpixel mask, shader 가 fg_color 곱).
+    /// 1 = color emoji (atlas RGB = 컬러, atlas A = alpha mask).
+    color_flag: f32 = 0.0,
 };
 
 // Constant buffer (must be 16-byte aligned, multiple of 16 bytes)
@@ -66,24 +69,37 @@ const text_shader_src =
     \\Texture2D atlas : register(t0);
     \\SamplerState smp : register(s0);
     \\struct I { float2 pos: IPOS; float2 sz: ISZ; float2 uvp: IUVP; float2 uvs: IUVS;
-    \\  float4 fg: IFG; uint vid: SV_VertexID; };
-    \\struct O { float4 pos: SV_POSITION; float2 uv: TEXCOORD; float4 fg: COLOR; };
+    \\  float4 fg: IFG; float cf: ICF; uint vid: SV_VertexID; };
+    \\struct O { float4 pos: SV_POSITION; float2 uv: TEXCOORD; float4 fg: COLOR;
+    \\  float cf: COLOR1; };
     \\struct P { float4 c0: SV_Target0; float4 c1: SV_Target1; };
     \\O text_vs(I i) { float2 c = float2(i.vid & 1, i.vid >> 1);
     \\  float2 px = (i.pos + c * i.sz) / sa.xy * 2.0 - 1.0;
     \\  O o; o.pos = float4(px.x, -px.y, 0, 1);
-    \\  o.uv = (i.uvp + c * i.uvs) / sa.zw; o.fg = i.fg; return o; }
+    \\  o.uv = (i.uvp + c * i.uvs) / sa.zw; o.fg = i.fg; o.cf = i.cf; return o; }
     \\float enh(float a, float k) { return a * (k + 1.0) / (a * k + 1.0); }
     \\float gammaCorr(float a, float f, float4 g) {
     \\  return a + a * (1.0 - a) * ((g.x * f + g.y) * a + (g.z * f + g.w)); }
     \\float lodAdj(float k, float3 c) {
     \\  return k * saturate(dot(c, float3(0.30, 0.59, 0.11) * -4.0) + 3.0); }
-    \\P text_ps(O i) : SV_Target { float3 g = atlas.Sample(smp, i.uv).rgb;
+    \\P text_ps(O i) : SV_Target {
+    \\  float4 sample = atlas.Sample(smp, i.uv);
+    \\  P o;
+    \\  if (i.cf > 0.5) {
+    \\    // Color emoji path — atlas RGB = 색 (depremult), atlas A = alpha mask.
+    \\    // ClearType blend (SRC1_COLOR / INV_SRC1_COLOR) 와 호환되도록 c1 에
+    \\    // alpha mask 를 RGB 채널 모두에 동일하게 출력 → result = sample.rgb *
+    \\    // sample.a + dst * (1 - sample.a) (표준 alpha blend).
+    \\    o.c0 = float4(sample.rgb, 1);
+    \\    o.c1 = float4(sample.aaa, 1);
+    \\    return o;
+    \\  }
+    \\  float3 g = sample.rgb;
     \\  float k = lodAdj(p.x, i.fg.rgb);
     \\  float3 ct = float3(enh(g.r, k), enh(g.g, k), enh(g.b, k));
     \\  ct = float3(gammaCorr(ct.r, i.fg.r, gr), gammaCorr(ct.g, i.fg.g, gr),
     \\              gammaCorr(ct.b, i.fg.b, gr));
-    \\  P o; o.c0 = float4(i.fg.rgb * ct, 1); o.c1 = float4(1 - ct, 1); return o; }
+    \\  o.c0 = float4(i.fg.rgb * ct, 1); o.c1 = float4(1 - ct, 1); return o; }
 ;
 
 // --- Renderer ---
@@ -283,6 +299,7 @@ pub const D3d11Renderer = struct {
             .{ .SemanticName = "IUVP", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 16, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
             .{ .SemanticName = "IUVS", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 24, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
             .{ .SemanticName = "IFG", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32B32A32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 32, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "ICF", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 48, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
         };
         var text_layout: ?*d3d.ID3D11InputLayout = null;
         if (device.?.CreateInputLayout(&text_elems, text_elems.len, text_vs_blob.GetBufferPointer(), text_vs_blob.GetBufferSize(), &text_layout) < 0) return error.LayoutFailed;
@@ -1024,6 +1041,7 @@ pub const D3d11Renderer = struct {
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
+                    .color_flag = if (entry.is_color) 1.0 else 0.0,
                 };
                 text_count += 1;
             }

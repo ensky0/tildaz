@@ -59,6 +59,7 @@ pub const DWRITE_MEASURING_MODE_NATURAL: u32 = 0;
 pub const DWRITE_PIXEL_GEOMETRY_FLAT: u32 = 0;
 pub const DWRITE_PIXEL_GEOMETRY_RGB: u32 = 1;
 
+pub const DWRITE_RENDERING_MODE_ALIASED: u32 = 1;
 pub const DWRITE_RENDERING_MODE_NATURAL: u32 = 4;
 pub const DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC: u32 = 5;
 pub const DWRITE_RENDERING_MODE_OUTLINE: u32 = 6;
@@ -406,7 +407,17 @@ pub const IDWriteFactory2 = extern struct {
         // IDWriteFactory2 (4)
         GetSystemFontFallback: *const fn (*IDWriteFactory2, *?*IDWriteFontFallback) callconv(.c) HRESULT,
         CreateFontFallbackBuilder: *const anyopaque,
-        TranslateColorGlyphRun: *const anyopaque,
+        TranslateColorGlyphRun: *const fn (
+            *IDWriteFactory2,
+            FLOAT, // baselineOriginX
+            FLOAT, // baselineOriginY
+            *const DWRITE_GLYPH_RUN,
+            ?*const anyopaque, // glyphRunDescription (DWRITE_GLYPH_RUN_DESCRIPTION) — null OK
+            u32, // measuringMode
+            ?*const DWRITE_MATRIX, // worldToDeviceTransform — null OK
+            UINT32, // colorPaletteIndex (0 = default)
+            *?*IDWriteColorGlyphRunEnumerator,
+        ) callconv(.c) HRESULT,
         CreateCustomRenderingParams2: *const anyopaque,
         CreateGlyphRunAnalysis2: *const anyopaque,
     };
@@ -417,6 +428,90 @@ pub const IDWriteFactory2 = extern struct {
 
     pub fn GetSystemFontFallback(self: *IDWriteFactory2, fallback: *?*IDWriteFontFallback) HRESULT {
         return self.vtable.GetSystemFontFallback(self, fallback);
+    }
+
+    pub fn TranslateColorGlyphRun(
+        self: *IDWriteFactory2,
+        baseline_x: FLOAT,
+        baseline_y: FLOAT,
+        glyph_run: *const DWRITE_GLYPH_RUN,
+        run_description: ?*const anyopaque,
+        measuring_mode: u32,
+        transform: ?*const DWRITE_MATRIX,
+        palette_index: UINT32,
+        enumerator: *?*IDWriteColorGlyphRunEnumerator,
+    ) HRESULT {
+        return self.vtable.TranslateColorGlyphRun(
+            self,
+            baseline_x,
+            baseline_y,
+            glyph_run,
+            run_description,
+            measuring_mode,
+            transform,
+            palette_index,
+            enumerator,
+        );
+    }
+};
+
+// --- 컬러 emoji 글리프 (#134) ---
+//
+// IDWriteFactory2.TranslateColorGlyphRun 이 컬러 글리프 (Segoe UI Emoji 같은
+// COLR/CPAL 폰트) 를 enumerator 로 분해 — enumerator 가 layer 별로
+// IDWriteColorGlyphRun (sub-glyph_run + 색) 을 반환. 우리는 각 layer 의 alpha
+// mask 를 일반 path 로 라스터 + layer 색을 곱해 BGRA 로 누적.
+
+/// `runColor` 4 float (R, G, B, A premultiplied 아님 — 일반 sRGB).
+pub const DWRITE_COLOR_F = extern struct {
+    r: FLOAT,
+    g: FLOAT,
+    b: FLOAT,
+    a: FLOAT,
+};
+
+/// `paletteIndex` 가 이 값이면 layer 가 *uncolored* — 사용자 fg 색으로 채워야
+/// 함. 우리는 atlas 캐싱이라 fg 가 cache 시점에 안 정해짐 — 일단 흰색으로 누적
+/// (검은 silhouette 보다는 fg-colored 가 맞으니 흰색으로 그려두면 셰이더가
+/// 색 모드면 그대로 흰색, mono 모드면 fg 곱).
+pub const DWRITE_NO_PALETTE_INDEX: UINT16 = 0xFFFF;
+
+/// `TranslateColorGlyphRun` 이 *컬러 아닌* 글리프 run 에 대해 반환하는 HRESULT.
+/// caller 는 이 코드면 fall-through 해서 일반 alpha rasterize.
+pub const DWRITE_E_NOCOLOR: HRESULT = @bitCast(@as(u32, 0x88985003));
+
+pub const IDWriteColorGlyphRun = extern struct {
+    glyph_run: DWRITE_GLYPH_RUN,
+    glyph_run_description: ?*const anyopaque, // DWRITE_GLYPH_RUN_DESCRIPTION — 우리 안 사용
+    baseline_origin_x: FLOAT,
+    baseline_origin_y: FLOAT,
+    run_color: DWRITE_COLOR_F,
+    palette_index: UINT16,
+};
+
+pub const IDWriteColorGlyphRunEnumerator = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const fn (*IDWriteColorGlyphRunEnumerator, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteColorGlyphRunEnumerator) callconv(.c) u32,
+        Release: *const fn (*IDWriteColorGlyphRunEnumerator) callconv(.c) u32,
+        // IDWriteColorGlyphRunEnumerator (2)
+        MoveNext: *const fn (*IDWriteColorGlyphRunEnumerator, *BOOL) callconv(.c) HRESULT,
+        GetCurrentRun: *const fn (*IDWriteColorGlyphRunEnumerator, *?*const IDWriteColorGlyphRun) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDWriteColorGlyphRunEnumerator) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn MoveNext(self: *IDWriteColorGlyphRunEnumerator, has_run: *BOOL) HRESULT {
+        return self.vtable.MoveNext(self, has_run);
+    }
+
+    pub fn GetCurrentRun(self: *IDWriteColorGlyphRunEnumerator, run: *?*const IDWriteColorGlyphRun) HRESULT {
+        return self.vtable.GetCurrentRun(self, run);
     }
 };
 
