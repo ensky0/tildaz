@@ -71,6 +71,10 @@ pub const GlyphAtlas = struct {
     /// Win Terminal 동등 — color emoji layer 마다 brush 새로 만들지 않고 atlas
     /// init 시 1번 흰색으로 만든 brush 를 SetColor 로 layer color 갱신해서 재사용.
     atlas_brush: ?*d2d.ID2D1SolidColorBrush = null,
+    /// atlas D2D RT 의 ID2D1DeviceContext (D2D 1.1+) — SetUnitMode(PIXELS) +
+    /// GetGlyphRunWorldBounds 사용. Win 7 SP1 미만에서 QI 실패 시 null,
+    /// rasterizeColor 가 mono path 로 fallback.
+    atlas_dc: ?*d2d.ID2D1DeviceContext = null,
 
     // Temporary buffers for glyph rasterization (reused, heap-allocated)
     temp_buf: []u8, // RGBA output: 256*256*4 bytes
@@ -171,6 +175,9 @@ pub const GlyphAtlas = struct {
                     // 와 무관한 RT state).
                     d2d.renderTargetSetTextAntialiasMode(atlas_d2d_rt.?, d2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
                     d2d.renderTargetSetTextRenderingParams(atlas_d2d_rt.?, @ptrCast(rp.?));
+                    // sys_dpi 적용 — RT 가 device pixel 좌표를 정확히 해석.
+                    const sys_dpi: f32 = 96.0 * pixels_per_dip;
+                    d2d.renderTargetSetDpi(atlas_d2d_rt.?, sys_dpi, sys_dpi);
                 }
             }
         }
@@ -178,6 +185,20 @@ pub const GlyphAtlas = struct {
         errdefer if (atlas_dxgi) |s| {
             _ = s.Release();
         };
+
+        // ID2D1DeviceContext QI (#137-3) — SetUnitMode(PIXELS) + GetGlyphRunWorldBounds.
+        // Win 7 SP1 + Platform Update / Win 8+ 에서 모든 RT 가 DC 호환. atlas_dc
+        // null 이면 rasterizeColor 가 fallback (이전 ALIASED bounds path).
+        var atlas_dc: ?*d2d.ID2D1DeviceContext = null;
+        if (atlas_d2d_rt) |rt| {
+            var dc_ptr: ?*anyopaque = null;
+            if (d2d.renderTargetQueryInterface(rt, &d2d.IID_ID2D1DeviceContext, &dc_ptr) >= 0 and dc_ptr != null) {
+                atlas_dc = @ptrCast(@alignCast(dc_ptr));
+                // PIXEL 모드 — 모든 좌표/사이즈가 device pixel. dpi 무관.
+                d2d.deviceContextSetUnitMode(atlas_dc.?, d2d.D2D1_UNIT_MODE_PIXELS);
+            }
+        }
+        errdefer if (atlas_dc) |c| d2d.deviceContextRelease(c);
 
         // Reusable solid brush (#137-6) — atlas init 시 흰색으로 한 번 생성,
         // layer 마다 SetColor 만 호출해서 재사용. brush 매번 생성/release 비용
@@ -207,11 +228,13 @@ pub const GlyphAtlas = struct {
             .atlas_dxgi_surface = atlas_dxgi,
             .atlas_d2d_rt = atlas_d2d_rt,
             .atlas_brush = atlas_brush,
+            .atlas_dc = atlas_dc,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
         if (self.atlas_brush) |b| d2d.brushRelease(b);
+        if (self.atlas_dc) |c| d2d.deviceContextRelease(c);
         if (self.atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
         if (self.atlas_dxgi_surface) |s| _ = s.Release();
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
@@ -385,8 +408,9 @@ pub const GlyphAtlas = struct {
     /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
     /// `rasterize` (mono ClearType) 로 fall-through.
     fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        // atlas D2D RT + brush + IDWriteFactory2 셋 다 있어야 컬러 path 가능.
+        // atlas D2D RT + DC + brush + IDWriteFactory2 모두 있어야 컬러 path 가능.
         const atlas_rt = self.atlas_d2d_rt orelse return null;
+        const atlas_dc = self.atlas_dc orelse return null;
         const brush = self.atlas_brush orelse return null;
         var factory2: ?*dw.IDWriteFactory2 = null;
         if (self.dw_factory.QueryInterface(&dw.IID_IDWriteFactory2, @ptrCast(&factory2)) < 0) return null;
@@ -405,14 +429,15 @@ pub const GlyphAtlas = struct {
             .bidiLevel = 0,
         };
 
-        // 컨테이너 글리프 (glyph_index 가 가리키는 main glyph) 는 COLR/PNG 폰트
-        // 에서 outline 이 없을 수 있어 GetAlphaTextureBounds 가 빈 bounds 반환.
-        // 따라서 bounds 는 layer 들의 union 으로 계산해야 함 — 두 패스 (Pass 1:
-        // bounds 만, Pass 2: composite). enumerator 는 한 번만 iterate 가능
-        // (rewind 안 됨) 라 TranslateColorGlyphRun 을 두 번 호출.
+        // 컨테이너 글리프 (COLR/PNG 폰트의 main glyph) 는 outline 없을 수 있어
+        // bounds 는 layer 들의 union. Win Terminal `ColorGlyphRunAccumulateBounds`
+        // 동등 — `ID2D1DeviceContext::GetGlyphRunWorldBounds` (PIXEL unit + sys
+        // DPI) 로 layer 별 정확한 outline bounds (antialias gradient 포함) 측정,
+        // floor/ceil 로 i32 RECT. enumerator 는 rewind 불가라 두 번 호출 (Pass 1:
+        // bounds, Pass 2: composite).
 
-        // Pass 1: layer bounds union.
-        var bounds = dw.RECT{ .left = 0x7FFFFFFF, .top = 0x7FFFFFFF, .right = -0x80000000, .bottom = -0x80000000 };
+        // Pass 1: layer bounds union via GetGlyphRunWorldBounds.
+        var fbounds = d2d.D2D1_RECT_F{ .left = 1.0e30, .top = 1.0e30, .right = -1.0e30, .bottom = -1.0e30 };
         {
             var enum1: ?*dw.IDWriteColorGlyphRunEnumerator = null;
             const tr1 = factory2.?.TranslateColorGlyphRun(
@@ -433,33 +458,33 @@ pub const GlyphAtlas = struct {
                 var cr_ptr: ?*const dw.IDWriteColorGlyphRun = null;
                 if (enum1.?.GetCurrentRun(&cr_ptr) < 0) continue;
                 const cr = cr_ptr orelse continue;
-                var la: ?*dw.IDWriteGlyphRunAnalysis = null;
-                if (self.dw_factory.CreateGlyphRunAnalysis(
-                    &cr.glyph_run,
-                    self.pixels_per_dip,
-                    null,
-                    dw.DWRITE_RENDERING_MODE_ALIASED,
+                const baseline = d2d.D2D_POINT_2F{ .x = cr.baseline_origin_x, .y = cr.baseline_origin_y };
+                var lb: d2d.D2D1_RECT_F = undefined;
+                if (d2d.deviceContextGetGlyphRunWorldBounds(
+                    atlas_dc,
+                    baseline,
+                    @ptrCast(&cr.glyph_run),
                     dw.DWRITE_MEASURING_MODE_NATURAL,
-                    cr.baseline_origin_x,
-                    cr.baseline_origin_y,
-                    &la,
+                    &lb,
                 ) < 0) continue;
-                defer _ = la.?.Release();
-                var lb: dw.RECT = undefined;
-                if (la.?.GetAlphaTextureBounds(dw.DWRITE_TEXTURE_ALIASED_1x1, &lb) < 0) continue;
                 if (lb.right - lb.left <= 0 or lb.bottom - lb.top <= 0) continue;
-                if (lb.left < bounds.left) bounds.left = lb.left;
-                if (lb.top < bounds.top) bounds.top = lb.top;
-                if (lb.right > bounds.right) bounds.right = lb.right;
-                if (lb.bottom > bounds.bottom) bounds.bottom = lb.bottom;
+                if (lb.left < fbounds.left) fbounds.left = lb.left;
+                if (lb.top < fbounds.top) fbounds.top = lb.top;
+                if (lb.right > fbounds.right) fbounds.right = lb.right;
+                if (lb.bottom > fbounds.bottom) fbounds.bottom = lb.bottom;
             }
         }
+        if (fbounds.right - fbounds.left <= 0 or fbounds.bottom - fbounds.top <= 0) return null;
 
-        // 1px padding — D2D antialias 가 ALIASED bounds 약간 밖까지 그릴 수 있음.
-        bounds.left -= 1;
-        bounds.top -= 1;
-        bounds.right += 1;
-        bounds.bottom += 1;
+        // Win Terminal 동등 (`lrintf` round-to-nearest) — floor/ceil 은 antialias
+        // 마진을 양쪽으로 1px 씩 추가해서 글리프가 cell 외곽으로 빠질 위험. round
+        // 가 outline 의 visual center 에 가장 가까운 정수.
+        const bounds = dw.RECT{
+            .left = @intFromFloat(@round(fbounds.left)),
+            .top = @intFromFloat(@round(fbounds.top)),
+            .right = @intFromFloat(@round(fbounds.right)),
+            .bottom = @intFromFloat(@round(fbounds.bottom)),
+        };
 
         const gw: i32 = bounds.right - bounds.left;
         const gh: i32 = bounds.bottom - bounds.top;
