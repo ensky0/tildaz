@@ -6,8 +6,6 @@
 
 const std = @import("std");
 const ct = @import("macos_coretext.zig");
-const dialog = @import("dialog.zig");
-const messages = @import("messages.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -74,21 +72,18 @@ pub const CoreTextFontContext = struct {
                 ct.kCFStringEncodingUTF8,
                 0,
             ) orelse {
-                showFontNotFound(family);
-                unreachable;
+                @import("font_validate.zig").showNotFoundFatal(family, font_families);
             };
             defer ct.CFRelease(family_str);
             const candidate = ct.CTFontCreateWithName(family_str, @floatCast(font_size), null) orelse {
-                showFontNotFound(family);
-                unreachable;
+                @import("font_validate.zig").showNotFoundFatal(family, font_families);
             };
             const actual_family = ct.CTFontCopyFamilyName(candidate);
             const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
             ct.CFRelease(actual_family);
             if (!matched) {
                 ct.CFRelease(candidate);
-                showFontNotFound(family);
-                unreachable;
+                @import("font_validate.zig").showNotFoundFatal(family, font_families);
             }
             fallback_fonts[fallback_count] = candidate;
             if (fallback_count == 0) {
@@ -176,13 +171,9 @@ pub const CoreTextFontContext = struct {
         };
     }
 
-    /// chain 의 한 폰트가 system 에 없을 때 — Windows `messages.font_not_found_format`
-    /// 와 동일 phrasing 으로 fatal dialog. dialog.showFatal 가 process.exit.
-    fn showFontNotFound(family: []const u8) noreturn {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, messages.font_not_found_format, .{family}) catch "Font not found";
-        dialog.showFatal(messages.config_error_title, msg);
-    }
+    // chain 의 한 폰트가 system 에 없을 때 — `font_validate.showNotFoundFatal`
+    // (cross-platform) 가 chain dump + 미설치 표시 + config 경로 안내 + fatal.
+    // Windows / macOS 같은 메시지 형식 사용.
 
     pub fn deinit(self: *CoreTextFontContext) void {
         for (self.fallback_fonts[0..self.fallback_count]) |f| {

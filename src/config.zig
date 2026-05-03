@@ -189,7 +189,7 @@ pub const DEFAULT_CONFIG_JSON: []const u8 = if (is_windows)
     \\    "opacity": 100
     \\  },
     \\  "font": {
-    \\    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
+    \\    "family": ["Cascadia Code", "Malgun Gothic", "Segoe UI Symbol"],
     \\    "size": 19,
     \\    "cell_width": 1.1,
     \\    "line_height": 0.95
@@ -235,7 +235,7 @@ const default_line_height: f32 = if (is_windows) 0.95 else 1.1;
 const default_shell: []const u8 = if (is_windows) "cmd.exe" else "";
 
 const DEFAULT_FONT_FAMILIES: []const []const u8 = if (is_windows)
-    &[_][]const u8{ "Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol" }
+    &[_][]const u8{ "Cascadia Code", "Malgun Gothic", "Segoe UI Symbol" }
 else
     &[_][]const u8{"Menlo"};
 

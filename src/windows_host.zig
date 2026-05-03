@@ -116,18 +116,19 @@ pub fn run() !void {
     const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system. 하나라도 미설치면 즉시
-    // fatal — 사용자가 명시한 chain 전체가 시스템에 있어야 한다는 의도 (macOS
-    // 동등). 이전엔 showError + return 이었지만 (a) macOS 는 showFatal 로 통일
-    // 되어 있었음, (b) showError + return 은 caller 가 종료 path 를 신경 써야
-    // 하는 implicit 흐름. showFatal (noreturn) 이 의도에 더 명시적.
+    // fatal — 사용자가 명시한 chain 전체가 시스템에 있어야 한다는 의도. macOS
+    // CoreTextFontContext.init 의 per-entry CTFontCopyFamilyName 검증과 동등.
+    // 메시지는 font_validate 가 처리 — 다른 config 에러 (shell_validate / hotkey)
+    // 와 같은 풍부한 형식 (chain dump + 미설치 표시 + config 경로).
+    const font_validate = @import("font_validate.zig");
     for (0..config.font_family_count) |i| {
         const idx: u8 = @intCast(i);
         const fam_w = config.fontFamilyUtf16(idx);
         if (!DWriteFontCtx.isFontAvailable(fam_w)) {
-            var msg_buf: [256]u8 = undefined;
-            const fam = config.font_families[i];
-            const msg = std.fmt.bufPrint(&msg_buf, messages.font_not_found_format, .{fam}) catch "Font not found";
-            dialog.showFatal(messages.config_error_title, msg);
+            font_validate.showNotFoundFatal(
+                config.font_families[i],
+                config.font_families[0..config.font_family_count],
+            );
         }
     }
 
