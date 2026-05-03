@@ -71,12 +71,14 @@ macOS 에서 `applicationShouldTerminate:` 로 Cmd+Q 가로채 confirm 띄움. W
 
 ---
 
-## #118 추가 sub: Windows hotkey config (방금 추가)
+## #118 추가 sub: Windows hotkey config
+
 - [ ] config 의 `"hotkey": "f1"` default 자동 생성 (`%APPDATA%\tildaz\config.json`)
 - [ ] `"hotkey": "ctrl+space"` 로 변경 후 재시작 → Ctrl+Space 가 toggle 트리거
-- [ ] `"hotkey": "shift+win+t"` 로 변경 후 재시작 → Shift+Win+T 가 toggle (그 사이 F1 은 동작 X)
-- [ ] `"hotkey": "noSuchKey"` → fatal dialog "failed to parse hotkey value"
-- [ ] f1..f12, space, grave, alphanumeric (e.g. `"ctrl+a"`) 모두 동작
+- [ ] `"hotkey": "noSuchKey"` (parser 가 모르는 키 이름) → fatal dialog "failed to parse hotkey value"
+- [ ] `"hotkey": "f12"` → **fatal dialog** ("Failed to register the global hotkey ... F12 is reserved for the kernel debugger ..."). MSDN 명시 — F12 는 OS 예약, RegisterHotKey 자체가 실패.
+- [ ] `"hotkey": "shift+win+t"` 같이 Windows shell / 다른 앱이 먼저 가로채는 조합 → 위와 같은 fatal dialog (RegisterHotKey 실패).
+- [ ] f1..**f11**, space, grave, alphanumeric (e.g. `"ctrl+a"`) 모두 동작 (f12 제외)
 
 ---
 
