@@ -123,7 +123,9 @@ macOS Shift+Cmd+[/] 와 동일 키 pair. Windows 는 modifier 만 네이티브 (
 
 ## #132 emoji 렌더링 (macOS 작업 — Windows 동등성 확인)
 
-macOS 에서 R8 alpha-only atlas 가 Apple Color Emoji silhouette 만 표시하는 문제를 BGRA8 atlas 로 fix. Windows 는 ClearType 용 R8G8B8A8 atlas 라 *색깔 자체*는 처음부터 OK 일 가능성 높지만, **grapheme cluster 단위 처리** (VS-16, skin tone modifier, ZWJ 시퀀스) 는 별개 문제로 Windows 도 깨질 가능성 큼.
+> **시연 결과 (2026-05-03):** Windows 는 컬러 emoji + grapheme shaping 모두 미구현 — 별도 cycle 로 [#134](https://github.com/ensky0/tildaz/issues/134) 에서 진행. 자세한 증상 / 원인 / 작업 범위 그쪽 참고.
+>
+> 가설: ClearType 용 R8G8B8A8 atlas 라 *색깔 자체*는 처음부터 OK 일 가능성 — 실제로는 컬러 글리프 atlas/셰이더 path 자체가 부재. **grapheme cluster 단위 처리** (VS-16, skin tone modifier, ZWJ 시퀀스) 도 미구현.
 
 Windows 의 emoji picker 는 `Win+.` (또는 `Win+;`).
 
