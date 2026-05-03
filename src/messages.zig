@@ -14,6 +14,11 @@ pub const quit_confirm_title = "Quit TildaZ?";
 /// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
 pub const quit_confirm_format = "This will close {d} open tab{s}.";
 
+/// About 다이얼로그 본문 — 양쪽 platform 동일 구조. version / exe / pid /
+/// config / log 다음 Tip 라인에 OS 별 단축키 (Windows Ctrl+Shift+P/L vs macOS
+/// Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접 selection +
+/// copy (mac NSTextView) 하거나 native Ctrl+C / Cmd+C 로 본문 전체 copy 후
+/// path 만 골라낼 수 있고, Tip 의 단축키로 editor 를 바로 열 수도 있음.
 pub const about_format =
     \\TildaZ v{s}
     \\
@@ -21,6 +26,9 @@ pub const about_format =
     \\pid   : {d}
     \\config: {s}
     \\log   : {s}
+    \\
+    \\Tip: {s} opens config in default editor.
+    \\     {s} opens log.
     \\
     \\https://github.com/ensky0/tildaz
 ;
