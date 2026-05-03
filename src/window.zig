@@ -175,6 +175,12 @@ extern "user32" fn EndPaint(HWND, *const PAINTSTRUCT) callconv(.c) BOOL;
 extern "user32" fn InvalidateRect(HWND, ?*const RECT, BOOL) callconv(.c) BOOL;
 extern "user32" fn SetWindowPos(HWND, HWND, c_int, c_int, c_int, c_int, UINT) callconv(.c) BOOL;
 extern "user32" fn SetForegroundWindow(HWND) callconv(.c) BOOL;
+extern "user32" fn GetForegroundWindow() callconv(.c) HWND;
+extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.c) DWORD;
+extern "kernel32" fn GetCurrentThreadId() callconv(.c) DWORD;
+extern "user32" fn AttachThreadInput(DWORD, DWORD, BOOL) callconv(.c) BOOL;
+extern "user32" fn BringWindowToTop(HWND) callconv(.c) BOOL;
+extern "user32" fn SetFocus(HWND) callconv(.c) HWND;
 extern "user32" fn RegisterHotKey(HWND, c_int, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn UnregisterHotKey(HWND, c_int) callconv(.c) BOOL;
 extern "user32" fn GetCursorPos(*POINT) callconv(.c) BOOL;
@@ -527,6 +533,38 @@ pub const Window = struct {
     /// 애니메이션 자체를 skip 하므로 재현되지 않음.
     /// Restore a window hidden by F1.
     /// The saved fullscreen mode is preserved while hidden.
+    /// 시작 직후 / F1 hide-show 등 모든 show 경로에서 keyboard focus 가
+    /// 안정적으로 우리 창에 잡히도록 강제. 단순 `SetForegroundWindow` 는 MSDN
+    /// 의 8 가지 조건 (foreground process 의 자식 / 마지막 input 받은 process /
+    /// foreground 무 / debug 중 등) 중 하나라도 안 맞으면 silently fail (return
+    /// 0). 진단 로깅으로 시작 직후 setfg_ret=0 + foreground 가 다른 창인 케이스
+    /// 직접 측정 확인 (PowerShell `Start-Process` 류로 띄울 때 발생) — 이때
+    /// Ctrl+Shift+T 등 단축키가 우리 창에 도달 안 함. F1 hide-show 는 사용자
+    /// input 직후라 #3 으로 통과해 setfg_ret=1 — 그래서 두 번째 F1 후엔 정상.
+    ///
+    /// AttachThreadInput trick: 우리 thread 의 input queue 를 현재 foreground
+    /// thread 와 잠시 attach → 두 thread 가 같은 input context 안에 있는 셈이
+    /// 되어 SetForegroundWindow 가 통과 → detach. Raymond Chen 의 well-known
+    /// idiom. SetFocus 도 같이 호출해 popup 본체가 직접 keyboard focus 를 받도록.
+    fn forceForegroundActivation(hwnd: HWND) void {
+        const fg_hwnd = GetForegroundWindow();
+        const our_thread = GetCurrentThreadId();
+        if (fg_hwnd != null and fg_hwnd != hwnd) {
+            const fg_thread = GetWindowThreadProcessId(fg_hwnd, null);
+            if (fg_thread != 0 and fg_thread != our_thread) {
+                _ = AttachThreadInput(our_thread, fg_thread, 1);
+                _ = BringWindowToTop(hwnd);
+                _ = SetForegroundWindow(hwnd);
+                _ = SetFocus(hwnd);
+                _ = AttachThreadInput(our_thread, fg_thread, 0);
+                return;
+            }
+        }
+        _ = BringWindowToTop(hwnd);
+        _ = SetForegroundWindow(hwnd);
+        _ = SetFocus(hwnd);
+    }
+
     pub fn show(self: *Window) void {
         if (self.hwnd) |hwnd| {
             self.layout_transition_active = true;
@@ -542,7 +580,7 @@ pub const Window = struct {
             self.applyLayoutFor(.cursor);
             self.syncLayout();
 
-            _ = SetForegroundWindow(hwnd);
+            forceForegroundActivation(hwnd);
 
             // `applyLayout` 의 SetWindowPos 가 현재 rect 과 동일해서 WM_SIZE
             // 를 생략한 경우 대비 safety net — swap chain / terminal grid 를
