@@ -739,12 +739,18 @@ pub const App = struct {
                     .open_config => {
                         const path = paths.configPath(self.allocator) catch return true;
                         defer self.allocator.free(path);
+                        // 우리 창은 WS_EX_TOPMOST 라 새로 launch 되는 editor 가
+                        // 그 뒤로 가려져 사용자에겐 안 보임. topmost flag 만 잠시
+                        // 내려 → editor 가 자연스럽게 우리 위. 다음 F1 toggle 시
+                        // show() 의 applyRect 가 HWND_TOPMOST 복귀.
+                        self.window.yieldTopmostUntilNextShow();
                         system_open.openInDefaultApp(self.allocator, path);
                         return true;
                     },
                     .open_log => {
                         const path = paths.logPath(self.allocator) catch return true;
                         defer self.allocator.free(path);
+                        self.window.yieldTopmostUntilNextShow();
                         system_open.openInDefaultApp(self.allocator, path);
                         return true;
                     },
