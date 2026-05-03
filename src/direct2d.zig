@@ -57,6 +57,15 @@ pub const D2D_POINT_2F = extern struct {
     y: FLOAT,
 };
 
+pub const D2D1_RECT_F = extern struct {
+    left: FLOAT,
+    top: FLOAT,
+    right: FLOAT,
+    bottom: FLOAT,
+};
+
+pub const D2D1_ANTIALIAS_MODE_ALIASED: u32 = 1;
+
 // --- DLL exports ---
 
 pub extern "d2d1" fn D2D1CreateFactory(
@@ -175,8 +184,8 @@ const ID2D1RenderTargetVTable = extern struct {
     Flush: *const anyopaque,
     SaveDrawingState: *const anyopaque,
     RestoreDrawingState: *const anyopaque,
-    PushAxisAlignedClip: *const anyopaque,
-    PopAxisAlignedClip: *const anyopaque,
+    PushAxisAlignedClip: *const fn (*ID2D1RenderTarget, *const D2D1_RECT_F, u32) callconv(.c) void,
+    PopAxisAlignedClip: *const fn (*ID2D1RenderTarget) callconv(.c) void,
     Clear: *const fn (*ID2D1RenderTarget, ?*const D2D1_COLOR_F) callconv(.c) void,
     BeginDraw: *const fn (*ID2D1RenderTarget) callconv(.c) void,
     EndDraw: *const fn (*ID2D1RenderTarget, ?*u64, ?*u64) callconv(.c) HRESULT,
@@ -240,6 +249,16 @@ pub fn renderTargetBeginDraw(self: *ID2D1RenderTarget) void {
 pub fn renderTargetEndDraw(self: *ID2D1RenderTarget) HRESULT {
     const vt: *const *const ID2D1RenderTargetVTable = @ptrCast(@alignCast(self));
     return vt.*.EndDraw(self, null, null);
+}
+
+pub fn renderTargetPushAxisAlignedClip(self: *ID2D1RenderTarget, rect: *const D2D1_RECT_F, mode: u32) void {
+    const vt: *const *const ID2D1RenderTargetVTable = @ptrCast(@alignCast(self));
+    vt.*.PushAxisAlignedClip(self, rect, mode);
+}
+
+pub fn renderTargetPopAxisAlignedClip(self: *ID2D1RenderTarget) void {
+    const vt: *const *const ID2D1RenderTargetVTable = @ptrCast(@alignCast(self));
+    vt.*.PopAxisAlignedClip(self);
 }
 
 // ID2D1SolidColorBrush extends ID2D1Brush — Release 만 사용.
