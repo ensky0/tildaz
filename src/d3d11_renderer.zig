@@ -86,12 +86,13 @@ const text_shader_src =
     \\  float4 sample = atlas.Sample(smp, i.uv);
     \\  P o;
     \\  if (i.cf > 0.5) {
-    \\    // Color emoji path — atlas RGB = 색 (depremult), atlas A = alpha mask.
-    \\    // ClearType blend (SRC1_COLOR / INV_SRC1_COLOR) 와 호환되도록 c1 에
-    \\    // alpha mask 를 RGB 채널 모두에 동일하게 출력 → result = sample.rgb *
-    \\    // sample.a + dst * (1 - sample.a) (표준 alpha blend).
-    \\    o.c0 = float4(sample.rgb, 1);
-    \\    o.c1 = float4(sample.aaa, 1);
+    \\    // Color emoji path — atlas 가 D2D 가 그린 *premultiplied* BGRA 를 byte
+    \\    // swap 만 해서 RGBA 로 보관 (Win Terminal 동등). c0 = atlas.rgba 그대로
+    \\    // (premult), c1 = atlas.aaaa (4채널 동일). dual-source blend
+    \\    // (SrcBlend=ONE / DestBlend=INV_SRC1_COLOR) 로 result = sample +
+    \\    // dst*(1 - sample.aaaa) — premultiplied src-over 정확히 일치.
+    \\    o.c0 = sample;
+    \\    o.c1 = sample.aaaa;
     \\    return o;
     \\  }
     \\  float3 g = sample.rgb;
@@ -198,7 +199,7 @@ pub const D3d11Renderer = struct {
                 null,
                 d3d.D3D_DRIVER_TYPE_HARDWARE,
                 null,
-                0,
+                d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, // D2D interop 필요 (#136)
                 null,
                 0,
                 d3d.D3D11_SDK_VERSION,
