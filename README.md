@@ -27,8 +27,8 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
   - Click to select, X button to close, drag to reorder, double-click to rename
   - Closing the last tab quits the app
 - **Full Unicode support** — Hangul, CJK, emoji, combining marks, wide / narrow cells
-- **Font glyph fallback chain** — up to 8 font families; *per-codepoint* lookup walks the chain to find a font with the glyph (e.g. Latin → Cascadia Mono / Menlo, Hangul → Malgun Gothic / Apple SD Gothic Neo, symbols → Segoe UI Symbol / Apple Symbols). All listed families must exist on the system.
-  - macOS additionally falls through to the system auto fallback (CoreText `CTFontCreateForString`) for codepoints not in the chain (Apple Color Emoji, etc.) — a single `["Menlo"]` is enough for most cases.
+- **Font glyph fallback chain** — up to 8 font families; *per-codepoint* lookup walks the chain to find a font with the glyph. All listed families must exist on the system (one missing = fatal dialog with chain dump + config path).
+  - Both platforms fall through to OS system fallback for codepoints not in the chain — Windows DirectWrite `IDWriteFontFallback.MapCharacters` (Hangul → Malgun Gothic, Symbols → Segoe UI Symbol, Emoji → Segoe UI Emoji), macOS CoreText `CTFontCreateForString` (Apple Color Emoji, Apple SD Gothic Neo, Apple Symbols). A single `["Cascadia Code"]` (Windows) / `["Menlo"]` (macOS) covers most cases — override with an array only if you want a specific Korean / CJK font.
 - **GPU-accelerated rendering**
   - Windows: ClearType subpixel via DirectWrite + Direct3D 11 / HLSL shaders
   - macOS: Metal + CoreText, retina (2x) glyph atlas
@@ -185,7 +185,7 @@ If missing, it is auto-created with defaults on first launch.
     "opacity": 100
   },
   "font": {
-    "family": ["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"],
+    "family": ["Cascadia Code"],
     "size": 19,
     "line_height": 0.95,
     "cell_width": 1.1
@@ -234,7 +234,7 @@ If missing, it is auto-created with defaults on first launch.
 | height | int | 1–100 | 100 | 100 | Height (% of screen) |
 | offset | int | 0–100 | 100 | 100 | Position along edge (0 = start, 50 = center, 100 = end) |
 | opacity | int | 0–100 | 100 | 100 | Window opacity (%) |
-| font.family | string \| string[] | — | `["Cascadia Mono", "Malgun Gothic", "Segoe UI Symbol"]` | `["Menlo"]` | Font families (array = *glyph fallback chain* — per-codepoint lookup, max 8). **All listed families must exist on the system.** macOS additionally falls back to the system font for glyphs not in the chain. |
+| font.family | string \| string[] | — | `["Cascadia Code"]` | `["Menlo"]` | Font families (array = *glyph fallback chain* — per-codepoint lookup, max 8). **All listed families must exist on the system.** Both platforms fall back to the OS system font for glyphs not in the chain (Windows DirectWrite, macOS CoreText). Override with explicit array if you want a specific Korean / CJK font. |
 | font.size | int | 8–72 | 19 | 15 | Font size (pt) |
 | font.line_height | float | 0.1–10.0 (Win) / 0.5–2.0 (mac) | 0.95 | 1.1 | Line-height multiplier (1.0 = default leading) |
 | font.cell_width | float | 0.1–10.0 (Win) / 0.5–2.0 (mac) | 1.1 | 1.0 | Cell-width multiplier (1.0 = default advance) |
@@ -342,7 +342,7 @@ Mouse:
 - **Ad-hoc codesign reissues identity per rebuild** — Input Monitoring / Accessibility grants must be re-enabled after each rebuild during development. Notarized releases ([#109](https://github.com/ensky0/tildaz/issues/109)) will fix this.
 - **`IMKCFRunLoopWakeUpReliable` stderr noise** — macOS IMK (Input Method Kit) emits this line via the system framework. Cannot be suppressed without redirecting all stderr; harmless. Same line appears in Ghostty, iTerm2, etc.
 - **`SF Mono` not registered by default** — Apple's user-facing "SF Mono" font is shipped with Xcode. Without Xcode (or manual install from the Apple Developer Fonts download), `["SF Mono"]` resolves to a substitute via CoreText; TildaZ rejects substitutes (strict family-name validation) so the config error is surfaced cleanly. The default chain `["Menlo"]` always works.
-- **macOS-specific glyph fallback** — codepoints outside the configured font.family chain still resolve via CoreText system auto fallback (Apple Color Emoji, Apple SD Gothic Neo, Apple Symbols, etc.). On Windows the chain must explicitly include a font for every script you want to display.
+- **System glyph fallback (both platforms)** — codepoints outside the configured `font.family` chain resolve via OS system fallback (Windows `IDWriteFontFallback.MapCharacters` → Malgun Gothic / Segoe UI Symbol / Segoe UI Emoji; macOS `CTFontCreateForString` → Apple SD Gothic Neo / Apple Color Emoji / Apple Symbols). Override with explicit chain (`["Menlo", "Apple SD Gothic Neo"]` etc.) only if you want a specific font for a script.
 
 ## Architecture
 
