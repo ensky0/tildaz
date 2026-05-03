@@ -20,6 +20,14 @@ pub const GUID = extern struct { d1: u32, d2: u16, d3: u16, d4: [8]u8 };
 // {06152247-6F50-465A-9245-118BFD3B6007}
 pub const IID_ID2D1Factory = GUID{ .d1 = 0x06152247, .d2 = 0x6F50, .d3 = 0x465A, .d4 = .{ 0x92, 0x45, 0x11, 0x8B, 0xFD, 0x3B, 0x60, 0x07 } };
 
+// ID2D1DeviceContext — D2D 1.1+ (Win 7 SP1 + Platform Update / Win 8+). atlas
+// RT 를 QI 해서 SetUnitMode(PIXELS) + GetGlyphRunWorldBounds 사용.
+// {E8F7FE7A-191C-466D-AD95-975678BDA998}
+pub const IID_ID2D1DeviceContext = GUID{ .d1 = 0xE8F7FE7A, .d2 = 0x191C, .d3 = 0x466D, .d4 = .{ 0xAD, 0x95, 0x97, 0x56, 0x78, 0xBD, 0xA9, 0x98 } };
+
+pub const D2D1_UNIT_MODE_DIPS: u32 = 0;
+pub const D2D1_UNIT_MODE_PIXELS: u32 = 1;
+
 // --- D2D enums / structs ---
 
 pub const D2D1_FACTORY_TYPE_SINGLE_THREADED: u32 = 0;
@@ -190,7 +198,7 @@ const ID2D1RenderTargetVTable = extern struct {
     BeginDraw: *const fn (*ID2D1RenderTarget) callconv(.c) void,
     EndDraw: *const fn (*ID2D1RenderTarget, ?*u64, ?*u64) callconv(.c) HRESULT,
     GetPixelFormat: *const anyopaque,
-    SetDpi: *const anyopaque,
+    SetDpi: *const fn (*ID2D1RenderTarget, FLOAT, FLOAT) callconv(.c) void,
     GetDpi: *const anyopaque,
     GetSize: *const anyopaque,
     GetPixelSize: *const anyopaque,
@@ -259,6 +267,55 @@ pub fn renderTargetPushAxisAlignedClip(self: *ID2D1RenderTarget, rect: *const D2
 pub fn renderTargetPopAxisAlignedClip(self: *ID2D1RenderTarget) void {
     const vt: *const *const ID2D1RenderTargetVTable = @ptrCast(@alignCast(self));
     vt.*.PopAxisAlignedClip(self);
+}
+
+pub fn renderTargetSetDpi(self: *ID2D1RenderTarget, dpi_x: FLOAT, dpi_y: FLOAT) void {
+    const vt: *const *const ID2D1RenderTargetVTable = @ptrCast(@alignCast(self));
+    vt.*.SetDpi(self, dpi_x, dpi_y);
+}
+
+// IUnknown::QueryInterface helper for any RT — DeviceContext QI 위해.
+pub fn renderTargetQueryInterface(self: *ID2D1RenderTarget, riid: *const GUID, ppv: *?*anyopaque) HRESULT {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const QI = @as(*const fn (*ID2D1RenderTarget, *const GUID, *?*anyopaque) callconv(.c) HRESULT, @ptrCast(@alignCast(vtable[0])));
+    return QI(self, riid, ppv);
+}
+
+// --- ID2D1DeviceContext (D2D 1.1+) — slot index 직접 dispatch ---
+//
+// vtable: 3 IUnknown + 1 Resource + 53 RT + 35 DC own = 92 slot. 우리가 쓰는
+// method:
+//   slot 2  = Release (IUnknown)
+//   slot 72 = GetGlyphRunWorldBounds (DC own #16)
+//   slot 80 = SetUnitMode (DC own #24)
+
+pub const ID2D1DeviceContext = opaque {};
+
+pub fn deviceContextRelease(self: *ID2D1DeviceContext) void {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const Release = @as(*const fn (*ID2D1DeviceContext) callconv(.c) u32, @ptrCast(@alignCast(vtable[2])));
+    _ = Release(self);
+}
+
+pub fn deviceContextSetUnitMode(self: *ID2D1DeviceContext, mode: u32) void {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const Fn = @as(*const fn (*ID2D1DeviceContext, u32) callconv(.c) void, @ptrCast(@alignCast(vtable[80])));
+    Fn(self, mode);
+}
+
+/// `GetGlyphRunWorldBounds(baseline, *DWRITE_GLYPH_RUN, measuringMode, *D2D1_RECT_F)`
+/// — 글리프 outline 의 정확한 RT 좌표계 bounds (antialias 가장자리 포함).
+/// PIXEL unit + sys DPI 모드면 결과는 device pixel 단위 RECT_F.
+pub fn deviceContextGetGlyphRunWorldBounds(
+    self: *ID2D1DeviceContext,
+    baseline: D2D_POINT_2F,
+    glyph_run: *const anyopaque,
+    measuring_mode: u32,
+    out_bounds: *D2D1_RECT_F,
+) HRESULT {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const Fn = @as(*const fn (*ID2D1DeviceContext, D2D_POINT_2F, *const anyopaque, u32, *D2D1_RECT_F) callconv(.c) HRESULT, @ptrCast(@alignCast(vtable[72])));
+    return Fn(self, baseline, glyph_run, measuring_mode, out_bounds);
 }
 
 // ID2D1SolidColorBrush extends ID2D1Brush extends ID2D1Resource extends IUnknown.
