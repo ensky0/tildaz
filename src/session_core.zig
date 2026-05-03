@@ -172,6 +172,15 @@ pub const Tab = struct {
         });
         errdefer terminal.deinit(alloc);
 
+        // Mode 2027 (grapheme cluster) — VS-16 / skin tone modifier (U+1F3FB-FF)
+        // / ZWJ 시퀀스 (U+200D) 가 같은 cell 의 grapheme 으로 묶이게. 기본 OFF
+        // 라 ❤️ 가 [U+2764, U+FE0F] 두 cell 에 분리되고 cell 폭도 narrow 로
+        // 남음. ON 시 base cell 의 `cell.grapheme` 에 extras 가 저장 + VS-16
+        // 일 때 cell 자동으로 wide. renderer 는 이 grapheme 을 cluster 로 shape
+        // (#134 C3+). macOS session 의 동일 정책 (commit 602dfe1) 과 cross-platform
+        // sync.
+        terminal.modes.set(.grapheme_cluster, true);
+
         var backend = try TerminalBackend.init(.{
             .allocator = alloc,
             .cols = cols,
