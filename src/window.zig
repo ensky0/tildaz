@@ -298,7 +298,12 @@ pub const Window = struct {
     // Font-creation parameters — remembered so `rebuildFontForDpi` can
     // recreate the GDI font and re-measure cell metrics at the new DPI
     // when `WM_DPICHANGED` fires.
-    font_family: [*:0]const WCHAR = undefined,
+    /// font.family chain — `[0]` 이 primary (GDI CreateFontW 의 face name + 셀
+    /// 메트릭 측정 base). chain entry 1+ 는 renderer 의 DWriteFontContext 에서
+    /// codepoint glyph 폴백 우선순위로 사용. config.MAX_FONT_FAMILIES (8) 와
+    /// 동일 크기 — 동기화 유지.
+    font_chain: [8][*:0]const WCHAR = undefined,
+    font_chain_count: u8 = 0,
     font_size: c_int = 14,
     cell_width_scale: f32 = 1.0,
     line_height_scale: f32 = 1.0,
@@ -356,7 +361,8 @@ pub const Window = struct {
     const RENDER_TIMER_ID: usize = 1;
     const LayoutMonitorTarget = enum { cursor, window };
 
-    pub fn init(self: *Window, font_family: [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
+    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
+        if (font_chain.len == 0) return error.EmptyFontChain;
         const hInstance = GetModuleHandleW(null);
 
         const wc = WNDCLASSEXW{
@@ -461,9 +467,11 @@ pub const Window = struct {
             dialog.showFatal("TildaZ — Hotkey Registration Failed", msg);
         }
 
-        // Remember font-creation parameters so `rebuildFontForDpi` can
-        // recreate the font + re-measure cell metrics on DPI changes.
-        self.font_family = font_family;
+        // Remember font chain + font-creation parameters so `rebuildFontForDpi`
+        // can recreate the font + re-measure cell metrics on DPI changes.
+        const limit = @min(font_chain.len, self.font_chain.len);
+        for (font_chain[0..limit], 0..) |fam, i| self.font_chain[i] = fam;
+        self.font_chain_count = @intCast(limit);
         self.font_size = font_size;
         self.cell_width_scale = cell_width_scale;
         self.line_height_scale = line_height_scale;
@@ -496,6 +504,10 @@ pub const Window = struct {
         const effective_dpi: f32 = if (new_dpi > 0) @floatFromInt(new_dpi) else 96.0;
         const scaled_font_size: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(self.font_size)) * effective_dpi / 96.0));
 
+        // GDI CreateFontW 는 single face — chain 의 primary (chain[0]) 만 셀
+        // 메트릭 (advance width / line height) 측정에 사용. 글리프 폴백은
+        // renderer 의 DWriteFontContext 가 chain 전체로 처리.
+        const primary_family = if (self.font_chain_count > 0) self.font_chain[0] else std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
         self.font = CreateFontW(
             scaled_font_size,
             0,
@@ -510,7 +522,7 @@ pub const Window = struct {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            self.font_family,
+            primary_family,
         );
 
         if (self.dc != null and self.font != null) {

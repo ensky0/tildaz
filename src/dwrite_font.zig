@@ -7,6 +7,10 @@ const dw = @import("directwrite.zig");
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
 
+/// font.family chain 의 최대 길이. config.MAX_FONT_FAMILIES 와 동등 — 동기화
+/// 유지 (cross-module hardcoded 8).
+pub const MAX_CHAIN: usize = 8;
+
 pub const GlyphResult = struct {
     face: *dw.IDWriteFontFace,
     index: dw.UINT16,
@@ -24,7 +28,13 @@ pub const DWriteFontContext = struct {
     factory2: ?*dw.IDWriteFactory2 = null,
     font_collection: *dw.IDWriteFontCollection,
     font_fallback: ?*dw.IDWriteFontFallback = null,
-    primary_font_face: *dw.IDWriteFontFace,
+    /// font.family chain — `[0]` 이 primary (cell metric / MapCharacters 의 base).
+    /// chain entry 마다 IDWriteFontFace 보관, resolveGlyph 가 codepoint 별로
+    /// 순회해서 글리프 가진 첫 face 반환. 모든 face 는 process 전체 lifetime
+    /// 안정 (deinit 까지 Release 안 함) — atlas cache key 가 face 포인터라
+    /// 안정성 필수.
+    chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN,
+    chain_count: u8 = 0,
     rendering_params: ?*dw.IDWriteRenderingParams = null,
     number_sub: ?*dw.IUnknown = null,
     primary_family_name: [64]WCHAR = undefined,
@@ -37,7 +47,14 @@ pub const DWriteFontContext = struct {
     // cache keys — which use the face pointer — remain stable.
     glyph_map: std.AutoHashMap(u21, CachedGlyph),
 
-    pub fn init(alloc: std.mem.Allocator, font_family: [*:0]const WCHAR, font_height: c_int, cell_w: u32, cell_h: u32) !DWriteFontContext {
+    pub fn init(
+        alloc: std.mem.Allocator,
+        font_chain: []const [*:0]const WCHAR,
+        font_height: c_int,
+        cell_w: u32,
+        cell_h: u32,
+    ) !DWriteFontContext {
+        if (font_chain.len == 0) return error.EmptyFontChain;
         // 1. Create DWrite factory
         var factory: ?*dw.IDWriteFactory = null;
         if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0)
@@ -47,51 +64,72 @@ pub const DWriteFontContext = struct {
         // 2. Get system font collection
         var collection: ?*dw.IDWriteFontCollection = null;
         if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return error.FontCollectionFailed;
+        errdefer _ = collection.?.vtable.Release(collection.?);
 
-        // 3. Find and create primary font face
-        var family_index: dw.UINT32 = 0;
-        var exists: BOOL = 0;
-        if (collection.?.FindFamilyName(font_family, &family_index, &exists) < 0 or exists == 0)
-            return error.FontNotFound;
+        // 3. chain entry 마다 face 생성. caller 가 사전 검증 (windows_host 의
+        //    isFontAvailable loop) 했지만 race 방지 위해 여기서도 missing 시 error.
+        //    중간 실패 시 errdefer 가 이미 만든 faces 모두 release.
+        var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN;
+        var chain_count: u8 = 0;
+        errdefer {
+            for (chain_faces[0..chain_count]) |maybe_face| {
+                if (maybe_face) |f| _ = f.vtable.Release(f);
+            }
+        }
 
-        var font_family_obj: ?*dw.IDWriteFontFamily = null;
-        if (collection.?.GetFontFamily(family_index, &font_family_obj) < 0) return error.FontFamilyFailed;
-        defer _ = font_family_obj.?.vtable.Release(font_family_obj.?);
+        const limit = @min(font_chain.len, MAX_CHAIN);
+        for (font_chain[0..limit]) |family_w| {
+            var family_index: dw.UINT32 = 0;
+            var exists: BOOL = 0;
+            if (collection.?.FindFamilyName(family_w, &family_index, &exists) < 0 or exists == 0)
+                return error.FontNotFound;
 
-        var dw_font: ?*dw.IDWriteFont = null;
-        if (font_family_obj.?.GetFirstMatchingFont(
-            dw.DWRITE_FONT_WEIGHT_NORMAL,
-            dw.DWRITE_FONT_STRETCH_NORMAL,
-            dw.DWRITE_FONT_STYLE_NORMAL,
-            &dw_font,
-        ) < 0) return error.FontMatchFailed;
-        defer _ = dw_font.?.vtable.Release(dw_font.?);
+            var family_obj: ?*dw.IDWriteFontFamily = null;
+            if (collection.?.GetFontFamily(family_index, &family_obj) < 0) return error.FontFamilyFailed;
+            defer _ = family_obj.?.vtable.Release(family_obj.?);
 
-        var font_face: ?*dw.IDWriteFontFace = null;
-        if (dw_font.?.CreateFontFace(&font_face) < 0) return error.FontFaceFailed;
+            var dw_font: ?*dw.IDWriteFont = null;
+            if (family_obj.?.GetFirstMatchingFont(
+                dw.DWRITE_FONT_WEIGHT_NORMAL,
+                dw.DWRITE_FONT_STRETCH_NORMAL,
+                dw.DWRITE_FONT_STYLE_NORMAL,
+                &dw_font,
+            ) < 0) return error.FontMatchFailed;
+            defer _ = dw_font.?.vtable.Release(dw_font.?);
+
+            var face: ?*dw.IDWriteFontFace = null;
+            if (dw_font.?.CreateFontFace(&face) < 0) return error.FontFaceFailed;
+            chain_faces[chain_count] = face.?;
+            chain_count += 1;
+        }
+
+        const primary_face = chain_faces[0].?;
+        const primary_family_w = font_chain[0];
 
         var self = DWriteFontContext{
             .alloc = alloc,
             .factory = factory.?,
             .font_collection = collection.?,
-            .primary_font_face = font_face.?,
+            .chain_faces = chain_faces,
+            .chain_count = chain_count,
             .cell_width = cell_w,
             .cell_height = cell_h,
             .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
         };
 
-        // Store family name for MapCharacters
+        // Store primary family name for MapCharacters fallback (system 의 fallback
+        // chain 이 우리 primary 를 base 로 fallback 결정).
         var i: u32 = 0;
-        while (font_family[i] != 0) : (i += 1) {
+        while (primary_family_w[i] != 0) : (i += 1) {
             if (i >= 63) break;
-            self.primary_family_name[i] = font_family[i];
+            self.primary_family_name[i] = primary_family_w[i];
         }
         self.primary_family_name[i] = 0;
         self.primary_family_len = i;
 
-        // 4. Calculate em size from font metrics
+        // 4. Calculate em size from primary font metrics
         var metrics: dw.DWRITE_FONT_METRICS = undefined;
-        font_face.?.GetMetrics(&metrics);
+        primary_face.GetMetrics(&metrics);
         const du_per_em: f32 = @floatFromInt(metrics.designUnitsPerEm);
         const ascent: f32 = @floatFromInt(metrics.ascent);
         const descent: f32 = @floatFromInt(metrics.descent);
@@ -127,8 +165,9 @@ pub const DWriteFontContext = struct {
     }
 
     pub fn deinit(self: *DWriteFontContext) void {
-        // Release all fallback faces retained in the glyph cache. Primary face
-        // is never stored in the cache, so no double-release risk.
+        // Release all MapCharacters-resolved faces retained in the glyph cache.
+        // Chain faces never enter the cache (skipped at insert time) so no
+        // double-release risk.
         var it = self.glyph_map.valueIterator();
         while (it.next()) |v| {
             _ = v.face.vtable.Release(v.face);
@@ -137,17 +176,23 @@ pub const DWriteFontContext = struct {
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
-        _ = self.primary_font_face.vtable.Release(self.primary_font_face);
+        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
+            if (maybe_face) |f| _ = f.vtable.Release(f);
+        }
         _ = self.font_collection.vtable.Release(self.font_collection);
         if (self.factory2) |f2| _ = f2.Release();
         _ = self.factory.Release();
     }
 
-    /// Resolve a codepoint to (font_face, glyph_index). Uses system font fallback.
-    /// Faces are cached for process lifetime so their pointer addresses remain
-    /// stable — the glyph atlas keys on face pointer, so pointer reuse after
-    /// Release would cause false cache hits across different fonts.
-    /// `owned` is always false; the context retains ownership.
+    /// Resolve a codepoint to (font_face, glyph_index). 우선순위:
+    ///   1. cache (이전에 resolve 된 결과)
+    ///   2. user font.family chain (config 순서대로 — primary → fallback)
+    ///   3. system fallback (DirectWrite IDWriteFontFallback.MapCharacters)
+    ///
+    /// chain face 는 process lifetime 안정 — atlas cache key (face 포인터) 가
+    /// 안정적이라 cache miss 시에도 같은 codepoint → 같은 face. system fallback
+    /// 으로 resolve 된 face 만 glyph_map 에 cache 해서 pointer 안정성 유지.
+    /// `owned` 는 항상 false — context 가 소유.
     pub fn resolveGlyph(self: *DWriteFontContext, codepoint: u21) ?GlyphResult {
         if (self.glyph_map.get(codepoint)) |c| {
             return .{ .face = c.face, .index = c.index, .owned = false };
@@ -155,12 +200,16 @@ pub const DWriteFontContext = struct {
 
         const cp32: dw.UINT32 = codepoint;
         var glyph_index: dw.UINT16 = 0;
-        _ = self.primary_font_face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
 
-        if (glyph_index != 0) {
-            // Primary face is stable (never freed), so skip cache to avoid
-            // double-Release in deinit.
-            return .{ .face = self.primary_font_face, .index = glyph_index, .owned = false };
+        // 1. user chain — config.font.family 순서대로. 글리프 가진 첫 face 반환.
+        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
+            const face = maybe_face orelse continue;
+            glyph_index = 0;
+            _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
+            if (glyph_index != 0) {
+                // chain face 는 stable — cache 안 해도 OK (deinit 에서 release).
+                return .{ .face = face, .index = glyph_index, .owned = false };
+            }
         }
 
         // Fallback via MapCharacters

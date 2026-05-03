@@ -151,7 +151,7 @@ pub const D3d11Renderer = struct {
         };
     }
 
-    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_family: [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
+    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
         const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
 
         // 1. Create D3D11 device + swap chain
@@ -228,7 +228,7 @@ pub const D3d11Renderer = struct {
         }
 
         // 2. Init font context
-        var font_ctx = try DWriteFontContext.init(alloc, font_family, font_height, cell_w, cell_h);
+        var font_ctx = try DWriteFontContext.init(alloc, font_chain, font_height, cell_w, cell_h);
         errdefer font_ctx.deinit();
 
         // 3. Init glyph atlas (with DPI-aware pixelsPerDip)
@@ -436,7 +436,7 @@ pub const D3d11Renderer = struct {
     pub fn rebuildFont(
         self: *D3d11Renderer,
         hwnd: ?*anyopaque,
-        font_family: [*:0]const u16,
+        font_chain: []const [*:0]const u16,
         font_height: c_int,
         cell_w: u32,
         cell_h: u32,
@@ -447,7 +447,7 @@ pub const D3d11Renderer = struct {
         self.atlas.deinit();
         self.font.deinit();
 
-        var font_ctx = try DWriteFontContext.init(self.alloc, font_family, font_height, cell_w, cell_h);
+        var font_ctx = try DWriteFontContext.init(self.alloc, font_chain, font_height, cell_w, cell_h);
         errdefer font_ctx.deinit();
 
         const dpi = GetDpiForWindow(hwnd);

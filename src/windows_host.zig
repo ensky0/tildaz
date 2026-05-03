@@ -2,7 +2,8 @@ const std = @import("std");
 const App = @import("app_controller.zig").App;
 const SessionCore = @import("session_core.zig").SessionCore;
 const RendererBackend = @import("renderer_backend.zig").RendererBackend;
-const Config = @import("config.zig").Config;
+const config_mod = @import("config.zig");
+const Config = config_mod.Config;
 const autostart = @import("autostart.zig");
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
@@ -130,9 +131,18 @@ pub fn run() !void {
         }
     }
 
-    const font_family_w = config.fontFamilyUtf16(0);
+    // font.family chain 을 *전체* renderer 까지 전달 — 이전엔 chain[0] 만 도달
+    // 하고 나머지는 validation loop 만 거치고 버려지는 사고 (#135 B2). chain
+    // entry 들은 config 의 static buffer (fontFamilyUtf16 의 per-index static)
+    // 를 가리키는 포인터라 process lifetime 안정. 로컬 array 는 run() 스택
+    // 프레임에 살아 있고 SessionCore / Window / Renderer 모두 같은 스코프.
+    var font_chain_arr: [config_mod.MAX_FONT_FAMILIES][*:0]const u16 = undefined;
+    for (0..config.font_family_count) |i| {
+        font_chain_arr[i] = config.fontFamilyUtf16(@intCast(i));
+    }
+    const font_chain: []const [*:0]const u16 = font_chain_arr[0..config.font_family_count];
     const font_size: c_int = @intCast(config.font_size);
-    try app.window.init(font_family_w, font_size, config.opacity, config.cell_width, config.line_height, config.hotkey.vkey, config.hotkey.modifiers);
+    try app.window.init(font_chain, font_size, config.opacity, config.cell_width, config.line_height, config.hotkey.vkey, config.hotkey.modifiers);
     tildaz_log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,
         app.window.cell_width,
@@ -147,7 +157,7 @@ pub fn run() !void {
 
     // Initialize renderer backend
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_family_w, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
+    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
         tildaz_log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
         break :blk null;
     };

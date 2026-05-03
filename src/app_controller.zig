@@ -298,7 +298,7 @@ pub const App = struct {
         if (self.renderer) |*r| {
             r.rebuildFont(
                 window.hwnd,
-                window.font_family,
+                window.font_chain[0..window.font_chain_count],
                 window.font_size,
                 @intCast(window.cell_width),
                 @intCast(window.cell_height),
