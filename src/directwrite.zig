@@ -39,6 +39,24 @@ pub const IID_IDWriteFactory2 = GUID{
     .Data4 = .{ 0x8d, 0xee, 0x3a, 0x9a, 0xf7, 0xb7, 0x32, 0xec },
 };
 
+// IDWriteFactory4 — DirectWrite 1.4+ (dwrite_3.h, Win 10 1607+).
+// {4B0B5BD3-0797-4549-8AC5-FE915CC53856}
+pub const IID_IDWriteFactory4 = GUID{
+    .Data1 = 0x4b0b5bd3,
+    .Data2 = 0x0797,
+    .Data3 = 0x4549,
+    .Data4 = .{ 0x8a, 0xc5, 0xfe, 0x91, 0x5c, 0xc5, 0x38, 0x56 },
+};
+
+// IDWriteColorGlyphRunEnumerator1 IID — Factory4.TranslateColorGlyphRun 의 결과.
+// {7C5F86DA-C7A1-4F05-B8E1-55A179FE5A35}
+pub const IID_IDWriteColorGlyphRunEnumerator1 = GUID{
+    .Data1 = 0x7c5f86da,
+    .Data2 = 0xc7a1,
+    .Data3 = 0x4f05,
+    .Data4 = .{ 0xb8, 0xe1, 0x55, 0xa1, 0x79, 0xfe, 0x5a, 0x35 },
+};
+
 pub const CLSID_NumberSubstitution = GUID{
     .Data1 = 0x14885CC9,
     .Data2 = 0xBAB0,
@@ -480,6 +498,29 @@ pub const DWRITE_NO_PALETTE_INDEX: UINT16 = 0xFFFF;
 /// caller 는 이 코드면 fall-through 해서 일반 alpha rasterize.
 pub const DWRITE_E_NOCOLOR: HRESULT = @bitCast(@as(u32, 0x88985003));
 
+// `DWRITE_GLYPH_IMAGE_FORMATS` (dcommon.h) bitmask — Factory4.TranslateColorGlyphRun
+// 의 desiredGlyphImageFormats 인자 + DWRITE_COLOR_GLYPH_RUN1.glyphImageFormat.
+pub const DWRITE_GLYPH_IMAGE_FORMATS_NONE: UINT32 = 0x0;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE: UINT32 = 0x1;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_CFF: UINT32 = 0x2;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_COLR: UINT32 = 0x4;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_SVG: UINT32 = 0x8;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_PNG: UINT32 = 0x10;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_JPEG: UINT32 = 0x20;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_TIFF: UINT32 = 0x40;
+pub const DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8: UINT32 = 0x80;
+/// 모든 bitmap + outline 형식 — Apple Color Emoji 같은 PNG 폰트 + Segoe UI Emoji
+/// COLR 폰트 모두 지원.
+pub const DWRITE_GLYPH_IMAGE_FORMATS_ALL: UINT32 =
+    DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE |
+    DWRITE_GLYPH_IMAGE_FORMATS_CFF |
+    DWRITE_GLYPH_IMAGE_FORMATS_COLR |
+    DWRITE_GLYPH_IMAGE_FORMATS_SVG |
+    DWRITE_GLYPH_IMAGE_FORMATS_PNG |
+    DWRITE_GLYPH_IMAGE_FORMATS_JPEG |
+    DWRITE_GLYPH_IMAGE_FORMATS_TIFF |
+    DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8;
+
 pub const IDWriteColorGlyphRun = extern struct {
     glyph_run: DWRITE_GLYPH_RUN,
     glyph_run_description: ?*const anyopaque, // DWRITE_GLYPH_RUN_DESCRIPTION — 우리 안 사용
@@ -514,6 +555,101 @@ pub const IDWriteColorGlyphRunEnumerator = extern struct {
         return self.vtable.GetCurrentRun(self, run);
     }
 };
+
+// IDWriteColorGlyphRun1 — DWRITE_COLOR_GLYPH_RUN extended with glyphImageFormat
+// + measuringMode. C++ inheritance 라 base struct (sizeof 88) 의 trailing pad
+// 을 derived 가 reuse 안 함 — 명시적 6-byte padding 으로 derived 첫 멤버를
+// offset 88 에 위치시킴 (zig 자동 align 은 84 라 ABI mismatch). MS dwrite_3.h
+// 와 일치.
+pub const IDWriteColorGlyphRun1 = extern struct {
+    glyph_run: DWRITE_GLYPH_RUN,
+    glyph_run_description: ?*const anyopaque,
+    baseline_origin_x: FLOAT,
+    baseline_origin_y: FLOAT,
+    run_color: DWRITE_COLOR_F,
+    palette_index: UINT16,
+    _base_pad: [6]u8 = .{ 0, 0, 0, 0, 0, 0 },
+    glyph_image_format: UINT32, // DWRITE_GLYPH_IMAGE_FORMATS
+    measuring_mode: UINT32, // DWRITE_MEASURING_MODE
+};
+
+// IDWriteColorGlyphRunEnumerator1 — extends Enumerator, GetCurrentRun(_RUN1)
+// 별도 vtable slot 5 추가. Factory4.TranslateColorGlyphRun 결과 또는 기존
+// enumerator → enumerator1 QI.
+pub const IDWriteColorGlyphRunEnumerator1 = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDWriteColorGlyphRunEnumerator1) callconv(.c) u32,
+        MoveNext: *const fn (*IDWriteColorGlyphRunEnumerator1, *BOOL) callconv(.c) HRESULT,
+        GetCurrentRun: *const fn (*IDWriteColorGlyphRunEnumerator1, *?*const IDWriteColorGlyphRun) callconv(.c) HRESULT,
+        GetCurrentRun1: *const fn (*IDWriteColorGlyphRunEnumerator1, *?*const IDWriteColorGlyphRun1) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDWriteColorGlyphRunEnumerator1) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn MoveNext(self: *IDWriteColorGlyphRunEnumerator1, has_run: *BOOL) HRESULT {
+        return self.vtable.MoveNext(self, has_run);
+    }
+
+    pub fn GetCurrentRun1(self: *IDWriteColorGlyphRunEnumerator1, run: *?*const IDWriteColorGlyphRun1) HRESULT {
+        return self.vtable.GetCurrentRun1(self, run);
+    }
+};
+
+// IDWriteFactory4 — vtable 깊음 (3 IUnknown + 21 Factory + 2 Factory1 + 5
+// Factory2 + 9 Factory3 + 3 Factory4 = 43 slots). 우리가 쓰는 method 만 slot
+// index 직접 dispatch.
+//
+//   slot 2  = Release (IUnknown)
+//   slot 40 = TranslateColorGlyphRun (Factory4 의 첫 own method)
+
+pub const IDWriteFactory4 = opaque {};
+
+pub fn factory4Release(self: *IDWriteFactory4) void {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const Release = @as(*const fn (*IDWriteFactory4) callconv(.c) u32, @ptrCast(@alignCast(vtable[2])));
+    _ = Release(self);
+}
+
+/// `Factory4.TranslateColorGlyphRun` — Win 10 1607+ 의 신규 overload. 기존
+/// Factory2 와 달리 `desiredGlyphImageFormats` 인자로 PNG/SVG/COLR 모두 명시
+/// 적으로 요청 가능. PNG bitmap emoji 폰트 (Apple Color Emoji 등) 도 layer
+/// 에 PNG 형식으로 포함됨. 결과는 `IDWriteColorGlyphRunEnumerator1` —
+/// `GetCurrentRun1` 으로 `glyphImageFormat` 받아 dispatch.
+pub fn factory4TranslateColorGlyphRun(
+    self: *IDWriteFactory4,
+    baseline_x: FLOAT,
+    baseline_y: FLOAT,
+    glyph_run: *const DWRITE_GLYPH_RUN,
+    glyph_run_description: ?*const anyopaque,
+    desired_formats: UINT32,
+    measuring_mode: u32,
+    transform: ?*const DWRITE_MATRIX,
+    palette_index: UINT32,
+    out_enumerator: *?*IDWriteColorGlyphRunEnumerator1,
+) HRESULT {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    // baselineOrigin 은 D2D1_POINT_2F by-value (8 bytes packed) — Microsoft x64
+    // ABI 에서 GPR 로 전달.
+    const Pt = extern struct { x: FLOAT, y: FLOAT };
+    const Fn = @as(*const fn (
+        *IDWriteFactory4,
+        Pt,
+        *const DWRITE_GLYPH_RUN,
+        ?*const anyopaque,
+        UINT32,
+        u32,
+        ?*const DWRITE_MATRIX,
+        UINT32,
+        *?*IDWriteColorGlyphRunEnumerator1,
+    ) callconv(.c) HRESULT, @ptrCast(@alignCast(vtable[40])));
+    return Fn(self, .{ .x = baseline_x, .y = baseline_y }, glyph_run, glyph_run_description, desired_formats, measuring_mode, transform, palette_index, out_enumerator);
+}
 
 // --- IDWriteFontCollection ---
 // IUnknown (3) + 4 own = 7

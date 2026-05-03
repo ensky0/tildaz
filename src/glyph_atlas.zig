@@ -75,6 +75,13 @@ pub const GlyphAtlas = struct {
     /// GetGlyphRunWorldBounds 사용. Win 7 SP1 미만에서 QI 실패 시 null,
     /// rasterizeColor 가 mono path 로 fallback.
     atlas_dc: ?*d2d.ID2D1DeviceContext = null,
+    /// atlas DC 의 ID2D1DeviceContext4 (D2D 1.3+, Win 10 1607+) — bitmap emoji
+    /// 글리프 (PNG/JPEG/TIFF/PREMULTIPLIED) 그리기 위한 DrawColorBitmapGlyphRun.
+    atlas_dc4: ?*d2d.ID2D1DeviceContext4 = null,
+    /// IDWriteFactory4 (DirectWrite 1.4+) — TranslateColorGlyphRun 의 신규
+    /// overload (desiredGlyphImageFormats 인자) 로 PNG bitmap layer 도 받음.
+    /// Apple Color Emoji 같은 PNG 폰트 지원에 필수. null 이면 fallback.
+    dw_factory4: ?*dw.IDWriteFactory4 = null,
 
     // Temporary buffers for glyph rasterization (reused, heap-allocated)
     temp_buf: []u8, // RGBA output: 256*256*4 bytes
@@ -200,6 +207,29 @@ pub const GlyphAtlas = struct {
         }
         errdefer if (atlas_dc) |c| d2d.deviceContextRelease(c);
 
+        // ID2D1DeviceContext4 QI (#137-4) — Win 10 1607+ 에서 bitmap emoji 글리프
+        // (PNG/SVG) 처리 위한 DrawColorBitmapGlyphRun. null 이면 outline path 만.
+        var atlas_dc4: ?*d2d.ID2D1DeviceContext4 = null;
+        if (atlas_dc) |dc| {
+            var dc4_ptr: ?*anyopaque = null;
+            const dc_as_rt: *d2d.ID2D1RenderTarget = @ptrCast(@alignCast(dc));
+            if (d2d.renderTargetQueryInterface(dc_as_rt, &d2d.IID_ID2D1DeviceContext4, &dc4_ptr) >= 0 and dc4_ptr != null) {
+                atlas_dc4 = @ptrCast(@alignCast(dc4_ptr));
+            }
+        }
+        errdefer if (atlas_dc4) |c| d2d.deviceContext4Release(c);
+
+        // IDWriteFactory4 QI (#137-4) — Factory2.TranslateColorGlyphRun 은
+        // desiredGlyphImageFormats 인자 없어 PNG layer 안 받음. Factory4 신규
+        // overload 로 모든 형식 (TRUETYPE | CFF | COLR | SVG | PNG | JPEG | TIFF |
+        // PREMULTIPLIED) 명시 요청.
+        var dw_factory4: ?*dw.IDWriteFactory4 = null;
+        var f4_ptr: ?*anyopaque = null;
+        if (dw_factory.QueryInterface(&dw.IID_IDWriteFactory4, &f4_ptr) >= 0 and f4_ptr != null) {
+            dw_factory4 = @ptrCast(@alignCast(f4_ptr));
+        }
+        errdefer if (dw_factory4) |f| dw.factory4Release(f);
+
         // Reusable solid brush (#137-6) — atlas init 시 흰색으로 한 번 생성,
         // layer 마다 SetColor 만 호출해서 재사용. brush 매번 생성/release 비용
         // 제거. Win Terminal `_emojiBrush` (BackendD3D.cpp:892) 동등.
@@ -229,14 +259,18 @@ pub const GlyphAtlas = struct {
             .atlas_d2d_rt = atlas_d2d_rt,
             .atlas_brush = atlas_brush,
             .atlas_dc = atlas_dc,
+            .atlas_dc4 = atlas_dc4,
+            .dw_factory4 = dw_factory4,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
         if (self.atlas_brush) |b| d2d.brushRelease(b);
+        if (self.atlas_dc4) |c| d2d.deviceContext4Release(c);
         if (self.atlas_dc) |c| d2d.deviceContextRelease(c);
         if (self.atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
         if (self.atlas_dxgi_surface) |s| _ = s.Release();
+        if (self.dw_factory4) |f| dw.factory4Release(f);
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
@@ -408,13 +442,13 @@ pub const GlyphAtlas = struct {
     /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
     /// `rasterize` (mono ClearType) 로 fall-through.
     fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        // atlas D2D RT + DC + brush + IDWriteFactory2 모두 있어야 컬러 path 가능.
+        // atlas RT + DC + DC4 + brush + Factory4 모두 있어야 컬러 path 가능.
+        // Win 10 1607+ 라 모두 사용 가능.
         const atlas_rt = self.atlas_d2d_rt orelse return null;
         const atlas_dc = self.atlas_dc orelse return null;
+        const atlas_dc4 = self.atlas_dc4 orelse return null;
         const brush = self.atlas_brush orelse return null;
-        var factory2: ?*dw.IDWriteFactory2 = null;
-        if (self.dw_factory.QueryInterface(&dw.IID_IDWriteFactory2, @ptrCast(&factory2)) < 0) return null;
-        defer _ = factory2.?.Release();
+        const factory4 = self.dw_factory4 orelse return null;
 
         const indices = [1]dw.UINT16{glyph_index};
         const advances = [1]dw.FLOAT{0};
@@ -430,21 +464,23 @@ pub const GlyphAtlas = struct {
         };
 
         // 컨테이너 글리프 (COLR/PNG 폰트의 main glyph) 는 outline 없을 수 있어
-        // bounds 는 layer 들의 union. Win Terminal `ColorGlyphRunAccumulateBounds`
-        // 동등 — `ID2D1DeviceContext::GetGlyphRunWorldBounds` (PIXEL unit + sys
-        // DPI) 로 layer 별 정확한 outline bounds (antialias gradient 포함) 측정,
-        // floor/ceil 로 i32 RECT. enumerator 는 rewind 불가라 두 번 호출 (Pass 1:
-        // bounds, Pass 2: composite).
+        // bounds 는 layer 들의 union. Factory4.TranslateColorGlyphRun 은
+        // desiredGlyphImageFormats=ALL 로 PNG bitmap 도 layer 에 포함됨 (Apple
+        // Color Emoji 같은 PNG 폰트 지원). enumerator 는 rewind 불가라 두 번 호출
+        // (Pass 1: bounds, Pass 2: composite).
 
-        // Pass 1: layer bounds union via GetGlyphRunWorldBounds.
+        // Pass 1: layer bounds union via GetGlyphRunWorldBounds (PIXEL unit + sys
+        // DPI) — antialias gradient 포함된 정확 outline bounds.
         var fbounds = d2d.D2D1_RECT_F{ .left = 1.0e30, .top = 1.0e30, .right = -1.0e30, .bottom = -1.0e30 };
         {
-            var enum1: ?*dw.IDWriteColorGlyphRunEnumerator = null;
-            const tr1 = factory2.?.TranslateColorGlyphRun(
+            var enum1: ?*dw.IDWriteColorGlyphRunEnumerator1 = null;
+            const tr1 = dw.factory4TranslateColorGlyphRun(
+                factory4,
                 0,
                 0,
                 &glyph_run,
                 null,
+                dw.DWRITE_GLYPH_IMAGE_FORMATS_ALL,
                 dw.DWRITE_MEASURING_MODE_NATURAL,
                 null,
                 0,
@@ -455,16 +491,16 @@ pub const GlyphAtlas = struct {
             while (true) {
                 var has_run: dw.BOOL = 0;
                 if (enum1.?.MoveNext(&has_run) < 0 or has_run == 0) break;
-                var cr_ptr: ?*const dw.IDWriteColorGlyphRun = null;
-                if (enum1.?.GetCurrentRun(&cr_ptr) < 0) continue;
-                const cr = cr_ptr orelse continue;
-                const baseline = d2d.D2D_POINT_2F{ .x = cr.baseline_origin_x, .y = cr.baseline_origin_y };
+                var cr1_ptr: ?*const dw.IDWriteColorGlyphRun1 = null;
+                if (enum1.?.GetCurrentRun1(&cr1_ptr) < 0) continue;
+                const cr1 = cr1_ptr orelse continue;
+                const baseline = d2d.D2D_POINT_2F{ .x = cr1.baseline_origin_x, .y = cr1.baseline_origin_y };
                 var lb: d2d.D2D1_RECT_F = undefined;
                 if (d2d.deviceContextGetGlyphRunWorldBounds(
                     atlas_dc,
                     baseline,
-                    @ptrCast(&cr.glyph_run),
-                    dw.DWRITE_MEASURING_MODE_NATURAL,
+                    @ptrCast(&cr1.glyph_run),
+                    cr1.measuring_mode,
                     &lb,
                 ) < 0) continue;
                 if (lb.right - lb.left <= 0 or lb.bottom - lb.top <= 0) continue;
@@ -522,13 +558,16 @@ pub const GlyphAtlas = struct {
         const base_x: f32 = fpos_x - @as(f32, @floatFromInt(bounds.left));
         const base_y: f32 = fpos_y - @as(f32, @floatFromInt(bounds.top));
 
-        // Pass 2: layer 별 DrawGlyphRun. enumerator 새로 열어서 iterate.
-        var enumerator: ?*dw.IDWriteColorGlyphRunEnumerator = null;
-        if (factory2.?.TranslateColorGlyphRun(
+        // Pass 2: layer 별 dispatch — fmt 따라 DrawColorBitmapGlyphRun (PNG/JPEG/
+        // TIFF/PREMULTIPLIED) 또는 DrawGlyphRun + brush (TRUETYPE/CFF/COLR/SVG).
+        var enumerator: ?*dw.IDWriteColorGlyphRunEnumerator1 = null;
+        if (dw.factory4TranslateColorGlyphRun(
+            factory4,
             0,
             0,
             &glyph_run,
             null,
+            dw.DWRITE_GLYPH_IMAGE_FORMATS_ALL,
             dw.DWRITE_MEASURING_MODE_NATURAL,
             null,
             0,
@@ -538,33 +577,51 @@ pub const GlyphAtlas = struct {
             while (true) {
                 var has_run: dw.BOOL = 0;
                 if (enumerator.?.MoveNext(&has_run) < 0 or has_run == 0) break;
-                var cr_ptr: ?*const dw.IDWriteColorGlyphRun = null;
-                if (enumerator.?.GetCurrentRun(&cr_ptr) < 0) continue;
-                const cr = cr_ptr orelse continue;
-
-                // layer 색. NO_PALETTE 면 사용자 fg 사용해야 하지만 atlas cache
-                // 는 fg-independent 라 흰색 대체 (대부분 emoji 는 모든 layer 에
-                // palette 색 정의). brush 는 atlas init 시 생성한 것 SetColor 로
-                // 재사용.
-                const layer_color = d2d.D2D1_COLOR_F{
-                    .r = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.r,
-                    .g = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.g,
-                    .b = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.b,
-                    .a = if (cr.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr.run_color.a,
-                };
-                d2d.brushSetColor(brush, &layer_color);
+                var cr1_ptr: ?*const dw.IDWriteColorGlyphRun1 = null;
+                if (enumerator.?.GetCurrentRun1(&cr1_ptr) < 0) continue;
+                const cr1 = cr1_ptr orelse continue;
 
                 const layer_baseline = d2d.D2D_POINT_2F{
-                    .x = base_x + cr.baseline_origin_x,
-                    .y = base_y + cr.baseline_origin_y,
+                    .x = base_x + cr1.baseline_origin_x,
+                    .y = base_y + cr1.baseline_origin_y,
                 };
-                d2d.renderTargetDrawGlyphRun(
-                    atlas_rt,
-                    layer_baseline,
-                    @ptrCast(&cr.glyph_run),
-                    d2d.brushAsBrush(brush),
-                    dw.DWRITE_MEASURING_MODE_NATURAL,
-                );
+
+                const fmt = cr1.glyph_image_format;
+                const is_bitmap = (fmt & (dw.DWRITE_GLYPH_IMAGE_FORMATS_PNG |
+                    dw.DWRITE_GLYPH_IMAGE_FORMATS_JPEG |
+                    dw.DWRITE_GLYPH_IMAGE_FORMATS_TIFF |
+                    dw.DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8)) != 0;
+
+                if (is_bitmap) {
+                    // PNG/JPEG/TIFF/PREMULTIPLIED bitmap layer — D2D 가 자체
+                    // 디코드 + 고품질 다운스케일. brush 불필요.
+                    d2d.deviceContext4DrawColorBitmapGlyphRun(
+                        atlas_dc4,
+                        fmt,
+                        layer_baseline,
+                        @ptrCast(&cr1.glyph_run),
+                        cr1.measuring_mode,
+                        d2d.D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION_DEFAULT,
+                    );
+                } else {
+                    // TRUETYPE/CFF/COLR/SVG — outline layer, brush 색으로 그림.
+                    // (SVG 는 DrawSvgGlyphRun 이 정공이지만 Segoe UI Emoji 는
+                    // COLR layer 만 라 SVG layer 거의 없음, 일단 brush 통일.)
+                    const layer_color = d2d.D2D1_COLOR_F{
+                        .r = if (cr1.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr1.run_color.r,
+                        .g = if (cr1.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr1.run_color.g,
+                        .b = if (cr1.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr1.run_color.b,
+                        .a = if (cr1.palette_index == dw.DWRITE_NO_PALETTE_INDEX) 1.0 else cr1.run_color.a,
+                    };
+                    d2d.brushSetColor(brush, &layer_color);
+                    d2d.renderTargetDrawGlyphRun(
+                        atlas_rt,
+                        layer_baseline,
+                        @ptrCast(&cr1.glyph_run),
+                        d2d.brushAsBrush(brush),
+                        cr1.measuring_mode,
+                    );
+                }
             }
         }
 

@@ -25,8 +25,15 @@ pub const IID_ID2D1Factory = GUID{ .d1 = 0x06152247, .d2 = 0x6F50, .d3 = 0x465A,
 // {E8F7FE7A-191C-466D-AD95-975678BDA998}
 pub const IID_ID2D1DeviceContext = GUID{ .d1 = 0xE8F7FE7A, .d2 = 0x191C, .d3 = 0x466D, .d4 = .{ 0xAD, 0x95, 0x97, 0x56, 0x78, 0xBD, 0xA9, 0x98 } };
 
+// ID2D1DeviceContext4 — D2D 1.3+ (Win 10 1607+). DrawColorBitmapGlyphRun (PNG/JPEG/
+// TIFF/PREMULTIPLIED bitmap emoji 글리프) + DrawSvgGlyphRun.
+// {8C427831-3D90-4476-B647-C4FAE349E4DB}
+pub const IID_ID2D1DeviceContext4 = GUID{ .d1 = 0x8C427831, .d2 = 0x3D90, .d3 = 0x4476, .d4 = .{ 0xB6, 0x47, 0xC4, 0xFA, 0xE3, 0x49, 0xE4, 0xDB } };
+
 pub const D2D1_UNIT_MODE_DIPS: u32 = 0;
 pub const D2D1_UNIT_MODE_PIXELS: u32 = 1;
+
+pub const D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION_DEFAULT: u32 = 0;
 
 // --- D2D enums / structs ---
 
@@ -316,6 +323,38 @@ pub fn deviceContextGetGlyphRunWorldBounds(
     const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
     const Fn = @as(*const fn (*ID2D1DeviceContext, D2D_POINT_2F, *const anyopaque, u32, *D2D1_RECT_F) callconv(.c) HRESULT, @ptrCast(@alignCast(vtable[72])));
     return Fn(self, baseline, glyph_run, measuring_mode, out_bounds);
+}
+
+// --- ID2D1DeviceContext4 (D2D 1.3+, Win 10 1607+) — slot index 직접 dispatch ---
+//
+// vtable: 3 IUnknown + 1 Resource + 53 RT + 35 DC + 3 DC1 + 11 DC2 + 2 DC3 + 7
+// DC4 = 115 slot. 우리가 쓰는 method:
+//   slot 2   = Release (IUnknown)
+//   slot 111 = DrawColorBitmapGlyphRun (DC4 own #4)
+
+pub const ID2D1DeviceContext4 = opaque {};
+
+pub fn deviceContext4Release(self: *ID2D1DeviceContext4) void {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const Release = @as(*const fn (*ID2D1DeviceContext4) callconv(.c) u32, @ptrCast(@alignCast(vtable[2])));
+    _ = Release(self);
+}
+
+/// `DrawColorBitmapGlyphRun(DWRITE_GLYPH_IMAGE_FORMATS, D2D_POINT_2F, *DWRITE_GLYPH_RUN,
+/// DWRITE_MEASURING_MODE, D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION)` — PNG/JPEG/TIFF/
+/// PREMULTIPLIED bitmap layer 글리프를 D2D 가 자체 디코드 + 고품질 다운스케일.
+/// brush 불필요 — bitmap 자체가 RGBA.
+pub fn deviceContext4DrawColorBitmapGlyphRun(
+    self: *ID2D1DeviceContext4,
+    glyph_image_format: u32,
+    baseline_origin: D2D_POINT_2F,
+    glyph_run: *const anyopaque,
+    measuring_mode: u32,
+    snap_option: u32,
+) void {
+    const vtable: [*]const *const anyopaque = @ptrCast(@alignCast(@as(*const *const anyopaque, @ptrCast(@alignCast(self))).*));
+    const Fn = @as(*const fn (*ID2D1DeviceContext4, u32, D2D_POINT_2F, *const anyopaque, u32, u32) callconv(.c) void, @ptrCast(@alignCast(vtable[111])));
+    Fn(self, glyph_image_format, baseline_origin, glyph_run, measuring_mode, snap_option);
 }
 
 // ID2D1SolidColorBrush extends ID2D1Brush extends ID2D1Resource extends IUnknown.
