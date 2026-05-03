@@ -1,6 +1,8 @@
 const std = @import("std");
 const windows = std.os.windows;
 const app_event = @import("app_event.zig");
+const dialog = @import("dialog.zig");
+const paths = @import("paths.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
@@ -432,8 +434,30 @@ pub const Window = struct {
         _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
         // Register global hotkey from config (default = F1, modifiers=0).
+        // 실패 사유 (시연 중 발견):
+        // - Windows OS 가 예약: F12 = kernel debugger 용 (MSDN RegisterHotKey 명시).
+        // - 다른 system shortcut 과 충돌: Win+Shift+S (Snip & Sketch) 등 일부 Win+Shift
+        //   조합은 Windows shell 이 먼저 가로채서 우리 hotkey 가 안 도달.
+        // - 다른 앱이 이미 같은 조합을 등록.
+        // 이 셋은 외부 표시 없이 silent fail 하는 게 사고 — drop-down 정체상 hotkey
+        // 가 없으면 토글 자체가 안 되어 사용자가 *왜 안 되는지* 모른 채 헤맴.
+        // fatal dialog 로 종료 + config 파일 경로 + 알려진 reservation 안내.
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
-            OutputDebugStringA("WARNING: Failed to register configured hotkey\n");
+            var alloc_buf: [4096]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
+            const cfg_path = paths.configPath(fba.allocator()) catch "(unknown)";
+            var msg_buf: [1024]u8 = undefined;
+            const msg = std.fmt.bufPrint(
+                &msg_buf,
+                "Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).\n\n" ++
+                    "Common causes:\n" ++
+                    "\u{2022} The OS reserves the key (F12 is reserved for the kernel debugger and cannot be a global hotkey)\n" ++
+                    "\u{2022} Another app already registered the same combination\n" ++
+                    "\u{2022} Windows shell intercepts the combination first (some Win+Shift+letter shortcuts)\n\n" ++
+                    "Edit the config and restart:\n{s}",
+                .{ hotkey_vkey, hotkey_modifiers, cfg_path },
+            ) catch "Failed to register the global hotkey. Edit %APPDATA%\\tildaz\\config.json and restart.";
+            dialog.showFatal("TildaZ — Hotkey Registration Failed", msg);
         }
 
         // Remember font-creation parameters so `rebuildFontForDpi` can
