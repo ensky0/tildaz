@@ -55,15 +55,19 @@
 
 macOS 에서 `applicationShouldTerminate:` 로 Cmd+Q 가로채 confirm 띄움. Windows 동등은 WM_CLOSE 핸들러 — `MessageBoxW` 인라인 호출을 `dialog.showConfirm` (cross-platform) 으로 교체 + 단축어 통일.
 
+> 우리 창은 `WS_POPUP` (titlebar / 시스템 메뉴 없음 — drop-down 정체) 이므로 시스템 메뉴 → Close 경로는 디자인 상 존재하지 않음. WM_CLOSE 트리거는 Alt+F4 / WS_POPUP 닫기 hook 등으로 한정.
+>
+> 다이얼로그가 우리 메인 창 (WS_EX_TOPMOST) 위로 보이도록 `MB_TOPMOST` 플래그를 명시 — 안 그러면 메인 창 뒤에 가려 버튼 클릭 불가.
+
 - [ ] **단일 탭 + Alt+F4** → "Quit TildaZ?" 다이얼로그 + 본문 "This will close 1 open tab." + Cancel(default) / OK 버튼
+- [ ] 다이얼로그가 메인 창 *위*에 보임 (가려지지 않음)
 - [ ] Cancel 누름 → 윈도우 그대로, 탭 유지
 - [ ] OK 누름 → 종료
 - [ ] **탭 2 개 + Alt+F4** → 본문 "This will close 2 open tabs." (`s` 붙음)
 - [ ] **탭 3+ Alt+F4** → "This will close 3 open tabs."
-- [ ] **시스템 메뉴 (창 좌상단 ☰) → Close** 클릭 → 같은 confirm
 - [ ] **Enter 만 눌러도 종료 안 됨** — default 버튼이 Cancel 이라 무심코 Enter 가 종료 안 트리거
 - [ ] **마지막 탭 셸 `exit`** → confirm 없이 즉시 종료 (PTY exit 자동 종료 path, `shell_exited` 분기)
-- [ ] **탭바 X 클릭으로 마지막 탭 닫기** → confirm 없이 즉시 종료
+- [ ] **단일 탭 Ctrl+Shift+W (close active tab)** → confirm 없이 즉시 종료 (탭이 1 개이면 탭바 자체가 없어 X 클릭 경로 자체가 없음 — #127)
 
 ---
 
