@@ -27,7 +27,7 @@ const UnsupportedRendererBackend = struct {
     pub fn init(
         _: std.mem.Allocator,
         _: ?*anyopaque,
-        _: [*:0]const u16,
+        _: []const [*:0]const u16,
         _: c_int,
         _: u32,
         _: u32,
@@ -45,7 +45,7 @@ const UnsupportedRendererBackend = struct {
     pub fn rebuildFont(
         _: *UnsupportedRendererBackend,
         _: ?*anyopaque,
-        _: [*:0]const u16,
+        _: []const [*:0]const u16,
         _: c_int,
         _: u32,
         _: u32,
