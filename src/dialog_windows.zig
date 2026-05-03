@@ -19,6 +19,11 @@ const MB_ICONINFORMATION: c_uint = 0x40;
 const MB_ICONERROR: c_uint = 0x10;
 const MB_ICONQUESTION: c_uint = 0x20;
 const MB_DEFBUTTON2: c_uint = 0x100;
+/// 다이얼로그 자체에 `WS_EX_TOPMOST` 부여 — 우리 메인 창이 topmost 라
+/// 일반 z-order 의 MessageBox 가 그 뒤에 가려져 버튼을 누를 수 없는 사고
+/// 방지. 메인 창과 같은 topmost 그룹 안에서 modal 다이얼로그가 더 늦게
+/// 만들어진 쪽이 위로 올라옴.
+const MB_TOPMOST: c_uint = 0x40000;
 
 const IDOK: c_int = 1;
 
@@ -31,7 +36,7 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
     title_buf[tlen] = 0;
     msg_buf[mlen] = 0;
 
-    const flags = MB_OK | switch (severity) {
+    const flags = MB_OK | MB_TOPMOST | switch (severity) {
         .info => MB_ICONINFORMATION,
         .err => MB_ICONERROR,
     };
@@ -59,7 +64,7 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
         null,
         @ptrCast(msg_buf[0..mlen :0]),
         @ptrCast(title_buf[0..tlen :0]),
-        MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2,
+        MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST,
     );
     return result == IDOK;
 }
