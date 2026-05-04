@@ -2,6 +2,10 @@ pub const Event = union(enum) {
     text_input: u21,
     key_input: KeyInput,
     shortcut: Shortcut,
+    /// 클립보드 paste (#142). UTF-8 bytes. 탭 rename 활성 시
+    /// `app_controller` 가 rename buffer 로 라우팅 (true 반환), 아니면 false
+    /// 반환해서 host 가 PTY 로 쓴다.
+    paste: []const u8,
     scroll: ScrollEvent,
     mouse_down: MouseEvent,
     mouse_double_click: MouseEvent,

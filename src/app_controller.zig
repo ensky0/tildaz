@@ -712,6 +712,27 @@ pub const App = struct {
                 if (self.isRenaming()) return true; // swallow rename editing keys
                 return false;
             },
+            .paste => |bytes| {
+                // rename 활성 시 paste 텍스트를 rename buffer 로 라우팅 (#142).
+                // printable codepoint 만 (cp >= 0x20) — newline / tab 등 control
+                // 문자는 탭 이름에 안 맞으므로 제외. host 가 false 일 땐 PTY 로 직접 write.
+                if (!self.isRenaming()) return false;
+                var i: usize = 0;
+                while (i < bytes.len) {
+                    const seq_len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch {
+                        i += 1;
+                        continue;
+                    };
+                    if (i + seq_len > bytes.len) break;
+                    const cp = std.unicode.utf8Decode(bytes[i .. i + seq_len]) catch {
+                        i += seq_len;
+                        continue;
+                    };
+                    if (cp >= 0x20) self.handleRenameChar(cp);
+                    i += seq_len;
+                }
+                return true;
+            },
             .shortcut => |shortcut| {
                 switch (shortcut) {
                     .new_tab => {
