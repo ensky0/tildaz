@@ -271,7 +271,6 @@ pub const IDWriteTextAnalyzer = extern struct {
         QueryInterface: *const fn (*IDWriteTextAnalyzer, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
         AddRef: *const fn (*IDWriteTextAnalyzer) callconv(.c) u32,
         Release: *const fn (*IDWriteTextAnalyzer) callconv(.c) u32,
-        // 4 analyze methods (we don't use them — opaque)
         AnalyzeScript: *const anyopaque,
         AnalyzeBidi: *const anyopaque,
         AnalyzeNumberSubstitution: *const anyopaque,
@@ -297,12 +296,56 @@ pub const IDWriteTextAnalyzer = extern struct {
             glyph_props: [*]DWRITE_SHAPING_GLYPH_PROPERTIES,
             actual_glyph_count: *UINT32,
         ) callconv(.c) HRESULT,
-        GetGlyphPlacements: *const anyopaque,
+        GetGlyphPlacements: *const fn (
+            *IDWriteTextAnalyzer,
+            text_string: [*]const WCHAR,
+            cluster_map: [*]const UINT16,
+            text_props: [*]DWRITE_SHAPING_TEXT_PROPERTIES,
+            text_length: UINT32,
+            glyph_indices: [*]const UINT16,
+            glyph_props: [*]const DWRITE_SHAPING_GLYPH_PROPERTIES,
+            glyph_count: UINT32,
+            font_face: *IDWriteFontFace,
+            font_em_size: FLOAT,
+            is_sideways: BOOL,
+            is_right_to_left: BOOL,
+            script_analysis: *const DWRITE_SCRIPT_ANALYSIS,
+            locale_name: ?[*:0]const WCHAR,
+            features: ?[*]const ?*const anyopaque,
+            feature_range_lengths: ?[*]const UINT32,
+            feature_ranges: UINT32,
+            glyph_advances: [*]FLOAT,
+            glyph_offsets: [*]DWRITE_GLYPH_OFFSET,
+        ) callconv(.c) HRESULT,
         GetGdiCompatibleGlyphPlacements: *const anyopaque,
     };
 
     pub fn Release(self: *IDWriteTextAnalyzer) u32 {
         return self.vtable.Release(self);
+    }
+
+    pub fn GetGlyphPlacements(
+        self: *IDWriteTextAnalyzer,
+        text_string: [*]const WCHAR,
+        cluster_map: [*]const UINT16,
+        text_props: [*]DWRITE_SHAPING_TEXT_PROPERTIES,
+        text_length: UINT32,
+        glyph_indices: [*]const UINT16,
+        glyph_props: [*]const DWRITE_SHAPING_GLYPH_PROPERTIES,
+        glyph_count: UINT32,
+        font_face: *IDWriteFontFace,
+        font_em_size: FLOAT,
+        is_sideways: BOOL,
+        is_right_to_left: BOOL,
+        script_analysis: *const DWRITE_SCRIPT_ANALYSIS,
+        locale_name: ?[*:0]const WCHAR,
+        features: ?[*]const ?*const anyopaque,
+        feature_range_lengths: ?[*]const UINT32,
+        feature_ranges: UINT32,
+        glyph_advances: [*]FLOAT,
+        glyph_offsets: [*]DWRITE_GLYPH_OFFSET,
+    ) HRESULT {
+        return self.vtable.GetGlyphPlacements(self, text_string, cluster_map, text_props, text_length, glyph_indices, glyph_props, glyph_count, font_face, font_em_size, is_sideways, is_right_to_left, script_analysis, locale_name, features, feature_range_lengths, feature_ranges, glyph_advances, glyph_offsets);
     }
 
     pub fn GetGlyphs(
