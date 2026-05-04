@@ -34,7 +34,7 @@ availability.
 
 **In scope**
 
-- The `tildaz.exe` binary as shipped in GitHub Releases
+- The `tildaz.exe` (Windows) and `TildaZ.app` (macOS) binaries as shipped in GitHub Releases
 - Source code under `src/`
 - Release pipeline under `.github/workflows/`
 
