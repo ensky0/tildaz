@@ -38,9 +38,28 @@ const GlyphKey = struct {
     index: u16,
 };
 
+/// Multi-glyph cluster (#139) cache key — glyph_indices hash 만. face_ptr 은
+/// system fallback (MapCharacters + CreateFontFace) 마다 새 instance 라 매번
+/// 다름 → key 에 넣으면 항상 cache miss. 같은 cluster 의 glyph indices 가 같은
+/// 시퀀스면 같은 visual 이라 face 무관하게 cache 가능. (collision 위험은 FNV-1a
+/// + multi-glyph hash 로 사실상 무시 가능.)
+const ClusterKey = struct {
+    indices_hash: u64,
+};
+
+fn hashIndices(indices: []const u16) u64 {
+    var h: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset basis
+    for (indices) |idx| {
+        h ^= @as(u64, idx);
+        h *%= 0x100000001b3;
+    }
+    return h;
+}
+
 pub const GlyphAtlas = struct {
     alloc: std.mem.Allocator,
     cache: std.AutoHashMap(GlyphKey, AtlasEntry),
+    cluster_cache: std.AutoHashMap(ClusterKey, AtlasEntry),
 
     // Atlas packing state (simple row-based)
     cursor_x: u32 = 0,
@@ -243,6 +262,7 @@ pub const GlyphAtlas = struct {
         return .{
             .alloc = alloc,
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
+            .cluster_cache = std.AutoHashMap(ClusterKey, AtlasEntry).init(alloc),
             .dw_factory = dw_factory,
             .rendering_params = rp.?,
             .rendering_mode = sys_rendering_mode,
@@ -275,6 +295,7 @@ pub const GlyphAtlas = struct {
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
         self.cache.deinit();
+        self.cluster_cache.deinit();
         _ = self.srv.Release();
         _ = self.texture.Release();
         _ = self.rendering_params.Release();
@@ -291,15 +312,37 @@ pub const GlyphAtlas = struct {
         const key = GlyphKey{ .face = @intFromPtr(face), .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
-        const entry = self.rasterizeColor(face, glyph_index) orelse
+        const single_indices = [_]u16{glyph_index};
+        const empty_advances = [_]dw.FLOAT{};
+        const empty_offsets = [_]dw.DWRITE_GLYPH_OFFSET{};
+        const entry = self.rasterizeColor(face, &single_indices, &empty_advances, &empty_offsets) orelse
             self.rasterize(face, glyph_index) orelse return null;
         self.cache.put(key, entry) catch return null;
+        return entry;
+    }
+
+    /// Multi-glyph cluster (#139, ZWJ family 등) atlas entry. GSUB 합성 안 된
+    /// cluster 의 모든 glyph 를 한 번에 D2D `DrawGlyphRun(glyphCount=N)` 으로
+    /// 라스터, single composite atlas entry 로 cache. count=1 이면 single
+    /// getOrInsert 로 redirect.
+    pub fn getOrInsertCluster(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_indices: []const u16, advances: []const dw.FLOAT, offsets: []const dw.DWRITE_GLYPH_OFFSET) ?AtlasEntry {
+        if (glyph_indices.len == 0) return null;
+        if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
+
+        const key = ClusterKey{ .indices_hash = hashIndices(glyph_indices) };
+        if (self.cluster_cache.get(key)) |entry| return entry;
+
+        // Color path 만 multi-glyph 지원 — mono ClearType 의 cluster 는 의미 작음
+        // (글자 cluster 는 single glyph 가 일반).
+        const entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse return null;
+        self.cluster_cache.put(key, entry) catch return null;
         return entry;
     }
 
     /// Reset the atlas (clear cache and packing state). Call only after flushing all pending draws.
     pub fn reset(self: *GlyphAtlas) void {
         self.cache.clearRetainingCapacity();
+        self.cluster_cache.clearRetainingCapacity();
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
@@ -441,7 +484,7 @@ pub const GlyphAtlas = struct {
     /// is_color=true 인 AtlasEntry 반환. 컬러 글리프 아닌 경우
     /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
     /// `rasterize` (mono ClearType) 로 fall-through.
-    fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
+    fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_indices: []const u16, in_advances: []const dw.FLOAT, in_offsets: []const dw.DWRITE_GLYPH_OFFSET) ?AtlasEntry {
         // atlas RT + DC + DC4 + brush + Factory4 모두 있어야 컬러 path 가능.
         // Win 10 1607+ 라 모두 사용 가능.
         const atlas_rt = self.atlas_d2d_rt orelse return null;
@@ -449,16 +492,30 @@ pub const GlyphAtlas = struct {
         const atlas_dc4 = self.atlas_dc4 orelse return null;
         const brush = self.atlas_brush orelse return null;
         const factory4 = self.dw_factory4 orelse return null;
+        if (glyph_indices.len == 0 or glyph_indices.len > 16) return null;
 
-        const indices = [1]dw.UINT16{glyph_index};
-        const advances = [1]dw.FLOAT{0};
+        // multi-glyph cluster (#139) — ZWJ family 등 GSUB 가 합성 못 한 cluster 의
+        // 모든 glyph 를 한 번에 D2D 에 전달. GetGlyphPlacements 로 받은 정확한
+        // advances + offsets 을 사용해 emoji 가 visual family 로 결합되게 함.
+        // single-glyph path 는 advances=0, offsets=null 으로 simple.
+        var indices_buf: [16]dw.UINT16 = undefined;
+        var advances_buf: [16]dw.FLOAT = undefined;
+        var offsets_buf: [16]dw.DWRITE_GLYPH_OFFSET = undefined;
+        const has_placements = in_advances.len == glyph_indices.len and in_offsets.len == glyph_indices.len;
+        for (glyph_indices, 0..) |gi, i| {
+            indices_buf[i] = gi;
+            advances_buf[i] = if (has_placements) in_advances[i] else 0;
+            offsets_buf[i] = if (has_placements) in_offsets[i] else .{ .advanceOffset = 0, .ascenderOffset = 0 };
+        }
+        const glyph_count: dw.UINT32 = @intCast(glyph_indices.len);
+        const offsets_ptr: ?[*]const dw.DWRITE_GLYPH_OFFSET = if (has_placements) &offsets_buf else null;
         const glyph_run = dw.DWRITE_GLYPH_RUN{
             .fontFace = face,
             .fontEmSize = self.font_em_size,
-            .glyphCount = 1,
-            .glyphIndices = &indices,
-            .glyphAdvances = &advances,
-            .glyphOffsets = null,
+            .glyphCount = glyph_count,
+            .glyphIndices = &indices_buf,
+            .glyphAdvances = &advances_buf,
+            .glyphOffsets = offsets_ptr,
             .isSideways = 0,
             .bidiLevel = 0,
         };

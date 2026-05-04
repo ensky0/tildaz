@@ -5,7 +5,8 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const d3d = @import("d3d11.zig");
 const dw = @import("directwrite.zig");
-const DWriteFontContext = @import("dwrite_font.zig").DWriteFontContext;
+const dwrite_font = @import("dwrite_font.zig");
+const DWriteFontContext = dwrite_font.DWriteFontContext;
 const ui_metrics = @import("ui_metrics.zig");
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
@@ -986,11 +987,12 @@ pub const D3d11Renderer = struct {
                     text_count = 0;
                 }
 
-                // Resolve glyph. grapheme cluster (VS-16 / skin tone modifier
-                // / ZWJ 시퀀스) 면 IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
-                // shape — 단일 (컬러 emoji) 글리프로 reduce. 일반 cell 은 빠른
-                // single-codepoint path 그대로. macOS resolveGrapheme 와 동등 패턴.
-                const result = blk: {
+                // Resolve glyph cluster. grapheme cluster (VS-16 / skin tone /
+                // ZWJ 시퀀스) 면 IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
+                // shape — single glyph (GSUB 합성 OK) 또는 multi-glyph (#139
+                // ZWJ family 등 합성 안 되는 cluster). 일반 cell 은 빠른 single-
+                // codepoint path. macOS resolveGrapheme 와 동등 패턴.
+                const result: dwrite_font.ClusterResult = blk: {
                     if (raw.hasGrapheme() and x < graphemes.len) {
                         var cluster: [16]u21 = undefined;
                         cluster[0] = cp;
@@ -999,9 +1001,14 @@ pub const D3d11Renderer = struct {
                         @memcpy(cluster[1..][0..take], extras[0..take]);
                         if (self.font.resolveGrapheme(cluster[0 .. 1 + take])) |r| break :blk r;
                     }
-                    break :blk self.font.resolveGlyph(cp) orelse continue;
+                    const single = self.font.resolveGlyph(cp) orelse continue;
+                    var indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                    indices[0] = single.index;
+                    const advances = [_]dw.FLOAT{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                    const offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                    break :blk .{ .face = single.face, .indices = indices, .advances = advances, .offsets = offsets, .count = 1, .owned = single.owned };
                 };
-                var entry_opt = self.atlas.getOrInsert(result.face, result.index);
+                var entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
 
                 // Atlas full: flush pending draws BEFORE reset so queued UV coords stay valid,
                 // then reset and retry once.
@@ -1015,7 +1022,7 @@ pub const D3d11Renderer = struct {
                         block_count = 0;
                     }
                     self.atlas.reset();
-                    entry_opt = self.atlas.getOrInsert(result.face, result.index);
+                    entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
                 }
 
                 const entry = entry_opt orelse {

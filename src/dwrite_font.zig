@@ -17,6 +17,20 @@ pub const GlyphResult = struct {
     owned: bool, // true = caller must Release face
 };
 
+/// ZWJ family / VS-16 / skin tone modifier cluster 의 multi-glyph 결과 (#139).
+/// Segoe UI Emoji 가 family ZWJ chain 을 single glyph 로 GSUB 합성 못 하면
+/// `count > 1` 의 multi-glyph cluster 반환. atlas 가 multi-glyph DrawGlyphRun
+/// 으로 한 번에 그려서 single composite glyph 로 cache.
+pub const MAX_CLUSTER_GLYPHS: usize = 16;
+pub const ClusterResult = struct {
+    face: *dw.IDWriteFontFace,
+    indices: [MAX_CLUSTER_GLYPHS]dw.UINT16,
+    advances: [MAX_CLUSTER_GLYPHS]dw.FLOAT,
+    offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
+    count: u8,
+    owned: bool,
+};
+
 const CachedGlyph = struct {
     face: *dw.IDWriteFontFace,
     index: u16,
@@ -288,7 +302,7 @@ pub const DWriteFontContext = struct {
     /// `cps[0]` 은 base codepoint, `cps[1..]` 은 modifier (VS-16 / skin tone /
     /// ZWJ + secondary base 등). chain 순회 → system fallback 순. 첫 face 가
     /// non-zero glyph 를 만들면 그걸 반환.
-    pub fn resolveGrapheme(self: *DWriteFontContext, cps: []const u21) ?GlyphResult {
+    pub fn resolveGrapheme(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
         if (cps.len == 0 or self.text_analyzer == null) return null;
 
         // UTF-21 codepoint slice → UTF-16 buffer (surrogate pair 처리).
@@ -308,11 +322,16 @@ pub const DWriteFontContext = struct {
         }
         if (u16_len == 0) return null;
 
+        var indices_buf: [MAX_CLUSTER_GLYPHS]u16 = undefined;
+        var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
+        var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
+
         // 1. user chain 순회 — face 별로 cluster shape 시도.
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
-            if (self.shapeOnFace(face, &u16_buf, u16_len)) |idx| {
-                return .{ .face = face, .index = idx, .owned = false };
+            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
+            if (cnt > 0) {
+                return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false };
             }
         }
 
@@ -341,14 +360,9 @@ pub const DWriteFontContext = struct {
                     var face_ptr: ?*dw.IDWriteFontFace = null;
                     if (mf.CreateFontFace(&face_ptr) >= 0) {
                         if (face_ptr) |face| {
-                            if (self.shapeOnFace(face, &u16_buf, u16_len)) |idx| {
-                                // owned=true — 호출처가 face 사용 후 Release.
-                                // (resolveGlyph 의 single-codepoint cache 패턴과
-                                // 다름 — cluster 를 cache key 로 쓰려면 hash 필요해
-                                // 일단 매번 새 face. 자주 호출되는 cluster 는 atlas
-                                // cache key 가 face 포인터라 cache miss 가능. 향후
-                                // 최적화 후보.)
-                                return .{ .face = face, .index = idx, .owned = true };
+                            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
+                            if (cnt > 0) {
+                                return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = true };
                             }
                             _ = face.vtable.Release(face);
                         }
@@ -360,19 +374,24 @@ pub const DWriteFontContext = struct {
         return null;
     }
 
-    /// `face` 로 cluster 를 OpenType shape — non-zero (`.notdef` 아님) 첫 glyph
-    /// 반환. cluster 가 .notdef 또는 빈 결과면 null (다음 face / system fallback
-    /// 으로 넘어가도록).
-    fn shapeOnFace(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32) ?u16 {
-        const analyzer = self.text_analyzer orelse return null;
+    /// `face` 로 cluster 를 OpenType shape — single glyph (가장 흔한 path) 또는
+    /// multi-glyph cluster (#139, ZWJ family 등 GSUB 미합성). 결과는 indices array
+    /// + count. .notdef 만 반환되면 null (다음 face / fallback).
+    /// out_indices 는 `[MAX_CLUSTER_GLYPHS]u16`. 리턴 = count (0 = fail).
+    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
+        const analyzer = self.text_analyzer orelse return 0;
 
         var cluster_map: [32]u16 = undefined;
         var text_props: [32]dw.DWRITE_SHAPING_TEXT_PROPERTIES = undefined;
         var glyph_indices: [64]u16 = undefined;
         var glyph_props: [64]dw.DWRITE_SHAPING_GLYPH_PROPERTIES = undefined;
+        var glyph_advances: [64]dw.FLOAT = undefined;
+        var glyph_offsets: [64]dw.DWRITE_GLYPH_OFFSET = undefined;
         var actual_count: dw.UINT32 = 0;
 
         const sa = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
+        const locale_name = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
+
         const hr = analyzer.GetGlyphs(
             text,
             text_len,
@@ -380,11 +399,11 @@ pub const DWriteFontContext = struct {
             0, // is_sideways
             0, // is_right_to_left
             &sa,
-            null, // locale_name
+            locale_name,
             null, // number_substitution
             null, // features
-            null, // feature_range_lengths
-            0, // feature_ranges
+            null,
+            0,
             glyph_indices.len,
             &cluster_map,
             &text_props,
@@ -392,9 +411,58 @@ pub const DWriteFontContext = struct {
             &glyph_props,
             &actual_count,
         );
-        if (hr < 0 or actual_count == 0) return null;
-        if (glyph_indices[0] == 0) return null; // .notdef
-        return glyph_indices[0];
+        if (hr < 0 or actual_count == 0) return 0;
+        // cluster 내 어떤 glyph 가 .notdef 면 face 가 cluster 의 모든 codepoint
+        // 를 글리프로 갖지 않음 — fallback (다음 face 또는 system fallback) 으로.
+        // 예: Cascadia 가 ZWJ family 받으면 emoji codepoint 가 .notdef → reject,
+        // Segoe UI Emoji fallback 으로 cluster 합성 시도.
+        const out_count: u8 = @intCast(@min(actual_count, MAX_CLUSTER_GLYPHS));
+        var i: u8 = 0;
+        while (i < out_count) : (i += 1) {
+            if (glyph_indices[i] == 0) return 0; // any .notdef → fail
+            out_indices[i] = glyph_indices[i];
+        }
+
+        // GetGlyphPlacements 로 advances + offsets 계산 (#139). emoji ZWJ family
+        // 는 GSUB 가 single glyph 로 ligation 안 되고 multi-glyph + 각자의
+        // advance/offset 으로 visual 결합되도록 design 되어 있음 (예: Segoe UI
+        // Emoji 의 family-mwg 는 man[adv=11.2 off=+3.4] + woman[adv=9.3] +
+        // girl[adv=0 off=-13.3] 로 left-pulled stack 으로 결합). advances=0 stack
+        // 으로 그리면 girl 만 위에 보이고 family 깨짐. WT 동등 path.
+        if (analyzer.GetGlyphPlacements(
+            text,
+            &cluster_map,
+            &text_props,
+            text_len,
+            &glyph_indices,
+            &glyph_props,
+            actual_count,
+            face,
+            self.font_em_size,
+            0, // is_sideways
+            0, // is_right_to_left
+            &sa,
+            locale_name,
+            null,
+            null,
+            0,
+            &glyph_advances,
+            &glyph_offsets,
+        ) >= 0) {
+            i = 0;
+            while (i < out_count) : (i += 1) {
+                out_advances[i] = glyph_advances[i];
+                out_offsets[i] = glyph_offsets[i];
+            }
+        } else {
+            i = 0;
+            while (i < out_count) : (i += 1) {
+                out_advances[i] = 0;
+                out_offsets[i] = .{ .advanceOffset = 0, .ascenderOffset = 0 };
+            }
+        }
+
+        return out_count;
     }
 
     /// Check if a font family is installed on the system via DirectWrite.
