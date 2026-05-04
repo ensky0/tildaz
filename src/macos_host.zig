@@ -1370,6 +1370,16 @@ fn handlePaste() void {
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
 
+    // rename 진행 중이면 PTY 대신 rename buf 로 라우팅 (#142). printable
+    // codepoint 만 (cp >= 0x20) — newline / tab 등 control 문자 제외.
+    if (g_rename.isActive()) {
+        var iter = std.unicode.Utf8Iterator{ .bytes = cstr[0..len], .i = 0 };
+        while (iter.nextCodepoint()) |cp| {
+            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
+        }
+        return;
+    }
+
     _ = tab.pty.write(cstr[0..len]) catch |err| {
         macos_log.appendLine("paste", "PTY write failed: {s}", .{@errorName(err)});
     };

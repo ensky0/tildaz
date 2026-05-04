@@ -1478,15 +1478,19 @@ pub const Window = struct {
         }
         if (len == 0) return;
 
-        // Convert UTF-16 to UTF-8 and send to PTY
-        var buf: [4]u8 = undefined;
+        // UTF-16 → UTF-8. paste text 통째로 buffer 에 모아서 #142 의 paste event
+        // dispatch — rename 활성 시 app_controller 가 rename buffer 로 라우팅,
+        // 아니면 PTY 로 한 번에 write.
+        const alloc = std.heap.page_allocator;
+        var u8_buf = alloc.alloc(u8, len * 3 + 4) catch return; // BMP=3, 짝꿍=4
+        defer alloc.free(u8_buf);
+        var u8_len: usize = 0;
         var i: usize = 0;
         while (i < len) {
             const unit = wide_ptr[i];
             i += 1;
             var cp: u21 = undefined;
             if (unit >= 0xD800 and unit <= 0xDBFF) {
-                // Surrogate pair
                 if (i < len) {
                     const low = wide_ptr[i];
                     i += 1;
@@ -1495,9 +1499,14 @@ pub const Window = struct {
             } else {
                 cp = @intCast(unit);
             }
-            const n = std.unicode.utf8Encode(cp, &buf) catch continue;
-            write_fn(buf[0..n], self.userdata);
+            const n = std.unicode.utf8Encode(cp, u8_buf[u8_len..]) catch continue;
+            u8_len += n;
         }
+        if (u8_len == 0) return;
+
+        const utf8 = u8_buf[0..u8_len];
+        if (self.dispatchAppEvent(.{ .paste = utf8 })) return; // app handled (rename)
+        write_fn(utf8, self.userdata);
     }
 
     pub fn copyToClipboard(self: *Window, text: [:0]const u8) void {
