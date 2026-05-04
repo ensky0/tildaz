@@ -2,8 +2,8 @@
 //
 // 진행 상태는 이슈 #108 참고.
 //
-//   M1 — host 골격 + fail-fast 메시지 (688d204).
-//   M2 — NSWindow + CAMetalLayer 빈 화면 + Cmd+Q (bebf897).
+//   M1 — host 골격 + fail-fast 메시지 (5a336db).
+//   M2 — NSWindow + CAMetalLayer 빈 화면 + Cmd+Q (ae2328b).
 //   M3 — borderless + dock rect + F1 글로벌 핫키 토글. (현재)
 //   M3.5 — config.zig platform-leak 정리, NSAlert 기반 config 에러.
 //   M4 — 모니터/DPI 변화 시 재적용.

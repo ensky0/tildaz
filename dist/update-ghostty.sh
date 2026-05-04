@@ -3,7 +3,7 @@
 #
 # build.zig.zon 의 .ghostty dependency 는 반드시 특정 SHA URL 로 pin 해야 한다:
 #   - rolling `refs/heads/main.tar.gz` 는 upstream 이 움직이면 CI 의 zig fetch 가
-#     해시 불일치로 실패 (과거 c41a9ef pin → e7c3942 회귀 → v0.2.10 에서 재핀).
+#     해시 불일치로 실패 (과거 c41a9ef pin → e10e78f 회귀 → v0.2.10 에서 재핀).
 #   - .github/workflows/release.yml 의 sanity check 가 rolling URL 을 거부함.
 #
 # 이 스크립트는 그 pin 을 안전하게 갱신해 준다. 실행 예:

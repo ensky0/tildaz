@@ -108,7 +108,7 @@ jobs:
 
           # build.zig.zon 의 github archive URL 은 전부 특정 SHA 로 pin 되어야 함.
           # refs/heads/ · refs/tags/ 같은 rolling reference 는 upstream 이 움직이면
-          # CI fetch 가 해시 불일치로 터지므로 금지. (과거 c41a9ef → e7c3942 회귀로
+          # CI fetch 가 해시 불일치로 터지므로 금지. (과거 c41a9ef → e10e78f 회귀로
           # 한 번 깨진 뒤 v0.2.10 에서 다시 핀 + 이 check 추가)
           BAD=$(grep -E '\.url[[:space:]]*=[[:space:]]*"https://github\.com/' build.zig.zon | grep -v -E '/archive/[0-9a-f]{40}\.tar\.gz"' || true)
           if [[ -n "$BAD" ]]; then
