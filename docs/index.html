@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TildaZ — Quake-style drop-down terminal for Windows</title>
-  <meta name="description" content="Press F1 to drop down a fast, Windows-native terminal. Zig + ghostty VT + Direct3D 11 ClearType rendering, tabs, 18 built-in themes, multi-monitor DPI tracking.">
-  <meta property="og:title" content="TildaZ — Quake-style drop-down terminal for Windows">
-  <meta property="og:description" content="Press F1 to drop down a fast, Windows-native terminal.">
+  <title>TildaZ — Quake-style drop-down terminal for Windows and macOS</title>
+  <meta name="description" content="Press F1 to drop down a fast, native terminal on Windows and macOS. Zig + ghostty VT, Direct3D 11 / Metal rendering, tabs, IME, 18 built-in themes, multi-monitor DPI tracking.">
+  <meta property="og:title" content="TildaZ — Quake-style drop-down terminal for Windows and macOS">
+  <meta property="og:description" content="Press F1 to drop down a fast, native terminal on Windows and macOS.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ensky0.github.io/tildaz/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -30,15 +30,15 @@
     <div class="hero-inner">
       <div class="hero-badge">
         <span class="hero-badge-dot"></span>
-        Windows · Zig 0.15 · AGPL-3.0
+        Windows · macOS · Zig 0.15 · AGPL-3.0
       </div>
       <h1 class="hero-title">
         <span class="hero-keycap">F1</span>
         <span class="hero-title-text">drops a terminal<br>right where you're working</span>
       </h1>
       <p class="hero-sub">
-        A Quake-style drop-down terminal for Windows.<br>
-        ghostty VT core, Direct3D 11 ClearType rendering, bundled OpenConsole ConPTY.
+        A Quake-style drop-down terminal for Windows and macOS.<br>
+        ghostty VT core, Direct3D 11 / Metal rendering, bundled OpenConsole ConPTY on Windows, native PTY on macOS.
       </p>
       <div class="hero-actions">
         <a class="btn btn-primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">
@@ -72,7 +72,7 @@
 
   <section id="features" class="features">
     <div class="section-inner">
-      <h2 class="section-title">Fast, focused, native to Windows</h2>
+      <h2 class="section-title">Fast, focused, native to Windows and macOS</h2>
       <p class="section-sub">Built around the things a drop-down terminal has to get right.</p>
 
       <div class="feature-grid">
@@ -90,14 +90,14 @@
 
         <article class="feature-card">
           <div class="feature-icon">🎨</div>
-          <h3>D3D11 ClearType rendering</h3>
-          <p>DirectWrite glyph atlas + HLSL dual-source blending. Subpixel anti-aliasing that actually survives.</p>
+          <h3>GPU rendering</h3>
+          <p>Direct3D 11 + ClearType subpixel on Windows. Metal + retina glyph atlas on macOS. DirectWrite / CoreText glyph atlases with HLSL / MSL shaders.</p>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">🚀</div>
-          <h3>Bundled OpenConsole (2.2×)</h3>
-          <p>Ships Microsoft's ConPTY runtime so conhost is out of the path. Bulk output throughput more than doubles.</p>
+          <h3>Native PTY on both</h3>
+          <p>Bundled OpenConsole ConPTY (1.26× faster than system conhost) on Windows. POSIX <code>openpty</code> + <code>login_tty</code> + IUTF8 termios on macOS.</p>
         </article>
 
         <article class="feature-card">
@@ -108,8 +108,8 @@
 
         <article class="feature-card">
           <div class="feature-icon">🌏</div>
-          <h3>Unicode, CJK, emoji</h3>
-          <p>Correct wide-character rendering out of the box. Font fallback chain up to 8 deep — no tofu.</p>
+          <h3>Unicode, CJK, emoji, IME</h3>
+          <p>Correct wide-character rendering, color emoji including ZWJ family glyphs, and inline IME pre-edit (Korean / Japanese / Chinese). Font fallback chain up to 8 deep.</p>
         </article>
 
         <article class="feature-card">
@@ -142,7 +142,7 @@
           <div class="qs-step-num">1</div>
           <div class="qs-step-content">
             <h3>Download</h3>
-            <p>Grab <code>tildaz-vX.Y.Z-win-x64.zip</code> from the Releases page.</p>
+            <p>From the Releases page: <code>tildaz-vX.Y.Z-windows.zip</code> (Windows) or <code>tildaz-vX.Y.Z-macos.dmg</code> (macOS, universal Apple Silicon + Intel).</p>
             <a class="btn btn-primary btn-sm" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Releases →</a>
           </div>
         </div>
@@ -150,8 +150,9 @@
         <div class="qs-step">
           <div class="qs-step-num">2</div>
           <div class="qs-step-content">
-            <h3>Extract</h3>
-            <p>Unzip anywhere. Keep <code>tildaz.exe</code>, <code>conpty.dll</code>, and <code>OpenConsole.exe</code> together — the bundled ConPTY runtime only activates when all three sit in the same folder.</p>
+            <h3>Install</h3>
+            <p><strong>Windows:</strong> unzip anywhere. Keep <code>tildaz.exe</code>, <code>conpty.dll</code>, and <code>OpenConsole.exe</code> together — the bundled ConPTY runtime activates only when all three sit in the same folder.</p>
+            <p><strong>macOS:</strong> open the DMG, drag <code>TildaZ.app</code> into the Applications shortcut. macOS 13 Ventura or later required.</p>
           </div>
         </div>
 
@@ -159,15 +160,16 @@
           <div class="qs-step-num">3</div>
           <div class="qs-step-content">
             <h3>Run and hit <kbd>F1</kbd></h3>
-            <p>First launch writes <code>%APPDATA%\tildaz\config.json</code> with defaults. Shell, theme, font, and drop-down geometry live there.</p>
+            <p>First launch writes the config with defaults: <code>%APPDATA%\tildaz\config.json</code> (Windows) or <code>~/.config/tildaz/config.json</code> (macOS). Shell, theme, font, and drop-down geometry live there.</p>
+            <p><strong>macOS first launch:</strong> the app is ad-hoc signed; Gatekeeper may block the first open. Right-click → Open, or run <code>xattr -d com.apple.quarantine /Applications/TildaZ.app</code>. Then grant Input Monitoring + Accessibility once for the global hotkey.</p>
           </div>
         </div>
       </div>
 
       <div class="qs-note">
-        <strong>Heads up on EDR false positives:</strong> the current <code>tildaz.exe</code> is not yet Authenticode-signed.
+        <strong>Heads up on EDR false positives (Windows):</strong> the current <code>tildaz.exe</code> is not yet Authenticode-signed.
         Some endpoint security products (SentinelOne, CrowdStrike, etc.) flag unsigned ConPTY-spawning binaries by behavior alone.
-        Code signing via the SignPath Foundation OSS program is in progress. <a href="https://github.com/ensky0/tildaz#배포와-코드-서명">Details →</a>
+        Code signing via the SignPath Foundation OSS program is in progress.
       </div>
     </div>
   </section>

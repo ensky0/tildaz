@@ -120,8 +120,9 @@ is finalized and its SHA256 is computed.
 ## Release cadence and project activity
 
 - **Public commit history**: active since March 2026 on a public repository.
-- **Recent releases** (as of writing): v0.2.5 through v0.2.13 shipped in April
-  2026. See https://github.com/ensky0/tildaz/releases for the full list.
+- **Recent releases** (as of writing): v0.2.5 through v0.3.0 shipped from
+  April through May 2026. See https://github.com/ensky0/tildaz/releases for
+  the full list.
 - **Expected cadence**: roughly weekly minor releases (0.2.x) with occasional
   hotfixes. No enterprise SLAs.
 
