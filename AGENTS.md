@@ -134,7 +134,14 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 # macOS — emoji 입력 테스트 방법
 
-`Ctrl+Cmd+Space` / `Ctrl+Shift+Space` 같은 system shortcut 이 우리 앱에선 안 떠 ([#130](https://github.com/ensky0/tildaz/issues/130)). 우회 방법:
+macOS 의 Show Emoji & Symbols (Apple default `Ctrl+Cmd+Space`) 는 트리거됨.
+단 cursor-anchored popover 가 아니라 화면 floating panel 로 뜨고, system 자동
+dismiss 안 됨 — Apple `CharacterPicker.framework` 가 NSTextView 기반
+firstResponder 만 popover path 활성하는 first-party 우대 한계 ([#130](https://github.com/ensky0/tildaz/issues/130)
+known limitation, ghostty / iTerm2 / Alacritty / Kitty 동등). dismiss 는
+`Esc` 또는 `Ctrl+Cmd+Space` 다시 (toggle). 자세한 분석은 SPEC.md 부록 B.
+
+picker 띄우지 않고 emoji 를 입력해 검증하는 우회 방법:
 
 ```sh
 echo "🎉 안녕 ABC"                       # source 에 emoji 직접 (다른 앱에서 복사 → 우클릭 paste)

@@ -139,6 +139,7 @@ otherwise.
 - **Ad-hoc codesign reissues identity per rebuild** — Input Monitoring / Accessibility grants must be re-enabled after each rebuild during development. Notarized releases ([#109](https://github.com/ensky0/tildaz/issues/109)) will fix this.
 - **`IMKCFRunLoopWakeUpReliable` stderr noise** — macOS IMK (Input Method Kit) emits this line via the system framework. Cannot be suppressed without redirecting all stderr; harmless. Same line appears in Ghostty, iTerm2, etc.
 - **`SF Mono` not registered by default** — Apple's user-facing "SF Mono" font is shipped with Xcode. Without Xcode (or manual install from Apple Developer Fonts), `["SF Mono"]` resolves to a substitute via CoreText; TildaZ rejects substitutes (strict family-name validation) so the config error is surfaced cleanly. The default chain `["Menlo"]` always works.
+- **Emoji & Symbols picker is a floating panel, not a cursor-anchored popover** — `Ctrl+Cmd+Space` opens the picker, but it appears as a free-floating window in its last-used position rather than anchored next to the text cursor, and macOS does not auto-dismiss it on focus loss. Press `Esc` or `Ctrl+Cmd+Space` again to dismiss. macOS reserves the popover path for `NSTextView`-based first responders (Terminal.app, TextEdit, Notes, Mail). Every modern fast terminal on macOS — Ghostty, iTerm2, Alacritty, Kitty — shares this limitation; the cell-grid + GPU-atlas + custom-IME architecture they all use is fundamentally incompatible with `NSTextView`. ([#130](https://github.com/ensky0/tildaz/issues/130))
 
 ## Privacy
 

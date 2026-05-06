@@ -597,16 +597,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // 의 interpretKeyEvents 로 흘러 SIGINT 안 갔음.)
     const NSEventModifierFlagControl: c_ulong = 1 << 18;
     const NSEventModifierFlagCommandKD: c_ulong = 1 << 20;
-    const NSEventModifierFlagShiftKD: c_ulong = 1 << 17;
     const ctrl = (flags & NSEventModifierFlagControl) != 0;
     const cmd_too = (flags & NSEventModifierFlagCommandKD) != 0;
-    const shift_too = (flags & NSEventModifierFlagShiftKD) != 0;
 
-    _ = shift_too; // emoji shortcut 은 mainMenu 의 menu item keyEquivalent 로 라우팅.
-
-    // Cmd 가 같이 눌린 ctrl+cmd 조합은 system shortcut (예: Ctrl+Cmd+Space =
-    // emoji picker) 일 가능성 — PTY 로 안 흘리고 super 로 넘김. 일반 Ctrl+C
-    // (Cmd 없음) 는 그대로 동작.
+    // Cmd 가 같이 눌린 ctrl+cmd 조합은 macOS system shortcut (Ctrl+Cmd+Space =
+    // Show Emoji & Symbols 등) 의 표식 — PTY 로 안 흘리고 mainMenu 의 menu
+    // item keyEquivalent 로 라우팅 (#130). 일반 Ctrl+C (Cmd 없음) 는 그대로
+    // PTY 직송.
     if (ctrl and !cmd_too) {
         const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
         const chars = get_chars(event, objc.sel("characters"));
@@ -643,11 +640,24 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const keycode = get_keycode(event, objc.sel("keyCode"));
 
+        const NSEventModifierFlagShift: c_ulong = 1 << 17;
+        const NSEventModifierFlagOption: c_ulong = 1 << 19;
+        const shift = (flags & NSEventModifierFlagShift) != 0;
+
+        // Esc — emoji picker 가 떠 있으면 dismiss (#130 follow-up). modifier
+        // 없는 단순 Esc 만 — Cmd / ctrl 은 위 분기에서 처리 끝 (cmd 는 mainMenu,
+        // ctrl-only 는 PTY 직송). shift / option 도 없을 때만. picker 의 visibility
+        // 는 `isEmojiPickerOpen()` 이 NSApp.orderedWindows 직접 query — boolean
+        // 추적의 stale 문제 회피.
+        if (keycode == 53 and !shift and (flags & NSEventModifierFlagOption) == 0 and isEmojiPickerOpen()) {
+            const orderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+            orderFront(g_app, objc.sel("orderFrontCharacterPalette:"), null);
+            return;
+        }
+
         // Shift+PgUp / Shift+PgDn — viewport scrollback. Windows
         // `session_core.scrollActive` 와 같은 *한 페이지 (visible rows)* 단위.
         // PTY 로 안 흘림.
-        const NSEventModifierFlagShift: c_ulong = 1 << 17;
-        const shift = (flags & NSEventModifierFlagShift) != 0;
         if (shift) {
             const rows: isize = @intCast(tab.terminal.rows);
             if (keycode == 116) { // kVK_PageUp — 위쪽 (older).
@@ -2237,10 +2247,21 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     @import("system_open.zig").openInDefaultApp(allocator, path);
 }
 
-/// Ctrl+Cmd+Space / Ctrl+Shift+Space — emoji & symbols picker (#130). 우리
-/// popup-level (101) 윈도우가 emoji panel 위에 가리는 문제 회피 위해 잠시
-/// normal level 로 낮춤. 다음 toggle (F1 / hotkey) 시 `showWindow` 가
-/// popup 으로 복구.
+/// Ctrl+Cmd+Space — Show Emoji & Symbols picker (#130). 우리 popup-level
+/// (101) 윈도우가 emoji panel 위에 가리는 문제 회피 위해 잠시 normal level
+/// 로 낮춤. 다음 toggle (F1 / hotkey) 시 `showWindow` 가 popup 으로 복구.
+///
+/// picker 가 cursor-anchored popover 가 아니라 floating panel 로 뜨는 것 +
+/// focus 잃어도 자동 dismiss 안 되는 것은 macOS 의 Apple-first-party 우대
+/// 한계 (Apple `CharacterPicker.framework` 가 NSTextView 기반 firstResponder
+/// 만 popover path 활성, custom NSView 는 floating panel fallback). ghostty
+/// / iTerm2 / Alacritty / Kitty 동등. 자세한 분석은 SPEC.md 부록 B.
+///
+/// Esc 로 dismiss 가능 — `tildazKeyDown` 이 `isEmojiPickerOpen()` 으로 panel
+/// 의 *실제 visibility* 를 매번 query (NSApp.orderedWindows 순회 + class name
+/// 매칭) → picker 떠 있을 때 modifier 없는 Esc 면 다시 `orderFrontCharacterPalette:`
+/// 호출 (toggle 닫힘). picker 가 외부 path 로 닫혀도 stale 안 됨 — boolean
+/// 추적이 아닌 직접 query.
 fn tildazShowEmojiAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
     _ = self;
     _ = _sel;
@@ -2252,6 +2273,65 @@ fn tildazShowEmojiAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callcon
     activate(g_app, objc.sel("activateIgnoringOtherApps:"), true);
     const orderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     orderFront(g_app, objc.sel("orderFrontCharacterPalette:"), null);
+}
+
+// CoreGraphics window list — 모든 process 의 onscreen 윈도우 query (#130).
+// emoji picker 는 별도 process (`com.apple.CharacterPaletteIM` 등 Apple Input
+// Method bundle) 가 호스팅 → 우리 NSApp.orderedWindows 로는 안 보임.
+const CGWindowListOption = u32;
+const kCGWindowListOptionOnScreenOnly: CGWindowListOption = 1 << 0;
+const kCGWindowListExcludeDesktopElements: CGWindowListOption = 1 << 4;
+const kCGNullWindowID: u32 = 0;
+extern fn CGWindowListCopyWindowInfo(option: CGWindowListOption, relativeToWindow: u32) objc.id;
+extern fn CFRelease(cf: ?*anyopaque) void;
+extern const kCGWindowOwnerPID: objc.id;
+
+/// Show Emoji & Symbols panel 이 현재 떠 있는지 — `CGWindowListCopyWindowInfo`
+/// 로 onscreen 윈도우 순회, 각 owner PID 를 NSRunningApplication 으로 풀어
+/// `bundleIdentifier` 매칭. owner name 은 localized 라 (한글: "이모지 및 기호",
+/// 영어: "Emoji & Symbols") bundle ID 로 식별 — locale-independent.
+///
+/// 매칭 prefix `com.apple.Character` — 현재 macOS 의 `com.apple.CharacterPaletteIM`
+/// + 다른 Apple Character* 변형 (`CharacterPicker` / `CharacterViewer` 등 미래
+/// 가능성) cover. 권한: `kCGWindowOwnerPID` 는 Screen Recording 권한 불필요.
+///
+/// 매 Esc keyDown 마다 호출 — CGWindowListCopyWindowInfo 자체는 fast (us 단위),
+/// 보통 onscreen 윈도우 ~20 개라 iteration 부담 없음.
+fn isEmojiPickerOpen() bool {
+    const info = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    );
+    if (info == null) return false;
+    defer CFRelease(@ptrCast(info));
+
+    const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
+    const obj_at = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) objc.id);
+    const dict_get = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+    const utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) ?[*:0]const u8);
+    const get_int = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_int);
+    const ra_for_pid = objc.objcSend(fn (objc.Class, objc.SEL, c_int) callconv(.c) objc.id);
+    const ra_send = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+
+    const NSRunningApplication = objc.getClass("NSRunningApplication");
+    const count = get_count(info, objc.sel("count"));
+
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const dict = obj_at(info, objc.sel("objectAtIndex:"), i);
+        if (dict == null) continue;
+        const pid_obj = dict_get(dict, objc.sel("objectForKey:"), kCGWindowOwnerPID);
+        if (pid_obj == null) continue;
+        const pid = get_int(pid_obj, objc.sel("intValue"));
+        const ra = ra_for_pid(NSRunningApplication, objc.sel("runningApplicationWithProcessIdentifier:"), pid);
+        if (ra == null) continue;
+        const bid = ra_send(ra, objc.sel("bundleIdentifier"));
+        if (bid == null) continue;
+        const b_cstr = utf8(bid, objc.sel("UTF8String")) orelse continue;
+        const b_slice = std.mem.span(b_cstr);
+        if (std.mem.startsWith(u8, b_slice, "com.apple.Character")) return true;
+    }
+    return false;
 }
 
 fn buildMainMenu(app: objc.id) !void {
@@ -2345,23 +2425,23 @@ fn buildMainMenu(app: objc.id) !void {
     const setSubmenu = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setSubmenu(app_item, objc.sel("setSubmenu:"), app_menu);
 
-    // Edit menu — `orderFrontCharacterPalette:` selector 의 menu item 추가하면
-    // macOS 의 "Show Emoji & Symbols" system shortcut (default Ctrl+Cmd+Space,
-    // 사용자 환경에 따라 Ctrl+Shift+Space 등) 이 NSApp 의 firstResponder
-    // chain 으로 라우팅 → emoji picker 표시. Edit menu 자체가 NSApp 의 표준
-    // Cut/Copy/Paste action 라우팅도 활성화 (보너스). Terminal.app / ghostty
-    // 모두 같은 패턴.
+    // Edit menu — "Emoji & Symbols" menu item 으로 macOS 의 Show Emoji & Symbols
+    // system shortcut (Apple default `Ctrl+Cmd+Space`) 라우팅. 이전 시도:
+    // selector `orderFrontCharacterPalette:` (Apple 표준) + 빈 keyEquivalent
+    // 로 *system 자동 매핑* 기대 — 동작 안 함. 그래서 explicit keyEquivalent
+    // 로 hardcode + 우리 selector `tildazShowEmoji:` 로 라우팅 (popup-level
+    // toggle 등 추가 처리). Terminal.app / ghostty 모두 비슷한 explicit menu
+    // item 패턴.
     const edit_item = init_obj(alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed, objc.sel("init")) orelse return error.MenuItemInitFailed;
     addItem(main_menu, objc.sel("addItem:"), edit_item);
 
     const edit_menu_init = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
     const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), nsString("Edit")) orelse return error.MenuInitFailed;
 
-    // Emoji & Symbols — 두 menu item, 같은 우리 selector (`tildazShowEmoji:`).
-    // keyEquivalent 두 변형 (Ctrl+Cmd+Space + Ctrl+Shift+Space) 등록 → NSApp 의
-    // sendEvent 단계에서 menu shortcut 매칭 자동 라우팅. 우리 view keyDown
-    // 까지 안 와서 PTY 안 흘림. selector 동작 시점에 popup-level 잠시 낮춤
-    // (orderFrontCharacterPalette: 보다 더 한 일 처리).
+    // Ctrl+Cmd+Space → tildazShowEmoji: — NSApp.sendEvent 단계에서 menu
+    // shortcut 매칭 자동 라우팅 → 우리 view keyDown 까지 안 와서 PTY 안 흘림.
+    // 사용자가 System Settings 에서 단축키를 다른 키로 변경한 경우 매칭 안 됨
+    // (low-priority 한계, 우회: System Settings 에서 default 복구).
     const NSEventModifierFlagCtrl: c_ulong = 1 << 18;
     {
         const emoji_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
@@ -2373,18 +2453,6 @@ fn buildMainMenu(app: objc.id) !void {
             nsString(" "),
         ) orelse return error.EmojiItemInitFailed;
         setMask(item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCtrl | NSEventModifierFlagCommand);
-        addItem(edit_menu, objc.sel("addItem:"), item);
-    }
-    {
-        const emoji_alloc2 = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-        const item = initItem(
-            emoji_alloc2,
-            objc.sel("initWithTitle:action:keyEquivalent:"),
-            nsString("Emoji & Symbols (Ctrl+Shift+Space)"),
-            objc.sel("tildazShowEmoji:"),
-            nsString(" "),
-        ) orelse return error.EmojiItemInitFailed;
-        setMask(item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCtrl | NSEventModifierFlagShift);
         addItem(edit_menu, objc.sel("addItem:"), item);
     }
 
