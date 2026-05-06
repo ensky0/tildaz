@@ -30,6 +30,10 @@ pub extern fn objc_getClass(name: [*:0]const u8) ?Class;
 pub extern fn sel_registerName(name: [*:0]const u8) SEL;
 pub extern fn objc_msgSend() void;
 
+/// Class 의 이름 (예: `NSWindow` / `_NSCharacterPanel` 등). 동적으로 떠 있는
+/// AppKit private 클래스 식별 (예: emoji picker 의 panel) 에 사용.
+pub extern fn class_getName(cls: Class) [*:0]const u8;
+
 // 동적 클래스 등록 — NSWindow / NSView subclass 만들어 method override 할 때.
 // `types` 는 method signature (e.g. "B@:" = bool method 인자 없음).
 pub extern fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, extra: usize) ?Class;
