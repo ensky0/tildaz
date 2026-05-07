@@ -73,11 +73,14 @@ jobs:
           echo "Downloading $ZIG_URL"
           # ziglang.org 가 Actions runner 에서 가끔 connection reset 던짐.
           # --retry 3 으로 부족 (3 번 연속 fail 사례, #145 follow-up). 더 적극적
-          # retry + connection-refused 도 retry + delay 사이.
+          # retry + connection-refused 도 retry + delay 사이. mid-transfer
+          # `Recv failure: Connection was reset` 는 default 로 retry 안 되므로
+          # --retry-all-errors 추가 (curl 7.71+, runner curl 8+).
           curl -fsSL \
             --retry 10 \
             --retry-delay 15 \
             --retry-connrefused \
+            --retry-all-errors \
             --retry-max-time 600 \
             -o "$ZIG_ZIP" "$ZIG_URL"
           mkdir -p "$ZIG_ROOT"
@@ -220,10 +223,12 @@ jobs:
           ZIG_TAR="${RUNNER_TEMP}/zig.tar.xz"
           ZIG_ROOT="${RUNNER_TEMP}/zig"
           # ziglang.org 가 Actions runner 에서 가끔 connection reset 던짐.
+          # mid-transfer reset 도 retry 하도록 --retry-all-errors 포함.
           curl -fsSL \
             --retry 10 \
             --retry-delay 15 \
             --retry-connrefused \
+            --retry-all-errors \
             --retry-max-time 600 \
             -o "$ZIG_TAR" "$ZIG_URL"
           mkdir -p "$ZIG_ROOT"
