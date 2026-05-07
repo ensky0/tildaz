@@ -47,54 +47,26 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
-      # Zig 공식 URL 에서 직접 다운로드. setup-zig 액션은 mirror 404 로 깨진 전적이
-      # 있고, 릴리즈 워크플로우는 자주 돌지 않아 캐싱 이득도 작음. 의존성 0.
-      #
-      # tar 는 Windows System32 의 bsdtar 를 명시적으로 사용. Git Bash 의 기본
-      # `tar` 는 GNU tar 라 Windows 경로의 콜론 (`D:\...`) 을 `host:path` 로
-      # 오해해서 `Cannot connect to D:` 로 터짐. System32 의 bsdtar 는 Windows
-      # 네이티브라 그 문제 없음.
-      #
-      # Zig 설치와 글로벌 캐시를 모두 D: 드라이브 (RUNNER_TEMP) 로 강제.
-      # windows-2022 러너는 checkout 이 D: 에 떨어지는데 기본 zig global cache 는
-      # `C:\Users\runneradmin\AppData\Local\zig` 라 크로스 드라이브. 그러면
-      # `std.fs.path.relative(C:\...\, D:\...)` 가 상대경로를 못 만들고 absolute
-      # 를 리턴해서 Zig 의 Run step (`convertPathArg` 내부 assert) 이 터짐.
-      # 동일 드라이브로 통일해 해결.
+      # mlugg/setup-zig 는 community mirror list fallback 내장 (ziglang.org 가
+      # Actions runner 에서 mid-transfer RST 던지는 케이스를 흡수). 과거 v1 시점
+      # 에는 0.15.x 의 새 파일명 패턴 (`zig-x86_64-windows-...`) 미지원으로 깨졌으나
+      # v2.2.0+ 에서 fix 됨. action 의 use-cache 는 false — 우리가 ZIG_GLOBAL_CACHE_DIR
+      # 을 직접 D: 로 맞춰야 cross-drive convertPathArg assert 회피 가능 (아래 step).
       - name: Setup Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      # windows-2022 러너의 checkout 은 D:\ 에 떨어지는데 기본 zig global cache 는
+      # C:\Users\runneradmin\AppData\Local\zig 라 크로스 드라이브.
+      # std.fs.path.relative(C:..., D:...) 가 상대경로를 못 만들고 absolute 리턴 →
+      # zig Run step (convertPathArg) assert. ZIG_GLOBAL_CACHE_DIR 을 RUNNER_TEMP
+      # (D:) 로 통일해 해결.
+      - name: "Set Zig global cache dir on D:"
         shell: bash
         run: |
-          set -euo pipefail
-          ZIG_VERSION=0.15.2
-          ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-windows-${ZIG_VERSION}.zip"
-          ZIG_ZIP="${RUNNER_TEMP}/zig.zip"
-          ZIG_ROOT="${RUNNER_TEMP}/zig"
-          WIN_TAR="/c/Windows/System32/tar.exe"
-          echo "Downloading $ZIG_URL"
-          # ziglang.org 가 Actions runner 에서 가끔 connection reset 던짐.
-          # --retry 3 으로 부족 (3 번 연속 fail 사례, #145 follow-up). 더 적극적
-          # retry + connection-refused 도 retry + delay 사이. mid-transfer
-          # `Recv failure: Connection was reset` 는 default 로 retry 안 되므로
-          # --retry-all-errors 추가 (curl 7.71+, runner curl 8+).
-          curl -fsSL \
-            --retry 10 \
-            --retry-delay 15 \
-            --retry-connrefused \
-            --retry-all-errors \
-            --retry-max-time 600 \
-            -o "$ZIG_ZIP" "$ZIG_URL"
-          mkdir -p "$ZIG_ROOT"
-          "$WIN_TAR" -xf "$ZIG_ZIP" -C "$ZIG_ROOT"
-          ZIG_BIN="${ZIG_ROOT}/zig-x86_64-windows-${ZIG_VERSION}"
-          if [[ ! -x "$ZIG_BIN/zig.exe" ]]; then
-            echo "ERROR: zig.exe not found at $ZIG_BIN" >&2
-            ls -la "$ZIG_ROOT" || true
-            exit 1
-          fi
-          echo "$ZIG_BIN" >> "$GITHUB_PATH"
           echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global-cache" >> "$GITHUB_ENV"
-          echo "zig bin           : $ZIG_BIN"
-          echo "zig global cache  : ${RUNNER_TEMP}/zig-global-cache"
 
       - name: Verify Zig
         shell: bash
@@ -215,27 +187,12 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
+      # mlugg/setup-zig — community mirror list fallback 내장. Windows job 의
+      # cross-drive 이슈는 macOS 에 없어 use-cache 도 default (true) 로 둠.
       - name: Setup Zig 0.15.2
-        run: |
-          set -euo pipefail
-          ZIG_VERSION=0.15.2
-          ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
-          ZIG_TAR="${RUNNER_TEMP}/zig.tar.xz"
-          ZIG_ROOT="${RUNNER_TEMP}/zig"
-          # ziglang.org 가 Actions runner 에서 가끔 connection reset 던짐.
-          # mid-transfer reset 도 retry 하도록 --retry-all-errors 포함.
-          curl -fsSL \
-            --retry 10 \
-            --retry-delay 15 \
-            --retry-connrefused \
-            --retry-all-errors \
-            --retry-max-time 600 \
-            -o "$ZIG_TAR" "$ZIG_URL"
-          mkdir -p "$ZIG_ROOT"
-          tar -xf "$ZIG_TAR" -C "$ZIG_ROOT"
-          ZIG_BIN="${ZIG_ROOT}/zig-aarch64-macos-${ZIG_VERSION}"
-          echo "$ZIG_BIN" >> "$GITHUB_PATH"
-          echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global-cache" >> "$GITHUB_ENV"
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
 
       - name: Verify Zig
         run: zig version
