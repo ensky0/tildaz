@@ -108,6 +108,11 @@ const kCGSessionEventTap: CGEventTapLocation = 1;
 const kCGHeadInsertEventTap: CGEventTapPlacement = 0;
 const kCGEventTapOptionDefault: CGEventTapOptions = 0;
 const kCGEventKeyDown: CGEventType = 10;
+// CGEventTap 이 OS 에 의해 자동 비활성화될 때 callback 으로 들어오는 special
+// type (#146). callback 응답 timeout 또는 user input race 시 발생. -1 / -2 의
+// signed 값이라 c_int (= CGEventType).
+const kCGEventTapDisabledByTimeout: CGEventType = -2;
+const kCGEventTapDisabledByUserInput: CGEventType = -1;
 const kCGKeyboardEventKeycode: CGEventField = 9;
 
 const CGEventTapCallBack = *const fn (
@@ -2080,12 +2085,23 @@ fn installEventTap() !void {
 
 /// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 또는 Cmd+Q 면
 /// \"이벤트 삼킴\" (null 반환), 아니면 그대로 passthrough (event 반환).
+///
+/// macOS 가 tap 을 timeout / user-input race 로 자동 비활성화하면 special
+/// event type 이 들어옴 (#146). 처리 안 하면 다시 활성화 안 되어 F1 hotkey
+/// 영원히 안 옴 — 다른 앱으로 focus 갔다 돌아왔을 때 흔히 재현. 그 경우
+/// `CGEventTapEnable(true)` 으로 re-enable. ghostty / Alfred / Raycast 등
+/// 모든 글로벌 hotkey 앱 표준 패턴.
 fn eventTapCallback(
     _: ?*anyopaque,
-    _: CGEventType,
+    event_type: CGEventType,
     event: CGEventRef,
     _: ?*anyopaque,
 ) callconv(.c) CGEventRef {
+    if (event_type == kCGEventTapDisabledByTimeout or event_type == kCGEventTapDisabledByUserInput) {
+        macos_log.appendLine("hotkey", "CGEventTap disabled (type={d}) — re-enabling", .{event_type});
+        if (g_event_tap != null) CGEventTapEnable(g_event_tap, true);
+        return event;
+    }
     const keycode_i64 = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
     const flags = CGEventGetFlags(event);
     const mods = flags & kCGEventFlagsAllModifiers;
