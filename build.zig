@@ -9,7 +9,7 @@ const std = @import("std");
 // 릴리즈 버전. 태그 / dist/windows/README.txt / GitHub Release / dist/release-notes/
 // 와 동기화 필요. src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도
 // 같이 갱신.
-const tildaz_version = "0.3.1";
+const tildaz_version = "0.3.2";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -118,6 +118,10 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&install_macos_exe.step);
         const install_macos_plist = b.addInstallFile(b.path("dist/macos/Info.plist"), "TildaZ.app/Contents/Info.plist");
         b.getInstallStep().dependOn(&install_macos_plist.step);
+        // App icon — Info.plist 의 CFBundleIconFile=AppIcon 이 Resources/AppIcon.icns
+        // 를 찾음 (#145). docs/favicon.svg 에서 sips + iconutil 로 만든 .icns commit.
+        const install_macos_icon = b.addInstallFile(b.path("dist/macos/AppIcon.icns"), "TildaZ.app/Contents/Resources/AppIcon.icns");
+        b.getInstallStep().dependOn(&install_macos_icon.step);
         // 코드 서명 identity. default `-` = ad-hoc (인증서 없이). macOS TCC
         // (Privacy & Security 권한 데이터베이스) 는 "signing identity + bundle
         // identifier" 로 앱 식별 — ad-hoc 은 매 빌드마다 hash 가 변경되어 동일
@@ -145,6 +149,7 @@ pub fn build(b: *std.Build) void {
         });
         sign.step.dependOn(&install_macos_exe.step);
         sign.step.dependOn(&install_macos_plist.step);
+        sign.step.dependOn(&install_macos_icon.step);
         b.getInstallStep().dependOn(&sign.step);
     } else {
         b.installArtifact(exe);
