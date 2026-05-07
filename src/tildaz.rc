@@ -8,9 +8,15 @@
 
 #pragma code_page(65001)
 
+// 앱 아이콘 (#145). docs/favicon.svg 에서 sips 로 PNG 6 size (16/32/48/64/128/256)
+// 만든 후 Python 으로 multi-resolution ICO 로 묶음. Windows Explorer 가 가장
+// 작은 ID 를 default 로 채택하므로 IDI_ICON 1 로 등록. 파일은 RC 컴파일러가
+// .rc 와 같은 디렉토리에서 찾도록 src/ 안에 둠.
+1 ICON "tildaz.ico"
+
 1 VERSIONINFO
- FILEVERSION    0,3,1,0
- PRODUCTVERSION 0,3,1,0
+ FILEVERSION    0,3,2,0
+ PRODUCTVERSION 0,3,2,0
  FILEFLAGSMASK  0x3FL
  FILEFLAGS      0x0L
  FILEOS         0x00040004L   // VOS_NT_WINDOWS32
@@ -23,12 +29,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "ensky0"
             VALUE "FileDescription",  "tildaz - drop-down terminal for Windows and macOS"
-            VALUE "FileVersion",      "0.3.1"
+            VALUE "FileVersion",      "0.3.2"
             VALUE "InternalName",     "tildaz"
             VALUE "LegalCopyright",   "(c) 2026 ensky0. AGPL-3.0-or-later."
             VALUE "OriginalFilename", "tildaz.exe"
             VALUE "ProductName",      "tildaz"
-            VALUE "ProductVersion",   "0.3.1"
+            VALUE "ProductVersion",   "0.3.2"
         END
     END
     BLOCK "VarFileInfo"

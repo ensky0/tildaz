@@ -87,6 +87,8 @@ lipo -create \
     "$X86_PREFIX/$APP_NAME/Contents/MacOS/tildaz" \
     -output "$UNIVERSAL_APP/Contents/MacOS/tildaz"
 cp "$ARM_PREFIX/$APP_NAME/Contents/Info.plist" "$UNIVERSAL_APP/Contents/Info.plist"
+mkdir -p "$UNIVERSAL_APP/Contents/Resources"
+cp "$ARM_PREFIX/$APP_NAME/Contents/Resources/AppIcon.icns" "$UNIVERSAL_APP/Contents/Resources/AppIcon.icns"
 echo "Universal binary architectures:"
 lipo -info "$UNIVERSAL_APP/Contents/MacOS/tildaz"
 
