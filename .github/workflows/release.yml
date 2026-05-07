@@ -71,7 +71,15 @@ jobs:
           ZIG_ROOT="${RUNNER_TEMP}/zig"
           WIN_TAR="/c/Windows/System32/tar.exe"
           echo "Downloading $ZIG_URL"
-          curl -fsSL --retry 3 -o "$ZIG_ZIP" "$ZIG_URL"
+          # ziglang.org 가 Actions runner 에서 가끔 connection reset 던짐.
+          # --retry 3 으로 부족 (3 번 연속 fail 사례, #145 follow-up). 더 적극적
+          # retry + connection-refused 도 retry + delay 사이.
+          curl -fsSL \
+            --retry 10 \
+            --retry-delay 15 \
+            --retry-connrefused \
+            --retry-max-time 600 \
+            -o "$ZIG_ZIP" "$ZIG_URL"
           mkdir -p "$ZIG_ROOT"
           "$WIN_TAR" -xf "$ZIG_ZIP" -C "$ZIG_ROOT"
           ZIG_BIN="${ZIG_ROOT}/zig-x86_64-windows-${ZIG_VERSION}"
@@ -211,7 +219,13 @@ jobs:
           ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
           ZIG_TAR="${RUNNER_TEMP}/zig.tar.xz"
           ZIG_ROOT="${RUNNER_TEMP}/zig"
-          curl -fsSL --retry 3 -o "$ZIG_TAR" "$ZIG_URL"
+          # ziglang.org 가 Actions runner 에서 가끔 connection reset 던짐.
+          curl -fsSL \
+            --retry 10 \
+            --retry-delay 15 \
+            --retry-connrefused \
+            --retry-max-time 600 \
+            -o "$ZIG_TAR" "$ZIG_URL"
           mkdir -p "$ZIG_ROOT"
           tar -xf "$ZIG_TAR" -C "$ZIG_ROOT"
           ZIG_BIN="${ZIG_ROOT}/zig-aarch64-macos-${ZIG_VERSION}"
