@@ -10,12 +10,15 @@ const log = @import("../log.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const shell_validate = @import("../shell_validate.zig");
+const terminal = @import("../terminal.zig");
+const themes = @import("../themes.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
 extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GetLastError() callconv(.c) u32;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
+extern "kernel32" fn GetEnvironmentVariableW([*:0]const WCHAR, ?[*]WCHAR, u32) callconv(.c) u32;
 extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 
@@ -100,7 +103,7 @@ pub fn run() !void {
         config.shellUtf16(),
         config.max_scroll_lines,
         config.theme,
-        null, // extra_env — Windows 는 terminal/windows.zig 의 envVarsForTheme 가 자체 처리
+        buildExtraEnv(config.theme),
         App.onSessionTabExit,
         &app,
     );
@@ -180,4 +183,56 @@ pub fn run() !void {
     log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();
     log.appendLine("startup", "message loop exited", .{});
+}
+
+/// 자식 셸에 inject 할 env. macOS host 의 `g_extra_env` 와 동등 — 양쪽 host 가
+/// SessionCore.init 인자로 명시 전달. terminal backend 는 platform-agnostic.
+///
+/// 항목:
+///   - `COLORFGBG` — vim / less / tmux 같은 TUI 가 dark / light colorscheme
+///     자동 선택할 때 보는 표준. dark = "15;0", light = "0;15".
+///   - `WSLENV` — WSL 자식 프로세스에 어떤 env 를 forward 할지 hint. 부모의
+///     기존 WSLENV (있으면) 에 ":COLORFGBG" 를 append. WSL 환경 외에서는
+///     무해.
+///
+/// Buffer lifetime: process lifetime static (다음 호출 시 덮어쓰지만 SessionCore
+/// 가 슬라이스를 들고 있는 동안 유효).
+fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
+    const t = theme orelse return null;
+    const S = struct {
+        var wslenv_buf: [768]u8 = undefined;
+        var wslenv_len: usize = 0;
+        var vars: [2]terminal.ExtraEnv = undefined;
+    };
+
+    S.vars[0] = .{
+        .name = "COLORFGBG",
+        .value = if (themes.isDark(t)) "15;0" else "0;15",
+    };
+
+    // WSLENV — 부모 utf-16 query → utf-8 변환 + ":COLORFGBG" suffix.
+    var wbuf: [512]WCHAR = undefined;
+    const wslenv_name = std.unicode.utf8ToUtf16LeStringLiteral("WSLENV");
+    const existing_wlen = GetEnvironmentVariableW(wslenv_name, &wbuf, wbuf.len);
+    var pos: usize = 0;
+    if (existing_wlen > 0 and existing_wlen < wbuf.len) {
+        const utf8_len = std.unicode.utf16LeToUtf8(&S.wslenv_buf, wbuf[0..existing_wlen]) catch 0;
+        pos = utf8_len;
+        if (pos < S.wslenv_buf.len) {
+            S.wslenv_buf[pos] = ':';
+            pos += 1;
+        }
+    }
+    const suffix = "COLORFGBG";
+    if (pos + suffix.len <= S.wslenv_buf.len) {
+        @memcpy(S.wslenv_buf[pos..][0..suffix.len], suffix);
+        pos += suffix.len;
+    }
+    S.wslenv_len = pos;
+    S.vars[1] = .{
+        .name = "WSLENV",
+        .value = S.wslenv_buf[0..S.wslenv_len],
+    };
+
+    return &S.vars;
 }
