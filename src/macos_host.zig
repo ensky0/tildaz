@@ -140,6 +140,17 @@ extern fn CFMachPortCreateRunLoopSource(
 
 extern fn CFRunLoopGetMain() CFRunLoopRef;
 extern fn CFRunLoopAddSource(runloop: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
+extern fn CFRunLoopRemoveSource(runloop: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
+extern fn CFMachPortInvalidate(port: CFMachPortRef) void;
+
+// GCD — 콜백 안에서 tap 자기 자신을 destroy 하기 위해 main run loop 의
+// 다음 turn 으로 작업 deferral. `dispatch_get_main_queue()` 는 macOS 헤더에
+// static inline 이라 link symbol 없음 — 실제 export 되는 `_dispatch_main_q`
+// 글로벌 변수의 주소를 dispatch_queue_t 로 직접 사용 (Apple SDK 가 헤더에서
+// 그렇게 풀어내는 것과 동일).
+extern var _dispatch_main_q: anyopaque;
+const dispatch_function_t = *const fn (?*anyopaque) callconv(.c) void;
+extern fn dispatch_async_f(queue: *anyopaque, ctx: ?*anyopaque, work: dispatch_function_t) void;
 
 // 렌더 timer 용 CFRunLoopTimer FFI. NSTimer 보다 가벼움 — ObjC class /
 // selector 등록 없이 C function pointer 그대로 사용.
@@ -2014,7 +2025,8 @@ fn installEventTap() !void {
         var msg_buf: [2048]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf,
             \\TildaZ needs two macOS permissions to work.
-            \\Without them the F1 hotkey and Cmd+Q quit won't respond.
+            \\Without them the F1 hotkey will not respond.
+            \\(Cmd+Q from the menu still works either way.)
             \\
             \\Please follow these steps:
             \\
@@ -2060,6 +2072,13 @@ fn installEventTap() !void {
         return;
     }
 
+    try createAndRegisterEventTap();
+}
+
+/// CGEventTapCreate + run loop source 등록 + Enable. Permission preflight 는
+/// 호출자 (`installEventTap` 또는 recreate path) 가 책임. 실패 시 module-level
+/// `g_event_tap` / `g_runloop_source` 는 null 인 채로 남음.
+fn createAndRegisterEventTap() !void {
     const mask: u64 = @as(u64, 1) << @as(u6, @intCast(kCGEventKeyDown));
     g_event_tap = CGEventTapCreate(
         kCGSessionEventTap,
@@ -2070,15 +2089,47 @@ fn installEventTap() !void {
         null,
     );
     if (g_event_tap == null) {
-        macos_log.appendLine("perm", "CGEventTapCreate failed — permissions may need to be renewed", .{});
-        return;
+        macos_log.appendLine("hotkey", "CGEventTapCreate failed — permissions may need to be renewed", .{});
+        return error.TapCreateFailed;
     }
 
     g_runloop_source = CFMachPortCreateRunLoopSource(null, g_event_tap, 0);
-    if (g_runloop_source == null) return error.RunLoopSourceFailed;
+    if (g_runloop_source == null) {
+        CFMachPortInvalidate(g_event_tap);
+        CFRelease(@ptrCast(g_event_tap));
+        g_event_tap = null;
+        return error.RunLoopSourceFailed;
+    }
 
     CFRunLoopAddSource(CFRunLoopGetMain(), g_runloop_source, kCFRunLoopCommonModes);
     CGEventTapEnable(g_event_tap, true);
+}
+
+/// CGEventTapEnable(true) 만으로 안 살아나는 OS-invalidated tap 을 destroy
+/// 후 새로 만들어 등록. 콜백 안에서 자기 자신을 invalidate 하면 안 되므로
+/// `dispatch_async_f` 로 main run loop 다음 turn 에서 호출되도록 dispatch.
+/// (#152)
+fn recreateEventTap() void {
+    if (g_runloop_source != null) {
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), g_runloop_source, kCFRunLoopCommonModes);
+        CFRelease(@ptrCast(g_runloop_source));
+        g_runloop_source = null;
+    }
+    if (g_event_tap != null) {
+        CFMachPortInvalidate(g_event_tap);
+        CFRelease(@ptrCast(g_event_tap));
+        g_event_tap = null;
+    }
+    createAndRegisterEventTap() catch |err| {
+        macos_log.appendLine("hotkey", "recreateEventTap failed: {s}", .{@errorName(err)});
+        return;
+    };
+    macos_log.appendLine("hotkey", "CGEventTap recreated", .{});
+}
+
+/// `dispatch_async_f` 트램폴린 — context 무시하고 recreateEventTap 호출.
+fn recreateEventTapTrampoline(_: ?*anyopaque) callconv(.c) void {
+    recreateEventTap();
 }
 
 /// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 면
@@ -2087,9 +2138,13 @@ fn installEventTap() !void {
 ///
 /// macOS 가 tap 을 timeout / user-input race 로 자동 비활성화하면 special
 /// event type 이 들어옴 (#146). 처리 안 하면 다시 활성화 안 되어 F1 hotkey
-/// 영원히 안 옴 — 다른 앱으로 focus 갔다 돌아왔을 때 흔히 재현. 그 경우
-/// `CGEventTapEnable(true)` 으로 re-enable. ghostty / Alfred / Raycast 등
-/// 모든 글로벌 hotkey 앱 표준 패턴.
+/// 영원히 안 옴 — 다른 앱으로 focus 갔다 돌아왔을 때 흔히 재현.
+///
+/// 1차 시도: `CGEventTapEnable(true)` 로 re-enable (단발 timeout 대부분 OK).
+/// 짧은 시간 (REPEAT_WINDOW_MS) 안에 disable 이 반복되면 OS 가 tap 을 truly
+/// invalidate 한 케이스 (#152) — `Enable(true)` 가 boolean 성공처럼 리턴해도
+/// events 안 옴. tap 을 destroy + recreate 해야 살아남. 콜백 안에서 invalidate
+/// 하면 안 되므로 main queue 로 dispatch.
 fn eventTapCallback(
     _: ?*anyopaque,
     event_type: CGEventType,
@@ -2097,8 +2152,17 @@ fn eventTapCallback(
     _: ?*anyopaque,
 ) callconv(.c) CGEventRef {
     if (event_type == kCGEventTapDisabledByTimeout or event_type == kCGEventTapDisabledByUserInput) {
-        macos_log.appendLine("hotkey", "CGEventTap disabled (type={d}) — re-enabling", .{event_type});
-        if (g_event_tap != null) CGEventTapEnable(g_event_tap, true);
+        const REPEAT_WINDOW_MS: i64 = 30_000;
+        const now_ms = std.time.milliTimestamp();
+        const recent = (now_ms - g_last_tap_disable_ms) < REPEAT_WINDOW_MS;
+        g_last_tap_disable_ms = now_ms;
+        if (recent) {
+            macos_log.appendLine("hotkey", "CGEventTap disabled (type={d}) — repeat within {d}s, scheduling recreate", .{ event_type, @divTrunc(REPEAT_WINDOW_MS, 1000) });
+            dispatch_async_f(&_dispatch_main_q, null, recreateEventTapTrampoline);
+        } else {
+            macos_log.appendLine("hotkey", "CGEventTap disabled (type={d}) — re-enabling", .{event_type});
+            if (g_event_tap != null) CGEventTapEnable(g_event_tap, true);
+        }
         return event;
     }
     const keycode_i64 = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
@@ -2229,6 +2293,11 @@ fn toggleWindow() void {
 // port 와 source 를 참조하므로 process 수명동안 살아 있어야 한다.
 var g_event_tap: CFMachPortRef = null;
 var g_runloop_source: CFRunLoopSourceRef = null;
+
+// 마지막 tap-disable 이벤트의 wall-clock millis. 짧은 시간 안에 재발하면
+// `CGEventTapEnable(true)` 만으로는 안 살아나는 케이스라 destroy + recreate
+// path 로 escalate (#152).
+var g_last_tap_disable_ms: i64 = 0;
 
 /// `About TildaZ` menu item action. Selector 는 NSApplication 에 등록되어
 /// responder chain 의 마지막 단계 (NSApp) 에서 항상 dispatch 된다 — 윈도우가
