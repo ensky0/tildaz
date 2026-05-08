@@ -176,8 +176,12 @@ pub const GlyphAtlas = struct {
         // 매 글리프마다 temp_buf 의 사용 영역 (gw*gh*4 bytes) 만 0 으로 clear.
         @memset(self.temp_buf[0 .. gw * gh * 4], 0);
 
+        // Apple 의 LCD font smoothing (회색 stroke fattening). Terminal.app /
+        // iTerm2 default 와 동등 (#157). retina 환경에서 stroke 약간 두꺼워져
+        // 검정 배경 흰 글자 가독성 향상. RGB subpixel 이 아니라 회색 fattening
+        // 이라 색 fringing 없음. 사용자 취향 차이 있어 향후 config 옵션화 검토.
         ct.CGContextSetAllowsFontSmoothing(ctx, true);
-        ct.CGContextSetShouldSmoothFonts(ctx, false);
+        ct.CGContextSetShouldSmoothFonts(ctx, true);
         ct.CGContextSetShouldAntialias(ctx, true);
 
         // 흰색 opaque fill — 일반 글리프엔 흰색 antialiased 마스크가 그려짐.
