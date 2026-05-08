@@ -590,6 +590,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             if (g_session.activateNext()) g_tab_scroll_user_override = false; // #117
             return;
         }
+        // Shift+Cmd+R = 활성 탭 reset (#162, kc 0x0F = 'R'). Windows
+        // Ctrl+Shift+R 동등. session_core.resetActive 가 fullReset + Ctrl+L
+        // (\x0c) 송신 — 다음 render frame 이 새 상태 자동 그림 (60fps timer).
+        if (shift and kc == 0x0F) {
+            _ = g_session.resetActive();
+            return;
+        }
         // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
         // PTY 로 forward 안 함.
         return;
