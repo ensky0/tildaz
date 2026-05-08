@@ -193,11 +193,22 @@ pub const GlyphAtlas = struct {
         // 1/scale 크기로 작게 들어간다 (#75 nostalgic-edison 의 결정적 fix).
         ct.CGContextScaleCTM(ctx, @floatCast(s), @floatCast(s));
 
-        // bounding rect origin (point 좌표, raw — CTM scale 이 곱해진다) 만큼
-        // 음수로 보정해 글리프 좌하단을 (0,0) 에 정렬.
+        // 글리프의 baseline 위치를 bitmap 안에서 *정수 pixel* 그리드와 정확히
+        // 정렬 (#156). 직접 `-origin.x`/`-origin.y` 를 쓰면 bitmap 의 (0,0)
+        // pixel 이 글리프별로 fractional offset 만큼 어긋나, 정수 bearing 으로
+        // 화면에 placement 할 때 글리프마다 ±0.5 logical-px baseline jitter
+        // 발생 (사용자 시연: C 내려가고, 4/7 올라감).
+        //
+        // floor(origin*s)/s 로 보정하면 bitmap (0,0) 이 정확히 bearing pixel
+        // 위치에 align. 글리프의 진짜 fractional 위치는 bitmap 안에서 sub-pixel
+        // anti-aliasing 으로 흡수 (gw/gh 가 ceil-floor 라 충분한 여유). renderer
+        // 는 정수 bearing 만 쓰면 baseline 일관 정렬. iTerm2 / Terminal.app
+        // 표준 패턴.
+        const pos_x_pt = -@floor(bounding_rect.origin.x * s) / s;
+        const pos_y_pt = -@floor(bounding_rect.origin.y * s) / s;
         const positions = [1]ct.CGPoint{.{
-            .x = -bounding_rect.origin.x,
-            .y = -bounding_rect.origin.y,
+            .x = pos_x_pt,
+            .y = pos_y_pt,
         }};
         ct.CTFontDrawGlyphs(font, &glyphs, &positions, 1, ctx);
 
