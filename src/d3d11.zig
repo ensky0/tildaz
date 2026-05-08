@@ -62,6 +62,9 @@ pub const D3D11_BLEND_ONE: u32 = 2;
 pub const D3D11_BLEND_SRC_ALPHA: u32 = 5;
 pub const D3D11_BLEND_INV_SRC_ALPHA: u32 = 6;
 pub const D3D11_BLEND_SRC1_COLOR: u32 = 16;
+pub const D3D11_BLEND_INV_SRC1_COLOR: u32 = 17;
+pub const D3D11_BLEND_SRC1_ALPHA: u32 = 18;
+pub const D3D11_BLEND_INV_SRC1_ALPHA: u32 = 19;
 pub const D3D11_BLEND_OP_ADD: u32 = 1;
 
 pub const D3D11_FILTER_MIN_MAG_MIP_POINT: u32 = 0;

@@ -27,6 +27,11 @@ const BgInstance = extern struct {
     pos: [2]f32,
     size: [2]f32,
     color: [4]f32,
+    /// 0 = solid fill. 1 / 2 / 3 = U+2591 LIGHT / U+2592 MEDIUM / U+2593 DARK
+    /// SHADE — shader 가 픽셀 (x,y) parity 로 dot mask 계산 + `discard` 로
+    /// 25% / 50% / 75% 밀도 표현. WT / xterm 전통의 procedural shade. 폰트
+    /// 글리프 fallback 보다 일관성 (font 무관).
+    shade: f32 = 0,
 };
 
 const TextInstance = extern struct {
@@ -57,12 +62,29 @@ const Constants = extern struct {
 
 const bg_shader_src =
     \\cbuffer CB : register(b0) { float4 sa; float4 p; };
-    \\struct I { float2 pos: IPOS; float2 sz: ISZ; float4 col: ICOL; uint vid: SV_VertexID; };
-    \\struct O { float4 pos: SV_POSITION; float4 col: COLOR; };
+    \\struct I { float2 pos: IPOS; float2 sz: ISZ; float4 col: ICOL; float sh: ISH; uint vid: SV_VertexID; };
+    \\struct O { float4 pos: SV_POSITION; float4 col: COLOR; float sh: SHADE; };
     \\O bg_vs(I i) { float2 c = float2(i.vid & 1, i.vid >> 1);
     \\  float2 px = (i.pos + c * i.sz) / sa.xy * 2.0 - 1.0;
-    \\  O o; o.pos = float4(px.x, -px.y, 0, 1); o.col = i.col; return o; }
-    \\float4 bg_ps(O i) : SV_Target { return i.col; }
+    \\  O o; o.pos = float4(px.x, -px.y, 0, 1); o.col = i.col; o.sh = i.sh; return o; }
+    \\float4 bg_ps(O i) : SV_Target {
+    \\  if (i.sh > 0.5) {
+    \\    // Procedural shade pattern (WT / xterm 전통). 셋 다 *대각 zigzag* —
+    \\    // 행마다 1px 어긋난 정렬 → 세 밀도 섞여도 일관된 시각.
+    \\    int2 px = int2(i.pos.xy);
+    \\    if (i.sh < 1.5) {
+    \\      // U+2591 LIGHT 25% — diagonal sparse: ON at (px + 2*py) % 4 == 0
+    \\      if (((px.x + 2 * px.y) & 3) != 0) discard;
+    \\    } else if (i.sh < 2.5) {
+    \\      // U+2592 MEDIUM 50% — checkerboard
+    \\      if (((px.x + px.y) & 1) != 0) discard;
+    \\    } else {
+    \\      // U+2593 DARK 75% — LIGHT 의 inverse (diagonal dense)
+    \\      if (((px.x + 2 * px.y) & 3) == 0) discard;
+    \\    }
+    \\  }
+    \\  return i.col;
+    \\}
 ;
 
 const text_shader_src =
@@ -101,7 +123,9 @@ const text_shader_src =
     \\  float3 ct = float3(enh(g.r, k), enh(g.g, k), enh(g.b, k));
     \\  ct = float3(gammaCorr(ct.r, i.fg.r, gr), gammaCorr(ct.g, i.fg.g, gr),
     \\              gammaCorr(ct.b, i.fg.b, gr));
-    \\  o.c0 = float4(i.fg.rgb * ct, 1); o.c1 = float4(1 - ct, 1); return o; }
+    \\  // c1 = coverage (per-channel). blend 가 INV_SRC1_COLOR 로 (1-ct) 합성 →
+    \\  // result = fg*ct + dst*(1-ct). WT shader_ps.hlsl ClearType weights 동등.
+    \\  o.c0 = float4(i.fg.rgb * ct, 1); o.c1 = float4(ct, 1); return o; }
 ;
 
 // --- Renderer ---
@@ -290,6 +314,7 @@ pub const D3d11Renderer = struct {
             .{ .SemanticName = "IPOS", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 0, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
             .{ .SemanticName = "ISZ", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 8, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
             .{ .SemanticName = "ICOL", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32G32B32A32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 16, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
+            .{ .SemanticName = "ISH", .SemanticIndex = 0, .Format = d3d.DXGI_FORMAT_R32_FLOAT, .InputSlot = 0, .AlignedByteOffset = 32, .InputSlotClass = d3d.D3D11_INPUT_PER_INSTANCE_DATA, .InstanceDataStepRate = 1 },
         };
         var bg_layout: ?*d3d.ID3D11InputLayout = null;
         if (device.?.CreateInputLayout(&bg_elems, bg_elems.len, bg_vs_blob.GetBufferPointer(), bg_vs_blob.GetBufferSize(), &bg_layout) < 0) return error.LayoutFailed;
@@ -328,15 +353,19 @@ pub const D3d11Renderer = struct {
         if (device.?.CreateBlendState(&alpha_desc, &alpha_blend) < 0) return error.BlendFailed;
         errdefer _ = alpha_blend.?.Release();
 
-        // ClearType dual-source blend: dest * src1 + src0
+        // Dual-source blend (WT BackendD3D 동등) — ClearType per-channel weights
+        // + premultiplied color emoji src-over 한 path 로 통일. shader 가 SV_Target1
+        // 으로 *coverage* (ClearType: ct, color: alpha) 를 emit, blend stage 가
+        // INV_SRC1_COLOR 로 (1-coverage) 합성 → result = src + dst*(1-coverage).
+        // ClearType: fg*ct + dst*(1-ct), color emoji: sample + dst*(1-alpha).
         var ct_desc = d3d.D3D11_BLEND_DESC{};
         ct_desc.RenderTarget[0] = .{
             .BlendEnable = 1,
             .SrcBlend = d3d.D3D11_BLEND_ONE,
-            .DestBlend = d3d.D3D11_BLEND_SRC1_COLOR,
+            .DestBlend = d3d.D3D11_BLEND_INV_SRC1_COLOR,
             .BlendOp = d3d.D3D11_BLEND_OP_ADD,
             .SrcBlendAlpha = d3d.D3D11_BLEND_ONE,
-            .DestBlendAlpha = d3d.D3D11_BLEND_ONE,
+            .DestBlendAlpha = d3d.D3D11_BLEND_INV_SRC1_ALPHA,
             .BlendOpAlpha = d3d.D3D11_BLEND_OP_ADD,
         };
         var ct_blend: ?*d3d.ID3D11BlendState = null;
@@ -977,6 +1006,7 @@ pub const D3d11Renderer = struct {
                         .pos = .{ fx + rect.x0 * width, fy + rect.y0 * ch },
                         .size = .{ (rect.x1 - rect.x0) * width, (rect.y1 - rect.y0) * ch },
                         .color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), rect.alpha },
+                        .shade = rect.shade,
                     };
                     block_count += 1;
                     continue;
@@ -1260,12 +1290,16 @@ pub const D3d11Renderer = struct {
         });
     }
 
-    const BlockRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32 };
+    /// shade: 0 = solid fill (BG 셰이더가 그대로 색 출력). 1/2/3 = LIGHT/MEDIUM/
+    /// DARK SHADE — 셰이더가 픽셀 parity 로 dot mask 계산.
+    const BlockRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32, shade: f32 = 0 };
 
     fn isBlockElement(cp: u21) bool {
-        return cp >= 0x2580 and cp <= 0x2595;
+        return blockElementRect(cp) != null;
     }
 
+    /// Solid block elements (▀▁..▏ ▐ ▔▕) + shade (░▒▓). Shade 는 cell 전체에
+    /// procedural dot pattern (`shade` 1/2/3) — WT / xterm 전통.
     fn blockElementRect(cp: u21) ?BlockRect {
         return switch (cp) {
             0x2580 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 0.5, .alpha = 1 },
@@ -1285,9 +1319,9 @@ pub const D3d11Renderer = struct {
             0x258E => .{ .x0 = 0, .y0 = 0, .x1 = 2.0 / 8.0, .y1 = 1, .alpha = 1 },
             0x258F => .{ .x0 = 0, .y0 = 0, .x1 = 1.0 / 8.0, .y1 = 1, .alpha = 1 },
             0x2590 => .{ .x0 = 0.5, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2591 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.25 },
-            0x2592 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.5 },
-            0x2593 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 0.75 },
+            0x2591 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1, .shade = 1 },
+            0x2592 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1, .shade = 2 },
+            0x2593 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1, .shade = 3 },
             0x2594 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1.0 / 8.0, .alpha = 1 },
             0x2595 => .{ .x0 = 7.0 / 8.0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
             else => null,
