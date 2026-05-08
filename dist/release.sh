@@ -113,13 +113,24 @@ echo ""
 echo "=== 2/4 zig build package ==="
 zig build package
 
-ZIP="zig-out/release/tildaz-v${VERSION}-win-x64.zip"
-SHA256="${ZIP}.sha256"
-if [[ ! -f "$ZIP" || ! -f "$SHA256" ]]; then
-    echo "ERROR: package output missing. Expected $ZIP and $SHA256" >&2
+# Local platform 의 artifact 만 검증 — Actions runner 가 다른 platform 빌드.
+# macOS host 는 universal DMG, Windows host 는 zip + ConPTY 동봉.
+case "$(uname -s)" in
+    Darwin)
+        ARTIFACT="zig-out/release/tildaz-v${VERSION}-macos.dmg"
+        ARTIFACT_LABEL="dmg"
+        ;;
+    *)
+        ARTIFACT="zig-out/release/tildaz-v${VERSION}-win-x64.zip"
+        ARTIFACT_LABEL="zip"
+        ;;
+esac
+SHA256="${ARTIFACT}.sha256"
+if [[ ! -f "$ARTIFACT" || ! -f "$SHA256" ]]; then
+    echo "ERROR: package output missing. Expected $ARTIFACT and $SHA256" >&2
     exit 1
 fi
-echo "  zip     : $ZIP"
+echo "  ${ARTIFACT_LABEL}     : $ARTIFACT"
 echo "  sha256  : $SHA256"
 echo "  content : $(cat "$SHA256")"
 
@@ -146,7 +157,7 @@ echo "  Pushed tag v${VERSION} to origin."
 if [[ "$LOCAL_UPLOAD" -eq 1 ]]; then
     echo ""
     echo "=== 4/4 gh release create (local upload) ==="
-    gh release create "v${VERSION}" "$ZIP" "$SHA256" \
+    gh release create "v${VERSION}" "$ARTIFACT" "$SHA256" \
         --title "v${VERSION}" \
         --notes-file "$NOTES_FILE"
     echo "  Release created: $(gh release view "v${VERSION}" --json url -q .url)"
