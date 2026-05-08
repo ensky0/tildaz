@@ -6,15 +6,16 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
 
 **Website**: https://ensky0.github.io/tildaz/
 
-> **v0.3.0 — cross-platform parity**
+> **v0.3.3 — Terminal.app-grade rendering on macOS, Windows Terminal-grade emoji on Windows**
 >
-> First release with macOS as a fully-featured peer to Windows: native CoreText
-> + Metal rendering, multi-tab UI with IME, color emoji (including ZWJ family),
-> universal-binary DMG installer. Windows gets matching color-emoji fixes
-> (Windows Terminal-equivalent path) and tab-rename paste. Quit confirmation
-> and tab-bar overflow scroll land on both platforms. See
-> [`dist/release-notes/v0.3.0.md`](dist/release-notes/v0.3.0.md) for the full
-> changelog.
+> macOS now matches Apple's Terminal.app on glyph weight, baseline alignment,
+> and block-element gradients, and the F1 hotkey + Cmd+Q routing are reliable
+> across long sessions and app focus changes. Windows brings its color emoji
+> path up to Windows Terminal quality (premultiplied dual-source blend,
+> DPI-correct cluster placement, default font metrics overhauled). See
+> [`dist/release-notes/v0.3.3.md`](dist/release-notes/v0.3.3.md) for the full
+> changelog. The v0.3.0 cross-platform parity baseline is documented in
+> [`dist/release-notes/v0.3.0.md`](dist/release-notes/v0.3.0.md).
 
 ## Features
 
