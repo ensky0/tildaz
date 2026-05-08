@@ -502,16 +502,30 @@ pub const GlyphAtlas = struct {
         var advances_buf: [16]dw.FLOAT = undefined;
         var offsets_buf: [16]dw.DWRITE_GLYPH_OFFSET = undefined;
         const has_placements = in_advances.len == glyph_indices.len and in_offsets.len == glyph_indices.len;
+        // GetGlyphPlacements (`dwrite_font.zig:509`) 가 em=`font_em_size` (DIP)
+        // 기준으로 advances/offsets 을 반환. atlas D2D RT 는 PIXEL mode 라
+        // fontEmSize 도 device pixel 로 (em_px = font_em_size * pixels_per_dip)
+        // 해석. 따라서 placements 도 같은 비율로 스케일해야 spacing 이 일관 —
+        // 스케일 안 하면 ZWJ family 등 cluster 가 좁게 압축 (DPI scale 비율로).
+        const em_scale = self.pixels_per_dip;
         for (glyph_indices, 0..) |gi, i| {
             indices_buf[i] = gi;
-            advances_buf[i] = if (has_placements) in_advances[i] else 0;
-            offsets_buf[i] = if (has_placements) in_offsets[i] else .{ .advanceOffset = 0, .ascenderOffset = 0 };
+            advances_buf[i] = if (has_placements) in_advances[i] * em_scale else 0;
+            offsets_buf[i] = if (has_placements) .{
+                .advanceOffset = in_offsets[i].advanceOffset * em_scale,
+                .ascenderOffset = in_offsets[i].ascenderOffset * em_scale,
+            } else .{ .advanceOffset = 0, .ascenderOffset = 0 };
         }
         const glyph_count: dw.UINT32 = @intCast(glyph_indices.len);
         const offsets_ptr: ?[*]const dw.DWRITE_GLYPH_OFFSET = if (has_placements) &offsets_buf else null;
+        // atlas D2D RT 가 SetUnitMode(PIXELS) 라 fontEmSize 가 device pixel 단위로
+        // 해석됨 (#149). DIP 값 그대로 넘기면 고DPI 환경에서 emoji 가 DPI scale
+        // 만큼 작아짐 — 100% DPI 에서만 우연히 정합. mono path 는 CreateGlyphRunAnalysis
+        // 의 두 번째 인자 pixels_per_dip 로 동등 처리.
+        const em_px = self.font_em_size * self.pixels_per_dip;
         const glyph_run = dw.DWRITE_GLYPH_RUN{
             .fontFace = face,
-            .fontEmSize = self.font_em_size,
+            .fontEmSize = em_px,
             .glyphCount = glyph_count,
             .glyphIndices = &indices_buf,
             .glyphAdvances = &advances_buf,
