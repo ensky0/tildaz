@@ -232,6 +232,12 @@ pub const Tab = struct {
 
     fn drainOutput(tab: *Tab) void {
         const drain_t0 = perf.now();
+        // 한 frame 에서 ring 통째 parse 하면 큰 paste 후 bash echo (ring 4MB 가능)
+        // 시 main thread 가 수 초 점유 → beachball + Cmd+Q / Ctrl+C / mouse 모두
+        // dispatch 안 됨. 60fps frame budget (16.7ms) 안의 절반 (8ms) 만 parse,
+        // 나머지는 다음 frame 에 계속. ring 이 못 비워져도 next frame fire 시
+        // pop 이어짐. 사용자 인지: 출력은 분산되지만 UI 는 항상 반응.
+        const FRAME_BUDGET_NS: u64 = 8 * 1_000_000;
         var buf: [65536]u8 = undefined;
         var total_bytes: u64 = 0;
         while (true) {
@@ -241,6 +247,7 @@ pub const Tab = struct {
             tab.stream.nextSlice(buf[0..n]);
             perf.addTimed(&perf.parse, parse_t0);
             total_bytes += n;
+            if (perf.nsSince(drain_t0) > FRAME_BUDGET_NS) break;
         }
         perf.addTimedBytes(&perf.drain, drain_t0, total_bytes);
     }
