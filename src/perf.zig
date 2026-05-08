@@ -1,8 +1,8 @@
 // Throughput instrumentation — atomic counters + file logger.
-// Writes snapshots to %APPDATA%\tildaz\tildaz.log via tildaz_log on dumpAndReset().
+// Writes snapshots to the unified log file (`log.zig`) on dumpAndReset().
 
 const std = @import("std");
-const tildaz_log = @import("tildaz_log.zig");
+const log = @import("log.zig");
 
 pub const Counter = struct {
     calls: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -101,5 +101,5 @@ pub fn dumpAndReset(label: []const u8) void {
         },
     ) catch return;
 
-    tildaz_log.appendBlock(text);
+    log.appendBlock(text);
 }

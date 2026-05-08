@@ -1,9 +1,19 @@
+//! Renderer dispatch — 호출처가 platform 별 그래픽스 API (D3D11 / Metal) 를
+//! 직접 다루지 않게.
+//!
+//! 현재 상태: Windows 의 `D3d11Renderer` 만 통합된 인터페이스 (init / deinit /
+//! invalidate / rebuildFont / resize / renderTabBar / renderTerminal) 를 노출한다.
+//! macOS 의 `MetalRenderer` 는 단일 `renderFrame` 만 노출하고 host 가 직접
+//! 호출 — 두 path 의 인터페이스 통일은 별도 이슈에서 진행. 그래서 `renderer.zig`
+//! 의 `RendererBackend` 는 Windows 전용이고, macOS host 는 `renderer/macos.zig`
+//! 의 MetalRenderer 를 직접 import.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
 
 const D3d11Renderer = if (builtin.os.tag == .windows)
-    @import("d3d11_renderer.zig").D3d11Renderer
+    @import("renderer/windows.zig").D3d11Renderer
 else
     struct {};
 

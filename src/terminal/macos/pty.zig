@@ -1,8 +1,9 @@
 // macOS POSIX PTY — `openpty(3)` + `forkpty(3)` 패턴으로 셸 spawn + master fd
 // 양방향 통신.
 //
-// Windows 의 `src/conpty.zig` (ConPTY 기반) 와 같은 역할. 인터페이스도 동등하게
-// 맞춰서 추후 `src/terminal_backend.zig` 로 통합 시 매끄럽게.
+// Windows 의 `terminal/windows/pty.zig` (ConPTY 기반) 와 같은 역할. 인터페이스도
+// 동등 — `terminal.zig` 의 cross-platform `TerminalBackend` 가 양쪽을 같은
+// API 로 wrap.
 //   - init(allocator, cols, rows, shell, extra_env) → spawn
 //   - write(data) → master fd 로 키 입력 송신
 //   - resize(cols, rows) → TIOCSWINSZ
@@ -240,7 +241,7 @@ pub const Pty = struct {
             // SIGHUP 무시 셸 — SIGKILL 으로 강제 종료. 로그 한 줄 남김.
             if (!self.child_exited.load(.acquire)) {
                 _ = std.c.kill(-self.child_pid, std.posix.SIG.KILL);
-                @import("macos_log.zig").appendLine(
+                @import("../../log.zig").appendLine(
                     "pty",
                     "SIGHUP ignored after {d}ms, sent SIGKILL pgid={d}",
                     .{ grace_ms, self.child_pid },

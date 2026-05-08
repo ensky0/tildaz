@@ -17,24 +17,24 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const objc = @import("macos_objc.zig");
-const config = @import("config.zig");
-const macos_pty = @import("macos_pty.zig");
+const objc = @import("../macos_objc.zig");
+const config = @import("../config.zig");
+const macos_pty = @import("../terminal/macos/pty.zig");
 const ghostty = @import("ghostty-vt");
-const macos_metal = @import("macos_metal.zig");
-const ui_metrics = @import("ui_metrics.zig");
-const terminal_interaction = @import("terminal_interaction.zig");
-const tab_interaction = @import("tab_interaction.zig");
-const macos_session = @import("macos_session.zig");
-const themes = @import("themes.zig");
-const dialog = @import("dialog.zig");
-const messages = @import("messages.zig");
-const about = @import("about.zig");
-const macos_log = @import("macos_log.zig");
-const macos_autostart = @import("macos_autostart.zig");
+const macos_metal = @import("../renderer/macos.zig");
+const ui_metrics = @import("../ui_metrics.zig");
+const terminal_interaction = @import("../terminal_interaction.zig");
+const tab_interaction = @import("../tab_interaction.zig");
+const macos_session = @import("../macos_session.zig");
+const themes = @import("../themes.zig");
+const dialog = @import("../dialog.zig");
+const messages = @import("../messages.zig");
+const about = @import("../about.zig");
+const log = @import("../log.zig");
+const autostart = @import("../autostart.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
-    macos_log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
+    log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch "panic (format failed)";
     dialog.showError(messages.crash_title, text);
@@ -42,7 +42,7 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    macos_log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+    log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
     var buf: [256]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch "TildaZ failed to start.";
     dialog.showError(messages.error_title, text);
@@ -189,7 +189,7 @@ extern "c" fn atexit(func: *const fn () callconv(.c) void) c_int;
 /// 직행하므로 run() 의 `defer logStop` 이 안 불린다. `atexit` 는 `exit()`
 /// 호출되면 동작하니 여기서 [exit] 라인 기록.
 fn atExitLogStop() callconv(.c) void {
-    macos_log.logStop(build_options.version);
+    log.logStop(build_options.version);
 }
 
 // NSApplication delegate — `applicationShouldTerminate:` 한 메서드만 구현.
@@ -449,11 +449,11 @@ fn syncTerminalGeometry() void {
     for (g_session.tabs.items) |t| {
         if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
         t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
-            macos_log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
+            log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
             continue;
         };
         t.pty.resize(new_cols, new_rows) catch |err| {
-            macos_log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
+            log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
         };
     }
 }
@@ -748,7 +748,7 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
     }
 
     _ = tab.pty.write(cstr[0..len]) catch |err| {
-        macos_log.appendLine("pty", "write failed: {s}", .{@errorName(err)});
+        log.appendLine("pty", "write failed: {s}", .{@errorName(err)});
     };
 }
 
@@ -933,14 +933,14 @@ fn syncGeometryAfterScreenChange() void {
     if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
         for (g_session.tabs.items) |t| {
             t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
-                macos_log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
+                log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
                 continue;
             };
             t.pty.resize(new_cols, new_rows) catch |err| {
-                macos_log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
+                log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
             };
         }
-        macos_log.appendLine("geom", "screen changed: vp={d}x{d}px scale={d:.2} cols={d} rows={d}", .{
+        log.appendLine("geom", "screen changed: vp={d}x{d}px scale={d:.2} cols={d} rows={d}", .{
             vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
         });
     }
@@ -1063,7 +1063,7 @@ fn handleTabBarClick(hit: TabBarHit) void {
     if (hit.on_close) {
         g_session.closeTab(hit.tab_index);
         if (g_session.count() == 0) {
-            macos_log.appendLine("tab", "last tab closed via close button, terminating tildaz", .{});
+            log.appendLine("tab", "last tab closed via close button, terminating tildaz", .{});
             const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
             terminate(g_app, objc.sel("terminate:"), null);
             return;
@@ -1219,7 +1219,7 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
             const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale);
             if (g_drag.finish(tab_w_int, g_session.count())) |req| {
                 _ = g_session.reorderTabs(req.from, req.to) catch |err| {
-                    macos_log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
+                    log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
                 };
                 // drag reorder 끝 — 활성 탭 위치 변경, ensure 재가동 (#117).
                 g_tab_scroll_user_override = false;
@@ -1309,7 +1309,7 @@ fn handleCloseActiveTab() void {
     if (g_session.activeTab() == null) return;
     g_session.closeTab(g_session.active_tab);
     if (g_session.count() == 0) {
-        macos_log.appendLine("tab", "last tab closed via Cmd+W, terminating tildaz", .{});
+        log.appendLine("tab", "last tab closed via Cmd+W, terminating tildaz", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
         return;
@@ -1334,7 +1334,7 @@ fn handleNewTab() void {
         onPtyExit,
         g_config.theme,
     ) catch |err| {
-        macos_log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+        log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
         return;
     };
     // 1 → 2 전환 시 탭바 등장 → cell 영역 줄어듦. 모든 탭 resize.
@@ -1403,7 +1403,7 @@ fn handlePaste() void {
     }
 
     _ = tab.pty.write(cstr[0..len]) catch |err| {
-        macos_log.appendLine("paste", "PTY write failed: {s}", .{@errorName(err)});
+        log.appendLine("paste", "PTY write failed: {s}", .{@errorName(err)});
     };
 }
 
@@ -1488,7 +1488,7 @@ fn registerTildazViewClass() !objc.Class {
     if (objc.objc_getProtocol("NSTextInputClient")) |proto| {
         _ = objc.class_addProtocol(cls, proto);
     } else {
-        macos_log.appendLine("ime", "WARNING: NSTextInputClient protocol not found", .{});
+        log.appendLine("ime", "WARNING: NSTextInputClient protocol not found", .{});
     }
 
     objc.objc_registerClassPair(cls);
@@ -1496,17 +1496,17 @@ fn registerTildazViewClass() !objc.Class {
 }
 
 pub fn run() !void {
-    // `~/Library/Logs/tildaz.log` 에 boot/exit 라인을 남긴다 (Windows
-    // `tildaz_log.logStart` 와 동등). Console.app 이 `~/Library/Logs` 를
-    // 자동 인덱싱해 GUI 에서 바로 열람 가능.
-    macos_log.logStart(build_options.version);
+    // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
+    // `~/Library/Logs/tildaz.log` — Console.app 이 자동 인덱싱해 GUI 에서
+    // 바로 열람 가능.
+    log.logStart(build_options.version);
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 
     // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
     g_config = config.Config.load(g_gpa.allocator());
-    macos_log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
+    log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
         g_config.opacity,
         @tagName(g_config.dock_position),
         if (g_config.theme) |_| "set" else "default",
@@ -1517,17 +1517,17 @@ pub fn run() !void {
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
-    @import("shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
+    @import("../shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
 
     // Auto-start (LaunchAgent) — Windows `autostart.enable/disable` 동등.
     // 사용자 로그인 시 launchd 가 plist 따라 자동 실행. 매 부팅마다 enable
     // / disable 을 sync 해 사용자가 config 끄면 즉시 효과.
     if (g_config.auto_start) {
-        macos_autostart.enable(g_gpa.allocator()) catch |err| {
-            macos_log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
+        autostart.enable(g_gpa.allocator()) catch |err| {
+            log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
         };
     } else {
-        macos_autostart.disable(g_gpa.allocator());
+        autostart.disable(g_gpa.allocator());
     }
 
     // 1. NSApplication.
@@ -1553,9 +1553,9 @@ pub fn run() !void {
         }
     }
 
-    // dialog_macos 가 NSAlert path 쓰도록 — 이 시점부터 우리 NSApp 안에서
+    // dialog/macos 가 NSAlert path 쓰도록 — 이 시점부터 우리 NSApp 안에서
     // alert 띄울 때 popup level 보다 위에 올바르게 표시.
-    @import("dialog_macos.zig").markNSAppReady();
+    @import("../dialog/macos.zig").markNSAppReady();
 
     try buildMainMenu(g_app);
 
@@ -1601,9 +1601,9 @@ pub fn run() !void {
     const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
     setLevel(g_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
 
-    // dialog_macos 가 alert 띄울 때 우리 윈도우 level 을 잠깐 normal 로 낮추도록
+    // dialog/macos 가 alert 띄울 때 우리 윈도우 level 을 잠깐 normal 로 낮추도록
     // 등록 (alert 가 popup 위에 표시되도록).
-    @import("dialog_macos.zig").setHostWindow(g_window);
+    @import("../dialog/macos.zig").setHostWindow(g_window);
 
     // 윈도우 자체를 opaque=NO + backgroundColor=clear 로 — borderless 라
     // titlebar 자체는 없지만 system 의 default window background (흰색) 가
@@ -1776,7 +1776,7 @@ pub fn run() !void {
     const cell_w_px: u32 = g_renderer.?.font.cell_width;
     const cell_h_px: u32 = g_renderer.?.font.cell_height;
     const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
-    macos_log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px pad={d}px font={s}", .{
+    log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px pad={d}px font={s}", .{
         vp_w_px,
         vp_h_px,
         scale_pt,
@@ -1824,7 +1824,7 @@ pub fn run() !void {
     //
     // COLORFGBG: vim / less / tmux 같은 TUI 가 자동으로 dark / light
     // colorscheme 선택할 때 보는 표준 환경변수. theme.background 의 luminance
-    // 로 판별 (Windows `terminal_backend.envVarsForTheme` 와 같은 helper
+    // 로 판별 (Windows `terminal/windows.zig` 의 envVarsForTheme 와 같은 helper
     // `themes.isDark` 사용). dark = "15;0", light = "0;15".
     const colorfgbg_value: []const u8 = if (g_config.theme) |t|
         (if (themes.isDark(t)) "15;0" else "0;15")
@@ -1853,7 +1853,7 @@ pub fn run() !void {
         onPtyExit,
         g_config.theme,
     );
-    macos_log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d} max_scroll_lines={d}", .{
+    log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d} max_scroll_lines={d}", .{
         shell_path,
         term_cols,
         term_rows,
@@ -1875,10 +1875,10 @@ pub fn run() !void {
     CFRunLoopAddTimer(CFRunLoopGetMain(), g_render_timer, kCFRunLoopCommonModes);
 
     // 7. 이벤트 루프.
-    macos_log.appendLine("startup", "enter NSApp run loop", .{});
+    log.appendLine("startup", "enter NSApp run loop", .{});
     const runApp = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
     runApp(g_app, objc.sel("run"));
-    macos_log.appendLine("startup", "NSApp run loop exited", .{});
+    log.appendLine("startup", "NSApp run loop exited", .{});
 }
 
 /// PTY read thread 의 콜백 — 받은 데이터를 ghostty-vt Terminal stream parser 로
@@ -1911,7 +1911,7 @@ fn drainExitedTabs() bool {
     while (i < g_session.tabs.items.len) {
         const t = g_session.tabs.items[i];
         if (t.exit_flag.load(.acquire)) {
-            macos_log.appendLine("pty", "tab {d} ('{s}') exited, closing", .{ i, t.title() });
+            log.appendLine("pty", "tab {d} ('{s}') exited, closing", .{ i, t.title() });
             g_session.closeTab(i);
             any_closed = true;
             // closeTab 후 인덱스가 시프트되므로 i 증가 안 함 — 다음 element 가
@@ -1921,7 +1921,7 @@ fn drainExitedTabs() bool {
         }
     }
     if (g_session.count() == 0) {
-        macos_log.appendLine("pty", "last tab closed, terminating tildaz", .{});
+        log.appendLine("pty", "last tab closed, terminating tildaz", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         terminate(g_app, objc.sel("terminate:"), null);
         return true;
@@ -2059,7 +2059,7 @@ fn installEventTap() !void {
             if (has_ax) "GRANTED" else "MISSING",
         }) catch "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
 
-        macos_log.appendLine("perm", "missing — input_monitoring={s} accessibility={s}", .{
+        log.appendLine("perm", "missing — input_monitoring={s} accessibility={s}", .{
             if (has_input) "OK" else "missing",
             if (has_ax) "OK" else "missing",
         });
@@ -2089,7 +2089,7 @@ fn createAndRegisterEventTap() !void {
         null,
     );
     if (g_event_tap == null) {
-        macos_log.appendLine("hotkey", "CGEventTapCreate failed — permissions may need to be renewed", .{});
+        log.appendLine("hotkey", "CGEventTapCreate failed — permissions may need to be renewed", .{});
         return error.TapCreateFailed;
     }
 
@@ -2121,10 +2121,10 @@ fn recreateEventTap() void {
         g_event_tap = null;
     }
     createAndRegisterEventTap() catch |err| {
-        macos_log.appendLine("hotkey", "recreateEventTap failed: {s}", .{@errorName(err)});
+        log.appendLine("hotkey", "recreateEventTap failed: {s}", .{@errorName(err)});
         return;
     };
-    macos_log.appendLine("hotkey", "CGEventTap recreated", .{});
+    log.appendLine("hotkey", "CGEventTap recreated", .{});
 }
 
 /// `dispatch_async_f` 트램폴린 — context 무시하고 recreateEventTap 호출.
@@ -2157,10 +2157,10 @@ fn eventTapCallback(
         const recent = (now_ms - g_last_tap_disable_ms) < REPEAT_WINDOW_MS;
         g_last_tap_disable_ms = now_ms;
         if (recent) {
-            macos_log.appendLine("hotkey", "CGEventTap disabled (type={d}) — repeat within {d}s, scheduling recreate", .{ event_type, @divTrunc(REPEAT_WINDOW_MS, 1000) });
+            log.appendLine("hotkey", "CGEventTap disabled (type={d}) — repeat within {d}s, scheduling recreate", .{ event_type, @divTrunc(REPEAT_WINDOW_MS, 1000) });
             dispatch_async_f(&_dispatch_main_q, null, recreateEventTapTrampoline);
         } else {
-            macos_log.appendLine("hotkey", "CGEventTap disabled (type={d}) — re-enabling", .{event_type});
+            log.appendLine("hotkey", "CGEventTap disabled (type={d}) — re-enabling", .{event_type});
             if (g_event_tap != null) CGEventTapEnable(g_event_tap, true);
         }
         return event;
@@ -2316,9 +2316,9 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     _ = _sel;
     _ = sender;
     const allocator = g_gpa.allocator();
-    const path = @import("paths.zig").configPath(allocator) catch return;
+    const path = @import("../paths.zig").configPath(allocator) catch return;
     defer allocator.free(path);
-    @import("system_open.zig").openInDefaultApp(allocator, path);
+    @import("../system_open.zig").openInDefaultApp(allocator, path);
 }
 
 /// Shift+Cmd+L — tildaz.log 를 default editor 로 열기 (#128).
@@ -2327,9 +2327,9 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     _ = _sel;
     _ = sender;
     const allocator = g_gpa.allocator();
-    const path = @import("paths.zig").logPath(allocator) catch return;
+    const path = @import("../paths.zig").logPath(allocator) catch return;
     defer allocator.free(path);
-    @import("system_open.zig").openInDefaultApp(allocator, path);
+    @import("../system_open.zig").openInDefaultApp(allocator, path);
 }
 
 /// Ctrl+Cmd+Space — Show Emoji & Symbols picker (#130). 우리 popup-level

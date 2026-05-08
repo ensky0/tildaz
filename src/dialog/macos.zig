@@ -21,8 +21,8 @@
 //! 결합 (host window 알아야 함) 비용은 있지만 panel 시각이 표준.
 
 const std = @import("std");
-const objc = @import("macos_objc.zig");
-const dialog = @import("dialog.zig");
+const objc = @import("../macos_objc.zig");
+const dialog = @import("../dialog.zig");
 
 var nsapp_ready: bool = false;
 /// 우리 NSWindow (popup level) — alert 띄우는 동안만 normal level 로 낮춰야
@@ -41,6 +41,72 @@ pub fn setHostWindow(window: objc.id) void {
     host_window = window;
 }
 
+const NSPopUpMenuWindowLevel: c_int = 101;
+const NSNormalWindowLevel: c_int = 0;
+
+/// host window 를 popup → normal 로 잠깐 낮춰 modal alert 가 그 위에 표시되게.
+/// caller 의 `runModal` 끝나면 popup 복구. host_window 가 null 이면 no-op.
+fn lowerHostLevel() void {
+    if (host_window == null) return;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    setLevel(host_window, objc.sel("setLevel:"), NSNormalWindowLevel);
+}
+fn restoreHostLevel() void {
+    if (host_window == null) return;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    setLevel(host_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
+}
+
+/// 새 NSAlert 인스턴스 (alloc + init). null 반환은 caller 가 fail-soft 로 무시.
+fn newAlert() ?objc.id {
+    const NSAlert = objc.getClass("NSAlert");
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const a = alloc(NSAlert, objc.sel("alloc")) orelse return null;
+    return init_obj(a, objc.sel("init"));
+}
+
+/// NSAlert 의 `setMessageText:`. nil-safe.
+fn setMessage(alert: objc.id, text: []const u8) void {
+    const setText = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setText(alert, objc.sel("setMessageText:"), nsStringFromSlice(text));
+}
+
+/// NSAlert 의 `setInformativeText:`. nil-safe.
+fn setInformative(alert: objc.id, text: []const u8) void {
+    const setText = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setText(alert, objc.sel("setInformativeText:"), nsStringFromSlice(text));
+}
+
+/// NSAlert 의 `addButtonWithTitle:` — 추가 순서대로 cmd+1, cmd+2... 단축키 + 첫
+/// 버튼이 default. 반환된 NSButton 은 우리가 retain 안 함 (alert 가 lifetime 관리).
+fn addButton(alert: objc.id, title: []const u8) void {
+    const add = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+    _ = add(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice(title));
+}
+
+/// NSAlertStyle: Warning=0, Informational=1, Critical=2.
+fn setStyle(alert: objc.id, style: c_long) void {
+    const set = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+    set(alert, objc.sel("setAlertStyle:"), style);
+}
+
+fn alertStyleFor(severity: dialog.Severity) c_long {
+    return switch (severity) {
+        .info => 1,
+        .err => 2,
+    };
+}
+
+/// host window level 을 잠깐 normal 로 낮춰 alert 가 위에 표시되게 한 뒤
+/// `runModal` 호출. 끝나면 popup level 로 복구. 결과 modal response 반환.
+fn runModalOverHost(alert: objc.id) c_long {
+    lowerHostLevel();
+    defer restoreHostLevel();
+    const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    return runModal(alert, objc.sel("runModal"));
+}
+
 pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     if (nsapp_ready) {
         showNSAlert(severity, title, message);
@@ -54,38 +120,12 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
 /// 가시성은 `runModal` 호출 *직전* 우리 NSWindow level 을 normal 로 낮추고
 /// runModal 종료 후 popup 복구하는 우회로 처리 (헤더 주석 참고).
 fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8) void {
-    const NSAlert = objc.getClass("NSAlert");
-    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-
-    const alert_alloc = alloc(NSAlert, objc.sel("alloc")) orelse return;
-    const alert = init_obj(alert_alloc, objc.sel("init")) orelse return;
-
-    const setText = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setText(alert, objc.sel("setMessageText:"), nsStringFromSlice(title));
-    setText(alert, objc.sel("setInformativeText:"), nsStringFromSlice(message));
-
-    const addBtn = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    _ = addBtn(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice("OK"));
-
-    // NSAlertStyle: Warning=0, Informational=1, Critical=2.
-    const setStyle = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
-    setStyle(alert, objc.sel("setAlertStyle:"), switch (severity) {
-        .info => @as(c_long, 1),
-        .err => @as(c_long, 2),
-    });
-
-    // 우리 popup-level 윈도우 level 을 잠깐 normal 로 낮춰 alert (modal level=8)
-    // 이 그 위에 자연 표시. runModal 끝나면 popup 복구.
-    const NSPopUpMenuWindowLevel: c_int = 101;
-    const NSNormalWindowLevel: c_int = 0;
-    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
-
-    if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSNormalWindowLevel);
-    defer if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
-
-    const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
-    _ = runModal(alert, objc.sel("runModal"));
+    const alert = newAlert() orelse return;
+    setMessage(alert, title);
+    setInformative(alert, message);
+    addButton(alert, "OK");
+    setStyle(alert, alertStyleFor(severity));
+    _ = runModalOverHost(alert);
 }
 
 const NSAlertRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
@@ -153,25 +193,15 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
         return;
     }
 
-    const NSAlert = objc.getClass("NSAlert");
-    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-
-    const alert_alloc = alloc(NSAlert, objc.sel("alloc")) orelse return;
-    const alert = init_obj(alert_alloc, objc.sel("init")) orelse return;
-
-    const setText = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setText(alert, objc.sel("setMessageText:"), nsStringFromSlice(title));
-
-    const setStyle = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
-    setStyle(alert, objc.sel("setAlertStyle:"), 1); // Informational
-
-    const addBtn = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    _ = addBtn(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice("OK"));
+    const alert = newAlert() orelse return;
+    setMessage(alert, title);
+    setStyle(alert, 1); // Informational
+    addButton(alert, "OK");
 
     // accessoryView: NSTextView. width 580 / height 110 — exe / config / log
     // 절대 경로 한 줄 다 들어감. selectable + editable=NO + monospace.
     const NSTextView = objc.getClass("NSTextView");
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
     const tv = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 580, .h = 130 }) orelse return;
@@ -203,15 +233,7 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setAccessory(alert, objc.sel("setAccessoryView:"), tv);
 
-    // host popup level → normal (NSAlert 가 위에 표시되도록), 끝나면 복구.
-    const NSPopUpMenuWindowLevel: c_int = 101;
-    const NSNormalWindowLevel: c_int = 0;
-    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
-    if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSNormalWindowLevel);
-    defer if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
-
-    const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
-    _ = runModal(alert, objc.sel("runModal"));
+    _ = runModalOverHost(alert);
 }
 
 /// OK / Cancel 두 버튼의 확인 다이얼로그 (#116). default 는 Cancel —
@@ -223,34 +245,14 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
     if (!nsapp_ready) return false; // bootstrap 단계엔 confirm 의미 없음.
 
-    const NSAlert = objc.getClass("NSAlert");
-    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const alert = newAlert() orelse return false;
+    setMessage(alert, title);
+    setInformative(alert, message);
+    setStyle(alert, 1); // Informational
+    addButton(alert, "Cancel");
+    addButton(alert, "Quit");
 
-    const alert_alloc = alloc(NSAlert, objc.sel("alloc")) orelse return false;
-    const alert = init_obj(alert_alloc, objc.sel("init")) orelse return false;
-
-    const setText = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setText(alert, objc.sel("setMessageText:"), nsStringFromSlice(title));
-    setText(alert, objc.sel("setInformativeText:"), nsStringFromSlice(message));
-
-    const setStyle = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
-    setStyle(alert, objc.sel("setAlertStyle:"), 1); // Informational
-
-    // default 버튼 = Cancel — 사용자가 Enter 만 눌러도 종료 안 되게 (HIG 패턴).
-    const addBtn = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    _ = addBtn(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice("Cancel"));
-    _ = addBtn(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice("Quit"));
-
-    // host popup level → normal (NSAlert 가 위에 표시되도록), 끝나면 복구.
-    const NSPopUpMenuWindowLevel: c_int = 101;
-    const NSNormalWindowLevel: c_int = 0;
-    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
-    if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSNormalWindowLevel);
-    defer if (host_window != null) setLevel(host_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
-
-    const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
-    const result = runModal(alert, objc.sel("runModal"));
+    const result = runModalOverHost(alert);
     // NSAlertSecondButtonReturn = 1001 (= Quit, 두 번째 추가 버튼).
     return result == 1001;
 }

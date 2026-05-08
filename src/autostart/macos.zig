@@ -1,7 +1,7 @@
 // macOS auto-start: `~/Library/LaunchAgents/com.tildaz.app.plist`
 //
 // 사용자 로그인 시 launchd 가 plist 따라 우리 .app 의 main 바이너리를 실행.
-// Windows `autostart.zig` (HKCU\...\Run) 와 동등.
+// Windows 의 `autostart/windows.zig` (HKCU\...\Run) 와 동등.
 //
 // LaunchAgent 위치는 Apple 표준 — `man launchd.plist` 참고. plist 자체는
 // 로그인 시 자동 load 라 file drop 만으로 충분 (`launchctl load` 호출 불필요).
@@ -10,7 +10,6 @@
 // 라벨 (`com.tildaz.app`) 은 reverse-DNS — 다른 사용자 LaunchAgent 와 충돌 방지.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const LABEL = "com.tildaz.app";
 
@@ -38,8 +37,6 @@ fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
 /// auto-start 활성화 — LaunchAgent plist 작성. 이미 동일 path 로 등록돼 있으면
 /// 덮어쓰기 (구버전 .app 위치에서 update 된 경우 stale 경로 정리).
 pub fn enable(allocator: std.mem.Allocator) !void {
-    if (builtin.os.tag != .macos) return;
-
     const exe = try currentExePath(allocator);
     defer allocator.free(exe);
 
@@ -74,8 +71,6 @@ pub fn enable(allocator: std.mem.Allocator) !void {
 /// plist 없으면 등록 안 함). 즉시 현재 세션 bootout 이 필요하면 수동:
 ///   `launchctl bootout gui/$(id -u)/com.tildaz.app`
 pub fn disable(allocator: std.mem.Allocator) void {
-    if (builtin.os.tag != .macos) return;
-
     const path = plistPath(allocator) catch return;
     defer allocator.free(path);
     std.fs.deleteFileAbsolute(path) catch {};

@@ -2,7 +2,7 @@
 // All vtable slots match Windows SDK d3d11.h / dxgi.h order.
 
 const std = @import("std");
-const dw = @import("directwrite.zig");
+const dw = @import("../../font/windows/directwrite.zig");
 
 pub const HRESULT = c_long;
 pub const FLOAT = f32;

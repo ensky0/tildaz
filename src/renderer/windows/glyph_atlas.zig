@@ -14,7 +14,7 @@
 //     Win Terminal `BackendD3D` 동등 path.
 
 const std = @import("std");
-const dw = @import("directwrite.zig");
+const dw = @import("../../font/windows/directwrite.zig");
 const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
 

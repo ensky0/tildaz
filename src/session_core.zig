@@ -1,11 +1,11 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
-const terminal_backend = @import("terminal_backend.zig");
-const TerminalBackend = terminal_backend.TerminalBackend;
+const terminal = @import("terminal.zig");
+const TerminalBackend = terminal.TerminalBackend;
 const themes = @import("themes.zig");
 const perf = @import("perf.zig");
-const tildaz_log = @import("tildaz_log.zig");
+const log = @import("log.zig");
 
 /// Lock-free 링버퍼 (단일 생산자, 단일 소비자)
 const RingBuffer = struct {
@@ -144,7 +144,7 @@ pub const Tab = struct {
         alloc: std.mem.Allocator,
         cols: u16,
         rows: u16,
-        shell: terminal_backend.ShellCommand,
+        shell: terminal.ShellCommand,
         max_scroll_lines: usize,
         theme: ?*const themes.Theme,
         tab_exit_fn: SessionCore.TabExitNotify,
@@ -160,7 +160,7 @@ pub const Tab = struct {
             .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
         } else ghostty.Terminal.Colors.default;
 
-        var terminal = try ghostty.Terminal.init(alloc, .{
+        var term = try ghostty.Terminal.init(alloc, .{
             .cols = cols,
             .rows = rows,
             .max_scrollback = max_scroll_lines * blk: {
@@ -170,7 +170,7 @@ pub const Tab = struct {
             },
             .colors = term_colors,
         });
-        errdefer terminal.deinit(alloc);
+        errdefer term.deinit(alloc);
 
         // Mode 2027 (grapheme cluster) — VS-16 / skin tone modifier (U+1F3FB-FF)
         // / ZWJ 시퀀스 (U+200D) 가 같은 cell 의 grapheme 으로 묶이게. 기본 OFF
@@ -179,7 +179,7 @@ pub const Tab = struct {
         // 일 때 cell 자동으로 wide. renderer 는 이 grapheme 을 cluster 로 shape
         // (#134 C3+). macOS session 의 동일 정책 (commit 0e18ab5) 과 cross-platform
         // sync.
-        terminal.modes.set(.grapheme_cluster, true);
+        term.modes.set(.grapheme_cluster, true);
 
         var backend = try TerminalBackend.init(.{
             .allocator = alloc,
@@ -191,7 +191,7 @@ pub const Tab = struct {
         errdefer backend.deinit();
 
         tab.* = .{
-            .terminal = terminal,
+            .terminal = term,
             .stream = undefined,
             .backend = backend,
             .tab_exit_fn = tab_exit_fn,
@@ -267,14 +267,14 @@ pub const Tab = struct {
 
     fn onPtyExit(userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
-        tildaz_log.appendLine("tab", "shell exited: title={s}", .{tab.title[0..tab.title_len]});
+        log.appendLine("tab", "shell exited: title={s}", .{tab.title[0..tab.title_len]});
         tab.tab_exit_fn(@intFromPtr(tab), tab.tab_exit_userdata);
     }
 };
 
 pub const SessionCore = struct {
     allocator: std.mem.Allocator,
-    shell_command: terminal_backend.ShellCommand,
+    shell_command: terminal.ShellCommand,
     max_scroll_lines: usize,
     theme: ?*const themes.Theme,
     tab_exit_fn: TabExitNotify,
@@ -292,7 +292,7 @@ pub const SessionCore = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        shell_command: terminal_backend.ShellCommand,
+        shell_command: terminal.ShellCommand,
         max_scroll_lines: usize,
         theme: ?*const themes.Theme,
         tab_exit_fn: TabExitNotify,

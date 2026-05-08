@@ -7,10 +7,10 @@ const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const Window = @import("window.zig").Window;
-const renderer_backend = @import("renderer_backend.zig");
+const renderer_backend = @import("renderer.zig");
 const RendererBackend = renderer_backend.RendererBackend;
 const perf = @import("perf.zig");
-const tildaz_log = @import("tildaz_log.zig");
+const log = @import("log.zig");
 const about = @import("about.zig");
 const ui_metrics = @import("ui_metrics.zig");
 const paths = @import("paths.zig");
@@ -75,7 +75,7 @@ pub const App = struct {
         switch (result) {
             .none => return,
             .closed_last => {
-                tildaz_log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
+                log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
                 self.window.closeAfterShellExit();
             },
             .changed => {
