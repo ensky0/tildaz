@@ -3,7 +3,7 @@
 //!
 //! 호출처가 platform-specific API (`MessageBoxW`, `osascript`, `NSAlert`) 를
 //! 직접 부르지 않게 — 메시지 텍스트는 `messages.zig` 에서 한 곳에서 관리하고
-//! 표시는 platform 모듈 (`dialog_windows.zig`, `dialog_macos.zig`) 이 처리.
+//! 표시는 platform 모듈 (`dialog/windows.zig`, `dialog/macos.zig`) 이 처리.
 //!
 //! 사용 예:
 //!     const dialog = @import("dialog.zig");
@@ -18,8 +18,8 @@ const builtin = @import("builtin");
 pub const Severity = enum { info, err };
 
 const impl = switch (builtin.os.tag) {
-    .windows => @import("dialog_windows.zig"),
-    .macos => @import("dialog_macos.zig"),
+    .windows => @import("dialog/windows.zig"),
+    .macos => @import("dialog/macos.zig"),
     else => @compileError("unsupported platform"),
 };
 

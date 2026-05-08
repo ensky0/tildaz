@@ -58,7 +58,7 @@ pub fn showAboutDialog() void {
     // 는 firstResponder + copy: 액션 정상 + monospace + 자연스러운 word
     // 더블클릭 선택. Windows 의 MessageBoxW 는 ctrl+c 자체 동작 OK.
     if (builtin.os.tag == .macos) {
-        @import("dialog_macos.zig").showAboutAlert(messages.about_title, msg);
+        @import("dialog/macos.zig").showAboutAlert(messages.about_title, msg);
     } else {
         dialog.showInfo(messages.about_title, msg);
     }

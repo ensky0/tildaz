@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const host = switch (builtin.os.tag) {
-    .windows => @import("windows_host.zig"),
-    .macos => @import("macos_host.zig"),
-    else => @import("unsupported_host.zig"),
+    .windows => @import("host/windows.zig"),
+    .macos => @import("host/macos.zig"),
+    else => @import("host/unsupported.zig"),
 };
 
 /// `std.log` 호출 (ghostty-vt 의 `unimplemented mode` 등) 을 우리 통합 로그로
@@ -26,11 +26,7 @@ fn tildazLogFn(
     if (comptime std.mem.indexOf(u8, fmt, "unimplemented mode") != null) return;
 
     const cat = "std.log:" ++ @tagName(scope) ++ "/" ++ @tagName(level);
-    switch (builtin.os.tag) {
-        .macos => @import("macos_log.zig").appendLine(cat, fmt, args),
-        .windows => @import("tildaz_log.zig").appendLine(cat, fmt, args),
-        else => {},
-    }
+    @import("log.zig").appendLine(cat, fmt, args);
 }
 
 /// ReleaseFast에서도 crash 원인을 표시하는 panic handler

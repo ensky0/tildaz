@@ -5,7 +5,7 @@
 // (claude/infallible-swartz) 패턴 그대로 차용.
 
 const std = @import("std");
-const ct = @import("macos_coretext.zig");
+const ct = @import("coretext.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -72,18 +72,18 @@ pub const CoreTextFontContext = struct {
                 ct.kCFStringEncodingUTF8,
                 0,
             ) orelse {
-                @import("font_validate.zig").showNotFoundFatal(family, font_families);
+                @import("../validate.zig").showNotFoundFatal(family, font_families);
             };
             defer ct.CFRelease(family_str);
             const candidate = ct.CTFontCreateWithName(family_str, @floatCast(font_size), null) orelse {
-                @import("font_validate.zig").showNotFoundFatal(family, font_families);
+                @import("../validate.zig").showNotFoundFatal(family, font_families);
             };
             const actual_family = ct.CTFontCopyFamilyName(candidate);
             const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
             ct.CFRelease(actual_family);
             if (!matched) {
                 ct.CFRelease(candidate);
-                @import("font_validate.zig").showNotFoundFatal(family, font_families);
+                @import("../validate.zig").showNotFoundFatal(family, font_families);
             }
             fallback_fonts[fallback_count] = candidate;
             if (fallback_count == 0) {
@@ -136,7 +136,7 @@ pub const CoreTextFontContext = struct {
         for (probe_adv[1..], probes[1..]) |a, ch| {
             const w: f32 = @floatCast(a.width);
             if (@abs(w - advance_pt) > 0.01) {
-                @import("macos_log.zig").appendLine(
+                @import("../../log.zig").appendLine(
                     "font",
                     "WARNING: '{c}' advance ({d}) != 'M' advance ({d}). '{s}' is not monospace — terminal layout will look broken.",
                     .{ @as(u8, @intCast(ch)), w, advance_pt, font_family },

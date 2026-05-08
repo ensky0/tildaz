@@ -13,7 +13,7 @@
 // #75 (claude/infallible-swartz) 패턴 + #132 컬러 emoji 확장.
 
 const std = @import("std");
-const ct = @import("macos_coretext.zig");
+const ct = @import("../../font/macos/coretext.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
