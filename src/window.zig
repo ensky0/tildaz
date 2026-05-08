@@ -1527,8 +1527,12 @@ pub const Window = struct {
         if (u8_len == 0) return;
 
         const utf8 = u8_buf[0..u8_len];
-        if (self.dispatchAppEvent(.{ .paste = utf8 })) return; // app handled (rename)
-        write_fn(utf8, self.userdata);
+        // app_controller.onAppEvent(.paste) 가 항상 처리 — rename 활성 시
+        // rename buffer 로, 비활성 시 SessionCore.pasteToActive (bracketed
+        // paste mode 검사 + wrap). 이전엔 비활성 시 false 반환 + write_fn 직접
+        // 호출이라 bracketed paste wrap 적용 못 됨.
+        _ = self.dispatchAppEvent(.{ .paste = utf8 });
+        _ = write_fn;
     }
 
     pub fn copyToClipboard(self: *Window, text: [:0]const u8) void {

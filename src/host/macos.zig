@@ -647,7 +647,15 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 }
                 const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
                 const cstr = get_utf8(chars, objc.sel("UTF8String"));
-                tab.queueWrite(cstr[0..len]);
+                // Ctrl+C (SIGINT) 만 큐 우회 + 큐 reset — paste 등으로 가득찬
+                // write_queue 뒤에 enqueue 되면 셸이 SIGINT 늦게 받아 "Ctrl+C
+                // 안 먹힌다" 로 보임. 다른 Ctrl+key (Ctrl+L / Ctrl+D 등) 은
+                // 일반 line discipline 이라 큐 통과 OK.
+                if (len == 1 and cstr[0] == 0x03) {
+                    tab.interruptWrite(cstr[0..len]);
+                } else {
+                    tab.queueWrite(cstr[0..len]);
+                }
                 return;
             }
         }
@@ -1373,7 +1381,6 @@ fn handleCopy() void {
 }
 
 fn handlePaste() void {
-    const tab = g_session.activeTab() orelse return;
     const NSPasteboard = objc.getClass("NSPasteboard");
     const get_general = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const pb = get_general(NSPasteboard, objc.sel("generalPasteboard"));
@@ -1401,7 +1408,9 @@ fn handlePaste() void {
         return;
     }
 
-    tab.queueWrite(cstr[0..len]);
+    // Bracketed paste mode 검사 + wrap 은 SessionCore.pasteToActive 가 처리 —
+    // typing 과 분리. Windows 의 onAppEvent(.paste) path 와 동일 helper.
+    g_session.pasteToActive(cstr[0..len]);
 }
 
 fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
