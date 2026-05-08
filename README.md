@@ -66,6 +66,20 @@ First launch writes the default config: `%APPDATA%\tildaz\config.json` on
 Windows, `~/.config/tildaz/config.json` on macOS. See [CONFIG.md](CONFIG.md)
 for the schema.
 
+## Try it — Unicode showcase
+
+Drop this one-liner into a tab to exercise color emoji, skin-tone modifiers,
+ZWJ family clusters, Latin / Hangul wide characters, and Unicode block
+elements all at once. Useful for a side-by-side comparison with another
+terminal:
+
+```sh
+echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n"
+```
+
+Works in any POSIX shell (bash / zsh on Linux / macOS / WSL). PowerShell and
+`cmd` variants are documented in [AGENTS.md § 터미널 시각 회귀 테스트](AGENTS.md).
+
 ## Build
 
 ### Requirements
