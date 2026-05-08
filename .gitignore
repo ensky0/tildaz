@@ -9,6 +9,9 @@ zig-cache/
 .claude/
 build.zig.tmp.*
 
+# stray empty file 자꾸 생성됨 — root cause 미파악, 일단 ignore.
+-10.1194
+
 # Local analysis worktree (Windows Terminal source mirror for #136/#137 — 임시)
 .wt-src/
 
