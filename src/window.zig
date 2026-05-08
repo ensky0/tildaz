@@ -3,6 +3,7 @@ const windows = std.os.windows;
 const app_event = @import("app_event.zig");
 const dialog = @import("dialog.zig");
 const paths = @import("paths.zig");
+const dwrite_font = @import("dwrite_font.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
@@ -515,9 +516,16 @@ pub const Window = struct {
         // GDI CreateFontW 는 single face — chain 의 primary (chain[0]) 만 셀
         // 메트릭 (advance width / line height) 측정에 사용. 글리프 폴백은
         // renderer 의 DWriteFontContext 가 chain 전체로 처리.
+        //
+        // 음수 cHeight = *em-size 컨벤션* (DWrite native + WT BackendD3D 동등).
+        // 양수면 cell-height 컨벤션 — GDI 가 em 을 작게 잡아서 (Cascadia 18pt
+        // → em 15.5) tmHeight 가 작아짐. 그러면 cell_h < DWrite 가 raster 한
+        // glyph 의 ascent+descent 라 글자가 cell 밖으로 삐져나옴 (#148 B-2 후
+        // 발견). 음수면 GDI 도 em=18 → tmHeight ≈ 21 → cell_h 가 DWrite asc+desc
+        // 와 정합.
         const primary_family = if (self.font_chain_count > 0) self.font_chain[0] else std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
         self.font = CreateFontW(
-            scaled_font_size,
+            -scaled_font_size,
             0,
             0,
             0,
@@ -533,12 +541,26 @@ pub const Window = struct {
             primary_family,
         );
 
-        if (self.dc != null and self.font != null) {
+        // 정공 cell metric (#148 후속) — DWrite design metric 으로 직접 산출.
+        // GDI tm.tmHeight 는 ascent+descent rounding 에 더해 tmExternalLeading
+        // 까지 포함해서 cell_h 가 4px 정도 부풀려짐 (Cascadia em=24 기준 32 vs
+        // 자연 28). DWrite asc+desc+lineGap 으로 가면 28 — WT 와 정합.
+        const dpi_scale_f: f32 = effective_dpi / 96.0;
+        const font_size_px: f32 = @as(f32, @floatFromInt(self.font_size)) * dpi_scale_f;
+        const measured = dwrite_font.measureCell(primary_family, font_size_px) catch null;
+        if (measured) |m| {
+            const base_w: f32 = @floatFromInt(m.cell_w);
+            const base_h: f32 = @floatFromInt(m.cell_h);
+            self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_scale))));
+            self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_scale))));
+        } else if (self.dc != null and self.font != null) {
+            // DWrite 측정 실패 fallback — GDI tm. 사용자 환경에서 이 path 거의
+            // 안 탐 (font 사전 검증 통과 후라).
             const old_f = SelectObject(self.dc, self.font);
             var tm: TEXTMETRICW = undefined;
             _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
-            const base_h: f32 = @floatFromInt(tm.tmHeight + tm.tmExternalLeading);
+            const base_h: f32 = @floatFromInt(tm.tmHeight);
             self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_scale))));
             self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_scale))));
             _ = SelectObject(self.dc, old_f);

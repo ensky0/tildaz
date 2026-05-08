@@ -36,6 +36,78 @@ const CachedGlyph = struct {
     index: u16,
 };
 
+/// 정공 cell metric — DWrite design metric (ascent/descent/lineGap/advance) 으로
+/// 직접 산출. GDI tm 의 round / leading 영향 배제. WT BackendD3D 의 cell sizing
+/// 패턴 동등.
+///
+/// font_height_px = 우리가 raster 할 em-size (#148 B-2 후 = 사용자 font.size ×
+/// DPI scale). monospace 폰트의 모든 glyph 가 같은 advance 라 '0' 의 advance 를
+/// cell_w 로 사용. cell_h = ascent + descent + lineGap (DWrite design 기반).
+///
+/// 임시 IDWriteFactory 한 번 만들어 측정 후 release. renderer 의 DWriteFontContext
+/// 도 자체 factory 를 따로 만듦 (lifetime 분리). DWrite factory 생성은 가벼워서
+/// 부담 없음.
+pub fn measureCell(
+    primary_family_w: [*:0]const WCHAR,
+    font_height_px: f32,
+) !struct { cell_w: u32, cell_h: u32 } {
+    var factory: ?*dw.IDWriteFactory = null;
+    if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0)
+        return error.DWriteFactoryFailed;
+    defer _ = factory.?.vtable.Release(factory.?);
+
+    var collection: ?*dw.IDWriteFontCollection = null;
+    if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return error.FontCollectionFailed;
+    defer _ = collection.?.vtable.Release(collection.?);
+
+    var family_index: dw.UINT32 = 0;
+    var exists: BOOL = 0;
+    if (collection.?.FindFamilyName(primary_family_w, &family_index, &exists) < 0 or exists == 0)
+        return error.FontNotFound;
+
+    var family_obj: ?*dw.IDWriteFontFamily = null;
+    if (collection.?.GetFontFamily(family_index, &family_obj) < 0) return error.FontFamilyFailed;
+    defer _ = family_obj.?.vtable.Release(family_obj.?);
+
+    var dw_font: ?*dw.IDWriteFont = null;
+    if (family_obj.?.GetFirstMatchingFont(
+        dw.DWRITE_FONT_WEIGHT_NORMAL,
+        dw.DWRITE_FONT_STRETCH_NORMAL,
+        dw.DWRITE_FONT_STYLE_NORMAL,
+        &dw_font,
+    ) < 0) return error.FontMatchFailed;
+    defer _ = dw_font.?.vtable.Release(dw_font.?);
+
+    var face: ?*dw.IDWriteFontFace = null;
+    if (dw_font.?.CreateFontFace(&face) < 0) return error.FontFaceFailed;
+    defer _ = face.?.vtable.Release(face.?);
+
+    var metrics: dw.DWRITE_FONT_METRICS = undefined;
+    face.?.GetMetrics(&metrics);
+    const em: f32 = @floatFromInt(metrics.designUnitsPerEm);
+    const asc: f32 = @floatFromInt(metrics.ascent);
+    const desc: f32 = @floatFromInt(metrics.descent);
+    const linegap: f32 = @floatFromInt(metrics.lineGap);
+
+    var glyph_idx: dw.UINT16 = 0;
+    const cp: dw.UINT32 = '0';
+    if (face.?.GetGlyphIndices(@ptrCast(&cp), 1, @ptrCast(&glyph_idx)) < 0)
+        return error.GlyphIndexFailed;
+
+    var glyph_metrics: dw.DWRITE_GLYPH_METRICS = undefined;
+    if (face.?.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), 0) < 0)
+        return error.GlyphMetricsFailed;
+    const advance: f32 = @floatFromInt(glyph_metrics.advanceWidth);
+
+    const cell_w_px = font_height_px * advance / em;
+    const cell_h_px = font_height_px * (asc + desc + linegap) / em;
+
+    return .{
+        .cell_w = @max(1, @as(u32, @intFromFloat(@round(cell_w_px)))),
+        .cell_h = @max(1, @as(u32, @intFromFloat(@round(cell_h_px)))),
+    };
+}
+
 pub const DWriteFontContext = struct {
     alloc: std.mem.Allocator,
     factory: *dw.IDWriteFactory,
@@ -150,10 +222,15 @@ pub const DWriteFontContext = struct {
         primary_face.GetMetrics(&metrics);
         const du_per_em: f32 = @floatFromInt(metrics.designUnitsPerEm);
         const ascent: f32 = @floatFromInt(metrics.ascent);
-        const descent: f32 = @floatFromInt(metrics.descent);
         const abs_height: f32 = @floatFromInt(if (font_height < 0) -font_height else font_height);
-        self.font_em_size = abs_height * du_per_em / (ascent + descent);
-        self.ascent_px = abs_height * ascent / (ascent + descent);
+        // WT BackendD3D 컨벤션 (#148) — em-size = font.size 픽셀 그대로. DWrite
+        // native + 일반적인 fontSize 의미와 정합. 이전 식 (`abs_height * em /
+        // (asc+desc)`) 은 GDI CreateFontW(positive) 의 cell-height 컨벤션 을
+        // DWrite em 으로 환산한 값 — Cascadia 19pt 에서 em=16.4 로 작아져 emoji
+        // 가 WT 보다 14% 작게 raster. ascent_px 는 새 em 기준 비례 — `em *
+        // ascent / du_per_em`.
+        self.font_em_size = abs_height;
+        self.ascent_px = abs_height * ascent / du_per_em;
 
         // 5. Get IDWriteFactory2 for system font fallback
         var factory2: ?*dw.IDWriteFactory2 = null;
