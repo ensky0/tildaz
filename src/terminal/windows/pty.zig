@@ -401,7 +401,7 @@ pub const ConPty = struct {
         cmd_buf[i] = 0;
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
-        const MAX_EXTRA_ENV = 4;
+        const MAX_EXTRA_ENV = 8;
         var saved_vals: [MAX_EXTRA_ENV][256]u16 = undefined;
         var saved_lens: [MAX_EXTRA_ENV]u32 = .{0} ** MAX_EXTRA_ENV;
         if (extra_env) |vars| {

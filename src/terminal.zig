@@ -27,12 +27,24 @@ pub const ShellCommand = switch (builtin.os.tag) {
     else => []const u8,
 };
 
+/// 자식 셸에 inject 할 환경변수. 양쪽 platform 동일 type (UTF-8). Windows
+/// Backend 는 init 시 UTF-16 변환 + 호출 후 환경 복원, macOS Backend 는
+/// `KEY=VALUE` allocPrintSentinel 후 execve 환경 배열에 prepend.
+pub const ExtraEnv = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 pub const Options = struct {
     allocator: std.mem.Allocator,
     cols: u16,
     rows: u16,
     shell: ShellCommand,
     theme: ?*const themes.Theme,
+    /// 호출자가 자식 셸에 inject 할 env (TERM / LANG / SHELL 등). theme 기반
+    /// COLORFGBG / WSLENV (Windows) / 그 외 platform 자동 inject 와는 별개로
+    /// 합쳐짐.
+    extra_env: ?[]const ExtraEnv = null,
 };
 
 pub const TerminalBackend = switch (builtin.os.tag) {
