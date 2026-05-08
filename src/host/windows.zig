@@ -100,6 +100,7 @@ pub fn run() !void {
         config.shellUtf16(),
         config.max_scroll_lines,
         config.theme,
+        null, // extra_env — Windows 는 terminal/windows.zig 의 envVarsForTheme 가 자체 처리
         App.onSessionTabExit,
         &app,
     );
