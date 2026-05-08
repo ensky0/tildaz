@@ -13,12 +13,17 @@ const RingBuffer = struct {
     buf: [SIZE]u8 align(64) = undefined,
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    /// Tab.deinit 신호 — set 시 push 가 spin 풀고 즉시 break. read_thread 가
+    /// ring full 에 갇혀 deinit 의 read_thread.join 이 deadlock 되는 것 방지
+    /// (Cmd+W 시연 시 발견된 회귀).
+    closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const SIZE = 4 * 1024 * 1024;
 
     fn push(self: *RingBuffer, data: []const u8) void {
         var i: usize = 0;
         while (i < data.len) {
+            if (self.closed.load(.acquire)) return;
             const pos = self.head.load(.monotonic);
             const t = self.tail.load(.acquire);
             const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
@@ -36,6 +41,10 @@ const RingBuffer = struct {
             self.head.store((pos + batch) % SIZE, .release);
             i += batch;
         }
+    }
+
+    fn close(self: *RingBuffer) void {
+        self.closed.store(true, .release);
     }
 
     fn isEmpty(self: *RingBuffer) bool {
@@ -124,6 +133,16 @@ const WriteQueue = struct {
         self.closed = true;
         self.mutex.unlock();
         self.event.set();
+    }
+
+    /// Pending data 즉시 폐기 — Ctrl+C interrupt 시 큐에 쌓인 paste data 등을
+    /// 무효화. write_thread 가 spinning (queue full 시) 중이면 free 공간 생기게
+    /// 하는 효과도 있어 main thread 의 다음 push 즉시 진행.
+    fn reset(self: *WriteQueue) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.head = 0;
+        self.tail = 0;
     }
 
     fn isClosed(self: *WriteQueue) bool {
@@ -217,6 +236,12 @@ pub const Tab = struct {
 
     fn deinit(tab: *Tab, alloc: std.mem.Allocator) void {
         tab.write_queue.close();
+        // output_ring 도 close 신호 → read_thread 가 ring.push 안에서 spin 하던
+        // 중이라도 즉시 break. 이게 없으면 backend.deinit 의 read_thread.join
+        // 이 deadlock (Cmd+W 시연 시 발견된 회귀): paste 후 ring full + main
+        // thread 가 deinit 진행 중이라 drain 못 함 → push 가 free 공간 안 생겨
+        // spin → join 영원히 안 됨 → beachball.
+        tab.output_ring.close();
         if (tab.write_thread) |t| {
             t.join();
             tab.write_thread = null;
@@ -228,6 +253,15 @@ pub const Tab = struct {
 
     pub fn queueWrite(tab: *Tab, data: []const u8) void {
         tab.write_queue.push(data);
+    }
+
+    /// Ctrl+C 같은 interrupt char 의 즉시 송신 path. write_queue 의 pending
+    /// (paste data 등) 모두 폐기 + backend.write 직접 호출. 큐 우회라 main
+    /// thread 에서 호출 안전 (backend.write 자체는 block 가능하지만 single
+    /// byte 라 PTY pipe 에 즉시 들어감).
+    pub fn interruptWrite(tab: *Tab, data: []const u8) void {
+        tab.write_queue.reset();
+        _ = tab.backend.write(data) catch {};
     }
 
     fn drainOutput(tab: *Tab) void {
@@ -449,6 +483,23 @@ pub const SessionCore = struct {
             tab.queueWrite(data);
             tab.terminal.scrollViewport(.{ .bottom = {} });
         }
+    }
+
+    /// Paste 전용 — 활성 탭의 ghostty Terminal mode `.bracketed_paste` (DEC
+    /// CSI 2004) 가 켜져 있으면 `\x1b[200~ <data> \x1b[201~` 로 wrap. 셸이
+    /// paste 를 한 묶음으로 받아 매 newline 단위 즉시 실행 / prompt redraw 안
+    /// 함 — 큰 paste (수만 라인) 의 cooked-mode line discipline 부담 제거.
+    /// 일반 typing (`queueInputToActive`) 과 분리 — typing 은 wrap 하면 안 됨.
+    pub fn pasteToActive(self: *SessionCore, data: []const u8) void {
+        const tab = self.activeTab() orelse return;
+        if (tab.terminal.modes.get(.bracketed_paste)) {
+            tab.queueWrite("\x1b[200~");
+            tab.queueWrite(data);
+            tab.queueWrite("\x1b[201~");
+        } else {
+            tab.queueWrite(data);
+        }
+        tab.terminal.scrollViewport(.{ .bottom = {} });
     }
 
     pub fn resizeAll(self: *SessionCore, cols: u16, rows: u16) void {
