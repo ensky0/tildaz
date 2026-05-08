@@ -196,9 +196,11 @@ const Defaults = if (is_windows) struct {
     /// JSON 은 0..100 percent. 메모리 alpha (0..255) 변환은 default_opacity_alpha 가 처리.
     pub const opacity_pct: u8 = 100;
     pub const font_family: []const []const u8 = &.{"Cascadia Code"};
-    pub const font_size: u8 = 19;
-    pub const cell_width: f32 = 1.1;
-    pub const line_height: f32 = 0.95;
+    /// #150 — DWrite design metric 직접 산출 (#148) 후 자연 metric 으로 갱신.
+    /// 이전 1.1 / 0.95 는 GDI cell-height 컨벤션 보정용이었음.
+    pub const font_size: u8 = 16;
+    pub const cell_width: f32 = 1.0;
+    pub const line_height: f32 = 1.0;
     pub const theme: []const u8 = "Tilda";
     pub const shell: []const u8 = "cmd.exe";
     pub const hotkey: []const u8 = "f1";
