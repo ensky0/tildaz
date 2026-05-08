@@ -66,10 +66,6 @@ const NSWindowZoomButton: c_long = 2;
 // `setTitleVisibility:` 의 NSWindowTitleHidden = 1.
 const NSWindowTitleHidden: c_long = 1;
 
-// 키 코드 (Apple 의 `Events.h` `kVK_*`). Cmd+Q 는 hardcoded — config 의
-// hotkey 와 별개로 macOS native 종료 단축키 그대로.
-const kVK_ANSI_Q: i64 = 0x0C;
-
 // CGEventFlags modifier 마스크 (CGEventTypes.h). Carbon modifier (1<<8 등) 와
 // 다른 비트 위치. 예: command = 1<<20.
 const kCGEventFlagMaskCommand: u64 = 0x00100000;
@@ -1554,9 +1550,9 @@ pub fn run() !void {
 
     // applicationShouldTerminate: hook (#116) — 다중 탭에서 Cmd+Q / 메뉴 Quit
     // 시 confirm 다이얼로그. NSApp.terminate 모든 path 를 한 곳에서 가로챔
-    // (CGEventTap 의 Cmd+Q + mainMenu 의 Quit). 마지막 탭 종료 후 자동 호출되는
-    // path (drainExitedTabs / handleCloseActiveTab / handleTabBarClick) 는
-    // count == 0 이라 자동 통과.
+    // (mainMenu 의 Quit + 마지막 탭 닫힘 자동 terminate). 마지막 탭 종료 후
+    // 자동 호출되는 path (drainExitedTabs / handleCloseActiveTab /
+    // handleTabBarClick) 는 count == 0 이라 자동 통과.
     try installAppDelegate();
 
     // 2. NSWindow (TildazWindow subclass) — borderless styleMask. Default
@@ -1710,10 +1706,12 @@ pub fn run() !void {
         .height = cv_bounds.size.height * scale_pt,
     });
 
-    // 5. CGEventTap 으로 글로벌 키 hotkey 등록 — F1 (toggle), Cmd+Q (terminate).
+    // 5. CGEventTap 으로 글로벌 키 hotkey 등록 — F1 (toggle) 만. Cmd+Q 는
+    //    NSMenu 의 "Quit TildaZ" item 이 표준 dispatch (#153 — 글로벌 hook
+    //    이었던 시절엔 다른 앱 frontmost 일 때도 가로챘음).
     //    Carbon RegisterEventHotKey 는 우리 환경 (macOS Tahoe + ad-hoc sign) 에서
     //    silently fail 하므로 Apple DTS 권장 modern API 인 CGEventTap 사용.
-    //    Input Monitoring 권한 필요 — 사용자 가 시스템 설정에서 활성화.
+    //    Input Monitoring 권한 필요 — 사용자가 시스템 설정에서 활성화.
     try installEventTap();
 
     const allocator = g_gpa.allocator();
@@ -2083,8 +2081,9 @@ fn installEventTap() !void {
     CGEventTapEnable(g_event_tap, true);
 }
 
-/// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 또는 Cmd+Q 면
-/// \"이벤트 삼킴\" (null 반환), 아니면 그대로 passthrough (event 반환).
+/// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 면
+/// \"이벤트 삼킴\" (null 반환), 아니면 그대로 passthrough (event 반환). Cmd+Q 는
+/// #153 에서 NSMenu 의 \"Quit TildaZ\" 로 위임 (active 상태에서만 dispatch).
 ///
 /// macOS 가 tap 을 timeout / user-input race 로 자동 비활성화하면 special
 /// event type 이 들어옴 (#146). 처리 안 하면 다시 활성화 안 되어 F1 hotkey
@@ -2112,12 +2111,13 @@ fn eventTapCallback(
         toggleWindow();
         return null;
     }
-    // Cmd+Q — macOS native 종료 단축키. config 와 별개로 hardcoded.
-    if (keycode_i64 == kVK_ANSI_Q and mods == kCGEventFlagMaskCommand) {
-        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-        terminate(g_app, objc.sel("terminate:"), null);
-        return null;
-    }
+
+    // Cmd+Q 글로벌 가로채기는 #153 에서 제거. NSMenu 의 "Quit TildaZ"
+    // (`terminate:` + keyEquivalent="q") 가 active 상태에서 표준 dispatch.
+    // TildazWindow 가 `canBecomeKeyWindow` YES override 라 borderless 여도
+    // mainMenu shortcut 정상 작동. 글로벌 hook 이 있던 시절엔 다른 앱이
+    // frontmost 일 때 Cmd+Q 가 그 앱이 아니라 tildaz 종료 dialog 를 띄우는
+    // 버그가 있었음.
 
     return event; // passthrough.
 }
