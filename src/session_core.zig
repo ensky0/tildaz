@@ -58,12 +58,13 @@ const RingBuffer = struct {
     }
 };
 
-/// PTY write용 큐 (UI → write 스레드). 1MB — main thread (Cmd+V) 가 paste 시
-/// queue full 로 yield-loop 빠지지 않도록 충분히 크게. 일반 paste (수천~수만
-/// 글자) 는 한 번에 push 후 즉시 return. 그 이상은 여전히 yield 하지만 빈도
-/// 낮음. 16탭 = 16MB — 받아들일 만한 메모리 비용.
+/// PTY write용 큐 (UI → write 스레드). 8MB — main thread (Cmd+V) 가 큰 paste
+/// 시 queue full 로 yield-loop 빠지지 않도록. 사용자 시연: 64000 라인 (1.1MB)
+/// paste 가 freeze 발생 → 1MB → 8MB 로 확장. 16탭 = 128MB — paste 가 일시적
+/// 이고 즉시 PTY 로 빠져나가므로 메모리 압박 짧음. 8MB 초과는 여전히 yield
+/// 하지만 일반 사용 시나리오에서는 거의 발생 안 함.
 const WriteQueue = struct {
-    buf: [1024 * 1024]u8 = undefined,
+    buf: [8 * 1024 * 1024]u8 = undefined,
     head: usize = 0,
     tail: usize = 0,
     mutex: std.Thread.Mutex = .{},
