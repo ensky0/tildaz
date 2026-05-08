@@ -238,15 +238,22 @@ pub const Tab = struct {
         tab.write_queue.close();
         // output_ring 도 close 신호 → read_thread 가 ring.push 안에서 spin 하던
         // 중이라도 즉시 break. 이게 없으면 backend.deinit 의 read_thread.join
-        // 이 deadlock (Cmd+W 시연 시 발견된 회귀): paste 후 ring full + main
-        // thread 가 deinit 진행 중이라 drain 못 함 → push 가 free 공간 안 생겨
-        // spin → join 영원히 안 됨 → beachball.
+        // 이 deadlock: paste 후 ring full + main thread 가 deinit 진행 중이라
+        // drain 못 함 → push 가 free 공간 안 생겨 spin → join 영원히 안 됨.
         tab.output_ring.close();
+
+        // 순서 핵심 — backend.deinit 을 *먼저* 부른 뒤 write_thread.join.
+        // 이유: write_thread 가 PTY pipe full + 자식이 paste 처리 중일 때
+        // `backend.write` 안에서 OS-level blocking. close flag 가 inner loop
+        // 안에서 검사 안 됨 → write_thread.join 이 영원 (Cmd+W beachball 30초+
+        // 회귀). backend.deinit 이 자식 SIGHUP/SIGKILL + master_fd close →
+        // write 가 EBADF → catch break → outer close 검사 break. 그 후 join
+        // 빠르게 풀림.
+        tab.backend.deinit();
         if (tab.write_thread) |t| {
             t.join();
             tab.write_thread = null;
         }
-        tab.backend.deinit();
         tab.terminal.deinit(alloc);
         alloc.destroy(tab);
     }
@@ -292,6 +299,9 @@ pub const Tab = struct {
             tab.write_queue.event.wait();
             tab.write_queue.event.reset();
             while (true) {
+                // close 후 pending data 처리 안 함 — 큰 paste 잔여 (수 MB) 가
+                // PTY 로 송신될 때 deinit 진행이 늦어지지 않게.
+                if (tab.write_queue.isClosed()) break;
                 const n = tab.write_queue.pop(&buf);
                 if (n == 0) break;
                 _ = tab.backend.write(buf[0..n]) catch break;
