@@ -16,6 +16,7 @@ const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
 const display_width = @import("display_width.zig");
+const block_element = @import("block_element.zig");
 
 const MAX_INSTANCES: u32 = 32768;
 
@@ -25,6 +26,14 @@ const BgInstance = extern struct {
     pos: [2]f32,
     size: [2]f32,
     color: [4]f32,
+    /// 0 = solid fill. 1/2/3 = U+2591/2/3 LIGHT/MEDIUM/DARK SHADE — fragment
+    /// 셰이더가 픽셀 parity 로 dot mask 계산 + discard. block_element.zig 와
+    /// d3d11 의 BgInstance.shade 와 동일 의미 (#155).
+    shade: f32 = 0,
+    /// MSL `float4` 16-byte align — 36 bytes 면 다음 multiple-of-16 (48) 으로
+    /// stride padding 되어 instance[1] 부터 깨짐. 12 bytes 명시 padding 으로
+    /// stride = 48 고정.
+    _pad: [3]f32 = .{ 0, 0, 0 },
 };
 
 const TextInstance = extern struct {
@@ -76,16 +85,34 @@ const shader_source =
     \\#include <metal_stdlib>
     \\using namespace metal;
     \\
-    \\struct BgInst { float2 pos; float2 size; float4 color; };
-    \\struct BgOut { float4 position [[position]]; float4 color; };
+    \\struct BgInst { float2 pos; float2 size; float4 color; float shade; };
+    \\struct BgOut { float4 position [[position]]; float4 color; float shade; };
     \\
     \\vertex BgOut bg_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
     \\    const device BgInst* inst [[buffer(0)]], constant float4& sa [[buffer(1)]]) {
     \\    float2 c = float2(vid & 1, vid >> 1);
     \\    float2 px = (inst[iid].pos + c * inst[iid].size) / sa.xy * 2.0 - 1.0;
-    \\    BgOut o; o.position = float4(px.x, -px.y, 0, 1); o.color = inst[iid].color; return o;
+    \\    BgOut o; o.position = float4(px.x, -px.y, 0, 1);
+    \\    o.color = inst[iid].color;
+    \\    o.shade = inst[iid].shade;
+    \\    return o;
     \\}
     \\fragment float4 bg_fs(BgOut in [[stage_in]]) {
+    \\    if (in.shade > 0.5) {
+    \\        // Procedural shade pattern — d3d11_renderer.zig bg_shader_src 동등.
+    \\        // 픽셀 parity 로 dot mask 계산 후 discard. 폰트 무관.
+    \\        int2 px = int2(in.position.xy);
+    \\        if (in.shade < 1.5) {
+    \\            // U+2591 LIGHT 25% — diagonal sparse: ON at (px + 2*py) % 4 == 0
+    \\            if (((px.x + 2 * px.y) & 3) != 0) discard_fragment();
+    \\        } else if (in.shade < 2.5) {
+    \\            // U+2592 MEDIUM 50% — checkerboard
+    \\            if (((px.x + px.y) & 1) != 0) discard_fragment();
+    \\        } else {
+    \\            // U+2593 DARK 75% — LIGHT 의 inverse (diagonal dense)
+    \\            if (((px.x + 2 * px.y) & 3) == 0) discard_fragment();
+    \\        }
+    \\    }
     \\    return float4(in.color.rgb * in.color.a, in.color.a);
     \\}
     \\
@@ -440,8 +467,10 @@ pub const MetalRenderer = struct {
         }
 
         if (bg_count > 0) self.drawBgInstances(encoder, bg_buf[0..bg_count]);
+        // bg pass 끝났으니 block element pass 가 같은 buffer 재사용 (Windows 동등).
+        bg_count = 0;
 
-        // --- Text pass ---
+        // --- Text pass (block element 도 여기서 처리) ---
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
             const cell_slice = all_cells[y].slice();
@@ -460,6 +489,32 @@ pub const MetalRenderer = struct {
                 if (!is_text) continue;
 
                 const cp = raw.codepoint();
+
+                // Block element / shade — font glyph 대신 cell-aligned procedural
+                // rectangle (#155). Windows d3d11 와 동일 path. 폰트 의존 제거 +
+                // 인접 셀 사이 갭 없음.
+                if (block_element.isBlockElement(cp)) {
+                    if (bg_count >= MAX_CELLS) {
+                        self.drawBgInstances(encoder, bg_buf[0..bg_count]);
+                        bg_count = 0;
+                    }
+                    const style_b = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                    const is_inverse_b = style_b.flags.inverse;
+                    const x16_b: u16 = @intCast(x);
+                    const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
+                    const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b);
+                    const rect = block_element.blockElementRect(cp) orelse continue;
+                    const block_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
+                    const block_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                    bg_buf[bg_count] = .{
+                        .pos = .{ block_x + rect.x0 * block_w, fy + rect.y0 * ch },
+                        .size = .{ (rect.x1 - rect.x0) * block_w, (rect.y1 - rect.y0) * ch },
+                        .color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), rect.alpha },
+                        .shade = rect.shade,
+                    };
+                    bg_count += 1;
+                    continue;
+                }
 
                 if (text_count >= MAX_CELLS) {
                     self.drawTextInstances(encoder, text_buf[0..text_count]);
@@ -522,7 +577,11 @@ pub const MetalRenderer = struct {
         }
 
         if (text_count > 0) self.drawTextInstances(encoder, text_buf[0..text_count]);
-
+        // Block element pass flush — text pass 안에서 bg_buf 재사용해 누적된 것.
+        if (bg_count > 0) {
+            self.drawBgInstances(encoder, bg_buf[0..bg_count]);
+            bg_count = 0;
+        }
 
         // --- Cursor (단순 박스) ---
         if (self.render_state.cursor.visible) {
