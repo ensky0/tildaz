@@ -249,8 +249,8 @@ pub const DEFAULT_CONFIG_JSON: []const u8 = blk: {
         \\  "font": {{
         \\    "family": {s},
         \\    "size": {d},
-        \\    "cell_width": {d},
-        \\    "line_height": {d}
+        \\    "cell_width": {d:.1},
+        \\    "line_height": {d:.1}
         \\  }},
         \\  "theme": "{s}",
         \\  "shell": "{s}",
