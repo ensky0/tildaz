@@ -153,6 +153,7 @@ pub const Tab = struct {
         shell: terminal.ShellCommand,
         max_scroll_lines: usize,
         theme: ?*const themes.Theme,
+        extra_env: ?[]const terminal.ExtraEnv,
         tab_exit_fn: SessionCore.TabExitNotify,
         tab_exit_userdata: ?*anyopaque,
     ) !*Tab {
@@ -193,6 +194,7 @@ pub const Tab = struct {
             .rows = rows,
             .shell = shell,
             .theme = theme,
+            .extra_env = extra_env,
         });
         errdefer backend.deinit();
 
@@ -283,6 +285,9 @@ pub const SessionCore = struct {
     shell_command: terminal.ShellCommand,
     max_scroll_lines: usize,
     theme: ?*const themes.Theme,
+    /// 자식 셸에 inject 할 환경변수 (TERM / LANG / SHELL 등). 모든 탭이 같은
+    /// 값. lifetime 은 호출자 책임 (process lifetime static 권장).
+    extra_env: ?[]const terminal.ExtraEnv,
     tab_exit_fn: TabExitNotify,
     tab_exit_userdata: ?*anyopaque,
     tabs: std.ArrayList(*Tab) = .{},
@@ -301,6 +306,7 @@ pub const SessionCore = struct {
         shell_command: terminal.ShellCommand,
         max_scroll_lines: usize,
         theme: ?*const themes.Theme,
+        extra_env: ?[]const terminal.ExtraEnv,
         tab_exit_fn: TabExitNotify,
         tab_exit_userdata: ?*anyopaque,
     ) SessionCore {
@@ -309,6 +315,7 @@ pub const SessionCore = struct {
             .shell_command = shell_command,
             .max_scroll_lines = max_scroll_lines,
             .theme = theme,
+            .extra_env = extra_env,
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
@@ -327,6 +334,7 @@ pub const SessionCore = struct {
             self.shell_command,
             self.max_scroll_lines,
             self.theme,
+            self.extra_env,
             self.tab_exit_fn,
             self.tab_exit_userdata,
         );
