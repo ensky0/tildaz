@@ -13,6 +13,7 @@ const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("perf.zig");
 const tildaz_log = @import("tildaz_log.zig");
 const display_width = @import("display_width.zig");
+const block_element = @import("block_element.zig");
 
 const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
@@ -1290,43 +1291,12 @@ pub const D3d11Renderer = struct {
         });
     }
 
-    /// shade: 0 = solid fill (BG 셰이더가 그대로 색 출력). 1/2/3 = LIGHT/MEDIUM/
-    /// DARK SHADE — 셰이더가 픽셀 parity 로 dot mask 계산.
-    const BlockRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, alpha: f32, shade: f32 = 0 };
-
-    fn isBlockElement(cp: u21) bool {
-        return blockElementRect(cp) != null;
-    }
-
-    /// Solid block elements (▀▁..▏ ▐ ▔▕) + shade (░▒▓). Shade 는 cell 전체에
-    /// procedural dot pattern (`shade` 1/2/3) — WT / xterm 전통.
-    fn blockElementRect(cp: u21) ?BlockRect {
-        return switch (cp) {
-            0x2580 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 0.5, .alpha = 1 },
-            0x2581 => .{ .x0 = 0, .y0 = 7.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2582 => .{ .x0 = 0, .y0 = 6.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2583 => .{ .x0 = 0, .y0 = 5.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2584 => .{ .x0 = 0, .y0 = 4.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2585 => .{ .x0 = 0, .y0 = 3.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2586 => .{ .x0 = 0, .y0 = 2.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2587 => .{ .x0 = 0, .y0 = 1.0 / 8.0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2588 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2589 => .{ .x0 = 0, .y0 = 0, .x1 = 7.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x258A => .{ .x0 = 0, .y0 = 0, .x1 = 6.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x258B => .{ .x0 = 0, .y0 = 0, .x1 = 5.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x258C => .{ .x0 = 0, .y0 = 0, .x1 = 4.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x258D => .{ .x0 = 0, .y0 = 0, .x1 = 3.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x258E => .{ .x0 = 0, .y0 = 0, .x1 = 2.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x258F => .{ .x0 = 0, .y0 = 0, .x1 = 1.0 / 8.0, .y1 = 1, .alpha = 1 },
-            0x2590 => .{ .x0 = 0.5, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            0x2591 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1, .shade = 1 },
-            0x2592 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1, .shade = 2 },
-            0x2593 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1, .shade = 3 },
-            0x2594 => .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1.0 / 8.0, .alpha = 1 },
-            0x2595 => .{ .x0 = 7.0 / 8.0, .y0 = 0, .x1 = 1, .y1 = 1, .alpha = 1 },
-            else => null,
-        };
-    }
+    /// Block element + shade 처리는 양 platform 공유 모듈 `block_element.zig` 로
+    /// 옮김 (#155). Windows / macOS 가 동일 코드포인트 → cell-fraction 좌표
+    /// 매핑을 사용하고, 셰이더 procedural shade 만 platform 별 작성.
+    const BlockRect = block_element.BlockRect;
+    const isBlockElement = block_element.isBlockElement;
+    const blockElementRect = block_element.blockElementRect;
 
     /// Compute gamma ratio coefficients from system gamma, exactly matching
     /// Windows Terminal's DWrite_GetGammaRatios (dwrite_helpers.cpp).
