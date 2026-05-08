@@ -10,14 +10,42 @@ pub const Backend = struct {
     pty: ConPty,
 
     pub fn init(opts: terminal.Options) !Backend {
+        // Theme 기반 (static utf-16) + 호출자가 추가한 (utf-8) env 두 source 를
+        // 합쳐 ConPty 가 이해하는 utf-16 NUL-term 슬라이스로. utf-8 → utf-16
+        // 변환 buffer 는 이 함수의 stack frame 에 두고, ConPty.init 호출 동안만
+        // valid 하면 됨 (자식 spawn 까지 SetEnvironmentVariableW 가 다 처리).
+        var combined: [16]ConPty.EnvVar = undefined;
+        var n: usize = 0;
+        if (envVarsForTheme(opts.theme)) |theme_env| {
+            for (theme_env) |v| {
+                if (n >= combined.len) break;
+                combined[n] = v;
+                n += 1;
+            }
+        }
+
+        const MAX_EXTRA = 8;
+        var name_bufs: [MAX_EXTRA][256]u16 = undefined;
+        var value_bufs: [MAX_EXTRA][512]u16 = undefined;
+        if (opts.extra_env) |extras| {
+            for (extras, 0..) |e, i| {
+                if (n >= combined.len or i >= MAX_EXTRA) break;
+                const nlen = std.unicode.utf8ToUtf16Le(&name_bufs[i], e.name) catch continue;
+                const vlen = std.unicode.utf8ToUtf16Le(&value_bufs[i], e.value) catch continue;
+                if (nlen >= name_bufs[i].len or vlen >= value_bufs[i].len) continue;
+                name_bufs[i][nlen] = 0;
+                value_bufs[i][vlen] = 0;
+                combined[n] = .{
+                    .name = @ptrCast(name_bufs[i][0..nlen :0]),
+                    .value = @ptrCast(value_bufs[i][0..vlen :0]),
+                };
+                n += 1;
+            }
+        }
+
+        const env_slice: ?[]const ConPty.EnvVar = if (n > 0) combined[0..n] else null;
         return .{
-            .pty = try ConPty.init(
-                opts.allocator,
-                opts.cols,
-                opts.rows,
-                opts.shell,
-                envVarsForTheme(opts.theme),
-            ),
+            .pty = try ConPty.init(opts.allocator, opts.cols, opts.rows, opts.shell, env_slice),
         };
     }
 
