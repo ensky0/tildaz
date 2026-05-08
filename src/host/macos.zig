@@ -1912,8 +1912,13 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // throttle. 큰 출력 시 frame budget 안에서만 parse — Windows app_controller
     // 의 패턴 동등. should_render=false 면 ring 에 더 데이터가 있어도 다음
     // frame 에서 처리 (60fps 안정).
+    //
+    // 단 rename / IME preedit 활성 시 throttle 우회 — 이 두 UI 는 PTY 출력과
+    // 무관한 매 keystroke 즉시 화면 갱신 필요. throttle 만 적용하면 typing
+    // 도중 화면이 늦게 따라옴 ("뒷부분 안 보임" 회귀, opt 2b2 시연 발견).
     const should_render = g_session.prepareActiveFrame(&g_last_render_ms);
-    if (!should_render) return;
+    const force_render = g_rename.isActive() or g_preedit_len > 0;
+    if (!should_render and !force_render) return;
 
     if (!g_visible) return;
     if (g_renderer == null) return;
