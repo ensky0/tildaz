@@ -13,7 +13,7 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | Next tab | Ctrl+Shift+] | Shift+Cmd+] |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V |
-| Reset terminal | Ctrl+Shift+R | (TBD) |
+| Reset terminal | Ctrl+Shift+R | Shift+Cmd+R |
 | About dialog | Ctrl+Shift+I | Shift+Cmd+I |
 | Open config in editor | Ctrl+Shift+P | Shift+Cmd+P |
 | Open log in editor | Ctrl+Shift+L | Shift+Cmd+L |
