@@ -150,6 +150,28 @@ printf '\xf0\x9f\x8e\x89\n'              # UTF-8 byte 직접 (🎉 = F0 9F 8E 89
 zsh -c "echo \$'\\U0001F389'"            # zsh unicode escape (macOS bash 3.2 미지원)
 ```
 
+# 터미널 시각 회귀 테스트 (한 줄)
+
+색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
+
+**bash / zsh** (WSL Debian, macOS, Linux — TildaZ 기본 탭이 WSL bash 라 *이게 메인*):
+
+```sh
+echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n"
+```
+
+**PowerShell** (Windows 호스트 셸 / TildaZ 의 PS 탭):
+
+```powershell
+"`n🎉❤️🌈🎨🌞🍎🚀💎✨`n👋🏻👋🏼👋🏽👋🏾👋🏿`n👨‍👩‍👧👨‍👨‍👦‍👦`nABCDEFG abcdefg 0123456789`n한글 ABC 가나다라마바사`n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏`n▐░▒▓▔▕`n"
+```
+
+**cmd** (한국어 Windows 는 ANSI=CP949 라 `chcp 65001` 로 UTF-8 활성화 필수, `echo` 가 `\n` 미지원이라 chain):
+
+```cmd
+chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo 👋🏻👋🏼👋🏽👋🏾👋🏿 && echo 👨‍👩‍👧👨‍👨‍👦‍👦 && echo ABCDEFG abcdefg 0123456789 && echo 한글 ABC 가나다라마바사 && echo ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏ && echo ▐░▒▓▔▕ && echo.
+```
+
 # 도구 실행
 
 **모든 도구 호출에 timeout 은 1분 (60000ms) 을 명시적으로 걸어요.** Bash, PowerShell, Agent 같은 도구의 기본 timeout (2~10 분) 에 의존하지 말고 매 호출마다 `timeout: 60000` 을 직접 넣어요. 사용자가 1 분 넘게 아무 응답도 받지 못하는 상황을 피하기 위한 규칙.
