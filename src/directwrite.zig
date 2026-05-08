@@ -9,6 +9,7 @@ pub const WCHAR = u16;
 pub const FLOAT = f32;
 pub const UINT16 = u16;
 pub const UINT32 = u32;
+pub const INT16 = i16;
 pub const INT32 = c_int;
 pub const HDC = ?*anyopaque;
 pub const HMONITOR = ?*anyopaque;
@@ -93,16 +94,19 @@ pub const DWRITE_FONT_SIMULATIONS_NONE: u32 = 0;
 
 // --- Structures ---
 
+// MS API 정확 layout — lineGap / underlinePosition / strikethroughPosition 는
+// INT16 (2 바이트). INT32 로 잘못 선언 시 lineGap 이 다음 필드 (capHeight) 까지
+// 같이 4 바이트로 읽혀 huge 값 → cell_h 폭주 (#148 후속에서 발견).
 pub const DWRITE_FONT_METRICS = extern struct {
     designUnitsPerEm: UINT16,
     ascent: UINT16,
     descent: UINT16,
-    lineGap: INT32,
+    lineGap: INT16,
     capHeight: UINT16,
     xHeight: UINT16,
-    underlinePosition: INT32,
+    underlinePosition: INT16,
     underlineThickness: UINT16,
-    strikethroughPosition: INT32,
+    strikethroughPosition: INT16,
     strikethroughThickness: UINT16,
 };
 
