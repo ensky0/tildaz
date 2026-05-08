@@ -3,7 +3,7 @@ const windows = std.os.windows;
 const app_event = @import("app_event.zig");
 const dialog = @import("dialog.zig");
 const paths = @import("paths.zig");
-const dwrite_font = @import("dwrite_font.zig");
+const dwrite_font = @import("font/windows/font.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;

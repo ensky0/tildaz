@@ -7,15 +7,15 @@
 // 우리 nullable `id` (?*opaque) 와 평면 모듈 구조에 맞춰 정리.
 
 const std = @import("std");
-const objc = @import("macos_objc.zig");
-const ct = @import("macos_coretext.zig");
-const CoreTextFontContext = @import("macos_font.zig").CoreTextFontContext;
-const macos_glyph_atlas = @import("macos_glyph_atlas.zig");
-const ui_metrics = @import("ui_metrics.zig");
+const objc = @import("../macos_objc.zig");
+const ct = @import("../font/macos/coretext.zig");
+const CoreTextFontContext = @import("../font/macos/font.zig").CoreTextFontContext;
+const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
+const ui_metrics = @import("../ui_metrics.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
-const display_width = @import("display_width.zig");
+const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 
 const MAX_INSTANCES: u32 = 32768;

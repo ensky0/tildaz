@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
-const macos_pty = @import("macos_pty.zig");
+const macos_pty = @import("terminal/macos/pty.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const themes = @import("themes.zig");
 

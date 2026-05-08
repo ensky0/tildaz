@@ -1,15 +1,15 @@
 const std = @import("std");
-const App = @import("app_controller.zig").App;
-const SessionCore = @import("session_core.zig").SessionCore;
-const RendererBackend = @import("renderer_backend.zig").RendererBackend;
-const config_mod = @import("config.zig");
+const App = @import("../app_controller.zig").App;
+const SessionCore = @import("../session_core.zig").SessionCore;
+const RendererBackend = @import("../renderer.zig").RendererBackend;
+const config_mod = @import("../config.zig");
 const Config = config_mod.Config;
-const autostart = @import("autostart.zig");
-const perf = @import("perf.zig");
-const tildaz_log = @import("tildaz_log.zig");
-const dialog = @import("dialog.zig");
-const messages = @import("messages.zig");
-const shell_validate = @import("shell_validate.zig");
+const autostart = @import("../autostart.zig");
+const perf = @import("../perf.zig");
+const log = @import("../log.zig");
+const dialog = @import("../dialog.zig");
+const messages = @import("../messages.zig");
+const shell_validate = @import("../shell_validate.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
@@ -30,7 +30,7 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    tildaz_log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+    log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
 
     var buf: [256]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -60,8 +60,8 @@ pub fn run() !void {
 
     // %APPDATA%\tildaz\tildaz.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
-    tildaz_log.logStart(build_options.version);
-    defer tildaz_log.logStop(build_options.version);
+    log.logStart(build_options.version);
+    defer log.logStop(build_options.version);
 
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -71,7 +71,7 @@ pub fn run() !void {
     // range 모두 fatal 처리 — 별도 validate() 호출 불필요.
     var config = Config.load(alloc);
     defer config.deinit();
-    tildaz_log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
+    log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
         config.hidden_start,
         config.auto_start,
         config.shell,
@@ -83,11 +83,11 @@ pub fn run() !void {
     shell_validate.validateOrFatal(alloc, config.shell);
 
     if (config.auto_start) {
-        autostart.enable() catch |err| {
-            tildaz_log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
+        autostart.enable(alloc) catch |err| {
+            log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
         };
     } else {
-        autostart.disable();
+        autostart.disable(alloc);
     }
 
     var app = App{
@@ -113,14 +113,14 @@ pub fn run() !void {
     app.window.font_change_fn = App.onFontChange;
     app.window.app_event_fn = App.onAppEvent;
     app.window.quit_request_fn = App.onQuitRequest;
-    const DWriteFontCtx = @import("dwrite_font.zig").DWriteFontContext;
+    const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system. 하나라도 미설치면 즉시
     // fatal — 사용자가 명시한 chain 전체가 시스템에 있어야 한다는 의도. macOS
     // CoreTextFontContext.init 의 per-entry CTFontCopyFamilyName 검증과 동등.
     // 메시지는 font_validate 가 처리 — 다른 config 에러 (shell_validate / hotkey)
     // 와 같은 풍부한 형식 (chain dump + 미설치 표시 + config 경로).
-    const font_validate = @import("font_validate.zig");
+    const font_validate = @import("../font/validate.zig");
     for (0..config.font_family_count) |i| {
         const idx: u8 = @intCast(i);
         const fam_w = config.fontFamilyUtf16(idx);
@@ -144,7 +144,7 @@ pub fn run() !void {
     const font_chain: []const [*:0]const u16 = font_chain_arr[0..config.font_family_count];
     const font_size: c_int = @intCast(config.font_size);
     try app.window.init(font_chain, font_size, config.opacity, config.cell_width, config.line_height, config.hotkey.vkey, config.hotkey.modifiers);
-    tildaz_log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
+    log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,
         app.window.cell_width,
         app.window.cell_height,
@@ -159,10 +159,10 @@ pub fn run() !void {
     // Initialize renderer backend
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
     app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
-        tildaz_log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
+        log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
         break :blk null;
     };
-    tildaz_log.appendLine("startup", "renderer active={}", .{app.renderer != null});
+    log.appendLine("startup", "renderer active={}", .{app.renderer != null});
     defer if (app.renderer) |*r| r.deinit();
 
     // Apply position from config
@@ -170,13 +170,13 @@ pub fn run() !void {
 
     // Create initial tab
     try app.createTab();
-    tildaz_log.appendLine("startup", "initial tab created: count={d}", .{app.session.count()});
+    log.appendLine("startup", "initial tab created: count={d}", .{app.session.count()});
 
     if (!config.hidden_start) {
-        tildaz_log.appendLine("startup", "show window", .{});
+        log.appendLine("startup", "show window", .{});
         app.window.show();
     }
-    tildaz_log.appendLine("startup", "enter message loop", .{});
+    log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();
-    tildaz_log.appendLine("startup", "message loop exited", .{});
+    log.appendLine("startup", "message loop exited", .{});
 }

@@ -10,7 +10,7 @@
 //
 // 모두 allocator-based — 호출처가 free 책임. 부모 디렉토리는 자동 생성
 // (이미 존재하면 무시). About 다이얼로그 / Open Config & Log 단축키 /
-// 모듈 (`config.zig` / `macos_config.zig` / `tildaz_log.zig`) 에서 사용.
+// 모듈 (`config.zig` / `macos_config.zig` / `log.zig`) 에서 사용.
 
 const std = @import("std");
 const builtin = @import("builtin");

@@ -3,16 +3,16 @@
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
-const d3d = @import("d3d11.zig");
-const dw = @import("directwrite.zig");
-const dwrite_font = @import("dwrite_font.zig");
+const d3d = @import("windows/d3d11.zig");
+const dw = @import("../font/windows/directwrite.zig");
+const dwrite_font = @import("../font/windows/font.zig");
 const DWriteFontContext = dwrite_font.DWriteFontContext;
-const ui_metrics = @import("ui_metrics.zig");
-const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
-const ATLAS_SIZE = @import("glyph_atlas.zig").ATLAS_SIZE;
-const perf = @import("perf.zig");
-const tildaz_log = @import("tildaz_log.zig");
-const display_width = @import("display_width.zig");
+const ui_metrics = @import("../ui_metrics.zig");
+const GlyphAtlas = @import("windows/glyph_atlas.zig").GlyphAtlas;
+const ATLAS_SIZE = @import("windows/glyph_atlas.zig").ATLAS_SIZE;
+const perf = @import("../perf.zig");
+const log = @import("../log.zig");
+const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 
 const WCHAR = u16;
@@ -253,13 +253,13 @@ pub const D3d11Renderer = struct {
             }
         }
         if (create_hr < 0) {
-            tildaz_log.appendLine("d3d", "swap chain create failed: layered={} hr=0x{x}", .{
+            log.appendLine("d3d", "swap chain create failed: layered={} hr=0x{x}", .{
                 layered_window,
                 @as(u32, @bitCast(create_hr)),
             });
             return error.D3D11CreateFailed;
         }
-        tildaz_log.appendLine("d3d", "swap chain created: layered={} effect={s} buffers={d}", .{
+        log.appendLine("d3d", "swap chain created: layered={} effect={s} buffers={d}", .{
             layered_window,
             swapEffectName(selected_swap_effect),
             sc_desc.BufferCount,

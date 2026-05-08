@@ -10,9 +10,9 @@
 //!   검증 실패 시.
 
 const std = @import("std");
-const dialog = @import("dialog.zig");
-const messages = @import("messages.zig");
-const paths = @import("paths.zig");
+const dialog = @import("../dialog.zig");
+const messages = @import("../messages.zig");
+const paths = @import("../paths.zig");
 
 /// `missing` 은 시스템에서 lookup 실패한 chain entry 이름. `chain` 은 사용자
 /// config 의 font.family 전체 (UTF-8 raw). 본 함수는 dialog.showFatal 로
