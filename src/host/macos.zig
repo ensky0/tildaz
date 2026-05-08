@@ -19,13 +19,13 @@ const std = @import("std");
 const build_options = @import("build_options");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
-const macos_pty = @import("../terminal/macos/pty.zig");
 const ghostty = @import("ghostty-vt");
 const macos_metal = @import("../renderer/macos.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
 const tab_interaction = @import("../tab_interaction.zig");
-const macos_session = @import("../macos_session.zig");
+const session_core = @import("../session_core.zig");
 const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
@@ -254,7 +254,18 @@ var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 /// thread 가 직접 stream parsing 해도 race 없음. 멀티탭 도입해도 활성 탭만
 /// 렌더링 + 입력 받으니 동일 — 단 closeTab 은 read thread 가 살아 있을 때
 /// 위험하므로 후속 milestone 에서 join 처리.
-var g_session: macos_session.SessionCore = undefined;
+var g_session: session_core.SessionCore = undefined;
+/// PTY 자식 종료 시 read thread 가 enqueue, main thread (renderTimerFire) 가
+/// drain. session_core 의 tab_exit_fn 이 read thread context 에서 불리는데
+/// 거기서 closeTabByPtr 직접 호출하면 self-join deadlock — read thread 가
+/// 자기 자신을 join 하게 됨. Windows 의 PostMessage 패턴과 같은 의도이지만
+/// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderTimerFire 가
+/// main thread 에서 매 frame drain).
+var g_pending_close_buf: std.ArrayList(usize) = .{};
+var g_pending_close_mutex: std.Thread.Mutex = .{};
+/// session_core.prepareActiveFrame 의 8ms throttle (Windows 동등). 매 frame
+/// 시작 시 갱신.
+var g_last_render_ms: i64 = 0;
 /// 탭 drag-and-drop reorder state (#111 M11.6a). Windows `tab_interaction.DragState`
 /// 그대로 사용 — cross-platform 모듈.
 var g_drag: tab_interaction.DragState = .{};
@@ -271,11 +282,9 @@ var g_tab_scroll_user_override: bool = false;
 /// 활성화 동안 모든 키 입력 / 텍스트 입력 (IME insertText 포함) 이 PTY 대신
 /// 이쪽으로 라우팅.
 var g_rename: tab_interaction.RenameState = .{};
-var g_pty_bytes_received: u64 = 0;
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
-var g_max_scrollback: usize = 0;
-var g_extra_env: [5]macos_pty.Pty.EnvVar = undefined;
+var g_extra_env: [5]terminal.ExtraEnv = undefined;
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 // font_family 는 config 통합 전까지 hardcoded.
@@ -452,7 +461,7 @@ fn syncTerminalGeometry() void {
             log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
             continue;
         };
-        t.pty.resize(new_cols, new_rows) catch |err| {
+        t.backend.resize(new_cols, new_rows) catch |err| {
             log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
         };
     }
@@ -638,7 +647,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 }
                 const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
                 const cstr = get_utf8(chars, objc.sel("UTF8String"));
-                _ = tab.pty.write(cstr[0..len]) catch {};
+                tab.queueWrite(cstr[0..len]);
                 return;
             }
         }
@@ -683,7 +692,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
 
         if (keyCodeToEscape(keycode)) |esc| {
-            _ = tab.pty.write(esc) catch {};
+            tab.queueWrite(esc);
             return;
         }
     }
@@ -747,9 +756,7 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c
         return;
     }
 
-    _ = tab.pty.write(cstr[0..len]) catch |err| {
-        log.appendLine("pty", "write failed: {s}", .{@errorName(err)});
-    };
+    tab.queueWrite(cstr[0..len]);
 }
 
 /// NSResponder 의 1-arg insertText: (legacy). 일부 IME 가 이걸 호출.
@@ -870,7 +877,7 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     else
         null;
     if (bytes) |b| {
-        _ = tab.pty.write(b) catch {};
+        tab.queueWrite(b);
     }
 }
 
@@ -936,7 +943,7 @@ fn syncGeometryAfterScreenChange() void {
                 log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
                 continue;
             };
-            t.pty.resize(new_cols, new_rows) catch |err| {
+            t.backend.resize(new_cols, new_rows) catch |err| {
                 log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
             };
         }
@@ -1051,7 +1058,7 @@ fn commitOrCancelRename(commit: bool) void {
     if (commit) {
         if (g_rename.commitRequest()) |req| {
             if (req.tab_index < g_session.count()) {
-                g_session.tabs.items[req.tab_index].setTitle(req.title);
+                g_session.tabs.items[req.tab_index].setCustomTitle(req.title);
             }
         }
     }
@@ -1061,7 +1068,7 @@ fn commitOrCancelRename(commit: bool) void {
 /// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
 fn handleTabBarClick(hit: TabBarHit) void {
     if (hit.on_close) {
-        g_session.closeTab(hit.tab_index);
+        _ = g_session.closeTab(hit.tab_index);
         if (g_session.count() == 0) {
             log.appendLine("tab", "last tab closed via close button, terminating tildaz", .{});
             const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
@@ -1125,7 +1132,8 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                     // 더블클릭 (close 버튼 외) → rename 시작.
                     if (click_count >= 2 and !hit.on_close) {
                         if (hit.tab_index < g_session.count()) {
-                            g_rename.begin(hit.tab_index, g_session.tabs.items[hit.tab_index].title());
+                            const t = g_session.tabs.items[hit.tab_index];
+                            g_rename.begin(hit.tab_index, t.title[0..t.title_len]);
                         }
                         return;
                     }
@@ -1307,7 +1315,7 @@ fn keycodeToTabIndex(kc: c_ushort) ?usize {
 /// 통일).
 fn handleCloseActiveTab() void {
     if (g_session.activeTab() == null) return;
-    g_session.closeTab(g_session.active_tab);
+    _ = g_session.closeTab(g_session.active_tab);
     if (g_session.count() == 0) {
         log.appendLine("tab", "last tab closed via Cmd+W, terminating tildaz", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
@@ -1324,16 +1332,7 @@ fn handleNewTab() void {
     const active = g_session.activeTab() orelse return;
     const cols = active.terminal.cols;
     const rows = active.terminal.rows;
-    _ = g_session.createTab(
-        cols,
-        rows,
-        g_max_scrollback,
-        g_shell_path,
-        &g_extra_env,
-        onPtyOutput,
-        onPtyExit,
-        g_config.theme,
-    ) catch |err| {
+    g_session.createTab(cols, rows) catch |err| {
         log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
         return;
     };
@@ -1402,9 +1401,7 @@ fn handlePaste() void {
         return;
     }
 
-    _ = tab.pty.write(cstr[0..len]) catch |err| {
-        log.appendLine("paste", "PTY write failed: {s}", .{@errorName(err)});
-    };
+    tab.queueWrite(cstr[0..len]);
 }
 
 fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
@@ -1808,56 +1805,39 @@ pub fn run() !void {
     const term_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
     const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
-    // Terminal init — Windows session_core 의 max_scrollback 계산식 차용.
-    // (라인 수 × 한 라인의 byte size 추정값). config.max_scroll_lines (#118).
-    const cap = ghostty.page.std_capacity.adjust(.{ .cols = term_cols }) catch
-        @as(ghostty.page.Capacity, .{ .cols = term_cols + 1, .rows = 8, .styles = 16, .grapheme_bytes = 0 });
-    const bytes_per_row = ghostty.Page.layout(cap).total_size / cap.rows;
-    const max_scrollback = g_config.max_scroll_lines * bytes_per_row;
-
-    g_session = .{ .allocator = allocator };
-
-    // TERM / LANG 환경변수: .app launch 시 부모 environ 에 없을 수 있어
-    // 명시적 설정. TERM=xterm-256color 는 escape sequence + 256-color 표준.
-    // LANG=en_US.UTF-8 은 bash readline 의 multi-byte 처리 활성화 — 안 하면
-    // 한글 / 일본어 byte 를 받아도 echo 안 함 (ASCII 모드).
-    //
-    // COLORFGBG: vim / less / tmux 같은 TUI 가 자동으로 dark / light
-    // colorscheme 선택할 때 보는 표준 환경변수. theme.background 의 luminance
-    // 로 판별 (Windows `terminal/windows.zig` 의 envVarsForTheme 와 같은 helper
-    // `themes.isDark` 사용). dark = "15;0", light = "0;15".
+    // 자식 셸 환경변수. macOS .app launch 시 부모 environ 에 없을 수 있어 명시
+    // 설정. TERM = xterm-256color, LANG = en_US.UTF-8 (bash readline multi-byte
+    // 활성화 — 안 하면 한글 byte 를 받아도 echo 안 함). COLORFGBG = TUI dark/
+    // light 자동 판별 (Windows `host/windows.zig` 의 buildExtraEnv 와 동등).
+    // SHELL = 우리가 spawn 한 셸 path (부모의 SHELL 과 어긋남 방지).
     const colorfgbg_value: []const u8 = if (g_config.theme) |t|
         (if (themes.isDark(t)) "15;0" else "0;15")
     else
         "15;0";
-    // SHELL: 우리가 spawn 한 셸 path. 부모 environ 의 SHELL (사용자가 .app 을
-    // 띄운 컨텍스트의 셸) 이 자식에 그대로 전달되면 prompt 와 $SHELL 이 어긋나는
-    // 이슈 방지 — pty.spawn 의 environ 머지 logic 이 extra_env 우선 적용.
+    g_shell_path = try allocator.dupe(u8, shell_path);
     g_extra_env = .{
         .{ .name = "TERM", .value = "xterm-256color" },
         .{ .name = "LANG", .value = "en_US.UTF-8" },
         .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
         .{ .name = "COLORFGBG", .value = colorfgbg_value },
-        .{ .name = "SHELL", .value = shell_path },
+        .{ .name = "SHELL", .value = g_shell_path },
     };
-    g_max_scrollback = max_scrollback;
-    g_shell_path = try allocator.dupe(u8, shell_path);
 
-    const tab = try g_session.createTab(
-        term_cols,
-        term_rows,
-        max_scrollback,
+    g_session = session_core.SessionCore.init(
+        allocator,
         g_shell_path,
-        &g_extra_env,
-        onPtyOutput,
-        onPtyExit,
+        g_config.max_scroll_lines,
         g_config.theme,
+        &g_extra_env,
+        onSessionTabExit,
+        null,
     );
-    log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} pid={d} max_scroll_lines={d}", .{
+
+    try g_session.createTab(term_cols, term_rows);
+    log.appendLine("startup", "initial tab created: shell={s} cols={d} rows={d} max_scroll_lines={d}", .{
         shell_path,
         term_cols,
         term_rows,
-        tab.pty.child_pid,
         g_config.max_scroll_lines,
     });
 
@@ -1881,45 +1861,33 @@ pub fn run() !void {
     log.appendLine("startup", "NSApp run loop exited", .{});
 }
 
-/// PTY read thread 의 콜백 — 받은 데이터를 ghostty-vt Terminal stream parser 로
-/// 라우팅. userdata 는 *Tab — 어느 탭의 출력인지 식별 (멀티탭 단계에서 의미).
-///
-/// thread safety: 이 콜백은 PTY read thread 에서 호출. 현재 단계에선 UI thread
-/// 가 terminal 을 안 읽으므로 race 없음. 후속 milestone 에서 ring buffer +
-/// drain 패턴 도입 예정.
-fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
-    const tab: *macos_session.Tab = @ptrCast(@alignCast(userdata orelse return));
-    tab.stream.nextSlice(data);
-    g_pty_bytes_received += data.len;
+/// session_core 의 tab_exit_fn — read thread 에서 호출. read thread 안에서
+/// closeTabByPtr 직접 호출하면 self-join deadlock (Tab.deinit 이 read_thread
+/// .join 부름) → 글로벌 queue 에 enqueue 만 하고 main thread (renderTimerFire)
+/// 가 매 frame 시작 시 drain. Windows 의 PostMessage 패턴과 동등 의도.
+fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
+    g_pending_close_mutex.lock();
+    defer g_pending_close_mutex.unlock();
+    g_pending_close_buf.append(g_gpa.allocator(), tab_ptr) catch {};
 }
 
-/// PTY 자식 (셸) 이 종료되면 read thread 가 호출. main thread 에서 부르는
-/// closeTab / NSApp.terminate 와 race 를 피하기 위해 per-tab atomic flag 만
-/// set. 실제 정리는 render timer 가 검사 후 처리.
-/// userdata 는 *Tab — createTab 에서 startReadThread 시 전달됐어요.
-fn onPtyExit(userdata: ?*anyopaque) void {
-    const tab: *macos_session.Tab = @ptrCast(@alignCast(userdata orelse return));
-    tab.exit_flag.store(true, .release);
-}
-
-/// 매 프레임 시작 시 모든 탭의 exit_flag 를 검사, set 된 탭은 closeTab 으로
-/// 정리. 마지막 탭이 닫히면 NSApp.terminate. main thread 에서 호출되므로
-/// closeTab → Tab.deinit → pty read_thread.join 이 deadlock 없이 정상 진행.
+/// 매 프레임 시작 시 pending close queue drain. main thread 에서 호출되므로
+/// closeTabByPtr → Tab.deinit → read_thread.join 이 deadlock 없이 진행.
+/// 마지막 탭이 닫히면 NSApp.terminate.
 fn drainExitedTabs() bool {
+    g_pending_close_mutex.lock();
+    const closes = g_pending_close_buf.toOwnedSlice(g_gpa.allocator()) catch &.{};
+    g_pending_close_mutex.unlock();
+    defer g_gpa.allocator().free(closes);
+
     var any_closed = false;
-    var i: usize = 0;
-    while (i < g_session.tabs.items.len) {
-        const t = g_session.tabs.items[i];
-        if (t.exit_flag.load(.acquire)) {
-            log.appendLine("pty", "tab {d} ('{s}') exited, closing", .{ i, t.title() });
-            g_session.closeTab(i);
-            any_closed = true;
-            // closeTab 후 인덱스가 시프트되므로 i 증가 안 함 — 다음 element 가
-            // 같은 i 위치에 있어요.
-        } else {
-            i += 1;
-        }
+    for (closes) |ptr| {
+        const result = g_session.closeTabByPtr(ptr);
+        if (result == .none) continue;
+        log.appendLine("pty", "tab ptr=0x{x} exited, closed", .{ptr});
+        any_closed = true;
     }
+
     if (g_session.count() == 0) {
         log.appendLine("pty", "last tab closed, terminating tildaz", .{});
         const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
@@ -1940,6 +1908,13 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // 은 더 진행 안 함).
     if (drainExitedTabs()) return;
 
+    // session_core 의 active tab output ring drain + ghostty parse + 8ms
+    // throttle. 큰 출력 시 frame budget 안에서만 parse — Windows app_controller
+    // 의 패턴 동등. should_render=false 면 ring 에 더 데이터가 있어도 다음
+    // frame 에서 처리 (60fps 안정).
+    const should_render = g_session.prepareActiveFrame(&g_last_render_ms);
+    if (!should_render) return;
+
     if (!g_visible) return;
     if (g_renderer == null) return;
     const tab = g_session.activeTab() orelse return;
@@ -1956,7 +1931,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     var titles_buf: [16][]const u8 = undefined;
     const tab_count = @min(g_session.count(), titles_buf.len);
     for (g_session.tabs.items[0..tab_count], 0..) |t, i| {
-        titles_buf[i] = t.title();
+        titles_buf[i] = t.title[0..t.title_len];
     }
     const titles = titles_buf[0..tab_count];
 

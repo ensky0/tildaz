@@ -19,26 +19,18 @@ pub var render: Counter = .{}; // renderTerminal excluding Present
 pub var present: Counter = .{}; // swap_chain.Present
 pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count
 
-extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.c) std.os.windows.BOOL;
-extern "kernel32" fn QueryPerformanceFrequency(lpFrequency: *i64) callconv(.c) std.os.windows.BOOL;
-
-var freq: i64 = 0;
-
-pub fn init() void {
-    _ = QueryPerformanceFrequency(&freq);
-}
+/// Cross-platform monotonic ns timestamp. macOS = mach_absolute_time, Windows
+/// = QueryPerformanceCounter, Linux = clock_gettime — std 가 OS 별 best
+/// resolution 자동 선택.
+pub fn init() void {}
 
 pub fn now() i64 {
-    var t: i64 = undefined;
-    _ = QueryPerformanceCounter(&t);
-    return t;
+    return @intCast(std.time.nanoTimestamp());
 }
 
 pub fn nsSince(start: i64) u64 {
-    var end: i64 = undefined;
-    _ = QueryPerformanceCounter(&end);
-    const ticks: u128 = @intCast(end - start);
-    return @intCast(ticks * 1_000_000_000 / @as(u128, @intCast(freq)));
+    const end: i64 = @intCast(std.time.nanoTimestamp());
+    return @intCast(end - start);
 }
 
 pub fn addTimed(c: *Counter, start: i64) void {
