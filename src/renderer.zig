@@ -22,11 +22,9 @@ pub const RendererBackend = switch (builtin.os.tag) {
     else => UnsupportedRendererBackend,
 };
 
-pub const TabTitle = RendererBackend.TabTitle;
 pub const RenameState = RendererBackend.RenameState;
 
 const UnsupportedRendererBackend = struct {
-    pub const TabTitle = struct { ptr: [*]const u8, len: usize };
     pub const RenameState = struct {
         tab_index: usize,
         text: [*]const u8,
@@ -65,7 +63,7 @@ const UnsupportedRendererBackend = struct {
 
     pub fn renderTabBar(
         _: *UnsupportedRendererBackend,
-        _: []const UnsupportedRendererBackend.TabTitle,
+        _: []const []const u8,
         _: usize,
         _: c_int,
         _: c_int,

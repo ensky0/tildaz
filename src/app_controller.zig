@@ -310,11 +310,11 @@ pub const App = struct {
                 // count<=1 이면 tab_bar_h=0 → 렌더러가 탭바 자체를 그리지 않고
                 // 터미널 영역만 (#127 — 단일 탭에서 cell 영역 reserve 안 함).
                 const tab_bar_h = self.effectiveTabBarHeight();
-                var tab_titles: [32]renderer_backend.TabTitle = undefined;
+                var tab_titles: [32][]const u8 = undefined;
                 const tabs = self.session.tabsSlice();
                 const n = @min(tabs.len, 32);
                 for (tabs[0..n], 0..) |t, i| {
-                    tab_titles[i] = .{ .ptr = &t.title, .len = t.title_len };
+                    tab_titles[i] = t.title[0..t.title_len];
                 }
                 const rs: ?renderer_backend.RenameState = if (self.tab_interaction.rename.view()) |rename| .{
                     .tab_index = rename.tab_index,
