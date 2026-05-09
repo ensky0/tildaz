@@ -343,12 +343,17 @@ const TabBarLayout = tab_layout.Layout;
 fn tabBarLayoutInputs() ?tab_layout.Inputs {
     if (g_renderer == null) return null;
     const r = &g_renderer.?;
+    // count >= MAX_TABS 면 plus 버튼 layout 에서 사라짐 — 마지막 탭이 `>` 화살표
+    // 에 인접. count < MAX_TABS 일 때만 plus_w 활성. layout / hit-test / drawing
+    // 모두 자동 적응.
+    const at_limit = g_session.count() >= session_core.MAX_TABS;
+    const plus_w = if (at_limit) 0 else @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale;
     return .{
         .viewport_w = @floatFromInt(r.vp_width),
         .tab_count = @intCast(g_session.count()),
         .tab_w = tabWidthPx(),
         .arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale,
-        .plus_w = @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale,
+        .plus_w = plus_w,
         .scroll_x = g_tab_scroll_x_px,
     };
 }
@@ -1292,6 +1297,16 @@ fn handleCloseActiveTab() void {
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
 /// 가 1 → 2 전환 시 탭바 등장으로 줄어드는 cell 영역에 맞춰 모든 탭 resize.
 fn handleNewTab() void {
+    // MAX_TABS 한도 도달 — `+` 버튼은 layout 에서 자동 사라지지만 단축키
+    // (Cmd+T) 시 무반응이면 사용자 인지 어려움 → 명시 dialog. createTab
+    // 자체는 호출 안 함 (자원 낭비 방지).
+    if (g_session.count() >= session_core.MAX_TABS) {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
+            messages.tab_limit_format;
+        dialog.showInfo(messages.tab_limit_title, msg);
+        return;
+    }
     const active = g_session.activeTab() orelse return;
     const cols = active.terminal.cols;
     const rows = active.terminal.rows;
@@ -1896,8 +1911,9 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
     const tab_bar_px = tabBarHeightPx(g_renderer.?.scale);
 
-    // 탭 제목 stack-allocated slice. 매 프레임 만들지만 alloc 없음 (16 개 한도).
-    var titles_buf: [16][]const u8 = undefined;
+    // 탭 제목 stack-allocated slice. 매 프레임 만들지만 alloc 없음. session_core
+    // .MAX_TABS = 32 한도와 일치 (cross-platform 동등, Windows 도 [32]).
+    var titles_buf: [session_core.MAX_TABS][]const u8 = undefined;
     const tab_count = @min(g_session.count(), titles_buf.len);
     for (g_session.tabs.items[0..tab_count], 0..) |t, i| {
         titles_buf[i] = t.title[0..t.title_len];

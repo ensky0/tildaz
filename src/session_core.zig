@@ -335,6 +335,11 @@ pub const Tab = struct {
     }
 };
 
+/// 탭 동시 존재 한도. 사용자 의도된 작업 흐름 + 탭바 가독성 + renderer
+/// instance buffer 한도 균형. 도달 시 새 탭 단축키 / `+` 클릭 거부 + dialog
+/// 안내 (cross-platform 동등).
+pub const MAX_TABS: usize = 32;
+
 pub const SessionCore = struct {
     allocator: std.mem.Allocator,
     shell_command: terminal.ShellCommand,
