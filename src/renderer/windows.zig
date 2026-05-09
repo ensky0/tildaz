@@ -684,8 +684,13 @@ pub const D3d11Renderer = struct {
 
             // IME preedit 활성 시 cursor 뒤 main text 를 preedit advance 만큼
             // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
-            // 시 좌측 복구). cursor follow scroll 의 reserve 도 정확히 이 값.
-            // (#164 1c-fix2)
+            // 시 좌측 복구).
+            //
+            // cursor 우측 reserve = `cw * 2` 고정 (wide 1 글자 자리). preedit
+            // 활성/비활성 무관 — transition 시 jump 없음 (한글 typing 빠를 때
+            // cursor 안정). ASCII typing 시 close 와 2 cell 여백 — wide IME 가능
+            // 가정의 trade-off. typing 중 일관 cursor 위치 우선. (#164 1c)
+            const cursor_reserve = cw * 2;
             var preedit_advance_total: f32 = 0;
             if (is_renaming and rename_preedit.len > 0) {
                 var pre_iter_w = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
@@ -714,10 +719,13 @@ pub const D3d11Renderer = struct {
                             probe_byte += plen;
                         }
                     }
-                    // cursor 우측에 *preedit 자리* 확보 — preedit_advance_total
-                    // 만큼 (정확). preedit 비활성 시 0 — cursor 가 max 까지 OK.
-                    if (probe_x > max_text_w - preedit_advance_total) {
-                        scroll_offset = probe_x - max_text_w + preedit_advance_total;
+                    // probe 에 preedit_advance_total 도 포함 — cursor 우측의
+                    // preedit 자리도 scroll 검사에. 가운데 cursor + typing 시
+                    // cursor + preedit 끝이 max - reserve 도달 시 좌측 scroll →
+                    // cursor 끝 visual 안정 (native textbox).
+                    const probe_total = probe_x + preedit_advance_total;
+                    if (probe_total > max_text_w - cursor_reserve) {
+                        scroll_offset = probe_total - max_text_w + cursor_reserve;
                     }
                 }
             }
@@ -739,9 +747,10 @@ pub const D3d11Renderer = struct {
                 const cp_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
                 const cp_w_cells: u8 = display_width.codepointWidth(codepoint);
                 const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                // rename 중 max 넘거나 *도달* 한 글자는 잘림 — close 버튼 침범
-                // 1 픽셀도 방지. truncate "..." 는 commit 후 long text 만.
-                if (is_renaming and x_off + advance >= max_text_w) break;
+                // rename 중 main text 영역 = `max_text_w - cursor_reserve` 까지
+                // (cursor_reserve = wide 1 글자 자리). 그 안에서만 그림 — close
+                // 버튼과 일정 간격. truncate "..." 는 commit 후 long text 만.
+                if (is_renaming and x_off + advance > max_text_w - cursor_reserve) break;
                 // Truncate with "..." if text would overflow
                 if (needs_truncate and x_off + advance > max_text_w - ellipsis_w) {
                     // Render "..."
@@ -842,9 +851,6 @@ pub const D3d11Renderer = struct {
             // (cursor_x 사용). codepoint 별 cell 단위 보라 배경 + glyph. 별도
             // buffer (pre_*) 에 쌓아 main text 후 그림 — main text 가 preedit
             // bg 위에 그려져 cursor 뒤 글자가 보이는 회귀 fix (#164 1c-fix2).
-            if (is_renaming) {
-                log.appendLine("ime", "  renderTabBar: tab={d} preedit.len={d} cursor_x={d} max_text_w={d}", .{ i, rename_preedit.len, cursor_x, max_text_w });
-            }
             if (is_renaming and rename_preedit.len > 0) {
                 const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
                 const cell_top = baseline_y2 - self.font.ascent_px;
@@ -855,7 +861,10 @@ pub const D3d11Renderer = struct {
                     if (pre_text_n >= pre_text_buf.len or pre_bg_n >= pre_bg_buf.len) break;
                     const cp_w_cells: u8 = display_width.codepointWidth(pcp);
                     const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    if (pre_x + advance >= max_text_w) break;
+                    // preedit 은 cursor 우측 reserve 자리에 그림. 보통 reserve =
+                    // preedit_advance_total 가정 (wide 1 글자) 이지만 길어지면
+                    // close 영역 (max) 까지 채울 수 있음.
+                    if (pre_x + advance > max_text_w) break;
                     if (pre_x < 0) {
                         pre_x += advance;
                         continue;
