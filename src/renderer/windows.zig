@@ -739,9 +739,9 @@ pub const D3d11Renderer = struct {
                 const cp_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
                 const cp_w_cells: u8 = display_width.codepointWidth(codepoint);
                 const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                // rename 중 max 넘는 글자는 그냥 잘림 — close 버튼 침범 방지.
-                // truncate "..." 는 commit 후 long text 만 (needs_truncate true).
-                if (is_renaming and x_off + advance > max_text_w) break;
+                // rename 중 max 넘거나 *도달* 한 글자는 잘림 — close 버튼 침범
+                // 1 픽셀도 방지. truncate "..." 는 commit 후 long text 만.
+                if (is_renaming and x_off + advance >= max_text_w) break;
                 // Truncate with "..." if text would overflow
                 if (needs_truncate and x_off + advance > max_text_w - ellipsis_w) {
                     // Render "..."
@@ -855,7 +855,7 @@ pub const D3d11Renderer = struct {
                     if (pre_text_n >= pre_text_buf.len or pre_bg_n >= pre_bg_buf.len) break;
                     const cp_w_cells: u8 = display_width.codepointWidth(pcp);
                     const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    if (pre_x + advance > max_text_w) break;
+                    if (pre_x + advance >= max_text_w) break;
                     if (pre_x < 0) {
                         pre_x += advance;
                         continue;
