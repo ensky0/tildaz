@@ -81,5 +81,6 @@ const UnsupportedRendererBackend = struct {
         _: c_int,
         _: c_int,
         _: c_int,
+        _: []const u8,
     ) void {}
 };

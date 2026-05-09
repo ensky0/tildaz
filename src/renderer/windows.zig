@@ -914,6 +914,9 @@ pub const D3d11Renderer = struct {
         padding: c_int,
         scrollbar_w: c_int,
         scrollbar_min_thumb_h: c_int,
+        /// IME 조합 중 자모 / 미완성 음절 — cursor 뒤 inline 표시 (#164). 빈
+        /// slice = 표시 안 함. Window 가 WM_IME_COMPOSITION 처리 후 buffer 채움.
+        preedit_utf8: []const u8,
     ) void {
         const render_t0 = perf.now();
         self.render_state.update(self.alloc, terminal) catch return;
@@ -1136,6 +1139,72 @@ pub const D3d11Renderer = struct {
                 }};
                 self.drawBgInstances(&cursor_inst);
             }
+        }
+
+        // --- IME preedit overlay (#164) ---
+        // cursor 위치부터 preedit_utf8 의 codepoint 별 cell 단위 확장. 보라
+        // 배경 (mac `renderer/macos.zig` 의 pre_bg_color 동일) + glyph. wide
+        // char (CJK) 는 2 cell 차지. 한글 / 일본어 / 중국어 / 베트남어 등 모든
+        // IMM IME path. atlas 가 dirty 면 다음 frame 에 글자 표시 — 한 frame 늦음.
+        if (preedit_utf8.len > 0 and self.render_state.cursor.viewport != null) {
+            const vp = self.render_state.cursor.viewport.?;
+            var pre_col: f32 = @floatFromInt(vp.x);
+            const pre_row: f32 = @floatFromInt(vp.y);
+            const pre_y = pre_row * ch + y_off;
+
+            var pre_bg_buf: [16]BgInstance = undefined;
+            var pre_text_buf: [16]TextInstance = undefined;
+            var pre_bg_n: u32 = 0;
+            var pre_text_n: u32 = 0;
+            const fg_color: [4]f32 = .{ colorF(colors.foreground.r), colorF(colors.foreground.g), colorF(colors.foreground.b), 1 };
+            const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
+
+            var utf8_iter = std.unicode.Utf8Iterator{ .bytes = preedit_utf8, .i = 0 };
+            while (utf8_iter.nextCodepoint()) |cp| {
+                if (pre_bg_n >= pre_bg_buf.len) break;
+                const result = self.font.resolveGlyph(@intCast(cp)) orelse continue;
+                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    continue;
+                };
+                if (result.owned) _ = result.face.vtable.Release(result.face);
+
+                const is_wide = cp >= 0x1100 and (cp <= 0x115F or
+                    (cp >= 0x2E80 and cp <= 0x9FFF) or
+                    (cp >= 0xA000 and cp <= 0xA4CF) or
+                    (cp >= 0xAC00 and cp <= 0xD7A3) or
+                    (cp >= 0xF900 and cp <= 0xFAFF) or
+                    (cp >= 0xFE30 and cp <= 0xFE4F) or
+                    (cp >= 0xFF00 and cp <= 0xFF60) or
+                    (cp >= 0xFFE0 and cp <= 0xFFE6));
+                const w_cells: f32 = if (is_wide) 2 else 1;
+
+                const cell_x = pre_col * cw + x_pad;
+                pre_bg_buf[pre_bg_n] = .{
+                    .pos = .{ cell_x, pre_y },
+                    .size = .{ w_cells * cw, ch },
+                    .color = pre_bg_color,
+                };
+                pre_bg_n += 1;
+
+                if (entry.w > 0 and entry.h > 0 and pre_text_n < pre_text_buf.len) {
+                    const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = pre_y + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+                    pre_text_buf[pre_text_n] = .{
+                        .pos = .{ gx, gy },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = fg_color,
+                        .color_flag = if (entry.is_color) 1.0 else 0.0,
+                    };
+                    pre_text_n += 1;
+                }
+                pre_col += w_cells;
+            }
+
+            if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
+            if (pre_text_n > 0) self.drawTextInstances(pre_text_buf[0..pre_text_n]);
         }
 
         // --- Scrollbar ---
