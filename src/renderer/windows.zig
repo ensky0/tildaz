@@ -570,6 +570,10 @@ pub const D3d11Renderer = struct {
         /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림. null = rename
         /// 비활성. cross-platform `tab_interaction.RenameView`.
         rename_view: ?tab_interaction.RenameView,
+        /// rename 활성 탭의 cursor 옆에 IME 조합 중 자모 inline 표시 (#164 1c).
+        /// 빈 slice = 표시 안 함. host 가 rename 활성 시 IME preedit 을 cell 대신
+        /// 여기로 라우팅.
+        rename_preedit: []const u8,
         /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값
         /// + tab_area_x 오프셋.
         tab_scroll_x: c_int,
@@ -794,6 +798,58 @@ pub const D3d11Renderer = struct {
                         cursor_count = 1;
                     }
                 }
+            }
+
+            // --- IME preedit overlay (#164 1c) ---
+            // rename 활성 탭의 cursor 뒤 inline. mac drawTabBar (renderer/macos.zig:935-)
+            // 동등 — codepoint 별 cell 단위 보라 배경 + glyph. wide char (CJK) 2 cell.
+            // max_text_w 안 일 동안만 그림. 한글 / 일본어 / 중국어 등 모든 IMM IME path.
+            if (is_renaming and rename_preedit.len > 0) {
+                var pre_bg_buf: [16]BgInstance = undefined;
+                var pre_bg_n: u32 = 0;
+                const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
+                const cell_top = baseline_y2 - self.font.ascent_px;
+
+                var pre_iter = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
+                while (pre_iter.nextCodepoint()) |pcp| {
+                    if (text_count >= 510 or pre_bg_n >= pre_bg_buf.len) break;
+                    const cp_w_cells: u8 = display_width.codepointWidth(pcp);
+                    const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
+                    if (x_off + advance > max_text_w) break;
+
+                    const cell_x = tab_x + pad + x_off;
+                    pre_bg_buf[pre_bg_n] = .{
+                        .pos = .{ cell_x, cell_top },
+                        .size = .{ advance, ch },
+                        .color = pre_bg_color,
+                    };
+                    pre_bg_n += 1;
+
+                    const result = self.font.resolveGlyph(pcp) orelse {
+                        x_off += advance;
+                        continue;
+                    };
+                    const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                        if (result.owned) _ = result.face.vtable.Release(result.face);
+                        x_off += advance;
+                        continue;
+                    };
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    if (entry.w > 0 and entry.h > 0) {
+                        const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
+                        const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
+                        text_instances[text_count] = .{
+                            .pos = .{ gx, gy },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                        };
+                        text_count += 1;
+                    }
+                    x_off += advance;
+                }
+                if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
             }
 
             // Close button "x"

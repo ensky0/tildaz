@@ -66,6 +66,7 @@ const UnsupportedRendererBackend = struct {
         _: c_int,
         _: ?tab_interaction.DragView,
         _: ?tab_interaction.RenameView,
+        _: []const u8,
         _: c_int,
         _: tab_layout.Layout,
     ) void {}
