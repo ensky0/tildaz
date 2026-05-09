@@ -108,6 +108,10 @@ pub fn run() !void {
         &app,
     );
     defer app.session.deinit();
+    // tab_actions.Host 콜백 — &app 안정 후 한 번만. helper 가 user_data 통해
+    // *App 으로 cast 후 invalidateRenderer / handleRenameChar / window.copyToClipboard
+    // 등 instance 메서드 호출.
+    app.setupHost();
 
     // Set up window
     app.window.userdata = &app;

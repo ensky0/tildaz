@@ -6,6 +6,7 @@ const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
+const tab_actions = @import("tab_actions.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const Window = @import("window.zig").Window;
 const renderer_backend = @import("renderer.zig");
@@ -38,6 +39,10 @@ pub const App = struct {
     /// 가려져도 그대로 (Firefox 패턴). 활성 탭 변경 / drag reorder 끝 / 새 탭
     /// 생성 시 false 로 리셋 → 그 시점부터 다시 ensure 동작.
     tab_scroll_user_override: bool = false,
+    /// `tab_actions.Host` 인스턴스 — App member (session / override flag) 를
+    /// cross-platform helper API 로 노출. `setupHost()` 가 self 의 stable
+    /// address 잡힌 후 채움 (콜백이 user_data → *App cast).
+    host: tab_actions.Host = undefined,
 
     // DPI-scaled values (initialized in run())
     dpi_scale: f32 = 1.0,
@@ -54,6 +59,48 @@ pub const App = struct {
     // hit-test / drag math in App.
     SCROLLBAR_MIN_THUMB_H: c_int = 32,
     TERMINAL_PADDING: c_int = 6,
+
+    /// `tab_actions.Host` 콜백 setup — self 의 메모리 위치가 안정 (스택의 `var
+    /// app` 한 자리) 인 시점에 한 번만 호출. helper 가 callback 안에서 user_data
+    /// → *App cast 해 instance state 접근.
+    pub fn setupHost(self: *App) void {
+        self.host = .{
+            .session = &self.session,
+            .override_ptr = &self.tab_scroll_user_override,
+            .invalidate = winHostInvalidate,
+            .rename_active = winHostRenameActive,
+            .insert_rename_cp = winHostInsertRenameCp,
+            .clipboard_copy = winHostClipboardCopy,
+            .terminate = winHostTerminate,
+            .user_data = self,
+        };
+    }
+
+    fn winHostInvalidate(host: *tab_actions.Host) void {
+        const self: *App = @ptrCast(@alignCast(host.user_data.?));
+        self.invalidateRenderer();
+    }
+
+    fn winHostRenameActive(host: *const tab_actions.Host) bool {
+        const self: *const App = @ptrCast(@alignCast(host.user_data.?));
+        return self.isRenaming();
+    }
+
+    fn winHostInsertRenameCp(host: *tab_actions.Host, cp: u21) void {
+        const self: *App = @ptrCast(@alignCast(host.user_data.?));
+        self.handleRenameChar(cp);
+    }
+
+    fn winHostClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
+        const self: *App = @ptrCast(@alignCast(host.user_data.?));
+        self.window.copyToClipboard(text);
+    }
+
+    fn winHostTerminate(host: *tab_actions.Host) void {
+        const self: *App = @ptrCast(@alignCast(host.user_data.?));
+        log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
+        self.window.closeAfterShellExit();
+    }
 
     pub fn createTab(self: *App) !void {
         const before: usize = self.session.count();
@@ -341,33 +388,28 @@ pub const App = struct {
     }
 
     pub fn handleNewTab(self: *App) void {
-        // MAX_TABS 한도 도달 — `+` 버튼은 layout 에서 자동 사라지지만 단축키
-        // (Ctrl+Shift+T) 시 무반응이면 사용자 인지 어려움 → 명시 dialog.
-        if (self.session.count() >= session_core.MAX_TABS) {
-            var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
-                messages.tab_limit_format;
-            dialog.showInfo(messages.tab_limit_title, msg);
-            return;
-        }
+        if (tab_actions.checkAtLimitAndDialog(&self.host)) return;
         self.createTab() catch {};
     }
 
     pub fn handleCloseActiveTab(self: *App) void {
-        if (self.session.count() > 0) {
-            self.closeTab(self.session.activeIndex());
+        // closeActive helper 가 마지막 탭 → terminate (`window.closeAfterShellExit`),
+        // 그 외 → override clear + invalidate. .changed 일 때만 platform-specific
+        // grid resize (2 → 1 전환에서 탭바 사라짐, #127).
+        if (tab_actions.closeActive(&self.host) == .changed) {
+            if (self.session.count() == 1) {
+                const grid = self.getTerminalGridSize();
+                self.session.resizeAll(grid.cols, grid.rows);
+            }
         }
     }
 
     pub fn handleSwitchTab(self: *App, index: usize) void {
-        if (self.session.setActiveTab(index)) {
-            // 활성 탭 변경 — 사용자 화살표 override 해제. 이 시점부터
-            // ensureActiveTabVisible 가 다시 동작해 viewport 가 활성 탭을
-            // 따라감 (Alt+N 으로 화살표 너머의 탭으로 이동했을 때 viewport
-            // 가 그 탭이 보이는 위치로 minimum 이동). handleTabClick 동일 패턴.
-            self.tab_scroll_user_override = false;
-            self.invalidateRenderer();
-        }
+        // 활성 탭 변경 — 사용자 화살표 override 해제. 이 시점부터
+        // ensureActiveTabVisible 가 다시 동작해 viewport 가 활성 탭을 따라감
+        // (Alt+N 으로 화살표 너머의 탭으로 이동했을 때 viewport 가 그 탭이
+        // 보이는 위치로 minimum 이동). handleTabClick 동일 패턴.
+        tab_actions.switchTab(&self.host, index);
     }
 
     pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
@@ -655,29 +697,10 @@ pub const App = struct {
                 return false;
             },
             .paste => |bytes| {
-                // rename 활성 시 paste 텍스트를 rename buffer 로 라우팅 (#142).
-                // printable codepoint 만 (cp >= 0x20) — newline / tab 등 control
-                // 문자는 탭 이름에 안 맞으므로 제외.
-                if (self.isRenaming()) {
-                    var i: usize = 0;
-                    while (i < bytes.len) {
-                        const seq_len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch {
-                            i += 1;
-                            continue;
-                        };
-                        if (i + seq_len > bytes.len) break;
-                        const cp = std.unicode.utf8Decode(bytes[i .. i + seq_len]) catch {
-                            i += seq_len;
-                            continue;
-                        };
-                        if (cp >= 0x20) self.handleRenameChar(cp);
-                        i += seq_len;
-                    }
-                    return true;
-                }
-                // 일반 paste — bracketed paste mode 검사 + wrap 은 SessionCore
-                // 가 처리. macOS host 의 handlePaste 와 같은 path.
-                self.session.pasteToActive(bytes);
+                // rename routing (printable cp 만 → handleRenameChar) 또는 일반
+                // PTY paste (bracketed paste + wrap 은 session 가). 양쪽 분기
+                // helper. mac handlePaste 와 같은 path.
+                tab_actions.routePaste(&self.host, bytes);
                 return true;
             },
             .shortcut => |shortcut| {
@@ -691,9 +714,7 @@ pub const App = struct {
                         return true;
                     },
                     .reset_terminal => {
-                        if (self.session.resetActive()) {
-                            self.invalidateRenderer();
-                        }
+                        tab_actions.resetActive(&self.host);
                         return true;
                     },
                     .dump_perf => {
@@ -727,31 +748,18 @@ pub const App = struct {
                         return true;
                     },
                     .next_tab => {
-                        if (self.session.activateNext()) {
-                            self.tab_scroll_user_override = false; // #117 — 활성 탭 보이도록 ensure 재가동
-                            self.invalidateRenderer();
-                        }
+                        tab_actions.nextTab(&self.host); // #117 — 활성 탭 보이도록 ensure 재가동
                         return true;
                     },
                     .prev_tab => {
-                        if (self.session.activatePrev()) {
-                            self.tab_scroll_user_override = false;
-                            self.invalidateRenderer();
-                        }
+                        tab_actions.prevTab(&self.host);
                         return true;
                     },
                     .copy_selection => {
                         // Ctrl+Shift+C — 현재 highlight 된 selection 을 clipboard 로
                         // (#120). 드래그 직후 finishTerminalSelection 이 자동 copy
                         // 하지만, 그 후 사용자가 키로 다시 트리거하고 싶을 때.
-                        if (self.activeTabPtr()) |tab| {
-                            const screen: *ghostty.Screen = tab.terminal.screens.active;
-                            if (screen.selection) |sel| {
-                                const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return true;
-                                defer self.allocator.free(text);
-                                if (text.len > 0) self.window.copyToClipboard(text);
-                            }
-                        }
+                        tab_actions.copyActiveSelection(&self.host, self.allocator);
                         return true;
                     },
                 }
