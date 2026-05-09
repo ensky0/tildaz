@@ -1088,6 +1088,29 @@ fn commitOrCancelRename(commit: bool) void {
     g_rename.clear();
 }
 
+/// commitOrCancelRename + IME marked text / preedit_buf 도 정리. 마우스 클릭
+/// (탭바 외 영역) path 전용. 활성 preedit 자모를 rename buf 에 manual commit
+/// 후 IME state cancel — terminal cell preedit 으로 옮겨가지 않게.
+/// (#164 follow-up — mac Cocoa markedText 가 click 시 자동 cancel 안 함)
+fn commitRenameWithPreeditCancel(self_view: objc.id) void {
+    if (g_rename.isActive() and g_preedit_len > 0) {
+        var iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
+        while (iter.nextCodepoint()) |cp| {
+            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
+        }
+    }
+    commitOrCancelRename(true);
+
+    g_preedit_len = 0;
+    g_marked_len = 0;
+    const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const ic = get_ic(self_view, objc.sel("inputContext"));
+    if (ic != null) {
+        const discard = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
+        discard(ic, objc.sel("discardMarkedText"));
+    }
+}
+
 /// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
 fn handleTabBarClick(hit: TabBarHit) void {
     if (hit.on_close) {
@@ -1157,8 +1180,9 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     if (tryRenameClickMoveCursor(self_view, event)) return;
 
     // 어떤 클릭이든 진행 중 rename 우선 commit. 더블클릭의 경우 commit 후 새
-    // rename begin (clear → begin 순서) 라 영향 없음.
-    commitOrCancelRename(true);
+    // rename begin (clear → begin 순서) 라 영향 없음. preedit / marked text 도
+    // cancel — terminal click 시 cell preedit 으로 옮겨가지 않게.
+    commitRenameWithPreeditCancel(self_view);
 
     // 스크롤바 영역 클릭 (#123) — Windows app_controller.zig:488-498 패턴.
     // cell selection / 탭바 클릭보다 우선.
