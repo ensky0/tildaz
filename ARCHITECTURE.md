@@ -2,11 +2,25 @@
 
 TildaZ runs as a native host on Windows and macOS, sharing cross-platform
 session / VT / config / dialog / themes / terminal-interaction / tab-interaction
-modules. Platform seams are the host (`windows_host.zig` / `macos_host.zig`),
-the PTY backend (ConPTY / POSIX), the window layer (Win32 / NSWindow), and the
-renderer (Direct3D 11 / Metal). The architecture review history lives in
-[#91](https://github.com/ensky0/tildaz/issues/91); the cross-platform behavior
-matrix lives in [SPEC.md](SPEC.md).
+/ tab-layout / tab-actions modules. Platform seams are the host (`windows_host.zig`
+/ `macos_host.zig`), the PTY backend (ConPTY / POSIX), the window layer
+(Win32 / NSWindow), and the renderer (Direct3D 11 / Metal). The architecture
+review history lives in [#91](https://github.com/ensky0/tildaz/issues/91);
+the cross-platform behavior matrix lives in [SPEC.md](SPEC.md).
+
+## Cross-platform modules
+
+The shared logic that drives both hosts:
+
+| Module | Purpose |
+|---|---|
+| `session_core.zig` | Tab list, active-tab index, `MAX_TABS = 32` cap, scrollback, VT drain, PTY queue. Both hosts hold a single `SessionCore`. |
+| `tab_interaction.zig` | `RenameState` + `RenameView` (rename buffer, cursor, IME-aware insert), `DragState` + `DragView` (5px threshold, world-coordinate drag follow). Both renderers consume the views directly. |
+| `tab_layout.zig` | Pure layout / hit-test math for the tab bar (Firefox pattern: `<` `[tabs]` `+` `>`), arrow scroll alignment (floor / ceil), `renameTextHit` (mouse → byte index), and the IME-aware cursor-follow-scroll helpers (`cursorReserve`, `computeAdvanceTotal`, `cursorScrollOffset`). |
+| `tab_actions.zig` | `Host` interface (session ptr, override flag, 5 platform callbacks: invalidate / rename_active / insert_rename_cp / clipboard_copy / terminate) + helpers for `switchTab` / `nextTab` / `prevTab` / `resetActive` / `closeActive` / `closeByPtr` / `closeIndex` / `copyActiveSelection` / `routePaste` / `checkAtLimitAndDialog`. Each helper sequences post-action work (override clear → invalidate → optional terminate) so call sites stay one line. |
+| `terminal_interaction.zig` | Cell selection / drag / word selection (wide-char-aware boundary). |
+| `dialog.zig` + `messages.zig` | Single entry point for user-facing text and modal dialogs (`MessageBoxW` / `NSAlert`). |
+| `themes.zig` | 18 built-in colour palettes + `COLORFGBG` derivation. |
 
 ## Windows pipeline
 
@@ -56,8 +70,14 @@ identical UX (Apple HIG `Shift+Cmd` order on macOS, Windows `Ctrl+Shift`;
 
 - Cross-platform `config.zig` unification ([#118](https://github.com/ensky0/tildaz/issues/118)) — schemas already compatible at the field level, the parser file is still split.
 - macOS Developer ID code signing + notarization ([#109](https://github.com/ensky0/tildaz/issues/109)) — currently ad-hoc signed; per-rebuild identity changes invalidate Input Monitoring / Accessibility grants.
+- macOS NSTextInputClient reconversion API ([#166](https://github.com/ensky0/tildaz/issues/166)) — Hanja / kanji conversion via Option+Return needs `attributedSubstring(forProposedRange:actualRange:)` + `firstRect(forCharacterRange:actualRange:)`. Apple's own Terminal.app does not implement these either; matching their behavior is the current state.
 - Linux backend (Wayland / X11) — not yet started.
 - Stress tests for bulk output, resize storms, output-pipe-full during tab close, WSL/nvim/mouse, and CJK/emoji/combining marks should be pinned down separately.
+
+## Recently closed structural work
+
+- **Tab bar / actions / IME pre-edit cross-platform unification** ([#159](https://github.com/ensky0/tildaz/issues/159) Phase 1-3, [#163](https://github.com/ensky0/tildaz/issues/163) Phase 4, v0.4.0) — `tab_layout.zig` extracted (Phase 1), `tab_actions.zig` + `Host` interface (Phase 2), `closeByPtr` / `closeIndex` unified close path (Phase 3), `RenameView` / `DragView` / `TabBarLayout` struct unified across both renderers (Phase 4), and the cursor-follow-scroll math (`cursorReserve` / `computeAdvanceTotal` / `cursorScrollOffset`) shared by both renderers and both hosts' click → cursor logic (option A). About ~400 lines of duplicated cross-platform code removed; future fixes land in one place.
+- **Windows IME pre-edit overlay + candidate-popup tracking** ([#164](https://github.com/ensky0/tildaz/issues/164), v0.4.0) — `WM_IME_*` hooked, `ImmGetCompositionStringW` reads `GCS_COMPSTR`, inline purple overlay at the cursor matches macOS, `ImmSetCompositionWindow(CFS_POINT)` keeps the Hanja / kanji / hanzi candidate popup next to the cursor, native-textbox tab-rename UX (click cursor reposition, mid-string push-right, fixed pre-edit reserve).
 
 ## Tech stack
 
@@ -71,7 +91,7 @@ identical UX (Apple HIG `Shift+Cmd` order on macOS, Windows `Ctrl+Shift`;
 | Hotkey | `RegisterHotKey` | CGEventTap (Input Monitoring + Accessibility) |
 | Renderer | Direct3D 11 + HLSL (ClearType subpixel) | Metal + CoreText |
 | Font | DirectWrite — explicit glyph fallback chain | CoreText — explicit glyph fallback chain + system auto fallback |
-| IME | Win32 IMM | NSTextInputClient (markedText pre-edit) |
+| IME | Win32 IMM (`WM_IME_*` + `ImmGetCompositionStringW` for inline pre-edit; `ImmSetCompositionWindow(CFS_POINT)` for candidate-popup tracking) | NSTextInputClient (markedText pre-edit) |
 | Autostart | HKCU `Run` registry entry | LaunchAgent plist (`~/Library/LaunchAgents/com.tildaz.app.plist`) |
 | Log path | `%APPDATA%\tildaz\tildaz.log` | `~/Library/Logs/tildaz.log` (Console.app indexed) |
 | Config path | `%APPDATA%\tildaz\config.json` | `~/.config/tildaz/config.json` (XDG) |
