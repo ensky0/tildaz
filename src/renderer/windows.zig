@@ -681,11 +681,36 @@ pub const D3d11Renderer = struct {
             // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
             const needs_truncate = !is_renaming and (total_text_w > max_text_w);
+            const rename_cursor_pos: ?usize = if (is_renaming) rename_state.?.cursor else null;
 
-            var x_off: f32 = 0;
+            // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
+            // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.
+            // x_off 가 viewport-relative — 시작값 음수면 좌측 잘림.
+            var scroll_offset: f32 = 0;
+            if (is_renaming) {
+                if (rename_cursor_pos) |cb| {
+                    var probe_x: f32 = 0;
+                    const probe_view = std.unicode.Utf8View.init(title) catch @as(?std.unicode.Utf8View, null);
+                    if (probe_view) |pv| {
+                        var probe_iter = pv.iterator();
+                        var probe_byte: usize = 0;
+                        while (probe_iter.nextCodepoint()) |pcp| {
+                            if (probe_byte >= cb) break;
+                            const pcw = display_width.codepointWidth(pcp);
+                            probe_x += cw * @as(f32, @floatFromInt(pcw));
+                            const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
+                            probe_byte += plen;
+                        }
+                    }
+                    if (probe_x > max_text_w - cw) {
+                        scroll_offset = probe_x - max_text_w + cw;
+                    }
+                }
+            }
+
+            var x_off: f32 = -scroll_offset;
             var byte_idx: usize = 0;
             var truncated = false;
-            const rename_cursor_pos: ?usize = if (is_renaming) rename_state.?.cursor else null;
             var view = std.unicode.Utf8View.init(title) catch {
                 // Invalid UTF-8 — skip this tab's text
                 continue;
@@ -724,18 +749,27 @@ pub const D3d11Renderer = struct {
                     truncated = true;
                     break;
                 }
-                // Draw cursor before this character if cursor is at this byte position
+                // Draw cursor before this character if cursor is at this byte position.
+                // viewport 좌측 밖 (scroll 으로 잘림) 이면 cursor 시각 표시 X.
+                // cursor_count = 1 로 마킹해 다음 byte 에서 또 그리려는 시도 막음.
                 if (rename_cursor_pos) |cp| {
                     if (byte_idx == cp and cursor_count == 0) {
-                        cursor_instances[0] = .{
-                            .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
-                            .size = .{ 1, ch - 2 },
-                            .color = ui_metrics.TAB_TEXT_COLOR,
-                        };
+                        if (x_off >= 0) {
+                            cursor_instances[0] = .{
+                                .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                                .size = .{ 1, ch - 2 },
+                                .color = ui_metrics.TAB_TEXT_COLOR,
+                            };
+                        }
                         cursor_count = 1;
                     }
                 }
                 byte_idx += cp_len;
+                // viewport 좌측 밖 — atlas / glyph 호출 skip, advance 만 누적.
+                if (x_off < 0) {
+                    x_off += advance;
+                    continue;
+                }
                 const result = self.font.resolveGlyph(codepoint) orelse {
                     x_off += advance;
                     continue;
@@ -760,10 +794,11 @@ pub const D3d11Renderer = struct {
                 }
                 x_off += advance;
             }
-            // Cursor at end of text (only if not truncated)
+            // Cursor at end of text (only if not truncated). viewport 좌측 밖이면
+            // 시각 표시 X — scroll 으로 잘려나간 영역.
             if (!truncated) {
                 if (rename_cursor_pos) |cp| {
-                    if (cp >= title.len and cursor_count == 0) {
+                    if (cp >= title.len and cursor_count == 0 and x_off >= 0) {
                         cursor_instances[0] = .{
                             .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
                             .size = .{ 1, ch - 2 },
