@@ -693,8 +693,11 @@ pub const D3d11Renderer = struct {
                             probe_byte += plen;
                         }
                     }
-                    if (probe_x > max_text_w - cw) {
-                        scroll_offset = probe_x - max_text_w + cw;
+                    // cursor 우측에 *최소 wide 1 글자* (cw*2) 여백 — preedit
+                    // (한글 / CJK 자모 wide=2 cell) 가 들어갈 자리 확보 (#164 1c).
+                    const reserve = cw * 2;
+                    if (probe_x > max_text_w - reserve) {
+                        scroll_offset = probe_x - max_text_w + reserve;
                     }
                 }
             }
@@ -702,6 +705,10 @@ pub const D3d11Renderer = struct {
             var x_off: f32 = -scroll_offset;
             var byte_idx: usize = 0;
             var truncated = false;
+            // rename 중 cursor 위치 보존 — preedit overlay 시작점. cursor 가
+            // 가운데일 때 main text 끝점 (`x_off`) 이 아니라 cursor 위치에
+            // overlay 그리도록 (#164 1c).
+            var cursor_x: f32 = -scroll_offset;
             var view = std.unicode.Utf8View.init(title) catch {
                 // Invalid UTF-8 — skip this tab's text
                 continue;
@@ -745,6 +752,7 @@ pub const D3d11Renderer = struct {
                 // cursor_count = 1 로 마킹해 다음 byte 에서 또 그리려는 시도 막음.
                 if (rename_cursor_pos) |cp| {
                     if (byte_idx == cp and cursor_count == 0) {
+                        cursor_x = x_off;
                         if (x_off >= 0) {
                             cursor_instances[0] = .{
                                 .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
@@ -789,35 +797,44 @@ pub const D3d11Renderer = struct {
             // 시각 표시 X — scroll 으로 잘려나간 영역.
             if (!truncated) {
                 if (rename_cursor_pos) |cp| {
-                    if (cp >= title.len and cursor_count == 0 and x_off >= 0) {
-                        cursor_instances[0] = .{
-                            .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
-                            .size = .{ 1, ch - 2 },
-                            .color = ui_metrics.TAB_TEXT_COLOR,
-                        };
+                    if (cp >= title.len and cursor_count == 0) {
+                        cursor_x = x_off;
+                        if (x_off >= 0) {
+                            cursor_instances[0] = .{
+                                .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                                .size = .{ 1, ch - 2 },
+                                .color = ui_metrics.TAB_TEXT_COLOR,
+                            };
+                        }
                         cursor_count = 1;
                     }
                 }
             }
 
             // --- IME preedit overlay (#164 1c) ---
-            // rename 활성 탭의 cursor 뒤 inline. mac drawTabBar (renderer/macos.zig:935-)
-            // 동등 — codepoint 별 cell 단위 보라 배경 + glyph. wide char (CJK) 2 cell.
-            // max_text_w 안 일 동안만 그림. 한글 / 일본어 / 중국어 등 모든 IMM IME path.
+            // rename 활성 탭의 cursor 뒤 inline. cursor 가 가운데일 때도 정확
+            // (cursor_x 사용 — main text 끝 x_off 가 아님). codepoint 별 cell
+            // 단위 보라 배경 + glyph. wide char (CJK) 2 cell. max_text_w 안 일
+            // 동안만. 한글 / 일본어 / 중국어 등 모든 IMM IME path.
             if (is_renaming and rename_preedit.len > 0) {
                 var pre_bg_buf: [16]BgInstance = undefined;
                 var pre_bg_n: u32 = 0;
                 const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
                 const cell_top = baseline_y2 - self.font.ascent_px;
+                var pre_x = cursor_x;
 
                 var pre_iter = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
                 while (pre_iter.nextCodepoint()) |pcp| {
                     if (text_count >= 510 or pre_bg_n >= pre_bg_buf.len) break;
                     const cp_w_cells: u8 = display_width.codepointWidth(pcp);
                     const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    if (x_off + advance > max_text_w) break;
+                    if (pre_x + advance > max_text_w) break;
+                    if (pre_x < 0) {
+                        pre_x += advance;
+                        continue;
+                    }
 
-                    const cell_x = tab_x + pad + x_off;
+                    const cell_x = tab_x + pad + pre_x;
                     pre_bg_buf[pre_bg_n] = .{
                         .pos = .{ cell_x, cell_top },
                         .size = .{ advance, ch },
@@ -826,12 +843,12 @@ pub const D3d11Renderer = struct {
                     pre_bg_n += 1;
 
                     const result = self.font.resolveGlyph(pcp) orelse {
-                        x_off += advance;
+                        pre_x += advance;
                         continue;
                     };
                     const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
-                        x_off += advance;
+                        pre_x += advance;
                         continue;
                     };
                     if (result.owned) _ = result.face.vtable.Release(result.face);
@@ -847,7 +864,7 @@ pub const D3d11Renderer = struct {
                         };
                         text_count += 1;
                     }
-                    x_off += advance;
+                    pre_x += advance;
                 }
                 if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
             }

@@ -804,8 +804,11 @@ pub const MetalRenderer = struct {
                         const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
                         probe_byte += plen;
                     }
-                    if (probe_x > max_text_w_px - cw) {
-                        scroll_offset = probe_x - max_text_w_px + cw;
+                    // cursor 우측에 *최소 wide 1 글자* (cw*2) 여백 — preedit
+                    // (한글 / CJK 자모 wide=2 cell) 가 들어갈 자리 확보 (#164 1c).
+                    const reserve = cw * 2;
+                    if (probe_x > max_text_w_px - reserve) {
+                        scroll_offset = probe_x - max_text_w_px + reserve;
                     }
                 }
             }
@@ -822,6 +825,9 @@ pub const MetalRenderer = struct {
 
             var byte_idx: usize = 0;
             var cursor_drawn = false;
+            // cursor 위치 보존 — preedit overlay 시작점. cursor 가 가운데일
+            // 때도 정확 (main text 끝 text_x 가 아니라 cursor 위치). #164 1c.
+            var cursor_x: f32 = text_x_start - scroll_offset;
             var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
             while (iter.nextCodepoint()) |cp| {
                 if (text_n >= MAX_TEXT) break;
@@ -867,6 +873,7 @@ pub const MetalRenderer = struct {
                 // true 처리 — 다음 byte 에서 또 그리려는 시도 막음).
                 if (cursor_byte) |cb| {
                     if (byte_idx == cb and !cursor_drawn) {
+                        cursor_x = text_x;
                         if (text_x >= viewport_left and bg_n < MAX_BG) {
                             bg_buf[bg_n] = .{
                                 .pos = .{ text_x, text_y_top + 2 },
@@ -921,48 +928,55 @@ pub const MetalRenderer = struct {
 
             // 끝에 cursor (text 가 cursor 위치를 안 지났을 때 — 예: cursor == title.len).
             // viewport 안일 때만 그림 (scroll 으로 좌측 잘림 영역엔 X).
-            if (renaming_this and !cursor_drawn and bg_n < MAX_BG) {
-                if (cursor_byte) |cb| if (cb >= title.len and text_x >= viewport_left) {
-                    bg_buf[bg_n] = .{
-                        .pos = .{ text_x, text_y_top + 2 },
-                        .size = .{ 1, ch - 4 },
-                        .color = ui_metrics.TAB_TEXT_COLOR,
-                    };
-                    bg_n += 1;
+            if (renaming_this and !cursor_drawn) {
+                if (cursor_byte) |cb| if (cb >= title.len) {
+                    cursor_x = text_x;
+                    if (text_x >= viewport_left and bg_n < MAX_BG) {
+                        bg_buf[bg_n] = .{
+                            .pos = .{ text_x, text_y_top + 2 },
+                            .size = .{ 1, ch - 4 },
+                            .color = ui_metrics.TAB_TEXT_COLOR,
+                        };
+                        bg_n += 1;
+                    }
                 };
             }
 
-            // preedit (IME composition) 인라인 — cursor 뒤에 보라 배경 + 글자.
+            // preedit (IME composition) 인라인 — cursor 뒤 보라 배경 + 글자.
+            // cursor_x 사용 (main text 끝 text_x 가 아님) — cursor 가운데 정확.
             if (renaming_this and preedit_text.len > 0) {
+                var pre_x = cursor_x;
                 var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
                 while (pre_iter.nextCodepoint()) |cp| {
                     if (text_n >= MAX_TEXT or bg_n >= MAX_BG) break;
                     const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
                     const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    if (text_x - text_x_start + advance > max_text_w_px) break;
+                    if (pre_x - text_x_start + advance > max_text_w_px) break;
+                    if (pre_x < viewport_left) {
+                        pre_x += advance;
+                        continue;
+                    }
 
-                    // 보라색 배경 (cell preedit 과 같은 색). wide char 는 advance
-                    // 폭 (2 cell) 으로 배경도 같이 늘림.
                     bg_buf[bg_n] = .{
-                        .pos = .{ text_x, text_y_top },
+                        .pos = .{ pre_x, text_y_top },
                         .size = .{ advance, ch },
                         .color = preedit_bg_color,
                     };
                     bg_n += 1;
 
                     const result = self.font.resolveGlyph(@intCast(cp)) orelse {
-                        text_x += advance;
+                        pre_x += advance;
                         continue;
                     };
                     const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                         if (result.owned) ct.CFRelease(result.font);
-                        text_x += advance;
+                        pre_x += advance;
                         continue;
                     };
                     if (result.owned) ct.CFRelease(result.font);
 
                     if (entry.w > 0 and entry.h > 0) {
-                        const gx = text_x + @as(f32, @floatFromInt(entry.bearing_x));
+                        const gx = pre_x + @as(f32, @floatFromInt(entry.bearing_x));
                         const gy = text_y_top + self.font.ascent_px
                             - @as(f32, @floatFromInt(entry.bearing_y))
                             - @as(f32, @floatFromInt(entry.h));
@@ -976,7 +990,7 @@ pub const MetalRenderer = struct {
                         };
                         text_n += 1;
                     }
-                    text_x += advance;
+                    pre_x += advance;
                 }
             }
 
