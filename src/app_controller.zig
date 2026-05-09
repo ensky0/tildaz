@@ -478,21 +478,25 @@ pub const App = struct {
         const close_x_int = tab_x_int + self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING;
         if (mouse_x >= close_x_int) return false;
 
-        // mouse_x → byte index — tab_layout.renameTextHit (cross-platform 산술).
+        // preedit 활성 시 manual commit — preedit 자모 들을 현재 cursor 위치
+        // 다음에 insert (rename buf 에). 그 후 IME state cancel — 다음
+        // GCS_RESULTSTR 안 받게. native textbox UX (#164 follow-up).
+        const preedit = self.window.imePreeditSlice();
+        if (preedit.len > 0) {
+            var commit_iter = std.unicode.Utf8Iterator{ .bytes = preedit, .i = 0 };
+            while (commit_iter.nextCodepoint()) |cp| {
+                if (cp >= 0x20) _ = self.tab_interaction.rename.insertCodepoint(cp);
+            }
+            self.window.imeCancelComposition();
+        }
+
+        // commit 반영된 새 view 로 mouse → byte 매핑.
+        const rv_new = self.tab_interaction.rename.view() orelse return false;
         const cw: f32 = @floatFromInt(self.window.cell_width);
         const text_x_start: f32 = @floatFromInt(tab_x_int + self.TAB_PADDING);
         const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING * 3);
 
-        // preedit_advance_total — renderer 와 동등.
-        const preedit = self.window.imePreeditSlice();
-        var preedit_advance_total: f32 = 0;
-        var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit, .i = 0 };
-        while (pre_iter.nextCodepoint()) |pcp| {
-            const pcw = display_width.codepointWidth(pcp);
-            preedit_advance_total += cw * @as(f32, @floatFromInt(pcw));
-        }
-
-        if (tab_layout.renameTextHit(rv.text[0..rv.text_len], rv.cursor, preedit_advance_total, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
+        if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], rv_new.cursor, 0, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
             self.tab_interaction.rename.setCursor(new_byte);
             self.invalidateRenderer();
             return true;
