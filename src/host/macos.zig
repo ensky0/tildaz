@@ -1090,15 +1090,7 @@ fn commitOrCancelRename(commit: bool) void {
 /// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
 fn handleTabBarClick(hit: TabBarHit) void {
     if (hit.on_close) {
-        _ = g_session.closeTab(hit.tab_index);
-        if (g_session.count() == 0) {
-            log.appendLine("tab", "last tab closed via close button, terminating tildaz", .{});
-            const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-            terminate(g_app, objc.sel("terminate:"), null);
-            return;
-        }
-        // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남.
-        syncTerminalGeometry();
+        if (tab_actions.closeIndex(&g_host, hit.tab_index) == .changed) syncTerminalGeometry();
         return;
     }
     _ = g_session.setActiveTab(hit.tab_index);
@@ -1854,31 +1846,28 @@ fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
 
 /// 매 프레임 시작 시 pending close queue drain. main thread 에서 호출되므로
 /// closeTabByPtr → Tab.deinit → read_thread.join 이 deadlock 없이 진행.
-/// 마지막 탭이 닫히면 NSApp.terminate.
+/// `tab_actions.closeByPtr` 가 마지막 탭 → terminate 자동 호출 (#117 helper)
+/// — 호출처는 .changed 만 분기.
 fn drainExitedTabs() bool {
     g_pending_close_mutex.lock();
     const closes = g_pending_close_buf.toOwnedSlice(g_gpa.allocator()) catch &.{};
     g_pending_close_mutex.unlock();
     defer g_gpa.allocator().free(closes);
 
-    var any_closed = false;
-    for (closes) |ptr| {
-        const result = g_session.closeTabByPtr(ptr);
-        if (result == .none) continue;
-        log.appendLine("pty", "tab ptr=0x{x} exited, closed", .{ptr});
-        any_closed = true;
-    }
+    var any_changed = false;
+    for (closes) |ptr| switch (tab_actions.closeByPtr(&g_host, ptr) orelse continue) {
+        .ended => {
+            log.appendLine("pty", "tab ptr=0x{x} exited (last tab), terminating tildaz", .{ptr});
+            return true;
+        },
+        .changed => {
+            log.appendLine("pty", "tab ptr=0x{x} exited, closed", .{ptr});
+            any_changed = true;
+        },
+    };
 
-    if (g_session.count() == 0) {
-        log.appendLine("pty", "last tab closed, terminating tildaz", .{});
-        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-        terminate(g_app, objc.sel("terminate:"), null);
-        return true;
-    }
-    if (any_closed) {
-        // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남. 모든 탭 resize.
-        syncTerminalGeometry();
-    }
+    // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남. 모든 탭 resize.
+    if (any_changed) syncTerminalGeometry();
     return false;
 }
 

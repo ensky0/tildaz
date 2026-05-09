@@ -112,7 +112,27 @@ pub const CloseOutcome = enum { changed, ended };
 /// clear + invalidate. 호출처는 .changed 분기에서 grid resize 등 platform 동작.
 pub fn closeActive(host: *Host) ?CloseOutcome {
     if (host.session.activeTab() == null) return null;
-    return switch (host.session.closeTab(host.session.active_tab)) {
+    return outcome(host, host.session.closeTab(host.session.active_tab));
+}
+
+/// PTY exit (자식 shell 종료) → host 의 deferred drain 이 호출. 정책 동일 —
+/// 마지막 탭이면 terminate, 아니면 override clear + invalidate. mac 의
+/// drainExitedTabs (mutex queue) / win 의 WM_TAB_CLOSED 모두 같은 helper.
+pub fn closeByPtr(host: *Host, tab_ptr: usize) ?CloseOutcome {
+    return outcome(host, host.session.closeTabByPtr(tab_ptr));
+}
+
+/// 인덱스 기반 close — 탭바 close 버튼 마우스 클릭 path. closeActive 와의 차이:
+/// 어떤 탭이든 닫을 수 있음 (활성 탭 X). 정책은 동일 — 마지막 탭 → terminate
+/// 등.
+pub fn closeIndex(host: *Host, idx: usize) ?CloseOutcome {
+    return outcome(host, host.session.closeTab(idx));
+}
+
+/// closeActive / closeByPtr 공통 사후 처리 — close 의 source 만 다르고 마지막
+/// 탭 정책 / override clear / invalidate 동일.
+fn outcome(host: *Host, result: session_core.SessionCore.CloseResult) ?CloseOutcome {
+    return switch (result) {
         .none => null,
         .closed_last => blk: {
             host.terminate(host);
