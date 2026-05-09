@@ -545,8 +545,6 @@ pub const D3d11Renderer = struct {
 
     // === Tab bar rendering ===
 
-    pub const TabTitle = struct { ptr: [*]const u8, len: usize };
-
     pub const RenameState = struct {
         tab_index: usize,
         text: [*]const u8,
@@ -571,7 +569,7 @@ pub const D3d11Renderer = struct {
 
     pub fn renderTabBar(
         self: *D3d11Renderer,
-        tab_titles: []const TabTitle,
+        tab_titles: []const []const u8,
         active_tab: usize,
         tab_bar_height: c_int,
         client_w: c_int,
@@ -671,7 +669,7 @@ pub const D3d11Renderer = struct {
                 @as(f32, @floatFromInt(i)) * tw - sx + tax;
 
             const is_renaming = if (rename_state) |rs| (i == rs.tab_index) else false;
-            const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i].ptr[0..tab_titles[i].len];
+            const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i];
             const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
             // Max text width: tab width - close button - padding on both sides - gap before close btn
