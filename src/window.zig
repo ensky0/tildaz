@@ -2,6 +2,7 @@ const std = @import("std");
 const windows = std.os.windows;
 const app_event = @import("app_event.zig");
 const dialog = @import("dialog.zig");
+const log = @import("log.zig");
 const paths = @import("paths.zig");
 const dwrite_font = @import("font/windows/font.zig");
 
@@ -1119,6 +1120,7 @@ pub const Window = struct {
             WM_IME_STARTCOMPOSITION => {
                 // IME 조합 시작 — preedit buffer 비우고 default IME composition
                 // window 차단 (return 0). 우리 inline overlay 가 대신 (#164).
+                log.appendLine("ime", "WM_IME_STARTCOMPOSITION", .{});
                 self.preedit_len = 0;
                 return 0;
             },
@@ -1128,8 +1130,14 @@ pub const Window = struct {
                 // — DefWindowProc 를 통과시켜 그 path 발동. 한글 / 일본어 / 중국
                 // 어 / 베트남어 / 인디크 모두 같은 IMM API.
                 const lp_dword: DWORD = @truncate(@as(usize, @bitCast(lParam)));
+                log.appendLine("ime", "WM_IME_COMPOSITION lparam=0x{x} compstr={d} resultstr={d}", .{
+                    lp_dword,
+                    @as(u32, if ((lp_dword & GCS_COMPSTR) != 0) 1 else 0),
+                    @as(u32, if ((lp_dword & GCS_RESULTSTR) != 0) 1 else 0),
+                });
                 if ((lp_dword & GCS_COMPSTR) != 0) {
                     self.imeReadCompositionPreedit();
+                    log.appendLine("ime", "  preedit_len after read = {d}", .{self.preedit_len});
                     // RESULTSTR 도 같이 들어왔으면 default 도 호출 — 그래야 commit 된 글자가 WM_CHAR 로 dispatch.
                     if ((lp_dword & GCS_RESULTSTR) != 0) return DefWindowProcW(hwnd, msg, wParam, lParam);
                     return 0;
@@ -1137,6 +1145,7 @@ pub const Window = struct {
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_IME_ENDCOMPOSITION => {
+                log.appendLine("ime", "WM_IME_ENDCOMPOSITION", .{});
                 self.preedit_len = 0;
                 return 0;
             },
