@@ -119,26 +119,16 @@ pub const App = struct {
         if (self.renderer) |*r| r.invalidate();
     }
 
-    fn handleCloseResult(self: *App, result: SessionCore.CloseResult) void {
-        switch (result) {
-            .none => return,
-            .closed_last => {
-                log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
-                self.window.closeAfterShellExit();
-            },
-            .changed => {
-                // 2 → 1 전환에서 탭바가 사라지며 cell 영역이 늘어난다 (#127).
-                if (self.session.count() == 1) {
-                    const grid = self.getTerminalGridSize();
-                    self.session.resizeAll(grid.cols, grid.rows);
-                }
-                self.invalidateRenderer();
-            },
-        }
-    }
-
+    /// 인덱스 기반 close — 탭바 close 버튼 마우스 클릭 path. helper 가 마지막
+    /// 탭 → terminate (`window.closeAfterShellExit`), 그 외 → override clear +
+    /// invalidate. .changed 일 때만 grid resize (#127, 2 → 1 전환).
     fn closeTab(self: *App, index: usize) void {
-        self.handleCloseResult(self.session.closeTab(index));
+        if (tab_actions.closeIndex(&self.host, index) == .changed) {
+            if (self.session.count() == 1) {
+                const grid = self.getTerminalGridSize();
+                self.session.resizeAll(grid.cols, grid.rows);
+            }
+        }
     }
 
     /// 탭이 1개 이하면 탭바 자체를 그리지 않으므로 layout 에서도 0 으로 취급
@@ -384,7 +374,15 @@ pub const App = struct {
     // --- Tab management from window messages ---
 
     pub fn handleTabClosed(self: *App, tab_ptr: usize) void {
-        self.handleCloseResult(self.session.closeTabByPtr(tab_ptr));
+        // PTY 자식 종료 → wndProc 가 WM_TAB_CLOSED 라우팅. closeByPtr helper 가
+        // 마지막 탭 → terminate (`window.closeAfterShellExit`), 그 외 → override
+        // clear + invalidate. .changed 일 때만 grid resize (#127, 2 → 1 전환).
+        if (tab_actions.closeByPtr(&self.host, tab_ptr) == .changed) {
+            if (self.session.count() == 1) {
+                const grid = self.getTerminalGridSize();
+                self.session.resizeAll(grid.cols, grid.rows);
+            }
+        }
     }
 
     pub fn handleNewTab(self: *App) void {
