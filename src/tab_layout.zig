@@ -196,6 +196,137 @@ pub fn cursorScrollOffset(
     return 0;
 }
 
+/// 탭바 title text 의 codepoint 별 layout 명령. iterTabText 가 codepoint 별로
+/// 호출자의 callback 에 emit. 호출자가 platform native 그리기 (mac
+/// CoreText/Metal, win DirectWrite/D3D11 — atlas / instance buffer / glyph y
+/// 좌표 계산 등) 처리. (#163 옵션 A 확장)
+pub const TextCmd = union(enum) {
+    /// title codepoint (viewport 안). 호출자가 atlas resolve + glyph instance.
+    glyph: struct { cp: u21, x: f32, advance: f32 },
+    /// rename cursor 1 px vertical bar.
+    cursor: struct { x: f32 },
+    /// preedit cell BG (보라). cursor 뒤 inline.
+    preedit_bg: struct { x: f32, advance: f32 },
+    /// preedit cell glyph. preedit_bg 와 동일 위치.
+    preedit_glyph: struct { cp: u21, x: f32, advance: f32 },
+    /// truncate "..." 의 dot (commit 후 long text 시 3 회 emit).
+    truncate_dot: struct { x: f32 },
+};
+
+/// 탭바 title text 의 cross-platform layout iter — codepoint 별 cb 호출.
+/// cursor follow scroll / preedit push-right (cursor 뒤 main text 우측 이동) /
+/// truncate ellipsis / max 잘림 모두 처리. mac/win 양쪽이 같은 helper 호출 →
+/// 같은 fix 양쪽 자동 반영 (#159 / #163 / #164 패턴 확장).
+///
+/// 인자:
+///   title: rename buf (rename 활성) 또는 tab title
+///   cursor_byte: rename 활성 시 cursor 위치 (null = rename 비활성)
+///   preedit_text: IME preedit (rename 활성 시 cursor 옆 inline)
+///   text_x_start: 탭 내 text 시작 x — 화면 절대 좌표 (`tab_x + tab_pad`)
+///   cw: cell width (DPI scaled)
+///   max_text_w: text 영역 너비 (`tab_w - close_w - 3*pad` 등)
+///   is_renaming: 이 탭이 rename 활성 여부
+///   needs_truncate: commit 후 (rename 비활성) + total > max → ellipsis
+///   ctx: callback 의 사용자 context (anytype — closure 대용)
+///   cb: comptime callback. 매 cmd 마다 호출. zero-overhead inline.
+pub fn iterTabText(
+    title: []const u8,
+    cursor_byte: ?usize,
+    preedit_text: []const u8,
+    text_x_start: f32,
+    cw: f32,
+    max_text_w: f32,
+    is_renaming: bool,
+    needs_truncate: bool,
+    ctx: anytype,
+    comptime cb: fn (@TypeOf(ctx), TextCmd) void,
+) void {
+    const reserve = cursorReserve(cw);
+    const ellipsis_w = cw * 3;
+    const truncate_at = if (needs_truncate) max_text_w - ellipsis_w else max_text_w;
+    const preedit_advance = if (is_renaming) computeAdvanceTotal(preedit_text, cw) else 0;
+
+    const scroll_offset: f32 = if (is_renaming and cursor_byte != null)
+        cursorScrollOffset(title, cursor_byte.?, cw, max_text_w, preedit_advance)
+    else
+        0;
+
+    var text_x = text_x_start - scroll_offset;
+    var byte_idx: usize = 0;
+    var cursor_drawn = false;
+    var cursor_x: f32 = text_x;
+    var truncated = false;
+
+    var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const cp_w_cells = display_width.codepointWidth(@intCast(cp));
+        const advance = cw * @as(f32, @floatFromInt(cp_w_cells));
+        const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+
+        // truncate threshold (rename 비활성, long text)
+        if (text_x - text_x_start + advance > truncate_at) {
+            if (needs_truncate) {
+                var i: u8 = 0;
+                while (i < 3) : (i += 1) {
+                    cb(ctx, .{ .truncate_dot = .{ .x = text_x } });
+                    text_x += cw;
+                }
+            }
+            truncated = true;
+            break;
+        }
+        // rename 중 close 와 reserve 간격 보장 — max - reserve 도달 시 잘림
+        if (is_renaming and text_x - text_x_start + advance > max_text_w - reserve) break;
+
+        // cursor mid (byte_idx 가 cursor_byte 도달)
+        if (cursor_byte) |cb_pos| {
+            if (byte_idx == cb_pos and !cursor_drawn) {
+                cursor_x = text_x;
+                if (text_x >= text_x_start) cb(ctx, .{ .cursor = .{ .x = text_x } });
+                cursor_drawn = true;
+                // cursor 통과 — main text 의 cursor 뒤 글자를 preedit advance 만큼 우측 이동.
+                text_x += preedit_advance;
+            }
+        }
+        byte_idx += cp_len;
+
+        // viewport 좌측 잘림 — advance 만 누적, glyph X
+        if (text_x < text_x_start) {
+            text_x += advance;
+            continue;
+        }
+        cb(ctx, .{ .glyph = .{ .cp = @intCast(cp), .x = text_x, .advance = advance } });
+        text_x += advance;
+    }
+
+    // cursor at end (cursor_byte == title.len). truncated 면 X.
+    if (is_renaming and !cursor_drawn and !truncated) {
+        if (cursor_byte) |cb_pos| if (cb_pos >= title.len) {
+            cursor_x = text_x;
+            if (text_x >= text_x_start) cb(ctx, .{ .cursor = .{ .x = text_x } });
+        };
+    }
+
+    // preedit overlay — cursor_x 부터 codepoint 별 보라 BG + glyph.
+    if (is_renaming and preedit_text.len > 0) {
+        var pre_x = cursor_x;
+        var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
+        while (pre_iter.nextCodepoint()) |pcp| {
+            const pcells = display_width.codepointWidth(@intCast(pcp));
+            const padv = cw * @as(f32, @floatFromInt(pcells));
+            // close 영역까지만 (preedit 길어지면 close 까지 — textbox 일반).
+            if (pre_x + padv > text_x_start + max_text_w) break;
+            if (pre_x < text_x_start) {
+                pre_x += padv;
+                continue;
+            }
+            cb(ctx, .{ .preedit_bg = .{ .x = pre_x, .advance = padv } });
+            cb(ctx, .{ .preedit_glyph = .{ .cp = @intCast(pcp), .x = pre_x, .advance = padv } });
+            pre_x += padv;
+        }
+    }
+}
+
 /// rename text 영역 안 마우스 위치 → text 안 byte index. cursor follow scroll
 /// 결과 좌측 잘림 영역도 처리. mouse_x 가 viewport 밖이면 null. native textbox
 /// UX — caller 가 RenameState.setCursor 호출 후 commit 안 함 (#164 follow-up).
