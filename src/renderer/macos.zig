@@ -17,6 +17,7 @@ const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
+const tab_layout = @import("../tab_layout.zig");
 
 const MAX_INSTANCES: u32 = 32768;
 
@@ -156,20 +157,10 @@ pub const TabDragView = struct {
     current_x_px: f32,
 };
 
-/// 탭바 layout (#117 Firefox 패턴) — `<` `>` 화살표 + `+` 버튼이 탭 viewport
-/// 영역을 깎음. 호출처 (macos_host) 가 계산해서 넘김.
-pub const TabBarLayout = struct {
-    tab_area_x: f32,
-    tab_area_w: f32,
-    arrows_visible: bool,
-    arrow_w: f32,
-    plus_w: f32,
-    plus_x: f32,
-    left_arrow_x: f32,
-    right_arrow_x: f32,
-    left_enabled: bool,
-    right_enabled: bool,
-};
+/// 탭바 layout (#117 Firefox 패턴) — cross-platform `tab_layout.Layout` 그대로
+/// 사용 (#163 4-i-2). 호출처 host 가 `tab_layout.compute()` 결과를 그대로 넘김
+/// — renderer struct 변환 cast block 사라짐.
+pub const TabBarLayout = tab_layout.Layout;
 
 pub const MetalRenderer = struct {
     alloc: std.mem.Allocator,
