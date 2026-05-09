@@ -786,203 +786,88 @@ pub const MetalRenderer = struct {
             const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
             const preedit_text: []const u8 = if (renaming_this) rename_preedit else &.{};
 
-            // typing 중 cursor follow scroll + preedit 산술 — cross-platform
-            // helper (mac/win renderer / host 동일). preedit 비활성 시 0.
-            const cursor_reserve = tab_layout.cursorReserve(cw);
-            const preedit_advance_total: f32 = if (renaming_this) tab_layout.computeAdvanceTotal(preedit_text, cw) else 0;
-            const scroll_offset: f32 = if (renaming_this and cursor_byte != null)
-                tab_layout.cursorScrollOffset(title, cursor_byte.?, cw, max_text_w_px, preedit_advance_total)
-            else
-                0;
-            var text_x = text_x_start - scroll_offset;
-
             // 긴 title 의 ellipsis 처리 (#161). typing 중 (renaming_this) 은
-            // truncate 안 함 — cursor 따라 그리고 max width 넘으면 break (Windows
-            // cb9c939 와 동등). commit 후 (typing 비활성) + total width 가 max
-            // 초과 시 max - ellipsis_w 까지 그린 뒤 "..." 추가.
+            // truncate 안 함. iterTabText 가 cursor follow scroll / preedit
+            // advance / truncate ellipsis 모두 처리.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
-            const ellipsis_w = cw * 3;
             const needs_truncate = !renaming_this and (total_text_w > max_text_w_px);
-            const truncate_at_w = if (needs_truncate) max_text_w_px - ellipsis_w else max_text_w_px;
-
-            var byte_idx: usize = 0;
-            var cursor_drawn = false;
-            // cursor 위치 보존 — preedit overlay 시작점. cursor 가 가운데일
-            // 때도 정확 (main text 끝 text_x 가 아니라 cursor 위치). #164 1c.
-            var cursor_x: f32 = text_x_start - scroll_offset;
-            var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
-            while (iter.nextCodepoint()) |cp| {
-                if (text_n >= MAX_TEXT) break;
-                // wide char (한글/CJK/Fullwidth/주요 emoji) 는 cell 2 개. 다음
-                // 글리프와 겹치지 않도록 codepoint 마다 advance 갱신.
-                const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
-                const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                // rename 중 main text 영역 = `max_text_w_px - cursor_reserve`
-                // 까지 (cursor_reserve = wide 1 글자 자리). close 와 일정 간격.
-                if (renaming_this and text_x - text_x_start + advance > max_text_w_px - cursor_reserve) break;
-                if (text_x - text_x_start + advance > truncate_at_w) {
-                    // truncate threshold 도달 — needs_truncate 면 "..." 그리고
-                    // break, 아니면 그냥 break (typing 중 long text).
-                    if (needs_truncate) {
-                        for (0..3) |_| {
-                            if (text_n >= MAX_TEXT) break;
-                            const dot_result = self.font.resolveGlyph('.') orelse break;
-                            const dot_entry = self.atlas.getOrInsert(dot_result.font, dot_result.index) orelse {
-                                if (dot_result.owned) ct.CFRelease(dot_result.font);
-                                break;
-                            };
-                            if (dot_result.owned) ct.CFRelease(dot_result.font);
-                            if (dot_entry.w > 0 and dot_entry.h > 0) {
-                                const gx = text_x + @as(f32, @floatFromInt(dot_entry.bearing_x));
-                                const gy = text_y_top + self.font.ascent_px
-                                    - @as(f32, @floatFromInt(dot_entry.bearing_y))
-                                    - @as(f32, @floatFromInt(dot_entry.h));
-                                text_buf[text_n] = .{
-                                    .pos = .{ gx, gy },
-                                    .size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
-                                    .uv_pos = .{ @floatFromInt(dot_entry.x), @floatFromInt(dot_entry.y) },
-                                    .uv_size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
-                                    .fg_color = ui_metrics.TAB_TEXT_COLOR,
-                                    .color_flag = 0,
-                                };
-                                text_n += 1;
-                            }
-                            text_x += cw;
-                        }
-                    }
-                    break;
-                }
-
-                // cursor 가 이 byte 위치에 와 있으면 1px vertical bar.
-                // viewport 좌측 밖이면 cursor 시각 표시는 X (cursor_drawn 은
-                // true 처리 — 다음 byte 에서 또 그리려는 시도 막음).
-                if (cursor_byte) |cb| {
-                    if (byte_idx == cb and !cursor_drawn) {
-                        cursor_x = text_x;
-                        if (text_x >= viewport_left and bg_n < MAX_BG) {
-                            bg_buf[bg_n] = .{
-                                .pos = .{ text_x, text_y_top + 2 },
-                                .size = .{ 1, ch - 4 },
-                                .color = ui_metrics.TAB_TEXT_COLOR,
-                            };
-                            bg_n += 1;
-                        }
-                        cursor_drawn = true;
-                        // cursor 통과 — 우측 main text 를 preedit advance 만큼
-                        // 우측 이동. cursor 위치 자체 (cursor_x) 는 그대로.
-                        text_x += preedit_advance_total;
-                    }
-                }
-
-                const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-                byte_idx += cp_len;
-
-                // viewport 좌측 밖 (scroll 으로 잘림) — atlas / glyph 호출 skip,
-                // advance 만 누적. typing 중 cursor 우측에 있을 때 좌측 글자들이
-                // 여기 해당.
-                if (text_x < viewport_left) {
-                    text_x += advance;
-                    continue;
-                }
-
-                const result = self.font.resolveGlyph(@intCast(cp)) orelse {
-                    text_x += advance;
-                    continue;
-                };
-                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+            // cross-platform iterTabText — codepoint 별 cb 호출. mac/win 양쪽
+            // 같은 helper 호출 → fix 한 곳 양쪽 자동 반영. (#163 옵션 A 확장)
+            const Ctx = struct {
+                self: *MetalRenderer,
+                bg_buf: *[MAX_BG]BgInstance,
+                bg_n: *usize,
+                text_buf: *[MAX_TEXT]TextInstance,
+                text_n: *usize,
+                text_y_top: f32,
+                ch: f32,
+                preedit_bg_color: [4]f32,
+                viewport_left: f32,
+            };
+            const ctx = Ctx{
+                .self = self,
+                .bg_buf = &bg_buf,
+                .bg_n = &bg_n,
+                .text_buf = &text_buf,
+                .text_n = &text_n,
+                .text_y_top = text_y_top,
+                .ch = ch,
+                .preedit_bg_color = preedit_bg_color,
+                .viewport_left = viewport_left,
+            };
+            const emitGlyph = struct {
+                fn run(c: Ctx, cp: u21, x: f32, fg: [4]f32) void {
+                    if (c.text_n.* >= MAX_TEXT) return;
+                    if (x < c.viewport_left) return;
+                    const result = c.self.font.resolveGlyph(@intCast(cp)) orelse return;
+                    const entry = c.self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                        if (result.owned) ct.CFRelease(result.font);
+                        return;
+                    };
                     if (result.owned) ct.CFRelease(result.font);
-                    text_x += advance;
-                    continue;
-                };
-                if (result.owned) ct.CFRelease(result.font);
-
-                if (entry.w > 0 and entry.h > 0) {
-                    const gx = text_x + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = text_y_top + self.font.ascent_px
+                    if (entry.w == 0 or entry.h == 0) return;
+                    const gx = x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = c.text_y_top + c.self.font.ascent_px
                         - @as(f32, @floatFromInt(entry.bearing_y))
                         - @as(f32, @floatFromInt(entry.h));
-                    text_buf[text_n] = .{
+                    c.text_buf[c.text_n.*] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                        .fg_color = fg,
                         .color_flag = if (entry.is_color) 1 else 0,
                     };
-                    text_n += 1;
+                    c.text_n.* += 1;
                 }
-                text_x += advance;
-            }
-
-            // 끝에 cursor (text 가 cursor 위치를 안 지났을 때 — 예: cursor == title.len).
-            // viewport 안일 때만 그림 (scroll 으로 좌측 잘림 영역엔 X).
-            if (renaming_this and !cursor_drawn) {
-                if (cursor_byte) |cb| if (cb >= title.len) {
-                    cursor_x = text_x;
-                    if (text_x >= viewport_left and bg_n < MAX_BG) {
-                        bg_buf[bg_n] = .{
-                            .pos = .{ text_x, text_y_top + 2 },
-                            .size = .{ 1, ch - 4 },
-                            .color = ui_metrics.TAB_TEXT_COLOR,
-                        };
-                        bg_n += 1;
+            }.run;
+            tab_layout.iterTabText(title, cursor_byte, preedit_text, text_x_start, cw, max_text_w_px, renaming_this, needs_truncate, ctx, struct {
+                fn cb(c: Ctx, cmd: tab_layout.TextCmd) void {
+                    switch (cmd) {
+                        .glyph => |g| emitGlyph(c, g.cp, g.x, ui_metrics.TAB_TEXT_COLOR),
+                        .cursor => |cur| {
+                            if (c.bg_n.* >= MAX_BG) return;
+                            c.bg_buf[c.bg_n.*] = .{
+                                .pos = .{ cur.x, c.text_y_top + 2 },
+                                .size = .{ 1, c.ch - 4 },
+                                .color = ui_metrics.TAB_TEXT_COLOR,
+                            };
+                            c.bg_n.* += 1;
+                        },
+                        .preedit_bg => |pbg| {
+                            if (c.bg_n.* >= MAX_BG) return;
+                            c.bg_buf[c.bg_n.*] = .{
+                                .pos = .{ pbg.x, c.text_y_top },
+                                .size = .{ pbg.advance, c.ch },
+                                .color = c.preedit_bg_color,
+                            };
+                            c.bg_n.* += 1;
+                        },
+                        .preedit_glyph => |pg| emitGlyph(c, pg.cp, pg.x, ui_metrics.TAB_TEXT_COLOR),
+                        .truncate_dot => |dot| emitGlyph(c, '.', dot.x, ui_metrics.TAB_TEXT_COLOR),
                     }
-                };
-            }
-
-            // preedit (IME composition) 인라인 — cursor 뒤 보라 배경 + 글자.
-            // cursor_x 사용 (main text 끝 text_x 가 아님) — cursor 가운데 정확.
-            if (renaming_this and preedit_text.len > 0) {
-                var pre_x = cursor_x;
-                var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
-                while (pre_iter.nextCodepoint()) |cp| {
-                    if (text_n >= MAX_TEXT or bg_n >= MAX_BG) break;
-                    const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
-                    const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    // preedit 은 cursor 우측 reserve 자리 (보통 reserve =
-                    // preedit_advance_total). 길어지면 close 영역 (max) 까지.
-                    if (pre_x - text_x_start + advance > max_text_w_px) break;
-                    if (pre_x < viewport_left) {
-                        pre_x += advance;
-                        continue;
-                    }
-
-                    bg_buf[bg_n] = .{
-                        .pos = .{ pre_x, text_y_top },
-                        .size = .{ advance, ch },
-                        .color = preedit_bg_color,
-                    };
-                    bg_n += 1;
-
-                    const result = self.font.resolveGlyph(@intCast(cp)) orelse {
-                        pre_x += advance;
-                        continue;
-                    };
-                    const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                        if (result.owned) ct.CFRelease(result.font);
-                        pre_x += advance;
-                        continue;
-                    };
-                    if (result.owned) ct.CFRelease(result.font);
-
-                    if (entry.w > 0 and entry.h > 0) {
-                        const gx = pre_x + @as(f32, @floatFromInt(entry.bearing_x));
-                        const gy = text_y_top + self.font.ascent_px
-                            - @as(f32, @floatFromInt(entry.bearing_y))
-                            - @as(f32, @floatFromInt(entry.h));
-                        text_buf[text_n] = .{
-                            .pos = .{ gx, gy },
-                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                            .fg_color = ui_metrics.TAB_TEXT_COLOR,
-                            .color_flag = if (entry.is_color) 1 else 0,
-                        };
-                        text_n += 1;
-                    }
-                    pre_x += advance;
                 }
-            }
+            }.cb);
 
             // close 버튼 'x' — 우측 끝 + tab_pad 위치. 색은 텍스트 60% + 탭
             // 배경 40% (Windows 와 동일 — 너무 강조되지 않게 dim).

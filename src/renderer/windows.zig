@@ -681,209 +681,112 @@ pub const D3d11Renderer = struct {
 
             // Max text width: tab width - close button - padding on both sides - gap before close btn
             const max_text_w = tw - cbs - pad * 3;
-            const ellipsis_w = cw * 3; // width of "..."
             // 탭 제목의 실제 시각 폭 — wide char (한글/CJK/Fullwidth/주요 emoji)
             // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
             const needs_truncate = !is_renaming and (total_text_w > max_text_w);
             const rename_cursor_pos: ?usize = if (is_renaming) rename_view.?.cursor else null;
 
-            // IME preedit 활성 시 cursor 뒤 main text 를 preedit advance 만큼
-            // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
-            // 시 좌측 복구).
-            //
-            // cross-platform helper — 같은 산술 mac renderer / host 와 공유.
-            const cursor_reserve = tab_layout.cursorReserve(cw);
-            const preedit_advance_total: f32 = if (is_renaming) tab_layout.computeAdvanceTotal(rename_preedit, cw) else 0;
-
-            // typing 중 cursor follow scroll (#161, native textbox 표준).
-            // cross-platform helper — mac renderer / host 와 동일 산술.
-            const scroll_offset: f32 = if (rename_cursor_pos) |cb|
-                tab_layout.cursorScrollOffset(title, cb, cw, max_text_w, preedit_advance_total)
-            else
-                0;
-
-            var x_off: f32 = -scroll_offset;
-            var byte_idx: usize = 0;
-            var truncated = false;
-            // rename 중 cursor 위치 보존 — preedit overlay 시작점. cursor 가
-            // 가운데일 때 main text 끝점 (`x_off`) 이 아니라 cursor 위치에
-            // overlay 그리도록 (#164 1c).
-            var cursor_x: f32 = -scroll_offset;
-            var view = std.unicode.Utf8View.init(title) catch {
-                // Invalid UTF-8 — skip this tab's text
-                continue;
+            // cross-platform iterTabText — codepoint 별 cb 호출. mac/win 양쪽
+            // 같은 helper 호출 → fix 한 곳 양쪽 자동 반영. (#163 옵션 A 확장)
+            // text_x_start = absolute x (tab 내 text 시작점). cb 가 받는 x 도
+            // absolute. preedit BG / glyph 은 별 buffer (1c-fix2) 라 main text
+            // drawCall 후 별도 호출 — cb 가 cmd 종류로 분기.
+            const text_x_start = tab_x + pad;
+            const Ctx = struct {
+                self: *D3d11Renderer,
+                text_instances: *[512]TextInstance,
+                text_count: *u32,
+                cursor_instances: *[1]BgInstance,
+                cursor_count: *u32,
+                pre_bg_buf: *[16]BgInstance,
+                pre_bg_n: *u32,
+                pre_text_buf: *[16]TextInstance,
+                pre_text_n: *u32,
+                ch: f32,
+                baseline_y2: f32,
+                text_x_start: f32,
+                pre_bg_color: [4]f32,
             };
-            var cp_iter = view.iterator();
-            while (cp_iter.nextCodepoint()) |codepoint| {
-                if (text_count >= 510) break;
-                const cp_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
-                const cp_w_cells: u8 = display_width.codepointWidth(codepoint);
-                const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                // rename 중 main text 영역 = `max_text_w - cursor_reserve` 까지
-                // (cursor_reserve = wide 1 글자 자리). 그 안에서만 그림 — close
-                // 버튼과 일정 간격. truncate "..." 는 commit 후 long text 만.
-                if (is_renaming and x_off + advance > max_text_w - cursor_reserve) break;
-                // Truncate with "..." if text would overflow
-                if (needs_truncate and x_off + advance > max_text_w - ellipsis_w) {
-                    // Render "..."
-                    for (0..3) |_| {
-                        if (text_count >= 512) break;
-                        const dot_result = self.font.resolveGlyph('.') orelse break;
-                        const dot_entry = self.atlas.getOrInsert(dot_result.face, dot_result.index) orelse {
-                            if (dot_result.owned) _ = dot_result.face.vtable.Release(dot_result.face);
-                            break;
-                        };
-                        if (dot_result.owned) _ = dot_result.face.vtable.Release(dot_result.face);
-                        if (dot_entry.w > 0 and dot_entry.h > 0) {
-                            const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(dot_entry.bearing_x));
-                            const gy = baseline_y2 + @as(f32, @floatFromInt(dot_entry.bearing_y));
-                            text_instances[text_count] = .{
-                                .pos = .{ gx, gy },
-                                .size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
-                                .uv_pos = .{ @floatFromInt(dot_entry.x), @floatFromInt(dot_entry.y) },
-                                .uv_size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
-                                .fg_color = ui_metrics.TAB_TEXT_COLOR,
-                            };
-                            text_count += 1;
-                        }
-                        x_off += cw;
-                    }
-                    truncated = true;
-                    break;
-                }
-                // Draw cursor before this character if cursor is at this byte position.
-                // viewport 좌측 밖 (scroll 으로 잘림) 이면 cursor 시각 표시 X.
-                // cursor_count = 1 로 마킹해 다음 byte 에서 또 그리려는 시도 막음.
-                if (rename_cursor_pos) |cp| {
-                    if (byte_idx == cp and cursor_count == 0) {
-                        cursor_x = x_off;
-                        if (x_off >= 0) {
-                            const cx_px = tab_x + pad + x_off;
-                            const cy_px = baseline_y2 - self.font.ascent_px + 2;
-                            cursor_instances[0] = .{
-                                .pos = .{ cx_px, cy_px },
-                                .size = .{ 1, ch - 2 },
-                                .color = ui_metrics.TAB_TEXT_COLOR,
-                            };
-                            self.last_cursor_px_x = @intFromFloat(cx_px);
-                            self.last_cursor_px_y = @intFromFloat(cy_px);
-                        }
-                        cursor_count = 1;
-                        // cursor 통과 — 우측 main text 를 preedit advance 만큼
-                        // 우측 이동. cursor 위치 자체 (cursor_x) 는 그대로.
-                        x_off += preedit_advance_total;
-                    }
-                }
-                byte_idx += cp_len;
-                // viewport 좌측 밖 — atlas / glyph 호출 skip, advance 만 누적.
-                if (x_off < 0) {
-                    x_off += advance;
-                    continue;
-                }
-                const result = self.font.resolveGlyph(codepoint) orelse {
-                    x_off += advance;
-                    continue;
-                };
-                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+            const ctx = Ctx{
+                .self = self,
+                .text_instances = &text_instances,
+                .text_count = &text_count,
+                .cursor_instances = &cursor_instances,
+                .cursor_count = &cursor_count,
+                .pre_bg_buf = &pre_bg_buf,
+                .pre_bg_n = &pre_bg_n,
+                .pre_text_buf = &pre_text_buf,
+                .pre_text_n = &pre_text_n,
+                .ch = ch,
+                .baseline_y2 = baseline_y2,
+                .text_x_start = text_x_start,
+                .pre_bg_color = .{ 0.25, 0.25, 0.5, 1 },
+            };
+            const Target = enum { main, preedit };
+            const emitGlyph = struct {
+                fn run(c: Ctx, cp: u21, x: f32, into: Target) void {
+                    if (x < c.text_x_start) return;
+                    const result = c.self.font.resolveGlyph(cp) orelse return;
+                    const entry = c.self.atlas.getOrInsert(result.face, result.index) orelse {
+                        if (result.owned) _ = result.face.vtable.Release(result.face);
+                        return;
+                    };
                     if (result.owned) _ = result.face.vtable.Release(result.face);
-                    x_off += advance;
-                    continue;
-                };
-                if (result.owned) _ = result.face.vtable.Release(result.face);
-                if (entry.w > 0 and entry.h > 0) {
-                    const gx = tab_x + pad + x_off + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
-                    text_instances[text_count] = .{
+                    if (entry.w == 0 or entry.h == 0) return;
+                    const gx = x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gy = c.baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
+                    const inst: TextInstance = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .fg_color = ui_metrics.TAB_TEXT_COLOR,
                     };
-                    text_count += 1;
+                    switch (into) {
+                        .main => {
+                            if (c.text_count.* >= 510) return;
+                            c.text_instances[c.text_count.*] = inst;
+                            c.text_count.* += 1;
+                        },
+                        .preedit => {
+                            if (c.pre_text_n.* >= c.pre_text_buf.len) return;
+                            c.pre_text_buf[c.pre_text_n.*] = inst;
+                            c.pre_text_n.* += 1;
+                        },
+                    }
                 }
-                x_off += advance;
-            }
-            // Cursor at end of text (only if not truncated). viewport 좌측 밖이면
-            // 시각 표시 X — scroll 으로 잘려나간 영역.
-            if (!truncated) {
-                if (rename_cursor_pos) |cp| {
-                    if (cp >= title.len and cursor_count == 0) {
-                        cursor_x = x_off;
-                        if (x_off >= 0) {
-                            const cx_px = tab_x + pad + x_off;
-                            const cy_px = baseline_y2 - self.font.ascent_px + 2;
-                            cursor_instances[0] = .{
-                                .pos = .{ cx_px, cy_px },
-                                .size = .{ 1, ch - 2 },
+            }.run;
+            tab_layout.iterTabText(title, rename_cursor_pos, rename_preedit, text_x_start, cw, max_text_w, is_renaming, needs_truncate, ctx, struct {
+                fn cb(c: Ctx, cmd: tab_layout.TextCmd) void {
+                    switch (cmd) {
+                        .glyph => |g| emitGlyph(c, g.cp, g.x, .main),
+                        .cursor => |cur| {
+                            const cy_px = c.baseline_y2 - c.self.font.ascent_px + 2;
+                            c.cursor_instances[0] = .{
+                                .pos = .{ cur.x, cy_px },
+                                .size = .{ 1, c.ch - 2 },
                                 .color = ui_metrics.TAB_TEXT_COLOR,
                             };
-                            self.last_cursor_px_x = @intFromFloat(cx_px);
-                            self.last_cursor_px_y = @intFromFloat(cy_px);
-                        }
-                        cursor_count = 1;
+                            c.cursor_count.* = 1;
+                            c.self.last_cursor_px_x = @intFromFloat(cur.x);
+                            c.self.last_cursor_px_y = @intFromFloat(cy_px);
+                        },
+                        .preedit_bg => |pbg| {
+                            if (c.pre_bg_n.* >= c.pre_bg_buf.len) return;
+                            const cell_top = c.baseline_y2 - c.self.font.ascent_px;
+                            c.pre_bg_buf[c.pre_bg_n.*] = .{
+                                .pos = .{ pbg.x, cell_top },
+                                .size = .{ pbg.advance, c.ch },
+                                .color = c.pre_bg_color,
+                            };
+                            c.pre_bg_n.* += 1;
+                        },
+                        .preedit_glyph => |pg| emitGlyph(c, pg.cp, pg.x, .preedit),
+                        .truncate_dot => |dot| emitGlyph(c, '.', dot.x, .main),
                     }
                 }
-            }
-
-            // --- IME preedit overlay (#164 1c) ---
-            // rename 활성 탭의 cursor 뒤 inline. cursor 가 가운데일 때도 정확
-            // (cursor_x 사용). codepoint 별 cell 단위 보라 배경 + glyph. 별도
-            // buffer (pre_*) 에 쌓아 main text 후 그림 — main text 가 preedit
-            // bg 위에 그려져 cursor 뒤 글자가 보이는 회귀 fix (#164 1c-fix2).
-            if (is_renaming and rename_preedit.len > 0) {
-                const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
-                const cell_top = baseline_y2 - self.font.ascent_px;
-                var pre_x = cursor_x;
-
-                var pre_iter = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
-                while (pre_iter.nextCodepoint()) |pcp| {
-                    if (pre_text_n >= pre_text_buf.len or pre_bg_n >= pre_bg_buf.len) break;
-                    const cp_w_cells: u8 = display_width.codepointWidth(pcp);
-                    const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    // preedit 은 cursor 우측 reserve 자리에 그림. 보통 reserve =
-                    // preedit_advance_total 가정 (wide 1 글자) 이지만 길어지면
-                    // close 영역 (max) 까지 채울 수 있음.
-                    if (pre_x + advance > max_text_w) break;
-                    if (pre_x < 0) {
-                        pre_x += advance;
-                        continue;
-                    }
-
-                    const cell_x = tab_x + pad + pre_x;
-                    pre_bg_buf[pre_bg_n] = .{
-                        .pos = .{ cell_x, cell_top },
-                        .size = .{ advance, ch },
-                        .color = pre_bg_color,
-                    };
-                    pre_bg_n += 1;
-
-                    const result = self.font.resolveGlyph(pcp) orelse {
-                        pre_x += advance;
-                        continue;
-                    };
-                    const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
-                        if (result.owned) _ = result.face.vtable.Release(result.face);
-                        pre_x += advance;
-                        continue;
-                    };
-                    if (result.owned) _ = result.face.vtable.Release(result.face);
-                    if (entry.w > 0 and entry.h > 0) {
-                        const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
-                        const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
-                        pre_text_buf[pre_text_n] = .{
-                            .pos = .{ gx, gy },
-                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                            .fg_color = ui_metrics.TAB_TEXT_COLOR,
-                        };
-                        pre_text_n += 1;
-                    }
-                    pre_x += advance;
-                }
-            }
+            }.cb);
 
             // Close button "x"
             if (text_count < 512) {
