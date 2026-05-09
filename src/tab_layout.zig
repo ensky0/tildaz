@@ -34,8 +34,7 @@ pub const Inputs = struct {
 
 /// 탭바 layout 계산 — viewport / tab count / scroll 기반 영역 분할.
 /// `[<][tabs][+][>]` (arrows_visible) 또는 `[tabs][+]` (no arrows). gap 없음 —
-/// 사용자 의도 (`<`/`>`/`+` 와 tab 이 인접). `Inputs.gap` 은 호환성 유지용으로
-/// 받지만 사용 X.
+/// 사용자 의도 (`<`/`>`/`+` 와 tab 이 인접).
 pub fn compute(inputs: Inputs) Layout {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
     const arrows_visible = total + inputs.plus_w > inputs.viewport_w;

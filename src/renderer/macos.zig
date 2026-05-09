@@ -1077,6 +1077,7 @@ pub const MetalRenderer = struct {
         const drawCtrlGlyph = struct {
             fn run(rself: *MetalRenderer, codepoint: u21, box_x: f32, box_w: f32, tbh: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
                 if (n.* >= buf.len) return;
+                if (box_w <= 0) return;
                 const result = rself.font.resolveGlyph(@intCast(codepoint)) orelse return;
                 const entry = rself.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                     if (result.owned) ct.CFRelease(result.font);

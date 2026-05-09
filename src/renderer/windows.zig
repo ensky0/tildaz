@@ -880,6 +880,7 @@ pub const D3d11Renderer = struct {
         const drawCtrlGlyph = struct {
             fn run(rself: *D3d11Renderer, codepoint: u21, box_x: c_int, box_w: c_int, tbh_: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
                 if (n.* >= buf.len) return;
+                if (box_w <= 0) return;
                 const result = rself.font.resolveGlyph(codepoint) orelse return;
                 const entry = rself.atlas.getOrInsert(result.face, result.index) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
