@@ -327,6 +327,9 @@ pub const App = struct {
                     self.TAB_PADDING,
                     self.tab_interaction.drag.view(),
                     self.tab_interaction.rename.view(),
+                    // rename 활성 시 IME preedit 을 탭바 cursor 옆 inline 으로
+                    // (mac 동등). 비활성이면 cell preedit (renderTerminal) 로.
+                    if (self.isRenaming()) self.window.imePreeditSlice() else &.{},
                     self.tab_scroll_x,
                     self.tabBarLayout(),
                 );
