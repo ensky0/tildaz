@@ -6,22 +6,25 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
 
 **Website**: https://ensky0.github.io/tildaz/
 
-> **v0.3.3 — Terminal.app-grade rendering on macOS, Windows Terminal-grade emoji on Windows**
+> **v0.4.0 — cross-platform code unification + Windows IME parity with macOS**
 >
-> macOS now matches Apple's Terminal.app on glyph weight, baseline alignment,
-> and block-element gradients, and the F1 hotkey + Cmd+Q routing are reliable
-> across long sessions and app focus changes. Windows brings its color emoji
-> path up to Windows Terminal quality (premultiplied dual-source blend,
-> DPI-correct cluster placement, default font metrics overhauled). See
-> [`dist/release-notes/v0.3.3.md`](dist/release-notes/v0.3.3.md) for the full
-> changelog. The v0.3.0 cross-platform parity baseline is documented in
-> [`dist/release-notes/v0.3.0.md`](dist/release-notes/v0.3.0.md).
+> Tab bar layout, tab actions, and IME pre-edit math now live in shared
+> cross-platform modules (`tab_layout.zig` / `tab_actions.zig` with a `Host`
+> interface) — a single fix lands on both platforms. Windows gains the inline
+> IME pre-edit overlay (purple, mac-equivalent), Hanja / kanji / hanzi
+> candidate-popup cursor tracking via `ImmSetCompositionWindow(CFS_POINT)`,
+> and native textbox UX for tab rename (click-to-position cursor, mid-string
+> push-right, fixed pre-edit reserve). About ~400 lines of duplicated
+> cross-platform code were removed. See
+> [`dist/release-notes/v0.4.0.md`](dist/release-notes/v0.4.0.md) for the full
+> changelog; v0.3.3's macOS rendering parity highlights are in
+> [`dist/release-notes/v0.3.3.md`](dist/release-notes/v0.3.3.md).
 
 ## Features
 
 - **Global hotkey** — toggle the terminal show/hide system-wide. Default F1, configurable per-platform via `config.hotkey`
 - **Fullscreen** — Alt+Enter on Windows, current-monitor work area (excluding taskbar / Dock). Fullscreen state is preserved across hide → show cycles and re-applied on display / DPI changes
-- **Tabs** — multiple independent terminal sessions; click to select, X to close, drag to reorder, double-click to rename. Shortcuts in [KEYBINDINGS.md](KEYBINDINGS.md)
+- **Tabs** — multiple independent terminal sessions; click to select, X to close, drag to reorder, double-click to rename. Up to 32 tabs (with a `Tab limit reached` dialog past that). Firefox-pattern tab-bar with `<` / `>` scroll arrows when the bar overflows. Shortcuts in [KEYBINDINGS.md](KEYBINDINGS.md)
 - **Full Unicode support** — Hangul, CJK, emoji (color, ZWJ family), combining marks, wide / narrow cells
 - **Font glyph fallback chain** — up to 8 font families; *per-codepoint* lookup walks the chain to find a font with the glyph. Both platforms fall through to OS system fallback for codepoints outside the chain. See [CONFIG.md](CONFIG.md) for the schema.
 - **GPU-accelerated rendering**
@@ -33,7 +36,7 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
 - **18 built-in color themes** — see [THEMES.md](THEMES.md)
 - **Text selection and copy** — drag-select with auto-copy on release, double-click for word, right-click to paste
 - **Scrollback** — mouse wheel, scrollbar drag (configurable up to 10 M lines)
-- **IME** (Korean / Japanese / Chinese) — inline pre-edit on the cursor, syllable-boundary commit, Ctrl+key during composition discards the pre-edit and aborts cleanly
+- **IME** (Korean / Japanese / Chinese) — inline pre-edit on the cursor (purple background) on both Windows and macOS, syllable-boundary commit, Hanja / kanji / hanzi candidate popup tracks the cursor on Windows, native textbox UX in tab rename (click to move cursor, mid-string typing pushes only the trailing characters)
 - **Multi-monitor follow** — drops onto whichever monitor the cursor is on; auto-reapplies on resolution / DPI / taskbar change
 - **Translucent**, always-on-top window (configurable opacity)
 - **About dialog** — Ctrl+Shift+I (Windows) / Shift+Cmd+I (macOS). Shows version / exe path / pid / config path / log path
