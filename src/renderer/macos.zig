@@ -794,8 +794,13 @@ pub const MetalRenderer = struct {
             var scroll_offset: f32 = 0;
             // IME preedit 활성 시 cursor 뒤 main text 를 preedit advance 만큼
             // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
-            // 시 좌측 복구). cursor follow scroll 의 reserve 도 정확히 이 값.
-            // (#164 1c-fix2)
+            // 시 좌측 복구).
+            //
+            // cursor 우측 reserve = `cw * 2` 고정 (wide 1 글자 자리). preedit
+            // 활성/비활성 무관 — transition 시 jump 없음 (한글 typing 빠를 때
+            // cursor 안정). ASCII typing 시 close 와 2 cell 여백 — wide IME 가능
+            // 가정의 trade-off. typing 중 일관 cursor 위치 우선. (#164 1c)
+            const cursor_reserve = cw * 2;
             var preedit_advance_total: f32 = 0;
             if (renaming_this and preedit_text.len > 0) {
                 var pre_iter_w = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
@@ -816,10 +821,13 @@ pub const MetalRenderer = struct {
                         const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
                         probe_byte += plen;
                     }
-                    // cursor 우측에 preedit 자리 확보 — preedit_advance_total
-                    // 만큼. preedit 비활성 시 0 — cursor 가 max 까지 OK.
-                    if (probe_x > max_text_w_px - preedit_advance_total) {
-                        scroll_offset = probe_x - max_text_w_px + preedit_advance_total;
+                    // probe 에 preedit_advance_total 도 포함 — cursor 우측의
+                    // preedit 자리도 scroll 검사에. 가운데 cursor + typing 시
+                    // cursor + preedit 끝이 max - reserve 도달 시 좌측 scroll →
+                    // cursor 끝 visual 안정 (native textbox).
+                    const probe_total = probe_x + preedit_advance_total;
+                    if (probe_total > max_text_w_px - cursor_reserve) {
+                        scroll_offset = probe_total - max_text_w_px + cursor_reserve;
                     }
                 }
             }
@@ -846,9 +854,9 @@ pub const MetalRenderer = struct {
                 // 글리프와 겹치지 않도록 codepoint 마다 advance 갱신.
                 const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
                 const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                // rename 중 max 넘거나 *도달* 한 글자는 잘림 — close 버튼 침범
-                // 1 픽셀도 방지.
-                if (renaming_this and text_x - text_x_start + advance >= max_text_w_px) break;
+                // rename 중 main text 영역 = `max_text_w_px - cursor_reserve`
+                // 까지 (cursor_reserve = wide 1 글자 자리). close 와 일정 간격.
+                if (renaming_this and text_x - text_x_start + advance > max_text_w_px - cursor_reserve) break;
                 if (text_x - text_x_start + advance > truncate_at_w) {
                     // truncate threshold 도달 — needs_truncate 면 "..." 그리고
                     // break, 아니면 그냥 break (typing 중 long text).
@@ -968,7 +976,9 @@ pub const MetalRenderer = struct {
                     if (text_n >= MAX_TEXT or bg_n >= MAX_BG) break;
                     const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
                     const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                    if (pre_x - text_x_start + advance >= max_text_w_px) break;
+                    // preedit 은 cursor 우측 reserve 자리 (보통 reserve =
+                    // preedit_advance_total). 길어지면 close 영역 (max) 까지.
+                    if (pre_x - text_x_start + advance > max_text_w_px) break;
                     if (pre_x < viewport_left) {
                         pre_x += advance;
                         continue;
