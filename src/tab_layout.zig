@@ -148,6 +148,54 @@ pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
     return .none;
 }
 
+/// rename / IME preedit 의 cross-platform 산술 — mac/win 양쪽 renderer 와 host
+/// 가 동일 호출. 한 곳 (helper) 변경 시 양쪽 자동 반영. (#163 통합 옵션 A)
+
+/// preedit text 의 codepoint 별 advance 합 — wide char (CJK) 자모 = 2 cell.
+pub fn computeAdvanceTotal(preedit_text: []const u8, cw: f32) f32 {
+    var total: f32 = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const cells = display_width.codepointWidth(@intCast(cp));
+        total += cw * @as(f32, @floatFromInt(cells));
+    }
+    return total;
+}
+
+/// cursor 우측 reserve (wide 1 글자 자리). preedit 활성/비활성 무관 고정 —
+/// transition jump 없음 (한글 typing 빠를 때 cursor 안정).
+pub fn cursorReserve(cw: f32) f32 {
+    return cw * 2;
+}
+
+/// rename text 의 cursor follow scroll. cursor 까지 main text + preedit 자리가
+/// max - reserve 넘으면 좌측 scroll. native textbox 동작 — cursor + preedit 끝
+/// 이 visual 우측 끝 안정.
+pub fn cursorScrollOffset(
+    title: []const u8,
+    cursor_byte: usize,
+    cw: f32,
+    max_text_w: f32,
+    preedit_advance_total: f32,
+) f32 {
+    var probe_x: f32 = 0;
+    var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+    var probe_byte: usize = 0;
+    while (probe_iter.nextCodepoint()) |pcp| {
+        if (probe_byte >= cursor_byte) break;
+        const pcw = display_width.codepointWidth(@intCast(pcp));
+        probe_x += cw * @as(f32, @floatFromInt(pcw));
+        const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
+        probe_byte += plen;
+    }
+    const probe_total = probe_x + preedit_advance_total;
+    const reserve = cursorReserve(cw);
+    if (probe_total > max_text_w - reserve) {
+        return probe_total - max_text_w + reserve;
+    }
+    return 0;
+}
+
 /// rename text 영역 안 마우스 위치 → text 안 byte index. cursor follow scroll
 /// 결과 좌측 잘림 영역도 처리. mouse_x 가 viewport 밖이면 null. native textbox
 /// UX — caller 가 RenameState.setCursor 호출 후 commit 안 함 (#164 follow-up).
@@ -174,21 +222,8 @@ pub fn renameTextHit(
 ) ?usize {
     if (mouse_x < text_x_start or mouse_x >= text_x_start + max_text_w) return null;
 
-    // scroll_offset 계산 — renderer 의 cursor follow scroll 과 동등.
-    var probe_x: f32 = 0;
-    var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
-    var probe_byte: usize = 0;
-    while (probe_iter.nextCodepoint()) |pcp| {
-        if (probe_byte >= cursor_byte) break;
-        const pcw = display_width.codepointWidth(@intCast(pcp));
-        probe_x += cw * @as(f32, @floatFromInt(pcw));
-        const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
-        probe_byte += plen;
-    }
-    var scroll_offset: f32 = 0;
-    if (probe_x > max_text_w - preedit_advance_total) {
-        scroll_offset = probe_x - max_text_w + preedit_advance_total;
-    }
+    // scroll_offset 계산 — renderer 와 동일 산술 (cursorScrollOffset helper).
+    const scroll_offset = cursorScrollOffset(title, cursor_byte, cw, max_text_w, preedit_advance_total);
 
     // mouse_x → text 안 byte 매핑.
     const target_x = mouse_x - text_x_start;

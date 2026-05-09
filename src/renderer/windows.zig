@@ -692,49 +692,16 @@ pub const D3d11Renderer = struct {
             // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
             // 시 좌측 복구).
             //
-            // cursor 우측 reserve = `cw * 2` 고정 (wide 1 글자 자리). preedit
-            // 활성/비활성 무관 — transition 시 jump 없음 (한글 typing 빠를 때
-            // cursor 안정). ASCII typing 시 close 와 2 cell 여백 — wide IME 가능
-            // 가정의 trade-off. typing 중 일관 cursor 위치 우선. (#164 1c)
-            const cursor_reserve = cw * 2;
-            var preedit_advance_total: f32 = 0;
-            if (is_renaming and rename_preedit.len > 0) {
-                var pre_iter_w = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
-                while (pre_iter_w.nextCodepoint()) |pcp_w| {
-                    const pcw_w = display_width.codepointWidth(pcp_w);
-                    preedit_advance_total += cw * @as(f32, @floatFromInt(pcw_w));
-                }
-            }
+            // cross-platform helper — 같은 산술 mac renderer / host 와 공유.
+            const cursor_reserve = tab_layout.cursorReserve(cw);
+            const preedit_advance_total: f32 = if (is_renaming) tab_layout.computeAdvanceTotal(rename_preedit, cw) else 0;
 
-            // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
-            // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.
-            // x_off 가 viewport-relative — 시작값 음수면 좌측 잘림.
-            var scroll_offset: f32 = 0;
-            if (is_renaming) {
-                if (rename_cursor_pos) |cb| {
-                    var probe_x: f32 = 0;
-                    const probe_view = std.unicode.Utf8View.init(title) catch @as(?std.unicode.Utf8View, null);
-                    if (probe_view) |pv| {
-                        var probe_iter = pv.iterator();
-                        var probe_byte: usize = 0;
-                        while (probe_iter.nextCodepoint()) |pcp| {
-                            if (probe_byte >= cb) break;
-                            const pcw = display_width.codepointWidth(pcp);
-                            probe_x += cw * @as(f32, @floatFromInt(pcw));
-                            const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
-                            probe_byte += plen;
-                        }
-                    }
-                    // probe 에 preedit_advance_total 도 포함 — cursor 우측의
-                    // preedit 자리도 scroll 검사에. 가운데 cursor + typing 시
-                    // cursor + preedit 끝이 max - reserve 도달 시 좌측 scroll →
-                    // cursor 끝 visual 안정 (native textbox).
-                    const probe_total = probe_x + preedit_advance_total;
-                    if (probe_total > max_text_w - cursor_reserve) {
-                        scroll_offset = probe_total - max_text_w + cursor_reserve;
-                    }
-                }
-            }
+            // typing 중 cursor follow scroll (#161, native textbox 표준).
+            // cross-platform helper — mac renderer / host 와 동일 산술.
+            const scroll_offset: f32 = if (rename_cursor_pos) |cb|
+                tab_layout.cursorScrollOffset(title, cb, cw, max_text_w, preedit_advance_total)
+            else
+                0;
 
             var x_off: f32 = -scroll_offset;
             var byte_idx: usize = 0;

@@ -786,51 +786,14 @@ pub const MetalRenderer = struct {
             const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
             const preedit_text: []const u8 = if (renaming_this) rename_preedit else &.{};
 
-            // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
-            // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.
-            // cursor_pixel_x 측정 후 scroll = max(0, cursor_pixel_x - max + cw).
-            // 사용자가 ← 로 cursor 좌측 이동 시 자동으로 scroll 줄어듦 (cursor
-            // 가 viewport 안이 되면 scroll = 0).
-            var scroll_offset: f32 = 0;
-            // IME preedit 활성 시 cursor 뒤 main text 를 preedit advance 만큼
-            // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
-            // 시 좌측 복구).
-            //
-            // cursor 우측 reserve = `cw * 2` 고정 (wide 1 글자 자리). preedit
-            // 활성/비활성 무관 — transition 시 jump 없음 (한글 typing 빠를 때
-            // cursor 안정). ASCII typing 시 close 와 2 cell 여백 — wide IME 가능
-            // 가정의 trade-off. typing 중 일관 cursor 위치 우선. (#164 1c)
-            const cursor_reserve = cw * 2;
-            var preedit_advance_total: f32 = 0;
-            if (renaming_this and preedit_text.len > 0) {
-                var pre_iter_w = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
-                while (pre_iter_w.nextCodepoint()) |pcp_w| {
-                    const pcw_w = display_width.codepointWidth(@intCast(pcp_w));
-                    preedit_advance_total += cw * @as(f32, @floatFromInt(pcw_w));
-                }
-            }
-            if (renaming_this) {
-                if (cursor_byte) |cb| {
-                    var probe_x: f32 = 0;
-                    var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
-                    var probe_byte: usize = 0;
-                    while (probe_iter.nextCodepoint()) |pcp| {
-                        if (probe_byte >= cb) break;
-                        const pcw = display_width.codepointWidth(@intCast(pcp));
-                        probe_x += cw * @as(f32, @floatFromInt(pcw));
-                        const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
-                        probe_byte += plen;
-                    }
-                    // probe 에 preedit_advance_total 도 포함 — cursor 우측의
-                    // preedit 자리도 scroll 검사에. 가운데 cursor + typing 시
-                    // cursor + preedit 끝이 max - reserve 도달 시 좌측 scroll →
-                    // cursor 끝 visual 안정 (native textbox).
-                    const probe_total = probe_x + preedit_advance_total;
-                    if (probe_total > max_text_w_px - cursor_reserve) {
-                        scroll_offset = probe_total - max_text_w_px + cursor_reserve;
-                    }
-                }
-            }
+            // typing 중 cursor follow scroll + preedit 산술 — cross-platform
+            // helper (mac/win renderer / host 동일). preedit 비활성 시 0.
+            const cursor_reserve = tab_layout.cursorReserve(cw);
+            const preedit_advance_total: f32 = if (renaming_this) tab_layout.computeAdvanceTotal(preedit_text, cw) else 0;
+            const scroll_offset: f32 = if (renaming_this and cursor_byte != null)
+                tab_layout.cursorScrollOffset(title, cursor_byte.?, cw, max_text_w_px, preedit_advance_total)
+            else
+                0;
             var text_x = text_x_start - scroll_offset;
 
             // 긴 title 의 ellipsis 처리 (#161). typing 중 (renaming_this) 은
