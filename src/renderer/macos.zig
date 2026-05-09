@@ -846,6 +846,8 @@ pub const MetalRenderer = struct {
                 // 글리프와 겹치지 않도록 codepoint 마다 advance 갱신.
                 const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
                 const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
+                // rename 중 max 넘는 글자는 그냥 잘림 — close 버튼 침범 방지.
+                if (renaming_this and text_x - text_x_start + advance > max_text_w_px) break;
                 if (text_x - text_x_start + advance > truncate_at_w) {
                     // truncate threshold 도달 — needs_truncate 면 "..." 그리고
                     // break, 아니면 그냥 break (typing 중 long text).
