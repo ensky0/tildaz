@@ -354,6 +354,10 @@ pub const App = struct {
                         if (self.isRenaming()) &.{} else self.window.imePreeditSlice(),
                     );
                 }
+                // IME composition / candidate window 위치 갱신 — 일본 / 중국
+                // IME 의 한자 후보 popup 이 cursor 옆 자연스럽게 추적 (#164 1d).
+                // renderer 가 cursor 그릴 때 last_cursor_px_* 갱신.
+                self.window.imeSetCompositionPos(r.last_cursor_px_x, r.last_cursor_px_y);
             } else {
                 perf.incExtra(&perf.onrender);
             }
