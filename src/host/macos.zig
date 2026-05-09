@@ -26,6 +26,7 @@ const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const tab_layout = @import("../tab_layout.zig");
+const tab_actions = @import("../tab_actions.zig");
 const session_core = @import("../session_core.zig");
 const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
@@ -295,6 +296,59 @@ var g_tab_scroll_user_override: bool = false;
 /// 활성화 동안 모든 키 입력 / 텍스트 입력 (IME insertText 포함) 이 PTY 대신
 /// 이쪽으로 라우팅.
 var g_rename: tab_interaction.RenameState = .{};
+/// `tab_actions.Host` 인스턴스 — module-level state (g_session 등) 를 cross-
+/// platform helper API 로 노출. 모든 콜백은 mac specific (NSPasteboard, NSApp
+/// terminate). invalidate 는 noop — mac 60fps timer 가 자동 redraw.
+var g_host: tab_actions.Host = .{
+    .session = &g_session,
+    .override_ptr = &g_tab_scroll_user_override,
+    .invalidate = macHostInvalidate,
+    .rename_active = macHostRenameActive,
+    .insert_rename_cp = macHostInsertRenameCp,
+    .clipboard_copy = macHostClipboardCopy,
+    .terminate = macHostTerminate,
+};
+
+fn macHostInvalidate(_: *tab_actions.Host) void {
+    // mac 은 renderTimerFire 가 60fps 로 자동 호출 — 즉시 redraw 트리거 불필요.
+}
+
+fn macHostRenameActive(_: *const tab_actions.Host) bool {
+    return g_rename.isActive();
+}
+
+fn macHostInsertRenameCp(_: *tab_actions.Host, cp: u21) void {
+    _ = g_rename.insertCodepoint(cp);
+}
+
+/// NSPasteboard.general → clearContents → setString:forType:NSPasteboardTypeString.
+/// text 는 caller 가 비어있지 않음 보장 (`tab_actions.copyActiveSelection` 가
+/// len==0 검사 후 호출).
+fn macHostClipboardCopy(_: *tab_actions.Host, text: [:0]const u8) void {
+    const NSPasteboard = objc.getClass("NSPasteboard");
+    const get_general = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const pb = get_general(NSPasteboard, objc.sel("generalPasteboard"));
+    if (pb == null) return;
+    const clear = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    _ = clear(pb, objc.sel("clearContents"));
+
+    // text 가 std.heap allocator 에서 온 non-null-terminated slice — NSString
+    // 의 stringWithBytes:length:encoding: 사용 (UTF8 = 4).
+    const NSString = objc.getClass("NSString");
+    const stringWithBytes = objc.objcSend(fn (objc.Class, objc.SEL, [*]const u8, usize, c_ulong) callconv(.c) objc.id);
+    const ns_text = stringWithBytes(NSString, objc.sel("stringWithBytes:length:encoding:"), text.ptr, text.len, NSUTF8StringEncoding);
+    if (ns_text == null) return;
+
+    const setString = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.id) callconv(.c) bool);
+    const ns_type = objc.nsString("public.utf8-plain-text"); // = NSPasteboardTypeString
+    _ = setString(pb, objc.sel("setString:forType:"), ns_text, ns_type);
+}
+
+fn macHostTerminate(_: *tab_actions.Host) void {
+    log.appendLine("tab", "last tab closed, terminating tildaz", .{});
+    const terminate_sel = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    terminate_sel(g_app, objc.sel("terminate:"), null);
+}
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
 var g_extra_env: [5]terminal.ExtraEnv = undefined;
@@ -533,23 +587,23 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
         // Cmd+1..9 = 해당 인덱스 탭 활성화. M11.2.
         if (keycodeToTabIndex(kc)) |idx| {
-            if (g_session.setActiveTab(idx)) g_tab_scroll_user_override = false; // #117
+            tab_actions.switchTab(&g_host, idx);
             return;
         }
         // Shift+Cmd+[ / Shift+Cmd+] = 이전 / 다음 탭. M11.2.
         if (shift and kc == 0x21) {
-            if (g_session.activatePrev()) g_tab_scroll_user_override = false; // #117
+            tab_actions.prevTab(&g_host);
             return;
         }
         if (shift and kc == 0x1E) {
-            if (g_session.activateNext()) g_tab_scroll_user_override = false; // #117
+            tab_actions.nextTab(&g_host);
             return;
         }
         // Shift+Cmd+R = 활성 탭 reset (#162, kc 0x0F = 'R'). Windows
         // Ctrl+Shift+R 동등. session_core.resetActive 가 fullReset + Ctrl+L
         // (\x0c) 송신 — 다음 render frame 이 새 상태 자동 그림 (60fps timer).
         if (shift and kc == 0x0F) {
-            _ = g_session.resetActive();
+            tab_actions.resetActive(&g_host);
             return;
         }
         // Cmd+Enter / Shift+Cmd+Enter (kc 0x24 = Return) = 전체화면 / 풀스크린
@@ -1282,41 +1336,22 @@ fn keycodeToTabIndex(kc: c_ushort) ?usize {
 /// frame 끝에 count == 0 일 수 있음 — drainExitedTabs 의 빈 컬렉션 분기로
 /// 통일).
 fn handleCloseActiveTab() void {
-    if (g_session.activeTab() == null) return;
-    _ = g_session.closeTab(g_session.active_tab);
-    if (g_session.count() == 0) {
-        log.appendLine("tab", "last tab closed via Cmd+W, terminating tildaz", .{});
-        const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-        terminate(g_app, objc.sel("terminate:"), null);
-        return;
-    }
-    // 2 → 1 전환 시 탭바 사라져 cell 영역 늘어남. 모든 탭 cols/rows 재동기화.
-    syncTerminalGeometry();
+    // closeActive helper 가 마지막 탭 → terminate, 그 외 → override clear +
+    // invalidate. mac 의 사후 처리는 .changed 일 때 syncTerminalGeometry 만 —
+    // 2 → 1 전환에서 탭바 사라져 cell 영역 늘어나는 케이스 대응 (#127).
+    if (tab_actions.closeActive(&g_host) == .changed) syncTerminalGeometry();
 }
 
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
 /// 가 1 → 2 전환 시 탭바 등장으로 줄어드는 cell 영역에 맞춰 모든 탭 resize.
 fn handleNewTab() void {
-    // MAX_TABS 한도 도달 — `+` 버튼은 layout 에서 자동 사라지지만 단축키
-    // (Cmd+T) 시 무반응이면 사용자 인지 어려움 → 명시 dialog. createTab
-    // 자체는 호출 안 함 (자원 낭비 방지).
-    if (g_session.count() >= session_core.MAX_TABS) {
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
-            messages.tab_limit_format;
-        dialog.showInfo(messages.tab_limit_title, msg);
-        return;
-    }
+    if (tab_actions.checkAtLimitAndDialog(&g_host)) return;
     const active = g_session.activeTab() orelse return;
-    const cols = active.terminal.cols;
-    const rows = active.terminal.rows;
-    g_session.createTab(cols, rows) catch |err| {
+    g_session.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
         log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
         return;
     };
-    // 1 → 2 전환 시 탭바 등장 → cell 영역 줄어듦. 모든 탭 resize.
     syncTerminalGeometry();
-    // 새 탭이 활성됨 — ensure 재가동 (#117).
     g_tab_scroll_user_override = false;
 }
 
@@ -1324,30 +1359,7 @@ fn handleNewTab() void {
 /// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
 /// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
 fn handleCopy() void {
-    const tab = g_session.activeTab() orelse return;
-    const screen: *ghostty.Screen = tab.terminal.screens.active;
-    const sel = screen.selection orelse return;
-    const alloc = g_gpa.allocator();
-    const text = screen.selectionString(alloc, .{ .sel = sel }) catch return;
-    defer alloc.free(text);
-    if (text.len == 0) return;
-
-    // NSPasteboard.general → clearContents → setString:forType: NSPasteboardTypeString.
-    const NSPasteboard = objc.getClass("NSPasteboard");
-    const get_general = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const pb = get_general(NSPasteboard, objc.sel("generalPasteboard"));
-    if (pb == null) return;
-    const clear = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
-    _ = clear(pb, objc.sel("clearContents"));
-
-    const NSString = objc.getClass("NSString");
-    const stringWithUTF8 = objc.objcSend(fn (objc.Class, objc.SEL, [*:0]const u8) callconv(.c) objc.id);
-    const ns_text = stringWithUTF8(NSString, objc.sel("stringWithUTF8String:"), text.ptr);
-    if (ns_text == null) return;
-
-    const setString = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.id) callconv(.c) bool);
-    const ns_type = objc.nsString("public.utf8-plain-text"); // = NSPasteboardTypeString
-    _ = setString(pb, objc.sel("setString:forType:"), ns_text, ns_type);
+    tab_actions.copyActiveSelection(&g_host, g_gpa.allocator());
 }
 
 fn handlePaste() void {
@@ -1368,19 +1380,9 @@ fn handlePaste() void {
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
 
-    // rename 진행 중이면 PTY 대신 rename buf 로 라우팅 (#142). printable
-    // codepoint 만 (cp >= 0x20) — newline / tab 등 control 문자 제외.
-    if (g_rename.isActive()) {
-        var iter = std.unicode.Utf8Iterator{ .bytes = cstr[0..len], .i = 0 };
-        while (iter.nextCodepoint()) |cp| {
-            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
-        }
-        return;
-    }
-
-    // Bracketed paste mode 검사 + wrap 은 SessionCore.pasteToActive 가 처리 —
-    // typing 과 분리. Windows 의 onAppEvent(.paste) path 와 동일 helper.
-    g_session.pasteToActive(cstr[0..len]);
+    // rename routing (printable cp 만 → g_rename) 또는 일반 PTY paste
+    // (bracketed paste + wrap 은 session.pasteToActive 가) — 양쪽 분기 helper.
+    tab_actions.routePaste(&g_host, cstr[0..len]);
 }
 
 fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
