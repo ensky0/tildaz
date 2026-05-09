@@ -303,6 +303,13 @@ pub const App = struct {
             // 무관한 매 keystroke 즉시 화면 갱신 필요 (mac 동등). throttle 만
             // 적용하면 typing 도중 preedit 안 보이거나 늦게 따라옴 (#164 회귀).
             const force_render = self.isRenaming() or self.window.imePreeditSlice().len > 0;
+            if (self.isRenaming() and self.window.imePreeditSlice().len > 0) {
+                log.appendLine("ime", "onRender: should={d} force={d} preedit_len={d}", .{
+                    @as(u32, if (should_render) 1 else 0),
+                    @as(u32, if (force_render) 1 else 0),
+                    self.window.imePreeditSlice().len,
+                });
+            }
 
             // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중인 동안은
             // handleDragMove 가 직접 auto-scroll 하므로 skip. 사용자 화살표
