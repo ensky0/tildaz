@@ -341,6 +341,9 @@ pub const App = struct {
                         self.TERMINAL_PADDING,
                         self.SCROLLBAR_W,
                         self.SCROLLBAR_MIN_THUMB_H,
+                        // rename 중이면 cell preedit 빈 slice — IME 자모는 탭바
+                        // (1c) 로 라우팅. 아니면 cursor 옆 inline overlay (#164).
+                        if (self.isRenaming()) &.{} else self.window.imePreeditSlice(),
                     );
                 }
             } else {
