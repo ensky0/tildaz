@@ -57,6 +57,11 @@ const WM_RBUTTONDOWN: UINT = 0x0204;
 const WM_MOUSEWHEEL: UINT = 0x020A;
 const WM_DISPLAYCHANGE: UINT = 0x007E;
 const WM_DPICHANGED: UINT = 0x02E0;
+const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
+const WM_IME_ENDCOMPOSITION: UINT = 0x010E;
+const WM_IME_COMPOSITION: UINT = 0x010F;
+const GCS_COMPSTR: DWORD = 0x0008;
+const GCS_RESULTSTR: DWORD = 0x0800;
 const WM_SETTINGCHANGE: UINT = 0x001A;
 const WM_WINDOWPOSCHANGING: UINT = 0x0046;
 const WM_WINDOWPOSCHANGED: UINT = 0x0047;
@@ -241,6 +246,15 @@ extern "gdi32" fn CreateCompatibleBitmap(HDC, c_int, c_int) callconv(.c) HGDIOBJ
 extern "gdi32" fn BitBlt(HDC, c_int, c_int, c_int, c_int, HDC, c_int, c_int, DWORD) callconv(.c) BOOL;
 extern "gdi32" fn DeleteDC(HDC) callconv(.c) BOOL;
 
+// === Imm32 (IME) ===
+// HIMC = IME context handle. GCS_COMPSTR = preedit (조합 중) 추출, GCS_RESULTSTR
+// = commit 된 결과 (Windows 가 WM_CHAR 로 자동 dispatch — 우리가 받음). 우리는
+// COMPSTR 만 inline overlay 로 그리고 RESULTSTR 은 default 처리.
+const HIMC = ?*opaque {};
+extern "imm32" fn ImmGetContext(HWND) callconv(.c) HIMC;
+extern "imm32" fn ImmReleaseContext(HWND, HIMC) callconv(.c) BOOL;
+extern "imm32" fn ImmGetCompositionStringW(HIMC, DWORD, ?*anyopaque, DWORD) callconv(.c) c_long;
+
 const SRCCOPY: DWORD = 0x00CC0020;
 
 const TEXTMETRICW = extern struct {
@@ -362,6 +376,14 @@ pub const Window = struct {
     /// commit 후 prompt 에 빈 줄 입력). KEYDOWN 에서 해당 키를 소비하면 이 flag
     /// 를 set, WM_CHAR 진입 즉시 swallow + clear.
     swallow_next_wm_char: bool = false,
+
+    /// IME composition (preedit) 버퍼 — UTF-8. WM_IME_COMPOSITION 의 GCS_COMPSTR
+    /// 를 ImmGetCompositionStringW 로 받아 UTF-16 → UTF-8 변환 후 저장 (#164).
+    /// renderer 가 매 frame 읽어 cursor 옆 inline overlay (mac 동등). 한글 / 일본
+    /// 어 / 중국어 등 모든 IMM 기반 IME 가 같은 path. GCS_RESULTSTR (commit 된
+    /// 텍스트) 는 default 처리 — Windows 가 WM_CHAR 로 따로 보냄.
+    preedit_buf: [256]u8 = undefined,
+    preedit_len: usize = 0,
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -1094,6 +1116,30 @@ pub const Window = struct {
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
+            WM_IME_STARTCOMPOSITION => {
+                // IME 조합 시작 — preedit buffer 비우고 default IME composition
+                // window 차단 (return 0). 우리 inline overlay 가 대신 (#164).
+                self.preedit_len = 0;
+                return 0;
+            },
+            WM_IME_COMPOSITION => {
+                // GCS_COMPSTR (조합 중 preedit) 만 가로채서 inline 그리기. GCS_
+                // RESULTSTR (commit 된 결과) 는 Windows 가 WM_CHAR 로 자동 보냄
+                // — DefWindowProc 를 통과시켜 그 path 발동. 한글 / 일본어 / 중국
+                // 어 / 베트남어 / 인디크 모두 같은 IMM API.
+                const lp_dword: DWORD = @truncate(@as(usize, @bitCast(lParam)));
+                if ((lp_dword & GCS_COMPSTR) != 0) {
+                    self.imeReadCompositionPreedit();
+                    // RESULTSTR 도 같이 들어왔으면 default 도 호출 — 그래야 commit 된 글자가 WM_CHAR 로 dispatch.
+                    if ((lp_dword & GCS_RESULTSTR) != 0) return DefWindowProcW(hwnd, msg, wParam, lParam);
+                    return 0;
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+            },
+            WM_IME_ENDCOMPOSITION => {
+                self.preedit_len = 0;
+                return 0;
+            },
             WM_CHAR => {
                 // KEYDOWN 가 같은 키를 소비했으면 짝꿍 WM_CHAR 도 swallow.
                 // (rename Enter / Escape commit/cancel 후 PTY 로 \r / \x1b 새는
@@ -1494,6 +1540,47 @@ pub const Window = struct {
         if (self.hwnd) |hwnd| {
             _ = PostMessageW(hwnd, WM_TAB_CLOSED, tab_ptr, 0);
         }
+    }
+
+    /// WM_IME_COMPOSITION (GCS_COMPSTR) → ImmGetCompositionStringW UTF-16 → UTF-8
+    /// `preedit_buf` 저장. 길이 0 / 음수 / 변환 실패 시 preedit_len = 0. 한글 /
+    /// 일본어 / 중국어 / 베트남어 등 모든 IMM IME 가 같은 API path.
+    fn imeReadCompositionPreedit(self: *Window) void {
+        const hwnd = self.hwnd orelse return;
+        const himc = ImmGetContext(hwnd);
+        if (himc == null) {
+            self.preedit_len = 0;
+            return;
+        }
+        defer _ = ImmReleaseContext(hwnd, himc);
+
+        // 1차 호출: 길이 (bytes) 만 알아냄. 0 → 빈 preedit (조합 막 시작 / 백
+        // 스페이스로 모두 지움).
+        const len_bytes = ImmGetCompositionStringW(himc, GCS_COMPSTR, null, 0);
+        if (len_bytes <= 0) {
+            self.preedit_len = 0;
+            return;
+        }
+        var w16_buf: [128]u16 = undefined;
+        const len_chars: u32 = @min(@as(u32, @intCast(len_bytes)) / 2, @as(u32, @intCast(w16_buf.len)));
+        const got = ImmGetCompositionStringW(himc, GCS_COMPSTR, &w16_buf, len_chars * 2);
+        if (got <= 0) {
+            self.preedit_len = 0;
+            return;
+        }
+
+        // UTF-16 LE → UTF-8 변환. surrogate pair 도 자동 결합.
+        const w16_slice = w16_buf[0..len_chars];
+        const written = std.unicode.utf16LeToUtf8(self.preedit_buf[0..], w16_slice) catch {
+            self.preedit_len = 0;
+            return;
+        };
+        self.preedit_len = written;
+    }
+
+    /// renderer 가 매 frame 호출 — 현재 IME preedit (UTF-8). 빈 slice 면 비활성.
+    pub fn imePreeditSlice(self: *const Window) []const u8 {
+        return self.preedit_buf[0..self.preedit_len];
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
