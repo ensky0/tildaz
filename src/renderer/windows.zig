@@ -839,6 +839,9 @@ pub const D3d11Renderer = struct {
             // (cursor_x 사용). codepoint 별 cell 단위 보라 배경 + glyph. 별도
             // buffer (pre_*) 에 쌓아 main text 후 그림 — main text 가 preedit
             // bg 위에 그려져 cursor 뒤 글자가 보이는 회귀 fix (#164 1c-fix2).
+            if (is_renaming) {
+                log.appendLine("ime", "  renderTabBar: tab={d} preedit.len={d} cursor_x={d} max_text_w={d}", .{ i, rename_preedit.len, cursor_x, max_text_w });
+            }
             if (is_renaming and rename_preedit.len > 0) {
                 const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
                 const cell_top = baseline_y2 - self.font.ascent_px;
@@ -924,6 +927,11 @@ pub const D3d11Renderer = struct {
         if (cursor_count > 0) {
             self.drawBgInstances(cursor_instances[0..cursor_count]);
         }
+        // IME preedit overlay — main text drawCall *후* 그려 cursor 뒤 main
+        // 글자가 보라 BG 에 가리도록 (#164 1c-fix2). 1c-fix2 commit msg 의
+        // "main text 후 별도 호출" 작업이 실제 코드에 누락 → preedit 안 보임.
+        if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
+        if (pre_text_n > 0) self.drawTextInstances(pre_text_buf[0..pre_text_n]);
 
         // #117 — 화살표 / + 영역. 탭 BG / 텍스트 그린 *후* 별도 batch 로 그려야
         // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:
