@@ -739,6 +739,9 @@ pub const D3d11Renderer = struct {
                 const cp_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
                 const cp_w_cells: u8 = display_width.codepointWidth(codepoint);
                 const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
+                // rename 중 max 넘는 글자는 그냥 잘림 — close 버튼 침범 방지.
+                // truncate "..." 는 commit 후 long text 만 (needs_truncate true).
+                if (is_renaming and x_off + advance > max_text_w) break;
                 // Truncate with "..." if text would overflow
                 if (needs_truncate and x_off + advance > max_text_w - ellipsis_w) {
                     // Render "..."

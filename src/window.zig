@@ -255,6 +255,9 @@ const HIMC = ?*opaque {};
 extern "imm32" fn ImmGetContext(HWND) callconv(.c) HIMC;
 extern "imm32" fn ImmReleaseContext(HWND, HIMC) callconv(.c) BOOL;
 extern "imm32" fn ImmGetCompositionStringW(HIMC, DWORD, ?*anyopaque, DWORD) callconv(.c) c_long;
+extern "imm32" fn ImmNotifyIME(HIMC, DWORD, DWORD, DWORD) callconv(.c) BOOL;
+const NI_COMPOSITIONSTR: DWORD = 0x0015;
+const CPS_CANCEL: DWORD = 0x4;
 
 const SRCCOPY: DWORD = 0x00CC0020;
 
@@ -1590,6 +1593,19 @@ pub const Window = struct {
     /// renderer 가 매 frame 호출 — 현재 IME preedit (UTF-8). 빈 slice 면 비활성.
     pub fn imePreeditSlice(self: *const Window) []const u8 {
         return self.preedit_buf[0..self.preedit_len];
+    }
+
+    /// IME composition 강제 cancel — preedit_buf 비우고 IME state 도 reset.
+    /// 호출처 (마우스 클릭 시 manual commit 후) 가 이미 자모를 rename buf 에
+    /// 추가했으니 IME 가 다음 GCS_RESULTSTR 보내지 않게 cancel. 한국어 / 일본어
+    /// / 중국어 모두 같은 IMM API path. (#164 follow-up)
+    pub fn imeCancelComposition(self: *Window) void {
+        const hwnd = self.hwnd orelse return;
+        const himc = ImmGetContext(hwnd);
+        if (himc == null) return;
+        defer _ = ImmReleaseContext(hwnd, himc);
+        _ = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+        self.preedit_len = 0;
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {

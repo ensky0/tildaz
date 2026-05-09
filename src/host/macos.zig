@@ -1112,26 +1112,35 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
     const hit = tabBarTabHitTest(xy.x, xy.y, layout) orelse return false;
     if (hit.tab_index != rv.tab_index or hit.on_close) return false;
 
-    // 마우스 x → byte index. renderer 의 cursor follow scroll / preedit advance
-    // 와 동일 산술 (tab_layout.renameTextHit).
+    // preedit 활성 시 manual commit — preedit 자모 들을 현재 cursor 위치 다음에
+    // insert. 그 후 IME marked text state 도 정리 (discardMarkedText). native
+    // textbox UX (#164 follow-up).
+    if (g_preedit_len > 0) {
+        var commit_iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
+        while (commit_iter.nextCodepoint()) |cp| {
+            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
+        }
+        g_preedit_len = 0;
+        g_marked_len = 0;
+        const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        const ic = get_ic(self_view, objc.sel("inputContext"));
+        if (ic != null) {
+            const discard = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
+            discard(ic, objc.sel("discardMarkedText"));
+        }
+    }
+
+    // commit 반영된 새 view + mouse → byte 매핑.
+    const rv_new = g_rename.view() orelse return false;
     const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
     const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
     const close_size_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
     const cw: f32 = @floatFromInt(r.font.cell_width);
-    const tab_x = @as(f32, @floatFromInt(rv.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
+    const tab_x = @as(f32, @floatFromInt(rv_new.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
     const text_x_start = tab_x + tab_pad_px;
     const max_text_w = tab_w_px - close_size_px - tab_pad_px * 3;
 
-    // mac preedit (g_preedit_buf) advance 합 — renderer 와 동등.
-    const preedit_slice: []const u8 = g_preedit_buf[0..g_preedit_len];
-    var preedit_advance_total: f32 = 0;
-    var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_slice, .i = 0 };
-    while (pre_iter.nextCodepoint()) |pcp| {
-        const pcw = display_width.codepointWidth(@intCast(pcp));
-        preedit_advance_total += cw * @as(f32, @floatFromInt(pcw));
-    }
-
-    if (tab_layout.renameTextHit(rv.text[0..rv.text_len], rv.cursor, preedit_advance_total, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
+    if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], rv_new.cursor, 0, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
         g_rename.setCursor(new_byte);
         return true;
     }
