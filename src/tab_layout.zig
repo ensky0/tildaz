@@ -102,23 +102,27 @@ pub const ArrowDir = enum { left, right };
 ///   - `>`: 우측 viewport 가 가까운 tab 우측 경계로. 잘려있던 우측 끝 탭의
 ///     끝으로, 정확히 경계면 한 탭 우측으로.
 ///
-/// 반대편 잘림 (`<` 시 우측 / `>` 시 좌측) 은 자연스러움 — vp 가 tab_w 의
-/// 정수배 아닐 때 어디든 한쪽은 잘림. 0 / max_sx 끝 도달 시 변화 없으면 null.
+/// 알고리즘 (epsilon 없는 exact math — 부동소수점 오차 영향 최소):
+///   - `<`: target_tab = ceil(sx / tw) - 1. sx = target * tw.
+///   - `>`: target_tab = floor((sx + vp) / tw) + 1. sx = target * tw - vp.
+///
+/// 정확 경계 (sx = N×tw): ceil(N) - 1 = N - 1 → 한 탭 좌측. 부분 잘림 (sx =
+/// N.5×tw): ceil(N.5) - 1 = N → 잘린 탭의 시작. 우측 대칭. 0 / max_sx 끝
+/// 도달 시 변화 없으면 null.
 pub fn scrollByArrow(inputs: Inputs, layout: Layout, dir: ArrowDir) ?f32 {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
     const vp = layout.tab_area_w;
     if (vp <= 0 or total <= vp) return null;
     const max_sx = total - vp;
-    const epsilon: f32 = 0.5;
     var sx = inputs.scroll_x;
     switch (dir) {
         .left => {
-            const target_tab = @floor((sx - epsilon) / inputs.tab_w);
+            const target_tab = @ceil(sx / inputs.tab_w) - 1;
             sx = @max(0, target_tab * inputs.tab_w);
         },
         .right => {
             const right_edge = sx + vp;
-            const target_tab = @ceil((right_edge + epsilon) / inputs.tab_w);
+            const target_tab = @floor(right_edge / inputs.tab_w) + 1;
             sx = @min(max_sx, target_tab * inputs.tab_w - vp);
         },
     }
