@@ -1912,24 +1912,11 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const titles = titles_buf[0..tab_count];
 
     // IME preedit (`g_preedit_buf`) 라우팅 — rename 활성 시 탭바 cursor 옆에
-    // 인라인 표시, 아니면 cell grid 의 cursor 위치에. 둘 동시에 안 나오게.
+    // 인라인 표시 (`tab_rename_preedit` 인자), 아니면 cell grid 의 cursor 위치
+    // (`cell_preedit` 인자). 둘 동시에 안 나오게 — rename 활성이면 cell 빈 slice.
     const preedit_slice: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
     const cell_preedit: []const u8 = if (g_rename.isActive()) &.{} else preedit_slice;
-
-    const rename_for_render: ?macos_metal.TabRenameView = if (g_rename.view()) |rv|
-        .{
-            .tab_index = rv.tab_index,
-            .text = rv.text[0..rv.text_len],
-            .cursor = rv.cursor,
-            .preedit = preedit_slice,
-        }
-    else
-        null;
-
-    const drag_for_render: ?macos_metal.TabDragView = if (g_drag.view()) |dv|
-        .{ .tab_index = dv.tab_index, .current_x_px = @floatFromInt(dv.current_x) }
-    else
-        null;
+    const tab_rename_preedit: []const u8 = if (g_rename.isActive()) preedit_slice else &.{};
 
     g_renderer.?.renderFrame(
         g_metal_layer,
@@ -1941,8 +1928,9 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         cell_preedit,
         titles,
         g_session.active_tab,
-        rename_for_render,
-        drag_for_render,
+        g_rename.view(),
+        tab_rename_preedit,
+        g_drag.view(),
         g_tab_scroll_x_px,
         tabBarLayout(),
     );

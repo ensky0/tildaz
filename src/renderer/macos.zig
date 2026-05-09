@@ -18,6 +18,7 @@ const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 const tab_layout = @import("../tab_layout.zig");
+const tab_interaction = @import("../tab_interaction.zig");
 
 const MAX_INSTANCES: u32 = 32768;
 
@@ -141,22 +142,6 @@ const shader_source =
 // --- Renderer ---
 
 /// rename 시각 정보 — drawTabBar 가 활성 탭 title 대신 이 텍스트를 그림.
-/// `cursor` byte offset 위치에 1px vertical bar (Windows 와 동일 always-visible).
-/// `preedit` 는 IME composition 중 자모 / 미완성 음절 — cursor 뒤에 inline 표시.
-pub const TabRenameView = struct {
-    tab_index: usize,
-    text: []const u8,
-    cursor: usize,
-    preedit: []const u8,
-};
-
-/// drag 시각 정보 — drag 중인 탭 위치를 마우스 따라 (`current_x_px - tab_w/2`)
-/// 그림. Windows `d3d11_renderer.zig:560` 와 동일 패턴.
-pub const TabDragView = struct {
-    tab_index: usize,
-    current_x_px: f32,
-};
-
 /// 탭바 layout (#117 Firefox 패턴) — cross-platform `tab_layout.Layout` 그대로
 /// 사용 (#163 4-i-2). 호출처 host 가 `tab_layout.compute()` 결과를 그대로 넘김
 /// — renderer struct 변환 cast block 사라짐.
@@ -316,12 +301,15 @@ pub const MetalRenderer = struct {
         tab_titles: []const []const u8,
         active_tab: usize,
         /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림 (#111 M11.6b).
-        /// null = rename 비활성.
-        rename_view: ?TabRenameView,
-        /// drag 진행 중이면 그 탭을 마우스 위치 (`current_x_px`) 따라 이동시켜
-        /// 그림. null = drag 안 함 또는 5px 임계 미만. `current_x_px` 는 *world*
-        /// 좌표 (#117) — 화면 위치는 `current_x_px - tab_scroll_x_px + tab_area_x`.
-        drag_view: ?TabDragView,
+        /// null = rename 비활성. cross-platform `tab_interaction.RenameView` 그대로.
+        rename_view: ?tab_interaction.RenameView,
+        /// rename 활성 탭의 cursor 옆에 IME 조합 중 자모 inline 표시. mac 전용
+        /// (Win 은 system IME UI — #164). 빈 slice = 표시 안 함.
+        tab_rename_preedit: []const u8,
+        /// drag 진행 중이면 그 탭을 마우스 위치 따라 이동시켜 그림. null = drag
+        /// 안 함 또는 5px 임계 미만. `current_x` (c_int) 는 *world* 좌표 (#117) —
+        /// 화면 위치는 `current_x - tab_scroll_x_px + tab_area_x`.
+        drag_view: ?tab_interaction.DragView,
         /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x = world -
         /// 이 값 + tab_area_x.
         tab_scroll_x_px: f32,
@@ -370,7 +358,7 @@ pub const MetalRenderer = struct {
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
-        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, drag_view, tab_scroll_x_px, tab_bar_layout);
+        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, tab_rename_preedit, drag_view, tab_scroll_x_px, tab_bar_layout);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
@@ -709,8 +697,9 @@ pub const MetalRenderer = struct {
         encoder: objc.id,
         tab_titles: []const []const u8,
         active_tab: usize,
-        rename_view: ?TabRenameView,
-        drag_view: ?TabDragView,
+        rename_view: ?tab_interaction.RenameView,
+        rename_preedit: []const u8,
+        drag_view: ?tab_interaction.DragView,
         /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x =
         /// `world_x - tab_scroll_x_px + tab_area_x`.
         tab_scroll_x_px: f32,
@@ -740,11 +729,11 @@ pub const MetalRenderer = struct {
 
         // 각 탭의 좌상단 x 좌표 — world (`i × tab_w_px`) - scroll + tab_area_x.
         // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
-        // drag.current_x_px 도 *world* 라 같은 변환.
+        // drag.current_x (c_int, *world*) 를 f32 로 cast 후 같은 변환.
         const tax = layout.tab_area_x;
         const tabXFor = struct {
-            fn f(i: usize, w: f32, dv: ?TabDragView, sx: f32, tax_: f32) f32 {
-                if (dv) |d| if (d.tab_index == i) return d.current_x_px - w * 0.5 - sx + tax_;
+            fn f(i: usize, w: f32, dv: ?tab_interaction.DragView, sx: f32, tax_: f32) f32 {
+                if (dv) |d| if (d.tab_index == i) return @as(f32, @floatFromInt(d.current_x)) - w * 0.5 - sx + tax_;
                 return @as(f32, @floatFromInt(i)) * w - sx + tax_;
             }
         }.f;
@@ -790,11 +779,12 @@ pub const MetalRenderer = struct {
             const viewport_left = text_x_start;
 
             // rename 진행 중인 탭이면 그 buf 의 텍스트를 대신 표시 + cursor +
-            // preedit (IME 자모) 인라인.
+            // preedit (IME 자모) 인라인. preedit 은 별도 인자 (mac 전용 — Win
+            // 은 system IME UI #164).
             const renaming_this = if (rename_view) |rv| (rv.tab_index == i) else false;
-            const title = if (renaming_this) rename_view.?.text else orig_title;
+            const title = if (renaming_this) rename_view.?.text[0..rename_view.?.text_len] else orig_title;
             const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
-            const preedit_text: []const u8 = if (renaming_this) rename_view.?.preedit else &.{};
+            const preedit_text: []const u8 = if (renaming_this) rename_preedit else &.{};
 
             // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
             // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.

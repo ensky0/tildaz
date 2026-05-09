@@ -14,6 +14,7 @@ const perf = @import("../perf.zig");
 const log = @import("../log.zig");
 const display_width = @import("../font/display_width.zig");
 const tab_layout = @import("../tab_layout.zig");
+const tab_interaction = @import("../tab_interaction.zig");
 const block_element = @import("block_element.zig");
 
 const WCHAR = u16;
@@ -546,13 +547,6 @@ pub const D3d11Renderer = struct {
 
     // === Tab bar rendering ===
 
-    pub const RenameState = struct {
-        tab_index: usize,
-        text: [*]const u8,
-        text_len: usize,
-        cursor: usize,
-    };
-
     /// 탭바 layout (#117 Firefox 패턴) — cross-platform `tab_layout.Layout`
     /// 그대로 (#163 4-i-2). 호출처 host 가 `tab_layout.compute()` 결과를 그대로
     /// 넘김 — c_int 변환 cast block 사라짐. 본문 안 layout.* 가 f32 라 vertex
@@ -569,10 +563,13 @@ pub const D3d11Renderer = struct {
         tab_width: c_int,
         close_btn_size: c_int,
         tab_padding: c_int,
-        dragged_tab: ?usize,
-        /// world 좌표 (#117). 화면 좌표는 `drag_x - tab_scroll_x + tab_area_x`.
-        drag_x: c_int,
-        rename_state: ?RenameState,
+        /// drag 진행 중인 탭. null = drag 안 함 또는 5px 임계 미만. `current_x`
+        /// (c_int) 는 *world* 좌표 (#117) — 화면 위치는 `current_x -
+        /// tab_scroll_x + tab_area_x`. cross-platform `tab_interaction.DragView`.
+        drag_view: ?tab_interaction.DragView,
+        /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림. null = rename
+        /// 비활성. cross-platform `tab_interaction.RenameView`.
+        rename_view: ?tab_interaction.RenameView,
         /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값
         /// + tab_area_x 오프셋.
         tab_scroll_x: c_int,
@@ -630,9 +627,9 @@ pub const D3d11Renderer = struct {
         // Tab backgrounds
         for (0..tab_count) |i| {
             if (bg_count >= 128) break;
-            const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
+            const is_dragged = if (drag_view) |d| (i == d.tab_index) else false;
             const tab_x: f32 = if (is_dragged)
-                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx + tax
+                @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
             else
                 @as(f32, @floatFromInt(i)) * tw - sx + tax;
             const c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
@@ -654,14 +651,14 @@ pub const D3d11Renderer = struct {
         var cursor_instances: [1]BgInstance = undefined;
         var cursor_count: u32 = 0;
         for (0..tab_count) |i| {
-            const is_dragged = if (dragged_tab) |dt| (i == dt) else false;
+            const is_dragged = if (drag_view) |d| (i == d.tab_index) else false;
             const tab_x: f32 = if (is_dragged)
-                @as(f32, @floatFromInt(drag_x)) - tw / 2.0 - sx + tax
+                @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
             else
                 @as(f32, @floatFromInt(i)) * tw - sx + tax;
 
-            const is_renaming = if (rename_state) |rs| (i == rs.tab_index) else false;
-            const title = if (is_renaming) rename_state.?.text[0..rename_state.?.text_len] else tab_titles[i];
+            const is_renaming = if (rename_view) |rv| (i == rv.tab_index) else false;
+            const title = if (is_renaming) rename_view.?.text[0..rename_view.?.text_len] else tab_titles[i];
             const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
             // Max text width: tab width - close button - padding on both sides - gap before close btn
@@ -671,7 +668,7 @@ pub const D3d11Renderer = struct {
             // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
             const needs_truncate = !is_renaming and (total_text_w > max_text_w);
-            const rename_cursor_pos: ?usize = if (is_renaming) rename_state.?.cursor else null;
+            const rename_cursor_pos: ?usize = if (is_renaming) rename_view.?.cursor else null;
 
             // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
             // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.

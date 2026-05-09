@@ -316,14 +316,6 @@ pub const App = struct {
                 for (tabs[0..n], 0..) |t, i| {
                     tab_titles[i] = t.title[0..t.title_len];
                 }
-                const rs: ?renderer_backend.RenameState = if (self.tab_interaction.rename.view()) |rename| .{
-                    .tab_index = rename.tab_index,
-                    .text = rename.text,
-                    .text_len = rename.text_len,
-                    .cursor = rename.cursor,
-                } else null;
-                const drag = self.tab_interaction.drag.view();
-                const layout = self.tabBarLayout();
                 r.renderTabBar(
                     tab_titles[0..n],
                     self.session.activeIndex(),
@@ -333,11 +325,10 @@ pub const App = struct {
                     self.TAB_WIDTH,
                     self.CLOSE_BTN_SIZE,
                     self.TAB_PADDING,
-                    if (drag) |d| d.tab_index else null,
-                    if (drag) |d| d.current_x else 0,
-                    rs,
+                    self.tab_interaction.drag.view(),
+                    self.tab_interaction.rename.view(),
                     self.tab_scroll_x,
-                    layout,
+                    self.tabBarLayout(),
                 );
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(
