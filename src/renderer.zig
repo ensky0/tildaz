@@ -11,6 +11,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
+const tab_interaction = @import("tab_interaction.zig");
+const tab_layout = @import("tab_layout.zig");
 
 const D3d11Renderer = if (builtin.os.tag == .windows)
     @import("renderer/windows.zig").D3d11Renderer
@@ -22,16 +24,7 @@ pub const RendererBackend = switch (builtin.os.tag) {
     else => UnsupportedRendererBackend,
 };
 
-pub const RenameState = RendererBackend.RenameState;
-
 const UnsupportedRendererBackend = struct {
-    pub const RenameState = struct {
-        tab_index: usize,
-        text: [*]const u8,
-        text_len: usize,
-        cursor: usize,
-    };
-
     pub fn init(
         _: std.mem.Allocator,
         _: ?*anyopaque,
@@ -71,9 +64,10 @@ const UnsupportedRendererBackend = struct {
         _: c_int,
         _: c_int,
         _: c_int,
-        _: ?usize,
+        _: ?tab_interaction.DragView,
+        _: ?tab_interaction.RenameView,
         _: c_int,
-        _: ?UnsupportedRendererBackend.RenameState,
+        _: tab_layout.Layout,
     ) void {}
 
     pub fn renderTerminal(
