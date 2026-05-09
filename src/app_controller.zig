@@ -299,6 +299,10 @@ pub const App = struct {
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
             const should_render = self.session.prepareActiveFrame(&self.last_render_ms);
+            // rename / IME preedit 활성 시 throttle 우회 — 두 UI 는 PTY 출력과
+            // 무관한 매 keystroke 즉시 화면 갱신 필요 (mac 동등). throttle 만
+            // 적용하면 typing 도중 preedit 안 보이거나 늦게 따라옴 (#164 회귀).
+            const force_render = self.isRenaming() or self.window.imePreeditSlice().len > 0;
 
             // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중인 동안은
             // handleDragMove 가 직접 auto-scroll 하므로 skip. 사용자 화살표
@@ -306,7 +310,7 @@ pub const App = struct {
             if (!self.tab_interaction.drag.active and !self.tab_scroll_user_override)
                 self.ensureActiveTabVisible();
 
-            if (should_render) {
+            if (should_render or force_render) {
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함).
                 // count<=1 이면 tab_bar_h=0 → 렌더러가 탭바 자체를 그리지 않고
                 // 터미널 영역만 (#127 — 단일 탭에서 cell 영역 reserve 안 함).
