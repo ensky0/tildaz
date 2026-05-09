@@ -32,6 +32,7 @@ const messages = @import("../messages.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const autostart = @import("../autostart.zig");
+const perf = @import("../perf.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
@@ -613,6 +614,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // — 들어간 키로만 나옴.
         if (kc == 0x24) {
             toggleFullscreenMode(if (shift) .workarea else .monitor);
+            return;
+        }
+        // Shift+Cmd+F12 = perf snapshot dump (#160, dev tool). Windows
+        // Ctrl+Shift+F12 동등. perf 카운터를 통합 로그 파일에 block 형태로
+        // 기록 + 카운터 reset. session_core 가 cross-platform 으로 자동 측정.
+        if (shift and kc == 0x6F) {
+            perf.dumpAndReset("snapshot");
             return;
         }
         // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
