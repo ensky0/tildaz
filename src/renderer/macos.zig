@@ -805,6 +805,15 @@ pub const MetalRenderer = struct {
             const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
             const preedit_text: []const u8 = if (renaming_this) rename_view.?.preedit else &.{};
 
+            // 긴 title 의 ellipsis 처리 (#161). typing 중 (renaming_this) 은
+            // truncate 안 함 — cursor 따라 그리고 max width 넘으면 break (Windows
+            // cb9c939 와 동등). commit 후 (typing 비활성) + total width 가 max
+            // 초과 시 max - ellipsis_w 까지 그린 뒤 "..." 추가.
+            const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
+            const ellipsis_w = cw * 3;
+            const needs_truncate = !renaming_this and (total_text_w > max_text_w_px);
+            const truncate_at_w = if (needs_truncate) max_text_w_px - ellipsis_w else max_text_w_px;
+
             var byte_idx: usize = 0;
             var cursor_drawn = false;
             var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
@@ -814,7 +823,38 @@ pub const MetalRenderer = struct {
                 // 글리프와 겹치지 않도록 codepoint 마다 advance 갱신.
                 const cp_w_cells: u8 = display_width.codepointWidth(@intCast(cp));
                 const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
-                if (text_x - text_x_start + advance > max_text_w_px) break;
+                if (text_x - text_x_start + advance > truncate_at_w) {
+                    // truncate threshold 도달 — needs_truncate 면 "..." 그리고
+                    // break, 아니면 그냥 break (typing 중 long text).
+                    if (needs_truncate) {
+                        for (0..3) |_| {
+                            if (text_n >= MAX_TEXT) break;
+                            const dot_result = self.font.resolveGlyph('.') orelse break;
+                            const dot_entry = self.atlas.getOrInsert(dot_result.font, dot_result.index) orelse {
+                                if (dot_result.owned) ct.CFRelease(dot_result.font);
+                                break;
+                            };
+                            if (dot_result.owned) ct.CFRelease(dot_result.font);
+                            if (dot_entry.w > 0 and dot_entry.h > 0) {
+                                const gx = text_x + @as(f32, @floatFromInt(dot_entry.bearing_x));
+                                const gy = text_y_top + self.font.ascent_px
+                                    - @as(f32, @floatFromInt(dot_entry.bearing_y))
+                                    - @as(f32, @floatFromInt(dot_entry.h));
+                                text_buf[text_n] = .{
+                                    .pos = .{ gx, gy },
+                                    .size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
+                                    .uv_pos = .{ @floatFromInt(dot_entry.x), @floatFromInt(dot_entry.y) },
+                                    .uv_size = .{ @floatFromInt(dot_entry.w), @floatFromInt(dot_entry.h) },
+                                    .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                                    .color_flag = 0,
+                                };
+                                text_n += 1;
+                            }
+                            text_x += cw;
+                        }
+                    }
+                    break;
+                }
 
                 // cursor 가 이 byte 위치에 와 있으면 1px vertical bar.
                 if (cursor_byte) |cb| {
