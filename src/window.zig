@@ -256,8 +256,18 @@ extern "imm32" fn ImmGetContext(HWND) callconv(.c) HIMC;
 extern "imm32" fn ImmReleaseContext(HWND, HIMC) callconv(.c) BOOL;
 extern "imm32" fn ImmGetCompositionStringW(HIMC, DWORD, ?*anyopaque, DWORD) callconv(.c) c_long;
 extern "imm32" fn ImmNotifyIME(HIMC, DWORD, DWORD, DWORD) callconv(.c) BOOL;
+extern "imm32" fn ImmSetCompositionWindow(HIMC, *COMPOSITIONFORM) callconv(.c) BOOL;
 const NI_COMPOSITIONSTR: DWORD = 0x0015;
 const CPS_CANCEL: DWORD = 0x4;
+const CFS_POINT: DWORD = 0x0002;
+/// IME composition / candidate window 위치 지정 (#164 1d). dwStyle = CFS_POINT
+/// 면 IME 가 ptCurrentPos 근처에 popup. 일본 / 중국 IME 의 한자 후보 list 가
+/// cursor 옆 자연스럽게 따라옴.
+const COMPOSITIONFORM = extern struct {
+    dwStyle: DWORD,
+    ptCurrentPos: POINT,
+    rcArea: RECT,
+};
 
 const SRCCOPY: DWORD = 0x00CC0020;
 
@@ -1585,6 +1595,23 @@ pub const Window = struct {
     /// renderer 가 매 frame 호출 — 현재 IME preedit (UTF-8). 빈 slice 면 비활성.
     pub fn imePreeditSlice(self: *const Window) []const u8 {
         return self.preedit_buf[0..self.preedit_len];
+    }
+
+    /// IME composition / candidate window 위치 갱신 — IME 가 한자 후보 list 등
+    /// popup 을 (x_px, y_px) 근처에 띄움. 일본 / 중국 IME 의 한자 변환 후보가
+    /// cursor 옆 자연스럽게 따라옴. 한국어는 후보 popup 거의 X — 영향 미미.
+    /// (#164 1d) 매 frame onRender 끝에 호출 — cursor 이동 시 popup 도 따라감.
+    pub fn imeSetCompositionPos(self: *const Window, x_px: c_int, y_px: c_int) void {
+        const hwnd = self.hwnd orelse return;
+        const himc = ImmGetContext(hwnd);
+        if (himc == null) return;
+        defer _ = ImmReleaseContext(hwnd, himc);
+        var form: COMPOSITIONFORM = .{
+            .dwStyle = CFS_POINT,
+            .ptCurrentPos = .{ .x = x_px, .y = y_px },
+            .rcArea = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+        };
+        _ = ImmSetCompositionWindow(himc, &form);
     }
 
     /// IME composition 강제 cancel — preedit_buf 비우고 IME state 도 reset.
