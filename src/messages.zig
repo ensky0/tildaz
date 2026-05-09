@@ -14,6 +14,12 @@ pub const quit_confirm_title = "Quit TildaZ?";
 /// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
 pub const quit_confirm_format = "This will close {d} open tab{s}.";
 
+/// 새 탭 한도 도달 시 (`session_core.MAX_TABS`). `+` 버튼은 layout 에서 자동
+/// 사라지지만 단축키 (Cmd+T / Ctrl+Shift+T) 시도 시 무반응 = 사용자 인지 어려움
+/// → 명시적 dialog. {d} 는 한도 (현재 32).
+pub const tab_limit_title = "Tab limit reached";
+pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
+
 /// About 다이얼로그 본문 — 양쪽 platform 동일 구조. version / exe / pid /
 /// config / log 다음 Tip 라인에 OS 별 단축키 (Windows Ctrl+Shift+P/L vs macOS
 /// Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접 selection +
