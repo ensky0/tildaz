@@ -138,6 +138,12 @@ pub const D3d11Renderer = struct {
     font: DWriteFontContext,
     atlas: GlyphAtlas,
     render_state: ghostty.RenderState = .empty,
+    /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
+    /// renderTerminal cell cursor 또는 renderTabBar rename cursor 그리면서
+    /// 갱신. App 가 IME composition 활성 시 ImmSetCompositionWindow(CFS_POINT)
+    /// 로 IME 후보 popup 을 이 위치 근처에 띄움 (#164 1d).
+    last_cursor_px_x: c_int = 0,
+    last_cursor_px_y: c_int = 0,
 
     // D3D11 core
     device: *d3d.ID3D11Device,
@@ -786,11 +792,15 @@ pub const D3d11Renderer = struct {
                     if (byte_idx == cp and cursor_count == 0) {
                         cursor_x = x_off;
                         if (x_off >= 0) {
+                            const cx_px = tab_x + pad + x_off;
+                            const cy_px = baseline_y2 - self.font.ascent_px + 2;
                             cursor_instances[0] = .{
-                                .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                                .pos = .{ cx_px, cy_px },
                                 .size = .{ 1, ch - 2 },
                                 .color = ui_metrics.TAB_TEXT_COLOR,
                             };
+                            self.last_cursor_px_x = @intFromFloat(cx_px);
+                            self.last_cursor_px_y = @intFromFloat(cy_px);
                         }
                         cursor_count = 1;
                         // cursor 통과 — 우측 main text 를 preedit advance 만큼
@@ -835,11 +845,15 @@ pub const D3d11Renderer = struct {
                     if (cp >= title.len and cursor_count == 0) {
                         cursor_x = x_off;
                         if (x_off >= 0) {
+                            const cx_px = tab_x + pad + x_off;
+                            const cy_px = baseline_y2 - self.font.ascent_px + 2;
                             cursor_instances[0] = .{
-                                .pos = .{ tab_x + pad + x_off, baseline_y2 - self.font.ascent_px + 2 },
+                                .pos = .{ cx_px, cy_px },
                                 .size = .{ 1, ch - 2 },
                                 .color = ui_metrics.TAB_TEXT_COLOR,
                             };
+                            self.last_cursor_px_x = @intFromFloat(cx_px);
+                            self.last_cursor_px_y = @intFromFloat(cy_px);
                         }
                         cursor_count = 1;
                     }
@@ -1251,6 +1265,8 @@ pub const D3d11Renderer = struct {
                     .color = cursor_color,
                 }};
                 self.drawBgInstances(&cursor_inst);
+                self.last_cursor_px_x = @intFromFloat(cx0);
+                self.last_cursor_px_y = @intFromFloat(cy0);
             }
         }
 
