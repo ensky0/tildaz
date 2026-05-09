@@ -266,6 +266,17 @@ var g_pending_close_mutex: std.Thread.Mutex = .{};
 /// session_core.prepareActiveFrame 의 8ms throttle (Windows 동등). 매 frame
 /// 시작 시 갱신.
 var g_last_render_ms: i64 = 0;
+
+/// 윈도우 표시 모드 (#162). Windows `FullscreenMode` 와 동등 — cross-platform.
+///   - .none: dock rect (config.dock_position / width / height / offset 기반)
+///   - .monitor: NSScreen.frame 통째 = 메뉴바 + dock 까지 덮음 ("전체화면")
+///   - .workarea: NSScreen.visibleFrame = 메뉴바 + dock 회피 ("풀스크린")
+///
+/// 토글 정책: 들어간 키로만 나옴 (self-symmetric). Cmd+Enter 로 .monitor 진입
+/// 시 같은 키로만 dock 복귀, Shift+Cmd+Enter 는 no-op. 같은 패턴으로 .workarea.
+/// `.monitor ↔ .workarea` 직접 transition 없음.
+const FullscreenMode = enum { none, monitor, workarea };
+var g_fullscreen_mode: FullscreenMode = .none;
 /// 탭 drag-and-drop reorder state (#111 M11.6a). Windows `tab_interaction.DragState`
 /// 그대로 사용 — cross-platform 모듈.
 var g_drag: tab_interaction.DragState = .{};
@@ -595,6 +606,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // (\x0c) 송신 — 다음 render frame 이 새 상태 자동 그림 (60fps timer).
         if (shift and kc == 0x0F) {
             _ = g_session.resetActive();
+            return;
+        }
+        // Cmd+Enter / Shift+Cmd+Enter (kc 0x24 = Return) = 전체화면 / 풀스크린
+        // 토글 (#162). Windows Alt+Enter / Shift+Alt+Enter 동등. self-symmetric
+        // — 들어간 키로만 나옴.
+        if (kc == 0x24) {
+            toggleFullscreenMode(if (shift) .workarea else .monitor);
             return;
         }
         // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
@@ -2237,9 +2255,27 @@ fn repositionWindow() void {
         .left, .right => usable_min_y + (usable_height - h) * offset_pct / 100.0,
     };
 
-    const rect = NSRect{ .origin = .{ .x = x, .y = y }, .size = .{ .width = w, .height = h } };
+    // Fullscreen 모드별 rect 결정 (#162). dock 모드는 위에서 계산한 rect.
+    const final_rect = switch (g_fullscreen_mode) {
+        .none => NSRect{ .origin = .{ .x = x, .y = y }, .size = .{ .width = w, .height = h } },
+        .monitor => frame, // 메뉴바 + dock 까지 덮음
+        .workarea => visible, // 메뉴바 + dock 회피
+    };
     const setFrameDisplay = objc.objcSend(fn (objc.id, objc.SEL, NSRect, bool) callconv(.c) void);
-    setFrameDisplay(g_window, objc.sel("setFrame:display:"), rect, true);
+    setFrameDisplay(g_window, objc.sel("setFrame:display:"), final_rect, true);
+}
+
+/// 단축키 (Cmd+Enter / Shift+Cmd+Enter) 핸들러. self-symmetric 토글 — 들어간
+/// 키로만 나옴 (Windows `Window.toggleFullscreenMode` 와 동등).
+fn toggleFullscreenMode(target: FullscreenMode) void {
+    if (g_fullscreen_mode == target) {
+        g_fullscreen_mode = .none;
+    } else if (g_fullscreen_mode == .none) {
+        g_fullscreen_mode = target;
+    } else {
+        return; // 다른 모드 → no-op
+    }
+    repositionWindow();
 }
 
 fn showWindow() void {
