@@ -95,15 +95,32 @@ pub const ArrowDir = enum { left, right };
 
 /// `<` / `>` 화살표 클릭 시 새 scroll_x. 변화 없으면 null. 호출처가 결과 받아
 /// 자기 글로벌 갱신 + user_override 활성화.
+///
+/// 방향-aware tab 경계 align — 누른 쪽 끝 탭이 안 잘리게:
+///   - `<`: 좌측 viewport 가 가까운 tab 좌측 경계로. 잘려있던 좌측 끝 탭의
+///     시작으로, 정확히 경계면 한 탭 좌측으로.
+///   - `>`: 우측 viewport 가 가까운 tab 우측 경계로. 잘려있던 우측 끝 탭의
+///     끝으로, 정확히 경계면 한 탭 우측으로.
+///
+/// 반대편 잘림 (`<` 시 우측 / `>` 시 좌측) 은 자연스러움 — vp 가 tab_w 의
+/// 정수배 아닐 때 어디든 한쪽은 잘림. 0 / max_sx 끝 도달 시 변화 없으면 null.
 pub fn scrollByArrow(inputs: Inputs, layout: Layout, dir: ArrowDir) ?f32 {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
     const vp = layout.tab_area_w;
     if (vp <= 0 or total <= vp) return null;
     const max_sx = total - vp;
+    const epsilon: f32 = 0.5;
     var sx = inputs.scroll_x;
     switch (dir) {
-        .left => sx = @max(0, sx - inputs.tab_w),
-        .right => sx = @min(max_sx, sx + inputs.tab_w),
+        .left => {
+            const target_tab = @floor((sx - epsilon) / inputs.tab_w);
+            sx = @max(0, target_tab * inputs.tab_w);
+        },
+        .right => {
+            const right_edge = sx + vp;
+            const target_tab = @ceil((right_edge + epsilon) / inputs.tab_w);
+            sx = @min(max_sx, target_tab * inputs.tab_w - vp);
+        },
     }
     if (sx == inputs.scroll_x) return null;
     return sx;
