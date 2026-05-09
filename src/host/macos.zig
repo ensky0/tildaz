@@ -2275,7 +2275,12 @@ fn toggleFullscreenMode(target: FullscreenMode) void {
     } else {
         return; // 다른 모드 → no-op
     }
-    repositionWindow();
+    // 풀-패스 재동기화 — repositionWindow 만 부르면 window frame 만 변경되어
+    // cell metric 그대로 → 글자만 늘어나 보임 (시연 회귀). syncGeometryAfter
+    // ScreenChange 가 frame 변경 + drawable + renderer viewport + 각 탭의
+    // ghostty Terminal / PTY winsize 까지 새 cols/rows 로 resize. 모니터 변경
+    // path 와 같음.
+    syncGeometryAfterScreenChange();
 }
 
 fn showWindow() void {
