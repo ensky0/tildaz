@@ -29,7 +29,6 @@ pub const Inputs = struct {
     tab_w: f32,
     arrow_w: f32,
     plus_w: f32,
-    gap: f32,
     scroll_x: f32,
 };
 

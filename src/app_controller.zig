@@ -113,14 +113,12 @@ pub const App = struct {
     /// shape 으로 변환만. Windows 는 c_int → f32 cast.
     fn tabBarLayoutInputs(self: *const App) tab_layout.Inputs {
         const vp = self.window.getClientSize().w;
-        const gap_f: f32 = @round(@as(f32, @floatFromInt(ui_metrics.TAB_CTRL_GAP_PT)) * self.dpi_scale);
         return .{
             .viewport_w = @floatFromInt(vp),
             .tab_count = @intCast(self.session.count()),
             .tab_w = @floatFromInt(self.TAB_WIDTH),
             .arrow_w = @floatFromInt(self.TAB_ARROW_W),
             .plus_w = @floatFromInt(self.TAB_PLUS_W),
-            .gap = gap_f,
             .scroll_x = @floatFromInt(self.tab_scroll_x),
         };
     }
