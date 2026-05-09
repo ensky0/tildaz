@@ -9,6 +9,7 @@
 //! 시 cast.
 
 const std = @import("std");
+const log = @import("log.zig");
 
 pub const Layout = struct {
     tab_area_x: f32,
@@ -118,12 +119,16 @@ pub fn scrollByArrow(inputs: Inputs, layout: Layout, dir: ArrowDir) ?f32 {
     switch (dir) {
         .left => {
             const target_tab = @ceil(sx / inputs.tab_w) - 1;
-            sx = @max(0, target_tab * inputs.tab_w);
+            const new_sx = @max(0, target_tab * inputs.tab_w);
+            log.appendLine("tab_layout", "LEFT  sx={d:.2} vp={d:.2} tw={d:.2} max={d:.2} target={d:.2} new={d:.2}", .{ sx, vp, inputs.tab_w, max_sx, target_tab, new_sx });
+            sx = new_sx;
         },
         .right => {
             const right_edge = sx + vp;
             const target_tab = @floor(right_edge / inputs.tab_w) + 1;
-            sx = @min(max_sx, target_tab * inputs.tab_w - vp);
+            const new_sx = @min(max_sx, target_tab * inputs.tab_w - vp);
+            log.appendLine("tab_layout", "RIGHT sx={d:.2} vp={d:.2} tw={d:.2} max={d:.2} re={d:.2} target={d:.2} new={d:.2}", .{ sx, vp, inputs.tab_w, max_sx, right_edge, target_tab, new_sx });
+            sx = new_sx;
         },
     }
     if (sx == inputs.scroll_x) return null;
