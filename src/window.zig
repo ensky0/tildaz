@@ -984,8 +984,20 @@ pub const Window = struct {
         self.presentNow();
     }
 
+    /// 같은 단축키 self-symmetric 토글. 들어간 키로만 나옴 — Alt+Enter 로
+    /// `.monitor` 진입 시 같은 키로만 dock 복귀, Shift+Alt+Enter 는 no-op.
+    /// `.workarea` 도 대칭. `.monitor ↔ .workarea` 직접 transition 없음 (사용자
+    /// 가 mode 전환 원하면 dock 거쳐 두 번). 이전 구현은 `.none` 외 모든 상태
+    /// 에서 어느 인자든 `.none` 으로 강제 복귀했으나, 실수로 다른 키 누름 시
+    /// dock 짧게 깜빡이는 UX 문제 → self-symmetric 으로 변경 (cross-platform
+    /// macOS 와 통일).
     pub fn toggleFullscreenMode(self: *Window, mode: FullscreenMode) void {
-        self.setFullscreenMode(if (self.fullscreen_mode == .none) mode else .none);
+        if (self.fullscreen_mode == mode) {
+            self.setFullscreenMode(.none);
+        } else if (self.fullscreen_mode == .none) {
+            self.setFullscreenMode(mode);
+        }
+        // 다른 모드 → no-op (예: .monitor 상태에서 인자 .workarea).
     }
 
     fn dispatchAppEvent(self: *Window, event: app_event.Event) bool {
