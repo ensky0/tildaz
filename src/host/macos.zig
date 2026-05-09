@@ -349,7 +349,6 @@ fn tabBarLayoutInputs() ?tab_layout.Inputs {
         .tab_w = tabWidthPx(),
         .arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale,
         .plus_w = @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale,
-        .gap = @as(f32, @floatFromInt(ui_metrics.TAB_CTRL_GAP_PT)) * r.scale,
         .scroll_x = g_tab_scroll_x_px,
     };
 }
