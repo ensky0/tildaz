@@ -792,6 +792,18 @@ pub const MetalRenderer = struct {
             // 사용자가 ← 로 cursor 좌측 이동 시 자동으로 scroll 줄어듦 (cursor
             // 가 viewport 안이 되면 scroll = 0).
             var scroll_offset: f32 = 0;
+            // IME preedit 활성 시 cursor 뒤 main text 를 preedit advance 만큼
+            // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
+            // 시 좌측 복구). cursor follow scroll 의 reserve 도 정확히 이 값.
+            // (#164 1c-fix2)
+            var preedit_advance_total: f32 = 0;
+            if (renaming_this and preedit_text.len > 0) {
+                var pre_iter_w = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
+                while (pre_iter_w.nextCodepoint()) |pcp_w| {
+                    const pcw_w = display_width.codepointWidth(@intCast(pcp_w));
+                    preedit_advance_total += cw * @as(f32, @floatFromInt(pcw_w));
+                }
+            }
             if (renaming_this) {
                 if (cursor_byte) |cb| {
                     var probe_x: f32 = 0;
@@ -804,11 +816,10 @@ pub const MetalRenderer = struct {
                         const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
                         probe_byte += plen;
                     }
-                    // cursor 우측에 *최소 wide 1 글자* (cw*2) 여백 — preedit
-                    // (한글 / CJK 자모 wide=2 cell) 가 들어갈 자리 확보 (#164 1c).
-                    const reserve = cw * 2;
-                    if (probe_x > max_text_w_px - reserve) {
-                        scroll_offset = probe_x - max_text_w_px + reserve;
+                    // cursor 우측에 preedit 자리 확보 — preedit_advance_total
+                    // 만큼. preedit 비활성 시 0 — cursor 가 max 까지 OK.
+                    if (probe_x > max_text_w_px - preedit_advance_total) {
+                        scroll_offset = probe_x - max_text_w_px + preedit_advance_total;
                     }
                 }
             }
@@ -883,6 +894,9 @@ pub const MetalRenderer = struct {
                             bg_n += 1;
                         }
                         cursor_drawn = true;
+                        // cursor 통과 — 우측 main text 를 preedit advance 만큼
+                        // 우측 이동. cursor 위치 자체 (cursor_x) 는 그대로.
+                        text_x += preedit_advance_total;
                     }
                 }
 

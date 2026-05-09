@@ -651,6 +651,14 @@ pub const D3d11Renderer = struct {
         // Tab title text + close buttons via glyph atlas
         var text_instances: [512]TextInstance = undefined;
         var text_count: u32 = 0;
+        // IME preedit overlay 별 buffer — main text drawTextInstances 후에
+        // 별도 호출하기 위함. 같은 buffer 에 두면 main bg → main text → preedit
+        // bg → preedit text 의 layer 순서 보장 못 함 (main text 가 preedit bg
+        // 위에 그려져 cursor 뒤 글자가 보라 위에 보임). #164 1c-fix2.
+        var pre_bg_buf: [16]BgInstance = undefined;
+        var pre_bg_n: u32 = 0;
+        var pre_text_buf: [16]TextInstance = undefined;
+        var pre_text_n: u32 = 0;
 
         var cursor_instances: [1]BgInstance = undefined;
         var cursor_count: u32 = 0;
@@ -674,6 +682,19 @@ pub const D3d11Renderer = struct {
             const needs_truncate = !is_renaming and (total_text_w > max_text_w);
             const rename_cursor_pos: ?usize = if (is_renaming) rename_view.?.cursor else null;
 
+            // IME preedit 활성 시 cursor 뒤 main text 를 preedit advance 만큼
+            // 우측 이동 — native textbox 패턴 (commit 시 자연 삽입, ESC cancel
+            // 시 좌측 복구). cursor follow scroll 의 reserve 도 정확히 이 값.
+            // (#164 1c-fix2)
+            var preedit_advance_total: f32 = 0;
+            if (is_renaming and rename_preedit.len > 0) {
+                var pre_iter_w = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
+                while (pre_iter_w.nextCodepoint()) |pcp_w| {
+                    const pcw_w = display_width.codepointWidth(pcp_w);
+                    preedit_advance_total += cw * @as(f32, @floatFromInt(pcw_w));
+                }
+            }
+
             // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
             // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.
             // x_off 가 viewport-relative — 시작값 음수면 좌측 잘림.
@@ -693,11 +714,10 @@ pub const D3d11Renderer = struct {
                             probe_byte += plen;
                         }
                     }
-                    // cursor 우측에 *최소 wide 1 글자* (cw*2) 여백 — preedit
-                    // (한글 / CJK 자모 wide=2 cell) 가 들어갈 자리 확보 (#164 1c).
-                    const reserve = cw * 2;
-                    if (probe_x > max_text_w - reserve) {
-                        scroll_offset = probe_x - max_text_w + reserve;
+                    // cursor 우측에 *preedit 자리* 확보 — preedit_advance_total
+                    // 만큼 (정확). preedit 비활성 시 0 — cursor 가 max 까지 OK.
+                    if (probe_x > max_text_w - preedit_advance_total) {
+                        scroll_offset = probe_x - max_text_w + preedit_advance_total;
                     }
                 }
             }
@@ -761,6 +781,9 @@ pub const D3d11Renderer = struct {
                             };
                         }
                         cursor_count = 1;
+                        // cursor 통과 — 우측 main text 를 preedit advance 만큼
+                        // 우측 이동. cursor 위치 자체 (cursor_x) 는 그대로.
+                        x_off += preedit_advance_total;
                     }
                 }
                 byte_idx += cp_len;
@@ -813,19 +836,17 @@ pub const D3d11Renderer = struct {
 
             // --- IME preedit overlay (#164 1c) ---
             // rename 활성 탭의 cursor 뒤 inline. cursor 가 가운데일 때도 정확
-            // (cursor_x 사용 — main text 끝 x_off 가 아님). codepoint 별 cell
-            // 단위 보라 배경 + glyph. wide char (CJK) 2 cell. max_text_w 안 일
-            // 동안만. 한글 / 일본어 / 중국어 등 모든 IMM IME path.
+            // (cursor_x 사용). codepoint 별 cell 단위 보라 배경 + glyph. 별도
+            // buffer (pre_*) 에 쌓아 main text 후 그림 — main text 가 preedit
+            // bg 위에 그려져 cursor 뒤 글자가 보이는 회귀 fix (#164 1c-fix2).
             if (is_renaming and rename_preedit.len > 0) {
-                var pre_bg_buf: [16]BgInstance = undefined;
-                var pre_bg_n: u32 = 0;
                 const pre_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1 };
                 const cell_top = baseline_y2 - self.font.ascent_px;
                 var pre_x = cursor_x;
 
                 var pre_iter = std.unicode.Utf8Iterator{ .bytes = rename_preedit, .i = 0 };
                 while (pre_iter.nextCodepoint()) |pcp| {
-                    if (text_count >= 510 or pre_bg_n >= pre_bg_buf.len) break;
+                    if (pre_text_n >= pre_text_buf.len or pre_bg_n >= pre_bg_buf.len) break;
                     const cp_w_cells: u8 = display_width.codepointWidth(pcp);
                     const advance: f32 = cw * @as(f32, @floatFromInt(cp_w_cells));
                     if (pre_x + advance > max_text_w) break;
@@ -855,18 +876,17 @@ pub const D3d11Renderer = struct {
                     if (entry.w > 0 and entry.h > 0) {
                         const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
                         const gy = baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
-                        text_instances[text_count] = .{
+                        pre_text_buf[pre_text_n] = .{
                             .pos = .{ gx, gy },
                             .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                             .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                             .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                             .fg_color = ui_metrics.TAB_TEXT_COLOR,
                         };
-                        text_count += 1;
+                        pre_text_n += 1;
                     }
                     pre_x += advance;
                 }
-                if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
             }
 
             // Close button "x"
