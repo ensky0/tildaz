@@ -25,6 +25,7 @@ const ui_metrics = @import("../ui_metrics.zig");
 const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
 const tab_interaction = @import("../tab_interaction.zig");
+const tab_layout = @import("../tab_layout.zig");
 const session_core = @import("../session_core.zig");
 const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
@@ -334,23 +335,27 @@ fn tabWidthPx() f32 {
     return @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale;
 }
 
-/// 탭바 layout (#117 Firefox 패턴) — `<` / `>` 화살표 + `+` 버튼이 탭 viewport
-/// 영역을 깎음. Windows `App.TabBarLayout` 와 동일 구조.
-const TabBarLayout = struct {
-    tab_area_x: f32,
-    tab_area_w: f32,
-    arrows_visible: bool,
-    arrow_w: f32,
-    plus_w: f32,
-    plus_x: f32,
-    left_arrow_x: f32 = 0,
-    right_arrow_x: f32 = 0,
-    left_enabled: bool = false,
-    right_enabled: bool = false,
-};
+/// `tab_layout.Layout` alias — 본문 정의는 cross-platform 모듈 (#159 Phase 1).
+const TabBarLayout = tab_layout.Layout;
+
+/// `Inputs` 채워서 tab_layout.compute 호출. host 별로 g_renderer.scale /
+/// g_session.count / g_tab_scroll_x_px 같은 글로벌을 인자로 변환만 함.
+fn tabBarLayoutInputs() ?tab_layout.Inputs {
+    if (g_renderer == null) return null;
+    const r = &g_renderer.?;
+    return .{
+        .viewport_w = @floatFromInt(r.vp_width),
+        .tab_count = @intCast(g_session.count()),
+        .tab_w = tabWidthPx(),
+        .arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale,
+        .plus_w = @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale,
+        .gap = @as(f32, @floatFromInt(ui_metrics.TAB_CTRL_GAP_PT)) * r.scale,
+        .scroll_x = g_tab_scroll_x_px,
+    };
+}
 
 fn tabBarLayout() TabBarLayout {
-    if (g_renderer == null) return .{
+    const inputs = tabBarLayoutInputs() orelse return .{
         .tab_area_x = 0,
         .tab_area_w = 0,
         .arrows_visible = false,
@@ -358,95 +363,29 @@ fn tabBarLayout() TabBarLayout {
         .plus_w = 0,
         .plus_x = 0,
     };
-    const r = &g_renderer.?;
-    const arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale;
-    const plus_w = @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale;
-    const gap = @as(f32, @floatFromInt(ui_metrics.TAB_CTRL_GAP_PT)) * r.scale;
-    const tab_w = tabWidthPx();
-    const total = tab_w * @as(f32, @floatFromInt(g_session.count()));
-    const vp = @as(f32, @floatFromInt(r.vp_width));
-    const arrows_visible = total + plus_w + gap > vp;
-    if (!arrows_visible) {
-        return .{
-            .tab_area_x = 0,
-            .tab_area_w = @max(0, vp - plus_w - gap),
-            .arrows_visible = false,
-            .arrow_w = arrow_w,
-            .plus_w = plus_w,
-            .plus_x = total + gap, // 마지막 탭 옆 (gap)
-        };
-    }
-    // layout: `[<][gap][tabs][gap][+][>]` — 양 끝 화살표, `+` 는 `>` 바로 왼쪽.
-    const tab_area_x = arrow_w + gap;
-    const tab_area_w = @max(0, vp - arrow_w * 2 - plus_w - gap * 2);
-    const right_arrow_x = vp - arrow_w;
-    const plus_x = right_arrow_x - plus_w;
-    const left_enabled = g_tab_scroll_x_px > 0;
-    const right_enabled = g_tab_scroll_x_px + tab_area_w < total;
-    return .{
-        .tab_area_x = tab_area_x,
-        .tab_area_w = tab_area_w,
-        .arrows_visible = true,
-        .arrow_w = arrow_w,
-        .plus_w = plus_w,
-        .plus_x = plus_x,
-        .left_arrow_x = 0,
-        .right_arrow_x = right_arrow_x,
-        .left_enabled = left_enabled,
-        .right_enabled = right_enabled,
-    };
+    return tab_layout.compute(inputs);
 }
 
-/// 활성 탭이 viewport 안에 보이도록 `g_tab_scroll_x_px` 갱신 (#117). 정책 (b):
-/// 이미 보이면 그대로, 안 보이면 보이는 가장 가까운 위치로 minimum 이동.
+/// 활성 탭이 viewport 안에 보이도록 `g_tab_scroll_x_px` 갱신 (#117 정책 b).
 /// drag / 사용자 화살표 override 중에는 호출 안 함.
 fn ensureActiveTabVisible() void {
-    const n = g_session.count();
-    if (n == 0 or g_renderer == null) {
+    const inputs = tabBarLayoutInputs() orelse {
         g_tab_scroll_x_px = 0;
         return;
-    }
-    const tab_w = tabWidthPx();
-    const total = tab_w * @as(f32, @floatFromInt(n));
-    const layout = tabBarLayout();
-    const vp = layout.tab_area_w;
-    if (vp <= 0 or total <= vp) {
-        g_tab_scroll_x_px = 0;
-        return;
-    }
-    const active_f = @as(f32, @floatFromInt(g_session.active_tab));
-    const tab_l = active_f * tab_w;
-    const tab_r = tab_l + tab_w;
-    var sx = g_tab_scroll_x_px;
-    if (tab_l < sx) {
-        sx = tab_l;
-    } else if (tab_r > sx + vp) {
-        sx = tab_r - vp;
-    }
-    const max_sx = total - vp;
-    if (sx < 0) sx = 0;
-    if (sx > max_sx) sx = max_sx;
-    g_tab_scroll_x_px = sx;
+    };
+    const layout = tab_layout.compute(inputs);
+    g_tab_scroll_x_px = tab_layout.ensureActiveVisible(inputs, layout, @intCast(g_session.active_tab));
 }
 
 /// `<` / `>` 화살표 클릭 처리 (#117). viewport 한 step (= 1 탭 너비) 이동 +
 /// user_override 활성. 양 끝 clamp.
-fn scrollTabsByArrow(dir: enum { left, right }) void {
-    if (g_renderer == null) return;
-    const tab_w = tabWidthPx();
-    const total = tab_w * @as(f32, @floatFromInt(g_session.count()));
-    const layout = tabBarLayout();
-    const vp = layout.tab_area_w;
-    if (vp <= 0 or total <= vp) return;
-    const max_sx = total - vp;
-    var sx = g_tab_scroll_x_px;
-    switch (dir) {
-        .left => sx = @max(0, sx - tab_w),
-        .right => sx = @min(max_sx, sx + tab_w),
+fn scrollTabsByArrow(dir: tab_layout.ArrowDir) void {
+    const inputs = tabBarLayoutInputs() orelse return;
+    const layout = tab_layout.compute(inputs);
+    if (tab_layout.scrollByArrow(inputs, layout, dir)) |sx| {
+        g_tab_scroll_x_px = sx;
+        g_tab_scroll_user_override = true;
     }
-    if (sx == g_tab_scroll_x_px) return;
-    g_tab_scroll_x_px = sx;
-    g_tab_scroll_user_override = true;
 }
 
 /// 현재 viewport / cell 크기 + 탭 수에 따른 cols/rows 재계산 후 모든 탭의
@@ -1043,8 +982,8 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     return .{ .col = col, .row = row };
 }
 
-const TabBarHit = struct { tab_index: usize, on_close: bool };
-const TabBarArea = enum { left_arrow, right_arrow, plus, tab_area, none };
+const TabBarHit = tab_layout.TabHit;
+const TabBarArea = tab_layout.Area;
 
 /// 탭바 영역 hit-area 분기 (#117). 화살표 / + 영역에서는 별도 처리, tab_area
 /// 안에서는 `tabBarTabHitTest` 가 탭 인덱스 + close 버튼 hit 여부 계산.
@@ -1052,16 +991,7 @@ fn tabBarHitArea(px: f32, py: f32, layout: TabBarLayout) TabBarArea {
     if (g_renderer == null) return .none;
     const r = &g_renderer.?;
     const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
-    if (px < 0 or py < 0 or py >= tab_bar_h) return .none;
-    if (layout.arrows_visible) {
-        if (px >= layout.left_arrow_x and px < layout.left_arrow_x + layout.arrow_w)
-            return .left_arrow;
-        if (px >= layout.right_arrow_x and px < layout.right_arrow_x + layout.arrow_w)
-            return .right_arrow;
-    }
-    if (px >= layout.plus_x and px < layout.plus_x + layout.plus_w) return .plus;
-    if (px >= layout.tab_area_x and px < layout.tab_area_x + layout.tab_area_w) return .tab_area;
-    return .none;
+    return tab_layout.hitArea(px, py, tab_bar_h, layout);
 }
 
 /// tab_area 안에서 px → (탭 인덱스, close 버튼 hit). 호출자가 먼저 hit-area 가
@@ -1073,24 +1003,17 @@ fn tabBarTabHitTest(px: f32, py: f32, layout: TabBarLayout) ?TabBarHit {
     const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
     const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
     const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
-
-    // 탭 영역 좌표계: world_x = (px - tab_area_x) + scroll.
-    const local_x = px - layout.tab_area_x;
-    const world_x = local_x + g_tab_scroll_x_px;
-    if (world_x < 0) return null;
-    const tab_index_f = world_x / tab_w_px;
-    const tab_index = @as(usize, @intFromFloat(tab_index_f));
-    if (tab_index >= g_session.count()) return null;
-
-    const tab_x = @as(f32, @floatFromInt(tab_index)) * tab_w_px;
-    const close_x_min = tab_x + tab_w_px - close_size_px - tab_pad_px;
-    const close_x_max = close_x_min + close_size_px;
-    const close_y_min = (tab_bar_h - close_size_px) * 0.5;
-    const close_y_max = close_y_min + close_size_px;
-    const on_close = (world_x >= close_x_min and world_x <= close_x_max and
-        py >= close_y_min and py <= close_y_max);
-
-    return .{ .tab_index = tab_index, .on_close = on_close };
+    return tab_layout.hitTab(
+        px,
+        py,
+        layout,
+        tab_w_px,
+        tab_pad_px,
+        close_size_px,
+        tab_bar_h,
+        g_tab_scroll_x_px,
+        @intCast(g_session.count()),
+    );
 }
 
 /// rename 진행 중이면 종료. `commit=true` 면 buf 의 텍스트를 그 탭의 title 로
