@@ -18,7 +18,7 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | About dialog | Ctrl+Shift+I | Shift+Cmd+I |
 | Open config in editor | Ctrl+Shift+P | Shift+Cmd+P |
 | Open log in editor | Ctrl+Shift+L | Shift+Cmd+L |
-| Perf snapshot to log | Ctrl+Shift+F12 | (dev tool, Win-only) |
+| Perf snapshot to log | Ctrl+Shift+F12 | Shift+Cmd+F12 |
 | Quit | (close last tab) | Cmd+Q |
 | Scrollback page up / down | Shift+PgUp / PgDn | Shift+PgUp / PgDn |
 
