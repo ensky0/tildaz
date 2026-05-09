@@ -57,6 +57,14 @@ pub const RenameState = struct {
         self.cursor = 0;
     }
 
+    /// rename text 영역 안 마우스 클릭 시 cursor 위치 변경 (native textbox UX —
+    /// #164 follow-up). byte 단위, 범위 밖이면 clamp. caller (host) 가 마우스
+    /// 좌표 → byte 변환 (`tab_layout.renameTextHit`) 후 호출.
+    pub fn setCursor(self: *RenameState, byte_idx: usize) void {
+        if (!self.isActive()) return;
+        self.cursor = @min(byte_idx, self.len);
+    }
+
     pub fn view(self: *RenameState) ?RenameView {
         const idx = self.tab_index orelse return null;
         return .{
