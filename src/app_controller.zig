@@ -113,12 +113,15 @@ pub const App = struct {
     /// shape 으로 변환만. Windows 는 c_int → f32 cast.
     fn tabBarLayoutInputs(self: *const App) tab_layout.Inputs {
         const vp = self.window.getClientSize().w;
+        // count >= MAX_TABS 면 plus 버튼 사라짐 — 마지막 탭이 `>` 화살표 인접.
+        const at_limit = self.session.count() >= session_core.MAX_TABS;
+        const plus_w_eff: c_int = if (at_limit) 0 else self.TAB_PLUS_W;
         return .{
             .viewport_w = @floatFromInt(vp),
             .tab_count = @intCast(self.session.count()),
             .tab_w = @floatFromInt(self.TAB_WIDTH),
             .arrow_w = @floatFromInt(self.TAB_ARROW_W),
-            .plus_w = @floatFromInt(self.TAB_PLUS_W),
+            .plus_w = @floatFromInt(plus_w_eff),
             .scroll_x = @floatFromInt(self.tab_scroll_x),
         };
     }
@@ -338,6 +341,15 @@ pub const App = struct {
     }
 
     pub fn handleNewTab(self: *App) void {
+        // MAX_TABS 한도 도달 — `+` 버튼은 layout 에서 자동 사라지지만 단축키
+        // (Ctrl+Shift+T) 시 무반응이면 사용자 인지 어려움 → 명시 dialog.
+        if (self.session.count() >= session_core.MAX_TABS) {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
+                messages.tab_limit_format;
+            dialog.showInfo(messages.tab_limit_title, msg);
+            return;
+        }
         self.createTab() catch {};
     }
 
