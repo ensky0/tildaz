@@ -1938,22 +1938,6 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         .left_enabled = layout.left_enabled,
         .right_enabled = layout.right_enabled,
     };
-    // 진단 로그 (#159) — drawTabBar 가 받는 sx 와 layout 의 정확 값. sx 변화 시만
-    // (= scroll 발생 직후 한 번) — 60fps 매 frame 로그 폭주 방지.
-    const S = struct {
-        var last_logged_sx: f32 = -1.0;
-    };
-    if (g_tab_scroll_x_px != S.last_logged_sx) {
-        log.appendLine("renderFrame", "sx={d:.2} tax={d:.2} taw={d:.2} plus_x={d:.2} arrows={} tab_count={d}", .{
-            g_tab_scroll_x_px,
-            layout.tab_area_x,
-            layout.tab_area_w,
-            layout.plus_x,
-            layout.arrows_visible,
-            g_session.count(),
-        });
-        S.last_logged_sx = g_tab_scroll_x_px;
-    }
     g_renderer.?.renderFrame(
         g_metal_layer,
         &tab.terminal,

@@ -9,7 +9,6 @@
 //! 시 cast.
 
 const std = @import("std");
-const log = @import("log.zig");
 
 pub const Layout = struct {
     tab_area_x: f32,
@@ -35,22 +34,24 @@ pub const Inputs = struct {
 };
 
 /// 탭바 layout 계산 — viewport / tab count / scroll 기반 영역 분할.
-/// `[<][gap][tabs][gap][+][>]` (arrows_visible) 또는 `[tabs][gap][+]` (no arrows).
+/// `[<][tabs][+][>]` (arrows_visible) 또는 `[tabs][+]` (no arrows). gap 없음 —
+/// 사용자 의도 (`<`/`>`/`+` 와 tab 이 인접). `Inputs.gap` 은 호환성 유지용으로
+/// 받지만 사용 X.
 pub fn compute(inputs: Inputs) Layout {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
-    const arrows_visible = total + inputs.plus_w + inputs.gap > inputs.viewport_w;
+    const arrows_visible = total + inputs.plus_w > inputs.viewport_w;
     if (!arrows_visible) {
         return .{
             .tab_area_x = 0,
-            .tab_area_w = @max(0, inputs.viewport_w - inputs.plus_w - inputs.gap),
+            .tab_area_w = @max(0, inputs.viewport_w - inputs.plus_w),
             .arrows_visible = false,
             .arrow_w = inputs.arrow_w,
             .plus_w = inputs.plus_w,
-            .plus_x = total + inputs.gap, // 마지막 탭 옆 (gap)
+            .plus_x = total, // 마지막 탭 끝 = plus 시작 (gap 없음)
         };
     }
-    const tab_area_x = inputs.arrow_w + inputs.gap;
-    const tab_area_w = @max(0, inputs.viewport_w - inputs.arrow_w * 2 - inputs.plus_w - inputs.gap * 2);
+    const tab_area_x = inputs.arrow_w;
+    const tab_area_w = @max(0, inputs.viewport_w - inputs.arrow_w * 2 - inputs.plus_w);
     const right_arrow_x = inputs.viewport_w - inputs.arrow_w;
     const plus_x = right_arrow_x - inputs.plus_w;
     const left_enabled = inputs.scroll_x > 0;
@@ -119,16 +120,12 @@ pub fn scrollByArrow(inputs: Inputs, layout: Layout, dir: ArrowDir) ?f32 {
     switch (dir) {
         .left => {
             const target_tab = @ceil(sx / inputs.tab_w) - 1;
-            const new_sx = @max(0, target_tab * inputs.tab_w);
-            log.appendLine("tab_layout", "LEFT  sx={d:.2} vp={d:.2} tw={d:.2} max={d:.2} target={d:.2} new={d:.2}", .{ sx, vp, inputs.tab_w, max_sx, target_tab, new_sx });
-            sx = new_sx;
+            sx = @max(0, target_tab * inputs.tab_w);
         },
         .right => {
             const right_edge = sx + vp;
             const target_tab = @floor(right_edge / inputs.tab_w) + 1;
-            const new_sx = @min(max_sx, target_tab * inputs.tab_w - vp);
-            log.appendLine("tab_layout", "RIGHT sx={d:.2} vp={d:.2} tw={d:.2} max={d:.2} re={d:.2} target={d:.2} new={d:.2}", .{ sx, vp, inputs.tab_w, max_sx, right_edge, target_tab, new_sx });
-            sx = new_sx;
+            sx = @min(max_sx, target_tab * inputs.tab_w - vp);
         },
     }
     if (sx == inputs.scroll_x) return null;
