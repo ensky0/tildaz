@@ -9,6 +9,7 @@
 //! 시 cast.
 
 const std = @import("std");
+const display_width = @import("font/display_width.zig");
 
 pub const Layout = struct {
     tab_area_x: f32,
@@ -145,6 +146,68 @@ pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
     if (px >= layout.plus_x and px < layout.plus_x + layout.plus_w) return .plus;
     if (px >= layout.tab_area_x and px < layout.tab_area_x + layout.tab_area_w) return .tab_area;
     return .none;
+}
+
+/// rename text 영역 안 마우스 위치 → text 안 byte index. cursor follow scroll
+/// 결과 좌측 잘림 영역도 처리. mouse_x 가 viewport 밖이면 null. native textbox
+/// UX — caller 가 RenameState.setCursor 호출 후 commit 안 함 (#164 follow-up).
+///
+/// 인자:
+///   - title: 현재 rename buffer text
+///   - cursor_byte: 현재 cursor 위치 (scroll_offset 계산용)
+///   - preedit_advance_total: preedit codepoint 들의 advance 합 (scroll reserve)
+///   - text_x_start: 탭 내 text 시작 x — 화면 좌표 (`tab_x + tab_pad`)
+///   - cw: cell width
+///   - max_text_w: text 영역 너비 (`tab_w - close_w - 3*pad` 등 host 별 동등)
+///   - mouse_x: 마우스 x (탭바 좌표)
+///
+/// 반환: byte index (mouse 가 codepoint 의 우반에 있으면 그 codepoint 끝, 좌반
+/// 이면 시작). title 끝 이후면 title.len. mouse_x 가 영역 밖이면 null.
+pub fn renameTextHit(
+    title: []const u8,
+    cursor_byte: usize,
+    preedit_advance_total: f32,
+    text_x_start: f32,
+    cw: f32,
+    max_text_w: f32,
+    mouse_x: f32,
+) ?usize {
+    if (mouse_x < text_x_start or mouse_x >= text_x_start + max_text_w) return null;
+
+    // scroll_offset 계산 — renderer 의 cursor follow scroll 과 동등.
+    var probe_x: f32 = 0;
+    var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+    var probe_byte: usize = 0;
+    while (probe_iter.nextCodepoint()) |pcp| {
+        if (probe_byte >= cursor_byte) break;
+        const pcw = display_width.codepointWidth(@intCast(pcp));
+        probe_x += cw * @as(f32, @floatFromInt(pcw));
+        const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
+        probe_byte += plen;
+    }
+    var scroll_offset: f32 = 0;
+    if (probe_x > max_text_w - preedit_advance_total) {
+        scroll_offset = probe_x - max_text_w + preedit_advance_total;
+    }
+
+    // mouse_x → text 안 byte 매핑.
+    const target_x = mouse_x - text_x_start;
+    var x_off: f32 = -scroll_offset;
+    var byte_idx: usize = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const cp_w_cells = display_width.codepointWidth(@intCast(cp));
+        const advance = cw * @as(f32, @floatFromInt(cp_w_cells));
+        const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+        if (target_x >= x_off and target_x < x_off + advance) {
+            // mouse 가 codepoint 우반 → 그 codepoint 끝, 좌반 → 시작.
+            if (target_x - x_off < advance / 2) return byte_idx;
+            return byte_idx + cp_len;
+        }
+        byte_idx += cp_len;
+        x_off += advance;
+    }
+    return byte_idx; // mouse_x 가 text 끝 이후 → title.len
 }
 
 pub const TabHit = struct { tab_index: usize, on_close: bool };

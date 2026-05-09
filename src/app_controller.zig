@@ -7,6 +7,7 @@ const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_actions = @import("tab_actions.zig");
+const display_width = @import("font/display_width.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const Window = @import("window.zig").Window;
 const renderer_backend = @import("renderer.zig");
@@ -446,6 +447,48 @@ pub const App = struct {
         return tab_layout.hitArea(@floatFromInt(mouse_x), 0, std.math.floatMax(f32), layout);
     }
 
+    /// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
+    /// 영역 밖 / 다른 탭 / close 버튼 / 터미널 등은 false → caller 가 commit.
+    /// (#164 follow-up — native textbox UX)
+    fn tryRenameClickMoveCursor(self: *App, mouse_x: c_int, mouse_y: c_int) bool {
+        const rv = self.tab_interaction.rename.view() orelse return false;
+        if (mouse_y >= self.effectiveTabBarHeight()) return false;
+        const layout = self.tabBarLayout();
+        if (self.tabBarHitArea(mouse_x, layout) != .tab_area) return false;
+
+        const local_x = mouse_x - @as(c_int, @intFromFloat(layout.tab_area_x));
+        const tab_index_raw = @divTrunc(local_x + self.tab_scroll_x, self.TAB_WIDTH);
+        if (tab_index_raw < 0) return false;
+        const tab_index: usize = @intCast(tab_index_raw);
+        if (tab_index != rv.tab_index) return false;
+
+        // close 버튼 영역 검사 — 그 위 클릭은 commit + close.
+        const tab_x_int = @as(c_int, @intCast(rv.tab_index)) * self.TAB_WIDTH - self.tab_scroll_x + @as(c_int, @intFromFloat(layout.tab_area_x));
+        const close_x_int = tab_x_int + self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING;
+        if (mouse_x >= close_x_int) return false;
+
+        // mouse_x → byte index — tab_layout.renameTextHit (cross-platform 산술).
+        const cw: f32 = @floatFromInt(self.window.cell_width);
+        const text_x_start: f32 = @floatFromInt(tab_x_int + self.TAB_PADDING);
+        const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING * 3);
+
+        // preedit_advance_total — renderer 와 동등.
+        const preedit = self.window.imePreeditSlice();
+        var preedit_advance_total: f32 = 0;
+        var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit, .i = 0 };
+        while (pre_iter.nextCodepoint()) |pcp| {
+            const pcw = display_width.codepointWidth(pcp);
+            preedit_advance_total += cw * @as(f32, @floatFromInt(pcw));
+        }
+
+        if (tab_layout.renameTextHit(rv.text[0..rv.text_len], rv.cursor, preedit_advance_total, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
+            self.tab_interaction.rename.setCursor(new_byte);
+            self.invalidateRenderer();
+            return true;
+        }
+        return false;
+    }
+
     pub fn handleTabClick(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         // 단일 탭이면 effectiveTabBarHeight==0 → 모든 클릭이 below 로 분류
         // (탭 클릭 자체가 의미 없음). count<=1 일 때 내부 분기에서 빨리 종료.
@@ -747,7 +790,12 @@ pub const App = struct {
                 }
             },
             .mouse_down => |mouse| {
-                if (self.isRenaming()) self.commitRename();
+                // rename 활성 탭 text 영역 안 클릭 → cursor 위치만 변경 (commit X).
+                // native textbox UX (#164 follow-up). 그 외는 기존 동작.
+                if (self.isRenaming()) {
+                    if (self.tryRenameClickMoveCursor(mouse.x, mouse.y)) return true;
+                    self.commitRename();
+                }
                 // count<=1 면 effectiveTabBarHeight==0 → 탭바 영역 자체가 없으므로
                 // 모든 클릭이 터미널/스크롤바 라우팅으로 흘러간다 (#127).
                 if (mouse.y < self.effectiveTabBarHeight()) {

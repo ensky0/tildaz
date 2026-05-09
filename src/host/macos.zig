@@ -20,6 +20,7 @@ const build_options = @import("build_options");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
 const ghostty = @import("ghostty-vt");
+const display_width = @import("../font/display_width.zig");
 const macos_metal = @import("../renderer/macos.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const terminal = @import("../terminal.zig");
@@ -1096,12 +1097,58 @@ fn handleTabBarClick(hit: TabBarHit) void {
     _ = g_session.setActiveTab(hit.tab_index);
 }
 
+/// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
+/// 영역 밖 / 다른 탭 / close 버튼 / 터미널 등은 false → caller 가 commit.
+fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
+    const rv = g_rename.view() orelse return false;
+    if (g_renderer == null or g_session.count() < 2) return false;
+
+    const r = &g_renderer.?;
+    const xy = eventToWindowPx(self_view, event);
+    const layout = tabBarLayout();
+
+    // 탭바 안 + tab_area 안만.
+    if (tabBarHitArea(xy.x, xy.y, layout) != .tab_area) return false;
+    const hit = tabBarTabHitTest(xy.x, xy.y, layout) orelse return false;
+    if (hit.tab_index != rv.tab_index or hit.on_close) return false;
+
+    // 마우스 x → byte index. renderer 의 cursor follow scroll / preedit advance
+    // 와 동일 산술 (tab_layout.renameTextHit).
+    const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
+    const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
+    const close_size_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
+    const cw: f32 = @floatFromInt(r.font.cell_width);
+    const tab_x = @as(f32, @floatFromInt(rv.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
+    const text_x_start = tab_x + tab_pad_px;
+    const max_text_w = tab_w_px - close_size_px - tab_pad_px * 3;
+
+    // mac preedit (g_preedit_buf) advance 합 — renderer 와 동등.
+    const preedit_slice: []const u8 = g_preedit_buf[0..g_preedit_len];
+    var preedit_advance_total: f32 = 0;
+    var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_slice, .i = 0 };
+    while (pre_iter.nextCodepoint()) |pcp| {
+        const pcw = display_width.codepointWidth(@intCast(pcp));
+        preedit_advance_total += cw * @as(f32, @floatFromInt(pcw));
+    }
+
+    if (tab_layout.renameTextHit(rv.text[0..rv.text_len], rv.cursor, preedit_advance_total, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
+        g_rename.setCursor(new_byte);
+        return true;
+    }
+    return false;
+}
+
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
-    // Windows 패턴 — 어떤 클릭이든 진행 중 rename 우선 commit. 더블클릭의 경우
-    // commit 후 새 rename begin (clear → begin 순서) 라 영향 없음.
+    // rename 활성 탭의 text 영역 안 클릭 → cursor 위치만 변경 (commit X). native
+    // textbox UX (#164 follow-up). 그 외 (다른 탭 / close 버튼 / terminal 등)
+    // 는 기존 동작 — commit + 다른 logic.
+    if (tryRenameClickMoveCursor(self_view, event)) return;
+
+    // 어떤 클릭이든 진행 중 rename 우선 commit. 더블클릭의 경우 commit 후 새
+    // rename begin (clear → begin 순서) 라 영향 없음.
     commitOrCancelRename(true);
 
     // 스크롤바 영역 클릭 (#123) — Windows app_controller.zig:488-498 패턴.
