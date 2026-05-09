@@ -796,7 +796,7 @@ pub const MetalRenderer = struct {
         for (tab_titles, 0..) |orig_title, i| {
             const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const text_x_start = tab_x + tab_pad_px;
-            var text_x = text_x_start;
+            const viewport_left = text_x_start;
 
             // rename 진행 중인 탭이면 그 buf 의 텍스트를 대신 표시 + cursor +
             // preedit (IME 자모) 인라인.
@@ -804,6 +804,31 @@ pub const MetalRenderer = struct {
             const title = if (renaming_this) rename_view.?.text else orig_title;
             const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
             const preedit_text: []const u8 = if (renaming_this) rename_view.?.preedit else &.{};
+
+            // typing 중 cursor follow scroll (#161): cursor 가 viewport 우측 끝
+            // 도달 시 좌측을 잘라내며 cursor 가 항상 보이게. textbox 표준 동작.
+            // cursor_pixel_x 측정 후 scroll = max(0, cursor_pixel_x - max + cw).
+            // 사용자가 ← 로 cursor 좌측 이동 시 자동으로 scroll 줄어듦 (cursor
+            // 가 viewport 안이 되면 scroll = 0).
+            var scroll_offset: f32 = 0;
+            if (renaming_this) {
+                if (cursor_byte) |cb| {
+                    var probe_x: f32 = 0;
+                    var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+                    var probe_byte: usize = 0;
+                    while (probe_iter.nextCodepoint()) |pcp| {
+                        if (probe_byte >= cb) break;
+                        const pcw = display_width.codepointWidth(@intCast(pcp));
+                        probe_x += cw * @as(f32, @floatFromInt(pcw));
+                        const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
+                        probe_byte += plen;
+                    }
+                    if (probe_x > max_text_w_px - cw) {
+                        scroll_offset = probe_x - max_text_w_px + cw;
+                    }
+                }
+            }
+            var text_x = text_x_start - scroll_offset;
 
             // 긴 title 의 ellipsis 처리 (#161). typing 중 (renaming_this) 은
             // truncate 안 함 — cursor 따라 그리고 max width 넘으면 break (Windows
@@ -857,20 +882,32 @@ pub const MetalRenderer = struct {
                 }
 
                 // cursor 가 이 byte 위치에 와 있으면 1px vertical bar.
+                // viewport 좌측 밖이면 cursor 시각 표시는 X (cursor_drawn 은
+                // true 처리 — 다음 byte 에서 또 그리려는 시도 막음).
                 if (cursor_byte) |cb| {
-                    if (byte_idx == cb and !cursor_drawn and bg_n < MAX_BG) {
-                        bg_buf[bg_n] = .{
-                            .pos = .{ text_x, text_y_top + 2 },
-                            .size = .{ 1, ch - 4 },
-                            .color = ui_metrics.TAB_TEXT_COLOR,
-                        };
-                        bg_n += 1;
+                    if (byte_idx == cb and !cursor_drawn) {
+                        if (text_x >= viewport_left and bg_n < MAX_BG) {
+                            bg_buf[bg_n] = .{
+                                .pos = .{ text_x, text_y_top + 2 },
+                                .size = .{ 1, ch - 4 },
+                                .color = ui_metrics.TAB_TEXT_COLOR,
+                            };
+                            bg_n += 1;
+                        }
                         cursor_drawn = true;
                     }
                 }
 
                 const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
                 byte_idx += cp_len;
+
+                // viewport 좌측 밖 (scroll 으로 잘림) — atlas / glyph 호출 skip,
+                // advance 만 누적. typing 중 cursor 우측에 있을 때 좌측 글자들이
+                // 여기 해당.
+                if (text_x < viewport_left) {
+                    text_x += advance;
+                    continue;
+                }
 
                 const result = self.font.resolveGlyph(@intCast(cp)) orelse {
                     text_x += advance;
@@ -902,8 +939,9 @@ pub const MetalRenderer = struct {
             }
 
             // 끝에 cursor (text 가 cursor 위치를 안 지났을 때 — 예: cursor == title.len).
+            // viewport 안일 때만 그림 (scroll 으로 좌측 잘림 영역엔 X).
             if (renaming_this and !cursor_drawn and bg_n < MAX_BG) {
-                if (cursor_byte) |cb| if (cb >= title.len) {
+                if (cursor_byte) |cb| if (cb >= title.len and text_x >= viewport_left) {
                     bg_buf[bg_n] = .{
                         .pos = .{ text_x, text_y_top + 2 },
                         .size = .{ 1, ch - 4 },
