@@ -337,20 +337,7 @@ pub const App = struct {
                     if (drag) |d| d.current_x else 0,
                     rs,
                     self.tab_scroll_x,
-                    .{
-                        // tab_layout.Layout 은 f32, renderer.TabBarLayout 은 c_int
-                        // (renderer 내부에서 픽셀 좌표 다룸). 호출 시점에 cast.
-                        .tab_area_x = @intFromFloat(layout.tab_area_x),
-                        .tab_area_w = @intFromFloat(layout.tab_area_w),
-                        .arrows_visible = layout.arrows_visible,
-                        .arrow_w = @intFromFloat(layout.arrow_w),
-                        .plus_w = @intFromFloat(layout.plus_w),
-                        .plus_x = @intFromFloat(layout.plus_x),
-                        .left_arrow_x = @intFromFloat(layout.left_arrow_x),
-                        .right_arrow_x = @intFromFloat(layout.right_arrow_x),
-                        .left_enabled = layout.left_enabled,
-                        .right_enabled = layout.right_enabled,
-                    },
+                    layout,
                 );
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(

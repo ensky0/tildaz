@@ -1931,19 +1931,6 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     else
         null;
 
-    const layout = tabBarLayout();
-    const layout_for_render: macos_metal.TabBarLayout = .{
-        .tab_area_x = layout.tab_area_x,
-        .tab_area_w = layout.tab_area_w,
-        .arrows_visible = layout.arrows_visible,
-        .arrow_w = layout.arrow_w,
-        .plus_w = layout.plus_w,
-        .plus_x = layout.plus_x,
-        .left_arrow_x = layout.left_arrow_x,
-        .right_arrow_x = layout.right_arrow_x,
-        .left_enabled = layout.left_enabled,
-        .right_enabled = layout.right_enabled,
-    };
     g_renderer.?.renderFrame(
         g_metal_layer,
         &tab.terminal,
@@ -1957,7 +1944,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         rename_for_render,
         drag_for_render,
         g_tab_scroll_x_px,
-        layout_for_render,
+        tabBarLayout(),
     );
 }
 
