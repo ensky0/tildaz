@@ -5,7 +5,8 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | Action | Windows | macOS |
 |--------|---------|-------|
 | Toggle terminal show/hide | F1 (configurable) | F1 (configurable) |
-| Fullscreen | Alt+Enter | (TBD) |
+| Fullscreen (taskbar/dock 덮음) | Alt+Enter | Cmd+Enter |
+| 풀스크린 (taskbar/dock 회피) | Shift+Alt+Enter | Shift+Cmd+Enter |
 | New tab | Ctrl+Shift+T | Cmd+T |
 | Close active tab | Ctrl+Shift+W | Cmd+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 |
