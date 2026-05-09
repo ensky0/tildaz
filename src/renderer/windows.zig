@@ -13,6 +13,7 @@ const ATLAS_SIZE = @import("windows/glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("../perf.zig");
 const log = @import("../log.zig");
 const display_width = @import("../font/display_width.zig");
+const tab_layout = @import("../tab_layout.zig");
 const block_element = @import("block_element.zig");
 
 const WCHAR = u16;
@@ -552,20 +553,11 @@ pub const D3d11Renderer = struct {
         cursor: usize,
     };
 
-    /// 탭바 layout (#117 Firefox 패턴) — `<` `>` 화살표 + `+` 버튼이 탭 viewport
-    /// 영역을 양쪽에서 깎음. App.tabBarLayout 와 동일 구조.
-    pub const TabBarLayout = struct {
-        tab_area_x: c_int,
-        tab_area_w: c_int,
-        arrows_visible: bool,
-        arrow_w: c_int,
-        plus_w: c_int,
-        plus_x: c_int,
-        left_arrow_x: c_int,
-        right_arrow_x: c_int,
-        left_enabled: bool,
-        right_enabled: bool,
-    };
+    /// 탭바 layout (#117 Firefox 패턴) — cross-platform `tab_layout.Layout`
+    /// 그대로 (#163 4-i-2). 호출처 host 가 `tab_layout.compute()` 결과를 그대로
+    /// 넘김 — c_int 변환 cast block 사라짐. 본문 안 layout.* 가 f32 라 vertex
+    /// 좌표에 그대로 사용.
+    pub const TabBarLayout = tab_layout.Layout;
 
     pub fn renderTabBar(
         self: *D3d11Renderer,
@@ -633,7 +625,7 @@ pub const D3d11Renderer = struct {
         // #117 — 모든 탭 x = world(`i × tw` or drag world) - scroll + tab_area_x.
         // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
         const sx: f32 = @floatFromInt(tab_scroll_x);
-        const tax: f32 = @floatFromInt(layout.tab_area_x);
+        const tax: f32 = layout.tab_area_x;
 
         // Tab backgrounds
         for (0..tab_count) |i| {
@@ -851,21 +843,21 @@ pub const D3d11Renderer = struct {
         var ctrl_bg_n: u32 = 0;
         if (layout.arrows_visible) {
             ctrl_bg_buf[ctrl_bg_n] = .{
-                .pos = .{ @floatFromInt(layout.left_arrow_x), 0 },
-                .size = .{ @floatFromInt(layout.arrow_w), tbh },
+                .pos = .{ layout.left_arrow_x, 0 },
+                .size = .{ layout.arrow_w, tbh },
                 .color = ui_metrics.TAB_BAR_BG,
             };
             ctrl_bg_n += 1;
             ctrl_bg_buf[ctrl_bg_n] = .{
-                .pos = .{ @floatFromInt(layout.right_arrow_x), 0 },
-                .size = .{ @floatFromInt(layout.arrow_w), tbh },
+                .pos = .{ layout.right_arrow_x, 0 },
+                .size = .{ layout.arrow_w, tbh },
                 .color = ui_metrics.TAB_BAR_BG,
             };
             ctrl_bg_n += 1;
         }
         ctrl_bg_buf[ctrl_bg_n] = .{
-            .pos = .{ @floatFromInt(layout.plus_x), 0 },
-            .size = .{ @floatFromInt(layout.plus_w), tbh },
+            .pos = .{ layout.plus_x, 0 },
+            .size = .{ layout.plus_w, tbh },
             .color = ui_metrics.TAB_BAR_BG,
         };
         ctrl_bg_n += 1;
@@ -876,7 +868,7 @@ pub const D3d11Renderer = struct {
         var ctrl_text_buf: [3]TextInstance = undefined;
         var ctrl_text_n: u32 = 0;
         const drawCtrlGlyph = struct {
-            fn run(rself: *D3d11Renderer, codepoint: u21, box_x: c_int, box_w: c_int, tbh_: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
+            fn run(rself: *D3d11Renderer, codepoint: u21, box_x: f32, box_w: f32, tbh_: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
                 if (n.* >= buf.len) return;
                 if (box_w <= 0) return;
                 const result = rself.font.resolveGlyph(codepoint) orelse return;
@@ -886,9 +878,7 @@ pub const D3d11Renderer = struct {
                 };
                 if (result.owned) _ = result.face.vtable.Release(result.face);
                 if (entry.w == 0 or entry.h == 0) return;
-                const bx: f32 = @floatFromInt(box_x);
-                const bw: f32 = @floatFromInt(box_w);
-                const gx = bx + (bw - cw_) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
+                const gx = box_x + (box_w - cw_) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
                 const baseline = (tbh_ + rself.font.ascent_px - (ch_ - rself.font.ascent_px)) * 0.5;
                 const gy = baseline + @as(f32, @floatFromInt(entry.bearing_y));
                 buf[n.*] = .{
