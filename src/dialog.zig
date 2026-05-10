@@ -27,6 +27,14 @@ pub fn showInfo(title: []const u8, message: []const u8) void {
     impl.show(.info, title, message);
 }
 
+/// About 다이얼로그 — `showInfo` 의 특수 케이스. macOS 는 NSTextView
+/// accessoryView 로 path 가독성 + cmd+c 정상 동작 (NSAlert 의 informativeText
+/// 는 NSTextField 라 modal 안에서 firstResponder 라우팅이 깨짐). Windows 는
+/// MessageBoxW 자체 ctrl+c 가 동작하므로 `showInfo` 와 동일.
+pub fn showAboutAlert(title: []const u8, message: []const u8) void {
+    impl.showAboutAlert(title, message);
+}
+
 pub fn showError(title: []const u8, message: []const u8) void {
     impl.show(.err, title, message);
 }
