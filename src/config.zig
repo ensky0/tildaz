@@ -524,9 +524,9 @@ pub const Config = struct {
     /// 이전 버전은 6 개 hardcoded 폰트 이름만 if-eql 로 인식하고 그 외엔 모두
     /// `"Consolas"` literal 반환 — 사용자가 `"JetBrains Mono"` 같은 일반 코딩
     /// 폰트를 적어도 시스템에 설치되어 있는지와 무관하게 결과는 Consolas. 같은
-    /// 패턴이 `shellUtf16` 에도 있었고 commit `836fe97` 에서 fix. font 도 같이.
-    pub fn fontFamilyUtf16(self: *const Config, index: u8) [*:0]const WCHAR {
-        if (!is_windows) @compileError("fontFamilyUtf16 is Windows-only");
+    /// 패턴이 `windowsShellUtf16` 에도 있었고 commit `836fe97` 에서 fix. font 도 같이.
+    pub fn windowsFontFamilyUtf16(self: *const Config, index: u8) [*:0]const WCHAR {
+        if (!is_windows) @compileError("windowsFontFamilyUtf16 is Windows-only");
         const S = struct {
             var bufs: [MAX_FONT_FAMILIES][512]u16 = undefined;
         };
@@ -552,8 +552,8 @@ pub const Config = struct {
     /// 이전 버전은 `_ = self;` + literal "cmd.exe" 만 반환해서 사용자가 config
     /// 의 `"shell"` 값을 바꿔도 적용 안 되는 사고 (시연 중 발견 — `"wsl.exe -d
     /// Debian --cd ~"` 무시되고 cmd 만 떴음).
-    pub fn shellUtf16(self: *const Config) [*:0]const WCHAR {
-        if (!is_windows) @compileError("shellUtf16 is Windows-only");
+    pub fn windowsShellUtf16(self: *const Config) [*:0]const WCHAR {
+        if (!is_windows) @compileError("windowsShellUtf16 is Windows-only");
         const S = struct {
             var buf: [1024]u16 = undefined;
         };
