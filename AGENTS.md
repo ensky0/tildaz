@@ -103,8 +103,8 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 **구현 위치:**
 - 양쪽 공통: [`src/themes.zig`](src/themes.zig) `isDark()` — luminance 계산.
-- Windows: [`src/terminal_backend.zig`](src/terminal_backend.zig) `envVarsForTheme` 가 ConPty 생성 시 `extra_env` 로 전달.
-- macOS: [`src/macos_host.zig`](src/macos_host.zig) `g_extra_env` 에 추가, PTY 생성 시 `extra_env` 로 전달.
+- Windows: [`src/host/windows.zig`](src/host/windows.zig) `buildExtraEnv` 가 ConPty 생성 시 `extra_env` 로 전달.
+- macOS: [`src/host/macos.zig`](src/host/macos.zig) `g_extra_env` 에 추가, PTY 생성 시 `extra_env` 로 전달.
 
 **새 platform 포팅 시 체크리스트:**
 - TUI 가 dark BG 인식하는지 확인 — `echo $COLORFGBG` 출력 / `vim` 띄워서 colorscheme 자동 적용 여부.
@@ -127,7 +127,7 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 향후 macOS 작업 시 재참고용. 모두 macOS 표준 동작이지만 직관과 다르거나 안내가 부족한 케이스.
 
-1. **NSApplication.terminate: 가 defer 안 거침.** Cmd+Q (NSApp `terminate:`) 가 `exit()` 직행 → main 의 `defer` 안 불림. 해결: POSIX `atexit()` hook 등록 (`macos_host.zig` 의 `atExitLogStop` 패턴).
+1. **NSApplication.terminate: 가 defer 안 거침.** Cmd+Q (NSApp `terminate:`) 가 `exit()` 직행 → main 의 `defer` 안 불림. 해결: POSIX `atexit()` hook 등록 (`host/macos.zig` 의 `atExitLogStop` 패턴).
 
 2. **영어 key repeat 안 됨 (한글 자모는 정상).** macOS "Press and Hold" 가 영어 키 길게 누름 → accent picker (à á â) 띄우려 repeat 막음. 한글은 IME 경로라 영향 없어 비대칭. 해결: `ApplePressAndHoldEnabled = false` 를 우리 앱 NSUserDefaults 에 register (ghostty / iTerm2 / Alacritty 동일).
 
