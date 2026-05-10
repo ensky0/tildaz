@@ -1,11 +1,11 @@
 // Cross-platform config.json schema + parser. Windows + macOS 같은 nested
 // schema, default 만 OS-specific (font.family / font.size / shell / hotkey
-// 등). DEFAULT_CONFIG_JSON 한 string 이 schema 의 single source — createDefault
-// 가 그대로 파일에 저장 + parse 시 user config 와 비교 (`validateStructure`)
-// 검증의 ground truth.
+// 등). `Defaults` struct + `defaultConfigJson(alloc, shell_resolved)` 가 schema
+// single source — createDefault 가 그대로 파일에 저장 + parse 시 user config
+// 와 비교 (`validateStructure`) 검증의 ground truth.
 //
-// 새 필드 추가 시 *DEFAULT_CONFIG_JSON 한 곳만* update 하면 required / unknown /
-// type 검증 자동 sync. value range 만 별도 hardcoded.
+// 새 필드 추가 시 *Defaults + defaultConfigJson 한 곳만* update 하면 required /
+// unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -177,9 +177,11 @@ fn eqIc(a: []const u8, b: []const u8) bool {
 // 나란히 두어서 한눈에 비교 / 편집 가능.
 //
 // 이 한 곳만 고치면:
-//   (a) `DEFAULT_CONFIG_JSON` — `std.fmt.comptimePrint` 로 자동 생성. 첫 실행
-//       시 디스크 (`%APPDATA%\tildaz\config.json` 등) 에 저장됨 + parse() 의
-//       `validateStructure` 가 schema 검증 ground truth 로 사용.
+//   (a) `defaultConfigJson(alloc, shell_resolved)` — Defaults 값 그대로 JSON
+//       템플릿 생성. 첫 실행 시 디스크 (`%APPDATA%\tildaz\config.json` 등)
+//       에 저장됨 + parse() 의 `validateStructure` 가 schema 검증 ground
+//       truth 로 사용. shell 만 host 가 첫 실행 시점에 resolveShell 로 결정해
+//       인자로 전달 (Windows 는 항상 Defaults.shell, macOS 는 $SHELL 우선).
 //   (b) `Config` struct 의 field initializer 가 참조하는 `default_*` const 도
 //       모두 같은 Defaults 에서 derive — disk 와 memory 가 자동 sync.
 //
@@ -188,7 +190,7 @@ fn eqIc(a: []const u8, b: []const u8) bool {
 // default 가 어긋나는 잠재 버그.
 // =============================================================================
 
-const Defaults = if (is_windows) struct {
+pub const Defaults = if (is_windows) struct {
     pub const dock_position: []const u8 = "top";
     pub const width: u8 = 50;
     pub const height: u8 = 100;
@@ -218,26 +220,40 @@ const Defaults = if (is_windows) struct {
     pub const cell_width: f32 = 1.0;
     pub const line_height: f32 = 1.1;
     pub const theme: []const u8 = "Tilda";
-    /// 빈 문자열 = host 가 `$SHELL` env / `/bin/zsh` fallback.
-    pub const shell: []const u8 = "";
+    /// host 의 `resolveShell` 이 `$SHELL` env 가 비어있을 때 쓰는 fallback.
+    /// 첫 실행 시 host 는 `$SHELL` (있으면) 또는 이 값을 disk JSON 에 명시.
+    pub const shell: []const u8 = "/bin/bash";
     pub const hotkey: []const u8 = "f1";
     pub const auto_start: bool = true;
     pub const hidden_start: bool = false;
     pub const max_scroll_lines: u32 = 100_000;
 };
 
-/// `Defaults` 로부터 자동 생성된 JSON 템플릿. 첫 실행 시 디스크에 저장 + schema
-/// 검증 (`validateStructure`) ground truth.
-pub const DEFAULT_CONFIG_JSON: []const u8 = blk: {
-    @setEvalBranchQuota(100_000);
-    // font.family JSON array literal — comptime concat.
-    var family_json: []const u8 = "[";
+/// `Defaults` + host 가 첫-실행 시 결정한 `shell_resolved` 로부터 JSON 템플릿
+/// 생성. 첫 실행 시 디스크 (`%APPDATA%\tildaz\config.json` 등) 에 저장 +
+/// schema 검증 (`validateStructure`) ground truth. Caller 는 반환 slice 를 free.
+///
+/// `shell_resolved` 는 host 의 `resolveShell` 이 OS 환경에서 결정한 값:
+///   - Windows: 항상 `Defaults.shell` (= `cmd.exe`).
+///   - macOS: `$SHELL` env 가 있으면 그 값, 없으면 `Defaults.shell` (= `/bin/bash`).
+/// 이렇게 disk 에 명시값으로 적어두면 이후 실행은 disk 그대로 사용 — host 의
+/// runtime fallback 분기 없음 (config 가 단일 source of truth).
+pub fn defaultConfigJson(
+    allocator: std.mem.Allocator,
+    shell_resolved: []const u8,
+) ![]const u8 {
+    var family_buf: [1024]u8 = undefined;
+    var family_fbs = std.io.fixedBufferStream(&family_buf);
+    const fw = family_fbs.writer();
+    try fw.writeAll("[");
     for (Defaults.font_family, 0..) |f, i| {
-        if (i > 0) family_json = family_json ++ ", ";
-        family_json = family_json ++ "\"" ++ f ++ "\"";
+        if (i > 0) try fw.writeAll(", ");
+        try fw.print("\"{s}\"", .{f});
     }
-    family_json = family_json ++ "]";
-    break :blk std.fmt.comptimePrint(
+    try fw.writeAll("]");
+    const family_json = family_fbs.getWritten();
+
+    return try std.fmt.allocPrint(allocator,
         \\{{
         \\  "window": {{
         \\    "dock_position": "{s}",
@@ -271,13 +287,13 @@ pub const DEFAULT_CONFIG_JSON: []const u8 = blk: {
         Defaults.cell_width,
         Defaults.line_height,
         Defaults.theme,
-        Defaults.shell,
+        shell_resolved,
         Defaults.hotkey,
         Defaults.auto_start,
         Defaults.hidden_start,
         Defaults.max_scroll_lines,
     });
-};
+}
 
 // `Defaults` 의 string / int 값을 Config struct 가 보관하는 native type 으로
 // 변환 (DockPosition enum / Hotkey struct / Theme pointer / alpha u8).
@@ -309,8 +325,9 @@ pub const Config = struct {
     opacity: u8 = default_opacity_alpha,
     theme: ?*const themes.Theme = default_theme,
     hotkey: Hotkey = default_hotkey,
-    /// Shell path. macOS 는 빈 문자열이면 host 가 `$SHELL` env / `/bin/zsh` fallback.
-    /// Windows 는 default `cmd.exe`.
+    /// Shell path. 첫 실행 시 host 의 `resolveShell` 이 결정한 값으로 disk 에
+    /// 명시되며, 이후 실행은 disk 의 명시값을 그대로 읽음 (runtime fallback
+    /// 분기 없음). 빈 문자열은 허용하지 않음 — `shell_validate` 가 잡음.
     shell: []const u8 = default_shell,
     auto_start: bool = Defaults.auto_start,
     hidden_start: bool = Defaults.hidden_start,
@@ -323,17 +340,30 @@ pub const Config = struct {
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
     font_family_count: u8 = DEFAULT_FONT_FAMILIES.len,
 
-    pub fn load(allocator: std.mem.Allocator) Config {
-        const path = paths.configPath(allocator) catch return .{};
+    /// `shell_resolved` 는 host 의 `resolveShell` 결과 (process lifetime 보유).
+    /// 첫 실행이거나 disk 를 못 읽을 때 memory default `Config.shell` 도 이
+    /// 값으로 sync. disk 명시값이 있으면 그 값 그대로 (parse 가 alloc.dupe).
+    pub fn load(allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
+        const path = paths.configPath(allocator) catch {
+            var c: Config = .{};
+            c.shell = shell_resolved;
+            return c;
+        };
         defer allocator.free(path);
 
         const file = std.fs.openFileAbsolute(path, .{}) catch {
-            createDefault(path);
-            return .{};
+            createDefault(allocator, path, shell_resolved);
+            var c: Config = .{};
+            c.shell = shell_resolved;
+            return c;
         };
         defer file.close();
 
-        const content = file.readToEndAlloc(allocator, 64 * 1024) catch return .{};
+        const content = file.readToEndAlloc(allocator, 64 * 1024) catch {
+            var c: Config = .{};
+            c.shell = shell_resolved;
+            return c;
+        };
         defer allocator.free(content);
 
         return parse(allocator, content);
@@ -357,8 +387,11 @@ pub const Config = struct {
         const root = parsed.value;
         if (root != .object) dialog.showFatal(messages.config_error_title, "config.json: top-level must be a JSON object.");
 
-        // Schema 검증 — DEFAULT_CONFIG_JSON 과 비교 (key set + nested 구조 + type).
-        var default_parsed = std.json.parseFromSlice(std.json.Value, allocator, DEFAULT_CONFIG_JSON, .{}) catch unreachable;
+        // Schema 검증 — `defaultConfigJson` 과 비교 (key set + nested 구조 + type).
+        // shell 인자는 schema 검증 시 *값* 무관 — `Defaults.shell` 한 번 사용.
+        const default_json = defaultConfigJson(allocator, Defaults.shell) catch unreachable;
+        defer allocator.free(default_json);
+        var default_parsed = std.json.parseFromSlice(std.json.Value, allocator, default_json, .{}) catch unreachable;
         defer default_parsed.deinit();
         validateStructure(root, default_parsed.value, "(top-level)");
 
@@ -503,10 +536,12 @@ pub const Config = struct {
         return config;
     }
 
-    fn createDefault(path: []const u8) void {
+    fn createDefault(allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
         const file = std.fs.createFileAbsolute(path, .{}) catch return;
         defer file.close();
-        file.writeAll(DEFAULT_CONFIG_JSON) catch {};
+        const json_text = defaultConfigJson(allocator, shell_resolved) catch return;
+        defer allocator.free(json_text);
+        file.writeAll(json_text) catch {};
     }
 
     pub fn deinit(self: *const Config) void {
