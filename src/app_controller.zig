@@ -28,7 +28,10 @@ pub const App = struct {
     renderer: ?RendererBackend = null,
     last_render_ms: i64 = 0,
     tab_interaction: tab_interaction.TabInteraction = .{},
-    terminal_interaction: terminal_interaction.TerminalInteraction = .{},
+    // terminal_interaction (mouse selection / scrollbar drag) state 는 per-tab —
+    // session_core.Tab.interaction (cross-platform field, macOS 와 동등) 사용.
+    // App level 에는 더 이상 글로벌 state 없음. 탭 전환 시 자동으로 새 탭의
+    // state 사용 → 탭 별 highlight 보존 + drag stuck 회피.
 
     /// 탭바 스크롤 오프셋 (픽셀, #117). 탭바 총 너비 (`count × TAB_WIDTH`) 가
     /// 윈도우 너비를 초과하면 활성 탭이 보이도록 viewport 자동 이동. 매 frame
@@ -657,17 +660,15 @@ pub const App = struct {
     }
 
     fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+        const tab = self.activeTabPtr() orelse return;
         const cell = self.mouseToCell(mouse_x, mouse_y);
-
-        if (self.activeTabPtr()) |tab| {
-            const screen: *ghostty.Screen = tab.terminal.screens.active;
-            self.terminal_interaction.selection.begin(screen, cell);
-        }
+        const screen: *ghostty.Screen = tab.terminal.screens.active;
+        tab.interaction.selection.begin(screen, cell);
     }
 
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
-        if (!self.terminal_interaction.selection.active) return;
         const tab = self.activeTabPtr() orelse return;
+        if (!tab.interaction.selection.active) return;
 
         // 터미널 영역 위/아래로 드래그 시 자동 스크롤
         const tbh = self.effectiveTabBarHeight();
@@ -683,15 +684,14 @@ pub const App = struct {
 
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
-        self.terminal_interaction.selection.update(screen, cell);
+        tab.interaction.selection.update(screen, cell);
     }
 
     fn finishTerminalSelection(self: *App) void {
-        if (!self.terminal_interaction.selection.finish()) return;
-
         const tab = self.activeTabPtr() orelse return;
-        const screen: *ghostty.Screen = tab.terminal.screens.active;
+        if (!tab.interaction.selection.finish()) return;
 
+        const screen: *ghostty.Screen = tab.terminal.screens.active;
         const sel = screen.selection orelse return;
         const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
         defer self.allocator.free(text);
@@ -811,7 +811,7 @@ pub const App = struct {
                 // count<=1 면 effectiveTabBarHeight==0 → 탭바 영역 자체가 없으므로
                 // 모든 클릭이 터미널/스크롤바 라우팅으로 흘러간다 (#127).
                 if (mouse.y < self.effectiveTabBarHeight()) {
-                    self.terminal_interaction.cancelPointerModes();
+                    if (self.activeTabPtr()) |tab| tab.interaction.cancelPointerModes();
                     self.handleTabClick(mouse.x, mouse.y);
                     // drag begin 은 *탭 영역* 안에서만 — 화살표 / + 위 클릭은
                     // drag 안 시작 (#117).
@@ -823,14 +823,16 @@ pub const App = struct {
                 }
                 const client_w = self.window.getClientSize().w;
                 if (mouse.x >= client_w - self.SCROLLBAR_W) {
-                    self.terminal_interaction.scrollbar.begin();
+                    if (self.activeTabPtr()) |tab| {
+                        tab.interaction.scrollbar.begin();
+                        tab.interaction.selection.cancel();
+                    }
                     self.tab_interaction.drag.reset();
-                    self.terminal_interaction.selection.cancel();
                     self.scrollToY(mouse.y);
                     return true;
                 }
                 self.tab_interaction.drag.reset();
-                self.terminal_interaction.scrollbar.end();
+                if (self.activeTabPtr()) |tab| tab.interaction.scrollbar.end();
                 self.startTerminalSelection(mouse.x, mouse.y);
                 return true;
             },
@@ -855,20 +857,25 @@ pub const App = struct {
             },
             .mouse_move => |mouse| {
                 if (mouse.left_button) {
-                    if (self.terminal_interaction.scrollbar.active) {
+                    const tab_opt = self.activeTabPtr();
+                    if (tab_opt != null and tab_opt.?.interaction.scrollbar.active) {
                         self.scrollToY(mouse.y);
                     } else if (self.tab_interaction.drag.active) {
                         self.handleDragMove(mouse.x);
-                    } else if (self.terminal_interaction.selection.active) {
+                    } else if (tab_opt != null and tab_opt.?.interaction.selection.active) {
                         self.updateTerminalSelection(mouse.x, mouse.y);
                     }
                 }
                 return true;
             },
             .mouse_up => |_| {
-                if (self.terminal_interaction.scrollbar.active) {
-                    self.terminal_interaction.scrollbar.end();
-                } else if (self.tab_interaction.drag.active) {
+                if (self.activeTabPtr()) |tab| {
+                    if (tab.interaction.scrollbar.active) {
+                        tab.interaction.scrollbar.end();
+                        return true;
+                    }
+                }
+                if (self.tab_interaction.drag.active) {
                     self.handleDragEnd();
                 } else {
                     self.finishTerminalSelection();

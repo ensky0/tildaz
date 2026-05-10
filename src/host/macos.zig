@@ -1295,6 +1295,11 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         const sbw_px: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * g_renderer.?.scale;
         const vp_w_f: f32 = @floatFromInt(g_renderer.?.vp_width);
         if (xy.x >= vp_w_f - sbw_px) {
+            // 새 scrollbar drag 시작 = 기존 selection drag 정리 (Windows
+            // app_controller.zig:826-828 동등). selection.cancel 은 active flag
+            // 만 리셋, screen 의 highlight 는 보존.
+            tab.interaction.selection.cancel();
+            g_drag.reset();
             tab.interaction.scrollbar.begin();
             scrollbarScrollToY(xy.y);
             return;
@@ -1306,7 +1311,14 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
         const layout = tabBarLayout();
-        switch (tabBarHitArea(xy.x, xy.y, layout)) {
+        const hit_area = tabBarHitArea(xy.x, xy.y, layout);
+        // 탭바 영역 (어떤 sub-area 든) 클릭 = 새 mode 시작 의도. 기존 활성
+        // 탭의 진행 중 pointer mode (selection / scrollbar drag) cleanup —
+        // Windows app_controller.zig:814 동등. β 정책에 따라 highlight 는 보존.
+        if (hit_area != .none) {
+            tab.interaction.cancelPointerModes();
+        }
+        switch (hit_area) {
             .left_arrow => {
                 if (layout.left_enabled) scrollTabsByArrow(.left);
                 return;
