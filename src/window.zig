@@ -1231,6 +1231,26 @@ pub const Window = struct {
                         return 0;
                     }
                 }
+                // Ctrl+A / Ctrl+E — rename 중이면 line begin/end (terminal
+                // readline 컨벤션, mac/win 통일). rename 비활성이면 dispatch 가
+                // false 반환 → fall through → WM_CHAR 0x01/0x05 가 PTY 로 (셸
+                // readline 정상). Ctrl+Shift+A/E 는 별 단축키 (Ctrl+Shift block
+                // 아래에서 처리).
+                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
+                    const ctrl_rename_key: ?app_event.KeyInput = switch (wParam) {
+                        0x41 => .home, // 'A'
+                        0x45 => .end, // 'E'
+                        else => null,
+                    };
+                    if (ctrl_rename_key) |k| {
+                        if (self.dispatchAppEvent(.{ .key_input = k })) {
+                            // rename consumed — TranslateMessage 가 보낼 짝꿍
+                            // WM_CHAR (0x01 / 0x05) 가 PTY 로 안 가게 swallow.
+                            self.swallow_next_wm_char = true;
+                            return 0;
+                        }
+                    }
+                }
                 // Ctrl+Shift shortcuts
                 if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
                     // Ctrl+Shift+C: copy current selection (#120)
