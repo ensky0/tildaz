@@ -73,9 +73,19 @@ pub fn checkAtLimitAndDialog(host: *const Host) bool {
 
 // === 활성 탭 이동 (override clear + invalidate 패턴 통일) ===
 
+/// 탭 전환 직전에 *기존 활성 탭* 의 진행 중 pointer mode (selection drag /
+/// scrollbar drag) 만 cleanup. 정책 β — drag 는 multi-tab span 의미 없음 (애초에
+/// 비정상 워크플로우 + #172 stuck path 와 같은 영역). cancelPointerModes 는
+/// active flag + start_pin 만 리셋, ghostty screen 의 highlight 는 그대로 보존
+/// 하므로 *완료된 selection* 은 탭별로 자연 보존.
+fn cancelDragOnActiveTab(host: *Host) void {
+    if (host.session.activeTab()) |tab| tab.interaction.cancelPointerModes();
+}
+
 /// idx 번 탭으로 활성. setActiveTab 의 변경 여부에 따라 override clear +
 /// invalidate. 호출처는 한 줄.
 pub fn switchTab(host: *Host, idx: usize) void {
+    cancelDragOnActiveTab(host);
     if (host.session.setActiveTab(idx)) {
         host.override_ptr.* = false;
         host.invalidate(host);
@@ -84,6 +94,7 @@ pub fn switchTab(host: *Host, idx: usize) void {
 
 /// 다음 탭 활성 (wrap-around). activateNext 의 변경 여부에 따라 사후 처리.
 pub fn nextTab(host: *Host) void {
+    cancelDragOnActiveTab(host);
     if (host.session.activateNext()) {
         host.override_ptr.* = false;
         host.invalidate(host);
@@ -92,6 +103,7 @@ pub fn nextTab(host: *Host) void {
 
 /// 이전 탭 활성 (wrap-around).
 pub fn prevTab(host: *Host) void {
+    cancelDragOnActiveTab(host);
     if (host.session.activatePrev()) {
         host.override_ptr.* = false;
         host.invalidate(host);
