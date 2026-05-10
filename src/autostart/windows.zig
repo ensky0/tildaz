@@ -7,8 +7,9 @@
 //     stale 엔트리가 영구히 남아 오래된 exe 가 자동 실행되는 사고 발생.
 //   - Quake-style 드롭다운 터미널에는 Task Scheduler 의 장점 (지연 실행 /
 //     권한 승격 / 배터리 조건) 이 필요 없음.
-//   - 따라서 Registry Run 을 primary mechanism 으로 단일화하고, 과거 버전이
-//     만들어 둔 Task Scheduler "TildaZ" 엔트리는 마이그레이션 경로로 제거.
+//   - 따라서 Registry Run 을 primary mechanism 으로 단일화. 사용자가 admin
+//     elevation 등을 위해 직접 등록하는 Task Scheduler 엔트리 (예: README
+//     §Known limitations 의 "TildaZ" task) 는 우리가 건드리지 않음.
 
 const std = @import("std");
 const windows = std.os.windows;
@@ -17,7 +18,6 @@ const HKEY = ?*anyopaque;
 const DWORD = windows.DWORD;
 const WCHAR = u16;
 const BYTE = windows.BYTE;
-const BOOL = windows.BOOL;
 const HANDLE = windows.HANDLE;
 
 // --- Registry Run (primary) ---
@@ -36,83 +36,6 @@ const RUN_KEY = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Win
 const VALUE_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ");
 
 extern "kernel32" fn GetModuleFileNameW(?HANDLE, [*]WCHAR, DWORD) callconv(.c) DWORD;
-
-// --- Task Scheduler (legacy cleanup only) ---
-
-const STARTUPINFOW = extern struct {
-    cb: DWORD = @sizeOf(STARTUPINFOW),
-    lpReserved: ?[*:0]WCHAR = null,
-    lpDesktop: ?[*:0]WCHAR = null,
-    lpTitle: ?[*:0]WCHAR = null,
-    dwX: DWORD = 0,
-    dwY: DWORD = 0,
-    dwXSize: DWORD = 0,
-    dwYSize: DWORD = 0,
-    dwXCountChars: DWORD = 0,
-    dwYCountChars: DWORD = 0,
-    dwFillAttribute: DWORD = 0,
-    dwFlags: DWORD = 0,
-    wShowWindow: u16 = 0,
-    cbReserved2: u16 = 0,
-    lpReserved2: ?*BYTE = null,
-    hStdInput: ?HANDLE = null,
-    hStdOutput: ?HANDLE = null,
-    hStdError: ?HANDLE = null,
-};
-
-const PROCESS_INFORMATION = extern struct {
-    hProcess: HANDLE,
-    hThread: HANDLE,
-    dwProcessId: DWORD,
-    dwThreadId: DWORD,
-};
-
-const CREATE_NO_WINDOW: DWORD = 0x08000000;
-
-extern "kernel32" fn CreateProcessW(
-    ?[*:0]const WCHAR,
-    [*:0]WCHAR,
-    ?*anyopaque,
-    ?*anyopaque,
-    BOOL,
-    DWORD,
-    ?*anyopaque,
-    ?[*:0]const WCHAR,
-    *STARTUPINFOW,
-    *PROCESS_INFORMATION,
-) callconv(.c) BOOL;
-
-/// 기존 버전이 만든 Task Scheduler "TildaZ" 엔트리를 조용히 제거.
-/// 없으면 에러 무시. 있으면 삭제. schtasks 자체가 막힌 환경이면 어차피
-/// 존재도 못 했을 테니 그냥 넘겨도 안전.
-fn removeLegacyTaskScheduler() void {
-    const cmd_tmpl = std.unicode.utf8ToUtf16LeStringLiteral("schtasks /delete /tn \"TildaZ\" /f");
-    var cmd: [cmd_tmpl.len + 1]WCHAR = undefined;
-    @memcpy(cmd[0..cmd_tmpl.len], cmd_tmpl);
-    cmd[cmd_tmpl.len] = 0;
-
-    var si = STARTUPINFOW{};
-    var pi: PROCESS_INFORMATION = undefined;
-
-    if (CreateProcessW(
-        null,
-        @ptrCast(cmd[0..cmd_tmpl.len :0]),
-        null,
-        null,
-        0,
-        CREATE_NO_WINDOW,
-        null,
-        null,
-        &si,
-        &pi,
-    ) == 0) return;
-
-    // Best-effort migration cleanup only. Do not block startup/shutdown on an
-    // external schtasks.exe process that might hang behind policy or shell
-    // initialization.
-    windows.CloseHandle(pi.hProcess);
-    windows.CloseHandle(pi.hThread);
-}
 
 /// HKCU\Software\Microsoft\Windows\CurrentVersion\Run\TildaZ 에
 /// 현재 실행 중인 tildaz.exe 의 풀 경로를 "따옴표로 감싼" 형태로 기록.
@@ -145,13 +68,10 @@ pub fn enable(_alloc: std.mem.Allocator) !void {
     if (RegSetValueExW(hkey, VALUE_NAME, 0, REG_SZ, @ptrCast(&quoted), cb_data) != ERROR_SUCCESS) {
         return error.RegSetValueFailed;
     }
-
-    // 마이그레이션: 옛 버전의 Task Scheduler 엔트리 정리
-    removeLegacyTaskScheduler();
 }
 
-/// Registry Run 엔트리 제거 + legacy Task Scheduler 엔트리도 같이 정리.
-/// 실패는 모두 무시 (에러 전파 없음). `_alloc` 은 시그니처 통일용 (Windows 무시).
+/// Registry Run 엔트리 제거. 실패는 무시 (에러 전파 없음).
+/// `_alloc` 은 시그니처 통일용 (Windows 무시).
 pub fn disable(_alloc: std.mem.Allocator) void {
     _ = _alloc;
     var hkey: HKEY = null;
@@ -159,6 +79,4 @@ pub fn disable(_alloc: std.mem.Allocator) void {
         defer _ = RegCloseKey(hkey);
         _ = RegDeleteValueW(hkey, VALUE_NAME);
     }
-
-    removeLegacyTaskScheduler();
 }
