@@ -100,7 +100,7 @@ pub fn run() !void {
     };
     app.session = SessionCore.init(
         alloc,
-        config.shellUtf16(),
+        config.windowsShellUtf16(),
         config.max_scroll_lines,
         config.theme,
         buildExtraEnv(config.theme),
@@ -131,7 +131,7 @@ pub fn run() !void {
     const font_validate = @import("../font/validate.zig");
     for (0..config.font_family_count) |i| {
         const idx: u8 = @intCast(i);
-        const fam_w = config.fontFamilyUtf16(idx);
+        const fam_w = config.windowsFontFamilyUtf16(idx);
         if (!DWriteFontCtx.isFontAvailable(fam_w)) {
             font_validate.showNotFoundFatal(
                 config.font_families[i],
@@ -142,12 +142,12 @@ pub fn run() !void {
 
     // font.family chain 을 *전체* renderer 까지 전달 — 이전엔 chain[0] 만 도달
     // 하고 나머지는 validation loop 만 거치고 버려지는 사고 (#135 B2). chain
-    // entry 들은 config 의 static buffer (fontFamilyUtf16 의 per-index static)
+    // entry 들은 config 의 static buffer (windowsFontFamilyUtf16 의 per-index static)
     // 를 가리키는 포인터라 process lifetime 안정. 로컬 array 는 run() 스택
     // 프레임에 살아 있고 SessionCore / Window / Renderer 모두 같은 스코프.
     var font_chain_arr: [config_mod.MAX_FONT_FAMILIES][*:0]const u16 = undefined;
     for (0..config.font_family_count) |i| {
-        font_chain_arr[i] = config.fontFamilyUtf16(@intCast(i));
+        font_chain_arr[i] = config.windowsFontFamilyUtf16(@intCast(i));
     }
     const font_chain: []const [*:0]const u16 = font_chain_arr[0..config.font_family_count];
     const font_size: c_int = @intCast(config.font_size);
