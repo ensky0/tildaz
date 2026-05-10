@@ -21,7 +21,7 @@ const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
-const macos_metal = @import("../renderer/macos.zig");
+const renderer_module = @import("../renderer.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
@@ -356,7 +356,7 @@ var g_extra_env: [5]terminal.ExtraEnv = undefined;
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 var g_metal_layer: objc.id = null;
-var g_renderer: ?macos_metal.MetalRenderer = null;
+var g_renderer: ?renderer_module.RendererBackend = null;
 var g_render_timer: CFRunLoopTimerRef = null;
 // 터미널 영역 안쪽 padding — `ui_metrics.zig` 의 공통 상수. Windows /
 // macOS 동일 값으로 시각적 일관성 유지. pixel 변환은 init 시 retina scale 곱.
@@ -1876,7 +1876,7 @@ pub fn run() !void {
     // theme 의 background 를 metal renderer 의 default_bg 로 — clear pass color
     // (cell 이 그리지 않는 영역) + 비활성 탭 BG 에 사용.
     const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    g_renderer = macos_metal.MetalRenderer.init(
+    g_renderer = renderer_module.RendererBackend.init(
         allocator,
         device,
         layer,
@@ -2072,14 +2072,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const cell_preedit: []const u8 = if (g_rename.isActive()) &.{} else preedit_slice;
     const tab_rename_preedit: []const u8 = if (g_rename.isActive()) preedit_slice else &.{};
 
-    g_renderer.?.renderFrame(
-        g_metal_layer,
-        &tab.terminal,
-        cell_w_px,
-        cell_h_px,
-        tab_bar_px,
-        pad_px,
-        cell_preedit,
+    g_renderer.?.renderTabBar(
         titles,
         g_session.active_tab,
         g_rename.view(),
@@ -2087,6 +2080,14 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
         g_drag.view(),
         g_tab_scroll_x_px,
         tabBarLayout(),
+    );
+    g_renderer.?.renderTerminal(
+        &tab.terminal,
+        cell_w_px,
+        cell_h_px,
+        tab_bar_px,
+        pad_px,
+        cell_preedit,
     );
 }
 
