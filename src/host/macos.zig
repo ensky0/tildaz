@@ -443,8 +443,8 @@ fn syncTerminalGeometry() void {
     if (g_session.count() == 0) return;
 
     const r = &g_renderer.?;
-    const cell_w = r.font.cell_width;
-    const cell_h = r.font.cell_height;
+    const cell_w = r.font.cell_width_px;
+    const cell_h = r.font.cell_height_px;
     const pad: u32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale);
     const tab_bar: u32 = @intCast(tabBarHeightPx(r.scale));
     const top_reserved = pad + tab_bar;
@@ -1015,8 +1015,8 @@ fn syncGeometryAfterScreenChange() void {
 
     // 4. 새 viewport 에 맞춰 cols/rows 재계산. cell 크기 같으면 viewport 만
     //    변경. ghostty Terminal + PTY 도 같은 cols/rows 로 resize.
-    const cell_w_px = g_renderer.?.font.cell_width;
-    const cell_h_px = g_renderer.?.font.cell_height;
+    const cell_w_px = g_renderer.?.font.cell_width_px;
+    const cell_h_px = g_renderer.?.font.cell_height_px;
     const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
     const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
     const top_reserved = pad_px + tab_bar_px;
@@ -1071,8 +1071,8 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
 
     const xy = eventToWindowPx(self_view, event);
     const scale = g_renderer.?.scale;
-    const cell_w_px = g_renderer.?.font.cell_width;
-    const cell_h_px = g_renderer.?.font.cell_height;
+    const cell_w_px = g_renderer.?.font.cell_width_px;
+    const cell_h_px = g_renderer.?.font.cell_height_px;
     const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * scale;
     const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
     const cell_top_px = pad_px + tab_bar_px;
@@ -1223,7 +1223,7 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
     const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
     const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
     const close_size_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
-    const cw: f32 = @floatFromInt(r.font.cell_width);
+    const cw: f32 = @floatFromInt(r.font.cell_width_px);
     const tab_x = @as(f32, @floatFromInt(rv_new.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
     const text_x_start = tab_x + tab_pad_px;
     const max_text_w = tab_w_px - close_size_px - tab_pad_px * 3;
@@ -1639,7 +1639,7 @@ pub fn run() !void {
     const shell_resolved = resolveShell(g_gpa.allocator());
     g_config = config.Config.load(g_gpa.allocator(), shell_resolved);
     log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
-        g_config.opacity,
+        g_config.opacity_alpha,
         @tagName(g_config.dock_position),
         if (g_config.theme) |_| "set" else "default",
         g_config.auto_start,
@@ -1752,7 +1752,7 @@ pub fn run() !void {
     // tildaz 의 layered window alpha 와 동일 의미 — 윈도우 전체 (cell grid +
     // 탭바) 가 그 alpha 만큼 반투명. opacity = 255 (default) 면 alpha = 1.0
     // 완전 불투명.
-    const alpha_value: f64 = @as(f64, @floatFromInt(g_config.opacity)) / 255.0;
+    const alpha_value: f64 = @as(f64, @floatFromInt(g_config.opacity_alpha)) / 255.0;
     const setAlphaValue = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
     setAlphaValue(g_window, objc.sel("setAlphaValue:"), alpha_value);
 
@@ -1881,9 +1881,9 @@ pub fn run() !void {
         device,
         layer,
         font_family_slice,
-        @floatFromInt(g_config.font_size),
-        g_config.cell_width,
-        g_config.line_height,
+        @floatFromInt(g_config.font_size_point),
+        g_config.cell_width_ratio,
+        g_config.line_height_ratio,
         theme_bg,
         @floatCast(scale_pt),
     ) catch |err| switch (err) {
@@ -1905,8 +1905,8 @@ pub fn run() !void {
     const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
     g_renderer.?.resize(vp_w_px, vp_h_px);
 
-    const cell_w_px: u32 = g_renderer.?.font.cell_width;
-    const cell_h_px: u32 = g_renderer.?.font.cell_height;
+    const cell_w_px: u32 = g_renderer.?.font.cell_width_px;
+    const cell_h_px: u32 = g_renderer.?.font.cell_height_px;
     const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
     log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px pad={d}px font={s}", .{
         vp_w_px,
@@ -2051,8 +2051,8 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag / 사용자 화살표
     // override 중에는 skip.
     if (!g_drag.active and !g_tab_scroll_user_override) ensureActiveTabVisible();
-    const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width);
-    const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height);
+    const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width_px);
+    const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height_px);
     const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
     const tab_bar_px = tabBarHeightPx(g_renderer.?.scale);
 
@@ -2303,23 +2303,23 @@ fn repositionWindow() void {
     const sw = visible.size.width;
     const sx = visible.origin.x;
 
-    const width_pct: f64 = @floatFromInt(g_config.width);
-    const height_pct: f64 = @floatFromInt(g_config.height);
-    const offset_pct: f64 = @floatFromInt(g_config.offset);
+    const width_percent: f64 = @floatCast(g_config.width_percent);
+    const height_percent: f64 = @floatCast(g_config.height_percent);
+    const offset_percent: f64 = @floatCast(g_config.offset_percent);
 
-    const w = sw * width_pct / 100.0;
-    const h = usable_height * height_pct / 100.0;
+    const w = sw * width_percent / 100.0;
+    const h = usable_height * height_percent / 100.0;
 
     // dock_position 별로 x / y 결정. macOS 의 bottom-up 좌표계 주의.
     const x: f64 = switch (g_config.dock_position) {
         .left => sx,
         .right => sx + sw - w,
-        .top, .bottom => sx + (sw - w) * offset_pct / 100.0,
+        .top, .bottom => sx + (sw - w) * offset_percent / 100.0,
     };
     const y: f64 = switch (g_config.dock_position) {
         .top => usable_max_y - h,
         .bottom => usable_min_y,
-        .left, .right => usable_min_y + (usable_height - h) * offset_pct / 100.0,
+        .left, .right => usable_min_y + (usable_height - h) * offset_percent / 100.0,
     };
 
     // Fullscreen 모드별 rect 결정 (#162). dock 모드는 위에서 계산한 rect.

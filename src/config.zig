@@ -193,11 +193,13 @@ fn eqIc(a: []const u8, b: []const u8) bool {
 
 pub const Defaults = if (is_windows) struct {
     pub const dock_position: []const u8 = "top";
-    pub const width: u8 = 50;
-    pub const height: u8 = 100;
-    pub const offset: u8 = 100;
-    /// JSON 은 0..100 percent. 메모리 alpha (0..255) 변환은 default_opacity_alpha 가 처리.
-    pub const opacity_pct: u8 = 100;
+    /// percent (0..100). 실수 — 사용자 세밀 조정용 (예: 33.3, 66.7).
+    pub const width_percent: f32 = 50.0;
+    pub const height_percent: f32 = 100.0;
+    pub const offset_percent: f32 = 100.0;
+    /// JSON 은 0..100 percent (실수). 메모리 alpha (0..255 u8) 변환은
+    /// default_opacity_alpha 가 처리.
+    pub const opacity_percent: f32 = 100.0;
     /// Primary font — 단일 string. 시스템에 반드시 설치돼 있어야 함 (없으면
     /// startup 시 fatal). Cascadia Code 는 Windows 11 / Win10 22H2+ 기본.
     pub const font_family: []const u8 = "Cascadia Code";
@@ -205,11 +207,14 @@ pub const Defaults = if (is_windows) struct {
     /// 시스템에 설치돼 있어야 함. 한글 (Malgun Gothic) → 이모지 (Segoe UI
     /// Emoji) → 심볼 (Segoe UI Symbol). 모두 Windows 8.1+ 기본 설치.
     pub const glyph_fallback: []const []const u8 = &.{ "Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol" };
-    /// #150 — DWrite design metric 직접 산출 (#148) 후 자연 metric 으로 갱신.
-    /// 이전 1.1 / 0.95 는 GDI cell-height 컨벤션 보정용이었음.
-    pub const font_size: u8 = 16;
-    pub const cell_width: f32 = 1.0;
-    pub const line_height: f32 = 1.0;
+    /// font size in *typographic point*. 두 platform 모두 host 에서 DPI scale
+    /// 곱한 후 raster (#148 B-2 후 = 사용자 size_point × DPI scale = font_height_px).
+    pub const font_size_point: u8 = 16;
+    /// cell width *ratio* — 측정된 advance 에 곱해 글자 사이 padding 조절.
+    /// 1.0 = 폰트 그대로, 1.1 = 10% 더 넓음.
+    pub const cell_width_ratio: f32 = 1.0;
+    /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이 조절.
+    pub const line_height_ratio: f32 = 1.0;
     pub const theme: []const u8 = "Tilda";
     pub const shell: []const u8 = "cmd.exe";
     pub const hotkey: []const u8 = "f1";
@@ -218,19 +223,19 @@ pub const Defaults = if (is_windows) struct {
     pub const max_scroll_lines: u32 = 100_000;
 } else struct {
     pub const dock_position: []const u8 = "top";
-    pub const width: u8 = 50;
-    pub const height: u8 = 100;
-    pub const offset: u8 = 100;
-    pub const opacity_pct: u8 = 100;
+    pub const width_percent: f32 = 50.0;
+    pub const height_percent: f32 = 100.0;
+    pub const offset_percent: f32 = 100.0;
+    pub const opacity_percent: f32 = 100.0;
     /// Primary font — Menlo 는 OS X 10.6+ 기본 등록 monospace.
     pub const font_family: []const u8 = "Menlo";
     /// Glyph fallback chain — 한글 (Apple SD Gothic Neo, 10.11+) → 이모지
     /// (Apple Color Emoji, 10.7+) → 심볼 (Apple Symbols, 10.5+). 모두
     /// macOS 기본 설치.
     pub const glyph_fallback: []const []const u8 = &.{ "Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols" };
-    pub const font_size: u8 = 15;
-    pub const cell_width: f32 = 1.0;
-    pub const line_height: f32 = 1.1;
+    pub const font_size_point: u8 = 15;
+    pub const cell_width_ratio: f32 = 1.0;
+    pub const line_height_ratio: f32 = 1.1;
     pub const theme: []const u8 = "Tilda";
     /// host 의 `resolveShell` 이 `$SHELL` env 가 비어있을 때 쓰는 fallback.
     /// 첫 실행 시 host 는 `$SHELL` (있으면) 또는 이 값을 disk JSON 에 명시.
@@ -269,17 +274,17 @@ pub fn defaultConfigJson(
         \\{{
         \\  "window": {{
         \\    "dock_position": "{s}",
-        \\    "width": {d},
-        \\    "height": {d},
-        \\    "offset": {d},
-        \\    "opacity": {d}
+        \\    "width_percent": {d:.1},
+        \\    "height_percent": {d:.1},
+        \\    "offset_percent": {d:.1},
+        \\    "opacity_percent": {d:.1}
         \\  }},
         \\  "font": {{
         \\    "family": "{s}",
         \\    "glyph_fallback": {s},
-        \\    "size": {d},
-        \\    "cell_width": {d:.1},
-        \\    "line_height": {d:.1}
+        \\    "size_point": {d},
+        \\    "cell_width_ratio": {d:.1},
+        \\    "line_height_ratio": {d:.1}
         \\  }},
         \\  "theme": "{s}",
         \\  "shell": "{s}",
@@ -291,15 +296,15 @@ pub fn defaultConfigJson(
         \\
     , .{
         Defaults.dock_position,
-        Defaults.width,
-        Defaults.height,
-        Defaults.offset,
-        Defaults.opacity_pct,
+        Defaults.width_percent,
+        Defaults.height_percent,
+        Defaults.offset_percent,
+        Defaults.opacity_percent,
         Defaults.font_family,
         glyph_fallback_json,
-        Defaults.font_size,
-        Defaults.cell_width,
-        Defaults.line_height,
+        Defaults.font_size_point,
+        Defaults.cell_width_ratio,
+        Defaults.line_height_ratio,
         Defaults.theme,
         shell_resolved,
         Defaults.hotkey,
@@ -309,16 +314,16 @@ pub fn defaultConfigJson(
     });
 }
 
-// `Defaults` 의 string / int 값을 Config struct 가 보관하는 native type 으로
+// `Defaults` 의 string / float 값을 Config struct 가 보관하는 native type 으로
 // 변환 (DockPosition enum / Hotkey struct / Theme pointer / alpha u8).
 const default_dock_position: DockPosition = DockPosition.fromString(Defaults.dock_position) orelse unreachable;
-/// JSON 은 percent (0..100), 메모리는 alpha (0..255). `100` percent → `255` alpha.
-const default_opacity_alpha: u8 = @intCast(@as(u32, Defaults.opacity_pct) * 255 / 100);
+/// JSON 은 percent (0..100, f32), 메모리는 alpha (0..255 u8). `100.0` percent → `255` alpha.
+const default_opacity_alpha: u8 = @intFromFloat(@round(Defaults.opacity_percent * 255.0 / 100.0));
 const default_theme: ?*const themes.Theme = themes.findTheme(Defaults.theme);
 const default_hotkey: Hotkey = Hotkey.fromString(Defaults.hotkey) orelse unreachable;
-const default_font_size: u8 = Defaults.font_size;
-const default_cell_width: f32 = Defaults.cell_width;
-const default_line_height: f32 = Defaults.line_height;
+const default_font_size_point: u8 = Defaults.font_size_point;
+const default_cell_width_ratio: f32 = Defaults.cell_width_ratio;
+const default_line_height_ratio: f32 = Defaults.line_height_ratio;
 const default_shell: []const u8 = Defaults.shell;
 /// Internal chain = primary (Defaults.font_family) + glyph_fallback. parse 후
 /// `Config.font_families` 도 같은 의미 — chain[0] 은 primary, chain[1..] 은
@@ -336,11 +341,14 @@ fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
 
 pub const Config = struct {
     dock_position: DockPosition = default_dock_position,
-    width: u8 = Defaults.width,
-    height: u8 = Defaults.height,
-    offset: u8 = Defaults.offset,
-    /// internal 0..255 alpha. JSON `window.opacity` 는 0..100 percent — parse 시 매핑.
-    opacity: u8 = default_opacity_alpha,
+    /// 화면 가로 점유율 percent (1..100, f32). 실수 허용 — 세밀 조정용.
+    width_percent: f32 = Defaults.width_percent,
+    height_percent: f32 = Defaults.height_percent,
+    offset_percent: f32 = Defaults.offset_percent,
+    /// memory 0..255 alpha. JSON `window.opacity_percent` (0..100, f32) → parse
+    /// 시 alpha 로 매핑. memory 표현은 host 의 native API (NSWindow.alphaValue,
+    /// SetLayeredWindowAttributes) 가 byte alpha 사용해 그 형식 그대로 보관.
+    opacity_alpha: u8 = default_opacity_alpha,
     theme: ?*const themes.Theme = default_theme,
     hotkey: Hotkey = default_hotkey,
     /// Shell path. 첫 실행 시 host 의 `resolveShell` 이 결정한 값으로 disk 에
@@ -350,11 +358,13 @@ pub const Config = struct {
     auto_start: bool = Defaults.auto_start,
     hidden_start: bool = Defaults.hidden_start,
     max_scroll_lines: u32 = Defaults.max_scroll_lines,
-    font_size: u8 = default_font_size,
-    /// cell width scale (was `cell_width` on Windows / `cell_width_scale` on macOS).
-    cell_width: f32 = default_cell_width,
-    /// line height scale (was `line_height` on Windows / `line_height_scale` on macOS).
-    line_height: f32 = default_line_height,
+    /// font size in typographic point (8..72). host 가 DPI scale 곱해 raster.
+    font_size_point: u8 = default_font_size_point,
+    /// cell width ratio — 측정된 advance 에 곱해 글자 사이 padding 조절. 1.0
+    /// = 폰트 그대로, 1.1 = 10% 넓음. range 0.5..2.0.
+    cell_width_ratio: f32 = default_cell_width_ratio,
+    /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이 조절.
+    line_height_ratio: f32 = default_line_height_ratio,
     /// chain = primary + glyph_fallback (parse 후 합쳐짐). chain[0] 은 primary,
     /// chain[1..] 은 glyph fallback 순서. host / renderer 가 한 개의 array 로 받음.
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
@@ -449,29 +459,25 @@ pub const Config = struct {
                     dialog.showFatal(messages.config_error_title, msg);
                 }
             }
-            if (wv.object.get("width")) |v| {
-                if (v.integer < 1 or v.integer > 100) {
-                    dialog.showFatal(messages.config_error_title, "config.json: \"window.width\" must be an integer in 1..100.");
-                }
-                config.width = @intCast(v.integer);
+            if (wv.object.get("width_percent")) |v| {
+                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.width_percent\" must be a number.");
+                if (f < 1.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.width_percent\" must be in 1..100.");
+                config.width_percent = f;
             }
-            if (wv.object.get("height")) |v| {
-                if (v.integer < 1 or v.integer > 100) {
-                    dialog.showFatal(messages.config_error_title, "config.json: \"window.height\" must be an integer in 1..100.");
-                }
-                config.height = @intCast(v.integer);
+            if (wv.object.get("height_percent")) |v| {
+                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.height_percent\" must be a number.");
+                if (f < 1.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.height_percent\" must be in 1..100.");
+                config.height_percent = f;
             }
-            if (wv.object.get("offset")) |v| {
-                if (v.integer < 0 or v.integer > 100) {
-                    dialog.showFatal(messages.config_error_title, "config.json: \"window.offset\" must be an integer in 0..100.");
-                }
-                config.offset = @intCast(v.integer);
+            if (wv.object.get("offset_percent")) |v| {
+                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.offset_percent\" must be a number.");
+                if (f < 0.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.offset_percent\" must be in 0..100.");
+                config.offset_percent = f;
             }
-            if (wv.object.get("opacity")) |v| {
-                if (v.integer < 0 or v.integer > 100) {
-                    dialog.showFatal(messages.config_error_title, "config.json: \"window.opacity\" must be an integer in 0..100 (percent).");
-                }
-                config.opacity = @intCast(@divFloor(v.integer * 255, 100));
+            if (wv.object.get("opacity_percent")) |v| {
+                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.opacity_percent\" must be a number.");
+                if (f < 0.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.opacity_percent\" must be in 0..100.");
+                config.opacity_alpha = @intFromFloat(@round(f * 255.0 / 100.0));
             }
         }
 
@@ -529,24 +535,25 @@ pub const Config = struct {
             config.max_scroll_lines = @intCast(v.integer);
         }
 
-        // font section — schema validateStructure 로 family / size / cell_width /
-        // line_height 모두 required + type 검증 끝남. 여기서는 value range + parse.
+        // font section — schema validateStructure 로 family / size_point /
+        // cell_width_ratio / line_height_ratio 모두 required + type 검증 끝남.
+        // 여기서는 value range + parse.
         const fv = root.object.get("font").?;
-        if (fv.object.get("size")) |v| {
+        if (fv.object.get("size_point")) |v| {
             if (v.integer < 8 or v.integer > 72) {
-                dialog.showFatal(messages.config_error_title, "config.json: \"font.size\" must be an integer in 8..72.");
+                dialog.showFatal(messages.config_error_title, "config.json: \"font.size_point\" must be an integer in 8..72.");
             }
-            config.font_size = @intCast(v.integer);
+            config.font_size_point = @intCast(v.integer);
         }
-        if (fv.object.get("cell_width")) |v| {
-            const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width\" must be a number.");
-            if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width\" must be in 0.5..2.0.");
-            config.cell_width = f;
+        if (fv.object.get("cell_width_ratio")) |v| {
+            const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width_ratio\" must be a number.");
+            if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width_ratio\" must be in 0.5..2.0.");
+            config.cell_width_ratio = f;
         }
-        if (fv.object.get("line_height")) |v| {
-            const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height\" must be a number.");
-            if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height\" must be in 0.5..2.0.");
-            config.line_height = f;
+        if (fv.object.get("line_height_ratio")) |v| {
+            const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height_ratio\" must be a number.");
+            if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height_ratio\" must be in 0.5..2.0.");
+            config.line_height_ratio = f;
         }
         // font.family — primary, single string. type 은 사전 체크에서 이미
         // 보장됨 (위 font_validate.showFamilyMustBeStringFatal). 여기서는 빈

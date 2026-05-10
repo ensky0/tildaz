@@ -195,8 +195,8 @@ pub const App = struct {
         const size = self.window.getClientSize();
         const w = size.w - 2 * self.TERMINAL_PADDING;
         const h = size.h - self.effectiveTabBarHeight() - 2 * self.TERMINAL_PADDING;
-        const cols: u16 = if (self.window.cell_width > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width))) else 120;
-        const rows: u16 = if (self.window.cell_height > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height))) else 30;
+        const cols: u16 = if (self.window.cell_width_px > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width_px))) else 120;
+        const rows: u16 = if (self.window.cell_height_px > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height_px))) else 30;
         return .{ .cols = cols, .rows = rows };
     }
 
@@ -257,7 +257,7 @@ pub const App = struct {
         self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
         self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
         self.TERMINAL_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TERMINAL_PADDING_PT)) * scale));
-        const min_tab_bar_h: c_int = @as(c_int, @intCast(self.window.cell_height)) + 4;
+        const min_tab_bar_h: c_int = @as(c_int, @intCast(self.window.cell_height_px)) + 4;
         if (self.TAB_BAR_HEIGHT < min_tab_bar_h) {
             self.TAB_BAR_HEIGHT = min_tab_bar_h;
         }
@@ -279,8 +279,8 @@ pub const App = struct {
                 window.hwnd,
                 window.font_chain[0..window.font_chain_count],
                 window.font_size,
-                @intCast(window.cell_width),
-                @intCast(window.cell_height),
+                @intCast(window.cell_width_px),
+                @intCast(window.cell_height_px),
             ) catch {
                 // Leave the renderer as-is; glyphs will stay at the old DPI
                 // but the app keeps running. User can restart to recover.
@@ -341,8 +341,8 @@ pub const App = struct {
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(
                         &tab.terminal,
-                        window.cell_width,
-                        window.cell_height,
+                        window.cell_width_px,
+                        window.cell_height_px,
                         size.w,
                         size.h,
                         tab_bar_h,
@@ -489,7 +489,7 @@ pub const App = struct {
 
         // commit 반영된 새 view 로 mouse → byte 매핑.
         const rv_new = self.tab_interaction.rename.view() orelse return false;
-        const cw: f32 = @floatFromInt(self.window.cell_width);
+        const cw: f32 = @floatFromInt(self.window.cell_width_px);
         const text_x_start: f32 = @floatFromInt(tab_x_int + self.TAB_PADDING);
         const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING * 3);
 
@@ -646,8 +646,8 @@ pub const App = struct {
     }
 
     fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) terminal_interaction.Cell {
-        const cw = self.window.cell_width;
-        const ch = self.window.cell_height;
+        const cw = self.window.cell_width_px;
+        const ch = self.window.cell_height_px;
         const grid = self.getTerminalGridSize();
         const term_x = mouse_x - self.TERMINAL_PADDING;
         const term_y = mouse_y - self.effectiveTabBarHeight() - self.TERMINAL_PADDING;

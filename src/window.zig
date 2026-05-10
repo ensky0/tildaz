@@ -305,8 +305,8 @@ pub const Window = struct {
     hwnd: HWND = null,
     visible: bool = false,
     font: HFONT = null,
-    cell_width: c_int = 8,
-    cell_height: c_int = 16,
+    cell_width_px: c_int = 8,
+    cell_height_px: c_int = 16,
     render_fn: ?*const fn (*Window) void = null,
     resize_fn: ?*const fn (u16, u16, ?*anyopaque) void = null,
     userdata: ?*anyopaque = null,
@@ -334,17 +334,17 @@ pub const Window = struct {
     font_chain: [8][*:0]const WCHAR = undefined,
     font_chain_count: u8 = 0,
     font_size: c_int = 14,
-    cell_width_scale: f32 = 1.0,
-    line_height_scale: f32 = 1.0,
+    cell_width_ratio: f32 = 1.0,
+    line_height_ratio: f32 = 1.0,
     current_dpi: UINT = 96,
 
     // Last position parameters — re-applied on WM_DISPLAYCHANGE / WM_DPICHANGED /
     // WM_SETTINGCHANGE(SPI_SETWORKAREA) and on show(), so the window tracks the
     // current monitor's work area when resolution, DPI, or taskbar changes.
     dock: DockPosition = .top,
-    width_pct: u8 = 50,
-    height_pct: u8 = 100,
-    offset_pct: u8 = 100,
+    width_percent: f32 = 50.0,
+    height_percent: f32 = 100.0,
+    offset_percent: f32 = 100.0,
     position_set: bool = false,
 
     // Alt+Enter 로 토글되는 fullscreen 상태. `show()` / `WM_DISPLAYCHANGE` /
@@ -406,7 +406,7 @@ pub const Window = struct {
     const RENDER_TIMER_ID: usize = 1;
     const LayoutMonitorTarget = enum { cursor, window };
 
-    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_scale: f32, line_height_scale: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
+    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_ratio: f32, line_height_ratio: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
         if (font_chain.len == 0) return error.EmptyFontChain;
         const hInstance = GetModuleHandleW(null);
 
@@ -518,8 +518,8 @@ pub const Window = struct {
         for (font_chain[0..limit], 0..) |fam, i| self.font_chain[i] = fam;
         self.font_chain_count = @intCast(limit);
         self.font_size = font_size;
-        self.cell_width_scale = cell_width_scale;
-        self.line_height_scale = line_height_scale;
+        self.cell_width_ratio = cell_width_ratio;
+        self.line_height_ratio = line_height_ratio;
 
         // DC must exist before `rebuildFontForDpi` measures cell metrics.
         self.dc = GetDC(self.hwnd);
@@ -587,8 +587,8 @@ pub const Window = struct {
         if (measured) |m| {
             const base_w: f32 = @floatFromInt(m.cell_w);
             const base_h: f32 = @floatFromInt(m.cell_h);
-            self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_scale))));
-            self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_scale))));
+            self.cell_width_px =@max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
+            self.cell_height_px =@max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
         } else if (self.dc != null and self.font != null) {
             // DWrite 측정 실패 fallback — GDI tm. 사용자 환경에서 이 path 거의
             // 안 탐 (font 사전 검증 통과 후라).
@@ -597,8 +597,8 @@ pub const Window = struct {
             _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
             const base_h: f32 = @floatFromInt(tm.tmHeight);
-            self.cell_width = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_scale))));
-            self.cell_height = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_scale))));
+            self.cell_width_px =@max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
+            self.cell_height_px =@max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
             _ = SelectObject(self.dc, old_f);
         }
 
@@ -731,36 +731,36 @@ pub const Window = struct {
         }
     }
 
-    pub fn setPosition(self: *Window, dock: DockPosition, width_pct: u8, height_pct: u8, offset_pct: u8) void {
+    pub fn setPosition(self: *Window, dock: DockPosition, width_percent: f32, height_percent: f32, offset_percent: f32) void {
         // Remember parameters so WM_DISPLAYCHANGE / WM_DPICHANGED /
         // WM_SETTINGCHANGE(SPI_SETWORKAREA) and show() can re-apply them on
         // resolution / monitor / DPI / taskbar changes.
         self.dock = dock;
-        self.width_pct = width_pct;
-        self.height_pct = height_pct;
-        self.offset_pct = offset_pct;
+        self.width_percent = width_percent;
+        self.height_percent = height_percent;
+        self.offset_percent = offset_percent;
         self.position_set = true;
-        self.applyDockedRect(dock, width_pct, height_pct, offset_pct, .cursor);
+        self.applyDockedRect(dock, width_percent, height_percent, offset_percent, .cursor);
     }
 
     fn applyDockedRect(
         self: *Window,
         dock: DockPosition,
-        width_pct: u8,
-        height_pct: u8,
-        offset_pct: u8,
+        width_percent: f32,
+        height_percent: f32,
+        offset_percent: f32,
         target: LayoutMonitorTarget,
     ) void {
         const mi = self.monitorInfoFor(target) orelse return;
-        const rect = dockRectForMonitor(dock, width_pct, height_pct, offset_pct, &mi);
+        const rect = dockRectForMonitor(dock, width_percent, height_percent, offset_percent, &mi);
         self.applyRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
     }
 
     fn dockRectForMonitor(
         dock: DockPosition,
-        width_pct: u8,
-        height_pct: u8,
-        offset_pct: u8,
+        width_percent: f32,
+        height_percent: f32,
+        offset_percent: f32,
         mi: *const MONITORINFO,
     ) RECT {
         const sw = mi.rcWork.right - mi.rcWork.left;
@@ -768,19 +768,24 @@ pub const Window = struct {
         const sx = mi.rcWork.left;
         const sy = mi.rcWork.top;
 
-        // width = always horizontal %, height = always vertical %
-        const w = @divTrunc(sw * @as(c_int, width_pct), 100);
-        const h = @divTrunc(sh * @as(c_int, height_pct), 100);
+        const sw_f: f32 = @floatFromInt(sw);
+        const sh_f: f32 = @floatFromInt(sh);
+
+        // width = always horizontal %, height = always vertical %.
+        // f32 percent → pixel: round 후 c_int. 정수 나눗셈 보다 정확한 세밀 조정
+        // (예: 33.3% 가 sw=1920 일 때 639.36 → 639 px).
+        const w: c_int = @intFromFloat(@round(sw_f * width_percent / 100.0));
+        const h: c_int = @intFromFloat(@round(sh_f * height_percent / 100.0));
 
         const x: c_int = switch (dock) {
             .left => sx,
             .right => sx + sw - w,
-            .top, .bottom => sx + @divTrunc((sw - w) * @as(c_int, offset_pct), 100),
+            .top, .bottom => sx + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(sw - w)) * offset_percent / 100.0))),
         };
         const y: c_int = switch (dock) {
             .top => sy,
             .bottom => sy + sh - h,
-            .left, .right => sy + @divTrunc((sh - h) * @as(c_int, offset_pct), 100),
+            .left, .right => sy + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(sh - h)) * offset_percent / 100.0))),
         };
 
         return .{
@@ -811,7 +816,7 @@ pub const Window = struct {
     /// terminal resize / backend resize / swapchain resize.
     pub fn repositionFromSaved(self: *Window) void {
         if (!self.position_set) return;
-        self.applyDockedRect(self.dock, self.width_pct, self.height_pct, self.offset_pct, .window);
+        self.applyDockedRect(self.dock, self.width_percent, self.height_percent, self.offset_percent, .window);
         if (!self.layout_transition_active) {
             if (self.resize_fn) |resize_fn| {
                 const grid = self.getGridSize();
@@ -921,8 +926,8 @@ pub const Window = struct {
     }
 
     /// 현재 창이 올라가 있는 모니터의 `rcWork` (작업 표시줄 제외) 전체로 창을
-    /// 확장. `setPosition` 과 달리 저장된 dock 파라미터 (`dock` / `width_pct` /
-    /// `height_pct` / `offset_pct`) 는 건드리지 않아서 fullscreen 해제시
+    /// 확장. `setPosition` 과 달리 저장된 dock 파라미터 (`dock` / `width_percent` /
+    /// `height_percent` / `offset_percent`) 는 건드리지 않아서 fullscreen 해제시
     /// `repositionFromSaved` 로 그대로 복원 가능.
     ///
     /// **`rcMonitor` 가 아닌 `rcWork` 를 쓰는 이유**: WS_POPUP + WS_EX_TOPMOST
@@ -975,7 +980,7 @@ pub const Window = struct {
     fn applyLayoutFor(self: *Window, target: LayoutMonitorTarget) void {
         switch (self.fullscreen_mode) {
             .none => switch (target) {
-                .cursor => self.applyDockedRect(self.dock, self.width_pct, self.height_pct, self.offset_pct, .cursor),
+                .cursor => self.applyDockedRect(self.dock, self.width_percent, self.height_percent, self.offset_percent, .cursor),
                 .window => self.repositionFromSaved(),
             },
             .monitor, .workarea => self.applyFullscreenFor(target),
@@ -996,7 +1001,7 @@ pub const Window = struct {
     }
 
     /// Alt+Enter 로 호출. fullscreen 진입/해제 토글. 해제시엔 `applyLayout` 이
-    /// 저장된 dock 설정 (`width_pct` / `height_pct` / `offset_pct`) 으로 복원.
+    /// 저장된 dock 설정 (`width_percent` / `height_percent` / `offset_percent`) 으로 복원.
     ///
     /// 과거 구현에서는 여기서 `SW_HIDE → applyLayout → SW_SHOW` 로 DWM refresh
     /// 를 강제했는데, 이 hide/show dance 가 spurious `WM_DISPLAYCHANGE` cascade
@@ -1760,8 +1765,8 @@ pub const Window = struct {
         _ = GetClientRect(self.hwnd, &rect);
         const w = rect.right - rect.left;
         const h = rect.bottom - rect.top;
-        const cols: u16 = if (self.cell_width > 0) @intCast(@max(1, @divTrunc(w, self.cell_width))) else 120;
-        const rows: u16 = if (self.cell_height > 0) @intCast(@max(1, @divTrunc(h, self.cell_height))) else 30;
+        const cols: u16 = if (self.cell_width_px > 0) @intCast(@max(1, @divTrunc(w, self.cell_width_px))) else 120;
+        const rows: u16 = if (self.cell_height_px > 0) @intCast(@max(1, @divTrunc(h, self.cell_height_px))) else 30;
         return .{ .cols = cols, .rows = rows };
     }
 

@@ -29,8 +29,8 @@ pub const CoreTextFontContext = struct {
     /// Monospace cell 크기 — 폰트의 'M' advance + ascent/descent/leading 으로
     /// 측정. host 가 hardcoded 상수 대신 이 값을 사용하면 폰트 교체 시에도
     /// 글자 사이 공백 / 줄 높이 가 자동 맞춰진다.
-    cell_width: u32,
-    cell_height: u32,
+    cell_width_px: u32,
+    cell_height_px: u32,
     /// 실제 lookup 성공한 primary 폰트 family name (debug / 로그 용).
     font_family: []const u8,
     /// config.font.family 의 *모든* chain 폰트 — codepoint 별 글리프 fallback
@@ -44,10 +44,10 @@ pub const CoreTextFontContext = struct {
         retina_scale: f32,
         /// Windows 의 `config.cell_width` 와 동일 의미 — 측정된 advance 에
         /// 곱해 글자 사이 padding 조절. 1.0 = 폰트 그대로.
-        cell_width_scale: f32,
+        cell_width_ratio: f32,
         /// Windows 의 `config.line_height` — 측정된 ascent+descent+leading
         /// 에 곱해 줄 높이 조절. 0.95 정도면 약간 빽빽.
-        line_height_scale: f32,
+        line_height_ratio: f32,
     ) !CoreTextFontContext {
         // Font *glyph fallback chain* — config.font.family 의 모든 폰트가
         // system 에 있어야 한다 (Windows DWriteFontContext 와 동등 strict 정책).
@@ -145,11 +145,11 @@ pub const CoreTextFontContext = struct {
             }
         }
 
-        // 픽셀 단위 cell. Windows 와 동일: advance × cell_width_scale,
-        // (ascent+descent+leading) × line_height_scale. ceil 로 글리프 잘림
+        // 픽셀 단위 cell. Windows 와 동일: advance × cell_width_ratio,
+        // (ascent+descent+leading) × line_height_ratio. ceil 로 글리프 잘림
         // 방지. 1.1 / 0.95 같은 미적 보정값을 그대로 적용 가능.
-        const cell_w_px: u32 = @intFromFloat(@ceil(advance_pt * cell_width_scale * retina_scale));
-        const cell_h_px: u32 = @intFromFloat(@ceil((ascent + descent + leading) * line_height_scale * retina_scale));
+        const cell_w_px: u32 = @intFromFloat(@ceil(advance_pt * cell_width_ratio * retina_scale));
+        const cell_h_px: u32 = @intFromFloat(@ceil((ascent + descent + leading) * line_height_ratio * retina_scale));
 
         // top_pad_px = ascent − 'M' bbox top. 폰트 metric (cap_height) 대신
         // 실제 'M' raster bbox 사용 — 폰트마다 metric 과 글리프 실제 모양이
@@ -163,8 +163,8 @@ pub const CoreTextFontContext = struct {
             .ascent_px = ascent * retina_scale,
             .descent_px = descent * retina_scale,
             .top_pad_px = top_pad_pt * retina_scale,
-            .cell_width = cell_w_px,
-            .cell_height = cell_h_px,
+            .cell_width_px = cell_w_px,
+            .cell_height_px = cell_h_px,
             .font_family = font_family,
             .fallback_fonts = fallback_fonts,
             .fallback_count = fallback_count,
