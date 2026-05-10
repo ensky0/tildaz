@@ -14,8 +14,12 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
 > IME pre-edit overlay (purple, mac-equivalent), Hanja / kanji / hanzi
 > candidate-popup cursor tracking via `ImmSetCompositionWindow(CFS_POINT)`,
 > and native textbox UX for tab rename (click-to-position cursor, mid-string
-> push-right, fixed pre-edit reserve). About ~400 lines of duplicated
-> cross-platform code were removed. See
+> push-right, fixed pre-edit reserve). Late additions: rename cursor click no
+> longer pins to the right edge on long names ([#168](https://github.com/ensky0/tildaz/issues/168)),
+> and IME pre-edit × line-nav (Home / End / Ctrl+A / Ctrl+E) is unified
+> across rename and terminal — the in-progress syllable commits before the
+> cursor moves on both platforms (#164 follow-up 6). About ~400 lines of
+> duplicated cross-platform code were removed. See
 > [`dist/release-notes/v0.4.0.md`](dist/release-notes/v0.4.0.md) for the full
 > changelog; v0.3.3's macOS rendering parity highlights are in
 > [`dist/release-notes/v0.3.3.md`](dist/release-notes/v0.3.3.md).
