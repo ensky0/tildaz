@@ -1610,6 +1610,18 @@ fn registerTildazViewClass() !objc.Class {
     return cls;
 }
 
+/// 첫 실행 시점에 disk config 에 명시할 shell path 결정.
+///   - `$SHELL` env 가 있으면 그 값 (사용자 환경 그대로 보존).
+///   - 없으면 `config.Defaults.shell` (= `/bin/bash`).
+///
+/// 반환 string 은 process lifetime — `getEnvVarOwned` 가 alloc 한 메모리는
+/// `g_gpa` 가 process 종료까지 보유 (deinit no-op 정책 일관). disk write 후
+/// memory `Config.shell` 도 같은 포인터로 sync.
+fn resolveShell(allocator: std.mem.Allocator) []const u8 {
+    if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
+    return config.Defaults.shell;
+}
+
 pub fn run() !void {
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
     // `~/Library/Logs/tildaz.log` — Console.app 이 자동 인덱싱해 GUI 에서
@@ -1620,7 +1632,12 @@ pub fn run() !void {
 
     // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
-    g_config = config.Config.load(g_gpa.allocator());
+    //
+    // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. `$SHELL` env 가
+    // 있으면 사용자 환경값을 그대로, 없으면 `Defaults.shell` (= `/bin/bash`).
+    // 이후 실행은 disk 의 명시값만 사용 — runtime fallback 분기 없음.
+    const shell_resolved = resolveShell(g_gpa.allocator());
+    g_config = config.Config.load(g_gpa.allocator(), shell_resolved);
     log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
         g_config.opacity,
         @tagName(g_config.dock_position),
@@ -1903,18 +1920,10 @@ pub fn run() !void {
 
     // 7. PTY + ghostty-vt Terminal (M5.0 + M5.1). cols/rows 는 (viewport −
     //    좌우 padding) ÷ cell. Windows app_controller 의 size − 2*pad 패턴.
-    // shell 결정 우선순위 (#118): config.shell 명시값 > $SHELL env > "/bin/zsh".
-    // config.shell == "" (빈 문자열) 이면 env fallback — 사용자가 따로 지정하지
-    // 않은 경우 시스템 기본값 따름. cross-platform Config 라 shell 은 []const u8
-    // 통일 (Windows 는 default "cmd.exe", macOS 는 default "").
-    const shell_env = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
-    defer if (shell_env) |s| allocator.free(s);
-    const shell_path: []const u8 = if (g_config.shell.len > 0)
-        g_config.shell
-    else if (shell_env) |s|
-        s
-    else
-        "/bin/zsh";
+    // shell path — disk 명시값 그대로. 첫 실행 시 host 의 `resolveShell` 이
+    // `$SHELL` 또는 `Defaults.shell` 로 disk 에 적었고, 이후 실행은 그 값을
+    // 그대로 읽음. 빈 문자열은 `shell_validate.validateOrFatal` 가 잡음.
+    const shell_path: []const u8 = g_config.shell;
 
     const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
     const top_reserved = pad_px + tab_bar_px;
