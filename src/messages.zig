@@ -53,6 +53,15 @@ pub const font_chain_all_failed_msg =
     \\Tried:
 ;
 
+/// `font.family` 가 string 이 아닐 때 (대표적으로 array). `font/validate.zig`
+/// 의 helper 가 Config path 라인을 붙여 표시.
+pub const font_family_must_be_string_msg = "Invalid config: font.family must be a string (font name).";
+
+/// `font.glyph_fallback` 이 string 의 array 가 아닐 때 (다른 type, 또는 array
+/// element 가 string 아닌 경우). `font/validate.zig` 의 helper 가 Config path
+/// 라인을 붙여 표시.
+pub const font_glyph_fallback_must_be_list_msg = "Invalid config: font.glyph_fallback must be a list of strings (fallback font names).";
+
 pub const config_dir_create_failed_format =
     \\Failed to create config directory.
     \\

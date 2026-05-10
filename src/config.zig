@@ -14,6 +14,7 @@ const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
+const font_validate = @import("font/validate.zig");
 
 const WCHAR = u16;
 
@@ -197,7 +198,13 @@ pub const Defaults = if (is_windows) struct {
     pub const offset: u8 = 100;
     /// JSON 은 0..100 percent. 메모리 alpha (0..255) 변환은 default_opacity_alpha 가 처리.
     pub const opacity_pct: u8 = 100;
-    pub const font_family: []const []const u8 = &.{"Cascadia Code"};
+    /// Primary font — 단일 string. 시스템에 반드시 설치돼 있어야 함 (없으면
+    /// startup 시 fatal). Cascadia Code 는 Windows 11 / Win10 22H2+ 기본.
+    pub const font_family: []const u8 = "Cascadia Code";
+    /// Glyph fallback chain — primary 에 글리프 없을 때 순서대로 lookup. 모두
+    /// 시스템에 설치돼 있어야 함. 한글 (Malgun Gothic) → 이모지 (Segoe UI
+    /// Emoji) → 심볼 (Segoe UI Symbol). 모두 Windows 8.1+ 기본 설치.
+    pub const glyph_fallback: []const []const u8 = &.{ "Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol" };
     /// #150 — DWrite design metric 직접 산출 (#148) 후 자연 metric 으로 갱신.
     /// 이전 1.1 / 0.95 는 GDI cell-height 컨벤션 보정용이었음.
     pub const font_size: u8 = 16;
@@ -215,7 +222,12 @@ pub const Defaults = if (is_windows) struct {
     pub const height: u8 = 100;
     pub const offset: u8 = 100;
     pub const opacity_pct: u8 = 100;
-    pub const font_family: []const []const u8 = &.{"Menlo"};
+    /// Primary font — Menlo 는 OS X 10.6+ 기본 등록 monospace.
+    pub const font_family: []const u8 = "Menlo";
+    /// Glyph fallback chain — 한글 (Apple SD Gothic Neo, 10.11+) → 이모지
+    /// (Apple Color Emoji, 10.7+) → 심볼 (Apple Symbols, 10.5+). 모두
+    /// macOS 기본 설치.
+    pub const glyph_fallback: []const []const u8 = &.{ "Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols" };
     pub const font_size: u8 = 15;
     pub const cell_width: f32 = 1.0;
     pub const line_height: f32 = 1.1;
@@ -242,16 +254,16 @@ pub fn defaultConfigJson(
     allocator: std.mem.Allocator,
     shell_resolved: []const u8,
 ) ![]const u8 {
-    var family_buf: [1024]u8 = undefined;
-    var family_fbs = std.io.fixedBufferStream(&family_buf);
-    const fw = family_fbs.writer();
+    var fb_buf: [1024]u8 = undefined;
+    var fb_fbs = std.io.fixedBufferStream(&fb_buf);
+    const fw = fb_fbs.writer();
     try fw.writeAll("[");
-    for (Defaults.font_family, 0..) |f, i| {
+    for (Defaults.glyph_fallback, 0..) |f, i| {
         if (i > 0) try fw.writeAll(", ");
         try fw.print("\"{s}\"", .{f});
     }
     try fw.writeAll("]");
-    const family_json = family_fbs.getWritten();
+    const glyph_fallback_json = fb_fbs.getWritten();
 
     return try std.fmt.allocPrint(allocator,
         \\{{
@@ -263,7 +275,8 @@ pub fn defaultConfigJson(
         \\    "opacity": {d}
         \\  }},
         \\  "font": {{
-        \\    "family": {s},
+        \\    "family": "{s}",
+        \\    "glyph_fallback": {s},
         \\    "size": {d},
         \\    "cell_width": {d:.1},
         \\    "line_height": {d:.1}
@@ -282,7 +295,8 @@ pub fn defaultConfigJson(
         Defaults.height,
         Defaults.offset,
         Defaults.opacity_pct,
-        family_json,
+        Defaults.font_family,
+        glyph_fallback_json,
         Defaults.font_size,
         Defaults.cell_width,
         Defaults.line_height,
@@ -306,12 +320,16 @@ const default_font_size: u8 = Defaults.font_size;
 const default_cell_width: f32 = Defaults.cell_width;
 const default_line_height: f32 = Defaults.line_height;
 const default_shell: []const u8 = Defaults.shell;
-const DEFAULT_FONT_FAMILIES: []const []const u8 = Defaults.font_family;
+/// Internal chain = primary (Defaults.font_family) + glyph_fallback. parse 후
+/// `Config.font_families` 도 같은 의미 — chain[0] 은 primary, chain[1..] 은
+/// glyph fallback. host / renderer 가 보는 인터페이스는 합친 chain 한 개.
+const DEFAULT_FONT_CHAIN_COUNT: u8 = @intCast(1 + Defaults.glyph_fallback.len);
 
 fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
     var arr: [MAX_FONT_FAMILIES][]const u8 = undefined;
-    for (DEFAULT_FONT_FAMILIES, 0..) |fam, i| arr[i] = fam;
-    var i: usize = DEFAULT_FONT_FAMILIES.len;
+    arr[0] = Defaults.font_family;
+    for (Defaults.glyph_fallback, 0..) |fb, i| arr[i + 1] = fb;
+    var i: usize = 1 + Defaults.glyph_fallback.len;
     while (i < MAX_FONT_FAMILIES) : (i += 1) arr[i] = "";
     return arr;
 }
@@ -337,8 +355,10 @@ pub const Config = struct {
     cell_width: f32 = default_cell_width,
     /// line height scale (was `line_height` on Windows / `line_height_scale` on macOS).
     line_height: f32 = default_line_height,
+    /// chain = primary + glyph_fallback (parse 후 합쳐짐). chain[0] 은 primary,
+    /// chain[1..] 은 glyph fallback 순서. host / renderer 가 한 개의 array 로 받음.
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
-    font_family_count: u8 = DEFAULT_FONT_FAMILIES.len,
+    font_family_count: u8 = DEFAULT_FONT_CHAIN_COUNT,
 
     /// `shell_resolved` 는 host 의 `resolveShell` 결과 (process lifetime 보유).
     /// 첫 실행이거나 disk 를 못 읽을 때 memory default `Config.shell` 도 이
@@ -386,6 +406,25 @@ pub const Config = struct {
 
         const root = parsed.value;
         if (root != .object) dialog.showFatal(messages.config_error_title, "config.json: top-level must be a JSON object.");
+
+        // font.family / font.glyph_fallback 의 type 만 우선 사전 체크 —
+        // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
+        // 의도 (primary single string + glyph fallback list) 를 명확히 안내.
+        if (root == .object) {
+            if (root.object.get("font")) |fv_pre| {
+                if (fv_pre == .object) {
+                    if (fv_pre.object.get("family")) |fam_v| {
+                        if (fam_v != .string) font_validate.showFamilyMustBeStringFatal();
+                    }
+                    if (fv_pre.object.get("glyph_fallback")) |fb_v| {
+                        if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal();
+                        for (fb_v.array.items) |item| {
+                            if (item != .string) font_validate.showGlyphFallbackMustBeListFatal();
+                        }
+                    }
+                }
+            }
+        }
 
         // Schema 검증 — `defaultConfigJson` 과 비교 (key set + nested 구조 + type).
         // shell 인자는 schema 검증 시 *값* 무관 — `Defaults.shell` 한 번 사용.
@@ -509,29 +548,40 @@ pub const Config = struct {
             if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height\" must be in 0.5..2.0.");
             config.line_height = f;
         }
+        // font.family — primary, single string. type 은 사전 체크에서 이미
+        // 보장됨 (위 font_validate.showFamilyMustBeStringFatal). 여기서는 빈
+        // 문자열만 reject + chain[0] 에 저장.
+        var chain_count: usize = 0;
         if (fv.object.get("family")) |v| {
-            var count: usize = 0;
-            if (v == .string) {
-                if (v.string.len == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must not be empty.");
-                config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
-                count = 1;
-            } else if (v == .array) {
-                if (v.array.items.len == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" array must not be empty.");
-                for (v.array.items) |item| {
-                    if (count >= MAX_FONT_FAMILIES) break;
-                    if (item != .string) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" array elements must be strings.");
-                    if (item.string.len == 0) continue;
-                    config.font_families[count] = allocator.dupe(u8, item.string) catch item.string;
-                    count += 1;
-                }
-                if (count == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must contain at least one non-empty string.");
-            } else {
-                dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must be a string or an array of strings.");
-            }
-            var i = count;
-            while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
-            config.font_family_count = @intCast(count);
+            if (v.string.len == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must not be empty.");
+            config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
+            chain_count = 1;
         }
+
+        // font.glyph_fallback — array of strings. type / element 모두 사전
+        // 체크 보장. 빈 array 는 허용 (system fallback 만 의존). chain[1..] 에
+        // 저장. chain 총 길이 (1 + fallback) 가 MAX_FONT_FAMILIES 초과 시 fatal —
+        // silent truncate 방지.
+        if (fv.object.get("glyph_fallback")) |v| {
+            for (v.array.items) |item| {
+                if (item.string.len == 0) continue;
+                if (chain_count >= MAX_FONT_FAMILIES) {
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(
+                        &buf,
+                        "config.json: font.family + glyph_fallback total exceeds {d} entries.",
+                        .{MAX_FONT_FAMILIES},
+                    ) catch "config.json: font chain too long";
+                    dialog.showFatal(messages.config_error_title, msg);
+                }
+                config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
+                chain_count += 1;
+            }
+        }
+
+        var i = chain_count;
+        while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
+        config.font_family_count = @intCast(chain_count);
 
         return config;
     }
