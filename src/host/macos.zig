@@ -559,8 +559,10 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const cmd = (flags & NSEventModifierFlagCommand) != 0;
     if (cmd) {
-        // Windows 패턴 — Cmd 단축키는 진행 중 rename 우선 commit 후 처리.
-        if (g_rename.isActive()) commitOrCancelRename(true);
+        // Windows 패턴 — Cmd 단축키는 진행 중 입력 (rename + terminal preedit)
+        // 모두 commit 후 처리. preedit 만 떠 있는 상태로 단축키 → 새 탭 / 다른
+        // 동작으로 넘어가면 preedit 이 dangling 됨.
+        commitPendingInput(self_view);
         const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const kc = get_kc(event, objc.sel("keyCode"));
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
@@ -1088,16 +1090,25 @@ fn commitOrCancelRename(commit: bool) void {
     g_rename.clear();
 }
 
-/// commitOrCancelRename + IME marked text / preedit_buf 도 정리. 마우스 클릭
-/// (탭바 외 영역) path 전용. 활성 preedit 자모를 rename buf 에 manual commit
-/// 후 IME state cancel — terminal cell preedit 으로 옮겨가지 않게.
-/// (#164 follow-up — mac Cocoa markedText 가 click 시 자동 cancel 안 함)
-fn commitRenameWithPreeditCancel(self_view: objc.id) void {
+/// 진행 중인 모든 입력 (rename text + IME preedit) 을 적절한 곳으로 확정 +
+/// IME 상태 클리어. focus 이탈 / 단축키 등 "지금 멈춰" 시점에 호출.
+/// - rename 활성 + preedit: preedit 자모를 rename buf 로 commit, rename 도 commit
+/// - rename 비활성 + terminal preedit: preedit 을 활성 탭 PTY 로 commit
+/// 둘 다 native textbox / Win IME 동등 동작 (cancel 아님).
+/// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
+fn commitPendingInput(self_view: objc.id) void {
     if (g_rename.isActive() and g_preedit_len > 0) {
+        // rename 활성 — preedit 자모 rename buf 에 manual commit.
         var iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
         while (iter.nextCodepoint()) |cp| {
             if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
         }
+    } else if (g_preedit_len > 0) {
+        // rename 비활성 + terminal preedit 활성 — focus 잃음 시 native textbox /
+        // Win IME 동작은 *commit* (자모 PTY 로 직송). 우리 이전 코드는 cancel 이라
+        // 사용자 의도와 다름 — fix. session.queueInputToActive 가 활성 탭의 PTY
+        // 로 보냄.
+        g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
     }
     commitOrCancelRename(true);
 
@@ -1182,7 +1193,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     // 어떤 클릭이든 진행 중 rename 우선 commit. 더블클릭의 경우 commit 후 새
     // rename begin (clear → begin 순서) 라 영향 없음. preedit / marked text 도
     // cancel — terminal click 시 cell preedit 으로 옮겨가지 않게.
-    commitRenameWithPreeditCancel(self_view);
+    commitPendingInput(self_view);
 
     // 스크롤바 영역 클릭 (#123) — Windows app_controller.zig:488-498 패턴.
     // cell selection / 탭바 클릭보다 우선.
