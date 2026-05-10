@@ -841,7 +841,8 @@ pub const MetalRenderer = struct {
                     c.text_n.* += 1;
                 }
             }.run;
-            tab_layout.iterTabText(title, cursor_byte, preedit_text, text_x_start, cw, max_text_w_px, renaming_this, needs_truncate, ctx, struct {
+            const rename_scroll_inout: ?*f32 = if (renaming_this) rename_view.?.scroll_offset else null;
+            tab_layout.iterTabText(title, cursor_byte, preedit_text, text_x_start, cw, max_text_w_px, renaming_this, needs_truncate, rename_scroll_inout, ctx, struct {
                 fn cb(c: Ctx, cmd: tab_layout.TextCmd) void {
                     switch (cmd) {
                         .glyph => |g| emitGlyph(c, g.cp, g.x, ui_metrics.TAB_TEXT_COLOR),

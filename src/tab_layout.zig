@@ -168,32 +168,43 @@ pub fn cursorReserve(cw: f32) f32 {
     return cw * 2;
 }
 
-/// rename text 의 cursor follow scroll. cursor 까지 main text + preedit 자리가
-/// max - reserve 넘으면 좌측 scroll. native textbox 동작 — cursor + preedit 끝
-/// 이 visual 우측 끝 안정.
+/// rename text 의 cursor follow scroll — native textbox 패턴 (#168). cursor 가
+/// 현재 viewport [0, max-reserve] 안이면 prev_offset 유지. 우측 out 시 우측
+/// align (cursor + preedit 끝이 max-reserve 에 pin), 좌측 out 시 좌측 align
+/// (cursor 가 0). cached state — caller 가 매 frame 새 값 받아 RenameState
+/// 에 write back.
 pub fn cursorScrollOffset(
     title: []const u8,
     cursor_byte: usize,
     cw: f32,
     max_text_w: f32,
     preedit_advance_total: f32,
+    prev_offset: f32,
 ) f32 {
-    var probe_x: f32 = 0;
+    var cursor_x: f32 = 0;
     var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
     var probe_byte: usize = 0;
     while (probe_iter.nextCodepoint()) |pcp| {
         if (probe_byte >= cursor_byte) break;
         const pcw = display_width.codepointWidth(@intCast(pcp));
-        probe_x += cw * @as(f32, @floatFromInt(pcw));
+        cursor_x += cw * @as(f32, @floatFromInt(pcw));
         const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
         probe_byte += plen;
     }
-    const probe_total = probe_x + preedit_advance_total;
     const reserve = cursorReserve(cw);
-    if (probe_total > max_text_w - reserve) {
-        return probe_total - max_text_w + reserve;
+    const right_limit = max_text_w - reserve;
+    const cursor_visual = cursor_x - prev_offset;
+    const preedit_end_visual = cursor_visual + preedit_advance_total;
+
+    // cursor + preedit 우측 out → 우측 align.
+    if (preedit_end_visual > right_limit) {
+        return cursor_x + preedit_advance_total - right_limit;
     }
-    return 0;
+    // cursor 좌측 out → 좌측 align (cursor visual = 0).
+    if (cursor_visual < 0) {
+        return cursor_x;
+    }
+    return prev_offset;
 }
 
 /// 탭바 title text 의 codepoint 별 layout 명령. iterTabText 가 codepoint 별로
@@ -238,6 +249,9 @@ pub fn iterTabText(
     max_text_w: f32,
     is_renaming: bool,
     needs_truncate: bool,
+    /// rename 활성 시 RenameState.scroll_offset 의 ptr (helper 가 갱신).
+    /// rename 비활성 시 null.
+    rename_scroll_offset_inout: ?*f32,
     ctx: anytype,
     comptime cb: fn (@TypeOf(ctx), TextCmd) void,
 ) void {
@@ -246,10 +260,21 @@ pub fn iterTabText(
     const truncate_at = if (needs_truncate) max_text_w - ellipsis_w else max_text_w;
     const preedit_advance = if (is_renaming) computeAdvanceTotal(preedit_text, cw) else 0;
 
-    const scroll_offset: f32 = if (is_renaming and cursor_byte != null)
-        cursorScrollOffset(title, cursor_byte.?, cw, max_text_w, preedit_advance)
-    else
-        0;
+    const scroll_offset: f32 = blk: {
+        if (is_renaming and cursor_byte != null and rename_scroll_offset_inout != null) {
+            const new_offset = cursorScrollOffset(
+                title,
+                cursor_byte.?,
+                cw,
+                max_text_w,
+                preedit_advance,
+                rename_scroll_offset_inout.?.*,
+            );
+            rename_scroll_offset_inout.?.* = new_offset;
+            break :blk new_offset;
+        }
+        break :blk 0;
+    };
 
     var text_x = text_x_start - scroll_offset;
     var byte_idx: usize = 0;
@@ -333,8 +358,8 @@ pub fn iterTabText(
 ///
 /// 인자:
 ///   - title: 현재 rename buffer text
-///   - cursor_byte: 현재 cursor 위치 (scroll_offset 계산용)
-///   - preedit_advance_total: preedit codepoint 들의 advance 합 (scroll reserve)
+///   - scroll_offset: RenameState.scroll_offset (#168 cached state — render 와
+///     동일 시점 값 사용 → click 위치 visual 일치)
 ///   - text_x_start: 탭 내 text 시작 x — 화면 좌표 (`tab_x + tab_pad`)
 ///   - cw: cell width
 ///   - max_text_w: text 영역 너비 (`tab_w - close_w - 3*pad` 등 host 별 동등)
@@ -344,17 +369,13 @@ pub fn iterTabText(
 /// 이면 시작). title 끝 이후면 title.len. mouse_x 가 영역 밖이면 null.
 pub fn renameTextHit(
     title: []const u8,
-    cursor_byte: usize,
-    preedit_advance_total: f32,
+    scroll_offset: f32,
     text_x_start: f32,
     cw: f32,
     max_text_w: f32,
     mouse_x: f32,
 ) ?usize {
     if (mouse_x < text_x_start or mouse_x >= text_x_start + max_text_w) return null;
-
-    // scroll_offset 계산 — renderer 와 동일 산술 (cursorScrollOffset helper).
-    const scroll_offset = cursorScrollOffset(title, cursor_byte, cw, max_text_w, preedit_advance_total);
 
     // mouse_x → text 안 byte 매핑.
     const target_x = mouse_x - text_x_start;

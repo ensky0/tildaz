@@ -1174,7 +1174,7 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
     const text_x_start = tab_x + tab_pad_px;
     const max_text_w = tab_w_px - close_size_px - tab_pad_px * 3;
 
-    if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], rv_new.cursor, 0, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
+    if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], g_rename.scroll_offset, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
         g_rename.setCursor(new_byte);
         return true;
     }

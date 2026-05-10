@@ -23,6 +23,8 @@ pub const RenameView = struct {
     text: *[RenameState.BUF_SIZE]u8,
     text_len: usize,
     cursor: usize,
+    /// cursor follow scroll cached state. iterTabText 가 매 frame 갱신 (#168).
+    scroll_offset: *f32,
 };
 
 pub const RenameCommit = struct {
@@ -35,6 +37,10 @@ pub const RenameState = struct {
     buf: [BUF_SIZE]u8 = undefined,
     len: usize = 0,
     cursor: usize = 0,
+    /// cursor follow scroll 의 cached pixel offset. `tab_layout.iterTabText` 가
+    /// cursor 가 viewport 밖일 때만 갱신 (native textbox 패턴 — #168). 마우스
+    /// click → byte 변환 (`renameTextHit`) 때도 같은 값 사용 → 시점 일치.
+    scroll_offset: f32 = 0,
 
     pub const BUF_SIZE = 64;
     const MAX_LEN = BUF_SIZE - 1;
@@ -49,12 +55,14 @@ pub const RenameState = struct {
         @memcpy(self.buf[0..copy_len], title[0..copy_len]);
         self.len = copy_len;
         self.cursor = copy_len;
+        self.scroll_offset = 0;
     }
 
     pub fn clear(self: *RenameState) void {
         self.tab_index = null;
         self.len = 0;
         self.cursor = 0;
+        self.scroll_offset = 0;
     }
 
     /// rename text 영역 안 마우스 클릭 시 cursor 위치 변경 (native textbox UX —
@@ -72,6 +80,7 @@ pub const RenameState = struct {
             .text = &self.buf,
             .text_len = self.len,
             .cursor = self.cursor,
+            .scroll_offset = &self.scroll_offset,
         };
     }
 
