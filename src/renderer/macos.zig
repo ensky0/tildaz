@@ -147,6 +147,18 @@ const shader_source =
 /// — renderer struct 변환 cast block 사라짐.
 pub const TabBarLayout = tab_layout.Layout;
 
+/// renderTabBar 가 받은 인자를 renderTerminal 까지 전달. tabs 는 z-order 상
+/// terminal 위에 그려져야 하므로 실제 encode 는 renderTerminal 끝에서.
+const PendingTabs = struct {
+    titles: []const []const u8,
+    active: usize,
+    rename_view: ?tab_interaction.RenameView,
+    rename_preedit: []const u8,
+    drag_view: ?tab_interaction.DragView,
+    scroll_x_px: f32,
+    layout: TabBarLayout,
+};
+
 pub const MetalRenderer = struct {
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,
@@ -155,6 +167,10 @@ pub const MetalRenderer = struct {
 
     // Metal 객체 (모두 ObjC id, 우리는 ARC 안 쓰지만 process 종료 시 회수).
     device: objc.id,
+    /// CAMetalLayer — init 에서 받아 보관. drawable 획득 시점이 매 frame
+    /// 다르므로 host 가 매번 인자로 줄 필요 없도록 self 안에 보관 (Windows
+    /// D3d11Renderer 의 hwnd / rtv 보관 패턴과 같은 의도).
+    layer: objc.id,
     command_queue: objc.id,
     bg_pipeline: objc.id,
     text_pipeline: objc.id,
@@ -166,9 +182,20 @@ pub const MetalRenderer = struct {
     // frame 내 누적된 instance 수. 매 drawBgInstances / drawTextInstances 호출이
     // 같은 buffer 의 *다음 offset* 에 쓰고 setVertexBuffer offset 도 그에 맞게.
     // 같은 frame 안에서 여러 호출 (cell bg → cursor → scrollbar → preedit) 의
-    // 데이터가 buffer 안에서 서로 덮어쓰지 않게. renderFrame 시작 시 0 reset.
+    // 데이터가 buffer 안에서 서로 덮어쓰지 않게. renderTabBar 시작 시 0 reset.
     bg_used: u32 = 0,
     text_used: u32 = 0,
+
+    // Frame in progress — renderTabBar 가 begin (drawable + cmd_buf + encoder
+    // 생성 + clear), renderTerminal 이 end (encode + present + commit).
+    // Windows 의 self.rtv 패턴과 같은 의도. null = frame 진행 중 아님.
+    current_drawable: objc.id = null,
+    current_cmd_buf: objc.id = null,
+    current_encoder: objc.id = null,
+    /// renderTabBar 가 받은 args 보관. renderTerminal 끝에서 z-order 상 terminal
+    /// 위에 tabs 가 그려지도록 마지막에 encode (Windows 와 layout 자체가 분리
+    /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
+    pending_tabs: ?PendingTabs = null,
 
     // 기본 배경색 (theme 미설정 시).
     default_bg: [3]f32,
@@ -262,6 +289,7 @@ pub const MetalRenderer = struct {
             .font = font_ctx,
             .atlas = glyph_atlas,
             .device = device,
+            .layer = layer,
             .command_queue = cmd_queue,
             .bg_pipeline = bg_pipeline,
             .text_pipeline = text_pipeline,
@@ -285,17 +313,16 @@ pub const MetalRenderer = struct {
         self.vp_height = height;
     }
 
-    /// 한 프레임 렌더 — drawable 획득 → 배경 + 텍스트 + 커서 + preedit (IME
-    /// 조합 중) 그리기 → present.
-    pub fn renderFrame(
+    /// Frame begin — drawable + cmd_buf + encoder 생성, clear color 설정. 받은
+    /// tab args 는 self.pending_tabs 에 보관, 실제 encode 는 `renderTerminal` 끝에
+    /// (terminal 위에 그려지도록). Windows D3d11Renderer.renderTabBar 의 setupFrame
+    /// + clear 패턴과 같은 의도 — host 가 두 fn 사이의 frame lifecycle 을 신경
+    /// 쓰지 않게.
+    ///
+    /// host 는 *항상* renderTabBar → renderTerminal 순서로 호출. tab_titles.len <
+    /// 2 면 단일 탭이라 탭바 자체는 안 그림 (#127) 단 frame begin 은 동일.
+    pub fn renderTabBar(
         self: *MetalRenderer,
-        layer: objc.id,
-        terminal: *ghostty.Terminal,
-        cell_w: i32,
-        cell_h: i32,
-        y_offset: i32,
-        padding: i32,
-        preedit_utf8: []const u8,
         /// 멀티탭 (#111). 길이 ≥ 2 일 때만 탭바 그림. 길이 0 / 1 이면 single-tab
         /// 으로 보고 cell grid 가 풀 화면 사용.
         tab_titles: []const []const u8,
@@ -316,8 +343,12 @@ pub const MetalRenderer = struct {
         /// 탭바 layout — `<` `>` `+` 버튼 위치, 탭 viewport 영역.
         tab_bar_layout: TabBarLayout,
     ) void {
-        const drawable = objc.msgSend(layer, objc.sel("nextDrawable"));
-        if (drawable == null) return;
+        const drawable = objc.msgSend(self.layer, objc.sel("nextDrawable"));
+        if (drawable == null) {
+            self.pending_tabs = null;
+            return;
+        }
+        self.current_drawable = drawable;
 
         // frame 내 buffer overwrite 방지 — 매 frame 시작 시 누적 offset 리셋.
         self.bg_used = 0;
@@ -326,6 +357,7 @@ pub const MetalRenderer = struct {
         const texture = objc.msgSend(drawable, objc.sel("texture"));
 
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
+        self.current_cmd_buf = cmd_buf;
 
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
         const rpd = objc.msgSend(rpd_class, objc.sel("renderPassDescriptor"));
@@ -347,6 +379,38 @@ pub const MetalRenderer = struct {
         setClearColorFn(att0, objc.sel("setClearColor:"), clear);
 
         const encoder = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
+        if (encoder == null) {
+            self.current_drawable = null;
+            self.current_cmd_buf = null;
+            self.pending_tabs = null;
+            return;
+        }
+        self.current_encoder = encoder;
+
+        self.pending_tabs = .{
+            .titles = tab_titles,
+            .active = active_tab,
+            .rename_view = rename_view,
+            .rename_preedit = tab_rename_preedit,
+            .drag_view = drag_view,
+            .scroll_x_px = tab_scroll_x_px,
+            .layout = tab_bar_layout,
+        };
+    }
+
+    /// Frame end — terminal encode → pending tabs encode → endEncoding + present
+    /// + commit. `renderTabBar` 가 drawable 획득에 실패했으면 (`current_encoder`
+    /// 가 null) no-op (frame skip).
+    pub fn renderTerminal(
+        self: *MetalRenderer,
+        terminal: *ghostty.Terminal,
+        cell_w: i32,
+        cell_h: i32,
+        y_offset: i32,
+        padding: i32,
+        preedit_utf8: []const u8,
+    ) void {
+        const encoder = self.current_encoder;
         if (encoder == null) return;
 
         self.updateConstants();
@@ -358,11 +422,21 @@ pub const MetalRenderer = struct {
 
         self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
 
-        if (tab_titles.len >= 2) self.drawTabBar(encoder, tab_titles, active_tab, rename_view, tab_rename_preedit, drag_view, tab_scroll_x_px, tab_bar_layout);
+        if (self.pending_tabs) |t| {
+            if (t.titles.len >= 2) {
+                self.drawTabBar(encoder, t.titles, t.active, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout);
+            }
+        }
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
-        objc.msgSendVoid1(cmd_buf, objc.sel("presentDrawable:"), drawable);
-        objc.msgSendVoid(cmd_buf, objc.sel("commit"));
+        objc.msgSendVoid1(self.current_cmd_buf, objc.sel("presentDrawable:"), self.current_drawable);
+        objc.msgSendVoid(self.current_cmd_buf, objc.sel("commit"));
+
+        // Frame end — state reset.
+        self.current_encoder = null;
+        self.current_cmd_buf = null;
+        self.current_drawable = null;
+        self.pending_tabs = null;
     }
 
     fn renderTerminalContent(
