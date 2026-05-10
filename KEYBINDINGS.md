@@ -31,11 +31,14 @@ Cmd+Q (macOS) and Alt+F4 (Windows) show a confirmation dialog with the open tab 
 Double-click a tab to rename. While renaming:
 
 - Type to insert characters (IME-aware, multi-byte friendly). The IME pre-edit appears inline at the cursor on a purple background on both Windows and macOS.
-- Backspace / arrows / Home / End / Delete edit the name
+- Backspace / Left / Right / Delete edit the name
+- **Line begin / end navigation**: `Home` and `End` keys (both platforms), plus `Ctrl+A` and `Ctrl+E` (terminal-style, both platforms — matches mac Terminal.app and `readline` convention)
 - Enter commits, Escape cancels
 - `Ctrl+Shift+V` (Windows) / `Cmd+V` (macOS) pastes clipboard text into the name (printable codepoints only — newlines and control chars are dropped)
 - **Click inside the same tab's text** → cursor jumps to the click position; any in-progress IME pre-edit is committed in place. Click outside (other tabs, the close button, the terminal, the arrows) commits and ends the rename.
 - **Mid-string typing** pushes only the characters after the cursor by the pre-edit's width. Commit drops the new characters there; Escape returns the trailing characters back to where they were.
+- **IME pre-edit + line nav**: pressing Home / End / Ctrl+A / Ctrl+E while a Korean / Japanese / Chinese syllable is composing commits the pre-edit's jamo into the rename buffer at the current cursor position, *then* moves the cursor (no syllable lost). Esc still cancels (pre-edit discarded). See SPEC §5.1 for the full matrix.
+- **Click on a long name + cursor jumps** ([#168](https://github.com/ensky0/tildaz/issues/168)): on long tab names, clicking the middle keeps the cursor at the click position — no more "snaps to right edge" (v0.4.0).
 
 ## Tab limit
 
