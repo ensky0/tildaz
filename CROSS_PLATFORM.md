@@ -148,12 +148,17 @@
   "font": {
     "family": "Cascadia Code",
     "glyph_fallback": ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"],
-    "size": 16,
-    "cell_width": 1.0,
-    "line_height": 1.0
+    "size_point": 16,
+    "cell_width_ratio": 1.0,
+    "line_height_ratio": 1.0
   }
 }
 ```
+
+> Phase 7 (α-전면) 후 다른 numeric 필드도 단위 suffix 적용 — `size_point` /
+> `cell_width_ratio` / `line_height_ratio` (위 예시), 그리고 window 측은
+> `width_percent` / `height_percent` / `offset_percent` / `opacity_percent`
+> (모두 실수). CONFIG.md 참고.
 
 - `font.family` — **단일 string**. 시스템에 반드시 설치돼 있어야 함.
 - `font.glyph_fallback` — **string array**. 각 entry 가 시스템에 반드시

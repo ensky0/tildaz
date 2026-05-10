@@ -155,12 +155,25 @@ otherwise.
 ### Windows
 
 - **F1 hotkey does not fire over elevated apps**: while an elevated (Admin) app like Task Manager or regedit has focus, F1 has no effect. Enforced by Windows UIPI (User Interface Privilege Isolation). Running TildaZ elevated works around it, but is not recommended.
+- **Unsigned binary may be blocked by AV / SmartScreen**: TildaZ releases are not yet code-signed (no Authenticode certificate). Some antivirus / EDR products may quarantine the executable, and Windows SmartScreen will surface a *"Windows protected your PC"* prompt on first launch. Workarounds — click *More info → Run anyway* on the SmartScreen prompt, allow-list the install path in the AV product, or launch elevated from PowerShell (some endpoint policies whitelist administrator-launched processes):
+
+  ```powershell
+  Start-Process tildaz.exe -Verb RunAs
+  ```
+
+  For elevated auto-start at logon, set `"auto_start": false` in your `tildaz.json` (so the bundled Registry Run entry is not re-created on every launch), then run the following from an *elevated* PowerShell — replaces the user-level Run entry with a Task Scheduler entry that runs at logon with highest privileges, no UAC prompt at startup:
+
+  ```powershell
+  Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "TildaZ" -ErrorAction SilentlyContinue
+  schtasks /Create /SC ONLOGON /TN "TildaZ" /TR "tildaz.exe" /RL HIGHEST /F
+  ```
+
+  Code signing is planned for a future release; [#151](https://github.com/ensky0/tildaz/issues/151) tracks an `auto_start_elevated` config option that automates the steps above.
 
 ### macOS
 
 - **Ad-hoc codesign reissues identity per rebuild** — Input Monitoring / Accessibility grants must be re-enabled after each rebuild during development. Notarized releases ([#109](https://github.com/ensky0/tildaz/issues/109)) will fix this.
 - **`IMKCFRunLoopWakeUpReliable` stderr noise** — macOS IMK (Input Method Kit) emits this line via the system framework. Cannot be suppressed without redirecting all stderr; harmless. Same line appears in Ghostty, iTerm2, etc.
-- **`SF Mono` not registered by default** — Apple's user-facing "SF Mono" font is shipped with Xcode. Without Xcode (or manual install from Apple Developer Fonts), `["SF Mono"]` resolves to a substitute via CoreText; TildaZ rejects substitutes (strict family-name validation) so the config error is surfaced cleanly. The default chain `["Menlo"]` always works.
 - **Emoji & Symbols picker is a floating panel, not a cursor-anchored popover** — `Ctrl+Cmd+Space` opens the picker, but it appears as a free-floating window in its last-used position rather than anchored next to the text cursor, and macOS does not auto-dismiss it on focus loss. Press `Esc` or `Ctrl+Cmd+Space` again to dismiss. macOS reserves the popover path for `NSTextView`-based first responders (Terminal.app, TextEdit, Notes, Mail). Every modern fast terminal on macOS — Ghostty, iTerm2, Alacritty, Kitty — shares this limitation; the cell-grid + GPU-atlas + custom-IME architecture they all use is fundamentally incompatible with `NSTextView`. ([#130](https://github.com/ensky0/tildaz/issues/130))
 - **Holding `Cmd+V` to flood-paste a wide grapheme cluster (e.g. `👨‍👩‍👧`) under bash 3.2 stalls line wrap** — single pastes are fine; the issue only appears when `Cmd+V` is held down so the OS key-repeat fires ~30 times per second. ghostty's Mode 2027 (grapheme clustering) treats each ZWJ family as 2 cells, but bash 3.2's `wcwidth(3)` is cluster-unaware and reserves the codepoint-sum width (6 cells per family). The 4-cell mismatch per family eventually puts bash's internal cursor model past its wrap threshold; bash then emits `\r` + erase-line, and the next paste overwrites the same row. The trade-offs to fix it (disable Mode 2027 → broken family/skin-tone/VS-16 ligatures, or fork ghostty's grid model) are large for a workflow most users never hit, so this is a known limitation. macOS default shell is migrating to zsh 5.x, whose line editor is grapheme-cluster-aware and doesn't exhibit the mismatch. ([#141](https://github.com/ensky0/tildaz/issues/141))
 

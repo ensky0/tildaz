@@ -2,11 +2,13 @@
 
 TildaZ runs as a native host on Windows and macOS, sharing cross-platform
 session / VT / config / dialog / themes / terminal-interaction / tab-interaction
-/ tab-layout / tab-actions modules. Platform seams are the host (`windows_host.zig`
-/ `macos_host.zig`), the PTY backend (ConPTY / POSIX), the window layer
-(Win32 / NSWindow), and the renderer (Direct3D 11 / Metal). The architecture
-review history lives in [#91](https://github.com/ensky0/tildaz/issues/91);
-the cross-platform behavior matrix lives in [SPEC.md](SPEC.md).
+/ tab-layout / tab-actions modules. Platform seams are the host
+(`host/windows.zig` / `host/macos.zig`), the PTY backend (ConPTY / POSIX),
+the window layer (Win32 / NSWindow), and the renderer (Direct3D 11 / Metal).
+The architecture review history lives in [#91](https://github.com/ensky0/tildaz/issues/91);
+the cross-platform behavior matrix lives in [SPEC.md](SPEC.md). The recent
+cross-platform unification work (v0.4.1 Phase 0-7) is tracked in
+[CROSS_PLATFORM.md](CROSS_PLATFORM.md) + [#171](https://github.com/ensky0/tildaz/issues/171).
 
 ## Cross-platform modules
 
@@ -21,24 +23,27 @@ The shared logic that drives both hosts:
 | `terminal_interaction.zig` | Cell selection / drag / word selection (wide-char-aware boundary). |
 | `dialog.zig` + `messages.zig` | Single entry point for user-facing text and modal dialogs (`MessageBoxW` / `NSAlert`). |
 | `themes.zig` | 18 built-in colour palettes + `COLORFGBG` derivation. |
+| `terminal.zig` | comptime PTY dispatch — `terminal/windows/pty.zig` (ConPTY) / `terminal/macos/pty.zig` (POSIX). Identical external API on both platforms. |
+| `renderer.zig` | comptime Renderer dispatch — `renderer/windows.zig` (D3D11) / `renderer/macos.zig` (Metal). Both expose `renderTabBar` + `renderTerminal` with stateful frame lifecycle (v0.4.1). |
+| `dialog.zig` / `autostart.zig` / `log.zig` / `font/validate.zig` | Wrapper + comptime select for the per-OS implementations. |
 
 ## Windows pipeline
 
-1. `windows_host.zig` — DPI awareness, single-instance, config, autostart, window, renderer, initial tab
+1. `host/windows.zig` — DPI awareness, single-instance, config, autostart, window, renderer, initial tab
 2. `window.zig` — Win32 messages → `app_event.zig`
 3. `app_controller.zig` — event → tab / session / selection / rename / scroll
 4. `session_core.zig` — tab list, active tab, scrollback, VT drain, PTY queue
-5. `terminal_backend.zig` → `conpty.zig` (bundled `conpty.dll` / `OpenConsole.exe`, fallback to `kernel32 CreatePseudoConsole`)
+5. `terminal.zig` → `terminal/windows/pty.zig` (bundled `conpty.dll` / `OpenConsole.exe`, fallback to `kernel32 CreatePseudoConsole`)
 6. PTY read thread → lock-free ring buffer → render callback drains through ghostty VT parser
-7. `renderer_backend.zig` → `d3d11_renderer.zig` (DirectWrite + Direct3D 11 / HLSL, dynamic glyph atlas)
+7. `renderer.zig` → `renderer/windows.zig` (DirectWrite + Direct3D 11 / HLSL, dynamic glyph atlas)
 
 ## macOS pipeline
 
-1. `macos_host.zig` — NSApplication accessory mode, NSWindow at popUpMenu level (101), CGEventTap for global hotkey, render timer via CFRunLoopTimer
-2. `macos_pty.zig` — POSIX PTY (`openpty` + `login_tty` + IUTF8). SIGHUP-ignoring shells get SIGKILL after a 500 ms grace
-3. Same cross-platform `session_core` analog (`macos_session.zig`) — schema-compatible with Windows `session_core`
-4. `macos_metal.zig` — Metal renderer (CAMetalLayer + MTLCommandQueue), retina-aware glyph atlas
-5. `macos_font.zig` — CoreText with explicit *glyph fallback chain* (config.font.family) + system auto fallback (`CTFontCreateForString`) for codepoints outside the chain
+1. `host/macos.zig` — NSApplication accessory mode, NSWindow at popUpMenu level (101), CGEventTap for global hotkey, render timer via CFRunLoopTimer
+2. `terminal/macos/pty.zig` — POSIX PTY (`openpty` + `login_tty` + IUTF8). SIGHUP-ignoring shells get SIGKILL after a 500 ms grace
+3. Same cross-platform `session_core.zig` as Windows (no platform-specific session module since v0.4.0)
+4. `renderer/macos.zig` — Metal renderer (CAMetalLayer + MTLCommandQueue), retina-aware glyph atlas. Frame lifecycle stateful between `renderTabBar` (begin) and `renderTerminal` (present + commit) — same call shape as Windows (v0.4.1)
+5. `font/macos/font.zig` — CoreText with explicit *primary + glyph fallback chain* (`config.font.family` string + `config.font.glyph_fallback` array, all entries strict-validated) + system auto fallback (`CTFontCreateForString`) for codepoints outside the chain
 6. NSTextInputClient implementation for IME (Korean / Japanese / Chinese composition) — inline pre-edit overlay, syllable-boundary commit
 7. macOS quirks tracked in [AGENTS.md § macOS Cocoa quirks](AGENTS.md): `atexit()` for `[exit]` log line (NSApp `terminate:` skips `defer`), `ApplePressAndHoldEnabled = false` for English key repeat, NSAlert TextView selection-auto-copy for Cmd+C routing, etc.
 
@@ -68,18 +73,20 @@ identical UX (Apple HIG `Shift+Cmd` order on macOS, Windows `Ctrl+Shift`;
 
 ## Open structural work
 
-- Cross-platform `config.zig` unification ([#118](https://github.com/ensky0/tildaz/issues/118)) — schemas already compatible at the field level, the parser file is still split.
 - macOS Developer ID code signing + notarization ([#109](https://github.com/ensky0/tildaz/issues/109)) — currently ad-hoc signed; per-rebuild identity changes invalidate Input Monitoring / Accessibility grants.
 - macOS NSTextInputClient reconversion API ([#166](https://github.com/ensky0/tildaz/issues/166)) — Hanja / kanji conversion via Option+Return needs `attributedSubstring(forProposedRange:actualRange:)` + `firstRect(forCharacterRange:actualRange:)`. Apple's own Terminal.app does not implement these either; matching their behavior is the current state.
-- Linux backend (Wayland / X11) — not yet started.
+- Config hot-reload ([#170](https://github.com/ensky0/tildaz/issues/170)) — disk file watch + per-field hot-apply dispatch (theme / opacity / dock_position / hotkey instant; font / shell heavier).
+- Windows `auto_start_elevated` config option ([#151](https://github.com/ensky0/tildaz/issues/151)) — automate the Task Scheduler `/RL HIGHEST` registration documented in README §Known limitations.
+- Linux backend (Wayland / X11) — not yet started; the cross-platform unification (v0.4.1) leaves only `host/linux.zig` to write; the rest of the wrapper hierarchy already accepts a third platform via comptime dispatch.
 - Stress tests for bulk output, resize storms, output-pipe-full during tab close, WSL/nvim/mouse, and CJK/emoji/combining marks should be pinned down separately.
 
 ## Recently closed structural work
 
+- **Cross-platform unification v0.4.1 — Phase 0-7** ([#171](https://github.com/ensky0/tildaz/issues/171), [CROSS_PLATFORM.md](CROSS_PLATFORM.md)) — dead-code cleanup in `host/macos.zig`, About-dialog wrapper consolidation, Windows-only helper renaming, first-run `$SHELL` resolution for macOS shell default, `font.family` + `font.glyph_fallback` schema breaking (primary string + array of fallbacks, both strict-validated), Metal renderer split into `renderTabBar` + `renderTerminal` with stateful frame lifecycle matching Windows, and config schema unit-suffix sweep (`width_percent` / `height_percent` / `offset_percent` / `opacity_percent` as floats, `size_point`, `cell_width_ratio`, `line_height_ratio`; window-side `cell_width_px` / `cell_height_px`).
 - **Tab bar / actions / IME pre-edit cross-platform unification** ([#159](https://github.com/ensky0/tildaz/issues/159) Phase 1-3, [#163](https://github.com/ensky0/tildaz/issues/163) Phase 4, v0.4.0) — `tab_layout.zig` extracted (Phase 1), `tab_actions.zig` + `Host` interface (Phase 2), `closeByPtr` / `closeIndex` unified close path (Phase 3), `RenameView` / `DragView` / `TabBarLayout` struct unified across both renderers (Phase 4), and the cursor-follow-scroll math (`cursorReserve` / `computeAdvanceTotal` / `cursorScrollOffset`) shared by both renderers and both hosts' click → cursor logic (option A). About ~400 lines of duplicated cross-platform code removed; future fixes land in one place.
 - **Windows IME pre-edit overlay + candidate-popup tracking** ([#164](https://github.com/ensky0/tildaz/issues/164), v0.4.0) — `WM_IME_*` hooked, `ImmGetCompositionStringW` reads `GCS_COMPSTR`, inline purple overlay at the cursor matches macOS, `ImmSetCompositionWindow(CFS_POINT)` keeps the Hanja / kanji / hanzi candidate popup next to the cursor, native-textbox tab-rename UX (click cursor reposition, mid-string push-right, fixed pre-edit reserve).
 - **Rename text cursor click → no longer pins to right edge** ([#168](https://github.com/ensky0/tildaz/issues/168), v0.4.0) — `cursorScrollOffset` was recomputed every frame from `cursor_byte` (pure function), so on a long tab name, any new cursor position past `max - reserve` would force the cursor visual to the right edge. Now the scroll offset is *cached state* on `RenameState` (`scroll_offset: f32`), updated by `iterTabText` only when the cursor leaves the visible viewport (native textbox pattern). `renameTextHit` (mouse → byte) reads the same cached value so click position translation matches what's drawn. Both platforms automatically fixed via the shared helper.
-- **IME pre-edit × line-nav unified across rename + terminal** (#164 follow-up 4-6, v0.4.0) — pressing Home / End / Ctrl+A / Ctrl+E during Korean / Japanese / Chinese composition commits the in-progress jamo (to rename buf or PTY depending on context) before moving the cursor, matching iTerm2 / native textbox behavior. `Ctrl+C` retains line-abort discard semantics. macOS uses direct keyCode interception in the rename branch (bypasses `interpretKeyEvents` / Cocoa StandardKeyBinding which doesn't reliably dispatch to custom NSViews); Windows routes Ctrl+A / Ctrl+E in `WM_KEYDOWN` to `KeyInput.home / .end` only when rename consumes them (otherwise WM_CHAR 0x01 / 0x05 falls through to readline). `commitPreeditPreserving` helper extracted so the same commit-without-ending-rename logic feeds nav, Cmd shortcuts, and mouse clicks. SPEC §5.1 has the full matrix and rationale (including notes on two reverted approaches: paragraph-selector mapping and right-side ellipsis cue).
+- **IME pre-edit × line-nav unified across rename + terminal** (#164 follow-up 4-6, v0.4.0) — pressing Home / End / Ctrl+A / Ctrl+E during Korean / Japanese / Chinese composition commits the in-progress jamo (to rename buf or PTY depending on context) before moving the cursor, matching iTerm2 / native textbox behavior. `Ctrl+C` retains line-abort discard semantics. macOS uses direct keyCode interception in the rename branch (bypasses `interpretKeyEvents` / Cocoa StandardKeyBinding which doesn't reliably dispatch to custom NSViews); Windows routes Ctrl+A / Ctrl+E in `WM_KEYDOWN` to `KeyInput.home / .end` only when rename consumes them (otherwise WM_CHAR 0x01 / 0x05 falls through to readline). `commitPreeditPreserving` helper extracted so the same commit-without-ending-rename logic feeds nav, Cmd shortcuts, and mouse clicks. SPEC §5.1 has the full matrix and rationale.
 
 ## Tech stack
 
@@ -87,12 +94,12 @@ identical UX (Apple HIG `Shift+Cmd` order on macOS, Windows `Ctrl+Shift`;
 |-----------|---------|-------|
 | Language | Zig 0.15.2 | Zig 0.15.2 |
 | Terminal emulation | [libghostty-vt](https://github.com/ghostty-org/ghostty) | [libghostty-vt](https://github.com/ghostty-org/ghostty) |
-| PTY backend | ConPTY (`conpty.zig`) | POSIX (`macos_pty.zig`) — `openpty` + `login_tty` + IUTF8 |
+| PTY backend | ConPTY (`terminal/windows/pty.zig`) | POSIX (`terminal/macos/pty.zig`) — `openpty` + `login_tty` + IUTF8 |
 | PTY host | Bundled `OpenConsole.exe` + `conpty.dll` ([microsoft/terminal](https://github.com/microsoft/terminal), MIT); falls back to system conhost | (kernel) |
 | Window | Win32 API (borderless popup) | NSWindow (popUpMenu level 101) |
 | Hotkey | `RegisterHotKey` | CGEventTap (Input Monitoring + Accessibility) |
 | Renderer | Direct3D 11 + HLSL (ClearType subpixel) | Metal + CoreText |
-| Font | DirectWrite — explicit glyph fallback chain | CoreText — explicit glyph fallback chain + system auto fallback |
+| Font | DirectWrite — primary + explicit glyph fallback chain | CoreText — primary + explicit glyph fallback chain + system auto fallback |
 | IME | Win32 IMM (`WM_IME_*` + `ImmGetCompositionStringW` for inline pre-edit; `ImmSetCompositionWindow(CFS_POINT)` for candidate-popup tracking) | NSTextInputClient (markedText pre-edit) |
 | Autostart | HKCU `Run` registry entry | LaunchAgent plist (`~/Library/LaunchAgents/com.tildaz.app.plist`) |
 | Log path | `%APPDATA%\tildaz\tildaz.log` | `~/Library/Logs/tildaz.log` (Console.app indexed) |
@@ -139,6 +146,7 @@ If your AV/EDR flags `tildaz.exe`:
 - With admin rights, add a SHA256 allowlist exception in your EDR
 - On a corporate-managed PC, file a false-positive report with your security team
 - Or copy the binary to a local-disk path (e.g. `%LOCALAPPDATA%\Programs\tildaz\`) before running — execution from UNC paths is scored as more suspicious
+- For elevated auto-start at logon under a strict EDR policy, see README §Known limitations (Task Scheduler `/RL HIGHEST` workaround)
 
 Plan: applying to the [SignPath Foundation open-source code-signing program](https://about.signpath.io/foundation). Once approved, future releases will ship with an Authenticode-signed `tildaz.exe`.
 
