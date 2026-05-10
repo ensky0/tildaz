@@ -493,7 +493,7 @@ pub const App = struct {
         const text_x_start: f32 = @floatFromInt(tab_x_int + self.TAB_PADDING);
         const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING * 3);
 
-        if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], rv_new.cursor, 0, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
+        if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], self.tab_interaction.rename.scroll_offset, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
             self.tab_interaction.rename.setCursor(new_byte);
             self.invalidateRenderer();
             return true;

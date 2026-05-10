@@ -757,7 +757,8 @@ pub const D3d11Renderer = struct {
                     }
                 }
             }.run;
-            tab_layout.iterTabText(title, rename_cursor_pos, rename_preedit, text_x_start, cw, max_text_w, is_renaming, needs_truncate, ctx, struct {
+            const rename_scroll_inout: ?*f32 = if (is_renaming) rename_view.?.scroll_offset else null;
+            tab_layout.iterTabText(title, rename_cursor_pos, rename_preedit, text_x_start, cw, max_text_w, is_renaming, needs_truncate, rename_scroll_inout, ctx, struct {
                 fn cb(c: Ctx, cmd: tab_layout.TextCmd) void {
                     switch (cmd) {
                         .glyph => |g| emitGlyph(c, g.cp, g.x, .main),
