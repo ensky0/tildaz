@@ -632,6 +632,31 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // 위임 → IME / NSResponder 가 imeInsertText / imeDoCommand 콜백 호출 →
     // 거기서 RenameState 로 라우팅. PTY 로 안 흘림.
     if (g_rename.isActive()) {
+        // line begin/end navigation 직접 keyCode intercept — interpretKeyEvents
+        // 의 StandardKeyBinding dispatch 가 우리 custom NSView 에선 일부 키
+        // (Home/End fn 변형, ^a/^e) 에 안 잡히는 케이스 발견. 신뢰성 위해 직접.
+        // Home/End 는 fn+Left/Right (Apple 노트북) 와 외장 키보드 Home/End 키
+        // 모두 keyCode 115/119. Ctrl+A/E 는 keyCode 0/14 + Ctrl modifier.
+        const NSEventModifierFlagControlEarly: c_ulong = 1 << 18;
+        const ctrl_early = (flags & NSEventModifierFlagControlEarly) != 0;
+        const get_kc_early = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+        const kc_early = get_kc_early(event, objc.sel("keyCode"));
+        const rename_nav: ?tab_interaction.RenameKey = blk: {
+            if (kc_early == 115) break :blk .home;
+            if (kc_early == 119) break :blk .end;
+            if (ctrl_early and kc_early == 0) break :blk .home; // Ctrl+A
+            if (ctrl_early and kc_early == 14) break :blk .end; // Ctrl+E
+            break :blk null;
+        };
+        if (rename_nav) |k| {
+            // preedit 활성 시 먼저 rename buf 로 commit 후 cursor 이동 — native
+            // textbox 동작 (자모 보존). preedit 없으면 no-op.
+            commitPreeditPreserving(self_view);
+            _ = g_rename.handleKey(k);
+            const setNeeds = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+            setNeeds(self_view, objc.sel("setNeedsDisplay:"), true);
+            return;
+        }
         const NSArray = objc.getClass("NSArray");
         const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
         const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
@@ -665,26 +690,29 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
             const len = get_len(chars, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
             if (len > 0) {
+                const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+                const cstr = get_utf8(chars, objc.sel("UTF8String"));
+                const ctrl_c = (len == 1 and cstr[0] == 0x03);
                 if (g_marked_len > 0) {
+                    // Ctrl+C 는 line abort 의미라 preedit *discard*. 다른
+                    // Ctrl+key (Ctrl+A/E/L/D 등) 은 *commit* — 입력 중인 자모
+                    // 보존 후 Ctrl char 발신 (native textbox / iTerm2 동등).
+                    if (!ctrl_c) {
+                        tab.queueWrite(g_preedit_buf[0..g_preedit_len]);
+                    }
                     const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
                     const ic = get_ic(self_view, objc.sel("inputContext"));
                     if (ic != null) {
                         const discard = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
                         discard(ic, objc.sel("discardMarkedText"));
                     }
-                    // 우리 overlay buffer 도 같이 비워야 다음 frame 에서
-                    // markedText 가 화면에서 사라진다 (`g_preedit_buf` 는
-                    // metal renderer 가 cursor 위에 그리는 preedit overlay).
                     g_marked_len = 0;
                     g_preedit_len = 0;
                 }
-                const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
-                const cstr = get_utf8(chars, objc.sel("UTF8String"));
                 // Ctrl+C (SIGINT) 만 큐 우회 + 큐 reset — paste 등으로 가득찬
                 // write_queue 뒤에 enqueue 되면 셸이 SIGINT 늦게 받아 "Ctrl+C
-                // 안 먹힌다" 로 보임. 다른 Ctrl+key (Ctrl+L / Ctrl+D 등) 은
-                // 일반 line discipline 이라 큐 통과 OK.
-                if (len == 1 and cstr[0] == 0x03) {
+                // 안 먹힌다" 로 보임.
+                if (ctrl_c) {
                     tab.interruptWrite(cstr[0..len]);
                 } else {
                     tab.queueWrite(cstr[0..len]);
@@ -733,6 +761,20 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
 
         if (keyCodeToEscape(keycode)) |esc| {
+            tab.queueWrite(esc);
+            return;
+        }
+    }
+
+    // preedit 활성 + nav 키 (Home/End/Arrows/PgUp/PgDn 등) — interpretKeyEvents
+    // 가 Home/End 같은 일부 키에 doCommandBySelector dispatch 안 하는 케이스
+    // (IME 가 finalize 만 하고 selector 안 보냄). 직접 keyCode 검사 후 preedit
+    // commit + escape 발신.
+    if (g_marked_len > 0) {
+        const get_keycode2 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+        const keycode2 = get_keycode2(event, objc.sel("keyCode"));
+        if (keyCodeToEscape(keycode2)) |esc| {
+            commitPreeditPreserving(self_view);
             tab.queueWrite(esc);
             return;
         }
@@ -883,6 +925,11 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
             else if (cmd_sel == objc.sel("moveRight:")) .right
             else if (cmd_sel == objc.sel("moveToBeginningOfLine:")) .home
             else if (cmd_sel == objc.sel("moveToEndOfLine:")) .end
+            // Home/End 물리 키 — mac Cocoa StandardKeyBinding 이 NSHome/NSEnd
+            // FunctionKey 를 moveTo*OfDocument: 으로 dispatch (single-line
+            // 이라 line begin/end 와 동등).
+            else if (cmd_sel == objc.sel("moveToBeginningOfDocument:")) .home
+            else if (cmd_sel == objc.sel("moveToEndOfDocument:")) .end
             else null;
         if (key) |k| {
             switch (g_rename.handleKey(k)) {
@@ -915,6 +962,21 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
         "\x1b[D"
     else if (cmd_sel == objc.sel("moveRight:"))
         "\x1b[C"
+    // Home/End 키 (preedit 활성 → IME finalize 후 nav selector 로 dispatch).
+    // Document/Line/Paragraph 셋 다 매핑 — 사용자 키보드 / 키바인딩에 따라 다른
+    // selector 가 dispatch 될 수 있음.
+    else if (cmd_sel == objc.sel("moveToBeginningOfDocument:"))
+        "\x1b[H"
+    else if (cmd_sel == objc.sel("moveToEndOfDocument:"))
+        "\x1b[F"
+    else if (cmd_sel == objc.sel("moveToBeginningOfLine:"))
+        "\x1b[H"
+    else if (cmd_sel == objc.sel("moveToEndOfLine:"))
+        "\x1b[F"
+    else if (cmd_sel == objc.sel("moveToBeginningOfParagraph:"))
+        "\x1b[H"
+    else if (cmd_sel == objc.sel("moveToEndOfParagraph:"))
+        "\x1b[F"
     else
         null;
     if (bytes) |b| {
@@ -1090,28 +1152,21 @@ fn commitOrCancelRename(commit: bool) void {
     g_rename.clear();
 }
 
-/// 진행 중인 모든 입력 (rename text + IME preedit) 을 적절한 곳으로 확정 +
-/// IME 상태 클리어. focus 이탈 / 단축키 등 "지금 멈춰" 시점에 호출.
-/// - rename 활성 + preedit: preedit 자모를 rename buf 로 commit, rename 도 commit
-/// - rename 비활성 + terminal preedit: preedit 을 활성 탭 PTY 로 commit
-/// 둘 다 native textbox / Win IME 동등 동작 (cancel 아님).
-/// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
-fn commitPendingInput(self_view: objc.id) void {
-    if (g_rename.isActive() and g_preedit_len > 0) {
-        // rename 활성 — preedit 자모 rename buf 에 manual commit.
+/// IME preedit (g_preedit_buf) 을 적절한 sink 로 commit + IME 상태 클리어.
+/// rename 은 *유지*. 호출 후 typing 계속 가능. (rename 끝낼 때는 후속
+/// commitOrCancelRename 호출.)
+/// - rename 활성: preedit 자모 rename buf 에 cursor 위치로 insert
+/// - rename 비활성: preedit 자모 활성 탭 PTY 로 직송
+fn commitPreeditPreserving(self_view: objc.id) void {
+    if (g_preedit_len == 0) return;
+    if (g_rename.isActive()) {
         var iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
         while (iter.nextCodepoint()) |cp| {
             if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
         }
-    } else if (g_preedit_len > 0) {
-        // rename 비활성 + terminal preedit 활성 — focus 잃음 시 native textbox /
-        // Win IME 동작은 *commit* (자모 PTY 로 직송). 우리 이전 코드는 cancel 이라
-        // 사용자 의도와 다름 — fix. session.queueInputToActive 가 활성 탭의 PTY
-        // 로 보냄.
+    } else {
         g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
     }
-    commitOrCancelRename(true);
-
     g_preedit_len = 0;
     g_marked_len = 0;
     const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
@@ -1120,6 +1175,17 @@ fn commitPendingInput(self_view: objc.id) void {
         const discard = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
         discard(ic, objc.sel("discardMarkedText"));
     }
+}
+
+/// 진행 중인 모든 입력 (rename text + IME preedit) 을 적절한 곳으로 확정 +
+/// IME 상태 클리어. focus 이탈 / 단축키 등 "지금 멈춰" 시점에 호출.
+/// - rename 활성 + preedit: preedit 자모를 rename buf 로 commit, rename 도 commit
+/// - rename 비활성 + terminal preedit: preedit 을 활성 탭 PTY 로 commit
+/// 둘 다 native textbox / Win IME 동등 동작 (cancel 아님).
+/// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
+fn commitPendingInput(self_view: objc.id) void {
+    commitPreeditPreserving(self_view);
+    commitOrCancelRename(true);
 }
 
 /// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
