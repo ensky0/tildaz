@@ -355,21 +355,9 @@ var g_shell_path: []const u8 = "";
 var g_extra_env: [5]terminal.ExtraEnv = undefined;
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
-// font_family 는 config 통합 전까지 hardcoded.
 var g_metal_layer: objc.id = null;
 var g_renderer: ?macos_metal.MetalRenderer = null;
 var g_render_timer: CFRunLoopTimerRef = null;
-// Menlo — macOS 기본 등록된 monospace. SF Mono 는 system font 라
-// CTFontCreateWithName 에서 family 매칭이 안 되면 proportional fallback 으로
-// 떨어져 글자 폭이 들쭉날쭉 해진다. 추후 menlo 로 동작 확인되면 SF Mono 는
-// CTFontCreateUIFontForLanguage 같은 별도 경로로 다시 시도.
-const FONT_FAMILY = "Menlo";
-const FONT_SIZE_PT: f32 = 14.0;
-// Windows config 의 cell_width / line_height default 와 동일. config 통합
-// 후 사용자 설정 가능. 1.0 / 1.0 이면 폰트 그대로, 1.1 / 0.95 는 약간의 가로
-// padding + 빽빽한 줄간격.
-const CELL_WIDTH_SCALE: f32 = 1.1;
-const LINE_HEIGHT_SCALE: f32 = 0.95;
 // 터미널 영역 안쪽 padding — `ui_metrics.zig` 의 공통 상수. Windows /
 // macOS 동일 값으로 시각적 일관성 유지. pixel 변환은 init 시 retina scale 곱.
 const TERMINAL_PADDING_PT = ui_metrics.TERMINAL_PADDING_PT;
