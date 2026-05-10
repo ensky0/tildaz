@@ -154,12 +154,12 @@ pub fn run() !void {
         font_chain_arr[i] = config.windowsFontFamilyUtf16(@intCast(i));
     }
     const font_chain: []const [*:0]const u16 = font_chain_arr[0..config.font_family_count];
-    const font_size: c_int = @intCast(config.font_size);
-    try app.window.init(font_chain, font_size, config.opacity, config.cell_width, config.line_height, config.hotkey.vkey, config.hotkey.modifiers);
+    const font_size: c_int = @intCast(config.font_size_point);
+    try app.window.init(font_chain, font_size, config.opacity_alpha, config.cell_width_ratio, config.line_height_ratio, config.hotkey.vkey, config.hotkey.modifiers);
     log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,
-        app.window.cell_width,
-        app.window.cell_height,
+        app.window.cell_width_px,
+        app.window.cell_height_px,
     });
     defer app.window.deinit();
 
@@ -170,7 +170,7 @@ pub fn run() !void {
 
     // Initialize renderer backend
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, font_size, @intCast(app.window.cell_width), @intCast(app.window.cell_height), theme_bg) catch |err| blk: {
+    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, font_size, @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg) catch |err| blk: {
         log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
         break :blk null;
     };
@@ -178,7 +178,7 @@ pub fn run() !void {
     defer if (app.renderer) |*r| r.deinit();
 
     // Apply position from config
-    app.window.setPosition(config.dock_position, config.width, config.height, config.offset);
+    app.window.setPosition(config.dock_position, config.width_percent, config.height_percent, config.offset_percent);
 
     // Create initial tab
     try app.createTab();

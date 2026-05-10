@@ -839,8 +839,8 @@ pub const MetalRenderer = struct {
         };
 
         // 3. 각 탭 제목 텍스트 + close 버튼 (× 글리프).
-        const cw: f32 = @floatFromInt(self.font.cell_width);
-        const ch: f32 = @floatFromInt(self.font.cell_height);
+        const cw: f32 = @floatFromInt(self.font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.font.cell_height_px);
         const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
         // close 버튼 자리 + 양쪽 padding 빼고 남은 영역만 텍스트.
         const max_text_w_px = tab_w_px - close_size_px - tab_pad_px * 3;

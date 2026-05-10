@@ -131,8 +131,8 @@ pub const DWriteFontContext = struct {
     primary_family_len: u32 = 0,
     font_em_size: f32 = 0,
     ascent_px: f32 = 0,
-    cell_width: u32,
-    cell_height: u32,
+    cell_width_px: u32,
+    cell_height_px: u32,
     // Caches (codepoint → face/index). Keeps fallback faces alive so atlas
     // cache keys — which use the face pointer — remain stable.
     glyph_map: std.AutoHashMap(u21, CachedGlyph),
@@ -202,8 +202,8 @@ pub const DWriteFontContext = struct {
             .font_collection = collection.?,
             .chain_faces = chain_faces,
             .chain_count = chain_count,
-            .cell_width = cell_w,
-            .cell_height = cell_h,
+            .cell_width_px = cell_w,
+            .cell_height_px = cell_h,
             .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
         };
 

@@ -604,8 +604,8 @@ pub const D3d11Renderer = struct {
         const tw: f32 = @floatFromInt(tab_width);
         const cbs: f32 = @floatFromInt(close_btn_size);
         const pad: f32 = @floatFromInt(tab_padding);
-        const cw: f32 = @floatFromInt(self.font.cell_width);
-        const ch: f32 = @floatFromInt(self.font.cell_height);
+        const cw: f32 = @floatFromInt(self.font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.font.cell_height_px);
         const w_f: f32 = @floatFromInt(client_w);
 
         // Ensure viewport dimensions are set
