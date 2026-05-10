@@ -14,6 +14,34 @@ const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const paths = @import("../paths.zig");
 
+/// `font.family` 가 string 이 아닐 때 (예: 구 schema 의 array). 메시지 +
+/// runtime 에서 결정한 config path 한 줄.
+pub fn showFamilyMustBeStringFatal() noreturn {
+    showSchemaErrorFatal(messages.font_family_must_be_string_msg);
+}
+
+/// `font.glyph_fallback` 이 string 의 list 가 아닐 때 (다른 type, 또는 array
+/// element 가 string 아닌 경우).
+pub fn showGlyphFallbackMustBeListFatal() noreturn {
+    showSchemaErrorFatal(messages.font_glyph_fallback_must_be_list_msg);
+}
+
+/// 단순 schema 위반 메시지 + Config path 라인 → fatal. 위 두 fn 의 공유 helper.
+fn showSchemaErrorFatal(line: []const u8) noreturn {
+    var alloc_buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
+    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch "(unknown)";
+
+    var msg_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&msg_buf);
+    const w = fbs.writer();
+    w.writeAll(line) catch {};
+    w.writeAll("\n\nConfig path:\n  ") catch {};
+    w.writeAll(cfg_path) catch {};
+
+    dialog.showFatal(messages.config_error_title, fbs.getWritten());
+}
+
 /// `missing` 은 시스템에서 lookup 실패한 chain entry 이름. `chain` 은 사용자
 /// config 의 font.family 전체 (UTF-8 raw). 본 함수는 dialog.showFatal 로
 /// process 종료.

@@ -104,7 +104,7 @@
 
 | # | 영역 | Windows | macOS | 권장 결정 |
 |---|---|---|---|---|
-| **A1** | font chain validation 정책 | per-entry 검증 — chain[i] **하나라도** 미설치면 fatal ([host/windows.zig:131-140](src/host/windows.zig#L131)) | chain 전체 lookup 모두 실패해야 fatal — chain[i] 일부 미설치는 통과 / fallback ([host/macos.zig:1880-1893](src/host/macos.zig#L1880)) | **Windows 따름.** 추가로 의미 명확화 — §6 참조 |
+| **A1** | ~~font chain validation 정책~~ | ~~per-entry 검증~~ | ~~chain 전체 lookup 모두 실패해야 fatal — chain[i] 일부 미설치는 통과~~ | **정정**: macOS 도 이미 per-entry strict 였음 ([font/macos/font.zig:65-94](src/font/macos/font.zig#L65)) — `CTFontCreateWithName` + `CTFontCopyFamilyName` 으로 실제 family 검증, match 안 되면 즉시 `showNotFoundFatal`. 분석 보고서의 클레임이 잘못된 것. Phase 4 에서 정책 통일 작업 불필요 |
 | **A2** | rename state 접근 | Windows: `App.isRenaming()` 메서드 / macOS: `g_rename.isActive()` 직접 호출 (⚠️ 부분 확인) | — | callback 통일 (#159 의 per-tab 이행 중) |
 
 > **결정 (사용자):** A1 — Windows 가 옳음. 모든 폰트는 시스템에 있어야
@@ -189,32 +189,28 @@ fallback 이라 chain 의 앞에 두면 lookup 비용이 적게 든다.
 
 ### 6.4 마이그레이션 — 안 함
 
-- **자동 변환 없음.** 기존 `font.family: ["Cascadia Code", ...]` (array)
-  config 를 발견하면 즉시 fatal.
-- **fatal 메시지 형식** (예시, 실제 문구는 `messages.zig` 에 정의 후 양쪽
-  host 동일 사용):
+- **자동 변환 없음.** schema 위반 시 즉시 fatal.
+- **fatal 메시지 형식** (실제 문구는 `messages.zig` 에 정의 후 양쪽 host
+  동일 사용. Config path 라인은 `font/validate.zig` 의 `showNotFoundFatal`
+  와 같이 runtime OS 별 치환):
 
+  `font.family` 가 string 이 아닐 때:
   ```
-  Config schema changed: font.family must be a single string,
-  not an array.
+  Invalid config: font.family must be a string (font name).
 
-  Old format (no longer supported):
-    "font": { "family": ["Cascadia Code", "Segoe UI Emoji"] }
-
-  New format:
-    "font": {
-      "family": "Cascadia Code",
-      "glyph_fallback": ["Segoe UI Emoji"]
-    }
-
-  Edit your config and restart.
   Config path:
-    %APPDATA%\tildaz\tildaz.json
+    <runtime-resolved>
   ```
 
-- 이유: 자동 변환은 silent migration → 사용자가 schema 변경을 인지 못함.
-  fatal + diff 메시지가 가장 투명. 사용자 영향 범위는 좁음 (release-notes
-  + 첫 startup 메시지 두 군데로 충분).
+  `font.glyph_fallback` 이 string 의 list 가 아닐 때:
+  ```
+  Invalid config: font.glyph_fallback must be a list of strings (fallback font names).
+
+  Config path:
+    <runtime-resolved>
+  ```
+
+- 이유: 단순 형식 안내. 마이그레이션 안내 / 이전 schema 의 흔적 없음.
 
 ### 6.5 영향 받는 파일 (Phase 4 진입 시 detail plan 으로 보강)
 
@@ -232,8 +228,9 @@ fallback 이라 chain 의 앞에 두면 lookup 비용이 적게 든다.
 - 정상: primary + 한글 + 이모지 + 심볼 모두 표시 (glyph fallback 동작).
 - 미설치: glyph_fallback 의 entry 1개를 임시로 존재하지 않는 이름으로 변경
   → startup 시 fatal 메시지 + chain dump.
-- 구 schema: `"family": ["A", "B"]` 로 적은 config → startup fatal +
-  새 schema 안내.
+- 구 schema: `"family": ["A", "B"]` 로 적은 config → startup fatal
+  ("font.family must be a string"). glyph_fallback 이 string list 가
+  아닌 경우도 별도 fatal.
 
 ---
 
@@ -389,3 +386,5 @@ host 별 first-run resolver fn 시그니처를 일관 (`fn resolveShell(alloc) [
 |---|---|
 | 2026-05-10 | 초기 작성 — Phase 0-7 정의, 사용자 결정 D1-D3, D6 반영 |
 | 2026-05-10 | §6 schema Plan A 확정, 마이그레이션 안 함 정책, glyph_fallback OS default 표 (한글 → 이모지 → 심볼). §7 first-run `$SHELL` resolution 패턴 명세. §8 Phase 표에 변경 파일 컬럼 추가. §9 결정 이력 표 신설 (D1-D6) |
+| 2026-05-10 | Phase 0-3 완료 + commit. §6.4 fatal 메시지 단순화 — 마이그레이션 / 이전 schema 흔적 제거, 형식 안내만. family 와 glyph_fallback 별도 fatal |
+| 2026-05-10 | Phase 4 schema breaking 완료. §5.2 A1 정정 — macOS 도 이미 per-entry strict (font/macos/font.zig:65-94 의 CTFontCopyFamilyName 검증). 분석 보고서의 "macOS 관대" 클레임이 잘못된 것. Phase 4 에서 macOS validation 추가 작업 불필요 — config.zig schema + parse + fatal helper 만으로 완료 |
