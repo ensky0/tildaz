@@ -72,7 +72,11 @@ pub fn run() !void {
 
     // Load configuration. parse() 가 schema (validateStructure) + 각 필드
     // range 모두 fatal 처리 — 별도 validate() 호출 불필요.
-    var config = Config.load(alloc);
+    //
+    // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. Windows 는 OS env
+    // 와 무관하게 항상 `Defaults.shell` (= `cmd.exe`) — `$SHELL` 같은 POSIX
+    // 컨벤션이 없음. macOS 는 `$SHELL` 우선 (host/macos.zig 의 resolveShell 참고).
+    var config = Config.load(alloc, config_mod.Defaults.shell);
     defer config.deinit();
     log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
         config.hidden_start,
