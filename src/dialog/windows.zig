@@ -54,6 +54,14 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
     _ = messageBox(title, message, flags, 0);
 }
 
+/// About 다이얼로그 — Windows 의 MessageBoxW 는 자체 ctrl+c 동작 OK 라
+/// `show(.info, ...)` 로 forward. macOS 측은 NSTextView accessoryView 로
+/// path 가독성 + cmd+c 라우팅을 따로 처리. wrapper 시그니처 통일을 위해
+/// 양쪽 platform 모두 같은 이름으로 노출.
+pub fn showAboutAlert(title: []const u8, message: []const u8) void {
+    show(.info, title, message);
+}
+
 /// OK / Cancel 두 버튼 확인 다이얼로그 (#116). default 는 Cancel
 /// (`MB_DEFBUTTON2`) — 사용자가 무심코 Enter 만 눌러도 종료가 진행되지 않게.
 /// 반환: OK → true, Cancel / 닫기 → false.
