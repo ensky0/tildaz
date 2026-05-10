@@ -353,6 +353,38 @@ fn macHostTerminate(_: *tab_actions.Host) void {
 /// 새 탭 생성 시 재사용할 PTY 파라미터들. 첫 탭 init 시 채우고 그 후 변동 없음.
 var g_shell_path: []const u8 = "";
 var g_extra_env: [5]terminal.ExtraEnv = undefined;
+
+// === DIAG #172 — startup race 진단 log (revert 가능, 진단 후 제거) =========
+// 시작 시점부터 mouse 텍스트 selection 안 되는 1/10 race 분석용. 정상 / 비정상
+// session 의 log 비교로 어느 단계에서 first responder / view 등록이 race 인지
+// 좁힘. 모두 log 만 — 동작 변경 없음. grep "DIAG #172" 로 한 번에 제거 가능.
+var g_diag_first_mouse_down_logged: bool = false;
+var g_diag_first_mouse_dragged_logged: bool = false;
+
+fn diagResponderState(label: []const u8) void {
+    const isBoolMsg = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
+    const objMsg = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+
+    const key_window = if (g_window != null) isBoolMsg(g_window, objc.sel("isKeyWindow")) else false;
+    const main_window = if (g_window != null) isBoolMsg(g_window, objc.sel("isMainWindow")) else false;
+    const visible = if (g_window != null) isBoolMsg(g_window, objc.sel("isVisible")) else false;
+    const fr = if (g_window != null) objMsg(g_window, objc.sel("firstResponder")) else null;
+    const fr_class_name: [*:0]const u8 = if (fr != null) blk: {
+        const cls = objc.object_getClass(fr) orelse break :blk @as([*:0]const u8, "(no-class)");
+        break :blk objc.class_getName(cls);
+    } else @as([*:0]const u8, "(null)");
+    const app_active = if (g_app != null) isBoolMsg(g_app, objc.sel("isActive")) else false;
+
+    log.appendLine("diag-172", "{s}: keyWindow={s} mainWindow={s} visible={s} firstResponder={s} appActive={s}", .{
+        label,
+        if (key_window) "Y" else "N",
+        if (main_window) "Y" else "N",
+        if (visible) "Y" else "N",
+        std.mem.span(fr_class_name),
+        if (app_active) "Y" else "N",
+    });
+}
+// === DIAG #172 end ===========================================================
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 var g_metal_layer: objc.id = null;
@@ -1236,6 +1268,13 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
 }
 
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    // DIAG #172 — 첫 mouseDown 도달 여부 진단. 1/10 race 시 이 라인이
+    // session log 에 안 보이면 = view 가 mouseDown event 자체를 못 받는 상태.
+    if (!g_diag_first_mouse_down_logged) {
+        g_diag_first_mouse_down_logged = true;
+        log.appendLine("diag-172", "first mouseDown received", .{});
+        diagResponderState("first-mouseDown");
+    }
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -1328,6 +1367,11 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
 }
 
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    // DIAG #172
+    if (!g_diag_first_mouse_dragged_logged) {
+        g_diag_first_mouse_dragged_logged = true;
+        log.appendLine("diag-172", "first mouseDragged received", .{});
+    }
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -2144,16 +2188,21 @@ fn installEventTap() !void {
             if (has_input) "OK" else "missing",
             if (has_ax) "OK" else "missing",
         });
+        diagResponderState("perm-dialog:before-show"); // DIAG #172
         dialog.showInfo("TildaZ — Permission required", msg);
+        diagResponderState("perm-dialog:after-dismiss"); // DIAG #172
         // dialog 가 keyWindow 를 빼앗아 갔다가 닫으면서 우리 윈도우로 안
         // 돌려줌 → 사용자가 직접 클릭해야 keyboard 입력 가능. showWindow 의
         // makeKeyAndOrderFront + activateIgnoringOtherApps + makeFirstResponder
         // 셋 다 다시 호출해서 강제 복원.
         showWindow();
+        diagResponderState("perm-dialog:after-showWindow"); // DIAG #172
         return;
     }
 
+    diagResponderState("eventTap:before-create"); // DIAG #172
     try createAndRegisterEventTap();
+    diagResponderState("eventTap:after-create"); // DIAG #172
 }
 
 /// CGEventTapCreate + run loop source 등록 + Enable. Permission preflight 는
@@ -2351,6 +2400,7 @@ fn toggleFullscreenMode(target: FullscreenMode) void {
 }
 
 fn showWindow() void {
+    diagResponderState("showWindow:enter"); // DIAG #172
     // popup level 복구 — emoji picker / dialog 같은 path 가 잠시 normal 로
     // 낮춘 후 다음 toggle 시 popup 으로 자동 복귀.
     const NSPopUpMenuWindowLevel: c_int = 101;
@@ -2359,9 +2409,14 @@ fn showWindow() void {
 
     const makeKeyAndOrderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     makeKeyAndOrderFront(g_window, objc.sel("makeKeyAndOrderFront:"), null);
+    diagResponderState("showWindow:post-makeKeyAndOrderFront"); // DIAG #172
+
     const activate = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     activate(g_app, objc.sel("activateIgnoringOtherApps:"), true);
+    diagResponderState("showWindow:post-activate"); // DIAG #172
+
     restoreContentViewFocus();
+    diagResponderState("showWindow:post-restoreFocus"); // DIAG #172
     g_visible = true;
 }
 
@@ -2373,7 +2428,10 @@ fn restoreContentViewFocus() void {
     const cv = contentView_get(g_window, objc.sel("contentView"));
     if (cv != null) {
         const makeFirstResponder = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) bool);
-        _ = makeFirstResponder(g_window, objc.sel("makeFirstResponder:"), cv);
+        const ok = makeFirstResponder(g_window, objc.sel("makeFirstResponder:"), cv);
+        log.appendLine("diag-172", "restoreContentViewFocus: makeFirstResponder result={s}", .{if (ok) "Y" else "N"}); // DIAG #172
+    } else {
+        log.appendLine("diag-172", "restoreContentViewFocus: contentView is null", .{}); // DIAG #172
     }
 }
 

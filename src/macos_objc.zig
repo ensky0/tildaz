@@ -34,6 +34,10 @@ pub extern fn objc_msgSend() void;
 /// AppKit private 클래스 식별 (예: emoji picker 의 panel) 에 사용.
 pub extern fn class_getName(cls: Class) [*:0]const u8;
 
+/// instance 의 동적 class 반환. `class_getName` 과 묶어 instance 의 실제
+/// class 이름 추출 — 진단 log (firstResponder 가 어떤 class 인지) 등.
+pub extern fn object_getClass(obj: id) ?Class;
+
 // 동적 클래스 등록 — NSWindow / NSView subclass 만들어 method override 할 때.
 // `types` 는 method signature (e.g. "B@:" = bool method 인자 없음).
 pub extern fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, extra: usize) ?Class;
