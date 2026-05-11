@@ -3,6 +3,7 @@ const windows = std.os.windows;
 const app_event = @import("app_event.zig");
 const dialog = @import("dialog.zig");
 const log = @import("log.zig");
+const messages = @import("messages.zig");
 const paths = @import("paths.zig");
 const dwrite_font = @import("font/windows/font.zig");
 
@@ -504,15 +505,10 @@ pub const Window = struct {
             var msg_buf: [1024]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &msg_buf,
-                "Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).\n\n" ++
-                    "Common causes:\n" ++
-                    "\u{2022} The OS reserves the key (F12 is reserved for the kernel debugger and cannot be a global hotkey)\n" ++
-                    "\u{2022} Another app already registered the same combination\n" ++
-                    "\u{2022} Windows shell intercepts the combination first (some Win+Shift+letter shortcuts)\n\n" ++
-                    "Edit the config and restart:\n{s}",
+                messages.hotkey_registration_failed_format,
                 .{ hotkey_vkey, hotkey_modifiers, cfg_path },
-            ) catch "Failed to register the global hotkey. Edit %APPDATA%\\tildaz\\config.json and restart.";
-            dialog.showFatal("TildaZ — Hotkey Registration Failed", msg);
+            ) catch messages.hotkey_registration_failed_fallback_msg;
+            dialog.showFatal(messages.hotkey_registration_failed_title, msg);
         }
 
         // Remember font chain + font-creation parameters so `rebuildFontForDpi`
@@ -590,8 +586,8 @@ pub const Window = struct {
         if (measured) |m| {
             const base_w: f32 = @floatFromInt(m.cell_w);
             const base_h: f32 = @floatFromInt(m.cell_h);
-            self.cell_width_px =@max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
-            self.cell_height_px =@max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
+            self.cell_width_px = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
+            self.cell_height_px = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
         } else if (self.dc != null and self.font != null) {
             // DWrite 측정 실패 fallback — GDI tm. 사용자 환경에서 이 path 거의
             // 안 탐 (font 사전 검증 통과 후라).
@@ -600,8 +596,8 @@ pub const Window = struct {
             _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
             const base_h: f32 = @floatFromInt(tm.tmHeight);
-            self.cell_width_px =@max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
-            self.cell_height_px =@max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
+            self.cell_width_px = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
+            self.cell_height_px = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
             _ = SelectObject(self.dc, old_f);
         }
 

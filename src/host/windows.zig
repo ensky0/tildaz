@@ -27,7 +27,7 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     var buf: [512]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch "panic (format failed)";
+    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(messages.crash_title, text);
     std.process.exit(1);
 }
@@ -40,7 +40,7 @@ pub fn showFatalRunError(err: anyerror) void {
         &buf,
         messages.run_failed_format,
         .{@errorName(err)},
-    ) catch "TildaZ failed to start.";
+    ) catch messages.run_failed_fallback_msg;
     dialog.showError(messages.error_title, text);
 }
 

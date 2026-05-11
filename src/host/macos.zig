@@ -40,7 +40,7 @@ const perf = @import("../perf.zig");
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch "panic (format failed)";
+    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(messages.crash_title, text);
     std.process.exit(1);
 }
@@ -48,7 +48,7 @@ pub fn showPanic(msg: []const u8, addr: usize) noreturn {
 pub fn showFatalRunError(err: anyerror) void {
     log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
     var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch "TildaZ failed to start.";
+    const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch messages.run_failed_fallback_msg;
     dialog.showError(messages.error_title, text);
 }
 
@@ -906,20 +906,11 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     // rename (#111 M11.6b) 진행 중이면 PTY 로 안 보내고 RenameState 로 라우팅.
     if (g_rename.isActive()) {
         const key: ?tab_interaction.RenameKey =
-            if (cmd_sel == objc.sel("insertNewline:")) .enter
-            else if (cmd_sel == objc.sel("cancelOperation:")) .escape
-            else if (cmd_sel == objc.sel("deleteBackward:")) .backspace
-            else if (cmd_sel == objc.sel("deleteForward:")) .delete
-            else if (cmd_sel == objc.sel("moveLeft:")) .left
-            else if (cmd_sel == objc.sel("moveRight:")) .right
-            else if (cmd_sel == objc.sel("moveToBeginningOfLine:")) .home
-            else if (cmd_sel == objc.sel("moveToEndOfLine:")) .end
+            if (cmd_sel == objc.sel("insertNewline:")) .enter else if (cmd_sel == objc.sel("cancelOperation:")) .escape else if (cmd_sel == objc.sel("deleteBackward:")) .backspace else if (cmd_sel == objc.sel("deleteForward:")) .delete else if (cmd_sel == objc.sel("moveLeft:")) .left else if (cmd_sel == objc.sel("moveRight:")) .right else if (cmd_sel == objc.sel("moveToBeginningOfLine:")) .home else if (cmd_sel == objc.sel("moveToEndOfLine:")) .end
             // Home/End 물리 키 — mac Cocoa StandardKeyBinding 이 NSHome/NSEnd
             // FunctionKey 를 moveTo*OfDocument: 으로 dispatch (single-line
             // 이라 line begin/end 와 동등).
-            else if (cmd_sel == objc.sel("moveToBeginningOfDocument:")) .home
-            else if (cmd_sel == objc.sel("moveToEndOfDocument:")) .end
-            else null;
+            else if (cmd_sel == objc.sel("moveToBeginningOfDocument:")) .home else if (cmd_sel == objc.sel("moveToEndOfDocument:")) .end else null;
         if (key) |k| {
             switch (g_rename.handleKey(k)) {
                 .commit => commitOrCancelRename(true),
@@ -951,9 +942,9 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
         "\x1b[D"
     else if (cmd_sel == objc.sel("moveRight:"))
         "\x1b[C"
-    // Home/End 키 (preedit 활성 → IME finalize 후 nav selector 로 dispatch).
-    // Document/Line/Paragraph 셋 다 매핑 — 사용자 키보드 / 키바인딩에 따라 다른
-    // selector 가 dispatch 될 수 있음.
+        // Home/End 키 (preedit 활성 → IME finalize 후 nav selector 로 dispatch).
+        // Document/Line/Paragraph 셋 다 매핑 — 사용자 키보드 / 키바인딩에 따라 다른
+        // selector 가 dispatch 될 수 있음.
     else if (cmd_sel == objc.sel("moveToBeginningOfDocument:"))
         "\x1b[H"
     else if (cmd_sel == objc.sel("moveToEndOfDocument:"))
@@ -2118,47 +2109,20 @@ fn installEventTap() !void {
         // 다이얼로그로 사용자에게 안내 + 로그 한 줄. stdout 으로 안 찍어 — 사용자가
         // .app 으로 띄우면 stdout 안 보고 다이얼로그를 봐야 함.
         var msg_buf: [2048]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf,
-            \\TildaZ needs two macOS permissions to work.
-            \\Without them the F1 hotkey will not respond.
-            \\(Cmd+Q from the menu still works either way.)
-            \\
-            \\Please follow these steps:
-            \\
-            \\Step 1 — Input Monitoring
-            \\  1. Open the Apple menu  →  System Settings.
-            \\  2. In the sidebar, click "Privacy & Security".
-            \\  3. Scroll down and click "Input Monitoring".
-            \\  4. Look for "tildaz" in the list:
-            \\       • If it is there, turn the switch ON.
-            \\       • If not, click the "+" button at the bottom,
-            \\         find TildaZ.app, click Open, then turn it ON.
-            \\
-            \\Step 2 — Accessibility
-            \\  1. Click "< Privacy & Security" to go back.
-            \\  2. Click "Accessibility" instead.
-            \\  3. Same as above: turn "tildaz" ON,
-            \\     or click "+" to add TildaZ.app and then turn it ON.
-            \\
-            \\Step 3 — Restart TildaZ
-            \\  Quit and relaunch this app for the new permissions to take effect.
-            \\
-            \\Current status:
-            \\  Input Monitoring : {s}
-            \\  Accessibility    : {s}
-            \\
-            \\(Developer note: ad-hoc signed builds get a new identity on each
-            \\rebuild, so permissions must be re-granted after every rebuild.)
-        , .{
-            if (has_input) "GRANTED" else "MISSING",
-            if (has_ax) "GRANTED" else "MISSING",
-        }) catch "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
+        const msg = std.fmt.bufPrint(
+            &msg_buf,
+            messages.macos_permission_required_format,
+            .{
+                if (has_input) messages.permission_status_granted else messages.permission_status_missing,
+                if (has_ax) messages.permission_status_granted else messages.permission_status_missing,
+            },
+        ) catch messages.macos_permission_required_fallback_msg;
 
         log.appendLine("perm", "missing — input_monitoring={s} accessibility={s}", .{
             if (has_input) "OK" else "missing",
             if (has_ax) "OK" else "missing",
         });
-        dialog.showInfo("TildaZ — Permission required", msg);
+        dialog.showInfo(messages.macos_permission_required_title, msg);
         // dialog 가 keyWindow 를 빼앗아 갔다가 닫으면서 우리 윈도우로 안
         // 돌려줌 → 사용자가 직접 클릭해야 keyboard 입력 가능. showWindow 의
         // makeKeyAndOrderFront + activateIgnoringOtherApps + makeFirstResponder

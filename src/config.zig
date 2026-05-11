@@ -80,17 +80,19 @@ const WindowsHotkey = struct {
 
     fn winVkeyFromName(name: []const u8) ?u32 {
         const map = [_]struct { name: []const u8, code: u32 }{
-            .{ .name = "f1", .code = 0x70 },     .{ .name = "f2", .code = 0x71 },
-            .{ .name = "f3", .code = 0x72 },     .{ .name = "f4", .code = 0x73 },
-            .{ .name = "f5", .code = 0x74 },     .{ .name = "f6", .code = 0x75 },
-            .{ .name = "f7", .code = 0x76 },     .{ .name = "f8", .code = 0x77 },
-            .{ .name = "f9", .code = 0x78 },     .{ .name = "f10", .code = 0x79 },
-            .{ .name = "f11", .code = 0x7A },    .{ .name = "f12", .code = 0x7B },
+            .{ .name = "f1", .code = 0x70 },    .{ .name = "f2", .code = 0x71 },
+            .{ .name = "f3", .code = 0x72 },    .{ .name = "f4", .code = 0x73 },
+            .{ .name = "f5", .code = 0x74 },    .{ .name = "f6", .code = 0x75 },
+            .{ .name = "f7", .code = 0x76 },    .{ .name = "f8", .code = 0x77 },
+            .{ .name = "f9", .code = 0x78 },    .{ .name = "f10", .code = 0x79 },
+            .{ .name = "f11", .code = 0x7A },   .{ .name = "f12", .code = 0x7B },
             .{ .name = "space", .code = 0x20 },
             .{ .name = "grave", .code = 0xC0 }, // VK_OEM_3
             .{ .name = "tab", .code = 0x09 },
-            .{ .name = "escape", .code = 0x1B }, .{ .name = "esc", .code = 0x1B },
-            .{ .name = "enter", .code = 0x0D }, .{ .name = "return", .code = 0x0D },
+            .{ .name = "escape", .code = 0x1B },
+            .{ .name = "esc", .code = 0x1B },
+            .{ .name = "enter", .code = 0x0D },
+            .{ .name = "return", .code = 0x0D },
         };
         for (map) |entry| {
             if (eqIc(name, entry.name)) return entry.code;
@@ -133,31 +135,30 @@ const MacHotkey = struct {
 
     fn macKeycodeFromName(name: []const u8) ?u32 {
         const map = [_]struct { name: []const u8, code: u32 }{
-            .{ .name = "f1", .code = 0x7A },  .{ .name = "f2", .code = 0x78 },
-            .{ .name = "f3", .code = 0x63 },  .{ .name = "f4", .code = 0x76 },
-            .{ .name = "f5", .code = 0x60 },  .{ .name = "f6", .code = 0x61 },
-            .{ .name = "f7", .code = 0x62 },  .{ .name = "f8", .code = 0x64 },
-            .{ .name = "f9", .code = 0x65 },  .{ .name = "f10", .code = 0x6D },
-            .{ .name = "f11", .code = 0x67 }, .{ .name = "f12", .code = 0x6F },
-            .{ .name = "space", .code = 0x31 },
-            .{ .name = "grave", .code = 0x32 }, .{ .name = "backquote", .code = 0x32 },
-            .{ .name = "tab", .code = 0x30 },
-            .{ .name = "return", .code = 0x24 }, .{ .name = "enter", .code = 0x24 },
-            .{ .name = "escape", .code = 0x35 }, .{ .name = "esc", .code = 0x35 },
+            .{ .name = "f1", .code = 0x7A },        .{ .name = "f2", .code = 0x78 },
+            .{ .name = "f3", .code = 0x63 },        .{ .name = "f4", .code = 0x76 },
+            .{ .name = "f5", .code = 0x60 },        .{ .name = "f6", .code = 0x61 },
+            .{ .name = "f7", .code = 0x62 },        .{ .name = "f8", .code = 0x64 },
+            .{ .name = "f9", .code = 0x65 },        .{ .name = "f10", .code = 0x6D },
+            .{ .name = "f11", .code = 0x67 },       .{ .name = "f12", .code = 0x6F },
+            .{ .name = "space", .code = 0x31 },     .{ .name = "grave", .code = 0x32 },
+            .{ .name = "backquote", .code = 0x32 }, .{ .name = "tab", .code = 0x30 },
+            .{ .name = "return", .code = 0x24 },    .{ .name = "enter", .code = 0x24 },
+            .{ .name = "escape", .code = 0x35 },    .{ .name = "esc", .code = 0x35 },
             // 알파벳 — kVK_ANSI_*
-            .{ .name = "a", .code = 0x00 }, .{ .name = "b", .code = 0x0B },
-            .{ .name = "c", .code = 0x08 }, .{ .name = "d", .code = 0x02 },
-            .{ .name = "e", .code = 0x0E }, .{ .name = "f", .code = 0x03 },
-            .{ .name = "g", .code = 0x05 }, .{ .name = "h", .code = 0x04 },
-            .{ .name = "i", .code = 0x22 }, .{ .name = "j", .code = 0x26 },
-            .{ .name = "k", .code = 0x28 }, .{ .name = "l", .code = 0x25 },
-            .{ .name = "m", .code = 0x2E }, .{ .name = "n", .code = 0x2D },
-            .{ .name = "o", .code = 0x1F }, .{ .name = "p", .code = 0x23 },
-            .{ .name = "q", .code = 0x0C }, .{ .name = "r", .code = 0x0F },
-            .{ .name = "s", .code = 0x01 }, .{ .name = "t", .code = 0x11 },
-            .{ .name = "u", .code = 0x20 }, .{ .name = "v", .code = 0x09 },
-            .{ .name = "w", .code = 0x0D }, .{ .name = "x", .code = 0x07 },
-            .{ .name = "y", .code = 0x10 }, .{ .name = "z", .code = 0x06 },
+            .{ .name = "a", .code = 0x00 },         .{ .name = "b", .code = 0x0B },
+            .{ .name = "c", .code = 0x08 },         .{ .name = "d", .code = 0x02 },
+            .{ .name = "e", .code = 0x0E },         .{ .name = "f", .code = 0x03 },
+            .{ .name = "g", .code = 0x05 },         .{ .name = "h", .code = 0x04 },
+            .{ .name = "i", .code = 0x22 },         .{ .name = "j", .code = 0x26 },
+            .{ .name = "k", .code = 0x28 },         .{ .name = "l", .code = 0x25 },
+            .{ .name = "m", .code = 0x2E },         .{ .name = "n", .code = 0x2D },
+            .{ .name = "o", .code = 0x1F },         .{ .name = "p", .code = 0x23 },
+            .{ .name = "q", .code = 0x0C },         .{ .name = "r", .code = 0x0F },
+            .{ .name = "s", .code = 0x01 },         .{ .name = "t", .code = 0x11 },
+            .{ .name = "u", .code = 0x20 },         .{ .name = "v", .code = 0x09 },
+            .{ .name = "w", .code = 0x0D },         .{ .name = "x", .code = 0x07 },
+            .{ .name = "y", .code = 0x10 },         .{ .name = "z", .code = 0x06 },
         };
         for (map) |entry| {
             if (eqIc(name, entry.name)) return entry.code;
@@ -408,15 +409,15 @@ pub const Config = struct {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
-                "config.json parse failed: {s}\n\nPath: {s}",
-                .{ @errorName(err), path_buf orelse "(unknown)" },
-            ) catch "config.json parse failed";
+                messages.config_parse_failed_format,
+                .{ path_buf orelse "(unknown)", @errorName(err) },
+            ) catch messages.config_parse_failed_fallback_msg;
             dialog.showFatal(messages.config_error_title, msg);
         };
         defer parsed.deinit();
 
         const root = parsed.value;
-        if (root != .object) dialog.showFatal(messages.config_error_title, "config.json: top-level must be a JSON object.");
+        if (root != .object) showConfigFatalMsg(messages.config_top_level_must_be_object_msg);
 
         // font.family / font.glyph_fallback 의 type 만 우선 사전 체크 —
         // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
@@ -454,30 +455,30 @@ pub const Config = struct {
                     var buf: [256]u8 = undefined;
                     const msg = std.fmt.bufPrint(
                         &buf,
-                        "config.json: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right",
+                        messages.config_dock_position_invalid_format,
                         .{v.string},
-                    ) catch "config.json: window.dock_position invalid";
+                    ) catch messages.config_dock_position_invalid_fallback_msg;
                     dialog.showFatal(messages.config_error_title, msg);
                 }
             }
             if (wv.object.get("width_percent")) |v| {
-                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.width_percent\" must be a number.");
-                if (f < 1.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.width_percent\" must be in 1..100.");
+                const f = parseFloat(v) orelse showConfigFatal(messages.config_field_number_required_format, .{"window.width_percent"});
+                if (f < 1.0 or f > 100.0) showConfigFatal(messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
                 config.width_percent = f;
             }
             if (wv.object.get("height_percent")) |v| {
-                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.height_percent\" must be a number.");
-                if (f < 1.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.height_percent\" must be in 1..100.");
+                const f = parseFloat(v) orelse showConfigFatal(messages.config_field_number_required_format, .{"window.height_percent"});
+                if (f < 1.0 or f > 100.0) showConfigFatal(messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
                 config.height_percent = f;
             }
             if (wv.object.get("offset_percent")) |v| {
-                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.offset_percent\" must be a number.");
-                if (f < 0.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.offset_percent\" must be in 0..100.");
+                const f = parseFloat(v) orelse showConfigFatal(messages.config_field_number_required_format, .{"window.offset_percent"});
+                if (f < 0.0 or f > 100.0) showConfigFatal(messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
                 config.offset_percent = f;
             }
             if (wv.object.get("opacity_percent")) |v| {
-                const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"window.opacity_percent\" must be a number.");
-                if (f < 0.0 or f > 100.0) dialog.showFatal(messages.config_error_title, "config.json: \"window.opacity_percent\" must be in 0..100.");
+                const f = parseFloat(v) orelse showConfigFatal(messages.config_field_number_required_format, .{"window.opacity_percent"});
+                if (f < 0.0 or f > 100.0) showConfigFatal(messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
                 config.opacity_alpha = @intFromFloat(@round(f * 255.0 / 100.0));
             }
         }
@@ -490,7 +491,7 @@ pub const Config = struct {
                     var buf: [512]u8 = undefined;
                     var fbs = std.io.fixedBufferStream(&buf);
                     const w = fbs.writer();
-                    w.print("config.json: unknown theme \"{s}\"\n\nAvailable themes:\n", .{v.string}) catch {};
+                    w.print(messages.config_unknown_theme_header_format, .{v.string}) catch {};
                     for (themes.themes, 0..) |t, i| {
                         if (i > 0) w.writeAll(", ") catch {};
                         w.writeAll(t.name) catch {};
@@ -508,9 +509,9 @@ pub const Config = struct {
                 var buf: [384]u8 = undefined;
                 const msg = std.fmt.bufPrint(
                     &buf,
-                    "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"",
+                    messages.config_hotkey_invalid_format,
                     .{v.string},
-                ) catch "config.json: hotkey invalid";
+                ) catch messages.config_hotkey_invalid_fallback_msg;
                 dialog.showFatal(messages.config_error_title, msg);
             }
         }
@@ -531,7 +532,7 @@ pub const Config = struct {
         // max_scroll_lines
         if (root.object.get("max_scroll_lines")) |v| {
             if (v.integer < 100 or v.integer > 10_000_000) {
-                dialog.showFatal(messages.config_error_title, "config.json: \"max_scroll_lines\" must be an integer in 100..10_000_000.");
+                showConfigFatal(messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
             }
             config.max_scroll_lines = @intCast(v.integer);
         }
@@ -542,18 +543,18 @@ pub const Config = struct {
         const fv = root.object.get("font").?;
         if (fv.object.get("size_point")) |v| {
             if (v.integer < 8 or v.integer > 72) {
-                dialog.showFatal(messages.config_error_title, "config.json: \"font.size_point\" must be an integer in 8..72.");
+                showConfigFatal(messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
             }
             config.font_size_point = @intCast(v.integer);
         }
         if (fv.object.get("cell_width_ratio")) |v| {
-            const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width_ratio\" must be a number.");
-            if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.cell_width_ratio\" must be in 0.5..2.0.");
+            const f = parseFloat(v) orelse showConfigFatal(messages.config_field_number_required_format, .{"font.cell_width_ratio"});
+            if (f < 0.5 or f > 2.0) showConfigFatal(messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
             config.cell_width_ratio = f;
         }
         if (fv.object.get("line_height_ratio")) |v| {
-            const f = parseFloat(v) orelse dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height_ratio\" must be a number.");
-            if (f < 0.5 or f > 2.0) dialog.showFatal(messages.config_error_title, "config.json: \"font.line_height_ratio\" must be in 0.5..2.0.");
+            const f = parseFloat(v) orelse showConfigFatal(messages.config_field_number_required_format, .{"font.line_height_ratio"});
+            if (f < 0.5 or f > 2.0) showConfigFatal(messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
             config.line_height_ratio = f;
         }
         // font.family — primary, single string. type 은 사전 체크에서 이미
@@ -561,7 +562,7 @@ pub const Config = struct {
         // 문자열만 reject + chain[0] 에 저장.
         var chain_count: usize = 0;
         if (fv.object.get("family")) |v| {
-            if (v.string.len == 0) dialog.showFatal(messages.config_error_title, "config.json: \"font.family\" must not be empty.");
+            if (v.string.len == 0) showConfigFatalMsg(messages.config_font_family_empty_msg);
             config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
             chain_count = 1;
         }
@@ -577,9 +578,9 @@ pub const Config = struct {
                     var buf: [256]u8 = undefined;
                     const msg = std.fmt.bufPrint(
                         &buf,
-                        "config.json: font.family + glyph_fallback total exceeds {d} entries.",
+                        messages.config_font_chain_too_long_format,
                         .{MAX_FONT_FAMILIES},
-                    ) catch "config.json: font chain too long";
+                    ) catch messages.config_font_chain_too_long_fallback_msg;
                     dialog.showFatal(messages.config_error_title, msg);
                 }
                 config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
@@ -672,6 +673,16 @@ fn parseFloat(v: std.json.Value) ?f32 {
     };
 }
 
+fn showConfigFatalMsg(message: []const u8) noreturn {
+    dialog.showFatal(messages.config_error_title, message);
+}
+
+fn showConfigFatal(comptime fmt: []const u8, args: anytype) noreturn {
+    var buf: [1024]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
+    dialog.showFatal(messages.config_error_title, msg);
+}
+
 /// user config 의 구조가 default config 와 일치하는지 재귀 검증:
 /// - object: key set 일치 (missing / unknown 양방향) + 각 value 재귀
 /// - 그 외 type: tag 일치 (integer ≠ float, string ≠ bool 등)
@@ -688,9 +699,9 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8)
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
-                "config.json: type mismatch at \"{s}\" — expected {s}, got {s}.",
+                messages.config_type_mismatch_format,
                 .{ ctx, @tagName(def_tag), @tagName(user_tag) },
-            ) catch "config.json: type mismatch";
+            ) catch messages.config_type_mismatch_fallback_msg;
             dialog.showFatal(messages.config_error_title, msg);
         }
     }
@@ -704,9 +715,9 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8)
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
-                "config.json: missing required key \"{s}\" in {s}.",
+                messages.config_missing_key_format,
                 .{ key, ctx },
-            ) catch "config.json: missing key";
+            ) catch messages.config_missing_key_fallback_msg;
             dialog.showFatal(messages.config_error_title, msg);
         }
     }
@@ -723,9 +734,9 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8)
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
-                "config.json: unknown key \"{s}\" in {s}.",
+                messages.config_unknown_key_format,
                 .{ key, ctx },
-            ) catch "config.json: unknown key";
+            ) catch messages.config_unknown_key_fallback_msg;
             dialog.showFatal(messages.config_error_title, msg);
         }
     }

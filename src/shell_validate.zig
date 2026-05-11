@@ -25,9 +25,9 @@ pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
         var msg_buf: [768]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
-            "config.json: \"shell\" is empty.\n\n{s}\n\nConfig path:\n{s}",
+            messages.shell_empty_format,
             .{ examples(), cfg_path },
-        ) catch "config.json: shell is empty.";
+        ) catch messages.shell_empty_fallback_msg;
         dialog.showFatal(messages.config_error_title, msg);
     }
 
@@ -36,9 +36,9 @@ pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
         var msg_buf: [768]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
-            "config.json: \"shell\" first token is empty.\n\nValue: \"{s}\"\n\n{s}\n\nConfig path:\n{s}",
+            messages.shell_first_token_empty_format,
             .{ shell, examples(), cfg_path },
-        ) catch "config.json: shell first token empty.";
+        ) catch messages.shell_first_token_empty_fallback_msg;
         dialog.showFatal(messages.config_error_title, msg);
     }
 
@@ -47,9 +47,9 @@ pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
     var msg_buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(
         &msg_buf,
-        "config.json: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}\n\nConfig path:\n{s}",
+        messages.shell_executable_not_found_format,
         .{ shell, tok, examples(), cfg_path },
-    ) catch "config.json: shell executable not found.";
+    ) catch messages.shell_executable_not_found_fallback_msg;
     dialog.showFatal(messages.config_error_title, msg);
 }
 
@@ -81,19 +81,8 @@ fn executableExists(allocator: std.mem.Allocator, token: []const u8) bool {
 
 fn examples() []const u8 {
     return switch (builtin.os.tag) {
-        .windows =>
-        \\Examples:
-        \\  "cmd.exe"
-        \\  "powershell.exe"
-        \\  "wsl.exe -d Debian --cd ~"
-        \\  "C:\\Windows\\System32\\cmd.exe"
-        ,
-        else =>
-        \\macOS expects an absolute path to an executable. Examples:
-        \\  "/bin/zsh"
-        \\  "/bin/bash"
-        \\  "/usr/local/bin/fish"
-        ,
+        .windows => messages.shell_examples_windows,
+        else => messages.shell_examples_macos,
     };
 }
 
