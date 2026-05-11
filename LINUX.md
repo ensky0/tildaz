@@ -1,113 +1,172 @@
 # Linux Backend Plan
 
-Status: draft for issue [#189](https://github.com/ensky0/tildaz/issues/189).
+Status: accepted planning direction for issue
+[#189](https://github.com/ensky0/tildaz/issues/189). No Linux release artifact
+exists yet.
 
-This document records the first Linux backend decision pass. It is intentionally
-about architecture and constraints, not implementation details.
+This document records the Linux backend contract before implementation starts.
+It separates decisions, support promises, fallbacks, and validation gates so the
+first Linux port does not accidentally promise more than the platform can
+provide.
 
-## Goals
+## Decision Summary
 
-- Ship a Linux build without adding an X11 backend.
-- Work well across modern Wayland desktops: GNOME, KDE Plasma, and wlroots
-  compositors such as Sway / Hyprland / Wayfire.
-- Preserve TildaZ's core UX where the compositor allows it: global toggle,
-  monitor-aware drop-down window, tabbed terminal, Unicode/IME, selection,
-  clipboard, themes, and config parity.
-- Keep Linux as a first-class host beside Windows and macOS, not a wrapper
-  around another terminal emulator.
+| Area | Decision |
+|---|---|
+| Initial display target | Wayland-only. X11 is not part of the first Linux implementation. |
+| X11 future path | Keep module boundaries open for a later `host/linux_x11.zig`, but do not implement it now. |
+| Toolkit | Direct Wayland backend. Do not add a mandatory GTK or Qt dependency to the core app. |
+| GTK / Qt fallback | Keep toolkit input integration as a last-resort option only if direct Wayland IME or clipboard support proves too brittle. |
+| Baseline window | `xdg-shell` toplevel window. This is the minimum viable Linux window path. |
+| True drop-down | Use `wlr-layer-shell` when the compositor advertises it. |
+| GNOME support | Limited at first. Promote to full support as soon as the implementation can provide the full drop-down workflow on GNOME without fragile hacks. |
+| Global shortcut | Prefer XDG Desktop Portal `GlobalShortcuts`. Missing portal support must produce a clear limitation, not a silent failure. |
+| Keyboard | `libxkbcommon`. |
+| IME | Wayland text-input v3 target, with desktop/IME compatibility tracked explicitly. |
+| Renderer | EGL + OpenGL ES first. Vulkan can be evaluated after the Linux host surface is stable. |
+| Font stack | fontconfig + FreeType + HarfBuzz. |
+| First alpha scope | Normal window, POSIX PTY, basic rendering path, keyboard/mouse input, selection, copy/paste. |
 
-## Proposed Direction
+## Support Tiers
 
-| Decision | Proposal | Reason |
-|---|---|---|
-| Display protocol | Wayland-only | X11 support adds a second Linux host surface and does not match the desired modern target. |
-| Toolkit | No mandatory GTK / Qt dependency in the core backend | TildaZ already owns rendering, tabs, config, dialogs, and terminal state. A toolkit does not remove the hard Wayland constraints around global shortcuts and window layering. |
-| Baseline window | `xdg-shell` toplevel | Works across general Wayland desktops and gives us a normal app window baseline. |
-| True drop-down window | Use `wlr-layer-shell` only when the compositor advertises it | Layer shell supports anchored desktop-layer surfaces, which matches the drop-down model. It is not guaranteed on every desktop. |
-| Global hotkey | Prefer XDG Desktop Portal `GlobalShortcuts` | This is the cross-desktop permissioned path for shortcuts that fire while the app is not focused. |
-| Keyboard | `libxkbcommon` | It is the standard keyboard handling library used by Wayland clients and toolkits. |
-| IME | Wayland text-input v3, with compatibility tracked explicitly | The protocol provides pre-edit / commit text flow, but it is still an unstable/experimental protocol family, so desktop support must be verified. |
-| Renderer | Start with EGL + OpenGL ES; keep Vulkan as a later option | OpenGL/EGL is the shortest first path to a GPU-backed Wayland surface. Vulkan can be evaluated after the host/input surface is stable. |
-| Font stack | fontconfig + FreeType + HarfBuzz | Linux-native font discovery, rasterization, and shaping. |
+TildaZ should describe Linux support by observed capabilities, not by desktop
+brand alone.
+
+| Tier | Meaning |
+|---|---|
+| Full support | Global toggle, monitor-aware drop-down placement, tabbed terminal, Unicode rendering, clipboard, config parity, and IME behavior meet the cross-platform spec on that desktop. |
+| Limited support | The terminal is usable, but at least one platform capability is missing or unverified: true drop-down layer, global shortcut, IME pre-edit, or desktop integration. |
+| Unsupported | The app cannot open a baseline Wayland window or cannot run a terminal session. |
+
+GNOME Wayland starts as **limited support**, not because it is unimportant, but
+because GNOME does not expose the same layer-shell contract that wlroots
+compositors commonly provide. The project goal is to move GNOME to full support
+as soon as a correct, maintainable implementation path exists.
+
+## Why Wayland First
+
+Wayland is the modern Linux desktop direction and matches the user's target:
+current desktop managers should work well without carrying a second legacy X11
+backend from day one.
+
+X11 support is not impossible, but it would create another host surface with its
+own windowing, input, clipboard, global hotkey, IME, DPI, and focus behavior. It
+should be reopened only if real users or distributions need it after the Wayland
+backend is useful.
+
+The code should still avoid painting itself into a corner. Linux-specific files
+should be named and layered so a later X11 backend can live beside Wayland
+instead of replacing it.
 
 ## Why Not GTK or Qt First?
 
-GTK and Qt are both viable UI stacks, but neither solves the core drop-down
-problem by itself:
+GTK and Qt are both good Linux UI stacks, but TildaZ already owns most of the
+terminal application surface:
 
-- TildaZ is not using native widgets for the terminal area. The renderer is a
-  custom GPU cell grid, so the toolkit would mostly provide a window shell,
-  input plumbing, clipboard, and IME integration.
-- GNOME, KDE, and wlroots differ in which Wayland extension protocols they
-  expose. A GTK app and a Qt app still need compositor support for global
-  shortcuts and layer-shell behavior.
-- Choosing GTK can feel natural on GNOME but adds a large runtime dependency on
-  KDE/minimal systems. Choosing Qt has the inverse bias.
-- A direct Wayland host keeps the dependency boundary explicit and lets us
-  probe capabilities at runtime.
+- terminal state and tabs;
+- config and validation;
+- custom GPU renderer;
+- selection and mouse policy;
+- dialogs and user-visible messages;
+- platform-specific PTY lifecycle.
 
-GTK / Qt can still be revisited if direct Wayland IME proves too brittle. That
-should be a measured fallback, not the first architecture.
+A toolkit would provide a window shell, input plumbing, clipboard, and IME
+integration, but it would not remove the hard Wayland constraints around global
+shortcuts and desktop-layer placement. GTK also biases the runtime toward GNOME,
+while Qt biases it toward KDE/Plasma. A direct Wayland backend keeps the
+capability boundary explicit and lets TildaZ probe each desktop at runtime.
 
-## Desktop Support Model
+Toolkit integration remains a fallback candidate only if direct Wayland
+text-input or clipboard behavior blocks a correct IME implementation.
 
-| Desktop / compositor | Baseline app window | True drop-down layer | Global hotkey | Notes |
-|---|---:|---:|---:|---|
-| GNOME Wayland | Expected via `xdg-shell` | Not assumed | Portal-dependent | True always-on-top / anchored drop-down may require a GNOME Shell extension or accepting a normal-window fallback. |
-| KDE Plasma Wayland | Expected via `xdg-shell` | Check by probing `zwlr_layer_shell_v1` | Portal-dependent | KDE has LayerShellQt for Qt shell surfaces, but TildaZ should probe the compositor protocol directly rather than require Qt. |
-| wlroots compositors | Expected via `xdg-shell` | Expected when `wlr-layer-shell` is advertised | Portal or compositor config | Best match for the drop-down terminal model. |
-| X11 sessions | Not targeted | Not targeted | Not targeted | Out of scope unless a later issue reopens it. |
+## Desktop Matrix
+
+| Desktop / compositor | Initial status | Expected baseline | Full-support blocker |
+|---|---|---|---|
+| wlroots compositors such as Sway, Hyprland, Wayfire | Full-support target | `xdg-shell` plus `wlr-layer-shell` when advertised | Global shortcut and IME behavior still require validation per compositor/session. |
+| KDE Plasma Wayland | Full-support candidate | `xdg-shell`; layer-shell support must be probed directly | Portal global shortcut and layer-shell behavior must be verified without requiring Qt. |
+| GNOME Wayland | Limited support first | `xdg-shell` normal app window | True drop-down placement needs a correct GNOME path, such as a proven shell-extension path or another maintainable compositor-supported mechanism. |
+| X11 sessions | Out of initial scope | None | Requires a separate backend decision and implementation issue. |
 
 ## Capability Strategy
 
-TildaZ should not assume a single Wayland desktop contract. On startup, the
-Linux host should detect and log:
+The Linux host must probe capabilities during startup and keep the result
+visible in logs. Missing support should degrade honestly.
 
-- `xdg_wm_base` for baseline app window support.
-- `zwlr_layer_shell_v1` for anchored overlay/drop-down support.
-- `zwp_text_input_manager_v3` / related text-input protocol support for IME.
-- XDG Desktop Portal `GlobalShortcuts` availability over D-Bus.
-- Clipboard/data-device support.
+| Capability | Probe | If missing |
+|---|---|---|
+| Baseline window | `xdg_wm_base` | Fatal: Linux host cannot open the app. |
+| Desktop layer | `zwlr_layer_shell_v1` | Use a normal `xdg-shell` window and mark true drop-down unavailable. |
+| Keyboard maps | `libxkbcommon` setup | Fatal or startup error: keyboard input cannot be interpreted correctly. |
+| Clipboard | Wayland data-device support | Terminal remains usable, but copy/paste is limited with a clear message/log. |
+| Global shortcut | XDG Desktop Portal `GlobalShortcuts` over D-Bus | Keep in-app shortcuts; show setup/unsupported guidance for global toggle. |
+| IME | `zwp_text_input_manager_v3` and real pre-edit/commit events | Raw keyboard and paste continue; IME is documented as unavailable on that session. |
 
-If a capability is missing, the app should degrade honestly:
+## Proposed Module Boundaries
 
-- No layer shell: run as a normal app window and document that true drop-down is
-  unavailable on that compositor.
-- No global shortcut portal: show a clear setup/unsupported message and keep
-  in-app shortcuts working.
-- No text-input protocol: raw keyboard input works, but IME is disabled with a
-  documented limitation.
+Final file names can change during implementation, but the first pass should
+keep these ownership lines clear:
+
+| Area | Planned location | Notes |
+|---|---|---|
+| Host entry | `src/host/linux_wayland.zig` | Wayland connection, event loop, window lifecycle, capability probing. |
+| PTY | `src/terminal/linux/pty.zig` | POSIX PTY; share concepts with macOS but keep Linux-specific termios/process details local. |
+| Terminal backend wrapper | `src/terminal/linux.zig` | Same public shape as Windows/macOS terminal backends. |
+| Renderer | `src/renderer/linux.zig`, `src/renderer/linux/*` | EGL/OpenGL ES surface, glyph atlas, frame lifecycle. |
+| Font | `src/font/linux/*` | fontconfig discovery, FreeType rasterization, HarfBuzz shaping, shared fallback-chain cap. |
+| Dialogs | `src/dialog/linux.zig` | Start with shared message text and a minimal desktop-safe path. Portal dialogs can be evaluated later. |
+| Logging / paths / autostart | Existing wrappers plus Linux impls | Follow XDG paths and keep user-visible messages through `src/messages.zig`. |
+
+Do not make shared core modules depend on Wayland types. Platform-specific
+objects should stay behind host, renderer, terminal, font, dialog, path, and
+autostart wrappers.
 
 ## Milestones
 
 | Milestone | Goal | Validation |
 |---|---|---|
-| L0 | Documentation + build boundary | Linux plan documented; no code behavior change. |
-| L1 | Build target skeleton | `zig build -Dtarget=x86_64-linux` reaches an intentional Linux-host TODO or a minimal no-op host. |
-| L2 | POSIX PTY reuse | Factor macOS POSIX PTY pieces that can be shared with Linux; shell starts under Linux. |
-| L3 | Wayland baseline window | `xdg-shell` window opens, resizes, closes, and renders a clear color. |
-| L4 | EGL/OpenGL renderer | Terminal grid renders with fontconfig / FreeType / HarfBuzz glyph atlas. |
-| L5 | Keyboard, mouse, clipboard | xkbcommon input, selection, copy/paste, scroll, tab shortcuts. |
-| L6 | Layer-shell drop-down | If `zwlr_layer_shell_v1` exists, anchor the terminal to the configured screen edge. |
-| L7 | Global shortcut portal | Register the configured hotkey through XDG Desktop Portal when supported. |
-| L8 | IME | text-input v3 pre-edit / commit path with inline overlay and cursor rectangle. |
-| L9 | Packaging | AppImage or distro package plan, `.desktop` file, autostart, config/log paths. |
+| L0 | Documentation + build boundary | This plan is documented; no code behavior change. |
+| L1 | Linux build skeleton | `zig build -Dtarget=x86_64-linux` reaches an intentional Linux-host TODO or minimal no-op host. |
+| L2 | POSIX PTY | A Linux shell starts through a Linux PTY backend. |
+| L3 | Wayland baseline window | `xdg-shell` window opens, resizes, closes, and logs probed capabilities. |
+| L4 | EGL/OpenGL renderer | Clear frame, then terminal grid, renders inside the Wayland window. |
+| L5 | Fonts | fontconfig + FreeType + HarfBuzz render Latin, Hangul, CJK, emoji fallback, and block elements. |
+| L6 | Input and clipboard | xkbcommon keyboard, mouse selection, scroll, copy, paste, tab shortcuts. |
+| L7 | First alpha | Normal Linux terminal window with PTY, rendering, input, selection, and copy/paste. |
+| L8 | Layer-shell drop-down | If `zwlr_layer_shell_v1` exists, anchor to the configured monitor edge. |
+| L9 | Global shortcut | Register the configured toggle through XDG Desktop Portal when supported. |
+| L10 | IME | text-input v3 pre-edit / commit path with inline overlay and cursor rectangle. |
+| L11 | Packaging | `.desktop` file, icon, AppImage or distro package plan, autostart, config/log paths. |
 
-## Open Questions
+## First Alpha Contract
 
-1. Should GNOME Wayland without layer-shell be considered supported with a
-   normal-window fallback, or should it be marked limited until a GNOME Shell
-   extension exists?
-2. Is OpenGL/EGL acceptable for the first Linux renderer, or should Linux start
-   with Vulkan despite the larger first implementation?
-3. Do we want a hard dependency on XDG Desktop Portal, or a soft dependency with
-   compositor-specific fallback hooks later?
-4. Should the first alpha require Wayland text-input support, or can IME land
-   after ASCII/UTF-8 keyboard input and paste are stable?
+The first Linux alpha is allowed to be a normal Wayland terminal window. It must
+not claim full TildaZ parity until these are all true on the target desktop:
+
+- global toggle works while another app is focused;
+- the window can appear as a monitor-aware drop-down at the configured edge;
+- keyboard, mouse, selection, copy, paste, resize, and tab operations work;
+- Unicode rendering passes the existing visual regression line from
+  `AGENTS.md`;
+- IME pre-edit and commit behavior match `SPEC.md` or are explicitly marked as
+  unavailable for that desktop/session.
+
+## Validation Checklist
+
+Each Linux support promotion should record:
+
+- desktop/compositor name and version;
+- Wayland session confirmation;
+- portal implementation and `GlobalShortcuts` availability;
+- layer-shell availability;
+- IME stack, such as ibus or fcitx, and tested language;
+- GPU/driver path used by EGL;
+- font fallback result for Latin, Hangul, CJK, emoji, and block elements;
+- exact command or script used for visual text regression.
 
 ## Source Notes
 
-- XDG Desktop Portal GlobalShortcuts is the permissioned cross-desktop API for
+- XDG Desktop Portal `GlobalShortcuts` is the permissioned cross-desktop API for
   registering shortcuts that activate while the app is not focused:
   <https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html>
 - `wlr-layer-shell` creates desktop layer surfaces that can be anchored to
