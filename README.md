@@ -105,6 +105,7 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 | Configuration schema, themes, examples | [CONFIG.md](CONFIG.md) |
 | Keyboard and mouse shortcuts | [KEYBINDINGS.md](KEYBINDINGS.md) |
 | Current code structure | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Linux backend planning | [LINUX.md](LINUX.md) |
 | Cross-platform behavior spec | [SPEC.md](SPEC.md) |
 | Maintainer / agent workflow rules | [AGENTS.md](AGENTS.md) |
 | Security reporting | [SECURITY.md](SECURITY.md) |
