@@ -226,7 +226,7 @@ pub const Pty = struct {
     /// std.Thread 에 timed_join 이 없어서 polling 우회. step_ms = 5ms 로
     /// 정상 케이스 지연 거의 0 (이전 200ms polling 과 차원이 다름).
     pub fn deinit(self: *Pty) void {
-        if (self.child_pid > 0) {
+        if (self.child_pid > 0 and !self.child_exited.load(.acquire)) {
             _ = std.c.kill(-self.child_pid, std.posix.SIG.HUP);
 
             // grace period: 자식이 SIGHUP 으로 정상 종료하길 기다림.
