@@ -1169,15 +1169,7 @@ pub const D3d11Renderer = struct {
                 };
                 if (result.owned) _ = result.face.vtable.Release(result.face);
 
-                const is_wide = cp >= 0x1100 and (cp <= 0x115F or
-                    (cp >= 0x2E80 and cp <= 0x9FFF) or
-                    (cp >= 0xA000 and cp <= 0xA4CF) or
-                    (cp >= 0xAC00 and cp <= 0xD7A3) or
-                    (cp >= 0xF900 and cp <= 0xFAFF) or
-                    (cp >= 0xFE30 and cp <= 0xFE4F) or
-                    (cp >= 0xFF00 and cp <= 0xFF60) or
-                    (cp >= 0xFFE0 and cp <= 0xFFE6));
-                const w_cells: f32 = if (is_wide) 2 else 1;
+                const w_cells: f32 = @floatFromInt(display_width.codepointWidth(cp));
 
                 const cell_x = pre_col * cw + x_pad;
                 pre_bg_buf[pre_bg_n] = .{
