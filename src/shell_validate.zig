@@ -7,8 +7,8 @@
 //! - Windows: shell 이 인자를 포함할 수 있고 (`"wsl.exe -d Debian --cd ~"`),
 //!   첫 토큰만 추출해서 SearchPathW 로 PATH + 절대경로 모두 자동 탐색.
 //! - macOS: SPEC §7 상 absolute binary path + 인자 없음. full string 을 그대로
-//!   path 로 보고 POSIX `access(X_OK)` 검사. config.shell == "" 이면 host 가
-//!   `$SHELL` / `/bin/zsh` fallback 을 따로 처리하므로 검증 skip.
+//!   path 로 보고 POSIX `access(X_OK)` 검사. 첫 실행의 `$SHELL` resolution 은
+//!   host 가 default config 생성 전에 끝내고, 이후 disk config 의 명시값만 사용.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -22,7 +22,6 @@ pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
     const cfg_path: []const u8 = cfg_path_owned orelse "(unknown)";
 
     if (shell.len == 0) {
-        if (builtin.os.tag == .macos) return; // macOS empty = $SHELL fallback
         var msg_buf: [768]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
@@ -94,8 +93,6 @@ fn examples() []const u8 {
         \\  "/bin/zsh"
         \\  "/bin/bash"
         \\  "/usr/local/bin/fish"
-        \\
-        \\Leave "shell": "" to use $SHELL / /bin/zsh fallback.
         ,
     };
 }
