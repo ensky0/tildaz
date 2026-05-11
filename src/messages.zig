@@ -40,7 +40,9 @@ pub const about_format =
 ;
 
 pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
+pub const panic_fallback_msg = "panic (format failed)";
 pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
+pub const run_failed_fallback_msg = "TildaZ failed to start.";
 pub const already_running_msg = "TildaZ is already running.";
 pub const font_not_found_format = "Font not found: \"{s}\"";
 
@@ -89,3 +91,98 @@ pub const config_parse_failed_format =
     \\Path: {s}
     \\Error: {s}
 ;
+pub const config_parse_failed_fallback_msg = "Failed to parse config JSON.";
+
+pub const config_error_fallback_msg = "config.json: invalid config.";
+pub const config_top_level_must_be_object_msg = "config.json: top-level must be a JSON object.";
+pub const config_dock_position_invalid_format = "config.json: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right";
+pub const config_dock_position_invalid_fallback_msg = "config.json: window.dock_position invalid";
+pub const config_field_number_required_format = "config.json: \"{s}\" must be a number.";
+pub const config_field_range_required_format = "config.json: \"{s}\" must be in {s}.";
+pub const config_field_integer_range_required_format = "config.json: \"{s}\" must be an integer in {s}.";
+pub const config_unknown_theme_header_format = "config.json: unknown theme \"{s}\"\n\nAvailable themes:\n";
+pub const config_hotkey_invalid_format = "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+pub const config_hotkey_invalid_fallback_msg = "config.json: hotkey invalid";
+pub const config_font_family_empty_msg = "config.json: \"font.family\" must not be empty.";
+pub const config_font_chain_too_long_format = "config.json: font.family + glyph_fallback total exceeds {d} entries.";
+pub const config_font_chain_too_long_fallback_msg = "config.json: font chain too long";
+pub const config_type_mismatch_format = "config.json: type mismatch at \"{s}\" — expected {s}, got {s}.";
+pub const config_type_mismatch_fallback_msg = "config.json: type mismatch";
+pub const config_missing_key_format = "config.json: missing required key \"{s}\" in {s}.";
+pub const config_missing_key_fallback_msg = "config.json: missing key";
+pub const config_unknown_key_format = "config.json: unknown key \"{s}\" in {s}.";
+pub const config_unknown_key_fallback_msg = "config.json: unknown key";
+
+pub const shell_empty_format =
+    "config.json: \"shell\" is empty.\n\n{s}\n\nConfig path:\n{s}";
+pub const shell_empty_fallback_msg = "config.json: shell is empty.";
+pub const shell_first_token_empty_format =
+    "config.json: \"shell\" first token is empty.\n\nValue: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
+pub const shell_first_token_empty_fallback_msg = "config.json: shell first token empty.";
+pub const shell_executable_not_found_format =
+    "config.json: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
+pub const shell_executable_not_found_fallback_msg = "config.json: shell executable not found.";
+pub const shell_examples_windows =
+    \\Examples:
+    \\  "cmd.exe"
+    \\  "powershell.exe"
+    \\  "wsl.exe -d Debian --cd ~"
+    \\  "C:\\Windows\\System32\\cmd.exe"
+;
+pub const shell_examples_macos =
+    \\macOS expects an absolute path to an executable. Examples:
+    \\  "/bin/zsh"
+    \\  "/bin/bash"
+    \\  "/usr/local/bin/fish"
+;
+
+pub const hotkey_registration_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const hotkey_registration_failed_format =
+    \\Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).
+    \\
+    \\Common causes:
+    \\• The OS reserves the key (F12 is reserved for the kernel debugger and cannot be a global hotkey)
+    \\• Another app already registered the same combination
+    \\• Windows shell intercepts the combination first (some Win+Shift+letter shortcuts)
+    \\
+    \\Edit the config and restart:
+    \\{s}
+;
+pub const hotkey_registration_failed_fallback_msg = "Failed to register the global hotkey. Edit %APPDATA%\\tildaz\\config.json and restart.";
+
+pub const macos_permission_required_title = "TildaZ — Permission required";
+pub const macos_permission_required_format =
+    \\TildaZ needs two macOS permissions to work.
+    \\Without them the F1 hotkey will not respond.
+    \\(Cmd+Q from the menu still works either way.)
+    \\
+    \\Please follow these steps:
+    \\
+    \\Step 1 — Input Monitoring
+    \\  1. Open the Apple menu  →  System Settings.
+    \\  2. In the sidebar, click "Privacy & Security".
+    \\  3. Scroll down and click "Input Monitoring".
+    \\  4. Look for "tildaz" in the list:
+    \\       • If it is there, turn the switch ON.
+    \\       • If not, click the "+" button at the bottom,
+    \\         find TildaZ.app, click Open, then turn it ON.
+    \\
+    \\Step 2 — Accessibility
+    \\  1. Click "< Privacy & Security" to go back.
+    \\  2. Click "Accessibility" instead.
+    \\  3. Same as above: turn "tildaz" ON,
+    \\     or click "+" to add TildaZ.app and then turn it ON.
+    \\
+    \\Step 3 — Restart TildaZ
+    \\  Quit and relaunch this app for the new permissions to take effect.
+    \\
+    \\Current status:
+    \\  Input Monitoring : {s}
+    \\  Accessibility    : {s}
+    \\
+    \\(Developer note: ad-hoc signed builds get a new identity on each
+    \\rebuild, so permissions must be re-granted after every rebuild.)
+;
+pub const macos_permission_required_fallback_msg = "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
+pub const permission_status_granted = "GRANTED";
+pub const permission_status_missing = "MISSING";
