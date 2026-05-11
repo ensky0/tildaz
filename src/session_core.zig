@@ -159,9 +159,8 @@ pub const Tab = struct {
     title: [64]u8 = undefined,
     title_len: usize = 0,
     /// 마우스 selection / scrollbar drag 같은 per-tab interaction 상태. 탭 간
-    /// 독립 — 탭 전환 시 각자 selection 보존. (현재 Windows host 는 글로벌
-    /// `App.terminal_interaction` 사용 중이라 이 필드 dormant; #159 에서
-    /// per-tab 로 통일 예정.)
+    /// 독립 — 탭 전환 시 각자 selection / drag 상태를 보존하고, host 는 활성
+    /// 탭의 interaction 을 event/render 시점에 참조한다.
     interaction: terminal_interaction.TerminalInteraction = .{},
     output_ring: RingBuffer = .{},
     write_queue: WriteQueue = .{},
