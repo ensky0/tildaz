@@ -393,12 +393,14 @@ pub const ConPty = struct {
 
         var process_info: PROCESS_INFORMATION = undefined;
 
-        var cmd_buf: [256]WCHAR = undefined;
-        var i: usize = 0;
-        while (shell[i] != 0 and i < cmd_buf.len - 1) : (i += 1) {
-            cmd_buf[i] = shell[i];
-        }
-        cmd_buf[i] = 0;
+        // CreateProcessW may mutate lpCommandLine, so keep a mutable copy.
+        // Size it from the validated config value instead of truncating to a
+        // small fixed buffer.
+        const shell_len = std.mem.len(shell);
+        const cmd_buf = try allocator.alloc(WCHAR, shell_len + 1);
+        defer allocator.free(cmd_buf);
+        @memcpy(cmd_buf[0..shell_len], shell[0..shell_len]);
+        cmd_buf[shell_len] = 0;
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
         const MAX_EXTRA_ENV = 8;
@@ -426,7 +428,7 @@ pub const ConPty = struct {
 
         if (CreateProcessW(
             null,
-            @ptrCast(&cmd_buf),
+            @ptrCast(cmd_buf[0..shell_len :0].ptr),
             null,
             null,
             0,
