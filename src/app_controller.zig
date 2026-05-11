@@ -227,6 +227,13 @@ pub const App = struct {
         return dialog.showConfirm(messages.quit_confirm_title, msg);
     }
 
+    /// F1 hide 직전 — rename 활성 시 commit (#175). 모든 focus_loss = commit
+    /// 정책 (SPEC §4.1). preedit 은 hide 시점에 IME 가 OS 차원에서 자동 처리.
+    pub fn onBeforeHide(userdata: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        if (self.isRenaming()) self.commitRename();
+    }
+
     // --- Window callbacks (userdata = *App) ---
 
     pub fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
@@ -741,6 +748,9 @@ pub const App = struct {
                 return true;
             },
             .shortcut => |shortcut| {
+                // rename 활성 중 어떤 단축키든 = focus_loss → 현재 입력값으로
+                // commit 후 단축키 실행 (#175). mac `commitPendingInput` 동등.
+                if (self.isRenaming()) self.commitRename();
                 switch (shortcut) {
                     .new_tab => {
                         self.handleNewTab();
