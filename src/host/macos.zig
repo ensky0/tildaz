@@ -354,55 +354,6 @@ fn macHostTerminate(_: *tab_actions.Host) void {
 var g_shell_path: []const u8 = "";
 var g_extra_env: [5]terminal.ExtraEnv = undefined;
 
-// === DIAG #172 — startup race 진단 log (revert 가능, 진단 후 제거) =========
-// 시작 시점부터 mouse 텍스트 selection 안 되는 1/10 race 분석용. 정상 / 비정상
-// session 의 log 비교로 어느 단계에서 first responder / view 등록이 race 인지
-// 좁힘. 모두 log 만 — 동작 변경 없음. grep "DIAG #172" 로 한 번에 제거 가능.
-var g_diag_first_mouse_down_logged: bool = false;
-var g_diag_first_mouse_dragged_logged: bool = false;
-var g_diag_first_hit_test_logged: bool = false;
-
-/// contentView 의 frame (px) 한 줄 log. #172 (b) 가설 #1 (hitTest race /
-/// contentView frame 0) 검증용 — showWindow 시점에 size 가 0 이면 hitTest 가
-/// nil 반환 → gesture recognizer fallback path.
-fn diagContentViewFrame(label: []const u8) void {
-    const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-    const cv = contentView_get(g_window, objc.sel("contentView"));
-    if (cv == null) {
-        log.appendLine("diag-172", "{s}: contentView is null", .{label});
-        return;
-    }
-    const get_frame = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
-    const fr = get_frame(cv, objc.sel("frame"));
-    log.appendLine("diag-172", "{s}: contentView frame x={d:.0} y={d:.0} w={d:.0} h={d:.0}", .{
-        label, fr.origin.x, fr.origin.y, fr.size.width, fr.size.height,
-    });
-}
-
-fn diagResponderState(label: []const u8) void {
-    const isBoolMsg = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
-    const objMsg = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-
-    const key_window = if (g_window != null) isBoolMsg(g_window, objc.sel("isKeyWindow")) else false;
-    const main_window = if (g_window != null) isBoolMsg(g_window, objc.sel("isMainWindow")) else false;
-    const visible = if (g_window != null) isBoolMsg(g_window, objc.sel("isVisible")) else false;
-    const fr = if (g_window != null) objMsg(g_window, objc.sel("firstResponder")) else null;
-    const fr_class_name: [*:0]const u8 = if (fr != null) blk: {
-        const cls = objc.object_getClass(fr) orelse break :blk @as([*:0]const u8, "(no-class)");
-        break :blk objc.class_getName(cls);
-    } else @as([*:0]const u8, "(null)");
-    const app_active = if (g_app != null) isBoolMsg(g_app, objc.sel("isActive")) else false;
-
-    log.appendLine("diag-172", "{s}: keyWindow={s} mainWindow={s} visible={s} firstResponder={s} appActive={s}", .{
-        label,
-        if (key_window) "Y" else "N",
-        if (main_window) "Y" else "N",
-        if (visible) "Y" else "N",
-        std.mem.span(fr_class_name),
-        if (app_active) "Y" else "N",
-    });
-}
-// === DIAG #172 end ===========================================================
 // M5.3 — Metal 렌더러 + timer + cell metrics. cell_width/height 는 폰트의
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 var g_metal_layer: objc.id = null;
@@ -547,28 +498,6 @@ fn registerTildazWindowClass() !objc.Class {
 // write. 특수 키 (화살표, F-key) 는 별도 escape sequence 매핑 필요 (M5.4b).
 fn tildazAcceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) bool {
     return true;
-}
-
-/// #172 (b) hypothesis — 1/10 빈도로 시작 시점부터 모든 mouse event 가 view
-/// 의 mouseDown 에 안 도달하는 stuck. sample 분석: NSWindow 의
-/// _handleMouseDownEvent: 까지는 정상 도달하지만 그 안에서 hitTest 가 nil
-/// 또는 frame 0 race 로 view 를 못 찾아 gesture recognizer 만 라우팅 →
-/// view mouseDown 호출 안 됨.
-///
-/// 우리 TildazView 는 child view 없음 (CAMetalLayer 만 backing) — hitTest
-/// 가 무조건 self 반환해도 안전. 권한 dialog (NSAlert modal) dismiss 후
-/// showWindow 의 timing 에 따라 contentView frame 이 일시적 0 일 가능성을
-/// 우회. 정상 동작 시에도 결과 동일 — view 가 mouse 이벤트 target.
-fn tildazHitTest(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) objc.id {
-    // DIAG #172 — 첫 hitTest 호출 도달 여부. mouseDown 보다 *먼저* 호출되니
-    // mouseDown 안 받는 stuck session 에서도 hitTest 는 받았을 수 있음.
-    if (!g_diag_first_hit_test_logged) {
-        g_diag_first_hit_test_logged = true;
-        log.appendLine("diag-172", "first hitTest called: point=({d:.1},{d:.1})", .{ point.x, point.y });
-        diagResponderState("first-hitTest");
-        diagContentViewFrame("first-hitTest");
-    }
-    return self_view;
 }
 
 const NSEventTypeKeyDown: c_long = 10;
@@ -1308,13 +1237,6 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
 }
 
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
-    // DIAG #172 — 첫 mouseDown 도달 여부 진단. 1/10 race 시 이 라인이
-    // session log 에 안 보이면 = view 가 mouseDown event 자체를 못 받는 상태.
-    if (!g_diag_first_mouse_down_logged) {
-        g_diag_first_mouse_down_logged = true;
-        log.appendLine("diag-172", "first mouseDown received", .{});
-        diagResponderState("first-mouseDown");
-    }
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -1372,8 +1294,9 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                 return;
             },
             .none => {
-                // 탭바 영역인데 어떤 버튼/탭에도 속하지 않음 (이론상 거의 없음). 무시.
-                return;
+                // 탭바 영역 *밖* = 터미널 영역 (tab_layout.hitArea 의 `py >= tab_bar_h`
+                // 케이스). 아래 cell selection / 더블클릭 분기로 fallthrough — return
+                // 하면 멀티탭 상태에서 모든 터미널 클릭이 무시됨 (#172).
             },
             .tab_area => {
                 if (tabBarTabHitTest(xy.x, xy.y, layout)) |hit| {
@@ -1419,11 +1342,6 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
 }
 
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
-    // DIAG #172
-    if (!g_diag_first_mouse_dragged_logged) {
-        g_diag_first_mouse_dragged_logged = true;
-        log.appendLine("diag-172", "first mouseDragged received", .{});
-    }
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -1645,11 +1563,6 @@ fn registerTildazViewClass() !objc.Class {
     const cls = objc.objc_allocateClassPair(NSView, "TildazView", 0) orelse
         return error.ViewSubclassAllocFailed;
     if (!objc.class_addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&tildazAcceptsFirstResponder), "B@:"))
-        return error.ViewSubclassAddMethodFailed;
-    // hitTest: override — #172 (b) hypothesis #1 의 fix. 매 mouse event 마다
-    // NSWindow 가 호출. child view 없으니 항상 self 반환 안전. signature:
-    // "@@:{CGPoint=dd}" = id 반환, self + _cmd + NSPoint(=CGPoint, 16 byte).
-    if (!objc.class_addMethod(cls, objc.sel("hitTest:"), @ptrCast(&tildazHitTest), "@@:{CGPoint=dd}"))
         return error.ViewSubclassAddMethodFailed;
     // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
@@ -2245,21 +2158,16 @@ fn installEventTap() !void {
             if (has_input) "OK" else "missing",
             if (has_ax) "OK" else "missing",
         });
-        diagResponderState("perm-dialog:before-show"); // DIAG #172
         dialog.showInfo("TildaZ — Permission required", msg);
-        diagResponderState("perm-dialog:after-dismiss"); // DIAG #172
         // dialog 가 keyWindow 를 빼앗아 갔다가 닫으면서 우리 윈도우로 안
         // 돌려줌 → 사용자가 직접 클릭해야 keyboard 입력 가능. showWindow 의
         // makeKeyAndOrderFront + activateIgnoringOtherApps + makeFirstResponder
         // 셋 다 다시 호출해서 강제 복원.
         showWindow();
-        diagResponderState("perm-dialog:after-showWindow"); // DIAG #172
         return;
     }
 
-    diagResponderState("eventTap:before-create"); // DIAG #172
     try createAndRegisterEventTap();
-    diagResponderState("eventTap:after-create"); // DIAG #172
 }
 
 /// CGEventTapCreate + run loop source 등록 + Enable. Permission preflight 는
@@ -2457,7 +2365,6 @@ fn toggleFullscreenMode(target: FullscreenMode) void {
 }
 
 fn showWindow() void {
-    diagResponderState("showWindow:enter"); // DIAG #172
     // popup level 복구 — emoji picker / dialog 같은 path 가 잠시 normal 로
     // 낮춘 후 다음 toggle 시 popup 으로 자동 복귀.
     const NSPopUpMenuWindowLevel: c_int = 101;
@@ -2466,15 +2373,11 @@ fn showWindow() void {
 
     const makeKeyAndOrderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     makeKeyAndOrderFront(g_window, objc.sel("makeKeyAndOrderFront:"), null);
-    diagResponderState("showWindow:post-makeKeyAndOrderFront"); // DIAG #172
 
     const activate = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     activate(g_app, objc.sel("activateIgnoringOtherApps:"), true);
-    diagResponderState("showWindow:post-activate"); // DIAG #172
 
     restoreContentViewFocus();
-    diagResponderState("showWindow:post-restoreFocus"); // DIAG #172
-    diagContentViewFrame("showWindow:post-restoreFocus"); // DIAG #172
     g_visible = true;
 }
 
@@ -2486,10 +2389,7 @@ fn restoreContentViewFocus() void {
     const cv = contentView_get(g_window, objc.sel("contentView"));
     if (cv != null) {
         const makeFirstResponder = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) bool);
-        const ok = makeFirstResponder(g_window, objc.sel("makeFirstResponder:"), cv);
-        log.appendLine("diag-172", "restoreContentViewFocus: makeFirstResponder result={s}", .{if (ok) "Y" else "N"}); // DIAG #172
-    } else {
-        log.appendLine("diag-172", "restoreContentViewFocus: contentView is null", .{}); // DIAG #172
+        _ = makeFirstResponder(g_window, objc.sel("makeFirstResponder:"), cv);
     }
 }
 
