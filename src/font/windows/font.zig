@@ -3,13 +3,13 @@
 
 const std = @import("std");
 const dw = @import("directwrite.zig");
+const font_constants = @import("../constants.zig");
 
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
 
-/// font.family chain 의 최대 길이. config.MAX_FONT_FAMILIES 와 동등 — 동기화
-/// 유지 (cross-module hardcoded 8).
-pub const MAX_CHAIN: usize = 8;
+/// font.family chain 의 최대 길이.
+pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 
 pub const GlyphResult = struct {
     face: *dw.IDWriteFontFace,
