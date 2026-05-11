@@ -1214,8 +1214,7 @@ fn resolveBg(
     dbg_g: f32,
     dbg_b: f32,
 ) [3]f32 {
-    if (is_selected) return .{ 0.25, 0.45, 0.75 };
-    if (is_inverse) {
+    if (is_selected or is_inverse) {
         const fg = style.fg(.{ .default = colors.foreground, .palette = &colors.palette });
         return .{ MetalRenderer.colorF(fg.r), MetalRenderer.colorF(fg.g), MetalRenderer.colorF(fg.b) };
     }
@@ -1232,10 +1231,13 @@ fn resolveFg(
     is_selected: bool,
     is_inverse: bool,
 ) ghostty.color.RGB {
-    if (is_selected) return colors.foreground;
-    if (is_inverse) {
+    if (is_selected or is_inverse) {
         if (style.bg(raw, &colors.palette)) |bg_col| return bg_col;
         return colors.background;
     }
-    return style.fg(.{ .default = colors.foreground, .palette = &colors.palette });
+    return style.fg(.{
+        .default = colors.foreground,
+        .palette = &colors.palette,
+        .bold = .bright,
+    });
 }
