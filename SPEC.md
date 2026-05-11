@@ -431,7 +431,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 > **schema strict 검증** (Windows + macOS 동일, v0.4.1 통일 — #118 후속):
 > - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지).
-> - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`.
+> - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 단 `_` prefix key (예: `_note`, `_disabled_*`) 는 *사용자 주석* 으로 인정 — schema 검사 skip (#173). JSON 표준에 주석 없지만 정식 key 는 `_` 안 붙으니 충돌 없는 convention.
 > - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
 > - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigJson(allocator, shell_resolved)` 결과와 user config 를 비교.
 

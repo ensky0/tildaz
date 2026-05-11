@@ -10,6 +10,8 @@ Config file path (per OS standard):
 If missing, it is auto-created with defaults on first launch. macOS additionally inserts the user's `$SHELL` env (or `/bin/bash`) into the `shell` field on first creation, so the value on disk reflects the user's actual shell.
 
 > **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Both Windows and macOS apply the same policy.
+>
+> **Comment keys** — any key starting with `_` (e.g. `_note`, `_disabled_test_font`) is treated as a user comment and skipped from schema validation. Use this to annotate your config or temporarily disable a field by renaming it (e.g. `"shell": "/bin/zsh"` → `"_shell": "/bin/zsh"`). The `_` prefix convention is not part of JSON itself but is convenient here since the official schema never uses it.
 
 ## Windows example
 
