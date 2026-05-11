@@ -537,6 +537,14 @@ fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
     };
 }
 
+fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
+    const NSArray = objc.getClass("NSArray");
+    const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
+    const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
+    const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
+}
+
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
@@ -646,11 +654,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             setNeeds(self_view, objc.sel("setNeedsDisplay:"), true);
             return;
         }
-        const NSArray = objc.getClass("NSArray");
-        const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
-        const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
-        const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-        interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
+        interpretSingleKeyEvent(self_view, event);
         return;
     }
 
@@ -722,6 +726,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
         const NSEventModifierFlagOption: c_ulong = 1 << 19;
         const shift = (flags & NSEventModifierFlagShift) != 0;
+        const option = (flags & NSEventModifierFlagOption) != 0;
 
         // Esc — emoji picker 가 떠 있으면 dismiss (#130 follow-up). modifier
         // 없는 단순 Esc 만 — Cmd / ctrl 은 위 분기에서 처리 끝 (cmd 는 mainMenu,
@@ -731,6 +736,14 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         if (keycode == 53 and !shift and (flags & NSEventModifierFlagOption) == 0 and isEmojiPickerOpen()) {
             const orderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
             orderFront(g_app, objc.sel("orderFrontCharacterPalette:"), null);
+            return;
+        }
+
+        // Option+Return 은 한국어 IME 의 한자 변환/reconversion 트리거. PTY 로
+        // 직접 보내지 않고 반드시 NSTextInputClient 경로로 흘려보내야 아래
+        // selectedRange / attributedSubstring / firstRect callback 을 IME 가 조회함.
+        if (option and keycode == 0x24) {
+            interpretSingleKeyEvent(self_view, event);
             return;
         }
 
@@ -769,19 +782,346 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
     }
 
-    const NSArray = objc.getClass("NSArray");
-    const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
-    const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
-    const interpretKeyEvents = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
+    interpretSingleKeyEvent(self_view, event);
 }
 
 // IME (NSTextInputClient) 상태 — 조합 중 (preedit) 텍스트 buffer.
 const NSRange = extern struct { location: usize, length: usize };
+const CGRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
 const NSNotFound: usize = @as(usize, @bitCast(@as(isize, -1)));
 var g_marked_len: usize = 0;
+var g_marked_selected_range: NSRange = .{ .location = 0, .length = 0 };
 var g_preedit_buf: [128]u8 = undefined;
 var g_preedit_len: usize = 0;
+
+const ImeRectPx = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+const ImeSnapshot = struct {
+    text: std.ArrayList(u8) = .{},
+    utf16_to_byte: std.ArrayList(usize) = .{},
+    positions: std.ArrayList(ImeRectPx) = .{},
+    selected: NSRange = .{ .location = 0, .length = 0 },
+
+    fn deinit(self: *ImeSnapshot, allocator: std.mem.Allocator) void {
+        self.text.deinit(allocator);
+        self.utf16_to_byte.deinit(allocator);
+        self.positions.deinit(allocator);
+    }
+
+    fn utf16Len(self: *const ImeSnapshot) usize {
+        return if (self.utf16_to_byte.items.len == 0) 0 else self.utf16_to_byte.items.len - 1;
+    }
+
+    fn initPositions(self: *ImeSnapshot, allocator: std.mem.Allocator, initial: ImeRectPx) !void {
+        try self.utf16_to_byte.append(allocator, 0);
+        try self.positions.append(allocator, initial);
+    }
+
+    fn appendCodepoint(self: *ImeSnapshot, allocator: std.mem.Allocator, cp: u21, start: ImeRectPx, end: ImeRectPx) !void {
+        var encoded: [4]u8 = undefined;
+        const encoded_len = try std.unicode.utf8Encode(cp, &encoded);
+        const byte_start = self.text.items.len;
+        try self.text.appendSlice(allocator, encoded[0..encoded_len]);
+        const byte_end = self.text.items.len;
+
+        const units: usize = if (cp >= 0x10000) 2 else 1;
+        for (0..units) |i| {
+            const is_last = i + 1 == units;
+            try self.utf16_to_byte.append(allocator, if (is_last) byte_end else byte_start);
+            try self.positions.append(allocator, if (is_last) end else start);
+        }
+    }
+
+    fn appendCluster(self: *ImeSnapshot, allocator: std.mem.Allocator, base: u21, extras: []const u21, start: ImeRectPx, end: ImeRectPx) !void {
+        if (extras.len == 0) {
+            try self.appendCodepoint(allocator, base, start, end);
+            return;
+        }
+        try self.appendCodepoint(allocator, base, start, start);
+        for (extras, 0..) |cp, i| {
+            try self.appendCodepoint(allocator, cp, start, if (i + 1 == extras.len) end else start);
+        }
+    }
+
+    fn clampRange(self: *const ImeSnapshot, proposed: NSRange) NSRange {
+        const len = self.utf16Len();
+        if (proposed.location == NSNotFound) return .{ .location = @min(self.selected.location, len), .length = 0 };
+        const start = @min(proposed.location, len);
+        const available = len - start;
+        const wanted = if (proposed.length > available) available else proposed.length;
+        return .{ .location = start, .length = wanted };
+    }
+};
+
+fn utf16LenOfUtf8Prefix(text: []const u8, byte_limit: usize) usize {
+    var len: usize = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.i < byte_limit) {
+        const before = iter.i;
+        const cp = iter.nextCodepoint() orelse break;
+        if (before >= byte_limit) break;
+        len += if (cp >= 0x10000) 2 else 1;
+        if (iter.i >= byte_limit) break;
+    }
+    return len;
+}
+
+fn nsAttributedStringFromUtf8(text: []const u8) objc.id {
+    const NSString = objc.getClass("NSString");
+    const stringWithBytes = objc.objcSend(fn (objc.Class, objc.SEL, [*]const u8, usize, c_ulong) callconv(.c) objc.id);
+    const empty: [1]u8 = .{0};
+    const ptr = if (text.len > 0) text.ptr else empty[0..0].ptr;
+    const ns_text = stringWithBytes(NSString, objc.sel("stringWithBytes:length:encoding:"), ptr, text.len, NSUTF8StringEncoding);
+    if (ns_text == null) return null;
+
+    const NSAttributedString = objc.getClass("NSAttributedString");
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const initWithString = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
+    const obj = initWithString(alloc(NSAttributedString, objc.sel("alloc")) orelse return null, objc.sel("initWithString:"), ns_text);
+    if (obj == null) return null;
+    const autorelease = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    return autorelease(obj, objc.sel("autorelease"));
+}
+
+fn localTopDownPxToScreenRect(self_view: objc.id, rect: ImeRectPx) CGRect {
+    if (g_renderer == null or self_view == null) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const scale = g_renderer.?.scale;
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const bounds = get_rect(self_view, objc.sel("bounds"));
+    const local = NSRect{
+        .origin = .{
+            .x = @as(f64, @floatCast(rect.x / scale)),
+            .y = bounds.size.height - @as(f64, @floatCast((rect.y + rect.h) / scale)),
+        },
+        .size = .{
+            .width = @as(f64, @floatCast(rect.w / scale)),
+            .height = @as(f64, @floatCast(rect.h / scale)),
+        },
+    };
+
+    const convertRect = objc.objcSend(fn (objc.id, objc.SEL, NSRect, objc.id) callconv(.c) NSRect);
+    const window_rect = convertRect(self_view, objc.sel("convertRect:toView:"), local, @as(objc.id, null));
+    const get_window = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    var window = get_window(self_view, objc.sel("window"));
+    if (window == null) window = g_window;
+    if (window == null) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+
+    const convertToScreen = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) NSRect);
+    const screen_rect = convertToScreen(window, objc.sel("convertRectToScreen:"), window_rect);
+    return .{
+        .x = screen_rect.origin.x,
+        .y = screen_rect.origin.y,
+        .w = screen_rect.size.width,
+        .h = screen_rect.size.height,
+    };
+}
+
+fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: f32, y: f32 } {
+    if (g_renderer == null or self_view == null) return null;
+    const get_window = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    var window = get_window(self_view, objc.sel("window"));
+    if (window == null) window = g_window;
+    if (window == null) return null;
+
+    const convertFromScreen = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) NSRect);
+    const window_rect = convertFromScreen(window, objc.sel("convertRectFromScreen:"), .{
+        .origin = point,
+        .size = .{ .width = 0, .height = 0 },
+    });
+    const convertPoint = objc.objcSend(fn (objc.id, objc.SEL, NSPoint, objc.id) callconv(.c) NSPoint);
+    const view_point = convertPoint(self_view, objc.sel("convertPoint:fromView:"), window_rect.origin, @as(objc.id, null));
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const bounds = get_rect(self_view, objc.sel("bounds"));
+    const scale = g_renderer.?.scale;
+    return .{
+        .x = @as(f32, @floatCast(view_point.x)) * scale,
+        .y = @as(f32, @floatCast(bounds.size.height - view_point.y)) * scale,
+    };
+}
+
+fn buildRenameImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+    const rv = g_rename.view() orelse return false;
+    if (g_renderer == null) return false;
+    const r = &g_renderer.?;
+    const text = rv.text[0..rv.text_len];
+
+    const tab_bar_h_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
+    const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
+    const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
+    const cw: f32 = @floatFromInt(r.font.cell_width_px);
+    const ch: f32 = @floatFromInt(r.font.cell_height_px);
+    const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
+    const layout = tabBarLayout();
+    const tab_x = @as(f32, @floatFromInt(rv.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
+    const text_x_start = tab_x + tab_pad_px;
+
+    var x = text_x_start - rv.scroll_offset.*;
+    snap.* = .{};
+    try snap.initPositions(allocator, .{ .x = x, .y = text_y_top, .w = cw, .h = ch });
+
+    var selected_set = false;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const byte_end = iter.i;
+        const byte_start = byte_end - (std.unicode.utf8CodepointSequenceLength(cp) catch 1);
+        if (!selected_set and rv.cursor <= byte_start) {
+            snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+            selected_set = true;
+        }
+        const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * cw;
+        const start = ImeRectPx{ .x = x, .y = text_y_top, .w = @max(advance, cw), .h = ch };
+        x += advance;
+        const end = ImeRectPx{ .x = x, .y = text_y_top, .w = cw, .h = ch };
+        try snap.appendCodepoint(allocator, cp, start, end);
+    }
+
+    if (!selected_set) {
+        snap.selected = .{ .location = utf16LenOfUtf8Prefix(text, @min(rv.cursor, text.len)), .length = 0 };
+        if (snap.selected.location > snap.utf16Len()) snap.selected.location = snap.utf16Len();
+    }
+    return true;
+}
+
+fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+    if (g_renderer == null) return false;
+    const tab = g_session.activeTab() orelse return false;
+    var r = &g_renderer.?;
+    try r.render_state.update(allocator, &tab.terminal);
+    const vp = r.render_state.cursor.viewport orelse return false;
+
+    const row_slice = r.render_state.row_data.slice();
+    const all_cells = row_slice.items(.cells);
+    if (vp.y >= all_cells.len) return false;
+    const cells = all_cells[vp.y].slice();
+    const raws = cells.items(.raw);
+    const graphemes = cells.items(.grapheme);
+
+    const cw: f32 = @floatFromInt(r.font.cell_width_px);
+    const ch: f32 = @floatFromInt(r.font.cell_height_px);
+    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale;
+    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
+    const row_y = pad_px + tab_bar_px + @as(f32, @floatFromInt(vp.y)) * ch;
+    const cursor_col: usize = if (vp.wide_tail and vp.x > 0) vp.x - 1 else vp.x;
+
+    var last_text_end: usize = 0;
+    for (raws, 0..) |raw, x| {
+        if (raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0) {
+            const width: usize = if (raw.wide == .wide) 2 else 1;
+            last_text_end = @max(last_text_end, x + width);
+        }
+    }
+    const limit = @min(@max(last_text_end, cursor_col), raws.len);
+
+    snap.* = .{};
+    try snap.initPositions(allocator, .{
+        .x = pad_px,
+        .y = row_y,
+        .w = cw,
+        .h = ch,
+    });
+
+    var selected_set = false;
+    var x: usize = 0;
+    while (x < limit) {
+        if (!selected_set and cursor_col <= x) {
+            snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+            selected_set = true;
+        }
+
+        const raw = raws[x];
+        const cell_x = pad_px + @as(f32, @floatFromInt(x)) * cw;
+        if (raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0) {
+            const width_cells: usize = if (raw.wide == .wide) 2 else 1;
+            const start = ImeRectPx{ .x = cell_x, .y = row_y, .w = @as(f32, @floatFromInt(width_cells)) * cw, .h = ch };
+            const end = ImeRectPx{ .x = cell_x + @as(f32, @floatFromInt(width_cells)) * cw, .y = row_y, .w = cw, .h = ch };
+            const extras = if (raw.hasGrapheme() and x < graphemes.len) graphemes[x] else &.{};
+            try snap.appendCluster(allocator, raw.codepoint(), extras, start, end);
+            x += width_cells;
+            continue;
+        }
+
+        const start = ImeRectPx{ .x = cell_x, .y = row_y, .w = cw, .h = ch };
+        const end = ImeRectPx{ .x = cell_x + cw, .y = row_y, .w = cw, .h = ch };
+        try snap.appendCodepoint(allocator, ' ', start, end);
+        x += 1;
+    }
+
+    if (!selected_set) {
+        snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+    }
+    return true;
+}
+
+fn buildImeSnapshot(allocator: std.mem.Allocator) ?ImeSnapshot {
+    var snap = ImeSnapshot{};
+    if (buildRenameImeSnapshot(allocator, &snap) catch false) return snap;
+    snap.deinit(allocator);
+    snap = .{};
+    if (buildTerminalImeSnapshot(allocator, &snap) catch false) return snap;
+    snap.deinit(allocator);
+    return null;
+}
+
+fn markedRangeStart() usize {
+    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return 0;
+    defer snap.deinit(g_gpa.allocator());
+    return @min(snap.selected.location, snap.utf16Len());
+}
+
+fn clearImeMarkedState() void {
+    g_marked_len = 0;
+    g_marked_selected_range = .{ .location = 0, .length = 0 };
+    g_preedit_len = 0;
+}
+
+fn replacementByteRange(snap: *const ImeSnapshot, replacement: NSRange) ?struct {
+    range: NSRange,
+    byte_start: usize,
+    byte_end: usize,
+} {
+    if (replacement.location == NSNotFound) return null;
+    const range = snap.clampRange(replacement);
+    const byte_start = snap.utf16_to_byte.items[range.location];
+    const byte_end = snap.utf16_to_byte.items[range.location + range.length];
+    return .{
+        .range = range,
+        .byte_start = byte_start,
+        .byte_end = @max(byte_start, byte_end),
+    };
+}
+
+fn utf8CodepointCount(bytes: []const u8) usize {
+    var count: usize = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+    while (iter.nextCodepoint()) |_| count += 1;
+    return count;
+}
+
+fn queueBackspaces(tab: anytype, count: usize) void {
+    var remaining = count;
+    const chunk = [_]u8{0x7f} ** 32;
+    while (remaining > 0) {
+        const n = @min(remaining, chunk.len);
+        tab.queueWrite(chunk[0..n]);
+        remaining -= n;
+    }
+}
+
+fn replaceRenameBytes(byte_start: usize, byte_end: usize) void {
+    if (!g_rename.isActive()) return;
+    const start = @min(byte_start, g_rename.len);
+    const end = @min(@max(byte_end, start), g_rename.len);
+    if (end > start) {
+        std.mem.copyForwards(u8, g_rename.buf[start .. g_rename.len - (end - start)], g_rename.buf[end..g_rename.len]);
+        g_rename.len -= end - start;
+    }
+    g_rename.cursor = start;
+}
 
 /// NSAttributedString 이거나 NSString 인 input → NSString 추출.
 fn imeStringFromInput(text: objc.id) objc.id {
@@ -797,38 +1137,56 @@ fn imeStringFromInput(text: objc.id) objc.id {
 
 /// IME 가 글자 commit 시 호출 (한글 음절 완성, 일본어 conversion 확정 등).
 /// PTY 로 write + preedit buffer clear.
-fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange) callconv(.c) void {
+fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
     const str = imeStringFromInput(text);
     if (str == null) {
-        g_marked_len = 0;
-        g_preedit_len = 0;
+        clearImeMarkedState();
         return;
     }
     const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
     const len = get_len(str, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
     if (len == 0) {
-        g_marked_len = 0;
-        g_preedit_len = 0;
+        clearImeMarkedState();
         return;
     }
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(str, objc.sel("UTF8String"));
+    const commit = cstr[0..len];
 
-    g_marked_len = 0;
-    g_preedit_len = 0;
-
-    // rename (#111 M11.6b) 진행 중이면 PTY 대신 rename buf 로 라우팅.
-    // codepoint 단위 iter 후 각각 insertCodepoint — 한글 등 multi-byte 도 지원.
     if (g_rename.isActive()) {
-        var iter = std.unicode.Utf8Iterator{ .bytes = cstr[0..len], .i = 0 };
+        var snap = buildImeSnapshot(g_gpa.allocator());
+        defer if (snap) |*s| s.deinit(g_gpa.allocator());
+        clearImeMarkedState();
+        if (snap) |*s| {
+            if (replacementByteRange(s, replacement)) |r| {
+                replaceRenameBytes(r.byte_start, r.byte_end);
+            }
+        }
+        // rename (#111 M11.6b) 진행 중이면 PTY 대신 rename buf 로 라우팅.
+        // codepoint 단위 iter 후 각각 insertCodepoint — 한글 등 multi-byte 도 지원.
+        var iter = std.unicode.Utf8Iterator{ .bytes = commit, .i = 0 };
         while (iter.nextCodepoint()) |cp| {
             _ = g_rename.insertCodepoint(cp);
         }
         return;
     }
 
-    tab.queueWrite(cstr[0..len]);
+    var snap = buildImeSnapshot(g_gpa.allocator());
+    defer if (snap) |*s| s.deinit(g_gpa.allocator());
+    clearImeMarkedState();
+    if (snap) |*s| {
+        if (replacementByteRange(s, replacement)) |r| {
+            // 터미널은 arbitrary range edit API 가 없으므로, IME 가 보통 한자 변환
+            // 시 보내는 "cursor 직전 텍스트 치환" 만 안전하게 backspace+insert 로
+            // 구현한다. 그 외 range 는 기존 입력 보존을 위해 단순 insert 로 fallback.
+            if (r.range.length > 0 and r.range.location + r.range.length == s.selected.location) {
+                const delete_count = utf8CodepointCount(s.text.items[r.byte_start..r.byte_end]);
+                queueBackspaces(tab, delete_count);
+            }
+        }
+    }
+    tab.queueWrite(commit);
 }
 
 /// NSResponder 의 1-arg insertText: (legacy). 일부 IME 가 이걸 호출.
@@ -838,20 +1196,20 @@ fn imeInsertTextSimple(self_view: objc.id, sel_: objc.SEL, text: objc.id) callco
 
 /// IME 조합 중 텍스트 — preedit buffer 에 저장. PTY 에는 안 보냄. metal
 /// renderer 가 cursor 위치 위에 overlay (M6.2).
-fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange, _: NSRange) callconv(.c) void {
+fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRange, _: NSRange) callconv(.c) void {
     const str = imeStringFromInput(text);
     if (str == null) {
-        g_marked_len = 0;
-        g_preedit_len = 0;
+        clearImeMarkedState();
         return;
     }
     const get_length = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
     g_marked_len = get_length(str, objc.sel("length"));
+    g_marked_selected_range = selected_range;
 
     const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
     const len = get_len(str, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
     if (len == 0) {
-        g_preedit_len = 0;
+        clearImeMarkedState();
         return;
     }
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
@@ -862,8 +1220,7 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, _: NSRange, _: NSRan
 }
 
 fn imeUnmarkText(_: objc.id, _: objc.SEL) callconv(.c) void {
-    g_marked_len = 0;
-    g_preedit_len = 0;
+    clearImeMarkedState();
 }
 
 fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) bool {
@@ -871,12 +1228,23 @@ fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) bool {
 }
 
 fn imeMarkedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
-    if (g_marked_len > 0) return .{ .location = 0, .length = g_marked_len };
+    if (g_marked_len > 0) return .{ .location = markedRangeStart(), .length = g_marked_len };
     return .{ .location = NSNotFound, .length = 0 };
 }
 
 fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
-    return .{ .location = 0, .length = 0 };
+    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return .{ .location = 0, .length = 0 };
+    defer snap.deinit(g_gpa.allocator());
+    const base = @min(snap.selected.location, snap.utf16Len());
+    if (g_marked_len == 0) return .{ .location = base, .length = snap.selected.length };
+
+    const marked_sel_loc = if (g_marked_selected_range.location == NSNotFound)
+        g_marked_len
+    else
+        @min(g_marked_selected_range.location, g_marked_len);
+    const remaining = g_marked_len - marked_sel_loc;
+    const marked_sel_len = @min(g_marked_selected_range.length, remaining);
+    return .{ .location = base + marked_sel_loc, .length = marked_sel_len };
 }
 
 fn imeValidAttributes(_: objc.id, _: objc.SEL) callconv(.c) objc.id {
@@ -885,17 +1253,54 @@ fn imeValidAttributes(_: objc.id, _: objc.SEL) callconv(.c) objc.id {
     return array(NSArray, objc.sel("array"));
 }
 
-fn imeAttrSubstring(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) objc.id {
-    return null;
+fn imeAttrSubstring(_: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRange) callconv(.c) objc.id {
+    var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
+        if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
+        return null;
+    };
+    defer snap.deinit(g_gpa.allocator());
+
+    const range = snap.clampRange(proposed);
+    if (actual) |a| a.* = range;
+    const byte_start = snap.utf16_to_byte.items[range.location];
+    const byte_end = snap.utf16_to_byte.items[range.location + range.length];
+    return nsAttributedStringFromUtf8(snap.text.items[byte_start..@max(byte_start, byte_end)]);
 }
 
-fn imeCharIndex(_: objc.id, _: objc.SEL, _: f64, _: f64) callconv(.c) usize {
-    return NSNotFound;
+fn imeCharIndex(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) usize {
+    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return NSNotFound;
+    defer snap.deinit(g_gpa.allocator());
+    const local = screenPointToLocalTopDownPx(self_view, point) orelse return NSNotFound;
+    const len = snap.utf16Len();
+    if (snap.positions.items.len == 0) return NSNotFound;
+    if (len == 0) {
+        const p = snap.positions.items[0];
+        return if (local.y >= p.y and local.y <= p.y + p.h) 0 else NSNotFound;
+    }
+
+    var row_match: ?usize = null;
+    for (0..len) |i| {
+        const p = snap.positions.items[i];
+        const next = snap.positions.items[i + 1];
+        if (local.y < p.y or local.y > p.y + p.h) continue;
+        row_match = i + 1;
+        const mid = (p.x + next.x) * 0.5;
+        if (local.x < mid) return i;
+    }
+    return row_match orelse NSNotFound;
 }
 
-const CGRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
-fn imeFirstRect(_: objc.id, _: objc.SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
-    return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRange) callconv(.c) CGRect {
+    var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
+        if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
+        return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    };
+    defer snap.deinit(g_gpa.allocator());
+
+    const range = snap.clampRange(proposed);
+    if (actual) |a| a.* = range;
+    const idx = @min(range.location, snap.positions.items.len - 1);
+    return localTopDownPxToScreenRect(self_view, snap.positions.items[idx]);
 }
 
 /// IME 가 모르는 special key (Return, Backspace, Tab, 화살표 등) 을
