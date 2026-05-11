@@ -1,15 +1,15 @@
 :root {
-  --ink: #17201d;
-  --muted: #60706a;
-  --paper: #f7f9f6;
-  --paper-strong: #ffffff;
-  --line: #dfe7df;
-  --line-dark: #26322e;
-  --forest: #123f36;
-  --forest-2: #0f2d29;
-  --mint: #63d48f;
-  --amber: #f2a541;
-  --blue: #3b82f6;
+  --ink: #e6edf3;
+  --muted: #9da7b3;
+  --paper: #0d1117;
+  --paper-strong: #151b23;
+  --line: #2a3139;
+  --line-dark: #1f262d;
+  --forest: #7ee787;
+  --forest-2: #151b23;
+  --mint: #7ee787;
+  --amber: #f0b957;
+  --blue: #79c0ff;
   --terminal: #0d1211;
   --terminal-2: #141c19;
   --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
@@ -75,7 +75,7 @@ kbd {
   min-height: 68px;
   padding: 0 32px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(18, 63, 54, 0.94);
+  background: rgba(13, 17, 23, 0.88);
   color: #f4fff9;
   backdrop-filter: blur(12px);
 }
@@ -111,8 +111,8 @@ kbd {
 
 .hero {
   color: #f7fff9;
-  background: var(--forest);
-  border-bottom: 1px solid #0b251f;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-dark);
 }
 
 .hero-inner {
@@ -166,7 +166,7 @@ kbd {
 
 .button.primary {
   background: var(--mint);
-  color: #082018;
+  color: #0d1117;
 }
 
 .button.primary:hover {
@@ -427,8 +427,8 @@ kbd {
   height: 34px;
   margin-bottom: 26px;
   border-radius: 50%;
-  background: var(--forest);
-  color: #f7fff9;
+  background: var(--mint);
+  color: #0d1117;
   font-family: var(--mono);
   font-weight: 900;
 }
