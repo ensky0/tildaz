@@ -360,6 +360,24 @@ var g_extra_env: [5]terminal.ExtraEnv = undefined;
 // 좁힘. 모두 log 만 — 동작 변경 없음. grep "DIAG #172" 로 한 번에 제거 가능.
 var g_diag_first_mouse_down_logged: bool = false;
 var g_diag_first_mouse_dragged_logged: bool = false;
+var g_diag_first_hit_test_logged: bool = false;
+
+/// contentView 의 frame (px) 한 줄 log. #172 (b) 가설 #1 (hitTest race /
+/// contentView frame 0) 검증용 — showWindow 시점에 size 가 0 이면 hitTest 가
+/// nil 반환 → gesture recognizer fallback path.
+fn diagContentViewFrame(label: []const u8) void {
+    const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const cv = contentView_get(g_window, objc.sel("contentView"));
+    if (cv == null) {
+        log.appendLine("diag-172", "{s}: contentView is null", .{label});
+        return;
+    }
+    const get_frame = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const fr = get_frame(cv, objc.sel("frame"));
+    log.appendLine("diag-172", "{s}: contentView frame x={d:.0} y={d:.0} w={d:.0} h={d:.0}", .{
+        label, fr.origin.x, fr.origin.y, fr.size.width, fr.size.height,
+    });
+}
 
 fn diagResponderState(label: []const u8) void {
     const isBoolMsg = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
@@ -529,6 +547,28 @@ fn registerTildazWindowClass() !objc.Class {
 // write. 특수 키 (화살표, F-key) 는 별도 escape sequence 매핑 필요 (M5.4b).
 fn tildazAcceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) bool {
     return true;
+}
+
+/// #172 (b) hypothesis — 1/10 빈도로 시작 시점부터 모든 mouse event 가 view
+/// 의 mouseDown 에 안 도달하는 stuck. sample 분석: NSWindow 의
+/// _handleMouseDownEvent: 까지는 정상 도달하지만 그 안에서 hitTest 가 nil
+/// 또는 frame 0 race 로 view 를 못 찾아 gesture recognizer 만 라우팅 →
+/// view mouseDown 호출 안 됨.
+///
+/// 우리 TildazView 는 child view 없음 (CAMetalLayer 만 backing) — hitTest
+/// 가 무조건 self 반환해도 안전. 권한 dialog (NSAlert modal) dismiss 후
+/// showWindow 의 timing 에 따라 contentView frame 이 일시적 0 일 가능성을
+/// 우회. 정상 동작 시에도 결과 동일 — view 가 mouse 이벤트 target.
+fn tildazHitTest(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) objc.id {
+    // DIAG #172 — 첫 hitTest 호출 도달 여부. mouseDown 보다 *먼저* 호출되니
+    // mouseDown 안 받는 stuck session 에서도 hitTest 는 받았을 수 있음.
+    if (!g_diag_first_hit_test_logged) {
+        g_diag_first_hit_test_logged = true;
+        log.appendLine("diag-172", "first hitTest called: point=({d:.1},{d:.1})", .{ point.x, point.y });
+        diagResponderState("first-hitTest");
+        diagContentViewFrame("first-hitTest");
+    }
+    return self_view;
 }
 
 const NSEventTypeKeyDown: c_long = 10;
@@ -1606,6 +1646,11 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAllocFailed;
     if (!objc.class_addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&tildazAcceptsFirstResponder), "B@:"))
         return error.ViewSubclassAddMethodFailed;
+    // hitTest: override — #172 (b) hypothesis #1 의 fix. 매 mouse event 마다
+    // NSWindow 가 호출. child view 없으니 항상 self 반환 안전. signature:
+    // "@@:{CGPoint=dd}" = id 반환, self + _cmd + NSPoint(=CGPoint, 16 byte).
+    if (!objc.class_addMethod(cls, objc.sel("hitTest:"), @ptrCast(&tildazHitTest), "@@:{CGPoint=dd}"))
+        return error.ViewSubclassAddMethodFailed;
     // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
@@ -2429,6 +2474,7 @@ fn showWindow() void {
 
     restoreContentViewFocus();
     diagResponderState("showWindow:post-restoreFocus"); // DIAG #172
+    diagContentViewFrame("showWindow:post-restoreFocus"); // DIAG #172
     g_visible = true;
 }
 
