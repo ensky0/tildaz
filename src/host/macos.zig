@@ -2401,6 +2401,11 @@ fn hideWindow() void {
 
 fn toggleWindow() void {
     if (g_visible) {
+        // #175 — F1 hide 도 focus_loss = commit. preedit + rename 둘 다.
+        // contentView 통해 commitPendingInput (IME state discard 위해 view 필요).
+        const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        const cv = contentView_get(g_window, objc.sel("contentView"));
+        if (cv != null) commitPendingInput(cv);
         hideWindow();
     } else {
         // 화면 / Dock 변화 대비해 매번 dock rect 재계산.

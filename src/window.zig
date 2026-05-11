@@ -317,6 +317,9 @@ pub const Window = struct {
     /// macOS `applicationShouldTerminate:` 와 같은 역할 (#116). 다중 탭 confirm
     /// 다이얼로그는 app 측에서 띄우고 결과만 반환.
     quit_request_fn: ?*const fn (?*anyopaque) bool = null,
+    /// F1 hide 직전 호출 (#175). app 측이 rename / preedit 등 진행 중인
+    /// 입력 상태를 commit 처리. show 분기는 호출 안 함.
+    before_hide_fn: ?*const fn (?*anyopaque) void = null,
     /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
     /// before `SetWindowPos` cascades into `WM_SIZE`.
@@ -725,6 +728,8 @@ pub const Window = struct {
 
     pub fn toggle(self: *Window) void {
         if (self.visible) {
+            // #175 — F1 hide 도 focus_loss = commit. show 분기에선 호출 안 함.
+            if (self.before_hide_fn) |f| f(self.userdata);
             self.hide();
         } else {
             self.show();
