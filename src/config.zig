@@ -714,6 +714,11 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8)
     while (user_iter.next()) |entry| {
         const key = entry.key_ptr.*;
         if (def.object.get(key) == null) {
+            // `_` prefix key 는 사용자 주석 — 알 수 없는 key 라도 무시 (#173).
+            // JSON 표준 자체엔 주석 없지만 convention. schema 의 정식 key 는
+            // 모두 `_` 안 붙으니 기존 검증과 충돌 X. type / 재귀 검사도 모두
+            // skip — caller 가 자유로운 형식의 주석 사용 가능.
+            if (key.len > 0 and key[0] == '_') continue;
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
