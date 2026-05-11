@@ -77,7 +77,7 @@ fields include their units (`_percent`, `_point`, `_ratio`).
 | Config schema completion / future cleanup | [#118](https://github.com/ensky0/tildaz/issues/118) | Open follow-up context |
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
-| Linux backend | none yet | Not started; wrappers are ready for a third host |
+| Linux backend | [#189](https://github.com/ensky0/tildaz/issues/189) | Planning in [LINUX.md](LINUX.md); Wayland-only direction under discussion |
 | Stress tests | none yet | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
 
 Completed cross-platform work is tracked in
