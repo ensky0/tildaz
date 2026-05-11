@@ -404,21 +404,39 @@ pub const ConPty = struct {
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
         const MAX_EXTRA_ENV = 8;
-        var saved_vals: [MAX_EXTRA_ENV][256]u16 = undefined;
-        var saved_lens: [MAX_EXTRA_ENV]u32 = .{0} ** MAX_EXTRA_ENV;
+        var saved_vals: [MAX_EXTRA_ENV]?[]u16 = .{null} ** MAX_EXTRA_ENV;
+        errdefer {
+            for (&saved_vals) |*maybe_buf| {
+                if (maybe_buf.*) |buf| {
+                    allocator.free(buf);
+                    maybe_buf.* = null;
+                }
+            }
+        }
         if (extra_env) |vars| {
-            for (vars, 0..) |v, vi| {
-                saved_lens[vi] = GetEnvironmentVariableW(v.name, &saved_vals[vi], saved_vals[vi].len);
+            const env_vars = vars[0..@min(vars.len, MAX_EXTRA_ENV)];
+            for (env_vars, 0..) |v, vi| {
+                const needed = GetEnvironmentVariableW(v.name, null, 0);
+                if (needed > 0) {
+                    const buf = try allocator.alloc(u16, needed);
+                    const copied = GetEnvironmentVariableW(v.name, buf.ptr, needed);
+                    if (copied >= needed) return error.GetEnvironmentVariableFailed;
+                    buf[copied] = 0;
+                    saved_vals[vi] = buf;
+                }
+            }
+            for (env_vars) |v| {
                 _ = SetEnvironmentVariableW(v.name, v.value);
             }
         }
 
         const restore_env = struct {
-            fn restore(vars: ?[]const EnvVar, s_vals: *[MAX_EXTRA_ENV][256]u16, s_lens: *[MAX_EXTRA_ENV]u32) void {
-                if (vars) |vs| for (vs, 0..) |v, vi| {
-                    if (s_lens[vi] > 0 and s_lens[vi] < s_vals[vi].len) {
-                        s_vals[vi][s_lens[vi]] = 0;
-                        _ = SetEnvironmentVariableW(v.name, @ptrCast(s_vals[vi][0..s_lens[vi] :0]));
+            fn restore(alloc: std.mem.Allocator, vars: ?[]const EnvVar, s_vals: *[MAX_EXTRA_ENV]?[]u16) void {
+                if (vars) |vs| for (vs[0..@min(vs.len, MAX_EXTRA_ENV)], 0..) |v, vi| {
+                    if (s_vals[vi]) |buf| {
+                        _ = SetEnvironmentVariableW(v.name, @ptrCast(buf.ptr));
+                        alloc.free(buf);
+                        s_vals[vi] = null;
                     } else {
                         _ = SetEnvironmentVariableW(v.name, null);
                     }
@@ -438,11 +456,11 @@ pub const ConPty = struct {
             &startup_info,
             &process_info,
         ) == 0) {
-            restore_env(extra_env, &saved_vals, &saved_lens);
+            restore_env(allocator, extra_env, &saved_vals);
             return error.CreateProcessFailed;
         }
 
-        restore_env(extra_env, &saved_vals, &saved_lens);
+        restore_env(allocator, extra_env, &saved_vals);
 
         // ── DA1 pre-response (번들 OpenConsole 3초 지연 회피)
         //
