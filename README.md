@@ -116,6 +116,10 @@ Historical cross-platform refactor notes are archived in
 
 ## Known Limitations
 
+- Linux is planned but not released yet. The accepted direction is a
+  Wayland-first backend with no initial X11 support; GNOME Wayland will start as
+  limited support until a correct full drop-down path is verified. See
+  [LINUX.md](LINUX.md).
 - Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
   may warn on first launch. The current SignPath application draft lives in
   [dist/signpath-application.md](dist/signpath-application.md).
