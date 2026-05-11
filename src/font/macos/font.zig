@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const ct = @import("coretext.zig");
+const font_constants = @import("../constants.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -14,7 +15,7 @@ pub const GlyphResult = struct {
     owned: bool,
 };
 
-pub const MAX_FALLBACK_FONTS = 8;
+pub const MAX_FALLBACK_FONTS = font_constants.MAX_CHAIN;
 
 pub const CoreTextFontContext = struct {
     primary_font: ct.CTFontRef,

@@ -15,10 +15,11 @@ const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
 const font_validate = @import("font/validate.zig");
+const font_constants = @import("font/constants.zig");
 
 const WCHAR = u16;
 
-pub const MAX_FONT_FAMILIES = 8;
+pub const MAX_FONT_FAMILIES = font_constants.MAX_CHAIN;
 
 const is_windows = builtin.os.tag == .windows;
 const is_macos = builtin.os.tag == .macos;
