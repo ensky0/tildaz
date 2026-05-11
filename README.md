@@ -6,23 +6,20 @@ Brings the UX of Linux's [Tilda](https://github.com/lanoxx/tilda) to Windows and
 
 **Website**: https://ensky0.github.io/tildaz/
 
-> **v0.4.0 — cross-platform code unification + Windows IME parity with macOS**
+> **v0.4.2 — multi-tab mouse fix + rename UX polish**
 >
-> Tab bar layout, tab actions, and IME pre-edit math now live in shared
-> cross-platform modules (`tab_layout.zig` / `tab_actions.zig` with a `Host`
-> interface) — a single fix lands on both platforms. Windows gains the inline
-> IME pre-edit overlay (purple, mac-equivalent), Hanja / kanji / hanzi
-> candidate-popup cursor tracking via `ImmSetCompositionWindow(CFS_POINT)`,
-> and native textbox UX for tab rename (click-to-position cursor, mid-string
-> push-right, fixed pre-edit reserve). Late additions: rename cursor click no
-> longer pins to the right edge on long names ([#168](https://github.com/ensky0/tildaz/issues/168)),
-> and IME pre-edit × line-nav (Home / End / Ctrl+A / Ctrl+E) is unified
-> across rename and terminal — the in-progress syllable commits before the
-> cursor moves on both platforms (#164 follow-up 6). About ~400 lines of
-> duplicated cross-platform code were removed. See
-> [`dist/release-notes/v0.4.0.md`](dist/release-notes/v0.4.0.md) for the full
-> changelog; v0.3.3's macOS rendering parity highlights are in
-> [`dist/release-notes/v0.3.3.md`](dist/release-notes/v0.3.3.md).
+> Bug-fix release on top of v0.4.1. The headline fix is the macOS multi-tab
+> regression — with two or more tabs open, terminal-area drag / double-click
+> silently did nothing (the `.none` branch of the tab-bar hit-area dispatch
+> ate every event below the tab bar). Also: config now treats `_`-prefix
+> keys (`_note`, `_disabled_*`) as user comments instead of fatal-on-unknown;
+> Windows `App.terminal_interaction` moves to per-tab state (matching macOS);
+> rename auto-commit on every focus loss (mouse / shortcut / F1 hide) is
+> unified across platforms — only `Esc` cancels. See
+> [`dist/release-notes/v0.4.2.md`](dist/release-notes/v0.4.2.md) for the
+> changelog; v0.4.1's cross-platform unification work is in
+> [`v0.4.1.md`](dist/release-notes/v0.4.1.md), v0.4.0's earlier IME parity
+> in [`v0.4.0.md`](dist/release-notes/v0.4.0.md).
 
 ## Features
 

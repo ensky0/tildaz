@@ -372,16 +372,13 @@ host 별 first-run resolver fn 시그니처를 일관 (`fn resolveShell(alloc) [
 
 ### 9.2 진입 게이트별 confirm 필요
 
-- [ ] Phase 3 진입 전: §7.4 의 변경 파일 list 가 충분한지 (특히 JSON
-      템플릿 fn 시그니처) 사용자 검토.
-- [ ] Phase 4 진입 전: §6.4 fatal 메시지 문구 사용자 검토.
-- [ ] Phase 5 진입 전: #163 / #165 의 기존 PR / commit 들 재확인 후
-      RendererBackend 타입 시그니처 detail 보강.
+- [x] Phase 3 진입 전: §7.4 의 변경 파일 list 검토 — 통과
+- [x] Phase 4 진입 전: §6.4 fatal 메시지 문구 검토 — 통과
+- [x] Phase 5 진입 전: #163 / #165 의 기존 PR / commit 재확인 — 통과
 
-### 9.3 Open (열린 채로 둬도 진행 가능)
+### 9.3 Open → 처리 완료
 
-- A2 의 macOS `g_rename.isActive()` vs Windows `App.isRenaming()` 통일
-  은 #159 의 per-tab interaction 작업에서 자연스럽게 처리 — 별도 Phase X.
+- ~~A2 의 macOS `g_rename.isActive()` vs Windows `App.isRenaming()` 통일~~ → [#175](https://github.com/ensky0/tildaz/issues/175) (v0.4.2) 로 해결. *상태 보관 위치 통일* 까지는 안 갔지만 (양쪽 글로벌 1개 그대로) *spec / 호출 site 일관* + SPEC §4.1 통합 표 명문화로 사용자 입장의 동작 차이 없어짐.
 
 ---
 
@@ -395,3 +392,4 @@ host 별 first-run resolver fn 시그니처를 일관 (`fn resolveShell(alloc) [
 | 2026-05-10 | Phase 4 schema breaking 완료. §5.2 A1 정정 — macOS 도 이미 per-entry strict (font/macos/font.zig:65-94 의 CTFontCopyFamilyName 검증). 분석 보고서의 "macOS 관대" 클레임이 잘못된 것. Phase 4 에서 macOS validation 추가 작업 불필요 — config.zig schema + parse + fatal helper 만으로 완료 |
 | 2026-05-10 | Phase 5/6 완료 — renderer API 통일. macOS MetalRenderer 의 renderFrame 을 renderTabBar + renderTerminal 두 fn 으로 분리 (frame state stateful, drawable / cmd_buf / encoder / pending tabs 가 두 fn 사이 self 안 보관). renderer.zig 의 RendererBackend 가 macOS 도 dispatch (UnsupportedRendererBackend stub 제거) |
 | 2026-05-11 | Phase 7 완료 — config schema 단위 일관 (α-전면). 모든 numeric 필드에 단위 suffix (_percent / _point / _ratio). percent 4개 (width / height / offset / opacity) 가 정수 → 실수 (사용자 세밀 조정용). 내부 변수 (window.cell_width / cell_height) 도 _px suffix. 트래킹 issue 생성 — umbrella #171, hot-reload 후속 #170 |
+| 2026-05-11 | v0.4.1 후 fix 4건 + §9.3 A2 해결: (1) macOS 멀티탭 mouseDown `.none` 분기 fallthrough — 멀티탭에서 터미널 영역 클릭이 모두 무시되던 결정론적 버그 ([#172](https://github.com/ensky0/tildaz/issues/172)). (2) config `_` prefix key 를 사용자 주석으로 인정 ([#173](https://github.com/ensky0/tildaz/issues/173)). (3) Windows `App.terminal_interaction` 글로벌 → per-tab + macOS `cancelPointerModes` 동등 + β 정책 ([#174](https://github.com/ensky0/tildaz/issues/174), §9.3 A2 일부 해결의 직접 선행). (4) 탭 rename auto-commit on every focus loss + SPEC §4.1 통합 표 명문화 ([#175](https://github.com/ensky0/tildaz/issues/175), §9.3 A2 최종 해결). v0.4.2 release 로 묶음 |
