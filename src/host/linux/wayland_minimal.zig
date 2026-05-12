@@ -8,7 +8,11 @@
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
+const session_core = @import("../../session_core.zig");
+const terminal_backend = @import("../../terminal.zig");
+const themes = @import("../../themes.zig");
 const log = @import("../../log.zig");
+const software_terminal = @import("software_terminal.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -25,6 +29,17 @@ const default_width: i32 = 640;
 const default_height: i32 = 420;
 const min_width: i32 = 160;
 const min_height: i32 = 120;
+const default_theme = &themes.themes[0];
+const shell_path = "/bin/sh";
+const frame_poll_ms: i32 = 16;
+
+const linux_extra_env = [_]terminal_backend.ExtraEnv{
+    .{ .name = "TERM", .value = "xterm-256color" },
+    .{ .name = "LANG", .value = "en_US.UTF-8" },
+    .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
+    .{ .name = "COLORFGBG", .value = "15;0" },
+    .{ .name = "SHELL", .value = shell_path },
+};
 
 const Global = struct {
     name: u32 = 0,
@@ -84,6 +99,9 @@ const Client = struct {
     window_width: i32 = default_width,
     window_height: i32 = default_height,
     mapped: bool = false,
+    renderer: software_terminal.Renderer = .{},
+    session: ?session_core.SessionCore = null,
+    shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     active_buffer: ?ShmBuffer = null,
     retired_buffers: std.ArrayList(ShmBuffer) = .{},
 
@@ -107,6 +125,11 @@ const Client = struct {
             buffer.deinit();
         }
         self.retired_buffers.deinit(self.allocator);
+        if (self.session) |*session| {
+            session.deinit();
+            self.session = null;
+        }
+        self.renderer.deinit(self.allocator);
         self.stream.close();
     }
 
@@ -125,13 +148,23 @@ const Client = struct {
 
         try self.createShellObjects();
         try self.waitForConfigure();
+        try self.ensureSessionGrid();
         try self.redraw();
 
-        std.debug.print("TildaZ Linux Wayland baseline window is open. Close the window to exit.\n", .{});
-        log.appendLine("linux", "Wayland baseline window mapped", .{});
+        std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
+        log.appendLine("linux", "Wayland terminal window mapped", .{});
 
         while (self.running) {
-            try self.readAndDispatch();
+            try self.pollAndDispatch(frame_poll_ms);
+            if (self.shell_exited.load(.acquire)) {
+                self.running = false;
+                break;
+            }
+            if (self.session) |*session| {
+                if (session.drainActiveOutputForRender()) {
+                    try self.redraw();
+                }
+            }
         }
     }
 
@@ -169,6 +202,42 @@ const Client = struct {
     fn applyPendingSize(self: *Client) void {
         if (self.pending_width > 0) self.window_width = @max(self.pending_width, min_width);
         if (self.pending_height > 0) self.window_height = @max(self.pending_height, min_height);
+    }
+
+    fn gridSize(self: *const Client) struct { cols: u16, rows: u16 } {
+        const usable_w = @max(software_terminal.cell_width_px, self.window_width - software_terminal.padding_px * 2);
+        const usable_h = @max(software_terminal.cell_height_px, self.window_height - software_terminal.padding_px * 2);
+        const cols_i32 = @max(1, @divTrunc(usable_w, software_terminal.cell_width_px));
+        const rows_i32 = @max(1, @divTrunc(usable_h, software_terminal.cell_height_px));
+        return .{
+            .cols = @intCast(@min(cols_i32, std.math.maxInt(u16))),
+            .rows = @intCast(@min(rows_i32, std.math.maxInt(u16))),
+        };
+    }
+
+    fn ensureSessionGrid(self: *Client) !void {
+        const grid = self.gridSize();
+        if (self.session) |*session| {
+            if (session.activeTab()) |tab| {
+                if (tab.terminal.cols != grid.cols or tab.terminal.rows != grid.rows) {
+                    session.resizeAll(grid.cols, grid.rows);
+                    log.appendLine("linux", "terminal resized cols={} rows={}", .{ grid.cols, grid.rows });
+                }
+            }
+            return;
+        }
+
+        self.session = session_core.SessionCore.init(
+            self.allocator,
+            shell_path,
+            10_000,
+            default_theme,
+            &linux_extra_env,
+            linuxTabExit,
+            self,
+        );
+        try self.session.?.createTab(grid.cols, grid.rows);
+        log.appendLine("linux", "terminal session created cols={} rows={}", .{ grid.cols, grid.rows });
     }
 
     fn redraw(self: *Client) !void {
@@ -210,7 +279,7 @@ const Client = struct {
         );
         errdefer posix.munmap(memory);
 
-        fillBuffer(memory, width, height, stride);
+        self.paintBuffer(memory, width, height, stride);
 
         try self.sendCreatePool(fd, size_i32, pool_id);
         try self.sendArgs(pool_id, 0, &.{
@@ -231,6 +300,24 @@ const Client = struct {
             .height = height,
             .stride = stride,
         };
+    }
+
+    fn paintBuffer(self: *Client, memory: []u8, width: i32, height: i32, stride: i32) void {
+        if (self.session) |*session| {
+            if (session.activeTab()) |tab| {
+                self.renderer.paint(
+                    self.allocator,
+                    memory,
+                    width,
+                    height,
+                    stride,
+                    &tab.terminal,
+                    default_theme,
+                );
+                return;
+            }
+        }
+        fillBuffer(memory, width, height, stride);
     }
 
     fn attachAndCommit(self: *Client, buffer: ShmBuffer) !void {
@@ -259,6 +346,25 @@ const Client = struct {
         if (n == 0) return error.WaylandConnectionClosed;
         self.input_len += n;
         try self.dispatchBuffered();
+    }
+
+    fn pollAndDispatch(self: *Client, timeout_ms: i32) !void {
+        if (self.input_len > 0) {
+            try self.dispatchBuffered();
+            return;
+        }
+
+        var fds = [_]posix.pollfd{.{
+            .fd = self.stream.handle,
+            .events = posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP,
+            .revents = 0,
+        }};
+        const n = try posix.poll(&fds, timeout_ms);
+        if (n == 0) return;
+        if ((fds[0].revents & posix.POLL.NVAL) != 0) return error.WaylandConnectionClosed;
+        if ((fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
+            try self.readAndDispatch();
+        }
     }
 
     fn dispatchBuffered(self: *Client) !void {
@@ -315,6 +421,7 @@ const Client = struct {
         if (id == xdg_surface_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(xdg_surface_id, 4, &.{readU32(payload[0..4])});
             self.applyPendingSize();
+            try self.ensureSessionGrid();
             self.configured = true;
             if (self.mapped) try self.redraw();
             return;
@@ -441,6 +548,11 @@ const Client = struct {
         self.sendNoArgs(id, 0) catch {};
     }
 };
+
+fn linuxTabExit(_: usize, userdata: ?*anyopaque) void {
+    const client: *Client = @ptrCast(@alignCast(userdata.?));
+    client.shell_exited.store(true, .release);
+}
 
 pub fn runBaselineWindow(allocator: std.mem.Allocator) !void {
     var client = try Client.init(allocator);
