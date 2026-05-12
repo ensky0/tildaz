@@ -34,8 +34,9 @@ fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, slice);
 }
 
-/// auto-start 활성화 — LaunchAgent plist 작성. 이미 동일 path 로 등록돼 있으면
-/// 덮어쓰기 (구버전 .app 위치에서 update 된 경우 stale 경로 정리).
+/// auto-start 활성화 — LaunchAgent plist 작성. 이미 같은 내용이면 건드리지
+/// 않는다. macOS 가 LaunchAgent 변경을 "background activity" 알림으로 보여줄
+/// 수 있어서, 실제 변경이 있을 때만 파일 timestamp 를 바꾼다.
 pub fn enable(allocator: std.mem.Allocator) !void {
     const exe = try currentExePath(allocator);
     defer allocator.free(exe);
@@ -61,6 +62,14 @@ pub fn enable(allocator: std.mem.Allocator) !void {
         \\
     , .{ LABEL, exe });
     defer allocator.free(plist);
+
+    if (std.fs.openFileAbsolute(path, .{})) |existing_file| {
+        defer existing_file.close();
+        if (existing_file.readToEndAlloc(allocator, 64 * 1024)) |existing| {
+            defer allocator.free(existing);
+            if (std.mem.eql(u8, existing, plist)) return;
+        } else |_| {}
+    } else |_| {}
 
     const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
     defer f.close();

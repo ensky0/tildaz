@@ -63,7 +63,7 @@
     <section class="release-band" aria-label="Latest release">
       <div>
         <strong>v0.4.3</strong>
-        <span>macOS Hanja / kanji reconversion, IME candidate tracking on both platforms, safer shell/env handling, and shared dialog cleanup.</span>
+        <span>macOS Hanja / kanji conversion from in-progress or committed Hangul, IME candidate tracking on both platforms, safer shell/env handling, and shared dialog cleanup.</span>
       </div>
       <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Release Notes</a>
     </section>
@@ -82,7 +82,7 @@
         <article class="feature-card">
           <span class="feature-kicker">Tabs</span>
           <h3>Multiple sessions, one surface</h3>
-          <p>Open, close, switch, drag reorder, and rename tabs. Rename behavior is IME-aware and commits predictably on focus loss.</p>
+          <p>Open, close, switch, drag reorder, and rename tabs. Rename behavior is IME-aware, including Hanja candidate replacement, and commits predictably on focus loss.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Rendering</span>
@@ -92,7 +92,7 @@
         <article class="feature-card">
           <span class="feature-kicker">Unicode</span>
           <h3>Hangul, CJK, emoji, IME</h3>
-          <p>Inline pre-edit, wide characters, color emoji, ZWJ clusters, and Hanja / kanji / hanzi candidate positioning are part of the core path.</p>
+          <p>Inline pre-edit, wide characters, color emoji, ZWJ clusters, and Hanja / kanji / hanzi candidate positioning and replacement are part of the core path.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">PTY</span>
@@ -124,7 +124,7 @@
         <div>
           <p class="eyebrow">macOS</p>
           <h2>POSIX PTY + Metal</h2>
-          <p>Uses AppKit, CoreText, and Metal directly, with NSTextInputClient support for IME composition and reconversion.</p>
+          <p>Uses AppKit, CoreText, and Metal directly, with NSTextInputClient support for IME composition, candidate anchoring, and Hanja reconversion.</p>
         </div>
         <ul>
           <li>Universal Apple Silicon + Intel release artifact</li>
