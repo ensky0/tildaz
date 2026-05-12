@@ -19,10 +19,12 @@ const wm_base_id: u32 = 6;
 const surface_id: u32 = 8;
 const xdg_surface_id: u32 = 9;
 const toplevel_id: u32 = 10;
-const shm_pool_id: u32 = 11;
-const buffer_id: u32 = 12;
 
 const shm_format_xrgb8888: u32 = 1;
+const default_width: i32 = 640;
+const default_height: i32 = 420;
+const min_width: i32 = 160;
+const min_height: i32 = 120;
 
 const Global = struct {
     name: u32 = 0,
@@ -52,6 +54,7 @@ const Capabilities = struct {
 };
 
 const ShmBuffer = struct {
+    id: u32,
     fd: posix.fd_t,
     memory: []align(std.heap.page_size_min) u8,
     width: i32,
@@ -75,6 +78,14 @@ const Client = struct {
     configured: bool = false,
     running: bool = true,
     saw_xrgb8888: bool = false,
+    next_id: u32 = 20,
+    pending_width: i32 = 0,
+    pending_height: i32 = 0,
+    window_width: i32 = default_width,
+    window_height: i32 = default_height,
+    mapped: bool = false,
+    active_buffer: ?ShmBuffer = null,
+    retired_buffers: std.ArrayList(ShmBuffer) = .{},
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -86,6 +97,16 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        if (self.active_buffer) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            self.active_buffer = null;
+        }
+        for (self.retired_buffers.items) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+        }
+        self.retired_buffers.deinit(self.allocator);
         self.stream.close();
     }
 
@@ -104,10 +125,7 @@ const Client = struct {
 
         try self.createShellObjects();
         try self.waitForConfigure();
-
-        var buffer = try self.createBuffer(640, 420);
-        defer buffer.deinit();
-        try self.attachAndCommit(buffer);
+        try self.redraw();
 
         std.debug.print("TildaZ Linux Wayland baseline window is open. Close the window to exit.\n", .{});
         log.appendLine("linux", "Wayland baseline window mapped", .{});
@@ -142,10 +160,41 @@ const Client = struct {
         }
     }
 
+    fn allocId(self: *Client) u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+        return id;
+    }
+
+    fn applyPendingSize(self: *Client) void {
+        if (self.pending_width > 0) self.window_width = @max(self.pending_width, min_width);
+        if (self.pending_height > 0) self.window_height = @max(self.pending_height, min_height);
+    }
+
+    fn redraw(self: *Client) !void {
+        self.applyPendingSize();
+        if (self.active_buffer) |buffer| {
+            try self.retired_buffers.append(self.allocator, buffer);
+            self.active_buffer = null;
+        }
+
+        var buffer = try self.createBuffer(self.window_width, self.window_height);
+        errdefer {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+        }
+        try self.attachAndCommit(buffer);
+        self.active_buffer = buffer;
+        self.mapped = true;
+        log.appendLine("wayland", "redraw {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
+    }
+
     fn createBuffer(self: *Client, width: i32, height: i32) !ShmBuffer {
         const stride: i32 = width * 4;
         const size_i32: i32 = stride * height;
         const size: usize = @intCast(size_i32);
+        const pool_id = self.allocId();
+        const new_buffer_id = self.allocId();
 
         const fd = try posix.memfd_create("tildaz-wayland-buffer", posix.MFD.CLOEXEC);
         errdefer posix.close(fd);
@@ -163,17 +212,19 @@ const Client = struct {
 
         fillBuffer(memory, width, height, stride);
 
-        try self.sendCreatePool(fd, size_i32);
-        try self.sendArgs(shm_pool_id, 0, &.{
-            buffer_id,
+        try self.sendCreatePool(fd, size_i32, pool_id);
+        try self.sendArgs(pool_id, 0, &.{
+            new_buffer_id,
             0,
             @intCast(width),
             @intCast(height),
             @intCast(stride),
             shm_format_xrgb8888,
         });
+        try self.sendNoArgs(pool_id, 1);
 
         return .{
+            .id = new_buffer_id,
             .fd = fd,
             .memory = memory,
             .width = width,
@@ -183,7 +234,7 @@ const Client = struct {
     }
 
     fn attachAndCommit(self: *Client, buffer: ShmBuffer) !void {
-        try self.sendArgs(surface_id, 1, &.{ buffer_id, 0, 0 });
+        try self.sendArgs(surface_id, 1, &.{ buffer.id, 0, 0 });
         try self.sendArgs(surface_id, 2, &.{
             0,
             0,
@@ -248,19 +299,56 @@ const Client = struct {
             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
             return;
         }
+        if (self.handleBufferEvent(id, opcode)) return;
         if (id == wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(wm_base_id, 3, &.{readU32(payload[0..4])});
             return;
         }
-        if (id == xdg_surface_id and opcode == 0 and payload.len >= 4) {
-            try self.sendArgs(xdg_surface_id, 4, &.{readU32(payload[0..4])});
-            self.configured = true;
+        if (id == toplevel_id and opcode == 0) {
+            try self.handleToplevelConfigure(payload);
             return;
         }
         if (id == toplevel_id and opcode == 1) {
             self.running = false;
             return;
         }
+        if (id == xdg_surface_id and opcode == 0 and payload.len >= 4) {
+            try self.sendArgs(xdg_surface_id, 4, &.{readU32(payload[0..4])});
+            self.applyPendingSize();
+            self.configured = true;
+            if (self.mapped) try self.redraw();
+            return;
+        }
+    }
+
+    fn handleToplevelConfigure(self: *Client, payload: []const u8) !void {
+        if (payload.len < 12) return error.WaylandBadMessage;
+        self.pending_width = readI32(payload[0..4]);
+        self.pending_height = readI32(payload[4..8]);
+    }
+
+    fn handleBufferEvent(self: *Client, id: u32, opcode: u16) bool {
+        if (opcode != 0) return false;
+
+        if (self.active_buffer) |*buffer| {
+            if (buffer.id == id) {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                self.active_buffer = null;
+                return true;
+            }
+        }
+
+        for (self.retired_buffers.items, 0..) |*buffer, i| {
+            if (buffer.id == id) {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                _ = self.retired_buffers.orderedRemove(i);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     fn handleRegistryGlobal(self: *Client, payload: []const u8) !void {
@@ -319,9 +407,9 @@ const Client = struct {
         try msg.send(self.stream);
     }
 
-    fn sendCreatePool(self: *Client, fd: posix.fd_t, size: i32) !void {
+    fn sendCreatePool(self: *Client, fd: posix.fd_t, size: i32, pool_id: u32) !void {
         var msg = Msg.init(shm_id, 0);
-        try msg.putU32(shm_pool_id);
+        try msg.putU32(pool_id);
         try msg.putI32(size);
         try msg.sendWithFd(self.stream, fd);
     }
@@ -347,6 +435,10 @@ const Client = struct {
         var msg = Msg.init(id, opcode);
         for (args) |arg| try msg.putU32(arg);
         try msg.send(self.stream);
+    }
+
+    fn destroyBufferObject(self: *Client, id: u32) void {
+        self.sendNoArgs(id, 0) catch {};
     }
 };
 
@@ -487,6 +579,10 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
 
 fn readU32(bytes: *const [4]u8) u32 {
     return wayland_minimal_readU32(bytes);
+}
+
+fn readI32(bytes: *const [4]u8) i32 {
+    return @bitCast(readU32(bytes));
 }
 
 fn wayland_minimal_readU32(bytes: *const [4]u8) u32 {
