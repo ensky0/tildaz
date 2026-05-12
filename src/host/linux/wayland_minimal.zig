@@ -75,6 +75,7 @@ const ShmBuffer = struct {
     width: i32,
     height: i32,
     stride: i32,
+    released: bool = false,
 
     fn deinit(self: *ShmBuffer) void {
         posix.munmap(self.memory);
@@ -102,6 +103,7 @@ const Client = struct {
     renderer: software_terminal.Renderer = .{},
     session: ?session_core.SessionCore = null,
     shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    needs_redraw: bool = false,
     active_buffer: ?ShmBuffer = null,
     retired_buffers: std.ArrayList(ShmBuffer) = .{},
 
@@ -162,9 +164,10 @@ const Client = struct {
             }
             if (self.session) |*session| {
                 if (session.drainActiveOutputForRender()) {
-                    try self.redraw();
+                    self.requestRedraw();
                 }
             }
+            try self.maybeRedraw();
         }
     }
 
@@ -202,6 +205,21 @@ const Client = struct {
     fn applyPendingSize(self: *Client) void {
         if (self.pending_width > 0) self.window_width = @max(self.pending_width, min_width);
         if (self.pending_height > 0) self.window_height = @max(self.pending_height, min_height);
+    }
+
+    fn requestRedraw(self: *Client) void {
+        self.needs_redraw = true;
+    }
+
+    fn canRedraw(self: *const Client) bool {
+        if (self.active_buffer) |buffer| return buffer.released;
+        return true;
+    }
+
+    fn maybeRedraw(self: *Client) !void {
+        if (!self.needs_redraw or !self.canRedraw()) return;
+        try self.redraw();
+        self.needs_redraw = false;
     }
 
     fn gridSize(self: *const Client) struct { cols: u16, rows: u16 } {
@@ -242,8 +260,21 @@ const Client = struct {
 
     fn redraw(self: *Client) !void {
         self.applyPendingSize();
-        if (self.active_buffer) |buffer| {
-            try self.retired_buffers.append(self.allocator, buffer);
+        if (self.active_buffer) |*buffer| {
+            if (!buffer.released) {
+                self.requestRedraw();
+                return;
+            }
+            if (buffer.width == self.window_width and buffer.height == self.window_height) {
+                self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+                try self.attachAndCommit(buffer.*);
+                buffer.released = false;
+                self.mapped = true;
+                log.appendLine("wayland", "redraw reuse {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
+                return;
+            }
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
             self.active_buffer = null;
         }
 
@@ -264,6 +295,14 @@ const Client = struct {
         const size: usize = @intCast(size_i32);
         const pool_id = self.allocId();
         const new_buffer_id = self.allocId();
+        log.appendLine("wayland", "create shm buffer {}x{} stride={} size={} pool_id={} buffer_id={}", .{
+            width,
+            height,
+            stride,
+            size_i32,
+            pool_id,
+            new_buffer_id,
+        });
 
         const fd = try posix.memfd_create("tildaz-wayland-buffer", posix.MFD.CLOEXEC);
         errdefer posix.close(fd);
@@ -299,6 +338,7 @@ const Client = struct {
             .width = width,
             .height = height,
             .stride = stride,
+            .released = false,
         };
     }
 
@@ -423,7 +463,7 @@ const Client = struct {
             self.applyPendingSize();
             try self.ensureSessionGrid();
             self.configured = true;
-            if (self.mapped) try self.redraw();
+            if (self.mapped) self.requestRedraw();
             return;
         }
     }
@@ -439,9 +479,7 @@ const Client = struct {
 
         if (self.active_buffer) |*buffer| {
             if (buffer.id == id) {
-                self.destroyBufferObject(buffer.id);
-                buffer.deinit();
-                self.active_buffer = null;
+                buffer.released = true;
                 return true;
             }
         }
