@@ -462,7 +462,7 @@ const Client = struct {
         if (id == xdg_surface_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(xdg_surface_id, 4, &.{readU32(payload[0..4])});
             self.applyPendingSize();
-            try self.ensureSessionGrid();
+            if (self.session != null) try self.ensureSessionGrid();
             self.configured = true;
             if (self.mapped) self.requestRedraw();
             return;
