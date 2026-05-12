@@ -558,6 +558,15 @@ pub const SessionCore = struct {
         }
         return should_render;
     }
+
+    /// Linux Wayland bring-up path: no platform render timer yet, so the host
+    /// needs to know whether PTY output actually changed the terminal state.
+    pub fn drainActiveOutputForRender(self: *SessionCore) bool {
+        const tab = self.activeTab() orelse return false;
+        const had_output = !tab.output_ring.isEmpty();
+        tab.drainOutput();
+        return had_output or !tab.output_ring.isEmpty();
+    }
 };
 
 fn nextActiveIndexAfterClose(active_index: usize, closed_index: usize, remaining_len: usize) ?usize {
