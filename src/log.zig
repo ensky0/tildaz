@@ -7,7 +7,9 @@
 //!   - macOS:   `~/Library/Logs/tildaz.log`  (Apple HIG — Console.app 자동 인덱싱)
 //!
 //! 포맷:
-//!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`  (양쪽 모두 local time)
+//!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`
+//!   Windows / macOS 는 local time. Linux 는 no-libc cross build 를 유지하기 위해
+//!   현재 UTC fields 를 사용한다.
 //!
 //! Platform 모듈 (`log/windows.zig` / `log/macos.zig`) 은 시스템 의존 부분
 //! (local time 변환 / pid / 로그 파일 path) 만 제공 — 그 외 formatting /
@@ -19,6 +21,7 @@ const builtin = @import("builtin");
 const impl = switch (builtin.os.tag) {
     .windows => @import("log/windows.zig"),
     .macos => @import("log/macos.zig"),
+    .linux => @import("log/linux.zig"),
     else => struct {
         pub const TimeFields = struct {
             year: u16 = 1970,

@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const terminal = @import("../terminal.zig");
+const wayland = @import("linux/wayland_minimal.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
@@ -31,14 +32,12 @@ pub fn run() !void {
         var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
         defer _ = gpa.deinit();
         try runPtySmoke(gpa.allocator());
+        return;
     }
 
-    log.appendLine(
-        "linux",
-        "Wayland backend boundary reached; implementation starts from #189 L1/L2",
-        .{},
-    );
-    return error.LinuxWaylandBackendNotImplemented;
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    try wayland.runBaselineWindow(gpa.allocator());
 }
 
 fn runPtySmoke(allocator: std.mem.Allocator) !void {
