@@ -625,10 +625,41 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         return;
     }
 
+    const NSEventModifierFlagShift: c_ulong = 1 << 17;
+    const NSEventModifierFlagOption: c_ulong = 1 << 19;
+    const shift = (flags & NSEventModifierFlagShift) != 0;
+    const option = (flags & NSEventModifierFlagOption) != 0;
+    const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+    const keycode = get_keycode(event, objc.sel("keyCode"));
+
+    if (option and keycode == 0x24) {
+        const had_marked_text = g_marked_len > 0 and g_preedit_len > 0;
+        clearHanjaState();
+        g_hanja_preedit_commit_requested = had_marked_text;
+        defer g_hanja_preedit_commit_requested = false;
+
+        if (!had_marked_text) _ = beginHanjaReconversionTarget();
+        interpretSingleKeyEvent(self_view, event);
+
+        if (had_marked_text and g_hanja_pending_commit_active) {
+            g_hanja_reconversion_active = true;
+            g_hanja_reconversion_range = g_hanja_pending_commit_range;
+            g_hanja_reconversion_delete_count = g_hanja_pending_commit_delete_count;
+            interpretSingleKeyEvent(self_view, event);
+            if (!g_hanja_candidate_active) cancelHanjaState();
+        }
+        return;
+    }
+
     // rename (#111 M11.6b) 진행 중이면 비-Cmd 키는 모두 interpretKeyEvents 로
     // 위임 → IME / NSResponder 가 imeInsertText / imeDoCommand 콜백 호출 →
     // 거기서 RenameState 로 라우팅. PTY 로 안 흘림.
     if (g_rename.isActive()) {
+        if (g_hanja_candidate_active) {
+            interpretSingleKeyEvent(self_view, event);
+            return;
+        }
+
         // line begin/end navigation 직접 keyCode intercept — interpretKeyEvents
         // 의 StandardKeyBinding dispatch 가 우리 custom NSView 에선 일부 키
         // (Home/End fn 변형, ^a/^e) 에 안 잡히는 케이스 발견. 신뢰성 위해 직접.
@@ -701,6 +732,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     }
                     g_marked_len = 0;
                     g_preedit_len = 0;
+                    clearHanjaState();
                 }
                 // Ctrl+C (SIGINT) 만 큐 우회 + 큐 reset — paste 등으로 가득찬
                 // write_queue 뒤에 enqueue 되면 셸이 SIGINT 늦게 받아 "Ctrl+C
@@ -720,14 +752,6 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // commit 후 doCommandBySelector 로 우리에게 위임 — 우리 imeDoCommand 가
     // escape sequence write.
     if (g_marked_len == 0) {
-        const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
-        const keycode = get_keycode(event, objc.sel("keyCode"));
-
-        const NSEventModifierFlagShift: c_ulong = 1 << 17;
-        const NSEventModifierFlagOption: c_ulong = 1 << 19;
-        const shift = (flags & NSEventModifierFlagShift) != 0;
-        const option = (flags & NSEventModifierFlagOption) != 0;
-
         // Esc — emoji picker 가 떠 있으면 dismiss (#130 follow-up). modifier
         // 없는 단순 Esc 만 — Cmd / ctrl 은 위 분기에서 처리 끝 (cmd 는 mainMenu,
         // ctrl-only 는 PTY 직송). shift / option 도 없을 때만. picker 의 visibility
@@ -736,14 +760,6 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         if (keycode == 53 and !shift and (flags & NSEventModifierFlagOption) == 0 and isEmojiPickerOpen()) {
             const orderFront = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
             orderFront(g_app, objc.sel("orderFrontCharacterPalette:"), null);
-            return;
-        }
-
-        // Option+Return 은 한국어 IME 의 한자 변환/reconversion 트리거. PTY 로
-        // 직접 보내지 않고 반드시 NSTextInputClient 경로로 흘려보내야 아래
-        // selectedRange / attributedSubstring / firstRect callback 을 IME 가 조회함.
-        if (option and keycode == 0x24) {
-            interpretSingleKeyEvent(self_view, event);
             return;
         }
 
@@ -776,6 +792,10 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const get_keycode2 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const keycode2 = get_keycode2(event, objc.sel("keyCode"));
         if (keyCodeToEscape(keycode2)) |esc| {
+            if (g_hanja_candidate_active) {
+                interpretSingleKeyEvent(self_view, event);
+                return;
+            }
             commitPreeditPreserving(self_view);
             tab.queueWrite(esc);
             return;
@@ -788,11 +808,25 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
 // IME (NSTextInputClient) 상태 — 조합 중 (preedit) 텍스트 buffer.
 const NSRange = extern struct { location: usize, length: usize };
 const CGRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
-const NSNotFound: usize = @as(usize, @bitCast(@as(isize, -1)));
+const NSNotFound: usize = @as(usize, @intCast(std.math.maxInt(isize)));
 var g_marked_len: usize = 0;
 var g_marked_selected_range: NSRange = .{ .location = 0, .length = 0 };
 var g_preedit_buf: [128]u8 = undefined;
 var g_preedit_len: usize = 0;
+var g_hanja_reconversion_active: bool = false;
+var g_hanja_reconversion_range: NSRange = .{ .location = 0, .length = 0 };
+var g_hanja_reconversion_delete_count: usize = 0;
+var g_hanja_candidate_active: bool = false;
+var g_hanja_candidate_range: NSRange = .{ .location = 0, .length = 0 };
+var g_hanja_candidate_delete_count: usize = 0;
+var g_hanja_preedit_commit_requested: bool = false;
+var g_hanja_pending_commit_active: bool = false;
+var g_hanja_pending_commit_buf: [128]u8 = undefined;
+var g_hanja_pending_commit_len: usize = 0;
+var g_hanja_pending_commit_range: NSRange = .{ .location = 0, .length = 0 };
+var g_hanja_pending_commit_delete_count: usize = 0;
+var g_hanja_target_virtual: bool = false;
+var g_ime_panel_window_lowered: bool = false;
 
 const ImeRectPx = struct {
     x: f32,
@@ -858,6 +892,87 @@ const ImeSnapshot = struct {
     }
 };
 
+fn isValidRange(range: NSRange) bool {
+    return range.location != NSNotFound;
+}
+
+fn isReplacingRange(range: NSRange) bool {
+    return isValidRange(range) and range.length > 0;
+}
+
+fn clearHanjaReconversionTarget() void {
+    g_hanja_reconversion_active = false;
+    g_hanja_reconversion_range = .{ .location = 0, .length = 0 };
+    g_hanja_reconversion_delete_count = 0;
+}
+
+fn clearHanjaCandidateTarget() void {
+    const was_active = g_hanja_candidate_active;
+    g_hanja_candidate_active = false;
+    g_hanja_candidate_range = .{ .location = 0, .length = 0 };
+    g_hanja_candidate_delete_count = 0;
+    if (was_active) restoreWindowLevelAfterImePanel();
+}
+
+fn clearHanjaPendingCommit() void {
+    g_hanja_pending_commit_active = false;
+    g_hanja_pending_commit_len = 0;
+    g_hanja_pending_commit_range = .{ .location = 0, .length = 0 };
+    g_hanja_pending_commit_delete_count = 0;
+    g_hanja_target_virtual = false;
+}
+
+fn clearHanjaState() void {
+    clearHanjaReconversionTarget();
+    clearHanjaCandidateTarget();
+    clearHanjaPendingCommit();
+    restoreWindowLevelAfterImePanel();
+}
+
+fn restoreVirtualHanjaTarget() void {
+    if (!g_hanja_target_virtual) return;
+    if (!g_hanja_pending_commit_active or g_hanja_pending_commit_len == 0) return;
+    if (!g_rename.isActive()) return;
+    const target = g_hanja_pending_commit_buf[0..g_hanja_pending_commit_len];
+    var iter = std.unicode.Utf8Iterator{ .bytes = target, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
+    }
+    g_hanja_target_virtual = false;
+}
+
+fn cancelHanjaState() void {
+    restoreVirtualHanjaTarget();
+    clearImeMarkedState();
+    clearHanjaState();
+}
+
+fn setMainWindowLevel(level: c_int) void {
+    if (g_window == null) return;
+    const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
+    setLevel(g_window, objc.sel("setLevel:"), level);
+}
+
+fn setPopupWindowLevel() void {
+    const NSPopUpMenuWindowLevel: c_int = 101;
+    setMainWindowLevel(NSPopUpMenuWindowLevel);
+    g_ime_panel_window_lowered = false;
+}
+
+fn lowerWindowForImePanel() void {
+    // Candidate panels sit below TildaZ's drop-down popup level. Lower only
+    // while the IME asks for a candidate anchor rect, not when Option+Return
+    // is merely pressed.
+    const NSFloatingWindowLevel: c_int = 3;
+    setMainWindowLevel(NSFloatingWindowLevel);
+    g_ime_panel_window_lowered = true;
+}
+
+fn restoreWindowLevelAfterImePanel() void {
+    if (!g_ime_panel_window_lowered) return;
+    setPopupWindowLevel();
+}
+
 fn utf16LenOfUtf8Prefix(text: []const u8, byte_limit: usize) usize {
     var len: usize = 0;
     var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
@@ -869,6 +984,130 @@ fn utf16LenOfUtf8Prefix(text: []const u8, byte_limit: usize) usize {
         if (iter.i >= byte_limit) break;
     }
     return len;
+}
+
+fn isHangulSyllable(cp: u21) bool {
+    return cp >= 0xAC00 and cp <= 0xD7A3;
+}
+
+fn isOnlyHangulSyllables(text: []const u8) bool {
+    var saw = false;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        if (!isHangulSyllable(cp)) return false;
+        saw = true;
+    }
+    return saw;
+}
+
+fn hangulRunBeforeCursor(text: []const u8, cursor_utf16: usize) ?NSRange {
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    var utf16_pos: usize = 0;
+    var run_start: ?usize = null;
+    var run_end: usize = 0;
+
+    while (iter.nextCodepoint()) |cp| {
+        const units: usize = if (cp >= 0x10000) 2 else 1;
+        const start = utf16_pos;
+        const end = start + units;
+        if (end > cursor_utf16) break;
+
+        if (isHangulSyllable(cp)) {
+            if (run_start == null or start != run_end) run_start = start;
+            run_end = end;
+        } else {
+            run_start = null;
+            run_end = end;
+        }
+        utf16_pos = end;
+    }
+
+    const start = run_start orelse return null;
+    if (run_end != cursor_utf16 or run_end <= start) return null;
+    return .{ .location = start, .length = run_end - start };
+}
+
+test "hangul run before cursor selects contiguous syllables" {
+    const text = "abc 한국";
+    const cursor = utf16LenOfUtf8Prefix(text, text.len);
+    const range = hangulRunBeforeCursor(text, cursor).?;
+    try std.testing.expectEqual(@as(usize, 4), range.location);
+    try std.testing.expectEqual(@as(usize, 2), range.length);
+}
+
+test "hangul run before cursor ignores non-hangul suffix" {
+    const text = "가x";
+    const cursor = utf16LenOfUtf8Prefix(text, text.len);
+    try std.testing.expect(hangulRunBeforeCursor(text, cursor) == null);
+}
+
+fn storeHanjaPendingCommit(commit: []const u8, range_start: usize) bool {
+    if (commit.len == 0 or commit.len > g_hanja_pending_commit_buf.len) return false;
+    const range_len = utf16LenOfUtf8Prefix(commit, commit.len);
+    if (range_len == 0) return false;
+    @memcpy(g_hanja_pending_commit_buf[0..commit.len], commit);
+    g_hanja_pending_commit_len = commit.len;
+    g_hanja_pending_commit_range = .{ .location = range_start, .length = range_len };
+    g_hanja_pending_commit_delete_count = utf8CodepointCount(commit);
+    g_hanja_pending_commit_active = true;
+    return true;
+}
+
+fn appendUtf8ToSnapshot(
+    allocator: std.mem.Allocator,
+    snap: *ImeSnapshot,
+    text: []const u8,
+    start_x: f32,
+    y: f32,
+    cw: f32,
+    ch: f32,
+) !f32 {
+    var x = start_x;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * cw;
+        const start = ImeRectPx{ .x = x, .y = y, .w = @max(advance, cw), .h = ch };
+        x += advance;
+        const end = ImeRectPx{ .x = x, .y = y, .w = cw, .h = ch };
+        try snap.appendCodepoint(allocator, cp, start, end);
+    }
+    return x;
+}
+
+fn appendPendingHanjaCommitToSnapshot(
+    allocator: std.mem.Allocator,
+    snap: *ImeSnapshot,
+    start_x: f32,
+    y: f32,
+    cw: f32,
+    ch: f32,
+) !f32 {
+    if (!g_hanja_pending_commit_active or g_hanja_pending_commit_len == 0) return start_x;
+    return appendUtf8ToSnapshot(
+        allocator,
+        snap,
+        g_hanja_pending_commit_buf[0..g_hanja_pending_commit_len],
+        start_x,
+        y,
+        cw,
+        ch,
+    );
+}
+
+fn beginHanjaReconversionTarget() bool {
+    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return false;
+    defer snap.deinit(g_gpa.allocator());
+
+    const cursor = @min(snap.selected.location + snap.selected.length, snap.utf16Len());
+    const range = hangulRunBeforeCursor(snap.text.items, cursor) orelse return false;
+    g_hanja_reconversion_range = range;
+    if (replacementByteRange(&snap, range)) |r| {
+        g_hanja_reconversion_delete_count = utf8CodepointCount(snap.text.items[r.byte_start..r.byte_end]);
+    } else {
+        g_hanja_reconversion_delete_count = range.length;
+    }
+    g_hanja_reconversion_active = true;
+    return true;
 }
 
 fn nsAttributedStringFromUtf8(text: []const u8) objc.id {
@@ -965,6 +1204,7 @@ fn buildRenameImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !boo
     try snap.initPositions(allocator, .{ .x = x, .y = text_y_top, .w = cw, .h = ch });
 
     var selected_set = false;
+    var pending_hanja_inserted = false;
     var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
     while (iter.nextCodepoint()) |cp| {
         const byte_end = iter.i;
@@ -972,6 +1212,8 @@ fn buildRenameImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !boo
         if (!selected_set and rv.cursor <= byte_start) {
             snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
             selected_set = true;
+            _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
+            pending_hanja_inserted = true;
         }
         const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * cw;
         const start = ImeRectPx{ .x = x, .y = text_y_top, .w = @max(advance, cw), .h = ch };
@@ -983,6 +1225,9 @@ fn buildRenameImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !boo
     if (!selected_set) {
         snap.selected = .{ .location = utf16LenOfUtf8Prefix(text, @min(rv.cursor, text.len)), .length = 0 };
         if (snap.selected.location > snap.utf16Len()) snap.selected.location = snap.utf16Len();
+    }
+    if (!pending_hanja_inserted) {
+        _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
     }
     return true;
 }
@@ -1026,11 +1271,15 @@ fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !b
     });
 
     var selected_set = false;
+    var pending_hanja_inserted = false;
     var x: usize = 0;
     while (x < limit) {
         if (!selected_set and cursor_col <= x) {
             snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
             selected_set = true;
+            const insert_x = pad_px + @as(f32, @floatFromInt(cursor_col)) * cw;
+            _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, insert_x, row_y, cw, ch);
+            pending_hanja_inserted = true;
         }
 
         const raw = raws[x];
@@ -1053,6 +1302,10 @@ fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !b
 
     if (!selected_set) {
         snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+    }
+    if (!pending_hanja_inserted) {
+        const insert_x = pad_px + @as(f32, @floatFromInt(cursor_col)) * cw;
+        _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, insert_x, row_y, cw, ch);
     }
     return true;
 }
@@ -1142,12 +1395,14 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
     const str = imeStringFromInput(text);
     if (str == null) {
         clearImeMarkedState();
+        clearHanjaState();
         return;
     }
     const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
     const len = get_len(str, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
     if (len == 0) {
         clearImeMarkedState();
+        clearHanjaState();
         return;
     }
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
@@ -1157,10 +1412,20 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
     if (g_rename.isActive()) {
         var snap = buildImeSnapshot(g_gpa.allocator());
         defer if (snap) |*s| s.deinit(g_gpa.allocator());
+        const should_reconvert_committed_preedit = g_hanja_preedit_commit_requested and isOnlyHangulSyllables(commit);
+        const pending_range_start = if (snap) |*s| @min(s.selected.location, s.utf16Len()) else 0;
         clearImeMarkedState();
-        if (snap) |*s| {
-            if (replacementByteRange(s, replacement)) |r| {
-                replaceRenameBytes(r.byte_start, r.byte_end);
+        if (should_reconvert_committed_preedit) {
+            if (storeHanjaPendingCommit(commit, pending_range_start)) {
+                g_hanja_target_virtual = true;
+            }
+            return;
+        }
+        if (!g_hanja_target_virtual) {
+            if (snap) |*s| {
+                if (replacementByteRange(s, replacement)) |r| {
+                    replaceRenameBytes(r.byte_start, r.byte_end);
+                }
             }
         }
         // rename (#111 M11.6b) 진행 중이면 PTY 대신 rename buf 로 라우팅.
@@ -1169,13 +1434,22 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
         while (iter.nextCodepoint()) |cp| {
             _ = g_rename.insertCodepoint(cp);
         }
+        if (!should_reconvert_committed_preedit) clearHanjaState();
         return;
     }
 
     var snap = buildImeSnapshot(g_gpa.allocator());
     defer if (snap) |*s| s.deinit(g_gpa.allocator());
+    const should_reconvert_committed_preedit = g_hanja_preedit_commit_requested and isOnlyHangulSyllables(commit);
+    const pending_range_start = if (snap) |*s| @min(s.selected.location, s.utf16Len()) else 0;
+    const candidate_delete_count = if (g_hanja_candidate_active) g_hanja_candidate_delete_count else 0;
     clearImeMarkedState();
-    if (snap) |*s| {
+    if (should_reconvert_committed_preedit) {
+        _ = storeHanjaPendingCommit(commit, pending_range_start);
+    }
+    if (candidate_delete_count > 0) {
+        queueBackspaces(tab, candidate_delete_count);
+    } else if (snap) |*s| {
         if (replacementByteRange(s, replacement)) |r| {
             // 터미널은 arbitrary range edit API 가 없으므로, IME 가 보통 한자 변환
             // 시 보내는 "cursor 직전 텍스트 치환" 만 안전하게 backspace+insert 로
@@ -1187,6 +1461,7 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
         }
     }
     tab.queueWrite(commit);
+    if (!should_reconvert_committed_preedit) clearHanjaState();
 }
 
 /// NSResponder 의 1-arg insertText: (legacy). 일부 IME 가 이걸 호출.
@@ -1196,10 +1471,13 @@ fn imeInsertTextSimple(self_view: objc.id, sel_: objc.SEL, text: objc.id) callco
 
 /// IME 조합 중 텍스트 — preedit buffer 에 저장. PTY 에는 안 보냄. metal
 /// renderer 가 cursor 위치 위에 overlay (M6.2).
-fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRange, _: NSRange) callconv(.c) void {
+fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRange, replacement_range: NSRange) callconv(.c) void {
+    const reconversion_delete_count = g_hanja_reconversion_delete_count;
+    clearHanjaReconversionTarget();
     const str = imeStringFromInput(text);
     if (str == null) {
         clearImeMarkedState();
+        clearHanjaState();
         return;
     }
     const get_length = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
@@ -1210,6 +1488,7 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     const len = get_len(str, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
     if (len == 0) {
         clearImeMarkedState();
+        clearHanjaState();
         return;
     }
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
@@ -1217,10 +1496,25 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     const copy_len = @min(len, g_preedit_buf.len);
     @memcpy(g_preedit_buf[0..copy_len], cstr[0..copy_len]);
     g_preedit_len = copy_len;
+    if (isReplacingRange(replacement_range)) {
+        g_hanja_candidate_active = true;
+        g_hanja_candidate_range = replacement_range;
+        g_hanja_candidate_delete_count = if (g_hanja_target_virtual)
+            0
+        else if (reconversion_delete_count > 0)
+            reconversion_delete_count
+        else
+            replacement_range.length;
+    }
 }
 
 fn imeUnmarkText(_: objc.id, _: objc.SEL) callconv(.c) void {
+    if (g_hanja_candidate_active) {
+        cancelHanjaState();
+        return;
+    }
     clearImeMarkedState();
+    clearHanjaState();
 }
 
 fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) bool {
@@ -1228,6 +1522,9 @@ fn imeHasMarkedText(_: objc.id, _: objc.SEL) callconv(.c) bool {
 }
 
 fn imeMarkedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
+    if (g_marked_len > 0 and g_hanja_candidate_active) {
+        return .{ .location = g_hanja_candidate_range.location, .length = g_marked_len };
+    }
     if (g_marked_len > 0) return .{ .location = markedRangeStart(), .length = g_marked_len };
     return .{ .location = NSNotFound, .length = 0 };
 }
@@ -1236,6 +1533,9 @@ fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
     var snap = buildImeSnapshot(g_gpa.allocator()) orelse return .{ .location = 0, .length = 0 };
     defer snap.deinit(g_gpa.allocator());
     const base = @min(snap.selected.location, snap.utf16Len());
+    if (g_marked_len == 0 and g_hanja_reconversion_active) {
+        return snap.clampRange(g_hanja_reconversion_range);
+    }
     if (g_marked_len == 0) return .{ .location = base, .length = snap.selected.length };
 
     const marked_sel_loc = if (g_marked_selected_range.location == NSNotFound)
@@ -1244,6 +1544,10 @@ fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
         @min(g_marked_selected_range.location, g_marked_len);
     const remaining = g_marked_len - marked_sel_loc;
     const marked_sel_len = @min(g_marked_selected_range.length, remaining);
+    if (g_hanja_candidate_active) {
+        const range = snap.clampRange(g_hanja_candidate_range);
+        return .{ .location = range.location + marked_sel_loc, .length = marked_sel_len };
+    }
     return .{ .location = base + marked_sel_loc, .length = marked_sel_len };
 }
 
@@ -1300,6 +1604,7 @@ fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NS
     const range = snap.clampRange(proposed);
     if (actual) |a| a.* = range;
     const idx = @min(range.location, snap.positions.items.len - 1);
+    if (g_hanja_reconversion_active or g_hanja_candidate_active) lowerWindowForImePanel();
     return localTopDownPxToScreenRect(self_view, snap.positions.items[idx]);
 }
 
@@ -1307,6 +1612,11 @@ fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NS
 /// interpretKeyEvents 가 selector 형태로 보냄. escape sequence 매핑.
 fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
+
+    if (g_hanja_candidate_active and cmd_sel == objc.sel("cancelOperation:")) {
+        cancelHanjaState();
+        return;
+    }
 
     // rename (#111 M11.6b) 진행 중이면 PTY 로 안 보내고 RenameState 로 라우팅.
     if (g_rename.isActive()) {
@@ -1554,6 +1864,7 @@ fn commitPreeditPreserving(self_view: objc.id) void {
     }
     g_preedit_len = 0;
     g_marked_len = 0;
+    clearHanjaState();
     const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const ic = get_ic(self_view, objc.sel("inputContext"));
     if (ic != null) {
@@ -1607,6 +1918,7 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
         }
         g_preedit_len = 0;
         g_marked_len = 0;
+        clearHanjaState();
         const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
         const ic = get_ic(self_view, objc.sel("inputContext"));
         if (ic != null) {
@@ -2478,7 +2790,13 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // IME preedit (`g_preedit_buf`) 라우팅 — rename 활성 시 탭바 cursor 옆에
     // 인라인 표시 (`tab_rename_preedit` 인자), 아니면 cell grid 의 cursor 위치
     // (`cell_preedit` 인자). 둘 동시에 안 나오게 — rename 활성이면 cell 빈 slice.
-    const preedit_slice: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
+    const preedit_slice: []const u8 =
+        if (g_rename.isActive() and g_hanja_target_virtual and g_hanja_pending_commit_active)
+            g_hanja_pending_commit_buf[0..g_hanja_pending_commit_len]
+        else if (g_preedit_len > 0 and !g_hanja_candidate_active)
+            g_preedit_buf[0..g_preedit_len]
+        else
+            &.{};
     const cell_preedit: []const u8 = if (g_rename.isActive()) &.{} else preedit_slice;
     const tab_rename_preedit: []const u8 = if (g_rename.isActive()) preedit_slice else &.{};
 
