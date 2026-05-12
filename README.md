@@ -10,12 +10,15 @@ macOS.
 **Website**: https://ensky0.github.io/tildaz/
 **Latest release**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.4.3 — macOS Hanja reconversion + reliability cleanup**
+> **v0.4.3 — macOS Hanja conversion UX + reliability cleanup**
 >
 > This release adds the macOS `NSTextInputClient` reconversion surface needed
-> for Hanja / kanji candidate replacement in the terminal row and tab rename,
-> tightens shell/env and renderer behavior across platforms, and routes
-> user-visible dialogs through the shared message layer. See
+> for Hanja / kanji candidate replacement in the terminal row and tab rename.
+> Option+Return can commit an in-progress Hangul syllable, open the candidate
+> list immediately, keep the original Hangul visible while choosing, and
+> replace it only when a candidate is accepted. It also tightens shell/env and
+> renderer behavior across platforms and routes user-visible dialogs through
+> the shared message layer. See
 > [`dist/release-notes/v0.4.3.md`](dist/release-notes/v0.4.3.md).
 
 ## Highlights
@@ -26,7 +29,7 @@ macOS.
 | Tabs | Independent sessions, click/select/close, drag reorder, double-click rename, 32-tab cap with dialog |
 | Terminal core | `libghostty-vt`, ANSI 16 / 256 / TrueColor, scrollback up to 10 M lines |
 | Rendering | DirectWrite + D3D11 ClearType on Windows; CoreText + Metal retina atlas on macOS |
-| Unicode / IME | Hangul, CJK, color emoji, ZWJ clusters, inline IME pre-edit, Hanja / kanji / hanzi candidate tracking |
+| Unicode / IME | Hangul, CJK, color emoji, ZWJ clusters, inline IME pre-edit, Hanja / kanji / hanzi candidate tracking and replacement |
 | Shells | Bundled OpenConsole ConPTY on Windows; POSIX `openpty` + `login_tty` on macOS |
 | Configuration | One JSON schema across platforms, strict validation, `_`-prefixed comment keys |
 
