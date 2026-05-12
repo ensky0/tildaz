@@ -150,8 +150,9 @@ const Client = struct {
 
         try self.createShellObjects();
         try self.waitForConfigure();
-        try self.ensureSessionGrid();
         try self.redraw();
+        try self.ensureSessionGrid();
+        self.requestRedraw();
 
         std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
         log.appendLine("linux", "Wayland terminal window mapped", .{});
