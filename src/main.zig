@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const host = switch (builtin.os.tag) {
     .windows => @import("host/windows.zig"),
     .macos => @import("host/macos.zig"),
+    .linux => @import("host/linux_wayland.zig"),
     else => @import("host/unsupported.zig"),
 };
 

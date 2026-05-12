@@ -9,8 +9,8 @@
 //!   resize(cols, rows) → !void
 //!   startReadThread(read_cb, exit_cb, userdata) → !void
 //!
-//! 실제 구현은 `terminal/windows.zig` / `terminal/macos.zig`. 두 모듈 모두
-//! 동일 API 시그니처를 export.
+//! 실제 구현은 `terminal/windows.zig` / `terminal/macos.zig` /
+//! `terminal/linux.zig`. 각 모듈은 동일 API 시그니처를 export.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -50,6 +50,7 @@ pub const Options = struct {
 pub const TerminalBackend = switch (builtin.os.tag) {
     .windows => @import("terminal/windows.zig").Backend,
     .macos => @import("terminal/macos.zig").Backend,
+    .linux => @import("terminal/linux.zig").Backend,
     else => UnsupportedTerminalBackend,
 };
 

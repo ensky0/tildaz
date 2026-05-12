@@ -43,6 +43,15 @@ pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";
 pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
 pub const run_failed_fallback_msg = "TildaZ failed to start.";
+pub const linux_backend_not_ready_msg =
+    \\TildaZ for Linux is not implemented yet.
+    \\
+    \\The accepted direction is a Wayland-first backend. The first alpha target
+    \\is a normal Wayland terminal window with PTY, rendering, input,
+    \\selection, copy, and paste before full drop-down support is claimed.
+    \\
+    \\See LINUX.md and issue #189 for the current plan.
+;
 pub const already_running_msg = "TildaZ is already running.";
 pub const font_not_found_format = "Font not found: \"{s}\"";
 
