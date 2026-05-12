@@ -657,13 +657,14 @@ const Msg = struct {
         const msg = posix.msghdr_const{
             .name = null,
             .namelen = 0,
-            .iov = &iov,
+            .iov = iov[0..].ptr,
             .iovlen = iov.len,
-            .control = &control,
+            .control = control[0..].ptr,
             .controllen = control.len,
             .flags = 0,
         };
-        _ = try posix.sendmsg(stream.handle, &msg, 0);
+        const sent = try posix.sendmsg(stream.handle, &msg, 0);
+        if (sent != bytes.len) return error.WaylandShortFdWrite;
     }
 };
 
