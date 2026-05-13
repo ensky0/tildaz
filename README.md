@@ -61,6 +61,12 @@ Then grant **Input Monitoring** and **Accessibility** in System Settings →
 Privacy & Security. Those permissions are needed for the global hotkey and
 window control shortcuts.
 
+For `auto_start`, TildaZ registers the app with macOS ServiceManagement. macOS
+may list it under System Settings → General → Login Items & Extensions. If that
+item is disabled, macOS can block login startup before TildaZ starts, so no
+TildaZ app log is written. Leave the TildaZ background item enabled for login
+startup.
+
 ## Configure
 
 Edit `config.json`; the schema is documented in [CONFIG.md](CONFIG.md).
