@@ -13,6 +13,7 @@ const terminal_backend = @import("../../terminal.zig");
 const themes = @import("../../themes.zig");
 const log = @import("../../log.zig");
 const software_terminal = @import("software_terminal.zig");
+const xkb = @import("xkb.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -33,6 +34,27 @@ const min_height: i32 = 120;
 const default_theme = &themes.themes[0];
 const shell_path = "/bin/sh";
 const frame_poll_ms: i32 = 16;
+const wl_seat_capability_keyboard: u32 = 2;
+const wl_keyboard_keymap_format_xkb_v1: u32 = 1;
+const wl_keyboard_key_state_pressed: u32 = 1;
+const wl_keyboard_key_state_repeated: u32 = 2;
+const wayland_xkb_keycode_offset: u32 = 8;
+
+const xkb_key_backspace: u32 = 0xff08;
+const xkb_key_tab: u32 = 0xff09;
+const xkb_key_return: u32 = 0xff0d;
+const xkb_key_escape: u32 = 0xff1b;
+const xkb_key_home: u32 = 0xff50;
+const xkb_key_left: u32 = 0xff51;
+const xkb_key_up: u32 = 0xff52;
+const xkb_key_right: u32 = 0xff53;
+const xkb_key_down: u32 = 0xff54;
+const xkb_key_page_up: u32 = 0xff55;
+const xkb_key_page_down: u32 = 0xff56;
+const xkb_key_end: u32 = 0xff57;
+const xkb_key_insert: u32 = 0xff63;
+const xkb_key_delete: u32 = 0xffff;
+const xkb_key_iso_left_tab: u32 = 0xfe20;
 
 const linux_extra_env = [_]terminal_backend.ExtraEnv{
     .{ .name = "TERM", .value = "xterm-256color" },
@@ -51,6 +73,7 @@ const Capabilities = struct {
     compositor: Global = .{},
     shm: Global = .{},
     xdg_wm_base: Global = .{},
+    seat: Global = .{},
     layer_shell: Global = .{},
     text_input_v3: Global = .{},
 
@@ -61,6 +84,8 @@ const Capabilities = struct {
             self.shm = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "xdg_wm_base")) {
             self.xdg_wm_base = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "wl_seat")) {
+            self.seat = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "zwlr_layer_shell_v1")) {
             self.layer_shell = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "zwp_text_input_manager_v3")) {
@@ -84,12 +109,47 @@ const ShmBuffer = struct {
     }
 };
 
+fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
+    return switch (sym) {
+        xkb_key_return => "\r",
+        xkb_key_escape => "\x1b",
+        xkb_key_backspace => "\x7f",
+        xkb_key_tab => "\t",
+        xkb_key_iso_left_tab => "\x1b[Z",
+        xkb_key_up => "\x1b[A",
+        xkb_key_down => "\x1b[B",
+        xkb_key_right => "\x1b[C",
+        xkb_key_left => "\x1b[D",
+        xkb_key_home => "\x1b[H",
+        xkb_key_end => "\x1b[F",
+        xkb_key_insert => "\x1b[2~",
+        xkb_key_delete => "\x1b[3~",
+        xkb_key_page_up => "\x1b[5~",
+        xkb_key_page_down => "\x1b[6~",
+        else => null,
+    };
+}
+
+fn createMemfd(name: [*:0]const u8) !posix.fd_t {
+    const rc = linux.memfd_create(name, linux.MFD.CLOEXEC);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .ACCES => error.AccessDenied,
+        .INVAL => error.InvalidMemfdFlags,
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        .NOMEM => error.SystemResources,
+        else => error.MemfdCreateFailed,
+    };
+}
+
 const Client = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
     caps: Capabilities = .{},
     input: [8192]u8 = undefined,
     input_len: usize = 0,
+    received_fds: std.ArrayList(posix.fd_t) = .{},
     wait_callback_id: u32 = 0,
     wait_callback_done: bool = false,
     configured: bool = false,
@@ -107,6 +167,10 @@ const Client = struct {
     needs_redraw: bool = false,
     active_buffer: ?ShmBuffer = null,
     retired_buffers: std.ArrayList(ShmBuffer) = .{},
+    seat_id: u32 = 0,
+    keyboard_id: u32 = 0,
+    seat_capabilities: u32 = 0,
+    keyboard: xkb.Keyboard = .{},
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -118,6 +182,9 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        self.keyboard.deinit();
+        for (self.received_fds.items) |fd| posix.close(fd);
+        self.received_fds.deinit(self.allocator);
         if (self.active_buffer) |*buffer| {
             self.destroyBufferObject(buffer.id);
             buffer.deinit();
@@ -148,6 +215,8 @@ const Client = struct {
         try self.roundtrip(7);
         self.logCapabilities();
         if (!self.saw_xrgb8888) return error.WaylandShmXrgb8888Missing;
+        try self.createKeyboardIfAvailable();
+        if (self.keyboard_id != 0) try self.roundtrip(self.allocId());
 
         try self.createShellObjects();
         try self.waitForConfigure();
@@ -181,6 +250,22 @@ const Client = struct {
         try self.bind(self.caps.compositor.name, "wl_compositor", @min(self.caps.compositor.version, 4), compositor_id);
         try self.bind(self.caps.shm.name, "wl_shm", 1, shm_id);
         try self.bind(self.caps.xdg_wm_base.name, "xdg_wm_base", 1, wm_base_id);
+        if (self.caps.seat.name != 0) {
+            self.seat_id = self.allocId();
+            try self.bind(self.caps.seat.name, "wl_seat", @min(self.caps.seat.version, 7), self.seat_id);
+        }
+    }
+
+    fn createKeyboardIfAvailable(self: *Client) !void {
+        if (self.seat_id == 0 or self.keyboard_id != 0) return;
+        if ((self.seat_capabilities & wl_seat_capability_keyboard) == 0) {
+            log.appendLine("wayland", "wl_seat has no keyboard capability", .{});
+            return;
+        }
+
+        self.keyboard_id = self.allocId();
+        try self.sendNewId(self.seat_id, 1, self.keyboard_id);
+        log.appendLine("wayland", "keyboard object created keyboard_id={}", .{self.keyboard_id});
     }
 
     fn createShellObjects(self: *Client) !void {
@@ -310,7 +395,7 @@ const Client = struct {
             new_buffer_id,
         });
 
-        const fd = try posix.memfd_create("tildaz-wayland-buffer", posix.MFD.CLOEXEC);
+        const fd = try createMemfd("tildaz-wayland-buffer");
         errdefer posix.close(fd);
         try posix.ftruncate(fd, @intCast(size));
 
@@ -388,10 +473,59 @@ const Client = struct {
 
     fn readAndDispatch(self: *Client) !void {
         if (self.input_len == self.input.len) return error.WaylandReadBufferFull;
-        const n = try self.stream.read(self.input[self.input_len..]);
+        const n = try self.recvWaylandBytes(self.input[self.input_len..]);
         if (n == 0) return error.WaylandConnectionClosed;
         self.input_len += n;
         try self.dispatchBuffered();
+    }
+
+    fn recvWaylandBytes(self: *Client, buf: []u8) !usize {
+        var iov = [_]posix.iovec{.{
+            .base = buf.ptr,
+            .len = buf.len,
+        }};
+        var control: [cmsgSpace(@sizeOf(c_int) * 8)]u8 align(@alignOf(Cmsghdr)) = @splat(0);
+        var msg = posix.msghdr{
+            .name = null,
+            .namelen = 0,
+            .iov = &iov,
+            .iovlen = iov.len,
+            .control = &control,
+            .controllen = control.len,
+            .flags = 0,
+        };
+
+        while (true) {
+            const rc = linux.recvmsg(self.stream.handle, &msg, linux.MSG.CMSG_CLOEXEC);
+            switch (posix.errno(rc)) {
+                .SUCCESS => {
+                    if ((msg.flags & linux.MSG.CTRUNC) != 0) return error.WaylandControlMessageTruncated;
+                    try self.storeReceivedFds(control[0..msg.controllen]);
+                    return @intCast(rc);
+                },
+                .INTR => continue,
+                .AGAIN => return 0,
+                else => return error.WaylandReadFailed,
+            }
+        }
+    }
+
+    fn storeReceivedFds(self: *Client, control: []const u8) !void {
+        var offset: usize = 0;
+        while (offset + @sizeOf(Cmsghdr) <= control.len) {
+            const hdr: *const Cmsghdr = @ptrCast(@alignCast(control.ptr + offset));
+            if (hdr.len < @sizeOf(Cmsghdr) or offset + hdr.len > control.len) return error.WaylandBadControlMessage;
+            if (hdr.level == linux.SOL.SOCKET and hdr.type == 1) {
+                const data_start = offset + cmsgAlign(@sizeOf(Cmsghdr));
+                const data_end = offset + hdr.len;
+                var data_offset = data_start;
+                while (data_offset + @sizeOf(c_int) <= data_end) : (data_offset += @sizeOf(c_int)) {
+                    const fd: *const c_int = @ptrCast(@alignCast(control.ptr + data_offset));
+                    try self.received_fds.append(self.allocator, fd.*);
+                }
+            }
+            offset += cmsgAlign(hdr.len);
+        }
     }
 
     fn pollAndDispatch(self: *Client, timeout_ms: i32) !void {
@@ -451,6 +585,14 @@ const Client = struct {
             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
             return;
         }
+        if (id == self.seat_id) {
+            try self.handleSeatEvent(opcode, payload);
+            return;
+        }
+        if (id == self.keyboard_id) {
+            try self.handleKeyboardEvent(opcode, payload);
+            return;
+        }
         if (self.handleBufferEvent(id, opcode)) return;
         if (id == wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(wm_base_id, 3, &.{readU32(payload[0..4])});
@@ -471,6 +613,101 @@ const Client = struct {
             self.configured = true;
             if (self.mapped) self.requestRedraw();
             return;
+        }
+    }
+
+    fn handleSeatEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        if (opcode == 0 and payload.len >= 4) {
+            self.seat_capabilities = readU32(payload[0..4]);
+            if (self.keyboard_id == 0) try self.createKeyboardIfAvailable();
+            return;
+        }
+    }
+
+    fn handleKeyboardEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        switch (opcode) {
+            0 => try self.handleKeyboardKeymap(payload),
+            3 => try self.handleKeyboardKey(payload),
+            4 => self.handleKeyboardModifiers(payload),
+            5 => self.handleKeyboardRepeatInfo(payload),
+            else => {},
+        }
+    }
+
+    fn handleKeyboardKeymap(self: *Client, payload: []const u8) !void {
+        if (payload.len < 8) return error.WaylandBadMessage;
+        const format = readU32(payload[0..4]);
+        const size_u32 = readU32(payload[4..8]);
+        const fd = try self.takeReceivedFd();
+        defer posix.close(fd);
+
+        if (format != wl_keyboard_keymap_format_xkb_v1) {
+            log.appendLine("wayland", "unsupported keyboard keymap format={}", .{format});
+            return;
+        }
+        if (size_u32 == 0) return error.WaylandBadKeymap;
+
+        const size: usize = @intCast(size_u32);
+        const memory = try posix.mmap(
+            null,
+            size,
+            linux.PROT.READ,
+            .{ .TYPE = .PRIVATE },
+            fd,
+            0,
+        );
+        defer posix.munmap(memory);
+
+        try self.keyboard.setKeymap(self.allocator, memory);
+        log.appendLine("wayland", "keyboard keymap loaded size={}", .{size});
+    }
+
+    fn handleKeyboardKey(self: *Client, payload: []const u8) !void {
+        if (payload.len < 16) return error.WaylandBadMessage;
+        const key = readU32(payload[8..12]);
+        const state = readU32(payload[12..16]);
+        if (state != wl_keyboard_key_state_pressed and state != wl_keyboard_key_state_repeated) return;
+
+        const xkb_key = key + wayland_xkb_keycode_offset;
+        if (self.keyboard.oneSym(xkb_key)) |sym| {
+            if (terminalSequenceForKeysym(sym)) |seq| {
+                self.queueInput(seq);
+                return;
+            }
+        }
+
+        var buf: [64]u8 = undefined;
+        const bytes = self.keyboard.utf8(xkb_key, &buf);
+        if (bytes.len > 0) self.queueInput(bytes);
+    }
+
+    fn handleKeyboardModifiers(self: *Client, payload: []const u8) void {
+        if (payload.len < 20) return;
+        self.keyboard.updateMask(
+            readU32(payload[4..8]),
+            readU32(payload[8..12]),
+            readU32(payload[12..16]),
+            readU32(payload[16..20]),
+        );
+    }
+
+    fn handleKeyboardRepeatInfo(_: *Client, payload: []const u8) void {
+        if (payload.len < 8) return;
+        log.appendLine("wayland", "keyboard repeat rate={} delay={}", .{
+            readI32(payload[0..4]),
+            readI32(payload[4..8]),
+        });
+    }
+
+    fn takeReceivedFd(self: *Client) !posix.fd_t {
+        if (self.received_fds.items.len == 0) return error.WaylandMissingFd;
+        return self.received_fds.orderedRemove(0);
+    }
+
+    fn queueInput(self: *Client, bytes: []const u8) void {
+        if (self.session) |*session| {
+            session.queueInputToActive(bytes);
+            self.requestRedraw();
         }
     }
 

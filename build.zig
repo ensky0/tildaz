@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
+    const is_linux_target = target_os == .linux;
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
@@ -55,6 +56,13 @@ pub fn build(b: *std.Build) void {
     if (is_windows_target) {
         // PE VERSIONINFO 리소스 (Explorer 속성 / Task Manager 에서 버전 표시).
         exe_mod.addWin32ResourceFile(.{ .file = b.path("src/tildaz.rc") });
+    }
+
+    if (is_linux_target) {
+        // Linux Wayland 키보드 입력은 런타임에 dlopen/dlsym 으로 libxkbcommon 을
+        // 로드한다. xkbcommon 자체는 링크 타임 필수 의존성으로 만들지 않되,
+        // 부분 ELF mapper 가 아니라 시스템 dynamic loader 를 사용하기 위한 libc.
+        exe_mod.link_libc = true;
     }
 
     const is_macos_target = target_os == .macos;
