@@ -23,6 +23,7 @@ const wm_base_id: u32 = 6;
 const surface_id: u32 = 8;
 const xdg_surface_id: u32 = 9;
 const toplevel_id: u32 = 10;
+const first_dynamic_id: u32 = toplevel_id + 1;
 
 const shm_format_xrgb8888: u32 = 1;
 const default_width: i32 = 640;
@@ -94,7 +95,7 @@ const Client = struct {
     configured: bool = false,
     running: bool = true,
     saw_xrgb8888: bool = false,
-    next_id: u32 = 20,
+    next_id: u32 = first_dynamic_id,
     pending_width: i32 = 0,
     pending_height: i32 = 0,
     window_width: i32 = default_width,
