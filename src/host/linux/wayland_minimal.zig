@@ -213,13 +213,8 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
-    fn canRedraw(self: *const Client) bool {
-        if (self.active_buffer) |buffer| return buffer.released;
-        return true;
-    }
-
     fn maybeRedraw(self: *Client) !void {
-        if (!self.needs_redraw or !self.canRedraw()) return;
+        if (!self.needs_redraw) return;
         try self.redraw();
         self.needs_redraw = false;
     }
@@ -263,21 +258,17 @@ const Client = struct {
     fn redraw(self: *Client) !void {
         self.applyPendingSize();
         if (self.active_buffer) |*buffer| {
-            if (!buffer.released) {
-                self.requestRedraw();
-                return;
-            }
             if (buffer.width == self.window_width and buffer.height == self.window_height) {
-                self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
-                try self.attachAndCommit(buffer.*);
-                buffer.released = false;
-                self.mapped = true;
-                log.appendLine("wayland", "redraw reuse {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
-                return;
+                if (buffer.released) {
+                    self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+                    try self.attachAndCommit(buffer.*);
+                    buffer.released = false;
+                    self.mapped = true;
+                    log.appendLine("wayland", "redraw reuse {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
+                    return;
+                }
             }
-            self.destroyBufferObject(buffer.id);
-            buffer.deinit();
-            self.active_buffer = null;
+            try self.retireActiveBuffer();
         }
 
         var buffer = try self.createBuffer(self.window_width, self.window_height);
@@ -289,6 +280,19 @@ const Client = struct {
         self.active_buffer = buffer;
         self.mapped = true;
         log.appendLine("wayland", "redraw {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
+    }
+
+    fn retireActiveBuffer(self: *Client) !void {
+        if (self.active_buffer) |buffer| {
+            if (buffer.released) {
+                self.destroyBufferObject(buffer.id);
+                var owned = buffer;
+                owned.deinit();
+            } else {
+                try self.retired_buffers.append(self.allocator, buffer);
+            }
+            self.active_buffer = null;
+        }
     }
 
     fn createBuffer(self: *Client, width: i32, height: i32) !ShmBuffer {
