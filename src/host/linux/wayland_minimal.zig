@@ -645,15 +645,18 @@ const Msg = struct {
         const bytes = self.finish();
         var iov = [_]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
 
-        var control: [cmsgSpace(@sizeOf(c_int))]u8 align(@alignOf(usize)) = @splat(0);
+        const fd_payload_size = @sizeOf(c_int);
+        const control_len = cmsgLen(fd_payload_size);
+        var control: [cmsgSpace(fd_payload_size)]u8 align(@alignOf(Cmsghdr)) = @splat(0);
         const hdr: *Cmsghdr = @ptrCast(@alignCast(&control));
         hdr.* = .{
-            .len = cmsgLen(@sizeOf(c_int)),
+            .len = control_len,
             .level = linux.SOL.SOCKET,
             .type = 1, // SCM_RIGHTS
         };
-        const fd_ptr: *c_int = @ptrCast(@alignCast(control[cmsgAlign(@sizeOf(Cmsghdr))..].ptr));
-        fd_ptr.* = fd;
+        const fd_i32: c_int = fd;
+        const data_offset = cmsgAlign(@sizeOf(Cmsghdr));
+        @memcpy(control[data_offset..][0..fd_payload_size], std.mem.asBytes(&fd_i32));
 
         const msg = posix.msghdr_const{
             .name = null,
@@ -661,7 +664,7 @@ const Msg = struct {
             .iov = iov[0..].ptr,
             .iovlen = iov.len,
             .control = control[0..].ptr,
-            .controllen = control.len,
+            .controllen = control_len,
             .flags = 0,
         };
         const sent = try posix.sendmsg(stream.handle, &msg, 0);
