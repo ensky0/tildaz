@@ -2,6 +2,7 @@
 // `log.zig`. 로그 파일은 `%APPDATA%\tildaz\tildaz.log`.
 
 const std = @import("std");
+const log_time = @import("../log_time.zig");
 
 const WCHAR = u16;
 const DWORD = std.os.windows.DWORD;
@@ -22,15 +23,7 @@ extern "kernel32" fn GetLocalTime(*SYSTEMTIME) callconv(.c) void;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const WCHAR, ?[*]WCHAR, u32) callconv(.c) u32;
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) DWORD;
 
-pub const TimeFields = struct {
-    year: u16,
-    month: u8,
-    day: u8,
-    hour: u8,
-    min: u8,
-    sec: u8,
-    ms: u16,
-};
+pub const TimeFields = log_time.TimeFields;
 
 pub fn currentLocalTime() TimeFields {
     var st: SYSTEMTIME = undefined;
