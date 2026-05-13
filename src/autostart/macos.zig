@@ -1,86 +1,132 @@
-// macOS auto-start: `~/Library/LaunchAgents/com.tildaz.app.plist`
+// macOS auto-start.
 //
-// 사용자 로그인 시 launchd 가 plist 따라 우리 .app 의 main 바이너리를 실행.
-// Windows 의 `autostart/windows.zig` (HKCU\...\Run) 와 동등.
+// macOS 13+ 는 Login Items / Background Items 를 ServiceManagement 의
+// SMAppService 로 관리한다. TildaZ 의 최소 macOS 도 13 이므로 구식
+// `~/Library/LaunchAgents` 직접 설치 대신 main app login item 을 등록한다.
 //
-// LaunchAgent 위치는 Apple 표준 — `man launchd.plist` 참고. plist 자체는
-// 로그인 시 자동 load 라 file drop 만으로 충분 (`launchctl load` 호출 불필요).
-// disable 시 file 삭제 + 현재 세션의 launched 인스턴스도 bootout.
-//
-// 라벨 (`com.tildaz.app`) 은 reverse-DNS — 다른 사용자 LaunchAgent 와 충돌 방지.
+// 사용자가 System Settings > General > Login Items & Extensions 에서 항목을
+// 꺼 둔 경우 앱이 그 결정을 우회해서 다시 켤 수 없다. 이때 SMAppService
+// status 는 `requires_approval` 이며, 우리는 로그에 명확히 남기고 사용자가
+// 직접 켜야 하는 상태로 처리한다 (#192).
 
 const std = @import("std");
+const log = @import("../log.zig");
+const objc = @import("../macos_objc.zig");
 
-const LABEL = "com.tildaz.app";
+const LEGACY_LABEL = "com.tildaz.app";
 
-/// `~/Library/LaunchAgents/com.tildaz.app.plist` 경로 (allocator-based).
-fn plistPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
+const ServiceStatus = enum(isize) {
+    not_registered = 0,
+    enabled = 1,
+    requires_approval = 2,
+    not_found = 3,
+    unknown = -1,
+
+    fn label(self: ServiceStatus) []const u8 {
+        return switch (self) {
+            .not_registered => "not_registered",
+            .enabled => "enabled",
+            .requires_approval => "requires_approval",
+            .not_found => "not_found",
+            .unknown => "unknown",
+        };
+    }
+};
+
+/// legacy `~/Library/LaunchAgents/com.tildaz.app.plist` 경로. v0.4.3 중간
+/// 빌드에서 생성된 plist 를 정리하기 위해 남겨 둔다.
+fn legacyPlistPath(allocator: std.mem.Allocator) ![]u8 {
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotSet;
     const dir = try std.fmt.allocPrint(allocator, "{s}/Library/LaunchAgents", .{home});
     defer allocator.free(dir);
-    std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-    return std.fmt.allocPrint(allocator, "{s}/{s}.plist", .{ dir, LABEL });
+    return std.fmt.allocPrint(allocator, "{s}/{s}.plist", .{ dir, LEGACY_LABEL });
 }
 
-/// 현재 .app 번들의 main 바이너리 절대경로 (`.../TildaZ.app/Contents/MacOS/tildaz`).
-/// `selfExePath` 가 ad-hoc sign 환경에서도 .app 안 경로를 그대로 돌려준다.
-fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const slice = try std.fs.selfExePath(&buf);
-    return allocator.dupe(u8, slice);
-}
-
-/// auto-start 활성화 — LaunchAgent plist 작성. 이미 같은 내용이면 건드리지
-/// 않는다. macOS 가 LaunchAgent 변경을 "background activity" 알림으로 보여줄
-/// 수 있어서, 실제 변경이 있을 때만 파일 timestamp 를 바꾼다.
 pub fn enable(allocator: std.mem.Allocator) !void {
-    const exe = try currentExePath(allocator);
-    defer allocator.free(exe);
+    const service = try mainAppService();
+    const before = serviceStatus(service);
+    log.appendLine("autostart", "main app service status before register: {s}", .{before.label()});
 
-    const path = try plistPath(allocator);
-    defer allocator.free(path);
+    switch (before) {
+        .enabled => {
+            cleanupLegacyLaunchAgent(allocator);
+            return;
+        },
+        .requires_approval => {
+            cleanupLegacyLaunchAgent(allocator);
+            return error.LoginItemRequiresApproval;
+        },
+        .not_registered, .not_found, .unknown => {},
+    }
 
-    const plist = try std.fmt.allocPrint(allocator,
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        \\<plist version="1.0">
-        \\<dict>
-        \\    <key>Label</key>
-        \\    <string>{s}</string>
-        \\    <key>ProgramArguments</key>
-        \\    <array>
-        \\        <string>{s}</string>
-        \\    </array>
-        \\    <key>RunAtLoad</key>
-        \\    <true/>
-        \\</dict>
-        \\</plist>
-        \\
-    , .{ LABEL, exe });
-    defer allocator.free(plist);
+    if (!registerService(service)) {
+        const after_fail = serviceStatus(service);
+        log.appendLine("autostart", "main app register failed; status after failure: {s}", .{after_fail.label()});
+        cleanupLegacyLaunchAgent(allocator);
+        if (after_fail == .requires_approval) return error.LoginItemRequiresApproval;
+        if (after_fail == .enabled) return;
+        return error.LoginItemRegisterFailed;
+    }
 
-    if (std.fs.openFileAbsolute(path, .{})) |existing_file| {
-        defer existing_file.close();
-        if (existing_file.readToEndAlloc(allocator, 64 * 1024)) |existing| {
-            defer allocator.free(existing);
-            if (std.mem.eql(u8, existing, plist)) return;
-        } else |_| {}
-    } else |_| {}
-
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(plist);
+    const after = serviceStatus(service);
+    log.appendLine("autostart", "main app service status after register: {s}", .{after.label()});
+    cleanupLegacyLaunchAgent(allocator);
+    if (after == .requires_approval) return error.LoginItemRequiresApproval;
+    if (after != .enabled) return error.LoginItemRegisterFailed;
 }
 
-/// auto-start 비활성화 — plist 파일 삭제. 다음 로그인부터 효과 발생 (launchd 가
-/// plist 없으면 등록 안 함). 즉시 현재 세션 bootout 이 필요하면 수동:
-///   `launchctl bootout gui/$(id -u)/com.tildaz.app`
 pub fn disable(allocator: std.mem.Allocator) void {
-    const path = plistPath(allocator) catch return;
+    const service = mainAppService() catch |err| {
+        log.appendLine("autostart", "main app service unavailable during disable: {s}", .{@errorName(err)});
+        cleanupLegacyLaunchAgent(allocator);
+        return;
+    };
+
+    const before = serviceStatus(service);
+    log.appendLine("autostart", "main app service status before unregister: {s}", .{before.label()});
+    if (before != .not_registered and before != .not_found) {
+        if (!unregisterService(service)) {
+            log.appendLine("autostart", "main app unregister failed; status after failure: {s}", .{serviceStatus(service).label()});
+        }
+    }
+    cleanupLegacyLaunchAgent(allocator);
+}
+
+fn mainAppService() !objc.id {
+    const SMAppService = objc.objc_getClass("SMAppService") orelse return error.ServiceManagementUnavailable;
+    const mainAppServiceFn: *const fn (objc.Class, objc.SEL) callconv(.c) objc.id = @ptrCast(objc.msgSend_raw);
+    return mainAppServiceFn(SMAppService, objc.sel("mainAppService")) orelse error.MainAppServiceUnavailable;
+}
+
+fn serviceStatus(service: objc.id) ServiceStatus {
+    const statusFn: *const fn (objc.id, objc.SEL) callconv(.c) objc.NSInteger = @ptrCast(objc.msgSend_raw);
+    const raw = statusFn(service, objc.sel("status"));
+    return switch (raw) {
+        0 => .not_registered,
+        1 => .enabled,
+        2 => .requires_approval,
+        3 => .not_found,
+        else => .unknown,
+    };
+}
+
+fn registerService(service: objc.id) bool {
+    const registerFn: *const fn (objc.id, objc.SEL, ?*objc.id) callconv(.c) objc.BOOL = @ptrCast(objc.msgSend_raw);
+    return registerFn(service, objc.sel("registerAndReturnError:"), null);
+}
+
+fn unregisterService(service: objc.id) bool {
+    const unregisterFn: *const fn (objc.id, objc.SEL, ?*objc.id) callconv(.c) objc.BOOL = @ptrCast(objc.msgSend_raw);
+    return unregisterFn(service, objc.sel("unregisterAndReturnError:"), null);
+}
+
+fn cleanupLegacyLaunchAgent(allocator: std.mem.Allocator) void {
+    const path = legacyPlistPath(allocator) catch return;
     defer allocator.free(path);
-    std.fs.deleteFileAbsolute(path) catch {};
+    if (std.fs.deleteFileAbsolute(path)) {
+        log.appendLine("autostart", "removed legacy LaunchAgent plist: {s}", .{path});
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => log.appendLine("autostart", "failed to remove legacy LaunchAgent plist: {s}: {s}", .{ path, @errorName(err) }),
+    }
 }

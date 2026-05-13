@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
         exe_mod.linkFramework("QuartzCore", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
         exe_mod.linkFramework("CoreFoundation", .{});
+        exe_mod.linkFramework("ServiceManagement", .{});
         // ApplicationServices — `AXIsProcessTrusted` (Accessibility 권한 체크).
         // active CGEventTap 은 Input Monitoring 외에 Accessibility 권한도
         // 필요하므로 사용자 안내용으로 사전 체크.
