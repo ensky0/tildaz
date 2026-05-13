@@ -3,6 +3,7 @@
 // 자동 인덱싱).
 
 const std = @import("std");
+const log_time = @import("../log_time.zig");
 
 const time_t = i64;
 
@@ -25,15 +26,7 @@ const tm = extern struct {
 extern "c" fn localtime_r(timep: *const time_t, result: *tm) ?*tm;
 extern "c" fn getpid() c_int;
 
-pub const TimeFields = struct {
-    year: u16,
-    month: u8,
-    day: u8,
-    hour: u8,
-    min: u8,
-    sec: u8,
-    ms: u16,
-};
+pub const TimeFields = log_time.TimeFields;
 
 pub fn currentLocalTime() TimeFields {
     // ms / sec 동일 시각에서 함께 가져옴 — 두 번 query 하면 boundary 에서
@@ -44,7 +37,7 @@ pub fn currentLocalTime() TimeFields {
 
     var t: tm = undefined;
     if (localtime_r(&secs, &t) == null) {
-        return .{ .year = 1970, .month = 1, .day = 1, .hour = 0, .min = 0, .sec = 0, .ms = 0 };
+        return log_time.fallback();
     }
     return .{
         .year = @intCast(t.tm_year + 1900),

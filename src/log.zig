@@ -8,8 +8,7 @@
 //!
 //! 포맷:
 //!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`
-//!   Windows / macOS 는 local time. Linux 는 no-libc cross build 를 유지하기 위해
-//!   현재 UTC fields 를 사용한다.
+//!   모든 platform 에서 local time 을 사용한다.
 //!
 //! Platform 모듈 (`log/windows.zig` / `log/macos.zig`) 은 시스템 의존 부분
 //! (local time 변환 / pid / 로그 파일 path) 만 제공 — 그 외 formatting /
@@ -17,23 +16,18 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const log_time = @import("log_time.zig");
+
+pub const TimeFields = log_time.TimeFields;
 
 const impl = switch (builtin.os.tag) {
     .windows => @import("log/windows.zig"),
     .macos => @import("log/macos.zig"),
     .linux => @import("log/linux.zig"),
     else => struct {
-        pub const TimeFields = struct {
-            year: u16 = 1970,
-            month: u8 = 1,
-            day: u8 = 1,
-            hour: u8 = 0,
-            min: u8 = 0,
-            sec: u8 = 0,
-            ms: u16 = 0,
-        };
-        pub fn currentLocalTime() TimeFields {
-            return .{};
+        pub const TimeFields = log_time.TimeFields;
+        pub fn currentLocalTime() log_time.TimeFields {
+            return log_time.fallback();
         }
         pub fn currentPid() u64 {
             return 0;
