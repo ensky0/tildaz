@@ -17,14 +17,7 @@ const xkb = @import("xkb.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
-const compositor_id: u32 = 4;
-const shm_id: u32 = 5;
-const wm_base_id: u32 = 6;
-
-const surface_id: u32 = 8;
-const xdg_surface_id: u32 = 9;
-const toplevel_id: u32 = 10;
-const first_dynamic_id: u32 = toplevel_id + 1;
+const first_client_alloc_id: u32 = registry_id + 1;
 
 const shm_format_xrgb8888: u32 = 1;
 const default_width: i32 = 640;
@@ -34,6 +27,7 @@ const min_height: i32 = 120;
 const default_theme = &themes.themes[0];
 const shell_path = "/bin/sh";
 const frame_poll_ms: i32 = 16;
+const max_buffers_per_size: usize = 2;
 const wl_seat_capability_keyboard: u32 = 2;
 const wl_keyboard_keymap_format_xkb_v1: u32 = 1;
 const wl_keyboard_key_state_pressed: u32 = 1;
@@ -155,7 +149,7 @@ const Client = struct {
     configured: bool = false,
     running: bool = true,
     saw_xrgb8888: bool = false,
-    next_id: u32 = first_dynamic_id,
+    next_id: u32 = first_client_alloc_id,
     pending_width: i32 = 0,
     pending_height: i32 = 0,
     window_width: i32 = default_width,
@@ -167,6 +161,12 @@ const Client = struct {
     needs_redraw: bool = false,
     active_buffer: ?ShmBuffer = null,
     retired_buffers: std.ArrayList(ShmBuffer) = .{},
+    compositor_id: u32 = 0,
+    shm_id: u32 = 0,
+    wm_base_id: u32 = 0,
+    surface_id: u32 = 0,
+    xdg_surface_id: u32 = 0,
+    toplevel_id: u32 = 0,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     seat_capabilities: u32 = 0,
@@ -205,24 +205,23 @@ const Client = struct {
 
     fn run(self: *Client) !void {
         try self.getRegistry();
-        try self.roundtrip(3);
+        try self.roundtrip();
 
         if (self.caps.compositor.name == 0) return error.WaylandCompositorMissing;
         if (self.caps.shm.name == 0) return error.WaylandShmMissing;
         if (self.caps.xdg_wm_base.name == 0) return error.WaylandXdgWmBaseMissing;
 
         try self.bindGlobals();
-        try self.roundtrip(7);
+        try self.roundtrip();
         self.logCapabilities();
         if (!self.saw_xrgb8888) return error.WaylandShmXrgb8888Missing;
         try self.createKeyboardIfAvailable();
-        if (self.keyboard_id != 0) try self.roundtrip(self.allocId());
+        if (self.keyboard_id != 0) try self.roundtrip();
 
         try self.createShellObjects();
         try self.waitForConfigure();
-        try self.redraw();
         try self.ensureSessionGrid();
-        self.requestRedraw();
+        _ = try self.redraw();
 
         std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
         log.appendLine("linux", "Wayland terminal window mapped", .{});
@@ -247,13 +246,22 @@ const Client = struct {
     }
 
     fn bindGlobals(self: *Client) !void {
-        try self.bind(self.caps.compositor.name, "wl_compositor", @min(self.caps.compositor.version, 4), compositor_id);
-        try self.bind(self.caps.shm.name, "wl_shm", 1, shm_id);
-        try self.bind(self.caps.xdg_wm_base.name, "xdg_wm_base", 1, wm_base_id);
+        self.compositor_id = self.allocId();
+        try self.bind(self.caps.compositor.name, "wl_compositor", @min(self.caps.compositor.version, 4), self.compositor_id);
+        self.shm_id = self.allocId();
+        try self.bind(self.caps.shm.name, "wl_shm", 1, self.shm_id);
+        self.wm_base_id = self.allocId();
+        try self.bind(self.caps.xdg_wm_base.name, "xdg_wm_base", 1, self.wm_base_id);
         if (self.caps.seat.name != 0) {
             self.seat_id = self.allocId();
             try self.bind(self.caps.seat.name, "wl_seat", @min(self.caps.seat.version, 7), self.seat_id);
         }
+        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={}", .{
+            self.compositor_id,
+            self.shm_id,
+            self.wm_base_id,
+            self.seat_id,
+        });
     }
 
     fn createKeyboardIfAvailable(self: *Client) !void {
@@ -269,12 +277,20 @@ const Client = struct {
     }
 
     fn createShellObjects(self: *Client) !void {
-        try self.sendNewId(compositor_id, 0, surface_id);
-        try self.sendArgs(wm_base_id, 2, &.{ xdg_surface_id, surface_id });
-        try self.sendNewId(xdg_surface_id, 1, toplevel_id);
-        try self.sendString(toplevel_id, 2, "TildaZ");
-        try self.sendString(toplevel_id, 3, "tildaz");
-        try self.sendNoArgs(surface_id, 6);
+        self.surface_id = self.allocId();
+        try self.sendNewId(self.compositor_id, 0, self.surface_id);
+        self.xdg_surface_id = self.allocId();
+        try self.sendArgs(self.wm_base_id, 2, &.{ self.xdg_surface_id, self.surface_id });
+        self.toplevel_id = self.allocId();
+        try self.sendNewId(self.xdg_surface_id, 1, self.toplevel_id);
+        try self.sendString(self.toplevel_id, 2, "TildaZ");
+        try self.sendString(self.toplevel_id, 3, "tildaz");
+        try self.sendNoArgs(self.surface_id, 6);
+        log.appendLine("wayland", "shell objects surface_id={} xdg_surface_id={} toplevel_id={}", .{
+            self.surface_id,
+            self.xdg_surface_id,
+            self.toplevel_id,
+        });
     }
 
     fn waitForConfigure(self: *Client) !void {
@@ -300,8 +316,9 @@ const Client = struct {
 
     fn maybeRedraw(self: *Client) !void {
         if (!self.needs_redraw) return;
-        try self.redraw();
-        self.needs_redraw = false;
+        if (try self.redraw()) {
+            self.needs_redraw = false;
+        }
     }
 
     fn gridSize(self: *const Client) struct { cols: u16, rows: u16 } {
@@ -340,8 +357,9 @@ const Client = struct {
         log.appendLine("linux", "terminal session created cols={} rows={}", .{ grid.cols, grid.rows });
     }
 
-    fn redraw(self: *Client) !void {
+    fn redraw(self: *Client) !bool {
         self.applyPendingSize();
+        self.discardReleasedRetiredBuffersExcept(self.window_width, self.window_height);
         if (self.active_buffer) |*buffer| {
             if (buffer.width == self.window_width and buffer.height == self.window_height) {
                 if (buffer.released) {
@@ -350,21 +368,29 @@ const Client = struct {
                     buffer.released = false;
                     self.mapped = true;
                     log.appendLine("wayland", "redraw reuse {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
-                    return;
+                    return true;
                 }
             }
-            try self.retireActiveBuffer();
         }
 
-        var buffer = try self.createBuffer(self.window_width, self.window_height);
+        var buffer = if (self.takeReusableBuffer(self.window_width, self.window_height)) |reusable| blk: {
+            log.appendLine("wayland", "redraw reuse retired {}x{} buffer_id={}", .{ self.window_width, self.window_height, reusable.id });
+            break :blk reusable;
+        } else blk: {
+            if (self.bufferCountForSize(self.window_width, self.window_height) >= max_buffers_per_size) return false;
+            break :blk try self.createBuffer(self.window_width, self.window_height);
+        };
         errdefer {
             self.destroyBufferObject(buffer.id);
             buffer.deinit();
         }
+        self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+        try self.retireActiveBuffer();
         try self.attachAndCommit(buffer);
         self.active_buffer = buffer;
         self.mapped = true;
         log.appendLine("wayland", "redraw {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
+        return true;
     }
 
     fn retireActiveBuffer(self: *Client) !void {
@@ -378,6 +404,40 @@ const Client = struct {
             }
             self.active_buffer = null;
         }
+    }
+
+    fn discardReleasedRetiredBuffersExcept(self: *Client, width: i32, height: i32) void {
+        var i: usize = 0;
+        while (i < self.retired_buffers.items.len) {
+            const buffer = &self.retired_buffers.items[i];
+            if (buffer.released and (buffer.width != width or buffer.height != height)) {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                _ = self.retired_buffers.orderedRemove(i);
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    fn takeReusableBuffer(self: *Client, width: i32, height: i32) ?ShmBuffer {
+        for (self.retired_buffers.items, 0..) |*buffer, i| {
+            if (buffer.released and buffer.width == width and buffer.height == height) {
+                return self.retired_buffers.orderedRemove(i);
+            }
+        }
+        return null;
+    }
+
+    fn bufferCountForSize(self: *const Client, width: i32, height: i32) usize {
+        var count: usize = 0;
+        if (self.active_buffer) |buffer| {
+            if (buffer.width == width and buffer.height == height) count += 1;
+        }
+        for (self.retired_buffers.items) |buffer| {
+            if (buffer.width == width and buffer.height == height) count += 1;
+        }
+        return count;
     }
 
     fn createBuffer(self: *Client, width: i32, height: i32) !ShmBuffer {
@@ -452,17 +512,18 @@ const Client = struct {
     }
 
     fn attachAndCommit(self: *Client, buffer: ShmBuffer) !void {
-        try self.sendArgs(surface_id, 1, &.{ buffer.id, 0, 0 });
-        try self.sendArgs(surface_id, 2, &.{
+        try self.sendArgs(self.surface_id, 1, &.{ buffer.id, 0, 0 });
+        try self.sendArgs(self.surface_id, 2, &.{
             0,
             0,
             @intCast(buffer.width),
             @intCast(buffer.height),
         });
-        try self.sendNoArgs(surface_id, 6);
+        try self.sendNoArgs(self.surface_id, 6);
     }
 
-    fn roundtrip(self: *Client, callback_id: u32) !void {
+    fn roundtrip(self: *Client) !void {
+        const callback_id = self.allocId();
         self.wait_callback_id = callback_id;
         self.wait_callback_done = false;
         try self.sendNewId(display_id, 0, callback_id);
@@ -580,7 +641,7 @@ const Client = struct {
             self.wait_callback_done = true;
             return;
         }
-        if (id == shm_id and opcode == 0 and payload.len >= 4) {
+        if (id == self.shm_id and opcode == 0 and payload.len >= 4) {
             const fmt = readU32(payload[0..4]);
             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
             return;
@@ -594,20 +655,20 @@ const Client = struct {
             return;
         }
         if (self.handleBufferEvent(id, opcode)) return;
-        if (id == wm_base_id and opcode == 0 and payload.len >= 4) {
-            try self.sendArgs(wm_base_id, 3, &.{readU32(payload[0..4])});
+        if (id == self.wm_base_id and opcode == 0 and payload.len >= 4) {
+            try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
             return;
         }
-        if (id == toplevel_id and opcode == 0) {
+        if (id == self.toplevel_id and opcode == 0) {
             try self.handleToplevelConfigure(payload);
             return;
         }
-        if (id == toplevel_id and opcode == 1) {
+        if (id == self.toplevel_id and opcode == 1) {
             self.running = false;
             return;
         }
-        if (id == xdg_surface_id and opcode == 0 and payload.len >= 4) {
-            try self.sendArgs(xdg_surface_id, 4, &.{readU32(payload[0..4])});
+        if (id == self.xdg_surface_id and opcode == 0 and payload.len >= 4) {
+            try self.sendArgs(self.xdg_surface_id, 4, &.{readU32(payload[0..4])});
             self.applyPendingSize();
             if (self.session != null) try self.ensureSessionGrid();
             self.configured = true;
@@ -727,11 +788,9 @@ const Client = struct {
             }
         }
 
-        for (self.retired_buffers.items, 0..) |*buffer, i| {
+        for (self.retired_buffers.items) |*buffer| {
             if (buffer.id == id) {
-                self.destroyBufferObject(buffer.id);
-                buffer.deinit();
-                _ = self.retired_buffers.orderedRemove(i);
+                buffer.released = true;
                 return true;
             }
         }
@@ -796,7 +855,7 @@ const Client = struct {
     }
 
     fn sendCreatePool(self: *Client, fd: posix.fd_t, size: i32, pool_id: u32) !void {
-        var msg = Msg.init(shm_id, 0);
+        var msg = Msg.init(self.shm_id, 0);
         try msg.putU32(pool_id);
         try msg.putI32(size);
         try msg.sendWithFd(self.stream, fd);
