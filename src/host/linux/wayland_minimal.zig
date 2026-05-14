@@ -367,16 +367,14 @@ const Client = struct {
                     try self.attachAndCommit(buffer.*);
                     buffer.released = false;
                     self.mapped = true;
-                    log.appendLine("wayland", "redraw reuse {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
                     return true;
                 }
             }
         }
 
-        var buffer = if (self.takeReusableBuffer(self.window_width, self.window_height)) |reusable| blk: {
-            log.appendLine("wayland", "redraw reuse retired {}x{} buffer_id={}", .{ self.window_width, self.window_height, reusable.id });
-            break :blk reusable;
-        } else blk: {
+        var buffer = if (self.takeReusableBuffer(self.window_width, self.window_height)) |reusable|
+            reusable
+        else blk: {
             if (self.bufferCountForSize(self.window_width, self.window_height) >= max_buffers_per_size) return false;
             break :blk try self.createBuffer(self.window_width, self.window_height);
         };
@@ -389,7 +387,6 @@ const Client = struct {
         try self.attachAndCommit(buffer);
         self.active_buffer = buffer;
         self.mapped = true;
-        log.appendLine("wayland", "redraw {}x{} buffer_id={}", .{ self.window_width, self.window_height, buffer.id });
         return true;
     }
 
