@@ -30,14 +30,19 @@ milestone 상태를 정확히 남기는 용도다.
 2026-05-14, UTM Debian Wayland 환경에서 확인된 상태다.
 
 - Branch: `linux-wayland-bringup`
-- Commit: `5a1dcad`
+- Commit: `41fc461`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
-- 결과: normal Wayland terminal window가 뜬다.
-- shell 출력이 보인다.
-- typing이 PTY로 들어간다.
-- Backspace가 동작한다.
-- `exit` 명령으로 shell/app이 종료된다.
-- 같은 크기의 `wl_shm` buffer는 2개 생성 후 재사용된다.
+
+| 영역 | 상태 |
+|---|---|
+| normal Wayland terminal window | 동작 |
+| shell 출력 표시 | 동작 |
+| typing → PTY | 동작 (lowercase / uppercase 시각 구분 포함) |
+| Backspace / `exit` / shell exit | 동작 |
+| `wl_shm` buffer lifecycle | 같은 크기 buffer 2 개 reuse, churn 없음 |
+| 마우스 좌클릭 + 드래그 selection | 동작 (셀 영역 색 반전 표시). 자동 clipboard copy 는 미구현 |
+| 휠 스크롤 (scrollback) | 동작 |
+| 로그 noise | bring-up 단계 매 frame redraw 로그 제거, lifecycle 변화 이벤트만 |
 
 사용자 제공 로그에서 확인된 capability:
 
@@ -49,26 +54,32 @@ zwlr_layer_shell_v1=true
 zwp_text_input_manager_v3=true
 ```
 
-buffer lifecycle 확인:
+41fc461 시연 로그 (47 초 사용 + 마우스 드래그 + 휠 + shell exit):
 
 ```text
-create shm buffer 640x420 ... buffer_id=15
-create shm buffer 640x420 ... buffer_id=17
-redraw reuse retired 640x420 buffer_id=15
-redraw reuse 640x420 buffer_id=15
-redraw reuse retired 640x420 buffer_id=17
-redraw reuse 640x420 buffer_id=17
+[boot] tildaz v0.4.3  pid=...
+[wayland] bound globals compositor_id=4 shm_id=5 wm_base_id=6 seat_id=7
+[wayland] keyboard object created keyboard_id=9
+[wayland] pointer object created pointer_id=10
+[wayland] capabilities compositor=true shm=true xdg_wm_base=true layer_shell=true text_input_v3=true shm_xrgb8888=true
+[wayland] keyboard repeat rate=25 delay=600
+[wayland] keyboard keymap loaded size=64822
+[wayland] shell objects surface_id=12 xdg_surface_id=13 toplevel_id=14
+[linux] terminal session created cols=78 rows=25
+[wayland] create shm buffer 640x420 stride=2560 size=1075200 pool_id=15 buffer_id=16
+[linux] Wayland terminal window mapped
+[wayland] create shm buffer 640x420 stride=2560 size=1075200 pool_id=17 buffer_id=18
+[tab] shell exited: title=Tab 1
+[exit] tildaz v0.4.3  pid=...
 ```
 
 판정:
 
-- 이전 `wl_registry#2.bind invalid arguments` protocol error는 해결됐다.
-- 이전 green placeholder 고정 문제는 해결됐다.
-- 이전 black screen 후 redraw가 멈추는 문제는 해결됐다.
-- 이전 unbounded `wl_shm` buffer churn은 해결됐다.
-- 지금은 “아주 초기 normal terminal window” 단계다. first alpha라고 부르기에는
-  selection / copy / paste / real font / Unicode / drop-down / global shortcut /
-  IME가 아직 부족하다.
+- 이전 protocol / green placeholder / black screen / buffer churn 회귀는 그대로 해결 상태 유지.
+- 이전에 보였던 매 frame `redraw ...` / `redraw reuse ...` / `redraw reuse retired ...` 로그는 정리돼 lifecycle 이벤트만 보임 ([commit 54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65)).
+- 이전에 보였던 "모두 대문자처럼 보임" 현상은 임시 renderer 의 glyph table 매핑 버그로 확정 후 분리 ([commit c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)).
+- 마우스 selection drag + 휠 scroll 동작 추가 ([commit 41fc461](https://github.com/ensky0/tildaz/commit/41fc461)).
+- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 휠 scroll" 단계. first alpha 라고 부르기에는 clipboard copy / paste / real font / Unicode / drop-down / global shortcut / IME 가 아직 부족하다.
 
 ## 현재 제한 사항
 
@@ -82,49 +93,33 @@ buffer에 직접 그려서 PTY - parser - resize - frame lifecycle을 먼저 검
 이 renderer는 최종 renderer가 아니다. EGL/OpenGL, fontconfig, FreeType,
 HarfBuzz가 붙기 전까지의 bring-up용 경로다.
 
-### 소문자가 대문자처럼 보이는 현상
+### 해소된 limitation (history 기록용)
 
-사용자 테스트에서 “모두 대문자로 나온다”는 현상이 관찰됐다.
+이 섹션은 이전에 관찰됐다가 fix 된 limitation 을 짧게 기록만 남긴다.
+재현 가능성 / 회귀 탐지를 위해 본문은 issue 와 commit 으로.
 
-현재 확인된 코드 근거상, 이 현상은 입력이 실제로 대문자로 바뀌는 버그라고
-단정하면 안 된다. 임시 renderer의 bitmap glyph table이 소문자와 대문자에 같은
-5x7 glyph를 배정하고 있다.
-
-예:
-
-```zig
-'A', 'a' => ...
-'B', 'b' => ...
-'C', 'c' => ...
-```
-
-즉 현재 상태에서는 `echo hi`를 입력해도 내부 terminal에는 lowercase가 들어갔을
-수 있지만, 화면 표시 glyph가 uppercase처럼 보일 수 있다.
-
-다음 작업자가 확인해야 할 것:
-
-- PTY로 실제 전달되는 bytes가 lowercase인지 확인한다.
-- `src/host/linux/wayland_minimal.zig`의 keyboard path에 짧은 debug log를 넣어
-  `key`, `xkb_key`, `keysym`, `utf8 bytes`를 확인한다.
-- lowercase bytes가 정상이라면 이 문제는 L5 real font renderer에서 자연스럽게
-  해결된다.
-- bytes 자체가 uppercase라면 L6 `libxkbcommon` state / modifier handling 버그로
-  처리한다.
+| limitation | 해소 commit | 원인 |
+|---|---|---|
+| "모두 대문자처럼 보임" | [c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8) | 임시 5x7 glyph table 이 `'A','a' => same` 매핑. PTY byte 는 정상 lowercase 였으나 화면이 어긋남. [#189 결과 코멘트](https://github.com/ensky0/tildaz/issues/189#issuecomment-4446871720). |
+| 매 frame `redraw ...` 로그 noise | [54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65) | bring-up 디버깅용 로그 3 줄이 frame 마다 출력. lifecycle 이벤트만 유지로 정리. |
 
 ### 아직 검증되지 않은 것
 
-- mouse selection
-- scrollback interaction
-- copy
-- paste
-- tab shortcuts
-- resize UX polish
-- Hangul / CJK / emoji / combining marks / grapheme cluster / block elements
-- layer-shell drop-down
-- global shortcut
-- IME pre-edit / commit
-- `.desktop` / packaging / autostart
-- compositor별 차이: GNOME, KDE Plasma, wlroots 계열
+| 항목 | 상태 |
+|---|---|
+| selection finish 시 자동 clipboard copy | 미구현 (L6.2 대기) |
+| 우클릭 paste / 단축키 paste | 미구현 (L6.3 / L6.4 대기) |
+| 단축키 copy (Ctrl+Shift+C) | 미구현 (L6.4 대기) |
+| 더블클릭 word selection | 미구현 (L6.7 대기) |
+| 스크롤바 클릭 / 드래그 | 미구현 (L6.6 대기) |
+| pointer cursor 모양 (I-beam) | 미구현 — `wl_pointer.set_cursor` 미호출. compositor 가 default 화살표 또는 cursor 미표시 가능 |
+| resize UX polish | 미검증 |
+| Hangul / CJK / emoji / combining mark / grapheme cluster / block element | 미구현 (L5 real font 후) |
+| layer-shell drop-down | 미구현 (L8 대기) |
+| global shortcut | 미구현 (L9 대기) |
+| IME pre-edit / commit | 미구현 (L10 대기) |
+| `.desktop` / packaging / autostart | 미구현 (L11 대기) |
+| compositor 별 차이 (GNOME / KDE Plasma / wlroots 계열) | 미검증 — 현재 UTM Debian Wayland 한 환경에서만 검증 |
 
 ## Support Tier 정의
 
@@ -227,9 +222,9 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L1 | Linux build skeleton | 완료 | Linux target이 generic unsupported host가 아니라 Linux host boundary로 들어간다. |
 | L2 | POSIX PTY | smoke scope 완료 | UTM Linux에서 `/bin/sh` PTY smoke test 성공. |
 | L3 | Wayland baseline window | normal `xdg-shell` scope 완료 | Wayland window open/map/close와 capability logging 확인. |
-| L4 | EGL/OpenGL renderer | 부분 완료, 단 EGL/OpenGL은 아님 | 임시 software `wl_shm` renderer로 terminal grid는 보임. final GPU renderer는 아직. |
-| L5 | Fonts | 대기 | 현재는 small bitmap glyph table. fontconfig + FreeType + HarfBuzz 미구현. |
-| L6 | Input and clipboard | keyboard만 부분 완료 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. typing / Backspace / `exit` 확인. mouse selection, scroll, copy, paste, tab shortcuts 대기. |
+| L4 | EGL/OpenGL renderer | 부분 완료, 단 EGL/OpenGL은 아님 | 임시 software `wl_shm` renderer로 terminal grid 보임. lowercase / uppercase 5x7 glyph 분리 ([c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)). final GPU renderer는 아직. |
+| L5 | Fonts | 대기 | 현재는 small bitmap glyph table. fontconfig + FreeType + HarfBuzz 미구현. Latin lowercase / uppercase 시각 구분만 임시로 확보. |
+| L6 | Input and clipboard | keyboard + mouse selection drag + 휠 scroll 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 남은 sub-task: clipboard copy 자동 / 단축키 copy / paste / 더블클릭 word selection / 스크롤바 클릭·드래그 / pointer cursor 모양. |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
 | L8 | Layer-shell drop-down | 대기 | 테스트 session에서 `zwlr_layer_shell_v1`은 광고되지만 layer-shell surface는 아직 미구현. |
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. |
@@ -263,16 +258,24 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서:
+우선순위가 높은 순서. 41fc461 까지 완료된 항목은 ✅ 표시.
 
-1. 현재 “소문자가 대문자처럼 보이는” 현상을 입력 문제인지 renderer 문제인지 확정한다.
-   현재 코드 근거상 renderer limitation 가능성이 높다.
-2. 임시 renderer 로그를 줄인다. 지금 `redraw reuse...` 로그는 bring-up에는
-   유용하지만 장기 실행에는 너무 많다.
-3. mouse selection / scroll / copy / paste 중 하나를 L6 후반 작업으로 시작한다.
-4. real font path를 시작한다. 최소 Latin lowercase 분리부터 확인하고,
-   이후 Hangul/CJK/emoji/block으로 확장한다.
-5. layer-shell prototype을 별도 작은 milestone로 진행한다.
+| 순서 | 작업 | 상태 |
+|---|---|---|
+| 1 | "소문자가 대문자처럼 보임" 원인 확정 + fix | ✅ [c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8) — renderer limitation 으로 확정, lowercase glyph 분리 |
+| 2 | 임시 renderer 로그 noise 감소 | ✅ [54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65) — 매 frame redraw 로그 3 줄 제거 |
+| 3 | L6.1 mouse selection drag + L6.5 휠 scroll | ✅ [41fc461](https://github.com/ensky0/tildaz/commit/41fc461) — `wl_pointer` 도입 |
+| 4 | L6.2 selection finish 자동 clipboard copy | 대기 — `wl_data_device_manager` / `wl_data_source` 도입 필요. selection 끝 → fd write → clipboard. |
+| 5 | L6.3 우클릭 paste | 대기 — `wl_data_offer` 도입 필요. paste fd 비동기 읽기 + PTY write. |
+| 6 | L6.4 단축키 copy / paste (Ctrl+Shift+C / V) | 대기 — keyboard path + L6.2 / L6.3 의 clipboard wrapper 재사용. |
+| 7 | L6.7 더블클릭 word selection | 대기 — click count 추적 + 공유 [`terminal_interaction.selectWord`](src/terminal_interaction.zig) 호출. |
+| 8 | L6.6 스크롤바 클릭 + 드래그 | 대기 — hit test + cross-platform `ScrollbarDragState`. |
+| 9 | pointer cursor 모양 (I-beam) | small follow-up — `wl_pointer.set_cursor` + cursor theme 로딩. 셀 영역 hover 시 I-beam. |
+| 10 | L5 real font stack | 대기 — fontconfig discovery + FreeType raster + HarfBuzz shaping. Latin / Hangul / CJK / emoji / block element 순차. |
+| 11 | L8 layer-shell drop-down prototype | 대기 — `zwlr_layer_shell_v1` 광고 확인됨. anchor / exclusive zone / monitor 선택 검증. |
+| 12 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. |
+| 13 | L10 IME | 대기 — `zwp_text_input_manager_v3` pre-edit / commit path. |
+| 14 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
 
 ## Source Notes
 
