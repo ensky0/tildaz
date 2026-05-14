@@ -10,6 +10,8 @@ const linux = std.os.linux;
 const posix = std.posix;
 const session_core = @import("../../session_core.zig");
 const terminal_backend = @import("../../terminal.zig");
+const terminal_interaction = @import("../../terminal_interaction.zig");
+const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
 const log = @import("../../log.zig");
 const software_terminal = @import("software_terminal.zig");
@@ -28,11 +30,22 @@ const default_theme = &themes.themes[0];
 const shell_path = "/bin/sh";
 const frame_poll_ms: i32 = 16;
 const max_buffers_per_size: usize = 2;
+const wl_seat_capability_pointer: u32 = 1;
 const wl_seat_capability_keyboard: u32 = 2;
 const wl_keyboard_keymap_format_xkb_v1: u32 = 1;
 const wl_keyboard_key_state_pressed: u32 = 1;
 const wl_keyboard_key_state_repeated: u32 = 2;
 const wayland_xkb_keycode_offset: u32 = 8;
+
+// Linux input-event-codes BTN_LEFT.
+const wl_pointer_button_left: u32 = 0x110;
+const wl_pointer_button_state_released: u32 = 0;
+const wl_pointer_button_state_pressed: u32 = 1;
+const wl_pointer_axis_vertical: u32 = 0;
+
+// wl_seat opcodes (request side, used by `get_pointer` / `get_keyboard`).
+const wl_seat_request_get_pointer: u16 = 0;
+const wl_seat_request_get_keyboard: u16 = 1;
 
 const xkb_key_backspace: u32 = 0xff08;
 const xkb_key_tab: u32 = 0xff09;
@@ -169,8 +182,12 @@ const Client = struct {
     toplevel_id: u32 = 0,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
+    pointer_id: u32 = 0,
     seat_capabilities: u32 = 0,
     keyboard: xkb.Keyboard = .{},
+    pointer_x_px: i32 = -1,
+    pointer_y_px: i32 = -1,
+    pointer_inside: bool = false,
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -272,8 +289,20 @@ const Client = struct {
         }
 
         self.keyboard_id = self.allocId();
-        try self.sendNewId(self.seat_id, 1, self.keyboard_id);
+        try self.sendNewId(self.seat_id, wl_seat_request_get_keyboard, self.keyboard_id);
         log.appendLine("wayland", "keyboard object created keyboard_id={}", .{self.keyboard_id});
+    }
+
+    fn createPointerIfAvailable(self: *Client) !void {
+        if (self.seat_id == 0 or self.pointer_id != 0) return;
+        if ((self.seat_capabilities & wl_seat_capability_pointer) == 0) {
+            log.appendLine("wayland", "wl_seat has no pointer capability", .{});
+            return;
+        }
+
+        self.pointer_id = self.allocId();
+        try self.sendNewId(self.seat_id, wl_seat_request_get_pointer, self.pointer_id);
+        log.appendLine("wayland", "pointer object created pointer_id={}", .{self.pointer_id});
     }
 
     fn createShellObjects(self: *Client) !void {
@@ -651,6 +680,10 @@ const Client = struct {
             try self.handleKeyboardEvent(opcode, payload);
             return;
         }
+        if (self.pointer_id != 0 and id == self.pointer_id) {
+            try self.handlePointerEvent(opcode, payload);
+            return;
+        }
         if (self.handleBufferEvent(id, opcode)) return;
         if (id == self.wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
@@ -678,6 +711,7 @@ const Client = struct {
         if (opcode == 0 and payload.len >= 4) {
             self.seat_capabilities = readU32(payload[0..4]);
             if (self.keyboard_id == 0) try self.createKeyboardIfAvailable();
+            if (self.pointer_id == 0) try self.createPointerIfAvailable();
             return;
         }
     }
@@ -755,6 +789,117 @@ const Client = struct {
             readI32(payload[0..4]),
             readI32(payload[4..8]),
         });
+    }
+
+    fn handlePointerEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        switch (opcode) {
+            0 => self.handlePointerEnter(payload),
+            1 => self.handlePointerLeave(payload),
+            2 => self.handlePointerMotion(payload),
+            3 => self.handlePointerButton(payload),
+            4 => self.handlePointerAxis(payload),
+            else => {},
+        }
+    }
+
+    /// wl_pointer.enter(serial, surface, surface_x_fixed, surface_y_fixed).
+    fn handlePointerEnter(self: *Client, payload: []const u8) void {
+        if (payload.len < 16) return;
+        // payload[0..4]=serial, payload[4..8]=surface object id (우리 surface_id).
+        const sx = readI32(payload[8..12]);
+        const sy = readI32(payload[12..16]);
+        self.pointer_x_px = wlFixedToPx(sx);
+        self.pointer_y_px = wlFixedToPx(sy);
+        self.pointer_inside = true;
+    }
+
+    /// wl_pointer.leave(serial, surface) — drag 중이면 selection 은 유지.
+    /// SPEC.md §3 / macOS `tildazMouseUp` 패턴 — drag 종료는 button release 에서만.
+    fn handlePointerLeave(self: *Client, payload: []const u8) void {
+        _ = payload;
+        self.pointer_inside = false;
+        self.pointer_x_px = -1;
+        self.pointer_y_px = -1;
+    }
+
+    /// wl_pointer.motion(time, surface_x_fixed, surface_y_fixed).
+    fn handlePointerMotion(self: *Client, payload: []const u8) void {
+        if (payload.len < 12) return;
+        // payload[0..4]=time.
+        const sx = readI32(payload[4..8]);
+        const sy = readI32(payload[8..12]);
+        self.pointer_x_px = wlFixedToPx(sx);
+        self.pointer_y_px = wlFixedToPx(sy);
+
+        const tab = self.activeTabOrNull() orelse return;
+        if (!tab.interaction.selection.active) return;
+        const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
+        tab.interaction.selection.update(tab.terminal.screens.active, cell);
+        self.requestRedraw();
+    }
+
+    /// wl_pointer.button(serial, time, button, state).
+    fn handlePointerButton(self: *Client, payload: []const u8) void {
+        if (payload.len < 16) return;
+        const button = readU32(payload[8..12]);
+        const state = readU32(payload[12..16]);
+        if (button != wl_pointer_button_left) return;
+
+        const tab = self.activeTabOrNull() orelse return;
+        switch (state) {
+            wl_pointer_button_state_pressed => {
+                const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
+                tab.interaction.selection.begin(tab.terminal.screens.active, cell);
+                self.requestRedraw();
+            },
+            wl_pointer_button_state_released => {
+                if (tab.interaction.selection.finish()) self.requestRedraw();
+            },
+            else => {},
+        }
+    }
+
+    /// wl_pointer.axis(time, axis, value).
+    ///
+    /// 변환: wayland axis value 는 wl_fixed_t. mouse wheel 한 notch ≈ 10.0 (=2560 fixed).
+    /// 부호는 wayland 가 *positive=scroll down* (content 가 위로 이동) 인 반면
+    /// 우리 `ScrollEvent.wheel` 은 Windows 패턴 (positive=notch up = view 위로) — 부호 반전.
+    /// Magnitude: 한 notch 당 wheel=120 (Windows WHEEL_DELTA 표준), session_core 의
+    /// `@divTrunc(raw, 40)` 로 3 lines 가 default 가 되는 흐름과 호환.
+    fn handlePointerAxis(self: *Client, payload: []const u8) void {
+        if (payload.len < 12) return;
+        const axis = readU32(payload[4..8]);
+        if (axis != wl_pointer_axis_vertical) return;
+        const value_fixed = readI32(payload[8..12]);
+
+        // 한 notch (2560) → -120, 부호 반전 + magnitude 정규화.
+        const wheel_i32: i32 = -@divTrunc(value_fixed * 120, 2560);
+        if (wheel_i32 == 0) return;
+        const wheel_i16: i16 = @intCast(std.math.clamp(wheel_i32, -32768, 32767));
+
+        if (self.session) |*session| {
+            const visible_rows: u16 = visibleRowCount(self.window_height);
+            const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
+            if (did) self.requestRedraw();
+        }
+    }
+
+    /// surface pixel → grid cell. padding 영역 / grid 범위 밖이면 null.
+    fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
+        if (px < software_terminal.padding_px or py < software_terminal.padding_px) return null;
+        const tab = self.activeTabOrNull() orelse return null;
+        const col_i32: i32 = @divTrunc(px - software_terminal.padding_px, software_terminal.cell_width_px);
+        const row_i32: i32 = @divTrunc(py - software_terminal.padding_px, software_terminal.cell_height_px);
+        if (col_i32 < 0 or row_i32 < 0) return null;
+        const cols_i32: i32 = @intCast(tab.terminal.cols);
+        const rows_i32: i32 = @intCast(tab.terminal.rows);
+        if (col_i32 >= cols_i32 or row_i32 >= rows_i32) return null;
+        return .{ .col = @intCast(col_i32), .row = @intCast(row_i32) };
+    }
+
+    fn activeTabOrNull(self: *Client) ?*session_core.Tab {
+        if (self.session) |*session| return session.activeTab();
+        return null;
     }
 
     fn takeReceivedFd(self: *Client) !posix.fd_t {
@@ -1028,6 +1173,23 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
             writeU32(memory[y * s + x * 4 ..][0..4], color);
         }
     }
+}
+
+/// wl_fixed_t (signed 24.8 fixed-point packed in i32) → integer pixel.
+/// surface 좌표는 음수가 정상 흐름엔 안 들어오지만, leave 직후 등 edge case 대비
+/// `@divTrunc` 로 0 방향 정수 변환 — pixelToCell 의 범위 검사가 음수 reject.
+fn wlFixedToPx(value: i32) i32 {
+    return @divTrunc(value, 256);
+}
+
+/// 현재 window_height 에서 grid 가 그릴 수 있는 row 수. SessionCore.scrollActive
+/// 의 visible_rows 인자에 사용 — page scroll 계산용. wheel scroll 자체는 wheel
+/// 값 (i16) 만 보지만 인터페이스 합치기 위해 같이 전달.
+fn visibleRowCount(window_height: i32) u16 {
+    const usable = @max(0, window_height - software_terminal.padding_px * 2);
+    const rows_i32 = @divTrunc(usable, software_terminal.cell_height_px);
+    if (rows_i32 <= 0) return 1;
+    return @intCast(@min(rows_i32, std.math.maxInt(u16)));
 }
 
 fn readU32(bytes: *const [4]u8) u32 {
