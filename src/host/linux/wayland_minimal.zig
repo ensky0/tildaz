@@ -47,6 +47,15 @@ const wl_pointer_axis_vertical: u32 = 0;
 const wl_seat_request_get_pointer: u16 = 0;
 const wl_seat_request_get_keyboard: u16 = 1;
 
+// wl_data_device_manager / wl_data_device / wl_data_source opcodes (request side).
+const wl_data_device_manager_request_create_data_source: u16 = 0;
+const wl_data_device_manager_request_get_data_device: u16 = 1;
+const wl_data_source_request_offer: u16 = 0;
+const wl_data_source_request_destroy: u16 = 1;
+const wl_data_device_request_set_selection: u16 = 1;
+
+const clipboard_mime_utf8: []const u8 = "text/plain;charset=utf-8";
+
 const xkb_key_backspace: u32 = 0xff08;
 const xkb_key_tab: u32 = 0xff09;
 const xkb_key_return: u32 = 0xff0d;
@@ -83,6 +92,7 @@ const Capabilities = struct {
     seat: Global = .{},
     layer_shell: Global = .{},
     text_input_v3: Global = .{},
+    data_device_manager: Global = .{},
 
     fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
         if (std.mem.eql(u8, interface, "wl_compositor")) {
@@ -97,6 +107,8 @@ const Capabilities = struct {
             self.layer_shell = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "zwp_text_input_manager_v3")) {
             self.text_input_v3 = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "wl_data_device_manager")) {
+            self.data_device_manager = .{ .name = name, .version = version };
         }
     }
 };
@@ -188,6 +200,11 @@ const Client = struct {
     pointer_x_px: i32 = -1,
     pointer_y_px: i32 = -1,
     pointer_inside: bool = false,
+    data_device_manager_id: u32 = 0,
+    data_device_id: u32 = 0,
+    active_data_source_id: u32 = 0,
+    clipboard_text: ?[]const u8 = null,
+    last_serial: u32 = 0,
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -199,6 +216,7 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        self.clearClipboardOwnership();
         self.keyboard.deinit();
         for (self.received_fds.items) |fd| posix.close(fd);
         self.received_fds.deinit(self.allocator);
@@ -273,11 +291,21 @@ const Client = struct {
             self.seat_id = self.allocId();
             try self.bind(self.caps.seat.name, "wl_seat", @min(self.caps.seat.version, 7), self.seat_id);
         }
-        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={}", .{
+        if (self.caps.data_device_manager.name != 0) {
+            self.data_device_manager_id = self.allocId();
+            try self.bind(
+                self.caps.data_device_manager.name,
+                "wl_data_device_manager",
+                @min(self.caps.data_device_manager.version, 3),
+                self.data_device_manager_id,
+            );
+        }
+        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={}", .{
             self.compositor_id,
             self.shm_id,
             self.wm_base_id,
             self.seat_id,
+            self.data_device_manager_id,
         });
     }
 
@@ -303,6 +331,21 @@ const Client = struct {
         self.pointer_id = self.allocId();
         try self.sendNewId(self.seat_id, wl_seat_request_get_pointer, self.pointer_id);
         log.appendLine("wayland", "pointer object created pointer_id={}", .{self.pointer_id});
+    }
+
+    /// seat 와 data_device_manager 가 모두 있으면 wl_data_device 객체 생성.
+    /// clipboard 의 선결 조건. 없으면 자동 copy / paste 불가하지만 terminal 자체는
+    /// 정상 — graceful degrade.
+    fn createDataDeviceIfAvailable(self: *Client) !void {
+        if (self.data_device_id != 0) return;
+        if (self.seat_id == 0 or self.data_device_manager_id == 0) return;
+        self.data_device_id = self.allocId();
+        try self.sendArgs(
+            self.data_device_manager_id,
+            wl_data_device_manager_request_get_data_device,
+            &.{ self.data_device_id, self.seat_id },
+        );
+        log.appendLine("wayland", "data device created data_device_id={}", .{self.data_device_id});
     }
 
     fn createShellObjects(self: *Client) !void {
@@ -684,6 +727,14 @@ const Client = struct {
             try self.handlePointerEvent(opcode, payload);
             return;
         }
+        if (self.data_device_id != 0 and id == self.data_device_id) {
+            try self.handleDataDeviceEvent(opcode, payload);
+            return;
+        }
+        if (self.active_data_source_id != 0 and id == self.active_data_source_id) {
+            try self.handleDataSourceEvent(opcode, payload);
+            return;
+        }
         if (self.handleBufferEvent(id, opcode)) return;
         if (id == self.wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
@@ -712,6 +763,7 @@ const Client = struct {
             self.seat_capabilities = readU32(payload[0..4]);
             if (self.keyboard_id == 0) try self.createKeyboardIfAvailable();
             if (self.pointer_id == 0) try self.createPointerIfAvailable();
+            if (self.data_device_id == 0) try self.createDataDeviceIfAvailable();
             return;
         }
     }
@@ -756,6 +808,7 @@ const Client = struct {
 
     fn handleKeyboardKey(self: *Client, payload: []const u8) !void {
         if (payload.len < 16) return error.WaylandBadMessage;
+        self.last_serial = readU32(payload[0..4]);
         const key = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
         if (state != wl_keyboard_key_state_pressed and state != wl_keyboard_key_state_repeated) return;
@@ -805,7 +858,7 @@ const Client = struct {
     /// wl_pointer.enter(serial, surface, surface_x_fixed, surface_y_fixed).
     fn handlePointerEnter(self: *Client, payload: []const u8) void {
         if (payload.len < 16) return;
-        // payload[0..4]=serial, payload[4..8]=surface object id (우리 surface_id).
+        self.last_serial = readU32(payload[0..4]);
         const sx = readI32(payload[8..12]);
         const sy = readI32(payload[12..16]);
         self.pointer_x_px = wlFixedToPx(sx);
@@ -841,6 +894,7 @@ const Client = struct {
     /// wl_pointer.button(serial, time, button, state).
     fn handlePointerButton(self: *Client, payload: []const u8) void {
         if (payload.len < 16) return;
+        self.last_serial = readU32(payload[0..4]);
         const button = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
         if (button != wl_pointer_button_left) return;
@@ -853,7 +907,10 @@ const Client = struct {
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
-                if (tab.interaction.selection.finish()) self.requestRedraw();
+                if (tab.interaction.selection.finish()) {
+                    self.copyActiveSelection();
+                    self.requestRedraw();
+                }
             },
             else => {},
         }
@@ -881,6 +938,104 @@ const Client = struct {
             const visible_rows: u16 = visibleRowCount(self.window_height);
             const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
             if (did) self.requestRedraw();
+        }
+    }
+
+    /// wl_data_device 이벤트. 현재는 data_offer / enter / leave / motion / drop /
+    /// selection 전부 무시 — L6.3 paste 작업에서 selection 이벤트와 data_offer
+    /// 흐름을 본격 구현한다. 무시해도 우리 자동 copy 동작에는 영향 없음.
+    fn handleDataDeviceEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        _ = self;
+        _ = opcode;
+        _ = payload;
+    }
+
+    /// wl_data_source 이벤트 분기.
+    /// - opcode 1: send(mime, fd) — compositor 가 paste 요청. fd 에 우리 clipboard
+    ///   text 를 동기 write 후 close.
+    /// - opcode 2: cancelled — 다른 앱이 clipboard 점유. 우리 source 정리.
+    /// - 그 외 (target / dnd_*) — drag-and-drop 용이라 우리 흐름에 무관.
+    fn handleDataSourceEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        switch (opcode) {
+            1 => try self.handleDataSourceSend(payload),
+            2 => self.handleDataSourceCancelled(),
+            else => {},
+        }
+    }
+
+    fn handleDataSourceSend(self: *Client, payload: []const u8) !void {
+        _ = payload; // mime 문자열은 우리가 advertise 한 유일 mime 라 검사 생략.
+        const fd = self.takeReceivedFd() catch return;
+        defer posix.close(fd);
+
+        const text = self.clipboard_text orelse return;
+        // fd 가 pipe 이므로 한 번에 다 못 보낼 수 있다 — 짧은 selection 위주라
+        // loop 으로 끝까지 시도. SIGPIPE 는 wayland 가 자기 reader 쪽에서 처리한다.
+        var offset: usize = 0;
+        while (offset < text.len) {
+            const n = posix.write(fd, text[offset..]) catch return;
+            if (n == 0) break;
+            offset += n;
+        }
+    }
+
+    fn handleDataSourceCancelled(self: *Client) void {
+        self.clearClipboardOwnership();
+    }
+
+    /// 활성 탭의 ghostty selection 을 추출해 wayland clipboard owner 로 등록.
+    /// macOS / Windows 의 `tab_actions.copyActiveSelection` 와 결과 동등.
+    fn copyActiveSelection(self: *Client) void {
+        if (self.data_device_id == 0) return; // clipboard protocol 없음 — graceful.
+        const tab = self.activeTabOrNull() orelse return;
+        const screen = tab.terminal.screens.active;
+        const sel = screen.selection orelse return;
+        const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
+        if (text.len == 0) {
+            self.allocator.free(text);
+            return;
+        }
+        self.setClipboardText(text) catch {
+            self.allocator.free(text);
+        };
+    }
+
+    /// 새 clipboard text 로 owner 갱신. 기존 source 가 있으면 cleanup 후 새로.
+    /// `text` ownership 을 self 가 가져간다. 호출 후 호출자는 free 하지 않는다.
+    fn setClipboardText(self: *Client, text: []const u8) !void {
+        if (self.last_serial == 0) {
+            // 어떤 input event 도 아직 못 받았으면 wayland 가 set_selection 을 거부.
+            // 실용적으로 거의 불가능한 path 지만 안전상 명시.
+            self.allocator.free(text);
+            return;
+        }
+        self.clearClipboardOwnership();
+
+        const source_id = self.allocId();
+        try self.sendNewId(
+            self.data_device_manager_id,
+            wl_data_device_manager_request_create_data_source,
+            source_id,
+        );
+        try self.sendString(source_id, wl_data_source_request_offer, clipboard_mime_utf8);
+        try self.sendArgs(
+            self.data_device_id,
+            wl_data_device_request_set_selection,
+            &.{ source_id, self.last_serial },
+        );
+
+        self.active_data_source_id = source_id;
+        self.clipboard_text = text;
+    }
+
+    fn clearClipboardOwnership(self: *Client) void {
+        if (self.active_data_source_id != 0) {
+            self.sendNoArgs(self.active_data_source_id, wl_data_source_request_destroy) catch {};
+            self.active_data_source_id = 0;
+        }
+        if (self.clipboard_text) |buf| {
+            self.allocator.free(buf);
+            self.clipboard_text = null;
         }
     }
 
@@ -975,13 +1130,14 @@ const Client = struct {
         );
         log.appendLine(
             "wayland",
-            "capabilities compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} shm_xrgb8888={}",
+            "capabilities compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shm_xrgb8888={}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
                 self.caps.xdg_wm_base.name != 0,
                 layer,
                 text_input,
+                self.caps.data_device_manager.name != 0,
                 self.saw_xrgb8888,
             },
         );
