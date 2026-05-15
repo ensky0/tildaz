@@ -27,10 +27,10 @@ milestone 상태를 정확히 남기는 용도다.
 
 ## 현재 구현 상태
 
-2026-05-14, UTM Debian Wayland 환경에서 확인된 상태다.
+2026-05-15, UTM Debian Wayland 환경에서 확인된 상태다.
 
 - Branch: `linux-wayland-bringup`
-- Commit: `41fc461`
+- Commit: `441f894`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -40,7 +40,10 @@ milestone 상태를 정확히 남기는 용도다.
 | typing → PTY | 동작 (lowercase / uppercase 시각 구분 포함) |
 | Backspace / `exit` / shell exit | 동작 |
 | `wl_shm` buffer lifecycle | 같은 크기 buffer 2 개 reuse, churn 없음 |
-| 마우스 좌클릭 + 드래그 selection | 동작 (셀 영역 색 반전 표시). 자동 clipboard copy 는 미구현 |
+| 마우스 좌클릭 + 드래그 selection | 동작 (셀 영역 색 반전 표시) |
+| selection finish 자동 clipboard copy | 동작 (외부 앱에 paste 가능) |
+| 우클릭 paste | 동작 (외부 앱 clipboard 의 text 가 PTY 직송) |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` 단축키 | 동작 (Linux 도 Windows 와 동일 native modifier) |
 | 휠 스크롤 (scrollback) | 동작 |
 | 로그 noise | bring-up 단계 매 frame redraw 로그 제거, lifecycle 변화 이벤트만 |
 
@@ -54,21 +57,22 @@ zwlr_layer_shell_v1=true
 zwp_text_input_manager_v3=true
 ```
 
-41fc461 시연 로그 (47 초 사용 + 마우스 드래그 + 휠 + shell exit):
+441f894 시연 startup 로그 (typing + 좌클릭 drag + 우클릭 paste + Ctrl+Shift+C/V + `exit` 까지):
 
 ```text
 [boot] tildaz v0.4.3  pid=...
-[wayland] bound globals compositor_id=4 shm_id=5 wm_base_id=6 seat_id=7
-[wayland] keyboard object created keyboard_id=9
-[wayland] pointer object created pointer_id=10
-[wayland] capabilities compositor=true shm=true xdg_wm_base=true layer_shell=true text_input_v3=true shm_xrgb8888=true
+[wayland] bound globals compositor_id=4 shm_id=5 wm_base_id=6 seat_id=7 data_device_manager_id=8
+[wayland] keyboard object created keyboard_id=10
+[wayland] pointer object created pointer_id=11
+[wayland] data device created data_device_id=12
+[wayland] capabilities compositor=true shm=true xdg_wm_base=true layer_shell=true text_input_v3=true data_device_manager=true shm_xrgb8888=true
 [wayland] keyboard repeat rate=25 delay=600
 [wayland] keyboard keymap loaded size=64822
-[wayland] shell objects surface_id=12 xdg_surface_id=13 toplevel_id=14
+[wayland] shell objects surface_id=14 xdg_surface_id=15 toplevel_id=16
 [linux] terminal session created cols=78 rows=25
-[wayland] create shm buffer 640x420 stride=2560 size=1075200 pool_id=15 buffer_id=16
-[linux] Wayland terminal window mapped
 [wayland] create shm buffer 640x420 stride=2560 size=1075200 pool_id=17 buffer_id=18
+[linux] Wayland terminal window mapped
+[wayland] create shm buffer 640x420 stride=2560 size=1075200 pool_id=19 buffer_id=20
 [tab] shell exited: title=Tab 1
 [exit] tildaz v0.4.3  pid=...
 ```
@@ -79,7 +83,8 @@ zwp_text_input_manager_v3=true
 - 이전에 보였던 매 frame `redraw ...` / `redraw reuse ...` / `redraw reuse retired ...` 로그는 정리돼 lifecycle 이벤트만 보임 ([commit 54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65)).
 - 이전에 보였던 "모두 대문자처럼 보임" 현상은 임시 renderer 의 glyph table 매핑 버그로 확정 후 분리 ([commit c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)).
 - 마우스 selection drag + 휠 scroll 동작 추가 ([commit 41fc461](https://github.com/ensky0/tildaz/commit/41fc461)).
-- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 휠 scroll" 단계. first alpha 라고 부르기에는 clipboard copy / paste / real font / Unicode / drop-down / global shortcut / IME 가 아직 부족하다.
+- L6.2 / L6.3 / L6.4 클립보드 통합 — 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 ([commit 441f894](https://github.com/ensky0/tildaz/commit/441f894)). 시연 사이클에서 wl_data_offer opcode 매핑 / xkb MODS_EFFECTIVE 상수 / self-paste deadlock / ghostty selectionString ownership 등 4 가지 잠재 버그 발견 + fix.
+- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 휠 scroll + clipboard (자동 copy / 우클릭 paste / 단축키)" 단계. first alpha 라고 부르기에는 더블클릭 word selection / 스크롤바 / real font / Unicode / drop-down / global shortcut / IME 가 아직 부족하다.
 
 ## 현재 제한 사항
 
@@ -102,14 +107,15 @@ HarfBuzz가 붙기 전까지의 bring-up용 경로다.
 |---|---|---|
 | "모두 대문자처럼 보임" | [c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8) | 임시 5x7 glyph table 이 `'A','a' => same` 매핑. PTY byte 는 정상 lowercase 였으나 화면이 어긋남. [#189 결과 코멘트](https://github.com/ensky0/tildaz/issues/189#issuecomment-4446871720). |
 | 매 frame `redraw ...` 로그 noise | [54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65) | bring-up 디버깅용 로그 3 줄이 frame 마다 출력. lifecycle 이벤트만 유지로 정리. |
+| 우클릭 paste / Ctrl+Shift+V 시 wayland protocol error | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | `wl_data_offer` request opcode 가 한 칸씩 어긋난 채 push (receive=0, destroy=1 인데 wayland 표준은 receive=1, destroy=2 — 0 은 accept 자리). 시연 검증 안 끝난 L6.3 위에 L6.4 가 누적되면서 발현. opcode 정정 + 시연 OK. |
+| Ctrl+Shift+C/V 가 그냥 Ctrl+C/V 처럼 동작 | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | `XKB_STATE_MODS_EFFECTIVE` 상수를 `0x0080` (= `LAYOUT_EFFECTIVE`) 으로 잘못 적어 `xkb_state_mod_name_is_active` 가 modifier component 를 안 봄 → 분기 false → fallthrough utf8 `\x03` PTY 송신 → SIGINT. `(1<<3)=0x0008` 로 정정. |
+| 우클릭 paste 후 터미널 freeze | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | 우리 자신이 last clipboard owner 인 상태에서 우클릭 → wayland 의 `source.send` event 가 main thread 로 와야 하는데 main thread 는 paste path 의 `posix.read` 에서 blocking → wayland event 못 받아 deadlock. self-source 가드 추가 (`active_data_source_id != 0` 면 buffer 직접 사용). |
+| `Invalid free` panic (좌클릭 drag 자동 copy 반복 시) | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | ghostty `screen.selectionString(allocator, ...)` 결과 ptr 의 ownership 이 우리 allocator (GPA) 가 아니라 ghostty 의 자체 arena. 우리 GPA 로 free 시도 시 invalid free panic. dupe 로 우리 buffer 만들어 그것만 보관/free. addr2line stack 의 `arena_allocator.zig:185` 가 결정적 단서. |
 
 ### 아직 검증되지 않은 것
 
 | 항목 | 상태 |
 |---|---|
-| selection finish 시 자동 clipboard copy | 미구현 (L6.2 대기) |
-| 우클릭 paste / 단축키 paste | 미구현 (L6.3 / L6.4 대기) |
-| 단축키 copy (Ctrl+Shift+C) | 미구현 (L6.4 대기) |
 | 더블클릭 word selection | 미구현 (L6.7 대기) |
 | 스크롤바 클릭 / 드래그 | 미구현 (L6.6 대기) |
 | pointer cursor 모양 (I-beam) | 미구현 — `wl_pointer.set_cursor` 미호출. compositor 가 default 화살표 또는 cursor 미표시 가능 |
@@ -224,7 +230,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L3 | Wayland baseline window | normal `xdg-shell` scope 완료 | Wayland window open/map/close와 capability logging 확인. |
 | L4 | EGL/OpenGL renderer | 부분 완료, 단 EGL/OpenGL은 아님 | 임시 software `wl_shm` renderer로 terminal grid 보임. lowercase / uppercase 5x7 glyph 분리 ([c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)). final GPU renderer는 아직. |
 | L5 | Fonts | 대기 | 현재는 small bitmap glyph table. fontconfig + FreeType + HarfBuzz 미구현. Latin lowercase / uppercase 시각 구분만 임시로 확보. |
-| L6 | Input and clipboard | keyboard + mouse selection drag + 휠 scroll 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 남은 sub-task: clipboard copy 자동 / 단축키 copy / paste / 더블클릭 word selection / 스크롤바 클릭·드래그 / pointer cursor 모양. |
+| L6 | Input and clipboard | keyboard + mouse selection drag + 휠 scroll + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 남은 sub-task: 더블클릭 word selection / 스크롤바 클릭·드래그 / pointer cursor 모양. |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
 | L8 | Layer-shell drop-down | 대기 | 테스트 session에서 `zwlr_layer_shell_v1`은 광고되지만 layer-shell surface는 아직 미구현. |
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. |
@@ -258,24 +264,22 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 41fc461 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. 441f894 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
 | 1 | "소문자가 대문자처럼 보임" 원인 확정 + fix | ✅ [c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8) — renderer limitation 으로 확정, lowercase glyph 분리 |
 | 2 | 임시 renderer 로그 noise 감소 | ✅ [54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65) — 매 frame redraw 로그 3 줄 제거 |
 | 3 | L6.1 mouse selection drag + L6.5 휠 scroll | ✅ [41fc461](https://github.com/ensky0/tildaz/commit/41fc461) — `wl_pointer` 도입 |
-| 4 | L6.2 selection finish 자동 clipboard copy | 대기 — `wl_data_device_manager` / `wl_data_source` 도입 필요. selection 끝 → fd write → clipboard. |
-| 5 | L6.3 우클릭 paste | 대기 — `wl_data_offer` 도입 필요. paste fd 비동기 읽기 + PTY write. |
-| 6 | L6.4 단축키 copy / paste (Ctrl+Shift+C / V) | 대기 — keyboard path + L6.2 / L6.3 의 clipboard wrapper 재사용. |
-| 7 | L6.7 더블클릭 word selection | 대기 — click count 추적 + 공유 [`terminal_interaction.selectWord`](src/terminal_interaction.zig) 호출. |
-| 8 | L6.6 스크롤바 클릭 + 드래그 | 대기 — hit test + cross-platform `ScrollbarDragState`. |
-| 9 | pointer cursor 모양 (I-beam) | small follow-up — `wl_pointer.set_cursor` + cursor theme 로딩. 셀 영역 hover 시 I-beam. |
-| 10 | L5 real font stack | 대기 — fontconfig discovery + FreeType raster + HarfBuzz shaping. Latin / Hangul / CJK / emoji / block element 순차. |
-| 11 | L8 layer-shell drop-down prototype | 대기 — `zwlr_layer_shell_v1` 광고 확인됨. anchor / exclusive zone / monitor 선택 검증. |
-| 12 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. |
-| 13 | L10 IME | 대기 — `zwp_text_input_manager_v3` pre-edit / commit path. |
-| 14 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
+| 4 | L6.2 / L6.3 / L6.4 클립보드 통합 (자동 copy + 우클릭 paste + Ctrl+Shift+C/V) | ✅ [441f894](https://github.com/ensky0/tildaz/commit/441f894) — `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` + `xkb_state_mod_name_is_active`. 시연 사이클에서 opcode / xkb 상수 / self-paste deadlock / selectionString ownership 4 가지 잠재 버그 발견 + fix |
+| 5 | L6.7 더블클릭 word selection | 대기 — click count 추적 + 공유 [`terminal_interaction.selectWord`](src/terminal_interaction.zig) 호출. |
+| 6 | L6.6 스크롤바 클릭 + 드래그 | 대기 — hit test + cross-platform `ScrollbarDragState`. |
+| 7 | pointer cursor 모양 (I-beam) | small follow-up — `wl_pointer.set_cursor` + cursor theme 로딩. 셀 영역 hover 시 I-beam. |
+| 8 | L5 real font stack | 대기 — fontconfig discovery + FreeType raster + HarfBuzz shaping. Latin / Hangul / CJK / emoji / block element 순차. |
+| 9 | L8 layer-shell drop-down prototype | 대기 — `zwlr_layer_shell_v1` 광고 확인됨. anchor / exclusive zone / monitor 선택 검증. |
+| 10 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. |
+| 11 | L10 IME | 대기 — `zwp_text_input_manager_v3` pre-edit / commit path. |
+| 12 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
 
 ## Source Notes
 
