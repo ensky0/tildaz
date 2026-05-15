@@ -43,6 +43,16 @@ const XkbStateKeyGetUtf8 = *const fn (
     size: usize,
 ) callconv(.c) c_int;
 const XkbStateKeyGetOneSym = *const fn (state: *xkb_state, key: c_uint) callconv(.c) c_uint;
+const XkbStateModNameIsActive = *const fn (
+    state: *xkb_state,
+    name: [*:0]const u8,
+    component: c_uint,
+) callconv(.c) c_int;
+
+// libxkbcommon `enum xkb_state_component`. MODS_EFFECTIVE = (1 << 3).
+// 처음에 (1 << 7) = LAYOUT_EFFECTIVE 로 잘못 적어 mod_name_is_active 가
+// modifier component 를 안 보고 항상 0 반환 → 단축키 분기 fail (1차 시연 발견).
+const XKB_STATE_MODS_EFFECTIVE: c_uint = 0x0008;
 
 const Api = struct {
     handle: *anyopaque,
@@ -55,6 +65,7 @@ const Api = struct {
     state_update_mask: XkbStateUpdateMask,
     state_key_get_utf8: XkbStateKeyGetUtf8,
     state_key_get_one_sym: XkbStateKeyGetOneSym,
+    state_mod_name_is_active: XkbStateModNameIsActive,
 
     fn load() !Api {
         const handle = std.c.dlopen("libxkbcommon.so.0", .{ .LAZY = true }) orelse return error.XkbLibraryMissing;
@@ -71,6 +82,7 @@ const Api = struct {
             .state_update_mask = lookup(handle, XkbStateUpdateMask, "xkb_state_update_mask") orelse return error.XkbSymbolMissing,
             .state_key_get_utf8 = lookup(handle, XkbStateKeyGetUtf8, "xkb_state_key_get_utf8") orelse return error.XkbSymbolMissing,
             .state_key_get_one_sym = lookup(handle, XkbStateKeyGetOneSym, "xkb_state_key_get_one_sym") orelse return error.XkbSymbolMissing,
+            .state_mod_name_is_active = lookup(handle, XkbStateModNameIsActive, "xkb_state_mod_name_is_active") orelse return error.XkbSymbolMissing,
         };
     }
 
@@ -164,6 +176,20 @@ pub const Keyboard = struct {
         const wanted: usize = @intCast(n);
         if (wanted >= buf.len) return "";
         return buf[0..wanted];
+    }
+
+    pub fn ctrlActive(self: *Keyboard) bool {
+        return self.modActive("Control");
+    }
+
+    pub fn shiftActive(self: *Keyboard) bool {
+        return self.modActive("Shift");
+    }
+
+    fn modActive(self: *Keyboard, comptime name: [:0]const u8) bool {
+        const api = if (self.api) |*api| api else return false;
+        const state = self.state orelse return false;
+        return api.state_mod_name_is_active(state, name.ptr, XKB_STATE_MODS_EFFECTIVE) > 0;
     }
 
     fn ensureApi(self: *Keyboard) !void {

@@ -47,14 +47,27 @@ const wl_pointer_axis_vertical: u32 = 0;
 const wl_seat_request_get_pointer: u16 = 0;
 const wl_seat_request_get_keyboard: u16 = 1;
 
-// wl_data_device_manager / wl_data_device / wl_data_source opcodes (request side).
+// wl_data_device_manager / wl_data_device / wl_data_source / wl_data_offer
+// opcodes (request side, used by us).
 const wl_data_device_manager_request_create_data_source: u16 = 0;
 const wl_data_device_manager_request_get_data_device: u16 = 1;
 const wl_data_source_request_offer: u16 = 0;
 const wl_data_source_request_destroy: u16 = 1;
 const wl_data_device_request_set_selection: u16 = 1;
+// wl_data_offer requests: 0=accept (안 씀), 1=receive, 2=destroy.
+// 처음 a9dab9e (L6.3 우클릭 paste) 에선 한 칸씩 어긋난 값 (0, 1) 으로 적혀
+// receive 가 accept 자리로 보내져 서버가 args 검사 실패 → protocol error.
+// L6.4 의 Ctrl+Shift+V 시연에서 첫 발현.
+const wl_data_offer_request_receive: u16 = 1;
+const wl_data_offer_request_destroy: u16 = 2;
 
+// 우리가 광고할 / 받아들일 mime. 셋 모두 paste 인입 시 동일하게 처리.
 const clipboard_mime_utf8: []const u8 = "text/plain;charset=utf-8";
+const clipboard_mime_utf8_string: []const u8 = "UTF8_STRING";
+const clipboard_mime_text_plain: []const u8 = "text/plain";
+
+// Linux input-event-codes BTN_RIGHT (좌 = 0x110 위에서 정의).
+const wl_pointer_button_right: u32 = 0x111;
 
 const xkb_key_backspace: u32 = 0xff08;
 const xkb_key_tab: u32 = 0xff09;
@@ -71,6 +84,11 @@ const xkb_key_end: u32 = 0xff57;
 const xkb_key_insert: u32 = 0xff63;
 const xkb_key_delete: u32 = 0xffff;
 const xkb_key_iso_left_tab: u32 = 0xfe20;
+// 알파벳 키는 ASCII codepoint — xkb 가 Shift 활성 시 대문자 keysym 을 돌려준다.
+const xkb_key_c_lower: u32 = 0x63;
+const xkb_key_c_upper: u32 = 0x43;
+const xkb_key_v_lower: u32 = 0x76;
+const xkb_key_v_upper: u32 = 0x56;
 
 const linux_extra_env = [_]terminal_backend.ExtraEnv{
     .{ .name = "TERM", .value = "xterm-256color" },
@@ -205,6 +223,13 @@ const Client = struct {
     active_data_source_id: u32 = 0,
     clipboard_text: ?[]const u8 = null,
     last_serial: u32 = 0,
+    // 우리가 paste 받기 위해 추적하는 wl_data_offer 객체. data_offer event 가
+    // 새 객체를 알리면 pending 자리, selection event 가 그 객체를 인정하면
+    // `paste_*` 로 승격. mime 광고는 offer event 가 도착할 때마다 누적.
+    pending_offer_id: u32 = 0,
+    pending_offer_has_utf8: bool = false,
+    paste_offer_id: u32 = 0,
+    paste_offer_has_utf8: bool = false,
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -735,6 +760,14 @@ const Client = struct {
             try self.handleDataSourceEvent(opcode, payload);
             return;
         }
+        if (self.pending_offer_id != 0 and id == self.pending_offer_id) {
+            try self.handleDataOfferEvent(opcode, payload, true);
+            return;
+        }
+        if (self.paste_offer_id != 0 and id == self.paste_offer_id) {
+            try self.handleDataOfferEvent(opcode, payload, false);
+            return;
+        }
         if (self.handleBufferEvent(id, opcode)) return;
         if (id == self.wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
@@ -815,6 +848,19 @@ const Client = struct {
 
         const xkb_key = key + wayland_xkb_keycode_offset;
         if (self.keyboard.oneSym(xkb_key)) |sym| {
+            // Ctrl+Shift+C / V — SPEC.md §2.3 클립보드. Linux 도 Windows 와 같은
+            // native modifier (Ctrl+Shift). 분기 안에서 utf8 PTY 송신은 차단해서
+            // xkb 가 만든 noise byte 가 shell 에 들어가지 않게 한다.
+            if (self.keyboard.ctrlActive() and self.keyboard.shiftActive()) {
+                if (sym == xkb_key_c_lower or sym == xkb_key_c_upper) {
+                    self.copyActiveSelection();
+                    return;
+                }
+                if (sym == xkb_key_v_lower or sym == xkb_key_v_upper) {
+                    self.pasteFromClipboard();
+                    return;
+                }
+            }
             if (terminalSequenceForKeysym(sym)) |seq| {
                 self.queueInput(seq);
                 return;
@@ -897,6 +943,13 @@ const Client = struct {
         self.last_serial = readU32(payload[0..4]);
         const button = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
+
+        if (button == wl_pointer_button_right) {
+            // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /
+            // macOS 와 같은 정책. SPEC.md §3).
+            if (state == wl_pointer_button_state_pressed) self.pasteFromClipboard();
+            return;
+        }
         if (button != wl_pointer_button_left) return;
 
         const tab = self.activeTabOrNull() orelse return;
@@ -941,13 +994,122 @@ const Client = struct {
         }
     }
 
-    /// wl_data_device 이벤트. 현재는 data_offer / enter / leave / motion / drop /
-    /// selection 전부 무시 — L6.3 paste 작업에서 selection 이벤트와 data_offer
-    /// 흐름을 본격 구현한다. 무시해도 우리 자동 copy 동작에는 영향 없음.
+    /// wl_data_device 이벤트.
+    /// - opcode 0: data_offer(new_id) — compositor 가 새 wl_data_offer 객체를
+    ///   알린다. selection event 직전 단계라 일단 pending 자리에 기록.
+    /// - opcode 5: selection(id) — clipboard 현재 owner 의 offer (id=0 이면 빈).
+    ///   pending 을 paste 위치로 승격하거나, 이전 paste offer 를 정리한다.
+    /// - 그 외 (enter / leave / motion / drop) — drag-and-drop 용이라 무관.
     fn handleDataDeviceEvent(self: *Client, opcode: u16, payload: []const u8) !void {
-        _ = self;
-        _ = opcode;
-        _ = payload;
+        switch (opcode) {
+            0 => {
+                if (payload.len < 4) return;
+                self.discardPendingOffer();
+                self.pending_offer_id = readU32(payload[0..4]);
+                self.pending_offer_has_utf8 = false;
+            },
+            5 => self.handleDataDeviceSelection(payload),
+            else => {},
+        }
+    }
+
+    fn handleDataDeviceSelection(self: *Client, payload: []const u8) void {
+        const offer_id: u32 = if (payload.len >= 4) readU32(payload[0..4]) else 0;
+
+        // 이전 paste offer 정리.
+        if (self.paste_offer_id != 0) {
+            self.sendNoArgs(self.paste_offer_id, wl_data_offer_request_destroy) catch {};
+            self.paste_offer_id = 0;
+            self.paste_offer_has_utf8 = false;
+        }
+
+        if (offer_id != 0 and offer_id == self.pending_offer_id) {
+            self.paste_offer_id = self.pending_offer_id;
+            self.paste_offer_has_utf8 = self.pending_offer_has_utf8;
+            self.pending_offer_id = 0;
+            self.pending_offer_has_utf8 = false;
+        } else {
+            // 빈 selection 또는 우리가 추적 못 한 offer — pending 도 청소.
+            self.discardPendingOffer();
+        }
+    }
+
+    fn discardPendingOffer(self: *Client) void {
+        if (self.pending_offer_id != 0) {
+            self.sendNoArgs(self.pending_offer_id, wl_data_offer_request_destroy) catch {};
+            self.pending_offer_id = 0;
+            self.pending_offer_has_utf8 = false;
+        }
+    }
+
+    /// wl_data_offer 이벤트. 우리가 관심 있는 것은 offer(mime) 만.
+    /// `is_pending` 은 caller 가 분기 — 같은 코드, 다른 flag 슬롯.
+    fn handleDataOfferEvent(self: *Client, opcode: u16, payload: []const u8, is_pending: bool) !void {
+        if (opcode != 0) return; // source_actions / action 은 dnd 전용이라 무시.
+        var p = Parser{ .buf = payload };
+        const mime = p.readString() catch return;
+        if (!isAcceptableTextMime(mime)) return;
+        if (is_pending) {
+            self.pending_offer_has_utf8 = true;
+        } else {
+            self.paste_offer_has_utf8 = true;
+        }
+    }
+
+    /// 우클릭 paste — Windows / macOS 와 같은 패턴 ([SPEC.md §3 우클릭 paste]).
+    /// 현재 paste_offer 가 utf8 광고했으면 pipe 만든 뒤 wl_data_offer.receive 로
+    /// write end 를 송신측에 넘기고, read end 에서 끝까지 읽어 PTY 로 paste.
+    fn pasteFromClipboard(self: *Client) void {
+        if (self.paste_offer_id == 0 or !self.paste_offer_has_utf8) return;
+        const session = if (self.session) |*s| s else return;
+        _ = session.activeTab() orelse return;
+
+        // self-paste 가드: 우리 자신이 마지막 clipboard owner 면 wayland 경유
+        // 시 compositor 가 우리 source.send event 를 main thread 로 보내는데
+        // 우리는 아래 posix.read 에서 blocking → wayland event 못 들어와
+        // deadlock. 우리 buffer 직접 사용.
+        if (self.active_data_source_id != 0) {
+            if (self.clipboard_text) |text| {
+                session.pasteToActive(text);
+                self.requestRedraw();
+            }
+            return;
+        }
+
+        const pipe_fds = posix.pipe() catch return;
+        // read end 는 우리, write end 는 wayland 가 보낼 송신측.
+        const read_fd = pipe_fds[0];
+        const write_fd = pipe_fds[1];
+
+        self.sendStringWithFd(
+            self.paste_offer_id,
+            wl_data_offer_request_receive,
+            clipboard_mime_utf8,
+            write_fd,
+        ) catch {
+            posix.close(read_fd);
+            posix.close(write_fd);
+            return;
+        };
+        posix.close(write_fd); // 우리 쪽 write end 는 안 씀.
+
+        // wayland 가 우리 송신 후 다른 쪽 fd 에 write 하기 시작. blocking read 로
+        // 끝까지 (EOF) 받는다. text paste 가 일반적으로 짧고 fd 가 pipe 라 deadlock
+        // 없음 — 송신측이 close 하면 우리 read 0 반환.
+        defer posix.close(read_fd);
+        var buf: [4096]u8 = undefined;
+        var accumulated: std.ArrayList(u8) = .{};
+        defer accumulated.deinit(self.allocator);
+        while (true) {
+            const n = posix.read(read_fd, &buf) catch break;
+            if (n == 0) break;
+            accumulated.appendSlice(self.allocator, buf[0..n]) catch break;
+        }
+        if (accumulated.items.len == 0) return;
+        if (self.session) |*s| {
+            s.pasteToActive(accumulated.items);
+            self.requestRedraw();
+        }
     }
 
     /// wl_data_source 이벤트 분기.
@@ -990,13 +1152,14 @@ const Client = struct {
         const tab = self.activeTabOrNull() orelse return;
         const screen = tab.terminal.screens.active;
         const sel = screen.selection orelse return;
-        const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
-        if (text.len == 0) {
-            self.allocator.free(text);
-            return;
-        }
-        self.setClipboardText(text) catch {
-            self.allocator.free(text);
+        // ghostty selectionString 결과 ptr 의 ownership 이 우리 allocator 가 아니라
+        // ghostty 의 자체 arena. 우리 GPA 로 free 하면 invalid free panic. dupe 로
+        // 우리 buffer 만들어 그것만 보관 + free (#189 5차 시연 진단).
+        const ghostty_text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
+        if (ghostty_text.len == 0) return;
+        const owned = self.allocator.dupe(u8, ghostty_text) catch return;
+        self.setClipboardText(owned) catch {
+            self.allocator.free(owned);
         };
     }
 
@@ -1156,6 +1319,12 @@ const Client = struct {
         var msg = Msg.init(self.shm_id, 0);
         try msg.putU32(pool_id);
         try msg.putI32(size);
+        try msg.sendWithFd(self.stream, fd);
+    }
+
+    fn sendStringWithFd(self: *Client, id: u32, opcode: u16, text: []const u8, fd: posix.fd_t) !void {
+        var msg = Msg.init(id, opcode);
+        try msg.putString(text);
         try msg.sendWithFd(self.stream, fd);
     }
 
@@ -1329,6 +1498,31 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
             writeU32(memory[y * s + x * 4 ..][0..4], color);
         }
     }
+}
+
+/// paste 인입으로 받아들일 mime. 셋 중 하나만 광고돼도 paste 가능. 셋 다
+/// UTF-8 plain text 표기 — 우리는 byte 그대로 PTY 로 넣으므로 charset
+/// fallback 가공 없음.
+fn isAcceptableTextMime(mime: []const u8) bool {
+    return std.mem.eql(u8, mime, clipboard_mime_utf8) or
+        std.mem.eql(u8, mime, clipboard_mime_utf8_string) or
+        std.mem.eql(u8, mime, clipboard_mime_text_plain);
+}
+
+/// wayland wire string parsing — `u32 length + (length bytes, null 포함)` +
+/// 4-byte 정렬 padding. length 가 null 을 포함하는 게 일반적이지만 일부
+/// compositor 가 안 포함하는 경우 대비해 마지막 byte 가 null 이면 빼고
+/// 반환. payload 가 짧거나 length 가 0 이면 null.
+fn readWaylandString(payload: []const u8) ?[]const u8 {
+    if (payload.len < 4) return null;
+    const len = readU32(payload[0..4]);
+    if (len == 0) return null;
+    const total: usize = @intCast(len);
+    if (payload.len < 4 + total) return null;
+    if (payload[4 + total - 1] == 0) {
+        return payload[4 .. 4 + total - 1];
+    }
+    return payload[4 .. 4 + total];
 }
 
 /// wl_fixed_t (signed 24.8 fixed-point packed in i32) → integer pixel.

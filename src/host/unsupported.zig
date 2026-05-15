@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn showPanic(msg: []const u8, addr: usize) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
     std.process.exit(1);
 }

@@ -37,7 +37,7 @@ const log = @import("../log.zig");
 const autostart = @import("../autostart.zig");
 const perf = @import("../perf.zig");
 
-pub fn showPanic(msg: []const u8, addr: usize) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
