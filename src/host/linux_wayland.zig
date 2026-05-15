@@ -5,10 +5,14 @@ const messages = @import("../messages.zig");
 const terminal = @import("../terminal.zig");
 const wayland = @import("linux/wayland_minimal.zig");
 
-pub fn showPanic(msg: []const u8, addr: usize) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
-    std.debug.print(messages.panic_format ++ "\n", .{ msg, addr });
-    std.process.exit(1);
+    // zig default panic — stderr 에 자동으로 file:line + backtrace dump.
+    // 시연 시 `./zig-out/bin/tildaz 2>&1 | tee /tmp/run.log` 처럼 stderr 도
+    // 캡처해야 보임. 우리 log file 에는 ret_addr 만 남기고 자세한 stack 은
+    // stderr 캡처에 위임 — symbolicate 직접 구현 (SelfInfo / Module getSymbolAtAddress)
+    // 보다 default 가 maintenance-light.
+    std.debug.defaultPanic(msg, addr);
 }
 
 pub fn showFatalRunError(err: anyerror) void {

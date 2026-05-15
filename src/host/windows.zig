@@ -25,7 +25,7 @@ extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 
-pub fn showPanic(msg: []const u8, addr: usize) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(messages.crash_title, text);
