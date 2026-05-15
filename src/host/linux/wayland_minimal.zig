@@ -68,6 +68,8 @@ const clipboard_mime_text_plain: []const u8 = "text/plain";
 
 // Linux input-event-codes BTN_RIGHT (좌 = 0x110 위에서 정의).
 const wl_pointer_button_right: u32 = 0x111;
+// 더블클릭 인식 시간 — macOS / Windows / GTK / Qt 의 표준 ~500ms 와 동일.
+const double_click_threshold_ms: u32 = 500;
 
 const xkb_key_backspace: u32 = 0xff08;
 const xkb_key_tab: u32 = 0xff09;
@@ -230,6 +232,10 @@ const Client = struct {
     pending_offer_has_utf8: bool = false,
     paste_offer_id: u32 = 0,
     paste_offer_has_utf8: bool = false,
+    // 더블클릭 검출 — wayland `wl_pointer.button` event 에 click count 정보 없음.
+    // 같은 cell 의 좌클릭 press 가 `double_click_threshold_ms` 이내 두 번이면 더블클릭.
+    last_left_click_time_ms: u32 = 0,
+    last_left_click_cell: ?terminal_interaction.Cell = null,
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -941,6 +947,7 @@ const Client = struct {
     fn handlePointerButton(self: *Client, payload: []const u8) void {
         if (payload.len < 16) return;
         self.last_serial = readU32(payload[0..4]);
+        const time_ms = readU32(payload[4..8]);
         const button = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
 
@@ -956,6 +963,31 @@ const Client = struct {
         switch (state) {
             wl_pointer_button_state_pressed => {
                 const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
+
+                // 더블클릭 검출 — 같은 cell + threshold 이내 두 번째 좌클릭.
+                // wayland `wl_pointer.button` event 에는 click count 정보가 없어
+                // 직접 추적. SPEC.md §3 더블클릭 word selection.
+                const is_double_click = blk: {
+                    const prev_cell = self.last_left_click_cell orelse break :blk false;
+                    if (time_ms -% self.last_left_click_time_ms > double_click_threshold_ms) break :blk false;
+                    if (prev_cell.col != cell.col or prev_cell.row != cell.row) break :blk false;
+                    break :blk true;
+                };
+                self.last_left_click_time_ms = time_ms;
+                self.last_left_click_cell = cell;
+
+                if (is_double_click) {
+                    // selectWord 는 screen.selection 을 직접 갱신 (cross-platform
+                    // 단일 구현 — [`terminal_interaction.selectWord`](src/terminal_interaction.zig)).
+                    // SelectionState.begin 안 함 → 다음 release 의 finish 가 false
+                    // → 자동 copy 중복 방지. 여기서 명시 copy 호출.
+                    if (terminal_interaction.selectWord(tab.terminal.screens.active, cell)) {
+                        self.copyActiveSelection();
+                        self.requestRedraw();
+                    }
+                    return;
+                }
+
                 tab.interaction.selection.begin(tab.terminal.screens.active, cell);
                 self.requestRedraw();
             },
