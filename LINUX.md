@@ -30,7 +30,7 @@ milestone 상태를 정확히 남기는 용도다.
 2026-05-15, UTM Debian Wayland 환경에서 확인된 상태다.
 
 - Branch: `linux-wayland-bringup`
-- Commit: `441f894`
+- Commit: `dd40440`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -42,6 +42,7 @@ milestone 상태를 정확히 남기는 용도다.
 | `wl_shm` buffer lifecycle | 같은 크기 buffer 2 개 reuse, churn 없음 |
 | 마우스 좌클릭 + 드래그 selection | 동작 (셀 영역 색 반전 표시) |
 | selection finish 자동 clipboard copy | 동작 (외부 앱에 paste 가능) |
+| 더블클릭 word selection + 자동 copy | 동작 (wide char spacer_tail / boundary 시작 reject 는 macOS / Windows 와 공유 모듈) |
 | 우클릭 paste | 동작 (외부 앱 clipboard 의 text 가 PTY 직송) |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` 단축키 | 동작 (Linux 도 Windows 와 동일 native modifier) |
 | 휠 스크롤 (scrollback) | 동작 |
@@ -84,7 +85,8 @@ zwp_text_input_manager_v3=true
 - 이전에 보였던 "모두 대문자처럼 보임" 현상은 임시 renderer 의 glyph table 매핑 버그로 확정 후 분리 ([commit c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)).
 - 마우스 selection drag + 휠 scroll 동작 추가 ([commit 41fc461](https://github.com/ensky0/tildaz/commit/41fc461)).
 - L6.2 / L6.3 / L6.4 클립보드 통합 — 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 ([commit 441f894](https://github.com/ensky0/tildaz/commit/441f894)). 시연 사이클에서 wl_data_offer opcode 매핑 / xkb MODS_EFFECTIVE 상수 / self-paste deadlock / ghostty selectionString ownership 등 4 가지 잠재 버그 발견 + fix.
-- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 휠 scroll + clipboard (자동 copy / 우클릭 paste / 단축키)" 단계. first alpha 라고 부르기에는 더블클릭 word selection / 스크롤바 / real font / Unicode / drop-down / global shortcut / IME 가 아직 부족하다.
+- L6.7 더블클릭 word selection 추가 ([commit dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 같은 cell + 500ms 이내 두 번째 좌클릭 → `terminal_interaction.selectWord` 호출 + 자동 copy.
+- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + clipboard (자동 copy / 우클릭 paste / 단축키)" 단계. first alpha 라고 부르기에는 스크롤바 / real font / Unicode / drop-down / global shortcut / IME 가 아직 부족하다.
 
 ## 현재 제한 사항
 
@@ -116,7 +118,6 @@ HarfBuzz가 붙기 전까지의 bring-up용 경로다.
 
 | 항목 | 상태 |
 |---|---|
-| 더블클릭 word selection | 미구현 (L6.7 대기) |
 | 스크롤바 클릭 / 드래그 | 미구현 (L6.6 대기) |
 | pointer cursor 모양 (I-beam) | 미구현 — `wl_pointer.set_cursor` 미호출. compositor 가 default 화살표 또는 cursor 미표시 가능 |
 | resize UX polish | 미검증 |
@@ -230,7 +231,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L3 | Wayland baseline window | normal `xdg-shell` scope 완료 | Wayland window open/map/close와 capability logging 확인. |
 | L4 | EGL/OpenGL renderer | 부분 완료, 단 EGL/OpenGL은 아님 | 임시 software `wl_shm` renderer로 terminal grid 보임. lowercase / uppercase 5x7 glyph 분리 ([c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)). final GPU renderer는 아직. |
 | L5 | Fonts | 대기 | 현재는 small bitmap glyph table. fontconfig + FreeType + HarfBuzz 미구현. Latin lowercase / uppercase 시각 구분만 임시로 확보. |
-| L6 | Input and clipboard | keyboard + mouse selection drag + 휠 scroll + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 남은 sub-task: 더블클릭 word selection / 스크롤바 클릭·드래그 / pointer cursor 모양. |
+| L6 | Input and clipboard | keyboard + mouse selection drag + 더블클릭 word + 휠 scroll + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 더블클릭 word selection ([dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 남은 sub-task: 스크롤바 클릭·드래그 / pointer cursor 모양. |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
 | L8 | Layer-shell drop-down | 대기 | 테스트 session에서 `zwlr_layer_shell_v1`은 광고되지만 layer-shell surface는 아직 미구현. |
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. |
@@ -264,7 +265,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 441f894 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. dd40440 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -272,7 +273,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 2 | 임시 renderer 로그 noise 감소 | ✅ [54b3e65](https://github.com/ensky0/tildaz/commit/54b3e65) — 매 frame redraw 로그 3 줄 제거 |
 | 3 | L6.1 mouse selection drag + L6.5 휠 scroll | ✅ [41fc461](https://github.com/ensky0/tildaz/commit/41fc461) — `wl_pointer` 도입 |
 | 4 | L6.2 / L6.3 / L6.4 클립보드 통합 (자동 copy + 우클릭 paste + Ctrl+Shift+C/V) | ✅ [441f894](https://github.com/ensky0/tildaz/commit/441f894) — `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` + `xkb_state_mod_name_is_active`. 시연 사이클에서 opcode / xkb 상수 / self-paste deadlock / selectionString ownership 4 가지 잠재 버그 발견 + fix |
-| 5 | L6.7 더블클릭 word selection | 대기 — click count 추적 + 공유 [`terminal_interaction.selectWord`](src/terminal_interaction.zig) 호출. |
+| 5 | L6.7 더블클릭 word selection | ✅ [dd40440](https://github.com/ensky0/tildaz/commit/dd40440) — 같은 cell + 500ms 이내 두 번째 좌클릭 → 공유 `terminal_interaction.selectWord` + 자동 copy |
 | 6 | L6.6 스크롤바 클릭 + 드래그 | 대기 — hit test + cross-platform `ScrollbarDragState`. |
 | 7 | pointer cursor 모양 (I-beam) | small follow-up — `wl_pointer.set_cursor` + cursor theme 로딩. 셀 영역 hover 시 I-beam. |
 | 8 | L5 real font stack | 대기 — fontconfig discovery + FreeType raster + HarfBuzz shaping. Latin / Hangul / CJK / emoji / block element 순차. |
