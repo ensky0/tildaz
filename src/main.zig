@@ -31,9 +31,9 @@ fn tildazLogFn(
 }
 
 /// ReleaseFast에서도 crash 원인을 표시하는 panic handler
-pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+pub fn panic(msg: []const u8, st: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
     const addr = ret_addr orelse @returnAddress();
-    host.showPanic(msg, addr);
+    host.showPanic(msg, addr, st);
 }
 
 pub fn main() void {
