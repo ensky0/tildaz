@@ -12,6 +12,12 @@ const themes = @import("../../themes.zig");
 pub const cell_width_px: i32 = 8;
 pub const cell_height_px: i32 = 16;
 pub const padding_px: i32 = 8;
+/// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
+/// 임시 renderer 라 픽셀 고정.
+pub const scrollbar_w_px: i32 = 8;
+/// thumb 최소 높이 — scrollback 이 길어 ratio 작아져도 클릭 가능한 영역 확보.
+pub const scrollbar_min_thumb_h: i32 = 20;
+const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
 
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
@@ -81,6 +87,29 @@ pub const Renderer = struct {
                 const cy: i32 = padding_px + @as(i32, @intCast(vp.y)) * cell_height_px;
                 const cursor = colors.cursor orelse ghostty.color.RGB{ .r = 180, .g = 180, .b = 180 };
                 rect(memory, width, height, stride, cx, cy + cell_height_px - 3, cell_width_px, 2, cursor);
+            }
+        }
+
+        // 우측 스크롤바 thumb — scrollback 있을 때만. track 자체는 별도 색 안 그림
+        // (배경 그대로). Windows / macOS 패턴 동일 (`renderer/macos.zig:662` 참고).
+        const sb = terminal.screens.active.pages.scrollbar();
+        if (sb.total > sb.len) {
+            const track_h: i32 = height - 2 * padding_px;
+            if (track_h > 0) {
+                const track_hf: f64 = @floatFromInt(track_h);
+                const total_f: f64 = @floatFromInt(sb.total);
+                const len_f: f64 = @floatFromInt(sb.len);
+                const ratio_px: f64 = track_hf / total_f;
+                const min_thumb_f: f64 = @floatFromInt(scrollbar_min_thumb_h);
+                const thumb_hf: f64 = @max(min_thumb_f, ratio_px * len_f);
+                const available: f64 = track_hf - thumb_hf;
+                const max_off_f: f64 = total_f - len_f;
+                const offset_f: f64 = @floatFromInt(sb.offset);
+                const offset_ratio: f64 = if (max_off_f > 0) offset_f / max_off_f else 0;
+                const thumb_y_px: i32 = padding_px + @as(i32, @intFromFloat(offset_ratio * available));
+                const thumb_h_px: i32 = @intFromFloat(thumb_hf);
+                const sb_x: i32 = width - scrollbar_w_px;
+                rect(memory, width, height, stride, sb_x, thumb_y_px, scrollbar_w_px, thumb_h_px, scrollbar_thumb_color);
             }
         }
     }
