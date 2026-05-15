@@ -937,6 +937,12 @@ const Client = struct {
         self.pointer_y_px = wlFixedToPx(sy);
 
         const tab = self.activeTabOrNull() orelse return;
+        // 스크롤바 drag 중 — selection 검사보다 먼저. drag 가 cell 영역 밖으로
+        // 나가도 follow (Windows `app_controller.scrollToY` 와 동등).
+        if (tab.interaction.scrollbar.active) {
+            self.scrollToY(self.pointer_y_px);
+            return;
+        }
         if (!tab.interaction.selection.active) return;
         const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
         tab.interaction.selection.update(tab.terminal.screens.active, cell);
@@ -962,6 +968,14 @@ const Client = struct {
         const tab = self.activeTabOrNull() orelse return;
         switch (state) {
             wl_pointer_button_state_pressed => {
+                // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
+                // Windows `app_controller.zig:835` 와 동등.
+                if (self.pointer_x_px >= self.window_width - software_terminal.scrollbar_w_px) {
+                    tab.interaction.scrollbar.begin();
+                    self.scrollToY(self.pointer_y_px);
+                    return;
+                }
+
                 const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
 
                 // 더블클릭 검출 — 같은 cell + threshold 이내 두 번째 좌클릭.
@@ -992,12 +1006,48 @@ const Client = struct {
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
+                if (tab.interaction.scrollbar.active) {
+                    tab.interaction.scrollbar.end();
+                    return;
+                }
                 if (tab.interaction.selection.finish()) {
                     self.copyActiveSelection();
                     self.requestRedraw();
                 }
             },
             else => {},
+        }
+    }
+
+    /// 스크롤바 thumb 위치를 mouse_y 에 맞춘다. Windows `app_controller.scrollToY`
+    /// (`src/app_controller.zig:422`) 의 패턴 그대로 — track height = `window_height
+    /// - 2*padding`, thumb 의 최소 높이 / available 계산 / `scrollViewport(.delta)`.
+    fn scrollToY(self: *Client, mouse_y: i32) void {
+        const tab = self.activeTabOrNull() orelse return;
+        const screen = tab.terminal.screens.active;
+        const sb = screen.pages.scrollbar();
+        if (sb.total <= sb.len) return;
+
+        const track_h: i32 = self.window_height - 2 * software_terminal.padding_px;
+        if (track_h <= 0) return;
+
+        const rel_y: i32 = @max(0, mouse_y - software_terminal.padding_px);
+        const track_hf: f64 = @floatFromInt(track_h);
+        const ratio_px: f64 = track_hf / @as(f64, @floatFromInt(sb.total));
+        const min_thumb: f64 = @floatFromInt(software_terminal.scrollbar_min_thumb_h);
+        const thumb_h: f64 = @max(min_thumb, ratio_px * @as(f64, @floatFromInt(sb.len)));
+        const available: f64 = track_hf - thumb_h;
+        if (available <= 0) return;
+        const clamped_y: f64 = @min(@as(f64, @floatFromInt(rel_y)), available);
+        const scroll_ratio: f64 = clamped_y / available;
+        const target_row: usize = @intFromFloat(scroll_ratio * @as(f64, @floatFromInt(sb.total - sb.len)));
+
+        const current: isize = @intCast(sb.offset);
+        const target: isize = @intCast(target_row);
+        const delta = target - current;
+        if (delta != 0) {
+            tab.terminal.scrollViewport(.{ .delta = delta });
+            self.requestRedraw();
         }
     }
 
