@@ -200,7 +200,7 @@ const Client = struct {
     window_width: i32 = default_width,
     window_height: i32 = default_height,
     mapped: bool = false,
-    renderer: software_terminal.Renderer = .{},
+    renderer: software_terminal.Renderer,
     session: ?session_core.SessionCore = null,
     shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     needs_redraw: bool = false,
@@ -240,9 +240,12 @@ const Client = struct {
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
+        var renderer = try software_terminal.Renderer.init(allocator);
+        errdefer renderer.deinit(allocator);
         return .{
             .allocator = allocator,
             .stream = try std.net.connectUnixSocket(path),
+            .renderer = renderer,
         };
     }
 
@@ -425,10 +428,12 @@ const Client = struct {
     }
 
     fn gridSize(self: *const Client) struct { cols: u16, rows: u16 } {
-        const usable_w = @max(software_terminal.cell_width_px, self.window_width - software_terminal.padding_px * 2);
-        const usable_h = @max(software_terminal.cell_height_px, self.window_height - software_terminal.padding_px * 2);
-        const cols_i32 = @max(1, @divTrunc(usable_w, software_terminal.cell_width_px));
-        const rows_i32 = @max(1, @divTrunc(usable_h, software_terminal.cell_height_px));
+        const cw = self.renderer.cellWidth();
+        const ch = self.renderer.cellHeight();
+        const usable_w = @max(cw, self.window_width - software_terminal.padding_px * 2);
+        const usable_h = @max(ch, self.window_height - software_terminal.padding_px * 2);
+        const cols_i32 = @max(1, @divTrunc(usable_w, cw));
+        const rows_i32 = @max(1, @divTrunc(usable_h, ch));
         return .{
             .cols = @intCast(@min(cols_i32, std.math.maxInt(u16))),
             .rows = @intCast(@min(rows_i32, std.math.maxInt(u16))),
@@ -1070,7 +1075,12 @@ const Client = struct {
         const wheel_i16: i16 = @intCast(std.math.clamp(wheel_i32, -32768, 32767));
 
         if (self.session) |*session| {
-            const visible_rows: u16 = visibleRowCount(self.window_height);
+            // SessionCore.scrollActive 의 visible_rows 인자 — page scroll 계산용.
+            // wheel 자체는 i16 만 보지만 같은 인터페이스라 함께 전달.
+            const ch = self.renderer.cellHeight();
+            const usable_h = @max(0, self.window_height - software_terminal.padding_px * 2);
+            const rows_i32 = @divTrunc(usable_h, ch);
+            const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
             const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
             if (did) self.requestRedraw();
         }
@@ -1287,9 +1297,11 @@ const Client = struct {
     /// surface pixel → grid cell. padding 영역 / grid 범위 밖이면 null.
     fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
         if (px < software_terminal.padding_px or py < software_terminal.padding_px) return null;
+        const cw = self.renderer.cellWidth();
+        const ch = self.renderer.cellHeight();
         const tab = self.activeTabOrNull() orelse return null;
-        const col_i32: i32 = @divTrunc(px - software_terminal.padding_px, software_terminal.cell_width_px);
-        const row_i32: i32 = @divTrunc(py - software_terminal.padding_px, software_terminal.cell_height_px);
+        const col_i32: i32 = @divTrunc(px - software_terminal.padding_px, cw);
+        const row_i32: i32 = @divTrunc(py - software_terminal.padding_px, ch);
         if (col_i32 < 0 or row_i32 < 0) return null;
         const cols_i32: i32 = @intCast(tab.terminal.cols);
         const rows_i32: i32 = @intCast(tab.terminal.rows);
@@ -1612,16 +1624,6 @@ fn readWaylandString(payload: []const u8) ?[]const u8 {
 /// `@divTrunc` 로 0 방향 정수 변환 — pixelToCell 의 범위 검사가 음수 reject.
 fn wlFixedToPx(value: i32) i32 {
     return @divTrunc(value, 256);
-}
-
-/// 현재 window_height 에서 grid 가 그릴 수 있는 row 수. SessionCore.scrollActive
-/// 의 visible_rows 인자에 사용 — page scroll 계산용. wheel scroll 자체는 wheel
-/// 값 (i16) 만 보지만 인터페이스 합치기 위해 같이 전달.
-fn visibleRowCount(window_height: i32) u16 {
-    const usable = @max(0, window_height - software_terminal.padding_px * 2);
-    const rows_i32 = @divTrunc(usable, software_terminal.cell_height_px);
-    if (rows_i32 <= 0) return 1;
-    return @intCast(@min(rows_i32, std.math.maxInt(u16)));
 }
 
 fn readU32(bytes: *const [4]u8) u32 {
