@@ -22,7 +22,7 @@ milestone 상태를 정확히 남기는 용도다.
 | Keyboard | `libxkbcommon`. 현재는 런타임 `dlopen("libxkbcommon.so.0")` 방식. |
 | IME | Wayland text-input v3 목표. desktop / IME 호환성은 별도 검증한다. |
 | Renderer | 원래 계획은 EGL + OpenGL ES 우선. 현재 구현은 bring-up용 software `wl_shm` renderer다. |
-| Font stack | 최종 목표는 fontconfig + FreeType + HarfBuzz. L5-1 (ce12372) fontconfig + FreeType ASCII raster, L5-3 (88db341) chain 구조 + per-face lazy raster + Hangul / CJK 동작 (paste). HarfBuzz shape / emoji / block element / config 통합은 별도 sub-step. |
+| Font stack | 최종 목표는 fontconfig + FreeType + HarfBuzz. L5-1 (ce12372) fontconfig + FreeType ASCII raster, L5-3 (88db341) chain 구조 + per-face lazy raster + Hangul / CJK 동작 (paste), L5-4 (4816052) BGRA color emoji + 임시 chain hardcoded + fontconfig substitution 검증. HarfBuzz shape / block element / config 통합은 별도 sub-step. |
 | First alpha scope | normal window, POSIX PTY, 기본 rendering, keyboard/mouse input, selection, copy/paste. |
 
 ## 현재 구현 상태
@@ -30,7 +30,7 @@ milestone 상태를 정확히 남기는 용도다.
 2026-05-15, UTM Debian Wayland 환경에서 확인된 상태다.
 
 - Branch: `linux-wayland-bringup`
-- Commit: `88db341`
+- Commit: `4816052`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -90,7 +90,8 @@ zwp_text_input_manager_v3=true
 - L6.6 스크롤바 클릭 + 드래그 추가 ([commit 33b760b](https://github.com/ensky0/tildaz/commit/33b760b)). 우측 8 px thumb 시각 + 좌클릭 hit test 가 selection/더블클릭보다 우선, `scrollToY` 는 Windows `app_controller.scrollToY` 패턴 그대로.
 - L5-1 fontconfig + FreeType + ASCII raster 추가 ([commit ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). 5x7 임시 glyph table 제거. `src/font/linux/{fontconfig,freetype,font}.zig` 신규. cell metric 은 Renderer field 로 노출. 시연 사이클에서 max_advance vs 'M' advance / cell-center 정렬 두 가지 잠재 버그 발견 + fix.
 - L5-3 font chain + lazy raster 추가 ([commit 88db341](https://github.com/ensky0/tildaz/commit/88db341)). single-face + ASCII pre-raster → N-face chain (MAX_CHAIN=8) + per-face `AutoHashMap(u21, Glyph)` lazy raster. `glyph(cp)` 가 chain 순회 + 첫 매치 face 의 cache 에서 lazy insert. paste 로 한글 / 한자 / 가나 입력 시 wide glyph (2 cell) 정상 — NotoSansCJK primary 한 face 안에서 처리.
-- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font + paste 시 한글 / CJK wide glyph" 단계. first alpha 라고 부르기에는 HarfBuzz shape / emoji / block element / drop-down / global shortcut / IME 가 아직 부족하다.
+- L5-4 BGRA color emoji + 임시 chain 갱신 추가 ([commit 4816052](https://github.com/ensky0/tildaz/commit/4816052)). `FT_LOAD_COLOR` + `FT_PIXEL_MODE_BGRA` raster path + `drawGlyphBgra` (cell ratio scale fit + center + premultiplied alpha 블렌딩). chain 임시 hardcoded (JetBrains/Fira/SourceCode/DejaVu/Liberation/monospace/NotoColorEmoji) + fontconfig substitution 검증 (specific family 가 generic 으로 fallback substitute 된 경우 skip). 시연 사이클에서 fontconfig substitution / dedup log 인덱스 두 가지 잠재 버그 발견 + fix.
+- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji" 단계. first alpha 라고 부르기에는 HarfBuzz shape / block element / drop-down / global shortcut / IME 가 아직 부족하다.
 
 ## 현재 제한 사항
 
@@ -125,7 +126,8 @@ HarfBuzz가 붙기 전까지의 bring-up용 경로다.
 | pointer cursor 모양 (I-beam) | 별도 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)) — Win/mac/Linux 셋 다 default 화살표라 Linux 단독 추가는 SPEC parity 깨짐. |
 | resize UX polish | 미검증 |
 | Hangul / CJK paste 시 wide glyph | 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341), NotoSansCJK primary 환경). IME 직접 입력은 L10 별도. |
-| emoji / combining mark / grapheme cluster / block element | 미구현 (L5-4 / L5-5 / L5-6 sub-step) |
+| color emoji paste | 동작 ([4816052](https://github.com/ensky0/tildaz/commit/4816052), Noto Color Emoji chain 포함 + BGRA raster path) |
+| combining mark / grapheme cluster / block element | 미구현 (L5-5 / L5-6 sub-step) |
 | layer-shell drop-down | 미구현 (L8 대기) |
 | global shortcut | 미구현 (L9 대기) |
 | IME pre-edit / commit | 미구현 (L10 대기) |
@@ -234,7 +236,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L2 | POSIX PTY | smoke scope 완료 | UTM Linux에서 `/bin/sh` PTY smoke test 성공. |
 | L3 | Wayland baseline window | normal `xdg-shell` scope 완료 | Wayland window open/map/close와 capability logging 확인. |
 | L4 | EGL/OpenGL renderer | 부분 완료, 단 EGL/OpenGL은 아님 | 임시 software `wl_shm` renderer로 terminal grid 보임. lowercase / uppercase 5x7 glyph 분리 ([c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)). final GPU renderer는 아직. |
-| L5 | Fonts | L5-1 / L5-3 완료, 나머지 대기 | L5-1 — fontconfig dlopen + FreeType dlopen + ASCII pre-raster + cell-center 정렬 ([ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). L5-3 — chain 구조 (MAX_CHAIN=8) + per-face lazy raster + Hangul / CJK paste 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341)). 남은 sub-step: L5-2 HarfBuzz Latin shape / L5-4 emoji (color) / L5-5 combining mark + ZWJ + grapheme cluster / L5-6 block element / config 통합 (font.family + font.glyph_fallback). |
+| L5 | Fonts | L5-1 / L5-3 / L5-4 완료, 나머지 대기 | L5-1 — fontconfig dlopen + FreeType dlopen + ASCII pre-raster + cell-center 정렬 ([ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). L5-3 — chain 구조 (MAX_CHAIN=8) + per-face lazy raster + Hangul / CJK paste 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341)). L5-4 — BGRA color emoji raster path + 임시 chain hardcoded + fontconfig substitution 검증 ([4816052](https://github.com/ensky0/tildaz/commit/4816052)). 남은 sub-step: L5-2 HarfBuzz Latin shape / L5-5 combining mark + ZWJ + grapheme cluster / L5-6 block element / config 통합 (font.family + font.glyph_fallback). |
 | L6 | Input and clipboard | keyboard + mouse selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 더블클릭 word selection ([dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 스크롤바 클릭 + 드래그 — 우측 8 px thumb hit test + `scrollToY` ([33b760b](https://github.com/ensky0/tildaz/commit/33b760b)). pointer cursor 모양은 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)). |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
 | L8 | Layer-shell drop-down | 대기 | 테스트 session에서 `zwlr_layer_shell_v1`은 광고되지만 layer-shell surface는 아직 미구현. |
@@ -269,7 +271,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 88db341 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. 4816052 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -283,7 +285,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 8 | L5-1 fontconfig + FreeType + ASCII raster | ✅ [ce12372](https://github.com/ensky0/tildaz/commit/ce12372) — 5x7 임시 table 제거 + `src/font/linux/{fontconfig,freetype,font}.zig` 도입 + cell-center 정렬. proportional 폰트도 cell 안 균일 분포. |
 | 9 | L5-2 HarfBuzz Latin shape | 대기 — kerning / ligature (`==` `!=` `->` 등). dlopen `libharfbuzz.so.0`. |
 | 10 | L5-3 font chain + lazy raster | ✅ [88db341](https://github.com/ensky0/tildaz/commit/88db341) — N-face chain (MAX_CHAIN=8) + per-face `AutoHashMap` lazy raster. paste 한글 / 한자 / 가나 wide glyph 동작. config 통합 / 진짜 chain 폰트 추가는 별도 sub-step. |
-| 11 | L5-4 emoji (color) | 대기 — FreeType `FT_PIXEL_MODE_BGRA` raster path. Noto Color Emoji. |
+| 11 | L5-4 emoji (color) + 임시 chain 갱신 | ✅ [4816052](https://github.com/ensky0/tildaz/commit/4816052) — `FT_LOAD_COLOR` + BGRA raster path + `drawGlyphBgra` (cell ratio scale fit + premultiplied alpha 블렌딩). chain 임시 hardcoded + fontconfig substitution 검증 (specific family 의 fallback substitution skip) + dedup log 인덱스 fix. |
 | 12 | L5-5 combining mark + ZWJ + grapheme cluster | 대기 — HarfBuzz cluster output. |
 | 13 | L5-6 block element | 대기 — 공유 `renderer/block_element.zig` 부착. |
 | 9 | L8 layer-shell drop-down prototype | 대기 — `zwlr_layer_shell_v1` 광고 확인됨. anchor / exclusive zone / monitor 선택 검증. |
