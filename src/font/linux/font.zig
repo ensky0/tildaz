@@ -5,6 +5,10 @@
 //! [src/font/macos/font.zig](../macos/font.zig) (CoreTextFontContext) 와 같은
 //! 역할. `glyph(cp)` 가 primary → fallback chain 순회로 첫 매치 face 에서
 //! raster + cache. chain 모두 미스면 primary 의 placeholder ('?') 반환.
+//!
+//! 8bpp gray (`FT_PIXEL_MODE_GRAY`) 와 color (`FT_PIXEL_MODE_BGRA`, Noto Color
+//! Emoji 등) 둘 다 raster — Glyph.pixel_mode 로 호출자 (`software_terminal.paint`)
+//! 가 두 path 갈래.
 
 const std = @import("std");
 const fontconfig = @import("fontconfig.zig");
@@ -15,21 +19,24 @@ const font_constants = @import("../constants.zig");
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 
 pub const Glyph = struct {
-    /// 8bpp alpha. width × height 크기. width=0 또는 height=0 이면 invisible (예: space).
+    /// gray = width × height × 1 byte (alpha). BGRA = width × height × 4 byte
+    /// (premultiplied alpha). width=0 또는 height=0 이면 invisible (예: space).
     bitmap: []u8,
     width: u32,
     height: u32,
-    /// baseline 기준 좌측 offset.
     bitmap_left: i32,
-    /// baseline 기준 위쪽 offset (양수 = baseline 위로).
     bitmap_top: i32,
     advance: u32,
+    /// `FT_PIXEL_MODE_GRAY` 또는 `FT_PIXEL_MODE_BGRA`. 그 외는 invisible bitmap.
+    pixel_mode: u8,
 };
 
 pub const Face = struct {
     allocator: std.mem.Allocator,
     ft_face: freetype.FT_Face,
     family: []u8,
+    /// 로딩 시 fontconfig 가 반환한 파일 path — chain 중복 제거에 사용.
+    path: []u8,
     glyph_cache: std.AutoHashMap(u21, Glyph),
 
     fn deinit(self: *Face, api: freetype.Api) void {
@@ -40,6 +47,7 @@ pub const Face = struct {
         self.glyph_cache.deinit();
         _ = api.done_face(self.ft_face);
         self.allocator.free(self.family);
+        self.allocator.free(self.path);
     }
 };
 
@@ -50,15 +58,11 @@ pub const Context = struct {
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
 
-    /// primary face 의 'M' advance 기준. monospace 면 모든 글자가 cell_width 안.
-    /// proportional 폰트면 글자별 advance 가 다르고 paint 가 cell 안 center 정렬.
     cell_width_px: u32,
-    /// primary face 의 line height (ascent + descent + line gap).
     cell_height_px: u32,
     ascent_px: u32,
     descent_px: u32,
 
-    /// primary face 의 '?' glyph. chain 모두 미스일 때 사용.
     placeholder: Glyph,
 
     pub fn init(
@@ -85,79 +89,126 @@ pub const Context = struct {
             .cell_height_px = pixel_height,
             .ascent_px = 0,
             .descent_px = 0,
-            .placeholder = .{ .bitmap = &.{}, .width = 0, .height = 0, .bitmap_left = 0, .bitmap_top = 0, .advance = 0 },
+            .placeholder = .{
+                .bitmap = &.{},
+                .width = 0,
+                .height = 0,
+                .bitmap_left = 0,
+                .bitmap_top = 0,
+                .advance = 0,
+                .pixel_mode = freetype.FT_PIXEL_MODE_GRAY,
+            },
         };
         errdefer self.freeFaces();
 
         const max_load = @min(families.len, MAX_CHAIN);
         for (families[0..max_load], 0..) |family, i| {
-            const family_z = try allocator.allocSentinel(u8, family.len, 0);
-            defer allocator.free(family_z);
-            @memcpy(family_z[0..family.len], family);
-
-            const path = fontconfig.lookupFile(allocator, family_z.ptr) catch |err| {
-                log.appendLine("font", "fontconfig lookup failed family={s} err={s}", .{ family, @errorName(err) });
-                continue;
+            self.tryLoadFamily(family, i, pixel_height) catch |err| {
+                log.appendLine("font", "chain[{d}] skip family={s} err={s}", .{ i, family, @errorName(err) });
             };
-            defer allocator.free(path);
-
-            const path_z = try allocator.allocSentinel(u8, path.len, 0);
-            defer allocator.free(path_z);
-            @memcpy(path_z[0..path.len], path);
-
-            var ft_face: freetype.FT_Face = undefined;
-            if (ft_api.new_face(ft_lib, path_z.ptr, 0, &ft_face) != 0) {
-                log.appendLine("font", "FreeType new_face failed family={s} path={s}", .{ family, path });
-                continue;
-            }
-
-            if (ft_api.set_pixel_sizes(ft_face, 0, pixel_height) != 0) {
-                _ = ft_api.done_face(ft_face);
-                log.appendLine("font", "FreeType set_pixel_sizes failed family={s}", .{family});
-                continue;
-            }
-
-            const family_owned = try allocator.dupe(u8, family);
-            errdefer allocator.free(family_owned);
-
-            self.faces[self.face_count] = .{
-                .allocator = allocator,
-                .ft_face = ft_face,
-                .family = family_owned,
-                .glyph_cache = std.AutoHashMap(u21, Glyph).init(allocator),
-            };
-            self.face_count += 1;
-
-            log.appendLine("font", "chain[{d}] family={s} path={s}", .{ i, family, path });
-
-            // primary face (= 첫 로드된 face) 의 metric 을 cell 크기로 사용.
-            if (self.face_count == 1) {
-                const m_idx = ft_api.get_char_index(ft_face, 'M');
-                if (ft_api.load_glyph(ft_face, m_idx, 0) == 0) {
-                    if (ft_face.glyph) |m_slot| {
-                        const adv = @divFloor(m_slot.advance.x, 64);
-                        if (adv > 0) self.cell_width_px = @intCast(adv);
-                    }
-                }
-                if (ft_face.size) |size_rec| {
-                    const m = size_rec.metrics;
-                    const ascent = @divFloor(m.ascender, 64);
-                    const descent = @divFloor(-m.descender, 64);
-                    const height = @divFloor(m.height, 64);
-                    if (ascent > 0) self.ascent_px = @intCast(ascent);
-                    if (descent > 0) self.descent_px = @intCast(descent);
-                    if (height > 0) self.cell_height_px = @intCast(height);
-                }
-                log.appendLine("font", "primary metric cell_w={d} cell_h={d} ascent={d} descent={d}", .{
-                    self.cell_width_px, self.cell_height_px, self.ascent_px, self.descent_px,
-                });
-                self.placeholder = rasterOne(allocator, ft_api, ft_face, '?') catch self.placeholder;
-            }
         }
 
         if (self.face_count == 0) return error.NoFaceLoaded;
 
         return self;
+    }
+
+    /// 한 family 의 path 조회 + face 등록. 실패는 caller 가 잡고 skip (err return).
+    fn tryLoadFamily(self: *Context, family: []const u8, log_idx: usize, pixel_height: u32) !void {
+        const family_z = try self.allocator.allocSentinel(u8, family.len, 0);
+        defer self.allocator.free(family_z);
+        @memcpy(family_z[0..family.len], family);
+
+        const fc_result = try fontconfig.lookup(self.allocator, family_z.ptr);
+        defer self.allocator.free(fc_result.family);
+        var path_owned_by_face = false;
+        defer if (!path_owned_by_face) self.allocator.free(fc_result.path);
+
+        // fontconfig 는 정확한 매치 없으면 fallback substitution 으로 다른 family
+        // 의 path 를 반환한다. generic family ("monospace" 등) 는 substitution 이
+        // 의도 — 시스템 default 매치. specific family 는 결과 family 명이 우리
+        // 요청과 substring 매치 안 되면 substitution 으로 판단 + skip.
+        if (!isGenericFamily(family) and std.ascii.indexOfIgnoreCase(fc_result.family, family) == null) {
+            log.appendLine("font", "chain[{d}] skip family={s} (fontconfig substituted to {s})", .{
+                log_idx, family, fc_result.family,
+            });
+            return error.FontconfigFallbackSubstitution;
+        }
+
+        // 같은 path 가 chain 안 이미 있으면 dedup. log 인덱스 = 매치된 face 의
+        // 실제 index (자기 자신이 아니라).
+        for (self.faces[0..self.face_count], 0..) |slot, idx| {
+            const existing = slot orelse continue;
+            if (std.mem.eql(u8, existing.path, fc_result.path)) {
+                log.appendLine("font", "chain[{d}] dedup family={s} path={s} (same as chain[{d}])", .{
+                    log_idx, family, fc_result.path, idx,
+                });
+                return;
+            }
+        }
+
+        const path_z = try self.allocator.allocSentinel(u8, fc_result.path.len, 0);
+        defer self.allocator.free(path_z);
+        @memcpy(path_z[0..fc_result.path.len], fc_result.path);
+
+        var ft_face: freetype.FT_Face = undefined;
+        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, 0, &ft_face) != 0) {
+            return error.FreetypeNewFaceFailed;
+        }
+        errdefer _ = self.ft_api.done_face(ft_face);
+
+        // set_pixel_sizes 가 fixed-strike 폰트 (Noto Color Emoji 등) 에서 fail
+        // 가능. fail 면 첫 strike 선택으로 fallback.
+        if (self.ft_api.set_pixel_sizes(ft_face, 0, pixel_height) != 0) {
+            if (ft_face.num_fixed_sizes <= 0 or self.ft_api.select_size(ft_face, 0) != 0) {
+                return error.FreetypeSetSizeFailed;
+            }
+        }
+
+        // primary face 자격 — 'M' glyph 가 있어야 cell metric 측정 가능. emoji
+        // 폰트 (Noto Color Emoji 등) 가 chain 의 첫 family 로 시도되어도 'M' 없으면
+        // primary 자리 미적임. 다음 family 시도.
+        const m_idx = self.ft_api.get_char_index(ft_face, 'M');
+        if (self.face_count == 0 and m_idx == 0) {
+            return error.NoLatinM;
+        }
+
+        const family_owned = try self.allocator.dupe(u8, family);
+        errdefer self.allocator.free(family_owned);
+
+        self.faces[self.face_count] = .{
+            .allocator = self.allocator,
+            .ft_face = ft_face,
+            .family = family_owned,
+            .path = fc_result.path,
+            .glyph_cache = std.AutoHashMap(u21, Glyph).init(self.allocator),
+        };
+        path_owned_by_face = true;
+        self.face_count += 1;
+
+        log.appendLine("font", "chain[{d}] family={s} path={s}", .{ log_idx, family, fc_result.path });
+
+        if (self.face_count == 1) {
+            if (m_idx != 0 and self.ft_api.load_glyph(ft_face, m_idx, 0) == 0) {
+                if (ft_face.glyph) |m_slot| {
+                    const adv = @divFloor(m_slot.advance.x, 64);
+                    if (adv > 0) self.cell_width_px = @intCast(adv);
+                }
+            }
+            if (ft_face.size) |size_rec| {
+                const m = size_rec.metrics;
+                const ascent = @divFloor(m.ascender, 64);
+                const descent = @divFloor(-m.descender, 64);
+                const height = @divFloor(m.height, 64);
+                if (ascent > 0) self.ascent_px = @intCast(ascent);
+                if (descent > 0) self.descent_px = @intCast(descent);
+                if (height > 0) self.cell_height_px = @intCast(height);
+            }
+            log.appendLine("font", "primary metric cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+                self.cell_width_px, self.cell_height_px, self.ascent_px, self.descent_px,
+            });
+            self.placeholder = rasterOne(self.allocator, self.ft_api, ft_face, '?') catch self.placeholder;
+        }
     }
 
     pub fn deinit(self: *Context) void {
@@ -198,6 +249,17 @@ pub const Context = struct {
     }
 };
 
+/// fontconfig 가 fallback substitution 으로 시스템 default 매치하는 게 의도된
+/// generic family. 그 외는 결과 family 명이 요청과 다르면 substitution 으로
+/// 판단해서 chain 에 안 추가.
+fn isGenericFamily(family: []const u8) bool {
+    const generic = [_][]const u8{ "monospace", "sans-serif", "serif" };
+    for (generic) |g| {
+        if (std.ascii.eqlIgnoreCase(family, g)) return true;
+    }
+    return false;
+}
+
 fn rasterOne(
     allocator: std.mem.Allocator,
     api: freetype.Api,
@@ -205,23 +267,36 @@ fn rasterOne(
     cp: u21,
 ) !Glyph {
     const idx = api.get_char_index(face, cp);
-    if (api.load_glyph(face, idx, freetype.FT_LOAD_RENDER) != 0) return error.FreetypeLoadGlyphFailed;
+    // FT_LOAD_COLOR — emoji (BGRA) 도 raster. mono 폰트엔 무시.
+    const load_flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_COLOR;
+    if (api.load_glyph(face, idx, load_flags) != 0) return error.FreetypeLoadGlyphFailed;
     const slot = face.glyph orelse return error.FreetypeNoGlyphSlot;
     const bm = slot.bitmap;
 
-    // 8bpp alpha (FT_PIXEL_MODE_GRAY) 만 지원. mono / BGRA 는 invisible bitmap 으로 fallback
-    // (L5-4 emoji 에서 BGRA, mono 는 현실적으로 거의 안 옴).
     var bitmap_slice: []u8 = &.{};
-    if (bm.buffer != null and bm.pixel_mode == freetype.FT_PIXEL_MODE_GRAY and bm.width > 0 and bm.rows > 0) {
+    var stored_pixel_mode: u8 = bm.pixel_mode;
+    if (bm.buffer != null and bm.width > 0 and bm.rows > 0) {
         const w: usize = @intCast(bm.width);
         const h: usize = @intCast(bm.rows);
-        bitmap_slice = try allocator.alloc(u8, w * h);
-        const pitch_abs: usize = if (bm.pitch >= 0) @intCast(bm.pitch) else @intCast(-bm.pitch);
-        var row: usize = 0;
-        while (row < h) : (row += 1) {
-            const src = bm.buffer.?[row * pitch_abs .. row * pitch_abs + w];
-            @memcpy(bitmap_slice[row * w .. row * w + w], src);
+        const bytes_per_pixel: usize = switch (bm.pixel_mode) {
+            freetype.FT_PIXEL_MODE_GRAY => 1,
+            freetype.FT_PIXEL_MODE_BGRA => 4,
+            else => 0,
+        };
+        if (bytes_per_pixel > 0) {
+            bitmap_slice = try allocator.alloc(u8, w * h * bytes_per_pixel);
+            const pitch_abs: usize = if (bm.pitch >= 0) @intCast(bm.pitch) else @intCast(-bm.pitch);
+            const row_bytes = w * bytes_per_pixel;
+            var row: usize = 0;
+            while (row < h) : (row += 1) {
+                const src = bm.buffer.?[row * pitch_abs .. row * pitch_abs + row_bytes];
+                @memcpy(bitmap_slice[row * row_bytes .. row * row_bytes + row_bytes], src);
+            }
+        } else {
+            stored_pixel_mode = freetype.FT_PIXEL_MODE_GRAY; // 빈 bitmap fallback
         }
+    } else {
+        stored_pixel_mode = freetype.FT_PIXEL_MODE_GRAY;
     }
 
     const advance_raw = @divFloor(slot.advance.x, 64);
@@ -234,5 +309,6 @@ fn rasterOne(
         .bitmap_left = slot.bitmap_left,
         .bitmap_top = slot.bitmap_top,
         .advance = advance_clamped,
+        .pixel_mode = stored_pixel_mode,
     };
 }
