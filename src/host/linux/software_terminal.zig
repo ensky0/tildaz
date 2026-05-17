@@ -1,29 +1,46 @@
 //! Temporary Linux bring-up renderer.
 //!
-//! This is intentionally small and software-only: it paints ghostty-vt render
-//! state into a Wayland `wl_shm` XRGB8888 buffer so the Linux host can validate
-//! PTY -> parser -> resize -> frame lifecycle before the real GPU/font stack is
-//! selected.
+//! Software-only — paints ghostty-vt render state into a Wayland `wl_shm`
+//! XRGB8888 buffer. 진짜 GPU renderer (EGL/OpenGL) 로 갈 때까지의 bring-up 코드.
+//! Glyph 는 fontconfig + FreeType 으로 raster (ASCII 만 pre-cached, [font/linux/font.zig](../../font/linux/font.zig)).
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
+const font = @import("../../font/linux/font.zig");
 
-pub const cell_width_px: i32 = 8;
-pub const cell_height_px: i32 = 16;
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
-/// 임시 renderer 라 픽셀 고정.
 pub const scrollbar_w_px: i32 = 8;
 /// thumb 최소 높이 — scrollback 이 길어 ratio 작아져도 클릭 가능한 영역 확보.
 pub const scrollbar_min_thumb_h: i32 = 20;
 const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
 
+/// 임시 raster pixel height. font.size_point 설정과 통합은 별도 sub-task.
+const default_pixel_height: u32 = 16;
+
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
+    font_ctx: font.Context,
+
+    pub fn init(allocator: std.mem.Allocator) !Renderer {
+        return .{
+            .render_state = .empty,
+            .font_ctx = try font.Context.init(allocator, default_pixel_height),
+        };
+    }
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.render_state.deinit(allocator);
+        self.font_ctx.deinit();
+    }
+
+    pub fn cellWidth(self: *const Renderer) i32 {
+        return @intCast(self.font_ctx.cell_width_px);
+    }
+
+    pub fn cellHeight(self: *const Renderer) i32 {
+        return @intCast(self.font_ctx.cell_height_px);
     }
 
     pub fn paint(
@@ -43,6 +60,10 @@ pub const Renderer = struct {
 
         const colors = self.render_state.colors;
         fill(memory, width, height, stride, colors.background);
+
+        const cw = self.cellWidth();
+        const ch = self.cellHeight();
+        const ascent: i32 = @intCast(self.font_ctx.ascent_px);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -66,27 +87,45 @@ pub const Renderer = struct {
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 const bg = resolveBg(style, &raw, &colors, is_selected);
-                const cell_x: i32 = padding_px + @as(i32, @intCast(x)) * cell_width_px;
-                const cell_y: i32 = padding_px + @as(i32, @intCast(y)) * cell_height_px;
-                const cell_w: i32 = if (raw.wide == .wide) cell_width_px * 2 else cell_width_px;
+                const cell_x: i32 = padding_px + @as(i32, @intCast(x)) * cw;
+                const cell_y: i32 = padding_px + @as(i32, @intCast(y)) * ch;
+                const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
 
                 if (is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null) {
-                    rect(memory, width, height, stride, cell_x, cell_y, cell_w, cell_height_px, bg);
+                    rect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, bg);
                 }
 
                 if (!raw.hasText() or raw.codepoint() == 0) continue;
                 const fg = resolveFg(style, &colors, is_selected);
-                drawGlyph(memory, width, height, stride, cell_x, cell_y, raw.codepoint(), fg);
+                const glyph = self.font_ctx.glyph(raw.codepoint());
+                const baseline = cell_y + ascent;
+                // proportional 폰트 (`fc-match monospace` 가 NotoSansCJK 같은 sans-serif
+                // 로 매치되는 환경 등) 라도 글자가 cell 안 가운데에 균일하게 분포하도록
+                // advance-center 정렬. monospace 면 글리프 advance == cell width 라 offset
+                // = 0 (그대로). wide glyph 의 fallback (placeholder '?') 도 cell-pair 가운데로.
+                const glyph_advance_i32: i32 = @intCast(glyph.advance);
+                const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
+                drawGlyph(
+                    memory,
+                    width,
+                    height,
+                    stride,
+                    cell_x + center_off + glyph.bitmap_left,
+                    baseline - glyph.bitmap_top,
+                    glyph,
+                    fg,
+                    bg,
+                );
             }
         }
 
         if (self.render_state.cursor.visible) {
             if (self.render_state.cursor.viewport) |vp| {
-                var cx: i32 = padding_px + @as(i32, @intCast(vp.x)) * cell_width_px;
-                if (vp.wide_tail and vp.x > 0) cx -= cell_width_px;
-                const cy: i32 = padding_px + @as(i32, @intCast(vp.y)) * cell_height_px;
+                var cx: i32 = padding_px + @as(i32, @intCast(vp.x)) * cw;
+                if (vp.wide_tail and vp.x > 0) cx -= cw;
+                const cy: i32 = padding_px + @as(i32, @intCast(vp.y)) * ch;
                 const cursor = colors.cursor orelse ghostty.color.RGB{ .r = 180, .g = 180, .b = 180 };
-                rect(memory, width, height, stride, cx, cy + cell_height_px - 3, cell_width_px, 2, cursor);
+                rect(memory, width, height, stride, cx, cy + ch - 3, cw, 2, cursor);
             }
         }
 
@@ -174,34 +213,33 @@ fn rect(
     }
 }
 
+/// 8bpp alpha bitmap 을 fg/bg 알파 블렌딩으로 XRGB8888 buffer 에 그린다.
+/// glyph buffer 가 비어 있거나 (space) 좌표가 화면 밖이면 무시.
 fn drawGlyph(
     memory: []u8,
     width: i32,
     height: i32,
     stride: i32,
-    cell_x: i32,
-    cell_y: i32,
-    cp: u21,
-    color: ghostty.color.RGB,
+    draw_x: i32,
+    draw_y: i32,
+    glyph: *const font.Glyph,
+    fg: ghostty.color.RGB,
+    bg: ghostty.color.RGB,
 ) void {
-    const rows = glyphRows(cp) orelse glyphRows('?').?;
-    const glyph_x = cell_x + 1;
-    const glyph_y = cell_y + 1;
-    for (rows, 0..) |bits, gy| {
-        for (0..5) |gx| {
-            const mask: u8 = @as(u8, 1) << @intCast(4 - gx);
-            if ((bits & mask) == 0) continue;
-            rect(
-                memory,
-                width,
-                height,
-                stride,
-                glyph_x + @as(i32, @intCast(gx)),
-                glyph_y + @as(i32, @intCast(gy)) * 2,
-                1,
-                2,
-                color,
-            );
+    if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
+
+    var row: u32 = 0;
+    while (row < glyph.height) : (row += 1) {
+        var col: u32 = 0;
+        while (col < glyph.width) : (col += 1) {
+            const alpha = glyph.bitmap[row * glyph.width + col];
+            if (alpha == 0) continue;
+            const px = draw_x + @as(i32, @intCast(col));
+            const py = draw_y + @as(i32, @intCast(row));
+            if (px < 0 or py < 0 or px >= width or py >= height) continue;
+            const off: usize = @intCast(py * stride + px * 4);
+            const blended = blendPixel(fg, bg, alpha);
+            std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
         }
     }
 }
@@ -210,109 +248,11 @@ fn pack(color: ghostty.color.RGB) u32 {
     return (@as(u32, color.r) << 16) | (@as(u32, color.g) << 8) | color.b;
 }
 
-fn glyphRows(cp: u21) ?[7]u8 {
-    return switch (cp) {
-        ' ' => .{ 0, 0, 0, 0, 0, 0, 0 },
-        '!' => .{ 0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100, 0 },
-        '"' => .{ 0b01010, 0b01010, 0b01010, 0, 0, 0, 0 },
-        '#' => .{ 0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010 },
-        '$' => .{ 0b00100, 0b01111, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100 },
-        '%' => .{ 0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011 },
-        '&' => .{ 0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101 },
-        '\'' => .{ 0b00100, 0b00100, 0b01000, 0, 0, 0, 0 },
-        '(' => .{ 0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010 },
-        ')' => .{ 0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000 },
-        '*' => .{ 0, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0 },
-        '+' => .{ 0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0 },
-        ',' => .{ 0, 0, 0, 0, 0b00100, 0b00100, 0b01000 },
-        '-' => .{ 0, 0, 0, 0b11111, 0, 0, 0 },
-        '.' => .{ 0, 0, 0, 0, 0, 0b00100, 0 },
-        '/' => .{ 0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000 },
-        '0' => .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 },
-        '1' => .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
-        '2' => .{ 0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111 },
-        '3' => .{ 0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110 },
-        '4' => .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 },
-        '5' => .{ 0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110 },
-        '6' => .{ 0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 },
-        '7' => .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 },
-        '8' => .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 },
-        '9' => .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110 },
-        ':' => .{ 0, 0b00100, 0, 0, 0, 0b00100, 0 },
-        ';' => .{ 0, 0b00100, 0, 0, 0b00100, 0b00100, 0b01000 },
-        '<' => .{ 0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010 },
-        '=' => .{ 0, 0, 0b11111, 0, 0b11111, 0, 0 },
-        '>' => .{ 0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000 },
-        '?' => .{ 0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100 },
-        '@' => .{ 0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110 },
-        'A' => .{ 0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001 },
-        'B' => .{ 0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110 },
-        'C' => .{ 0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110 },
-        'D' => .{ 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110 },
-        'E' => .{ 0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111 },
-        'F' => .{ 0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000 },
-        'G' => .{ 0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110 },
-        'H' => .{ 0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001 },
-        'I' => .{ 0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
-        'J' => .{ 0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100 },
-        'K' => .{ 0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001 },
-        'L' => .{ 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111 },
-        'M' => .{ 0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001 },
-        'N' => .{ 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001 },
-        'O' => .{ 0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
-        'P' => .{ 0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000 },
-        'Q' => .{ 0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101 },
-        'R' => .{ 0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001 },
-        'S' => .{ 0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110 },
-        'T' => .{ 0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100 },
-        'U' => .{ 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
-        'V' => .{ 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100 },
-        'W' => .{ 0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010 },
-        'X' => .{ 0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001 },
-        'Y' => .{ 0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100 },
-        'Z' => .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111 },
-        'a' => .{ 0, 0, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111 },
-        'b' => .{ 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110 },
-        'c' => .{ 0, 0, 0b01110, 0b10001, 0b10000, 0b10001, 0b01110 },
-        'd' => .{ 0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b10001, 0b01111 },
-        'e' => .{ 0, 0, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110 },
-        'f' => .{ 0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b01000 },
-        'g' => .{ 0, 0, 0b01111, 0b10001, 0b01111, 0b00001, 0b01110 },
-        'h' => .{ 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001 },
-        'i' => .{ 0b00100, 0, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100 },
-        'j' => .{ 0b00010, 0, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100 },
-        'k' => .{ 0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010 },
-        'l' => .{ 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
-        'm' => .{ 0, 0, 0b11010, 0b10101, 0b10101, 0b10001, 0b10001 },
-        'n' => .{ 0, 0, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001 },
-        'o' => .{ 0, 0, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110 },
-        'p' => .{ 0, 0, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000 },
-        'q' => .{ 0, 0, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001 },
-        'r' => .{ 0, 0, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000 },
-        's' => .{ 0, 0, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110 },
-        't' => .{ 0b01000, 0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110 },
-        'u' => .{ 0, 0, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
-        'v' => .{ 0, 0, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100 },
-        'w' => .{ 0, 0, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010 },
-        'x' => .{ 0, 0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001 },
-        'y' => .{ 0, 0, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110 },
-        'z' => .{ 0, 0, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111 },
-        '[' => .{ 0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110 },
-        '\\' => .{ 0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001 },
-        ']' => .{ 0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110 },
-        '^' => .{ 0b00100, 0b01010, 0b10001, 0, 0, 0, 0 },
-        '_' => .{ 0, 0, 0, 0, 0, 0, 0b11111 },
-        '`' => .{ 0b01000, 0b00100, 0b00010, 0, 0, 0, 0 },
-        '{' => .{ 0b00010, 0b00100, 0b00100, 0b01000, 0b00100, 0b00100, 0b00010 },
-        '|' => .{ 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100 },
-        '}' => .{ 0b01000, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b01000 },
-        '~' => .{ 0, 0, 0b01000, 0b10101, 0b00010, 0, 0 },
-        else => null,
-    };
-}
-
-test "software renderer has shell prompt glyphs" {
-    for ("ensky0@utm-linux:~$ /bin/sh?") |c| {
-        try std.testing.expect(glyphRows(c) != null);
-    }
+fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
+    const a: u32 = alpha;
+    const inv: u32 = 255 - a;
+    const r: u32 = (@as(u32, fg.r) * a + @as(u32, bg.r) * inv) / 255;
+    const g: u32 = (@as(u32, fg.g) * a + @as(u32, bg.g) * inv) / 255;
+    const b: u32 = (@as(u32, fg.b) * a + @as(u32, bg.b) * inv) / 255;
+    return (r << 16) | (g << 8) | b;
 }
