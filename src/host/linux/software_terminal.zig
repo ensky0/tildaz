@@ -19,6 +19,12 @@ const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
 /// 임시 raster pixel height. font.size_point 설정과 통합은 별도 sub-task.
 const default_pixel_height: u32 = 16;
 
+/// 임시 default font chain. config.font.family / font.glyph_fallback 통합은
+/// 별도 sub-task — Win/mac 처럼 config 에서 받기. 현재는 generic "monospace"
+/// 만 — fontconfig 가 시스템 default 매치 (Debian 환경에선 NotoSansCJK 라
+/// Hangul / CJK ASCII 모두 같은 face).
+const default_families = [_][]const u8{"monospace"};
+
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     font_ctx: font.Context,
@@ -26,7 +32,7 @@ pub const Renderer = struct {
     pub fn init(allocator: std.mem.Allocator) !Renderer {
         return .{
             .render_state = .empty,
-            .font_ctx = try font.Context.init(allocator, default_pixel_height),
+            .font_ctx = try font.Context.init(allocator, &default_families, default_pixel_height),
         };
     }
 
