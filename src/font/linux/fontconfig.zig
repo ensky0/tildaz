@@ -61,15 +61,15 @@ const Api = struct {
 
         return .{
             .handle = handle,
-            .init = lookup(handle, FcInit, "FcInit") orelse return error.FontconfigSymbolMissing,
-            .pattern_create = lookup(handle, FcPatternCreate, "FcPatternCreate") orelse return error.FontconfigSymbolMissing,
-            .pattern_destroy = lookup(handle, FcPatternDestroy, "FcPatternDestroy") orelse return error.FontconfigSymbolMissing,
-            .pattern_add_string = lookup(handle, FcPatternAddString, "FcPatternAddString") orelse return error.FontconfigSymbolMissing,
-            .config_substitute = lookup(handle, FcConfigSubstitute, "FcConfigSubstitute") orelse return error.FontconfigSymbolMissing,
-            .default_substitute = lookup(handle, FcDefaultSubstitute, "FcDefaultSubstitute") orelse return error.FontconfigSymbolMissing,
-            .font_match = lookup(handle, FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
-            .pattern_get_string = lookup(handle, FcPatternGetString, "FcPatternGetString") orelse return error.FontconfigSymbolMissing,
-            .fini = lookup(handle, FcFini, "FcFini") orelse return error.FontconfigSymbolMissing,
+            .init = lookupSym(handle,FcInit, "FcInit") orelse return error.FontconfigSymbolMissing,
+            .pattern_create = lookupSym(handle,FcPatternCreate, "FcPatternCreate") orelse return error.FontconfigSymbolMissing,
+            .pattern_destroy = lookupSym(handle,FcPatternDestroy, "FcPatternDestroy") orelse return error.FontconfigSymbolMissing,
+            .pattern_add_string = lookupSym(handle,FcPatternAddString, "FcPatternAddString") orelse return error.FontconfigSymbolMissing,
+            .config_substitute = lookupSym(handle,FcConfigSubstitute, "FcConfigSubstitute") orelse return error.FontconfigSymbolMissing,
+            .default_substitute = lookupSym(handle,FcDefaultSubstitute, "FcDefaultSubstitute") orelse return error.FontconfigSymbolMissing,
+            .font_match = lookupSym(handle,FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
+            .pattern_get_string = lookupSym(handle,FcPatternGetString, "FcPatternGetString") orelse return error.FontconfigSymbolMissing,
+            .fini = lookupSym(handle,FcFini, "FcFini") orelse return error.FontconfigSymbolMissing,
         };
     }
 
@@ -78,17 +78,27 @@ const Api = struct {
     }
 };
 
-fn lookup(handle: *anyopaque, comptime T: type, name: [*:0]const u8) ?T {
+fn lookupSym(handle: *anyopaque, comptime T: type, name: [*:0]const u8) ?T {
     const symbol = std.c.dlsym(handle, name) orelse return null;
     return @ptrCast(@alignCast(symbol));
 }
 
-/// `family` 에 해당하는 폰트 파일 path 를 caller-owned 슬라이스로 반환.
+pub const MatchResult = struct {
+    /// fontconfig 가 *반환한* family 명. 우리가 *요청한* family 와 다르면 fallback
+    /// substitution 발생 — caller 가 비교해서 skip 여부 결정.
+    family: []u8,
+    /// 매치된 폰트 파일 path.
+    path: []u8,
+};
+
+/// `family` 에 해당하는 폰트의 fontconfig 매치 결과 (반환 family + 파일 path) 를
+/// caller-owned 슬라이스로 반환.
 ///
-/// 일반적으로 `family = "monospace"` 를 넣으면 시스템 default monospace
-/// (DejaVu Sans Mono / Noto Sans Mono / Liberation Mono 등) path 가 돌아온다.
-/// libfontconfig 가 없거나 매치 실패 / 파일 추출 실패 시 error.
-pub fn lookupFile(allocator: std.mem.Allocator, family: [*:0]const u8) ![]u8 {
+/// 주의: fontconfig 는 정확한 매치가 없으면 fallback substitution 으로 *다른*
+/// family 의 path 를 반환할 수 있다. caller 가 `result.family` 를 우리가 요청한
+/// family 와 비교해서 substitution 여부를 판단해야 한다. generic family
+/// ("monospace" / "sans-serif" / "serif") 만 substitution 허용 의도.
+pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult {
     var api = try Api.load();
     defer api.deinit();
 
@@ -108,8 +118,14 @@ pub fn lookupFile(allocator: std.mem.Allocator, family: [*:0]const u8) ![]u8 {
     defer api.pattern_destroy(match);
     if (result != FC_RESULT_MATCH) return error.FontconfigNoMatch;
 
+    var family_ptr: [*:0]FcChar8 = undefined;
+    if (api.pattern_get_string(match, "family", 0, &family_ptr) != FC_RESULT_MATCH) return error.FontconfigNoFamily;
     var file_ptr: [*:0]FcChar8 = undefined;
     if (api.pattern_get_string(match, "file", 0, &file_ptr) != FC_RESULT_MATCH) return error.FontconfigNoFile;
 
-    return try allocator.dupe(u8, std.mem.span(file_ptr));
+    const family_dup = try allocator.dupe(u8, std.mem.span(family_ptr));
+    errdefer allocator.free(family_dup);
+    const path_dup = try allocator.dupe(u8, std.mem.span(file_ptr));
+
+    return .{ .family = family_dup, .path = path_dup };
 }

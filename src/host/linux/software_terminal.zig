@@ -8,6 +8,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
+const freetype = @import("../../font/linux/freetype.zig");
 
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
@@ -20,10 +21,19 @@ const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
 const default_pixel_height: u32 = 16;
 
 /// 임시 default font chain. config.font.family / font.glyph_fallback 통합은
-/// 별도 sub-task — Win/mac 처럼 config 에서 받기. 현재는 generic "monospace"
-/// 만 — fontconfig 가 시스템 default 매치 (Debian 환경에선 NotoSansCJK 라
-/// Hangul / CJK ASCII 모두 같은 face).
-const default_families = [_][]const u8{"monospace"};
+/// 별도 sub-task — Win/mac 처럼 config 에서 받기. 지금은 hardcoded — ligature
+/// 있는 mono primary 우선, 기본 mono fallback, generic fallback, color emoji
+/// 마지막. fontconfig 가 시스템에 없는 family 는 다른 폰트로 fallback 매치할
+/// 수 있는데 그건 font.Context.tryLoadFamily 의 path 중복 체크로 제거된다.
+const default_families = [_][]const u8{
+    "JetBrains Mono",
+    "Fira Code",
+    "Source Code Pro",
+    "DejaVu Sans Mono",
+    "Liberation Mono",
+    "monospace",
+    "Noto Color Emoji",
+};
 
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
@@ -104,24 +114,30 @@ pub const Renderer = struct {
                 if (!raw.hasText() or raw.codepoint() == 0) continue;
                 const fg = resolveFg(style, &colors, is_selected);
                 const glyph = self.font_ctx.glyph(raw.codepoint());
-                const baseline = cell_y + ascent;
-                // proportional 폰트 (`fc-match monospace` 가 NotoSansCJK 같은 sans-serif
-                // 로 매치되는 환경 등) 라도 글자가 cell 안 가운데에 균일하게 분포하도록
-                // advance-center 정렬. monospace 면 글리프 advance == cell width 라 offset
-                // = 0 (그대로). wide glyph 의 fallback (placeholder '?') 도 cell-pair 가운데로.
-                const glyph_advance_i32: i32 = @intCast(glyph.advance);
-                const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
-                drawGlyph(
-                    memory,
-                    width,
-                    height,
-                    stride,
-                    cell_x + center_off + glyph.bitmap_left,
-                    baseline - glyph.bitmap_top,
-                    glyph,
-                    fg,
-                    bg,
-                );
+                if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                    // color emoji — bitmap 이 보통 strike size (~109px) 라 cell 안 ratio
+                    // 유지 scale down + cell 가운데 fit. emoji 색 자체 사용 (fg 무시).
+                    drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, glyph);
+                } else {
+                    // proportional 폰트 (`fc-match monospace` 가 NotoSansCJK 같은 sans-serif
+                    // 로 매치되는 환경 등) 라도 글자가 cell 안 가운데에 균일하게 분포하도록
+                    // advance-center 정렬. monospace 면 글리프 advance == cell width 라 offset
+                    // = 0 (그대로). wide glyph 의 fallback (placeholder '?') 도 cell-pair 가운데로.
+                    const baseline = cell_y + ascent;
+                    const glyph_advance_i32: i32 = @intCast(glyph.advance);
+                    const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
+                    drawGlyph(
+                        memory,
+                        width,
+                        height,
+                        stride,
+                        cell_x + center_off + glyph.bitmap_left,
+                        baseline - glyph.bitmap_top,
+                        glyph,
+                        fg,
+                        bg,
+                    );
+                }
             }
         }
 
@@ -246,6 +262,71 @@ fn drawGlyph(
             const off: usize = @intCast(py * stride + px * 4);
             const blended = blendPixel(fg, bg, alpha);
             std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
+        }
+    }
+}
+
+/// FT_PIXEL_MODE_BGRA bitmap (premultiplied alpha) 를 cell 안 ratio 유지 scale +
+/// center fit + alpha 블렌딩으로 XRGB8888 buffer 에 그린다. emoji 색 자체 사용
+/// (fg 무시). nearest neighbor sampling — 작은 cell 에 큰 emoji bitmap (보통
+/// strike 109px) 가 들어갈 때 quality 보다 단순성 우선.
+fn drawGlyphBgra(
+    memory: []u8,
+    fb_w: i32,
+    fb_h: i32,
+    stride: i32,
+    cell_x: i32,
+    cell_y: i32,
+    cell_w: i32,
+    cell_h: i32,
+    glyph: *const font.Glyph,
+) void {
+    if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
+    if (cell_w <= 0 or cell_h <= 0) return;
+
+    const gw_f: f64 = @floatFromInt(glyph.width);
+    const gh_f: f64 = @floatFromInt(glyph.height);
+    const cw_f: f64 = @floatFromInt(cell_w);
+    const ch_f: f64 = @floatFromInt(cell_h);
+    const scale: f64 = @min(cw_f / gw_f, ch_f / gh_f);
+    const target_w: i32 = @intFromFloat(gw_f * scale);
+    const target_h: i32 = @intFromFloat(gh_f * scale);
+    if (target_w <= 0 or target_h <= 0) return;
+    const off_x: i32 = @divFloor(cell_w - target_w, 2);
+    const off_y: i32 = @divFloor(cell_h - target_h, 2);
+
+    var dy: i32 = 0;
+    while (dy < target_h) : (dy += 1) {
+        var dx: i32 = 0;
+        while (dx < target_w) : (dx += 1) {
+            const src_xf: f64 = @as(f64, @floatFromInt(dx)) / scale;
+            const src_yf: f64 = @as(f64, @floatFromInt(dy)) / scale;
+            const src_x: u32 = @intFromFloat(src_xf);
+            const src_y: u32 = @intFromFloat(src_yf);
+            if (src_x >= glyph.width or src_y >= glyph.height) continue;
+            const src_off: usize = (@as(usize, src_y) * glyph.width + src_x) * 4;
+            const b = glyph.bitmap[src_off];
+            const g = glyph.bitmap[src_off + 1];
+            const r = glyph.bitmap[src_off + 2];
+            const a = glyph.bitmap[src_off + 3];
+            if (a == 0) continue;
+
+            const px = cell_x + off_x + dx;
+            const py = cell_y + off_y + dy;
+            if (px < 0 or py < 0 or px >= fb_w or py >= fb_h) continue;
+
+            const dst_off: usize = @intCast(py * stride + px * 4);
+            const dst_b = memory[dst_off];
+            const dst_g = memory[dst_off + 1];
+            const dst_r = memory[dst_off + 2];
+            const inv: u32 = 255 - @as(u32, a);
+            // premultiplied: out = src + (1 - a) * dst.
+            const out_b: u8 = @intCast(@min(@as(u32, 255), @as(u32, b) + (@as(u32, dst_b) * inv) / 255));
+            const out_g: u8 = @intCast(@min(@as(u32, 255), @as(u32, g) + (@as(u32, dst_g) * inv) / 255));
+            const out_r: u8 = @intCast(@min(@as(u32, 255), @as(u32, r) + (@as(u32, dst_r) * inv) / 255));
+            memory[dst_off] = out_b;
+            memory[dst_off + 1] = out_g;
+            memory[dst_off + 2] = out_r;
         }
     }
 }

@@ -18,6 +18,8 @@ pub const FT_F26Dot6 = c_long;
 pub const FT_Error = c_int;
 
 pub const FT_LOAD_RENDER: c_int = 0x4;
+/// `( 1L << 20 )` — color emoji (BGRA) raster 활성화. mono 폰트엔 무시됨.
+pub const FT_LOAD_COLOR: c_int = 0x100000;
 
 pub const FT_PIXEL_MODE_MONO: u8 = 1;
 pub const FT_PIXEL_MODE_GRAY: u8 = 2;
@@ -169,6 +171,7 @@ const FtSetPixelSizes = *const fn (
     pixel_width: FT_UInt,
     pixel_height: FT_UInt,
 ) callconv(.c) FT_Error;
+const FtSelectSize = *const fn (face: FT_Face, strike_index: c_int) callconv(.c) FT_Error;
 const FtGetCharIndex = *const fn (face: FT_Face, charcode: FT_ULong) callconv(.c) FT_UInt;
 const FtLoadGlyph = *const fn (
     face: FT_Face,
@@ -183,6 +186,7 @@ pub const Api = struct {
     new_face: FtNewFace,
     done_face: FtDoneFace,
     set_pixel_sizes: FtSetPixelSizes,
+    select_size: FtSelectSize,
     get_char_index: FtGetCharIndex,
     load_glyph: FtLoadGlyph,
 
@@ -197,6 +201,7 @@ pub const Api = struct {
             .new_face = lookup(handle, FtNewFace, "FT_New_Face") orelse return error.FreetypeSymbolMissing,
             .done_face = lookup(handle, FtDoneFace, "FT_Done_Face") orelse return error.FreetypeSymbolMissing,
             .set_pixel_sizes = lookup(handle, FtSetPixelSizes, "FT_Set_Pixel_Sizes") orelse return error.FreetypeSymbolMissing,
+            .select_size = lookup(handle, FtSelectSize, "FT_Select_Size") orelse return error.FreetypeSymbolMissing,
             .get_char_index = lookup(handle, FtGetCharIndex, "FT_Get_Char_Index") orelse return error.FreetypeSymbolMissing,
             .load_glyph = lookup(handle, FtLoadGlyph, "FT_Load_Glyph") orelse return error.FreetypeSymbolMissing,
         };
