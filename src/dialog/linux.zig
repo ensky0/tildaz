@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const dialog = @import("../dialog.zig");
+const log = @import("../log.zig");
 
 pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     const prefix = switch (severity) {
@@ -13,6 +14,11 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
         .err => "error",
     };
     std.debug.print("[{s}] {s}\n{s}\n", .{ prefix, title, message });
+    // 임시 backend 라 GUI 없음 — log 에도 남겨 사용자가 `tildaz.log` 로
+    // 확인 가능 (예: 32-tab cap 도달이 GUI 없이도 보이게). L11 packaging
+    // 사이클에서 zenity / kdialog / GTK 통합 시 이 줄은 그대로 두고 GUI
+    // 추가.
+    log.appendLine("dialog", "{s} title={s} msg={s}", .{ prefix, title, message });
 }
 
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
