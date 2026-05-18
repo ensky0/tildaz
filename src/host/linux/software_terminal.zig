@@ -14,6 +14,7 @@ const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const tab_layout = @import("../../tab_layout.zig");
+const tab_interaction = @import("../../tab_interaction.zig");
 
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
@@ -89,6 +90,7 @@ pub const Renderer = struct {
         active_tab_idx: usize,
         layout: tab_layout.Layout,
         tab_scroll_x: f32,
+        rename_view: ?tab_interaction.RenameView,
     ) void {
         self.render_state.update(allocator, terminal) catch {
             fill(memory, width, height, stride, theme.background);
@@ -98,15 +100,15 @@ pub const Renderer = struct {
         const colors = self.render_state.colors;
         fill(memory, width, height, stride, colors.background);
 
+        const cw = self.cellWidth();
+        const ch = self.cellHeight();
+        const ascent: i32 = @intCast(self.font_ctx.ascent_px);
+
         // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, layout, tab_scroll_x, colors.background, &self.font_ctx);
-
-        const cw = self.cellWidth();
-        const ch = self.cellHeight();
-        const ascent: i32 = @intCast(self.font_ctx.ascent_px);
+        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, self.preedit_text, cw, colors.background, &self.font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -219,7 +221,12 @@ pub const Renderer = struct {
         // 동등 색 (`renderer/macos.zig:686`, `renderer/windows.zig:1144`).
         // PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가 commit_string 으로
         // 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
-        if (self.preedit_text.len > 0) {
+        //
+        // L12-γ-2 — rename 모드 활성 시 preedit 은 tab bar 안 rename cursor
+        // 옆에 그려진다 (`iterTabText` 가 preedit_text 인자로 처리). cell
+        // 영역에 또 그리면 두 군데 — skip.
+        const rename_active = rename_view != null;
+        if (!rename_active and self.preedit_text.len > 0) {
             if (self.render_state.cursor.viewport) |vp| {
                 drawPreeditOverlay(
                     memory,
@@ -274,6 +281,9 @@ fn drawTabBar(
     active_idx: usize,
     layout: tab_layout.Layout,
     scroll_x: f32,
+    rename_view: ?tab_interaction.RenameView,
+    preedit_text: []const u8,
+    cell_w: i32,
     inactive_bg: ghostty.color.RGB,
     font_ctx: *font.Context,
 ) void {
@@ -292,13 +302,29 @@ fn drawTabBar(
     const tab_y: i32 = 2;
     const tab_actual_h: i32 = @max(tab_bar_h - 4, 1);
     const tab_actual_w: i32 = @max(tab_w - 2, 1);
+    // mac / win 동등 — text 영역 y 위치는 cell height 기준 vertical center.
+    // cursor / preedit_bg 의 y 도 이 값. close 'x' / title text glyph baseline
+    // 도 동일.
+    const cell_h: i32 = @intCast(font_ctx.cell_height_px);
+    const text_y_top: i32 = @divFloor(tab_bar_h - cell_h, 2);
+    // close 'x' / preedit / cursor 모두 동일한 max_text_w — mac `tab_w -
+    // close_size_px - tab_pad_px * 3` 동등 (close box + 양쪽 padding).
+    const close_size_metric: i32 = @intCast(ui_metrics.TAB_CLOSE_SIZE_PT);
+    const max_text_w_metric: i32 = tab_w - close_size_metric - tab_pad * 3;
     const tab_area_x: i32 = @intFromFloat(layout.tab_area_x);
     const tab_area_w: i32 = @intFromFloat(layout.tab_area_w);
     const tab_area_end: i32 = tab_area_x + tab_area_w;
     const scroll_x_i: i32 = @intFromFloat(scroll_x);
 
     // --- 각 탭 (tab_area 안에서 clipping) ---
-    for (titles, 0..) |title, i| {
+    for (titles, 0..) |title_default, i| {
+        // L12-γ-2 — rename 활성 탭은 title 대신 buffer 사용.
+        const renaming_this = if (rename_view) |rv| rv.tab_index == i else false;
+        const title: []const u8 = if (renaming_this) blk: {
+            const rv = rename_view.?;
+            break :blk rv.text[0..rv.text_len];
+        } else title_default;
+
         // tab 의 world (scroll-relative) 좌측. tab_area_x 더하면 surface 좌표.
         const tab_world_x: i32 = @as(i32, @intCast(i)) * tab_w;
         const tab_screen_x: i32 = tab_area_x + tab_world_x - scroll_x_i;
@@ -346,40 +372,148 @@ fn drawTabBar(
             );
         }
 
-        // title text — 탭이 area 안에 적어도 일부 보일 때만 그림. text 가
-        // tab_area 경계 + close 박스 를 넘지 않게 truncate.
+        // L12-γ-2/3 — title text 그리기를 cross-platform `tab_layout.
+        // iterTabText` 로 — cursor follow scroll + truncate ellipsis +
+        // preedit overlay (rename 활성 시 cursor 옆 inline) 모두 자동.
+        // mac / win renderer 의 호출 패턴과 인자 / cb 분기 모두 동등.
         const text_x_start: i32 = tab_x + tab_pad;
-        const text_x_end: i32 = @min(close_x_outer - tab_pad, tab_area_end);
-        var pen_x: i32 = text_x_start;
-        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
-        while (utf8_iter.nextCodepoint()) |cp| {
-            const w_cells: u8 = display_width.codepointWidth(cp);
-            if (w_cells == 0) continue;
-            const glyph = font_ctx.glyph(cp);
-            const adv: i32 = @intCast(glyph.advance);
-            if (pen_x + adv > text_x_end) break;
-            // glyph 위치가 tab_area 좌측 경계 못 미치면 skip (clipping).
-            if (pen_x < tab_area_x) {
-                pen_x += adv;
-                continue;
+        const cw_f: f32 = @floatFromInt(cell_w);
+        const max_text_w_f: f32 = @floatFromInt(max_text_w_metric);
+
+        const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
+        const scroll_inout: ?*f32 = if (renaming_this) rename_view.?.scroll_offset else null;
+        const preedit_for_this: []const u8 = if (renaming_this) preedit_text else "";
+        // mac/win 동등 — 짧은 title 은 truncate 안 함 (ellipsis 안 그림).
+        // rename 활성 중에는 cursor follow scroll 가 처리 — truncate 비활성.
+        const total_text_w_f: f32 = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw_f;
+        const needs_truncate = !renaming_this and total_text_w_f > max_text_w_f;
+
+        const TextCtx = struct {
+            memory: []u8,
+            fb_w: i32,
+            fb_h: i32,
+            stride: i32,
+            viewport_left: i32,
+            tab_area_end: i32,
+            text_y_top: i32,
+            cell_h: i32,
+            tab_bar_h: i32,
+            text_baseline: i32,
+            bg: ghostty.color.RGB,
+            text_color: ghostty.color.RGB,
+            font_ctx: *font.Context,
+        };
+        const ctx = TextCtx{
+            .memory = memory,
+            .fb_w = fb_w,
+            .fb_h = fb_h,
+            .stride = stride,
+            .viewport_left = text_x_start,
+            .tab_area_end = tab_area_end,
+            .text_y_top = text_y_top,
+            .cell_h = cell_h,
+            .tab_bar_h = tab_bar_h,
+            .text_baseline = text_baseline,
+            .bg = bg,
+            .text_color = text_color,
+            .font_ctx = font_ctx,
+        };
+
+        const cb_fn = struct {
+            fn emit(c: TextCtx, cmd: tab_layout.TextCmd) void {
+                switch (cmd) {
+                    .glyph => |g| {
+                        // mac / win 동등 — glyph 만 viewport_left 검사 (scroll
+                        // 좌측 잘림 영역 skip). cursor / preedit_bg 는 검사 X.
+                        const px: i32 = @intFromFloat(g.x);
+                        if (px < c.viewport_left) return;
+                        if (px >= c.tab_area_end) return;
+                        const gl = c.font_ctx.glyph(g.cp);
+                        if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                            const adv: i32 = @intFromFloat(g.advance);
+                            drawGlyphBgra(c.memory, c.fb_w, c.fb_h, c.stride, px, 0, adv, c.tab_bar_h, gl);
+                        } else {
+                            drawGlyph(
+                                c.memory,
+                                c.fb_w,
+                                c.fb_h,
+                                c.stride,
+                                px + gl.bitmap_left,
+                                c.text_baseline - gl.bitmap_top,
+                                gl,
+                                c.text_color,
+                                c.bg,
+                            );
+                        }
+                    },
+                    .cursor => |cur| {
+                        // mac 동등 — 1px wide, height = cell_h - 4, y = text_y_top + 2.
+                        const px: i32 = @intFromFloat(cur.x);
+                        rect(c.memory, c.fb_w, c.fb_h, c.stride, px, c.text_y_top + 2, 1, @max(c.cell_h - 4, 1), c.text_color);
+                    },
+                    .preedit_bg => |pb| {
+                        // mac 동등 — y = text_y_top, height = cell_h.
+                        const px: i32 = @intFromFloat(pb.x);
+                        const adv: i32 = @intFromFloat(pb.advance);
+                        const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
+                        rect(c.memory, c.fb_w, c.fb_h, c.stride, px, c.text_y_top, adv, c.cell_h, preedit_bg);
+                    },
+                    .preedit_glyph => |pg| {
+                        const px: i32 = @intFromFloat(pg.x);
+                        const gl = c.font_ctx.glyph(pg.cp);
+                        const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
+                        if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                            const adv: i32 = @intFromFloat(pg.advance);
+                            drawGlyphBgra(c.memory, c.fb_w, c.fb_h, c.stride, px, 0, adv, c.tab_bar_h, gl);
+                        } else {
+                            drawGlyph(
+                                c.memory,
+                                c.fb_w,
+                                c.fb_h,
+                                c.stride,
+                                px + gl.bitmap_left,
+                                c.text_baseline - gl.bitmap_top,
+                                gl,
+                                c.text_color,
+                                preedit_bg,
+                            );
+                        }
+                    },
+                    .truncate_dot => |dot| {
+                        // emitGlyph('.') 동등 — mac 의 emitGlyph 호출 패턴.
+                        const px: i32 = @intFromFloat(dot.x);
+                        if (px < c.viewport_left) return;
+                        if (px >= c.tab_area_end) return;
+                        const gl = c.font_ctx.glyph('.');
+                        drawGlyph(
+                            c.memory,
+                            c.fb_w,
+                            c.fb_h,
+                            c.stride,
+                            px + gl.bitmap_left,
+                            c.text_baseline - gl.bitmap_top,
+                            gl,
+                            c.text_color,
+                            c.bg,
+                        );
+                    },
+                }
             }
-            if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                drawGlyphBgra(memory, fb_w, fb_h, stride, pen_x, 0, adv, tab_bar_h, glyph);
-            } else {
-                drawGlyph(
-                    memory,
-                    fb_w,
-                    fb_h,
-                    stride,
-                    pen_x + glyph.bitmap_left,
-                    text_baseline - glyph.bitmap_top,
-                    glyph,
-                    text_color,
-                    bg,
-                );
-            }
-            pen_x += adv;
-        }
+        }.emit;
+
+        tab_layout.iterTabText(
+            title,
+            cursor_byte,
+            preedit_for_this,
+            @floatFromInt(text_x_start),
+            cw_f,
+            max_text_w_f,
+            renaming_this,
+            needs_truncate,
+            scroll_inout,
+            ctx,
+            cb_fn,
+        );
     }
 
     // --- arrow / plus 버튼 ---
