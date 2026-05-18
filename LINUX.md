@@ -27,10 +27,11 @@ milestone 상태를 정확히 남기는 용도다.
 
 ## 현재 구현 상태
 
-2026-05-15, UTM Debian Wayland 환경에서 확인된 상태다.
+2026-05-18, Debian Cinnamon Wayland 세션에서 확인된 상태다 (이전까지는 UTM
+Debian Wayland 환경).
 
 - Branch: `linux-wayland-bringup`
-- Commit: `4816052`
+- Commit: `97ee2d0`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -47,6 +48,8 @@ milestone 상태를 정확히 남기는 용도다.
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` 단축키 | 동작 (Linux 도 Windows 와 동일 native modifier) |
 | 휠 스크롤 (scrollback) | 동작 |
 | 스크롤바 클릭 + 드래그 | 동작 (우측 8 px thumb, Windows/macOS 패턴 동일) |
+| block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 (공유 `src/renderer/block_element.zig` 부착, 폰트 무관 cell-aligned procedural rect / dot mask) |
+| Wayland 미연결 startup 에러 메시지 | path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR + 진단 hint 출력 (`error.WaylandSocketUnavailable`) |
 | 로그 noise | bring-up 단계 매 frame redraw 로그 제거, lifecycle 변화 이벤트만 |
 
 사용자 제공 로그에서 확인된 capability:
@@ -91,7 +94,9 @@ zwp_text_input_manager_v3=true
 - L5-1 fontconfig + FreeType + ASCII raster 추가 ([commit ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). 5x7 임시 glyph table 제거. `src/font/linux/{fontconfig,freetype,font}.zig` 신규. cell metric 은 Renderer field 로 노출. 시연 사이클에서 max_advance vs 'M' advance / cell-center 정렬 두 가지 잠재 버그 발견 + fix.
 - L5-3 font chain + lazy raster 추가 ([commit 88db341](https://github.com/ensky0/tildaz/commit/88db341)). single-face + ASCII pre-raster → N-face chain (MAX_CHAIN=8) + per-face `AutoHashMap(u21, Glyph)` lazy raster. `glyph(cp)` 가 chain 순회 + 첫 매치 face 의 cache 에서 lazy insert. paste 로 한글 / 한자 / 가나 입력 시 wide glyph (2 cell) 정상 — NotoSansCJK primary 한 face 안에서 처리.
 - L5-4 BGRA color emoji + 임시 chain 갱신 추가 ([commit 4816052](https://github.com/ensky0/tildaz/commit/4816052)). `FT_LOAD_COLOR` + `FT_PIXEL_MODE_BGRA` raster path + `drawGlyphBgra` (cell ratio scale fit + center + premultiplied alpha 블렌딩). chain 임시 hardcoded (JetBrains/Fira/SourceCode/DejaVu/Liberation/monospace/NotoColorEmoji) + fontconfig substitution 검증 (specific family 가 generic 으로 fallback substitute 된 경우 skip). 시연 사이클에서 fontconfig substitution / dedup log 인덱스 두 가지 잠재 버그 발견 + fix.
-- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji" 단계. first alpha 라고 부르기에는 HarfBuzz shape / block element / drop-down / global shortcut / IME 가 아직 부족하다.
+- L5-6 block element 부착 추가 ([commit c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a)). 공유 `src/renderer/block_element.zig` 의 `blockElementRect(cp)` 를 `software_terminal.zig` 셀 loop 에 부착. `U+2580..U+2595` (block + LIGHT/MEDIUM/DARK SHADE) 를 폰트 글리프 대신 cell-aligned procedural rectangle / dot mask 로 그린다. shade 식은 d3d11 `bg_shader_src` / macOS Metal `bg_fs` 와 동일 — `(px + 2py) & 3 == 0` (LIGHT 25%), `(px + py) & 1 == 0` (MEDIUM 50%), `(px + 2py) & 3 != 0` (DARK 75%). `▀..▏` 인접 셀 사이 갭/overlap 없이 정확히 맞물림 확인.
+- Wayland startup 에러 메시지 정확성 polish 추가 ([commit 97ee2d0](https://github.com/ensky0/tildaz/commit/97ee2d0)). X11 세션에서 실행 시 `TildaZ failed to start. Error: FileNotFound` 한 줄로 끝나던 generic 메시지를, 시도한 socket path + `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` / `XDG_RUNTIME_DIR` raw 값 + 진단 hint 까지 출력하도록 교체. 의미 이름 `error.WaylandSocketUnavailable` 로 변환해 `showFatalRunError` 가 generic format 중복 print 안 함. 사용자 메시지 텍스트는 `messages.linux_wayland_socket_unavailable_format` 단일 진입점.
+- 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / IME 가 아직 부족하다.
 
 ## 현재 제한 사항
 
@@ -127,7 +132,8 @@ HarfBuzz가 붙기 전까지의 bring-up용 경로다.
 | resize UX polish | 미검증 |
 | Hangul / CJK paste 시 wide glyph | 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341), NotoSansCJK primary 환경). IME 직접 입력은 L10 별도. |
 | color emoji paste | 동작 ([4816052](https://github.com/ensky0/tildaz/commit/4816052), Noto Color Emoji chain 포함 + BGRA raster path) |
-| combining mark / grapheme cluster / block element | 미구현 (L5-5 / L5-6 sub-step) |
+| block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 ([c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a), 공유 `block_element.zig` 부착 + procedural dot mask) |
+| combining mark / grapheme cluster | 미구현 (L5-5 sub-step) |
 | layer-shell drop-down | 미구현 (L8 대기) |
 | global shortcut | 미구현 (L9 대기) |
 | IME pre-edit / commit | 미구현 (L10 대기) |
@@ -236,7 +242,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L2 | POSIX PTY | smoke scope 완료 | UTM Linux에서 `/bin/sh` PTY smoke test 성공. |
 | L3 | Wayland baseline window | normal `xdg-shell` scope 완료 | Wayland window open/map/close와 capability logging 확인. |
 | L4 | EGL/OpenGL renderer | 부분 완료, 단 EGL/OpenGL은 아님 | 임시 software `wl_shm` renderer로 terminal grid 보임. lowercase / uppercase 5x7 glyph 분리 ([c8f97c8](https://github.com/ensky0/tildaz/commit/c8f97c8)). final GPU renderer는 아직. |
-| L5 | Fonts | L5-1 / L5-3 / L5-4 완료, 나머지 대기 | L5-1 — fontconfig dlopen + FreeType dlopen + ASCII pre-raster + cell-center 정렬 ([ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). L5-3 — chain 구조 (MAX_CHAIN=8) + per-face lazy raster + Hangul / CJK paste 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341)). L5-4 — BGRA color emoji raster path + 임시 chain hardcoded + fontconfig substitution 검증 ([4816052](https://github.com/ensky0/tildaz/commit/4816052)). 남은 sub-step: L5-2 HarfBuzz Latin shape / L5-5 combining mark + ZWJ + grapheme cluster / L5-6 block element / config 통합 (font.family + font.glyph_fallback). |
+| L5 | Fonts | L5-1 / L5-3 / L5-4 / L5-6 완료, 나머지 대기 | L5-1 — fontconfig dlopen + FreeType dlopen + ASCII pre-raster + cell-center 정렬 ([ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). L5-3 — chain 구조 (MAX_CHAIN=8) + per-face lazy raster + Hangul / CJK paste 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341)). L5-4 — BGRA color emoji raster path + 임시 chain hardcoded + fontconfig substitution 검증 ([4816052](https://github.com/ensky0/tildaz/commit/4816052)). L5-6 — 공유 `block_element.zig` 부착 + procedural dot mask (d3d11 / Metal 셰이더와 동일 식) ([c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a)). 남은 sub-step: L5-2 HarfBuzz Latin shape / L5-5 combining mark + ZWJ + grapheme cluster / config 통합 (font.family + font.glyph_fallback). |
 | L6 | Input and clipboard | keyboard + mouse selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 더블클릭 word selection ([dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 스크롤바 클릭 + 드래그 — 우측 8 px thumb hit test + `scrollToY` ([33b760b](https://github.com/ensky0/tildaz/commit/33b760b)). pointer cursor 모양은 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)). |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
 | L8 | Layer-shell drop-down | 대기 | 테스트 session에서 `zwlr_layer_shell_v1`은 광고되지만 layer-shell surface는 아직 미구현. |
@@ -271,7 +277,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 4816052 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. 97ee2d0 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -287,7 +293,8 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 10 | L5-3 font chain + lazy raster | ✅ [88db341](https://github.com/ensky0/tildaz/commit/88db341) — N-face chain (MAX_CHAIN=8) + per-face `AutoHashMap` lazy raster. paste 한글 / 한자 / 가나 wide glyph 동작. config 통합 / 진짜 chain 폰트 추가는 별도 sub-step. |
 | 11 | L5-4 emoji (color) + 임시 chain 갱신 | ✅ [4816052](https://github.com/ensky0/tildaz/commit/4816052) — `FT_LOAD_COLOR` + BGRA raster path + `drawGlyphBgra` (cell ratio scale fit + premultiplied alpha 블렌딩). chain 임시 hardcoded + fontconfig substitution 검증 (specific family 의 fallback substitution skip) + dedup log 인덱스 fix. |
 | 12 | L5-5 combining mark + ZWJ + grapheme cluster | 대기 — HarfBuzz cluster output. |
-| 13 | L5-6 block element | 대기 — 공유 `renderer/block_element.zig` 부착. |
+| 13 | L5-6 block element | ✅ [c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a) — 공유 `renderer/block_element.zig` 부착. 셀 loop 분기 + `drawBlockRect` (solid rect / shade procedural dot mask). shade 식은 d3d11 `bg_shader_src` / macOS Metal `bg_fs` 와 동일. `▀..▏` 인접 셀 사이 갭/overlap 없이 정확히 맞물림 확인. |
+| 14 | Wayland startup 에러 메시지 정확성 polish | ✅ [97ee2d0](https://github.com/ensky0/tildaz/commit/97ee2d0) — X11 세션 실행 시 `FileNotFound` 한 줄 → 시도한 socket path + `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` / `XDG_RUNTIME_DIR` + 진단 hint. `error.WaylandSocketUnavailable` 의미 이름으로 변환 + `messages.linux_wayland_socket_unavailable_format` 단일 진입점. |
 | 9 | L8 layer-shell drop-down prototype | 대기 — `zwlr_layer_shell_v1` 광고 확인됨. anchor / exclusive zone / monitor 선택 검증. |
 | 10 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. |
 | 11 | L10 IME | 대기 — `zwp_text_input_manager_v3` pre-edit / commit path. |
