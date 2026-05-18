@@ -69,6 +69,8 @@ pub const Context = struct {
         allocator: std.mem.Allocator,
         families: []const []const u8,
         pixel_height: u32,
+        cell_width_ratio: f32,
+        line_height_ratio: f32,
     ) !Context {
         if (families.len == 0) return error.NoFamilies;
 
@@ -109,6 +111,25 @@ pub const Context = struct {
         }
 
         if (self.face_count == 0) return error.NoFaceLoaded;
+
+        // L13-β — config.cell_width_ratio / line_height_ratio 적용. measured
+        // 값에 곱해 저장 — `Renderer.cellWidth/cellHeight` getter 가 단순
+        // 반환만 하면 자동으로 ratio 가 적용됨. 1.0 / 1.1 등 사용자가
+        // config.json 으로 조절 가능 (Config 검증 범위 0.5..2.0).
+        if (cell_width_ratio != 1.0) {
+            const w_f: f32 = @floatFromInt(self.cell_width_px);
+            self.cell_width_px = @intFromFloat(@max(1.0, w_f * cell_width_ratio));
+        }
+        if (line_height_ratio != 1.0) {
+            const h_f: f32 = @floatFromInt(self.cell_height_px);
+            self.cell_height_px = @intFromFloat(@max(1.0, h_f * line_height_ratio));
+        }
+        log.appendLine("font", "applied ratios cell_w={} cell_h={} cell_width_ratio={d:.2} line_height_ratio={d:.2}", .{
+            self.cell_width_px,
+            self.cell_height_px,
+            cell_width_ratio,
+            line_height_ratio,
+        });
 
         return self;
     }

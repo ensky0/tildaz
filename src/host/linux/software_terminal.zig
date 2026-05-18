@@ -11,6 +11,7 @@ const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
 const display_width = @import("../../font/display_width.zig");
+const config_mod = @import("../../config.zig");
 
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
@@ -19,23 +20,15 @@ pub const scrollbar_w_px: i32 = 8;
 pub const scrollbar_min_thumb_h: i32 = 20;
 const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
 
-/// 임시 raster pixel height. font.size_point 설정과 통합은 별도 sub-task.
-const default_pixel_height: u32 = 16;
-
-/// 임시 default font chain. config.font.family / font.glyph_fallback 통합은
-/// 별도 sub-task — Win/mac 처럼 config 에서 받기. 지금은 hardcoded — ligature
-/// 있는 mono primary 우선, 기본 mono fallback, generic fallback, color emoji
-/// 마지막. fontconfig 가 시스템에 없는 family 는 다른 폰트로 fallback 매치할
-/// 수 있는데 그건 font.Context.tryLoadFamily 의 path 중복 체크로 제거된다.
-const default_families = [_][]const u8{
-    "JetBrains Mono",
-    "Fira Code",
-    "Source Code Pro",
-    "DejaVu Sans Mono",
-    "Liberation Mono",
-    "monospace",
-    "Noto Color Emoji",
-};
+/// `config.font_size_point` 의미는 cross-platform 동등 — Windows host 의
+/// `font_height_px = font_size_point × DPI_scale` 식, macOS host 의 logical
+/// pixel 그대로 사용 패턴과 같이 **96 DPI 의 logical pixel** 의미. 표준
+/// typographic 1pt = 1/72 inch 변환 (× 96/72) 을 다시 곱하면 Win/Mac 대비
+/// 1.33x 큰 cell 이 되어 사용자가 "Linux 글자가 크다" 고 느낌 (사용자 보고).
+/// 따라서 1:1. fractional / output scale 통합은 후속 sub-step.
+fn fontPixelHeight(size_point: u8) u32 {
+    return @intCast(size_point);
+}
 
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
@@ -45,10 +38,18 @@ pub const Renderer = struct {
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
     preedit_text: []const u8 = "",
 
-    pub fn init(allocator: std.mem.Allocator) !Renderer {
+    pub fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Renderer {
+        const chain = cfg.font_families[0..cfg.font_family_count];
+        const pixel_height = fontPixelHeight(cfg.font_size_point);
         return .{
             .render_state = .empty,
-            .font_ctx = try font.Context.init(allocator, &default_families, default_pixel_height),
+            .font_ctx = try font.Context.init(
+                allocator,
+                chain,
+                pixel_height,
+                cfg.cell_width_ratio,
+                cfg.line_height_ratio,
+            ),
         };
     }
 
