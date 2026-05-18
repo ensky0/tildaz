@@ -57,7 +57,14 @@ const text_input_manager_request_get_text_input: u16 = 1;
 const text_input_request_destroy: u16 = 0;
 const text_input_request_enable: u16 = 1;
 const text_input_request_disable: u16 = 2;
+const text_input_request_set_content_type: u16 = 5;
+const text_input_request_set_cursor_rectangle: u16 = 6;
 const text_input_request_commit: u16 = 7;
+// content_hint / content_purpose enum 값 — text-input-unstable-v3 spec
+// (wayland.app/protocols/text-input-unstable-v3). terminal purpose 가
+// 우리 의도 ("일반 텍스트 입력 + 단축키 raw forward").
+const text_input_content_hint_none: u32 = 0x0;
+const text_input_content_purpose_terminal: u32 = 13;
 const text_input_event_enter: u16 = 0;
 const text_input_event_leave: u16 = 1;
 const text_input_event_preedit_string: u16 = 2;
@@ -277,6 +284,12 @@ const Client = struct {
     pending_preedit: std.ArrayList(u8) = .{},
     pending_commit: std.ArrayList(u8) = .{},
     preedit_text: std.ArrayList(u8) = .{},
+    // L10-γ — 마지막으로 server 에 알린 cursor rect (pixel, surface-relative).
+    // paint 끝마다 비교해 변경 시만 set_cursor_rectangle + commit 보내 spam 회피.
+    last_cursor_rect_x: i32 = -1,
+    last_cursor_rect_y: i32 = -1,
+    last_cursor_rect_w: i32 = 0,
+    last_cursor_rect_h: i32 = 0,
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -684,6 +697,10 @@ const Client = struct {
                     &tab.terminal,
                     default_theme,
                 );
+                // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
+                // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
+                // 근처에 정렬되도록. error 는 main loop 멈추지 않게 swallow.
+                self.updateCursorRectangle() catch {};
                 return;
             }
         }
@@ -907,12 +924,48 @@ const Client = struct {
 
     /// L10-α — text_input.enable() + commit(). focus enter 시 호출.
     /// text_input object 가 없으면 (manager 광고 없는 환경) no-op.
+    /// L10-γ — enable + set_content_type(none, terminal) + commit 한 batch.
+    /// content_type 은 double-buffered 라 commit 으로 flush 해야 server 가 적용.
     fn enableTextInput(self: *Client) !void {
         if (self.text_input_id == 0 or self.text_input_enabled) return;
         try self.sendNoArgs(self.text_input_id, text_input_request_enable);
+        try self.sendArgs(self.text_input_id, text_input_request_set_content_type, &.{
+            text_input_content_hint_none,
+            text_input_content_purpose_terminal,
+        });
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
         self.text_input_enabled = true;
-        log.appendLine("wayland", "text_input enabled id={}", .{self.text_input_id});
+        // 다음 paint 가 cursor_rectangle 을 갱신할 수 있도록 캐시 무효화.
+        self.last_cursor_rect_x = -1;
+        log.appendLine("wayland", "text_input enabled id={} content_purpose=terminal", .{self.text_input_id});
+    }
+
+    /// L10-γ — `set_cursor_rectangle(x, y, w, h)` + commit. surface-relative
+    /// pixel 좌표. fcitx5 popover (한자 / 확장 candidate window) 가 cursor 근처
+    /// 에 정렬되도록. 캐시 비교로 cursor 가 실제로 이동했을 때만 전송 (spam
+    /// 회피). text_input 미활성이면 no-op.
+    fn updateCursorRectangle(self: *Client) !void {
+        if (!self.text_input_enabled or self.text_input_id == 0) return;
+        const vp = self.renderer.render_state.cursor.viewport orelse return;
+        const cw = self.renderer.cellWidth();
+        const ch = self.renderer.cellHeight();
+        const x: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.x)) * cw;
+        const y: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.y)) * ch;
+        if (x == self.last_cursor_rect_x and
+            y == self.last_cursor_rect_y and
+            cw == self.last_cursor_rect_w and
+            ch == self.last_cursor_rect_h) return;
+        var msg = Msg.init(self.text_input_id, text_input_request_set_cursor_rectangle);
+        try msg.putI32(x);
+        try msg.putI32(y);
+        try msg.putI32(cw);
+        try msg.putI32(ch);
+        try msg.send(self.stream);
+        try self.sendNoArgs(self.text_input_id, text_input_request_commit);
+        self.last_cursor_rect_x = x;
+        self.last_cursor_rect_y = y;
+        self.last_cursor_rect_w = cw;
+        self.last_cursor_rect_h = ch;
     }
 
     fn disableTextInput(self: *Client) !void {
@@ -1034,6 +1087,20 @@ const Client = struct {
         const key = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
         if (state != wl_keyboard_key_state_pressed and state != wl_keyboard_key_state_repeated) return;
+
+        // L10-γ — Ctrl+key 가 client 까지 forward 됐다는 건 fcitx5 가 자기
+        // 단축키 아니라고 통과시킨 것. 그 시점에 IME 조합 중이면 client 측
+        // preedit / pending 을 즉시 클리어 — AGENTS.md macOS Cocoa quirk 3번
+        // 동등 ("shell line abort 의도와 일관"). fcitx5 가 자체 buffer 도 같이
+        // reset 한다는 전제 (preedit_string 으로 reset 신호 도착하면 자동
+        // 갱신). 시연으로 검증.
+        if (self.keyboard.ctrlActive() and self.preedit_text.items.len > 0) {
+            self.pending_preedit.clearRetainingCapacity();
+            self.pending_commit.clearRetainingCapacity();
+            self.preedit_text.clearRetainingCapacity();
+            self.renderer.preedit_text = "";
+            self.needs_redraw = true;
+        }
 
         const xkb_key = key + wayland_xkb_keycode_offset;
         if (self.keyboard.oneSym(xkb_key)) |sym| {
