@@ -16,7 +16,7 @@ milestone 상태를 정확히 남기는 용도다.
 | Toolkit | core app에 GTK / Qt 필수 의존성을 넣지 않고 direct Wayland backend로 시작한다. |
 | GTK / Qt fallback | direct Wayland IME 또는 clipboard가 유지 가능한 방식으로 막힐 때만 마지막 fallback 후보로 재검토한다. |
 | Baseline window | `xdg-shell` toplevel window. Linux 최소 실행 경로다. |
-| True drop-down | compositor가 `wlr-layer-shell`을 광고하면 layer-shell 기반 drop-down을 목표로 한다. |
+| True drop-down | compositor 가 `wlr-layer-shell` 을 client 에게 노출 (Wayland 용어 *advertise* — `wl_registry.global` 로 보내는 protocol 지원 통보) 하면 layer-shell 기반 drop-down 을 목표로 한다. |
 | GNOME support | 초기에는 limited support. hack 없이 full drop-down workflow가 가능한 경로가 확인되면 바로 full support로 승격한다. |
 | Global shortcut | XDG Desktop Portal `GlobalShortcuts` 우선. 지원이 없으면 조용히 실패하지 말고 명확히 제한 사항을 남긴다. |
 | Keyboard | `libxkbcommon`. 현재는 런타임 `dlopen("libxkbcommon.so.0")` 방식. |
@@ -245,9 +245,9 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L5 | Fonts | L5-1 / L5-3 / L5-4 / L5-6 완료, 나머지 대기 | L5-1 — fontconfig dlopen + FreeType dlopen + ASCII pre-raster + cell-center 정렬 ([ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). L5-3 — chain 구조 (MAX_CHAIN=8) + per-face lazy raster + Hangul / CJK paste 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341)). L5-4 — BGRA color emoji raster path + 임시 chain hardcoded + fontconfig substitution 검증 ([4816052](https://github.com/ensky0/tildaz/commit/4816052)). L5-6 — 공유 `block_element.zig` 부착 + procedural dot mask (d3d11 / Metal 셰이더와 동일 식) ([c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a)). 남은 sub-step: L5-2 HarfBuzz Latin shape / L5-5 combining mark + ZWJ + grapheme cluster / config 통합 (font.family + font.glyph_fallback). |
 | L6 | Input and clipboard | keyboard + mouse selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 더블클릭 word selection ([dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 스크롤바 클릭 + 드래그 — 우측 8 px thumb hit test + `scrollToY` ([33b760b](https://github.com/ensky0/tildaz/commit/33b760b)). pointer cursor 모양은 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)). |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
-| L8 | Layer-shell drop-down | 대기 | 테스트 session에서 `zwlr_layer_shell_v1`은 광고되지만 layer-shell surface는 아직 미구현. |
+| L8 | Layer-shell drop-down | 대기 | 테스트 session 의 compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (Wayland 용어 *advertise* — `wl_registry.global` 로 보내는 protocol 지원 통보) 하는 건 확인됐지만, TildaZ 가 그 위에 layer-shell surface 를 만드는 코드는 아직 미구현. |
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. |
-| L10 | IME | 대기 | 테스트 session에서 `zwp_text_input_manager_v3`은 광고되지만 pre-edit / commit path 미구현. |
+| L10 | IME | 대기 | 테스트 session 의 compositor 가 `zwp_text_input_manager_v3` 을 client 에게 노출 (Wayland 용어 *advertise*) 하는 건 확인됐지만, TildaZ 의 pre-edit / commit 처리 코드는 아직 미구현. |
 | L11 | Packaging | 대기 | `.desktop`, icon install, AppImage/distro package plan, autostart, final config/log path 검증 필요. |
 
 ## First Alpha Contract
@@ -295,7 +295,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 12 | L5-5 combining mark + ZWJ + grapheme cluster | 대기 — HarfBuzz cluster output. |
 | 13 | L5-6 block element | ✅ [c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a) — 공유 `renderer/block_element.zig` 부착. 셀 loop 분기 + `drawBlockRect` (solid rect / shade procedural dot mask). shade 식은 d3d11 `bg_shader_src` / macOS Metal `bg_fs` 와 동일. `▀..▏` 인접 셀 사이 갭/overlap 없이 정확히 맞물림 확인. |
 | 14 | Wayland startup 에러 메시지 정확성 polish | ✅ [97ee2d0](https://github.com/ensky0/tildaz/commit/97ee2d0) — X11 세션 실행 시 `FileNotFound` 한 줄 → 시도한 socket path + `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` / `XDG_RUNTIME_DIR` + 진단 hint. `error.WaylandSocketUnavailable` 의미 이름으로 변환 + `messages.linux_wayland_socket_unavailable_format` 단일 진입점. |
-| 9 | L8 layer-shell drop-down prototype | 대기 — `zwlr_layer_shell_v1` 광고 확인됨. anchor / exclusive zone / monitor 선택 검증. |
+| 9 | L8 layer-shell drop-down prototype | 대기 — compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (*advertise*) 하는 건 확인됨. anchor / exclusive zone / monitor 선택 검증 필요. |
 | 10 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. |
 | 11 | L10 IME | 대기 — `zwp_text_input_manager_v3` pre-edit / commit path. |
 | 12 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
