@@ -10,6 +10,7 @@ const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
+const display_width = @import("../../font/display_width.zig");
 
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
@@ -39,6 +40,10 @@ const default_families = [_][]const u8{
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     font_ctx: font.Context,
+    /// L10-β — IME 조합 중 (preedit) 텍스트. host (wayland_minimal) 가 매
+    /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
+    /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
+    preedit_text: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator) !Renderer {
         return .{
@@ -185,8 +190,95 @@ pub const Renderer = struct {
                 rect(memory, width, height, stride, sb_x, thumb_y_px, scrollbar_w_px, thumb_h_px, scrollbar_thumb_color);
             }
         }
+
+        // --- L10-β: IME preedit (조합 중) inline overlay ---
+        // cursor 위치부터 preedit_text 의 codepoint 별로 보라색 배경 + foreground
+        // 글자. AGENTS.md "한글 IME 동작 스펙" — "강조 배경 (보라색 계열) + 글자
+        // 로 inline 표시. 별도 candidate window 안 띄움". macOS / Windows 와
+        // 동등 색 (`renderer/macos.zig:686`, `renderer/windows.zig:1144`).
+        // PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가 commit_string 으로
+        // 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
+        if (self.preedit_text.len > 0) {
+            if (self.render_state.cursor.viewport) |vp| {
+                drawPreeditOverlay(
+                    memory,
+                    width,
+                    height,
+                    stride,
+                    cw,
+                    ch,
+                    ascent,
+                    @intCast(vp.x),
+                    @intCast(vp.y),
+                    cols,
+                    self.preedit_text,
+                    colors.foreground,
+                    &self.font_ctx,
+                );
+            }
+        }
     }
 };
+
+/// L10-β preedit overlay — cursor 위치부터 UTF-8 codepoint 별로 cell 너비
+/// (display_width.codepointWidth) 만큼 보라색 배경 + foreground 글자. wide
+/// char (한글 등) 는 2 cell. 가로 cols 넘어가면 truncate (wrap 안 함 — 다음
+/// done event 가 새 preedit 보내주면 갱신).
+fn drawPreeditOverlay(
+    memory: []u8,
+    fb_w: i32,
+    fb_h: i32,
+    stride: i32,
+    cw: i32,
+    ch: i32,
+    ascent: i32,
+    start_col: i32,
+    cy_cell: i32,
+    cols: usize,
+    text: []const u8,
+    fg: ghostty.color.RGB,
+    font_ctx: *font.Context,
+) void {
+    // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
+    // 동일 색. 8-bit RGB 환산 64 / 64 / 128.
+    const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
+    const pre_y: i32 = padding_px + cy_cell * ch;
+    const baseline: i32 = pre_y + ascent;
+
+    var col: i32 = start_col;
+    var utf8_iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (utf8_iter.nextCodepoint()) |cp| {
+        const w_cells: i32 = @intCast(display_width.codepointWidth(cp));
+        if (w_cells <= 0) continue;
+        if (col + w_cells > @as(i32, @intCast(cols))) break;
+
+        const cell_x: i32 = padding_px + col * cw;
+        const cell_w: i32 = w_cells * cw;
+        rect(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, preedit_bg);
+
+        const glyph = font_ctx.glyph(cp);
+        if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+            // emoji 가 preedit 으로 올 일 거의 없지만 안전하게 동일 path 분기.
+            drawGlyphBgra(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, glyph);
+        } else {
+            const glyph_advance_i32: i32 = @intCast(glyph.advance);
+            const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
+            drawGlyph(
+                memory,
+                fb_w,
+                fb_h,
+                stride,
+                cell_x + center_off + glyph.bitmap_left,
+                baseline - glyph.bitmap_top,
+                glyph,
+                fg,
+                preedit_bg,
+            );
+        }
+
+        col += w_cells;
+    }
+}
 
 fn resolveFg(style: ghostty.Style, colors: *const ghostty.RenderState.Colors, selected: bool) ghostty.color.RGB {
     if (selected) return colors.background;
