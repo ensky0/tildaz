@@ -13,6 +13,7 @@ const block_element = @import("../../renderer/block_element.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
+const tab_layout = @import("../../tab_layout.zig");
 
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
@@ -86,6 +87,8 @@ pub const Renderer = struct {
         theme: *const themes.Theme,
         tab_titles: []const []const u8,
         active_tab_idx: usize,
+        layout: tab_layout.Layout,
+        tab_scroll_x: f32,
     ) void {
         self.render_state.update(allocator, terminal) catch {
             fill(memory, width, height, stride, theme.background);
@@ -95,11 +98,11 @@ pub const Renderer = struct {
         const colors = self.render_state.colors;
         fill(memory, width, height, stride, colors.background);
 
-        // L12-α/β — 상단 tab bar 영역. 활성 + 비활성 탭 표시. arrow / plus /
-        // 스크롤 layout 은 L12-γ scope (탭 폭 합이 화면 폭 넘어가면 단순
-        // truncate). 비활성 탭 배경은 terminal background 와 같은 색 — cell
-        // 영역과 자연 이음 (Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, colors.background, &self.font_ctx);
+        // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
+        // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
+        // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
+        // background (cell 영역과 자연 이음, Windows 패턴 동일).
+        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, layout, tab_scroll_x, colors.background, &self.font_ctx);
 
         const cw = self.cellWidth();
         const ch = self.cellHeight();
@@ -257,11 +260,10 @@ pub const Renderer = struct {
     }
 };
 
-/// L12-α/β tab bar — 상단 (0, 0, width, tab_bar_h) 영역에 배경 (`TAB_BAR_BG`)
-/// 채움 + 각 탭 (좌측부터 `TAB_WIDTH_PT` 너비) 을 활성/비활성 색 으로 그리고
-/// title text. 비활성 탭은 terminal background 와 같은 색 — cell 영역과 자연
-/// 이음 (Windows 패턴 동일, 활성 탭만 두드러짐). arrow / plus / 스크롤 layout
-/// 은 L12-γ scope (탭 폭 합이 화면 폭 넘어가면 단순 truncate).
+/// L12-α/β/γ tab bar — cross-platform `tab_layout.Layout` 따라 영역 분할 + 각
+/// 탭 그리기. `[<][tabs+][+][>]` (arrows_visible) 또는 `[tabs+][+]`. tab area
+/// 안 탭들은 `scroll_x` 만큼 좌측 밀려 그려지고 area 범위 밖은 clip. 활성 =
+/// `TAB_ACTIVE_BG`, 비활성 = `inactive_bg` (cell 영역 background 와 자연 이음).
 fn drawTabBar(
     memory: []u8,
     fb_w: i32,
@@ -270,6 +272,8 @@ fn drawTabBar(
     tab_bar_h: i32,
     titles: []const []const u8,
     active_idx: usize,
+    layout: tab_layout.Layout,
+    scroll_x: f32,
     inactive_bg: ghostty.color.RGB,
     font_ctx: *font.Context,
 ) void {
@@ -285,23 +289,39 @@ fn drawTabBar(
     const descent: i32 = @intCast(font_ctx.descent_px);
     const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
 
-    // 좌우 1px + 상하 2px sandwich gap — TAB_BAR_BG 가 윤곽선 역할 (Windows
-    // / macOS 패턴 동일).
     const tab_y: i32 = 2;
     const tab_actual_h: i32 = @max(tab_bar_h - 4, 1);
     const tab_actual_w: i32 = @max(tab_w - 2, 1);
+    const tab_area_x: i32 = @intFromFloat(layout.tab_area_x);
+    const tab_area_w: i32 = @intFromFloat(layout.tab_area_w);
+    const tab_area_end: i32 = tab_area_x + tab_area_w;
+    const scroll_x_i: i32 = @intFromFloat(scroll_x);
 
+    // --- 각 탭 (tab_area 안에서 clipping) ---
     for (titles, 0..) |title, i| {
-        const tab_x_outer: i32 = @as(i32, @intCast(i)) * tab_w;
-        const tab_x: i32 = tab_x_outer + 1;
-        if (tab_x >= fb_w) break; // 화면 폭 넘은 탭은 단순 truncate (L12-γ scope)
+        // tab 의 world (scroll-relative) 좌측. tab_area_x 더하면 surface 좌표.
+        const tab_world_x: i32 = @as(i32, @intCast(i)) * tab_w;
+        const tab_screen_x: i32 = tab_area_x + tab_world_x - scroll_x_i;
+        // tab 전체가 tab_area 밖 (좌/우) 이면 skip — clipping 효과.
+        if (tab_screen_x + tab_w <= tab_area_x) continue;
+        if (tab_screen_x >= tab_area_end) break;
 
+        const tab_x: i32 = tab_screen_x + 1;
         const is_active = i == active_idx;
         const bg = if (is_active) active_bg else inactive_bg;
-        rect(memory, fb_w, fb_h, stride, tab_x, tab_y, tab_actual_w, tab_actual_h, bg);
+        // rect helper 의 (x, w) → 자동 clip 단, 우리는 tab_area 경계 안에서
+        // 그리도록 보정. min/max 로 clipping. (fb 의 외부 clip 은 rect 의 내부
+        // clamp 가 처리, tab_area 경계 clip 만 우리가.)
+        const clip_x: i32 = @max(tab_x, tab_area_x);
+        const clip_w: i32 = @min(tab_x + tab_actual_w, tab_area_end) - clip_x;
+        if (clip_w > 0) {
+            rect(memory, fb_w, fb_h, stride, clip_x, tab_y, clip_w, tab_actual_h, bg);
+        }
 
+        // title text — 탭이 area 안에 적어도 일부 보일 때만 그림. text 가
+        // tab_area 경계를 넘지 않게 truncate.
         const text_x_start: i32 = tab_x + tab_pad;
-        const text_x_end: i32 = tab_x + tab_actual_w - tab_pad;
+        const text_x_end: i32 = @min(tab_x + tab_actual_w - tab_pad, tab_area_end);
         var pen_x: i32 = text_x_start;
         var utf8_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
         while (utf8_iter.nextCodepoint()) |cp| {
@@ -309,7 +329,12 @@ fn drawTabBar(
             if (w_cells == 0) continue;
             const glyph = font_ctx.glyph(cp);
             const adv: i32 = @intCast(glyph.advance);
-            if (pen_x + adv > text_x_end) break; // 한 탭 안 ellipsis 도 L12-γ
+            if (pen_x + adv > text_x_end) break;
+            // glyph 위치가 tab_area 좌측 경계 못 미치면 skip (clipping).
+            if (pen_x < tab_area_x) {
+                pen_x += adv;
+                continue;
+            }
             if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                 drawGlyphBgra(memory, fb_w, fb_h, stride, pen_x, 0, adv, tab_bar_h, glyph);
             } else {
@@ -328,6 +353,62 @@ fn drawTabBar(
             pen_x += adv;
         }
     }
+
+    // --- arrow / plus 버튼 ---
+    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, font_ctx);
+}
+
+/// `<` / `>` / `+` 버튼 그리기. arrows_visible 면 좌측 `<` + 우측 `>`. 항상
+/// `+` (탭 area 끝 또는 우 arrow 좌측). 색은 TAB_TEXT_COLOR, 배경은 TAB_BAR_BG
+/// 그대로 — 별도 fill 없이 글자만.
+fn drawTabBarControls(
+    memory: []u8,
+    fb_w: i32,
+    fb_h: i32,
+    stride: i32,
+    tab_bar_h: i32,
+    layout: tab_layout.Layout,
+    font_ctx: *font.Context,
+) void {
+    const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
+    const ascent: i32 = @intCast(font_ctx.ascent_px);
+    const descent: i32 = @intCast(font_ctx.descent_px);
+    const baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
+    const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
+
+    const drawCentered = struct {
+        fn call(
+            mem: []u8,
+            w: i32,
+            h: i32,
+            s: i32,
+            cp: u21,
+            x_left: i32,
+            box_w: i32,
+            line_baseline: i32,
+            fg: ghostty.color.RGB,
+            bg_color: ghostty.color.RGB,
+            ctx: *font.Context,
+        ) void {
+            const g = ctx.glyph(cp);
+            const adv: i32 = @intCast(g.advance);
+            const center: i32 = x_left + @divFloor(box_w - adv, 2);
+            if (g.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) return;
+            drawGlyph(mem, w, h, s, center + g.bitmap_left, line_baseline - g.bitmap_top, g, fg, bg_color);
+        }
+    }.call;
+
+    if (layout.arrows_visible) {
+        const left_x: i32 = @intFromFloat(layout.left_arrow_x);
+        const right_x: i32 = @intFromFloat(layout.right_arrow_x);
+        const arrow_w: i32 = @intFromFloat(layout.arrow_w);
+        // enabled / disabled 시각화 — disabled 면 dimmed. 단순화: 그대로.
+        drawCentered(memory, fb_w, fb_h, stride, '<', left_x, arrow_w, baseline, text_color, bg, font_ctx);
+        drawCentered(memory, fb_w, fb_h, stride, '>', right_x, arrow_w, baseline, text_color, bg, font_ctx);
+    }
+    const plus_x: i32 = @intFromFloat(layout.plus_x);
+    const plus_w: i32 = @intFromFloat(layout.plus_w);
+    drawCentered(memory, fb_w, fb_h, stride, '+', plus_x, plus_w, baseline, text_color, bg, font_ctx);
 }
 
 fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
