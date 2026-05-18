@@ -355,6 +355,12 @@ const Client = struct {
     /// 방지 (cell drag selection 과 tab bar rename 의 timer 분리).
     last_tab_click_time_ms: u32 = 0,
     last_tab_click_idx: usize = std.math.maxInt(usize),
+    /// L12-γ-3 — tab drag-and-drop reorder state. cross-platform
+    /// `tab_interaction.DragState` — mac / win 공유. `handleTabBarClick`
+    /// 의 본체 single-click 에서 `begin`, `handlePointerMotion` 에서 `move`
+    /// + 탭 area 가장자리 auto-scroll, button release 에서 `finish` →
+    /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
+    tab_drag: tab_interaction.DragState = .{},
 
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
@@ -820,6 +826,7 @@ const Client = struct {
                     layout,
                     self.tab_scroll_x,
                     self.rename_state.view(),
+                    self.tab_drag.view(),
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -1276,9 +1283,58 @@ const Client = struct {
                     return;
                 }
                 tab_actions.switchTab(&host, hit.tab_index);
+                // L12-γ-3 — drag-begin. `world_x = (px - tab_area_x) + scroll_x`
+                // — DragState 의 mouse_x 는 idx 0 의 left edge 부터 측정한
+                // 좌표 (= 탭 area world 좌표). single-click 이면 `move` 가
+                // threshold (5px) 안 넘어 `dragging=false` 유지 → release
+                // 의 `finish` 가 null 반환 → reorder 일어나지 않음.
+                const world_x: f32 = px_f - layout.tab_area_x + self.tab_scroll_x;
+                const tab_w_int: c_int = @intCast(ui_metrics.TAB_WIDTH_PT);
+                _ = self.tab_drag.begin(@intFromFloat(world_x), tab_w_int, session.count());
             },
             .none => {},
         }
+    }
+
+    /// L12-γ-3 — drag 중 pointer motion 처리. tab area 가장자리 hover 시
+    /// auto-scroll + `DragState.move` 호출. mouse 가 cell 영역 / scrollbar
+    /// 영역으로 벗어나도 drag 자체는 wayland implicit grab 으로 우리 surface
+    /// 까지 도달 — `pointer_inside=false` 와 무관.
+    fn handleTabDragMotion(self: *Client) void {
+        if (self.session == null) return;
+        const session = &self.session.?;
+        const layout_inputs = tab_layout.Inputs{
+            .viewport_w = @floatFromInt(self.window_width),
+            .tab_count = @intCast(session.count()),
+            .tab_w = @floatFromInt(ui_metrics.TAB_WIDTH_PT),
+            .arrow_w = @floatFromInt(ui_metrics.TAB_ARROW_W_PT),
+            .plus_w = @floatFromInt(ui_metrics.TAB_PLUS_W_PT),
+            .scroll_x = self.tab_scroll_x,
+        };
+        const layout = tab_layout.compute(layout_inputs);
+        const px_f: f32 = @floatFromInt(self.pointer_x_px);
+        const tab_area_end_f: f32 = layout.tab_area_x + layout.tab_area_w;
+
+        // Drag auto-scroll — pointer 가 tab area 좌/우 가장자리 hover 시 한
+        // step 이동. `auto_scroll_w` 안으로 들어오면 한 motion 당 step 만큼.
+        const auto_scroll_w: f32 = 30;
+        const auto_scroll_step: f32 = 12;
+        const total_tabs_w_f: f32 = @as(f32, @floatFromInt(session.count())) *
+            @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT));
+        const max_scroll: f32 = @max(0, total_tabs_w_f - layout.tab_area_w);
+        if (px_f < layout.tab_area_x + auto_scroll_w and self.tab_scroll_x > 0) {
+            self.tab_scroll_x = @max(0, self.tab_scroll_x - auto_scroll_step);
+            self.tab_scroll_override = true;
+        } else if (px_f > tab_area_end_f - auto_scroll_w and self.tab_scroll_x < max_scroll) {
+            self.tab_scroll_x = @min(max_scroll, self.tab_scroll_x + auto_scroll_step);
+            self.tab_scroll_override = true;
+        }
+
+        // DragState.move 는 world_x (idx 0 의 left edge 부터 측정) — `begin`
+        // 과 같은 좌표계. surface_x - tab_area_x + scroll_x.
+        const world_x: f32 = px_f - layout.tab_area_x + self.tab_scroll_x;
+        _ = self.tab_drag.move(@intFromFloat(world_x));
+        self.needs_redraw = true;
     }
 
     fn handleNextTab(self: *Client) void {
@@ -1737,6 +1793,14 @@ const Client = struct {
         self.pointer_x_px = wlFixedToPx(sx);
         self.pointer_y_px = wlFixedToPx(sy);
 
+        // L12-γ-3 — tab drag 활성이면 selection / scrollbar 우선이 아니라
+        // drag move 만 처리. mouse 가 cell 영역으로 벗어나도 drag 자체는
+        // tab area 의 가장자리 auto-scroll + drop_idx 업데이트.
+        if (self.tab_drag.active) {
+            self.handleTabDragMotion();
+            return;
+        }
+
         const tab = self.activeTabOrNull() orelse return;
         // 스크롤바 drag 중 — selection 검사보다 먼저. drag 가 cell 영역 밖으로
         // 나가도 follow (Windows `app_controller.scrollToY` 와 동등).
@@ -1819,6 +1883,28 @@ const Client = struct {
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
+                // L12-γ-3 — drag 활성이면 reorder 처리. `dragging=true`
+                // (= move 5px threshold 넘김) 였으면 `finish` 가 ReorderRequest
+                // 반환 → `session.reorderTabs`. single-click 이면 finish 가 null
+                // → reset 만 일어남 (defer reset 으로 자동). 어느 경우든 selection
+                // / scrollbar 분기보다 우선.
+                if (self.tab_drag.active) {
+                    const tab_w_int: c_int = @intCast(ui_metrics.TAB_WIDTH_PT);
+                    if (self.session) |*session_ptr| {
+                        if (self.tab_drag.finish(tab_w_int, session_ptr.count())) |req| {
+                            _ = session_ptr.reorderTabs(req.from, req.to) catch |err| {
+                                log.appendLine("tab", "reorder 실패: {s}", .{@errorName(err)});
+                            };
+                            // 활성 탭 위치 변경 — auto-scroll override 해제 +
+                            // 다음 paint 의 `ensureActiveVisible` 가 갱신.
+                            self.tab_scroll_override = false;
+                            self.requestRedraw();
+                        }
+                    } else {
+                        self.tab_drag.reset();
+                    }
+                    return;
+                }
                 if (tab.interaction.scrollbar.active) {
                     tab.interaction.scrollbar.end();
                     return;
