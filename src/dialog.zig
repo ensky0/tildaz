@@ -20,6 +20,7 @@ pub const Severity = enum { info, err };
 const impl = switch (builtin.os.tag) {
     .windows => @import("dialog/windows.zig"),
     .macos => @import("dialog/macos.zig"),
+    .linux => @import("dialog/linux.zig"),
     else => @compileError("unsupported platform"),
 };
 

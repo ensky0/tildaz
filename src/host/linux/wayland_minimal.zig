@@ -15,6 +15,7 @@ const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
+const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
 const xkb = @import("xkb.zig");
 
@@ -27,8 +28,9 @@ const default_width: i32 = 640;
 const default_height: i32 = 420;
 const min_width: i32 = 160;
 const min_height: i32 = 120;
-const default_theme = &themes.themes[0];
-const shell_path = "/bin/sh";
+/// `config.theme` 가 disk 값 매핑 실패 등으로 null 일 때 fallback. themes
+/// 모듈의 첫 entry (= "Tilda" 기본 테마). L13-α 이전엔 항상 이 값을 사용했다.
+const fallback_theme = &themes.themes[0];
 const frame_poll_ms: i32 = 16;
 const max_buffers_per_size: usize = 2;
 const wl_seat_capability_pointer: u32 = 1;
@@ -126,13 +128,12 @@ const xkb_key_c_upper: u32 = 0x43;
 const xkb_key_v_lower: u32 = 0x76;
 const xkb_key_v_upper: u32 = 0x56;
 
-const linux_extra_env = [_]terminal_backend.ExtraEnv{
-    .{ .name = "TERM", .value = "xterm-256color" },
-    .{ .name = "LANG", .value = "en_US.UTF-8" },
-    .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
-    .{ .name = "COLORFGBG", .value = "15;0" },
-    .{ .name = "SHELL", .value = shell_path },
-};
+// 자식 셸 process 에 넘기는 extra env — AGENTS.md "터미널 환경변수" 정책
+// 동등. SHELL / COLORFGBG 값이 사용자 config.shell / config.theme 에 따라
+// 달라지므로 module-level const 가 아니라 `Client.extra_env_storage` 에 보관
+// (Client.init 에서 채움). entry 수가 변하면 `Client.extra_env_storage` 의
+// array size 도 같이 갱신.
+const linux_extra_env_entry_count: usize = 5;
 
 const Global = struct {
     name: u32 = 0,
@@ -290,8 +291,15 @@ const Client = struct {
     last_cursor_rect_y: i32 = -1,
     last_cursor_rect_w: i32 = 0,
     last_cursor_rect_h: i32 = 0,
+    // L13-α — 사용자 설정. `runBaselineWindow` 가 host 의 g_config 포인터를
+    // 전달. SessionCore.init 시 shell / theme / max_scroll_lines 가 여기서.
+    config: *const config_mod.Config,
+    /// 자식 셸 extra env. Client.init 에서 config.shell + theme luminance 로
+    /// 채워진다. SessionCore.init 에 slice 로 전달 — Client lifetime 안에서
+    /// storage valid.
+    extra_env_storage: [linux_extra_env_entry_count]terminal_backend.ExtraEnv = undefined,
 
-    fn init(allocator: std.mem.Allocator) !Client {
+    fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
         var renderer = try software_terminal.Renderer.init(allocator);
@@ -306,10 +314,19 @@ const Client = struct {
             reportWaylandSocketFailure(allocator, path, err);
             return error.WaylandSocketUnavailable;
         };
+        const theme = cfg.theme orelse fallback_theme;
         return .{
             .allocator = allocator,
             .stream = stream,
             .renderer = renderer,
+            .config = cfg,
+            .extra_env_storage = .{
+                .{ .name = "TERM", .value = "xterm-256color" },
+                .{ .name = "LANG", .value = "en_US.UTF-8" },
+                .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
+                .{ .name = "COLORFGBG", .value = if (themes.isDark(theme)) "15;0" else "0;15" },
+                .{ .name = "SHELL", .value = cfg.shell },
+            },
         };
     }
 
@@ -539,12 +556,13 @@ const Client = struct {
             return;
         }
 
+        const theme = self.config.theme orelse fallback_theme;
         self.session = session_core.SessionCore.init(
             self.allocator,
-            shell_path,
-            10_000,
-            default_theme,
-            &linux_extra_env,
+            self.config.shell,
+            self.config.max_scroll_lines,
+            theme,
+            &self.extra_env_storage,
             linuxTabExit,
             self,
         );
@@ -695,7 +713,7 @@ const Client = struct {
                     height,
                     stride,
                     &tab.terminal,
-                    default_theme,
+                    self.config.theme orelse fallback_theme,
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -1700,8 +1718,8 @@ fn linuxTabExit(_: usize, userdata: ?*anyopaque) void {
     client.shell_exited.store(true, .release);
 }
 
-pub fn runBaselineWindow(allocator: std.mem.Allocator) !void {
-    var client = try Client.init(allocator);
+pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !void {
+    var client = try Client.init(allocator, cfg);
     defer client.deinit();
     try client.run();
 }
