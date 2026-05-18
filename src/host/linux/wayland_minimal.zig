@@ -540,7 +540,8 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const usable_w = @max(cw, self.window_width - software_terminal.padding_px * 2);
-        const usable_h = @max(ch, self.window_height - software_terminal.padding_px * 2);
+        // L12-α — 상단 tab bar 영역만큼 grid height 축소.
+        const usable_h = @max(ch, self.window_height - software_terminal.Renderer.tab_bar_height_px - software_terminal.padding_px * 2);
         const cols_i32 = @max(1, @divTrunc(usable_w, cw));
         const rows_i32 = @max(1, @divTrunc(usable_h, ch));
         return .{
@@ -719,6 +720,7 @@ const Client = struct {
                     stride,
                     &tab.terminal,
                     self.config.theme orelse fallback_theme,
+                    tab.title[0..tab.title_len],
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -974,7 +976,7 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const x: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.x)) * cw;
-        const y: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.y)) * ch;
+        const y: i32 = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px + @as(i32, @intCast(vp.y)) * ch;
         if (x == self.last_cursor_rect_x and
             y == self.last_cursor_rect_y and
             cw == self.last_cursor_rect_w and
@@ -1347,7 +1349,7 @@ const Client = struct {
             // SessionCore.scrollActive 의 visible_rows 인자 — page scroll 계산용.
             // wheel 자체는 i16 만 보지만 같은 인터페이스라 함께 전달.
             const ch = self.renderer.cellHeight();
-            const usable_h = @max(0, self.window_height - software_terminal.padding_px * 2);
+            const usable_h = @max(0, self.window_height - software_terminal.Renderer.tab_bar_height_px - software_terminal.padding_px * 2);
             const rows_i32 = @divTrunc(usable_h, ch);
             const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
             const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
@@ -1563,14 +1565,17 @@ const Client = struct {
         }
     }
 
-    /// surface pixel → grid cell. padding 영역 / grid 범위 밖이면 null.
+    /// surface pixel → grid cell. tab bar / padding 영역 / grid 범위 밖이면
+    /// null. L12-α — grid 영역이 tab_bar_height_px + padding 만큼 아래로
+    /// 밀려있으므로 py 의 origin 도 같이 보정.
     fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
-        if (px < software_terminal.padding_px or py < software_terminal.padding_px) return null;
+        const grid_top: i32 = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px;
+        if (px < software_terminal.padding_px or py < grid_top) return null;
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const tab = self.activeTabOrNull() orelse return null;
         const col_i32: i32 = @divTrunc(px - software_terminal.padding_px, cw);
-        const row_i32: i32 = @divTrunc(py - software_terminal.padding_px, ch);
+        const row_i32: i32 = @divTrunc(py - grid_top, ch);
         if (col_i32 < 0 or row_i32 < 0) return null;
         const cols_i32: i32 = @intCast(tab.terminal.cols);
         const rows_i32: i32 = @intCast(tab.terminal.rows);
