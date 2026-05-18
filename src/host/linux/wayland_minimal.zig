@@ -23,6 +23,7 @@ const display_id: u32 = 1;
 const registry_id: u32 = 2;
 const first_client_alloc_id: u32 = registry_id + 1;
 
+const shm_format_argb8888: u32 = 0;
 const shm_format_xrgb8888: u32 = 1;
 const default_width: i32 = 640;
 const default_height: i32 = 420;
@@ -229,6 +230,7 @@ const Client = struct {
     configured: bool = false,
     running: bool = true,
     saw_xrgb8888: bool = false,
+    saw_argb8888: bool = false,
     next_id: u32 = first_client_alloc_id,
     pending_width: i32 = 0,
     pending_height: i32 = 0,
@@ -303,6 +305,7 @@ const Client = struct {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
         var renderer = try software_terminal.Renderer.init(allocator, cfg);
+        renderer.opacity_alpha = cfg.opacity_alpha;
         errdefer renderer.deinit(allocator);
         const stream = std.net.connectUnixSocket(path) catch |err| {
             // connectUnixSocket 의 `FileNotFound` / `AccessDenied` / `ConnectionRefused`
@@ -367,7 +370,9 @@ const Client = struct {
         try self.bindGlobals();
         try self.roundtrip();
         self.logCapabilities();
-        if (!self.saw_xrgb8888) return error.WaylandShmXrgb8888Missing;
+        // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
+        // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
+        if (!self.saw_argb8888) return error.WaylandShmArgb8888Missing;
         try self.createKeyboardIfAvailable();
         if (self.keyboard_id != 0) try self.roundtrip();
 
@@ -688,7 +693,7 @@ const Client = struct {
             @intCast(width),
             @intCast(height),
             @intCast(stride),
-            shm_format_xrgb8888,
+            shm_format_argb8888,
         });
         try self.sendNoArgs(pool_id, 1);
 
@@ -858,6 +863,7 @@ const Client = struct {
         if (id == self.shm_id and opcode == 0 and payload.len >= 4) {
             const fmt = readU32(payload[0..4]);
             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
+            if (fmt == shm_format_argb8888) self.saw_argb8888 = true;
             return;
         }
         if (id == self.seat_id) {
@@ -1650,7 +1656,7 @@ const Client = struct {
         );
         log.appendLine(
             "wayland",
-            "capabilities compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shm_xrgb8888={}",
+            "capabilities compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shm_xrgb8888={} shm_argb8888={}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
@@ -1659,6 +1665,7 @@ const Client = struct {
                 text_input,
                 self.caps.data_device_manager.name != 0,
                 self.saw_xrgb8888,
+                self.saw_argb8888,
             },
         );
     }
@@ -1883,7 +1890,9 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
         for (0..w) |x| {
             const green: u32 = @intCast(92 + (x * 80 / @max(w, 1)));
             const blue: u32 = @intCast(48 + (y * 70 / @max(h, 1)));
-            const color: u32 = (0x24 << 16) | (green << 8) | blue;
+            // ARGB8888 — alpha=255 (fully opaque). 이 fallback path 는
+            // session 미연결 placeholder 라 사용자 opacity 적용 무의미.
+            const color: u32 = (0xFF << 24) | (0x24 << 16) | (green << 8) | blue;
             writeU32(memory[y * s + x * 4 ..][0..4], color);
         }
     }
