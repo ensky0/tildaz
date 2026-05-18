@@ -271,6 +271,12 @@ const Client = struct {
     text_input_id: u32 = 0,
     text_input_enabled: bool = false,
     text_input_done_serial: u32 = 0,
+    // L10-β. text-input-v3 는 enter/leave/preedit/commit/delete 가 batch 로
+    // 오고 `done(serial)` 에서 한 번에 적용해야 한다 (spec). batch 안 누적용
+    // pending buffer 두 개 + `done` 직후 renderer 가 가리킬 preedit storage.
+    pending_preedit: std.ArrayList(u8) = .{},
+    pending_commit: std.ArrayList(u8) = .{},
+    preedit_text: std.ArrayList(u8) = .{},
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -297,6 +303,9 @@ const Client = struct {
     fn deinit(self: *Client) void {
         self.clearClipboardOwnership();
         self.keyboard.deinit();
+        self.pending_preedit.deinit(self.allocator);
+        self.pending_commit.deinit(self.allocator);
+        self.preedit_text.deinit(self.allocator);
         for (self.received_fds.items) |fd| posix.close(fd);
         self.received_fds.deinit(self.allocator);
         if (self.active_buffer) |*buffer| {
@@ -911,14 +920,20 @@ const Client = struct {
         try self.sendNoArgs(self.text_input_id, text_input_request_disable);
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
         self.text_input_enabled = false;
+        // focus 떠나는 시점에 preedit overlay 도 같이 사라져야 자연. pending
+        // batch 잔여물도 초기화 — disable 직전에 들어온 preedit 가 다음 enable
+        // 시 잘못 적용되지 않게.
+        self.pending_preedit.clearRetainingCapacity();
+        self.pending_commit.clearRetainingCapacity();
+        self.preedit_text.clearRetainingCapacity();
+        self.renderer.preedit_text = "";
         log.appendLine("wayland", "text_input disabled id={}", .{self.text_input_id});
     }
 
-    /// L10-α — zwp_text_input_v3 server → client events. 6 개 모두 dispatch.
-    /// preedit / commit / delete_surrounding 의 실제 적용은 done(serial) 이
-    /// 올 때까지 누적해야 spec 에 맞지만, 이번 sub-step 은 commit_string 만
-    /// 즉시 PTY 송신 (preedit overlay 미사용 + surrounding text 미설정). done
-    /// serial 은 보관만 — 차후 sub-step 에서 set_surrounding_text 사용 시 필요.
+    /// L10-α + L10-β — zwp_text_input_v3 server → client events. spec 상
+    /// preedit / commit / delete 는 한 batch 로 들어와 `done(serial)` 에서 한
+    /// 번에 apply. preedit/commit 텍스트는 pending buffer 에 누적했다가 done
+    /// 시점에 commit → PTY 송신, preedit → renderer overlay 갱신.
     fn handleTextInputEvent(self: *Client, opcode: u16, payload: []const u8) !void {
         switch (opcode) {
             text_input_event_enter => {
@@ -929,21 +944,20 @@ const Client = struct {
                 log.appendLine("wayland", "text_input leave", .{});
             },
             text_input_event_preedit_string => {
-                // string text + int cursor_begin + int cursor_end. 이번 sub-step
-                // 은 로그만 — overlay 부착은 L10-β.
+                // string text + int cursor_begin + int cursor_end. text 만
+                // 사용 (cursor_begin/end 는 split 표시용 — L10 단순화 scope 밖).
                 var cursor = Parser{ .buf = payload };
-                const text = cursor.readString() catch return;
-                log.appendLine("wayland", "text_input preedit text_len={}", .{text.len});
+                const text = cursor.readString() catch "";
+                self.pending_preedit.clearRetainingCapacity();
+                try self.pending_preedit.appendSlice(self.allocator, text);
             },
             text_input_event_commit_string => {
-                // string text. fcitx5 가 한글 음절 완성 시점에 보내준다. 그대로
-                // PTY 로 송신 — 다른 키 입력 path 와 동일.
+                // string text. fcitx5 가 음절 완성 시점에 보내준다. 한 batch
+                // 안에 한 commit_string 이 보통이라 append 누적 (spec 상 둘 이상
+                // 와도 안전).
                 var cursor = Parser{ .buf = payload };
-                const text = cursor.readString() catch return;
-                if (text.len > 0) {
-                    log.appendLine("wayland", "text_input commit text_len={}", .{text.len});
-                    self.queueInput(text);
-                }
+                const text = cursor.readString() catch "";
+                try self.pending_commit.appendSlice(self.allocator, text);
             },
             text_input_event_delete_surrounding_text => {
                 // uint before + uint after. surrounding_text 미설정이라 보통
@@ -954,9 +968,36 @@ const Client = struct {
                 if (payload.len >= 4) {
                     self.text_input_done_serial = readU32(payload[0..4]);
                 }
+                try self.applyTextInputBatch();
             },
             else => {},
         }
+    }
+
+    /// L10-β — text-input-v3 `done` 시점의 batch apply. spec 상 한 batch 의
+    /// commit 은 PTY 로, preedit 는 화면 overlay 로 갱신. 매 batch 마다 preedit
+    /// 은 새 값 (= empty 도 정상, "조합 끝" 의미) 으로 reset 된다.
+    fn applyTextInputBatch(self: *Client) !void {
+        if (self.pending_commit.items.len > 0) {
+            log.appendLine("wayland", "text_input commit text_len={}", .{self.pending_commit.items.len});
+            self.queueInput(self.pending_commit.items);
+            self.pending_commit.clearRetainingCapacity();
+        }
+        // pending_preedit → preedit_text 로 옮긴 뒤 renderer slice 갱신. paint
+        // 호출 시점에 storage 가 valid 해야 하므로 ArrayList 의 owned 메모리에
+        // 보관. pending_preedit 가 비어 있으면 preedit_text 도 비움 (overlay
+        // 사라짐 = 조합 끝).
+        log.appendLine("wayland", "text_input preedit text_len={}", .{self.pending_preedit.items.len});
+        self.preedit_text.clearRetainingCapacity();
+        try self.preedit_text.appendSlice(self.allocator, self.pending_preedit.items);
+        self.pending_preedit.clearRetainingCapacity();
+        self.renderer.preedit_text = self.preedit_text.items;
+        // IME 활성 시 wl_keyboard.key event 는 IME 로 raised 되어 우리한테 안
+        // 온다. text_input event 만 들어오는 동안 다른 갱신 트리거가 없어
+        // `needs_redraw` 가 자동으로 안 켜진다. preedit 변화가 화면에 보이려면
+        // 명시 트리거 필수 — commit batch 면 PTY echo 가 다음 frame 을 어차피
+        // 끌고 오지만 preedit 만 변하는 경우는 이 줄이 유일 트리거.
+        self.needs_redraw = true;
     }
 
     fn handleKeyboardKeymap(self: *Client, payload: []const u8) !void {
