@@ -52,6 +52,28 @@ pub const linux_backend_not_ready_msg =
     \\
     \\See LINUX.md and issue #189 for the current plan.
 ;
+
+/// Wayland compositor unix socket 에 connect 실패 시 사용자가 보는 메시지.
+/// `@errorName(err)` 한 단어로는 진단이 불가능해서 시도한 path, errno name,
+/// 그리고 진짜 분기 단서가 되는 세 환경변수 raw 값을 같이 보여준다. X11 세션
+/// 에서 실행했을 때 `XDG_SESSION_TYPE=x11` / `WAYLAND_DISPLAY=(unset)` 가
+/// 보이면 즉시 원인 식별 가능.
+///
+/// fmt 슬롯 순서: path, err name, WAYLAND_DISPLAY, XDG_SESSION_TYPE, XDG_RUNTIME_DIR.
+pub const linux_wayland_socket_unavailable_format =
+    \\TildaZ failed to start: could not connect to the Wayland compositor.
+    \\
+    \\  socket path:      {s}
+    \\  error:            {s}
+    \\  WAYLAND_DISPLAY:  {s}
+    \\  XDG_SESSION_TYPE: {s}
+    \\  XDG_RUNTIME_DIR:  {s}
+    \\
+    \\TildaZ's Linux backend is Wayland-only. If XDG_SESSION_TYPE is not
+    \\"wayland", log in to a Wayland session (GNOME, Cinnamon, KDE Plasma,
+    \\sway, Hyprland, etc.). Otherwise verify that the compositor is running
+    \\and that the socket path above exists.
+;
 pub const already_running_msg = "TildaZ is already running.";
 pub const font_not_found_format = "Font not found: \"{s}\"";
 
