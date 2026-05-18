@@ -9,6 +9,7 @@ const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
+const block_element = @import("../../renderer/block_element.zig");
 
 pub const padding_px: i32 = 8;
 /// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
@@ -113,7 +114,18 @@ pub const Renderer = struct {
 
                 if (!raw.hasText() or raw.codepoint() == 0) continue;
                 const fg = resolveFg(style, &colors, is_selected);
-                const glyph = self.font_ctx.glyph(raw.codepoint());
+                const cp = raw.codepoint();
+
+                // Block element + shade — cell-aligned procedural rectangle / dot
+                // mask. 폰트 fallback (FreeType raster) 대신 공유 모듈로 그려서
+                // 인접 셀 사이 갭 / overlap 제거. Windows d3d11 / macOS Metal 가
+                // 같은 모듈을 동일 의미로 사용 ([renderer/windows.zig], [renderer/macos.zig]).
+                if (block_element.blockElementRect(cp)) |br| {
+                    drawBlockRect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, br, fg);
+                    continue;
+                }
+
+                const glyph = self.font_ctx.glyph(cp);
                 if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                     // color emoji — bitmap 이 보통 strike size (~109px) 라 cell 안 ratio
                     // 유지 scale down + cell 가운데 fit. emoji 색 자체 사용 (fg 무시).
@@ -327,6 +339,63 @@ fn drawGlyphBgra(
             memory[dst_off] = out_b;
             memory[dst_off + 1] = out_g;
             memory[dst_off + 2] = out_r;
+        }
+    }
+}
+
+/// Block element rect (`U+2580..U+2595`) 를 셀 안 fraction → 절대 pixel 좌표로
+/// 옮겨 그린다. shade == 0 면 solid fg rect. shade ∈ {1,2,3} 이면 d3d11
+/// `bg_shader_src` / macOS Metal `bg_fs` 와 동일 식의 procedural dot mask 적용
+/// — 픽셀의 absolute (px, py) 로 패턴을 결정해 인접 셀 사이 끊김 없이 대각
+/// zigzag 가 이어진다. dot 픽셀만 fg 색으로 set, 나머지는 이미 그려진 배경
+/// 그대로 (셰이더의 `discard` 동등).
+fn drawBlockRect(
+    memory: []u8,
+    fb_w: i32,
+    fb_h: i32,
+    stride: i32,
+    cell_x: i32,
+    cell_y: i32,
+    cell_w: i32,
+    cell_h: i32,
+    br: block_element.BlockRect,
+    fg: ghostty.color.RGB,
+) void {
+    const cw_f: f32 = @floatFromInt(cell_w);
+    const ch_f: f32 = @floatFromInt(cell_h);
+    const x0: i32 = cell_x + @as(i32, @intFromFloat(br.x0 * cw_f));
+    const y0: i32 = cell_y + @as(i32, @intFromFloat(br.y0 * ch_f));
+    const x1: i32 = cell_x + @as(i32, @intFromFloat(br.x1 * cw_f));
+    const y1: i32 = cell_y + @as(i32, @intFromFloat(br.y1 * ch_f));
+
+    if (br.shade < 0.5) {
+        rect(memory, fb_w, fb_h, stride, x0, y0, x1 - x0, y1 - y0, fg);
+        return;
+    }
+
+    const cx0 = @max(0, x0);
+    const cy0 = @max(0, y0);
+    const cx1 = @min(fb_w, x1);
+    const cy1 = @min(fb_h, y1);
+    if (cx1 <= cx0 or cy1 <= cy0) return;
+
+    const fg_packed = pack(fg);
+    var py = cy0;
+    while (py < cy1) : (py += 1) {
+        var px = cx0;
+        while (px < cx1) : (px += 1) {
+            const on: bool = if (br.shade < 1.5)
+                // U+2591 LIGHT 25% — diagonal sparse
+                ((px + 2 * py) & 3) == 0
+            else if (br.shade < 2.5)
+                // U+2592 MEDIUM 50% — checkerboard
+                ((px + py) & 1) == 0
+            else
+                // U+2593 DARK 75% — LIGHT 의 inverse (diagonal dense)
+                ((px + 2 * py) & 3) != 0;
+            if (!on) continue;
+            const off: usize = @intCast(py * stride + px * 4);
+            std.mem.writeInt(u32, memory[off..][0..4], fg_packed, .little);
         }
     }
 }
