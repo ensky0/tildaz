@@ -91,6 +91,7 @@ pub const Renderer = struct {
         layout: tab_layout.Layout,
         tab_scroll_x: f32,
         rename_view: ?tab_interaction.RenameView,
+        drag_view: ?tab_interaction.DragView,
     ) void {
         self.render_state.update(allocator, terminal) catch {
             fill(memory, width, height, stride, theme.background);
@@ -108,7 +109,7 @@ pub const Renderer = struct {
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, self.preedit_text, cw, colors.background, &self.font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -282,6 +283,7 @@ fn drawTabBar(
     layout: tab_layout.Layout,
     scroll_x: f32,
     rename_view: ?tab_interaction.RenameView,
+    drag_view: ?tab_interaction.DragView,
     preedit_text: []const u8,
     cell_w: i32,
     inactive_bg: ghostty.color.RGB,
@@ -320,6 +322,14 @@ fn drawTabBar(
     for (titles, 0..) |title_default, i| {
         // L12-γ-2 — rename 활성 탭은 title 대신 buffer 사용.
         const renaming_this = if (rename_view) |rv| rv.tab_index == i else false;
+        // L12-γ-3 — drag source 탭은 글자 색 dim (mac / win alpha 0.6 동등 visual).
+        // bg 와 50% blend → drop 위치로 옮겨가는 중임을 시각적으로 표시.
+        const is_drag_source = if (drag_view) |dv| dv.tab_index == i else false;
+        const effective_text: ghostty.color.RGB = if (is_drag_source) ghostty.color.RGB{
+            .r = blendU8(text_color.r, tab_bar_bg.r, 0.5),
+            .g = blendU8(text_color.g, tab_bar_bg.g, 0.5),
+            .b = blendU8(text_color.b, tab_bar_bg.b, 0.5),
+        } else text_color;
         const title: []const u8 = if (renaming_this) blk: {
             const rv = rename_view.?;
             break :blk rv.text[0..rv.text_len];
@@ -352,9 +362,9 @@ fn drawTabBar(
         const close_x_outer: i32 = tab_x + tab_actual_w - close_size - tab_pad;
         if (close_x_outer >= tab_area_x and close_x_outer + close_size <= tab_area_end) {
             const close_color = ghostty.color.RGB{
-                .r = blendU8(text_color.r, bg.r, 0.6),
-                .g = blendU8(text_color.g, bg.g, 0.6),
-                .b = blendU8(text_color.b, bg.b, 0.6),
+                .r = blendU8(effective_text.r, bg.r, 0.6),
+                .g = blendU8(effective_text.g, bg.g, 0.6),
+                .b = blendU8(effective_text.b, bg.b, 0.6),
             };
             const x_glyph = font_ctx.glyph('x');
             const x_adv: i32 = @intCast(x_glyph.advance);
@@ -408,14 +418,19 @@ fn drawTabBar(
             .fb_w = fb_w,
             .fb_h = fb_h,
             .stride = stride,
-            .viewport_left = text_x_start,
+            // L12-γ scroll 잘림 fix — 부분 잘린 첫 보이는 탭은 `text_x_start`
+            // 가 `tab_area_x` 보다 왼쪽으로 음수 가능 → glyph clip 검사
+            // (`px < viewport_left`) 가 무효화되어 화살표 영역 invade. mac
+            // 은 Metal scissor / NSView bounds 가 추가 clip 해서 발현 안
+            // 함. software 는 수동 max clamp.
+            .viewport_left = @max(text_x_start, tab_area_x),
             .tab_area_end = tab_area_end,
             .text_y_top = text_y_top,
             .cell_h = cell_h,
             .tab_bar_h = tab_bar_h,
             .text_baseline = text_baseline,
             .bg = bg,
-            .text_color = text_color,
+            .text_color = effective_text,
             .font_ctx = font_ctx,
         };
 
@@ -516,6 +531,25 @@ fn drawTabBar(
         );
     }
 
+    // L12-γ-3 — drop indicator. source 와 drop_idx 가 다를 때만 drop_idx 의
+    // left edge 에 2px wide 세로 line (text_color). drop_idx 는 `DragState.
+    // finish` 와 같은 공식 (`current_x / tab_w` clamped).
+    if (drag_view) |dv| {
+        if (titles.len > 1 and dv.tab_index < titles.len) {
+            const tab_count_c: c_int = @intCast(titles.len);
+            var target_raw: c_int = @divTrunc(dv.current_x, tab_w);
+            target_raw = @max(0, @min(target_raw, tab_count_c - 1));
+            if (target_raw != @as(c_int, @intCast(dv.tab_index))) {
+                const drop_idx: i32 = @intCast(target_raw);
+                const indicator_world_x: i32 = drop_idx * tab_w;
+                const indicator_screen_x: i32 = tab_area_x + indicator_world_x - scroll_x_i;
+                if (indicator_screen_x >= tab_area_x - 1 and indicator_screen_x <= tab_area_end) {
+                    rect(memory, fb_w, fb_h, stride, indicator_screen_x, tab_y, 2, tab_actual_h, text_color);
+                }
+            }
+        }
+    }
+
     // --- arrow / plus 버튼 ---
     drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, font_ctx);
 }
@@ -532,11 +566,15 @@ fn drawTabBarControls(
     layout: tab_layout.Layout,
     font_ctx: *font.Context,
 ) void {
-    const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
     const ascent: i32 = @intCast(font_ctx.ascent_px);
     const descent: i32 = @intCast(font_ctx.descent_px);
     const baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
     const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
+    // mac / win 동등 — enabled = `TAB_CTRL_ACTIVE_COLOR` (밝은 흰색 0.95),
+    // disabled = `TAB_ARROW_DISABLED_COLOR` (회색 0.4). scroll 왼쪽 끝이면
+    // `<` 회색, 우측 끝이면 `>` 회색. plus 는 항상 enabled.
+    const active_color = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
+    const disabled_color = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
 
     const drawCentered = struct {
         fn call(
@@ -564,13 +602,14 @@ fn drawTabBarControls(
         const left_x: i32 = @intFromFloat(layout.left_arrow_x);
         const right_x: i32 = @intFromFloat(layout.right_arrow_x);
         const arrow_w: i32 = @intFromFloat(layout.arrow_w);
-        // enabled / disabled 시각화 — disabled 면 dimmed. 단순화: 그대로.
-        drawCentered(memory, fb_w, fb_h, stride, '<', left_x, arrow_w, baseline, text_color, bg, font_ctx);
-        drawCentered(memory, fb_w, fb_h, stride, '>', right_x, arrow_w, baseline, text_color, bg, font_ctx);
+        const left_color = if (layout.left_enabled) active_color else disabled_color;
+        const right_color = if (layout.right_enabled) active_color else disabled_color;
+        drawCentered(memory, fb_w, fb_h, stride, '<', left_x, arrow_w, baseline, left_color, bg, font_ctx);
+        drawCentered(memory, fb_w, fb_h, stride, '>', right_x, arrow_w, baseline, right_color, bg, font_ctx);
     }
     const plus_x: i32 = @intFromFloat(layout.plus_x);
     const plus_w: i32 = @intFromFloat(layout.plus_w);
-    drawCentered(memory, fb_w, fb_h, stride, '+', plus_x, plus_w, baseline, text_color, bg, font_ctx);
+    drawCentered(memory, fb_w, fb_h, stride, '+', plus_x, plus_w, baseline, active_color, bg, font_ctx);
 }
 
 /// `a * weight + b * (1 - weight)` 의 u8 클램프. close 'x' 의 dim 색 등에 사용.
