@@ -37,6 +37,10 @@ pub const Renderer = struct {
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
     preedit_text: []const u8 = "",
+    /// L13-γ — 매 픽셀의 alpha byte (ARGB8888 의 high byte). `config.opacity_
+    /// alpha` 가 그대로. 100% → 255 (완전 opaque, 시각 변화 없음), <100 →
+    /// compositor 가 배경과 alpha blending. `Client.init` 에서 채움.
+    opacity_alpha: u8 = 255,
 
     pub fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Renderer {
         const chain = cfg.font_families[0..cfg.font_family_count];
@@ -216,6 +220,25 @@ pub const Renderer = struct {
                     colors.foreground,
                     &self.font_ctx,
                 );
+            }
+        }
+
+        // --- L13-γ: opacity alpha sweep ---
+        // ARGB8888 buffer 의 alpha byte 를 self.opacity_alpha 로 일괄 채움.
+        // pack / rect / drawGlyph / drawGlyphBgra 등 모든 pixel write 함수가
+        // RGB 만 채우고 alpha byte (high byte) 는 0 으로 두는 대신, paint
+        // 마지막에 한 번 sweep — 함수 시그니처 / 호출 site 의 변경 폭을
+        // 줄이고 alpha 미적용 누락도 자동으로 막힘. opacity=255 (= 100%) 면
+        // 시각 변화 없음 — compositor 가 fully opaque 로 합성.
+        {
+            const opacity = self.opacity_alpha;
+            var py: i32 = 0;
+            while (py < height) : (py += 1) {
+                var px: i32 = 0;
+                while (px < width) : (px += 1) {
+                    const off: usize = @intCast(py * stride + px * 4);
+                    memory[off + 3] = opacity;
+                }
             }
         }
     }
