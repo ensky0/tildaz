@@ -325,8 +325,15 @@ const Client = struct {
             .config = cfg,
             .extra_env_storage = .{
                 .{ .name = "TERM", .value = "xterm-256color" },
-                .{ .name = "LANG", .value = "en_US.UTF-8" },
-                .{ .name = "LC_CTYPE", .value = "en_US.UTF-8" },
+                // Linux 는 `C.UTF-8` — POSIX 표준 portable UTF-8 locale, 모든
+                // 주요 distro 에 보장. macOS / Windows 의 `en_US.UTF-8` 은 그
+                // OS 의 기본 locale 이라 setlocale OK, 단 Linux 는 distro 에
+                // 따라 `en_US.UTF-8` 미설치 가능 (사용자 환경 = ko_KR.utf8 +
+                // C.utf8 만). setlocale 실패하면 bash readline 이 single-byte
+                // 모드로 떨어져 한글 paste / IME commit 깨짐 — 사용자 보고로
+                // 확정.
+                .{ .name = "LANG", .value = "C.UTF-8" },
+                .{ .name = "LC_CTYPE", .value = "C.UTF-8" },
                 .{ .name = "COLORFGBG", .value = if (themes.isDark(theme)) "15;0" else "0;15" },
                 .{ .name = "SHELL", .value = cfg.shell },
             },
