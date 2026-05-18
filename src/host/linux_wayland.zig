@@ -21,6 +21,10 @@ pub fn showFatalRunError(err: anyerror) void {
         error.LinuxWaylandBackendNotImplemented => {
             std.debug.print("{s}\n", .{messages.linux_backend_not_ready_msg});
         },
+        // Wayland socket 실패는 `Client.init` 안에서 path / env 까지 포함한
+        // 정확한 메시지를 이미 stderr + log 양쪽에 남긴다. 여기서 generic
+        // `run_failed_format` 을 다시 찍으면 진단 정보를 가리는 노이즈.
+        error.WaylandSocketUnavailable => {},
         else => {
             std.debug.print(messages.run_failed_format ++ "\n", .{@errorName(err)});
         },
