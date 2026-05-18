@@ -302,7 +302,7 @@ const Client = struct {
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
-        var renderer = try software_terminal.Renderer.init(allocator);
+        var renderer = try software_terminal.Renderer.init(allocator, cfg);
         errdefer renderer.deinit(allocator);
         const stream = std.net.connectUnixSocket(path) catch |err| {
             // connectUnixSocket 의 `FileNotFound` / `AccessDenied` / `ConnectionRefused`
