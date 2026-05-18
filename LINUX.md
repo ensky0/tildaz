@@ -112,6 +112,7 @@ zwp_text_input_manager_v3=true
 - L12-γ-1 tab bar arrow / plus + tab_layout.compute 통합 추가 ([commit 357b0ec](https://github.com/ensky0/tildaz/commit/357b0ec)). cross-platform `tab_layout.compute` / `ensureActiveVisible` / `scrollByArrow` / `hitArea` / `hitTab` 부착. 탭 폭 합 > viewport 폭 시 좌 `<` / 우 `>` arrow + `+` plus 등장. 활성 탭이 viewport 밖 나가면 자동 scroll (override=false 일 때). `<` / `>` 클릭 → 수동 scroll + override true. `+` 클릭 → 새 탭. 탭 클릭 → switchTab.
 - L12-γ-4 tab close 'x' 버튼 추가 ([commit 41473d9](https://github.com/ensky0/tildaz/commit/41473d9)). 각 탭 우측 끝 `TAB_CLOSE_SIZE_PT (=14)` box 안 'x' 글리프. mac / win 동등 dim 색 (`TEXT × 0.6 + bg × 0.4`). hit.on_close → `tab_actions.closeIndex` (마지막 탭이면 terminate, 아니면 invalidate). hover 강조는 mac / win 도 미부착이라 동등. `blendU8` helper 신규. 시연 사이클 메모: 임시로 "tab bar 우클릭 → close" 도 추가했었는데 SPEC 외라 사용자 지적 후 즉시 원복.
 - L12-γ-5 client-side key repeat 추가 ([commit 7248163](https://github.com/ensky0/tildaz/commit/7248163)). Wayland spec 상 key repeat 은 client 책임 (macOS / Windows 는 OS 자동). `Client.key_repeat_keycode` / `key_repeat_next_ms` / `key_repeat_rate_hz` / `key_repeat_delay_ms` field + `handleKeyboardKey` 의 byte parsing / `processKeyEvent(serial, key)` 로 분리. press → timer arm (`next_ms = now + delay`), release → disarm, `wl_keyboard.leave` → disarm (focus 떠날 때 release 못 받는 stuck 방지). main loop 의 `maybeRepeatKey()` 가 매 iteration `now >= next_ms` 면 `processKeyEvent(last_serial, key)` 재호출 + `next_ms += 1000/rate`. IME 활성 시 key 가 IME 로 raised 되어 안 옴 → fcitx5 자체 repeat (충돌 없음). 시연 확인: `a` 연속 입력, Ctrl+Shift+T 연속 새 탭 (32 도달 시 dialog).
+- L12-γ-2 더블클릭 rename + IME foot 패턴 정밀화 추가 ([commit c5689e9](https://github.com/ensky0/tildaz/commit/c5689e9)). 탭바 더블클릭 → cross-platform `tab_interaction.RenameState` 부착 (mac/win 공유). Enter commit (`setCustomTitle`), Escape cancel, rename 중 마우스 클릭 cursor positioning, IME 한글 commit 시 buffer 삽입 (PTY 송신 분기 차단), 포커스 loss 시 preedit 자동 commit (mac / win 동등). 진단 사이클에서 `zwp_text_input_v3` 구현을 foot terminal 패턴으로 정밀화 — `enableTextInput` 한 batch (`enable + set_content_type(NONE, TERMINAL) + set_cursor_rectangle(actual cursor pos) + commit`) + `text_input.leave` 가 disable+commit 책임 + `wl_keyboard.enter/leave` 의 enable/disable 호출 제거 (text_input.enter/leave 가 권위) + `computeCursorRect()` helper (surface-relative cursor pixel rect). VSCode (Electron, X11 frontend) 포커스 후 tildaz 한글 입력 회귀는 foot 도 동일 증상 → fcitx5 X11/Wayland frontend separation 환경 한계 ([#194](https://github.com/ensky0/tildaz/issues/194)). Slack desktop 은 영향 없어 일반화 깨짐.
 - 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element + 한글 IME (음절 commit + preedit overlay + Ctrl 시 discard + popover cursor 정렬 + terminal hint)" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / **tabs** / **사용자 config 적용** 이 아직 부족하다.
 
 ## 현재 제한 사항
@@ -125,6 +126,21 @@ buffer에 직접 그려서 PTY - parser - resize - frame lifecycle을 먼저 검
 
 이 renderer는 최종 renderer가 아니다. EGL/OpenGL, fontconfig, FreeType,
 HarfBuzz가 붙기 전까지의 bring-up용 경로다.
+
+### VSCode 포커스 후 tildaz 한글 IME 입력 안 됨
+
+Cinnamon Wayland session + fcitx5-hangul 환경에서 VSCode (Electron, X11 frontend)
+텍스트 편집창에 포커스 갔다 tildaz 로 복귀 시 한영키 / 한글 입력이 동작 안 한다.
+
+foot terminal (Wayland 표준 `zwp_text_input_v3` 구현체) 도 동일 증상으로 확인 → tildaz
+code 문제가 아닌 **fcitx5 X11/Wayland frontend separation 환경 한계**.
+
+**Slack desktop 등 일부 Electron 앱은 영향 없음** (사용자 확인) — "모든 X11 frontend
+Electron 앱 = 회귀" 일반화 아님. VSCode 만의 특수성으로 좁혀짐.
+
+우회: gnome-terminal 등 Wayland frontend 사용 앱에 잠깐 포커스했다 tildaz 로 돌아오면 정상화.
+
+추가 검증 / 우회 방법은 [#194](https://github.com/ensky0/tildaz/issues/194) 에서 tracking.
 
 ### 해소된 limitation (history 기록용)
 
@@ -331,7 +347,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 27 | L12-β tab 단축키 + multi-tab + 클릭 activate | ✅ [d694392](https://github.com/ensky0/tildaz/commit/d694392) — `tab_actions.Host` 부착 + Ctrl+Shift+T/W/]/[ + 클릭 activate + 32-tab cap dialog. 시연 사이클에서 multi-tab cascade 종료 회귀 발견 + fix (macOS `pending_close_buf` + main loop drain). |
 | 28 | L12-γ-1 arrow / plus + tab_layout.compute 통합 | ✅ [357b0ec](https://github.com/ensky0/tildaz/commit/357b0ec) — 탭 폭 합 > viewport 시 `<` `>` `+` 등장 + 자동 scroll + 수동 scroll override + cross-platform `tab_layout.compute` 사용. |
 | 29 | L12-γ-4 tab close 'x' 버튼 | ✅ [41473d9](https://github.com/ensky0/tildaz/commit/41473d9) — 각 탭 우측 끝 'x' 글리프 (mac/win 동등 dim 색) + hit.on_close → closeIndex. 시연 사이클에서 임시 추가했던 우클릭 close 는 SPEC 외라 원복. |
-| 30 | L12-γ-2 더블클릭 rename | 대기 — `tab_interaction.zig` 의 rename 모드 부착 + IME (preedit overlay 와 같은 path) 통합. |
+| 30 | L12-γ-2 더블클릭 rename + IME foot 패턴 정밀화 | ✅ [c5689e9](https://github.com/ensky0/tildaz/commit/c5689e9) — 탭바 더블클릭 → cross-platform `tab_interaction.RenameState` 부착 (mac/win 공유). Enter commit (`setCustomTitle`), Escape cancel, 클릭 cursor positioning, IME 한글 commit buffer 삽입, 포커스 loss 시 preedit 자동 commit (mac/win 동등). `zwp_text_input_v3` foot 패턴 정밀화 — `enableTextInput` 한 batch + `text_input.leave` 가 disable+commit + `wl_keyboard.enter/leave` 의 enable/disable 제거. VSCode→tildaz 회귀는 foot 동일 증상 → fcitx5 X11/Wayland frontend separation 환경 한계 ([#194](https://github.com/ensky0/tildaz/issues/194)). |
 | 31 | L12-γ-3 drag reorder | 대기 — 좌클릭 drag 시 tab 위치 swap. `tab_actions` 의 reorder helper 사용. |
 | 32 | L12-γ-5 key repeat (Wayland client-side timer) | ✅ [7248163](https://github.com/ensky0/tildaz/commit/7248163) — `wl_keyboard.repeat_info` rate/delay + `maybeRepeatKey()` main loop timer. press → arm, release/leave → disarm. IME 활성 시 fcitx5 자체 repeat (충돌 없음). |
 
