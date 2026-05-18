@@ -12,6 +12,7 @@ const session_core = @import("../../session_core.zig");
 const terminal_backend = @import("../../terminal.zig");
 const terminal_interaction = @import("../../terminal_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
+const tab_layout = @import("../../tab_layout.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
@@ -329,6 +330,11 @@ const Client = struct {
     /// 패턴 — read thread 는 buf 에 ptr append, main loop 가 drain.
     pending_close_buf: std.ArrayList(usize) = .{},
     pending_close_mutex: std.Thread.Mutex = .{},
+    /// L12-γ — tab bar 의 가로 scroll 위치 (pixel, tab area 좌측 기준). 탭
+    /// 폭 합이 viewport 폭 넘을 때만 의미. user override = false 면 매 paint
+    /// 시 `ensureActiveVisible` 로 자동 보정 (활성 탭이 viewport 안 들어옴).
+    /// user 가 `<` `>` 클릭하면 override true 되어 자동 보정 정지.
+    tab_scroll_x: f32 = 0,
 
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
@@ -761,6 +767,24 @@ const Client = struct {
                 for (tabs[0..count], 0..) |t, i| {
                     titles_storage[i] = t.title[0..t.title_len];
                 }
+                // L12-γ — tab_layout.compute 로 arrow/plus/tab area 영역 분할.
+                // override 가 false 면 ensureActiveVisible 로 활성 탭이 보이는
+                // 위치로 scroll_x 보정. compute / ensureActiveVisible 둘 다
+                // cross-platform pure function — side effect 없음, client field
+                // 갱신은 여기서.
+                const layout_inputs = tab_layout.Inputs{
+                    .viewport_w = @floatFromInt(width),
+                    .tab_count = @intCast(count),
+                    .tab_w = @floatFromInt(ui_metrics.TAB_WIDTH_PT),
+                    .arrow_w = @floatFromInt(ui_metrics.TAB_ARROW_W_PT),
+                    .plus_w = @floatFromInt(ui_metrics.TAB_PLUS_W_PT),
+                    .scroll_x = self.tab_scroll_x,
+                };
+                const layout = tab_layout.compute(layout_inputs);
+                if (!self.tab_scroll_override) {
+                    const sx = tab_layout.ensureActiveVisible(layout_inputs, layout, @intCast(session.active_tab));
+                    self.tab_scroll_x = sx;
+                }
                 self.renderer.paint(
                     self.allocator,
                     memory,
@@ -771,6 +795,8 @@ const Client = struct {
                     self.config.theme orelse fallback_theme,
                     titles_storage[0..count],
                     session.active_tab,
+                    layout,
+                    self.tab_scroll_x,
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -1063,19 +1089,59 @@ const Client = struct {
         if (any_changed) self.needs_redraw = true;
     }
 
-    /// L12-β — tab bar 영역 좌클릭. (px, py) 가 tab bar 안일 때만 호출.
-    /// 간단 layout — idx = px / TAB_WIDTH_PT. 탭 폭 합 넘으면 활성 변경
-    /// 안 함. arrow / plus / close 'x' / drag reorder 는 L12-γ scope.
-    fn handleTabBarClick(self: *Client, px: i32) void {
+    /// L12-β/γ — tab bar 영역 좌클릭. cross-platform `tab_layout.hitArea`
+    /// 로 분기 — `<` `>` 화살표 / `+` plus / tab area. tab area 면 hitTab
+    /// 으로 어떤 탭인지. close 'x' 는 L12-γ-4 scope (현재 on_close 무시).
+    fn handleTabBarClick(self: *Client, px: i32, py: i32) void {
         if (self.session == null) return;
-        const tab_w: i32 = @intCast(ui_metrics.TAB_WIDTH_PT);
-        if (px < 0 or tab_w <= 0) return;
-        const idx_i32: i32 = @divTrunc(px, tab_w);
-        if (idx_i32 < 0) return;
-        const idx: usize = @intCast(idx_i32);
-        if (idx >= self.session.?.count()) return;
-        var host = self.buildTabActionsHost();
-        tab_actions.switchTab(&host, idx);
+        const session = &self.session.?;
+        const layout_inputs = tab_layout.Inputs{
+            .viewport_w = @floatFromInt(self.window_width),
+            .tab_count = @intCast(session.count()),
+            .tab_w = @floatFromInt(ui_metrics.TAB_WIDTH_PT),
+            .arrow_w = @floatFromInt(ui_metrics.TAB_ARROW_W_PT),
+            .plus_w = @floatFromInt(ui_metrics.TAB_PLUS_W_PT),
+            .scroll_x = self.tab_scroll_x,
+        };
+        const layout = tab_layout.compute(layout_inputs);
+        const px_f: f32 = @floatFromInt(px);
+        const py_f: f32 = @floatFromInt(py);
+        const tab_bar_h_f: f32 = @floatFromInt(software_terminal.Renderer.tab_bar_height_px);
+        const area = tab_layout.hitArea(px_f, py_f, tab_bar_h_f, layout);
+        switch (area) {
+            .left_arrow => {
+                if (tab_layout.scrollByArrow(layout_inputs, layout, .left)) |sx| {
+                    self.tab_scroll_x = sx;
+                    self.tab_scroll_override = true;
+                    self.needs_redraw = true;
+                }
+            },
+            .right_arrow => {
+                if (tab_layout.scrollByArrow(layout_inputs, layout, .right)) |sx| {
+                    self.tab_scroll_x = sx;
+                    self.tab_scroll_override = true;
+                    self.needs_redraw = true;
+                }
+            },
+            .plus => self.handleNewTab(),
+            .tab_area => {
+                const hit = tab_layout.hitTab(
+                    px_f,
+                    py_f,
+                    layout,
+                    @floatFromInt(ui_metrics.TAB_WIDTH_PT),
+                    @floatFromInt(ui_metrics.TAB_PADDING_PT),
+                    @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT),
+                    tab_bar_h_f,
+                    self.tab_scroll_x,
+                    @intCast(session.count()),
+                ) orelse return;
+                // close 'x' 는 L12-γ-4 — 현재 on_close 무시하고 항상 switch.
+                var host = self.buildTabActionsHost();
+                tab_actions.switchTab(&host, hit.tab_index);
+            },
+            .none => {},
+        }
     }
 
     fn handleNextTab(self: *Client) void {
@@ -1405,11 +1471,11 @@ const Client = struct {
         const tab = self.activeTabOrNull() orelse return;
         switch (state) {
             wl_pointer_button_state_pressed => {
-                // L12-β — tab bar 영역 클릭 → 해당 탭 activate. 다른 모든
-                // pointer mode (scrollbar / selection / 더블클릭) 보다 *우선*
-                // 검사 — tab bar 안에서 selection drag 안 시작.
+                // L12-β/γ — tab bar 영역 클릭 → tab_layout.hitArea 로 분기.
+                // 다른 모든 pointer mode (scrollbar / selection / 더블클릭)
+                // 보다 *우선* 검사 — tab bar 안에서 selection drag 안 시작.
                 if (self.pointer_y_px >= 0 and self.pointer_y_px < software_terminal.Renderer.tab_bar_height_px) {
-                    self.handleTabBarClick(self.pointer_x_px);
+                    self.handleTabBarClick(self.pointer_x_px, self.pointer_y_px);
                     return;
                 }
                 // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
