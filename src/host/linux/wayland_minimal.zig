@@ -48,6 +48,32 @@ const wl_pointer_axis_vertical: u32 = 0;
 const wl_seat_request_get_pointer: u16 = 0;
 const wl_seat_request_get_keyboard: u16 = 1;
 
+// zwp_text_input_manager_v3 / zwp_text_input_v3 wire opcodes (v1 of unstable
+// protocol — https://wayland.app/protocols/text-input-unstable-v3). Wire-level
+// 직접 송수신이라 spec 의 zero-based 선언 순서가 그대로 opcode. v3 spec 은
+// enable / disable / set_* state 가 double-buffered — 반드시 마지막에 commit()
+// 으로 flush 해야 server 가 적용한다.
+const text_input_manager_request_get_text_input: u16 = 1;
+const text_input_request_destroy: u16 = 0;
+const text_input_request_enable: u16 = 1;
+const text_input_request_disable: u16 = 2;
+const text_input_request_commit: u16 = 7;
+const text_input_event_enter: u16 = 0;
+const text_input_event_leave: u16 = 1;
+const text_input_event_preedit_string: u16 = 2;
+const text_input_event_commit_string: u16 = 3;
+const text_input_event_delete_surrounding_text: u16 = 4;
+const text_input_event_done: u16 = 5;
+// wl_keyboard event opcodes — keymap=0 / enter=1 / leave=2 / key=3 / modifiers=4
+// / repeat_info=5. 이전엔 enter/leave 무시했는데 L10-α 부터는 keyboard focus 가
+// 토글되는 시점에 text input 의 enable / disable + commit 도 함께 트리거한다.
+const wl_keyboard_event_keymap: u16 = 0;
+const wl_keyboard_event_enter: u16 = 1;
+const wl_keyboard_event_leave: u16 = 2;
+const wl_keyboard_event_key: u16 = 3;
+const wl_keyboard_event_modifiers: u16 = 4;
+const wl_keyboard_event_repeat_info: u16 = 5;
+
 // wl_data_device_manager / wl_data_device / wl_data_source / wl_data_offer
 // opcodes (request side, used by us).
 const wl_data_device_manager_request_create_data_source: u16 = 0;
@@ -237,6 +263,14 @@ const Client = struct {
     // 같은 cell 의 좌클릭 press 가 `double_click_threshold_ms` 이내 두 번이면 더블클릭.
     last_left_click_time_ms: u32 = 0,
     last_left_click_cell: ?terminal_interaction.Cell = null,
+    // L10-α IME wiring. zwp_text_input_v3 manager / object id. keyboard focus
+    // 가 들어오면 enable + commit, 나가면 disable + commit. commit_string event
+    // 가 도착하면 그 텍스트를 PTY 로 송신 — fcitx5 가 음절 완성 시점에 보내준다.
+    // preedit_string 도 받지만 overlay 는 L10-β 의 scope.
+    text_input_manager_id: u32 = 0,
+    text_input_id: u32 = 0,
+    text_input_enabled: bool = false,
+    text_input_done_serial: u32 = 0,
 
     fn init(allocator: std.mem.Allocator) !Client {
         const path = try waylandSocketPath(allocator);
@@ -345,12 +379,32 @@ const Client = struct {
                 self.data_device_manager_id,
             );
         }
-        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={}", .{
+        // L10-α — `zwp_text_input_manager_v3` bind + 그 자리에서 바로
+        // `get_text_input(seat)` 호출해 text_input object 생성. enable / disable
+        // 은 keyboard focus enter / leave 이벤트에서 트리거.
+        if (self.caps.text_input_v3.name != 0 and self.seat_id != 0) {
+            self.text_input_manager_id = self.allocId();
+            try self.bind(
+                self.caps.text_input_v3.name,
+                "zwp_text_input_manager_v3",
+                @min(self.caps.text_input_v3.version, 1),
+                self.text_input_manager_id,
+            );
+            self.text_input_id = self.allocId();
+            try self.sendArgs(
+                self.text_input_manager_id,
+                text_input_manager_request_get_text_input,
+                &.{ self.text_input_id, self.seat_id },
+            );
+        }
+        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={}", .{
             self.compositor_id,
             self.shm_id,
             self.wm_base_id,
             self.seat_id,
             self.data_device_manager_id,
+            self.text_input_manager_id,
+            self.text_input_id,
         });
     }
 
@@ -770,6 +824,10 @@ const Client = struct {
             try self.handleKeyboardEvent(opcode, payload);
             return;
         }
+        if (self.text_input_id != 0 and id == self.text_input_id) {
+            try self.handleTextInputEvent(opcode, payload);
+            return;
+        }
         if (self.pointer_id != 0 and id == self.pointer_id) {
             try self.handlePointerEvent(opcode, payload);
             return;
@@ -825,10 +883,78 @@ const Client = struct {
 
     fn handleKeyboardEvent(self: *Client, opcode: u16, payload: []const u8) !void {
         switch (opcode) {
-            0 => try self.handleKeyboardKeymap(payload),
-            3 => try self.handleKeyboardKey(payload),
-            4 => self.handleKeyboardModifiers(payload),
-            5 => self.handleKeyboardRepeatInfo(payload),
+            wl_keyboard_event_keymap => try self.handleKeyboardKeymap(payload),
+            // L10-α — focus 가 우리 surface 로 들어오면 text input 을 enable,
+            // 나가면 disable. enable / disable 후 commit 으로 state flush 가
+            // 반드시 한 짝이어야 server 가 적용 (text-input-v3 double-buffer 규약).
+            wl_keyboard_event_enter => try self.enableTextInput(),
+            wl_keyboard_event_leave => try self.disableTextInput(),
+            wl_keyboard_event_key => try self.handleKeyboardKey(payload),
+            wl_keyboard_event_modifiers => self.handleKeyboardModifiers(payload),
+            wl_keyboard_event_repeat_info => self.handleKeyboardRepeatInfo(payload),
+            else => {},
+        }
+    }
+
+    /// L10-α — text_input.enable() + commit(). focus enter 시 호출.
+    /// text_input object 가 없으면 (manager 광고 없는 환경) no-op.
+    fn enableTextInput(self: *Client) !void {
+        if (self.text_input_id == 0 or self.text_input_enabled) return;
+        try self.sendNoArgs(self.text_input_id, text_input_request_enable);
+        try self.sendNoArgs(self.text_input_id, text_input_request_commit);
+        self.text_input_enabled = true;
+        log.appendLine("wayland", "text_input enabled id={}", .{self.text_input_id});
+    }
+
+    fn disableTextInput(self: *Client) !void {
+        if (self.text_input_id == 0 or !self.text_input_enabled) return;
+        try self.sendNoArgs(self.text_input_id, text_input_request_disable);
+        try self.sendNoArgs(self.text_input_id, text_input_request_commit);
+        self.text_input_enabled = false;
+        log.appendLine("wayland", "text_input disabled id={}", .{self.text_input_id});
+    }
+
+    /// L10-α — zwp_text_input_v3 server → client events. 6 개 모두 dispatch.
+    /// preedit / commit / delete_surrounding 의 실제 적용은 done(serial) 이
+    /// 올 때까지 누적해야 spec 에 맞지만, 이번 sub-step 은 commit_string 만
+    /// 즉시 PTY 송신 (preedit overlay 미사용 + surrounding text 미설정). done
+    /// serial 은 보관만 — 차후 sub-step 에서 set_surrounding_text 사용 시 필요.
+    fn handleTextInputEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        switch (opcode) {
+            text_input_event_enter => {
+                // payload: object<wl_surface>. 우리 surface 하나뿐이라 검증 생략.
+                log.appendLine("wayland", "text_input enter", .{});
+            },
+            text_input_event_leave => {
+                log.appendLine("wayland", "text_input leave", .{});
+            },
+            text_input_event_preedit_string => {
+                // string text + int cursor_begin + int cursor_end. 이번 sub-step
+                // 은 로그만 — overlay 부착은 L10-β.
+                var cursor = Parser{ .buf = payload };
+                const text = cursor.readString() catch return;
+                log.appendLine("wayland", "text_input preedit text_len={}", .{text.len});
+            },
+            text_input_event_commit_string => {
+                // string text. fcitx5 가 한글 음절 완성 시점에 보내준다. 그대로
+                // PTY 로 송신 — 다른 키 입력 path 와 동일.
+                var cursor = Parser{ .buf = payload };
+                const text = cursor.readString() catch return;
+                if (text.len > 0) {
+                    log.appendLine("wayland", "text_input commit text_len={}", .{text.len});
+                    self.queueInput(text);
+                }
+            },
+            text_input_event_delete_surrounding_text => {
+                // uint before + uint after. surrounding_text 미설정이라 보통
+                // 안 온다. 로그만.
+                log.appendLine("wayland", "text_input delete_surrounding (unexpected — no surrounding set)", .{});
+            },
+            text_input_event_done => {
+                if (payload.len >= 4) {
+                    self.text_input_done_serial = readU32(payload[0..4]);
+                }
+            },
             else => {},
         }
     }
