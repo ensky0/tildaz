@@ -335,6 +335,15 @@ const Client = struct {
     /// 시 `ensureActiveVisible` 로 자동 보정 (활성 탭이 viewport 안 들어옴).
     /// user 가 `<` `>` 클릭하면 override true 되어 자동 보정 정지.
     tab_scroll_x: f32 = 0,
+    /// L12-γ-5 — Wayland client-side key repeat state. compositor 가 알려준
+    /// rate / delay (`wl_keyboard.repeat_info`) 따라 main loop 의 timer 가
+    /// repeat event simulate. macOS / Windows 는 OS 자동, Linux Wayland 는
+    /// client 책임 (spec). keycode=0 이면 disarm. delay 가 첫 repeat 까지,
+    /// 그 후 `1000/rate` ms 마다 repeat.
+    key_repeat_keycode: u32 = 0,
+    key_repeat_next_ms: i64 = 0,
+    key_repeat_rate_hz: i32 = 0,
+    key_repeat_delay_ms: i32 = 0,
 
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
@@ -433,6 +442,8 @@ const Client = struct {
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
             // 마지막 탭 닫음을 만나면 shell_exited 트리거.
             self.drainExitedTabs();
+            // L12-γ-5 — Wayland client-side key repeat timer 검사.
+            try self.maybeRepeatKey();
             if (self.shell_exited.load(.acquire)) {
                 self.running = false;
                 break;
@@ -1016,7 +1027,13 @@ const Client = struct {
             // 나가면 disable. enable / disable 후 commit 으로 state flush 가
             // 반드시 한 짝이어야 server 가 적용 (text-input-v3 double-buffer 규약).
             wl_keyboard_event_enter => try self.enableTextInput(),
-            wl_keyboard_event_leave => try self.disableTextInput(),
+            wl_keyboard_event_leave => {
+                // focus 떠나면 IME disable + key repeat timer 도 disarm —
+                // window 가 비활성이면 사용자가 키 떼는 release event 받지
+                // 못해 timer 영원히 stuck 가능.
+                self.key_repeat_keycode = 0;
+                try self.disableTextInput();
+            },
             wl_keyboard_event_key => try self.handleKeyboardKey(payload),
             wl_keyboard_event_modifiers => self.handleKeyboardModifiers(payload),
             wl_keyboard_event_repeat_info => self.handleKeyboardRepeatInfo(payload),
@@ -1322,11 +1339,40 @@ const Client = struct {
 
     fn handleKeyboardKey(self: *Client, payload: []const u8) !void {
         if (payload.len < 16) return error.WaylandBadMessage;
-        self.last_serial = readU32(payload[0..4]);
+        const serial = readU32(payload[0..4]);
         const key = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
+        // L12-γ-5 — pressed 면 repeat timer arm, released 면 disarm (같은
+        // key 한정 — 다른 key 가 이미 repeat 중이면 그건 새 key 의 press 가
+        // swap 했을 때만 cancel).
+        if (state == wl_keyboard_key_state_pressed) {
+            self.key_repeat_keycode = key;
+            self.key_repeat_next_ms = std.time.milliTimestamp() + @as(i64, self.key_repeat_delay_ms);
+        } else if (state == 0 and self.key_repeat_keycode == key) {
+            // released — same key disarm.
+            self.key_repeat_keycode = 0;
+        }
         if (state != wl_keyboard_key_state_pressed and state != wl_keyboard_key_state_repeated) return;
+        try self.processKeyEvent(serial, key);
+    }
 
+    /// L12-γ-5 — main loop 의 매 iteration 에서 repeat timer 검사. timer 가
+    /// arm 되어 있고 (`key_repeat_keycode != 0`) 현재 시간이 next_ms 넘으면
+    /// `processKeyEvent` 를 simulated `repeated` state 로 재호출.
+    fn maybeRepeatKey(self: *Client) !void {
+        if (self.key_repeat_keycode == 0) return;
+        if (self.key_repeat_rate_hz <= 0) return;
+        const now = std.time.milliTimestamp();
+        if (now < self.key_repeat_next_ms) return;
+        try self.processKeyEvent(self.last_serial, self.key_repeat_keycode);
+        self.key_repeat_next_ms = now + @divTrunc(1000, @as(i64, self.key_repeat_rate_hz));
+    }
+
+    /// L12-γ-5 — keyboard.key 의 실제 처리 (byte parsing 분리 후). pressed /
+    /// repeated 둘 다 같은 path. serial 은 clipboard 등 시점 기록용으로 자기
+    /// 자신에게 보관 (matchClipboardSerial 같은 path 에서 사용).
+    fn processKeyEvent(self: *Client, serial: u32, key: u32) !void {
+        self.last_serial = serial;
         // L10-γ — Ctrl+key 가 client 까지 forward 됐다는 건 fcitx5 가 자기
         // 단축키 아니라고 통과시킨 것. 그 시점에 IME 조합 중이면 client 측
         // preedit / pending 을 즉시 클리어 — AGENTS.md macOS Cocoa quirk 3번
@@ -1396,12 +1442,13 @@ const Client = struct {
         );
     }
 
-    fn handleKeyboardRepeatInfo(_: *Client, payload: []const u8) void {
+    fn handleKeyboardRepeatInfo(self: *Client, payload: []const u8) void {
         if (payload.len < 8) return;
-        log.appendLine("wayland", "keyboard repeat rate={} delay={}", .{
-            readI32(payload[0..4]),
-            readI32(payload[4..8]),
-        });
+        const rate = readI32(payload[0..4]);
+        const delay = readI32(payload[4..8]);
+        self.key_repeat_rate_hz = rate;
+        self.key_repeat_delay_ms = delay;
+        log.appendLine("wayland", "keyboard repeat rate={} delay={}", .{ rate, delay });
     }
 
     fn handlePointerEvent(self: *Client, opcode: u16, payload: []const u8) !void {
