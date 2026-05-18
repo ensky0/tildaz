@@ -1136,9 +1136,14 @@ const Client = struct {
                     self.tab_scroll_x,
                     @intCast(session.count()),
                 ) orelse return;
-                // close 'x' 는 L12-γ-4 — 현재 on_close 무시하고 항상 switch.
                 var host = self.buildTabActionsHost();
-                tab_actions.switchTab(&host, hit.tab_index);
+                if (hit.on_close) {
+                    // L12-γ-4 — close 'x' 클릭. `tab_actions.closeIndex` 가
+                    // 마지막 탭이면 terminate / 아니면 invalidate.
+                    _ = tab_actions.closeIndex(&host, hit.tab_index);
+                } else {
+                    tab_actions.switchTab(&host, hit.tab_index);
+                }
             },
             .none => {},
         }
