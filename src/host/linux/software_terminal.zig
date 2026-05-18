@@ -318,10 +318,38 @@ fn drawTabBar(
             rect(memory, fb_w, fb_h, stride, clip_x, tab_y, clip_w, tab_actual_h, bg);
         }
 
+        // close 'x' — 탭 우측 끝 padding 안. mac / win 동등 시각 — 'x'
+        // 글리프 + 색을 `TAB_TEXT_COLOR × 0.6 + bg × 0.4` 로 dim (활성 / 비활성
+        // 탭 배경 색 차이가 자연 반영). `tab_layout.hitTab` 의 `close_x_min
+        // = tab_x + tab_w - close_size - tab_pad` 와 정확 align.
+        const close_size: i32 = @intCast(ui_metrics.TAB_CLOSE_SIZE_PT);
+        const close_x_outer: i32 = tab_x + tab_actual_w - close_size - tab_pad;
+        if (close_x_outer >= tab_area_x and close_x_outer + close_size <= tab_area_end) {
+            const close_color = ghostty.color.RGB{
+                .r = blendU8(text_color.r, bg.r, 0.6),
+                .g = blendU8(text_color.g, bg.g, 0.6),
+                .b = blendU8(text_color.b, bg.b, 0.6),
+            };
+            const x_glyph = font_ctx.glyph('x');
+            const x_adv: i32 = @intCast(x_glyph.advance);
+            const x_glyph_x: i32 = close_x_outer + @divFloor(close_size - x_adv, 2);
+            drawGlyph(
+                memory,
+                fb_w,
+                fb_h,
+                stride,
+                x_glyph_x + x_glyph.bitmap_left,
+                text_baseline - x_glyph.bitmap_top,
+                x_glyph,
+                close_color,
+                bg,
+            );
+        }
+
         // title text — 탭이 area 안에 적어도 일부 보일 때만 그림. text 가
-        // tab_area 경계를 넘지 않게 truncate.
+        // tab_area 경계 + close 박스 를 넘지 않게 truncate.
         const text_x_start: i32 = tab_x + tab_pad;
-        const text_x_end: i32 = @min(tab_x + tab_actual_w - tab_pad, tab_area_end);
+        const text_x_end: i32 = @min(close_x_outer - tab_pad, tab_area_end);
         var pen_x: i32 = text_x_start;
         var utf8_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
         while (utf8_iter.nextCodepoint()) |cp| {
@@ -409,6 +437,14 @@ fn drawTabBarControls(
     const plus_x: i32 = @intFromFloat(layout.plus_x);
     const plus_w: i32 = @intFromFloat(layout.plus_w);
     drawCentered(memory, fb_w, fb_h, stride, '+', plus_x, plus_w, baseline, text_color, bg, font_ctx);
+}
+
+/// `a * weight + b * (1 - weight)` 의 u8 클램프. close 'x' 의 dim 색 등에 사용.
+fn blendU8(a: u8, b: u8, weight: f32) u8 {
+    const a_f: f32 = @floatFromInt(a);
+    const b_f: f32 = @floatFromInt(b);
+    const mixed = a_f * weight + b_f * (1.0 - weight);
+    return @intFromFloat(@max(0.0, @min(255.0, mixed)));
 }
 
 fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
