@@ -14,6 +14,7 @@ const terminal_interaction = @import("../../terminal_interaction.zig");
 const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
 const log = @import("../../log.zig");
+const messages = @import("../../messages.zig");
 const software_terminal = @import("software_terminal.zig");
 const xkb = @import("xkb.zig");
 
@@ -242,9 +243,19 @@ const Client = struct {
         defer allocator.free(path);
         var renderer = try software_terminal.Renderer.init(allocator);
         errdefer renderer.deinit(allocator);
+        const stream = std.net.connectUnixSocket(path) catch |err| {
+            // connectUnixSocket 의 `FileNotFound` / `AccessDenied` / `ConnectionRefused`
+            // 만 위로 올리면 사용자가 본 메시지가 "TildaZ failed to start. Error: FileNotFound"
+            // 한 줄 — Wayland 세션인지 X11 세션인지조차 알 수 없다. 시도한 socket
+            // path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR raw 값을
+            // log + stderr 양쪽에 같이 노출하고, caller 가 분기 가능한 의미 이름
+            // (`WaylandSocketUnavailable`) 으로 변환.
+            reportWaylandSocketFailure(allocator, path, err);
+            return error.WaylandSocketUnavailable;
+        };
         return .{
             .allocator = allocator,
-            .stream = try std.net.connectUnixSocket(path),
+            .stream = stream,
             .renderer = renderer,
         };
     }
@@ -1563,6 +1574,38 @@ const Parser = struct {
         return raw[0 .. raw.len - 1];
     }
 };
+
+/// `connectUnixSocket` 실패 컨텍스트를 log + stderr 에 같이 남긴다. 사용자
+/// 메시지 텍스트는 `messages.linux_wayland_socket_unavailable_format` 단일
+/// 진입점 (AGENTS.md "사용자 표시 텍스트 / 다이얼로그" 정책). env 값은
+/// `(unset)` 로 정직하게 노출 — X11 세션일 때 `WAYLAND_DISPLAY=(unset)` /
+/// `XDG_SESSION_TYPE=x11` 가 보이면 즉시 원인 식별 가능.
+fn reportWaylandSocketFailure(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    err: anyerror,
+) void {
+    const display_owned = std.process.getEnvVarOwned(allocator, "WAYLAND_DISPLAY") catch null;
+    defer if (display_owned) |s| allocator.free(s);
+    const session_owned = std.process.getEnvVarOwned(allocator, "XDG_SESSION_TYPE") catch null;
+    defer if (session_owned) |s| allocator.free(s);
+    const runtime_owned = std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch null;
+    defer if (runtime_owned) |s| allocator.free(s);
+
+    const display_str: []const u8 = if (display_owned) |s| s else "(unset)";
+    const session_str: []const u8 = if (session_owned) |s| s else "(unset)";
+    const runtime_str: []const u8 = if (runtime_owned) |s| s else "(unset)";
+
+    log.appendLine(
+        "fatal",
+        "wayland socket connect failed: path={s} err={s} WAYLAND_DISPLAY={s} XDG_SESSION_TYPE={s} XDG_RUNTIME_DIR={s}",
+        .{ path, @errorName(err), display_str, session_str, runtime_str },
+    );
+    std.debug.print(
+        messages.linux_wayland_socket_unavailable_format ++ "\n",
+        .{ path, @errorName(err), display_str, session_str, runtime_str },
+    );
+}
 
 fn waylandSocketPath(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "WAYLAND_DISPLAY")) |display| {
