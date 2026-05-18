@@ -84,7 +84,8 @@ pub const Renderer = struct {
         stride: i32,
         terminal: *ghostty.Terminal,
         theme: *const themes.Theme,
-        active_title: []const u8,
+        tab_titles: []const []const u8,
+        active_tab_idx: usize,
     ) void {
         self.render_state.update(allocator, terminal) catch {
             fill(memory, width, height, stride, theme.background);
@@ -94,10 +95,11 @@ pub const Renderer = struct {
         const colors = self.render_state.colors;
         fill(memory, width, height, stride, colors.background);
 
-        // L12-α — 상단 tab bar 영역. Windows / macOS 와 동일 색 (`ui_metrics
-        // .TAB_BAR_BG` / `TAB_ACTIVE_BG`). 활성 탭 한 개만 — 비활성 탭 / 클릭
-        // 라우팅 / 단축키는 L12-β/γ scope.
-        drawTabBar(memory, width, height, stride, tab_bar_height_px, active_title, &self.font_ctx);
+        // L12-α/β — 상단 tab bar 영역. 활성 + 비활성 탭 표시. arrow / plus /
+        // 스크롤 layout 은 L12-γ scope (탭 폭 합이 화면 폭 넘어가면 단순
+        // truncate). 비활성 탭 배경은 terminal background 와 같은 색 — cell
+        // 영역과 자연 이음 (Windows 패턴 동일).
+        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, colors.background, &self.font_ctx);
 
         const cw = self.cellWidth();
         const ch = self.cellHeight();
@@ -255,69 +257,76 @@ pub const Renderer = struct {
     }
 };
 
-/// L12-α tab bar — 상단 (0, 0, width, tab_bar_h) 영역에 배경 (`TAB_BAR_BG`)
-/// 채움 + 활성 탭 한 개 (left-aligned, `TAB_WIDTH_PT × tab_bar_h`) 를 `TAB_
-/// ACTIVE_BG` 로 그리고 그 위에 title text. 비활성 탭 / 클릭 라우팅 / arrow /
-/// plus 버튼은 L12-β / L12-γ scope. title 은 UTF-8 codepoint iteration —
-/// wide char (한글 등) 도 cell pair 너비.
+/// L12-α/β tab bar — 상단 (0, 0, width, tab_bar_h) 영역에 배경 (`TAB_BAR_BG`)
+/// 채움 + 각 탭 (좌측부터 `TAB_WIDTH_PT` 너비) 을 활성/비활성 색 으로 그리고
+/// title text. 비활성 탭은 terminal background 와 같은 색 — cell 영역과 자연
+/// 이음 (Windows 패턴 동일, 활성 탭만 두드러짐). arrow / plus / 스크롤 layout
+/// 은 L12-γ scope (탭 폭 합이 화면 폭 넘어가면 단순 truncate).
 fn drawTabBar(
     memory: []u8,
     fb_w: i32,
     fb_h: i32,
     stride: i32,
     tab_bar_h: i32,
-    active_title: []const u8,
+    titles: []const []const u8,
+    active_idx: usize,
+    inactive_bg: ghostty.color.RGB,
     font_ctx: *font.Context,
 ) void {
-    if (tab_bar_h <= 0 or fb_w <= 0) return;
+    if (tab_bar_h <= 0 or fb_w <= 0 or titles.len == 0) return;
     const tab_bar_bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
     rect(memory, fb_w, fb_h, stride, 0, 0, fb_w, tab_bar_h, tab_bar_bg);
 
     const tab_w: i32 = @intCast(ui_metrics.TAB_WIDTH_PT);
     const tab_pad: i32 = @intCast(ui_metrics.TAB_PADDING_PT);
-    // 활성 탭 — Windows / macOS 패턴 동일 (좌우 1px + 상하 2px gap 으로
-    // TAB_BAR_BG 가 윤곽선 역할). 단순화를 위해 sandwich gap 은 동일.
-    const tab_x: i32 = 1;
-    const tab_y: i32 = 2;
-    const tab_actual_w: i32 = @max(tab_w - 2, 1);
-    const tab_actual_h: i32 = @max(tab_bar_h - 4, 1);
     const active_bg = rgbFromMetrics(ui_metrics.TAB_ACTIVE_BG);
-    rect(memory, fb_w, fb_h, stride, tab_x, tab_y, tab_actual_w, tab_actual_h, active_bg);
-
-    // title text — vertical center. baseline = (tab_bar_h + ascent - descent) / 2.
+    const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
     const ascent: i32 = @intCast(font_ctx.ascent_px);
     const descent: i32 = @intCast(font_ctx.descent_px);
     const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
-    const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
-    const text_x_start: i32 = tab_x + tab_pad;
-    const text_x_end: i32 = tab_x + tab_actual_w - tab_pad;
 
-    var pen_x: i32 = text_x_start;
-    var utf8_iter = std.unicode.Utf8Iterator{ .bytes = active_title, .i = 0 };
-    while (utf8_iter.nextCodepoint()) |cp| {
-        const w_cells: u8 = display_width.codepointWidth(cp);
-        if (w_cells == 0) continue;
-        const glyph = font_ctx.glyph(cp);
-        const adv: i32 = @intCast(glyph.advance);
-        if (pen_x + adv > text_x_end) break; // truncate (다음 sub-step: ellipsis)
-        if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-            // emoji title — strike size 가 보통 너무 커서 cell-fit 안 됨.
-            // 단순화: drawGlyphBgra 의 cell_w / cell_h 자리에 advance / tab_bar_h.
-            drawGlyphBgra(memory, fb_w, fb_h, stride, pen_x, 0, adv, tab_bar_h, glyph);
-        } else {
-            drawGlyph(
-                memory,
-                fb_w,
-                fb_h,
-                stride,
-                pen_x + glyph.bitmap_left,
-                text_baseline - glyph.bitmap_top,
-                glyph,
-                text_color,
-                active_bg,
-            );
+    // 좌우 1px + 상하 2px sandwich gap — TAB_BAR_BG 가 윤곽선 역할 (Windows
+    // / macOS 패턴 동일).
+    const tab_y: i32 = 2;
+    const tab_actual_h: i32 = @max(tab_bar_h - 4, 1);
+    const tab_actual_w: i32 = @max(tab_w - 2, 1);
+
+    for (titles, 0..) |title, i| {
+        const tab_x_outer: i32 = @as(i32, @intCast(i)) * tab_w;
+        const tab_x: i32 = tab_x_outer + 1;
+        if (tab_x >= fb_w) break; // 화면 폭 넘은 탭은 단순 truncate (L12-γ scope)
+
+        const is_active = i == active_idx;
+        const bg = if (is_active) active_bg else inactive_bg;
+        rect(memory, fb_w, fb_h, stride, tab_x, tab_y, tab_actual_w, tab_actual_h, bg);
+
+        const text_x_start: i32 = tab_x + tab_pad;
+        const text_x_end: i32 = tab_x + tab_actual_w - tab_pad;
+        var pen_x: i32 = text_x_start;
+        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+        while (utf8_iter.nextCodepoint()) |cp| {
+            const w_cells: u8 = display_width.codepointWidth(cp);
+            if (w_cells == 0) continue;
+            const glyph = font_ctx.glyph(cp);
+            const adv: i32 = @intCast(glyph.advance);
+            if (pen_x + adv > text_x_end) break; // 한 탭 안 ellipsis 도 L12-γ
+            if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                drawGlyphBgra(memory, fb_w, fb_h, stride, pen_x, 0, adv, tab_bar_h, glyph);
+            } else {
+                drawGlyph(
+                    memory,
+                    fb_w,
+                    fb_h,
+                    stride,
+                    pen_x + glyph.bitmap_left,
+                    text_baseline - glyph.bitmap_top,
+                    glyph,
+                    text_color,
+                    bg,
+                );
+            }
+            pen_x += adv;
         }
-        pen_x += adv;
     }
 }
 
