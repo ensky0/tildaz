@@ -31,7 +31,7 @@ milestone 상태를 정확히 남기는 용도다.
 Debian Wayland 환경).
 
 - Branch: `linux-wayland-bringup`
-- Commit: `318bbef`
+- Commit: `db53efb`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -52,6 +52,7 @@ Debian Wayland 환경).
 | 한글 IME 입력 (fcitx5 + Cinnamon Wayland) | 동작 — `zwp_text_input_v3` wire-level 구현 + commit_string event → PTY 송신 + preedit inline overlay (보라색 배경, macOS / Windows 동등) + Ctrl+key 시 IME discard + cursor 근처 popover 정렬 (`set_cursor_rectangle`) + terminal hint (`set_content_type purpose=terminal`). spec done-apply batch 패턴. L10-α / L10-β / L10-γ 모두 완료. |
 | Wayland 미연결 startup 에러 메시지 | path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR + 진단 hint 출력 (`error.WaylandSocketUnavailable`) |
 | 사용자 config 적용 (shell / theme / max_scroll / font / cell_ratio / opacity) | 동작 (L13-α + β + γ) — `~/.config/tildaz/config.json` 자동 생성 + 사용자 값 변경 시 재실행에 반영. font.family / glyph_fallback chain / size_point (1:1 logical pixel, mac/win 동등) / cell_width_ratio / line_height_ratio / window.opacity_percent (ARGB8888 alpha) 모두 적용. dock / hotkey 통합은 L8 / L9. |
+| Tab bar (활성 탭 1 개) | 동작 (L12-α) — 상단 28px tab bar + 활성 탭 ("Tab N") + title. 비활성 탭 / 클릭 라우팅 / drag / 단축키 / 32-tab cap 은 L12-β/γ. |
 | 로그 noise | bring-up 단계 매 frame redraw 로그 제거, lifecycle 변화 이벤트만 |
 
 사용자 제공 로그에서 확인된 capability:
@@ -104,6 +105,8 @@ zwp_text_input_manager_v3=true
 - L13-α config integration 기초 + Defaults 단일 struct 리팩토링 + dialog Linux backend 추가 ([commit f416072](https://github.com/ensky0/tildaz/commit/f416072)). (1) `host/linux_wayland.zig` 에 macOS 패턴 동등 `resolveShell` + `Config.load` + `g_config` + log. `Client` 에 `config` / `extra_env_storage` field — SessionCore.init 의 shell / max_scroll_lines / theme / extra_env (TERM / LANG / LC_CTYPE / COLORFGBG / SHELL) 가 사용자 config 에서. (2) `config.zig` 의 `Defaults` 세 platform sub-struct → 단일 struct + 항목별 `if/else` 인라인 — 사용자 명시 지적 ("같은 shape struct 인데 셋 다 sub-struct 분리하면 공통 값 70% 까지 중복") 반영. Linux 가지 default (DejaVu Sans Mono / Noto CJK / Noto Color Emoji / size=12 / shell=/bin/bash) 도 같이 정의. `Hotkey` Linux placeholder 추가 (실제 keysym parsing 은 L9). (3) `src/dialog/linux.zig` 신규 — stderr 출력 backend (zenity / kdialog / GTK 통합은 L11). 시연 확인: `~/.config/tildaz/config.json` 자동 생성 + `config.theme` 을 "Solarized Dark" 등으로 바꿔 재실행 시 배경 / foreground 색 변화 ✅.
 - L13-β config.font 통합 추가 ([commit a08c3ca](https://github.com/ensky0/tildaz/commit/a08c3ca)). `software_terminal.default_families` (7-entry hardcoded) / `default_pixel_height=16` 하드코딩 제거 → `cfg.font_families[0..font_family_count]` / `cfg.font_size_point` / `cfg.cell_width_ratio` / `cfg.line_height_ratio`. `font.Context.init` 시그니처에 ratio 2 개 추가해 measured cell_w/cell_h 에 곱해 저장. 시연 사이클에서 첫 시도가 표준 typographic 변환 (1pt = 1/72 inch, × 96/72 ≈ 1.33x) 였는데 사용자가 "mac/win 대비 글자가 크다" 보고 → Windows `font_height_px = font_size_point × DPI_scale` (96 DPI 시 1:1) / macOS logical pixel 패턴과 비교해 cross-platform 비대칭 확인 → 1:1 정정 (cell_h 30 → 15 @ size_point=18). 시연 확인: chain 이 사용자 명시 그대로 (DejaVu / NotoCJK / NotoColorEmoji), size_point 변경 시 cell metric 즉시 반영 ✅.
 - L13-γ config.opacity_percent 적용 추가 ([commit 318bbef](https://github.com/ensky0/tildaz/commit/318bbef)). Wayland buffer 의 format 을 `ARGB8888 (=0)` (이전 `XRGB8888 (=1)`) + capability 추적 `saw_argb8888`. `Renderer.opacity_alpha` field + paint() 마지막에 alpha sweep — ARGB buffer 의 alpha byte 를 일괄 `self.opacity_alpha` 로 채움. 모든 pixel write 함수 시그니처 / 호출 site 변경 없이 단일 sweep 으로 통합 — 변경 폭 최소. `fillBuffer` (session 미연결 placeholder) 도 ARGB alpha=255. 시연 확인: `opacity_percent: 100 → 80` 변경 시 윈도우 반투명 (compositor 배경 합성) ✅.
+- L12-α tab bar 렌더링 + pointer→cell offset 보정 추가 ([commit b392765](https://github.com/ensky0/tildaz/commit/b392765)). 상단 28 logical pixel tab bar 영역 (`ui_metrics.TAB_BAR_HEIGHT_PT`) + 활성 탭 한 개 (`TAB_WIDTH_PT × tab_bar_h - 4`) + title text. terminal grid 가 그만큼 아래로 밀림 — paint() / gridSize / pixelToCell / updateCursorRectangle / 휠 scroll 의 visible_rows 모두 tab_bar offset 적용. 비활성 탭 / 클릭 라우팅 / drag / 단축키 / 32-tab cap 은 L12-β/γ scope. 시연 사이클에서 발견 + fix: `pixelToCell` 의 py origin 보정 누락으로 드래그/더블클릭 시 한 줄 아래 셀이 선택되던 회귀 — 같은 commit 으로 fix.
+- L13-α 회귀 fix: LANG/LC_CTYPE default 를 C.UTF-8 로 ([commit db53efb](https://github.com/ensky0/tildaz/commit/db53efb)). L13-α 가 cfg.shell 을 `/bin/sh` (= dash, readline 없음) → 사용자 `$SHELL` (`/bin/bash`) 로 변경한 후 한글 paste / IME commit 깨짐 보고 (`정상` → `정정상` 같은 byte-level 처리). bisect 로 cause 확정: 우리 extra_env 가 `LANG=LC_CTYPE=en_US.UTF-8` 강제 → 사용자 시스템 (`C.utf8 / ko_KR.utf8` 만, en_US 미설치) 에서 setlocale 실패 → bash readline single-byte 모드 → 한글 byte 가 binary 처리. Linux default 를 `C.UTF-8` (POSIX 표준 portable, 모든 Linux 보장) 로. macOS / Windows 는 그대로 `en_US.UTF-8` (OS 기본). 진단 사이클에서 시도한 IUTF8 직접 비트 OR fix 는 cause 아니라 원복 (`tio.iflag.IUTF8 = true` Zig bitfield 유지).
 - 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element + 한글 IME (음절 commit + preedit overlay + Ctrl 시 discard + popover cursor 정렬 + terminal hint)" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / **tabs** / **사용자 config 적용** 이 아직 부족하다.
 
 ## 현재 제한 사항
@@ -258,7 +261,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. **명시 요구사항**: 다른 X11 / Electron 앱 (예: VSCode) 이 focus 잡고 있을 때도 hotkey 가 TildaZ 에 도달해야 한다. X11 시대의 Tilda 가 동일 시나리오에서 VSCode focus 시 F1 이 안 닿는 quirk 가 있는데 (`XGrabKey` 가 XWayland 안 X11 client 의 grab 에 가려짐), TildaZ 는 Wayland native client 로서 portal `GlobalShortcuts` 가 compositor 레벨 routing 이라 focus 무관히 동작해야 한다 — 검증 항목. |
 | L10 | IME | 완료 (L10-α / β / γ) | L10-α — `zwp_text_input_v3` wire-level + `get_text_input(seat)` + keyboard focus 시점 enable/disable + `commit_string` → PTY 송신 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5)). L10-β — preedit inline overlay (보라색 배경 + foreground 글자, macOS / Windows 동등) + spec done-apply batch 패턴 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)). L10-γ — Ctrl+key 시 IME 조합 discard + `set_cursor_rectangle` + `set_content_type(purpose=terminal)` ([6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49)). fcitx5-hangul + Cinnamon Wayland 시연 OK. |
 | L11 | Packaging | 대기 | `.desktop`, icon install, AppImage/distro package plan, autostart, final config/log path 검증 필요. |
-| L12 | Tabs (multi-session UI) | 대기 — 코드 추상화는 이미 들어가 있고 UI 부착만 비어 있음 | 공유 cross-platform 모듈 (`session_core.zig` / `tab_actions.zig` / `tab_interaction.zig` / `tab_layout.zig`) 은 Windows / macOS 와 같이 이미 사용 중이고 `wayland_minimal.zig` 도 `session.createTab` / `tab.terminal` resize 동기화까지 호출하는 단계. Linux 만 비어 있는 부분: ① `software_terminal.zig` 의 tab bar 렌더링 ② `wl_pointer` 클릭/드래그/더블클릭 라우팅 → 공유 `tab_interaction` ③ `Ctrl+T` / `Ctrl+W` / `Ctrl+Tab` 단축키 + 32-tab cap 메시지 다이얼로그 ④ multi-PTY 라이프사이클 (한 탭만 운영 중인 현재의 `linuxTabExit` 확장). First Alpha Contract 의 "tab operation 동작" 이 이 milestone 이다. |
+| L12 | Tabs (multi-session UI) | L12-α 완료, β/γ 대기 | L12-α — 상단 28px tab bar + 활성 탭 1 개 + title text ([b392765](https://github.com/ensky0/tildaz/commit/b392765)). 시연 사이클에서 pointer→cell offset 누락 fix 같이. L12-β 대기: `wl_pointer` 클릭/드래그/더블클릭 라우팅 → 공유 `tab_interaction.zig`. L12-γ 대기: `Ctrl+T` / `Ctrl+W` / `Ctrl+Tab` 단축키 + 32-tab cap 다이얼로그 + 비활성 탭 (multi-tab 표시) + arrow/plus 버튼 + multi-PTY 라이프사이클. First Alpha Contract 의 "tab operation 동작" 이 이 milestone. |
 | L13 | Config integration (사용자 설정 적용) | 완료 (L13-α / β / γ) | L13-α — `Config.load` + `resolveShell` + `g_config` + `Client` 에 config / extra_env_storage field. SessionCore.init 이 `config.shell` / `config.max_scroll_lines` / `config.theme` / `extra_env` 사용. `Defaults` 단일 struct 리팩토링 + Linux 가지 default. dialog Linux backend ([f416072](https://github.com/ensky0/tildaz/commit/f416072)). L13-β — `cfg.font_families` chain / `cfg.font_size_point` (1:1 logical pixel, mac/win 동등) / cell_ratio 두 개 적용 ([a08c3ca](https://github.com/ensky0/tildaz/commit/a08c3ca)). L13-γ — ARGB8888 buffer + paint 마지막 alpha sweep 으로 `config.opacity_percent` 반영 ([318bbef](https://github.com/ensky0/tildaz/commit/318bbef)). 나머지 (dock_position 등) 는 L8 / L9 / L11 와 통합. |
 
 ## First Alpha Contract
@@ -290,7 +293,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 318bbef 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. db53efb 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -318,6 +321,8 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 22 | L8 layer-shell drop-down prototype | 대기 — compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (*advertise*) 하는 건 확인됨. anchor / exclusive zone / monitor 선택 검증 필요. |
 | 23 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. **명시 요구**: VSCode 등 다른 X11/Electron 앱 focus 시에도 hotkey 도달해야 함 (L9 milestone 행 참고). |
 | 24 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
+| 25 | L12-α tab bar 렌더링 (활성 탭 1 개) | ✅ [b392765](https://github.com/ensky0/tildaz/commit/b392765) — 28px tab bar + 활성 탭 + title text + pointer→cell offset 보정. 비활성 / 클릭 라우팅 / drag / 단축키는 L12-β/γ. |
+| 26 | L13-α LANG 회귀 fix | ✅ [db53efb](https://github.com/ensky0/tildaz/commit/db53efb) — Linux default LANG/LC_CTYPE 을 C.UTF-8 (POSIX 표준) 로. `en_US.UTF-8` 미설치 환경에서 bash readline single-byte 모드로 빠지던 회귀 fix. |
 
 ## Source Notes
 
