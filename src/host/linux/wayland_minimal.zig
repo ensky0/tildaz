@@ -11,6 +11,7 @@ const posix = std.posix;
 const session_core = @import("../../session_core.zig");
 const terminal_backend = @import("../../terminal.zig");
 const terminal_interaction = @import("../../terminal_interaction.zig");
+const tab_interaction = @import("../../tab_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
@@ -344,6 +345,16 @@ const Client = struct {
     key_repeat_next_ms: i64 = 0,
     key_repeat_rate_hz: i32 = 0,
     key_repeat_delay_ms: i32 = 0,
+    /// L12-γ-2 — tab rename 모드. cross-platform `tab_interaction.RenameState`
+    /// — macOS / Windows 가 같은 module 사용. 더블클릭으로 begin, Enter / Escape
+    /// 으로 종료, typing / IME commit 으로 buffer 갱신.
+    rename_state: tab_interaction.RenameState = .{},
+    /// tab bar 더블클릭 검출 — `wl_pointer.button` 의 click count 정보 없음.
+    /// 같은 tab_index 좌클릭 press 가 `double_click_threshold_ms` (= 500) 안
+    /// 두 번이면 더블클릭. cell 영역 (`last_left_click_*`) 과 별도 — 영역 간섭
+    /// 방지 (cell drag selection 과 tab bar rename 의 timer 분리).
+    last_tab_click_time_ms: u32 = 0,
+    last_tab_click_idx: usize = std.math.maxInt(usize),
 
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
@@ -808,6 +819,7 @@ const Client = struct {
                     session.active_tab,
                     layout,
                     self.tab_scroll_x,
+                    self.rename_state.view(),
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -1023,16 +1035,26 @@ const Client = struct {
     fn handleKeyboardEvent(self: *Client, opcode: u16, payload: []const u8) !void {
         switch (opcode) {
             wl_keyboard_event_keymap => try self.handleKeyboardKeymap(payload),
-            // L10-α — focus 가 우리 surface 로 들어오면 text input 을 enable,
-            // 나가면 disable. enable / disable 후 commit 으로 state flush 가
-            // 반드시 한 짝이어야 server 가 적용 (text-input-v3 double-buffer 규약).
-            wl_keyboard_event_enter => try self.enableTextInput(),
+            // foot terminal 패턴 동등 — enable / disable 은 `text_input.enter
+            // / leave` event 시점에만. wl_keyboard.enter / leave 시점은 별도
+            // 처리 없음. fcitx5 의 wayland frontend 가 자기 enter/leave event
+            // 보내는 시점을 정확히 제어.
+            wl_keyboard_event_enter => {},
             wl_keyboard_event_leave => {
-                // focus 떠나면 IME disable + key repeat timer 도 disarm —
-                // window 가 비활성이면 사용자가 키 떼는 release event 받지
-                // 못해 timer 영원히 stuck 가능.
+                // L12-γ-5 — focus 떠나면 key repeat timer disarm (release event
+                // 못 받는 stuck 방지).
                 self.key_repeat_keycode = 0;
-                try self.disableTextInput();
+                // L12-γ-2 — macOS #175 동등. focus loss = commit (preedit /
+                // rename 모두 보존). Escape 만 cancel.
+                self.commitPendingInput();
+                // 시연 사이클 발견: focus loss 마다 `text_input.disable + commit`
+                // 호출하면 fcitx5 가 매 cycle 한글 모드 상태 reset → 사용자가
+                // 다시 focus 받았을 때 한글 모드인데 영문만 들어오는 회귀.
+                // 다른 wayland terminal (gnome-terminal / kitty) 도 명시 disable
+                // 안 보냄 — fcitx5 가 자체 wl_keyboard focus 추적해서 비활성.
+                // 우리도 disable 생략 + state 만 동기.
+                self.text_input_enabled = false;
+                self.last_cursor_rect_x = -1;
             },
             wl_keyboard_event_key => try self.handleKeyboardKey(payload),
             wl_keyboard_event_modifiers => self.handleKeyboardModifiers(payload),
@@ -1057,12 +1079,12 @@ const Client = struct {
         };
     }
 
-    /// L12-β — Ctrl+T (Windows / Linux) / Cmd+T (macOS) 동등. 활성 탭의 cols
-    /// / rows 와 같은 크기로 새 탭 생성. 32-tab cap 도달 시 dialog + skip.
-    /// arrow/plus 버튼 미부착이라 현재 layout 한 줄 그대로 (탭 폭 합이 화면
-    /// 폭 넘어가면 잘려 보임 — L12-γ scope).
+    /// L12-β — Ctrl+Shift+T 새 탭. 32-tab cap 도달 시 dialog + skip.
+    /// L12-γ-2 — macOS `commitPendingInput` 정책 — 단축키 진입 시 진행 중
+    /// preedit / rename 을 commit (보존).
     fn handleNewTab(self: *Client) void {
         if (self.session == null) return;
+        self.commitPendingInput();
         var host = self.buildTabActionsHost();
         if (tab_actions.checkAtLimitAndDialog(&host)) return;
         const active = self.activeTabOrNull() orelse return;
@@ -1074,10 +1096,62 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
+    /// L12-γ-2 — macOS `commitPendingInput` 동등. focus loss / hide / 단축키
+    /// 등 "지금 멈춰" 시점에 진행 중인 모든 입력 (cell preedit + rename buf
+    /// + IME pending) 을 적절한 곳으로 **commit** (cancel 아님). Escape 만
+    /// 명시적 cancel — macOS Cocoa quirk (#175) 동등 정책.
+    fn commitPendingInput(self: *Client) void {
+        const had_preedit = self.preedit_text.items.len > 0 or self.pending_preedit.items.len > 0;
+        // 1) Cell preedit (terminal IME 조합 중) — rename 활성 시 rename buf
+        //    으로 자모 commit, 비활성 시 PTY 로 직접 송신.
+        if (self.preedit_text.items.len > 0) {
+            if (self.rename_state.isActive()) {
+                var iter = std.unicode.Utf8Iterator{ .bytes = self.preedit_text.items, .i = 0 };
+                while (iter.nextCodepoint()) |cp| {
+                    if (cp >= 0x20) _ = self.rename_state.insertCodepoint(cp);
+                }
+            } else {
+                self.queueInput(self.preedit_text.items);
+            }
+            self.preedit_text.clearRetainingCapacity();
+            self.renderer.preedit_text = "";
+        }
+        // 2) Wayland text-input pending (다음 done 안 온 batch) 도 cleanup.
+        self.pending_preedit.clearRetainingCapacity();
+        self.pending_commit.clearRetainingCapacity();
+        // 3) Rename 활성이면 buf 의 현재 값으로 setCustomTitle (commit).
+        if (self.rename_state.isActive()) {
+            if (self.session) |*session| {
+                if (self.rename_state.commitRequest()) |req| {
+                    const tabs = session.tabsSlice();
+                    if (req.tab_index < tabs.len) {
+                        tabs[req.tab_index].setCustomTitle(req.title);
+                    }
+                }
+            }
+            self.rename_state.clear();
+        }
+        // 4) 시연 사이클 발견: client 가 preedit 자모를 PTY 송신해도 fcitx5
+        //    의 internal IME state 의 자모 buffer 는 그대로 남음 → 다음
+        //    typing 시 *이전 자모 + 새 자모* 가 한 음절로 commit 됨 (사용자
+        //    보고: 터미널 한글 후 탭바 한글 시 터미널 한글이 탭바에 다시 써짐).
+        //    text_input.disable + commit → fcitx5 가 자기 IME session 종료
+        //    + 자모 buffer 비움. 즉시 enable + commit 으로 새 session 시작.
+        if (had_preedit and self.text_input_id != 0 and self.text_input_enabled) {
+            self.sendNoArgs(self.text_input_id, text_input_request_disable) catch {};
+            self.sendNoArgs(self.text_input_id, text_input_request_commit) catch {};
+            self.text_input_enabled = false;
+            self.enableTextInput() catch {};
+        }
+        self.needs_redraw = true;
+    }
+
     /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
     /// (= shell_exited true) → main loop 가 종료. 다중 탭이면 그 탭만.
+    /// L12-γ-2 — 단축키 진입 시 commitPendingInput.
     fn handleCloseTab(self: *Client) void {
         if (self.session == null) return;
+        self.commitPendingInput();
         var host = self.buildTabActionsHost();
         _ = tab_actions.closeActive(&host);
     }
@@ -1108,8 +1182,9 @@ const Client = struct {
 
     /// L12-β/γ — tab bar 영역 좌클릭. cross-platform `tab_layout.hitArea`
     /// 로 분기 — `<` `>` 화살표 / `+` plus / tab area. tab area 면 hitTab
-    /// 으로 어떤 탭인지. close 'x' 는 L12-γ-4 scope (현재 on_close 무시).
-    fn handleTabBarClick(self: *Client, px: i32, py: i32) void {
+    /// 으로 어떤 탭인지. close 'x' → closeIndex. 같은 tab 두 번 (500ms 안)
+    /// 더블클릭 → rename 모드 시작.
+    fn handleTabBarClick(self: *Client, px: i32, py: i32, time_ms: u32) void {
         if (self.session == null) return;
         const session = &self.session.?;
         const layout_inputs = tab_layout.Inputs{
@@ -1155,12 +1230,52 @@ const Client = struct {
                 ) orelse return;
                 var host = self.buildTabActionsHost();
                 if (hit.on_close) {
-                    // L12-γ-4 — close 'x' 클릭. `tab_actions.closeIndex` 가
-                    // 마지막 탭이면 terminate / 아니면 invalidate.
                     _ = tab_actions.closeIndex(&host, hit.tab_index);
-                } else {
-                    tab_actions.switchTab(&host, hit.tab_index);
+                    self.last_tab_click_idx = std.math.maxInt(usize);
+                    return;
                 }
+                // L12-γ-2 — rename 활성 중 같은 탭 클릭 (single) → cursor
+                // 위치 이동 (`tab_layout.renameTextHit` byte index). native
+                // textbox UX (mac / win 동등).
+                if (self.rename_state.isActive() and self.rename_state.tab_index == hit.tab_index) {
+                    const tab_w_f: f32 = @floatFromInt(ui_metrics.TAB_WIDTH_PT);
+                    const tab_pad_f: f32 = @floatFromInt(ui_metrics.TAB_PADDING_PT);
+                    const close_size_f: f32 = @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT);
+                    const tab_world_x_f: f32 = @as(f32, @floatFromInt(hit.tab_index)) * tab_w_f;
+                    const text_x_start_f: f32 = layout.tab_area_x + tab_world_x_f - self.tab_scroll_x + tab_pad_f;
+                    const max_text_w_f: f32 = tab_w_f - close_size_f - tab_pad_f * 3;
+                    const cw_f: f32 = @floatFromInt(self.renderer.cellWidth());
+                    if (tab_layout.renameTextHit(
+                        self.rename_state.buf[0..self.rename_state.len],
+                        self.rename_state.scroll_offset,
+                        text_x_start_f,
+                        cw_f,
+                        max_text_w_f,
+                        px_f,
+                    )) |byte_idx| {
+                        self.rename_state.setCursor(byte_idx);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // 더블클릭이면 rename 모드 시작 — 같은 tab_index 좌클릭 500ms 안 두 번.
+                const is_double = self.last_tab_click_idx == hit.tab_index and
+                    (time_ms -% self.last_tab_click_time_ms) <= double_click_threshold_ms;
+                self.last_tab_click_idx = hit.tab_index;
+                self.last_tab_click_time_ms = time_ms;
+                if (is_double) {
+                    // L12-γ-2 — begin 전 commitPendingInput. 터미널에서 한글
+                    // 조합 중 (cell preedit) 인 상태로 더블클릭 → 자모가 rename
+                    // buffer 로 들어가는 회귀 fix. begin 후 호출하면 rename
+                    // 활성이라 buffer 행, begin 전 호출이면 rename 비활성이라
+                    // PTY 송신 (의도된 commit policy).
+                    self.commitPendingInput();
+                    const tab = session.tabsSlice()[hit.tab_index];
+                    self.rename_state.begin(hit.tab_index, tab.title[0..tab.title_len]);
+                    self.needs_redraw = true;
+                    return;
+                }
+                tab_actions.switchTab(&host, hit.tab_index);
             },
             .none => {},
         }
@@ -1168,20 +1283,24 @@ const Client = struct {
 
     fn handleNextTab(self: *Client) void {
         if (self.session == null) return;
+        self.commitPendingInput();
         var host = self.buildTabActionsHost();
         tab_actions.nextTab(&host);
     }
 
     fn handlePrevTab(self: *Client) void {
         if (self.session == null) return;
+        self.commitPendingInput();
         var host = self.buildTabActionsHost();
         tab_actions.prevTab(&host);
     }
 
-    /// L10-α — text_input.enable() + commit(). focus enter 시 호출.
-    /// text_input object 가 없으면 (manager 광고 없는 환경) no-op.
-    /// L10-γ — enable + set_content_type(none, terminal) + commit 한 batch.
-    /// content_type 은 double-buffered 라 commit 으로 flush 해야 server 가 적용.
+    /// L10-α — `text_input.enable()` + content_type + cursor_rect + commit 한
+    /// batch. foot terminal (`enter` handler in `ime.c`) 의 정확한 sequence
+    /// 동등 — wayland-native terminal 의 검증된 패턴. foot 은 enable 전에
+    /// 정확한 cursor 위치 set (0,0,0,0 같은 placeholder 안 보냄) — fcitx5
+    /// 가 IME session init 시 cursor 정확한 위치 알아야 자기 한/영 state
+    /// 정상 보존.
     fn enableTextInput(self: *Client) !void {
         if (self.text_input_id == 0 or self.text_input_enabled) return;
         try self.sendNoArgs(self.text_input_id, text_input_request_enable);
@@ -1189,11 +1308,35 @@ const Client = struct {
             text_input_content_hint_none,
             text_input_content_purpose_terminal,
         });
+        // Cursor rectangle — 활성 탭 cursor 의 surface pixel 위치. 정확한
+        // 위치 set 후 batch commit (foot 패턴 동등).
+        const rect = self.computeCursorRect();
+        var rect_msg = Msg.init(self.text_input_id, text_input_request_set_cursor_rectangle);
+        try rect_msg.putI32(rect.x);
+        try rect_msg.putI32(rect.y);
+        try rect_msg.putI32(rect.w);
+        try rect_msg.putI32(rect.h);
+        try rect_msg.send(self.stream);
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
         self.text_input_enabled = true;
-        // 다음 paint 가 cursor_rectangle 을 갱신할 수 있도록 캐시 무효화.
-        self.last_cursor_rect_x = -1;
-        log.appendLine("wayland", "text_input enabled id={} content_purpose=terminal", .{self.text_input_id});
+        self.last_cursor_rect_x = rect.x;
+        self.last_cursor_rect_y = rect.y;
+        self.last_cursor_rect_w = rect.w;
+        self.last_cursor_rect_h = rect.h;
+        log.appendLine("wayland", "text_input enabled id={} cursor_rect={}x{}+{}+{}", .{ self.text_input_id, rect.w, rect.h, rect.x, rect.y });
+    }
+
+    /// 활성 탭 cursor 의 surface-relative pixel rect. cursor 미가시 / session
+    /// 없음이면 (0, 0, cw, ch) — fcitx5 한테 의미 있는 placeholder.
+    fn computeCursorRect(self: *const Client) struct { x: i32, y: i32, w: i32, h: i32 } {
+        const cw = self.renderer.cellWidth();
+        const ch = self.renderer.cellHeight();
+        if (self.renderer.render_state.cursor.viewport) |vp| {
+            const x: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.x)) * cw;
+            const y: i32 = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px + @as(i32, @intCast(vp.y)) * ch;
+            return .{ .x = x, .y = y, .w = cw, .h = ch };
+        }
+        return .{ .x = software_terminal.padding_px, .y = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px, .w = cw, .h = ch };
     }
 
     /// L10-γ — `set_cursor_rectangle(x, y, w, h)` + commit. surface-relative
@@ -1247,10 +1390,28 @@ const Client = struct {
         switch (opcode) {
             text_input_event_enter => {
                 // payload: object<wl_surface>. 우리 surface 하나뿐이라 검증 생략.
+                // spec 정확한 시점에 enable() 호출 — fcitx5 의 IME session init
+                // 이 우리 wayland frontend 에 align.
                 log.appendLine("wayland", "text_input enter", .{});
+                try self.enableTextInput();
             },
             text_input_event_leave => {
                 log.appendLine("wayland", "text_input leave", .{});
+                // foot `ime_disable` 동등 — disable + commit + state clear.
+                // fcitx5 가 leave 시 명시 disable 받아야 자기 IME session
+                // 정확히 종료.
+                if (self.text_input_id != 0 and self.text_input_enabled) {
+                    try self.sendNoArgs(self.text_input_id, text_input_request_disable);
+                    try self.sendNoArgs(self.text_input_id, text_input_request_commit);
+                }
+                self.text_input_enabled = false;
+                // pending preedit / commit batch 도 cleanup (foot `ime_reset_
+                // pending` / `ime_reset_preedit` 동등).
+                self.pending_preedit.clearRetainingCapacity();
+                self.pending_commit.clearRetainingCapacity();
+                self.preedit_text.clearRetainingCapacity();
+                self.renderer.preedit_text = "";
+                self.last_cursor_rect_x = -1;
             },
             text_input_event_preedit_string => {
                 // string text + int cursor_begin + int cursor_end. text 만
@@ -1289,7 +1450,18 @@ const Client = struct {
     fn applyTextInputBatch(self: *Client) !void {
         if (self.pending_commit.items.len > 0) {
             log.appendLine("wayland", "text_input commit text_len={}", .{self.pending_commit.items.len});
-            self.queueInput(self.pending_commit.items);
+            // L12-γ-2 — rename 모드 활성 시 IME commit 도 PTY 가 아니라 rename
+            // buffer 로 라우팅 (macOS / Windows 동등). codepoint 별 insert —
+            // utf8 byte 단위로 처리하면 한글 음절 안 byte boundary 깨짐.
+            if (self.rename_state.isActive()) {
+                var utf8_iter = std.unicode.Utf8Iterator{ .bytes = self.pending_commit.items, .i = 0 };
+                while (utf8_iter.nextCodepoint()) |cp| {
+                    if (cp < 0x20) continue;
+                    _ = self.rename_state.insertCodepoint(cp);
+                }
+            } else {
+                self.queueInput(self.pending_commit.items);
+            }
             self.pending_commit.clearRetainingCapacity();
         }
         // pending_preedit → preedit_text 로 옮긴 뒤 renderer slice 갱신. paint
@@ -1356,6 +1528,66 @@ const Client = struct {
         try self.processKeyEvent(serial, key);
     }
 
+    /// L12-γ-2 — rename 모드 활성 시 key 라우팅. xkb keysym → RenameKey 매핑
+    /// 또는 printable utf8 → `insertCodepoint`. RenameOutcome 으로 commit /
+    /// cancel 분기.
+    fn handleRenameKey(self: *Client, key: u32) !void {
+        const xkb_key = key + wayland_xkb_keycode_offset;
+        const sym = self.keyboard.oneSym(xkb_key) orelse return;
+
+        const rename_key: ?tab_interaction.RenameKey = switch (sym) {
+            xkb_key_return => .enter,
+            xkb_key_escape => .escape,
+            xkb_key_backspace => .backspace,
+            xkb_key_delete => .delete,
+            xkb_key_left => .left,
+            xkb_key_right => .right,
+            xkb_key_home => .home,
+            xkb_key_end => .end,
+            else => null,
+        };
+        if (rename_key) |rk| {
+            const outcome = self.rename_state.handleKey(rk);
+            try self.applyRenameOutcome(outcome);
+            return;
+        }
+        // printable utf8 — keyboard.utf8 로 decode 후 codepoint 별 insert.
+        var buf: [64]u8 = undefined;
+        const bytes = self.keyboard.utf8(xkb_key, &buf);
+        if (bytes.len == 0) return;
+        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+        while (utf8_iter.nextCodepoint()) |cp| {
+            if (cp < 0x20) continue;
+            _ = self.rename_state.insertCodepoint(cp);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// rename 의 commit / cancel / changed 적용. commit 면 tab.setCustomTitle
+    /// + clear, cancel 면 clear 만, changed 면 needs_redraw.
+    fn applyRenameOutcome(self: *Client, outcome: tab_interaction.RenameOutcome) !void {
+        switch (outcome) {
+            .commit => {
+                if (self.session) |*session| {
+                    if (self.rename_state.commitRequest()) |req| {
+                        const tabs = session.tabsSlice();
+                        if (req.tab_index < tabs.len) {
+                            tabs[req.tab_index].setCustomTitle(req.title);
+                        }
+                    }
+                }
+                self.rename_state.clear();
+                self.needs_redraw = true;
+            },
+            .cancel => {
+                self.rename_state.clear();
+                self.needs_redraw = true;
+            },
+            .changed => self.needs_redraw = true,
+            .none => {},
+        }
+    }
+
     /// L12-γ-5 — main loop 의 매 iteration 에서 repeat timer 검사. timer 가
     /// arm 되어 있고 (`key_repeat_keycode != 0`) 현재 시간이 next_ms 넘으면
     /// `processKeyEvent` 를 simulated `repeated` state 로 재호출.
@@ -1373,6 +1605,15 @@ const Client = struct {
     /// 자신에게 보관 (matchClipboardSerial 같은 path 에서 사용).
     fn processKeyEvent(self: *Client, serial: u32, key: u32) !void {
         self.last_serial = serial;
+
+        // L12-γ-2 — rename 모드 활성 시 모든 키를 PTY 가 아니라 RenameState 로
+        // 라우팅 (macOS `g_rename.isActive()` 분기 동등). modifier 단축키
+        // (ctrl+shift+*) 도 무시 — 사용자가 Enter / Escape 로 나가야.
+        if (self.rename_state.isActive()) {
+            try self.handleRenameKey(key);
+            return;
+        }
+
         // L10-γ — Ctrl+key 가 client 까지 forward 됐다는 건 fcitx5 가 자기
         // 단축키 아니라고 통과시킨 것. 그 시점에 IME 조합 중이면 client 측
         // preedit / pending 을 즉시 클리어 — AGENTS.md macOS Cocoa quirk 3번
@@ -1394,10 +1635,15 @@ const Client = struct {
             // xkb 가 만든 noise byte 가 shell 에 들어가지 않게 한다.
             if (self.keyboard.ctrlActive() and self.keyboard.shiftActive()) {
                 if (sym == xkb_key_c_lower or sym == xkb_key_c_upper) {
+                    // copy 는 read-only — commitPendingInput 호출 안 함 (preedit
+                    // / rename 상태 무관 동작).
                     self.copyActiveSelection();
                     return;
                 }
                 if (sym == xkb_key_v_lower or sym == xkb_key_v_upper) {
+                    // L12-γ-2 — paste 진입 시 preedit / rename commit (macOS
+                    // Cmd 단축키 패턴 동등). preedit 자모를 dangling 시키지 않게.
+                    self.commitPendingInput();
                     self.pasteFromClipboard();
                     return;
                 }
@@ -1527,7 +1773,7 @@ const Client = struct {
                 // 다른 모든 pointer mode (scrollbar / selection / 더블클릭)
                 // 보다 *우선* 검사 — tab bar 안에서 selection drag 안 시작.
                 if (self.pointer_y_px >= 0 and self.pointer_y_px < software_terminal.Renderer.tab_bar_height_px) {
-                    self.handleTabBarClick(self.pointer_x_px, self.pointer_y_px);
+                    self.handleTabBarClick(self.pointer_x_px, self.pointer_y_px, time_ms);
                     return;
                 }
                 // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
@@ -1537,6 +1783,11 @@ const Client = struct {
                     self.scrollToY(self.pointer_y_px);
                     return;
                 }
+
+                // L12-γ-2 — cell 영역 클릭 진입 시 commitPendingInput. 탭바
+                // 에서 rename 중 한글 typing 후 터미널 클릭 시 rename 이 commit
+                // (= setCustomTitle) 되어야 함. preedit / rename 모두 보존.
+                self.commitPendingInput();
 
                 const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
 
@@ -2029,14 +2280,15 @@ fn linuxTabInvalidate(host: *tab_actions.Host) void {
     client.needs_redraw = true;
 }
 
-fn linuxTabRenameActive(_: *const tab_actions.Host) bool {
-    // L12-β 에서 rename 모드 미부착 — 항상 false. L12-γ 의 더블클릭 rename
-    // 부착 시 client.rename_state 같은 걸 검사하도록.
-    return false;
+fn linuxTabRenameActive(host: *const tab_actions.Host) bool {
+    const client: *Client = @ptrCast(@alignCast(host.user_data.?));
+    return client.rename_state.isActive();
 }
 
-fn linuxTabInsertRenameCp(_: *tab_actions.Host, _: u21) void {
-    // L12-β 에서 rename 모드 미부착 — no-op.
+fn linuxTabInsertRenameCp(host: *tab_actions.Host, cp: u21) void {
+    const client: *Client = @ptrCast(@alignCast(host.user_data.?));
+    _ = client.rename_state.insertCodepoint(cp);
+    client.needs_redraw = true;
 }
 
 fn linuxTabClipboardCopy(_: *tab_actions.Host, _: [:0]const u8) void {
