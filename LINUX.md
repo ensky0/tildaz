@@ -31,7 +31,7 @@ milestone 상태를 정확히 남기는 용도다.
 Debian Wayland 환경).
 
 - Branch: `linux-wayland-bringup`
-- Commit: `6e46e49`
+- Commit: `f416072`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -51,6 +51,7 @@ Debian Wayland 환경).
 | block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 (공유 `src/renderer/block_element.zig` 부착, 폰트 무관 cell-aligned procedural rect / dot mask) |
 | 한글 IME 입력 (fcitx5 + Cinnamon Wayland) | 동작 — `zwp_text_input_v3` wire-level 구현 + commit_string event → PTY 송신 + preedit inline overlay (보라색 배경, macOS / Windows 동등) + Ctrl+key 시 IME discard + cursor 근처 popover 정렬 (`set_cursor_rectangle`) + terminal hint (`set_content_type purpose=terminal`). spec done-apply batch 패턴. L10-α / L10-β / L10-γ 모두 완료. |
 | Wayland 미연결 startup 에러 메시지 | path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR + 진단 hint 출력 (`error.WaylandSocketUnavailable`) |
+| 사용자 config 적용 (shell / theme / max_scroll) | 동작 (L13-α) — `~/.config/tildaz/config.json` 자동 생성 + Linux 가지 default (DejaVu Sans Mono / Noto CJK / Noto Color Emoji / size=12) + 사용자 값 변경 시 재실행에 반영 (config.theme 변경 시 색 변화 확인). font / opacity / dock / hotkey 통합은 L13-β/γ 및 L8/L9. |
 | 로그 noise | bring-up 단계 매 frame redraw 로그 제거, lifecycle 변화 이벤트만 |
 
 사용자 제공 로그에서 확인된 capability:
@@ -100,6 +101,7 @@ zwp_text_input_manager_v3=true
 - L10-α IME 기초 wiring 추가 ([commit 76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5)). `zwp_text_input_v3` 를 client 측에서 wire-level 직접 구현. fcitx5 wayland frontend (libwaylandim.so) 가 server-side. `bindGlobals` 에서 `text_input_manager.get_text_input(seat)` 호출해 text_input object 생성, `wl_keyboard.enter` 시 `text_input.enable() + commit()` / `wl_keyboard.leave` 시 `disable() + commit()` (text-input-v3 double-buffer 규약). `commit_string` event 의 text 를 `queueInput` 으로 PTY 송신 — 다른 키 path 와 동일 통로. `preedit_string` 은 로그만 (overlay 는 L10-β scope). Cinnamon Wayland + fcitx5-hangul 에서 `한 글`, `되네?`, `이게 되?` 등 한글 음절 완성 시 PTY 도달 확인. opcode 출처 https://wayland.app/protocols/text-input-unstable-v3.
 - L10-β IME preedit inline overlay 추가 ([commit 6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)). cursor 위치에 보라색 (`RGB(64, 64, 128)`) 배경 + foreground 글자색으로 조합 중 텍스트 inline 표시 — macOS Metal / Windows d3d11 와 동등 시각 (AGENTS.md "한글 IME 동작 스펙"). spec done-apply 패턴 도입 — preedit/commit event 는 pending ArrayList 에 누적했다가 `text_input.done(serial)` 시점에 한 batch 로 apply (commit → PTY, preedit → renderer overlay). focus disable 시 preedit + pending 모두 클리어. IME 활성 중에는 `wl_keyboard.key` event 가 IME 로 raised 되어 client 에 안 와서 `needs_redraw` 자동 트리거가 안 닿는 문제 발견 — `applyTextInputBatch` 에서 명시 set. `software_terminal.Renderer.preedit_text` field + `drawPreeditOverlay` (`display_width.codepointWidth` 로 wide char 2 cell, cols 넘어가면 truncate).
 - L10-γ IME corner case polish 추가 ([commit 6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49)). 세 가지 묶음: ① Ctrl+key 시 IME 조합 discard (AGENTS.md macOS Cocoa quirk 3번 동등) — `handleKeyboardKey` 진입 시 `ctrlActive() && preedit_text` 면 client 측 pending/preedit 즉시 클리어 + redraw. ② `set_cursor_rectangle(x, y, w, h)` — surface-relative pixel 좌표를 server 에 알려 fcitx5 popover 가 cursor 근처에 정렬. `updateCursorRectangle` helper 가 캐시 비교로 cursor 가 실제로 이동했을 때만 전송 (spam 회피). ③ `set_content_type(none, terminal)` — `enableTextInput` 안에서 enable + set_content_type + commit 한 batch (`content_purpose.terminal=13`). 시연 확인: Ctrl+C 시 preedit 즉시 사라짐 + 다음 입력 잔여물 없음 ✅ / popover cursor 근처 정렬 ✅ / log `content_purpose=terminal` ✅.
+- L13-α config integration 기초 + Defaults 단일 struct 리팩토링 + dialog Linux backend 추가 ([commit f416072](https://github.com/ensky0/tildaz/commit/f416072)). (1) `host/linux_wayland.zig` 에 macOS 패턴 동등 `resolveShell` + `Config.load` + `g_config` + log. `Client` 에 `config` / `extra_env_storage` field — SessionCore.init 의 shell / max_scroll_lines / theme / extra_env (TERM / LANG / LC_CTYPE / COLORFGBG / SHELL) 가 사용자 config 에서. (2) `config.zig` 의 `Defaults` 세 platform sub-struct → 단일 struct + 항목별 `if/else` 인라인 — 사용자 명시 지적 ("같은 shape struct 인데 셋 다 sub-struct 분리하면 공통 값 70% 까지 중복") 반영. Linux 가지 default (DejaVu Sans Mono / Noto CJK / Noto Color Emoji / size=12 / shell=/bin/bash) 도 같이 정의. `Hotkey` Linux placeholder 추가 (실제 keysym parsing 은 L9). (3) `src/dialog/linux.zig` 신규 — stderr 출력 backend (zenity / kdialog / GTK 통합은 L11). 시연 확인: `~/.config/tildaz/config.json` 자동 생성 + `config.theme` 을 "Solarized Dark" 등으로 바꿔 재실행 시 배경 / foreground 색 변화 ✅.
 - 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element + 한글 IME (음절 commit + preedit overlay + Ctrl 시 discard + popover cursor 정렬 + terminal hint)" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / **tabs** / **사용자 config 적용** 이 아직 부족하다.
 
 ## 현재 제한 사항
@@ -255,7 +257,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L10 | IME | 완료 (L10-α / β / γ) | L10-α — `zwp_text_input_v3` wire-level + `get_text_input(seat)` + keyboard focus 시점 enable/disable + `commit_string` → PTY 송신 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5)). L10-β — preedit inline overlay (보라색 배경 + foreground 글자, macOS / Windows 동등) + spec done-apply batch 패턴 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)). L10-γ — Ctrl+key 시 IME 조합 discard + `set_cursor_rectangle` + `set_content_type(purpose=terminal)` ([6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49)). fcitx5-hangul + Cinnamon Wayland 시연 OK. |
 | L11 | Packaging | 대기 | `.desktop`, icon install, AppImage/distro package plan, autostart, final config/log path 검증 필요. |
 | L12 | Tabs (multi-session UI) | 대기 — 코드 추상화는 이미 들어가 있고 UI 부착만 비어 있음 | 공유 cross-platform 모듈 (`session_core.zig` / `tab_actions.zig` / `tab_interaction.zig` / `tab_layout.zig`) 은 Windows / macOS 와 같이 이미 사용 중이고 `wayland_minimal.zig` 도 `session.createTab` / `tab.terminal` resize 동기화까지 호출하는 단계. Linux 만 비어 있는 부분: ① `software_terminal.zig` 의 tab bar 렌더링 ② `wl_pointer` 클릭/드래그/더블클릭 라우팅 → 공유 `tab_interaction` ③ `Ctrl+T` / `Ctrl+W` / `Ctrl+Tab` 단축키 + 32-tab cap 메시지 다이얼로그 ④ multi-PTY 라이프사이클 (한 탭만 운영 중인 현재의 `linuxTabExit` 확장). First Alpha Contract 의 "tab operation 동작" 이 이 milestone 이다. |
-| L13 | Config integration (사용자 설정 적용) | 대기 — `config.zig` 자체는 cross-platform 이라 import 만 하면 됨, 적용 hook 만 비어 있음 | Linux host 가 `Config.load` 호출조차 안 하는 상태. theme (`&themes.themes[0]` 강제) / shell (`"/bin/sh"` 하드코딩) / font.size_point (`16` 하드코딩) / font.family + glyph_fallback (7개 하드코딩 chain) / max_scroll_lines / auto_start / hidden_start 모두 미적용. Windows ([host/windows.zig](src/host/windows.zig) `Config.load` + `config.theme` / `config.shell` / `config.windowsFontFamilyUtf16` / `config.max_scroll_lines` / `config.auto_start` 패턴) 와 동등 통로를 Linux 도 만들어야 한다. sub-step: ① `Config.load` 호출 + log ② `config.shell` → PTY spawn ③ `config.theme` → renderer ④ `config.font_size_pt` + `config.font.family/glyph_fallback` → `font.Context` ⑤ `config.max_scroll_lines` → ghostty backend ⑥ window.opacity_percent → Wayland alpha buffer ⑦ window.dock_position / size_percent / offset_percent → L8 layer-shell anchor 와 통합 ⑧ hotkey → L9 portal 와 통합 ⑨ auto_start / hidden_start → L11 packaging 과 통합. |
+| L13 | Config integration (사용자 설정 적용) | L13-α 완료, β / γ 대기 | L13-α — `Config.load` + `resolveShell` + `g_config` + `Client` 에 config / extra_env_storage field. SessionCore.init 이 `config.shell` / `config.max_scroll_lines` / `config.theme` / `extra_env (TERM / LANG / LC_CTYPE / COLORFGBG / SHELL — 사용자 shell 과 일치)` 사용. `Defaults` 단일 struct 리팩토링 + Linux 가지 default (DejaVu Sans Mono / Noto CJK / Noto Color Emoji / size=12). dialog Linux backend (stderr 임시) ([f416072](https://github.com/ensky0/tildaz/commit/f416072)). L13-β 대기: `config.font_family` / `glyph_fallback` / `font_size_point` → `font.Context` chain 통합 (`software_terminal.default_families` 하드코딩 제거) + `cell_width_ratio` / `line_height_ratio`. L13-γ 대기: `config.opacity_percent`. 나머지 (dock_position 등) 는 L8 / L9 / L11 와 통합. |
 
 ## First Alpha Contract
 
@@ -286,7 +288,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 6e46e49 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. f416072 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -308,10 +310,12 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 16 | L10-β preedit inline overlay | ✅ [6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6) — cursor 위치 보라색 inline (`RGB(64, 64, 128)` 배경 + foreground 글자, macOS / Windows 동등) + spec done-apply batch 패턴 + IME 활성 중 redraw 트리거 fix. |
 | 17 | L10-γ Ctrl+key discard / cursor rectangle / content_type | ✅ [6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49) — Ctrl+key 시 client 측 preedit/pending 클리어 + `set_cursor_rectangle` (캐시 비교로 spam 회피) + `set_content_type(purpose=terminal)` 적용. Cinnamon + fcitx5-hangul 시연 OK. |
 | 18 | L12 Tabs (multi-session UI) | 대기 — 공유 cross-platform 모듈 (`session_core` / `tab_actions` / `tab_interaction` / `tab_layout`) 은 이미 사용 중, Linux 만 비어 있음. ① tab bar 렌더링 ② pointer 라우팅 ③ Ctrl+T/W/Tab 단축키 + 32-tab cap ④ multi-PTY 라이프사이클 (sub-step 으로 쪼개서 진행). |
-| 19 | L13 Config integration (사용자 설정 적용) | 대기 — Linux host 가 `Config.load` 호출조차 안 함. theme / shell / font.size_point / font.family + glyph_fallback / max_scroll_lines / auto_start / hidden_start 모두 hardcoded. Windows 의 `Config.load` + 각 hook 패턴과 동등 통로 부착. |
-| 20 | L8 layer-shell drop-down prototype | 대기 — compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (*advertise*) 하는 건 확인됨. anchor / exclusive zone / monitor 선택 검증 필요. |
-| 21 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. **명시 요구**: VSCode 등 다른 X11/Electron 앱 focus 시에도 hotkey 도달해야 함 (L9 milestone 행 참고). |
-| 22 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
+| 19 | L13-α Config integration 기초 hook | ✅ [f416072](https://github.com/ensky0/tildaz/commit/f416072) — `Config.load` + `resolveShell` + Client.config / extra_env_storage + Defaults 단일 struct 리팩토링 + dialog Linux backend. shell / theme / max_scroll_lines / extra_env (TERM / LANG / LC_CTYPE / COLORFGBG / SHELL) 사용자 값 적용. |
+| 20 | L13-β config.font / cell_ratio 통합 | 대기 — `config.font_family` / `glyph_fallback` / `font_size_point` → `font.Context` chain 통합 (`software_terminal.default_families` 하드코딩 제거 + font validation `font/validate.zig` 활용) + `cell_width_ratio` / `line_height_ratio`. |
+| 21 | L13-γ config.opacity_percent | 대기 — Wayland alpha buffer (XRGB8888 → ARGB8888 또는 surface region alpha). |
+| 22 | L8 layer-shell drop-down prototype | 대기 — compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (*advertise*) 하는 건 확인됨. anchor / exclusive zone / monitor 선택 검증 필요. |
+| 23 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. **명시 요구**: VSCode 등 다른 X11/Electron 앱 focus 시에도 hotkey 도달해야 함 (L9 milestone 행 참고). |
+| 24 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
 
 ## Source Notes
 
