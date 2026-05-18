@@ -23,6 +23,7 @@ pub const MAX_FONT_FAMILIES = font_constants.MAX_CHAIN;
 
 const is_windows = builtin.os.tag == .windows;
 const is_macos = builtin.os.tag == .macos;
+const is_linux = builtin.os.tag == .linux;
 
 // --- DockPosition (cross-platform) ---
 
@@ -51,7 +52,23 @@ pub const DockPosition = enum {
 /// Windows: `RegisterHotKey` 의 vkey + modifier flags. macOS: CGEventTap 이
 /// 받는 `kVK_*` keycode + `kCGEventFlagMask*` modifier mask. 외부 인터페이스는
 /// `Hotkey.fromString(s)` 로 동일.
-pub const Hotkey = if (is_windows) WindowsHotkey else if (is_macos) MacHotkey else struct {};
+pub const Hotkey = if (is_windows) WindowsHotkey else if (is_macos) MacHotkey else LinuxHotkey;
+
+/// L9 미구현. Config.load 가 `Defaults.hotkey` 를 parse 할 때 unreachable
+/// 빠지지 않게 placeholder 만 둔다. 실제 XDG Portal `GlobalShortcuts` 등록 시
+/// (L9) 진짜 키 mapping / D-Bus binding 추가.
+const LinuxHotkey = struct {
+    /// keysym (xkb). `f1` = 0xffbe (xkbcommon `XKB_KEY_F1`). L9 가 실제 D-Bus
+    /// shortcut registration 시 사용할 자리.
+    keysym: u32 = 0xffbe,
+    modifiers: u32 = 0,
+
+    pub fn fromString(_: []const u8) ?LinuxHotkey {
+        // 정확한 parsing 은 L9 에서. 지금은 default 반환 — Config 가 nil
+        // 으로 빠지지 않게.
+        return .{};
+    }
+};
 
 const WindowsHotkey = struct {
     vkey: u32 = 0x70, // VK_F1
@@ -193,7 +210,11 @@ fn eqIc(a: []const u8, b: []const u8) bool {
 // default 가 어긋나는 잠재 버그.
 // =============================================================================
 
-pub const Defaults = if (is_windows) struct {
+/// 세 platform 의 첫-실행 default. 같은 shape struct 라 OS 별 sub-struct 셋을
+/// 분리하면 공통 값 (dock_position, width_percent, opacity_percent, theme,
+/// hotkey, max_scroll_lines, ...) 까지 다 중복됨. 단일 struct + OS 별로 *진짜*
+/// 다른 항목만 `if/else` 인라인.
+pub const Defaults = struct {
     pub const dock_position: []const u8 = "top";
     /// percent (0..100). 실수 — 사용자 세밀 조정용 (예: 33.3, 66.7).
     pub const width_percent: f32 = 50.0;
@@ -202,50 +223,48 @@ pub const Defaults = if (is_windows) struct {
     /// JSON 은 0..100 percent (실수). 메모리 alpha (0..255 u8) 변환은
     /// default_opacity_alpha 가 처리.
     pub const opacity_percent: f32 = 100.0;
-    /// Primary font — 단일 string. 시스템에 반드시 설치돼 있어야 함 (없으면
-    /// startup 시 fatal). Cascadia Code 는 Windows 11 / Win10 22H2+ 기본.
-    pub const font_family: []const u8 = "Cascadia Code";
-    /// Glyph fallback chain — primary 에 글리프 없을 때 순서대로 lookup. 모두
-    /// 시스템에 설치돼 있어야 함. 한글 (Malgun Gothic) → 이모지 (Segoe UI
-    /// Emoji) → 심볼 (Segoe UI Symbol). 모두 Windows 8.1+ 기본 설치.
-    pub const glyph_fallback: []const []const u8 = &.{ "Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol" };
-    /// font size in *typographic point*. 두 platform 모두 host 에서 DPI scale
-    /// 곱한 후 raster (#148 B-2 후 = 사용자 size_point × DPI scale = font_height_px).
-    pub const font_size_point: u8 = 16;
     /// cell width *ratio* — 측정된 advance 에 곱해 글자 사이 padding 조절.
-    /// 1.0 = 폰트 그대로, 1.1 = 10% 더 넓음.
+    /// 1.0 = 폰트 그대로, 1.1 = 10% 더 넓음. 세 platform 공통.
     pub const cell_width_ratio: f32 = 1.0;
-    /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이 조절.
-    pub const line_height_ratio: f32 = 1.0;
     pub const theme: []const u8 = "Tilda";
-    pub const shell: []const u8 = "cmd.exe";
     pub const hotkey: []const u8 = "f1";
     pub const auto_start: bool = true;
     pub const hidden_start: bool = false;
     pub const max_scroll_lines: u32 = 100_000;
-} else struct {
-    pub const dock_position: []const u8 = "top";
-    pub const width_percent: f32 = 50.0;
-    pub const height_percent: f32 = 100.0;
-    pub const offset_percent: f32 = 100.0;
-    pub const opacity_percent: f32 = 100.0;
-    /// Primary font — Menlo 는 OS X 10.6+ 기본 등록 monospace.
-    pub const font_family: []const u8 = "Menlo";
-    /// Glyph fallback chain — 한글 (Apple SD Gothic Neo, 10.11+) → 이모지
-    /// (Apple Color Emoji, 10.7+) → 심볼 (Apple Symbols, 10.5+). 모두
-    /// macOS 기본 설치.
-    pub const glyph_fallback: []const []const u8 = &.{ "Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols" };
-    pub const font_size_point: u8 = 15;
-    pub const cell_width_ratio: f32 = 1.0;
-    pub const line_height_ratio: f32 = 1.1;
-    pub const theme: []const u8 = "Tilda";
+
+    /// Primary font — 단일 string. 시스템에 반드시 설치돼 있어야 함 (없으면
+    /// startup 시 fatal). Windows: Cascadia Code (Win10 22H2+ / Win11 기본).
+    /// macOS: Menlo (OS X 10.6+ 기본). Linux: DejaVu Sans Mono (Debian /
+    /// Ubuntu / Fedora / Arch 거의 기본).
+    pub const font_family: []const u8 = if (is_windows)
+        "Cascadia Code"
+    else if (is_macos)
+        "Menlo"
+    else
+        "DejaVu Sans Mono";
+
+    /// Glyph fallback chain — primary 에 글리프 없을 때 순서대로 lookup. 모두
+    /// 시스템에 설치돼 있어야 함 (없으면 fatal). 한글 → 이모지 → 심볼 패턴.
+    pub const glyph_fallback: []const []const u8 = if (is_windows)
+        &.{ "Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol" }
+    else if (is_macos)
+        &.{ "Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols" }
+    else
+        &.{ "Noto Sans CJK KR", "Noto Color Emoji" };
+
+    /// font size in *typographic point*. host 가 DPI scale 곱한 후 raster
+    /// (#148 B-2). Windows 기본 폰트가 약간 작아 16 / macOS 15 / Linux 12.
+    pub const font_size_point: u8 = if (is_windows) 16 else if (is_macos) 15 else 12;
+
+    /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이
+    /// 조절. Windows 기본 폰트는 leading 이 충분해 1.0, POSIX (mac/linux) 는
+    /// 1.1 로 살짝 늘림.
+    pub const line_height_ratio: f32 = if (is_windows) 1.0 else 1.1;
+
     /// host 의 `resolveShell` 이 `$SHELL` env 가 비어있을 때 쓰는 fallback.
     /// 첫 실행 시 host 는 `$SHELL` (있으면) 또는 이 값을 disk JSON 에 명시.
-    pub const shell: []const u8 = "/bin/bash";
-    pub const hotkey: []const u8 = "f1";
-    pub const auto_start: bool = true;
-    pub const hidden_start: bool = false;
-    pub const max_scroll_lines: u32 = 100_000;
+    /// Windows 는 POSIX `$SHELL` 컨벤션 없어 무조건 cmd.exe.
+    pub const shell: []const u8 = if (is_windows) "cmd.exe" else "/bin/bash";
 };
 
 /// `Defaults` + host 가 첫-실행 시 결정한 `shell_resolved` 로부터 JSON 템플릿
