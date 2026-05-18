@@ -3,7 +3,25 @@ const build_options = @import("build_options");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const terminal = @import("../terminal.zig");
+const config_mod = @import("../config.zig");
 const wayland = @import("linux/wayland_minimal.zig");
+
+/// L13-α — 사용자 설정. macOS `g_config` 패턴 동등. `run()` 안에서 한 번
+/// load 되고 wayland client 가 module 경계로 가져다 쓴다.
+var g_config: ?config_mod.Config = null;
+
+/// `$SHELL` env 우선, 없으면 `Defaults.shell` (= "/bin/bash"). POSIX 패턴 —
+/// macOS host 의 `resolveShell` 과 동등.
+fn resolveShell(allocator: std.mem.Allocator) []const u8 {
+    if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
+    return config_mod.Defaults.shell;
+}
+
+/// wayland_minimal 이 `runBaselineWindow` 진입 시 module global 에서 꺼내
+/// 쓰는 진입점. `run()` 이 먼저 load 한 뒤에만 valid.
+pub fn config() *const config_mod.Config {
+    return &g_config.?;
+}
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
@@ -45,7 +63,24 @@ pub fn run() !void {
 
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
-    try wayland.runBaselineWindow(gpa.allocator());
+
+    // L13-α — `Config.load` (cross-platform). 첫 실행 시 `~/.config/tildaz/
+    // config.json` template 생성, 이후 실행은 disk 값 그대로. shell_resolved
+    // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
+    // shell path 결정.
+    const shell_resolved = resolveShell(gpa.allocator());
+    g_config = config_mod.Config.load(gpa.allocator(), shell_resolved);
+    defer if (g_config) |*c| c.deinit();
+    const cfg = &g_config.?;
+    log.appendLine("startup", "config loaded: theme={s} shell={s} max_scroll={} auto_start={} hidden_start={}", .{
+        if (cfg.theme) |t| t.name else "default",
+        cfg.shell,
+        cfg.max_scroll_lines,
+        cfg.auto_start,
+        cfg.hidden_start,
+    });
+
+    try wayland.runBaselineWindow(gpa.allocator(), &g_config.?);
 }
 
 fn runPtySmoke(allocator: std.mem.Allocator) !void {
