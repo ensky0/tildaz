@@ -11,6 +11,8 @@ const posix = std.posix;
 const session_core = @import("../../session_core.zig");
 const terminal_backend = @import("../../terminal.zig");
 const terminal_interaction = @import("../../terminal_interaction.zig");
+const tab_actions = @import("../../tab_actions.zig");
+const ui_metrics = @import("../../ui_metrics.zig");
 const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
 const log = @import("../../log.zig");
@@ -128,6 +130,20 @@ const xkb_key_c_lower: u32 = 0x63;
 const xkb_key_c_upper: u32 = 0x43;
 const xkb_key_v_lower: u32 = 0x76;
 const xkb_key_v_upper: u32 = 0x56;
+// L12-β — tab 단축키. Linux / Windows 의 일반 terminal 관습 (gnome-terminal /
+// kitty) 동등 — `Ctrl+Shift+T` 새 탭 / `Ctrl+Shift+W` 활성 탭 닫기 / `Ctrl+
+// Shift+]` 다음 탭 / `Ctrl+Shift+[` 이전 탭. Ctrl 단독 단축키는 shell 의 정상
+// 통과 (Ctrl+T = transpose, Ctrl+W = kill word 등) 를 보존.
+const xkb_key_t_lower: u32 = 0x74;
+const xkb_key_t_upper: u32 = 0x54;
+const xkb_key_w_lower: u32 = 0x77;
+const xkb_key_w_upper: u32 = 0x57;
+// `[` 과 Shift 의 `{` 가 keymap 별로 다른 keysym — 둘 다 매치. `]` / `}` 도
+// 동일.
+const xkb_key_bracketleft: u32 = 0x5b;
+const xkb_key_braceleft: u32 = 0x7b;
+const xkb_key_bracketright: u32 = 0x5d;
+const xkb_key_braceright: u32 = 0x7d;
 
 // 자식 셸 process 에 넘기는 extra env — AGENTS.md "터미널 환경변수" 정책
 // 동등. SHELL / COLORFGBG 값이 사용자 config.shell / config.theme 에 따라
@@ -300,6 +316,19 @@ const Client = struct {
     /// 채워진다. SessionCore.init 에 slice 로 전달 — Client lifetime 안에서
     /// storage valid.
     extra_env_storage: [linux_extra_env_entry_count]terminal_backend.ExtraEnv = undefined,
+    /// L12-β — `tab_actions.Host.override_ptr` 가 가리키는 storage. arrow `<`
+    /// `>` 로 사용자가 활성 탭 추적을 일시 정지한 경우 true — L12-γ scope,
+    /// L12-β 에서는 항상 false. `tab_actions.Host` 자체는 매 호출 시 stack
+    /// 에 build (`buildTabActionsHost`) — Client field 로 보관하면 init
+    /// 시점 (return-by-value) 의 callback ptr / override_ptr 주소가 stale.
+    tab_scroll_override: bool = false,
+    /// L12-β — read thread → main thread pending close queue. shell process
+    /// 가 exit (PTY EOF) 시 read thread 가 `linuxTabExit` 호출 → 직접 close
+    /// 면 다른 탭의 read thread join 시 deadlock 가능 + multi-tab 시 잘못된
+    /// 종료 (모든 탭 cascade). macOS host (`g_pending_close_buf`) 와 동등
+    /// 패턴 — read thread 는 buf 에 ptr append, main loop 가 drain.
+    pending_close_buf: std.ArrayList(usize) = .{},
+    pending_close_mutex: std.Thread.Mutex = .{},
 
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
@@ -346,6 +375,7 @@ const Client = struct {
         self.pending_preedit.deinit(self.allocator);
         self.pending_commit.deinit(self.allocator);
         self.preedit_text.deinit(self.allocator);
+        self.pending_close_buf.deinit(self.allocator);
         for (self.received_fds.items) |fd| posix.close(fd);
         self.received_fds.deinit(self.allocator);
         if (self.active_buffer) |*buffer| {
@@ -393,6 +423,10 @@ const Client = struct {
 
         while (self.running) {
             try self.pollAndDispatch(frame_poll_ms);
+            // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
+            // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
+            // 마지막 탭 닫음을 만나면 shell_exited 트리거.
+            self.drainExitedTabs();
             if (self.shell_exited.load(.acquire)) {
                 self.running = false;
                 break;
@@ -719,6 +753,14 @@ const Client = struct {
     fn paintBuffer(self: *Client, memory: []u8, width: i32, height: i32, stride: i32) void {
         if (self.session) |*session| {
             if (session.activeTab()) |tab| {
+                // Titles slice — stack 의 임시 array. session_core.MAX_TABS (= 32)
+                // 안. paint 호출 동안만 valid (각 title slice 는 Tab.title 의 view).
+                var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
+                const tabs = session.tabsSlice();
+                const count = @min(tabs.len, titles_storage.len);
+                for (tabs[0..count], 0..) |t, i| {
+                    titles_storage[i] = t.title[0..t.title_len];
+                }
                 self.renderer.paint(
                     self.allocator,
                     memory,
@@ -727,7 +769,8 @@ const Client = struct {
                     stride,
                     &tab.terminal,
                     self.config.theme orelse fallback_theme,
-                    tab.title[0..tab.title_len],
+                    titles_storage[0..count],
+                    session.active_tab,
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -955,6 +998,98 @@ const Client = struct {
         }
     }
 
+    /// L12-β — cross-platform `tab_actions.Host` build. callback ptr 와
+    /// override_ptr 가 Client 의 stable 주소를 가리키도록 매 호출 시 fresh.
+    /// session 이 null (createTab 전) 이면 fatal — 호출자가 보장해야 한다.
+    fn buildTabActionsHost(self: *Client) tab_actions.Host {
+        return .{
+            .session = &self.session.?,
+            .override_ptr = &self.tab_scroll_override,
+            .invalidate = linuxTabInvalidate,
+            .rename_active = linuxTabRenameActive,
+            .insert_rename_cp = linuxTabInsertRenameCp,
+            .clipboard_copy = linuxTabClipboardCopy,
+            .terminate = linuxTabTerminate,
+            .user_data = self,
+        };
+    }
+
+    /// L12-β — Ctrl+T (Windows / Linux) / Cmd+T (macOS) 동등. 활성 탭의 cols
+    /// / rows 와 같은 크기로 새 탭 생성. 32-tab cap 도달 시 dialog + skip.
+    /// arrow/plus 버튼 미부착이라 현재 layout 한 줄 그대로 (탭 폭 합이 화면
+    /// 폭 넘어가면 잘려 보임 — L12-γ scope).
+    fn handleNewTab(self: *Client) void {
+        if (self.session == null) return;
+        var host = self.buildTabActionsHost();
+        if (tab_actions.checkAtLimitAndDialog(&host)) return;
+        const active = self.activeTabOrNull() orelse return;
+        self.session.?.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
+            log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.tab_scroll_override = false;
+        self.needs_redraw = true;
+    }
+
+    /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
+    /// (= shell_exited true) → main loop 가 종료. 다중 탭이면 그 탭만.
+    fn handleCloseTab(self: *Client) void {
+        if (self.session == null) return;
+        var host = self.buildTabActionsHost();
+        _ = tab_actions.closeActive(&host);
+    }
+
+    /// L12-β — read thread 가 `pending_close_buf` 에 쌓아둔 ptr 들 main thread
+    /// 에서 일괄 처리. `tab_actions.closeByPtr` 의 outcome 가 `.ended` (마지막
+    /// 탭) 면 shell_exited true → main loop 종료. `.changed` 면 redraw.
+    fn drainExitedTabs(self: *Client) void {
+        if (self.session == null) return;
+        self.pending_close_mutex.lock();
+        const closes = self.pending_close_buf.toOwnedSlice(self.allocator) catch &.{};
+        self.pending_close_mutex.unlock();
+        defer self.allocator.free(closes);
+        if (closes.len == 0) return;
+
+        var host = self.buildTabActionsHost();
+        var any_changed = false;
+        for (closes) |ptr| switch (tab_actions.closeByPtr(&host, ptr) orelse continue) {
+            .ended => {
+                log.appendLine("tab", "last tab exited — shutting down", .{});
+                self.shell_exited.store(true, .release);
+                return;
+            },
+            .changed => any_changed = true,
+        };
+        if (any_changed) self.needs_redraw = true;
+    }
+
+    /// L12-β — tab bar 영역 좌클릭. (px, py) 가 tab bar 안일 때만 호출.
+    /// 간단 layout — idx = px / TAB_WIDTH_PT. 탭 폭 합 넘으면 활성 변경
+    /// 안 함. arrow / plus / close 'x' / drag reorder 는 L12-γ scope.
+    fn handleTabBarClick(self: *Client, px: i32) void {
+        if (self.session == null) return;
+        const tab_w: i32 = @intCast(ui_metrics.TAB_WIDTH_PT);
+        if (px < 0 or tab_w <= 0) return;
+        const idx_i32: i32 = @divTrunc(px, tab_w);
+        if (idx_i32 < 0) return;
+        const idx: usize = @intCast(idx_i32);
+        if (idx >= self.session.?.count()) return;
+        var host = self.buildTabActionsHost();
+        tab_actions.switchTab(&host, idx);
+    }
+
+    fn handleNextTab(self: *Client) void {
+        if (self.session == null) return;
+        var host = self.buildTabActionsHost();
+        tab_actions.nextTab(&host);
+    }
+
+    fn handlePrevTab(self: *Client) void {
+        if (self.session == null) return;
+        var host = self.buildTabActionsHost();
+        tab_actions.prevTab(&host);
+    }
+
     /// L10-α — text_input.enable() + commit(). focus enter 시 호출.
     /// text_input object 가 없으면 (manager 광고 없는 환경) no-op.
     /// L10-γ — enable + set_content_type(none, terminal) + commit 한 batch.
@@ -1149,6 +1284,25 @@ const Client = struct {
                     self.pasteFromClipboard();
                     return;
                 }
+                // L12-β — tab 단축키 모두 `Ctrl+Shift+*` 자리. Ctrl 단독은
+                // shell 통과 (Ctrl+T transpose / Ctrl+W kill-word / Ctrl+Tab
+                // 일부 shell 단축키). gnome-terminal / kitty 와 동등 관습.
+                if (sym == xkb_key_t_lower or sym == xkb_key_t_upper) {
+                    self.handleNewTab();
+                    return;
+                }
+                if (sym == xkb_key_w_lower or sym == xkb_key_w_upper) {
+                    self.handleCloseTab();
+                    return;
+                }
+                if (sym == xkb_key_bracketright or sym == xkb_key_braceright) {
+                    self.handleNextTab();
+                    return;
+                }
+                if (sym == xkb_key_bracketleft or sym == xkb_key_braceleft) {
+                    self.handlePrevTab();
+                    return;
+                }
             }
             if (terminalSequenceForKeysym(sym)) |seq| {
                 self.queueInput(seq);
@@ -1251,6 +1405,13 @@ const Client = struct {
         const tab = self.activeTabOrNull() orelse return;
         switch (state) {
             wl_pointer_button_state_pressed => {
+                // L12-β — tab bar 영역 클릭 → 해당 탭 activate. 다른 모든
+                // pointer mode (scrollbar / selection / 더블클릭) 보다 *우선*
+                // 검사 — tab bar 안에서 selection drag 안 시작.
+                if (self.pointer_y_px >= 0 and self.pointer_y_px < software_terminal.Renderer.tab_bar_height_px) {
+                    self.handleTabBarClick(self.pointer_x_px);
+                    return;
+                }
                 // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
                 // Windows `app_controller.zig:835` 와 동등.
                 if (self.pointer_x_px >= self.window_width - software_terminal.scrollbar_w_px) {
@@ -1732,8 +1893,43 @@ const Client = struct {
     }
 };
 
-fn linuxTabExit(_: usize, userdata: ?*anyopaque) void {
+/// L12-β — read thread callback. shell process exit (PTY EOF) 시 호출.
+/// 직접 closeTab 면 self-join deadlock + multi-tab cascade 잘못된 종료. macOS
+/// 패턴 동등 — buf 에 ptr append 만, main loop 의 `drainExitedTabs` 가 처리.
+fn linuxTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
     const client: *Client = @ptrCast(@alignCast(userdata.?));
+    client.pending_close_mutex.lock();
+    defer client.pending_close_mutex.unlock();
+    client.pending_close_buf.append(client.allocator, tab_ptr) catch {};
+}
+
+// L12-β — tab_actions.Host callbacks. `user_data` 가 `*Client`. 모두 module-
+// level fn 이라 ptr 가 static — host build 마다 fresh 해도 stable.
+
+fn linuxTabInvalidate(host: *tab_actions.Host) void {
+    const client: *Client = @ptrCast(@alignCast(host.user_data.?));
+    client.needs_redraw = true;
+}
+
+fn linuxTabRenameActive(_: *const tab_actions.Host) bool {
+    // L12-β 에서 rename 모드 미부착 — 항상 false. L12-γ 의 더블클릭 rename
+    // 부착 시 client.rename_state 같은 걸 검사하도록.
+    return false;
+}
+
+fn linuxTabInsertRenameCp(_: *tab_actions.Host, _: u21) void {
+    // L12-β 에서 rename 모드 미부착 — no-op.
+}
+
+fn linuxTabClipboardCopy(_: *tab_actions.Host, _: [:0]const u8) void {
+    // L12-β 에서 미사용 — Linux 는 자체 `copyActiveSelection` path 가 직접
+    // wl_data_source 로 보낸다. `tab_actions.copyActiveSelection` helper 도
+    // 우리는 호출 안 함 (selection 자동 copy 는 wl_pointer.button release 가
+    // 직접 처리). callback contract 만 만족.
+}
+
+fn linuxTabTerminate(host: *tab_actions.Host) void {
+    const client: *Client = @ptrCast(@alignCast(host.user_data.?));
     client.shell_exited.store(true, .release);
 }
 
