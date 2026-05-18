@@ -31,7 +31,7 @@ milestone 상태를 정확히 남기는 용도다.
 Debian Wayland 환경).
 
 - Branch: `linux-wayland-bringup`
-- Commit: `41473d9`
+- Commit: `7248163`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -52,7 +52,8 @@ Debian Wayland 환경).
 | 한글 IME 입력 (fcitx5 + Cinnamon Wayland) | 동작 — `zwp_text_input_v3` wire-level 구현 + commit_string event → PTY 송신 + preedit inline overlay (보라색 배경, macOS / Windows 동등) + Ctrl+key 시 IME discard + cursor 근처 popover 정렬 (`set_cursor_rectangle`) + terminal hint (`set_content_type purpose=terminal`). spec done-apply batch 패턴. L10-α / L10-β / L10-γ 모두 완료. |
 | Wayland 미연결 startup 에러 메시지 | path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR + 진단 hint 출력 (`error.WaylandSocketUnavailable`) |
 | 사용자 config 적용 (shell / theme / max_scroll / font / cell_ratio / opacity) | 동작 (L13-α + β + γ) — `~/.config/tildaz/config.json` 자동 생성 + 사용자 값 변경 시 재실행에 반영. font.family / glyph_fallback chain / size_point (1:1 logical pixel, mac/win 동등) / cell_width_ratio / line_height_ratio / window.opacity_percent (ARGB8888 alpha) 모두 적용. dock / hotkey 통합은 L8 / L9. |
-| Tab (multi-tab + 단축키 + 클릭 + arrow/plus + close 'x' + 32-tab cap) | 동작 (L12-α + β + γ-1/4) — 상단 28px tab bar + 활성/비활성 탭 + 클릭 activate + `Ctrl+Shift+T/W/]/[` + `tab_layout.compute` 로 arrow `<` `>` + plus `+` + 자동 scroll (활성 탭 보임) + 수동 scroll (override) + close 'x' (dim 색, mac/win 동등) + 32-tab cap dialog. 더블클릭 rename / drag reorder / key repeat 는 L12-γ-2/3/5. |
+| Tab (multi-tab + 단축키 + 클릭 + arrow/plus + close 'x' + 32-tab cap) | 동작 (L12-α + β + γ-1/4) — 상단 28px tab bar + 활성/비활성 탭 + 클릭 activate + `Ctrl+Shift+T/W/]/[` + `tab_layout.compute` 로 arrow `<` `>` + plus `+` + 자동 scroll (활성 탭 보임) + 수동 scroll (override) + close 'x' (dim 색, mac/win 동등) + 32-tab cap dialog. 더블클릭 rename / drag reorder 는 L12-γ-2/3. |
+| Key repeat (Wayland client-side timer) | 동작 (L12-γ-5) — 영문 typing / 단축키 누르고 있으면 연속 입력. compositor `wl_keyboard.repeat_info` 의 rate / delay 따름. focus 떠날 때 / 키 뗌 시 즉시 disarm. |
 | 로그 noise | bring-up 단계 매 frame redraw 로그 제거, lifecycle 변화 이벤트만 |
 
 사용자 제공 로그에서 확인된 capability:
@@ -110,6 +111,7 @@ zwp_text_input_manager_v3=true
 - L12-β tab 단축키 + multi-tab 표시 + 클릭 activate 추가 ([commit d694392](https://github.com/ensky0/tildaz/commit/d694392)). cross-platform `tab_actions.Host` 패턴 부착 — `buildTabActionsHost()` helper + callback 5 개. `Ctrl+Shift+T` 새 탭 / `Ctrl+Shift+W` 활성 탭 닫기 / `Ctrl+Shift+]` 다음 / `Ctrl+Shift+[` 이전 — 단축키 모두 `Ctrl+Shift+*` 자리 (shell 의 정상 통과 보존, gnome-terminal / kitty 관습). `drawTabBar` 가 모든 탭 iter — 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer background (cell 영역과 자연 이음). tab bar 영역 클릭 → `tab_actions.switchTab`. 32-tab cap dialog (임시 stderr/log backend, GUI 는 L11). 시연 사이클에서 발견 + fix: multi-tab Ctrl+Shift+W 가 모든 탭 cascade 종료 회귀 — `linuxTabExit` 가 read thread 에서 직접 `shell_exited.store(true)` 한 게 cause, macOS `g_pending_close_buf` + main loop drain 패턴으로 교체 (`.ended` 만 종료, `.changed` 는 redraw). 단축키 매핑도 사용자 피드백 반영 (초안 `Ctrl+T` 등 → 모두 `Ctrl+Shift+*`).
 - L12-γ-1 tab bar arrow / plus + tab_layout.compute 통합 추가 ([commit 357b0ec](https://github.com/ensky0/tildaz/commit/357b0ec)). cross-platform `tab_layout.compute` / `ensureActiveVisible` / `scrollByArrow` / `hitArea` / `hitTab` 부착. 탭 폭 합 > viewport 폭 시 좌 `<` / 우 `>` arrow + `+` plus 등장. 활성 탭이 viewport 밖 나가면 자동 scroll (override=false 일 때). `<` / `>` 클릭 → 수동 scroll + override true. `+` 클릭 → 새 탭. 탭 클릭 → switchTab.
 - L12-γ-4 tab close 'x' 버튼 추가 ([commit 41473d9](https://github.com/ensky0/tildaz/commit/41473d9)). 각 탭 우측 끝 `TAB_CLOSE_SIZE_PT (=14)` box 안 'x' 글리프. mac / win 동등 dim 색 (`TEXT × 0.6 + bg × 0.4`). hit.on_close → `tab_actions.closeIndex` (마지막 탭이면 terminate, 아니면 invalidate). hover 강조는 mac / win 도 미부착이라 동등. `blendU8` helper 신규. 시연 사이클 메모: 임시로 "tab bar 우클릭 → close" 도 추가했었는데 SPEC 외라 사용자 지적 후 즉시 원복.
+- L12-γ-5 client-side key repeat 추가 ([commit 7248163](https://github.com/ensky0/tildaz/commit/7248163)). Wayland spec 상 key repeat 은 client 책임 (macOS / Windows 는 OS 자동). `Client.key_repeat_keycode` / `key_repeat_next_ms` / `key_repeat_rate_hz` / `key_repeat_delay_ms` field + `handleKeyboardKey` 의 byte parsing / `processKeyEvent(serial, key)` 로 분리. press → timer arm (`next_ms = now + delay`), release → disarm, `wl_keyboard.leave` → disarm (focus 떠날 때 release 못 받는 stuck 방지). main loop 의 `maybeRepeatKey()` 가 매 iteration `now >= next_ms` 면 `processKeyEvent(last_serial, key)` 재호출 + `next_ms += 1000/rate`. IME 활성 시 key 가 IME 로 raised 되어 안 옴 → fcitx5 자체 repeat (충돌 없음). 시연 확인: `a` 연속 입력, Ctrl+Shift+T 연속 새 탭 (32 도달 시 dialog).
 - 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element + 한글 IME (음절 commit + preedit overlay + Ctrl 시 discard + popover cursor 정렬 + terminal hint)" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / **tabs** / **사용자 config 적용** 이 아직 부족하다.
 
 ## 현재 제한 사항
@@ -264,7 +266,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. **명시 요구사항**: 다른 X11 / Electron 앱 (예: VSCode) 이 focus 잡고 있을 때도 hotkey 가 TildaZ 에 도달해야 한다. X11 시대의 Tilda 가 동일 시나리오에서 VSCode focus 시 F1 이 안 닿는 quirk 가 있는데 (`XGrabKey` 가 XWayland 안 X11 client 의 grab 에 가려짐), TildaZ 는 Wayland native client 로서 portal `GlobalShortcuts` 가 compositor 레벨 routing 이라 focus 무관히 동작해야 한다 — 검증 항목. |
 | L10 | IME | 완료 (L10-α / β / γ) | L10-α — `zwp_text_input_v3` wire-level + `get_text_input(seat)` + keyboard focus 시점 enable/disable + `commit_string` → PTY 송신 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5)). L10-β — preedit inline overlay (보라색 배경 + foreground 글자, macOS / Windows 동등) + spec done-apply batch 패턴 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)). L10-γ — Ctrl+key 시 IME 조합 discard + `set_cursor_rectangle` + `set_content_type(purpose=terminal)` ([6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49)). fcitx5-hangul + Cinnamon Wayland 시연 OK. |
 | L11 | Packaging | 대기 | `.desktop`, icon install, AppImage/distro package plan, autostart, final config/log path 검증 필요. |
-| L12 | Tabs (multi-session UI) | L12-α / β / γ-1 / γ-4 완료, γ-2/3/5 대기 | L12-α — tab bar + 활성 탭 ([b392765](https://github.com/ensky0/tildaz/commit/b392765)). L12-β — `tab_actions.Host` + 단축키 + multi-tab + 클릭 activate + 32-tab cap + cascade 회귀 fix ([d694392](https://github.com/ensky0/tildaz/commit/d694392)). L12-γ-1 — arrow `<`/`>` + plus `+` + tab_layout.compute / scroll ([357b0ec](https://github.com/ensky0/tildaz/commit/357b0ec)). L12-γ-4 — close 'x' 버튼 (dim 색, mac/win 동등) ([41473d9](https://github.com/ensky0/tildaz/commit/41473d9)). 남은 sub-step: L12-γ-2 더블클릭 rename / L12-γ-3 drag reorder / L12-γ-5 key repeat (Wayland client-side timer). First Alpha Contract 의 "tab operation 동작" 이 이 milestone. |
+| L12 | Tabs (multi-session UI) | L12-α / β / γ-1 / γ-4 / γ-5 완료, γ-2/3 대기 | L12-α — tab bar + 활성 탭 ([b392765](https://github.com/ensky0/tildaz/commit/b392765)). L12-β — `tab_actions.Host` + 단축키 + multi-tab + 클릭 activate + 32-tab cap + cascade 회귀 fix ([d694392](https://github.com/ensky0/tildaz/commit/d694392)). L12-γ-1 — arrow `<`/`>` + plus `+` + tab_layout.compute / scroll ([357b0ec](https://github.com/ensky0/tildaz/commit/357b0ec)). L12-γ-4 — close 'x' 버튼 (dim 색, mac/win 동등) ([41473d9](https://github.com/ensky0/tildaz/commit/41473d9)). L12-γ-5 — Wayland client-side key repeat timer ([7248163](https://github.com/ensky0/tildaz/commit/7248163)). 남은 sub-step: L12-γ-2 더블클릭 rename / L12-γ-3 drag reorder. First Alpha Contract 의 "tab operation 동작" 이 이 milestone. |
 | L13 | Config integration (사용자 설정 적용) | 완료 (L13-α / β / γ) | L13-α — `Config.load` + `resolveShell` + `g_config` + `Client` 에 config / extra_env_storage field. SessionCore.init 이 `config.shell` / `config.max_scroll_lines` / `config.theme` / `extra_env` 사용. `Defaults` 단일 struct 리팩토링 + Linux 가지 default. dialog Linux backend ([f416072](https://github.com/ensky0/tildaz/commit/f416072)). L13-β — `cfg.font_families` chain / `cfg.font_size_point` (1:1 logical pixel, mac/win 동등) / cell_ratio 두 개 적용 ([a08c3ca](https://github.com/ensky0/tildaz/commit/a08c3ca)). L13-γ — ARGB8888 buffer + paint 마지막 alpha sweep 으로 `config.opacity_percent` 반영 ([318bbef](https://github.com/ensky0/tildaz/commit/318bbef)). 나머지 (dock_position 등) 는 L8 / L9 / L11 와 통합. |
 
 ## First Alpha Contract
@@ -296,7 +298,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 41473d9 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. 7248163 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -331,7 +333,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 29 | L12-γ-4 tab close 'x' 버튼 | ✅ [41473d9](https://github.com/ensky0/tildaz/commit/41473d9) — 각 탭 우측 끝 'x' 글리프 (mac/win 동등 dim 색) + hit.on_close → closeIndex. 시연 사이클에서 임시 추가했던 우클릭 close 는 SPEC 외라 원복. |
 | 30 | L12-γ-2 더블클릭 rename | 대기 — `tab_interaction.zig` 의 rename 모드 부착 + IME (preedit overlay 와 같은 path) 통합. |
 | 31 | L12-γ-3 drag reorder | 대기 — 좌클릭 drag 시 tab 위치 swap. `tab_actions` 의 reorder helper 사용. |
-| 32 | L12-γ-5 key repeat (Wayland client-side timer) | 대기 — Wayland 의 `wl_keyboard.repeat_info` rate/delay 따라 client-side timer 로 repeat event 생성. macOS / Windows 는 OS 자동, Linux Wayland 는 client 책임. |
+| 32 | L12-γ-5 key repeat (Wayland client-side timer) | ✅ [7248163](https://github.com/ensky0/tildaz/commit/7248163) — `wl_keyboard.repeat_info` rate/delay + `maybeRepeatKey()` main loop timer. press → arm, release/leave → disarm. IME 활성 시 fcitx5 자체 repeat (충돌 없음). |
 
 ## Source Notes
 
