@@ -378,6 +378,20 @@ const Client = struct {
     // 사용. dbus_session null 이거나 CreateSession 실패 시 null — hotkey 기능
     // 미제공 graceful degrade.
     portal_session: ?portal.GlobalShortcutsSession = null,
+    // L9-γ — portal `Activated` signal subscription. BindShortcuts 성공 후
+    // 등록 — compositor 가 hotkey 누름마다 portal 통해 Activated signal 보내고
+    // filter callback (`onPortalActivated`) 가 toggle 호출. heap 할당 — filter
+    // user_data 가 stable address 요구.
+    portal_subscription: ?*portal.ActivatedSubscription = null,
+    // L9-γ — surface visibility toggle state. macOS `g_visible` 동등. false
+    // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
+    // commit 송신 끝난 상태). 다음 Activated → flip + re-attach.
+    surface_hidden: bool = false,
+    // L9-γ — 중복 Activated debounce. 일부 compositor 가 같은 hotkey press
+    // 에 대해 portal 통해 두 번 signal 보낼 가능성 (key repeat 자체는 보통
+    // compositor 가 차단 — repeat_info 와 다른 channel). 같은 timestamp 면
+    // 같은 누름으로 간주. 0 timestamp 면 debounce 안 함 (compositor 미채움).
+    last_toggle_timestamp: u64 = 0,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
@@ -513,6 +527,11 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        if (self.portal_subscription) |sub| {
+            sub.deinit();
+            self.allocator.destroy(sub);
+            self.portal_subscription = null;
+        }
         if (self.portal_session) |*session| {
             session.deinit();
             self.portal_session = null;
@@ -579,6 +598,9 @@ const Client = struct {
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
             // 마지막 탭 닫음을 만나면 shell_exited 트리거.
             self.drainExitedTabs();
+            // L9-γ — portal Activated signal 등 dbus message dispatch (filter
+            // callback 통해 onPortalActivated → handleActivatedToggle).
+            self.dispatchDbusMessages();
             // L12-γ-5 — Wayland client-side key repeat timer 검사.
             try self.maybeRepeatKey();
             if (self.shell_exited.load(.acquire)) {
@@ -2700,6 +2722,8 @@ const Client = struct {
     /// dbus_session 이 null 이면 후속 L9 sub-step 도 skip — hotkey 기능 미제공.
     /// L9-β-1 — 성공 시 곧바로 portal `CreateSession` 호출. 실패해도 fatal 아님
     /// (portal 미설치 / 사용자 거부 등).
+    /// L9-γ — BindShortcuts 성공 후 곧바로 `Activated` signal subscribe.
+    /// subscribe 실패해도 fatal 아님 — hotkey 미동작이라도 terminal 자체는 OK.
     fn tryConnectDbus(self: *Client) void {
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
@@ -2713,7 +2737,8 @@ const Client = struct {
         self.portal_session = portal_session;
         // L9-β-2 — 단일 "toggle" shortcut 등록. 첫 호출 시 KDE / GNOME portal
         // UI dialog 뜸 (사용자 승인). 실패해도 fatal 아님 — session 은 살아
-        // 있고 다음 실행에서 재시도 가능.
+        // 있고 다음 실행에서 재시도 가능. 실패 시 Activated subscribe 도 skip
+        // (shortcut bound 안 됐으니 signal 도 안 옴).
         portal.bindToggleShortcut(
             self.allocator,
             &self.dbus_session.?,
@@ -2722,7 +2747,76 @@ const Client = struct {
             self.config.hotkey.modifiers,
         ) catch |err| {
             log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+            return;
         };
+        // L9-γ — Activated signal subscribe. 이후 main loop 의
+        // `dispatchDbusMessages` 가 매 iteration `read_write_dispatch(0)` 호출
+        // → filter callback (`onPortalActivated`) 가 우리 toggle 발동.
+        log.appendLine("portal", "subscribing Activated signal...", .{});
+        const sub = portal.subscribeActivatedSignal(
+            self.allocator,
+            &self.dbus_session.?,
+            self.portal_session.?.session_handle,
+            onPortalActivated,
+            self,
+        ) catch |err| {
+            log.appendLine("portal", "Activated subscribe skipped: {s} — hotkey 비활성", .{@errorName(err)});
+            return;
+        };
+        self.portal_subscription = sub;
+    }
+
+    /// L9-γ — main loop 매 iteration 마다 dbus 의 들어온 message 를 dispatch.
+    /// `read_write_dispatch(conn, 0)` 는 socket 의 pending data read + 누적된
+    /// message dispatch (filter callback 호출 포함) + 0 timeout 이라 즉시 반환.
+    /// dbus fd 를 wayland fd 와 함께 poll 통합하는 대신 매 iteration 0-timeout
+    /// dispatch 호출 — frame_poll_ms (16ms) 가 wayland poll timeout 이라 hotkey
+    /// latency 도 같은 수준으로 충분 (60Hz 한 frame).
+    fn dispatchDbusMessages(self: *Client) void {
+        if (self.dbus_session) |*bus| {
+            _ = bus.api.read_write_dispatch(bus.conn, 0);
+        }
+    }
+
+    /// L9-γ — portal `Activated` signal filter callback. `shortcut_id` 가
+    /// "toggle" 이면 surface visibility flip. 같은 timestamp 의 중복 호출은
+    /// debounce (compositor 가 한 누름에 두 번 보낼 가능성 hedge). 0 timestamp
+    /// 면 debounce 안 함 (compositor 미채움 — 매번 toggle).
+    fn onPortalActivated(user_data: ?*anyopaque, shortcut_id: []const u8, timestamp: u64) void {
+        const self: *Client = @ptrCast(@alignCast(user_data.?));
+        if (!std.mem.eql(u8, shortcut_id, std.mem.span(portal.shortcut_id_toggle))) return;
+        if (timestamp != 0 and timestamp == self.last_toggle_timestamp) return;
+        self.last_toggle_timestamp = timestamp;
+        self.handleActivatedToggle() catch |err| {
+            log.appendLine("portal", "toggle failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    /// L9-γ — surface visibility flip. mac `toggleWindow` 동등 — hide 시점에
+    /// `commitPendingInput` (preedit / rename buf 보존). show 는 `mapped=false`
+    /// + `requestRedraw` 로 maybeRedraw 가 buffer 다시 attach (자연 re-map).
+    ///
+    /// hide 패턴: `wl_surface.attach(NULL, 0, 0)` + `wl_surface.commit` —
+    /// Wayland spec 의 표준 unmap. layer-shell 의 configure 는 이미 받았으니
+    /// re-mapping 시 별도 configure 기다림 없이 다음 attach + commit 만으로
+    /// 다시 보임. KDE / GNOME 양쪽 검증은 시연 사이클로.
+    fn handleActivatedToggle(self: *Client) !void {
+        if (self.surface_hidden) {
+            self.surface_hidden = false;
+            self.requestRedraw();
+            log.appendLine("portal", "toggle show", .{});
+            return;
+        }
+        // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
+        // 아님), 다음 show 때 사용자가 이어서 작업 가능.
+        self.commitPendingInput();
+        // wl_surface.attach (opcode 1) — NULL buffer (id=0) 로 unmap.
+        try self.sendArgs(self.surface_id, 1, &.{ 0, 0, 0 });
+        // wl_surface.commit (opcode 6) — pending state 적용.
+        try self.sendNoArgs(self.surface_id, 6);
+        self.mapped = false;
+        self.surface_hidden = true;
+        log.appendLine("portal", "toggle hide", .{});
     }
 
     fn logCapabilities(self: *Client) void {
