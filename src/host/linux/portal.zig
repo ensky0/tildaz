@@ -29,12 +29,19 @@ const interface_global_shortcuts: [*:0]const u8 = "org.freedesktop.portal.Global
 const interface_request: [*:0]const u8 = "org.freedesktop.portal.Request";
 const member_response: [*:0]const u8 = "Response";
 const member_create_session: [*:0]const u8 = "CreateSession";
+const member_bind_shortcuts: [*:0]const u8 = "BindShortcuts";
 
 /// Request handle / session handle 의 token (path 의 마지막 segment). 우리가
 /// 고정 — tildaz process 안에선 동시에 portal session 한 개만 운영. 다른
 /// instance 와 conflict 시 portal 가 임의 token 으로 override 가능 (spec).
 const handle_token: [*:0]const u8 = "tildaz_handle";
 const session_handle_token: [*:0]const u8 = "tildaz_session";
+const bind_handle_token: [*:0]const u8 = "tildaz_bind";
+
+/// L9-β-2 — 우리가 portal 에 등록하는 유일한 shortcut id. Activated signal 의
+/// `shortcut_id` arg 도 이 값으로 들어옴 — L9-γ 에서 매칭 키.
+pub const shortcut_id_toggle: [*:0]const u8 = "toggle";
+const shortcut_description: [*:0]const u8 = "Show / hide TildaZ";
 
 /// portal Response signal 의 응답 code (spec):
 ///   0 = success
@@ -47,6 +54,9 @@ const response_code_success: u32 = 0;
 const dispatch_iter_timeout_ms: c_int = 100;
 const create_session_total_timeout_ms: i64 = 30_000;
 const method_call_timeout_ms: c_int = 25_000;
+/// BindShortcuts 는 사용자 dialog 응답 기다림 — 첫 등록 시 portal 가 KDE /
+/// GNOME UI 띄움, 사용자가 승인 / 거부 / 단축키 변경. 5 분 timeout.
+const bind_total_timeout_ms: i64 = 300_000;
 
 /// `org.freedesktop.portal.GlobalShortcuts.CreateSession` 호출 결과. 이후
 /// `BindShortcuts` (L9-β-2) 가 `session_handle` 사용.
@@ -285,4 +295,185 @@ fn appendStringVariantEntry(
     if (api.iter_append_basic(&var_iter, dbus.dbus_type_string, @ptrCast(&value_var)) == 0) return error.PortalAppendFailed;
     if (api.iter_close_container(&entry_iter, &var_iter) == 0) return error.PortalAppendFailed;
     if (api.iter_close_container(arr_iter, &entry_iter) == 0) return error.PortalAppendFailed;
+}
+
+/// XKB keysym + modifier → portal `preferred_trigger` 의 GTK accelerator 문자열
+/// (예: `0xffbe + 0` → `"F1"`, `0xffbe + ctrl` → `"<Control>F1"`).
+///
+/// L9-β-2 scope — `config.LinuxHotkey.fromString` 이 placeholder 라 (default
+/// 만 반환) modifier 는 항상 0, keysym 도 F1..F12 default 범위. 후속 sub-step
+/// 에서 `Hotkey.fromString` 정식 구현 + 더 많은 keysym 매핑.
+///
+/// caller 가 free.
+fn keysymToAccelerator(allocator: std.mem.Allocator, keysym: u32, modifiers: u32) ![:0]u8 {
+    const name: []const u8 = switch (keysym) {
+        // XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_F*`.
+        0xffbe => "F1",
+        0xffbf => "F2",
+        0xffc0 => "F3",
+        0xffc1 => "F4",
+        0xffc2 => "F5",
+        0xffc3 => "F6",
+        0xffc4 => "F7",
+        0xffc5 => "F8",
+        0xffc6 => "F9",
+        0xffc7 => "F10",
+        0xffc8 => "F11",
+        0xffc9 => "F12",
+        else => "F1",
+    };
+    // modifier 매핑은 후속 — 현재 LinuxHotkey.fromString 이 modifier=0 만 줌.
+    _ = modifiers;
+    return allocator.dupeZ(u8, name);
+}
+
+/// portal `GlobalShortcuts.BindShortcuts` 호출 — 단일 "toggle" shortcut 등록.
+/// 첫 호출 시 portal 가 KDE / GNOME UI dialog 띄움 → 사용자 승인 / 거부 / 단축키
+/// 변경. 이후엔 cached (compositor 측). 흐름은 `createGlobalShortcutsSession`
+/// 와 동등 — Request handle path 계산 → match rule + filter install → method
+/// call → reply (Request path) → Response signal wait. timeout 만 더 김 (5 min).
+pub fn bindToggleShortcut(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    hotkey_keysym: u32,
+    hotkey_modifiers: u32,
+) !void {
+    const sender_segment = try sanitizeSenderForPath(allocator, bus.unique_name);
+    defer allocator.free(sender_segment);
+
+    const expected_request_path = try std.fmt.allocPrint(allocator, "/org/freedesktop/portal/desktop/request/{s}/{s}", .{
+        sender_segment, std.mem.span(bind_handle_token),
+    });
+    defer allocator.free(expected_request_path);
+
+    const match_rule = try std.fmt.allocPrintSentinel(allocator, "type='signal',interface='{s}',member='{s}',path='{s}'", .{
+        std.mem.span(interface_request), std.mem.span(member_response), expected_request_path,
+    }, 0);
+    defer allocator.free(match_rule);
+
+    const session_handle_z = try allocator.dupeZ(u8, session_handle);
+    defer allocator.free(session_handle_z);
+
+    const accelerator = try keysymToAccelerator(allocator, hotkey_keysym, hotkey_modifiers);
+    defer allocator.free(accelerator);
+
+    var state = ResponseWaitState{
+        .api = &bus.api,
+        .expected_request_path = expected_request_path,
+        .allocator = allocator,
+    };
+
+    if (bus.api.add_filter(bus.conn, responseFilter, &state, null) == 0) return error.PortalAddFilterFailed;
+    defer bus.api.remove_filter(bus.conn, responseFilter, &state);
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+
+    bus.api.add_match(bus.conn, match_rule.ptr, &err);
+    if (bus.api.error_is_set(&err) != 0) {
+        const msg = if (err.message) |m| std.mem.span(m) else "(no message)";
+        log.appendLine("portal", "BindShortcuts add_match failed: {s}", .{msg});
+        return error.PortalAddMatchFailed;
+    }
+    defer {
+        var err2: dbus.DBusError = .{};
+        bus.api.error_init(&err2);
+        bus.api.remove_match(bus.conn, match_rule.ptr, &err2);
+        bus.api.error_free(&err2);
+    }
+
+    // build BindShortcuts method call. args:
+    //   o session_handle
+    //   a(sa{sv}) shortcuts — list of (id, attrs). 우리는 1 entry.
+    //   s parent_window — layer-shell 은 toplevel 아니라 빈 string.
+    //   a{sv} options — handle_token 만.
+    const call = bus.api.message_new_method_call(
+        portal_destination,
+        portal_path,
+        interface_global_shortcuts,
+        member_bind_shortcuts,
+    ) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    {
+        var iter: dbus.DBusMessageIter = .{};
+        bus.api.iter_init_append(call, &iter);
+
+        // arg 1: o session_handle.
+        var session_var: [*:0]const u8 = session_handle_z.ptr;
+        if (bus.api.iter_append_basic(&iter, dbus.dbus_type_object_path, @ptrCast(&session_var)) == 0) return error.PortalAppendFailed;
+
+        // arg 2: a(sa{sv}) shortcuts.
+        var arr_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "(sa{sv})", &arr_iter) == 0) return error.PortalAppendFailed;
+        {
+            var struct_iter: dbus.DBusMessageIter = .{};
+            if (bus.api.iter_open_container(&arr_iter, dbus.dbus_type_struct, null, &struct_iter) == 0) return error.PortalAppendFailed;
+            var id_var: [*:0]const u8 = shortcut_id_toggle;
+            if (bus.api.iter_append_basic(&struct_iter, dbus.dbus_type_string, @ptrCast(&id_var)) == 0) return error.PortalAppendFailed;
+            var attrs_iter: dbus.DBusMessageIter = .{};
+            if (bus.api.iter_open_container(&struct_iter, dbus.dbus_type_array, "{sv}", &attrs_iter) == 0) return error.PortalAppendFailed;
+            try appendStringVariantEntry(&bus.api, &attrs_iter, "description", shortcut_description);
+            const accel_ptr: [*:0]const u8 = accelerator.ptr;
+            try appendStringVariantEntry(&bus.api, &attrs_iter, "preferred_trigger", accel_ptr);
+            if (bus.api.iter_close_container(&struct_iter, &attrs_iter) == 0) return error.PortalAppendFailed;
+            if (bus.api.iter_close_container(&arr_iter, &struct_iter) == 0) return error.PortalAppendFailed;
+        }
+        if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return error.PortalAppendFailed;
+
+        // arg 3: s parent_window — 빈 string (layer-shell 은 xdg toplevel 없음).
+        var parent_var: [*:0]const u8 = "";
+        if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&parent_var)) == 0) return error.PortalAppendFailed;
+
+        // arg 4: a{sv} options — handle_token.
+        var opt_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "{sv}", &opt_iter) == 0) return error.PortalAppendFailed;
+        try appendStringVariantEntry(&bus.api, &opt_iter, "handle_token", bind_handle_token);
+        if (bus.api.iter_close_container(&iter, &opt_iter) == 0) return error.PortalAppendFailed;
+    }
+
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
+        if (bus.api.error_is_set(&err) != 0) {
+            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+            log.appendLine("portal", "BindShortcuts method call failed: {s}", .{m});
+        }
+        return error.PortalMethodCallFailed;
+    };
+    defer bus.api.message_unref(reply);
+
+    {
+        var reply_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_init(reply, &reply_iter) == 0) return error.PortalReplyMissingArgs;
+        if (bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_object_path) return error.PortalReplyBadType;
+        var got_c: ?[*:0]const u8 = null;
+        bus.api.iter_get_basic(&reply_iter, @ptrCast(&got_c));
+        const got_path = if (got_c) |g| std.mem.span(g) else "";
+        if (!std.mem.eql(u8, got_path, expected_request_path)) {
+            log.appendLine("portal", "BindShortcuts request path mismatch — expected={s} got={s}", .{ expected_request_path, got_path });
+            return error.PortalRequestPathMismatch;
+        }
+    }
+
+    log.appendLine("portal", "BindShortcuts request sent preferred_trigger={s} — waiting for user approval (up to 5 min)", .{accelerator});
+
+    const start_ms = std.time.milliTimestamp();
+    while (!state.done) {
+        if (bus.api.read_write_dispatch(bus.conn, dispatch_iter_timeout_ms) == 0) {
+            log.appendLine("portal", "connection disconnected during BindShortcuts wait", .{});
+            return error.PortalConnectionLost;
+        }
+        if (std.time.milliTimestamp() - start_ms > bind_total_timeout_ms) {
+            log.appendLine("portal", "BindShortcuts Response signal timeout", .{});
+            return error.PortalResponseTimeout;
+        }
+    }
+
+    if (state.response_code != response_code_success) {
+        log.appendLine("portal", "BindShortcuts response code={d} (1=user cancel)", .{state.response_code});
+        return error.PortalBindDenied;
+    }
+
+    log.appendLine("portal", "shortcut bound id={s}", .{std.mem.span(shortcut_id_toggle)});
 }
