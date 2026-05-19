@@ -138,27 +138,34 @@ layer-shell surface 가 dock 의 floating margin 영역까지 일부 침범. doc
 base height 만큼은 회피되지만, floating 으로 떠 있는 cosmetic margin (예:
 하단 8~12px) 까지는 우리 surface 가 차지해 dock 일부가 가려진다.
 
-#### 가설 (검증 안 함)
+#### 가설 — 시연 cross-verification 으로 KWin 의도적 설계 확정
 
-- Plasma 의 floating dock 은 floating margin 영역을 layer-shell exclusive
-  zone 으로 광고 안 함 (의도적 — cosmetic floating). compositor 가 floating
-  영역을 "회피 대상" 으로 client 에게 안 알려주니 우리 surface 가 정확히
-  회피 못 함.
-- cross-verification 미실시 — foot / waybar 등 다른 layer-shell client 도
-  같은 환경에서 동일 증상인지 안 확인. 같은 증상이면 KWin / Plasma 한계로
-  확정, 다르면 우리 매핑 추가 점검 필요.
+- 매핑 자체는 정확 — 로그 `shell objects (layer-shell) ... anchor=0x7
+  size=720x0 margin=(0,0,0,720)` (top+bottom+left + size.height=0 stretch
+  + margin.left=720) 가 의도대로 송신됨.
+- **KWin 의 dock auto-unfloat trigger 가 normal window 에만 반응, layer-shell
+  surface 는 안 봄.** 같은 사용자 환경에서 foot 를 KWin Quick Tile 로 우측
+  절반에 magnetize → dock 자동 un-float (화면 끝에 붙음). 즉 normal xdg-shell
+  + maximized / tiled state 가 trigger.
+- 우리 surface 는 layer-shell 이라 "정상 windows" 카테고리에 없어 trigger
+  안 됨 → dock 이 floating 상태 유지 → floating margin (예: 하단 8~12px) 이
+  exclusive zone 으로 광고되지 않은 채 떠 있고 우리 surface 가 그 영역 점유
+  → 일부 가림.
+- KDE Plasma 의 의도적 설계로 추정 (floating 은 cosmetic, "전체 사용" 시점
+  만 un-float).
 
 #### 우회
 
 - Plasma 의 dock "Floating" 옵션 끄기 (사용자 환경) — base height 만큼은
   정상적으로 exclusive zone 광고되므로 tildaz 도 정확히 회피.
 
-#### 후속
+#### 후속 (필요 시)
 
-다음 L9 (XDG GlobalShortcuts) / L11 (packaging) 작업 중 다른 layer-shell
-client 시연으로 자연스러운 cross-verification 가능. KWin 한계 확정 시 KDE
-전용 우회 (예: `org_kde_plasma_window_management` protocol 사용) 검토하되,
-KDE-specific dependency 추가는 신중히.
+- KDE 전용 우회 (예: `org_kde_plasma_window_management` 의 surface state
+  hint 로 "이건 maximized 처럼 봐라" 전달) — KDE-specific dependency 추가
+  신중. 다른 compositor (mutter / wlroots) 환경에선 의미 없음.
+- 또는 KWin upstream 에 "layer-shell surface 도 dock un-float trigger"
+  feature request — 별도 KDE 측 작업.
 
 ### tildaz 창이 항상 다른 앱 위에 떠 있음 (z-order)
 
