@@ -112,6 +112,7 @@ const zwlr_layer_shell_layer_top: u32 = 2;
 // 가로), height 만 set_size 값 사용 (spec: "anchored to opposing edges → 그
 // axis 의 size 는 anchor 가 결정, set_size 무시").
 const zwlr_layer_surface_anchor_top: u32 = 1;
+const zwlr_layer_surface_anchor_bottom: u32 = 2;
 const zwlr_layer_surface_anchor_left: u32 = 4;
 const zwlr_layer_surface_anchor_right: u32 = 8;
 // keyboard_interactivity. v1 spec 은 0/1 (none / exclusive — exclusive 면
@@ -122,6 +123,19 @@ const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
 // 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
 // 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
 const layer_surface_default_height: u32 = 400;
+// L8-β — wl_output 의 mode / done event. geometry / scale 은 아직 안 씀.
+const wl_output_event_geometry: u16 = 0;
+const wl_output_event_mode: u16 = 1;
+const wl_output_event_done: u16 = 2;
+const wl_output_event_scale: u16 = 3;
+const wl_output_mode_flag_current: u32 = 0x1;
+// L8-β — wl_output 없는 환경 fallback. 정상 Wayland session 에선 늘 advertise
+// 되므로 거의 안 닿음 — 닿으면 startup 로그에 fallback 명시.
+const screen_fallback_width: i32 = 1920;
+const screen_fallback_height: i32 = 1080;
+// width_percent / height_percent 가 거의 100 일 때 opposing edge anchor 로
+// stretch (full screen 한 축). 정확히 100.0 비교는 부동소수점 위험.
+const stretch_threshold_pct: f32 = 99.9;
 
 // wl_data_device_manager / wl_data_device / wl_data_source / wl_data_offer
 // opcodes (request side, used by us).
@@ -202,6 +216,10 @@ const Capabilities = struct {
     layer_shell: Global = .{},
     text_input_v3: Global = .{},
     data_device_manager: Global = .{},
+    // L8-β — 화면 해상도 알아내기 위해 wl_output bind. multi-monitor 환경에선
+    // wl_output 여러 개 advertise 되지만 L8-β scope 에선 첫 번째만 사용 (multi-
+    // monitor 선택은 후속 sub-step).
+    output: Global = .{},
 
     fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
         if (std.mem.eql(u8, interface, "wl_compositor")) {
@@ -218,9 +236,43 @@ const Capabilities = struct {
             self.text_input_v3 = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "wl_data_device_manager")) {
             self.data_device_manager = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "wl_output") and self.output.name == 0) {
+            // 첫 번째만 저장 (multi-monitor 시 후속 wl_output 무시 — L8-β scope).
+            self.output = .{ .name = name, .version = version };
         }
     }
 };
+
+/// L8-β — layer-shell 한 surface 의 anchor / size / margin 합본. 우리 config
+/// (dock_position / width_percent / height_percent / offset_percent) 와 wire
+/// protocol args 사이의 변환 결과. `Client.computeLayerLayout` 가 채움,
+/// `createLayerSurface` 가 그대로 송신.
+const LayerLayout = struct {
+    anchor: u32,
+    width: u32,
+    height: u32,
+    margin_top: i32,
+    margin_right: i32,
+    margin_bottom: i32,
+    margin_left: i32,
+};
+
+/// L8-β — 화면 한 축 (가로 또는 세로) 의 percent 점유율을 픽셀로. clamp 후
+/// 음수 방지 위해 max(0). `width_percent` / `height_percent` 모두 동일 식.
+fn pctToPx(screen_dim: f32, pct: f32) u32 {
+    const clamped = std.math.clamp(pct, 0.0, 100.0);
+    const v = screen_dim * clamped / 100.0;
+    if (v < 0.0) return 0;
+    return @intFromFloat(@round(v));
+}
+
+/// L8-β — cross-axis margin 계산. `remaining = screen_dim - surface_dim` 의
+/// `offset_percent` 비율만큼 한 쪽 (`anchor` 잡힌 edge) 에 띄움. 음수 방지.
+fn pxOffset(remaining: i32, off_pct: f32) i32 {
+    if (remaining <= 0) return 0;
+    const rem_f: f32 = @floatFromInt(remaining);
+    return @intFromFloat(@round(rem_f * off_pct / 100.0));
+}
 
 const ShmBuffer = struct {
     id: u32,
@@ -308,6 +360,12 @@ const Client = struct {
     // 경로를 동시에 만들면 안 된다 (한 surface 의 role 충돌).
     layer_shell_id: u32 = 0,
     layer_surface_id: u32 = 0,
+    // L8-β — wl_output binding + 화면 해상도. layer-shell anchor / size /
+    // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
+    // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
+    output_id: u32 = 0,
+    screen_width: i32 = 0,
+    screen_height: i32 = 0,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
@@ -550,6 +608,19 @@ const Client = struct {
                 self.layer_shell_id,
             );
         }
+        // L8-β — wl_output bind. mode event 에서 screen_width / screen_height
+        // 받아 layer-shell anchor / size / margin 계산에 사용. multi-monitor
+        // 환경에선 첫 번째 wl_output 만 — `Capabilities.record` 가 첫 advertise
+        // 만 저장. 정상 Wayland session 에선 항상 advertise — 없으면 fallback.
+        if (self.caps.output.name != 0) {
+            self.output_id = self.allocId();
+            try self.bind(
+                self.caps.output.name,
+                "wl_output",
+                @min(self.caps.output.version, 2),
+                self.output_id,
+            );
+        }
         // L10-α — `zwp_text_input_manager_v3` bind + 그 자리에서 바로
         // `get_text_input(seat)` 호출해 text_input object 생성. enable / disable
         // 은 keyboard focus enter / leave 이벤트에서 트리거.
@@ -568,7 +639,7 @@ const Client = struct {
                 &.{ self.text_input_id, self.seat_id },
             );
         }
-        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={}", .{
+        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={} output_id={}", .{
             self.compositor_id,
             self.shm_id,
             self.wm_base_id,
@@ -577,6 +648,7 @@ const Client = struct {
             self.text_input_manager_id,
             self.text_input_id,
             self.layer_shell_id,
+            self.output_id,
         });
     }
 
@@ -647,12 +719,13 @@ const Client = struct {
     }
 
     /// L8-α — wlr-layer-shell drop-down surface 경로. compositor 가
-    /// `zwlr_layer_shell_v1` advertise 한 경우. top+left+right anchor 로
-    /// 화면 상단 가로 전체 + 고정 높이 layer surface. configure event 시
-    /// ack + window_width/height 갱신. L8-β 부터 dock_position / height
-    /// 사용자 설정 반영, L8-γ slide animation, L9 portal hotkey toggle.
+    /// `zwlr_layer_shell_v1` advertise 한 경우. config 의 dock_position /
+    /// width_percent / height_percent / offset_percent 를 anchor / size /
+    /// margin 으로 변환해 송신. L8-γ slide animation 은 SPEC 아님,
+    /// L9 portal hotkey toggle 은 별도.
     fn createLayerSurface(self: *Client) !void {
         self.layer_surface_id = self.allocId();
+        const layout = self.computeLayerLayout();
         // get_layer_surface(new_id, surface, output=NULL, layer=TOP, namespace)
         // output=0 → compositor 가 현재 monitor 선택 (보통 pointer / focus).
         var msg = Msg.init(self.layer_shell_id, zwlr_layer_shell_v1_request_get_layer_surface);
@@ -663,21 +736,34 @@ const Client = struct {
         try msg.putString("tildaz");
         try msg.send(self.stream);
 
-        // set_anchor(top | left | right). 가로는 anchor 가 결정 (full width),
-        // 높이는 set_size 값 사용.
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_anchor,
-            &.{zwlr_layer_surface_anchor_top | zwlr_layer_surface_anchor_left | zwlr_layer_surface_anchor_right},
+            &.{layout.anchor},
         );
-
-        // set_size(width=0, height=default). width=0 = "compositor 가
-        // anchor 기반으로 채워라". L8-β 에서 사용자 height_percent 반영 예정.
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_size,
-            &.{ 0, layer_surface_default_height },
+            &.{ layout.width, layout.height },
         );
+        // set_exclusive_zone(0). spec default 가 0 이지만 명시 송신 — KDE Plasma
+        // 시연 사이클에서 default 가 confusion 일 수 있어 발견. 0 = 우리 surface
+        // 가 다른 panel / dock 의 exclusive zone 회피 (= 회피된 working area 안에
+        // 위치). 양수 면 우리가 그만큼의 zone 차지 (panel 처럼). 음수 (-1) 면
+        // 다른 exclusive zone 무시하고 우리가 anchor edge 까지 침범.
+        try self.sendArgs(
+            self.layer_surface_id,
+            zwlr_layer_surface_v1_request_set_exclusive_zone,
+            &.{0},
+        );
+        // set_margin(top, right, bottom, left). cross-axis 위치 결정 — anchor
+        // 가 잡힌 두 edge 사이에서 offset_percent 로 이동.
+        var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
+        try margin_msg.putI32(layout.margin_top);
+        try margin_msg.putI32(layout.margin_right);
+        try margin_msg.putI32(layout.margin_bottom);
+        try margin_msg.putI32(layout.margin_left);
+        try margin_msg.send(self.stream);
 
         // set_keyboard_interactivity(exclusive). drop-down 은 떠 있을 때
         // 키보드 받아야 시연 가치 — L9 hotkey 가 toggle 하면 visible 시점에
@@ -693,11 +779,183 @@ const Client = struct {
         // 후 compositor 가 첫 configure event 송신.
         try self.sendNoArgs(self.surface_id, 6);
 
-        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} anchor=top+left+right layer=top keyboard_interactivity=exclusive default_height={}", .{
+        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} anchor=0x{x} size={}x{} margin=({},{},{},{}) keyboard_interactivity=exclusive", .{
             self.surface_id,
             self.layer_surface_id,
-            layer_surface_default_height,
+            @tagName(self.config.dock_position),
+            self.screen_width,
+            self.screen_height,
+            layout.anchor,
+            layout.width,
+            layout.height,
+            layout.margin_top,
+            layout.margin_right,
+            layout.margin_bottom,
+            layout.margin_left,
         });
+    }
+
+    /// L8-β — config 의 dock_position / width_percent / height_percent /
+    /// offset_percent 를 layer-shell 의 anchor mask / set_size args / margin
+    /// args 로 변환. mac `screenFrameForDock` 와 동등 시각 결과 — 한 축 anchor
+    /// 두 edge 면 stretch, 한 edge 면 percent 기반 size + cross-axis margin.
+    fn computeLayerLayout(self: *const Client) LayerLayout {
+        const cfg = self.config;
+        const sw_i: i32 = if (self.screen_width > 0) self.screen_width else screen_fallback_width;
+        const sh_i: i32 = if (self.screen_height > 0) self.screen_height else screen_fallback_height;
+        const sw_f: f32 = @floatFromInt(sw_i);
+        const sh_f: f32 = @floatFromInt(sh_i);
+        const off_pct = std.math.clamp(cfg.offset_percent, 0.0, 100.0);
+        const want_w: u32 = pctToPx(sw_f, cfg.width_percent);
+        const want_h: u32 = pctToPx(sh_f, cfg.height_percent);
+        const want_w_i: i32 = @intCast(@min(want_w, @as(u32, std.math.maxInt(i32))));
+        const want_h_i: i32 = @intCast(@min(want_h, @as(u32, std.math.maxInt(i32))));
+        // 가로/세로 점유율이 거의 100 이면 opposing edge 두 개 anchor —
+        // compositor 가 자동 stretch. size 의 해당 축은 0 으로 (spec: anchor 가
+        // 양 edge 에 잡힌 축은 set_size 무시).
+        const stretch_w = cfg.width_percent >= stretch_threshold_pct;
+        const stretch_h = cfg.height_percent >= stretch_threshold_pct;
+
+        const a_top = zwlr_layer_surface_anchor_top;
+        const a_bottom = zwlr_layer_surface_anchor_bottom;
+        const a_left = zwlr_layer_surface_anchor_left;
+        const a_right = zwlr_layer_surface_anchor_right;
+
+        // dock_position 별 anchor / size / margin. 두 축 각각 stretch (full 점유)
+        // / single edge anchor (percent 점유) 의 4 조합. 두 축 stretch 면 모든
+        // edge anchor + size=(0, 0), 한 축 stretch 면 그 축의 opposing 두 edge +
+        // 다른 축의 single edge + size=(0 / w_or_h, 0 / w_or_h). 두 축 모두
+        // single edge 면 corner anchor + 명시 size + margin 으로 cross-axis 이동.
+        //
+        // height_percent=100 일 때 size.height=0 + 양 edge anchor (top+bottom) →
+        // mac `usable_height = visibleFrame.maxY - visibleFrame.minY` 와 동등 —
+        // compositor 가 다른 panel 의 exclusive zone honor 한 영역 안에서 stretch
+        // (KDE Plasma 의 floating dock 등도 자동 회피). size 를 명시하면 compositor
+        // 가 그대로 깔아서 dock 영역까지 침범 — Plasma 시연으로 확인된 패턴.
+        return switch (cfg.dock_position) {
+            .top => blk: {
+                if (stretch_w and stretch_h) break :blk LayerLayout{
+                    .anchor = a_top | a_bottom | a_left | a_right,
+                    .width = 0,
+                    .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_w) break :blk LayerLayout{
+                    .anchor = a_top | a_left | a_right,
+                    .width = 0,
+                    .height = want_h,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_h) break :blk LayerLayout{
+                    .anchor = a_top | a_bottom | a_left,
+                    .width = want_w,
+                    .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
+                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
+                };
+                break :blk LayerLayout{
+                    .anchor = a_top | a_left,
+                    .width = want_w,
+                    .height = want_h,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
+                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
+                };
+            },
+            .bottom => blk: {
+                if (stretch_w and stretch_h) break :blk LayerLayout{
+                    .anchor = a_top | a_bottom | a_left | a_right,
+                    .width = 0, .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_w) break :blk LayerLayout{
+                    .anchor = a_bottom | a_left | a_right,
+                    .width = 0, .height = want_h,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_h) break :blk LayerLayout{
+                    .anchor = a_top | a_bottom | a_left,
+                    .width = want_w, .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
+                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
+                };
+                break :blk LayerLayout{
+                    .anchor = a_bottom | a_left,
+                    .width = want_w, .height = want_h,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
+                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
+                };
+            },
+            .left => blk: {
+                if (stretch_w and stretch_h) break :blk LayerLayout{
+                    .anchor = a_top | a_bottom | a_left | a_right,
+                    .width = 0, .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_h) break :blk LayerLayout{
+                    .anchor = a_left | a_top | a_bottom,
+                    .width = want_w, .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_w) break :blk LayerLayout{
+                    .anchor = a_left | a_right | a_top,
+                    .width = 0, .height = want_h,
+                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
+                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                break :blk LayerLayout{
+                    .anchor = a_top | a_left,
+                    .width = want_w, .height = want_h,
+                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
+                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+            },
+            .right => blk: {
+                if (stretch_w and stretch_h) break :blk LayerLayout{
+                    .anchor = a_top | a_bottom | a_left | a_right,
+                    .width = 0, .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_h) break :blk LayerLayout{
+                    .anchor = a_right | a_top | a_bottom,
+                    .width = want_w, .height = 0,
+                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                if (stretch_w) break :blk LayerLayout{
+                    .anchor = a_left | a_right | a_top,
+                    .width = 0, .height = want_h,
+                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
+                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+                break :blk LayerLayout{
+                    .anchor = a_top | a_right,
+                    .width = want_w, .height = want_h,
+                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
+                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
+                };
+            },
+        };
+    }
+
+    /// L8-β — wl_output 의 mode (current flag 인 것만) / done 처리. geometry /
+    /// scale 은 아직 안 씀 (HiDPI / rotation 은 후속 sub-step). transform 도
+    /// 무시 — 일반 monitor 의 default 0 (normal) 가정.
+    fn handleOutputEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+        switch (opcode) {
+            wl_output_event_mode => {
+                if (payload.len < 16) return;
+                const flags = readU32(payload[0..4]);
+                if ((flags & wl_output_mode_flag_current) == 0) return;
+                self.screen_width = readI32(payload[4..8]);
+                self.screen_height = readI32(payload[8..12]);
+                log.appendLine("wayland", "output mode width={} height={} refresh={}", .{
+                    self.screen_width,
+                    self.screen_height,
+                    readI32(payload[12..16]),
+                });
+            },
+            // geometry / done / scale 은 layer-shell layout 에 직접 안 씀.
+            else => {},
+        }
     }
 
     fn waitForConfigure(self: *Client) !void {
@@ -1124,6 +1382,10 @@ const Client = struct {
             return;
         }
         if (self.handleBufferEvent(id, opcode)) return;
+        if (self.output_id != 0 and id == self.output_id) {
+            try self.handleOutputEvent(opcode, payload);
+            return;
+        }
         if (id == self.wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
             return;
