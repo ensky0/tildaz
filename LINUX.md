@@ -31,12 +31,13 @@ milestone 상태를 정확히 남기는 용도다.
 Debian Wayland 환경).
 
 - Branch: `linux-wayland-bringup`
-- Commit: `7248163`
+- Commit: `4673a2e`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
 |---|---|
-| normal Wayland terminal window | 동작 |
+| normal Wayland terminal window | 동작 — compositor 가 layer-shell 미advertise (GNOME mutter 등) 시 xdg-shell fallback |
+| layer-shell drop-down surface | 동작 (L8-α) — compositor 가 `zwlr_layer_shell_v1` advertise 시 자동 사용. top+left+right anchor (가로 full screen) + 고정 높이 400px + exclusive keyboard. UTM Debian arm64 (mutter Wayland) 에서 buffer 1440x400 확인 |
 | shell 출력 표시 | 동작 |
 | typing → PTY | 동작 (lowercase / uppercase 시각 구분 포함) |
 | Backspace / `exit` / shell exit | 동작 |
@@ -113,6 +114,7 @@ zwp_text_input_manager_v3=true
 - L12-γ-4 tab close 'x' 버튼 추가 ([commit 41473d9](https://github.com/ensky0/tildaz/commit/41473d9)). 각 탭 우측 끝 `TAB_CLOSE_SIZE_PT (=14)` box 안 'x' 글리프. mac / win 동등 dim 색 (`TEXT × 0.6 + bg × 0.4`). hit.on_close → `tab_actions.closeIndex` (마지막 탭이면 terminate, 아니면 invalidate). hover 강조는 mac / win 도 미부착이라 동등. `blendU8` helper 신규. 시연 사이클 메모: 임시로 "tab bar 우클릭 → close" 도 추가했었는데 SPEC 외라 사용자 지적 후 즉시 원복.
 - L12-γ-5 client-side key repeat 추가 ([commit 7248163](https://github.com/ensky0/tildaz/commit/7248163)). Wayland spec 상 key repeat 은 client 책임 (macOS / Windows 는 OS 자동). `Client.key_repeat_keycode` / `key_repeat_next_ms` / `key_repeat_rate_hz` / `key_repeat_delay_ms` field + `handleKeyboardKey` 의 byte parsing / `processKeyEvent(serial, key)` 로 분리. press → timer arm (`next_ms = now + delay`), release → disarm, `wl_keyboard.leave` → disarm (focus 떠날 때 release 못 받는 stuck 방지). main loop 의 `maybeRepeatKey()` 가 매 iteration `now >= next_ms` 면 `processKeyEvent(last_serial, key)` 재호출 + `next_ms += 1000/rate`. IME 활성 시 key 가 IME 로 raised 되어 안 옴 → fcitx5 자체 repeat (충돌 없음). 시연 확인: `a` 연속 입력, Ctrl+Shift+T 연속 새 탭 (32 도달 시 dialog).
 - L12-γ-2 더블클릭 rename + IME foot 패턴 정밀화 추가 ([commit c5689e9](https://github.com/ensky0/tildaz/commit/c5689e9)). 탭바 더블클릭 → cross-platform `tab_interaction.RenameState` 부착 (mac/win 공유). Enter commit (`setCustomTitle`), Escape cancel, rename 중 마우스 클릭 cursor positioning, IME 한글 commit 시 buffer 삽입 (PTY 송신 분기 차단), 포커스 loss 시 preedit 자동 commit (mac / win 동등). 진단 사이클에서 `zwp_text_input_v3` 구현을 foot terminal 패턴으로 정밀화 — `enableTextInput` 한 batch (`enable + set_content_type(NONE, TERMINAL) + set_cursor_rectangle(actual cursor pos) + commit`) + `text_input.leave` 가 disable+commit 책임 + `wl_keyboard.enter/leave` 의 enable/disable 호출 제거 (text_input.enter/leave 가 권위) + `computeCursorRect()` helper (surface-relative cursor pixel rect). VSCode (Electron, X11 frontend) 포커스 후 tildaz 한글 입력 회귀는 foot 도 동일 증상 → fcitx5 X11/Wayland frontend separation 환경 한계 ([#194](https://github.com/ensky0/tildaz/issues/194)). Slack desktop 은 영향 없어 일반화 깨짐.
+- L8-α wlr-layer-shell drop-down surface 추가 ([commit 4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e)). compositor 가 `zwlr_layer_shell_v1` advertise 한 경우 xdg-shell toplevel 대신 layer-shell surface 생성. `get_layer_surface(surface, output=NULL, layer=TOP, namespace="tildaz")` + `set_anchor(top|left|right)` + `set_size(0, 400)` + `set_keyboard_interactivity(exclusive)`. configure event 시 `ack_configure` + size apply (compositor 가 0 보내면 기존 값 유지). xdg-shell fallback 경로는 `caps.layer_shell.name == 0` 시 (GNOME mutter 등). 시연 (UTM Debian arm64 mutter Wayland): 화면 상단 가로 전체 (1440px) + 우리 요청 높이 400px 그대로 + 기존 키보드 / 마우스 / clipboard / 탭 / scroll / IME enter/leave 회귀 없음. 한글 IME 입력 자체는 미테스트. 알려진 한계: 다른 일반 앱 활성화 시 tildaz 가 z-order 위 유지 — layer=top + exclusive 의 자연스러운 결과, cross-platform 별도 이슈 ([#195](https://github.com/ensky0/tildaz/issues/195)). protocol 출처 https://wayland.app/protocols/wlr-layer-shell-unstable-v1.
 - L12-γ-3 drag reorder + scroll polish 추가 ([commit b801baf](https://github.com/ensky0/tildaz/commit/b801baf)). cross-platform `tab_interaction.DragState` 부착 (mac/win 공유). 탭 본체 left press → `tab_drag.begin(world_x, tab_w, count)`, motion → tab area 가장자리 (30px) auto-scroll + `tab_drag.move(world_x)`, release → `tab_drag.finish()?` → `session.reorderTabs(from, to)`. drag source 탭은 글자 색 50% blend (mac/win alpha 0.6 동등), drop_idx 의 left edge 에 2px 세로 indicator. `DragState.finish` 의 `defer reset` + `begin` 의 reset 으로 cancel 경로 자동 (mac 패턴 동등, 별도 Escape 분기 없음). 묶음 scroll polish — ① 첫 보이는 탭이 부분 잘릴 때 (`text_x_start < tab_area_x`) text 가 `<` arrow 영역 invade → `viewport_left = @max(text_x_start, tab_area_x)` clamp (mac/win 의 Metal scissor / NSView bounds 동등 software 패턴). ② `<` / `>` arrow 색 분기 — enabled = `TAB_CTRL_ACTIVE_COLOR (0.95)`, disabled = `TAB_ARROW_DISABLED_COLOR (0.4)`, mac/win 동등. plus 는 항상 enabled. scroll 왼쪽 끝 → `<` 회색, 우측 끝 → `>` 회색.
 - 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element + 한글 IME (음절 commit + preedit overlay + Ctrl 시 discard + popover cursor 정렬 + terminal hint)" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / **tabs** / **사용자 config 적용** 이 아직 부족하다.
 
@@ -127,6 +129,17 @@ buffer에 직접 그려서 PTY - parser - resize - frame lifecycle을 먼저 검
 
 이 renderer는 최종 renderer가 아니다. EGL/OpenGL, fontconfig, FreeType,
 HarfBuzz가 붙기 전까지의 bring-up용 경로다.
+
+### tildaz 창이 항상 다른 앱 위에 떠 있음 (z-order)
+
+L8-α 의 layer-shell surface 가 `layer=top + keyboard_interactivity=exclusive`
+로 set 되어 있어 다른 일반 앱 (browser / VSCode 등) 을 activate 해도 그 앱이
+tildaz 위로 못 올라온다. 사용자가 tildaz 를 hide 시켜야만 다른 앱이 보임.
+
+cross-platform 동일 증상 — macOS `NSPopUpMenuWindowLevel`, Windows
+`HWND_TOPMOST` 도 같은 결과. drop-down 본분 ("hotkey 토글, focus 잃으면 자동
+hide") 가 갖춰지면 자연 해소될 가능성 — [#195](https://github.com/ensky0/tildaz/issues/195)
+에서 cross-platform 으로 추적.
 
 ### VSCode 포커스 후 tildaz 한글 IME 입력 안 됨
 
@@ -167,7 +180,7 @@ Electron 앱 = 회귀" 일반화 아님. VSCode 만의 특수성으로 좁혀짐
 | color emoji paste | 동작 ([4816052](https://github.com/ensky0/tildaz/commit/4816052), Noto Color Emoji chain 포함 + BGRA raster path) |
 | block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 ([c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a), 공유 `block_element.zig` 부착 + procedural dot mask) |
 | combining mark / grapheme cluster | 미구현 (L5-5 sub-step) |
-| layer-shell drop-down | 미구현 (L8 대기) |
+| layer-shell drop-down surface (top+left+right anchor, exclusive keyboard) | 동작 (L8-α, [4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e), UTM Debian arm64 mutter Wayland). dock_position / width_percent / height_percent config 반영 + slide animation + hotkey toggle 은 L8-β / γ / L9. |
 | global shortcut | 미구현 (L9 대기) |
 | IME commit (음절 PTY 송신) | 동작 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5), fcitx5 + Cinnamon Wayland) — L10-α |
 | IME preedit inline overlay (보라색) | 동작 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)) — macOS / Windows 동등 시각, spec done-apply batch 패턴 |
@@ -279,7 +292,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L5 | Fonts | L5-1 / L5-3 / L5-4 / L5-6 완료, 나머지 대기 | L5-1 — fontconfig dlopen + FreeType dlopen + ASCII pre-raster + cell-center 정렬 ([ce12372](https://github.com/ensky0/tildaz/commit/ce12372)). L5-3 — chain 구조 (MAX_CHAIN=8) + per-face lazy raster + Hangul / CJK paste 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341)). L5-4 — BGRA color emoji raster path + 임시 chain hardcoded + fontconfig substitution 검증 ([4816052](https://github.com/ensky0/tildaz/commit/4816052)). L5-6 — 공유 `block_element.zig` 부착 + procedural dot mask (d3d11 / Metal 셰이더와 동일 식) ([c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a)). 남은 sub-step: L5-2 HarfBuzz Latin shape / L5-5 combining mark + ZWJ + grapheme cluster / config 통합 (font.family + font.glyph_fallback). |
 | L6 | Input and clipboard | keyboard + mouse selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 더블클릭 word selection ([dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 스크롤바 클릭 + 드래그 — 우측 8 px thumb hit test + `scrollToY` ([33b760b](https://github.com/ensky0/tildaz/commit/33b760b)). pointer cursor 모양은 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)). |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
-| L8 | Layer-shell drop-down | 대기 | 테스트 session 의 compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (Wayland 용어 *advertise* — `wl_registry.global` 로 보내는 protocol 지원 통보) 하는 건 확인됐지만, TildaZ 가 그 위에 layer-shell surface 를 만드는 코드는 아직 미구현. |
+| L8 | Layer-shell drop-down | L8-α 완료, L8-β / γ 대기 | L8-α — `caps.layer_shell.name != 0` 시 xdg-shell toplevel 대신 layer-shell surface 생성 (top+left+right anchor + 고정 400px 높이 + exclusive keyboard, [4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e)). 시연 (UTM Debian arm64 mutter Wayland) — 화면 상단 가로 full (1440px) + 우리 요청 높이 그대로 + 기존 입력 / clipboard / 탭 / IME enter/leave 회귀 없음. fallback (GNOME mutter 등) 시 xdg-shell. 알려진 한계: 다른 일반 앱 z-order 위로 못 옴 — [#195](https://github.com/ensky0/tildaz/issues/195). 남은 sub-step: L8-β (dock_position / width_percent / height_percent config 반영) / L8-γ (slide-down animation). 단독 hotkey toggle 은 L9 (portal GlobalShortcuts). |
 | L9 | Global shortcut | 대기 | XDG Desktop Portal `GlobalShortcuts` integration 미시작. **명시 요구사항**: 다른 X11 / Electron 앱 (예: VSCode) 이 focus 잡고 있을 때도 hotkey 가 TildaZ 에 도달해야 한다. X11 시대의 Tilda 가 동일 시나리오에서 VSCode focus 시 F1 이 안 닿는 quirk 가 있는데 (`XGrabKey` 가 XWayland 안 X11 client 의 grab 에 가려짐), TildaZ 는 Wayland native client 로서 portal `GlobalShortcuts` 가 compositor 레벨 routing 이라 focus 무관히 동작해야 한다 — 검증 항목. |
 | L10 | IME | 완료 (L10-α / β / γ) | L10-α — `zwp_text_input_v3` wire-level + `get_text_input(seat)` + keyboard focus 시점 enable/disable + `commit_string` → PTY 송신 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5)). L10-β — preedit inline overlay (보라색 배경 + foreground 글자, macOS / Windows 동등) + spec done-apply batch 패턴 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)). L10-γ — Ctrl+key 시 IME 조합 discard + `set_cursor_rectangle` + `set_content_type(purpose=terminal)` ([6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49)). fcitx5-hangul + Cinnamon Wayland 시연 OK. |
 | L11 | Packaging | 대기 | `.desktop`, icon install, AppImage/distro package plan, autostart, final config/log path 검증 필요. |
@@ -315,7 +328,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 
 ## 다음 작업 후보
 
-우선순위가 높은 순서. 7248163 까지 완료된 항목은 ✅ 표시.
+우선순위가 높은 순서. 4673a2e 까지 완료된 항목은 ✅ 표시.
 
 | 순서 | 작업 | 상태 |
 |---|---|---|
@@ -340,7 +353,9 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 19 | L13-α Config integration 기초 hook | ✅ [f416072](https://github.com/ensky0/tildaz/commit/f416072) — `Config.load` + `resolveShell` + Client.config / extra_env_storage + Defaults 단일 struct 리팩토링 + dialog Linux backend. shell / theme / max_scroll_lines / extra_env (TERM / LANG / LC_CTYPE / COLORFGBG / SHELL) 사용자 값 적용. |
 | 20 | L13-β config.font / cell_ratio 통합 | ✅ [a08c3ca](https://github.com/ensky0/tildaz/commit/a08c3ca) — `cfg.font_families` chain / `cfg.font_size_point` (1:1, mac/win 동등) / `cfg.cell_width_ratio` / `cfg.line_height_ratio` 가 `font.Context` 와 cell metric 에 반영. `default_families` / `default_pixel_height` 하드코딩 제거. 시연 사이클에서 pt-pixel 변환 비대칭 (1.33x) 발견 + fix. |
 | 21 | L13-γ config.opacity_percent | ✅ [318bbef](https://github.com/ensky0/tildaz/commit/318bbef) — Wayland buffer format XRGB8888 → ARGB8888 + paint 끝 alpha sweep 으로 일괄 적용. 호출 site 변경 없이 단일 sweep 으로 통합. |
-| 22 | L8 layer-shell drop-down prototype | 대기 — compositor 가 `zwlr_layer_shell_v1` 을 client 에게 노출 (*advertise*) 하는 건 확인됨. anchor / exclusive zone / monitor 선택 검증 필요. |
+| 22 | L8-α layer-shell drop-down surface (baseline) | ✅ [4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e) — `caps.layer_shell.name != 0` 시 xdg-shell toplevel 대신 layer-shell surface. top+left+right anchor + 고정 400px + exclusive keyboard. UTM Debian arm64 mutter Wayland 에서 가로 full screen (1440px) + 입력 / 탭 / clipboard / IME enter/leave 회귀 없음 확인. |
+| 22-β | L8-β config 반영 (`dock_position` / `width_percent` / `height_percent`) | 대기 — 현재 top + full width + 400px hardcoded. config 에 정의는 이미 있음 ([src/config.zig:364](src/config.zig#L364)). |
+| 22-γ | L8-γ slide-down animation | 대기 — frame callback 으로 height 점진 증가 / hide 시 감소. |
 | 23 | L9 global shortcut | 대기 — XDG Desktop Portal `GlobalShortcuts` over D-Bus. **명시 요구**: VSCode 등 다른 X11/Electron 앱 focus 시에도 hotkey 도달해야 함 (L9 milestone 행 참고). |
 | 24 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
 | 25 | L12-α tab bar 렌더링 (활성 탭 1 개) | ✅ [b392765](https://github.com/ensky0/tildaz/commit/b392765) — 28px tab bar + 활성 탭 + title text + pointer→cell offset 보정. 비활성 / 클릭 라우팅 / drag / 단축키는 L12-β/γ. |
