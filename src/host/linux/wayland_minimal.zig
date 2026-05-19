@@ -23,6 +23,7 @@ const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
 const xkb = @import("xkb.zig");
 const dbus = @import("dbus.zig");
+const portal = @import("portal.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -367,11 +368,16 @@ const Client = struct {
     output_id: u32 = 0,
     screen_width: i32 = 0,
     screen_height: i32 = 0,
-    // L9-α — D-Bus session bus client (sd-bus dlopen). portal `GlobalShortcuts`
+    // L9-α — D-Bus session bus client (libdbus-1 dlopen). portal `GlobalShortcuts`
     // 의 진입 자리. 연결 실패는 fatal 아님 — minimal Wayland session (portal
-    // 없음) 에선 hotkey 기능 없이 terminal 자체는 정상. L9-β 부터 method call /
+    // 없음) 에선 hotkey 기능 없이 terminal 자체는 정상. L9-β-1 부터 method call /
     // signal subscribe.
     dbus_session: ?dbus.SessionBus = null,
+    // L9-β-1 — portal `GlobalShortcuts.CreateSession` 결과. session_handle 은
+    // 후속 `BindShortcuts` (L9-β-2) / `Activated` signal subscribe (L9-γ) 에서
+    // 사용. dbus_session null 이거나 CreateSession 실패 시 null — hotkey 기능
+    // 미제공 graceful degrade.
+    portal_session: ?portal.GlobalShortcutsSession = null,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
@@ -507,6 +513,10 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        if (self.portal_session) |*session| {
+            session.deinit();
+            self.portal_session = null;
+        }
         if (self.dbus_session) |*session| {
             session.deinit();
             self.dbus_session = null;
@@ -2686,15 +2696,21 @@ const Client = struct {
     }
 
     /// L9-α — D-Bus session bus 연결 시도. 실패는 fatal 아님 (portal 없는
-    /// minimal Wayland session, libsystemd 미설치 musl Linux 등) — log 만
-    /// 남기고 진행. dbus_session 이 null 이면 후속 L9 sub-step (CreateSession /
-    /// BindShortcuts / Activated signal) 도 skip — hotkey 기능 미제공.
+    /// minimal Wayland session, libdbus 미설치 등) — log 만 남기고 진행.
+    /// dbus_session 이 null 이면 후속 L9 sub-step 도 skip — hotkey 기능 미제공.
+    /// L9-β-1 — 성공 시 곧바로 portal `CreateSession` 호출. 실패해도 fatal 아님
+    /// (portal 미설치 / 사용자 거부 등).
     fn tryConnectDbus(self: *Client) void {
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
             return;
         };
         self.dbus_session = session;
+        const portal_session = portal.createGlobalShortcutsSession(self.allocator, &self.dbus_session.?) catch |err| {
+            log.appendLine("portal", "CreateSession skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+            return;
+        };
+        self.portal_session = portal_session;
     }
 
     fn logCapabilities(self: *Client) void {
