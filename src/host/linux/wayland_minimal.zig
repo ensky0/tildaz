@@ -2711,6 +2711,18 @@ const Client = struct {
             return;
         };
         self.portal_session = portal_session;
+        // L9-β-2 — 단일 "toggle" shortcut 등록. 첫 호출 시 KDE / GNOME portal
+        // UI dialog 뜸 (사용자 승인). 실패해도 fatal 아님 — session 은 살아
+        // 있고 다음 실행에서 재시도 가능.
+        portal.bindToggleShortcut(
+            self.allocator,
+            &self.dbus_session.?,
+            self.portal_session.?.session_handle,
+            self.config.hotkey.keysym,
+            self.config.hotkey.modifiers,
+        ) catch |err| {
+            log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+        };
     }
 
     fn logCapabilities(self: *Client) void {
