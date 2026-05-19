@@ -22,6 +22,7 @@ const messages = @import("../../messages.zig");
 const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
 const xkb = @import("xkb.zig");
+const dbus = @import("dbus.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -366,6 +367,11 @@ const Client = struct {
     output_id: u32 = 0,
     screen_width: i32 = 0,
     screen_height: i32 = 0,
+    // L9-α — D-Bus session bus client (sd-bus dlopen). portal `GlobalShortcuts`
+    // 의 진입 자리. 연결 실패는 fatal 아님 — minimal Wayland session (portal
+    // 없음) 에선 hotkey 기능 없이 terminal 자체는 정상. L9-β 부터 method call /
+    // signal subscribe.
+    dbus_session: ?dbus.SessionBus = null,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
@@ -501,6 +507,10 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        if (self.dbus_session) |*session| {
+            session.deinit();
+            self.dbus_session = null;
+        }
         self.clearClipboardOwnership();
         self.keyboard.deinit();
         self.pending_preedit.deinit(self.allocator);
@@ -538,6 +548,7 @@ const Client = struct {
         try self.bindGlobals();
         try self.roundtrip();
         self.logCapabilities();
+        self.tryConnectDbus();
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
         if (!self.saw_argb8888) return error.WaylandShmArgb8888Missing;
@@ -2672,6 +2683,18 @@ const Client = struct {
         std.debug.print("Wayland protocol error: object={} code={} message={s}\n", .{ object_id, code, msg });
         log.appendLine("wayland", "protocol error object={} code={} message={s}", .{ object_id, code, msg });
         return error.WaylandDisplayError;
+    }
+
+    /// L9-α — D-Bus session bus 연결 시도. 실패는 fatal 아님 (portal 없는
+    /// minimal Wayland session, libsystemd 미설치 musl Linux 등) — log 만
+    /// 남기고 진행. dbus_session 이 null 이면 후속 L9 sub-step (CreateSession /
+    /// BindShortcuts / Activated signal) 도 skip — hotkey 기능 미제공.
+    fn tryConnectDbus(self: *Client) void {
+        const session = dbus.SessionBus.connect() catch |err| {
+            log.appendLine("dbus", "session bus connect skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+            return;
+        };
+        self.dbus_session = session;
     }
 
     fn logCapabilities(self: *Client) void {
