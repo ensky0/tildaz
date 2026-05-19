@@ -30,6 +30,7 @@ const interface_request: [*:0]const u8 = "org.freedesktop.portal.Request";
 const member_response: [*:0]const u8 = "Response";
 const member_create_session: [*:0]const u8 = "CreateSession";
 const member_bind_shortcuts: [*:0]const u8 = "BindShortcuts";
+const member_activated: [*:0]const u8 = "Activated";
 
 /// Request handle / session handle 의 token (path 의 마지막 segment). 우리가
 /// 고정 — tildaz process 안에선 동시에 portal session 한 개만 운영. 다른
@@ -131,6 +132,7 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
 
     var arr_iter: dbus.DBusMessageIter = .{};
     api.iter_recurse(&iter, &arr_iter);
+    log.appendLine("portal", "Response body code={d}, parsing results dict", .{code});
     while (api.iter_get_arg_type(&arr_iter) == dbus.dbus_type_dict_entry) {
         var entry_iter: dbus.DBusMessageIter = .{};
         api.iter_recurse(&arr_iter, &entry_iter);
@@ -140,6 +142,10 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
             _ = api.iter_next(&entry_iter);
             if (key_c) |k| {
                 const key = std.mem.span(k);
+                // L9-γ 진단 trace — Response.results 의 어떤 key 들이 오는지
+                // 출력. BindShortcuts response 에 "shortcuts" key 가 있고 그
+                // array 가 비어 있으면 KDE portal-kde 가 실제 등록 안 함.
+                log.appendLine("portal", "Response key={s} type={c}", .{ key, @as(u8, @intCast(api.iter_get_arg_type(&entry_iter))) });
                 if (std.mem.eql(u8, key, "session_handle") and api.iter_get_arg_type(&entry_iter) == dbus.dbus_type_variant) {
                     var var_iter: dbus.DBusMessageIter = .{};
                     api.iter_recurse(&entry_iter, &var_iter);
@@ -151,6 +157,31 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
                             const v_slice = std.mem.span(v);
                             state.session_handle = state.allocator.dupe(u8, v_slice) catch null;
                         }
+                    }
+                } else if (std.mem.eql(u8, key, "shortcuts") and api.iter_get_arg_type(&entry_iter) == dbus.dbus_type_variant) {
+                    // L9-γ 진단 trace — BindShortcuts response 의 `shortcuts`
+                    // variant 안 a(sa{sv}) 풀어서 entry count + 각 entry 의
+                    // shortcut id 출력. 빈 array 면 portal-kde 가 KGlobalAccel
+                    // 등록 실패 (사용자 dialog 거부 or 충돌).
+                    var var_iter: dbus.DBusMessageIter = .{};
+                    api.iter_recurse(&entry_iter, &var_iter);
+                    if (api.iter_get_arg_type(&var_iter) == dbus.dbus_type_array) {
+                        var sc_arr: dbus.DBusMessageIter = .{};
+                        api.iter_recurse(&var_iter, &sc_arr);
+                        var count: u32 = 0;
+                        while (api.iter_get_arg_type(&sc_arr) == dbus.dbus_type_struct) {
+                            var st_iter: dbus.DBusMessageIter = .{};
+                            api.iter_recurse(&sc_arr, &st_iter);
+                            if (api.iter_get_arg_type(&st_iter) == dbus.dbus_type_string) {
+                                var sid_c: ?[*:0]const u8 = null;
+                                api.iter_get_basic(&st_iter, @ptrCast(&sid_c));
+                                const sid = if (sid_c) |s| std.mem.span(s) else "(null)";
+                                log.appendLine("portal", "Response shortcuts[{d}] id={s}", .{ count, sid });
+                            }
+                            count += 1;
+                            _ = api.iter_next(&sc_arr);
+                        }
+                        log.appendLine("portal", "Response shortcuts total={d}", .{count});
                     }
                 }
             }
@@ -476,4 +507,147 @@ pub fn bindToggleShortcut(
     }
 
     log.appendLine("portal", "shortcut bound id={s}", .{std.mem.span(shortcut_id_toggle)});
+}
+
+/// L9-γ — `Activated` signal 도착 시 호출되는 user callback. portal 가
+/// signal payload 파싱 후 `shortcut_id` (예: "toggle") 와 `timestamp` 를
+/// 그대로 전달. caller 가 user_data 로 자기 context (`*Client` 등) 를 받음.
+pub const ActivatedCallback = *const fn (user_data: ?*anyopaque, shortcut_id: []const u8, timestamp: u64) void;
+
+/// L9-γ — portal `GlobalShortcuts.Activated` signal subscription. heap 으로
+/// 할당해야 함 — `add_filter` 의 user_data 가 stable address 를 요구하고
+/// filter 가 이 struct 의 field (api / session_handle / callback) 를 매
+/// signal 마다 읽음. deinit 이 remove_match / remove_filter / dupe 해 둔
+/// strings free. caller (wayland_minimal) 가 deinit 후 `allocator.destroy`.
+pub const ActivatedSubscription = struct {
+    allocator: std.mem.Allocator,
+    api: *const dbus.Api,
+    conn: *dbus.DBusConnection,
+    match_rule: [:0]u8,
+    session_handle: []u8,
+    callback: ActivatedCallback,
+    user_data: ?*anyopaque,
+
+    pub fn deinit(self: *ActivatedSubscription) void {
+        var err: dbus.DBusError = .{};
+        self.api.error_init(&err);
+        self.api.remove_match(self.conn, self.match_rule.ptr, &err);
+        self.api.error_free(&err);
+        self.api.remove_filter(self.conn, activatedFilter, self);
+        self.allocator.free(self.match_rule);
+        self.allocator.free(self.session_handle);
+    }
+};
+
+/// `dbus_connection_add_filter` callback — `org.freedesktop.portal.GlobalShortcuts.Activated`
+/// signal 인지 확인하고 payload 파싱. signal args (spec):
+///   o session_handle, s shortcut_id, t timestamp, a{sv} options
+/// session 이 우리 session 이 아니면 NOT_YET_HANDLED — 다른 filter / 다른
+/// subscription 도 볼 수 있게.
+fn activatedFilter(conn: *dbus.DBusConnection, msg: *dbus.DBusMessage, user_data: ?*anyopaque) callconv(.c) c_int {
+    _ = conn;
+    const sub: *ActivatedSubscription = @ptrCast(@alignCast(user_data.?));
+    const api = sub.api;
+
+    // L9-γ 진단 trace — 들어오는 모든 message 의 type / interface / member
+    // 출력. signal 도착 자체가 안 되는 건지, 도착하는데 매칭 실패인지 분기.
+    const iface_c = api.message_get_interface(msg);
+    const member_c = api.message_get_member(msg);
+    const msg_type = api.message_get_type(msg);
+    const iface = if (iface_c) |i| std.mem.span(i) else "(null)";
+    const member = if (member_c) |m| std.mem.span(m) else "(null)";
+    log.appendLine("portal", "filter msg type={d} iface={s} member={s}", .{ msg_type, iface, member });
+
+    if (api.message_is_signal(msg, interface_global_shortcuts, member_activated) == 0) {
+        return dbus.dbus_handler_result_not_yet_handled;
+    }
+    log.appendLine("portal", "filter Activated signal matched, parsing payload", .{});
+
+    var iter: dbus.DBusMessageIter = .{};
+    if (api.iter_init(msg, &iter) == 0) return dbus.dbus_handler_result_not_yet_handled;
+
+    // arg 0: o session_handle — 다른 client 의 session signal 은 무시.
+    if (api.iter_get_arg_type(&iter) != dbus.dbus_type_object_path) {
+        return dbus.dbus_handler_result_not_yet_handled;
+    }
+    var session_c: ?[*:0]const u8 = null;
+    api.iter_get_basic(&iter, @ptrCast(&session_c));
+    const session_path = if (session_c) |s| std.mem.span(s) else "";
+    if (!std.mem.eql(u8, session_path, sub.session_handle)) {
+        return dbus.dbus_handler_result_not_yet_handled;
+    }
+
+    // arg 1: s shortcut_id.
+    _ = api.iter_next(&iter);
+    if (api.iter_get_arg_type(&iter) != dbus.dbus_type_string) {
+        return dbus.dbus_handler_result_handled;
+    }
+    var sid_c: ?[*:0]const u8 = null;
+    api.iter_get_basic(&iter, @ptrCast(&sid_c));
+    const shortcut_id = if (sid_c) |s| std.mem.span(s) else "";
+
+    // arg 2: t timestamp (compositor 의 input event time, 단위는 ms 가
+    // 일반적이지만 spec 상 opaque). 0 가능 — compositor 가 안 채울 수도.
+    _ = api.iter_next(&iter);
+    var timestamp: u64 = 0;
+    if (api.iter_get_arg_type(&iter) == dbus.dbus_type_uint64) {
+        api.iter_get_basic(&iter, @ptrCast(&timestamp));
+    }
+
+    sub.callback(sub.user_data, shortcut_id, timestamp);
+    return dbus.dbus_handler_result_handled;
+}
+
+/// L9-γ — `Activated` signal subscribe. portal `BindShortcuts` 가 성공한 후
+/// 곧바로 호출 — compositor 가 hotkey 누름마다 이 signal 보냄. 반환된
+/// subscription 은 main loop 종료 시 `deinit` + `destroy` 로 해제.
+///
+/// session_handle 매칭 — 다른 portal client 의 Activated signal 도 같은
+/// session bus 에 흐를 수 있어 (예: 다른 GlobalShortcuts 사용 app), 우리
+/// session path 와 일치할 때만 callback 호출. dispatch 자체는 main loop
+/// 의 `read_write_dispatch(conn, 0)` 가 매 iteration 처리.
+pub fn subscribeActivatedSignal(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    callback: ActivatedCallback,
+    user_data: ?*anyopaque,
+) !*ActivatedSubscription {
+    const match_rule = try std.fmt.allocPrintSentinel(allocator, "type='signal',interface='{s}',member='{s}'", .{
+        std.mem.span(interface_global_shortcuts), std.mem.span(member_activated),
+    }, 0);
+    errdefer allocator.free(match_rule);
+
+    const session_copy = try allocator.dupe(u8, session_handle);
+    errdefer allocator.free(session_copy);
+
+    const sub = try allocator.create(ActivatedSubscription);
+    errdefer allocator.destroy(sub);
+    sub.* = .{
+        .allocator = allocator,
+        .api = &bus.api,
+        .conn = bus.conn,
+        .match_rule = match_rule,
+        .session_handle = session_copy,
+        .callback = callback,
+        .user_data = user_data,
+    };
+
+    if (bus.api.add_filter(bus.conn, activatedFilter, sub, null) == 0) {
+        return error.PortalAddFilterFailed;
+    }
+    errdefer bus.api.remove_filter(bus.conn, activatedFilter, sub);
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+    bus.api.add_match(bus.conn, match_rule.ptr, &err);
+    if (bus.api.error_is_set(&err) != 0) {
+        const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+        log.appendLine("portal", "Activated add_match failed: {s}", .{m});
+        return error.PortalAddMatchFailed;
+    }
+
+    log.appendLine("portal", "Activated signal subscribed session={s}", .{session_copy});
+    return sub;
 }

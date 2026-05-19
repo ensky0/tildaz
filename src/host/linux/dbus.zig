@@ -49,6 +49,7 @@ const dbus_bus_type_session: c_int = 0;
 pub const dbus_type_invalid: c_int = 0;
 pub const dbus_type_string: c_int = 's';
 pub const dbus_type_uint32: c_int = 'u';
+pub const dbus_type_uint64: c_int = 't';
 pub const dbus_type_object_path: c_int = 'o';
 pub const dbus_type_array: c_int = 'a';
 pub const dbus_type_variant: c_int = 'v';
@@ -90,6 +91,9 @@ const DBusMessageIsSignal = *const fn (
     member: [*:0]const u8,
 ) callconv(.c) c_int;
 const DBusMessageGetPath = *const fn (msg: *DBusMessage) callconv(.c) ?[*:0]const u8;
+const DBusMessageGetInterface = *const fn (msg: *DBusMessage) callconv(.c) ?[*:0]const u8;
+const DBusMessageGetMember = *const fn (msg: *DBusMessage) callconv(.c) ?[*:0]const u8;
+const DBusMessageGetType = *const fn (msg: *DBusMessage) callconv(.c) c_int;
 
 const DBusMessageIterInitAppend = *const fn (msg: *DBusMessage, iter: *DBusMessageIter) callconv(.c) void;
 const DBusMessageIterOpenContainer = *const fn (
@@ -145,6 +149,9 @@ pub const Api = struct {
     message_unref: DBusMessageUnref,
     message_is_signal: DBusMessageIsSignal,
     message_get_path: DBusMessageGetPath,
+    message_get_interface: DBusMessageGetInterface,
+    message_get_member: DBusMessageGetMember,
+    message_get_type: DBusMessageGetType,
     iter_init_append: DBusMessageIterInitAppend,
     iter_open_container: DBusMessageIterOpenContainer,
     iter_close_container: DBusMessageIterCloseContainer,
@@ -178,6 +185,9 @@ pub const Api = struct {
             .message_unref = lookupSymbol(handle, DBusMessageUnref, "dbus_message_unref"),
             .message_is_signal = lookupSymbol(handle, DBusMessageIsSignal, "dbus_message_is_signal"),
             .message_get_path = lookupSymbol(handle, DBusMessageGetPath, "dbus_message_get_path"),
+            .message_get_interface = lookupSymbol(handle, DBusMessageGetInterface, "dbus_message_get_interface"),
+            .message_get_member = lookupSymbol(handle, DBusMessageGetMember, "dbus_message_get_member"),
+            .message_get_type = lookupSymbol(handle, DBusMessageGetType, "dbus_message_get_type"),
             .iter_init_append = lookupSymbol(handle, DBusMessageIterInitAppend, "dbus_message_iter_init_append"),
             .iter_open_container = lookupSymbol(handle, DBusMessageIterOpenContainer, "dbus_message_iter_open_container"),
             .iter_close_container = lookupSymbol(handle, DBusMessageIterCloseContainer, "dbus_message_iter_close_container"),
