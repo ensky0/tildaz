@@ -88,6 +88,41 @@ const wl_keyboard_event_key: u16 = 3;
 const wl_keyboard_event_modifiers: u16 = 4;
 const wl_keyboard_event_repeat_info: u16 = 5;
 
+// zwlr_layer_shell_v1 / zwlr_layer_surface_v1 wire opcodes (unstable v1 — 출처
+// https://wayland.app/protocols/wlr-layer-shell-unstable-v1). L8-α 의 핵심
+// protocol — Tilda-style drop-down 처럼 compositor 의 output edge 에 anchor
+// 한 surface 를 만든다. xdg-shell toplevel 과는 별도 경로 — 둘 다 만들 필요는
+// 없고, layer-shell 이 advertise 됐을 때만 layer-shell 경로 사용 (없으면
+// xdg-shell fallback, Capability Strategy 표대로).
+const zwlr_layer_shell_v1_request_get_layer_surface: u16 = 0;
+const zwlr_layer_shell_v1_request_destroy: u16 = 1;
+const zwlr_layer_surface_v1_request_set_size: u16 = 0;
+const zwlr_layer_surface_v1_request_set_anchor: u16 = 1;
+const zwlr_layer_surface_v1_request_set_exclusive_zone: u16 = 2;
+const zwlr_layer_surface_v1_request_set_margin: u16 = 3;
+const zwlr_layer_surface_v1_request_set_keyboard_interactivity: u16 = 4;
+const zwlr_layer_surface_v1_request_ack_configure: u16 = 6;
+const zwlr_layer_surface_v1_request_destroy: u16 = 7;
+const zwlr_layer_surface_v1_event_configure: u16 = 0;
+const zwlr_layer_surface_v1_event_closed: u16 = 1;
+// layer enum: 0=background, 1=bottom, 2=top, 3=overlay. drop-down 은 normal
+// window 위 / lock screen 아래 → top (2). overlay 면 panel / 알림 위까지 덮음.
+const zwlr_layer_shell_layer_top: u32 = 2;
+// anchor bitmask. top+left+right (= 13) 이면 width 는 compositor 가 결정 (full
+// 가로), height 만 set_size 값 사용 (spec: "anchored to opposing edges → 그
+// axis 의 size 는 anchor 가 결정, set_size 무시").
+const zwlr_layer_surface_anchor_top: u32 = 1;
+const zwlr_layer_surface_anchor_left: u32 = 4;
+const zwlr_layer_surface_anchor_right: u32 = 8;
+// keyboard_interactivity. v1 spec 은 0/1 (none / exclusive — exclusive 면
+// 모든 keyboard event 가 우리 surface 로). v4 부터 on_demand=2 추가됐지만
+// 우리는 v1 만 bind — drop-down 본분 (click 즉시 typing) 에는 exclusive 면
+// 충분. v4+ 로 갈 때 on_demand 로 바꿔서 다른 app 도 background typing 가능.
+const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
+// 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
+// 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
+const layer_surface_default_height: u32 = 400;
+
 // wl_data_device_manager / wl_data_device / wl_data_source / wl_data_offer
 // opcodes (request side, used by us).
 const wl_data_device_manager_request_create_data_source: u16 = 0;
@@ -267,6 +302,12 @@ const Client = struct {
     surface_id: u32 = 0,
     xdg_surface_id: u32 = 0,
     toplevel_id: u32 = 0,
+    // L8-α — wlr-layer-shell surface. compositor 가 `zwlr_layer_shell_v1` 을
+    // advertise 한 경우에만 활성. 둘 다 0 이면 xdg-shell fallback 경로 사용.
+    // layer-shell 활성 시 xdg_surface_id / toplevel_id 는 0 으로 유지 — 두
+    // 경로를 동시에 만들면 안 된다 (한 surface 의 role 충돌).
+    layer_shell_id: u32 = 0,
+    layer_surface_id: u32 = 0,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
@@ -498,6 +539,17 @@ const Client = struct {
                 self.data_device_manager_id,
             );
         }
+        // L8-α — `zwlr_layer_shell_v1` bind. advertise 안 됐으면 (GNOME 등)
+        // skip — `createShellObjects` 가 xdg-shell fallback 경로로 분기.
+        if (self.caps.layer_shell.name != 0) {
+            self.layer_shell_id = self.allocId();
+            try self.bind(
+                self.caps.layer_shell.name,
+                "zwlr_layer_shell_v1",
+                @min(self.caps.layer_shell.version, 1),
+                self.layer_shell_id,
+            );
+        }
         // L10-α — `zwp_text_input_manager_v3` bind + 그 자리에서 바로
         // `get_text_input(seat)` 호출해 text_input object 생성. enable / disable
         // 은 keyboard focus enter / leave 이벤트에서 트리거.
@@ -516,7 +568,7 @@ const Client = struct {
                 &.{ self.text_input_id, self.seat_id },
             );
         }
-        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={}", .{
+        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={}", .{
             self.compositor_id,
             self.shm_id,
             self.wm_base_id,
@@ -524,6 +576,7 @@ const Client = struct {
             self.data_device_manager_id,
             self.text_input_manager_id,
             self.text_input_id,
+            self.layer_shell_id,
         });
     }
 
@@ -569,6 +622,16 @@ const Client = struct {
     fn createShellObjects(self: *Client) !void {
         self.surface_id = self.allocId();
         try self.sendNewId(self.compositor_id, 0, self.surface_id);
+        if (self.layer_shell_id != 0) {
+            try self.createLayerSurface();
+        } else {
+            try self.createXdgToplevel();
+        }
+    }
+
+    /// L8-α — xdg-shell toplevel 경로. compositor 가 `zwlr_layer_shell_v1` 을
+    /// advertise 안 한 경우 (예: GNOME mutter). normal desktop window 로 동작.
+    fn createXdgToplevel(self: *Client) !void {
         self.xdg_surface_id = self.allocId();
         try self.sendArgs(self.wm_base_id, 2, &.{ self.xdg_surface_id, self.surface_id });
         self.toplevel_id = self.allocId();
@@ -576,10 +639,64 @@ const Client = struct {
         try self.sendString(self.toplevel_id, 2, "TildaZ");
         try self.sendString(self.toplevel_id, 3, "tildaz");
         try self.sendNoArgs(self.surface_id, 6);
-        log.appendLine("wayland", "shell objects surface_id={} xdg_surface_id={} toplevel_id={}", .{
+        log.appendLine("wayland", "shell objects (xdg) surface_id={} xdg_surface_id={} toplevel_id={}", .{
             self.surface_id,
             self.xdg_surface_id,
             self.toplevel_id,
+        });
+    }
+
+    /// L8-α — wlr-layer-shell drop-down surface 경로. compositor 가
+    /// `zwlr_layer_shell_v1` advertise 한 경우. top+left+right anchor 로
+    /// 화면 상단 가로 전체 + 고정 높이 layer surface. configure event 시
+    /// ack + window_width/height 갱신. L8-β 부터 dock_position / height
+    /// 사용자 설정 반영, L8-γ slide animation, L9 portal hotkey toggle.
+    fn createLayerSurface(self: *Client) !void {
+        self.layer_surface_id = self.allocId();
+        // get_layer_surface(new_id, surface, output=NULL, layer=TOP, namespace)
+        // output=0 → compositor 가 현재 monitor 선택 (보통 pointer / focus).
+        var msg = Msg.init(self.layer_shell_id, zwlr_layer_shell_v1_request_get_layer_surface);
+        try msg.putU32(self.layer_surface_id);
+        try msg.putU32(self.surface_id);
+        try msg.putU32(0);
+        try msg.putU32(zwlr_layer_shell_layer_top);
+        try msg.putString("tildaz");
+        try msg.send(self.stream);
+
+        // set_anchor(top | left | right). 가로는 anchor 가 결정 (full width),
+        // 높이는 set_size 값 사용.
+        try self.sendArgs(
+            self.layer_surface_id,
+            zwlr_layer_surface_v1_request_set_anchor,
+            &.{zwlr_layer_surface_anchor_top | zwlr_layer_surface_anchor_left | zwlr_layer_surface_anchor_right},
+        );
+
+        // set_size(width=0, height=default). width=0 = "compositor 가
+        // anchor 기반으로 채워라". L8-β 에서 사용자 height_percent 반영 예정.
+        try self.sendArgs(
+            self.layer_surface_id,
+            zwlr_layer_surface_v1_request_set_size,
+            &.{ 0, layer_surface_default_height },
+        );
+
+        // set_keyboard_interactivity(exclusive). drop-down 은 떠 있을 때
+        // 키보드 받아야 시연 가치 — L9 hotkey 가 toggle 하면 visible 시점에
+        // 자동 focus. v1 spec 에서 on_demand 값 (2) 은 미존재라 exclusive (1)
+        // 사용. v4+ bind 시 on_demand 로 바꿔 다른 app background typing 가능.
+        try self.sendArgs(
+            self.layer_surface_id,
+            zwlr_layer_surface_v1_request_set_keyboard_interactivity,
+            &.{zwlr_layer_surface_keyboard_interactivity_exclusive},
+        );
+
+        // wl_surface.commit (opcode 6) — pending double-buffered state 적용
+        // 후 compositor 가 첫 configure event 송신.
+        try self.sendNoArgs(self.surface_id, 6);
+
+        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} anchor=top+left+right layer=top keyboard_interactivity=exclusive default_height={}", .{
+            self.surface_id,
+            self.layer_surface_id,
+            layer_surface_default_height,
         });
     }
 
@@ -1011,21 +1128,47 @@ const Client = struct {
             try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
             return;
         }
-        if (id == self.toplevel_id and opcode == 0) {
+        if (self.toplevel_id != 0 and id == self.toplevel_id and opcode == 0) {
             try self.handleToplevelConfigure(payload);
             return;
         }
-        if (id == self.toplevel_id and opcode == 1) {
+        if (self.toplevel_id != 0 and id == self.toplevel_id and opcode == 1) {
             self.running = false;
             return;
         }
-        if (id == self.xdg_surface_id and opcode == 0 and payload.len >= 4) {
+        if (self.xdg_surface_id != 0 and id == self.xdg_surface_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.xdg_surface_id, 4, &.{readU32(payload[0..4])});
             self.applyPendingSize();
             if (self.session != null) try self.ensureSessionGrid();
             self.configured = true;
             if (self.mapped) self.requestRedraw();
             return;
+        }
+        // L8-α — zwlr_layer_surface_v1 events. configure(serial, w, h) 와
+        // closed 두 가지. configure 는 xdg_surface configure 와 동일한 ack
+        // + size apply 흐름이지만 ack opcode 가 6 (xdg 는 4), payload 도
+        // (serial + w + h) 합쳐서 12 바이트.
+        if (self.layer_surface_id != 0 and id == self.layer_surface_id) {
+            if (opcode == zwlr_layer_surface_v1_event_configure and payload.len >= 12) {
+                const serial = readU32(payload[0..4]);
+                const w = readU32(payload[4..8]);
+                const h = readU32(payload[8..12]);
+                try self.sendArgs(self.layer_surface_id, zwlr_layer_surface_v1_request_ack_configure, &.{serial});
+                // compositor 가 0 으로 보내면 "you decide" — 기존 size 유지.
+                // 보통은 anchor L+R 기반 full screen width + 우리 요청 height
+                // 그대로 돌려보냄.
+                if (w > 0) self.pending_width = @intCast(@min(w, @as(u32, std.math.maxInt(i32))));
+                if (h > 0) self.pending_height = @intCast(@min(h, @as(u32, std.math.maxInt(i32))));
+                self.applyPendingSize();
+                if (self.session != null) try self.ensureSessionGrid();
+                self.configured = true;
+                if (self.mapped) self.requestRedraw();
+                return;
+            }
+            if (opcode == zwlr_layer_surface_v1_event_closed) {
+                self.running = false;
+                return;
+            }
         }
     }
 
