@@ -53,6 +53,7 @@ pub const dbus_type_object_path: c_int = 'o';
 pub const dbus_type_array: c_int = 'a';
 pub const dbus_type_variant: c_int = 'v';
 pub const dbus_type_dict_entry: c_int = 'e';
+pub const dbus_type_struct: c_int = 'r';
 
 /// `DBUS_HANDLER_RESULT_*` enum — filter / object handler 가 반환. HANDLED =
 /// "이 message 처리 끝, 다음 filter 안 부름". NOT_YET_HANDLED = "다른 filter
