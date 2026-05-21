@@ -195,6 +195,9 @@ const xkb_key_w_upper: u32 = 0x57;
 // 동일.
 const xkb_key_bracketleft: u32 = 0x5b;
 const xkb_key_braceleft: u32 = 0x7b;
+// SPEC §2.2 — Alt+1..9 탭 인덱스 점프. xkb keysym = ASCII '1'..'9'.
+const xkb_key_1: u32 = 0x31;
+const xkb_key_9: u32 = 0x39;
 const xkb_key_bracketright: u32 = 0x5d;
 const xkb_key_braceright: u32 = 0x7d;
 
@@ -1802,6 +1805,16 @@ const Client = struct {
         tab_actions.prevTab(&host);
     }
 
+    /// SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등, `window.zig:1194-1200`).
+    /// 1 → index 0, 9 → index 8. 탭 수보다 큰 인덱스는 `setActiveTab` 가 false
+    /// 반환하고 no-op.
+    fn handleSwitchTab(self: *Client, idx: usize) void {
+        if (self.session == null) return;
+        self.commitPendingInput();
+        var host = self.buildTabActionsHost();
+        tab_actions.switchTab(&host, idx);
+    }
+
     /// L10-α — `text_input.enable()` + content_type + cursor_rect + commit 한
     /// batch. foot terminal (`enter` handler in `ime.c`) 의 정확한 sequence
     /// 동등 — wayland-native terminal 의 검증된 패턴. foot 은 enable 전에
@@ -2173,6 +2186,13 @@ const Client = struct {
                     self.handlePrevTab();
                     return;
                 }
+            }
+            // SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등). Ctrl / Shift 미동반
+            // 만 trigger — Alt+Shift+숫자 / Alt+Ctrl+숫자 같은 다른 조합은 shell /
+            // X 의 통과로 둠. Alt+0 은 사용 안 (spec 9 까지만).
+            if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and !self.keyboard.shiftActive() and sym >= xkb_key_1 and sym <= xkb_key_9) {
+                self.handleSwitchTab(@intCast(sym - xkb_key_1));
+                return;
             }
             if (terminalSequenceForKeysym(sym)) |seq| {
                 self.queueInput(seq);
