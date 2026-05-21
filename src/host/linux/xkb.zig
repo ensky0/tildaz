@@ -186,6 +186,12 @@ pub const Keyboard = struct {
         return self.modActive("Shift");
     }
 
+    /// xkb 의 Alt = "Mod1" (Linux 표준 — `XKB_MOD_NAME_ALT` 의 underlying name).
+    /// SPEC.md §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등) 등에 사용.
+    pub fn altActive(self: *Keyboard) bool {
+        return self.modActive("Mod1");
+    }
+
     fn modActive(self: *Keyboard, comptime name: [:0]const u8) bool {
         const api = if (self.api) |*api| api else return false;
         const state = self.state orelse return false;

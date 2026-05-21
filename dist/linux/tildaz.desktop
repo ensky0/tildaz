@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=TildaZ
+GenericName=Drop-down Terminal
+Comment=Quake-style drop-down terminal for Wayland
+# install 시 사용자 환경의 절대 경로로 치환. 예:
+#   sed -i 's|__TILDAZ_EXE__|/home/<user>/tildaz/zig-out/bin/tildaz|' tildaz.desktop
+# L11 packaging 정식 install path (`/usr/bin/tildaz` 등) 결정 후 자동화 예정.
+Exec=__TILDAZ_EXE__
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+# Wayland xdg_toplevel.set_app_id 와 일치. portal-kde 등이 sender pid 의
+# process 정보 + .desktop 매칭으로 client 식별할 때 같은 식별자.
+StartupWMClass=tildaz
+StartupNotify=true
