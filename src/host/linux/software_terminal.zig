@@ -45,9 +45,18 @@ pub const Renderer = struct {
     /// compositor 가 배경과 alpha blending. `Client.init` 에서 채움.
     opacity_alpha: u8 = 255,
 
-    pub fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Renderer {
+    /// `scale_num / scale_den` — fractional scaling factor (e.g. 204/120 = 1.7x).
+    /// 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가 아직
+    /// 안 왔을 수 있어 default 120/120 = 1.0x. event 받은 후 `reinitFont` 로
+    /// 정확한 scale 의 font 재초기화.
+    pub fn init(
+        allocator: std.mem.Allocator,
+        cfg: *const config_mod.Config,
+        scale_num: u32,
+        scale_den: u32,
+    ) !Renderer {
         const chain = cfg.font_families[0..cfg.font_family_count];
-        const pixel_height = fontPixelHeight(cfg.font_size_point);
+        const pixel_height = scaledFontPixelHeight(cfg.font_size_point, scale_num, scale_den);
         return .{
             .render_state = .empty,
             .font_ctx = try font.Context.init(
@@ -63,6 +72,41 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.render_state.deinit(allocator);
         self.font_ctx.deinit();
+    }
+
+    /// fractional scale 변경 시 font 재초기화. preferred_scale event handler
+    /// 가 호출 — pixel_height = base × scale / 120 으로 raster (logical 단위에서
+    /// user 가 보는 size 가 scale 무관 동일).
+    pub fn reinitFont(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        cfg: *const config_mod.Config,
+        scale_num: u32,
+        scale_den: u32,
+    ) !void {
+        const chain = cfg.font_families[0..cfg.font_family_count];
+        const pixel_height = scaledFontPixelHeight(cfg.font_size_point, scale_num, scale_den);
+        const new_ctx = try font.Context.init(
+            allocator,
+            chain,
+            pixel_height,
+            cfg.cell_width_ratio,
+            cfg.line_height_ratio,
+        );
+        self.font_ctx.deinit();
+        self.font_ctx = new_ctx;
+    }
+
+    fn scaledFontPixelHeight(size_point: u8, scale_num: u32, scale_den: u32) u32 {
+        const base = fontPixelHeight(size_point);
+        if (scale_num == scale_den) return base;
+        const base_i: i64 = @intCast(base);
+        const num: i64 = @intCast(scale_num);
+        const den: i64 = @intCast(scale_den);
+        // round-up — 작은 pixel_height 보다 큰 게 user 시각에 더 자연.
+        const scaled = @divFloor(base_i * num + den - 1, den);
+        if (scaled <= 0) return base;
+        return @intCast(scaled);
     }
 
     pub fn cellWidth(self: *const Renderer) i32 {

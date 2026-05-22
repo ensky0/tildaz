@@ -125,6 +125,23 @@ const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
 // 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
 // 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
 const layer_surface_default_height: u32 = 400;
+// wp_viewporter (stable v1) — fractional scaling 환경의 logical / physical 분리.
+// https://wayland.app/protocols/viewporter
+const wp_viewporter_request_destroy: u16 = 0;
+const wp_viewporter_request_get_viewport: u16 = 1;
+const wp_viewport_request_destroy: u16 = 0;
+const wp_viewport_request_set_destination: u16 = 2;
+
+// wp_fractional_scale_v1 (staging) — compositor 가 권장하는 fractional scale 통보.
+// https://wayland.app/protocols/fractional-scale-v1
+// preferred_scale 의 unit = scale / 120. 즉 240 = 2.0x, 204 = 1.7x, 120 = 1.0x.
+const wp_fractional_scale_manager_v1_request_destroy: u16 = 0;
+const wp_fractional_scale_manager_v1_request_get_fractional_scale: u16 = 1;
+const wp_fractional_scale_v1_request_destroy: u16 = 0;
+const wp_fractional_scale_v1_event_preferred_scale: u16 = 0;
+const fractional_scale_denominator: u32 = 120;
+
+
 // L8-β — wl_output 의 mode / done event. geometry / scale 은 아직 안 씀.
 const wl_output_event_geometry: u16 = 0;
 const wl_output_event_mode: u16 = 1;
@@ -225,6 +242,9 @@ const Capabilities = struct {
     // wl_output 여러 개 advertise 되지만 L8-β scope 에선 첫 번째만 사용 (multi-
     // monitor 선택은 후속 sub-step).
     output: Global = .{},
+    // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등.
+    viewporter: Global = .{},
+    fractional_scale_manager: Global = .{},
 
     fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
         if (std.mem.eql(u8, interface, "wl_compositor")) {
@@ -244,6 +264,10 @@ const Capabilities = struct {
         } else if (std.mem.eql(u8, interface, "wl_output") and self.output.name == 0) {
             // 첫 번째만 저장 (multi-monitor 시 후속 wl_output 무시 — L8-β scope).
             self.output = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "wp_viewporter")) {
+            self.viewporter = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "wp_fractional_scale_manager_v1")) {
+            self.fractional_scale_manager = .{ .name = name, .version = version };
         }
     }
 };
@@ -371,6 +395,17 @@ const Client = struct {
     output_id: u32 = 0,
     screen_width: i32 = 0,
     screen_height: i32 = 0,
+    // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등. compositor 가
+    // advertise 안 한 환경 (GNOME mutter / wlroots 등) 에선 0 이라 미사용 — `preferred_scale`
+    // default `fractional_scale_denominator` (= 120 = 1.0x) 로 no-op 동작.
+    viewporter_id: u32 = 0,
+    fractional_scale_manager_id: u32 = 0,
+    /// per-surface — `createShellObjects` 가 create, `destroyShellObjects` 가 destroy.
+    viewport_id: u32 = 0,
+    fractional_scale_id: u32 = 0,
+    /// preferred_scale event 가 받는 numerator. denominator = 120.
+    /// physical_px = logical_px × preferred_scale / 120.
+    preferred_scale: u32 = fractional_scale_denominator,
     // L9-α — D-Bus session bus client (libdbus-1 dlopen). portal `GlobalShortcuts`
     // 의 진입 자리. 연결 실패는 fatal 아님 — minimal Wayland session (portal
     // 없음) 에선 hotkey 기능 없이 terminal 자체는 정상. L9-β-1 부터 method call /
@@ -493,7 +528,14 @@ const Client = struct {
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
-        var renderer = try software_terminal.Renderer.init(allocator, cfg);
+        // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
+        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 reinitFont.
+        var renderer = try software_terminal.Renderer.init(
+            allocator,
+            cfg,
+            fractional_scale_denominator,
+            fractional_scale_denominator,
+        );
         renderer.opacity_alpha = cfg.opacity_alpha;
         errdefer renderer.deinit(allocator);
         const stream = std.net.connectUnixSocket(path) catch |err| {
@@ -667,6 +709,27 @@ const Client = struct {
                 self.output_id,
             );
         }
+        // fractional scaling — wp_viewporter + wp_fractional_scale_manager_v1.
+        // 둘 다 advertise 된 환경 (KDE Plasma 6) 에서만 fractional scale 정확.
+        // 한 쪽만 있어도 effective 0 (둘 다 묶여야 의미) — 그래도 bind 시도.
+        if (self.caps.viewporter.name != 0) {
+            self.viewporter_id = self.allocId();
+            try self.bind(
+                self.caps.viewporter.name,
+                "wp_viewporter",
+                @min(self.caps.viewporter.version, 1),
+                self.viewporter_id,
+            );
+        }
+        if (self.caps.fractional_scale_manager.name != 0) {
+            self.fractional_scale_manager_id = self.allocId();
+            try self.bind(
+                self.caps.fractional_scale_manager.name,
+                "wp_fractional_scale_manager_v1",
+                @min(self.caps.fractional_scale_manager.version, 1),
+                self.fractional_scale_manager_id,
+            );
+        }
         // L10-α — `zwp_text_input_manager_v3` bind + 그 자리에서 바로
         // `get_text_input(seat)` 호출해 text_input object 생성. enable / disable
         // 은 keyboard focus enter / leave 이벤트에서 트리거.
@@ -740,6 +803,54 @@ const Client = struct {
     fn createShellObjects(self: *Client) !void {
         self.surface_id = self.allocId();
         try self.sendNewId(self.compositor_id, 0, self.surface_id);
+        // `set_opaque_region` 으로 surface 가 alpha 블렌딩 없이 직접 composite
+        // 되도록. opacity_alpha==255 (= 100%) 일 때만. compositor 는 ARGB8888
+        // buffer 라도 모든 픽셀이 opaque 임을 알면 background 합성 단계를
+        // 생략 → fractional scale 환경 (KDE 170%) 에서 타이핑마다 flicker
+        // (배경 비침) 추적, sub-pixel 스케일링 + alpha blending 의 race 가
+        // 후보. region 의 좌표는 surface-local — 큰 rectangle 로 보내면 KWin
+        // 이 surface 영역으로 clip. region object 는 set 직후 destroy 가능
+        // (surface state 로 copy 된다 — spec).
+        if (self.renderer.opacity_alpha == 255) {
+            const region_id = self.allocId();
+            // wl_compositor.create_region (opcode 1).
+            try self.sendNewId(self.compositor_id, 1, region_id);
+            // wl_region.add (opcode 1) — (x, y, w, h). 65535 = 모든 실용적 화면 cover.
+            try self.sendArgs(region_id, 1, &.{ 0, 0, 65535, 65535 });
+            // wl_surface.set_opaque_region (opcode 4).
+            try self.sendArgs(self.surface_id, 4, &.{region_id});
+            // wl_region.destroy (opcode 0) — pending state 는 surface 가 보유.
+            try self.sendNoArgs(region_id, 0);
+        }
+        // fractional scaling — surface 생성 직후 viewport + fractional_scale 객체
+        // 생성. compositor 가 두 protocol 다 advertise 한 경우만. preferred_scale
+        // event 는 이후 비동기 — `createLayerSurface` 의 첫 commit 전후로 도착.
+        if (self.viewporter_id != 0) {
+            self.viewport_id = self.allocId();
+            try self.sendArgs(
+                self.viewporter_id,
+                wp_viewporter_request_get_viewport,
+                &.{ self.viewport_id, self.surface_id },
+            );
+        }
+        if (self.fractional_scale_manager_id != 0) {
+            self.fractional_scale_id = self.allocId();
+            try self.sendArgs(
+                self.fractional_scale_manager_id,
+                wp_fractional_scale_manager_v1_request_get_fractional_scale,
+                &.{ self.fractional_scale_id, self.surface_id },
+            );
+            // preferred_scale event 를 *첫 sendLayerSurfaceLayout 이전에* 받기 위한
+            // roundtrip. 안 그러면 default scale=120 으로 logical 계산해 KWin 에 잘못된
+            // 첫 layout 송신 (예: 1.7x 환경에서 margin_left=1920 logical = screen 절반
+            // 보다 큼). KWin 이 그걸 받아 logical_w=339 같은 비정상 첫 configure 응답
+            // → preferred_scale event 받은 후 우리가 재송신해 정정되지만, 그 사이 인접
+            // xdg-shell window 의 Quick Tile work area 가 잘못된 첫 configure 기준으로
+            // 잡혀 ~10-20 physical pixel 갭 발생 가능 (3차 시연 cycle 발견).
+            // fractional_scale advertise 안 한 환경 (mutter / wlroots) 에선 이 branch
+            // skip — `preferred_scale` 가 default 120 그대로 유효 (no-op 변환).
+            try self.roundtrip();
+        }
         if (self.layer_shell_id != 0) {
             try self.createLayerSurface();
         } else {
@@ -771,7 +882,6 @@ const Client = struct {
     /// L9 portal hotkey toggle 은 별도.
     fn createLayerSurface(self: *Client) !void {
         self.layer_surface_id = self.allocId();
-        const layout = self.computeLayerLayout();
         // get_layer_surface(new_id, surface, output=NULL, layer=TOP, namespace)
         // output=0 → compositor 가 현재 monitor 선택 (보통 pointer / focus).
         var msg = Msg.init(self.layer_shell_id, zwlr_layer_shell_v1_request_get_layer_surface);
@@ -782,58 +892,71 @@ const Client = struct {
         try msg.putString("tildaz");
         try msg.send(self.stream);
 
+        try self.sendLayerSurfaceLayout();
+    }
+
+    /// layer-surface 의 set_anchor / set_size / set_exclusive_zone / set_margin
+    /// / set_keyboard_interactivity + commit 묶음. createLayerSurface 의 초기
+    /// 송신 + preferred_scale event 받은 후 재송신 둘 다 사용.
+    ///
+    /// fractional scaling 시점 문제 — createShellObjects 의 첫 commit 시점에
+    /// preferred_scale event 가 아직 도착 안 했을 수 있다 (compositor 가 우리
+    /// commit 다음에 send). 이때 physicalToLogical 가 default scale=1.0 으로
+    /// no-op → physical 단위 그대로 송신 → KWin 이 logical 단위로 해석해 surface
+    /// 가 over-scaled 됨. preferred_scale event handler 가 이 함수 재호출 하면
+    /// 새 scale 로 정확히 변환된 layout 송신 + 두 번째 configure event 가 정확.
+    fn sendLayerSurfaceLayout(self: *Client) !void {
+        if (self.layer_surface_id == 0) return;
+        const layout = self.computeLayerLayout();
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_anchor,
             &.{layout.anchor},
         );
+        // layer-shell spec: set_size / set_margin 은 *surface-local logical pixel*
+        // 단위. 우리 layout 은 physical 이라 송신 시 logical 변환.
+        const logical_w: u32 = @intCast(self.physicalToLogical(@intCast(layout.width)));
+        const logical_h: u32 = @intCast(self.physicalToLogical(@intCast(layout.height)));
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_size,
-            &.{ layout.width, layout.height },
+            &.{ logical_w, logical_h },
         );
-        // set_exclusive_zone(0). spec default 가 0 이지만 명시 송신 — KDE Plasma
-        // 시연 사이클에서 default 가 confusion 일 수 있어 발견. 0 = 우리 surface
-        // 가 다른 panel / dock 의 exclusive zone 회피 (= 회피된 working area 안에
-        // 위치). 양수 면 우리가 그만큼의 zone 차지 (panel 처럼). 음수 (-1) 면
-        // 다른 exclusive zone 무시하고 우리가 anchor edge 까지 침범.
+        // set_exclusive_zone(0) — 다른 panel / dock exclusive zone 회피.
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_exclusive_zone,
             &.{0},
         );
-        // set_margin(top, right, bottom, left). cross-axis 위치 결정 — anchor
-        // 가 잡힌 두 edge 사이에서 offset_percent 로 이동.
+        // set_margin — logical. cross-axis 위치 결정.
         var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
-        try margin_msg.putI32(layout.margin_top);
-        try margin_msg.putI32(layout.margin_right);
-        try margin_msg.putI32(layout.margin_bottom);
-        try margin_msg.putI32(layout.margin_left);
+        try margin_msg.putI32(self.physicalToLogical(layout.margin_top));
+        try margin_msg.putI32(self.physicalToLogical(layout.margin_right));
+        try margin_msg.putI32(self.physicalToLogical(layout.margin_bottom));
+        try margin_msg.putI32(self.physicalToLogical(layout.margin_left));
         try margin_msg.send(self.stream);
-
-        // set_keyboard_interactivity(exclusive). drop-down 은 떠 있을 때
-        // 키보드 받아야 시연 가치 — L9 hotkey 가 toggle 하면 visible 시점에
-        // 자동 focus. v1 spec 에서 on_demand 값 (2) 은 미존재라 exclusive (1)
-        // 사용. v4+ bind 시 on_demand 로 바꿔 다른 app background typing 가능.
+        // set_keyboard_interactivity(exclusive) — drop-down 은 떠 있을 때 키보드
+        // 받아야 시연 가치. L9 hotkey 가 toggle 하면 visible 시점에 자동 focus.
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_keyboard_interactivity,
             &.{zwlr_layer_surface_keyboard_interactivity_exclusive},
         );
-
-        // wl_surface.commit (opcode 6) — pending double-buffered state 적용
-        // 후 compositor 가 첫 configure event 송신.
+        // wl_surface.commit (opcode 6) — pending double-buffered state 적용.
         try self.sendNoArgs(self.surface_id, 6);
 
-        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} anchor=0x{x} size={}x{} margin=({},{},{},{}) keyboard_interactivity=exclusive", .{
+        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity=exclusive", .{
             self.surface_id,
             self.layer_surface_id,
             @tagName(self.config.dock_position),
             self.screen_width,
             self.screen_height,
+            self.preferred_scale,
             layout.anchor,
             layout.width,
             layout.height,
+            logical_w,
+            logical_h,
             layout.margin_top,
             layout.margin_right,
             layout.margin_bottom,
@@ -878,106 +1001,58 @@ const Client = struct {
         // compositor 가 다른 panel 의 exclusive zone honor 한 영역 안에서 stretch
         // (KDE Plasma 의 floating dock 등도 자동 회피). size 를 명시하면 compositor
         // 가 그대로 깔아서 dock 영역까지 침범 — Plasma 시연으로 확인된 패턴.
+        // 가로/세로 양 edge 의 margin 을 *둘 다* 지정해 4-edge anchor + size=0
+        // 패턴으로 보낸다. 한 축 stretch + 한 축 partial 케이스도 동일 — 양쪽
+        // margin 모두 지정 (한 쪽은 0). 이유: width / margin 둘 다 physical →
+        // logical 변환을 거치는데 KWin 이 받은 두 logical 값을 *각각* round-trip
+        // 하면 누적 오차로 인접 surface 와 1-2px 갭. 4-edge anchor + 양쪽 margin
+        // 만 보내면 surface width 는 KWin 이 `screen_logical − margin_l − margin_r`
+        // 로 자체 계산 → margin 두 개의 rounding error 만 합산되고, 반대편 edge
+        // 는 정확히 screen edge 에 fit. width 차이를 *외형* 가 아닌 *margin 차이*
+        // 로 표현하는 게 핵심.
+        const margin_h_extra = sw_i - want_w_i; // cross-axis 빈 공간 (가로)
+        const margin_v_extra = sh_i - want_h_i; // cross-axis 빈 공간 (세로)
+        const ml = pxOffset(margin_h_extra, off_pct);
+        const mr = margin_h_extra - ml;
+        const mt = pxOffset(margin_v_extra, off_pct);
+        const mb = margin_v_extra - mt;
+
         return switch (cfg.dock_position) {
-            .top => blk: {
-                if (stretch_w and stretch_h) break :blk LayerLayout{
-                    .anchor = a_top | a_bottom | a_left | a_right,
-                    .width = 0,
-                    .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_w) break :blk LayerLayout{
-                    .anchor = a_top | a_left | a_right,
-                    .width = 0,
-                    .height = want_h,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_h) break :blk LayerLayout{
-                    .anchor = a_top | a_bottom | a_left,
-                    .width = want_w,
-                    .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
-                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
-                };
-                break :blk LayerLayout{
-                    .anchor = a_top | a_left,
-                    .width = want_w,
-                    .height = want_h,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
-                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
-                };
+            .top => LayerLayout{
+                .anchor = a_top | a_bottom | a_left | a_right,
+                .width = 0,
+                .height = 0,
+                .margin_top = 0,
+                .margin_right = mr,
+                .margin_bottom = if (stretch_h) 0 else (sh_i - want_h_i),
+                .margin_left = ml,
             },
-            .bottom => blk: {
-                if (stretch_w and stretch_h) break :blk LayerLayout{
-                    .anchor = a_top | a_bottom | a_left | a_right,
-                    .width = 0, .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_w) break :blk LayerLayout{
-                    .anchor = a_bottom | a_left | a_right,
-                    .width = 0, .height = want_h,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_h) break :blk LayerLayout{
-                    .anchor = a_top | a_bottom | a_left,
-                    .width = want_w, .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
-                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
-                };
-                break :blk LayerLayout{
-                    .anchor = a_bottom | a_left,
-                    .width = want_w, .height = want_h,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0,
-                    .margin_left = pxOffset(sw_i - want_w_i, off_pct),
-                };
+            .bottom => LayerLayout{
+                .anchor = a_top | a_bottom | a_left | a_right,
+                .width = 0,
+                .height = 0,
+                .margin_top = if (stretch_h) 0 else (sh_i - want_h_i),
+                .margin_right = mr,
+                .margin_bottom = 0,
+                .margin_left = ml,
             },
-            .left => blk: {
-                if (stretch_w and stretch_h) break :blk LayerLayout{
-                    .anchor = a_top | a_bottom | a_left | a_right,
-                    .width = 0, .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_h) break :blk LayerLayout{
-                    .anchor = a_left | a_top | a_bottom,
-                    .width = want_w, .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_w) break :blk LayerLayout{
-                    .anchor = a_left | a_right | a_top,
-                    .width = 0, .height = want_h,
-                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
-                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                break :blk LayerLayout{
-                    .anchor = a_top | a_left,
-                    .width = want_w, .height = want_h,
-                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
-                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
+            .left => LayerLayout{
+                .anchor = a_top | a_bottom | a_left | a_right,
+                .width = 0,
+                .height = 0,
+                .margin_top = mt,
+                .margin_right = if (stretch_w) 0 else (sw_i - want_w_i),
+                .margin_bottom = mb,
+                .margin_left = 0,
             },
-            .right => blk: {
-                if (stretch_w and stretch_h) break :blk LayerLayout{
-                    .anchor = a_top | a_bottom | a_left | a_right,
-                    .width = 0, .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_h) break :blk LayerLayout{
-                    .anchor = a_right | a_top | a_bottom,
-                    .width = want_w, .height = 0,
-                    .margin_top = 0, .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                if (stretch_w) break :blk LayerLayout{
-                    .anchor = a_left | a_right | a_top,
-                    .width = 0, .height = want_h,
-                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
-                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
-                break :blk LayerLayout{
-                    .anchor = a_top | a_right,
-                    .width = want_w, .height = want_h,
-                    .margin_top = pxOffset(sh_i - want_h_i, off_pct),
-                    .margin_right = 0, .margin_bottom = 0, .margin_left = 0,
-                };
+            .right => LayerLayout{
+                .anchor = a_top | a_bottom | a_left | a_right,
+                .width = 0,
+                .height = 0,
+                .margin_top = mt,
+                .margin_right = 0,
+                .margin_bottom = mb,
+                .margin_left = if (stretch_w) 0 else (sw_i - want_w_i),
             },
         };
     }
@@ -1014,6 +1089,28 @@ const Client = struct {
         const id = self.next_id;
         self.next_id += 1;
         return id;
+    }
+
+    /// fractional scaling 변환. 우리 코드 내부 단위 = physical pixel. compositor
+    /// 와 I/O 시 logical 단위로 변환 / 역변환. KDE Plasma 6 의 170% 환경에서
+    /// preferred_scale=204 (= 120×1.7) → logical_w × 204 / 120 = physical_w.
+    /// fallback (advertise 안 된 compositor): preferred_scale=120 → no-op.
+    fn logicalToPhysical(self: *const Client, logical: i32) i32 {
+        const num: i32 = @intCast(self.preferred_scale);
+        const den: i32 = @intCast(fractional_scale_denominator);
+        return @divFloor(logical * num, den);
+    }
+
+    fn physicalToLogical(self: *const Client, physical: i32) i32 {
+        const num: i32 = @intCast(self.preferred_scale);
+        const den: i32 = @intCast(fractional_scale_denominator);
+        // fractional scale 환경의 logical 추정 — `preferred_scale / 120` 비율
+        // 로 physical → logical. 단 KWin 내부의 정확한 screen_logical 과 round
+        // 정책 차이로 1px 오차 가능 — fallback 용. xdg-output-unstable-v1 의
+        // `logical_size` event 가 와서 `screen_logical_*` 이 채워지면 layout
+        // 계산은 그 정확한 값을 직접 사용 (이 함수 미사용).
+        if (physical <= 0) return 0;
+        return @divFloor(physical * den, num);
     }
 
     fn applyPendingSize(self: *Client) void {
@@ -1263,8 +1360,15 @@ const Client = struct {
     }
 
     fn attachAndCommit(self: *Client, buffer: ShmBuffer) !void {
+        // wl_surface.attach (opcode 1) — (buffer_id, x=0, y=0).
         try self.sendArgs(self.surface_id, 1, &.{ buffer.id, 0, 0 });
-        try self.sendArgs(self.surface_id, 2, &.{
+        // wl_surface.damage_buffer (opcode 9) — viewport 적용된 surface 에서는
+        // `wl_surface.damage` (surface-local 좌표) 가 modeled scale 누적으로
+        // 부정확. `damage_buffer` 는 buffer-local 좌표 (= physical) 라 viewport
+        // 와 무관하게 일관. 시연 사이클 (KDE 170%) 에서 타이핑마다 1-frame
+        // 노이즈 (배경 비침) 추적 — `damage` 를 surface coords 로 보내며 viewport
+        // scale 의 sub-pixel 정렬과 충돌하던 게 후보.
+        try self.sendArgs(self.surface_id, 9, &.{
             0,
             0,
             @intCast(buffer.width),
@@ -1435,6 +1539,41 @@ const Client = struct {
             try self.handleOutputEvent(opcode, payload);
             return;
         }
+        if (self.fractional_scale_id != 0 and id == self.fractional_scale_id) {
+            if (opcode == wp_fractional_scale_v1_event_preferred_scale and payload.len >= 4) {
+                const new_scale = readU32(payload[0..4]);
+                if (new_scale != self.preferred_scale and new_scale > 0) {
+                    self.preferred_scale = new_scale;
+                    log.appendLine("wayland", "fractional scale preferred={d}/120 (≈{d}.{d:0>2}x)", .{
+                        new_scale,
+                        new_scale / 120,
+                        (new_scale * 100 / 120) % 100,
+                    });
+                    // font 재초기화 — pixel_height = base × scale / 120. 첫 init
+                    // 의 default scale=120 으로 만든 font 가 fractional scale
+                    // 환경에서 user 시각에 너무 작음. cell metric 도 자동 갱신.
+                    self.renderer.reinitFont(
+                        self.allocator,
+                        self.config,
+                        new_scale,
+                        fractional_scale_denominator,
+                    ) catch |err| {
+                        log.appendLine("wayland", "font reinit failed: {s} — keeping default size", .{@errorName(err)});
+                    };
+                    // 첫 createLayerSurface 의 set_size 시점엔 preferred_scale 이
+                    // 아직 default (120) 이라 physical 단위 그대로 송신됐을 가능성
+                    // — 새 scale 로 정확히 변환된 layout 재송신. KWin 이 새 configure
+                    // 발신 → 그 handler 가 정확한 logical → physical 변환.
+                    if (self.layer_surface_id != 0) {
+                        try self.sendLayerSurfaceLayout();
+                    }
+                    // cell metric 변경 → grid 재계산.
+                    if (self.session != null) try self.ensureSessionGrid();
+                    self.requestRedraw();
+                }
+            }
+            return;
+        }
         if (id == self.wm_base_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.wm_base_id, 3, &.{readU32(payload[0..4])});
             return;
@@ -1450,6 +1589,15 @@ const Client = struct {
         if (self.xdg_surface_id != 0 and id == self.xdg_surface_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.xdg_surface_id, 4, &.{readU32(payload[0..4])});
             self.applyPendingSize();
+            if (self.viewport_id != 0 and self.window_width > 0 and self.window_height > 0) {
+                const dw: u32 = @intCast(self.physicalToLogical(self.window_width));
+                const dh: u32 = @intCast(self.physicalToLogical(self.window_height));
+                try self.sendArgs(
+                    self.viewport_id,
+                    wp_viewport_request_set_destination,
+                    &.{ dw, dh },
+                );
+            }
             if (self.session != null) try self.ensureSessionGrid();
             self.configured = true;
             if (self.mapped) self.requestRedraw();
@@ -1464,13 +1612,35 @@ const Client = struct {
                 const serial = readU32(payload[0..4]);
                 const w = readU32(payload[4..8]);
                 const h = readU32(payload[8..12]);
+                // 진단 — KWin 이 우리 anchor + margin 설정을 받아 계산한 surface
+                // 의 logical 크기. 우리가 보낸 margin 의 합과 screen logical
+                // 크기 사이 mismatch 가 보이면 KWin 의 round 정책 추정 가능.
+                log.appendLine("wayland", "layer-surface configure serial={} logical_w={} logical_h={} scale={d}/120", .{
+                    serial,
+                    w,
+                    h,
+                    self.preferred_scale,
+                });
                 try self.sendArgs(self.layer_surface_id, zwlr_layer_surface_v1_request_ack_configure, &.{serial});
                 // compositor 가 0 으로 보내면 "you decide" — 기존 size 유지.
                 // 보통은 anchor L+R 기반 full screen width + 우리 요청 height
-                // 그대로 돌려보냄.
-                if (w > 0) self.pending_width = @intCast(@min(w, @as(u32, std.math.maxInt(i32))));
-                if (h > 0) self.pending_height = @intCast(@min(h, @as(u32, std.math.maxInt(i32))));
+                // 그대로 돌려보냄. w/h 는 *logical pixel* (layer-shell spec).
+                // 우리 코드 내부는 physical 이라 변환.
+                const w_logical: i32 = @intCast(@min(w, @as(u32, std.math.maxInt(i32))));
+                const h_logical: i32 = @intCast(@min(h, @as(u32, std.math.maxInt(i32))));
+                if (w > 0) self.pending_width = self.logicalToPhysical(w_logical);
+                if (h > 0) self.pending_height = self.logicalToPhysical(h_logical);
                 self.applyPendingSize();
+                // viewport.set_destination — compositor 가 우리 buffer (physical)
+                // 를 logical surface size 안에 1:1 매핑하게. 호출 안 하면 buffer
+                // 가 logical size 로 stretch 되어 흐려짐 (fractional scale 환경).
+                if (self.viewport_id != 0 and w > 0 and h > 0) {
+                    try self.sendArgs(
+                        self.viewport_id,
+                        wp_viewport_request_set_destination,
+                        &.{ w, h },
+                    );
+                }
                 if (self.session != null) try self.ensureSessionGrid();
                 self.configured = true;
                 // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
@@ -1831,13 +2001,15 @@ const Client = struct {
             text_input_content_purpose_terminal,
         });
         // Cursor rectangle — 활성 탭 cursor 의 surface pixel 위치. 정확한
-        // 위치 set 후 batch commit (foot 패턴 동등).
+        // 위치 set 후 batch commit (foot 패턴 동등). text-input v3 spec 의
+        // cursor_rectangle 단위 = *logical pixel* — 우리 rect 는 physical 이라
+        // 변환 후 송신 (fractional scale 환경에서 IME candidate window 정확 위치).
         const rect = self.computeCursorRect();
         var rect_msg = Msg.init(self.text_input_id, text_input_request_set_cursor_rectangle);
-        try rect_msg.putI32(rect.x);
-        try rect_msg.putI32(rect.y);
-        try rect_msg.putI32(rect.w);
-        try rect_msg.putI32(rect.h);
+        try rect_msg.putI32(self.physicalToLogical(rect.x));
+        try rect_msg.putI32(self.physicalToLogical(rect.y));
+        try rect_msg.putI32(self.physicalToLogical(rect.w));
+        try rect_msg.putI32(self.physicalToLogical(rect.h));
         try rect_msg.send(self.stream);
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
         self.text_input_enabled = true;
@@ -2237,13 +2409,15 @@ const Client = struct {
     }
 
     /// wl_pointer.enter(serial, surface, surface_x_fixed, surface_y_fixed).
+    /// 좌표 = *surface-local logical pixel* (fixed 24.8). 우리 paint area / cell
+    /// metric 은 physical 이라 fixed → logical → physical 변환.
     fn handlePointerEnter(self: *Client, payload: []const u8) void {
         if (payload.len < 16) return;
         self.last_serial = readU32(payload[0..4]);
         const sx = readI32(payload[8..12]);
         const sy = readI32(payload[12..16]);
-        self.pointer_x_px = wlFixedToPx(sx);
-        self.pointer_y_px = wlFixedToPx(sy);
+        self.pointer_x_px = self.logicalToPhysical(wlFixedToPx(sx));
+        self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
         self.pointer_inside = true;
     }
 
@@ -2256,14 +2430,14 @@ const Client = struct {
         self.pointer_y_px = -1;
     }
 
-    /// wl_pointer.motion(time, surface_x_fixed, surface_y_fixed).
+    /// wl_pointer.motion(time, surface_x_fixed, surface_y_fixed). 좌표 = logical.
     fn handlePointerMotion(self: *Client, payload: []const u8) void {
         if (payload.len < 12) return;
         // payload[0..4]=time.
         const sx = readI32(payload[4..8]);
         const sy = readI32(payload[8..12]);
-        self.pointer_x_px = wlFixedToPx(sx);
-        self.pointer_y_px = wlFixedToPx(sy);
+        self.pointer_x_px = self.logicalToPhysical(wlFixedToPx(sx));
+        self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
 
         // L12-γ-3 — tab drag 활성이면 selection / scrollbar 우선이 아니라
         // drag move 만 처리. mouse 가 cell 영역으로 벗어나도 drag 자체는
@@ -2697,8 +2871,10 @@ const Client = struct {
 
     fn handleToplevelConfigure(self: *Client, payload: []const u8) !void {
         if (payload.len < 12) return error.WaylandBadMessage;
-        self.pending_width = readI32(payload[0..4]);
-        self.pending_height = readI32(payload[4..8]);
+        // xdg-shell configure 의 width/height = *logical pixel* (compositor 단위).
+        // 우리 내부 단위는 physical 이라 변환.
+        self.pending_width = self.logicalToPhysical(readI32(payload[0..4]));
+        self.pending_height = self.logicalToPhysical(readI32(payload[4..8]));
     }
 
     fn handleBufferEvent(self: *Client, id: u32, opcode: u16) bool {
@@ -2887,6 +3063,16 @@ const Client = struct {
         if (self.xdg_surface_id != 0) {
             try self.sendNoArgs(self.xdg_surface_id, 0);
             self.xdg_surface_id = 0;
+        }
+        // fractional scaling — viewport + fractional_scale_v1 destroy. surface
+        // 보다 먼저 destroy (둘 다 surface 의 extension 이라 surface 보다 nested).
+        if (self.viewport_id != 0) {
+            try self.sendNoArgs(self.viewport_id, wp_viewport_request_destroy);
+            self.viewport_id = 0;
+        }
+        if (self.fractional_scale_id != 0) {
+            try self.sendNoArgs(self.fractional_scale_id, wp_fractional_scale_v1_request_destroy);
+            self.fractional_scale_id = 0;
         }
         // wl_surface destroy (opcode 0).
         if (self.surface_id != 0) {
