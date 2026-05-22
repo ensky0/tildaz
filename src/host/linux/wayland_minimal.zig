@@ -390,9 +390,6 @@ const Client = struct {
     // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
     // commit 송신 끝난 상태). 다음 Activated → flip + re-attach.
     surface_hidden: bool = false,
-    /// L9-γ 진단 trace — dispatchDbusMessages 호출 횟수. 약 60 iter/sec
-    /// (frame_poll_ms=16ms), 60 마다 log → 1초 1번 dispatch heartbeat.
-    dbus_dispatch_count: u64 = 0,
     // L9-γ — 중복 Activated debounce. 일부 compositor 가 같은 hotkey press
     // 에 대해 portal 통해 두 번 signal 보낼 가능성 (key repeat 자체는 보통
     // compositor 가 차단 — repeat_info 와 다른 channel). 같은 timestamp 면
@@ -1076,6 +1073,17 @@ const Client = struct {
     }
 
     fn redraw(self: *Client) !bool {
+        // L9-γ hide / show — layer-shell spec 의 re-map sequence 준수:
+        // 1. hide path 가 `surface_hidden=true` set → 어떤 attach 도 skip.
+        // 2. show path 가 `surface_hidden=false` + `configured=false` + commit
+        //    only → compositor 가 new configure event 발신. configure handler
+        //    가 `configured=true` set + requestRedraw.
+        // 3. 그 사이 (`surface_hidden=false` 인데 `configured=false`) 의 main
+        //    loop iteration 에선 *어떤 attach 도 skip* — 아니면 protocol error
+        //    "a buffer has been attached to a layer surface prior to the
+        //    first layer_surface.configure event".
+        if (self.surface_hidden) return false;
+        if (!self.configured) return false;
         self.applyPendingSize();
         self.discardReleasedRetiredBuffersExcept(self.window_width, self.window_height);
         if (self.active_buffer) |*buffer| {
@@ -1161,14 +1169,6 @@ const Client = struct {
         const size: usize = @intCast(size_i32);
         const pool_id = self.allocId();
         const new_buffer_id = self.allocId();
-        log.appendLine("wayland", "create shm buffer {}x{} stride={} size={} pool_id={} buffer_id={}", .{
-            width,
-            height,
-            stride,
-            size_i32,
-            pool_id,
-            new_buffer_id,
-        });
 
         const fd = try createMemfd("tildaz-wayland-buffer");
         errdefer posix.close(fd);
@@ -1473,7 +1473,9 @@ const Client = struct {
                 self.applyPendingSize();
                 if (self.session != null) try self.ensureSessionGrid();
                 self.configured = true;
-                if (self.mapped) self.requestRedraw();
+                // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
+                // 인 경우도 redraw — hide 후 re-map sequence 의 첫 attach.
+                if (self.mapped or !self.surface_hidden) self.requestRedraw();
                 return;
             }
             if (opcode == zwlr_layer_surface_v1_event_closed) {
@@ -1843,7 +1845,6 @@ const Client = struct {
         self.last_cursor_rect_y = rect.y;
         self.last_cursor_rect_w = rect.w;
         self.last_cursor_rect_h = rect.h;
-        log.appendLine("wayland", "text_input enabled id={} cursor_rect={}x{}+{}+{}", .{ self.text_input_id, rect.w, rect.h, rect.x, rect.y });
     }
 
     /// 활성 탭 cursor 의 surface-relative pixel rect. cursor 미가시 / session
@@ -1912,11 +1913,9 @@ const Client = struct {
                 // payload: object<wl_surface>. 우리 surface 하나뿐이라 검증 생략.
                 // spec 정확한 시점에 enable() 호출 — fcitx5 의 IME session init
                 // 이 우리 wayland frontend 에 align.
-                log.appendLine("wayland", "text_input enter", .{});
                 try self.enableTextInput();
             },
             text_input_event_leave => {
-                log.appendLine("wayland", "text_input leave", .{});
                 // foot `ime_disable` 동등 — disable + commit + state clear.
                 // fcitx5 가 leave 시 명시 disable 받아야 자기 IME session
                 // 정확히 종료.
@@ -1988,7 +1987,9 @@ const Client = struct {
         // 호출 시점에 storage 가 valid 해야 하므로 ArrayList 의 owned 메모리에
         // 보관. pending_preedit 가 비어 있으면 preedit_text 도 비움 (overlay
         // 사라짐 = 조합 끝).
-        log.appendLine("wayland", "text_input preedit text_len={}", .{self.pending_preedit.items.len});
+        if (self.pending_preedit.items.len > 0) {
+            log.appendLine("wayland", "text_input preedit text_len={}", .{self.pending_preedit.items.len});
+        }
         self.preedit_text.clearRetainingCapacity();
         try self.preedit_text.appendSlice(self.allocator, self.pending_preedit.items);
         self.pending_preedit.clearRetainingCapacity();
@@ -2798,12 +2799,9 @@ const Client = struct {
     fn dispatchDbusMessages(self: *Client) void {
         if (self.dbus_session) |*bus| {
             const r = bus.api.read_write_dispatch(bus.conn, 0);
-            self.dbus_dispatch_count += 1;
-            // L9-γ 진단 trace — 60 iter (≈1s) 마다 heartbeat. r==0 면 conn
-            // disconnected. message 가 정말 안 오는 건지, 도착했는데 filter
-            // 분기 실패인지 (전자: 이 줄만, 후자: "filter msg" 도 같이) 구분.
-            if (self.dbus_dispatch_count % 60 == 0) {
-                log.appendLine("portal", "dispatch heartbeat count={d} return={d}", .{ self.dbus_dispatch_count, r });
+            // r == 0 은 connection disconnected — fatal 아니지만 hotkey 더 안 옴.
+            if (r == 0) {
+                log.appendLine("portal", "dbus connection disconnected — hotkey routing stopped", .{});
             }
         }
     }
@@ -2826,27 +2824,78 @@ const Client = struct {
     /// `commitPendingInput` (preedit / rename buf 보존). show 는 `mapped=false`
     /// + `requestRedraw` 로 maybeRedraw 가 buffer 다시 attach (자연 re-map).
     ///
-    /// hide 패턴: `wl_surface.attach(NULL, 0, 0)` + `wl_surface.commit` —
-    /// Wayland spec 의 표준 unmap. layer-shell 의 configure 는 이미 받았으니
-    /// re-mapping 시 별도 configure 기다림 없이 다음 attach + commit 만으로
-    /// 다시 보임. KDE / GNOME 양쪽 검증은 시연 사이클로.
+    /// hide / show — wl_surface + layer_surface (또는 xdg_toplevel + xdg_surface)
+    /// 둘 다 destroy / recreate.
+    ///
+    /// 배경:
+    /// - [wlr-layer-shell spec](https://wayland.app/protocols/wlr-layer-shell-unstable-v1)
+    ///   는 "perform a commit without any buffer attached, waiting for a
+    ///   configure event" 로 re-map 가능하다고 명시.
+    /// - 시연 사이클 (KDE Plasma 6.6.5 + xdg-desktop-portal-kde) 에서 그 sequence
+    ///   가 동작 안 함 — `commit only` 후 compositor 가 configure event 안 보냄.
+    ///   KWin 의 wlr-layer-shell impl 이 spec 의 commit-only re-map 안 따르는
+    ///   것으로 보임. 검증된 reference (wlroots compositor: Sway / Hyprland)
+    ///   환경에선 commit-only re-map 동작 가능.
+    /// - [wayland-book](https://wayland-book.com/) 의 "Destroying the role
+    ///   object does not remove the role from the wl_surface" 에 따라, role
+    ///   object (layer_surface) 만 destroy 후 같은 wl_surface 에 new role
+    ///   부여는 protocol error 가능 — wl_surface 도 destroy + recreate 필수.
+    ///
+    /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
         if (self.surface_hidden) {
             self.surface_hidden = false;
-            self.requestRedraw();
-            log.appendLine("portal", "toggle show", .{});
+            try self.createShellObjects();
+            log.appendLine("portal", "toggle show — recreated shell objects", .{});
             return;
         }
         // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
         self.commitPendingInput();
-        // wl_surface.attach (opcode 1) — NULL buffer (id=0) 로 unmap.
-        try self.sendArgs(self.surface_id, 1, &.{ 0, 0, 0 });
-        // wl_surface.commit (opcode 6) — pending state 적용.
-        try self.sendNoArgs(self.surface_id, 6);
-        self.mapped = false;
+        try self.destroyShellObjects();
         self.surface_hidden = true;
-        log.appendLine("portal", "toggle hide", .{});
+        log.appendLine("portal", "toggle hide — destroyed shell objects", .{});
+    }
+
+    /// wl_surface + role object (layer_surface 또는 xdg_toplevel+xdg_surface) +
+    /// 모든 wl_buffer destroy. pending/active flag reset. hide path 의 핵심.
+    fn destroyShellObjects(self: *Client) !void {
+        // 모든 buffer destroy + release. compositor 가 surface destroy 시 자체
+        // 적으로 attach 해제하지만, 우리 wl_buffer object 는 직접 destroy.
+        if (self.active_buffer) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            self.active_buffer = null;
+        }
+        for (self.retired_buffers.items) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+        }
+        self.retired_buffers.clearRetainingCapacity();
+
+        // layer_surface destroy (opcode 7).
+        if (self.layer_surface_id != 0) {
+            try self.sendNoArgs(self.layer_surface_id, zwlr_layer_surface_v1_request_destroy);
+            self.layer_surface_id = 0;
+        }
+        // xdg_toplevel.destroy (opcode 0) + xdg_surface.destroy (opcode 0) —
+        // layer-shell fallback path (mutter 등 GNOME).
+        if (self.toplevel_id != 0) {
+            try self.sendNoArgs(self.toplevel_id, 0);
+            self.toplevel_id = 0;
+        }
+        if (self.xdg_surface_id != 0) {
+            try self.sendNoArgs(self.xdg_surface_id, 0);
+            self.xdg_surface_id = 0;
+        }
+        // wl_surface destroy (opcode 0).
+        if (self.surface_id != 0) {
+            try self.sendNoArgs(self.surface_id, 0);
+            self.surface_id = 0;
+        }
+
+        self.mapped = false;
+        self.configured = false;
     }
 
     fn logCapabilities(self: *Client) void {
