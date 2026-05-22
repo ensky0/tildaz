@@ -145,7 +145,6 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
                 // L9-γ 진단 trace — Response.results 의 어떤 key 들이 오는지
                 // 출력. BindShortcuts response 에 "shortcuts" key 가 있고 그
                 // array 가 비어 있으면 KDE portal-kde 가 실제 등록 안 함.
-                log.appendLine("portal", "Response key={s} type={c}", .{ key, @as(u8, @intCast(api.iter_get_arg_type(&entry_iter))) });
                 if (std.mem.eql(u8, key, "session_handle") and api.iter_get_arg_type(&entry_iter) == dbus.dbus_type_variant) {
                     var var_iter: dbus.DBusMessageIter = .{};
                     api.iter_recurse(&entry_iter, &var_iter);
@@ -170,18 +169,9 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
                         api.iter_recurse(&var_iter, &sc_arr);
                         var count: u32 = 0;
                         while (api.iter_get_arg_type(&sc_arr) == dbus.dbus_type_struct) {
-                            var st_iter: dbus.DBusMessageIter = .{};
-                            api.iter_recurse(&sc_arr, &st_iter);
-                            if (api.iter_get_arg_type(&st_iter) == dbus.dbus_type_string) {
-                                var sid_c: ?[*:0]const u8 = null;
-                                api.iter_get_basic(&st_iter, @ptrCast(&sid_c));
-                                const sid = if (sid_c) |s| std.mem.span(s) else "(null)";
-                                log.appendLine("portal", "Response shortcuts[{d}] id={s}", .{ count, sid });
-                            }
                             count += 1;
                             _ = api.iter_next(&sc_arr);
                         }
-                        log.appendLine("portal", "Response shortcuts total={d}", .{count});
                     }
                 }
             }
@@ -549,19 +539,9 @@ fn activatedFilter(conn: *dbus.DBusConnection, msg: *dbus.DBusMessage, user_data
     const sub: *ActivatedSubscription = @ptrCast(@alignCast(user_data.?));
     const api = sub.api;
 
-    // L9-γ 진단 trace — 들어오는 모든 message 의 type / interface / member
-    // 출력. signal 도착 자체가 안 되는 건지, 도착하는데 매칭 실패인지 분기.
-    const iface_c = api.message_get_interface(msg);
-    const member_c = api.message_get_member(msg);
-    const msg_type = api.message_get_type(msg);
-    const iface = if (iface_c) |i| std.mem.span(i) else "(null)";
-    const member = if (member_c) |m| std.mem.span(m) else "(null)";
-    log.appendLine("portal", "filter msg type={d} iface={s} member={s}", .{ msg_type, iface, member });
-
     if (api.message_is_signal(msg, interface_global_shortcuts, member_activated) == 0) {
         return dbus.dbus_handler_result_not_yet_handled;
     }
-    log.appendLine("portal", "filter Activated signal matched, parsing payload", .{});
 
     var iter: dbus.DBusMessageIter = .{};
     if (api.iter_init(msg, &iter) == 0) return dbus.dbus_handler_result_not_yet_handled;
