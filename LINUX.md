@@ -31,7 +31,7 @@ milestone 상태를 정확히 남기는 용도다.
 Debian Wayland 환경).
 
 - Branch: `linux-wayland-bringup`
-- Commit: `199d002`
+- Commit: `70c41e9`
 - 실행 경로: `zig build && ./zig-out/bin/tildaz`
 
 | 영역 | 상태 |
@@ -120,7 +120,7 @@ zwp_text_input_manager_v3=true
 - L9-α libdbus-1 dlopen + session bus connect 추가 ([commit 0a9e7f6](https://github.com/ensky0/tildaz/commit/0a9e7f6)). `src/host/linux/dbus.zig` 신규 — `dbus_bus_get_private` / `dbus_connection_*` 의 dlopen wrapper + `SessionBus` struct (connect / deinit / `unique_name` 로깅). `Client.dbus_session: ?dbus.SessionBus` field + `tryConnectDbus()` 가 capability 후속 단계에서 호출 — 실패는 fatal 아님 (libdbus 미설치 또는 session bus 부재 시 hotkey 기능 없이 terminal 자체는 정상). 시연 사이클: Cinnamon Wayland 환경에서 `unique_name=:1.X` 로 connect ✅.
 - L9-β-1 portal GlobalShortcuts.CreateSession 추가 ([commit 2af21c2](https://github.com/ensky0/tildaz/commit/2af21c2)). `src/host/linux/portal.zig` 신규 — D-Bus method call `/org/freedesktop/portal/desktop` 의 `org.freedesktop.portal.GlobalShortcuts.CreateSession` 호출 + Response signal 대기 (handle_token `tildaz_handle`, timeout 30s). reply 검증 → `session_handle` 파싱 + `Client.portal_session` 에 저장. catch path 별 graceful degrade — 어느 단계 fail 이든 dbus_session / portal_session 일관성 유지.
 - L9-β-2 portal BindShortcuts "toggle" 추가 (`wip:` [commit 992a2a7](https://github.com/ensky0/tildaz/commit/992a2a7), KDE/GNOME 정식 시연 대기). CreateSession 후 곧바로 단일 `"toggle"` shortcut 등록 — `shortcuts: a(sa{sv})` 의 한 entry `("toggle", {description: "Show / hide TildaZ", preferred_trigger: keysymToAccelerator(config.hotkey)})`. `keysymToAccelerator` helper — XKB keysym → GTK accelerator string (L9-β-2 scope: F1..F12 + modifier=0). timeout 5분 (user dialog 응답 대기). `shortcut_id_toggle` pub const 노출 — L9-γ 의 `Activated` signal 매칭 키로 재사용. `dbus.dbus_type_struct = 'r'` constant 추가. 시연 사이클: Cinnamon Wayland (xdg-desktop-portal-gtk + -xapp) 환경에선 portal `Desktop` 객체에 `org.freedesktop.portal.GlobalShortcuts` 인터페이스 자체가 없음 → CreateSession 단계 `No such interface` D-Bus error → graceful degrade chain 정상 동작 (`[portal] CreateSession skipped: PortalMethodCallFailed — hotkey 기능 비활성` + 메인 window 정상). 정식 검증은 KDE Plasma 6 (xdg-desktop-portal-kde) 또는 GNOME 45+ (xdg-desktop-portal-gnome) 환경 필요.
-- L9-γ portal Activated signal subscribe + window toggle 추가 (`wip:` [commit 8680ac7](https://github.com/ensky0/tildaz/commit/8680ac7), KDE Plasma 6 진단 중). `portal.subscribeActivatedSignal` + `ActivatedSubscription` (match rule `interface=GlobalShortcuts member=Activated` + filter, signal payload `(o session, s shortcut_id, t timestamp, a{sv})` 파싱 + session_handle 매칭 + user callback dispatch). `Client` 에 `portal_subscription` / `surface_hidden` / `last_toggle_timestamp` field + `onPortalActivated` (timestamp debounce + shortcut_id 매칭) → `handleActivatedToggle` (hide = `wl_surface.attach(NULL) + commit`, show = `requestRedraw`). main loop `dispatchDbusMessages` 매 iteration `read_write_dispatch(0)` non-blocking. `dbus.zig` 에 `dbus_type_uint64 = 't'` 추가 + 진단용 trace logger field 들 (`message_get_interface` / `_member` / `_type`). 코드 안 진단용 trace log (Response key/shortcuts entries, dispatch heartbeat, filter 진입 interface/member) — cause 확정 후 원복 예정. 시연 사이클 (KDE Plasma 6 + xdg-desktop-portal-kde) 진단 결과: BindShortcuts 응답으로 `shortcuts total=1 id=toggle` 반환 (등록 success). 그러나 KDE Settings 의 F1 owner 가 Konsole 로 표시 + F1 누름 시 Activated signal 미도착 (filter 진입 0회). 가설 (검증 안 함): portal-kde 가 sender pid 의 process tree / desktop file 매칭으로 client 식별 → tildaz binary 의 `.desktop` 부재 → parent process (실행한 Konsole) 로 fallback. 다음 검증: `.desktop` install + KRunner / `gio launch` 실행 시 owner 변화 여부.
+- L9-γ portal Activated subscribe (initial) + hide/show destroy/recreate 추가 ([initial 9195427](https://github.com/ensky0/tildaz/commit/9195427) + [최종 70c41e9](https://github.com/ensky0/tildaz/commit/70c41e9)). `portal.subscribeActivatedSignal` + `ActivatedSubscription` (match rule + filter, payload 파싱 + session_handle 매칭). `Client.handleActivatedToggle` 의 hide path = `destroyShellObjects` (wl_buffer + layer_surface + wl_surface 모두 destroy), show path = `createShellObjects` 재호출 (compositor 가 first configure 발신 → handler 가 ack + redraw). `redraw()` 진입 가드 — `surface_hidden` + `!configured` check. spec compliant + 모든 compositor 일관 동작. KDE Plasma 6.6.5 + xdg-desktop-portal-kde 6.6.5 시연 OK (KRunner 통한 실행 + 첫 등록 user dialog "확인" 응답 후 F1 hide/show cycle 무한 안정).
 - 지금은 "normal terminal window + 키보드 + 마우스 selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / 단축키) + ASCII real font (mono polish) + paste 시 한글 / CJK wide glyph + color emoji + block element + 한글 IME (음절 commit + preedit overlay + Ctrl 시 discard + popover cursor 정렬 + terminal hint)" 단계. first alpha 라고 부르기에는 HarfBuzz shape / drop-down / global shortcut / **tabs** / **사용자 config 적용** 이 아직 부족하다.
 
 ## 현재 제한 사항
@@ -197,103 +197,32 @@ Electron 앱 = 회귀" 일반화 아님. VSCode 만의 특수성으로 좁혀짐
 
 추가 검증 / 우회 방법은 [#194](https://github.com/ensky0/tildaz/issues/194) 에서 tracking.
 
-### KDE Plasma 6 portal-kde 의 GlobalShortcuts silent skip — L9-γ 진단 중
+### KDE Plasma 6 install — KRunner / Application Menu 통한 실행 필수
 
-KDE Plasma 6.6.5 + xdg-desktop-portal-kde 6.6.5 + KGlobalAccel 6.26.0 환경에서
-portal `BindShortcuts` 가 success response 반환하지만 **실제 KGlobalAccel runtime
-component register 가 silent skip**. 결과: F1 누름 시 Activated signal 미도착,
-hotkey toggle 동작 X.
+KDE Plasma 6 환경에서 `~/.local/share/applications/tildaz.desktop` install 후
+**KRunner (Alt+F2) / Application Menu / kstart 통해 실행** 해야 portal-kde 의
+GlobalShortcuts 가 정상 동작.
 
-#### 진단 단계 / 발견 사항 (2026-05-22)
+이유: portal-kde 가 D-Bus sender pid 의 process tree 매칭으로 client app_id
+식별. terminal 에서 직접 실행하면 부모 (Konsole 등) 의 desktop entry 로 잡혀
+portal-kde 의 BindShortcuts 가 *Konsole 의 KGlobalAccel component 안에 등록*
+→ 우리 tildaz process 에 trigger signal 안 옴.
 
-1. **`.desktop` install + `StartupWMClass=tildaz`** — portal-kde 의 client 식별
-   path 성공. KDE Settings → 단축키 → 검색 "F1" 의 owner 가 "TildaZ" 로 표시.
-   체크박스 활성 + 적용 한 상태에서도 F1 trigger 안 동작.
+`gio launch ~/.local/share/applications/tildaz.desktop` 같이 GIO / DE launcher
+통하면 portal-kde 가 정확히 `app_id: "tildaz"` 인식. 첫 등록 시 KDE 의 user
+dialog (`전역 단축키 요청됨 — TildaZ 에서 ... 등록`) 표시 — "확인" 누르면
+KGlobalAccel runtime 에 등록 완료.
 
-2. **dbus-monitor `interface=org.freedesktop.portal.GlobalShortcuts`** 띄우고
-   F1 누르면 **Activated signal 자체가 발신 안 됨**. 터미널 / 바탕화면 / VSCode
-   어디서도 동일. F1 누르면 그 자리에 raw `^[OP` (ESC O P = F1 ANSI seq) 가
-   application 까지 직통 — KDE 가 F1 을 *전혀 가로채지 않음* 확정.
+`dist/linux/tildaz.desktop` 의 `Exec=__TILDAZ_EXE__` placeholder 를 binary
+path 로 sed 치환 후 install:
 
-3. **`org.kde.kglobalaccel` D-Bus service** 가 `kwin_wayland` (KWin) process 안에
-   흡수됨 (Plasma 6.6 architecture). legacy `/usr/lib/kglobalacceld` 는 startup
-   시 self-exit (singleton guard).
-
-4. **KGlobalAccel runtime component list 조사** — `busctl --user tree
-   org.kde.kglobalaccel` 결과:
-   - `/component/yakuake` (Yakuake F1 정상 동작 reference)
-   - `/component/org_kde_konsole`, `/component/plasmashell`, ...
-   - **`tildaz` 또는 비슷한 component *없음*** — portal-kde 가 KGlobalAccel 의
-     runtime register 까지 못 가서 silent fail.
-
-5. **`~/.config/kglobalshortcutsrc` 의 우리 entry**:
-   ```
-   toggle=,F1,Show / hide TildaZ
-          ^── 빈 string (actual key 미할당)
-           ,F1, ── default key 만 표시
-   ```
-   format `<action>=<actual>,<default>,<friendly_name>` 에서 **actual key 가
-   empty**. KDE Settings UI 는 default 자리의 `F1` 표시. 실제 trigger 는 empty
-   라 동작 X. [MR !449](https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/merge_requests/449)
-   의 "always registered (but not assigned any keys)" 패턴과 정확히 일치.
-
-6. **portal-kde `globalshortcuts.cpp` 분석** (KDE master branch):
-   - `newShortcutInfos.empty()` 가 true 면 dialog 안 띄우고 `PortalResponse::
-     Success` 즉시 반환.
-   - 우리 시연 log: `BindShortcuts request sent` → `Response body code=0` 가
-     **1ms 만에 도착**. dialog user 응답 시간 (몇 초) 안 됨 = *dialog 안 뜸*.
-
-#### 가설 (강한 순)
-
-| 가설 | 근거 |
-|---|---|
-| **MR !449 denied cache 패턴** — portal-kde 가 *이전 시도 시 우리 toggle 을 "user denied" 로 기록* → 이후 BindShortcuts 호출은 dialog skip + empty key 등록 + success response | MR !449 의 정확한 동작 패턴. portal-kde state file `~/.local/state/xdg-desktop-portal-kdestaterc` 의 우리 entry 확인 필요 (진단 다음 단계). |
-| **layer-shell `keyboard_interactivity=exclusive` 가 dialog 못 뜨게 가로채기** — 첫 시연에서 우리 surface 가 키 입력 다 차지 → portal-kde 의 dialog 가 발신됐어도 user 응답 못 받음 → 자동 deny | dialog 본 적 없음. 첫 시연부터 1ms response. portal-kde 의 globalshortcuts.cpp 는 layer-shell 인식 코드 없음 — bug 가능성. |
-| **portal-kde 의 KDE Plasma 6.6 architecture mismatch** — KGlobalAccel daemon 의 KWin 흡수 timing 에 portal-kde 의 forward path 가 부정합 | Yakuake 의 직접 path (`KGlobalAccel::self()->setGlobalShortcut`) 는 정상 동작 — portal layer 만 wire 가 깨진 가능성. |
-
-#### 다음 진단 단계 (이어가는 PC 에서)
-
-1. **Yakuake F1 binding KDE Settings 에서 임시 disable** (conflict 제거).
-2. **portal-kde state file 내용 확인** — 우리 toggle 의 denied / disabled 기록 있나:
-   ```sh
-   cat ~/.local/state/xdg-desktop-portal-kdestaterc
-   ```
-3. **cache 삭제 + portal-kde 재시작 + tildaz 재실행**:
-   ```sh
-   cp ~/.config/kglobalshortcutsrc ~/.config/kglobalshortcutsrc.bak
-   sed -i '/^toggle=,F1,Show \/ hide TildaZ/d' ~/.config/kglobalshortcutsrc
-   # portal-kde state file 에 우리 entry 있으면 그것도 삭제 (위 확인 결과 따라)
-   systemctl --user restart plasma-xdg-desktop-portal-kde.service
-   pkill -9 tildaz; sleep 1
-   gio launch ~/.local/share/applications/tildaz.desktop
-   ```
-4. **dialog 진짜 뜨는지 확인** — accept 시 actual key = F1 등록되고 F1 trigger 동작 가능.
-
-#### Workaround 후보 — Yakuake 패턴 (L9-δ)
-
-만약 portal 가 끝까지 안 동작 또는 portal-kde 의 bug 확정 시: **KGlobalAccel
-D-Bus 직접 호출**. Yakuake 의 검증된 path ([yakuake mainwindow.cpp](https://invent.kde.org/utilities/yakuake/-/blob/master/app/mainwindow.cpp)):
-
-```cpp
-action = actionCollection()->addAction(QStringLiteral("toggle-window-state"));
-KGlobalAccel::self()->setGlobalShortcut(action,
-    QList<QKeySequence>() << QKeySequence(Qt::Key_F12));
+```sh
+TILDAZ_EXE="$(realpath /home/<user>/tildaz/zig-out/bin/tildaz)"
+sed "s|__TILDAZ_EXE__|$TILDAZ_EXE|" /path/to/tildaz/dist/linux/tildaz.desktop \
+  > ~/.local/share/applications/tildaz.desktop
 ```
 
-portal 우회. *cross-desktop spec 외* (KDE-only) 지만 검증됨. portal 시도 후
-KGlobalAccel service 가 D-Bus 에 있으면 추가 등록 — GNOME / wlroots 영향 0
-(KGlobalAccel D-Bus 없어 자연 skip).
-
-D-Bus interface: `org.kde.KGlobalAccel`, methods: `doRegister(as)`,
-`setForeignShortcut(as a(ai))`, `getComponent(s)`. Signal:
-`org.kde.kglobalaccel.Component.globalShortcutPressed`.
-
-#### 참고 link
-
-- [portal-kde globalshortcuts.cpp](https://raw.githubusercontent.com/KDE/xdg-desktop-portal-kde/master/src/globalshortcuts.cpp)
-- [MR !449 Remember denied shortcuts](https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/merge_requests/449)
-- [XDG GlobalShortcuts spec](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html)
-- [Yakuake KGlobalAccel direct path](https://raw.githubusercontent.com/KDE/yakuake/master/app/mainwindow.cpp)
+L11 packaging 의 정식 install 흐름 (.deb / .rpm / AppImage) 은 별도 milestone.
 
 ### 해소된 limitation (history 기록용)
 
@@ -308,6 +237,7 @@ D-Bus interface: `org.kde.KGlobalAccel`, methods: `doRegister(as)`,
 | Ctrl+Shift+C/V 가 그냥 Ctrl+C/V 처럼 동작 | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | `XKB_STATE_MODS_EFFECTIVE` 상수를 `0x0080` (= `LAYOUT_EFFECTIVE`) 으로 잘못 적어 `xkb_state_mod_name_is_active` 가 modifier component 를 안 봄 → 분기 false → fallthrough utf8 `\x03` PTY 송신 → SIGINT. `(1<<3)=0x0008` 로 정정. |
 | 우클릭 paste 후 터미널 freeze | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | 우리 자신이 last clipboard owner 인 상태에서 우클릭 → wayland 의 `source.send` event 가 main thread 로 와야 하는데 main thread 는 paste path 의 `posix.read` 에서 blocking → wayland event 못 받아 deadlock. self-source 가드 추가 (`active_data_source_id != 0` 면 buffer 직접 사용). |
 | `Invalid free` panic (좌클릭 drag 자동 copy 반복 시) | [441f894](https://github.com/ensky0/tildaz/commit/441f894) | ghostty `screen.selectionString(allocator, ...)` 결과 ptr 의 ownership 이 우리 allocator (GPA) 가 아니라 ghostty 의 자체 arena. 우리 GPA 로 free 시도 시 invalid free panic. dupe 로 우리 buffer 만들어 그것만 보관/free. addr2line stack 의 `arena_allocator.zig:185` 가 결정적 단서. |
+| KDE Plasma 6 portal-kde GlobalShortcuts silent skip — F1 trigger 안 됨 | [70c41e9](https://github.com/ensky0/tildaz/commit/70c41e9) | 두 가지 cause 가 묶임: (a) terminal child 환경에서 실행 시 portal-kde 가 app_id 를 부모 process (`org.kde.konsole` 등) 로 매칭 → KGlobalAccel 등록이 Konsole component 안으로 → 우리에 trigger 안 옴. KRunner / Application Menu / `gio launch` 통한 실행 시 `app_id: "tildaz"` 정상 인식 + 첫 등록 user dialog 표시. (b) [wlr-layer-shell spec](https://wayland.app/protocols/wlr-layer-shell-unstable-v1) 의 commit-only re-map sequence 가 KWin 에서 동작 X (configure event 미발신) — wl_surface + layer_surface 둘 다 destroy / recreate 가 정공. 진단 일지는 [#189 댓글 chain](https://github.com/ensky0/tildaz/issues/189). |
 
 ### 아직 검증되지 않은 것
 
@@ -432,7 +362,7 @@ renderer, terminal, font, dialog, path, autostart wrapper 뒤에 둔다.
 | L6 | Input and clipboard | keyboard + mouse selection drag + 더블클릭 word + 휠 scroll + 스크롤바 클릭/드래그 + clipboard (자동 copy / 우클릭 paste / Ctrl+Shift+C/V) 까지 | `wl_keyboard` + runtime `libxkbcommon` keymap loading 성공. `wl_pointer` 도입 후 셀 영역 selection drag + 휠 scroll 동작 ([41fc461](https://github.com/ensky0/tildaz/commit/41fc461)). 그 다음 `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` 도입 + `xkb_state_mod_name_is_active` 로 modifier 검사해서 자동 copy + 우클릭 paste + Ctrl+Shift+C/V 단축키 동작 ([441f894](https://github.com/ensky0/tildaz/commit/441f894)). 더블클릭 word selection ([dd40440](https://github.com/ensky0/tildaz/commit/dd40440)). 스크롤바 클릭 + 드래그 — 우측 8 px thumb hit test + `scrollToY` ([33b760b](https://github.com/ensky0/tildaz/commit/33b760b)). pointer cursor 모양은 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)). |
 | L7 | First alpha | 대기 | normal window에서 PTY/render/input + selection/copy/paste가 모두 되어야 함. |
 | L8 | Layer-shell drop-down | L8-α / β 완료 | L8-α — `caps.layer_shell.name != 0` 시 xdg-shell toplevel 대신 layer-shell surface 생성 + exclusive keyboard ([4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e)). L8-β — `wl_output.mode` 로 screen 크기 받아 `dock_position` / `width_percent` / `height_percent` / `offset_percent` 4 개 config 반영 + `set_exclusive_zone(0)` 명시 + percent=100 축은 size=0 + opposing edge anchor (compositor 가 다른 panel exclusive zone honor 한 영역에서 stretch) ([5c203a0](https://github.com/ensky0/tildaz/commit/5c203a0)). 시연 OK: UTM Debian mutter + KDE Plasma 6 KWin 양쪽. fallback (GNOME mutter 등) 시 xdg-shell. 알려진 한계: ① 다른 일반 앱 z-order 위로 못 옴 — [#195](https://github.com/ensky0/tildaz/issues/195). ② KDE Plasma floating dock 의 floating margin 영역까지 회피 안 됨 (현재 제한 사항 섹션). slide-down animation 은 SPEC 아님 — mac / Windows 도 즉시 표시. 단독 hotkey toggle 은 L9 (portal GlobalShortcuts). |
-| L9 | Global shortcut | α / β-1 feat 완료, β-2 / γ 코드 완료 (`wip:`), KDE Plasma 6 진단 중 | L9-α — libdbus-1 dlopen + session bus connect ([0a9e7f6](https://github.com/ensky0/tildaz/commit/0a9e7f6)). L9-β-1 — portal `GlobalShortcuts.CreateSession` ([2af21c2](https://github.com/ensky0/tildaz/commit/2af21c2)). L9-β-2 — portal `BindShortcuts` "toggle" + `keysymToAccelerator` ([992a2a7](https://github.com/ensky0/tildaz/commit/992a2a7) `wip:`, Cinnamon graceful degrade 확인). L9-γ — `Activated` signal subscribe + `handleActivatedToggle` (hide=`wl_surface.attach(NULL)+commit` / show=`requestRedraw`) + main loop `dispatchDbusMessages` ([8680ac7](https://github.com/ensky0/tildaz/commit/8680ac7) `wip:`). KDE Plasma 6.6.5 + xdg-desktop-portal-kde 6.6.5 진단 진행 중 — 자세한 진단 일지 / 가설 / 다음 단계는 "현재 제한 사항" 섹션 의 *"KDE Plasma 6 portal-kde 의 GlobalShortcuts silent skip"* 참고. 요약: `.desktop` install + `StartupWMClass` 후 KDE Settings owner = TildaZ 표시 OK (1차 가설 일부 확정), 그러나 KGlobalAccel runtime component list (`/component/...`) 에 tildaz 가 없고 `~/.config/kglobalshortcutsrc` 의 `toggle=,F1,...` 의 actual key 자리가 *empty*. 현재 강한 가설: [MR !449](https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/merge_requests/449) denied cache 또는 layer-shell exclusive 환경의 dialog 미발신. 다음 단계: portal-kde state file (`~/.local/state/xdg-desktop-portal-kdestaterc`) 의 우리 entry 확인 + cache 삭제 + portal-kde 재시작 + dialog 진짜 뜨는지 검증. Workaround 후보: KGlobalAccel D-Bus 직접 호출 (Yakuake 패턴, L9-δ). **명시 요구사항**: 다른 X11 / Electron 앱 (예: VSCode) 이 focus 잡고 있을 때도 hotkey 가 TildaZ 에 도달해야 한다. X11 시대의 Tilda 가 동일 시나리오에서 VSCode focus 시 F1 이 안 닿는 quirk 가 있는데 (`XGrabKey` 가 XWayland 안 X11 client 의 grab 에 가려짐), TildaZ 는 Wayland native client 로서 portal `GlobalShortcuts` 가 compositor 레벨 routing 이라 focus 무관히 동작해야 한다 — 검증 항목. |
+| L9 | Global shortcut | **완료** | L9-α — libdbus-1 dlopen + session bus connect ([0a9e7f6](https://github.com/ensky0/tildaz/commit/0a9e7f6)). L9-β-1 — portal `GlobalShortcuts.CreateSession` ([2af21c2](https://github.com/ensky0/tildaz/commit/2af21c2)). L9-β-2 — portal `BindShortcuts` "toggle" + `keysymToAccelerator` ([6492d1d](https://github.com/ensky0/tildaz/commit/6492d1d)). L9-γ — `Activated` signal subscribe (initial) + hide/show destroy/recreate ([9195427](https://github.com/ensky0/tildaz/commit/9195427) + [70c41e9](https://github.com/ensky0/tildaz/commit/70c41e9)). KDE Plasma 6.6.5 + xdg-desktop-portal-kde 6.6.5 시연 OK. **명시 요구사항 충족**: 다른 X11 / Electron 앱 (예: VSCode) focus 시도 hotkey TildaZ 에 도달 — portal `GlobalShortcuts` 가 compositor 레벨 routing 이라 focus 무관 동작. **KDE 환경 install 요구사항**: KRunner / Application Menu / `gio launch` 통한 실행 필수 — terminal 직접 실행하면 portal-kde 가 부모 process 의 app_id 로 매칭. 자세한 install guide 는 "현재 제한 사항" 의 *KDE Plasma 6 install* 섹션 참고. |
 | L10 | IME | 완료 (L10-α / β / γ) | L10-α — `zwp_text_input_v3` wire-level + `get_text_input(seat)` + keyboard focus 시점 enable/disable + `commit_string` → PTY 송신 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5)). L10-β — preedit inline overlay (보라색 배경 + foreground 글자, macOS / Windows 동등) + spec done-apply batch 패턴 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)). L10-γ — Ctrl+key 시 IME 조합 discard + `set_cursor_rectangle` + `set_content_type(purpose=terminal)` ([6e46e49](https://github.com/ensky0/tildaz/commit/6e46e49)). fcitx5-hangul + Cinnamon Wayland 시연 OK. |
 | L11 | Packaging | 대기 | `.desktop`, icon install, AppImage/distro package plan, autostart, final config/log path 검증 필요. |
 | L12 | Tabs (multi-session UI) | 전체 완료 (α / β / γ-1~5) + Alt+1..9 보강 ([199d002](https://github.com/ensky0/tildaz/commit/199d002)) | L12-α — tab bar + 활성 탭 ([b392765](https://github.com/ensky0/tildaz/commit/b392765)). L12-β — `tab_actions.Host` + 단축키 + multi-tab + 클릭 activate + 32-tab cap + cascade 회귀 fix ([d694392](https://github.com/ensky0/tildaz/commit/d694392)). L12-γ-1 — arrow `<`/`>` + plus `+` + tab_layout.compute / scroll ([357b0ec](https://github.com/ensky0/tildaz/commit/357b0ec)). L12-γ-2 — 더블클릭 rename + IME foot 패턴 ([c5689e9](https://github.com/ensky0/tildaz/commit/c5689e9)). L12-γ-3 — drag reorder + scroll polish (viewport_left clamp + disabled arrow 색) ([b801baf](https://github.com/ensky0/tildaz/commit/b801baf)). L12-γ-4 — close 'x' 버튼 (dim 색, mac/win 동등) ([41473d9](https://github.com/ensky0/tildaz/commit/41473d9)). L12-γ-5 — Wayland client-side key repeat timer ([7248163](https://github.com/ensky0/tildaz/commit/7248163)). First Alpha Contract 의 "tab operation 동작" 이 이 milestone. |
@@ -494,9 +424,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 21 | L13-γ config.opacity_percent | ✅ [318bbef](https://github.com/ensky0/tildaz/commit/318bbef) — Wayland buffer format XRGB8888 → ARGB8888 + paint 끝 alpha sweep 으로 일괄 적용. 호출 site 변경 없이 단일 sweep 으로 통합. |
 | 22 | L8-α layer-shell drop-down surface (baseline) | ✅ [4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e) — `caps.layer_shell.name != 0` 시 xdg-shell toplevel 대신 layer-shell surface. top+left+right anchor + 고정 400px + exclusive keyboard. UTM Debian arm64 mutter Wayland 에서 가로 full screen (1440px) + 입력 / 탭 / clipboard / IME enter/leave 회귀 없음 확인. |
 | 22-β | L8-β config 반영 (`dock_position` / `width_percent` / `height_percent` / `offset_percent`) | ✅ [5c203a0](https://github.com/ensky0/tildaz/commit/5c203a0) — `wl_output.mode` 로 screen 크기 받음 + `LayerLayout` 으로 anchor / size / margin 변환 (mac `screenFrameForDock` 동등). 시연 OK (UTM mutter + KDE Plasma KWin). 한계: KDE Plasma floating dock 의 floating margin 영역까지 회피 안 됨 (현재 제한 사항 섹션). |
-| 23 | L9 global shortcut | 진행 중 — α / β-1 feat ([0a9e7f6](https://github.com/ensky0/tildaz/commit/0a9e7f6) / [2af21c2](https://github.com/ensky0/tildaz/commit/2af21c2)), β-2 / γ `wip:` ([992a2a7](https://github.com/ensky0/tildaz/commit/992a2a7) / [8680ac7](https://github.com/ensky0/tildaz/commit/8680ac7)). KDE Plasma 6 진단 진행 중 — `.desktop` install 후 KDE Settings owner = TildaZ 표시 OK, 그러나 KGlobalAccel runtime register silent skip (`kglobalshortcutsrc` 의 actual key empty). 자세한 일지 / 가설 / 다음 단계는 "현재 제한 사항" 섹션. |
-| 24 | L9-γ 진단 마무리 (portal cache 삭제 + 재시도) | 다음 PC 에서 — `~/.local/state/xdg-desktop-portal-kdestaterc` 확인 + `kglobalshortcutsrc` tildaz entry 삭제 + portal-kde 재시작 + dialog 진짜 뜨는지 검증. Yakuake F1 임시 disable 권장 (conflict 제거). |
-| 25 | L9-δ Workaround — KGlobalAccel D-Bus 직접 호출 (portal 끝까지 안 동작 시) | 대기 — Yakuake 패턴. `org.kde.KGlobalAccel` 의 `doRegister` / `setForeignShortcut` / `globalShortcutPressed` signal. cross-desktop 영향 0 (KGlobalAccel D-Bus 없는 환경은 자연 skip). |
+| 23 | L9 global shortcut | ✅ [9195427](https://github.com/ensky0/tildaz/commit/9195427) + [70c41e9](https://github.com/ensky0/tildaz/commit/70c41e9) — α / β-1 / β-2 / γ 모두 완료. KDE Plasma 6 시연 OK (KRunner 통한 실행 + 첫 등록 user dialog 응답 후). |
 | 24 | L11 packaging | 대기 — `.desktop` / icon / AppImage / autostart / config-log path 검증. |
 | 25 | L12-α tab bar 렌더링 (활성 탭 1 개) | ✅ [b392765](https://github.com/ensky0/tildaz/commit/b392765) — 28px tab bar + 활성 탭 + title text + pointer→cell offset 보정. 비활성 / 클릭 라우팅 / drag / 단축키는 L12-β/γ. |
 | 26 | L13-α LANG 회귀 fix | ✅ [db53efb](https://github.com/ensky0/tildaz/commit/db53efb) — Linux default LANG/LC_CTYPE 을 C.UTF-8 (POSIX 표준) 로. `en_US.UTF-8` 미설치 환경에서 bash readline single-byte 모드로 빠지던 회귀 fix. |
