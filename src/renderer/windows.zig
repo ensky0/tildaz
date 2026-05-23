@@ -16,6 +16,8 @@ const display_width = @import("../font/display_width.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const block_element = @import("block_element.zig");
+const ligature_mod = @import("../font/ligature.zig");
+const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
 const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
@@ -1001,12 +1003,16 @@ pub const D3d11Renderer = struct {
 
             const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
-            for (0..cols) |x| {
+            var x: usize = 0;
+            while (x < cols) {
                 if (x >= raws.len) break;
                 const raw = raws[x];
 
                 const is_text = raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0;
-                if (!is_text) continue;
+                if (!is_text) {
+                    x += 1;
+                    continue;
+                }
 
                 const cp = raw.codepoint();
 
@@ -1016,12 +1022,15 @@ pub const D3d11Renderer = struct {
                         self.drawBgInstances(bg_buf[0..block_count]);
                         block_count = 0;
                     }
-                    const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
-                    const is_inverse = style.flags.inverse;
-                    const x16: u16 = @intCast(x);
-                    const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                    const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
-                    const rect = blockElementRect(cp) orelse continue;
+                    const style_b = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                    const is_inverse_b = style_b.flags.inverse;
+                    const x16_b: u16 = @intCast(x);
+                    const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
+                    const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b);
+                    const rect = blockElementRect(cp) orelse {
+                        x += 1;
+                        continue;
+                    };
                     const width: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                     const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
 
@@ -1032,59 +1041,9 @@ pub const D3d11Renderer = struct {
                         .shade = rect.shade,
                     };
                     block_count += 1;
+                    x += 1;
                     continue;
                 }
-
-                if (text_count >= MAX_CELLS) {
-                    self.drawTextInstances(text_buf[0..text_count]);
-                    text_count = 0;
-                }
-
-                // Resolve glyph cluster. grapheme cluster (VS-16 / skin tone /
-                // ZWJ 시퀀스) 면 IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
-                // shape — single glyph (GSUB 합성 OK) 또는 multi-glyph (#139
-                // ZWJ family 등 합성 안 되는 cluster). 일반 cell 은 빠른 single-
-                // codepoint path. macOS resolveGrapheme 와 동등 패턴.
-                const result: dwrite_font.ClusterResult = blk: {
-                    if (raw.hasGrapheme() and x < graphemes.len) {
-                        var cluster: [16]u21 = undefined;
-                        cluster[0] = cp;
-                        const extras = graphemes[x];
-                        const take = @min(extras.len, cluster.len - 1);
-                        @memcpy(cluster[1..][0..take], extras[0..take]);
-                        if (self.font.resolveGrapheme(cluster[0 .. 1 + take])) |r| break :blk r;
-                    }
-                    const single = self.font.resolveGlyph(cp) orelse continue;
-                    var indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
-                    indices[0] = single.index;
-                    const advances = [_]dw.FLOAT{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
-                    const offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
-                    break :blk .{ .face = single.face, .indices = indices, .advances = advances, .offsets = offsets, .count = 1, .owned = single.owned };
-                };
-                var entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
-
-                // Atlas full: flush pending draws BEFORE reset so queued UV coords stay valid,
-                // then reset and retry once.
-                if (entry_opt == null and self.atlas.is_full) {
-                    if (text_count > 0) {
-                        self.drawTextInstances(text_buf[0..text_count]);
-                        text_count = 0;
-                    }
-                    if (block_count > 0) {
-                        self.drawBgInstances(bg_buf[0..block_count]);
-                        block_count = 0;
-                    }
-                    self.atlas.reset();
-                    entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
-                }
-
-                const entry = entry_opt orelse {
-                    if (result.owned) _ = result.face.vtable.Release(result.face);
-                    continue;
-                };
-                if (result.owned) _ = result.face.vtable.Release(result.face);
-
-                if (entry.w == 0 or entry.h == 0) continue; // empty glyph (space)
 
                 const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 const is_inverse = style.flags.inverse;
@@ -1092,19 +1051,80 @@ pub const D3d11Renderer = struct {
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
 
-                const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
-                const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
-                const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+                // SPEC § 12.1 — Grapheme cluster (VS-16 / skin tone / ZWJ family /
+                // combining mark). IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
+                // shape — single glyph (GSUB 합성 OK) 또는 multi-glyph (#139 ZWJ
+                // family 등 합성 안 되는 cluster). ligature lookahead 와 별개.
+                if (raw.hasGrapheme() and x < graphemes.len) {
+                    if (text_count >= MAX_CELLS) {
+                        self.drawTextInstances(text_buf[0..text_count]);
+                        text_count = 0;
+                    }
+                    var cluster: [16]u21 = undefined;
+                    cluster[0] = cp;
+                    const extras = graphemes[x];
+                    const take = @min(extras.len, cluster.len - 1);
+                    @memcpy(cluster[1..][0..take], extras[0..take]);
+                    const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
+                    if (r_opt) |r| {
+                        emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb);
+                        x += 1;
+                        continue;
+                    }
+                }
 
-                text_buf[text_count] = .{
-                    .pos = .{ gx, gy },
-                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                    .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
-                    .color_flag = if (entry.is_color) 1.0 else 0.0,
+                // SPEC § 12.2 — N-char ligature lookahead. 3-char → 2-char 순서.
+                if (x + 2 < cols and x + 2 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
+                    const next = raws[x + 1];
+                    const next2 = raws[x + 2];
+                    if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
+                        next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()) and
+                        next2.wide == .narrow and next2.hasText() and next2.codepoint() != 0 and
+                        next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
+                    {
+                        if (self.font.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
+                            emitLigatureMatch(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, x, lm, fy, cw, x_pad, fg_rgb);
+                            x += 3;
+                            continue;
+                        }
+                    }
+                }
+                if (x + 1 < cols and x + 1 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
+                    const next = raws[x + 1];
+                    if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
+                        next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
+                    {
+                        if (self.font.ligaturePair(cp, next.codepoint())) |lm| {
+                            emitLigatureMatch(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, x, lm, fy, cw, x_pad, fg_rgb);
+                            x += 2;
+                            continue;
+                        }
+                    }
+                }
+
+                if (text_count >= MAX_CELLS) {
+                    self.drawTextInstances(text_buf[0..text_count]);
+                    text_count = 0;
+                }
+
+                const single = self.font.resolveGlyph(cp) orelse {
+                    x += 1;
+                    continue;
                 };
-                text_count += 1;
+                var single_indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                single_indices[0] = single.index;
+                const single_advances = [_]dw.FLOAT{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                const single_offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                const single_result = dwrite_font.ClusterResult{
+                    .face = single.face,
+                    .indices = single_indices,
+                    .advances = single_advances,
+                    .offsets = single_offsets,
+                    .count = 1,
+                    .owned = single.owned,
+                };
+                emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb);
+                x += 1;
             }
         }
 
@@ -1344,6 +1364,120 @@ pub const D3d11Renderer = struct {
         }
         if (errors) |e| _ = e.Release();
         return code.?;
+    }
+
+    /// 한 cluster (multi-glyph composite atlas entry) 또는 single-glyph 의 atlas
+    /// entry 를 `text_buf` 에 push. atlas full 시 flush + reset + retry 패턴.
+    /// fg_rgb 는 caller 가 cell 별 resolveFg 로 계산해 넘김.
+    fn emitClusterInstance(
+        self: *D3d11Renderer,
+        text_buf: []TextInstance,
+        text_count: *u32,
+        bg_buf: []BgInstance,
+        block_count: *u32,
+        result: dwrite_font.ClusterResult,
+        x: usize,
+        fy: f32,
+        cw: f32,
+        x_pad: f32,
+        fg_rgb: ghostty.color.RGB,
+    ) void {
+        if (text_count.* >= text_buf.len) {
+            self.drawTextInstances(text_buf[0..text_count.*]);
+            text_count.* = 0;
+        }
+        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
+        if (entry_opt == null and self.atlas.is_full) {
+            if (text_count.* > 0) {
+                self.drawTextInstances(text_buf[0..text_count.*]);
+                text_count.* = 0;
+            }
+            if (block_count.* > 0) {
+                self.drawBgInstances(bg_buf[0..block_count.*]);
+                block_count.* = 0;
+            }
+            self.atlas.reset();
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
+        }
+        const entry = entry_opt orelse {
+            if (result.owned) _ = result.face.vtable.Release(result.face);
+            return;
+        };
+        if (result.owned) _ = result.face.vtable.Release(result.face);
+        if (entry.w == 0 or entry.h == 0) return;
+
+        const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+        const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
+        const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
+        text_buf[text_count.*] = .{
+            .pos = .{ gx, gy },
+            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+            .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
+            .color_flag = if (entry.is_color) 1.0 else 0.0,
+        };
+        text_count.* += 1;
+    }
+
+    /// `LigatureMatch` switch — `.single` 은 1 glyph 을 base cell 에, `.spacer`
+    /// 는 각 glyph 을 자기 cell 에 emit. 둘 다 single-glyph cluster atlas entry 로
+    /// 그림. primary face 사용 (Latin ligature 는 primary 의 GSUB).
+    fn emitLigatureMatch(
+        self: *D3d11Renderer,
+        text_buf: []TextInstance,
+        text_count: *u32,
+        bg_buf: []BgInstance,
+        block_count: *u32,
+        x: usize,
+        match: dwrite_font.LigatureMatch,
+        fy: f32,
+        cw: f32,
+        x_pad: f32,
+        fg_rgb: ghostty.color.RGB,
+    ) void {
+        if (self.font.chain_count == 0) return;
+        const face = self.font.chain_faces[0] orelse return;
+        switch (match) {
+            .single => |lg| {
+                self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(lg.glyph_index), x, fy, cw, x_pad, fg_rgb);
+            },
+            .spacer => |sp| {
+                for (0..sp.count) |i| {
+                    self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(sp.glyph_indices[i]), x + i, fy, cw, x_pad, fg_rgb);
+                }
+            },
+        }
+    }
+
+    /// 단일 glyph_index 를 single-element ClusterResult 로 wrap 후 `emitClusterInstance`.
+    fn emitSingleGlyphCluster(
+        self: *D3d11Renderer,
+        text_buf: []TextInstance,
+        text_count: *u32,
+        bg_buf: []BgInstance,
+        block_count: *u32,
+        face: *dw.IDWriteFontFace,
+        glyph_index: u16,
+        x: usize,
+        fy: f32,
+        cw: f32,
+        x_pad: f32,
+        fg_rgb: ghostty.color.RGB,
+    ) void {
+        var indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+        indices[0] = glyph_index;
+        const advances = [_]dw.FLOAT{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+        const offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+        const result = dwrite_font.ClusterResult{
+            .face = face,
+            .indices = indices,
+            .advances = advances,
+            .offsets = offsets,
+            .count = 1,
+            .owned = false,
+        };
+        self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb);
     }
 
     // --- Color helpers ---
