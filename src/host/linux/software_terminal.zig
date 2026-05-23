@@ -239,10 +239,13 @@ pub const Renderer = struct {
             const styles = cell_slice.items(.style);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
 
-            for (0..cols) |x| {
-                if (x >= raws.len) break;
+            var x: usize = 0;
+            while (x < cols and x < raws.len) {
                 const raw = raws[x];
-                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
+                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) {
+                    x += 1;
+                    continue;
+                }
 
                 const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 const x16: u16 = @intCast(x);
@@ -256,7 +259,10 @@ pub const Renderer = struct {
                     rect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, bg);
                 }
 
-                if (!raw.hasText() or raw.codepoint() == 0) continue;
+                if (!raw.hasText() or raw.codepoint() == 0) {
+                    x += 1;
+                    continue;
+                }
                 const fg = resolveFg(style, &colors, is_selected);
                 const cp = raw.codepoint();
 
@@ -266,7 +272,65 @@ pub const Renderer = struct {
                 // 같은 모듈을 동일 의미로 사용 ([renderer/windows.zig], [renderer/macos.zig]).
                 if (block_element.blockElementRect(cp)) |br| {
                     drawBlockRect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, br, fg);
+                    x += 1;
                     continue;
+                }
+
+                // L5-2-β: 2-char ligature lookahead. 다음 cell 도 plain single
+                // codepoint + non-wide + same style + ASCII printable 범위면
+                // `ligaturePair(cp, next_cp)` 시도. HarfBuzz shape 결과 1 glyph 면
+                // ligature 확정 → 첫 cell 위치에 ligature glyph (2 cell 너비) +
+                // 다음 cell 의 cell area 는 bg 만 (다음 cell skip). cache 가
+                // 같은 ASCII pair 결과 보관해 매 frame 매 cell pair shape 호출
+                // 회피.
+                //
+                // 조건: 둘 다 narrow, single codepoint, style_id 일치 (= 같은
+                // attribute, fg / bg / flags 등). 다른 색 / underline 등 다른
+                // style 의 cell pair 는 ligature 안 — terminal 의 자연스러운
+                // 의미 (color 분리 = 의도된 두 문자).
+                if (x + 1 < cols and x + 1 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
+                    const next = raws[x + 1];
+                    if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
+                        next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
+                    {
+                        const next_cp = next.codepoint();
+                        if (self.font_ctx.ligaturePair(cp, next_cp)) |lg| {
+                            // 다음 cell 의 selection / bg 도 그리기.
+                            const next_style = if (next.style_id != 0) styles[x + 1] else ghostty.Style{};
+                            const next_x16: u16 = @intCast(x + 1);
+                            const next_is_selected = if (sel_range) |sr| (next_x16 >= sr[0] and next_x16 <= sr[1]) else false;
+                            const next_bg = resolveBg(next_style, &next, &colors, next_is_selected);
+                            const next_cell_x: i32 = pad + @as(i32, @intCast(x + 1)) * cw;
+                            if (next_is_selected or next_style.flags.inverse or next_style.bg(&next, &colors.palette) != null) {
+                                rect(memory, width, height, stride, next_cell_x, cell_y, cw, ch, next_bg);
+                            }
+                            // ligature glyph — 2 cell 너비. glyph_index 로 raster
+                            // (codepoint 안 갖는 ligature idx). center 정렬은
+                            // 2-cell 너비 기준.
+                            const ligature_glyph = self.font_ctx.glyphByIndex(lg.glyph_index);
+                            const ligature_w: i32 = 2 * cw;
+                            if (ligature_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                                drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, ligature_w, ch, ligature_glyph);
+                            } else {
+                                const baseline = cell_y + ascent;
+                                const glyph_advance_i32: i32 = @intCast(ligature_glyph.advance);
+                                const center_off: i32 = @divFloor(ligature_w - glyph_advance_i32, 2);
+                                drawGlyph(
+                                    memory,
+                                    width,
+                                    height,
+                                    stride,
+                                    cell_x + center_off + ligature_glyph.bitmap_left + lg.x_offset,
+                                    baseline - ligature_glyph.bitmap_top - lg.y_offset,
+                                    ligature_glyph,
+                                    fg,
+                                    bg,
+                                );
+                            }
+                            x += 2;
+                            continue;
+                        }
+                    }
                 }
 
                 const glyph = self.font_ctx.glyph(cp);
@@ -294,6 +358,7 @@ pub const Renderer = struct {
                         bg,
                     );
                 }
+                x += 1;
             }
         }
 
@@ -832,6 +897,20 @@ fn resolveBg(
         });
     }
     return style.bg(raw, &colors.palette) orelse colors.background;
+}
+
+/// L5-2-β: 2-char ligature lookahead 후보 검사. ASCII printable / punctuation
+/// 만 — ligature 폰트 (Fira Code, JetBrains Mono, Cascadia Code 등) 의 대부분
+/// ligature 가 이 범위. CJK / 한글 / emoji 등은 cluster path (L5-5) 또는 단순
+/// single-glyph path.
+///
+/// 범위 0x20..0x7E 의 모든 char 가 후보 — `=`, `!`, `<`, `>`, `:`, `-`, `/`,
+/// 알파벳 (`->`, `=>`, `||`, `&&`, `::`, `++`, `--`, `==`, `!=`, `<=`, `>=`,
+/// `/*`, `*/`, `//`, `/=`, `+=`, `-=`, `<-`, `>>`, `<<` 등 + 알파벳 ligature
+/// `fi`, `fl`, `ff`, `ffi`, `ffl`). non-ligature pair 도 shape 호출되지만
+/// cache 가 결과 (`None`) 보관 → 두 번째 호출부터 shape skip.
+fn isLigatureCandidate(cp: u21) bool {
+    return cp >= 0x20 and cp <= 0x7E;
 }
 
 fn fill(memory: []u8, width: i32, height: i32, stride: i32, color: ghostty.color.RGB) void {
