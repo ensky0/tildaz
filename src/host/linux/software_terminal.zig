@@ -237,6 +237,7 @@ pub const Renderer = struct {
             const cell_slice = all_cells[y].slice();
             const raws = cell_slice.items(.raw);
             const styles = cell_slice.items(.style);
+            const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
 
             var x: usize = 0;
@@ -276,6 +277,58 @@ pub const Renderer = struct {
                     continue;
                 }
 
+                // L5-5: grapheme cluster (VS-16 emoji, skin tone modifier, ZWJ
+                // 시퀀스, combining mark) → HarfBuzz 로 shape 후 representative
+                // single glyph 으로 reduce. cells.items(.grapheme) 가 base 외
+                // extras (`[]const u21`) 슬라이스를 모든 셀에 대해 보관 (extras
+                // 가 없는 cell 은 빈 슬라이스). `raw.hasGrapheme()` 가 그
+                // cell 의 content_tag 가 `codepoint_grapheme` 인지 알려준다.
+                //
+                // mac `CoreTextFontContext.resolveGrapheme` ([renderer/macos.zig:577])
+                // / Win `DWriteFontContext.resolveGrapheme` ([renderer/windows.zig:1043])
+                // 와 같은 패턴 — cluster 시도 → 실패 (= 결과 glyph_index 0,
+                // primary face 에 cluster glyph 없음) 면 base codepoint 의 chain
+                // lookup (`glyph(cp)`) 로 fallback. emoji 같은 경우 chain 의
+                // NotoColorEmoji 가 base codepoint 만 매치해도 visual 은 그대로
+                // emoji.
+                //
+                // cluster path 는 ligature lookahead *보다 먼저* — extras 있는
+                // cell 은 2-char ASCII pair 가 아니라 cluster 자체로 해석되어야
+                // 함.
+                if (raw.hasGrapheme() and x < graphemes.len) {
+                    var cluster: [16]u21 = undefined;
+                    cluster[0] = cp;
+                    const extras = graphemes[x];
+                    const take = @min(extras.len, cluster.len - 1);
+                    @memcpy(cluster[1..][0..take], extras[0..take]);
+                    if (self.font_ctx.resolveCluster(cluster[0 .. 1 + take])) |cg| {
+                        const cluster_glyph = self.font_ctx.glyphByIndex(cg.face_idx, cg.glyph_index);
+                        if (cluster_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                            drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, cluster_glyph);
+                        } else {
+                            const baseline = cell_y + ascent;
+                            const glyph_advance_i32: i32 = @intCast(cluster_glyph.advance);
+                            const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
+                            drawGlyph(
+                                memory,
+                                width,
+                                height,
+                                stride,
+                                cell_x + center_off + cluster_glyph.bitmap_left + cg.x_offset,
+                                baseline - cluster_glyph.bitmap_top - cg.y_offset,
+                                cluster_glyph,
+                                fg,
+                                bg,
+                            );
+                        }
+                        x += 1;
+                        continue;
+                    }
+                    // resolveCluster null → primary face 에 cluster 매치 없음.
+                    // 아래 base codepoint chain lookup 으로 fallthrough (extras
+                    // 무시되지만 base 는 emoji face 등에서 매치 → 시각상 합리).
+                }
+
                 // L5-2-β: 2-char ligature lookahead. 다음 cell 도 plain single
                 // codepoint + non-wide + same style + ASCII printable 범위면
                 // `ligaturePair(cp, next_cp)` 시도. HarfBuzz shape 결과 1 glyph 면
@@ -307,7 +360,7 @@ pub const Renderer = struct {
                             // ligature glyph — 2 cell 너비. glyph_index 로 raster
                             // (codepoint 안 갖는 ligature idx). center 정렬은
                             // 2-cell 너비 기준.
-                            const ligature_glyph = self.font_ctx.glyphByIndex(lg.glyph_index);
+                            const ligature_glyph = self.font_ctx.glyphByIndex(lg.face_idx, lg.glyph_index);
                             const ligature_w: i32 = 2 * cw;
                             if (ligature_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                                 drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, ligature_w, ch, ligature_glyph);

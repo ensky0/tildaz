@@ -36,6 +36,10 @@ pub const Glyph = struct {
 /// 후 결과 glyph 가 1 개 (= ligature) 면 그 정보. 결과가 2 개 (= 일반 single
 /// char 들) 면 caller 에 `null` 반환 — single-char path 사용.
 pub const LigatureGlyph = struct {
+    /// chain index 의 face — `glyphByIndex(face_idx, glyph_index)` 로 raster.
+    /// Latin ligature 는 항상 primary (face_idx=0). cluster shape 는 ZWJ family
+    /// emoji 등 emoji face (NotoColorEmoji 등) 에서 매치되어 face_idx>0 가능.
+    face_idx: u8 = 0,
     glyph_index: u32,
     /// 26.6 fixed point 의 integer 부 (px). 보통 ligature 의 advance 는 input
     /// char 수 만큼 cell width (e.g. 2-char `=>` → 2 × cell_w). 우리 paint 는
@@ -363,12 +367,14 @@ pub const Context = struct {
         return &self.placeholder;
     }
 
-    /// primary face 의 glyph_index 로 raster + cache. shape 결과의 ligature
-    /// glyph (codepoint 안 갖는 idx) lookup 에 사용. caller 는 `shapeRun` 의
-    /// 결과 ShapedGlyph.glyph_index 를 그대로 넣음.
-    pub fn glyphByIndex(self: *Context, glyph_index: u32) *const Glyph {
-        if (self.face_count == 0) return &self.placeholder;
-        const face = if (self.faces[0]) |*f| f else return &self.placeholder;
+    /// 지정 face 의 glyph_index 로 raster + cache. shape 결과의 ligature glyph
+    /// (codepoint 안 갖는 idx) lookup 에 사용. caller 는 `LigatureGlyph` 의
+    /// `face_idx` + `glyph_index` 를 그대로 넣음. ZWJ family emoji cluster
+    /// (NotoColorEmoji face) 등 face_idx > 0 에서 raster 되어야 BGRA 가
+    /// 살아남는 케이스 대응.
+    pub fn glyphByIndex(self: *Context, face_idx: u8, glyph_index: u32) *const Glyph {
+        if (face_idx >= self.face_count) return &self.placeholder;
+        const face = if (self.faces[face_idx]) |*f| f else return &self.placeholder;
         if (face.glyph_by_index.getPtr(glyph_index)) |cached| return cached;
         const g = rasterByIndex(self.allocator, self.ft_api, face.ft_face, glyph_index) catch {
             return &self.placeholder;
@@ -393,12 +399,32 @@ pub const Context = struct {
     /// 만 그리고 나머지 cluster index 의 cell 은 빈 background — kitty / alacritty
     /// 패턴.
     pub fn shapeRun(self: *Context, cps: []const u21, out: []ShapedGlyph) usize {
-        if (cps.len == 0 or out.len == 0 or self.face_count == 0) return 0;
+        return self.shapeRunOnFace(0, cps, out);
+    }
 
-        const hb_api = if (self.hb_api) |*api| api else return self.shapeRunFallback(cps, out);
-        const hb_buf = self.hb_buffer orelse return self.shapeRunFallback(cps, out);
-        const face = if (self.faces[0]) |*f| f else return self.shapeRunFallback(cps, out);
-        const hb_font = face.hb_font orelse return self.shapeRunFallback(cps, out);
+    /// `shapeRun` 의 multi-face 변종 — `face_idx` 지정. ZWJ family / VS-16 emoji
+    /// cluster 가 emoji face (NotoColorEmoji 등) 에서만 GSUB 합성되는 케이스
+    /// 대응. caller 는 `resolveCluster` 처럼 chain 순회로 매치 face 검색.
+    ///
+    /// HarfBuzz 미advertise / face hb_font 없음 — face_idx==0 면 fallback
+    /// (cp → idx 1:1), 그 외 face 는 0 반환 (그 face 시도는 skip).
+    pub fn shapeRunOnFace(self: *Context, face_idx: u8, cps: []const u21, out: []ShapedGlyph) usize {
+        if (cps.len == 0 or out.len == 0 or self.face_count == 0) return 0;
+        if (face_idx >= self.face_count) return 0;
+
+        const hb_api = if (self.hb_api) |*api| api else {
+            if (face_idx == 0) return self.shapeRunFallback(cps, out);
+            return 0;
+        };
+        const hb_buf = self.hb_buffer orelse {
+            if (face_idx == 0) return self.shapeRunFallback(cps, out);
+            return 0;
+        };
+        const face = if (self.faces[face_idx]) |*f| f else return 0;
+        const hb_font = face.hb_font orelse {
+            if (face_idx == 0) return self.shapeRunFallback(cps, out);
+            return 0;
+        };
 
         // codepoint array 를 u32 로 reinterpret (u21 → u32 동일 비트 layout 아님
         // → 명시 변환 buffer 사용).
@@ -431,6 +457,43 @@ pub const Context = struct {
         return result_count;
     }
 
+    /// grapheme cluster (VS-16 / skin tone / ZWJ 시퀀스 / combining mark) 의
+    /// shape 결과를 하나의 representative glyph 로 reduce. cps 는 base + extras
+    /// 의 codepoint array (`cell.raw.codepoint()` + `cell.grapheme` 의 합).
+    /// mac `CoreTextFontContext.resolveGrapheme` / Win `DWriteFontContext.
+    /// resolveGrapheme` 와 같은 의미.
+    ///
+    /// HarfBuzz GSUB 가 합성 가능한 cluster (대부분 — VS-16 emoji, skin tone,
+    /// ZWJ family) 는 shape 결과 1 glyph 이라 그 glyph_index 를 그대로 raster.
+    /// chain 의 *모든 face* 를 순회 — primary monospace 가 VS-16 emoji 의 GSUB
+    /// 합성 안 하는 케이스도 NotoColorEmoji face 에서 shape 시 1 glyph 가 되어
+    /// face_idx>0 으로 매치. mac `CTLineCreateWithAttributedString` 의 자동
+    /// fallback / Win `IDWriteTextAnalyzer.GetGlyphs` 의 face fallback 동등.
+    ///
+    /// 매치 정책 — 첫 face 가 *clean single-glyph* (= n==1 + glyph_index != 0)
+    /// 결과 내면 그 face 결과 return. 그 외 (다중 glyph 또는 0-glyph) 는 다음
+    /// face 시도. 모든 face 미매치면 null — caller 가 base codepoint chain
+    /// lookup (`glyph(cp)`) 으로 fallback (cluster extras 무시되지만 base 표시).
+    pub fn resolveCluster(self: *Context, cps: []const u21) ?LigatureGlyph {
+        if (cps.len == 0 or self.face_count == 0 or self.hb_api == null) return null;
+
+        var shape_buf: [16]ShapedGlyph = undefined;
+        for (0..self.face_count) |face_idx| {
+            const idx_u8: u8 = @intCast(face_idx);
+            const n = self.shapeRunOnFace(idx_u8, cps, &shape_buf);
+            if (n != 1) continue;
+            if (shape_buf[0].glyph_index == 0) continue;
+            return .{
+                .face_idx = idx_u8,
+                .glyph_index = shape_buf[0].glyph_index,
+                .x_advance = shape_buf[0].x_advance,
+                .x_offset = shape_buf[0].x_offset,
+                .y_offset = shape_buf[0].y_offset,
+            };
+        }
+        return null;
+    }
+
     /// 2-char ligature lookup with cache. paint loop 가 매 cell pair 에 호출.
     /// `cp0` + `cp1` shape 결과 glyph 1 개면 ligature → 그 정보 반환. 2 개면
     /// no ligature → null. cache 가 결과 보관 — 같은 pair 반복 호출 시 shape
@@ -455,6 +518,8 @@ pub const Context = struct {
         const n = self.shapeRun(&pair_cps, &shape_buf);
 
         const result: ?LigatureGlyph = if (n == 1) .{
+            // Latin ligature 는 primary face 의 GSUB — face_idx 항상 0.
+            .face_idx = 0,
             .glyph_index = shape_buf[0].glyph_index,
             .x_advance = shape_buf[0].x_advance,
             .x_offset = shape_buf[0].x_offset,
