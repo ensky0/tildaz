@@ -1047,19 +1047,7 @@ fn resolveBg(
     return style.bg(raw, &colors.palette) orelse colors.background;
 }
 
-/// L5-2-β: 2-char ligature lookahead 후보 검사. ASCII printable / punctuation
-/// 만 — ligature 폰트 (Fira Code, JetBrains Mono, Cascadia Code 등) 의 대부분
-/// ligature 가 이 범위. CJK / 한글 / emoji 등은 cluster path (L5-5) 또는 단순
-/// single-glyph path.
-///
-/// 범위 0x20..0x7E 의 모든 char 가 후보 — `=`, `!`, `<`, `>`, `:`, `-`, `/`,
-/// 알파벳 (`->`, `=>`, `||`, `&&`, `::`, `++`, `--`, `==`, `!=`, `<=`, `>=`,
-/// `/*`, `*/`, `//`, `/=`, `+=`, `-=`, `<-`, `>>`, `<<` 등 + 알파벳 ligature
-/// `fi`, `fl`, `ff`, `ffi`, `ffl`). non-ligature pair 도 shape 호출되지만
-/// cache 가 결과 (`None`) 보관 → 두 번째 호출부터 shape skip.
-fn isLigatureCandidate(cp: u21) bool {
-    return cp >= 0x20 and cp <= 0x7E;
-}
+const isLigatureCandidate = @import("../../font/ligature.zig").isLigatureCandidate;
 
 fn fill(memory: []u8, width: i32, height: i32, stride: i32, color: ghostty.color.RGB) void {
     rect(memory, width, height, stride, 0, 0, width, height, color);

@@ -129,6 +129,14 @@ pub fn classify(input_count: usize, slots: []const ShapedSlot) ?LigatureMatch {
     return .{ .spacer = spacer };
 }
 
+/// ASCII printable (0x20..0x7E) — paint loop 의 ligature lookahead 후보 검사.
+/// Latin ligature 폰트 (Fira Code / JetBrains Mono / Cascadia Code) 의 ligature
+/// 대부분이 이 범위 char 들로 구성. CJK / 한글 / emoji 등은 cluster path 또는
+/// single-char path 로.
+pub fn isLigatureCandidate(cp: u21) bool {
+    return cp >= 0x20 and cp <= 0x7E;
+}
+
 test "classify: single-glyph ligature (n < input)" {
     const slots = [_]ShapedSlot{
         .{ .glyph_index = 999, .natural_glyph_index = 100 }, // anything — only n < input matters

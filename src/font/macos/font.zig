@@ -7,6 +7,7 @@
 const std = @import("std");
 const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
+const ligature = @import("../ligature.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -16,6 +17,12 @@ pub const GlyphResult = struct {
 };
 
 pub const MAX_FALLBACK_FONTS = font_constants.MAX_CHAIN;
+
+// Cross-platform ligature 타입 re-export — caller (renderer/macos.zig) 가
+// `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
+pub const LigatureGlyph = ligature.LigatureGlyph;
+pub const LigatureSpacer = ligature.LigatureSpacer;
+pub const LigatureMatch = ligature.LigatureMatch;
 
 pub const CoreTextFontContext = struct {
     primary_font: ct.CTFontRef,
@@ -268,6 +275,123 @@ pub const CoreTextFontContext = struct {
         _ = ct.CFRetain(run_font);
 
         return .{ .font = run_font, .index = glyph, .owned = true };
+    }
+
+    /// 2-char ligature lookup (SPEC § 12.2). `cp0` + `cp1` 을 primary font 로
+    /// CTLine shape 한 후 결과 glyph 들 vs natural (= `CTFontGetGlyphsForCharacters`
+    /// 결과) 비교로 `LigatureMatch` 판정 — 공유 `ligature.classify` 사용.
+    ///
+    /// Latin ligature 는 primary font 의 GSUB — fallback chain 안 봄. Fira Code 등
+    /// ligature 폰트가 user 의 primary 일 때만 의미. caller (renderer/macos) 는
+    /// `.single` glyph 또는 `.spacer` glyphs 를 `primary_font` 기준 atlas 에
+    /// raster.
+    pub fn ligaturePair(self: *CoreTextFontContext, cp0: u21, cp1: u21) ?LigatureMatch {
+        var cps = [_]u21{ cp0, cp1 };
+        return self.ligatureShape(&cps);
+    }
+
+    /// 3-char ligature lookup. `===` / `!==` / `<=>` / `<--` / `-->` 등.
+    pub fn ligatureTriple(self: *CoreTextFontContext, cp0: u21, cp1: u21, cp2: u21) ?LigatureMatch {
+        var cps = [_]u21{ cp0, cp1, cp2 };
+        return self.ligatureShape(&cps);
+    }
+
+    /// CTLine 짧은 line shape + `ligature.classify`. natural indices 는 primary
+    /// font 의 `CTFontGetGlyphsForCharacters` 로 직접 계산. `resolveGrapheme` 의
+    /// CTLine 호출 패턴 재사용 (fallback chain 부착 안 함 — Latin ligature 는
+    /// primary 에서만).
+    fn ligatureShape(self: *CoreTextFontContext, cps: []const u21) ?LigatureMatch {
+        if (cps.len == 0 or cps.len > 4) return null;
+
+        // UTF-16 buffer — ASCII 만 candidate (`isLigatureCandidate` 0x20..0x7E)
+        // 라 항상 1 unit / cp. 안전을 위해 surrogate pair 도 처리.
+        var utf16_buf: [8]u16 = undefined;
+        var utf16_len: usize = 0;
+        var cp_to_utf16_index: [4]u8 = .{ 0, 0, 0, 0 };
+        for (cps, 0..) |cp, i| {
+            cp_to_utf16_index[i] = @intCast(utf16_len);
+            if (cp <= 0xFFFF) {
+                if (utf16_len + 1 > utf16_buf.len) return null;
+                utf16_buf[utf16_len] = @intCast(cp);
+                utf16_len += 1;
+            } else {
+                if (utf16_len + 2 > utf16_buf.len) return null;
+                const offset = cp - 0x10000;
+                utf16_buf[utf16_len] = @intCast(0xD800 + (offset >> 10));
+                utf16_buf[utf16_len + 1] = @intCast(0xDC00 + (offset & 0x3FF));
+                utf16_len += 2;
+            }
+        }
+        if (utf16_len == 0) return null;
+
+        // Natural glyph indices — primary font 의 cp → glyph_index 직접 매핑.
+        // ligature 가 *substitute* 한 경우 shape 결과의 glyph_index 가 이 값과
+        // 다름. ASCII candidate 라 BMP 안, surrogate 없음 가정.
+        var natural: [4]ct.CGGlyph = .{ 0, 0, 0, 0 };
+        var natural_u16: [4]u16 = undefined;
+        for (cps, 0..) |cp, i| natural_u16[i] = @intCast(cp & 0xFFFF);
+        _ = ct.CTFontGetGlyphsForCharacters(self.primary_font, &natural_u16, &natural, @intCast(cps.len));
+
+        // CTLine shape on primary font.
+        const cf_str = ct.CFStringCreateWithCharacters(null, &utf16_buf, @intCast(utf16_len)) orelse return null;
+        defer ct.CFRelease(cf_str);
+
+        const keys = [1]?*const anyopaque{@ptrCast(ct.kCTFontAttributeName)};
+        const values = [1]?*const anyopaque{@ptrCast(self.primary_font)};
+        const attrs = ct.CFDictionaryCreate(
+            null,
+            &keys,
+            &values,
+            1,
+            @ptrCast(&ct.kCFTypeDictionaryKeyCallBacks),
+            @ptrCast(&ct.kCFTypeDictionaryValueCallBacks),
+        ) orelse return null;
+        defer ct.CFRelease(attrs);
+
+        const attr_str = ct.CFAttributedStringCreate(null, cf_str, attrs) orelse return null;
+        defer ct.CFRelease(attr_str);
+
+        const line = ct.CTLineCreateWithAttributedString(attr_str) orelse return null;
+        defer ct.CFRelease(line);
+
+        const runs = ct.CTLineGetGlyphRuns(line);
+        if (ct.CFArrayGetCount(runs) == 0) return null;
+        const run_ptr = ct.CFArrayGetValueAtIndex(runs, 0) orelse return null;
+        const run: ct.CTRunRef = @constCast(run_ptr);
+
+        const glyph_count_i = ct.CTRunGetGlyphCount(run);
+        if (glyph_count_i <= 0) return null;
+        const glyph_count: usize = @intCast(glyph_count_i);
+
+        // run 의 font 가 primary 와 다르면 (= CT 의 system fallback 으로 다른
+        // font 선택) — Latin ligature 가 아니라 char fallback. ligature 미적용
+        // 으로 판정 (single-char path 가 자기 처리).
+        const run_attrs = ct.CTRunGetAttributes(run);
+        const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse return null;
+        if (@as(ct.CTFontRef, @constCast(font_val)) != self.primary_font) return null;
+
+        var glyphs_buf: [4]ct.CGGlyph = .{ 0, 0, 0, 0 };
+        const checked = @min(glyph_count, glyphs_buf.len);
+        if (ct.CTRunGetGlyphsPtr(run)) |ptr| {
+            for (0..checked) |i| glyphs_buf[i] = ptr[i];
+        } else {
+            ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = @intCast(checked) }, &glyphs_buf);
+        }
+
+        // ShapedSlot[] 구성 — `ligature.classify` 가 입력. offsets 은 0 (mac
+        // CTRun 의 positions 는 baseline 기준이라 cell-center 정렬 후 추가
+        // offset 거의 0. fine-tuning 은 future sub-step).
+        var slots: [4]ligature.ShapedSlot = undefined;
+        for (0..checked) |i| {
+            const cp_idx = @min(i, cps.len - 1);
+            slots[i] = .{
+                .glyph_index = glyphs_buf[i],
+                .natural_glyph_index = natural[cp_idx],
+                .x_offset = 0,
+                .y_offset = 0,
+            };
+        }
+        return ligature.classify(cps.len, slots[0..checked]);
     }
 
     /// codepoint → (font, glyph_index) 해석. config.font.family chain 순회 →

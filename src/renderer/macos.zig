@@ -9,7 +9,8 @@
 const std = @import("std");
 const objc = @import("../macos_objc.zig");
 const ct = @import("../font/macos/coretext.zig");
-const CoreTextFontContext = @import("../font/macos/font.zig").CoreTextFontContext;
+const mac_font = @import("../font/macos/font.zig");
+const CoreTextFontContext = mac_font.CoreTextFontContext;
 const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
@@ -19,6 +20,8 @@ const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_interaction = @import("../tab_interaction.zig");
+const ligature_mod = @import("../font/ligature.zig");
+const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
 const MAX_INSTANCES: u32 = 32768;
 
@@ -534,12 +537,16 @@ pub const MetalRenderer = struct {
 
             const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
-            for (0..cols) |x| {
+            var x: usize = 0;
+            while (x < cols) {
                 if (x >= raws.len) break;
                 const raw = raws[x];
 
                 const is_text = raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0;
-                if (!is_text) continue;
+                if (!is_text) {
+                    x += 1;
+                    continue;
+                }
 
                 const cp = raw.codepoint();
 
@@ -556,7 +563,10 @@ pub const MetalRenderer = struct {
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
                     const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b);
-                    const rect = block_element.blockElementRect(cp) orelse continue;
+                    const rect = block_element.blockElementRect(cp) orelse {
+                        x += 1;
+                        continue;
+                    };
                     const block_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                     const block_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                     bg_buf[bg_count] = .{
@@ -566,35 +576,9 @@ pub const MetalRenderer = struct {
                         .shade = rect.shade,
                     };
                     bg_count += 1;
+                    x += 1;
                     continue;
                 }
-
-                if (text_count >= MAX_CELLS) {
-                    self.drawTextInstances(encoder, text_buf[0..text_count]);
-                    text_count = 0;
-                }
-
-                // grapheme cluster (VS-16 / skin tone modifier / ZWJ 시퀀스) 면 CTLine
-                // 으로 shape — 단일 컬러 emoji 글리프로 reduce. 일반 cell 은 빠른
-                // single-codepoint path 그대로.
-                const result = blk: {
-                    if (raw.hasGrapheme() and x < graphemes.len) {
-                        var cluster: [16]u21 = undefined;
-                        cluster[0] = cp;
-                        const extras = graphemes[x];
-                        const take = @min(extras.len, cluster.len - 1);
-                        @memcpy(cluster[1..][0..take], extras[0..take]);
-                        if (self.font.resolveGrapheme(cluster[0 .. 1 + take])) |r| break :blk r;
-                    }
-                    break :blk self.font.resolveGlyph(cp) orelse continue;
-                };
-                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                    if (result.owned) ct.CFRelease(result.font);
-                    continue;
-                };
-                if (result.owned) ct.CFRelease(result.font);
-
-                if (entry.w == 0 or entry.h == 0) continue;
 
                 const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 const is_inverse = style.flags.inverse;
@@ -602,30 +586,89 @@ pub const MetalRenderer = struct {
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
 
-                // 모든 좌표 pixel 단위. bearing / atlas size / cell_w/h /
-                // ascent_px 모두 pixel — font.init 시 scale 곱해 통일됨.
-                //
-                // bearing_y 는 CG 의 bbox.origin.y * scale (= bbox 의 bottom,
-                // baseline-Y-up 좌표). 화면 Y-down 좌표에서 글리프 top 위치는:
-                //   gy = cell_top + ascent − top_of_bbox_y_up
-                //      = cell_top + ascent − (bearing_y + h)
-                // serene-euler #73 의 `offset_y = ascent - (origin.y + size.h)`
-                // 와 동일.
-                const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
-                const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
-                const gy = fy + self.font.ascent_px
-                    - @as(f32, @floatFromInt(entry.bearing_y))
-                    - @as(f32, @floatFromInt(entry.h));
+                // grapheme cluster (VS-16 / skin tone modifier / ZWJ 시퀀스) — cell 의
+                // base + extras 를 CTLine 으로 shape, 단일 representative glyph 으로
+                // reduce. 일반 cell 은 빠른 single-codepoint path 또는 ligature
+                // lookahead 분기.
+                if (raw.hasGrapheme() and x < graphemes.len) {
+                    if (text_count >= MAX_CELLS) {
+                        self.drawTextInstances(encoder, text_buf[0..text_count]);
+                        text_count = 0;
+                    }
+                    var cluster: [16]u21 = undefined;
+                    cluster[0] = cp;
+                    const extras = graphemes[x];
+                    const take = @min(extras.len, cluster.len - 1);
+                    @memcpy(cluster[1..][0..take], extras[0..take]);
+                    const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
+                    if (r_opt) |result| {
+                        const entry_opt = self.atlas.getOrInsert(result.font, @intCast(result.index));
+                        if (result.owned) ct.CFRelease(result.font);
+                        if (entry_opt) |entry| {
+                            if (entry.w > 0 and entry.h > 0) {
+                                emitTextInstance(text_buf, &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
+                            }
+                        }
+                        x += 1;
+                        continue;
+                    }
+                }
 
-                text_buf[text_count] = .{
-                    .pos = .{ gx, gy },
-                    .size = .{ @as(f32, @floatFromInt(entry.w)), @as(f32, @floatFromInt(entry.h)) },
-                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                    .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
-                    .color_flag = if (entry.is_color) 1 else 0,
+                // SPEC § 12.2 — N-char ligature lookahead. 3-char → 2-char 순서.
+                // 모든 cell narrow + single codepoint + same style_id + ASCII
+                // candidate. 매치 시 `.single` 은 N-cell 너비 1 glyph, `.spacer`
+                // 는 각 cell 별 1 glyph.
+                if (x + 2 < cols and x + 2 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
+                    const next = raws[x + 1];
+                    const next2 = raws[x + 2];
+                    if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
+                        next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()) and
+                        next2.wide == .narrow and next2.hasText() and next2.codepoint() != 0 and
+                        next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
+                    {
+                        if (self.font.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
+                            emitLigatureMatch(self, encoder, text_buf, &text_count, x, 3, lm, fy, cw, x_pad, fg_rgb);
+                            x += 3;
+                            continue;
+                        }
+                    }
+                }
+                if (x + 1 < cols and x + 1 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
+                    const next = raws[x + 1];
+                    if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
+                        next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
+                    {
+                        if (self.font.ligaturePair(cp, next.codepoint())) |lm| {
+                            emitLigatureMatch(self, encoder, text_buf, &text_count, x, 2, lm, fy, cw, x_pad, fg_rgb);
+                            x += 2;
+                            continue;
+                        }
+                    }
+                }
+
+                if (text_count >= MAX_CELLS) {
+                    self.drawTextInstances(encoder, text_buf[0..text_count]);
+                    text_count = 0;
+                }
+
+                const result = self.font.resolveGlyph(cp) orelse {
+                    x += 1;
+                    continue;
                 };
-                text_count += 1;
+                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    if (result.owned) ct.CFRelease(result.font);
+                    x += 1;
+                    continue;
+                };
+                if (result.owned) ct.CFRelease(result.font);
+
+                if (entry.w == 0 or entry.h == 0) {
+                    x += 1;
+                    continue;
+                }
+
+                emitTextInstance(text_buf, &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
+                x += 1;
             }
         }
 
@@ -1192,6 +1235,81 @@ pub const MetalRenderer = struct {
         return objc.msgSend1(device, objc.sel("newTextureWithDescriptor:"), desc);
     }
 };
+
+/// 한 cell 의 atlas entry 를 `text_buf` 에 instance 로 emit. base cell index `x`
+/// + 추가 dx/dy (`.spacer` 의 cell 별 offset 또는 `.single` 의 0). atlas entry
+/// 의 bearing 으로 glyph 의 cell 안 위치 계산.
+fn emitTextInstance(
+    text_buf: []TextInstance,
+    text_count: *usize,
+    entry: macos_glyph_atlas.AtlasEntry,
+    x: usize,
+    fy: f32,
+    cw: f32,
+    x_pad: f32,
+    ascent_px: f32,
+    fg_rgb: ghostty.color.RGB,
+    dx: f32,
+    dy: f32,
+) void {
+    const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad + dx;
+    const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
+    const gy = fy + ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) + dy;
+    text_buf[text_count.*] = .{
+        .pos = .{ gx, gy },
+        .size = .{ @as(f32, @floatFromInt(entry.w)), @as(f32, @floatFromInt(entry.h)) },
+        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+        .fg_color = .{ MetalRenderer.colorF(fg_rgb.r), MetalRenderer.colorF(fg_rgb.g), MetalRenderer.colorF(fg_rgb.b), 1 },
+        .color_flag = if (entry.is_color) 1 else 0,
+    };
+    text_count.* += 1;
+}
+
+/// `LigatureMatch` switch — `.single` 은 1 glyph 을 base cell 에 (font 의 자연
+/// width 그대로, ligature glyph 이 N-cell wide bbox 가짐), `.spacer` 는 각
+/// glyph 을 자기 cell 에 (1-cell wide each). 모두 primary font 의 glyph_index
+/// 로 atlas lookup.
+///
+/// 호출자가 N 의 trailing cells 의 bg/selection 은 bg pass 에서 이미 그렸으니
+/// text pass 만 처리. text_buf overflow 면 flush.
+fn emitLigatureMatch(
+    self: *MetalRenderer,
+    encoder: objc.id,
+    text_buf: []TextInstance,
+    text_count: *usize,
+    x: usize,
+    count: usize,
+    match: mac_font.LigatureMatch,
+    fy: f32,
+    cw: f32,
+    x_pad: f32,
+    fg_rgb: ghostty.color.RGB,
+) void {
+    _ = count;
+    switch (match) {
+        .single => |lg| {
+            if (text_count.* >= text_buf.len) {
+                self.drawTextInstances(encoder, text_buf[0..text_count.*]);
+                text_count.* = 0;
+            }
+            const entry = self.atlas.getOrInsert(self.font.primary_font, @intCast(lg.glyph_index)) orelse return;
+            if (entry.w == 0 or entry.h == 0) return;
+            emitTextInstance(text_buf, text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)), @as(f32, @floatFromInt(lg.y_offset)));
+        },
+        .spacer => |sp| {
+            for (0..sp.count) |i| {
+                if (text_count.* >= text_buf.len) {
+                    self.drawTextInstances(encoder, text_buf[0..text_count.*]);
+                    text_count.* = 0;
+                }
+                const entry = self.atlas.getOrInsert(self.font.primary_font, @intCast(sp.glyph_indices[i])) orelse continue;
+                if (entry.w == 0 or entry.h == 0) continue;
+                emitTextInstance(text_buf, text_count, entry, x + i, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])), @as(f32, @floatFromInt(sp.y_offsets[i])));
+            }
+        },
+    }
+}
 
 // --- 색상 해석 (Windows renderer 와 같은 규칙) ---
 
