@@ -32,6 +32,20 @@ pub const Glyph = struct {
     pixel_mode: u8,
 };
 
+/// 2-char ligature lookup 결과 (캐시 value). `ligaturePair(cp0, cp1)` 가 shape
+/// 후 결과 glyph 가 1 개 (= ligature) 면 그 정보. 결과가 2 개 (= 일반 single
+/// char 들) 면 caller 에 `null` 반환 — single-char path 사용.
+pub const LigatureGlyph = struct {
+    glyph_index: u32,
+    /// 26.6 fixed point 의 integer 부 (px). 보통 ligature 의 advance 는 input
+    /// char 수 만큼 cell width (e.g. 2-char `=>` → 2 × cell_w). 우리 paint 는
+    /// cell grid 기반이라 *advance 자체* 는 안 쓰고 cell index 진행만 — 단,
+    /// glyph 의 bitmap 너비가 2 cell 차지함을 시각적으로 가정.
+    x_advance: i32,
+    x_offset: i32,
+    y_offset: i32,
+};
+
 /// HarfBuzz 가 shape 한 한 glyph. `cluster` 는 입력 codepoint array 의 어느
 /// index 의 char 에서 나왔는지 (ligature 면 여러 char 가 같은 cluster index 공유).
 /// mac `resolveGrapheme` 의 CTRun glyph / Win `shapeOnFaceMulti` 의 dwrite glyph
@@ -95,6 +109,13 @@ pub const Context = struct {
     hb_api: ?harfbuzz.Api = null,
     /// shape 호출 사이 reuse 하는 buffer. shape 마다 clear_contents 호출 후 재사용.
     hb_buffer: ?*harfbuzz.hb_buffer_t = null,
+    /// 2-char ligature lookahead cache. `paint` loop 가 매 cell-pair 마다
+    /// `ligaturePair(cp0, cp1)` 호출 — cache miss 면 shape, 결과 store. key
+    /// `= cp0 << 21 | cp1` (u42 packed in u64). value `Some` = ligature glyph
+    /// (shape 결과 1 glyph), `None` = no ligature (2 glyph or fallback).
+    /// HashMap lookup 이 shape 호출 보다 훨씬 빠름 — terminal 의 같은 ASCII pair
+    /// 가 매 frame 반복 호출되는 패턴 최적화.
+    ligature_pair_cache: std.AutoHashMap(u64, ?LigatureGlyph),
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
 
@@ -137,6 +158,7 @@ pub const Context = struct {
             .ft_lib = ft_lib,
             .hb_api = hb_api,
             .hb_buffer = hb_buffer,
+            .ligature_pair_cache = std.AutoHashMap(u64, ?LigatureGlyph).init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
             .cell_width_px = pixel_height / 2,
@@ -299,6 +321,7 @@ pub const Context = struct {
     pub fn deinit(self: *Context) void {
         self.freeFaces();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
+        self.ligature_pair_cache.deinit();
         if (self.hb_api) |*api| {
             if (self.hb_buffer) |b| api.buffer_destroy(b);
             api.deinit();
@@ -406,6 +429,41 @@ pub const Context = struct {
             };
         }
         return result_count;
+    }
+
+    /// 2-char ligature lookup with cache. paint loop 가 매 cell pair 에 호출.
+    /// `cp0` + `cp1` shape 결과 glyph 1 개면 ligature → 그 정보 반환. 2 개면
+    /// no ligature → null. cache 가 결과 보관 — 같은 pair 반복 호출 시 shape
+    /// 호출 회피.
+    ///
+    /// caller 패턴 (software_terminal.paint):
+    /// ```
+    /// if (font_ctx.ligaturePair(cp0, cp1)) |lg| {
+    ///     // ligature glyph 첫 cell 위치에 그리고 둘째 cell 은 skip
+    /// } else {
+    ///     // single-char path (기존)
+    /// }
+    /// ```
+    pub fn ligaturePair(self: *Context, cp0: u21, cp1: u21) ?LigatureGlyph {
+        if (self.face_count == 0 or self.hb_api == null) return null;
+        const key: u64 = (@as(u64, cp0) << 32) | @as(u64, cp1);
+        if (self.ligature_pair_cache.get(key)) |cached| return cached;
+
+        // cache miss — shape 실행. 결과 1 glyph 면 ligature, 2 glyph 면 not.
+        var pair_cps: [2]u21 = .{ cp0, cp1 };
+        var shape_buf: [4]ShapedGlyph = undefined;
+        const n = self.shapeRun(&pair_cps, &shape_buf);
+
+        const result: ?LigatureGlyph = if (n == 1) .{
+            .glyph_index = shape_buf[0].glyph_index,
+            .x_advance = shape_buf[0].x_advance,
+            .x_offset = shape_buf[0].x_offset,
+            .y_offset = shape_buf[0].y_offset,
+        } else null;
+
+        // cache put — 실패해도 fatal 아님 (다음 호출 시 다시 shape).
+        self.ligature_pair_cache.put(key, result) catch {};
+        return result;
     }
 
     /// HarfBuzz 미지원 / 미적용 환경의 fallback. 각 codepoint 의 단순 glyph_index
