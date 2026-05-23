@@ -16,8 +16,15 @@ const freetype = @import("freetype.zig");
 const harfbuzz = @import("harfbuzz.zig");
 const log = @import("../../log.zig");
 const font_constants = @import("../constants.zig");
+const ligature = @import("../ligature.zig");
 
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
+
+// Cross-platform ligature 타입 re-export — caller (software_terminal.zig)
+// 가 `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
+pub const LigatureGlyph = ligature.LigatureGlyph;
+pub const LigatureSpacer = ligature.LigatureSpacer;
+pub const LigatureMatch = ligature.LigatureMatch;
 
 pub const Glyph = struct {
     /// gray = width × height × 1 byte (alpha). BGRA = width × height × 4 byte
@@ -30,46 +37,6 @@ pub const Glyph = struct {
     advance: u32,
     /// `FT_PIXEL_MODE_GRAY` 또는 `FT_PIXEL_MODE_BGRA`. 그 외는 invisible bitmap.
     pixel_mode: u8,
-};
-
-/// Single-glyph ligature 의 정보. 입력 N chars 가 하나의 ligature glyph 으로
-/// GSUB 합성된 경우 (예: JetBrains Mono / Cascadia Code 의 `==` → 단일 glyph,
-/// VS-16 emoji / 스킨톤 modifier / ZWJ family 의 cluster shape).
-pub const LigatureGlyph = struct {
-    /// chain index 의 face — `glyphByIndex(face_idx, glyph_index)` 로 raster.
-    /// Latin ligature 는 항상 primary (face_idx=0). cluster shape 는 ZWJ family
-    /// emoji 등 emoji face (NotoColorEmoji 등) 에서 매치되어 face_idx>0 가능.
-    face_idx: u8 = 0,
-    glyph_index: u32,
-    /// HarfBuzz GPOS 의 ink box offset (cell-center 정렬에 더해 적용). 대부분 0,
-    /// 일부 cluster 에서만 non-zero.
-    x_offset: i32,
-    y_offset: i32,
-};
-
-/// Spacer-pattern ligature — 입력 N chars 가 N glyph 으로 substitute 되되 그
-/// glyph indices 가 natural (= `get_char_index(face, cp)`) 과 다름. Fira Code
-/// 의 핵심 패턴 — `=>` 는 `LIG.arrow.start` + `LIG.arrow.end` 두 glyph 으로,
-/// 각 glyph 은 자기 cell 에 그려져서 시각적으로 합쳐진 화살표 형태가 됨.
-/// cursor positioning + cell-grid 정렬 유지가 디자인 의도.
-///
-/// 우리 paint 는 cell-by-cell 로 각 glyph 을 raster — i 번째 cell 에
-/// `glyphByIndex(face_idx, glyph_indices[i])` 결과를 자기 cell 너비 (cw) 로
-/// 그리면 충분 (single-glyph N-cell wide 의 stretched draw 와 달리).
-pub const LigatureSpacer = struct {
-    face_idx: u8 = 0,
-    count: u8,
-    glyph_indices: [4]u32,
-    x_offsets: [4]i32,
-    y_offsets: [4]i32,
-};
-
-/// Ligature detect 결과의 tagged union — single-glyph 와 spacer-pattern 둘 다
-/// 표현. `ligaturePair` / `ligatureTriple` 의 return value `?LigatureMatch`.
-/// `null` 은 ligature 아님 (자연스러운 N chars).
-pub const LigatureMatch = union(enum) {
-    single: LigatureGlyph,
-    spacer: LigatureSpacer,
 };
 
 /// HarfBuzz 가 shape 한 한 glyph. `cluster` 는 입력 codepoint array 의 어느
@@ -585,45 +552,28 @@ pub const Context = struct {
     ///   substitute 되되 그 indices 가 자연 `=`, `>` 와 다름). 자연 그대로면
     ///   ligature 아님 (단순 `=>` 가 ligature 없는 폰트).
     /// - 그 외 (n == 0 or n > cps.len): 비정상 결과 — null.
+    /// HarfBuzz shape 결과를 `ligature.ShapedSlot[]` 으로 normalize 후 공유
+    /// `ligature.classify` 호출. natural indices 는 primary face 의 FreeType
+    /// `get_char_index` 로 계산. mac / Windows 도 같은 `classify` 사용.
+    ///
+    /// `n > cps.len` 인 비정상 shape 결과는 classify 가 null 반환 — slots 채울
+    /// 때 cps OOB 만 안 일어나면 됨 (cp_idx clamp).
     fn detectLigatureMatch(self: *Context, cps: []const u21, shape_buf: []const ShapedGlyph, n: usize) ?LigatureMatch {
-        if (n == 0 or n > cps.len) return null;
-        if (self.face_count == 0) return null;
+        if (self.face_count == 0 or cps.len == 0) return null;
         const face = if (self.faces[0]) |*f| f else return null;
 
-        if (n < cps.len) {
-            // Classic single-glyph ligature (예: JetBrains Mono `==` → 1 glyph).
-            return .{ .single = .{
-                .face_idx = 0,
-                .glyph_index = shape_buf[0].glyph_index,
-                .x_offset = shape_buf[0].x_offset,
-                .y_offset = shape_buf[0].y_offset,
-            } };
-        }
-
-        // n == cps.len — spacer pattern 후보. natural indices 비교.
-        var any_differs = false;
-        var natural_indices: [4]u32 = .{ 0, 0, 0, 0 };
-        const checked = @min(n, natural_indices.len);
-        for (cps[0..checked], 0..) |cp, i| {
-            natural_indices[i] = self.ft_api.get_char_index(face.ft_face, @intCast(cp));
-            if (shape_buf[i].glyph_index != natural_indices[i]) any_differs = true;
-        }
-        if (!any_differs) return null; // 자연 그대로 — ligature 아님.
-
-        // Spacer pattern — 각 glyph 을 자기 cell 에 raster.
-        var spacer = LigatureSpacer{
-            .face_idx = 0,
-            .count = @intCast(checked),
-            .glyph_indices = .{ 0, 0, 0, 0 },
-            .x_offsets = .{ 0, 0, 0, 0 },
-            .y_offsets = .{ 0, 0, 0, 0 },
-        };
+        var slots: [4]ligature.ShapedSlot = undefined;
+        const checked = @min(n, slots.len);
         for (0..checked) |i| {
-            spacer.glyph_indices[i] = shape_buf[i].glyph_index;
-            spacer.x_offsets[i] = shape_buf[i].x_offset;
-            spacer.y_offsets[i] = shape_buf[i].y_offset;
+            const cp_idx = @min(i, cps.len - 1);
+            slots[i] = .{
+                .glyph_index = shape_buf[i].glyph_index,
+                .natural_glyph_index = self.ft_api.get_char_index(face.ft_face, @intCast(cps[cp_idx])),
+                .x_offset = shape_buf[i].x_offset,
+                .y_offset = shape_buf[i].y_offset,
+            };
         }
-        return .{ .spacer = spacer };
+        return ligature.classify(cps.len, slots[0..checked]);
     }
 
     /// HarfBuzz 미지원 / 미적용 환경의 fallback. 각 codepoint 의 단순 glyph_index
