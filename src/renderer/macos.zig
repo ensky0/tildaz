@@ -606,7 +606,7 @@ pub const MetalRenderer = struct {
                         if (result.owned) ct.CFRelease(result.font);
                         if (entry_opt) |entry| {
                             if (entry.w > 0 and entry.h > 0) {
-                                emitTextInstance(text_buf, &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
+                                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
                             }
                         }
                         x += 1;
@@ -627,7 +627,7 @@ pub const MetalRenderer = struct {
                         next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
                     {
                         if (self.font.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
-                            emitLigatureMatch(self, encoder, text_buf, &text_count, x, 3, lm, fy, cw, x_pad, fg_rgb);
+                            emitLigatureMatch(self, encoder, text_buf[0..], &text_count, x, 3, lm, fy, cw, x_pad, fg_rgb);
                             x += 3;
                             continue;
                         }
@@ -639,7 +639,7 @@ pub const MetalRenderer = struct {
                         next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
                     {
                         if (self.font.ligaturePair(cp, next.codepoint())) |lm| {
-                            emitLigatureMatch(self, encoder, text_buf, &text_count, x, 2, lm, fy, cw, x_pad, fg_rgb);
+                            emitLigatureMatch(self, encoder, text_buf[0..], &text_count, x, 2, lm, fy, cw, x_pad, fg_rgb);
                             x += 2;
                             continue;
                         }
@@ -667,7 +667,7 @@ pub const MetalRenderer = struct {
                     continue;
                 }
 
-                emitTextInstance(text_buf, &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
+                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
                 x += 1;
             }
         }
