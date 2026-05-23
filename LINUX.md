@@ -282,7 +282,7 @@ L11 packaging 의 정식 install 흐름 (.deb / .rpm / AppImage) 은 별도 mile
 | block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 ([c5bbf2a](https://github.com/ensky0/tildaz/commit/c5bbf2a), 공유 `block_element.zig` 부착 + procedural dot mask) |
 | combining mark / grapheme cluster | ✅ L5-5 — `Context.resolveCluster` + paint loop cluster path (mac `resolveGrapheme` / Win `resolveGrapheme` 동등). VS-16 / 스킨톤 / ZWJ / combining mark 첫 glyph reduce. 다중 glyph 합성 / 3-char+ ligature row-shape 는 별도 sub-step. |
 | layer-shell drop-down surface (top+left+right anchor, exclusive keyboard) | 동작 (L8-α, [4673a2e](https://github.com/ensky0/tildaz/commit/4673a2e), UTM Debian arm64 mutter Wayland). dock_position / width_percent / height_percent config 반영 + slide animation + hotkey toggle 은 L8-β / γ / L9. |
-| global shortcut | 미구현 (L9 대기) |
+| global shortcut | 동작 — L9 portal GlobalShortcuts 완료 ([9195427](https://github.com/ensky0/tildaz/commit/9195427) + [70c41e9](https://github.com/ensky0/tildaz/commit/70c41e9)). KDE Plasma 6 + xdg-desktop-portal-kde 시연 OK. 다른 X11/Electron 앱 focus 중에도 hotkey 도달. KRunner / `gio launch` 통한 실행 필수 (자세한 사유 — *KDE Plasma 6 install* 섹션). |
 | IME commit (음절 PTY 송신) | 동작 ([76b9bb5](https://github.com/ensky0/tildaz/commit/76b9bb5), fcitx5 + Cinnamon Wayland) — L10-α |
 | IME preedit inline overlay (보라색) | 동작 ([6c685b6](https://github.com/ensky0/tildaz/commit/6c685b6)) — macOS / Windows 동등 시각, spec done-apply batch 패턴 |
 | `.desktop` / packaging / autostart | 미구현 (L11 대기) |
