@@ -32,22 +32,44 @@ pub const Glyph = struct {
     pixel_mode: u8,
 };
 
-/// 2-char ligature lookup 결과 (캐시 value). `ligaturePair(cp0, cp1)` 가 shape
-/// 후 결과 glyph 가 1 개 (= ligature) 면 그 정보. 결과가 2 개 (= 일반 single
-/// char 들) 면 caller 에 `null` 반환 — single-char path 사용.
+/// Single-glyph ligature 의 정보. 입력 N chars 가 하나의 ligature glyph 으로
+/// GSUB 합성된 경우 (예: JetBrains Mono / Cascadia Code 의 `==` → 단일 glyph,
+/// VS-16 emoji / 스킨톤 modifier / ZWJ family 의 cluster shape).
 pub const LigatureGlyph = struct {
     /// chain index 의 face — `glyphByIndex(face_idx, glyph_index)` 로 raster.
     /// Latin ligature 는 항상 primary (face_idx=0). cluster shape 는 ZWJ family
     /// emoji 등 emoji face (NotoColorEmoji 등) 에서 매치되어 face_idx>0 가능.
     face_idx: u8 = 0,
     glyph_index: u32,
-    /// 26.6 fixed point 의 integer 부 (px). 보통 ligature 의 advance 는 input
-    /// char 수 만큼 cell width (e.g. 2-char `=>` → 2 × cell_w). 우리 paint 는
-    /// cell grid 기반이라 *advance 자체* 는 안 쓰고 cell index 진행만 — 단,
-    /// glyph 의 bitmap 너비가 2 cell 차지함을 시각적으로 가정.
-    x_advance: i32,
+    /// HarfBuzz GPOS 의 ink box offset (cell-center 정렬에 더해 적용). 대부분 0,
+    /// 일부 cluster 에서만 non-zero.
     x_offset: i32,
     y_offset: i32,
+};
+
+/// Spacer-pattern ligature — 입력 N chars 가 N glyph 으로 substitute 되되 그
+/// glyph indices 가 natural (= `get_char_index(face, cp)`) 과 다름. Fira Code
+/// 의 핵심 패턴 — `=>` 는 `LIG.arrow.start` + `LIG.arrow.end` 두 glyph 으로,
+/// 각 glyph 은 자기 cell 에 그려져서 시각적으로 합쳐진 화살표 형태가 됨.
+/// cursor positioning + cell-grid 정렬 유지가 디자인 의도.
+///
+/// 우리 paint 는 cell-by-cell 로 각 glyph 을 raster — i 번째 cell 에
+/// `glyphByIndex(face_idx, glyph_indices[i])` 결과를 자기 cell 너비 (cw) 로
+/// 그리면 충분 (single-glyph N-cell wide 의 stretched draw 와 달리).
+pub const LigatureSpacer = struct {
+    face_idx: u8 = 0,
+    count: u8,
+    glyph_indices: [4]u32,
+    x_offsets: [4]i32,
+    y_offsets: [4]i32,
+};
+
+/// Ligature detect 결과의 tagged union — single-glyph 와 spacer-pattern 둘 다
+/// 표현. `ligaturePair` / `ligatureTriple` 의 return value `?LigatureMatch`.
+/// `null` 은 ligature 아님 (자연스러운 N chars).
+pub const LigatureMatch = union(enum) {
+    single: LigatureGlyph,
+    spacer: LigatureSpacer,
 };
 
 /// HarfBuzz 가 shape 한 한 glyph. `cluster` 는 입력 codepoint array 의 어느
@@ -114,12 +136,17 @@ pub const Context = struct {
     /// shape 호출 사이 reuse 하는 buffer. shape 마다 clear_contents 호출 후 재사용.
     hb_buffer: ?*harfbuzz.hb_buffer_t = null,
     /// 2-char ligature lookahead cache. `paint` loop 가 매 cell-pair 마다
-    /// `ligaturePair(cp0, cp1)` 호출 — cache miss 면 shape, 결과 store. key
-    /// `= cp0 << 21 | cp1` (u42 packed in u64). value `Some` = ligature glyph
-    /// (shape 결과 1 glyph), `None` = no ligature (2 glyph or fallback).
-    /// HashMap lookup 이 shape 호출 보다 훨씬 빠름 — terminal 의 같은 ASCII pair
-    /// 가 매 frame 반복 호출되는 패턴 최적화.
-    ligature_pair_cache: std.AutoHashMap(u64, ?LigatureGlyph),
+    /// `ligaturePair(cp0, cp1)` 호출 — cache miss 면 shape + `detectLigatureMatch`
+    /// 분류 후 store. key `= cp0 << 32 | cp1` (u53 packed in u64). value
+    /// `.single` = 단일-glyph ligature, `.spacer` = Fira Code 식 다중-glyph
+    /// ligature, `null` = ligature 아님 (자연 그대로). HashMap lookup 이 shape
+    /// 호출 보다 훨씬 빠름 — terminal 의 같은 ASCII pair 가 매 frame 반복
+    /// 호출되는 패턴 최적화.
+    ligature_pair_cache: std.AutoHashMap(u64, ?LigatureMatch),
+    /// 3-char ligature cache. `paint` loop 가 2-char 보다 먼저 3-char 시도
+    /// (`===` / `<=>` / `!==` / `<--` 등 흔한 3-char ligature).
+    /// key = `cp0 << 42 | cp1 << 21 | cp2` (3 × 21 bits = 63 bits, u64 안).
+    ligature_triple_cache: std.AutoHashMap(u64, ?LigatureMatch),
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
 
@@ -162,7 +189,8 @@ pub const Context = struct {
             .ft_lib = ft_lib,
             .hb_api = hb_api,
             .hb_buffer = hb_buffer,
-            .ligature_pair_cache = std.AutoHashMap(u64, ?LigatureGlyph).init(allocator),
+            .ligature_pair_cache = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
+            .ligature_triple_cache = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
             .cell_width_px = pixel_height / 2,
@@ -326,6 +354,7 @@ pub const Context = struct {
         self.freeFaces();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
         self.ligature_pair_cache.deinit();
+        self.ligature_triple_cache.deinit();
         if (self.hb_api) |*api| {
             if (self.hb_buffer) |b| api.buffer_destroy(b);
             api.deinit();
@@ -486,7 +515,6 @@ pub const Context = struct {
             return .{
                 .face_idx = idx_u8,
                 .glyph_index = shape_buf[0].glyph_index,
-                .x_advance = shape_buf[0].x_advance,
                 .x_offset = shape_buf[0].x_offset,
                 .y_offset = shape_buf[0].y_offset,
             };
@@ -507,28 +535,95 @@ pub const Context = struct {
     ///     // single-char path (기존)
     /// }
     /// ```
-    pub fn ligaturePair(self: *Context, cp0: u21, cp1: u21) ?LigatureGlyph {
+    pub fn ligaturePair(self: *Context, cp0: u21, cp1: u21) ?LigatureMatch {
         if (self.face_count == 0 or self.hb_api == null) return null;
         const key: u64 = (@as(u64, cp0) << 32) | @as(u64, cp1);
         if (self.ligature_pair_cache.get(key)) |cached| return cached;
 
-        // cache miss — shape 실행. 결과 1 glyph 면 ligature, 2 glyph 면 not.
+        // cache miss — shape 실행. 결과 1 glyph 면 single-glyph ligature (JetBrains
+        // Mono 등), N glyph 인데 indices 가 natural 과 다르면 spacer ligature
+        // (Fira Code 등 — `=>` 가 자연 glyph 2개가 아닌 spacer pair 2개로 substitute).
+        // 둘 다 아니면 ligature 아님.
         var pair_cps: [2]u21 = .{ cp0, cp1 };
         var shape_buf: [4]ShapedGlyph = undefined;
         const n = self.shapeRun(&pair_cps, &shape_buf);
 
-        const result: ?LigatureGlyph = if (n == 1) .{
-            // Latin ligature 는 primary face 의 GSUB — face_idx 항상 0.
-            .face_idx = 0,
-            .glyph_index = shape_buf[0].glyph_index,
-            .x_advance = shape_buf[0].x_advance,
-            .x_offset = shape_buf[0].x_offset,
-            .y_offset = shape_buf[0].y_offset,
-        } else null;
-
-        // cache put — 실패해도 fatal 아님 (다음 호출 시 다시 shape).
+        const result = detectLigatureMatch(self, &pair_cps, &shape_buf, n);
         self.ligature_pair_cache.put(key, result) catch {};
         return result;
+    }
+
+    /// 3-char ligature lookup with cache. `ligaturePair` 와 동일 패턴, 3 cp.
+    /// Fira Code / JetBrains Mono / Cascadia Code 의 흔한 3-char ligature
+    /// (`===` / `!==` / `<=>` / `<--` / `-->` / `<->` 등) 대응. paint loop 는
+    /// 3-char 먼저 시도 → 결과 1 glyph 면 ligature 확정 + 3 cell skip; 아니면
+    /// 2-char (`ligaturePair`) 시도; 둘 다 미매치면 single-char.
+    ///
+    /// key 는 3 × 21 bits = 63 bits packed in u64 — 충돌 없는 unique 식별.
+    pub fn ligatureTriple(self: *Context, cp0: u21, cp1: u21, cp2: u21) ?LigatureMatch {
+        if (self.face_count == 0 or self.hb_api == null) return null;
+        const key: u64 = (@as(u64, cp0) << 42) | (@as(u64, cp1) << 21) | @as(u64, cp2);
+        if (self.ligature_triple_cache.get(key)) |cached| return cached;
+
+        var triple_cps: [3]u21 = .{ cp0, cp1, cp2 };
+        var shape_buf: [4]ShapedGlyph = undefined;
+        const n = self.shapeRun(&triple_cps, &shape_buf);
+
+        const result = detectLigatureMatch(self, &triple_cps, &shape_buf, n);
+        self.ligature_triple_cache.put(key, result) catch {};
+        return result;
+    }
+
+    /// shape 결과 (`shape_buf[0..n]`) 와 입력 `cps` 를 비교해 single-glyph
+    /// 또는 spacer-pattern ligature 판정.
+    ///
+    /// - `n < cps.len`: 입력보다 결과 glyph 수가 적음 = classic single-glyph
+    ///   ligature (JetBrains Mono / Cascadia Code 의 일부). 첫 glyph 으로 N
+    ///   cell width 차지.
+    /// - `n == cps.len`: 결과 glyph 수가 입력과 같음. *naturalindices 와 다르면*
+    ///   spacer-pattern ligature (Fira Code 의 디폴트 — `=>` 가 2 glyph 으로
+    ///   substitute 되되 그 indices 가 자연 `=`, `>` 와 다름). 자연 그대로면
+    ///   ligature 아님 (단순 `=>` 가 ligature 없는 폰트).
+    /// - 그 외 (n == 0 or n > cps.len): 비정상 결과 — null.
+    fn detectLigatureMatch(self: *Context, cps: []const u21, shape_buf: []const ShapedGlyph, n: usize) ?LigatureMatch {
+        if (n == 0 or n > cps.len) return null;
+        if (self.face_count == 0) return null;
+        const face = if (self.faces[0]) |*f| f else return null;
+
+        if (n < cps.len) {
+            // Classic single-glyph ligature (예: JetBrains Mono `==` → 1 glyph).
+            return .{ .single = .{
+                .face_idx = 0,
+                .glyph_index = shape_buf[0].glyph_index,
+                .x_offset = shape_buf[0].x_offset,
+                .y_offset = shape_buf[0].y_offset,
+            } };
+        }
+
+        // n == cps.len — spacer pattern 후보. natural indices 비교.
+        var any_differs = false;
+        var natural_indices: [4]u32 = .{ 0, 0, 0, 0 };
+        const checked = @min(n, natural_indices.len);
+        for (cps[0..checked], 0..) |cp, i| {
+            natural_indices[i] = self.ft_api.get_char_index(face.ft_face, @intCast(cp));
+            if (shape_buf[i].glyph_index != natural_indices[i]) any_differs = true;
+        }
+        if (!any_differs) return null; // 자연 그대로 — ligature 아님.
+
+        // Spacer pattern — 각 glyph 을 자기 cell 에 raster.
+        var spacer = LigatureSpacer{
+            .face_idx = 0,
+            .count = @intCast(checked),
+            .glyph_indices = .{ 0, 0, 0, 0 },
+            .x_offsets = .{ 0, 0, 0, 0 },
+            .y_offsets = .{ 0, 0, 0, 0 },
+        };
+        for (0..checked) |i| {
+            spacer.glyph_indices[i] = shape_buf[i].glyph_index;
+            spacer.x_offsets[i] = shape_buf[i].x_offset;
+            spacer.y_offsets[i] = shape_buf[i].y_offset;
+        }
+        return .{ .spacer = spacer };
     }
 
     /// HarfBuzz 미지원 / 미적용 환경의 fallback. 각 codepoint 의 단순 glyph_index
