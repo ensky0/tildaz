@@ -16,12 +16,20 @@ const ui_metrics = @import("../../ui_metrics.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 
-pub const padding_px: i32 = 8;
-/// 우측 스크롤바 너비 — Windows / macOS 의 `ui_metrics.SCROLLBAR_W_PT = 8` 과 동일.
-pub const scrollbar_w_px: i32 = 8;
-/// thumb 최소 높이 — scrollback 이 길어 ratio 작아져도 클릭 가능한 영역 확보.
-pub const scrollbar_min_thumb_h: i32 = 20;
 const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
+
+/// `ui_metrics.zig` 의 PT (logical point) 값을 `scale` 곱해 physical pixel 로
+/// 변환. mac `backingScaleFactor` / Win `dpi/96.0` 동등 패턴. 1.0x 면 PT 그대로.
+fn scaledPt(pt: u32, scale: f32) i32 {
+    return @intFromFloat(@round(@as(f32, @floatFromInt(pt)) * scale));
+}
+
+/// preferred_scale (= scale_num/scale_den, e.g. 204/120 = 1.7x) 을 f32 factor 로.
+/// denominator 0 또는 분자 0 이면 1.0 (no-op fallback).
+fn scaleFactor(scale_num: u32, scale_den: u32) f32 {
+    if (scale_num == 0 or scale_den == 0) return 1.0;
+    return @as(f32, @floatFromInt(scale_num)) / @as(f32, @floatFromInt(scale_den));
+}
 
 /// `config.font_size_point` 의미는 cross-platform 동등 — Windows host 의
 /// `font_height_px = font_size_point × DPI_scale` 식, macOS host 의 logical
@@ -44,11 +52,16 @@ pub const Renderer = struct {
     /// alpha` 가 그대로. 100% → 255 (완전 opaque, 시각 변화 없음), <100 →
     /// compositor 가 배경과 alpha blending. `Client.init` 에서 채움.
     opacity_alpha: u8 = 255,
+    /// `ui_metrics.*_PT` 를 physical pixel 로 변환할 때 곱하는 factor.
+    /// mac `backingScaleFactor` / Win `dpi/96.0` 동등. preferred_scale event
+    /// 로 갱신 (`applyScale`). default 1.0 — fractional scaling 미advertise
+    /// 환경 또는 첫 init 시점.
+    scale: f32 = 1.0,
 
     /// `scale_num / scale_den` — fractional scaling factor (e.g. 204/120 = 1.7x).
     /// 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가 아직
-    /// 안 왔을 수 있어 default 120/120 = 1.0x. event 받은 후 `reinitFont` 로
-    /// 정확한 scale 의 font 재초기화.
+    /// 안 왔을 수 있어 default 120/120 = 1.0x. event 받은 후 `applyScale` 로
+    /// 정확한 scale 의 font 재초기화 + scale field 갱신.
     pub fn init(
         allocator: std.mem.Allocator,
         cfg: *const config_mod.Config,
@@ -66,6 +79,7 @@ pub const Renderer = struct {
                 cfg.cell_width_ratio,
                 cfg.line_height_ratio,
             ),
+            .scale = scaleFactor(scale_num, scale_den),
         };
     }
 
@@ -74,10 +88,11 @@ pub const Renderer = struct {
         self.font_ctx.deinit();
     }
 
-    /// fractional scale 변경 시 font 재초기화. preferred_scale event handler
-    /// 가 호출 — pixel_height = base × scale / 120 으로 raster (logical 단위에서
-    /// user 가 보는 size 가 scale 무관 동일).
-    pub fn reinitFont(
+    /// fractional scale 변경 시 font 재초기화 + UI chrome scale 갱신. preferred_
+    /// scale event handler 가 호출 — pixel_height = base × scale / 120 으로 raster
+    /// + `Renderer.scale` field 갱신해 tab bar / padding / scrollbar 도 같은
+    /// scale 로 정렬.
+    pub fn applyScale(
         self: *Renderer,
         allocator: std.mem.Allocator,
         cfg: *const config_mod.Config,
@@ -95,6 +110,62 @@ pub const Renderer = struct {
         );
         self.font_ctx.deinit();
         self.font_ctx = new_ctx;
+        self.scale = scaleFactor(scale_num, scale_den);
+    }
+
+    /// 터미널 영역 안쪽 padding (cell grid 가 surface 모서리에서 떨어진 거리).
+    /// `ui_metrics.TERMINAL_PADDING_PT` (6 pt) × scale. mac `pad_px` / Win
+    /// `TERMINAL_PADDING` 동등.
+    pub fn paddingPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TERMINAL_PADDING_PT, self.scale);
+    }
+
+    /// 우측 스크롤바 thumb 너비. `ui_metrics.SCROLLBAR_W_PT` (8 pt) × scale.
+    pub fn scrollbarWPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale);
+    }
+
+    /// 스크롤바 thumb 최소 높이 — scrollback 이 길어 ratio 작아져도 클릭 가능
+    /// 영역. `ui_metrics.SCROLLBAR_MIN_THUMB_H_PT` (32 pt) × scale.
+    pub fn scrollbarMinThumbHPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, self.scale);
+    }
+
+    /// 상단 탭바 높이. `ui_metrics.TAB_BAR_HEIGHT_PT` (28 pt) × scale. mac /
+    /// Win `applyDpiScale` 동등 — cell_h 보다 작아지면 cell_h + 4 px 로 보정
+    /// (탭 텍스트 + 약간의 여백 보장, Win `applyDpiScale` 의 `min_tab_bar_h`
+    /// 패턴).
+    pub fn tabBarHeightPx(self: *const Renderer) i32 {
+        const base = scaledPt(ui_metrics.TAB_BAR_HEIGHT_PT, self.scale);
+        const min: i32 = self.cellHeight() + 4;
+        return @max(base, min);
+    }
+
+    /// 한 탭의 너비. `ui_metrics.TAB_WIDTH_PT` (150 pt) × scale.
+    pub fn tabWidthPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_WIDTH_PT, self.scale);
+    }
+
+    /// 탭 안 padding (title text / close 'x' 정렬). `ui_metrics.TAB_PADDING_PT`
+    /// (6 pt) × scale.
+    pub fn tabPaddingPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_PADDING_PT, self.scale);
+    }
+
+    /// 탭 close 'x' 박스 size. `ui_metrics.TAB_CLOSE_SIZE_PT` (14 pt) × scale.
+    pub fn tabCloseSizePx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_CLOSE_SIZE_PT, self.scale);
+    }
+
+    /// 탭바 좌/우 스크롤 화살표 `<` / `>` 너비. `ui_metrics.TAB_ARROW_W_PT`
+    /// (24 pt) × scale.
+    pub fn tabArrowWPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_ARROW_W_PT, self.scale);
+    }
+
+    /// 탭바 `+` 새 탭 버튼 너비. `ui_metrics.TAB_PLUS_W_PT` (24 pt) × scale.
+    pub fn tabPlusWPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_PLUS_W_PT, self.scale);
     }
 
     fn scaledFontPixelHeight(size_point: u8, scale_num: u32, scale_den: u32) u32 {
@@ -116,10 +187,6 @@ pub const Renderer = struct {
     pub fn cellHeight(self: *const Renderer) i32 {
         return @intCast(self.font_ctx.cell_height_px);
     }
-
-    /// Tab bar 높이 (logical pixel). cell grid 가 이 높이 만큼 아래로 밀린다.
-    /// Linux 는 1pt = 1px (96 DPI 가정) — fractional scale 통합은 후속.
-    pub const tab_bar_height_px: i32 = @intCast(ui_metrics.TAB_BAR_HEIGHT_PT);
 
     pub fn paint(
         self: *Renderer,
@@ -148,12 +215,16 @@ pub const Renderer = struct {
         const cw = self.cellWidth();
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
+        const pad: i32 = self.paddingPx();
+        const tab_bar_h: i32 = self.tabBarHeightPx();
+        const sb_w: i32 = self.scrollbarWPx();
+        const sb_min_thumb: i32 = self.scrollbarMinThumbHPx();
 
         // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_height_px, tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), self.tabCloseSizePx(), tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -177,8 +248,8 @@ pub const Renderer = struct {
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 const bg = resolveBg(style, &raw, &colors, is_selected);
-                const cell_x: i32 = padding_px + @as(i32, @intCast(x)) * cw;
-                const cell_y: i32 = tab_bar_height_px + padding_px + @as(i32, @intCast(y)) * ch;
+                const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
+                const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
                 const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
 
                 if (is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null) {
@@ -228,9 +299,9 @@ pub const Renderer = struct {
 
         if (self.render_state.cursor.visible) {
             if (self.render_state.cursor.viewport) |vp| {
-                var cx: i32 = padding_px + @as(i32, @intCast(vp.x)) * cw;
+                var cx: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
                 if (vp.wide_tail and vp.x > 0) cx -= cw;
-                const cy: i32 = tab_bar_height_px + padding_px + @as(i32, @intCast(vp.y)) * ch;
+                const cy: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
                 const cursor = colors.cursor orelse ghostty.color.RGB{ .r = 180, .g = 180, .b = 180 };
                 rect(memory, width, height, stride, cx, cy + ch - 3, cw, 2, cursor);
             }
@@ -240,22 +311,22 @@ pub const Renderer = struct {
         // (배경 그대로). Windows / macOS 패턴 동일 (`renderer/macos.zig:662` 참고).
         const sb = terminal.screens.active.pages.scrollbar();
         if (sb.total > sb.len) {
-            const track_h: i32 = height - tab_bar_height_px - 2 * padding_px;
+            const track_h: i32 = height - tab_bar_h - 2 * pad;
             if (track_h > 0) {
                 const track_hf: f64 = @floatFromInt(track_h);
                 const total_f: f64 = @floatFromInt(sb.total);
                 const len_f: f64 = @floatFromInt(sb.len);
                 const ratio_px: f64 = track_hf / total_f;
-                const min_thumb_f: f64 = @floatFromInt(scrollbar_min_thumb_h);
+                const min_thumb_f: f64 = @floatFromInt(sb_min_thumb);
                 const thumb_hf: f64 = @max(min_thumb_f, ratio_px * len_f);
                 const available: f64 = track_hf - thumb_hf;
                 const max_off_f: f64 = total_f - len_f;
                 const offset_f: f64 = @floatFromInt(sb.offset);
                 const offset_ratio: f64 = if (max_off_f > 0) offset_f / max_off_f else 0;
-                const thumb_y_px: i32 = tab_bar_height_px + padding_px + @as(i32, @intFromFloat(offset_ratio * available));
+                const thumb_y_px: i32 = tab_bar_h + pad + @as(i32, @intFromFloat(offset_ratio * available));
                 const thumb_h_px: i32 = @intFromFloat(thumb_hf);
-                const sb_x: i32 = width - scrollbar_w_px;
-                rect(memory, width, height, stride, sb_x, thumb_y_px, scrollbar_w_px, thumb_h_px, scrollbar_thumb_color);
+                const sb_x: i32 = width - sb_w;
+                rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, scrollbar_thumb_color);
             }
         }
 
@@ -278,6 +349,8 @@ pub const Renderer = struct {
                     width,
                     height,
                     stride,
+                    pad,
+                    tab_bar_h,
                     cw,
                     ch,
                     ascent,
@@ -322,6 +395,9 @@ fn drawTabBar(
     fb_h: i32,
     stride: i32,
     tab_bar_h: i32,
+    tab_w: i32,
+    tab_pad: i32,
+    close_size_metric: i32,
     titles: []const []const u8,
     active_idx: usize,
     layout: tab_layout.Layout,
@@ -337,8 +413,6 @@ fn drawTabBar(
     const tab_bar_bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
     rect(memory, fb_w, fb_h, stride, 0, 0, fb_w, tab_bar_h, tab_bar_bg);
 
-    const tab_w: i32 = @intCast(ui_metrics.TAB_WIDTH_PT);
-    const tab_pad: i32 = @intCast(ui_metrics.TAB_PADDING_PT);
     const active_bg = rgbFromMetrics(ui_metrics.TAB_ACTIVE_BG);
     const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
     const ascent: i32 = @intCast(font_ctx.ascent_px);
@@ -355,7 +429,6 @@ fn drawTabBar(
     const text_y_top: i32 = @divFloor(tab_bar_h - cell_h, 2);
     // close 'x' / preedit / cursor 모두 동일한 max_text_w — mac `tab_w -
     // close_size_px - tab_pad_px * 3` 동등 (close box + 양쪽 padding).
-    const close_size_metric: i32 = @intCast(ui_metrics.TAB_CLOSE_SIZE_PT);
     const max_text_w_metric: i32 = tab_w - close_size_metric - tab_pad * 3;
     const tab_area_x: i32 = @intFromFloat(layout.tab_area_x);
     const tab_area_w: i32 = @intFromFloat(layout.tab_area_w);
@@ -402,7 +475,7 @@ fn drawTabBar(
         // 글리프 + 색을 `TAB_TEXT_COLOR × 0.6 + bg × 0.4` 로 dim (활성 / 비활성
         // 탭 배경 색 차이가 자연 반영). `tab_layout.hitTab` 의 `close_x_min
         // = tab_x + tab_w - close_size - tab_pad` 와 정확 align.
-        const close_size: i32 = @intCast(ui_metrics.TAB_CLOSE_SIZE_PT);
+        const close_size: i32 = close_size_metric;
         const close_x_outer: i32 = tab_x + tab_actual_w - close_size - tab_pad;
         if (close_x_outer >= tab_area_x and close_x_outer + close_size <= tab_area_end) {
             const close_color = ghostty.color.RGB{
@@ -681,6 +754,8 @@ fn drawPreeditOverlay(
     fb_w: i32,
     fb_h: i32,
     stride: i32,
+    pad: i32,
+    tab_bar_h: i32,
     cw: i32,
     ch: i32,
     ascent: i32,
@@ -694,7 +769,7 @@ fn drawPreeditOverlay(
     // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
     // 동일 색. 8-bit RGB 환산 64 / 64 / 128.
     const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
-    const pre_y: i32 = Renderer.tab_bar_height_px + padding_px + cy_cell * ch;
+    const pre_y: i32 = tab_bar_h + pad + cy_cell * ch;
     const baseline: i32 = pre_y + ascent;
 
     var col: i32 = start_col;
@@ -704,7 +779,7 @@ fn drawPreeditOverlay(
         if (w_cells <= 0) continue;
         if (col + w_cells > @as(i32, @intCast(cols))) break;
 
-        const cell_x: i32 = padding_px + col * cw;
+        const cell_x: i32 = pad + col * cw;
         const cell_w: i32 = w_cells * cw;
         rect(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, preedit_bg);
 

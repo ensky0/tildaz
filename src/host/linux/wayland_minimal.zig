@@ -529,7 +529,7 @@ const Client = struct {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
         // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
-        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 reinitFont.
+        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 applyScale.
         var renderer = try software_terminal.Renderer.init(
             allocator,
             cfg,
@@ -1132,9 +1132,11 @@ const Client = struct {
     fn gridSize(self: *const Client) struct { cols: u16, rows: u16 } {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
-        const usable_w = @max(cw, self.window_width - software_terminal.padding_px * 2);
+        const pad = self.renderer.paddingPx();
+        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const usable_w = @max(cw, self.window_width - pad * 2);
         // L12-α — 상단 tab bar 영역만큼 grid height 축소.
-        const usable_h = @max(ch, self.window_height - software_terminal.Renderer.tab_bar_height_px - software_terminal.padding_px * 2);
+        const usable_h = @max(ch, self.window_height - tab_bar_h - pad * 2);
         const cols_i32 = @max(1, @divTrunc(usable_w, cw));
         const rows_i32 = @max(1, @divTrunc(usable_h, ch));
         return .{
@@ -1324,9 +1326,9 @@ const Client = struct {
                 const layout_inputs = tab_layout.Inputs{
                     .viewport_w = @floatFromInt(width),
                     .tab_count = @intCast(count),
-                    .tab_w = @floatFromInt(ui_metrics.TAB_WIDTH_PT),
-                    .arrow_w = @floatFromInt(ui_metrics.TAB_ARROW_W_PT),
-                    .plus_w = @floatFromInt(ui_metrics.TAB_PLUS_W_PT),
+                    .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
+                    .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+                    .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
                     .scroll_x = self.tab_scroll_x,
                 };
                 const layout = tab_layout.compute(layout_inputs);
@@ -1552,13 +1554,13 @@ const Client = struct {
                     // font 재초기화 — pixel_height = base × scale / 120. 첫 init
                     // 의 default scale=120 으로 만든 font 가 fractional scale
                     // 환경에서 user 시각에 너무 작음. cell metric 도 자동 갱신.
-                    self.renderer.reinitFont(
+                    self.renderer.applyScale(
                         self.allocator,
                         self.config,
                         new_scale,
                         fractional_scale_denominator,
                     ) catch |err| {
-                        log.appendLine("wayland", "font reinit failed: {s} — keeping default size", .{@errorName(err)});
+                        log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
                     };
                     // 첫 createLayerSurface 의 set_size 시점엔 preferred_scale 이
                     // 아직 default (120) 이라 physical 단위 그대로 송신됐을 가능성
@@ -1820,18 +1822,21 @@ const Client = struct {
     fn handleTabBarClick(self: *Client, px: i32, py: i32, time_ms: u32) void {
         if (self.session == null) return;
         const session = &self.session.?;
+        const tab_w_px = self.renderer.tabWidthPx();
+        const tab_pad_px = self.renderer.tabPaddingPx();
+        const tab_close_px = self.renderer.tabCloseSizePx();
         const layout_inputs = tab_layout.Inputs{
             .viewport_w = @floatFromInt(self.window_width),
             .tab_count = @intCast(session.count()),
-            .tab_w = @floatFromInt(ui_metrics.TAB_WIDTH_PT),
-            .arrow_w = @floatFromInt(ui_metrics.TAB_ARROW_W_PT),
-            .plus_w = @floatFromInt(ui_metrics.TAB_PLUS_W_PT),
+            .tab_w = @floatFromInt(tab_w_px),
+            .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+            .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
         const px_f: f32 = @floatFromInt(px);
         const py_f: f32 = @floatFromInt(py);
-        const tab_bar_h_f: f32 = @floatFromInt(software_terminal.Renderer.tab_bar_height_px);
+        const tab_bar_h_f: f32 = @floatFromInt(self.renderer.tabBarHeightPx());
         const area = tab_layout.hitArea(px_f, py_f, tab_bar_h_f, layout);
         switch (area) {
             .left_arrow => {
@@ -1854,9 +1859,9 @@ const Client = struct {
                     px_f,
                     py_f,
                     layout,
-                    @floatFromInt(ui_metrics.TAB_WIDTH_PT),
-                    @floatFromInt(ui_metrics.TAB_PADDING_PT),
-                    @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT),
+                    @floatFromInt(tab_w_px),
+                    @floatFromInt(tab_pad_px),
+                    @floatFromInt(tab_close_px),
                     tab_bar_h_f,
                     self.tab_scroll_x,
                     @intCast(session.count()),
@@ -1871,9 +1876,9 @@ const Client = struct {
                 // 위치 이동 (`tab_layout.renameTextHit` byte index). native
                 // textbox UX (mac / win 동등).
                 if (self.rename_state.isActive() and self.rename_state.tab_index == hit.tab_index) {
-                    const tab_w_f: f32 = @floatFromInt(ui_metrics.TAB_WIDTH_PT);
-                    const tab_pad_f: f32 = @floatFromInt(ui_metrics.TAB_PADDING_PT);
-                    const close_size_f: f32 = @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT);
+                    const tab_w_f: f32 = @floatFromInt(tab_w_px);
+                    const tab_pad_f: f32 = @floatFromInt(tab_pad_px);
+                    const close_size_f: f32 = @floatFromInt(tab_close_px);
                     const tab_world_x_f: f32 = @as(f32, @floatFromInt(hit.tab_index)) * tab_w_f;
                     const text_x_start_f: f32 = layout.tab_area_x + tab_world_x_f - self.tab_scroll_x + tab_pad_f;
                     const max_text_w_f: f32 = tab_w_f - close_size_f - tab_pad_f * 3;
@@ -1915,7 +1920,7 @@ const Client = struct {
                 // threshold (5px) 안 넘어 `dragging=false` 유지 → release
                 // 의 `finish` 가 null 반환 → reorder 일어나지 않음.
                 const world_x: f32 = px_f - layout.tab_area_x + self.tab_scroll_x;
-                const tab_w_int: c_int = @intCast(ui_metrics.TAB_WIDTH_PT);
+                const tab_w_int: c_int = @intCast(tab_w_px);
                 _ = self.tab_drag.begin(@intFromFloat(world_x), tab_w_int, session.count());
             },
             .none => {},
@@ -1929,12 +1934,13 @@ const Client = struct {
     fn handleTabDragMotion(self: *Client) void {
         if (self.session == null) return;
         const session = &self.session.?;
+        const tab_w_px = self.renderer.tabWidthPx();
         const layout_inputs = tab_layout.Inputs{
             .viewport_w = @floatFromInt(self.window_width),
             .tab_count = @intCast(session.count()),
-            .tab_w = @floatFromInt(ui_metrics.TAB_WIDTH_PT),
-            .arrow_w = @floatFromInt(ui_metrics.TAB_ARROW_W_PT),
-            .plus_w = @floatFromInt(ui_metrics.TAB_PLUS_W_PT),
+            .tab_w = @floatFromInt(tab_w_px),
+            .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+            .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -1946,7 +1952,7 @@ const Client = struct {
         const auto_scroll_w: f32 = 30;
         const auto_scroll_step: f32 = 12;
         const total_tabs_w_f: f32 = @as(f32, @floatFromInt(session.count())) *
-            @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT));
+            @as(f32, @floatFromInt(tab_w_px));
         const max_scroll: f32 = @max(0, total_tabs_w_f - layout.tab_area_w);
         if (px_f < layout.tab_area_x + auto_scroll_w and self.tab_scroll_x > 0) {
             self.tab_scroll_x = @max(0, self.tab_scroll_x - auto_scroll_step);
@@ -2024,12 +2030,14 @@ const Client = struct {
     fn computeCursorRect(self: *const Client) struct { x: i32, y: i32, w: i32, h: i32 } {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
+        const pad = self.renderer.paddingPx();
+        const tab_bar_h = self.renderer.tabBarHeightPx();
         if (self.renderer.render_state.cursor.viewport) |vp| {
-            const x: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.x)) * cw;
-            const y: i32 = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px + @as(i32, @intCast(vp.y)) * ch;
+            const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
+            const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
             return .{ .x = x, .y = y, .w = cw, .h = ch };
         }
-        return .{ .x = software_terminal.padding_px, .y = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px, .w = cw, .h = ch };
+        return .{ .x = pad, .y = tab_bar_h + pad, .w = cw, .h = ch };
     }
 
     /// L10-γ — `set_cursor_rectangle(x, y, w, h)` + commit. surface-relative
@@ -2041,8 +2049,10 @@ const Client = struct {
         const vp = self.renderer.render_state.cursor.viewport orelse return;
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
-        const x: i32 = software_terminal.padding_px + @as(i32, @intCast(vp.x)) * cw;
-        const y: i32 = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px + @as(i32, @intCast(vp.y)) * ch;
+        const pad = self.renderer.paddingPx();
+        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
+        const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
         if (x == self.last_cursor_rect_x and
             y == self.last_cursor_rect_y and
             cw == self.last_cursor_rect_w and
@@ -2482,13 +2492,13 @@ const Client = struct {
                 // L12-β/γ — tab bar 영역 클릭 → tab_layout.hitArea 로 분기.
                 // 다른 모든 pointer mode (scrollbar / selection / 더블클릭)
                 // 보다 *우선* 검사 — tab bar 안에서 selection drag 안 시작.
-                if (self.pointer_y_px >= 0 and self.pointer_y_px < software_terminal.Renderer.tab_bar_height_px) {
+                if (self.pointer_y_px >= 0 and self.pointer_y_px < self.renderer.tabBarHeightPx()) {
                     self.handleTabBarClick(self.pointer_x_px, self.pointer_y_px, time_ms);
                     return;
                 }
                 // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
                 // Windows `app_controller.zig:835` 와 동등.
-                if (self.pointer_x_px >= self.window_width - software_terminal.scrollbar_w_px) {
+                if (self.pointer_x_px >= self.window_width - self.renderer.scrollbarWPx()) {
                     tab.interaction.scrollbar.begin();
                     self.scrollToY(self.pointer_y_px);
                     return;
@@ -2535,7 +2545,7 @@ const Client = struct {
                 // → reset 만 일어남 (defer reset 으로 자동). 어느 경우든 selection
                 // / scrollbar 분기보다 우선.
                 if (self.tab_drag.active) {
-                    const tab_w_int: c_int = @intCast(ui_metrics.TAB_WIDTH_PT);
+                    const tab_w_int: c_int = @intCast(self.renderer.tabWidthPx());
                     if (self.session) |*session_ptr| {
                         if (self.tab_drag.finish(tab_w_int, session_ptr.count())) |req| {
                             _ = session_ptr.reorderTabs(req.from, req.to) catch |err| {
@@ -2573,13 +2583,14 @@ const Client = struct {
         const sb = screen.pages.scrollbar();
         if (sb.total <= sb.len) return;
 
-        const track_h: i32 = self.window_height - 2 * software_terminal.padding_px;
+        const pad = self.renderer.paddingPx();
+        const track_h: i32 = self.window_height - 2 * pad;
         if (track_h <= 0) return;
 
-        const rel_y: i32 = @max(0, mouse_y - software_terminal.padding_px);
+        const rel_y: i32 = @max(0, mouse_y - pad);
         const track_hf: f64 = @floatFromInt(track_h);
         const ratio_px: f64 = track_hf / @as(f64, @floatFromInt(sb.total));
-        const min_thumb: f64 = @floatFromInt(software_terminal.scrollbar_min_thumb_h);
+        const min_thumb: f64 = @floatFromInt(self.renderer.scrollbarMinThumbHPx());
         const thumb_h: f64 = @max(min_thumb, ratio_px * @as(f64, @floatFromInt(sb.len)));
         const available: f64 = track_hf - thumb_h;
         if (available <= 0) return;
@@ -2618,7 +2629,7 @@ const Client = struct {
             // SessionCore.scrollActive 의 visible_rows 인자 — page scroll 계산용.
             // wheel 자체는 i16 만 보지만 같은 인터페이스라 함께 전달.
             const ch = self.renderer.cellHeight();
-            const usable_h = @max(0, self.window_height - software_terminal.Renderer.tab_bar_height_px - software_terminal.padding_px * 2);
+            const usable_h = @max(0, self.window_height - self.renderer.tabBarHeightPx() - self.renderer.paddingPx() * 2);
             const rows_i32 = @divTrunc(usable_h, ch);
             const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
             const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
@@ -2838,12 +2849,13 @@ const Client = struct {
     /// null. L12-α — grid 영역이 tab_bar_height_px + padding 만큼 아래로
     /// 밀려있으므로 py 의 origin 도 같이 보정.
     fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
-        const grid_top: i32 = software_terminal.Renderer.tab_bar_height_px + software_terminal.padding_px;
-        if (px < software_terminal.padding_px or py < grid_top) return null;
+        const pad = self.renderer.paddingPx();
+        const grid_top: i32 = self.renderer.tabBarHeightPx() + pad;
+        if (px < pad or py < grid_top) return null;
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const tab = self.activeTabOrNull() orelse return null;
-        const col_i32: i32 = @divTrunc(px - software_terminal.padding_px, cw);
+        const col_i32: i32 = @divTrunc(px - pad, cw);
         const row_i32: i32 = @divTrunc(py - grid_top, ch);
         if (col_i32 < 0 or row_i32 < 0) return null;
         const cols_i32: i32 = @intCast(tab.terminal.cols);
