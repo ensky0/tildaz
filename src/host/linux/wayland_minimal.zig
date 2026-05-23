@@ -375,6 +375,15 @@ const Client = struct {
     session: ?session_core.SessionCore = null,
     shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     needs_redraw: bool = false,
+    // Frame callback throttling (issue #196 — KDE Plasma 6 fractional scaling
+    // 환경에서 타이핑마다 짧은 flicker). compositor 의 next-frame timing 에
+    // commit 을 정렬해서 60Hz 보다 빠른 commit (fast typing 시) 을 차단. foot
+    // / alacritty / wezterm 등 표준 Wayland client 패턴. `attachAndCommit` 가
+    // commit 직전 `wl_surface.frame(id)` request 보내고 `awaiting_frame=true`
+    // 표시. 다음 `redraw` 호출은 `awaiting_frame` 면 skip (needs_redraw 는
+    // true 로 남아 다음 iter 에 재시도). `wl_callback.done` 도착 시 false.
+    frame_callback_id: u32 = 0,
+    awaiting_frame: bool = false,
     active_buffer: ?ShmBuffer = null,
     retired_buffers: std.ArrayList(ShmBuffer) = .{},
     compositor_id: u32 = 0,
@@ -1183,6 +1192,11 @@ const Client = struct {
         //    first layer_surface.configure event".
         if (self.surface_hidden) return false;
         if (!self.configured) return false;
+        // issue #196: compositor 의 frame callback 받기 전엔 다음 commit skip
+        // — fast typing 시 over-commit 차단 (60Hz 보다 빠르게 commit 안 함).
+        // `needs_redraw` 는 true 로 유지되어 callback 도착 후 다음 main loop
+        // iter 가 자연스럽게 redraw 진행.
+        if (self.awaiting_frame) return false;
         self.applyPendingSize();
         self.discardReleasedRetiredBuffersExcept(self.window_width, self.window_height);
         if (self.active_buffer) |*buffer| {
@@ -1376,6 +1390,18 @@ const Client = struct {
             @intCast(buffer.width),
             @intCast(buffer.height),
         });
+        // wl_surface.frame (opcode 3) — compositor 가 next frame 준비됐을 때
+        // wl_callback.done 발신. spec 상 *commit 전에* request — pending state
+        // 의 일부로 atomic 적용. issue #196: KDE Plasma 6 fractional scaling
+        // 의 잔류 flicker (타이핑 burst 마다 짧은 시각 disturbance) 대응.
+        // 미throttle 하면 user typing 속도 따라 60Hz 보다 빠르게 commit → KWin
+        // shader-scaling tick 과 비동기. frame callback 을 한 번 받기 전까지
+        // 다음 commit skip 하면 자연스럽게 vsync 와 정렬.
+        const callback_id = self.allocId();
+        try self.sendNewId(self.surface_id, 3, callback_id);
+        self.frame_callback_id = callback_id;
+        self.awaiting_frame = true;
+        // wl_surface.commit (opcode 6) — pending double-buffered state apply.
         try self.sendNoArgs(self.surface_id, 6);
     }
 
@@ -1498,6 +1524,13 @@ const Client = struct {
             self.wait_callback_done = true;
             return;
         }
+        // issue #196: frame callback done — compositor 가 next frame 준비됨.
+        // commit gate 해제. callback id 는 one-shot 이라 한 번 받으면 reset.
+        if (self.frame_callback_id != 0 and id == self.frame_callback_id and opcode == 0) {
+            self.awaiting_frame = false;
+            self.frame_callback_id = 0;
+            return;
+        }
         if (id == self.shm_id and opcode == 0 and payload.len >= 4) {
             const fmt = readU32(payload[0..4]);
             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
@@ -1590,6 +1623,10 @@ const Client = struct {
         }
         if (self.xdg_surface_id != 0 and id == self.xdg_surface_id and opcode == 0 and payload.len >= 4) {
             try self.sendArgs(self.xdg_surface_id, 4, &.{readU32(payload[0..4])});
+            // issue #196: configure 는 surface 가 다시 보이거나 크기 변경된
+            // 신호 — 이전 frame callback 이 fire 안 했을 수도 있으므로 reset.
+            self.awaiting_frame = false;
+            self.frame_callback_id = 0;
             self.applyPendingSize();
             if (self.viewport_id != 0 and self.window_width > 0 and self.window_height > 0) {
                 const dw: u32 = @intCast(self.physicalToLogical(self.window_width));
@@ -1614,6 +1651,10 @@ const Client = struct {
                 const serial = readU32(payload[0..4]);
                 const w = readU32(payload[4..8]);
                 const h = readU32(payload[8..12]);
+                // issue #196: configure 는 surface 재출현 / 크기 변경 신호 —
+                // 이전 frame callback 이 fire 안 했을 수도 있으므로 reset.
+                self.awaiting_frame = false;
+                self.frame_callback_id = 0;
                 // 진단 — KWin 이 우리 anchor + margin 설정을 받아 계산한 surface
                 // 의 logical 크기. 우리가 보낸 margin 의 합과 screen logical
                 // 크기 사이 mismatch 가 보이면 KWin 의 round 정책 추정 가능.
@@ -3094,6 +3135,11 @@ const Client = struct {
 
         self.mapped = false;
         self.configured = false;
+        // issue #196: surface destroy → 이전 frame callback 은 더 이상 fire
+        // 안 함 (surface 가 사라졌으니 compositor 가 callback 발신 안 함).
+        // 재생성 (show) 후 첫 redraw 가 막히지 않도록 reset.
+        self.frame_callback_id = 0;
+        self.awaiting_frame = false;
     }
 
     fn logCapabilities(self: *Client) void {
