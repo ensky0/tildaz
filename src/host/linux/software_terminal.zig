@@ -341,45 +341,49 @@ pub const Renderer = struct {
                 // attribute, fg / bg / flags 등). 다른 색 / underline 등 다른
                 // style 의 cell pair 는 ligature 안 — terminal 의 자연스러운
                 // 의미 (color 분리 = 의도된 두 문자).
+                // 3-char ligature lookahead 먼저. Fira Code / JetBrains Mono /
+                // Cascadia Code 의 흔한 3-char ligature (`===` / `!==` / `<=>` /
+                // `<--` / `-->` / `<->` / `<==` / `==>` / `||=` 등). 2-char
+                // 보다 *먼저* 시도해야 `===` 가 `==` + `=` 로 분해되지 않음.
+                // cache miss 시 1 회 shape — 같은 triple 반복 호출은 캐시 hit.
+                if (x + 2 < cols and x + 2 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
+                    const next = raws[x + 1];
+                    const next2 = raws[x + 2];
+                    if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
+                        next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()) and
+                        next2.wide == .narrow and next2.hasText() and next2.codepoint() != 0 and
+                        next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
+                    {
+                        const next_cp = next.codepoint();
+                        const next2_cp = next2.codepoint();
+                        if (self.font_ctx.ligatureTriple(cp, next_cp, next2_cp)) |lm| {
+                            drawLigatureMatch(
+                                &self.font_ctx,
+                                memory, width, height, stride,
+                                raws, styles, sel_range, &colors,
+                                pad, cell_y, cw, ch, ascent,
+                                x, 3, lm, fg, bg,
+                            );
+                            x += 3;
+                            continue;
+                        }
+                    }
+                }
+
                 if (x + 1 < cols and x + 1 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
                     const next = raws[x + 1];
                     if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
                         next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
                     {
                         const next_cp = next.codepoint();
-                        if (self.font_ctx.ligaturePair(cp, next_cp)) |lg| {
-                            // 다음 cell 의 selection / bg 도 그리기.
-                            const next_style = if (next.style_id != 0) styles[x + 1] else ghostty.Style{};
-                            const next_x16: u16 = @intCast(x + 1);
-                            const next_is_selected = if (sel_range) |sr| (next_x16 >= sr[0] and next_x16 <= sr[1]) else false;
-                            const next_bg = resolveBg(next_style, &next, &colors, next_is_selected);
-                            const next_cell_x: i32 = pad + @as(i32, @intCast(x + 1)) * cw;
-                            if (next_is_selected or next_style.flags.inverse or next_style.bg(&next, &colors.palette) != null) {
-                                rect(memory, width, height, stride, next_cell_x, cell_y, cw, ch, next_bg);
-                            }
-                            // ligature glyph — 2 cell 너비. glyph_index 로 raster
-                            // (codepoint 안 갖는 ligature idx). center 정렬은
-                            // 2-cell 너비 기준.
-                            const ligature_glyph = self.font_ctx.glyphByIndex(lg.face_idx, lg.glyph_index);
-                            const ligature_w: i32 = 2 * cw;
-                            if (ligature_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                                drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, ligature_w, ch, ligature_glyph);
-                            } else {
-                                const baseline = cell_y + ascent;
-                                const glyph_advance_i32: i32 = @intCast(ligature_glyph.advance);
-                                const center_off: i32 = @divFloor(ligature_w - glyph_advance_i32, 2);
-                                drawGlyph(
-                                    memory,
-                                    width,
-                                    height,
-                                    stride,
-                                    cell_x + center_off + ligature_glyph.bitmap_left + lg.x_offset,
-                                    baseline - ligature_glyph.bitmap_top - lg.y_offset,
-                                    ligature_glyph,
-                                    fg,
-                                    bg,
-                                );
-                            }
+                        if (self.font_ctx.ligaturePair(cp, next_cp)) |lm| {
+                            drawLigatureMatch(
+                                &self.font_ctx,
+                                memory, width, height, stride,
+                                raws, styles, sel_range, &colors,
+                                pad, cell_y, cw, ch, ascent,
+                                x, 2, lm, fg, bg,
+                            );
                             x += 2;
                             continue;
                         }
@@ -922,6 +926,97 @@ fn drawPreeditOverlay(
         }
 
         col += w_cells;
+    }
+}
+
+/// 2-cell 또는 3-cell ligature 의 단일 그리기 경로. `LigatureMatch` 의
+/// `.single` (입력 N chars → 1 glyph, N-cell wide draw, JetBrains Mono /
+/// Cascadia Code 패턴) 과 `.spacer` (입력 N chars → N glyphs each at own
+/// cell, Fira Code 패턴) 둘 다 처리. caller 는 `x` (base cell index) +
+/// `count` (2 또는 3) + `match` 만 전달.
+///
+/// 둘 다 다음 N-1 cells 의 bg/selection rect 는 *spacer 의 경우* 본 함수가
+/// 그림 (per-cell width=cw); .single 의 경우는 caller 가 base bg 그렸으니
+/// 추가 N-1 cells 도 그림. `cell_x` (= `pad + x * cw`) 는 함수 안 재계산.
+fn drawLigatureMatch(
+    font_ctx: *font.Context,
+    memory: []u8,
+    fb_w: i32,
+    fb_h: i32,
+    stride: i32,
+    raws: []const ghostty.Cell,
+    styles: []const ghostty.Style,
+    sel_range: ?[2]u16,
+    colors: *const ghostty.RenderState.Colors,
+    pad: i32,
+    cell_y: i32,
+    cw: i32,
+    ch: i32,
+    ascent: i32,
+    x: usize,
+    count: usize,
+    match: font.LigatureMatch,
+    fg: ghostty.color.RGB,
+    bg: ghostty.color.RGB,
+) void {
+    const base_cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
+
+    // 다음 (count-1) cells 의 selection / bg 그리기 — 둘 다 (.single / .spacer)
+    // 공통. base cell 의 bg 는 caller 가 이미 그림.
+    for (1..count) |off| {
+        const ox = x + off;
+        if (ox >= raws.len) break;
+        const ocell = raws[ox];
+        const ostyle = if (ocell.style_id != 0) styles[ox] else ghostty.Style{};
+        const ox16: u16 = @intCast(ox);
+        const ois_selected = if (sel_range) |sr| (ox16 >= sr[0] and ox16 <= sr[1]) else false;
+        const obg = resolveBg(ostyle, &ocell, colors, ois_selected);
+        const ocell_x: i32 = pad + @as(i32, @intCast(ox)) * cw;
+        if (ois_selected or ostyle.flags.inverse or ostyle.bg(&ocell, &colors.palette) != null) {
+            rect(memory, fb_w, fb_h, stride, ocell_x, cell_y, cw, ch, obg);
+        }
+    }
+
+    switch (match) {
+        .single => |lg| {
+            // 1 glyph 이 N-cell 너비 차지 — center 정렬 (count × cw 안).
+            const ligature_glyph = font_ctx.glyphByIndex(lg.face_idx, lg.glyph_index);
+            const ligature_w: i32 = @intCast(count * @as(usize, @intCast(cw)));
+            if (ligature_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                drawGlyphBgra(memory, fb_w, fb_h, stride, base_cell_x, cell_y, ligature_w, ch, ligature_glyph);
+            } else {
+                const baseline = cell_y + ascent;
+                const glyph_advance_i32: i32 = @intCast(ligature_glyph.advance);
+                const center_off: i32 = @divFloor(ligature_w - glyph_advance_i32, 2);
+                drawGlyph(
+                    memory, fb_w, fb_h, stride,
+                    base_cell_x + center_off + ligature_glyph.bitmap_left + lg.x_offset,
+                    baseline - ligature_glyph.bitmap_top - lg.y_offset,
+                    ligature_glyph, fg, bg,
+                );
+            }
+        },
+        .spacer => |sp| {
+            // N glyph 을 각 cell 에 (1-cell wide each). Fira Code 의 spacer pattern.
+            const n = @min(@as(usize, sp.count), count);
+            for (0..n) |i| {
+                const gx_cell: i32 = pad + @as(i32, @intCast(x + i)) * cw;
+                const g_glyph = font_ctx.glyphByIndex(sp.face_idx, sp.glyph_indices[i]);
+                if (g_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                    drawGlyphBgra(memory, fb_w, fb_h, stride, gx_cell, cell_y, cw, ch, g_glyph);
+                } else {
+                    const baseline = cell_y + ascent;
+                    const glyph_advance_i32: i32 = @intCast(g_glyph.advance);
+                    const center_off: i32 = @divFloor(cw - glyph_advance_i32, 2);
+                    drawGlyph(
+                        memory, fb_w, fb_h, stride,
+                        gx_cell + center_off + g_glyph.bitmap_left + sp.x_offsets[i],
+                        baseline - g_glyph.bitmap_top - sp.y_offsets[i],
+                        g_glyph, fg, bg,
+                    );
+                }
+            }
+        },
     }
 }
 
