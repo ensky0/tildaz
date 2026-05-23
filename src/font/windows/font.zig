@@ -4,12 +4,19 @@
 const std = @import("std");
 const dw = @import("directwrite.zig");
 const font_constants = @import("../constants.zig");
+const ligature = @import("../ligature.zig");
 
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
 
 /// font.family chain 의 최대 길이.
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
+
+// Cross-platform ligature 타입 re-export — caller (renderer/windows.zig) 가
+// `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
+pub const LigatureGlyph = ligature.LigatureGlyph;
+pub const LigatureSpacer = ligature.LigatureSpacer;
+pub const LigatureMatch = ligature.LigatureMatch;
 
 pub const GlyphResult = struct {
     face: *dw.IDWriteFontFace,
@@ -449,6 +456,81 @@ pub const DWriteFontContext = struct {
         }
 
         return null;
+    }
+
+    /// 2-char ligature lookup (SPEC § 12.2). `cp0` + `cp1` 을 primary face 로
+    /// shape (TextAnalyzer.GetGlyphs) 한 후 결과 glyph 들 vs natural
+    /// (`GetGlyphIndices`) 비교로 `LigatureMatch` 판정 — 공유 `ligature.classify`
+    /// 사용. Latin ligature 폰트 (Fira Code / JetBrains Mono / Cascadia Code)
+    /// 사용 시 `==` / `=>` / `!=` 등 정상 합성.
+    ///
+    /// Latin ligature 는 primary 의 GSUB — fallback chain 안 봄.
+    pub fn ligaturePair(self: *DWriteFontContext, cp0: u21, cp1: u21) ?LigatureMatch {
+        var cps = [_]u21{ cp0, cp1 };
+        return self.ligatureShape(&cps);
+    }
+
+    /// 3-char ligature lookup. `===` / `!==` / `<=>` / `<--` / `-->` / `<->` /
+    /// `<==` / `==>` / `||=` / `>>=` 등.
+    pub fn ligatureTriple(self: *DWriteFontContext, cp0: u21, cp1: u21, cp2: u21) ?LigatureMatch {
+        var cps = [_]u21{ cp0, cp1, cp2 };
+        return self.ligatureShape(&cps);
+    }
+
+    /// primary face 로 shape + `ligature.classify`. natural indices 는 primary
+    /// face 의 `GetGlyphIndices` 로 직접 계산. fallback chain 안 봄 (Latin
+    /// ligature 는 primary 의 GSUB).
+    fn ligatureShape(self: *DWriteFontContext, cps: []const u21) ?LigatureMatch {
+        if (cps.len == 0 or cps.len > 4 or self.text_analyzer == null) return null;
+        if (self.chain_count == 0) return null;
+        const face = self.chain_faces[0] orelse return null;
+
+        // UTF-16 buffer. ASCII candidate 만 호출되어 surrogate 없음, but safety
+        // 위해 처리도 포함.
+        var u16_buf: [8]WCHAR = undefined;
+        var u16_len: dw.UINT32 = 0;
+        for (cps) |cp| {
+            if (u16_len + 1 >= u16_buf.len) return null;
+            if (cp <= 0xFFFF) {
+                u16_buf[u16_len] = @intCast(cp);
+                u16_len += 1;
+            } else {
+                const off = cp - 0x10000;
+                u16_buf[u16_len] = @intCast(0xD800 + (off >> 10));
+                u16_buf[u16_len + 1] = @intCast(0xDC00 + (off & 0x3FF));
+                u16_len += 2;
+            }
+        }
+        if (u16_len == 0) return null;
+
+        // Natural indices — primary face 의 cp → glyph 직접 매핑.
+        var natural: [4]u16 = .{ 0, 0, 0, 0 };
+        var cps_u32: [4]u32 = .{ 0, 0, 0, 0 };
+        for (cps, 0..) |cp, i| cps_u32[i] = @intCast(cp);
+        _ = face.GetGlyphIndices(@ptrCast(&cps_u32), @intCast(cps.len), @ptrCast(&natural));
+
+        // Shape on primary face.
+        var indices_buf: [MAX_CLUSTER_GLYPHS]u16 = undefined;
+        var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
+        var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
+        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
+        if (cnt == 0) return null;
+
+        // ShapedSlot[] 구성 + classify. Win 의 advances/offsets 는 design unit
+        // 기준 float — ligature classify 는 glyph index 만 보므로 offsets 은 0
+        // 으로 (drawing 시 cell-center 정렬이 1차 처리, fine-tuning 은 future).
+        var slots: [4]ligature.ShapedSlot = undefined;
+        const checked = @min(@as(usize, cnt), slots.len);
+        for (0..checked) |i| {
+            const cp_idx = @min(i, cps.len - 1);
+            slots[i] = .{
+                .glyph_index = indices_buf[i],
+                .natural_glyph_index = natural[cp_idx],
+                .x_offset = 0,
+                .y_offset = 0,
+            };
+        }
+        return ligature.classify(cps.len, slots[0..checked]);
     }
 
     /// `face` 로 cluster 를 OpenType shape — single glyph (가장 흔한 path) 또는

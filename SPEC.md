@@ -642,9 +642,11 @@ cross-platform 공유 detection helper: `src/font/ligature.zig` 의 `classify` (
 
 | platform | shape API | 위치 |
 |---|---|---|
-| Windows | `IDWriteTextAnalyzer.GetGlyphs` (짧은 string) | `src/font/windows/font.zig` `ligaturePair` / `ligatureTriple` / `ligatureQuad` |
-| macOS | CTLine 짧은 line shape + 첫 CTRun glyphs | `src/font/macos/font.zig` `ligaturePair` / `ligatureTriple` / `ligatureQuad` |
-| Linux | HarfBuzz `shapeRun` 2/3/4 cp | `src/font/linux/font.zig` 동일 이름 |
+| Windows | `IDWriteTextAnalyzer.GetGlyphs` (짧은 string) + `GetGlyphIndices` natural | `src/font/windows/font.zig` `ligaturePair` / `ligatureTriple` |
+| macOS | CTLine 짧은 line shape + 첫 CTRun glyphs + `CTFontGetGlyphsForCharacters` natural | `src/font/macos/font.zig` `ligaturePair` / `ligatureTriple` |
+| Linux | HarfBuzz `shapeRun` + FreeType `get_char_index` natural | `src/font/linux/font.zig` `ligaturePair` / `ligatureTriple` |
+
+4-char+ ligature (`<==>`, `=<<`, `>>=`) 는 후속 sub-step — 위 인프라 위에 동일 패턴으로 셋 다 동시 추가 예정.
 
 cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (key = packed codepoint bits). 같은 sequence 의 반복 호출은 cache hit.
 
