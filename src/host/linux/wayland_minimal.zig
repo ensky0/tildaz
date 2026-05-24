@@ -24,6 +24,7 @@ const software_terminal = @import("software_terminal.zig");
 const xkb = @import("xkb.zig");
 const dbus = @import("dbus.zig");
 const portal = @import("portal.zig");
+const single_instance = @import("single_instance.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -375,6 +376,10 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
 const Client = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
+    // #198 — portal-less hotkey IPC. `tildaz --toggle` 보낸 두 번째 인스턴스의
+    // 신호를 받는 Unix domain socket listener. -1 = listener 생성 실패 (이미
+    // 다른 인스턴스가 사용 중 — 정상). createListener 가 실패해도 시작은 계속.
+    toggle_listener_fd: posix.fd_t = -1,
     caps: Capabilities = .{},
     input: [8192]u8 = undefined,
     input_len: usize = 0,
@@ -612,6 +617,13 @@ const Client = struct {
     }
 
     fn deinit(self: *Client) void {
+        // #198 — toggle listener cleanup. socket file 도 unlink — 다음 인스턴스가
+        // 깨끗하게 bind 가능.
+        if (self.toggle_listener_fd >= 0) {
+            posix.close(self.toggle_listener_fd);
+            single_instance.cleanup();
+            self.toggle_listener_fd = -1;
+        }
         if (self.portal_subscription) |sub| {
             sub.deinit();
             self.allocator.destroy(sub);
@@ -1619,16 +1631,35 @@ const Client = struct {
             return;
         }
 
-        var fds = [_]posix.pollfd{.{
-            .fd = self.stream.handle,
-            .events = posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP,
-            .revents = 0,
-        }};
+        // #198 — wayland fd + toggle listener fd 둘 다 polling. listener fd 가
+        // -1 (생성 실패 또는 비활성) 이면 OS poll 이 자동 skip (POSIX 표준).
+        var fds = [_]posix.pollfd{
+            .{
+                .fd = self.stream.handle,
+                .events = posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP,
+                .revents = 0,
+            },
+            .{
+                .fd = self.toggle_listener_fd,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            },
+        };
         const n = try posix.poll(&fds, timeout_ms);
         if (n == 0) return;
         if ((fds[0].revents & posix.POLL.NVAL) != 0) return error.WaylandConnectionClosed;
         if ((fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
             try self.readAndDispatch();
+        }
+        if (self.toggle_listener_fd >= 0 and (fds[1].revents & posix.POLL.IN) != 0) {
+            // #198 — `tildaz --toggle` 두 번째 인스턴스로부터 toggle 신호.
+            // portal `Activated` 와 같은 path 로 hide/show.
+            const did_toggle = single_instance.acceptToggle(self.toggle_listener_fd) catch false;
+            if (did_toggle) {
+                self.handleActivatedToggle() catch |err| {
+                    log.appendLine("toggle-ipc", "handleActivatedToggle failed: {s}", .{@errorName(err)});
+                };
+            }
         }
     }
 
@@ -3417,6 +3448,12 @@ fn linuxTabTerminate(host: *tab_actions.Host) void {
 pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !void {
     var client = try Client.init(allocator, cfg);
     defer client.deinit();
+    // #198 — portal-less hotkey IPC. listener 생성 실패는 fatal 아님 (이미
+    // 다른 인스턴스가 listen 중이거나 socket 권한 문제 — graceful degrade).
+    client.toggle_listener_fd = single_instance.createListener() catch |err| blk: {
+        log.appendLine("toggle-ipc", "listener disabled: {s}", .{@errorName(err)});
+        break :blk -1;
+    };
     try client.run();
 }
 
