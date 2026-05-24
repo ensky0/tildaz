@@ -429,3 +429,26 @@ pub fn hitTab(
 
     return .{ .tab_index = tab_index, .on_close = on_close };
 }
+
+/// #193 — cursor shape (I-beam) 결정용 — rename 활성 탭의 text 입력 영역 hit.
+/// rename 비활성, 다른 탭, close 'x' 박스 위, 탭바 밖 모두 false. SPEC.md §3.1
+/// "탭바 — rename 활성 탭의 text 입력 영역" 행.
+pub fn hitRenameText(
+    px: f32,
+    py: f32,
+    layout: Layout,
+    tab_w: f32,
+    tab_pad: f32,
+    close_size: f32,
+    tab_bar_h: f32,
+    scroll_x: f32,
+    tab_count: u32,
+    rename_tab_index: ?usize,
+) bool {
+    const idx = rename_tab_index orelse return false;
+    if (py < 0 or py >= tab_bar_h) return false;
+    const hit = hitTab(px, py, layout, tab_w, tab_pad, close_size, tab_bar_h, scroll_x, tab_count) orelse return false;
+    if (hit.tab_index != idx) return false;
+    if (hit.on_close) return false;
+    return true;
+}

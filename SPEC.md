@@ -166,6 +166,21 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | 탭바 — 더블클릭 rename | 탭 본체 더블클릭 | `RenameState.begin` | 동일 (`g_rename`) | ✅ | ✅ |
 | 탭바 — `<` / `>` 화살표 클릭 | 탭바 양 끝 화살표 (#117) | `scrollTabsByArrow` — viewport 만 1 탭 너비씩 이동, **활성 탭 안 바뀜** + `tab_scroll_user_override=true` | 동일 (`scrollTabsByArrow`) | ✅ | ✅ |
 | 탭바 — `+` 클릭 | `>` 안쪽 새 탭 (#117) | 새 탭 생성 → 활성 → ensure 가 viewport 우측 끝으로 정렬 | 동일 | ✅ | ✅ |
+| OS mouse cursor shape (#193) | 아래 §3.1 표 참고 | `WM_SETCURSOR` 가 `App.cursorRegion` 호출 → `IDC_IBEAM` 또는 `IDC_ARROW` `SetCursor` ([src/window.zig](src/window.zig)) | NSView `resetCursorRects` 가 cell rect 에 `NSCursor.IBeamCursor` add ([src/host/macos.zig](src/host/macos.zig) `tildazResetCursorRects`) | ✅ | ✅ |
+
+### 3.1 OS mouse cursor shape (#193) — 영역별 정의
+
+| 영역 | hover 시 cursor | 비고 |
+|---|---|---|
+| 셀 (terminal grid) 영역 | I-beam | rename / preedit / 기타 상태 무관, 셀 영역은 *항상* 텍스트 편집 컨텍스트 |
+| 탭바 — rename 활성 탭의 *text 입력 영역* (close 'x' 박스 제외) | I-beam | rename 진입 (더블클릭) 이후 그 탭의 text 영역만 텍스트 편집 컨텍스트. 같은 탭의 close 'x' 박스는 arrow |
+| 탭바 — 모든 상태의 close 'x' 박스 (rename 활성 탭 / 비활성 탭 / 활성 탭 모두) | arrow | close 'x' 는 *버튼* 성격 — 클릭 = 탭 닫기. rename 활성 탭의 text 영역이 I-beam 이라도 그 탭의 close 'x' 박스는 arrow (텍스트 편집 컨텍스트 아님, cancel 의도) |
+| 탭바 — 비활성 탭 본체 / 활성 탭 본체 (rename 비활성) / `<` / `>` / `+` / 빈 영역 / drag 중 | arrow | 탭바의 기본 — 클릭 / 더블클릭 / drag 등 *버튼* 성격 영역 |
+| 스크롤바 (우측 8 PT) | arrow | drag-to-scroll 버튼 |
+| 윈도우 padding / 가장자리 | arrow | terminal_padding 영역 |
+| 윈도우 가장자리 (system non-client) | OS 기본 | 우리가 안 건드림 (Win: HTBORDER 등은 `DefWindowProc` 처리, mac: borderless 라 가장자리 없음, Linux: layer-shell 가장자리 없음) |
+
+> **참조 비교:** iTerm2 / Terminal.app 동등 패턴 — 셀 항상 I-beam, 탭바 평상 arrow, 탭 rename 더블클릭 시 그 탭 text 만 I-beam. VSCode / Chrome 탭바는 rename 없어 항상 arrow.
 
 > **`<` / `>` 화살표 vs 활성 탭 — Firefox 패턴 (#117):**
 >
