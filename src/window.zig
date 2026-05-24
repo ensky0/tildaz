@@ -71,6 +71,7 @@ const WM_NCCALCSIZE: UINT = 0x0083;
 const WM_ERASEBKGND: UINT = 0x0014;
 const WM_SETCURSOR: UINT = 0x0020;
 const HTCLIENT: u16 = 1;
+const WM_ACTIVATEAPP: UINT = 0x001C;
 const SPI_SETWORKAREA: WPARAM = 0x002F;
 const MK_LBUTTON: WPARAM = 0x0001;
 
@@ -1599,6 +1600,18 @@ pub const Window = struct {
             WM_TAB_CLOSED => {
                 _ = self.dispatchAppEvent(.{ .tab_closed = wParam });
                 return 0;
+            },
+            // #195 — 다른 app 활성화 시 우리 z-order 양보. visible 유지 (drop-down
+            // 본분 — hide 안 함, 다른 app 뒤에 보임). `WS_EX_TOPMOST` 만 잠시 해제
+            // (`HWND_NOTOPMOST`) → 그 app 이 z-order 위로. 다시 우리 활성화 시
+            // `HWND_TOPMOST` 복귀. mac `applicationDidResignActive` / `applicationDidBecomeActive`
+            // 동등 패턴. wParam=FALSE (0) = becoming inactive, TRUE (1) = becoming active.
+            WM_ACTIVATEAPP => {
+                if (self.visible) {
+                    const top = if (wParam == 0) HWND_NOTOPMOST else HWND_TOPMOST;
+                    _ = SetWindowPos(hwnd, top, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             else => {},
         }

@@ -209,16 +209,30 @@ margin 의 투명 영역 1px). dock content 정상.
   / xdg-shell placement 비대칭 해소 가능 — 현재 KWin 6.6.5 는 미advertise (구
   `wp_fractional_scale_v1` 만), KDE upstream 진행 중 ([KDE blog](https://blogs.kde.org/2024/12/14/this-week-in-plasma-better-fractional-scaling/)).
 
-### tildaz 창이 항상 다른 앱 위에 떠 있음 (z-order)
+### z-order 양보 on focus loss (#195) — Linux 미적용, platform-limit
 
-L8-α 의 layer-shell surface 가 `layer=top + keyboard_interactivity=exclusive`
-로 set 되어 있어 다른 일반 앱 (browser / VSCode 등) 을 activate 해도 그 앱이
-tildaz 위로 못 올라온다. 사용자가 tildaz 를 hide 시켜야만 다른 앱이 보임.
+mac (`applicationDidResignActive:` → `NSNormalWindowLevel`) / Windows
+(`WM_ACTIVATEAPP wParam=0` → `HWND_NOTOPMOST`) 는 다른 app 활성화 시 우리
+*level 만 떨어뜨려* 그 app 이 위로 + 우리 *visible 유지* (다른 app 뒤에 보임).
+Linux 는 적용 불가 — `wp_layer_shell_v1` 의 layer 가 *categorical* 4 단계
+(background / bottom / top / overlay) 라 *normal xdg_toplevel z-order level*
+자체가 없음. `set_layer(bottom)` 으로 떨어뜨려도 *desktop wallpaper 바로 위 +
+**모든** 일반 windows 아래* — 사용자 의도 (다른 새 창 → tildaz → 그 외) 와
+어긋남 (시연 사이클 발견: KDE Plasma 6 에서 tildaz 가 너무 낮게 떨어져 다른
+모든 일반 app 아래 + 그 사이로 desktop 도 보임).
 
-cross-platform 동일 증상 — macOS `NSPopUpMenuWindowLevel`, Windows
-`HWND_TOPMOST` 도 같은 결과. drop-down 본분 ("hotkey 토글, focus 잃으면 자동
-hide") 가 갖춰지면 자연 해소될 가능성 — [#195](https://github.com/ensky0/tildaz/issues/195)
-에서 cross-platform 으로 추적.
+**현재 정책**: `layer=top` + `keyboard_interactivity=exclusive` 유지 — tildaz
+가 visible 인 동안 *어떤 일반 app 도 위로 못 옴 + 키 입력도 못 받음*. 사용자
+가 다른 app 사용하려면 **hotkey 로 tildaz hide (toggle)** → 다른 app 활성화
+→ 다시 hotkey 로 표시. yakuake / guake / Tilda 등 모든 Linux drop-down terminal
+의 표준 패턴 — *layer-shell categorical protocol 자체의 한계*.
+
+자세한 정책은 [SPEC.md §3](SPEC.md) 의 z-order 양보 행 + Linux note.
+
+미래 대안 후보 (현재 미채택): layer-shell surface destroy + xdg_toplevel
+재생성. 동작은 mac/win 과 비슷 가능하나 DE / compositor 마다 quirk (KDE
+floating, GNOME Activities overview, sway tiling) + animation glitch + 매
+toggle 마다 수십~수백 ms latency 라 사용자가 알아챔. drop-down UX 깨짐.
 
 ### VSCode 포커스 후 tildaz 한글 IME 입력 안 됨
 
