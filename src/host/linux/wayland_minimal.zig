@@ -117,10 +117,11 @@ const zwlr_layer_surface_anchor_top: u32 = 1;
 const zwlr_layer_surface_anchor_bottom: u32 = 2;
 const zwlr_layer_surface_anchor_left: u32 = 4;
 const zwlr_layer_surface_anchor_right: u32 = 8;
-// keyboard_interactivity. v1 spec 은 0/1 (none / exclusive — exclusive 면
-// 모든 keyboard event 가 우리 surface 로). v4 부터 on_demand=2 추가됐지만
-// 우리는 v1 만 bind — drop-down 본분 (click 즉시 typing) 에는 exclusive 면
-// 충분. v4+ 로 갈 때 on_demand 로 바꿔서 다른 app 도 background typing 가능.
+// keyboard_interactivity. v1 spec 은 0/1 (none / exclusive — exclusive 면 모든
+// keyboard event 가 우리 surface 로). drop-down 본분 — yakuake / guake 등 모든
+// Linux drop-down terminal 의 표준. mac NSPopUpMenuWindowLevel / Win
+// WS_EX_TOPMOST 의 *level toggle* z-order 양보 (#195) 는 layer-shell categorical
+// (top / bottom / overlay / background) 이라 unavailable — Linux platform-limit.
 const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
 // 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
 // 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
@@ -1087,8 +1088,9 @@ const Client = struct {
         try margin_msg.putI32(self.physicalToLogical(layout.margin_bottom));
         try margin_msg.putI32(self.physicalToLogical(layout.margin_left));
         try margin_msg.send(self.stream);
-        // set_keyboard_interactivity(exclusive) — drop-down 은 떠 있을 때 키보드
-        // 받아야 시연 가치. L9 hotkey 가 toggle 하면 visible 시점에 자동 focus.
+        // set_keyboard_interactivity(exclusive) — drop-down 본분. yakuake /
+        // guake 등 모든 Linux drop-down terminal 의 표준. mac/win 의 z-order
+        // 양보 (#195) 는 layer-shell categorical 라 Linux 적용 불가 platform-limit.
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_keyboard_interactivity,

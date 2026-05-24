@@ -214,6 +214,26 @@ fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
     return if (dialog.showConfirm(messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
 }
 
+/// #195 — 다른 app 활성화 시 우리 NSWindow level 을 normal (0) 로 떨어뜨림.
+/// 그 app 이 z-order 상 위로 올라오고, 우리는 *visible 유지* (drop-down 본분 —
+/// hide 안 함, 다른 app 뒤에 보임). 다시 우리 app 활성화 (`DidBecomeActive`)
+/// 시 popUpMenu (101) 로 복귀 — dock / menu bar 위에 우리가 다시 자리잡음.
+///
+/// IME 후보 panel (`lowerWindowForImePanel`) 경로와는 별개 — 그쪽은 우리 app
+/// 활성 + IME 후보 표시 시 floating (3) 으로 잠깐 낮춤. `setPopupWindowLevel`
+/// 호출 시 `g_ime_panel_window_lowered=false` 까지 한 번 reset — IME 가 다시
+/// 후보 띄울 때 `lowerWindowForImePanel` 재호출.
+fn applicationDidResignActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    if (!g_visible) return;
+    const NSNormalWindowLevel: c_int = 0;
+    setMainWindowLevel(NSNormalWindowLevel);
+}
+
+fn applicationDidBecomeActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    if (!g_visible) return;
+    setPopupWindowLevel();
+}
+
 var g_app_delegate_class: ?objc.Class = null;
 var g_app_delegate_instance: objc.id = null;
 
@@ -225,6 +245,11 @@ fn installAppDelegate() !void {
     // 시그니처: 반환 NSApplicationTerminateReply (NSUInteger 호환 c_long),
     //         self (id) + _cmd (SEL) + sender (NSApplication id).
     if (!objc.class_addMethod(cls, objc.sel("applicationShouldTerminate:"), @ptrCast(&applicationShouldTerminate), "Q@:@"))
+        return error.AppDelegateAddMethodFailed;
+    // #195 — focus loss / regain z-order toggle. visible 유지, level 만 조정.
+    if (!objc.class_addMethod(cls, objc.sel("applicationDidResignActive:"), @ptrCast(&applicationDidResignActive), "v@:@"))
+        return error.AppDelegateAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("applicationDidBecomeActive:"), @ptrCast(&applicationDidBecomeActive), "v@:@"))
         return error.AppDelegateAddMethodFailed;
     objc.objc_registerClassPair(cls);
     g_app_delegate_class = cls;
