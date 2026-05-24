@@ -104,14 +104,26 @@ pub fn classify(input_count: usize, slots: []const ShapedSlot) ?LigatureMatch {
     }
 
     // n == input_count — spacer 후보. natural 과 비교.
-    var any_differs = false;
+    //
+    // **ALL** glyph 이 natural 과 달라야 valid N-char spacer ligature. 만약
+    // 하나라도 natural 과 같으면 → GSUB 가 그 position 의 char 는 substitute
+    // 안 했음 → ligature 가 position 0 에서 N 까지 *완전히 걸쳐 있지 않음*.
+    //
+    // 예: space + `<=` 의 3-char shape — glyph[0]=space_natural, glyph[1,2]=
+    // LIG.<=.start/end 의 substituted. 일부 substitute 만 됐으니 3-char ligature
+    // 아님 (실제로는 1-char space + 2-char `<=`). null 반환 → caller 가 2-char
+    // fallback 시도.
+    //
+    // 초기 구현 ("any differs") 은 너무 aggressive — 위 케이스를 spacer 로
+    // 잘못 분류해서 paint loop 가 cell 3개 consume + 다음 ligature 의 첫 cell
+    // 들 건너뛰는 버그 발생 (Linux 시연에서 `-->` 가 `--` + `>` 로 분해 보였던
+    // 원인).
     for (slots) |slot| {
-        if (slot.glyph_index != slot.natural_glyph_index) {
-            any_differs = true;
-            break;
+        if (slot.glyph_index == slot.natural_glyph_index) {
+            // 하나라도 natural 그대로 — N-char spacer 가 아님.
+            return null;
         }
     }
-    if (!any_differs) return null; // 자연 그대로 — ligature 아님.
 
     var spacer = LigatureSpacer{
         .face_idx = 0,
