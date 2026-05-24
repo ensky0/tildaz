@@ -2479,13 +2479,7 @@ pub fn run() !void {
     // 이후 실행은 disk 의 명시값만 사용 — runtime fallback 분기 없음.
     const shell_resolved = resolveShell(g_gpa.allocator());
     g_config = config.Config.load(g_gpa.allocator(), shell_resolved);
-    log.appendLine("startup", "config loaded: opacity={d} dock={s} theme={s} auto_start={} hidden_start={}", .{
-        g_config.opacity_alpha,
-        @tagName(g_config.dock_position),
-        if (g_config.theme) |_| "set" else "default",
-        g_config.auto_start,
-        g_config.hidden_start,
-    });
+    log.logConfigLoaded(g_config);
 
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안

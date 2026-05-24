@@ -843,7 +843,6 @@ const Client = struct {
 
         self.keyboard_id = self.allocId();
         try self.sendNewId(self.seat_id, wl_seat_request_get_keyboard, self.keyboard_id);
-        log.appendLine("wayland", "keyboard object created keyboard_id={}", .{self.keyboard_id});
     }
 
     fn createPointerIfAvailable(self: *Client) !void {
@@ -855,7 +854,6 @@ const Client = struct {
 
         self.pointer_id = self.allocId();
         try self.sendNewId(self.seat_id, wl_seat_request_get_pointer, self.pointer_id);
-        log.appendLine("wayland", "pointer object created pointer_id={}", .{self.pointer_id});
 
         // #193 — cursor_shape_device 가 wl_pointer 와 1:1 매칭. manager advertise
         // 된 경우만. set_shape 는 last_serial (enter event) 필요해 이 시점엔 송신
@@ -867,7 +865,6 @@ const Client = struct {
                 wp_cursor_shape_manager_v1_request_get_pointer,
                 &.{ self.cursor_shape_device_id, self.pointer_id },
             );
-            log.appendLine("wayland", "cursor shape device created device_id={}", .{self.cursor_shape_device_id});
         }
     }
 
@@ -950,7 +947,6 @@ const Client = struct {
             wl_data_device_manager_request_get_data_device,
             &.{ self.data_device_id, self.seat_id },
         );
-        log.appendLine("wayland", "data device created data_device_id={}", .{self.data_device_id});
     }
 
     fn createShellObjects(self: *Client) !void {
