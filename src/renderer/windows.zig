@@ -1067,7 +1067,7 @@ pub const D3d11Renderer = struct {
                     @memcpy(cluster[1..][0..take], extras[0..take]);
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |r| {
-                        emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb);
+                        emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb, 0);
                         x += 1;
                         continue;
                     }
@@ -1123,7 +1123,7 @@ pub const D3d11Renderer = struct {
                     .count = 1,
                     .owned = single.owned,
                 };
-                emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb);
+                emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, 0);
                 x += 1;
             }
         }
@@ -1381,6 +1381,10 @@ pub const D3d11Renderer = struct {
         cw: f32,
         x_pad: f32,
         fg_rgb: ghostty.color.RGB,
+        /// spacer ligature 의 GPOS x_offset (DWRITE_GLYPH_OFFSET.advanceOffset
+        /// 추출, Fira Code `||=` 의 `=` 가 `||` 쪽으로 당겨지는 디자인 등).
+        /// 일반 cluster / single-glyph 는 0.
+        dx: f32,
     ) void {
         if (text_count.* >= text_buf.len) {
             self.drawTextInstances(text_buf[0..text_count.*]);
@@ -1406,7 +1410,7 @@ pub const D3d11Renderer = struct {
         if (result.owned) _ = result.face.vtable.Release(result.face);
         if (entry.w == 0 or entry.h == 0) return;
 
-        const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+        const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad + dx;
         const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
         const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
         text_buf[text_count.*] = .{
@@ -1422,7 +1426,8 @@ pub const D3d11Renderer = struct {
 
     /// `LigatureMatch` switch — `.single` 은 1 glyph 을 base cell 에, `.spacer`
     /// 는 각 glyph 을 자기 cell 에 emit. 둘 다 single-glyph cluster atlas entry 로
-    /// 그림. primary face 사용 (Latin ligature 는 primary 의 GSUB).
+    /// 그림. primary face 사용 (Latin ligature 는 primary 의 GSUB). `.spacer`
+    /// 의 각 glyph 별 GPOS x_offset 적용 (`||=` 같은 디자인).
     fn emitLigatureMatch(
         self: *D3d11Renderer,
         text_buf: []TextInstance,
@@ -1440,11 +1445,11 @@ pub const D3d11Renderer = struct {
         const face = self.font.chain_faces[0] orelse return;
         switch (match) {
             .single => |lg| {
-                self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(lg.glyph_index), x, fy, cw, x_pad, fg_rgb);
+                self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(lg.glyph_index), x, fy, cw, x_pad, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)));
             },
             .spacer => |sp| {
                 for (0..sp.count) |i| {
-                    self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(sp.glyph_indices[i]), x + i, fy, cw, x_pad, fg_rgb);
+                    self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(sp.glyph_indices[i]), x + i, fy, cw, x_pad, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])));
                 }
             },
         }
@@ -1464,6 +1469,7 @@ pub const D3d11Renderer = struct {
         cw: f32,
         x_pad: f32,
         fg_rgb: ghostty.color.RGB,
+        dx: f32,
     ) void {
         var indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
         indices[0] = glyph_index;
@@ -1477,7 +1483,7 @@ pub const D3d11Renderer = struct {
             .count = 1,
             .owned = false,
         };
-        self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb);
+        self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb, dx);
     }
 
     // --- Color helpers ---

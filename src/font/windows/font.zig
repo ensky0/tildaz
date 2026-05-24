@@ -516,9 +516,13 @@ pub const DWriteFontContext = struct {
         const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
         if (cnt == 0) return null;
 
-        // ShapedSlot[] 구성 + classify. Win 의 advances/offsets 는 design unit
-        // 기준 float — ligature classify 는 glyph index 만 보므로 offsets 은 0
-        // 으로 (drawing 시 cell-center 정렬이 1차 처리, fine-tuning 은 future).
+        // ShapedSlot[] 구성. DWrite `DWRITE_GLYPH_OFFSET.advanceOffset` (=
+        // GPOS 의 advance 외 추가 x 조정) 를 `x_offset` 으로 추출. Fira Code
+        // `||=` 의 spacer 디자인이 `=` glyph 을 `||` 쪽으로 당겨 시각상 연결
+        // 시키는 GPOS adjustment 가 이 offset 에 들어있음. paint 단계가 cell
+        // base position 에 더해 정확한 GPOS 위치에 그림.
+        //
+        // y_offset 은 mac 과 동등하게 0 — Fira Code 등의 GPOS y 조정 거의 없음.
         var slots: [4]ligature.ShapedSlot = undefined;
         const checked = @min(@as(usize, cnt), slots.len);
         for (0..checked) |i| {
@@ -526,7 +530,7 @@ pub const DWriteFontContext = struct {
             slots[i] = .{
                 .glyph_index = indices_buf[i],
                 .natural_glyph_index = natural[cp_idx],
-                .x_offset = 0,
+                .x_offset = @intFromFloat(@round(offsets_buf[i].advanceOffset)),
                 .y_offset = 0,
             };
         }
