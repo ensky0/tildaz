@@ -4,6 +4,7 @@ const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const terminal = @import("../terminal.zig");
 const config_mod = @import("../config.zig");
+const autostart = @import("../autostart.zig");
 const wayland = @import("linux/wayland_minimal.zig");
 
 /// L13-α — 사용자 설정. macOS `g_config` 패턴 동등. `run()` 안에서 한 번
@@ -79,6 +80,18 @@ pub fn run() !void {
         cfg.auto_start,
         cfg.hidden_start,
     });
+
+    // L11-α — auto-start (XDG autostart `~/.config/autostart/tildaz.desktop`).
+    // mac LaunchAgent / Windows Registry Run 동등. 매 부팅마다 enable / disable
+    // 을 sync 해 사용자가 config 끄면 즉시 효과. install path 가 바뀌었어도
+    // (다른 위치로 binary 옮겼어도) 현재 `selfExePath` 로 자동 갱신.
+    if (cfg.auto_start) {
+        autostart.enable(gpa.allocator()) catch |err| {
+            log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
+        };
+    } else {
+        autostart.disable(gpa.allocator());
+    }
 
     try wayland.runBaselineWindow(gpa.allocator(), &g_config.?);
 }
