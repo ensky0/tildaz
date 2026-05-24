@@ -73,13 +73,7 @@ pub fn run() !void {
     g_config = config_mod.Config.load(gpa.allocator(), shell_resolved);
     defer if (g_config) |*c| c.deinit();
     const cfg = &g_config.?;
-    log.appendLine("startup", "config loaded: theme={s} shell={s} max_scroll={} auto_start={} hidden_start={}", .{
-        if (cfg.theme) |t| t.name else "default",
-        cfg.shell,
-        cfg.max_scroll_lines,
-        cfg.auto_start,
-        cfg.hidden_start,
-    });
+    log.logConfigLoaded(cfg.*);
 
     // L11-α — auto-start (XDG autostart `~/.config/autostart/tildaz.desktop`).
     // mac LaunchAgent / Windows Registry Run 동등. 매 부팅마다 enable / disable

@@ -83,3 +83,19 @@ pub fn logStart(version: []const u8) void {
 pub fn logStop(version: []const u8) void {
     appendLine("exit", "tildaz v{s}  pid={d}", .{ version, impl.currentPid() });
 }
+
+/// #197 — cross-platform `[startup] config loaded` 한 줄. 모든 host 가 동일
+/// 필드 / 순서로 출력 — 이전엔 Linux / Win / mac 각각 다른 형식으로 verbose
+/// 일관성이 깨졌었음 (Linux 가 fullest, Win 이 sparse).
+///
+/// `cfg` 는 `config.Config` (anytype 으로 받아 import 순환 회피).
+pub fn logConfigLoaded(cfg: anytype) void {
+    appendLine("startup", "config loaded: theme={s} shell={s} font_size={d} max_scroll={d} auto_start={} hidden_start={}", .{
+        if (cfg.theme) |t| t.name else "default",
+        cfg.shell,
+        cfg.font_size_point,
+        cfg.max_scroll_lines,
+        cfg.auto_start,
+        cfg.hidden_start,
+    });
+}

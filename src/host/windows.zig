@@ -78,11 +78,7 @@ pub fn run() !void {
     // 컨벤션이 없음. macOS 는 `$SHELL` 우선 (host/macos.zig 의 resolveShell 참고).
     var config = Config.load(alloc, config_mod.Defaults.shell);
     defer config.deinit();
-    log.appendLine("startup", "config loaded: hidden_start={} auto_start={} shell={s}", .{
-        config.hidden_start,
-        config.auto_start,
-        config.shell,
-    });
+    log.logConfigLoaded(config);
 
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
