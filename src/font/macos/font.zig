@@ -27,6 +27,10 @@ pub const LigatureMatch = ligature.LigatureMatch;
 pub const CoreTextFontContext = struct {
     primary_font: ct.CTFontRef,
     font_em_size: f32,
+    /// Retina scale factor — physical pixels per logical point. CoreText shape
+    /// API (CTRun positions 등) 의 결과가 *font_em_size unit (= logical points)*
+    /// 인데, 우리 cell metric 은 physical pixels — 변환 시 이 값 곱함.
+    retina_scale: f32,
     ascent_px: f32,
     descent_px: f32,
     /// 폰트의 위쪽 internal leading (= ascent − cap_height). 대문자 위쪽
@@ -168,6 +172,7 @@ pub const CoreTextFontContext = struct {
         return .{
             .primary_font = font,
             .font_em_size = font_size,
+            .retina_scale = retina_scale,
             .ascent_px = ascent * retina_scale,
             .descent_px = descent * retina_scale,
             .top_pad_px = top_pad_pt * retina_scale,
@@ -393,19 +398,19 @@ pub const CoreTextFontContext = struct {
             ct.CTRunGetPositions(run, ct.CFRange{ .location = 0, .length = @intCast(checked) }, &positions_buf);
         }
 
+        // CT positions 는 **logical points** (font_em_size unit) — cell_w_px
+        // 는 **physical pixels** (× retina_scale). offset 계산 시 positions ×
+        // retina_scale 해서 픽셀로 변환 후 default cell 위치와 비교. SPEC §
+        // `ShapedSlot.x_offset` convention = PIXELS.
         const cell_w_f: f64 = @floatFromInt(self.cell_width_px);
+        const retina: f64 = @floatCast(self.retina_scale);
         var slots: [4]ligature.ShapedSlot = undefined;
         for (0..checked) |i| {
             const cp_idx = @min(i, cps.len - 1);
-            // x_offset = (실제 CT position) − (기본 monospace 위치 i * cell_w).
-            // GPOS 가 spacer glyph 을 인접 cell 쪽으로 당기는 경우 음수가 됨 →
-            // emit 시 cell base position 에 더해줘 갭 메움 (`||=` 의 `=` 가
-            // `||` 쪽으로 당겨지는 디자인 등).
-            const default_x: f64 = @as(f64, @floatFromInt(i)) * cell_w_f;
-            const offset_x: f64 = positions_buf[i].x - default_x;
-            // y_offset 은 0 — Fira Code 등 우리가 쓰는 ligature 폰트의 GPOS y
-            // 조정은 거의 없음. CT y-up vs screen y-down sign convention 차이
-            // 도 따로 처리 안 함 (적용 case 없으므로).
+            const actual_x_px: f64 = positions_buf[i].x * retina; // points → pixels
+            const default_x_px: f64 = @as(f64, @floatFromInt(i)) * cell_w_f;
+            const offset_x: f64 = actual_x_px - default_x_px;
+            // y_offset = 0 — Fira Code 의 GPOS y 조정 거의 없음.
             slots[i] = .{
                 .glyph_index = glyphs_buf[i],
                 .natural_glyph_index = natural[cp_idx],
