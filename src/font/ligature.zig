@@ -72,6 +72,16 @@ pub const LigatureMatch = union(enum) {
 
 /// Shape 결과의 한 slot — caller 가 `classify` 호출 시 채워서 넘김.
 /// platform 별 shape API 의 결과를 이 형태로 normalize.
+///
+/// **Unit convention** — 모든 offset/position 필드는 **PHYSICAL PIXELS** (=
+/// `cell_w_px` / `cell_h_px` 와 같은 단위). platform 별 shape API 의 native
+/// 단위에서 픽셀로 변환 후 채워야 함:
+///
+/// - Linux (HarfBuzz): 26.6 fixed-point font units → `>> 6` (`shapeRun` 내부).
+/// - macOS (CoreText): CTRun positions 는 *font_em_size units* (대개 logical
+///   points). retina_scale 곱해 픽셀로 변환 필요.
+/// - Windows (DirectWrite): `DWRITE_GLYPH_OFFSET.advanceOffset` 는 DIPs at
+///   rendered em-size = 픽셀 (font 가 physical em-size 로 생성된 경우).
 pub const ShapedSlot = struct {
     /// shape 결과의 glyph index (FreeType `FT_Load_Glyph(idx, ...)` / mac
     /// `CGGlyph` / Windows `UINT16`).
@@ -80,7 +90,11 @@ pub const ShapedSlot = struct {
     /// Windows `GetGlyphIndicesA` 의 결과 = 자연 (ligature 미적용) glyph index.
     /// ligature 검출은 shape result 와 비교로.
     natural_glyph_index: u32,
+    /// GPOS x adjustment, **PIXELS**. 양수 = 우측 (LTR shift right), 음수 = 좌측.
+    /// 우리 paint loop 가 cell base position 에 더해 GPOS 위치 맞춤.
     x_offset: i32 = 0,
+    /// GPOS y adjustment, **PIXELS**. font convention 의 y-up (양수 = 시각적
+    /// 위쪽). 우리 draw 는 screen y-down 이라 *subtract* 해서 적용.
     y_offset: i32 = 0,
 };
 
