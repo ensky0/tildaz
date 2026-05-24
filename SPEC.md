@@ -167,6 +167,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | 탭바 — `<` / `>` 화살표 클릭 | 탭바 양 끝 화살표 (#117) | `scrollTabsByArrow` — viewport 만 1 탭 너비씩 이동, **활성 탭 안 바뀜** + `tab_scroll_user_override=true` | 동일 (`scrollTabsByArrow`) | ✅ | ✅ |
 | 탭바 — `+` 클릭 | `>` 안쪽 새 탭 (#117) | 새 탭 생성 → 활성 → ensure 가 viewport 우측 끝으로 정렬 | 동일 | ✅ | ✅ |
 | OS mouse cursor shape (#193) | 아래 §3.1 표 참고 | `WM_SETCURSOR` 가 `App.cursorRegion` 호출 → `IDC_IBEAM` 또는 `IDC_ARROW` `SetCursor` ([src/window.zig](src/window.zig)) | NSView `resetCursorRects` 가 cell rect 에 `NSCursor.IBeamCursor` add ([src/host/macos.zig](src/host/macos.zig) `tildazResetCursorRects`) | ✅ | ✅ |
+| z-order 양보 on focus loss (#195) | 다른 app 활성화 시 우리 z-order *level* 만 떨어뜨려서 그 app 이 위로. 우리는 *visible 유지* (hide 안 함, 다른 app 뒤에 보임). 다시 우리 app 활성화 시 원래 level 복귀. **Linux 미적용 — layer-shell categorical 한계, 아래 note** | `WM_ACTIVATEAPP wParam=0` → `SetWindowPos(HWND_NOTOPMOST)`, wParam=1 → `SetWindowPos(HWND_TOPMOST)` ([src/window.zig](src/window.zig)) | `applicationDidResignActive:` → `setMainWindowLevel(NSNormalWindowLevel)`, `applicationDidBecomeActive:` → `setPopupWindowLevel()` ([src/host/macos.zig](src/host/macos.zig)) | ✅ | ✅ |
 
 ### 3.1 OS mouse cursor shape (#193) — 영역별 정의
 
@@ -181,6 +182,8 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | 윈도우 가장자리 (system non-client) | OS 기본 | 우리가 안 건드림 (Win: HTBORDER 등은 `DefWindowProc` 처리, mac: borderless 라 가장자리 없음, Linux: layer-shell 가장자리 없음) |
 
 > **참조 비교:** iTerm2 / Terminal.app 동등 패턴 — 셀 항상 I-beam, 탭바 평상 arrow, 탭 rename 더블클릭 시 그 탭 text 만 I-beam. VSCode / Chrome 탭바는 rename 없어 항상 arrow.
+
+> **z-order 양보 — Linux 미적용 (#195):** Linux Wayland 의 `wp_layer_shell_v1` 은 *categorical* 4 단계 (background / bottom / top / overlay) 라 *normal xdg_toplevel z-order level* 자체가 없음. `set_layer(bottom)` 으로 떨어뜨려도 *desktop wallpaper 바로 위 + 모든 일반 windows 아래* — 사용자 의도 (*다른 새 창 → tildaz → 그 외*) 와 어긋남 (tildaz 가 모든 일반 windows 아래로 가버림). mac `NSWindow.setLevel(NSNormalWindowLevel)` / Win `SetWindowPos(HWND_NOTOPMOST)` 은 우연히 *normal app z-order* 와 mix 자연이라 한 줄 toggle 로 완벽 — Linux 의 categorical 한계 우회 불가. *layer-shell destroy + xdg_toplevel 재생성* 도 시도 가능하나 DE / compositor 마다 동작 다양 + animation glitch + 매 toggle 마다 수십~수백 ms latency 라 사용자가 알아챔. 회피 — layer=top + `keyboard_interactivity=exclusive` 유지. drop-down 본분 (yakuake / guake / Tilda 등 모든 Linux drop-down 동등 한계). 사용자가 hotkey 로 hide 후 다른 app 사용.
 
 > **`<` / `>` 화살표 vs 활성 탭 — Firefox 패턴 (#117):**
 >
