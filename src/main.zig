@@ -37,5 +37,24 @@ pub fn panic(msg: []const u8, st: ?*std.builtin.StackTrace, ret_addr: ?usize) no
 }
 
 pub fn main() void {
+    // #198 — Linux portal-less hotkey support. `tildaz --toggle` 명령은 첫
+    // 인스턴스의 Unix domain socket 으로 toggle 신호 송신 + 즉시 exit. 사용자가
+    // 자기 DE 의 keyboard shortcut 설정에서 이 명령에 단축키 binding —
+    // GlobalShortcuts portal 안 advertise 하는 환경 (Cinnamon / mutter /
+    // wlroots) 에서도 hotkey toggle 가능.
+    if (builtin.os.tag == .linux) {
+        for (std.os.argv[1..]) |arg_ptr| {
+            const arg = std.mem.span(arg_ptr);
+            if (std.mem.eql(u8, arg, "--toggle")) {
+                const si = @import("host/linux/single_instance.zig");
+                si.sendToggle() catch |err| {
+                    std.debug.print("tildaz --toggle failed: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+                std.process.exit(0);
+            }
+        }
+    }
+
     host.run() catch |err| host.showFatalRunError(err);
 }
