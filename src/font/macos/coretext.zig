@@ -200,6 +200,11 @@ pub extern "CoreText" fn CTRunGetGlyphCount(run: CTRunRef) CFIndex;
 pub extern "CoreText" fn CTRunGetGlyphsPtr(run: CTRunRef) ?[*]const CGGlyph;
 pub extern "CoreText" fn CTRunGetGlyphs(run: CTRunRef, range: CFRange, buffer: [*]CGGlyph) void;
 pub extern "CoreText" fn CTRunGetAttributes(run: CTRunRef) CFDictionaryRef;
+// CTRun 의 per-glyph positions (CGPoint). text matrix space = font raster pixel.
+// 기본 monospace 폰트면 position[i].x ≈ i * advance. GPOS adjustment 가 적용된
+// position 이라 spacer ligature 의 glyph-별 정확한 위치 알 수 있음.
+pub extern "CoreText" fn CTRunGetPositionsPtr(run: CTRunRef) ?[*]const CGPoint;
+pub extern "CoreText" fn CTRunGetPositions(run: CTRunRef, range: CFRange, buffer: [*]CGPoint) void;
 
 pub extern "CoreFoundation" fn CFDictionaryGetValue(dict: CFDictionaryRef, key: ?*const anyopaque) ?*const anyopaque;
 
