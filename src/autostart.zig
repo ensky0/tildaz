@@ -3,10 +3,11 @@
 //!
 //!   - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 //!   - macOS:   `~/Library/LaunchAgents/com.tildaz.app.plist` (launchd)
+//!   - Linux:   `~/.config/autostart/tildaz.desktop` (XDG Autostart)
 //!
-//! API 시그니처는 양쪽 동일 — `enable(allocator)` / `disable(allocator)`.
-//! Windows 는 allocator 를 무시 (fixed buffer + Win32 API), macOS 는 path
-//! 작성에 사용.
+//! API 시그니처는 세 platform 동일 — `enable(allocator)` / `disable(allocator)`.
+//! Windows 는 allocator 를 무시 (fixed buffer + Win32 API), macOS / Linux 는
+//! path 작성에 사용.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -14,6 +15,7 @@ const builtin = @import("builtin");
 const impl = switch (builtin.os.tag) {
     .windows => @import("autostart/windows.zig"),
     .macos => @import("autostart/macos.zig"),
+    .linux => @import("autostart/linux.zig"),
     else => struct {
         pub fn enable(_: std.mem.Allocator) !void {
             return error.AutostartUnsupportedPlatform;

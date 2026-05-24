@@ -638,13 +638,32 @@ const Client = struct {
         try self.createKeyboardIfAvailable();
         if (self.keyboard_id != 0) try self.roundtrip();
 
-        try self.createShellObjects();
-        try self.waitForConfigure();
-        try self.ensureSessionGrid();
-        _ = try self.redraw();
+        // L11-β — hidden_start: portal `GlobalShortcuts` 가 가용한 경우에만
+        // surface 생성 skip + `surface_hidden=true` set. 첫 portal Activated
+        // 신호 (사용자가 hotkey 누름) 가 `handleActivatedToggle` → `createShellObjects`
+        // → configure handler 의 `ensureSessionGrid` 자동 호출로 정상 show.
+        // mac `if (!g_config.hidden_start) showWindow();` / Windows `if (!config.hidden_start) app.window.show();`
+        // 동등.
+        //
+        // portal 미가용 환경 (portal_session == null) 에서 hidden_start=true 면
+        // 사용자가 영영 볼 수 없는 trap — warning log + 즉시 show 로 fallback.
+        const hidden_at_start = self.config.hidden_start and self.portal_session != null;
+        if (self.config.hidden_start and self.portal_session == null) {
+            log.appendLine("startup", "hidden_start ignored — portal GlobalShortcuts unavailable, showing on start", .{});
+        }
+        if (hidden_at_start) {
+            self.surface_hidden = true;
+            log.appendLine("startup", "hidden_start — surface deferred until first portal Activated", .{});
+            std.debug.print("TildaZ Linux Wayland terminal is hidden — press the configured hotkey to show.\n", .{});
+        } else {
+            try self.createShellObjects();
+            try self.waitForConfigure();
+            try self.ensureSessionGrid();
+            _ = try self.redraw();
 
-        std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
-        log.appendLine("linux", "Wayland terminal window mapped", .{});
+            std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
+            log.appendLine("linux", "Wayland terminal window mapped", .{});
+        }
 
         while (self.running) {
             try self.pollAndDispatch(frame_poll_ms);
