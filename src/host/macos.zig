@@ -1845,6 +1845,8 @@ fn commitOrCancelRename(commit: bool) void {
         }
     }
     g_rename.clear();
+    // #193 — rename end → cursor rect 재계산 (text rect 제거).
+    invalidateRenameCursorRects();
 }
 
 /// IME preedit (g_preedit_buf) 을 적절한 sink 로 commit + IME 상태 클리어.
@@ -1944,6 +1946,93 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
     return false;
 }
 
+/// #193 — OS mouse cursor shape. NSView 의 `resetCursorRects` override. SPEC.md
+/// §3.1: cell 영역 → I-beam, rename 활성 탭 text 영역 → I-beam, 그 외 → arrow.
+/// NSView default coordinate (Y-up, bottom-left origin) 라 paint 좌표계 (Y-down)
+/// 와 flip 변환.
+///
+/// resetCursorRects 자동 호출 경로: view bounds 변경 (`setFrame:`) / mouse 가
+/// view 위로 들어옴 / `[window invalidateCursorRectsForView:]`. rename
+/// begin/end 시 명시 invalidate 필요 (`invalidateRenameCursorRects`).
+fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
+    const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+    const bounds = get_rect(self_view, objc.sel("bounds"));
+    const w: f64 = bounds.size.width;
+    const h: f64 = bounds.size.height;
+
+    // PT (logical points) — bounds 자체 PT 단위라 scale 곱 불필요.
+    const pad: f64 = @floatFromInt(TERMINAL_PADDING_PT);
+    const sbw: f64 = @floatFromInt(ui_metrics.SCROLLBAR_W_PT);
+    const tab_bar_h_pt: f64 = if (g_session.count() < 2) 0 else @floatFromInt(TAB_BAR_HEIGHT_PT);
+
+    const NSCursor = objc.getClass("NSCursor");
+    const get_ibeam = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const ibeam = get_ibeam(NSCursor, objc.sel("IBeamCursor"));
+    if (ibeam == null) return;
+    const add_rect = objc.objcSend(fn (objc.id, objc.SEL, NSRect, objc.id) callconv(.c) void);
+
+    // cell 영역 (Y-up): x=[pad, w-pad-sbw], y=[pad, h-tab_bar_h-pad].
+    const cell_w = w - 2.0 * pad - sbw;
+    const cell_h = h - tab_bar_h_pt - 2.0 * pad;
+    if (cell_w > 0 and cell_h > 0) {
+        const cell_rect = NSRect{
+            .origin = .{ .x = pad, .y = pad },
+            .size = .{ .width = cell_w, .height = cell_h },
+        };
+        add_rect(self_view, objc.sel("addCursorRect:cursor:"), cell_rect, ibeam);
+    }
+
+    // SPEC.md §3.1 — rename 활성 탭의 text 영역. close 'x' 박스 + tab area
+    // viewport clamping 적용. PT 단위 layout 재계산 (paint 의 px layout 을
+    // scale 로 나눠도 동등).
+    if (g_rename.isActive() and g_session.count() > 1 and g_renderer != null) blk: {
+        // RenameState.tab_index 는 ?usize — isActive() true 면 not null 보장
+        // 이지만 zig type checker 가 그것 추론 안 함. 명시 unwrap (안전 fallback).
+        const tab_idx_v = g_rename.tab_index orelse break :blk;
+        const scale: f64 = g_renderer.?.scale;
+        const tab_w_pt: f64 = @floatFromInt(ui_metrics.TAB_WIDTH_PT);
+        const at_limit = g_session.count() >= session_core.MAX_TABS;
+        const plus_w_pt: f64 = if (at_limit) 0 else @floatFromInt(ui_metrics.TAB_PLUS_W_PT);
+        // scroll_x 는 Inputs 의 field — Layout 결과에는 없으니 별도 변수 보관.
+        const scroll_x_pt: f64 = @as(f64, g_tab_scroll_x_px) / scale;
+        const layout_pt = tab_layout.compute(.{
+            .viewport_w = @floatCast(w),
+            .tab_count = @intCast(g_session.count()),
+            .tab_w = @floatCast(tab_w_pt),
+            .arrow_w = @floatCast(@as(f64, @floatFromInt(ui_metrics.TAB_ARROW_W_PT))),
+            .plus_w = @floatCast(plus_w_pt),
+            .scroll_x = @floatCast(scroll_x_pt),
+        });
+        const close_pt: f64 = @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT);
+        const tab_pad_pt: f64 = @floatFromInt(ui_metrics.TAB_PADDING_PT);
+        const idx: f64 = @floatFromInt(tab_idx_v);
+        const tab_world_x = idx * tab_w_pt - scroll_x_pt;
+        const tab_x_view = layout_pt.tab_area_x + tab_world_x;
+        // viewport clamp (`<` `>` arrow 영역 안 침범)
+        const text_left = @max(tab_x_view, layout_pt.tab_area_x);
+        const text_right_uncliped = tab_x_view + tab_w_pt - close_pt - tab_pad_pt;
+        const text_right = @min(text_right_uncliped, layout_pt.tab_area_x + layout_pt.tab_area_w);
+        if (text_right > text_left) {
+            // 탭바 paint top = view top (Y-down), Y-up 변환: y_min = h - tab_bar_h.
+            const rename_rect = NSRect{
+                .origin = .{ .x = text_left, .y = h - tab_bar_h_pt },
+                .size = .{ .width = text_right - text_left, .height = tab_bar_h_pt },
+            };
+            add_rect(self_view, objc.sel("addCursorRect:cursor:"), rename_rect, ibeam);
+        }
+    }
+}
+
+/// #193 — rename state 변화 직후 cursor rect 재계산. mouse 안 움직여도 변경 적용.
+fn invalidateRenameCursorRects() void {
+    if (g_window == null) return;
+    const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const cv = contentView_get(g_window, objc.sel("contentView"));
+    if (cv == null) return;
+    const invalidate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    invalidate(g_window, objc.sel("invalidateCursorRectsForView:"), cv);
+}
+
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
@@ -2015,6 +2104,8 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                         if (hit.tab_index < g_session.count()) {
                             const t = g_session.tabs.items[hit.tab_index];
                             g_rename.begin(hit.tab_index, t.title[0..t.title_len]);
+                            // #193 — rename begin → cursor rect 갱신 (text rect 추가).
+                            invalidateRenameCursorRects();
                         }
                         return;
                     }
@@ -2286,6 +2377,9 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     // 우클릭 paste (#119) — cmd.exe console 표준 패턴.
     if (!objc.class_addMethod(cls, objc.sel("rightMouseDown:"), @ptrCast(&tildazRightMouseDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // #193 — OS mouse cursor shape. cell 영역 I-beam.
+    if (!objc.class_addMethod(cls, objc.sel("resetCursorRects"), @ptrCast(&tildazResetCursorRects), "v@:"))
         return error.ViewSubclassAddMethodFailed;
     // 모니터 / DPI / dock auto-hide 등 screen parameter 변경 알림 handler.
     if (!objc.class_addMethod(cls, objc.sel("screenChanged:"), @ptrCast(&tildazScreenChanged), "v@:@"))

@@ -125,6 +125,20 @@ const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
 // 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
 // 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
 const layer_surface_default_height: u32 = 400;
+// wp_cursor_shape_v1 (#193) — compositor 가 themed cursor 직접 처리. wl_pointer
+// 의 set_cursor + XCursor 테마 로딩 직접 구현 대안. KDE Plasma 6 / GNOME 등이
+// advertise. 출처 https://wayland.app/protocols/cursor-shape-v1.
+const wp_cursor_shape_manager_v1_request_destroy: u16 = 0;
+const wp_cursor_shape_manager_v1_request_get_pointer: u16 = 1;
+const wp_cursor_shape_device_v1_request_destroy: u16 = 0;
+const wp_cursor_shape_device_v1_request_set_shape: u16 = 1;
+// shape enum (https://wayland.app/protocols/cursor-shape-v1):
+// 1=default(arrow), 4=pointer(hand), 7=cell(crosshair-like), 8=crosshair,
+// 9=text(I-beam), 10=vertical_text 등. 시연 결과 7 (`cell`) 로 잘못 보내
+// 스프레드시트 셀 선택 + 모양이 나오던 회귀 — 9 (`text`) 가 정답.
+const wp_cursor_shape_v1_default: u32 = 1;
+const wp_cursor_shape_v1_text: u32 = 9;
+
 // wp_viewporter (stable v1) — fractional scaling 환경의 logical / physical 분리.
 // https://wayland.app/protocols/viewporter
 const wp_viewporter_request_destroy: u16 = 0;
@@ -245,6 +259,9 @@ const Capabilities = struct {
     // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등.
     viewporter: Global = .{},
     fractional_scale_manager: Global = .{},
+    // #193 — `wp_cursor_shape_manager_v1` advertise 면 themed cursor 사용
+    // (compositor 가 XCursor 테마 자동 매칭). 미advertise 시 default arrow 만.
+    cursor_shape_manager: Global = .{},
 
     fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
         if (std.mem.eql(u8, interface, "wl_compositor")) {
@@ -268,6 +285,8 @@ const Capabilities = struct {
             self.viewporter = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "wp_fractional_scale_manager_v1")) {
             self.fractional_scale_manager = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "wp_cursor_shape_manager_v1")) {
+            self.cursor_shape_manager = .{ .name = name, .version = version };
         }
     }
 };
@@ -409,6 +428,17 @@ const Client = struct {
     // default `fractional_scale_denominator` (= 120 = 1.0x) 로 no-op 동작.
     viewporter_id: u32 = 0,
     fractional_scale_manager_id: u32 = 0,
+    // #193 — wp_cursor_shape protocol object ids + cached last shape (set_shape
+    // 가 last_serial 필요해 enter event 까지 0 으로 둠, 변경 시만 송신).
+    cursor_shape_manager_id: u32 = 0,
+    cursor_shape_device_id: u32 = 0,
+    last_cursor_shape: u32 = 0,
+    // #193 — `set_shape(serial, shape)` 의 serial 은 *pointer enter event*
+    // serial 이어야 함 (spec). `last_serial` 은 keyboard / button / pointer
+    // 모든 종류의 최신 serial 이라 typing / click 직후엔 pointer-enter 가
+    // 아닌 serial → compositor reject + cursor 변경 안 됨. pointer enter
+    // 만 별도 보관.
+    last_pointer_enter_serial: u32 = 0,
     /// per-surface — `createShellObjects` 가 create, `destroyShellObjects` 가 destroy.
     viewport_id: u32 = 0,
     fractional_scale_id: u32 = 0,
@@ -686,6 +716,9 @@ const Client = struct {
                 }
             }
             try self.maybeRedraw();
+            // #193 — rename begin/end 등 state 변화 후 mouse 안 움직여도 즉시
+            // cursor 갱신. cached `last_cursor_shape` 비교라 no-op 자주.
+            self.updateCursorShape() catch {};
         }
     }
 
@@ -758,6 +791,17 @@ const Client = struct {
                 self.fractional_scale_manager_id,
             );
         }
+        // #193 — wp_cursor_shape_manager_v1 bind. advertise 안 됐으면 (older
+        // compositor) cursor 변경 비활성 (compositor default arrow 유지).
+        if (self.caps.cursor_shape_manager.name != 0) {
+            self.cursor_shape_manager_id = self.allocId();
+            try self.bind(
+                self.caps.cursor_shape_manager.name,
+                "wp_cursor_shape_manager_v1",
+                @min(self.caps.cursor_shape_manager.version, 1),
+                self.cursor_shape_manager_id,
+            );
+        }
         // L10-α — `zwp_text_input_manager_v3` bind + 그 자리에서 바로
         // `get_text_input(seat)` 호출해 text_input object 생성. enable / disable
         // 은 keyboard focus enter / leave 이벤트에서 트리거.
@@ -811,6 +855,86 @@ const Client = struct {
         self.pointer_id = self.allocId();
         try self.sendNewId(self.seat_id, wl_seat_request_get_pointer, self.pointer_id);
         log.appendLine("wayland", "pointer object created pointer_id={}", .{self.pointer_id});
+
+        // #193 — cursor_shape_device 가 wl_pointer 와 1:1 매칭. manager advertise
+        // 된 경우만. set_shape 는 last_serial (enter event) 필요해 이 시점엔 송신
+        // X — handlePointerEnter / handlePointerMotion 가 시점에 따라 호출.
+        if (self.cursor_shape_manager_id != 0 and self.cursor_shape_device_id == 0) {
+            self.cursor_shape_device_id = self.allocId();
+            try self.sendArgs(
+                self.cursor_shape_manager_id,
+                wp_cursor_shape_manager_v1_request_get_pointer,
+                &.{ self.cursor_shape_device_id, self.pointer_id },
+            );
+            log.appendLine("wayland", "cursor shape device created device_id={}", .{self.cursor_shape_device_id});
+        }
+    }
+
+    /// #193 — pointer 위치 기반 cursor 결정 + set_shape 송신 (변경 시만).
+    /// SPEC.md §3.1 — cell 영역 + rename 활성 탭 text 영역 → text (I-beam),
+    /// 그 외 → default arrow.
+    fn updateCursorShape(self: *Client) !void {
+        if (self.cursor_shape_device_id == 0) return; // protocol 미advertise
+        if (self.last_pointer_enter_serial == 0) return; // enter event 아직
+        const want_text = self.pointerInCellArea() or self.pointerInRenameText();
+        const shape: u32 = if (want_text) wp_cursor_shape_v1_text else wp_cursor_shape_v1_default;
+        if (shape == self.last_cursor_shape) return; // 캐시 hit — spam 회피
+        // spec: serial = pointer enter event serial (latest 권장). keyboard /
+        // button serial 보내면 compositor reject + cursor 안 바뀜 (시연 회귀).
+        try self.sendArgs(
+            self.cursor_shape_device_id,
+            wp_cursor_shape_device_v1_request_set_shape,
+            &.{ self.last_pointer_enter_serial, shape },
+        );
+        self.last_cursor_shape = shape;
+    }
+
+    /// 현재 pointer 위치 (physical px) 가 cell 영역인지. 좌표가 음수 (pointer
+    /// 영역 밖) 면 false.
+    fn pointerInCellArea(self: *const Client) bool {
+        const x = self.pointer_x_px;
+        const y = self.pointer_y_px;
+        if (x < 0 or y < 0) return false;
+        const pad = self.renderer.paddingPx();
+        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const sbw = self.renderer.scrollbarWPx();
+        if (y < tab_bar_h) return false; // 탭바
+        if (x >= self.window_width - sbw) return false; // 스크롤바
+        if (x < pad or y < tab_bar_h + pad) return false; // 좌측 / 상단 padding
+        if (y >= self.window_height - pad) return false; // 하단 padding
+        if (x >= self.window_width - pad - sbw) return false; // 우측 padding
+        return true;
+    }
+
+    /// SPEC.md §3.1 — rename 활성 탭의 text 입력 영역 hit-test (close 'x' 박스
+    /// 제외). `tab_layout.hitRenameText` 공유 helper 사용 — Win / mac 동등 로직.
+    fn pointerInRenameText(self: *const Client) bool {
+        if (!self.rename_state.isActive()) return false;
+        const session = if (self.session) |*s| s else return false;
+        const x = self.pointer_x_px;
+        const y = self.pointer_y_px;
+        if (x < 0 or y < 0) return false;
+        const layout_inputs = tab_layout.Inputs{
+            .viewport_w = @floatFromInt(self.window_width),
+            .tab_count = @intCast(session.count()),
+            .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
+            .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+            .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .scroll_x = self.tab_scroll_x,
+        };
+        const layout = tab_layout.compute(layout_inputs);
+        return tab_layout.hitRenameText(
+            @floatFromInt(x),
+            @floatFromInt(y),
+            layout,
+            @floatFromInt(self.renderer.tabWidthPx()),
+            @floatFromInt(self.renderer.tabPaddingPx()),
+            @floatFromInt(self.renderer.tabCloseSizePx()),
+            @floatFromInt(self.renderer.tabBarHeightPx()),
+            self.tab_scroll_x,
+            @intCast(session.count()),
+            self.rename_state.tab_index,
+        );
     }
 
     /// seat 와 data_device_manager 가 모두 있으면 wl_data_device 객체 생성.
@@ -2483,12 +2607,21 @@ const Client = struct {
     /// metric 은 physical 이라 fixed → logical → physical 변환.
     fn handlePointerEnter(self: *Client, payload: []const u8) void {
         if (payload.len < 16) return;
-        self.last_serial = readU32(payload[0..4]);
+        const serial = readU32(payload[0..4]);
+        self.last_serial = serial;
+        // #193 — set_shape 의 serial 은 pointer enter event serial 이어야 함.
+        self.last_pointer_enter_serial = serial;
         const sx = readI32(payload[8..12]);
         const sy = readI32(payload[12..16]);
         self.pointer_x_px = self.logicalToPhysical(wlFixedToPx(sx));
         self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
         self.pointer_inside = true;
+        // #193 — enter 시 우리 surface 가 받는 첫 serial. 이 시점에 cursor 첫
+        // 송신해야 compositor 의 default cursor 가 우리 의도 (cell I-beam 또는
+        // arrow) 로 즉시 전환. enter 후 cached shape 가 stale 할 수 있어 강제
+        // reset.
+        self.last_cursor_shape = 0;
+        self.updateCursorShape() catch {};
     }
 
     /// wl_pointer.leave(serial, surface) — drag 중이면 selection 은 유지.
@@ -2508,6 +2641,8 @@ const Client = struct {
         const sy = readI32(payload[8..12]);
         self.pointer_x_px = self.logicalToPhysical(wlFixedToPx(sx));
         self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
+        // #193 — region 변경 시만 set_shape (캐시 hit 시 no-op).
+        self.updateCursorShape() catch {};
 
         // L12-γ-3 — tab drag 활성이면 selection / scrollbar 우선이 아니라
         // drag move 만 처리. mouse 가 cell 영역으로 벗어나도 drag 자체는

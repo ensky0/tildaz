@@ -59,6 +59,7 @@ Debian Wayland 환경).
 | autostart (XDG `~/.config/autostart/tildaz.desktop`) | 동작 (L11-α) — `cfg.auto_start=true` 면 매 부팅마다 enable, `false` 면 disable. exe path 는 `selfExePath` 로 동적 — binary 옮겨도 자동 갱신. mac LaunchAgent / Win Registry Run 동등 (`src/autostart/linux.zig`). |
 | hidden_start (첫 hotkey 까지 surface unmapped) | 동작 (L11-β) — `cfg.hidden_start=true` + portal `GlobalShortcuts` 가용 시 시작 시 `createShellObjects` skip + `surface_hidden=true`. 첫 portal Activated 신호 → `handleActivatedToggle` → createShellObjects → configure handler 의 `ensureSessionGrid` 자동 호출. portal 미가용 (mutter / wlroots) 환경에선 warning log + 즉시 show fallback. |
 | `.desktop` install 자동화 (`~/.local/share/applications/tildaz.desktop` + hicolor scalable icon) | 동작 (L11-γ) — `dist/linux/install.sh` 가 placeholder sed 치환 + `docs/favicon.svg` 를 `~/.local/share/icons/hicolor/scalable/apps/tildaz.svg` 로 복사 + `update-desktop-database` / `gtk-update-icon-cache` best-effort. uninstall 대칭 (`dist/linux/uninstall.sh`). |
+| OS mouse cursor shape (#193) | 동작 — `wp_cursor_shape_v1` protocol bind + `set_shape(serial, text=9 / default=1)` 송신. SPEC.md §3.1 영역별 정의 (cell + rename 활성 탭 text → I-beam, 탭바 일반 / close 'x' / 스크롤바 / padding → arrow). serial 은 *pointer enter event* 의 것 (`last_pointer_enter_serial`) — keyboard / button serial 보내면 compositor reject. cached shape 변경 시만 송신. compositor advertise 안 한 환경 graceful degrade. Win `WM_SETCURSOR` + mac `resetCursorRects` 와 동등. |
 
 사용자 제공 로그에서 확인된 capability:
 
@@ -293,7 +294,7 @@ distro packaging (.deb / .rpm / AppImage / Flatpak) 의 system-wide install
 
 | 항목 | 상태 |
 |---|---|
-| pointer cursor 모양 (I-beam) | 별도 cross-platform 이슈로 분리 ([#193](https://github.com/ensky0/tildaz/issues/193)) — Win/mac/Linux 셋 다 default 화살표라 Linux 단독 추가는 SPEC parity 깨짐. |
+| pointer cursor 모양 (I-beam) | ✅ #193 — `wp_cursor_shape_v1` protocol. cell 영역 + rename 활성 탭 text 영역 → text (I-beam), 그 외 (탭바 일반 / close 'x' / 스크롤바 / padding) → default arrow. SPEC.md §3.1 영역별 정의. compositor advertise 안 한 환경 graceful degrade. Win `WM_SETCURSOR` + mac `resetCursorRects` 동시 사용자 테스트 OK. |
 | resize UX polish | 미검증 |
 | Hangul / CJK paste 시 wide glyph | 동작 ([88db341](https://github.com/ensky0/tildaz/commit/88db341), NotoSansCJK primary 환경). IME 직접 입력은 L10 별도. |
 | color emoji paste | 동작 ([4816052](https://github.com/ensky0/tildaz/commit/4816052), Noto Color Emoji chain 포함 + BGRA raster path) |
@@ -459,7 +460,7 @@ Linux support를 승격할 때마다 아래를 기록한다.
 | 4 | L6.2 / L6.3 / L6.4 클립보드 통합 (자동 copy + 우클릭 paste + Ctrl+Shift+C/V) | ✅ [441f894](https://github.com/ensky0/tildaz/commit/441f894) — `wl_data_device_manager` / `wl_data_source` / `wl_data_offer` + `xkb_state_mod_name_is_active`. 시연 사이클에서 opcode / xkb 상수 / self-paste deadlock / selectionString ownership 4 가지 잠재 버그 발견 + fix |
 | 5 | L6.7 더블클릭 word selection | ✅ [dd40440](https://github.com/ensky0/tildaz/commit/dd40440) — 같은 cell + 500ms 이내 두 번째 좌클릭 → 공유 `terminal_interaction.selectWord` + 자동 copy |
 | 6 | L6.6 스크롤바 클릭 + 드래그 | ✅ [33b760b](https://github.com/ensky0/tildaz/commit/33b760b) — 우측 8 px thumb hit test (selection/더블클릭보다 우선) + Windows `app_controller.scrollToY` 패턴. |
-| 7 | pointer cursor 모양 (I-beam) | ↗ [#193](https://github.com/ensky0/tildaz/issues/193) — Win/mac/Linux 셋 다 default 화살표라 Linux 단독 추가는 parity 깨짐. cross-platform 이슈로 분리. |
+| 7 | pointer cursor 모양 (I-beam) | ✅ #193 — `wp_cursor_shape_v1` (Linux) + `WM_SETCURSOR` + `IDC_IBEAM` (Windows) + `resetCursorRects` + `NSCursor.IBeamCursor` (macOS). SPEC.md §3.1 영역별 정의 — cell + rename 활성 탭 text I-beam, close 'x' 박스 모든 상태 arrow. |
 | 8 | L5-1 fontconfig + FreeType + ASCII raster | ✅ [ce12372](https://github.com/ensky0/tildaz/commit/ce12372) — 5x7 임시 table 제거 + `src/font/linux/{fontconfig,freetype,font}.zig` 도입 + cell-center 정렬. proportional 폰트도 cell 안 균일 분포. |
 | 9 | L5-2 HarfBuzz Latin shape | ✅ α [f9478a1](https://github.com/ensky0/tildaz/commit/f9478a1) + β [3afb846](https://github.com/ensky0/tildaz/commit/3afb846) — `src/font/linux/harfbuzz.zig` dlopen + `Context.shapeRun` / `glyphByIndex` infra (α) + paint loop 의 2-char ASCII pair lookahead + `ligaturePair` cache (β). 시연 대기: Fira Code / JetBrains Mono install 후. 3-char+ ligature 는 별도 sub-step. |
 | 10 | L5-3 font chain + lazy raster | ✅ [88db341](https://github.com/ensky0/tildaz/commit/88db341) — N-face chain (MAX_CHAIN=8) + per-face `AutoHashMap` lazy raster. paste 한글 / 한자 / 가나 wide glyph 동작. config 통합 / 진짜 chain 폰트 추가는 별도 sub-step. |

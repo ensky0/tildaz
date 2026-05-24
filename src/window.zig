@@ -69,6 +69,8 @@ const WM_WINDOWPOSCHANGING: UINT = 0x0046;
 const WM_WINDOWPOSCHANGED: UINT = 0x0047;
 const WM_NCCALCSIZE: UINT = 0x0083;
 const WM_ERASEBKGND: UINT = 0x0014;
+const WM_SETCURSOR: UINT = 0x0020;
+const HTCLIENT: u16 = 1;
 const SPI_SETWORKAREA: WPARAM = 0x002F;
 const MK_LBUTTON: WPARAM = 0x0001;
 
@@ -93,7 +95,12 @@ const SWP_NOCOPYBITS: UINT = 0x0100;
 const SWP_REPAINT: UINT = SWP_NOCOPYBITS | SWP_FRAMECHANGED;
 const CW_USEDEFAULT: c_int = @bitCast(@as(c_uint, 0x80000000));
 const COLOR_WINDOW: c_int = 5;
-const IDC_ARROW: [*:0]const WCHAR = @ptrFromInt(32512);
+// LoadCursorW 의 두 번째 param 은 `MAKEINTRESOURCE(id)` — 실제 pointer 가 아닌
+// resource id 로 reinterpret 됨. WCHAR (align 2) ptr 로 declare 하면 odd ID
+// (`IDC_IBEAM = 32513`) 가 alignment 위반. `?*const anyopaque` 로 alignment
+// 요구 제거.
+const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
+const IDC_IBEAM: ?*const anyopaque = @ptrFromInt(32513);
 const GWL_USERDATA: c_int = -21;
 const TRANSPARENT: c_int = 1;
 const LWA_ALPHA: DWORD = 0x00000002;
@@ -203,7 +210,9 @@ extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) c
 extern "dwmapi" fn DwmFlush() callconv(.c) std.os.windows.HRESULT;
 extern "user32" fn SetWindowLongPtrW(HWND, c_int, isize) callconv(.c) isize;
 extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
-extern "user32" fn LoadCursorW(HINSTANCE, [*:0]const WCHAR) callconv(.c) HCURSOR;
+extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) HCURSOR;
+extern "user32" fn SetCursor(HCURSOR) callconv(.c) HCURSOR;
+extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.c) BOOL;
 extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) BOOL;
@@ -302,6 +311,10 @@ fn rgb(r: u8, g: u8, b: u8) COLORREF {
 pub const FullscreenMode = enum { none, monitor, workarea };
 
 pub const Window = struct {
+    /// `WM_SETCURSOR` (#193) — client 영역 안의 위치별 cursor 분류. 결정은
+    /// host (app) 가 — cell 영역만 알면 되고, 그 외는 `.other` 로 default arrow.
+    pub const CursorRegion = enum { cell, other };
+
     owner_hwnd: HWND = null,
     hwnd: HWND = null,
     visible: bool = false,
@@ -325,6 +338,14 @@ pub const Window = struct {
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
     /// before `SetWindowPos` cascades into `WM_SIZE`.
     font_change_fn: ?*const fn (*Window, ?*anyopaque) void = null,
+    /// `WM_SETCURSOR` — client 영역 안 좌표 (`x`, `y`) 가 cell 영역인지 그 외인지
+    /// 결정하는 host callback. null 이면 항상 default arrow (#193). host 의
+    /// `effectiveTabBarHeight` / `SCROLLBAR_W` / `TERMINAL_PADDING` 를 다 알아야
+    /// 정확한 hit test 가능 — Window 가 모르는 정보라 callback 으로 외부화.
+    cursor_region_fn: ?*const fn (x: c_int, y: c_int, userdata: ?*anyopaque) CursorRegion = null,
+    /// `WM_SETCURSOR` 마다 LoadCursorW 호출 비용 피하려 init 에서 캐시 (#193).
+    cursor_arrow: HCURSOR = null,
+    cursor_ibeam: HCURSOR = null,
     shell_exited: bool = false,
     dc: HDC = null, // DC for GDI font measurement
 
@@ -413,6 +434,11 @@ pub const Window = struct {
     pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_ratio: f32, line_height_ratio: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
         if (font_chain.len == 0) return error.EmptyFontChain;
         const hInstance = GetModuleHandleW(null);
+
+        // #193 — cursor handle 캐시. WM_SETCURSOR 매 호출마다 LoadCursorW 안 함.
+        // LoadCursorW(null, IDC_*) 는 system shared resource — DestroyCursor 불필요.
+        self.cursor_arrow = LoadCursorW(null, IDC_ARROW);
+        self.cursor_ibeam = LoadCursorW(null, IDC_IBEAM);
 
         const wc = WNDCLASSEXW{
             .cbSize = @sizeOf(WNDCLASSEXW),
@@ -1519,6 +1545,29 @@ pub const Window = struct {
                     },
                 });
                 return 0;
+            },
+            // #193 — OS cursor shape (cell hover I-beam, 그 외 arrow). HTCLIENT
+            // 외 (border / caption 등) 는 DefWindowProcW 의 system cursor 유지.
+            // GetCursorPos + ScreenToClient 로 정확한 client 좌표 받음 (lParam 은
+            // WM_SETCURSOR 에서 사용 불가 — hit-test code + msg id 만 들어있음).
+            // host (App) 의 cursorRegion callback 가 cell vs other 결정.
+            WM_SETCURSOR => {
+                const hit_test: u16 = @truncate(@as(usize, @bitCast(lParam)) & 0xFFFF);
+                if (hit_test == HTCLIENT) {
+                    if (self.cursor_region_fn) |region_fn| {
+                        var pt: POINT = .{ .x = 0, .y = 0 };
+                        if (GetCursorPos(&pt) != 0 and ScreenToClient(hwnd, &pt) != 0) {
+                            const region = region_fn(@intCast(pt.x), @intCast(pt.y), self.userdata);
+                            const handle: HCURSOR = switch (region) {
+                                .cell => self.cursor_ibeam,
+                                .other => self.cursor_arrow,
+                            };
+                            _ = SetCursor(handle);
+                            return 1; // TRUE — 우리가 처리 (DefWindowProcW 안 부름)
+                        }
+                    }
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_LBUTTONUP => {
                 _ = self.dispatchAppEvent(.{
