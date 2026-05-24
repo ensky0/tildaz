@@ -694,6 +694,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 한영 jamo replay (IMK mach port timing) | 한영 전환 직후 마지막 jamo 가 두 번 처리될 수 있음 | 사용자 환경 미발생. 우리 코드에 워크어라운드 없음. |
 | macOS emoji picker — floating panel + no system auto-dismiss ([#130](https://github.com/ensky0/tildaz/issues/130)) | `Ctrl+Cmd+Space` picker 는 트리거되나, cursor 옆 popover 가 아닌 화면 floating panel. focus 잃어도 system 이 자동 안 닫음. | Apple-first-party (Terminal.app / TextEdit / Notes) 만 popover path. ghostty / iTerm2 / Alacritty / Kitty / tildaz 등 모든 custom-NSView 기반 modern 터미널 동등 한계. NSTextView 로 architectural rewrite 외 우회 없음 (10M scrollback / GPU atlas / custom IME overlay 잃음). dismiss: `Ctrl+Cmd+Space` 다시 (toggle) 또는 **`Esc`** (우리 boolean 추적 best-effort). emoji 입력 자체 우회: `echo`, `printf`, 다른 앱에서 복사 → 우클릭 paste. |
 | ZWJ family / wide cluster emoji 다중 paste 시 줄바꿈 안 됨 ([#141](https://github.com/ensky0/tildaz/issues/141)) | `Cmd+V` 길게 누름 (key repeat ~30회/초) 으로 `👨‍👩‍👧` 같은 ZWJ family 를 flood 시 같은 줄에 덮어써짐. 1 회 paste 는 정상. | ghostty 의 Mode 2027 (grapheme cluster) 가 cluster = 2 cells 로 처리, bash 3.2 의 wcwidth 는 codepoint sum (man 2 + ZWJ 0 + woman 2 + ZWJ 0 + girl 2 = 6 cells) 으로 계산 → cell 4 mismatch/family. flood 시 bash 의 internal cursor 가 자기 wrap 임계 도달 → `\r` (CR) 출력 → 우리 grid col 0 으로 reset → 같은 자리 덮어써짐. fix path A (Mode 2027 OFF) 는 family ligature 깨짐, B (cluster cell width = codepoint sum + visual ligature 합성) 는 ghostty design 변경 필요 — 둘 다 trade-off 큼. 일반 사용 (1 회 paste) 무영향이라 known limitation 등재. zsh 5.x 등 cluster-aware shell 사용 시 자연 해소. |
+| Fira Code `||=` 의 `=` 분리 갭 — 모든 shaper ([#189](https://github.com/ensky0/tildaz/issues/189) 후속) | `||=` 시퀀스에서 `||` 부분만 합쳐지고 마지막 `=` 가 자연 글리프로 분리되어 시각 갭. 다른 3-char ligature (`===`, `==>`, `<==`, `<=>`, `-->`, `<--` 등) 는 정상 합성. | Fira Code 6.x 의 calt 룰 chain 호환성 문제 — `=` 를 `equal_end.seq` 로 substitute 하는 룰이 mac (CoreText) / Linux (HarfBuzz) / Windows (DirectWrite) 모든 shaper 에서 적용 안 됨. 모든 platform 동일이라 cross-platform 동등성 유지. 폰트 update 또는 다른 폰트로 우회 외 우리 코드 fix 불가. |
 
 > **한영 jamo replay 상세:**
 >
@@ -734,6 +735,18 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 >
 > 관련 검색어: `Mode 2027 grapheme cluster wcwidth`, `bash readline emoji width mismatch`, `ZWJ wcwidth POSIX`, `terminal-unicode-core`.
 
+> **Fira Code `||=` 의 `=` 분리 갭 상세 ([#189](https://github.com/ensky0/tildaz/issues/189) 후속):**
+>
+> Fira Code 6.x 의 `||=` 시퀀스가 `||` 부분만 ligature substitute 되고 마지막 `=` 가 자연 글리프로 분리되어 시각 갭. mac (CoreText) / Linux (HarfBuzz) / Windows (DirectWrite) 모든 shaper 에서 동일 모양.
+>
+> - **언제 발생하나?** Fira Code 6.x 폰트 + 임의 shaper 환경 + `||=` 시퀀스. mac kitty 0.47.0 + mac Apple Terminal + Linux tildaz + Windows tildaz 4 환경 모두 같은 모양 시연 확인. 다른 3-char ligature (`===`, `==>`, `<==`, `<=>`, `-->`, `<--` 등) 는 모두 정상 합성.
+> - **폰트 spec** — [`features/calt/equal_arrows.fea`](https://github.com/tonsky/FiraCode/blob/master/features/calt/equal_arrows.fea) 의 line 51-52 가 `|` `|` `=` 의 첫 두 char 를 `bar.spacer` + `bar_bar_equal_start.seq` 로 substitute. line 10 의 `sub [... bar_bar_equal_start.seq ...] equal' by equal_end.seq;` 가 `=` 를 `equal_end.seq` 로 substitute 하려는 의도. 그러나 모든 shaper 에서 line 10 적용 안 됨 — calt 룰 chain 의 lookup 순서 또는 shaper 별 contextual substitution 호환성 문제 추정.
+> - **우리 디버그 결과** — mac CT `ligatureShape` ([`src/font/macos/font.zig`](src/font/macos/font.zig)) 의 GSUB output: `g=(1484,1330,1578) nat=(1327,1327,1578)`. g[2]=1578 (= 자연 글리프) 그대로 → line 10 미적용 확정. Linux / Windows 도 시연 결과 동일 시각 모양 → 같은 substitution 결과 추정. 또한 `||=` `=` 뒤에 공백이 있는 경우만 line 10 의 trailing context 가 매칭 안 되는지 등 contextual 룰 정의 자체 의심도 남음.
+> - **fix path 분석** — A (옵션 A workaround: `ligature.classify` 의 "ALL must differ" 룰 완화 + 자연 마지막 glyph 에 강제 negative x_offset paint shift): mac / Linux / Windows 우리 코드만 fix 가능하나 폰트 디자이너 의도와 다른 hack + 다른 폰트 부작용 검증 필요 + 폰트 update 시 conflict 가능. B (옵션 C: HB mac 도입): mac CT → HB 교체 큰 작업이나 root cause 가 폰트라 fix 안 됨. C (폰트 issue 보고): tonsky/FiraCode 측에서만 가능 fix. **우리 범위 아님**.
+> - **결론** — 모든 platform 동일이라 우리 cross-platform 동등성 깨지지 않음 (mac/Linux/Windows 다 같이 갭). 폰트 issue 라 fix 안 함. #189 의 직접 motivation 이었으나 우리 코드 fix 대상 아니라고 확정 후 종결. 단 #189 의 부수 fix (모든 spacer ligature 의 GPOS x_offset 추출 + cross-platform unit convention 통일 — [`1af2247`](https://github.com/ensky0/tildaz/commit/1af2247) / [`b1bdbf3`](https://github.com/ensky0/tildaz/commit/b1bdbf3) / [`487cd0e`](https://github.com/ensky0/tildaz/commit/487cd0e)) 는 다른 ligature 의 GPOS positioning 정확성 측면에서 유지.
+>
+> 관련 검색어: `Fira Code ||= ligature broken`, `calt lookup chain shaper compatibility`, `tonsky FiraCode equal_arrows`.
+
 ---
 
 ## 부록 C — cross-platform 후속 이슈
@@ -760,5 +773,5 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
-*마지막 업데이트: 2026-05-12 (v0.4.3 — macOS Hanja reconversion UX + renderer/dialog/env/font-chain 후속 정리).
+*마지막 업데이트: 2026-05-24 (#189 의 Fira Code `||=` 폰트 한계 — 부록 B 등재).
 이 문서는 living document — 코드 변경할 때 같은 PR 안에서 update.*
