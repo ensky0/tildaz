@@ -112,13 +112,16 @@ fn ensureConptyDll() void {
         log.appendLine("conpty", "conpty.dll not found — falling back to kernel32", .{});
         return;
     };
-    conpty_create_fn = @ptrCast(GetProcAddress(mod, "ConptyCreatePseudoConsole"));
-    conpty_resize_fn = @ptrCast(GetProcAddress(mod, "ConptyResizePseudoConsole"));
-    conpty_close_fn = @ptrCast(GetProcAddress(mod, "ConptyClosePseudoConsole"));
+    // ARM64 Windows 의 fn ptr alignment 가 4 (x64 는 1) — `GetProcAddress`
+    // 반환은 `?*const anyopaque` (alignment 1) 라 cross-platform fn ptr 변환에
+    // `@alignCast` 명시 필요 (#191).
+    conpty_create_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyCreatePseudoConsole")));
+    conpty_resize_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyResizePseudoConsole")));
+    conpty_close_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyClosePseudoConsole")));
     // ShowHide 는 optional — 실패해도 fatal 아님. Windows Terminal 이 호출하는
     // 순서를 따라 CreateProcessW 전에 호출해 OpenConsole 의 pseudo window 를
     // 활성화한다.
-    conpty_show_hide_fn = @ptrCast(GetProcAddress(mod, "ConptyShowHidePseudoConsole"));
+    conpty_show_hide_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyShowHidePseudoConsole")));
     if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null) {
         log.appendLine("conpty", "conpty.dll loaded but symbols missing — falling back to kernel32", .{});
         conpty_create_fn = null;
