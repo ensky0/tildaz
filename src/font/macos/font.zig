@@ -378,16 +378,38 @@ pub const CoreTextFontContext = struct {
             ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = @intCast(checked) }, &glyphs_buf);
         }
 
-        // ShapedSlot[] 구성 — `ligature.classify` 가 입력. offsets 은 0 (mac
-        // CTRun 의 positions 는 baseline 기준이라 cell-center 정렬 후 추가
-        // offset 거의 0. fine-tuning 은 future sub-step).
+        // CTRun 의 per-glyph positions — GPOS adjustment 가 적용된 실제 위치.
+        // Fira Code 6.x 의 `||=` spacer 같이 GPOS 가 `=` glyph 을 `||` 쪽으로
+        // 당겨 시각상 연결시키는 디자인은 이 positions 에 반영됨. 우리 paint
+        // 가 cell-aligned 으로 draw 하니, (실제 position) − (기본 monospace
+        // position = i * cell_w) 차이를 spacer 의 x_offset 으로 추출 → emit
+        // 단계에서 cell base position 에 더해줘 정확한 GPOS 위치에 그림.
+        var positions_buf: [4]ct.CGPoint = .{
+            .{ .x = 0, .y = 0 }, .{ .x = 0, .y = 0 }, .{ .x = 0, .y = 0 }, .{ .x = 0, .y = 0 },
+        };
+        if (ct.CTRunGetPositionsPtr(run)) |ptr| {
+            for (0..checked) |i| positions_buf[i] = ptr[i];
+        } else {
+            ct.CTRunGetPositions(run, ct.CFRange{ .location = 0, .length = @intCast(checked) }, &positions_buf);
+        }
+
+        const cell_w_f: f64 = @floatFromInt(self.cell_width_px);
         var slots: [4]ligature.ShapedSlot = undefined;
         for (0..checked) |i| {
             const cp_idx = @min(i, cps.len - 1);
+            // x_offset = (실제 CT position) − (기본 monospace 위치 i * cell_w).
+            // GPOS 가 spacer glyph 을 인접 cell 쪽으로 당기는 경우 음수가 됨 →
+            // emit 시 cell base position 에 더해줘 갭 메움 (`||=` 의 `=` 가
+            // `||` 쪽으로 당겨지는 디자인 등).
+            const default_x: f64 = @as(f64, @floatFromInt(i)) * cell_w_f;
+            const offset_x: f64 = positions_buf[i].x - default_x;
+            // y_offset 은 0 — Fira Code 등 우리가 쓰는 ligature 폰트의 GPOS y
+            // 조정은 거의 없음. CT y-up vs screen y-down sign convention 차이
+            // 도 따로 처리 안 함 (적용 case 없으므로).
             slots[i] = .{
                 .glyph_index = glyphs_buf[i],
                 .natural_glyph_index = natural[cp_idx],
-                .x_offset = 0,
+                .x_offset = @intFromFloat(@round(offset_x)),
                 .y_offset = 0,
             };
         }
