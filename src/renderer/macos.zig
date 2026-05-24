@@ -1241,7 +1241,7 @@ pub const MetalRenderer = struct {
 /// 의 bearing 으로 glyph 의 cell 안 위치 계산.
 fn emitTextInstance(
     text_buf: []TextInstance,
-    text_count: *usize,
+    text_count: *u32,
     entry: macos_glyph_atlas.AtlasEntry,
     x: usize,
     fy: f32,
@@ -1277,7 +1277,7 @@ fn emitLigatureMatch(
     self: *MetalRenderer,
     encoder: objc.id,
     text_buf: []TextInstance,
-    text_count: *usize,
+    text_count: *u32,
     x: usize,
     count: usize,
     match: mac_font.LigatureMatch,
