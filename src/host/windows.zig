@@ -126,6 +126,7 @@ pub fn run() !void {
     app.window.app_event_fn = App.onAppEvent;
     app.window.quit_request_fn = App.onQuitRequest;
     app.window.before_hide_fn = App.onBeforeHide;
+    app.window.cursor_region_fn = App.cursorRegion;
     const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system. 하나라도 미설치면 즉시

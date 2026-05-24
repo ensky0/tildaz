@@ -142,6 +142,43 @@ pub const App = struct {
         return if (self.session.count() > 1) self.TAB_BAR_HEIGHT else 0;
     }
 
+    /// #193 — Windows host 의 `WM_SETCURSOR` callback. SPEC.md §3.1:
+    /// - cell 영역 → I-beam (`.cell`)
+    /// - rename 활성 탭의 text 입력 영역 (close 'x' 박스 제외) → I-beam
+    /// - 그 외 (탭바 일반 / 스크롤바 / padding) → arrow (`.other`)
+    pub fn cursorRegion(x: c_int, y: c_int, userdata: ?*anyopaque) Window.CursorRegion {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        const tab_bar_h = self.effectiveTabBarHeight();
+        // 탭바 영역 — rename 활성 탭 text 면 I-beam, 그 외 arrow.
+        if (y < tab_bar_h) {
+            if (self.tab_interaction.rename.isActive()) {
+                const inputs = self.tabBarLayoutInputs();
+                const layout = tab_layout.compute(inputs);
+                const hit_text = tab_layout.hitRenameText(
+                    @floatFromInt(x),
+                    @floatFromInt(y),
+                    layout,
+                    @floatFromInt(self.TAB_WIDTH),
+                    @floatFromInt(self.TAB_PADDING),
+                    @floatFromInt(self.CLOSE_BTN_SIZE),
+                    @floatFromInt(tab_bar_h),
+                    @floatFromInt(self.tab_scroll_x),
+                    @intCast(self.session.count()),
+                    self.tab_interaction.rename.tab_index,
+                );
+                if (hit_text) return .cell;
+            }
+            return .other;
+        }
+        const size = self.window.getClientSize();
+        if (x >= size.w - self.SCROLLBAR_W) return .other; // 스크롤바
+        const pad = self.TERMINAL_PADDING;
+        if (x < pad or y < tab_bar_h + pad) return .other; // 좌측 / 상단 padding
+        if (y >= size.h - pad) return .other; // 하단 padding
+        if (x >= size.w - pad - self.SCROLLBAR_W) return .other; // 우측 padding (스크롤바 옆)
+        return .cell;
+    }
+
     fn tabBarTotalWidth(self: *const App) c_int {
         return @as(c_int, @intCast(self.session.count())) * self.TAB_WIDTH;
     }
