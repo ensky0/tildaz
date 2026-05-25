@@ -177,11 +177,15 @@ jobs:
           prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
           fail_on_unmatched_files: true
 
-  # macOS 빌드는 Apple Silicon (aarch64) 전용. Apple Developer 계정이 없어
-  # ad-hoc 서명 — 사용자 첫 다운로드 시 quarantine 우회 (`xattr -d
-  # com.apple.quarantine ./TildaZ.app`) + Input Monitoring / Accessibility
-  # 권한 한 번 부여 필요. CI 빌드의 ad-hoc identity 는 stable 이라 다음
-  # 릴리즈에서도 권한 유지.
+  # macOS 빌드는 Apple Silicon runner (macos-15 = aarch64) 에서 cross-build 로
+  # aarch64-macos + x86_64-macos 두 target 을 만든 후 `lipo -create` 로 universal
+  # binary (Mach-O fat) 로 합쳐 단일 DMG 로 배포 — Intel + Apple Silicon 모두 실행
+  # 가능 (#133, dist/macos/package.sh).
+  #
+  # Apple Developer 계정이 없어 ad-hoc 서명 — 사용자 첫 다운로드 시 quarantine
+  # 우회 (`xattr -d com.apple.quarantine ./TildaZ.app`) + Input Monitoring /
+  # Accessibility 권한 한 번 부여 필요. CI 빌드의 ad-hoc identity 는 stable 이라
+  # 다음 릴리즈에서도 권한 유지.
   release-macos:
     runs-on: macos-15
     steps:
