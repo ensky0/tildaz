@@ -29,6 +29,8 @@ const single_instance = @import("single_instance.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const system_open = @import("../../system_open.zig");
+const dialog_mod = @import("../../dialog.zig");
+const dialog_linux = @import("../../dialog/linux.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -390,6 +392,45 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
     };
 }
 
+/// #203 Phase C — wayland layer-shell overlay dialog state (option A).
+///
+/// 동작:
+///   - `kind = .none` — dialog 없음. 모든 입력 정상 (terminal / rename / nav).
+///   - `kind = .info` — Info 또는 Error dialog. 모든 입력 routed 됨.
+///     Enter / Esc / 클릭 → dismiss (kind → .none).
+///   - `kind = .confirm` — Confirm dialog. 같은 routing + Enter / Esc / 클릭
+///     으로 result 채워짐 → inner event loop pump 가 깨어남.
+///
+/// Wayland 표준 dialog API 없어 자체 그리기 — 우리 main wayland surface 안
+/// inline overlay (별 surface 안 만듦, drop-down 안에서 그려짐). drop-down
+/// 의 layer=top + exclusive keyboard 그대로 활용 — modal 효과 자연.
+pub const DialogState = struct {
+    pub const Kind = enum { none, info, confirm };
+
+    kind: Kind = .none,
+    severity: dialog_mod.Severity = .info,
+    title_buf: [128]u8 = undefined,
+    title_len: usize = 0,
+    msg_buf: [4096]u8 = undefined,
+    msg_len: usize = 0,
+    /// confirm 의 사용자 선택 결과 (true = OK, false = Cancel). inner event
+    /// loop pump 가 null → some 으로 바뀔 때까지 poll.
+    confirm_result: ?bool = null,
+    /// confirm 의 focused button (false = Cancel default — destructive 작업
+    /// 의 안전 default, #116). Tab 으로 toggle, Enter 가 focused 선택.
+    confirm_focus_ok: bool = false,
+
+    pub fn title(self: *const DialogState) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+    pub fn message(self: *const DialogState) []const u8 {
+        return self.msg_buf[0..self.msg_len];
+    }
+    pub fn active(self: *const DialogState) bool {
+        return self.kind != .none;
+    }
+};
+
 const Client = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -587,6 +628,12 @@ const Client = struct {
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
 
+    /// #203 Phase C — layer-shell overlay dialog state (option A). active 시
+    /// 모든 키 / 마우스 입력이 dialog 로 라우팅. info 는 fire-and-forget
+    /// (Enter / Esc / 클릭 → dismiss), confirm 은 inner event loop pump 가
+    /// `result` 채워질 때까지 wait.
+    dialog: DialogState = .{},
+
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
@@ -681,6 +728,16 @@ const Client = struct {
     }
 
     fn run(self: *Client) !void {
+        // #203 Phase C — dialog overlay 콜백 등록 (option A). self pointer 가
+        // final 위치라야 함 — Client.init 가 by value 반환이라 init 안에서는
+        // 등록 못 함. run 시작 시점 = stable address.
+        dialog_linux.registerCallbacks(.{
+            .ctx = self,
+            .show_info = Client.dialogShowInfoCb,
+            .show_confirm = Client.dialogShowConfirmCb,
+        });
+        defer dialog_linux.unregisterCallbacks();
+
         try self.getRegistry();
         try self.roundtrip();
 
@@ -1535,6 +1592,25 @@ const Client = struct {
                     self.rename_state.view(),
                     self.tab_drag.view(),
                 );
+                // #203 Phase C — dialog overlay (option A inline). 활성 시 paint
+                // 결과 위에 modal box. info 는 dismiss 만, confirm 은 button focus
+                // 표기 (Step 2 에서 button rect hit-test).
+                if (self.dialog.active()) {
+                    const confirm_focus: ?bool = if (self.dialog.kind == .confirm)
+                        self.dialog.confirm_focus_ok
+                    else
+                        null;
+                    self.renderer.drawDialogOverlay(
+                        memory,
+                        width,
+                        height,
+                        stride,
+                        self.dialog.severity,
+                        self.dialog.title(),
+                        self.dialog.message(),
+                        confirm_focus,
+                    );
+                }
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
                 // 근처에 정렬되도록. error 는 main loop 멈추지 않게 swallow.
@@ -2010,6 +2086,92 @@ const Client = struct {
         }
         self.needs_redraw = true;
     }
+
+    //=== #203 Phase C — Dialog overlay (option A, layer-shell modal in main surface) ====
+
+    /// dialog_linux 의 info / error callback. cross-platform `dialog.show*` /
+    /// `dialog.showAboutAlert` 가 결국 여기로 도달. fire-and-forget — 사용자가
+    /// Enter / Esc / 클릭으로 dismiss 할 때까지 visual 만 유지.
+    fn dialogShowInfoCb(ctx: *anyopaque, severity: dialog_mod.Severity, title: []const u8, message: []const u8) void {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        self.openInfoDialog(severity, title, message);
+    }
+
+    /// dialog_linux 의 confirm callback (Step 2 — synchronous via inner event
+    /// loop pump). Step 1 단계에선 default Cancel (= false) 반환 — 기존 stderr
+    /// fallback 정책과 같음 (#116 안전 default).
+    fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        _ = self;
+        log.appendLine("dialog", "showConfirm (sync) Step 2 미구현 — default Cancel: title={s}", .{title});
+        _ = message;
+        return false;
+    }
+
+    fn openInfoDialog(self: *Client, severity: dialog_mod.Severity, title: []const u8, message: []const u8) void {
+        const title_len = @min(title.len, self.dialog.title_buf.len);
+        const msg_len = @min(message.len, self.dialog.msg_buf.len);
+        @memcpy(self.dialog.title_buf[0..title_len], title[0..title_len]);
+        @memcpy(self.dialog.msg_buf[0..msg_len], message[0..msg_len]);
+        self.dialog = .{
+            .kind = .info,
+            .severity = severity,
+            .title_buf = self.dialog.title_buf,
+            .title_len = title_len,
+            .msg_buf = self.dialog.msg_buf,
+            .msg_len = msg_len,
+        };
+        self.needs_redraw = true;
+        log.appendLine("dialog", "open info severity={s} title={s} msg_len={d}", .{
+            @tagName(severity), self.dialog.title(), msg_len,
+        });
+    }
+
+    fn dismissDialog(self: *Client, confirm_result: ?bool) void {
+        if (self.dialog.kind == .none) return;
+        log.appendLine("dialog", "dismiss kind={s} result={s}", .{
+            @tagName(self.dialog.kind),
+            if (confirm_result) |r| (if (r) "OK" else "Cancel") else "-",
+        });
+        self.dialog.confirm_result = confirm_result;
+        // info 는 즉시 .none. confirm 은 inner loop 가 result 보고 .none 처리.
+        if (self.dialog.kind == .info) {
+            self.dialog.kind = .none;
+        } else if (self.dialog.kind == .confirm) {
+            // result 를 채워서 inner loop 가 깨어나게. .kind 는 inner loop 에서
+            // .none 으로 (현재는 Step 1 단계라 confirm 사용 안 됨).
+            self.dialog.kind = .none;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// dialog 활성 시 모든 키 라우팅. SPEC §6 — Enter / Esc / 클릭으로 dismiss.
+    /// Tab 은 confirm 의 button focus toggle (Step 2). 그 외 키 무시 (modal).
+    fn handleDialogKey(self: *Client, key: u32) void {
+        const xkb_key = key + wayland_xkb_keycode_offset;
+        const sym = self.keyboard.oneSym(xkb_key) orelse return;
+        switch (sym) {
+            xkb_key_return => {
+                // info: dismiss / confirm: 현재 focused button (Step 1 = 항상 false)
+                const result: ?bool = if (self.dialog.kind == .confirm) self.dialog.confirm_focus_ok else null;
+                self.dismissDialog(result);
+            },
+            xkb_key_escape => {
+                // info: dismiss / confirm: Cancel
+                const result: ?bool = if (self.dialog.kind == .confirm) false else null;
+                self.dismissDialog(result);
+            },
+            xkb_key_tab => {
+                if (self.dialog.kind == .confirm) {
+                    self.dialog.confirm_focus_ok = !self.dialog.confirm_focus_ok;
+                    self.needs_redraw = true;
+                }
+            },
+            else => {}, // modal — 다른 키 swallow
+        }
+    }
+
+    //=== End dialog overlay block ===
 
     /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
     /// (= shell_exited true) → main loop 가 종료. 다중 탭이면 그 탭만.
@@ -2634,6 +2796,14 @@ const Client = struct {
     fn processKeyEvent(self: *Client, serial: u32, key: u32) !void {
         self.last_serial = serial;
 
+        // #203 Phase C — dialog overlay 활성 시 모든 키 dialog 로 라우팅 (modal).
+        // rename / preedit / 단축키 등 모두 swallow. Enter / Esc / Tab 만 dialog
+        // 가 처리, 나머지 키는 무시.
+        if (self.dialog.active()) {
+            self.handleDialogKey(key);
+            return;
+        }
+
         // L12-γ-2 — rename 모드 활성 시 모든 키를 PTY 가 아니라 RenameState 로
         // 라우팅 (macOS `g_rename.isActive()` 분기 동등). modifier 단축키
         // (ctrl+shift+*) 도 무시 — 사용자가 Enter / Escape 로 나가야.
@@ -2874,6 +3044,19 @@ const Client = struct {
         const time_ms = readU32(payload[4..8]);
         const button = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
+
+        // #203 Phase C — dialog overlay 활성 시 모든 클릭 swallow + pressed
+        // edge 에서 dismiss (Step 1 info dialog 만 — Step 2 confirm 은 OK/Cancel
+        // 버튼 hit-test). 다른 단축키 (scrollbar / tab bar / selection / paste)
+        // 보다 우선.
+        if (self.dialog.active()) {
+            if (state == wl_pointer_button_state_pressed) {
+                // info 는 result null, confirm 은 default Cancel (false).
+                const result: ?bool = if (self.dialog.kind == .confirm) false else null;
+                self.dismissDialog(result);
+            }
+            return;
+        }
 
         if (button == wl_pointer_button_right) {
             // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /

@@ -120,7 +120,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` 호출. dialog backend 는 stderr + log (Linux dialog backend §6 참조) | ✅ | ✅ | 🟨 (단축키 ✅ / GUI dialog ❌ — §6) |
+| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` → `dialog.showAboutAlert` → host overlay (main surface 안 modal box, §6) | ✅ | ✅ | ✅ |
 
 ### 2.5 스크롤
 
@@ -458,10 +458,11 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
-| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal` | `dialog_windows.zig` (`MessageBoxW`) | `dialog_macos.zig` (NSAlert + osascript fallback) | `dialog/linux.zig` **stderr-only** — GUI dialog 없음 (Wayland 표준 dialog API 없음, kdialog/zenity DE 의존). config error 등 fatal 은 message 가 보이긴 함 (stderr + log) | ✅ | ✅ | 🟨 |
-| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | 단축키 (`Ctrl+Shift+I`) 는 `about.showAboutDialog()` 호출 — `dialog.showAboutAlert` 까지 도달 ✅. 그러나 Linux dialog backend (`src/dialog/linux.zig`) 가 stderr + log only — *GUI dialog 안 뜸* ❌. Wayland 표준 dialog API 부재 — D-Bus `org.freedesktop.Notifications` info 또는 layer-shell info window 등 자체 구현 필요 | ✅ | ✅ | ❌ |
-| Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | stderr fatal message + exit (log 에도 기록) | ✅ | ✅ | 🟨 |
-| Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | stderr error + exit | ✅ | ✅ | 🟨 |
+| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm` | `dialog_windows.zig` (`MessageBoxW`) | `dialog_macos.zig` (NSAlert + osascript fallback) | `dialog/linux.zig` runtime callback → wayland_minimal Client 의 inline overlay (option A, #203 Phase C). 등록 전 / 미가용 시 stderr + log fallback | ✅ | ✅ | ✅ |
+| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showAboutAlert` → host overlay (main surface 안 modal box, dim + 1px border + 멀티라인 message + footer hint) | ✅ | ✅ | ✅ |
+| Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` → host overlay (callback 등록 후). callback 등록 전 (main 시작 전 fatal) 면 stderr + log fallback — silent crash 회피 | ✅ | ✅ | 🟨 (run 진입 후 ✅ / 진입 전 stderr) |
+| Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → host overlay (위와 동일 등록 시점 분기) + exit | ✅ | ✅ | 🟨 (run 진입 후 ✅ / 진입 전 stderr) |
+| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (예: Alt+F4 multi-tab) | `dialog.showConfirm` (`MessageBoxW MB_YESNO`) | NSAlert YES/NO | inner wayland event loop pump (Step 2 — 현재 default Cancel 반환) | ✅ | ✅ | 🟨 (info 등 ✅ / confirm 은 Step 2 — 현재 default Cancel) |
 
 ---
 
