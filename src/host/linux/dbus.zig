@@ -48,6 +48,7 @@ const dbus_bus_type_session: c_int = 0;
 /// 문자 값 그대로 (예: `DBUS_TYPE_STRING = 's' = 115`).
 pub const dbus_type_invalid: c_int = 0;
 pub const dbus_type_string: c_int = 's';
+pub const dbus_type_int32: c_int = 'i';
 pub const dbus_type_uint32: c_int = 'u';
 pub const dbus_type_uint64: c_int = 't';
 pub const dbus_type_object_path: c_int = 'o';
