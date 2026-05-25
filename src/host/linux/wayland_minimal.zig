@@ -1949,7 +1949,13 @@ const Client = struct {
                         &.{ w, h },
                     );
                 }
-                if (self.session != null) try self.ensureSessionGrid();
+                // hidden_start=true 의 첫 toggle show — handleActivatedToggle 가
+                // createShellObjects 만 하고 session 생성은 안 함. 이전 guard
+                // `if (self.session != null)` 가 첫 configure 에서 ensureSessionGrid
+                // 를 skip 시켜 session 이 영영 안 만들어졌음 (사용자가 fillBuffer
+                // gradient 만 봄). ensureSessionGrid 는 idempotent (session 존재
+                // 시 resize, null 시 create) — guard 없이 호출 안전.
+                try self.ensureSessionGrid();
                 self.configured = true;
                 // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
                 // 인 경우도 redraw — hide 후 re-map sequence 의 첫 attach.
