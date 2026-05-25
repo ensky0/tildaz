@@ -275,3 +275,148 @@ jobs:
           # 안 올라오게 (#133 RC 검증).
           prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
           fail_on_unmatched_files: true
+
+  # Linux 배포 — 4 format × 2 arch = 8 artifact (#202).
+  # ubuntu-22.04 단일 runner 에서 모든 (arch, format) cross-build / cross-package:
+  #   - zig 가 x86_64 호스트에서 aarch64-linux-gnu 빌드 가능 (LLVM cross)
+  #   - 우리 의존성 모두 runtime dlopen → host glibc 와 무관
+  #   - dpkg-deb / rpmbuild / appimagetool 모두 binary metadata 만 다루지 host
+  #     arch 와 무관 (포함 binary 가 cross-built 면 그대로 패키징)
+  # glibc minor 는 .2.28 pin — RHEL 8 / Debian 10 / Ubuntu 18.04 부터 호환.
+  release-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        format: [tar.gz, deb, rpm, AppImage]
+        include:
+          - arch: x86_64
+            zig_target: x86_64-linux-gnu.2.28
+          - arch: aarch64
+            zig_target: aarch64-linux-gnu.2.28
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Resolve tag / version
+        id: vars
+        run: |
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.vars.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Setup Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Verify Zig
+        run: zig version
+
+      # format 별 호스트 도구. tar.gz 만 표준 (POSIX) — 추가 설치 0.
+      # dpkg-deb 는 ubuntu 기본 (build-essential 또는 dpkg-dev). rpm 는 별 install.
+      # appimagetool 은 package.sh 가 자동 다운로드.
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          case "${{ matrix.format }}" in
+              tar.gz)
+                  echo "tar.gz — no extra tools needed"
+                  ;;
+              deb)
+                  sudo apt-get update -qq
+                  sudo apt-get install -y -qq dpkg-dev
+                  dpkg-deb --version
+                  ;;
+              rpm)
+                  sudo apt-get update -qq
+                  sudo apt-get install -y -qq rpm
+                  rpmbuild --version
+                  ;;
+              AppImage)
+                  # appimagetool 자체는 package.sh 가 다운로드. FUSE 는
+                  # --appimage-extract-and-run 으로 회피.
+                  echo "AppImage — appimagetool downloaded on demand"
+                  ;;
+          esac
+
+      - name: Sanity checks (version / release notes)
+        run: |
+          set -euo pipefail
+          BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
+          if [[ "$BZIG_VER" != "${{ steps.vars.outputs.version }}" ]]; then
+            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag (${{ steps.vars.outputs.version }})"
+            exit 1
+          fi
+          NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
+          if [[ ! -f "$NOTES" ]]; then
+            echo "ERROR: release notes missing at $NOTES"
+            exit 1
+          fi
+
+      - name: Prefetch dependencies
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if zig build --fetch=all; then
+              exit 0
+            fi
+            [[ $i -eq 5 ]] && exit 1
+            sleep 10
+          done
+
+      - name: Build + package (${{ matrix.arch }} / ${{ matrix.format }})
+        run: zig build package -Dtarget=${{ matrix.zig_target }} -Dformat=${{ matrix.format }}
+
+      - name: Resolve artifact name
+        id: artifact
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.vars.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          case "$ARCH" in
+              x86_64)  DEBARCH=amd64 ;;
+              aarch64) DEBARCH=arm64 ;;
+          esac
+          case "${{ matrix.format }}" in
+              tar.gz)   NAME="tildaz-v${VERSION}-linux-${ARCH}.tar.gz" ;;
+              deb)      NAME="tildaz_${VERSION}_${DEBARCH}.deb" ;;
+              rpm)      NAME="tildaz-${VERSION}-1.${ARCH}.rpm" ;;
+              AppImage) NAME="TildaZ-${VERSION}-${ARCH}.AppImage" ;;
+          esac
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "path=zig-out/release/$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify artifact
+        run: |
+          set -euo pipefail
+          P="${{ steps.artifact.outputs.path }}"
+          S="$P.sha256"
+          if [[ ! -f "$P" || ! -f "$S" ]]; then
+            echo "ERROR: artifact missing — expected: $P + $S"
+            ls -la zig-out/release/ || true
+            exit 1
+          fi
+          echo "artifact : $P ($(stat -c %s "$P") bytes)"
+          echo "sha256   : $(cat "$S")"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.tag }}
+          files: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256
+          draft: false
+          prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
+          fail_on_unmatched_files: true

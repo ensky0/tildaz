@@ -94,6 +94,7 @@ from `v*` tags.
 | Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
 | Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
 | macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), ad-hoc signed |
+| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.{tar.gz,deb,rpm,AppImage}` and the AppImage as `TildaZ-...` | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. |
 
 The release workflow checks that:
 
