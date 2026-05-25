@@ -525,10 +525,19 @@ pub const SessionCore = struct {
 
     pub fn scrollActive(self: *SessionCore, event: app_event.ScrollEvent, visible_rows: u16) bool {
         const tab = self.activeTab() orelse return false;
+        // ghostty `scrollViewport(.delta = -X)` = older (scrollback up), `+X` = newer.
+        // wheel: 사용자 의도 = wheel 위로 (양수 raw) → older. 그래서 공용 `-delta`
+        //   로 반전 → scrollViewport(-X) = older.
+        // page: `.up` = older (PgUp 의 사용자 mental model = scrollback). wheel
+        //   convention 과 같이 *delta 양수 = 위로 의도* 로 통일. `.up` → +rows
+        //   → 공용 `-delta` 후 scrollViewport(-rows) = older. 사용자 시연 발견
+        //   정정 — 이전엔 `.up` 이 -rows 였어 최종 scrollViewport(+rows) = newer
+        //   로 *반대* 동작 (Win/Linux 모두 영향, mac 은 직접 scrollViewport
+        //   호출이라 무관).
         const delta: isize = switch (event) {
             .page => |dir| blk: {
                 const rows: isize = @intCast(visible_rows);
-                break :blk if (dir == .up) -rows else rows;
+                break :blk if (dir == .up) rows else -rows;
             },
             .wheel => |raw| @divTrunc(@as(isize, raw), 40),
         };
