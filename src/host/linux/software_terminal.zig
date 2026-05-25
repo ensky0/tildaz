@@ -619,6 +619,24 @@ pub const Renderer = struct {
         } else {
             self.drawDialogTextLine(memory, fb_w, fb_h, stride, text_x, text_y + ascent, footer, fg, bg);
         }
+
+        // 사용자 시연 발견 — dim loop + `rect` / `drawGlyph` 가 alpha byte 를
+        // 0 (fully transparent) 으로 덮어씀. `pack()` 가 0x00RRGGBB 만 반환,
+        // `paint()` 끝 의 opacity_alpha sweep 은 이미 끝났음. 그래서 dialog
+        // 그린 픽셀 모두 alpha=0 → compositor 가 wallpaper 비치게 합성.
+        // 해결: dialog 그리기 끝나면 전체 buffer 의 alpha byte 를 self.opacity_alpha
+        // 로 다시 sweep. paint() 의 sweep 과 동등 로직.
+        {
+            const opacity = self.opacity_alpha;
+            var py: i32 = 0;
+            while (py < fb_h) : (py += 1) {
+                var px: i32 = 0;
+                while (px < fb_w) : (px += 1) {
+                    const off: usize = @intCast(py * stride + px * 4);
+                    memory[off + 3] = opacity;
+                }
+            }
+        }
     }
 
     /// drawDialogOverlay helper — UTF-8 line 을 codepoint 별 glyph draw.

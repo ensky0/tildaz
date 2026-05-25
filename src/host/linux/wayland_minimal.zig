@@ -3625,6 +3625,13 @@ const Client = struct {
         }
         // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
+        // 사용자 시연 발견 — dialog 활성 중 F1 hide 시 다음 show 가 dialog
+        // 잔여 상태로 그려져 화면 깜빡임. F1 = 강력 종료 의미라 dialog 도
+        // dismiss (info 면 null, confirm 면 Cancel default).
+        if (self.dialog.active()) {
+            const result: ?bool = if (self.dialog.kind == .confirm) false else null;
+            self.dismissDialog(result);
+        }
         self.commitPendingInput();
         try self.destroyShellObjects();
         self.surface_hidden = true;
