@@ -206,7 +206,7 @@ pub fn build(b: *std.Build) void {
     // bash 는 PATH 에서 해석돼요:
     //   Windows - Git for Windows 의 C:\Program Files\Git\usr\bin\bash.exe
     //   macOS / Linux - 시스템 기본 bash
-    const package_step = b.step("package", "릴리즈 zip 번들과 SHA256 sidecar 생성 (Windows / macOS)");
+    const package_step = b.step("package", "릴리즈 artifact + SHA256 sidecar 생성 (Windows zip / macOS dmg / Linux tar.gz·deb·rpm·AppImage)");
     if (is_windows_target) {
         const arch_arg: []const u8 = switch (target.result.cpu.arch) {
             .x86_64 => "x64",
@@ -235,8 +235,35 @@ pub fn build(b: *std.Build) void {
             tildaz_version,
         });
         package_step.dependOn(&package_cmd.step);
+    } else if (is_linux_target) {
+        // Linux (#202) — 4 format (tar.gz / deb / rpm / AppImage) × 2 arch
+        // (x86_64 / aarch64) = 8 artifact 매트릭스. 한 호출당 한 format —
+        // `-Dformat=<tar.gz|deb|rpm|AppImage>` 로 선택. CI 가 matrix 안에서
+        // 각 (arch, format) 한 번씩 호출.
+        const format = b.option(
+            []const u8,
+            "format",
+            "Linux release artifact 형식 (tar.gz / deb / rpm / AppImage)",
+        ) orelse "tar.gz";
+        const linux_arch_arg: []const u8 = switch (target.result.cpu.arch) {
+            .x86_64 => "x86_64",
+            .aarch64 => "aarch64",
+            else => @panic("unsupported Linux arch for package step — only x86_64 / aarch64"),
+        };
+        const package_cmd = b.addSystemCommand(&.{
+            "bash",
+            "dist/linux/package.sh",
+            "--version",
+            tildaz_version,
+            "--arch",
+            linux_arch_arg,
+            "--format",
+            format,
+        });
+        package_cmd.step.dependOn(b.getInstallStep());
+        package_step.dependOn(&package_cmd.step);
     } else {
-        const package_fail = b.addFail("package step은 Windows 또는 macOS 대상에서만 동작합니다.");
+        const package_fail = b.addFail("package step은 Windows / macOS / Linux 대상에서만 동작합니다.");
         package_step.dependOn(&package_fail.step);
     }
 }

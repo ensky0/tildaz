@@ -40,7 +40,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$TILDAZ_EXE" ]]; then
-    TILDAZ_EXE="$REPO_ROOT/zig-out/bin/tildaz"
+    # tar.gz release tarball 안 install.sh — binary 가 script 와 같은 폴더에 있음.
+    # repo dev 환경 — zig-out/bin/tildaz.
+    if [[ -x "$SCRIPT_DIR/tildaz" ]]; then
+        TILDAZ_EXE="$SCRIPT_DIR/tildaz"
+    else
+        TILDAZ_EXE="$REPO_ROOT/zig-out/bin/tildaz"
+    fi
 fi
 
 if [[ ! -x "$TILDAZ_EXE" ]]; then
