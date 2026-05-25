@@ -249,6 +249,29 @@ Electron 앱 = 회귀" 일반화 아님. VSCode 만의 특수성으로 좁혀짐
 
 추가 검증 / 우회 방법은 [#194](https://github.com/ensky0/tildaz/issues/194) 에서 tracking.
 
+### 한자 / kanji 후보 popup 안 nav 키 — IME default 따름 ([#204](https://github.com/ensky0/tildaz/issues/204))
+
+한자 / kanji / hanzi 후보 popup 의 navigation 키 (다음 / 이전 후보, page 이동,
+확정 등) 는 *사용 중인 IME 가 정한 default*. tildaz client 는 popup 의 keynav
+강제 / 통일 안 함 — SPEC §0 #2 (platform / native 동작 우선) 원칙대로 IME 의
+native 동작 그대로 통과.
+
+각 IME (fcitx5 / ibus / kime / nimf 등) 마다 default keynav 다름 — 각 IME 의
+설정 UI / config 파일에서 변경 가능. 자세한 키 매핑은 사용 중인 IME 문서 참조.
+
+**예: fcitx5-hangul addon** (KDE Plasma / Cinnamon Wayland 등에서 자주 사용)
+
+| 키 | 동작 |
+|---|---|
+| ↑ / ↓ | page navigation (다음 / 이전 page) |
+| Tab / Shift+Tab | candidate navigation (다음 / 이전 후보) |
+| Enter | 후보 확정 |
+| ←/→ | *기본 미매핑* → cursor 이동 의도로 해석되어 popup 닫힘 |
+
+fcitx5-hangul 사용자가 ←/→ 로 candidate nav 원하면 `~/.config/fcitx5/conf/hangul.conf`
+의 `PrevCandidate` / `NextCandidate` 에 `Left` / `Right` 추가 — 전적으로 사용자
+선택. tildaz 코드 무관 (다른 IME 사용 시 영향 X).
+
 ### KDE Plasma 6 install — KRunner / Application Menu 통한 실행 필수
 
 KDE Plasma 6 환경에서 `~/.local/share/applications/tildaz.desktop` install 후
