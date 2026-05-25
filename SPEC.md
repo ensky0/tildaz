@@ -95,7 +95,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 윈도우 토글 (drop-down) | F1 (`RegisterHotKey`) | F1 (CGEventTap, config 변경 가능) | F1 portal `GlobalShortcuts.BindShortcuts` ([70c41e9](https://github.com/ensky0/tildaz/commit/70c41e9), L9) + portal 미가용 환경에선 `tildaz --toggle` Unix socket IPC ([39309d4](https://github.com/ensky0/tildaz/commit/39309d4), #198) | ✅ | ✅ | ✅ |
-| 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | ❌ — 단축키 핸들러 없음 (창 닫기는 마지막 탭 종료 시 자동, 또는 hotkey 로 hide). LINUX.md 갱신 + 별 후속 | ✅ | ✅ | ❌ |
+| 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
 ### 2.2 탭 관리
 
@@ -120,14 +120,14 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | ❌ — 단축키 핸들러 + dialog backend 미구현 (`src/dialog/linux.zig` stderr-only) | ✅ | ✅ | ❌ |
+| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` 호출. dialog backend 는 stderr + log (Linux dialog backend §6 참조) | ✅ | ✅ | 🟨 (단축키 ✅ / GUI dialog ❌ — §6) |
 
 ### 2.5 스크롤
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 한 페이지 위 (scrollback) | Shift+PgUp | Shift+PgUp | ❌ — XKB_KEY_Page_Up 핸들러 미발견 | ✅ | ✅ | ❌ |
-| 한 페이지 아래 | Shift+PgDn | Shift+PgDn | ❌ — 동상 | ✅ | ✅ | ❌ |
+| 한 페이지 위 (scrollback) | Shift+PgUp | Shift+PgUp | Shift+PgUp — `session.scrollActive(.{ .page = .up }, visible_rows)`. wheel 분기와 같은 통로 | ✅ | ✅ | ✅ |
+| 한 페이지 아래 | Shift+PgDn | Shift+PgDn | Shift+PgDn — 동상 (`.page = .down`) | ✅ | ✅ | ✅ |
 
 ### 2.6 Ctrl+key PTY 전달 (control char)
 
@@ -240,7 +240,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | Cmd/Ctrl+Shift+[ / ] (prev/next) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 동일 (Ctrl+Shift+[/]) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
-| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | ❌ — show_about / open_config / open_log / dump_perf 핸들러 자체 없음 (Linux 에 미구현) | ✅ | ✅ | ❌ |
+| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 각 handler 진입 첫 줄 (`commitPendingInput`) — Ctrl+Shift+I·P·L 등 신규 핸들러 모두 동일 패턴. reset_terminal / dump_perf 는 Linux 단축키 미할당 (별 후속) | ✅ | ✅ | 🟨 (show_about / open_config / open_log ✅ / reset / dump_perf Linux 단축키 미할당) |
 | F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow` 진입 직전 (visible 이면 `commitPendingInputFromContentView`) | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 
@@ -459,7 +459,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
 | 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal` | `dialog_windows.zig` (`MessageBoxW`) | `dialog_macos.zig` (NSAlert + osascript fallback) | `dialog/linux.zig` **stderr-only** — GUI dialog 없음 (Wayland 표준 dialog API 없음, kdialog/zenity DE 의존). config error 등 fatal 은 message 가 보이긴 함 (stderr + log) | ✅ | ✅ | 🟨 |
-| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | ❌ — 단축키 핸들러 + GUI dialog 미구현 | ✅ | ✅ | ❌ |
+| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | 단축키 (`Ctrl+Shift+I`) 는 `about.showAboutDialog()` 호출 — `dialog.showAboutAlert` 까지 도달 ✅. 그러나 Linux dialog backend (`src/dialog/linux.zig`) 가 stderr + log only — *GUI dialog 안 뜸* ❌. Wayland 표준 dialog API 부재 — D-Bus `org.freedesktop.Notifications` info 또는 layer-shell info window 등 자체 구현 필요 | ✅ | ✅ | ❌ |
 | Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | stderr fatal message + exit (log 에도 기록) | ✅ | ✅ | 🟨 |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | stderr error + exit | ✅ | ✅ | 🟨 |
 
@@ -569,8 +569,8 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| Config 열기 | Ctrl+Shift+P | Shift+Cmd+P | ❌ — 단축키 핸들러 없음 (xdg-open 호출 wire 도 없음) | ✅ | ✅ | ❌ |
-| Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | ❌ — 동상 | ✅ | ✅ | ❌ |
+| Config 열기 | Ctrl+Shift+P | Shift+Cmd+P | Ctrl+Shift+P — `paths.configPath` + `system_open.openInDefaultApp` (xdg-open) | ✅ | ✅ | ✅ |
+| Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L — `paths.logPath` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
 
 > Windows 의 `dump_perf` (스냅샷) 단축키는 Ctrl+Shift+P 와 충돌해 Ctrl+Shift+F12 로 이동 (개발자 dev 도구 컨벤션, F12).
 
