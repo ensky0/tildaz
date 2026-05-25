@@ -3,8 +3,8 @@
 #
 # zig-out/bin/ 의 3 파일 (tildaz.exe / conpty.dll / OpenConsole.exe) 과
 # dist/windows/README.txt 를 스테이징 폴더에 모아서
-#   zig-out/release/tildaz-v<ver>-win-x64.zip
-#   zig-out/release/tildaz-v<ver>-win-x64.zip.sha256
+#   zig-out/release/tildaz-v<ver>-win-<arch>.zip
+#   zig-out/release/tildaz-v<ver>-win-<arch>.zip.sha256
 # 를 만들어요.
 #
 # sha256 파일은 GNU coreutils 'sha256sum -c' 호환 포맷
@@ -15,7 +15,8 @@
 #   macOS / Linux                         → zip 커맨드
 #
 # 사용법:
-#   dist/windows/package.sh --version 0.2.9
+#   dist/windows/package.sh --version 0.2.9                    # 기본 x64
+#   dist/windows/package.sh --version 0.2.9 --arch arm64       # ARM64
 #   dist/windows/package.sh --version 0.2.9 --clean
 
 set -euo pipefail
@@ -24,11 +25,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 VERSION=""
+ARCH="x64"
 CLEAN=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
+        --arch)    ARCH="$2";    shift 2 ;;
         --clean)   CLEAN=1; shift ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \?//'
@@ -43,10 +46,15 @@ if [[ -z "$VERSION" ]]; then
     exit 2
 fi
 
+case "$ARCH" in
+    x64|arm64) ;;
+    *) echo "ERROR: --arch must be 'x64' or 'arm64' (got '$ARCH')" >&2; exit 2 ;;
+esac
+
 SRC_BIN="$REPO_ROOT/zig-out/bin"
 SRC_README="$SCRIPT_DIR/README.txt"
 RELEASE_ROOT="$REPO_ROOT/zig-out/release"
-NAME="tildaz-v${VERSION}-win-x64"
+NAME="tildaz-v${VERSION}-win-${ARCH}"
 STAGE="$RELEASE_ROOT/$NAME"
 ZIP="$RELEASE_ROOT/${NAME}.zip"
 SHA256="${ZIP}.sha256"

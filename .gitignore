@@ -15,6 +15,7 @@ build.zig.tmp.*
 # Local analysis worktree (Windows Terminal source mirror for #136/#137 — 임시)
 .wt-src/
 
-# vendored ConPTY runtime (MS MIT) — shipped alongside tildaz.exe
-!vendor/conpty/OpenConsole.exe
-!vendor/conpty/conpty.dll
+# vendored ConPTY runtime (MS MIT) — shipped alongside tildaz.exe.
+# x64/ + arm64/ subdir 각각 arch native binary.
+!vendor/conpty/**/OpenConsole.exe
+!vendor/conpty/**/conpty.dll
