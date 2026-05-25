@@ -26,6 +26,9 @@ const xkb = @import("xkb.zig");
 const dbus = @import("dbus.zig");
 const portal = @import("portal.zig");
 const single_instance = @import("single_instance.zig");
+const about = @import("../../about.zig");
+const paths = @import("../../paths.zig");
+const system_open = @import("../../system_open.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -219,8 +222,17 @@ const xkb_key_c_lower: u32 = 0x63;
 const xkb_key_c_upper: u32 = 0x43;
 const xkb_key_e_lower: u32 = 0x65;
 const xkb_key_e_upper: u32 = 0x45;
+const xkb_key_i_lower: u32 = 0x69;
+const xkb_key_i_upper: u32 = 0x49;
+const xkb_key_l_lower: u32 = 0x6c;
+const xkb_key_l_upper: u32 = 0x4c;
+const xkb_key_p_lower: u32 = 0x70;
+const xkb_key_p_upper: u32 = 0x50;
 const xkb_key_v_lower: u32 = 0x76;
 const xkb_key_v_upper: u32 = 0x56;
+// XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h`. F4 만 Alt+F4 quit
+// 단축키용. (F1 toggle 은 portal hotkey 처리이라 별 매핑 필요 없음.)
+const xkb_key_f4: u32 = 0xffc1;
 // L12-β — tab 단축키. Linux / Windows 의 일반 terminal 관습 (gnome-terminal /
 // kitty) 동등 — `Ctrl+Shift+T` 새 탭 / `Ctrl+Shift+W` 활성 탭 닫기 / `Ctrl+
 // Shift+]` 다음 탭 / `Ctrl+Shift+[` 이전 탭. Ctrl 단독 단축키는 shell 의 정상
@@ -2693,6 +2705,56 @@ const Client = struct {
                     self.handlePrevTab();
                     return;
                 }
+                // SPEC §2.4 — Ctrl+Shift+I : About 다이얼로그 (Win 동등 native).
+                // §4.1 — 단축키 진입 시 rename commit (commitPendingInput).
+                if (sym == xkb_key_i_lower or sym == xkb_key_i_upper) {
+                    self.commitPendingInput();
+                    about.showAboutDialog();
+                    return;
+                }
+                // SPEC §11.2 — Ctrl+Shift+P : Open Config (default editor 로).
+                if (sym == xkb_key_p_lower or sym == xkb_key_p_upper) {
+                    self.commitPendingInput();
+                    const cfg_path = paths.configPath(self.allocator) catch return;
+                    defer self.allocator.free(cfg_path);
+                    system_open.openInDefaultApp(self.allocator, cfg_path);
+                    return;
+                }
+                // SPEC §11.2 — Ctrl+Shift+L : Open Log.
+                if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
+                    self.commitPendingInput();
+                    const log_path = paths.logPath(self.allocator) catch return;
+                    defer self.allocator.free(log_path);
+                    system_open.openInDefaultApp(self.allocator, log_path);
+                    return;
+                }
+            }
+            // SPEC §2.5 — Shift+PgUp / Shift+PgDn : scrollback (한 페이지 단위).
+            // mac `tab.terminal.scrollViewport({-rows / +rows})` 와 동등하게
+            // `session.scrollActive({.page = .up/.down}, visible_rows)` 사용
+            // — wheel 분기와 같은 통로. Ctrl 동반 X.
+            if (self.keyboard.shiftActive() and !self.keyboard.ctrlActive() and !self.keyboard.altActive()) {
+                if (sym == xkb_key_page_up or sym == xkb_key_page_down) {
+                    self.commitPendingInput();
+                    if (self.session) |*session| {
+                        const ch = self.renderer.cellHeight();
+                        const usable_h = @max(0, self.window_height - self.renderer.tabBarHeightPx() - self.renderer.paddingPx() * 2);
+                        const rows_i32 = @divTrunc(usable_h, ch);
+                        const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
+                        const dir: app_event.PageDirection = if (sym == xkb_key_page_up) .up else .down;
+                        const did = session.scrollActive(.{ .page = dir }, visible_rows);
+                        if (did) self.requestRedraw();
+                    }
+                    return;
+                }
+            }
+            // SPEC §2.1 — Alt+F4 : 앱 종료 (Win 동등 native, Linux desktop 표준).
+            // main loop break — `self.running = false`. drainExitedTabs 와 같은
+            // 종료 path.
+            if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and !self.keyboard.shiftActive() and sym == xkb_key_f4) {
+                self.commitPendingInput();
+                self.running = false;
+                return;
             }
             // SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등). Ctrl / Shift 미동반
             // 만 trigger — Alt+Shift+숫자 / Alt+Ctrl+숫자 같은 다른 조합은 shell /
