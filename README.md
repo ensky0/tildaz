@@ -40,7 +40,8 @@ Download the latest artifact from
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Windows 10 1903+ x64 | `tildaz-vX.Y.Z-windows.zip` | Unzip anywhere and keep `tildaz.exe`, `conpty.dll`, and `OpenConsole.exe` together. |
+| Windows 10 1903+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere and keep `tildaz.exe`, `conpty.dll`, and `OpenConsole.exe` together. |
+| Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |
 | macOS 13+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
 
 First launch creates the default config:
@@ -95,7 +96,8 @@ Outputs:
 
 | Platform | Local build output | Package output |
 |---|---|---|
-| Windows | `zig-out/bin/tildaz.exe` | `zig-out/release/tildaz-v<ver>-windows.zip` |
+| Windows x64 | `zig-out/bin/tildaz.exe` | `zig-out/release/tildaz-v<ver>-win-x64.zip` |
+| Windows ARM64 | `zig-out/bin/tildaz.exe` (with `-Dtarget=aarch64-windows`) | `zig-out/release/tildaz-v<ver>-win-arm64.zip` |
 | macOS | `zig-out/TildaZ.app` | `zig-out/release/tildaz-v<ver>-macos.dmg` |
 
 Official release binaries are built by GitHub Actions from `v*` tags. Local

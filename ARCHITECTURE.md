@@ -91,8 +91,9 @@ from `v*` tags.
 
 | Platform | Artifact | Signing |
 |---|---|---|
-| Windows | `tildaz-v<ver>-windows.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
-| macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle, ad-hoc signed |
+| Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
+| Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
+| macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), ad-hoc signed |
 
 The release workflow checks that:
 
