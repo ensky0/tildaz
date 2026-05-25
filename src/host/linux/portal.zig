@@ -32,6 +32,16 @@ const member_create_session: [*:0]const u8 = "CreateSession";
 const member_bind_shortcuts: [*:0]const u8 = "BindShortcuts";
 const member_activated: [*:0]const u8 = "Activated";
 
+/// L9-δ — `org.freedesktop.Notifications` D-Bus service (portal 와 별개).
+/// KDE / GNOME / sway / Hyprland / Cinnamon 등 거의 모든 desktop 의 notification
+/// daemon 이 이 spec 으로 listen. fdo Desktop Notifications spec 출처:
+/// https://specifications.freedesktop.org/notification-spec/notification-spec-latest.html
+const notifications_destination: [*:0]const u8 = "org.freedesktop.Notifications";
+const notifications_path: [*:0]const u8 = "/org/freedesktop/Notifications";
+const notifications_interface: [*:0]const u8 = "org.freedesktop.Notifications";
+const notifications_member_notify: [*:0]const u8 = "Notify";
+const notify_call_timeout_ms: c_int = 2_000;
+
 /// Request handle / session handle 의 token (path 의 마지막 segment). 우리가
 /// 고정 — tildaz process 안에선 동시에 portal session 한 개만 운영. 다른
 /// instance 와 conflict 시 portal 가 임의 token 으로 override 가능 (spec).
@@ -90,6 +100,12 @@ const ResponseWaitState = struct {
     allocator: std.mem.Allocator,
     response_code: u32 = std.math.maxInt(u32),
     session_handle: ?[]u8 = null,
+    /// L9-δ — BindShortcuts response 의 `shortcuts` array 안 우리 "toggle"
+    /// entry 의 `trigger_description` (human-readable, 예: "F1", "Ctrl+F1").
+    /// portal-kde 가 사용자 dialog 에서 다른 키로 변경한 경우 우리가 보낸
+    /// preferred_trigger 와 다름 — 비교 후 사용자에게 desktop notification.
+    /// 일부 portal 구현 (Cinnamon 등) 이 안 채울 가능성 — null / 빈 string 면 skip.
+    actual_trigger: ?[]u8 = null,
     done: bool = false,
 };
 
@@ -158,18 +174,18 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
                         }
                     }
                 } else if (std.mem.eql(u8, key, "shortcuts") and api.iter_get_arg_type(&entry_iter) == dbus.dbus_type_variant) {
-                    // L9-γ 진단 trace — BindShortcuts response 의 `shortcuts`
-                    // variant 안 a(sa{sv}) 풀어서 entry count + 각 entry 의
-                    // shortcut id 출력. 빈 array 면 portal-kde 가 KGlobalAccel
-                    // 등록 실패 (사용자 dialog 거부 or 충돌).
+                    // L9-δ — BindShortcuts response 의 `shortcuts` variant 안
+                    // a(sa{sv}) 풀어서 각 entry 의 (id, attrs) 확인. id 가
+                    // "toggle" 인 entry 의 `trigger_description` 추출 — caller
+                    // (`bindToggleShortcut`) 가 preferred_trigger 와 비교 후
+                    // 다르면 desktop notification.
                     var var_iter: dbus.DBusMessageIter = .{};
                     api.iter_recurse(&entry_iter, &var_iter);
                     if (api.iter_get_arg_type(&var_iter) == dbus.dbus_type_array) {
                         var sc_arr: dbus.DBusMessageIter = .{};
                         api.iter_recurse(&var_iter, &sc_arr);
-                        var count: u32 = 0;
                         while (api.iter_get_arg_type(&sc_arr) == dbus.dbus_type_struct) {
-                            count += 1;
+                            extractTriggerDescriptionForToggle(state, &sc_arr);
                             _ = api.iter_next(&sc_arr);
                         }
                     }
@@ -177,6 +193,56 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
             }
         }
         _ = api.iter_next(&arr_iter);
+    }
+}
+
+/// L9-δ — shortcuts array 의 한 struct iterator 에서 (id, attrs) 를 읽어
+/// id == "toggle" 이면 attrs 의 `trigger_description` string 을 추출해 state 에
+/// dupe 저장. 첫 호출에서 채워지면 이후 호출에선 skip (한 BindShortcuts 호출에
+/// shortcut 1 개만 등록하지만, portal 가 여러 entry 반환할 가능성 hedge).
+fn extractTriggerDescriptionForToggle(state: *ResponseWaitState, sc_arr: *dbus.DBusMessageIter) void {
+    const api = state.api;
+    if (state.actual_trigger != null) return;
+
+    var struct_iter: dbus.DBusMessageIter = .{};
+    api.iter_recurse(sc_arr, &struct_iter);
+
+    // arg 0: s shortcut_id
+    if (api.iter_get_arg_type(&struct_iter) != dbus.dbus_type_string) return;
+    var sid_c: ?[*:0]const u8 = null;
+    api.iter_get_basic(&struct_iter, @ptrCast(&sid_c));
+    const sid = if (sid_c) |s| std.mem.span(s) else return;
+    if (!std.mem.eql(u8, sid, std.mem.span(shortcut_id_toggle))) return;
+
+    // arg 1: a{sv} attrs
+    _ = api.iter_next(&struct_iter);
+    if (api.iter_get_arg_type(&struct_iter) != dbus.dbus_type_array) return;
+
+    var attrs_iter: dbus.DBusMessageIter = .{};
+    api.iter_recurse(&struct_iter, &attrs_iter);
+    while (api.iter_get_arg_type(&attrs_iter) == dbus.dbus_type_dict_entry) {
+        var a_entry: dbus.DBusMessageIter = .{};
+        api.iter_recurse(&attrs_iter, &a_entry);
+        if (api.iter_get_arg_type(&a_entry) == dbus.dbus_type_string) {
+            var ak_c: ?[*:0]const u8 = null;
+            api.iter_get_basic(&a_entry, @ptrCast(&ak_c));
+            _ = api.iter_next(&a_entry);
+            if (ak_c) |ak| {
+                const akey = std.mem.span(ak);
+                if (std.mem.eql(u8, akey, "trigger_description") and api.iter_get_arg_type(&a_entry) == dbus.dbus_type_variant) {
+                    var av_iter: dbus.DBusMessageIter = .{};
+                    api.iter_recurse(&a_entry, &av_iter);
+                    if (api.iter_get_arg_type(&av_iter) == dbus.dbus_type_string) {
+                        var v_c: ?[*:0]const u8 = null;
+                        api.iter_get_basic(&av_iter, @ptrCast(&v_c));
+                        if (v_c) |v| {
+                            state.actual_trigger = state.allocator.dupe(u8, std.mem.span(v)) catch null;
+                        }
+                    }
+                }
+            }
+        }
+        _ = api.iter_next(&attrs_iter);
     }
 }
 
@@ -384,6 +450,11 @@ pub fn bindToggleShortcut(
         .expected_request_path = expected_request_path,
         .allocator = allocator,
     };
+    // success / response-code-fail 경로에선 actual_trigger 를 명시 free / defer
+    // 로 처리. errdefer 는 그 사이 *예상 외* error return (예: ConnectionLost /
+    // Timeout — 이때도 filter callback 이 이미 actual_trigger 채웠을 가능성)
+    // 의 leak 만 hedge.
+    errdefer if (state.actual_trigger) |t| allocator.free(t);
 
     if (bus.api.add_filter(bus.conn, responseFilter, &state, null) == 0) return error.PortalAddFilterFailed;
     defer bus.api.remove_filter(bus.conn, responseFilter, &state);
@@ -493,10 +564,108 @@ pub fn bindToggleShortcut(
 
     if (state.response_code != response_code_success) {
         log.appendLine("portal", "BindShortcuts response code={d} (1=user cancel)", .{state.response_code});
-        return error.PortalBindDenied;
+        return error.PortalBindDenied; // actual_trigger leak 은 위 errdefer 가 해제
     }
 
     log.appendLine("portal", "shortcut bound id={s}", .{std.mem.span(shortcut_id_toggle)});
+
+    // L9-δ — 실제 bound trigger 와 우리가 요청한 preferred_trigger 비교. portal-kde
+    // 의 사용자 dialog 에서 다른 키 선택 / KDE settings 에서 사용자가 직접 변경 등
+    // 으로 다를 수 있음 — 사용자에게 desktop notification 으로 알림.
+    //
+    // *왜 yes/no dialog 가 아니고 notification 인가*: Wayland 에는 일반 dialog API
+    // 표준이 없음 (kdialog/zenity 는 DE 의존). 그리고 yes 분기에서 config 를 갱신
+    // 하면 "프로그램이 config 안 고친다" 정책 위반 — 사용자가 config 를 직접 수정
+    // 하도록 *알림만* 띄우는 게 일관 (#198 결정 흐름 — Option Y).
+    //
+    // 비교는 string-equal. portal trigger_description 의 human-readable 형식 (예:
+    // "F1", "Ctrl+F1") 과 우리 keysymToAccelerator 출력 (예: "F1") 의 표기 충돌
+    // 가능 — false-positive 가 더 안전 (사용자 인지). 일부 portal (Cinnamon 등)
+    // 은 trigger_description 안 채울 수도 — null / 빈 string 이면 skip.
+    if (state.actual_trigger) |actual| {
+        defer allocator.free(actual);
+        if (actual.len > 0 and !std.mem.eql(u8, actual, accelerator)) {
+            log.appendLine("portal", "hotkey mismatch — config={s} actual={s}", .{ accelerator, actual });
+            const body_buf = std.fmt.allocPrintSentinel(allocator, "System binding {s} differs from config {s}. Edit ~/.config/tildaz/tildaz.json and restart to align.", .{ actual, accelerator }, 0) catch null;
+            if (body_buf) |b| {
+                defer allocator.free(b);
+                sendNotification(bus, "TildaZ", "TildaZ hotkey differs from config", b.ptr) catch |e| {
+                    log.appendLine("portal", "Notify call failed (no notification daemon?): {s}", .{@errorName(e)});
+                };
+            }
+        } else if (actual.len > 0) {
+            log.appendLine("portal", "hotkey trigger confirmed actual={s}", .{actual});
+        }
+    }
+}
+
+/// L9-δ — `org.freedesktop.Notifications.Notify` D-Bus method call.
+/// signature `susssasa{sv}i`:
+///   s app_name, u replaces_id, s app_icon, s summary, s body,
+///   as actions (empty 가능), a{sv} hints (empty 가능), i expire_timeout
+///
+/// fire-and-forget — 반환되는 notification id (u32) 무시. notification daemon
+/// 부재 (`org.freedesktop.Notifications` service 등록 안 됨) 시 send_with_reply
+/// 가 method-call 에러 반환 — caller 에서 log 만 (fatal 아님). spec:
+/// https://specifications.freedesktop.org/notification-spec/notification-spec-latest.html
+pub fn sendNotification(
+    bus: *dbus.SessionBus,
+    app_name: [*:0]const u8,
+    summary: [*:0]const u8,
+    body: [*:0]const u8,
+) !void {
+    const call = bus.api.message_new_method_call(
+        notifications_destination,
+        notifications_path,
+        notifications_interface,
+        notifications_member_notify,
+    ) orelse return error.NotifyMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    var iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_init_append(call, &iter);
+
+    var app_var: [*:0]const u8 = app_name;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&app_var)) == 0) return error.NotifyAppendFailed;
+
+    var replaces_id: u32 = 0;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_uint32, @ptrCast(&replaces_id)) == 0) return error.NotifyAppendFailed;
+
+    var icon_var: [*:0]const u8 = "";
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&icon_var)) == 0) return error.NotifyAppendFailed;
+
+    var summary_var: [*:0]const u8 = summary;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&summary_var)) == 0) return error.NotifyAppendFailed;
+
+    var body_var: [*:0]const u8 = body;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&body_var)) == 0) return error.NotifyAppendFailed;
+
+    // arg 5: as actions — 빈 array. interactive button 없음 (notification 만).
+    var actions_iter: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &actions_iter) == 0) return error.NotifyAppendFailed;
+    if (bus.api.iter_close_container(&iter, &actions_iter) == 0) return error.NotifyAppendFailed;
+
+    // arg 6: a{sv} hints — 빈 dict (urgency / category 등 hint 안 줌, 기본).
+    var hints_iter: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "{sv}", &hints_iter) == 0) return error.NotifyAppendFailed;
+    if (bus.api.iter_close_container(&iter, &hints_iter) == 0) return error.NotifyAppendFailed;
+
+    // arg 7: i expire_timeout (-1 = daemon default; 0 = never; 양수 = ms).
+    var timeout: i32 = -1;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_int32, @ptrCast(&timeout)) == 0) return error.NotifyAppendFailed;
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, notify_call_timeout_ms, &err) orelse {
+        if (bus.api.error_is_set(&err) != 0) {
+            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+            log.appendLine("notify", "Notify method call failed: {s}", .{m});
+        }
+        return error.NotifyCallFailed;
+    };
+    bus.api.message_unref(reply);
 }
 
 /// L9-γ — `Activated` signal 도착 시 호출되는 user callback. portal 가
