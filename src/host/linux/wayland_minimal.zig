@@ -14,6 +14,7 @@ const terminal_interaction = @import("../../terminal_interaction.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
+const display_width = @import("../../font/display_width.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
@@ -212,8 +213,12 @@ const xkb_key_insert: u32 = 0xff63;
 const xkb_key_delete: u32 = 0xffff;
 const xkb_key_iso_left_tab: u32 = 0xfe20;
 // 알파벳 키는 ASCII codepoint — xkb 가 Shift 활성 시 대문자 keysym 을 돌려준다.
+const xkb_key_a_lower: u32 = 0x61;
+const xkb_key_a_upper: u32 = 0x41;
 const xkb_key_c_lower: u32 = 0x63;
 const xkb_key_c_upper: u32 = 0x43;
+const xkb_key_e_lower: u32 = 0x65;
+const xkb_key_e_upper: u32 = 0x45;
 const xkb_key_v_lower: u32 = 0x76;
 const xkb_key_v_upper: u32 = 0x56;
 // L12-β — tab 단축키. Linux / Windows 의 일반 terminal 관습 (gnome-terminal /
@@ -2079,6 +2084,13 @@ const Client = struct {
                     self.tab_scroll_x,
                     @intCast(session.count()),
                 ) orelse return;
+                // SPEC §4.1 — rename 활성 중 *다른* 탭 click (switch / close / drag begin)
+                // 진입 시 commitPendingInput. 같은 탭 click 은 cursor 이동 (아래 별
+                // 분기) 이라 commit 안 함. 사용자 시연 발견 — 다른 탭바 클릭 시
+                // 3번탭 rename 이 commit 안 되어 I-beam 편집 상태 유지되던 버그.
+                if (self.rename_state.isActive() and self.rename_state.tab_index != hit.tab_index) {
+                    self.commitPendingInput();
+                }
                 var host = self.buildTabActionsHost();
                 if (hit.on_close) {
                     _ = tab_actions.closeIndex(&host, hit.tab_index);
@@ -2253,34 +2265,103 @@ const Client = struct {
         return .{ .x = pad, .y = tab_bar_h + pad, .w = cw, .h = ch };
     }
 
+    /// IME cursor rectangle 의 named 형 — `updateCursorRectangle` / `computeRenameCursorRect`
+    /// 의 anonymous struct 들이 if-else branch 에서 같은 type 으로 합쳐지도록.
+    const CursorRect = struct { x: i32, y: i32, w: i32, h: i32 };
+
+    /// rename 활성 시 — 탭바의 rename cursor 의 surface-relative pixel rect.
+    /// mac `firstRectForCharacterRange` 가 tab rename snapshot 기준 rect 반환
+    /// 하는 패턴 동등 — IME popup 이 탭바 cursor 옆에 뜨도록.
+    fn computeRenameCursorRect(self: *const Client) ?CursorRect {
+        const session = if (self.session) |*s| s else return null;
+        const tab_idx = self.rename_state.tab_index orelse return null;
+        if (tab_idx >= session.count()) return null;
+
+        const cw = self.renderer.cellWidth();
+        const tab_w_px = self.renderer.tabWidthPx();
+        const tab_pad_px = self.renderer.tabPaddingPx();
+        const tab_bar_h = self.renderer.tabBarHeightPx();
+
+        const layout_inputs = tab_layout.Inputs{
+            .viewport_w = @floatFromInt(self.window_width),
+            .tab_count = @intCast(session.count()),
+            .tab_w = @floatFromInt(tab_w_px),
+            .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+            .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .scroll_x = self.tab_scroll_x,
+        };
+        const layout = tab_layout.compute(layout_inputs);
+        const tab_world_x: f32 = @as(f32, @floatFromInt(tab_idx)) * @as(f32, @floatFromInt(tab_w_px));
+        const text_x_start: f32 = layout.tab_area_x + tab_world_x - self.tab_scroll_x +
+            @as(f32, @floatFromInt(tab_pad_px));
+
+        // title bytes [0..cursor] 의 cell width 합. preedit advance 는 cursor
+        // *뒤* 에 push-right 라 cursor x 자체엔 영향 X (cursor 가 preedit 앞).
+        var cursor_x_in_text: f32 = 0;
+        const title = self.rename_state.buf[0..self.rename_state.len];
+        var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
+        var byte: usize = 0;
+        while (iter.nextCodepoint()) |cp| {
+            if (byte >= self.rename_state.cursor) break;
+            const cells = display_width.codepointWidth(@intCast(cp));
+            cursor_x_in_text += @as(f32, @floatFromInt(cw)) * @as(f32, @floatFromInt(cells));
+            const len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+            byte += len;
+        }
+        const cursor_visual_x: f32 = text_x_start + cursor_x_in_text - self.rename_state.scroll_offset;
+        return .{
+            .x = @intFromFloat(cursor_visual_x),
+            .y = 0, // 탭바 최상단 — IME popup 이 탭바 아래로 나옴
+            .w = cw,
+            .h = tab_bar_h,
+        };
+    }
+
     /// L10-γ — `set_cursor_rectangle(x, y, w, h)` + commit. surface-relative
     /// pixel 좌표. fcitx5 popover (한자 / 확장 candidate window) 가 cursor 근처
-    /// 에 정렬되도록. 캐시 비교로 cursor 가 실제로 이동했을 때만 전송 (spam
-    /// 회피). text_input 미활성이면 no-op.
+    /// 에 정렬되도록. text-input-v3 spec 의 cursor_rectangle 단위 = **logical
+    /// pixel** — fractional scale 환경 (KDE 1.5x / 1.7x 등) 에서 우리 physical
+    /// 좌표를 그대로 넘기면 IME 가 큰 logical 좌표로 해석 → popup 화면 중간 등
+    /// 엉뚱한 위치. `enableTextInput` 의 변환과 같은 패턴 (사용자 시연 발견).
+    ///
+    /// rename 활성 시 — 탭바 rename cursor 위치 (사용자 시연 — 한자키 누르면
+    /// popup 이 탭바 위치 아닌 cell cursor 위치에 떴음). mac SPEC §5 의
+    /// firstRectForCharacterRange 의 terminal cursor row / tab rename snapshot
+    /// 분기 동등.
+    ///
+    /// 캐시 비교로 cursor 가 실제로 이동했을 때만 전송 (spam 회피). text_input
+    /// 미활성이면 no-op.
     fn updateCursorRectangle(self: *Client) !void {
         if (!self.text_input_enabled or self.text_input_id == 0) return;
-        const vp = self.renderer.render_state.cursor.viewport orelse return;
+
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
-        const pad = self.renderer.paddingPx();
-        const tab_bar_h = self.renderer.tabBarHeightPx();
-        const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
-        const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
-        if (x == self.last_cursor_rect_x and
-            y == self.last_cursor_rect_y and
-            cw == self.last_cursor_rect_w and
-            ch == self.last_cursor_rect_h) return;
+        const rect: CursorRect = if (self.rename_state.isActive())
+            self.computeRenameCursorRect() orelse return
+        else blk: {
+            const vp = self.renderer.render_state.cursor.viewport orelse return;
+            const pad = self.renderer.paddingPx();
+            const tab_bar_h = self.renderer.tabBarHeightPx();
+            const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
+            const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
+            break :blk CursorRect{ .x = x, .y = y, .w = cw, .h = ch };
+        };
+
+        if (rect.x == self.last_cursor_rect_x and
+            rect.y == self.last_cursor_rect_y and
+            rect.w == self.last_cursor_rect_w and
+            rect.h == self.last_cursor_rect_h) return;
         var msg = Msg.init(self.text_input_id, text_input_request_set_cursor_rectangle);
-        try msg.putI32(x);
-        try msg.putI32(y);
-        try msg.putI32(cw);
-        try msg.putI32(ch);
+        try msg.putI32(self.physicalToLogical(rect.x));
+        try msg.putI32(self.physicalToLogical(rect.y));
+        try msg.putI32(self.physicalToLogical(rect.w));
+        try msg.putI32(self.physicalToLogical(rect.h));
         try msg.send(self.stream);
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
-        self.last_cursor_rect_x = x;
-        self.last_cursor_rect_y = y;
-        self.last_cursor_rect_w = cw;
-        self.last_cursor_rect_h = ch;
+        self.last_cursor_rect_x = rect.x;
+        self.last_cursor_rect_y = rect.y;
+        self.last_cursor_rect_w = rect.w;
+        self.last_cursor_rect_h = rect.h;
     }
 
     fn disableTextInput(self: *Client) !void {
@@ -2447,21 +2528,40 @@ const Client = struct {
     /// L12-γ-2 — rename 모드 활성 시 key 라우팅. xkb keysym → RenameKey 매핑
     /// 또는 printable utf8 → `insertCodepoint`. RenameOutcome 으로 commit /
     /// cancel 분기.
+    ///
+    /// SPEC §5.1 — Ctrl+A / Ctrl+E 도 line-nav (Home / End) 로 매핑. terminal
+    /// readline 컨벤션 + native textbox 표준. mac `tildazKeyDown` 의 keyCode
+    /// intercept 동등 (mac SPEC §5.1 시도/폐기 기록 참조). preedit 자모는 IME
+    /// 자체 commit_string 으로 rename buf 에 들어옴 (별도 명시 commit 호출 X
+    /// — 같은 batch 안 commit_string + preedit_string(empty) + done 흐름).
     fn handleRenameKey(self: *Client, key: u32) !void {
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
 
-        const rename_key: ?tab_interaction.RenameKey = switch (sym) {
-            xkb_key_return => .enter,
-            xkb_key_escape => .escape,
-            xkb_key_backspace => .backspace,
-            xkb_key_delete => .delete,
-            xkb_key_left => .left,
-            xkb_key_right => .right,
-            xkb_key_home => .home,
-            xkb_key_end => .end,
-            else => null,
-        };
+        // 사용자 시연 발견 — Ctrl+A / Ctrl+E 가 mapping 없어 (utf8 cp < 0x20
+        // reject) no-op 였음. Ctrl 단독 (Shift 없을 때) + a/e 만 매핑.
+        // Ctrl+Shift+A / Ctrl+Shift+E 는 별 의미 없어 그대로 utf8 path.
+        var rename_key: ?tab_interaction.RenameKey = null;
+        if (self.keyboard.ctrlActive() and !self.keyboard.shiftActive()) {
+            rename_key = switch (sym) {
+                xkb_key_a_lower, xkb_key_a_upper => .home,
+                xkb_key_e_lower, xkb_key_e_upper => .end,
+                else => null,
+            };
+        }
+        if (rename_key == null) {
+            rename_key = switch (sym) {
+                xkb_key_return => .enter,
+                xkb_key_escape => .escape,
+                xkb_key_backspace => .backspace,
+                xkb_key_delete => .delete,
+                xkb_key_left => .left,
+                xkb_key_right => .right,
+                xkb_key_home => .home,
+                xkb_key_end => .end,
+                else => null,
+            };
+        }
         if (rename_key) |rk| {
             const outcome = self.rename_state.handleKey(rk);
             try self.applyRenameOutcome(outcome);
@@ -2530,22 +2630,33 @@ const Client = struct {
             return;
         }
 
-        // L10-γ — Ctrl+key 가 client 까지 forward 됐다는 건 fcitx5 가 자기
-        // 단축키 아니라고 통과시킨 것. 그 시점에 IME 조합 중이면 client 측
-        // preedit / pending 을 즉시 클리어 — AGENTS.md macOS Cocoa quirk 3번
-        // 동등 ("shell line abort 의도와 일관"). fcitx5 가 자체 buffer 도 같이
-        // reset 한다는 전제 (preedit_string 으로 reset 신호 도착하면 자동
-        // 갱신). 시연으로 검증.
+        const xkb_key = key + wayland_xkb_keycode_offset;
+        const sym_opt = self.keyboard.oneSym(xkb_key);
+
+        // SPEC §2.6 / §5.1 — Ctrl+key + preedit 정책 (사용자 시연 발견 후 정정).
+        //   Ctrl+C 만 *discard* — shell line abort (\\x03 SIGINT) 의도와 일관.
+        //     fcitx5 의 자체 IME state 도 reset 가정.
+        //   그 외 모든 Ctrl+letter (Ctrl+A / Ctrl+E / Ctrl+L / Ctrl+D 등) 는
+        //     *commit to PTY* — terminal readline 이 자모 먼저 받고 그 다음
+        //     Ctrl byte 처리 (`commitPendingInput` 이 자모 PTY 송신 + fcitx5
+        //     session disable/enable 으로 IME 자모 buffer 도 비움).
         if (self.keyboard.ctrlActive() and self.preedit_text.items.len > 0) {
-            self.pending_preedit.clearRetainingCapacity();
-            self.pending_commit.clearRetainingCapacity();
-            self.preedit_text.clearRetainingCapacity();
-            self.renderer.preedit_text = "";
-            self.needs_redraw = true;
+            const is_ctrl_c = if (sym_opt) |s|
+                (s == xkb_key_c_lower or s == xkb_key_c_upper)
+            else
+                false;
+            if (is_ctrl_c) {
+                self.pending_preedit.clearRetainingCapacity();
+                self.pending_commit.clearRetainingCapacity();
+                self.preedit_text.clearRetainingCapacity();
+                self.renderer.preedit_text = "";
+                self.needs_redraw = true;
+            } else {
+                self.commitPendingInput();
+            }
         }
 
-        const xkb_key = key + wayland_xkb_keycode_offset;
-        if (self.keyboard.oneSym(xkb_key)) |sym| {
+        if (sym_opt) |sym| {
             // Ctrl+Shift+C / V — SPEC.md §2.3 클립보드. Linux 도 Windows 와 같은
             // native modifier (Ctrl+Shift). 분기 안에서 utf8 PTY 송신은 차단해서
             // xkb 가 만든 noise byte 가 shell 에 들어가지 않게 한다.
