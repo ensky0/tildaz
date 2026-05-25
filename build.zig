@@ -168,8 +168,18 @@ pub fn build(b: *std.Build) void {
         // tildaz.exe 와 같은 폴더로 복사되어 conpty.dll 의 ConptyCreatePseudoConsole
         // 이 sibling OpenConsole.exe 를 찾아 스폰합니다. 누락 시 src/conpty.zig 가
         // kernel32 CreatePseudoConsole 로 fallback 합니다.
-        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path("vendor/conpty/conpty.dll"), "conpty.dll").step);
-        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path("vendor/conpty/OpenConsole.exe"), "OpenConsole.exe").step);
+        //
+        // target arch 별 native binary 선택 — PE32+ x86_64 / ARM64 별도 (PE loader
+        // 가 arch mismatch 시 STATUS_INVALID_IMAGE_FORMAT 로 거부).
+        const conpty_arch_dir: []const u8 = switch (target.result.cpu.arch) {
+            .x86_64 => "vendor/conpty/x64",
+            .aarch64 => "vendor/conpty/arm64",
+            else => @panic("unsupported Windows arch — only x86_64 / aarch64 ConPTY bundle 제공"),
+        };
+        const conpty_dll_path = b.fmt("{s}/conpty.dll", .{conpty_arch_dir});
+        const open_console_path = b.fmt("{s}/OpenConsole.exe", .{conpty_arch_dir});
+        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(conpty_dll_path), "conpty.dll").step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(open_console_path), "OpenConsole.exe").step);
     }
 
     // 실행 단계
@@ -186,22 +196,30 @@ pub fn build(b: *std.Build) void {
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
-    //   zig build package
+    //   zig build package                              → x64 (기본)
+    //   zig build package -Dtarget=aarch64-windows     → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + conpty.dll + OpenConsole.exe
-    //     → bash dist/windows/package.sh --version <tildaz_version>
-    //        → zig-out/release/tildaz-v<ver>-win-x64.zip
-    //        → zig-out/release/tildaz-v<ver>-win-x64.zip.sha256
+    //     → bash dist/windows/package.sh --version <tildaz_version> --arch <x64|arm64>
+    //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip
+    //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip.sha256
     //
     // bash 는 PATH 에서 해석돼요:
     //   Windows - Git for Windows 의 C:\Program Files\Git\usr\bin\bash.exe
     //   macOS / Linux - 시스템 기본 bash
     const package_step = b.step("package", "릴리즈 zip 번들과 SHA256 sidecar 생성 (Windows / macOS)");
     if (is_windows_target) {
+        const arch_arg: []const u8 = switch (target.result.cpu.arch) {
+            .x86_64 => "x64",
+            .aarch64 => "arm64",
+            else => @panic("unsupported Windows arch for package step"),
+        };
         const package_cmd = b.addSystemCommand(&.{
             "bash",
             "dist/windows/package.sh",
             "--version",
             tildaz_version,
+            "--arch",
+            arch_arg,
         });
         package_cmd.step.dependOn(b.getInstallStep());
         package_step.dependOn(&package_cmd.step);

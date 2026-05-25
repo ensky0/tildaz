@@ -23,6 +23,24 @@ fallback 합니다 (`src/conpty.zig` 참조).
 - 원본 저장소: https://github.com/microsoft/terminal
 - 라이선스: MIT (이 디렉터리의 `LICENSE.txt` 참조)
 
+## 디렉터리 구조
+
+```
+vendor/conpty/
+├── LICENSE.txt
+├── README.md            (이 파일)
+├── x64/
+│   ├── conpty.dll       (PE32+ x86_64)
+│   └── OpenConsole.exe  (PE32+ x86_64)
+└── arm64/
+    ├── conpty.dll       (PE32+ ARM64)
+    └── OpenConsole.exe  (PE32+ ARM64)
+```
+
+`build.zig` 가 target arch 따라 `vendor/conpty/<arch>/` 두 파일을 install bin
+에 복사합니다. PE loader 가 arch mismatch 시 `STATUS_INVALID_IMAGE_FORMAT` 로
+거부하므로 분리 필수 — x64 binary 를 ARM64 Windows 에서 못 씁니다 (그 반대도).
+
 ## 업데이트 방법
 
 ```sh
@@ -34,8 +52,14 @@ VER=<버전>
 curl -sL -o conpty.nupkg \
   "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/$VER/microsoft.windows.console.conpty.$VER.nupkg"
 unzip -o conpty.nupkg -d /tmp/conpty_unpacked
-cp /tmp/conpty_unpacked/build/native/runtimes/x64/OpenConsole.exe vendor/conpty/
-cp /tmp/conpty_unpacked/runtimes/win-x64/native/conpty.dll vendor/conpty/
+
+# x64
+cp /tmp/conpty_unpacked/build/native/runtimes/x64/OpenConsole.exe vendor/conpty/x64/
+cp /tmp/conpty_unpacked/runtimes/win-x64/native/conpty.dll        vendor/conpty/x64/
+
+# arm64
+cp /tmp/conpty_unpacked/build/native/runtimes/arm64/OpenConsole.exe vendor/conpty/arm64/
+cp /tmp/conpty_unpacked/runtimes/win-arm64/native/conpty.dll        vendor/conpty/arm64/
 ```
 
 업그레이드 후에는 **회귀 테스트** (cat, vim, fzf, 선택·복사, 리사이즈) 를
