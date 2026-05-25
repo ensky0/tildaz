@@ -223,7 +223,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | Rename — preedit 가운데 입력 push-right | cursor 뒤 main text 가 preedit advance 만큼 우측 이동, commit 시 자연 삽입 | `x_off += preedit_advance_total` (#164 v0.4.0) | 동일 (`text_x += preedit_advance_total`) | 동일 (cross-platform `drawTabBar`) | ✅ | ✅ | ✅ |
 | Rename — cursor follow scroll reserve | wide 1 글자 (cw*2) 고정. preedit 활성/비활성 무관 → typing 빠를 때 cursor 안정 | `tab_layout.cursorReserve` / `cursorScrollOffset` (#163 v0.4.0 helper) | 동일 (양쪽 같은 helper) | 동일 (cross-platform `tab_layout`) | ✅ | ✅ | ✅ |
 | Rename — MAX_TABS 32 한도 + dialog | `+` layout 자동 사라짐 + 단축키 시 dialog | `tab_actions.checkAtLimitAndDialog` (#159 v0.4.0) | 동일 (양쪽 같은 helper) | 동일 helper — but dialog 는 stderr-only (§6) | ✅ | ✅ | 🟨 (logic ✅, dialog UI ❌) |
-| Rename — IME 후보 popup 위치 / Hanja 치환 | cursor 옆 자연 추적 (한자 / kanji / hanzi). macOS Option+Return 은 조합 중 한글을 먼저 rename buffer 에 commit 한 뒤 후보창을 즉시 띄우고, 후보 확정 시에만 원래 한글 range 를 선택 한자로 치환. Esc / focus loss 는 원래 한글 유지. | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 tab rename snapshot 기준 rect 반환 + `insertText:replacementRange:` 로 range 치환 (#166, #190 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 가 IME 후보 popup 위치 (L10-γ). **Hanja reconversion ❓** — text-input-v3 spec 에 reconversion API 없음 — fcitx5 / ibus 자체 popup 동작에 의존. 미검증 | ✅ | ✅ | 🟨 (cursor 위치 ✅ / reconversion ❓) |
+| Rename — IME 후보 popup 위치 / Hanja 치환 | cursor 옆 자연 추적 (한자 / kanji / hanzi). macOS Option+Return 은 조합 중 한글을 먼저 rename buffer 에 commit 한 뒤 후보창을 즉시 띄우고, 후보 확정 시에만 원래 한글 range 를 선택 한자로 치환. Esc / focus loss 는 원래 한글 유지. | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 tab rename snapshot 기준 rect 반환 + `insertText:replacementRange:` 로 range 치환 (#166, #190 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 가 IME 후보 popup 위치 — `updateCursorRectangle` 가 `physicalToLogical` 변환 적용 (L10-γ + 사용자 시연 fix). reconversion 은 §5 표 참조 (❌) | ✅ | ✅ | 🟨 (cursor 위치 ✅ / Hanja reconversion ❌ — §5 행) |
 | Rename auto-commit on focus loss | 아래 §4.1 통합 표 참조 — 모든 focus_loss = commit, Esc 만 cancel | (각 host 의 호출 site) | (각 host 의 호출 site) | (각 호출 site — §4.1 참조) | ✅ | ✅ | 🟨 (일부 path 미구현 — §4.1 참조) |
 
 ### 4.1 Rename focus_loss 통합 표 (#175)
@@ -267,8 +267,8 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
 |---|---|---|---|---|---|---|
-| 탭 rename | Home / Ctrl+A | preedit 자모 → rename buf cursor 위치 insert | cursor 맨 앞 | ✅ | ✅ | 🟨 (Home ✅ via IME side-effect + `handleRenameKey` mapping / Ctrl+A ❌ — mapping 없음, `cp < 0x20` reject) |
-| 탭 rename | End / Ctrl+E | (동일) | cursor 맨 끝 | ✅ | ✅ | 🟨 (End ✅ / Ctrl+E ❌ 동상) |
+| 탭 rename | Home / Ctrl+A | preedit 자모 → rename buf cursor 위치 insert | cursor 맨 앞 | ✅ | ✅ | ✅ (`handleRenameKey` mapping — Home / Ctrl+A 모두 .home 로 변환) |
+| 탭 rename | End / Ctrl+E | (동일) | cursor 맨 끝 | ✅ | ✅ | ✅ (End / Ctrl+E 모두 .end 로 변환) |
 | 탭 rename | Left / Right | (IME 자체 commit 트리거 — 음절 확정) | cursor 한 자 이동 | ✅ | ✅ | ✅ (`handleRenameKey` mapping + IME commit trigger) |
 | 탭 rename | Backspace | (IME 자체 — 자모 단위 되돌리기) | (preedit 안의 음절 처리) | ✅ | ✅ | ✅ (`handleRenameKey` mapping + IME 자모 처리) |
 | 탭 rename | Esc | preedit cancel + rename cancel | rename 종료 (변경 안 함) | ✅ | ✅ | ✅ |
@@ -276,7 +276,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | 탭 rename | Cmd / Ctrl+T·W·… 단축키 | preedit + rename 모두 commit | 단축키 동작 | ✅ | ✅ | ✅ |
 | 탭 rename | 마우스 click 다른 영역 | preedit + rename 모두 commit | click 동작 | ✅ | ✅ | ✅ |
 | terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
-| terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | 🟨 — `processKeyEvent` 가 Ctrl+key + preedit 시 `preedit_text.clearRetainingCapacity()` 로 *discard* (SPEC 의 commit 정책과 다름). fcitx5 가 자체 commit 한다는 전제로 동작 — 시연 검증 필요 |
+| terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | ✅ — `processKeyEvent` 가 Ctrl+letter (Ctrl+C 제외) + preedit 시 `commitPendingInput` → PTY 자모 송신 + IME session reset. 그 다음 utf8 path 가 Ctrl byte 송신 |
 | terminal cell | Ctrl+C | preedit *discard* (예외 — line abort) | SIGINT (`\x03` interruptWrite) | ✅ | ✅ | ✅ |
 | terminal cell | Ctrl+L / Ctrl+D 등 | preedit → PTY commit | Ctrl char 발신 | ✅ | ✅ | ✅ |
 | terminal cell | Left / Right / Up / Down | (IME 자체 commit 트리거) | escape sequence 발신 | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
