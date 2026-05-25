@@ -1,34 +1,79 @@
-//! Linux dialog backend — 임시 stderr 출력만. GUI 다이얼로그 (zenity /
-//! kdialog / GTK MessageDialog) 통합은 L11 packaging 사이클에서. dialog.zig
-//! 의 cross-platform 인터페이스 (show / showAboutAlert / showConfirm) 를
-//! 만족시키는 최소 구현 — 사용자가 config 검증 fatal 등을 stderr 로 보고
-//! `tildaz.log` 에도 자연스럽게 남는다 (host 가 log.appendLine 별도).
+//! Linux dialog backend — layer-shell overlay 통합 (option A, #203 Phase C).
+//!
+//! Host (wayland_minimal Client) 가 init 시 `registerCallbacks` 로 runtime
+//! 콜백 등록. callback 미등록 환경 (host 초기화 전 fatal / cli mode 등) 에선
+//! stderr + log fallback — silent crash 회피.
+//!
+//! 동작:
+//!   - `show(severity, ...)` / `showAboutAlert(...)` — host info dialog 호출
+//!     (non-blocking, fire-and-forget). Enter / Esc / OK 클릭 시 자동 닫힘.
+//!   - `showConfirm(...)` — host confirm dialog 호출 (synchronous via inner
+//!     wayland event loop pump). Cancel default.
+//!
+//! Wayland dialog API 표준 부재 — 자체 layer-shell overlay surface 그림.
+//! 다른 옵션 비교 + 결정 흐름은 #203 / SPEC.md §6 / LINUX.md 참조.
 
 const std = @import("std");
 const dialog = @import("../dialog.zig");
 const log = @import("../log.zig");
 
+pub const Callbacks = struct {
+    ctx: *anyopaque,
+    show_info: *const fn (ctx: *anyopaque, severity: dialog.Severity, title: []const u8, message: []const u8) void,
+    show_confirm: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) bool,
+};
+
+var g_callbacks: ?Callbacks = null;
+
+/// Host (wayland_minimal Client) 가 init 마지막에 호출. 이후 dialog.* 가
+/// stderr fallback 대신 host overlay 그림.
+pub fn registerCallbacks(cb: Callbacks) void {
+    g_callbacks = cb;
+}
+
+/// Host shutdown 직전 호출 — main loop 빠져나간 후 dialog 호출 시 dangling
+/// callback 회피 (예: deinit 안 fatal).
+pub fn unregisterCallbacks() void {
+    g_callbacks = null;
+}
+
 pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
-    const prefix = switch (severity) {
-        .info => "info",
-        .err => "error",
-    };
-    std.debug.print("[{s}] {s}\n{s}\n", .{ prefix, title, message });
-    // 임시 backend 라 GUI 없음 — log 에도 남겨 사용자가 `tildaz.log` 로
-    // 확인 가능 (예: 32-tab cap 도달이 GUI 없이도 보이게). L11 packaging
-    // 사이클에서 zenity / kdialog / GTK 통합 시 이 줄은 그대로 두고 GUI
-    // 추가.
-    log.appendLine("dialog", "{s} title={s} msg={s}", .{ prefix, title, message });
+    if (g_callbacks) |cb| {
+        cb.show_info(cb.ctx, severity, title, message);
+        // log 에도 남김 — log 재방문 시 dialog 본문 확인 가능.
+        const prefix = switch (severity) {
+            .info => "info",
+            .err => "error",
+        };
+        log.appendLine("dialog", "{s} title={s} msg={s}", .{ prefix, title, message });
+        return;
+    }
+    // Fallback — host 초기화 전 / cli mode / dialog backend 등록 안 됨.
+    showStderr(severity, title, message);
 }
 
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
     show(.info, title, message);
 }
 
-/// "되돌릴 수 없는 작업" 직전 확인. GUI 없는 임시 backend 에서는 default
-/// Cancel (= false) — 실수 종료 방지 정책 (#116) 동등. TTY 없는 환경에서
-/// 사용자에게 묻지 않고 진행하면 안전 사고 가능.
+/// "되돌릴 수 없는 작업" 직전 확인. Host 콜백 가용 시 modal 그림 + inner
+/// event loop pump 로 사용자 선택 대기. 미가용 시 default Cancel (= false)
+/// — 실수 종료 방지 (#116).
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
-    show(.info, title, message);
+    if (g_callbacks) |cb| {
+        const result = cb.show_confirm(cb.ctx, title, message);
+        log.appendLine("dialog", "confirm title={s} result={s}", .{ title, if (result) "OK" else "Cancel" });
+        return result;
+    }
+    showStderr(.info, title, message);
     return false;
+}
+
+fn showStderr(severity: dialog.Severity, title: []const u8, message: []const u8) void {
+    const prefix = switch (severity) {
+        .info => "info",
+        .err => "error",
+    };
+    std.debug.print("[{s}] {s}\n{s}\n", .{ prefix, title, message });
+    log.appendLine("dialog", "{s} title={s} msg={s} (stderr fallback)", .{ prefix, title, message });
 }
