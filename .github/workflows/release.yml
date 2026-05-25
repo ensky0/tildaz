@@ -25,6 +25,18 @@ env:
 
 jobs:
   release-windows:
+    # x64 + arm64 두 architecture 를 windows-2022 (x86_64 호스트) 에서 cross-build.
+    # zig 가 PE/COFF 양쪽 모두 cross 가능 + 우리 의존성 (kernel32 / user32 / ConPTY
+    # bundle) 은 arch 별 binary 를 빌드 시점에 선택 ([build.zig:166](build.zig#L166)).
+    # ARM64 실 device smoke test 는 별도 후속 작업 (#191 완료 조건의 별 항목).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            zig_target: x86_64-windows
+          - arch: arm64
+            zig_target: aarch64-windows
     runs-on: windows-2022
     steps:
       - name: Resolve tag / version
@@ -131,14 +143,14 @@ jobs:
             sleep 10
           done
 
-      - name: Build + package
+      - name: Build + package (${{ matrix.arch }})
         shell: bash
-        run: zig build package
+        run: zig build package -Dtarget=${{ matrix.zig_target }}
 
       - name: Verify artifacts
         shell: bash
         run: |
-          ZIP="zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-x64.zip"
+          ZIP="zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-${{ matrix.arch }}.zip"
           SHA="$ZIP.sha256"
           if [[ ! -f "$ZIP" || ! -f "$SHA" ]]; then
             echo "ERROR: expected artifacts missing"
@@ -148,15 +160,19 @@ jobs:
           echo "zip    : $ZIP ($(stat -c %s "$ZIP") bytes)"
           echo "sha256 : $(cat "$SHA")"
 
-      - name: Create GitHub Release
+      # 두 matrix 작업이 *같은 release tag* 에 artifact append.
+      # action-gh-release 는 동일 tag 의 release 가 이미 있으면 metadata
+      # (name / body / prerelease) 갱신 + files 만 추가. 두 작업이 순서
+      # 무관하게 동작.
+      - name: Create / append GitHub Release (${{ matrix.arch }})
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
           body_path: dist/release-notes/${{ steps.vars.outputs.tag }}.md
           files: |
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-x64.zip
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-x64.zip.sha256
+            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-${{ matrix.arch }}.zip
+            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-${{ matrix.arch }}.zip.sha256
           draft: false
           prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
           fail_on_unmatched_files: true
