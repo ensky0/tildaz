@@ -15,8 +15,49 @@ const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
+const dialog_mod = @import("../../dialog.zig");
 
 const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
+
+/// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
+/// NSAlert / Win 11 dialog 의 ~12-16 범위. fractional scaling 환경 에선 그대로
+/// physical px — `applyScale` 후 cell_h 변하지만 radius 는 시각 일정 (≈ 시스템
+/// 표준 dialog radius). **PT (논리 점) 단위** — `scaledPt(pt, scale)` 로 physical
+/// 변환. fractional scaling (KDE Plasma 6 125% / 170% 등) 환경에서도 일관 시각.
+const dialog_corner_radius_pt: u32 = 16;
+
+/// #203 Phase C step 3.2 — drop shadow 너비 (PT, 논리 점). 박스 outer edge 에서
+/// 그림자가 fade out 되는 거리. buffer 가 box 보다 4 방향 각 `dialog_shadow_margin`
+/// 만큼 큼 — set_size 와 computeDialogSize 모두 합산 포함.
+const dialog_shadow_margin_pt: u32 = 12;
+
+/// drop shadow 의 최대 alpha — 박스 edge 바로 바깥 픽셀 의 검정 alpha. 거기서
+/// 거리 비례 (quadratic) 로 0 까지 감소. macOS NSAlert 의 그림자 짙기 정도.
+/// 색 / 투명도라 scale 무관 (PT 아님).
+const dialog_shadow_max_alpha: u8 = 96;
+
+/// #203 Phase C step 3.4 — dialog 의 OK / Cancel button 시각 (PT, 논리 점).
+/// macOS 시스템 파란 + 흰 글자 의 표준 primary action 버튼. 사용자 시연 발견
+/// — 이전 80×36 physical 고정 + 1.7x 환경에서 *논리 47×21* 로 너무 작아 누르기
+/// 어려움. PT × scale 패턴으로 모든 DPI 환경에서 일관 크기.
+const dialog_button_w_pt: u32 = 100;
+const dialog_button_h_pt: u32 = 44;
+const dialog_button_radius_pt: u32 = 16;
+const dialog_button_color: ghostty.color.RGB = .{ .r = 45, .g = 125, .b = 210 }; // macOS 시스템 blue
+const dialog_button_text_color: ghostty.color.RGB = .{ .r = 255, .g = 255, .b = 255 };
+
+/// #203 Phase C step 3.3 — dialog 상단 아이콘 크기 (PT, 논리 점). `docs/favicon.svg`
+/// 의 viewBox=64×64 를 그대로 줄여 그림. tildaz 의 monitor + `>_` 표지. 사용자
+/// 시연 발견 — 이전 48 physical 고정 + 1.7x 환경에서 *논리 28* 로 너무 작음.
+const dialog_icon_size_pt: u32 = 64;
+
+/// #203 Phase C step 3.6 — dialog 배경 / 텍스트 색. 터미널 theme (`render_state
+/// .colors`) 와 분리 — Tilda 같은 어두운 테마라도 dialog 는 *시스템 표준 밝은
+/// 색* (macOS NSAlert / Win 10+ MessageBox 의 light mode 동등). OS 의 light/
+/// dark 자동 감지는 별 작업 (portal `org.freedesktop.appearance.color-scheme`).
+const dialog_bg_color: ghostty.color.RGB = .{ .r = 0xF2, .g = 0xF2, .b = 0xF2 };
+const dialog_text_color: ghostty.color.RGB = .{ .r = 0x1A, .g = 0x1A, .b = 0x1A };
+const dialog_separator_color: ghostty.color.RGB = .{ .r = 0xC8, .g = 0xC8, .b = 0xC8 };
 
 /// `ui_metrics.zig` 의 PT (logical point) 값을 `scale` 곱해 physical pixel 로
 /// 변환. mac `backingScaleFactor` / Win `dpi/96.0` 동등 패턴. 1.0x 면 PT 그대로.
@@ -48,6 +89,11 @@ pub const Renderer = struct {
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
     preedit_text: []const u8 = "",
+    /// #203 Phase C — drawDialogContent 가 OK 버튼을 그릴 때 좌표 (dialog
+    /// surface-local physical pixel) 저장. host (handlePointerButton) 가 hit-test
+    /// 에 사용. dialog 안 떠 있으면 `w == 0`. mac/win modal 정책 (본문 click 은
+    /// 무시, OK 버튼 click 만 dismiss) 의 구현 보조.
+    last_dialog_button_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     /// L13-γ — 매 픽셀의 alpha byte (ARGB8888 의 high byte). `config.opacity_
     /// alpha` 가 그대로. 100% → 255 (완전 opaque, 시각 변화 없음), <100 →
     /// compositor 가 배경과 alpha blending. `Client.init` 에서 채움.
@@ -506,6 +552,219 @@ pub const Renderer = struct {
         }
     }
 
+    /// #203 Phase C step 3 — 별 layer-shell overlay dialog surface 의 buffer
+    /// 그리기. main paint 와 달리 dim / wallpaper 합성 없음 (별 surface 라
+    /// compositor 가 main 위 modal 로 합성). buffer = 박스 + drop shadow 영역.
+    ///
+    /// 좌표계 — 박스 = (sm, sm) ~ (buffer_w - sm, buffer_h - sm). 모든 텍스트 /
+    /// 배경 그리기는 박스 안쪽. shadow 영역 (margin) 은 (6) 단일 SDF pass 에서
+    /// 검정 + falloff alpha 로 합성.
+    ///
+    /// 구조 — 박스 안 pad 안: title → 1px separator → message lines → gap →
+    /// footer hint. border 없음 (둥근 모서리 + drop shadow 로 박스 시각 분리,
+    /// macOS NSAlert 동등).
+    pub fn drawDialogContent(
+        self: *Renderer,
+        memory: []u8,
+        buffer_w: i32,
+        buffer_h: i32,
+        stride: i32,
+        severity: dialog_mod.Severity,
+        title: []const u8,
+        message: []const u8,
+        confirm_focus_ok: ?bool,
+    ) void {
+        const ch = self.cellHeight();
+        const ascent: i32 = @intCast(self.font_ctx.ascent_px);
+        const pad: i32 = @max(@as(i32, 8), @divTrunc(ch, 2));
+        // PT × scale → physical pixel. 한 번씩 계산해서 layout 일관 보장.
+        const sm: i32 = scaledPt(dialog_shadow_margin_pt, self.scale);
+        const corner_r: i32 = scaledPt(dialog_corner_radius_pt, self.scale);
+        const icon_size: i32 = scaledPt(dialog_icon_size_pt, self.scale);
+        const button_w: i32 = scaledPt(dialog_button_w_pt, self.scale);
+        const button_h: i32 = scaledPt(dialog_button_h_pt, self.scale);
+        const button_r: i32 = scaledPt(dialog_button_radius_pt, self.scale);
+
+        const box_x: i32 = sm;
+        const box_y: i32 = sm;
+        const box_w: i32 = buffer_w - sm * 2;
+        const box_h: i32 = buffer_h - sm * 2;
+
+        // dialog 색 — terminal theme 와 분리, 시스템 표준 light dialog.
+        const fg = dialog_text_color;
+        const bg = dialog_bg_color;
+        const accent: ghostty.color.RGB = switch (severity) {
+            .info => dialog_separator_color,
+            .err => .{ .r = 220, .g = 80, .b = 80 },
+        };
+        _ = confirm_focus_ok; // step 4 에서 Cancel 버튼 추가 시 사용.
+
+        // (1) 박스 영역만 배경 (shadow 영역 제외).
+        rect(memory, buffer_w, buffer_h, stride, box_x, box_y, box_w, box_h, bg);
+
+        // (2) 아이콘 — 박스 가로 중앙, 박스 상단 padding 아래.
+        const icon_x: i32 = box_x + @divTrunc(box_w - icon_size, 2);
+        const icon_y: i32 = box_y + pad;
+        drawDialogIcon(memory, buffer_w, buffer_h, stride, icon_x, icon_y, icon_size);
+
+        const text_x: i32 = box_x + pad;
+        // 텍스트 시작 — 아이콘 하단 + 작은 gap (ch/2).
+        var text_y: i32 = icon_y + icon_size + @divTrunc(ch, 2);
+
+        // (3) Title.
+        self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, title, fg, bg);
+        text_y += ch;
+
+        // (3) separator line — title 과 message 구분.
+        const inner_w: i32 = box_w - pad * 2;
+        rect(memory, buffer_w, buffer_h, stride, text_x, text_y + @divTrunc(ch, 2), inner_w, 1, accent);
+        text_y += ch;
+
+        // (4) Message lines (\n split).
+        var iter = std.mem.splitScalar(u8, message, '\n');
+        while (iter.next()) |line| {
+            self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
+            text_y += ch;
+        }
+
+        // (5) OK 버튼 — 박스 가로 중앙, 하단 padding 위. macOS 표준 primary
+        // action 버튼 모양 (system blue + 흰 글자 + pill 모서리).
+        const button_x: i32 = box_x + @divTrunc(box_w - button_w, 2);
+        const button_y: i32 = box_y + box_h - pad - button_h;
+        // #203 Phase C — host 가 hit-test 에 사용. 좌표 = dialog surface-local
+        // physical pixel (buffer 와 같은 좌표계).
+        self.last_dialog_button_rect = .{ .x = button_x, .y = button_y, .w = button_w, .h = button_h };
+        fillRoundedRect(
+            memory,
+            buffer_w,
+            buffer_h,
+            stride,
+            button_x,
+            button_y,
+            button_w,
+            button_h,
+            button_r,
+            dialog_button_color,
+        );
+        const button_text = "OK";
+        const button_text_cells = display_width.stringWidth(button_text);
+        const button_text_w: i32 = @intCast(button_text_cells * @as(usize, @intCast(self.cellWidth())));
+        const button_text_x: i32 = button_x + @divTrunc(button_w - button_text_w, 2);
+        const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
+        self.drawDialogTextLine(
+            memory,
+            buffer_w,
+            buffer_h,
+            stride,
+            button_text_x,
+            button_text_y,
+            button_text,
+            dialog_button_text_color,
+            dialog_button_color,
+        );
+
+        // (6) Single-pass SDF — 박스 내부 alpha sweep + 둥근 모서리 + drop shadow
+        // 한 번에 처리. 박스 안 (d < 0): opacity 보장 / 박스 모서리 1-pixel 띠
+        // (d ∈ [-0.5, 0.5)): anti-alias / 박스 밖 shadow 띠 (d ∈ [0.5, sm)):
+        // 검정 + quadratic falloff / 그 밖 (d ≥ sm): alpha=0 (compositor 가
+        // underlying surface 와 합성).
+        applyShadowAndMask(
+            memory,
+            buffer_w,
+            buffer_h,
+            stride,
+            sm,
+            corner_r,
+            self.opacity_alpha,
+            dialog_shadow_max_alpha,
+        );
+    }
+
+    /// #203 Phase C step 3 — dialog buffer 의 physical pixel 크기 계산. 박스
+    /// (텍스트 폭 × cell_w + padding + 라인 수 × cell_h + 버튼) + 4 방향 shadow
+    /// margin. `openInfoDialog` 가 surface set_size 보내기 전 호출 — 전체
+    /// surface / buffer 크기 결정.
+    pub fn computeDialogSize(
+        self: *const Renderer,
+        title: []const u8,
+        message: []const u8,
+        confirm: bool,
+    ) struct { w: i32, h: i32 } {
+        const cw = self.cellWidth();
+        const ch = self.cellHeight();
+        const pad: i32 = @max(@as(i32, 8), @divTrunc(ch, 2));
+        _ = confirm; // step 4 에서 Cancel 버튼 추가 시 너비 계산 분기.
+
+        var max_cells: usize = display_width.stringWidth(title);
+        var line_count: usize = 0;
+        var iter = std.mem.splitScalar(u8, message, '\n');
+        while (iter.next()) |line| {
+            max_cells = @max(max_cells, display_width.stringWidth(line));
+            line_count += 1;
+        }
+        // 최소 30 cell 폭 — 너무 짧은 title 의 박스가 어색해지지 않게.
+        max_cells = @max(max_cells, 30);
+
+        // 행 (text 영역): title(1) + separator(1) + msg(line_count) + gap(1).
+        // 위로 아이콘 (icon_size + 짧은 gap), 아래로 OK 버튼 + bottom pad.
+        // box_h = pad(top) + icon + gap + text_rows*ch + button_h + pad(bottom)
+        const text_rows: i32 = 1 + 1 + @as(i32, @intCast(line_count)) + 1;
+        const inner_w: i32 = @intCast(max_cells * @as(usize, @intCast(cw)));
+        // PT × scale — drawDialogContent 와 같은 변환식 사용해 layout 좌표 일관.
+        const button_w: i32 = scaledPt(dialog_button_w_pt, self.scale);
+        const button_h: i32 = scaledPt(dialog_button_h_pt, self.scale);
+        const icon_size: i32 = scaledPt(dialog_icon_size_pt, self.scale);
+        const sm: i32 = scaledPt(dialog_shadow_margin_pt, self.scale);
+        // 박스 폭 — 텍스트 폭 vs 버튼 폭 vs 아이콘 폭 + 좌우 여유 중 가장 큰.
+        const box_w: i32 = @max(@max(inner_w + pad * 2, button_w + pad * 4), icon_size + pad * 2);
+        const icon_section: i32 = icon_size + @divTrunc(ch, 2);
+        const box_h: i32 = pad * 2 + icon_section + text_rows * ch + button_h;
+        // buffer = box + shadow margin × 2 (모든 4 방향).
+        return .{ .w = box_w + sm * 2, .h = box_h + sm * 2 };
+    }
+
+    /// drawDialogContent helper — UTF-8 line 을 codepoint 별 glyph draw.
+    /// 03d07c6a 의 `drawDialogTextLine` 재이식. cell-aligned 라 ligature /
+    /// cluster shape 안 필요.
+    fn drawDialogTextLine(
+        self: *Renderer,
+        memory: []u8,
+        fb_w: i32,
+        fb_h: i32,
+        stride: i32,
+        start_x: i32,
+        baseline_y: i32,
+        text: []const u8,
+        fg: ghostty.color.RGB,
+        bg: ghostty.color.RGB,
+    ) void {
+        const cw = self.cellWidth();
+        const ch_metric = self.cellHeight();
+        var x: i32 = start_x;
+        var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+        while (iter.nextCodepoint()) |cp| {
+            if (x >= fb_w) break;
+            const cells = display_width.codepointWidth(@intCast(cp));
+            const adv: i32 = cw * @as(i32, @intCast(cells));
+            const gl = self.font_ctx.glyph(cp);
+            if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                drawGlyphBgra(memory, fb_w, fb_h, stride, x, baseline_y - ch_metric, adv, ch_metric, gl);
+            } else {
+                drawGlyph(
+                    memory,
+                    fb_w,
+                    fb_h,
+                    stride,
+                    x + gl.bitmap_left,
+                    baseline_y - gl.bitmap_top,
+                    gl,
+                    fg,
+                    bg,
+                );
+            }
+            x += adv;
+        }
+    }
 };
 
 /// L12-α/β/γ tab bar — cross-platform `tab_layout.Layout` 따라 영역 분할 + 각
@@ -1078,6 +1337,324 @@ fn rect(
         while (px < x1) : (px += 1) {
             const off: usize = @intCast(py * stride + px * 4);
             std.mem.writeInt(u32, memory[off..][0..4], packed_color, .little);
+        }
+    }
+}
+
+/// #203 Phase C step 3.4 — 둥근 사각형 채우기. dialog 의 OK / Cancel button
+/// 등. SDF (signed distance function) 기반으로 내부 = 솔리드 color, edge
+/// 1-pixel 띠 = 기존 픽셀 (= box bg) 와 anti-alias 블렌딩, 외부 = 손대지 않음
+/// (= 박스 bg 보존). alpha byte 는 안 건드림 — drawDialogContent 의 마지막
+/// `applyShadowAndMask` 가 일괄 처리.
+fn fillRoundedRect(
+    memory: []u8,
+    buffer_w: i32,
+    buffer_h: i32,
+    stride: i32,
+    rect_x: i32,
+    rect_y: i32,
+    rect_w: i32,
+    rect_h: i32,
+    radius: i32,
+    color: ghostty.color.RGB,
+) void {
+    if (rect_w <= 0 or rect_h <= 0) return;
+    const cx: f32 = @as(f32, @floatFromInt(rect_x)) + @as(f32, @floatFromInt(rect_w)) * 0.5;
+    const cy: f32 = @as(f32, @floatFromInt(rect_y)) + @as(f32, @floatFromInt(rect_h)) * 0.5;
+    const hw: f32 = @as(f32, @floatFromInt(rect_w)) * 0.5;
+    const hh: f32 = @as(f32, @floatFromInt(rect_h)) * 0.5;
+    // radius 가 박스 절반 보다 크면 clamp (overflow 방지).
+    const max_r = @min(@divTrunc(rect_w, 2), @divTrunc(rect_h, 2));
+    const r: f32 = @floatFromInt(@min(radius, max_r));
+    const packed_color = pack(color);
+
+    var py = @max(0, rect_y);
+    const py_end = @min(buffer_h, rect_y + rect_h);
+    while (py < py_end) : (py += 1) {
+        var px = @max(0, rect_x);
+        const px_end = @min(buffer_w, rect_x + rect_w);
+        while (px < px_end) : (px += 1) {
+            const xf: f32 = @as(f32, @floatFromInt(px)) + 0.5 - cx;
+            const yf: f32 = @as(f32, @floatFromInt(py)) + 0.5 - cy;
+            const ax: f32 = if (xf < 0) -xf else xf;
+            const ay: f32 = if (yf < 0) -yf else yf;
+            const qx: f32 = ax - hw + r;
+            const qy: f32 = ay - hh + r;
+            const ox: f32 = if (qx > 0) qx else 0;
+            const oy: f32 = if (qy > 0) qy else 0;
+            const outside_len: f32 = @sqrt(ox * ox + oy * oy);
+            const max_q: f32 = if (qx > qy) qx else qy;
+            const inside_term: f32 = if (max_q < 0) max_q else 0;
+            const d: f32 = outside_len + inside_term - r;
+
+            const off: usize = @intCast(py * stride + px * 4);
+            if (d < -0.5) {
+                // 내부 — 솔리드 color.
+                std.mem.writeInt(u32, memory[off..][0..4], packed_color, .little);
+            } else if (d < 0.5) {
+                // 모서리 anti-alias — 기존 pixel 과 coverage 비례 블렌딩.
+                const coverage: f32 = 0.5 - d;
+                const inv: f32 = 1.0 - coverage;
+                const existing = std.mem.readInt(u32, memory[off..][0..4], .little);
+                const er: f32 = @floatFromInt((existing >> 16) & 0xff);
+                const eg: f32 = @floatFromInt((existing >> 8) & 0xff);
+                const eb: f32 = @floatFromInt(existing & 0xff);
+                const br: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.r)) * coverage + er * inv));
+                const bg_: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.g)) * coverage + eg * inv));
+                const bb: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.b)) * coverage + eb * inv));
+                const blended: u32 = (br << 16) | (bg_ << 8) | bb;
+                std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
+            }
+            // d >= 0.5: 외부 — 손대지 않음 (기존 box bg 보존).
+        }
+    }
+}
+
+/// #203 Phase C step 3.3 — 두 점 사이의 두꺼운 line drawing (round caps).
+/// SDF 기반 — 픽셀 별로 line segment 까지 거리 계산, distance < thickness/2
+/// 면 색 채움. 1-pixel 띠 anti-alias. `fillRoundedRect` 와 같이 alpha byte 는
+/// 안 건드림 (마지막 `applyShadowAndMask` 가 일괄 처리).
+fn drawThickLine(
+    memory: []u8,
+    buffer_w: i32,
+    buffer_h: i32,
+    stride: i32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    thickness: f32,
+    color: ghostty.color.RGB,
+) void {
+    const half_t: f32 = thickness * 0.5;
+    const dx: f32 = x2 - x1;
+    const dy: f32 = y2 - y1;
+    const len_sq: f32 = dx * dx + dy * dy;
+    if (len_sq < 0.0001) return;
+
+    const min_x: i32 = @intFromFloat(@floor(@min(x1, x2) - half_t - 1.0));
+    const max_x: i32 = @intFromFloat(@ceil(@max(x1, x2) + half_t + 1.0));
+    const min_y: i32 = @intFromFloat(@floor(@min(y1, y2) - half_t - 1.0));
+    const max_y: i32 = @intFromFloat(@ceil(@max(y1, y2) + half_t + 1.0));
+
+    const packed_color = pack(color);
+
+    var py = @max(0, min_y);
+    const py_end = @min(buffer_h, max_y + 1);
+    while (py < py_end) : (py += 1) {
+        var px = @max(0, min_x);
+        const px_end = @min(buffer_w, max_x + 1);
+        while (px < px_end) : (px += 1) {
+            const pxf: f32 = @as(f32, @floatFromInt(px)) + 0.5;
+            const pyf: f32 = @as(f32, @floatFromInt(py)) + 0.5;
+            const apx: f32 = pxf - x1;
+            const apy: f32 = pyf - y1;
+            const t_raw: f32 = (apx * dx + apy * dy) / len_sq;
+            const t: f32 = @max(0.0, @min(1.0, t_raw));
+            const proj_x: f32 = x1 + t * dx;
+            const proj_y: f32 = y1 + t * dy;
+            const ddx: f32 = pxf - proj_x;
+            const ddy: f32 = pyf - proj_y;
+            const dist: f32 = @sqrt(ddx * ddx + ddy * ddy);
+
+            const off: usize = @intCast(py * stride + px * 4);
+            if (dist < half_t - 0.5) {
+                std.mem.writeInt(u32, memory[off..][0..4], packed_color, .little);
+            } else if (dist < half_t + 0.5) {
+                const coverage: f32 = half_t + 0.5 - dist;
+                const inv: f32 = 1.0 - coverage;
+                const existing = std.mem.readInt(u32, memory[off..][0..4], .little);
+                const er: f32 = @floatFromInt((existing >> 16) & 0xff);
+                const eg: f32 = @floatFromInt((existing >> 8) & 0xff);
+                const eb: f32 = @floatFromInt(existing & 0xff);
+                const br: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.r)) * coverage + er * inv));
+                const bg_: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.g)) * coverage + eg * inv));
+                const bb: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.b)) * coverage + eb * inv));
+                const blended: u32 = (br << 16) | (bg_ << 8) | bb;
+                std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
+            }
+        }
+    }
+}
+
+/// #203 Phase C step 3.3 — `docs/favicon.svg` 의 tildaz 아이콘을 직접 raster.
+/// viewBox=64×64 의 SVG 를 `icon_size`×`icon_size` 로 scale 해 (icon_x, icon_y)
+/// 좌상단부터 그림. SVG primitive 5개 (배경 + 모니터 외곽 + 스탠드 + `>` +
+/// `_`) 를 fillRoundedRect / rect / drawThickLine 으로 매핑.
+fn drawDialogIcon(
+    memory: []u8,
+    buffer_w: i32,
+    buffer_h: i32,
+    stride: i32,
+    icon_x: i32,
+    icon_y: i32,
+    icon_size: i32,
+) void {
+    const scale: f32 = @as(f32, @floatFromInt(icon_size)) / 64.0;
+    const sx = struct {
+        fn f(s: f32, vb: f32) f32 {
+            return vb * s;
+        }
+        fn i(s: f32, vb: f32) i32 {
+            return @intFromFloat(@round(vb * s));
+        }
+    };
+    const fx: f32 = @floatFromInt(icon_x);
+    const fy: f32 = @floatFromInt(icon_y);
+
+    const dark_bg = ghostty.color.RGB{ .r = 0x0d, .g = 0x11, .b = 0x17 };
+    const green = ghostty.color.RGB{ .r = 0x7e, .g = 0xe7, .b = 0x87 };
+    const orange = ghostty.color.RGB{ .r = 0xF7, .g = 0xA4, .b = 0x1D };
+
+    // (1) Outer rounded square (rx=12) — 어두운 배경.
+    fillRoundedRect(
+        memory,
+        buffer_w,
+        buffer_h,
+        stride,
+        icon_x,
+        icon_y,
+        icon_size,
+        icon_size,
+        sx.i(scale, 12.0),
+        dark_bg,
+    );
+
+    // (2) Monitor 외곽 — SVG 에서 stroke 3px 의 fill=none rect. 우리는 outer
+    // 녹색 + inner dark 두 fill 로 stroke 효과 흉내. SVG stroke 중심선이 path
+    // 위에 있어 outer/inner extent 는 ±half_stroke (= ±1.5).
+    const m_outer_x = icon_x + sx.i(scale, 7.0 - 1.5);
+    const m_outer_y = icon_y + sx.i(scale, 8.0 - 1.5);
+    const m_outer_w = sx.i(scale, 50.0 + 3.0);
+    const m_outer_h = sx.i(scale, 44.0 + 3.0);
+    fillRoundedRect(memory, buffer_w, buffer_h, stride, m_outer_x, m_outer_y, m_outer_w, m_outer_h, sx.i(scale, 4.0 + 1.5), green);
+    const m_inner_x = icon_x + sx.i(scale, 7.0 + 1.5);
+    const m_inner_y = icon_y + sx.i(scale, 8.0 + 1.5);
+    const m_inner_w = sx.i(scale, 50.0 - 3.0);
+    const m_inner_h = sx.i(scale, 44.0 - 3.0);
+    fillRoundedRect(memory, buffer_w, buffer_h, stride, m_inner_x, m_inner_y, m_inner_w, m_inner_h, sx.i(scale, 4.0 - 1.5), dark_bg);
+
+    // (3) Monitor stand neck — 작은 녹색 rect.
+    rect(memory, buffer_w, buffer_h, stride, icon_x + sx.i(scale, 27.0), icon_y + sx.i(scale, 52.0), sx.i(scale, 10.0), sx.i(scale, 4.0), green);
+    // (4) Monitor stand base.
+    rect(memory, buffer_w, buffer_h, stride, icon_x + sx.i(scale, 21.0), icon_y + sx.i(scale, 56.0), sx.i(scale, 22.0), sx.i(scale, 3.0), green);
+
+    // (5) Orange `>` (M 14 20 L 24 30 L 14 40) — stroke 5px, round caps/joins.
+    const stroke: f32 = sx.f(scale, 5.0);
+    drawThickLine(memory, buffer_w, buffer_h, stride, fx + sx.f(scale, 14.0), fy + sx.f(scale, 20.0), fx + sx.f(scale, 24.0), fy + sx.f(scale, 30.0), stroke, orange);
+    drawThickLine(memory, buffer_w, buffer_h, stride, fx + sx.f(scale, 24.0), fy + sx.f(scale, 30.0), fx + sx.f(scale, 14.0), fy + sx.f(scale, 40.0), stroke, orange);
+    // (6) Orange `_` (32 40 → 46 40).
+    drawThickLine(memory, buffer_w, buffer_h, stride, fx + sx.f(scale, 32.0), fy + sx.f(scale, 40.0), fx + sx.f(scale, 46.0), fy + sx.f(scale, 40.0), stroke, orange);
+}
+
+/// #203 Phase C step 3.2 / 3.7 / 3.8 — ARGB8888 buffer 에 SDF (signed distance
+/// function) pass 적용해 box 내부 alpha sweep + 둥근 모서리 + drop shadow
+/// 동시 처리. 3.8 — supersampling 2×2 (픽셀 당 4 sample) 로 진짜 anti-alias.
+///
+/// 박스 영역 = buffer 중앙의 `(buffer_w - margin×2) × (buffer_h - margin×2)`
+/// 정사각형 (radius 만큼 둥글). 박스 SDF d (음수=내부, 양수=외부).
+///
+/// 픽셀 별 처리 (각 픽셀 4 subpixel sample 평균):
+///   각 sample i 에 대해:
+///     box_in_i     = (d_i < 0) ? 1 : 0
+///     shadow_cov_i = (d_i ∈ (0, margin)) ? (1 - d_i/margin)² : 0
+///   box_cov = avg(box_in_i)
+///   shadow_cov = avg(shadow_cov_i) × (1 - box_cov)
+///   box_alpha    = box_cov * opacity
+///   shadow_alpha = shadow_cov * shadow_max
+///   total_alpha  = box_alpha + shadow_alpha (Porter-Duff "box over shadow")
+///   RGB = existing × (1 - shadow_alpha / total_alpha)  (검정 쪽 blend)
+///
+/// supersampling 으로 SDF 의 자연 coverage 가 fractional. 모서리 stair / halo
+/// 모두 해소. `drawDialogContent` 의 마지막 step 이어야 (text drawing 의 alpha=0 정정).
+fn applyShadowAndMask(
+    memory: []u8,
+    buffer_w: i32,
+    buffer_h: i32,
+    stride: i32,
+    margin: i32,
+    radius: i32,
+    opacity_alpha: u8,
+    shadow_max_alpha: u8,
+) void {
+    if (buffer_w <= 0 or buffer_h <= 0) return;
+    if (buffer_w <= margin * 2 or buffer_h <= margin * 2) return;
+
+    const cx: f32 = @as(f32, @floatFromInt(buffer_w)) * 0.5;
+    const cy: f32 = @as(f32, @floatFromInt(buffer_h)) * 0.5;
+    const box_w_f: f32 = @floatFromInt(buffer_w - margin * 2);
+    const box_h_f: f32 = @floatFromInt(buffer_h - margin * 2);
+    const hw: f32 = box_w_f * 0.5;
+    const hh: f32 = box_h_f * 0.5;
+    const r: f32 = @floatFromInt(radius);
+    const margin_f: f32 = @floatFromInt(margin);
+    const opacity_f: f32 = @floatFromInt(opacity_alpha);
+    const shadow_max_f: f32 = @floatFromInt(shadow_max_alpha);
+
+    // 2×2 supersampling — 픽셀 당 4 sample 의 subpixel offset.
+    const sample_offsets = [_][2]f32{
+        .{ 0.25, 0.25 },
+        .{ 0.75, 0.25 },
+        .{ 0.25, 0.75 },
+        .{ 0.75, 0.75 },
+    };
+
+    var py: i32 = 0;
+    while (py < buffer_h) : (py += 1) {
+        var px: i32 = 0;
+        while (px < buffer_w) : (px += 1) {
+            // 4 sample 평균.
+            var box_cov_sum: f32 = 0;
+            var shadow_cov_sum: f32 = 0;
+            for (sample_offsets) |so| {
+                const xf: f32 = @as(f32, @floatFromInt(px)) + so[0] - cx;
+                const yf: f32 = @as(f32, @floatFromInt(py)) + so[1] - cy;
+                const ax: f32 = if (xf < 0) -xf else xf;
+                const ay: f32 = if (yf < 0) -yf else yf;
+                const qx: f32 = ax - hw + r;
+                const qy: f32 = ay - hh + r;
+                const ox: f32 = if (qx > 0) qx else 0;
+                const oy: f32 = if (qy > 0) qy else 0;
+                const outside_len: f32 = @sqrt(ox * ox + oy * oy);
+                const max_q: f32 = if (qx > qy) qx else qy;
+                const inside_term: f32 = if (max_q < 0) max_q else 0;
+                const d: f32 = outside_len + inside_term - r;
+
+                if (d < 0) {
+                    box_cov_sum += 1.0;
+                } else if (d < margin_f) {
+                    const t: f32 = d / margin_f;
+                    const t_inv: f32 = 1.0 - t;
+                    shadow_cov_sum += t_inv * t_inv;
+                }
+            }
+            const box_cov: f32 = box_cov_sum * 0.25;
+            const shadow_cov: f32 = (shadow_cov_sum * 0.25) * (1.0 - box_cov);
+
+            const off: usize = @intCast(py * stride + px * 4);
+
+            const box_alpha: f32 = box_cov * opacity_f;
+            const shadow_alpha: f32 = shadow_cov * shadow_max_f;
+            const total_alpha: f32 = box_alpha + shadow_alpha;
+
+            if (total_alpha < 0.5) {
+                memory[off + 3] = 0;
+                continue;
+            }
+
+            // RGB blending — shadow 비율 만큼 검정 쪽으로.
+            if (shadow_alpha > 0.5) {
+                const shadow_weight: f32 = shadow_alpha / total_alpha;
+                const rgb_keep: f32 = 1.0 - shadow_weight;
+                const r0: f32 = @floatFromInt(memory[off + 2]);
+                const g0: f32 = @floatFromInt(memory[off + 1]);
+                const b0: f32 = @floatFromInt(memory[off + 0]);
+                memory[off + 2] = @intFromFloat(@round(r0 * rgb_keep));
+                memory[off + 1] = @intFromFloat(@round(g0 * rgb_keep));
+                memory[off + 0] = @intFromFloat(@round(b0 * rgb_keep));
+            }
+
+            memory[off + 3] = @intFromFloat(@round(total_alpha));
         }
     }
 }
