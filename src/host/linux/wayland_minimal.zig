@@ -387,7 +387,9 @@ const ShmBuffer = struct {
 /// kind = .info → Info / Error dialog. Enter / Esc / 클릭 → dismiss.
 /// step 4 에서 confirm (동기 wait) 추가.
 pub const DialogOverlay = struct {
-    pub const Kind = enum { none, info };
+    /// `.confirm` — OK + Cancel 두 버튼. Enter = OK (= true), Esc = Cancel (= false).
+    /// dismiss 시 호출자가 `pending_confirm_result` 로 결과 받음 (step 4, #203).
+    pub const Kind = enum { none, info, confirm };
 
     // --- content ---
     kind: Kind = .none,
@@ -515,6 +517,16 @@ const Client = struct {
     /// 호출자 (handlePointerButton / handleDialogKey / layer-surface closed) 는
     /// `requestDismissDialog` 로 flag 만 set, main loop 가 매 iteration drain.
     pending_dialog_dismiss: bool = false,
+    /// #203 Phase C step 4 — confirm dialog 의 결과. dismiss 시 set, host 의
+    /// `dialogShowConfirmCb` inner pump 가 `null != null` 으로 break.
+    ///   - `true` = OK 클릭 / Enter
+    ///   - `false` = Cancel 클릭 / Esc / 외부 dismiss (closed event 등)
+    pending_confirm_result: ?bool = null,
+    /// #203 Phase C step 4 — Alt+F4 의 deferred quit. Alt+F4 핸들러는 flag 만
+    /// set, main loop 의 `drainQuitRequest` 가 multi-tab confirm + `running=false`.
+    /// `dialog.showConfirm` 의 inner pump 가 `dispatchBuffered` 의 reentrant
+    /// context 안에서 호출되면 안 됨 (deferred dismiss 와 동일 reentrancy 위험).
+    pending_quit_request: bool = false,
     // L8-β — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
@@ -843,6 +855,9 @@ const Client = struct {
             // outer buffer state corrupt (사용자 시연 발견 — `BadMessage offset
             // input_len=0` 진단). deferred 로 reentrancy 해소.
             self.drainPendingDialogDismiss();
+            // #203 Phase C step 4 — Alt+F4 deferred quit. confirm 의 inner pump
+            // 도 outer dispatchBuffered 밖에서 호출.
+            self.drainQuitRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
             // 마지막 탭 닫음을 만나면 shell_exited 트리거.
@@ -1951,7 +1966,10 @@ const Client = struct {
             return;
         }
         if (self.toplevel_id != 0 and id == self.toplevel_id and opcode == 1) {
-            self.running = false;
+            // step 4 — xdg-shell toplevel close 도 quit confirm 거침. KWin /
+            // GNOME mutter 의 Alt+F4 가 fallback 경로일 때 (= xdg-shell mode).
+            log.appendLine("input", "xdg-shell toplevel close — set pending_quit_request", .{});
+            self.pending_quit_request = true;
             return;
         }
         if (self.xdg_surface_id != 0 and id == self.xdg_surface_id and opcode == 0 and payload.len >= 4) {
@@ -2049,7 +2067,15 @@ const Client = struct {
                 return;
             }
             if (opcode == zwlr_layer_surface_v1_event_closed) {
-                self.running = false;
+                // step 4 — main layer-surface closed event 가 KWin 의 Alt+F4
+                // 단축키 ("Close window") 도 같은 path. 사용자 시연 진단 결과:
+                // KWin 이 F4 key event 를 우리에게 보내지 않고 (system shortcut
+                // 가로챔) 대신 closed event 발송. 즉 *우리 Alt+F4 keysym 핸들러*
+                // 우회. step 4 정책: closed event 도 quit confirm 거침. confirm
+                // OK = 종료, Cancel = 사용자가 다시 F1 으로 표시 (현재 단순 path,
+                // 후속 polish 에서 자동 main surface 재생성 가능).
+                log.appendLine("input", "main layer-surface closed — set pending_quit_request", .{});
+                self.pending_quit_request = true;
                 return;
             }
         }
@@ -2940,11 +2966,22 @@ const Client = struct {
                 }
             }
             // SPEC §2.1 — Alt+F4 : 앱 종료 (Win 동등 native, Linux desktop 표준).
-            // main loop break — `self.running = false`. drainExitedTabs 와 같은
-            // 종료 path.
+            // step 4 — multi-tab / 단일 탭 *모두* confirm dialog (mac
+            // `applicationShouldTerminate:` / Win `onQuitRequest` 동등). flag 만
+            // set, main loop 의 `drainQuitRequest` 가 *outer dispatchBuffered
+            // reentrancy 밖* 에서 dialog.showConfirm 호출. OK 면 종료, Cancel 이면
+            // 무시.
+            //
+            // 시연 진단으로 발견 — KDE Plasma 6 + KWin 의 Alt+F4 는 *system
+            // shortcut* 으로 F4 key event 를 우리 client 에 안 보냄. 대신 main
+            // layer-surface 에 `zwlr_layer_surface_v1.closed` event 발송. 그
+            // 경로는 `handleEvent` 의 layer_surface closed 분기에서 동일하게
+            // pending_quit_request 처리. 이 keysym 분기는 *KWin 외 compositor*
+            // (예: sway / hyprland / GNOME mutter) 에서 F4 가 도달하는 경우 대비
+            // 유지.
             if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and !self.keyboard.shiftActive() and sym == xkb_key_f4) {
                 self.commitPendingInput();
-                self.running = false;
+                self.pending_quit_request = true;
                 return;
             }
             // SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등). Ctrl / Shift 미동반
@@ -3078,21 +3115,23 @@ const Client = struct {
         const state = readU32(payload[12..16]);
 
         // #203 Phase C — dialog 활성 시 모든 클릭 무시 (modal). 단 *dialog
-        // surface 위 + OK 버튼 좌표 안* 의 누름만 dismiss 트리거. 사용자 대화로
-        // 확정된 정책 (mac NSAlert / Win MessageBoxW 표준 동등):
+        // surface 위 + OK / Cancel 버튼 좌표 안* 의 누름만 dismiss 트리거. 사용자
+        // 대화로 확정된 정책 (mac NSAlert / Win MessageBoxW 표준 동등):
         //   - 본문 (텍스트 / 여백) 누름 → 무시 + dismiss X (포커스 회복만)
         //   - terminal 영역 누름 → 무시 + dismiss X
-        //   - OK 버튼 / Enter / Esc → dismiss
+        //   - OK 버튼 → dismiss + result=true (confirm 시)
+        //   - Cancel 버튼 → dismiss + result=false (confirm 시)
+        //   - Enter / Esc → handleDialogKey 가 처리
         // 다른 단축키 (tab bar / scrollbar / selection / paste) 보다 우선.
         if (self.dialog.active()) {
             if (state == wl_pointer_button_state_pressed and
                 self.last_pointer_enter_surface_id == self.dialog.surface_id)
             {
-                const r = self.renderer.last_dialog_button_rect;
-                if (r.w > 0 and
-                    self.pointer_x_px >= r.x and self.pointer_x_px < r.x + r.w and
-                    self.pointer_y_px >= r.y and self.pointer_y_px < r.y + r.h)
-                {
+                if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
+                    if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
+                    self.requestDismissDialog();
+                } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
+                    if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
                     self.requestDismissDialog();
                 }
             }
@@ -3736,18 +3775,31 @@ const Client = struct {
     /// `dialog.showInfo` / `dialog.showAboutAlert` 등의 종착점 (dialog/linux.zig
     /// callback 통과). fire-and-forget — 사용자가 Enter / Esc / 클릭으로 dismiss.
     fn openInfoDialog(self: *Client, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
+        try self.openDialog(.info, severity, title, message);
+    }
+
+    /// #203 Phase C step 4 — confirm dialog (OK + Cancel). `dialogShowConfirmCb`
+    /// 의 inner pump 가 결과 (`pending_confirm_result`) 를 받아 호출자에게 반환.
+    /// dismiss 전 default `pending_confirm_result = null` — Cancel 등 명시 결정.
+    fn openConfirmDialog(self: *Client, title: []const u8, message: []const u8) !void {
+        try self.openDialog(.confirm, .info, title, message);
+    }
+
+    fn openDialog(self: *Client, kind: DialogOverlay.Kind, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
         const title_len = @min(title.len, self.dialog.title_buf.len);
         const msg_len = @min(message.len, self.dialog.msg_buf.len);
         @memcpy(self.dialog.title_buf[0..title_len], title[0..title_len]);
         @memcpy(self.dialog.msg_buf[0..msg_len], message[0..msg_len]);
         self.dialog.title_len = title_len;
         self.dialog.msg_len = msg_len;
-        self.dialog.kind = .info;
+        self.dialog.kind = kind;
         self.dialog.severity = severity;
+        // Confirm pending 새로 시작 — 이전 dialog 의 result 가 남아 있을 가능성 0.
+        self.pending_confirm_result = null;
 
         // 박스 크기 — 텍스트 폭 / 라인 수 기반 (renderer 가 cell metric 으로
         // 계산). physical → logical 변환해 layer-shell 에 송신.
-        const size = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), false);
+        const size = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), kind == .confirm);
         const logical_w: u32 = @intCast(self.physicalToLogical(size.w));
         const logical_h: u32 = @intCast(self.physicalToLogical(size.h));
 
@@ -3758,8 +3810,8 @@ const Client = struct {
             try self.destroyDialogSurface();
         }
         try self.createDialogSurface(logical_w, logical_h);
-        log.appendLine("dialog", "open info severity={s} title={s} msg_len={d} logical={}x{}", .{
-            @tagName(severity), self.dialog.title(), msg_len, logical_w, logical_h,
+        log.appendLine("dialog", "open {s} severity={s} title={s} msg_len={d} logical={}x{}", .{
+            @tagName(kind), @tagName(severity), self.dialog.title(), msg_len, logical_w, logical_h,
         });
     }
 
@@ -3789,6 +3841,47 @@ const Client = struct {
         if (!self.pending_dialog_dismiss) return;
         self.pending_dialog_dismiss = false;
         self.dismissDialog();
+    }
+
+    /// #203 Phase C step 4 — Alt+F4 quit confirm. mac `applicationShouldTerminate:`
+    /// / Win `app_controller.onQuitRequest` 동등 정책 — count == 0 (PTY 자동
+    /// 종료) 만 skip, 단일 / 다중 탭 *항상* confirm. `dialog.showConfirm` 이 inner
+    /// pump 라 main loop 의 deferred phase 에서 호출 (outer dispatchBuffered
+    /// reentrancy 안전).
+    fn drainQuitRequest(self: *Client) void {
+        if (!self.pending_quit_request) return;
+        self.pending_quit_request = false;
+        log.appendLine("dialog", "drainQuitRequest — calling dialog.showConfirm", .{});
+
+        const n: usize = if (self.session) |*session| session.count() else 0;
+        if (n == 0) {
+            self.running = false;
+            return;
+        }
+
+        const plural: []const u8 = if (n == 1) "" else "s";
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, messages.quit_confirm_format, .{ n, plural }) catch {
+            self.running = false;
+            return;
+        };
+        if (dialog_mod.showConfirm(messages.quit_confirm_title, msg)) {
+            self.running = false;
+            return;
+        }
+        // Cancel — closed event trigger 라면 KWin 측에서 main layer-surface 가
+        // 이미 unmap (재 key event 라우팅 안 됨). 우리도 *재생성* 해야 다음
+        // Alt+F4 가 정상 동작. 시연 발견: Cancel 후 두 번째 Alt+F4 시 F4 key
+        // event 가 우리 client 에 도달 X (`closed` event 한 번만 발송) — 사용자가
+        // 종료 못 함. handleActivatedToggle 의 toggle show path 동등.
+        self.destroyShellObjects() catch |err| {
+            log.appendLine("dialog", "drainQuitRequest cancel: destroyShellObjects failed: {s}", .{@errorName(err)});
+        };
+        self.createShellObjects() catch |err| {
+            log.appendLine("dialog", "drainQuitRequest cancel: createShellObjects failed: {s} — fatal", .{@errorName(err)});
+            self.running = false;
+        };
+        log.appendLine("dialog", "drainQuitRequest cancel — main surface 재생성", .{});
     }
 
     fn dismissDialog(self: *Client) void {
@@ -3877,14 +3970,29 @@ const Client = struct {
     }
 
     /// dialog 활성 시 모든 키 라우팅. SPEC §6 — Enter / Esc / 클릭 dismiss.
-    /// 그 외 키 무시 (modal). step 4 에서 confirm 의 Tab focus toggle 추가.
+    /// 그 외 키 무시 (modal). Confirm 모드: Enter = OK (true), Esc = Cancel (false).
     fn handleDialogKey(self: *Client, key: u32) void {
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
         switch (sym) {
-            xkb_key_return, xkb_key_escape => self.requestDismissDialog(),
+            xkb_key_return => {
+                if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
+                self.requestDismissDialog();
+            },
+            xkb_key_escape => {
+                if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
+                self.requestDismissDialog();
+            },
             else => {}, // modal — 다른 키 swallow
         }
+    }
+
+    /// pointer 가 *dialog surface-local* rect 안인지. `last_dialog_*_rect`
+    /// 가 그리기 때 set + destroyDialogSurface 가 reset (w == 0 → 자동 miss).
+    fn hitDialogRect(self: *const Client, r: anytype) bool {
+        return r.w > 0 and
+            self.pointer_x_px >= r.x and self.pointer_x_px < r.x + r.w and
+            self.pointer_y_px >= r.y and self.pointer_y_px < r.y + r.h;
     }
 
     /// 별 layer-shell `overlay` surface 생성. 새 wl_surface + zwlr_layer_surface
@@ -3986,16 +4094,20 @@ const Client = struct {
         self.dialog.configured = false;
         self.dialog.buffer_w = 0;
         self.dialog.buffer_h = 0;
-        // #203 Phase C — OK 버튼 hit-test 좌표 reset. dialog 없는 동안 stale
-        // rect 로 hit 되지 않게.
-        self.renderer.last_dialog_button_rect = .{};
+        // #203 Phase C — OK / Cancel 버튼 hit-test 좌표 reset. dialog 없는 동안
+        // stale rect 로 hit 되지 않게. Confirm pending 도 reset (dismiss 가 결과
+        // 미설정 시 default Cancel 보장).
+        self.renderer.last_dialog_ok_rect = .{};
+        self.renderer.last_dialog_cancel_rect = .{};
         log.appendLine("dialog", "destroyDialogSurface", .{});
     }
 
     /// dialog surface buffer painting. `drawDialogContent` 호출 — title /
     /// separator / message / footer / border / alpha sweep 모두 renderer 처리.
-    /// step 4 에서 confirm focus 인자 전달 추가.
+    /// step 4 — confirm 모드 (`kind == .confirm`) 면 `confirm_focus_ok = true`
+    /// 전달 (OK 버튼 + Cancel 버튼 그림). Info 모드 면 null (OK 하나만).
     fn paintDialogBuffer(self: *Client, memory: []u8, w: i32, h: i32, stride: i32) void {
+        const focus_arg: ?bool = if (self.dialog.kind == .confirm) true else null;
         self.renderer.drawDialogContent(
             memory,
             w,
@@ -4004,7 +4116,7 @@ const Client = struct {
             self.dialog.severity,
             self.dialog.title(),
             self.dialog.message(),
-            null,
+            focus_arg,
         );
     }
 
@@ -4127,13 +4239,51 @@ const Client = struct {
         };
     }
 
-    /// dialog_linux 의 confirm callback. step 4 동기 wait 미구현 단계 — default
-    /// Cancel (= false) 반환 + log. #116 안전 default.
+    /// dialog_linux 의 confirm callback. step 4 — confirm dialog 띄움 + inner
+    /// wayland event pump 로 사용자 선택 (OK / Cancel / Enter / Esc / external
+    /// dismiss) 대기. 결과 반환.
+    ///
+    /// **reentrancy 안전성**: 호출 site (예: `app_controller.onQuitRequest`) 는
+    /// *main loop 의 keyboard handler* 가 아니라 *deferred path* (Linux 의 경우
+    /// Alt+F4 핸들러도 곧 deferred 으로 만듦 — main loop 의 quit check phase).
+    /// 즉 *outer dispatchBuffered 안 호출 X* — inner pump 의 `pollAndDispatch`
+    /// + `drainPendingDialogDismiss` 패턴 안전. dismiss 의 xdg-activation
+    /// roundtrip 도 main loop 의 drain 시점에서 *outer pump cycle 밖* 에 처리.
     fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
-        _ = ctx;
-        _ = message;
-        log.appendLine("dialog", "showConfirm sync wait 미구현 (step 4) — default Cancel: title={s}", .{title});
-        return false;
+        const self: *Client = @ptrCast(@alignCast(ctx));
+
+        // Confirm dialog 띄움. 실패 시 안전 default Cancel.
+        self.openConfirmDialog(title, message) catch |err| {
+            log.appendLine("dialog", "openConfirmDialog failed: {s} — default Cancel", .{@errorName(err)});
+            return false;
+        };
+
+        // Inner pump — 결과 받을 때까지 (`pending_confirm_result != null`) 또는
+        // app 종료 (`self.running == false`). 각 iteration 의 work 는 main loop
+        // 의 그것과 일치 (dispatch / drain dismiss / drain exited tabs / dbus /
+        // key repeat / redraw).
+        while (self.running and self.pending_confirm_result == null) {
+            self.pollAndDispatch(frame_poll_ms) catch |err| {
+                log.appendLine("dialog", "confirm inner pump pollAndDispatch failed: {s} — break + Cancel", .{@errorName(err)});
+                self.pending_confirm_result = false;
+                break;
+            };
+            self.drainPendingDialogDismiss();
+            self.drainExitedTabs();
+            self.dispatchDbusMessages();
+            self.maybeRepeatKey() catch {};
+            if (self.session) |*session| {
+                if (session.drainActiveOutputForRender()) {
+                    self.requestRedraw();
+                }
+            }
+            self.maybeRedraw() catch {};
+        }
+
+        const result = self.pending_confirm_result orelse false;
+        self.pending_confirm_result = null;
+        log.appendLine("dialog", "confirm result={s} title={s}", .{ if (result) "OK" else "Cancel", title });
+        return result;
     }
 
     fn logCapabilities(self: *Client) void {
