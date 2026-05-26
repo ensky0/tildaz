@@ -3958,13 +3958,13 @@ const Client = struct {
     /// dialog surface 의 모든 wayland 객체 destroy. content state (kind /
     /// title / message) 는 caller 가 별도 관리 — 본 함수는 wayland 객체만.
     ///
-    /// 이전 시도 (266f0347 v1: main 재송신 nudge, bde2f50c v2: dialog 의
-    /// keyboard_interactivity=none 토글) 모두 시연 실패 + 진짜 분석으로 잘못된
-    /// 방향 확정 (Sway #7936 / Hyprland #8293 / Wayfire #1204 — wlroots 기반
-    /// 모두 같은 패턴이 *compositor 측 버그* 였고 *client* 측 fix 불가). 사용자
-    /// 단서: pointer 가 main 위에 있을 때만 focus 자동 복귀 → KWin 의 focus
-    /// return 이 pointer 위치 기반. wl_keyboard event 로깅으로 진짜 시점 분석
-    /// 우선 (cb 위 단서 확정 후 진짜 fix 결정).
+    /// 이전 시도 (focus v1: main 의 set_keyboard_interactivity 재송신,
+    /// focus v2: dialog 의 keyboard_interactivity=none 토글) 모두 시연 실패 +
+    /// 진짜 분석으로 잘못된 방향 확정 (Sway #7936 / Hyprland #8293 / Wayfire
+    /// #1204 — wlroots 기반 모두 같은 패턴이 *compositor 측 버그* 였고 *client*
+    /// 측 fix 불가). 사용자 단서: pointer 가 main 위에 있을 때만 focus 자동
+    /// 복귀 → KWin 의 focus return 이 pointer 위치 기반. xdg-activation-v1
+    /// 표준으로 정공 fix (focus 가드 포함). 자세한 학습 기록은 #203 코멘트 chain.
     fn destroyDialogSurface(self: *Client) !void {
         if (self.dialog.surface_id == 0) return;
 
