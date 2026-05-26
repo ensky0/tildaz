@@ -29,8 +29,9 @@ const single_instance = @import("single_instance.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const system_open = @import("../../system_open.zig");
-const dialog_mod = @import("../../dialog.zig");
-const dialog_linux = @import("../../dialog/linux.zig");
+// dialog backend (dialog/linux.zig) 의 runtime callback 등록은 2단계 별도
+// layer-shell overlay surface 구현 후 다시 연결 — 지금 단계는 stderr fallback
+// 그대로. import 도 그때 추가.
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -117,6 +118,9 @@ const zwlr_layer_surface_v1_event_closed: u16 = 1;
 // layer enum: 0=background, 1=bottom, 2=top, 3=overlay. drop-down 은 normal
 // window 위 / lock screen 아래 → top (2). overlay 면 panel / 알림 위까지 덮음.
 const zwlr_layer_shell_layer_top: u32 = 2;
+// #203 Phase C — 대화상자는 main surface (`top`) 위로 떠야 modal 가시화 보장.
+// `overlay` 면 panel / 알림 위까지 덮어 native NSAlert / MessageBoxW 동등.
+const zwlr_layer_shell_layer_overlay: u32 = 3;
 // anchor bitmask. top+left+right (= 13) 이면 width 는 compositor 가 결정 (full
 // 가로), height 만 set_size 값 사용 (spec: "anchored to opposing edges → 그
 // axis 의 size 는 anchor 가 결정, set_size 무시").
@@ -133,6 +137,10 @@ const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
 // 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
 // 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
 const layer_surface_default_height: u32 = 400;
+// #203 Phase C — 대화상자 박스 기본 크기 (logical pixel). compositor 의 anchor=0
+// (center 배치) 와 함께 사용. step 3 에서 텍스트 metric 따라 동적 조정될 수 있음.
+const dialog_default_logical_w: u32 = 480;
+const dialog_default_logical_h: u32 = 240;
 // wp_cursor_shape_v1 (#193) — compositor 가 themed cursor 직접 처리. wl_pointer
 // 의 set_cursor + XCursor 테마 로딩 직접 구현 대안. KDE Plasma 6 / GNOME 등이
 // advertise. 출처 https://wayland.app/protocols/cursor-shape-v1.
@@ -392,45 +400,6 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
     };
 }
 
-/// #203 Phase C — wayland layer-shell overlay dialog state (option A).
-///
-/// 동작:
-///   - `kind = .none` — dialog 없음. 모든 입력 정상 (terminal / rename / nav).
-///   - `kind = .info` — Info 또는 Error dialog. 모든 입력 routed 됨.
-///     Enter / Esc / 클릭 → dismiss (kind → .none).
-///   - `kind = .confirm` — Confirm dialog. 같은 routing + Enter / Esc / 클릭
-///     으로 result 채워짐 → inner event loop pump 가 깨어남.
-///
-/// Wayland 표준 dialog API 없어 자체 그리기 — 우리 main wayland surface 안
-/// inline overlay (별 surface 안 만듦, drop-down 안에서 그려짐). drop-down
-/// 의 layer=top + exclusive keyboard 그대로 활용 — modal 효과 자연.
-pub const DialogState = struct {
-    pub const Kind = enum { none, info, confirm };
-
-    kind: Kind = .none,
-    severity: dialog_mod.Severity = .info,
-    title_buf: [128]u8 = undefined,
-    title_len: usize = 0,
-    msg_buf: [4096]u8 = undefined,
-    msg_len: usize = 0,
-    /// confirm 의 사용자 선택 결과 (true = OK, false = Cancel). inner event
-    /// loop pump 가 null → some 으로 바뀔 때까지 poll.
-    confirm_result: ?bool = null,
-    /// confirm 의 focused button (false = Cancel default — destructive 작업
-    /// 의 안전 default, #116). Tab 으로 toggle, Enter 가 focused 선택.
-    confirm_focus_ok: bool = false,
-
-    pub fn title(self: *const DialogState) []const u8 {
-        return self.title_buf[0..self.title_len];
-    }
-    pub fn message(self: *const DialogState) []const u8 {
-        return self.msg_buf[0..self.msg_len];
-    }
-    pub fn active(self: *const DialogState) bool {
-        return self.kind != .none;
-    }
-};
-
 const Client = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -481,6 +450,20 @@ const Client = struct {
     // 경로를 동시에 만들면 안 된다 (한 surface 의 role 충돌).
     layer_shell_id: u32 = 0,
     layer_surface_id: u32 = 0,
+    // #203 Phase C — 별 layer-shell `overlay` surface (대화상자 전용). main
+    // surface (`top`) 와 *동일 connection* 의 별 wl_surface + zwlr_layer_surface
+    // 쌍. native NSAlert / MessageBoxW 와 동등하게 main terminal 위 modal 로
+    // 그려진다. 0 = inactive (대화상자 없음). step 2 = 골격 / 빈 buffer 만,
+    // 그리기 / 콜백 wire 는 step 3 + step 4.
+    dialog_surface_id: u32 = 0,
+    dialog_layer_surface_id: u32 = 0,
+    dialog_viewport_id: u32 = 0,
+    dialog_active_buffer: ?ShmBuffer = null,
+    // configure event 가 알려준 buffer 크기 (physical px). 0 이면 우리 요청
+    // 박스 크기 (`dialog_default_logical_*`) × scale 로 fallback.
+    dialog_buffer_w: i32 = 0,
+    dialog_buffer_h: i32 = 0,
+    dialog_configured: bool = false,
     // L8-β — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
@@ -628,12 +611,6 @@ const Client = struct {
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
 
-    /// #203 Phase C — layer-shell overlay dialog state (option A). active 시
-    /// 모든 키 / 마우스 입력이 dialog 로 라우팅. info 는 fire-and-forget
-    /// (Enter / Esc / 클릭 → dismiss), confirm 은 inner event loop pump 가
-    /// `result` 채워질 때까지 wait.
-    dialog: DialogState = .{},
-
     fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
@@ -719,6 +696,13 @@ const Client = struct {
             buffer.deinit();
         }
         self.retired_buffers.deinit(self.allocator);
+        // #203 Phase C — dialog surface 가 떠 있는 상태로 종료 시 cleanup.
+        // wayland connection 이 곧 close 라 send 실패는 무시 — buffer mmap /
+        // fd 만 안전하게 해제.
+        if (self.dialog_active_buffer) |*buffer| {
+            buffer.deinit();
+            self.dialog_active_buffer = null;
+        }
         if (self.session) |*session| {
             session.deinit();
             self.session = null;
@@ -728,16 +712,6 @@ const Client = struct {
     }
 
     fn run(self: *Client) !void {
-        // #203 Phase C — dialog overlay 콜백 등록 (option A). self pointer 가
-        // final 위치라야 함 — Client.init 가 by value 반환이라 init 안에서는
-        // 등록 못 함. run 시작 시점 = stable address.
-        dialog_linux.registerCallbacks(.{
-            .ctx = self,
-            .show_info = Client.dialogShowInfoCb,
-            .show_confirm = Client.dialogShowConfirmCb,
-        });
-        defer dialog_linux.unregisterCallbacks();
-
         try self.getRegistry();
         try self.roundtrip();
 
@@ -1592,25 +1566,6 @@ const Client = struct {
                     self.rename_state.view(),
                     self.tab_drag.view(),
                 );
-                // #203 Phase C — dialog overlay (option A inline). 활성 시 paint
-                // 결과 위에 modal box. info 는 dismiss 만, confirm 은 button focus
-                // 표기 (Step 2 에서 button rect hit-test).
-                if (self.dialog.active()) {
-                    const confirm_focus: ?bool = if (self.dialog.kind == .confirm)
-                        self.dialog.confirm_focus_ok
-                    else
-                        null;
-                    self.renderer.drawDialogOverlay(
-                        memory,
-                        width,
-                        height,
-                        stride,
-                        self.dialog.severity,
-                        self.dialog.title(),
-                        self.dialog.message(),
-                        confirm_focus,
-                    );
-                }
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
                 // 근처에 정렬되도록. error 는 main loop 멈추지 않게 swallow.
@@ -1907,6 +1862,24 @@ const Client = struct {
             if (self.mapped) self.requestRedraw();
             return;
         }
+        // #203 Phase C — dialog layer-surface events. main layer-surface 와
+        // 동일 protocol (`zwlr_layer_surface_v1`) — opcode / payload 동등. main
+        // 분기 *앞에* 위치 — dialog 가 inactive (id=0) 일 때만 main 분기 fall
+        // through. closed event 시 surface 정리 (compositor 측 dismiss 가능성).
+        if (self.dialog_layer_surface_id != 0 and id == self.dialog_layer_surface_id) {
+            if (opcode == zwlr_layer_surface_v1_event_configure and payload.len >= 12) {
+                const serial = readU32(payload[0..4]);
+                const w = readU32(payload[4..8]);
+                const h = readU32(payload[8..12]);
+                try self.handleDialogConfigure(serial, w, h);
+                return;
+            }
+            if (opcode == zwlr_layer_surface_v1_event_closed) {
+                log.appendLine("dialog", "dialog layer-surface closed by compositor", .{});
+                try self.destroyDialogSurface();
+                return;
+            }
+        }
         // L8-α — zwlr_layer_surface_v1 events. configure(serial, w, h) 와
         // closed 두 가지. configure 는 xdg_surface configure 와 동일한 ack
         // + size apply 흐름이지만 ack opcode 가 6 (xdg 는 4), payload 도
@@ -2092,92 +2065,6 @@ const Client = struct {
         }
         self.needs_redraw = true;
     }
-
-    //=== #203 Phase C — Dialog overlay (option A, layer-shell modal in main surface) ====
-
-    /// dialog_linux 의 info / error callback. cross-platform `dialog.show*` /
-    /// `dialog.showAboutAlert` 가 결국 여기로 도달. fire-and-forget — 사용자가
-    /// Enter / Esc / 클릭으로 dismiss 할 때까지 visual 만 유지.
-    fn dialogShowInfoCb(ctx: *anyopaque, severity: dialog_mod.Severity, title: []const u8, message: []const u8) void {
-        const self: *Client = @ptrCast(@alignCast(ctx));
-        self.openInfoDialog(severity, title, message);
-    }
-
-    /// dialog_linux 의 confirm callback (Step 2 — synchronous via inner event
-    /// loop pump). Step 1 단계에선 default Cancel (= false) 반환 — 기존 stderr
-    /// fallback 정책과 같음 (#116 안전 default).
-    fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
-        const self: *Client = @ptrCast(@alignCast(ctx));
-        _ = self;
-        log.appendLine("dialog", "showConfirm (sync) Step 2 미구현 — default Cancel: title={s}", .{title});
-        _ = message;
-        return false;
-    }
-
-    fn openInfoDialog(self: *Client, severity: dialog_mod.Severity, title: []const u8, message: []const u8) void {
-        const title_len = @min(title.len, self.dialog.title_buf.len);
-        const msg_len = @min(message.len, self.dialog.msg_buf.len);
-        @memcpy(self.dialog.title_buf[0..title_len], title[0..title_len]);
-        @memcpy(self.dialog.msg_buf[0..msg_len], message[0..msg_len]);
-        self.dialog = .{
-            .kind = .info,
-            .severity = severity,
-            .title_buf = self.dialog.title_buf,
-            .title_len = title_len,
-            .msg_buf = self.dialog.msg_buf,
-            .msg_len = msg_len,
-        };
-        self.needs_redraw = true;
-        log.appendLine("dialog", "open info severity={s} title={s} msg_len={d}", .{
-            @tagName(severity), self.dialog.title(), msg_len,
-        });
-    }
-
-    fn dismissDialog(self: *Client, confirm_result: ?bool) void {
-        if (self.dialog.kind == .none) return;
-        log.appendLine("dialog", "dismiss kind={s} result={s}", .{
-            @tagName(self.dialog.kind),
-            if (confirm_result) |r| (if (r) "OK" else "Cancel") else "-",
-        });
-        self.dialog.confirm_result = confirm_result;
-        // info 는 즉시 .none. confirm 은 inner loop 가 result 보고 .none 처리.
-        if (self.dialog.kind == .info) {
-            self.dialog.kind = .none;
-        } else if (self.dialog.kind == .confirm) {
-            // result 를 채워서 inner loop 가 깨어나게. .kind 는 inner loop 에서
-            // .none 으로 (현재는 Step 1 단계라 confirm 사용 안 됨).
-            self.dialog.kind = .none;
-        }
-        self.needs_redraw = true;
-    }
-
-    /// dialog 활성 시 모든 키 라우팅. SPEC §6 — Enter / Esc / 클릭으로 dismiss.
-    /// Tab 은 confirm 의 button focus toggle (Step 2). 그 외 키 무시 (modal).
-    fn handleDialogKey(self: *Client, key: u32) void {
-        const xkb_key = key + wayland_xkb_keycode_offset;
-        const sym = self.keyboard.oneSym(xkb_key) orelse return;
-        switch (sym) {
-            xkb_key_return => {
-                // info: dismiss / confirm: 현재 focused button (Step 1 = 항상 false)
-                const result: ?bool = if (self.dialog.kind == .confirm) self.dialog.confirm_focus_ok else null;
-                self.dismissDialog(result);
-            },
-            xkb_key_escape => {
-                // info: dismiss / confirm: Cancel
-                const result: ?bool = if (self.dialog.kind == .confirm) false else null;
-                self.dismissDialog(result);
-            },
-            xkb_key_tab => {
-                if (self.dialog.kind == .confirm) {
-                    self.dialog.confirm_focus_ok = !self.dialog.confirm_focus_ok;
-                    self.needs_redraw = true;
-                }
-            },
-            else => {}, // modal — 다른 키 swallow
-        }
-    }
-
-    //=== End dialog overlay block ===
 
     /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
     /// (= shell_exited true) → main loop 가 종료. 다중 탭이면 그 탭만.
@@ -2802,14 +2689,6 @@ const Client = struct {
     fn processKeyEvent(self: *Client, serial: u32, key: u32) !void {
         self.last_serial = serial;
 
-        // #203 Phase C — dialog overlay 활성 시 모든 키 dialog 로 라우팅 (modal).
-        // rename / preedit / 단축키 등 모두 swallow. Enter / Esc / Tab 만 dialog
-        // 가 처리, 나머지 키는 무시.
-        if (self.dialog.active()) {
-            self.handleDialogKey(key);
-            return;
-        }
-
         // L12-γ-2 — rename 모드 활성 시 모든 키를 PTY 가 아니라 RenameState 로
         // 라우팅 (macOS `g_rename.isActive()` 분기 동등). modifier 단축키
         // (ctrl+shift+*) 도 무시 — 사용자가 Enter / Escape 로 나가야.
@@ -2883,9 +2762,15 @@ const Client = struct {
                 }
                 // SPEC §2.4 — Ctrl+Shift+I : About 다이얼로그 (Win 동등 native).
                 // §4.1 — 단축키 진입 시 rename commit (commitPendingInput).
+                // #203 Phase C step 2 — 임시 wiring: dialog surface 골격 toggle
+                // (없으면 create / 있으면 destroy). step 3 에서 About 그리기 +
+                // dialog/linux.zig callback 재등록 후 `about.showAboutDialog()`
+                // 호출로 복귀.
                 if (sym == xkb_key_i_lower or sym == xkb_key_i_upper) {
                     self.commitPendingInput();
-                    about.showAboutDialog();
+                    self.toggleDialogSurfaceTest() catch |err| {
+                        log.appendLine("dialog", "toggleDialogSurfaceTest failed: {s}", .{@errorName(err)});
+                    };
                     return;
                 }
                 // SPEC §11.2 — Ctrl+Shift+P : Open Config (default editor 로).
@@ -3050,19 +2935,6 @@ const Client = struct {
         const time_ms = readU32(payload[4..8]);
         const button = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
-
-        // #203 Phase C — dialog overlay 활성 시 모든 클릭 swallow + pressed
-        // edge 에서 dismiss (Step 1 info dialog 만 — Step 2 confirm 은 OK/Cancel
-        // 버튼 hit-test). 다른 단축키 (scrollbar / tab bar / selection / paste)
-        // 보다 우선.
-        if (self.dialog.active()) {
-            if (state == wl_pointer_button_state_pressed) {
-                // info 는 result null, confirm 은 default Cancel (false).
-                const result: ?bool = if (self.dialog.kind == .confirm) false else null;
-                self.dismissDialog(result);
-            }
-            return;
-        }
 
         if (button == wl_pointer_button_right) {
             // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /
@@ -3492,6 +3364,15 @@ const Client = struct {
             }
         }
 
+        // #203 Phase C — dialog surface 도 동일 release event 흐름. step 2 는
+        // single-shot 이라 released 표시만 — step 3 의 재paint cycle 에서 사용.
+        if (self.dialog_active_buffer) |*buffer| {
+            if (buffer.id == id) {
+                buffer.released = true;
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -3625,13 +3506,6 @@ const Client = struct {
         }
         // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
-        // 사용자 시연 발견 — dialog 활성 중 F1 hide 시 다음 show 가 dialog
-        // 잔여 상태로 그려져 화면 깜빡임. F1 = 강력 종료 의미라 dialog 도
-        // dismiss (info 면 null, confirm 면 Cancel default).
-        if (self.dialog.active()) {
-            const result: ?bool = if (self.dialog.kind == .confirm) false else null;
-            self.dismissDialog(result);
-        }
         self.commitPendingInput();
         try self.destroyShellObjects();
         self.surface_hidden = true;
@@ -3692,6 +3566,242 @@ const Client = struct {
         // 재생성 (show) 후 첫 redraw 가 막히지 않도록 reset.
         self.frame_callback_id = 0;
         self.awaiting_frame = false;
+    }
+
+    /// #203 Phase C step 2 — 별 layer-shell `overlay` surface 의 *골격* 생성.
+    /// 새 wl_surface + zwlr_layer_surface (layer=overlay, anchor=0 center,
+    /// set_size=박스 크기, set_keyboard_interactivity=exclusive). 첫 commit 은
+    /// buffer 없이 send — layer-shell spec: "buffer 는 첫 configure event ack
+    /// 전에 attach 불가". configure handler 가 ack + 빈 buffer attach 담당.
+    ///
+    /// step 2 검증 목표 — surface 가 떴다 사라지는 것까지. 그리기 / 콜백 wire
+    /// 는 step 3+. 두 번 호출 (이미 active 일 때) 은 no-op.
+    fn createDialogSurface(self: *Client) !void {
+        if (self.dialog_surface_id != 0) return;
+        if (self.layer_shell_id == 0) {
+            // xdg-shell fallback 환경 (GNOME mutter 등) — layer-shell overlay
+            // 미가용. step 2 에선 그냥 log 만, step 4+ 에서 xdg-popup fallback
+            // 별도 검토.
+            log.appendLine("dialog", "createDialogSurface skipped — zwlr_layer_shell_v1 unavailable", .{});
+            return;
+        }
+        self.dialog_surface_id = self.allocId();
+        try self.sendNewId(self.compositor_id, 0, self.dialog_surface_id);
+
+        // viewporter (fractional scaling) — main surface 와 동일 패턴. 없으면
+        // skip (mutter / wlroots). fractional_scale_manager 은 step 2 에서는
+        // skip — main surface 의 preferred_scale 을 그대로 사용 (overlay 도 같은
+        // output 가정).
+        if (self.viewporter_id != 0) {
+            self.dialog_viewport_id = self.allocId();
+            try self.sendArgs(
+                self.viewporter_id,
+                wp_viewporter_request_get_viewport,
+                &.{ self.dialog_viewport_id, self.dialog_surface_id },
+            );
+        }
+
+        // get_layer_surface(new_id, surface, output=NULL, layer=OVERLAY, namespace).
+        // overlay layer 라 KDE panel / GNOME top bar 위까지 덮음 — modal 가시화.
+        self.dialog_layer_surface_id = self.allocId();
+        var msg = Msg.init(self.layer_shell_id, zwlr_layer_shell_v1_request_get_layer_surface);
+        try msg.putU32(self.dialog_layer_surface_id);
+        try msg.putU32(self.dialog_surface_id);
+        try msg.putU32(0);
+        try msg.putU32(zwlr_layer_shell_layer_overlay);
+        try msg.putString("tildaz-dialog");
+        try msg.send(self.stream);
+
+        // set_size(box_w, box_h) — logical pixel. set_anchor(0) = anchor 없음
+        // → compositor 가 surface 를 화면 중앙 배치 (spec). margin 도 0.
+        try self.sendArgs(
+            self.dialog_layer_surface_id,
+            zwlr_layer_surface_v1_request_set_size,
+            &.{ dialog_default_logical_w, dialog_default_logical_h },
+        );
+        try self.sendArgs(
+            self.dialog_layer_surface_id,
+            zwlr_layer_surface_v1_request_set_anchor,
+            &.{0},
+        );
+        // exclusive — modal 입력. 사용자가 main surface 클릭해도 키 입력은
+        // 우리 dialog 로 옴.
+        try self.sendArgs(
+            self.dialog_layer_surface_id,
+            zwlr_layer_surface_v1_request_set_keyboard_interactivity,
+            &.{zwlr_layer_surface_keyboard_interactivity_exclusive},
+        );
+        // 첫 commit — buffer 없이. compositor 가 응답으로 configure event 보냄.
+        try self.sendNoArgs(self.dialog_surface_id, 6);
+
+        log.appendLine("dialog", "createDialogSurface dialog_surface_id={} dialog_layer_surface_id={} size={}x{} (logical) layer=overlay anchor=0 keyboard=exclusive", .{
+            self.dialog_surface_id,
+            self.dialog_layer_surface_id,
+            dialog_default_logical_w,
+            dialog_default_logical_h,
+        });
+    }
+
+    /// #203 Phase C step 2 — 별 dialog surface 의 모든 wayland 객체 destroy.
+    /// hide path / 사용자 dismiss 후 호출. main surface 의 destroyShellObjects
+    /// 와 동등 정리 — buffer → layer_surface → viewport → surface 순서.
+    fn destroyDialogSurface(self: *Client) !void {
+        if (self.dialog_surface_id == 0) return;
+
+        if (self.dialog_active_buffer) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            self.dialog_active_buffer = null;
+        }
+        if (self.dialog_layer_surface_id != 0) {
+            try self.sendNoArgs(self.dialog_layer_surface_id, zwlr_layer_surface_v1_request_destroy);
+            self.dialog_layer_surface_id = 0;
+        }
+        if (self.dialog_viewport_id != 0) {
+            try self.sendNoArgs(self.dialog_viewport_id, wp_viewport_request_destroy);
+            self.dialog_viewport_id = 0;
+        }
+        try self.sendNoArgs(self.dialog_surface_id, 0);
+        self.dialog_surface_id = 0;
+        self.dialog_configured = false;
+        self.dialog_buffer_w = 0;
+        self.dialog_buffer_h = 0;
+        log.appendLine("dialog", "destroyDialogSurface", .{});
+    }
+
+    /// #203 Phase C step 2 — 빈 buffer 의 픽셀 painting. step 2 는 가시성 확인용
+    /// 단색 회색 채움만 — step 3 에서 텍스트 / 테두리 / 버튼 / 알파 sweep 그리기로
+    /// 교체. ARGB8888 little-endian → in-memory bytes = (B, G, R, A) per pixel.
+    fn paintDialogBuffer(self: *Client, memory: []u8, w: i32, h: i32, stride: i32) void {
+        _ = self;
+        _ = w;
+        _ = h;
+        _ = stride;
+        var i: usize = 0;
+        while (i + 4 <= memory.len) : (i += 4) {
+            memory[i + 0] = 0x60; // B
+            memory[i + 1] = 0x60; // G
+            memory[i + 2] = 0x60; // R
+            memory[i + 3] = 0xff; // A (opaque)
+        }
+    }
+
+    /// #203 Phase C step 2 — dialog surface 용 buffer 생성. main surface 의
+    /// createBuffer 와 동일 패턴 (memfd + mmap + shm pool + wl_buffer) — 차이는
+    /// `paintDialogBuffer` 호출 + 결과를 `dialog_active_buffer` 에 보관 (main
+    /// 의 retired_buffers cycle 미사용 — dialog 는 single-shot 이라 size 가 한
+    /// 번 정해지면 destroy 까지 그대로).
+    fn createDialogBuffer(self: *Client, width: i32, height: i32) !ShmBuffer {
+        const stride: i32 = width * 4;
+        const size_i32: i32 = stride * height;
+        const size: usize = @intCast(size_i32);
+        const pool_id = self.allocId();
+        const new_buffer_id = self.allocId();
+
+        const fd = try createMemfd("tildaz-wayland-dialog-buffer");
+        errdefer posix.close(fd);
+        try posix.ftruncate(fd, @intCast(size));
+
+        const memory = try posix.mmap(
+            null,
+            size,
+            linux.PROT.READ | linux.PROT.WRITE,
+            .{ .TYPE = .SHARED },
+            fd,
+            0,
+        );
+        errdefer posix.munmap(memory);
+
+        self.paintDialogBuffer(memory, width, height, stride);
+
+        try self.sendCreatePool(fd, size_i32, pool_id);
+        try self.sendArgs(pool_id, 0, &.{
+            new_buffer_id,
+            0,
+            @intCast(width),
+            @intCast(height),
+            @intCast(stride),
+            shm_format_argb8888,
+        });
+        try self.sendNoArgs(pool_id, 1);
+
+        return .{
+            .id = new_buffer_id,
+            .fd = fd,
+            .memory = memory,
+            .width = width,
+            .height = height,
+            .stride = stride,
+            .released = false,
+        };
+    }
+
+    /// #203 Phase C step 2 — dialog layer-surface 의 configure event handler.
+    /// main surface 의 동등 흐름 (ack_configure → set_destination → attach +
+    /// commit) 이지만 dialog 전용 state (`dialog_*`) 사용. configure 가 알려준
+    /// w / h 가 0 이면 우리 요청 크기 그대로 (`dialog_default_logical_*`).
+    fn handleDialogConfigure(self: *Client, serial: u32, w_logical: u32, h_logical: u32) !void {
+        try self.sendArgs(
+            self.dialog_layer_surface_id,
+            zwlr_layer_surface_v1_request_ack_configure,
+            &.{serial},
+        );
+        const logical_w_used: u32 = if (w_logical > 0) w_logical else dialog_default_logical_w;
+        const logical_h_used: u32 = if (h_logical > 0) h_logical else dialog_default_logical_h;
+        const physical_w: i32 = self.logicalToPhysical(@intCast(@min(logical_w_used, @as(u32, std.math.maxInt(i32)))));
+        const physical_h: i32 = self.logicalToPhysical(@intCast(@min(logical_h_used, @as(u32, std.math.maxInt(i32)))));
+        // viewport set_destination — buffer (physical) 를 surface (logical) 에
+        // 1:1 매핑. compositor 가 자체 stretch 안 하도록.
+        if (self.dialog_viewport_id != 0) {
+            try self.sendArgs(
+                self.dialog_viewport_id,
+                wp_viewport_request_set_destination,
+                &.{ logical_w_used, logical_h_used },
+            );
+        }
+        // 크기가 변했거나 buffer 가 아직 없으면 (재)생성.
+        const need_new = self.dialog_active_buffer == null or self.dialog_buffer_w != physical_w or self.dialog_buffer_h != physical_h;
+        if (need_new) {
+            if (self.dialog_active_buffer) |*old| {
+                self.destroyBufferObject(old.id);
+                old.deinit();
+                self.dialog_active_buffer = null;
+            }
+            const buffer = try self.createDialogBuffer(physical_w, physical_h);
+            self.dialog_active_buffer = buffer;
+            self.dialog_buffer_w = physical_w;
+            self.dialog_buffer_h = physical_h;
+        }
+        // attach + damage_buffer + commit. frame callback 은 step 2 에선 사용
+        // 안 함 — dialog 는 정적, throttling 불필요.
+        if (self.dialog_active_buffer) |buffer| {
+            try self.sendArgs(self.dialog_surface_id, 1, &.{ buffer.id, 0, 0 });
+            try self.sendArgs(self.dialog_surface_id, 9, &.{
+                0,
+                0,
+                @intCast(buffer.width),
+                @intCast(buffer.height),
+            });
+            try self.sendNoArgs(self.dialog_surface_id, 6);
+        }
+        self.dialog_configured = true;
+        log.appendLine("dialog", "dialog configure ack serial={} logical={}x{} physical={}x{}", .{
+            serial,
+            logical_w_used,
+            logical_h_used,
+            physical_w,
+            physical_h,
+        });
+    }
+
+    /// #203 Phase C step 2 — 테스트 trigger 가 부르는 toggle. 이미 떠 있으면
+    /// destroy, 없으면 create. step 4 에서 동기 `showConfirm` wire 후 제거 예정.
+    fn toggleDialogSurfaceTest(self: *Client) !void {
+        if (self.dialog_surface_id != 0) {
+            try self.destroyDialogSurface();
+        } else {
+            try self.createDialogSurface();
+        }
     }
 
     fn logCapabilities(self: *Client) void {
