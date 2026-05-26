@@ -20,11 +20,11 @@ pub const quit_confirm_format = "This will close {d} open tab{s}.";
 pub const tab_limit_title = "Tab limit reached";
 pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
 
-/// About 다이얼로그 본문 — 양쪽 platform 동일 구조. version / exe / pid /
-/// config / log 다음 Tip 라인에 OS 별 단축키 (Windows Ctrl+Shift+P/L vs macOS
-/// Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접 selection +
-/// copy (mac NSTextView) 하거나 native Ctrl+C / Cmd+C 로 본문 전체 copy 후
-/// path 만 골라낼 수 있고, Tip 의 단축키로 editor 를 바로 열 수도 있음.
+/// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
+/// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L
+/// vs macOS Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접
+/// selection + copy (mac NSTextView) 하거나 native Ctrl+C / Cmd+C 로 본문
+/// 전체 copy 후 path 만 골라낼 수 있고, Tip 의 단축키로 editor 를 바로 열 수도 있음.
 pub const about_format =
     \\TildaZ v{s}
     \\

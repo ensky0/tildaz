@@ -1,5 +1,5 @@
 //! About / 버전 확인 다이얼로그.
-//!   - Windows: F1 으로 띄운 후 Ctrl+Shift+I.
+//!   - Windows / Linux: F1 으로 띄운 후 Ctrl+Shift+I.
 //!   - macOS: Shift+Cmd+I (mainMenu "About TildaZ" 의 keyEquivalent — 메뉴바
 //!     UI 는 Accessory mode 라 안 보이지만 키 dispatch 는 동작).
 //!
@@ -37,10 +37,17 @@ pub fn showAboutDialog() void {
     const config_path = paths.configPath(alloc) catch "(unknown)";
     const log_path = paths.logPath(alloc) catch "(unknown)";
 
-    // Tip 라인의 단축키 — platform native modifier (SPEC §0 #2). body 구조는
-    // 양쪽 동일하고 토큰만 다름.
-    const open_config_key: []const u8 = if (builtin.os.tag == .windows) "Ctrl+Shift+P" else "Shift+Cmd+P";
-    const open_log_key: []const u8 = if (builtin.os.tag == .windows) "Ctrl+Shift+L" else "Shift+Cmd+L";
+    // Tip 라인의 단축키 — platform native modifier (SPEC §0 #2). macOS 만
+    // Cmd 기반, Windows / Linux 는 Ctrl 기반 표준. body 구조는 양쪽 동일하고
+    // 토큰만 다름.
+    const open_config_key: []const u8 = switch (builtin.os.tag) {
+        .macos => "Shift+Cmd+P",
+        else => "Ctrl+Shift+P",
+    };
+    const open_log_key: []const u8 = switch (builtin.os.tag) {
+        .macos => "Shift+Cmd+L",
+        else => "Ctrl+Shift+L",
+    };
 
     var msg_buf: [2048]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, messages.about_format, .{
