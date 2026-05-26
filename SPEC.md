@@ -458,11 +458,14 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
-| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm` | `dialog_windows.zig` (`MessageBoxW`) | `dialog_macos.zig` (NSAlert + osascript fallback) | `dialog/linux.zig` runtime callback infra 보유 — 본체 wayland 호스트가 별도 wayland surface 띄울 때 등록. 현재 미연결 — stderr + log fallback. 재구현 중 (#203 Phase C) | ✅ | ✅ | 🟨 |
-| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` 호출 정상, 그러나 dialog backend 미연결 — stderr + log 만. 별도 wayland surface 구현 후 ✅ 예정 | ✅ | ✅ | 🟨 (단축키 ✅ / GUI 표시 ❌ — 재구현 중) |
-| Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` → stderr + log fallback + exit | ✅ | ✅ | 🟨 |
-| Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → stderr + log fallback + exit | ✅ | ✅ | 🟨 |
-| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (예: Alt+F4 multi-tab) | `dialog.showConfirm` (`MessageBoxW MB_YESNO`) | NSAlert YES/NO | 미구현 (default Cancel 반환 — 안전 default) | ✅ | ✅ | ❌ |
+| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm` | `dialog_windows.zig` (`MessageBoxW`) | `dialog_macos.zig` (NSAlert + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
+| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showInfo` → Linux backend → layer-shell overlay 그림. 아이콘 (`docs/favicon.svg` raster) + Title + separator + body + OK 버튼 (system blue). | ✅ | ✅ | ✅ |
+| Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` — startup 시점은 wayland client 미초기화라 stderr + log fallback + exit. 런타임은 layer-shell overlay. | ✅ | ✅ | ✅ (런타임) / 🟨 (startup fallback) |
+| Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → stderr + log fallback + exit (panic 은 일반적으로 runtime 라 overlay 가능하나 안전 fallback 우선) | ✅ | ✅ | ✅ |
+| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (예: Alt+F4 multi-tab) | `dialog.showConfirm` (`MessageBoxW MB_YESNO`) | NSAlert YES/NO | 미구현 (default Cancel 반환 — 안전 default). step 4 에서 동기 `showConfirm` (inner wayland event pump) + Alt+F4 multi-tab 연결 예정 | ✅ | ✅ | ❌ |
+| Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X (mac NSAlert / Win MessageBoxW 표준). | OS modal 표준 자체 | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
+| dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
+| Dialog 시각 크기 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기 | DWrite native | NSAlert native | dialog 시각 상수 (corner radius / shadow margin / button w/h / icon size) PT 단위 + `scaledPt(pt, scale)` 변환. KDE Plasma 6 의 1.25x / 1.5x / 1.7x 환경 모두 일관 (SPEC.md §1.1 UI metric scaling 와 같은 패턴). | ✅ | ✅ | ✅ |
 
 ---
 
