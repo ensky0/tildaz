@@ -1485,8 +1485,9 @@ pub const Window = struct {
                     return 0;
                 }
                 // 사용자 발생 close (Alt+F4 / 시스템 메뉴) — app 에 결정 위임.
-                // 단일 탭 skip / 다중 탭 confirm 다이얼로그 (#116) 정책은
-                // app_controller 측에서 통일 처리.
+                // count == 0 (PTY 자동 종료) 만 skip, 단일 / 다중 탭 *항상*
+                // confirm — macOS `applicationShouldTerminate:` 와 동등 정책
+                // (#116). app_controller `onQuitRequest` 가 통일 처리.
                 if (self.quit_request_fn) |f| {
                     if (!f(self.userdata)) return 0;
                 }
