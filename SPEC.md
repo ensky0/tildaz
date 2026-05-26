@@ -120,7 +120,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` 호출 정상, dialog GUI 는 §6 재구현 중 | ✅ | ✅ | 🟨 (단축키 ✅ / GUI ❌ — §6) |
+| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` → 별 layer-shell `overlay` surface (§6 step 3, #203) | ✅ | ✅ | ✅ |
 
 ### 2.5 스크롤
 
@@ -142,7 +142,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | 항목 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 영어/숫자/기호 길게 누름 → 반복 입력 | OS default | `ApplePressAndHoldEnabled = false` 우리 앱 도메인에 등록 — 안 등록하면 system 이 accent picker (à á â) 띄우려 repeat 막음 | client-side timer (compositor `wl_keyboard.repeat_info` 의 rate / delay 따름, [7248163](https://github.com/ensky0/tildaz/commit/7248163), L12-γ-5). focus 떠날 때 / key release 시 즉시 disarm | ✅ | ✅ | ✅ |
-| 한글 자모 길게 누름 → 반복 입력 | (해당 없음) | IME 경로라 PressAndHold 영향 없음 (자동) | `wl_keyboard.key` 가 IME 로 라우팅됨 — fcitx5 / ibus 자체 key repeat 동작 (compositor `repeat_info` 가 IME 측에 적용). 사용자 시연 미검증, 표준 IME 동작이라 추정 | — | ✅ | 🟨 |
+| 한글 자모 길게 누름 → 반복 입력 | (해당 없음) | IME 경로라 PressAndHold 영향 없음 (자동) | `wl_keyboard.key` 가 IME 로 라우팅됨 — fcitx5 / ibus 자체 key repeat 동작 (compositor `repeat_info` 가 IME 측에 적용). 사용자 일상 사용 OK 확인 (Cinnamon Wayland + fcitx5-hangul, KDE Plasma 6 + KWin). | — | ✅ | ✅ |
 
 ---
 
@@ -222,7 +222,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | Rename — 마우스 클릭 cursor 이동 | 같은 탭 text 영역 클릭 → cursor 이동 (commit X). 다른 영역 → commit. preedit 활성 시 manual commit + IME state cancel. | `tryRenameClickMoveCursor` + `imeCancelComposition` (#164 v0.4.0) | `tryRenameClickMoveCursor` + `discardMarkedText` 동일 | `tryRenameClickMoveCursor` + text-input reset (L12-γ-2) | ✅ | ✅ | ✅ |
 | Rename — preedit 가운데 입력 push-right | cursor 뒤 main text 가 preedit advance 만큼 우측 이동, commit 시 자연 삽입 | `x_off += preedit_advance_total` (#164 v0.4.0) | 동일 (`text_x += preedit_advance_total`) | 동일 (cross-platform `drawTabBar`) | ✅ | ✅ | ✅ |
 | Rename — cursor follow scroll reserve | wide 1 글자 (cw*2) 고정. preedit 활성/비활성 무관 → typing 빠를 때 cursor 안정 | `tab_layout.cursorReserve` / `cursorScrollOffset` (#163 v0.4.0 helper) | 동일 (양쪽 같은 helper) | 동일 (cross-platform `tab_layout`) | ✅ | ✅ | ✅ |
-| Rename — MAX_TABS 32 한도 + dialog | `+` layout 자동 사라짐 + 단축키 시 dialog | `tab_actions.checkAtLimitAndDialog` (#159 v0.4.0) | 동일 (양쪽 같은 helper) | 동일 helper — but dialog 는 stderr-only (§6) | ✅ | ✅ | 🟨 (logic ✅, dialog UI ❌) |
+| Rename — MAX_TABS 32 한도 + dialog | `+` layout 자동 사라짐 + 단축키 시 dialog | `tab_actions.checkAtLimitAndDialog` (#159 v0.4.0) | 동일 (양쪽 같은 helper) | 동일 helper — dialog UI 는 §6 step 3 후 layer-shell overlay (#203) | ✅ | ✅ | ✅ |
 | Rename — IME 후보 popup 위치 / Hanja 치환 | cursor 옆 자연 추적 (한자 / kanji / hanzi). macOS Option+Return 은 조합 중 한글을 먼저 rename buffer 에 commit 한 뒤 후보창을 즉시 띄우고, 후보 확정 시에만 원래 한글 range 를 선택 한자로 치환. Esc / focus loss 는 원래 한글 유지. | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 tab rename snapshot 기준 rect 반환 + `insertText:replacementRange:` 로 range 치환 (#166, #190 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 가 IME 후보 popup 위치 — `updateCursorRectangle` 가 `physicalToLogical` 변환 적용 (L10-γ + 사용자 시연 fix). reconversion 은 §5 표 참조 (❌) | ✅ | ✅ | 🟨 (cursor 위치 ✅ / Hanja reconversion ❌ — §5 행) |
 | Rename auto-commit on focus loss | 아래 §4.1 통합 표 참조 — 모든 focus_loss = commit, Esc 만 cancel | (각 host 의 호출 site) | (각 host 의 호출 site) | (각 호출 site — §4.1 참조) | ✅ | ✅ | 🟨 (일부 path 미구현 — §4.1 참조) |
 
@@ -462,7 +462,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showInfo` → Linux backend → layer-shell overlay 그림. 아이콘 (`docs/favicon.svg` raster) + Title + separator + body + OK 버튼 (system blue). | ✅ | ✅ | ✅ |
 | Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` — startup 시점은 wayland client 미초기화라 stderr + log fallback + exit. 런타임은 layer-shell overlay. | ✅ | ✅ | ✅ (런타임) / 🟨 (startup fallback) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → stderr + log fallback + exit (panic 은 일반적으로 runtime 라 overlay 가능하나 안전 fallback 우선) | ✅ | ✅ | ✅ |
-| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (예: Alt+F4 multi-tab) | `dialog.showConfirm` (`MessageBoxW MB_YESNO`) | NSAlert YES/NO | 미구현 (default Cancel 반환 — 안전 default). step 4 에서 동기 `showConfirm` (inner wayland event pump) + Alt+F4 multi-tab 연결 예정 | ✅ | ✅ | ❌ |
+| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | `dialog.showConfirm` (`MessageBoxW MB_YESNO`) — `app_controller.onQuitRequest` 가 호출 | NSAlert YES/NO — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X (mac NSAlert / Win MessageBoxW 표준). | OS modal 표준 자체 | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
 | dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
 | Dialog 시각 크기 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기 | DWrite native | NSAlert native | dialog 시각 상수 (corner radius / shadow margin / button w/h / icon size) PT 단위 + `scaledPt(pt, scale)` 변환. KDE Plasma 6 의 1.25x / 1.5x / 1.7x 환경 모두 일관 (SPEC.md §1.1 UI metric scaling 와 같은 패턴). | ✅ | ✅ | ✅ |
@@ -489,7 +489,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `window.opacity_percent` | float 0.0..100.0 (memory: 0..255 alpha) | 100.0 | 100.0 | 100.0 (ARGB8888 alpha sweep, L13-γ) | ✅ | ✅ | ✅ |
 | `theme` | string (`themes.findTheme`) | `Tilda` | `Tilda` | `Tilda` | ✅ | ✅ | ✅ |
 | `font.family` | string (primary font, single) | `Cascadia Code` | `Menlo` | host `resolveDefaultFont` (fontconfig substitute `monospace` 결과) | ✅ | ✅ | ✅ |
-| `font.glyph_fallback` | string array (max 7 — chain total ≤ 8 with primary). 한글 / 이모지 / 심볼 순. | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Noto Sans CJK KR", "Noto Color Emoji", "Noto Sans Symbols"]` (fontconfig 환경 표준) | ✅ | ✅ | ✅ |
+| `font.glyph_fallback` | string array (max 7 — chain total ≤ 8 with primary). 한글 / 이모지 / 심볼 순. | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Noto Sans CJK KR", "Noto Color Emoji"]` (fontconfig 환경 표준, 심볼은 fontconfig 자동 fallback) | ✅ | ✅ | ✅ |
 | `font.size_point` | integer 8..72 (typographic point — host applies DPI scale) | 16 | 15 (Apple Terminal/iTerm2 컨벤션 + retina) | 16 (1:1 logical pixel, mac/win 동등) | ✅ | ✅ | ✅ |
 | `font.line_height_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.1 (Apple HIG) | 1.0 (FreeType metric 자연) | ✅ | ✅ | ✅ |
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
