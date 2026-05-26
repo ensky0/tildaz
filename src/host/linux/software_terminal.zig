@@ -45,6 +45,12 @@ const dialog_button_h_pt: u32 = 44;
 const dialog_button_radius_pt: u32 = 16;
 const dialog_button_color: ghostty.color.RGB = .{ .r = 45, .g = 125, .b = 210 }; // macOS 시스템 blue
 const dialog_button_text_color: ghostty.color.RGB = .{ .r = 255, .g = 255, .b = 255 };
+/// Confirm dialog 의 Cancel 버튼 색 — macOS secondary action 모양 (회색
+/// 배경 + 검정 글자). OK 와 시각 구분.
+const dialog_cancel_color: ghostty.color.RGB = .{ .r = 0xD8, .g = 0xD8, .b = 0xD8 };
+const dialog_cancel_text_color: ghostty.color.RGB = .{ .r = 0x1A, .g = 0x1A, .b = 0x1A };
+/// 두 버튼 사이 간격 (PT). pad 와 무관한 작은 gap.
+const dialog_button_gap_pt: u32 = 12;
 
 /// #203 Phase C step 3.3 — dialog 상단 아이콘 크기 (PT, 논리 점). `docs/favicon.svg`
 /// 의 viewBox=64×64 를 그대로 줄여 그림. tildaz 의 monitor + `>_` 표지. 사용자
@@ -89,11 +95,13 @@ pub const Renderer = struct {
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
     preedit_text: []const u8 = "",
-    /// #203 Phase C — drawDialogContent 가 OK 버튼을 그릴 때 좌표 (dialog
-    /// surface-local physical pixel) 저장. host (handlePointerButton) 가 hit-test
-    /// 에 사용. dialog 안 떠 있으면 `w == 0`. mac/win modal 정책 (본문 click 은
-    /// 무시, OK 버튼 click 만 dismiss) 의 구현 보조.
-    last_dialog_button_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
+    /// #203 Phase C — drawDialogContent 가 그린 OK / Cancel 버튼 좌표 (dialog
+    /// surface-local physical pixel). host (handlePointerButton) 가 hit-test 에
+    /// 사용. dialog 안 떠 있으면 `w == 0`. mac/win modal 정책 (본문 click 은
+    /// 무시, OK / Cancel 버튼 click 만 dismiss) 의 구현 보조. Confirm 모드 가
+    /// 아니면 cancel rect 의 `w == 0` (그리지 않음).
+    last_dialog_ok_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
+    last_dialog_cancel_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     /// L13-γ — 매 픽셀의 alpha byte (ARGB8888 의 high byte). `config.opacity_
     /// alpha` 가 그대로. 100% → 255 (완전 opaque, 시각 변화 없음), <100 →
     /// compositor 가 배경과 alpha blending. `Client.init` 에서 채움.
@@ -597,7 +605,14 @@ pub const Renderer = struct {
             .info => dialog_separator_color,
             .err => .{ .r = 220, .g = 80, .b = 80 },
         };
-        _ = confirm_focus_ok; // step 4 에서 Cancel 버튼 추가 시 사용.
+        // step 4 — confirm_focus_ok != null 이면 confirm 모드 (OK + Cancel 두
+        // 버튼). null 이면 info 모드 (OK 하나만, 가로 중앙). focus 표시 (.true =
+        // OK, .false = Cancel) 는 차후 시각 강조 (tab focus 등) — 현재는 동작 결정
+        // 만 영향. mac NSAlert 표준: primary (OK) 가 오른쪽, secondary (Cancel)
+        // 가 왼쪽. 그룹은 박스 가로 중앙.
+        const is_confirm: bool = confirm_focus_ok != null;
+        // confirm_focus_ok 의 *값* (true = OK / false = Cancel) 은 focus 시각
+        // 강조 (예: 두꺼운 테두리) 에 후속 활용. 현재는 *null vs bool* 만 사용.
 
         // (1) 박스 영역만 배경 (shadow 영역 제외).
         rect(memory, buffer_w, buffer_h, stride, box_x, box_y, box_w, box_h, bg);
@@ -627,41 +642,37 @@ pub const Renderer = struct {
             text_y += ch;
         }
 
-        // (5) OK 버튼 — 박스 가로 중앙, 하단 padding 위. macOS 표준 primary
-        // action 버튼 모양 (system blue + 흰 글자 + pill 모서리).
-        const button_x: i32 = box_x + @divTrunc(box_w - button_w, 2);
+        // (5) 버튼 — Info 모드: OK 하나만 중앙. Confirm 모드: OK + Cancel 그룹,
+        // mac NSAlert 표준 — primary (OK) 오른쪽, secondary (Cancel) 왼쪽.
         const button_y: i32 = box_y + box_h - pad - button_h;
-        // #203 Phase C — host 가 hit-test 에 사용. 좌표 = dialog surface-local
-        // physical pixel (buffer 와 같은 좌표계).
-        self.last_dialog_button_rect = .{ .x = button_x, .y = button_y, .w = button_w, .h = button_h };
-        fillRoundedRect(
-            memory,
-            buffer_w,
-            buffer_h,
-            stride,
-            button_x,
-            button_y,
-            button_w,
-            button_h,
-            button_r,
-            dialog_button_color,
-        );
-        const button_text = "OK";
-        const button_text_cells = display_width.stringWidth(button_text);
-        const button_text_w: i32 = @intCast(button_text_cells * @as(usize, @intCast(self.cellWidth())));
-        const button_text_x: i32 = button_x + @divTrunc(button_w - button_text_w, 2);
+        const button_gap: i32 = scaledPt(dialog_button_gap_pt, self.scale);
+        const group_w: i32 = if (is_confirm) button_w * 2 + button_gap else button_w;
+        const group_x: i32 = box_x + @divTrunc(box_w - group_w, 2);
+
+        // OK 버튼 (primary action, 항상 그림).
+        const ok_x: i32 = if (is_confirm) group_x + button_w + button_gap else group_x;
+        self.last_dialog_ok_rect = .{ .x = ok_x, .y = button_y, .w = button_w, .h = button_h };
+        fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, dialog_button_color);
+        const ok_text = "OK";
+        const ok_text_cells = display_width.stringWidth(ok_text);
+        const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(self.cellWidth())));
+        const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
         const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
-        self.drawDialogTextLine(
-            memory,
-            buffer_w,
-            buffer_h,
-            stride,
-            button_text_x,
-            button_text_y,
-            button_text,
-            dialog_button_text_color,
-            dialog_button_color,
-        );
+        self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, dialog_button_text_color, dialog_button_color);
+
+        // Cancel 버튼 — confirm 모드 에서만. secondary action (회색 배경 + 검정).
+        if (is_confirm) {
+            const cancel_x: i32 = group_x;
+            self.last_dialog_cancel_rect = .{ .x = cancel_x, .y = button_y, .w = button_w, .h = button_h };
+            fillRoundedRect(memory, buffer_w, buffer_h, stride, cancel_x, button_y, button_w, button_h, button_r, dialog_cancel_color);
+            const cancel_text = "Cancel";
+            const cancel_text_cells = display_width.stringWidth(cancel_text);
+            const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(self.cellWidth())));
+            const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
+            self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color, dialog_cancel_color);
+        } else {
+            self.last_dialog_cancel_rect = .{}; // info 모드: Cancel 그리지 않음.
+        }
 
         // (6) Single-pass SDF — 박스 내부 alpha sweep + 둥근 모서리 + drop shadow
         // 한 번에 처리. 박스 안 (d < 0): opacity 보장 / 박스 모서리 1-pixel 띠
@@ -693,7 +704,7 @@ pub const Renderer = struct {
         const cw = self.cellWidth();
         const ch = self.cellHeight();
         const pad: i32 = @max(@as(i32, 8), @divTrunc(ch, 2));
-        _ = confirm; // step 4 에서 Cancel 버튼 추가 시 너비 계산 분기.
+        // confirm: Cancel 버튼 너비 추가 분기 (아래 buttons_w 계산).
 
         var max_cells: usize = display_width.stringWidth(title);
         var line_count: usize = 0;
@@ -715,8 +726,11 @@ pub const Renderer = struct {
         const button_h: i32 = scaledPt(dialog_button_h_pt, self.scale);
         const icon_size: i32 = scaledPt(dialog_icon_size_pt, self.scale);
         const sm: i32 = scaledPt(dialog_shadow_margin_pt, self.scale);
+        const button_gap: i32 = scaledPt(dialog_button_gap_pt, self.scale);
+        // Confirm 모드 시 OK + Cancel 두 버튼 + gap. Info 모드 는 OK 하나.
+        const buttons_w: i32 = if (confirm) button_w * 2 + button_gap else button_w;
         // 박스 폭 — 텍스트 폭 vs 버튼 폭 vs 아이콘 폭 + 좌우 여유 중 가장 큰.
-        const box_w: i32 = @max(@max(inner_w + pad * 2, button_w + pad * 4), icon_size + pad * 2);
+        const box_w: i32 = @max(@max(inner_w + pad * 2, buttons_w + pad * 4), icon_size + pad * 2);
         const icon_section: i32 = icon_size + @divTrunc(ch, 2);
         const box_h: i32 = pad * 2 + icon_section + text_rows * ch + button_h;
         // buffer = box + shadow margin × 2 (모든 4 방향).
