@@ -54,19 +54,70 @@ pub const DockPosition = enum {
 /// `Hotkey.fromString(s)` 로 동일.
 pub const Hotkey = if (is_windows) WindowsHotkey else if (is_macos) MacHotkey else LinuxHotkey;
 
-/// L9 미구현. Config.load 가 `Defaults.hotkey` 를 parse 할 때 unreachable
-/// 빠지지 않게 placeholder 만 둔다. 실제 XDG Portal `GlobalShortcuts` 등록 시
-/// (L9) 진짜 키 mapping / D-Bus binding 추가.
+/// XDG Portal `GlobalShortcuts` 등록 + xkb keysym 매핑. Win `WindowsHotkey` /
+/// mac `MacHotkey` 와 같은 토큰 분리 패턴 (`+` 로 token, modifier + 키 이름).
+/// `keysymToAccelerator` (`src/host/linux/portal.zig`) 가 이 `keysym + modifiers`
+/// 를 GTK accelerator 문자열 (`<Control>F1` 등) 으로 변환해 portal 에 송신.
 const LinuxHotkey = struct {
-    /// keysym (xkb). `f1` = 0xffbe (xkbcommon `XKB_KEY_F1`). L9 가 실제 D-Bus
-    /// shortcut registration 시 사용할 자리.
+    /// keysym (xkb). `f1` = 0xffbe (xkbcommon `XKB_KEY_F1`).
     keysym: u32 = 0xffbe,
+    /// modifier 비트마스크. Win 패턴 동등 — `MOD_*` 비트. `keysymToAccelerator`
+    /// 가 이를 `<Control><Shift>...` 같은 prefix 로 변환.
     modifiers: u32 = 0,
 
-    pub fn fromString(_: []const u8) ?LinuxHotkey {
-        // 정확한 parsing 은 L9 에서. 지금은 default 반환 — Config 가 nil
-        // 으로 빠지지 않게.
-        return .{};
+    pub const MOD_ALT: u32 = 0x1;
+    pub const MOD_CTRL: u32 = 0x2;
+    pub const MOD_SHIFT: u32 = 0x4;
+    pub const MOD_SUPER: u32 = 0x8; // Win key / Super / `cmd` 토큰.
+
+    pub fn fromString(s: []const u8) ?LinuxHotkey {
+        var modifiers: u32 = 0;
+        var keysym: ?u32 = null;
+        var iter = std.mem.tokenizeScalar(u8, s, '+');
+        while (iter.next()) |raw| {
+            const tok = std.mem.trim(u8, raw, " \t");
+            if (eqIc(tok, "ctrl") or eqIc(tok, "control")) {
+                modifiers |= MOD_CTRL;
+            } else if (eqIc(tok, "shift")) {
+                modifiers |= MOD_SHIFT;
+            } else if (eqIc(tok, "alt")) {
+                modifiers |= MOD_ALT;
+            } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd")) {
+                modifiers |= MOD_SUPER;
+            } else {
+                if (linuxKeysymFromName(tok)) |k| keysym = k else return null;
+            }
+        }
+        return .{ .keysym = keysym orelse return null, .modifiers = modifiers };
+    }
+
+    /// 키 이름 → xkb keysym. `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_*`.
+    /// Latin 문자 (a-z) / 숫자 (0-9) 는 ASCII 값 그대로 keysym (xkb 정의).
+    fn linuxKeysymFromName(name: []const u8) ?u32 {
+        const map = [_]struct { name: []const u8, sym: u32 }{
+            .{ .name = "f1", .sym = 0xffbe },  .{ .name = "f2", .sym = 0xffbf },
+            .{ .name = "f3", .sym = 0xffc0 },  .{ .name = "f4", .sym = 0xffc1 },
+            .{ .name = "f5", .sym = 0xffc2 },  .{ .name = "f6", .sym = 0xffc3 },
+            .{ .name = "f7", .sym = 0xffc4 },  .{ .name = "f8", .sym = 0xffc5 },
+            .{ .name = "f9", .sym = 0xffc6 },  .{ .name = "f10", .sym = 0xffc7 },
+            .{ .name = "f11", .sym = 0xffc8 }, .{ .name = "f12", .sym = 0xffc9 },
+            .{ .name = "space", .sym = 0x0020 },
+            .{ .name = "grave", .sym = 0x0060 },
+            .{ .name = "tab", .sym = 0xff09 },
+            .{ .name = "escape", .sym = 0xff1b },
+            .{ .name = "esc", .sym = 0xff1b },
+            .{ .name = "enter", .sym = 0xff0d },
+            .{ .name = "return", .sym = 0xff0d },
+        };
+        for (map) |entry| {
+            if (eqIc(name, entry.name)) return entry.sym;
+        }
+        if (name.len == 1) {
+            const c = std.ascii.toLower(name[0]);
+            if (c >= 'a' and c <= 'z') return c; // xkb keysym = ASCII
+            if (c >= '0' and c <= '9') return c;
+        }
+        return null;
     }
 };
 

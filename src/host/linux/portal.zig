@@ -21,6 +21,8 @@
 
 const std = @import("std");
 const log = @import("../../log.zig");
+const dialog = @import("../../dialog.zig");
+const messages = @import("../../messages.zig");
 const dbus = @import("dbus.zig");
 
 const portal_destination: [*:0]const u8 = "org.freedesktop.portal.Desktop";
@@ -30,6 +32,7 @@ const interface_request: [*:0]const u8 = "org.freedesktop.portal.Request";
 const member_response: [*:0]const u8 = "Response";
 const member_create_session: [*:0]const u8 = "CreateSession";
 const member_bind_shortcuts: [*:0]const u8 = "BindShortcuts";
+const member_unbind_shortcuts: [*:0]const u8 = "UnbindShortcuts";
 const member_activated: [*:0]const u8 = "Activated";
 
 /// L9-δ — `org.freedesktop.Notifications` D-Bus service (portal 와 별개).
@@ -48,6 +51,8 @@ const notify_call_timeout_ms: c_int = 2_000;
 const handle_token: [*:0]const u8 = "tildaz_handle";
 const session_handle_token: [*:0]const u8 = "tildaz_session";
 const bind_handle_token: [*:0]const u8 = "tildaz_bind";
+const unbind_handle_token: [*:0]const u8 = "tildaz_unbind";
+const rebind_handle_token: [*:0]const u8 = "tildaz_rebind";
 
 /// L9-β-2 — 우리가 portal 에 등록하는 유일한 shortcut id. Activated signal 의
 /// `shortcut_id` arg 도 이 값으로 들어옴 — L9-γ 에서 매칭 키.
@@ -384,17 +389,44 @@ fn appendStringVariantEntry(
     if (api.iter_close_container(arr_iter, &entry_iter) == 0) return error.PortalAppendFailed;
 }
 
-/// XKB keysym + modifier → portal `preferred_trigger` 의 GTK accelerator 문자열
-/// (예: `0xffbe + 0` → `"F1"`, `0xffbe + ctrl` → `"<Control>F1"`).
+/// XKB keysym + modifier → portal `preferred_trigger` 문자열. XDG portal /
+/// portal-gnome / portal-kde 가 받는 *표준 형식* = 소문자 modifier + `+` separator
+/// + key 이름. 예: `0xffbe + 0` → `"F1"` / `0xffbe + MOD_CTRL` → `"ctrl+F1"` /
+/// `0x0020 + MOD_SHIFT | MOD_CTRL` → `"shift+ctrl+space"`.
 ///
-/// L9-β-2 scope — `config.LinuxHotkey.fromString` 이 placeholder 라 (default
-/// 만 반환) modifier 는 항상 0, keysym 도 F1..F12 default 범위. 후속 sub-step
-/// 에서 `Hotkey.fromString` 정식 구현 + 더 많은 keysym 매핑.
+/// modifier 비트 (`config.zig` 의 `LinuxHotkey.MOD_*` 와 일치):
+///   - 0x1 = Alt → `alt+`
+///   - 0x2 = Ctrl → `ctrl+`
+///   - 0x4 = Shift → `shift+`
+///   - 0x8 = Super (Win key / `cmd` 토큰) → `super+`
+///
+/// 출처:
+///   - XDG portal spec: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html
+///   - portal-gnome doc: `"ctrl+a"` / `"ctrl+shift+a"` 형식 명시
+///   - 사용자 시연 발견 — `<Control>grave` (GTK format) 으로 보냈을 때 portal-kde
+///     의 user dialog 의 binding field 가 "없음" 으로 표시. 표준 format 으로
+///     변경 후 자동 pre-fill 기대.
 ///
 /// caller 가 free.
 fn keysymToAccelerator(allocator: std.mem.Allocator, keysym: u32, modifiers: u32) ![:0]u8 {
-    const name: []const u8 = switch (keysym) {
-        // XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_F*`.
+    var buf: [64]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const w = fbs.writer();
+    // 순서: shift+ctrl+alt+super+key — portal-gnome doc 의 예시와 일치.
+    if ((modifiers & 0x4) != 0) try w.writeAll("shift+");
+    if ((modifiers & 0x2) != 0) try w.writeAll("ctrl+");
+    if ((modifiers & 0x1) != 0) try w.writeAll("alt+");
+    if ((modifiers & 0x8) != 0) try w.writeAll("super+");
+    try w.writeAll(keysymGtkName(keysym));
+    return allocator.dupeZ(u8, fbs.getWritten());
+}
+
+/// xkb keysym → GTK accelerator 의 key 이름. `gdk_keyval_name` 표준 표기.
+/// Latin / 숫자 는 ASCII 그대로 한 글자. F1..F12 / space / Return / Escape 등은
+/// 별 이름. 미지원 키는 `"F1"` fallback (이전 placeholder 와 동등).
+fn keysymGtkName(keysym: u32) []const u8 {
+    return switch (keysym) {
+        // XKB F1..F12 — `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_F*`.
         0xffbe => "F1",
         0xffbf => "F2",
         0xffc0 => "F3",
@@ -407,12 +439,29 @@ fn keysymToAccelerator(allocator: std.mem.Allocator, keysym: u32, modifiers: u32
         0xffc7 => "F10",
         0xffc8 => "F11",
         0xffc9 => "F12",
+        0xff09 => "Tab",
+        0xff0d => "Return",
+        0xff1b => "Escape",
+        // Latin lowercase a-z / digits 0-9 — keysym 값이 ASCII 와 동일.
+        // GTK 의 1-char accelerator (예: `<Ctrl>a`) 그대로 송신. 우리 buffer
+        // 가 64 bytes 면 안전.
+        'a'...'z', '0'...'9' => single_char_lookup[keysym - 0x0020],
+        ' ' => "space",
+        '`' => "grave",
         else => "F1",
     };
-    // modifier 매핑은 후속 — 현재 LinuxHotkey.fromString 이 modifier=0 만 줌.
-    _ = modifiers;
-    return allocator.dupeZ(u8, name);
 }
+
+/// Latin / digit 1-char accelerator 용 정적 string lookup. keysym (= ASCII) -
+/// 0x20 으로 indexing. `'a'` (0x61) → index 0x41 의 `"a"`. zig comptime 으로
+/// 한 글자 string 들 정적 배열로.
+const single_char_lookup: [96][]const u8 = blk: {
+    var arr: [96][]const u8 = undefined;
+    for (0..96) |i| {
+        arr[i] = &[1]u8{@intCast(0x20 + i)};
+    }
+    break :blk arr;
+};
 
 /// portal `GlobalShortcuts.BindShortcuts` 호출 — 단일 "toggle" shortcut 등록.
 /// 첫 호출 시 portal 가 KDE / GNOME UI dialog 띄움 → 사용자 승인 / 거부 / 단축키
@@ -586,16 +635,384 @@ pub fn bindToggleShortcut(
         defer allocator.free(actual);
         if (actual.len > 0 and !std.mem.eql(u8, actual, accelerator)) {
             log.appendLine("portal", "hotkey mismatch — config={s} actual={s}", .{ accelerator, actual });
-            const body_buf = std.fmt.allocPrintSentinel(allocator, "System binding {s} differs from config {s}. Edit ~/.config/tildaz/tildaz.json and restart to align.", .{ actual, accelerator }, 0) catch null;
-            if (body_buf) |b| {
-                defer allocator.free(b);
-                sendNotification(bus, "TildaZ", "TildaZ hotkey differs from config", b.ptr) catch |e| {
-                    log.appendLine("portal", "Notify call failed (no notification daemon?): {s}", .{@errorName(e)});
-                };
-            }
+            try handleHotkeyMismatch(allocator, bus, session_handle, accelerator, actual, hotkey_keysym, hotkey_modifiers);
         } else if (actual.len > 0) {
             log.appendLine("portal", "hotkey trigger confirmed actual={s}", .{actual});
         }
+    }
+}
+
+/// #207 — portal `BindShortcuts` 응답의 `actual` 이 우리 config 의 `preferred`
+/// 와 다를 때 자동 보정. config 이 source of truth (mac/win 동등). **계층적
+/// fallback chain**:
+///
+///   1차 (cross-DE 정공): XDG portal `UnbindShortcuts` (spec v2 since)
+///     → `BindShortcuts` 재시도. 모든 portal impl 가 v2 구현 시 cross-DE 일관.
+///
+///   2차 (DE-specific): 1차 실패 시 `XDG_CURRENT_DESKTOP` 감지 + DE 의 native
+///     global shortcut API 직접:
+///       - KDE: `org.kde.kglobalaccel` D-Bus → `unregister(component, "toggle")`
+///         → portal `BindShortcuts` 재호출. runtime 즉시 갱신.
+///       - GNOME / sway / hyprland: 별 작업 (#207 후속)
+///
+///   3차 (마지막 fallback): 위 모두 실패 / 미지원 DE 면 `dialog.showInfo` 로
+///     수동 변경 안내.
+///
+/// dialog 는 `dialog.showInfo` (layer-shell overlay, #203 step 3). 시작 시점에
+/// 호출 — main loop 진입 후 첫 frame 에 표시됨. fire-and-forget.
+fn handleHotkeyMismatch(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    preferred: []const u8,
+    actual: []const u8,
+    keysym: u32,
+    modifiers: u32,
+) !void {
+    // 1차 — XDG portal UnbindShortcuts + 재 BindShortcuts.
+    unbindToggleShortcut(allocator, bus, session_handle) catch |e| {
+        log.appendLine("portal", "1차 UnbindShortcuts failed: {s} — 2차 DE-specific path 시도", .{@errorName(e)});
+        return tryDeSpecificHotkeyFix(allocator, bus, session_handle, preferred, actual, keysym, modifiers);
+    };
+
+    rebindToggleShortcut(allocator, bus, session_handle, keysym, modifiers) catch |e| {
+        log.appendLine("portal", "1차 rebind BindShortcuts failed: {s} — 2차 DE-specific path 시도", .{@errorName(e)});
+        return tryDeSpecificHotkeyFix(allocator, bus, session_handle, preferred, actual, keysym, modifiers);
+    };
+
+    // 1차 성공.
+    log.appendLine("portal", "hotkey updated (portal): {s} → {s}", .{ actual, preferred });
+    showHotkeyUpdatedDialog(allocator, actual, preferred);
+}
+
+/// 2차 — `XDG_CURRENT_DESKTOP` 감지 + DE 의 native API. KDE 만 우선 구현
+/// (#207). 다른 DE 는 3차 fallback dialog 로.
+fn tryDeSpecificHotkeyFix(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    preferred: []const u8,
+    actual: []const u8,
+    keysym: u32,
+    modifiers: u32,
+) !void {
+    const de = detectCurrentDesktop(allocator);
+    defer if (de) |s| allocator.free(s);
+
+    if (de) |d| {
+        if (containsToken(d, "KDE")) {
+            log.appendLine("portal", "2차 DE=KDE — kglobalaccel D-Bus unregister 시도", .{});
+            kdeUnregisterToggleShortcut(bus, kde_component_tildaz) catch |e| {
+                log.appendLine("portal", "KDE unregister failed: {s} — 3차 fallback", .{@errorName(e)});
+                showMismatchPersistsDialog(allocator, preferred, actual);
+                return;
+            };
+            // KGlobalAccel 의 우리 `[tildaz]` component 의 toggle binding 삭제됨.
+            // 이제 portal BindShortcuts 재호출 시 *처음 등록* 처럼 KDE 가 우리
+            // preferred_trigger 를 받아들임 (user dialog 다시 띄울 수 있음).
+            rebindToggleShortcut(allocator, bus, session_handle, keysym, modifiers) catch |e| {
+                log.appendLine("portal", "KDE 후속 rebind 실패: {s} — 3차 fallback", .{@errorName(e)});
+                showMismatchPersistsDialog(allocator, preferred, actual);
+                return;
+            };
+            log.appendLine("portal", "hotkey updated (KDE D-Bus): {s} → {s}", .{ actual, preferred });
+            showHotkeyUpdatedDialog(allocator, actual, preferred);
+            return;
+        }
+        // GNOME / sway / hyprland 등 — 별 작업 (#207 후속).
+        log.appendLine("portal", "2차 DE={s} 미구현 — 3차 fallback", .{d});
+    } else {
+        log.appendLine("portal", "2차 XDG_CURRENT_DESKTOP 미설정 — 3차 fallback", .{});
+    }
+    showMismatchPersistsDialog(allocator, preferred, actual);
+}
+
+/// `[tildaz]` group 의 toggle binding — kglobalshortcutsrc 파일 + KGlobalAccel
+/// runtime 의 component 이름. *Konsole 부모 cgroup* 으로 잘못 등록된 경우 대비
+/// 별 component (`org.kde.konsole`) 도 후속 정리 가능 (현재는 우리 own 만).
+const kde_component_tildaz: [*:0]const u8 = "tildaz";
+const kde_action_toggle: [*:0]const u8 = "toggle";
+
+/// KDE 의 `org.kde.kglobalaccel` D-Bus interface 호출:
+///   `unregister(in s componentUnique, in s shortcutUnique, out b arg_0)`
+///
+/// kglobalshortcutsrc 의 `[<componentUnique>]` group 안 `<shortcutUnique>` line
+/// 의 binding 을 *runtime + on-disk* 모두 삭제. 그 후 우리 portal BindShortcuts
+/// 가 *처음 등록* path 로 새 trigger 적용 (KDE 가 user dialog 띄울 수 있음).
+///
+/// 출처: `gdbus introspect --session --dest org.kde.kglobalaccel
+///        --object-path /kglobalaccel` (KDE Plasma 6.6.5).
+fn kdeUnregisterToggleShortcut(bus: *dbus.SessionBus, component: [*:0]const u8) !void {
+    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
+    const path: [*:0]const u8 = "/kglobalaccel";
+    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
+    const method: [*:0]const u8 = "unregister";
+
+    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    var iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_init_append(call, &iter);
+    var comp_var: [*:0]const u8 = component;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&comp_var)) == 0) return error.PortalAppendFailed;
+    var action_var: [*:0]const u8 = kde_action_toggle;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&action_var)) == 0) return error.PortalAppendFailed;
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
+        if (bus.api.error_is_set(&err) != 0) {
+            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+            log.appendLine("portal", "kglobalaccel unregister failed: {s}", .{m});
+        }
+        return error.PortalMethodCallFailed;
+    };
+    defer bus.api.message_unref(reply);
+
+    // 반환 = bool (성공 여부). false 면 KGlobalAccel 측에서 *해당 binding 없음*
+    // (이미 unregister 되었거나 다른 component). 우리 의도 (= 다음 BindShortcuts
+    // 가 깨끗한 상태에서 시작) 충족이라 success 처리.
+    log.appendLine("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(kde_action_toggle) });
+}
+
+/// `XDG_CURRENT_DESKTOP` env — 콜론 (`:`) 으로 다중 토큰 가능 (예: `Unity:GNOME`).
+/// caller 가 free.
+fn detectCurrentDesktop(allocator: std.mem.Allocator) ?[]u8 {
+    return std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch null;
+}
+
+/// `:` 분리된 다중 토큰 안에 *대소문자 무관* `needle` 있는지.
+fn containsToken(haystack: []const u8, needle: []const u8) bool {
+    var iter = std.mem.tokenizeScalar(u8, haystack, ':');
+    while (iter.next()) |tok| {
+        if (std.ascii.eqlIgnoreCase(tok, needle)) return true;
+    }
+    return false;
+}
+
+fn showHotkeyUpdatedDialog(allocator: std.mem.Allocator, was: []const u8, now: []const u8) void {
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, messages.hotkey_updated_format, .{ was, now }) catch {
+        dialog.showInfo(messages.hotkey_updated_title, "System hotkey updated to match config.");
+        return;
+    };
+    dialog.showInfo(messages.hotkey_updated_title, msg);
+    _ = allocator;
+}
+
+fn showMismatchPersistsDialog(allocator: std.mem.Allocator, preferred: []const u8, actual: []const u8) void {
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, messages.hotkey_mismatch_persists_format, .{ preferred, actual }) catch {
+        dialog.showInfo(messages.hotkey_mismatch_persists_title, "Hotkey mismatch — adjust in your desktop's Global Shortcuts settings.");
+        return;
+    };
+    dialog.showInfo(messages.hotkey_mismatch_persists_title, msg);
+    _ = allocator;
+}
+
+/// portal `GlobalShortcuts.UnbindShortcuts` (spec v2, since 2). 같은 session 의
+/// 기존 binding 제거. spec args:
+///   o session_handle
+///   as shortcuts (= ["toggle"])
+///   a{sv} options (handle_token)
+/// → reply: o handle (Request path)
+/// → Response signal (u response_code, a{sv} results — empty)
+fn unbindToggleShortcut(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+) !void {
+    try callShortcutRequestVerb(allocator, bus, session_handle, .unbind, unbind_handle_token, 0, 0);
+}
+
+fn rebindToggleShortcut(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    keysym: u32,
+    modifiers: u32,
+) !void {
+    try callShortcutRequestVerb(allocator, bus, session_handle, .bind, rebind_handle_token, keysym, modifiers);
+}
+
+const ShortcutVerb = enum { bind, unbind };
+
+/// `BindShortcuts` / `UnbindShortcuts` 공통 호출 helper. 둘 다 Request object
+/// pattern (method call → Request path → Response signal) 동일. 차이:
+///   - `BindShortcuts`: args = (o, a(sa{sv}), s, a{sv}). shortcuts 는 attrs 있음.
+///   - `UnbindShortcuts`: args = (o, as, a{sv}). shortcuts 는 id 만.
+fn callShortcutRequestVerb(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    verb: ShortcutVerb,
+    request_token: [*:0]const u8,
+    keysym: u32,
+    modifiers: u32,
+) !void {
+    const sender_segment = try sanitizeSenderForPath(allocator, bus.unique_name);
+    defer allocator.free(sender_segment);
+
+    const expected_request_path = try std.fmt.allocPrint(allocator, "/org/freedesktop/portal/desktop/request/{s}/{s}", .{
+        sender_segment, std.mem.span(request_token),
+    });
+    defer allocator.free(expected_request_path);
+
+    const match_rule = try std.fmt.allocPrintSentinel(allocator, "type='signal',interface='{s}',member='{s}',path='{s}'", .{
+        std.mem.span(interface_request), std.mem.span(member_response), expected_request_path,
+    }, 0);
+    defer allocator.free(match_rule);
+
+    const session_handle_z = try allocator.dupeZ(u8, session_handle);
+    defer allocator.free(session_handle_z);
+
+    var accelerator_opt: ?[:0]u8 = null;
+    defer if (accelerator_opt) |a| allocator.free(a);
+    if (verb == .bind) {
+        accelerator_opt = try keysymToAccelerator(allocator, keysym, modifiers);
+    }
+
+    var state = ResponseWaitState{
+        .api = &bus.api,
+        .expected_request_path = expected_request_path,
+        .allocator = allocator,
+    };
+    errdefer if (state.actual_trigger) |t| allocator.free(t);
+
+    if (bus.api.add_filter(bus.conn, responseFilter, &state, null) == 0) return error.PortalAddFilterFailed;
+    defer bus.api.remove_filter(bus.conn, responseFilter, &state);
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+
+    bus.api.add_match(bus.conn, match_rule.ptr, &err);
+    if (bus.api.error_is_set(&err) != 0) {
+        const msg = if (err.message) |m| std.mem.span(m) else "(no message)";
+        log.appendLine("portal", "{s} add_match failed: {s}", .{ @tagName(verb), msg });
+        return error.PortalAddMatchFailed;
+    }
+    defer {
+        var err2: dbus.DBusError = .{};
+        bus.api.error_init(&err2);
+        bus.api.remove_match(bus.conn, match_rule.ptr, &err2);
+        bus.api.error_free(&err2);
+    }
+
+    const member_str: [*:0]const u8 = if (verb == .bind) member_bind_shortcuts else member_unbind_shortcuts;
+    const call = bus.api.message_new_method_call(
+        portal_destination,
+        portal_path,
+        interface_global_shortcuts,
+        member_str,
+    ) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    {
+        var iter: dbus.DBusMessageIter = .{};
+        bus.api.iter_init_append(call, &iter);
+
+        // arg 1: o session_handle.
+        var session_var: [*:0]const u8 = session_handle_z.ptr;
+        if (bus.api.iter_append_basic(&iter, dbus.dbus_type_object_path, @ptrCast(&session_var)) == 0) return error.PortalAppendFailed;
+
+        if (verb == .bind) {
+            // arg 2: a(sa{sv}) shortcuts — single entry "toggle" + attrs.
+            var arr_iter: dbus.DBusMessageIter = .{};
+            if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "(sa{sv})", &arr_iter) == 0) return error.PortalAppendFailed;
+            {
+                var struct_iter: dbus.DBusMessageIter = .{};
+                if (bus.api.iter_open_container(&arr_iter, dbus.dbus_type_struct, null, &struct_iter) == 0) return error.PortalAppendFailed;
+                var id_var: [*:0]const u8 = shortcut_id_toggle;
+                if (bus.api.iter_append_basic(&struct_iter, dbus.dbus_type_string, @ptrCast(&id_var)) == 0) return error.PortalAppendFailed;
+                var attrs_iter: dbus.DBusMessageIter = .{};
+                if (bus.api.iter_open_container(&struct_iter, dbus.dbus_type_array, "{sv}", &attrs_iter) == 0) return error.PortalAppendFailed;
+                try appendStringVariantEntry(&bus.api, &attrs_iter, "description", shortcut_description);
+                const accel_ptr: [*:0]const u8 = accelerator_opt.?.ptr;
+                try appendStringVariantEntry(&bus.api, &attrs_iter, "preferred_trigger", accel_ptr);
+                if (bus.api.iter_close_container(&struct_iter, &attrs_iter) == 0) return error.PortalAppendFailed;
+                if (bus.api.iter_close_container(&arr_iter, &struct_iter) == 0) return error.PortalAppendFailed;
+            }
+            if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return error.PortalAppendFailed;
+
+            // arg 3: s parent_window.
+            var parent_var: [*:0]const u8 = "";
+            if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&parent_var)) == 0) return error.PortalAppendFailed;
+        } else {
+            // arg 2: as shortcuts — list of ids ("toggle").
+            var arr_iter: dbus.DBusMessageIter = .{};
+            if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return error.PortalAppendFailed;
+            var id_var: [*:0]const u8 = shortcut_id_toggle;
+            if (bus.api.iter_append_basic(&arr_iter, dbus.dbus_type_string, @ptrCast(&id_var)) == 0) return error.PortalAppendFailed;
+            if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return error.PortalAppendFailed;
+        }
+
+        // last arg: a{sv} options — handle_token.
+        var opt_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "{sv}", &opt_iter) == 0) return error.PortalAppendFailed;
+        try appendStringVariantEntry(&bus.api, &opt_iter, "handle_token", request_token);
+        if (bus.api.iter_close_container(&iter, &opt_iter) == 0) return error.PortalAppendFailed;
+    }
+
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
+        if (bus.api.error_is_set(&err) != 0) {
+            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+            log.appendLine("portal", "{s} method call failed: {s}", .{ @tagName(verb), m });
+        }
+        return error.PortalMethodCallFailed;
+    };
+    defer bus.api.message_unref(reply);
+
+    {
+        var reply_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_init(reply, &reply_iter) == 0) return error.PortalReplyMissingArgs;
+        if (bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_object_path) return error.PortalReplyBadType;
+        var got_c: ?[*:0]const u8 = null;
+        bus.api.iter_get_basic(&reply_iter, @ptrCast(&got_c));
+        const got_path = if (got_c) |g| std.mem.span(g) else "";
+        if (!std.mem.eql(u8, got_path, expected_request_path)) {
+            log.appendLine("portal", "{s} request path mismatch — expected={s} got={s}", .{ @tagName(verb), expected_request_path, got_path });
+            return error.PortalRequestPathMismatch;
+        }
+    }
+
+    log.appendLine("portal", "{s} request sent — waiting for response", .{@tagName(verb)});
+
+    const start_ms = std.time.milliTimestamp();
+    while (!state.done) {
+        if (bus.api.read_write_dispatch(bus.conn, dispatch_iter_timeout_ms) == 0) {
+            log.appendLine("portal", "connection disconnected during {s} wait", .{@tagName(verb)});
+            return error.PortalConnectionLost;
+        }
+        if (std.time.milliTimestamp() - start_ms > bind_total_timeout_ms) {
+            log.appendLine("portal", "{s} Response signal timeout", .{@tagName(verb)});
+            return error.PortalResponseTimeout;
+        }
+    }
+
+    if (state.response_code != response_code_success) {
+        log.appendLine("portal", "{s} response code={d}", .{ @tagName(verb), state.response_code });
+        return error.PortalRequestFailed;
+    }
+
+    log.appendLine("portal", "{s} success", .{@tagName(verb)});
+
+    // bind 의 actual_trigger 확인은 첫 호출 위치에서 (mismatch detect). retry
+    // path 에서는 *두 번째 actual* 도 처리해야 — 그러나 retry 도 mismatch 면
+    // 사용자에게 mismatch_persists dialog (caller `handleHotkeyMismatch` 가 결정).
+    // 여기서 단순 free.
+    if (state.actual_trigger) |t| {
+        if (verb == .bind and accelerator_opt != null) {
+            // retry 의 actual 검사. accelerator_opt 가 우리 preferred.
+            if (t.len > 0 and !std.mem.eql(u8, t, accelerator_opt.?)) {
+                log.appendLine("portal", "rebind still mismatched — config={s} actual={s}", .{ accelerator_opt.?, t });
+                allocator.free(t);
+                return error.PortalRebindMismatch;
+            }
+        }
+        allocator.free(t);
     }
 }
 
