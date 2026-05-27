@@ -389,34 +389,32 @@ fn appendStringVariantEntry(
     if (api.iter_close_container(arr_iter, &entry_iter) == 0) return error.PortalAppendFailed;
 }
 
-/// XKB keysym + modifier → portal `preferred_trigger` 문자열. XDG portal /
-/// portal-gnome / portal-kde 가 받는 *표준 형식* = 소문자 modifier + `+` separator
-/// + key 이름. 예: `0xffbe + 0` → `"F1"` / `0xffbe + MOD_CTRL` → `"ctrl+F1"` /
-/// `0x0020 + MOD_SHIFT | MOD_CTRL` → `"shift+ctrl+space"`.
+/// XKB keysym + modifier → portal `preferred_trigger` 문자열. portal-kde 의
+/// `XdgShortcut::parse` 가 **대문자 modifier 만** (case-sensitive) — 소문자
+/// 보내면 parse 실패 → user dialog 의 binding field 가 "없음" 으로 표시
+/// (사용자 시연 발견). portal-kde source 정독으로 확정:
+/// https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/blob/v6.6.5/src/xdgshortcut.cpp
 ///
-/// modifier 비트 (`config.zig` 의 `LinuxHotkey.MOD_*` 와 일치):
-///   - 0x1 = Alt → `alt+`
-///   - 0x2 = Ctrl → `ctrl+`
-///   - 0x4 = Shift → `shift+`
-///   - 0x8 = Super (Win key / `cmd` 토큰) → `super+`
+/// 예: `0xffbe + 0` → `"F1"` / `0xffbe + MOD_CTRL` → `"CTRL+F1"` /
+/// `0x0020 + MOD_SHIFT | MOD_CTRL` → `"SHIFT+CTRL+space"`.
 ///
-/// 출처:
-///   - XDG portal spec: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html
-///   - portal-gnome doc: `"ctrl+a"` / `"ctrl+shift+a"` 형식 명시
-///   - 사용자 시연 발견 — `<Control>grave` (GTK format) 으로 보냈을 때 portal-kde
-///     의 user dialog 의 binding field 가 "없음" 으로 표시. 표준 format 으로
-///     변경 후 자동 pre-fill 기대.
+/// modifier 비트 (`config.zig` 의 `LinuxHotkey.MOD_*` 와 일치) → Qt 의 표기:
+///   - 0x1 = Alt → `ALT` (Qt::AltModifier)
+///   - 0x2 = Ctrl → `CTRL` (Qt::ControlModifier)
+///   - 0x4 = Shift → `SHIFT` (Qt::ShiftModifier)
+///   - 0x8 = Super (Win key / `cmd` 토큰) → `LOGO` (Qt::MetaModifier)
 ///
 /// caller 가 free.
 fn keysymToAccelerator(allocator: std.mem.Allocator, keysym: u32, modifiers: u32) ![:0]u8 {
     var buf: [64]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const w = fbs.writer();
-    // 순서: shift+ctrl+alt+super+key — portal-gnome doc 의 예시와 일치.
-    if ((modifiers & 0x4) != 0) try w.writeAll("shift+");
-    if ((modifiers & 0x2) != 0) try w.writeAll("ctrl+");
-    if ((modifiers & 0x1) != 0) try w.writeAll("alt+");
-    if ((modifiers & 0x8) != 0) try w.writeAll("super+");
+    // portal-kde 의 XdgShortcut::parse 순서 무관 (HashMap lookup) — 일관된
+    // 순서로: SHIFT+CTRL+ALT+LOGO+key.
+    if ((modifiers & 0x4) != 0) try w.writeAll("SHIFT+");
+    if ((modifiers & 0x2) != 0) try w.writeAll("CTRL+");
+    if ((modifiers & 0x1) != 0) try w.writeAll("ALT+");
+    if ((modifiers & 0x8) != 0) try w.writeAll("LOGO+");
     try w.writeAll(keysymGtkName(keysym));
     return allocator.dupeZ(u8, fbs.getWritten());
 }
@@ -633,10 +631,14 @@ pub fn bindToggleShortcut(
     // 은 trigger_description 안 채울 수도 — null / 빈 string 이면 skip.
     if (state.actual_trigger) |actual| {
         defer allocator.free(actual);
-        if (actual.len > 0 and !std.mem.eql(u8, actual, accelerator)) {
-            log.appendLine("portal", "hotkey mismatch — config={s} actual={s}", .{ accelerator, actual });
+        // empty actual 도 mismatch — KGlobalAccel store 의 entry 의 binding 이
+        // *비어 있음* (`toggle=,none,...`). 사용자 시연 진단 결과: portal-kde 가
+        // *기존 entry 존재* 만 봐서 즉시 응답 + empty trigger_description. 우리
+        // setShortcut 직접 set 필요 (#207).
+        if (!std.mem.eql(u8, actual, accelerator)) {
+            log.appendLine("portal", "hotkey mismatch — config={s} actual=\"{s}\"", .{ accelerator, actual });
             try handleHotkeyMismatch(allocator, bus, session_handle, accelerator, actual, hotkey_keysym, hotkey_modifiers);
-        } else if (actual.len > 0) {
+        } else {
             log.appendLine("portal", "hotkey trigger confirmed actual={s}", .{actual});
         }
     }
@@ -701,21 +703,32 @@ fn tryDeSpecificHotkeyFix(
 
     if (de) |d| {
         if (containsToken(d, "KDE")) {
-            log.appendLine("portal", "2차 DE=KDE — kglobalaccel D-Bus unregister 시도", .{});
+            log.appendLine("portal", "2차 DE=KDE — kglobalaccel D-Bus unregister + setShortcut 시도", .{});
+            // (1) unregister — KGlobalAccel runtime cache 의 binding 비움.
+            //     `[tildaz] toggle = ,none,...` 상태로. 단독으로는 부족 — portal-
+            //     kde 가 *entry 존재* 만 보고 empty 응답 (시연 진단).
             kdeUnregisterToggleShortcut(bus, kde_component_tildaz) catch |e| {
                 log.appendLine("portal", "KDE unregister failed: {s} — 3차 fallback", .{@errorName(e)});
                 showMismatchPersistsDialog(allocator, preferred, actual);
                 return;
             };
-            // KGlobalAccel 의 우리 `[tildaz]` component 의 toggle binding 삭제됨.
-            // 이제 portal BindShortcuts 재호출 시 *처음 등록* 처럼 KDE 가 우리
-            // preferred_trigger 를 받아들임 (user dialog 다시 띄울 수 있음).
+            // (2) setShortcut — 우리 keys 직접 KGlobalAccel store 에 set.
+            //     unregister 의 부족분 (entry binding value 비어 있음) 채움.
+            //     portal-kde 의 다음 BindShortcuts 응답이 *우리 set 값* 보장.
+            const qt_key = xkbToQtKey(keysym, modifiers);
+            kdeSetToggleShortcut(allocator, bus, qt_key) catch |e| {
+                log.appendLine("portal", "KDE setShortcut failed: {s} — 3차 fallback", .{@errorName(e)});
+                showMismatchPersistsDialog(allocator, preferred, actual);
+                return;
+            };
+            // (3) 재 BindShortcuts — portal-kde 의 internal cache 갱신 + actual
+            //     응답 확인 (= 우리 preferred 면 success).
             rebindToggleShortcut(allocator, bus, session_handle, keysym, modifiers) catch |e| {
                 log.appendLine("portal", "KDE 후속 rebind 실패: {s} — 3차 fallback", .{@errorName(e)});
                 showMismatchPersistsDialog(allocator, preferred, actual);
                 return;
             };
-            log.appendLine("portal", "hotkey updated (KDE D-Bus): {s} → {s}", .{ actual, preferred });
+            log.appendLine("portal", "hotkey updated (KDE D-Bus): \"{s}\" → {s}", .{ actual, preferred });
             showHotkeyUpdatedDialog(allocator, actual, preferred);
             return;
         }
@@ -732,6 +745,13 @@ fn tryDeSpecificHotkeyFix(
 /// 별 component (`org.kde.konsole`) 도 후속 정리 가능 (현재는 우리 own 만).
 const kde_component_tildaz: [*:0]const u8 = "tildaz";
 const kde_action_toggle: [*:0]const u8 = "toggle";
+const kde_component_display: [*:0]const u8 = "TildaZ";
+const kde_action_display: [*:0]const u8 = "Show / hide TildaZ";
+
+/// `org.kde.KGlobalAccel.setShortcut` 의 `flags` argument. KDE source 에서
+/// `KGlobalAccel::SetShortcutFlag` enum. 우리 케이스 = `NoAutoloading` —
+/// kglobalshortcutsrc 의 default value 무시 + 우리가 직접 set 한 값 유지.
+const kde_set_shortcut_flag_no_autoloading: u32 = 1;
 
 /// KDE 의 `org.kde.kglobalaccel` D-Bus interface 호출:
 ///   `unregister(in s componentUnique, in s shortcutUnique, out b arg_0)`
@@ -775,6 +795,121 @@ fn kdeUnregisterToggleShortcut(bus: *dbus.SessionBus, component: [*:0]const u8) 
     // (이미 unregister 되었거나 다른 component). 우리 의도 (= 다음 BindShortcuts
     // 가 깨끗한 상태에서 시작) 충족이라 success 처리.
     log.appendLine("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(kde_action_toggle) });
+}
+
+/// XKB keysym + modifier → Qt `KeySequence` packed int. `KGlobalAccel.setShortcut`
+/// 의 `keys: ai` argument 형식. Qt 의 `Qt::Key_*` (CamelCase 무관) 와 modifier
+/// 비트 (`Qt::*Modifier`) 의 OR.
+///
+/// modifier 매핑 (`config.zig` LinuxHotkey MOD_* → Qt 비트):
+///   - MOD_SHIFT (0x4) → Qt::ShiftModifier (0x02000000)
+///   - MOD_CTRL  (0x2) → Qt::ControlModifier (0x04000000)
+///   - MOD_ALT   (0x1) → Qt::AltModifier (0x08000000)
+///   - MOD_SUPER (0x8) → Qt::MetaModifier (0x10000000)
+///
+/// key code (Qt 의 `qnamespace.h` 의 `Qt::Key` enum):
+///   - F1..F12 = 0x01000030..0x0100003B (xkb 0xffbe..0xffc9)
+///   - Tab = 0x01000001 (xkb 0xff09)
+///   - Return = 0x01000004 (xkb 0xff0d)
+///   - Escape = 0x01000000 (xkb 0xff1b)
+///   - Space = 0x20 (xkb 0x20, 동일)
+///   - QuoteLeft (grave) = 0x60 (xkb 0x60, 동일)
+///   - 0-9 = 0x30..0x39 (xkb 동일)
+///   - A-Z = 0x41..0x5A (xkb a-z 의 *대문자 변환*)
+fn xkbToQtKey(keysym: u32, modifiers: u32) i32 {
+    var key: i32 = 0;
+    if ((modifiers & 0x4) != 0) key |= 0x02000000; // SHIFT
+    if ((modifiers & 0x2) != 0) key |= 0x04000000; // CTRL
+    if ((modifiers & 0x1) != 0) key |= 0x08000000; // ALT
+    if ((modifiers & 0x8) != 0) key |= 0x10000000; // META (Super)
+
+    const key_code: i32 = switch (keysym) {
+        0xffbe => 0x01000030, // F1
+        0xffbf => 0x01000031, // F2
+        0xffc0 => 0x01000032, // F3
+        0xffc1 => 0x01000033, // F4
+        0xffc2 => 0x01000034, // F5
+        0xffc3 => 0x01000035, // F6
+        0xffc4 => 0x01000037, // F7
+        0xffc5 => 0x01000038, // F8
+        0xffc6 => 0x01000039, // F9
+        0xffc7 => 0x0100003a, // F10
+        0xffc8 => 0x0100003b, // F11
+        0xffc9 => 0x0100003c, // F12
+        0xff09 => 0x01000001, // Tab
+        0xff0d => 0x01000004, // Return
+        0xff1b => 0x01000000, // Escape
+        0x0020 => 0x20, // Space
+        0x0060 => 0x60, // QuoteLeft (grave)
+        '0'...'9' => @intCast(keysym), // 동일 (0x30..0x39)
+        'a'...'z' => @intCast(keysym - 0x20), // Qt A-Z (0x41..0x5a)
+        else => 0,
+    };
+    return key | key_code;
+}
+
+/// `org.kde.KGlobalAccel.setShortcut(actionId: as, keys: ai, flags: u) → ai` —
+/// KGlobalAccel store 의 `[<component>]` group 의 `<action>` line 의 binding
+/// 값을 *직접 set*. `unregister` 가 *binding 비움만* 하는 데 비해 setShortcut
+/// 은 *우리 의도된 keys 적용*. running 중 호출 가능 (cleanUp 과 달리 isActive
+/// 검사 없음).
+///
+/// 우리 path: `unregister` 로 KGlobalAccel daemon 의 cached binding 비움 →
+/// `setShortcut` 으로 우리 keys 갱신 → 재 BindShortcuts 가 *우리 set 값* 응답
+/// → mismatch 없음.
+fn kdeSetToggleShortcut(allocator: std.mem.Allocator, bus: *dbus.SessionBus, qt_key: i32) !void {
+    _ = allocator;
+    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
+    const path: [*:0]const u8 = "/kglobalaccel";
+    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
+    const method: [*:0]const u8 = "setShortcut";
+
+    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    var iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_init_append(call, &iter);
+
+    // arg 1: as actionId — 4-string array [component, action, friendlyComponent, friendlyAction].
+    var arr_iter: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return error.PortalAppendFailed;
+    const action_id = [_][*:0]const u8{
+        kde_component_tildaz,
+        kde_action_toggle,
+        kde_component_display,
+        kde_action_display,
+    };
+    for (action_id) |s| {
+        var p: [*:0]const u8 = s;
+        if (bus.api.iter_append_basic(&arr_iter, dbus.dbus_type_string, @ptrCast(&p)) == 0) return error.PortalAppendFailed;
+    }
+    if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return error.PortalAppendFailed;
+
+    // arg 2: ai keys — single int.
+    var keys_iter: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "i", &keys_iter) == 0) return error.PortalAppendFailed;
+    var k: i32 = qt_key;
+    if (bus.api.iter_append_basic(&keys_iter, dbus.dbus_type_int32, @ptrCast(&k)) == 0) return error.PortalAppendFailed;
+    if (bus.api.iter_close_container(&iter, &keys_iter) == 0) return error.PortalAppendFailed;
+
+    // arg 3: u flags — NoAutoloading.
+    var flags: u32 = kde_set_shortcut_flag_no_autoloading;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_uint32, @ptrCast(&flags)) == 0) return error.PortalAppendFailed;
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
+        if (bus.api.error_is_set(&err) != 0) {
+            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+            log.appendLine("portal", "kglobalaccel setShortcut failed: {s}", .{m});
+        }
+        return error.PortalMethodCallFailed;
+    };
+    defer bus.api.message_unref(reply);
+
+    log.appendLine("portal", "kglobalaccel setShortcut succeeded — qt_key=0x{x}", .{qt_key});
 }
 
 /// `XDG_CURRENT_DESKTOP` env — 콜론 (`:`) 으로 다중 토큰 가능 (예: `Unity:GNOME`).
@@ -1005,9 +1140,10 @@ fn callShortcutRequestVerb(
     // 여기서 단순 free.
     if (state.actual_trigger) |t| {
         if (verb == .bind and accelerator_opt != null) {
-            // retry 의 actual 검사. accelerator_opt 가 우리 preferred.
-            if (t.len > 0 and !std.mem.eql(u8, t, accelerator_opt.?)) {
-                log.appendLine("portal", "rebind still mismatched — config={s} actual={s}", .{ accelerator_opt.?, t });
+            // retry 의 actual 검사 — accelerator_opt 가 우리 preferred.
+            // empty 도 mismatch — setShortcut 직접 set 이 실제 적용 안 됨 가능.
+            if (!std.mem.eql(u8, t, accelerator_opt.?)) {
+                log.appendLine("portal", "rebind still mismatched — config={s} actual=\"{s}\"", .{ accelerator_opt.?, t });
                 allocator.free(t);
                 return error.PortalRebindMismatch;
             }
