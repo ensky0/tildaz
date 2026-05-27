@@ -20,6 +20,14 @@ pub const quit_confirm_format = "This will close {d} open tab{s}.";
 pub const tab_limit_title = "Tab limit reached";
 pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
 
+/// Linux portal `BindShortcuts` response 의 actual trigger 가 config 의 preferred
+/// 와 다를 때 — 우리가 `UnbindShortcuts` + 재 `BindShortcuts` 로 자동 보정 한 후
+/// 사용자에게 결과 알림. config 이 source of truth (cross-platform parity).
+pub const hotkey_updated_title = "Hotkey updated";
+pub const hotkey_updated_format = "System binding was {s}. Updated to match config: {s}.";
+pub const hotkey_mismatch_persists_title = "Hotkey mismatch";
+pub const hotkey_mismatch_persists_format = "Tried to set hotkey to {s} (config) but system still reports {s}. Adjust in your desktop's Global Shortcuts settings.";
+
 /// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
 /// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L
 /// vs macOS Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접
