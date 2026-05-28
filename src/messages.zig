@@ -28,6 +28,20 @@ pub const hotkey_updated_format = "System binding was {s}. Updated to match conf
 pub const hotkey_mismatch_persists_title = "Hotkey mismatch";
 pub const hotkey_mismatch_persists_format = "Tried to set hotkey to {s} (config) but system still reports {s}. Adjust in your desktop's Global Shortcuts settings.";
 
+/// Linux KDE — 우리 config 의 hotkey 가 *다른 KDE 컴포넌트* (kwin / plasmashell
+/// 등) 의 단축키와 충돌 시 사용자 확인 (#207). OK = 충돌 컴포넌트에서 해당 키만
+/// 회수하고 tildaz 로 가져옴, Cancel = 기존 binding 유지.
+pub const hotkey_takeover_title = "Hotkey conflict";
+pub const hotkey_takeover_format =
+    \\"{s}" is currently used by another component:
+    \\
+    \\  • {s} — {s}
+    \\
+    \\Take this shortcut for TildaZ? The original component keeps its other shortcuts.
+;
+pub const hotkey_takeover_declined_title = "Hotkey unchanged";
+pub const hotkey_takeover_declined_format = "Kept the existing binding. To use \"{s}\" for TildaZ, free it from {s} in your desktop's Global Shortcuts settings.";
+
 /// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
 /// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L
 /// vs macOS Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접
