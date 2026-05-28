@@ -497,7 +497,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`~/.config/autostart/tildaz.desktop`), L11-α | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 portal Activated 까지 layer-surface 생성 skip (L11-β). portal 미가용 환경에선 warning + 즉시 show fallback | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 100_000 | 100_000 default. ghostty `bytes_per_row × lines` 로 max byte 계산. | 동일 | ✅ | ✅ | ✅ |
-| `hotkey` | string (`"f1"`, `"ctrl+space"`, `"shift+cmd+t"` 등). Windows 는 RegisterHotKey, macOS 는 CGEventTap. config = source of truth (cross-platform parity). **지원 표기** (모든 platform 동일): <br/>**Modifier 토큰** (대소문자 무관, `+` 분리): `ctrl` / `control`, `shift`, `alt` / `option` (mac 친숙), `cmd` / `command` / `super` / `win` / `meta` / `logo` (모두 같은 키 — Win key / Super / Cmd / Meta — 사용자 친숙 표기 어떤 것이든). <br/>**Key 토큰**: F1..F12 (`f1`..`f12`), Latin a-z (대소문자 무관), 숫자 0-9, special name (`space`, `tab`, `escape` / `esc`, `return` / `enter`, `grave`), literal ASCII symbol (`` ` ``, `~`, `!`, `=`, `-`, `[`, `]`, `,`, `.`, `/`, `\\`, `\|` 등 — Linux 의 fromString 만, portal-kde 호환 제약 아래 참조). | `f1` | `f1` | `f1` — `LinuxHotkey.fromString` 가 `+` 토큰 분리 + xkb keysym 매핑 + modifier 비트마스크 (`MOD_ALT`/`MOD_CTRL`/`MOD_SHIFT`/`MOD_SUPER`) parse. `keysymToAccelerator` 가 **portal-kde 표준 형식** (`CTRL+grave`, `SHIFT+CTRL+a` — *대문자* modifier + `+` 분리. portal-kde 의 `XdgShortcut::parse` 가 case-sensitive HashMap 으로 *대문자만* 받음, source 정독 확정) 으로 portal `GlobalShortcuts.BindShortcuts` 송신. **portal-kde 의 key 제약**: `XdgShortcut::parse` 가 `^([\\w\\d_]+).*$` regex 로 *alphanumeric + underscore* 만 받음 → literal symbol (`` ` ``, `~` 등) 은 우리 `keysymGtkName` 의 xkb name 매핑 (예: `` ` `` → `grave`) 거쳐 송신. 매핑 없는 symbol 은 portal-kde parse fail 가능. config ≠ system binding 시 **계층적 fallback chain** (`portal.handleHotkeyMismatch` — #207): 1차 XDG portal `UnbindShortcuts` (v2 — portal-kde 6.6.5 미구현) → 2차 KDE-specific (`org.kde.KGlobalAccel.action(qt_key) → as` 로 충돌 owner 진단 → 다른 component 가 선점 시 `dialog.showConfirm` (Cancel 옵션, default Cancel) → OK 시 owner 의 `shortcut(as) → ai` query → 해당 키만 filter out → `setForeignShortcut(owner, filtered)` 로 회수 → `setForeignShortcut(tildaz, [qt_key])` 로 우리 binding 적용 → `shortcut(tildaz)` 재query 로 검증. `setShortcut` 은 Qt KGlobalAccel 내부 client API 라 외부 D-Bus 거부 — `setForeignShortcut` 이 외부용 정공, 시연 확정. **runtime cache only** — kglobalshortcutsrc 파일 미갱신, KGlobalAccel daemon 재시작 시 reset 가능) → 3차 dialog 안내. display 표기 = `keysymDisplayString` (`Meta+A`, `Ctrl+F7` — KDE 친화). 자동 update 후 `dialog.showInfo` overlay 로 사용자 OK 확인. GNOME / Cinnamon / sway 등 다른 DE 의 2차 path = `tryDeSpecificHotkeyFix` 의 분기에서 미구현 — 3차 fallback dialog 로 KDE Settings 등가 안내 (별 후속). | ✅ | ✅ | ✅ (#207 — modifier 조합 + 자동 적용 + KDE takeover + confirm dialog 모두 시연 통과: `ctrl+shift+t`, `alt+f12`, `super+a` ↔ plasmashell next activity, `ctrl+f7` ↔ kwin ExposeClass) |
+| `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `f1` | `f1` | `f1` — `LinuxHotkey.fromString` + `keysymToAccelerator` + `kdeTryAutoApply` (충돌 owner 진단 + confirm dialog + takeover). 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207) |
 
 > **glyph fallback chain** (#135, v0.4.1 schema breaking): chain = `font.family` (primary, single string) + `font.glyph_fallback` (array of strings). codepoint 별로 chain 순회 → 글리프 가진 첫 폰트 사용. chain 에 없는 codepoint 는 양쪽 OS 모두 system fallback 이 자동 처리 — Windows DirectWrite `IDWriteFontFallback.MapCharacters`, macOS CoreText `CTFontCreateForString`. 사용자가 별도 폰트를 추가하고 싶으면 `glyph_fallback` 끝에 append.
 >
@@ -512,6 +512,68 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 > - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 단 `_` prefix key (예: `_note`, `_disabled_*`) 는 *사용자 주석* 으로 인정 — schema 검사 skip (#173). JSON 표준에 주석 없지만 정식 key 는 `_` 안 붙으니 충돌 없는 convention.
 > - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
 > - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigJson(allocator, shell_resolved)` 결과와 user config 를 비교.
+
+### 7.1 hotkey 상세
+
+**Schema**: `string`. 기본값: `"f1"`. config = source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록.
+
+**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:597-609](src/config.zig#L597-L609), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
+
+**예제** (모든 platform 동일 문법):
+
+```json
+"hotkey": "f1"                  // 기본
+"hotkey": "ctrl+space"          // 흔한 toggle
+"hotkey": "ctrl+shift+t"        // ✅ KDE 테스트 통과
+"hotkey": "alt+f12"             // ✅ KDE 테스트 통과
+"hotkey": "super+a"             // ✅ KDE — plasmashell next activity 충돌 → takeover dialog
+"hotkey": "ctrl+f7"             // ✅ KDE — kwin ExposeClass 충돌 → takeover dialog
+"hotkey": "shift+cmd+t"         // mac 친숙 표기 (`cmd` = `super` = `meta` 모두 동일 키)
+"hotkey": "ctrl+grave"          // backtick — `grave` 또는 `` ` `` 둘 다 가능
+```
+
+**Modifier 토큰** (대소문자 무관, `+` 분리, 임의 개수 결합):
+
+| 토큰 | 의미 | 비고 |
+|---|---|---|
+| `ctrl` / `control` | Control | |
+| `shift` | Shift | |
+| `alt` / `option` | Alt | `option` 은 mac 친숙 표기 |
+| `cmd` / `command` / `super` / `win` / `meta` / `logo` | Super | 모두 같은 키 — Win key / Super / Cmd / KDE Meta / Qt Logo. 어떤 표기든 받음 |
+
+**Key 토큰** (대소문자 무관). Linux 의 `LinuxHotkey.fromString` 이 *받는* 범위 (mac/win 은 별 mapping, 동일 spec 의도):
+
+| 분류 | 토큰 / 글자 | Linux 의 portal-kde 송신 보장 |
+|---|---|---|
+| Function key | `f1` ~ `f12` | ✅ |
+| Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ |
+| Digit | `0` ~ `9` | ✅ |
+| Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
+| Backtick | `grave` (이름) 또는 `` ` `` (글자) | ✅ |
+| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ⚠️ **현재 silent F1 fallback** — `LinuxHotkey.fromString` 은 받지만 `keysymGtkName` 의 xkb name 매핑이 없어 portal-kde 에 `"F1"` 송신. Linux 사용 시 위 범위 내 키로 한정 권장. fix = `keysymGtkName` xkb name 매핑 추가 또는 `fromString` 에서 reject. 별 후속 |
+
+**계층적 fallback chain — config ≠ system binding 시 자동 보정** (`portal.handleHotkeyMismatch`, #207):
+
+1. **1차 (cross-DE 정공)**: XDG portal `UnbindShortcuts` (spec v2) + 재 `BindShortcuts`. portal-kde 6.6.5 는 v2 미구현이라 KDE 에선 항상 fail. portal upstream 가 v2 추가 시 모든 portal-가용 DE 에서 cross-DE 일관 동작.
+
+2. **2차 (KDE-specific, `kdeTryAutoApply`)**:
+   - `org.kde.KGlobalAccel.action(qt_key) → as` 로 현재 owner 진단 (4-string actionId).
+   - owner ≠ tildaz 면 `dialog.showConfirm` (Cancel 옵션, default Cancel — Wayland modal layer-shell overlay, #203 의 dialog backend).
+   - 사용자 OK 시 → `shortcut(as) → ai` query 로 owner 의 현재 keys 전체 가져와 → 해당 키만 filter out → `setForeignShortcut(owner, filtered)` 로 *그 키만* 회수 (다른 binding 보존. 예: kwin `ExposeClass` 의 `[Meta+F7, Ctrl+F7]` 에서 `Ctrl+F7` 빼면 `Meta+F7` 유지).
+   - `setForeignShortcut(tildaz_actionId, [qt_key])` 로 우리 binding 적용.
+   - `shortcut(tildaz_actionId)` 재 query 로 검증 — 우리 qt_key 와 다르면 fallback dialog.
+   - **runtime cache only** — `kglobalshortcutsrc` 파일은 미갱신, KGlobalAccel daemon 재시작 시 reset 가능. tildaz 매 실행마다 mismatch 감지 → takeover 자동 재 적용.
+   - **GNOME / Cinnamon / sway / hyprland** — `tryDeSpecificHotkeyFix` 의 분기에서 미구현. 각 DE 의 mechanism 다름 (GNOME / Cinnamon = dconf 경로, sway / hyprland = config file) + runtime D-Bus API 없거나 invasive. 현재는 3차 fallback dialog 로.
+
+3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
+
+**Display 표기 (사용자 dialog / log)**: `keysymDisplayString` 가 Title case + `+` 분리 (`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`) — KDE 친화. portal-kde D-Bus 송신용 parse format (`LOGO+a`, `SHIFT+CTRL+grave`) 과 분리.
+
+**기타 KDE 제약 / 시도 학습**:
+- portal-kde 의 `XdgShortcut::parse` 가 *대문자 modifier만* (`CTRL`/`SHIFT`/`ALT`/`LOGO`) case-sensitive HashMap — `keysymToAccelerator` 가 대문자 송신.
+- portal-kde 의 *key 부분* 은 `^([\w\d_]+).*$` regex 로 alphanumeric + underscore — literal symbol 은 xkb name (예: `` ` `` → `grave`) 거쳐 송신 필요.
+- `KGlobalAccel.setShortcut` 은 Qt 내부 client API 라 외부 D-Bus 거부. `setForeignShortcut` 이 외부용 정공 (void return).
+- `KGlobalAccel.unregister` 는 *binding + listener 둘 다 해제* — invasive, 사용 X.
 
 ---
 
