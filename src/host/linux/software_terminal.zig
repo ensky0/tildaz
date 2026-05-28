@@ -189,7 +189,13 @@ pub const Renderer = struct {
     /// Win `applyDpiScale` 동등 — cell_h 보다 작아지면 cell_h + 4 px 로 보정
     /// (탭 텍스트 + 약간의 여백 보장, Win `applyDpiScale` 의 `min_tab_bar_h`
     /// 패턴).
-    pub fn tabBarHeightPx(self: *const Renderer) i32 {
+    ///
+    /// `tab_count < 2` 면 0 — 단일 탭 시 탭바 자리 안 띄움 (#127, SPEC.md §1
+    /// `단일 탭 시 탭바 자리`). mac `tabBarHeightPx` / Win `effectiveTabBarHeight`
+    /// 동등. 탭 카운트 변화 시점 (createTab / closeTab / 탭 exit) 에 호출자가
+    /// 모든 탭 cols/rows 재계산 책임 (Linux 는 `Client.ensureSessionGrid`).
+    pub fn tabBarHeightPx(self: *const Renderer, tab_count: usize) i32 {
+        if (tab_count < 2) return 0;
         const base = scaledPt(ui_metrics.TAB_BAR_HEIGHT_PT, self.scale);
         const min: i32 = self.cellHeight() + 4;
         return @max(base, min);
@@ -270,7 +276,7 @@ pub const Renderer = struct {
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
         const pad: i32 = self.paddingPx();
-        const tab_bar_h: i32 = self.tabBarHeightPx();
+        const tab_bar_h: i32 = self.tabBarHeightPx(tab_titles.len);
         const sb_w: i32 = self.scrollbarWPx();
         const sb_min_thumb: i32 = self.scrollbarMinThumbHPx();
 
