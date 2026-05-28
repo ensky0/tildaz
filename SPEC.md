@@ -550,7 +550,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | Digit | `0` ~ `9` | ✅ |
 | Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
 | Backtick | `grave` (이름) 또는 `` ` `` (글자) | ✅ |
-| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ⚠️ **현재 silent F1 fallback** — `LinuxHotkey.fromString` 은 받지만 `keysymGtkName` 의 xkb name 매핑이 없어 portal-kde 에 `"F1"` 송신. Linux 사용 시 위 범위 내 키로 한정 권장. fix = `keysymGtkName` xkb name 매핑 추가 또는 `fromString` 에서 reject. 별 후속 |
+| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ⚠️ **현재 silent F1 fallback** — `LinuxHotkey.fromString` 은 받지만 `keysymGtkName` 의 xkb name 매핑이 없어 portal-kde 에 `"F1"` 송신. Linux 사용 시 위 범위 내 키로 한정 권장. 별 issue #208 에서 추적 (옵션: keysymGtkName xkb name 매핑 추가 vs fromString reject) |
 
 **계층적 fallback chain — config ≠ system binding 시 자동 보정** (`portal.handleHotkeyMismatch`, #207):
 
