@@ -1,10 +1,11 @@
 const std = @import("std");
 
 // 빌드:
-//   zig build                  -- 기본 빌드 (ReleaseFast, SIMD 비활성)
-//   zig build -Dsimd=true      -- SIMD 활성 (현재 Windows / Zig 0.15 에서 동작하지 않음)
-//   zig build -Doptimize=Debug -- 디버그 빌드
-//   zig build package          -- Windows 릴리즈 zip + .sha256 생성
+//   zig build                       -- 기본 빌드 (Debug, SIMD 비활성, #200)
+//   zig build -Doptimize=ReleaseFast -- 릴리즈 최적화 빌드
+//   zig build -Dsimd=true           -- SIMD 활성 (현재 Windows / Zig 0.15 에서 동작하지 않음)
+//   zig build package               -- Windows 릴리즈 zip + .sha256 생성 (자동 ReleaseFast)
+//   zig build check                 -- 6-target compile-only verify (#201)
 //
 // 릴리즈 버전. 태그 / dist/windows/README.txt / GitHub Release / dist/release-notes/
 // 와 동기화 필요. src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도
@@ -16,11 +17,16 @@ pub fn build(b: *std.Build) void {
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
     const is_linux_target = target_os == .linux;
+    // #200 — default 가 ReleaseFast 면 runtime safety check 모두 비활성
+    // (overflow / null deref / array bounds 등 silently 통과) → 개발 사이클의
+    // 버그가 production 까지 새어 나감. Debug 가 default — 안전성 + 진단 가능성
+    // 우선. 빌드 시간 손해는 dev 경험에서 회복. 릴리즈 / packaging 은 명시
+    // `-Doptimize=ReleaseFast` (CI / `package` step / `dist/release.sh`).
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
-        "성능, 안전성, 바이너리 크기 중 무엇을 우선할지 선택",
-    ) orelse .ReleaseFast;
+        "성능, 안전성, 바이너리 크기 중 무엇을 우선할지 선택 (default: Debug)",
+    ) orelse .Debug;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -193,6 +199,58 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "테스트 실행");
     const exe_tests = b.addTest(.{ .root_module = exe_mod });
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+
+    // 6-target compile-only check 단계 (#201).
+    //
+    //   zig build check
+    //
+    // win/mac/linux × x86_64/aarch64 = 6 가지 target 의 *컴파일 단계* 만 돌려
+    // type / 빌드 에러를 조기 발견. link 단계는 skip — macOS 의 framework /
+    // -lobjc 같은 SDK 의존 link 가 없는 dev 머신에서도 모든 host 의 compile
+    // error 가 surface. `b.addObject` 가 link 없이 .o 만 생성하는 핵심.
+    //
+    // 한계: link 단계의 미참조 symbol / framework 의 ABI mismatch 는 잡지 못함.
+    // 그건 release.yml 의 실 host runner (windows-2022 / macos-15 / ubuntu-22.04)
+    // 가 잡음. 이 step 은 *dev cycle 에서 mac/win 머신 없이도 compile error
+    // 만큼은 잡자* 가 목표 (#201 옵션 A).
+    const check_step = b.step("check", "6-target compile-only verify (#201)");
+    const check_targets = [_]struct { name: []const u8, query: std.Target.Query }{
+        .{ .name = "linux-x86_64", .query = .{ .os_tag = .linux, .cpu_arch = .x86_64, .abi = .gnu } },
+        .{ .name = "linux-aarch64", .query = .{ .os_tag = .linux, .cpu_arch = .aarch64, .abi = .gnu } },
+        .{ .name = "windows-x86_64", .query = .{ .os_tag = .windows, .cpu_arch = .x86_64 } },
+        .{ .name = "windows-aarch64", .query = .{ .os_tag = .windows, .cpu_arch = .aarch64 } },
+        .{ .name = "macos-x86_64", .query = .{ .os_tag = .macos, .cpu_arch = .x86_64 } },
+        .{ .name = "macos-aarch64", .query = .{ .os_tag = .macos, .cpu_arch = .aarch64 } },
+    };
+    for (check_targets) |c| {
+        const check_target = b.resolveTargetQuery(c.query);
+        const check_mod = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = check_target,
+            // Debug — safety check 활성. ReleaseFast 와의 codegen 차이로 일부
+            // type error 가 안 surface 되는 케이스 회피.
+            .optimize = .Debug,
+        });
+        check_mod.addOptions("build_options", build_opts);
+        if (b.lazyDependency("ghostty", .{
+            .target = check_target,
+            .simd = simd,
+            .optimize = .Debug,
+            .@"emit-lib-vt" = true,
+        })) |dep| {
+            check_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+        }
+        // OS-specific link spec 도 declare. *compile-only* 라 link 안 함이지만
+        // host 코드의 일부 `extern` decl 이 module 의 link_libc / framework 마커를
+        // 검사하는 케이스 일관성. mac framework / windows resource 는 compile
+        // 자체엔 영향 없어 skip.
+        if (c.query.os_tag == .linux) check_mod.link_libc = true;
+        const check_obj = b.addObject(.{
+            .name = b.fmt("tildaz-check-{s}", .{c.name}),
+            .root_module = check_mod,
+        });
+        check_step.dependOn(&check_obj.step);
+    }
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
