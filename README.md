@@ -1,25 +1,30 @@
 # TildaZ
 
-Quake-style drop-down terminal for Windows and macOS, built with Zig and
-`libghostty-vt`.
+Quake-style drop-down terminal for Windows, macOS, and Linux Wayland, built
+with Zig and `libghostty-vt`.
 
 TildaZ brings the feel of Linux's [Tilda](https://github.com/lanoxx/tilda) to
 native desktop stacks: ConPTY + Direct3D 11 on Windows, POSIX PTY + Metal on
-macOS.
+macOS, and a direct Wayland client + software renderer on Linux (no GTK / Qt
+dependency).
 
 **Website**: https://ensky0.github.io/tildaz/
 **Latest release**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.4.3 — macOS Hanja conversion UX + reliability cleanup**
+> **v0.5.0-rc1 — first Linux Wayland preview**
 >
-> This release adds the macOS `NSTextInputClient` reconversion surface needed
-> for Hanja / kanji candidate replacement in the terminal row and tab rename.
-> Option+Return can commit an in-progress Hangul syllable, open the candidate
-> list immediately, keep the original Hangul visible while choosing, and
-> replace it only when a candidate is accepted. It also tightens shell/env and
-> renderer behavior across platforms and routes user-visible dialogs through
-> the shared message layer. See
-> [`dist/release-notes/v0.4.3.md`](dist/release-notes/v0.4.3.md).
+> This release candidate introduces the Linux Wayland backend as a preview:
+> `xdg-shell` and `wlr-layer-shell` windows, KDE-style fractional scaling,
+> fontconfig + FreeType + HarfBuzz, `zwp_text_input_v3` IME, XDG Desktop
+> Portal global shortcuts with `tildaz --toggle` IPC fallback, and four
+> packaging formats (`.tar.gz`, `.deb`, `.rpm`, `.AppImage`) on `x86_64` and
+> `aarch64`. Windows ARM64 is now a first-class build target, and Linux's
+> cross-platform ligature module is shared with Windows / macOS. See
+> [`dist/release-notes/v0.5.0-rc1.md`](dist/release-notes/v0.5.0-rc1.md).
+>
+> Linux is verified on KDE Plasma 6.6.5 (KWin) and Cinnamon Wayland with
+> fcitx5-hangul. GNOME Wayland is limited support; sway / Hyprland are
+> untested in this preview.
 
 ## Highlights
 
@@ -54,6 +59,7 @@ First launch creates the default config:
 |---|---|---|
 | Windows | `%APPDATA%\tildaz\config.json` | `%APPDATA%\tildaz\tildaz.log` |
 | macOS | `~/.config/tildaz/config.json` | `~/Library/Logs/tildaz.log` |
+| Linux | `~/.config/tildaz/config.json` | `~/.local/state/tildaz/tildaz.log` |
 
 macOS releases are ad-hoc signed. If Gatekeeper blocks the first open,
 right-click `TildaZ.app` and choose **Open**, or run:
@@ -126,10 +132,14 @@ Historical cross-platform refactor notes are archived in
 
 ## Known Limitations
 
-- Linux is planned but not released yet. The accepted direction is a
-  Wayland-first backend with no initial X11 support; GNOME Wayland will start as
-  limited support until a correct full drop-down path is verified. See
-  [LINUX.md](LINUX.md).
+- Linux is **preview** in v0.5.0-rc1 — Wayland-only, no X11. KDE Plasma 6 and
+  Cinnamon Wayland are verified; GNOME Wayland is limited (no true drop-down
+  path); sway / Hyprland / Wayfire are untested. The Linux renderer is a
+  software path (no GPU yet). Z-order yield on focus loss is not implemented
+  on Linux (`wp_layer_shell_v1` categorical layers have no normal-window
+  slot). Hanja conversion of already-committed Hangul (selecting committed
+  Korean text and pressing the Hanja key) is not supported on Linux —
+  `zwp_text_input_v3` has no reconversion request. See [LINUX.md](LINUX.md).
 - Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
   may warn on first launch. The current SignPath application draft lives in
   [dist/signpath-application.md](dist/signpath-application.md).
