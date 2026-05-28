@@ -11,9 +11,13 @@ dependency).
 **Website**: https://ensky0.github.io/tildaz/
 **Latest release**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.0-rc1 — first Linux Wayland preview**
+> **v0.5.0-rc3 — first Linux Wayland preview (workflow-verified)**
 >
-> This release candidate introduces the Linux Wayland backend as a preview:
+> rc1 / rc2 failed the release workflow's sanity check; rc3 is the first
+> release where Windows, macOS, and Linux artifacts are built end-to-end
+> by CI. Scope is otherwise identical to rc1.
+>
+> The release candidate introduces the Linux Wayland backend as a preview:
 > `xdg-shell` and `wlr-layer-shell` windows, KDE-style fractional scaling,
 > fontconfig + FreeType + HarfBuzz, `zwp_text_input_v3` IME, XDG Desktop
 > Portal global shortcuts with `tildaz --toggle` IPC fallback, and four
