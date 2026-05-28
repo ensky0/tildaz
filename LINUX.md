@@ -1,11 +1,95 @@
 # Linux 백엔드 구현 계획
 
 상태: [#189](https://github.com/ensky0/tildaz/issues/189) 구현 진행 중.
-아직 Linux 릴리즈 아티팩트는 없다.
+v0.5.0-rc4 publish (10/11 success). 아래 *v0.5.0 출시 작업 결과* 참고.
 
 이 문서는 Linux 백엔드 구현을 이어받기 위한 내부 작업 문서다. end-user에게
 공개적으로 약속하는 문서가 아니라, 결정 사항, 확인된 동작, 남은 리스크,
 milestone 상태를 정확히 남기는 용도다.
+
+## v0.5.0 출시 작업 결과 (2026-05-28)
+
+### 완료된 작업
+
+| 항목 | 커밋 | 비고 |
+|---|---|---|
+| [#127](https://github.com/ensky0/tildaz/issues/127) 단일 탭 시 탭바 자리 reserve | [6144e48](https://github.com/ensky0/tildaz/commit/6144e48) | `Renderer.tabBarHeightPx(tab_count)` + `Client.ensureSessionGrid()` 호출 추가 |
+| [#208](https://github.com/ensky0/tildaz/issues/208) hotkey silent F1 fallback | [b1da3fc](https://github.com/ensky0/tildaz/commit/b1da3fc) | `linuxKeysymFromName` symbol reject + `keysymGtkName` defensive log |
+| [#207](https://github.com/ensky0/tildaz/issues/207) LINUX.md ↔ issue 정합성 | [ea01888](https://github.com/ensky0/tildaz/commit/ea01888) | ✅ → 🟨 (KDE 만 자동 적용, 다른 DE 는 3차 fallback) |
+| [#209](https://github.com/ensky0/tildaz/issues/209) 입력 확정된 한글의 한자 변환 | [f38f7ea](https://github.com/ensky0/tildaz/commit/f38f7ea) | platform-limit issue create + close + SPEC / LINUX 표현 정정 |
+| [#200](https://github.com/ensky0/tildaz/issues/200) default Debug | [330c057](https://github.com/ensky0/tildaz/commit/330c057) | `build.zig orelse .Debug` + release.yml `-Doptimize=ReleaseFast` 명시 |
+| [#201](https://github.com/ensky0/tildaz/issues/201) `zig build check` 6-target | [330c057](https://github.com/ensky0/tildaz/commit/330c057) | win/mac/linux × x86_64/aarch64 compile-only, 통과 시연 |
+| [#205](https://github.com/ensky0/tildaz/issues/205) startup latency fix | (이번 fix commit) | **165ms → 25ms** (6.5배). KWin Bug 503121 의 [kitty workaround pattern](https://github.com/kovidgoyal/kitty/blob/master/glfw/wl_window.c) — wl_surface + layer_surface 유지 + `attach(null)` unmap + `sendLayerSurfaceLayout` (set_layer 포함) remap. 두 진짜 cause: (1) `layer_shell` bind version 이 `@min(_, 1)` 였음 → `@min(_, 4)` (set_layer since v2). (2) `set_layer` 재송신 누락 — KWin 의 remap visibility tracking 핵심. 측정 phase: paint 3ms + KWin compose+present 16-25ms (= 1-2 frame @ 60Hz, 정상) |
+
+### v0.5.0 release dry-run 사이클
+
+| Tag | 결과 | 발견된 갭 | Fix commit |
+|---|---|---|---|
+| v0.5.0-rc1 | ❌ Sanity | `${TAG#v}=0.5.0-rc1` vs `tildaz_version="0.5.0"` mismatch | [330c057](https://github.com/ensky0/tildaz/commit/330c057) — BASE_VER 비교 |
+| v0.5.0-rc2 | ❌ Sanity | `dist/release-notes/v0.5.0-rc2.md` 부재 | per-RC notes 정책 |
+| v0.5.0-rc3 | ❌ Verify | (1) artifact 이름이 *full tag* 기대 vs *base ver* 출력 (2) aarch64-rpm `No compatible architectures` | [8f88958](https://github.com/ensky0/tildaz/commit/8f88958) — BASE_VER + rpmbuild `_target_*` 명시 |
+| v0.5.0-rc4 | 🟨 **11 중 10 SUCCESS + release publish** — `release-linux (aarch64, rpm)` Build+package fail 만 남음 (rpmbuild `_target_*` 명시도 통과 안 됨, ubuntu rpm package 의 plaform table 부재 더 deep) | 1개 fail | 미해소 (아래 *남은 fix*) |
+
+**v0.5.0-rc4 release 상태**: <https://github.com/ensky0/tildaz/releases/tag/v0.5.0-rc4>
+prerelease 로 publish. Win x64/arm64 zip, macOS dmg, Linux x86_64 / aarch64 의
+tar.gz / AppImage, Linux x86_64 rpm + deb 모두 업로드. 빠진 것: **Linux
+aarch64 rpm 만**.
+
+### rc4 의 남은 fix — Linux aarch64 rpm
+
+`rpmbuild --target aarch64 + --define '_target_cpu/_target_os/_target_platform'`
+명시에도 ubuntu rpm package 가 `aarch64-linux` platform lookup 부재로 fail.
+
+**다음 세션 옵션**:
+- (a) `runs-on: ubuntu-24.04-arm` (GitHub Actions 의 ARM64 runner) 로 rpm
+  matrix entry 만 분리 — native arch 빌드.
+- (b) ubuntu runner 에 추가 platform file (`/usr/lib/rpm/platform/aarch64-linux/macros`)
+  수동 install. `apt-get install rpm-common` 이 안 만들면 `/etc/rpm/platform`
+  에 entry 추가.
+- (c) `dist/linux/package.sh` 의 rpmbuild 호출에 `--rebuild` 또는 추가
+  `--buildroot` / `--define '%_host_cpu aarch64'` 시도. rpm spec 의
+  `%_target_platform` macros override.
+- (d) **임시**: `release.yml` 의 matrix 에서 `{arch: aarch64, format: rpm}`
+  exclude — aarch64 사용자는 AppImage / tar.gz / deb 로 안내. v0.5.0 final
+  에 포함 안 함, 별 sub-issue 로 분리. 가장 simple.
+
+→ **(d) 채택** ([71e73fc](https://github.com/ensky0/tildaz/commit/71e73fc) — `release.yml` 의 matrix exclude). aarch64 Fedora/RHEL 사용자는 AppImage / tar.gz / deb fallback. 정공 path 는 [#211](https://github.com/ensky0/tildaz/issues/211) 추적 (`ubuntu-24.04-arm` runner 사용 옵션).
+
+### #205 startup latency — fix 완료 + 영구 기록
+
+**문제**: F1 hide → F1 show cycle 의 visible 까지 ~165ms (사용자 perception "느림"). KDE Plasma 6.6.5 + KWin + 1.70x fractional scale 환경.
+
+**진짜 cause** ([KWin Bug 503121](https://bugs.kde.org/show_bug.cgi?id=503121), CONFIRMED, open):
+> "KWin's wlr-layer-shell implementation has a bug where if a surface is unmapped by attaching a null buffer and committing, then later remapped, no layer shell configure event is sent by KWin. ... while this works as expected on Sway and Hyprland."
+
+= KWin 의 wlr-layer-shell remap path 가 spec 의 *commit-only re-map* 미구현. wlroots 계열 (Sway / Hyprland) 정상 동작. 우리 4차 destroy/recreate fallback 이 *그 KWin bug 우회용* 였지만 매 cycle 마다 *fresh layer-shell surface mapping* — KWin 의 first-frame composition pipeline 의 *몇 frame 의 cost* 가 ~165ms.
+
+**Fix** — [kitty quick-access kitten 의 workaround pattern](https://github.com/kovidgoyal/kitty/blob/master/glfw/wl_window.c) 적용:
+1. **wl_surface + layer_surface 유지** — destroy/recreate 안 함
+2. **hide path** — `wl_surface.attach(null) + commit` (unmap)
+3. **show path** — `sendLayerSurfaceLayout()` 재호출 (set_anchor / set_size / set_exclusive_zone / set_margin / set_keyboard_interactivity + **set_layer** + commit) — KWin Bug 503121 workaround 가 *모든 layer-shell property 재송신* + commit 으로 configure trigger
+
+**진짜 cause 두 가지** (수정 #205 분석 cycle 발견):
+1. `layer_shell` bind version 이 `@min(advertise, 1)` 였음 — set_layer 가 since v2 — version 1 환경에서 송신 시 *unknown opcode* → BrokenPipe protocol error → crash. `@min(advertise, 4)` 로 수정. version 1 fallback 환경에선 set_layer skip.
+2. `sendLayerSurfaceLayout` 에 **set_layer 누락** — get_layer_surface 시 layer 지정만 했고 *재송신 안 함*. KWin 의 remap visibility tracking 가 set_layer 받아야 정상.
+
+**측정 결과** (KDE Plasma 6.6.5 + 1.70x, ReleaseFast binary):
+- F1 hide → F1 show: **first frame done elapsed ~25ms (19-28ms, 평균 25ms)**
+- phase breakdown: paint 3ms + commit 0ms + KWin compose+present 16-25ms (= 1-2 frame @ 60Hz, 정상)
+- **165ms → 25ms = 6.5배 빠름**. kitty quick-access (~14ms) 와 비슷한 수준.
+- 남은 25ms 는 *KWin frame cycle* 의 minimum. 우리 측 fix 여지 거의 없음.
+
+**검증된 환경**: KDE Plasma 6.6.5 + KWin + cachyOS + fractional scaling 1.70x.
+
+**대안 시도 + reject 기록** (향후 같은 가설 빠지지 않게):
+- KWin Fade desktop effect 가설 — Plasma 6 의 *애니메이션 속도 즉시* 설정 후도 ~165ms → reject
+- KWin Latency policy 가설 — Plasma 6 가 default minimum (force low latency 옵션 제거됨, KDE Discuss 의 nicolasfella 답변) → reject
+- Yakuake 비교 — wl_surface 유지가 cause 확정 (Yakuake 도 quick-access pattern)
+
+### 미해결 — 사용자 환경 시연 의존 (#206 / sway)
+
+- [#206](https://github.com/ensky0/tildaz/issues/206) KDE floating dock — `set_exclusive_zone` 값 별 KWin 동작 비교. 사용자 KDE Plasma 환경에서 시연 필요.
+- **sway / Hyprland 1 회 시연** — *Support Tier 정의* 에서 wlroots 계열을 *Full-support target* 으로 분류했지만 실 시연 0 회. 사용자 환경 setup 후 검증.
 
 ## 결정 요약
 
