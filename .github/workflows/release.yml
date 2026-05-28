@@ -90,8 +90,12 @@ jobs:
           set -euo pipefail
 
           BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-          if [[ "$BZIG_VER" != "${{ steps.vars.outputs.version }}" ]]; then
-            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag version (${{ steps.vars.outputs.version }})"
+          # prerelease (-rc* / -beta* / -alpha*) tag 는 base version (= 첫 `-` 앞까지) 만 build.zig 와 매칭.
+          # `0.5.0-rc1` → `0.5.0` 비교. build.zig 의 tildaz_version 은 base 유지.
+          BASE_VER="${{ steps.vars.outputs.version }}"
+          BASE_VER="${BASE_VER%-*}"
+          if [[ "$BZIG_VER" != "$BASE_VER" ]]; then
+            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
             exit 1
           fi
 
@@ -145,7 +149,9 @@ jobs:
 
       - name: Build + package (${{ matrix.arch }})
         shell: bash
-        run: zig build package -Dtarget=${{ matrix.zig_target }}
+        # `-Doptimize=ReleaseFast` 명시 — #200 으로 build.zig default 가 Debug
+        # 로 바뀐 이후 release artifact 는 안전을 위해 *명시* 적용.
+        run: zig build package -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast
 
       - name: Verify artifacts
         shell: bash
@@ -221,8 +227,11 @@ jobs:
         run: |
           set -euo pipefail
           BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-          if [[ "$BZIG_VER" != "${{ steps.vars.outputs.version }}" ]]; then
-            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag (${{ steps.vars.outputs.version }})"
+          # prerelease (-rc* / -beta* / -alpha*) tag 는 base version 만 build.zig 와 매칭.
+          BASE_VER="${{ steps.vars.outputs.version }}"
+          BASE_VER="${BASE_VER%-*}"
+          if [[ "$BZIG_VER" != "$BASE_VER" ]]; then
+            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
             exit 1
           fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
@@ -243,7 +252,9 @@ jobs:
           done
 
       - name: Build + package
-        run: zig build package
+        # `-Doptimize=ReleaseFast` 명시 (#200) — default 가 Debug 가 된 후
+        # 매크로 OS package 도 명시 적용.
+        run: zig build package -Doptimize=ReleaseFast
 
       - name: Verify artifacts
         run: |
@@ -353,8 +364,11 @@ jobs:
         run: |
           set -euo pipefail
           BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-          if [[ "$BZIG_VER" != "${{ steps.vars.outputs.version }}" ]]; then
-            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag (${{ steps.vars.outputs.version }})"
+          # prerelease (-rc* / -beta* / -alpha*) tag 는 base version 만 build.zig 와 매칭.
+          BASE_VER="${{ steps.vars.outputs.version }}"
+          BASE_VER="${BASE_VER%-*}"
+          if [[ "$BZIG_VER" != "$BASE_VER" ]]; then
+            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
             exit 1
           fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
@@ -375,7 +389,9 @@ jobs:
           done
 
       - name: Build + package (${{ matrix.arch }} / ${{ matrix.format }})
-        run: zig build package -Dtarget=${{ matrix.zig_target }} -Dformat=${{ matrix.format }}
+        # `-Doptimize=ReleaseFast` 명시 (#200) — default 가 Debug 가 된 후
+        # Linux release artifact 도 명시 적용.
+        run: zig build package -Dtarget=${{ matrix.zig_target }} -Dformat=${{ matrix.format }} -Doptimize=ReleaseFast
 
       - name: Resolve artifact name
         id: artifact
