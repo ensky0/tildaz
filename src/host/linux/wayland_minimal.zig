@@ -643,6 +643,12 @@ const Client = struct {
     // L13-α — 사용자 설정. `runBaselineWindow` 가 host 의 g_config 포인터를
     // 전달. SessionCore.init 시 shell / theme / max_scroll_lines 가 여기서.
     config: *const config_mod.Config,
+    /// #205 — boot / show phase elapsed log 용 monotonic timer. boot path
+    /// 는 `runBaselineWindow` 진입에 start, show path 는 매 `handleActivatedToggle`
+    /// show 분기 시작에 reset. 사용자 *체감* 1-2 sec startup latency 가 어느
+    /// phase 에 모이는지 확정 위한 진단 인프라 — fix 는 측정 결과 본 후.
+    boot_timer: ?std.time.Timer = null,
+    show_timer: ?std.time.Timer = null,
     /// 자식 셸 extra env. Client.init 에서 config.shell + theme luminance 로
     /// 채워진다. SessionCore.init 에 slice 로 전달 — Client lifetime 안에서
     /// storage valid.
@@ -793,6 +799,10 @@ const Client = struct {
     }
 
     fn run(self: *Client) !void {
+        // #205 — boot phase elapsed timer start. 사용자 *체감* 1-2 sec startup
+        // latency 진단용. monotonic, ns_per_ms 단위로 log.
+        self.boot_timer = std.time.Timer.start() catch null;
+
         // #203 Phase C — dialog backend host callback 등록. self pointer 가
         // final 위치 (Client.init 가 by value 반환이라 init 안에서는 등록 못 함).
         // run 진입 시점 = stable address. defer 해제로 deinit 안 dangling 회피.
@@ -805,6 +815,7 @@ const Client = struct {
 
         try self.getRegistry();
         try self.roundtrip();
+        self.logBootElapsed("registry+roundtrip");
 
         if (self.caps.compositor.name == 0) return error.WaylandCompositorMissing;
         if (self.caps.shm.name == 0) return error.WaylandShmMissing;
@@ -813,12 +824,15 @@ const Client = struct {
         try self.bindGlobals();
         try self.roundtrip();
         self.logCapabilities();
+        self.logBootElapsed("bind globals");
         self.tryConnectDbus();
+        self.logBootElapsed("dbus+portal");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
         if (!self.saw_argb8888) return error.WaylandShmArgb8888Missing;
         try self.createKeyboardIfAvailable();
         if (self.keyboard_id != 0) try self.roundtrip();
+        self.logBootElapsed("keyboard ready");
 
         // L11-β — hidden_start: portal `GlobalShortcuts` 가 가용한 경우에만
         // surface 생성 skip + `surface_hidden=true` set. 첫 portal Activated
@@ -836,12 +850,17 @@ const Client = struct {
         if (hidden_at_start) {
             self.surface_hidden = true;
             log.appendLine("startup", "hidden_start — surface deferred until first portal Activated", .{});
+            self.logBootElapsed("ready (hidden_start, awaiting first hotkey)");
             std.debug.print("TildaZ Linux Wayland terminal is hidden — press the configured hotkey to show.\n", .{});
         } else {
             try self.createShellObjects();
+            self.logBootElapsed("createShellObjects");
             try self.waitForConfigure();
+            self.logBootElapsed("first configure");
             try self.ensureSessionGrid();
+            self.logBootElapsed("session+PTY");
             _ = try self.redraw();
+            self.logBootElapsed("first frame");
 
             std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
             log.appendLine("linux", "Wayland terminal window mapped", .{});
@@ -1476,6 +1495,25 @@ const Client = struct {
         return self.renderer.tabBarHeightPx(count);
     }
 
+    /// #205 — boot phase elapsed log. `boot_timer` 가 `runBaselineWindow` 진입에
+    /// start 됐을 때만 동작. 사용자 *체감* 1-2 sec startup latency 가 어느
+    /// phase 에 모이는지 확정 위한 진단.
+    fn logBootElapsed(self: *Client, phase: []const u8) void {
+        if (self.boot_timer) |*t| {
+            const elapsed_ms = t.read() / std.time.ns_per_ms;
+            log.appendLine("startup", "boot phase={s} elapsed={d}ms (#205)", .{ phase, elapsed_ms });
+        }
+    }
+
+    /// #205 — show phase elapsed log. `show_timer` 는 매 `handleActivatedToggle`
+    /// show 분기 시작에 reset. portal Activated → first frame 까지.
+    fn logShowElapsed(self: *Client, phase: []const u8) void {
+        if (self.show_timer) |*t| {
+            const elapsed_ms = t.read() / std.time.ns_per_ms;
+            log.appendLine("startup", "show phase={s} elapsed={d}ms (#205)", .{ phase, elapsed_ms });
+        }
+    }
+
     fn ensureSessionGrid(self: *Client) !void {
         const grid = self.gridSize();
         if (self.session) |*session| {
@@ -2071,6 +2109,7 @@ const Client = struct {
                 // 시 resize, null 시 create) — guard 없이 호출 안전.
                 try self.ensureSessionGrid();
                 self.configured = true;
+                self.logShowElapsed("first configure+session");
                 // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
                 // 인 경우도 redraw — hide 후 re-map sequence 의 첫 attach.
                 if (self.mapped or !self.surface_hidden) self.requestRedraw();
@@ -3738,8 +3777,13 @@ const Client = struct {
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
         if (self.surface_hidden) {
+            // #205 — show phase elapsed timer. portal Activated → first frame.
+            // configure handler / ensureSessionGrid / redraw 가 후속 호출에서
+            // 발생하므로 그 site 에 별도 logShowElapsed.
+            self.show_timer = std.time.Timer.start() catch null;
             self.surface_hidden = false;
             try self.createShellObjects();
+            self.logShowElapsed("createShellObjects");
             log.appendLine("portal", "toggle show — recreated shell objects", .{});
             return;
         }

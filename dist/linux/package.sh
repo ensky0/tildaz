@@ -286,9 +286,24 @@ END
 
     # Ubuntu runner 환경에선 dist tag 가 안 붙어 출력 이름이 tildaz-<ver>-1.<arch>.rpm.
     # %{?dist} 를 빈 string 으로 강제 — 출력 이름 결정적 (RHEL native 빌드 시 'el8' 등 추가 회피).
+    #
+    # cross-arch (Ubuntu x86_64 runner 에서 aarch64 target rpm 빌드) 시
+    # `rpmbuild --target aarch64` 만으로는 ubuntu rpm package 의 `/usr/lib/rpm/platform`
+    # table 에 aarch64-linux entry 가 없어 `No compatible architectures found
+    # for build` fail. `_target_cpu` / `_target_os` / `_target_platform` 명시로
+    # platform lookup 우회.
+    local RPM_TARGET_PLATFORM
+    case "$RPMARCH" in
+        x86_64)  RPM_TARGET_PLATFORM="x86_64-linux"  ;;
+        aarch64) RPM_TARGET_PLATFORM="aarch64-linux" ;;
+        *)       RPM_TARGET_PLATFORM="$RPMARCH-linux";;
+    esac
     rpmbuild -bb \
         --define "_topdir $RPMTREE" \
         --define "dist %{nil}" \
+        --define "_target_cpu $RPMARCH" \
+        --define "_target_os linux" \
+        --define "_target_platform $RPM_TARGET_PLATFORM" \
         --target "$RPMARCH" \
         "$RPMTREE/SPECS/tildaz.spec"
 

@@ -11,11 +11,12 @@ dependency).
 **Website**: https://ensky0.github.io/tildaz/
 **Latest release**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.0-rc3 — first Linux Wayland preview (workflow-verified)**
+> **v0.5.0-rc4 — first Linux Wayland preview (workflow-verified)**
 >
-> rc1 / rc2 failed the release workflow's sanity check; rc3 is the first
-> release where Windows, macOS, and Linux artifacts are built end-to-end
-> by CI. Scope is otherwise identical to rc1.
+> rc1 / rc2 / rc3 each failed a different step of the release workflow.
+> rc4 is the first release where Windows, macOS, and Linux artifacts are
+> all built and uploaded end-to-end by CI. Scope is otherwise identical
+> to rc1.
 >
 > The release candidate introduces the Linux Wayland backend as a preview:
 > `xdg-shell` and `wlr-layer-shell` windows, KDE-style fractional scaling,
