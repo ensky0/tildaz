@@ -4,15 +4,16 @@ TildaZ is a native host on each operating system with a shared terminal,
 configuration, tab, dialog, theme, and interaction core.
 
 The project deliberately does not wrap an existing terminal app. Windows uses
-ConPTY and Direct3D 11 directly; macOS uses POSIX PTY and Metal directly. The
-shared code owns terminal state and UI policy, while each host owns the OS event
-loop and native APIs.
+ConPTY and Direct3D 11 directly; macOS uses POSIX PTY and Metal directly;
+Linux uses a direct Wayland client + software `wl_shm` renderer (no GTK / Qt
+toolkit dependency, no X11). The shared code owns terminal state and UI
+policy, while each host owns the OS event loop and native APIs.
 
 ## Layers
 
 | Layer | Shared? | Main files | Responsibility |
 |---|---:|---|---|
-| Host | No | `src/host/windows.zig`, `src/host/macos.zig` | OS startup, event loop, global hotkey, window lifecycle |
+| Host | No | `src/host/windows.zig`, `src/host/macos.zig`, `src/host/linux_wayland.zig` + `src/host/linux/wayland_minimal.zig` | OS startup, event loop, global hotkey, window lifecycle |
 | Window controller | Mostly Windows | `src/window.zig`, `src/app_controller.zig`, `src/app_event.zig` | Win32 message dispatch and app-level event routing |
 | Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues |
 | Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig` | Tab switching, close paths, rename, drag, hit testing |
@@ -77,7 +78,7 @@ fields include their units (`_percent`, `_point`, `_ratio`).
 | Config schema completion / future cleanup | [#118](https://github.com/ensky0/tildaz/issues/118) | Open follow-up context |
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
-| Linux backend | [#189](https://github.com/ensky0/tildaz/issues/189) | Planned in [LINUX.md](LINUX.md): Wayland first, no initial X11 backend, GNOME limited until a full drop-down path is verified |
+| Linux backend | [#189](https://github.com/ensky0/tildaz/issues/189) | Preview shipped in v0.5.0-rc1 — Wayland-only, KDE Plasma 6 + Cinnamon verified, GNOME limited, sway / Hyprland untested. Software renderer is a placeholder for a future EGL path. See [LINUX.md](LINUX.md) |
 | Stress tests | none yet | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
 
 Completed cross-platform work is tracked in
