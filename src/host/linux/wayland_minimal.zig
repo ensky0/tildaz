@@ -110,7 +110,11 @@ const zwlr_layer_surface_v1_request_set_anchor: u16 = 1;
 const zwlr_layer_surface_v1_request_set_exclusive_zone: u16 = 2;
 const zwlr_layer_surface_v1_request_set_margin: u16 = 3;
 const zwlr_layer_surface_v1_request_set_keyboard_interactivity: u16 = 4;
+// opcode 5 = get_popup (set_layer 아님 — #205 진단 cycle 발견, 우리 코드 미사용)
 const zwlr_layer_surface_v1_request_ack_configure: u16 = 6;
+/// `set_layer` 는 since version 2. layer_shell version 1 환경에서 송신 시
+/// protocol error → BrokenPipe. KWin Plasma 6 은 v4 이상 (안전).
+const zwlr_layer_surface_v1_request_set_layer: u16 = 8;
 const zwlr_layer_surface_v1_request_destroy: u16 = 7;
 const zwlr_layer_surface_v1_event_configure: u16 = 0;
 const zwlr_layer_surface_v1_event_closed: u16 = 1;
@@ -930,10 +934,14 @@ const Client = struct {
         // skip — `createShellObjects` 가 xdg-shell fallback 경로로 분기.
         if (self.caps.layer_shell.name != 0) {
             self.layer_shell_id = self.allocId();
+            // #205 — version 2 이상이 필요 (set_layer since v2, #205 kitty
+            // workaround 의 핵심). spec 의 latest = 4. 최대 4 까지 bind.
+            // version 1 만 advertise 하는 compositor 면 set_layer 미사용 path
+            // 로 fallback 필요 — 아래 send 사이트의 version check.
             try self.bind(
                 self.caps.layer_shell.name,
                 "zwlr_layer_shell_v1",
-                @min(self.caps.layer_shell.version, 1),
+                @min(self.caps.layer_shell.version, 4),
                 self.layer_shell_id,
             );
         }
@@ -1247,6 +1255,21 @@ const Client = struct {
     fn sendLayerSurfaceLayout(self: *Client) !void {
         if (self.layer_surface_id == 0) return;
         const layout = self.computeLayerLayout();
+        // #205 — set_layer 재송신 (kitty workaround pattern, `layer_set_properties`
+        // 의 `during_creation=false` 분기). get_layer_surface 시 layer argument
+        // 로 지정했지만, KWin Bug 503121 의 remap path 에서 *layer state 도
+        // 재송신* 해야 visibility tracking 정확. 이게 빠지면 KWin 이 frame_done
+        // 발신해도 surface 시각상 안 그려짐 (사용자 시연 발견).
+        // `set_layer` 는 since version 2 — v1 환경 (advertise version 검사) 에선
+        // 송신 시 unknown opcode → BrokenPipe protocol error 가 됨 (시연 확정).
+        // v2+ 만 송신.
+        if (self.caps.layer_shell.version >= 2) {
+            try self.sendArgs(
+                self.layer_surface_id,
+                zwlr_layer_surface_v1_request_set_layer,
+                &.{zwlr_layer_shell_layer_top},
+            );
+        }
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_anchor,
@@ -1559,11 +1582,17 @@ const Client = struct {
         if (self.awaiting_frame) return false;
         self.applyPendingSize();
         self.discardReleasedRetiredBuffersExcept(self.window_width, self.window_height);
+        // #205 B-phase 진단 — show_timer valid (= show 의 첫 frame 까지) 동안만
+        // 3 phase elapsed log: paint / commit / frame_done. show_timer null 면
+        // 모든 호출 no-op (logShowElapsed 안 가드). spam 차단.
+        self.logShowElapsed("redraw begin");
         if (self.active_buffer) |*buffer| {
             if (buffer.width == self.window_width and buffer.height == self.window_height) {
                 if (buffer.released) {
                     self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+                    self.logShowElapsed("paint done (reuse)");
                     try self.attachAndCommit(buffer.*);
+                    self.logShowElapsed("commit done (reuse)");
                     buffer.released = false;
                     self.mapped = true;
                     return true;
@@ -1582,8 +1611,10 @@ const Client = struct {
             buffer.deinit();
         }
         self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+        self.logShowElapsed("paint done (new buf)");
         try self.retireActiveBuffer();
         try self.attachAndCommit(buffer);
+        self.logShowElapsed("commit done (new buf)");
         self.active_buffer = buffer;
         self.mapped = true;
         return true;
@@ -1913,6 +1944,15 @@ const Client = struct {
         if (self.frame_callback_id != 0 and id == self.frame_callback_id and opcode == 0) {
             self.awaiting_frame = false;
             self.frame_callback_id = 0;
+            // #205 — show path 의 *visible 까지* 측정. boot path 의 first frame
+            // elapsed 와 다른 metric: compositor 가 우리 buffer 를 화면에 그리고
+            // next frame ready 신호. 사용자 perception "show 가 느림" 의 객관
+            // 측정 (createShellObjects~configure 까지의 0ms vs visible 까지의
+            // 실제 시간 격차 잡기). first frame done 후 timer null 로 매 frame
+            // spam 차단 — 다음 show 분기 진입 시 handleActivatedToggle 가 재
+            // start.
+            self.logShowElapsed("first frame done");
+            self.show_timer = null;
             return;
         }
         if (id == self.shm_id and opcode == 0 and payload.len >= 4) {
@@ -3782,17 +3822,73 @@ const Client = struct {
             // 발생하므로 그 site 에 별도 logShowElapsed.
             self.show_timer = std.time.Timer.start() catch null;
             self.surface_hidden = false;
-            try self.createShellObjects();
-            self.logShowElapsed("createShellObjects");
-            log.appendLine("portal", "toggle show — recreated shell objects", .{});
+            // 첫 show (hidden_start=true 의 첫 portal Activated) 면 surface 아직
+            // 안 만들어졌으므로 full create. 이후 hide/show cycle 은 unmap/remap
+            // path (#205 — wl_surface + layer_surface 유지가 ~165ms → ~16ms 줄임,
+            // KWin Bug 503121 의 kitty workaround pattern).
+            if (self.surface_id == 0) {
+                try self.createShellObjects();
+                self.logShowElapsed("createShellObjects (first show)");
+                log.appendLine("portal", "toggle show — created shell objects (first)", .{});
+            } else {
+                try self.remapShellObjects();
+                self.logShowElapsed("remapShellObjects");
+                log.appendLine("portal", "toggle show — remapped shell objects (#205)", .{});
+            }
             return;
         }
         // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
         self.commitPendingInput();
-        try self.destroyShellObjects();
+        try self.unmapShellObjects();
         self.surface_hidden = true;
-        log.appendLine("portal", "toggle hide — destroyed shell objects", .{});
+        log.appendLine("portal", "toggle hide — unmapped shell objects (#205)", .{});
+    }
+
+    /// #205 — kitty pattern hide: `wl_surface.attach(null) + commit`. wl_surface
+    /// + layer_surface + buffer 모두 유지 — show 시 fresh surface mapping cost
+    /// (~165ms) 회피. configure 다시 받아야 하므로 `configured=false` reset.
+    ///
+    /// active_buffer / retired_buffers 는 유지 — 다음 paint 가 재사용 가능.
+    /// kitty 의 `swaps_disallowed=true` 와 동등 효과는 `surface_hidden=true` +
+    /// `redraw()` 의 가드.
+    fn unmapShellObjects(self: *Client) !void {
+        if (self.surface_id != 0) {
+            // wl_surface.attach (opcode 1) — buffer=null (id 0) + x=0 + y=0.
+            try self.sendArgs(self.surface_id, 1, &.{ 0, 0, 0 });
+            // wl_surface.commit (opcode 6) — pending state (= null buffer) 적용.
+            try self.sendNoArgs(self.surface_id, 6);
+        }
+        self.configured = false;
+        self.mapped = false;
+        // issue #196: 이전 frame callback 은 unmap 후 더 이상 fire 안 함.
+        // 재 map 후 첫 attachAndCommit 가 새 frame request — reset 필수.
+        self.frame_callback_id = 0;
+        self.awaiting_frame = false;
+    }
+
+    /// #205 — kitty pattern show: layer properties 재송신 + commit. KWin Bug
+    /// 503121 workaround — KWin 의 wlr-layer-shell 이 "commit-only re-map"
+    /// (= commit 만으로 configure 트리거) 미구현. set_anchor / set_size /
+    /// set_exclusive_zone / set_margin / set_keyboard_interactivity 재송신
+    /// → KWin 이 *state 변경* 으로 인식 → configure event 발신.
+    ///
+    /// Sway / Hyprland 등 wlroots 계열은 commit-only 만으로 충분하지만 redundant
+    /// set_* 도 spec 가 명시 prohibit 안 함 + double-buffered 라 idempotent
+    /// 효과 (compositor 가 pending state overwrite). kitty 가 모든 compositor
+    /// 에 동일 path 적용 — compositor 분기 불필요.
+    ///
+    /// configure 도착 시 handler 가 `configured=true` set + `requestRedraw` —
+    /// 다음 main loop redraw 가 active_buffer (유지된 것) 재 attach + commit.
+    fn remapShellObjects(self: *Client) !void {
+        if (self.layer_surface_id != 0) {
+            try self.sendLayerSurfaceLayout();
+        } else if (self.surface_id != 0) {
+            // xdg-shell fallback (mutter 등) — set_* 같은 toplevel state 송신
+            // 필요. 일단 commit 만 — 충분한지 검증 필요 (현재 xdg-shell 환경
+            // 에서 unmap/remap 시연 안 됨).
+            try self.sendNoArgs(self.surface_id, 6);
+        }
     }
 
     /// wl_surface + role object (layer_surface 또는 xdg_toplevel+xdg_surface) +
