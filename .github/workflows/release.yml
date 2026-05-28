@@ -154,17 +154,27 @@ jobs:
         run: zig build package -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast
 
       - name: Verify artifacts
+        id: verify
         shell: bash
+        # package.sh 가 만드는 file 이름은 `tildaz_version` (build.zig 의 base
+        # version) 만 사용. tag 가 prerelease 인 경우 (`v0.5.0-rc3`) 도 file
+        # 이름은 `tildaz-v0.5.0-win-x64.zip`. 각 release 의 tag page 가 따로라
+        # 사용자가 file 이름으로 *어떤 RC* 인지 식별 못 하는 단점 acceptable
+        # (release page 에서 확인).
         run: |
-          ZIP="zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-${{ matrix.arch }}.zip"
+          BASE_VER="${{ steps.vars.outputs.version }}"
+          BASE_VER="${BASE_VER%-*}"
+          ZIP="zig-out/release/tildaz-v${BASE_VER}-win-${{ matrix.arch }}.zip"
           SHA="$ZIP.sha256"
           if [[ ! -f "$ZIP" || ! -f "$SHA" ]]; then
-            echo "ERROR: expected artifacts missing"
+            echo "ERROR: expected artifacts missing — looked for $ZIP / $SHA"
             ls -la zig-out/release/ || true
             exit 1
           fi
           echo "zip    : $ZIP ($(stat -c %s "$ZIP") bytes)"
           echo "sha256 : $(cat "$SHA")"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       # 두 matrix 작업이 *같은 release tag* 에 artifact append.
       # action-gh-release 는 동일 tag 의 release 가 이미 있으면 metadata
@@ -177,8 +187,8 @@ jobs:
           name: ${{ steps.vars.outputs.tag }}
           body_path: dist/release-notes/${{ steps.vars.outputs.tag }}.md
           files: |
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-${{ matrix.arch }}.zip
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-win-${{ matrix.arch }}.zip.sha256
+            ${{ steps.verify.outputs.zip }}
+            ${{ steps.verify.outputs.sha }}
           draft: false
           prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
           fail_on_unmatched_files: true
@@ -257,11 +267,14 @@ jobs:
         run: zig build package -Doptimize=ReleaseFast
 
       - name: Verify artifacts
+        id: verify
         run: |
-          DMG="zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos.dmg"
+          BASE_VER="${{ steps.vars.outputs.version }}"
+          BASE_VER="${BASE_VER%-*}"
+          DMG="zig-out/release/tildaz-v${BASE_VER}-macos.dmg"
           SHA="$DMG.sha256"
           if [[ ! -f "$DMG" || ! -f "$SHA" ]]; then
-            echo "ERROR: expected artifacts missing"
+            echo "ERROR: expected artifacts missing — looked for $DMG / $SHA"
             ls -la zig-out/release/ || true
             exit 1
           fi
@@ -269,6 +282,8 @@ jobs:
           echo "sha256 : $(cat "$SHA")"
           echo "universal binary architectures:"
           lipo -info "zig-out/TildaZ.app/Contents/MacOS/tildaz"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
       # softprops/action-gh-release 의 default 동작.
@@ -278,8 +293,8 @@ jobs:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
           files: |
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos.dmg
-            zig-out/release/tildaz-${{ steps.vars.outputs.tag }}-macos.dmg.sha256
+            ${{ steps.verify.outputs.dmg }}
+            ${{ steps.verify.outputs.sha }}
           draft: false
           # vX.Y.Z-rc* / -beta* 같이 prerelease 표기 포함된 tag 면 GitHub Release
           # 의 prerelease 플래그도 같이 set — release listing 에서 stable 위에
@@ -397,17 +412,20 @@ jobs:
         id: artifact
         run: |
           set -euo pipefail
-          VERSION="${{ steps.vars.outputs.version }}"
+          # base version 만 사용 — package.sh 가 build.zig 의 `tildaz_version`
+          # (= base version, prerelease suffix 없음) 으로 file 이름 생성.
+          BASE_VER="${{ steps.vars.outputs.version }}"
+          BASE_VER="${BASE_VER%-*}"
           ARCH="${{ matrix.arch }}"
           case "$ARCH" in
               x86_64)  DEBARCH=amd64 ;;
               aarch64) DEBARCH=arm64 ;;
           esac
           case "${{ matrix.format }}" in
-              tar.gz)   NAME="tildaz-v${VERSION}-linux-${ARCH}.tar.gz" ;;
-              deb)      NAME="tildaz_${VERSION}_${DEBARCH}.deb" ;;
-              rpm)      NAME="tildaz-${VERSION}-1.${ARCH}.rpm" ;;
-              AppImage) NAME="TildaZ-${VERSION}-${ARCH}.AppImage" ;;
+              tar.gz)   NAME="tildaz-v${BASE_VER}-linux-${ARCH}.tar.gz" ;;
+              deb)      NAME="tildaz_${BASE_VER}_${DEBARCH}.deb" ;;
+              rpm)      NAME="tildaz-${BASE_VER}-1.${ARCH}.rpm" ;;
+              AppImage) NAME="TildaZ-${BASE_VER}-${ARCH}.AppImage" ;;
           esac
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "path=zig-out/release/$NAME" >> "$GITHUB_OUTPUT"
