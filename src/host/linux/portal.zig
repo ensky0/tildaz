@@ -484,7 +484,14 @@ fn keysymGtkName(keysym: u32) []const u8 {
         'a'...'z', '0'...'9' => single_char_lookup[keysym - 0x0020],
         ' ' => "space",
         '`' => "grave",
-        else => "F1",
+        // #208 — `config.linuxKeysymFromName` 의 수용 범위가 이 switch 의
+        // 매핑 범위와 1:1. 도달하면 config 검증을 우회한 keysym (개발 중 신규
+        // key 추가 시 한쪽만 갱신) → 명시 log + 'F1' fallback (서비스 자체는
+        // 유지). silent fallback 막기 위한 defensive layer.
+        else => blk: {
+            log.appendLine("portal", "keysymGtkName: unmapped keysym=0x{x} — config.linuxKeysymFromName 동기화 누락? 'F1' fallback (#208)", .{keysym});
+            break :blk "F1";
+        },
     };
 }
 

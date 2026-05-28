@@ -100,6 +100,14 @@ const LinuxHotkey = struct {
     ///   - xkb keysym name: `f1`, `grave`, `space`, `tab`, `escape`, `return`
     ///   - literal symbol: `` ` ``, ASCII letter (a-z), digit (0-9)
     /// Latin 문자 / 숫자 는 ASCII 값 그대로 keysym (xkb 정의).
+    ///
+    /// **수용 범위는 portal 송신 시점의 `portal.keysymGtkName` 매핑과 1:1**
+    /// (#208). 이전엔 ASCII symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나
+    /// `keysymGtkName` 매핑 부재로 portal 송신 시 `"F1"` 로 silent fallback
+    /// → 사용자가 모르고 동작 안 함. 명시 reject 로 caller (config load)
+    /// 의 `dialog.showFatal` 경로 활성 — silent 한 것보다 명확한 parse
+    /// error 가 낫다. literal symbol 표현력 확대는 portal-kde 의 `XdgShortcut::parse`
+    /// 가 실제 매핑하는 Qt::Key 범위 시연 후 별 sub-task.
     fn linuxKeysymFromName(name: []const u8) ?u32 {
         const map = [_]struct { name: []const u8, sym: u32 }{
             .{ .name = "f1", .sym = 0xffbe },  .{ .name = "f2", .sym = 0xffbf },
@@ -119,21 +127,15 @@ const LinuxHotkey = struct {
         for (map) |entry| {
             if (eqIc(name, entry.name)) return entry.sym;
         }
-        // Single-char literal — Latin letter / digit / symbol. ASCII 값 = xkb
-        // keysym 정의 (대부분 일치). 사용자가 `` ` `` / `1` / `=` 같이 적기.
+        // Single-char literal — `portal.keysymGtkName` 의 매핑 범위와 1:1
+        // (#208 fix). Latin letter / digit / grave 만. `~` `=` `-` 등은 reject
+        // → caller 가 `dialog.showFatal` 로 명확히 알림 (silent F1 fallback X).
         if (name.len == 1) {
             const c = name[0];
             if (c >= 'A' and c <= 'Z') return c + 0x20; // 대문자 → 소문자 keysym
             if (c >= 'a' and c <= 'z') return c;
             if (c >= '0' and c <= '9') return c;
-            // 흔한 ASCII symbol — xkb keysym = ASCII (0x21~0x7e 대부분 일치).
-            if (c == '`' or c == '~' or c == '!' or c == '@' or c == '#' or
-                c == '$' or c == '%' or c == '^' or c == '&' or c == '*' or
-                c == '(' or c == ')' or c == '-' or c == '_' or c == '=' or
-                c == '+' or c == '[' or c == ']' or c == '{' or c == '}' or
-                c == ';' or c == ':' or c == '\'' or c == '"' or c == ',' or
-                c == '.' or c == '<' or c == '>' or c == '/' or c == '?' or
-                c == '\\' or c == '|') return c;
+            if (c == '`') return c; // = grave (xkb keysym 0x0060)
         }
         return null;
     }

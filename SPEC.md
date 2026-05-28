@@ -550,7 +550,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | Digit | `0` ~ `9` | ✅ |
 | Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
 | Backtick | `grave` (이름) 또는 `` ` `` (글자) | ✅ |
-| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ⚠️ **현재 silent F1 fallback** — `LinuxHotkey.fromString` 은 받지만 `keysymGtkName` 의 xkb name 매핑이 없어 portal-kde 에 `"F1"` 송신. Linux 사용 시 위 범위 내 키로 한정 권장. 별 issue #208 에서 추적 (옵션: keysymGtkName xkb name 매핑 추가 vs fromString reject) |
+| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString` 이 *명시 reject* (#208 fix). caller 가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 로 즉시 알림. 이전엔 silent F1 fallback 이었음 (수용 범위 확대는 portal-kde `XdgShortcut::parse` 의 실제 Qt::Key 매핑 시연 후 별 sub-task) |
 
 **계층적 fallback chain — config ≠ system binding 시 자동 보정** (`portal.handleHotkeyMismatch`, #207):
 
