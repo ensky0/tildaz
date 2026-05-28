@@ -3669,6 +3669,8 @@ const Client = struct {
     /// 면 debounce 안 함 (compositor 미채움 — 매번 toggle).
     fn onPortalActivated(user_data: ?*anyopaque, shortcut_id: []const u8, timestamp: u64) void {
         const self: *Client = @ptrCast(@alignCast(user_data.?));
+        // #207 진단 — Activated signal 도달 확인 (시연 단계, fix 확정 후 제거).
+        log.appendLine("portal", "Activated signal received — shortcut_id={s} timestamp={}", .{ shortcut_id, timestamp });
         if (!std.mem.eql(u8, shortcut_id, std.mem.span(portal.shortcut_id_toggle))) return;
         if (timestamp != 0 and timestamp == self.last_toggle_timestamp) return;
         self.last_toggle_timestamp = timestamp;

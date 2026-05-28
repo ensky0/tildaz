@@ -80,9 +80,13 @@ const LinuxHotkey = struct {
                 modifiers |= MOD_CTRL;
             } else if (eqIc(tok, "shift")) {
                 modifiers |= MOD_SHIFT;
-            } else if (eqIc(tok, "alt")) {
+            } else if (eqIc(tok, "alt") or eqIc(tok, "option")) {
                 modifiers |= MOD_ALT;
-            } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd")) {
+            } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd") or
+                eqIc(tok, "meta") or eqIc(tok, "command") or eqIc(tok, "logo"))
+            {
+                // 모두 같은 키 — Linux Super = Windows Win = Mac Cmd = KDE Meta
+                // = Qt Logo. 사용자 친숙한 표기 어떤 것이든 받음.
                 modifiers |= MOD_SUPER;
             } else {
                 if (linuxKeysymFromName(tok)) |k| keysym = k else return null;
@@ -92,7 +96,10 @@ const LinuxHotkey = struct {
     }
 
     /// 키 이름 → xkb keysym. `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_*`.
-    /// Latin 문자 (a-z) / 숫자 (0-9) 는 ASCII 값 그대로 keysym (xkb 정의).
+    /// 두 표기 모두 받음 (사용자 친화):
+    ///   - xkb keysym name: `f1`, `grave`, `space`, `tab`, `escape`, `return`
+    ///   - literal symbol: `` ` ``, ASCII letter (a-z), digit (0-9)
+    /// Latin 문자 / 숫자 는 ASCII 값 그대로 keysym (xkb 정의).
     fn linuxKeysymFromName(name: []const u8) ?u32 {
         const map = [_]struct { name: []const u8, sym: u32 }{
             .{ .name = "f1", .sym = 0xffbe },  .{ .name = "f2", .sym = 0xffbf },
@@ -112,10 +119,21 @@ const LinuxHotkey = struct {
         for (map) |entry| {
             if (eqIc(name, entry.name)) return entry.sym;
         }
+        // Single-char literal — Latin letter / digit / symbol. ASCII 값 = xkb
+        // keysym 정의 (대부분 일치). 사용자가 `` ` `` / `1` / `=` 같이 적기.
         if (name.len == 1) {
-            const c = std.ascii.toLower(name[0]);
-            if (c >= 'a' and c <= 'z') return c; // xkb keysym = ASCII
+            const c = name[0];
+            if (c >= 'A' and c <= 'Z') return c + 0x20; // 대문자 → 소문자 keysym
+            if (c >= 'a' and c <= 'z') return c;
             if (c >= '0' and c <= '9') return c;
+            // 흔한 ASCII symbol — xkb keysym = ASCII (0x21~0x7e 대부분 일치).
+            if (c == '`' or c == '~' or c == '!' or c == '@' or c == '#' or
+                c == '$' or c == '%' or c == '^' or c == '&' or c == '*' or
+                c == '(' or c == ')' or c == '-' or c == '_' or c == '=' or
+                c == '+' or c == '[' or c == ']' or c == '{' or c == '}' or
+                c == ';' or c == ':' or c == '\'' or c == '"' or c == ',' or
+                c == '.' or c == '<' or c == '>' or c == '/' or c == '?' or
+                c == '\\' or c == '|') return c;
         }
         return null;
     }
