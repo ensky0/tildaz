@@ -1065,7 +1065,7 @@ const Client = struct {
         const y = self.pointer_y_px;
         if (x < 0 or y < 0) return false;
         const pad = self.renderer.paddingPx();
-        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const tab_bar_h = self.effectiveTabBarHeightPx();
         const sbw = self.renderer.scrollbarWPx();
         if (y < tab_bar_h) return false; // 탭바
         if (x >= self.window_width - sbw) return false; // 스크롤바
@@ -1099,7 +1099,7 @@ const Client = struct {
             @floatFromInt(self.renderer.tabWidthPx()),
             @floatFromInt(self.renderer.tabPaddingPx()),
             @floatFromInt(self.renderer.tabCloseSizePx()),
-            @floatFromInt(self.renderer.tabBarHeightPx()),
+            @floatFromInt(self.effectiveTabBarHeightPx()),
             self.tab_scroll_x,
             @intCast(session.count()),
             self.rename_state.tab_index,
@@ -1454,9 +1454,11 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const pad = self.renderer.paddingPx();
-        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const tab_bar_h = self.effectiveTabBarHeightPx();
         const usable_w = @max(cw, self.window_width - pad * 2);
-        // L12-α — 상단 tab bar 영역만큼 grid height 축소.
+        // L12-α — 상단 tab bar 영역만큼 grid height 축소. 단일 탭이면
+        // `effectiveTabBarHeightPx` 가 0 → 탭바 자리 안 띄움 (#127, mac /
+        // Win 동등).
         const usable_h = @max(ch, self.window_height - tab_bar_h - pad * 2);
         const cols_i32 = @max(1, @divTrunc(usable_w, cw));
         const rows_i32 = @max(1, @divTrunc(usable_h, ch));
@@ -1464,6 +1466,14 @@ const Client = struct {
             .cols = @intCast(@min(cols_i32, std.math.maxInt(u16))),
             .rows = @intCast(@min(rows_i32, std.math.maxInt(u16))),
         };
+    }
+
+    /// 현재 세션 탭 수 기준 탭바 픽셀 높이. `Renderer.tabBarHeightPx(count)`
+    /// 가 count < 2 시 0 반환 (#127, mac `tabBarHeightPx` / Win
+    /// `effectiveTabBarHeight` 동등). 세션 미초기화면 count = 0 으로 자연 0.
+    fn effectiveTabBarHeightPx(self: *const Client) i32 {
+        const count: usize = if (self.session) |*s| s.count() else 0;
+        return self.renderer.tabBarHeightPx(count);
     }
 
     fn ensureSessionGrid(self: *Client) !void {
@@ -2166,6 +2176,11 @@ const Client = struct {
             log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
             return;
         };
+        // #127 — 1 → 2 탭 전환 시 탭바 등장으로 cell 영역 변함 → 모든 탭
+        // cols/rows 재계산. mac `syncTerminalGeometry` 동등.
+        self.ensureSessionGrid() catch |err| {
+            log.appendLine("tab", "ensureSessionGrid after new tab failed: {s}", .{@errorName(err)});
+        };
         self.tab_scroll_override = false;
         self.needs_redraw = true;
     }
@@ -2227,7 +2242,14 @@ const Client = struct {
         if (self.session == null) return;
         self.commitPendingInput();
         var host = self.buildTabActionsHost();
-        _ = tab_actions.closeActive(&host);
+        const outcome = tab_actions.closeActive(&host);
+        // #127 — 2 → 1 탭 전환 시 탭바 사라지면서 cell 영역 변함. `.changed`
+        // 면 grid 재계산. `.ended` 는 main loop 가 종료 처리.
+        if (outcome == .changed) {
+            self.ensureSessionGrid() catch |err| {
+                log.appendLine("tab", "ensureSessionGrid after close failed: {s}", .{@errorName(err)});
+            };
+        }
     }
 
     /// L12-β — read thread 가 `pending_close_buf` 에 쌓아둔 ptr 들 main thread
@@ -2251,7 +2273,14 @@ const Client = struct {
             },
             .changed => any_changed = true,
         };
-        if (any_changed) self.needs_redraw = true;
+        if (any_changed) {
+            // #127 — 탭 카운트 변화 시 cell 영역 동기화. 2 → 1 전환이면
+            // 탭바 사라짐 → 남은 탭 grid 확장.
+            self.ensureSessionGrid() catch |err| {
+                log.appendLine("tab", "ensureSessionGrid after drain failed: {s}", .{@errorName(err)});
+            };
+            self.needs_redraw = true;
+        }
     }
 
     /// L12-β/γ — tab bar 영역 좌클릭. cross-platform `tab_layout.hitArea`
@@ -2275,7 +2304,7 @@ const Client = struct {
         const layout = tab_layout.compute(layout_inputs);
         const px_f: f32 = @floatFromInt(px);
         const py_f: f32 = @floatFromInt(py);
-        const tab_bar_h_f: f32 = @floatFromInt(self.renderer.tabBarHeightPx());
+        const tab_bar_h_f: f32 = @floatFromInt(self.effectiveTabBarHeightPx());
         const area = tab_layout.hitArea(px_f, py_f, tab_bar_h_f, layout);
         switch (area) {
             .left_arrow => {
@@ -2314,7 +2343,13 @@ const Client = struct {
                 }
                 var host = self.buildTabActionsHost();
                 if (hit.on_close) {
-                    _ = tab_actions.closeIndex(&host, hit.tab_index);
+                    const outcome = tab_actions.closeIndex(&host, hit.tab_index);
+                    // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
+                    if (outcome == .changed) {
+                        self.ensureSessionGrid() catch |err| {
+                            log.appendLine("tab", "ensureSessionGrid after close 'x' failed: {s}", .{@errorName(err)});
+                        };
+                    }
                     self.last_tab_click_idx = std.math.maxInt(usize);
                     return;
                 }
@@ -2477,7 +2512,7 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const pad = self.renderer.paddingPx();
-        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const tab_bar_h = self.effectiveTabBarHeightPx();
         if (self.renderer.render_state.cursor.viewport) |vp| {
             const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
             const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
@@ -2501,7 +2536,7 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const tab_w_px = self.renderer.tabWidthPx();
         const tab_pad_px = self.renderer.tabPaddingPx();
-        const tab_bar_h = self.renderer.tabBarHeightPx();
+        const tab_bar_h = self.effectiveTabBarHeightPx();
 
         const layout_inputs = tab_layout.Inputs{
             .viewport_w = @floatFromInt(self.window_width),
@@ -2562,7 +2597,7 @@ const Client = struct {
         else blk: {
             const vp = self.renderer.render_state.cursor.viewport orelse return;
             const pad = self.renderer.paddingPx();
-            const tab_bar_h = self.renderer.tabBarHeightPx();
+            const tab_bar_h = self.effectiveTabBarHeightPx();
             const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
             const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
             break :blk CursorRect{ .x = x, .y = y, .w = cw, .h = ch };
@@ -2955,7 +2990,7 @@ const Client = struct {
                     self.commitPendingInput();
                     if (self.session) |*session| {
                         const ch = self.renderer.cellHeight();
-                        const usable_h = @max(0, self.window_height - self.renderer.tabBarHeightPx() - self.renderer.paddingPx() * 2);
+                        const usable_h = @max(0, self.window_height - self.effectiveTabBarHeightPx() - self.renderer.paddingPx() * 2);
                         const rows_i32 = @divTrunc(usable_h, ch);
                         const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
                         const dir: app_event.PageDirection = if (sym == xkb_key_page_up) .up else .down;
@@ -3152,7 +3187,7 @@ const Client = struct {
                 // L12-β/γ — tab bar 영역 클릭 → tab_layout.hitArea 로 분기.
                 // 다른 모든 pointer mode (scrollbar / selection / 더블클릭)
                 // 보다 *우선* 검사 — tab bar 안에서 selection drag 안 시작.
-                if (self.pointer_y_px >= 0 and self.pointer_y_px < self.renderer.tabBarHeightPx()) {
+                if (self.pointer_y_px >= 0 and self.pointer_y_px < self.effectiveTabBarHeightPx()) {
                     self.handleTabBarClick(self.pointer_x_px, self.pointer_y_px, time_ms);
                     return;
                 }
@@ -3289,7 +3324,7 @@ const Client = struct {
             // SessionCore.scrollActive 의 visible_rows 인자 — page scroll 계산용.
             // wheel 자체는 i16 만 보지만 같은 인터페이스라 함께 전달.
             const ch = self.renderer.cellHeight();
-            const usable_h = @max(0, self.window_height - self.renderer.tabBarHeightPx() - self.renderer.paddingPx() * 2);
+            const usable_h = @max(0, self.window_height - self.effectiveTabBarHeightPx() - self.renderer.paddingPx() * 2);
             const rows_i32 = @divTrunc(usable_h, ch);
             const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
             const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
@@ -3510,7 +3545,7 @@ const Client = struct {
     /// 밀려있으므로 py 의 origin 도 같이 보정.
     fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
         const pad = self.renderer.paddingPx();
-        const grid_top: i32 = self.renderer.tabBarHeightPx() + pad;
+        const grid_top: i32 = self.effectiveTabBarHeightPx() + pad;
         if (px < pad or py < grid_top) return null;
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
