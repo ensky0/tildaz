@@ -272,6 +272,27 @@ fcitx5-hangul 사용자가 ←/→ 로 candidate nav 원하면 `~/.config/fcitx5
 의 `PrevCandidate` / `NextCandidate` 에 `Left` / `Right` 추가 — 전적으로 사용자
 선택. tildaz 코드 무관 (다른 IME 사용 시 영향 X).
 
+### 입력 확정된 한글의 한자 변환 — text-input-v3 wire protocol 한계 ([#209](https://github.com/ensky0/tildaz/issues/209))
+
+일반 용어로 "Hanja reconversion" — *재변환* 이라 부르지만 한자 → 한글 되돌리는
+게 아니라 *이미 입력 확정된 한글 글자를 다시 IME 의 변환 대상으로 되돌려*
+한자 후보 popup 띄우기. 사용자가 *이미 화면에 입력한* `한국` 같은 텍스트를
+selection / cursor 위치로 지정 + 한자 키 → 그 range 의 한자 후보 popup → 확정
+시 한자로 치환.
+
+두 시나리오:
+
+| 시나리오 | 트리거 | 동작 | Linux |
+|---|---|---|---|
+| (a) *조합 중* (preedit) 한글의 한자 후보 | 사용자가 `한` 까지 친 상태에서 한자 키 | 한자 후보 popup → 확정 시 그 자리만 치환 | ✅ — fcitx5 / ibus 자체 popup 으로 정상 동작 (어느 host 든 OK) |
+| (b) *입력 확정된* 한글의 한자 변환 | 화면의 commit 된 한글 글자 선택 + 한자 키 | 그 range 를 다시 IME 변환 대상으로 → 한자 후보 popup → 확정 시 치환 | ❌ **platform 한계** |
+
+(b) 의 Linux 한계 이유:
+- `zwp_text_input_v3` wire protocol 에 *client → IME 의 reconversion request 자체가 없음*. mac 의 `NSTextInputClient.insertText:replacementRange:` / Win IMM API 처럼 *이미 commit 된 range 를 다시 변환 대상으로 만들어달라* 는 신호를 보낼 통로 부재.
+- text-input-v4 의 `set_surrounding_text` 활용 가능성은 있으나 표준 reconversion API 는 아직 부재.
+
+→ Linux 첫 릴리즈는 (b) **unsupported** 로 출시. mac 도 v0.4.3 (2026-05-11) 에서야 들어온 기능이라 Linux 가 못 한다고 차단할 항목은 아님. text-input-v4 정착 / 사용자 요구 시 별 후속 검토. SPEC.md §5 의 *입력 확정된 한글의 한자 변환* 행 참조.
+
 ### KDE Plasma 6 install — KRunner / Application Menu 통한 실행 필수
 
 KDE Plasma 6 환경에서 `~/.local/share/applications/tildaz.desktop` install 후
