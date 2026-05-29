@@ -91,6 +91,58 @@ aarch64 rpm 만**.
 - [#206](https://github.com/ensky0/tildaz/issues/206) KDE floating dock — `set_exclusive_zone` 값 별 KWin 동작 비교. 사용자 KDE Plasma 환경에서 시연 필요.
 - **sway / Hyprland 1 회 시연** — *Support Tier 정의* 에서 wlroots 계열을 *Full-support target* 으로 분류했지만 실 시연 0 회. 사용자 환경 setup 후 검증.
 
+### v0.5.0 release blocker (2026-05-29 진단 cycle 추가)
+
+다음 두 항목 release 전 fix 필수 (사용자 명시):
+
+- **[#212](https://github.com/ensky0/tildaz/issues/212)** Quit confirm OK 후 종료 path 의 `integer overflow` panic. Debug 빌드 에서 잡힘. ReleaseFast 는 silent corruption. quit path 라 *사용자 못 알아챔* — log 의 다음 실행 까지 영향 가능.
+- **[#213](https://github.com/ensky0/tildaz/issues/213)** About dialog (Ctrl+Shift+I) crash — silent abort (ReleaseFast). 큰 buffer + 긴 multi-line content + URL 처리 의심. 다음 세션 첫 task: ReleaseSafe 빌드 + stderr capture 시연 → panic source line 격리.
+
+### #210 dialog click bug — fix 완료 (2026-05-29)
+
+**증상**: Hotkey updated dialog 등 *boot 중 자동 띄움 dialog* 의 OK 버튼 click 안 동작 + Esc/Enter 만 dismiss. process kill 후도 surface 안 사라짐 (= dead modal).
+
+**진단 cycle**:
+1. *Esc / Enter 정상 → 마우스 만 안 됨* 사용자 보고 → keyboard event routing 정상, pointer 만 별 path
+2. `handlePointerButton` 진단 log 추가 → click 도착 + `last_enter==dialog_surface` 일치 + 그러나 *OK rect hit 미스*
+3. 좌표 검산 — click `(545, 341)` = `(320, 200) × 1.7x` → **dialog 가 1x 인데 우리 코드가 main 의 1.7x 변환 적용**
+4. 원인 격리 — *dialog 가 main createShellObjects 이전 띄움* (boot 중 portal `Hotkey updated`) → main 의 `fractional_scale_v1` 객체 아직 안 만들어짐 → `preferred_scale` event 안 받음 → renderer.scale=1x → dialog 의 buffer 1x 표시 + paint 작은 layout → 사용자 visible click 좌표 가 surface-local logical 좌표 와 mismatch
+
+**Fix**:
+1. `Client.dialog` 에 `fractional_scale_id: u32 = 0` field 추가
+2. `createDialogSurface` 에 dialog 자체 `wp_fractional_scale_v1` 객체 생성 + roundtrip — dialog 가 자기 surface 의 `preferred_scale` event 받음 보장
+3. fractional_scale event handler 가 dialog id 도 매칭 — 같은 output 의 preferred_scale 라 공유 변수 갱신
+4. `renderer.applyScale` 도 항상 호출 (main path 의 *layout 재송신* 만 main 있을 때 조건부)
+5. `destroyDialogSurface` 에 dialog.fractional_scale_id destroy 추가
+
+**시연 결과**:
+- Hotkey updated dialog — OK 버튼 click 정상 + text / icon 크기 비례 정상
+- Quit confirm dialog — 같은 backend 라 자연 동작
+- **About dialog — 별 crash 발견** ([#213](https://github.com/ensky0/tildaz/issues/213)). 다음 세션 분석.
+
+### 공통 dialog interface refactor — 미시작 (release 전 권장)
+
+사용자 명시 — "같은 mistake 2번 안 나게 공통 인터페이스". 정공 형태:
+
+\`\`\`zig
+pub const DialogConfig = struct {
+    title: []const u8,
+    message: []const u8,
+    severity: Severity = .info,     // info / warn / error → 기본 icon
+    icon: ?IconResource = null,     // 직접 지정 (severity icon override)
+    buttons: []const Button = &.{ .{ .label = "OK", .role = .default } },
+};
+pub const Button = struct {
+    label: []const u8,
+    role: enum { default, cancel, destructive },  // 색 / Enter / Esc 매핑
+};
+pub fn show(cfg: DialogConfig) ?usize { ... }  // 선택된 button index
+\`\`\`
+
+→ 0/1/2/N 버튼 + icon (severity 또는 custom) + Enter/Esc 자동 routing 통일. scale / hit-test / fractional 처리 한 곳 에서.
+
+현재 dialog backend (showInfo / showConfirm / showAboutAlert) 는 이미 같은 `createDialogSurface` 통과 — refactor 가 *API 통일* + *new mistake 방지* 의 가치.
+
 ## 결정 요약
 
 | 항목 | 결정 |
