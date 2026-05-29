@@ -17,6 +17,8 @@
 특히 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에는 사실 판단의 근거가 되는 공식 문서, 이슈, 코드, 커밋, 로그 등의 링크를 포함해요.
 이 원칙은 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에 모두 동일하게 적용해요.
 
+**용어 — Wayland `advertise` 를 "광고 / 미광고" 로 옮기지 않아요.** compositor 가 `wl_registry.global` 로 client 에게 지원 protocol 을 알리는 행위 (*advertise*) 를 "광고" 로 직역하면 한국어로 의미가 안 통해요 (사용자 두 번 지적). 대신 "client 에게 노출 (*advertise*)", "지원 통보가 온다 / 안 온다", "`wl_registry.global` 로 알린다", 또는 영어 *advertised* / *not advertised* 를 그대로 써요. "이 capability 는 compositor 에 없음" 처럼 풀어 써도 좋아요. 이슈 / 답변 / LINUX.md / 코드 주석 / 커밋 메시지 모두 적용.
+
 # 한글 IME 동작 스펙
 
 한글 (한국어 / 일본어 / 중국어 IME 일반) 입력 시 다음 동작이 정의된 스펙이에요.
@@ -65,6 +67,51 @@
   의문 (변수 값, 시나리오) 을 묻거나 디버그 정보 (log) 를 추가해 좁히세요.
   시연 결과가 분석과 어긋나면 다른 가설로 점프 X — 분석을 다시 검토해서
   어디서 어긋났는지 식별하고 보강 후 재 patch.
+- **가설 fix 가 cause 아니면 즉시 원복.** 진단 사이클에서 가설로 시도한 변경
+  (의심 비트 OR, termios 명시 set, trace log 등) 이 시연으로 cause 아니라고
+  확정되면 그 변경만 *즉시 원복*해요. 다른 fix 와 mix 해 한 commit 으로 묶지
+  않아요 — noise commit 은 review 를 가리고 다음 진단에 hack 을 누적시켜요.
+- **cause 확정 전 commit 금지.** 진단 중 working tree 변경은 cause 확정까지
+  commit 만들지 않아요. 이미 진단 commit 이 있으면 `git commit --amend` 로
+  덮어쓰고 새 commit 을 쌓지 않아요. 진단 노트는 commit body 가 아니라 이슈
+  댓글 / 정식 fix 의 reasoning 에 남겨요.
+
+# 버그 / 미동작 발견 시 — 영향 범위를 소스 레벨에서 확인
+
+버그나 미동작을 발견하면 *발견한 환경에서만 보고 끝내지 않는다*. 같은 원인이
+다른 Linux DE / compositor (KWin / mutter / wlroots 계열 등), 다른 platform
+(Windows / macOS / Linux), 다른 OS 버전에서도 나타날 수 있는지 **반드시
+소스 레벨에서 확인**한다. "내 환경에서 재현 안 되니 무관" 식 추정 금지 —
+재현 안 되는 환경이라도 *코드 경로를 읽어* 영향 여부를 판정한다.
+
+- **공유 경로면 전 환경 잠재.** 원인이 cross-platform 모듈 / 공통 helper 에
+  있으면 다른 platform / DE 에서도 잠재한다. host-specific 경로면 그 host 에서만.
+  *어느 쪽인지 코드로 판별*하고 결론 (영향 받는 환경 / 안 받는 환경) 을 이슈
+  본문과 커밋 메시지에 명시한다.
+- **재현 불가 환경의 판정도 코드로.** 예: 한 DE 에서 dialog 가 안 떠도 그게
+  "그 경로를 아예 안 타서" (예: layer-shell 을 advertise 안 함 → `createDialogSurface`
+  early return) 인지, "다른 진입점으로 같은 버그가 그대로 사는지" 를 소스로 구분한다.
+- **parity 가 깨지는 것 자체가 버그다.** SPEC §0 #1 (Windows reference,
+  macOS / Linux 동등). 추가로 *Linux 는 모든 DE 에서 drop-down (quake) 동작이
+  목표* — 한 DE / 한 compositor 에서만 되는 기능, 한 platform 에만 있는 동작,
+  한 환경에서만 나는 crash 는 모두 이슈로 추적하고 *다른 환경 영향 여부를
+  함께 적는다*.
+
+# 의사결정 — 방향은 사용자와 함께 정해요
+
+버그 fix 방향, 스코프 확대 / 축소, 새 작업 착수, 이슈를 몇 개로 나눌지, 우선순위,
+SPEC 변경 등 *"방향"* 에 해당하는 결정은 단독으로 정하고 진행하지 않아요. 반드시
+사용자와 상의해서 함께 결정해요. 사실 확인 / 소스 분석 / 진단은 자유롭게 하되,
+결정 지점에서는 옵션을 제시하고 사용자 선택을 기다려요.
+
+# 크로스 플랫폼 코드 스타일 — single definition 우선
+
+OS-specific 값이 모두 같은 shape (같은 field set 의 struct, 같은 enum, 같은 const
+set) 이면 **single definition + 항목별 `if/else` 인라인** 을 먼저 시도해요. Windows /
+macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 같은 shape 분리는
+(1) 코드 양이 늘고 (2) 항목 추가 시 N 곳 수정 (3) 공통 값 일관성을 컴파일러가 보장
+못 해요. 진짜로 method / type 자체가 OS 별로 다를 때만 그 부분을 분리해요. 적용 예:
+`config.zig` 의 `Defaults`.
 
 # 커밋 메시지
 
