@@ -1844,3 +1844,50 @@ fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
     const b: u32 = (@as(u32, fg.b) * a + @as(u32, bg.b) * inv) / 255;
     return (r << 16) | (g << 8) | b;
 }
+
+// #213 재현 — About dialog paint 경로 (compositor 무관). KDE Plasma 1.7x 에서
+// Ctrl+Shift+I crash 가 layer-shell dialog paint (`handleDialogConfigure` →
+// `drawDialogContent`) 에 있는지 격리. layer-shell 미지원 DE (Cinnamon 등) 에선
+// dialog 가 안 떠 GUI 재현 불가하므로 paint 만 직접 호출. ReleaseSafe 로 돌리면
+// safety panic 의 정확한 source line 확보.
+test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
+    const allocator = std.testing.allocator;
+    const chain = [_][]const u8{"monospace"};
+    // 1.7x → font pixel_height = ceil(16*204/120) = 28 (scaledFontPixelHeight).
+    const ctx = font.Context.init(allocator, &chain, 28, 1.0, 1.0) catch |e| {
+        std.debug.print("[#213] font init failed ({s}) — skip (no fontconfig?)\n", .{@errorName(e)});
+        return;
+    };
+    var r = Renderer{ .font_ctx = ctx, .scale = 1.7, .opacity_alpha = 255 };
+    defer r.font_ctx.deinit();
+
+    const title = "About TildaZ";
+    const msg =
+        \\TildaZ v0.5.0
+        \\
+        \\exe   : /home/ensky0/tildaz/zig-out/bin/tildaz
+        \\pid   : 12345
+        \\config: /home/ensky0/.config/tildaz/config.json
+        \\log   : /home/ensky0/.local/state/tildaz/tildaz.log
+        \\
+        \\Tip: Ctrl+Shift+P opens config in default editor.
+        \\     Ctrl+Shift+L opens log.
+        \\
+        \\https://github.com/ensky0/tildaz
+    ;
+
+    const size = r.computeDialogSize(title, msg, false);
+    // handleDialogConfigure 의 logical 왕복 재현 (preferred_scale 204/120 = 1.7x):
+    // physical → logical(set_size) → KWin echo → logicalToPhysical(buffer).
+    const lw = @divFloor(size.w * 120, 204);
+    const lh = @divFloor(size.h * 120, 204);
+    const pw = @divFloor(lw * 204, 120);
+    const ph = @divFloor(lh * 204, 120);
+    const stride = pw * 4;
+    std.debug.print("[#213] computeDialogSize={}x{} logical={}x{} buffer={}x{}\n", .{ size.w, size.h, lw, lh, pw, ph });
+    const buf = try allocator.alloc(u8, @intCast(stride * ph));
+    defer allocator.free(buf);
+    @memset(buf, 0);
+    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null);
+    std.debug.print("[#213] painted ok\n", .{});
+}
