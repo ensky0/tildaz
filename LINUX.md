@@ -153,7 +153,7 @@ pub fn show(cfg: DialogConfig) ?usize { ... }  // 선택된 button index
 | GTK / Qt fallback | direct Wayland IME 또는 clipboard가 유지 가능한 방식으로 막힐 때만 마지막 fallback 후보로 재검토한다. |
 | Baseline window | `xdg-shell` toplevel window. Linux 최소 실행 경로다. |
 | True drop-down | compositor 가 `wlr-layer-shell` 을 client 에게 노출 (Wayland 용어 *advertise* — `wl_registry.global` 로 보내는 protocol 지원 통보) 하면 layer-shell 기반 drop-down 을 목표로 한다. |
-| GNOME support | 초기에는 limited support. hack 없이 full drop-down workflow가 가능한 경로가 확인되면 바로 full support로 승격한다. |
+| GNOME / Cinnamon support | **모든 DE 에서 drop-down 동작이 요구사항** ([#215](https://github.com/ensky0/tildaz/issues/215)). mutter / Muffin 은 layer-shell 미구현이라 일반 창으로 떨어지는데 이는 *수용된 한계가 아니라 추적 중인 gap*. GNOME 은 GNOME Shell extension, Cinnamon 은 별도 컴포넌트 필요. GNOME / Cinnamon 은 사용자 많아 **v0.5.0 범위** (단 release blocker #213 / #212 먼저). |
 | Global shortcut | XDG Desktop Portal `GlobalShortcuts` 우선. 지원이 없으면 조용히 실패하지 말고 명확히 제한 사항을 남긴다. |
 | Keyboard | `libxkbcommon`. 현재는 런타임 `dlopen("libxkbcommon.so.0")` 방식. |
 | IME | Wayland text-input v3 목표. desktop / IME 호환성은 별도 검증한다. |
