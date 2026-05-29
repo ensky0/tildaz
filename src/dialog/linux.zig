@@ -40,15 +40,10 @@ pub fn unregisterCallbacks() void {
 pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     if (g_callbacks) |cb| {
         cb.show_info(cb.ctx, severity, title, message);
-        // log 에도 남김 — log 재방문 시 dialog 본문 확인 가능.
-        const prefix = switch (severity) {
-            .info => "info",
-            .err => "error",
-        };
-        log.appendLine("dialog", "{s} title={s} msg={s}", .{ prefix, title, message });
         return;
     }
     // Fallback — host 초기화 전 / cli mode / dialog backend 등록 안 됨.
+    // 창 띄울 backend 없으므로 사용자가 본문 보려면 stderr / log 필요.
     showStderr(severity, title, message);
 }
 

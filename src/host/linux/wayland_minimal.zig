@@ -407,6 +407,13 @@ pub const DialogOverlay = struct {
     surface_id: u32 = 0,
     layer_surface_id: u32 = 0,
     viewport_id: u32 = 0,
+    /// #210 — dialog 자체 fractional_scale 객체. main 의 fractional_scale 와
+    /// 독립 — dialog 가 main createShellObjects *이전* 띄울 때 (예: boot 중
+    /// portal Hotkey updated) main 의 preferred_scale event 아직 안 받음 →
+    /// dialog 가 1x 로 표시 + click 좌표 변환 mismatch 의 cause. dialog 자체
+    /// 객체 + roundtrip 으로 dialog 가 자기 surface 의 preferred_scale event
+    /// 받음 보장. 같은 output 가정상 main 의 preferred_scale 값과 동일.
+    fractional_scale_id: u32 = 0,
     active_buffer: ?ShmBuffer = null,
     /// configure event 가 알려준 buffer 크기 (physical px).
     buffer_w: i32 = 0,
@@ -2010,19 +2017,27 @@ const Client = struct {
             self.pending_activation_token_done = true;
             return;
         }
-        if (self.fractional_scale_id != 0 and id == self.fractional_scale_id) {
+        // #210 — dialog 의 fractional_scale 객체 event 도 같은 path 처리. 같은
+        // output 의 preferred_scale 라 같은 변수 갱신. 단 layout 재송신은 dialog
+        // 가 별 path — handleDialogConfigure 가 자체 logicalToPhysical 사용.
+        const matches_main = self.fractional_scale_id != 0 and id == self.fractional_scale_id;
+        const matches_dialog = self.dialog.fractional_scale_id != 0 and id == self.dialog.fractional_scale_id;
+        if (matches_main or matches_dialog) {
             if (opcode == wp_fractional_scale_v1_event_preferred_scale and payload.len >= 4) {
                 const new_scale = readU32(payload[0..4]);
                 if (new_scale != self.preferred_scale and new_scale > 0) {
                     self.preferred_scale = new_scale;
-                    log.appendLine("wayland", "fractional scale preferred={d}/120 (≈{d}.{d:0>2}x)", .{
+                    log.appendLine("wayland", "fractional scale preferred={d}/120 (≈{d}.{d:0>2}x) source={s}", .{
                         new_scale,
                         new_scale / 120,
                         (new_scale * 100 / 120) % 100,
+                        if (matches_dialog) "dialog" else "main",
                     });
-                    // font 재초기화 — pixel_height = base × scale / 120. 첫 init
-                    // 의 default scale=120 으로 만든 font 가 fractional scale
-                    // 환경에서 user 시각에 너무 작음. cell metric 도 자동 갱신.
+                    // renderer scale apply — main / dialog 든 같은 output 의 scale.
+                    // dialog event 가 먼저 도착해도 (boot 중 Hotkey updated)
+                    // renderer 의 scale 갱신 필요. paint 가 1x layout 그리면
+                    // 큰 buffer 안 작은 content (#210 사용자 시연 발견). 두 번째
+                    // 호출은 new_scale 같으면 이 분기 자체 안 들어옴 (no-op).
                     self.renderer.applyScale(
                         self.allocator,
                         self.config,
@@ -2031,14 +2046,11 @@ const Client = struct {
                     ) catch |err| {
                         log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
                     };
-                    // 첫 createLayerSurface 의 set_size 시점엔 preferred_scale 이
-                    // 아직 default (120) 이라 physical 단위 그대로 송신됐을 가능성
-                    // — 새 scale 로 정확히 변환된 layout 재송신. KWin 이 새 configure
-                    // 발신 → 그 handler 가 정확한 logical → physical 변환.
+                    // layer surface 재송신 + grid 재계산. main 없으면 skip
+                    // (boot 중 dialog 가 main 이전 created 시점).
                     if (self.layer_surface_id != 0) {
                         try self.sendLayerSurfaceLayout();
                     }
-                    // cell metric 변경 → grid 재계산.
                     if (self.session != null) try self.ensureSessionGrid();
                     self.requestRedraw();
                 }
@@ -3238,16 +3250,35 @@ const Client = struct {
         //   - Enter / Esc → handleDialogKey 가 처리
         // 다른 단축키 (tab bar / scrollbar / selection / paste) 보다 우선.
         if (self.dialog.active()) {
+            // #210 진단 — dialog 활성 시 pointer button 도착 여부 + enter_surface
+            // 매칭 + hit-test 결과 추적. 사용자 시연에서 *Esc/Enter 동작 / 마우스
+            // click 안 동작* 보고. enter event 가 dialog 로 안 오면 가드 reject —
+            // 그 여부 확인.
+            log.appendLine("dialog", "pointer button kind={s} state={d} button=0x{x} last_enter={} dialog_surface={} pointer_xy=({},{})", .{
+                @tagName(self.dialog.kind),
+                state,
+                button,
+                self.last_pointer_enter_surface_id,
+                self.dialog.surface_id,
+                self.pointer_x_px,
+                self.pointer_y_px,
+            });
             if (state == wl_pointer_button_state_pressed and
                 self.last_pointer_enter_surface_id == self.dialog.surface_id)
             {
                 if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
+                    log.appendLine("dialog", "OK hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
                     self.requestDismissDialog();
                 } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
+                    log.appendLine("dialog", "Cancel hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
                     self.requestDismissDialog();
+                } else {
+                    log.appendLine("dialog", "button in dialog area but no OK/Cancel rect hit (ok={any} cancel={any})", .{ self.renderer.last_dialog_ok_rect, self.renderer.last_dialog_cancel_rect });
                 }
+            } else if (state == wl_pointer_button_state_pressed) {
+                log.appendLine("dialog", "button rejected — enter_surface mismatch (need {} got {})", .{ self.dialog.surface_id, self.last_pointer_enter_surface_id });
             }
             return;
         }
@@ -4190,9 +4221,7 @@ const Client = struct {
         self.dialog.surface_id = self.allocId();
         try self.sendNewId(self.compositor_id, 0, self.dialog.surface_id);
 
-        // viewporter (fractional scaling) — main surface 와 동일 패턴. 없으면
-        // skip (mutter / wlroots). fractional_scale_manager 는 별도 binding 없이
-        // main surface 의 preferred_scale 그대로 사용 (overlay 도 같은 output 가정).
+        // viewporter (fractional scaling) — main surface 와 동일 패턴.
         if (self.viewporter_id != 0) {
             self.dialog.viewport_id = self.allocId();
             try self.sendArgs(
@@ -4200,6 +4229,21 @@ const Client = struct {
                 wp_viewporter_request_get_viewport,
                 &.{ self.dialog.viewport_id, self.dialog.surface_id },
             );
+        }
+        // #210 — dialog 자체 fractional_scale 객체 + roundtrip 으로 preferred_scale
+        // event 받음 보장. dialog 가 main createShellObjects *이전* 호출 시
+        // (boot 중 portal Hotkey updated 등) main 의 preferred_scale 가 아직
+        // default 120 (1x) → dialog physical=logical (1x 표시) → click 좌표
+        // 변환 mismatch (main 의 1.7x 변환 잘못 적용) 의 cause. main 의
+        // createShellObjects 와 같은 pattern.
+        if (self.fractional_scale_manager_id != 0) {
+            self.dialog.fractional_scale_id = self.allocId();
+            try self.sendArgs(
+                self.fractional_scale_manager_id,
+                wp_fractional_scale_manager_v1_request_get_fractional_scale,
+                &.{ self.dialog.fractional_scale_id, self.dialog.surface_id },
+            );
+            try self.roundtrip();
         }
 
         // get_layer_surface(new_id, surface, output=NULL, layer=OVERLAY, namespace).
@@ -4265,6 +4309,10 @@ const Client = struct {
         if (self.dialog.viewport_id != 0) {
             try self.sendNoArgs(self.dialog.viewport_id, wp_viewport_request_destroy);
             self.dialog.viewport_id = 0;
+        }
+        if (self.dialog.fractional_scale_id != 0) {
+            try self.sendNoArgs(self.dialog.fractional_scale_id, wp_fractional_scale_v1_request_destroy);
+            self.dialog.fractional_scale_id = 0;
         }
         try self.sendNoArgs(self.dialog.surface_id, 0);
         self.dialog.surface_id = 0;
