@@ -4104,6 +4104,83 @@ const Client = struct {
         about.showAboutDialog();
     }
 
+    /// #216 — KWin Alt+F4 `closed` 후 메인 surface 를 **깜박임 없이** 교체.
+    ///
+    /// KWin 은 `closed` 를 보낸 뒤에도 메인 surface 의 마지막 frame 을 화면에
+    /// *유지* 한다 (사용자 시연 확정 — Cancel 전까지 터미널이 다이얼로그 뒤에
+    /// 계속 보임). 따라서 깜박임의 원인은 KWin 의 unmap 이 아니라 우리의
+    /// `destroyShellObjects`(→ 유지 frame 제거 → 데스크톱 노출) → `createShellObjects`
+    /// (→ 재 paint) **순서** 였다.
+    ///
+    /// fix = **create-before-destroy**: 옛 surface 객체를 스냅샷으로 보존한 채
+    /// (KWin 이 옛 frame 계속 표시), 새 surface 를 만들어 첫 frame 까지 paint 한
+    /// *뒤에* 옛 surface 를 destroy. 옛 frame 이 새 frame 준비될 때까지 화면에
+    /// 남아 빈 frame (깜박임) 이 없다. `closed` 된 옛 surface 는 protocol 상 재사용
+    /// 불가라 새로 만들어야 하고, 새 surface 는 다음 Alt+F4 `closed` 도 다시 받는다.
+    fn swapMainSurfaceSeamless(self: *Client) void {
+        // 옛 surface 객체 스냅샷 — destroy 는 새 frame paint 후로 미룬다.
+        const old_surface_id = self.surface_id;
+        const old_layer_surface_id = self.layer_surface_id;
+        const old_viewport_id = self.viewport_id;
+        const old_fractional_scale_id = self.fractional_scale_id;
+        const old_xdg_surface_id = self.xdg_surface_id;
+        const old_toplevel_id = self.toplevel_id;
+        var old_active = self.active_buffer;
+        var old_retired = self.retired_buffers;
+
+        // self 필드 초기화 → createShellObjects 가 fresh id 할당. 옛 객체는
+        // 스냅샷이 보유 (KWin 이 옛 frame 화면에 유지).
+        self.surface_id = 0;
+        self.layer_surface_id = 0;
+        self.viewport_id = 0;
+        self.fractional_scale_id = 0;
+        self.xdg_surface_id = 0;
+        self.toplevel_id = 0;
+        self.active_buffer = null;
+        self.retired_buffers = .{};
+        self.configured = false;
+        self.mapped = false;
+        self.frame_callback_id = 0;
+        self.awaiting_frame = false;
+
+        // 새 surface 생성 + 첫 frame 동기 paint (옛 frame 위에 동일 내용 올림).
+        self.createShellObjects() catch |err| {
+            log.appendLine("dialog", "swapMainSurface: createShellObjects failed: {s} — fatal", .{@errorName(err)});
+            self.running = false;
+            return;
+        };
+        // 새 layer-surface 첫 configure 까지 pump (bounded — 안 오면 main loop 의
+        // 다음 redraw 가 그림). drainQuitRequest 는 outer dispatchBuffered 밖에서
+        // 호출되어 reentrancy 안전 (#213 무관).
+        var tries: u8 = 0;
+        while (!self.configured and tries < 64) : (tries += 1) {
+            self.readAndDispatch() catch break;
+        }
+        self.needs_redraw = true;
+        _ = self.redraw() catch |err| {
+            log.appendLine("dialog", "swapMainSurface: redraw failed: {s}", .{@errorName(err)});
+        };
+
+        // 새 frame 이 올라왔으니 옛 surface destroy (KWin 이 유지하던 옛 frame 제거).
+        if (old_active) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+        }
+        for (old_retired.items) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+        }
+        old_retired.deinit(self.allocator);
+        if (old_layer_surface_id != 0) self.sendNoArgs(old_layer_surface_id, zwlr_layer_surface_v1_request_destroy) catch {};
+        if (old_toplevel_id != 0) self.sendNoArgs(old_toplevel_id, 0) catch {};
+        if (old_xdg_surface_id != 0) self.sendNoArgs(old_xdg_surface_id, 0) catch {};
+        if (old_viewport_id != 0) self.sendNoArgs(old_viewport_id, wp_viewport_request_destroy) catch {};
+        if (old_fractional_scale_id != 0) self.sendNoArgs(old_fractional_scale_id, wp_fractional_scale_v1_request_destroy) catch {};
+        if (old_surface_id != 0) self.sendNoArgs(old_surface_id, 0) catch {};
+
+        log.appendLine("dialog", "swapMainSurface — create-before-destroy (new surface_id={} configured={})", .{ self.surface_id, self.configured });
+    }
+
     fn drainQuitRequest(self: *Client) void {
         if (!self.pending_quit_request) return;
         self.pending_quit_request = false;
@@ -4121,23 +4198,15 @@ const Client = struct {
             self.running = false;
             return;
         };
+        // 다이얼로그 동안엔 KWin 이 옛 메인 frame 을 유지 → 터미널이 뒤에 보임
+        // (원래 동작, Alt+F4 시점 깜박임 없음).
         if (dialog_mod.showConfirm(messages.quit_confirm_title, msg)) {
             self.running = false;
             return;
         }
-        // Cancel — closed event trigger 라면 KWin 측에서 main layer-surface 가
-        // 이미 unmap (재 key event 라우팅 안 됨). 우리도 *재생성* 해야 다음
-        // Alt+F4 가 정상 동작. 시연 발견: Cancel 후 두 번째 Alt+F4 시 F4 key
-        // event 가 우리 client 에 도달 X (`closed` event 한 번만 발송) — 사용자가
-        // 종료 못 함. handleActivatedToggle 의 toggle show path 동등.
-        self.destroyShellObjects() catch |err| {
-            log.appendLine("dialog", "drainQuitRequest cancel: destroyShellObjects failed: {s}", .{@errorName(err)});
-        };
-        self.createShellObjects() catch |err| {
-            log.appendLine("dialog", "drainQuitRequest cancel: createShellObjects failed: {s} — fatal", .{@errorName(err)});
-            self.running = false;
-        };
-        log.appendLine("dialog", "drainQuitRequest cancel — main surface 재생성", .{});
+        // Cancel — `closed` 된 메인 surface 를 create-before-destroy 로 깜박임 없이
+        // 교체. 다음 Alt+F4 가 다시 동작하려면 새 surface 필요 (#216).
+        self.swapMainSurfaceSeamless();
     }
 
     fn dismissDialog(self: *Client) void {
