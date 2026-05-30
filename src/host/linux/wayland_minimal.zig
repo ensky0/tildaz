@@ -3793,25 +3793,42 @@ const Client = struct {
             return;
         };
         self.dbus_session = session;
+        // #207 — portal 연결 *전에* 우리 전용 systemd app scope 로 이동. 터미널 /
+        // konsole / 다른 앱 cgroup 에서 실행됐을 때 portal 이 app-id 를 그 부모로
+        // 인식해 hotkey 가 tildaz 에 안 오는 문제 (launch-independent hotkey) 의 근본
+        // fix. 이미 app-tildaz scope (proper launch) 면 no-op.
+        portal.ensureAppScope(&self.dbus_session.?);
         const portal_session = portal.createGlobalShortcutsSession(self.allocator, &self.dbus_session.?) catch |err| {
             log.appendLine("portal", "CreateSession skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
             return;
         };
         self.portal_session = portal_session;
-        // L9-β-2 — 단일 "toggle" shortcut 등록. 첫 호출 시 KDE / GNOME portal
-        // UI dialog 뜸 (사용자 승인). 실패해도 fatal 아님 — session 은 살아
-        // 있고 다음 실행에서 재시도 가능. 실패 시 Activated subscribe 도 skip
-        // (shortcut bound 안 됐으니 signal 도 안 옴).
-        portal.bindToggleShortcut(
+        // #207 — 매 실행 BindShortcuts (= portal/KDE 단축키 dialog) 회피. CreateSession
+        // 의 loadActions 가 이미 이전 session 의 binding 을 KGlobalAccel 에 재등록하므로
+        // (portal-kde globalshortcuts.cpp 확인), 이미 bound + config 일치면 BindShortcuts
+        // 를 skip 해도 Activated 는 그대로 발화 = hotkey 동작 유지 + dialog 안 뜸.
+        // 첫 등록 / config 변경 시에만 BindShortcuts (이때만 dialog 1 회). 실패해도
+        // fatal 아님 — session 살아 있고 다음 실행 재시도 가능.
+        if (portal.toggleAlreadyBoundMatchingConfig(
             self.allocator,
             &self.dbus_session.?,
             self.portal_session.?.session_handle,
             self.config.hotkey.keysym,
             self.config.hotkey.modifiers,
-        ) catch |err| {
-            log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
-            return;
-        };
+        )) {
+            log.appendLine("portal", "hotkey 이미 등록됨 (config 일치) — BindShortcuts skip (dialog 안 뜸)", .{});
+        } else {
+            portal.bindToggleShortcut(
+                self.allocator,
+                &self.dbus_session.?,
+                self.portal_session.?.session_handle,
+                self.config.hotkey.keysym,
+                self.config.hotkey.modifiers,
+            ) catch |err| {
+                log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+                return;
+            };
+        }
         // L9-γ — Activated signal subscribe. 이후 main loop 의
         // `dispatchDbusMessages` 가 매 iteration `read_write_dispatch(0)` 호출
         // → filter callback (`onPortalActivated`) 가 우리 toggle 발동.
