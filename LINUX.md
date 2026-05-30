@@ -66,6 +66,7 @@ Debian Wayland 환경).
 | 더블클릭 word selection + 자동 copy | 동작 (wide char spacer_tail / boundary 시작 reject 는 macOS / Windows 와 공유 모듈) |
 | 우클릭 paste | 동작 (외부 앱 clipboard 의 text 가 PTY 직송) |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` 단축키 | 동작 (Linux 도 Windows 와 동일 native modifier) |
+| `Ctrl+Shift+R` 화면 reset 단축키 | 동작 (#214) — 활성 탭 `session.resetActive()` = `terminal.fullReset()` + `\x0c` (Ctrl+L). Win `Ctrl+Shift+R` / mac `Shift+Cmd+R` 동등. |
 | 휠 스크롤 (scrollback) | 동작 |
 | 스크롤바 클릭 + 드래그 | 동작 (우측 8 px thumb, Windows/macOS 패턴 동일) |
 | block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 (공유 `src/renderer/block_element.zig` 부착, 폰트 무관 cell-aligned procedural rect / dot mask) |
