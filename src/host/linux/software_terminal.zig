@@ -1852,14 +1852,17 @@ fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
 // safety panic 의 정확한 source line 확보.
 test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const allocator = std.testing.allocator;
-    const chain = [_][]const u8{"monospace"};
-    // 1.7x → font pixel_height = ceil(16*204/120) = 28 (scaledFontPixelHeight).
-    const ctx = font.Context.init(allocator, &chain, 28, 1.0, 1.0) catch |e| {
-        std.debug.print("[#213] font init failed ({s}) — skip (no fontconfig?)\n", .{@errorName(e)});
+    // 실제 GUI 경로 재현 — hand-build 가 아니라 `Renderer.init` 로 *실제 Config*
+    // (Linux default = DejaVu Sans Mono + Noto fallback chain + size_point 16 +
+    // cell_width_ratio 1.0 + **line_height_ratio 1.1**) 를 scale 1.7 (204/120) 로
+    // 초기화. 이전 버전은 chain={"monospace"} + line_height 1.0 hand-build 라
+    // 사용자 config (line_height 1.1) 의 layout 을 재현 못 했음 (#213 진단 cycle).
+    const cfg = config_mod.Config{};
+    var r = Renderer.init(allocator, &cfg, 204, 120) catch |e| {
+        std.debug.print("[#213] Renderer.init failed ({s}) — skip (no fontconfig?)\n", .{@errorName(e)});
         return;
     };
-    var r = Renderer{ .font_ctx = ctx, .scale = 1.7, .opacity_alpha = 255 };
-    defer r.font_ctx.deinit();
+    defer r.deinit(allocator);
 
     const title = "About TildaZ";
     const msg =
