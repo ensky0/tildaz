@@ -15,7 +15,9 @@ var g_config: ?config_mod.Config = null;
 /// macOS host 의 `resolveShell` 과 동등.
 fn resolveShell(allocator: std.mem.Allocator) []const u8 {
     if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
-    return config_mod.Defaults.shell;
+    // #218 — Config.load 가 owned 인수를 기대 (disk 경로서 free) — fallback 도
+    // dupe. OOM 시 static drift 는 극단 케이스(곧 종료).
+    return allocator.dupe(u8, config_mod.Defaults.shell) catch config_mod.Defaults.shell;
 }
 
 /// wayland_minimal 이 `runBaselineWindow` 진입 시 module global 에서 꺼내
@@ -71,7 +73,7 @@ pub fn run() !void {
     // shell path 결정.
     const shell_resolved = resolveShell(gpa.allocator());
     g_config = config_mod.Config.load(gpa.allocator(), shell_resolved);
-    defer if (g_config) |*c| c.deinit();
+    defer if (g_config) |*c| c.deinit(gpa.allocator());
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);
 
