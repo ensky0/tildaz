@@ -76,8 +76,11 @@ pub fn run() !void {
     // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. Windows 는 OS env
     // 와 무관하게 항상 `Defaults.shell` (= `cmd.exe`) — `$SHELL` 같은 POSIX
     // 컨벤션이 없음. macOS 는 `$SHELL` 우선 (host/macos.zig 의 resolveShell 참고).
-    var config = Config.load(alloc, config_mod.Defaults.shell);
-    defer config.deinit();
+    // #218 — Config.load 가 owned shell 인수를 기대 (disk 경로서 free). Windows 는
+    // $SHELL 컨벤션이 없어 Defaults.shell 을 owned dupe 로 전달.
+    const shell_resolved = alloc.dupe(u8, config_mod.Defaults.shell) catch config_mod.Defaults.shell;
+    var config = Config.load(alloc, shell_resolved);
+    defer config.deinit(alloc);
     log.logConfigLoaded(config);
 
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.

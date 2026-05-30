@@ -468,30 +468,42 @@ pub const Config = struct {
     /// `shell_resolved` 는 host 의 `resolveShell` 결과 (process lifetime 보유).
     /// 첫 실행이거나 disk 를 못 읽을 때 memory default `Config.shell` 도 이
     /// 값으로 sync. disk 명시값이 있으면 그 값 그대로 (parse 가 alloc.dupe).
+    /// #218 — `shell_resolved` 소유권 인수. 첫 실행 / disk 못 읽음(fail) 경로는
+    /// 그대로 보관(+ font_families 도 owned dupe 로 정규화), disk 정상 경로는 parse
+    /// 가 JSON 값을 dupe 하므로 안 쓰는 `shell_resolved` 를 free. 결과 Config 는
+    /// 모든 경로에서 shell / font_families 가 owned → `deinit` 이 일관 free.
+    /// 따라서 `shell_resolved` 는 호출처가 항상 *owned* 로 넘겨야 한다.
     pub fn load(allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
         const path = paths.configPath(allocator) catch {
-            var c: Config = .{};
-            c.shell = shell_resolved;
-            return c;
+            return defaultOwned(allocator, shell_resolved);
         };
         defer allocator.free(path);
 
         const file = std.fs.openFileAbsolute(path, .{}) catch {
             createDefault(allocator, path, shell_resolved);
-            var c: Config = .{};
-            c.shell = shell_resolved;
-            return c;
+            return defaultOwned(allocator, shell_resolved);
         };
         defer file.close();
 
         const content = file.readToEndAlloc(allocator, 64 * 1024) catch {
-            var c: Config = .{};
-            c.shell = shell_resolved;
-            return c;
+            return defaultOwned(allocator, shell_resolved);
         };
         defer allocator.free(content);
 
+        // disk 정상 — parse 가 JSON 의 shell 을 dupe 하므로 인자는 미사용. 누수 방지 free.
+        allocator.free(shell_resolved);
         return parse(allocator, content);
+    }
+
+    /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static
+    /// default `font_families` 를 owned dupe 로 정규화 → deinit 이 일관 free.
+    fn defaultOwned(allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
+        var c: Config = .{};
+        c.shell = shell_resolved;
+        for (c.font_families[0..c.font_family_count]) |*f| {
+            f.* = allocator.dupe(u8, f.*) catch f.*;
+        }
+        return c;
     }
 
     fn parse(allocator: std.mem.Allocator, content: []const u8) Config {
@@ -696,11 +708,15 @@ pub const Config = struct {
         file.writeAll(json_text) catch {};
     }
 
-    pub fn deinit(self: *const Config) void {
-        _ = self;
-        // Process exit 시 OS 가 모든 메모리 회수 — host loop 종료 후 명시적
-        // free 불필요. 명확한 leak 만 막기 위해 함수 자체는 유지 (host 가 호출
-        // 해도 no-op).
+    /// #218 — `load` 가 owned 로 정규화한 `shell` / `font_families` 해제. 모든
+    /// load 경로(첫 실행 fail 포함)가 owned 라 일관 free (빈 문자열은 len 0 → skip).
+    /// host loop 종료 후 호출 (Linux `run` / Windows `main`). macOS 는 terminate
+    /// 가 exit 직행이라 미호출 — at-exit OS 회수 (leak detect 미작동).
+    pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
+        if (self.shell.len > 0) allocator.free(self.shell);
+        for (self.font_families[0..self.font_family_count]) |f| {
+            if (f.len > 0) allocator.free(f);
+        }
     }
 
     /// Windows 만 사용하는 helper — UTF-8 `font_families[index]` 를 Win32 가

@@ -2455,12 +2455,13 @@ fn registerTildazViewClass() !objc.Class {
 ///   - `$SHELL` env 가 있으면 그 값 (사용자 환경 그대로 보존).
 ///   - 없으면 `config.Defaults.shell` (= `/bin/bash`).
 ///
-/// 반환 string 은 process lifetime — `getEnvVarOwned` 가 alloc 한 메모리는
-/// `g_gpa` 가 process 종료까지 보유 (deinit no-op 정책 일관). disk write 후
-/// memory `Config.shell` 도 같은 포인터로 sync.
+/// 반환 string 은 owned — `Config.load` 가 소유권 인수 (disk 정상 경로서 free,
+/// fail 경로서 `Config.shell` 로 보관, #218). fallback 도 dupe 해 항상 owned.
+/// (macOS 는 terminate 가 exit 직행이라 `Config.deinit` 미호출 — 그래도 load 의
+/// disk 경로 free 가 owned 를 기대하므로 dupe 필요.)
 fn resolveShell(allocator: std.mem.Allocator) []const u8 {
     if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
-    return config.Defaults.shell;
+    return allocator.dupe(u8, config.Defaults.shell) catch config.Defaults.shell;
 }
 
 pub fn run() !void {
