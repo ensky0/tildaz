@@ -13,6 +13,7 @@ const posix = std.posix;
 
 pub const Pty = struct {
     master_fd: posix.fd_t,
+    shutdown_fd: posix.fd_t,
     child_pid: posix.pid_t,
     read_thread: ?std.Thread = null,
     wait_thread: ?std.Thread = null,
@@ -36,6 +37,11 @@ pub const Pty = struct {
             0,
         ) catch return error.OpenPtyFailed;
         errdefer posix.close(master_fd);
+
+        // #223 — read thread 의 poll 을 종료 시 깨우는 eventfd. EFD_CLOEXEC 로
+        // 자식(shell)에 상속 안 되게.
+        const shutdown_fd = posix.eventfd(0, linux.EFD.CLOEXEC) catch return error.OpenPtyFailed;
+        errdefer posix.close(shutdown_fd);
 
         var unlock: c_int = 0;
         if (posix.errno(linux.ioctl(master_fd, linux.T.IOCSPTLCK, @intFromPtr(&unlock))) != .SUCCESS) {
@@ -87,6 +93,7 @@ pub const Pty = struct {
         posix.close(slave_fd);
         return .{
             .master_fd = master_fd,
+            .shutdown_fd = shutdown_fd,
             .child_pid = pid,
             .allocator = allocator,
         };
@@ -120,11 +127,17 @@ pub const Pty = struct {
         }
 
         if (self.read_thread) |t| {
+            // #223 — readLoop 의 poll 을 깨워 종료시킨다. daemon (예: openconnect
+            // -b) 이 PTY slave 를 쥐고 있으면 master read 에 EOF 가 안 와서, 이
+            // 신호 없이 join 하면 영원히 블록한다.
+            const one: u64 = 1;
+            _ = posix.write(self.shutdown_fd, std.mem.asBytes(&one)) catch {};
             t.join();
             self.read_thread = null;
         }
 
         posix.close(self.master_fd);
+        posix.close(self.shutdown_fd);
     }
 
     pub fn write(self: *Pty, data: []const u8) !usize {
@@ -144,7 +157,7 @@ pub const Pty = struct {
         exit_cb: ExitCallback,
         userdata: ?*anyopaque,
     ) !void {
-        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.master_fd, callback, userdata });
+        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.master_fd, self.shutdown_fd, callback, userdata });
         self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.child_pid, &self.child_exited, exit_cb, userdata });
     }
 
@@ -194,12 +207,22 @@ fn resizeFd(fd: posix.fd_t, cols: u16, rows: u16) !void {
     }
 }
 
-fn readLoop(master_fd: posix.fd_t, callback: Pty.ReadCallback, userdata: ?*anyopaque) void {
+fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCallback, userdata: ?*anyopaque) void {
     var buf: [65536]u8 = undefined;
+    var fds = [_]posix.pollfd{
+        .{ .fd = master_fd, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = shutdown_fd, .events = posix.POLL.IN, .revents = 0 },
+    };
     while (true) {
-        const n = posix.read(master_fd, &buf) catch break;
-        if (n == 0) break;
-        callback(buf[0..n], userdata);
+        _ = posix.poll(&fds, -1) catch break;
+        // #223 — deinit 이 shutdown_fd 로 깨움 (daemon 이 slave 를 쥐어 master 에
+        // EOF 가 안 와도 read thread 안전 종료 → join deadlock 회피).
+        if ((fds[1].revents & posix.POLL.IN) != 0) break;
+        if ((fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0) {
+            const n = posix.read(master_fd, &buf) catch break;
+            if (n == 0) break;
+            callback(buf[0..n], userdata);
+        }
     }
 }
 
