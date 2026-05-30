@@ -122,12 +122,13 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 |---|---|---|---|---|---|---|
 | About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` → 별 layer-shell `overlay` surface (§6 step 3, #203) | ✅ | ✅ | ✅ |
 
-### 2.5 스크롤
+### 2.5 스크롤 / 화면 reset
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 한 페이지 위 (scrollback) | Shift+PgUp | Shift+PgUp | Shift+PgUp — `session.scrollActive(.{ .page = .up }, visible_rows)`. wheel 분기와 같은 통로 | ✅ | ✅ | ✅ |
 | 한 페이지 아래 | Shift+PgDn | Shift+PgDn | Shift+PgDn — 동상 (`.page = .down`) | ✅ | ✅ | ✅ |
+| 화면 reset (활성 탭) | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R — `session.resetActive()` = `terminal.fullReset()` + `\\x0c` (Ctrl+L) 송신 ([#214](https://github.com/ensky0/tildaz/issues/214)) | ✅ | ✅ | ✅ |
 
 ### 2.6 Ctrl+key PTY 전달 (control char)
 
@@ -240,7 +241,7 @@ host-specific getter 호출 결과를 `Inputs` 에 채워서 전달.
 | Cmd/Ctrl+Shift+[ / ] (prev/next) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 동일 (Ctrl+Shift+[/]) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
-| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 각 handler 진입 첫 줄 (`commitPendingInput`) — Ctrl+Shift+I·P·L 등 신규 핸들러 모두 동일 패턴. reset_terminal / dump_perf 는 Linux 단축키 미할당 (별 후속) | ✅ | ✅ | 🟨 (show_about / open_config / open_log ✅ / reset / dump_perf Linux 단축키 미할당) |
+| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 각 handler 진입 첫 줄 (`commitPendingInput`) — Ctrl+Shift+I·P·L·R 등 신규 핸들러 모두 동일 패턴. reset_terminal 구현 (#214, Ctrl+Shift+R). dump_perf 는 Linux 단축키 미할당 (별 후속) | ✅ | ✅ | 🟨 (show_about / open_config / open_log / reset ✅ / dump_perf Linux 단축키 미할당) |
 | F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow` 진입 직전 (visible 이면 `commitPendingInputFromContentView`) | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 

@@ -325,12 +325,10 @@ pub const Defaults = struct {
 
     /// font size in *typographic point*. host 가 DPI scale 곱한 후 raster
     /// (#148 B-2). Windows 기본 폰트가 약간 작아 16 / macOS 15 / Linux 16.
-    /// Linux 12 / 14 모두 KDE 170% fractional scale 환경에서 사용자 보고로
-    /// "너무 작다" — pt 단위 의미가 plat 별로 다른 (Win 96 DPI = 1px/pt, mac
-    /// retina 2x → 30 physical px, Linux 우리 구현 = logical px) 가 원인.
-    /// Win default (16) 와 동일 — KDE 170% 에서 16 logical = 27.2 physical 로
-    /// mac retina (30 physical) 와 비슷.
-    pub const font_size_point: u8 = if (is_windows) 16 else if (is_macos) 15 else 16;
+    /// Linux 12 / 14 는 KDE 170% fractional scale 에서 "너무 작다" 보고 — pt
+    /// 의미가 plat 별로 다름 (Win 96 DPI = 1px/pt, mac retina 2x, Linux = logical
+    /// px). 16 까지 올렸다가 macOS 와 동일한 15 로 정리 (Win 은 16 유지).
+    pub const font_size_point: u8 = if (is_windows) 16 else 15;
 
     /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이
     /// 조절. Windows 기본 폰트는 leading 이 충분해 1.0, POSIX (mac/linux) 는

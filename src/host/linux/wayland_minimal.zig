@@ -251,6 +251,9 @@ const xkb_key_p_lower: u32 = 0x70;
 const xkb_key_p_upper: u32 = 0x50;
 const xkb_key_v_lower: u32 = 0x76;
 const xkb_key_v_upper: u32 = 0x56;
+// #214 — Ctrl+Shift+R : 활성 탭 화면 reset (Win `Ctrl+Shift+R` / mac `Shift+Cmd+R` 동등).
+const xkb_key_r_lower: u32 = 0x72;
+const xkb_key_r_upper: u32 = 0x52;
 // XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h`. F4 만 Alt+F4 quit
 // 단축키용. (F1 toggle 은 portal hotkey 처리이라 별 매핑 필요 없음.)
 const xkb_key_f4: u32 = 0xffc1;
@@ -3120,6 +3123,17 @@ const Client = struct {
                     const log_path = paths.logPath(self.allocator) catch return;
                     defer self.allocator.free(log_path);
                     system_open.openInDefaultApp(self.allocator, log_path);
+                    return;
+                }
+                // SPEC §2 / §4.1 — Ctrl+Shift+R : 활성 탭 화면 reset (Win
+                // `Ctrl+Shift+R` / mac `Shift+Cmd+R` 동등, #214). resetActive 가
+                // fullReset + Ctrl+L (`\x0c`) 송신. §4.1 — 단축키 진입 시 rename
+                // / preedit commit. utf8 PTY 송신은 return 으로 차단.
+                if (sym == xkb_key_r_lower or sym == xkb_key_r_upper) {
+                    self.commitPendingInput();
+                    if (self.session) |*session| {
+                        if (session.resetActive()) self.requestRedraw();
+                    }
                     return;
                 }
             }
