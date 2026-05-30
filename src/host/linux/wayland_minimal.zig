@@ -1314,12 +1314,26 @@ const Client = struct {
             zwlr_layer_surface_v1_request_set_exclusive_zone,
             &.{0},
         );
-        // set_margin — logical. cross-axis 위치 결정.
+        // set_margin — 논리 픽셀 단위. cross-axis 위치 결정.
+        // #220 — 붙는 가장자리(가장자리에 고정 + 여백 0)는 여백을 1 논리 픽셀만큼
+        // 화면 밖(음수)으로 내보낸다. KWin 의 화면 논리 너비 = floor(물리/배율) 라,
+        // 논리 좌표에 둔 가장자리가 물리 화면 끝보다 1픽셀 미만 짧아져 부분 크기 표면의
+        // 마지막 픽셀 한 줄이 안 덮인다(그 줄로 뒤 화면이 비침). compositor 가 화면
+        // 경계에서 잘라내므로 화면 밖으로 넘치지 않는다. 화면 전체를 덮는 표면만 KWin
+        // 이 물리 경계로 맞춰주고 부분 표면은 안 맞춰주는 차이를 이 음수 여백이 메운다.
+        // KDE Plasma 6 + 배율 1.1 에서 스크린샷 픽셀 측정으로 빈틈 0 확인(화면 전체 /
+        // 4방향 dock / offset 0·100 회귀 없음). 정수 배율에선 나머지가 0이라 무해(잘림).
+        const a = layout.anchor;
+        const mt = self.physicalToLogical(layout.margin_top);
+        const mr = self.physicalToLogical(layout.margin_right);
+        const mb = self.physicalToLogical(layout.margin_bottom);
+        const ml = self.physicalToLogical(layout.margin_left);
+        const ov: i32 = -1;
         var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
-        try margin_msg.putI32(self.physicalToLogical(layout.margin_top));
-        try margin_msg.putI32(self.physicalToLogical(layout.margin_right));
-        try margin_msg.putI32(self.physicalToLogical(layout.margin_bottom));
-        try margin_msg.putI32(self.physicalToLogical(layout.margin_left));
+        try margin_msg.putI32(if ((a & zwlr_layer_surface_anchor_top) != 0 and mt == 0) ov else mt);
+        try margin_msg.putI32(if ((a & zwlr_layer_surface_anchor_right) != 0 and mr == 0) ov else mr);
+        try margin_msg.putI32(if ((a & zwlr_layer_surface_anchor_bottom) != 0 and mb == 0) ov else mb);
+        try margin_msg.putI32(if ((a & zwlr_layer_surface_anchor_left) != 0 and ml == 0) ov else ml);
         try margin_msg.send(self.stream);
         // set_keyboard_interactivity(exclusive) — drop-down 본분. yakuake /
         // guake 등 모든 Linux drop-down terminal 의 표준. mac/win 의 z-order
