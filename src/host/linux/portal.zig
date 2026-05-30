@@ -32,6 +32,7 @@ const interface_request: [*:0]const u8 = "org.freedesktop.portal.Request";
 const member_response: [*:0]const u8 = "Response";
 const member_create_session: [*:0]const u8 = "CreateSession";
 const member_bind_shortcuts: [*:0]const u8 = "BindShortcuts";
+const member_list_shortcuts: [*:0]const u8 = "ListShortcuts";
 const member_unbind_shortcuts: [*:0]const u8 = "UnbindShortcuts";
 const member_activated: [*:0]const u8 = "Activated";
 
@@ -53,6 +54,7 @@ const session_handle_token: [*:0]const u8 = "tildaz_session";
 const bind_handle_token: [*:0]const u8 = "tildaz_bind";
 const unbind_handle_token: [*:0]const u8 = "tildaz_unbind";
 const rebind_handle_token: [*:0]const u8 = "tildaz_rebind";
+const list_handle_token: [*:0]const u8 = "tildaz_list";
 
 /// L9-β-2 — 우리가 portal 에 등록하는 유일한 shortcut id. Activated signal 의
 /// `shortcut_id` arg 도 이 값으로 들어옴 — L9-γ 에서 매칭 키.
@@ -73,6 +75,8 @@ const method_call_timeout_ms: c_int = 25_000;
 /// BindShortcuts 는 사용자 dialog 응답 기다림 — 첫 등록 시 portal 가 KDE /
 /// GNOME UI 띄움, 사용자가 승인 / 거부 / 단축키 변경. 5 분 timeout.
 const bind_total_timeout_ms: i64 = 300_000;
+/// ListShortcuts 는 UI 없는 read-only 조회 — 사용자 응답 대기 없음. 짧은 timeout.
+const list_total_timeout_ms: i64 = 5_000;
 
 /// `org.freedesktop.portal.GlobalShortcuts.CreateSession` 호출 결과. 이후
 /// `BindShortcuts` (L9-β-2) 가 `session_handle` 사용.
@@ -84,6 +88,159 @@ pub const GlobalShortcutsSession = struct {
         self.allocator.free(self.session_handle);
     }
 };
+
+const systemd1_destination: [*:0]const u8 = "org.freedesktop.systemd1";
+const systemd1_path: [*:0]const u8 = "/org/freedesktop/systemd1";
+const systemd1_manager_interface: [*:0]const u8 = "org.freedesktop.systemd1.Manager";
+const systemd1_start_transient_unit: [*:0]const u8 = "StartTransientUnit";
+
+/// StartTransientUnit 의 reply (job path) 이후 PID 의 cgroup 이동이 실제로
+/// 끝날 때까지 기다리는 상한 / poll 간격. systemd unit 활성화는 비동기라
+/// reply 직후엔 아직 부모 cgroup 일 수 있다 (#207 진단). 이동은 보통 수 ms.
+const app_scope_migration_timeout_ms: i64 = 1_000;
+const app_scope_poll_interval_ms: u64 = 5;
+
+/// `/proc/self/cgroup` 를 한 번 읽어 (1) 우리 전용 app scope (`app-tildaz*`) 안인지
+/// 와 (2) 진단 로그용 leaf cgroup 이름을 함께 돌려준다. leaf 는 호출자 버퍼
+/// (`out`) 로 복사 — 반환 slice 는 `out` 을 가리킨다. 읽기 실패면 null.
+const CgroupState = struct { in_tildaz_scope: bool, leaf: []const u8 };
+fn readCgroupState(out: []u8) ?CgroupState {
+    var buf: [4096]u8 = undefined;
+    const file = std.fs.openFileAbsolute("/proc/self/cgroup", .{}) catch return null;
+    defer file.close();
+    const n = file.readAll(&buf) catch return null;
+    var it = std.mem.tokenizeScalar(u8, buf[0..n], '\n');
+    var in_scope = false;
+    var leaf_slice: []const u8 = "";
+    while (it.next()) |line| {
+        const slash = std.mem.lastIndexOfScalar(u8, line, '/') orelse continue;
+        const leaf = line[slash + 1 ..];
+        leaf_slice = leaf; // 마지막 line 의 leaf 를 대표로 (cgroup v2 면 line 1 개)
+        if (std.mem.startsWith(u8, leaf, "app-tildaz")) in_scope = true;
+    }
+    const copy_len = @min(leaf_slice.len, out.len);
+    @memcpy(out[0..copy_len], leaf_slice[0..copy_len]);
+    return .{ .in_tildaz_scope = in_scope, .leaf = out[0..copy_len] };
+}
+
+/// `/proc/self/cgroup` 의 leaf scope 가 `app-tildaz*` 인지 — 이미 우리 전용
+/// app scope 안이면 (proper launch: krunner / 메뉴 / .desktop autostart 가
+/// `app-tildaz-<random>.scope` 부여) 추가 이동 불필요.
+fn alreadyInTildazScope() bool {
+    var leaf_buf: [256]u8 = undefined;
+    const st = readCgroupState(&leaf_buf) orelse return false;
+    return st.in_tildaz_scope;
+}
+
+/// `("Description", <s value>)` — systemd `a(sv)` property 의 STRUCT entry.
+/// (portal 의 `appendStringVariantEntry` 는 dict_entry `e` — systemd 는 struct `r`.)
+fn appendStructStringVariant(api: *const dbus.Api, arr_iter: *dbus.DBusMessageIter, key: [*:0]const u8, value: [*:0]const u8) !void {
+    var st: dbus.DBusMessageIter = .{};
+    if (api.iter_open_container(arr_iter, dbus.dbus_type_struct, null, &st) == 0) return error.PortalAppendFailed;
+    var key_var: [*:0]const u8 = key;
+    if (api.iter_append_basic(&st, dbus.dbus_type_string, @ptrCast(&key_var)) == 0) return error.PortalAppendFailed;
+    var v: dbus.DBusMessageIter = .{};
+    if (api.iter_open_container(&st, dbus.dbus_type_variant, "s", &v) == 0) return error.PortalAppendFailed;
+    var value_var: [*:0]const u8 = value;
+    if (api.iter_append_basic(&v, dbus.dbus_type_string, @ptrCast(&value_var)) == 0) return error.PortalAppendFailed;
+    if (api.iter_close_container(&st, &v) == 0) return error.PortalAppendFailed;
+    if (api.iter_close_container(arr_iter, &st) == 0) return error.PortalAppendFailed;
+}
+
+/// `("PIDs", <au [pid]>)` — StartTransientUnit 의 PIDs property (변수 = u32 array).
+fn appendPidsProperty(api: *const dbus.Api, arr_iter: *dbus.DBusMessageIter, pid: u32) !void {
+    var st: dbus.DBusMessageIter = .{};
+    if (api.iter_open_container(arr_iter, dbus.dbus_type_struct, null, &st) == 0) return error.PortalAppendFailed;
+    var key_var: [*:0]const u8 = "PIDs";
+    if (api.iter_append_basic(&st, dbus.dbus_type_string, @ptrCast(&key_var)) == 0) return error.PortalAppendFailed;
+    var v: dbus.DBusMessageIter = .{};
+    if (api.iter_open_container(&st, dbus.dbus_type_variant, "au", &v) == 0) return error.PortalAppendFailed;
+    var au: dbus.DBusMessageIter = .{};
+    if (api.iter_open_container(&v, dbus.dbus_type_array, "u", &au) == 0) return error.PortalAppendFailed;
+    var p: u32 = pid;
+    if (api.iter_append_basic(&au, dbus.dbus_type_uint32, @ptrCast(&p)) == 0) return error.PortalAppendFailed;
+    if (api.iter_close_container(&v, &au) == 0) return error.PortalAppendFailed;
+    if (api.iter_close_container(&st, &v) == 0) return error.PortalAppendFailed;
+    if (api.iter_close_container(arr_iter, &st) == 0) return error.PortalAppendFailed;
+}
+
+/// #207 — launch-independent hotkey 의 *근본* fix. xdg-desktop-portal 은 caller 의
+/// systemd cgroup scope 이름 (`app-<appid>-<random>.scope`) 에서 app-id 를 파싱한다
+/// (`app-` prefix 만 인정 — XDG cgroup 표준). tildaz 를 터미널 / konsole / 다른 앱
+/// (예: Chromium 기반 IDE) 에서 실행하면 *부모의* scope 를 상속 → portal 이 app-id 를
+/// 그 부모로 인식 → GlobalShortcuts hotkey 가 tildaz 가 아닌 그쪽에 귀속돼 안 먹는다
+/// (시연 확정: konsole 에서 실행 시 konsole 이 hotkey 받음).
+///
+/// 해결: 우리가 `app-tildaz` scope 에 있지 않으면, systemd user manager 에 자기 PID 를
+/// `app-tildaz-<pid>.scope` 로 StartTransientUnit → 이후 portal CreateSession 이
+/// 우리 cgroup 을 읽어 app-id=tildaz 로 인식. **portal 연결 전에 호출**해야 함.
+/// systemd user manager 부재 / 권한 실패는 graceful (hotkey app-id 부정확 가능하나
+/// 앱 자체는 정상). 출처: systemd.io DESKTOP_ENVIRONMENTS, flatpak/xdg-desktop-portal
+/// app-id cgroup 표준 (PR #581).
+pub fn ensureAppScope(bus: *dbus.SessionBus) void {
+    if (alreadyInTildazScope()) {
+        log.appendLine("portal", "app-scope: 이미 app-tildaz scope — 이동 불필요", .{});
+        return;
+    }
+    const pid: u32 = @intCast(std.os.linux.getpid());
+    var name_buf: [64]u8 = undefined;
+    const scope_name = std.fmt.bufPrintZ(&name_buf, "app-tildaz-{d}.scope", .{pid}) catch return;
+
+    const call = bus.api.message_new_method_call(systemd1_destination, systemd1_path, systemd1_manager_interface, systemd1_start_transient_unit) orelse return;
+    defer bus.api.message_unref(call);
+
+    var iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_init_append(call, &iter);
+    var name_ptr: [*:0]const u8 = scope_name.ptr;
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&name_ptr)) == 0) return;
+    var mode_ptr: [*:0]const u8 = "fail";
+    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&mode_ptr)) == 0) return;
+    // properties: a(sv)
+    var props: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "(sv)", &props) == 0) return;
+    appendPidsProperty(&bus.api, &props, pid) catch return;
+    appendStructStringVariant(&bus.api, &props, "Description", "TildaZ terminal") catch return;
+    if (bus.api.iter_close_container(&iter, &props) == 0) return;
+    // aux: a(sa(sv)) — empty
+    var aux: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "(sa(sv))", &aux) == 0) return;
+    if (bus.api.iter_close_container(&iter, &aux) == 0) return;
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err);
+    if (reply) |r| bus.api.message_unref(r);
+    if (bus.api.error_is_set(&err) != 0) {
+        const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+        log.appendLine("portal", "app-scope StartTransientUnit failed: {s} — hotkey app-id 부정확 가능 (앱은 정상)", .{m});
+        return;
+    }
+
+    // StartTransientUnit 의 reply 는 *job object path* — job 을 enqueue 했다는
+    // ack 일 뿐, scope unit 활성화 + PID 의 cgroup 이동 *완료* 는 아니다 (systemd
+    // 비동기). 바로 다음에 호출되는 portal CreateSession 이 우리 *첫* portal 호출 →
+    // xdg-desktop-portal 이 그 시점 `/proc/<pid>/cgroup` 을 읽어 app-id 를 sender
+    // 기준으로 *한 번* 캐싱한다. 이동이 아직이면 부모(터미널/konsole) cgroup 을
+    // 읽어 app-id 오인 → BindShortcuts actual="" (#207 진단). → cgroup leaf 가
+    // 실제로 app-tildaz 로 바뀔 때까지 bounded poll 후 반환.
+    var leaf_buf0: [256]u8 = undefined;
+    if (readCgroupState(&leaf_buf0)) |st0| {
+        log.appendLine("portal", "app-scope: StartTransientUnit ok ({s}), reply 직후 cgroup leaf={s} in_scope={}", .{ scope_name, st0.leaf, st0.in_tildaz_scope });
+    }
+    const poll_start = std.time.milliTimestamp();
+    while (std.time.milliTimestamp() - poll_start < app_scope_migration_timeout_ms) {
+        var lb: [256]u8 = undefined;
+        if (readCgroupState(&lb)) |st| {
+            if (st.in_tildaz_scope) {
+                log.appendLine("portal", "app-scope: cgroup 이동 완료 leaf={s} ({d}ms) — portal app-id=tildaz", .{ st.leaf, std.time.milliTimestamp() - poll_start });
+                return;
+            }
+        }
+        std.Thread.sleep(app_scope_poll_interval_ms * std.time.ns_per_ms);
+    }
+    log.appendLine("portal", "app-scope: {d}ms 내 cgroup 이동 미확인 — hotkey app-id 부정확 가능 (앱은 정상)", .{app_scope_migration_timeout_ms});
+}
 
 /// Sender 의 D-Bus unique name (예: `:1.93`) 을 portal Request / Session
 /// object path 의 segment 로 변환. spec — `:` 제거 + `.` → `_`. 결과: "1_93".
@@ -1558,6 +1715,176 @@ fn callShortcutRequestVerb(
         }
         allocator.free(t);
     }
+}
+
+/// portal `GlobalShortcuts.ListShortcuts` 호출 — 이전 session 에서 bound 된
+/// shortcut 목록을 *UI 없이* 조회. spec args: (o session_handle, a{sv} options)
+/// → reply o (Request path) → Response signal (u code, a{sv} results 안
+/// "shortcuts": a(sa{sv})). "toggle" entry 의 `trigger_description` 을 dup 해
+/// 반환 (caller free 책임), 없으면 null. Response 파싱은 BindShortcuts 와 같은
+/// `responseFilter` / `extractTriggerDescriptionForToggle` 공유 (shortcuts array
+/// 형식 동일). 출처: org.freedesktop.portal.GlobalShortcuts spec.
+fn listToggleShortcut(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+) !?[]u8 {
+    const sender_segment = try sanitizeSenderForPath(allocator, bus.unique_name);
+    defer allocator.free(sender_segment);
+
+    const expected_request_path = try std.fmt.allocPrint(allocator, "/org/freedesktop/portal/desktop/request/{s}/{s}", .{
+        sender_segment, std.mem.span(list_handle_token),
+    });
+    defer allocator.free(expected_request_path);
+
+    const match_rule = try std.fmt.allocPrintSentinel(allocator, "type='signal',interface='{s}',member='{s}',path='{s}'", .{
+        std.mem.span(interface_request), std.mem.span(member_response), expected_request_path,
+    }, 0);
+    defer allocator.free(match_rule);
+
+    const session_handle_z = try allocator.dupeZ(u8, session_handle);
+    defer allocator.free(session_handle_z);
+
+    var state = ResponseWaitState{
+        .api = &bus.api,
+        .expected_request_path = expected_request_path,
+        .allocator = allocator,
+    };
+    errdefer if (state.actual_trigger) |t| allocator.free(t);
+
+    if (bus.api.add_filter(bus.conn, responseFilter, &state, null) == 0) return error.PortalAddFilterFailed;
+    defer bus.api.remove_filter(bus.conn, responseFilter, &state);
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+
+    bus.api.add_match(bus.conn, match_rule.ptr, &err);
+    if (bus.api.error_is_set(&err) != 0) {
+        const msg = if (err.message) |m| std.mem.span(m) else "(no message)";
+        log.appendLine("portal", "ListShortcuts add_match failed: {s}", .{msg});
+        return error.PortalAddMatchFailed;
+    }
+    defer {
+        var err2: dbus.DBusError = .{};
+        bus.api.error_init(&err2);
+        bus.api.remove_match(bus.conn, match_rule.ptr, &err2);
+        bus.api.error_free(&err2);
+    }
+
+    const call = bus.api.message_new_method_call(
+        portal_destination,
+        portal_path,
+        interface_global_shortcuts,
+        member_list_shortcuts,
+    ) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    {
+        var iter: dbus.DBusMessageIter = .{};
+        bus.api.iter_init_append(call, &iter);
+        var session_var: [*:0]const u8 = session_handle_z.ptr;
+        if (bus.api.iter_append_basic(&iter, dbus.dbus_type_object_path, @ptrCast(&session_var)) == 0) return error.PortalAppendFailed;
+        // options: a{sv} — handle_token 만.
+        var opt_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "{sv}", &opt_iter) == 0) return error.PortalAppendFailed;
+        try appendStringVariantEntry(&bus.api, &opt_iter, "handle_token", list_handle_token);
+        if (bus.api.iter_close_container(&iter, &opt_iter) == 0) return error.PortalAppendFailed;
+    }
+
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
+        if (bus.api.error_is_set(&err) != 0) {
+            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
+            log.appendLine("portal", "ListShortcuts method call failed: {s}", .{m});
+        }
+        return error.PortalMethodCallFailed;
+    };
+    defer bus.api.message_unref(reply);
+
+    {
+        var reply_iter: dbus.DBusMessageIter = .{};
+        if (bus.api.iter_init(reply, &reply_iter) == 0) return error.PortalReplyMissingArgs;
+        if (bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_object_path) return error.PortalReplyBadType;
+        var got_c: ?[*:0]const u8 = null;
+        bus.api.iter_get_basic(&reply_iter, @ptrCast(&got_c));
+        const got_path = if (got_c) |g| std.mem.span(g) else "";
+        if (!std.mem.eql(u8, got_path, expected_request_path)) {
+            log.appendLine("portal", "ListShortcuts request path mismatch — expected={s} got={s}", .{ expected_request_path, got_path });
+            return error.PortalRequestPathMismatch;
+        }
+    }
+
+    const start_ms = std.time.milliTimestamp();
+    while (!state.done) {
+        if (bus.api.read_write_dispatch(bus.conn, dispatch_iter_timeout_ms) == 0) {
+            log.appendLine("portal", "connection disconnected during ListShortcuts wait", .{});
+            return error.PortalConnectionLost;
+        }
+        if (std.time.milliTimestamp() - start_ms > list_total_timeout_ms) {
+            log.appendLine("portal", "ListShortcuts Response signal timeout", .{});
+            return error.PortalResponseTimeout;
+        }
+    }
+
+    if (state.response_code != response_code_success) {
+        log.appendLine("portal", "ListShortcuts response code={d}", .{state.response_code});
+        return error.PortalRequestFailed;
+    }
+
+    // toggle 의 trigger_description (있으면) — 소유권을 caller 로 이전.
+    const trig = state.actual_trigger;
+    state.actual_trigger = null;
+    return trig;
+}
+
+/// #207 — 매 실행 BindShortcuts (= portal/KDE 단축키 dialog) 회피용 판정.
+/// portal `ListShortcuts` 로 이전 session 의 "toggle" 이 이미 bound 이고 그 trigger
+/// 가 config 과 같으면 true → 호출자가 BindShortcuts skip. CreateSession 의
+/// loadActions 가 이미 그 binding 을 KGlobalAccel 에 재등록하므로 Activated 는
+/// 그대로 발화 (portal-kde globalshortcuts.cpp 확인 — skip 해도 hotkey 동작 유지).
+/// false 면 첫 등록 / config 변경 / 미지원 → 호출자가 BindShortcuts.
+///
+/// 비교: KDE 는 `kdeQueryToggleShortcut` (KGlobalAccel 의 packed Qt key) 직접
+/// 비교가 정확 (human-readable trigger 표기 차이에 안 흔들림). 非KDE (GNOME 등)
+/// 는 portal trigger_description 과 우리 accelerator 를 대소문자 무관 비교.
+pub fn toggleAlreadyBoundMatchingConfig(
+    allocator: std.mem.Allocator,
+    bus: *dbus.SessionBus,
+    session_handle: []const u8,
+    keysym: u32,
+    modifiers: u32,
+) bool {
+    const listed = listToggleShortcut(allocator, bus, session_handle) catch |e| {
+        log.appendLine("portal", "ListShortcuts 실패 ({s}) — BindShortcuts 진행 (dialog 가능)", .{@errorName(e)});
+        return false;
+    };
+    const trig = listed orelse {
+        log.appendLine("portal", "ListShortcuts: 이전 bound toggle 없음 (첫 등록) — BindShortcuts 진행", .{});
+        return false;
+    };
+    defer allocator.free(trig);
+
+    const our_qt = xkbToQtKey(keysym, modifiers);
+    var disp_buf: [64]u8 = undefined;
+    const cfg_disp = keysymDisplayString(&disp_buf, keysym, modifiers);
+
+    if (kdeQueryToggleShortcut(bus)) |stored| {
+        const ok = (stored == our_qt);
+        log.appendLine("portal", "ListShortcuts: toggle bound (portal=\"{s}\") — KDE stored qt=0x{x} config={s} qt=0x{x} match={} → BindShortcuts {s}", .{
+            trig, @as(u32, @bitCast(stored)), cfg_disp, @as(u32, @bitCast(our_qt)), ok, if (ok) "skip" else "필요(config 변경)",
+        });
+        return ok;
+    }
+
+    // 非KDE — portal trigger_description string 비교 (대소문자 무관). false-negative
+    // (= 같은데 다르게 판정) 는 dialog 만 더 뜸 (안전), false-positive 회피 우선.
+    const accel = keysymToAccelerator(allocator, keysym, modifiers) catch return false;
+    defer allocator.free(accel);
+    const ok = std.ascii.eqlIgnoreCase(trig, accel);
+    log.appendLine("portal", "ListShortcuts: toggle bound (\"{s}\") config accel=\"{s}\" match={} → BindShortcuts {s}", .{
+        trig, accel, ok, if (ok) "skip" else "필요",
+    });
+    return ok;
 }
 
 /// L9-δ — `org.freedesktop.Notifications.Notify` D-Bus method call.
