@@ -538,6 +538,14 @@ const Client = struct {
     /// `dialog.showConfirm` 의 inner pump 가 `dispatchBuffered` 의 reentrant
     /// context 안에서 호출되면 안 됨 (deferred dismiss 와 동일 reentrancy 위험).
     pending_quit_request: bool = false,
+    /// #213 — Ctrl+Shift+I 의 deferred About. key 핸들러는 flag 만 set, main
+    /// loop 의 `drainAboutRequest` 가 실제로 About 다이얼로그를 연다. About 의
+    /// `createDialogSurface` 가 `roundtrip` (inner dispatchBuffered) 을 돌리는데,
+    /// 이게 outer `dispatchBuffered` 의 reentrant context 안에서 호출되면 공유
+    /// `self.input` / `input_len` 이 outer 의 stale `offset` 과 어긋나 post-loop
+    /// 의 `input_len - offset` 뺄셈이 underflow → integer overflow panic (#213).
+    /// quit / dismiss 와 동일하게 deferred 로 reentrancy 제거.
+    pending_about_request: bool = false,
     // L8-β — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
@@ -780,7 +788,6 @@ const Client = struct {
         self.pending_preedit.deinit(self.allocator);
         self.pending_commit.deinit(self.allocator);
         self.preedit_text.deinit(self.allocator);
-        self.pending_close_buf.deinit(self.allocator);
         self.pending_activation_token.deinit(self.allocator);
         for (self.received_fds.items) |fd| posix.close(fd);
         self.received_fds.deinit(self.allocator);
@@ -805,6 +812,13 @@ const Client = struct {
             session.deinit();
             self.session = null;
         }
+        // #212 — `pending_close_buf` 는 *session.deinit 뒤에* 해제. session.deinit
+        // 이 각 Tab 의 backend.deinit (master_fd close) → PTY read/wait thread 가
+        // EOF 로 `onPtyExit` → `linuxTabExit` 를 호출해 이 buffer 에 append 하기
+        // 때문. 먼저 해제하면 종료 (quit confirm OK 등) 시 freed ArrayList 에
+        // append → capacity 산정에서 integer overflow (use-after-free). session.
+        // deinit 이 모든 PTY thread 를 join 한 뒤엔 더 이상 append 없으므로 안전.
+        self.pending_close_buf.deinit(self.allocator);
         self.renderer.deinit(self.allocator);
         self.stream.close();
     }
@@ -888,6 +902,9 @@ const Client = struct {
             // #203 Phase C step 4 — Alt+F4 deferred quit. confirm 의 inner pump
             // 도 outer dispatchBuffered 밖에서 호출.
             self.drainQuitRequest();
+            // #213 — Ctrl+Shift+I deferred About. createDialogSurface 의 inner
+            // roundtrip 을 outer dispatchBuffered 밖에서 돌려 buffer corrupt 회피.
+            self.drainAboutRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
             // 마지막 탭 닫음을 만나면 shell_exited 트리거.
@@ -1908,6 +1925,25 @@ const Client = struct {
         }
     }
 
+    /// dispatchBuffered 의 post-loop 버퍼 compaction — `offset` 바이트만큼 소비한
+    /// 뒤 남은 바이트를 buffer 앞으로 당기고 새 length 반환.
+    ///
+    /// #213 — `input_len - offset` 은 usize 라 `input_len < offset` 이면 underflow
+    /// → integer overflow panic. 이 상황은 `handleEvent` 안에서 inner reentrant
+    /// `dispatchBuffered` (예: `createDialogSurface` 의 `roundtrip`) 가 공유
+    /// `input` 을 *이미* compact 해 `input_len` 을 줄였는데 outer 의 `offset` 은
+    /// stale 일 때 발생. 그 경우 inner 가 이미 올바른 remaining 으로 compact 했으니
+    /// outer 는 재compact 하지 않고 현재 `input_len` 을 그대로 반환 (1935 루프
+    /// 가드의 2 차 방어 대응). 근본 fix 는 dialog open 을 main loop 로 deferred 한
+    /// 것 (`drainAboutRequest` / `drainQuitRequest` / `drainPendingDialogDismiss`).
+    /// `offset == 0` (소비 없음) / `input_len == offset` (전량 소비, rem=0) 은 정상.
+    fn compactInput(input: []u8, input_len: usize, offset: usize) usize {
+        if (offset == 0 or input_len < offset) return input_len;
+        const rem = input_len - offset;
+        std.mem.copyForwards(u8, input[0..rem], input[offset..input_len]);
+        return rem;
+    }
+
     fn dispatchBuffered(self: *Client) !void {
         var offset: usize = 0;
         // #203 Phase C — `offset + 8 <= input_len` 형태로 작성 (이전: `input_len
@@ -1926,11 +1962,7 @@ const Client = struct {
             offset += size;
         }
 
-        if (offset > 0) {
-            const rem = self.input_len - offset;
-            std.mem.copyForwards(u8, self.input[0..rem], self.input[offset..self.input_len]);
-            self.input_len = rem;
-        }
+        self.input_len = compactInput(&self.input, self.input_len, offset);
     }
 
     fn handleEvent(self: *Client, id: u32, opcode: u16, payload: []const u8) !void {
@@ -3050,9 +3082,14 @@ const Client = struct {
                 }
                 // SPEC §2.4 — Ctrl+Shift+I : About 다이얼로그 (Win 동등 native).
                 // §4.1 — 단축키 진입 시 rename commit (commitPendingInput).
+                // #213 — About 의 `createDialogSurface` 가 roundtrip (inner
+                // dispatchBuffered) 을 돌려서, 여기 (outer dispatchBuffered 의
+                // reentrant context) 에서 직접 열면 outer buffer state corrupt →
+                // overflow. quit / dismiss 와 동일하게 flag 만 set, main loop 의
+                // `drainAboutRequest` 가 reentrancy 밖에서 연다.
                 if (sym == xkb_key_i_lower or sym == xkb_key_i_upper) {
                     self.commitPendingInput();
-                    about.showAboutDialog();
+                    self.pending_about_request = true;
                     return;
                 }
                 // SPEC §11.2 — Ctrl+Shift+P : Open Config (default editor 로).
@@ -4056,6 +4093,17 @@ const Client = struct {
     /// 종료) 만 skip, 단일 / 다중 탭 *항상* confirm. `dialog.showConfirm` 이 inner
     /// pump 라 main loop 의 deferred phase 에서 호출 (outer dispatchBuffered
     /// reentrancy 안전).
+    /// #213 — Ctrl+Shift+I 가 set 한 deferred About 를 main loop 에서 실제 표시.
+    /// `about.showAboutDialog` → `dialog.showAboutAlert` → `openInfoDialog` →
+    /// `createDialogSurface` 가 inner roundtrip (dispatchBuffered) 을 돌리는데,
+    /// 여기는 outer dispatchBuffered 밖이라 reentrancy 위험 없음. dismiss /
+    /// quit 의 deferred 패턴과 동일.
+    fn drainAboutRequest(self: *Client) void {
+        if (!self.pending_about_request) return;
+        self.pending_about_request = false;
+        about.showAboutDialog();
+    }
+
     fn drainQuitRequest(self: *Client) void {
         if (!self.pending_quit_request) return;
         self.pending_quit_request = false;
@@ -4874,4 +4922,34 @@ fn cmsgLen(payload_len: usize) usize {
 
 fn cmsgSpace(payload_len: usize) usize {
     return cmsgAlign(@sizeOf(Cmsghdr)) + cmsgAlign(payload_len);
+}
+
+// #213 회귀 가드 — About 를 dispatchBuffered (outer) 안에서 직접 열면
+// `createDialogSurface` 의 inner `roundtrip` 이 reentrant `dispatchBuffered` 를
+// 돌려 공유 `input` 을 compact, `input_len` 을 outer 의 `offset` 밑으로 줄인다.
+// 그 뒤 outer post-loop 의 `input_len - offset` 가 usize underflow → integer
+// overflow panic. 근본 fix 는 About 를 main loop 로 deferred (`pending_about_
+// request` / `drainAboutRequest`) 한 것이고, 이 테스트는 2 차 방어인
+// `compactInput` 의 underflow guard 를 직접 검증한다 (compositor 불필요).
+test "#213 compactInput — input_len < offset 일 때 underflow 없이 length 보존" {
+    var buf: [256]u8 = undefined;
+
+    // 정상 compaction: offset=10 소비, input_len=40 → 남은 30 bytes 를 앞으로.
+    for (0..40) |i| buf[i] = @intCast(i);
+    try std.testing.expectEqual(@as(usize, 30), Client.compactInput(&buf, 40, 10));
+    // [10..40] (값 10..39) 이 [0..30] 으로 이동했는지 표본 확인.
+    try std.testing.expectEqual(@as(u8, 10), buf[0]);
+    try std.testing.expectEqual(@as(u8, 39), buf[29]);
+
+    // underflow 방어 ①: input_len=0, offset=24 (inner 가 전량 compact) → 0 그대로.
+    try std.testing.expectEqual(@as(usize, 0), Client.compactInput(&buf, 0, 24));
+
+    // underflow 방어 ②: input_len(10) < offset(24) → input_len 보존 (재compact X).
+    try std.testing.expectEqual(@as(usize, 10), Client.compactInput(&buf, 10, 24));
+
+    // 전량 소비: input_len == offset → rem 0.
+    try std.testing.expectEqual(@as(usize, 0), Client.compactInput(&buf, 24, 24));
+
+    // 소비 없음: offset == 0 → length 불변.
+    try std.testing.expectEqual(@as(usize, 50), Client.compactInput(&buf, 50, 0));
 }
