@@ -31,7 +31,7 @@ export default class TildazExtension extends Extension {
     this._settings = this.getSettings();
     this._appSystem = Shell.AppSystem.get_default();
     this._cfg = this._readConfig();
-    this._pendingId = 0;
+    this._mapWaitId = 0;
     this._managed = null; // make_above 해 둔 창 (disable 시 복원)
     this._placed = null; // placement 를 이미 적용한 창 (1회만)
 
@@ -45,13 +45,19 @@ export default class TildazExtension extends Extension {
       Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW | Shell.ActionMode.POPUP,
       () => this._toggle()
     );
+
+    // auto_start 면 로그인(enable) 시 미리 launch. hidden_start=false → 우측에 바로
+    // 보이게, true → 배치 후 숨김(hotkey 로 등장). auto_start=false 면 on-demand
+    // (첫 hotkey 에 launch). zig 는 GNOME 에서 autostart .desktop 을 삭제하므로
+    // lifecycle 은 여기(extension)가 단독으로 담당한다.
+    if (this._cfg.autoStart) this._launch(this._cfg.hiddenStart);
   }
 
   disable() {
     Main.wm.removeKeybinding(KEY);
-    if (this._pendingId) {
-      global.display.disconnect(this._pendingId);
-      this._pendingId = 0;
+    if (this._mapWaitId) {
+      global.window_manager.disconnect(this._mapWaitId);
+      this._mapWaitId = 0;
     }
     if (this._managed) {
       try {
@@ -68,7 +74,15 @@ export default class TildazExtension extends Extension {
 
   /** ~/.config/tildaz/config.json 읽기 (실패 시 안전한 기본값). */
   _readConfig() {
-    const out = { accel: "<Super>grave", dock: "top", wp: 50, hp: 100, op: 100 };
+    const out = {
+      accel: "<Super>grave",
+      dock: "top",
+      wp: 50,
+      hp: 100,
+      op: 100,
+      autoStart: true,
+      hiddenStart: false,
+    };
     try {
       const path = GLib.build_filenamev([
         GLib.get_home_dir(),
@@ -88,6 +102,8 @@ export default class TildazExtension extends Extension {
         if (typeof w.width_percent === "number") out.wp = w.width_percent;
         if (typeof w.height_percent === "number") out.hp = w.height_percent;
         if (typeof w.offset_percent === "number") out.op = w.offset_percent;
+        if (typeof j.auto_start === "boolean") out.autoStart = j.auto_start;
+        if (typeof j.hidden_start === "boolean") out.hiddenStart = j.hidden_start;
       }
     } catch (e) {
       console.log(`[tildaz] config read failed: ${e}`);
@@ -135,22 +151,7 @@ export default class TildazExtension extends Extension {
     const win = this._find();
 
     if (!win) {
-      const app = this._appSystem.lookup_app(DESKTOP_ID);
-      if (!app) {
-        Main.notify("TildaZ", `${DESKTOP_ID} not found — run dist/linux/install.sh`);
-        return;
-      }
-      // launch 후 첫 tildaz window-created 에서 배치 (Wayland mapped 대기 위해 약간 지연).
-      if (this._pendingId) global.display.disconnect(this._pendingId);
-      this._pendingId = global.display.connect("window-created", (_d, w) => {
-        const c = w.get_wm_class();
-        if (c === APP_ID || (c && c.toLowerCase() === APP_ID)) {
-          global.display.disconnect(this._pendingId);
-          this._pendingId = 0;
-          this._placeOnMap(w);
-        }
-      });
-      app.activate();
+      this._launch(false); // 첫 hotkey: launch 후 우측에 보이게
       return;
     }
 
@@ -177,23 +178,28 @@ export default class TildazExtension extends Extension {
     if (actor) Main.wm.skipNextEffect(actor);
   }
 
-  // 한 창에 대해 placement(move_resize_frame) 를 한 번만 수행. show 마다 재배치하면
-  // tildaz xdg buffer 재그리기 race 로 flicker 가 나므로, 최초 1회만 우측에 맞춘다.
-  _ensurePlacedOnce(win) {
-    if (this._placed === win) return;
-    this._place(win);
-    this._placed = win;
-  }
-
-  // 첫 launch 시 '중앙 작은창 → 우측' 전환을 숨긴다 (quake-mode 패턴). 창이 map 되는
-  // 순간 actor.opacity=0 으로 투명하게 + mutter 기본 생성 효과 제거, placement 를
-  // 적용하고 resize 가 반영되면(stage-views-changed) 그제서야 opacity 복원해 보인다.
-  // → 사용자는 중앙 작은창을 보지 못하고 우측에 자리잡은 채로 등장.
-  _placeOnMap(win) {
+  // tildaz 를 launch 하고 map 시그널에서 우측 배치. hidden=true 면 배치만 해두고
+  // 숨김(preload — hotkey 로 등장). 이미 떠 있으면 no-op.
+  _launch(hidden) {
+    if (this._find()) return;
+    const app = this._appSystem.lookup_app(DESKTOP_ID);
+    if (!app) {
+      Main.notify("TildaZ", `${DESKTOP_ID} not found — run dist/linux/install.sh`);
+      return;
+    }
+    // window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라 로그인 직후
+    // preload 에서 tildaz 를 놓친다(실측). map 시그널은 app_id 확정 후라 wm_class
+    // 로 안정 식별 가능 — 거기서 잡아 우측 배치(+첫 등장 trick). hidden=true 면
+    // 배치만 하고 숨김.
     const wm = global.window_manager;
-    const mapId = wm.connect("map", (_wm, actor) => {
-      if (actor.meta_window !== win) return;
-      wm.disconnect(mapId);
+    if (this._mapWaitId) wm.disconnect(this._mapWaitId);
+    this._mapWaitId = wm.connect("map", (_wm, actor) => {
+      const win = actor.meta_window;
+      const c = win.get_wm_class();
+      if (!(c === APP_ID || (c && c.toLowerCase() === APP_ID))) return;
+      wm.disconnect(this._mapWaitId);
+      this._mapWaitId = 0;
+
       actor.opacity = 0;
       wm.emit("kill-window-effects", actor);
       this._ensurePlacedOnce(win);
@@ -202,10 +208,14 @@ export default class TildazExtension extends Extension {
       const reveal = () => {
         if (shown) return;
         shown = true;
-        actor.opacity = 255;
-        Main.activateWindow(win);
+        actor.opacity = 255; // minimize 후 unminimize(hotkey show) 시 보이도록 복원
+        if (hidden) {
+          this._skipEffect(win); // preload: 우측에 배치만 하고 숨김
+          win.minimize();
+        } else {
+          Main.activateWindow(win);
+        }
       };
-      // resize 반영 직전 신호. 안 오는 경우 대비 짧은 fallback.
       const svId = actor.connect("stage-views-changed", () => {
         actor.disconnect(svId);
         reveal();
@@ -218,6 +228,15 @@ export default class TildazExtension extends Extension {
         return GLib.SOURCE_REMOVE;
       });
     });
+    app.activate();
+  }
+
+  // 한 창에 대해 placement(move_resize_frame) 를 한 번만 수행. show 마다 재배치하면
+  // tildaz xdg buffer 재그리기 race 로 flicker 가 나므로, 최초 1회만 우측에 맞춘다.
+  _ensurePlacedOnce(win) {
+    if (this._placed === win) return;
+    this._place(win);
+    this._placed = win;
   }
 
   /** config 의 dock_position/width/height/offset 으로 primary monitor workArea 기준 배치. */
