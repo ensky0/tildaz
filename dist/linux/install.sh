@@ -73,13 +73,38 @@ chmod 644 "$ICON_OUT"
 update-desktop-database "$APP_DIR" 2>/dev/null || true
 gtk-update-icon-cache -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
+# GNOME Shell extension — GNOME(mutter) 은 wlr-layer-shell 미지원이라 drop-down
+# placement / lifecycle(launch·show·hide) 을 extension 이 담당한다 (#228). GNOME
+# 환경에서만 의미(다른 DE 는 gnome-shell 이 없어 무시). 복사는 항상, enable 은
+# gnome-extensions 명령이 있을 때. Wayland 는 enable 후 로그아웃/로그인해야 적용.
+EXT_UUID="tildaz@ensky0.github.io"
+EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_UUID"
+EXT_MSG=""
+if [[ -d "$EXT_SRC" ]]; then
+    EXT_DST="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
+    mkdir -p "$EXT_DST"
+    cp -r "$EXT_SRC/." "$EXT_DST/"
+    if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d "$EXT_DST/schemas" ]]; then
+        glib-compile-schemas "$EXT_DST/schemas" 2>/dev/null || true
+    fi
+    if command -v gnome-extensions >/dev/null 2>&1; then
+        gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
+        EXT_MSG="$EXT_DST  (enabled — GNOME 로그아웃/로그인 후 적용)"
+    else
+        EXT_MSG="$EXT_DST  (복사됨 — GNOME 세션에서: gnome-extensions enable $EXT_UUID + 재로그인)"
+    fi
+fi
+
 echo "Installed:"
 echo "  $DESKTOP_OUT  (Exec=$TILDAZ_EXE)"
 echo "  $ICON_OUT"
+[[ -n "$EXT_MSG" ]] && echo "  $EXT_MSG"
 echo ""
 echo "Next:"
 echo "  - KDE Plasma 6: Alt+F2 → 'TildaZ' 또는 메뉴에서 실행 (portal app_id 인식)"
-echo "  - GNOME/Cinnamon/XFCE: Activities / 메뉴에서 'TildaZ' 검색 후 실행"
-echo "  - config: ~/.config/tildaz/config.json 자동 생성 (없으면)"
-echo "  - autostart: config.auto_start=true 면 다음 로그인부터 자동 시작"
-echo "    (~/.config/autostart/tildaz.desktop)"
+echo "  - GNOME: 위 extension 이 drop-down 위치/단축키/자동시작을 담당."
+echo "           Wayland 라 로그아웃→로그인해야 extension 이 활성화됨."
+echo "  - sway/Hyprland/wlroots: layer-shell 로 바로 drop-down (extension 불요)"
+echo "  - config: ~/.config/tildaz/config.json (auto_start/hidden_start/hotkey/위치)"
+echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 ~/.config/autostart/"
+echo "    tildaz.desktop 자동 생성. GNOME 은 extension 이 담당하므로 그 파일을 삭제함."
