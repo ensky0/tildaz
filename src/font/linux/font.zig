@@ -197,7 +197,7 @@ pub const Context = struct {
             const h_f: f32 = @floatFromInt(self.cell_height_px);
             self.cell_height_px = @intFromFloat(@max(1.0, h_f * line_height_ratio));
         }
-        log.appendLine("font", "applied ratios cell_w={} cell_h={} cell_width_ratio={d:.2} line_height_ratio={d:.2}", .{
+        log.appendLineVerbose("font", "applied ratios cell_w={} cell_h={} cell_width_ratio={d:.2} line_height_ratio={d:.2}", .{
             self.cell_width_px,
             self.cell_height_px,
             cell_width_ratio,
@@ -234,7 +234,7 @@ pub const Context = struct {
         for (self.faces[0..self.face_count], 0..) |slot, idx| {
             const existing = slot orelse continue;
             if (std.mem.eql(u8, existing.path, fc_result.path)) {
-                log.appendLine("font", "chain[{d}] dedup family={s} path={s} (same as chain[{d}])", .{
+                log.appendLineVerbose("font", "chain[{d}] dedup family={s} path={s} (same as chain[{d}])", .{
                     log_idx, family, fc_result.path, idx,
                 });
                 return;
@@ -292,7 +292,9 @@ pub const Context = struct {
         path_owned_by_face = true;
         self.face_count += 1;
 
-        log.appendLine("font", "chain[{d}] family={s} path={s}", .{ log_idx, family, fc_result.path });
+        // #197 — chain detail (path 포함) 은 verbose. primary 의 path 도 여기 남고,
+        // production 1줄 lifecycle 은 path 없이 cross-platform 동일 형식.
+        log.appendLineVerbose("font", "chain[{d}] family={s} path={s}", .{ log_idx, family, fc_result.path });
 
         if (self.face_count == 1) {
             if (m_idx != 0 and self.ft_api.load_glyph(ft_face, m_idx, 0) == 0) {
@@ -310,8 +312,11 @@ pub const Context = struct {
                 if (descent > 0) self.descent_px = @intCast(descent);
                 if (height > 0) self.cell_height_px = @intCast(height);
             }
-            log.appendLine("font", "primary metric cell_w={d} cell_h={d} ascent={d} descent={d}", .{
-                self.cell_width_px, self.cell_height_px, self.ascent_px, self.descent_px,
+            // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는
+            // platform 차이(mac/win 은 system font 라 path 없음)라 제외 — Linux
+            // path 는 위 chain verbose 에 남음. fallback chain / ratios 는 verbose.
+            log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+                family, self.cell_width_px, self.cell_height_px, self.ascent_px, self.descent_px,
             });
             self.placeholder = rasterOne(self.allocator, self.ft_api, ft_face, '?') catch self.placeholder;
         }

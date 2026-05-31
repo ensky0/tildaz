@@ -5,6 +5,7 @@ const std = @import("std");
 const dw = @import("directwrite.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const log = @import("../../log.zig");
 
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
@@ -138,6 +139,7 @@ pub const DWriteFontContext = struct {
     primary_family_len: u32 = 0,
     font_em_size: f32 = 0,
     ascent_px: f32 = 0,
+    descent_px: f32 = 0,
     cell_width_px: u32,
     cell_height_px: u32,
     // Caches (codepoint → face/index). Keeps fallback faces alive so atlas
@@ -238,6 +240,17 @@ pub const DWriteFontContext = struct {
         // ascent / du_per_em`.
         self.font_em_size = abs_height;
         self.ascent_px = abs_height * ascent / du_per_em;
+        self.descent_px = abs_height * @as(f32, @floatFromInt(metrics.descent)) / du_per_em;
+
+        // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는 win
+        // system font 라 제외. family 는 UTF-16 → UTF-8 변환.
+        var fam_buf: [128]u8 = undefined;
+        const fam_len = std.unicode.utf16LeToUtf8(&fam_buf, self.primary_family_name[0..self.primary_family_len]) catch 0;
+        log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+            fam_buf[0..fam_len], self.cell_width_px, self.cell_height_px,
+            @as(u32, @intFromFloat(@round(self.ascent_px))),
+            @as(u32, @intFromFloat(@round(self.descent_px))),
+        });
 
         // 5. Get IDWriteFactory2 for system font fallback
         var factory2: ?*dw.IDWriteFactory2 = null;

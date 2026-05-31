@@ -310,7 +310,7 @@ fn parseResponseBody(state: *ResponseWaitState, msg: *dbus.DBusMessage) void {
 
     var arr_iter: dbus.DBusMessageIter = .{};
     api.iter_recurse(&iter, &arr_iter);
-    log.appendLine("portal", "Response body code={d}, parsing results dict", .{code});
+    log.appendLineVerbose("portal", "Response body code={d}, parsing results dict", .{code});
     while (api.iter_get_arg_type(&arr_iter) == dbus.dbus_type_dict_entry) {
         var entry_iter: dbus.DBusMessageIter = .{};
         api.iter_recurse(&arr_iter, &entry_iter);

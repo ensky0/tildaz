@@ -2469,6 +2469,8 @@ pub fn run() !void {
     // `~/Library/Logs/tildaz.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
     log.logStart(build_options.version);
+    // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
+    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 

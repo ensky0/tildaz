@@ -65,6 +65,8 @@ pub fn run() !void {
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
     log.logStart(build_options.version);
     defer log.logStop(build_options.version);
+    // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
+    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
 
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();

@@ -66,6 +66,22 @@ pub fn appendLine(category: []const u8, comptime fmt: []const u8, args: anytype)
     writeRaw(buf[0 .. total + 1]);
 }
 
+/// #197 — verbose 토글. boot 시 한 번 set (main thread), 이후 read-only 라
+/// thread race 없음. true 일 때만 `appendLineVerbose` 가 출력.
+var g_verbose: bool = false;
+
+pub fn setVerbose(v: bool) void {
+    g_verbose = v;
+}
+
+/// #197 — protocol-level / timing / detail 전용 로그. `setVerbose(true)` (env
+/// `TILDAZ_VERBOSE`) 일 때만 출력. 기본(production)은 lifecycle + summary 만 남겨
+/// platform 간 분량 일관. 호출 형태는 `appendLine` 과 동일.
+pub fn appendLineVerbose(category: []const u8, comptime fmt: []const u8, args: anytype) void {
+    if (!g_verbose) return;
+    appendLine(category, fmt, args);
+}
+
 /// 여러 줄 블록을 timestamp / category prefix 없이 그대로 append. perf
 /// 스냅샷처럼 자체 헤더 / 포맷을 가진 텍스트용.
 pub fn appendBlock(text: []const u8) void {

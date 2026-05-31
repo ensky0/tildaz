@@ -8,6 +8,7 @@ const std = @import("std");
 const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const log = @import("../../log.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -168,6 +169,16 @@ pub const CoreTextFontContext = struct {
         // 약간 다를 수 있어 더 정확.
         _ = cap_height;
         const top_pad_pt: f32 = ascent - m_top_pt;
+
+        // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는 mac
+        // (system font) 에 없어 제외. ascent/descent 는 retina 적용 후 px 정수.
+        log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+            font_family,
+            cell_w_px,
+            cell_h_px,
+            @as(u32, @intFromFloat(@round(ascent * retina_scale))),
+            @as(u32, @intFromFloat(@round(descent * retina_scale))),
+        });
 
         return .{
             .primary_font = font,
