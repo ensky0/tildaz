@@ -89,8 +89,14 @@ pub fn run() !void {
     // 되므로 auto_start 값과 무관하게 생성하지 않고 삭제한다 (KDE/sway 에서 넘어온
     // 잔재도 제거). 그 외 DE 는 종전대로 auto_start 따라 enable/disable.
     if (gsettings_hotkey.isGnomeWithExtension(gpa.allocator())) {
+        // GNOME extension 이 launch/show/hide/placement 를 전담한다.
+        // - autostart .desktop 은 placement 전 중앙창을 만들어 불필요 → 삭제.
+        // - hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한
+        //   재launch 를 유발한다(실측). 무시하고 tildaz 는 항상 창을 만들며, 숨김
+        //   (hidden_start=true) 은 extension 이 config 를 읽어 minimize 로 처리한다.
+        g_config.?.hidden_start = false;
         autostart.disable(gpa.allocator());
-        log.appendLine("autostart", "GNOME + tildaz extension — autostart .desktop 삭제 (lifecycle 은 extension 담당)", .{});
+        log.appendLine("autostart", "GNOME + tildaz extension — autostart 삭제 + hidden_start 무시 (lifecycle 은 extension 담당)", .{});
     } else if (cfg.auto_start) {
         autostart.enable(gpa.allocator()) catch |err| {
             log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
