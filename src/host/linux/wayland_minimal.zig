@@ -1565,7 +1565,7 @@ const Client = struct {
     fn logBootElapsed(self: *Client, phase: []const u8) void {
         if (self.boot_timer) |*t| {
             const elapsed_ms = t.read() / std.time.ns_per_ms;
-            log.appendLine("startup", "boot phase={s} elapsed={d}ms (#205)", .{ phase, elapsed_ms });
+            log.appendLineVerbose("startup", "boot phase={s} elapsed={d}ms (#205)", .{ phase, elapsed_ms });
         }
     }
 
@@ -1574,7 +1574,7 @@ const Client = struct {
     fn logShowElapsed(self: *Client, phase: []const u8) void {
         if (self.show_timer) |*t| {
             const elapsed_ms = t.read() / std.time.ns_per_ms;
-            log.appendLine("startup", "show phase={s} elapsed={d}ms (#205)", .{ phase, elapsed_ms });
+            log.appendLineVerbose("startup", "show phase={s} elapsed={d}ms (#205)", .{ phase, elapsed_ms });
         }
     }
 
@@ -2076,7 +2076,7 @@ const Client = struct {
                 const new_scale = readU32(payload[0..4]);
                 if (new_scale != self.preferred_scale and new_scale > 0) {
                     self.preferred_scale = new_scale;
-                    log.appendLine("wayland", "fractional scale preferred={d}/120 (≈{d}.{d:0>2}x) source={s}", .{
+                    log.appendLineVerbose("wayland", "fractional scale preferred={d}/120 (≈{d}.{d:0>2}x) source={s}", .{
                         new_scale,
                         new_scale / 120,
                         (new_scale * 100 / 120) % 100,
@@ -2176,7 +2176,7 @@ const Client = struct {
                 // 진단 — KWin 이 우리 anchor + margin 설정을 받아 계산한 surface
                 // 의 logical 크기. 우리가 보낸 margin 의 합과 screen logical
                 // 크기 사이 mismatch 가 보이면 KWin 의 round 정책 추정 가능.
-                log.appendLine("wayland", "layer-surface configure serial={} logical_w={} logical_h={} scale={d}/120", .{
+                log.appendLineVerbose("wayland", "layer-surface configure serial={} logical_w={} logical_h={} scale={d}/120", .{
                     serial,
                     w,
                     h,

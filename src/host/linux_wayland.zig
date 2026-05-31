@@ -56,6 +56,8 @@ pub fn showFatalRunError(err: anyerror) void {
 pub fn run() !void {
     log.logStart(build_options.version);
     defer log.logStop(build_options.version);
+    // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
+    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
 
     if (std.process.hasEnvVarConstant("TILDAZ_LINUX_PTY_SMOKE")) {
         var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
