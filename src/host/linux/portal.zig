@@ -617,7 +617,7 @@ fn keysymDisplayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     return fbs.getWritten();
 }
 
-fn keysymGtkName(keysym: u32) []const u8 {
+pub fn keysymGtkName(keysym: u32) []const u8 {
     return switch (keysym) {
         // XKB F1..F12 — `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_F*`.
         0xffbe => "F1",
