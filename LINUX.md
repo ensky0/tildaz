@@ -252,12 +252,18 @@ Toolkit integration은 direct Wayland text-input 또는 clipboard가 실제로
 
 ## Desktop Matrix
 
-| Desktop / compositor | 초기 상태 | 기대 baseline | Full support blocker |
-|---|---|---|---|
-| Sway, Hyprland, Wayfire 등 wlroots 계열 | Full-support target | `xdg-shell` plus `wlr-layer-shell` when advertised | global shortcut과 IME behavior를 compositor/session별로 검증해야 한다. |
-| KDE Plasma Wayland | Full-support candidate | `xdg-shell`; layer-shell support는 실제 probe 필요 | Qt 없이 portal global shortcut과 layer-shell behavior가 가능한지 검증해야 한다. |
-| GNOME Wayland | Limited support first | `xdg-shell` normal app window | true drop-down placement는 GNOME Shell extension 등 유지 가능한 별도 경로가 필요할 수 있다. |
-| X11 sessions | 초기 범위 밖 | 없음 | 별도 backend 결정과 구현 이슈가 필요하다. |
+tildaz 는 **Wayland 전용** (X11 backend 없음). DE 는 *이름* 보다 **compositor (+ `wlr-layer-shell` 가용성)** 카테고리로 묶인다. drop-down(quake) 은 layer-shell, hotkey 자동 적용은 카테고리별 메커니즘이 다르다. DE별 진행은 각 이슈에서 추적 (#215 / #207 을 DE별로 재편성, 2026-05-31).
+
+| compositor 카테고리 | layer-shell (drop-down) | hotkey 자동 적용 | 대표 DE / 이슈 | 같은 카테고리 DE |
+|---|---|---|---|---|
+| **KWin** | ✅ | portal `GlobalShortcuts` + `kglobalaccel` takeover | KDE Plasma — [#225](https://github.com/ensky0/tildaz/issues/225) ✅완료 | — |
+| **wlroots** | ✅ | portal 또는 native (sway = `bindsym` i3-ipc) | sway [#226](https://github.com/ensky0/tildaz/issues/226) 🟨, Hyprland [#227](https://github.com/ensky0/tildaz/issues/227) ⏳ | Wayfire / river / niri |
+| **mutter** | ❌ (extension 필요) | gsettings custom-keybinding (libgio) | GNOME — [#228](https://github.com/ensky0/tildaz/issues/228) 🟨 | Ubuntu / Budgie / Pantheon |
+| **muffin** | ❌ (extension 필요) | gsettings (Cinnamon 변형 schema) | Cinnamon — [#229](https://github.com/ensky0/tildaz/issues/229) ⏳ | — |
+| **smithay** | ✅ (예상) | portal? / cosmic RON config (조사 필요) | COSMIC — [#230](https://github.com/ensky0/tildaz/issues/230) ⏳ | — |
+| **X11 전용** | — (Wayland 아님) | — | XFCE / MATE / LXDE | **현재 범위 밖** (tildaz Wayland 전용, 별도 backend 필요) |
+
+상태 범례: ✅완료 · 🟨진행(코드 완료/시연 잔여) · ⏳미착수.
 
 ## Capability Strategy
 
