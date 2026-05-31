@@ -26,6 +26,7 @@ const xkb = @import("xkb.zig");
 const dbus = @import("dbus.zig");
 const portal = @import("portal.zig");
 const single_instance = @import("single_instance.zig");
+const sway_ipc = @import("sway_ipc.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const system_open = @import("../../system_open.zig");
@@ -4802,6 +4803,10 @@ pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Co
         log.appendLine("toggle-ipc", "listener disabled: {s}", .{@errorName(err)});
         break :blk -1;
     };
+    // #207 — sway 는 GlobalShortcuts portal 미지원이라 portal Activated 가 안 온다.
+    // toggle listener 가 준비된 직후, sway 세션이면 `tildaz --toggle` 을 sway 의
+    // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
+    sway_ipc.registerToggleIfSway(allocator, cfg);
     try client.run();
 }
 

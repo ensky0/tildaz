@@ -516,7 +516,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. 기본값: `"f1"`. config = source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록.
+**Schema**: `string`. 기본값: `"f1"`. config = source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle` Unix socket IPC (#198) + DE native binding 자동 등록 (sway = `bindsym`, 아래 *sway* 단락).
 
 **잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:597-609](src/config.zig#L597-L609), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
 
@@ -564,9 +564,11 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
    - `setForeignShortcut(tildaz_actionId, [qt_key])` 로 우리 binding 적용.
    - `shortcut(tildaz_actionId)` 재 query 로 검증 — 우리 qt_key 와 다르면 fallback dialog.
    - **runtime cache only** — `kglobalshortcutsrc` 파일은 미갱신, KGlobalAccel daemon 재시작 시 reset 가능. tildaz 매 실행마다 mismatch 감지 → takeover 자동 재 적용.
-   - **GNOME / Cinnamon / sway / hyprland** — `tryDeSpecificHotkeyFix` 의 분기에서 미구현. 각 DE 의 mechanism 다름 (GNOME / Cinnamon = dconf 경로, sway / hyprland = config file) + runtime D-Bus API 없거나 invasive. 현재는 3차 fallback dialog 로.
+   - **GNOME / Cinnamon / hyprland** — `tryDeSpecificHotkeyFix` 의 분기에서 미구현. 각 DE 의 mechanism 다름 (GNOME / Cinnamon = dconf 경로, hyprland = portal GlobalShortcuts 재사용). 현재는 3차 fallback dialog 로. (sway 는 portal mismatch 경로가 아니라 아래 별도 단락.)
 
 3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
+
+**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 #198 single_instance (`tildaz --toggle`). `bindsym` 은 runtime-only (sway reload 시 사라짐, KDE `setForeignShortcut` 과 동일 성격) 이라 *매 실행* 등록 → config 가 source of truth. accel modifier 는 sway 친화 이름 (`Shift` / `Ctrl` / `Alt` / `Super`), key 이름은 `portal.keysymGtkName` (XKB name) 재사용. nested sway 1.12 시연: 등록 → `tildaz --toggle` → hide/show 사슬 확인.
 
 **Display 표기 (사용자 dialog / log)**: `keysymDisplayString` 가 Title case + `+` 분리 (`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`) — KDE 친화. portal-kde D-Bus 송신용 parse format (`LOGO+a`, `SHIFT+CTRL+grave`) 과 분리.
 
