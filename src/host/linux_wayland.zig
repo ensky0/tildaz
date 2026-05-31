@@ -5,6 +5,7 @@ const messages = @import("../messages.zig");
 const terminal = @import("../terminal.zig");
 const config_mod = @import("../config.zig");
 const autostart = @import("../autostart.zig");
+const gsettings_hotkey = @import("linux/gsettings_hotkey.zig");
 const wayland = @import("linux/wayland_minimal.zig");
 
 /// L13-α — 사용자 설정. macOS `g_config` 패턴 동등. `run()` 안에서 한 번
@@ -83,7 +84,14 @@ pub fn run() !void {
     // mac LaunchAgent / Windows Registry Run 동등. 매 부팅마다 enable / disable
     // 을 sync 해 사용자가 config 끄면 즉시 효과. install path 가 바뀌었어도
     // (다른 위치로 binary 옮겼어도) 현재 `selfExePath` 로 자동 갱신.
-    if (cfg.auto_start) {
+    // GNOME + tildaz extension 이면 lifecycle(launch/show/hide) 을 extension 이
+    // 담당한다. autostart `.desktop` 으로 뜨면 extension placement 전 중앙 일반창이
+    // 되므로 auto_start 값과 무관하게 생성하지 않고 삭제한다 (KDE/sway 에서 넘어온
+    // 잔재도 제거). 그 외 DE 는 종전대로 auto_start 따라 enable/disable.
+    if (gsettings_hotkey.isGnomeWithExtension(gpa.allocator())) {
+        autostart.disable(gpa.allocator());
+        log.appendLine("autostart", "GNOME + tildaz extension — autostart .desktop 삭제 (lifecycle 은 extension 담당)", .{});
+    } else if (cfg.auto_start) {
         autostart.enable(gpa.allocator()) catch |err| {
             log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
         };
