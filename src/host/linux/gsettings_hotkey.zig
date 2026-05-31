@@ -36,6 +36,9 @@ const schema_media_keys = "org.gnome.settings-daemon.plugins.media-keys";
 const schema_custom_kb = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
 const key_list = "custom-keybindings";
 const our_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz/";
+const extension_uuid = "tildaz@ensky0.github.io";
+const schema_gnome_shell = "org.gnome.shell";
+const key_enabled_extensions = "enabled-extensions";
 
 const Api = struct {
     schema_source_get_default: *const fn () callconv(.c) ?*c.GSettingsSchemaSource,
@@ -101,6 +104,17 @@ pub fn registerToggleIfGnome(allocator: std.mem.Allocator, cfg: *const config_mo
     };
     api.schema_unref(sch_kb);
 
+    // tildaz GNOME Shell extension(#228) 이 활성이면 그 extension 이 hotkey 를
+    // 전담한다 (extension 의 addKeybinding 과 gsettings custom keybinding 이 같은
+    // 키를 두 곳에 등록하면 충돌). 등록을 skip 하고 기존 우리 항목도 제거한다.
+    if (isExtensionEnabled(&api)) {
+        const media_ext = api.settings_new(schema_media_keys) orelse return;
+        defer api.object_unref(media_ext);
+        removeOurKeybinding(allocator, &api, media_ext);
+        log.appendLine("gnome", "tildaz extension 활성 — gsettings hotkey skip + 기존 custom-keybinding 제거 (extension 이 hotkey 전담)", .{});
+        return;
+    }
+
     // self exe path + command / accel 준비.
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
@@ -154,6 +168,45 @@ fn ensurePathInList(allocator: std.mem.Allocator, api: *const Api, media: *c.GSe
     }
     try list.append(allocator, our_path);
     try list.append(allocator, null); // NULL-terminate (g_settings_set_strv 요구).
+    _ = api.settings_set_strv(media, key_list, list.items.ptr);
+}
+
+/// `org.gnome.shell` 의 `enabled-extensions` 에 tildaz extension uuid 가 있나.
+fn isExtensionEnabled(api: *const Api) bool {
+    const source = api.schema_source_get_default() orelse return false;
+    const sch = api.schema_source_lookup(source, schema_gnome_shell, 1) orelse return false;
+    api.schema_unref(sch);
+    const s = api.settings_new(schema_gnome_shell) orelse return false;
+    defer api.object_unref(s);
+    const arr = api.settings_get_strv(s, key_enabled_extensions);
+    defer api.strfreev(arr);
+    if (arr) |e| {
+        var i: usize = 0;
+        while (e[i]) |item| : (i += 1) {
+            if (std.mem.eql(u8, std.mem.span(item), extension_uuid)) return true;
+        }
+    }
+    return false;
+}
+
+/// `custom-keybindings` 리스트에서 우리 path 제거 (extension 활성 시 중복 정리).
+fn removeOurKeybinding(allocator: std.mem.Allocator, api: *const Api, media: *c.GSettings) void {
+    const existing = api.settings_get_strv(media, key_list);
+    defer api.strfreev(existing);
+    if (existing == null) return;
+    var list: std.ArrayList(?[*:0]const u8) = .empty;
+    defer list.deinit(allocator);
+    var found = false;
+    var i: usize = 0;
+    while (existing.?[i]) |s| : (i += 1) {
+        if (std.mem.eql(u8, std.mem.span(s), our_path)) {
+            found = true;
+            continue;
+        }
+        list.append(allocator, s) catch return;
+    }
+    if (!found) return;
+    list.append(allocator, null) catch return;
     _ = api.settings_set_strv(media, key_list, list.items.ptr);
 }
 

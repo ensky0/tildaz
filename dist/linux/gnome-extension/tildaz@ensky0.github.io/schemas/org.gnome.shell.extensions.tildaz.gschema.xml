@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.tildaz" path="/org/gnome/shell/extensions/tildaz/">
+    <key name="toggle-hotkey" type="as">
+      <default><![CDATA[['<Super>grave']]]></default>
+      <summary>Toggle the TildaZ drop-down</summary>
+      <description>GTK accelerator(s). Overwritten on enable from ~/.config/tildaz/config.json "hotkey" (config = source of truth); this default only applies if the config is unreadable.</description>
+    </key>
+  </schema>
+</schemalist>
