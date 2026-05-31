@@ -320,17 +320,18 @@ jobs:
             zig_target: x86_64-linux-gnu.2.28
           - arch: aarch64
             zig_target: aarch64-linux-gnu.2.28
-        # aarch64 / rpm 는 ubuntu-22.04 의 rpm package 가 `aarch64-linux`
-        # platform entry 부재로 cross-build fail ("No compatible architectures
-        # found for build" — v0.5.0-rc4 시연 확정). `--target` / `_target_cpu`
-        # / `_target_os` / `_target_platform` 모두 명시해도 host arch 의
-        # /usr/lib/rpm/platform/ 에 그 platform 정의 없으면 lookup 실패. fix
-        # path 는 #211 추적 (옵션 a — GitHub Actions ARM64 runner 권장).
-        # 현재는 aarch64 Fedora/RHEL 사용자는 AppImage 또는 tar.gz fallback.
-        exclude:
+          # #211 — aarch64 rpm 은 ubuntu-22.04(x86_64 host)의 rpm package 에
+          # `aarch64-linux` platform 정의가 없어 cross-build 가 "No compatible
+          # architectures found for build" 로 fail (v0.5.0-rc4 확정). 다른
+          # (arch,format) 은 x86 runner cross-build OK (dpkg/tar/appimage 는
+          # metadata only) 지만 rpm 만 platform lookup 이 필요. → ARM64 runner
+          # (ubuntu-24.04-arm, 공개 repo 무료)에서 *native* rpmbuild 로 해결.
+          # zig 도 같은 arch 라 native build (cross 아님).
           - arch: aarch64
             format: rpm
-    runs-on: ubuntu-22.04
+            runner: ubuntu-24.04-arm
+    # 기본은 x86_64 호스트 cross-build, aarch64 rpm 만 ARM runner (#211).
+    runs-on: ${{ matrix.runner || 'ubuntu-22.04' }}
     steps:
       - name: Resolve tag / version
         id: vars
