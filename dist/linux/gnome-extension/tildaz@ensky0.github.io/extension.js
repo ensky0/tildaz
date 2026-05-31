@@ -147,11 +147,7 @@ export default class TildazExtension extends Extension {
         if (c === APP_ID || (c && c.toLowerCase() === APP_ID)) {
           global.display.disconnect(this._pendingId);
           this._pendingId = 0;
-          GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-            this._ensurePlacedOnce(w);
-            Main.activateWindow(w);
-            return GLib.SOURCE_REMOVE;
-          });
+          this._placeOnMap(w);
         }
       });
       app.activate();
@@ -187,6 +183,41 @@ export default class TildazExtension extends Extension {
     if (this._placed === win) return;
     this._place(win);
     this._placed = win;
+  }
+
+  // 첫 launch 시 '중앙 작은창 → 우측' 전환을 숨긴다 (quake-mode 패턴). 창이 map 되는
+  // 순간 actor.opacity=0 으로 투명하게 + mutter 기본 생성 효과 제거, placement 를
+  // 적용하고 resize 가 반영되면(stage-views-changed) 그제서야 opacity 복원해 보인다.
+  // → 사용자는 중앙 작은창을 보지 못하고 우측에 자리잡은 채로 등장.
+  _placeOnMap(win) {
+    const wm = global.window_manager;
+    const mapId = wm.connect("map", (_wm, actor) => {
+      if (actor.meta_window !== win) return;
+      wm.disconnect(mapId);
+      actor.opacity = 0;
+      wm.emit("kill-window-effects", actor);
+      this._ensurePlacedOnce(win);
+
+      let shown = false;
+      const reveal = () => {
+        if (shown) return;
+        shown = true;
+        actor.opacity = 255;
+        Main.activateWindow(win);
+      };
+      // resize 반영 직전 신호. 안 오는 경우 대비 짧은 fallback.
+      const svId = actor.connect("stage-views-changed", () => {
+        actor.disconnect(svId);
+        reveal();
+      });
+      GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
+        try {
+          actor.disconnect(svId);
+        } catch (_e) {}
+        reveal();
+        return GLib.SOURCE_REMOVE;
+      });
+    });
   }
 
   /** config 의 dock_position/width/height/offset 으로 primary monitor workArea 기준 배치. */

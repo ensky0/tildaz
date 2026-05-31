@@ -171,6 +171,16 @@ fn ensurePathInList(allocator: std.mem.Allocator, api: *const Api, media: *c.GSe
     _ = api.settings_set_strv(media, key_list, list.items.ptr);
 }
 
+/// GNOME 세션 + tildaz extension 활성 여부. linux_wayland 의 autostart 분기용 —
+/// 이 경우 launch/show/hide lifecycle 을 extension 이 담당하므로 zig 의 autostart
+/// `.desktop` 은 만들지 않고 (있으면) 삭제한다 (DE 전환 잔재 제거 + 로그인 시
+/// placement 전 중앙 일반창 방지).
+pub fn isGnomeWithExtension(allocator: std.mem.Allocator) bool {
+    if (!isGnomeDesktop(allocator)) return false;
+    const api = Api.load() orelse return false;
+    return isExtensionEnabled(&api);
+}
+
 /// `org.gnome.shell` 의 `enabled-extensions` 에 tildaz extension uuid 가 있나.
 fn isExtensionEnabled(api: *const Api) bool {
     const source = api.schema_source_get_default() orelse return false;
