@@ -27,6 +27,7 @@ const dbus = @import("dbus.zig");
 const portal = @import("portal.zig");
 const single_instance = @import("single_instance.zig");
 const sway_ipc = @import("sway_ipc.zig");
+const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const system_open = @import("../../system_open.zig");
@@ -4807,6 +4808,10 @@ pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Co
     // toggle listener 가 준비된 직후, sway 세션이면 `tildaz --toggle` 을 sway 의
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     sway_ipc.registerToggleIfSway(allocator, cfg);
+    // #207 — GNOME 도 layer-shell / portal GlobalShortcuts 가 없거나 불안정 →
+    // GNOME 세션이면 `tildaz --toggle` 을 custom keybinding (GSettings) 으로 자동
+    // 등록. 비-GNOME 면 no-op.
+    gsettings_hotkey.registerToggleIfGnome(allocator, cfg);
     try client.run();
 }
 
