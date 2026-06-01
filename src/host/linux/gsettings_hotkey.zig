@@ -221,7 +221,7 @@ fn removeOurKeybinding(allocator: std.mem.Allocator, api: *const Api, media: *c.
 }
 
 /// `XDG_CURRENT_DESKTOP` (콜론 구분 다중 토큰, 예 `ubuntu:GNOME`) 에 GNOME 토큰 여부.
-fn isGnomeDesktop(allocator: std.mem.Allocator) bool {
+pub fn isGnomeDesktop(allocator: std.mem.Allocator) bool {
     const de = std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch return false;
     defer allocator.free(de);
     var it = std.mem.tokenizeScalar(u8, de, ':');

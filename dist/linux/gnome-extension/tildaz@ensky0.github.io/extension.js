@@ -11,9 +11,11 @@
  * config = single source of truth: ~/.config/tildaz/config.json 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} 를 읽는다.
  *
- * Phase 1 — 기본 동작: app_id 감지 + config 기반 placement(move_resize_frame) +
- * make_above + stick + hotkey 토글(없으면 launch / focus 면 minimize / 아니면 show).
- * slide 애니메이션 / overview·Alt-Tab 숨김 / 멀티모니터 선택은 Phase 2.
+ * 동작: app_id 감지 + config 기반 placement(move_resize_frame) + make_above +
+ * stick + skip_taskbar(overview/Alt-Tab 에서 숨김) + hotkey 토글(focus 면 minimize
+ * / 아니면 show). hotkey 는 toggle 전용 — tildaz 가 안 떠 있으면 무동작(KDE/sway/
+ * Win/mac 과 동일한 일관모델). 실행은 autostart(enable 시 launch)/메뉴가 담당.
+ * slide 애니메이션 / 멀티모니터 선택은 향후.
  */
 
 import Meta from "gi://Meta";
@@ -34,6 +36,7 @@ export default class TildazExtension extends Extension {
     this._mapWaitId = 0;
     this._managed = null; // make_above 해 둔 창 (disable 시 복원)
     this._placed = null; // placement 를 이미 적용한 창 (1회만)
+    this._taskbarPatched = null; // skip_taskbar override 한 창 (disable 시 복원)
 
     // config.json 의 hotkey 를 gschema 키에 반영한 뒤 등록 (config = source of truth).
     if (this._cfg.accel) this._settings.set_strv(KEY, [this._cfg.accel]);
@@ -47,9 +50,10 @@ export default class TildazExtension extends Extension {
     );
 
     // auto_start 면 로그인(enable) 시 미리 launch. hidden_start=false → 우측에 바로
-    // 보이게, true → 배치 후 숨김(hotkey 로 등장). auto_start=false 면 on-demand
-    // (첫 hotkey 에 launch). zig 는 GNOME 에서 autostart .desktop 을 삭제하므로
-    // lifecycle 은 여기(extension)가 단독으로 담당한다.
+    // 보이게, true → 배치 후 숨김(hotkey 로 등장). auto_start=false 면 로그인 시
+    // 안 뜨고(메뉴/터미널로 수동 실행), F1 은 실행 중일 때만 toggle(미실행 시 무동작).
+    // zig 는 GNOME 에서 autostart .desktop 을 삭제하므로 launch lifecycle 은
+    // 여기(extension)가 단독으로 담당한다.
     if (this._cfg.autoStart) this._launch(this._cfg.hiddenStart);
   }
 
@@ -65,6 +69,13 @@ export default class TildazExtension extends Extension {
         this._managed.unstick();
       } catch (_e) {}
       this._managed = null;
+    }
+    if (this._taskbarPatched) {
+      // configurable:true 로 정의했으므로 delete → GObject prototype getter 복귀.
+      try {
+        delete this._taskbarPatched.skip_taskbar;
+      } catch (_e) {}
+      this._taskbarPatched = null;
     }
     this._settings = null;
     this._appSystem = null;
@@ -151,7 +162,9 @@ export default class TildazExtension extends Extension {
     const win = this._find();
 
     if (!win) {
-      this._launch(false); // 첫 hotkey: launch 후 우측에 보이게
+      // 일관모델: hotkey = toggle 전용. tildaz 가 안 떠 있으면 무동작
+      // (KDE/sway/Win/mac 모두 동일 — hotkey 는 실행 중인 창을 show/hide 만).
+      // 실행은 autostart(enable 시 launch) 또는 메뉴/터미널이 담당한다.
       return;
     }
 
@@ -279,6 +292,24 @@ export default class TildazExtension extends Extension {
     win.move_resize_frame(false, x, y, w, h);
     win.make_above();
     win.stick();
+    this._skipTaskbar(win);
     this._managed = win;
+  }
+
+  // overview(Activities)/Alt-Tab window switcher 에서 창을 숨긴다. mutter 가
+  // skip_taskbar 창을 두 목록에서 제외하므로, getter 를 true 로 override 한다
+  // (creation 시점에 GObject property 라 set 은 못 하고 instance getter 만 덮어씀).
+  // reference: quake-terminal quake-mode.js _configureSkipTaskbarProperty.
+  // hidden_start=true 의 로그인 백그라운드 대기(minimize)에서 단독 창이라도
+  // overview thumbnail 로 안 보이게 하는 게 목적 — KDE 의 숨김과 동일한 결과.
+  _skipTaskbar(win) {
+    if (this._taskbarPatched === win) return;
+    Object.defineProperty(win, "skip_taskbar", {
+      get() {
+        return true;
+      },
+      configurable: true,
+    });
+    this._taskbarPatched = win;
   }
 }

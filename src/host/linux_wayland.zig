@@ -84,19 +84,27 @@ pub fn run() !void {
     // mac LaunchAgent / Windows Registry Run 동등. 매 부팅마다 enable / disable
     // 을 sync 해 사용자가 config 끄면 즉시 효과. install path 가 바뀌었어도
     // (다른 위치로 binary 옮겼어도) 현재 `selfExePath` 로 자동 갱신.
-    // GNOME + tildaz extension 이면 lifecycle(launch/show/hide) 을 extension 이
-    // 담당한다. autostart `.desktop` 으로 뜨면 extension placement 전 중앙 일반창이
-    // 되므로 auto_start 값과 무관하게 생성하지 않고 삭제한다 (KDE/sway 에서 넘어온
-    // 잔재도 제거). 그 외 DE 는 종전대로 auto_start 따라 enable/disable.
-    if (gsettings_hotkey.isGnomeWithExtension(gpa.allocator())) {
-        // GNOME extension 이 launch/show/hide/placement 를 전담한다.
-        // - autostart .desktop 은 placement 전 중앙창을 만들어 불필요 → 삭제.
-        // - hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한
-        //   재launch 를 유발한다(실측). 무시하고 tildaz 는 항상 창을 만들며, 숨김
-        //   (hidden_start=true) 은 extension 이 config 를 읽어 minimize 로 처리한다.
-        g_config.?.hidden_start = false;
+    // GNOME 은 lifecycle(launch/show/hide) 을 extension 이 담당하므로 XDG
+    // autostart `.desktop` 을 쓰지 않는다 — GNOME 이면 extension 감지나 auto_start
+    // 값과 무관하게 무조건 삭제한다(KDE/sway 에서 GNOME 으로 바꿨을 때 남은 잔재
+    // 포함). 그 외 DE 는 auto_start 따라 enable/disable.
+    if (gsettings_hotkey.isGnomeDesktop(gpa.allocator())) {
+        // GNOME 은 autostart(로그인 launch)를 extension 이 담당한다. 따라서 XDG
+        // autostart `.desktop` 은 GNOME 에서 *절대 쓰지 않는다* — extension 감지
+        // 여부나 auto_start 값과 무관하게, 다른 DE(KDE/sway 등)에서 GNOME 으로
+        // 바꿨을 때 남은 잔재까지 무조건 확인 후 삭제한다. (autostart .desktop 이
+        // 살아 있으면 extension placement 전 중앙 일반창이 떠 lifecycle 이 꼬임.)
         autostart.disable(gpa.allocator());
-        log.appendLine("autostart", "GNOME + tildaz extension — autostart 삭제 + hidden_start 무시 (lifecycle 은 extension 담당)", .{});
+        if (gsettings_hotkey.isGnomeWithExtension(gpa.allocator())) {
+            // extension 이 창을 잡아 배치/숨김. hidden_start(surface 보류)는
+            // extension 이 잡을 *창 자체* 를 없애 무한 재launch 를 유발한다(실측).
+            // 무시하고 tildaz 는 항상 창을 만들며, 숨김(hidden_start=true)은
+            // extension 이 minimize + skip_taskbar 로 처리한다.
+            g_config.?.hidden_start = false;
+            log.appendLine("autostart", "GNOME + extension — autostart .desktop 삭제 + hidden_start override (lifecycle 은 extension 담당)", .{});
+        } else {
+            log.appendLine("autostart", "GNOME (extension 미감지) — autostart .desktop 삭제 (GNOME 의 autostart 는 extension 이 담당)", .{});
+        }
     } else if (cfg.auto_start) {
         autostart.enable(gpa.allocator()) catch |err| {
             log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
