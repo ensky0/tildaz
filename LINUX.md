@@ -258,7 +258,7 @@ tildaz 는 **Wayland 전용** (X11 backend 없음). DE 는 *이름* 보다 **com
 |---|---|---|---|---|
 | **KWin** | ✅ | portal `GlobalShortcuts` + `kglobalaccel` takeover | KDE Plasma — [#225](https://github.com/ensky0/tildaz/issues/225) ✅완료 | — |
 | **wlroots** | ✅ | portal 또는 native (sway = `bindsym` i3-ipc) | sway [#226](https://github.com/ensky0/tildaz/issues/226) 🟨, Hyprland [#227](https://github.com/ensky0/tildaz/issues/227) ⏳ | Wayfire / river / niri |
-| **mutter** | ❌ (extension 필요) | gsettings custom-keybinding (libgio) | GNOME — [#228](https://github.com/ensky0/tildaz/issues/228) 🟨 | Ubuntu / Budgie / Pantheon |
+| **mutter** | 🟨 tildaz 전용 extension (#228 — placement/flicker/preload lifecycle 동작; dialog [#231](https://github.com/ensky0/tildaz/issues/231) 미동작) | gsettings custom-keybinding (libgio) + extension 충돌 자동 skip | GNOME — [#228](https://github.com/ensky0/tildaz/issues/228) 🟨 | Ubuntu / Budgie / Pantheon |
 | **muffin** | ❌ (extension 필요) | gsettings (Cinnamon 변형 schema) | Cinnamon — [#229](https://github.com/ensky0/tildaz/issues/229) ⏳ | — |
 | **smithay** | ✅ (예상) | portal? / cosmic RON config (조사 필요) | COSMIC — [#230](https://github.com/ensky0/tildaz/issues/230) ⏳ | — |
 | **X11 전용** | — (Wayland 아님) | — | XFCE / MATE / LXDE | **현재 범위 밖** (tildaz Wayland 전용, 별도 backend 필요) |
