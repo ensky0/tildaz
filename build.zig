@@ -115,6 +115,20 @@ pub fn build(b: *std.Build) void {
         exe.subsystem = .Windows;
     }
 
+    if (is_linux_target) {
+        // Zig 0.15 는 x86_64-linux Debug 에서 self-hosted backend + self-hosted ELF
+        // 링커를 기본 쓰는데, 이 링커가 최신 GNU toolchain(예: GCC 16)이 crt1.o 에
+        // 넣는 `.sframe` 섹션의 R_X86_64_PC64 relocation 을 처리하지 못해 링크가
+        // fatal 로 실패한다. ReleaseSafe/Fast 는 기본 LLVM backend + LLD 라 정상인데
+        // (그 차이가 원인 단서였다), self-hosted backend + LLD 조합도 불안정해서
+        // (link command terminated unexpectedly) backend·linker 를 모두 LLVM/LLD 로
+        // 맞춘다 = ReleaseSafe 와 동일 toolchain. optimize 모드(Debug)는 그대로 둬
+        // 디버그 정보/safety check 는 유지된다. (Debug codegen 이 self-hosted 보다
+        // 느려지는 게 유일한 trade-off.)
+        exe.use_llvm = true;
+        exe.use_lld = true;
+    }
+
     if (is_macos_target) {
         // macOS 는 일반 zig-out/bin/tildaz CLI 가 아니라 .app 번들 형태로 install.
         // unsigned CLI binary 가 macOS Tahoe (26+) 의 정식 앱 라이프사이클에 안
