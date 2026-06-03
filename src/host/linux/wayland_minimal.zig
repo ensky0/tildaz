@@ -3667,10 +3667,17 @@ const Client = struct {
         const tab = self.activeTabOrNull() orelse return;
         const screen = tab.terminal.screens.active;
         const sel = screen.selection orelse return;
-        // ghostty selectionString 결과 ptr 의 ownership 이 우리 allocator 가 아니라
-        // ghostty 의 자체 arena. 우리 GPA 로 free 하면 invalid free panic. dupe 로
-        // 우리 buffer 만들어 그것만 보관 + free (#189 5차 시연 진단).
+        // ghostty selectionString 은 *우리가 넘긴 allocator* 로 결과를 할당하고 그
+        // ownership 을 caller(우리)에게 준다 (ghostty Screen.zig doc 명시: "owned by
+        // the caller and allocated using alloc"). 따라서 우리가 free 해야 한다 — 안
+        // 하면 누수(#235, 종료 시 GPA leak 리포트로 확인). 반환 타입은 sentinel slice
+        // ([:0]const u8, 할당 = len+1) 라 *그 타입 그대로* free 해야 길이가 맞다(defer).
+        // clipboard 에는 sentinel 없는 []u8 dupe 본을 보관한다 — setClipboardText 가
+        // []const u8 (길이 N) 로 free 하므로, sentinel 본(N+1)을 그대로 넘기면 길이
+        // 불일치 free 가 난다(이게 #189 에서 "invalid free panic" 으로 보였던 증상 —
+        // ownership 이 ghostty arena 라서가 아니라 sentinel 길이 불일치였음).
         const ghostty_text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
+        defer self.allocator.free(ghostty_text);
         if (ghostty_text.len == 0) return;
         const owned = self.allocator.dupe(u8, ghostty_text) catch return;
         self.setClipboardText(owned) catch {
