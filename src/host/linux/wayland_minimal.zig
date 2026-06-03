@@ -5007,10 +5007,10 @@ pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Co
     // toggle listener 가 준비된 직후, sway 세션이면 `tildaz --toggle` 을 sway 의
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     sway_ipc.registerToggleIfSway(allocator, cfg);
-    // #207 — GNOME 도 layer-shell / portal GlobalShortcuts 가 없거나 불안정 →
-    // GNOME 세션이면 `tildaz --toggle` 을 custom keybinding (GSettings) 으로 자동
-    // 등록. 비-GNOME 면 no-op.
-    gsettings_hotkey.registerToggleIfGnome(allocator, cfg);
+    // #207 / #229 — GNOME · Cinnamon 도 layer-shell / portal GlobalShortcuts 가
+    // 없거나 불안정 → 두 세션이면 `tildaz --toggle` 을 custom keybinding (GSettings)
+    // 으로 자동 등록. 그 외 DE 면 no-op.
+    gsettings_hotkey.registerToggleHotkey(allocator, cfg);
     try client.run();
 }
 

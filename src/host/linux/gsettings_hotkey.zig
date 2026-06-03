@@ -1,22 +1,27 @@
-//! #207 — GNOME global hotkey 자동 등록. GNOME (mutter) 은 layer-shell 미지원이라
-//! tildaz 가 xdg-shell 일반 창으로 뜨고, portal `GlobalShortcuts` 채택도 ongoing /
-//! 불안정이라 hotkey 실동작은 #198 single_instance (`tildaz --toggle`) 경로다. 이
-//! 모듈은 그 `tildaz --toggle` 을 GNOME 의 *custom keybinding* 으로 자동 등록한다 —
-//! 사용자가 GNOME Settings 를 손대지 않아도 `config.hotkey` 가 system binding 에
-//! 반영된다 (config = source of truth, KDE / sway 자동 적용과 동등 정책).
+//! #207 / #229 — GNOME · Cinnamon global hotkey 자동 등록. 둘 다 layer-shell
+//! 미지원이라 tildaz 가 xdg-shell 일반 창으로 뜨고, hotkey 실동작은 #198
+//! single_instance (`tildaz --toggle`) 경로다. 이 모듈은 그 `tildaz --toggle` 을
+//! 세션 DE 의 *custom keybinding* 으로 자동 등록한다 — 사용자가 시스템 설정을
+//! 손대지 않아도 `config.hotkey` 가 system binding 에 반영된다 (config = source of
+//! truth, KDE / sway 자동 적용과 동등 정책).
 //!
 //! 구현은 GSettings (`libgio-2.0`) 를 runtime dlopen — `gsettings` CLI subprocess 가
 //! 아니라 라이브러리 직접 (dbus / fontconfig / freetype / xkb / harfbuzz 와 같은
 //! dlopen 패턴 일관). dconf 직접 D-Bus 쓰기는 gvdb 직렬화가 필요해 회피.
 //!
-//! GNOME custom keybinding 표준 (3단계):
-//!   1. `org.gnome.settings-daemon.plugins.media-keys` 의 `custom-keybindings`
-//!      (strv of dconf paths) 에 우리 path 추가.
-//!   2. relocatable schema `...media-keys.custom-keybinding` 을 우리 path 로 열어
-//!   3. `name` / `command` / `binding` (모두 string) set.
+//! custom keybinding 표준 (3단계, GNOME · Cinnamon 공통):
+//!   1. 리스트 schema 의 리스트 key (strv) 에 우리 항목 추가.
+//!   2. relocatable per-binding schema 를 우리 고정 path 로 열어
+//!   3. `name` / `command` / `binding` set.
 //!
 //! 우리 path 는 고정 (`.../custom-keybindings/tildaz/`) — 매 실행 idempotent
 //! (덮어쓰기, customN 번호 충돌 회피). config 변경 시 다음 실행에 자동 반영.
+//!
+//! GNOME ↔ Cinnamon 차이 (`Variant` descriptor 로 흡수, 그 외 경로는 공통):
+//!   - 리스트에 넣는 값: GNOME 은 full dconf path, Cinnamon 은 id (`tildaz`).
+//!   - `binding` key 타입: GNOME 은 string, Cinnamon 은 strv (`['<Super>grave']`).
+//!   - schema / key / path 이름.
+//!   출처: linuxmint/Cinnamon 5a4c4a7, community.linuxmint.com/tutorial/view/1171.
 //!
 //! ⚠️ `g_settings_new` 은 schema 미설치 시 `g_error` → abort (프로세스 죽음). 반드시
 //! `g_settings_schema_source_lookup` 으로 schema 존재를 먼저 확인한 뒤 연다.
@@ -32,13 +37,53 @@ const c = struct {
     const GSettingsSchemaSource = opaque {};
 };
 
-const schema_media_keys = "org.gnome.settings-daemon.plugins.media-keys";
-const schema_custom_kb = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
-const key_list = "custom-keybindings";
-const our_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz/";
-const extension_uuid = "tildaz@ensky0.github.io";
+// --- GNOME (gnome-settings-daemon media-keys) ---
+const gnome_list_schema = "org.gnome.settings-daemon.plugins.media-keys";
+const gnome_list_key = "custom-keybindings";
+const gnome_kb_schema = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
+const gnome_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz/";
+
+// --- Cinnamon (cinnamon-settings-daemon keybindings) ---
+const cinnamon_list_schema = "org.cinnamon.desktop.keybindings";
+const cinnamon_list_key = "custom-list";
+const cinnamon_kb_schema = "org.cinnamon.desktop.keybindings.custom-keybinding";
+const cinnamon_path = "/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz/";
+const cinnamon_id = "tildaz";
+
 const schema_gnome_shell = "org.gnome.shell";
 const key_enabled_extensions = "enabled-extensions";
+const extension_uuid = "tildaz@ensky0.github.io";
+
+/// GSettings custom-keybinding 등록의 DE별 차이를 담는 descriptor. GNOME 과
+/// Cinnamon 은 같은 3단계 (리스트에 항목 추가 → relocatable schema 를 우리 path 로
+/// 열기 → name/command/binding set) 지만 (1) 리스트에 넣는 값이 GNOME 은 full dconf
+/// path, Cinnamon 은 id, (2) `binding` key 가 GNOME 은 string, Cinnamon 은 strv 다.
+const Variant = struct {
+    list_schema: [*:0]const u8,
+    list_key: [*:0]const u8,
+    kb_schema: [*:0]const u8,
+    path: [*:0]const u8,
+    list_value: [*:0]const u8,
+    binding_is_strv: bool,
+};
+
+const gnome_variant = Variant{
+    .list_schema = gnome_list_schema,
+    .list_key = gnome_list_key,
+    .kb_schema = gnome_kb_schema,
+    .path = gnome_path,
+    .list_value = gnome_path, // GNOME 리스트는 full dconf path 를 담는다.
+    .binding_is_strv = false,
+};
+
+const cinnamon_variant = Variant{
+    .list_schema = cinnamon_list_schema,
+    .list_key = cinnamon_list_key,
+    .kb_schema = cinnamon_kb_schema,
+    .path = cinnamon_path,
+    .list_value = cinnamon_id, // Cinnamon 리스트는 id 만 담는다.
+    .binding_is_strv = true,
+};
 
 const Api = struct {
     schema_source_get_default: *const fn () callconv(.c) ?*c.GSettingsSchemaSource,
@@ -76,49 +121,74 @@ const Api = struct {
     }
 };
 
-/// boot 진입점 — 현재 세션이 GNOME 이면 toggle hotkey 를 custom keybinding 으로
-/// 자동 등록. GNOME 이 아니거나 (schema 미설치 / libgio 없음) 등록 실패는 모두
-/// graceful — log 만 남기고 반환. single_instance toggle listener 는 그대로
-/// 살아 있어 사용자 수동 등록도 가능.
-pub fn registerToggleIfGnome(allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
-    if (!isGnomeDesktop(allocator)) return;
+/// boot 진입점 — 현재 세션이 GNOME 또는 Cinnamon 이면 toggle hotkey 를 custom
+/// keybinding 으로 자동 등록. 그 외 DE 거나 (schema 미설치 / libgio 없음) 등록
+/// 실패는 모두 graceful — log 만 남기고 반환. single_instance toggle listener 는
+/// 그대로 살아 있어 사용자 수동 등록도 가능.
+pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
+    const de: enum { gnome, cinnamon } = if (isGnomeDesktop(allocator))
+        .gnome
+    else if (isCinnamonDesktop(allocator))
+        .cinnamon
+    else
+        return;
 
     const api = Api.load() orelse {
-        log.appendLine("gnome", "libgio-2.0 dlopen 실패 — custom keybinding 자동 등록 skip", .{});
+        log.appendLine("gsettings-hotkey", "libgio-2.0 dlopen 실패 — custom keybinding 자동 등록 skip", .{});
         return;
     };
-
-    // schema 존재 확인 (g_settings_new abort 회피).
     const source = api.schema_source_get_default() orelse {
-        log.appendLine("gnome", "GSettings schema source 없음 — skip", .{});
+        log.appendLine("gsettings-hotkey", "GSettings schema source 없음 — skip", .{});
         return;
     };
-    const sch_media = api.schema_source_lookup(source, schema_media_keys, 1) orelse {
-        log.appendLine("gnome", "schema {s} 미설치 (gnome-settings-daemon 없음?) — skip", .{schema_media_keys});
-        return;
-    };
-    api.schema_unref(sch_media);
-    const sch_kb = api.schema_source_lookup(source, schema_custom_kb, 1) orelse {
-        log.appendLine("gnome", "relocatable schema {s} 미설치 — skip", .{schema_custom_kb});
-        return;
-    };
-    api.schema_unref(sch_kb);
 
-    // tildaz GNOME Shell extension(#228) 이 활성이면 그 extension 이 hotkey 를
-    // 전담한다 (extension 의 addKeybinding 과 gsettings custom keybinding 이 같은
-    // 키를 두 곳에 등록하면 충돌). 등록을 skip 하고 기존 우리 항목도 제거한다.
-    if (isExtensionEnabled(&api)) {
-        const media_ext = api.settings_new(schema_media_keys) orelse return;
-        defer api.object_unref(media_ext);
-        removeOurKeybinding(allocator, &api, media_ext);
-        log.appendLine("gnome", "tildaz extension 활성 — gsettings hotkey skip + 기존 custom-keybinding 제거 (extension 이 hotkey 전담)", .{});
-        return;
+    switch (de) {
+        .gnome => {
+            if (!schemasPresent(&api, source, gnome_variant)) {
+                log.appendLine("gnome", "media-keys custom-keybinding schema 미설치 (gnome-settings-daemon 없음?) — skip", .{});
+                return;
+            }
+            // tildaz GNOME Shell extension(#228) 이 활성이면 그 extension 이 hotkey 를
+            // 전담한다 (extension 의 addKeybinding 과 gsettings custom keybinding 이
+            // 같은 키를 두 곳에 등록하면 충돌). 등록을 skip 하고 기존 항목도 제거한다.
+            if (isExtensionEnabled(&api)) {
+                const media_ext = api.settings_new(gnome_variant.list_schema) orelse return;
+                defer api.object_unref(media_ext);
+                removeFromList(allocator, &api, media_ext, gnome_variant);
+                log.appendLine("gnome", "tildaz extension 활성 — gsettings hotkey skip + 기존 custom-keybinding 제거 (extension 이 hotkey 전담)", .{});
+                return;
+            }
+            registerWithVariant(allocator, &api, cfg, gnome_variant);
+        },
+        .cinnamon => {
+            if (!schemasPresent(&api, source, cinnamon_variant)) {
+                log.appendLine("cinnamon", "keybindings custom-keybinding schema 미설치 — skip", .{});
+                return;
+            }
+            // #229 Phase 2 — Cinnamon drop-down extension/applet 은 미구현. hotkey 는
+            // #231 로 이미 뜨는 일반 xdg-shell 창을 toggle 한다. Cinnamon extension 이
+            // 생기면 GNOME 처럼 "extension 활성 시 skip" 분기를 여기 추가한다.
+            registerWithVariant(allocator, &api, cfg, cinnamon_variant);
+        },
     }
+}
 
+/// `Variant` 의 리스트 schema 와 relocatable per-binding schema 가 모두 설치돼
+/// 있는지 (`g_settings_new` abort 회피). 둘 다 있으면 true.
+fn schemasPresent(api: *const Api, source: *c.GSettingsSchemaSource, v: Variant) bool {
+    const sch_list = api.schema_source_lookup(source, v.list_schema, 1) orelse return false;
+    api.schema_unref(sch_list);
+    const sch_kb = api.schema_source_lookup(source, v.kb_schema, 1) orelse return false;
+    api.schema_unref(sch_kb);
+    return true;
+}
+
+/// 3단계 등록 (GNOME · Cinnamon 공통). 차이는 모두 `v` 에서 읽는다.
+fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *const config_mod.Config, v: Variant) void {
     // self exe path + command / accel 준비.
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
-        log.appendLine("gnome", "selfExePath 실패: {s} — skip", .{@errorName(err)});
+        log.appendLine("gsettings-hotkey", "selfExePath 실패: {s} — skip", .{@errorName(err)});
         return;
     };
     var cmd_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
@@ -126,49 +196,93 @@ pub fn registerToggleIfGnome(allocator: std.mem.Allocator, cfg: *const config_mo
     var accel_buf: [96]u8 = undefined;
     const accel = buildGtkAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers) catch return;
 
-    // 1단계 — custom-keybindings 리스트에 우리 path 추가 (없을 때만).
-    const media = api.settings_new(schema_media_keys) orelse {
-        log.appendLine("gnome", "g_settings_new(media-keys) 실패 — skip", .{});
-        return;
-    };
-    defer api.object_unref(media);
-    ensurePathInList(allocator, &api, media) catch |err| {
-        log.appendLine("gnome", "custom-keybindings 리스트 갱신 실패: {s} — skip", .{@errorName(err)});
-        return;
-    };
-
-    // 2/3단계 — relocatable schema 를 우리 path 로 열어 name/command/binding set.
-    const kb = api.settings_new_with_path(schema_custom_kb, our_path) orelse {
-        log.appendLine("gnome", "g_settings_new_with_path 실패 — skip", .{});
+    // ⚠️ 순서 중요 — name/command/binding 을 **먼저** set 하고, 리스트 추가를
+    // **마지막**에 한다. Cinnamon 은 `changed::custom-list` 를 런타임에 감시해 새
+    // 항목을 즉시 bind 하는데, 리스트를 먼저 바꾸면 그 신호를 받는 순간 아직 빈
+    // command/binding 을 읽고는 이후 값 변경은 (custom-list 가 안 바뀌니) 다시 안
+    // 읽어 — 재로그인 전까지 hotkey 가 안 먹는다 (#229 실측, 재로그인하면 처음부터
+    // 값이 다 있는 상태로 읽어 동작). 값을 먼저 넣어두면 리스트 추가 신호 한 번에
+    // 라이브로 bind 된다. GNOME (gnome-settings-daemon) 은 기존 순서로도 동작했고
+    // 이 순서로도 무해 — 두 DE 공통으로 더 안전하다.
+    // 1/2단계 — relocatable schema 를 우리 path 로 열어 name/command/binding set.
+    const kb = api.settings_new_with_path(v.kb_schema, v.path) orelse {
+        log.appendLine("gsettings-hotkey", "g_settings_new_with_path 실패 — skip", .{});
         return;
     };
     defer api.object_unref(kb);
     _ = api.settings_set_string(kb, "name", "TildaZ");
     _ = api.settings_set_string(kb, "command", command);
-    _ = api.settings_set_string(kb, "binding", accel);
+    if (v.binding_is_strv) {
+        // Cinnamon `binding` 은 strv — ['<Super>grave'] 형식.
+        const arr = [_]?[*:0]const u8{ accel.ptr, null };
+        _ = api.settings_set_strv(kb, "binding", &arr);
+    } else {
+        _ = api.settings_set_string(kb, "binding", accel);
+    }
+    // 값을 dconf 백엔드에 먼저 flush — 다음 리스트 변경 신호를 Cinnamon 이 받을 때
+    // 값이 이미 있도록 보장한다 (단일 dconf 백엔드라 쓰기 순서는 보존되지만, 명시
+    // sync 로 race 여지를 없앤다).
     api.settings_sync();
 
-    log.appendLine("gnome", "custom keybinding 자동 등록 OK — binding={s} command={s} (path={s})", .{ accel, command, our_path });
+    // 3단계 — 리스트에 우리 항목 추가 (없을 때만; idempotent). 이 변경이 Cinnamon
+    // 의 즉시 re-bind 를 트리거한다 (값은 위에서 이미 들어가 있음).
+    const list = api.settings_new(v.list_schema) orelse {
+        log.appendLine("gsettings-hotkey", "g_settings_new({s}) 실패 — skip", .{v.list_schema});
+        return;
+    };
+    defer api.object_unref(list);
+    ensureInList(allocator, api, list, v.list_key, v.list_value) catch |err| {
+        log.appendLine("gsettings-hotkey", "{s} 리스트 갱신 실패: {s} — skip", .{ v.list_key, @errorName(err) });
+        return;
+    };
+    api.settings_sync();
+
+    log.appendLine("gsettings-hotkey", "custom keybinding 자동 등록 OK — binding={s} command={s} (path={s})", .{ accel, command, v.path });
 }
 
-/// `custom-keybindings` strv 에 우리 path 가 없으면 추가. 있으면 no-op (idempotent).
-fn ensurePathInList(allocator: std.mem.Allocator, api: *const Api, media: *c.GSettings) !void {
-    const existing = api.settings_get_strv(media, key_list);
+/// 리스트 strv (`key`) 에 `value` 가 없으면 추가. 있으면 no-op (idempotent).
+/// 기존 항목 (`__dummy__` 등) 은 보존한다.
+fn ensureInList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, key: [*:0]const u8, value: [*:0]const u8) !void {
+    const existing = api.settings_get_strv(settings, key);
     defer api.strfreev(existing);
 
     var list: std.ArrayList(?[*:0]const u8) = .empty;
     defer list.deinit(allocator);
 
+    const want = std.mem.span(value);
     if (existing) |e| {
         var i: usize = 0;
         while (e[i]) |s| : (i += 1) {
-            if (std.mem.eql(u8, std.mem.span(s), our_path)) return; // 이미 등록됨.
+            if (std.mem.eql(u8, std.mem.span(s), want)) return; // 이미 등록됨.
             try list.append(allocator, s);
         }
     }
-    try list.append(allocator, our_path);
+    try list.append(allocator, value);
     try list.append(allocator, null); // NULL-terminate (g_settings_set_strv 요구).
-    _ = api.settings_set_strv(media, key_list, list.items.ptr);
+    _ = api.settings_set_strv(settings, key, list.items.ptr);
+}
+
+/// 리스트 strv (`v.list_key`) 에서 우리 항목 (`v.list_value`) 제거 (GNOME extension
+/// 활성 시 중복 정리).
+fn removeFromList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, v: Variant) void {
+    const existing = api.settings_get_strv(settings, v.list_key);
+    defer api.strfreev(existing);
+    if (existing == null) return;
+    var list: std.ArrayList(?[*:0]const u8) = .empty;
+    defer list.deinit(allocator);
+    const want = std.mem.span(v.list_value);
+    var found = false;
+    var i: usize = 0;
+    while (existing.?[i]) |s| : (i += 1) {
+        if (std.mem.eql(u8, std.mem.span(s), want)) {
+            found = true;
+            continue;
+        }
+        list.append(allocator, s) catch return;
+    }
+    if (!found) return;
+    list.append(allocator, null) catch return;
+    _ = api.settings_set_strv(settings, v.list_key, list.items.ptr);
 }
 
 /// GNOME 세션 + tildaz extension 활성 여부. linux_wayland 의 autostart 분기용 —
@@ -199,41 +313,34 @@ fn isExtensionEnabled(api: *const Api) bool {
     return false;
 }
 
-/// `custom-keybindings` 리스트에서 우리 path 제거 (extension 활성 시 중복 정리).
-fn removeOurKeybinding(allocator: std.mem.Allocator, api: *const Api, media: *c.GSettings) void {
-    const existing = api.settings_get_strv(media, key_list);
-    defer api.strfreev(existing);
-    if (existing == null) return;
-    var list: std.ArrayList(?[*:0]const u8) = .empty;
-    defer list.deinit(allocator);
-    var found = false;
-    var i: usize = 0;
-    while (existing.?[i]) |s| : (i += 1) {
-        if (std.mem.eql(u8, std.mem.span(s), our_path)) {
-            found = true;
-            continue;
-        }
-        list.append(allocator, s) catch return;
-    }
-    if (!found) return;
-    list.append(allocator, null) catch return;
-    _ = api.settings_set_strv(media, key_list, list.items.ptr);
-}
-
 /// `XDG_CURRENT_DESKTOP` (콜론 구분 다중 토큰, 예 `ubuntu:GNOME`) 에 GNOME 토큰 여부.
 pub fn isGnomeDesktop(allocator: std.mem.Allocator) bool {
+    return desktopHasToken(allocator, &.{"GNOME"});
+}
+
+/// `XDG_CURRENT_DESKTOP` 에 Cinnamon 토큰 여부. Linux Mint 는 `X-Cinnamon`,
+/// 일부 배포 / 설정은 `Cinnamon` — 둘 다 인정.
+pub fn isCinnamonDesktop(allocator: std.mem.Allocator) bool {
+    return desktopHasToken(allocator, &.{ "X-Cinnamon", "Cinnamon" });
+}
+
+/// `XDG_CURRENT_DESKTOP` 의 콜론 구분 토큰 중 하나라도 `wanted` 에 (대소문자 무시)
+/// 들어 있나.
+fn desktopHasToken(allocator: std.mem.Allocator, wanted: []const []const u8) bool {
     const de = std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch return false;
     defer allocator.free(de);
     var it = std.mem.tokenizeScalar(u8, de, ':');
     while (it.next()) |tok| {
-        if (std.ascii.eqlIgnoreCase(tok, "GNOME")) return true;
+        for (wanted) |w| {
+            if (std.ascii.eqlIgnoreCase(tok, w)) return true;
+        }
     }
     return false;
 }
 
-/// `config.hotkey` → GTK accelerator (GNOME `binding` 형식). modifier 는
-/// `<Control><Shift><Alt><Super>` (gtk_accelerator_parse 표준), key 이름은
-/// `portal.keysymGtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
+/// `config.hotkey` → GTK accelerator (GNOME `binding` 형식, Cinnamon strv 의 원소).
+/// modifier 는 `<Control><Shift><Alt><Super>` (gtk_accelerator_parse 표준), key
+/// 이름은 `portal.keysymGtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
 fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     const H = config_mod.Hotkey;
     var fbs = std.io.fixedBufferStream(buf);
