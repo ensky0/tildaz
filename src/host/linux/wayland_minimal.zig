@@ -416,6 +416,15 @@ pub const DialogOverlay = struct {
     // --- wayland 객체 ---
     surface_id: u32 = 0,
     layer_surface_id: u32 = 0,
+    /// #231 — layer-shell 미advertise (GNOME mutter / Cinnamon muffin) 시 dialog
+    /// 를 일반 xdg_toplevel 로 띄운다. layer_surface_id 와 상호배타 — 둘 중 하나만
+    /// 0 아님. 그리기/버퍼/입력/dismiss 경로는 surface_id 기준이라 공유.
+    xdg_surface_id: u32 = 0,
+    xdg_toplevel_id: u32 = 0,
+    /// xdg 경로 — xdg_toplevel.configure 가 알려준 크기(logical). 같은 commit
+    /// 의 xdg_surface.configure 에서 ack 후 이 값으로 paint. 0 이면 요청 크기 유지.
+    pending_w_logical: u32 = 0,
+    pending_h_logical: u32 = 0,
     viewport_id: u32 = 0,
     /// #210 — dialog 자체 fractional_scale 객체. main 의 fractional_scale 와
     /// 독립 — dialog 가 main createShellObjects *이전* 띄울 때 (예: boot 중
@@ -1488,6 +1497,29 @@ const Client = struct {
         };
     }
 
+    /// #231 — KDE/layer dialog 를 *터미널 위 중앙* 에 놓기 위한 margin(logical,
+    /// top/left). GNOME 의 transient-over-parent 배치와 시각 통일. 모든 dock 이
+    /// 4-edge anchor + 4 margin 이라 터미널 rect = 화면에서 그 4 margin 만큼 inset
+    /// (= `x=ml, y=mt, w=sw−ml−mr, h=sh−mt−mb`, uniform). 그 rect 중앙에 dialog
+    /// (logical_w×logical_h)를 놓고 화면 밖으로 안 나가게 clamp.
+    fn dialogCenterMargins(self: *const Client, logical_w: i32, logical_h: i32) struct { top: i32, left: i32 } {
+        const sw_i: i32 = if (self.screen_width > 0) self.screen_width else screen_fallback_width;
+        const sh_i: i32 = if (self.screen_height > 0) self.screen_height else screen_fallback_height;
+        const main = self.computeLayerLayout();
+        // 터미널 rect → logical.
+        const tx_l = self.physicalToLogical(main.margin_left);
+        const ty_l = self.physicalToLogical(main.margin_top);
+        const tw_l = self.physicalToLogical(sw_i - main.margin_left - main.margin_right);
+        const th_l = self.physicalToLogical(sh_i - main.margin_top - main.margin_bottom);
+        const sw_l = self.physicalToLogical(sw_i);
+        const sh_l = self.physicalToLogical(sh_i);
+        var dx = tx_l + @divTrunc(tw_l - logical_w, 2);
+        var dy = ty_l + @divTrunc(th_l - logical_h, 2);
+        dx = std.math.clamp(dx, 0, @max(0, sw_l - logical_w));
+        dy = std.math.clamp(dy, 0, @max(0, sh_l - logical_h));
+        return .{ .top = dy, .left = dx };
+    }
+
     /// L8-β — wl_output 의 mode (current flag 인 것만) / done 처리. geometry /
     /// scale 은 아직 안 씀 (HiDPI / rotation 은 후속 sub-step). transform 도
     /// 무시 — 일반 monitor 의 default 0 (normal) 가정.
@@ -2186,6 +2218,31 @@ const Client = struct {
                 self.requestDismissDialog();
                 return;
             }
+        }
+        // #231 — dialog xdg_toplevel events (layer-shell 없는 mutter/muffin).
+        // configure(opcode 0): width/height(+states) — 0 이면 "you decide" 라
+        // 보관한 요청 크기 유지. close(opcode 1): 사용자가 창 닫음 → dismiss.
+        if (self.dialog.xdg_toplevel_id != 0 and id == self.dialog.xdg_toplevel_id) {
+            if (opcode == 0 and payload.len >= 8) {
+                const w = readU32(payload[0..4]);
+                const h = readU32(payload[4..8]);
+                if (w > 0) self.dialog.pending_w_logical = w;
+                if (h > 0) self.dialog.pending_h_logical = h;
+                return;
+            }
+            if (opcode == 1) {
+                log.appendLine("dialog", "dialog xdg_toplevel closed by user/compositor", .{});
+                self.requestDismissDialog();
+                return;
+            }
+        }
+        // #231 — dialog xdg_surface configure(opcode 0): ack(opcode 4) 후 보관한
+        // 크기로 공통 paint. (layer 경로의 handleDialogConfigure 와 ack opcode 만 다름.)
+        if (self.dialog.xdg_surface_id != 0 and id == self.dialog.xdg_surface_id and opcode == 0 and payload.len >= 4) {
+            const serial = readU32(payload[0..4]);
+            try self.sendArgs(self.dialog.xdg_surface_id, 4, &.{serial});
+            try self.applyDialogSizeAndPaint(self.dialog.pending_w_logical, self.dialog.pending_h_logical);
+            return;
         }
         // L8-α — zwlr_layer_surface_v1 events. configure(serial, w, h) 와
         // closed 두 가지. configure 는 xdg_surface configure 와 동일한 ack
@@ -4294,9 +4351,16 @@ const Client = struct {
             self.running = false;
             return;
         }
-        // Cancel — `closed` 된 메인 surface 를 create-before-destroy 로 깜박임 없이
-        // 교체. 다음 Alt+F4 가 다시 동작하려면 새 surface 필요 (#216).
-        self.swapMainSurfaceSeamless();
+        // Cancel — 메인 surface 처리는 close 가 온 경로에 따라 다르다.
+        // - layer-shell(KWin): `closed` 가 메인 surface 를 죽이므로(재사용 불가)
+        //   create-before-destroy 로 깜박임 없이 교체해야 다음 Alt+F4 가 동작(#216).
+        // - xdg-shell(mutter/muffin): `xdg_toplevel.close` 는 권고일 뿐 surface 가
+        //   살아있다 → 재생성 불필요. 재생성하면 새 map 을 GNOME 확장(#228)이 다시
+        //   잡아 placement+(hidden_start면)minimize 로 *숨겨버린다*(#231 시연 회귀).
+        //   surface 가 그대로라 아무것도 안 하면 터미널이 그 자리에 유지된다.
+        if (self.layer_surface_id != 0) {
+            self.swapMainSurfaceSeamless();
+        }
     }
 
     fn dismissDialog(self: *Client) void {
@@ -4417,11 +4481,11 @@ const Client = struct {
     /// `handleDialogConfigure` 가 ack + buffer attach 담당.
     fn createDialogSurface(self: *Client, logical_w: u32, logical_h: u32) !void {
         if (self.dialog.surface_id != 0) return;
-        if (self.layer_shell_id == 0) {
-            // xdg-shell fallback 환경 (GNOME mutter 등) — layer-shell overlay
-            // 미가용. log + 즉시 dismiss state 로 — 사용자가 dialog 호출했는데
-            // 영영 안 뜨는 trap 회피. (xdg-popup fallback 은 후속 별 작업.)
-            log.appendLine("dialog", "createDialogSurface skipped — zwlr_layer_shell_v1 unavailable", .{});
+        if (self.layer_shell_id == 0 and self.wm_base_id == 0) {
+            // role object 를 만들 protocol 이 전혀 없음 — surface 만 만들면 영영
+            // 안 뜨는 trap 이라 skip. (createShellObjects 가 wm_base 를 필수로
+            // 요구하므로 실제로는 거의 도달 안 함.)
+            log.appendLine("dialog", "createDialogSurface skipped — layer-shell·xdg_wm_base 모두 없음", .{});
             self.dialog.kind = .none;
             return;
         }
@@ -4453,42 +4517,96 @@ const Client = struct {
             try self.roundtrip();
         }
 
-        // get_layer_surface(new_id, surface, output=NULL, layer=OVERLAY, namespace).
-        // overlay layer 라 panel / 알림 위까지 덮음 — modal 가시화.
-        self.dialog.layer_surface_id = self.allocId();
-        var msg = Msg.init(self.layer_shell_id, zwlr_layer_shell_v1_request_get_layer_surface);
-        try msg.putU32(self.dialog.layer_surface_id);
-        try msg.putU32(self.dialog.surface_id);
-        try msg.putU32(0);
-        try msg.putU32(zwlr_layer_shell_layer_overlay);
-        try msg.putString("tildaz-dialog");
-        try msg.send(self.stream);
+        // role object — surface 종류만 compositor 별로 갈린다. 그리기/버퍼/
+        // 입력/dismiss 는 surface_id 기준이라 이후 경로 공유.
+        if (self.layer_shell_id != 0) {
+            // get_layer_surface(new_id, surface, output=NULL, layer=OVERLAY, namespace).
+            // overlay layer 라 panel / 알림 위까지 덮음 — modal 가시화.
+            self.dialog.layer_surface_id = self.allocId();
+            var msg = Msg.init(self.layer_shell_id, zwlr_layer_shell_v1_request_get_layer_surface);
+            try msg.putU32(self.dialog.layer_surface_id);
+            try msg.putU32(self.dialog.surface_id);
+            try msg.putU32(0);
+            try msg.putU32(zwlr_layer_shell_layer_overlay);
+            try msg.putString("tildaz-dialog");
+            try msg.send(self.stream);
 
-        try self.sendArgs(
-            self.dialog.layer_surface_id,
-            zwlr_layer_surface_v1_request_set_size,
-            &.{ logical_w, logical_h },
-        );
-        try self.sendArgs(
-            self.dialog.layer_surface_id,
-            zwlr_layer_surface_v1_request_set_anchor,
-            &.{0},
-        );
-        // exclusive — modal 입력. 사용자가 main surface 클릭해도 키 입력은
-        // 우리 dialog 로 옴.
-        try self.sendArgs(
-            self.dialog.layer_surface_id,
-            zwlr_layer_surface_v1_request_set_keyboard_interactivity,
-            &.{zwlr_layer_surface_keyboard_interactivity_exclusive},
-        );
-        try self.sendNoArgs(self.dialog.surface_id, 6);
+            try self.sendArgs(
+                self.dialog.layer_surface_id,
+                zwlr_layer_surface_v1_request_set_size,
+                &.{ logical_w, logical_h },
+            );
+            // #231 — anchor=0(화면 중앙) 대신 top|left + margin 으로 *터미널 위
+            // 중앙* 에 배치 (GNOME 의 transient-over-parent 와 시각 통일). margin 은
+            // 터미널 rect 중앙에 dialog 를 놓는 logical 오프셋.
+            try self.sendArgs(
+                self.dialog.layer_surface_id,
+                zwlr_layer_surface_v1_request_set_anchor,
+                &.{zwlr_layer_surface_anchor_top | zwlr_layer_surface_anchor_left},
+            );
+            const c = self.dialogCenterMargins(@intCast(logical_w), @intCast(logical_h));
+            var dlg_margin = Msg.init(self.dialog.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
+            try dlg_margin.putI32(c.top);
+            try dlg_margin.putI32(0); // right (anchor 안 함 → 무시)
+            try dlg_margin.putI32(0); // bottom (anchor 안 함 → 무시)
+            try dlg_margin.putI32(c.left);
+            try dlg_margin.send(self.stream);
+            // exclusive — modal 입력. 사용자가 main surface 클릭해도 키 입력은
+            // 우리 dialog 로 옴.
+            try self.sendArgs(
+                self.dialog.layer_surface_id,
+                zwlr_layer_surface_v1_request_set_keyboard_interactivity,
+                &.{zwlr_layer_surface_keyboard_interactivity_exclusive},
+            );
+            try self.sendNoArgs(self.dialog.surface_id, 6);
 
-        log.appendLine("dialog", "createDialogSurface surface_id={} layer_surface_id={} size={}x{} (logical) layer=overlay anchor=0 keyboard=exclusive", .{
-            self.dialog.surface_id,
-            self.dialog.layer_surface_id,
-            logical_w,
-            logical_h,
-        });
+            log.appendLine("dialog", "createDialogSurface surface_id={} layer_surface_id={} size={}x{} (logical) layer=overlay anchor=0 keyboard=exclusive", .{
+                self.dialog.surface_id,
+                self.dialog.layer_surface_id,
+                logical_w,
+                logical_h,
+            });
+        } else {
+            // #231 — layer-shell 미advertise (GNOME mutter / Cinnamon muffin):
+            // 일반 xdg_toplevel 로 띄운다. xdg_surface(get_xdg_surface) →
+            // xdg_toplevel(get_toplevel) → title/app_id → main 을 parent 로 →
+            // min=max size 로 고정 크기 → commit. compositor 가 새 toplevel 에
+            // 키보드 focus 를 줘 Enter/Esc(handleDialogKey)·클릭(hit-test) 동작.
+            self.dialog.xdg_surface_id = self.allocId();
+            try self.sendArgs(self.wm_base_id, 2, &.{ self.dialog.xdg_surface_id, self.dialog.surface_id });
+            self.dialog.xdg_toplevel_id = self.allocId();
+            try self.sendNewId(self.dialog.xdg_surface_id, 1, self.dialog.xdg_toplevel_id);
+            try self.sendString(self.dialog.xdg_toplevel_id, 2, self.dialog.title()); // set_title
+            // set_app_id — 메인 창("tildaz")과 *다른* id. GNOME 확장(#228)이
+            // app_id=="tildaz" 인 창을 drop-down 으로 가로채(opacity 0 + 상단 배치)
+            // dialog 가 안 보이던 버그(#231 시연) 회피 — 확장의 exact match 에서
+            // 제외돼 mutter 가 transient child 로 중앙에 정상 표시한다.
+            try self.sendString(self.dialog.xdg_toplevel_id, 3, "tildaz-dialog"); // set_app_id
+            // set_parent(main toplevel) — main 이 xdg_toplevel (layer-shell 없는
+            // 환경이라 main 도 xdg) 일 때만. transient grouping + 중앙 배치 유도.
+            if (self.toplevel_id != 0) {
+                try self.sendArgs(self.dialog.xdg_toplevel_id, 1, &.{self.toplevel_id});
+            }
+            // set_max_size(7) + set_min_size(8) = 같은 크기 → 고정 크기 dialog
+            // 창. compositor 의 tile/maximize 회피.
+            try self.sendArgs(self.dialog.xdg_toplevel_id, 7, &.{ logical_w, logical_h });
+            try self.sendArgs(self.dialog.xdg_toplevel_id, 8, &.{ logical_w, logical_h });
+            // xdg_toplevel.configure 가 0x0("you decide")을 줄 수 있으니 요청 크기를
+            // 미리 보관 — xdg_surface.configure 에서 이 값으로 paint. toplevel.configure
+            // 가 non-zero 면 덮어씀.
+            self.dialog.pending_w_logical = logical_w;
+            self.dialog.pending_h_logical = logical_h;
+            try self.sendNoArgs(self.dialog.surface_id, 6); // commit — 첫 configure 유도
+
+            log.appendLine("dialog", "createDialogSurface surface_id={} xdg_surface_id={} xdg_toplevel_id={} size={}x{} (logical) role=xdg_toplevel parent={}", .{
+                self.dialog.surface_id,
+                self.dialog.xdg_surface_id,
+                self.dialog.xdg_toplevel_id,
+                logical_w,
+                logical_h,
+                self.toplevel_id,
+            });
+        }
     }
 
     /// dialog surface 의 모든 wayland 객체 destroy. content state (kind /
@@ -4513,6 +4631,18 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.layer_surface_id, zwlr_layer_surface_v1_request_destroy);
             self.dialog.layer_surface_id = 0;
         }
+        // #231 — xdg role 객체 정리 (toplevel 먼저, 그 다음 xdg_surface). 둘 다
+        // destroy 가 opcode 0.
+        if (self.dialog.xdg_toplevel_id != 0) {
+            try self.sendNoArgs(self.dialog.xdg_toplevel_id, 0);
+            self.dialog.xdg_toplevel_id = 0;
+        }
+        if (self.dialog.xdg_surface_id != 0) {
+            try self.sendNoArgs(self.dialog.xdg_surface_id, 0);
+            self.dialog.xdg_surface_id = 0;
+        }
+        self.dialog.pending_w_logical = 0;
+        self.dialog.pending_h_logical = 0;
         if (self.dialog.viewport_id != 0) {
             try self.sendNoArgs(self.dialog.viewport_id, wp_viewport_request_destroy);
             self.dialog.viewport_id = 0;
@@ -4600,15 +4730,23 @@ const Client = struct {
         };
     }
 
-    /// dialog layer-surface configure event handler. ack_configure → viewport
-    /// set_destination → buffer (재)생성 + attach + damage_buffer + commit.
-    /// frame callback throttling 없음 — dialog 는 정적.
+    /// dialog layer-surface configure event handler. ack_configure (opcode 6)
+    /// 후 공통 paint. #231 — xdg fallback 은 `handleDialogXdgSurfaceConfigure`
+    /// 가 opcode 4 로 ack 한 뒤 같은 `applyDialogSizeAndPaint` 를 부른다.
     fn handleDialogConfigure(self: *Client, serial: u32, w_logical: u32, h_logical: u32) !void {
         try self.sendArgs(
             self.dialog.layer_surface_id,
             zwlr_layer_surface_v1_request_ack_configure,
             &.{serial},
         );
+        try self.applyDialogSizeAndPaint(w_logical, h_logical);
+    }
+
+    /// #231 — surface role(layer/xdg) 무관 공통 paint. viewport set_destination
+    /// → buffer (재)생성 + attach + damage_buffer + commit. frame callback
+    /// throttling 없음 — dialog 는 정적. ack_configure 는 호출자(role별 opcode)가
+    /// 먼저 보낸다.
+    fn applyDialogSizeAndPaint(self: *Client, w_logical: u32, h_logical: u32) !void {
         // compositor 가 0 으로 답하면 (= "you decide") 우리 요청 크기 그대로 —
         // 새로 계산 (openInfoDialog 가 보낸 set_size 값 회수). 다만 그 값은
         // 이미 보냈으니 0 fall-back 은 거의 안 닿음. 보수적으로 renderer 재계산.
@@ -4657,8 +4795,8 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.surface_id, 6);
         }
         self.dialog.configured = true;
-        log.appendLine("dialog", "configure ack serial={} logical={}x{} physical={}x{}", .{
-            serial, w_logical, h_logical, physical.w, physical.h,
+        log.appendLine("dialog", "dialog paint logical={}x{} physical={}x{}", .{
+            w_logical, h_logical, physical.w, physical.h,
         });
     }
 
