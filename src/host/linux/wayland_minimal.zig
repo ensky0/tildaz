@@ -1520,9 +1520,46 @@ const Client = struct {
         return .{ .top = dy, .left = dx };
     }
 
-    /// L8-β — wl_output 의 mode (current flag 인 것만) / done 처리. geometry /
-    /// scale 은 아직 안 씀 (HiDPI / rotation 은 후속 sub-step). transform 도
-    /// 무시 — 일반 monitor 의 default 0 (normal) 가정.
+    /// #210/#238 — preferred_scale 변경 적용. 두 scale source 의 단일 진입점:
+    /// `wp_fractional_scale_v1`(KDE) 와 `wl_output` 정수 scale fallback(GNOME
+    /// mutter). new_scale 은 /120 단위(120=1.0x, 240=2.0x). renderer scale 갱신
+    /// + (layer 면) layout 재송신 + grid 재계산 + redraw 로 폰트·탭바·전체 chrome
+    /// 을 동기 반영. xdg(GNOME)는 layer 재송신 대신 configure 가 viewport/size 를
+    /// 새 scale 로 맞춘다 — wl_output scale 은 초기 bind roundtrip 에서 첫 surface
+    /// configure *이전* 에 도착하므로 첫 frame 부터 올바른 크기.
+    fn applyScaleChange(self: *Client, new_scale: u32, source: []const u8) !void {
+        if (new_scale == 0 or new_scale == self.preferred_scale) return;
+        self.preferred_scale = new_scale;
+        log.appendLineVerbose("wayland", "scale preferred={d}/120 (≈{d}.{d:0>2}x) source={s}", .{
+            new_scale,
+            new_scale / 120,
+            (new_scale * 100 / 120) % 100,
+            source,
+        });
+        // renderer scale apply — paint 가 1x layout 그리면 큰 buffer 안 작은
+        // content (#210). 실패해도 default scale 로 진행.
+        self.renderer.applyScale(
+            self.allocator,
+            self.config,
+            new_scale,
+            fractional_scale_denominator,
+        ) catch |err| {
+            log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
+        };
+        // layer surface 재송신 + grid 재계산. layer 없으면(xdg/GNOME) skip —
+        // configure 가 viewport/size 처리. boot 중 dialog 가 main 이전이면 main skip.
+        if (self.layer_surface_id != 0) {
+            try self.sendLayerSurfaceLayout();
+        }
+        if (self.session != null) try self.ensureSessionGrid();
+        self.requestRedraw();
+    }
+
+    /// L8-β — wl_output 의 mode (current flag) / scale 처리. geometry / done /
+    /// transform 은 미사용(일반 monitor default 0 가정).
+    /// #238 — `wl_output.scale`(정수) 는 `wp_fractional_scale_v1` 미advertise 환경
+    /// (GNOME mutter / Cinnamon muffin) 의 scale source fallback. fractional manager
+    /// 가 advertise 된 환경(KDE)은 그쪽이 우선이라 wl_output scale 을 무시한다.
     fn handleOutputEvent(self: *Client, opcode: u16, payload: []const u8) !void {
         switch (opcode) {
             wl_output_event_mode => {
@@ -1537,7 +1574,16 @@ const Client = struct {
                     readI32(payload[12..16]),
                 });
             },
-            // geometry / done / scale 은 layer-shell layout 에 직접 안 씀.
+            wl_output_event_scale => {
+                if (payload.len < 4) return;
+                const factor = readI32(payload[0..4]);
+                // fractional manager 가 있으면 그쪽이 source of truth → 무시.
+                if (self.fractional_scale_manager_id != 0) return;
+                if (factor < 1) return;
+                const new_scale: u32 = @as(u32, @intCast(factor)) * fractional_scale_denominator;
+                try self.applyScaleChange(new_scale, "wl_output");
+            },
+            // geometry / done / transform 은 미사용.
             else => {},
         }
     }
@@ -2133,35 +2179,7 @@ const Client = struct {
         if (matches_main or matches_dialog) {
             if (opcode == wp_fractional_scale_v1_event_preferred_scale and payload.len >= 4) {
                 const new_scale = readU32(payload[0..4]);
-                if (new_scale != self.preferred_scale and new_scale > 0) {
-                    self.preferred_scale = new_scale;
-                    log.appendLineVerbose("wayland", "fractional scale preferred={d}/120 (≈{d}.{d:0>2}x) source={s}", .{
-                        new_scale,
-                        new_scale / 120,
-                        (new_scale * 100 / 120) % 100,
-                        if (matches_dialog) "dialog" else "main",
-                    });
-                    // renderer scale apply — main / dialog 든 같은 output 의 scale.
-                    // dialog event 가 먼저 도착해도 (boot 중 Hotkey updated)
-                    // renderer 의 scale 갱신 필요. paint 가 1x layout 그리면
-                    // 큰 buffer 안 작은 content (#210 사용자 시연 발견). 두 번째
-                    // 호출은 new_scale 같으면 이 분기 자체 안 들어옴 (no-op).
-                    self.renderer.applyScale(
-                        self.allocator,
-                        self.config,
-                        new_scale,
-                        fractional_scale_denominator,
-                    ) catch |err| {
-                        log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
-                    };
-                    // layer surface 재송신 + grid 재계산. main 없으면 skip
-                    // (boot 중 dialog 가 main 이전 created 시점).
-                    if (self.layer_surface_id != 0) {
-                        try self.sendLayerSurfaceLayout();
-                    }
-                    if (self.session != null) try self.ensureSessionGrid();
-                    self.requestRedraw();
-                }
+                try self.applyScaleChange(new_scale, if (matches_dialog) "fractional/dialog" else "fractional/main");
             }
             return;
         }
