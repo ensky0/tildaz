@@ -1,0 +1,7 @@
+{
+  "uuid": "tildaz@ensky0.github.io",
+  "name": "TildaZ Drop-down",
+  "description": "Places the TildaZ terminal (Wayland app_id=tildaz) as a drop-down window. Cinnamon on Wayland only — muffin has no wlr-layer-shell, so placement must be done from the shell process (this extension), mirroring the GNOME Shell extension. See https://github.com/ensky0/tildaz issue #229.",
+  "cinnamon-version": ["6.0", "6.2", "6.4", "6.6"],
+  "url": "https://github.com/ensky0/tildaz"
+}
