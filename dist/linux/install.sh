@@ -95,15 +95,62 @@ if [[ -d "$EXT_SRC" ]]; then
     fi
 fi
 
+# Cinnamon extension — Cinnamon(muffin) 도 wlr-layer-shell 미지원이라 drop-down
+# placement / hotkey 토글을 extension 이 담당한다 (#229, GNOME 과 동일 패턴, Cjs).
+# Cinnamon on Wayland 세션에서만 의미 (tildaz=Wayland client → X11 Cinnamon 세션엔
+# 못 뜸; 다른 DE 는 cinnamon 셸이 없어 무시). 복사는 항상, enable 은 gsettings
+# org.cinnamon enabled-extensions 에 uuid 추가 (스키마 있을 때만). 재로그인 후 적용.
+CIN_UUID="tildaz@ensky0.github.io"
+CIN_SRC="$SCRIPT_DIR/cinnamon-extension/$CIN_UUID"
+CIN_MSG=""
+if [[ -d "$CIN_SRC" ]]; then
+    CIN_DST="$HOME/.local/share/cinnamon/extensions/$CIN_UUID"
+    mkdir -p "$CIN_DST"
+    cp -r "$CIN_SRC/." "$CIN_DST/"
+    if command -v gsettings >/dev/null 2>&1 && gsettings writable org.cinnamon enabled-extensions >/dev/null 2>&1; then
+        CUR="$(gsettings get org.cinnamon enabled-extensions 2>/dev/null || echo '@as []')"
+        if [[ "$CUR" == *"'$CIN_UUID'"* ]]; then
+            CIN_MSG="$CIN_DST  (이미 enabled — Cinnamon Wayland 재로그인 후 적용)"
+        elif command -v python3 >/dev/null 2>&1; then
+            # 기존 목록 보존 + uuid 추가 (gsettings 의 @as [] / ['a','b'] 둘 다 파싱).
+            NEW="$(python3 - "$CUR" "$CIN_UUID" <<'PY'
+import sys
+cur, uuid = sys.argv[1].strip(), sys.argv[2]
+i = cur.find('[')
+items = []
+if i >= 0:
+    body = cur[i + 1:cur.rfind(']')]
+    items = [x.strip().strip("'\"") for x in body.split(',') if x.strip()]
+if uuid not in items:
+    items.append(uuid)
+print('[' + ', '.join("'%s'" % x for x in items) + ']')
+PY
+)"
+            if gsettings set org.cinnamon enabled-extensions "$NEW" 2>/dev/null; then
+                CIN_MSG="$CIN_DST  (enabled — Cinnamon Wayland 세션 재로그인 후 적용)"
+            else
+                CIN_MSG="$CIN_DST  (복사됨 — 시스템 설정 > 확장에서 활성화 + 재로그인)"
+            fi
+        else
+            CIN_MSG="$CIN_DST  (복사됨 — python3 없음, 시스템 설정 > 확장에서 활성화 + 재로그인)"
+        fi
+    else
+        CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings 미설치, 다른 DE 에선 무시)"
+    fi
+fi
+
 echo "Installed:"
 echo "  $DESKTOP_OUT  (Exec=$TILDAZ_EXE)"
 echo "  $ICON_OUT"
 [[ -n "$EXT_MSG" ]] && echo "  $EXT_MSG"
+[[ -n "$CIN_MSG" ]] && echo "  $CIN_MSG"
 echo ""
 echo "Next:"
 echo "  - KDE Plasma 6: Alt+F2 → 'TildaZ' 또는 메뉴에서 실행 (portal app_id 인식)"
 echo "  - GNOME: 위 extension 이 drop-down 위치/단축키/자동시작을 담당."
 echo "           Wayland 라 로그아웃→로그인해야 extension 이 활성화됨."
+echo "  - Cinnamon: 위 extension 이 drop-down 위치/단축키를 담당 (Cinnamon on Wayland)."
+echo "              Wayland 라 로그아웃→로그인해야 활성화됨. X11 세션엔 tildaz 안 뜸."
 echo "  - sway/Hyprland/wlroots: layer-shell 로 바로 drop-down (extension 불요)"
 echo "  - config: ~/.config/tildaz/config.json (auto_start/hidden_start/hotkey/위치)"
 echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 ~/.config/autostart/"
