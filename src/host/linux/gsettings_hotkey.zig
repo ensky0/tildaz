@@ -51,7 +51,8 @@ const cinnamon_path = "/org/cinnamon/desktop/keybindings/custom-keybindings/tild
 const cinnamon_id = "tildaz";
 
 const schema_gnome_shell = "org.gnome.shell";
-const key_enabled_extensions = "enabled-extensions";
+const schema_cinnamon_shell = "org.cinnamon";
+const key_enabled_extensions = "enabled-extensions"; // GNOME · Cinnamon 동일 key 이름.
 const extension_uuid = "tildaz@ensky0.github.io";
 
 /// GSettings custom-keybinding 등록의 DE별 차이를 담는 descriptor. GNOME 과
@@ -165,9 +166,19 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
                 log.appendLine("cinnamon", "keybindings custom-keybinding schema 미설치 — skip", .{});
                 return;
             }
-            // #229 Phase 2 — Cinnamon drop-down extension/applet 은 미구현. hotkey 는
-            // #231 로 이미 뜨는 일반 xdg-shell 창을 toggle 한다. Cinnamon extension 이
-            // 생기면 GNOME 처럼 "extension 활성 시 skip" 분기를 여기 추가한다.
+            // tildaz Cinnamon extension(#229 Phase 2)이 활성이면 그 extension 이
+            // hotkey 를 전담한다 (addHotKey + minimize/unminimize toggle). gsettings
+            // custom-keybinding 을 함께 두면 (1) F1 이중 grab, (2) gsettings 가 부르는
+            // `tildaz --toggle` 의 null-buffer hide 가 extension 배치를 깨므로(#229
+            // 실측) 등록을 skip 하고 기존 항목도 제거한다. 미설치면 일반 xdg 창 +
+            // gsettings F1 fallback.
+            if (isCinnamonExtensionEnabled(&api)) {
+                const list = api.settings_new(cinnamon_variant.list_schema) orelse return;
+                defer api.object_unref(list);
+                removeFromList(allocator, &api, list, cinnamon_variant);
+                log.appendLine("cinnamon", "tildaz extension 활성 — gsettings hotkey skip + 기존 custom-keybinding 제거 (extension 이 hotkey 전담)", .{});
+                return;
+            }
             registerWithVariant(allocator, &api, cfg, cinnamon_variant);
         },
     }
@@ -297,10 +308,22 @@ pub fn isGnomeWithExtension(allocator: std.mem.Allocator) bool {
 
 /// `org.gnome.shell` 의 `enabled-extensions` 에 tildaz extension uuid 가 있나.
 fn isExtensionEnabled(api: *const Api) bool {
+    return isExtensionEnabledInSchema(api, schema_gnome_shell);
+}
+
+/// `org.cinnamon` 의 `enabled-extensions` 에 tildaz extension uuid 가 있나.
+fn isCinnamonExtensionEnabled(api: *const Api) bool {
+    return isExtensionEnabledInSchema(api, schema_cinnamon_shell);
+}
+
+/// `<schema>` 의 `enabled-extensions` (strv) 에 tildaz uuid 가 있나. GNOME
+/// (`org.gnome.shell`) · Cinnamon (`org.cinnamon`) 둘 다 같은 key 이름이라 schema 만
+/// 다르다. schema 미설치면 false.
+fn isExtensionEnabledInSchema(api: *const Api, schema: [*:0]const u8) bool {
     const source = api.schema_source_get_default() orelse return false;
-    const sch = api.schema_source_lookup(source, schema_gnome_shell, 1) orelse return false;
+    const sch = api.schema_source_lookup(source, schema, 1) orelse return false;
     api.schema_unref(sch);
-    const s = api.settings_new(schema_gnome_shell) orelse return false;
+    const s = api.settings_new(schema) orelse return false;
     defer api.object_unref(s);
     const arr = api.settings_get_strv(s, key_enabled_extensions);
     defer api.strfreev(arr);
