@@ -17,6 +17,8 @@
 특히 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에는 사실 판단의 근거가 되는 공식 문서, 이슈, 코드, 커밋, 로그 등의 링크를 포함해요.
 이 원칙은 GitHub 이슈, 이슈 코멘트, 릴리즈 노트, 작업 기록 문서에 모두 동일하게 적용해요.
 
+**작업 기록은 GitHub 이슈에 남기고 `LINUX.md` 에는 남기지 않아요.** `LINUX.md` 는 *리눅스 구현 계획* 문서예요 — 무엇을 구현할지 적어두는 곳이고, **리눅스 구현이 끝나면 삭제할 임시 파일**이에요. 따라서 해결한 내용 / 해결 과정 / 버그 추적 같은 **작업 기록은 `LINUX.md` 가 아니라 관련 GitHub 이슈에 기록**해요 (워크플로우 ②③). 미해결 버그 / 새 항목은 **새 이슈를 만들어** 거기에 기록해요. (`SPEC.md` 는 cross-platform 동작 사양으로 별개 — 이것도 작업 기록 자리는 아니에요.)
+
 **용어 — Wayland `advertise` 를 "광고 / 미광고" 로 옮기지 않아요.** compositor 가 `wl_registry.global` 로 client 에게 지원 protocol 을 알리는 행위 (*advertise*) 를 "광고" 로 직역하면 한국어로 의미가 안 통해요 (사용자 두 번 지적). 대신 "client 에게 노출 (*advertise*)", "지원 통보가 온다 / 안 온다", "`wl_registry.global` 로 알린다", 또는 영어 *advertised* / *not advertised* 를 그대로 써요. "이 capability 는 compositor 에 없음" 처럼 풀어 써도 좋아요. 이슈 / 답변 / LINUX.md / 코드 주석 / 커밋 메시지 모두 적용.
 
 # 한글 IME 동작 스펙
