@@ -106,6 +106,31 @@ SPEC 변경 등 *"방향"* 에 해당하는 결정은 단독으로 정하고 진
 사용자와 상의해서 함께 결정해요. 사실 확인 / 소스 분석 / 진단은 자유롭게 하되,
 결정 지점에서는 옵션을 제시하고 사용자 선택을 기다려요.
 
+# 렌더링 — 화면 scale 을 처음부터 항상 고려
+
+그리는 작업 (탭바 / 폰트 / cell / scrollbar / padding / 다이얼로그 / 새 UI 요소 등) 을
+구현할 때는 **처음부터 항상 화면 scale 을 고려**해요. 크기 상수는 물리 픽셀이 아니라
+**logical point (pt)** 로 정의하고, 그릴 때 `pt → px` 변환에 현재 화면 scale 을 곱해요.
+"일단 1.0x 로 그리고 나중에 scale 붙이기" 는 금지 — scale 누락은 한 환경 (특히 fractional
+배율 / HiDPI) 에서만 작게 / 흐리게 나와 뒤늦게 발견돼요 (#238: GNOME 에서 scale source
+누락으로 탭바·폰트가 1.0x 로 작게 — "탭바만 따로" 가 아니라 *scale 을 곱하는 모든 요소* 의
+공통 갭이었음).
+
+scale source 는 platform 마다 다르지만 **단일 `scale` 값으로 수렴**시켜 모든 그리기가 그걸
+곱하게 해요 (한 곳만 맞으면 전부 일관):
+
+| platform | scale source |
+|---|---|
+| macOS | `backingScaleFactor` |
+| Linux / KDE Plasma (KWin) | `wp_fractional_scale_v1` 의 `preferred_scale` (예 204/120 = 1.7x) |
+| Linux / GNOME (mutter) · fractional 미advertise | `wl_output` 정수 scale (event opcode 3) 로 fallback |
+
+- 공통 상수: `src/ui_metrics.zig` (예 `TAB_BAR_HEIGHT_PT`) — platform 별로 다시 정의하지 않아요.
+- Linux 변환: `software_terminal.zig` 의 `self.scale` (단일 값). 새 scale source 가 생기면 이
+  값 하나로 수렴시키고 `renderer.applyScale()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
+- 새 platform / compositor 포팅 시 **scale source 부터** 확인 — 배율 켜고 다른 환경 (mac / KDE)
+  과 나란히 띄워 같은 크기로 보이는지 시연으로 검증해요.
+
 # 크로스 플랫폼 코드 스타일 — single definition 우선
 
 OS-specific 값이 모두 같은 shape (같은 field set 의 struct, 같은 enum, 같은 const
