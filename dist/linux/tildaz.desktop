@@ -15,4 +15,11 @@ Categories=System;TerminalEmulator;
 # Wayland xdg_toplevel.set_app_id 와 일치. portal-kde 등이 sender pid 의
 # process 정보 + .desktop 매칭으로 client 식별할 때 같은 식별자.
 StartupWMClass=tildaz
-StartupNotify=true
+# StartupNotify=false — tildaz 는 Wayland `xdg-activation` 토큰을 소비하지 않아
+# startup notification 시퀀스를 *완료*시키지 못한다. true 면 GNOME 이 만든 시퀀스가
+# 타임아웃(~16s)까지 매달려 그동안 `Shell.App.state` 가 STARTING 에 머물고, 그 사이
+# exit 후 재실행하면 GNOME 이 "launch 진행 중"으로 보고 새 프로세스를 안 띄운다
+# (spinner 만 돌다 실패, #234 계측으로 확정 — app.state 가 RUNNING 에 도달 못 하고
+# STARTING→(16s)→STOPPED). drop-down 은 extension 이 placement/표시를 직접 하므로
+# startup spinner 자체가 무의미 → 끈다.
+StartupNotify=false
