@@ -37,6 +37,7 @@ export default class TildazExtension extends Extension {
     this._managed = null; // make_above 해 둔 창 (disable 시 복원)
     this._placed = null; // placement 를 이미 적용한 창 (1회만)
     this._taskbarPatched = null; // skip_taskbar override 한 창 (disable 시 복원)
+    this._startupHookId = 0; // hidden preload 의 startup-complete overview 닫기 hook
 
     // config.json 의 hotkey 를 gschema 키에 반영한 뒤 등록 (config = source of truth).
     if (this._cfg.accel) this._settings.set_strv(KEY, [this._cfg.accel]);
@@ -76,6 +77,12 @@ export default class TildazExtension extends Extension {
         delete this._taskbarPatched.skip_taskbar;
       } catch (_e) {}
       this._taskbarPatched = null;
+    }
+    if (this._startupHookId) {
+      try {
+        Main.layoutManager.disconnect(this._startupHookId);
+      } catch (_e) {}
+      this._startupHookId = 0;
     }
     this._settings = null;
     this._appSystem = null;
@@ -191,6 +198,24 @@ export default class TildazExtension extends Extension {
     if (actor) Main.wm.skipNextEffect(actor);
   }
 
+  // hidden preload 시 로그인 startup overview 를 닫는다. 지금 한 번 닫고, 아직
+  // startup 중이면 startup 애니메이션이 overview 를 다시 SHOWN 으로 만들 수 있어
+  // startup-complete 직후 한 번 더 닫는다(이미 끝났으면 신호가 안 와 no-op).
+  _dismissOverview() {
+    try {
+      Main.overview.hide();
+    } catch (_e) {}
+    if (this._startupHookId) return;
+    const lm = Main.layoutManager;
+    this._startupHookId = lm.connect("startup-complete", () => {
+      lm.disconnect(this._startupHookId);
+      this._startupHookId = 0;
+      try {
+        Main.overview.hide();
+      } catch (_e) {}
+    });
+  }
+
   // tildaz 를 launch 하고 map 시그널에서 우측 배치. hidden=true 면 배치만 해두고
   // 숨김(preload — hotkey 로 등장). 이미 떠 있으면 no-op.
   _launch(hidden) {
@@ -225,6 +250,11 @@ export default class TildazExtension extends Extension {
         if (hidden) {
           this._skipEffect(win); // preload: 우측에 배치만 하고 숨김
           win.minimize();
+          // GNOME 은 로그인 시 overview 에서 startup 한다(layout.js
+          // _startupAnimationSession → overview.runStartupAnimation). 보통 첫 창이
+          // map 되며 activate 경로로 overview 가 닫히는데, hidden preload 는 minimize
+          // 라 그 트리거가 없어 overview 에 남는다(실측). 명시적으로 닫는다.
+          this._dismissOverview();
         } else {
           Main.activateWindow(win);
         }
