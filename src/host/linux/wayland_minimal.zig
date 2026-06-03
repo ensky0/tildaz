@@ -3828,6 +3828,17 @@ const Client = struct {
         // 인식해 hotkey 가 tildaz 에 안 오는 문제 (launch-independent hotkey) 의 근본
         // fix. 이미 app-tildaz scope (proper launch) 면 no-op.
         portal.ensureAppScope(&self.dbus_session.?);
+        // #228 — GNOME + extension 환경에선 hotkey 를 GNOME Shell extension
+        // (Main.wm.addKeybinding) 이 담당한다. portal GlobalShortcuts 는 (1) 불필요,
+        // (2) app_id=tildaz 가 portal 기준 invalid 라 BindShortcuts 가 어차피 거부되며,
+        // (3) 무엇보다 로그인 직후 xdg-desktop-portal 이 아직 안 떠 응답이 없으면
+        // CreateSession 이 D-Bus 기본 reply timeout(25s) 을 통째로 블록 → 그 뒤에야
+        // createShellObjects(창 map) 가 돌아 사용자 체감 startup 이 25초 지연된다(실측).
+        // 그러니 GNOME+extension 이면 GlobalShortcuts 경로 자체를 건너뛴다.
+        if (gsettings_hotkey.isGnomeWithExtension(self.allocator)) {
+            log.appendLine("portal", "GNOME extension 이 hotkey 담당 — GlobalShortcuts CreateSession skip (로그인 25s 지연 회피)", .{});
+            return;
+        }
         const portal_session = portal.createGlobalShortcutsSession(self.allocator, &self.dbus_session.?) catch |err| {
             log.appendLine("portal", "CreateSession skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
             return;

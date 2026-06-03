@@ -50,12 +50,17 @@ export default class TildazExtension extends Extension {
       () => this._toggle()
     );
 
-    // auto_start 면 로그인(enable) 시 미리 launch. hidden_start=false → 우측에 바로
-    // 보이게, true → 배치 후 숨김(hotkey 로 등장). auto_start=false 면 로그인 시
-    // 안 뜨고(메뉴/터미널로 수동 실행), F1 은 실행 중일 때만 toggle(미실행 시 무동작).
-    // zig 는 GNOME 에서 autostart .desktop 을 삭제하므로 launch lifecycle 은
-    // 여기(extension)가 단독으로 담당한다.
-    if (this._cfg.autoStart) this._launch(this._cfg.hiddenStart);
+    // 배치(우측 드롭다운) 핸들러는 auto_start 와 무관하게 *항상* 건다 — 그래야 앱
+    // 그리드/터미널로 수동 실행해도(auto_start=false) extension 이 그 창을 잡아
+    // 드롭다운으로 만든다. (전엔 _launch 안에서만 걸려 수동 실행이 일반 창으로 떴다.)
+    this._armMapHandler();
+
+    // auto_start 면 로그인(enable) 시 미리 launch. 표시/숨김은 map 핸들러가
+    // config(hidden_start) 로 결정한다 (false → 우측에 바로 표시, true → 배치 후
+    // 숨김, hotkey 로 등장). auto_start=false 면 로그인 시 안 뜨고(앱 그리드/터미널로
+    // 수동 실행), F1 은 실행 중일 때만 toggle(미실행 시 무동작). zig 는 GNOME 에서
+    // autostart .desktop 을 삭제하므로 launch lifecycle 은 여기(extension)가 담당한다.
+    if (this._cfg.autoStart) this._launch();
   }
 
   disable() {
@@ -187,7 +192,11 @@ export default class TildazExtension extends Extension {
     // client) 가 configure→buffer 재그리기 race 로 '왼쪽 전체→우측' 희번덕이 난다.
     // placement 는 launch 시 1회만 하고(아래 _ensurePlacedOnce), 이후 show 는
     // minimize 가 유지한 geometry 그대로 unminimize + activate 만 한다.
+    // hidden preload(_launch hidden=true)는 opacity 0 으로 숨겨둔 상태라 여기서
+    // 처음 보일 때 255 로 복원한다 — 복원 누락 시 unminimize 해도 안 보인다.
     this._skipEffect(win);
+    const actor = win.get_compositor_private();
+    if (actor) actor.opacity = 255;
     if (win.minimized) win.unminimize();
     this._ensurePlacedOnce(win);
     Main.activateWindow(win);
@@ -216,48 +225,64 @@ export default class TildazExtension extends Extension {
     });
   }
 
-  // tildaz 를 launch 하고 map 시그널에서 우측 배치. hidden=true 면 배치만 해두고
-  // 숨김(preload — hotkey 로 등장). 이미 떠 있으면 no-op.
-  _launch(hidden) {
-    if (this._find()) return;
-    const app = this._appSystem.lookup_app(DESKTOP_ID);
-    if (!app) {
-      Main.notify("TildaZ", `${DESKTOP_ID} not found — run dist/linux/install.sh`);
-      return;
-    }
-    // window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라 로그인 직후
-    // preload 에서 tildaz 를 놓친다(실측). map 시그널은 app_id 확정 후라 wm_class
-    // 로 안정 식별 가능 — 거기서 잡아 우측 배치(+첫 등장 trick). hidden=true 면
-    // 배치만 하고 숨김.
+  // tildaz 의 map 시그널을 잡아 우측 드롭다운으로 배치하는 핸들러를 건다. enable()
+  // 에서 auto_start 와 무관하게 항상 호출 — 앱 그리드/터미널로 *수동* 실행해도
+  // extension 이 그 창을 잡아 드롭다운으로 만든다. 표시/숨김은 실행 경로와 무관하게
+  // config(hidden_start) 단일 기준(핸들러 안에서 읽음).
+  // window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라 tildaz 를 놓친다
+  // (실측). map 은 app_id 확정 후라 wm_class 로 안정 식별 가능 — 여기서 잡는다.
+  // 핸들러는 close→relaunch 도 잡도록 계속 살려두고, disable() 에서만 해제한다.
+  _armMapHandler() {
     const wm = global.window_manager;
     if (this._mapWaitId) wm.disconnect(this._mapWaitId);
     this._mapWaitId = wm.connect("map", (_wm, actor) => {
       const win = actor.meta_window;
       const c = win.get_wm_class();
       if (!(c === APP_ID || (c && c.toLowerCase() === APP_ID))) return;
-      wm.disconnect(this._mapWaitId);
-      this._mapWaitId = 0;
 
-      actor.opacity = 0;
+      // tildaz 가 뜰 때마다 config 를 다시 읽는다 (config = single source of truth).
+      // 사용자가 config.json 의 hidden_start / 위치(dock/width/...) 를 바꾸고 tildaz 만
+      // 재실행해도 extension reload 없이 반영된다. (hotkey 는 enable 의 gschema 바인딩
+      // 이라 예외 — 바꾸면 extension reload/relogin 이 필요하다.)
+      this._cfg = this._readConfig();
+
+      // 숨김 여부는 config(hidden_start)가 단일 기준 — 실행 경로(auto_start preload /
+      // 앱 그리드 / 터미널)와 무관하게 일관. hidden_start=true 면 배치 후 minimize
+      // (첫 hotkey 로 등장), false 면 우측 드롭다운으로 바로 표시.
+      const hidden = this._cfg.hiddenStart;
+
+      // map 직후엔 mutter 의 map 애니메이션(opacity 0→255 ease)이 진행 중이다.
+      // kill-window-effects 로 그 애니메이션을 *먼저* 끝낸 뒤(끝나면 opacity 가
+      // 255/중간값으로 남는다) opacity 0 을 박아야 placement(기본 위치→우측) 이동이
+      // 안 보인다. 순서를 반대로(0 먼저 → kill) 하면 kill 이 0 을 덮어써 왼쪽→우측
+      // 이동이 그대로 보인다(실측 버그).
       wm.emit("kill-window-effects", actor);
+      actor.opacity = 0;
       this._ensurePlacedOnce(win);
 
+      if (hidden) {
+        // preload: 절대 보이지 않게. opacity 0(invisible) 인 채로 배치까지 끝낸 뒤
+        // minimize 만 한다. opacity 255 복원은 첫 hotkey show(_toggle)에서 한다.
+        // (여기서 255 로 올렸다가 minimize 하면 우측에 한 프레임 번쩍인다 — 기존 버그.)
+        this._skipEffect(win);
+        win.minimize();
+        // GNOME 은 로그인 시 overview 에서 startup 한다(layout.js
+        // _startupAnimationSession → overview.runStartupAnimation). 보통 첫 창이
+        // map 되며 activate 경로로 overview 가 닫히는데, hidden preload 는 minimize
+        // 라 그 트리거가 없어 overview 에 남는다(실측). 명시적으로 닫는다.
+        this._dismissOverview();
+        return;
+      }
+
+      // 표시(수동 실행, 또는 auto_start + hidden_start=false): placement 가 정착
+      // (repaint)해 보일 준비가 되면 opacity 복원 + activate. stage-views-changed 가
+      // 먼저 오면 그때, 안 오면 200ms 안전망.
       let shown = false;
       const reveal = () => {
         if (shown) return;
         shown = true;
-        actor.opacity = 255; // minimize 후 unminimize(hotkey show) 시 보이도록 복원
-        if (hidden) {
-          this._skipEffect(win); // preload: 우측에 배치만 하고 숨김
-          win.minimize();
-          // GNOME 은 로그인 시 overview 에서 startup 한다(layout.js
-          // _startupAnimationSession → overview.runStartupAnimation). 보통 첫 창이
-          // map 되며 activate 경로로 overview 가 닫히는데, hidden preload 는 minimize
-          // 라 그 트리거가 없어 overview 에 남는다(실측). 명시적으로 닫는다.
-          this._dismissOverview();
-        } else {
-          Main.activateWindow(win);
-        }
+        actor.opacity = 255;
+        Main.activateWindow(win);
       };
       const svId = actor.connect("stage-views-changed", () => {
         actor.disconnect(svId);
@@ -271,6 +296,18 @@ export default class TildazExtension extends Extension {
         return GLib.SOURCE_REMOVE;
       });
     });
+  }
+
+  // tildaz 를 실행. 이미 떠 있으면 no-op. 배치/숨김은 map 핸들러(_armMapHandler,
+  // enable 에서 이미 걸림)가 config(hidden_start) 기준으로 처리한다. auto_start
+  // preload 전용 경로다(수동 실행은 .desktop activate 가 직접 같은 핸들러를 탄다).
+  _launch() {
+    if (this._find()) return;
+    const app = this._appSystem.lookup_app(DESKTOP_ID);
+    if (!app) {
+      Main.notify("TildaZ", `${DESKTOP_ID} not found — run dist/linux/install.sh`);
+      return;
+    }
     app.activate();
   }
 
