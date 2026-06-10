@@ -739,8 +739,12 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 // 안 먹힌다" 로 보임.
                 if (ctrl_c) {
                     tab.interruptWrite(cstr[0..len]);
+                    // #242 — Ctrl+C 도 사용자 입력 → 맨 아래로(^C/새 prompt 보이게).
+                    // interruptWrite 는 즉시 SIGINT 경로라 writeUserInput(queue) 대신
+                    // scroll 만 별도.
+                    tab.terminal.scrollViewport(.{ .bottom = {} });
                 } else {
-                    tab.queueWrite(cstr[0..len]);
+                    writeUserInput(tab, cstr[0..len]);
                 }
                 return;
             }
@@ -779,7 +783,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
 
         if (keyCodeToEscape(keycode)) |esc| {
-            tab.queueWrite(esc);
+            writeUserInput(tab, esc);
             return;
         }
     }
@@ -797,7 +801,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 return;
             }
             commitPreeditPreserving(self_view);
-            tab.queueWrite(esc);
+            writeUserInput(tab, esc);
             return;
         }
     }
@@ -1365,6 +1369,16 @@ fn queueBackspaces(tab: anytype, count: usize) void {
     }
 }
 
+/// #242 — 사용자 키 입력을 PTY 로 보내고 viewport 를 맨 아래로 (scroll-on-keystroke).
+/// Linux/Windows 의 `session_core.queueInputToActive` 와 동등 — macOS parity
+/// (SPEC §0). scroll-on-output(program 출력) / terminal 자동응답 write 와 구분해
+/// *사용자 키 입력* 경로에서만 호출한다. macOS 60fps render timer 가 viewport
+/// 변화를 다음 프레임에 반영하므로 별도 redraw 트리거 불필요(휠 스크롤과 동일).
+fn writeUserInput(tab: anytype, bytes: []const u8) void {
+    tab.queueWrite(bytes);
+    tab.terminal.scrollViewport(.{ .bottom = {} });
+}
+
 fn replaceRenameBytes(byte_start: usize, byte_end: usize) void {
     if (!g_rename.isActive()) return;
     const start = @min(byte_start, g_rename.len);
@@ -1460,7 +1474,7 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
             }
         }
     }
-    tab.queueWrite(commit);
+    writeUserInput(tab, commit);
     if (!should_reconvert_committed_preedit) clearHanjaState();
 }
 
@@ -1675,7 +1689,7 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     else
         null;
     if (bytes) |b| {
-        tab.queueWrite(b);
+        writeUserInput(tab, b);
     }
 }
 
