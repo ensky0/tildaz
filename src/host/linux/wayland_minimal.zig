@@ -3036,6 +3036,13 @@ const Client = struct {
         try self.preedit_text.appendSlice(self.allocator, self.pending_preedit.items);
         self.pending_preedit.clearRetainingCapacity();
         self.renderer.preedit_text = self.preedit_text.items;
+        // #242 — preedit(조합 중)도 사용자 입력 → 맨 아래로(scroll-on-keystroke).
+        // composition 은 cursor(맨 아래 live line)에 inline 표시되므로 스크롤백
+        // 올린 상태에서 안 내려가면 자기 조합이 안 보임. rename(탭바) 조합은
+        // terminal viewport 와 무관하므로 제외. commit 은 위 queueInput 이 scroll.
+        if (self.preedit_text.items.len > 0 and !self.rename_state.isActive()) {
+            if (self.session) |*session| session.scrollActiveToBottom();
+        }
         // IME 활성 시 wl_keyboard.key event 는 IME 로 raised 되어 우리한테 안
         // 온다. text_input event 만 들어오는 동안 다른 갱신 트리거가 없어
         // `needs_redraw` 가 자동으로 안 켜진다. preedit 변화가 화면에 보이려면
