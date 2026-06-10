@@ -1510,6 +1510,11 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     const copy_len = @min(len, g_preedit_buf.len);
     @memcpy(g_preedit_buf[0..copy_len], cstr[0..copy_len]);
     g_preedit_len = copy_len;
+    // #242 — preedit(조합 중)도 사용자 입력 → 맨 아래로(scroll-on-keystroke).
+    // composition 은 cursor(맨 아래 live line)에 inline 표시되므로, 스크롤백 올린
+    // 상태에서 조합 시작 시 안 내려가면 자기 조합이 안 보임. rename(탭바) 조합은
+    // terminal viewport 와 무관하므로 제외. commit 은 imeInsertText 가 scroll.
+    if (!g_rename.isActive()) g_session.scrollActiveToBottom();
     if (isReplacingRange(replacement_range)) {
         g_hanja_candidate_active = true;
         g_hanja_candidate_range = replacement_range;

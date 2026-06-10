@@ -499,6 +499,16 @@ pub const SessionCore = struct {
         }
     }
 
+    /// #242 — 활성 탭 viewport 를 맨 아래로(scroll-on-keystroke). PTY write 없이
+    /// scroll 만 필요한 입력 경로용 — IME preedit(조합 중)은 PTY 로 안 가고 화면에
+    /// inline 표시만 되므로, 스크롤백 올린 상태에서 조합 시작 시 cursor(맨 아래)로
+    /// 내려와야 자기 조합이 보인다. 타이핑 commit 은 queueInputToActive 가 겸함.
+    pub fn scrollActiveToBottom(self: *SessionCore) void {
+        if (self.activeTab()) |tab| {
+            tab.terminal.scrollViewport(.{ .bottom = {} });
+        }
+    }
+
     /// Paste 전용 — 활성 탭의 ghostty Terminal mode `.bracketed_paste` (DEC
     /// CSI 2004) 가 켜져 있으면 `\x1b[200~ <data> \x1b[201~` 로 wrap. 셸이
     /// paste 를 한 묶음으로 받아 매 newline 단위 즉시 실행 / prompt redraw 안
