@@ -571,6 +571,24 @@ const Client = struct {
     output_id: u32 = 0,
     screen_width: i32 = 0,
     screen_height: i32 = 0,
+    // #241 — 모니터 hotplug 대응 플래그.
+    //  - output_topology_pending: 이번 dispatch batch 에 output topology 변화가
+    //    있었음 — wl_output 의 global 추가(모니터 연결/재구성) 또는 우리 bind 한
+    //    output 의 global_remove(분리). KWin 은 분리·재연결 모두에서 topology
+    //    이벤트와 layer-surface closed 를 같은 batch 로 보낸다(시연 확인). 그래서
+    //    closed 즉시 판정 대신, batch 전체 처리 후 main loop drain 에서 "quit 요청
+    //    + 이 flag" 면 사용자 Alt+F4 가 아니라 output re-home 으로 보고 recreate.
+    //    batch-local — drain 끝에서 clear 해 다음의 *진짜* Alt+F4 가 오인되지 않게.
+    //    (batch 내 이벤트 순서 무관 — closed 가 topology 이벤트보다 먼저 와도 OK.)
+    //  - output_rebind_pending: 우리 output 이 제거된 뒤 재연결된 새 wl_output 을
+    //    재bind 해야 함을 표시(long-lived — replug 까지 유지). startup 첫
+    //    bind(bindGlobals)와 구분.
+    //  - pending_output_recreate: visible 상태 output topology 변화로 closed 된
+    //    경우의 deferred 재생성 요청. closed/drain 은 swapMainSurfaceSeamless(내부
+    //    configure pump=reentrant) 를 직접 못 부르므로 main loop 에서 처리.
+    output_topology_pending: bool = false,
+    output_rebind_pending: bool = false,
+    pending_output_recreate: bool = false,
     // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등. compositor 가
     // advertise 안 한 환경 (GNOME mutter / wlroots 등) 에선 0 이라 미사용 — `preferred_scale`
     // default `fractional_scale_denominator` (= 120 = 1.0x) 로 no-op 동작.
@@ -918,9 +936,25 @@ const Client = struct {
             // outer buffer state corrupt (사용자 시연 발견 — `BadMessage offset
             // input_len=0` 진단). deferred 로 reentrancy 해소.
             self.drainPendingDialogDismiss();
+            // #241 — batch 전체 처리 후 판정: visible 상태에서 들어온 quit 요청
+            // (layer-surface closed)이 이번 batch 의 output topology 변화(모니터
+            // 연결/분리)와 함께 온 것이면 사용자 Alt+F4 가 아니라 output re-home →
+            // quit 대신 재생성. batch 내 이벤트 순서 무관. layer-shell 전용(xdg 의
+            // close 는 advisory — 이 경로로 안 옴).
+            if (self.pending_quit_request and self.output_topology_pending and self.layer_surface_id != 0) {
+                self.pending_quit_request = false;
+                self.pending_output_recreate = true;
+                log.appendLine("input", "quit request coincided with output topology change — recreate instead of quit (#241)", .{});
+            }
             // #203 Phase C step 4 — Alt+F4 deferred quit. confirm 의 inner pump
             // 도 outer dispatchBuffered 밖에서 호출.
             self.drainQuitRequest();
+            // #241 — visible 상태 output topology 변화로 closed 된 경우의 재생성도
+            // outer dispatchBuffered 밖에서(swapMainSurfaceSeamless 가 configure pump).
+            self.drainOutputRecreate();
+            // #241 — output_topology_pending 은 batch-local. 위 판정/소비 후 매
+            // iteration 끝에서 clear 해 다음의 *진짜* Alt+F4 가 오인되지 않게 한다.
+            self.output_topology_pending = false;
             // #213 — Ctrl+Shift+I deferred About. createDialogSurface 의 inner
             // roundtrip 을 outer dispatchBuffered 밖에서 돌려 buffer corrupt 회피.
             self.drainAboutRequest();
@@ -2346,6 +2380,13 @@ const Client = struct {
                     try self.destroyShellObjects();
                     return;
                 }
+                // #241 Fix B — visible 상태의 closed 는 즉시 판정하지 않는다.
+                // 모니터 분리(global_remove)뿐 아니라 재연결(global add)도 surface
+                // re-home 을 위해 closed 를 보내며(KWin 시연 확인), 둘 다 같은 batch
+                // 의 topology 이벤트와 함께 온다. closed 시점엔 그 topology 이벤트가
+                // 이 batch 의 앞/뒤 어디 있을지 모르므로, 일단 quit 요청만 세우고
+                // main loop drain 이 batch 전체를 본 뒤 output_topology_pending 으로
+                // "Alt+F4 vs output re-home" 을 판정한다(아래 step 4 와 동일 경로).
                 // step 4 — main layer-surface closed event 가 KWin 의 Alt+F4
                 // 단축키 ("Close window") 도 같은 path. 사용자 시연 진단 결과:
                 // KWin 이 F4 key event 를 우리에게 보내지 않고 (system shortcut
@@ -3931,19 +3972,49 @@ const Client = struct {
         const interface = try p.readString();
         const version = try p.readU32();
         self.caps.record(name, interface, version);
+        // #241 — wl_output 의 global 추가(모니터 연결/재구성). 이번 batch 안에서
+        // 들어오는 layer-surface closed 는 사용자 Alt+F4 가 아니라 output re-home
+        // 이다 → drain 단계에서 quit 대신 recreate 로 전환(batch-local 판정).
+        if (std.mem.eql(u8, interface, "wl_output")) {
+            self.output_topology_pending = true;
+            // hotplug 재연결: global_remove 가 output_id=0 + caps.output reset +
+            // output_rebind_pending 을 set 해둔 상태. 방금 record 된 wl_output 이
+            // 우리 것이면(caps.output.name == name) 즉시 재bind → 새 output 이
+            // geometry/mode/scale/done 자동 발신 → handleOutputEvent 가 screen dims
+            // + scale 재동기(applyScaleChange 가 visible 이면 relayout). startup 첫
+            // bind 는 bindGlobals 담당 — output_rebind_pending 으로 구분.
+            if (self.output_rebind_pending and self.output_id == 0 and self.caps.output.name == name) {
+                self.output_rebind_pending = false;
+                self.output_id = self.allocId();
+                self.bind(self.caps.output.name, "wl_output", @min(self.caps.output.version, 2), self.output_id) catch |err| {
+                    log.appendLine("wayland", "wl_output rebind failed: {s} (#241)", .{@errorName(err)});
+                    return;
+                };
+                log.appendLine("wayland", "wl_output rebound after hotplug name={} output_id={} (#241)", .{ self.caps.output.name, self.output_id });
+            }
+        }
     }
 
     /// #241 — `wl_registry.global_remove` (opcode 1). payload = 제거된 global
-    /// name (u32). 이번 단계는 *진단 전용* — 어떤 global 이, 특히 우리가 bind 한
-    /// wl_output 이 언제 제거되는지와 layer-surface `closed` 와의 발생 순서를
-    /// 로그로 확보한다 (Fix B-3 의 visible 케이스 disambiguation 이 순서에 의존
-    /// → 순서 확정 후 다음 단계에서 output 재bind / geometry 캐시 무효화 구현).
-    /// 따라서 지금은 행동 변화 없이 로그만 남긴다.
+    /// name (u32). 우리가 bind 한 wl_output 이 사라진 경우(모니터 분리 등)만 처리:
+    /// (1) output_topology_pending set — 이번 batch 의 layer-surface closed 를
+    ///     quit 아닌 output 변화로 보게 함(판정은 main loop drain, batch-local).
+    /// (2) stale 추적 제거 + 재bind 예약. wl_output 은 v≤2 로 bind 해 release(v3)
+    ///     destructor 가 없으므로 proxy id 는 그냥 버린다(server 측 이미 소멸).
+    ///     screen_width/height 는 새 output 의 mode event 가 갱신할 때까지
+    ///     last-known 유지 — replug 전 transient fallback layout 회피.
     fn handleRegistryGlobalRemove(self: *Client, payload: []const u8) void {
         if (payload.len < 4) return;
         const name = readU32(payload[0..4]);
-        const is_bound_output = self.caps.output.name != 0 and name == self.caps.output.name;
-        log.appendLine("wayland", "registry global_remove name={} is_bound_output={} surface_hidden={} (#241 diag)", .{ name, is_bound_output, self.surface_hidden });
+        if (self.caps.output.name == 0 or name != self.caps.output.name) {
+            log.appendLineVerbose("wayland", "registry global_remove name={} (not bound output) (#241)", .{name});
+            return;
+        }
+        self.output_topology_pending = true;
+        self.output_rebind_pending = true;
+        self.output_id = 0;
+        self.caps.output = .{};
+        log.appendLine("wayland", "bound wl_output removed name={} (hotplug) — reset + rebind pending, topology_pending set (#241)", .{name});
     }
 
     fn handleDisplayError(_: *Client, payload: []const u8) !void {
@@ -4384,6 +4455,20 @@ const Client = struct {
         if (old_surface_id != 0) self.sendNoArgs(old_surface_id, 0) catch {};
 
         log.appendLine("dialog", "swapMainSurface — create-before-destroy (new surface_id={} configured={})", .{ self.surface_id, self.configured });
+    }
+
+    /// #241 — visible 상태에서 output 소멸로 layer-surface 가 closed 된 경우의
+    /// deferred 재생성. closed 핸들러(dispatchBuffered 안)는 pending_output_recreate
+    /// 만 set → 여기(outer dispatchBuffered 밖, drainQuitRequest 와 같은 위치)서
+    /// swapMainSurfaceSeamless(내부 configure pump = reentrant dispatch) 실행해
+    /// reentrancy 회피. layer-shell 전용 — xdg-shell 의 close 는 advisory 라 이
+    /// 경로로 안 온다(handleEvent 의 toplevel close 분기에서 hidden 무시).
+    fn drainOutputRecreate(self: *Client) void {
+        if (!self.pending_output_recreate) return;
+        self.pending_output_recreate = false;
+        if (self.layer_surface_id == 0) return;
+        log.appendLine("input", "drainOutputRecreate — swapMainSurfaceSeamless after output loss (visible) (#241)", .{});
+        self.swapMainSurfaceSeamless();
     }
 
     fn drainQuitRequest(self: *Client) void {
