@@ -2093,7 +2093,11 @@ const Client = struct {
             return;
         }
         if (id == registry_id) {
-            if (opcode == 0) try self.handleRegistryGlobal(payload);
+            if (opcode == 0) {
+                try self.handleRegistryGlobal(payload);
+            } else if (opcode == 1) {
+                self.handleRegistryGlobalRemove(payload);
+            }
             return;
         }
         if (id == self.wait_callback_id and opcode == 0) {
@@ -2192,6 +2196,15 @@ const Client = struct {
             return;
         }
         if (self.toplevel_id != 0 and id == self.toplevel_id and opcode == 1) {
+            // #241 — hide 상태의 close 는 사용자 Alt+F4 가 아니라 compositor 측
+            // 이벤트(output 변화 등). xdg_toplevel.close 는 권고일 뿐이고 surface 는
+            // 살아있으므로 아무 것도 안 하고 무시 — 다음 show(remap)가 정상 동작.
+            // (재생성하면 GNOME 확장 #228/#231 이 새 map 을 다시 placement/minimize
+            // 로 가로채 숨겨버림 → 재생성 금지.) quit 으로 안 감.
+            if (self.surface_hidden) {
+                log.appendLine("input", "xdg-shell toplevel close while hidden — ignored (surface alive), NOT quit (#241)", .{});
+                return;
+            }
             // step 4 — xdg-shell toplevel close 도 quit confirm 거침. KWin /
             // GNOME mutter 의 Alt+F4 가 fallback 경로일 때 (= xdg-shell mode).
             log.appendLine("input", "xdg-shell toplevel close — set pending_quit_request", .{});
@@ -2319,6 +2332,20 @@ const Client = struct {
                 return;
             }
             if (opcode == zwlr_layer_surface_v1_event_closed) {
+                // #241 — `closed` 는 의미가 둘: (1) 사용자/compositor 의 닫기 요청
+                // (KWin Alt+F4 등), (2) surface 가 올라간 output 이 사라짐 (모니터
+                // 분리, compositor 재구성 — wlr-layer-shell spec 에 "output may
+                // have been destroyed" 명시). hide 상태(surface_hidden)면 안 보이는
+                // 창을 사용자가 닫을 수 없으므로 (2) 로 확정 — quit 으로 오해하지
+                // 않는다. layer-surface 는 closed 후 재사용 불가라 destroyShellObjects
+                // 로 정리(surface_id=0) → 다음 show 가 createShellObjects 로 현재
+                // 모니터(output=NULL)에 완전 재생성. Win/mac 처럼 hide 는 순수
+                // visibility 토글로 유지.
+                if (self.surface_hidden) {
+                    log.appendLine("input", "main layer-surface closed while hidden (output gone) — destroy + recreate on next show, NOT quit (#241)", .{});
+                    try self.destroyShellObjects();
+                    return;
+                }
                 // step 4 — main layer-surface closed event 가 KWin 의 Alt+F4
                 // 단축키 ("Close window") 도 같은 path. 사용자 시연 진단 결과:
                 // KWin 이 F4 key event 를 우리에게 보내지 않고 (system shortcut
@@ -3904,6 +3931,19 @@ const Client = struct {
         const interface = try p.readString();
         const version = try p.readU32();
         self.caps.record(name, interface, version);
+    }
+
+    /// #241 — `wl_registry.global_remove` (opcode 1). payload = 제거된 global
+    /// name (u32). 이번 단계는 *진단 전용* — 어떤 global 이, 특히 우리가 bind 한
+    /// wl_output 이 언제 제거되는지와 layer-surface `closed` 와의 발생 순서를
+    /// 로그로 확보한다 (Fix B-3 의 visible 케이스 disambiguation 이 순서에 의존
+    /// → 순서 확정 후 다음 단계에서 output 재bind / geometry 캐시 무효화 구현).
+    /// 따라서 지금은 행동 변화 없이 로그만 남긴다.
+    fn handleRegistryGlobalRemove(self: *Client, payload: []const u8) void {
+        if (payload.len < 4) return;
+        const name = readU32(payload[0..4]);
+        const is_bound_output = self.caps.output.name != 0 and name == self.caps.output.name;
+        log.appendLine("wayland", "registry global_remove name={} is_bound_output={} surface_hidden={} (#241 diag)", .{ name, is_bound_output, self.surface_hidden });
     }
 
     fn handleDisplayError(_: *Client, payload: []const u8) !void {
