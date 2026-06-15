@@ -24,8 +24,21 @@
  *     그래서 zig 는 Cinnamon+extension 이면 gsettings hotkey 를 skip 한다.
  *   - hotkey = toggle 전용: tildaz 가 안 떠 있으면 무동작(전 platform/DE 일관).
  *   - hidden_start=true → map 시 배치 후 minimize (로그인 시 숨김, 첫 hotkey 로 등장).
- *   - overview(Expo/Scale)·Alt-Tab 숨김: skip_taskbar getter override (quake-terminal
- *     표준 기법, GNOME 동일).
+ *   - 목록 숨김(패널 window-list / Alt-Tab / grouped-list / workspace-switcher):
+ *     Cinnamon 은 두 경로로 필터한다 — (a) 메서드 `is_skip_taskbar()` (Alt-Tab /
+ *     grouped-list), (b) `Main.isInteresting`→C `tracker.is_window_interesting()`
+ *     (window-list / workspace-switcher). muffin 에 set_skip_taskbar 세터가 없어 C
+ *     상태를 못 바꾸므로, (a) 는 window 인스턴스 메서드 override, (b) 는 WindowTracker
+ *     인스턴스 메서드 패치로 둘 다 JS 레벨에서 가린다. (GNOME 의 property getter
+ *     override 는 Cinnamon 이 안 읽어 무효 — #229 실측.)
+ *   - ⚠️ Expo(워크스페이스 오버뷰)는 못 가린다 — Cinnamon 한계(수용). Expo 썸네일은
+ *     `isExpoWindow`(expoThumbnail.js)가 window TYPE(DESKTOP/DOCK)만 검사하고
+ *     skip_taskbar / is_window_interesting 을 안 본다. 즉 *네이티브 앱이 skip_taskbar
+ *     를 켜도* Expo 엔 나오는 게 Cinnamon 설계. 일반 창을 Expo 에서 빼는 documented
+ *     API 가 없어(공식 개발자 가이드 확인) DOCK 타입화(drop-down 깨짐)나 Expo 내부
+ *     monkeypatch(버전마다 깨짐) 외엔 방법이 없어 한계로 둔다.
+ *   - drop-down 은 `stick()`(전 워크스페이스)이라 보이는 동안 워크스페이스를 바꿔도
+ *     따라온다 — yakuake/guake 등 drop-down 표준 동작(숨김=minimize 면 안 보임).
  *   - dialog(quit confirm/About): tildaz 가 별도 toplevel(app_id="tildaz-dialog",
  *     set_parent(main))로 띄운다(wayland_minimal.zig). client 는 자기 위치를 몰라
  *     화면 중앙에 그리므로(드롭다운 밖), extension 이 잡아 managed 터미널 위 중앙으로
@@ -45,11 +58,16 @@
  */
 
 const GLib = imports.gi.GLib;
+const Cinnamon = imports.gi.Cinnamon;
 const Main = imports.ui.main;
 
 const APP_ID = "tildaz";
 const DIALOG_APP_ID = "tildaz-dialog";
 const HOTKEY_NAME = "tildaz-toggle";
+
+// CinnamonWindowTracker.is_window_interesting 의 원본(프로토타입) 메서드 — enable
+// 에서 인스턴스 메서드를 패치할 때 원본 호출용 (disable 에서 delete 로 복원).
+const TrackerProto = Cinnamon.WindowTracker.prototype;
 
 // 모듈 레벨 상태 (Cinnamon 확장은 전역 init/enable/disable + 모듈 상태 패턴).
 let st = null;
@@ -60,8 +78,23 @@ function enable() {
   st = {
     mapId: 0,
     managed: null, // 배치(make_above/stick)한 터미널 창 (disable 시 복원 + dialog 기준)
-    taskbarPatched: null, // skip_taskbar override 한 창 (disable 시 복원)
+    taskbarPatched: null, // is_skip_taskbar override 한 창 (disable 시 복원)
+    tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
     cfg: readConfig(),
+  };
+
+  // 패널 window-list / workspace-switcher 는 Main.isInteresting → C
+  // `tracker.is_window_interesting()` 로 필터한다(소스: main.js:1569, window-list
+  // applet:1438 _shouldAdd, workspace-switcher:413). is_skip_taskbar 메서드 override
+  // 는 *C 호출* 인 이 경로엔 안 닿고(muffin 에 set_skip_taskbar 세터도 없음), 게다가
+  // window-list 는 _shouldAdd 를 창 생성 시 1회만 평가하므로(map 후 override 는 늦음)
+  // tracker 패치가 race 없이 확실하다. tracker 의 JS proxy 메서드를 패치해 tildaz
+  // 터미널을 not-interesting 으로 만든다(Main.isInteresting 이 JS 로 이걸 호출).
+  // (Expo 썸네일은 isInteresting 이 아니라 window TYPE 으로 거르므로 이 패치가 안 닿음
+  // — 위 헤더의 Expo 한계 참고.)
+  st.tracker = Cinnamon.WindowTracker.get_default();
+  st.tracker.is_window_interesting = function (w) {
+    return isTildaz(w) ? false : TrackerProto.is_window_interesting.call(this, w);
   };
 
   // hotkey 등록 (config = source of truth). addHotKey(name, accel, cb) — accel 은
@@ -94,11 +127,17 @@ function disable() {
     st.managed = null;
   }
   if (st && st.taskbarPatched) {
-    // configurable:true 로 정의했으므로 delete → GObject prototype getter 복귀.
+    // own 으로 할당한 메서드를 delete → prototype 의 GObject 메서드 복귀.
     try {
-      delete st.taskbarPatched.skip_taskbar;
+      delete st.taskbarPatched.is_skip_taskbar;
     } catch (_e) {}
     st.taskbarPatched = null;
+  }
+  if (st && st.tracker) {
+    try {
+      delete st.tracker.is_window_interesting; // prototype 원본 복귀.
+    } catch (_e) {}
+    st.tracker = null;
   }
   st = null;
 }
@@ -297,17 +336,14 @@ function placeDialog(win) {
   win.stick();
 }
 
-// overview(Expo/Scale)/Alt-Tab window switcher 에서 창을 숨긴다. muffin 이
-// skip_taskbar 창을 두 목록에서 제외하므로 getter 를 true 로 override 한다
-// (creation 시점 GObject property 라 set 은 못 하고 instance getter 만 덮어씀).
-// reference: quake-terminal quake-mode.js. disable() 에서 delete 로 복원.
+// Alt-Tab(appSwitcher) / grouped-window-list 에서 창을 숨긴다. 이들은 매번 새로
+// 질의하는 **메서드 `is_skip_taskbar()`** 로 필터하므로(소스: appSwitcher.js:35/39/43,
+// grouped-window-list:1018) 인스턴스 메서드를 override 한다 (GNOME 식 property getter
+// override 는 Cinnamon 이 안 읽어 무효 — #229 실측). disable 에서 delete 로 복원.
+// (패널 window-list·workspace-switcher 는 is_window_interesting 경로 — enable 의
+// tracker 패치가 담당. Expo 는 둘 다 안 닿는 Cinnamon 한계 — 헤더 참고.)
 function skipTaskbar(win) {
   if (st.taskbarPatched === win) return;
-  Object.defineProperty(win, "skip_taskbar", {
-    get() {
-      return true;
-    },
-    configurable: true,
-  });
+  win.is_skip_taskbar = () => true;
   st.taskbarPatched = win;
 }
