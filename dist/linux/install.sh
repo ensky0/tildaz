@@ -13,6 +13,9 @@
 #   ~/.config/sway/config  (sway 는 XDG autostart 미지원 → sway 세션 자동실행엔
 #     이 파일의 exec 가 필요. 없으면 stock 상속(include)+tildaz 블록 생성, 있으면
 #     tildaz 블록(marker+exec 2줄)만 append. 기존 본문은 덮지 않음)
+#   ~/.config/hypr/{hyprland.lua|hyprland.conf}  (Hyprland 자동실행 + hotkey bind —
+#     Lua 면 hl.on+hl.bind, hyprlang 이면 exec-once+bind append. 둘 다 없으면
+#     `Hyprland --verify-config` 로 기본 config 생성 후 append. 미설치면 안내. 본문 안 덮음)
 #
 # desktop database / icon cache refresh 는 best-effort (없으면 skip).
 #
@@ -98,21 +101,103 @@ ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 #   - config 있음 + tildaz 줄(marker 또는 exec) 없음 → tildaz 2줄 append
 #     (`include` 는 안 붙임 — 기존 config 엔 이미 stock 설정이 있으므로).
 #   - config 있음 + 이미 있음 → 변경 없음 (중복 방지). 기존 본문은 절대 안 덮음.
+# 자동실행 블록 식별 marker — install.sh ↔ uninstall.sh 글자 단위 동일해야 매칭됨.
+# sway/Hyprland 두 config 에 같은 marker 를 쓴다(파일은 따로 처리).
+TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes this)"
 SWAY_CFG="$HOME/.config/sway/config"
-SWAY_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes this)"
 if [[ ! -e "$SWAY_CFG" ]]; then
     mkdir -p "$(dirname "$SWAY_CFG")"
     cat > "$SWAY_CFG" <<EOF
 include /etc/sway/config
-$SWAY_MARKER
+$TILDAZ_MARKER
 exec $TILDAZ_EXE
 EOF
     SWAY_MSG="$SWAY_CFG  (생성 — stock 상속 + tildaz 자동실행 블록)"
-elif grep -qF "$SWAY_MARKER" "$SWAY_CFG" || grep -qE '^[[:space:]]*exec[[:space:]].*tildaz' "$SWAY_CFG"; then
+elif grep -qF -e "$TILDAZ_MARKER" "$SWAY_CFG" || grep -qE '^[[:space:]]*exec[[:space:]].*tildaz' "$SWAY_CFG"; then
     SWAY_MSG="$SWAY_CFG  (이미 tildaz 자동실행 줄 있음 — 변경 없음)"
 else
-    printf '\n%s\nexec %s\n' "$SWAY_MARKER" "$TILDAZ_EXE" >> "$SWAY_CFG"
+    printf '\n%s\nexec %s\n' "$TILDAZ_MARKER" "$TILDAZ_EXE" >> "$SWAY_CFG"
     SWAY_MSG="$SWAY_CFG  (기존 config 에 tildaz 자동실행 2줄 append)"
+fi
+
+# ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`) + hotkey bind. Hyprland 은
+# XDG autostart 미지원이고 GlobalShortcuts portal 도 DE 전환에 불안정(#244)+anonymous
+# shortcut 이라, hotkey 는 sway 처럼 compositor bind→`tildaz --toggle`(portal 우회)로 건다.
+# Hyprland 0.55+ 는 기본 config 가 Lua(hyprland.lua), 구버전/사용자는 hyprlang(.conf):
+#   - .conf → `exec-once = <bin>` + `bind = <mods>,<key>,exec,<bin> --toggle`            (주석 #)
+#   - .lua  → `hl.on(...exec_cmd)` + `hl.bind("<key>", hl.dsp.exec_cmd("<bin> --toggle"))` (주석 --)
+#   - 둘 다 없음 → Hyprland 설치돼 있으면 `Hyprland --verify-config` 로 기본 config 생성
+#     (세션 안 띄움) 후 append. 미설치면 안내만 (`command -v` 로 먼저 걸러 안 깨짐).
+# 기존 본문 안 건드리고 append 만. 각 줄 앞에 marker — uninstall 이 marker+다음줄 제거.
+HYPR_DIR="$HOME/.config/hypr"
+HYPR_CONF="$HYPR_DIR/hyprland.conf"
+HYPR_LUA="$HYPR_DIR/hyprland.lua"
+TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
+
+# tildaz config.hotkey ("f1" / "ctrl+grave" / "super+a" …, '+' 구분) → Hyprland bind 형식.
+#   HYPR_BIND_CONF = hyprlang 1번 필드 "<mods>,<key>" (mods 공백구분)
+#   HYPR_BIND_LUA  = lua "<mod + … + key>"
+hypr_translate_hotkey() {
+    local cfg="$HOME/.config/tildaz/config.json" hk="f1" v=""
+    if [[ -f "$cfg" ]]; then
+        v="$(grep -oE '"hotkey"[[:space:]]*:[[:space:]]*"[^"]*"' "$cfg" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
+        if [[ -n "$v" ]]; then hk="$v"; fi
+    fi
+    local -a parts=() mods=(); local key="" tok hkey m
+    IFS='+' read -ra parts <<< "$hk"
+    for tok in "${parts[@]}"; do
+        case "${tok,,}" in
+            ctrl|control) mods+=("CTRL") ;;
+            shift) mods+=("SHIFT") ;;
+            alt) mods+=("ALT") ;;
+            super|meta|logo|win) mods+=("SUPER") ;;
+            "") ;;
+            *) key="$tok" ;;
+        esac
+    done
+    hkey="$key"
+    if [[ "$key" =~ ^[a-zA-Z]$ || "$key" =~ ^[fF][0-9]+$ ]]; then hkey="${key^^}"; fi
+    local conf_mods="" lua_combo=""
+    for m in "${mods[@]}"; do conf_mods+="${conf_mods:+ }$m"; lua_combo+="$m + "; done
+    HYPR_BIND_CONF="${conf_mods},${hkey}"
+    HYPR_BIND_LUA="${lua_combo}${hkey}"
+}
+
+# config 에 marker+line 을 idempotent append (needle 정규식이 이미 있으면 skip → return 1).
+append_marked() {
+    local cfg="$1" marker="$2" needle="$3" line="$4"
+    grep -qE "$needle" "$cfg" && return 1
+    printf '\n%s\n%s\n' "$marker" "$line" >> "$cfg"
+    return 0
+}
+
+hypr_translate_hotkey
+HYPR_MSG=""
+if [[ ! -f "$HYPR_CONF" && ! -f "$HYPR_LUA" ]]; then
+    if command -v Hyprland >/dev/null 2>&1; then
+        mkdir -p "$HYPR_DIR"
+        Hyprland --verify-config >/dev/null 2>&1 || true   # config 없으면 기본 생성
+    else
+        HYPR_MSG="Hyprland 자동실행: Hyprland 미설치 — 나중에 Hyprland 설치해 쓸 거면 tildaz 를 다시 설치하면 자동실행+단축키가 구성됩니다."
+    fi
+fi
+hypr_added=()
+if [[ -f "$HYPR_CONF" ]]; then
+    if append_marked "$HYPR_CONF" "$TILDAZ_MARKER" '^[[:space:]]*exec-once[[:space:]]*=.*tildaz' "exec-once = $TILDAZ_EXE"; then hypr_added+=("autostart"); fi
+    if append_marked "$HYPR_CONF" "$TILDAZ_MARKER" '^[[:space:]]*bind[[:space:]]*=.*tildaz' "bind = ${HYPR_BIND_CONF},exec,$TILDAZ_EXE --toggle"; then hypr_added+=("hotkey"); fi
+    if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_CONF  (hyprlang ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_CONF  (이미 설정됨 — 변경 없음)"; fi
+elif [[ -f "$HYPR_LUA" ]]; then
+    # autogenerated 경고 배너(상단 overlay)가 top-anchored 드롭다운 위를 가리므로
+    # 그 플래그 줄을 제거한다. 이 줄(`hl.config({ autogenerated = true }) -- remove
+    # this line ...`)은 Hyprland 자동생성물에만 있고 사용자가 손댄 config 엔 없다
+    # (배너 안내대로 지웠을 것) → "생성된 config 한정" 충족. 제거는 idempotent.
+    if grep -qE 'hl\.config\(.*autogenerated' "$HYPR_LUA"; then
+        sed -i '/hl\.config(.*autogenerated/d' "$HYPR_LUA"
+        hypr_added+=("배너제거")
+    fi
+    if append_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" 'hl\.on\(.*tildaz' "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"$TILDAZ_EXE\") end)"; then hypr_added+=("autostart"); fi
+    if append_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" 'hl\.bind\(.*tildaz' "hl.bind(\"$HYPR_BIND_LUA\", hl.dsp.exec_cmd(\"$TILDAZ_EXE --toggle\"))"; then hypr_added+=("hotkey"); fi
+    if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_LUA  (Lua ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_LUA  (이미 설정됨 — 변경 없음)"; fi
 fi
 
 # GNOME Shell extension — GNOME(mutter) 은 wlr-layer-shell 미지원이라 drop-down
@@ -186,6 +271,7 @@ echo "  $DESKTOP_OUT  (Exec=$TILDAZ_EXE)"
 echo "  $ICON_OUT"
 echo "  $BIN_LINK -> $TILDAZ_EXE"
 echo "  $SWAY_MSG"
+[[ -n "$HYPR_MSG" ]] && echo "  $HYPR_MSG"
 [[ -n "$EXT_MSG" ]] && echo "  $EXT_MSG"
 [[ -n "$CIN_MSG" ]] && echo "  $CIN_MSG"
 echo ""
@@ -197,8 +283,9 @@ echo "  - Cinnamon: 위 extension 이 drop-down 위치/단축키를 담당 (Cinn
 echo "              Wayland 라 로그아웃→로그인해야 활성화됨. X11 세션엔 tildaz 안 뜸."
 echo "  - sway: ~/.config/sway/config 의 exec 로 자동실행(없으면 위에서 생성)."
 echo "          로그인 후 hotkey(기본 F1) 토글. exit 후 재실행은 launcher 에서 'tildaz'."
-echo "  - Hyprland/기타 wlroots: layer-shell 로 바로 drop-down. 자동실행은 각자"
-echo "          compositor 의 exec(예: hyprland.conf 'exec-once = tildaz')."
+echo "  - Hyprland: layer-shell drop-down. hotkey 는 config bind→'tildaz --toggle'(portal 우회, #244 무관)."
+echo "          위에서 hyprland.lua/.conf 에 자동실행+단축키 추가 → 적용하려면 'hyprctl reload' 또는 재로그인."
+echo "  - 기타 wlroots: layer-shell drop-down. 자동실행은 compositor 의 exec 류로 직접."
 echo "  - config: ~/.config/tildaz/config.json (auto_start/hidden_start/hotkey/위치)"
 echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 ~/.config/autostart/"
 echo "    tildaz.desktop 자동 생성. GNOME 은 extension 이 담당하므로 그 파일을 삭제함."
