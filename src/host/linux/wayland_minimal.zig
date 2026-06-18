@@ -139,6 +139,7 @@ const zwlr_layer_surface_anchor_right: u32 = 8;
 // WS_EX_TOPMOST 의 *level toggle* z-order 양보 (#195) 는 layer-shell categorical
 // (top / bottom / overlay / background) 이라 unavailable — Linux platform-limit.
 const zwlr_layer_surface_keyboard_interactivity_exclusive: u32 = 1;
+const zwlr_layer_surface_keyboard_interactivity_on_demand: u32 = 2;
 // 첫 set_size 의 fallback 높이. compositor 가 0 으로 답하면 (= "you decide")
 // 이 값 사용. 보통은 screen 폭 + 우리 요청 height 를 그대로 돌려보냄.
 const layer_surface_default_height: u32 = 400;
@@ -865,6 +866,18 @@ const Client = struct {
         // latency 진단용. monotonic, ns_per_ms 단위로 log.
         self.boot_timer = std.time.Timer.start() catch null;
 
+        // Linux 세션 식별 — 어느 로그가 어느 DE인지 구분 + tildaz 의 sway/Hyprland
+        // 감지 진단용. server=display protocol(XDG_SESSION_TYPE), de=DE 이름
+        // (XDG_CURRENT_DESKTOP). swaysock/hyprland 신호는 tildaz 가 실제 감지에 쓰는
+        // env($SWAYSOCK / $HYPRLAND_INSTANCE_SIGNATURE) — *있을 때만* 덧붙인다(평소
+        // 깔끔, 어긋날 때만 튄다: 예 de=KDE 인데 swaysock=set = stale SWAYSOCK 버그).
+        log.appendLine("startup", "session: server={s} de={s}{s}{s}", .{
+            posix.getenv("XDG_SESSION_TYPE") orelse "(unset)",
+            posix.getenv("XDG_CURRENT_DESKTOP") orelse "(unset)",
+            if (posix.getenv("SWAYSOCK") != null) " swaysock=set" else "",
+            if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) " hyprland=set" else "",
+        });
+
         // #203 Phase C — dialog backend host callback 등록. self pointer 가
         // final 위치 (Client.init 가 by value 반환이라 init 안에서는 등록 못 함).
         // run 진입 시점 = stable address. defer 해제로 deinit 안 dangling 회피.
@@ -905,13 +918,21 @@ const Client = struct {
         //
         // portal 미가용 환경 (portal_session == null) 에서 hidden_start=true 면
         // 사용자가 영영 볼 수 없는 trap — warning log + 즉시 show 로 fallback.
-        const hidden_at_start = self.config.hidden_start and self.portal_session != null;
-        if (self.config.hidden_start and self.portal_session == null) {
-            log.appendLine("startup", "hidden_start ignored — portal GlobalShortcuts unavailable, showing on start", .{});
+        // hotkey 전달 경로가 있을 때만 hidden_start 존중 (없으면 사용자가 영영 못
+        // 띄우는 trap → show-on-start fallback). 경로: portal GlobalShortcuts(KDE 등),
+        // 또는 sway/Hyprland 의 compositor keybind→`tildaz --toggle`($SWAYSOCK /
+        // $HYPRLAND_INSTANCE_SIGNATURE 로 감지 — sway_ipc 자동등록 / install.sh 의
+        // hyprland config bind 가 그 키를 single_instance socket toggle 로 연결).
+        // 첫 toggle 은 handleActivatedToggle 가 surface_id==0 분기로 createShellObjects.
+        const has_compositor_hotkey = posix.getenv("SWAYSOCK") != null or
+            posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null;
+        const hidden_at_start = self.config.hidden_start and (self.portal_session != null or has_compositor_hotkey);
+        if (self.config.hidden_start and !hidden_at_start) {
+            log.appendLine("startup", "hidden_start ignored — no hotkey path (portal/sway/Hyprland), showing on start", .{});
         }
         if (hidden_at_start) {
             self.surface_hidden = true;
-            log.appendLine("startup", "hidden_start — surface deferred until first portal Activated", .{});
+            log.appendLine("startup", "hidden_start — surface deferred until first hotkey toggle", .{});
             self.logBootElapsed("ready (hidden_start, awaiting first hotkey)");
             std.debug.print("TildaZ Linux Wayland terminal is hidden — press the configured hotkey to show.\n", .{});
         } else {
@@ -1400,18 +1421,21 @@ const Client = struct {
         try margin_msg.putI32(if (overscan_bottom) ov else mb);
         try margin_msg.putI32(ml); // left = 원점 변, 항상 그대로
         try margin_msg.send(self.stream);
-        // set_keyboard_interactivity(exclusive) — drop-down 본분. yakuake /
-        // guake 등 모든 Linux drop-down terminal 의 표준. mac/win 의 z-order
-        // 양보 (#195) 는 layer-shell categorical 라 Linux 적용 불가 platform-limit.
+        // set_keyboard_interactivity(on_demand) — show 시 키보드 포커스를 받되 *독점
+        // 안 함*. exclusive 는 떠 있는 동안 다른 창에 포커스를 못 줘서(특히 Hyprland 은
+        // 엄격히 키보드를 독점 → 다른 창 클릭 불가), on_demand 로 클릭-어웨이 허용 →
+        // mac/win 의 focus-loss z-order 양보(#195) 정신과 맞다. (dialog 는 modal 이라
+        // exclusive 유지 — createDialogSurface 참고.) 단 on_demand 는 show 시 자동
+        // 포커스가 compositor 구현마다 달라(KDE/sway/Hyprland) 실기 확인 필요.
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_keyboard_interactivity,
-            &.{zwlr_layer_surface_keyboard_interactivity_exclusive},
+            &.{zwlr_layer_surface_keyboard_interactivity_on_demand},
         );
         // wl_surface.commit (opcode 6) — pending double-buffered state 적용.
         try self.sendNoArgs(self.surface_id, 6);
 
-        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity=exclusive", .{
+        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity=on_demand", .{
             self.surface_id,
             self.layer_surface_id,
             @tagName(self.config.dock_position),
