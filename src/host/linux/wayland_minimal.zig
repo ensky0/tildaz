@@ -1427,15 +1427,26 @@ const Client = struct {
         // mac/win 의 focus-loss z-order 양보(#195) 정신과 맞다. (dialog 는 modal 이라
         // exclusive 유지 — createDialogSurface 참고.) 단 on_demand 는 show 시 자동
         // 포커스가 compositor 구현마다 달라(KDE/sway/Hyprland) 실기 확인 필요.
+        //
+        // on_demand(값 2) enum 은 layer-shell **version 4 부터**. v4 미만 서버에 보내면
+        // 표준상 invalid — wlroots 는 관대히 `!!interactive`(=exclusive) 로 강등하지만
+        // (크래시 X) 그 관대함에 기대지 않고, set_layer(`version >= 2`) 와 같은 패턴으로
+        // 버전 가드를 둔다: v4+ 면 on_demand, 미만이면 exclusive(전 버전 유효, 무회귀).
+        // 현행 compositor 는 모두 v4+ advertise (KWin v5 / Hyprland·sway v4) 라 실제론
+        // 항상 on_demand — 가드는 오래된 wlroots(<0.15, v3) 등 tail case 안전망.
+        const ki: u32 = if (self.caps.layer_shell.version >= 4)
+            zwlr_layer_surface_keyboard_interactivity_on_demand
+        else
+            zwlr_layer_surface_keyboard_interactivity_exclusive;
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_keyboard_interactivity,
-            &.{zwlr_layer_surface_keyboard_interactivity_on_demand},
+            &.{ki},
         );
         // wl_surface.commit (opcode 6) — pending double-buffered state 적용.
         try self.sendNoArgs(self.surface_id, 6);
 
-        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity=on_demand", .{
+        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity={s} (layer_shell v{})", .{
             self.surface_id,
             self.layer_surface_id,
             @tagName(self.config.dock_position),
@@ -1451,6 +1462,8 @@ const Client = struct {
             layout.margin_right,
             layout.margin_bottom,
             layout.margin_left,
+            if (ki == zwlr_layer_surface_keyboard_interactivity_on_demand) "on_demand" else "exclusive",
+            self.caps.layer_shell.version,
         });
     }
 
@@ -4067,6 +4080,20 @@ const Client = struct {
     /// L9-γ — BindShortcuts 성공 후 곧바로 `Activated` signal subscribe.
     /// subscribe 실패해도 fatal 아님 — hotkey 미동작이라도 terminal 자체는 OK.
     fn tryConnectDbus(self: *Client) void {
+        // #227 — sway / Hyprland 은 portal GlobalShortcuts 를 쓰지 않는다. hotkey 는
+        // compositor keybind → `tildaz --toggle` (sway = sway_ipc 런타임 `bindsym`,
+        // Hyprland = install.sh 의 config `bind`/`hl.bind`) 로 거는 게 정공 — portal
+        // GlobalShortcuts 는 anonymous shortcut + DE 전환 wedge (#244) 라 불안정.
+        // 특히 xdg-desktop-portal-hyprland 는 GlobalShortcuts 를 *advertise 하면서도*
+        // binding 을 비워(anonymous) 돌려줘 BindShortcuts 가 mismatch → KDE 가 아닌데도
+        // "Hotkey mismatch" dialog 가 뜬다 (sway 는 portal 이 GlobalShortcuts 미advertise
+        // 라 CreateSession 단계에서 graceful fail → dialog 안 떴음, Hyprland 만 노출).
+        // compositor hotkey 경로면 portal 경로 (CreateSession/Bind/Activated) 자체를
+        // 건너뛴다 — hidden_start 는 has_compositor_hotkey 로 이미 별도 존중.
+        if (posix.getenv("SWAYSOCK") != null or posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) {
+            log.appendLine("portal", "sway/Hyprland 감지 — hotkey 는 compositor bind→--toggle, GlobalShortcuts portal skip", .{});
+            return;
+        }
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
             return;
