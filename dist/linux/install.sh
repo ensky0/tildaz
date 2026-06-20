@@ -29,7 +29,7 @@
 #
 # KDE Plasma 6 환경: install 후 KRunner (Alt+F2) 또는 Application Menu 에서
 # "TildaZ" 검색 + 실행 → portal-kde 가 app_id=tildaz 인식. terminal 직접 실행
-# 시 portal GlobalShortcuts 동작 안 함 (LINUX.md "KDE Plasma 6 install" 섹션).
+# 시 portal GlobalShortcuts 동작 안 함 (SPEC.md §1.2 참조).
 
 set -euo pipefail
 

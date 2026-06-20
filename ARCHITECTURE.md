@@ -50,6 +50,30 @@ policy, while each host owns the OS event loop and native APIs.
    Chinese IME pre-edit and reconversion. Since v0.4.3, committed-text Hanja /
    kanji reconversion works for the active terminal row and tab rename.
 
+## Linux Pipeline
+
+1. `host/linux_wayland.zig` is the Linux entry point: it resolves config and
+   shell, then connects to `host/linux/wayland_minimal.zig`.
+2. `host/linux/wayland_minimal.zig` is a direct Wayland wire-protocol client (no
+   GTK / Qt). It owns the registry, `xdg-shell` / `wlr-layer-shell` surfaces,
+   `wl_shm` buffers, keyboard / pointer / data-device, `zwp_text_input_v3` IME,
+   the D-Bus / XDG-portal global-shortcut path, and the main event loop.
+3. The same `session_core.zig` tab/session model is used as Windows / macOS.
+4. `terminal/linux/pty.zig` opens a POSIX PTY (`/dev/ptmx`, `setsid`,
+   `TIOCSCTTY`) behind the shared `terminal.zig` API.
+5. `host/linux/software_terminal.zig` is a software `wl_shm` renderer that draws
+   the terminal grid and tab bar directly into an ARGB8888 buffer. `xkb.zig`
+   (runtime `libxkbcommon`) decodes keys; fonts come from fontconfig + FreeType
+   + HarfBuzz via `src/font/linux/*`, all `dlopen`-loaded.
+
+The host probes compositor capabilities at startup and degrades gracefully:
+`xdg_wm_base` (baseline window — fatal if missing), `zwlr_layer_shell_v1` (true
+drop-down; falls back to a normal `xdg-shell` window or a Shell extension on
+mutter / muffin), `libxkbcommon` (keymaps), Wayland data-device (clipboard),
+XDG-portal `GlobalShortcuts` (global toggle; otherwise per-DE config bind to
+`tildaz --toggle`), and `zwp_text_input_v3` (IME). Each missing capability is
+logged and surfaced as a documented limitation rather than a crash.
+
 ## Design Choices
 
 **Native PTY backends.** ConPTY is the supported Windows pseudoconsole API for
@@ -70,6 +94,23 @@ Cmd patterns and AppKit input callbacks.
 and defaults. Unknown keys are fatal except `_`-prefixed comment keys. Numeric
 fields include their units (`_percent`, `_point`, `_ratio`).
 
+**Wayland-only on Linux.** Wayland is where modern Linux desktops are heading,
+which matches the goal of behaving well on current desktop managers. X11 is not
+impossible, but supporting it would fork windowing, input, clipboard, global
+hotkey, IME, DPI, and focus handling into a second host surface. So the first
+Linux backend is Wayland-only; the Linux-specific files keep names and
+boundaries (`linux_wayland.zig`, not `linux.zig`) so an X11 backend could sit
+alongside later if real user or distribution demand appears.
+
+**No GTK / Qt toolkit dependency.** TildaZ already owns most of a terminal app's
+surface — terminal state, tabs, config, renderer, selection policy, dialogs, and
+PTY lifecycle. A toolkit would help with window shell, input plumbing, clipboard,
+and IME, but it would not remove the Wayland constraints on global shortcuts and
+desktop-layer placement, and each toolkit carries a runtime bias (GTK toward
+GNOME, Qt toward KDE). A direct Wayland client can probe each desktop's
+capabilities at runtime instead. Toolkit integration is only reconsidered as a
+fallback if direct Wayland text-input or clipboard becomes unworkable.
+
 ## Current Open Work
 
 | Area | Issue | State |
@@ -78,7 +119,7 @@ fields include their units (`_percent`, `_point`, `_ratio`).
 | Config schema completion / future cleanup | [#118](https://github.com/ensky0/tildaz/issues/118) | Open follow-up context |
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
-| Linux backend | [#189](https://github.com/ensky0/tildaz/issues/189) | Preview shipped in v0.5.0-rc1 — Wayland-only, KDE Plasma 6 + Cinnamon verified, GNOME limited, sway / Hyprland untested. Software renderer is a placeholder for a future EGL path. See [LINUX.md](LINUX.md) |
+| Linux renderer (EGL/OpenGL ES) | [#189](https://github.com/ensky0/tildaz/issues/189) | Wayland backend shipped in v0.5.0 (final) — Wayland-only, verified on real hardware across KDE Plasma 6, Hyprland, sway, Cinnamon, GNOME (Shell extension), and COSMIC. The remaining follow-up is replacing the bring-up software `wl_shm` renderer with a GPU (EGL/OpenGL ES) path; the software renderer is correct but is a placeholder. |
 | Stress tests | none yet | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
 
 Completed cross-platform work is tracked in
@@ -95,7 +136,7 @@ from `v*` tags.
 | Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
 | Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
 | macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), ad-hoc signed |
-| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.{tar.gz,deb,rpm,AppImage}` and the AppImage as `TildaZ-...` | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. |
+| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.{tar.gz,deb,rpm,AppImage}`, the AppImage as `TildaZ-...`, plus an Arch package `tildaz-<ver>-1-x86_64.pkg.tar.zst` (x86_64 only) | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. The `.deb` / `.rpm` packages declare the core libraries (xkbcommon, freetype, fontconfig) as dependencies so a fresh install pulls them in. |
 
 The release workflow checks that:
 
@@ -115,3 +156,18 @@ macOS has not yet been benchmarked with the same harness. Subjectively the
 Metal path is comparable to the Windows D3D11 path, but formal numbers should
 be collected under a dedicated performance issue before being treated as a
 published claim.
+
+## Linux Protocol References
+
+- XDG Desktop Portal `GlobalShortcuts` — permissioned cross-desktop API for
+  registering shortcuts outside app focus:
+  <https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html>
+- `wlr-layer-shell` — desktop layer surfaces anchored to an output edge:
+  <https://wayland.app/protocols/wlr-layer-shell-unstable-v1>
+- `xdg-shell` — baseline Wayland protocol for normal toplevel windows:
+  <https://wayland.app/protocols/xdg-shell>
+- `libxkbcommon` — shared keyboard handling library:
+  <https://xkbcommon.org/>
+- Wayland `text-input-v3` — pre-edit and commit-string events for IME (protocol
+  family is still unstable/experimental):
+  <https://wayland.app/protocols/text-input-unstable-v3>

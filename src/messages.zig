@@ -72,7 +72,7 @@ pub const linux_backend_not_ready_msg =
     \\is a normal Wayland terminal window with PTY, rendering, input,
     \\selection, copy, and paste before full drop-down support is claimed.
     \\
-    \\See LINUX.md and issue #189 for the current plan.
+    \\See issue #189 for the current plan.
 ;
 
 /// Wayland compositor unix socket 에 connect 실패 시 사용자가 보는 메시지.
