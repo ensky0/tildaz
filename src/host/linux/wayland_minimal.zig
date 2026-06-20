@@ -485,6 +485,52 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
     };
 }
 
+/// hotkey 를 portal `GlobalShortcuts` 가 아니라 **compositor keybind → `tildaz
+/// --toggle`** (#198 single-instance socket) 로 거는 환경인지. 이 환경이면
+/// (1) portal GlobalShortcuts 경로(CreateSession/Bind/Activated)를 skip 하고,
+/// (2) hidden_start 를 존중(첫 toggle 이 surface 생성)한다.
+///   - sway: `$SWAYSOCK` (sway_ipc 가 런타임 `bindsym` 등록)
+///   - Hyprland: `$HYPRLAND_INSTANCE_SIGNATURE` (install.sh 가 config `bind`/`hl.bind`)
+///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — xdg-desktop-portal-cosmic 은
+///     GlobalShortcuts 미구현(portal-cosmic#4)이라 portal 재사용 불가 → install.sh 가
+///     RON custom shortcut(`Spawn("tildaz --toggle")`)으로 등록.
+fn compositorHotkeyEnv() bool {
+    if (posix.getenv("SWAYSOCK") != null) return true;
+    if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) return true;
+    if (cosmicCompositor()) return true;
+    return false;
+}
+
+/// `$XDG_CURRENT_DESKTOP` 에 `needle` (소문자) 가 들어있나. XDG 값은 ':' 다중
+/// 토큰일 수 있어 정확매칭 대신 substring + 대소문자 무관.
+fn currentDesktopContains(needle: []const u8) bool {
+    if (posix.getenv("XDG_CURRENT_DESKTOP")) |xcd| {
+        var buf: [128]u8 = undefined;
+        if (xcd.len <= buf.len) {
+            const lower = std.ascii.lowerString(buf[0..xcd.len], xcd);
+            if (std.mem.indexOf(u8, lower, needle) != null) return true;
+        }
+    }
+    return false;
+}
+
+/// COSMIC (smithay `cosmic-comp`) 세션인지 — hotkey 를 RON custom shortcut
+/// (`Spawn("tildaz --toggle")`) 으로 거는 환경 식별용 (`compositorHotkeyEnv`).
+fn cosmicCompositor() bool {
+    return currentDesktopContains("cosmic");
+}
+
+/// KWin (KDE Plasma) 세션인지. drop-down 재표시는 **기본이 destroy/recreate**
+/// (단순·범용·정확 — 모든 compositor 의 첫 show 경로) 인데, KWin 만 surface 전체
+/// 재생성이 ~165ms 로 느려(KWin Bug 503121) 그 한 곳에서만 #205 의 unmap→remap
+/// (`attach(null)` 로 숨기고 속성 재전송으로 다시 map, wl_surface/layer_surface 유지)
+/// 워크어라운드를 쓴다. wlroots 는 remap 도 되지만 recreate 도 빠르고, smithay
+/// (cosmic-comp #230) 는 remap 미지원이라 recreate 가 정답 — 그래서 *예외는 KWin 한
+/// 곳* 으로 모은다 (워크어라운드를 그 버그가 있는 compositor 에만).
+fn kwinCompositor() bool {
+    return currentDesktopContains("kde");
+}
+
 const Client = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -920,15 +966,14 @@ const Client = struct {
         // 사용자가 영영 볼 수 없는 trap — warning log + 즉시 show 로 fallback.
         // hotkey 전달 경로가 있을 때만 hidden_start 존중 (없으면 사용자가 영영 못
         // 띄우는 trap → show-on-start fallback). 경로: portal GlobalShortcuts(KDE 등),
-        // 또는 sway/Hyprland 의 compositor keybind→`tildaz --toggle`($SWAYSOCK /
-        // $HYPRLAND_INSTANCE_SIGNATURE 로 감지 — sway_ipc 자동등록 / install.sh 의
-        // hyprland config bind 가 그 키를 single_instance socket toggle 로 연결).
+        // 또는 sway/Hyprland/COSMIC 의 compositor keybind→`tildaz --toggle`
+        // (sway_ipc 자동등록 / Hyprland·COSMIC 은 install.sh 가 config bind / RON
+        // shortcut 으로 그 키를 single_instance socket toggle 로 연결 — compositorHotkeyEnv).
         // 첫 toggle 은 handleActivatedToggle 가 surface_id==0 분기로 createShellObjects.
-        const has_compositor_hotkey = posix.getenv("SWAYSOCK") != null or
-            posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null;
+        const has_compositor_hotkey = compositorHotkeyEnv();
         const hidden_at_start = self.config.hidden_start and (self.portal_session != null or has_compositor_hotkey);
         if (self.config.hidden_start and !hidden_at_start) {
-            log.appendLine("startup", "hidden_start ignored — no hotkey path (portal/sway/Hyprland), showing on start", .{});
+            log.appendLine("startup", "hidden_start ignored — no hotkey path (portal/sway/Hyprland/COSMIC), showing on start", .{});
         }
         if (hidden_at_start) {
             self.surface_hidden = true;
@@ -4080,18 +4125,20 @@ const Client = struct {
     /// L9-γ — BindShortcuts 성공 후 곧바로 `Activated` signal subscribe.
     /// subscribe 실패해도 fatal 아님 — hotkey 미동작이라도 terminal 자체는 OK.
     fn tryConnectDbus(self: *Client) void {
-        // #227 — sway / Hyprland 은 portal GlobalShortcuts 를 쓰지 않는다. hotkey 는
-        // compositor keybind → `tildaz --toggle` (sway = sway_ipc 런타임 `bindsym`,
-        // Hyprland = install.sh 의 config `bind`/`hl.bind`) 로 거는 게 정공 — portal
-        // GlobalShortcuts 는 anonymous shortcut + DE 전환 wedge (#244) 라 불안정.
+        // #227 / #230 — sway / Hyprland / COSMIC 은 portal GlobalShortcuts 를 쓰지
+        // 않는다. hotkey 는 compositor keybind → `tildaz --toggle` (sway = sway_ipc
+        // 런타임 `bindsym`, Hyprland = install.sh 의 config `bind`/`hl.bind`, COSMIC =
+        // install.sh 의 RON `Spawn("tildaz --toggle")`) 로 거는 게 정공 — portal
+        // GlobalShortcuts 는 anonymous shortcut + DE 전환 wedge (#244) 라 불안정하거나
+        // (Hyprland) 아예 미구현 (xdg-desktop-portal-cosmic, portal-cosmic#4).
         // 특히 xdg-desktop-portal-hyprland 는 GlobalShortcuts 를 *advertise 하면서도*
         // binding 을 비워(anonymous) 돌려줘 BindShortcuts 가 mismatch → KDE 가 아닌데도
         // "Hotkey mismatch" dialog 가 뜬다 (sway 는 portal 이 GlobalShortcuts 미advertise
         // 라 CreateSession 단계에서 graceful fail → dialog 안 떴음, Hyprland 만 노출).
         // compositor hotkey 경로면 portal 경로 (CreateSession/Bind/Activated) 자체를
         // 건너뛴다 — hidden_start 는 has_compositor_hotkey 로 이미 별도 존중.
-        if (posix.getenv("SWAYSOCK") != null or posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) {
-            log.appendLine("portal", "sway/Hyprland 감지 — hotkey 는 compositor bind→--toggle, GlobalShortcuts portal skip", .{});
+        if (compositorHotkeyEnv()) {
+            log.appendLine("portal", "sway/Hyprland/COSMIC 감지 — hotkey 는 compositor bind→--toggle, GlobalShortcuts portal skip", .{});
             return;
         }
         const session = dbus.SessionBus.connect() catch |err| {
@@ -4242,9 +4289,21 @@ const Client = struct {
         // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
         self.commitPendingInput();
-        try self.unmapShellObjects();
+        // hide/show 재표시는 **기본이 destroy/recreate** (다음 show 는 surface_id==0
+        // → createShellObjects, 첫 show 와 동일 경로 = 모든 compositor 에서 동작).
+        // 단 KWin 만 surface 재생성이 ~165ms 로 느려(Bug 503121) #205 의 unmap→remap
+        // (wl_surface/layer_surface 유지) 워크어라운드를 쓴다 — 예외는 버그 있는 KWin
+        // 한 곳뿐. (smithay/cosmic-comp 은 remap 미지원 #230, wlroots 는 recreate 도 빠름.)
+        // 세션(PTY/shell)은 destroyShellObjects 가 안 건드림 → 재표시 후 그대로 유지.
+        if (kwinCompositor()) {
+            try self.unmapShellObjects();
+            self.surface_hidden = true;
+            log.appendLine("portal", "toggle hide — unmapped shell objects (#205 KWin 503121 workaround)", .{});
+            return;
+        }
+        try self.destroyShellObjects();
         self.surface_hidden = true;
-        log.appendLine("portal", "toggle hide — unmapped shell objects (#205)", .{});
+        log.appendLine("portal", "toggle hide — destroyed shell objects (recreate path)", .{});
     }
 
     /// #205 — kitty pattern hide: `wl_surface.attach(null) + commit`. wl_surface
@@ -5178,14 +5237,27 @@ fn linuxTabTerminate(host: *tab_actions.Host) void {
 }
 
 pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !void {
+    // #198 / #230 — single-instance. 이미 살아있는 인스턴스가 있으면 이 두 번째
+    // 전체 실행(앱 아이콘 재실행 / autostart 중복 등)은 toggle 신호만 보내고 종료해
+    // 기존 인스턴스를 보여준다. socket 을 빼앗지 않으므로 orphan/hotkey 라우팅 깨짐
+    // 없음. Client.init(wayland 연결) *전에* 검사 — 두 번째 인스턴스가 창을 안 만든다.
+    const listener_fd = single_instance.createListener() catch |err| switch (err) {
+        error.AlreadyRunning => {
+            log.appendLine("toggle-ipc", "already running — sending toggle to existing instance + exiting", .{});
+            single_instance.sendToggle() catch |e| {
+                log.appendLine("toggle-ipc", "delegate toggle failed: {s}", .{@errorName(e)});
+            };
+            return;
+        },
+        // 그 외(권한 등)는 fatal 아님 — listener 없이 진행 (graceful degrade).
+        else => blk: {
+            log.appendLine("toggle-ipc", "listener disabled: {s}", .{@errorName(err)});
+            break :blk @as(posix.fd_t, -1);
+        },
+    };
     var client = try Client.init(allocator, cfg);
     defer client.deinit();
-    // #198 — portal-less hotkey IPC. listener 생성 실패는 fatal 아님 (이미
-    // 다른 인스턴스가 listen 중이거나 socket 권한 문제 — graceful degrade).
-    client.toggle_listener_fd = single_instance.createListener() catch |err| blk: {
-        log.appendLine("toggle-ipc", "listener disabled: {s}", .{@errorName(err)});
-        break :blk -1;
-    };
+    client.toggle_listener_fd = listener_fd;
     // #207 — sway 는 GlobalShortcuts portal 미지원이라 portal Activated 가 안 온다.
     // toggle listener 가 준비된 직후, sway 세션이면 `tildaz --toggle` 을 sway 의
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.

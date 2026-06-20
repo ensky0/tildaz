@@ -70,6 +70,18 @@ remove_tildaz_block "$SWAY_CFG"  "$TILDAZ_MARKER"     "marker + exec 2줄"
 remove_tildaz_block "$HYPR_CONF" "$TILDAZ_MARKER"     "marker + exec-once 2줄"
 remove_tildaz_block "$HYPR_LUA"  "$TILDAZ_MARKER_LUA" "marker + hl.on 2줄"
 
+# COSMIC RON custom shortcut — marker 블록이 아니라 단일 라인이라 `Spawn("..tildaz
+# --toggle")` 매칭으로 그 줄만 제거(다른 단축키 + 바깥 '{ }' 보존). 바이너리 경로
+# 무관하게 매칭(uninstall 시 binary 가 이미 없을 수 있음).
+COSMIC_CUSTOM="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
+if [[ -f "$COSMIC_CUSTOM" ]] && grep -qE 'Spawn\("[^"]*tildaz --toggle"\)' "$COSMIC_CUSTOM"; then
+    tmp="$COSMIC_CUSTOM.tildaz-uninstall-tmp"
+    grep -vE 'Spawn\("[^"]*tildaz --toggle"\)' "$COSMIC_CUSTOM" > "$tmp"
+    mv "$tmp" "$COSMIC_CUSTOM"
+    echo "Removed: tildaz hotkey shortcut in $COSMIC_CUSTOM"
+    removed=$((removed + 1))
+fi
+
 if [[ "$removed" -eq 0 ]]; then
     echo "Nothing to remove (already uninstalled)."
 fi

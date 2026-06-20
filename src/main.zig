@@ -47,10 +47,15 @@ pub fn main() void {
             const arg = std.mem.span(arg_ptr);
             if (std.mem.eql(u8, arg, "--toggle")) {
                 const si = @import("host/linux/single_instance.zig");
+                // 결과를 tildaz.log 에도 남긴다 — `tildaz --toggle` 은 별 process 라
+                // stderr 가 compositor 저널로 가 진단이 어렵다 (#230). 매 hotkey 마다
+                // 기존 인스턴스에 닿았는지(sent) / 없는지(NoRunningInstance) 기록.
                 si.sendToggle() catch |err| {
+                    @import("log.zig").appendLine("toggle-ipc", "--toggle send failed: {s} (running instance 없음/socket 문제)", .{@errorName(err)});
                     std.debug.print("tildaz --toggle failed: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
                 };
+                @import("log.zig").appendLine("toggle-ipc", "--toggle sent to running instance", .{});
                 std.process.exit(0);
             }
         }
