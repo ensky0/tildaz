@@ -114,11 +114,18 @@ echo "=== 2/4 zig build package ==="
 zig build package
 
 # Local platform 의 artifact 만 검증 — Actions runner 가 다른 platform 빌드.
-# macOS host 는 universal DMG, Windows host 는 zip + ConPTY 동봉.
+# macOS host 는 universal DMG, Linux host 는 (호스트 arch) tar.gz, Windows host
+# 는 zip + ConPTY 동봉. (Linux 호스트에선 `zig build package` 기본 format 이
+# tar.gz 라 그 파일을 확인 — 이전엔 Linux 케이스가 없어 `*)` 로 떨어져 win-x64.zip
+# 을 기대해 "package output missing" 으로 멈췄음.)
 case "$(uname -s)" in
     Darwin)
         ARTIFACT="zig-out/release/tildaz-v${VERSION}-macos.dmg"
         ARTIFACT_LABEL="dmg"
+        ;;
+    Linux)
+        ARTIFACT="zig-out/release/tildaz-v${VERSION}-linux-$(uname -m).tar.gz"
+        ARTIFACT_LABEL="tar.gz"
         ;;
     *)
         ARTIFACT="zig-out/release/tildaz-v${VERSION}-win-x64.zip"
