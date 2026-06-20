@@ -6,6 +6,27 @@ pub const Cell = struct {
     row: u16,
 };
 
+/// #245 — drag-select auto-scroll 경계 판정. 보이는 grid 의 row 범위(0..rows)
+/// 기준, unclamped row 가 위(<0)면 -1(older/위로 스크롤), 아래(>=rows)면 +1(newer),
+/// 안이면 0. 각 host(Win app_controller / mac / Linux)가 공유한다.
+pub fn edgeScrollDir(row: i32, rows: u16) i8 {
+    if (row < 0) return -1;
+    if (row >= @as(i32, @intCast(rows))) return 1;
+    return 0;
+}
+
+/// #245 — 선택 갱신용 cell 을 보이는 grid 범위로 clamp. 경계 밖으로 드래그해도
+/// (가장자리 행/열) 선택이 freeze 되지 않고 가장자리까지 연장 — auto-scroll 과
+/// 함께 scrollback 까지 선택을 늘린다 (이전엔 viewport clamp 로 막혔음).
+pub fn clampCell(col: i32, row: i32, cols: u16, rows: u16) Cell {
+    const cmax: i32 = if (cols == 0) 0 else @as(i32, @intCast(cols)) - 1;
+    const rmax: i32 = if (rows == 0) 0 else @as(i32, @intCast(rows)) - 1;
+    return .{
+        .col = @intCast(std.math.clamp(col, 0, cmax)),
+        .row = @intCast(std.math.clamp(row, 0, rmax)),
+    };
+}
+
 pub const SelectionState = struct {
     active: bool = false,
     start_pin: ?ghostty.PageList.Pin = null,

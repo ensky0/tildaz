@@ -48,6 +48,11 @@ const min_height: i32 = 120;
 /// 모듈의 첫 entry (= "Tilda" 기본 테마). L13-α 이전엔 항상 이 값을 사용했다.
 const fallback_theme = &themes.themes[0];
 const frame_poll_ms: i32 = 16;
+/// #245 — drag-select auto-scroll tick 간격(ms). 한 tick 당 `sel_autoscroll_step`
+/// 줄. 40ms × 3줄 ≈ 75줄/s — 편안한 속도. frame_poll_ms(16) 보다 커 매 frame 마다는
+/// 아니고 timestamp 게이트로 throttle.
+const sel_autoscroll_interval_ms: i64 = 40;
+const sel_autoscroll_step: isize = 3;
 const max_buffers_per_size: usize = 2;
 const wl_seat_capability_pointer: u32 = 1;
 const wl_seat_capability_keyboard: u32 = 2;
@@ -783,6 +788,13 @@ const Client = struct {
     key_repeat_next_ms: i64 = 0,
     key_repeat_rate_hz: i32 = 0,
     key_repeat_delay_ms: i32 = 0,
+    /// #245 — drag-select auto-scroll. 선택 드래그 중 포인터가 grid 위/아래 경계
+    /// 밖이면 방향 저장(-1=위/older, +1=아래/newer, 0=비활성). main loop tick
+    /// (`maybeAutoScrollSelection`)이 이 동안 주기적으로 viewport 스크롤 + 마지막
+    /// 포인터(`pointer_*_px`)로 selection.update 재호출 → 멈춰 있어도 연속 스크롤 +
+    /// scrollback 까지 선택 연장. 선택 종료(button release)에서 0 으로.
+    sel_autoscroll_dir: i8 = 0,
+    sel_autoscroll_next_ms: i64 = 0,
     /// L12-γ-2 — tab rename 모드. cross-platform `tab_interaction.RenameState`
     /// — macOS / Windows 가 같은 module 사용. 더블클릭으로 begin, Enter / Escape
     /// 으로 종료, typing / IME commit 으로 buffer 갱신.
@@ -1031,6 +1043,8 @@ const Client = struct {
             self.dispatchDbusMessages();
             // L12-γ-5 — Wayland client-side key repeat timer 검사.
             try self.maybeRepeatKey();
+            // #245 — drag-select auto-scroll tick (포인터가 grid 경계 밖에 머물면 연속).
+            self.maybeAutoScrollSelection();
             if (self.shell_exited.load(.acquire)) {
                 self.running = false;
                 break;
@@ -3551,8 +3565,14 @@ const Client = struct {
             return;
         }
         if (!tab.interaction.selection.active) return;
-        const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
-        tab.interaction.selection.update(tab.terminal.screens.active, cell);
+        // #245 — 경계 밖이어도 null 대신 clamp 된 cell 로 선택 연장 + 위/아래 경계면
+        // auto-scroll 방향 arm. pixelToCell(클릭용, 범위 밖 null)과 분리.
+        const sc = self.selectionCellAndDir(tab);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        const prev_dir = self.sel_autoscroll_dir;
+        self.sel_autoscroll_dir = sc.dir;
+        // 0→nonzero 전환이면 즉시 첫 tick (다음 run loop iteration 에서 스크롤 시작).
+        if (sc.dir != 0 and prev_dir == 0) self.sel_autoscroll_next_ms = 0;
         self.requestRedraw();
     }
 
@@ -3668,6 +3688,8 @@ const Client = struct {
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
+                // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
+                self.sel_autoscroll_dir = 0;
                 // L12-γ-3 — drag 활성이면 reorder 처리. `dragging=true`
                 // (= move 5px threshold 넘김) 였으면 `finish` 가 ReorderRequest
                 // 반환 → `session.reorderTabs`. single-click 이면 finish 가 null
@@ -3998,6 +4020,51 @@ const Client = struct {
         const rows_i32: i32 = @intCast(tab.terminal.rows);
         if (col_i32 >= cols_i32 or row_i32 >= rows_i32) return null;
         return .{ .col = @intCast(col_i32), .row = @intCast(row_i32) };
+    }
+
+    /// #245 — 선택 드래그용 포인터→cell. `pixelToCell`(클릭용, 범위 밖 null)과 달리
+    /// 경계 밖이어도 가장자리로 clamp 한 cell + 위/아래 경계 방향(dir)을 함께 반환.
+    /// 음수 좌표를 위해 `@divFloor` 사용(py < grid_top 이면 row 가 음수 → dir=-1).
+    fn selectionCellAndDir(self: *Client, tab: *session_core.Tab) struct { cell: terminal_interaction.Cell, dir: i8 } {
+        const pad = self.renderer.paddingPx();
+        const grid_top: i32 = self.effectiveTabBarHeightPx() + pad;
+        const cw = self.renderer.cellWidth();
+        const ch = self.renderer.cellHeight();
+        const cols: u16 = tab.terminal.cols;
+        const rows: u16 = tab.terminal.rows;
+        const col_i32: i32 = @divFloor(self.pointer_x_px - pad, cw);
+        const row_i32: i32 = @divFloor(self.pointer_y_px - grid_top, ch);
+        return .{
+            .cell = terminal_interaction.clampCell(col_i32, row_i32, cols, rows),
+            .dir = terminal_interaction.edgeScrollDir(row_i32, rows),
+        };
+    }
+
+    /// #245 — drag-select auto-scroll tick (main loop 매 iteration 호출). 포인터가
+    /// grid 위/아래 경계 밖(dir!=0)이고 선택 활성이면 주기적으로 viewport 를 dir
+    /// 방향으로 한 step 스크롤 + 마지막 포인터 위치(clamp cell)로 selection.update
+    /// → 포인터를 멈춰 둬도 scrollback 까지 선택이 따라 연장된다. key repeat tick 과
+    /// 같은 timestamp-gate 패턴.
+    fn maybeAutoScrollSelection(self: *Client) void {
+        if (self.sel_autoscroll_dir == 0) return;
+        const tab = self.activeTabOrNull() orelse {
+            self.sel_autoscroll_dir = 0;
+            return;
+        };
+        if (!tab.interaction.selection.active) {
+            self.sel_autoscroll_dir = 0;
+            return;
+        }
+        const now = std.time.milliTimestamp();
+        if (now < self.sel_autoscroll_next_ms) return;
+        // scrollViewport: delta<0 = older(위로), >0 = newer(아래로).
+        const delta: isize = if (self.sel_autoscroll_dir < 0) -sel_autoscroll_step else sel_autoscroll_step;
+        tab.terminal.scrollViewport(.{ .delta = delta });
+        // 스크롤 뒤 가장자리 cell 로 선택 end 재계산 — 새로 보이는 scrollback 행을 가리킴.
+        const sc = self.selectionCellAndDir(tab);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        self.requestRedraw();
+        self.sel_autoscroll_next_ms = now + sel_autoscroll_interval_ms;
     }
 
     fn activeTabOrNull(self: *Client) ?*session_core.Tab {
