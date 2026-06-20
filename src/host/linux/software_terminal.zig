@@ -1858,9 +1858,9 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     // 초기화. 이전 버전은 chain={"monospace"} + line_height 1.0 hand-build 라
     // 사용자 config (line_height 1.1) 의 layout 을 재현 못 했음 (#213 진단 cycle).
     const cfg = config_mod.Config{};
-    var r = Renderer.init(allocator, &cfg, 204, 120) catch |e| {
-        std.debug.print("[#213] Renderer.init failed ({s}) — skip (no fontconfig?)\n", .{@errorName(e)});
-        return;
+    var r = Renderer.init(allocator, &cfg, 204, 120) catch {
+        // fontconfig 없는 환경(CI 등)에선 이 테스트를 건너뛴다.
+        return error.SkipZigTest;
     };
     defer r.deinit(allocator);
 
@@ -1887,10 +1887,8 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const pw = @divFloor(lw * 204, 120);
     const ph = @divFloor(lh * 204, 120);
     const stride = pw * 4;
-    std.debug.print("[#213] computeDialogSize={}x{} logical={}x{} buffer={}x{}\n", .{ size.w, size.h, lw, lh, pw, ph });
     const buf = try allocator.alloc(u8, @intCast(stride * ph));
     defer allocator.free(buf);
     @memset(buf, 0);
     r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null);
-    std.debug.print("[#213] painted ok\n", .{});
 }

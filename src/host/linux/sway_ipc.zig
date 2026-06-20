@@ -41,7 +41,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
     // `XDG_CURRENT_DESKTOP` 토큰은 보조 (SWAYSOCK 미설정 환경 hedge).
     const sock_path = posix.getenv("SWAYSOCK") orelse {
         if (isSwayDesktop()) {
-            log.appendLine("sway", "XDG_CURRENT_DESKTOP=sway 이나 SWAYSOCK 미설정 — bindsym 자동 등록 skip", .{});
+            log.appendLine("sway", "XDG_CURRENT_DESKTOP=sway but SWAYSOCK not set — bindsym auto-register skipped", .{});
         }
         return;
     };
@@ -49,7 +49,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
     // 자기 실행 파일 절대 경로 — `exec` command 로 다시 `--toggle` 호출.
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
-        log.appendLine("sway", "selfExePath 실패: {s} — bindsym 자동 등록 skip", .{@errorName(err)});
+        log.appendLine("sway", "selfExePath failed: {s} — bindsym auto-register skipped", .{@errorName(err)});
         return;
     };
 
@@ -66,13 +66,13 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
 
     log.appendLineVerbose("sway", "RUN_COMMAND payload=[{s}] (sock={s})", .{ command, sock_path });
     const ok = runCommand(allocator, sock_path, command) catch |err| {
-        log.appendLine("sway", "bindsym IPC 실패: {s} — single_instance toggle 은 유지 (사용자 수동 등록 가능)", .{@errorName(err)});
+        log.appendLine("sway", "bindsym IPC failed: {s} — single_instance toggle retained (user can register manually)", .{@errorName(err)});
         return;
     };
     if (ok) {
-        log.appendLine("sway", "bindsym 자동 등록 OK — {s} → tildaz --toggle (runtime, 매 실행 갱신)", .{accel});
+        log.appendLine("sway", "bindsym auto-registered OK — {s} → tildaz --toggle (runtime, refreshed each launch)", .{accel});
     } else {
-        log.appendLine("sway", "bindsym 자동 등록 거부 (sway success=false) — accel={s}", .{accel});
+        log.appendLine("sway", "bindsym auto-register rejected (sway success=false) — accel={s}", .{accel});
     }
 }
 

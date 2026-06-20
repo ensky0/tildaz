@@ -135,18 +135,18 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
         return;
 
     const api = Api.load() orelse {
-        log.appendLine("gsettings-hotkey", "libgio-2.0 dlopen 실패 — custom keybinding 자동 등록 skip", .{});
+        log.appendLine("gsettings-hotkey", "libgio-2.0 dlopen failed — custom keybinding auto-register skipped", .{});
         return;
     };
     const source = api.schema_source_get_default() orelse {
-        log.appendLine("gsettings-hotkey", "GSettings schema source 없음 — skip", .{});
+        log.appendLine("gsettings-hotkey", "GSettings schema source not found — skipped", .{});
         return;
     };
 
     switch (de) {
         .gnome => {
             if (!schemasPresent(&api, source, gnome_variant)) {
-                log.appendLine("gnome", "media-keys custom-keybinding schema 미설치 (gnome-settings-daemon 없음?) — skip", .{});
+                log.appendLine("gnome", "media-keys custom-keybinding schema not installed (gnome-settings-daemon missing?) — skipped", .{});
                 return;
             }
             // tildaz GNOME Shell extension(#228) 이 활성이면 그 extension 이 hotkey 를
@@ -156,14 +156,14 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
                 const media_ext = api.settings_new(gnome_variant.list_schema) orelse return;
                 defer api.object_unref(media_ext);
                 removeFromList(allocator, &api, media_ext, gnome_variant);
-                log.appendLine("gnome", "tildaz extension 활성 — gsettings hotkey skip + 기존 custom-keybinding 제거 (extension 이 hotkey 전담)", .{});
+                log.appendLine("gnome", "tildaz extension active — gsettings hotkey skipped + removed existing custom-keybinding (extension handles hotkey)", .{});
                 return;
             }
             registerWithVariant(allocator, &api, cfg, gnome_variant);
         },
         .cinnamon => {
             if (!schemasPresent(&api, source, cinnamon_variant)) {
-                log.appendLine("cinnamon", "keybindings custom-keybinding schema 미설치 — skip", .{});
+                log.appendLine("cinnamon", "keybindings custom-keybinding schema not installed — skipped", .{});
                 return;
             }
             // tildaz Cinnamon extension(#229 Phase 2)이 활성이면 그 extension 이
@@ -176,7 +176,7 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
                 const list = api.settings_new(cinnamon_variant.list_schema) orelse return;
                 defer api.object_unref(list);
                 removeFromList(allocator, &api, list, cinnamon_variant);
-                log.appendLine("cinnamon", "tildaz extension 활성 — gsettings hotkey skip + 기존 custom-keybinding 제거 (extension 이 hotkey 전담)", .{});
+                log.appendLine("cinnamon", "tildaz extension active — gsettings hotkey skipped + removed existing custom-keybinding (extension handles hotkey)", .{});
                 return;
             }
             registerWithVariant(allocator, &api, cfg, cinnamon_variant);
@@ -199,7 +199,7 @@ fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *cons
     // self exe path + command / accel 준비.
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
-        log.appendLine("gsettings-hotkey", "selfExePath 실패: {s} — skip", .{@errorName(err)});
+        log.appendLine("gsettings-hotkey", "selfExePath failed: {s} — skipped", .{@errorName(err)});
         return;
     };
     var cmd_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
@@ -217,7 +217,7 @@ fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *cons
     // 이 순서로도 무해 — 두 DE 공통으로 더 안전하다.
     // 1/2단계 — relocatable schema 를 우리 path 로 열어 name/command/binding set.
     const kb = api.settings_new_with_path(v.kb_schema, v.path) orelse {
-        log.appendLine("gsettings-hotkey", "g_settings_new_with_path 실패 — skip", .{});
+        log.appendLine("gsettings-hotkey", "g_settings_new_with_path failed — skipped", .{});
         return;
     };
     defer api.object_unref(kb);
@@ -238,17 +238,17 @@ fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *cons
     // 3단계 — 리스트에 우리 항목 추가 (없을 때만; idempotent). 이 변경이 Cinnamon
     // 의 즉시 re-bind 를 트리거한다 (값은 위에서 이미 들어가 있음).
     const list = api.settings_new(v.list_schema) orelse {
-        log.appendLine("gsettings-hotkey", "g_settings_new({s}) 실패 — skip", .{v.list_schema});
+        log.appendLine("gsettings-hotkey", "g_settings_new({s}) failed — skipped", .{v.list_schema});
         return;
     };
     defer api.object_unref(list);
     ensureInList(allocator, api, list, v.list_key, v.list_value) catch |err| {
-        log.appendLine("gsettings-hotkey", "{s} 리스트 갱신 실패: {s} — skip", .{ v.list_key, @errorName(err) });
+        log.appendLine("gsettings-hotkey", "{s} list update failed: {s} — skipped", .{ v.list_key, @errorName(err) });
         return;
     };
     api.settings_sync();
 
-    log.appendLine("gsettings-hotkey", "custom keybinding 자동 등록 OK — binding={s} command={s} (path={s})", .{ accel, command, v.path });
+    log.appendLine("gsettings-hotkey", "custom keybinding auto-registered OK — binding={s} command={s} (path={s})", .{ accel, command, v.path });
 }
 
 /// 리스트 strv (`key`) 에 `value` 가 없으면 추가. 있으면 no-op (idempotent).

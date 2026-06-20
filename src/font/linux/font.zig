@@ -143,7 +143,7 @@ pub const Context = struct {
         // HarfBuzz dlopen 시도. 실패해도 fatal 아님 — `shapeRun` 이 fallback
         // (codepoint loop, ligature 안 됨). graceful degrade.
         var hb_api: ?harfbuzz.Api = harfbuzz.Api.load() catch |err| blk: {
-            log.appendLine("font", "HarfBuzz load skipped: {s} — ligature / cluster shape 비활성", .{@errorName(err)});
+            log.appendLine("font", "HarfBuzz load skipped: {s} — ligature / cluster shape disabled", .{@errorName(err)});
             break :blk null;
         };
         errdefer if (hb_api) |*api| api.deinit();

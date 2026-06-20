@@ -51,8 +51,7 @@ pub fn main() void {
                 // stderr 가 compositor 저널로 가 진단이 어렵다 (#230). 매 hotkey 마다
                 // 기존 인스턴스에 닿았는지(sent) / 없는지(NoRunningInstance) 기록.
                 si.sendToggle() catch |err| {
-                    @import("log.zig").appendLine("toggle-ipc", "--toggle send failed: {s} (running instance 없음/socket 문제)", .{@errorName(err)});
-                    std.debug.print("tildaz --toggle failed: {s}\n", .{@errorName(err)});
+                    @import("log.zig").appendLine("toggle-ipc", "--toggle send failed: {s} (no running instance / socket problem)", .{@errorName(err)});
                     std.process.exit(1);
                 };
                 @import("log.zig").appendLine("toggle-ipc", "--toggle sent to running instance", .{});
