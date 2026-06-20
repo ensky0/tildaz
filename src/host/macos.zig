@@ -296,6 +296,15 @@ var g_pending_close_mutex: std.Thread.Mutex = .{};
 /// 시작 시 갱신.
 var g_last_render_ms: i64 = 0;
 
+/// #245 — drag-select auto-scroll (mac). 선택 드래그 중 포인터가 grid 위/아래 경계
+/// 밖이면 방향(-1=위/older, +1=아래/newer, 0=비활성) + 마지막 drag px 저장. 60fps
+/// 렌더 타이머(renderTimerFire)가 이 동안 viewport 스크롤 + selection.update 재호출
+/// → 포인터를 멈춰 둬도 연속 스크롤 + scrollback 까지 선택 연장. mouseUp 에서 0.
+var g_sel_autoscroll_dir: i8 = 0;
+var g_sel_autoscroll_next_ms: i64 = 0;
+var g_last_drag_x: f32 = 0;
+var g_last_drag_y: f32 = 0;
+
 /// 윈도우 표시 모드 (#162). Windows `FullscreenMode` 와 동등 — cross-platform.
 ///   - .none: dock rect (config.dock_position / width / height / offset 기반)
 ///   - .monitor: NSScreen.frame 통째 = 메뉴바 + dock 까지 덮음 ("전체화면")
@@ -1844,6 +1853,51 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     return .{ .col = col, .row = row };
 }
 
+/// #245 — drag px → (clamp 된 선택 cell, 경계 방향). `eventToCell`(클릭용, 위/왼쪽
+/// 경계 null)과 달리 경계 밖이어도 가장자리로 clamp + 위/아래 경계 dir 반환. event
+/// 없이 px 만 받아 mouseDragged 와 렌더-타이머 tick 둘 다 호출.
+fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, dir: i8 } {
+    if (g_renderer == null) return null;
+    const tab = g_session.activeTab() orelse return null;
+    const scale = g_renderer.?.scale;
+    const cell_w_px = g_renderer.?.font.cell_width_px;
+    const cell_h_px = g_renderer.?.font.cell_height_px;
+    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * scale;
+    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
+    const cell_top_px = pad_px + tab_bar_px;
+    const col_i: i32 = @intFromFloat(@floor((x - pad_px) / @as(f32, @floatFromInt(cell_w_px))));
+    const row_i: i32 = @intFromFloat(@floor((y - cell_top_px) / @as(f32, @floatFromInt(cell_h_px))));
+    return .{
+        .cell = terminal_interaction.clampCell(col_i, row_i, tab.terminal.cols, tab.terminal.rows),
+        .dir = terminal_interaction.edgeScrollDir(row_i, tab.terminal.rows),
+    };
+}
+
+/// #245 — drag-select auto-scroll tick (mac, renderTimerFire 에서 매 frame 호출).
+/// 포인터가 grid 경계 밖(dir!=0)이고 선택 활성이면 40ms 마다 viewport 한 step
+/// 스크롤 + 마지막 drag px(clamp cell)로 selection.update → 멈춰 있어도 연속.
+/// 이번 frame 에 스크롤했으면 true 반환(force render).
+fn maybeAutoScrollSelectionMac() bool {
+    if (g_sel_autoscroll_dir == 0) return false;
+    const tab = g_session.activeTab() orelse {
+        g_sel_autoscroll_dir = 0;
+        return false;
+    };
+    if (!tab.interaction.selection.active) {
+        g_sel_autoscroll_dir = 0;
+        return false;
+    }
+    const now = std.time.milliTimestamp();
+    if (now < g_sel_autoscroll_next_ms) return false;
+    const step: isize = 3;
+    tab.terminal.scrollViewport(.{ .delta = if (g_sel_autoscroll_dir < 0) -step else step });
+    if (cellAndDirFromPx(g_last_drag_x, g_last_drag_y)) |sc| {
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+    }
+    g_sel_autoscroll_next_ms = now + 40;
+    return true;
+}
+
 const TabBarHit = tab_layout.TabHit;
 const TabBarArea = tab_layout.Area;
 
@@ -2224,12 +2278,23 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     }
 
     if (!tab.interaction.selection.active) return;
-    const cell = eventToCell(self_view, event) orelse return;
-    tab.interaction.selection.update(tab.terminal.screens.active, cell);
+    // #245 — 경계 밖이어도 clamp cell 로 선택 연장 + 위/아래 경계면 auto-scroll arm.
+    // 마지막 drag px 저장 (렌더-타이머 tick 이 멈춰 있어도 연속 스크롤에 사용).
+    const xy = eventToWindowPx(self_view, event);
+    g_last_drag_x = xy.x;
+    g_last_drag_y = xy.y;
+    if (cellAndDirFromPx(xy.x, xy.y)) |sc| {
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        const prev = g_sel_autoscroll_dir;
+        g_sel_autoscroll_dir = sc.dir;
+        if (sc.dir != 0 and prev == 0) g_sel_autoscroll_next_ms = 0;
+    }
 }
 
 fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     const tab = g_session.activeTab() orelse return;
+    // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
+    g_sel_autoscroll_dir = 0;
 
     // 스크롤바 drag 종료 (#123).
     if (tab.interaction.scrollbar.active) {
@@ -2890,6 +2955,10 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // 은 더 진행 안 함).
     if (drainExitedTabs()) return;
 
+    // #245 — drag-select auto-scroll tick (포인터가 grid 경계 밖에 머물면 연속).
+    // 스크롤했으면 이번 frame 강제 렌더.
+    const did_autoscroll = maybeAutoScrollSelectionMac();
+
     // session_core 의 active tab output ring drain + ghostty parse + 8ms
     // throttle. 큰 출력 시 frame budget 안에서만 parse — Windows app_controller
     // 의 패턴 동등. should_render=false 면 ring 에 더 데이터가 있어도 다음
@@ -2899,7 +2968,7 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // 무관한 매 keystroke 즉시 화면 갱신 필요. throttle 만 적용하면 typing
     // 도중 화면이 늦게 따라옴 ("뒷부분 안 보임" 회귀, opt 2b2 시연 발견).
     const should_render = g_session.prepareActiveFrame(&g_last_render_ms);
-    const force_render = g_rename.isActive() or g_preedit_len > 0;
+    const force_render = g_rename.isActive() or g_preedit_len > 0 or did_autoscroll;
     if (!should_render and !force_render) return;
 
     if (!g_visible) return;
