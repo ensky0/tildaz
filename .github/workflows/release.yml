@@ -330,8 +330,18 @@ jobs:
           - arch: aarch64
             format: rpm
             runner: ubuntu-24.04-arm
-    # 기본은 x86_64 호스트 cross-build, aarch64 rpm 만 ARM runner (#211).
+          # Arch Linux (.pkg.tar.zst) — base 매트릭스에 없는 format 이라 include 로
+          # 단일 조합만 추가. archlinux 컨테이너에서 root 로 zig 빌드 후, makepkg 는
+          # 비root 가 필요 → build_pkg 가 root 면 `builder` 유저로 떨어뜨려 실행.
+          # Arch 공식 아키텍처는 x86_64 뿐 (aarch64 는 Arch Linux ARM 별도).
+          - arch: x86_64
+            format: pkg
+            zig_target: x86_64-linux-gnu.2.28
+            container: archlinux:base-devel
+    # 기본은 x86_64 호스트 cross-build, aarch64 rpm 만 ARM runner (#211),
+    # pkg 만 archlinux 컨테이너 (matrix.container 없으면 빈 값 = 컨테이너 미사용).
     runs-on: ${{ matrix.runner || 'ubuntu-22.04' }}
+    container: ${{ matrix.container }}
     steps:
       - name: Resolve tag / version
         id: vars
@@ -344,6 +354,12 @@ jobs:
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # archlinux:base-devel 컨테이너엔 git 이 없어 checkout 이 실패한다 → pkg
+      # 조합만 checkout 전에 설치 (다른 조합은 runner 에 git 기본 존재).
+      - name: Install git (Arch container)
+        if: matrix.format == 'pkg'
+        run: pacman -Sy --noconfirm --needed git
 
       - name: Checkout at tag
         uses: actions/checkout@v4
@@ -383,6 +399,11 @@ jobs:
                   # appimagetool 자체는 package.sh 가 다운로드. FUSE 는
                   # --appimage-extract-and-run 으로 회피.
                   echo "AppImage — appimagetool downloaded on demand"
+                  ;;
+              pkg)
+                  # archlinux:base-devel 컨테이너에 makepkg / fakeroot / sudo 포함 —
+                  # 추가 설치 없음. (build_pkg 가 root→builder 로 makepkg 실행.)
+                  echo "pkg — makepkg/base-devel preinstalled in archlinux container"
                   ;;
           esac
 
@@ -437,6 +458,7 @@ jobs:
               deb)      NAME="tildaz_${BASE_VER}_${DEBARCH}.deb" ;;
               rpm)      NAME="tildaz-${BASE_VER}-1.${ARCH}.rpm" ;;
               AppImage) NAME="TildaZ-${BASE_VER}-${ARCH}.AppImage" ;;
+              pkg)      NAME="tildaz-${BASE_VER}-1-x86_64.pkg.tar.zst" ;;
           esac
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "path=zig-out/release/$NAME" >> "$GITHUB_OUTPUT"
@@ -465,3 +487,4 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
           fail_on_unmatched_files: true
+

@@ -56,8 +56,8 @@ case "$ARCH" in
     *) echo "ERROR: --arch must be x86_64 or aarch64 (got '$ARCH')" >&2; exit 2 ;;
 esac
 case "$FORMAT" in
-    tar.gz|deb|rpm|AppImage) ;;
-    *) echo "ERROR: --format must be tar.gz|deb|rpm|AppImage (got '$FORMAT')" >&2; exit 2 ;;
+    tar.gz|deb|rpm|AppImage|pkg) ;;
+    *) echo "ERROR: --format must be tar.gz|deb|rpm|AppImage|pkg (got '$FORMAT')" >&2; exit 2 ;;
 esac
 
 BINDIR="${BINDIR:-$REPO_ROOT/zig-out/bin}"
@@ -174,6 +174,8 @@ Section: utils
 Priority: optional
 Architecture: ${DEBARCH}
 Installed-Size: ${INSTALLED_SIZE}
+Depends: libxkbcommon0, libfreetype6, libfontconfig1
+Recommends: libharfbuzz0b, libdbus-1-3, libglib2.0-0, xdg-desktop-portal
 Maintainer: ensky0 <bongjun.yi@navercorp.com>
 Homepage: https://github.com/ensky0/tildaz
 Description: Quake-style drop-down terminal for Wayland
@@ -247,8 +249,14 @@ Summary:        Quake-style drop-down terminal for Wayland
 License:        GPL-3.0-or-later AND LicenseRef-Commons-Clause
 URL:            https://github.com/ensky0/tildaz
 BuildArch:      ${RPMARCH}
-# 우리 모든 native 의존성은 runtime dlopen — rpmbuild 자동 dep 추출 비활성.
+# native 의존성은 모두 runtime dlopen 이라 rpmbuild 자동 dep 추출은 비활성.
 AutoReqProv:    no
+# 단, core 라이브러리(키보드/폰트)는 명시 Requires. distro 간 패키지명 차이
+# (Fedora freetype ↔ openSUSE libfreetype6) 를 피하려 이름 대신 SONAME
+# capability 를 쓴다 — rpm 이 각 lib 에 대해 자동 Provides 하므로 distro 무관.
+# ligature / hotkey 용 lib 와 portal 서비스는 dlopen graceful degrade 라 weak Recommends.
+Requires:       libxkbcommon.so.0()(64bit) libfreetype.so.6()(64bit) libfontconfig.so.1()(64bit)
+Recommends:     libharfbuzz.so.0()(64bit) libdbus-1.so.3()(64bit) libgio-2.0.so.0()(64bit) xdg-desktop-portal
 
 %description
 TildaZ is a drop-down terminal with native Wayland support (layer-shell)
@@ -392,9 +400,90 @@ END
     ls -l "$APPIMAGE" "$APPIMAGE.sha256"
 }
 
+#-----------------------------------------------------------------------
+# Format: pkg — Arch Linux (.pkg.tar.zst via makepkg). x86_64 전용.
+# (Arch 공식 아키텍처는 x86_64 뿐 — aarch64 는 Arch Linux ARM 별도 프로젝트.)
+# makepkg 는 root 로 실행을 거부 → CI 는 비root builder 로 호출 (release.yml
+# build-arch job). 우린 이미 빌드된 $BINARY 를 -bin 방식으로 패키징만 한다.
+#-----------------------------------------------------------------------
+build_pkg() {
+    command -v makepkg >/dev/null 2>&1 || {
+        echo "ERROR: makepkg not found — Arch package needs base-devel (pacman -S base-devel)" >&2
+        exit 1
+    }
+    if [[ "$ARCH" != "x86_64" ]]; then
+        echo "ERROR: Arch .pkg only supports x86_64 (got '$ARCH')" >&2
+        exit 1
+    fi
+    local BUILD="$RELEASE_ROOT/arch-build"
+    local PKG="$RELEASE_ROOT/tildaz-${VERSION}-1-x86_64.pkg.tar.zst"
+
+    rm -rf "$BUILD" "$PKG" "$PKG.sha256"
+    mkdir -p "$BUILD"
+
+    cp "$BINARY" "$BUILD/tildaz"
+    cp "$DESKTOP_TEMPLATE" "$BUILD/tildaz.desktop"
+    cp "$ICON_SRC" "$BUILD/tildaz.svg"
+
+    # 의존성은 deb/rpm 과 동일 정책: core(키보드/폰트) hard depends, ligature/
+    # hotkey 용은 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
+    # 런타임 변수라 heredoc 에서 escape — \${VERSION} 만 여기서 확장.
+    cat > "$BUILD/PKGBUILD" << END
+# Maintainer: ensky0 <bongjun.yi@navercorp.com>
+pkgname=tildaz
+pkgver=${VERSION}
+pkgrel=1
+pkgdesc='Quake-style drop-down terminal for Wayland'
+arch=('x86_64')
+url='https://github.com/ensky0/tildaz'
+license=('GPL3' 'custom:Commons-Clause')
+depends=('libxkbcommon' 'freetype2' 'fontconfig')
+optdepends=('harfbuzz: ligature rendering'
+            'dbus: KDE portal / KGlobalAccel global hotkey'
+            'glib2: GNOME/Cinnamon gsettings global hotkey'
+            'xdg-desktop-portal: portal-based global hotkey')
+source=('tildaz' 'tildaz.desktop' 'tildaz.svg')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+options=('!strip' '!debug')
+package() {
+  install -Dm755 "\$srcdir/tildaz"         "\$pkgdir/usr/bin/tildaz"
+  install -Dm644 "\$srcdir/tildaz.desktop" "\$pkgdir/usr/share/applications/tildaz.desktop"
+  install -Dm644 "\$srcdir/tildaz.svg"     "\$pkgdir/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
+}
+END
+
+    # --noextract: source 가 로컬 복사본이라 추출 불필요. --nodeps: 빌드 호스트에
+    # depends 설치 안 함 (패키징만). --nosign: 서명 skip. PKGDEST 로 출력 고정.
+    #
+    # makepkg 는 root 실행을 거부한다. CI(archlinux 컨테이너)는 root 라 비root
+    # `builder` 유저로 떨어뜨려 실행 (root 는 무암호 sudo 가능). 로컬에서 비root
+    # 로 돌리면 그대로 직접 실행.
+    if [[ "$(id -u)" -eq 0 ]]; then
+        id builder >/dev/null 2>&1 || useradd -m builder
+        chown -R builder:builder "$BUILD"
+        sudo -u builder env PKGDEST="$BUILD" bash -c "cd '$BUILD' && makepkg -f --noextract --nodeps --nosign"
+    else
+        ( cd "$BUILD" && PKGDEST="$BUILD" makepkg -f --noextract --nodeps --nosign )
+    fi
+
+    local OUT
+    OUT=$(ls "$BUILD"/tildaz-${VERSION}-1-x86_64.pkg.tar.zst 2>/dev/null | head -1)
+    if [[ -z "$OUT" ]]; then
+        echo "ERROR: makepkg did not produce the expected package" >&2
+        ls -la "$BUILD" >&2
+        exit 1
+    fi
+    mv "$OUT" "$PKG"
+    rm -rf "$BUILD"
+    write_sha256 "$PKG"
+    echo "--- Output ---"
+    ls -l "$PKG" "$PKG.sha256"
+}
+
 case "$FORMAT" in
     tar.gz)   build_tar_gz ;;
     deb)      build_deb ;;
     rpm)      build_rpm ;;
     AppImage) build_appimage ;;
+    pkg)      build_pkg ;;
 esac
