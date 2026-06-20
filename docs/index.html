@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TildaZ — Drop-down terminal for Windows and macOS</title>
-  <meta name="description" content="TildaZ is a Quake-style drop-down terminal for Windows and macOS, built with Zig, ghostty-vt, ConPTY, Direct3D 11, POSIX PTY, and Metal.">
-  <meta property="og:title" content="TildaZ — Drop-down terminal for Windows and macOS">
-  <meta property="og:description" content="Press F1 to bring a fast native terminal to the screen you are using.">
+  <title>TildaZ — The drop-down terminal for Windows, macOS, and Linux</title>
+  <meta name="description" content="TildaZ is a native, cross-platform Quake-style drop-down terminal for Windows, macOS, and Linux — with a real drop-down and global hotkey on every major Linux desktop. In the spirit of tilda.">
+  <meta property="og:title" content="TildaZ — The drop-down terminal that works everywhere">
+  <meta property="og:description" content="One hotkey, one fast native terminal — on Windows, macOS, and every major Linux desktop. In the spirit of tilda.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ensky0.github.io/tildaz/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -28,12 +28,12 @@
 
   <header class="hero">
     <div class="hero-inner">
-      <p class="eyebrow">Windows · macOS · Zig · ghostty-vt · v0.4.3</p>
-      <h1>TildaZ</h1>
+      <p class="eyebrow">Windows · macOS · Linux · v0.5.0</p>
+      <h1>The drop-down terminal that works everywhere.</h1>
       <p class="hero-copy">
-        Press <kbd>F1</kbd> for a native drop-down terminal that follows the
-        monitor you are using and keeps shell work close without becoming a
-        separate workspace.
+        Hit <kbd>F1</kbd> and a fast, native terminal slides down over whatever
+        you're doing — on Windows, macOS, and Linux. One app, one workflow,
+        every desktop. In the spirit of <a href="https://github.com/lanoxx/tilda" target="_blank" rel="noopener">tilda</a>.
       </p>
       <div class="hero-actions">
         <a class="button primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Download Latest</a>
@@ -43,16 +43,17 @@
       <div class="terminal-surface" aria-label="TildaZ terminal preview">
         <div class="surface-top">
           <div class="tab active">~/tildaz</div>
-          <div class="tab">wsl · logs</div>
+          <div class="tab">linux · wayland</div>
           <div class="tab">macos · pty</div>
+          <div class="tab">wsl · logs</div>
           <div class="tab-spacer"></div>
           <div class="window-dot"></div>
         </div>
         <div class="terminal-grid">
-          <p><span class="prompt">ensky0 ~/tildaz</span> zig build test</p>
-          <p class="muted">Build Summary: 19/19 steps succeeded</p>
-          <p><span class="prompt">ensky0 ~/tildaz</span> echo "안녕 🌈 TildaZ"</p>
-          <p><span class="output">안녕 🌈 TildaZ</span></p>
+          <p><span class="prompt">ensky0 ~/tildaz</span> echo "안녕 🌈 TildaZ — ligatures => != >="</p>
+          <p><span class="output">안녕 🌈 TildaZ — ligatures => != >=</span></p>
+          <p><span class="output">🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라</span></p>
+          <p><span class="output">▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789</span></p>
           <p><span class="prompt">ensky0 ~/tildaz</span> <span class="cursor"></span></p>
         </div>
       </div>
@@ -62,47 +63,47 @@
   <main>
     <section class="release-band" aria-label="Latest release">
       <div>
-        <strong>v0.4.3</strong>
-        <span>macOS Hanja / kanji conversion from in-progress or committed Hangul, IME candidate tracking on both platforms, safer shell/env handling, and shared dialog cleanup.</span>
+        <strong>v0.5.0 — now on Linux</strong>
+        <span>One drop-down terminal for Windows, macOS, and Linux (Wayland), with verified drop-down + global-hotkey support on KDE Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland.</span>
       </div>
       <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Release Notes</a>
     </section>
 
     <section id="features" class="section">
       <div class="section-heading">
-        <p class="eyebrow">What It Optimizes</p>
-        <h2>Fast access, native behavior, no terminal compromise.</h2>
+        <p class="eyebrow">Why TildaZ</p>
+        <h2>Fast access, native feel, no compromise — on every OS.</h2>
       </div>
       <div class="feature-grid">
         <article class="feature-card">
+          <span class="feature-kicker">Everywhere</span>
+          <h3>One terminal, every OS</h3>
+          <p>The same drop-down terminal on Windows, macOS, and Linux — one config and one muscle memory across all of them. Most drop-down terminals only run on one.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-kicker">Linux</span>
+          <h3>Every major desktop</h3>
+          <p>A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland — not just one desktop, all of them.</p>
+        </article>
+        <article class="feature-card">
           <span class="feature-kicker">Hotkey</span>
           <h3>Drop down from anywhere</h3>
-          <p>One global hotkey shows or hides the terminal. The window docks to the screen with your cursor and supports top, bottom, left, and right layouts.</p>
+          <p>One global hotkey shows or hides the terminal. It docks to the screen under your cursor and supports top, bottom, left, and right layouts.</p>
         </article>
         <article class="feature-card">
-          <span class="feature-kicker">Tabs</span>
-          <h3>Multiple sessions, one surface</h3>
-          <p>Open, close, switch, drag reorder, and rename tabs. Rename behavior is IME-aware, including Hanja candidate replacement, and commits predictably on focus loss.</p>
-        </article>
-        <article class="feature-card">
-          <span class="feature-kicker">Rendering</span>
-          <h3>DirectWrite and CoreText</h3>
-          <p>Windows uses DirectWrite with Direct3D 11. macOS uses CoreText with Metal. Both paths use native font systems and GPU atlases.</p>
+          <span class="feature-kicker">Native</span>
+          <h3>Quick and lightweight</h3>
+          <p>No Electron, no toolkit bloat. GPU rendering on Windows and macOS, a direct Wayland client on Linux, and the fast <code>libghostty-vt</code> core.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Unicode</span>
-          <h3>Hangul, CJK, emoji, IME</h3>
-          <p>Inline pre-edit, wide characters, color emoji, ZWJ clusters, and Hanja / kanji / hanzi candidate positioning and replacement are part of the core path.</p>
+          <h3>Hangul, CJK, emoji, ligatures</h3>
+          <p>True color, font ligatures, color emoji, and full inline IME for Korean, Japanese, and Chinese — including Hanja / kanji candidate replacement.</p>
         </article>
         <article class="feature-card">
-          <span class="feature-kicker">PTY</span>
-          <h3>Real shell integration</h3>
-          <p>Bundled OpenConsole ConPTY on Windows; POSIX PTY with <code>login_tty</code> on macOS. Child shells receive consistent terminal env.</p>
-        </article>
-        <article class="feature-card">
-          <span class="feature-kicker">Config</span>
-          <h3>One schema across platforms</h3>
-          <p>The JSON config is strict, shared, and explicit about units. Font fallback supports up to 8 families including the primary font.</p>
+          <span class="feature-kicker">Yours</span>
+          <h3>Tabs, themes, and privacy</h3>
+          <p>Independent tabs with drag reorder and rename, JSON themes and config, and zero telemetry — only local config and log files.</p>
         </article>
       </div>
     </section>
@@ -111,25 +112,37 @@
       <div class="platform-panel">
         <div>
           <p class="eyebrow">Windows</p>
-          <h2>ConPTY + Direct3D 11</h2>
-          <p>Ships with Microsoft OpenConsole runtime files to reduce system ConPTY variance, while falling back to the OS implementation when needed.</p>
+          <h2>Fast and native</h2>
+          <p>GPU-accelerated rendering with a bundled Microsoft OpenConsole runtime for a consistent, modern terminal — x64 and ARM64.</p>
         </div>
         <ul>
-          <li>DirectWrite ClearType glyph rasterization</li>
-          <li>Bundled <code>OpenConsole.exe</code> and <code>conpty.dll</code></li>
+          <li>Crisp ClearType glyph rendering</li>
+          <li>Bundled ConPTY for reliable shells</li>
           <li>Win32 global hotkey and native window behavior</li>
         </ul>
       </div>
       <div class="platform-panel">
         <div>
           <p class="eyebrow">macOS</p>
-          <h2>POSIX PTY + Metal</h2>
-          <p>Uses AppKit, CoreText, and Metal directly, with NSTextInputClient support for IME composition, candidate anchoring, and Hanja reconversion.</p>
+          <h2>Retina-sharp</h2>
+          <p>Built on AppKit and Metal with full IME composition, candidate anchoring, and Hanja / kanji reconversion. Universal Apple Silicon + Intel.</p>
         </div>
         <ul>
-          <li>Universal Apple Silicon + Intel release artifact</li>
-          <li>CoreText glyph fallback and Metal atlas rendering</li>
-          <li>Input Monitoring + Accessibility for global control</li>
+          <li>Retina glyph rendering</li>
+          <li>Universal app bundle</li>
+          <li>Cursor-following drop-down on any display</li>
+        </ul>
+      </div>
+      <div class="platform-panel">
+        <div>
+          <p class="eyebrow">Linux</p>
+          <h2>Every Wayland desktop</h2>
+          <p>A direct Wayland client — no GTK or Qt dependency. Real drop-down placement and a global hotkey across the major desktops, with packages for every distro.</p>
+        </div>
+        <ul>
+          <li>KDE Plasma, GNOME, Cinnamon, COSMIC, sway, Hyprland</li>
+          <li>Fractional / HiDPI scaling, fcitx5 / IME support</li>
+          <li>tar.gz · deb · rpm · AppImage · Arch pkg (x86_64 / aarch64)</li>
         </ul>
       </div>
     </section>
@@ -137,28 +150,25 @@
     <section id="install" class="section install">
       <div class="section-heading">
         <p class="eyebrow">Get Started</p>
-        <h2>Download, unzip or drag, press F1.</h2>
+        <h2>Download, install, press F1.</h2>
       </div>
       <div class="install-grid">
         <article class="install-step">
           <span>1</span>
           <h3>Download</h3>
-          <p>Use the latest GitHub Release: Windows zip (x64 or ARM64) or macOS universal DMG.</p>
+          <p>Grab the latest GitHub Release for your OS: Windows zip, macOS DMG, or a Linux package (deb / rpm / AppImage / Arch / tar.gz).</p>
         </article>
         <article class="install-step">
           <span>2</span>
           <h3>Install</h3>
-          <p>Windows: keep the EXE and bundled ConPTY files together. macOS: drag the app into Applications.</p>
+          <p>Windows: unzip and run. macOS: drag the app into Applications. Linux: install the package or run <code>./install.sh</code> from the tarball.</p>
         </article>
         <article class="install-step">
           <span>3</span>
-          <h3>Configure</h3>
-          <p>Edit <code>config.json</code> for shell, theme, font, hotkey, opacity, geometry, and scrollback.</p>
+          <h3>Press F1</h3>
+          <p>Drop the terminal down with the hotkey. Tweak <code>config.json</code> for shell, theme, font, hotkey, opacity, and geometry.</p>
         </article>
       </div>
-      <pre class="code-block"><code>zig build
-zig build test
-zig build package</code></pre>
     </section>
 
     <section id="docs" class="section docs">
@@ -169,7 +179,7 @@ zig build package</code></pre>
       <div class="doc-list">
         <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md" target="_blank" rel="noopener"><strong>CONFIG.md</strong><span>Schema, themes, defaults, and examples</span></a>
         <a href="https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md" target="_blank" rel="noopener"><strong>KEYBINDINGS.md</strong><span>Keyboard and mouse shortcuts</span></a>
-        <a href="https://github.com/ensky0/tildaz/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener"><strong>ARCHITECTURE.md</strong><span>Current code structure</span></a>
+        <a href="https://github.com/ensky0/tildaz/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener"><strong>ARCHITECTURE.md</strong><span>How TildaZ is built</span></a>
         <a href="https://github.com/ensky0/tildaz/blob/main/SPEC.md" target="_blank" rel="noopener"><strong>SPEC.md</strong><span>Cross-platform behavior spec</span></a>
       </div>
     </section>
@@ -180,7 +190,7 @@ zig build package</code></pre>
       <img src="favicon.svg" alt="" class="footer-icon">
       <span>TildaZ</span>
     </div>
-    <p>AGPL-3.0-or-later · Built with Zig, ghostty-vt, ConPTY, Direct3D 11, POSIX PTY, and Metal.</p>
+    <p>AGPL-3.0-or-later · A native drop-down terminal for Windows, macOS, and Linux — in the spirit of tilda.</p>
   </footer>
 </body>
 </html>
