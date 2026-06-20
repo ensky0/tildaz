@@ -53,15 +53,35 @@ pub fn sendToggle() !void {
     _ = try posix.write(fd, &.{cmd_toggle});
 }
 
-/// 첫 인스턴스가 시작 시 호출. stale socket 정리 + listen. 같은 user 의 두 번째
-/// 인스턴스가 동시 listen 시도하면 bind 실패 (`AddressInUse`) — 우리는 정상
-/// 동작하는 인스턴스가 있는 거니 host 가 `error.AlreadyRunning` 으로 처리해
-/// 사용자에게 명확한 메시지 표시 권장.
+/// path 에 *살아있는* 인스턴스가 listen 중인지 connect 로 probe. 성공 = live,
+/// 실패 = stale (이전 crash 잔존) 또는 없음. 부작용 없음 — connect 직후 close 하면
+/// listener 의 accept+read 가 0 byte(EOF)로 끝나 toggle 안 일으킴 (`acceptToggle`
+/// 가 `n>=1 and 'T'` 검사).
+fn probeRunning(path: [:0]const u8) bool {
+    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch return false;
+    defer posix.close(fd);
+    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
+    if (path.len + 1 > addr.path.len) return false;
+    @memcpy(addr.path[0..path.len], path);
+    addr.path[path.len] = 0;
+    const addrlen: posix.socklen_t = @intCast(@sizeOf(@TypeOf(addr.family)) + path.len + 1);
+    posix.connect(fd, @ptrCast(&addr), addrlen) catch return false;
+    return true;
+}
+
+/// 첫 인스턴스가 시작 시 호출. stale socket 정리 + listen. **이미 살아있는
+/// 인스턴스가 있으면 `error.AlreadyRunning`** — host 가 toggle 신호만 보내고 이
+/// 두 번째 인스턴스를 종료(기존 인스턴스를 보여줌)하게 한다. 살아있는 socket 을
+/// 빼앗지(steal) 않는 게 핵심 — 이전엔 무조건 unlink 라 두 번째 전체 인스턴스가
+/// 기존 socket 을 빼앗아 orphan 인스턴스가 생기고 hotkey 라우팅이 엉켰다 (#230).
 ///
 /// 반환 fd 는 host 가 main loop polling 에 등록 + 종료 시 close.
 pub fn createListener() !posix.fd_t {
     var path_buf: [256]u8 = undefined;
     const path = try socketPath(&path_buf);
+
+    // 살아있는 인스턴스 먼저 판별 — 있으면 steal 금지하고 caller 가 toggle 로 위임.
+    if (probeRunning(path)) return error.AlreadyRunning;
 
     const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
@@ -72,9 +92,7 @@ pub fn createListener() !posix.fd_t {
     addr.path[path.len] = 0;
     const addrlen: posix.socklen_t = @intCast(@sizeOf(@TypeOf(addr.family)) + path.len + 1);
 
-    // stale socket 정리. 이전 process 가 crash 로 안 지운 경우 등.
-    // 단 active connect 가능한 path 면 다른 인스턴스가 살아있다는 거라 unlink
-    // 안 하고 bind 시도 → `AddressInUse` 로 fail → host 가 분기.
+    // probe 에서 connect 실패 = stale 또는 없음 → 남은 socket file 정리 후 bind.
     posix.unlink(path) catch {};
 
     posix.bind(fd, @ptrCast(&addr), addrlen) catch |err| return err;

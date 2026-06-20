@@ -41,10 +41,22 @@ const impl = switch (builtin.os.tag) {
 fn writeRaw(text: []const u8) void {
     var path_buf: [520]u8 = undefined;
     const path = impl.resolvePath(&path_buf) orelse return;
-    const f = std.fs.createFileAbsolute(path, .{ .truncate = false, .read = false }) catch return;
-    defer f.close();
-    f.seekFromEnd(0) catch {};
-    f.writeAll(text) catch {};
+    if (builtin.os.tag == .windows) {
+        const f = std.fs.createFileAbsolute(path, .{ .truncate = false, .read = false }) catch return;
+        defer f.close();
+        f.seekFromEnd(0) catch {};
+        f.writeAll(text) catch {};
+    } else {
+        // O_APPEND — 커널이 매 write 를 파일 끝에 원자적으로 append (한 줄 < PIPE_BUF).
+        // 여러 프로세스(메인 인스턴스 + `tildaz --toggle` 자식, #230)가 동시에 써도
+        // 줄이 안 섞인다. 이전 createFile+seekFromEnd+writeAll 은 seek 와 write 사이
+        // race 라 동시 writer 시 torn line 이 났다. 한 줄 단일 write — 작은 크기라
+        // partial write 없이 한 번에 atomic append.
+        const posix = std.posix;
+        const fd = posix.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
+        defer posix.close(fd);
+        _ = posix.write(fd, text) catch {};
+    }
 }
 
 /// `[YYYY-MM-DD HH:MM:SS.mmm] [category] <fmt args>\n` 한 줄 append.
