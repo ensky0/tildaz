@@ -1,47 +1,41 @@
 # TildaZ
 
-Quake-style drop-down terminal for Windows, macOS, and Linux Wayland, built
-with Zig and `libghostty-vt`.
+**The drop-down terminal that works everywhere.** Hit one hotkey and a fast,
+native terminal slides down over whatever you're doing — on Windows, macOS,
+and Linux. In the spirit of [Tilda](https://github.com/lanoxx/tilda), but on
+every desktop you use.
 
-TildaZ brings the feel of Linux's [Tilda](https://github.com/lanoxx/tilda) to
-native desktop stacks: ConPTY + Direct3D 11 on Windows, POSIX PTY + Metal on
-macOS, and a direct Wayland client + software renderer on Linux (no GTK / Qt
-dependency).
+Most drop-down terminals live on a single OS — or a single Linux desktop.
+TildaZ is one app across all three platforms, and on Linux it brings a real
+drop-down with a global hotkey to **every major desktop**: KDE Plasma, GNOME,
+Cinnamon, COSMIC, sway, and Hyprland. No Electron, no toolkit bloat — just a
+quick native window that gets out of your way.
 
-**Website**: https://ensky0.github.io/tildaz/
-**Latest release**: https://github.com/ensky0/tildaz/releases/latest
+**Website**: https://ensky0.github.io/tildaz/ ·
+**Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.0-rc4 — first Linux Wayland preview (workflow-verified)**
->
-> rc1 / rc2 / rc3 each failed a different step of the release workflow.
-> rc4 is the first release where Windows, macOS, and Linux artifacts are
-> all built and uploaded end-to-end by CI. Scope is otherwise identical
-> to rc1.
->
-> The release candidate introduces the Linux Wayland backend as a preview:
-> `xdg-shell` and `wlr-layer-shell` windows, KDE-style fractional scaling,
-> fontconfig + FreeType + HarfBuzz, `zwp_text_input_v3` IME, XDG Desktop
-> Portal global shortcuts with `tildaz --toggle` IPC fallback, and four
-> packaging formats (`.tar.gz`, `.deb`, `.rpm`, `.AppImage`) on `x86_64` and
-> `aarch64`. Windows ARM64 is now a first-class build target, and Linux's
-> cross-platform ligature module is shared with Windows / macOS. See
-> [`dist/release-notes/v0.5.0-rc1.md`](dist/release-notes/v0.5.0-rc1.md).
->
-> Linux is verified on KDE Plasma 6.6.5 (KWin) and Cinnamon Wayland with
-> fcitx5-hangul. GNOME Wayland is limited support; sway / Hyprland are
-> untested in this preview.
+> **v0.5.0 — now on Linux.** One drop-down terminal for Windows, macOS, and
+> Linux (Wayland), with verified drop-down + global-hotkey support on KDE
+> Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland.
 
-## Highlights
+## Why TildaZ
 
-| Area | What TildaZ does |
-|---|---|
-| Drop-down workflow | Global hotkey, always-on-top translucent window, current-monitor docking, fullscreen toggle |
-| Tabs | Independent sessions, click/select/close, drag reorder, double-click rename, 32-tab cap with dialog |
-| Terminal core | `libghostty-vt`, ANSI 16 / 256 / TrueColor, scrollback up to 10 M lines |
-| Rendering | DirectWrite + D3D11 ClearType on Windows; CoreText + Metal retina atlas on macOS |
-| Unicode / IME | Hangul, CJK, color emoji, ZWJ clusters, inline IME pre-edit, Hanja / kanji / hanzi candidate tracking and replacement |
-| Shells | Bundled OpenConsole ConPTY on Windows; POSIX `openpty` + `login_tty` on macOS |
-| Configuration | One JSON schema across platforms, strict validation, `_`-prefixed comment keys |
+- **One terminal, every OS.** The same drop-down terminal on Windows, macOS, and Linux — one config, one muscle memory.
+- **Works on every Linux desktop.** A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland — not just one.
+- **Native and quick.** No Electron, no GTK/Qt — GPU rendering on Windows and macOS, a direct Wayland client on Linux, and the fast `libghostty-vt` core.
+- **A real terminal.** Tabs, themes, true color, ligatures, color emoji, and full CJK with inline IME (Korean / Japanese / Chinese), Hanja / kanji included.
+- **Stays out of your way.** Drop it down with a hotkey, dock it to the monitor under your cursor, dismiss it just as fast.
+- **Private by default.** No telemetry, no analytics, no auto-update phone-home — only local config and logs.
+
+## See it render
+
+Ligatures, true color, color emoji with skin tones and ZWJ families, full-width
+CJK, and block / shade glyphs all render correctly — identically on Windows,
+macOS, and Linux. Paste this into any TildaZ window:
+
+```sh
+echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n"
+```
 
 ## Install
 
@@ -57,6 +51,7 @@ Download the latest artifact from
 | Linux Debian / Ubuntu | `tildaz_X.Y.Z_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
+| Linux Arch / Manjaro / EndeavourOS | `tildaz-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst` (x86_64). |
 
 First launch creates the default config:
 
@@ -126,7 +121,6 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 | Configuration schema, themes, examples | [CONFIG.md](CONFIG.md) |
 | Keyboard and mouse shortcuts | [KEYBINDINGS.md](KEYBINDINGS.md) |
 | Current code structure | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Linux backend planning | [LINUX.md](LINUX.md) |
 | Cross-platform behavior spec | [SPEC.md](SPEC.md) |
 | Maintainer / agent workflow rules | [AGENTS.md](AGENTS.md) |
 | Security reporting | [SECURITY.md](SECURITY.md) |
@@ -137,14 +131,14 @@ Historical cross-platform refactor notes are archived in
 
 ## Known Limitations
 
-- Linux is **preview** in v0.5.0-rc1 — Wayland-only, no X11. KDE Plasma 6 and
-  Cinnamon Wayland are verified; GNOME Wayland is limited (no true drop-down
-  path); sway / Hyprland / Wayfire are untested. The Linux renderer is a
-  software path (no GPU yet). Z-order yield on focus loss is not implemented
-  on Linux (`wp_layer_shell_v1` categorical layers have no normal-window
-  slot). Hanja conversion of already-committed Hangul (selecting committed
-  Korean text and pressing the Hanja key) is not supported on Linux —
-  `zwp_text_input_v3` has no reconversion request. See [LINUX.md](LINUX.md).
+- Linux is Wayland-only (no X11) and shipped in v0.5.0. It is verified on real
+  hardware across KDE Plasma 6, Hyprland, sway, Cinnamon, GNOME (via a Shell
+  extension), and COSMIC. The Linux renderer is still a software path (no GPU
+  yet). Z-order yield on focus loss is not implemented on Linux
+  (`wp_layer_shell_v1` categorical layers have no normal-window slot). Hanja
+  conversion of already-committed Hangul (selecting committed Korean text and
+  pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no
+  reconversion request. See [SPEC.md](SPEC.md) §1.2 for the desktop matrix.
 - Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
   may warn on first launch. The current SignPath application draft lives in
   [dist/signpath-application.md](dist/signpath-application.md).
