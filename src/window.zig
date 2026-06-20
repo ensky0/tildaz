@@ -327,6 +327,11 @@ pub const Window = struct {
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
+    /// #245 — drag-select auto-scroll 상태. 타이머 활성 여부 + 마지막 마우스 위치
+    /// (타이머가 이 좌표로 synthetic mouse_move 재전송).
+    auto_scroll_active: bool = false,
+    last_mouse_x: c_int = 0,
+    last_mouse_y: c_int = 0,
     /// 사용자가 윈도우 닫기를 요청 (Alt+F4 / 시스템 메뉴 / WM_CLOSE) 했을 때
     /// 호출. true 반환 = 종료 진행 (DestroyWindow), false 반환 = 종료 취소.
     /// macOS `applicationShouldTerminate:` 와 같은 역할 (#116). 다중 탭 confirm
@@ -430,6 +435,11 @@ pub const Window = struct {
     const VK_F1: UINT = 0x70;
     const VK_RETURN: WPARAM = 0x0D;
     const RENDER_TIMER_ID: usize = 1;
+    // #245 — drag-select auto-scroll. 포인터가 터미널 경계 밖에 머무는 동안
+    // 마지막 mouse_move 를 주기적으로 재전송 → app 의 updateTerminalSelection 이
+    // 연속 스크롤 (이벤트 없어도 굴러감). app_controller 가 setAutoScroll 로 on/off.
+    const AUTOSCROLL_TIMER_ID: usize = 2;
+    const AUTOSCROLL_INTERVAL_MS: UINT = 40;
     const LayoutMonitorTarget = enum { cursor, window };
 
     pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_ratio: f32, line_height_ratio: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
@@ -1076,6 +1086,21 @@ pub const Window = struct {
         return false;
     }
 
+    /// #245 — drag-select auto-scroll 타이머 on/off. on 이면 AUTOSCROLL_INTERVAL_MS
+    /// 마다 WM_TIMER → 마지막 마우스 위치로 mouse_move 재전송. idempotent (이미 같은
+    /// 상태면 no-op). app_controller 의 updateTerminalSelection(경계 밖이면 on) /
+    /// mouse_up(off) 가 호출.
+    pub fn setAutoScroll(self: *Window, on: bool) void {
+        if (on == self.auto_scroll_active) return;
+        if (self.hwnd == null) return;
+        if (on) {
+            _ = SetTimer(self.hwnd, AUTOSCROLL_TIMER_ID, AUTOSCROLL_INTERVAL_MS, null);
+        } else {
+            _ = KillTimer(self.hwnd, AUTOSCROLL_TIMER_ID);
+        }
+        self.auto_scroll_active = on;
+    }
+
     fn getMouseX(lParam: LPARAM) c_int {
         const raw: u16 = @truncate(@as(usize, @bitCast(lParam)));
         return @as(c_int, @intCast(@as(i16, @bitCast(raw))));
@@ -1115,6 +1140,17 @@ pub const Window = struct {
                     if (self.render_fn) |render_fn| {
                         render_fn(self);
                     }
+                } else if (wParam == AUTOSCROLL_TIMER_ID) {
+                    // #245 — 마지막 마우스 위치로 mouse_move(left_button=true) 재전송.
+                    // app 의 updateTerminalSelection 이 다시 돌아 경계 밖이면 한 step
+                    // 더 스크롤 + 선택 갱신. 경계 안으로 돌아오면 그쪽에서 타이머 off.
+                    _ = self.dispatchAppEvent(.{
+                        .mouse_move = .{
+                            .x = self.last_mouse_x,
+                            .y = self.last_mouse_y,
+                            .left_button = true,
+                        },
+                    });
                 }
                 return 0;
             },
@@ -1539,10 +1575,13 @@ pub const Window = struct {
                 return 0;
             },
             WM_MOUSEMOVE => {
+                // #245 — 마지막 위치 저장 (auto-scroll 타이머가 재전송에 사용).
+                self.last_mouse_x = getMouseX(lParam);
+                self.last_mouse_y = getMouseY(lParam);
                 _ = self.dispatchAppEvent(.{
                     .mouse_move = .{
-                        .x = getMouseX(lParam),
-                        .y = getMouseY(lParam),
+                        .x = self.last_mouse_x,
+                        .y = self.last_mouse_y,
                         .left_button = (wParam & MK_LBUTTON) != 0,
                     },
                 });

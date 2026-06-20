@@ -713,18 +713,24 @@ pub const App = struct {
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         const tab = self.activeTabPtr() orelse return;
         if (!tab.interaction.selection.active) return;
-
-        // 터미널 영역 위/아래로 드래그 시 자동 스크롤
-        const tbh = self.effectiveTabBarHeight();
-        const term_y = mouse_y - tbh - self.TERMINAL_PADDING;
         if (self.window.hwnd == null) return;
-        const client_h = self.window.getClientSize().h;
-        const term_h = client_h - tbh - 2 * self.TERMINAL_PADDING;
-        if (term_y < 0) {
+
+        // #245 — 경계 밖 방향 판정(공유 헬퍼) + 위/아래면 auto-scroll. 포인터를
+        // 경계 밖에 멈춰 둬도 연속되도록 window 의 auto-scroll 타이머를 on/off
+        // (타이머가 마지막 mouse_move 를 재전송 → 이 함수 재진입). raw_row 는
+        // @divFloor 로 음수(위 경계) 판정.
+        const tbh = self.effectiveTabBarHeight();
+        const ch: i32 = @intCast(self.window.cell_height_px);
+        const term_y: i32 = @intCast(mouse_y - tbh - self.TERMINAL_PADDING);
+        const grid = self.getTerminalGridSize();
+        const raw_row: i32 = if (ch > 0) @divFloor(term_y, ch) else 0;
+        const dir = terminal_interaction.edgeScrollDir(raw_row, grid.rows);
+        if (dir < 0) {
             tab.terminal.scrollViewport(.{ .delta = -3 });
-        } else if (term_y > term_h) {
+        } else if (dir > 0) {
             tab.terminal.scrollViewport(.{ .delta = 3 });
         }
+        self.window.setAutoScroll(dir != 0);
 
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
@@ -916,6 +922,8 @@ pub const App = struct {
                 return true;
             },
             .mouse_up => |_| {
+                // #245 — 어떤 release 든 drag-select auto-scroll 타이머 정지.
+                self.window.setAutoScroll(false);
                 if (self.activeTabPtr()) |tab| {
                     if (tab.interaction.scrollbar.active) {
                         tab.interaction.scrollbar.end();

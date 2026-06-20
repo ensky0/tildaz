@@ -70,6 +70,7 @@ Debian Wayland 환경).
 | `Ctrl+Shift+R` 화면 reset 단축키 | 동작 (#214) — 활성 탭 `session.resetActive()` = `terminal.fullReset()` + `\x0c` (Ctrl+L). Win `Ctrl+Shift+R` / mac `Shift+Cmd+R` 동등. |
 | 휠 스크롤 (scrollback) | 동작 |
 | 스크롤바 클릭 + 드래그 | 동작 (우측 8 px thumb, Windows/macOS 패턴 동일) |
+| 선택 드래그 auto-scroll (#245) | 동작 ([39133d3](https://github.com/ensky0/tildaz/commit/39133d3)) — 선택 드래그를 grid 위/아래 경계 밖으로 끌면 viewport 가 따라 스크롤되며 scrollback 까지 선택 연장. 포인터를 멈춰 둬도 main loop tick(40ms·3줄, key repeat 와 같은 timestamp-gate)으로 연속. 경계 판정/clamp 은 공유 `terminal_interaction.edgeScrollDir`/`clampCell` (mac/Win 동일 사용 — [755f7d9](https://github.com/ensky0/tildaz/commit/755f7d9)). |
 | block element + shade (`▀..▏ ▐░▒▓▔▕`) | 동작 (공유 `src/renderer/block_element.zig` 부착, 폰트 무관 cell-aligned procedural rect / dot mask) |
 | 한글 IME 입력 (fcitx5 + Cinnamon Wayland) | 동작 — `zwp_text_input_v3` wire-level 구현 + commit_string event → PTY 송신 + preedit inline overlay (보라색 배경, macOS / Windows 동등) + Ctrl+key 시 IME discard + cursor 근처 popover 정렬 (`set_cursor_rectangle`) + terminal hint (`set_content_type purpose=terminal`). spec done-apply batch 패턴. L10-α / L10-β / L10-γ 모두 완료. |
 | Wayland 미연결 startup 에러 메시지 | path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR + 진단 hint 출력 (`error.WaylandSocketUnavailable`) |
