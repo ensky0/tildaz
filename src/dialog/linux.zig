@@ -11,7 +11,7 @@
 //!     wayland event loop pump). Cancel default.
 //!
 //! Wayland dialog API 표준 부재 — 자체 layer-shell overlay surface 그림.
-//! 다른 옵션 비교 + 결정 흐름은 #203 / SPEC.md §6 / LINUX.md 참조.
+//! 다른 옵션 비교 + 결정 흐름은 #203 / SPEC.md §6 참조.
 
 const std = @import("std");
 const dialog = @import("../dialog.zig");
