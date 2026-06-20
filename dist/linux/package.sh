@@ -452,8 +452,10 @@ package() {
 }
 END
 
-    # --noextract: source 가 로컬 복사본이라 추출 불필요. --nodeps: 빌드 호스트에
-    # depends 설치 안 함 (패키징만). --nosign: 서명 skip. PKGDEST 로 출력 고정.
+    # --nodeps: 빌드 호스트에 depends 설치 안 함 (패키징만). --nosign: 서명 skip.
+    # PKGDEST 로 출력 고정. (--noextract 는 쓰지 않는다 — 로컬 source 파일을
+    # $srcdir 로 링크하는 단계까지 건너뛰어 package() 가 $srcdir/tildaz 를 못 찾는다.
+    # plain 파일은 makepkg 가 추출 대신 심링크하므로 extract 단계가 그 역할.)
     #
     # makepkg 는 root 실행을 거부한다. CI(archlinux 컨테이너)는 root 라 비root
     # `builder` 유저로 떨어뜨려 실행 (root 는 무암호 sudo 가능). 로컬에서 비root
@@ -461,9 +463,9 @@ END
     if [[ "$(id -u)" -eq 0 ]]; then
         id builder >/dev/null 2>&1 || useradd -m builder
         chown -R builder:builder "$BUILD"
-        sudo -u builder env PKGDEST="$BUILD" bash -c "cd '$BUILD' && makepkg -f --noextract --nodeps --nosign"
+        sudo -u builder env PKGDEST="$BUILD" bash -c "cd '$BUILD' && makepkg -f --nodeps --nosign"
     else
-        ( cd "$BUILD" && PKGDEST="$BUILD" makepkg -f --noextract --nodeps --nosign )
+        ( cd "$BUILD" && PKGDEST="$BUILD" makepkg -f --nodeps --nosign )
     fi
 
     local OUT
