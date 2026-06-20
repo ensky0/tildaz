@@ -31,12 +31,14 @@
  *     상태를 못 바꾸므로, (a) 는 window 인스턴스 메서드 override, (b) 는 WindowTracker
  *     인스턴스 메서드 패치로 둘 다 JS 레벨에서 가린다. (GNOME 의 property getter
  *     override 는 Cinnamon 이 안 읽어 무효 — #229 실측.)
- *   - ⚠️ Expo(워크스페이스 오버뷰)는 못 가린다 — Cinnamon 한계(수용). Expo 썸네일은
- *     `isExpoWindow`(expoThumbnail.js)가 window TYPE(DESKTOP/DOCK)만 검사하고
- *     skip_taskbar / is_window_interesting 을 안 본다. 즉 *네이티브 앱이 skip_taskbar
- *     를 켜도* Expo 엔 나오는 게 Cinnamon 설계. 일반 창을 Expo 에서 빼는 documented
- *     API 가 없어(공식 개발자 가이드 확인) DOCK 타입화(drop-down 깨짐)나 Expo 내부
- *     monkeypatch(버전마다 깨짐) 외엔 방법이 없어 한계로 둔다.
+ *   - Expo(워크스페이스 오버뷰) 숨김: Expo 썸네일은 skip_taskbar / is_window_interesting
+ *     을 안 보고 `ExpoWorkspaceThumbnail.prototype.isExpoWindow(win)`(expoThumbnail.js)로
+ *     클론 생성을 거른다. 원본은 window TYPE(DESKTOP/DOCK)만 검사 → 일반 창인 tildaz 통과.
+ *     이 메서드는 `this.isExpoWindow` 로 호출되는 prototype 메서드라 override 가 내부에
+ *     닿는다(is_window_interesting 패치와 동형) → enable 에서 패치해 wm_class=tildaz 클론을
+ *     막는다. tildaz 가 stick()(is_on_all_workspaces)이라 전 workspace 썸네일에 뜨던 것 +
+ *     비활성 workspace 가 stale snapshot 으로 그려져(linuxmint/Cinnamon #8095) 현재만 안 보이고
+ *     2·3·4 엔 보이던 비대칭까지 함께 해소(클론 자체를 안 만들므로 active/stale 무관).
  *   - drop-down 은 `stick()`(전 워크스페이스)이라 보이는 동안 워크스페이스를 바꿔도
  *     따라온다 — yakuake/guake 등 drop-down 표준 동작(숨김=minimize 면 안 보임).
  *   - dialog(quit confirm/About): tildaz 가 별도 toplevel(app_id="tildaz-dialog",
@@ -80,6 +82,8 @@ function enable() {
     managed: null, // 배치(make_above/stick)한 터미널 창 (disable 시 복원 + dialog 기준)
     taskbarPatched: null, // is_skip_taskbar override 한 창 (disable 시 복원)
     tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
+    expoProto: null, // isExpoWindow 패치한 ExpoWorkspaceThumbnail.prototype (disable 복원)
+    origIsExpoWindow: null, // 그 원본 메서드
     cfg: readConfig(),
   };
 
@@ -90,12 +94,39 @@ function enable() {
   // window-list 는 _shouldAdd 를 창 생성 시 1회만 평가하므로(map 후 override 는 늦음)
   // tracker 패치가 race 없이 확실하다. tracker 의 JS proxy 메서드를 패치해 tildaz
   // 터미널을 not-interesting 으로 만든다(Main.isInteresting 이 JS 로 이걸 호출).
-  // (Expo 썸네일은 isInteresting 이 아니라 window TYPE 으로 거르므로 이 패치가 안 닿음
-  // — 위 헤더의 Expo 한계 참고.)
+  // (Expo 썸네일은 isInteresting 이 아니라 isExpoWindow 로 거르므로 아래에서 별도 패치.)
   st.tracker = Cinnamon.WindowTracker.get_default();
   st.tracker.is_window_interesting = function (w) {
     return isTildaz(w) ? false : TrackerProto.is_window_interesting.call(this, w);
   };
+
+  // Expo(워크스페이스 오버뷰) 숨김. Expo 썸네일은 is_skip_taskbar / is_window_interesting
+  // 을 안 보고, ExpoWorkspaceThumbnail.prototype.isExpoWindow(win) 로 클론 생성을 거른다
+  // (소스: expoThumbnail.js, this.isExpoWindow 로 호출 → prototype override 가 내부에 닿음
+  // — is_window_interesting 패치와 동형). 원본은 window TYPE(DESKTOP/DOCK)만 검사해 일반
+  // 창인 tildaz 가 통과 → 모든 workspace 썸네일에 뜬다(특히 stick() 이라 is_on_all_workspaces
+  // → main.js isWindowActorDisplayedOnWorkspace 가 전 workspace true). wm_class=tildaz 면
+  // false 로 클론 자체를 막는다. (현재 workspace 만 안 보이고 2·3·4 엔 보이던 비대칭은
+  // Cinnamon Expo 가 비활성 workspace 를 stale snapshot 으로 그리는 동작(linuxmint/Cinnamon
+  // #8095)과 sticky 가 겹친 것 — 클론을 아예 안 만들면 active/stale 무관하게 해소.)
+  // ExpoWorkspaceThumbnail 미존재 버전(매우 구형/비표준)이면 guard 로 skip.
+  try {
+    const ExpoThumb = imports.ui.expoThumbnail;
+    const ExpoProto =
+      ExpoThumb && ExpoThumb.ExpoWorkspaceThumbnail && ExpoThumb.ExpoWorkspaceThumbnail.prototype;
+    if (ExpoProto && typeof ExpoProto.isExpoWindow === "function") {
+      const origIsExpoWindow = ExpoProto.isExpoWindow;
+      st.expoProto = ExpoProto;
+      st.origIsExpoWindow = origIsExpoWindow;
+      ExpoProto.isExpoWindow = function (win) {
+        const mw = metaWindowOf(win);
+        if (mw && isTildaz(mw)) return false;
+        return origIsExpoWindow.call(this, win);
+      };
+    }
+  } catch (e) {
+    global.logError("[tildaz] isExpoWindow patch failed: " + e);
+  }
 
   // hotkey 등록 (config = source of truth). addHotKey(name, accel, cb) — accel 은
   // GTK accelerator(예 "F1" / "<Super>grave"), 여러 개는 "::" 구분. cb 는
@@ -138,6 +169,13 @@ function disable() {
       delete st.tracker.is_window_interesting; // prototype 원본 복귀.
     } catch (_e) {}
     st.tracker = null;
+  }
+  if (st && st.expoProto && st.origIsExpoWindow) {
+    try {
+      st.expoProto.isExpoWindow = st.origIsExpoWindow; // prototype 원본 복귀.
+    } catch (_e) {}
+    st.expoProto = null;
+    st.origIsExpoWindow = null;
   }
   st = null;
 }
