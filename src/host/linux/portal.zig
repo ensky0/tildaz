@@ -179,7 +179,7 @@ fn appendPidsProperty(api: *const dbus.Api, arr_iter: *dbus.DBusMessageIter, pid
 /// app-id cgroup 표준 (PR #581).
 pub fn ensureAppScope(bus: *dbus.SessionBus) void {
     if (alreadyInTildazScope()) {
-        log.appendLine("portal", "app-scope: 이미 app-tildaz scope — 이동 불필요", .{});
+        log.appendLineVerbose("portal", "app-scope: already in app-tildaz scope — no migration needed", .{});
         return;
     }
     const pid: u32 = @intCast(std.os.linux.getpid());
@@ -213,7 +213,7 @@ pub fn ensureAppScope(bus: *dbus.SessionBus) void {
     if (reply) |r| bus.api.message_unref(r);
     if (bus.api.error_is_set(&err) != 0) {
         const m = if (err.message) |x| std.mem.span(x) else "(no message)";
-        log.appendLine("portal", "app-scope StartTransientUnit failed: {s} — hotkey app-id 부정확 가능 (앱은 정상)", .{m});
+        log.appendLine("portal", "app-scope StartTransientUnit failed: {s} — hotkey app-id may be inaccurate (app still works)", .{m});
         return;
     }
 
@@ -226,20 +226,20 @@ pub fn ensureAppScope(bus: *dbus.SessionBus) void {
     // 실제로 app-tildaz 로 바뀔 때까지 bounded poll 후 반환.
     var leaf_buf0: [256]u8 = undefined;
     if (readCgroupState(&leaf_buf0)) |st0| {
-        log.appendLine("portal", "app-scope: StartTransientUnit ok ({s}), reply 직후 cgroup leaf={s} in_scope={}", .{ scope_name, st0.leaf, st0.in_tildaz_scope });
+        log.appendLineVerbose("portal", "app-scope: StartTransientUnit ok ({s}), cgroup right after reply leaf={s} in_scope={}", .{ scope_name, st0.leaf, st0.in_tildaz_scope });
     }
     const poll_start = std.time.milliTimestamp();
     while (std.time.milliTimestamp() - poll_start < app_scope_migration_timeout_ms) {
         var lb: [256]u8 = undefined;
         if (readCgroupState(&lb)) |st| {
             if (st.in_tildaz_scope) {
-                log.appendLine("portal", "app-scope: cgroup 이동 완료 leaf={s} ({d}ms) — portal app-id=tildaz", .{ st.leaf, std.time.milliTimestamp() - poll_start });
+                log.appendLine("portal", "app-scope: cgroup migration done leaf={s} ({d}ms) — portal app-id=tildaz", .{ st.leaf, std.time.milliTimestamp() - poll_start });
                 return;
             }
         }
         std.Thread.sleep(app_scope_poll_interval_ms * std.time.ns_per_ms);
     }
-    log.appendLine("portal", "app-scope: {d}ms 내 cgroup 이동 미확인 — hotkey app-id 부정확 가능 (앱은 정상)", .{app_scope_migration_timeout_ms});
+    log.appendLine("portal", "app-scope: cgroup migration not confirmed within {d}ms — hotkey app-id may be inaccurate (app still works)", .{app_scope_migration_timeout_ms});
 }
 
 /// Sender 의 D-Bus unique name (예: `:1.93`) 을 portal Request / Session
@@ -646,7 +646,7 @@ pub fn keysymGtkName(keysym: u32) []const u8 {
         // key 추가 시 한쪽만 갱신) → 명시 log + 'F1' fallback (서비스 자체는
         // 유지). silent fallback 막기 위한 defensive layer.
         else => blk: {
-            log.appendLine("portal", "keysymGtkName: unmapped keysym=0x{x} — config.linuxKeysymFromName 동기화 누락? 'F1' fallback (#208)", .{keysym});
+            log.appendLine("portal", "keysymGtkName: unmapped keysym=0x{x} — config.linuxKeysymFromName out of sync? 'F1' fallback (#208)", .{keysym});
             break :blk "F1";
         },
     };
@@ -797,7 +797,7 @@ pub fn bindToggleShortcut(
         }
     }
 
-    log.appendLine("portal", "BindShortcuts request sent preferred_trigger={s} — waiting for user approval (up to 5 min)", .{accelerator});
+    log.appendLineVerbose("portal", "BindShortcuts request sent preferred_trigger={s} — waiting for user approval (up to 5 min)", .{accelerator});
 
     const start_ms = std.time.milliTimestamp();
     while (!state.done) {
@@ -896,12 +896,12 @@ fn handleHotkeyMismatch(
 
     // 1차 — XDG portal UnbindShortcuts + 재 BindShortcuts.
     unbindToggleShortcut(allocator, bus, session_handle) catch |e| {
-        log.appendLine("portal", "1차 UnbindShortcuts failed: {s} — 2차 DE-specific path 시도", .{@errorName(e)});
+        log.appendLine("portal", "primary UnbindShortcuts failed: {s} — trying secondary DE-specific path", .{@errorName(e)});
         return tryDeSpecificHotkeyFix(allocator, bus, session_handle, preferred, actual, keysym, modifiers);
     };
 
     rebindToggleShortcut(allocator, bus, session_handle, keysym, modifiers) catch |e| {
-        log.appendLine("portal", "1차 rebind BindShortcuts failed: {s} — 2차 DE-specific path 시도", .{@errorName(e)});
+        log.appendLine("portal", "primary rebind BindShortcuts failed: {s} — trying secondary DE-specific path", .{@errorName(e)});
         return tryDeSpecificHotkeyFix(allocator, bus, session_handle, preferred, actual, keysym, modifiers);
     };
 
@@ -936,9 +936,9 @@ fn tryDeSpecificHotkeyFix(
             kdeTryAutoApply(allocator, bus, keysym, modifiers, preferred_display, actual);
             return;
         }
-        log.appendLine("portal", "2차 DE={s} 미구현 — 3차 fallback", .{d});
+        log.appendLine("portal", "secondary DE={s} not implemented — tertiary fallback", .{d});
     } else {
-        log.appendLine("portal", "2차 XDG_CURRENT_DESKTOP 미설정 — 3차 fallback", .{});
+        log.appendLine("portal", "secondary XDG_CURRENT_DESKTOP not set — tertiary fallback", .{});
     }
     showMismatchPersistsDialog(allocator, preferred_display, actual);
 }
@@ -975,7 +975,7 @@ fn kdeTryAutoApply(
     if (owner_opt) |owner| {
         if (!is_tildaz_owner) {
             // 다른 component 가 선점 — 사용자 confirm.
-            log.appendLine("portal", "2차 충돌 감지 — owner={s}/{s} (display: {s} / {s}) qt_key=0x{x}", .{
+            log.appendLine("portal", "secondary conflict detected — owner={s}/{s} (display: {s} / {s}) qt_key=0x{x}", .{
                 owner.component, owner.action, owner.display_component, owner.display_action,
                 @as(u32, @bitCast(qt_key)),
             });
@@ -988,7 +988,7 @@ fn kdeTryAutoApply(
             };
             const ok = dialog.showConfirm(messages.hotkey_takeover_title, confirm_msg);
             if (!ok) {
-                log.appendLine("portal", "takeover 거부됨 (Cancel) — 기존 binding 유지", .{});
+                log.appendLine("portal", "takeover declined (Cancel) — existing binding retained", .{});
                 var declined_buf: [256]u8 = undefined;
                 const dmsg = std.fmt.bufPrint(&declined_buf, messages.hotkey_takeover_declined_format, .{
                     preferred_display, owner.display_component,
@@ -1001,7 +1001,7 @@ fn kdeTryAutoApply(
             }
 
             kdeTakeoverConflict(allocator, bus, &owner, qt_key) catch |e| {
-                log.appendLine("portal", "takeover D-Bus call 실패 ({s}) — fallback dialog", .{@errorName(e)});
+                log.appendLine("portal", "takeover D-Bus call failed ({s}) — fallback dialog", .{@errorName(e)});
                 showMismatchPersistsDialog(allocator, preferred_display, actual);
                 return;
             };
@@ -1010,7 +1010,7 @@ fn kdeTryAutoApply(
 
     // tildaz 자체 binding set (이미 tildaz owner 였든 / 회수 직후든 동일 path).
     kdeSetToggleShortcut(allocator, bus, qt_key) catch |e| {
-        log.appendLine("portal", "KDE setForeignShortcut(tildaz) 실패 ({s}) — fallback dialog", .{@errorName(e)});
+        log.appendLine("portal", "KDE setForeignShortcut(tildaz) failed ({s}) — fallback dialog", .{@errorName(e)});
         showMismatchPersistsDialog(allocator, preferred_display, actual);
         return;
     };
@@ -1018,7 +1018,7 @@ fn kdeTryAutoApply(
     // 검증 — 적용 후 query 가 우리 qt_key 와 일치.
     if (kdeQueryToggleShortcut(bus)) |stored| {
         if (stored != qt_key) {
-            log.appendLine("portal", "KDE set 후 검증 실패 — stored=0x{x} expected=0x{x}", .{
+            log.appendLine("portal", "KDE post-set verification failed — stored=0x{x} expected=0x{x}", .{
                 @as(u32, @bitCast(stored)), @as(u32, @bitCast(qt_key)),
             });
             showMismatchPersistsDialog(allocator, preferred_display, actual);
@@ -1093,7 +1093,7 @@ fn kdeUnregisterToggleShortcut(bus: *dbus.SessionBus, component: [*:0]const u8) 
     // 반환 = bool (성공 여부). false 면 KGlobalAccel 측에서 *해당 binding 없음*
     // (이미 unregister 되었거나 다른 component). 우리 의도 (= 다음 BindShortcuts
     // 가 깨끗한 상태에서 시작) 충족이라 success 처리.
-    log.appendLine("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(kde_action_toggle) });
+    log.appendLineVerbose("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(kde_action_toggle) });
 }
 
 /// XKB keysym + modifier → Qt `KeySequence` packed int. `KGlobalAccel.setShortcut`
@@ -1419,7 +1419,7 @@ fn kdeSetToggleShortcut(_: std.mem.Allocator, bus: *dbus.SessionBus, qt_key: i32
     };
     const keys = [_]i32{qt_key};
     try kdeSetForeignShortcut(bus, &action_id, &keys);
-    log.appendLine("portal", "kglobalaccel setForeignShortcut(tildaz) succeeded — qt_key=0x{x}", .{@as(u32, @bitCast(qt_key))});
+    log.appendLineVerbose("portal", "kglobalaccel setForeignShortcut(tildaz) succeeded — qt_key=0x{x}", .{@as(u32, @bitCast(qt_key))});
 }
 
 /// `owner` 의 keys list 에서 `our_qt_key` 만 제거 후 `setForeignShortcut` 으로
@@ -1454,7 +1454,7 @@ fn kdeTakeoverConflict(
     if (filtered.items.len == owner_keys.len) {
         // owner 가 our_qt_key 안 들고 있음 — KGlobalAccel.action 결과와 불일치.
         // race condition 가능 — skip.
-        log.appendLine("portal", "takeover: owner '{s}' 의 keys 에 our_qt_key=0x{x} 없음 — skip", .{ owner.component, @as(u32, @bitCast(our_qt_key)) });
+        log.appendLine("portal", "takeover: owner '{s}' keys missing our_qt_key=0x{x} — skipped", .{ owner.component, @as(u32, @bitCast(our_qt_key)) });
         return;
     }
 
@@ -1469,7 +1469,7 @@ fn kdeTakeoverConflict(
         owner_actionid_sentinels[idx] = @ptrCast(&bufs[idx]);
     }
     try kdeSetForeignShortcut(bus, &owner_actionid_sentinels, filtered.items);
-    log.appendLine("portal", "takeover: '{s}/{s}' 에서 qt_key=0x{x} 회수 (남은 keys = {})", .{
+    log.appendLineVerbose("portal", "takeover: from '{s}/{s}' reclaimed qt_key=0x{x} (remaining keys = {})", .{
         owner.component,
         owner.action,
         @as(u32, @bitCast(our_qt_key)),
@@ -1678,7 +1678,7 @@ fn callShortcutRequestVerb(
         }
     }
 
-    log.appendLine("portal", "{s} request sent — waiting for response", .{@tagName(verb)});
+    log.appendLineVerbose("portal", "{s} request sent — waiting for response", .{@tagName(verb)});
 
     const start_ms = std.time.milliTimestamp();
     while (!state.done) {
@@ -1697,7 +1697,7 @@ fn callShortcutRequestVerb(
         return error.PortalRequestFailed;
     }
 
-    log.appendLine("portal", "{s} success", .{@tagName(verb)});
+    log.appendLineVerbose("portal", "{s} success", .{@tagName(verb)});
 
     // bind 의 actual_trigger 확인은 첫 호출 위치에서 (mismatch detect). retry
     // path 에서는 *두 번째 actual* 도 처리해야 — 그러나 retry 도 mismatch 면
@@ -1855,11 +1855,11 @@ pub fn toggleAlreadyBoundMatchingConfig(
     modifiers: u32,
 ) bool {
     const listed = listToggleShortcut(allocator, bus, session_handle) catch |e| {
-        log.appendLine("portal", "ListShortcuts 실패 ({s}) — BindShortcuts 진행 (dialog 가능)", .{@errorName(e)});
+        log.appendLine("portal", "ListShortcuts failed ({s}) — proceeding with BindShortcuts (dialog possible)", .{@errorName(e)});
         return false;
     };
     const trig = listed orelse {
-        log.appendLine("portal", "ListShortcuts: 이전 bound toggle 없음 (첫 등록) — BindShortcuts 진행", .{});
+        log.appendLineVerbose("portal", "ListShortcuts: no previously bound toggle (first registration) — proceeding with BindShortcuts", .{});
         return false;
     };
     defer allocator.free(trig);
@@ -1870,8 +1870,8 @@ pub fn toggleAlreadyBoundMatchingConfig(
 
     if (kdeQueryToggleShortcut(bus)) |stored| {
         const ok = (stored == our_qt);
-        log.appendLine("portal", "ListShortcuts: toggle bound (portal=\"{s}\") — KDE stored qt=0x{x} config={s} qt=0x{x} match={} → BindShortcuts {s}", .{
-            trig, @as(u32, @bitCast(stored)), cfg_disp, @as(u32, @bitCast(our_qt)), ok, if (ok) "skip" else "필요(config 변경)",
+        log.appendLineVerbose("portal", "ListShortcuts: toggle bound (portal=\"{s}\") — KDE stored qt=0x{x} config={s} qt=0x{x} match={} → BindShortcuts {s}", .{
+            trig, @as(u32, @bitCast(stored)), cfg_disp, @as(u32, @bitCast(our_qt)), ok, if (ok) "skip" else "needed (config changed)",
         });
         return ok;
     }
@@ -1881,8 +1881,8 @@ pub fn toggleAlreadyBoundMatchingConfig(
     const accel = keysymToAccelerator(allocator, keysym, modifiers) catch return false;
     defer allocator.free(accel);
     const ok = std.ascii.eqlIgnoreCase(trig, accel);
-    log.appendLine("portal", "ListShortcuts: toggle bound (\"{s}\") config accel=\"{s}\" match={} → BindShortcuts {s}", .{
-        trig, accel, ok, if (ok) "skip" else "필요",
+    log.appendLineVerbose("portal", "ListShortcuts: toggle bound (\"{s}\") config accel=\"{s}\" match={} → BindShortcuts {s}", .{
+        trig, accel, ok, if (ok) "skip" else "needed",
     });
     return ok;
 }

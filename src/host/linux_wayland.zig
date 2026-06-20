@@ -38,17 +38,22 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+    // #197 — 사용자 메시지를 stderr + 로그에 동일하게 (log.userFacing). 로그와
+    // 화면 내용이 갈리지 않는다.
     switch (err) {
         error.LinuxWaylandBackendNotImplemented => {
-            std.debug.print("{s}\n", .{messages.linux_backend_not_ready_msg});
+            log.userFacing("fatal", messages.linux_backend_not_ready_msg);
         },
         // Wayland socket 실패는 `Client.init` 안에서 path / env 까지 포함한
-        // 정확한 메시지를 이미 stderr + log 양쪽에 남긴다. 여기서 generic
-        // `run_failed_format` 을 다시 찍으면 진단 정보를 가리는 노이즈.
-        error.WaylandSocketUnavailable => {},
+        // 정확한 메시지를 이미 stderr + log 양쪽에 남겼다. 여기선 errorName 만
+        // compact 하게 한 줄 — generic 본문을 다시 내면 그 진단을 가린다.
+        error.WaylandSocketUnavailable => {
+            log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+        },
         else => {
-            std.debug.print(messages.run_failed_format ++ "\n", .{@errorName(err)});
+            var buf: [256]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch messages.run_failed_fallback_msg;
+            log.userFacing("fatal", text);
         },
     }
     std.process.exit(1);
@@ -101,9 +106,9 @@ pub fn run() !void {
             // 무시하고 tildaz 는 항상 창을 만들며, 숨김(hidden_start=true)은
             // extension 이 minimize + skip_taskbar 로 처리한다.
             g_config.?.hidden_start = false;
-            log.appendLine("autostart", "GNOME + extension — autostart .desktop 삭제 + hidden_start override (lifecycle 은 extension 담당)", .{});
+            log.appendLine("autostart", "GNOME + extension — removed autostart .desktop + hidden_start override (extension handles lifecycle)", .{});
         } else {
-            log.appendLine("autostart", "GNOME (extension 미감지) — autostart .desktop 삭제 (GNOME 의 autostart 는 extension 이 담당)", .{});
+            log.appendLine("autostart", "GNOME (extension not detected) — removed autostart .desktop (extension handles GNOME autostart)", .{});
         }
     } else if (cfg.auto_start) {
         autostart.enable(gpa.allocator()) catch |err| {

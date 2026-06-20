@@ -127,3 +127,15 @@ pub fn logConfigLoaded(cfg: anytype) void {
         cfg.hidden_start,
     });
 }
+
+/// #197 — fatal / 시작 실패처럼 *사용자에게 직접 보여주는* 메시지를 한 번만
+/// 받아 두 채널에 동일하게 보낸다:
+///   1. stderr — 터미널에서 직접 실행한 사용자가 즉시 본다.
+///   2. 로그 파일 — post-mortem 기록.
+/// 호출처가 같은 문자열을 쓰므로 "로그엔 진단 한 줄, 화면엔 다른 문구" 식의
+/// 내용 분기가 생기지 않는다 (이전엔 socket 실패 등이 같은 데이터를 두 번
+/// 따로 포맷해 갈렸음). 메시지는 이미 렌더된 최종 텍스트 (multi-line 허용).
+pub fn userFacing(category: []const u8, text: []const u8) void {
+    std.debug.print("{s}\n", .{text});
+    appendLine(category, "{s}", .{text});
+}

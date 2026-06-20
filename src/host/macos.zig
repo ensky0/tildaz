@@ -2868,11 +2868,12 @@ fn drainExitedTabs() bool {
     var any_changed = false;
     for (closes) |ptr| switch (tab_actions.closeByPtr(&g_host, ptr) orelse continue) {
         .ended => {
-            log.appendLine("pty", "tab ptr=0x{x} exited (last tab), terminating tildaz", .{ptr});
+            log.appendLine("tab", "last tab exited — terminating tildaz", .{});
             return true;
         },
         .changed => {
-            log.appendLine("pty", "tab ptr=0x{x} exited, closed", .{ptr});
+            // per-tab close 는 session_core 의 cross-platform "[tab] shell exited" 가 이미 기록.
+            log.appendLineVerbose("pty", "tab ptr=0x{x} exited, closed", .{ptr});
             any_changed = true;
         },
     };

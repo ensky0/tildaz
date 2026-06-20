@@ -979,7 +979,6 @@ const Client = struct {
             self.surface_hidden = true;
             log.appendLine("startup", "hidden_start — surface deferred until first hotkey toggle", .{});
             self.logBootElapsed("ready (hidden_start, awaiting first hotkey)");
-            std.debug.print("TildaZ Linux Wayland terminal is hidden — press the configured hotkey to show.\n", .{});
         } else {
             try self.createShellObjects();
             self.logBootElapsed("createShellObjects");
@@ -990,7 +989,6 @@ const Client = struct {
             _ = try self.redraw();
             self.logBootElapsed("first frame");
 
-            std.debug.print("TildaZ Linux Wayland terminal window is open. Close the window to exit.\n", .{});
             log.appendLine("linux", "Wayland terminal window mapped", .{});
         }
 
@@ -1162,7 +1160,9 @@ const Client = struct {
                 &.{ self.text_input_id, self.seat_id },
             );
         }
-        log.appendLine("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={} output_id={}", .{
+        // #197 — 개별 protocol object id 는 wire-level detail 이라 verbose.
+        // production 용 capabilities 요약은 boot 시 logCapabilities() 가 담당.
+        log.appendLineVerbose("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={} output_id={}", .{
             self.compositor_id,
             self.shm_id,
             self.wm_base_id,
@@ -1358,7 +1358,7 @@ const Client = struct {
         try self.sendString(self.toplevel_id, 2, "TildaZ");
         try self.sendString(self.toplevel_id, 3, "tildaz");
         try self.sendNoArgs(self.surface_id, 6);
-        log.appendLine("wayland", "shell objects (xdg) surface_id={} xdg_surface_id={} toplevel_id={}", .{
+        log.appendLineVerbose("wayland", "shell objects (xdg) surface_id={} xdg_surface_id={} toplevel_id={}", .{
             self.surface_id,
             self.xdg_surface_id,
             self.toplevel_id,
@@ -1491,7 +1491,7 @@ const Client = struct {
         // wl_surface.commit (opcode 6) — pending double-buffered state 적용.
         try self.sendNoArgs(self.surface_id, 6);
 
-        log.appendLine("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity={s} (layer_shell v{})", .{
+        log.appendLineVerbose("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity={s} (layer_shell v{})", .{
             self.surface_id,
             self.layer_surface_id,
             @tagName(self.config.dock_position),
@@ -1684,7 +1684,7 @@ const Client = struct {
                 if ((flags & wl_output_mode_flag_current) == 0) return;
                 self.screen_width = readI32(payload[4..8]);
                 self.screen_height = readI32(payload[8..12]);
-                log.appendLine("wayland", "output mode width={} height={} refresh={}", .{
+                log.appendLineVerbose("wayland", "output mode width={} height={} refresh={}", .{
                     self.screen_width,
                     self.screen_height,
                     readI32(payload[12..16]),
@@ -3024,7 +3024,7 @@ const Client = struct {
         self.pending_commit.clearRetainingCapacity();
         self.preedit_text.clearRetainingCapacity();
         self.renderer.preedit_text = "";
-        log.appendLine("wayland", "text_input disabled id={}", .{self.text_input_id});
+        log.appendLineVerbose("wayland", "text_input disabled id={}", .{self.text_input_id});
     }
 
     /// L10-α + L10-β — zwp_text_input_v3 server → client events. spec 상
@@ -3092,7 +3092,7 @@ const Client = struct {
     /// 은 새 값 (= empty 도 정상, "조합 끝" 의미) 으로 reset 된다.
     fn applyTextInputBatch(self: *Client) !void {
         if (self.pending_commit.items.len > 0) {
-            log.appendLine("wayland", "text_input commit text_len={}", .{self.pending_commit.items.len});
+            log.appendLineVerbose("wayland", "text_input commit text_len={}", .{self.pending_commit.items.len});
             // L12-γ-2 — rename 모드 활성 시 IME commit 도 PTY 가 아니라 rename
             // buffer 로 라우팅 (macOS / Windows 동등). codepoint 별 insert —
             // utf8 byte 단위로 처리하면 한글 음절 안 byte boundary 깨짐.
@@ -3112,7 +3112,7 @@ const Client = struct {
         // 보관. pending_preedit 가 비어 있으면 preedit_text 도 비움 (overlay
         // 사라짐 = 조합 끝).
         if (self.pending_preedit.items.len > 0) {
-            log.appendLine("wayland", "text_input preedit text_len={}", .{self.pending_preedit.items.len});
+            log.appendLineVerbose("wayland", "text_input preedit text_len={}", .{self.pending_preedit.items.len});
         }
         self.preedit_text.clearRetainingCapacity();
         try self.preedit_text.appendSlice(self.allocator, self.pending_preedit.items);
@@ -3158,7 +3158,7 @@ const Client = struct {
         defer posix.munmap(memory);
 
         try self.keyboard.setKeymap(self.allocator, memory);
-        log.appendLine("wayland", "keyboard keymap loaded size={}", .{size});
+        log.appendLineVerbose("wayland", "keyboard keymap loaded size={}", .{size});
     }
 
     fn handleKeyboardKey(self: *Client, payload: []const u8) !void {
@@ -3468,7 +3468,7 @@ const Client = struct {
         const delay = readI32(payload[4..8]);
         self.key_repeat_rate_hz = rate;
         self.key_repeat_delay_ms = delay;
-        log.appendLine("wayland", "keyboard repeat rate={} delay={}", .{ rate, delay });
+        log.appendLineVerbose("wayland", "keyboard repeat rate={} delay={}", .{ rate, delay });
     }
 
     fn handlePointerEvent(self: *Client, opcode: u16, payload: []const u8) !void {
@@ -3578,7 +3578,7 @@ const Client = struct {
             // 매칭 + hit-test 결과 추적. 사용자 시연에서 *Esc/Enter 동작 / 마우스
             // click 안 동작* 보고. enter event 가 dialog 로 안 오면 가드 reject —
             // 그 여부 확인.
-            log.appendLine("dialog", "pointer button kind={s} state={d} button=0x{x} last_enter={} dialog_surface={} pointer_xy=({},{})", .{
+            log.appendLineVerbose("dialog", "pointer button kind={s} state={d} button=0x{x} last_enter={} dialog_surface={} pointer_xy=({},{})", .{
                 @tagName(self.dialog.kind),
                 state,
                 button,
@@ -3591,18 +3591,18 @@ const Client = struct {
                 self.last_pointer_enter_surface_id == self.dialog.surface_id)
             {
                 if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
-                    log.appendLine("dialog", "OK hit — dismiss request", .{});
+                    log.appendLineVerbose("dialog", "OK hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
                     self.requestDismissDialog();
                 } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
-                    log.appendLine("dialog", "Cancel hit — dismiss request", .{});
+                    log.appendLineVerbose("dialog", "Cancel hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
                     self.requestDismissDialog();
                 } else {
-                    log.appendLine("dialog", "button in dialog area but no OK/Cancel rect hit (ok={any} cancel={any})", .{ self.renderer.last_dialog_ok_rect, self.renderer.last_dialog_cancel_rect });
+                    log.appendLineVerbose("dialog", "button in dialog area but no OK/Cancel rect hit (ok={any} cancel={any})", .{ self.renderer.last_dialog_ok_rect, self.renderer.last_dialog_cancel_rect });
                 }
             } else if (state == wl_pointer_button_state_pressed) {
-                log.appendLine("dialog", "button rejected — enter_surface mismatch (need {} got {})", .{ self.dialog.surface_id, self.last_pointer_enter_surface_id });
+                log.appendLineVerbose("dialog", "button rejected — enter_surface mismatch (need {} got {})", .{ self.dialog.surface_id, self.last_pointer_enter_surface_id });
             }
             return;
         }
@@ -3678,7 +3678,7 @@ const Client = struct {
                     if (self.session) |*session_ptr| {
                         if (self.tab_drag.finish(tab_w_int, session_ptr.count())) |req| {
                             _ = session_ptr.reorderTabs(req.from, req.to) catch |err| {
-                                log.appendLine("tab", "reorder 실패: {s}", .{@errorName(err)});
+                                log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
                             };
                             // 활성 탭 위치 변경 — auto-scroll override 해제 +
                             // 다음 paint 의 `ensureActiveVisible` 가 갱신.
@@ -4112,7 +4112,6 @@ const Client = struct {
         const code = readU32(payload[4..8]);
         var p = Parser{ .buf = payload[8..] };
         const msg = p.readString() catch "(unparseable)";
-        std.debug.print("Wayland protocol error: object={} code={} message={s}\n", .{ object_id, code, msg });
         log.appendLine("wayland", "protocol error object={} code={} message={s}", .{ object_id, code, msg });
         return error.WaylandDisplayError;
     }
@@ -4138,11 +4137,11 @@ const Client = struct {
         // compositor hotkey 경로면 portal 경로 (CreateSession/Bind/Activated) 자체를
         // 건너뛴다 — hidden_start 는 has_compositor_hotkey 로 이미 별도 존중.
         if (compositorHotkeyEnv()) {
-            log.appendLine("portal", "sway/Hyprland/COSMIC 감지 — hotkey 는 compositor bind→--toggle, GlobalShortcuts portal skip", .{});
+            log.appendLine("portal", "sway/Hyprland/COSMIC detected — hotkey via compositor bind→--toggle, GlobalShortcuts portal skipped", .{});
             return;
         }
         const session = dbus.SessionBus.connect() catch |err| {
-            log.appendLine("dbus", "session bus connect skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+            log.appendLine("dbus", "session bus connect skipped: {s} — hotkey disabled", .{@errorName(err)});
             return;
         };
         self.dbus_session = session;
@@ -4159,11 +4158,11 @@ const Client = struct {
         // createShellObjects(창 map) 가 돌아 사용자 체감 startup 이 25초 지연된다(실측).
         // 그러니 GNOME+extension 이면 GlobalShortcuts 경로 자체를 건너뛴다.
         if (gsettings_hotkey.isGnomeWithExtension(self.allocator)) {
-            log.appendLine("portal", "GNOME extension 이 hotkey 담당 — GlobalShortcuts CreateSession skip (로그인 25s 지연 회피)", .{});
+            log.appendLine("portal", "GNOME extension handles hotkey — GlobalShortcuts CreateSession skipped (avoids 25s login delay)", .{});
             return;
         }
         const portal_session = portal.createGlobalShortcutsSession(self.allocator, &self.dbus_session.?) catch |err| {
-            log.appendLine("portal", "CreateSession skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+            log.appendLine("portal", "CreateSession skipped: {s} — hotkey disabled", .{@errorName(err)});
             return;
         };
         self.portal_session = portal_session;
@@ -4180,7 +4179,7 @@ const Client = struct {
             self.config.hotkey.keysym,
             self.config.hotkey.modifiers,
         )) {
-            log.appendLine("portal", "hotkey 이미 등록됨 (config 일치) — BindShortcuts skip (dialog 안 뜸)", .{});
+            log.appendLine("portal", "hotkey already registered (matches config) — BindShortcuts skipped (no dialog)", .{});
         } else {
             portal.bindToggleShortcut(
                 self.allocator,
@@ -4189,14 +4188,14 @@ const Client = struct {
                 self.config.hotkey.keysym,
                 self.config.hotkey.modifiers,
             ) catch |err| {
-                log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey 기능 비활성", .{@errorName(err)});
+                log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey disabled", .{@errorName(err)});
                 return;
             };
         }
         // L9-γ — Activated signal subscribe. 이후 main loop 의
         // `dispatchDbusMessages` 가 매 iteration `read_write_dispatch(0)` 호출
         // → filter callback (`onPortalActivated`) 가 우리 toggle 발동.
-        log.appendLine("portal", "subscribing Activated signal...", .{});
+        log.appendLineVerbose("portal", "subscribing Activated signal...", .{});
         const sub = portal.subscribeActivatedSignal(
             self.allocator,
             &self.dbus_session.?,
@@ -4204,7 +4203,7 @@ const Client = struct {
             onPortalActivated,
             self,
         ) catch |err| {
-            log.appendLine("portal", "Activated subscribe skipped: {s} — hotkey 비활성", .{@errorName(err)});
+            log.appendLine("portal", "Activated subscribe skipped: {s} — hotkey disabled", .{@errorName(err)});
             return;
         };
         self.portal_subscription = sub;
@@ -4233,7 +4232,7 @@ const Client = struct {
     fn onPortalActivated(user_data: ?*anyopaque, shortcut_id: []const u8, timestamp: u64) void {
         const self: *Client = @ptrCast(@alignCast(user_data.?));
         // #207 진단 — Activated signal 도달 확인 (시연 단계, fix 확정 후 제거).
-        log.appendLine("portal", "Activated signal received — shortcut_id={s} timestamp={}", .{ shortcut_id, timestamp });
+        log.appendLineVerbose("portal", "Activated signal received — shortcut_id={s} timestamp={}", .{ shortcut_id, timestamp });
         if (!std.mem.eql(u8, shortcut_id, std.mem.span(portal.shortcut_id_toggle))) return;
         if (timestamp != 0 and timestamp == self.last_toggle_timestamp) return;
         self.last_toggle_timestamp = timestamp;
@@ -4571,7 +4570,7 @@ const Client = struct {
         if (old_fractional_scale_id != 0) self.sendNoArgs(old_fractional_scale_id, wp_fractional_scale_v1_request_destroy) catch {};
         if (old_surface_id != 0) self.sendNoArgs(old_surface_id, 0) catch {};
 
-        log.appendLine("dialog", "swapMainSurface — create-before-destroy (new surface_id={} configured={})", .{ self.surface_id, self.configured });
+        log.appendLineVerbose("dialog", "swapMainSurface — create-before-destroy (new surface_id={} configured={})", .{ self.surface_id, self.configured });
     }
 
     /// #241 — visible 상태에서 output 소멸로 layer-surface 가 closed 된 경우의
@@ -4584,14 +4583,14 @@ const Client = struct {
         if (!self.pending_output_recreate) return;
         self.pending_output_recreate = false;
         if (self.layer_surface_id == 0) return;
-        log.appendLine("input", "drainOutputRecreate — swapMainSurfaceSeamless after output loss (visible) (#241)", .{});
+        log.appendLineVerbose("input", "drainOutputRecreate — swapMainSurfaceSeamless after output loss (visible) (#241)", .{});
         self.swapMainSurfaceSeamless();
     }
 
     fn drainQuitRequest(self: *Client) void {
         if (!self.pending_quit_request) return;
         self.pending_quit_request = false;
-        log.appendLine("dialog", "drainQuitRequest — calling dialog.showConfirm", .{});
+        log.appendLineVerbose("dialog", "drainQuitRequest — calling dialog.showConfirm", .{});
 
         const n: usize = if (self.session) |*session| session.count() else 0;
         if (n == 0) {
@@ -4637,7 +4636,7 @@ const Client = struct {
         // (1~3) xdg-activation token 발급 + main activate. 실패해도 fallback
         // (focus return 안 되지만 dialog 는 정상 dismiss).
         self.requestMainFocusViaActivation() catch |err| {
-            log.appendLine("dialog", "focus return via xdg-activation failed: {s} — fallback (focus 수동)", .{@errorName(err)});
+            log.appendLine("dialog", "focus return via xdg-activation failed: {s} — fallback (manual focus)", .{@errorName(err)});
         };
 
         self.destroyDialogSurface() catch |err| {
@@ -4665,7 +4664,7 @@ const Client = struct {
             // dialog 가 keyboard focus 가 아님 — 사용자가 이미 다른 곳에 focus
             // 양도. token 발급 자체가 spec 위반 + KWin 의 protocol error 유발
             // path. skip + log (focus 자동 return 의미도 없음).
-            log.appendLine("dialog", "skip xdg-activation: dialog not focused (kbd_focus={} dialog_surface={})", .{ self.last_keyboard_focus_surface_id, self.dialog.surface_id });
+            log.appendLineVerbose("dialog", "skip xdg-activation: dialog not focused (kbd_focus={} dialog_surface={})", .{ self.last_keyboard_focus_surface_id, self.dialog.surface_id });
             return;
         }
 
@@ -4705,7 +4704,7 @@ const Client = struct {
         // token object destroy.
         try self.sendNoArgs(token_id, xdg_activation_token_v1_request_destroy);
         self.pending_activation_token_id = 0;
-        log.appendLine("dialog", "xdg-activation token activated for main surface_id={}", .{self.surface_id});
+        log.appendLineVerbose("dialog", "xdg-activation token activated for main surface_id={}", .{self.surface_id});
     }
 
     /// dialog 활성 시 모든 키 라우팅. SPEC §6 — Enter / Esc / 클릭 dismiss.
@@ -4745,7 +4744,7 @@ const Client = struct {
             // role object 를 만들 protocol 이 전혀 없음 — surface 만 만들면 영영
             // 안 뜨는 trap 이라 skip. (createShellObjects 가 wm_base 를 필수로
             // 요구하므로 실제로는 거의 도달 안 함.)
-            log.appendLine("dialog", "createDialogSurface skipped — layer-shell·xdg_wm_base 모두 없음", .{});
+            log.appendLine("dialog", "createDialogSurface skipped — neither layer-shell nor xdg_wm_base available", .{});
             self.dialog.kind = .none;
             return;
         }
@@ -4820,7 +4819,7 @@ const Client = struct {
             );
             try self.sendNoArgs(self.dialog.surface_id, 6);
 
-            log.appendLine("dialog", "createDialogSurface surface_id={} layer_surface_id={} size={}x{} (logical) layer=overlay anchor=0 keyboard=exclusive", .{
+            log.appendLineVerbose("dialog", "createDialogSurface surface_id={} layer_surface_id={} size={}x{} (logical) layer=overlay anchor=0 keyboard=exclusive", .{
                 self.dialog.surface_id,
                 self.dialog.layer_surface_id,
                 logical_w,
@@ -4858,7 +4857,7 @@ const Client = struct {
             self.dialog.pending_h_logical = logical_h;
             try self.sendNoArgs(self.dialog.surface_id, 6); // commit — 첫 configure 유도
 
-            log.appendLine("dialog", "createDialogSurface surface_id={} xdg_surface_id={} xdg_toplevel_id={} size={}x{} (logical) role=xdg_toplevel parent={}", .{
+            log.appendLineVerbose("dialog", "createDialogSurface surface_id={} xdg_surface_id={} xdg_toplevel_id={} size={}x{} (logical) role=xdg_toplevel parent={}", .{
                 self.dialog.surface_id,
                 self.dialog.xdg_surface_id,
                 self.dialog.xdg_toplevel_id,
@@ -4921,7 +4920,7 @@ const Client = struct {
         // 미설정 시 default Cancel 보장).
         self.renderer.last_dialog_ok_rect = .{};
         self.renderer.last_dialog_cancel_rect = .{};
-        log.appendLine("dialog", "destroyDialogSurface", .{});
+        log.appendLineVerbose("dialog", "destroyDialogSurface", .{});
     }
 
     /// dialog surface buffer painting. `drawDialogContent` 호출 — title /
@@ -5055,7 +5054,7 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.surface_id, 6);
         }
         self.dialog.configured = true;
-        log.appendLine("dialog", "dialog paint logical={}x{} physical={}x{}", .{
+        log.appendLineVerbose("dialog", "dialog paint logical={}x{} physical={}x{}", .{
             w_logical, h_logical, physical.w, physical.h,
         });
     }
@@ -5117,27 +5116,16 @@ const Client = struct {
     }
 
     fn logCapabilities(self: *Client) void {
-        const layer = self.caps.layer_shell.name != 0;
-        const text_input = self.caps.text_input_v3.name != 0;
-        std.debug.print(
-            "Wayland capabilities: wl_compositor={} wl_shm={} xdg_wm_base={} zwlr_layer_shell_v1={} zwp_text_input_manager_v3={}\n",
-            .{
-                self.caps.compositor.name != 0,
-                self.caps.shm.name != 0,
-                self.caps.xdg_wm_base.name != 0,
-                layer,
-                text_input,
-            },
-        );
+        // #197 — production capabilities 요약 (once per boot). lifecycle 성격이라 [startup].
         log.appendLine(
-            "wayland",
-            "capabilities compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shm_xrgb8888={} shm_argb8888={}",
+            "startup",
+            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shm_xrgb8888={} shm_argb8888={}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
                 self.caps.xdg_wm_base.name != 0,
-                layer,
-                text_input,
+                self.caps.layer_shell.name != 0,
+                self.caps.text_input_v3.name != 0,
                 self.caps.data_device_manager.name != 0,
                 self.saw_xrgb8888,
                 self.saw_argb8888,
@@ -5393,15 +5381,16 @@ fn reportWaylandSocketFailure(
     const session_str: []const u8 = if (session_owned) |s| s else "(unset)";
     const runtime_str: []const u8 = if (runtime_owned) |s| s else "(unset)";
 
-    log.appendLine(
-        "fatal",
-        "wayland socket connect failed: path={s} err={s} WAYLAND_DISPLAY={s} XDG_SESSION_TYPE={s} XDG_RUNTIME_DIR={s}",
+    // #197 — 사용자 메시지(path / errno / 환경변수 3종 포함 = 진단 정보 전부)를
+    // 한 번 렌더해 stderr + 로그 양쪽에 동일하게. 이전엔 compact 진단 한 줄을
+    // 따로 log 하고 friendly 본문을 따로 print 해 같은 데이터를 두 번 포맷했음.
+    var buf: [1536]u8 = undefined;
+    const text = std.fmt.bufPrint(
+        &buf,
+        messages.linux_wayland_socket_unavailable_format,
         .{ path, @errorName(err), display_str, session_str, runtime_str },
-    );
-    std.debug.print(
-        messages.linux_wayland_socket_unavailable_format ++ "\n",
-        .{ path, @errorName(err), display_str, session_str, runtime_str },
-    );
+    ) catch messages.run_failed_fallback_msg;
+    log.userFacing("fatal", text);
 }
 
 fn waylandSocketPath(allocator: std.mem.Allocator) ![]u8 {

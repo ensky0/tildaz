@@ -130,7 +130,7 @@ fn ensureConptyDll() void {
         conpty_show_hide_fn = null;
         return;
     }
-    log.appendLine("conpty", "conpty.dll loaded, using bundled OpenConsole", .{});
+    log.appendLineVerbose("conpty", "conpty.dll loaded, using bundled OpenConsole", .{});
 }
 
 extern "kernel32" fn InitializeProcThreadAttributeList(

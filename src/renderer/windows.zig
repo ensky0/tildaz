@@ -269,7 +269,7 @@ pub const D3d11Renderer = struct {
             });
             return error.D3D11CreateFailed;
         }
-        log.appendLine("d3d", "swap chain created: layered={} effect={s} buffers={d}", .{
+        log.appendLineVerbose("d3d", "swap chain created: layered={} effect={s} buffers={d}", .{
             layered_window,
             swapEffectName(selected_swap_effect),
             sc_desc.BufferCount,

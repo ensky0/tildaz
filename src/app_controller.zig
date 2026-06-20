@@ -102,7 +102,7 @@ pub const App = struct {
 
     fn winHostTerminate(host: *tab_actions.Host) void {
         const self: *App = @ptrCast(@alignCast(host.user_data.?));
-        log.appendLine("tab", "마지막 탭 종료: 창 닫기 요청", .{});
+        log.appendLine("tab", "last tab exited — requesting window close", .{});
         self.window.closeAfterShellExit();
     }
 
