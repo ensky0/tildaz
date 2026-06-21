@@ -151,7 +151,7 @@ kbd {
 
 .hero-copy {
   max-width: 720px;
-  margin: 28px 0 0;
+  margin: clamp(2.5rem, 5vw, 4.5rem) 0 0;
   color: rgba(247, 255, 249, 0.82);
   font-size: clamp(1.1rem, 2vw, 1.45rem);
 }
