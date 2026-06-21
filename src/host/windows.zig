@@ -104,6 +104,7 @@ pub fn run() !void {
         .session = undefined,
         .window = .{},
         .allocator = alloc,
+        .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
     };
     app.session = SessionCore.init(
         alloc,

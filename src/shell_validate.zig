@@ -53,6 +53,30 @@ pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
     dialog.showFatal(messages.config_error_title, msg);
 }
 
+/// #248 — 런타임 새 탭 생성 *직전* shell 바이너리 재검증. startup `validateOrFatal`
+/// 과 달리 절대 종료하지 않는다 — 없으면 non-fatal 알림(OK 하나)을 띄우고 `false`
+/// 를 반환해 호출자가 탭 생성을 취소하게 한다. brew / 패키지 업데이트로 shell 경로가
+/// 런타임에 사라졌을 때 새 탭이 *조용히* 죽던 것을 막고 사용자에게 원인을 알린다.
+/// 존재하면 `true` (정상 진행). startup 검증과 같은 `firstShellToken` /
+/// `executableExists` 를 공유해 판정 기준이 일관된다.
+pub fn checkForNewTab(allocator: std.mem.Allocator, shell: []const u8) bool {
+    const tok = firstShellToken(shell);
+    if (tok.len != 0 and executableExists(allocator, tok)) return true;
+
+    const cfg_path_owned: ?[]u8 = paths.configPath(allocator) catch null;
+    defer if (cfg_path_owned) |p| allocator.free(p);
+    const cfg_path: []const u8 = cfg_path_owned orelse "(unknown)";
+
+    var msg_buf: [1024]u8 = undefined;
+    const msg = std.fmt.bufPrint(
+        &msg_buf,
+        messages.shell_new_tab_not_found_format,
+        .{ shell, cfg_path },
+    ) catch messages.shell_new_tab_not_found_fallback_msg;
+    dialog.showInfo(messages.shell_new_tab_error_title, msg);
+    return false;
+}
+
 /// `config.shell` 의 첫 *토큰* 추출. Windows 는 인자 허용 → 따옴표 / 첫 공백
 /// 까지. macOS 는 spec 상 인자 없음 → full string 이 그대로 토큰. 따옴표만
 /// 양쪽으로 strip (사용자가 `"\"...\""` 로 적었을 때 보호).

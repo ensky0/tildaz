@@ -20,11 +20,15 @@ const paths = @import("paths.zig");
 const system_open = @import("system_open.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const shell_validate = @import("shell_validate.zig");
 
 pub const App = struct {
     session: SessionCore,
     window: Window,
     allocator: std.mem.Allocator,
+    /// #248 — `config.shell` (UTF-8 원본). 런타임 새 탭 생성 직전 shell 바이너리
+    /// 재검증용 (startup `validateOrFatal` 과 같은 값). host(`windows.zig`)가 set.
+    shell: []const u8 = "",
     renderer: ?RendererBackend = null,
     last_render_ms: i64 = 0,
     tab_interaction: tab_interaction.TabInteraction = .{},
@@ -427,6 +431,8 @@ pub const App = struct {
 
     pub fn handleNewTab(self: *App) void {
         if (tab_actions.checkAtLimitAndDialog(&self.host)) return;
+        // #248 — shell 이 런타임에 사라졌으면 조용히 죽는 대신 알림 후 취소.
+        if (!shell_validate.checkForNewTab(self.allocator, self.shell)) return;
         self.createTab() catch {};
     }
 

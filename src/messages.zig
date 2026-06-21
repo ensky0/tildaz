@@ -175,6 +175,14 @@ pub const shell_first_token_empty_fallback_msg = "config.json: shell first token
 pub const shell_executable_not_found_format =
     "config.json: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
 pub const shell_executable_not_found_fallback_msg = "config.json: shell executable not found.";
+
+// #248 — 런타임 새 탭 생성 시 shell 바이너리가 사라진 경우 (brew/패키지 업데이트로
+// 경로 변경 등). startup fatal 과 달리 종료하지 않고 OK 하나짜리 알림만.
+pub const shell_new_tab_error_title = "TildaZ — Cannot Open New Tab";
+pub const shell_new_tab_not_found_format =
+    "The configured shell could not be found:\n  \"{s}\"\n\nCheck \"shell\" in config.json:\n  {s}";
+pub const shell_new_tab_not_found_fallback_msg = "The configured shell could not be found. Check \"shell\" in config.json.";
+
 pub const shell_examples_windows =
     \\Examples:
     \\  "cmd.exe"

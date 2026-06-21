@@ -30,6 +30,7 @@ const sway_ipc = @import("sway_ipc.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
+const shell_validate = @import("../../shell_validate.zig");
 const system_open = @import("../../system_open.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
@@ -2673,6 +2674,8 @@ const Client = struct {
         self.commitPendingInput();
         var host = self.buildTabActionsHost();
         if (tab_actions.checkAtLimitAndDialog(&host)) return;
+        // #248 — shell 이 런타임에 사라졌으면 (패키지 업데이트 등) 조용히 죽는 대신 알림.
+        if (!shell_validate.checkForNewTab(self.allocator, self.config.shell)) return;
         const active = self.activeTabOrNull() orelse return;
         self.session.?.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
             log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});

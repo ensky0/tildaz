@@ -2405,6 +2405,8 @@ fn handleCloseActiveTab() void {
 /// 가 1 → 2 전환 시 탭바 등장으로 줄어드는 cell 영역에 맞춰 모든 탭 resize.
 fn handleNewTab() void {
     if (tab_actions.checkAtLimitAndDialog(&g_host)) return;
+    // #248 — shell 이 런타임에 사라졌으면 (brew 업데이트 등) 조용히 죽는 대신 알림.
+    if (!@import("../shell_validate.zig").checkForNewTab(g_gpa.allocator(), g_config.shell)) return;
     const active = g_session.activeTab() orelse return;
     g_session.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
         log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
