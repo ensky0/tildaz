@@ -21,6 +21,13 @@
 
 **용어 — Wayland `advertise` 를 "광고 / 미광고" 로 옮기지 않아요.** compositor 가 `wl_registry.global` 로 client 에게 지원 protocol 을 알리는 행위 (*advertise*) 를 "광고" 로 직역하면 한국어로 의미가 안 통해요 (사용자 두 번 지적). 대신 "client 에게 노출 (*advertise*)", "지원 통보가 온다 / 안 온다", "`wl_registry.global` 로 알린다", 또는 영어 *advertised* / *not advertised* 를 그대로 써요. "이 capability 는 compositor 에 없음" 처럼 풀어 써도 좋아요. 이슈 / 답변 / 공유 문서 / 코드 주석 / 커밋 메시지 모두 적용.
 
+**고유명사는 항상 공식 표기 — 대소문자까지 정확히.** 제품 / OS / 데스크톱 / API 이름은 각자의 공식 표기를 그대로 따라요 (사용자 지적). 표기는 이름마다 규칙이 달라요:
+- 전부 소문자: `sway`, `i3` (문장 첫머리에서도 소문자가 공식)
+- 전부 대문자: `GNOME`, `COSMIC`, `GTK`
+- 혼합: `macOS`, `KDE Plasma`, `Cinnamon`, `Hyprland`, `Wayland`, `Metal`, `Direct3D`, `ConPTY`, `GitHub`, `AppImage`, `Electron`, `Qt`, `Windows`, `Linux`
+- **예외 — URL · 파일경로 · 파일명 · 코드 식별자는 리터럴 그대로** 둬요 (`github.com`, `src/host/macos.zig`, `conpty.dll`). 이건 산문 속 고유명사가 아니라 실제 문자열이라 교정 대상이 아니에요.
+README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적용. 확신이 없으면 공식 사이트 표기를 확인하고 써요.
+
 # 한글 IME 동작 스펙
 
 한글 (한국어 / 일본어 / 중국어 IME 일반) 입력 시 다음 동작이 정의된 스펙이에요.

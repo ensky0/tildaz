@@ -204,16 +204,13 @@ kbd {
 }
 
 .tab {
-  min-width: 110px;
-  max-width: 180px;
+  flex: 0 0 auto;
   padding: 9px 12px;
   border-radius: 7px 7px 0 0;
   color: #80938c;
   font-family: var(--mono);
   font-size: 0.8rem;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .tab.active {
@@ -243,9 +240,8 @@ kbd {
 
 .terminal-grid p {
   margin: 0 0 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .prompt {
@@ -552,7 +548,7 @@ kbd {
     min-width: 84px;
   }
 
-  .tab:nth-child(3) {
+  .tab-backend {
     display: none;
   }
 

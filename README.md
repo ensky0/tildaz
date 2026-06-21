@@ -1,28 +1,28 @@
 # TildaZ
 
 **The drop-down terminal that works everywhere.** Hit one hotkey and a fast,
-native terminal slides down over whatever you're doing — on Windows, macOS,
-and Linux. In the spirit of [Tilda](https://github.com/lanoxx/tilda), but on
+native terminal slides down over whatever you're doing — on Linux, macOS,
+and Windows. In the spirit of [Tilda](https://github.com/lanoxx/tilda), but on
 every desktop you use.
 
 Most drop-down terminals live on a single OS — or a single Linux desktop.
 TildaZ is one app across all three platforms, and on Linux it brings a real
 drop-down with a global hotkey to **every major desktop**: KDE Plasma, GNOME,
-Cinnamon, COSMIC, sway, and Hyprland. No Electron, no toolkit bloat — just a
+Cinnamon, COSMIC, Hyprland, and sway. No Electron, no toolkit bloat — just a
 quick native window that gets out of your way.
 
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.0 — now on Linux.** One drop-down terminal for Windows, macOS, and
-> Linux (Wayland), with verified drop-down + global-hotkey support on KDE
-> Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland.
+> **v0.5.0 — now on Linux.** One drop-down terminal for Linux (Wayland),
+> macOS, and Windows, with verified drop-down + global-hotkey support on KDE
+> Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.
 
 ## Why TildaZ
 
-- **One terminal, every OS.** The same drop-down terminal on Windows, macOS, and Linux — one config, one muscle memory.
-- **Works on every Linux desktop.** A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland — not just one.
-- **Native and quick.** No Electron, no GTK/Qt — GPU rendering on Windows and macOS, a direct Wayland client on Linux, and the fast `libghostty-vt` core.
+- **One terminal, every OS.** The same drop-down terminal on Linux, macOS, and Windows — one config, one muscle memory.
+- **Works on every Linux desktop.** A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway — not just one.
+- **Native and quick.** No Electron, no GTK/Qt — a direct Wayland client on Linux, GPU rendering on macOS and Windows, and the fast `libghostty-vt` core.
 - **A real terminal.** Tabs, themes, true color, ligatures, color emoji, and full CJK with inline IME (Korean / Japanese / Chinese), Hanja / kanji included.
 - **Stays out of your way.** Drop it down with a hotkey, dock it to the monitor under your cursor, dismiss it just as fast.
 - **Private by default.** No telemetry, no analytics, no auto-update phone-home — only local config and logs.
@@ -30,8 +30,8 @@ quick native window that gets out of your way.
 ## See it render
 
 Ligatures, true color, color emoji with skin tones and ZWJ families, full-width
-CJK, and block / shade glyphs all render correctly — identically on Windows,
-macOS, and Linux. Paste this into any TildaZ window:
+CJK, and block / shade glyphs all render correctly — identically on Linux,
+macOS, and Windows. Paste this into any TildaZ window:
 
 ```sh
 echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n"
