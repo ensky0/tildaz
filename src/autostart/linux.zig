@@ -70,6 +70,14 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     //
     // `Hidden=false` + `X-GNOME-Autostart-enabled=true` 는 GNOME / Cinnamon /
     // KDE 모두에서 항목 활성으로 인식되는 표준 조합.
+    //
+    // `NotShowIn=GNOME;` — GNOME 은 tildaz Shell extension 이 launch lifecycle 을
+    // 담당하므로(mutter 엔 wlr-layer-shell 이 없어 placement 가 셸 안에서만 가능)
+    // gnome-session 의 XDG autostart 로는 *띄우지 않는다*. 이 키 하나로 GNOME 만
+    // 이 항목을 건너뛰고(extension 이 대신 launch), KDE/Cinnamon/COSMIC 등은 그대로
+    // honor 한다. 이 파일은 전 DE 가 공유하므로(`~/.config/autostart`), 예전처럼
+    // GNOME 진입 시 파일을 삭제하면 GNOME 을 거친 뒤 KDE/Cinnamon autostart 가
+    // 통째로 깨졌다 — NotShowIn 으로 파일을 지우지 않고 DE 왕복에도 살아남게 한다.
     const entry = try std.fmt.allocPrint(allocator,
         \\[Desktop Entry]
         \\Type=Application
@@ -84,6 +92,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
         \\StartupNotify=true
         \\Hidden=false
         \\X-GNOME-Autostart-enabled=true
+        \\NotShowIn=GNOME;
         \\
     , .{exe});
     defer allocator.free(entry);
