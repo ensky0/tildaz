@@ -185,6 +185,7 @@ export default class TildazExtension extends Extension {
     if (win.has_focus() && !win.minimized) {
       this._skipEffect(win);
       win.minimize();
+      this._defocusAfterHide(win);
       return;
     }
 
@@ -205,6 +206,31 @@ export default class TildazExtension extends Extension {
   _skipEffect(win) {
     const actor = win.get_compositor_private();
     if (actor) Main.wm.skipNextEffect(actor);
+  }
+
+  // 숨김 시 keyboard focus 를 다른 창으로 넘긴다 (#247). mutter 는 sticky+above 인
+  // tildaz 를 minimize 해도 focus 를 자동 이양하지 않아, 숨김 중에도 client 가
+  // wl_keyboard focus 를 유지한다 — Alt+Enter 토글이 먹고, 숨긴 직후 타이핑이
+  // 안 보이는 터미널로 새어든다(최대 ~2.3s, mutter 가 suspended 보낼 때까지).
+  // MRU tab list 의 다음 일반 창으로 focus 를 넘겨 "숨김=비focus" 로 만든다 — 그러면
+  // tildaz 가 키를 못 받아 자연히 no-op (Win/macOS 의 hidden=unfocused 모델 동등).
+  _defocusAfterHide(win) {
+    try {
+      const ws = global.workspace_manager.get_active_workspace();
+      const now = global.get_current_time();
+      for (const w of global.display.get_tab_list(Meta.TabList.NORMAL, ws)) {
+        if (w !== win && !w.minimized) {
+          Main.activateWindow(w, now);
+          return;
+        }
+      }
+      // 넘길 창이 없으면(빈 데스크톱) input focus 자체를 해제.
+      if (typeof global.display.unset_input_focus === "function") {
+        global.display.unset_input_focus(now);
+      }
+    } catch (e) {
+      global.logError("[tildaz] defocus after hide failed: " + e);
+    }
   }
 
   // hidden preload 시 로그인 startup overview 를 닫는다. 지금 한 번 닫고, 아직

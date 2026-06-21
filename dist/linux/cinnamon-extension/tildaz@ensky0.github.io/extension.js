@@ -60,6 +60,7 @@
  */
 
 const GLib = imports.gi.GLib;
+const Meta = imports.gi.Meta;
 const Cinnamon = imports.gi.Cinnamon;
 const Main = imports.ui.main;
 
@@ -294,6 +295,7 @@ function toggle() {
     if (!win) return; // toggle 전용 — 미실행 시 무동작(실행은 autostart/메뉴).
     if (win.has_focus() && !win.minimized) {
       win.minimize();
+      defocusAfterHide(win);
       return;
     }
     if (win.minimized) win.unminimize();
@@ -303,6 +305,33 @@ function toggle() {
     Main.activateWindow(win);
   } catch (e) {
     global.logError("[tildaz] toggle failed: " + e);
+  }
+}
+
+// 숨김 시 keyboard focus 를 다른 창으로 넘긴다 (#247). muffin 은 sticky+above 인
+// tildaz 를 minimize 해도 focus 를 자동 이양하지 않아, 숨김 중에도 client 가
+// wl_keyboard focus 를 유지한다 — Alt+Enter 토글이 먹고, 숨긴 직후 타이핑이 안
+// 보이는 터미널로 새어든다. MRU tab list 의 다음 일반 창으로 focus 를 넘겨
+// "숨김=비focus" 로 만든다 (Win/macOS 의 hidden=unfocused 모델 동등). GNOME 확장과 동형.
+function defocusAfterHide(win) {
+  try {
+    const wm = global.workspace_manager || global.screen;
+    const ws = wm.get_active_workspace();
+    const now = global.get_current_time();
+    const list = global.display.get_tab_list(Meta.TabList.NORMAL, ws);
+    for (let i = 0; i < list.length; i++) {
+      const w = list[i];
+      if (w !== win && !w.minimized) {
+        Main.activateWindow(w);
+        return;
+      }
+    }
+    // 넘길 창이 없으면(빈 데스크톱) input focus 자체를 해제.
+    if (typeof global.display.unset_input_focus === "function") {
+      global.display.unset_input_focus(now);
+    }
+  } catch (e) {
+    global.logError("[tildaz] defocus after hide failed: " + e);
   }
 }
 
