@@ -293,8 +293,14 @@ pub const Pty = struct {
 
     fn readLoop(master_fd: posix.fd_t, callback: ReadCallback, userdata: ?*anyopaque) void {
         var buf: [65536]u8 = undefined;
+        // #254 — poll 로 대기(타이밍 밖) 후 read 만 측정 → readloop ms 가 "read 복사
+        // 시간"만 재서 Linux 와 의미 일치(blocking read 직접 측정은 idle 대기까지 포함).
+        // 종료: deinit 의 SIGHUP → 자식 종료 → master fd POLLHUP → poll 깨어남 →
+        // read 0/에러 → break (close(master_fd) 는 read_thread.join() 후라 race 없음).
+        var fds = [_]posix.pollfd{.{ .fd = master_fd, .events = posix.POLL.IN, .revents = 0 }};
         while (true) {
-            const t0 = perf.now(); // #160 — readloop 계측 (Windows terminal/windows/pty.zig 동등)
+            _ = posix.poll(&fds, -1) catch break;
+            const t0 = perf.now(); // #160 — readloop 계측 (read 복사 시간만).
             const n = posix.read(master_fd, &buf) catch break;
             perf.addTimedBytes(&perf.readloop, t0, @intCast(n));
             if (n == 0) break;
