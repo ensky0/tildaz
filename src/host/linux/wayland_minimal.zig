@@ -4463,7 +4463,8 @@ const Client = struct {
             } else {
                 try self.remapShellObjects();
                 self.logShowElapsed("remapShellObjects");
-                log.appendLine("portal", "toggle show — remapped shell objects (#205)", .{});
+                // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
+                log.appendLineVerbose("toggle", "show — remapped shell objects (#205)", .{});
             }
             return;
         }
@@ -4479,12 +4480,13 @@ const Client = struct {
         if (kwinCompositor()) {
             try self.unmapShellObjects();
             self.surface_hidden = true;
-            log.appendLine("portal", "toggle hide — unmapped shell objects (#205 KWin 503121 workaround)", .{});
+            // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
+            log.appendLineVerbose("toggle", "hide — unmapped shell objects (#205 KWin 503121 workaround)", .{});
             return;
         }
         try self.destroyShellObjects();
         self.surface_hidden = true;
-        log.appendLine("portal", "toggle hide — destroyed shell objects (recreate path)", .{});
+        log.appendLineVerbose("toggle", "hide — destroyed shell objects (recreate path)", .{});
     }
 
     /// #205 — kitty pattern hide: `wl_surface.attach(null) + commit`. wl_surface

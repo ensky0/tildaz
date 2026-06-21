@@ -763,8 +763,11 @@ pub const Window = struct {
         if (self.visible) {
             // #175 — F1 hide 도 focus_loss = commit. show 분기에선 호출 안 함.
             if (self.before_hide_fn) |f| f(self.userdata);
+            // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
+            log.appendLineVerbose("toggle", "hide", .{});
             self.hide();
         } else {
+            log.appendLineVerbose("toggle", "show", .{});
             self.show();
         }
     }
