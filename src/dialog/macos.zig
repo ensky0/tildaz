@@ -57,6 +57,144 @@ fn restoreHostLevel() void {
     setLevel(host_window, objc.sel("setLevel:"), NSPopUpMenuWindowLevel);
 }
 
+fn sharedApp() objc.id {
+    const NSApplication = objc.getClass("NSApplication");
+    const shared = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    return shared(NSApplication, objc.sel("sharedApplication"));
+}
+
+/// #249 — 단일 버튼(OK 하나) alert 의 키보드 닫기. NSAlert 의 기본 동작만으론 두 가지가
+/// 빠진다:
+///   1. Esc: NSAlert 는 제목이 "Cancel" 인 버튼에만 Esc(`\x1b`)를 자동 부여하고 OK
+///      하나짜리엔 안 묶는다([NSAlert.buttons]).
+///   2. Enter: 보통 기본 버튼(OK)이 Return 을 받지만, About 처럼 selectable NSTextView
+///      accessoryView 가 있으면 그 text view 가 first responder 라 Return 을 먼저 먹어
+///      Enter 를 두 번 눌러야 닫힌다(NSButton 은 Full Keyboard Access 가 꺼져 있으면
+///      first responder 가 안 돼 makeFirstResponder 로도 못 돌린다).
+/// 그래서 runModal 동안 NSEvent local key monitor 를 달아 Esc(53)·Return(36)·키패드
+/// Enter(76)를 *first responder 와 무관하게* 직접 가로채 `stopModalWithCode:` 로 닫는다.
+/// 단일 버튼 alert 은 어느 키든 결과가 "닫기" 하나라 stopModal 로 충분(반환값 무시).
+/// alert window 를 안 건드려 위치 race 없음. runModal 종료 후 removeMonitor: 로 해제.
+///
+/// [NSAlert.buttons]: https://developer.apple.com/documentation/appkit/nsalert/1532992-buttons
+///
+/// ObjC block 을 Zig 에서 직접 구성한다. captures 없는 *global* block 이라 isa 는
+/// `_NSConcreteGlobalBlock`, flags 는 `BLOCK_IS_GLOBAL`. addLocalMonitor 내부의
+/// Block_copy 는 global block 을 그대로 돌려주므로 정적 인스턴스로 안전하다.
+const BlockDescriptor = extern struct {
+    reserved: c_ulong = 0,
+    size: c_ulong,
+};
+const DismissMonitorBlock = extern struct {
+    isa: ?*const anyopaque,
+    flags: c_int,
+    reserved: c_int = 0,
+    invoke: *const fn (*DismissMonitorBlock, objc.id) callconv(.c) objc.id,
+    descriptor: *const BlockDescriptor,
+};
+extern const _NSConcreteGlobalBlock: anyopaque;
+const BLOCK_IS_GLOBAL: c_int = 1 << 28;
+const NSEventMaskKeyDown: u64 = 1 << 10;
+const kVK_Return: u16 = 36;
+const kVK_Escape: u16 = 53;
+const kVK_KeypadEnter: u16 = 76;
+
+/// local monitor block 의 invoke — 닫기 키(Esc/Return/키패드 Enter)면 modal 종료 + 이벤트
+/// 삼킴(null 반환), 아니면 그대로 통과(event 반환).
+fn dismissMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) objc.id {
+    if (event == null) return event;
+    const keyCodeOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) u16);
+    const code = keyCodeOf(event, objc.sel("keyCode"));
+    if (code == kVK_Escape or code == kVK_Return or code == kVK_KeypadEnter) {
+        const app = sharedApp();
+        if (app != null) {
+            const stopModal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+            stopModal(app, objc.sel("stopModalWithCode:"), 0);
+        }
+        return null;
+    }
+    return event;
+}
+
+var dismiss_block_descriptor: BlockDescriptor = .{ .reserved = 0, .size = @sizeOf(DismissMonitorBlock) };
+var dismiss_block: DismissMonitorBlock = .{
+    .isa = null, // 런타임에 _NSConcreteGlobalBlock 로 설정 (extern 주소는 comptime 불가).
+    .flags = BLOCK_IS_GLOBAL,
+    .reserved = 0,
+    .invoke = &dismissMonitorInvoke,
+    .descriptor = &dismiss_block_descriptor,
+};
+
+/// runModal 동안만 닫기 키를 가로채는 local monitor 등록. 반환값은 removeDismissMonitor 로 해제.
+fn addDismissMonitor() objc.id {
+    dismiss_block.isa = &_NSConcreteGlobalBlock;
+    const NSEvent = objc.getClass("NSEvent");
+    const add = objc.objcSend(fn (objc.Class, objc.SEL, u64, *DismissMonitorBlock) callconv(.c) objc.id);
+    return add(NSEvent, objc.sel("addLocalMonitorForEventsMatchingMask:handler:"), NSEventMaskKeyDown, &dismiss_block);
+}
+fn removeDismissMonitor(monitor: objc.id) void {
+    if (monitor == null) return;
+    const NSEvent = objc.getClass("NSEvent");
+    const rm = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) void);
+    rm(NSEvent, objc.sel("removeMonitor:"), monitor);
+}
+
+/// #249 — alert 가 key window 가 아니면 강제로 key 로 승격한다(이미 key 면 no-op).
+/// 키보드는 *key window* 로만 가는데, 키 입력에 두 갈래가 있다:
+///   - Esc: 우리 local monitor 가 앱 이벤트 스트림에서 가로채 key window 와 *무관* 하게 동작.
+///   - Enter: NSAlert 기본 버튼(OK/Quit)의 Return 응답이라 alert 가 *key 여야만* 동작.
+/// 그래서 alert 가 key 가 아니면 "Esc 는 되는데 Enter 만 안 되는" 증상이 난다. alert 가
+/// key 가 못 되는 경우: ① startup 권한창(앱이 백그라운드 launch 직후라 active 아님) ②
+/// 앱이 어떤 이유로 frontmost 를 놓친 상태. 단순 `activateIgnoringOtherApps:` 는 background
+/// 앱에서 거부되므로, 창을 직접 앞으로 내미는 makeKeyAndOrderFront 로 활성화한다 — 이게
+/// background accessory 앱의 *정당한* 활성화 경로라 앱이 active 가 되고 alert 가 key 가
+/// 된다(이어서 activate 도 호출해 frontmost 확정). `runModal` *전* 이 아니라 modal 루프
+/// (`NSModalPanelRunLoopMode`) 안 = 중앙배치 *후* 라 위치 race 도 없다.
+fn dialogForceKeyFn(_: objc.id, _: objc.SEL, alert: objc.id) callconv(.c) void {
+    if (alert == null) return;
+    const getWin = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const w = getWin(alert, objc.sel("window")) orelse return;
+    const isKey = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
+    if (isKey(w, objc.sel("isKeyWindow"))) return; // 이미 key — 런타임 정상 경로는 무변경.
+    const mkf = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    mkf(w, objc.sel("makeKeyAndOrderFront:"), null);
+    const app = sharedApp();
+    if (app != null) {
+        const act = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+        act(app, objc.sel("activateIgnoringOtherApps:"), true);
+    }
+}
+var force_key_instance: objc.id = null;
+/// `dialogForceKeyFn` 을 modal 루프 안에서 실행되도록 예약(중앙배치 후). 0 / 0.1s 두 시점에
+/// idempotent 하게 — 비동기 activate 가 한 번에 적용 안 될 때 대비(이미 key 면 둘 다 no-op).
+fn scheduleForceKey(alert: objc.id) void {
+    if (force_key_instance == null) {
+        const NSObject = objc.getClass("NSObject");
+        const cls = objc.objc_allocateClassPair(NSObject, "TildazDialogKeyer", 0) orelse return;
+        _ = objc.class_addMethod(cls, objc.sel("forceKey:"), @ptrCast(&dialogForceKeyFn), "v@:@");
+        objc.objc_registerClassPair(cls);
+        const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+        const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        force_key_instance = init_obj(alloc(cls, objc.sel("alloc")) orelse return, objc.sel("init"));
+    }
+    const NSArray = objc.getClass("NSArray");
+    const arrayWith = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
+    const modes = arrayWith(NSArray, objc.sel("arrayWithObject:"), objc.nsString("NSModalPanelRunLoopMode"));
+    const perform = objc.objcSend(fn (objc.id, objc.SEL, objc.SEL, objc.id, f64, objc.id) callconv(.c) void);
+    const delays = [_]f64{ 0.0, 0.1 };
+    for (delays) |d| {
+        perform(force_key_instance, objc.sel("performSelector:withObject:afterDelay:inModes:"), objc.sel("forceKey:"), alert, d, modes);
+    }
+}
+/// runModal 종료 후 아직 안 fire 한 forceKey 예약을 취소 — 다음 다이얼로그(다른 alert)로
+/// stale 참조가 새지 않게.
+fn cancelForceKey() void {
+    if (force_key_instance == null) return;
+    const NSObject = objc.getClass("NSObject");
+    const cancel = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) void);
+    cancel(NSObject, objc.sel("cancelPreviousPerformRequestsWithTarget:"), force_key_instance);
+}
+
 /// 새 NSAlert 인스턴스 (alloc + init). null 반환은 caller 가 fail-soft 로 무시.
 fn newAlert() ?objc.id {
     const NSAlert = objc.getClass("NSAlert");
@@ -98,11 +236,23 @@ fn alertStyleFor(severity: dialog.Severity) c_long {
     };
 }
 
-/// host window level 을 잠깐 normal 로 낮춰 alert 가 위에 표시되게 한 뒤
-/// `runModal` 호출. 끝나면 popup level 로 복구. 결과 modal response 반환.
-fn runModalOverHost(alert: objc.id) c_long {
+/// host window level 을 잠깐 normal 로 낮춰 alert 가 위에 표시되게 한 뒤 `runModal`
+/// 호출. 끝나면 popup level 로 복구. 결과 modal response 반환.
+///
+/// 포커스(alert 가 key window 가 되는 것)는 `scheduleForceKey` 한 곳이 책임진다 — accessory
+/// 앱은 active 가 아니면 alert 가 key 가 못 돼 키보드를 못 받기 때문(#249).
+/// `keyboard_dismiss` 가 true 면 runModal 동안 닫기 키(Esc/Enter) local monitor 를 단다 —
+/// 단일 버튼(OK 하나) alert 전용. 확인창은 두 버튼의 의미가 달라(Quit/Cancel) monitor 를
+/// 안 쓰고 기본 버튼 Return + Cancel 버튼 Esc keyEquivalent 로 처리하므로 false.
+fn runModalOverHost(alert: objc.id, keyboard_dismiss: bool) c_long {
     lowerHostLevel();
     defer restoreHostLevel();
+    // #249 — alert 가 key 가 아니면(권한창 등) 키보드를 못 받으므로 modal 루프 안에서 key 로
+    // 승격. 이미 key 인 런타임 다이얼로그는 dialogForceKeyFn 이 no-op.
+    scheduleForceKey(alert);
+    defer cancelForceKey();
+    const monitor: objc.id = if (keyboard_dismiss) addDismissMonitor() else null;
+    defer if (keyboard_dismiss) removeDismissMonitor(monitor);
     const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     return runModal(alert, objc.sel("runModal"));
 }
@@ -125,7 +275,7 @@ fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8
     setInformative(alert, message);
     addButton(alert, "OK");
     setStyle(alert, alertStyleFor(severity));
-    _ = runModalOverHost(alert);
+    _ = runModalOverHost(alert, true);
 }
 
 const NSAlertRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
@@ -233,7 +383,9 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setAccessory(alert, objc.sel("setAccessoryView:"), tv);
 
-    _ = runModalOverHost(alert);
+    // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
+    // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard_dismiss=true).
+    _ = runModalOverHost(alert, true);
 }
 
 /// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=Quit, Esc=Cancel.
@@ -251,7 +403,7 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     addButton(alert, "Cancel");
     setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
 
-    const result = runModalOverHost(alert);
+    const result = runModalOverHost(alert, false);
     // NSAlertFirstButtonReturn = 1000 (= Quit, 첫 추가 버튼 = 기본).
     return result == 1000;
 }

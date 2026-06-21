@@ -3052,12 +3052,14 @@ fn installEventTap() !void {
             if (has_input) "OK" else "missing",
             if (has_ax) "OK" else "missing",
         });
-        dialog.showInfo(messages.macos_permission_required_title, msg);
-        // dialog 가 keyWindow 를 빼앗아 갔다가 닫으면서 우리 윈도우로 안
-        // 돌려줌 → 사용자가 직접 클릭해야 keyboard 입력 가능. showWindow 의
-        // makeKeyAndOrderFront + activateIgnoringOtherApps + makeFirstResponder
-        // 셋 다 다시 호출해서 강제 복원.
-        showWindow();
+        // #249 — installEventTap 은 `[NSApp run]` *전* 에 호출된다. 이 시점에 곧장
+        // showInfo 를 부르면 run loop 가 없어 활성화(activateIgnoringOtherApps)가
+        // 적용 안 되고 alert 가 key window 가 못 돼 키보드를 못 받는다. 그래서
+        // main queue 로 dispatch 해 run loop 시작 *후* 에 띄운다 — 그때는 앱이
+        // active 가 돼 런타임 다이얼로그와 똑같이 key 를 얻는다 (실측 확인).
+        g_perm_msg_len = @min(msg.len, g_perm_msg_buf.len);
+        @memcpy(g_perm_msg_buf[0..g_perm_msg_len], msg[0..g_perm_msg_len]);
+        dispatch_async_f(&_dispatch_main_q, null, showPermDialogTrampoline);
         return;
     }
 
@@ -3119,6 +3121,14 @@ fn recreateEventTap() void {
 /// `dispatch_async_f` 트램폴린 — context 무시하고 recreateEventTap 호출.
 fn recreateEventTapTrampoline(_: ?*anyopaque) callconv(.c) void {
     recreateEventTap();
+}
+
+/// `dispatch_async_f` 트램폴린 — run loop 시작 후 권한 안내 다이얼로그 표시 (#249).
+/// 인자를 못 받아 메시지는 module-level `g_perm_msg_buf` 에서 읽는다.
+fn showPermDialogTrampoline(_: ?*anyopaque) callconv(.c) void {
+    dialog.showInfo(messages.macos_permission_required_title, g_perm_msg_buf[0..g_perm_msg_len]);
+    // dialog 가 닫히면서 key window 를 우리 윈도우로 안 돌려줄 수 있어 강제 복원.
+    showWindow();
 }
 
 /// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 면
@@ -3317,6 +3327,11 @@ var g_runloop_source: CFRunLoopSourceRef = null;
 // `CGEventTapEnable(true)` 만으로는 안 살아나는 케이스라 destroy + recreate
 // path 로 escalate (#152).
 var g_last_tap_disable_ms: i64 = 0;
+
+// #249 — installEventTap 의 권한 안내 메시지를 run loop 시작 후 dispatch 로 띄우려
+// 임시 보관. dispatch 트램폴린은 인자를 못 받아 module-level 에 둔다.
+var g_perm_msg_buf: [2048]u8 = undefined;
+var g_perm_msg_len: usize = 0;
 
 /// `About TildaZ` menu item action. Selector 는 NSApplication 에 등록되어
 /// responder chain 의 마지막 단계 (NSApp) 에서 항상 dispatch 된다 — 윈도우가
