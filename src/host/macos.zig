@@ -3342,9 +3342,12 @@ fn toggleWindow() void {
         const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
         const cv = contentView_get(g_window, objc.sel("contentView"));
         if (cv != null) commitPendingInput(cv);
+        // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
+        log.appendLineVerbose("toggle", "hide", .{});
         hideWindow();
     } else {
         // 화면 / Dock 변화 대비해 매번 dock rect 재계산.
+        log.appendLineVerbose("toggle", "show", .{});
         repositionWindow();
         showWindow();
     }
