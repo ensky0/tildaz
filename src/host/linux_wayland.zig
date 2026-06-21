@@ -89,33 +89,28 @@ pub fn run() !void {
     // mac LaunchAgent / Windows Registry Run 동등. 매 부팅마다 enable / disable
     // 을 sync 해 사용자가 config 끄면 즉시 효과. install path 가 바뀌었어도
     // (다른 위치로 binary 옮겼어도) 현재 `selfExePath` 로 자동 갱신.
-    // GNOME 은 lifecycle(launch/show/hide) 을 extension 이 담당하므로 XDG
-    // autostart `.desktop` 을 쓰지 않는다 — GNOME 이면 extension 감지나 auto_start
-    // 값과 무관하게 무조건 삭제한다(KDE/sway 에서 GNOME 으로 바꿨을 때 남은 잔재
-    // 포함). 그 외 DE 는 auto_start 따라 enable/disable.
-    if (gsettings_hotkey.isGnomeDesktop(gpa.allocator())) {
-        // GNOME 은 autostart(로그인 launch)를 extension 이 담당한다. 따라서 XDG
-        // autostart `.desktop` 은 GNOME 에서 *절대 쓰지 않는다* — extension 감지
-        // 여부나 auto_start 값과 무관하게, 다른 DE(KDE/sway 등)에서 GNOME 으로
-        // 바꿨을 때 남은 잔재까지 무조건 확인 후 삭제한다. (autostart .desktop 이
-        // 살아 있으면 extension placement 전 중앙 일반창이 떠 lifecycle 이 꼬임.)
-        autostart.disable(gpa.allocator());
-        if (gsettings_hotkey.isGnomeWithExtension(gpa.allocator())) {
-            // extension 이 창을 잡아 배치/숨김. hidden_start(surface 보류)는
-            // extension 이 잡을 *창 자체* 를 없애 무한 재launch 를 유발한다(실측).
-            // 무시하고 tildaz 는 항상 창을 만들며, 숨김(hidden_start=true)은
-            // extension 이 minimize + skip_taskbar 로 처리한다.
-            g_config.?.hidden_start = false;
-            log.appendLine("autostart", "GNOME + extension — removed autostart .desktop + hidden_start override (extension handles lifecycle)", .{});
-        } else {
-            log.appendLine("autostart", "GNOME (extension not detected) — removed autostart .desktop (extension handles GNOME autostart)", .{});
-        }
-    } else if (cfg.auto_start) {
+    //
+    // 이 `.desktop` 은 전 DE 가 공유한다(`~/.config/autostart`). GNOME 만은
+    // launch 를 extension 이 담당하지만, 예전처럼 GNOME 진입 시 파일을 *삭제*하면
+    // GNOME 을 거친 뒤 KDE/Cinnamon/COSMIC autostart 가 통째로 깨졌다. 대신
+    // `autostart.enable` 이 파일에 `NotShowIn=GNOME;` 을 박아 gnome-session 만
+    // 이 항목을 건너뛰게 한다(autostart/linux.zig 참고) — 그래서 DE 와 무관하게
+    // auto_start 값만 따라 enable/disable 하면 되고, 파일은 DE 왕복에도 살아남는다.
+    if (cfg.auto_start) {
         autostart.enable(gpa.allocator()) catch |err| {
             log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
         };
     } else {
         autostart.disable(gpa.allocator());
+    }
+
+    // GNOME + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
+    // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch
+    // 를 유발하므로(실측) 무시 — tildaz 는 항상 창을 만들고, 숨김(hidden_start=true)
+    // 은 extension 이 map 직후 minimize + skip_taskbar 로 처리한다.
+    if (gsettings_hotkey.isGnomeWithExtension(gpa.allocator())) {
+        g_config.?.hidden_start = false;
+        log.appendLine("autostart", "GNOME + extension — hidden_start override (extension handles show/hide via minimize)", .{});
     }
 
     try wayland.runBaselineWindow(gpa.allocator(), &g_config.?);
