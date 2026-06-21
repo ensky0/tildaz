@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TildaZ — The drop-down terminal for Windows, macOS, and Linux</title>
-  <meta name="description" content="TildaZ is a native, cross-platform Quake-style drop-down terminal for Windows, macOS, and Linux — with a real drop-down and global hotkey on every major Linux desktop. In the spirit of tilda.">
+  <title>TildaZ — The drop-down terminal for Linux, macOS, and Windows</title>
+  <meta name="description" content="TildaZ is a native, cross-platform Quake-style drop-down terminal for Linux, macOS, and Windows — with a real drop-down and global hotkey on every major Linux desktop. In the spirit of tilda.">
   <meta property="og:title" content="TildaZ — The drop-down terminal that works everywhere">
-  <meta property="og:description" content="One hotkey, one fast native terminal — on Windows, macOS, and every major Linux desktop. In the spirit of tilda.">
+  <meta property="og:description" content="One hotkey, one fast native terminal — on every major Linux desktop, macOS, and Windows. In the spirit of tilda.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ensky0.github.io/tildaz/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -28,11 +28,11 @@
 
   <header class="hero">
     <div class="hero-inner">
-      <p class="eyebrow">Windows · macOS · Linux · v0.5.0</p>
+      <p class="eyebrow">Linux · macOS · Windows · v0.5.0</p>
       <h1>The drop-down terminal that works everywhere.</h1>
       <p class="hero-copy">
         Hit <kbd>F1</kbd> and a fast, native terminal slides down over whatever
-        you're doing — on Windows, macOS, and Linux. One app, one workflow,
+        you're doing — on Linux, macOS, and Windows. One app, one workflow,
         every desktop. In the spirit of <a href="https://github.com/lanoxx/tilda" target="_blank" rel="noopener">tilda</a>.
       </p>
       <div class="hero-actions">
@@ -43,14 +43,14 @@
       <div class="terminal-surface" aria-label="TildaZ terminal preview">
         <div class="surface-top">
           <div class="tab active">~/tildaz</div>
-          <div class="tab">linux · wayland</div>
-          <div class="tab">macos · pty</div>
-          <div class="tab">wsl · logs</div>
+          <div class="tab">Linux<span class="tab-backend"> · Wayland</span></div>
+          <div class="tab">macOS<span class="tab-backend"> · Metal</span></div>
+          <div class="tab">Windows<span class="tab-backend"> · Direct3D</span></div>
           <div class="tab-spacer"></div>
           <div class="window-dot"></div>
         </div>
         <div class="terminal-grid">
-          <p><span class="prompt">ensky0 ~/tildaz</span> echo "안녕 🌈 TildaZ — ligatures => != >="</p>
+          <p><span class="prompt">ensky0 ~/tildaz</span> echo -e "안녕 🌈 TildaZ — ligatures => != >=\n🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라\n▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789"</p>
           <p><span class="output">안녕 🌈 TildaZ — ligatures => != >=</span></p>
           <p><span class="output">🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라</span></p>
           <p><span class="output">▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789</span></p>
@@ -64,7 +64,7 @@
     <section class="release-band" aria-label="Latest release">
       <div>
         <strong>v0.5.0 — now on Linux</strong>
-        <span>One drop-down terminal for Windows, macOS, and Linux (Wayland), with verified drop-down + global-hotkey support on KDE Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland.</span>
+        <span>One drop-down terminal for Linux (Wayland), macOS, and Windows, with verified drop-down + global-hotkey support on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.</span>
       </div>
       <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Release Notes</a>
     </section>
@@ -78,12 +78,12 @@
         <article class="feature-card">
           <span class="feature-kicker">Everywhere</span>
           <h3>One terminal, every OS</h3>
-          <p>The same drop-down terminal on Windows, macOS, and Linux — one config and one muscle memory across all of them. Most drop-down terminals only run on one.</p>
+          <p>The same drop-down terminal on Linux, macOS, and Windows — one config and one muscle memory across all of them. Most drop-down terminals only run on one.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Linux</span>
           <h3>Every major desktop</h3>
-          <p>A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, sway, and Hyprland — not just one desktop, all of them.</p>
+          <p>A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway — not just one desktop, all of them.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Hotkey</span>
@@ -93,7 +93,7 @@
         <article class="feature-card">
           <span class="feature-kicker">Native</span>
           <h3>Quick and lightweight</h3>
-          <p>No Electron, no toolkit bloat. GPU rendering on Windows and macOS, a direct Wayland client on Linux, and the fast <code>libghostty-vt</code> core.</p>
+          <p>No Electron, no toolkit bloat. A direct Wayland client on Linux, GPU rendering on macOS and Windows, and the fast <code>libghostty-vt</code> core.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Unicode</span>
@@ -140,7 +140,7 @@
           <p>A direct Wayland client — no GTK or Qt dependency. Real drop-down placement and a global hotkey across the major desktops, with packages for every distro.</p>
         </div>
         <ul>
-          <li>KDE Plasma, GNOME, Cinnamon, COSMIC, sway, Hyprland</li>
+          <li>KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, sway</li>
           <li>Fractional / HiDPI scaling, fcitx5 / IME support</li>
           <li>tar.gz · deb · rpm · AppImage · Arch pkg (x86_64 / aarch64)</li>
         </ul>
@@ -156,12 +156,12 @@
         <article class="install-step">
           <span>1</span>
           <h3>Download</h3>
-          <p>Grab the latest GitHub Release for your OS: Windows zip, macOS DMG, or a Linux package (deb / rpm / AppImage / Arch / tar.gz).</p>
+          <p>Grab the latest GitHub Release for your OS: a Linux package (deb / rpm / AppImage / Arch / tar.gz), macOS DMG, or Windows zip.</p>
         </article>
         <article class="install-step">
           <span>2</span>
           <h3>Install</h3>
-          <p>Windows: unzip and run. macOS: drag the app into Applications. Linux: install the package or run <code>./install.sh</code> from the tarball.</p>
+          <p>Linux: install the package or run <code>./install.sh</code> from the tarball. macOS: drag the app into Applications. Windows: unzip and run.</p>
         </article>
         <article class="install-step">
           <span>3</span>
@@ -190,7 +190,7 @@
       <img src="favicon.svg" alt="" class="footer-icon">
       <span>TildaZ</span>
     </div>
-    <p>AGPL-3.0-or-later · A native drop-down terminal for Windows, macOS, and Linux — in the spirit of tilda.</p>
+    <p>AGPL-3.0-or-later · A native drop-down terminal for Linux, macOS, and Windows — in the spirit of tilda.</p>
   </footer>
 </body>
 </html>
