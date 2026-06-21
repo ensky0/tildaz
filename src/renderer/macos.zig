@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const objc = @import("../macos_objc.zig");
+const perf = @import("../perf.zig");
 const ct = @import("../font/macos/coretext.zig");
 const mac_font = @import("../font/macos/font.zig");
 const CoreTextFontContext = mac_font.CoreTextFontContext;
@@ -416,6 +417,8 @@ pub const MetalRenderer = struct {
         const encoder = self.current_encoder;
         if (encoder == null) return;
 
+        // #160 — render(그리기, present 제외) 계측. Windows renderer/windows.zig 동등.
+        const render_t0 = perf.now();
         self.updateConstants();
 
         if (self.atlas.dirty) {
@@ -432,8 +435,13 @@ pub const MetalRenderer = struct {
         }
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
+        perf.addTimed(&perf.render, render_t0);
+
+        // #160 — present(drawable 표시 + commit) 계측.
+        const present_t0 = perf.now();
         objc.msgSendVoid1(self.current_cmd_buf, objc.sel("presentDrawable:"), self.current_drawable);
         objc.msgSendVoid(self.current_cmd_buf, objc.sel("commit"));
+        perf.addTimed(&perf.present, present_t0);
 
         // Frame end — state reset.
         self.current_encoder = null;

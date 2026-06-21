@@ -1939,6 +1939,14 @@ const Client = struct {
     }
 
     fn redraw(self: *Client) !bool {
+        // #160 — onrender(프레임 tick 전체) 계측. Windows app_controller 동등. paint 못
+        // 한 frame(awaiting_frame / not configured 등)은 skip(extra) 으로 카운트.
+        const onrender_t0 = perf.now();
+        var painted_frame = false;
+        defer {
+            perf.addTimed(&perf.onrender, onrender_t0);
+            if (!painted_frame) perf.incExtra(&perf.onrender);
+        }
         // L9-γ hide / show — layer-shell spec 의 re-map sequence 준수:
         // 1. hide path 가 `surface_hidden=true` set → 어떤 attach 도 skip.
         // 2. show path 가 `surface_hidden=false` + `configured=false` + commit
@@ -1970,6 +1978,7 @@ const Client = struct {
                     self.logShowElapsed("commit done (reuse)");
                     buffer.released = false;
                     self.mapped = true;
+                    painted_frame = true;
                     return true;
                 }
             }
@@ -1992,6 +2001,7 @@ const Client = struct {
         self.logShowElapsed("commit done (new buf)");
         self.active_buffer = buffer;
         self.mapped = true;
+        painted_frame = true;
         return true;
     }
 
@@ -2088,6 +2098,9 @@ const Client = struct {
     }
 
     fn paintBuffer(self: *Client, memory: []u8, width: i32, height: i32, stride: i32) void {
+        // #160 — render(그리기, present 제외) 계측. Windows renderer/windows.zig 동등.
+        const render_t0 = perf.now();
+        defer perf.addTimed(&perf.render, render_t0);
         if (self.session) |*session| {
             if (session.activeTab()) |tab| {
                 // Titles slice — stack 의 임시 array. session_core.MAX_TABS (= 32)
@@ -2142,6 +2155,9 @@ const Client = struct {
     }
 
     fn attachAndCommit(self: *Client, buffer: ShmBuffer) !void {
+        // #160 — present(attach + damage + commit) 계측. Windows present(swap) 동등.
+        const present_t0 = perf.now();
+        defer perf.addTimed(&perf.present, present_t0);
         // wl_surface.attach (opcode 1) — (buffer_id, x=0, y=0).
         try self.sendArgs(self.surface_id, 1, &.{ buffer.id, 0, 0 });
         // wl_surface.damage_buffer (opcode 9) — viewport 적용된 surface 에서는
