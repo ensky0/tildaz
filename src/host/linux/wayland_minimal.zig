@@ -18,6 +18,7 @@ const display_width = @import("../../font/display_width.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
+const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const config_mod = @import("../../config.zig");
@@ -274,9 +275,10 @@ const xkb_key_v_upper: u32 = 0x56;
 // #214 — Ctrl+Shift+R : 활성 탭 화면 reset (Win `Ctrl+Shift+R` / mac `Shift+Cmd+R` 동등).
 const xkb_key_r_lower: u32 = 0x72;
 const xkb_key_r_upper: u32 = 0x52;
-// XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h`. F4 만 Alt+F4 quit
-// 단축키용. (F1 toggle 은 portal hotkey 처리이라 별 매핑 필요 없음.)
+// XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h`. F4 = Alt+F4 quit,
+// F12 = Ctrl+Shift+F12 perf dump (#160). (F1 toggle 은 portal hotkey 처리이라 별 매핑 필요 없음.)
 const xkb_key_f4: u32 = 0xffc1;
+const xkb_key_f12: u32 = 0xffc9;
 // L12-β — tab 단축키. Linux / Windows 의 일반 terminal 관습 (gnome-terminal /
 // kitty) 동등 — `Ctrl+Shift+T` 새 탭 / `Ctrl+Shift+W` 활성 탭 닫기 / `Ctrl+
 // Shift+]` 다음 탭 / `Ctrl+Shift+[` 이전 탭. Ctrl 단독 단축키는 shell 의 정상
@@ -3506,6 +3508,13 @@ const Client = struct {
                     if (self.session) |*session| {
                         if (session.resetActive()) self.requestRedraw();
                     }
+                    return;
+                }
+                // #160 — Ctrl+Shift+F12 : perf snapshot 을 통합 로그에 block 으로 dump +
+                // 카운터 reset (dev tool). Windows Ctrl+Shift+F12 / macOS Shift+Cmd+F12
+                // 동등. session_core 가 cross-platform 으로 자동 측정하므로 Linux 도 동일.
+                if (sym == xkb_key_f12) {
+                    perf.dumpAndReset("snapshot");
                     return;
                 }
             }
