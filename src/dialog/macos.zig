@@ -236,12 +236,10 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     _ = runModalOverHost(alert);
 }
 
-/// OK / Cancel 두 버튼의 확인 다이얼로그 (#116). default 는 Cancel —
-/// 사용자가 무심코 Enter 만 눌러도 종료가 진행되지 않게. 반환: OK → true.
-///
-/// NSAlert 의 첫 번째 추가 버튼이 NSAlertFirstButtonReturn (1000), 두 번째가
-/// NSAlertSecondButtonReturn (1001). default 버튼은 첫 번째 — Cancel 을 먼저
-/// 추가해 default 로 두고, OK 는 두 번째.
+/// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=Quit, Esc=Cancel.
+/// NSAlert 의 첫 추가 버튼 = 기본(Return) + 맨 오른쪽이라 Quit 을 먼저 → Enter=Quit
+/// (NSAlertFirstButtonReturn=1000). Esc=Cancel 은 NSAlert 가 자동 부여하지 않으므로
+/// 두 번째 버튼(Cancel)에 Esc keyEquivalent 를 명시. 반환: Quit → true.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
     if (!nsapp_ready) return false; // bootstrap 단계엔 confirm 의미 없음.
 
@@ -249,12 +247,24 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     setMessage(alert, title);
     setInformative(alert, message);
     setStyle(alert, 1); // Informational
-    addButton(alert, "Cancel");
     addButton(alert, "Quit");
+    addButton(alert, "Cancel");
+    setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
 
     const result = runModalOverHost(alert);
-    // NSAlertSecondButtonReturn = 1001 (= Quit, 두 번째 추가 버튼).
-    return result == 1001;
+    // NSAlertFirstButtonReturn = 1000 (= Quit, 첫 추가 버튼 = 기본).
+    return result == 1000;
+}
+
+/// NSAlert.buttons[index] 의 keyEquivalent 를 Esc(`\x1b`)로 설정. NSAlert 가 Cancel
+/// 버튼에 Esc 를 자동 부여하지 않으므로 명시 (#250).
+fn setButtonEsc(alert: objc.id, index: u64) void {
+    const get_buttons = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const buttons = get_buttons(alert, objc.sel("buttons")) orelse return;
+    const obj_at = objc.objcSend(fn (objc.id, objc.SEL, u64) callconv(.c) objc.id);
+    const btn = obj_at(buttons, objc.sel("objectAtIndex:"), index) orelse return;
+    const set_keyeq = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    set_keyeq(btn, objc.sel("setKeyEquivalent:"), objc.nsString("\x1b"));
 }
 
 /// AppleScript fallback — NSApp 무관, config 에러 같이 부트스트랩 실패 시.

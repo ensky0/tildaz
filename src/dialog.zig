@@ -46,9 +46,9 @@ pub fn showFatal(title: []const u8, message: []const u8) noreturn {
     std.process.exit(1);
 }
 
-/// OK / Cancel 두 버튼의 확인 다이얼로그. 실수 종료 방지 (#116) 같이
-/// "되돌릴 수 없는 작업" 직전에 호출. default 버튼은 Cancel — 사용자가
-/// 무심코 Enter 만 눌러도 작업이 진행되지 않게.
+/// OK / Cancel 두 버튼의 확인 다이얼로그. "되돌릴 수 없는 작업"(종료 등) 직전에
+/// 호출. #250 — 표준 매핑으로 전 플랫폼 통일: Enter=OK, Esc=Cancel. 다이얼로그
+/// 출현 자체가 speed bump 라 실수 방지엔 충분 (#116 의 'Cancel 기본' 폐기).
 ///
 /// 반환: OK (Quit) → true, Cancel / 닫기 → false.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
