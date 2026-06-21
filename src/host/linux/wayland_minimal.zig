@@ -351,6 +351,13 @@ const Capabilities = struct {
 /// (dock_position / width_percent / height_percent / offset_percent) 와 wire
 /// protocol args 사이의 변환 결과. `Client.computeLayerLayout` 가 채움,
 /// `createLayerSurface` 가 그대로 송신.
+/// #87 — Alt+Enter fullscreen 토글 (Win `FullscreenMode` 동등). layer-shell 계열
+/// (KWin/wlroots/COSMIC) 전용. drop-down 을 output 전체로 키운다:
+///   - cover  (Alt+Enter):       4-edge anchor + size 0 + exclusive_zone(-1) → 패널 위 덮음 (Win `.monitor`).
+///   - avoid  (Shift+Alt+Enter):  4-edge anchor + size 0 + exclusive_zone(0)  → 패널 비킨 work-area (Win `.workarea`).
+/// F1 hide/show 가 이 상태를 보존 (sendLayerSurfaceLayout 이 매 재배치/재생성에서 반영).
+const FullscreenMode = enum { none, cover, avoid };
+
 const LayerLayout = struct {
     anchor: u32,
     width: u32,
@@ -609,6 +616,10 @@ const Client = struct {
     /// `dialog.showConfirm` 의 inner pump 가 `dispatchBuffered` 의 reentrant
     /// context 안에서 호출되면 안 됨 (deferred dismiss 와 동일 reentrancy 위험).
     pending_quit_request: bool = false,
+    /// #87 — Alt+Enter / Shift+Alt+Enter fullscreen 상태. hide 가 건드리지 않아
+    /// F1 hide→show 시 그대로 복원된다 (Win `Window.fullscreen_mode` 동등).
+    /// layer-shell 계열에서만 동작 — xdg fallback(GNOME/Cinnamon)은 별도(#87).
+    fullscreen_mode: FullscreenMode = .none,
     /// #213 — Ctrl+Shift+I 의 deferred About. key 핸들러는 flag 만 set, main
     /// loop 의 `drainAboutRequest` 가 실제로 About 다이얼로그를 연다. About 의
     /// `createDialogSurface` 가 `roundtrip` (inner dispatchBuffered) 을 돌리는데,
@@ -1412,6 +1423,12 @@ const Client = struct {
     fn sendLayerSurfaceLayout(self: *Client) !void {
         if (self.layer_surface_id == 0) return;
         const layout = self.computeLayerLayout();
+        // #87 — fullscreen 이면 config layout 대신 output 전체로 override:
+        // 4-edge anchor + size 0 (compositor 가 anchored span 채움) + margin 0.
+        // exclusive_zone 은 아래에서 cover=-1 (패널 덮음) / avoid=0 (work-area).
+        const fs = self.fullscreen_mode;
+        const fullscreen = fs != .none;
+        const all_anchor: u32 = zwlr_layer_surface_anchor_top | zwlr_layer_surface_anchor_bottom | zwlr_layer_surface_anchor_left | zwlr_layer_surface_anchor_right;
         // #205 — set_layer 재송신 (kitty workaround pattern, `layer_set_properties`
         // 의 `during_creation=false` 분기). get_layer_surface 시 layer argument
         // 로 지정했지만, KWin Bug 503121 의 remap path 에서 *layer state 도
@@ -1430,22 +1447,25 @@ const Client = struct {
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_anchor,
-            &.{layout.anchor},
+            &.{if (fullscreen) all_anchor else layout.anchor},
         );
         // layer-shell spec: set_size / set_margin 은 *surface-local logical pixel*
         // 단위. 우리 layout 은 physical 이라 송신 시 logical 변환.
-        const logical_w: u32 = @intCast(self.physicalToLogical(@intCast(layout.width)));
-        const logical_h: u32 = @intCast(self.physicalToLogical(@intCast(layout.height)));
+        const logical_w: u32 = if (fullscreen) 0 else @intCast(self.physicalToLogical(@intCast(layout.width)));
+        const logical_h: u32 = if (fullscreen) 0 else @intCast(self.physicalToLogical(@intCast(layout.height)));
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_size,
             &.{ logical_w, logical_h },
         );
-        // set_exclusive_zone(0) — 다른 panel / dock exclusive zone 회피.
+        // set_exclusive_zone — 평소 0 (다른 panel exclusive zone 회피). #87 cover
+        // fullscreen 만 -1 로 패널 위까지 덮음 (avoid / non-fullscreen 은 0).
+        const ez_i32: i32 = if (fs == .cover) -1 else 0;
+        const ez_u32: u32 = @bitCast(ez_i32);
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_exclusive_zone,
-            &.{0},
+            &.{ez_u32},
         );
         // set_margin — 논리 픽셀 단위. cross-axis 위치 결정.
         // #220/#233 — overscan = "각 변의 목표를 올림(ceil)". 화면 먼 끝(우/하)은
@@ -1465,21 +1485,31 @@ const Client = struct {
         // 그래서 overscan 은 **부분축(non-stretch)의 화면 먼 끝 flush 변(right/bottom,
         // 여백 0)** 에만 건다. 원점·stretch축·패널에 닿는 변은 여백 0 그대로 두면 KWin
         // 이 정수 경계에 정확히 놓는다(= 정수 올림 no-op).
-        const a = layout.anchor;
-        const mt = self.physicalToLogical(layout.margin_top);
-        const mr = self.physicalToLogical(layout.margin_right);
-        const mb = self.physicalToLogical(layout.margin_bottom);
-        const ml = self.physicalToLogical(layout.margin_left);
-        const ov: i32 = -1;
-        // right/bottom = 화면 먼 끝. 그 축이 부분(non-stretch)이고 여백 0(flush)일 때만 올림.
-        const overscan_right = (a & zwlr_layer_surface_anchor_right) != 0 and mr == 0 and !layout.stretch_w;
-        const overscan_bottom = (a & zwlr_layer_surface_anchor_bottom) != 0 and mb == 0 and !layout.stretch_h;
-        var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
-        try margin_msg.putI32(mt); // top = 원점 변, 항상 그대로 (overscan 안 함)
-        try margin_msg.putI32(if (overscan_right) ov else mr);
-        try margin_msg.putI32(if (overscan_bottom) ov else mb);
-        try margin_msg.putI32(ml); // left = 원점 변, 항상 그대로
-        try margin_msg.send(self.stream);
+        if (fullscreen) {
+            // #87 — output 전체라 여백 0, overscan 불필요 (4-edge anchor + size 0).
+            var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
+            try margin_msg.putI32(0);
+            try margin_msg.putI32(0);
+            try margin_msg.putI32(0);
+            try margin_msg.putI32(0);
+            try margin_msg.send(self.stream);
+        } else {
+            const a = layout.anchor;
+            const mt = self.physicalToLogical(layout.margin_top);
+            const mr = self.physicalToLogical(layout.margin_right);
+            const mb = self.physicalToLogical(layout.margin_bottom);
+            const ml = self.physicalToLogical(layout.margin_left);
+            const ov: i32 = -1;
+            // right/bottom = 화면 먼 끝. 그 축이 부분(non-stretch)이고 여백 0(flush)일 때만 올림.
+            const overscan_right = (a & zwlr_layer_surface_anchor_right) != 0 and mr == 0 and !layout.stretch_w;
+            const overscan_bottom = (a & zwlr_layer_surface_anchor_bottom) != 0 and mb == 0 and !layout.stretch_h;
+            var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
+            try margin_msg.putI32(mt); // top = 원점 변, 항상 그대로 (overscan 안 함)
+            try margin_msg.putI32(if (overscan_right) ov else mr);
+            try margin_msg.putI32(if (overscan_bottom) ov else mb);
+            try margin_msg.putI32(ml); // left = 원점 변, 항상 그대로
+            try margin_msg.send(self.stream);
+        }
         // set_keyboard_interactivity(on_demand) — show 시 키보드 포커스를 받되 *독점
         // 안 함*. exclusive 는 떠 있는 동안 다른 창에 포커스를 못 줘서(특히 Hyprland 은
         // 엄격히 키보드를 독점 → 다른 창 클릭 불가), on_demand 로 클릭-어웨이 허용 →
@@ -1524,6 +1554,25 @@ const Client = struct {
             if (ki == zwlr_layer_surface_keyboard_interactivity_on_demand) "on_demand" else "exclusive",
             self.caps.layer_shell.version,
         });
+    }
+
+    /// #87 — Alt+Enter (cover) / Shift+Alt+Enter (avoid) fullscreen 토글.
+    /// Win `toggleFullscreenMode` 동등 — 같은 모드 키 = dock 복귀(none), none →
+    /// 그 모드, 다른 모드 = no-op. layer-shell 재배치(sendLayerSurfaceLayout)가
+    /// configure 를 유발해 새 크기로 resize + redraw. layer-shell 없는 fallback
+    /// (GNOME/Cinnamon)은 layer_surface_id==0 → sendLayerSurfaceLayout no-op (#87).
+    fn toggleFullscreen(self: *Client, mode: FullscreenMode) void {
+        if (self.fullscreen_mode == mode) {
+            self.fullscreen_mode = .none;
+        } else if (self.fullscreen_mode == .none) {
+            self.fullscreen_mode = mode;
+        } else return; // 다른 모드 → no-op (Win 동등)
+        self.sendLayerSurfaceLayout() catch |err| {
+            log.appendLine("wayland", "fullscreen relayout failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.requestRedraw();
+        log.appendLine("input", "fullscreen → {s}", .{@tagName(self.fullscreen_mode)});
     }
 
     /// L8-β — config 의 dock_position / width_percent / height_percent /
@@ -3446,6 +3495,13 @@ const Client = struct {
             if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and !self.keyboard.shiftActive() and sym == xkb_key_f4) {
                 self.commitPendingInput();
                 self.pending_quit_request = true;
+                return;
+            }
+            // #87 — Alt+Enter: fullscreen 덮음(cover) / Shift+Alt+Enter: 패널 회피
+            // (avoid) 토글. Ctrl 미동반. layer-shell 계열 전용 (fallback 은 no-op).
+            if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and sym == xkb_key_return) {
+                self.commitPendingInput();
+                self.toggleFullscreen(if (self.keyboard.shiftActive()) .avoid else .cover);
                 return;
             }
             // SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등). Ctrl / Shift 미동반
