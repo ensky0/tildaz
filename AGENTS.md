@@ -28,6 +28,11 @@
 - **예외 — URL · 파일경로 · 파일명 · 코드 식별자는 리터럴 그대로** 둬요 (`github.com`, `src/host/macos.zig`, `conpty.dll`). 이건 산문 속 고유명사가 아니라 실제 문자열이라 교정 대상이 아니에요.
 README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적용. 확신이 없으면 공식 사이트 표기를 확인하고 써요.
 
+**플랫폼 나열 순서는 항상 `Linux · macOS · Windows`.** 사용자 노출 산문 (README / 사이트 / 마케팅 문구 / 릴리스 소개) 에서 세 플랫폼을 나열할 땐 이 순서를 지켜요 (사용자 지적). 기술 설명 문장이라도 의미를 지키며 Linux 를 먼저 두도록 재배열해요 (예: "a direct Wayland client on Linux, GPU rendering on macOS and Windows"). 사이트의 플랫폼 카드 / 탭 / eyebrow 등 시각 요소도 같은 순서.
+- **예외** — SPEC.md 표의 컬럼 순서, ARCHITECTURE 의 코드 경로 나열, 이미 배포된 과거 릴리스 노트, "Windows reference" 처럼 *Windows 가 기준 구현* 이라는 의미가 고정된 표현은 건드리지 않아요 (사실이 바뀌므로).
+
+**Linux 데스크톱 나열 순서는 `KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, sway`.** "풀 데스크톱(KDE Plasma / GNOME / Cinnamon / COSMIC) → 타일링 WM(Hyprland / sway)" 묶음 안에서 각각 사용자 수 많은 순. 마케팅 문구의 DE 목록은 이 순서로 통일해요. (검증 하드웨어 목록처럼 테스트 순서를 반영하는 기술 노트는 예외.)
+
 # 한글 IME 동작 스펙
 
 한글 (한국어 / 일본어 / 중국어 IME 일반) 입력 시 다음 동작이 정의된 스펙이에요.
