@@ -13,6 +13,7 @@
 // 패턴은 #75 (claude/infallible-swartz) 에서 검증된 그대로 차용.
 
 const std = @import("std");
+const perf = @import("../../perf.zig");
 const posix = std.posix;
 
 // macOS C API 선언 — Zig 표준 라이브러리에 일부 함수가 없어서 직접.
@@ -293,7 +294,9 @@ pub const Pty = struct {
     fn readLoop(master_fd: posix.fd_t, callback: ReadCallback, userdata: ?*anyopaque) void {
         var buf: [65536]u8 = undefined;
         while (true) {
+            const t0 = perf.now(); // #160 — readloop 계측 (Windows terminal/windows/pty.zig 동등)
             const n = posix.read(master_fd, &buf) catch break;
+            perf.addTimedBytes(&perf.readloop, t0, @intCast(n));
             if (n == 0) break;
             callback(buf[0..n], userdata);
         }

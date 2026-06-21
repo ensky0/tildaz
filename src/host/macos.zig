@@ -2957,6 +2957,10 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // 은 더 진행 안 함).
     if (drainExitedTabs()) return;
 
+    // #160 — onrender(프레임 tick 전체) 계측. Windows app_controller 동등.
+    const onrender_t0 = perf.now();
+    defer perf.addTimed(&perf.onrender, onrender_t0);
+
     // #245 — drag-select auto-scroll tick (포인터가 grid 경계 밖에 머물면 연속).
     // 스크롤했으면 이번 frame 강제 렌더.
     const did_autoscroll = maybeAutoScrollSelectionMac();
@@ -2971,7 +2975,10 @@ fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     // 도중 화면이 늦게 따라옴 ("뒷부분 안 보임" 회귀, opt 2b2 시연 발견).
     const should_render = g_session.prepareActiveFrame(&g_last_render_ms);
     const force_render = g_rename.isActive() or g_preedit_len > 0 or did_autoscroll;
-    if (!should_render and !force_render) return;
+    if (!should_render and !force_render) {
+        perf.incExtra(&perf.onrender); // #160 — throttle 로 skip 한 frame.
+        return;
+    }
 
     if (!g_visible) return;
     if (g_renderer == null) return;
