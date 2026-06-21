@@ -3196,10 +3196,42 @@ fn eventTapCallback(
 ///     사용자가 \"화면 끝까지 와 줘\" 라고 지정했으므로 frame.minY 까지 사용.
 ///   - 메뉴바는 어떤 경우에도 회피해야 하므로 `frame.maxY - visibleFrame.maxY`
 ///     만큼 위쪽을 빼고 사용.
-fn repositionWindow() void {
+/// #240 — drop-down 이 뜰 스크린 = 마우스 커서가 있는 스크린 (drop-down 표준 UX,
+/// SPEC §1 '표시 모니터'). `NSScreen.mainScreen` 은 키 윈도우/메뉴바 스크린이라 공식적으론
+/// 커서 모니터가 아님 (Windows `MonitorFromPoint(GetCursorPos)` / Linux current_monitor 동등).
+/// `NSEvent.mouseLocation`(global, NSScreen.frame 과 같은 좌표 공간)을 포함하는 NSScreen 을
+/// 찾고, 없으면 mainScreen fallback. 경계는 half-open [origin, origin+size) — 두 모니터
+/// 인접 경계에서 한쪽만 claim.
+fn screenForCursor() objc.id {
     const NSScreen = objc.getClass("NSScreen");
+    const NSEvent = objc.getClass("NSEvent");
+    const mouseLoc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) NSPoint);
+    const cursor = mouseLoc(NSEvent, objc.sel("mouseLocation"));
+
+    const getScreens = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const screens = getScreens(NSScreen, objc.sel("screens"));
+    if (screens != null) {
+        const countMsg = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) u64);
+        const objAt = objc.objcSend(fn (objc.id, objc.SEL, u64) callconv(.c) objc.id);
+        const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
+        const n = countMsg(screens, objc.sel("count"));
+        var i: u64 = 0;
+        while (i < n) : (i += 1) {
+            const s = objAt(screens, objc.sel("objectAtIndex:"), i) orelse continue;
+            const f = getRect(s, objc.sel("frame"));
+            if (cursor.x >= f.origin.x and cursor.x < f.origin.x + f.size.width and
+                cursor.y >= f.origin.y and cursor.y < f.origin.y + f.size.height)
+            {
+                return s;
+            }
+        }
+    }
     const mainScreen = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const screen = mainScreen(NSScreen, objc.sel("mainScreen")) orelse return;
+    return mainScreen(NSScreen, objc.sel("mainScreen"));
+}
+
+fn repositionWindow() void {
+    const screen = screenForCursor() orelse return;
 
     // arm64 macOS 의 NSRect 반환은 일반 레지스터 ABI — stret variant 불필요.
     const getRectSel = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
