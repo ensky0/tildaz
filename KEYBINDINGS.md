@@ -5,8 +5,8 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | Action | Windows | macOS | Linux |
 |--------|---------|-------|-------|
 | Toggle terminal show/hide | F1 (configurable) | F1 (configurable) | F1 (configurable) |
-| Fullscreen (taskbar/dock 덮음) | Alt+Enter | Cmd+Enter | — |
-| 풀스크린 (taskbar/dock 회피) | Shift+Alt+Enter | Shift+Cmd+Enter | — |
+| Fullscreen (taskbar/dock 덮음) | Alt+Enter | Cmd+Enter | Alt+Enter |
+| 풀스크린 (taskbar/dock 회피) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
 | New tab | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T |
 | Close active tab | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
@@ -22,9 +22,15 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | Quit | Alt+F4 (or close last tab) | Cmd+Q | Alt+F4 (or close last tab) |
 | Scrollback page up / down | Shift+PgUp / PgDn | Shift+PgUp / PgDn | Shift+PgUp / PgDn |
 
-On Linux the drop-down is a `wlr-layer-shell` surface sized from config
-(`dock_position` / `width_percent` / `height_percent`), so there is no
-fullscreen toggle; the perf-snapshot shortcut is also not wired on Linux.
+On Linux the drop-down is normally sized from config (`dock_position` /
+`width_percent` / `height_percent`). Fullscreen is delegated to the compositor:
+layer-shell desktops (KDE Plasma, sway, Hyprland, COSMIC) re-anchor the surface
+to all four edges — Alt+Enter covers the panels (`exclusive_zone = -1`),
+Shift+Alt+Enter keeps them visible (`exclusive_zone = 0`); GNOME and Cinnamon
+(no layer-shell) use `xdg_toplevel.set_fullscreen` / `set_maximized`. The toggle
+applies only while the terminal is visible, and the fullscreen state is
+preserved across F1 hide/show. The perf-snapshot shortcut (Ctrl+Shift+F12) is
+not yet wired on Linux.
 
 ## Quit confirmation
 

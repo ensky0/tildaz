@@ -209,6 +209,17 @@ minimize/restore.
 | 영어/숫자/기호 길게 누름 → 반복 입력 | OS default | `ApplePressAndHoldEnabled = false` 우리 앱 도메인에 등록 — 안 등록하면 system 이 accent picker (à á â) 띄우려 repeat 막음 | client-side timer (compositor `wl_keyboard.repeat_info` 의 rate / delay 따름, [5455d54](https://github.com/ensky0/tildaz/commit/5455d54), L12-γ-5). focus 떠날 때 / key release 시 즉시 disarm | ✅ | ✅ | ✅ |
 | 한글 자모 길게 누름 → 반복 입력 | (해당 없음) | IME 경로라 PressAndHold 영향 없음 (자동) | `wl_keyboard.key` 가 IME 로 라우팅됨 — fcitx5 / ibus 자체 key repeat 동작 (compositor `repeat_info` 가 IME 측에 적용). 사용자 일상 사용 OK 확인 (Cinnamon Wayland + fcitx5-hangul, KDE Plasma 6 + KWin). | — | ✅ | ✅ |
 
+### 2.8 전체화면 토글 (윈도우 단위)
+
+| 동작 | Windows | macOS | Linux | Win | Mac | Linux |
+|---|---|---|---|---|---|---|
+| 전체화면 — taskbar/dock **덮음** | Alt+Enter | Cmd+Enter | Alt+Enter — layer-shell DE(KWin/sway/Hyprland/COSMIC)는 4-edge anchor + size 0 + `exclusive_zone=-1` 로 패널 위까지 덮음; GNOME/Cinnamon(layer-shell 부재)은 `xdg_toplevel.set_fullscreen` ([#87](https://github.com/ensky0/tildaz/issues/87)) | ✅ | ✅ | ✅ |
+| 전체화면 — taskbar/dock **회피** | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter — layer-shell 은 `exclusive_zone=0` (패널 유지); GNOME/Cinnamon 은 `xdg_toplevel.set_maximized` ([#87](https://github.com/ensky0/tildaz/issues/87)) | ✅ | ✅ | ✅ |
+| 같은 키 재입력 → dock 복귀 / 다른 모드 → no-op | Alt+Enter↔Shift+Alt+Enter | Cmd+Enter↔Shift+Cmd+Enter | 동일 (`FullscreenMode {none,cover,avoid}` toggle 로직 — Win 동등) | ✅ | ✅ | ✅ |
+| 토글된 fullscreen **상태**가 F1 hide→show 간 유지 | ✅ | ✅ | layer-shell 은 `fullscreen_mode` 필드로 show 시 재적용; GNOME/Cinnamon 은 compositor 가 minimize↔복원 간 maximize/fullscreen 보존 | ✅ | ✅ | ✅ |
+
+> **숨김(hide) 상태에선 전체화면 토글 no-op** — 보이는 창에만 적용되는 윈도우 동작. Win/Mac 은 숨김 시 창이 keyboard focus 를 잃어 키 미수신으로 자연 보장. Linux layer-shell DE 도 hide 시 surface 를 파괴해 키가 안 와 동일 보장. 단 **GNOME/Cinnamon 은 extension 이 `minimize` 로 숨겨도 client 가 focus 를 유지해 현재 숨김 중에도 토글됨 — 별도 추적([#247](https://github.com/ensky0/tildaz/issues/247)).**
+
 ---
 
 ## 3. 마우스 동작
