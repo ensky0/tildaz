@@ -62,14 +62,16 @@ pub fn showAboutAlert(title: []const u8, message: []const u8) void {
     show(.info, title, message);
 }
 
-/// OK / Cancel 두 버튼 확인 다이얼로그 (#116). default 는 Cancel
-/// (`MB_DEFBUTTON2`) — 사용자가 무심코 Enter 만 눌러도 종료가 진행되지 않게.
+/// OK / Cancel 두 버튼 확인 다이얼로그. #250 — 표준 매핑(Enter=OK, Esc=Cancel)
+/// 으로 통일. 기본 버튼 = 첫 번째(OK) 이므로 `MB_DEFBUTTON2`(Cancel 기본) 제거 →
+/// Enter=OK. Esc 는 MB_OKCANCEL 에서 항상 Cancel. (#116 의 'Cancel 기본 — Enter
+/// 종료 방지' 폐기 — 다이얼로그 출현 자체가 speed bump.)
 /// 반환: OK → true, Cancel / 닫기 → false.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
     const result = messageBox(
         title,
         message,
-        MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST,
+        MB_OKCANCEL | MB_ICONQUESTION | MB_TOPMOST,
         0, // 변환 실패 → false (안전한 default).
     );
     return result == IDOK;

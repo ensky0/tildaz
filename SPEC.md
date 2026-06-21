@@ -637,7 +637,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 2. **2차 (KDE-specific, `kdeTryAutoApply`)**:
    - `org.kde.KGlobalAccel.action(qt_key) → as` 로 현재 owner 진단 (4-string actionId).
-   - owner ≠ tildaz 면 `dialog.showConfirm` (Cancel 옵션, default Cancel — Wayland modal layer-shell overlay, #203 의 dialog backend).
+   - owner ≠ tildaz 면 `dialog.showConfirm` (OK/Cancel — Enter=OK / Esc=Cancel (#250), Wayland modal layer-shell overlay, #203 의 dialog backend).
    - 사용자 OK 시 → `shortcut(as) → ai` query 로 owner 의 현재 keys 전체 가져와 → 해당 키만 filter out → `setForeignShortcut(owner, filtered)` 로 *그 키만* 회수 (다른 binding 보존. 예: kwin `ExposeClass` 의 `[Meta+F7, Ctrl+F7]` 에서 `Ctrl+F7` 빼면 `Meta+F7` 유지).
    - `setForeignShortcut(tildaz_actionId, [qt_key])` 로 우리 binding 적용.
    - `shortcut(tildaz_actionId)` 재 query 로 검증 — 우리 qt_key 와 다르면 fallback dialog.

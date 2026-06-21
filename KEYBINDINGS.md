@@ -34,7 +34,7 @@ not yet wired on Linux.
 
 ## Quit confirmation
 
-Cmd+Q (macOS) and Alt+F4 (Windows / Linux) show a confirmation dialog with the open tab count. Default button is Cancel — an accidental Enter will not terminate. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+Cmd+Q (macOS) and Alt+F4 (Windows / Linux) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
 
 ## Tab rename
 
