@@ -219,6 +219,17 @@ const wl_data_device_request_set_selection: u16 = 1;
 const wl_data_offer_request_receive: u16 = 1;
 const wl_data_offer_request_destroy: u16 = 2;
 
+// xdg_toplevel request opcodes (xdg-shell stable). 선언 순서 = opcode:
+// destroy=0 set_parent=1 set_title=2 set_app_id=3 show_window_menu=4 move=5
+// resize=6 set_max_size=7 set_min_size=8 set_maximized=9 unset_maximized=10
+// set_fullscreen=11 unset_fullscreen=12 set_minimized=13. #87 fullscreen 의
+// xdg fallback(GNOME/Cinnamon) 경로에서만 사용 — set_title/set_app_id 는
+// 현재 리터럴(2/3)로 송신 중이라 여기 안 옮긴다.
+const xdg_toplevel_request_set_maximized: u16 = 9;
+const xdg_toplevel_request_unset_maximized: u16 = 10;
+const xdg_toplevel_request_set_fullscreen: u16 = 11;
+const xdg_toplevel_request_unset_fullscreen: u16 = 12;
+
 // 우리가 광고할 / 받아들일 mime. 셋 모두 paste 인입 시 동일하게 처리.
 const clipboard_mime_utf8: []const u8 = "text/plain;charset=utf-8";
 const clipboard_mime_utf8_string: []const u8 = "UTF8_STRING";
@@ -1558,21 +1569,57 @@ const Client = struct {
 
     /// #87 — Alt+Enter (cover) / Shift+Alt+Enter (avoid) fullscreen 토글.
     /// Win `toggleFullscreenMode` 동등 — 같은 모드 키 = dock 복귀(none), none →
-    /// 그 모드, 다른 모드 = no-op. layer-shell 재배치(sendLayerSurfaceLayout)가
-    /// configure 를 유발해 새 크기로 resize + redraw. layer-shell 없는 fallback
-    /// (GNOME/Cinnamon)은 layer_surface_id==0 → sendLayerSurfaceLayout no-op (#87).
+    /// 그 모드, 다른 모드 = no-op.
+    ///   • layer-shell(KWin/sway/Hyprland/COSMIC): sendLayerSurfaceLayout 가
+    ///     anchor/size/exclusive_zone 를 재전송 → configure → resize + redraw.
+    ///   • xdg-shell fallback(GNOME/Cinnamon): 위치/크기를 Shell 확장이 잡으므로
+    ///     layer 식 재배치 불가. xdg_toplevel 표준 상태 요청을 compositor 에 위임
+    ///     (cover=set_fullscreen, avoid=set_maximized) — applyXdgFullscreen 참조.
     fn toggleFullscreen(self: *Client, mode: FullscreenMode) void {
-        if (self.fullscreen_mode == mode) {
-            self.fullscreen_mode = .none;
-        } else if (self.fullscreen_mode == .none) {
-            self.fullscreen_mode = mode;
-        } else return; // 다른 모드 → no-op (Win 동등)
-        self.sendLayerSurfaceLayout() catch |err| {
-            log.appendLine("wayland", "fullscreen relayout failed: {s}", .{@errorName(err)});
-            return;
-        };
+        const prev = self.fullscreen_mode;
+        const next: FullscreenMode = if (prev == mode)
+            .none
+        else if (prev == .none)
+            mode
+        else
+            return; // 다른 모드 → no-op (Win 동등)
+        self.fullscreen_mode = next;
+
+        if (self.layer_surface_id != 0) {
+            self.sendLayerSurfaceLayout() catch |err| {
+                log.appendLine("wayland", "fullscreen relayout failed: {s}", .{@errorName(err)});
+                return;
+            };
+        } else if (self.toplevel_id != 0) {
+            self.applyXdgFullscreen(prev, next) catch |err| {
+                log.appendLine("wayland", "fullscreen xdg request failed: {s}", .{@errorName(err)});
+                return;
+            };
+        } else return;
+
         self.requestRedraw();
         log.appendLine("input", "fullscreen → {s}", .{@tagName(self.fullscreen_mode)});
+    }
+
+    /// #87 xdg-shell 경로 — fullscreen_mode 전이를 xdg_toplevel 상태 요청으로 변환.
+    /// toggle 로직상 prev↔next 는 항상 한쪽이 none(cover↔avoid 직접 전환 없음)이라
+    /// 두 switch 중 하나만 동작 — 나머지는 안전망. set_fullscreen 의 output 인자는
+    /// null(0) = compositor 선택. 새 크기는 뒤따르는 xdg_toplevel.configure 가
+    /// 전달 → 기존 configure 처리로 resize. mutter/muffin 은 maximize/fullscreen
+    /// 상태를 minimize↔복원 간 보존하므로 확장의 F1 hide/show 후에도 유지된다.
+    fn applyXdgFullscreen(self: *Client, prev: FullscreenMode, next: FullscreenMode) !void {
+        switch (prev) {
+            .cover => try self.sendNoArgs(self.toplevel_id, xdg_toplevel_request_unset_fullscreen),
+            .avoid => try self.sendNoArgs(self.toplevel_id, xdg_toplevel_request_unset_maximized),
+            .none => {},
+        }
+        switch (next) {
+            .cover => try self.sendArgs(self.toplevel_id, xdg_toplevel_request_set_fullscreen, &.{0}),
+            .avoid => try self.sendNoArgs(self.toplevel_id, xdg_toplevel_request_set_maximized),
+            .none => {},
+        }
+        // wl_surface.commit (opcode 6) — 상태 요청 반영.
+        try self.sendNoArgs(self.surface_id, 6);
     }
 
     /// L8-β — config 의 dock_position / width_percent / height_percent /
