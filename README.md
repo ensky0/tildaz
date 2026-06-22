@@ -46,7 +46,7 @@ Download the latest artifact from
 |---|---|---|
 | Windows 10 1903+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere and keep `tildaz.exe`, `conpty.dll`, and `OpenConsole.exe` together. |
 | Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |
-| macOS 13+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
+| macOS 14+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
 | Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then `./install.sh` installs the `.desktop` and icon under `~/.local/share`. The binary stays in the extracted directory by default. |
 | Linux Debian / Ubuntu | `tildaz_X.Y.Z_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |

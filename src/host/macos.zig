@@ -1766,11 +1766,18 @@ fn syncGeometryAfterScreenChange() void {
         .height = cv_bounds.size.height * scale_pt,
     });
 
-    // 3. Renderer viewport + scale 갱신. font cell_width/height 는 init 시
-    //    측정한 값 유지 — 같은 모니터에서 DPI 만 바뀐 경우 (드물지만 가능)
-    //    엔 cell metric 도 재측정해야 정확한데 그건 큰 변경이라 후속 작업.
+    // 3. Renderer viewport 갱신 + (#253) scale 이 실제로 바뀌었으면 폰트 cell
+    //    재측정 + glyph atlas 재구성 + renderer scale 갱신. 다른 scale(DPI) 모니터로
+    //    이동하면 cell/glyph/UI metric 이 init scale 에 고정돼 글자·탭바가 배율만큼
+    //    틀어지므로(Windows rebuildFontForDpi / Linux applyScale 동등) 여기서 보정.
+    //    같은 scale 이동은 viewport 만 바꾸면 됨(atlas 재생성 낭비 회피).
     const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
     const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
+    if (@as(f32, @floatCast(scale_pt)) != g_renderer.?.scale) {
+        g_renderer.?.applyScale(@floatCast(scale_pt)) catch |err| {
+            log.appendLine("geom", "applyScale failed: {s} — cell 재측정 skip", .{@errorName(err)});
+        };
+    }
     g_renderer.?.resize(vp_w_px, vp_h_px);
 
     // 4. 새 viewport 에 맞춰 cols/rows 재계산. cell 크기 같으면 viewport 만

@@ -256,6 +256,14 @@ pub const MetalRenderer = struct {
     // Retina backing scale.
     scale: f32,
 
+    // #253 — 다른 scale 모니터로 이동 시 cell 재측정(applyScale)에 필요한 init
+    // 파라미터 보관. font_families 슬라이스/문자열은 host 가 process lifetime 으로
+    // 보유(g_config 또는 run() 의 env_chain) — 재init 시 그대로 재사용.
+    font_families: []const []const u8,
+    font_size: f32,
+    cell_width_scale: f32,
+    line_height_scale: f32,
+
     pub fn colorF(v: u8) f32 {
         return @as(f32, @floatFromInt(v)) / 255.0;
     }
@@ -348,7 +356,40 @@ pub const MetalRenderer = struct {
             .constants_buffer = const_buf,
             .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .scale = scale,
+            .font_families = font_families,
+            .font_size = font_size,
+            .cell_width_scale = cell_width_scale,
+            .line_height_scale = line_height_scale,
         };
+    }
+
+    /// #253 — backingScaleFactor 가 바뀐 모니터로 이동했을 때 호출. 새 scale 의
+    /// pixel 크기로 폰트 cell 을 재측정하고 glyph atlas 를 재구성한다(Windows
+    /// `rebuildFontForDpi` / Linux `applyScale` 동등). 안 하면 init scale 의 cell·
+    /// glyph·UI metric 을 그대로 써서 다른 scale 모니터에서 글자/탭바가 배율만큼
+    /// 틀어진다. scale 이 실제로 바뀐 경우에만 호출(같은 scale 이동은 viewport 만).
+    pub fn applyScale(self: *MetalRenderer, new_scale: f32) !void {
+        if (new_scale == self.scale) return;
+
+        // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
+        const new_font = try CoreTextFontContext.init(
+            self.font_families,
+            self.font_size,
+            new_scale,
+            self.cell_width_scale,
+            self.line_height_scale,
+        );
+        self.font.deinit();
+        self.font = new_font;
+
+        // 2. atlas 를 새 scale 로 재구성 — cache/packing/pixels clear + scale 갱신.
+        //    다음 render 에서 글리프가 새 scale 로 재라스터되고 dirty 로 재업로드됨.
+        //    (atlas_texture 자체는 ATLAS_SIZE 고정이라 재사용.)
+        self.atlas.scale = new_scale;
+        self.atlas.reset();
+
+        // 3. renderer scale 갱신 — 탭바/스크롤바/패딩 등 UI metric 이 곱해 쓰는 값.
+        self.scale = new_scale;
     }
 
     pub fn deinit(self: *MetalRenderer) void {
