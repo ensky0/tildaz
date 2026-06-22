@@ -156,26 +156,13 @@ extern var _dispatch_main_q: anyopaque;
 const dispatch_function_t = *const fn (?*anyopaque) callconv(.c) void;
 extern fn dispatch_async_f(queue: *anyopaque, ctx: ?*anyopaque, work: dispatch_function_t) void;
 
-// 렌더 timer 용 CFRunLoopTimer FFI. NSTimer 보다 가벼움 — ObjC class /
-// selector 등록 없이 C function pointer 그대로 사용.
-const CFAbsoluteTime = f64;
-const CFTimeInterval = f64;
-const CFRunLoopTimerRef = ?*anyopaque;
-const CFRunLoopTimerCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
-extern fn CFAbsoluteTimeGetCurrent() CFAbsoluteTime;
-extern fn CFRunLoopTimerCreate(
-    allocator: ?*anyopaque,
-    fireDate: CFAbsoluteTime,
-    interval: CFTimeInterval,
-    flags: u32,
-    order: isize,
-    callout: CFRunLoopTimerCallback,
-    context: ?*anyopaque,
-) CFRunLoopTimerRef;
-extern fn CFRunLoopAddTimer(runloop: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef) void;
+// render 는 CADisplayLink (`NSWindow.displayLink(target:selector:)`, macOS 14+)
+// 가 vsync 마다 main thread 에서 구동한다. 시스템이 합성 타이밍/재생률을 관리
+// 하고, 창이 디스플레이에 없으면(hidden) AppKit 이 link 를 자동 suspend 해
+// idle 시 render 0 — 옛 CFRunLoopTimer(60fps 무조건 fire)를 대체 (#255).
 
-// kCFRunLoopCommonModes 는 CFString 상수 (Apple 의 CFRunLoop.h). Zig 의
-// extern var 로 받아 쓴다.
+// kCFRunLoopCommonModes 는 CFString 상수 (Apple 의 CFRunLoop.h). NSString 과
+// toll-free bridge 라 NSRunLoop addToRunLoop:forMode: 의 mode 로도 쓴다.
 extern const kCFRunLoopCommonModes: CFStringRef;
 
 // Input Monitoring 권한 (macOS 10.15+).
@@ -284,11 +271,11 @@ var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 /// 렌더링 + 입력 받으니 동일 — 단 closeTab 은 read thread 가 살아 있을 때
 /// 위험하므로 후속 milestone 에서 join 처리.
 var g_session: session_core.SessionCore = undefined;
-/// PTY 자식 종료 시 read thread 가 enqueue, main thread (renderTimerFire) 가
+/// PTY 자식 종료 시 read thread 가 enqueue, main thread (renderFrameTick) 가
 /// drain. session_core 의 tab_exit_fn 이 read thread context 에서 불리는데
 /// 거기서 closeTabByPtr 직접 호출하면 self-join deadlock — read thread 가
 /// 자기 자신을 join 하게 됨. Windows 의 PostMessage 패턴과 같은 의도이지만
-/// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderTimerFire 가
+/// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderFrameTick 가
 /// main thread 에서 매 frame drain).
 var g_pending_close_buf: std.ArrayList(usize) = .{};
 var g_pending_close_mutex: std.Thread.Mutex = .{};
@@ -298,7 +285,7 @@ var g_last_render_ms: i64 = 0;
 
 /// #245 — drag-select auto-scroll (mac). 선택 드래그 중 포인터가 grid 위/아래 경계
 /// 밖이면 방향(-1=위/older, +1=아래/newer, 0=비활성) + 마지막 drag px 저장. 60fps
-/// 렌더 타이머(renderTimerFire)가 이 동안 viewport 스크롤 + selection.update 재호출
+/// 렌더 tick(renderFrameTick)이 이 동안 viewport 스크롤 + selection.update 재호출
 /// → 포인터를 멈춰 둬도 연속 스크롤 + scrollback 까지 선택 연장. mouseUp 에서 0.
 var g_sel_autoscroll_dir: i8 = 0;
 var g_sel_autoscroll_next_ms: i64 = 0;
@@ -320,7 +307,7 @@ var g_fullscreen_mode: FullscreenMode = .none;
 var g_drag: tab_interaction.DragState = .{};
 /// 탭바 스크롤 오프셋 (픽셀, #117). 탭바 총 너비가 viewport 너비를 초과하면
 /// 활성 탭이 보이도록 자동 이동. Windows `App.tab_scroll_x` 와 동일 정책 — 매
-/// frame `renderTimerFire` 에서 `ensureActiveTabVisible` 가 갱신, drag 중에는
+/// frame `renderFrameTick` 에서 `ensureActiveTabVisible` 가 갱신, drag 중에는
 /// `tildazMouseDragged` 가 직접 갱신.
 var g_tab_scroll_x_px: f32 = 0;
 /// 사용자가 `<` / `>` 화살표를 눌러 viewport 를 옮긴 상태 (#117). 이 동안
@@ -345,7 +332,7 @@ var g_host: tab_actions.Host = .{
 };
 
 fn macHostInvalidate(_: *tab_actions.Host) void {
-    // mac 은 renderTimerFire 가 60fps 로 자동 호출 — 즉시 redraw 트리거 불필요.
+    // mac 은 renderFrameTick 이 vsync 마다 자동 호출 — 즉시 redraw 트리거 불필요.
 }
 
 fn macHostRenameActive(_: *const tab_actions.Host) bool {
@@ -392,7 +379,8 @@ var g_extra_env: [5]terminal.ExtraEnv = undefined;
 // 'M' advance / ascent+descent+leading 으로 동적 측정 (Windows 와 동일 패턴).
 var g_metal_layer: objc.id = null;
 var g_renderer: ?renderer_module.RendererBackend = null;
-var g_render_timer: CFRunLoopTimerRef = null;
+/// CADisplayLink (NSWindow.displayLink) — vsync render driver. null = 미생성.
+var g_display_link: objc.id = null;
 // 터미널 영역 안쪽 padding — `ui_metrics.zig` 의 공통 상수. Windows /
 // macOS 동일 값으로 시각적 일관성 유지. pixel 변환은 init 시 retina scale 곱.
 const TERMINAL_PADDING_PT = ui_metrics.TERMINAL_PADDING_PT;
@@ -1873,7 +1861,7 @@ fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, d
     };
 }
 
-/// #245 — drag-select auto-scroll tick (mac, renderTimerFire 에서 매 frame 호출).
+/// #245 — drag-select auto-scroll tick (mac, renderFrameTick 에서 매 frame 호출).
 /// 포인터가 grid 경계 밖(dir!=0)이고 선택 활성이면 40ms 마다 viewport 한 step
 /// 스크롤 + 마지막 drag px(clamp cell)로 selection.update → 멈춰 있어도 연속.
 /// 이번 frame 에 스크롤했으면 true 반환(force render).
@@ -2495,6 +2483,9 @@ fn registerTildazViewClass() !objc.Class {
     // 모니터 / DPI / dock auto-hide 등 screen parameter 변경 알림 handler.
     if (!objc.class_addMethod(cls, objc.sel("screenChanged:"), @ptrCast(&tildazScreenChanged), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
+    // CADisplayLink (#255) target — vsync 마다 render. 인자는 CADisplayLink id.
+    if (!objc.class_addMethod(cls, objc.sel("displayLinkFire:"), @ptrCast(&displayLinkFire), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
 
     // NSTextInputClient protocol — IME (한글 / 일본어 / 중국어). 등록한 13
     // 메서드는 ghostty / Terminal.app / 표준 NSView terminal 패턴. `NSRange`
@@ -2892,18 +2883,30 @@ pub fn run() !void {
         g_config.max_scroll_lines,
     });
 
-    // 60fps render timer. CFRunLoopTimer 가 NSApp.run 의 main run loop 에서
-    // 주기적으로 fire. callback 은 C 함수 — selector / ObjC class 등록 불필요.
-    g_render_timer = CFRunLoopTimerCreate(
-        null,
-        CFAbsoluteTimeGetCurrent(),
-        1.0 / 60.0,
-        0,
-        0,
-        renderTimerFire,
-        null,
-    );
-    CFRunLoopAddTimer(CFRunLoopGetMain(), g_render_timer, kCFRunLoopCommonModes);
+    // CADisplayLink (#255) — vsync render driver. `NSWindow.displayLink`
+    // (macOS 14+) 가 contentView(tildaz_view)의 displayLinkFire: 를 매 vsync
+    // main thread 에서 호출. CFRunLoopTimer(60fps 무조건 fire)와 달리 시스템이
+    // 합성 타이밍/재생률을 관리하고, 창이 hidden 이면 AppKit 이 자동 suspend
+    // 해 idle render 0. common modes 로 등록 — 리사이즈/모달 tracking 중에도 fire.
+    {
+        const display_link_for = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL) callconv(.c) objc.id);
+        g_display_link = display_link_for(
+            g_window,
+            objc.sel("displayLinkWithTarget:selector:"),
+            tildaz_view,
+            objc.sel("displayLinkFire:"),
+        );
+        if (g_display_link == null) return error.DisplayLinkCreateFailed;
+
+        const NSRunLoop = objc.getClass("NSRunLoop");
+        const main_run_loop = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+        const run_loop = main_run_loop(NSRunLoop, objc.sel("mainRunLoop"));
+        // mode: kCFRunLoopCommonModes (CFStringRef) ↔ NSRunLoopCommonModes (NSString)
+        // toll-free bridge — 그대로 전달.
+        const add_to_run_loop = objc.objcSend(fn (objc.id, objc.SEL, objc.id, CFStringRef) callconv(.c) void);
+        add_to_run_loop(g_display_link, objc.sel("addToRunLoop:forMode:"), run_loop, kCFRunLoopCommonModes);
+        log.appendLine("startup", "CADisplayLink installed (vsync render driver)", .{});
+    }
 
     // 7. 이벤트 루프.
     log.appendLine("startup", "enter NSApp run loop", .{});
@@ -2914,7 +2917,7 @@ pub fn run() !void {
 
 /// session_core 의 tab_exit_fn — read thread 에서 호출. read thread 안에서
 /// closeTabByPtr 직접 호출하면 self-join deadlock (Tab.deinit 이 read_thread
-/// .join 부름) → 글로벌 queue 에 enqueue 만 하고 main thread (renderTimerFire)
+/// .join 부름) → 글로벌 queue 에 enqueue 만 하고 main thread (renderFrameTick)
 /// 가 매 frame 시작 시 drain. Windows 의 PostMessage 패턴과 동등 의도.
 fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
     g_pending_close_mutex.lock();
@@ -2950,9 +2953,15 @@ fn drainExitedTabs() bool {
     return false;
 }
 
-/// 60fps render timer callback. 윈도우 hidden 이거나 renderer 미초기화면 skip.
-/// cell_w/h 는 font 가 측정한 pixel 단위 (Retina backing scale 이미 적용됨).
-fn renderTimerFire(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+/// CADisplayLink (#255) fire — vsync 마다 main thread 호출. ObjC method
+/// signature: (self, _cmd, CADisplayLink*). 인자는 안 씀.
+fn displayLinkFire(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    renderFrameTick();
+}
+
+/// render tick. 윈도우 hidden 이거나 renderer 미초기화면 skip. cell_w/h 는
+/// font 가 측정한 pixel 단위 (Retina backing scale 이미 적용됨).
+fn renderFrameTick() void {
     // Per-tab PTY exit 처리 — 마지막 탭이 정리되면 NSApp.terminate (이번 frame
     // 은 더 진행 안 함).
     if (drainExitedTabs()) return;
