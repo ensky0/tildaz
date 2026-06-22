@@ -118,6 +118,13 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 100,000 | 100,000 | 100,000 | Scrollback buffer (lines) |
 
+**Ligatures** require a ligature-capable `font.family` (e.g. Fira Code or
+JetBrains Mono — both free). The Windows default (Cascadia Code) includes them;
+the macOS (Menlo) and Linux (DejaVu Sans Mono) defaults do not, so point
+`font.family` at a ligature font to enable them. Color emoji and ZWJ families
+(skin tones, multi-person families) come from the emoji fallback (Segoe UI Emoji
+/ Apple Color Emoji / Noto Color Emoji) and work with the defaults.
+
 ## Position examples
 
 ```
