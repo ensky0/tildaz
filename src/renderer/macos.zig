@@ -26,6 +26,51 @@ const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
 const MAX_INSTANCES: u32 = 32768;
 
+// --- #255 Phase 2: CADisplayLink pause 합성 게이트 ---
+// drawable 이 *실제로 화면에 표시*됐는지 확인하는 신호. host 가 idle 시 displayLink
+// 를 pause 하려면 "show 직후 첫 프레임이 합성(composite)됐다"를 알아야 한다 — 안
+// 그러면 합성 전 1프레임만 그리고 멈춰 빈 화면(#252 의 근본). `addPresentedHandler:`
+// 는 drawable 이 표시된 *직후* 호출되고 `presentedTime>0` 이면 표시 확정. 핸들러는
+// CoreAnimation presentation 스레드에서 불리므로 atomic. captures 없는 global block.
+const BlockDescriptor = extern struct {
+    reserved: c_ulong = 0,
+    size: c_ulong,
+};
+const PresentedBlock = extern struct {
+    isa: ?*const anyopaque,
+    flags: c_int,
+    reserved: c_int = 0,
+    invoke: *const fn (*PresentedBlock, objc.id) callconv(.c) void,
+    descriptor: *const BlockDescriptor,
+};
+extern const _NSConcreteGlobalBlock: anyopaque;
+const BLOCK_IS_GLOBAL: c_int = 1 << 28;
+var g_frame_presented = std.atomic.Value(bool).init(false);
+
+fn presentedInvoke(_: *PresentedBlock, drawable: objc.id) callconv(.c) void {
+    if (drawable == null) return;
+    const presentedTimeOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    if (presentedTimeOf(drawable, objc.sel("presentedTime")) > 0)
+        g_frame_presented.store(true, .seq_cst);
+}
+var presented_block_descriptor: BlockDescriptor = .{ .reserved = 0, .size = @sizeOf(PresentedBlock) };
+var presented_block: PresentedBlock = .{
+    .isa = null, // 런타임에 _NSConcreteGlobalBlock 로 설정 (extern 주소는 comptime 불가).
+    .flags = BLOCK_IS_GLOBAL,
+    .reserved = 0,
+    .invoke = &presentedInvoke,
+    .descriptor = &presented_block_descriptor,
+};
+
+/// 마지막 show 이후 drawable 이 화면에 표시된 적 있나 (host 의 pause 게이트).
+pub fn frameWasPresented() bool {
+    return g_frame_presented.load(.seq_cst);
+}
+/// show(hidden→visible) 시 host 가 호출 — 재합성 필요하므로 표시 확정 리셋.
+pub fn resetFramePresented() void {
+    g_frame_presented.store(false, .seq_cst);
+}
+
 // --- Instance data layouts (MSL struct 와 일치해야 함) ---
 
 const BgInstance = extern struct {
@@ -436,6 +481,14 @@ pub const MetalRenderer = struct {
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         perf.addTimed(&perf.render, render_t0);
+
+        // #255 Phase 2 — 표시 확정 전이면 presented handler 부착(present *전*에 등록).
+        // 표시 확정되면 더는 안 닮 — host 가 idle 시 frameWasPresented() 로 pause 판단.
+        if (!g_frame_presented.load(.seq_cst)) {
+            presented_block.isa = &_NSConcreteGlobalBlock;
+            const addHandler = objc.objcSend(fn (objc.id, objc.SEL, *PresentedBlock) callconv(.c) void);
+            addHandler(self.current_drawable, objc.sel("addPresentedHandler:"), &presented_block);
+        }
 
         // #160 — present(drawable 표시 + commit) 계측.
         const present_t0 = perf.now();
