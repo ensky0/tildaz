@@ -22,6 +22,8 @@ const config = @import("../config.zig");
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const renderer_module = @import("../renderer.zig");
+// macOS 전용 host — render present/합성 게이트(#255 Phase 2) free 함수 직접 접근.
+const mac_renderer = @import("../renderer/macos.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
@@ -279,9 +281,14 @@ var g_session: session_core.SessionCore = undefined;
 /// main thread 에서 매 frame drain).
 var g_pending_close_buf: std.ArrayList(usize) = .{};
 var g_pending_close_mutex: std.Thread.Mutex = .{};
-/// session_core.prepareActiveFrame 의 8ms throttle (Windows 동등). 매 frame
-/// 시작 시 갱신.
-var g_last_render_ms: i64 = 0;
+/// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
+/// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainActiveOutputForRender 반환)
+/// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ rename/preedit/autoscroll(force_render).
+/// 셋 다 아니고 화면 표시까지 확정(frameWasPresented)되면 그 frame 의 render 작업을
+/// skip(GPU 안 씀) — displayLink 는 visible 동안 계속 돌아 다음 변화를 다음 frame 이
+/// 즉시 잡는다. 입력 핸들러·renderFrameTick 모두 main thread 라 atomic 불필요.
+/// init=true(첫 프레임). requestRender() 로 set, render 후 clear.
+var g_needs_render: bool = true;
 
 /// #245 — drag-select auto-scroll (mac). 선택 드래그 중 포인터가 grid 위/아래 경계
 /// 밖이면 방향(-1=위/older, +1=아래/newer, 0=비활성) + 마지막 drag px 저장. 60fps
@@ -568,6 +575,7 @@ fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
 }
 
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    requestRender(); // #255 Phase2 — 키 입력 → 렌더 (스크롤백/탭조작 등 출력 없는 변화 포함).
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
@@ -1427,6 +1435,7 @@ fn imeStringFromInput(text: objc.id) objc.id {
 /// IME 가 글자 commit 시 호출 (한글 음절 완성, 일본어 conversion 확정 등).
 /// PTY 로 write + preedit buffer clear.
 fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) callconv(.c) void {
+    requestRender(); // #255 Phase2
     const tab = g_session.activeTab() orelse return;
     const str = imeStringFromInput(text);
     if (str == null) {
@@ -1508,6 +1517,7 @@ fn imeInsertTextSimple(self_view: objc.id, sel_: objc.SEL, text: objc.id) callco
 /// IME 조합 중 텍스트 — preedit buffer 에 저장. PTY 에는 안 보냄. metal
 /// renderer 가 cursor 위치 위에 overlay (M6.2).
 fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRange, replacement_range: NSRange) callconv(.c) void {
+    requestRender(); // #255 Phase2 — preedit 변경 → 렌더.
     const reconversion_delete_count = g_hanja_reconversion_delete_count;
     clearHanjaReconversionTarget();
     const str = imeStringFromInput(text);
@@ -1652,6 +1662,7 @@ fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NS
 /// IME 가 모르는 special key (Return, Backspace, Tab, 화살표 등) 을
 /// interpretKeyEvents 가 selector 형태로 보냄. escape sequence 매핑.
 fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
+    requestRender(); // #255 Phase2
     const tab = g_session.activeTab() orelse return;
 
     if (g_hanja_candidate_active and cmd_sel == objc.sel("cancelOperation:")) {
@@ -1729,6 +1740,7 @@ fn tildazScreenChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
 }
 
 fn syncGeometryAfterScreenChange() void {
+    requestRender(); // #255 Phase2 — 리사이즈/모니터 변경 → 렌더.
     if (g_renderer == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -2120,6 +2132,7 @@ fn invalidateRenameCursorRects() void {
 }
 
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    requestRender(); // #255 Phase2 — 마우스 → 렌더 (선택/탭/스크롤바 등).
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -2227,6 +2240,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
 }
 
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    requestRender(); // #255 Phase2
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
@@ -2280,6 +2294,7 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
 }
 
 fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    requestRender(); // #255 Phase2
     const tab = g_session.activeTab() orelse return;
     // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
     g_sel_autoscroll_dir = 0;
@@ -2435,6 +2450,7 @@ fn handlePaste() void {
 }
 
 fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    requestRender(); // #255 Phase2 — 휠 스크롤 → 렌더 (viewport 변경, 출력 없음).
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
@@ -2949,7 +2965,10 @@ fn drainExitedTabs() bool {
     };
 
     // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남. 모든 탭 resize.
-    if (any_changed) syncTerminalGeometry();
+    if (any_changed) {
+        syncTerminalGeometry();
+        g_needs_render = true; // #255 Phase2 — 탭 닫힘 후 새 레이아웃 렌더 (idle 재pause 전).
+    }
     return false;
 }
 
@@ -2957,6 +2976,13 @@ fn drainExitedTabs() bool {
 /// signature: (self, _cmd, CADisplayLink*). 인자는 안 씀.
 fn displayLinkFire(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     renderFrameTick();
+}
+
+/// #255 Phase 2 — "그릴 게 생겼다" 신호 (main thread 전용, 입력/창 핸들러가 호출).
+/// displayLink 는 visible 동안 계속 vsync 로 돌고(규칙적 cadence → 깜빡임 없음 +
+/// auto-scroll tick 유지), 이 플래그가 그 frame 에 *render 작업을 할지*만 가른다.
+fn requestRender() void {
+    g_needs_render = true;
 }
 
 /// render tick. 윈도우 hidden 이거나 renderer 미초기화면 skip. cell_w/h 는
@@ -2974,19 +3000,26 @@ fn renderFrameTick() void {
     // 스크롤했으면 이번 frame 강제 렌더.
     const did_autoscroll = maybeAutoScrollSelectionMac();
 
-    // session_core 의 active tab output ring drain + ghostty parse + 8ms
-    // throttle. 큰 출력 시 frame budget 안에서만 parse — Windows app_controller
-    // 의 패턴 동등. should_render=false 면 ring 에 더 데이터가 있어도 다음
-    // frame 에서 처리 (60fps 안정).
-    //
-    // 단 rename / IME preedit 활성 시 throttle 우회 — 이 두 UI 는 PTY 출력과
-    // 무관한 매 keystroke 즉시 화면 갱신 필요. throttle 만 적용하면 typing
-    // 도중 화면이 늦게 따라옴 ("뒷부분 안 보임" 회귀, opt 2b2 시연 발견).
-    const should_render = g_session.prepareActiveFrame(&g_last_render_ms);
+    // #255 Phase 2 — active tab output ring drain + parse (Linux 와 동일 함수).
+    // 반환값 = "이번에 PTY 출력 변화가 있었나"(idle=빈 ring 이면 false). 큰 출력은
+    // drainOutput 내부 budget 으로 frame 당 제한.
+    const had_output = g_session.drainActiveOutputForRender();
+    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ rename/preedit/autoscroll.
     const force_render = g_rename.isActive() or g_preedit_len > 0 or did_autoscroll;
-    if (!should_render and !force_render) {
-        perf.incExtra(&perf.onrender); // #160 — throttle 로 skip 한 frame.
-        return;
+    if (!had_output and !force_render and !g_needs_render) {
+        // 변화 없음(idle) → 비싼 render 작업(GPU encode/present) skip. displayLink
+        // 는 계속 돌므로 다음 출력/입력은 다음 frame 이 즉시 잡는다(별도 wake 불필요).
+        // 단 show 직후 화면 표시(합성)가 확정되기 *전* 이면 skip 하지 않고 정적
+        // 내용이라도 계속 그려 합성 완료시킨다 — 합성 전 1프레임만 그리고 멈추면 빈
+        // 화면(#252 의 근본). presentedTime(결정적 신호, 매직넘버 없음)으로 표시
+        // 확정되면 그때부터 idle skip 시작.
+        if (mac_renderer.frameWasPresented()) {
+            perf.incExtra(&perf.onrender); // #255 — idle skip frame (render 안 함).
+            return;
+        }
+        // 표시 미확정 → fall through 해 한 프레임 더 그림(present handler 재부착).
+    } else {
+        g_needs_render = false;
     }
 
     if (!g_visible) return;
@@ -3040,6 +3073,14 @@ fn renderFrameTick() void {
         pad_px,
         cell_preedit,
     );
+
+    // #255 — 이번 frame draw 중 *처음 본* glyph 는 atlas 에 추가되지만(getOrInsert →
+    // dirty=true) GPU 업로드는 *다음* frame uploadAtlas 에서 일어난다(현재 upload 는
+    // draw 前 순서). 그래서 그 glyph 는 이번 frame 엔 빈칸이고 다음 frame 에 채워진다
+    // — Phase 1(60fps 무조건 render)은 자연 보정됐으나, idle skip 이 그 다음 frame 을
+    // 없애면 처음 보는 문자(`"`,`(`,`N` 등)가 빈칸으로 남는다. atlas 가 아직 dirty 면
+    // 한 frame 더 요청해 업로드+재draw 시킨다(빈칸은 1 frame, Phase 1 과 동일).
+    if (g_renderer.?.atlas.dirty) g_needs_render = true;
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
@@ -3301,6 +3342,7 @@ fn repositionWindow() void {
 /// 단축키 (Cmd+Enter / Shift+Cmd+Enter) 핸들러. self-symmetric 토글 — 들어간
 /// 키로만 나옴 (Windows `Window.toggleFullscreenMode` 와 동등).
 fn toggleFullscreenMode(target: FullscreenMode) void {
+    requestRender(); // #255 Phase2 — 전체화면 토글 → 렌더.
     if (g_fullscreen_mode == target) {
         g_fullscreen_mode = .none;
     } else if (g_fullscreen_mode == .none) {
@@ -3317,6 +3359,8 @@ fn toggleFullscreenMode(target: FullscreenMode) void {
 }
 
 fn showWindow() void {
+    mac_renderer.resetFramePresented(); // #255 Phase2 — hidden→visible 재합성: 표시 확정 리셋.
+    requestRender();
     // popup level 복구 — emoji picker / dialog 같은 path 가 잠시 normal 로
     // 낮춘 후 다음 toggle 시 popup 으로 자동 복귀.
     const NSPopUpMenuWindowLevel: c_int = 101;
