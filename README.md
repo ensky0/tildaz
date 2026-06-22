@@ -14,9 +14,10 @@ quick native window that gets out of your way.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.0 — now on Linux.** One drop-down terminal for Linux (Wayland),
-> macOS, and Windows, with verified drop-down + global-hotkey support on KDE
-> Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.
+> **v0.5.1 — fullscreen on every desktop + cross-platform polish.** One
+> drop-down terminal for Linux (Wayland), macOS, and Windows, with verified
+> drop-down + global-hotkey support on KDE Plasma, GNOME, Cinnamon, COSMIC,
+> Hyprland, and sway.
 
 ## Why TildaZ
 

@@ -15,8 +15,8 @@
 1 ICON "tildaz.ico"
 
 1 VERSIONINFO
- FILEVERSION    0,5,0,0
- PRODUCTVERSION 0,5,0,0
+ FILEVERSION    0,5,1,0
+ PRODUCTVERSION 0,5,1,0
  FILEFLAGSMASK  0x3FL
  FILEFLAGS      0x0L
  FILEOS         0x00040004L   // VOS_NT_WINDOWS32
@@ -28,13 +28,13 @@ BEGIN
         BLOCK "040904b0"  // U.S. English (0x0409), Unicode (1200 = 0x04b0)
         BEGIN
             VALUE "CompanyName",      "ensky0"
-            VALUE "FileDescription",  "tildaz - drop-down terminal for Windows, macOS, and Linux"
-            VALUE "FileVersion",      "0.5.0"
+            VALUE "FileDescription",  "tildaz - drop-down terminal for Linux, macOS, and Windows"
+            VALUE "FileVersion",      "0.5.1"
             VALUE "InternalName",     "tildaz"
             VALUE "LegalCopyright",   "(c) 2026 ensky0. AGPL-3.0-or-later."
             VALUE "OriginalFilename", "tildaz.exe"
             VALUE "ProductName",      "tildaz"
-            VALUE "ProductVersion",   "0.5.0"
+            VALUE "ProductVersion",   "0.5.1"
         END
     END
     BLOCK "VarFileInfo"
