@@ -16,10 +16,10 @@ on:
 permissions:
   contents: write   # gh release create 에 필요
 
-# Node.js 20 deprecation (2026-09-16 제거 예정) 회피. actions/checkout@v4 와
-# softprops/action-gh-release@v2 가 아직 Node 20 번들이라 runner 가 강제 Node
-# 24 로 실행. 2026-06-02 부터 default 가 24 로 바뀌면 이 env 는 redundant
-# 이지만 그때까지 deprecation 경고 + 호환성 보장 위한 안전한 사전 적용.
+# Node.js 20 deprecation (2026-09-16 제거 예정) 회피. checkout(@v7) 와
+# action-gh-release(@v3) 는 Node 24 native 로 올렸고, 남은 mlugg/setup-zig@v2
+# 만 아직 Node 20 번들이라 runner 가 강제 Node 24 로 실행하게 이 env 를 유지.
+# upstream 이 Node 24 버전을 내면 제거 (#257).
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -54,7 +54,7 @@ jobs:
           echo "Resolved: tag=$TAG version=$VERSION"
 
       - name: Checkout at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
@@ -181,7 +181,7 @@ jobs:
       # (name / body / prerelease) 갱신 + files 만 추가. 두 작업이 순서
       # 무관하게 동작.
       - name: Create / append GitHub Release (${{ matrix.arch }})
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
@@ -218,7 +218,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Checkout at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
@@ -288,7 +288,7 @@ jobs:
       # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
       # softprops/action-gh-release 의 default 동작.
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
@@ -362,7 +362,7 @@ jobs:
         run: pacman -Sy --noconfirm --needed git
 
       - name: Checkout at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
@@ -477,7 +477,7 @@ jobs:
           echo "sha256   : $(cat "$S")"
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
