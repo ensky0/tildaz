@@ -291,7 +291,13 @@ WSL 파일을 Windows 경로로 접근해야 할 때는 반드시 `\\wsl$\Debian
 - 단위 테스트: `zig build test` (이 머신에서 debug `.sframe` 링커 에러 나면 `-Doptimize=ReleaseSafe`).
 - 순수 모듈만 빠르게: `zig test src/<module>.zig` (ghostty 의존성 없는 모듈 한정, 예: `src/scrollbar.zig`).
 
+**캐시 두 종류 — 헷갈리지 않기.** zig 는 캐시가 둘이에요. (1) **로컬 캐시** = 빌드 산출물·중간물, `--cache-dir` 로 지정 (위 명령의 `C:/ziglang/tildaz-cache`). (2) **글로벌 캐시** = 받아온 의존성 패키지 (`ghostty` / `vaxis` / `uucode` 등, `p/` 디렉토리), `--global-cache-dir` 또는 `ZIG_GLOBAL_CACHE_DIR` 로 지정하고 기본은 `%LocalAppData%\zig`. 둘은 **별개라** `--cache-dir` 만 바꿔도 의존성은 글로벌 캐시에서 따로 관리돼요. 의존성 fetch 문제(아래 libxml2)는 *글로벌* 캐시에서 일어나요.
+
+**새 컴퓨터 첫 빌드.** zig 는 `build.zig.zon` 의 `minimum_zig_version` (현재 **0.15.2**) 이상이 필요해요. 첫 빌드는 의존성을 자동 fetch 하는데, 아래 `font-backend = .freetype` 덕에 libxml2 없이 받아져서 Developer Mode / 심볼릭 링크 권한이 없어도 됩니다. WSL 소스를 UNC 로 받는 경우 글로벌 캐시도 Windows 로컬(예 `C:/ziglang/tildaz-cache`)로 두면 빨라요 (`ZIG_GLOBAL_CACHE_DIR` 설정).
+
 **`zig build --fetch=all` 은 쓰지 않아요.** `--fetch=all` 은 폰트용 lazy 의존성 (ghostty → fontconfig → libxml2) 까지 전부 받는데, libxml2 tarball 은 Unix 심볼릭 링크 (test fixtures) 를 담고 있어 **심볼릭 링크 생성 권한 없는 Windows (Developer Mode off) 환경에선 unpack 이 `AccessDenied` 로 실패**해요. 근본 차단은 [`build.zig`](build.zig) 가 ghostty 의존성에 `font-backend = .freetype` 을 명시한 것 — ghostty 의 `SharedDeps.init` 은 `emit-lib-vt` 여부와 무관하게 항상 돌며 `font_backend.hasFontconfig()` 이 true 면 `lazyDependency("fontconfig")` 를 호출하는데, 기본값(`FontBackend.default`)이 Linux 등에서 `fontconfig_freetype` 이라 끌려와요. `.freetype` 은 `hasFontconfig()=false` 라 그 경로를 통째로 스킵해 libxml2 를 아예 안 받아요 (VT 파서 모듈은 폰트 백엔드 미사용 — 값 무방, 그래프 평가만 통과). prefetch 도 needed (`--fetch`) 만 써요. CI 도 동일 ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
+
+**git push 인증 (이 레포 특이사항).** 커밋 author 는 WSL `.gitconfig` 에 있지만 (`ensky0`), 원격은 https 라 push 는 **Windows Git Credential Manager** 의 저장된 자격으로 돼요 (`git -C <repo> push origin main` 을 Windows 셸에서). WSL 의 gh 토큰은 `workflow` scope 가 없어 `.github/workflows/*` 변경을 거부하고, WSL `~/.ssh/id_ed25519` 는 GitHub 에 등록돼 있지 않아 ssh push 도 안 돼요. 새 환경에선 Windows 셸 push 를 먼저 시도해요.
 
 # 릴리즈
 
