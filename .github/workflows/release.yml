@@ -130,12 +130,20 @@ jobs:
       # (ghostty 아래 imgui, vaxis 아래 zigimg / uucode 등) 를 받을 때 가끔
       # `HttpConnectionClosing` / `WriteFailed` 로 깨짐. fetch 만 선행 + 재시도
       # 해서 네트워크 플래키함을 흡수하고, 이후 build 는 캐시된 상태로 한 번에.
+      #
+      # `--fetch` (needed) 사용 — `--fetch=all` 은 폰트용 lazy 의존성
+      # (ghostty → fontconfig → libxml2) 까지 전부 받는데, 우리는 ghostty 의
+      # `emit-lib-vt` (VT 파서 모듈) 만 써서 이들을 빌드에 안 쓴다. 특히 libxml2
+      # tarball 은 Unix 심볼릭 링크 (test fixtures) 를 담고 있어, 심볼릭 링크
+      # 권한 없는 Windows 환경 (Developer Mode off) 에선 unpack 이 AccessDenied
+      # 로 실패한다. needed 만 받으면 그 unpack 자체를 회피 + 불필요한 다운로드
+      # 제거. (실제 build step 도 lazy 의존성을 호출하지 않아 빌드 중 추가 fetch 없음.)
       - name: Prefetch dependencies (retry on transient HTTP fail)
         shell: bash
         run: |
           set -euo pipefail
           for i in 1 2 3 4 5; do
-            if zig build --fetch=all; then
+            if zig build --fetch; then
               echo "All dependencies fetched (attempt $i)"
               exit 0
             fi
@@ -254,7 +262,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in 1 2 3 4 5; do
-            if zig build --fetch=all; then
+            if zig build --fetch; then
               exit 0
             fi
             [[ $i -eq 5 ]] && exit 1
@@ -428,7 +436,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in 1 2 3 4 5; do
-            if zig build --fetch=all; then
+            if zig build --fetch; then
               exit 0
             fi
             [[ $i -eq 5 ]] && exit 1
