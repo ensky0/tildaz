@@ -50,11 +50,22 @@ pub fn build(b: *std.Build) void {
     // `emit-lib-vt = true` 가 정확히 그 케이스를 위한 ghostty 옵션 — xcframework /
     // macOS app / docs 빌드를 모두 끄고 vt 모듈만 빌드한다. Windows 에서는 어차피
     // 기본값이 false 라 동작에 변화가 없다.
+    //
+    // `font-backend = .freetype` 명시 — ghostty 의 build.zig 는 `emit-lib-vt` 여부와
+    // 무관하게 `SharedDeps.init` 을 항상 돌리고, 거기서 `font_backend.hasFontconfig()`
+    // 이 true 면 `lazyDependency("fontconfig")` 를 호출한다 (`SharedDeps.zig`). fontconfig
+    // 은 다시 libxml2 를 끌어오는데, libxml2 tarball 은 Unix 심볼릭 링크(test fixtures)
+    // 를 담고 있어 심볼릭 링크 권한 없는 Windows (Developer Mode off) 에선 unpack 이
+    // AccessDenied 로 실패한다. font_backend 의 기본값은 타겟별 `FontBackend.default`
+    // 라 Linux 등에서 `fontconfig_freetype` (hasFontconfig=true) 가 된다. `.freetype` 은
+    // hasFontconfig=false 라 그 경로를 스킵 → libxml2 를 아예 안 받는다. VT 파서 모듈은
+    // 폰트 백엔드를 실제로 쓰지 않으므로 값은 무방하고, 빌드 그래프 평가만 통과하면 된다.
     if (b.lazyDependency("ghostty", .{
         .target = target,
         .simd = simd,
         .optimize = optimize,
         .@"emit-lib-vt" = true,
+        .@"font-backend" = .freetype,
     })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
@@ -251,6 +262,9 @@ pub fn build(b: *std.Build) void {
             .simd = simd,
             .optimize = .Debug,
             .@"emit-lib-vt" = true,
+            // libxml2 회피 — 위 메인 빌드의 `font-backend` 주석 참고. check 는 linux
+            // 타겟도 도는데, linux 기본 font_backend 는 fontconfig_freetype 이라 더더욱 필요.
+            .@"font-backend" = .freetype,
         })) |dep| {
             check_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
         }
