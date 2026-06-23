@@ -25,6 +25,7 @@ const renderer_module = @import("../renderer.zig");
 // macOS 전용 host — render present/합성 게이트(#255 Phase 2) free 함수 직접 접근.
 const mac_renderer = @import("../renderer/macos.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const scrollbar = @import("../scrollbar.zig");
 const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
 const tab_interaction = @import("../tab_interaction.zig");
@@ -2165,7 +2166,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             // 만 리셋, screen 의 highlight 는 보존.
             tab.interaction.selection.cancel();
             g_drag.reset();
-            tab.interaction.scrollbar.begin();
+            tab.interaction.scrollbar.begin(scrollbarGrabAt(xy.y));
             scrollbarScrollToY(xy.y);
             return;
         }
@@ -2343,39 +2344,40 @@ fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     handlePaste();
 }
 
-/// 스크롤바 클릭 / 드래그 시 thumb 위치 따라 viewport scroll (#123).
-/// Windows app_controller.zig:233-266 `scrollToY` 패턴 그대로.
+/// 현재 활성 탭의 scrollbar `Hit` (track + thumb geometry). 스크롤백이 없거나
+/// thumb 여유가 없으면 null. 렌더러(`renderer/macos.zig`)와 같은 `scrollbar.hit`
+/// 입력을 써서 그림 영역과 클릭 영역을 일치시킨다 (#259).
+fn scrollbarHit() ?scrollbar.Hit {
+    const tab = g_session.activeTab() orelse return null;
+    if (g_renderer == null) return null;
+    const r = &g_renderer.?;
+    const sb = tab.terminal.screens.active.pages.scrollbar();
+    return scrollbar.hit(
+        sb.total,
+        sb.len,
+        sb.offset,
+        @floatFromInt(r.vp_height),
+        @floatFromInt(tabBarHeightPx(r.scale)),
+        @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale,
+        @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * r.scale,
+    );
+}
+
+/// mouse-down 시 grab offset (#259). 스크롤바 없으면 0.
+fn scrollbarGrabAt(mouse_y_px: f32) f64 {
+    const h = scrollbarHit() orelse return 0;
+    return h.grab(mouse_y_px);
+}
+
+/// 스크롤바 드래그 시 thumb 위치 따라 viewport scroll (#123). grab offset 은
+/// down 때 `scrollbar.begin` 으로 저장된 값을 사용 — thumb 어디를 잡아도 그 지점이
+/// 커서 아래 고정돼 따라온다 (#259, 이전엔 thumb 윗변이 커서로 점프).
 /// `mouse_y_px` 는 윈도우 좌상 기준 top-down pixel.
 fn scrollbarScrollToY(mouse_y_px: f32) void {
     const tab = g_session.activeTab() orelse return;
-    if (g_renderer == null) return;
-    const r = &g_renderer.?;
-
-    const screen = tab.terminal.screens.active;
-    const sb = screen.pages.scrollbar();
-    if (sb.total <= sb.len) return;
-
-    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale;
-    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
-    const cell_top_px = pad_px + tab_bar_px;
-    const vp_h_f: f32 = @floatFromInt(r.vp_height);
-    const track_h: f32 = vp_h_f - cell_top_px;
-    if (track_h <= 0) return;
-
-    const sb_min: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * r.scale;
-    const ratio_px = track_h / @as(f32, @floatFromInt(sb.total));
-    const thumb_h = @max(sb_min, ratio_px * @as(f32, @floatFromInt(sb.len)));
-    const available = track_h - thumb_h;
-    if (available <= 0) return;
-
-    const rel_y = @max(0, mouse_y_px - cell_top_px);
-    const clamped_y = @min(rel_y, available);
-    const scroll_ratio = clamped_y / available;
-    const target_row: usize = @intFromFloat(scroll_ratio * @as(f32, @floatFromInt(sb.total - sb.len)));
-
-    const current: isize = @intCast(sb.offset);
-    const target: isize = @intCast(target_row);
-    const delta = target - current;
+    const h = scrollbarHit() orelse return;
+    const target_row = h.target(mouse_y_px, tab.interaction.scrollbar.grab_offset);
+    const delta = @as(isize, @intCast(target_row)) - @as(isize, @intCast(h.offset));
     if (delta != 0) {
         tab.terminal.scrollViewport(.{ .delta = delta });
     }

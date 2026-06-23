@@ -13,6 +13,7 @@ const block_element = @import("../../renderer/block_element.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
+const scrollbar = @import("../../scrollbar.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
@@ -491,25 +492,22 @@ pub const Renderer = struct {
 
         // 우측 스크롤바 thumb — scrollback 있을 때만. track 자체는 별도 색 안 그림
         // (배경 그대로). Windows / macOS 패턴 동일 (`renderer/macos.zig:662` 참고).
+        // #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은
+        // `scrollbar.hit` 입력. track = 탭바 아래 + 위/아래 padding 반영.
         const sb = terminal.screens.active.pages.scrollbar();
-        if (sb.total > sb.len) {
-            const track_h: i32 = height - tab_bar_h - 2 * pad;
-            if (track_h > 0) {
-                const track_hf: f64 = @floatFromInt(track_h);
-                const total_f: f64 = @floatFromInt(sb.total);
-                const len_f: f64 = @floatFromInt(sb.len);
-                const ratio_px: f64 = track_hf / total_f;
-                const min_thumb_f: f64 = @floatFromInt(sb_min_thumb);
-                const thumb_hf: f64 = @max(min_thumb_f, ratio_px * len_f);
-                const available: f64 = track_hf - thumb_hf;
-                const max_off_f: f64 = total_f - len_f;
-                const offset_f: f64 = @floatFromInt(sb.offset);
-                const offset_ratio: f64 = if (max_off_f > 0) offset_f / max_off_f else 0;
-                const thumb_y_px: i32 = tab_bar_h + pad + @as(i32, @intFromFloat(offset_ratio * available));
-                const thumb_h_px: i32 = @intFromFloat(thumb_hf);
-                const sb_x: i32 = width - sb_w;
-                rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, scrollbar_thumb_color);
-            }
+        if (scrollbar.hit(
+            sb.total,
+            sb.len,
+            sb.offset,
+            @floatFromInt(height),
+            @floatFromInt(tab_bar_h),
+            @floatFromInt(pad),
+            @floatFromInt(sb_min_thumb),
+        )) |h| {
+            const thumb_y_px: i32 = @intFromFloat(h.thumbTop());
+            const thumb_h_px: i32 = @intFromFloat(h.g.thumb_h);
+            const sb_x: i32 = width - sb_w;
+            rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, scrollbar_thumb_color);
         }
 
         // --- L10-β: IME preedit (조합 중) inline overlay ---

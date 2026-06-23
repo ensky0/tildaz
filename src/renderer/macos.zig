@@ -14,6 +14,7 @@ const mac_font = @import("../font/macos/font.zig");
 const CoreTextFontContext = mac_font.CoreTextFontContext;
 const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
@@ -803,26 +804,26 @@ pub const MetalRenderer = struct {
         }
 
         // --- Scrollbar (Windows d3d11_renderer 와 동일 패턴) ---
-        // pixel 단위. self.scale 곱해 retina pixel 로.
+        // pixel 단위. self.scale 곱해 retina pixel 로. #259 — drag hit-test
+        // (`host/macos.scrollbarHit`) 와 같은 `scrollbar.hit` 입력. track_top 은
+        // 셀 영역 윗변(`y_offset + padding`) — 텍스트 baseline 용 `y_off`(top_pad_px
+        // 보정 포함) 와 달라 scrollbar 는 별도로 둔다.
         const sb = terminal.screens.active.pages.scrollbar();
-        if (sb.total > sb.len) {
+        if (scrollbar.hit(
+            sb.total,
+            sb.len,
+            sb.offset,
+            @floatFromInt(self.vp_height),
+            @floatFromInt(y_offset),
+            @floatFromInt(padding),
+            @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * self.scale,
+        )) |h| {
             const sbw: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * self.scale;
-            const sb_min: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * self.scale;
-            const vp_hf: f32 = @floatFromInt(self.vp_height);
             const vp_wf: f32 = @floatFromInt(self.vp_width);
-            const track_h: f32 = vp_hf - @as(f32, @floatFromInt(y_offset + padding));
             const track_x: f32 = vp_wf - sbw;
-            const ratio = track_h / @as(f32, @floatFromInt(sb.total));
-            const thumb_h = @max(sb_min, ratio * @as(f32, @floatFromInt(sb.len)));
-            const available = track_h - thumb_h;
-            const max_offset: f32 = @floatFromInt(sb.total - sb.len);
-            const thumb_y = y_off + if (max_offset > 0)
-                @as(f32, @floatFromInt(sb.offset)) / max_offset * available
-            else
-                0;
             const scrollbar_inst = [1]BgInstance{.{
-                .pos = .{ track_x, thumb_y },
-                .size = .{ sbw, thumb_h },
+                .pos = .{ track_x, @floatCast(h.thumbTop()) },
+                .size = .{ sbw, @floatCast(h.g.thumb_h) },
                 .color = ui_metrics.SCROLLBAR_COLOR,
             }};
             self.drawBgInstances(encoder, &scrollbar_inst);

@@ -16,6 +16,7 @@ const perf = @import("perf.zig");
 const log = @import("log.zig");
 const about = @import("about.zig");
 const ui_metrics = @import("ui_metrics.zig");
+const scrollbar = @import("scrollbar.zig");
 const paths = @import("paths.zig");
 const system_open = @import("system_open.zig");
 const dialog = @import("dialog.zig");
@@ -462,36 +463,40 @@ pub const App = struct {
         }
     }
 
-    fn scrollToY(self: *App, mouse_y: c_int) void {
-        const tab = self.activeTabPtr() orelse return;
-        const screen = tab.terminal.screens.active;
-        const sb = screen.pages.scrollbar();
-        if (sb.total <= sb.len) return;
-
-        // 터미널 영역 내 Y 비율 → 스크롤 위치
-        if (self.window.hwnd == null) return;
+    /// 현재 활성 탭의 scrollbar `Hit` (track geometry + thumb geometry). 스크롤백이
+    /// 없거나 thumb 가 들어갈 여유가 없으면 null. 렌더러(`renderer/windows.zig`)와
+    /// 같은 `scrollbar.hit` 입력을 써서 그림 영역과 클릭 영역을 일치시킨다 (#259).
+    fn scrollbarHit(self: *App) ?scrollbar.Hit {
+        const tab = self.activeTabPtr() orelse return null;
+        if (self.window.hwnd == null) return null;
+        const sb = tab.terminal.screens.active.pages.scrollbar();
         const client_h = self.window.getClientSize().h;
         const tbh = self.effectiveTabBarHeight();
-        const track_h = client_h - tbh - 2 * self.TERMINAL_PADDING;
-        if (track_h <= 0) return;
+        return scrollbar.hit(
+            sb.total,
+            sb.len,
+            sb.offset,
+            @floatFromInt(client_h),
+            @floatFromInt(tbh),
+            @floatFromInt(self.TERMINAL_PADDING),
+            @floatFromInt(self.SCROLLBAR_MIN_THUMB_H),
+        );
+    }
 
-        const rel_y = @max(0, mouse_y - tbh - self.TERMINAL_PADDING);
-        const track_hf = @as(f64, @floatFromInt(track_h));
-        const ratio_px = track_hf / @as(f64, @floatFromInt(sb.total));
-        // Must match the renderer's `scrollbar_min_thumb_h` so the thumb the
-        // user clicks covers the same Y range the drag math walks over.
-        const min_thumb: f64 = @floatFromInt(self.SCROLLBAR_MIN_THUMB_H);
-        const thumb_h = @max(min_thumb, ratio_px * @as(f64, @floatFromInt(sb.len)));
-        const available = track_hf - thumb_h;
-        if (available <= 0) return;
-        const clamped_y = @min(@as(f64, @floatFromInt(rel_y)), available);
-        const scroll_ratio = clamped_y / available;
-        const target_row: usize = @intFromFloat(scroll_ratio * @as(f64, @floatFromInt(sb.total - sb.len)));
+    /// mouse-down 시 grab offset 산출 (#259). 스크롤바 없으면 0.
+    fn scrollbarGrabAt(self: *App, mouse_y: c_int) f64 {
+        const h = self.scrollbarHit() orelse return 0;
+        return h.grab(@floatFromInt(mouse_y));
+    }
 
-        // delta = target - current offset
-        const current: isize = @intCast(sb.offset);
-        const target: isize = @intCast(target_row);
-        const delta = target - current;
+    /// 드래그 중 thumb 를 mouse_y 에 맞춰 viewport scroll. grab offset 은 down 때
+    /// `scrollbar.begin` 으로 저장된 값을 사용 — thumb 어디를 잡아도 그 지점이
+    /// 커서 아래 고정돼 따라온다 (#259, 이전엔 thumb 윗변이 커서로 점프).
+    fn scrollToY(self: *App, mouse_y: c_int) void {
+        const tab = self.activeTabPtr() orelse return;
+        const h = self.scrollbarHit() orelse return;
+        const target_row = h.target(@floatFromInt(mouse_y), tab.interaction.scrollbar.grab_offset);
+        const delta = @as(isize, @intCast(target_row)) - @as(isize, @intCast(h.offset));
         if (delta != 0) {
             tab.terminal.scrollViewport(.{ .delta = delta });
             self.invalidateRenderer();
@@ -883,7 +888,7 @@ pub const App = struct {
                 const client_w = self.window.getClientSize().w;
                 if (mouse.x >= client_w - self.SCROLLBAR_W) {
                     if (self.activeTabPtr()) |tab| {
-                        tab.interaction.scrollbar.begin();
+                        tab.interaction.scrollbar.begin(self.scrollbarGrabAt(mouse.y));
                         tab.interaction.selection.cancel();
                     }
                     self.tab_interaction.drag.reset();

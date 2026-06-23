@@ -60,9 +60,14 @@ pub const SelectionState = struct {
 
 pub const ScrollbarDragState = struct {
     active: bool = false,
+    /// #259 — mouse-down 시 잡은 thumb 지점의 offset (track_top 기준 thumb 윗변과
+    /// 커서의 거리). 드래그 중 `thumb_top = mouse_rel_y - grab_offset` 로 환산해
+    /// 잡은 지점이 커서 아래 고정된 채 따라오게 한다. `scrollbar.grabOffset` 산출.
+    grab_offset: f64 = 0,
 
-    pub fn begin(self: *ScrollbarDragState) void {
+    pub fn begin(self: *ScrollbarDragState, grab: f64) void {
         self.active = true;
+        self.grab_offset = grab;
     }
 
     pub fn end(self: *ScrollbarDragState) void {
@@ -169,8 +174,15 @@ test "selection finish and cancel clear active state" {
 
 test "scrollbar drag state toggles explicitly" {
     var scrollbar = ScrollbarDragState{};
-    scrollbar.begin();
+    scrollbar.begin(12.5);
     try std.testing.expect(scrollbar.active);
+    try std.testing.expectEqual(@as(f64, 12.5), scrollbar.grab_offset);
     scrollbar.end();
     try std.testing.expect(!scrollbar.active);
+}
+
+// #259 — scrollbar.zig 순수 모듈의 테스트가 어느 플랫폼 빌드에서든 실행되도록
+// (host 별 hit-test 가 platform-gated 라) 항상 reachable 한 여기서 참조한다.
+test {
+    std.testing.refAllDecls(@import("scrollbar.zig"));
 }
