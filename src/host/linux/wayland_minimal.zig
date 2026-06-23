@@ -16,6 +16,7 @@ const tab_actions = @import("../../tab_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const display_width = @import("../../font/display_width.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
+const scrollbar = @import("../../scrollbar.zig");
 const app_event = @import("../../app_event.zig");
 const themes = @import("../../themes.zig");
 const perf = @import("../../perf.zig");
@@ -3779,7 +3780,7 @@ const Client = struct {
                 // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
                 // Windows `app_controller.zig:835` 와 동등.
                 if (self.pointer_x_px >= self.window_width - self.renderer.scrollbarWPx()) {
-                    tab.interaction.scrollbar.begin();
+                    tab.interaction.scrollbar.begin(self.scrollbarGrabAt(self.pointer_y_px));
                     self.scrollToY(self.pointer_y_px);
                     return;
                 }
@@ -3856,33 +3857,39 @@ const Client = struct {
         }
     }
 
-    /// 스크롤바 thumb 위치를 mouse_y 에 맞춘다. Windows `app_controller.scrollToY`
-    /// (`src/app_controller.zig:422`) 의 패턴 그대로 — track height = `window_height
-    /// - 2*padding`, thumb 의 최소 높이 / available 계산 / `scrollViewport(.delta)`.
+    /// 현재 활성 탭의 scrollbar `Hit` (track + thumb geometry). 스크롤백이 없거나
+    /// thumb 여유가 없으면 null. 렌더러(`software_terminal.zig`)와 같은
+    /// `scrollbar.hit` 입력을 써서 그림 영역과 클릭 영역을 일치시킨다 (#259).
+    /// track_top 은 `tab_bar_h + pad` — 이전엔 탭바 높이를 빼지 않아 멀티탭에서
+    /// 스크롤바 클릭이 탭바 높이만큼 어긋났다.
+    fn scrollbarHit(self: *Client) ?scrollbar.Hit {
+        const tab = self.activeTabOrNull() orelse return null;
+        const sb = tab.terminal.screens.active.pages.scrollbar();
+        return scrollbar.hit(
+            sb.total,
+            sb.len,
+            sb.offset,
+            @floatFromInt(self.window_height),
+            @floatFromInt(self.effectiveTabBarHeightPx()),
+            @floatFromInt(self.renderer.paddingPx()),
+            @floatFromInt(self.renderer.scrollbarMinThumbHPx()),
+        );
+    }
+
+    /// mouse-down 시 grab offset (#259). 스크롤바 없으면 0.
+    fn scrollbarGrabAt(self: *Client, mouse_y: i32) f64 {
+        const h = self.scrollbarHit() orelse return 0;
+        return h.grab(@floatFromInt(mouse_y));
+    }
+
+    /// 스크롤바 드래그 시 thumb 위치 따라 viewport scroll. grab offset 은 down 때
+    /// `scrollbar.begin` 으로 저장된 값을 사용 — thumb 어디를 잡아도 그 지점이
+    /// 커서 아래 고정돼 따라온다 (#259, 이전엔 thumb 윗변이 커서로 점프).
     fn scrollToY(self: *Client, mouse_y: i32) void {
         const tab = self.activeTabOrNull() orelse return;
-        const screen = tab.terminal.screens.active;
-        const sb = screen.pages.scrollbar();
-        if (sb.total <= sb.len) return;
-
-        const pad = self.renderer.paddingPx();
-        const track_h: i32 = self.window_height - 2 * pad;
-        if (track_h <= 0) return;
-
-        const rel_y: i32 = @max(0, mouse_y - pad);
-        const track_hf: f64 = @floatFromInt(track_h);
-        const ratio_px: f64 = track_hf / @as(f64, @floatFromInt(sb.total));
-        const min_thumb: f64 = @floatFromInt(self.renderer.scrollbarMinThumbHPx());
-        const thumb_h: f64 = @max(min_thumb, ratio_px * @as(f64, @floatFromInt(sb.len)));
-        const available: f64 = track_hf - thumb_h;
-        if (available <= 0) return;
-        const clamped_y: f64 = @min(@as(f64, @floatFromInt(rel_y)), available);
-        const scroll_ratio: f64 = clamped_y / available;
-        const target_row: usize = @intFromFloat(scroll_ratio * @as(f64, @floatFromInt(sb.total - sb.len)));
-
-        const current: isize = @intCast(sb.offset);
-        const target: isize = @intCast(target_row);
-        const delta = target - current;
+        const h = self.scrollbarHit() orelse return;
+        const target_row = h.target(@floatFromInt(mouse_y), tab.interaction.scrollbar.grab_offset);
+        const delta = @as(isize, @intCast(target_row)) - @as(isize, @intCast(h.offset));
         if (delta != 0) {
             tab.terminal.scrollViewport(.{ .delta = delta });
             self.requestRedraw();

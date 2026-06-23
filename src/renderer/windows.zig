@@ -8,6 +8,7 @@ const dw = @import("../font/windows/directwrite.zig");
 const dwrite_font = @import("../font/windows/font.zig");
 const DWriteFontContext = dwrite_font.DWriteFontContext;
 const ui_metrics = @import("../ui_metrics.zig");
+const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = @import("windows/glyph_atlas.zig").GlyphAtlas;
 const ATLAS_SIZE = @import("windows/glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("../perf.zig");
@@ -1226,21 +1227,24 @@ pub const D3d11Renderer = struct {
         // drag hit-test in `main.zig` to keep click → offset mapping
         // consistent with what's drawn.
         const sb = terminal.screens.active.pages.scrollbar();
-        if (sb.total > sb.len) {
+        // #259 — drag hit-test (`app_controller.scrollbarHit`) 와 같은 `scrollbar.hit`
+        // 입력을 써서 thumb 그림 영역과 클릭 영역을 일치시킨다. track = `y_offset`
+        // (탭바) 아래 + 위/아래 padding 반영.
+        if (scrollbar.hit(
+            sb.total,
+            sb.len,
+            sb.offset,
+            @floatFromInt(vp_h),
+            @floatFromInt(y_offset),
+            @floatFromInt(padding),
+            @floatFromInt(scrollbar_min_thumb_h),
+        )) |h| {
             const sbw: f32 = @floatFromInt(scrollbar_w);
-            const sb_min: f32 = @floatFromInt(scrollbar_min_thumb_h);
-            const vp_hf: f32 = @floatFromInt(vp_h);
             const vp_wf: f32 = @floatFromInt(vp_w);
-            const track_h: f32 = vp_hf - @as(f32, @floatFromInt(y_offset + padding));
             const track_x: f32 = vp_wf - sbw;
-            const ratio = track_h / @as(f32, @floatFromInt(sb.total));
-            const thumb_h = @max(sb_min, ratio * @as(f32, @floatFromInt(sb.len)));
-            const available = track_h - thumb_h;
-            const max_offset: f32 = @floatFromInt(sb.total - sb.len);
-            const thumb_y = y_off + if (max_offset > 0) @as(f32, @floatFromInt(sb.offset)) / max_offset * available else 0;
             const scrollbar_inst = [1]BgInstance{.{
-                .pos = .{ track_x, thumb_y },
-                .size = .{ sbw, thumb_h },
+                .pos = .{ track_x, @floatCast(h.thumbTop()) },
+                .size = .{ sbw, @floatCast(h.g.thumb_h) },
                 .color = ui_metrics.SCROLLBAR_COLOR,
             }};
             self.drawBgInstances(&scrollbar_inst);
