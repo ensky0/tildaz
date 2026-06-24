@@ -516,14 +516,57 @@ pub const SessionCore = struct {
     /// 일반 typing (`queueInputToActive`) 과 분리 — typing 은 wrap 하면 안 됨.
     pub fn pasteToActive(self: *SessionCore, data: []const u8) void {
         const tab = self.activeTab() orelse return;
+        // paste 줄바꿈 정규화 (#260). 붙여넣는 텍스트의 줄바꿈은 출처(다른 OS의
+        // 클립보드 / 파일 / 웹)에 따라 CRLF·LF·CR 무엇이든 올 수 있으므로 전부
+        // CR(\r) 하나로 통일한다 — CR 은 모든 OS 에서 터미널이 Enter 키로 보내는
+        // 바이트라 OS 무관하게 옳다:
+        //   - Windows: PowerShell/PSReadLine 은 paste 에 LF 가 섞이면 줄 순서를
+        //     뒤집는 버그가 있음(PSReadLine #579). LF 를 남기지 않아야 함.
+        //   - Unix(mac/Linux): PTY line discipline(ICRNL)이 CR→LF 로 바꿔주므로 정상.
+        // CRLF 는 한 개로 합쳐 중복 빈 줄도 방지. *paste* 경로 전용 — 타이핑
+        // (queueInputToActive)·프로그램 출력(progress bar 의 \r 등)은 안 건드림.
+        const norm = normalizePasteNewlines(self.allocator, data, '\r');
+        defer if (norm) |b| self.allocator.free(b);
+        const out = norm orelse data; // 변환 불필요(또는 alloc 실패) 시 원본 그대로
         if (tab.terminal.modes.get(.bracketed_paste)) {
             tab.queueWrite("\x1b[200~");
-            tab.queueWrite(data);
+            tab.queueWrite(out);
             tab.queueWrite("\x1b[201~");
         } else {
-            tab.queueWrite(data);
+            tab.queueWrite(out);
         }
         tab.terminal.scrollViewport(.{ .bottom = {} });
+    }
+
+    /// paste 데이터의 줄바꿈을 단일 `nl` 로 통일. CRLF·LF·CR 전부 `nl` 하나로
+    /// (CRLF 는 한 개로 합침). 대량(수 MB) paste 도 빠르도록:
+    ///  - `nl` 외의 줄바꿈 문자가 하나도 없으면 변환 불필요 → null 반환(복사 0,
+    ///    호출부가 원본을 그대로 사용). 스캔은 SIMD memchr(`indexOfScalar`).
+    ///  - 변환 시에도 줄바꿈 아닌 구간은 `@memcpy` 로 통째 복사(바이트 루프 회피).
+    /// alloc 실패도 null.
+    fn normalizePasteNewlines(alloc: std.mem.Allocator, data: []const u8, nl: u8) ?[]u8 {
+        // nl 이 아닌 줄바꿈 문자(`other`)가 없으면 결과 == 입력 → 변환 생략.
+        const other: u8 = if (nl == '\n') '\r' else '\n';
+        if (std.mem.indexOfScalar(u8, data, other) == null) return null;
+
+        const buf = alloc.alloc(u8, data.len) catch return null;
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < data.len) {
+            // 줄바꿈 아닌 구간을 통째 복사 (memcpy 속도).
+            const start = i;
+            while (i < data.len and data[i] != '\r' and data[i] != '\n') i += 1;
+            if (i > start) {
+                @memcpy(buf[n..][0 .. i - start], data[start..i]);
+                n += i - start;
+            }
+            if (i >= data.len) break;
+            buf[n] = nl;
+            n += 1;
+            // CRLF 는 2바이트 건너뜀, 나머지(CR/LF 단독)는 1바이트.
+            i += if (data[i] == '\r' and i + 1 < data.len and data[i + 1] == '\n') 2 else 1;
+        }
+        return buf[0..n];
     }
 
     pub fn resizeAll(self: *SessionCore, cols: u16, rows: u16) void {
@@ -601,4 +644,43 @@ test "next active index shifts when closing earlier tab" {
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(2, 0, 2));
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(1, 1, 2));
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(1, 2, 2));
+}
+
+test "normalizePasteNewlines collapses CRLF/LF/CR and skips when unchanged" {
+    const a = std.testing.allocator;
+    { // CR target: CRLF·LF·CR 모두 단일 CR
+        const out = SessionCore.normalizePasteNewlines(a, "1\r\n2\n3\r4", '\r').?;
+        defer a.free(out);
+        try std.testing.expectEqualStrings("1\r2\r3\r4", out);
+    }
+    { // LF target: 모두 단일 LF
+        const out = SessionCore.normalizePasteNewlines(a, "1\r\n2\n3\r4", '\n').?;
+        defer a.free(out);
+        try std.testing.expectEqualStrings("1\n2\n3\n4", out);
+    }
+    // 변환 불필요 → null (복사 0). CR target 인데 LF 없음 / LF target 인데 CR 없음.
+    try std.testing.expect(SessionCore.normalizePasteNewlines(a, "abc", '\r') == null);
+    try std.testing.expect(SessionCore.normalizePasteNewlines(a, "a\rb\rc", '\r') == null);
+    try std.testing.expect(SessionCore.normalizePasteNewlines(a, "a\nb\nc", '\n') == null);
+    try std.testing.expect(SessionCore.normalizePasteNewlines(a, "", '\r') == null);
+    { // 대량 입력 정확성 (memcpy 구간 + 줄바꿈 혼합). LF→CR 1:1 이라 길이 동일.
+        var big: [10000]u8 = undefined;
+        for (&big, 0..) |*c, idx| c.* = if (idx % 100 == 99) '\n' else 'x';
+        const out = SessionCore.normalizePasteNewlines(a, &big, '\r').?;
+        defer a.free(out);
+        try std.testing.expectEqual(@as(usize, 10000), out.len);
+        try std.testing.expectEqual(@as(u8, '\r'), out[99]);
+        try std.testing.expectEqual(@as(u8, 'x'), out[100]);
+    }
+    { // CRLF 대량 → 길이 절반 가까이 축소 (\r\n → \r)
+        var big: [200]u8 = undefined;
+        var k: usize = 0;
+        while (k < big.len) : (k += 2) {
+            big[k] = '\r';
+            big[k + 1] = '\n';
+        }
+        const out = SessionCore.normalizePasteNewlines(a, &big, '\r').?;
+        defer a.free(out);
+        try std.testing.expectEqual(@as(usize, 100), out.len); // 100 CRLF → 100 CR
+    }
 }
