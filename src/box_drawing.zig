@@ -60,11 +60,16 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         }
     }.f;
 
+    // 선 두께 — WT BuiltinGlyphs 와 동일: 가는선 = max(1, round(셀너비/6)),
+    // 굵은선 = 가는선 × 2. (이전엔 셀높이/14 기준이라 WT 보다 얇았음.)
+    const lt = lightPx(cw);
+    const ht = lt * 2;
+
     // 대각선 ╱ ╲ ╳ — corner-to-corner 직선을 픽셀별 AA coverage 로 래스터.
     // 무한직선까지의 수직거리로 coverage = saturate(hw + 0.5 - dist). 모서리에서
     // 모서리로 가 인접 대각선 셀과 이어진다.
     if (cp == 0x2571 or cp == 0x2572 or cp == 0x2573) {
-        const hw = lightPx(ch) / 2; // half-width
+        const hw = lt / 2; // half-width
         const bs = cp == 0x2572 or cp == 0x2573; // ╲ : (0,0)→(cw,ch)
         const sl = cp == 0x2571 or cp == 0x2573; // ╱ : (0,ch)→(cw,0)
         var py: f32 = 0;
@@ -84,8 +89,6 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
 
     const d = descFor(cp) orelse return null;
 
-    const lt = lightPx(ch);
-    const ht = heavyPx(ch);
     const cx = @round(cw / 2);
     const cy = @round(ch / 2);
 
@@ -97,7 +100,7 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         if (horiz) {
             const y = @round(cy - t / 2);
             const cell = cw / segs;
-            const gap = @round(cell * 0.45);
+            const gap = @round(cell / 3.0); // WT 식 dash:gap ≈ 2:1
             var i: f32 = 0;
             while (i < segs) : (i += 1) {
                 const x0 = @round(i * cell + gap / 2);
@@ -107,7 +110,7 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         } else {
             const x = @round(cx - t / 2);
             const cell = ch / segs;
-            const gap = @round(cell * 0.45);
+            const gap = @round(cell / 3.0); // WT 식 dash:gap ≈ 2:1
             var i: f32 = 0;
             while (i < segs) : (i += 1) {
                 const y0 = @round(i * cell + gap / 2);
@@ -232,11 +235,9 @@ fn lineCov(qx: f32, qy: f32, ax: f32, ay: f32, bx: f32, by: f32, hw: f32) f32 {
     return @max(0, @min(1, hw + 0.5 - dist));
 }
 
-fn lightPx(ch: f32) f32 {
-    return @max(1, @round(ch / 14));
-}
-fn heavyPx(ch: f32) f32 {
-    return @max(2, @round(ch / 7));
+/// 가는 선 두께(px). WT BuiltinGlyphs: max(1, round(cellWidth/6)). 굵은선은 호출처에서 ×2.
+fn lightPx(w: f32) f32 {
+    return @max(1, @round(w / 6));
 }
 
 /// U+2500–U+257F 의 arm 분해 테이블. 대각선(2571–2573) 은 null.

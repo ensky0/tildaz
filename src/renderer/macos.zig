@@ -673,10 +673,13 @@ pub const MetalRenderer = struct {
                     };
                     const block_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                     const block_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                    // bg blend 가 premultiplied (One, OneMinusSrcAlpha) 라 음영(alpha<1)
+                    // 은 rgb 에도 alpha 를 곱해야 함. 솔리드(alpha=1)는 변화 없음.
+                    const a = rect.alpha;
                     bg_buf[bg_count] = .{
                         .pos = .{ block_x + rect.x0 * block_w, fy + rect.y0 * ch },
                         .size = .{ (rect.x1 - rect.x0) * block_w, (rect.y1 - rect.y0) * ch },
-                        .color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), rect.alpha },
+                        .color = .{ colorF(fg_rgb.r) * a, colorF(fg_rgb.g) * a, colorF(fg_rgb.b) * a, a },
                         .shade = rect.shade,
                     };
                     bg_count += 1;
