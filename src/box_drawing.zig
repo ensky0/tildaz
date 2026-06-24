@@ -17,12 +17,14 @@
 
 const std = @import("std");
 
-/// 셀 좌상단(0,0) 기준 픽셀 사각형.
-pub const Rect = struct { x: f32, y: f32, w: f32, h: f32 };
+/// 셀 좌상단(0,0) 기준 픽셀 사각형. cov = 0~1 coverage (anti-alias 용 알파).
+/// 직선/모서리 등 axis-aligned 는 cov=1(crisp). 곡선(호)·대각선은 픽셀별 cov<1
+/// 로 AA. renderer 는 cov 를 인스턴스 알파로 써서 배경과 blend 한다.
+pub const Rect = struct { x: f32, y: f32, w: f32, h: f32, cov: f32 = 1 };
 
-/// 한 글자당 최대 사각형 수. 둥근 모서리 호(arc) / 대각선은 작은 사각형
-/// staircase 라 여유 있게. ╳(대각선 2개)는 각 절반 예산으로 적응형 step.
-pub const MAX_RECTS = 64;
+/// 한 글자당 최대 사각형 수. 호·대각선 AA 는 픽셀별 사각형이라 큰 셀에서 수가
+/// 늘어 넉넉히. (╳ 대각선 2개가 가장 많음.)
+pub const MAX_RECTS = 384;
 
 const W = enum { none, light, heavy, double };
 
@@ -45,29 +47,36 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
     const push = struct {
         fn f(buf: *[MAX_RECTS]Rect, cnt: *usize, x: f32, y: f32, w: f32, h: f32) void {
             if (w <= 0 or h <= 0 or cnt.* >= MAX_RECTS) return;
-            buf[cnt.*] = .{ .x = x, .y = y, .w = w, .h = h };
+            buf[cnt.*] = .{ .x = x, .y = y, .w = w, .h = h, .cov = 1 };
+            cnt.* += 1;
+        }
+    }.f;
+    // 1px AA 픽셀 — coverage 알파. (호/대각선 edge 부드럽게)
+    const pix = struct {
+        fn f(buf: *[MAX_RECTS]Rect, cnt: *usize, px: f32, py: f32, cov: f32) void {
+            if (cov <= 0.02 or cnt.* >= MAX_RECTS) return;
+            buf[cnt.*] = .{ .x = px, .y = py, .w = 1, .h = 1, .cov = @min(1, cov) };
             cnt.* += 1;
         }
     }.f;
 
-    // 대각선 ╱ ╲ ╳ — corner-to-corner 직선을 작은 사각형 staircase 로 근사.
-    // (WT 는 stroked 직선; axis-aligned 사각형만 그리는 우리는 계단.) 모서리에서
-    // 모서리로 가므로 인접 대각선 셀과 이어진다. 큰 셀에서도 MAX_RECTS 안에
-    // 맞도록 row step 을 적응형으로.
+    // 대각선 ╱ ╲ ╳ — corner-to-corner 직선을 픽셀별 AA coverage 로 래스터.
+    // 무한직선까지의 수직거리로 coverage = saturate(hw + 0.5 - dist). 모서리에서
+    // 모서리로 가 인접 대각선 셀과 이어진다.
     if (cp == 0x2571 or cp == 0x2572 or cp == 0x2573) {
-        const t = lightPx(ch);
-        const both = cp == 0x2573;
-        const budget: f32 = if (both) @floatFromInt(MAX_RECTS / 2) else @floatFromInt(MAX_RECTS);
-        const step = @max(1, @ceil(ch / budget));
-        var y: f32 = 0;
-        while (y < ch) : (y += step) {
-            const frac = y / ch;
-            const h = @min(step, ch - y);
-            if (cp == 0x2572 or both) { // ╲ : (0,0)→(cw,ch)
-                push(out, &n, @round(frac * cw - t / 2), @round(y), t, h);
-            }
-            if (cp == 0x2571 or both) { // ╱ : (0,ch)→(cw,0)
-                push(out, &n, @round((1 - frac) * cw - t / 2), @round(y), t, h);
+        const hw = lightPx(ch) / 2; // half-width
+        const bs = cp == 0x2572 or cp == 0x2573; // ╲ : (0,0)→(cw,ch)
+        const sl = cp == 0x2571 or cp == 0x2573; // ╱ : (0,ch)→(cw,0)
+        var py: f32 = 0;
+        while (py < ch) : (py += 1) {
+            var px: f32 = 0;
+            while (px < cw) : (px += 1) {
+                const qx = px + 0.5;
+                const qy = py + 0.5;
+                var cov: f32 = 0;
+                if (bs) cov = @max(cov, lineCov(qx, qy, 0, 0, cw, ch, hw));
+                if (sl) cov = @max(cov, lineCov(qx, qy, 0, ch, cw, 0, hw));
+                pix(out, &n, px, py, cov);
             }
         }
         return n;
@@ -109,11 +118,12 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         return n;
     }
 
-    // 둥근 모서리 ╭╮╯╰ — 사분원 호(arc). WT BuiltinGlyphs 와 동일 의도:
-    // 두 arm 을 잇는 quarter-circle. 우리 파이프라인은 사각형만 그리므로 호를
-    // 작은 사각형 staircase 로 근사한다. 반지름은 WT 식 r=min(lt*4, min(cw,ch)*0.4).
+    // 둥근 모서리 ╭╮╯╰ — 사분원 호(arc) + 두 직선 arm. 호는 픽셀별 AA
+    // coverage 로 매끈하게(staircase 아님). 중심에서 거리 |dist-r| 로 coverage,
+    // elbow 쪽 사분면만(quadrant 판정으로 atan2 없이). WT 의 quarter-circle 의도.
     if (d.rounded) {
         const t = lt;
+        const hw = lt / 2; // 호 band half-width
         const hx: f32 = if (d.right != .none) 1 else -1; // right=+1, left=-1
         const vy: f32 = if (d.down != .none) 1 else -1; // down=+1, up=-1
         var r = @min(lt * 3, @min(cw, ch) * 0.32);
@@ -121,42 +131,39 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         const acx = cx + hx * r; // 호 중심
         const acy = cy + vy * r;
 
-        // 세로 arm (x=cx 중앙), 호 끝점 (cx, cy+vy*r) 부터 edge 까지.
+        // 세로 arm (crisp): 호 끝점(cy+vy*r) → 가장자리. 1px 겹쳐 이음새 제거.
         {
             const ax = @round(cx - t / 2);
             if (vy > 0) {
-                const y0 = @round(cy + r - t / 2);
+                const y0 = @max(0, @round(cy + r) - 1);
                 push(out, &n, ax, y0, t, ch - y0);
             } else {
-                const y1 = @round(cy - r + t / 2);
+                const y1 = @round(cy - r) + 1;
                 push(out, &n, ax, 0, t, y1);
             }
         }
-        // 가로 arm (y=cy 중앙), 호 끝점 (cx+hx*r, cy) 부터 edge 까지.
+        // 가로 arm (crisp): 호 끝점(cx+hx*r) → 가장자리.
         {
             const ay = @round(cy - t / 2);
             if (hx > 0) {
-                const x0 = @round(cx + r - t / 2);
+                const x0 = @max(0, @round(cx + r) - 1);
                 push(out, &n, x0, ay, cw - x0, t);
             } else {
-                const x1 = @round(cx - r + t / 2);
+                const x1 = @round(cx - r) + 1;
                 push(out, &n, 0, ay, x1, t);
             }
         }
-        // 호 staircase: a0(세로 join) → a1(가로 join), 90° sweep.
-        const pi = std.math.pi;
-        const a0: f32 = if (hx > 0) pi else 0;
-        var a1: f32 = if (vy > 0) -(pi / 2.0) else (pi / 2.0);
-        while (a1 - a0 > pi) a1 -= 2 * pi;
-        while (a1 - a0 < -pi) a1 += 2 * pi;
-        const steps: usize = @intFromFloat(@max(3, @round(r * 1.8)));
-        var k: usize = 0;
-        while (k <= steps) : (k += 1) {
-            const f = @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(steps));
-            const th = a0 + (a1 - a0) * f;
-            const px = acx + r * @cos(th);
-            const py = acy + r * @sin(th);
-            push(out, &n, @round(px - t / 2), @round(py - t / 2), t, t);
+        // 호 band AA: elbow 쪽 사분면(dx*hx<=0, dy*vy<=0)에서 거리 r±hw.
+        var py: f32 = 0;
+        while (py < ch) : (py += 1) {
+            var px: f32 = 0;
+            while (px < cw) : (px += 1) {
+                const dx = (px + 0.5) - acx;
+                const dy = (py + 0.5) - acy;
+                if (dx * hx > 0 or dy * vy > 0) continue; // 다른 사분면
+                const dr = @abs(@sqrt(dx * dx + dy * dy) - r);
+                pix(out, &n, px, py, hw + 0.5 - dr);
+            }
         }
         return n;
     }
@@ -213,6 +220,17 @@ fn spanOf(w: W, lt: f32, ht: f32) f32 {
         .heavy => ht,
         .double => 3 * lt, // 두 선(각 lt) + 가운데 간격(lt)
     };
+}
+
+/// 점 (qx,qy) 의 직선 (ax,ay)-(bx,by) 에 대한 AA coverage.
+/// 무한직선까지 수직거리 dist → saturate(hw + 0.5 - dist). (대각선용)
+fn lineCov(qx: f32, qy: f32, ax: f32, ay: f32, bx: f32, by: f32, hw: f32) f32 {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = @sqrt(dx * dx + dy * dy);
+    if (len < 0.0001) return 0;
+    const dist = @abs((qx - ax) * dy - (qy - ay) * dx) / len;
+    return @max(0, @min(1, hw + 0.5 - dist));
 }
 
 fn lightPx(ch: f32) f32 {

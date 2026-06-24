@@ -700,11 +700,14 @@ pub const MetalRenderer = struct {
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
                         const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x);
                         const box_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                        // cov = AA coverage. bg blend 가 (One, OneMinusSrcAlpha)
+                        // premultiplied 라 rgb 에도 cov 를 곱한다.
                         for (box_rects[0..bn]) |br| {
+                            const cv = br.cov;
                             bg_buf[bg_count] = .{
                                 .pos = .{ box_x + br.x, fy + br.y },
                                 .size = .{ br.w, br.h },
-                                .color = .{ colorF(fg_rgb_x.r), colorF(fg_rgb_x.g), colorF(fg_rgb_x.b), 1 },
+                                .color = .{ colorF(fg_rgb_x.r) * cv, colorF(fg_rgb_x.g) * cv, colorF(fg_rgb_x.b) * cv, cv },
                                 .shade = 0,
                             };
                             bg_count += 1;
