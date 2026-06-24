@@ -1867,7 +1867,8 @@ fn drawBlockRect(
     const y1: i32 = cell_y + @as(i32, @intFromFloat(br.y1 * ch_f));
 
     if (br.shade < 0.5) {
-        rect(memory, fb_w, fb_h, stride, x0, y0, x1 - x0, y1 - y0, fg);
+        // 솔리드/음영 — br.alpha 로 blend (음영 ░▒▓ = 0.25/0.5/0.75, 블록 = 1.0).
+        blendRect(memory, fb_w, fb_h, stride, x0, y0, x1 - x0, y1 - y0, fg, br.alpha);
         return;
     }
 
