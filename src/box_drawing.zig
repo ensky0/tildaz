@@ -131,25 +131,27 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         const acx = cx + hx * r; // 호 중심
         const acy = cy + vy * r;
 
-        // 세로 arm (crisp): 호 끝점(cy+vy*r) → 가장자리. 1px 겹쳐 이음새 제거.
+        // 세로 arm (crisp): 호 끝점(cy+vy*r)에서 정확히 시작 → 가장자리.
+        // overshoot 금지 — arm 이 곡선 안쪽으로 삐져나가면 이음새가 튀어나옴.
+        // 호는 tangent(수직)로 만나므로 끝점에서 이어 그려야 매끈.
         {
             const ax = @round(cx - t / 2);
             if (vy > 0) {
-                const y0 = @max(0, @round(cy + r) - 1);
+                const y0 = @round(cy + r);
                 push(out, &n, ax, y0, t, ch - y0);
             } else {
-                const y1 = @round(cy - r) + 1;
+                const y1 = @round(cy - r);
                 push(out, &n, ax, 0, t, y1);
             }
         }
-        // 가로 arm (crisp): 호 끝점(cx+hx*r) → 가장자리.
+        // 가로 arm (crisp): 호 끝점(cx+hx*r)에서 정확히 시작 → 가장자리.
         {
             const ay = @round(cy - t / 2);
             if (hx > 0) {
-                const x0 = @max(0, @round(cx + r) - 1);
+                const x0 = @round(cx + r);
                 push(out, &n, x0, ay, cw - x0, t);
             } else {
-                const x1 = @round(cx - r) + 1;
+                const x1 = @round(cx - r);
                 push(out, &n, 0, ay, x1, t);
             }
         }
