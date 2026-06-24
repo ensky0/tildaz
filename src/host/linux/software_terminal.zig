@@ -346,7 +346,8 @@ pub const Renderer = struct {
                     var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
                     if (box_drawing.boxRects(cp, @floatFromInt(cell_w), @floatFromInt(ch), &box_rects)) |bn| {
                         for (box_rects[0..bn]) |br| {
-                            rect(
+                            // br.cov = AA coverage → src-over 블렌딩 가중치.
+                            blendRect(
                                 memory,
                                 width,
                                 height,
@@ -356,6 +357,7 @@ pub const Renderer = struct {
                                 @as(i32, @intFromFloat(br.w)),
                                 @as(i32, @intFromFloat(br.h)),
                                 fg,
+                                br.cov,
                             );
                         }
                         x += 1;
@@ -1380,6 +1382,47 @@ fn rect(
         while (px < x1) : (px += 1) {
             const off: usize = @intCast(py * stride + px * 4);
             std.mem.writeInt(u32, memory[off..][0..4], packed_color, .little);
+        }
+    }
+}
+
+/// `rect` 의 anti-alias 버전 — cov(0~1) 를 src-over 가중치로 기존 픽셀과 블렌딩.
+/// box-drawing 의 호/대각선 AA 용 (#258). cov>=1 이면 불투명 rect 와 동일.
+fn blendRect(
+    memory: []u8,
+    width: i32,
+    height: i32,
+    stride: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: ghostty.color.RGB,
+    cov: f32,
+) void {
+    if (cov <= 0) return;
+    if (cov >= 0.999) {
+        rect(memory, width, height, stride, x, y, w, h, color);
+        return;
+    }
+    const x0 = @max(0, x);
+    const y0 = @max(0, y);
+    const x1 = @min(width, x + w);
+    const y1 = @min(height, y + h);
+    if (x1 <= x0 or y1 <= y0) return;
+    const a: u8 = @intFromFloat(@max(0, @min(255, cov * 255)));
+    var py = y0;
+    while (py < y1) : (py += 1) {
+        var px = x0;
+        while (px < x1) : (px += 1) {
+            const off: usize = @intCast(py * stride + px * 4);
+            const cur = std.mem.readInt(u32, memory[off..][0..4], .little);
+            const bg: ghostty.color.RGB = .{
+                .r = @intCast((cur >> 16) & 0xff),
+                .g = @intCast((cur >> 8) & 0xff),
+                .b = @intCast(cur & 0xff),
+            };
+            std.mem.writeInt(u32, memory[off..][0..4], blendPixel(color, bg, a), .little);
         }
     }
 }

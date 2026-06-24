@@ -1064,11 +1064,13 @@ pub const D3d11Renderer = struct {
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
                         const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x);
                         const fx_box: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                        // cov = AA coverage → 인스턴스 알파. alpha_blend 가
+                        // SrcAlpha/InvSrcAlpha(non-premult) 라 rgb 는 그대로.
                         for (box_rects[0..bn]) |br| {
                             bg_buf[block_count] = .{
                                 .pos = .{ fx_box + br.x, fy + br.y },
                                 .size = .{ br.w, br.h },
-                                .color = .{ colorF(fg_rgb_x.r), colorF(fg_rgb_x.g), colorF(fg_rgb_x.b), 1 },
+                                .color = .{ colorF(fg_rgb_x.r), colorF(fg_rgb_x.g), colorF(fg_rgb_x.b), br.cov },
                                 .shade = 0,
                             };
                             block_count += 1;
