@@ -20,6 +20,7 @@ const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
+const box_drawing = @import("../box_drawing.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const ligature_mod = @import("../font/ligature.zig");
@@ -681,6 +682,36 @@ pub const MetalRenderer = struct {
                     bg_count += 1;
                     x += 1;
                     continue;
+                }
+
+                // Box-drawing (선/모서리/junction, U+2500–257F) — block element 과
+                // 같은 이유로 procedural 사각형 (#258). 대각선은 null → 글리프 path.
+                if (cp >= 0x2500 and cp <= 0x257F) {
+                    const box_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
+                    var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
+                    if (box_drawing.boxRects(cp, box_w, ch, &box_rects)) |bn| {
+                        if (bg_count + bn > MAX_CELLS) {
+                            self.drawBgInstances(encoder, bg_buf[0..bg_count]);
+                            bg_count = 0;
+                        }
+                        const style_x = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                        const is_inverse_x = style_x.flags.inverse;
+                        const x16_x: u16 = @intCast(x);
+                        const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
+                        const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x);
+                        const box_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
+                        for (box_rects[0..bn]) |br| {
+                            bg_buf[bg_count] = .{
+                                .pos = .{ box_x + br.x, fy + br.y },
+                                .size = .{ br.w, br.h },
+                                .color = .{ colorF(fg_rgb_x.r), colorF(fg_rgb_x.g), colorF(fg_rgb_x.b), 1 },
+                                .shade = 0,
+                            };
+                            bg_count += 1;
+                        }
+                        x += 1;
+                        continue;
+                    }
                 }
 
                 const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};

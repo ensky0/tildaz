@@ -10,6 +10,7 @@ const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
+const box_drawing = @import("../../box_drawing.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
@@ -336,6 +337,30 @@ pub const Renderer = struct {
                     drawBlockRect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, br, fg);
                     x += 1;
                     continue;
+                }
+
+                // Box-drawing (선/모서리/junction, U+2500–257F) — block element 과
+                // 같은 이유로 procedural 사각형 (#258). 폰트(FreeType) 글리프는
+                // cell 에 안 맞아 셀 사이 갭. 대각선은 null → 아래 글리프 path.
+                if (cp >= 0x2500 and cp <= 0x257F) {
+                    var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
+                    if (box_drawing.boxRects(cp, @floatFromInt(cell_w), @floatFromInt(ch), &box_rects)) |bn| {
+                        for (box_rects[0..bn]) |br| {
+                            rect(
+                                memory,
+                                width,
+                                height,
+                                stride,
+                                cell_x + @as(i32, @intFromFloat(br.x)),
+                                cell_y + @as(i32, @intFromFloat(br.y)),
+                                @as(i32, @intFromFloat(br.w)),
+                                @as(i32, @intFromFloat(br.h)),
+                                fg,
+                            );
+                        }
+                        x += 1;
+                        continue;
+                    }
                 }
 
                 // L5-5: grapheme cluster (VS-16 emoji, skin tone modifier, ZWJ
