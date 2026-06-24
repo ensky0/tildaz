@@ -126,7 +126,7 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         const hw = lt / 2; // 호 band half-width
         const hx: f32 = if (d.right != .none) 1 else -1; // right=+1, left=-1
         const vy: f32 = if (d.down != .none) 1 else -1; // down=+1, up=-1
-        var r = @min(lt * 3, @min(cw, ch) * 0.32);
+        var r = @min(lt * 5, @min(cw, ch) * 0.5);
         if (r < 1) r = 1;
         const acx = cx + hx * r; // 호 중심
         const acy = cy + vy * r;
