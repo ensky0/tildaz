@@ -118,53 +118,50 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
         return n;
     }
 
-    // 둥근 모서리 ╭╮╯╰ — 사분원 호(arc) + 두 직선 arm. 호는 픽셀별 AA
-    // coverage 로 매끈하게(staircase 아님). 중심에서 거리 |dist-r| 로 coverage,
-    // elbow 쪽 사분면만(quadrant 판정으로 atan2 없이). WT 의 quarter-circle 의도.
+    // 둥근 모서리 ╭╮╯╰ — WT 처럼 "직선 arm + 사분원 호 + 직선 arm" 을 **하나의
+    // 연속 stroke** 로 그린다. 경로까지의 최소 거리로 픽셀별 coverage 를 구하므로
+    // (arc 와 arm 을 따로 그릴 때 생기던) 이음새 뿔이 원천적으로 없다.
+    // WT BuiltinGlyphs: DrawRoundedRectangle(중심→모서리, cornerRadius). 동등.
     if (d.rounded) {
-        const t = lt;
-        const hw = lt / 2; // 호 band half-width
+        const hw = lt / 2; // stroke half-width
         const hx: f32 = if (d.right != .none) 1 else -1; // right=+1, left=-1
         const vy: f32 = if (d.down != .none) 1 else -1; // down=+1, up=-1
         var r = @min(lt * 5, @min(cw, ch) * 0.5);
         if (r < 1) r = 1;
-        const acx = cx + hx * r; // 호 중심
-        const acy = cy + vy * r;
+        // 중심선을 *픽셀 중심*에 정렬 — crisp-rect 와 같은 위치(round(c-lt/2)+lt/2).
+        // 정수 좌표에 두면 1px 선이 두 픽셀에 50%씩 걸쳐 흐려지므로(straddle) 필수.
+        const xc = @round(cx - lt / 2) + lt / 2;
+        const yc = @round(cy - lt / 2) + lt / 2;
+        const acx = xc + hx * r; // 호 중심
+        const acy = yc + vy * r;
+        // 세로 arm: x=xc, y ∈ [v_lo,v_hi] (호 끝점에서 가장자리까지, tangent 연결).
+        const v_lo = if (vy > 0) yc + r else 0;
+        const v_hi = if (vy > 0) ch else yc - r;
+        // 가로 arm: y=yc, x ∈ [h_lo,h_hi].
+        const h_lo = if (hx > 0) xc + r else 0;
+        const h_hi = if (hx > 0) cw else xc - r;
 
-        // 세로 arm (crisp): 호 끝점(cy+vy*r)에서 정확히 시작 → 가장자리.
-        // overshoot 금지 — arm 이 곡선 안쪽으로 삐져나가면 이음새가 튀어나옴.
-        // 호는 tangent(수직)로 만나므로 끝점에서 이어 그려야 매끈.
-        {
-            const ax = @round(cx - t / 2);
-            if (vy > 0) {
-                const y0 = @round(cy + r);
-                push(out, &n, ax, y0, t, ch - y0);
-            } else {
-                const y1 = @round(cy - r);
-                push(out, &n, ax, 0, t, y1);
-            }
-        }
-        // 가로 arm (crisp): 호 끝점(cx+hx*r)에서 정확히 시작 → 가장자리.
-        {
-            const ay = @round(cy - t / 2);
-            if (hx > 0) {
-                const x0 = @round(cx + r);
-                push(out, &n, x0, ay, cw - x0, t);
-            } else {
-                const x1 = @round(cx - r);
-                push(out, &n, 0, ay, x1, t);
-            }
-        }
-        // 호 band AA: elbow 쪽 사분면(dx*hx<=0, dy*vy<=0)에서 거리 r±hw.
         var py: f32 = 0;
         while (py < ch) : (py += 1) {
             var px: f32 = 0;
             while (px < cw) : (px += 1) {
-                const dx = (px + 0.5) - acx;
-                const dy = (py + 0.5) - acy;
-                if (dx * hx > 0 or dy * vy > 0) continue; // 다른 사분면
-                const dr = @abs(@sqrt(dx * dx + dy * dy) - r);
-                pix(out, &n, px, py, hw + 0.5 - dr);
+                const qx = px + 0.5;
+                const qy = py + 0.5;
+                // 세로 arm 까지 거리 (점-선분).
+                const vyc = @max(v_lo, @min(v_hi, qy));
+                const dV = @sqrt((qx - xc) * (qx - xc) + (qy - vyc) * (qy - vyc));
+                // 가로 arm 까지 거리.
+                const hxc = @max(h_lo, @min(h_hi, qx));
+                const dH = @sqrt((qx - hxc) * (qx - hxc) + (qy - yc) * (qy - yc));
+                // 호까지 거리 (elbow 사분면에서만; 밖은 arm 이 담당).
+                const dx = qx - acx;
+                const dy = qy - acy;
+                var dA: f32 = 1e9;
+                if (dx * hx <= 0 and dy * vy <= 0) {
+                    dA = @abs(@sqrt(dx * dx + dy * dy) - r);
+                }
+                const dist = @min(dV, @min(dH, dA));
+                pix(out, &n, px, py, hw + 0.5 - dist);
             }
         }
         return n;
