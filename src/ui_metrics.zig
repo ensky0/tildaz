@@ -6,7 +6,7 @@
 pub const TERMINAL_PADDING_PT: u32 = 6;
 
 /// 우측 scrollbar 너비.
-pub const SCROLLBAR_W_PT: u32 = 8;
+pub const SCROLLBAR_W_PT: u32 = 10;
 
 /// scrollbar thumb 의 최소 높이 — scrollback 이 길어 ratio 가 매우 작아도
 /// thumb 가 클릭 가능한 크기 유지.
