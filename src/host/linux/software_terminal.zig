@@ -326,7 +326,7 @@ pub const Renderer = struct {
                     x += 1;
                     continue;
                 }
-                const fg = resolveFg(style, &colors, is_selected);
+                const fg = resolveFg(style, &raw, &colors, is_selected);
                 const cp = raw.codepoint();
 
                 // Block element + shade — cell-aligned procedural rectangle / dot
@@ -1325,14 +1325,19 @@ fn drawLigatureMatch(
     }
 }
 
-fn resolveFg(style: ghostty.Style, colors: *const ghostty.RenderState.Colors, selected: bool) ghostty.color.RGB {
+fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, selected: bool) ghostty.color.RGB {
     if (selected) return colors.background;
     if (style.flags.inverse) return colors.background;
-    return style.fg(.{
+    const base = style.fg(.{
         .default = colors.foreground,
         .palette = &colors.palette,
         .bold = .bright,
     });
+    if (style.flags.faint) {
+        const bg = style.bg(raw, &colors.palette) orelse colors.background;
+        return themes.faintBlend(base, bg);
+    }
+    return base;
 }
 
 fn resolveBg(

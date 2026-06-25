@@ -18,6 +18,7 @@ const tab_layout = @import("../tab_layout.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
+const themes = @import("../themes.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
@@ -1544,11 +1545,16 @@ pub const D3d11Renderer = struct {
         if (is_selected or is_inverse) {
             return style.bg(raw, &colors.palette) orelse colors.background;
         }
-        return style.fg(.{
+        const base = style.fg(.{
             .default = colors.foreground,
             .palette = &colors.palette,
             .bold = .bright,
         });
+        if (style.flags.faint) {
+            const bg = style.bg(raw, &colors.palette) orelse colors.background;
+            return themes.faintBlend(base, bg);
+        }
+        return base;
     }
 
     /// Block element + shade 처리는 양 platform 공유 모듈 `block_element.zig` 로

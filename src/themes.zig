@@ -265,6 +265,21 @@ pub fn isDark(theme: *const Theme) bool {
     return lum < 128_000;
 }
 
+/// SGR 2 (faint/dim) 색 처리. ghostty `Style.fg()` 는 faint 를 적용하지 않고
+/// (bold/bright 만 처리), ghostty 자체 renderer 가 faint 를 glyph alpha
+/// `faint-opacity` (기본 0.5) 로 cell 배경 위에 blend 한다. 우리 3 renderer 의
+/// resolveFg 는 style.fg() 결과를 그대로 써서 faint 가 무시됐다 (#258 B 갈래).
+/// 동일 결과를 내려고 fg 를 cell 배경색 쪽으로 0.5 blend (= alpha 0.5 over bg)
+/// 한다. 단순 fg×0.5 (검정 쪽) 이 아니라 bg 쪽 blend 라 light 테마·투명창에서도
+/// 올바르다. 3 OS (Windows d3d11 / macOS Metal / Linux software) 공통.
+pub fn faintBlend(fg: RGB, bg: RGB) RGB {
+    return .{
+        .r = @intCast((@as(u16, fg.r) + bg.r) / 2),
+        .g = @intCast((@as(u16, fg.g) + bg.g) / 2),
+        .b = @intCast((@as(u16, fg.b) + bg.b) / 2),
+    };
+}
+
 fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
