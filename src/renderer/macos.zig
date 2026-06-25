@@ -21,6 +21,7 @@ const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
+const themes = @import("../themes.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const ligature_mod = @import("../font/ligature.zig");
@@ -1535,9 +1536,14 @@ fn resolveFg(
         if (style.bg(raw, &colors.palette)) |bg_col| return bg_col;
         return colors.background;
     }
-    return style.fg(.{
+    const base = style.fg(.{
         .default = colors.foreground,
         .palette = &colors.palette,
         .bold = .bright,
     });
+    if (style.flags.faint) {
+        const bg = style.bg(raw, &colors.palette) orelse colors.background;
+        return themes.faintBlend(base, bg);
+    }
+    return base;
 }
