@@ -237,6 +237,17 @@ pub const MetalRenderer = struct {
     bg_used: u32 = 0,
     text_used: u32 = 0,
 
+    // 현재 buffer 가 담을 수 있는 instance 수. 초기 MAX_INSTANCES, 수요 초과 시
+    // frame 시작에서 키운다 (monotonic). box-drawing 은 MAX_RECTS=384 까지 분해돼
+    // 화면 가득 + 큰 선택(선택 cell 마다 배경 instance)이 겹치면 32768 을 쉽게
+    // 넘어, 초과분 draw 가 silent drop 되어 선택과 무관한 box 선까지 사라졌었다.
+    bg_capacity: u32 = MAX_INSTANCES,
+    text_capacity: u32 = MAX_INSTANCES,
+    // 이번 frame 이 그리려 *요청한* 총 instance 수 (drop 포함). frame 시작에서
+    // capacity 와 비교해 버퍼 확대 판단 후 0 reset. capacity 와 달리 drop 된 것도 셈.
+    bg_needed: u32 = 0,
+    text_needed: u32 = 0,
+
     // Frame in progress — renderTabBar 가 begin (drawable + cmd_buf + encoder
     // 생성 + clear), renderTerminal 이 end (encode + present + commit).
     // Windows 의 self.rtv 패턴과 같은 의도. null = frame 진행 중 아님.
@@ -442,9 +453,18 @@ pub const MetalRenderer = struct {
         }
         self.current_drawable = drawable;
 
+        // 직전 frame 이 요청한 instance 수가 buffer 용량을 넘었으면 키운다. 누적-offset
+        // 방식이라 buffer 는 frame 전체 instance 를 동시에 담아야 하는데, 초과 시
+        // drawBgInstances 가 그 호출을 통째 drop 해 box-drawing 등 뒷 draw 가 사라졌다.
+        // frame 시작(아직 draw 없음)에서만 재할당 — 진행 중 swap 회피. 직전 frame 의
+        // command buffer 가 옛 buffer 를 retain 하므로 즉시 release 안전.
+        self.growInstanceBuffers();
+
         // frame 내 buffer overwrite 방지 — 매 frame 시작 시 누적 offset 리셋.
         self.bg_used = 0;
         self.text_used = 0;
+        self.bg_needed = 0;
+        self.text_needed = 0;
 
         const texture = objc.msgSend(drawable, objc.sel("texture"));
 
@@ -1261,7 +1281,10 @@ pub const MetalRenderer = struct {
 
     fn drawBgInstances(self: *MetalRenderer, encoder: objc.id, instances: []const BgInstance) void {
         if (instances.len == 0) return;
-        if (self.bg_used + instances.len > MAX_INSTANCES) return;
+        // 이번 frame 의 총 수요 누적 (drop 돼도 셈) — frame 시작에서 buffer 확대 판단용.
+        self.bg_needed += @intCast(instances.len);
+        // 현재 용량 초과면 이 호출만 drop. 다음 frame 시작에서 buffer 가 커져 복구.
+        if (self.bg_used + instances.len > self.bg_capacity) return;
 
         const contents_ptr = objc.msgSend(self.bg_buffer, objc.sel("contents")) orelse return;
         const contents: [*]BgInstance = @ptrCast(@alignCast(contents_ptr));
@@ -1291,7 +1314,8 @@ pub const MetalRenderer = struct {
 
     fn drawTextInstances(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance) void {
         if (instances.len == 0) return;
-        if (self.text_used + instances.len > MAX_INSTANCES) return;
+        self.text_needed += @intCast(instances.len);
+        if (self.text_used + instances.len > self.text_capacity) return;
 
         const contents_ptr = objc.msgSend(self.text_buffer, objc.sel("contents")) orelse return;
         const contents: [*]TextInstance = @ptrCast(@alignCast(contents_ptr));
@@ -1359,6 +1383,33 @@ pub const MetalRenderer = struct {
     fn createBuffer(device: objc.id, size: u32) objc.id {
         // MTLResourceStorageModeShared = 0
         return objc.msgSend2(device, objc.sel("newBufferWithLength:options:"), @as(objc.NSUInteger, size), @as(objc.NSUInteger, 0));
+    }
+
+    /// 직전 frame 이 요청한 instance 수(`*_needed`)가 현재 buffer 용량을 넘으면
+    /// 2배씩 키워 다음 frame 부터 drop 없이 그린다 (monotonic — 줄이진 않음).
+    /// frame 시작에서만 호출 (아직 draw encode 전이라 안전). 옛 buffer 는 직전
+    /// frame 의 command buffer 가 retain 하므로 release 해도 in-flight 안전.
+    fn growInstanceBuffers(self: *MetalRenderer) void {
+        if (self.bg_needed > self.bg_capacity) {
+            var cap = self.bg_capacity;
+            while (cap < self.bg_needed) cap *|= 2;
+            const buf = createBuffer(self.device, cap * @sizeOf(BgInstance));
+            if (buf != null) {
+                objc.msgSendVoid(self.bg_buffer, objc.sel("release"));
+                self.bg_buffer = buf;
+                self.bg_capacity = cap;
+            }
+        }
+        if (self.text_needed > self.text_capacity) {
+            var cap = self.text_capacity;
+            while (cap < self.text_needed) cap *|= 2;
+            const buf = createBuffer(self.device, cap * @sizeOf(TextInstance));
+            if (buf != null) {
+                objc.msgSendVoid(self.text_buffer, objc.sel("release"));
+                self.text_buffer = buf;
+                self.text_capacity = cap;
+            }
+        }
     }
 
     fn createAtlasTexture(device: objc.id) objc.id {
