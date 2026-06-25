@@ -255,6 +255,26 @@ kbd {
   overflow-wrap: break-word;
 }
 
+/* Box-drawing art is a single block (no inter-row paragraph margin) so the rows
+   join into a connected box. Line-height matches the surrounding text so the box
+   glyphs are the same size as the box chars in the typed command above. */
+.terminal-grid p.box-art {
+  margin-top: 0;
+}
+
+/* Shade blocks (░▒▓) render as smooth alpha fills — the way TildaZ v0.5.2 draws
+   them — instead of the dot-dither the raw glyphs show in a browser font. */
+.shade {
+  display: inline-block;
+  width: 1ch;
+  height: 1em;
+  vertical-align: text-bottom;
+}
+
+.shade-1 { background: color-mix(in srgb, currentColor 25%, transparent); }
+.shade-2 { background: color-mix(in srgb, currentColor 50%, transparent); }
+.shade-3 { background: color-mix(in srgb, currentColor 75%, transparent); }
+
 .prompt {
   color: #7cc7ff;
   margin-right: 0.7ch;

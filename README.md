@@ -14,10 +14,12 @@ quick native window that gets out of your way.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.1 — fullscreen on every desktop + cross-platform polish.** One
-> drop-down terminal for Linux (Wayland), macOS, and Windows, with verified
-> drop-down + global-hotkey support on KDE Plasma, GNOME, Cinnamon, COSMIC,
-> Hyprland, and sway.
+> **v0.5.2 — box-drawing and dim text rendered the way Windows Terminal does.**
+> One drop-down terminal for Linux (Wayland), macOS, and Windows. Box-drawing
+> characters (the lines and borders TUIs draw) now render as continuous procedural
+> strokes, faint/dim text (SGR 2) dims toward the background, and the scrollbar is
+> wider and easier to grab — all verified across KDE Plasma, GNOME, Cinnamon,
+> COSMIC, Hyprland, sway, macOS, and Windows.
 
 ## Why TildaZ
 
@@ -31,11 +33,13 @@ quick native window that gets out of your way.
 ## See it render
 
 Ligatures, true color, color emoji with skin tones and ZWJ families, full-width
-CJK, and block / shade glyphs all render correctly — identically on Linux,
-macOS, and Windows. Paste this into any TildaZ window:
+CJK, smoothly-shaded block glyphs (`░▒▓` now use smooth alpha instead of a dot
+dither), and procedural box-drawing (continuous lines, corners, and rounded
+joints — drawn the way Windows Terminal does) all render correctly — identically
+on Linux, macOS, and Windows. Paste this into any TildaZ window:
 
 ```sh
-echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n"
+echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n┌─┬─┐ ╔═╦═╗ ╭───╮\n├─┼─┤ ╠═╬═╣ │░▒▓│\n└─┴─┘ ╚═╩═╝ ╰───╯\n"
 ```
 
 ## Install
@@ -122,13 +126,8 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 | Configuration schema, themes, examples | [CONFIG.md](CONFIG.md) |
 | Keyboard and mouse shortcuts | [KEYBINDINGS.md](KEYBINDINGS.md) |
 | Current code structure | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Cross-platform behavior spec | [SPEC.md](SPEC.md) |
-| Maintainer / agent workflow rules | [AGENTS.md](AGENTS.md) |
 | Security reporting | [SECURITY.md](SECURITY.md) |
 | Release notes | [`dist/release-notes/`](dist/release-notes/) |
-
-Historical cross-platform refactor notes are archived in
-[CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 
 ## Known Limitations
 
@@ -139,7 +138,7 @@ Historical cross-platform refactor notes are archived in
   (`wp_layer_shell_v1` categorical layers have no normal-window slot). Hanja
   conversion of already-committed Hangul (selecting committed Korean text and
   pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no
-  reconversion request. See [SPEC.md](SPEC.md) §1.2 for the desktop matrix.
+  reconversion request.
 - Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
   may warn on first launch. The current SignPath application draft lives in
   [dist/signpath-application.md](dist/signpath-application.md).

@@ -29,7 +29,7 @@
 
   <header class="hero">
     <div class="hero-inner">
-      <p class="eyebrow">Linux · macOS · Windows · v0.5.1</p>
+      <p class="eyebrow">Linux · macOS · Windows · v0.5.2</p>
       <h1>The drop-down terminal that works everywhere.</h1>
       <p class="hero-copy">
         Hit <kbd>F1</kbd> and a fast, native terminal slides down over whatever
@@ -51,10 +51,12 @@
           <div class="window-dot"></div>
         </div>
         <div class="terminal-grid">
-          <p><span class="prompt">ensky0 ~/tildaz</span> echo -e "안녕 🌈 TildaZ — ligatures => != >=\n🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라\n▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789"</p>
-          <p><span class="output">안녕 🌈 TildaZ — ligatures => != >=</span></p>
-          <p><span class="output">🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라</span></p>
-          <p><span class="output">▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789</span></p>
+          <p><span class="prompt">ensky0 ~/tildaz</span> echo -e "🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라  ligatures => != >=\n▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789\n┌─┬─┐ ╔═╦═╗ ╭───╮\n├─┼─┤ ╠═╬═╣ │░▒▓│\n└─┴─┘ ╚═╩═╝ ╰───╯"</p>
+          <p><span class="output">🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라  ligatures => != >=</span></p>
+          <p><span class="output">▀▁▂▃▄▅▆▇█  <span class="shade shade-1"></span><span class="shade shade-2"></span><span class="shade shade-3"></span>  ABCDEFG abcdefg 0123456789</span></p>
+          <p class="output box-art">┌─┬─┐ ╔═╦═╗ ╭───╮
+├─┼─┤ ╠═╬═╣ │<span class="shade shade-1"></span><span class="shade shade-2"></span><span class="shade shade-3"></span>│
+└─┴─┘ ╚═╩═╝ ╰───╯</p>
           <p><span class="prompt">ensky0 ~/tildaz</span> <span class="cursor"></span></p>
         </div>
       </div>
@@ -64,8 +66,8 @@
   <main>
     <section class="release-band" aria-label="Latest release">
       <div>
-        <strong>v0.5.1 — fullscreen on every desktop + cross-platform polish</strong>
-        <span>One drop-down terminal for Linux (Wayland), macOS, and Windows, with verified drop-down + global-hotkey support on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.</span>
+        <strong>v0.5.2 — box-drawing and dim text rendered the way Windows Terminal does</strong>
+        <span>Box-drawing characters now render as continuous procedural strokes, faint/dim text (SGR 2) dims toward the background, and the scrollbar is wider and easier to grab — across Linux (Wayland), macOS, and Windows.</span>
       </div>
       <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Release Notes</a>
     </section>
@@ -99,7 +101,7 @@
         <article class="feature-card">
           <span class="feature-kicker">Unicode</span>
           <h3>Hangul, CJK, emoji, ligatures</h3>
-          <p>True color, font ligatures, color emoji, and full inline IME for Korean, Japanese, and Chinese — including Hanja / kanji candidate replacement.</p>
+          <p>True color, font ligatures, color emoji, procedural box-drawing and smooth-shaded blocks for crisp TUIs, and full inline IME for Korean, Japanese, and Chinese — including Hanja / kanji candidate replacement.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Yours</span>
@@ -175,13 +177,11 @@
     <section id="docs" class="section docs">
       <div class="section-heading">
         <p class="eyebrow">Read Next</p>
-        <h2>Small docs, clear ownership.</h2>
+        <h2>Two short docs, everything you need.</h2>
       </div>
       <div class="doc-list">
         <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md" target="_blank" rel="noopener"><strong>CONFIG.md</strong><span>Schema, themes, defaults, and examples</span></a>
         <a href="https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md" target="_blank" rel="noopener"><strong>KEYBINDINGS.md</strong><span>Keyboard and mouse shortcuts</span></a>
-        <a href="https://github.com/ensky0/tildaz/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener"><strong>ARCHITECTURE.md</strong><span>How TildaZ is built</span></a>
-        <a href="https://github.com/ensky0/tildaz/blob/main/SPEC.md" target="_blank" rel="noopener"><strong>SPEC.md</strong><span>Cross-platform behavior spec</span></a>
       </div>
     </section>
   </main>

@@ -5,8 +5,8 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | Action | Windows | macOS | Linux |
 |--------|---------|-------|-------|
 | Toggle terminal show/hide | F1 (configurable) | F1 (configurable) | F1 (configurable) |
-| Fullscreen (taskbar/dock 덮음) | Alt+Enter | Cmd+Enter | Alt+Enter |
-| 풀스크린 (taskbar/dock 회피) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
+| Fullscreen (cover taskbar/dock) | Alt+Enter | Cmd+Enter | Alt+Enter |
+| Fullscreen (keep taskbar/dock visible) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
 | New tab | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T |
 | Close active tab | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
@@ -18,7 +18,7 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | About dialog | Ctrl+Shift+I | Shift+Cmd+I | Ctrl+Shift+I |
 | Open config in editor | Ctrl+Shift+P | Shift+Cmd+P | Ctrl+Shift+P |
 | Open log in editor | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L |
-| Perf snapshot to log | Ctrl+Shift+F12 | Shift+Cmd+F12 | — |
+| Perf snapshot to log | Ctrl+Shift+F12 | Shift+Cmd+F12 | Ctrl+Shift+F12 |
 | Quit | Alt+F4 (or close last tab) | Cmd+Q | Alt+F4 (or close last tab) |
 | Scrollback page up / down | Shift+PgUp / PgDn | Shift+PgUp / PgDn | Shift+PgUp / PgDn |
 
@@ -29,8 +29,9 @@ to all four edges — Alt+Enter covers the panels (`exclusive_zone = -1`),
 Shift+Alt+Enter keeps them visible (`exclusive_zone = 0`); GNOME and Cinnamon
 (no layer-shell) use `xdg_toplevel.set_fullscreen` / `set_maximized`. The toggle
 applies only while the terminal is visible, and the fullscreen state is
-preserved across F1 hide/show. The perf-snapshot shortcut (Ctrl+Shift+F12) is
-not yet wired on Linux.
+preserved across F1 hide/show. The perf-snapshot shortcut (Ctrl+Shift+F12)
+writes a render / read-loop timing snapshot to the log and works on all three
+platforms.
 
 ## Quit confirmation
 
@@ -47,7 +48,7 @@ Double-click a tab to rename. While renaming:
 - `Ctrl+Shift+V` (Windows / Linux) / `Cmd+V` (macOS) pastes clipboard text into the name (printable codepoints only — newlines and control chars are dropped)
 - **Click inside the same tab's text** → cursor jumps to the click position; any in-progress IME pre-edit is committed in place. Click outside (other tabs, the close button, the terminal, the arrows) commits and ends the rename.
 - **Mid-string typing** pushes only the characters after the cursor by the pre-edit's width. Commit drops the new characters there; Escape returns the trailing characters back to where they were.
-- **IME pre-edit + line nav**: pressing Home / End / Ctrl+A / Ctrl+E while a Korean / Japanese / Chinese syllable is composing commits the pre-edit's jamo into the rename buffer at the current cursor position, *then* moves the cursor (no syllable lost). Esc still cancels (pre-edit discarded). See SPEC §5.1 for the full matrix.
+- **IME pre-edit + line nav**: pressing Home / End / Ctrl+A / Ctrl+E while a Korean / Japanese / Chinese syllable is composing commits the pre-edit's jamo into the rename buffer at the current cursor position, *then* moves the cursor (no syllable lost). Esc still cancels (pre-edit discarded).
 - **Click on a long name + cursor jumps** ([#168](https://github.com/ensky0/tildaz/issues/168)): on long tab names, clicking the middle keeps the cursor at the click position — no more "snaps to right edge" (v0.4.0).
 
 ## Tab limit
