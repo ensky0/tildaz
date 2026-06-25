@@ -122,8 +122,8 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Linux renderer (EGL/OpenGL ES) | [#189](https://github.com/ensky0/tildaz/issues/189) | Wayland backend shipped in v0.5.0 (final) — Wayland-only, verified on real hardware across KDE Plasma 6, Hyprland, sway, Cinnamon, GNOME (Shell extension), and COSMIC. The remaining follow-up is replacing the bring-up software `wl_shm` renderer with a GPU (EGL/OpenGL ES) path; the software renderer is correct but is a placeholder. |
 | Stress tests | none yet | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
 
-Completed cross-platform work is tracked in
-[CROSS_PLATFORM.md](CROSS_PLATFORM.md), [#171](https://github.com/ensky0/tildaz/issues/171),
+Completed cross-platform unification work is tracked in
+[#171](https://github.com/ensky0/tildaz/issues/171),
 [#176](https://github.com/ensky0/tildaz/issues/176), and the release notes.
 
 ## Distribution
