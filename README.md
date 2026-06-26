@@ -23,6 +23,20 @@ you do not.
 > wider and easier to grab — all verified across KDE Plasma, GNOME, Cinnamon,
 > COSMIC, Hyprland, sway, macOS, and Windows.
 
+## Who is TildaZ for?
+
+- **You want a Tilda alternative that follows you across OSes.** TildaZ keeps
+  the Quake-style drop-down workflow on Linux, macOS, and Windows instead of
+  tying it to one desktop.
+- **You like the Guake / Yakuake reflex.** Press one hotkey, get a real terminal
+  over your current workspace, press it again, and get back to what you were
+  doing.
+- **You need a Wayland drop-down terminal.** TildaZ has real drop-down and global
+  hotkey paths across KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.
+- **You want familiar config everywhere.** Config paths differ by platform, but
+  the JSON schema, themes, hotkey, font, shell, opacity, and geometry settings
+  stay familiar.
+
 ## Why TildaZ
 
 - **One key between thought and shell.** Drop the terminal over your current workspace, run the command, and hide it again before your flow cools off.

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Install TildaZ - Drop-down Terminal for Linux, macOS, and Windows</title>
+  <meta name="description" content="Install TildaZ, a native Quake-style drop-down terminal for Linux, macOS, and Windows. Download Linux deb, rpm, AppImage, tar.gz, Arch pkg, macOS DMG, or Windows zip builds.">
+  <link rel="canonical" href="https://ensky0.github.io/tildaz/install/">
+  <meta property="og:title" content="Install TildaZ">
+  <meta property="og:description" content="Download TildaZ for Linux, macOS, and Windows: deb, rpm, AppImage, tar.gz, Arch pkg, DMG, and zip builds.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ensky0.github.io/tildaz/install/">
+  <meta property="og:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="../fonts/JetBrainsMono-subset.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "TildaZ", "item": "https://ensky0.github.io/tildaz/" },
+      { "@type": "ListItem", "position": 2, "name": "Install", "item": "https://ensky0.github.io/tildaz/install/" }
+    ]
+  }
+  </script>
+</head>
+<body class="subpage">
+  <nav class="nav" aria-label="Primary navigation">
+    <a class="brand" href="../">
+      <img src="../favicon.svg" alt="" class="brand-icon">
+      <span>TildaZ</span>
+    </a>
+    <div class="nav-links">
+      <a href="../#features">Features</a>
+      <a href="../install/">Install</a>
+      <a href="../config/">Config</a>
+      <a href="../linux-wayland/">Linux</a>
+      <a href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="page-hero">
+      <p class="eyebrow">Install TildaZ</p>
+      <h1>Download the native drop-down terminal for your OS.</h1>
+      <p>TildaZ ships release builds for Linux, macOS, and Windows. Pick the package that matches how you normally install tools, launch it, then press <kbd>F1</kbd>.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Download Latest</a>
+        <a class="button secondary" href="../config/">Configure</a>
+      </div>
+    </section>
+
+    <section class="section compact-section">
+      <div class="info-grid three">
+        <article class="info-card">
+          <span class="feature-kicker">Linux</span>
+          <h2>Choose your package</h2>
+          <p>Use a portable tarball, deb, rpm, AppImage, or Arch pkg. Linux builds target common distribution families and include x86_64 / aarch64 where the release provides them.</p>
+          <ul>
+            <li>tar.gz for portable installs</li>
+            <li>deb for Debian / Ubuntu</li>
+            <li>rpm for Fedora / RHEL / openSUSE</li>
+            <li>AppImage for a single-file launch</li>
+            <li>Arch pkg for Arch-family systems</li>
+          </ul>
+        </article>
+        <article class="info-card">
+          <span class="feature-kicker">macOS</span>
+          <h2>Drag the app in</h2>
+          <p>Download the universal DMG, drag <code>TildaZ.app</code> into Applications, then grant Input Monitoring and Accessibility for global hotkey and window control shortcuts.</p>
+          <ul>
+            <li>macOS 14+</li>
+            <li>Apple Silicon + Intel</li>
+            <li>AppKit + Metal host</li>
+          </ul>
+        </article>
+        <article class="info-card">
+          <span class="feature-kicker">Windows</span>
+          <h2>Unzip and run</h2>
+          <p>Download the x64 or ARM64 zip and keep <code>tildaz.exe</code>, <code>conpty.dll</code>, and <code>OpenConsole.exe</code> together in the same directory.</p>
+          <ul>
+            <li>Windows 10 1903+ x64</li>
+            <li>Windows 11 ARM64</li>
+            <li>Bundled Microsoft OpenConsole runtime</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">After Install</p>
+        <h2>First launch creates your config.</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Platform</th><th>Config</th><th>Log</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Linux</td><td><code>~/.config/tildaz/config.json</code></td><td><code>~/.local/state/tildaz/tildaz.log</code></td></tr>
+            <tr><td>macOS</td><td><code>~/.config/tildaz/config.json</code></td><td><code>~/Library/Logs/tildaz.log</code></td></tr>
+            <tr><td>Windows</td><td><code>%APPDATA%\tildaz\config.json</code></td><td><code>%APPDATA%\tildaz\tildaz.log</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div>
+      <img src="../favicon.svg" alt="" class="footer-icon">
+      <span>TildaZ</span>
+    </div>
+    <p><a href="../">Home</a> · <a href="../config/">Config</a> · <a href="../linux-wayland/">Linux Wayland</a></p>
+  </footer>
+</body>
+</html>
