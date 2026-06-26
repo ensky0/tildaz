@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TildaZ Linux Wayland - Drop-down Terminal for KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway</title>
+  <meta name="description" content="TildaZ is a Linux Wayland drop-down terminal with real global hotkey paths across KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.">
+  <link rel="canonical" href="https://ensky0.github.io/tildaz/linux-wayland/">
+  <meta property="og:title" content="TildaZ for Linux Wayland">
+  <meta property="og:description" content="A native Wayland drop-down terminal for KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ensky0.github.io/tildaz/linux-wayland/">
+  <meta property="og:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="../fonts/JetBrainsMono-subset.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "TildaZ", "item": "https://ensky0.github.io/tildaz/" },
+      { "@type": "ListItem", "position": 2, "name": "Linux Wayland", "item": "https://ensky0.github.io/tildaz/linux-wayland/" }
+    ]
+  }
+  </script>
+</head>
+<body class="subpage">
+  <nav class="nav" aria-label="Primary navigation">
+    <a class="brand" href="../">
+      <img src="../favicon.svg" alt="" class="brand-icon">
+      <span>TildaZ</span>
+    </a>
+    <div class="nav-links">
+      <a href="../#features">Features</a>
+      <a href="../install/">Install</a>
+      <a href="../config/">Config</a>
+      <a href="../linux-wayland/">Linux</a>
+      <a href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="page-hero">
+      <p class="eyebrow">Linux Wayland</p>
+      <h1>A real drop-down terminal across major Wayland desktops.</h1>
+      <p>TildaZ is a direct Wayland client for Linux. It targets the Quake-style workflow on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway without requiring an Electron, GTK, or Qt runtime.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="../install/">Install on Linux</a>
+        <a class="button secondary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Latest Release</a>
+      </div>
+    </section>
+
+    <section class="section compact-section">
+      <div class="info-grid three">
+        <article class="info-card">
+          <span class="feature-kicker">Desktops</span>
+          <h2>Not one compositor only</h2>
+          <p>TildaZ tracks the desktop-specific paths needed for drop-down placement and hotkey behavior across the major Wayland environments.</p>
+          <ul>
+            <li>KDE Plasma</li>
+            <li>GNOME</li>
+            <li>Cinnamon</li>
+            <li>COSMIC</li>
+            <li>Hyprland</li>
+            <li>sway</li>
+          </ul>
+        </article>
+        <article class="info-card">
+          <span class="feature-kicker">Native</span>
+          <h2>Direct Wayland, terminal core inside</h2>
+          <p>The Linux host is a direct Wayland client with the fast <code>libghostty-vt</code> terminal core. It is Wayland-only and does not include an X11 backend.</p>
+          <ul>
+            <li>No Electron runtime</li>
+            <li>No GTK / Qt runtime dependency</li>
+            <li>Software renderer path today</li>
+          </ul>
+        </article>
+        <article class="info-card">
+          <span class="feature-kicker">Text</span>
+          <h2>Built for real terminal output</h2>
+          <p>Linux support includes HiDPI / fractional scaling paths, fcitx5 / IME support, true color, ligatures, emoji, procedural box-drawing, and smooth shaded blocks.</p>
+          <ul>
+            <li>Inline IME for Korean / Japanese / Chinese</li>
+            <li>Box-drawing for crisp TUIs</li>
+            <li>Color emoji and ligatures</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">Packages</p>
+        <h2>Pick the Linux package format that fits your distro.</h2>
+      </div>
+      <div class="path-list">
+        <article><strong>tar.gz</strong><span>Portable install with <code>./install.sh</code> for desktop file and icon setup.</span></article>
+        <article><strong>deb</strong><span>Debian / Ubuntu package for amd64 and arm64 release builds.</span></article>
+        <article><strong>rpm</strong><span>Fedora / RHEL / openSUSE package for x86_64 and aarch64 release builds.</span></article>
+        <article><strong>AppImage</strong><span>Distro-independent single-file launch on glibc 2.28+ systems.</span></article>
+      </div>
+    </section>
+
+    <section class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">Actual Capture</p>
+        <h2>A real TildaZ layer-shell surface on Linux Wayland.</h2>
+      </div>
+      <figure class="screenshot-frame">
+        <img src="../tildaz-linux-wayland-screenshot.png" alt="Actual TildaZ Linux Wayland drop-down terminal surface">
+        <figcaption>Captured from the Linux Wayland backend on KDE Plasma. The surrounding desktop was cropped out.</figcaption>
+      </figure>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div>
+      <img src="../favicon.svg" alt="" class="footer-icon">
+      <span>TildaZ</span>
+    </div>
+    <p><a href="../">Home</a> · <a href="../install/">Install</a> · <a href="../config/">Config</a></p>
+  </footer>
+</body>
+</html>
