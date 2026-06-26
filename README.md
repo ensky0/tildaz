@@ -1,15 +1,17 @@
 # TildaZ
 
-**The drop-down terminal that works everywhere.** Hit one hotkey and a fast,
-native terminal slides down over whatever you're doing — on Linux, macOS,
-and Windows. In the spirit of [Tilda](https://github.com/lanoxx/tilda), but on
-every desktop you use.
+**A native Quake-style drop-down terminal for Linux, macOS, and Windows.** Your
+terminal, one key away. If you are looking for a Tilda alternative, a Guake /
+Yakuake-style terminal, or a Wayland drop-down terminal that also follows you to
+macOS and Windows, TildaZ brings that show-and-hide workflow to every desktop
+you use.
 
-Most drop-down terminals live on a single OS — or a single Linux desktop.
-TildaZ is one app across all three platforms, and on Linux it brings a real
-drop-down with a global hotkey to **every major desktop**: KDE Plasma, GNOME,
-Cinnamon, COSMIC, Hyprland, and sway. No Electron, no toolkit bloat — just a
-quick native window that gets out of your way.
+Most drop-down terminals stop at one OS, one toolkit, or one Linux desktop.
+TildaZ is one native app across Linux, macOS, and Windows. On Linux it brings a
+real drop-down with a global hotkey to **every major desktop**: KDE Plasma,
+GNOME, Cinnamon, COSMIC, Hyprland, and sway. No Electron, no GTK or Qt runtime
+dependency — just a terminal that appears when you need it and disappears when
+you do not.
 
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
@@ -23,12 +25,13 @@ quick native window that gets out of your way.
 
 ## Why TildaZ
 
-- **One terminal, every OS.** The same drop-down terminal on Linux, macOS, and Windows — one config, one muscle memory.
-- **Works on every Linux desktop.** A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway — not just one.
-- **Native and quick.** No Electron, no GTK/Qt — a direct Wayland client on Linux, GPU rendering on macOS and Windows, and the fast `libghostty-vt` core.
-- **A real terminal.** Tabs, themes, true color, ligatures, color emoji, and full CJK with inline IME (Korean / Japanese / Chinese), Hanja / kanji included.
-- **Stays out of your way.** Drop it down with a hotkey, dock it to the monitor under your cursor, dismiss it just as fast.
-- **Private by default.** No telemetry, no analytics, no auto-update phone-home — only local config and logs.
+- **One key between thought and shell.** Drop the terminal over your current workspace, run the command, and hide it again before your flow cools off.
+- **Same reflex, every OS.** The same drop-down terminal on Linux, macOS, and Windows — one JSON config shape, one muscle memory.
+- **Familiar config everywhere.** Config paths differ by platform, but the schema, themes, hotkey, font, shell, opacity, and geometry settings stay familiar.
+- **Wayland coverage that matters.** KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway all get a real drop-down and global hotkey path.
+- **Native where it counts.** No Electron, no GTK or Qt runtime dependency — direct Wayland on Linux, GPU rendering on macOS and Windows, and the fast `libghostty-vt` core.
+- **Pretty TUIs, serious text.** Tabs, themes, true color, ligatures, color emoji, full CJK, procedural box-drawing, smooth shaded blocks, and inline IME for Korean / Japanese / Chinese.
+- **Personal, not nosy.** No telemetry, no analytics, no auto-update phone-home — only local config and logs.
 
 ## See it render
 
@@ -49,22 +52,22 @@ Download the latest artifact from
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Windows 10 1903+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere and keep `tildaz.exe`, `conpty.dll`, and `OpenConsole.exe` together. |
-| Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |
-| macOS 14+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
 | Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then `./install.sh` installs the `.desktop` and icon under `~/.local/share`. The binary stays in the extracted directory by default. |
 | Linux Debian / Ubuntu | `tildaz_X.Y.Z_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
 | Linux Arch / Manjaro / EndeavourOS | `tildaz-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst` (x86_64). |
+| macOS 14+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
+| Windows 10 1903+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere and keep `tildaz.exe`, `conpty.dll`, and `OpenConsole.exe` together. |
+| Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |
 
 First launch creates the default config:
 
 | Platform | Config | Log |
 |---|---|---|
-| Windows | `%APPDATA%\tildaz\config.json` | `%APPDATA%\tildaz\tildaz.log` |
-| macOS | `~/.config/tildaz/config.json` | `~/Library/Logs/tildaz.log` |
 | Linux | `~/.config/tildaz/config.json` | `~/.local/state/tildaz/tildaz.log` |
+| macOS | `~/.config/tildaz/config.json` | `~/Library/Logs/tildaz.log` |
+| Windows | `%APPDATA%\tildaz\config.json` | `%APPDATA%\tildaz\tildaz.log` |
 
 macOS releases are ad-hoc signed. If Gatekeeper blocks the first open,
 right-click `TildaZ.app` and choose **Open**, or run:
@@ -111,10 +114,10 @@ Outputs:
 
 | Platform | Local build output | Package output |
 |---|---|---|
+| Linux | `zig-out/bin/tildaz` (with `-Dtarget={x86_64,aarch64}-linux-gnu.2.28`) | `zig-out/release/{tildaz-v<ver>-linux-<arch>.tar.gz,tildaz_<ver>_<debarch>.deb,tildaz-<ver>-1.<arch>.rpm,TildaZ-<ver>-<arch>.AppImage}` (`-Dformat=tar.gz\|deb\|rpm\|AppImage`) |
+| macOS | `zig-out/TildaZ.app` | `zig-out/release/tildaz-v<ver>-macos.dmg` |
 | Windows x64 | `zig-out/bin/tildaz.exe` | `zig-out/release/tildaz-v<ver>-win-x64.zip` |
 | Windows ARM64 | `zig-out/bin/tildaz.exe` (with `-Dtarget=aarch64-windows`) | `zig-out/release/tildaz-v<ver>-win-arm64.zip` |
-| macOS | `zig-out/TildaZ.app` | `zig-out/release/tildaz-v<ver>-macos.dmg` |
-| Linux | `zig-out/bin/tildaz` (with `-Dtarget={x86_64,aarch64}-linux-gnu.2.28`) | `zig-out/release/{tildaz-v<ver>-linux-<arch>.tar.gz,tildaz_<ver>_<debarch>.deb,tildaz-<ver>-1.<arch>.rpm,TildaZ-<ver>-<arch>.AppImage}` (`-Dformat=tar.gz\|deb\|rpm\|AppImage`) |
 
 Official release binaries are built by GitHub Actions from `v*` tags. Local
 packages are useful for testing, but release artifacts are not uploaded by hand.
@@ -139,11 +142,6 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
   conversion of already-committed Hangul (selecting committed Korean text and
   pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no
   reconversion request.
-- Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
-  may warn on first launch. The current SignPath application draft lives in
-  [dist/signpath-application.md](dist/signpath-application.md).
-- The Windows global hotkey cannot fire while an elevated app has focus unless
-  TildaZ is also elevated. This is Windows UIPI behavior.
 - macOS releases are ad-hoc signed, so Gatekeeper may require the first-open
   flow above. Developer ID notarization is still blocked by the current signing
   environment.
@@ -153,6 +151,11 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 - Holding paste-repeat on very wide ZWJ emoji clusters under macOS bash 3.2 can
   desynchronize shell wrapping. Normal single paste is unaffected; zsh 5.x does
   not exhibit the same mismatch.
+- Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
+  may warn on first launch. The current SignPath application draft lives in
+  [dist/signpath-application.md](dist/signpath-application.md).
+- The Windows global hotkey cannot fire while an elevated app has focus unless
+  TildaZ is also elevated. This is Windows UIPI behavior.
 
 ## Privacy
 

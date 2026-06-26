@@ -3,15 +3,47 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TildaZ — The drop-down terminal for Linux, macOS, and Windows</title>
-  <meta name="description" content="TildaZ is a native, cross-platform Quake-style drop-down terminal for Linux, macOS, and Windows — with a real drop-down and global hotkey on every major Linux desktop. In the spirit of tilda.">
-  <meta property="og:title" content="TildaZ — The drop-down terminal that works everywhere">
-  <meta property="og:description" content="One hotkey, one fast native terminal — on every major Linux desktop, macOS, and Windows. In the spirit of tilda.">
+  <title>TildaZ - Native Quake-style Drop-down Terminal for Linux, macOS, and Windows</title>
+  <meta name="description" content="TildaZ is a native Quake-style drop-down terminal for Linux, macOS, and Windows. Get the Tilda, Guake, or Yakuake-style hotkey workflow across KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, sway, macOS, and Windows.">
+  <link rel="canonical" href="https://ensky0.github.io/tildaz/">
+  <meta property="og:title" content="TildaZ - Native Quake-style terminal for every desktop">
+  <meta property="og:description" content="Your terminal, one key away: a native Quake-style drop-down terminal for Linux, macOS, and Windows.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ensky0.github.io/tildaz/">
+  <meta property="og:site_name" content="TildaZ">
+  <meta property="og:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="TildaZ website hero for a native Quake-style drop-down terminal">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="TildaZ - Native Quake-style terminal for every desktop">
+  <meta name="twitter:description" content="Your terminal, one key away: a native Quake-style drop-down terminal for Linux, macOS, and Windows.">
+  <meta name="twitter:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <meta name="theme-color" content="#0d1117">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/JetBrainsMono-subset.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "TildaZ",
+    "url": "https://ensky0.github.io/tildaz/",
+    "description": "A native Quake-style drop-down terminal for Linux, macOS, and Windows, with a real global hotkey drop-down on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "softwareVersion": "0.5.2",
+    "license": "https://github.com/ensky0/tildaz/blob/main/LICENSE",
+    "codeRepository": "https://github.com/ensky0/tildaz",
+    "downloadUrl": "https://github.com/ensky0/tildaz/releases/latest",
+    "releaseNotes": "https://github.com/ensky0/tildaz/releases/latest",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
 </head>
 <body>
   <nav class="nav" aria-label="Primary navigation">
@@ -29,12 +61,13 @@
 
   <header class="hero">
     <div class="hero-inner">
-      <p class="eyebrow">Linux · macOS · Windows · v0.5.2</p>
-      <h1>The drop-down terminal that works everywhere.</h1>
+      <p class="eyebrow">Linux · macOS · Windows · Native drop-down terminal</p>
+      <h1>The native Quake-style terminal for every desktop.</h1>
       <p class="hero-copy">
-        Hit <kbd>F1</kbd> and a fast, native terminal slides down over whatever
-        you're doing — on Linux, macOS, and Windows. One app, one workflow,
-        every desktop. In the spirit of <a href="https://github.com/lanoxx/tilda" target="_blank" rel="noopener">tilda</a>.
+        Your terminal, one key away. TildaZ brings the Tilda / Guake /
+        Yakuake-style drop-down workflow to Linux, macOS, and Windows — with a
+        real global hotkey path on KDE Plasma, GNOME, Cinnamon, COSMIC,
+        Hyprland, and sway. Press <kbd>F1</kbd>, do the thing, dismiss it.
       </p>
       <div class="hero-actions">
         <a class="button primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Download Latest</a>
@@ -60,14 +93,21 @@
           <p><span class="prompt">ensky0 ~/tildaz</span> <span class="cursor"></span></p>
         </div>
       </div>
+
+      <div class="hero-proof" aria-label="TildaZ highlights">
+        <span>Direct Wayland on Linux</span>
+        <span>AppKit + Metal on macOS</span>
+        <span>Win32 + Direct3D on Windows</span>
+        <span>No Electron. No telemetry.</span>
+      </div>
     </div>
   </header>
 
   <main>
     <section class="release-band" aria-label="Latest release">
       <div>
-        <strong>v0.5.2 — box-drawing and dim text rendered the way Windows Terminal does</strong>
-        <span>Box-drawing characters now render as continuous procedural strokes, faint/dim text (SGR 2) dims toward the background, and the scrollbar is wider and easier to grab — across Linux (Wayland), macOS, and Windows.</span>
+        <strong>Built for the terminal you keep reaching for</strong>
+        <span>A real drop-down terminal for people who want the shell instantly, without being tied to one OS, one compositor, or one web runtime.</span>
       </div>
       <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Release Notes</a>
     </section>
@@ -75,38 +115,63 @@
     <section id="features" class="section">
       <div class="section-heading">
         <p class="eyebrow">Why TildaZ</p>
-        <h2>Fast access, native feel, no compromise — on every OS.</h2>
+        <h2>The drop-down workflow people love, rebuilt for the desktops they actually use.</h2>
       </div>
       <div class="feature-grid">
         <article class="feature-card">
-          <span class="feature-kicker">Everywhere</span>
-          <h3>One terminal, every OS</h3>
-          <p>The same drop-down terminal on Linux, macOS, and Windows — one config and one muscle memory across all of them. Most drop-down terminals only run on one.</p>
+          <span class="feature-kicker">Instant</span>
+          <h3>One key between thought and shell</h3>
+          <p>Drop the terminal over your current workspace, run the command, and hide it again before your flow cools off.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Linux</span>
-          <h3>Every major desktop</h3>
-          <p>A real drop-down and global hotkey on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway — not just one desktop, all of them.</p>
+          <h3>Wayland coverage that matters</h3>
+          <p>KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway get real drop-down placement and global hotkey paths.</p>
         </article>
         <article class="feature-card">
-          <span class="feature-kicker">Hotkey</span>
-          <h3>Drop down from anywhere</h3>
-          <p>One global hotkey shows or hides the terminal. It docks to the screen under your cursor and supports top, bottom, left, and right layouts.</p>
+          <span class="feature-kicker">Everywhere</span>
+          <h3>Same reflex, every OS</h3>
+          <p>Keep one JSON config shape and one muscle memory across Linux, macOS, and Windows while each host still behaves natively.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Native</span>
-          <h3>Quick and lightweight</h3>
-          <p>No Electron, no toolkit bloat. A direct Wayland client on Linux, GPU rendering on macOS and Windows, and the fast <code>libghostty-vt</code> core.</p>
+          <h3>Native where it counts</h3>
+          <p>Direct Wayland, AppKit + Metal, Win32 + Direct3D, and the fast <code>libghostty-vt</code> core. No Electron runtime.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Unicode</span>
-          <h3>Hangul, CJK, emoji, ligatures</h3>
-          <p>True color, font ligatures, color emoji, procedural box-drawing and smooth-shaded blocks for crisp TUIs, and full inline IME for Korean, Japanese, and Chinese — including Hanja / kanji candidate replacement.</p>
+          <h3>Pretty TUIs, serious text</h3>
+          <p>True color, ligatures, color emoji, procedural box-drawing, smooth shaded blocks, and inline IME for Korean, Japanese, and Chinese.</p>
         </article>
         <article class="feature-card">
           <span class="feature-kicker">Yours</span>
-          <h3>Tabs, themes, and privacy</h3>
-          <p>Independent tabs with drag reorder and rename, JSON themes and config, and zero telemetry — only local config and log files.</p>
+          <h3>Personal, not nosy</h3>
+          <p>Tabs, drag reorder, rename, JSON themes, local config, local logs, and zero telemetry or analytics.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="search-path section" aria-label="Common search paths">
+      <div class="section-heading">
+        <p class="eyebrow">Find It Fast</p>
+        <h2>If you searched for any of these, you are in the right place.</h2>
+      </div>
+      <div class="path-list">
+        <article>
+          <strong>Tilda alternative</strong>
+          <span>A native drop-down terminal in the spirit of Tilda, but designed for Linux, macOS, and Windows.</span>
+        </article>
+        <article>
+          <strong>Guake / Yakuake-style terminal</strong>
+          <span>The same one-hotkey, show-and-hide workflow without being limited to one Linux desktop.</span>
+        </article>
+        <article>
+          <strong>Cross-platform terminal config</strong>
+          <span>Paths differ by OS, but the JSON schema, themes, hotkey, font, shell, opacity, and geometry settings stay familiar.</span>
+        </article>
+        <article>
+          <strong>Wayland drop-down terminal</strong>
+          <span>Direct Wayland integration across KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.</span>
         </article>
       </div>
     </section>
@@ -115,8 +180,8 @@
       <div class="platform-panel">
         <div>
           <p class="eyebrow">Linux</p>
-          <h2>Every Wayland desktop</h2>
-          <p>A direct Wayland client — no GTK or Qt dependency. Real drop-down placement and a global hotkey across the major desktops, with packages for every distro.</p>
+          <h2>Every major Wayland desktop</h2>
+          <p>A direct Wayland client with no GTK or Qt runtime dependency. Real drop-down placement and global hotkey paths across major desktops, with package formats for common Linux distribution families.</p>
         </div>
         <ul>
           <li>KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, sway</li>
@@ -127,7 +192,7 @@
       <div class="platform-panel">
         <div>
           <p class="eyebrow">macOS</p>
-          <h2>Retina-sharp</h2>
+          <h2>Native, Retina-sharp</h2>
           <p>Built on AppKit and Metal with full IME composition, candidate anchoring, and Hanja / kanji reconversion. Universal Apple Silicon + Intel.</p>
         </div>
         <ul>
@@ -139,7 +204,7 @@
       <div class="platform-panel">
         <div>
           <p class="eyebrow">Windows</p>
-          <h2>Fast and native</h2>
+          <h2>Fast, native, bundled</h2>
           <p>GPU-accelerated rendering with a bundled Microsoft OpenConsole runtime for a consistent, modern terminal — x64 and ARM64.</p>
         </div>
         <ul>
@@ -177,11 +242,12 @@
     <section id="docs" class="section docs">
       <div class="section-heading">
         <p class="eyebrow">Read Next</p>
-        <h2>Two short docs, everything you need.</h2>
+        <h2>Docs when you want to tune it.</h2>
       </div>
       <div class="doc-list">
         <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md" target="_blank" rel="noopener"><strong>CONFIG.md</strong><span>Schema, themes, defaults, and examples</span></a>
         <a href="https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md" target="_blank" rel="noopener"><strong>KEYBINDINGS.md</strong><span>Keyboard and mouse shortcuts</span></a>
+        <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener"><strong>Latest Release</strong><span>Download packages and read what changed</span></a>
       </div>
     </section>
   </main>
@@ -191,7 +257,7 @@
       <img src="favicon.svg" alt="" class="footer-icon">
       <span>TildaZ</span>
     </div>
-    <p>AGPL-3.0-or-later · A native drop-down terminal for Linux, macOS, and Windows — in the spirit of tilda.</p>
+    <p>AGPL-3.0-or-later · A native Quake-style drop-down terminal for Linux, macOS, and Windows — in the spirit of Tilda.</p>
   </footer>
 </body>
 </html>
