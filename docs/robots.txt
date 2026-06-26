@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ensky0.github.io/tildaz/sitemap.xml
