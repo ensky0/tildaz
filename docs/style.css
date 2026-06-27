@@ -15,10 +15,13 @@
   --paper-strong: #141913;
   --line: #30382f;
   --line-dark: #20281f;
-  --forest: #7ee787;
+  --brand-green: #7ee787;
+  --brand-green-pressed: #74d47c;
+  --brand-orange: #F7A41D;
+  --forest: var(--brand-green);
   --forest-2: #151b23;
-  --mint: #7ee787;
-  --amber: #f0b957;
+  --mint: var(--brand-green);
+  --amber: var(--brand-orange);
   --blue: #79c0ff;
   --terminal: #08100c;
   --terminal-2: #101811;
@@ -128,7 +131,7 @@ kbd {
 .hero-inner {
   width: min(1120px, calc(100% - 40px));
   margin: 0 auto;
-  padding: 40px 0 34px;
+  padding: 48px 0 36px;
 }
 
 .eyebrow {
@@ -143,41 +146,51 @@ kbd {
 
 .hero h1 {
   margin: 0;
-  max-width: 1040px;
-  font-size: clamp(3.2rem, 6.2vw, 4.7rem);
-  line-height: 0.98;
+  max-width: 980px;
+  font-size: clamp(4.2rem, 8vw, 7rem);
+  line-height: 0.9;
   letter-spacing: 0;
 }
 
+.hero-accent {
+  color: var(--amber);
+}
+
 .hero-copy {
-  max-width: 800px;
-  margin: 22px 0 0;
-  color: rgba(247, 255, 249, 0.82);
-  font-size: clamp(1.02rem, 1.3vw, 1.16rem);
+  max-width: 660px;
+  margin: 24px 0 0;
+  color: rgba(247, 255, 249, 0.86);
+  font-size: clamp(1.1rem, 1.45vw, 1.28rem);
 }
 
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 24px;
+  margin-top: 26px;
 }
 
 .hero-proof {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 14px;
-  color: rgba(247, 255, 249, 0.72);
+  margin-top: 12px;
+  color: rgba(247, 255, 249, 0.82);
   font-family: var(--mono);
   font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .hero-proof span {
   padding: 7px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(126, 231, 135, 0.42);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(126, 231, 135, 0.08);
+}
+
+.hero-proof span:first-child {
+  border-color: rgba(247, 164, 29, 0.56);
+  background: rgba(247, 164, 29, 0.1);
 }
 
 .button {
@@ -197,7 +210,7 @@ kbd {
 }
 
 .button.primary:hover {
-  background: #8be8ae;
+  background: var(--brand-green-pressed);
 }
 
 .button.secondary {
@@ -212,12 +225,13 @@ kbd {
 
 .terminal-surface {
   width: 100%;
-  margin-top: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  margin-top: 28px;
+  border: 1px solid rgba(126, 231, 135, 0.34);
+  border-top: 3px solid var(--amber);
   border-radius: 8px 8px 0 0;
   overflow: hidden;
   background: var(--terminal);
-  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.34);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(247, 164, 29, 0.08);
 }
 
 .surface-top {
@@ -258,23 +272,23 @@ kbd {
 }
 
 .terminal-grid {
-  min-height: 230px;
-  padding: 26px;
+  min-height: 216px;
+  padding: 24px 26px;
   color: #dbe8df;
   font-family: var(--mono);
-  font-size: clamp(0.88rem, 1.4vw, 1.05rem);
+  font-size: clamp(0.92rem, 1.35vw, 1.06rem);
   font-feature-settings: "liga" 1, "calt" 1;
+  line-height: 1.38;
 }
 
 .terminal-grid p {
-  margin: 0 0 12px;
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 
-/* Box-drawing art is a single block (no inter-row paragraph margin) so the rows
-   join into a connected box. Line-height matches the surrounding text so the box
-   glyphs are the same size as the box chars in the typed command above. */
+/* Keep box-drawing art in one block so rows use the same terminal rhythm and
+   stay visually connected. */
 .terminal-grid p.box-art {
   margin-top: 0;
 }
@@ -293,7 +307,7 @@ kbd {
 .shade-3 { background: color-mix(in srgb, currentColor 75%, transparent); }
 
 .prompt {
-  color: #7cc7ff;
+  color: var(--amber);
   margin-right: 0.7ch;
 }
 
@@ -353,9 +367,13 @@ kbd {
 }
 
 .release-band a {
-  color: var(--blue);
+  color: var(--amber);
   font-weight: 800;
   white-space: nowrap;
+}
+
+.release-band a:hover {
+  color: var(--mint);
 }
 
 .section {
