@@ -48,6 +48,9 @@ pub const App = struct {
     /// 가려져도 그대로 (Firefox 패턴). 활성 탭 변경 / drag reorder 끝 / 새 탭
     /// 생성 시 false 로 리셋 → 그 시점부터 다시 ensure 동작.
     tab_scroll_user_override: bool = false,
+    /// 탭바 컨트롤 버튼 (`<` `>` `+` `×`) 의 hover 대상 (#268 2b). mouse move
+    /// 마다 갱신, 변경 시에만 재렌더. 렌더러가 hover 배경 박스를 그림.
+    tab_hover: tab_layout.Area = .none,
     /// `tab_actions.Host` 인스턴스 — App member (session / override flag) 를
     /// cross-platform helper API 로 노출. `setupHost()` 가 self 의 stable
     /// address 잡힌 후 채움 (콜백이 user_data → *App cast).
@@ -388,6 +391,7 @@ pub const App = struct {
                     if (self.isRenaming()) self.window.imePreeditSlice() else &.{},
                     self.tab_scroll_x,
                     self.tabBarLayout(),
+                    self.tab_hover,
                 );
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(
@@ -554,6 +558,24 @@ pub const App = struct {
             return true;
         }
         return false;
+    }
+
+    /// #268 2b — 탭바 컨트롤 버튼 hover 갱신. 버튼 (`<` `>` `+` `×`) 위에서만
+    /// hover, 탭 본체 / 탭바 밖은 .none. 변경 시에만 재렌더 (mouse move 마다
+    /// 그리지 않게).
+    fn updateTabHover(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+        const new_hover: tab_layout.Area = blk: {
+            if (mouse_y < 0 or mouse_y >= self.effectiveTabBarHeight()) break :blk .none;
+            const layout = self.tabBarLayout();
+            break :blk switch (self.tabBarHitArea(mouse_x, layout)) {
+                .left_arrow, .right_arrow, .plus, .close => |a| a,
+                .tab_area, .none => .none,
+            };
+        };
+        if (new_hover != self.tab_hover) {
+            self.tab_hover = new_hover;
+            self.invalidateRenderer();
+        }
     }
 
     pub fn handleTabClick(self: *App, mouse_x: c_int, mouse_y: c_int) void {
@@ -921,6 +943,7 @@ pub const App = struct {
                         self.updateTerminalSelection(mouse.x, mouse.y);
                     }
                 }
+                self.updateTabHover(mouse.x, mouse.y);
                 return true;
             },
             .mouse_up => |_| {

@@ -318,6 +318,9 @@ var g_drag: tab_interaction.DragState = .{};
 /// frame `renderFrameTick` 에서 `ensureActiveTabVisible` 가 갱신, drag 중에는
 /// `tildazMouseDragged` 가 직접 갱신.
 var g_tab_scroll_x_px: f32 = 0;
+/// #268 2b — 탭바 컨트롤 버튼 (`<` `>` `×` `+`) 의 hover 대상. mouseMoved:
+/// 마다 갱신, 변경 시에만 재렌더. 렌더러가 hover 배경 박스를 그림.
+var g_tab_hover: tab_layout.Area = .none;
 /// 사용자가 `<` / `>` 화살표를 눌러 viewport 를 옮긴 상태 (#117). 이 동안
 /// `ensureActiveTabVisible` skip — 활성 탭 가려져도 그대로 (Firefox).
 /// 활성 탭 변경 / drag reorder 끝 / 새 탭 생성 시 false 로 리셋.
@@ -2330,6 +2333,33 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     }
 }
 
+/// #268 2b — NSTrackingArea 의 mouseMoved:. 탭바 컨트롤 버튼 (`<` `>` `×`
+/// `+`) 위에서만 hover, 탭 본체 / 탭바 밖은 .none. 변경 시에만 재렌더.
+fn tildazMouseMoved(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (g_renderer == null) return;
+    const new_hover: tab_layout.Area = blk: {
+        if (g_session.count() < 2) break :blk .none;
+        const xy = eventToWindowPx(self_view, event);
+        const layout = tabBarLayout();
+        break :blk switch (tabBarHitArea(xy.x, xy.y, layout)) {
+            .left_arrow, .right_arrow, .plus, .close => |a| a,
+            .tab_area, .none => .none,
+        };
+    };
+    if (new_hover != g_tab_hover) {
+        g_tab_hover = new_hover;
+        requestRender();
+    }
+}
+
+/// #268 2b — 마우스가 view 밖으로 나가면 hover 해제 (안 하면 박스가 남음).
+fn tildazMouseExited(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    if (g_tab_hover != .none) {
+        g_tab_hover = .none;
+        requestRender();
+    }
+}
+
 /// 우클릭 paste (#119). cmd.exe console 표준 패턴 — Windows 의 WM_RBUTTONDOWN
 /// (변경 후) 와 동일.
 fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
@@ -2493,6 +2523,12 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     // 우클릭 paste (#119) — cmd.exe console 표준 패턴.
     if (!objc.class_addMethod(cls, objc.sel("rightMouseDown:"), @ptrCast(&tildazRightMouseDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // #268 2b — 탭바 컨트롤 버튼 hover 추적. NSTrackingArea (아래 attach) 가
+    // mouseMoved: / mouseExited: 를 보내준다.
+    if (!objc.class_addMethod(cls, objc.sel("mouseMoved:"), @ptrCast(&tildazMouseMoved), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("mouseExited:"), @ptrCast(&tildazMouseExited), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     // #193 — OS mouse cursor shape. cell 영역 I-beam.
     if (!objc.class_addMethod(cls, objc.sel("resetCursorRects"), @ptrCast(&tildazResetCursorRects), "v@:"))
@@ -2708,6 +2744,26 @@ pub fn run() !void {
         return error.ViewInitFailed;
     const setContentView = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setContentView(g_window, objc.sel("setContentView:"), tildaz_view);
+
+    // #268 2b — mouseMoved: 수신용 NSTrackingArea. options:
+    //   MouseEnteredAndExited(0x01) | MouseMoved(0x02) | ActiveAlways(0x80)
+    //   | InVisibleRect(0x200) — InVisibleRect 라 rect 인자 무시 + view resize
+    //   자동 추적 (updateTrackingAreas 재부착 불필요).
+    {
+        const NSTrackingArea = objc.getClass("NSTrackingArea");
+        const ta_alloc = alloc(NSTrackingArea, objc.sel("alloc")) orelse return error.TrackingAreaAllocFailed;
+        const ta_init = objc.objcSend(fn (objc.id, objc.SEL, NSRect, c_ulong, objc.id, objc.id) callconv(.c) objc.id);
+        const tracking_area = ta_init(
+            ta_alloc,
+            objc.sel("initWithRect:options:owner:userInfo:"),
+            placeholder,
+            0x01 | 0x02 | 0x80 | 0x200,
+            tildaz_view,
+            null,
+        ) orelse return error.TrackingAreaInitFailed;
+        const addTA = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        addTA(tildaz_view, objc.sel("addTrackingArea:"), tracking_area);
+    }
 
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const content_view = contentView_get(g_window, objc.sel("contentView")) orelse return error.ContentViewMissing;
@@ -3065,6 +3121,7 @@ fn renderFrameTick() void {
         g_drag.view(),
         g_tab_scroll_x_px,
         tabBarLayout(),
+        g_tab_hover,
     );
     g_renderer.?.renderTerminal(
         &tab.terminal,
