@@ -17,6 +17,7 @@ const std = @import("std");
 const dw = @import("../../font/windows/directwrite.zig");
 const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
+const tab_icons = @import("../../tab_icons.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
@@ -336,6 +337,63 @@ pub const GlyphAtlas = struct {
         // (글자 cluster 는 single glyph 가 일반).
         const entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse return null;
         self.cluster_cache.put(key, entry) catch return null;
+        return entry;
+    }
+
+    /// 탭바 컨트롤 아이콘 (`< > × +`) 을 `tab_icons` 로 rasterize 해 atlas 에
+    /// 캐시 (#268). 폰트 글리프가 아니라 우리가 만든 알파 커버리지라 codepoint
+    /// 대신 아이콘 enum 을 key 로 씀 (face=0 은 유효한 face 아님). mono glyph 와
+    /// 같은 RGBA 경로 — 회색이라 R=G=B=coverage, A=0xFF (subpixel fringing 없음),
+    /// `temp_buf` → `UpdateSubresource` 업로드. is_color=false 로 mono shader path.
+    pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
+        const key = GlyphKey{ .face = 0, .index = @intFromEnum(icon) };
+        if (self.cache.get(key)) |entry| return entry;
+        if (size == 0 or size > tab_icons.MAX_SIZE) return null;
+
+        var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
+        tab_icons.rasterize(icon, size, stroke_px, &cov);
+
+        const rgba_pitch = size * 4;
+        for (0..size) |row| {
+            for (0..size) |col| {
+                const a = cov[row * size + col];
+                const off = row * rgba_pitch + col * 4;
+                self.temp_buf[off + 0] = a; // R
+                self.temp_buf[off + 1] = a; // G
+                self.temp_buf[off + 2] = a; // B
+                self.temp_buf[off + 3] = 0xFF; // A (mono glyph 경로와 동일)
+            }
+        }
+
+        const pos = self.packGlyph(size, size) orelse {
+            self.is_full = true;
+            return null;
+        };
+        const box = d3d.D3D11_BOX{
+            .left = pos[0],
+            .top = pos[1],
+            .right = pos[0] + size,
+            .bottom = pos[1] + size,
+        };
+        self.d3d_ctx.UpdateSubresource(
+            @ptrCast(self.texture),
+            0,
+            &box,
+            @ptrCast(self.temp_buf.ptr),
+            rgba_pitch,
+            0,
+        );
+
+        const entry = AtlasEntry{
+            .x = @intCast(pos[0]),
+            .y = @intCast(pos[1]),
+            .w = @intCast(size),
+            .h = @intCast(size),
+            .bearing_x = 0,
+            .bearing_y = 0,
+            .is_color = false,
+        };
+        self.cache.put(key, entry) catch return null;
         return entry;
     }
 

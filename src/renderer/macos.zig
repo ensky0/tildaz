@@ -23,6 +23,7 @@ const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
 const themes = @import("../themes.zig");
 const tab_layout = @import("../tab_layout.zig");
+const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
@@ -1215,30 +1216,27 @@ pub const MetalRenderer = struct {
             }
         }
 
-        // 글리프 `<` `>` `+` — 박스 안 cw × ch 가운데 정렬. 활성 / 비활성 색 분리.
-        const drawCtrlGlyph = struct {
-            fn run(rself: *MetalRenderer, codepoint: u21, box_x: f32, box_w: f32, tbh: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
+        // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
+        // 알파 커버리지 비트맵을 만들어 atlas 커스텀 엔트리로 그림 (폰트 독립).
+        // Linux / Windows 와 같은 비트맵 → 세 platform 픽셀 동일. box 중앙 정렬.
+        const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.scale));
+        const icon_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.scale);
+        const drawIcon = struct {
+            fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
                 if (n.* >= buf.len) return;
-                if (box_w <= 0) return;
-                const result = rself.font.resolveGlyph(@intCast(codepoint)) orelse return;
-                const entry = rself.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                    if (result.owned) ct.CFRelease(result.font);
-                    return;
-                };
-                if (result.owned) ct.CFRelease(result.font);
+                if (box_w <= 0 or isz == 0) return;
+                const entry = rself.atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
-                const baseline_top = (tbh - ch_) * 0.5;
-                const gx = box_x + (box_w - cw_) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
-                const gy = baseline_top + rself.font.ascent_px
-                    - @as(f32, @floatFromInt(entry.bearing_y))
-                    - @as(f32, @floatFromInt(entry.h));
+                const fsz: f32 = @floatFromInt(isz);
+                const gx = box_x + (box_w - fsz) * 0.5;
+                const gy = (tbh - fsz) * 0.5;
                 buf[n.*] = .{
                     .pos = .{ gx, gy },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = color,
-                    .color_flag = if (entry.is_color) 1 else 0,
+                    .color_flag = 0,
                 };
                 n.* += 1;
             }
@@ -1247,14 +1245,12 @@ pub const MetalRenderer = struct {
         if (layout.arrows_visible) {
             const left_color = if (layout.left_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
             const right_color = if (layout.right_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
-            drawCtrlGlyph(self, '<', layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, cw, ch, left_color, &text_buf, &text_n);
-            drawCtrlGlyph(self, '>', layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, cw, ch, right_color, &text_buf, &text_n);
+            drawIcon(self, .chevron_left, layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, left_color, &text_buf, &text_n);
+            drawIcon(self, .chevron_right, layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, right_color, &text_buf, &text_n);
         }
-        drawCtrlGlyph(self, '+', layout.plus_x, layout.plus_w, tab_bar_h_px, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
-        // #268 — 우측 끝 닫기 버튼. 소문자 'x' 대신 × (U+00D7 곱셈 기호) —
-        // '+' 와 같은 수학 연산자 계열이라 폰트가 짝으로 디자인해 크기/두께/
-        // 중심이 '+' 와 맞음 (소문자는 글자라 커 보임 — 사용자 시연 피드백).
-        drawCtrlGlyph(self, '\u{D7}', layout.close_x, layout.close_w, tab_bar_h_px, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
+        drawIcon(self, .plus, layout.plus_x, layout.plus_w, tab_bar_h_px, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
+        // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
+        drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
 
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);

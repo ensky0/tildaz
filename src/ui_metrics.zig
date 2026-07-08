@@ -54,3 +54,11 @@ pub const TAB_CTRL_HOVER_BG: [4]f32 = .{ 1.0, 1.0, 1.0, 0.12 };
 /// 비활성 화살표 (더 갈 곳 없음) 의 색 — 활성과 명확히 구분되도록 어둡지만
 /// 너무 어둡지 않게. Firefox 의 disabled chevron 과 동등 시각.
 pub const TAB_ARROW_DISABLED_COLOR: [4]f32 = .{ 0.4, 0.4, 0.4, 1.0 };
+
+// 탭바 컨트롤 아이콘 (`< > × +`) 절차적 그리기 (#199 / #268) — 폰트 독립.
+// `src/tab_icons.zig` 가 선분 geometry 를 알파 커버리지 비트맵으로 rasterize,
+// 세 renderer 가 같은 비트맵을 glyph 처럼 그림 (세 platform 픽셀 동일).
+/// 아이콘 한 변 (bounding square). 버튼 box (24pt) 안에 여백 두고 들어가는 크기.
+pub const TAB_ICON_SIZE_PT: u32 = 10;
+/// 아이콘 선 두께 (pt). `pt × scale` 로 px 두께. AA 로 fractional scale 도 또렷.
+pub const TAB_ICON_STROKE_PT: f32 = 1.5;

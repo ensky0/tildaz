@@ -16,6 +16,7 @@ const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const tab_layout = @import("../../tab_layout.zig");
+const tab_icons = @import("../../tab_icons.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
 
@@ -288,7 +289,7 @@ pub const Renderer = struct {
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, self.scale, &self.font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -836,6 +837,7 @@ fn drawTabBar(
     preedit_text: []const u8,
     cell_w: i32,
     inactive_bg: ghostty.color.RGB,
+    scale: f32,
     font_ctx: *font.Context,
 ) void {
     if (tab_bar_h <= 0 or fb_w <= 0 or titles.len == 0) return;
@@ -1069,7 +1071,7 @@ fn drawTabBar(
     }
 
     // --- arrow / plus 버튼 ---
-    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, font_ctx);
+    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx);
 }
 
 /// `<` / `>` / `+` 버튼 그리기. arrows_visible 면 좌측 `<` + 우측 `>`. 항상
@@ -1083,11 +1085,9 @@ fn drawTabBarControls(
     tab_bar_h: i32,
     layout: tab_layout.Layout,
     tab_hover: tab_layout.Area,
-    font_ctx: *font.Context,
+    scale: f32,
+    _: *font.Context,
 ) void {
-    const ascent: i32 = @intCast(font_ctx.ascent_px);
-    const descent: i32 = @intCast(font_ctx.descent_px);
-    const baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
     const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
     // mac / win 동등 — enabled = `TAB_CTRL_ACTIVE_COLOR` (밝은 흰색 0.95),
     // disabled = `TAB_ARROW_DISABLED_COLOR` (회색 0.4). scroll 왼쪽 끝이면
@@ -1095,29 +1095,50 @@ fn drawTabBarControls(
     const active_color = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
     const disabled_color = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
 
-    const drawCentered = struct {
+    // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
+    // 알파 커버리지 비트맵으로 만든 뒤 box 중앙에 blit (폰트 독립). mac/win 은
+    // 같은 비트맵을 atlas 에 올려 그림 → 세 platform 픽셀 동일.
+    const icon_size_i: i32 = scaledPt(ui_metrics.TAB_ICON_SIZE_PT, scale);
+    const icon_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), icon_size_i)));
+    const stroke_px: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+
+    const drawIcon = struct {
         fn call(
             mem: []u8,
             w: i32,
             h: i32,
             s: i32,
-            cp: u21,
+            icon: tab_icons.Icon,
             x_left: i32,
             box_w: i32,
-            line_baseline: i32,
+            bar_h: i32,
+            sz: u32,
+            stroke: f32,
             fg: ghostty.color.RGB,
             bg_color: ghostty.color.RGB,
-            ctx: *font.Context,
         ) void {
-            const g = ctx.glyph(cp);
-            const adv: i32 = @intCast(g.advance);
-            const center: i32 = x_left + @divFloor(box_w - adv, 2);
-            if (g.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) return;
-            drawGlyph(mem, w, h, s, center + g.bitmap_left, line_baseline - g.bitmap_top, g, fg, bg_color);
+            var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
+            tab_icons.rasterize(icon, sz, stroke, &cov);
+            const sz_i: i32 = @intCast(sz);
+            const draw_x: i32 = x_left + @divFloor(box_w - sz_i, 2);
+            const draw_y: i32 = @divFloor(bar_h - sz_i, 2);
+            var row: u32 = 0;
+            while (row < sz) : (row += 1) {
+                var col: u32 = 0;
+                while (col < sz) : (col += 1) {
+                    const alpha = cov[row * sz + col];
+                    if (alpha == 0) continue;
+                    const px = draw_x + @as(i32, @intCast(col));
+                    const py = draw_y + @as(i32, @intCast(row));
+                    if (px < 0 or py < 0 or px >= w or py >= h) continue;
+                    const off: usize = @intCast(py * s + px * 4);
+                    std.mem.writeInt(u32, mem[off..][0..4], blendPixel(fg, bg_color, alpha), .little);
+                }
+            }
         }
     }.call;
 
-    // #268 2b — hover 강조 박스 (글리프보다 먼저 → 글리프가 위에). software
+    // #268 2b — hover 강조 박스 (아이콘보다 먼저 → 아이콘이 위에). software
     // 렌더러엔 알파 블렌드 rect 가 없지만 박스 밑이 균일한 TAB_BAR_BG 라
     // 미리 섞은 단색이 픽셀 동일 (`TAB_CTRL_HOVER_BG` 알파 12%).
     {
@@ -1159,18 +1180,16 @@ fn drawTabBarControls(
         const arrow_w: i32 = @intFromFloat(layout.arrow_w);
         const left_color = if (layout.left_enabled) active_color else disabled_color;
         const right_color = if (layout.right_enabled) active_color else disabled_color;
-        drawCentered(memory, fb_w, fb_h, stride, '<', left_x, arrow_w, baseline, left_color, bg, font_ctx);
-        drawCentered(memory, fb_w, fb_h, stride, '>', right_x, arrow_w, baseline, right_color, bg, font_ctx);
+        drawIcon(memory, fb_w, fb_h, stride, .chevron_left, left_x, arrow_w, tab_bar_h, icon_size, stroke_px, left_color, bg);
+        drawIcon(memory, fb_w, fb_h, stride, .chevron_right, right_x, arrow_w, tab_bar_h, icon_size, stroke_px, right_color, bg);
     }
     const plus_x: i32 = @intFromFloat(layout.plus_x);
     const plus_w: i32 = @intFromFloat(layout.plus_w);
-    drawCentered(memory, fb_w, fb_h, stride, '+', plus_x, plus_w, baseline, active_color, bg, font_ctx);
-    // #268 — 우측 끝 닫기 버튼. 소문자 'x' 대신 × (U+00D7 곱셈 기호) —
-        // '+' 와 같은 수학 연산자 계열이라 폰트가 짝으로 디자인해 크기/두께/
-        // 중심이 '+' 와 맞음 (소문자는 글자라 커 보임 — 사용자 시연 피드백).
+    drawIcon(memory, fb_w, fb_h, stride, .plus, plus_x, plus_w, tab_bar_h, icon_size, stroke_px, active_color, bg);
+    // #268 — 우측 끝 활성 탭 닫기 버튼. `×` 아이콘을 tab_icons 로 직접 그림.
     const close_x: i32 = @intFromFloat(layout.close_x);
     const close_w: i32 = @intFromFloat(layout.close_w);
-    drawCentered(memory, fb_w, fb_h, stride, '\u{D7}', close_x, close_w, baseline, active_color, bg, font_ctx);
+    drawIcon(memory, fb_w, fb_h, stride, .close, close_x, close_w, tab_bar_h, icon_size, stroke_px, active_color, bg);
 }
 
 /// `a * weight + b * (1 - weight)` 의 u8 클램프. close 'x' 의 dim 색 등에 사용.
