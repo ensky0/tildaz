@@ -235,6 +235,8 @@ pub const Tab = struct {
         var vt_handler = tab.terminal.vtHandler();
         vt_handler.effects.write_pty = &vtWritePty;
         vt_handler.effects.device_attributes = &vtDeviceAttributes;
+        vt_handler.effects.xtversion = &vtXtversion;
+        vt_handler.effects.color_scheme = &vtColorScheme;
         tab.stream = .initAlloc(alloc, vt_handler);
         tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
 
@@ -283,6 +285,22 @@ pub const Tab = struct {
     fn vtDeviceAttributes(handler: *ghostty.TerminalStream.Handler) VtAttributes {
         _ = handler;
         return .{};
+    }
+
+    /// #266 2단계 — ghostty-vt `Effects.xtversion`. XTVERSION (`\e[>0q`) 응답
+    /// 문자열. 연결 안 하면 "libghostty" 로 보고돼 터미널 식별이 어긋난다.
+    fn vtXtversion(handler: *ghostty.TerminalStream.Handler) []const u8 {
+        _ = handler;
+        return "tildaz " ++ @import("build_options").version;
+    }
+
+    /// #266 2단계 — ghostty-vt `Effects.color_scheme`. color scheme DSR
+    /// (`\e[?996n`) 응답 → `\e[?997;1n` (dark) / `\e[?997;2n` (light).
+    /// theme 상수가 아니라 terminal 의 *현재* 배경색 (OSC 11 로 런타임 변경
+    /// 가능) 으로 판별 — 기준은 COLORFGBG 와 동일 (`themes.isDarkRgb`).
+    fn vtColorScheme(handler: *ghostty.TerminalStream.Handler) ?ghostty.device_status.ColorScheme {
+        const bg = handler.terminal.colors.background.get() orelse return null;
+        return if (themes.isDarkRgb(bg.r, bg.g, bg.b)) .dark else .light;
     }
 
     /// ghostty-vt 가 module root (`lib_vt.zig`) 에 `device_attributes.Attributes`
