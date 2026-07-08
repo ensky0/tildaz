@@ -228,28 +228,26 @@ pub const Tab = struct {
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
-        // #266 — 터미널 질의 응답 배선 (macOS / Linux 만). 기본 vtStream() 은
-        // 읽기 전용이라 응답이 필요한 시퀀스 (DA1 / DSR / DECRQM / OSC 색 질의
-        // / kitty keyboard 질의 / XTVERSION) 를 전부 무시 → fish 가 필수 질의인
-        // DA1 응답을 10초 기다리다 경고. effects 에 write_pty (응답 송신 통로)
-        // + 콜백들을 연결하면 나머지 질의는 ghostty-vt 가 내장 처리한다.
-        //
-        // Windows 는 종전 readonly 유지 — ConPTY 구조에서는 자식 앱의 질의에
-        // conhost 가 터미널 역할로 직접 응답하므로 우리 응답의 수신자가 없다.
-        // 오히려 conhost 자신의 DA1 질의는 spawn 직후 pre-response
-        // (terminal/windows/pty.zig) 로 이미 답을 받은 상태라, 파서의 두 번째
-        // 응답을 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 "62;22c"
-        // 가 찍히는 leak 이 Windows 시연에서 확인됨 (#266).
+        // #266 — 터미널 질의 응답 배선. 기본 vtStream() 은 읽기 전용이라 응답이
+        // 필요한 시퀀스 (DA1 / DSR / DECRQM / OSC 색 질의 / kitty keyboard 질의
+        // / XTVERSION) 를 전부 무시 → fish 가 필수 질의인 DA1 응답을 10초
+        // 기다리다 경고. effects 에 write_pty (응답 송신 통로) + 콜백들을
+        // 연결하면 나머지 질의는 ghostty-vt 가 내장 처리한다.
+        var vt_handler = tab.terminal.vtHandler();
+        vt_handler.effects.write_pty = &vtWritePty;
+        vt_handler.effects.xtversion = &vtXtversion;
+        vt_handler.effects.color_scheme = &vtColorScheme;
+        // Windows 는 device_attributes 만 제외. conhost 의 DA1 질의는 spawn
+        // 직후 pre-response (terminal/windows/pty.zig) 가 이미 답하므로, 파서가
+        // 또 답하면 두 번째 응답을 conhost 가 소비하지 않고 자식 입력으로
+        // 흘려보내 cmd 에 "62;22c" 가 찍힘 (Windows 시연 실측). 나머지 배선은
+        // Windows 도 유지 — conhost 는 자기가 모르는 기본색 질의 (OSC 10/11,
+        // INVALID_COLOR 면 침묵) 등을 답하지 못하므로, 질의가 우리 출력까지
+        // 통과해 오는 경우 우리 theme 값으로 응답하기 위함 (#266 W8).
         if (comptime builtin.os.tag != .windows) {
-            var vt_handler = tab.terminal.vtHandler();
-            vt_handler.effects.write_pty = &vtWritePty;
             vt_handler.effects.device_attributes = &vtDeviceAttributes;
-            vt_handler.effects.xtversion = &vtXtversion;
-            vt_handler.effects.color_scheme = &vtColorScheme;
-            tab.stream = .initAlloc(alloc, vt_handler);
-        } else {
-            tab.stream = tab.terminal.vtStream();
         }
+        tab.stream = .initAlloc(alloc, vt_handler);
         tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
 
         return tab;

@@ -703,7 +703,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 앱이 터미널에게 보내는 질의 (응답을 PTY 로 되돌려야 하는 시퀀스) 의 응답 사양. 파싱과 응답 생성은 ghostty-vt 가 담당하고, [`session_core.zig`](src/session_core.zig) 의 Tab.init 이 `vtHandler().effects` 에 콜백을 연결한다 (응답 송신은 `write_pty` → `tab.queueWrite`).
 
-**macOS · Linux 만 배선 — Windows 는 의도적으로 readonly 유지.** ConPTY 구조에서는 자식 앱의 질의에 conhost 가 터미널 역할로 직접 응답하므로 (아래 표의 동작을 conhost 가 제공) 우리 응답의 수신자가 없다. 오히려 conhost 자신의 DA1 질의는 spawn 직후 pre-response ([terminal/windows/pty.zig](src/terminal/windows/pty.zig)) 로 이미 답을 받은 상태라, 파서가 두 번째 응답을 보내면 conhost 가 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 `62;22c` 가 찍히는 leak 이 실기에서 확인됐다 (#266 Windows 시연).
+**Windows 는 `device_attributes` 만 제외하고 배선.** conhost 의 DA1 질의는 spawn 직후 pre-response ([terminal/windows/pty.zig](src/terminal/windows/pty.zig)) 가 이미 답하므로, 파서가 또 답하면 conhost 가 두 번째 응답을 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 `62;22c` 가 찍힌다 (#266 Windows 실기 확인 — 그래서 DA 콜백은 Windows 제외). 자식 앱의 DA1/DSR 등 대부분의 질의는 conhost 가 터미널 역할로 직접 응답하지만, conhost 가 답하지 못하는 질의 — 기본색 OSC 10/11 은 headless ConPTY 에서 색을 몰라 (`INVALID_COLOR`) 침묵 ([microsoft/terminal `RequestXtermColorResource`](https://github.com/microsoft/terminal/blob/main/src/terminal/adapter/adaptDispatch.cpp)) — 가 우리 출력까지 통과해 오는 경우를 위해 나머지 배선은 Windows 도 유지한다. `확인 필요`: 통과 여부는 #266 W8 재시연으로 판정 중.
 
 | 질의 | 응답 | 구현 |
 |---|---|---|
