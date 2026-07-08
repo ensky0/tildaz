@@ -15,6 +15,7 @@ const perf = @import("../perf.zig");
 const log = @import("../log.zig");
 const display_width = @import("../font/display_width.zig");
 const tab_layout = @import("../tab_layout.zig");
+const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
@@ -142,6 +143,9 @@ pub const D3d11Renderer = struct {
     alloc: std.mem.Allocator,
     font: DWriteFontContext,
     atlas: GlyphAtlas,
+    /// 현재 DPI scale (dpi/96). pt → px 변환에 곱하는 단일 scale 값 — UI metric
+    /// (탭바 아이콘 크기/두께 등) 이 이 값을 쓴다. init / DPI 변경 시 갱신.
+    pixels_per_dip: f32 = 1.0,
     render_state: ghostty.RenderState = .empty,
     /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
     /// renderTerminal cell cursor 또는 renderTabBar rename cursor 그리면서
@@ -431,6 +435,7 @@ pub const D3d11Renderer = struct {
             .alloc = alloc,
             .font = font_ctx,
             .atlas = atlas,
+            .pixels_per_dip = pixels_per_dip,
             .device = device.?,
             .ctx = ctx.?,
             .swap_chain = swap_chain.?,
@@ -522,6 +527,7 @@ pub const D3d11Renderer = struct {
 
         self.font = font_ctx;
         self.atlas = atlas;
+        self.pixels_per_dip = pixels_per_dip;
 
         // Grid state was computed against the old cell metrics — force a
         // full redraw so every cell re-rasterizes through the new atlas.
@@ -874,24 +880,24 @@ pub const D3d11Renderer = struct {
         }
         self.drawBgInstances(ctrl_bg_buf[0..ctrl_bg_n]);
 
-        // 글리프 `<` `>` `+`. 박스 안에 cw × ch 글자 가운데 정렬. 활성 / 비활성
-        // 색 분리.
+        // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
+        // 알파 커버리지 비트맵을 만들어 atlas 커스텀 엔트리로 그림 (폰트 독립).
+        // Linux / macOS 와 같은 비트맵 → 세 platform 픽셀 동일. box 중앙 정렬.
+        // scale 은 renderer 가 들고 있는 pixels_per_dip 사용 (탭바 폰트/metric 과
+        // 동일 scale — 역산 아님).
         var ctrl_text_buf: [4]TextInstance = undefined;
         var ctrl_text_n: u32 = 0;
-        const drawCtrlGlyph = struct {
-            fn run(rself: *D3d11Renderer, codepoint: u21, box_x: f32, box_w: f32, tbh_: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
+        const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.pixels_per_dip));
+        const icon_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.pixels_per_dip);
+        const drawIcon = struct {
+            fn run(rself: *D3d11Renderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh_: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
                 if (n.* >= buf.len) return;
-                if (box_w <= 0) return;
-                const result = rself.font.resolveGlyph(codepoint) orelse return;
-                const entry = rself.atlas.getOrInsert(result.face, result.index) orelse {
-                    if (result.owned) _ = result.face.vtable.Release(result.face);
-                    return;
-                };
-                if (result.owned) _ = result.face.vtable.Release(result.face);
+                if (box_w <= 0 or isz == 0) return;
+                const entry = rself.atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
-                const gx = box_x + (box_w - cw_) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
-                const baseline = (tbh_ + rself.font.ascent_px - (ch_ - rself.font.ascent_px)) * 0.5;
-                const gy = baseline + @as(f32, @floatFromInt(entry.bearing_y));
+                const fsz: f32 = @floatFromInt(isz);
+                const gx = box_x + (box_w - fsz) * 0.5;
+                const gy = (tbh_ - fsz) * 0.5;
                 buf[n.*] = .{
                     .pos = .{ gx, gy },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -906,14 +912,12 @@ pub const D3d11Renderer = struct {
         if (layout.arrows_visible) {
             const left_color = if (layout.left_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
             const right_color = if (layout.right_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
-            drawCtrlGlyph(self, '<', layout.left_arrow_x, layout.arrow_w, tbh, cw, ch, left_color, &ctrl_text_buf, &ctrl_text_n);
-            drawCtrlGlyph(self, '>', layout.right_arrow_x, layout.arrow_w, tbh, cw, ch, right_color, &ctrl_text_buf, &ctrl_text_n);
+            drawIcon(self, .chevron_left, layout.left_arrow_x, layout.arrow_w, tbh, icon_size, icon_stroke, left_color, &ctrl_text_buf, &ctrl_text_n);
+            drawIcon(self, .chevron_right, layout.right_arrow_x, layout.arrow_w, tbh, icon_size, icon_stroke, right_color, &ctrl_text_buf, &ctrl_text_n);
         }
-        drawCtrlGlyph(self, '+', layout.plus_x, layout.plus_w, tbh, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
-        // #268 — 우측 끝 닫기 버튼. 소문자 'x' 대신 × (U+00D7 곱셈 기호) —
-        // '+' 와 같은 수학 연산자 계열이라 폰트가 짝으로 디자인해 크기/두께/
-        // 중심이 '+' 와 맞음 (소문자는 글자라 커 보임 — 사용자 시연 피드백).
-        drawCtrlGlyph(self, '\u{D7}', layout.close_x, layout.close_w, tbh, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
+        drawIcon(self, .plus, layout.plus_x, layout.plus_w, tbh, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
+        // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
+        drawIcon(self, .close, layout.close_x, layout.close_w, tbh, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
         if (ctrl_text_n > 0) self.drawTextInstances(ctrl_text_buf[0..ctrl_text_n]);
 
         // Don't present — renderTerminal will continue

@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const ct = @import("../../font/macos/coretext.zig");
+const tab_icons = @import("../../tab_icons.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
@@ -92,6 +93,63 @@ pub const GlyphAtlas = struct {
         if (self.cache.get(key)) |entry| return entry;
 
         const entry = self.rasterize(font, glyph_index) orelse return null;
+        self.cache.put(key, entry) catch return null;
+        return entry;
+    }
+
+    /// 탭바 컨트롤 아이콘 (`< > × +`) 을 `tab_icons` 로 rasterize 해 atlas 에
+    /// 캐시 (#268). 폰트 글리프가 아니라 우리가 만든 알파 커버리지라 codepoint
+    /// 대신 아이콘 enum 을 key 로 씀 (font=0 은 유효한 CTFontRef 아님). 커버리지
+    /// `a` 를 흰색 premultiplied (a,a,a,a) 로 써서 일반 글리프와 같은 셰이더
+    /// tint 경로 사용. scale 변경 시 `applyScale` 이 `reset` 하므로 다음 render
+    /// 에서 새 size 로 재라스터.
+    pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
+        const key = GlyphKey{ .font = 0, .index = @intFromEnum(icon) };
+        if (self.cache.get(key)) |entry| return entry;
+        if (size == 0 or size > tab_icons.MAX_SIZE) return null;
+
+        var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
+        tab_icons.rasterize(icon, size, stroke_px, &cov);
+
+        const bytes_per_row = size * 4;
+        for (0..size) |row| {
+            for (0..size) |col| {
+                const a = cov[row * size + col];
+                const off = row * bytes_per_row + col * 4;
+                // BGRA premultiplied 흰색 — 일반 글리프와 동일 (a,a,a,a).
+                self.temp_buf[off + 0] = a;
+                self.temp_buf[off + 1] = a;
+                self.temp_buf[off + 2] = a;
+                self.temp_buf[off + 3] = a;
+            }
+        }
+
+        const pos = self.packGlyph(size, size) orelse blk: {
+            self.reset();
+            break :blk self.packGlyph(size, size) orelse return null;
+        };
+        const atlas_x = pos[0];
+        const atlas_y = pos[1];
+        const atlas_row_bytes = ATLAS_SIZE * 4;
+        for (0..size) |row| {
+            const src_off = row * bytes_per_row;
+            const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
+            @memcpy(self.pixels[dst_off..][0..bytes_per_row], self.temp_buf[src_off..][0..bytes_per_row]);
+        }
+
+        self.dirty = true;
+        if (atlas_y < self.dirty_min_y) self.dirty_min_y = atlas_y;
+        if (atlas_y + size > self.dirty_max_y) self.dirty_max_y = atlas_y + size;
+
+        const entry = AtlasEntry{
+            .x = @intCast(atlas_x),
+            .y = @intCast(atlas_y),
+            .w = @intCast(size),
+            .h = @intCast(size),
+            .bearing_x = 0,
+            .bearing_y = 0,
+            .is_color = false,
+        };
         self.cache.put(key, entry) catch return null;
         return entry;
     }
