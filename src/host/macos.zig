@@ -428,6 +428,7 @@ fn tabBarLayoutInputs() ?tab_layout.Inputs {
         .tab_w = tabWidthPx(),
         .arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale,
         .plus_w = plus_w,
+        .close_w = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT)) * r.scale,
         .scroll_x = g_tab_scroll_x_px,
     };
 }
@@ -440,6 +441,8 @@ fn tabBarLayout() TabBarLayout {
         .arrow_w = 0,
         .plus_w = 0,
         .plus_x = 0,
+        .close_w = 0,
+        .close_x = 0,
     };
     return tab_layout.compute(inputs);
 }
@@ -1906,11 +1909,10 @@ fn maybeAutoScrollSelectionMac() bool {
     return true;
 }
 
-const TabBarHit = tab_layout.TabHit;
 const TabBarArea = tab_layout.Area;
 
-/// 탭바 영역 hit-area 분기 (#117). 화살표 / + 영역에서는 별도 처리, tab_area
-/// 안에서는 `tabBarTabHitTest` 가 탭 인덱스 + close 버튼 hit 여부 계산.
+/// 탭바 영역 hit-area 분기 (#117). 화살표 / `+` / `x` 영역에서는 별도 처리,
+/// tab_area 안에서는 `tabBarTabHitTest` 가 탭 인덱스 계산.
 fn tabBarHitArea(px: f32, py: f32, layout: TabBarLayout) TabBarArea {
     if (g_renderer == null) return .none;
     const r = &g_renderer.?;
@@ -1918,23 +1920,16 @@ fn tabBarHitArea(px: f32, py: f32, layout: TabBarLayout) TabBarArea {
     return tab_layout.hitArea(px, py, tab_bar_h, layout);
 }
 
-/// tab_area 안에서 px → (탭 인덱스, close 버튼 hit). 호출자가 먼저 hit-area 가
-/// `.tab_area` 인지 검사.
-fn tabBarTabHitTest(px: f32, py: f32, layout: TabBarLayout) ?TabBarHit {
+/// tab_area 안에서 px → 탭 인덱스. 호출자가 먼저 hit-area 가 `.tab_area` 인지
+/// 검사. (#268 — per-tab close 제거로 인덱스만.)
+fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
     if (g_renderer == null) return null;
     const r = &g_renderer.?;
     const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
-    const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
-    const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
-    const tab_bar_h: f32 = @floatFromInt(tabBarHeightPx(r.scale));
     return tab_layout.hitTab(
         px,
-        py,
         layout,
         tab_w_px,
-        tab_pad_px,
-        close_size_px,
-        tab_bar_h,
         g_tab_scroll_x_px,
         @intCast(g_session.count()),
     );
@@ -1992,15 +1987,6 @@ fn commitPendingInput(self_view: objc.id) void {
     commitOrCancelRename(true);
 }
 
-/// 탭바 클릭 처리 (#111 M11.5). close hit 면 그 탭 정리, 본체 hit 면 활성화.
-fn handleTabBarClick(hit: TabBarHit) void {
-    if (hit.on_close) {
-        if (tab_actions.closeIndex(&g_host, hit.tab_index) == .changed) syncTerminalGeometry();
-        return;
-    }
-    _ = g_session.setActiveTab(hit.tab_index);
-}
-
 /// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
 /// 영역 밖 / 다른 탭 / close 버튼 / 터미널 등은 false → caller 가 commit.
 fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
@@ -2013,8 +1999,8 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
 
     // 탭바 안 + tab_area 안만.
     if (tabBarHitArea(xy.x, xy.y, layout) != .tab_area) return false;
-    const hit = tabBarTabHitTest(xy.x, xy.y, layout) orelse return false;
-    if (hit.tab_index != rv.tab_index or hit.on_close) return false;
+    const hit = tabBarTabHitTest(xy.x, layout) orelse return false;
+    if (hit != rv.tab_index) return false;
 
     // preedit 활성 시 manual commit — preedit 자모 들을 현재 cursor 위치 다음에
     // insert. 그 후 IME marked text state 도 정리 (discardMarkedText). native
@@ -2039,11 +2025,11 @@ fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
     const rv_new = g_rename.view() orelse return false;
     const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
     const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
-    const close_size_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * r.scale;
     const cw: f32 = @floatFromInt(r.font.cell_width_px);
     const tab_x = @as(f32, @floatFromInt(rv_new.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
     const text_x_start = tab_x + tab_pad_px;
-    const max_text_w = tab_w_px - close_size_px - tab_pad_px * 3;
+    // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
+    const max_text_w = tab_w_px - tab_pad_px * 2;
 
     if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], g_rename.scroll_offset, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
         g_rename.setCursor(new_byte);
@@ -2107,16 +2093,17 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
             .tab_w = @floatCast(tab_w_pt),
             .arrow_w = @floatCast(@as(f64, @floatFromInt(ui_metrics.TAB_ARROW_W_PT))),
             .plus_w = @floatCast(plus_w_pt),
+            .close_w = @floatCast(@as(f64, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT))),
             .scroll_x = @floatCast(scroll_x_pt),
         });
-        const close_pt: f64 = @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT);
         const tab_pad_pt: f64 = @floatFromInt(ui_metrics.TAB_PADDING_PT);
         const idx: f64 = @floatFromInt(tab_idx_v);
         const tab_world_x = idx * tab_w_pt - scroll_x_pt;
         const tab_x_view = layout_pt.tab_area_x + tab_world_x;
         // viewport clamp (`<` `>` arrow 영역 안 침범)
         const text_left = @max(tab_x_view, layout_pt.tab_area_x);
-        const text_right_uncliped = tab_x_view + tab_w_pt - close_pt - tab_pad_pt;
+        // #268 — per-tab close 제거로 text 영역이 탭 우측 padding 까지.
+        const text_right_uncliped = tab_x_view + tab_w_pt - tab_pad_pt;
         const text_right = @min(text_right_uncliped, layout_pt.tab_area_x + layout_pt.tab_area_w);
         if (text_right > text_left) {
             // 탭바 paint top = view top (Y-down), Y-up 변환: y_min = h - tab_bar_h.
@@ -2154,26 +2141,11 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     // cancel — terminal click 시 cell preedit 으로 옮겨가지 않게.
     commitPendingInput(self_view);
 
-    // 스크롤바 영역 클릭 (#123) — Windows app_controller.zig:488-498 패턴.
-    // cell selection / 탭바 클릭보다 우선.
-    if (g_renderer != null) {
-        const xy = eventToWindowPx(self_view, event);
-        const sbw_px: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * g_renderer.?.scale;
-        const vp_w_f: f32 = @floatFromInt(g_renderer.?.vp_width);
-        if (xy.x >= vp_w_f - sbw_px) {
-            // 새 scrollbar drag 시작 = 기존 selection drag 정리 (Windows
-            // app_controller.zig:826-828 동등). selection.cancel 은 active flag
-            // 만 리셋, screen 의 highlight 는 보존.
-            tab.interaction.selection.cancel();
-            g_drag.reset();
-            tab.interaction.scrollbar.begin(scrollbarGrabAt(xy.y));
-            scrollbarScrollToY(xy.y);
-            return;
-        }
-    }
-
-    // 탭바 영역 클릭 (멀티탭 시) → 화살표 / + / 탭 전환 / close / drag-begin /
-    // rename.
+    // 탭바 영역 클릭 (멀티탭 시) → 화살표 / + / × / 탭 전환 / drag-begin /
+    // rename. Windows (app_controller mouse_down) / Linux (handlePointerButton)
+    // 와 동일하게 **탭바 분기가 스크롤바보다 먼저** (#268 — 우측 끝 × 버튼이
+    // 스크롤바 x 밴드와 겹치므로 순서가 정답. 탭바 안 클릭은 여기서 전부
+    // return 하고, .none (= 탭바 밖) 만 아래로 fallthrough).
     if (g_session.count() >= 2 and g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
         const layout = tabBarLayout();
@@ -2197,31 +2169,32 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                 handleNewTab();
                 return;
             },
+            // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
+            .close => {
+                handleCloseActiveTab();
+                return;
+            },
             .none => {
                 // 탭바 영역 *밖* = 터미널 영역 (tab_layout.hitArea 의 `py >= tab_bar_h`
                 // 케이스). 아래 cell selection / 더블클릭 분기로 fallthrough — return
                 // 하면 멀티탭 상태에서 모든 터미널 클릭이 무시됨 (#172).
             },
             .tab_area => {
-                if (tabBarTabHitTest(xy.x, xy.y, layout)) |hit| {
+                if (tabBarTabHitTest(xy.x, layout)) |hit_index| {
                     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
                     const click_count = get_count(event, objc.sel("clickCount"));
-                    // 더블클릭 (close 버튼 외) → rename 시작.
-                    if (click_count >= 2 and !hit.on_close) {
-                        if (hit.tab_index < g_session.count()) {
-                            const t = g_session.tabs.items[hit.tab_index];
-                            g_rename.begin(hit.tab_index, t.title[0..t.title_len]);
+                    // 더블클릭 → rename 시작.
+                    if (click_count >= 2) {
+                        if (hit_index < g_session.count()) {
+                            const t = g_session.tabs.items[hit_index];
+                            g_rename.begin(hit_index, t.title[0..t.title_len]);
                             // #193 — rename begin → cursor rect 갱신 (text rect 추가).
                             invalidateRenameCursorRects();
                         }
                         return;
                     }
-                    if (hit.on_close) {
-                        handleTabBarClick(hit);
-                        return;
-                    }
                     // 본체 클릭 → 활성 전환 + drag-begin. DragState world 좌표.
-                    _ = g_session.setActiveTab(hit.tab_index);
+                    _ = g_session.setActiveTab(hit_index);
                     g_tab_scroll_user_override = false;
                     const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale);
                     const world_x: f32 = (xy.x - layout.tab_area_x) + g_tab_scroll_x_px;
@@ -2233,6 +2206,25 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             },
         }
     }
+    // 스크롤바 영역 클릭 (#123) — Windows app_controller mouse_down 과 동일
+    // 순서: 탭바 분기가 위에서 먼저 처리되므로 여기 도달한 클릭은 탭바 밖
+    // (y ≥ tab_bar_h). cell selection 보다는 우선.
+    if (g_renderer != null) {
+        const xy = eventToWindowPx(self_view, event);
+        const sbw_px: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * g_renderer.?.scale;
+        const vp_w_f: f32 = @floatFromInt(g_renderer.?.vp_width);
+        if (xy.x >= vp_w_f - sbw_px) {
+            // 새 scrollbar drag 시작 = 기존 selection drag 정리 (Windows
+            // app_controller.zig 동등). selection.cancel 은 active flag
+            // 만 리셋, screen 의 highlight 는 보존.
+            tab.interaction.selection.cancel();
+            g_drag.reset();
+            tab.interaction.scrollbar.begin(scrollbarGrabAt(xy.y));
+            scrollbarScrollToY(xy.y);
+            return;
+        }
+    }
+
     const cell = eventToCell(self_view, event) orelse return;
     // double-click → word selection + 자동 copy (Windows `selectWordAt` 와 동등).
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);

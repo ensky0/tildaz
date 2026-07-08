@@ -978,7 +978,6 @@ pub const MetalRenderer = struct {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
         const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
-        const close_size_px = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_SIZE_PT)) * self.scale;
         const inactive_bg: [4]f32 = .{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
 
         const MAX_BG: usize = 64;
@@ -1033,12 +1032,12 @@ pub const MetalRenderer = struct {
             bg_n += 1;
         };
 
-        // 3. 각 탭 제목 텍스트 + close 버튼 (× 글리프).
+        // 3. 각 탭 제목 텍스트.
         const cw: f32 = @floatFromInt(self.font.cell_width_px);
         const ch: f32 = @floatFromInt(self.font.cell_height_px);
         const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
-        // close 버튼 자리 + 양쪽 padding 빼고 남은 영역만 텍스트.
-        const max_text_w_px = tab_w_px - close_size_px - tab_pad_px * 3;
+        // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
+        const max_text_w_px = tab_w_px - tab_pad_px * 2;
         // rename preedit 배경색 (cell preedit 과 동일 — 보라 회색).
         const preedit_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1.0 };
 
@@ -1138,52 +1137,9 @@ pub const MetalRenderer = struct {
                     }
                 }
             }.cb);
-
-            // close 버튼 'x' — 우측 끝 + tab_pad 위치. 색은 텍스트 60% + 탭
-            // 배경 40% (Windows 와 동일 — 너무 강조되지 않게 dim).
-            if (text_n < MAX_TEXT) {
-                const tab_bg = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
-                const close_c: [4]f32 = .{
-                    ui_metrics.TAB_TEXT_COLOR[0] * 0.6 + tab_bg[0] * 0.4,
-                    ui_metrics.TAB_TEXT_COLOR[1] * 0.6 + tab_bg[1] * 0.4,
-                    ui_metrics.TAB_TEXT_COLOR[2] * 0.6 + tab_bg[2] * 0.4,
-                    1.0,
-                };
-                const close_x = tab_x + tab_w_px - close_size_px - tab_pad_px;
-                const close_y = (tab_bar_h_px - close_size_px) * 0.5;
-                if (self.font.resolveGlyph('x')) |result| {
-                    if (self.atlas.getOrInsert(result.font, @intCast(result.index))) |entry| {
-                        if (result.owned) ct.CFRelease(result.font);
-                        if (entry.w > 0 and entry.h > 0) {
-                            // close 박스 (close_size_px × close_size_px) 안에 cell
-                            // (cw × ch) 를 중앙 정렬한 가상 cell 의 baseline.
-                            const close_baseline = close_y + (close_size_px + self.font.ascent_px - (ch - self.font.ascent_px)) * 0.5;
-                            const gx = close_x + (close_size_px - cw) * 0.5 + @as(f32, @floatFromInt(entry.bearing_x));
-                            // macOS 좌표계 (cell 글리프와 동일 패턴):
-                            //   gy = baseline − bearing_y − h
-                            // Windows 는 `+ bearing_y` 인데 그건 DirectWrite 의
-                            // bearing_y 부호 정의가 달라서. CoreText 는 baseline
-                            // 위쪽이 양수 bearing_y 이고 atlas 의 entry.h 가
-                            // 글리프 height 라 위로 올라가야 top.
-                            const gy = close_baseline
-                                - @as(f32, @floatFromInt(entry.bearing_y))
-                                - @as(f32, @floatFromInt(entry.h));
-                            text_buf[text_n] = .{
-                                .pos = .{ gx, gy },
-                                .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                                .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                                .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                                .fg_color = close_c,
-                                .color_flag = if (entry.is_color) 1 else 0,
-                            };
-                            text_n += 1;
-                        }
-                    } else if (result.owned) ct.CFRelease(result.font);
-                }
-            }
         }
 
-        // 1차 batch — 탭 BG / 텍스트 / cursor / close 글리프 그림.
+        // 1차 batch — 탭 BG / 텍스트 그림.
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);
 
@@ -1209,6 +1165,13 @@ pub const MetalRenderer = struct {
         bg_buf[bg_n] = .{
             .pos = .{ layout.plus_x, 0 },
             .size = .{ layout.plus_w, tab_bar_h_px },
+            .color = ui_metrics.TAB_BAR_BG,
+        };
+        bg_n += 1;
+        // #268 — 우측 끝 `x` (활성 탭 닫기) 버튼 배경.
+        bg_buf[bg_n] = .{
+            .pos = .{ layout.close_x, 0 },
+            .size = .{ layout.close_w, tab_bar_h_px },
             .color = ui_metrics.TAB_BAR_BG,
         };
         bg_n += 1;
@@ -1249,6 +1212,10 @@ pub const MetalRenderer = struct {
             drawCtrlGlyph(self, '>', layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, cw, ch, right_color, &text_buf, &text_n);
         }
         drawCtrlGlyph(self, '+', layout.plus_x, layout.plus_w, tab_bar_h_px, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
+        // #268 — 우측 끝 닫기 버튼. 소문자 'x' 대신 × (U+00D7 곱셈 기호) —
+        // '+' 와 같은 수학 연산자 계열이라 폰트가 짝으로 디자인해 크기/두께/
+        // 중심이 '+' 와 맞음 (소문자는 글자라 커 보임 — 사용자 시연 피드백).
+        drawCtrlGlyph(self, '\u{D7}', layout.close_x, layout.close_w, tab_bar_h_px, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
 
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);

@@ -572,7 +572,6 @@ pub const D3d11Renderer = struct {
         client_w: c_int,
         client_h: c_int,
         tab_width: c_int,
-        close_btn_size: c_int,
         tab_padding: c_int,
         /// drag 진행 중인 탭. null = drag 안 함 또는 5px 임계 미만. `current_x`
         /// (c_int) 는 *world* 좌표 (#117) — 화면 위치는 `current_x -
@@ -607,7 +606,6 @@ pub const D3d11Renderer = struct {
 
         const tbh: f32 = @floatFromInt(tab_bar_height);
         const tw: f32 = @floatFromInt(tab_width);
-        const cbs: f32 = @floatFromInt(close_btn_size);
         const pad: f32 = @floatFromInt(tab_padding);
         const cw: f32 = @floatFromInt(self.font.cell_width_px);
         const ch: f32 = @floatFromInt(self.font.cell_height_px);
@@ -684,8 +682,8 @@ pub const D3d11Renderer = struct {
             const title = if (is_renaming) rename_view.?.text[0..rename_view.?.text_len] else tab_titles[i];
             const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
 
-            // Max text width: tab width - close button - padding on both sides - gap before close btn
-            const max_text_w = tw - cbs - pad * 3;
+            // Max text width — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
+            const max_text_w = tw - pad * 2;
             // 탭 제목의 실제 시각 폭 — wide char (한글/CJK/Fullwidth/주요 emoji)
             // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
@@ -793,34 +791,6 @@ pub const D3d11Renderer = struct {
                     }
                 }
             }.cb);
-
-            // Close button "x"
-            if (text_count < 512) {
-                const close_x = tab_x + tw - cbs - pad;
-                const close_y = (tbh - cbs) / 2.0;
-                const tab_bg_c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
-                const close_c = ui_metrics.TAB_TEXT_COLOR[0] * 0.6 + tab_bg_c * 0.4;
-
-                const result = self.font.resolveGlyph('x') orelse continue;
-                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
-                    if (result.owned) _ = result.face.vtable.Release(result.face);
-                    continue;
-                };
-                if (result.owned) _ = result.face.vtable.Release(result.face);
-                if (entry.w > 0 and entry.h > 0) {
-                    const gx = close_x + (cbs - cw) / 2.0 + @as(f32, @floatFromInt(entry.bearing_x));
-                    const close_baseline = close_y + (cbs + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
-                    const gy = close_baseline + @as(f32, @floatFromInt(entry.bearing_y));
-                    text_instances[text_count] = .{
-                        .pos = .{ gx, gy },
-                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = .{ close_c, close_c, close_c, 1 },
-                    };
-                    text_count += 1;
-                }
-            }
         }
 
         if (text_count > 0) {
@@ -839,7 +809,7 @@ pub const D3d11Renderer = struct {
         // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:
         // 탭 너비 줄이는 효과). 색은 활성 (밝은 흰색) / 비활성 (어두운 회색)
         // 명확히 구분.
-        var ctrl_bg_buf: [3]BgInstance = undefined;
+        var ctrl_bg_buf: [4]BgInstance = undefined;
         var ctrl_bg_n: u32 = 0;
         if (layout.arrows_visible) {
             ctrl_bg_buf[ctrl_bg_n] = .{
@@ -861,11 +831,18 @@ pub const D3d11Renderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         ctrl_bg_n += 1;
+        // #268 — 우측 끝 `x` (활성 탭 닫기) 버튼 배경.
+        ctrl_bg_buf[ctrl_bg_n] = .{
+            .pos = .{ layout.close_x, 0 },
+            .size = .{ layout.close_w, tbh },
+            .color = ui_metrics.TAB_BAR_BG,
+        };
+        ctrl_bg_n += 1;
         self.drawBgInstances(ctrl_bg_buf[0..ctrl_bg_n]);
 
         // 글리프 `<` `>` `+`. 박스 안에 cw × ch 글자 가운데 정렬. 활성 / 비활성
         // 색 분리.
-        var ctrl_text_buf: [3]TextInstance = undefined;
+        var ctrl_text_buf: [4]TextInstance = undefined;
         var ctrl_text_n: u32 = 0;
         const drawCtrlGlyph = struct {
             fn run(rself: *D3d11Renderer, codepoint: u21, box_x: f32, box_w: f32, tbh_: f32, cw_: f32, ch_: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
@@ -899,6 +876,10 @@ pub const D3d11Renderer = struct {
             drawCtrlGlyph(self, '>', layout.right_arrow_x, layout.arrow_w, tbh, cw, ch, right_color, &ctrl_text_buf, &ctrl_text_n);
         }
         drawCtrlGlyph(self, '+', layout.plus_x, layout.plus_w, tbh, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
+        // #268 — 우측 끝 닫기 버튼. 소문자 'x' 대신 × (U+00D7 곱셈 기호) —
+        // '+' 와 같은 수학 연산자 계열이라 폰트가 짝으로 디자인해 크기/두께/
+        // 중심이 '+' 와 맞음 (소문자는 글자라 커 보임 — 사용자 시연 피드백).
+        drawCtrlGlyph(self, '\u{D7}', layout.close_x, layout.close_w, tbh, cw, ch, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
         if (ctrl_text_n > 0) self.drawTextInstances(ctrl_text_buf[0..ctrl_text_n]);
 
         // Don't present — renderTerminal will continue

@@ -59,7 +59,7 @@ pub const App = struct {
     TAB_WIDTH: c_int = 150,
     TAB_ARROW_W: c_int = 28,
     TAB_PLUS_W: c_int = 28,
-    CLOSE_BTN_SIZE: c_int = 14,
+    TAB_CLOSE_W: c_int = 28,
     TAB_PADDING: c_int = 6,
     SCROLLBAR_W: c_int = 8,
     // Minimum scrollback thumb height — clamps the thumb so a deeply scrolled
@@ -164,8 +164,6 @@ pub const App = struct {
                     @floatFromInt(y),
                     layout,
                     @floatFromInt(self.TAB_WIDTH),
-                    @floatFromInt(self.TAB_PADDING),
-                    @floatFromInt(self.CLOSE_BTN_SIZE),
                     @floatFromInt(tab_bar_h),
                     @floatFromInt(self.tab_scroll_x),
                     @intCast(self.session.count()),
@@ -196,7 +194,8 @@ pub const App = struct {
     /// shape 으로 변환만. Windows 는 c_int → f32 cast.
     fn tabBarLayoutInputs(self: *const App) tab_layout.Inputs {
         const vp = self.window.getClientSize().w;
-        // count >= MAX_TABS 면 plus 버튼 사라짐 — 마지막 탭이 `>` 화살표 인접.
+        // count >= MAX_TABS 면 plus 버튼 사라짐. close (`x`, 활성 탭 닫기) 는
+        // 탭바가 보이는 한 항상 표시 (#268 — 우측 끝 고정 클러스터).
         const at_limit = self.session.count() >= session_core.MAX_TABS;
         const plus_w_eff: c_int = if (at_limit) 0 else self.TAB_PLUS_W;
         return .{
@@ -205,6 +204,7 @@ pub const App = struct {
             .tab_w = @floatFromInt(self.TAB_WIDTH),
             .arrow_w = @floatFromInt(self.TAB_ARROW_W),
             .plus_w = @floatFromInt(plus_w_eff),
+            .close_w = @floatFromInt(self.TAB_CLOSE_W),
             .scroll_x = @floatFromInt(self.tab_scroll_x),
         };
     }
@@ -304,7 +304,7 @@ pub const App = struct {
         self.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
         self.TAB_ARROW_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * scale));
         self.TAB_PLUS_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * scale));
-        self.CLOSE_BTN_SIZE = @intFromFloat(@round(14.0 * scale));
+        self.TAB_CLOSE_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT)) * scale));
         self.TAB_PADDING = @intFromFloat(@round(6.0 * scale));
         self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
         self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
@@ -380,7 +380,6 @@ pub const App = struct {
                     size.w,
                     size.h,
                     self.TAB_WIDTH,
-                    self.CLOSE_BTN_SIZE,
                     self.TAB_PADDING,
                     self.tab_interaction.drag.view(),
                     self.tab_interaction.rename.view(),
@@ -528,10 +527,7 @@ pub const App = struct {
         const tab_index: usize = @intCast(tab_index_raw);
         if (tab_index != rv.tab_index) return false;
 
-        // close 버튼 영역 검사 — 그 위 클릭은 commit + close.
         const tab_x_int = @as(c_int, @intCast(rv.tab_index)) * self.TAB_WIDTH - self.tab_scroll_x + @as(c_int, @intFromFloat(layout.tab_area_x));
-        const close_x_int = tab_x_int + self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING;
-        if (mouse_x >= close_x_int) return false;
 
         // preedit 활성 시 manual commit — preedit 자모 들을 현재 cursor 위치
         // 다음에 insert (rename buf 에). 그 후 IME state cancel — 다음
@@ -549,7 +545,8 @@ pub const App = struct {
         const rv_new = self.tab_interaction.rename.view() orelse return false;
         const cw: f32 = @floatFromInt(self.window.cell_width_px);
         const text_x_start: f32 = @floatFromInt(tab_x_int + self.TAB_PADDING);
-        const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING * 3);
+        // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
+        const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.TAB_PADDING * 2);
 
         if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], self.tab_interaction.rename.scroll_offset, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
             self.tab_interaction.rename.setCursor(new_byte);
@@ -579,6 +576,11 @@ pub const App = struct {
                 self.handleNewTab();
                 return;
             },
+            // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
+            .close => {
+                self.closeTab(self.session.activeIndex());
+                return;
+            },
             .none => return,
             .tab_area => {},
         }
@@ -592,17 +594,6 @@ pub const App = struct {
         if (tab_index_raw < 0) return;
         const tab_index: usize = @intCast(tab_index_raw);
         if (tab_index >= self.session.count()) return;
-
-        // close 버튼 hit (world 좌표).
-        const tab_x = @as(c_int, @intCast(tab_index)) * self.TAB_WIDTH;
-        const close_x = tab_x + self.TAB_WIDTH - self.CLOSE_BTN_SIZE - self.TAB_PADDING;
-        const close_y = @divTrunc(self.TAB_BAR_HEIGHT - self.CLOSE_BTN_SIZE, 2);
-        if (world_x >= close_x and world_x <= close_x + self.CLOSE_BTN_SIZE and
-            mouse_y >= close_y and mouse_y <= close_y + self.CLOSE_BTN_SIZE)
-        {
-            self.closeTab(tab_index);
-            return;
-        }
 
         if (self.session.setActiveTab(tab_index)) {
             self.tab_scroll_user_override = false;

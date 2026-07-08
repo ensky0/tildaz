@@ -18,6 +18,8 @@ pub const Layout = struct {
     arrow_w: f32,
     plus_w: f32,
     plus_x: f32,
+    close_w: f32,
+    close_x: f32,
     left_arrow_x: f32 = 0,
     right_arrow_x: f32 = 0,
     left_enabled: bool = false,
@@ -30,29 +32,38 @@ pub const Inputs = struct {
     tab_w: f32,
     arrow_w: f32,
     plus_w: f32,
+    close_w: f32,
     scroll_x: f32,
 };
 
 /// 탭바 layout 계산 — viewport / tab count / scroll 기반 영역 분할.
-/// `[<][tabs][+][>]` (arrows_visible) 또는 `[tabs][+]` (no arrows). gap 없음 —
-/// 사용자 의도 (`<`/`>`/`+` 와 tab 이 인접).
+/// `[<][tabs][>][+][x]` (arrows_visible) 또는 `[tabs][+][x]` (no arrows).
+///
+/// #268 — `+` (새 탭) / `x` (활성 탭 닫기) 는 탭을 따라다니지 않고 **우측 끝
+/// 고정 클러스터**: `x` 가 최우측 구석, `+` 가 그 왼쪽. 위치가 고정이라 탭
+/// 전환 클릭과 물리적으로 분리 → per-tab X misclick 사고 방지 + 근육 기억.
+/// per-tab close 는 제거됨 (#199 는 이 재설계로 대체).
 pub fn compute(inputs: Inputs) Layout {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
-    const arrows_visible = total + inputs.plus_w > inputs.viewport_w;
+    const cluster_w = inputs.plus_w + inputs.close_w;
+    const close_x = inputs.viewport_w - inputs.close_w;
+    const plus_x = close_x - inputs.plus_w;
+    const arrows_visible = total > inputs.viewport_w - cluster_w;
     if (!arrows_visible) {
         return .{
             .tab_area_x = 0,
-            .tab_area_w = @max(0, inputs.viewport_w - inputs.plus_w),
+            .tab_area_w = @max(0, inputs.viewport_w - cluster_w),
             .arrows_visible = false,
             .arrow_w = inputs.arrow_w,
             .plus_w = inputs.plus_w,
-            .plus_x = total, // 마지막 탭 끝 = plus 시작 (gap 없음)
+            .plus_x = plus_x,
+            .close_w = inputs.close_w,
+            .close_x = close_x,
         };
     }
     const tab_area_x = inputs.arrow_w;
-    const tab_area_w = @max(0, inputs.viewport_w - inputs.arrow_w * 2 - inputs.plus_w);
-    const right_arrow_x = inputs.viewport_w - inputs.arrow_w;
-    const plus_x = right_arrow_x - inputs.plus_w;
+    const tab_area_w = @max(0, inputs.viewport_w - inputs.arrow_w * 2 - cluster_w);
+    const right_arrow_x = plus_x - inputs.arrow_w;
     const left_enabled = inputs.scroll_x > 0;
     const right_enabled = inputs.scroll_x + tab_area_w < total;
     return .{
@@ -62,6 +73,8 @@ pub fn compute(inputs: Inputs) Layout {
         .arrow_w = inputs.arrow_w,
         .plus_w = inputs.plus_w,
         .plus_x = plus_x,
+        .close_w = inputs.close_w,
+        .close_x = close_x,
         .left_arrow_x = 0,
         .right_arrow_x = right_arrow_x,
         .left_enabled = left_enabled,
@@ -131,10 +144,11 @@ pub fn scrollByArrow(inputs: Inputs, layout: Layout, dir: ArrowDir) ?f32 {
     return sx;
 }
 
-pub const Area = enum { left_arrow, right_arrow, plus, tab_area, none };
+pub const Area = enum { left_arrow, right_arrow, plus, close, tab_area, none };
 
 /// 픽셀 좌표 (px, py) 가 탭바의 어느 영역에 있는지. py 가 [0, tab_bar_h) 밖 또는
 /// px 가 음수면 .none. arrows_visible=false 면 좌/우 화살표 검사 skip.
+/// `.close` = 우측 끝 활성 탭 닫기 버튼 (#268).
 pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
     if (px < 0 or py < 0 or py >= tab_bar_h) return .none;
     if (layout.arrows_visible) {
@@ -143,6 +157,7 @@ pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
         if (px >= layout.right_arrow_x and px < layout.right_arrow_x + layout.arrow_w)
             return .right_arrow;
     }
+    if (px >= layout.close_x and px < layout.close_x + layout.close_w) return .close;
     if (px >= layout.plus_x and px < layout.plus_x + layout.plus_w) return .plus;
     if (px >= layout.tab_area_x and px < layout.tab_area_x + layout.tab_area_w) return .tab_area;
     return .none;
@@ -397,49 +412,32 @@ pub fn renameTextHit(
     return byte_idx; // mouse_x 가 text 끝 이후 → title.len
 }
 
-pub const TabHit = struct { tab_index: usize, on_close: bool };
-
-/// tab_area 안에서 px → 탭 인덱스 + close 버튼 hit. 호출자가 먼저 hitArea 가
-/// .tab_area 인지 검사 후 호출. tab_area 좌표계: world_x = (px - tab_area_x) +
-/// scroll_x.
+/// tab_area 안에서 px → 탭 인덱스. 호출자가 먼저 hitArea 가 .tab_area 인지
+/// 검사 후 호출. tab_area 좌표계: world_x = (px - tab_area_x) + scroll_x.
+/// #268 — per-tab close 가 제거되어 탭 인덱스만 반환 (탭 어디를 눌러도 전환).
 pub fn hitTab(
     px: f32,
-    py: f32,
     layout: Layout,
     tab_w: f32,
-    tab_pad: f32,
-    close_size: f32,
-    tab_bar_h: f32,
     scroll_x: f32,
     tab_count: u32,
-) ?TabHit {
+) ?usize {
     const local_x = px - layout.tab_area_x;
     const world_x = local_x + scroll_x;
     if (world_x < 0) return null;
     const tab_index = @as(usize, @intFromFloat(world_x / tab_w));
     if (tab_index >= tab_count) return null;
-
-    const tab_x = @as(f32, @floatFromInt(tab_index)) * tab_w;
-    const close_x_min = tab_x + tab_w - close_size - tab_pad;
-    const close_x_max = close_x_min + close_size;
-    const close_y_min = (tab_bar_h - close_size) * 0.5;
-    const close_y_max = close_y_min + close_size;
-    const on_close = (world_x >= close_x_min and world_x <= close_x_max and
-        py >= close_y_min and py <= close_y_max);
-
-    return .{ .tab_index = tab_index, .on_close = on_close };
+    return tab_index;
 }
 
 /// #193 — cursor shape (I-beam) 결정용 — rename 활성 탭의 text 입력 영역 hit.
-/// rename 비활성, 다른 탭, close 'x' 박스 위, 탭바 밖 모두 false. SPEC.md §3.1
+/// rename 비활성, 다른 탭, 탭바 밖 모두 false. SPEC.md §3.1
 /// "탭바 — rename 활성 탭의 text 입력 영역" 행.
 pub fn hitRenameText(
     px: f32,
     py: f32,
     layout: Layout,
     tab_w: f32,
-    tab_pad: f32,
-    close_size: f32,
     tab_bar_h: f32,
     scroll_x: f32,
     tab_count: u32,
@@ -447,8 +445,7 @@ pub fn hitRenameText(
 ) bool {
     const idx = rename_tab_index orelse return false;
     if (py < 0 or py >= tab_bar_h) return false;
-    const hit = hitTab(px, py, layout, tab_w, tab_pad, close_size, tab_bar_h, scroll_x, tab_count) orelse return false;
-    if (hit.tab_index != idx) return false;
-    if (hit.on_close) return false;
-    return true;
+    if (hitArea(px, py, tab_bar_h, layout) != .tab_area) return false;
+    const hit = hitTab(px, layout, tab_w, scroll_x, tab_count) orelse return false;
+    return hit == idx;
 }

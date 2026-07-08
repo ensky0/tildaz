@@ -1285,8 +1285,8 @@ const Client = struct {
         return true;
     }
 
-    /// SPEC.md §3.1 — rename 활성 탭의 text 입력 영역 hit-test (close 'x' 박스
-    /// 제외). `tab_layout.hitRenameText` 공유 helper 사용 — Win / mac 동등 로직.
+    /// SPEC.md §3.1 — rename 활성 탭의 text 입력 영역 hit-test.
+    /// `tab_layout.hitRenameText` 공유 helper 사용 — Win / mac 동등 로직.
     fn pointerInRenameText(self: *const Client) bool {
         if (!self.rename_state.isActive()) return false;
         const session = if (self.session) |*s| s else return false;
@@ -1299,6 +1299,7 @@ const Client = struct {
             .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -1307,8 +1308,6 @@ const Client = struct {
             @floatFromInt(y),
             layout,
             @floatFromInt(self.renderer.tabWidthPx()),
-            @floatFromInt(self.renderer.tabPaddingPx()),
-            @floatFromInt(self.renderer.tabCloseSizePx()),
             @floatFromInt(self.effectiveTabBarHeightPx()),
             self.tab_scroll_x,
             @intCast(session.count()),
@@ -2123,6 +2122,7 @@ const Client = struct {
                     .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
                     .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
                     .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+                    .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
                     .scroll_x = self.tab_scroll_x,
                 };
                 const layout = tab_layout.compute(layout_inputs);
@@ -2816,13 +2816,13 @@ const Client = struct {
         const session = &self.session.?;
         const tab_w_px = self.renderer.tabWidthPx();
         const tab_pad_px = self.renderer.tabPaddingPx();
-        const tab_close_px = self.renderer.tabCloseSizePx();
         const layout_inputs = tab_layout.Inputs{
             .viewport_w = @floatFromInt(self.window_width),
             .tab_count = @intCast(session.count()),
             .tab_w = @floatFromInt(tab_w_px),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -2846,47 +2846,44 @@ const Client = struct {
                 }
             },
             .plus => self.handleNewTab(),
+            // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
+            .close => {
+                var host = self.buildTabActionsHost();
+                const outcome = tab_actions.closeIndex(&host, session.activeIndex());
+                // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
+                if (outcome == .changed) {
+                    self.ensureSessionGrid() catch |err| {
+                        log.appendLine("tab", "ensureSessionGrid after close 'x' failed: {s}", .{@errorName(err)});
+                    };
+                }
+                self.last_tab_click_idx = std.math.maxInt(usize);
+            },
             .tab_area => {
-                const hit = tab_layout.hitTab(
+                const hit_index = tab_layout.hitTab(
                     px_f,
-                    py_f,
                     layout,
                     @floatFromInt(tab_w_px),
-                    @floatFromInt(tab_pad_px),
-                    @floatFromInt(tab_close_px),
-                    tab_bar_h_f,
                     self.tab_scroll_x,
                     @intCast(session.count()),
                 ) orelse return;
-                // SPEC §4.1 — rename 활성 중 *다른* 탭 click (switch / close / drag begin)
+                // SPEC §4.1 — rename 활성 중 *다른* 탭 click (switch / drag begin)
                 // 진입 시 commitPendingInput. 같은 탭 click 은 cursor 이동 (아래 별
                 // 분기) 이라 commit 안 함. 사용자 시연 발견 — 다른 탭바 클릭 시
                 // 3번탭 rename 이 commit 안 되어 I-beam 편집 상태 유지되던 버그.
-                if (self.rename_state.isActive() and self.rename_state.tab_index != hit.tab_index) {
+                if (self.rename_state.isActive() and self.rename_state.tab_index != hit_index) {
                     self.commitPendingInput();
                 }
                 var host = self.buildTabActionsHost();
-                if (hit.on_close) {
-                    const outcome = tab_actions.closeIndex(&host, hit.tab_index);
-                    // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
-                    if (outcome == .changed) {
-                        self.ensureSessionGrid() catch |err| {
-                            log.appendLine("tab", "ensureSessionGrid after close 'x' failed: {s}", .{@errorName(err)});
-                        };
-                    }
-                    self.last_tab_click_idx = std.math.maxInt(usize);
-                    return;
-                }
                 // L12-γ-2 — rename 활성 중 같은 탭 클릭 (single) → cursor
                 // 위치 이동 (`tab_layout.renameTextHit` byte index). native
                 // textbox UX (mac / win 동등).
-                if (self.rename_state.isActive() and self.rename_state.tab_index == hit.tab_index) {
+                if (self.rename_state.isActive() and self.rename_state.tab_index == hit_index) {
                     const tab_w_f: f32 = @floatFromInt(tab_w_px);
                     const tab_pad_f: f32 = @floatFromInt(tab_pad_px);
-                    const close_size_f: f32 = @floatFromInt(tab_close_px);
-                    const tab_world_x_f: f32 = @as(f32, @floatFromInt(hit.tab_index)) * tab_w_f;
+                    const tab_world_x_f: f32 = @as(f32, @floatFromInt(hit_index)) * tab_w_f;
                     const text_x_start_f: f32 = layout.tab_area_x + tab_world_x_f - self.tab_scroll_x + tab_pad_f;
-                    const max_text_w_f: f32 = tab_w_f - close_size_f - tab_pad_f * 3;
+                    // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
+                    const max_text_w_f: f32 = tab_w_f - tab_pad_f * 2;
                     const cw_f: f32 = @floatFromInt(self.renderer.cellWidth());
                     if (tab_layout.renameTextHit(
                         self.rename_state.buf[0..self.rename_state.len],
@@ -2902,9 +2899,9 @@ const Client = struct {
                     }
                 }
                 // 더블클릭이면 rename 모드 시작 — 같은 tab_index 좌클릭 500ms 안 두 번.
-                const is_double = self.last_tab_click_idx == hit.tab_index and
+                const is_double = self.last_tab_click_idx == hit_index and
                     (time_ms -% self.last_tab_click_time_ms) <= double_click_threshold_ms;
-                self.last_tab_click_idx = hit.tab_index;
+                self.last_tab_click_idx = hit_index;
                 self.last_tab_click_time_ms = time_ms;
                 if (is_double) {
                     // L12-γ-2 — begin 전 commitPendingInput. 터미널에서 한글
@@ -2913,12 +2910,12 @@ const Client = struct {
                     // 활성이라 buffer 행, begin 전 호출이면 rename 비활성이라
                     // PTY 송신 (의도된 commit policy).
                     self.commitPendingInput();
-                    const tab = session.tabsSlice()[hit.tab_index];
-                    self.rename_state.begin(hit.tab_index, tab.title[0..tab.title_len]);
+                    const tab = session.tabsSlice()[hit_index];
+                    self.rename_state.begin(hit_index, tab.title[0..tab.title_len]);
                     self.needs_redraw = true;
                     return;
                 }
-                tab_actions.switchTab(&host, hit.tab_index);
+                tab_actions.switchTab(&host, hit_index);
                 // L12-γ-3 — drag-begin. `world_x = (px - tab_area_x) + scroll_x`
                 // — DragState 의 mouse_x 는 idx 0 의 left edge 부터 측정한
                 // 좌표 (= 탭 area world 좌표). single-click 이면 `move` 가
@@ -2946,6 +2943,7 @@ const Client = struct {
             .tab_w = @floatFromInt(tab_w_px),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -3068,6 +3066,7 @@ const Client = struct {
             .tab_w = @floatFromInt(tab_w_px),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);

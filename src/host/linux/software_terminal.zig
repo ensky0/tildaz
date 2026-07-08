@@ -214,9 +214,10 @@ pub const Renderer = struct {
         return scaledPt(ui_metrics.TAB_PADDING_PT, self.scale);
     }
 
-    /// 탭 close 'x' 박스 size. `ui_metrics.TAB_CLOSE_SIZE_PT` (14 pt) × scale.
-    pub fn tabCloseSizePx(self: *const Renderer) i32 {
-        return scaledPt(ui_metrics.TAB_CLOSE_SIZE_PT, self.scale);
+    /// 탭바 우측 끝 `x` (활성 탭 닫기) 버튼 너비 (#268).
+    /// `ui_metrics.TAB_CLOSE_W_PT` (24 pt) × scale.
+    pub fn tabCloseWPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_CLOSE_W_PT, self.scale);
     }
 
     /// 탭바 좌/우 스크롤 화살표 `<` / `>` 너비. `ui_metrics.TAB_ARROW_W_PT`
@@ -286,7 +287,7 @@ pub const Renderer = struct {
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), self.tabCloseSizePx(), tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -824,7 +825,6 @@ fn drawTabBar(
     tab_bar_h: i32,
     tab_w: i32,
     tab_pad: i32,
-    close_size_metric: i32,
     titles: []const []const u8,
     active_idx: usize,
     layout: tab_layout.Layout,
@@ -854,9 +854,9 @@ fn drawTabBar(
     // 도 동일.
     const cell_h: i32 = @intCast(font_ctx.cell_height_px);
     const text_y_top: i32 = @divFloor(tab_bar_h - cell_h, 2);
-    // close 'x' / preedit / cursor 모두 동일한 max_text_w — mac `tab_w -
-    // close_size_px - tab_pad_px * 3` 동등 (close box + 양쪽 padding).
-    const max_text_w_metric: i32 = tab_w - close_size_metric - tab_pad * 3;
+    // preedit / cursor 모두 동일한 max_text_w — #268 per-tab close 제거로
+    // 탭 전체 (양쪽 padding 제외). mac `tab_w - tab_pad_px * 2` 동등.
+    const max_text_w_metric: i32 = tab_w - tab_pad * 2;
     const tab_area_x: i32 = @intFromFloat(layout.tab_area_x);
     const tab_area_w: i32 = @intFromFloat(layout.tab_area_w);
     const tab_area_end: i32 = tab_area_x + tab_area_w;
@@ -896,34 +896,6 @@ fn drawTabBar(
         const clip_w: i32 = @min(tab_x + tab_actual_w, tab_area_end) - clip_x;
         if (clip_w > 0) {
             rect(memory, fb_w, fb_h, stride, clip_x, tab_y, clip_w, tab_actual_h, bg);
-        }
-
-        // close 'x' — 탭 우측 끝 padding 안. mac / win 동등 시각 — 'x'
-        // 글리프 + 색을 `TAB_TEXT_COLOR × 0.6 + bg × 0.4` 로 dim (활성 / 비활성
-        // 탭 배경 색 차이가 자연 반영). `tab_layout.hitTab` 의 `close_x_min
-        // = tab_x + tab_w - close_size - tab_pad` 와 정확 align.
-        const close_size: i32 = close_size_metric;
-        const close_x_outer: i32 = tab_x + tab_actual_w - close_size - tab_pad;
-        if (close_x_outer >= tab_area_x and close_x_outer + close_size <= tab_area_end) {
-            const close_color = ghostty.color.RGB{
-                .r = blendU8(effective_text.r, bg.r, 0.6),
-                .g = blendU8(effective_text.g, bg.g, 0.6),
-                .b = blendU8(effective_text.b, bg.b, 0.6),
-            };
-            const x_glyph = font_ctx.glyph('x');
-            const x_adv: i32 = @intCast(x_glyph.advance);
-            const x_glyph_x: i32 = close_x_outer + @divFloor(close_size - x_adv, 2);
-            drawGlyph(
-                memory,
-                fb_w,
-                fb_h,
-                stride,
-                x_glyph_x + x_glyph.bitmap_left,
-                text_baseline - x_glyph.bitmap_top,
-                x_glyph,
-                close_color,
-                bg,
-            );
         }
 
         // L12-γ-2/3 — title text 그리기를 cross-platform `tab_layout.
@@ -1154,6 +1126,12 @@ fn drawTabBarControls(
     const plus_x: i32 = @intFromFloat(layout.plus_x);
     const plus_w: i32 = @intFromFloat(layout.plus_w);
     drawCentered(memory, fb_w, fb_h, stride, '+', plus_x, plus_w, baseline, active_color, bg, font_ctx);
+    // #268 — 우측 끝 닫기 버튼. 소문자 'x' 대신 × (U+00D7 곱셈 기호) —
+        // '+' 와 같은 수학 연산자 계열이라 폰트가 짝으로 디자인해 크기/두께/
+        // 중심이 '+' 와 맞음 (소문자는 글자라 커 보임 — 사용자 시연 피드백).
+    const close_x: i32 = @intFromFloat(layout.close_x);
+    const close_w: i32 = @intFromFloat(layout.close_w);
+    drawCentered(memory, fb_w, fb_h, stride, '\u{D7}', close_x, close_w, baseline, active_color, bg, font_ctx);
 }
 
 /// `a * weight + b * (1 - weight)` 의 u8 클램프. close 'x' 의 dim 색 등에 사용.
