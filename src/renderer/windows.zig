@@ -587,8 +587,11 @@ pub const D3d11Renderer = struct {
         /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값
         /// + tab_area_x 오프셋.
         tab_scroll_x: c_int,
-        /// 화살표 / + 버튼 layout. arrows_visible == false 면 + 만 표시.
+        /// 화살표 / + / × 버튼 layout. arrows_visible == false 면 화살표 없음.
         layout: TabBarLayout,
+        /// #268 2b — hover 중인 컨트롤 버튼 (.none = 없음). 해당 버튼에 강조
+        /// 배경 박스.
+        hover: tab_layout.Area,
     ) void {
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
@@ -809,7 +812,7 @@ pub const D3d11Renderer = struct {
         // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:
         // 탭 너비 줄이는 효과). 색은 활성 (밝은 흰색) / 비활성 (어두운 회색)
         // 명확히 구분.
-        var ctrl_bg_buf: [4]BgInstance = undefined;
+        var ctrl_bg_buf: [5]BgInstance = undefined;
         var ctrl_bg_n: u32 = 0;
         if (layout.arrows_visible) {
             ctrl_bg_buf[ctrl_bg_n] = .{
@@ -838,6 +841,37 @@ pub const D3d11Renderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         ctrl_bg_n += 1;
+        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 탭과 같은
+        // 상하 2px + 좌우 2px inset. 비활성 화살표 / 숨은 + (MAX_TABS) 는 제외.
+        var hover_x: f32 = 0;
+        var hover_w: f32 = 0;
+        switch (hover) {
+            .plus => {
+                hover_x = layout.plus_x;
+                hover_w = layout.plus_w;
+            },
+            .close => {
+                hover_x = layout.close_x;
+                hover_w = layout.close_w;
+            },
+            .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
+                hover_x = layout.left_arrow_x;
+                hover_w = layout.arrow_w;
+            },
+            .right_arrow => if (layout.arrows_visible and layout.right_enabled) {
+                hover_x = layout.right_arrow_x;
+                hover_w = layout.arrow_w;
+            },
+            .tab_area, .none => {},
+        }
+        if (hover_w > 4) {
+            ctrl_bg_buf[ctrl_bg_n] = .{
+                .pos = .{ hover_x + 2, 2 },
+                .size = .{ hover_w - 4, tbh - 4 },
+                .color = ui_metrics.TAB_CTRL_HOVER_BG,
+            };
+            ctrl_bg_n += 1;
+        }
         self.drawBgInstances(ctrl_bg_buf[0..ctrl_bg_n]);
 
         // 글리프 `<` `>` `+`. 박스 안에 cw × ch 글자 가운데 정렬. 활성 / 비활성

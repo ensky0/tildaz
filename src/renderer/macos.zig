@@ -209,6 +209,7 @@ const PendingTabs = struct {
     drag_view: ?tab_interaction.DragView,
     scroll_x_px: f32,
     layout: TabBarLayout,
+    hover: tab_layout.Area,
 };
 
 pub const MetalRenderer = struct {
@@ -444,8 +445,10 @@ pub const MetalRenderer = struct {
         /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x = world -
         /// 이 값 + tab_area_x.
         tab_scroll_x_px: f32,
-        /// 탭바 layout — `<` `>` `+` 버튼 위치, 탭 viewport 영역.
+        /// 탭바 layout — `<` `>` `×` `+` 버튼 위치, 탭 viewport 영역.
         tab_bar_layout: TabBarLayout,
+        /// #268 2b — hover 중인 컨트롤 버튼 (.none = 없음). 강조 배경 박스.
+        tab_hover: tab_layout.Area,
     ) void {
         const drawable = objc.msgSend(self.layer, objc.sel("nextDrawable"));
         if (drawable == null) {
@@ -508,6 +511,7 @@ pub const MetalRenderer = struct {
             .drag_view = drag_view,
             .scroll_x_px = tab_scroll_x_px,
             .layout = tab_bar_layout,
+            .hover = tab_hover,
         };
     }
 
@@ -539,7 +543,7 @@ pub const MetalRenderer = struct {
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
-                self.drawTabBar(encoder, t.titles, t.active, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout);
+                self.drawTabBar(encoder, t.titles, t.active, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout, t.hover);
             }
         }
 
@@ -972,8 +976,10 @@ pub const MetalRenderer = struct {
         /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x =
         /// `world_x - tab_scroll_x_px + tab_area_x`.
         tab_scroll_x_px: f32,
-        /// `<` `>` `+` 버튼 layout. tab_area_x = 화살표 있을 때 ARROW_W.
+        /// `<` `>` `×` `+` 버튼 layout. tab_area_x = 화살표 있을 때 ARROW_W.
         layout: TabBarLayout,
+        /// #268 2b — hover 중인 컨트롤 버튼 (.none = 없음). 강조 배경 박스.
+        hover: tab_layout.Area,
     ) void {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
@@ -1168,13 +1174,46 @@ pub const MetalRenderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         bg_n += 1;
-        // #268 — 우측 끝 `x` (활성 탭 닫기) 버튼 배경.
+        // #268 — 우측 끝 `×` (활성 탭 닫기) 버튼 배경.
         bg_buf[bg_n] = .{
             .pos = .{ layout.close_x, 0 },
             .size = .{ layout.close_w, tab_bar_h_px },
             .color = ui_metrics.TAB_BAR_BG,
         };
         bg_n += 1;
+        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 탭과 같은
+        // 상하 2px + 좌우 2px inset. 비활성 화살표 / 숨은 + (MAX_TABS) 는 제외.
+        {
+            var hover_x: f32 = 0;
+            var hover_w: f32 = 0;
+            switch (hover) {
+                .plus => {
+                    hover_x = layout.plus_x;
+                    hover_w = layout.plus_w;
+                },
+                .close => {
+                    hover_x = layout.close_x;
+                    hover_w = layout.close_w;
+                },
+                .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
+                    hover_x = layout.left_arrow_x;
+                    hover_w = layout.arrow_w;
+                },
+                .right_arrow => if (layout.arrows_visible and layout.right_enabled) {
+                    hover_x = layout.right_arrow_x;
+                    hover_w = layout.arrow_w;
+                },
+                .tab_area, .none => {},
+            }
+            if (hover_w > 4 and bg_n < MAX_BG) {
+                bg_buf[bg_n] = .{
+                    .pos = .{ hover_x + 2, 2 },
+                    .size = .{ hover_w - 4, tab_bar_h_px - 4 },
+                    .color = ui_metrics.TAB_CTRL_HOVER_BG,
+                };
+                bg_n += 1;
+            }
+        }
 
         // 글리프 `<` `>` `+` — 박스 안 cw × ch 가운데 정렬. 활성 / 비활성 색 분리.
         const drawCtrlGlyph = struct {

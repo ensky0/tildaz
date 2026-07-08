@@ -37,17 +37,20 @@ pub const Inputs = struct {
 };
 
 /// 탭바 layout 계산 — viewport / tab count / scroll 기반 영역 분할.
-/// `[<][tabs][>][+][x]` (arrows_visible) 또는 `[tabs][+][x]` (no arrows).
+/// `[<][tabs][>][×][+]` (arrows_visible) 또는 `[tabs][×][+]` (no arrows).
 ///
-/// #268 — `+` (새 탭) / `x` (활성 탭 닫기) 는 탭을 따라다니지 않고 **우측 끝
-/// 고정 클러스터**: `x` 가 최우측 구석, `+` 가 그 왼쪽. 위치가 고정이라 탭
-/// 전환 클릭과 물리적으로 분리 → per-tab X misclick 사고 방지 + 근육 기억.
-/// per-tab close 는 제거됨 (#199 는 이 재설계로 대체).
+/// #268 — `×` (활성 탭 닫기) / `+` (새 탭) 는 탭을 따라다니지 않고 **우측 끝
+/// 고정 클러스터**. 클러스터가 탭 본체와 분리돼 per-tab X misclick 사고 방지
+/// + 위치 고정으로 근육 기억. per-tab close 는 제거됨 (#199 대체).
+///
+/// 클러스터 안 순서는 `+` 가 최우측 구석: (1) 최상단 우측 구석의 × 는 "창
+/// 닫기" 버튼으로 읽힘 (titlebar X 관례와 충돌 — 사용자 결정), (2) 구석은
+/// 가장 맞히기 쉬운 자리 (Fitts) 라 파괴적 × 보다 빈번+안전한 + 가 적합.
 pub fn compute(inputs: Inputs) Layout {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
     const cluster_w = inputs.plus_w + inputs.close_w;
-    const close_x = inputs.viewport_w - inputs.close_w;
-    const plus_x = close_x - inputs.plus_w;
+    const plus_x = inputs.viewport_w - inputs.plus_w;
+    const close_x = plus_x - inputs.close_w;
     const arrows_visible = total > inputs.viewport_w - cluster_w;
     if (!arrows_visible) {
         return .{
@@ -63,7 +66,7 @@ pub fn compute(inputs: Inputs) Layout {
     }
     const tab_area_x = inputs.arrow_w;
     const tab_area_w = @max(0, inputs.viewport_w - inputs.arrow_w * 2 - cluster_w);
-    const right_arrow_x = plus_x - inputs.arrow_w;
+    const right_arrow_x = close_x - inputs.arrow_w;
     const left_enabled = inputs.scroll_x > 0;
     const right_enabled = inputs.scroll_x + tab_area_w < total;
     return .{

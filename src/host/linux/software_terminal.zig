@@ -266,6 +266,7 @@ pub const Renderer = struct {
         tab_scroll_x: f32,
         rename_view: ?tab_interaction.RenameView,
         drag_view: ?tab_interaction.DragView,
+        tab_hover: tab_layout.Area,
     ) void {
         self.render_state.update(allocator, terminal) catch {
             fill(memory, width, height, stride, theme.background);
@@ -287,7 +288,7 @@ pub const Renderer = struct {
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, &self.font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -828,6 +829,7 @@ fn drawTabBar(
     titles: []const []const u8,
     active_idx: usize,
     layout: tab_layout.Layout,
+    tab_hover: tab_layout.Area,
     scroll_x: f32,
     rename_view: ?tab_interaction.RenameView,
     drag_view: ?tab_interaction.DragView,
@@ -1067,7 +1069,7 @@ fn drawTabBar(
     }
 
     // --- arrow / plus 버튼 ---
-    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, font_ctx);
+    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, font_ctx);
 }
 
 /// `<` / `>` / `+` 버튼 그리기. arrows_visible 면 좌측 `<` + 우측 `>`. 항상
@@ -1080,6 +1082,7 @@ fn drawTabBarControls(
     stride: i32,
     tab_bar_h: i32,
     layout: tab_layout.Layout,
+    tab_hover: tab_layout.Area,
     font_ctx: *font.Context,
 ) void {
     const ascent: i32 = @intCast(font_ctx.ascent_px);
@@ -1113,6 +1116,42 @@ fn drawTabBarControls(
             drawGlyph(mem, w, h, s, center + g.bitmap_left, line_baseline - g.bitmap_top, g, fg, bg_color);
         }
     }.call;
+
+    // #268 2b — hover 강조 박스 (글리프보다 먼저 → 글리프가 위에). software
+    // 렌더러엔 알파 블렌드 rect 가 없지만 박스 밑이 균일한 TAB_BAR_BG 라
+    // 미리 섞은 단색이 픽셀 동일 (`TAB_CTRL_HOVER_BG` 알파 12%).
+    {
+        var hover_x: f32 = -1;
+        var hover_w: f32 = 0;
+        switch (tab_hover) {
+            .plus => {
+                hover_x = layout.plus_x;
+                hover_w = layout.plus_w;
+            },
+            .close => {
+                hover_x = layout.close_x;
+                hover_w = layout.close_w;
+            },
+            .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
+                hover_x = layout.left_arrow_x;
+                hover_w = layout.arrow_w;
+            },
+            .right_arrow => if (layout.arrows_visible and layout.right_enabled) {
+                hover_x = layout.right_arrow_x;
+                hover_w = layout.arrow_w;
+            },
+            .tab_area, .none => {},
+        }
+        if (hover_w > 4) {
+            const alpha = ui_metrics.TAB_CTRL_HOVER_BG[3];
+            const hover_bg = ghostty.color.RGB{
+                .r = blendU8(255, bg.r, alpha),
+                .g = blendU8(255, bg.g, alpha),
+                .b = blendU8(255, bg.b, alpha),
+            };
+            rect(memory, fb_w, fb_h, stride, @as(i32, @intFromFloat(hover_x)) + 2, 2, @as(i32, @intFromFloat(hover_w)) - 4, tab_bar_h - 4, hover_bg);
+        }
+    }
 
     if (layout.arrows_visible) {
         const left_x: i32 = @intFromFloat(layout.left_arrow_x);

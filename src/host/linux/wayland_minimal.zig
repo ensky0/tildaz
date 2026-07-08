@@ -793,6 +793,9 @@ const Client = struct {
     /// 에 build (`buildTabActionsHost`) — Client field 로 보관하면 init
     /// 시점 (return-by-value) 의 callback ptr / override_ptr 주소가 stale.
     tab_scroll_override: bool = false,
+    /// #268 2b — 탭바 컨트롤 버튼 (`<` `>` `×` `+`) 의 hover 대상. pointer
+    /// motion 마다 갱신, 변경 시에만 재렌더. 렌더러가 hover 배경 박스를 그림.
+    tab_hover: tab_layout.Area = .none,
     /// L12-β — read thread → main thread pending close queue. shell process
     /// 가 exit (PTY EOF) 시 read thread 가 `linuxTabExit` 호출 → 직접 close
     /// 면 다른 탭의 read thread join 시 deadlock 가능 + multi-tab 시 잘못된
@@ -1266,6 +1269,41 @@ const Client = struct {
             &.{ self.last_pointer_enter_serial, shape },
         );
         self.last_cursor_shape = shape;
+    }
+
+    /// #268 2b — 탭바 컨트롤 버튼 hover 갱신. 버튼 (`<` `>` `×` `+`) 위에서만
+    /// hover, 탭 본체 / 탭바 밖은 .none. 변경 시에만 재렌더.
+    fn updateTabHover(self: *Client) void {
+        const new_hover: tab_layout.Area = blk: {
+            const session = if (self.session) |*s2| s2 else break :blk .none;
+            const x = self.pointer_x_px;
+            const y = self.pointer_y_px;
+            const tab_bar_h = self.effectiveTabBarHeightPx();
+            if (x < 0 or y < 0 or y >= tab_bar_h) break :blk .none;
+            const layout_inputs = tab_layout.Inputs{
+                .viewport_w = @floatFromInt(self.window_width),
+                .tab_count = @intCast(session.count()),
+                .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
+                .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+                .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+                .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+                .scroll_x = self.tab_scroll_x,
+            };
+            const layout = tab_layout.compute(layout_inputs);
+            break :blk switch (tab_layout.hitArea(
+                @floatFromInt(x),
+                @floatFromInt(y),
+                @floatFromInt(tab_bar_h),
+                layout,
+            )) {
+                .left_arrow, .right_arrow, .plus, .close => |a| a,
+                .tab_area, .none => .none,
+            };
+        };
+        if (new_hover != self.tab_hover) {
+            self.tab_hover = new_hover;
+            self.needs_redraw = true;
+        }
     }
 
     /// 현재 pointer 위치 (physical px) 가 cell 영역인지. 좌표가 음수 (pointer
@@ -2144,6 +2182,7 @@ const Client = struct {
                     self.tab_scroll_x,
                     self.rename_state.view(),
                     self.tab_drag.view(),
+                    self.tab_hover,
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -3667,6 +3706,11 @@ const Client = struct {
         self.pointer_inside = false;
         self.pointer_x_px = -1;
         self.pointer_y_px = -1;
+        // #268 2b — 창 밖으로 나가면 hover 해제 (안 하면 강조 박스가 남음).
+        if (self.tab_hover != .none) {
+            self.tab_hover = .none;
+            self.needs_redraw = true;
+        }
     }
 
     /// wl_pointer.motion(time, surface_x_fixed, surface_y_fixed). 좌표 = logical.
@@ -3679,6 +3723,8 @@ const Client = struct {
         self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
         // #193 — region 변경 시만 set_shape (캐시 hit 시 no-op).
         self.updateCursorShape() catch {};
+        // #268 2b — 탭바 컨트롤 버튼 hover 갱신 (변경 시에만 재렌더).
+        self.updateTabHover();
 
         // L12-γ-3 — tab drag 활성이면 selection / scrollbar 우선이 아니라
         // drag move 만 처리. mouse 가 cell 영역으로 벗어나도 drag 자체는
