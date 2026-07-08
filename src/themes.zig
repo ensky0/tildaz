@@ -259,9 +259,13 @@ pub fn findTheme(name: []const u8) ?*const Theme {
 /// vim / less / tmux 같은 TUI 가 자동으로 dark / light colorscheme 선택할 때
 /// `COLORFGBG` 환경변수 set 에 사용. cross-platform — Windows / macOS 모두.
 pub fn isDark(theme: *const Theme) bool {
-    const lum = @as(u32, theme.background.r) * 299 +
-        @as(u32, theme.background.g) * 587 +
-        @as(u32, theme.background.b) * 114;
+    return isDarkRgb(theme.background.r, theme.background.g, theme.background.b);
+}
+
+/// Theme 밖의 RGB (예: OSC 11 로 런타임 변경된 ghostty terminal 배경색) 에도
+/// 같은 기준을 적용하는 raw 버전 (#266 color scheme DSR 응답).
+pub fn isDarkRgb(r: u8, g: u8, b: u8) bool {
+    const lum = @as(u32, r) * 299 + @as(u32, g) * 587 + @as(u32, b) * 114;
     return lum < 128_000;
 }
 

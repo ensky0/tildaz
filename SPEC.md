@@ -692,10 +692,27 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `TERM` | escape sequence + 256-color capability | `xterm-256color` (Windows ConPTY 자체 default 있음, macOS 명시) | (PTY default) | ✅ | ✅ ([wayland_minimal.zig:603](src/host/linux/wayland_minimal.zig#L603), 5-entry storage) |
 | `LANG` | bash readline multi-byte 처리 | `en_US.UTF-8` (안 하면 한글 byte raw 처리, echo 안 됨) | (PTY default) | ✅ | ✅ — `C.UTF-8` (L13-α [ec72010](https://github.com/ensky0/tildaz/commit/ec72010), 한글 IME 회귀 fix) |
 | `LC_CTYPE` | locale, 일부 셸이 `LANG` 안 봄 | `en_US.UTF-8` | (PTY default) | ✅ | ✅ — `C.UTF-8` 동일 |
-| `COLORFGBG` | vim / less / tmux 자동 dark/light colorscheme | `themes.isDark(theme)` → `15;0` (dark) / `0;15` (light) — *theme 으로 강제* (사용자 환경 override 의도) | ✅ | ✅ | ✅ ([wayland_minimal.zig:613](src/host/linux/wayland_minimal.zig#L613)) |
+| `COLORFGBG` | vim / less / tmux 자동 dark/light colorscheme (구식 TUI 용 통로) | `themes.isDark(theme)` → `15;0` (dark) / `0;15` (light) — *theme 으로 강제* (사용자 환경 override 의도). **spawn 시 1회 스냅샷** — env 는 이미 뜬 프로세스에 갱신 불가 (환경변수 본질 한계) | ✅ | ✅ | ✅ ([wayland_minimal.zig:613](src/host/linux/wayland_minimal.zig#L613)) |
 | `WSLENV` | WSL 안 process 에 `COLORFGBG` 전달 | `COLORFGBG` 추가 | ✅ | — | — (WSL Linux-host 무관) |
 
 **예외 — `COLORFGBG` 만 우리 값 강제 의도** (theme 따라 결정). 다른 변수는 사용자 환경 우선.
+
+**dark/light 판별 통로는 두 겹** ([#266](https://github.com/ensky0/tildaz/issues/266)): `COLORFGBG` 는 질의를 안 보내는 구식 TUI 용 spawn 스냅샷이고, 질의를 보내는 앱 (fish 4 / neovim / 최신 vim) 은 §9.1 의 OSC 11 · DSR `?996n` 응답으로 *현재* 배경색 (OSC 로 런타임 변경 반영, ssh 너머 동작) 을 받는다. 두 통로의 판별 공식은 [`themes.isDarkRgb`](src/themes.zig) 하나로 공유 — 서로 어긋날 수 없음.
+
+### 9.1 터미널 질의 응답 ([#266](https://github.com/ensky0/tildaz/issues/266))
+
+앱이 터미널에게 보내는 질의 (응답을 PTY 로 되돌려야 하는 시퀀스) 의 응답 사양. 파싱과 응답 생성은 ghostty-vt 가 담당하고, [`session_core.zig`](src/session_core.zig) 의 Tab.init 이 `vtHandler().effects` 에 콜백을 연결한다 (응답 송신은 `write_pty` → `tab.queueWrite`). 세 platform 공통 경로. Windows 는 자식 앱의 질의에 conhost 가 먼저 응답하므로, 우리 응답의 실질 대상은 conhost 자신의 질의 (DA1 등).
+
+| 질의 | 응답 | 구현 |
+|---|---|---|
+| DA1 / DA2 / DA3 (`\e[c` 등) | `\e[?62;22c` (vt220 + ansi_color, lib 기본값) | `device_attributes` 콜백 |
+| DSR 5n / 6n (상태 / 커서 위치) | `\e[0n` / `\e[row;colR` | lib 내장 (`write_pty` 만 필요) |
+| DECRQM (mode 2026 등) | mode 상태 보고 | lib 내장 |
+| kitty keyboard 질의 (`\e[?u`) | 현재 flags | lib 내장 |
+| XTVERSION (`\e[>0q`) | `tildaz <version>` (`build_options.version`) | `xtversion` 콜백 |
+| OSC 4 / 10 / 11 색 질의 | 현재 palette / fg / bg 색 | lib 내장 (ghostty pin [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d)+) |
+| color scheme DSR (`\e[?996n`) | `\e[?997;1n` (dark) / `2n` (light) — terminal *현재* 배경색의 `themes.isDarkRgb` | `color_scheme` 콜백 |
+| XTGETTCAP | **미구현** — upstream lib 도 DCS 무시. #266 3단계 후보 | — |
 
 ---
 
