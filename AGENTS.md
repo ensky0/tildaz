@@ -298,7 +298,7 @@ WSL 파일을 Windows 경로로 접근해야 할 때는 반드시 `\\wsl$\Debian
 - 켜는 법 (Windows 11): **설정 → 시스템 → 개발자용 (고급) → 개발자 모드 ON**. 재부팅 없이 바로 적용.
 - 이유: ghostty tarball 이 upstream [c09ade22](https://github.com/ghostty-org/ghostty/commit/c09ade22) (2026-05-29) 부터 `CLAUDE.md → AGENTS.md` **심볼릭 링크**를 담고 있어요. 우리 pin 은 [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d) (#266, 2026-07-08) 부터 해당. 심볼릭 링크 생성 권한이 없으면 fetch 가 `error: unable to unpack tarball ... unable to create symlink from 'CLAUDE.md' to 'AGENTS.md': AccessDenied` 로 실패해요 (Windows 실기에서 실측, 개발자 모드 ON 으로 해결 확인).
 - 그 이전 pin (3a1482d, 2026-04-21) 은 symlink 가 없어서 개발자 모드 없이도 빌드됐어요 — 과거 문서의 "Developer Mode 없어도 됩니다" 는 그 시점 기준.
-- `확인 필요`: CI (windows-2022 러너) 는 symlink 든 ghostty tarball 을 아직 unpack 해본 적 없어요 (마지막 릴리즈 v0.5.2 는 옛 pin). **다음 릴리즈 태그 push 전에** 러너가 심볼릭 링크를 만들 수 있는지 확인하고, 실패하면 release.yml 에 조치 필요.
+- CI (windows-2022 러너) 는 **별도 조치 없이 unpack 성공 확인** — [`windows-fetch-check.yml`](.github/workflows/windows-fetch-check.yml) (workflow_dispatch, release.yml 의 fetch 이전 step 과 동일 구성) 수동 실행으로 검증 ([run 28923076087](https://github.com/ensky0/tildaz/actions/runs/28923076087), 2026-07-08 success). ghostty pin 을 올릴 때마다 이 workflow 로 태그 전에 재검증하면 돼요.
 
 libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문단) — 개발자 모드는 ghostty 자체 tarball 때문에 필요한 것. WSL 소스를 UNC 로 받는 경우 글로벌 캐시도 Windows 로컬(예 `C:/ziglang/tildaz-cache`)로 두면 빨라요 (`ZIG_GLOBAL_CACHE_DIR` 설정).
 
