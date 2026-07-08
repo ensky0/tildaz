@@ -701,7 +701,9 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 ### 9.1 터미널 질의 응답 ([#266](https://github.com/ensky0/tildaz/issues/266))
 
-앱이 터미널에게 보내는 질의 (응답을 PTY 로 되돌려야 하는 시퀀스) 의 응답 사양. 파싱과 응답 생성은 ghostty-vt 가 담당하고, [`session_core.zig`](src/session_core.zig) 의 Tab.init 이 `vtHandler().effects` 에 콜백을 연결한다 (응답 송신은 `write_pty` → `tab.queueWrite`). 세 platform 공통 경로. Windows 는 자식 앱의 질의에 conhost 가 먼저 응답하므로, 우리 응답의 실질 대상은 conhost 자신의 질의 (DA1 등).
+앱이 터미널에게 보내는 질의 (응답을 PTY 로 되돌려야 하는 시퀀스) 의 응답 사양. 파싱과 응답 생성은 ghostty-vt 가 담당하고, [`session_core.zig`](src/session_core.zig) 의 Tab.init 이 `vtHandler().effects` 에 콜백을 연결한다 (응답 송신은 `write_pty` → `tab.queueWrite`).
+
+**macOS · Linux 만 배선 — Windows 는 의도적으로 readonly 유지.** ConPTY 구조에서는 자식 앱의 질의에 conhost 가 터미널 역할로 직접 응답하므로 (아래 표의 동작을 conhost 가 제공) 우리 응답의 수신자가 없다. 오히려 conhost 자신의 DA1 질의는 spawn 직후 pre-response ([terminal/windows/pty.zig](src/terminal/windows/pty.zig)) 로 이미 답을 받은 상태라, 파서가 두 번째 응답을 보내면 conhost 가 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 `62;22c` 가 찍히는 leak 이 실기에서 확인됐다 (#266 Windows 시연).
 
 | 질의 | 응답 | 구현 |
 |---|---|---|
