@@ -4,7 +4,7 @@
 //! Windows host / macOS host 가 Config.load 직후 한 번 호출.
 //!
 //! OS 별 차이:
-//! - Windows: shell 이 인자를 포함할 수 있고 (`"wsl.exe -d Debian --cd ~"`),
+//! - Windows: shell 이 인자를 포함할 수 있고 (`"wsl.exe -d Debian"`),
 //!   첫 토큰만 추출해서 SearchPathW 로 PATH + 절대경로 모두 자동 탐색.
 //! - macOS: SPEC §7 상 absolute binary path + 인자 없음. full string 을 그대로
 //!   path 로 보고 POSIX `access(X_OK)` 검사. 첫 실행의 `$SHELL` resolution 은

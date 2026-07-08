@@ -112,7 +112,7 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.0 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
-| `shell` | string | — | "cmd.exe" | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | Shell to spawn. Windows accepts arguments — e.g. `"wsl.exe -d Debian --cd ~"` to drop straight into a WSL home prompt. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
+| `shell` | string | — | "cmd.exe" | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | Shell to spawn. It always starts in your home directory; WSL tabs start in the *Linux* home (TildaZ adds `--cd ~` to `wsl.exe` automatically — skipped if your command already has `--cd`). Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
 | `hotkey` | string | "f1", "ctrl+space", "shift+cmd+t", … | "f1" | "f1" | "f1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
