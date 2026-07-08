@@ -69,7 +69,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | `TAB_BAR_HEIGHT_PT` | 28 | `App.TAB_BAR_HEIGHT`, `max(_, cell_h + 4)` 보정 | `tabBarHeightPx(scale)`, 동일 보정 | `Renderer.tabBarHeightPx()`, 동일 보정 |
 | `TAB_WIDTH_PT` | 150 | `App.TAB_WIDTH` | `tab_w_px = TAB_WIDTH_PT × scale` | `Renderer.tabWidthPx()` |
 | `TAB_PADDING_PT` | 6 | `App.TAB_PADDING` | `tab_pad_px` | `Renderer.tabPaddingPx()` |
-| `TAB_CLOSE_SIZE_PT` | 14 | `App.CLOSE_BTN_SIZE` | `close_size_px` | `Renderer.tabCloseSizePx()` |
+| `TAB_CLOSE_W_PT` | 24 | `App.TAB_CLOSE_W` | `tabBarLayoutInputs` | `Renderer.tabCloseWPx()` |
 | `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `arrow_w_px` | `Renderer.tabArrowWPx()` |
 | `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `plus_w_px` | `Renderer.tabPlusWPx()` |
 
@@ -239,7 +239,7 @@ minimize/restore.
 | 스크롤바 클릭 + 드래그 | 우측 가장자리 | `mouse.x >= client_w - SCROLLBAR_W` → `scrollToY` | 동일 (`scrollbarScrollToY`, Windows 패턴 그대로) | 동일 ([e671b02](https://github.com/ensky0/tildaz/commit/e671b02), L6.6 — Windows 패턴 그대로) | ✅ | ✅ | ✅ |
 | viewport 이동 시 selection 유지 | 어디든 | ghostty `Selection` 이 `Pin` (page list 절대 위치) 기반 — viewport 는 보는 창문 | 동일 (같은 ghostty 모듈) | 동일 (같은 ghostty 모듈) | ✅ | ✅ | ✅ |
 | 탭바 — 탭 클릭 | 상단 탭 영역 | `handleTabClick` → `setActiveTab` | 동일 (`tabBarHitTest`) | 동일 (L12-β, cross-platform `tab_interaction`) | ✅ | ✅ | ✅ |
-| 탭바 — × 클릭 | 탭 우측 close 박스 | `handleTabClick` → `closeTab` | 동일 | 동일 (L12-γ-4, [b41fcc9](https://github.com/ensky0/tildaz/commit/b41fcc9)) | ✅ | ✅ | ✅ |
+| 탭바 — × 클릭 (**활성 탭 닫기**) | 탭바 우측 끝 고정 `×` 버튼 ([#268](https://github.com/ensky0/tildaz/issues/268) — per-tab close 제거, 탭 전환 misclick 방지). `[탭들][+][×]`, 화살표 시 `[<][탭들][>][+][×]`. `×` 는 U+00D7 (\'+\' 와 같은 연산자 계열 글리프 — 크기/중심 일치). 탭 본체 클릭은 어디든 전환만 | `handleTabClick` `.close` → `closeTab(activeIndex)` | `.close` → `handleCloseActiveTab` (Cmd+W 와 동일 helper). 스크롤바 클릭 판정은 탭바 아래 (y ≥ tab_bar_h) 만 — `×` 버튼과 x 밴드 겹침 (시연 발견) | `.close` → `closeIndex(activeIndex)` + `ensureSessionGrid` | ✅ | ✅ | ✅ |
 | 탭바 — drag reorder | 탭 본체 drag | `DragState` (5px 임계) → `reorderTabs` | 동일 (`g_drag`) | 동일 (L12-γ-3, [4f7e724](https://github.com/ensky0/tildaz/commit/4f7e724)) | ✅ | ✅ | ✅ |
 | 탭바 — drag follow 시각 | drag 중 탭 마우스 따라 | `dragged_tab + drag_x` 인자 | 동일 (`TabDragView`) | 동일 — source dim + drop indicator + 가장자리 auto-scroll (L12-γ-3) | ✅ | ✅ | ✅ |
 | 탭바 — 더블클릭 rename | 탭 본체 더블클릭 | `RenameState.begin` | 동일 (`g_rename`) | 동일 (L12-γ-2, [04cec33](https://github.com/ensky0/tildaz/commit/04cec33)) | ✅ | ✅ | ✅ |
@@ -253,8 +253,8 @@ minimize/restore.
 | 영역 | hover 시 cursor | 비고 |
 |---|---|---|
 | 셀 (terminal grid) 영역 | I-beam | rename / preedit / 기타 상태 무관, 셀 영역은 *항상* 텍스트 편집 컨텍스트 |
-| 탭바 — rename 활성 탭의 *text 입력 영역* (close 'x' 박스 제외) | I-beam | rename 진입 (더블클릭) 이후 그 탭의 text 영역만 텍스트 편집 컨텍스트. 같은 탭의 close 'x' 박스는 arrow |
-| 탭바 — 모든 상태의 close 'x' 박스 (rename 활성 탭 / 비활성 탭 / 활성 탭 모두) | arrow | close 'x' 는 *버튼* 성격 — 클릭 = 탭 닫기. rename 활성 탭의 text 영역이 I-beam 이라도 그 탭의 close 'x' 박스는 arrow (텍스트 편집 컨텍스트 아님, cancel 의도) |
+| 탭바 — rename 활성 탭의 *text 입력 영역* | I-beam | rename 진입 (더블클릭) 이후 그 탭의 text 영역만 텍스트 편집 컨텍스트. #268 로 per-tab close 가 사라져 탭 내부 전체가 text 영역 |
+| 탭바 — 우측 끝 `+` / `×` 버튼 | arrow | 버튼 성격 — 클릭 = 새 탭 / 활성 탭 닫기 (#268) |
 | 탭바 — 비활성 탭 본체 / 활성 탭 본체 (rename 비활성) / `<` / `>` / `+` / 빈 영역 / drag 중 | arrow | 탭바의 기본 — 클릭 / 더블클릭 / drag 등 *버튼* 성격 영역 |
 | 스크롤바 (우측 8 PT) | arrow | drag-to-scroll 버튼 |
 | 윈도우 padding / 가장자리 | arrow | terminal_padding 영역 |
