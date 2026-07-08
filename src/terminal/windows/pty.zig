@@ -400,10 +400,52 @@ pub const ConPty = struct {
         // Size it from the validated config value instead of truncating to a
         // small fixed buffer.
         const shell_len = std.mem.len(shell);
-        const cmd_buf = try allocator.alloc(WCHAR, shell_len + 1);
+
+        // ── 시작 디렉토리를 홈으로 (#265)
+        //
+        // 일반 exe (cmd.exe / PowerShell 등) 는 lpCurrentDirectory 에
+        // %USERPROFILE% 를 넘기면 되지만, WSL 탭의 목표는 Linux 홈 (`~`) —
+        // Windows 경로로 표현 불가 + Windows 쪽에서는 그 위치를 알 수도 없다.
+        // Windows Terminal 과 같은 방식으로 wsl 명령줄에 `--cd ~` 를 끼워 넣어
+        // wsl 자신에게 위임한다 (microsoft/terminal PR #9223 의
+        // MangleStartingDirectoryForWSL 패턴). 사용자가 이미 `--cd` 나 단독
+        // `~` 인자를 넣었으면 충돌하므로 건드리지 않는다.
+        const wsl_cd = wslCdInsertion(shell[0..shell_len]);
+        const insert: []const u16 = if (wsl_cd.insert)
+            std.unicode.utf8ToUtf16LeStringLiteral(" --cd ~")
+        else
+            &.{};
+
+        const cmd_len = shell_len + insert.len;
+        const cmd_buf = try allocator.alloc(WCHAR, cmd_len + 1);
         defer allocator.free(cmd_buf);
-        @memcpy(cmd_buf[0..shell_len], shell[0..shell_len]);
-        cmd_buf[shell_len] = 0;
+        @memcpy(cmd_buf[0..wsl_cd.insert_at], shell[0..wsl_cd.insert_at]);
+        @memcpy(cmd_buf[wsl_cd.insert_at..][0..insert.len], insert);
+        @memcpy(
+            cmd_buf[wsl_cd.insert_at + insert.len ..][0 .. shell_len - wsl_cd.insert_at],
+            shell[wsl_cd.insert_at..shell_len],
+        );
+        cmd_buf[cmd_len] = 0;
+
+        // WSL 이 아닌 경우의 시작 디렉토리 = %USERPROFILE%. 환경변수가 없으면
+        // null (기존 동작 — 부모의 현재 디렉토리 상속).
+        var home_buf: ?[]u16 = null;
+        defer if (home_buf) |b| allocator.free(b);
+        if (!wsl_cd.is_wsl) {
+            const name = std.unicode.utf8ToUtf16LeStringLiteral("USERPROFILE");
+            const needed = GetEnvironmentVariableW(name, null, 0);
+            if (needed > 0) {
+                const buf = try allocator.alloc(u16, needed);
+                const copied = GetEnvironmentVariableW(name, buf.ptr, needed);
+                if (copied > 0 and copied < needed) {
+                    buf[copied] = 0;
+                    home_buf = buf;
+                } else {
+                    allocator.free(buf);
+                }
+            }
+        }
+        const cwd: ?[*:0]const WCHAR = if (home_buf) |b| @ptrCast(b.ptr) else null;
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
         const MAX_EXTRA_ENV = 8;
@@ -449,13 +491,13 @@ pub const ConPty = struct {
 
         if (CreateProcessW(
             null,
-            @ptrCast(cmd_buf[0..shell_len :0].ptr),
+            @ptrCast(cmd_buf[0..cmd_len :0].ptr),
             null,
             null,
             0,
             EXTENDED_STARTUPINFO_PRESENT,
             null,
-            null,
+            cwd,
             &startup_info,
             &process_info,
         ) == 0) {
@@ -580,6 +622,92 @@ pub const ConPty = struct {
         return result != 0;
     }
 };
+
+/// #265 — 명령줄이 WSL (`wsl` / `wsl.exe`) 인지 판정하고, WSL 이면 시작
+/// 디렉토리를 Linux 홈으로 만들 `--cd ~` 를 끼워 넣을 위치를 계산한다.
+/// Windows Terminal 의 `MangleStartingDirectoryForWSL` (microsoft/terminal
+/// PR #9223) 과 같은 규칙:
+///   - 첫 토큰 (선행 `"` 지원) 의 파일 이름이 정확히 `wsl` / `wsl.exe` 일 때만.
+///   - 나머지 인자에 이미 `--cd` 가 있으면 끼워 넣지 않음 (사용자 값이 이김).
+///   - 단독 `~` 인자 (wsl 이 홈으로 해석하는 기존 workaround) 가 있어도 충돌
+///     이므로 끼워 넣지 않음. `~/script.sh` 처럼 뒤에 글자가 붙으면 무관.
+fn wslCdInsertion(cmd: []const u16) struct { is_wsl: bool, insert: bool, insert_at: usize } {
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+    if (cmd.len == 0) return .{ .is_wsl = false, .insert = false, .insert_at = 0 };
+
+    // 첫 토큰 경계 — `"` 로 시작하면 닫는 `"` 까지, 아니면 첫 공백까지.
+    const quoted = cmd[0] == '"';
+    const tok_start: usize = if (quoted) 1 else 0;
+    var tok_end = tok_start;
+    while (tok_end < cmd.len) : (tok_end += 1) {
+        const ch = cmd[tok_end];
+        if (quoted) {
+            if (ch == '"') break;
+        } else if (ch == ' ') break;
+    }
+
+    // 토큰의 파일 이름 = 마지막 경로 구분자 뒤.
+    var base_start = tok_start;
+    for (cmd[tok_start..tok_end], tok_start..) |ch, i| {
+        if (ch == '\\' or ch == '/') base_start = i + 1;
+    }
+    const basename = cmd[base_start..tok_end];
+    const is_wsl = std.mem.eql(u16, basename, L("wsl")) or
+        std.mem.eql(u16, basename, L("wsl.exe"));
+
+    // 끼워 넣는 위치 — 토큰 (닫는 `"` 포함) 바로 뒤.
+    const insert_at = if (quoted and tok_end < cmd.len) tok_end + 1 else tok_end;
+    if (!is_wsl) return .{ .is_wsl = false, .insert = false, .insert_at = insert_at };
+
+    const args = cmd[@min(insert_at, cmd.len)..];
+    if (std.mem.indexOf(u16, args, L("--cd")) != null)
+        return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
+    if (std.mem.indexOfScalar(u16, args, '~')) |ti| {
+        if (ti + 1 == args.len or args[ti + 1] == ' ')
+            return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
+    }
+    return .{ .is_wsl = true, .insert = true, .insert_at = insert_at };
+}
+
+test "wslCdInsertion: wsl 판정 + 삽입 위치" {
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+
+    // 끼워 넣는 케이스
+    {
+        const r = wslCdInsertion(L("wsl.exe -d Debian"));
+        try std.testing.expect(r.is_wsl and r.insert);
+        try std.testing.expectEqual(@as(usize, 7), r.insert_at);
+    }
+    {
+        const r = wslCdInsertion(L("wsl"));
+        try std.testing.expect(r.is_wsl and r.insert);
+        try std.testing.expectEqual(@as(usize, 3), r.insert_at);
+    }
+    {
+        const r = wslCdInsertion(L("\"C:\\Windows\\System32\\wsl.exe\" -d Debian"));
+        try std.testing.expect(r.is_wsl and r.insert);
+        try std.testing.expectEqual(@as(usize, 29), r.insert_at);
+    }
+    // ~/script.sh 처럼 붙은 ~ 는 단독 ~ 가 아니므로 끼워 넣음
+    {
+        const r = wslCdInsertion(L("wsl -d Debian ~/run.sh"));
+        try std.testing.expect(r.is_wsl and r.insert);
+    }
+
+    // 끼워 넣지 않는 케이스
+    try std.testing.expect(!wslCdInsertion(L("cmd.exe")).is_wsl);
+    try std.testing.expect(!wslCdInsertion(L("powershell.exe -NoLogo")).is_wsl);
+    try std.testing.expect(!wslCdInsertion(L("mywsl.exe")).is_wsl);
+    try std.testing.expect(!wslCdInsertion(L("WSL.EXE")).is_wsl); // WT 와 동일 — 정확 표기만
+    {
+        const r = wslCdInsertion(L("wsl.exe -d Debian --cd /tmp"));
+        try std.testing.expect(r.is_wsl and !r.insert);
+    }
+    {
+        const r = wslCdInsertion(L("wsl.exe -d Debian ~"));
+        try std.testing.expect(r.is_wsl and !r.insert);
+    }
+}
 
 // Simple test: verify ConPTY can be created and destroyed
 test "conpty create and destroy" {

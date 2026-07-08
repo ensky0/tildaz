@@ -155,6 +155,13 @@ pub const Pty = struct {
             // redirect 까지 한 번에 (login_tty(3)).
             _ = c.login_tty(slave_fd);
 
+            // 시작 디렉토리를 홈으로 (#265). 지정하지 않으면 부모 (앱) 의 현재
+            // 디렉토리를 물려받아 Finder 실행 시 `/` 에서 뜬다. `HOME` 이 없거나
+            // chdir 실패면 그대로 진행 (기존 동작).
+            if (posix.getenv("HOME")) |home| {
+                posix.chdir(home) catch {};
+            }
+
             // 셸 실행. login shell 모드 (`-l` flag) 로 — "Last login: ..."
             // 출력 + ~/.bash_profile / ~/.zprofile 로드. macOS Terminal.app
             // 와 동일 동작. login shell 안 쓰면 row 0 가 비어 있어 첫 글자가

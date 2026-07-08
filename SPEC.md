@@ -656,6 +656,19 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 - `KGlobalAccel.setShortcut` 은 Qt 내부 client API 라 외부 D-Bus 거부. `setForeignShortcut` 이 외부용 정공 (void return).
 - `KGlobalAccel.unregister` 는 *binding + listener 둘 다 해제* — invasive, 사용 X.
 
+### 7.2 셸 시작 디렉토리 ([#265](https://github.com/ensky0/tildaz/issues/265))
+
+새 탭의 셸은 모든 platform 에서 **홈 디렉토리에서 시작**한다. 지정하지 않으면 자식 셸이 부모 (앱) 의 현재 디렉토리를 물려받아, 앱을 어떻게 실행했는지 (Finder / 런처 / 개발 중 셸) 에 따라 시작 위치가 달라진다.
+
+| platform | 방법 | 구현 | 상태 |
+|---|---|---|---|
+| Windows — 일반 exe (`cmd.exe` / PowerShell 등) | `CreateProcessW` 의 `lpCurrentDirectory` 에 `%USERPROFILE%` (환경변수 없으면 null = 부모 디렉토리 상속) | [src/terminal/windows/pty.zig](src/terminal/windows/pty.zig) | ✅ |
+| Windows — 셸이 `wsl` / `wsl.exe` | 명령줄에 `--cd ~` 삽입 → **Linux 홈**에서 시작. Windows Terminal 의 `MangleStartingDirectoryForWSL` 과 동일 규칙 ([microsoft/terminal PR #9223](https://github.com/microsoft/terminal/pull/9223)) — 사용자가 이미 `--cd` 나 단독 `~` 인자를 넣었으면 삽입 안 함 (사용자 값이 이김) | 동일 파일 `wslCdInsertion` | ✅ |
+| macOS | fork 자식에서 `execve` 전 `chdir(getenv("HOME"))` — 실패 시 무시하고 진행 | [src/terminal/macos/pty.zig](src/terminal/macos/pty.zig) | ✅ |
+| Linux | 동일 — `chdir(getenv("HOME"))` | [src/terminal/linux/pty.zig](src/terminal/linux/pty.zig) | ✅ |
+
+> Windows 에서 Linux 홈을 `lpCurrentDirectory` 로 지정할 수 없는 이유 (Windows 경로만 표현 가능 + Linux 홈 위치는 distro 안에서만 알 수 있음) 와 `\\wsl$\...` 대안이 기각된 근거는 [#265 코멘트](https://github.com/ensky0/tildaz/issues/265#issuecomment-4910677101) 참조.
+
 ---
 
 ## 8. PTY 자식 종료

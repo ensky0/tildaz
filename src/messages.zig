@@ -187,7 +187,7 @@ pub const shell_examples_windows =
     \\Examples:
     \\  "cmd.exe"
     \\  "powershell.exe"
-    \\  "wsl.exe -d Debian --cd ~"
+    \\  "wsl.exe -d Debian"
     \\  "C:\\Windows\\System32\\cmd.exe"
 ;
 pub const shell_examples_macos =

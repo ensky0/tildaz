@@ -184,6 +184,13 @@ fn childExec(
     posix.dup2(slave_fd, 2) catch posix.exit(127);
     if (slave_fd > 2) posix.close(slave_fd);
 
+    // 시작 디렉토리를 홈으로 (#265). 지정하지 않으면 부모 (앱) 의 현재
+    // 디렉토리를 물려받아 실행 경로 (런처 / 셸) 에 따라 달라진다. `HOME` 이
+    // 없거나 chdir 실패면 그대로 진행 (기존 동작).
+    if (posix.getenv("HOME")) |home| {
+        posix.chdir(home) catch {};
+    }
+
     const argv = [_:null]?[*:0]const u8{ shell, null };
     switch (posix.execveZ(shell, &argv, envp)) {
         else => posix.exit(127),
