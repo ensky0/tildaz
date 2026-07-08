@@ -1,0 +1,40 @@
+# windows-2022 러너가 pin 된 의존성 tarball 을 unpack 할 수 있는지 태그 없이
+# 검증하는 수동 실행 workflow (#266).
+#
+# 배경: ghostty tarball 이 upstream c09ade22 (2026-05-29) 부터 심볼릭 링크
+# (CLAUDE.md → AGENTS.md) 를 담고 있어, 심볼릭 링크 생성 권한이 없는 Windows
+# 에서는 zig fetch unpack 이 AccessDenied 로 실패한다 (로컬은 개발자 모드로
+# 해결). CI 러너에서 되는지는 릴리즈 태그를 밀기 전에 이걸로 확인한다.
+#
+# 사용: gh workflow run windows-fetch-check.yml
+#
+# step 구성은 release.yml 의 fetch 이전 단계와 동일하게 유지 (거기서 통과
+# = 릴리즈에서도 통과 를 보장하기 위함).
+name: windows-fetch-check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      # release.yml 과 동일 — 크로스 드라이브 cache 문제 회피.
+      - name: "Set Zig global cache dir on D:"
+        shell: bash
+        run: |
+          echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global-cache" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned dependencies (symlink unpack check)
+        shell: bash
+        run: zig build --fetch
