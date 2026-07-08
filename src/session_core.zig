@@ -227,7 +227,15 @@ pub const Tab = struct {
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
-        tab.stream = tab.terminal.vtStream();
+        // #266 — 터미널 질의 응답 배선. 기본 vtStream() 은 읽기 전용이라 응답이
+        // 필요한 시퀀스 (DA1 / DSR / DECRQM / kitty keyboard 질의 / XTVERSION)
+        // 를 전부 무시 → fish 가 필수 질의인 DA1 응답을 10초 기다리다 경고.
+        // effects 에 write_pty (응답 송신 통로) + device_attributes (DA1/DA2/DA3
+        // 값) 만 연결하면 나머지 질의는 ghostty-vt 가 내장 처리한다.
+        var vt_handler = tab.terminal.vtHandler();
+        vt_handler.effects.write_pty = &vtWritePty;
+        vt_handler.effects.device_attributes = &vtDeviceAttributes;
+        tab.stream = .initAlloc(alloc, vt_handler);
         tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
 
         return tab;
@@ -260,6 +268,36 @@ pub const Tab = struct {
     pub fn queueWrite(tab: *Tab, data: []const u8) void {
         tab.write_queue.push(data);
     }
+
+    /// #266 — ghostty-vt `Effects.write_pty`. 질의 응답 (DA1 / DSR / DECRQM
+    /// 등) 을 PTY 로 송신. stream 파싱은 main thread 의 drainOutput 에서
+    /// 일어나므로 blocking 가능한 backend.write 직접 호출 대신 키 입력과 같은
+    /// write_queue 경로로 (순서 보존 + push 가 복사라 data lifetime 무관).
+    fn vtWritePty(handler: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+        const tab: *Tab = @alignCast(@fieldParentPtr("terminal", handler.terminal));
+        tab.queueWrite(data);
+    }
+
+    /// #266 — ghostty-vt `Effects.device_attributes`. DA1/DA2/DA3 응답 값.
+    /// lib 기본값 (DA1: vt220 conformance + ansi_color = `\x1b[?62;22c`) 그대로.
+    fn vtDeviceAttributes(handler: *ghostty.TerminalStream.Handler) VtAttributes {
+        _ = handler;
+        return .{};
+    }
+
+    /// ghostty-vt 가 module root (`lib_vt.zig`) 에 `device_attributes.Attributes`
+    /// 를 export 하지 않아, Effects 콜백 필드의 함수 반환 타입에서 comptime 으로
+    /// 얻는다.
+    const VtAttributes = @typeInfo(
+        @typeInfo(
+            @typeInfo(
+                std.meta.fieldInfo(
+                    ghostty.TerminalStream.Handler.Effects,
+                    .device_attributes,
+                ).type,
+            ).optional.child,
+        ).pointer.child,
+    ).@"fn".return_type.?;
 
     /// Ctrl+C 같은 interrupt char 의 즉시 송신 path. write_queue 의 pending
     /// (paste data 등) 모두 폐기 + backend.write 직접 호출. 큐 우회라 main
