@@ -1058,9 +1058,9 @@ fn drawTabBar(
     drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx);
 }
 
-/// `<` / `>` / `+` 버튼 그리기. arrows_visible 면 좌측 `<` + 우측 `>`. 항상
-/// `+` (탭 area 끝 또는 우 arrow 좌측). 색은 TAB_TEXT_COLOR, 배경은 TAB_BAR_BG
-/// 그대로 — 별도 fill 없이 글자만.
+/// `<` / `>` / `×` / `+` 버튼 그리기. 제목을 그린 뒤 컨트롤 전체 box를
+/// TAB_BAR_BG로 먼저 채워 탭 viewport 밖 glyph 픽셀을 가리고, 그 위에 hover와
+/// 아이콘을 그린다. macOS / Windows renderer와 같은 layer 순서.
 fn drawTabBarControls(
     memory: []u8,
     fb_w: i32,
@@ -1078,6 +1078,33 @@ fn drawTabBarControls(
     // `<` 회색, 우측 끝이면 `>` 회색. plus 는 항상 enabled.
     const active_color = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
     const disabled_color = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
+
+    // 탭 제목 뒤에 컨트롤 배경을 다시 그려 tab_area 경계를 실제 clip처럼 만든다.
+    // glyph 시작점만 tab_area_end 안에 있고 bitmap 끝이 경계를 넘는 경우도 이
+    // layer가 덮으므로, 탭과 `>` 사이 separator에는 TAB_BAR_BG만 남는다.
+    const fillControlBg = struct {
+        fn call(
+            mem: []u8,
+            w: i32,
+            h: i32,
+            s: i32,
+            x: f32,
+            box_w: f32,
+            bar_h: i32,
+            color: ghostty.color.RGB,
+        ) void {
+            const x_i: i32 = @intFromFloat(x);
+            const box_w_i: i32 = @intFromFloat(box_w);
+            if (box_w_i <= 0) return;
+            rect(mem, w, h, s, x_i, 0, box_w_i, bar_h, color);
+        }
+    }.call;
+    if (layout.arrows_visible) {
+        fillControlBg(memory, fb_w, fb_h, stride, layout.left_arrow_x, layout.arrow_w, tab_bar_h, bg);
+        fillControlBg(memory, fb_w, fb_h, stride, layout.right_arrow_x, layout.arrow_w, tab_bar_h, bg);
+    }
+    fillControlBg(memory, fb_w, fb_h, stride, layout.close_x, layout.close_w, tab_bar_h, bg);
+    fillControlBg(memory, fb_w, fb_h, stride, layout.plus_x, layout.plus_w, tab_bar_h, bg);
 
     // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
     // 알파 커버리지 비트맵으로 만든 뒤 box 중앙에 blit (폰트 독립). mac/win 은
