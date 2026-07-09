@@ -850,9 +850,11 @@ fn drawTabBar(
     const descent: i32 = @intCast(font_ctx.descent_px);
     const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
 
-    const tab_y: i32 = 2;
-    const tab_actual_h: i32 = @max(tab_bar_h - 4, 1);
-    const tab_actual_w: i32 = @max(tab_w - 2, 1);
+    const tab_gap = ui_metrics.tabGapPx(scale);
+    const tab_x_inset: i32 = @intFromFloat(@round(tab_gap.tab_horizontal_inset));
+    const tab_y: i32 = @intFromFloat(@round(tab_gap.tab_vertical_inset));
+    const tab_actual_h: i32 = @max(tab_bar_h - tab_y * 2, 1);
+    const tab_actual_w: i32 = @max(tab_w - tab_x_inset * 2, 1);
     // mac / win 동등 — text 영역 y 위치는 cell height 기준 vertical center.
     // cursor / preedit_bg 의 y 도 이 값. close 'x' / title text glyph baseline
     // 도 동일.
@@ -890,7 +892,7 @@ fn drawTabBar(
         if (tab_screen_x + tab_w <= tab_area_x) continue;
         if (tab_screen_x >= tab_area_end) break;
 
-        const tab_x: i32 = tab_screen_x + 1;
+        const tab_x: i32 = tab_screen_x + tab_x_inset;
         const is_active = i == active_idx;
         const bg = if (is_active) active_bg else inactive_bg;
         // rect helper 의 (x, w) → 자동 clip 단, 우리는 tab_area 경계 안에서
@@ -1145,14 +1147,27 @@ fn drawTabBarControls(
             },
             .tab_area, .none => {},
         }
-        if (hover_w > 4) {
+        const hover_inset: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).control_hover_inset));
+        const hover_x_i: i32 = @intFromFloat(hover_x);
+        const hover_w_i: i32 = @intFromFloat(hover_w);
+        if (hover_w_i > hover_inset * 2) {
             const alpha = ui_metrics.TAB_CTRL_HOVER_BG[3];
             const hover_bg = ghostty.color.RGB{
                 .r = blendU8(255, bg.r, alpha),
                 .g = blendU8(255, bg.g, alpha),
                 .b = blendU8(255, bg.b, alpha),
             };
-            rect(memory, fb_w, fb_h, stride, @as(i32, @intFromFloat(hover_x)) + 2, 2, @as(i32, @intFromFloat(hover_w)) - 4, tab_bar_h - 4, hover_bg);
+            rect(
+                memory,
+                fb_w,
+                fb_h,
+                stride,
+                hover_x_i + hover_inset,
+                hover_inset,
+                hover_w_i - hover_inset * 2,
+                @max(tab_bar_h - hover_inset * 2, 1),
+                hover_bg,
+            );
         }
     }
 

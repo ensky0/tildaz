@@ -963,8 +963,8 @@ pub const MetalRenderer = struct {
     ///   - 비활성 탭 BG = renderer 의 `default_bg` (terminal 배경) → cell grid 와
     ///     자연스럽게 이어짐.
     ///   - 활성 탭 BG = TAB_ACTIVE_BG (50/255) → 어두운 BG 대비 두드러짐.
-    ///   - 탭 placement: 좌우 1px + 상하 2px gap 을 두고 sandwich → 그 gap 으로
-    ///     TAB_BAR_BG 가 보여 탭의 명확한 윤곽선 역할.
+    ///   - 탭 placement: 좌우 1pt + 상하 2pt gap에 화면 scale을 곱함 → 그 gap으로
+    ///     TAB_BAR_BG가 보여 탭의 명확한 윤곽선 역할.
     ///   - 우측 끝에 'x' 글리프 (close 버튼) — dim 회색. 클릭 처리는 M11.5.
     fn drawTabBar(
         self: *MetalRenderer,
@@ -985,6 +985,7 @@ pub const MetalRenderer = struct {
         const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
         const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
+        const tab_gap = ui_metrics.tabGapPx(self.scale);
         const inactive_bg: [4]f32 = .{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
 
         const MAX_BG: usize = 64;
@@ -1013,16 +1014,19 @@ pub const MetalRenderer = struct {
             }
         }.f;
 
-        // 2. 각 탭 배경 — 좌우 1px + 상하 2px sandwich (Windows 패턴). drag 탭은
-        //    마지막에 그려서 다른 탭 위에 올라오게.
+        // 2. 각 탭 배경 — 좌우 1pt + 상하 2pt sandwich. 화면 scale을 곱하며,
+        //    drag 탭은 마지막에 그려서 다른 탭 위에 올라오게 한다.
         for (tab_titles, 0..) |_, i| {
             if (bg_n >= MAX_BG) break;
             if (drag_view) |d| if (d.tab_index == i) continue;
             const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
-                .pos = .{ tab_x + 1, 2 },
-                .size = .{ @max(tab_w_px - 2, 1), @max(tab_bar_h_px - 4, 1) },
+                .pos = .{ tab_x + tab_gap.tab_horizontal_inset, tab_gap.tab_vertical_inset },
+                .size = .{
+                    @max(tab_w_px - tab_gap.tab_horizontal_inset * 2.0, 1.0),
+                    @max(tab_bar_h_px - tab_gap.tab_vertical_inset * 2.0, 1.0),
+                },
                 .color = color,
             };
             bg_n += 1;
@@ -1032,8 +1036,11 @@ pub const MetalRenderer = struct {
             const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const color = if (d.tab_index == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
             bg_buf[bg_n] = .{
-                .pos = .{ tab_x + 1, 2 },
-                .size = .{ @max(tab_w_px - 2, 1), @max(tab_bar_h_px - 4, 1) },
+                .pos = .{ tab_x + tab_gap.tab_horizontal_inset, tab_gap.tab_vertical_inset },
+                .size = .{
+                    @max(tab_w_px - tab_gap.tab_horizontal_inset * 2.0, 1.0),
+                    @max(tab_bar_h_px - tab_gap.tab_vertical_inset * 2.0, 1.0),
+                },
                 .color = color,
             };
             bg_n += 1;
@@ -1181,8 +1188,8 @@ pub const MetalRenderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         bg_n += 1;
-        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 탭과 같은
-        // 상하 2px + 좌우 2px inset. 비활성 화살표 / 숨은 + (MAX_TABS) 는 제외.
+        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 네 방향 2pt
+        // inset에 화면 scale을 곱한다. 비활성 화살표 / 숨은 + (MAX_TABS)는 제외.
         {
             var hover_x: f32 = 0;
             var hover_w: f32 = 0;
@@ -1205,10 +1212,16 @@ pub const MetalRenderer = struct {
                 },
                 .tab_area, .none => {},
             }
-            if (hover_w > 4 and bg_n < MAX_BG) {
+            if (hover_w > tab_gap.control_hover_inset * 2.0 and bg_n < MAX_BG) {
                 bg_buf[bg_n] = .{
-                    .pos = .{ hover_x + 2, 2 },
-                    .size = .{ hover_w - 4, tab_bar_h_px - 4 },
+                    .pos = .{
+                        hover_x + tab_gap.control_hover_inset,
+                        tab_gap.control_hover_inset,
+                    },
+                    .size = .{
+                        hover_w - tab_gap.control_hover_inset * 2.0,
+                        tab_bar_h_px - tab_gap.control_hover_inset * 2.0,
+                    },
                     .color = ui_metrics.TAB_CTRL_HOVER_BG,
                 };
                 bg_n += 1;

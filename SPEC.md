@@ -69,9 +69,15 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | `TAB_BAR_HEIGHT_PT` | 28 | `App.TAB_BAR_HEIGHT`, `max(_, cell_h + 4)` 보정 | `tabBarHeightPx(scale)`, 동일 보정 | `Renderer.tabBarHeightPx()`, 동일 보정 |
 | `TAB_WIDTH_PT` | 150 | `App.TAB_WIDTH` | `tab_w_px = TAB_WIDTH_PT × scale` | `Renderer.tabWidthPx()` |
 | `TAB_PADDING_PT` | 6 | `App.TAB_PADDING` | `tab_pad_px` | `Renderer.tabPaddingPx()` |
+| `TAB_GAP_PT` | 2 | `tabGapPx(App.dpi_scale)` | `tabGapPx(Renderer.scale)` | `tabGapPx(scale)` 후 정수 px 반올림 |
 | `TAB_CLOSE_W_PT` | 24 | `App.TAB_CLOSE_W` | `tabBarLayoutInputs` | `Renderer.tabCloseWPx()` |
 | `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `arrow_w_px` | `Renderer.tabArrowWPx()` |
 | `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `plus_w_px` | `Renderer.tabPlusWPx()` |
+
+**탭 gap / hover inset**: `TAB_GAP_PT`를 기준으로 각 탭 배경은 좌우에 절반인
+1pt, 상하에 2pt를 inset으로 사용한다. 컨트롤 hover 박스는 네 방향에 2pt를
+사용한다. 세 host 모두 현재 화면 scale을 곱하며, Linux software renderer는
+최종 physical pixel 좌표에서 가장 가까운 정수로 반올림한다.
 
 **`max(_, cell_h + 4)` 보정**: 폰트 cell 이 디자인 tab bar 높이 보다 클 때 (예:
 KDE 170% + 16pt 폰트의 cell_h = 33 physical > TAB_BAR_HEIGHT_PT 28 × 1.7 = 47.6
