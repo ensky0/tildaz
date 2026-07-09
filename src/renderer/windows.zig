@@ -579,6 +579,9 @@ pub const D3d11Renderer = struct {
         client_h: c_int,
         tab_width: c_int,
         tab_padding: c_int,
+        /// Windows DPI / 96. 탭 gap과 hover inset의 logical point를 physical
+        /// pixel로 변환할 때 사용한다.
+        dpi_scale: f32,
         /// drag 진행 중인 탭. null = drag 안 함 또는 5px 임계 미만. `current_x`
         /// (c_int) 는 *world* 좌표 (#117) — 화면 위치는 `current_x -
         /// tab_scroll_x + tab_area_x`. cross-platform `tab_interaction.DragView`.
@@ -616,6 +619,7 @@ pub const D3d11Renderer = struct {
         const tbh: f32 = @floatFromInt(tab_bar_height);
         const tw: f32 = @floatFromInt(tab_width);
         const pad: f32 = @floatFromInt(tab_padding);
+        const tab_gap = ui_metrics.tabGapPx(dpi_scale);
         const cw: f32 = @floatFromInt(self.font.cell_width_px);
         const ch: f32 = @floatFromInt(self.font.cell_height_px);
         const w_f: f32 = @floatFromInt(client_w);
@@ -656,8 +660,11 @@ pub const D3d11Renderer = struct {
                 @as(f32, @floatFromInt(i)) * tw - sx + tax;
             const c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
             bg_instances[bg_count] = .{
-                .pos = .{ tab_x + 1, 2 },
-                .size = .{ tw - 2, tbh - 2 },
+                .pos = .{ tab_x + tab_gap.tab_horizontal_inset, tab_gap.tab_vertical_inset },
+                .size = .{
+                    @max(tw - tab_gap.tab_horizontal_inset * 2.0, 1.0),
+                    @max(tbh - tab_gap.tab_vertical_inset * 2.0, 1.0),
+                },
                 .color = .{ c, c, c, 1 },
             };
             bg_count += 1;
@@ -846,8 +853,8 @@ pub const D3d11Renderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         ctrl_bg_n += 1;
-        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 탭과 같은
-        // 상하 2px + 좌우 2px inset. 비활성 화살표 / 숨은 + (MAX_TABS) 는 제외.
+        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 네 방향 2pt
+        // inset에 DPI scale을 곱한다. 비활성 화살표 / 숨은 + (MAX_TABS)는 제외.
         var hover_x: f32 = 0;
         var hover_w: f32 = 0;
         switch (hover) {
@@ -869,10 +876,16 @@ pub const D3d11Renderer = struct {
             },
             .tab_area, .none => {},
         }
-        if (hover_w > 4) {
+        if (hover_w > tab_gap.control_hover_inset * 2.0) {
             ctrl_bg_buf[ctrl_bg_n] = .{
-                .pos = .{ hover_x + 2, 2 },
-                .size = .{ hover_w - 4, tbh - 4 },
+                .pos = .{
+                    hover_x + tab_gap.control_hover_inset,
+                    tab_gap.control_hover_inset,
+                },
+                .size = .{
+                    hover_w - tab_gap.control_hover_inset * 2.0,
+                    tbh - tab_gap.control_hover_inset * 2.0,
+                },
                 .color = ui_metrics.TAB_CTRL_HOVER_BG,
             };
             ctrl_bg_n += 1;

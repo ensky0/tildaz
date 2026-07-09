@@ -384,6 +384,7 @@ pub const App = struct {
                     size.h,
                     self.TAB_WIDTH,
                     self.TAB_PADDING,
+                    self.dpi_scale,
                     self.tab_interaction.drag.view(),
                     self.tab_interaction.rename.view(),
                     // rename 활성 시 IME preedit 을 탭바 cursor 옆 inline 으로

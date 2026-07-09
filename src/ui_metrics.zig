@@ -1,6 +1,8 @@
 //! 크로스 플랫폼 UI 디자인 상수. logical points 단위 — 사용처에서 DPI /
-//! Retina scale 을 곱해 pixel 단위로 변환. Windows / macOS 가 동일 값 사용해
-//! 두 플랫폼 시각적 일관성 유지.
+//! Retina scale 을 곱해 pixel 단위로 변환. Linux · macOS · Windows 가 동일
+//! 값을 사용해 세 플랫폼 시각적 일관성 유지.
+
+const std = @import("std");
 
 /// 터미널 영역 안쪽 padding. 글자가 윈도우 모서리에 딱 붙지 않게.
 pub const TERMINAL_PADDING_PT: u32 = 6;
@@ -19,6 +21,26 @@ pub const SCROLLBAR_COLOR: [4]f32 = .{ 1, 1, 1, 0.3 };
 pub const TAB_BAR_HEIGHT_PT: u32 = 28;
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
+/// 인접 탭 사이와 탭바 상하에 보이는 윤곽선의 logical gap.
+/// 각 탭은 좌우에 절반(1pt), 상하에 전체(2pt)를 inset으로 사용한다.
+/// 컨트롤 hover 박스도 네 방향에 전체(2pt)를 사용한다.
+pub const TAB_GAP_PT: u32 = 2;
+
+pub const TabGapPx = struct {
+    tab_horizontal_inset: f32,
+    tab_vertical_inset: f32,
+    control_hover_inset: f32,
+};
+
+/// logical gap을 현재 화면 scale에 맞는 physical pixel inset으로 변환한다.
+pub fn tabGapPx(scale: f32) TabGapPx {
+    const gap_px = @as(f32, @floatFromInt(TAB_GAP_PT)) * scale;
+    return .{
+        .tab_horizontal_inset = gap_px / 2.0,
+        .tab_vertical_inset = gap_px,
+        .control_hover_inset = gap_px,
+    };
+}
 
 /// 활성 탭 배경 (50/255 ≈ 0.196). Windows `TAB_ACTIVE_R` 와 동일.
 pub const TAB_ACTIVE_BG: [4]f32 = .{ 50.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0 };
@@ -31,8 +53,9 @@ pub const TAB_TEXT_COLOR: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.
 // 비활성 탭 배경은 상수가 아니라 *renderer 의 default_bg (terminal 배경)* 를
 // 사용해요. cell grid 와 같은 색이라 비활성 탭이 cell 영역과 자연스럽게
 // 이어지고 활성 탭만 두드러지는 효과 — Windows 패턴.
-// 탭 placement 도 Windows 와 동일: 좌우 1px + 상하 2px gap 을 두고 sandwich.
-// 그 gap 으로 TAB_BAR_BG 가 보여 탭의 명확한 윤곽선 역할.
+// 탭 placement 는 좌우 1pt + 상하 2pt gap 을 두고 sandwich. 현재 화면 scale을
+// 곱한 physical pixel inset으로 변환하며, 그 gap으로 TAB_BAR_BG가 보여 탭의
+// 명확한 윤곽선 역할을 한다.
 
 // 탭바 컨트롤 버튼 (#117 — Firefox 패턴). width < height 로 살짝 세로 길쭉
 // (탭바 height 28 vs width 24) — 가로 넓적하지 않은 chevron 느낌.
@@ -62,3 +85,24 @@ pub const TAB_ARROW_DISABLED_COLOR: [4]f32 = .{ 0.4, 0.4, 0.4, 1.0 };
 pub const TAB_ICON_SIZE_PT: u32 = 10;
 /// 아이콘 선 두께 (pt). `pt × scale` 로 px 두께. AA 로 fractional scale 도 또렷.
 pub const TAB_ICON_STROKE_PT: f32 = 1.5;
+
+test "tab gap scales from logical points to physical pixels" {
+    const Case = struct {
+        scale: f32,
+        horizontal: f32,
+        vertical: f32,
+    };
+    const cases = [_]Case{
+        .{ .scale = 1.0, .horizontal = 1.0, .vertical = 2.0 },
+        .{ .scale = 1.5, .horizontal = 1.5, .vertical = 3.0 },
+        .{ .scale = 1.7, .horizontal = 1.7, .vertical = 3.4 },
+        .{ .scale = 2.0, .horizontal = 2.0, .vertical = 4.0 },
+    };
+
+    for (cases) |case| {
+        const gap = tabGapPx(case.scale);
+        try std.testing.expectApproxEqAbs(case.horizontal, gap.tab_horizontal_inset, 0.0001);
+        try std.testing.expectApproxEqAbs(case.vertical, gap.tab_vertical_inset, 0.0001);
+        try std.testing.expectApproxEqAbs(case.vertical, gap.control_hover_inset, 0.0001);
+    }
+}
