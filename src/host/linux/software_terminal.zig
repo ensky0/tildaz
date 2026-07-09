@@ -1014,24 +1014,6 @@ fn drawTabBar(
                             );
                         }
                     },
-                    .truncate_dot => |dot| {
-                        // emitGlyph('.') 동등 — mac 의 emitGlyph 호출 패턴.
-                        const px: i32 = @intFromFloat(dot.x);
-                        if (px < c.viewport_left) return;
-                        if (px >= c.tab_area_end) return;
-                        const gl = c.font_ctx.glyph('.');
-                        drawGlyph(
-                            c.memory,
-                            c.fb_w,
-                            c.fb_h,
-                            c.stride,
-                            px + gl.bitmap_left,
-                            c.text_baseline - gl.bitmap_top,
-                            gl,
-                            c.text_color,
-                            c.bg,
-                        );
-                    },
                 }
             }
         }.emit;

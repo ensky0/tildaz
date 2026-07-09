@@ -180,10 +180,11 @@ pub fn computeAdvanceTotal(preedit_text: []const u8, cw: f32) f32 {
     return total;
 }
 
-/// cursor 우측 reserve (wide 1 글자 자리). preedit 활성/비활성 무관 고정 —
-/// transition jump 없음 (한글 typing 빠를 때 cursor 안정).
+/// cursor 우측 reserve (1 cell). preedit 폭은 cursorScrollOffset이 별도로 더한다.
+/// preedit 활성/비활성 무관 고정 — transition jump 없음 (한글 typing 빠를 때
+/// cursor 안정).
 pub fn cursorReserve(cw: f32) f32 {
-    return cw * 2;
+    return cw;
 }
 
 /// rename text 의 cursor follow scroll — native textbox 패턴 (#168). cursor 가
@@ -230,7 +231,8 @@ pub fn cursorScrollOffset(
 /// CoreText/Metal, win DirectWrite/D3D11 — atlas / instance buffer / glyph y
 /// 좌표 계산 등) 처리. (#163 옵션 A 확장)
 pub const TextCmd = union(enum) {
-    /// title codepoint (viewport 안). 호출자가 atlas resolve + glyph instance.
+    /// title codepoint 또는 synthetic truncation ellipsis (viewport 안).
+    /// 호출자가 atlas resolve + glyph instance.
     glyph: struct { cp: u21, x: f32, advance: f32 },
     /// rename cursor 1 px vertical bar.
     cursor: struct { x: f32 },
@@ -238,9 +240,9 @@ pub const TextCmd = union(enum) {
     preedit_bg: struct { x: f32, advance: f32 },
     /// preedit cell glyph. preedit_bg 와 동일 위치.
     preedit_glyph: struct { cp: u21, x: f32, advance: f32 },
-    /// truncate "..." 의 dot (commit 후 long text 시 3 회 emit).
-    truncate_dot: struct { x: f32 },
 };
+
+const truncate_ellipsis_cp: u21 = '…';
 
 /// 탭바 title text 의 cross-platform layout iter — codepoint 별 cb 호출.
 /// cursor follow scroll / preedit push-right (cursor 뒤 main text 우측 이동) /
@@ -274,7 +276,8 @@ pub fn iterTabText(
     comptime cb: fn (@TypeOf(ctx), TextCmd) void,
 ) void {
     const reserve = cursorReserve(cw);
-    const ellipsis_w = cw * 3;
+    const ellipsis_cells = display_width.codepointWidth(truncate_ellipsis_cp);
+    const ellipsis_w = cw * @as(f32, @floatFromInt(ellipsis_cells));
     const truncate_at = if (needs_truncate) max_text_w - ellipsis_w else max_text_w;
     const preedit_advance = if (is_renaming) computeAdvanceTotal(preedit_text, cw) else 0;
 
@@ -309,11 +312,11 @@ pub fn iterTabText(
         // truncate threshold (rename 비활성, long text)
         if (text_x - text_x_start + advance > truncate_at) {
             if (needs_truncate) {
-                var i: u8 = 0;
-                while (i < 3) : (i += 1) {
-                    cb(ctx, .{ .truncate_dot = .{ .x = text_x } });
-                    text_x += cw;
-                }
+                cb(ctx, .{ .glyph = .{
+                    .cp = truncate_ellipsis_cp,
+                    .x = text_x,
+                    .advance = ellipsis_w,
+                } });
             }
             truncated = true;
             break;
@@ -451,4 +454,137 @@ pub fn hitRenameText(
     if (hitArea(px, py, tab_bar_h, layout) != .tab_area) return false;
     const hit = hitTab(px, layout, tab_w, scroll_x, tab_count) orelse return false;
     return hit == idx;
+}
+
+test "committed title truncation emits one-cell ellipsis and preserves more ASCII" {
+    const Trace = struct {
+        cps: [16]u21 = undefined,
+        xs: [16]f32 = undefined,
+        advances: [16]f32 = undefined,
+        len: usize = 0,
+
+        fn emit(self: *@This(), cmd: TextCmd) void {
+            switch (cmd) {
+                .glyph => |glyph| {
+                    self.cps[self.len] = glyph.cp;
+                    self.xs[self.len] = glyph.x;
+                    self.advances[self.len] = glyph.advance;
+                    self.len += 1;
+                },
+                else => {},
+            }
+        }
+    };
+
+    try std.testing.expectEqual(@as(u8, 1), display_width.codepointWidth(truncate_ellipsis_cp));
+
+    var trace: Trace = .{};
+    iterTabText(
+        "ABCDEFG",
+        null,
+        "",
+        0,
+        10,
+        60,
+        false,
+        true,
+        null,
+        &trace,
+        Trace.emit,
+    );
+
+    const expected = [_]u21{ 'A', 'B', 'C', 'D', 'E', truncate_ellipsis_cp };
+    try std.testing.expectEqualSlices(u21, &expected, trace.cps[0..trace.len]);
+    try std.testing.expectEqual(@as(f32, 50), trace.xs[trace.len - 1]);
+    try std.testing.expectEqual(@as(f32, 10), trace.advances[trace.len - 1]);
+}
+
+test "committed CJK title truncation keeps wide glyph boundaries and one ellipsis" {
+    const Trace = struct {
+        cps: [16]u21 = undefined,
+        xs: [16]f32 = undefined,
+        advances: [16]f32 = undefined,
+        len: usize = 0,
+
+        fn emit(self: *@This(), cmd: TextCmd) void {
+            switch (cmd) {
+                .glyph => |glyph| {
+                    self.cps[self.len] = glyph.cp;
+                    self.xs[self.len] = glyph.x;
+                    self.advances[self.len] = glyph.advance;
+                    self.len += 1;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var trace: Trace = .{};
+    iterTabText(
+        "가나다라",
+        null,
+        "",
+        0,
+        10,
+        60,
+        false,
+        true,
+        null,
+        &trace,
+        Trace.emit,
+    );
+
+    const expected = [_]u21{ '가', '나', truncate_ellipsis_cp };
+    try std.testing.expectEqualSlices(u21, &expected, trace.cps[0..trace.len]);
+    try std.testing.expectEqual(@as(f32, 40), trace.xs[trace.len - 1]);
+    try std.testing.expectEqual(@as(f32, 10), trace.advances[trace.len - 1]);
+    try std.testing.expect(trace.xs[trace.len - 1] + trace.advances[trace.len - 1] <= 60);
+}
+
+test "one-cell cursor reserve keeps wide preedit commit scroll stable" {
+    const cw: f32 = 10;
+    const max_text_w: f32 = 60;
+    try std.testing.expectEqual(cw, cursorReserve(cw));
+
+    const preedit = "한";
+    const preedit_advance = computeAdvanceTotal(preedit, cw);
+    try std.testing.expectEqual(@as(f32, 20), preedit_advance);
+
+    const before_commit = "ABCDE";
+    const during_preedit = cursorScrollOffset(
+        before_commit,
+        before_commit.len,
+        cw,
+        max_text_w,
+        preedit_advance,
+        0,
+    );
+    try std.testing.expectEqual(@as(f32, 20), during_preedit);
+
+    const after_commit = "ABCDE한";
+    const after_preedit = cursorScrollOffset(
+        after_commit,
+        after_commit.len,
+        cw,
+        max_text_w,
+        0,
+        during_preedit,
+    );
+    try std.testing.expectEqual(during_preedit, after_preedit);
+
+    const cursor_x = 5 * cw + preedit_advance - after_preedit;
+    try std.testing.expectEqual(@as(f32, 50), cursor_x);
+    try std.testing.expectEqual(cw, max_text_w - cursor_x);
+
+    const long_ascii = "ABCDEFG";
+    const ascii_offset = cursorScrollOffset(
+        long_ascii,
+        long_ascii.len,
+        cw,
+        max_text_w,
+        0,
+        0,
+    );
+    try std.testing.expectEqual(@as(f32, 20), ascii_offset);
+    try std.testing.expectEqual(@as(f32, 50), 7 * cw - ascii_offset);
 }
