@@ -283,7 +283,7 @@ var g_session: session_core.SessionCore = undefined;
 var g_pending_close_buf: std.ArrayList(usize) = .{};
 var g_pending_close_mutex: std.Thread.Mutex = .{};
 /// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
-/// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainActiveOutputForRender 반환)
+/// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainOutputForRender 반환)
 /// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ rename/preedit/autoscroll(force_render).
 /// 셋 다 아니고 화면 표시까지 확정(frameWasPresented)되면 그 frame 의 render 작업을
 /// skip(GPU 안 씀) — displayLink 는 visible 동안 계속 돌아 다음 변화를 다음 frame 이
@@ -3057,10 +3057,10 @@ fn renderFrameTick() void {
     // 스크롤했으면 이번 frame 강제 렌더.
     const did_autoscroll = maybeAutoScrollSelectionMac();
 
-    // #255 Phase 2 — active tab output ring drain + parse (Linux 와 동일 함수).
-    // 반환값 = "이번에 PTY 출력 변화가 있었나"(idle=빈 ring 이면 false). 큰 출력은
-    // drainOutput 내부 budget 으로 frame 당 제한.
-    const had_output = g_session.drainActiveOutputForRender();
+    // #255 Phase 2 / #269 — 모든 탭 output ring을 공통 예산 안에서 drain + parse.
+    // 반환값은 활성 탭 본문 또는 어느 탭이든 제목이 바뀌어 현재 화면 redraw가
+    // 필요한지 나타낸다. 비활성 탭 본문만 바뀌면 parse하되 GPU render는 생략한다.
+    const had_output = g_session.drainOutputForRender();
     // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ rename/preedit/autoscroll.
     const force_render = g_rename.isActive() or g_preedit_len > 0 or did_autoscroll;
     if (!had_output and !force_render and !g_needs_render) {

@@ -1079,7 +1079,7 @@ const Client = struct {
                 break;
             }
             if (self.session) |*session| {
-                if (session.drainActiveOutputForRender()) {
+                if (session.drainOutputForRender()) {
                     self.requestRedraw();
                 }
             }
@@ -5354,7 +5354,7 @@ const Client = struct {
             self.dispatchDbusMessages();
             self.maybeRepeatKey() catch {};
             if (self.session) |*session| {
-                if (session.drainActiveOutputForRender()) {
+                if (session.drainOutputForRender()) {
                     self.requestRedraw();
                 }
             }
