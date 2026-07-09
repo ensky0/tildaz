@@ -796,7 +796,6 @@ pub const D3d11Renderer = struct {
                             c.pre_bg_n.* += 1;
                         },
                         .preedit_glyph => |pg| emitGlyph(c, pg.cp, pg.x, .preedit),
-                        .truncate_dot => |dot| emitGlyph(c, '.', dot.x, .main),
                     }
                 }
             }.cb);

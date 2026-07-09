@@ -1140,7 +1140,6 @@ pub const MetalRenderer = struct {
                             c.bg_n.* += 1;
                         },
                         .preedit_glyph => |pg| emitGlyph(c, pg.cp, pg.x, ui_metrics.TAB_TEXT_COLOR),
-                        .truncate_dot => |dot| emitGlyph(c, '.', dot.x, ui_metrics.TAB_TEXT_COLOR),
                     }
                 }
             }.cb);
