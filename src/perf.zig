@@ -19,28 +19,34 @@ pub var render: Counter = .{}; // renderTerminal excluding Present
 pub var present: Counter = .{}; // swap_chain.Present
 pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count
 
-/// Cross-platform monotonic ns timestamp. macOS = mach_absolute_time, Windows
-/// = QueryPerformanceCounter, Linux = clock_gettime — std 가 OS 별 best
-/// resolution 자동 선택.
-pub fn init() void {}
+/// Cross-platform elapsed-time timestamp. Linux = CLOCK_BOOTTIME, macOS =
+/// CLOCK_UPTIME_RAW, Windows = QueryPerformanceCounter. Clock 미지원이면 해당
+/// diagnostic sample만 생략한다.
+pub const Timestamp = ?std.time.Instant;
 
-pub fn now() i64 {
-    return @intCast(std.time.nanoTimestamp());
+pub fn now() Timestamp {
+    return std.time.Instant.now() catch null;
 }
 
-pub fn nsSince(start: i64) u64 {
-    const end: i64 = @intCast(std.time.nanoTimestamp());
-    return @intCast(end - start);
+fn elapsedNs(start: std.time.Instant, end: std.time.Instant) ?u64 {
+    if (end.order(start) == .lt) return null;
+    return end.since(start);
 }
 
-pub fn addTimed(c: *Counter, start: i64) void {
-    const dt = nsSince(start);
+pub fn nsSince(start: Timestamp) ?u64 {
+    const start_instant = start orelse return null;
+    const end = now() orelse return null;
+    return elapsedNs(start_instant, end);
+}
+
+pub fn addTimed(c: *Counter, start: Timestamp) void {
+    const dt = nsSince(start) orelse return;
     _ = c.ns.fetchAdd(dt, .monotonic);
     _ = c.calls.fetchAdd(1, .monotonic);
 }
 
-pub fn addTimedBytes(c: *Counter, start: i64, bytes: u64) void {
-    const dt = nsSince(start);
+pub fn addTimedBytes(c: *Counter, start: Timestamp, bytes: u64) void {
+    const dt = nsSince(start) orelse return;
     _ = c.ns.fetchAdd(dt, .monotonic);
     _ = c.calls.fetchAdd(1, .monotonic);
     _ = c.bytes.fetchAdd(bytes, .monotonic);
@@ -94,4 +100,25 @@ pub fn dumpAndReset(label: []const u8) void {
     ) catch return;
 
     log.appendBlock(text);
+}
+
+test "Instant duration rejects reversed samples" {
+    const start = try std.time.Instant.now();
+    std.Thread.sleep(5 * std.time.ns_per_ms);
+    const end = try std.time.Instant.now();
+
+    try std.testing.expectEqual(@as(?u64, 0), elapsedNs(start, start));
+    try std.testing.expect((elapsedNs(start, end) orelse 0) > 0);
+    try std.testing.expectEqual(@as(?u64, null), elapsedNs(end, start));
+}
+
+test "unavailable clock sample does not update counters" {
+    var counter: Counter = .{};
+
+    addTimed(&counter, null);
+    addTimedBytes(&counter, null, 123);
+
+    try std.testing.expectEqual(@as(u64, 0), counter.calls.load(.monotonic));
+    try std.testing.expectEqual(@as(u64, 0), counter.ns.load(.monotonic));
+    try std.testing.expectEqual(@as(u64, 0), counter.bytes.load(.monotonic));
 }

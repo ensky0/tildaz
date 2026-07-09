@@ -5,7 +5,6 @@ const RendererBackend = @import("../renderer.zig").RendererBackend;
 const config_mod = @import("../config.zig");
 const Config = config_mod.Config;
 const autostart = @import("../autostart.zig");
-const perf = @import("../perf.zig");
 const log = @import("../log.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
@@ -47,8 +46,6 @@ pub fn showFatalRunError(err: anyerror) void {
 }
 
 pub fn run() !void {
-    perf.init();
-
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
