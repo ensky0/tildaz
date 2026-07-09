@@ -159,6 +159,10 @@ pub const Tab = struct {
     backend: TerminalBackend,
     title: [64]u8 = undefined,
     title_len: usize = 0,
+    /// OSC 0/2 빈 제목이 오면 최초 자동 이름으로 돌아가기 위한 stable id.
+    default_title_id: usize = 0,
+    /// 사용자가 rename 한 제목은 이후 셸의 OSC 0/2 보다 우선한다.
+    has_custom_title: bool = false,
     /// 마우스 selection / scrollbar drag 같은 per-tab interaction 상태. 탭 간
     /// 독립 — 탭 전환 시 각자 selection / drag 상태를 보존하고, host 는 활성
     /// 탭의 interaction 을 event/render 시점에 참조한다.
@@ -246,6 +250,7 @@ pub const Tab = struct {
             vt_handler.effects.device_attributes = &vtDeviceAttributes;
             vt_handler.effects.xtversion = &vtXtversion;
             vt_handler.effects.color_scheme = &vtColorScheme;
+            vt_handler.effects.title_changed = &vtTitleChanged;
             tab.stream = .initAlloc(alloc, vt_handler);
         } else {
             tab.stream = tab.terminal.vtStream();
@@ -315,6 +320,15 @@ pub const Tab = struct {
         return if (themes.isDarkRgb(bg.r, bg.g, bg.b)) .dark else .light;
     }
 
+    /// #269 — Linux · macOS effects stream 의 OSC 0/2 알림. ghostty-vt 가
+    /// `Terminal.setTitle` 을 먼저 끝낸 뒤 호출하므로 공통 동기화 함수에서 새
+    /// 상태를 읽는다. Windows 는 readonly stream 을 유지해야 해서 drainOutput
+    /// 직후 같은 함수를 호출한다.
+    fn vtTitleChanged(handler: *ghostty.TerminalStream.Handler) void {
+        const tab: *Tab = @alignCast(@fieldParentPtr("terminal", handler.terminal));
+        tab.syncTerminalTitle();
+    }
+
     /// ghostty-vt 가 module root (`lib_vt.zig`) 에 `device_attributes.Attributes`
     /// 를 export 하지 않아, Effects 콜백 필드의 함수 반환 타입에서 comptime 으로
     /// 얻는다.
@@ -353,6 +367,10 @@ pub const Tab = struct {
             if (n == 0) break;
             const parse_t0 = perf.now();
             tab.stream.nextSlice(buf[0..n]);
+            // #269 — Windows 는 #266 의 ConPTY 응답 누출을 막기 위해 effects 없는
+            // readonly stream 을 유지한다. readonly 여도 OSC 0/2 는 Terminal.title
+            // 에 저장되므로 parse 직후 공통 제목 상태만 읽어 동기화한다.
+            if (comptime builtin.os.tag == .windows) tab.syncTerminalTitle();
             perf.addTimed(&perf.parse, parse_t0);
             total_bytes += n;
             if (perf.nsSince(drain_t0) > FRAME_BUDGET_NS) break;
@@ -378,14 +396,25 @@ pub const Tab = struct {
     }
 
     pub fn setTitle(tab: *Tab, title_id: usize) void {
-        const result = std.fmt.bufPrint(&tab.title, "Tab {d}", .{title_id}) catch "Tab";
-        tab.title_len = result.len;
+        tab.default_title_id = title_id;
+        tab.has_custom_title = false;
+        writeDefaultTitle(&tab.title, &tab.title_len, title_id);
     }
 
     pub fn setCustomTitle(tab: *Tab, title: []const u8) void {
-        const len = @min(title.len, tab.title.len);
-        @memcpy(tab.title[0..len], title[0..len]);
-        tab.title_len = len;
+        tab.title_len = copyValidUtf8Title(&tab.title, title);
+        tab.has_custom_title = true;
+    }
+
+    fn syncTerminalTitle(tab: *Tab) void {
+        const terminal_title: ?[]const u8 = if (tab.terminal.getTitle()) |title| title else null;
+        applyAutomaticTitle(
+            &tab.title,
+            &tab.title_len,
+            tab.default_title_id,
+            tab.has_custom_title,
+            terminal_title,
+        );
     }
 
     fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
@@ -401,6 +430,40 @@ pub const Tab = struct {
         tab.tab_exit_fn(@intFromPtr(tab), tab.tab_exit_userdata);
     }
 };
+
+/// 고정 크기 탭 제목 버퍼에 유효한 UTF-8 prefix 만 복사한다. byte 한도에서
+/// 다중 바이트 codepoint 가 잘리거나 OSC payload 에 잘못된 byte 가 있으면 마지막
+/// 유효 경계까지만 사용해 renderer 에 invalid UTF-8 을 넘기지 않는다.
+fn copyValidUtf8Title(dest: []u8, source: []const u8) usize {
+    var len = @min(dest.len, source.len);
+    while (len > 0 and !std.unicode.utf8ValidateSlice(source[0..len])) : (len -= 1) {}
+    @memcpy(dest[0..len], source[0..len]);
+    return len;
+}
+
+fn writeDefaultTitle(dest: []u8, len: *usize, title_id: usize) void {
+    const result = std.fmt.bufPrint(dest, "Tab {d}", .{title_id}) catch "Tab";
+    len.* = result.len;
+}
+
+/// OSC 0/2 제목 정책의 단일 진입점. 수동 rename 은 자동 제목보다 우선하고,
+/// OSC 빈 payload (ghostty `getTitle() == null`) 는 최초 `Tab N` 으로 복귀한다.
+fn applyAutomaticTitle(
+    dest: []u8,
+    len: *usize,
+    default_title_id: usize,
+    has_custom_title: bool,
+    automatic_title: ?[]const u8,
+) void {
+    if (has_custom_title) return;
+    if (automatic_title) |title| {
+        if (title.len > 0) {
+            len.* = copyValidUtf8Title(dest, title);
+            return;
+        }
+    }
+    writeDefaultTitle(dest, len, default_title_id);
+}
 
 /// 탭 동시 존재 한도. 사용자 의도된 작업 흐름 + 탭바 가독성 + renderer
 /// instance buffer 한도 균형. 도달 시 새 탭 단축키 / `+` 클릭 거부 + dialog
@@ -712,6 +775,96 @@ test "next active index shifts when closing earlier tab" {
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(2, 0, 2));
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(1, 1, 2));
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(1, 2, 2));
+}
+
+test "OSC 0 and 2 update automatic tab title and empty title restores default" {
+    var terminal_state = try ghostty.Terminal.init(std.testing.allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    defer terminal_state.deinit(std.testing.allocator);
+
+    var stream = terminal_state.vtStream();
+    defer stream.deinit();
+
+    var title: [64]u8 = undefined;
+    var title_len: usize = 0;
+    writeDefaultTitle(&title, &title_len, 7);
+
+    stream.nextSlice("\x1b]2;fish: ~/src\x1b\\");
+    applyAutomaticTitle(&title, &title_len, 7, false, terminal_state.getTitle().?);
+    try std.testing.expectEqualStrings("fish: ~/src", title[0..title_len]);
+
+    stream.nextSlice("\x1b]0;vim main.zig\x07");
+    applyAutomaticTitle(&title, &title_len, 7, false, terminal_state.getTitle().?);
+    try std.testing.expectEqualStrings("vim main.zig", title[0..title_len]);
+
+    stream.nextSlice("\x1b]2;\x1b\\");
+    const reset_title: ?[]const u8 = if (terminal_state.getTitle()) |value| value else null;
+    applyAutomaticTitle(&title, &title_len, 7, false, reset_title);
+    try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+}
+
+test "Windows ConPTY forwards child console title to tab title" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    const shell = std.unicode.utf8ToUtf16LeStringLiteral(
+        "cmd.exe /d /c \"title TILDAZ_OSC_TEST & echo ready\"",
+    );
+    var session = SessionCore.init(
+        std.testing.allocator,
+        shell,
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+    try session.createTab(80, 24);
+
+    var observed = false;
+    for (0..300) |_| {
+        _ = session.drainActiveOutputForRender();
+        const tab = session.activeTab().?;
+        if (std.mem.eql(u8, tab.title[0..tab.title_len], "TILDAZ_OSC_TEST")) {
+            observed = true;
+            break;
+        }
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(observed);
+}
+
+test "manual tab title wins over OSC title" {
+    var title: [64]u8 = undefined;
+    var title_len = copyValidUtf8Title(&title, "내 작업");
+
+    applyAutomaticTitle(&title, &title_len, 3, true, "shell title");
+    try std.testing.expectEqualStrings("내 작업", title[0..title_len]);
+
+    applyAutomaticTitle(&title, &title_len, 3, true, null);
+    try std.testing.expectEqualStrings("내 작업", title[0..title_len]);
+}
+
+test "tab title truncation preserves valid UTF-8 boundary" {
+    var long_ascii: [80]u8 = undefined;
+    @memset(&long_ascii, 'a');
+    var title: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 64), copyValidUtf8Title(&title, &long_ascii));
+
+    var long_hangul: [66]u8 = undefined;
+    for (0..22) |i| @memcpy(long_hangul[i * 3 ..][0..3], "한");
+    const hangul_len = copyValidUtf8Title(&title, &long_hangul);
+    try std.testing.expectEqual(@as(usize, 63), hangul_len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(title[0..hangul_len]));
+
+    const invalid_len = copyValidUtf8Title(&title, "abc\xffdef");
+    try std.testing.expectEqual(@as(usize, 3), invalid_len);
+    try std.testing.expectEqualStrings("abc", title[0..invalid_len]);
 }
 
 test "normalizePasteNewlines collapses CRLF/LF/CR and skips when unchanged" {
