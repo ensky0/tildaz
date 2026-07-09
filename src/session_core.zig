@@ -153,16 +153,65 @@ const WriteQueue = struct {
     }
 };
 
+const TITLE_DEBOUNCE_NS: u64 = 150 * std.time.ns_per_ms;
+
+/// OSC 자동 제목의 trailing-edge debounce 상태. 셸이 짧은 명령 전후로
+/// `cwd -> command cwd -> cwd` 를 수십 ms 안에 보내면 중간 제목을 화면에
+/// 노출하지 않는다. raw 문자열은 수정하지 않고 150ms 안정성만 확인한다.
+const PendingTitle = struct {
+    buf: [64]u8 = undefined,
+    len: usize = 0,
+    since_ns: u64 = 0,
+    active: bool = false,
+
+    fn clear(self: *PendingTitle) void {
+        self.active = false;
+        self.len = 0;
+        self.since_ns = 0;
+    }
+
+    fn queue(self: *PendingTitle, displayed: []const u8, candidate: []const u8, now_ns: u64) void {
+        // 셸이 debounce 안에 원래 표시 제목으로 돌아오면 중간 제목을 폐기.
+        if (std.mem.eql(u8, displayed, candidate)) {
+            self.clear();
+            return;
+        }
+        // 같은 pending title 반복은 안정화 시간을 다시 시작하지 않는다.
+        if (self.active and std.mem.eql(u8, self.buf[0..self.len], candidate)) return;
+
+        self.len = copyValidUtf8Title(&self.buf, candidate);
+        self.since_ns = now_ns;
+        self.active = true;
+    }
+
+    fn flush(self: *PendingTitle, dest: []u8, dest_len: *usize, now_ns: u64) bool {
+        if (!self.active) return false;
+        if (now_ns - self.since_ns < TITLE_DEBOUNCE_NS) return false;
+
+        const changed = !std.mem.eql(u8, dest[0..dest_len.*], self.buf[0..self.len]);
+        if (changed) {
+            @memcpy(dest[0..self.len], self.buf[0..self.len]);
+            dest_len.* = self.len;
+        }
+        self.clear();
+        return changed;
+    }
+};
+
 pub const Tab = struct {
     terminal: ghostty.Terminal,
     stream: ghostty.TerminalStream,
     backend: TerminalBackend,
+    /// OSC title debounce 전용 monotonic elapsed clock. `nanoTimestamp`는
+    /// CLOCK_REALTIME/system time이라 시계 보정 영향을 받으므로 쓰지 않는다.
+    title_clock: std.time.Timer,
     title: [64]u8 = undefined,
     title_len: usize = 0,
     /// OSC 0/2 빈 제목이 오면 최초 자동 이름으로 돌아가기 위한 stable id.
     default_title_id: usize = 0,
     /// 사용자가 rename 한 제목은 이후 셸의 OSC 0/2 보다 우선한다.
     has_custom_title: bool = false,
+    pending_title: PendingTitle = .{},
     /// 마우스 selection / scrollbar drag 같은 per-tab interaction 상태. 탭 간
     /// 독립 — 탭 전환 시 각자 selection / drag 상태를 보존하고, host 는 활성
     /// 탭의 interaction 을 event/render 시점에 참조한다.
@@ -224,11 +273,13 @@ pub const Tab = struct {
             .extra_env = extra_env,
         });
         errdefer backend.deinit();
+        const title_clock = try std.time.Timer.start();
 
         tab.* = .{
             .terminal = term,
             .stream = undefined,
             .backend = backend,
+            .title_clock = title_clock,
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
@@ -398,23 +449,44 @@ pub const Tab = struct {
     pub fn setTitle(tab: *Tab, title_id: usize) void {
         tab.default_title_id = title_id;
         tab.has_custom_title = false;
+        tab.pending_title.clear();
         writeDefaultTitle(&tab.title, &tab.title_len, title_id);
     }
 
     pub fn setCustomTitle(tab: *Tab, title: []const u8) void {
         tab.title_len = copyValidUtf8Title(&tab.title, title);
         tab.has_custom_title = true;
+        tab.pending_title.clear();
     }
 
     fn syncTerminalTitle(tab: *Tab) void {
+        if (tab.has_custom_title) {
+            tab.pending_title.clear();
+            return;
+        }
         const terminal_title: ?[]const u8 = if (tab.terminal.getTitle()) |title| title else null;
+        var candidate: [64]u8 = undefined;
+        var candidate_len: usize = 0;
         applyAutomaticTitle(
-            &tab.title,
-            &tab.title_len,
+            &candidate,
+            &candidate_len,
             tab.default_title_id,
-            tab.has_custom_title,
+            false,
             terminal_title,
         );
+        tab.pending_title.queue(
+            tab.title[0..tab.title_len],
+            candidate[0..candidate_len],
+            tab.title_clock.read(),
+        );
+    }
+
+    fn flushPendingTitle(tab: *Tab) bool {
+        if (tab.has_custom_title) {
+            tab.pending_title.clear();
+            return false;
+        }
+        return tab.pending_title.flush(&tab.title, &tab.title_len, tab.title_clock.read());
     }
 
     fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
@@ -740,9 +812,10 @@ pub const SessionCore = struct {
         var should_render = true;
         if (self.activeTab()) |tab| {
             tab.drainOutput();
+            const title_changed = tab.flushPendingTitle();
             if (!tab.output_ring.isEmpty()) {
                 const now = std.time.milliTimestamp();
-                if (now - last_render_ms.* < 8) {
+                if (now - last_render_ms.* < 8 and !title_changed) {
                     should_render = false;
                 } else {
                     last_render_ms.* = now;
@@ -758,7 +831,8 @@ pub const SessionCore = struct {
         const tab = self.activeTab() orelse return false;
         const had_output = !tab.output_ring.isEmpty();
         tab.drainOutput();
-        return had_output or !tab.output_ring.isEmpty();
+        const title_changed = tab.flushPendingTitle();
+        return had_output or !tab.output_ring.isEmpty() or title_changed;
     }
 };
 
@@ -803,6 +877,59 @@ test "OSC 0 and 2 update automatic tab title and empty title restores default" {
     const reset_title: ?[]const u8 = if (terminal_state.getTitle()) |value| value else null;
     applyAutomaticTitle(&title, &title_len, 7, false, reset_title);
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+}
+
+test "automatic title debounce suppresses short command round trip" {
+    var title: [64]u8 = undefined;
+    var title_len = copyValidUtf8Title(&title, "~");
+    var pending: PendingTitle = .{};
+
+    pending.queue(title[0..title_len], "true ~", 0);
+    try std.testing.expect(!pending.flush(&title, &title_len, 149 * std.time.ns_per_ms));
+    try std.testing.expectEqualStrings("~", title[0..title_len]);
+
+    // 32ms 뒤 fish prompt 가 원래 cwd 제목으로 돌아오면 command title 취소.
+    pending.queue(title[0..title_len], "~", 32 * std.time.ns_per_ms);
+    try std.testing.expect(!pending.active);
+    try std.testing.expect(!pending.flush(&title, &title_len, 500 * std.time.ns_per_ms));
+    try std.testing.expectEqualStrings("~", title[0..title_len]);
+}
+
+test "automatic title debounce applies stable title at exact boundary" {
+    var title: [64]u8 = undefined;
+    var title_len = copyValidUtf8Title(&title, "~");
+    var pending: PendingTitle = .{};
+
+    pending.queue(title[0..title_len], "sleep 3 ~", 0);
+    // 같은 값 반복은 timestamp를 reset하지 않는다.
+    pending.queue(title[0..title_len], "sleep 3 ~", 100 * std.time.ns_per_ms);
+    try std.testing.expect(!pending.flush(&title, &title_len, 149 * std.time.ns_per_ms));
+    try std.testing.expect(pending.flush(&title, &title_len, 150 * std.time.ns_per_ms));
+    try std.testing.expectEqualStrings("sleep 3 ~", title[0..title_len]);
+
+    pending.queue(title[0..title_len], "~", 3 * std.time.ns_per_s);
+    try std.testing.expect(!pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 149 * std.time.ns_per_ms));
+    try std.testing.expect(pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 150 * std.time.ns_per_ms));
+    try std.testing.expectEqualStrings("~", title[0..title_len]);
+}
+
+test "automatic title debounce supports default reset and manual cancellation" {
+    var title: [64]u8 = undefined;
+    var title_len = copyValidUtf8Title(&title, "shell title");
+    var candidate: [64]u8 = undefined;
+    var candidate_len: usize = 0;
+    applyAutomaticTitle(&candidate, &candidate_len, 7, false, null);
+
+    var pending: PendingTitle = .{};
+    pending.queue(title[0..title_len], candidate[0..candidate_len], 0);
+    try std.testing.expect(pending.flush(&title, &title_len, TITLE_DEBOUNCE_NS));
+    try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+
+    pending.queue(title[0..title_len], "ignored OSC", 2 * std.time.ns_per_s);
+    pending.clear(); // setCustomTitle 이 수행하는 취소와 동일.
+    title_len = copyValidUtf8Title(&title, "내 작업");
+    try std.testing.expect(!pending.flush(&title, &title_len, 3 * std.time.ns_per_s));
+    try std.testing.expectEqualStrings("내 작업", title[0..title_len]);
 }
 
 test "Windows ConPTY forwards child console title to tab title" {
