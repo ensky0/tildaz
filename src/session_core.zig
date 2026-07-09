@@ -154,6 +154,32 @@ const WriteQueue = struct {
 };
 
 const TITLE_DEBOUNCE_NS: u64 = 150 * std.time.ns_per_ms;
+const INITIAL_TITLE_GRACE_NS: u64 = std.time.ns_per_s;
+
+/// 새 탭의 첫 non-empty OSC 제목을 기다리는 표시 유예 상태. 이 시간은 셸의
+/// OSC 지원 여부를 판정하지 않는다. 1초 동안 usable title이 없을 때만 기존
+/// `Tab N` fallback을 표시하기 위한 명시적인 UI grace period다.
+const InitialTitleState = struct {
+    since_ns: u64 = 0,
+    waiting: bool = false,
+
+    fn begin(self: *InitialTitleState, now_ns: u64) void {
+        self.since_ns = now_ns;
+        self.waiting = true;
+    }
+
+    fn clear(self: *InitialTitleState) void {
+        self.since_ns = 0;
+        self.waiting = false;
+    }
+
+    fn fallbackDue(self: *InitialTitleState, now_ns: u64) bool {
+        if (!self.waiting) return false;
+        if (now_ns - self.since_ns < INITIAL_TITLE_GRACE_NS) return false;
+        self.clear();
+        return true;
+    }
+};
 
 /// OSC 자동 제목의 trailing-edge debounce 상태. 셸이 짧은 명령 전후로
 /// `cwd -> command cwd -> cwd` 를 수십 ms 안에 보내면 중간 제목을 화면에
@@ -211,6 +237,7 @@ pub const Tab = struct {
     default_title_id: usize = 0,
     /// 사용자가 rename 한 제목은 이후 셸의 OSC 0/2 보다 우선한다.
     has_custom_title: bool = false,
+    initial_title: InitialTitleState = .{},
     pending_title: PendingTitle = .{},
     /// 마우스 selection / scrollbar drag 같은 per-tab interaction 상태. 탭 간
     /// 독립 — 탭 전환 시 각자 selection / drag 상태를 보존하고, host 는 활성
@@ -439,16 +466,18 @@ pub const Tab = struct {
         }
     }
 
-    pub fn setTitle(tab: *Tab, title_id: usize) void {
+    fn beginInitialTitle(tab: *Tab, title_id: usize) void {
         tab.default_title_id = title_id;
         tab.has_custom_title = false;
         tab.pending_title.clear();
-        writeDefaultTitle(&tab.title, &tab.title_len, title_id);
+        tab.title_len = 0;
+        tab.initial_title.begin(tab.title_clock.read());
     }
 
     pub fn setCustomTitle(tab: *Tab, title: []const u8) void {
         tab.title_len = copyValidUtf8Title(&tab.title, title);
         tab.has_custom_title = true;
+        tab.initial_title.clear();
         tab.pending_title.clear();
     }
 
@@ -458,28 +487,26 @@ pub const Tab = struct {
             return;
         }
         const terminal_title: ?[]const u8 = if (tab.terminal.getTitle()) |title| title else null;
-        var candidate: [64]u8 = undefined;
-        var candidate_len: usize = 0;
-        applyAutomaticTitle(
-            &candidate,
-            &candidate_len,
-            tab.default_title_id,
-            false,
-            terminal_title,
-        );
-        tab.pending_title.queue(
+        queueAutomaticTitle(
+            &tab.initial_title,
+            &tab.pending_title,
             tab.title[0..tab.title_len],
-            candidate[0..candidate_len],
+            tab.default_title_id,
+            terminal_title,
             tab.title_clock.read(),
         );
     }
 
     fn flushPendingTitle(tab: *Tab) bool {
-        if (tab.has_custom_title) {
-            tab.pending_title.clear();
-            return false;
-        }
-        return tab.pending_title.flush(&tab.title, &tab.title_len, tab.title_clock.read());
+        return flushAutomaticTitle(
+            &tab.initial_title,
+            &tab.pending_title,
+            &tab.title,
+            &tab.title_len,
+            tab.default_title_id,
+            tab.has_custom_title,
+            tab.title_clock.read(),
+        );
     }
 
     fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
@@ -528,6 +555,63 @@ fn applyAutomaticTitle(
         }
     }
     writeDefaultTitle(dest, len, default_title_id);
+}
+
+/// OSC title을 공통 pending 상태에 넣는다. 초기 grace 중에는 non-empty OSC만
+/// usable title로 인정한다. empty OSC는 진행 중인 첫 제목 후보를 취소하지만,
+/// 초기 상태가 끝난 뒤에는 기존 정책대로 `Tab N` 후보가 된다.
+fn queueAutomaticTitle(
+    initial: *InitialTitleState,
+    pending: *PendingTitle,
+    displayed: []const u8,
+    default_title_id: usize,
+    automatic_title: ?[]const u8,
+    now_ns: u64,
+) void {
+    if (initial.waiting and (automatic_title == null or automatic_title.?.len == 0)) {
+        pending.clear();
+        return;
+    }
+
+    var candidate: [64]u8 = undefined;
+    var candidate_len: usize = 0;
+    applyAutomaticTitle(
+        &candidate,
+        &candidate_len,
+        default_title_id,
+        false,
+        automatic_title,
+    );
+    pending.queue(displayed, candidate[0..candidate_len], now_ns);
+}
+
+/// 첫 OSC pending이 있으면 1초 fallback보다 항상 우선한다. pending이 150ms
+/// 안정화되어 반영된 순간 초기 상태를 끝내고, pending 없이 grace가 끝난 경우에만
+/// stable id 기반 `Tab N`을 표시한다.
+fn flushAutomaticTitle(
+    initial: *InitialTitleState,
+    pending: *PendingTitle,
+    dest: []u8,
+    dest_len: *usize,
+    default_title_id: usize,
+    has_custom_title: bool,
+    now_ns: u64,
+) bool {
+    if (has_custom_title) {
+        initial.clear();
+        pending.clear();
+        return false;
+    }
+
+    if (pending.active) {
+        const changed = pending.flush(dest, dest_len, now_ns);
+        if (!pending.active) initial.clear();
+        return changed;
+    }
+
+    if (!initial.fallbackDue(now_ns)) return false;
+    writeDefaultTitle(dest, dest_len, default_title_id);
+    return true;
 }
 
 /// 탭 동시 존재 한도. 사용자 의도된 작업 흐름 + 탭바 가독성 + renderer
@@ -608,7 +692,7 @@ pub const SessionCore = struct {
         );
         errdefer tab.deinit(self.allocator);
 
-        tab.setTitle(self.next_tab_id);
+        tab.beginInitialTitle(self.next_tab_id);
         self.next_tab_id += 1;
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
         try self.tabs.append(self.allocator, tab);
@@ -926,6 +1010,150 @@ test "OSC 0 and 2 update automatic tab title and empty title restores default" {
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
 }
 
+test "initial tab title stays blank until exact one second fallback boundary" {
+    var title: [64]u8 = undefined;
+    var title_len: usize = 0;
+    var initial: InitialTitleState = .{};
+    var pending: PendingTitle = .{};
+    initial.begin(0);
+
+    try std.testing.expect(!flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        INITIAL_TITLE_GRACE_NS - 1,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), title_len);
+    try std.testing.expect(initial.waiting);
+
+    try std.testing.expect(flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        INITIAL_TITLE_GRACE_NS,
+    ));
+    try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+    try std.testing.expect(!initial.waiting);
+}
+
+test "initial OSC pending suppresses fallback until debounce completes" {
+    var title: [64]u8 = undefined;
+    var title_len: usize = 0;
+    var initial: InitialTitleState = .{};
+    var pending: PendingTitle = .{};
+    initial.begin(0);
+
+    const received_ns = 950 * std.time.ns_per_ms;
+    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "~", received_ns);
+
+    try std.testing.expect(!flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        INITIAL_TITLE_GRACE_NS,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), title_len);
+    try std.testing.expect(initial.waiting);
+    try std.testing.expect(pending.active);
+
+    try std.testing.expect(!flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        received_ns + TITLE_DEBOUNCE_NS - 1,
+    ));
+    try std.testing.expect(flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        received_ns + TITLE_DEBOUNCE_NS,
+    ));
+    try std.testing.expectEqualStrings("~", title[0..title_len]);
+    try std.testing.expect(!initial.waiting);
+}
+
+test "initial empty OSC falls back and late non-empty OSC still replaces it" {
+    var title: [64]u8 = undefined;
+    var title_len: usize = 0;
+    var initial: InitialTitleState = .{};
+    var pending: PendingTitle = .{};
+    initial.begin(0);
+
+    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "transient", 800 * std.time.ns_per_ms);
+    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, null, 900 * std.time.ns_per_ms);
+    try std.testing.expect(!pending.active);
+    try std.testing.expect(flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        INITIAL_TITLE_GRACE_NS,
+    ));
+    try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+
+    const late_ns = 1200 * std.time.ns_per_ms;
+    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "late title", late_ns);
+    try std.testing.expect(!flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        late_ns + TITLE_DEBOUNCE_NS - 1,
+    ));
+    try std.testing.expect(flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        false,
+        late_ns + TITLE_DEBOUNCE_NS,
+    ));
+    try std.testing.expectEqualStrings("late title", title[0..title_len]);
+}
+
+test "manual rename cancels initial wait and pending OSC" {
+    var title: [64]u8 = undefined;
+    var title_len: usize = 0;
+    var initial: InitialTitleState = .{};
+    var pending: PendingTitle = .{};
+    initial.begin(0);
+    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "shell title", 900 * std.time.ns_per_ms);
+    title_len = copyValidUtf8Title(&title, "내 작업");
+
+    try std.testing.expect(!flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        7,
+        true,
+        2 * std.time.ns_per_s,
+    ));
+    try std.testing.expectEqualStrings("내 작업", title[0..title_len]);
+    try std.testing.expect(!initial.waiting);
+    try std.testing.expect(!pending.active);
+}
+
 test "automatic title debounce suppresses short command round trip" {
     var title: [64]u8 = undefined;
     var title_len = copyValidUtf8Title(&title, "~");
@@ -1001,6 +1229,8 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
     try session.createTab(80, 24);
     try session.createTab(80, 24);
     try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
+    try std.testing.expectEqual(@as(usize, 0), session.tabAt(0).?.title_len);
+    try std.testing.expectEqual(@as(usize, 0), session.tabAt(1).?.title_len);
 
     var active_observed = false;
     var inactive_observed = false;
@@ -1024,6 +1254,48 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
     try std.testing.expect(active_observed);
     try std.testing.expect(inactive_observed);
     try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
+}
+
+test "Windows ConPTY without OSC shows default title after initial grace" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    const shell = std.unicode.utf8ToUtf16LeStringLiteral(
+        "cmd.exe /d /q /c \"ping -n 4 127.0.0.1 >nul\"",
+    );
+    var session = SessionCore.init(
+        std.testing.allocator,
+        shell,
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+    try session.createTab(80, 24);
+    try std.testing.expectEqual(@as(usize, 0), session.activeTab().?.title_len);
+
+    var elapsed = try std.time.Timer.start();
+    while (elapsed.read() < 750 * std.time.ns_per_ms) {
+        _ = session.drainOutputForRender();
+        try std.testing.expectEqual(@as(usize, 0), session.activeTab().?.title_len);
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    var fallback_observed = false;
+    while (elapsed.read() < 1500 * std.time.ns_per_ms) {
+        _ = session.drainOutputForRender();
+        const tab = session.activeTab().?;
+        if (std.mem.eql(u8, tab.title[0..tab.title_len], "Tab 1")) {
+            fallback_observed = true;
+            break;
+        }
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(fallback_observed);
 }
 
 test "manual tab title wins over OSC title" {
