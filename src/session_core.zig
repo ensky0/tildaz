@@ -403,30 +403,23 @@ pub const Tab = struct {
         _ = tab.backend.write(data) catch {};
     }
 
-    fn drainOutput(tab: *Tab) void {
+    /// 한 번에 최대 64KiB만 파싱한다. frame 전체 예산과 탭 간 순서는
+    /// SessionCore가 관리하고, 이 함수는 한 탭의 원자적인 drain 단위만 담당한다.
+    fn drainOutputChunk(tab: *Tab) bool {
         const drain_t0 = perf.now();
-        // 한 frame 에서 ring 통째 parse 하면 큰 paste 후 bash echo (ring 4MB 가능)
-        // 시 main thread 가 수 초 점유 → beachball + Cmd+Q / Ctrl+C / mouse 모두
-        // dispatch 안 됨. 60fps frame budget (16.7ms) 안의 절반 (8ms) 만 parse,
-        // 나머지는 다음 frame 에 계속. ring 이 못 비워져도 next frame fire 시
-        // pop 이어짐. 사용자 인지: 출력은 분산되지만 UI 는 항상 반응.
-        const FRAME_BUDGET_NS: u64 = 8 * 1_000_000;
         var buf: [65536]u8 = undefined;
-        var total_bytes: u64 = 0;
-        while (true) {
-            const n = tab.output_ring.pop(&buf);
-            if (n == 0) break;
-            const parse_t0 = perf.now();
-            tab.stream.nextSlice(buf[0..n]);
-            // #269 — Windows 는 #266 의 ConPTY 응답 누출을 막기 위해 effects 없는
-            // readonly stream 을 유지한다. readonly 여도 OSC 0/2 는 Terminal.title
-            // 에 저장되므로 parse 직후 공통 제목 상태만 읽어 동기화한다.
-            if (comptime builtin.os.tag == .windows) tab.syncTerminalTitle();
-            perf.addTimed(&perf.parse, parse_t0);
-            total_bytes += n;
-            if (perf.nsSince(drain_t0) > FRAME_BUDGET_NS) break;
-        }
-        perf.addTimedBytes(&perf.drain, drain_t0, total_bytes);
+        const n = tab.output_ring.pop(&buf);
+        if (n == 0) return false;
+
+        const parse_t0 = perf.now();
+        tab.stream.nextSlice(buf[0..n]);
+        // #269 — Windows 는 #266 의 ConPTY 응답 누출을 막기 위해 effects 없는
+        // readonly stream 을 유지한다. readonly 여도 OSC 0/2 는 Terminal.title
+        // 에 저장되므로 parse 직후 공통 제목 상태만 읽어 동기화한다.
+        if (comptime builtin.os.tag == .windows) tab.syncTerminalTitle();
+        perf.addTimed(&perf.parse, parse_t0);
+        perf.addTimedBytes(&perf.drain, drain_t0, @intCast(n));
+        return true;
     }
 
     fn writeLoop(tab: *Tab) void {
@@ -554,7 +547,20 @@ pub const SessionCore = struct {
     tab_exit_userdata: ?*anyopaque,
     tabs: std.ArrayList(*Tab) = .{},
     active_tab: usize = 0,
+    /// 비활성 탭 drain의 다음 시작 위치. 탭 close/reorder 뒤에는 drain 시점에
+    /// 현재 길이로 정규화하므로 별도 인덱스 보정이 필요 없다.
+    inactive_drain_cursor: usize = 0,
     next_tab_id: usize = 1,
+
+    /// 한 frame에서 VT parse가 UI thread를 점유할 수 있는 공통 상한.
+    /// 활성/비활성 탭이 이 예산을 함께 쓰므로 탭 수가 늘어도 총 예산은 그대로다.
+    const DRAIN_FRAME_BUDGET_NS: u64 = 8 * std.time.ns_per_ms;
+
+    const DrainFrameResult = struct {
+        active_output: bool = false,
+        active_output_pending: bool = false,
+        title_changed: bool = false,
+    };
 
     pub const TabExitNotify = *const fn (usize, ?*anyopaque) void;
     pub const CloseResult = enum {
@@ -808,14 +814,57 @@ pub const SessionCore = struct {
         return true;
     }
 
+    /// round-robin cursor에서 시작해 출력이 있는 비활성 탭 하나를 한 chunk 처리한다.
+    /// 빈 탭은 건너뛰고, 성공하면 다음 호출이 그 다음 탭부터 찾도록 전진한다.
+    fn drainNextInactiveChunk(self: *SessionCore) bool {
+        const len = self.tabs.items.len;
+        if (len <= 1) return false;
+
+        const start = self.inactive_drain_cursor % len;
+        for (0..len) |offset| {
+            const index = (start + offset) % len;
+            if (index == self.active_tab) continue;
+            const tab = self.tabs.items[index];
+            if (tab.output_ring.isEmpty()) continue;
+
+            self.inactive_drain_cursor = (index + 1) % len;
+            return tab.drainOutputChunk();
+        }
+        self.inactive_drain_cursor = (start + 1) % len;
+        return false;
+    }
+
+    /// 활성 탭 한 chunk와 다음 비활성 탭 한 chunk를 번갈아 처리한다. 활성 탭은
+    /// 매 frame 첫 순서를 보장하되, 모든 탭이 하나의 8ms 예산을 공유해 탭 수가
+    /// 늘어나도 UI thread 점유 시간이 비례해 늘지 않는다.
+    fn drainFrame(self: *SessionCore) DrainFrameResult {
+        const active = self.activeTab() orelse return .{};
+        const started_ns = active.title_clock.read();
+        var result: DrainFrameResult = .{};
+
+        while (active.title_clock.read() - started_ns < DRAIN_FRAME_BUDGET_NS) {
+            const drained_active = active.drainOutputChunk();
+            result.active_output = result.active_output or drained_active;
+
+            if (active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) break;
+            const drained_inactive = self.drainNextInactiveChunk();
+            if (!drained_active and !drained_inactive) break;
+        }
+
+        result.active_output_pending = !active.output_ring.isEmpty();
+        for (self.tabs.items) |tab| {
+            result.title_changed = tab.flushPendingTitle() or result.title_changed;
+        }
+        return result;
+    }
+
     pub fn prepareActiveFrame(self: *SessionCore, last_render_ms: *i64) bool {
         var should_render = true;
-        if (self.activeTab()) |tab| {
-            tab.drainOutput();
-            const title_changed = tab.flushPendingTitle();
-            if (!tab.output_ring.isEmpty()) {
+        if (self.activeTab() != null) {
+            const drained = self.drainFrame();
+            if (drained.active_output_pending) {
                 const now = std.time.milliTimestamp();
-                if (now - last_render_ms.* < 8 and !title_changed) {
+                if (now - last_render_ms.* < 8 and !drained.title_changed) {
                     should_render = false;
                 } else {
                     last_render_ms.* = now;
@@ -825,14 +874,12 @@ pub const SessionCore = struct {
         return should_render;
     }
 
-    /// Linux Wayland bring-up path: no platform render timer yet, so the host
-    /// needs to know whether PTY output actually changed the terminal state.
-    pub fn drainActiveOutputForRender(self: *SessionCore) bool {
-        const tab = self.activeTab() orelse return false;
-        const had_output = !tab.output_ring.isEmpty();
-        tab.drainOutput();
-        const title_changed = tab.flushPendingTitle();
-        return had_output or !tab.output_ring.isEmpty() or title_changed;
+    /// macOS display link와 Linux poll loop가 render 필요 여부를 판단하는 공통 경로.
+    /// 비활성 탭의 본문 출력만 파싱한 경우 현재 화면은 변하지 않지만, 어느 탭이든
+    /// 제목이 바뀌면 탭바를 다시 그려야 한다.
+    pub fn drainOutputForRender(self: *SessionCore) bool {
+        const drained = self.drainFrame();
+        return drained.active_output or drained.active_output_pending or drained.title_changed;
     }
 };
 
@@ -932,7 +979,7 @@ test "automatic title debounce supports default reset and manual cancellation" {
     try std.testing.expectEqualStrings("내 작업", title[0..title_len]);
 }
 
-test "Windows ConPTY forwards child console title to tab title" {
+test "Windows ConPTY updates active and inactive tab titles without switching" {
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 
     const Exit = struct {
@@ -952,18 +999,31 @@ test "Windows ConPTY forwards child console title to tab title" {
     );
     defer session.deinit();
     try session.createTab(80, 24);
+    try session.createTab(80, 24);
+    try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
 
-    var observed = false;
+    var active_observed = false;
+    var inactive_observed = false;
     for (0..300) |_| {
-        _ = session.drainActiveOutputForRender();
-        const tab = session.activeTab().?;
-        if (std.mem.eql(u8, tab.title[0..tab.title_len], "TILDAZ_OSC_TEST")) {
-            observed = true;
-            break;
-        }
+        _ = session.drainOutputForRender();
+        const inactive = session.tabAt(0).?;
+        const active = session.tabAt(1).?;
+        inactive_observed = std.mem.eql(
+            u8,
+            inactive.title[0..inactive.title_len],
+            "TILDAZ_OSC_TEST",
+        );
+        active_observed = std.mem.eql(
+            u8,
+            active.title[0..active.title_len],
+            "TILDAZ_OSC_TEST",
+        );
+        if (inactive_observed and active_observed) break;
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
-    try std.testing.expect(observed);
+    try std.testing.expect(active_observed);
+    try std.testing.expect(inactive_observed);
+    try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
 }
 
 test "manual tab title wins over OSC title" {
