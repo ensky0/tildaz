@@ -3,6 +3,7 @@
 //! 값을 사용해 세 플랫폼 시각적 일관성 유지.
 
 const std = @import("std");
+const font_spec = @import("font/spec.zig");
 
 /// 터미널 영역 안쪽 padding. 글자가 윈도우 모서리에 딱 붙지 않게.
 pub const TERMINAL_PADDING_PT: u32 = 6;
@@ -19,6 +20,9 @@ pub const SCROLLBAR_COLOR: [4]f32 = .{ 1, 1, 1, 0.3 };
 
 // 탭바 — Windows `d3d11_renderer.zig` 의 TAB_* 상수와 같은 디자인 (시각 일관성).
 pub const TAB_BAR_HEIGHT_PT: u32 = 28;
+/// 터미널 콘텐츠 font와 독립된 탭 제목 logical size. 같은 font family/fallback을
+/// 사용하되 terminal의 `font.size_point` 변경에는 영향받지 않는다.
+pub const TAB_LABEL_FONT_PT: u32 = 13;
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
 /// 인접 탭 사이와 탭바 상하에 보이는 윤곽선의 logical gap.
@@ -86,6 +90,18 @@ pub const TAB_ICON_SIZE_PT: u32 = 10;
 /// 아이콘 선 두께 (pt). `pt × scale` 로 px 두께. AA 로 fractional scale 도 또렷.
 pub const TAB_ICON_STROKE_PT: f32 = 1.5;
 
+pub fn tabLabelFontSpec() font_spec.Spec {
+    return .{
+        .size_logical = @floatFromInt(TAB_LABEL_FONT_PT),
+        .cell_width_ratio = 1.0,
+        .line_height_ratio = 1.0,
+    };
+}
+
+pub fn tabBarHeightPx(scale: f32) u32 {
+    return @intFromFloat(@round(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale));
+}
+
 test "tab gap scales from logical points to physical pixels" {
     const Case = struct {
         scale: f32,
@@ -105,4 +121,18 @@ test "tab gap scales from logical points to physical pixels" {
         try std.testing.expectApproxEqAbs(case.vertical, gap.tab_vertical_inset, 0.0001);
         try std.testing.expectApproxEqAbs(case.vertical, gap.control_hover_inset, 0.0001);
     }
+}
+
+test "tab label font uses a fixed logical size" {
+    const spec = tabLabelFontSpec();
+    try std.testing.expectEqual(@as(f32, @floatFromInt(TAB_LABEL_FONT_PT)), spec.size_logical);
+    try std.testing.expectEqual(@as(f32, 1.0), spec.cell_width_ratio);
+    try std.testing.expectEqual(@as(f32, 1.0), spec.line_height_ratio);
+}
+
+test "tab bar height uses common rounded physical pixels" {
+    try std.testing.expectEqual(@as(u32, 28), tabBarHeightPx(1.0));
+    try std.testing.expectEqual(@as(u32, 42), tabBarHeightPx(1.5));
+    try std.testing.expectEqual(@as(u32, 48), tabBarHeightPx(1.7));
+    try std.testing.expectEqual(@as(u32, 56), tabBarHeightPx(2.0));
 }

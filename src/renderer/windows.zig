@@ -144,6 +144,8 @@ pub const D3d11Renderer = struct {
     alloc: std.mem.Allocator,
     font: DWriteFontContext,
     atlas: GlyphAtlas,
+    tab_font: DWriteFontContext,
+    tab_atlas: GlyphAtlas,
     /// 현재 DPI scale (dpi/96). pt → px 변환에 곱하는 단일 scale 값 — UI metric
     /// (탭바 아이콘 크기/두께 등) 이 이 값을 쓴다. init / DPI 변경 시 갱신.
     pixels_per_dip: f32 = 1.0,
@@ -196,6 +198,40 @@ pub const D3d11Renderer = struct {
 
     fn colorF(v: u8) f32 {
         return @as(f32, @floatFromInt(v)) / 255.0;
+    }
+
+    const FontResources = struct {
+        font: DWriteFontContext,
+        atlas: GlyphAtlas,
+
+        fn deinit(self: *FontResources) void {
+            self.atlas.deinit();
+            self.font.deinit();
+        }
+    };
+
+    fn initTabFontResources(
+        alloc: std.mem.Allocator,
+        font_chain: []const [*:0]const u16,
+        dpi: c_uint,
+        device: *d3d.ID3D11Device,
+        ctx: *d3d.ID3D11DeviceContext,
+    ) !FontResources {
+        const effective_dpi: u32 = if (dpi > 0) dpi else 96;
+        const pixels_per_dip = @as(f32, @floatFromInt(effective_dpi)) / 96.0;
+        const spec = ui_metrics.tabLabelFontSpec();
+        const physical_size = spec.physicalSizeRatioPx(effective_dpi, 96);
+        const measured = try dwrite_font.measureCell(font_chain[0], physical_size);
+        const cell_w = font_spec.ceilPositivePx(measured.cell_w * spec.cell_width_ratio);
+        const cell_h = font_spec.ceilPositivePx(measured.cell_h * spec.line_height_ratio);
+
+        var font_ctx = try DWriteFontContext.init(alloc, font_chain, spec, cell_w, cell_h);
+        errdefer font_ctx.deinit();
+        font_ctx.ascent_px *= pixels_per_dip;
+
+        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, device, ctx);
+        errdefer atlas.deinit();
+        return .{ .font = font_ctx, .atlas = atlas };
     }
 
     fn isLayeredWindow(hwnd: ?*anyopaque) bool {
@@ -300,6 +336,9 @@ pub const D3d11Renderer = struct {
         font_ctx.ascent_px *= pixels_per_dip;
         var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, device.?, ctx.?);
         errdefer atlas.deinit();
+
+        var tab_resources = try initTabFontResources(alloc, font_chain, dpi, device.?, ctx.?);
+        errdefer tab_resources.deinit();
 
         // 4. Compile shaders
         const bg_vs_blob = try compileShader(bg_shader_src, "bg_vs", "vs_4_0");
@@ -436,6 +475,8 @@ pub const D3d11Renderer = struct {
             .alloc = alloc,
             .font = font_ctx,
             .atlas = atlas,
+            .tab_font = tab_resources.font,
+            .tab_atlas = tab_resources.atlas,
             .pixels_per_dip = pixels_per_dip,
             .device = device.?,
             .ctx = ctx.?,
@@ -480,6 +521,8 @@ pub const D3d11Renderer = struct {
         _ = self.bg_ps.Release();
         _ = self.bg_vs.Release();
         if (self.rtv) |r| _ = r.Release();
+        self.tab_atlas.deinit();
+        self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
         _ = self.swap_chain.Release();
@@ -519,10 +562,17 @@ pub const D3d11Renderer = struct {
         var atlas = try GlyphAtlas.init(self.alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, self.device, self.ctx);
         errdefer atlas.deinit();
 
+        var tab_resources = try initTabFontResources(self.alloc, font_chain, dpi, self.device, self.ctx);
+        errdefer tab_resources.deinit();
+
+        self.tab_atlas.deinit();
+        self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
         self.font = font_ctx;
         self.atlas = atlas;
+        self.tab_font = tab_resources.font;
+        self.tab_atlas = tab_resources.atlas;
         self.pixels_per_dip = pixels_per_dip;
 
         // Grid state was computed against the old cell metrics — force a
@@ -616,8 +666,8 @@ pub const D3d11Renderer = struct {
         const tw: f32 = @floatFromInt(tab_width);
         const pad: f32 = @floatFromInt(tab_padding);
         const tab_gap = ui_metrics.tabGapPx(dpi_scale);
-        const cw: f32 = @floatFromInt(self.font.cell_width_px);
-        const ch: f32 = @floatFromInt(self.font.cell_height_px);
+        const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
         const w_f: f32 = @floatFromInt(client_w);
 
         // Ensure viewport dimensions are set
@@ -692,7 +742,7 @@ pub const D3d11Renderer = struct {
 
             const is_renaming = if (rename_view) |rv| (i == rv.tab_index) else false;
             const title = if (is_renaming) rename_view.?.text[0..rename_view.?.text_len] else tab_titles[i];
-            const baseline_y2 = (tbh + self.font.ascent_px - (ch - self.font.ascent_px)) / 2.0;
+            const baseline_y2 = (tbh + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2.0;
 
             // Max text width — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
             const max_text_w = tw - pad * 2;
@@ -742,8 +792,8 @@ pub const D3d11Renderer = struct {
             const emitGlyph = struct {
                 fn run(c: Ctx, cp: u21, x: f32, into: Target) void {
                     if (x < c.text_x_start) return;
-                    const result = c.self.font.resolveGlyph(cp) orelse return;
-                    const entry = c.self.atlas.getOrInsert(result.face, result.index) orelse {
+                    const result = c.self.tab_font.resolveGlyph(cp) orelse return;
+                    const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         return;
                     };
@@ -778,7 +828,7 @@ pub const D3d11Renderer = struct {
                     switch (cmd) {
                         .glyph => |g| emitGlyph(c, g.cp, g.x, .main),
                         .cursor => |cur| {
-                            const cy_px = c.baseline_y2 - c.self.font.ascent_px + 2;
+                            const cy_px = c.baseline_y2 - c.self.tab_font.ascent_px + 2;
                             c.cursor_instances[0] = .{
                                 .pos = .{ cur.x, cy_px },
                                 .size = .{ 1, c.ch - 2 },
@@ -790,7 +840,7 @@ pub const D3d11Renderer = struct {
                         },
                         .preedit_bg => |pbg| {
                             if (c.pre_bg_n.* >= c.pre_bg_buf.len) return;
-                            const cell_top = c.baseline_y2 - c.self.font.ascent_px;
+                            const cell_top = c.baseline_y2 - c.self.tab_font.ascent_px;
                             c.pre_bg_buf[c.pre_bg_n.*] = .{
                                 .pos = .{ pbg.x, cell_top },
                                 .size = .{ pbg.advance, c.ch },
@@ -805,7 +855,7 @@ pub const D3d11Renderer = struct {
         }
 
         if (text_count > 0) {
-            self.drawTextInstances(text_instances[0..text_count]);
+            self.drawTextInstancesWithAtlas(text_instances[0..text_count], &self.tab_atlas);
         }
         if (cursor_count > 0) {
             self.drawBgInstances(cursor_instances[0..cursor_count]);
@@ -814,7 +864,7 @@ pub const D3d11Renderer = struct {
         // 글자가 보라 BG 에 가리도록 (#164 1c-fix2). 1c-fix2 commit msg 의
         // "main text 후 별도 호출" 작업이 실제 코드에 누락 → preedit 안 보임.
         if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
-        if (pre_text_n > 0) self.drawTextInstances(pre_text_buf[0..pre_text_n]);
+        if (pre_text_n > 0) self.drawTextInstancesWithAtlas(pre_text_buf[0..pre_text_n], &self.tab_atlas);
 
         // #117 — 화살표 / + 영역. 탭 BG / 텍스트 그린 *후* 별도 batch 로 그려야
         // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:
@@ -901,7 +951,7 @@ pub const D3d11Renderer = struct {
             fn run(rself: *D3d11Renderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh_: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
                 if (n.* >= buf.len) return;
                 if (box_w <= 0 or isz == 0) return;
-                const entry = rself.atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
+                const entry = rself.tab_atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
                 const fsz: f32 = @floatFromInt(isz);
                 const gx = box_x + (box_w - fsz) * 0.5;
@@ -926,7 +976,7 @@ pub const D3d11Renderer = struct {
         drawIcon(self, .plus, layout.plus_x, layout.plus_w, tbh, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
         // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
         drawIcon(self, .close, layout.close_x, layout.close_w, tbh, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &ctrl_text_buf, &ctrl_text_n);
-        if (ctrl_text_n > 0) self.drawTextInstances(ctrl_text_buf[0..ctrl_text_n]);
+        if (ctrl_text_n > 0) self.drawTextInstancesWithAtlas(ctrl_text_buf[0..ctrl_text_n], &self.tab_atlas);
 
         // Don't present — renderTerminal will continue
     }
@@ -1380,6 +1430,10 @@ pub const D3d11Renderer = struct {
     }
 
     fn drawTextInstances(self: *D3d11Renderer, instances: []const TextInstance) void {
+        self.drawTextInstancesWithAtlas(instances, &self.atlas);
+    }
+
+    fn drawTextInstancesWithAtlas(self: *D3d11Renderer, instances: []const TextInstance, atlas: *const GlyphAtlas) void {
         if (instances.len == 0) return;
 
         // Upload instance data
@@ -1400,7 +1454,7 @@ pub const D3d11Renderer = struct {
         self.ctx.OMSetBlendState(self.ct_blend, null, 0xffffffff);
 
         // Bind atlas texture
-        const srvs = [1]?*d3d.ID3D11ShaderResourceView{self.atlas.srv};
+        const srvs = [1]?*d3d.ID3D11ShaderResourceView{atlas.srv};
         self.ctx.PSSetShaderResources(0, 1, &srvs);
         const samplers = [1]?*d3d.ID3D11SamplerState{self.sampler};
         self.ctx.PSSetSamplers(0, 1, &samplers);

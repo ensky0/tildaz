@@ -403,7 +403,7 @@ const TAB_BAR_HEIGHT_PT = ui_metrics.TAB_BAR_HEIGHT_PT;
 /// (`syncTerminalGeometry` 가 통합 처리).
 fn tabBarHeightPx(scale: f32) i32 {
     if (g_session.count() < 2) return 0;
-    return @intFromFloat(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale);
+    return @intCast(ui_metrics.tabBarHeightPx(scale));
 }
 
 /// 픽셀 단위 탭 너비 (DPI scale 적용). hit-test / drag / scroll 모두 같은 값.
