@@ -263,12 +263,22 @@ kbd {
   flex: 1;
 }
 
-.window-dot {
-  width: 10px;
-  height: 10px;
-  margin: 0 8px 15px 0;
-  border-radius: 50%;
-  background: var(--amber);
+.tab-control {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 7px;
+  color: #b8c8c0;
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.tab-control.accent {
+  color: var(--amber);
 }
 
 .terminal-grid {
@@ -794,6 +804,10 @@ td {
   }
 
   .tab-backend {
+    display: none;
+  }
+
+  .tab.mobile-hide {
     display: none;
   }
 

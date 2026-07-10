@@ -16,12 +16,12 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.2 — box-drawing and dim text rendered the way Windows Terminal does.**
-> One drop-down terminal for Linux (Wayland), macOS, and Windows. Box-drawing
-> characters (the lines and borders TUIs draw) now render as continuous procedural
-> strokes, faint/dim text (SGR 2) dims toward the background, and the scrollbar is
-> wider and easier to grab — all verified across KDE Plasma, GNOME, Cinnamon,
-> COSMIC, Hyprland, sway, macOS, and Windows.
+> **v0.5.3 — smarter tabs and consistent logical sizing across every desktop.**
+> Tab titles now follow the shell through OSC 0/2, the tab bar has fixed
+> right-side navigation / close / new-tab controls, and terminal and tab fonts
+> use explicit logical sizes that follow each OS display scale. Shells start in
+> the home directory, and fish starts immediately on Linux and macOS with
+> terminal query responses enabled. Verified on Linux, macOS, and Windows.
 
 ## Who is TildaZ for?
 
@@ -168,6 +168,10 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 - Windows binaries are not Authenticode-signed yet, so SmartScreen or EDR tools
   may warn on first launch. The current SignPath application draft lives in
   [dist/signpath-application.md](dist/signpath-application.md).
+- Windows ConPTY does not expose OSC 10/11 default-color queries to TildaZ, so
+  `fish_terminal_color_theme` can remain empty in WSL. This also occurs in
+  Windows Terminal. TildaZ still passes `COLORFGBG` into WSL so vim, tmux, and
+  other tools can select the configured dark/light scheme.
 - The Windows global hotkey cannot fire while an elevated app has focus unless
   TildaZ is also elevated. This is Windows UIPI behavior.
 
