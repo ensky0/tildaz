@@ -333,7 +333,7 @@ pub const App = struct {
             r.rebuildFont(
                 window.hwnd,
                 window.font_chain[0..window.font_chain_count],
-                window.font_size,
+                window.terminal_font,
                 @intCast(window.cell_width_px),
                 @intCast(window.cell_height_px),
             ) catch {

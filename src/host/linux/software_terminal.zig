@@ -8,6 +8,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
+const font_spec = @import("../../font/spec.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
 const box_drawing = @import("../../box_drawing.zig");
@@ -81,16 +82,6 @@ fn scaleFactor(scale_num: u32, scale_den: u32) f32 {
     return @as(f32, @floatFromInt(scale_num)) / @as(f32, @floatFromInt(scale_den));
 }
 
-/// `config.font_size_point` 의미는 cross-platform 동등 — Windows host 의
-/// `font_height_px = font_size_point × DPI_scale` 식, macOS host 의 logical
-/// pixel 그대로 사용 패턴과 같이 **96 DPI 의 logical pixel** 의미. 표준
-/// typographic 1pt = 1/72 inch 변환 (× 96/72) 을 다시 곱하면 Win/Mac 대비
-/// 1.33x 큰 cell 이 되어 사용자가 "Linux 글자가 크다" 고 느낌 (사용자 보고).
-/// 따라서 1:1. fractional / output scale 통합은 후속 sub-step.
-fn fontPixelHeight(size_point: u8) u32 {
-    return @intCast(size_point);
-}
-
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     font_ctx: font.Context,
@@ -126,15 +117,16 @@ pub const Renderer = struct {
         scale_den: u32,
     ) !Renderer {
         const chain = cfg.font_families[0..cfg.font_family_count];
-        const pixel_height = scaledFontPixelHeight(cfg.font_size_point, scale_num, scale_den);
+        const spec = cfg.terminalFontSpec();
+        const pixel_height = scaledFontPixelHeight(spec, scale_num, scale_den);
         return .{
             .render_state = .empty,
             .font_ctx = try font.Context.init(
                 allocator,
                 chain,
                 pixel_height,
-                cfg.cell_width_ratio,
-                cfg.line_height_ratio,
+                spec.cell_width_ratio,
+                spec.line_height_ratio,
             ),
             .scale = scaleFactor(scale_num, scale_den),
         };
@@ -157,13 +149,14 @@ pub const Renderer = struct {
         scale_den: u32,
     ) !void {
         const chain = cfg.font_families[0..cfg.font_family_count];
-        const pixel_height = scaledFontPixelHeight(cfg.font_size_point, scale_num, scale_den);
+        const spec = cfg.terminalFontSpec();
+        const pixel_height = scaledFontPixelHeight(spec, scale_num, scale_den);
         const new_ctx = try font.Context.init(
             allocator,
             chain,
             pixel_height,
-            cfg.cell_width_ratio,
-            cfg.line_height_ratio,
+            spec.cell_width_ratio,
+            spec.line_height_ratio,
         );
         self.font_ctx.deinit();
         self.font_ctx = new_ctx;
@@ -232,16 +225,14 @@ pub const Renderer = struct {
         return scaledPt(ui_metrics.TAB_PLUS_W_PT, self.scale);
     }
 
-    fn scaledFontPixelHeight(size_point: u8, scale_num: u32, scale_den: u32) u32 {
-        const base = fontPixelHeight(size_point);
-        if (scale_num == scale_den) return base;
-        const base_i: i64 = @intCast(base);
-        const num: i64 = @intCast(scale_num);
-        const den: i64 = @intCast(scale_den);
-        // round-up — 작은 pixel_height 보다 큰 게 user 시각에 더 자연.
-        const scaled = @divFloor(base_i * num + den - 1, den);
-        if (scaled <= 0) return base;
-        return @intCast(scaled);
+    /// `Config.terminalFontSpec().size_logical` 의미는 cross-platform 동등 —
+    /// Windows host 의 `font_height_px = size_logical × DPI_scale` 식, macOS host
+    /// 의 logical pixel 그대로 사용 패턴과 같이 **96 DPI 의 logical pixel** 의미.
+    /// 표준 typographic 1pt = 1/72 inch 변환 (× 96/72) 을 다시 곱하면 Win/Mac
+    /// 대비 1.33x 큰 cell 이 되어 사용자가 "Linux 글자가 크다" 고 느낌 (사용자
+    /// 보고). 따라서 1:1 에 output scale 만 곱한다.
+    fn scaledFontPixelHeight(spec: font_spec.Spec, scale_num: u32, scale_den: u32) u32 {
+        return spec.physicalSizeRatioCeilPx(scale_num, scale_den);
     }
 
     pub fn cellWidth(self: *const Renderer) i32 {
@@ -450,10 +441,24 @@ pub const Renderer = struct {
                         if (self.font_ctx.ligatureTriple(cp, next_cp, next2_cp)) |lm| {
                             drawLigatureMatch(
                                 &self.font_ctx,
-                                memory, width, height, stride,
-                                raws, styles, sel_range, &colors,
-                                pad, cell_y, cw, ch, ascent,
-                                x, 3, lm, fg, bg,
+                                memory,
+                                width,
+                                height,
+                                stride,
+                                raws,
+                                styles,
+                                sel_range,
+                                &colors,
+                                pad,
+                                cell_y,
+                                cw,
+                                ch,
+                                ascent,
+                                x,
+                                3,
+                                lm,
+                                fg,
+                                bg,
                             );
                             x += 3;
                             continue;
@@ -470,10 +475,24 @@ pub const Renderer = struct {
                         if (self.font_ctx.ligaturePair(cp, next_cp)) |lm| {
                             drawLigatureMatch(
                                 &self.font_ctx,
-                                memory, width, height, stride,
-                                raws, styles, sel_range, &colors,
-                                pad, cell_y, cw, ch, ascent,
-                                x, 2, lm, fg, bg,
+                                memory,
+                                width,
+                                height,
+                                stride,
+                                raws,
+                                styles,
+                                sel_range,
+                                &colors,
+                                pad,
+                                cell_y,
+                                cw,
+                                ch,
+                                ascent,
+                                x,
+                                2,
+                                lm,
+                                fg,
+                                bg,
                             );
                             x += 2;
                             continue;
@@ -1354,10 +1373,15 @@ fn drawLigatureMatch(
                 const glyph_advance_i32: i32 = @intCast(ligature_glyph.advance);
                 const center_off: i32 = @divFloor(ligature_w - glyph_advance_i32, 2);
                 drawGlyph(
-                    memory, fb_w, fb_h, stride,
+                    memory,
+                    fb_w,
+                    fb_h,
+                    stride,
                     base_cell_x + center_off + ligature_glyph.bitmap_left + lg.x_offset,
                     baseline - ligature_glyph.bitmap_top - lg.y_offset,
-                    ligature_glyph, fg, bg,
+                    ligature_glyph,
+                    fg,
+                    bg,
                 );
             }
         },
@@ -1374,10 +1398,15 @@ fn drawLigatureMatch(
                     const glyph_advance_i32: i32 = @intCast(g_glyph.advance);
                     const center_off: i32 = @divFloor(cw - glyph_advance_i32, 2);
                     drawGlyph(
-                        memory, fb_w, fb_h, stride,
+                        memory,
+                        fb_w,
+                        fb_h,
+                        stride,
                         gx_cell + center_off + g_glyph.bitmap_left + sp.x_offsets[i],
                         baseline - g_glyph.bitmap_top - sp.y_offsets[i],
-                        g_glyph, fg, bg,
+                        g_glyph,
+                        fg,
+                        bg,
                     );
                 }
             }
@@ -1985,7 +2014,7 @@ fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
 test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const allocator = std.testing.allocator;
     // 실제 GUI 경로 재현 — hand-build 가 아니라 `Renderer.init` 로 *실제 Config*
-    // (Linux default = DejaVu Sans Mono + Noto fallback chain + size_point 16 +
+    // (Linux default = DejaVu Sans Mono + Noto fallback chain + size_point 15 +
     // cell_width_ratio 1.0 + **line_height_ratio 1.1**) 를 scale 1.7 (204/120) 로
     // 초기화. 이전 버전은 chain={"monospace"} + line_height 1.0 hand-build 라
     // 사용자 config (line_height 1.1) 의 layout 을 재현 못 했음 (#213 진단 cycle).

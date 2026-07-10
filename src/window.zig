@@ -6,6 +6,7 @@ const log = @import("log.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
 const dwrite_font = @import("font/windows/font.zig");
+const font_spec = @import("font/spec.zig");
 
 const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
@@ -364,9 +365,11 @@ pub const Window = struct {
     /// 동일 크기 — 동기화 유지.
     font_chain: [8][*:0]const WCHAR = undefined,
     font_chain_count: u8 = 0,
-    font_size: c_int = 14,
-    cell_width_ratio: f32 = 1.0,
-    line_height_ratio: f32 = 1.0,
+    terminal_font: font_spec.Spec = .{
+        .size_logical = 15.0,
+        .cell_width_ratio = 1.0,
+        .line_height_ratio = 1.1,
+    },
     current_dpi: UINT = 96,
 
     // Last position parameters — re-applied on WM_DISPLAYCHANGE / WM_DPICHANGED /
@@ -442,7 +445,7 @@ pub const Window = struct {
     const AUTOSCROLL_INTERVAL_MS: UINT = 40;
     const LayoutMonitorTarget = enum { cursor, window };
 
-    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, font_size: c_int, opacity: u8, cell_width_ratio: f32, line_height_ratio: f32, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
+    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, terminal_font: font_spec.Spec, opacity: u8, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
         if (font_chain.len == 0) return error.EmptyFontChain;
         const hInstance = GetModuleHandleW(null);
 
@@ -553,9 +556,7 @@ pub const Window = struct {
         const limit = @min(font_chain.len, self.font_chain.len);
         for (font_chain[0..limit], 0..) |fam, i| self.font_chain[i] = fam;
         self.font_chain_count = @intCast(limit);
-        self.font_size = font_size;
-        self.cell_width_ratio = cell_width_ratio;
-        self.line_height_ratio = line_height_ratio;
+        self.terminal_font = terminal_font;
 
         // DC must exist before `rebuildFontForDpi` measures cell metrics.
         self.dc = GetDC(self.hwnd);
@@ -582,8 +583,8 @@ pub const Window = struct {
         // Release previous font (if any) before creating a replacement.
         if (self.font) |prev| _ = DeleteObject(prev);
 
-        const effective_dpi: f32 = if (new_dpi > 0) @floatFromInt(new_dpi) else 96.0;
-        const scaled_font_size: c_int = @intFromFloat(@round(@as(f32, @floatFromInt(self.font_size)) * effective_dpi / 96.0));
+        const effective_dpi: u32 = if (new_dpi > 0) new_dpi else 96;
+        const scaled_font_size: c_int = @intCast(self.terminal_font.physicalSizeRatioCeilPx(effective_dpi, 96));
 
         // GDI CreateFontW 는 single face — chain 의 primary (chain[0]) 만 셀
         // 메트릭 (advance width / line height) 측정에 사용. 글리프 폴백은
@@ -617,14 +618,11 @@ pub const Window = struct {
         // GDI tm.tmHeight 는 ascent+descent rounding 에 더해 tmExternalLeading
         // 까지 포함해서 cell_h 가 4px 정도 부풀려짐 (Cascadia em=24 기준 32 vs
         // 자연 28). DWrite asc+desc+lineGap 으로 가면 28 — WT 와 정합.
-        const dpi_scale_f: f32 = effective_dpi / 96.0;
-        const font_size_px: f32 = @as(f32, @floatFromInt(self.font_size)) * dpi_scale_f;
+        const font_size_px = self.terminal_font.physicalSizeRatioPx(effective_dpi, 96);
         const measured = dwrite_font.measureCell(primary_family, font_size_px) catch null;
         if (measured) |m| {
-            const base_w: f32 = @floatFromInt(m.cell_w);
-            const base_h: f32 = @floatFromInt(m.cell_h);
-            self.cell_width_px = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
-            self.cell_height_px = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
+            self.cell_width_px = @intCast(font_spec.ceilPositivePx(m.cell_w * self.terminal_font.cell_width_ratio));
+            self.cell_height_px = @intCast(font_spec.ceilPositivePx(m.cell_h * self.terminal_font.line_height_ratio));
         } else if (self.dc != null and self.font != null) {
             // DWrite 측정 실패 fallback — GDI tm. 사용자 환경에서 이 path 거의
             // 안 탐 (font 사전 검증 통과 후라).
@@ -633,8 +631,8 @@ pub const Window = struct {
             _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
             const base_h: f32 = @floatFromInt(tm.tmHeight);
-            self.cell_width_px = @max(1, @as(c_int, @intFromFloat(@round(base_w * self.cell_width_ratio))));
-            self.cell_height_px = @max(1, @as(c_int, @intFromFloat(@round(base_h * self.line_height_ratio))));
+            self.cell_width_px = @intCast(font_spec.ceilPositivePx(base_w * self.terminal_font.cell_width_ratio));
+            self.cell_height_px = @intCast(font_spec.ceilPositivePx(base_h * self.terminal_font.line_height_ratio));
             _ = SelectObject(self.dc, old_f);
         }
 

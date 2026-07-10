@@ -28,9 +28,9 @@ If missing, it is auto-created with defaults on first launch. macOS and Linux ad
   "font": {
     "family": "Cascadia Code",
     "glyph_fallback": ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"],
-    "size_point": 16,
+    "size_point": 15,
     "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.0
+    "line_height_ratio": 1.1
   },
   "theme": "Tilda",
   "shell": "cmd.exe",
@@ -108,9 +108,9 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `window.opacity_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Window opacity (%) — internally converted to 0–255 alpha |
 | `font.family` | string | — | "Cascadia Code" | "Menlo" | "DejaVu Sans Mono" | Primary font. Must be installed on the system; missing → fatal |
 | `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Noto Sans CJK KR", "Noto Color Emoji"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. **All listed entries must be installed.** Empty array `[]` is allowed (system fallback only) |
-| `font.size_point` | int | 8–72 | 16 | 15 | 15 | Font size in typographic points (host applies DPI scale) |
+| `font.size_point` | int | 8–72 | 15 | 15 | 15 | Logical font size (host applies the OS scale; the legacy key name does not mean a physical 1/72-inch point) |
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
-| `font.line_height_ratio` | float | 0.5–2.0 | 1.0 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
+| `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
 | `shell` | string | — | "cmd.exe" | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | Shell to spawn. It always starts in your home directory; WSL tabs start in the *Linux* home (TildaZ adds `--cd ~` to `wsl.exe` automatically — skipped if your command already has `--cd`). Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
 | `hotkey` | string | "f1", "ctrl+space", "shift+cmd+t", … | "f1" | "f1" | "f1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |

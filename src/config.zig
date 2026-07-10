@@ -16,6 +16,7 @@ const messages = @import("messages.zig");
 const paths = @import("paths.zig");
 const font_validate = @import("font/validate.zig");
 const font_constants = @import("font/constants.zig");
+const font_spec = @import("font/spec.zig");
 
 const WCHAR = u16;
 
@@ -110,18 +111,15 @@ const LinuxHotkey = struct {
     /// 가 실제 매핑하는 Qt::Key 범위 시연 후 별 sub-task.
     fn linuxKeysymFromName(name: []const u8) ?u32 {
         const map = [_]struct { name: []const u8, sym: u32 }{
-            .{ .name = "f1", .sym = 0xffbe },  .{ .name = "f2", .sym = 0xffbf },
-            .{ .name = "f3", .sym = 0xffc0 },  .{ .name = "f4", .sym = 0xffc1 },
-            .{ .name = "f5", .sym = 0xffc2 },  .{ .name = "f6", .sym = 0xffc3 },
-            .{ .name = "f7", .sym = 0xffc4 },  .{ .name = "f8", .sym = 0xffc5 },
-            .{ .name = "f9", .sym = 0xffc6 },  .{ .name = "f10", .sym = 0xffc7 },
-            .{ .name = "f11", .sym = 0xffc8 }, .{ .name = "f12", .sym = 0xffc9 },
-            .{ .name = "space", .sym = 0x0020 },
-            .{ .name = "grave", .sym = 0x0060 },
-            .{ .name = "tab", .sym = 0xff09 },
-            .{ .name = "escape", .sym = 0xff1b },
-            .{ .name = "esc", .sym = 0xff1b },
-            .{ .name = "enter", .sym = 0xff0d },
+            .{ .name = "f1", .sym = 0xffbe },     .{ .name = "f2", .sym = 0xffbf },
+            .{ .name = "f3", .sym = 0xffc0 },     .{ .name = "f4", .sym = 0xffc1 },
+            .{ .name = "f5", .sym = 0xffc2 },     .{ .name = "f6", .sym = 0xffc3 },
+            .{ .name = "f7", .sym = 0xffc4 },     .{ .name = "f8", .sym = 0xffc5 },
+            .{ .name = "f9", .sym = 0xffc6 },     .{ .name = "f10", .sym = 0xffc7 },
+            .{ .name = "f11", .sym = 0xffc8 },    .{ .name = "f12", .sym = 0xffc9 },
+            .{ .name = "space", .sym = 0x0020 },  .{ .name = "grave", .sym = 0x0060 },
+            .{ .name = "tab", .sym = 0xff09 },    .{ .name = "escape", .sym = 0xff1b },
+            .{ .name = "esc", .sym = 0xff1b },    .{ .name = "enter", .sym = 0xff0d },
             .{ .name = "return", .sym = 0xff0d },
         };
         for (map) |entry| {
@@ -323,17 +321,14 @@ pub const Defaults = struct {
     else
         &.{ "Noto Sans CJK KR", "Noto Color Emoji" };
 
-    /// font size in *typographic point*. host 가 DPI scale 곱한 후 raster
-    /// (#148 B-2). Windows 기본 폰트가 약간 작아 16 / macOS 15 / Linux 16.
-    /// Linux 12 / 14 는 KDE 170% fractional scale 에서 "너무 작다" 보고 — pt
-    /// 의미가 plat 별로 다름 (Win 96 DPI = 1px/pt, mac retina 2x, Linux = logical
-    /// px). 16 까지 올렸다가 macOS 와 동일한 15 로 정리 (Win 은 16 유지).
-    pub const font_size_point: u8 = if (is_windows) 16 else 15;
+    /// Logical font size. host 가 OS scale 을 곱한 후 raster.
+    /// Linux · macOS · Windows 공통 기본값.
+    /// Linux 12 / 14 는 KDE 170% fractional scale 에서 "너무 작다" 보고.
+    pub const font_size_point: u8 = 15;
 
     /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이
-    /// 조절. Windows 기본 폰트는 leading 이 충분해 1.0, POSIX (mac/linux) 는
-    /// 1.1 로 살짝 늘림.
-    pub const line_height_ratio: f32 = if (is_windows) 1.0 else 1.1;
+    /// 조절. Linux · macOS · Windows 공통 기본값.
+    pub const line_height_ratio: f32 = 1.1;
 
     /// host 의 `resolveShell` 이 `$SHELL` env 가 비어있을 때 쓰는 fallback.
     /// 첫 실행 시 host 는 `$SHELL` (있으면) 또는 이 값을 disk JSON 에 명시.
@@ -453,7 +448,7 @@ pub const Config = struct {
     auto_start: bool = Defaults.auto_start,
     hidden_start: bool = Defaults.hidden_start,
     max_scroll_lines: u32 = Defaults.max_scroll_lines,
-    /// font size in typographic point (8..72). host 가 DPI scale 곱해 raster.
+    /// Logical font size (8..72). host 가 OS scale 을 곱해 raster.
     font_size_point: u8 = default_font_size_point,
     /// cell width ratio — 측정된 advance 에 곱해 글자 사이 padding 조절. 1.0
     /// = 폰트 그대로, 1.1 = 10% 넓음. range 0.5..2.0.
@@ -464,6 +459,14 @@ pub const Config = struct {
     /// chain[1..] 은 glyph fallback 순서. host / renderer 가 한 개의 array 로 받음.
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
     font_family_count: u8 = DEFAULT_FONT_CHAIN_COUNT,
+
+    pub fn terminalFontSpec(self: *const Config) font_spec.Spec {
+        return .{
+            .size_logical = @floatFromInt(self.font_size_point),
+            .cell_width_ratio = self.cell_width_ratio,
+            .line_height_ratio = self.line_height_ratio,
+        };
+    }
 
     /// `shell_resolved` 는 host 의 `resolveShell` 결과 (process lifetime 보유).
     /// 첫 실행이거나 disk 를 못 읽을 때 memory default `Config.shell` 도 이
@@ -869,4 +872,42 @@ test "DockPosition.fromString" {
     try std.testing.expectEqual(DockPosition.top, DockPosition.fromString("top").?);
     try std.testing.expectEqual(DockPosition.bottom, DockPosition.fromString("bottom").?);
     try std.testing.expectEqual(@as(?DockPosition, null), DockPosition.fromString("nope"));
+}
+
+test "terminal font defaults use the cross-platform logical size contract" {
+    const config = Config{};
+    const spec = config.terminalFontSpec();
+
+    try std.testing.expectEqual(@as(u8, 15), Defaults.font_size_point);
+    try std.testing.expectEqual(@as(f32, @floatFromInt(Defaults.font_size_point)), spec.size_logical);
+    try std.testing.expectEqual(@as(f32, 1.0), spec.cell_width_ratio);
+    try std.testing.expectEqual(@as(f32, 1.1), spec.line_height_ratio);
+}
+
+test "default config JSON uses the common terminal font defaults" {
+    const allocator = std.testing.allocator;
+    const json_text = try defaultConfigJson(allocator, Defaults.shell);
+    defer allocator.free(json_text);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_text, .{});
+    defer parsed.deinit();
+
+    const font = parsed.value.object.get("font").?.object;
+    try std.testing.expectEqual(@as(i64, 15), font.get("size_point").?.integer);
+    try std.testing.expectEqual(@as(f64, 1.1), font.get("line_height_ratio").?.float);
+}
+
+test "explicit line height ratio is preserved when parsing" {
+    const allocator = std.testing.allocator;
+    const json_text = @constCast(try defaultConfigJson(allocator, Defaults.shell));
+    defer allocator.free(json_text);
+
+    const expected = "\"line_height_ratio\": 1.1";
+    const offset = std.mem.indexOf(u8, json_text, expected) orelse return error.TestUnexpectedResult;
+    const value_offset = offset + expected.len - 3;
+    @memcpy(json_text[value_offset .. value_offset + 3], "0.9");
+
+    const config = Config.parse(allocator, json_text);
+    defer config.deinit(allocator);
+    try std.testing.expectEqual(@as(f32, 0.9), config.line_height_ratio);
 }

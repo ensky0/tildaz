@@ -12,6 +12,7 @@ const perf = @import("../perf.zig");
 const ct = @import("../font/macos/coretext.zig");
 const mac_font = @import("../font/macos/font.zig");
 const CoreTextFontContext = mac_font.CoreTextFontContext;
+const font_spec = @import("../font/spec.zig");
 const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const scrollbar = @import("../scrollbar.zig");
@@ -276,9 +277,7 @@ pub const MetalRenderer = struct {
     // 파라미터 보관. font_families 슬라이스/문자열은 host 가 process lifetime 으로
     // 보유(g_config 또는 run() 의 env_chain) — 재init 시 그대로 재사용.
     font_families: []const []const u8,
-    font_size: f32,
-    cell_width_scale: f32,
-    line_height_scale: f32,
+    terminal_font: font_spec.Spec,
 
     pub fn colorF(v: u8) f32 {
         return @as(f32, @floatFromInt(v)) / 255.0;
@@ -289,11 +288,7 @@ pub const MetalRenderer = struct {
         device: objc.id,
         layer: objc.id,
         font_families: []const []const u8,
-        font_size: f32,
-        /// Windows config 와 동일한 미적 보정. 폰트 변경 시 cell 크기는
-        /// font 가 자체 측정 (advance + ascent/descent/leading).
-        cell_width_scale: f32,
-        line_height_scale: f32,
+        terminal_font: font_spec.Spec,
         bg_rgb: ?[3]u8,
         scale: f32,
     ) !MetalRenderer {
@@ -303,14 +298,12 @@ pub const MetalRenderer = struct {
 
         var font_ctx = try CoreTextFontContext.init(
             font_families,
-            font_size,
+            terminal_font,
             scale,
-            cell_width_scale,
-            line_height_scale,
         );
         errdefer font_ctx.deinit();
 
-        var glyph_atlas = try GlyphAtlas.init(alloc, font_size, scale);
+        var glyph_atlas = try GlyphAtlas.init(alloc, terminal_font.size_logical, scale);
         errdefer glyph_atlas.deinit();
 
         // Metal 셰이더 컴파일.
@@ -373,9 +366,7 @@ pub const MetalRenderer = struct {
             .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .scale = scale,
             .font_families = font_families,
-            .font_size = font_size,
-            .cell_width_scale = cell_width_scale,
-            .line_height_scale = line_height_scale,
+            .terminal_font = terminal_font,
         };
     }
 
@@ -390,10 +381,8 @@ pub const MetalRenderer = struct {
         // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
         const new_font = try CoreTextFontContext.init(
             self.font_families,
-            self.font_size,
+            self.terminal_font,
             new_scale,
-            self.cell_width_scale,
-            self.line_height_scale,
         );
         self.font.deinit();
         self.font = new_font;
@@ -934,9 +923,7 @@ pub const MetalRenderer = struct {
 
                 if (entry.w > 0 and entry.h > 0 and pre_text_n < pre_text_buf.len) {
                     const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = pre_y + self.font.ascent_px
-                        - @as(f32, @floatFromInt(entry.bearing_y))
-                        - @as(f32, @floatFromInt(entry.h));
+                    const gy = pre_y + self.font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
                     pre_text_buf[pre_text_n] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -1109,9 +1096,7 @@ pub const MetalRenderer = struct {
                     if (result.owned) ct.CFRelease(result.font);
                     if (entry.w == 0 or entry.h == 0) return;
                     const gx = x + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = c.text_y_top + c.self.font.ascent_px
-                        - @as(f32, @floatFromInt(entry.bearing_y))
-                        - @as(f32, @floatFromInt(entry.h));
+                    const gy = c.text_y_top + c.self.font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
                     c.text_buf[c.text_n.*] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },

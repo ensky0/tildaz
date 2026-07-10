@@ -7,6 +7,7 @@ const d3d = @import("windows/d3d11.zig");
 const dw = @import("../font/windows/directwrite.zig");
 const dwrite_font = @import("../font/windows/font.zig");
 const DWriteFontContext = dwrite_font.DWriteFontContext;
+const font_spec = @import("../font/spec.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = @import("windows/glyph_atlas.zig").GlyphAtlas;
@@ -211,7 +212,7 @@ pub const D3d11Renderer = struct {
         };
     }
 
-    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, font_height: c_int, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
+    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, spec: font_spec.Spec, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
         const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
 
         // 1. Create D3D11 device + swap chain
@@ -288,7 +289,7 @@ pub const D3d11Renderer = struct {
         }
 
         // 2. Init font context
-        var font_ctx = try DWriteFontContext.init(alloc, font_chain, font_height, cell_w, cell_h);
+        var font_ctx = try DWriteFontContext.init(alloc, font_chain, spec, cell_w, cell_h);
         errdefer font_ctx.deinit();
 
         // 3. Init glyph atlas (with DPI-aware pixelsPerDip)
@@ -497,24 +498,16 @@ pub const D3d11Renderer = struct {
     /// `cell_w` / `cell_h`, so the atlas rasterizes glyphs at the new
     /// monitor's physical pixel density instead of the init-time DPI.
     ///
-    /// On failure the renderer is left in a broken state (old resources
-    /// already released, new ones not yet created). Callers treat any
-    /// error as fatal.
+    /// On failure the previous renderer resources remain active.
     pub fn rebuildFont(
         self: *D3d11Renderer,
         hwnd: ?*anyopaque,
         font_chain: []const [*:0]const u16,
-        font_height: c_int,
+        spec: font_spec.Spec,
         cell_w: u32,
         cell_h: u32,
     ) !void {
-        // Release old font + atlas first — the atlas texture is bound to
-        // the init-time `pixels_per_dip` and the font metrics were scaled
-        // for the init-time DPI, so neither can be reused.
-        self.atlas.deinit();
-        self.font.deinit();
-
-        var font_ctx = try DWriteFontContext.init(self.alloc, font_chain, font_height, cell_w, cell_h);
+        var font_ctx = try DWriteFontContext.init(self.alloc, font_chain, spec, cell_w, cell_h);
         errdefer font_ctx.deinit();
 
         const dpi = GetDpiForWindow(hwnd);
@@ -523,8 +516,11 @@ pub const D3d11Renderer = struct {
         // `ascent_px` line up with the DPI-scaled raster.
         font_ctx.ascent_px *= pixels_per_dip;
 
-        const atlas = try GlyphAtlas.init(self.alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, self.device, self.ctx);
+        var atlas = try GlyphAtlas.init(self.alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, self.device, self.ctx);
+        errdefer atlas.deinit();
 
+        self.atlas.deinit();
+        self.font.deinit();
         self.font = font_ctx;
         self.atlas = atlas;
         self.pixels_per_dip = pixels_per_dip;

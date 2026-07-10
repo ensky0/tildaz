@@ -5,6 +5,7 @@ const std = @import("std");
 const dw = @import("directwrite.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 
 const BOOL = std.os.windows.BOOL;
@@ -45,8 +46,8 @@ const CachedGlyph = struct {
 };
 
 /// 정공 cell metric — DWrite design metric (ascent/descent/lineGap/advance) 으로
-/// 직접 산출. GDI tm 의 round / leading 영향 배제. WT BackendD3D 의 cell sizing
-/// 패턴 동등.
+/// 직접 산출. GDI tm 의 rounding / leading 영향 배제. 여기서는 실수 측정값을
+/// 그대로 반환하고 호출처가 ratio 까지 적용한 뒤 공통 정책으로 한 번만 ceil 한다.
 ///
 /// font_height_px = 우리가 raster 할 em-size (#148 B-2 후 = 사용자 font.size ×
 /// DPI scale). monospace 폰트의 모든 glyph 가 같은 advance 라 '0' 의 advance 를
@@ -58,7 +59,7 @@ const CachedGlyph = struct {
 pub fn measureCell(
     primary_family_w: [*:0]const WCHAR,
     font_height_px: f32,
-) !struct { cell_w: u32, cell_h: u32 } {
+) !struct { cell_w: f32, cell_h: f32 } {
     var factory: ?*dw.IDWriteFactory = null;
     if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0)
         return error.DWriteFactoryFailed;
@@ -111,8 +112,8 @@ pub fn measureCell(
     const cell_h_px = font_height_px * (asc + desc + linegap) / em;
 
     return .{
-        .cell_w = @max(1, @as(u32, @intFromFloat(@round(cell_w_px)))),
-        .cell_h = @max(1, @as(u32, @intFromFloat(@round(cell_h_px)))),
+        .cell_w = cell_w_px,
+        .cell_h = cell_h_px,
     };
 }
 
@@ -149,7 +150,7 @@ pub const DWriteFontContext = struct {
     pub fn init(
         alloc: std.mem.Allocator,
         font_chain: []const [*:0]const WCHAR,
-        font_height: c_int,
+        spec: font_spec.Spec,
         cell_w: u32,
         cell_h: u32,
     ) !DWriteFontContext {
@@ -231,7 +232,7 @@ pub const DWriteFontContext = struct {
         primary_face.GetMetrics(&metrics);
         const du_per_em: f32 = @floatFromInt(metrics.designUnitsPerEm);
         const ascent: f32 = @floatFromInt(metrics.ascent);
-        const abs_height: f32 = @floatFromInt(if (font_height < 0) -font_height else font_height);
+        const abs_height = spec.size_logical;
         // WT BackendD3D 컨벤션 (#148) — em-size = font.size 픽셀 그대로. DWrite
         // native + 일반적인 fontSize 의미와 정합. 이전 식 (`abs_height * em /
         // (asc+desc)`) 은 GDI CreateFontW(positive) 의 cell-height 컨벤션 을
@@ -247,9 +248,8 @@ pub const DWriteFontContext = struct {
         var fam_buf: [128]u8 = undefined;
         const fam_len = std.unicode.utf16LeToUtf8(&fam_buf, self.primary_family_name[0..self.primary_family_len]) catch 0;
         log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
-            fam_buf[0..fam_len], self.cell_width_px, self.cell_height_px,
-            @as(u32, @intFromFloat(@round(self.ascent_px))),
-            @as(u32, @intFromFloat(@round(self.descent_px))),
+            fam_buf[0..fam_len],                             self.cell_width_px,                               self.cell_height_px,
+            @as(u32, @intFromFloat(@round(self.ascent_px))), @as(u32, @intFromFloat(@round(self.descent_px))),
         });
 
         // 5. Get IDWriteFactory2 for system font fallback

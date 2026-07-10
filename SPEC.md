@@ -74,6 +74,11 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `arrow_w_px` | `Renderer.tabArrowWPx()` |
 | `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `plus_w_px` | `Renderer.tabPlusWPx()` |
 
+`font.size_point`는 호환성을 위해 유지하는 외부 key 이름이며 물리적인 1/72 inch
+point가 아니다. 내부 의미는 logical size이고 실제 raster 크기는 위 표의 OS scale을
+적용한다. 실제 mm 보정은 하지 않는다. 폰트 metric에 cell width/line height ratio와
+scale을 적용한 최종 cell 정수 크기는 Linux · macOS · Windows 모두 `ceil`한다.
+
 **탭 gap / hover inset**: `TAB_GAP_PT`를 기준으로 각 탭 배경은 좌우에 절반인
 1pt, 상하에 2pt를 inset으로 사용한다. 컨트롤 hover 박스는 네 방향에 2pt를
 사용한다. 세 host 모두 현재 화면 scale을 곱하며, Linux software renderer는
@@ -577,8 +582,8 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `theme` | string (`themes.findTheme`) | `Tilda` | `Tilda` | `Tilda` | ✅ | ✅ | ✅ |
 | `font.family` | string (primary font, single) | `Cascadia Code` | `Menlo` | host `resolveDefaultFont` (fontconfig substitute `monospace` 결과) | ✅ | ✅ | ✅ |
 | `font.glyph_fallback` | string array (max 7 — chain total ≤ 8 with primary). 한글 / 이모지 / 심볼 순. | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Noto Sans CJK KR", "Noto Color Emoji"]` (fontconfig 환경 표준, 심볼은 fontconfig 자동 fallback) | ✅ | ✅ | ✅ |
-| `font.size_point` | integer 8..72 (typographic point — host applies DPI scale) | 16 | 15 (Apple Terminal/iTerm2 컨벤션 + retina) | 16 (1:1 logical pixel, mac/win 동등) | ✅ | ✅ | ✅ |
-| `font.line_height_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.1 (Apple HIG) | 1.0 (FreeType metric 자연) | ✅ | ✅ | ✅ |
+| `font.size_point` | integer 8..72 (logical size — host 가 OS scale 적용) | 15 | 15 | 15 | ✅ | ✅ | ✅ |
+| `font.line_height_ratio` | float 0.5..2.0 (측정된 ascent+descent+leading 배율) | 1.1 | 1.1 | 1.1 | ✅ | ✅ | ✅ |
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`~/.config/autostart/tildaz.desktop`), L11-α | ✅ | ✅ | ✅ |
