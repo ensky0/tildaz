@@ -66,7 +66,8 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | `TERMINAL_PADDING_PT` | 6 | `App.TERMINAL_PADDING` | `pad_px` | `Renderer.paddingPx()` |
 | `SCROLLBAR_W_PT` | 8 | `App.SCROLLBAR_W` | `scrollbar_w_px` | `Renderer.scrollbarWPx()` |
 | `SCROLLBAR_MIN_THUMB_H_PT` | 32 | `App.SCROLLBAR_MIN_THUMB_H` | `scrollbar_min_thumb_h_px` | `Renderer.scrollbarMinThumbHPx()` |
-| `TAB_BAR_HEIGHT_PT` | 28 | `App.TAB_BAR_HEIGHT`, `max(_, cell_h + 4)` 보정 | `tabBarHeightPx(scale)`, 동일 보정 | `Renderer.tabBarHeightPx()`, 동일 보정 |
+| `TAB_BAR_HEIGHT_PT` | 28 | `ui_metrics.tabBarHeightPx(scale)` | 동일 | 동일 |
+| `TAB_LABEL_FONT_PT` | 13 | tab 전용 DWrite context + atlas | tab 전용 CoreText context + atlas/texture | tab 전용 FreeType context + glyph cache |
 | `TAB_WIDTH_PT` | 150 | `App.TAB_WIDTH` | `tab_w_px = TAB_WIDTH_PT × scale` | `Renderer.tabWidthPx()` |
 | `TAB_PADDING_PT` | 6 | `App.TAB_PADDING` | `tab_pad_px` | `Renderer.tabPaddingPx()` |
 | `TAB_GAP_PT` | 2 | `tabGapPx(App.dpi_scale)` | `tabGapPx(Renderer.scale)` | `tabGapPx(scale)` 후 정수 px 반올림 |
@@ -84,10 +85,12 @@ scale을 적용한 최종 cell 정수 크기는 Linux · macOS · Windows 모두
 사용한다. 세 host 모두 현재 화면 scale을 곱하며, Linux software renderer는
 최종 physical pixel 좌표에서 가장 가까운 정수로 반올림한다.
 
-**`max(_, cell_h + 4)` 보정**: 폰트 cell 이 디자인 tab bar 높이 보다 클 때 (예:
-KDE 170% + 16pt 폰트의 cell_h = 33 physical > TAB_BAR_HEIGHT_PT 28 × 1.7 = 47.6
-같은 케이스가 아니라, 작은 scale 환경에서 cell_h 가 28 보다 커지는 케이스) 텍스트
-잘림 방지. 세 host 모두 동일 로직.
+**탭 제목 font 분리**: 탭 제목·rename cursor·rename preedit은 terminal의
+`font.size_point`와 무관한 고정 13 logical pt를 쓴다. 같은 font family/fallback
+chain을 사용하되 Linux · macOS · Windows 모두 terminal과 별도인 font context와
+atlas/cache를 소유한다. 따라서 terminal font 크기를 바꿔도 탭 제목과 28pt 탭바
+높이는 변하지 않는다. `tabBarHeightPx(scale)`는 fractional scale에서도 세 플랫폼이
+같은 physical pixel 높이를 쓰도록 최종값을 공통 반올림한다.
 
 **fallback**: scale 정보 못 받은 환경 (Linux 의 fractional_scale_manager 미advertise,
 mutter / wlroots) 또는 첫 init 시점 — `scale = 1.0` default, PT 값 그대로 사용

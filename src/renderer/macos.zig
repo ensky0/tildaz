@@ -218,6 +218,8 @@ pub const MetalRenderer = struct {
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,
     atlas: GlyphAtlas,
+    tab_font: CoreTextFontContext,
+    tab_atlas: GlyphAtlas,
     render_state: ghostty.RenderState = .empty,
 
     // Metal 객체 (모두 ObjC id, 우리는 ARC 안 쓰지만 process 종료 시 회수).
@@ -232,6 +234,7 @@ pub const MetalRenderer = struct {
     bg_buffer: objc.id,
     text_buffer: objc.id,
     atlas_texture: objc.id,
+    tab_atlas_texture: objc.id,
     constants_buffer: objc.id,
 
     // frame 내 누적된 instance 수. 매 drawBgInstances / drawTextInstances 호출이
@@ -306,6 +309,17 @@ pub const MetalRenderer = struct {
         var glyph_atlas = try GlyphAtlas.init(alloc, terminal_font.size_logical, scale);
         errdefer glyph_atlas.deinit();
 
+        const tab_spec = ui_metrics.tabLabelFontSpec();
+        var tab_font_ctx = try CoreTextFontContext.init(
+            font_families,
+            tab_spec,
+            scale,
+        );
+        errdefer tab_font_ctx.deinit();
+
+        var tab_glyph_atlas = try GlyphAtlas.init(alloc, tab_spec.size_logical, scale);
+        errdefer tab_glyph_atlas.deinit();
+
         // Metal 셰이더 컴파일.
         const source_str = objc.nsString(shader_source);
         var err: objc.id = null;
@@ -345,6 +359,7 @@ pub const MetalRenderer = struct {
         const const_buf = createBuffer(device, 16);
 
         const atlas_tex = createAtlasTexture(device);
+        const tab_atlas_tex = createAtlasTexture(device);
 
         // CAMetalLayer 설정 (device 등록 + pixel format).
         objc.msgSendVoid1(layer, objc.sel("setDevice:"), device);
@@ -354,6 +369,8 @@ pub const MetalRenderer = struct {
             .alloc = alloc,
             .font = font_ctx,
             .atlas = glyph_atlas,
+            .tab_font = tab_font_ctx,
+            .tab_atlas = tab_glyph_atlas,
             .device = device,
             .layer = layer,
             .command_queue = cmd_queue,
@@ -362,6 +379,7 @@ pub const MetalRenderer = struct {
             .bg_buffer = bg_buf,
             .text_buffer = text_buf,
             .atlas_texture = atlas_tex,
+            .tab_atlas_texture = tab_atlas_tex,
             .constants_buffer = const_buf,
             .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .scale = scale,
@@ -379,25 +397,40 @@ pub const MetalRenderer = struct {
         if (new_scale == self.scale) return;
 
         // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
-        const new_font = try CoreTextFontContext.init(
+        var new_font = try CoreTextFontContext.init(
             self.font_families,
             self.terminal_font,
             new_scale,
         );
+        errdefer new_font.deinit();
+
+        var new_tab_font = try CoreTextFontContext.init(
+            self.font_families,
+            ui_metrics.tabLabelFontSpec(),
+            new_scale,
+        );
+        errdefer new_tab_font.deinit();
+
+        self.tab_font.deinit();
         self.font.deinit();
         self.font = new_font;
+        self.tab_font = new_tab_font;
 
         // 2. atlas 를 새 scale 로 재구성 — cache/packing/pixels clear + scale 갱신.
         //    다음 render 에서 글리프가 새 scale 로 재라스터되고 dirty 로 재업로드됨.
         //    (atlas_texture 자체는 ATLAS_SIZE 고정이라 재사용.)
         self.atlas.scale = new_scale;
         self.atlas.reset();
+        self.tab_atlas.scale = new_scale;
+        self.tab_atlas.reset();
 
         // 3. renderer scale 갱신 — 탭바/스크롤바/패딩 등 UI metric 이 곱해 쓰는 값.
         self.scale = new_scale;
     }
 
     pub fn deinit(self: *MetalRenderer) void {
+        self.tab_atlas.deinit();
+        self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
         // Metal 객체는 ARC / process exit 으로 정리.
@@ -525,7 +558,7 @@ pub const MetalRenderer = struct {
         self.updateConstants();
 
         if (self.atlas.dirty) {
-            self.uploadAtlas();
+            self.uploadAtlas(&self.atlas, self.atlas_texture);
             self.atlas.dirty = false;
         }
 
@@ -969,7 +1002,7 @@ pub const MetalRenderer = struct {
         /// #268 2b — hover 중인 컨트롤 버튼 (.none = 없음). 강조 배경 박스.
         hover: tab_layout.Area,
     ) void {
-        const tab_bar_h_px = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.scale;
+        const tab_bar_h_px: f32 = @floatFromInt(ui_metrics.tabBarHeightPx(self.scale));
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
         const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
         const tab_gap = ui_metrics.tabGapPx(self.scale);
@@ -1034,8 +1067,8 @@ pub const MetalRenderer = struct {
         };
 
         // 3. 각 탭 제목 텍스트.
-        const cw: f32 = @floatFromInt(self.font.cell_width_px);
-        const ch: f32 = @floatFromInt(self.font.cell_height_px);
+        const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
         const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
         // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
         const max_text_w_px = tab_w_px - tab_pad_px * 2;
@@ -1088,15 +1121,15 @@ pub const MetalRenderer = struct {
                 fn run(c: Ctx, cp: u21, x: f32, fg: [4]f32) void {
                     if (c.text_n.* >= MAX_TEXT) return;
                     if (x < c.viewport_left) return;
-                    const result = c.self.font.resolveGlyph(@intCast(cp)) orelse return;
-                    const entry = c.self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    const result = c.self.tab_font.resolveGlyph(@intCast(cp)) orelse return;
+                    const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                         if (result.owned) ct.CFRelease(result.font);
                         return;
                     };
                     if (result.owned) ct.CFRelease(result.font);
                     if (entry.w == 0 or entry.h == 0) return;
                     const gx = x + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = c.text_y_top + c.self.font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
+                    const gy = c.text_y_top + c.self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
                     c.text_buf[c.text_n.*] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -1139,7 +1172,10 @@ pub const MetalRenderer = struct {
 
         // 1차 batch — 탭 BG / 텍스트 그림.
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
-        if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);
+        if (text_n > 0) {
+            self.uploadTabAtlasIfDirty();
+            self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
+        }
 
         // #117 — 2차 batch: 화살표 / + 영역. 탭 BG / 텍스트 *후* 에 별도 batch 로
         // 그려야 viewport 끝에서 잘리는 첫/마지막 탭의 글자가 화살표 영역에 침범
@@ -1222,7 +1258,7 @@ pub const MetalRenderer = struct {
             fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
                 if (n.* >= buf.len) return;
                 if (box_w <= 0 or isz == 0) return;
-                const entry = rself.atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
+                const entry = rself.tab_atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
                 const fsz: f32 = @floatFromInt(isz);
                 const gx = box_x + (box_w - fsz) * 0.5;
@@ -1250,7 +1286,10 @@ pub const MetalRenderer = struct {
         drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
 
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
-        if (text_n > 0) self.drawTextInstances(encoder, text_buf[0..text_n]);
+        if (text_n > 0) {
+            self.uploadTabAtlasIfDirty();
+            self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
+        }
     }
 
     fn updateConstants(self: *MetalRenderer) void {
@@ -1264,19 +1303,25 @@ pub const MetalRenderer = struct {
         };
     }
 
-    fn uploadAtlas(self: *MetalRenderer) void {
+    fn uploadAtlas(_: *MetalRenderer, atlas: *GlyphAtlas, texture: objc.id) void {
         const Region = extern struct { ox: usize, oy: usize, oz: usize, sx: usize, sy: usize, sz: usize };
         const region = Region{ .ox = 0, .oy = 0, .oz = 0, .sx = ATLAS_SIZE, .sy = ATLAS_SIZE, .sz = 1 };
 
         const f: *const fn (objc.id, objc.SEL, Region, objc.NSUInteger, [*]const u8, objc.NSUInteger) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         f(
-            self.atlas_texture,
+            texture,
             objc.sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
             region,
             0,
-            self.atlas.pixels.ptr,
+            atlas.pixels.ptr,
             ATLAS_SIZE * 4, // BGRA8 = 4 bytes per pixel.
         );
+    }
+
+    fn uploadTabAtlasIfDirty(self: *MetalRenderer) void {
+        if (!self.tab_atlas.dirty) return;
+        self.uploadAtlas(&self.tab_atlas, self.tab_atlas_texture);
+        self.tab_atlas.dirty = false;
     }
 
     fn drawBgInstances(self: *MetalRenderer, encoder: objc.id, instances: []const BgInstance) void {
@@ -1313,6 +1358,10 @@ pub const MetalRenderer = struct {
     }
 
     fn drawTextInstances(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance) void {
+        self.drawTextInstancesWithTexture(encoder, instances, self.atlas_texture);
+    }
+
+    fn drawTextInstancesWithTexture(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance, texture: objc.id) void {
         if (instances.len == 0) return;
         self.text_needed += @intCast(instances.len);
         if (self.text_used + instances.len > self.text_capacity) return;
@@ -1326,7 +1375,7 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, offset_bytes, @as(objc.NSUInteger, 0));
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
-        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
+        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), texture, @as(objc.NSUInteger, 0));
 
         objc.msgSendVoid4(
             encoder,

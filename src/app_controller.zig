@@ -303,7 +303,7 @@ pub const App = struct {
         const effective: f32 = if (new_dpi > 0) @as(f32, @floatFromInt(new_dpi)) else 96.0;
         const scale: f32 = effective / 96.0;
         self.dpi_scale = scale;
-        self.TAB_BAR_HEIGHT = @intFromFloat(@round(28.0 * scale));
+        self.TAB_BAR_HEIGHT = @intCast(ui_metrics.tabBarHeightPx(scale));
         self.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
         self.TAB_ARROW_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * scale));
         self.TAB_PLUS_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * scale));
@@ -312,10 +312,6 @@ pub const App = struct {
         self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
         self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
         self.TERMINAL_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TERMINAL_PADDING_PT)) * scale));
-        const min_tab_bar_h: c_int = @as(c_int, @intCast(self.window.cell_height_px)) + 4;
-        if (self.TAB_BAR_HEIGHT < min_tab_bar_h) {
-            self.TAB_BAR_HEIGHT = min_tab_bar_h;
-        }
     }
 
     /// WM_DPICHANGED path (called from `window.wndProc` after

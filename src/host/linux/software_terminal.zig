@@ -85,6 +85,7 @@ fn scaleFactor(scale_num: u32, scale_den: u32) f32 {
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     font_ctx: font.Context,
+    tab_font_ctx: font.Context,
     /// L10-β — IME 조합 중 (preedit) 텍스트. host (wayland_minimal) 가 매
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
@@ -119,21 +120,37 @@ pub const Renderer = struct {
         const chain = cfg.font_families[0..cfg.font_family_count];
         const spec = cfg.terminalFontSpec();
         const pixel_height = scaledFontPixelHeight(spec, scale_num, scale_den);
+        var terminal_ctx = try font.Context.init(
+            allocator,
+            chain,
+            pixel_height,
+            spec.cell_width_ratio,
+            spec.line_height_ratio,
+        );
+        errdefer terminal_ctx.deinit();
+
+        const tab_spec = ui_metrics.tabLabelFontSpec();
+        const tab_pixel_height = scaledFontPixelHeight(tab_spec, scale_num, scale_den);
+        var tab_ctx = try font.Context.init(
+            allocator,
+            chain,
+            tab_pixel_height,
+            tab_spec.cell_width_ratio,
+            tab_spec.line_height_ratio,
+        );
+        errdefer tab_ctx.deinit();
+
         return .{
             .render_state = .empty,
-            .font_ctx = try font.Context.init(
-                allocator,
-                chain,
-                pixel_height,
-                spec.cell_width_ratio,
-                spec.line_height_ratio,
-            ),
+            .font_ctx = terminal_ctx,
+            .tab_font_ctx = tab_ctx,
             .scale = scaleFactor(scale_num, scale_den),
         };
     }
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.render_state.deinit(allocator);
+        self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
     }
 
@@ -151,15 +168,30 @@ pub const Renderer = struct {
         const chain = cfg.font_families[0..cfg.font_family_count];
         const spec = cfg.terminalFontSpec();
         const pixel_height = scaledFontPixelHeight(spec, scale_num, scale_den);
-        const new_ctx = try font.Context.init(
+        var new_ctx = try font.Context.init(
             allocator,
             chain,
             pixel_height,
             spec.cell_width_ratio,
             spec.line_height_ratio,
         );
+        errdefer new_ctx.deinit();
+
+        const tab_spec = ui_metrics.tabLabelFontSpec();
+        const tab_pixel_height = scaledFontPixelHeight(tab_spec, scale_num, scale_den);
+        var new_tab_ctx = try font.Context.init(
+            allocator,
+            chain,
+            tab_pixel_height,
+            tab_spec.cell_width_ratio,
+            tab_spec.line_height_ratio,
+        );
+        errdefer new_tab_ctx.deinit();
+
+        self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
         self.font_ctx = new_ctx;
+        self.tab_font_ctx = new_tab_ctx;
         self.scale = scaleFactor(scale_num, scale_den);
     }
 
@@ -181,10 +213,7 @@ pub const Renderer = struct {
         return scaledPt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, self.scale);
     }
 
-    /// 상단 탭바 높이. `ui_metrics.TAB_BAR_HEIGHT_PT` (28 pt) × scale. mac /
-    /// Win `applyDpiScale` 동등 — cell_h 보다 작아지면 cell_h + 4 px 로 보정
-    /// (탭 텍스트 + 약간의 여백 보장, Win `applyDpiScale` 의 `min_tab_bar_h`
-    /// 패턴).
+    /// 상단 탭바 높이. terminal cell height와 독립된 공통 28 logical pt.
     ///
     /// `tab_count < 2` 면 0 — 단일 탭 시 탭바 자리 안 띄움 (#127, SPEC.md §1
     /// `단일 탭 시 탭바 자리`). mac `tabBarHeightPx` / Win `effectiveTabBarHeight`
@@ -192,9 +221,7 @@ pub const Renderer = struct {
     /// 모든 탭 cols/rows 재계산 책임 (Linux 는 `Client.ensureSessionGrid`).
     pub fn tabBarHeightPx(self: *const Renderer, tab_count: usize) i32 {
         if (tab_count < 2) return 0;
-        const base = scaledPt(ui_metrics.TAB_BAR_HEIGHT_PT, self.scale);
-        const min: i32 = self.cellHeight() + 4;
-        return @max(base, min);
+        return @intCast(ui_metrics.tabBarHeightPx(self.scale));
     }
 
     /// 한 탭의 너비. `ui_metrics.TAB_WIDTH_PT` (150 pt) × scale.
@@ -280,7 +307,7 @@ pub const Renderer = struct {
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
         // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, cw, colors.background, self.scale, &self.font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, colors.background, self.scale, &self.tab_font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -854,7 +881,6 @@ fn drawTabBar(
     rename_view: ?tab_interaction.RenameView,
     drag_view: ?tab_interaction.DragView,
     preedit_text: []const u8,
-    cell_w: i32,
     inactive_bg: ghostty.color.RGB,
     scale: f32,
     font_ctx: *font.Context,
@@ -878,6 +904,7 @@ fn drawTabBar(
     // cursor / preedit_bg 의 y 도 이 값. close 'x' / title text glyph baseline
     // 도 동일.
     const cell_h: i32 = @intCast(font_ctx.cell_height_px);
+    const cell_w: i32 = @intCast(font_ctx.cell_width_px);
     const text_y_top: i32 = @divFloor(tab_bar_h - cell_h, 2);
     // preedit / cursor 모두 동일한 max_text_w — #268 per-tab close 제거로
     // 탭 전체 (양쪽 padding 제외). mac `tab_w - tab_pad_px * 2` 동등.
