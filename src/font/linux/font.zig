@@ -17,6 +17,7 @@ const harfbuzz = @import("harfbuzz.zig");
 const log = @import("../../log.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const font_spec = @import("../spec.zig");
 
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 
@@ -189,14 +190,8 @@ pub const Context = struct {
         // 값에 곱해 저장 — `Renderer.cellWidth/cellHeight` getter 가 단순
         // 반환만 하면 자동으로 ratio 가 적용됨. 1.0 / 1.1 등 사용자가
         // config.json 으로 조절 가능 (Config 검증 범위 0.5..2.0).
-        if (cell_width_ratio != 1.0) {
-            const w_f: f32 = @floatFromInt(self.cell_width_px);
-            self.cell_width_px = @intFromFloat(@max(1.0, w_f * cell_width_ratio));
-        }
-        if (line_height_ratio != 1.0) {
-            const h_f: f32 = @floatFromInt(self.cell_height_px);
-            self.cell_height_px = @intFromFloat(@max(1.0, h_f * line_height_ratio));
-        }
+        self.cell_width_px = font_spec.ceilPositivePx(@as(f32, @floatFromInt(self.cell_width_px)) * cell_width_ratio);
+        self.cell_height_px = font_spec.ceilPositivePx(@as(f32, @floatFromInt(self.cell_height_px)) * line_height_ratio);
         log.appendLineVerbose("font", "applied ratios cell_w={} cell_h={} cell_width_ratio={d:.2} line_height_ratio={d:.2}", .{
             self.cell_width_px,
             self.cell_height_px,

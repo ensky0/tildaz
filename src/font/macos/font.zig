@@ -8,6 +8,7 @@ const std = @import("std");
 const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 
 pub const GlyphResult = struct {
@@ -53,14 +54,8 @@ pub const CoreTextFontContext = struct {
 
     pub fn init(
         font_families: []const []const u8,
-        font_size: f32,
+        spec: font_spec.Spec,
         retina_scale: f32,
-        /// Windows 의 `config.cell_width` 와 동일 의미 — 측정된 advance 에
-        /// 곱해 글자 사이 padding 조절. 1.0 = 폰트 그대로.
-        cell_width_ratio: f32,
-        /// Windows 의 `config.line_height` — 측정된 ascent+descent+leading
-        /// 에 곱해 줄 높이 조절. 0.95 정도면 약간 빽빽.
-        line_height_ratio: f32,
     ) !CoreTextFontContext {
         // Font *glyph fallback chain* — config.font.family 의 모든 폰트가
         // system 에 있어야 한다 (Windows DWriteFontContext 와 동등 strict 정책).
@@ -88,7 +83,7 @@ pub const CoreTextFontContext = struct {
                 @import("../validate.zig").showNotFoundFatal(family, font_families);
             };
             defer ct.CFRelease(family_str);
-            const candidate = ct.CTFontCreateWithName(family_str, @floatCast(font_size), null) orelse {
+            const candidate = ct.CTFontCreateWithName(family_str, @floatCast(spec.size_logical), null) orelse {
                 @import("../validate.zig").showNotFoundFatal(family, font_families);
             };
             const actual_family = ct.CTFontCopyFamilyName(candidate);
@@ -161,8 +156,8 @@ pub const CoreTextFontContext = struct {
         // 픽셀 단위 cell. Windows 와 동일: advance × cell_width_ratio,
         // (ascent+descent+leading) × line_height_ratio. ceil 로 글리프 잘림
         // 방지. 1.1 / 0.95 같은 미적 보정값을 그대로 적용 가능.
-        const cell_w_px: u32 = @intFromFloat(@ceil(advance_pt * cell_width_ratio * retina_scale));
-        const cell_h_px: u32 = @intFromFloat(@ceil((ascent + descent + leading) * line_height_ratio * retina_scale));
+        const cell_w_px = font_spec.scaledRatioCeilPx(advance_pt, spec.cell_width_ratio, retina_scale);
+        const cell_h_px = font_spec.scaledRatioCeilPx(ascent + descent + leading, spec.line_height_ratio, retina_scale);
 
         // top_pad_px = ascent − 'M' bbox top. 폰트 metric (cap_height) 대신
         // 실제 'M' raster bbox 사용 — 폰트마다 metric 과 글리프 실제 모양이
@@ -182,7 +177,7 @@ pub const CoreTextFontContext = struct {
 
         return .{
             .primary_font = font,
-            .font_em_size = font_size,
+            .font_em_size = spec.size_logical,
             .retina_scale = retina_scale,
             .ascent_px = ascent * retina_scale,
             .descent_px = descent * retina_scale,

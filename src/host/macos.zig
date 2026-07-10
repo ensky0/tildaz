@@ -2847,9 +2847,8 @@ pub fn run() !void {
 
     const allocator = g_gpa.allocator();
 
-    // 6. Metal 렌더러 (font 측정 포함). 폰트의 'M' advance + ascent/descent/
-    //    leading 으로 cell_width/height 자동 계산 — Windows 의 GetTextMetricsW
-    //    + cell_width_scale/line_height_scale 패턴과 동일.
+    // 6. Metal 렌더러 (font 측정 포함). terminal Font Spec 의 logical size와
+    //    ratio로 cell_width/height 자동 계산 — Windows / Linux 와 동일 계약.
     //
     //    `TILDAZ_FONT` 환경변수로 config 보다 우선 — 빠르게 다른 폰트 시험.
     //    config.font.family 는 *glyph fallback chain* (codepoint 별로 chain 순회).
@@ -2869,9 +2868,7 @@ pub fn run() !void {
         device,
         layer,
         font_family_slice,
-        @floatFromInt(g_config.font_size_point),
-        g_config.cell_width_ratio,
-        g_config.line_height_ratio,
+        g_config.terminalFontSpec(),
         theme_bg,
         @floatCast(scale_pt),
     ) catch |err| switch (err) {
