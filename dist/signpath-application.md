@@ -18,12 +18,13 @@ TildaZ
 
 ## Project description (short)
 
-TildaZ is a Quake-style drop-down terminal emulator for Windows, written in Zig
-and built on the libghostty-vt terminal engine. It brings the UX of the Linux
-[Tilda](https://github.com/lanoxx/tilda) terminal to Windows while staying
-native to the Windows stack: OpenConsole / ConPTY pseudoconsole host, DirectWrite
-glyph rasterization, and a Direct3D 11 renderer with HLSL shaders for ClearType
-subpixel text.
+TildaZ is a native Quake-style drop-down terminal emulator for Linux, macOS,
+and Windows, written in Zig and built on the libghostty-vt terminal engine. It
+brings the one-hotkey workflow of the Linux
+[Tilda](https://github.com/lanoxx/tilda) terminal to every supported desktop
+while using a native host on each platform: direct Wayland on Linux, AppKit and
+Metal on macOS, and OpenConsole / ConPTY with DirectWrite and Direct3D 11 on
+Windows.
 
 A single global hotkey (F1) drops the terminal in from the top of the current
 monitor; pressing F1 again hides it. The app supports tabs, drag-to-reorder,
@@ -32,9 +33,11 @@ Unicode/CJK/emoji rendering.
 
 ## Project description (long / why this exists)
 
-Windows lacks a well-maintained native drop-down terminal comparable to Tilda,
-Guake, or Yakuake on Linux. Windows Terminal and WezTerm are excellent but are
-not drop-down-first. TildaZ fills that gap.
+Most drop-down terminals are tied to one operating system or one Linux desktop.
+TildaZ provides the same drop-down-first workflow across Linux, macOS, and
+Windows while keeping native windowing, input, and rendering paths. Windows
+Terminal and WezTerm are excellent general-purpose terminals but are not
+drop-down-first; TildaZ focuses on that interaction model.
 
 Design decisions of note for a security-review audience:
 - **Bundled OpenConsole / ConPTY**: TildaZ ships Microsoft's
@@ -46,8 +49,9 @@ Design decisions of note for a security-review audience:
   pattern used by Windows Terminal, WezTerm, Alacritty on Windows.
 - **Lock-free I/O**: PTY output is piped into a single-producer / single-consumer
   ring buffer (4 MiB), drained on the UI thread through the ghostty VT parser.
-- **Direct3D 11 rendering**: DirectWrite rasterizes glyphs into a dynamic atlas;
-  D3D11 draws instanced quads with a custom HLSL dual-source ClearType pipeline.
+- **Native rendering**: Linux uses a direct Wayland software surface, macOS uses
+  Metal with CoreText glyphs, and Windows uses DirectWrite glyph atlases with a
+  Direct3D 11 dual-source ClearType pipeline.
 
 ## License
 
@@ -87,7 +91,7 @@ EDR, would let a single cert-level approval cover all future releases.
 
 ## Release artifacts to be signed
 
-- `tildaz.exe` (single Windows PE, AMD64, statically linked)
+- `tildaz.exe` (Windows PE, built separately for AMD64 and ARM64)
 - Bundled `OpenConsole.exe` and `conpty.dll` ship alongside but are already
   signed by Microsoft — TildaZ does not need to re-sign them.
 
@@ -95,36 +99,38 @@ EDR, would let a single cert-level approval cover all future releases.
 
 Builds are produced entirely on GitHub-hosted runners via GitHub Actions. The
 release workflow is committed at `.github/workflows/release.yml` on the default
-branch, runs on `windows-2022`, and:
+branch. It builds Windows AMD64/ARM64 packages on `windows-2022`, a universal
+Apple Silicon/Intel DMG on `macos-15`, and Linux x86_64/aarch64 packages on
+Ubuntu runners. For each platform it:
 
 1. Validates the tag matches `build.zig`'s `tildaz_version` constant.
 2. Validates `build.zig.zon` dependencies are pinned to 40-hex-digit commit
    SHAs (no rolling branch/tag URLs).
 3. Fetches dependencies (`zig build --fetch`).
-4. Builds and packages (`zig build package`) into
-   `zig-out/release/tildaz-v<ver>-win-x64.zip` + `.sha256`.
-5. Creates the GitHub Release with the zip, SHA256 sidecar, and the release
-   notes file `dist/release-notes/v<ver>.md` as the body.
+4. Builds ReleaseFast artifacts and packages them in the platform's supported
+   formats.
+5. Creates or appends to the GitHub Release with each artifact, its SHA256
+   sidecar, and `dist/release-notes/v<ver>.md` as the release body.
 
 The trigger is a `v*` tag push on `main`. There is no local/manual release
 path for the authoritative binary — all shipped artifacts come from CI.
 
 ## Expected signing integration
 
-If approved, I plan to add a signing step to `release.yml` using
-`signpath-io/github-action-submit-signing-request`, positioned between the
-`zig build package` step and the upload step. The signed artifact from SignPath
-would replace the unsigned `tildaz.exe` inside the release zip before the zip
-is finalized and its SHA256 is computed.
+If approved, I plan to add a Windows-only signing step to `release.yml` using
+`signpath-io/github-action-submit-signing-request`. The signed AMD64/ARM64
+`tildaz.exe` files would be placed into their respective release ZIPs before
+the archives and SHA256 sidecars are finalized. Linux and macOS artifacts are
+outside the Authenticode signing scope.
 
 ## Release cadence and project activity
 
 - **Public commit history**: active since March 2026 on a public repository.
-- **Recent releases** (as of writing): v0.2.5 through v0.3.0 shipped from
-  April through May 2026. See https://github.com/ensky0/tildaz/releases for
-  the full list.
-- **Expected cadence**: roughly weekly minor releases (0.2.x) with occasional
-  hotfixes. No enterprise SLAs.
+- **Recent releases**: the v0.5 series added full Linux Wayland support and
+  continued cross-platform rendering, input, and tab-bar improvements. See
+  https://github.com/ensky0/tildaz/releases for the current list.
+- **Expected cadence**: maintenance releases ship when a tested set of fixes and
+  improvements is ready. There are no enterprise SLAs.
 
 ## Security policy
 
@@ -141,12 +147,14 @@ is used as the disclosure channel.
   NuGet 1.24.260303001. Source: https://github.com/microsoft/terminal
 - **Zig** — MIT (compiler / build system).
 
-No other runtime dependencies.
+Linux package dependencies and optional runtime-loaded libraries are documented
+in the repository README and package metadata. macOS uses system frameworks.
 
 ## Anything else
 
-- The project targets a single platform (Windows x64) — signing scope is narrow.
+- The project is cross-platform, but the requested Authenticode signing scope is
+  limited to the Windows AMD64 and ARM64 `tildaz.exe` binaries.
 - No network services, no telemetry, no auto-updater. TildaZ runs fully offline
   after install.
-- Source is ~5k LOC of Zig + HLSL shaders embedded as string literals; the
-  bundled DLL/EXE come from an official Microsoft NuGet package.
+- The bundled DLL/EXE come from an official Microsoft NuGet package and retain
+  Microsoft's signatures.

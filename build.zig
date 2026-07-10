@@ -7,10 +7,9 @@ const std = @import("std");
 //   zig build package               -- Windows 릴리즈 zip + .sha256 생성 (자동 ReleaseFast)
 //   zig build check                 -- 6-target compile-only verify (#201)
 //
-// 릴리즈 버전. 태그 / dist/windows/README.txt / GitHub Release / dist/release-notes/
-// 와 동기화 필요. src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도
-// 같이 갱신.
-const tildaz_version = "0.5.2";
+// 릴리즈 버전. 태그 / GitHub Release / dist/release-notes/ 와 동기화 필요.
+// src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도 같이 갱신.
+const tildaz_version = "0.5.3";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});

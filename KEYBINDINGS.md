@@ -1,9 +1,9 @@
 # Keybindings
 
-Cross-platform shortcut convention: each platform follows its native modifier (Apple HIG order Shift+Cmd on macOS; Ctrl+Shift on Windows and Linux).
+Cross-platform shortcut convention: each platform follows its native modifier (Apple HIG order Shift+Cmd on macOS; Ctrl+Shift on Linux and Windows).
 
-| Action | Windows | macOS | Linux |
-|--------|---------|-------|-------|
+| Action | Linux | macOS | Windows |
+|--------|-------|-------|---------|
 | Toggle terminal show/hide | F1 (configurable) | F1 (configurable) | F1 (configurable) |
 | Fullscreen (cover taskbar/dock) | Alt+Enter | Cmd+Enter | Alt+Enter |
 | Fullscreen (keep taskbar/dock visible) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
@@ -35,17 +35,28 @@ platforms.
 
 ## Quit confirmation
 
-Cmd+Q (macOS) and Alt+F4 (Windows / Linux) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+
+## Tab bar controls
+
+Tab controls stay at the right edge instead of putting a destructive close
+target inside every tab. The normal order is `[tabs][×][+]`; when tabs overflow,
+it becomes `[<][tabs][>][×][+]`.
+
+- `<` / `>` scroll the visible tab strip and disable at the corresponding end.
+- `×` closes the active tab, matching Cmd+W / Ctrl+Shift+W.
+- `+` opens a tab and hides at the 32-tab limit.
+- Clicking a tab only activates it. Dragging a tab reorders it.
 
 ## Tab rename
 
 Double-click a tab to rename. While renaming:
 
-- Type to insert characters (IME-aware, multi-byte friendly). The IME pre-edit appears inline at the cursor on a purple background on Windows, macOS, and Linux.
+- Type to insert characters (IME-aware, multi-byte friendly). The IME pre-edit appears inline at the cursor on a purple background on Linux, macOS, and Windows.
 - Backspace / Left / Right / Delete edit the name
 - **Line begin / end navigation**: `Home` and `End` keys (all platforms), plus `Ctrl+A` and `Ctrl+E` (terminal-style, all platforms — matches mac Terminal.app and `readline` convention)
 - Enter commits, Escape cancels
-- `Ctrl+Shift+V` (Windows / Linux) / `Cmd+V` (macOS) pastes clipboard text into the name (printable codepoints only — newlines and control chars are dropped)
+- `Ctrl+Shift+V` (Linux / Windows) / `Cmd+V` (macOS) pastes clipboard text into the name (printable codepoints only — newlines and control chars are dropped)
 - **Click inside the same tab's text** → cursor jumps to the click position; any in-progress IME pre-edit is committed in place. Click outside (other tabs, the close button, the terminal, the arrows) commits and ends the rename.
 - **Mid-string typing** pushes only the characters after the cursor by the pre-edit's width. Commit drops the new characters there; Escape returns the trailing characters back to where they were.
 - **IME pre-edit + line nav**: pressing Home / End / Ctrl+A / Ctrl+E while a Korean / Japanese / Chinese syllable is composing commits the pre-edit's jamo into the rename buffer at the current cursor position, *then* moves the cursor (no syllable lost). Esc still cancels (pre-edit discarded).

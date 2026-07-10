@@ -32,7 +32,7 @@
     "description": "A native Quake-style drop-down terminal for Linux, macOS, and Windows, with a real global hotkey drop-down on KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS, Windows",
-    "softwareVersion": "0.5.2",
+    "softwareVersion": "0.5.3",
     "license": "https://github.com/ensky0/tildaz/blob/main/LICENSE",
     "codeRepository": "https://github.com/ensky0/tildaz",
     "downloadUrl": "https://github.com/ensky0/tildaz/releases/latest",
@@ -77,10 +77,11 @@
         <div class="surface-top">
           <div class="tab active">~/tildaz</div>
           <div class="tab">Linux<span class="tab-backend"> · Wayland</span></div>
-          <div class="tab">macOS<span class="tab-backend"> · Metal</span></div>
-          <div class="tab">Windows<span class="tab-backend"> · Direct3D</span></div>
+          <div class="tab mobile-hide">macOS<span class="tab-backend"> · Metal</span></div>
+          <div class="tab mobile-hide">Windows<span class="tab-backend"> · Direct3D</span></div>
           <div class="tab-spacer"></div>
-          <div class="window-dot"></div>
+          <div class="tab-control">&times;</div>
+          <div class="tab-control accent">+</div>
         </div>
         <div class="terminal-grid">
           <p><span class="prompt">ensky0 ~/tildaz</span> echo -e "🎉❤️🌈🚀💎  👋🏻👋🏽👋🏿  👨‍👩‍👧  한글 가나다라  ligatures => != >=\n▀▁▂▃▄▅▆▇█  ░▒▓  ABCDEFG abcdefg 0123456789\n┌─┬─┐ ╔═╦═╗ ╭───╮\n├─┼─┤ ╠═╬═╣ │░▒▓│\n└─┴─┘ ╚═╩═╝ ╰───╯"</p>
@@ -104,8 +105,8 @@
   <main>
     <section class="release-band" aria-label="Latest release">
       <div>
-        <strong>Built for the terminal you keep reaching for</strong>
-        <span>A real drop-down terminal for people who want the shell instantly, without being tied to one OS, one compositor, or one web runtime.</span>
+        <strong>v0.5.3 · Smarter tabs, consistent logical sizing</strong>
+        <span>Shell-driven titles, safer fixed tab controls, home-directory shells, and display-scale-aware font contracts across every desktop.</span>
       </div>
       <a href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Release Notes</a>
     </section>

@@ -1,70 +1,72 @@
-tildaz — Windows 드롭다운 터미널
+TildaZ - Windows package
 
 ================================================================
-소개
+ABOUT
 ================================================================
 
-tildaz 는 Zig + Direct3D 11 로 작성한 경량 Windows 터미널입니다.
-Linux Tilda 의 Quake-style 드롭다운 UX 를 Windows 에 제공하며,
-ConPTY 를 통해 cmd.exe / PowerShell / WSL 을 구동합니다.
+TildaZ is a native Quake-style drop-down terminal for Linux,
+macOS, and Windows. This package contains the Windows host built
+with Zig, DirectWrite, Direct3D 11, and ConPTY.
 
-DirectWrite + Direct3D 11 ClearType 서브픽셀 렌더링으로 저지연
-고품질 텍스트 출력을 지원합니다.
+Press F1 to show or hide the terminal. TildaZ supports cmd.exe,
+PowerShell, and WSL shells through ConPTY.
 
-버전별 변경 이력 · 벤치마크는 GitHub Releases 페이지에서 확인할
-수 있습니다:
+Release notes and checksums:
 
     https://github.com/ensky0/tildaz/releases
 
 ================================================================
-구성 파일
+PACKAGE CONTENTS
 ================================================================
 
-    tildaz.exe        본체
-    conpty.dll        번들 ConPTY 런타임  (Microsoft, MIT)
-    OpenConsole.exe   번들 PTY 호스트     (Microsoft, MIT)
+    tildaz.exe        TildaZ application
+    conpty.dll        Bundled ConPTY runtime (Microsoft, MIT)
+    OpenConsole.exe   Bundled PTY host (Microsoft, MIT)
+    README.txt        This file
 
-세 파일을 같은 폴더에 두세요. tildaz.exe 실행 시 자동으로
-conpty.dll 을 로드하고, conpty.dll 이 sibling OpenConsole.exe 를
-PTY 호스트로 스폰합니다.
-
-conpty.dll 이나 OpenConsole.exe 가 누락되면 tildaz 는 kernel32 의
-시스템 conhost.exe 로 자동 fallback 합니다. 이 경우 기본 동작은
-정상이지만 대량 출력 throughput 이 번들 경로 대비 약 절반 수준이
-됩니다.
+Keep tildaz.exe, conpty.dll, and OpenConsole.exe in the same
+directory. TildaZ prefers the bundled runtime and falls back to
+the system ConPTY implementation if the two Microsoft files are
+missing.
 
 ================================================================
-설정
+CONFIG AND LOG
 ================================================================
 
-처음 실행하면 %APPDATA%\tildaz\config.json 이 생성됩니다.
-셸 · 폰트 · 테마 · 키바인딩 등을 직접 수정할 수 있습니다.
+The first launch creates:
 
-기본 단축키 · 기능 전체 목록은 GitHub README 를 참고하세요:
+    Config: %APPDATA%\tildaz\config.json
+    Log:    %APPDATA%\tildaz\tildaz.log
 
-    https://github.com/ensky0/tildaz#단축키
+New shells start in the Windows home directory. WSL commands start
+in the Linux home unless the configured command already supplies
+an explicit --cd option.
 
-로그 파일:
-    %APPDATA%\tildaz\tildaz.log
-    부팅 · 종료 · ConPTY 초기화 · autostart 에러 · perf 스냅샷이
-    같은 타임라인에 쌓입니다. 예전 버전이 자동 실행되는 등 이상 동작이
-    있을 때 사후 추적용.
+Configuration reference:
 
-================================================================
-라이선스
-================================================================
+    https://github.com/ensky0/tildaz/blob/main/CONFIG.md
 
-    tildaz.exe       저장소 LICENSE 참조 (GPL-3.0 + Commons Clause)
-                     (libghostty-vt MIT 를 static link
-                      — ghostty-org/ghostty)
-    conpty.dll       microsoft/terminal, MIT
-    OpenConsole.exe  microsoft/terminal, MIT
+Keyboard and mouse controls:
 
-OpenConsole / conpty 번들 바이너리는 Microsoft.Windows.Console.ConPTY
-nuget 에서 추출한 것이며, MIT 라이선스로 재배포됩니다.
+    https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md
 
 ================================================================
-저장소 · 피드백
+LICENSES
+================================================================
+
+    TildaZ                         AGPL-3.0-or-later
+    libghostty-vt                  MIT
+    OpenConsole.exe / conpty.dll   MIT
+
+The TildaZ license text is available in the repository:
+
+    https://github.com/ensky0/tildaz/blob/main/LICENSE
+
+The bundled Microsoft binaries come from
+Microsoft.Windows.Console.ConPTY and are redistributed under MIT.
+
+================================================================
+PROJECT AND FEEDBACK
 ================================================================
 
     https://github.com/ensky0/tildaz

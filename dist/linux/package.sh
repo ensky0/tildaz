@@ -119,7 +119,7 @@ Uninstall:
   ./uninstall.sh
 
 Config: ~/.config/tildaz/config.json (auto-created on first run)
-Log:    ~/.config/tildaz/tildaz.log
+Log:    ~/.local/state/tildaz/tildaz.log
 
 GitHub: https://github.com/ensky0/tildaz
 END
@@ -246,7 +246,7 @@ Version:        ${VERSION}
 Release:        1%{?dist}
 Summary:        Quake-style drop-down terminal for Wayland
 
-License:        GPL-3.0-or-later AND LicenseRef-Commons-Clause
+License:        AGPL-3.0-or-later
 URL:            https://github.com/ensky0/tildaz
 BuildArch:      ${RPMARCH}
 # native 의존성은 모두 runtime dlopen 이라 rpmbuild 자동 dep 추출은 비활성.
@@ -436,7 +436,7 @@ pkgrel=1
 pkgdesc='Quake-style drop-down terminal for Wayland'
 arch=('x86_64')
 url='https://github.com/ensky0/tildaz'
-license=('GPL3' 'custom:Commons-Clause')
+license=('AGPL-3.0-or-later')
 depends=('libxkbcommon' 'freetype2' 'fontconfig')
 optdepends=('harfbuzz: ligature rendering'
             'dbus: KDE portal / KGlobalAccel global hotkey'
