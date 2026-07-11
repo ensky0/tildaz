@@ -1093,6 +1093,150 @@ fn kdeUnregisterShortcut(bus: *dbus.SessionBus, component: [*:0]const u8, action
     log.appendLineVerbose("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(action) });
 }
 
+/// KGlobalAccel의 현재 component를 열거해 config에서 사라진 numbered TildaZ
+/// action만 해제한다. 동일한 component/action은 worker의 기존 등록 경로가
+/// 그대로 유지하므로 매 launcher 실행마다 전체 재등록하지 않는다.
+pub fn syncNumberedKdeIdentities(allocator: std.mem.Allocator, indices: []const u32) void {
+    const de = detectCurrentDesktop(allocator);
+    defer if (de) |value| allocator.free(value);
+    if (de == null or !containsToken(de.?, "KDE")) return;
+
+    var bus = dbus.SessionBus.connect() catch |err| {
+        log.appendLineVerbose("portal", "KDE numbered identity query skipped: {s}", .{@errorName(err)});
+        return;
+    };
+    defer bus.deinit();
+
+    const paths = kdeAllComponentPaths(allocator, &bus) catch |err| {
+        log.appendLineVerbose("portal", "KDE component enumeration skipped: {s}", .{@errorName(err)});
+        return;
+    };
+    defer {
+        for (paths) |path| allocator.free(path);
+        allocator.free(paths);
+    }
+
+    var kept: usize = 0;
+    var removed: usize = 0;
+    for (paths) |path| {
+        const unique_name = kdeComponentUniqueName(allocator, &bus, path) catch continue;
+        defer allocator.free(unique_name);
+        const index = numberedKdeComponentIndex(unique_name) orelse continue;
+        if (containsInstanceIndex(indices, index)) {
+            kept += 1;
+            continue;
+        }
+
+        const component_z = allocator.dupeZ(u8, unique_name) catch continue;
+        defer allocator.free(component_z);
+        var action_buf: [32]u8 = undefined;
+        const action = std.fmt.bufPrintZ(&action_buf, "toggle-{d}", .{index}) catch continue;
+        kdeUnregisterShortcut(&bus, component_z.ptr, action.ptr) catch |err| {
+            log.appendLineVerbose("portal", "stale KDE action cleanup skipped for instance {}: {s}", .{ index, @errorName(err) });
+            continue;
+        };
+        removed += 1;
+    }
+    log.appendLine("portal", "KDE numbered hotkeys synchronized desired={} kept={} removed={}", .{ indices.len, kept, removed });
+}
+
+fn kdeAllComponentPaths(allocator: std.mem.Allocator, bus: *dbus.SessionBus) ![][]u8 {
+    const call = bus.api.message_new_method_call(
+        "org.kde.kglobalaccel",
+        "/kglobalaccel",
+        "org.kde.KGlobalAccel",
+        "allComponents",
+    ) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse return error.PortalMethodCallFailed;
+    defer bus.api.message_unref(reply);
+
+    var reply_iter: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_init(reply, &reply_iter) == 0 or bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_array) {
+        return error.PortalReplyBadType;
+    }
+    var array_iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_recurse(&reply_iter, &array_iter);
+
+    var paths: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+    while (bus.api.iter_get_arg_type(&array_iter) != dbus.dbus_type_invalid) {
+        if (bus.api.iter_get_arg_type(&array_iter) != dbus.dbus_type_object_path) return error.PortalReplyBadType;
+        var path_c: ?[*:0]const u8 = null;
+        bus.api.iter_get_basic(&array_iter, @ptrCast(&path_c));
+        if (path_c) |path| try paths.append(allocator, try allocator.dupe(u8, std.mem.span(path)));
+        if (bus.api.iter_next(&array_iter) == 0) break;
+    }
+    return paths.toOwnedSlice(allocator);
+}
+
+fn kdeComponentUniqueName(allocator: std.mem.Allocator, bus: *dbus.SessionBus, path: []const u8) ![]u8 {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+    const call = bus.api.message_new_method_call(
+        "org.kde.kglobalaccel",
+        path_z.ptr,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+    ) orelse return error.PortalMessageAllocFailed;
+    defer bus.api.message_unref(call);
+
+    var append_iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_init_append(call, &append_iter);
+    var interface_name: [*:0]const u8 = "org.kde.kglobalaccel.Component";
+    if (bus.api.iter_append_basic(&append_iter, dbus.dbus_type_string, @ptrCast(&interface_name)) == 0) return error.PortalAppendFailed;
+    var property_name: [*:0]const u8 = "uniqueName";
+    if (bus.api.iter_append_basic(&append_iter, dbus.dbus_type_string, @ptrCast(&property_name)) == 0) return error.PortalAppendFailed;
+
+    var err: dbus.DBusError = .{};
+    bus.api.error_init(&err);
+    defer bus.api.error_free(&err);
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse return error.PortalMethodCallFailed;
+    defer bus.api.message_unref(reply);
+
+    var reply_iter: dbus.DBusMessageIter = .{};
+    if (bus.api.iter_init(reply, &reply_iter) == 0 or bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_variant) {
+        return error.PortalReplyBadType;
+    }
+    var value_iter: dbus.DBusMessageIter = .{};
+    bus.api.iter_recurse(&reply_iter, &value_iter);
+    if (bus.api.iter_get_arg_type(&value_iter) != dbus.dbus_type_string) return error.PortalReplyBadType;
+    var value_c: ?[*:0]const u8 = null;
+    bus.api.iter_get_basic(&value_iter, @ptrCast(&value_c));
+    return allocator.dupe(u8, if (value_c) |value| std.mem.span(value) else "");
+}
+
+fn numberedKdeComponentIndex(component: []const u8) ?u32 {
+    const prefix = "tildaz.instance";
+    if (!std.mem.startsWith(u8, component, prefix)) return null;
+    const number = component[prefix.len..];
+    if (number.len == 0 or (number.len > 1 and number[0] == '0')) return null;
+    return std.fmt.parseInt(u32, number, 10) catch null;
+}
+
+fn containsInstanceIndex(indices: []const u32, needle: u32) bool {
+    for (indices) |index| {
+        if (index == needle) return true;
+    }
+    return false;
+}
+
+test "numbered KDE component identity is parsed strictly" {
+    try std.testing.expectEqual(@as(?u32, 0), numberedKdeComponentIndex("tildaz.instance0"));
+    try std.testing.expectEqual(@as(?u32, 42), numberedKdeComponentIndex("tildaz.instance42"));
+    try std.testing.expect(numberedKdeComponentIndex("tildaz.instance") == null);
+    try std.testing.expect(numberedKdeComponentIndex("tildaz.instance01") == null);
+    try std.testing.expect(numberedKdeComponentIndex("tildaz.instance2.extra") == null);
+    try std.testing.expect(numberedKdeComponentIndex("other.instance2") == null);
+}
+
 /// 0.5.x와 #267 중간 작업본이 사용한 shared KDE component의 action만 제거한다.
 /// 새 component는 `tildaz.instanceN`이라 다른 instance나 다른 앱과 겹치지 않는다.
 pub fn cleanupLegacyKdeIdentity(allocator: std.mem.Allocator, bus: *dbus.SessionBus) void {

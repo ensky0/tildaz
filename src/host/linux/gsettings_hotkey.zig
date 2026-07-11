@@ -199,6 +199,86 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
     }
 }
 
+/// launcher 단위 stale cleanup. 실제 값 등록/변경은 worker가 자기 index의
+/// `registerToggleHotkey`에서 담당하고, 여기서는 list actual에서 삭제된 config의
+/// TildaZ 항목만 제거한다. extension이 활성인 DE는 fallback 항목 전체가 stale이다.
+pub fn syncNumberedEntries(allocator: std.mem.Allocator, indices: []const u32) void {
+    const de: enum { gnome, cinnamon } = if (isGnomeDesktop(allocator))
+        .gnome
+    else if (isCinnamonDesktop(allocator))
+        .cinnamon
+    else
+        return;
+    const api = Api.load() orelse return;
+    const source = api.schema_source_get_default() orelse return;
+    const base = switch (de) {
+        .gnome => gnome_variant,
+        .cinnamon => cinnamon_variant,
+    };
+    if (!schemasPresent(&api, source, base)) return;
+
+    const extension_active = switch (de) {
+        .gnome => isExtensionEnabled(&api),
+        .cinnamon => isCinnamonExtensionEnabled(&api),
+    };
+    const list = api.settings_new(base.list_schema) orelse return;
+    defer api.object_unref(list);
+    const existing = api.settings_get_strv(list, base.list_key);
+    defer api.strfreev(existing);
+    if (existing == null) return;
+
+    var next: std.ArrayList(?[*:0]const u8) = .empty;
+    defer next.deinit(allocator);
+    var changed = false;
+    var i: usize = 0;
+    while (existing.?[i]) |entry| : (i += 1) {
+        const text = std.mem.span(entry);
+        if (gsettingsTildazIndex(text, de == .gnome)) |index| {
+            if (extension_active or !containsIndex(indices, index)) {
+                changed = true;
+                continue;
+            }
+        }
+        next.append(allocator, entry) catch return;
+    }
+    if (!changed) {
+        log.appendLine("gsettings-hotkey", "numbered entries already synchronized ({d})", .{indices.len});
+        return;
+    }
+    next.append(allocator, null) catch return;
+    _ = api.settings_set_strv(list, base.list_key, next.items.ptr);
+    api.settings_sync();
+    log.appendLine("gsettings-hotkey", "removed stale numbered entries", .{});
+}
+
+fn containsIndex(indices: []const u32, needle: u32) bool {
+    for (indices) |index| if (index == needle) return true;
+    return false;
+}
+
+fn gsettingsTildazIndex(value: []const u8, gnome: bool) ?u32 {
+    const prefix = if (gnome)
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-"
+    else
+        "tildaz-";
+    const suffix = if (gnome) "/" else "";
+    if (!std.mem.startsWith(u8, value, prefix) or !std.mem.endsWith(u8, value, suffix)) return null;
+    const end = value.len - suffix.len;
+    const digits = value[prefix.len..end];
+    if (digits.len == 0 or (digits.len > 1 and digits[0] == '0')) return null;
+    return std.fmt.parseInt(u32, digits, 10) catch null;
+}
+
+test "GSettings numbered TildaZ entries are identified without user entries" {
+    try std.testing.expectEqual(@as(?u32, 2), gsettingsTildazIndex(
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-2/",
+        true,
+    ));
+    try std.testing.expectEqual(@as(?u32, 3), gsettingsTildazIndex("tildaz-3", false));
+    try std.testing.expectEqual(@as(?u32, null), gsettingsTildazIndex("custom0", false));
+    try std.testing.expectEqual(@as(?u32, null), gsettingsTildazIndex("tildaz-03", false));
+}
+
 /// `Variant` 의 리스트 schema 와 relocatable per-binding schema 가 모두 설치돼
 /// 있는지 (`g_settings_new` abort 회피). 둘 다 있으면 true.
 fn schemasPresent(api: *const Api, source: *c.GSettingsSchemaSource, v: Variant) bool {
