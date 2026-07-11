@@ -6,6 +6,7 @@ const messages = @import("messages.zig");
 const autostart = @import("autostart.zig");
 const log = @import("log.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
+const hotkey_capture = @import("hotkey_capture.zig");
 
 const ValidationContext = struct {
     allocator: std.mem.Allocator,
@@ -38,10 +39,17 @@ pub fn handle(allocator: std.mem.Allocator) void {
     var prompt_buf: [256]u8 = undefined;
     const input_prompt = std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{indices.len + 1}) catch return;
     var validation_context = ValidationContext{ .allocator = allocator };
-    const input_owned = dialog.promptHotkey(allocator, messages.new_instance_title, input_prompt, .{
-        .ctx = &validation_context,
-        .validate_fn = validateHotkey,
-    }) orelse return;
+    const input_owned = blk: {
+        var capture = hotkey_capture.begin(indices) catch |err| {
+            showCreateError(err);
+            return;
+        };
+        defer capture.deinit();
+        break :blk dialog.promptHotkey(allocator, messages.new_instance_title, input_prompt, .{
+            .ctx = &validation_context,
+            .validate_fn = validateHotkey,
+        }) orelse return;
+    };
     const input = std.mem.trim(u8, input_owned, " \t\r\n");
     _ = config.Hotkey.fromString(input) orelse {
         allocator.free(input_owned);

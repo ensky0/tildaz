@@ -9,6 +9,9 @@ const WCHAR = u16;
 const HWND = ?*anyopaque;
 const HINSTANCE = ?*anyopaque;
 const HMENU = ?*anyopaque;
+const HDC = ?*anyopaque;
+const HBRUSH = ?*anyopaque;
+const HFONT = ?*anyopaque;
 const UINT = c_uint;
 const WPARAM = usize;
 const LPARAM = isize;
@@ -49,6 +52,13 @@ extern "user32" fn EnableWindow(HWND, c_int) callconv(.c) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn GetDpiForSystem() callconv(.c) UINT;
 extern "user32" fn GetSystemMetrics(c_int) callconv(.c) c_int;
+extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
+extern "user32" fn GetSysColorBrush(c_int) callconv(.c) HBRUSH;
+extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) ?*anyopaque;
+extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
+extern "gdi32" fn DeleteObject(?*anyopaque) callconv(.c) c_int;
+extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.c) c_int;
+extern "gdi32" fn SetTextColor(HDC, DWORD) callconv(.c) DWORD;
 
 extern "user32" fn MessageBoxW(
     hWnd: ?*anyopaque,
@@ -75,7 +85,8 @@ const WM_COMMAND: UINT = 0x0111;
 const WM_CLOSE: UINT = 0x0010;
 const WM_KEYDOWN: UINT = 0x0100;
 const WM_SYSKEYDOWN: UINT = 0x0104;
-const EN_CHANGE: usize = 0x0300;
+const WM_SETFONT: UINT = 0x0030;
+const WM_CTLCOLORSTATIC: UINT = 0x0138;
 const VK_BACK: usize = 0x08;
 const VK_RETURN: usize = 0x0D;
 const VK_SHIFT: usize = 0x10;
@@ -89,18 +100,51 @@ const WS_CHILD: DWORD = 0x40000000;
 const WS_CAPTION: DWORD = 0x00C00000;
 const WS_SYSMENU: DWORD = 0x00080000;
 const WS_TABSTOP: DWORD = 0x00010000;
-const WS_BORDER: DWORD = 0x00800000;
-const ES_AUTOHSCROLL: DWORD = 0x0080;
-const ES_READONLY: DWORD = 0x0800;
+const SS_CENTER: DWORD = 0x00000001;
+const SS_CENTERIMAGE: DWORD = 0x00000200;
 const BS_DEFPUSHBUTTON: DWORD = 0x0001;
 const WS_EX_TOPMOST: DWORD = 0x00000008;
-const WS_EX_CLIENTEDGE: DWORD = 0x00000200;
 const SW_SHOW: c_int = 5;
 const SM_CXSCREEN: c_int = 0;
 const SM_CYSCREEN: c_int = 1;
+const COLOR_BTNFACE: c_int = 15;
+const TRANSPARENT: c_int = 1;
+const CLEARTYPE_QUALITY: DWORD = 5;
+const FW_NORMAL: c_int = 400;
+const FW_SEMIBOLD: c_int = 600;
+const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 
 fn scaled(value: c_int, dpi: UINT) c_int {
     return @intCast(@divTrunc(@as(i64, value) * dpi + 48, 96));
+}
+
+fn createDialogFont(dpi: UINT, point_size: u32, weight: c_int) HFONT {
+    const height: c_int = -@as(c_int, @intCast(@divTrunc(@as(u64, point_size) * dpi + 36, 72)));
+    return CreateFontW(
+        height,
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        1, // DEFAULT_CHARSET
+        0,
+        0,
+        CLEARTYPE_QUALITY,
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
+    );
+}
+
+fn setControlFont(control: HWND, font: HFONT) void {
+    if (control == null or font == null) return;
+    _ = SendMessageW(control, WM_SETFONT, @intFromPtr(font.?), 1);
+}
+
+fn rgb(r: u8, g: u8, b: u8) DWORD {
+    return @as(DWORD, r) | (@as(DWORD, g) << 8) | (@as(DWORD, b) << 16);
 }
 
 /// UTF-8 title / message 를 NUL-terminated WCHAR 버퍼에 인코딩 후 MessageBoxW
@@ -165,11 +209,6 @@ const prompt_class_name = std.unicode.utf8ToUtf16LeStringLiteral("TildaZPromptWi
 fn promptWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.c) LRESULT {
     if (msg == WM_COMMAND) {
         const id = wparam & 0xffff;
-        const notification = (wparam >> 16) & 0xffff;
-        if (id == 100 and notification == EN_CHANGE and prompt_edit != null and prompt_create != null) {
-            _ = updatePromptValidation();
-            return 0;
-        }
         if (id == IDOK) {
             if (!updatePromptValidation()) return 0;
             prompt_ok = true;
@@ -185,6 +224,13 @@ fn promptWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
         prompt_ok = false;
         prompt_done = true;
         return 0;
+    } else if (msg == WM_CTLCOLORSTATIC) {
+        const dc: HDC = @ptrFromInt(wparam);
+        _ = SetBkMode(dc, TRANSPARENT);
+        const child: HWND = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (child == prompt_status) _ = SetTextColor(dc, rgb(196, 43, 28));
+        const brush = GetSysColorBrush(COLOR_BTNFACE) orelse return 0;
+        return @bitCast(@intFromPtr(brush));
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -235,6 +281,7 @@ fn handlePromptKey(vkey: usize) bool {
     }
     if (vkey == VK_BACK) {
         _ = SetWindowTextW(prompt_edit, std.unicode.utf8ToUtf16LeStringLiteral(""));
+        _ = updatePromptValidation();
         return true;
     }
     if (vkey == VK_SHIFT or vkey == VK_CONTROL or vkey == VK_MENU or vkey == VK_LWIN or vkey == VK_RWIN) return true;
@@ -250,12 +297,13 @@ fn handlePromptKey(vkey: usize) bool {
     const len = std.unicode.utf8ToUtf16Le(&wide_buf, captured) catch return true;
     wide_buf[len] = 0;
     _ = SetWindowTextW(prompt_edit, @ptrCast(wide_buf[0..len :0]));
+    _ = updatePromptValidation();
     return true;
 }
 
 fn ensurePromptClass(hinstance: HINSTANCE) bool {
     if (prompt_class_registered) return true;
-    const wc = WNDCLASSEXW{ .cbSize = @sizeOf(WNDCLASSEXW), .style = 0, .lpfnWndProc = promptWndProc, .cbClsExtra = 0, .cbWndExtra = 0, .hInstance = hinstance, .hIcon = null, .hCursor = null, .hbrBackground = @ptrFromInt(6), .lpszMenuName = null, .lpszClassName = prompt_class_name, .hIconSm = null };
+    const wc = WNDCLASSEXW{ .cbSize = @sizeOf(WNDCLASSEXW), .style = 0, .lpfnWndProc = promptWndProc, .cbClsExtra = 0, .cbWndExtra = 0, .hInstance = hinstance, .hIcon = null, .hCursor = LoadCursorW(null, IDC_ARROW), .hbrBackground = @ptrFromInt(COLOR_BTNFACE + 1), .lpszMenuName = null, .lpszClassName = prompt_class_name, .hIconSm = null };
     if (RegisterClassExW(&wc) == 0) return false;
     prompt_class_registered = true;
     return true;
@@ -271,20 +319,33 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     title_buf[title_len] = 0;
     message_buf[message_len] = 0;
     const dpi = GetDpiForSystem();
-    const win_w = scaled(540, dpi);
-    const win_h = scaled(275, dpi);
+    const ui_font = createDialogFont(dpi, 10, FW_NORMAL);
+    defer {
+        if (ui_font != null) _ = DeleteObject(ui_font);
+    }
+    const capture_font = createDialogFont(dpi, 16, FW_SEMIBOLD);
+    defer {
+        if (capture_font != null) _ = DeleteObject(capture_font);
+    }
+    const win_w = scaled(520, dpi);
+    const win_h = scaled(250, dpi);
     const win_x = @divTrunc(GetSystemMetrics(SM_CXSCREEN) - win_w, 2);
     const win_y = @divTrunc(GetSystemMetrics(SM_CYSCREEN) - win_h, 2);
-    const hwnd = CreateWindowExW(WS_EX_TOPMOST, prompt_class_name, @ptrCast(title_buf[0..title_len :0]), WS_CAPTION | WS_SYSMENU | WS_VISIBLE, win_x, win_y, win_w, win_h, null, null, hinstance, null) orelse return null;
+    const hwnd = CreateWindowExW(WS_EX_TOPMOST, prompt_class_name, @ptrCast(title_buf[0..title_len :0]), WS_CAPTION | WS_SYSMENU, win_x, win_y, win_w, win_h, null, null, hinstance, null) orelse return null;
     defer _ = DestroyWindow(hwnd);
-    _ = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), @ptrCast(message_buf[0..message_len :0]), WS_CHILD | WS_VISIBLE, scaled(20, dpi), scaled(18, dpi), scaled(490, dpi), scaled(70, dpi), hwnd, null, hinstance, null);
-    prompt_edit = CreateWindowExW(WS_EX_CLIENTEDGE, std.unicode.utf8ToUtf16LeStringLiteral("EDIT"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY, scaled(20, dpi), scaled(98, dpi), scaled(490, dpi), scaled(28, dpi), hwnd, @ptrFromInt(100), hinstance, null);
-    prompt_status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE, scaled(20, dpi), scaled(132, dpi), scaled(490, dpi), scaled(42, dpi), hwnd, null, hinstance, null);
-    prompt_create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Create"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, scaled(300, dpi), scaled(190, dpi), scaled(100, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDOK), hinstance, null);
+    const message_control = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), @ptrCast(message_buf[0..message_len :0]), WS_CHILD | WS_VISIBLE, scaled(24, dpi), scaled(20, dpi), scaled(472, dpi), scaled(48, dpi), hwnd, null, hinstance, null);
+    prompt_edit = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, scaled(24, dpi), scaled(76, dpi), scaled(472, dpi), scaled(36, dpi), hwnd, @ptrFromInt(100), hinstance, null);
+    prompt_status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, scaled(24, dpi), scaled(116, dpi), scaled(472, dpi), scaled(36, dpi), hwnd, null, hinstance, null);
+    const cancel = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Cancel"), WS_CHILD | WS_VISIBLE | WS_TABSTOP, scaled(300, dpi), scaled(174, dpi), scaled(96, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
+    prompt_create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Create"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, scaled(404, dpi), scaled(174, dpi), scaled(96, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDOK), hinstance, null);
     if (prompt_create != null) _ = EnableWindow(prompt_create, 0);
-    _ = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Cancel"), WS_CHILD | WS_VISIBLE | WS_TABSTOP, scaled(410, dpi), scaled(190, dpi), scaled(100, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
+    setControlFont(message_control, ui_font);
+    setControlFont(prompt_edit, capture_font);
+    setControlFont(prompt_status, ui_font);
+    setControlFont(cancel, ui_font);
+    setControlFont(prompt_create, ui_font);
     _ = ShowWindow(hwnd, SW_SHOW);
-    _ = SetFocus(prompt_edit);
+    _ = SetFocus(hwnd);
     prompt_done = false;
     prompt_ok = false;
     prompt_validator = validator;
