@@ -4,22 +4,24 @@ Config file path (per OS standard):
 
 | OS | Path |
 |---|---|
-| Windows | `%APPDATA%\tildaz\configN.json` |
-| macOS | `~/.config/tildaz/configN.json` (XDG, ghostty / alacritty pattern) |
-| Linux | `~/.config/tildaz/configN.json` (XDG) |
+| Linux | `~/.config/tildaz/config_N.json` (XDG) |
+| macOS | `~/.config/tildaz/config_N.json` (XDG, Ghostty / Alacritty pattern) |
+| Windows | `%APPDATA%\tildaz\config_N.json` |
 
-The first launch creates `config0.json` with defaults. Launching TildaZ while
+The first launch creates `config_0.json` with defaults. Launching TildaZ while
 all configured instances are already running shows the resulting instance count
-and a hotkey capture field in one Create/Cancel dialog before writing the next numbered file. Press the desired key combination; **Create** remains disabled until a hotkey is captured. Each
-`configN.json` owns one TildaZ process. A legacy `config.json` is not loaded,
-converted, or deleted. macOS and Linux insert the user's `$SHELL` env (or
+and a hotkey capture dialog before writing the next numbered file. Press the
+desired key combination; **Create** remains disabled until a valid, unused
+hotkey is captured. Each `config_N.json` owns one TildaZ process. A legacy
+`config.json` is not loaded, converted, or deleted. Linux and macOS insert the
+user's `$SHELL` env (or
 `/bin/bash`) into newly created configs.
 
-> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Windows, macOS, and Linux apply the same policy.
+> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
 > **Comment keys** — any key starting with `_` (e.g. `_note`, `_disabled_test_font`) is treated as a user comment and skipped from schema validation. Use this to annotate your config or temporarily disable a field by renaming it (e.g. `"shell": "/bin/zsh"` → `"_shell": "/bin/zsh"`). The `_` prefix convention is not part of JSON itself but is convenient here since the official schema never uses it.
 
-## Windows example
+## Linux example
 
 ```json
 {
@@ -31,15 +33,15 @@ converted, or deleted. macOS and Linux insert the user's `$SHELL` env (or
     "opacity_percent": 100.0
   },
   "font": {
-    "family": "Cascadia Code",
-    "glyph_fallback": ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"],
+    "family": "DejaVu Sans Mono",
+    "glyph_fallback": ["Noto Sans CJK KR", "Noto Color Emoji"],
     "size_point": 15,
     "cell_width_ratio": 1.0,
     "line_height_ratio": 1.1
   },
   "theme": "Tilda",
-  "shell": "cmd.exe",
-  "hotkey": "f1",
+  "shell": "/bin/bash",
+  "hotkey": "F1",
   "auto_start": true,
   "hidden_start": false,
   "max_scroll_lines": 100000
@@ -66,14 +68,14 @@ converted, or deleted. macOS and Linux insert the user's `$SHELL` env (or
   },
   "theme": "Tilda",
   "shell": "/bin/zsh",
-  "hotkey": "f1",
+  "hotkey": "F1",
   "auto_start": true,
   "hidden_start": false,
   "max_scroll_lines": 100000
 }
 ```
 
-## Linux example
+## Windows example
 
 ```json
 {
@@ -85,15 +87,15 @@ converted, or deleted. macOS and Linux insert the user's `$SHELL` env (or
     "opacity_percent": 100.0
   },
   "font": {
-    "family": "DejaVu Sans Mono",
-    "glyph_fallback": ["Noto Sans CJK KR", "Noto Color Emoji"],
+    "family": "Cascadia Code",
+    "glyph_fallback": ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"],
     "size_point": 15,
     "cell_width_ratio": 1.0,
     "line_height_ratio": 1.1
   },
   "theme": "Tilda",
-  "shell": "/bin/bash",
-  "hotkey": "f1",
+  "shell": "cmd.exe",
+  "hotkey": "F1",
   "auto_start": true,
   "hidden_start": false,
   "max_scroll_lines": 100000
@@ -104,21 +106,21 @@ converted, or deleted. macOS and Linux insert the user's `$SHELL` env (or
 
 Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). String / boolean fields are self-evident.
 
-| Key | Type | Range | Windows default | macOS default | Linux default | Description |
-|-----|------|-------|-----------------|---------------|---------------|-------------|
+| Key | Type | Range | Linux default | macOS default | Windows default | Description |
+|-----|------|-------|---------------|---------------|-----------------|-------------|
 | `window.dock_position` | string | top / bottom / left / right | "top" | "top" | "top" | Edge to dock to |
 | `window.width_percent` | float | 1.0–100.0 | 50.0 | 50.0 | 50.0 | Width as % of screen — fractional values OK (e.g. 33.3) |
 | `window.height_percent` | float | 1.0–100.0 | 100.0 | 100.0 | 100.0 | Height as % of screen |
 | `window.offset_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Position along edge (0 = start, 50 = center, 100 = end) |
 | `window.opacity_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Window opacity (%) — internally converted to 0–255 alpha |
-| `font.family` | string | — | "Cascadia Code" | "Menlo" | "DejaVu Sans Mono" | Primary font. Must be installed on the system; missing → fatal |
-| `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Noto Sans CJK KR", "Noto Color Emoji"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. **All listed entries must be installed.** Empty array `[]` is allowed (system fallback only) |
+| `font.family` | string | — | "DejaVu Sans Mono" | "Menlo" | "Cascadia Code" | Primary font. Must be installed on the system; missing → fatal |
+| `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Noto Sans CJK KR", "Noto Color Emoji"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. **All listed entries must be installed.** Empty array `[]` is allowed (system fallback only) |
 | `font.size_point` | int | 8–72 | 15 | 15 | 15 | Logical font size (host applies the OS scale; the legacy key name does not mean a physical 1/72-inch point) |
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
-| `shell` | string | — | "cmd.exe" | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | Shell to spawn. It always starts in your home directory; WSL tabs start in the *Linux* home (TildaZ adds `--cd ~` to `wsl.exe` automatically — skipped if your command already has `--cd`). Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
-| `hotkey` | string | "f1", "ctrl+space", "shift+cmd+t", … | "f1" | "f1" | "f1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
+| `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. It always starts in your home directory; WSL tabs start in the *Linux* home (TildaZ adds `--cd ~` to `wsl.exe` automatically — skipped if your command already has `--cd`). Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
+| `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | "F1" | "F1" | "F1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 100,000 | 100,000 | 100,000 | Scrollback buffer (lines) |

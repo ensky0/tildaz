@@ -15,9 +15,9 @@
 
 const std = @import("std");
 
-pub const Class = *opaque{};
-pub const SEL = *opaque{};
-pub const id = ?*opaque{};
+pub const Class = *opaque {};
+pub const SEL = *opaque {};
+pub const id = ?*opaque {};
 
 // Cocoa 표준 타입 별칭 (Apple 의 Foundation/MacTypes 헤더와 같은 의미).
 pub const NSUInteger = usize;

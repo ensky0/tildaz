@@ -2877,7 +2877,7 @@ pub fn run() !void {
         .height = cv_bounds.size.height * scale_pt,
     });
 
-    // 5. CGEventTap 으로 글로벌 키 hotkey 등록 — F1 (toggle) 만. Cmd+Q 는
+    // 5. CGEventTap 으로 이 worker config의 글로벌 hotkey 등록. Cmd+Q 는
     //    NSMenu 의 "Quit TildaZ" item 이 표준 dispatch (#153 — 글로벌 hook
     //    이었던 시절엔 다른 앱 frontmost 일 때도 가로챘음).
     //    Carbon RegisterEventHotKey 는 우리 환경 (macOS Tahoe + ad-hoc sign) 에서

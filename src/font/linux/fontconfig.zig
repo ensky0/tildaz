@@ -61,15 +61,15 @@ const Api = struct {
 
         return .{
             .handle = handle,
-            .init = lookupSym(handle,FcInit, "FcInit") orelse return error.FontconfigSymbolMissing,
-            .pattern_create = lookupSym(handle,FcPatternCreate, "FcPatternCreate") orelse return error.FontconfigSymbolMissing,
-            .pattern_destroy = lookupSym(handle,FcPatternDestroy, "FcPatternDestroy") orelse return error.FontconfigSymbolMissing,
-            .pattern_add_string = lookupSym(handle,FcPatternAddString, "FcPatternAddString") orelse return error.FontconfigSymbolMissing,
-            .config_substitute = lookupSym(handle,FcConfigSubstitute, "FcConfigSubstitute") orelse return error.FontconfigSymbolMissing,
-            .default_substitute = lookupSym(handle,FcDefaultSubstitute, "FcDefaultSubstitute") orelse return error.FontconfigSymbolMissing,
-            .font_match = lookupSym(handle,FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
-            .pattern_get_string = lookupSym(handle,FcPatternGetString, "FcPatternGetString") orelse return error.FontconfigSymbolMissing,
-            .fini = lookupSym(handle,FcFini, "FcFini") orelse return error.FontconfigSymbolMissing,
+            .init = lookupSym(handle, FcInit, "FcInit") orelse return error.FontconfigSymbolMissing,
+            .pattern_create = lookupSym(handle, FcPatternCreate, "FcPatternCreate") orelse return error.FontconfigSymbolMissing,
+            .pattern_destroy = lookupSym(handle, FcPatternDestroy, "FcPatternDestroy") orelse return error.FontconfigSymbolMissing,
+            .pattern_add_string = lookupSym(handle, FcPatternAddString, "FcPatternAddString") orelse return error.FontconfigSymbolMissing,
+            .config_substitute = lookupSym(handle, FcConfigSubstitute, "FcConfigSubstitute") orelse return error.FontconfigSymbolMissing,
+            .default_substitute = lookupSym(handle, FcDefaultSubstitute, "FcDefaultSubstitute") orelse return error.FontconfigSymbolMissing,
+            .font_match = lookupSym(handle, FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
+            .pattern_get_string = lookupSym(handle, FcPatternGetString, "FcPatternGetString") orelse return error.FontconfigSymbolMissing,
+            .fini = lookupSym(handle, FcFini, "FcFini") orelse return error.FontconfigSymbolMissing,
         };
     }
 

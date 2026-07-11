@@ -9,7 +9,7 @@ const std = @import("std");
 //
 // 릴리즈 버전. 태그 / GitHub Release / dist/release-notes/ 와 동기화 필요.
 // src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도 같이 갱신.
-const tildaz_version = "0.5.3";
+const tildaz_version = "0.6.0";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -166,13 +166,13 @@ pub fn build(b: *std.Build) void {
         // 앱으로 인식 안 되어서, 사용자가 매번 Input Monitoring + Accessibility
         // 권한 재부여해야 함.
         //
-        // 로컬 개발 시 `-Dmacos-sign-identity="tildaz Local"` 로 self-signed
+        // 로컬 개발 시 `-Dmacos-sign-identity=TildazLocal` 로 self-signed
         // code-signing 인증서 사용 → identity stable → 권한 한 번만 부여하면
-        // 다음 빌드에도 유지. self-signed 인증서 만드는 법: dist/macos/README.md.
+        // 다음 빌드에도 유지. self-signed 인증서 만드는 법: dist/macos/SETUP.md.
         const sign_identity = b.option(
             []const u8,
             "macos-sign-identity",
-            "macOS codesign identity. default `-` (ad-hoc). 로컬에서 권한 유지 용 self-signed cert 사용 시 그 이름 (예: \"tildaz Local\").",
+            "macOS codesign identity. default `-` (ad-hoc). 로컬에서 권한 유지 용 self-signed cert 사용 시 그 이름 (예: \"TildazLocal\").",
         ) orelse "-";
         // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
         // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133

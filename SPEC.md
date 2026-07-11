@@ -566,14 +566,14 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showInfo` → Linux backend → layer-shell overlay 그림. 아이콘 (`docs/favicon.svg` raster) + Title + separator + body + OK 버튼 (system blue). | ✅ | ✅ | ✅ |
 | Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` — startup 시점은 wayland client 미초기화라 stderr + log fallback + exit. 런타임은 layer-shell overlay. | ✅ | ✅ | ✅ (런타임) / 🟨 (startup fallback) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → stderr + log fallback + exit (panic 은 일반적으로 runtime 라 overlay 가능하나 안전 fallback 우선) | ✅ | ✅ | ✅ |
-| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | `dialog.showConfirm` (`MessageBoxW MB_YESNO`) — `app_controller.onQuitRequest` 가 호출 | NSAlert YES/NO — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
+| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | `dialog.showConfirm` (`MessageBoxW MB_OKCANCEL`) — `app_controller.onQuitRequest` 가 호출 | NSAlert OK/Cancel — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X (mac NSAlert / Win MessageBoxW 표준). | OS modal 표준 자체 | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
 | dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
 | Dialog 시각 크기 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기 | DWrite native | NSAlert native | dialog 시각 상수 (corner radius / shadow margin / button w/h / icon size) PT 단위 + `scaledPt(pt, scale)` 변환. KDE Plasma 6 의 1.25x / 1.5x / 1.7x 환경 모두 일관 (SPEC.md §1.1 UI metric scaling 와 같은 패턴). | ✅ | ✅ | ✅ |
 
 ---
 
-## 7. config (#118 — 통합 진행 중)
+## 7. config (#118 — 통합 완료)
 
 같은 nested schema, default 만 OS-specific. *Single source of truth* 패턴 — [`src/config.zig`](src/config.zig) 의 `Defaults` struct (Win/Mac 분기, 같은 필드 순서로 나란히) 한 곳에 모든 default 값. 이로부터:
 
@@ -593,7 +593,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
   복구한 뒤 launcher가 종료한다. `config_0.json`이 없으면 다른 번호의 config 존재
   여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라
   `config_<N>.json` ↔ worker N 대응으로 판정한다.
-- 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 필드를
+- 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 영역을
   한 다이얼로그에 표시한다. prompt 전에 worker 0을 show/restore/activate하며, 표시가
   반영된 뒤 alert를 연다. 실제 key 조합을 캡처하기 전에는 **Create**가 비활성이다.
   입력 직후와 **Create** 클릭 순간에 Linux · macOS · Windows 공통 validator가 형식과
@@ -872,8 +872,6 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 - **Windows**: `MessageBoxW` 표준 dialog — `Ctrl+C` 가 본문 + 제목 + 버튼 전체를 클립보드로 (Win 내장 동작). path 만 골라내고 싶으면 paste 후 trim, 또는 Tip 의 `Ctrl+Shift+P/L` 로 editor 바로 열기 (path 자체 필요한 경우는 보통 editor 가 더 유용).
 - **macOS**: `NSAlert.accessoryView` 의 `NSTextView` (selectable / monospace) 로 본문 표시 + selection 변경 시 자동 clipboard copy (NSTextView delegate 의 `textViewDidChangeSelection:`) — 우리 터미널 selection finish auto-copy (#122) 와 같은 패턴. NSAlert modal 안에서 NSTextView 가 firstResponder 를 안정적으로 못 잡아 `Cmd+C` 의 `copy:` 액션이 OK 버튼 쪽으로 라우팅되는 macOS quirk (AGENTS.md macOS Cocoa quirks #4) 우회.
 
-> **TODO (cross-platform 동등 후속):** Windows 의 `Ctrl+C → 본문 전체 복사` 와 동등하게 macOS 도 `Cmd+C → 본문 전체 복사` 로 매칭 예정. NSAlert firstResponder quirk 때문에 단순 변경으론 안 되고 (a) 자체 NSPanel + custom keyDown 핸들러 또는 (b) `NSEvent.addLocalMonitorForEventsMatchingMask:` + Objective-C block FFI 신규 도입 필요. 별도 cycle 에서 macOS 머신 직접 시연하며 결정.
-
 ### 11.4 config error 시 dialog 경로 안내
 
 잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *해당 config 파일 경로* 명시 — 사용자가 어디 고쳐야 할지 즉시 알게.
@@ -949,7 +947,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | autostart (LaunchAgent) | ✅ | #126 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등 |
 | 로그 시스템 (`~/Library/Logs/tildazN.log`) | ✅ | #124 | Windows `tildaz_log.zig` 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
 | Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback ad-hoc |
-| config schema 확장 (font.* / shell / max_scroll_lines) | 🟡 | #118 | Windows config 와 동일 schema. macOS 는 현재 dock_position / width / height / offset / opacity / theme / hotkey / auto_start / hidden_start 만. font / shell / max_scroll 모두 hardcoded → JSON 으로. |
+| config schema 확장 (font.* / shell / max_scroll_lines) | ✅ | #118 | Linux · macOS · Windows가 같은 schema를 사용하고 default만 OS별로 다름. |
 | SIGHUP 무시 셸 fallback (SIGKILL) | ✅ | #129 | `Pty.deinit` 에 grace period (500ms / 5ms polling) + `child_exited` atomic flag. wait_thread 의 waitpid 가 깨어나면 즉시 break, 안 깨어나면 SIGKILL. Cmd+W / 탭 close button 으로만 트리거 (Cmd+Q 는 NSApp `terminate:` → `exit()` 직행). |
 ### A.2 Windows 미구현 (macOS 기능 → Windows 추가)
 
@@ -960,7 +958,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 컬러 emoji + grapheme cluster shaping | ✅ | [#134](https://github.com/ensky0/tildaz/issues/134), [#136](https://github.com/ensky0/tildaz/issues/136), [#139](https://github.com/ensky0/tildaz/issues/139) | macOS #132 동등성. (a) `IDWriteFactory2.TranslateColorGlyphRun` + Direct2D D3D11-backed RT (`CreateDxgiSurfaceRenderTarget`) 으로 layer 별 `DrawGlyphRun` (`GRAYSCALE` antialias) + 2x super-sampling + `SetTextRenderingParams` (gamma=1.0) → atlas 에 premultiplied BGRA 로 저장. shader color path 가 `atlas.rgba` (premult) + `atlas.aaaa` 로 dual-source blend (Win Terminal `BackendD3D` 동등). (b) `IDWriteTextAnalyzer` 로 grapheme cluster shaping (skin tone, ZWJ). (c) `mode 2027` (grapheme cluster) ON. (d) ZWJ family glyph (`👨‍👩‍👧` 등) 는 `IDWriteTextAnalyzer.GetGlyphPlacements` 로 multi-glyph cluster 의 advance/offset 받아 visual 결합 (#139, WT 동등). |
 | IME inline preedit (cell + tab rename) | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) v0.4.0 | macOS 의 `g_preedit_buf` + 보라 overlay 동등. `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (`GCS_COMPSTR`) / `WM_IME_ENDCOMPOSITION` 가로채기 + `ImmGetCompositionStringW` UTF-16 → UTF-8 → `Window.preedit_buf` → renderer overlay (cell 시 cursor 위치 / rename 시 cursor 옆 inline). |
 | IME 후보 popup cursor 추적 | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) 1d v0.4.0 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame onRender 끝에 호출. 일본 / 중국 / 한국 IME 의 한자 후보 popup 이 cursor 옆 자연 추적. `D3d11Renderer.last_cursor_px_x/_y` 에 cursor 그릴 때 보관 (terminal cell / tab rename 양쪽). |
-| About 다이얼로그 Cmd+C → 본문 전체 복사 | 🟢 | (#128 후속) | Windows `MessageBoxW` Ctrl+C 와 동등하게 macOS 도 Cmd+C 로 본문 전체 복사 매칭 예정. NSAlert firstResponder quirk 우회 (custom NSPanel + keyDown 핸들러 또는 NSEvent local monitor + Objective-C block FFI 신규 도입) 필요. 사용자 환경에서 macOS 시연 시 결정. |
+| About 다이얼로그 본문 복사 | ✅ | #128 | Windows는 `MessageBoxW`의 Ctrl+C, macOS는 selectable `NSTextView` selection 변경 시 자동 copy로 NSAlert firstResponder 제약을 우회. |
 
 ---
 

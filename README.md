@@ -16,12 +16,12 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.5.3 — smarter tabs and consistent logical sizing across every desktop.**
-> Tab titles now follow the shell through OSC 0/2, the tab bar has fixed
-> right-side navigation / close / new-tab controls, and terminal and tab fonts
-> use explicit logical sizes that follow each OS display scale. Shells start in
-> the home directory, and fish starts immediately on Linux and macOS with
-> terminal query responses enabled. Verified on Linux, macOS, and Windows.
+> **v0.6.0 — independent drop-down instances, each with its own config and hotkey.**
+> Launch TildaZ normally: it restores any missing configured workers, or offers
+> to create another instance when all of them are running. Every
+> `config_N.json` owns one process, hotkey, log, and desktop identity. Hotkey
+> capture rejects duplicates before creation and integrates with KDE Plasma,
+> GNOME, Cinnamon, COSMIC, Hyprland, sway, macOS, and Windows.
 
 ## Who is TildaZ for?
 
@@ -153,8 +153,8 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 ## Known Limitations
 
 - Linux is Wayland-only (no X11) and shipped in v0.5.0. It is verified on real
-  hardware across KDE Plasma 6, Hyprland, sway, Cinnamon, GNOME (via a Shell
-  extension), and COSMIC. The Linux renderer is still a software path (no GPU
+  hardware across KDE Plasma 6, GNOME (via a Shell extension), Cinnamon,
+  COSMIC, Hyprland, and sway. The Linux renderer is still a software path (no GPU
   yet). Z-order yield on focus loss is not implemented on Linux
   (`wp_layer_shell_v1` categorical layers have no normal-window slot). Hanja
   conversion of already-committed Hangul (selecting committed Korean text and

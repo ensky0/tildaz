@@ -168,7 +168,6 @@ pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
 
 /// rename / IME preedit 의 cross-platform 산술 — mac/win 양쪽 renderer 와 host
 /// 가 동일 호출. 한 곳 (helper) 변경 시 양쪽 자동 반영. (#163 통합 옵션 A)
-
 /// preedit text 의 codepoint 별 advance 합 — wide char (CJK) 자모 = 2 cell.
 pub fn computeAdvanceTotal(preedit_text: []const u8, cw: f32) f32 {
     var total: f32 = 0;
