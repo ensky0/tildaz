@@ -633,7 +633,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`~/.config/autostart/tildaz.desktop`), L11-α | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 portal Activated 까지 layer-surface 생성 skip (L11-β). portal 미가용 환경에선 warning + 즉시 show fallback | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 100_000 | 100_000 default. ghostty `bytes_per_row × lines` 로 max byte 계산. | 동일 | ✅ | ✅ | ✅ |
-| `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `f1` | `f1` | `f1` — `LinuxHotkey.fromString` + `keysymToAccelerator` + `kdeTryAutoApply` (충돌 owner 진단 + confirm dialog + takeover). 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207) |
+| `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + `keysymToAccelerator` + `kdeTryAutoApply` (충돌 owner 진단 + confirm dialog + takeover). 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207) |
 
 > **glyph fallback chain** (#135, v0.4.1 schema breaking): chain = `font.family` (primary, single string) + `font.glyph_fallback` (array of strings). codepoint 별로 chain 순회 → 글리프 가진 첫 폰트 사용. chain 에 없는 codepoint 는 양쪽 OS 모두 system fallback 이 자동 처리 — Windows DirectWrite `IDWriteFontFallback.MapCharacters`, macOS CoreText `CTFontCreateForString`. 사용자가 별도 폰트를 추가하고 싶으면 `glyph_fallback` 끝에 append.
 >
@@ -651,14 +651,16 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. `config_0.json` 기본값: `"f1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle N` Unix socket IPC (#198) + DE native binding 자동 등록.
+**Schema**: `string`. `config_0.json` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle N` Unix socket IPC (#198) + DE native binding 자동 등록.
 
 **잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:597-609](src/config.zig#L597-L609), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
+
+**일반 입력 보호**: modifier 없이 허용하는 global hotkey는 `F1`~`F12`뿐이다. 문자, 숫자, `Space`, `Tab`, `grave` 등은 `Ctrl` / `Alt` / `Super` (`Cmd`) 중 하나 이상이 있어야 한다. `Shift` 단독 조합도 대문자·기호·`Shift+Tab` 같은 일상 입력을 가로채므로 거부한다. 이 검증은 dialog capture와 config parser 양쪽에 공통 적용된다.
 
 **예제** (모든 platform 동일 문법):
 
 ```json
-"hotkey": "f1"                  // 기본
+"hotkey": "F1"                  // 기본
 "hotkey": "ctrl+space"          // 흔한 toggle
 "hotkey": "ctrl+shift+t"        // ✅ KDE 테스트 통과
 "hotkey": "alt+f12"             // ✅ KDE 테스트 통과
@@ -699,11 +701,13 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
    - `setForeignShortcut(tildaz_actionId, [qt_key])` 로 우리 binding 적용.
    - `shortcut(tildaz_actionId)` 재 query 로 검증 — 우리 qt_key 와 다르면 fallback dialog.
    - **runtime cache only** — `kglobalshortcutsrc` 파일은 미갱신, KGlobalAccel daemon 재시작 시 reset 가능. tildaz 매 실행마다 mismatch 감지 → takeover 자동 재 적용.
-   - **GNOME / Cinnamon / hyprland** — `tryDeSpecificHotkeyFix` 의 분기에서 미구현. 각 DE 의 mechanism 다름 (GNOME / Cinnamon = dconf 경로, hyprland = portal GlobalShortcuts 재사용). 현재는 3차 fallback dialog 로. (sway 는 portal mismatch 경로가 아니라 아래 별도 단락.)
+   - **GNOME / Cinnamon** — `tryDeSpecificHotkeyFix` 의 분기에서 미구현. 각 DE 의 dconf 경로가 달라 현재는 3차 fallback dialog 로 간다. (Hyprland와 sway는 portal mismatch 경로가 아니라 아래 별도 runtime binding 경로.)
 
 3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
 
 **sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다.
+
+**Hyprland (portal `GlobalShortcuts` 미사용) — runtime binding 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON을 읽고, 현재 TildaZ 실행 파일의 `--toggle N`을 실행하는 기존 runtime binding을 모두 식별해 `unbind`한다. 그 뒤 현재 `config_N.json` 목록만 `hyprctl keyword bind`로 다시 등록한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
 
 **Display 표기 (사용자 dialog / log)**: `keysymDisplayString` 가 Title case + `+` 분리 (`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`) — KDE 친화. portal-kde D-Bus 송신용 parse format (`LOGO+a`, `SHIFT+CTRL+grave`) 과 분리.
 

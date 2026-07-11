@@ -7,6 +7,7 @@ const host = switch (builtin.os.tag) {
     else => @import("host/unsupported.zig"),
 };
 const autostart = @import("autostart.zig");
+const config = @import("config.zig");
 const instance_context = @import("instance_context.zig");
 const instances = @import("instances.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
@@ -119,7 +120,7 @@ fn runLauncher(autostart_launch: bool) !void {
     if (indices.len == 0 or indices[0] != 0) {
         const shell = try instances.defaultShell(allocator);
         defer allocator.free(shell);
-        try instances.createDefaultConfig(allocator, 0, shell, "f1");
+        try instances.createDefaultConfig(allocator, 0, shell, config.Defaults.hotkey);
         const expanded = try allocator.alloc(u32, indices.len + 1);
         expanded[0] = 0;
         @memcpy(expanded[1..], indices);
