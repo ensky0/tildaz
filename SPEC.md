@@ -135,27 +135,34 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
 - **KWin (KDE Plasma).** layer-shell drop-down. hotkey 는 portal `GlobalShortcuts`
   로 등록하고, 그 키를 이미 다른 component 가 쓰고 있으면 `kglobalaccel`
   `setForeignShortcut` 로 그 키만 회수(takeover)한 뒤 우리 binding 적용 — config 가
-  source of truth. drop-down 재표시는 KWin 만 `#205` unmap/remap 워크어라운드(아래
+  source of truth. launcher 는 KGlobalAccel component 목록에서 정확히
+  `tildaz.instanceN`인 항목만 비교해 config 에 없는 번호의 `toggle-N` action 을
+  증분 해제한다. drop-down 재표시는 KWin 만 `#205` unmap/remap 워크어라운드(아래
   부록 B 참조).
 - **sway (wlroots).** GlobalShortcuts portal 미지원이라 portal `Activated` 가 안 옴
   → `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec <self_exe> --toggle N`
   를 런타임 등록. hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/tildaz-N.sock`).
-  runtime-only 라 매 실행 등록 = config 가 source of truth.
+  runtime-only 라 매 실행 등록 = config 가 source of truth. 단 sway IPC 는 현재
+  binding 열거 요청을 제공하지 않아 세션 중 stale binding 증분 제거는 지원하지
+  않는다. config 삭제/변경 전에 등록된 binding 은 sway 세션 재시작 때 사라진다.
 - **Hyprland (wlroots).** layer-shell drop-down 은 sway 와 같은 경로(코드 동일).
-  hotkey 는 portal 우회 — 실행 시 `hyprctl keyword unbind/bind`로 각 config의
-  단축키를 `tildaz --toggle N`에 연결. `install.sh`는 `~/.config/hypr/` config의
+  hotkey 는 portal 우회 — 실행 시 `hyprctl -j binds` actual 과 config desired 를
+  비교해 TildaZ `--toggle N` binding 의 차이만 `unbind/bind`한다. `install.sh`는
+  `~/.config/hypr/` config의
   autostart만 관리한다. drop-down 은 `on_demand`
   keyboard interactivity 로 클릭-어웨이 허용. XDG autostart 미지원이라 autostart 도
   config 의 `exec-once` 로.
 - **COSMIC (smithay).** layer-shell drop-down. hotkey 는 RON custom shortcut
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
-  `Spawn("tildaz --toggle N")`로 원자적 갱신(portal-cosmic GlobalShortcuts 미구현).
-  XDG autostart 는 지원.
+  `Spawn("tildaz --toggle N")`로 원자적 갱신하되, 기존 bytes 와 같으면 write/rename 을
+  생략한다(portal-cosmic GlobalShortcuts 미구현). XDG autostart 는 지원.
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
   xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
   담당. hotkey 는 gsettings custom keybinding 으로 자동 등록(extension 활성 시
-  중복 grab 회피로 gsettings 등록 skip). config 가 source of truth. 숨김(minimize)
+  중복 grab 회피로 gsettings 등록 skip). launcher 는 config 에 없는 numbered
+  GSettings 항목만 제거하고, Shell extension 은 config directory 변경을 감시해
+  index/accelerator 차이만 remove/add한다. config 가 source of truth. 숨김(minimize)
   시 extension 이 keyboard focus 를 MRU 다음 창으로 넘긴다 — mutter/muffin 이
   sticky+above 인 tildaz 를 minimize 해도 focus 를 자동 이양하지 않아, 안 그러면
   숨김 중에도 client 가 키를 계속 받아 Alt+Enter 토글 + 타이핑이 새어든다 (#247).
@@ -705,9 +712,11 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
 
-**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다.
+**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다. [sway IPC의 공식 request 목록](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd)에는 현재 binding을 열거하는 request가 없으므로, launcher는 stale binding을 추측해 제거하지 않는다. 삭제/변경 전 binding은 sway 세션 재시작 때 사라진다.
 
-**Hyprland (portal `GlobalShortcuts` 미사용) — runtime binding 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON을 읽고, 현재 TildaZ 실행 파일의 `--toggle N`을 실행하는 기존 runtime binding을 모두 식별해 `unbind`한다. 그 뒤 현재 `config_N.json` 목록만 `hyprctl keyword bind`로 다시 등록한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
+**Hyprland (portal `GlobalShortcuts` 미사용) — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.json` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
+
+**KDE Plasma / GNOME / Cinnamon — persistent binding 증분 정리**: launcher는 KDE Plasma에서 KGlobalAccel `allComponents()`와 Component `uniqueName`을 조회해 config에서 사라진 `tildaz.instanceN`의 `toggle-N`만 `unregister`한다([KGlobalAccel D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml), [Component interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml)). GNOME/Cinnamon의 GSettings fallback도 custom keybinding 목록에서 TildaZ numbered entry만 식별해 사라진 번호를 제거하며 사용자 항목은 보존한다. GNOME/Cinnamon Shell extension은 config directory monitor로 변경을 받고 동일 index/accelerator는 유지한다.
 
 **Display 표기 (사용자 dialog / log)**: `keysymDisplayString` 가 Title case + `+` 분리 (`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`) — KDE 친화. portal-kde D-Bus 송신용 parse format (`LOGO+a`, `SHIFT+CTRL+grave`) 과 분리.
 
