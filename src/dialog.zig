@@ -14,8 +14,41 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const messages = @import("messages.zig");
 
 pub const Severity = enum { info, err };
+
+pub const HotkeyValidation = union(enum) {
+    available,
+    duplicate: u32,
+    invalid,
+    check_failed,
+};
+
+pub const HotkeyValidator = struct {
+    ctx: *anyopaque,
+    validate_fn: *const fn (ctx: *anyopaque, hotkey: []const u8) HotkeyValidation,
+
+    pub fn validate(self: HotkeyValidator, hotkey: []const u8) HotkeyValidation {
+        return self.validate_fn(self.ctx, hotkey);
+    }
+};
+
+pub fn hotkeyValidationMessage(buf: []u8, result: HotkeyValidation) []const u8 {
+    return switch (result) {
+        .available => "",
+        .duplicate => |index| std.fmt.bufPrint(buf, messages.new_instance_hotkey_duplicate_format, .{index}) catch messages.new_instance_hotkey_duplicate_fallback,
+        .invalid => messages.new_instance_hotkey_invalid_msg,
+        .check_failed => messages.new_instance_hotkey_check_failed_msg,
+    };
+}
+
+test "hotkey validation messages identify the conflicting TildaZ instance" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("", hotkeyValidationMessage(&buf, .available));
+    try std.testing.expectEqualStrings("Already used by TildaZ 3.", hotkeyValidationMessage(&buf, .{ .duplicate = 3 }));
+    try std.testing.expectEqualStrings(messages.new_instance_hotkey_check_failed_msg, hotkeyValidationMessage(&buf, .check_failed));
+}
 
 const impl = switch (builtin.os.tag) {
     .windows => @import("dialog/windows.zig"),
@@ -57,6 +90,6 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
 
 /// 실제 key 조합을 캡처하는 modal dialog. Cancel / 닫기면 null, Create면
 /// allocator-owned canonical hotkey 문자열을 반환한다.
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
-    return impl.promptHotkey(allocator, title, message);
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: HotkeyValidator) ?[]u8 {
+    return impl.promptHotkey(allocator, title, message, validator);
 }

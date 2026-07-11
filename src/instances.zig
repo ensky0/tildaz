@@ -194,7 +194,7 @@ pub fn configHotkeyText(allocator: std.mem.Allocator, index: u32) ![]u8 {
     return allocator.dupe(u8, value.string);
 }
 
-pub fn hotkeyTaken(allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !bool {
+pub fn hotkeyOwner(allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !?u32 {
     for (indices) |index| {
         const path = try paths.configPathFor(allocator, index);
         defer allocator.free(path);
@@ -208,9 +208,9 @@ pub fn hotkeyTaken(allocator: std.mem.Allocator, indices: []const u32, candidate
         const value = parsed.value.object.get("hotkey") orelse return error.InvalidConfig;
         if (value != .string) return error.InvalidConfig;
         const existing = config.Hotkey.fromString(value.string) orelse return error.InvalidConfig;
-        if (std.meta.eql(existing, candidate)) return true;
+        if (std.meta.eql(existing, candidate)) return index;
     }
-    return false;
+    return null;
 }
 
 test "only canonical numbered config names are accepted" {

@@ -7,6 +7,19 @@ const autostart = @import("autostart.zig");
 const log = @import("log.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
 
+const ValidationContext = struct {
+    allocator: std.mem.Allocator,
+};
+
+fn validateHotkey(ctx_ptr: *anyopaque, text: []const u8) dialog.HotkeyValidation {
+    const ctx: *ValidationContext = @ptrCast(@alignCast(ctx_ptr));
+    const hotkey = config.Hotkey.fromString(text) orelse return .invalid;
+    const current_indices = instances.listConfigIndices(ctx.allocator) catch return .check_failed;
+    defer ctx.allocator.free(current_indices);
+    const owner = instances.hotkeyOwner(ctx.allocator, current_indices, hotkey) catch return .check_failed;
+    return if (owner) |index| .{ .duplicate = index } else .available;
+}
+
 pub fn handle(allocator: std.mem.Allocator) void {
     // launcher의 config 열거/spawn 결정과 새 config 생성 transaction이 서로
     // 중간 상태를 관찰하지 않도록 같은 process lock으로 직렬화한다.
@@ -23,65 +36,55 @@ pub fn handle(allocator: std.mem.Allocator) void {
     defer allocator.free(indices);
 
     var prompt_buf: [256]u8 = undefined;
-    var input_prompt: []const u8 = std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{indices.len + 1}) catch return;
-    while (true) {
-        const input_owned = dialog.promptHotkey(allocator, messages.new_instance_title, input_prompt) orelse return;
-        const input = std.mem.trim(u8, input_owned, " \t\r\n");
-        const hotkey = config.Hotkey.fromString(input) orelse {
-            allocator.free(input_owned);
-            input_prompt = messages.new_instance_hotkey_invalid_msg;
-            continue;
-        };
-        const taken = instances.hotkeyTaken(allocator, indices, hotkey) catch |err| {
-            allocator.free(input_owned);
-            showCreateError(err);
-            return;
-        };
-        if (taken) {
-            allocator.free(input_owned);
-            input_prompt = messages.new_instance_hotkey_duplicate_msg;
-            continue;
-        }
-
-        const index = instances.nextConfigIndex(indices) catch |err| {
-            allocator.free(input_owned);
-            showCreateError(err);
-            return;
-        };
-        const shell = instances.defaultShell(allocator) catch |err| {
-            allocator.free(input_owned);
-            showCreateError(err);
-            return;
-        };
-        defer allocator.free(shell);
-        instances.createDefaultConfig(allocator, index, shell, input) catch |err| {
-            allocator.free(input_owned);
-            showCreateError(err);
-            return;
-        };
+    const input_prompt = std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{indices.len + 1}) catch return;
+    var validation_context = ValidationContext{ .allocator = allocator };
+    const input_owned = dialog.promptHotkey(allocator, messages.new_instance_title, input_prompt, .{
+        .ctx = &validation_context,
+        .validate_fn = validateHotkey,
+    }) orelse return;
+    const input = std.mem.trim(u8, input_owned, " \t\r\n");
+    _ = config.Hotkey.fromString(input) orelse {
         allocator.free(input_owned);
-        var updated_indices = allocator.alloc(u32, indices.len + 1) catch |err| {
-            showCreateError(err);
-            return;
-        };
-        defer allocator.free(updated_indices);
-        @memcpy(updated_indices[0..indices.len], indices);
-        updated_indices[indices.len] = index;
-        shortcut_sync.sync(allocator, updated_indices) catch |err| {
-            showCreateError(err);
-            return;
-        };
-        autostart.enable(allocator) catch |err| log.appendLine("autostart", "enable after instance create failed: {s}", .{@errorName(err)});
-        instances.spawnWorker(allocator, index) catch |err| {
-            showCreateError(err);
-            return;
-        };
-        instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s) catch |err| {
-            showCreateError(err);
-            return;
-        };
         return;
-    }
+    };
+
+    const index = instances.nextConfigIndex(indices) catch |err| {
+        allocator.free(input_owned);
+        showCreateError(err);
+        return;
+    };
+    const shell = instances.defaultShell(allocator) catch |err| {
+        allocator.free(input_owned);
+        showCreateError(err);
+        return;
+    };
+    defer allocator.free(shell);
+    instances.createDefaultConfig(allocator, index, shell, input) catch |err| {
+        allocator.free(input_owned);
+        showCreateError(err);
+        return;
+    };
+    allocator.free(input_owned);
+    var updated_indices = allocator.alloc(u32, indices.len + 1) catch |err| {
+        showCreateError(err);
+        return;
+    };
+    defer allocator.free(updated_indices);
+    @memcpy(updated_indices[0..indices.len], indices);
+    updated_indices[indices.len] = index;
+    shortcut_sync.sync(allocator, updated_indices) catch |err| {
+        showCreateError(err);
+        return;
+    };
+    autostart.enable(allocator) catch |err| log.appendLine("autostart", "enable after instance create failed: {s}", .{@errorName(err)});
+    instances.spawnWorker(allocator, index) catch |err| {
+        showCreateError(err);
+        return;
+    };
+    instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s) catch |err| {
+        showCreateError(err);
+        return;
+    };
 }
 
 fn showCreateError(err: anyerror) void {

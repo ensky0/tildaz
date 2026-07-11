@@ -144,6 +144,35 @@ var prompt_field: objc.id = null;
 var prompt_alert: objc.id = null;
 var prompt_capture_buf: [64]u8 = undefined;
 var prompt_capture_len: usize = 0;
+var prompt_validator: ?dialog.HotkeyValidator = null;
+var prompt_message: []const u8 = "";
+
+fn updatePromptValidation() bool {
+    if (prompt_capture_len == 0) {
+        setPromptCreateEnabled(prompt_alert, false);
+        setInformative(prompt_alert, prompt_message);
+        return false;
+    }
+    const result = if (prompt_validator) |validator|
+        validator.validate(prompt_capture_buf[0..prompt_capture_len])
+    else
+        dialog.HotkeyValidation.check_failed;
+    const available = switch (result) {
+        .available => true,
+        else => false,
+    };
+    setPromptCreateEnabled(prompt_alert, available);
+    var status_buf: [256]u8 = undefined;
+    const status = dialog.hotkeyValidationMessage(&status_buf, result);
+    if (status.len == 0) {
+        setInformative(prompt_alert, prompt_message);
+    } else {
+        var combined_buf: [1024]u8 = undefined;
+        const combined = std.fmt.bufPrint(&combined_buf, "{s}\n\n{s}", .{ prompt_message, status }) catch status;
+        setInformative(prompt_alert, combined);
+    }
+    return available;
+}
 
 fn promptMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) objc.id {
     if (event == null) return null;
@@ -158,7 +187,7 @@ fn promptMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) obj
         return null;
     }
     if (keycode == kVK_Return or keycode == kVK_KeypadEnter) {
-        if (prompt_capture_len > 0 and app != null) {
+        if (updatePromptValidation() and app != null) {
             const stopModal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
             stopModal(app, objc.sel("stopModalWithCode:"), 1000);
         }
@@ -167,7 +196,7 @@ fn promptMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) obj
     if (keycode == 51) { // kVK_Delete
         prompt_capture_len = 0;
         setPromptFieldText("");
-        setPromptCreateEnabled(prompt_alert, false);
+        _ = updatePromptValidation();
         return null;
     }
 
@@ -181,7 +210,7 @@ fn promptMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) obj
     if (config.capturedHotkeyText(&prompt_capture_buf, keycode, modifiers)) |captured| {
         prompt_capture_len = captured.len;
         setPromptFieldText(captured);
-        setPromptCreateEnabled(prompt_alert, true);
+        _ = updatePromptValidation();
     }
     return null;
 }
@@ -477,7 +506,7 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     return result == 1000;
 }
 
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
     if (!nsapp_ready) return null;
     const alert = newAlert() orelse return null;
     setMessage(alert, title);
@@ -500,15 +529,25 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     prompt_field = field;
     prompt_alert = alert;
     prompt_capture_len = 0;
+    prompt_validator = validator;
+    prompt_message = message;
+    defer {
+        prompt_validator = null;
+        prompt_message = "";
+    }
     setPromptCreateEnabled(alert, false);
 
     const monitor = addPromptMonitor();
-    const result = runModalOverHost(alert, false);
-    removeDismissMonitor(monitor);
-    prompt_field = null;
-    prompt_alert = null;
-    if (result != 1000) return null;
-    return allocator.dupe(u8, prompt_capture_buf[0..prompt_capture_len]) catch null;
+    defer removeDismissMonitor(monitor);
+    defer {
+        prompt_field = null;
+        prompt_alert = null;
+    }
+    while (true) {
+        const result = runModalOverHost(alert, false);
+        if (result != 1000) return null;
+        if (updatePromptValidation()) return allocator.dupe(u8, prompt_capture_buf[0..prompt_capture_len]) catch null;
+    }
 }
 
 fn setPromptCreateEnabled(alert: objc.id, enabled: bool) void {

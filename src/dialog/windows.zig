@@ -157,6 +157,8 @@ var prompt_done = false;
 var prompt_ok = false;
 var prompt_edit: HWND = null;
 var prompt_create: HWND = null;
+var prompt_status: HWND = null;
+var prompt_validator: ?dialog.HotkeyValidator = null;
 var prompt_class_registered = false;
 const prompt_class_name = std.unicode.utf8ToUtf16LeStringLiteral("TildaZPromptWindow");
 
@@ -165,11 +167,17 @@ fn promptWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
         const id = wparam & 0xffff;
         const notification = (wparam >> 16) & 0xffff;
         if (id == 100 and notification == EN_CHANGE and prompt_edit != null and prompt_create != null) {
-            _ = EnableWindow(prompt_create, if (promptHasText()) 1 else 0);
+            _ = updatePromptValidation();
             return 0;
         }
-        if (id == IDOK or id == IDCANCEL) {
-            prompt_ok = id == IDOK;
+        if (id == IDOK) {
+            if (!updatePromptValidation()) return 0;
+            prompt_ok = true;
+            prompt_done = true;
+            return 0;
+        }
+        if (id == IDCANCEL) {
+            prompt_ok = false;
             prompt_done = true;
             return 0;
         }
@@ -181,15 +189,35 @@ fn promptWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-fn promptHasText() bool {
-    if (prompt_edit == null) return false;
+fn promptText(buf: []u8) ?[]const u8 {
+    if (prompt_edit == null) return null;
     var wide: [256]WCHAR = undefined;
     const copied = GetWindowTextW(prompt_edit, &wide, wide.len);
-    if (copied <= 0) return false;
-    for (wide[0..@intCast(copied)]) |char| {
-        if (char != ' ' and char != '\t' and char != '\r' and char != '\n') return true;
-    }
-    return false;
+    if (copied <= 0) return null;
+    const len = std.unicode.utf16LeToUtf8(buf, wide[0..@intCast(copied)]) catch return null;
+    return buf[0..len];
+}
+
+fn updatePromptValidation() bool {
+    var text_buf: [256]u8 = undefined;
+    const text = promptText(&text_buf) orelse {
+        if (prompt_create != null) _ = EnableWindow(prompt_create, 0);
+        if (prompt_status != null) _ = SetWindowTextW(prompt_status, std.unicode.utf8ToUtf16LeStringLiteral(""));
+        return false;
+    };
+    const result = if (prompt_validator) |validator| validator.validate(text) else dialog.HotkeyValidation.check_failed;
+    const available = switch (result) {
+        .available => true,
+        else => false,
+    };
+    if (prompt_create != null) _ = EnableWindow(prompt_create, if (available) 1 else 0);
+    var status_buf: [256]u8 = undefined;
+    const status = dialog.hotkeyValidationMessage(&status_buf, result);
+    var wide_buf: [512]WCHAR = undefined;
+    const len = std.unicode.utf8ToUtf16Le(&wide_buf, status) catch return available;
+    wide_buf[len] = 0;
+    if (prompt_status != null) _ = SetWindowTextW(prompt_status, @ptrCast(wide_buf[0..len :0]));
+    return available;
 }
 
 fn handlePromptKey(vkey: usize) bool {
@@ -199,7 +227,7 @@ fn handlePromptKey(vkey: usize) bool {
         return true;
     }
     if (vkey == VK_RETURN) {
-        if (promptHasText()) {
+        if (updatePromptValidation()) {
             prompt_ok = true;
             prompt_done = true;
         }
@@ -233,7 +261,7 @@ fn ensurePromptClass(hinstance: HINSTANCE) bool {
     return true;
 }
 
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
     const hinstance = GetModuleHandleW(null);
     if (!ensurePromptClass(hinstance)) return null;
     var title_buf: [256]WCHAR = undefined;
@@ -244,20 +272,28 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     message_buf[message_len] = 0;
     const dpi = GetDpiForSystem();
     const win_w = scaled(540, dpi);
-    const win_h = scaled(240, dpi);
+    const win_h = scaled(275, dpi);
     const win_x = @divTrunc(GetSystemMetrics(SM_CXSCREEN) - win_w, 2);
     const win_y = @divTrunc(GetSystemMetrics(SM_CYSCREEN) - win_h, 2);
     const hwnd = CreateWindowExW(WS_EX_TOPMOST, prompt_class_name, @ptrCast(title_buf[0..title_len :0]), WS_CAPTION | WS_SYSMENU | WS_VISIBLE, win_x, win_y, win_w, win_h, null, null, hinstance, null) orelse return null;
     defer _ = DestroyWindow(hwnd);
     _ = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), @ptrCast(message_buf[0..message_len :0]), WS_CHILD | WS_VISIBLE, scaled(20, dpi), scaled(18, dpi), scaled(490, dpi), scaled(70, dpi), hwnd, null, hinstance, null);
     prompt_edit = CreateWindowExW(WS_EX_CLIENTEDGE, std.unicode.utf8ToUtf16LeStringLiteral("EDIT"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY, scaled(20, dpi), scaled(98, dpi), scaled(490, dpi), scaled(28, dpi), hwnd, @ptrFromInt(100), hinstance, null);
-    prompt_create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Create"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, scaled(300, dpi), scaled(155, dpi), scaled(100, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDOK), hinstance, null);
+    prompt_status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE, scaled(20, dpi), scaled(132, dpi), scaled(490, dpi), scaled(42, dpi), hwnd, null, hinstance, null);
+    prompt_create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Create"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, scaled(300, dpi), scaled(190, dpi), scaled(100, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDOK), hinstance, null);
     if (prompt_create != null) _ = EnableWindow(prompt_create, 0);
-    _ = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Cancel"), WS_CHILD | WS_VISIBLE | WS_TABSTOP, scaled(410, dpi), scaled(155, dpi), scaled(100, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
+    _ = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Cancel"), WS_CHILD | WS_VISIBLE | WS_TABSTOP, scaled(410, dpi), scaled(190, dpi), scaled(100, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
     _ = ShowWindow(hwnd, SW_SHOW);
     _ = SetFocus(prompt_edit);
     prompt_done = false;
     prompt_ok = false;
+    prompt_validator = validator;
+    defer {
+        prompt_validator = null;
+        prompt_status = null;
+        prompt_create = null;
+        prompt_edit = null;
+    }
     var msg: MSG = undefined;
     while (!prompt_done and GetMessageW(&msg, null, 0, 0) > 0) {
         if ((msg.message == WM_KEYDOWN or msg.message == WM_SYSKEYDOWN) and handlePromptKey(msg.wParam)) continue;

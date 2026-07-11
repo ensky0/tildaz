@@ -216,8 +216,12 @@ pub const new_instance_hotkey_prompt_format =
     "A total of {d} TildaZ instances will run.\n\nPress a hotkey for the new instance.";
 pub const new_instance_hotkey_invalid_msg =
     "That hotkey is invalid. Press another combination, for example F2, Ctrl+Space, or Shift+Cmd+T.";
-pub const new_instance_hotkey_duplicate_msg =
-    "That hotkey is already used by another TildaZ instance. Press another combination.";
+pub const new_instance_hotkey_duplicate_format =
+    "Already used by TildaZ {d}.";
+pub const new_instance_hotkey_duplicate_fallback =
+    "Already used by another TildaZ instance.";
+pub const new_instance_hotkey_check_failed_msg =
+    "Could not check existing TildaZ hotkeys.";
 pub const new_instance_create_failed_format = "The new TildaZ instance could not be created.\n\n{s}";
 
 pub const macos_permission_required_title = "TildaZ — Permission required";
