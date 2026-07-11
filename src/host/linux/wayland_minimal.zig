@@ -2541,7 +2541,10 @@ const Client = struct {
             }
             if (self.session != null) try self.ensureSessionGrid();
             self.configured = true;
-            if (self.mapped) self.requestRedraw();
+            // Fresh xdg-shell recreate는 아직 mapped=false지만 visible이다.
+            // 첫 non-null buffer attach가 일어나도록 layer-shell configure와
+            // 같은 조건으로 redraw를 요청한다.
+            if (self.mapped or !self.surface_hidden) self.requestRedraw();
             return;
         }
         // #203 Phase C — dialog layer-surface events. main layer-surface 와
@@ -5541,6 +5544,10 @@ const Client = struct {
             self.drainPendingDialogDismiss();
             self.drainExitedTabs();
             self.dispatchDbusMessages();
+            // Fresh surface의 configure handler가 예약한 첫 frame을 이 bounded
+            // pump 안에서 attach해야 mapped=true가 된다. outer main loop의 redraw는
+            // 이 함수가 반환한 뒤라 여기서 기다리는 동안에는 실행될 수 없다.
+            try self.maybeRedraw();
         }
         if (!self.mapped) return error.MainWindowShowTimeout;
         log.appendLine("dialog", "main window shown before new-instance prompt", .{});
