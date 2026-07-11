@@ -242,6 +242,14 @@ fn newInstanceNotification(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) voi
     if (@import("../instance_context.zig").requireWorkerIndex() == 0) createNewInstance();
 }
 
+fn hotkeyCaptureBeginNotification(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    @import("../hotkey_capture/macos.zig").setSuspended(true);
+}
+
+fn hotkeyCaptureEndNotification(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    @import("../hotkey_capture/macos.zig").setSuspended(false);
+}
+
 var g_app_delegate_class: ?objc.Class = null;
 var g_app_delegate_instance: objc.id = null;
 
@@ -262,6 +270,10 @@ fn installAppDelegate() !void {
     if (!objc.class_addMethod(cls, objc.sel("applicationShouldHandleReopen:hasVisibleWindows:"), @ptrCast(&applicationShouldHandleReopen), "B@:@B"))
         return error.AppDelegateAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("newInstanceNotification:"), @ptrCast(&newInstanceNotification), "v@:@"))
+        return error.AppDelegateAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("hotkeyCaptureBeginNotification:"), @ptrCast(&hotkeyCaptureBeginNotification), "v@:@"))
+        return error.AppDelegateAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("hotkeyCaptureEndNotification:"), @ptrCast(&hotkeyCaptureEndNotification), "v@:@"))
         return error.AppDelegateAddMethodFailed;
     objc.objc_registerClassPair(cls);
     g_app_delegate_class = cls;
@@ -287,6 +299,9 @@ fn installAppDelegate() !void {
             objc.nsString(@import("../instance_request/macos.zig").notification_name),
             null,
         );
+        const capture = @import("../hotkey_capture/macos.zig");
+        addObserver(center, objc.sel("addObserver:selector:name:object:"), inst, objc.sel("hotkeyCaptureBeginNotification:"), objc.nsString(capture.begin_notification_name), null);
+        addObserver(center, objc.sel("addObserver:selector:name:object:"), inst, objc.sel("hotkeyCaptureEndNotification:"), objc.nsString(capture.end_notification_name), null);
     }
 }
 
@@ -3305,6 +3320,10 @@ fn eventTapCallback(
     const flags = CGEventGetFlags(event);
     const mods = flags & kCGEventFlagsAllModifiers;
     const keycode: u32 = @intCast(keycode_i64);
+
+    // 단축키 입력 dialog 동안에는 기존 worker 의 hotkey 를 통과시켜 local
+    // NSEvent monitor 가 실제 조합을 받게 한다.
+    if (@import("../hotkey_capture/macos.zig").isSuspended()) return event;
 
     // 사용자 toggle hotkey (config.hotkey).
     if (keycode == g_config.hotkey.keycode and mods == g_config.hotkey.modifiers) {

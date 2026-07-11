@@ -47,6 +47,8 @@ const WM_KEYUP: UINT = 0x0101;
 const WM_CHAR: UINT = 0x0102;
 const WM_HOTKEY: UINT = 0x0312;
 pub const WM_NEW_INSTANCE_REQUEST: UINT = 0x8000 + 267;
+pub const WM_HOTKEY_CAPTURE_BEGIN: UINT = 0x8000 + 268;
+pub const WM_HOTKEY_CAPTURE_END: UINT = 0x8000 + 269;
 const WM_TIMER: UINT = 0x0113;
 const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
@@ -433,6 +435,9 @@ pub const Window = struct {
     /// 텍스트) 는 default 처리 — Windows 가 WM_CHAR 로 따로 보냄.
     preedit_buf: [256]u8 = undefined,
     preedit_len: usize = 0,
+    hotkey_vkey: UINT = 0,
+    hotkey_modifiers: UINT = 0,
+    hotkey_registered: bool = false,
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
     const HOTKEY_ID: c_int = 1;
@@ -544,6 +549,8 @@ pub const Window = struct {
         // 이 셋은 외부 표시 없이 silent fail 하는 게 사고 — drop-down 정체상 hotkey
         // 가 없으면 토글 자체가 안 되어 사용자가 *왜 안 되는지* 모른 채 헤맴.
         // fatal dialog 로 종료 + config 파일 경로 + 알려진 reservation 안내.
+        self.hotkey_vkey = hotkey_vkey;
+        self.hotkey_modifiers = hotkey_modifiers;
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
@@ -556,6 +563,7 @@ pub const Window = struct {
             ) catch messages.hotkey_registration_failed_fallback_msg;
             dialog.showFatal(messages.hotkey_registration_failed_title, msg);
         }
+        self.hotkey_registered = true;
 
         // Remember font chain + font-creation parameters so `rebuildFontForDpi`
         // can recreate the font + re-measure cell metrics on DPI changes.
@@ -648,7 +656,7 @@ pub const Window = struct {
     pub fn deinit(self: *Window) void {
         if (self.hwnd) |hwnd| {
             _ = KillTimer(hwnd, RENDER_TIMER_ID);
-            _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+            if (self.hotkey_registered) _ = UnregisterHotKey(hwnd, HOTKEY_ID);
             if (self.dc) |dc| _ = ReleaseDC(hwnd, dc);
             _ = DestroyWindow(hwnd);
         }
@@ -1141,6 +1149,20 @@ pub const Window = struct {
                     @import("new_instance.zig").handle(std.heap.page_allocator);
                 }
                 return 0;
+            },
+            WM_HOTKEY_CAPTURE_BEGIN => {
+                if (self.hotkey_registered) {
+                    if (UnregisterHotKey(hwnd, HOTKEY_ID) == 0) return 0;
+                    self.hotkey_registered = false;
+                }
+                return 1;
+            },
+            WM_HOTKEY_CAPTURE_END => {
+                if (!self.hotkey_registered) {
+                    if (RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey) == 0) return 0;
+                    self.hotkey_registered = true;
+                }
+                return 1;
             },
             WM_HOTKEY => {
                 if (wParam == HOTKEY_ID) {

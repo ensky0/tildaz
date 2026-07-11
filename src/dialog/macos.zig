@@ -141,16 +141,16 @@ fn removeDismissMonitor(monitor: objc.id) void {
 }
 
 var prompt_field: objc.id = null;
+var prompt_status: objc.id = null;
 var prompt_alert: objc.id = null;
 var prompt_capture_buf: [64]u8 = undefined;
 var prompt_capture_len: usize = 0;
 var prompt_validator: ?dialog.HotkeyValidator = null;
-var prompt_message: []const u8 = "";
 
 fn updatePromptValidation() bool {
     if (prompt_capture_len == 0) {
         setPromptCreateEnabled(prompt_alert, false);
-        setInformative(prompt_alert, prompt_message);
+        setPromptStatusText("");
         return false;
     }
     const result = if (prompt_validator) |validator|
@@ -164,13 +164,7 @@ fn updatePromptValidation() bool {
     setPromptCreateEnabled(prompt_alert, available);
     var status_buf: [256]u8 = undefined;
     const status = dialog.hotkeyValidationMessage(&status_buf, result);
-    if (status.len == 0) {
-        setInformative(prompt_alert, prompt_message);
-    } else {
-        var combined_buf: [1024]u8 = undefined;
-        const combined = std.fmt.bufPrint(&combined_buf, "{s}\n\n{s}", .{ prompt_message, status }) catch status;
-        setInformative(prompt_alert, combined);
-    }
+    setPromptStatusText(status);
     return available;
 }
 
@@ -235,6 +229,14 @@ fn setPromptFieldText(text: []const u8) void {
     if (prompt_field == null) return;
     const set = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     set(prompt_field, objc.sel("setStringValue:"), nsStringFromSlice(text));
+}
+
+fn setPromptStatusText(text: []const u8) void {
+    if (prompt_status == null) return;
+    const set = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    set(prompt_status, objc.sel("setStringValue:"), nsStringFromSlice(text));
+    const redraw = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    redraw(prompt_status, objc.sel("setNeedsDisplay:"), true);
 }
 
 /// #249 — alert 가 key window 가 아니면 강제로 key 로 승격한다(이미 key 면 no-op).
@@ -516,31 +518,51 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     addButton(alert, "Cancel");
     setButtonEsc(alert, 1);
 
+    const NSView = objc.getClass("NSView");
     const NSTextField = objc.getClass("NSTextField");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const container_alloc = alloc(NSView, objc.sel("alloc")) orelse return null;
     const field_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
+    const status_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 360, .h = 26 }) orelse return null;
+    const container = initWithFrame(container_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 360, .h = 52 }) orelse return null;
+    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 26, .w = 360, .h = 26 }) orelse return null;
+    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 360, .h = 22 }) orelse return null;
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    setBool(field, objc.sel("setEditable:"), false);
-    setBool(field, objc.sel("setSelectable:"), false);
+    for ([_]objc.id{ field, status }) |label| {
+        setBool(label, objc.sel("setEditable:"), false);
+        setBool(label, objc.sel("setSelectable:"), false);
+        setBool(label, objc.sel("setBezeled:"), false);
+        setBool(label, objc.sel("setDrawsBackground:"), false);
+    }
+    const setAlignment = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+    setAlignment(field, objc.sel("setAlignment:"), 1); // NSTextAlignmentCenter
+    setAlignment(status, objc.sel("setAlignment:"), 1);
+    const NSColor = objc.getClass("NSColor");
+    const getColor = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const red = getColor(NSColor, objc.sel("systemRedColor"));
+    if (red != null) {
+        const setColor = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        setColor(status, objc.sel("setTextColor:"), red);
+    }
+    const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    addSubview(container, objc.sel("addSubview:"), field);
+    addSubview(container, objc.sel("addSubview:"), status);
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setAccessory(alert, objc.sel("setAccessoryView:"), field);
+    setAccessory(alert, objc.sel("setAccessoryView:"), container);
     prompt_field = field;
+    prompt_status = status;
     prompt_alert = alert;
     prompt_capture_len = 0;
     prompt_validator = validator;
-    prompt_message = message;
-    defer {
-        prompt_validator = null;
-        prompt_message = "";
-    }
+    defer prompt_validator = null;
     setPromptCreateEnabled(alert, false);
 
     const monitor = addPromptMonitor();
     defer removeDismissMonitor(monitor);
     defer {
         prompt_field = null;
+        prompt_status = null;
         prompt_alert = null;
     }
     while (true) {
