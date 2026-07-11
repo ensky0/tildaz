@@ -60,6 +60,7 @@
  */
 
 const GLib = imports.gi.GLib;
+const Gio = imports.gi.Gio;
 const Meta = imports.gi.Meta;
 const Cinnamon = imports.gi.Cinnamon;
 const Main = imports.ui.main;
@@ -88,7 +89,10 @@ function enable() {
     expoProto: null, // isExpoWindow 패치한 ExpoWorkspaceThumbnail.prototype (disable 복원)
     origIsExpoWindow: null, // 그 원본 메서드
     configs: readConfigs(),
-    hotkeys: new Set(),
+    hotkeys: new Map(),
+    configMonitor: null,
+    configMonitorId: 0,
+    configReloadId: 0,
   };
 
   // 패널 window-list / workspace-switcher 는 Main.isInteresting → C
@@ -138,6 +142,23 @@ function enable() {
   // (display, window, binding) 인자를 받지만 toggle 은 무시.
   for (const [index, cfg] of st.configs) registerHotkey(index, cfg);
 
+  const configDir = Gio.File.new_for_path(
+    GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"])
+  );
+  try {
+    st.configMonitor = configDir.monitor_directory(Gio.FileMonitorFlags.NONE, null);
+    st.configMonitorId = st.configMonitor.connect("changed", () => {
+      if (st.configReloadId) GLib.source_remove(st.configReloadId);
+      st.configReloadId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+        st.configReloadId = 0;
+        syncHotkeys(readConfigs());
+        return GLib.SOURCE_REMOVE;
+      });
+    });
+  } catch (e) {
+    global.logError("[tildaz] config monitor failed: " + e);
+  }
+
   // Worker 배치에는 app_id가 확정된 map을 사용한다. Dialog는 hidden parent 때문에
   // map되지 않을 수 있어 window-created + notify::wm-class에서 parent를 먼저 복원한다.
   st.windowCreatedId = global.display.connect("window-created", (_display, win) => {
@@ -147,7 +168,10 @@ function enable() {
 }
 
 function disable() {
-  for (const name of st?.hotkeys || []) try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
+  for (const name of st?.hotkeys?.keys() || []) try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
+  if (st?.configMonitorId) st.configMonitor.disconnect(st.configMonitorId);
+  if (st?.configMonitor) st.configMonitor.cancel();
+  if (st?.configReloadId) GLib.source_remove(st.configReloadId);
   if (st && st.mapId) {
     global.window_manager.disconnect(st.mapId);
     st.mapId = 0;
@@ -241,9 +265,24 @@ function readConfigs() {
 
 function registerHotkey(index, cfg) {
   const name = `tildaz-toggle-${index}`;
-  if (!cfg.accel || st.hotkeys.has(name)) return;
+  if (!cfg.accel || st.hotkeys.get(name) === cfg.accel) return;
+  if (st.hotkeys.has(name)) {
+    try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
+  }
   Main.keybindingManager.addHotKey(name, cfg.accel, () => toggle(index));
-  st.hotkeys.add(name);
+  st.hotkeys.set(name, cfg.accel);
+}
+
+function syncHotkeys(nextConfigs) {
+  for (const [name, accel] of st.hotkeys) {
+    const match = /^tildaz-toggle-(0|[1-9][0-9]*)$/.exec(name);
+    const next = match ? nextConfigs.get(Number(match[1])) : null;
+    if (next?.accel === accel) continue;
+    try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
+    st.hotkeys.delete(name);
+  }
+  st.configs = nextConfigs;
+  for (const [index, cfg] of nextConfigs) registerHotkey(index, cfg);
 }
 
 /** tildaz hotkey 문자열("ctrl+shift+t" / "f1" / "super+grave") → GTK accelerator. */

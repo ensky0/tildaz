@@ -3,9 +3,13 @@ const config = @import("../config.zig");
 const instances = @import("../instances.zig");
 const log = @import("../log.zig");
 const instance_identity = @import("../host/linux/instance_identity.zig");
+const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
+const portal = @import("../host/linux/portal.zig");
 
 pub fn sync(allocator: std.mem.Allocator, indices: []const u32) !void {
     try instance_identity.syncDesktopEntries(allocator, indices);
+    gsettings_hotkey.syncNumberedEntries(allocator, indices);
+    portal.syncNumberedKdeIdentities(allocator, indices);
     if (desktopContains("hyprland")) syncHyprland(allocator, indices) catch |err| {
         log.appendLine("hyprland", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});
     };
@@ -26,19 +30,82 @@ fn desktopContains(name: []const u8) bool {
 fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
-    try removeManagedHyprlandBindings(allocator, exe);
+
+    var desired: std.ArrayList(HyprlandDesired) = .empty;
+    defer {
+        for (desired.items) |item| item.deinit(allocator);
+        desired.deinit(allocator);
+    }
     for (indices) |index| {
         const text = try instances.configHotkeyText(allocator, index);
         defer allocator.free(text);
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
         var accel_buf: [96]u8 = undefined;
         const accel = try hyprlandAccel(&accel_buf, hotkey);
-        const binding = try std.fmt.allocPrint(allocator, "{s},exec,{s} --toggle {d}", .{ accel, exe, index });
+        const owned_accel = try allocator.dupe(u8, accel);
+        errdefer allocator.free(owned_accel);
+        const command = try std.fmt.allocPrint(allocator, "{s} --toggle {d}", .{ exe, index });
+        errdefer allocator.free(command);
+        try desired.append(allocator, .{
+            .accel = owned_accel,
+            .command = command,
+        });
+    }
+
+    const actual = try readHyprlandBindings(allocator);
+    defer actual.deinit();
+    const present = try allocator.alloc(bool, desired.items.len);
+    defer allocator.free(present);
+    @memset(present, false);
+    var removed_accels: std.ArrayList([]u8) = .empty;
+    defer {
+        for (removed_accels.items) |accel| allocator.free(accel);
+        removed_accels.deinit(allocator);
+    }
+
+    var kept: usize = 0;
+    var removed: usize = 0;
+    for (actual.value) |binding| {
+        var accel_buf: [96]u8 = undefined;
+        const accel = managedHyprlandAccel(&accel_buf, binding, exe) orelse continue;
+        if (findHyprlandDesired(desired.items, accel, binding.arg)) |desired_index| {
+            if (!present[desired_index]) {
+                present[desired_index] = true;
+                kept += 1;
+                continue;
+            }
+        }
+        if (containsString(removed_accels.items, accel)) continue;
+        _ = try runHyprlandKeyword(allocator, "unbind", accel);
+        try removed_accels.append(allocator, try allocator.dupe(u8, accel));
+        removed += 1;
+        // Hyprland unbind는 accelerator 단위라 같은 키의 desired binding도 함께
+        // 제거될 수 있다. 해당 desired는 아래 add 단계에서 복원한다.
+        for (desired.items, 0..) |item, i| {
+            if (std.mem.eql(u8, item.accel, accel)) present[i] = false;
+        }
+    }
+
+    var added: usize = 0;
+    for (desired.items, 0..) |item, i| {
+        if (present[i]) continue;
+        const binding = try std.fmt.allocPrint(allocator, "{s},exec,{s}", .{ item.accel, item.command });
         defer allocator.free(binding);
         if (!try runHyprlandKeyword(allocator, "bind", binding)) return error.HyprctlFailed;
+        added += 1;
     }
-    log.appendLine("hyprland", "numbered hotkeys synchronized ({d})", .{indices.len});
+    log.appendLine("hyprland", "numbered hotkeys synchronized desired={} kept={} removed={} added={}", .{ desired.items.len, kept, removed, added });
 }
+
+const HyprlandDesired = struct {
+    accel: []const u8,
+    command: []const u8,
+
+    fn deinit(self: HyprlandDesired, allocator: std.mem.Allocator) void {
+        allocator.free(self.accel);
+        allocator.free(self.command);
+    }
+};
 
 const HyprlandBind = struct {
     modmask: u32 = 0,
@@ -54,7 +121,7 @@ const hypr_mod_alt: u32 = 8;
 const hypr_mod_super: u32 = 64;
 const hypr_supported_mods = hypr_mod_shift | hypr_mod_ctrl | hypr_mod_alt | hypr_mod_super;
 
-fn removeManagedHyprlandBindings(allocator: std.mem.Allocator, exe: []const u8) !void {
+fn readHyprlandBindings(allocator: std.mem.Allocator) !std.json.Parsed([]HyprlandBind) {
     const result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{ "hyprctl", "-j", "binds" },
@@ -67,18 +134,24 @@ fn removeManagedHyprlandBindings(allocator: std.mem.Allocator, exe: []const u8) 
         else => return error.HyprctlFailed,
     }
 
-    const parsed = try std.json.parseFromSlice([]HyprlandBind, allocator, result.stdout, .{
+    return std.json.parseFromSlice([]HyprlandBind, allocator, result.stdout, .{
+        .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
-    defer parsed.deinit();
-    var removed: usize = 0;
-    for (parsed.value) |binding| {
-        var accel_buf: [96]u8 = undefined;
-        const accel = managedHyprlandAccel(&accel_buf, binding, exe) orelse continue;
-        _ = try runHyprlandKeyword(allocator, "unbind", accel);
-        removed += 1;
+}
+
+fn findHyprlandDesired(desired: []const HyprlandDesired, accel: []const u8, command: []const u8) ?usize {
+    for (desired, 0..) |item, i| {
+        if (std.mem.eql(u8, item.accel, accel) and std.mem.eql(u8, item.command, command)) return i;
     }
-    log.appendLine("hyprland", "removed managed runtime hotkeys ({d})", .{removed});
+    return null;
+}
+
+fn containsString(items: []const []u8, needle: []const u8) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item, needle)) return true;
+    }
+    return false;
 }
 
 fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]const u8 {
@@ -172,6 +245,16 @@ test "Hyprland binds JSON keeps the fields needed for cleanup" {
     try std.testing.expectEqualStrings(",F3", managedHyprlandAccel(&buf, parsed.value[0], "/home/test/tildaz").?);
 }
 
+test "Hyprland desired lookup distinguishes keep and changed command" {
+    const desired = [_]HyprlandDesired{
+        .{ .accel = ",F1", .command = "/home/test/tildaz --toggle 0" },
+        .{ .accel = ",F2", .command = "/home/test/tildaz --toggle 1" },
+    };
+    try std.testing.expectEqual(@as(?usize, 0), findHyprlandDesired(&desired, ",F1", "/home/test/tildaz --toggle 0"));
+    try std.testing.expectEqual(@as(?usize, null), findHyprlandDesired(&desired, ",F3", "/home/test/tildaz --toggle 2"));
+    try std.testing.expectEqual(@as(?usize, null), findHyprlandDesired(&desired, ",F1", "/home/test/tildaz --toggle 9"));
+}
+
 fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
     const home = std.posix.getenv("HOME") orelse return error.HomeNotSet;
     const dir_path = try std.fs.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
@@ -203,6 +286,11 @@ fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
             try output.append(allocator, '\n');
         }
         offset = if (end < content.len) end + 1 else content.len;
+    }
+
+    if (std.mem.eql(u8, content, output.items)) {
+        log.appendLine("cosmic", "numbered hotkeys already synchronized ({d})", .{indices.len});
+        return;
     }
 
     const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-tmp", .{path});
