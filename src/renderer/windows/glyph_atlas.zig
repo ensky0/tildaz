@@ -105,7 +105,7 @@ pub const GlyphAtlas = struct {
 
     // Temporary buffers for glyph rasterization (reused, heap-allocated)
     temp_buf: []u8, // RGBA output: 256*256*4 bytes
-    ct_buf: []u8,   // ClearType 3x1 input: 256*256*3 bytes
+    ct_buf: []u8, // ClearType 3x1 input: 256*256*3 bytes
 
     // Set to true when getOrInsert finds the atlas full; caller must flush, call reset(), then retry.
     is_full: bool = false,

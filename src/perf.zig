@@ -75,7 +75,8 @@ pub fn dumpAndReset(label: []const u8) void {
     const on = snapshot(&onrender);
 
     var buf: [4096]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf,
+    const text = std.fmt.bufPrint(
+        &buf,
         "\n=== {s} @ ts={d}ms ===\n" ++
             "readloop calls={d} bytes={d} ms={d:.3}\n" ++
             "push     calls={d} bytes={d} yields={d}\n" ++
@@ -85,17 +86,16 @@ pub fn dumpAndReset(label: []const u8) void {
             "present  calls={d} ms={d:.3}\n" ++
             "onrender calls={d} ms={d:.3} skip={d}\n",
         .{
-            label,              std.time.milliTimestamp(),
-            rl[0],              rl[2],
-            @as(f64, @floatFromInt(rl[1])) / 1_000_000.0,
-            pu[0],              pu[2],              pu[3],
-            dr[0],              dr[2],
-            @as(f64, @floatFromInt(dr[1])) / 1_000_000.0,
-            pa[0],              @as(f64, @floatFromInt(pa[1])) / 1_000_000.0,
-            re[0],              @as(f64, @floatFromInt(re[1])) / 1_000_000.0,
-            pr[0],              @as(f64, @floatFromInt(pr[1])) / 1_000_000.0,
-            on[0],              @as(f64, @floatFromInt(on[1])) / 1_000_000.0,
-            on[3],
+            label,                                        std.time.milliTimestamp(),
+            rl[0],                                        rl[2],
+            @as(f64, @floatFromInt(rl[1])) / 1_000_000.0, pu[0],
+            pu[2],                                        pu[3],
+            dr[0],                                        dr[2],
+            @as(f64, @floatFromInt(dr[1])) / 1_000_000.0, pa[0],
+            @as(f64, @floatFromInt(pa[1])) / 1_000_000.0, re[0],
+            @as(f64, @floatFromInt(re[1])) / 1_000_000.0, pr[0],
+            @as(f64, @floatFromInt(pr[1])) / 1_000_000.0, on[0],
+            @as(f64, @floatFromInt(on[1])) / 1_000_000.0, on[3],
         },
     ) catch return;
 

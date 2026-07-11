@@ -142,11 +142,10 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Area | Issue | State |
 |---|---:|---|
 | macOS Developer ID signing / notarization | [#109](https://github.com/ensky0/tildaz/issues/109) | Blocked by current signing environment; releases are ad-hoc signed |
-| Config schema completion / future cleanup | [#118](https://github.com/ensky0/tildaz/issues/118) | Open follow-up context |
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
-| Linux renderer (EGL/OpenGL ES) | [#189](https://github.com/ensky0/tildaz/issues/189) | Wayland backend shipped in v0.5.0 (final) — Wayland-only, verified on real hardware across KDE Plasma 6, Hyprland, sway, Cinnamon, GNOME (Shell extension), and COSMIC. The remaining follow-up is replacing the bring-up software `wl_shm` renderer with a GPU (EGL/OpenGL ES) path; the software renderer is correct but is a placeholder. |
-| Stress tests | none yet | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
+| Linux renderer (EGL/OpenGL ES) | [#277](https://github.com/ensky0/tildaz/issues/277) | The Wayland backend shipped in v0.5.0; replacing the correct software `wl_shm` path with a GPU renderer remains future work. |
+| Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),

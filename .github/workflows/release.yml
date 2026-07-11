@@ -252,6 +252,11 @@ jobs:
             echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
             exit 1
           fi
+          PLIST_VER=$(sed -n '/<key>CFBundleShortVersionString<\/key>/{n;s/.*<string>\([^<]*\)<\/string>.*/\1/p;}' dist/macos/Info.plist)
+          if [[ "$PLIST_VER" != "$BASE_VER" ]]; then
+            echo "ERROR: macOS Info.plist version ($PLIST_VER) != tag base version ($BASE_VER)"
+            exit 1
+          fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
           if [[ ! -f "$NOTES" ]]; then
             echo "ERROR: release notes missing at $NOTES"
@@ -495,4 +500,3 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
           fail_on_unmatched_files: true
-

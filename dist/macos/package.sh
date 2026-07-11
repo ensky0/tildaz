@@ -17,7 +17,7 @@
 #   - Input Monitoring + Accessibility 권한 한 번 부여
 #
 # 사용법:
-#   bash dist/macos/package.sh --version 0.2.13
+#   bash dist/macos/package.sh --version 0.6.0
 #
 # 옵션:
 #   --version <ver>    필수. release 파일 이름에 사용.
@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$VERSION" ]]; then
-    echo "ERROR: --version is required (e.g. --version 0.2.13)" >&2
+    echo "ERROR: --version is required (e.g. --version 0.6.0)" >&2
     exit 2
 fi
 
@@ -71,12 +71,14 @@ echo "--- 1. Build aarch64-macos (Apple Silicon) ---"
 rm -rf "$ARM_PREFIX"
 zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
+    -Doptimize=ReleaseFast \
     -p "$ARM_PREFIX"
 
 echo "--- 2. Build x86_64-macos (Intel) ---"
 rm -rf "$X86_PREFIX"
 zig build -Dtarget=x86_64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
+    -Doptimize=ReleaseFast \
     -p "$X86_PREFIX"
 
 echo "--- 3. Universal binary via lipo ---"

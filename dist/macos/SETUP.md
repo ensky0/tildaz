@@ -15,7 +15,7 @@ password 와 다른 별도 정책 password 를 요구하는 경우가 있고, �
 ## 옵션 A: ad-hoc (default, 항상 동작)
 
 ```bash
-zig build
+zig build -Doptimize=ReleaseFast
 ```
 
 `codesign --sign -` (ad-hoc) 으로 서명. 매 빌드마다 hash 변경 → macOS 가 새
@@ -60,7 +60,7 @@ security find-identity -v -p codesigning
 ### 3. 빌드
 
 ```bash
-zig build -Dmacos-sign-identity=TildazLocal
+zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast
 ```
 
 처음 빌드 시 keychain access dialog 가 뜸. **macOS 로그인 password** 입력 +
@@ -79,7 +79,7 @@ F1 첫 누름에 macOS 권한 요구:
 - System Settings → Privacy & Security → Input Monitoring → tildaz ON
 - System Settings → Privacy & Security → Accessibility → tildaz ON
 
-이후 `zig build -Dmacos-sign-identity=TildazLocal` 로 빌드 + 다시 실행해도
+이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast` 로 빌드 + 다시 실행해도
 **권한 유지** — signing identity stable.
 
 ### 검증
@@ -109,6 +109,25 @@ bash dist/macos/setup-cert.sh
    직접 `sudo` 실행 (script 가 GUI dialog 환경 못 받는 case 회피).
 
 CLI 시도가 막히면 옵션 B 로 fallback.
+
+## ReleaseFast 빌드 + Applications 설치
+
+`TildazLocal` identity가 이미 유효하면 아래 스크립트가 ReleaseFast 빌드와
+`/Applications/TildaZ.app` 설치를 한 번에 수행해요. identity가 없으면
+`setup-cert.sh`를 먼저 실행하고, 출력된 system trust 명령까지 완료되지 않은
+경우에는 안전하게 중단해요.
+
+```bash
+./dist/macos/build_and_install.sh
+```
+
+설치 경로 또는 identity를 바꿔야 하면 환경변수로 지정할 수 있어요.
+
+```bash
+TILDAZ_INSTALL_PATH="$HOME/Applications/TildaZ.app" \
+TILDAZ_SIGN_IDENTITY=TildazLocal \
+./dist/macos/build_and_install.sh
+```
 
 ## CI 빌드 (`.github/workflows/release.yml`)
 

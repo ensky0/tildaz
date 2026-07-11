@@ -2,12 +2,12 @@
 # tildaz 로컬 빌드용 self-signed code-signing 인증서 setup.
 #
 # 한 번만 실행해요. 결과:
-#   - login keychain 에 "tildaz Local" 인증서 + private key 추가
+#   - login keychain 에 "TildazLocal" 인증서 + private key 추가
 #   - codesign 이 dialog 없이 사용 가능 (partition-list 설정)
 #   - codeSign trust 추가 (find-identity -p codesigning 에 valid 로)
 #
 # 이후 빌드:
-#   zig build -Dmacos-sign-identity="tildaz Local"
+#   zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast
 #
 # 매 빌드마다 ad-hoc 의 hash 가 바뀌어 macOS TCC 가 권한 재요구하던 짜증 해결.
 # signing identity + bundle identifier (me.ensky0.tildaz) 가 stable 이라 코드
@@ -25,7 +25,7 @@ trap "rm -rf $TMPDIR" EXIT
 
 # 사용자 login password — partition-list set + unlock-keychain 에 필요.
 # osascript 로 GUI dialog — terminal log 에 안 남고 hidden input.
-PW=$(osascript -e 'display dialog "tildaz: macOS 로그인 password (codesign cert setup)" default answer "" with hidden answer with icon caution' -e 'return text returned of result' 2>/dev/null)
+PW=$(osascript -e 'display dialog "TildaZ: macOS 로그인 password (codesign cert setup)" default answer "" with hidden answer with icon caution' -e 'return text returned of result' 2>/dev/null)
 if [[ -z "$PW" ]]; then
     echo "ERROR: password 입력 안 됨." >&2
     exit 1
