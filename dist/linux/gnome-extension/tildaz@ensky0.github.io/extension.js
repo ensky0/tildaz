@@ -8,7 +8,7 @@
  * 평범한 Wayland xdg-shell client(app_id="tildaz")로 그대로 두고, 이 extension 이
  * 그 창을 잡아 배치/토글한다. reference: ddterm / quake-terminal 패턴.
  *
- * config = single source of truth: ~/.config/tildaz/config.json 의 hotkey 와
+ * config = single source of truth: ~/.config/tildaz/config_N.json 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} 를 읽는다.
  *
  * 동작: app_id 감지 + config 기반 placement(move_resize_frame) + make_above +
@@ -21,34 +21,48 @@
 import Meta from "gi://Meta";
 import Shell from "gi://Shell";
 import GLib from "gi://GLib";
+import Gio from "gi://Gio";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 
 const APP_ID = "tildaz";
 const DESKTOP_ID = "tildaz.desktop";
-const KEY = "toggle-hotkey";
 
 export default class TildazExtension extends Extension {
   enable() {
-    this._settings = this.getSettings();
     this._appSystem = Shell.AppSystem.get_default();
-    this._cfg = this._readConfig();
+    this._configs = this._readConfigs();
     this._mapWaitId = 0;
-    this._managed = null; // make_above 해 둔 창 (disable 시 복원)
-    this._placed = null; // placement 를 이미 적용한 창 (1회만)
-    this._taskbarPatched = null; // skip_taskbar override 한 창 (disable 시 복원)
+    this._managed = new Set();
+    this._placed = new Set();
+    this._taskbarPatched = new Set();
     this._startupHookId = 0; // hidden preload 의 startup-complete overview 닫기 hook
 
-    // config.json 의 hotkey 를 gschema 키에 반영한 뒤 등록 (config = source of truth).
-    if (this._cfg.accel) this._settings.set_strv(KEY, [this._cfg.accel]);
-
-    Main.wm.addKeybinding(
-      KEY,
-      this._settings,
-      Meta.KeyBindingFlags.IGNORE_AUTOREPEAT,
-      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW | Shell.ActionMode.POPUP,
-      () => this._toggle()
+    this._accelerators = new Map();
+    this._acceleratorSignalId = global.display.connect(
+      "accelerator-activated",
+      (_display, action) => {
+        const index = this._accelerators.get(action);
+        if (index !== undefined) this._toggle(index);
+      }
     );
+    this._registerAccelerators();
+    const configDir = Gio.File.new_for_path(GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"]));
+    try {
+      this._configMonitor = configDir.monitor_directory(Gio.FileMonitorFlags.NONE, null);
+      this._configMonitorId = this._configMonitor.connect("changed", () => {
+        if (this._configReloadId) GLib.source_remove(this._configReloadId);
+        this._configReloadId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+          this._configReloadId = 0;
+          this._configs = this._readConfigs();
+          this._unregisterAccelerators();
+          this._registerAccelerators();
+          return GLib.SOURCE_REMOVE;
+        });
+      });
+    } catch (_e) {
+      this._configMonitor = null;
+    }
 
     // 배치(우측 드롭다운) 핸들러는 auto_start 와 무관하게 *항상* 건다 — 그래야 앱
     // 그리드/터미널로 수동 실행해도(auto_start=false) extension 이 그 창을 잡아
@@ -60,28 +74,49 @@ export default class TildazExtension extends Extension {
     // 숨김, hotkey 로 등장). auto_start=false 면 로그인 시 안 뜨고(앱 그리드/터미널로
     // 수동 실행), F1 은 실행 중일 때만 toggle(미실행 시 무동작). zig 는 GNOME 에서
     // autostart .desktop 을 삭제하므로 launch lifecycle 은 여기(extension)가 담당한다.
-    if (this._cfg.autoStart) this._launch();
+    if (this._configs.size === 0 || [...this._configs.values()].some(c => c.autoStart)) this._launchAutostart();
+  }
+
+  _registerAccelerators() {
+    for (const [index, cfg] of this._configs) {
+      if (!cfg.accel) continue;
+      const action = global.display.grab_accelerator(cfg.accel, Meta.KeyBindingFlags.NONE);
+      if (action && action !== Meta.KeyBindingAction.NONE) {
+        this._accelerators.set(action, index);
+        Main.wm.allowKeybinding(
+          Meta.external_binding_name_for_action(action),
+          Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW | Shell.ActionMode.POPUP
+        );
+      }
+    }
+  }
+
+  _unregisterAccelerators() {
+    for (const action of this._accelerators?.keys() || []) global.display.ungrab_accelerator(action);
+    this._accelerators = new Map();
   }
 
   disable() {
-    Main.wm.removeKeybinding(KEY);
+    if (this._acceleratorSignalId) global.display.disconnect(this._acceleratorSignalId);
+    this._unregisterAccelerators();
+    if (this._configMonitorId) this._configMonitor.disconnect(this._configMonitorId);
+    if (this._configMonitor) this._configMonitor.cancel();
+    if (this._configReloadId) GLib.source_remove(this._configReloadId);
     if (this._mapWaitId) {
       global.window_manager.disconnect(this._mapWaitId);
       this._mapWaitId = 0;
     }
-    if (this._managed) {
+    for (const win of this._managed || []) {
       try {
-        this._managed.unmake_above();
-        this._managed.unstick();
+        win.unmake_above();
+        win.unstick();
       } catch (_e) {}
-      this._managed = null;
     }
-    if (this._taskbarPatched) {
+    for (const win of this._taskbarPatched || []) {
       // configurable:true 로 정의했으므로 delete → GObject prototype getter 복귀.
       try {
-        delete this._taskbarPatched.skip_taskbar;
+        delete win.skip_taskbar;
       } catch (_e) {}
-      this._taskbarPatched = null;
     }
     if (this._startupHookId) {
       try {
@@ -89,14 +124,16 @@ export default class TildazExtension extends Extension {
       } catch (_e) {}
       this._startupHookId = 0;
     }
-    this._settings = null;
     this._appSystem = null;
-    this._cfg = null;
+    this._configs = null;
+    this._managed = null;
     this._placed = null;
+    this._taskbarPatched = null;
+    this._accelerators = null;
   }
 
-  /** ~/.config/tildaz/config.json 읽기 (실패 시 안전한 기본값). */
-  _readConfig() {
+  /** ~/.config/tildaz/config_N.json 읽기 (실패 시 해당 항목 제외). */
+  _readConfig(index) {
     const out = {
       accel: "<Super>grave",
       dock: "top",
@@ -111,7 +148,7 @@ export default class TildazExtension extends Extension {
         GLib.get_home_dir(),
         ".config",
         "tildaz",
-        "config.json",
+        `config_${index}.json`,
       ]);
       const [ok, bytes] = GLib.file_get_contents(path);
       if (ok) {
@@ -132,6 +169,23 @@ export default class TildazExtension extends Extension {
       console.log(`[tildaz] config read failed: ${e}`);
     }
     return out;
+  }
+
+  _readConfigs() {
+    const configs = new Map();
+    const dirPath = GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"]);
+    try {
+      const dir = GLib.Dir.open(dirPath, 0);
+      let name;
+      while ((name = dir.read_name()) !== null) {
+        const match = /^config_(0|[1-9][0-9]*)\.json$/.exec(name);
+        if (match) configs.set(Number(match[1]), this._readConfig(Number(match[1])));
+      }
+      dir.close();
+    } catch (e) {
+      console.log(`[tildaz] config directory read failed: ${e}`);
+    }
+    return new Map([...configs.entries()].sort((a, b) => a[0] - b[0]));
   }
 
   /** tildaz hotkey 문자열("ctrl+shift+t" / "f1" / "super+grave") → GTK accelerator. */
@@ -159,19 +213,19 @@ export default class TildazExtension extends Extension {
   }
 
   /** app_id == "tildaz" 인 창 찾기 (Wayland: get_wm_class 가 app_id 를 반환). */
-  _find() {
+  _find(index) {
     const wins = global.display.list_all_windows();
     for (const w of wins) {
       const c = w.get_wm_class();
       const ci = w.get_wm_class_instance ? w.get_wm_class_instance() : null;
-      if (c === APP_ID || ci === APP_ID) return w;
-      if (c && c.toLowerCase() === APP_ID) return w;
+      const title = w.get_title ? w.get_title() : "";
+      if ((c === APP_ID || ci === APP_ID || (c && c.toLowerCase() === APP_ID)) && title === `TildaZ-${index}`) return w;
     }
     return null;
   }
 
-  _toggle() {
-    const win = this._find();
+  _toggle(index) {
+    const win = this._find(index);
 
     if (!win) {
       // 일관모델: hotkey = toggle 전용. tildaz 가 안 떠 있으면 무동작
@@ -199,7 +253,7 @@ export default class TildazExtension extends Extension {
     const actor = win.get_compositor_private();
     if (actor) actor.opacity = 255;
     if (win.minimized) win.unminimize();
-    this._ensurePlacedOnce(win);
+    this._ensurePlacedOnce(win, this._configs.get(index));
     Main.activateWindow(win);
   }
 
@@ -265,17 +319,21 @@ export default class TildazExtension extends Extension {
       const win = actor.meta_window;
       const c = win.get_wm_class();
       if (!(c === APP_ID || (c && c.toLowerCase() === APP_ID))) return;
+      const match = /^TildaZ-(\d+)$/.exec(win.get_title());
+      if (!match) return;
+      const index = Number(match[1]);
 
       // tildaz 가 뜰 때마다 config 를 다시 읽는다 (config = single source of truth).
-      // 사용자가 config.json 의 hidden_start / 위치(dock/width/...) 를 바꾸고 tildaz 만
+      // 사용자가 config_N.json 의 hidden_start / 위치(dock/width/...) 를 바꾸고 tildaz 만
       // 재실행해도 extension reload 없이 반영된다. (hotkey 는 enable 의 gschema 바인딩
       // 이라 예외 — 바꾸면 extension reload/relogin 이 필요하다.)
-      this._cfg = this._readConfig();
+      const cfg = this._readConfig(index);
+      this._configs.set(index, cfg);
 
       // 숨김 여부는 config(hidden_start)가 단일 기준 — 실행 경로(auto_start preload /
       // 앱 그리드 / 터미널)와 무관하게 일관. hidden_start=true 면 배치 후 minimize
       // (첫 hotkey 로 등장), false 면 우측 드롭다운으로 바로 표시.
-      const hidden = this._cfg.hiddenStart;
+      const hidden = cfg.hiddenStart;
 
       // map 직후엔 mutter 의 map 애니메이션(opacity 0→255 ease)이 진행 중이다.
       // kill-window-effects 로 그 애니메이션을 *먼저* 끝낸 뒤(끝나면 opacity 가
@@ -284,7 +342,7 @@ export default class TildazExtension extends Extension {
       // 이동이 그대로 보인다(실측 버그).
       wm.emit("kill-window-effects", actor);
       actor.opacity = 0;
-      this._ensurePlacedOnce(win);
+      this._ensurePlacedOnce(win, cfg);
 
       if (hidden) {
         // preload: 절대 보이지 않게. opacity 0(invisible) 인 채로 배치까지 끝낸 뒤
@@ -327,30 +385,34 @@ export default class TildazExtension extends Extension {
   // tildaz 를 실행. 이미 떠 있으면 no-op. 배치/숨김은 map 핸들러(_armMapHandler,
   // enable 에서 이미 걸림)가 config(hidden_start) 기준으로 처리한다. auto_start
   // preload 전용 경로다(수동 실행은 .desktop activate 가 직접 같은 핸들러를 탄다).
-  _launch() {
-    if (this._find()) return;
+  _launchAutostart() {
     const app = this._appSystem.lookup_app(DESKTOP_ID);
     if (!app) {
       Main.notify("TildaZ", `${DESKTOP_ID} not found — run dist/linux/install.sh`);
       return;
     }
-    app.activate();
+    const exe = app.get_app_info()?.get_executable();
+    if (!exe) return;
+    try {
+      Gio.Subprocess.new([exe, "--autostart"], Gio.SubprocessFlags.NONE);
+    } catch (e) {
+      console.log(`[tildaz] autostart launch failed: ${e}`);
+    }
   }
 
   // 한 창에 대해 placement(move_resize_frame) 를 한 번만 수행. show 마다 재배치하면
   // tildaz xdg buffer 재그리기 race 로 flicker 가 나므로, 최초 1회만 우측에 맞춘다.
-  _ensurePlacedOnce(win) {
-    if (this._placed === win) return;
-    this._place(win);
-    this._placed = win;
+  _ensurePlacedOnce(win, cfg) {
+    if (this._placed.has(win)) return;
+    this._place(win, cfg);
+    this._placed.add(win);
   }
 
   /** config 의 dock_position/width/height/offset 으로 primary monitor workArea 기준 배치. */
-  _place(win) {
+  _place(win, c) {
     const mi = Main.layoutManager.primaryIndex;
     const a = win.get_work_area_for_monitor(mi);
     if (!a) return;
-    const c = this._cfg;
 
     let w = Math.round((a.width * Math.min(c.wp, 100)) / 100);
     let h = Math.round((a.height * Math.min(c.hp, 100)) / 100);
@@ -386,7 +448,7 @@ export default class TildazExtension extends Extension {
     win.make_above();
     win.stick();
     this._skipTaskbar(win);
-    this._managed = win;
+    this._managed.add(win);
   }
 
   // overview(Activities)/Alt-Tab window switcher 에서 창을 숨긴다. mutter 가
@@ -396,13 +458,13 @@ export default class TildazExtension extends Extension {
   // hidden_start=true 의 로그인 백그라운드 대기(minimize)에서 단독 창이라도
   // overview thumbnail 로 안 보이게 하는 게 목적 — KDE 의 숨김과 동일한 결과.
   _skipTaskbar(win) {
-    if (this._taskbarPatched === win) return;
+    if (this._taskbarPatched.has(win)) return;
     Object.defineProperty(win, "skip_taskbar", {
       get() {
         return true;
       },
       configurable: true,
     });
-    this._taskbarPatched = win;
+    this._taskbarPatched.add(win);
   }
 }

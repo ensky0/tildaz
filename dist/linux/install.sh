@@ -13,8 +13,8 @@
 #   ~/.config/sway/config  (sway 는 XDG autostart 미지원 → sway 세션 자동실행엔
 #     이 파일의 exec 가 필요. 없으면 stock 상속(include)+tildaz 블록 생성, 있으면
 #     tildaz 블록(marker+exec 2줄)만 append. 기존 본문은 덮지 않음)
-#   ~/.config/hypr/{hyprland.lua|hyprland.conf}  (Hyprland 자동실행 + hotkey bind —
-#     Lua 면 hl.on+hl.bind, hyprlang 이면 exec-once+bind append. 둘 다 없으면
+#   ~/.config/hypr/{hyprland.lua|hyprland.conf}  (Hyprland 자동실행 —
+#     Lua 면 hl.on, hyprlang 이면 exec-once append. hotkey는 TildaZ가 런타임 등록. 둘 다 없으면
 #     `Hyprland --verify-config` 로 기본 config 생성 후 append. 미설치면 안내. 본문 안 덮음)
 #
 # desktop database / icon cache refresh 는 best-effort (없으면 skip).
@@ -120,12 +120,12 @@ else
     SWAY_MSG="$SWAY_CFG  (기존 config 에 tildaz 자동실행 2줄 append)"
 fi
 
-# ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`) + hotkey bind. Hyprland 은
+# ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`). Hyprland 은
 # XDG autostart 미지원이고 GlobalShortcuts portal 도 DE 전환에 불안정(#244)+anonymous
-# shortcut 이라, hotkey 는 sway 처럼 compositor bind→`tildaz --toggle`(portal 우회)로 건다.
+# shortcut 이라, 실행된 TildaZ가 `hyprctl keyword bind`로 config_N별 단축키를 건다.
 # Hyprland 0.55+ 는 기본 config 가 Lua(hyprland.lua), 구버전/사용자는 hyprlang(.conf):
-#   - .conf → `exec-once = <bin>` + `bind = <mods>,<key>,exec,<bin> --toggle`            (주석 #)
-#   - .lua  → `hl.on(...exec_cmd)` + `hl.bind("<key>", hl.dsp.exec_cmd("<bin> --toggle"))` (주석 --)
+#   - .conf → `exec-once = <bin>` (주석 #)
+#   - .lua  → `hl.on(...exec_cmd)` (주석 --)
 #   - 둘 다 없음 → Hyprland 설치돼 있으면 `Hyprland --verify-config` 로 기본 config 생성
 #     (세션 안 띄움) 후 append. 미설치면 안내만 (`command -v` 로 먼저 걸러 안 깨짐).
 # 기존 본문 안 건드리고 append 만. 각 줄 앞에 marker — uninstall 이 marker+다음줄 제거.
@@ -134,41 +134,12 @@ HYPR_CONF="$HYPR_DIR/hyprland.conf"
 HYPR_LUA="$HYPR_DIR/hyprland.lua"
 TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
 
-# tildaz config.hotkey ("f1" / "ctrl+grave" / "super+a" …, '+' 구분) → Hyprland bind 형식.
-#   HYPR_BIND_CONF = hyprlang 1번 필드 "<mods>,<key>" (mods 공백구분)
-#   HYPR_BIND_LUA  = lua "<mod + … + key>"
-hypr_translate_hotkey() {
-    local cfg="$HOME/.config/tildaz/config.json" hk="f1" v=""
-    if [[ -f "$cfg" ]]; then
-        v="$(grep -oE '"hotkey"[[:space:]]*:[[:space:]]*"[^"]*"' "$cfg" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
-        if [[ -n "$v" ]]; then hk="$v"; fi
-    fi
-    local -a parts=() mods=(); local key="" tok hkey m
-    IFS='+' read -ra parts <<< "$hk"
-    for tok in "${parts[@]}"; do
-        case "${tok,,}" in
-            ctrl|control) mods+=("CTRL") ;;
-            shift) mods+=("SHIFT") ;;
-            alt) mods+=("ALT") ;;
-            super|meta|logo|win) mods+=("SUPER") ;;
-            "") ;;
-            *) key="$tok" ;;
-        esac
-    done
-    hkey="$key"
-    if [[ "$key" =~ ^[a-zA-Z]$ || "$key" =~ ^[fF][0-9]+$ ]]; then hkey="${key^^}"; fi
-    local conf_mods="" lua_combo=""
-    for m in "${mods[@]}"; do conf_mods+="${conf_mods:+ }$m"; lua_combo+="$m + "; done
-    HYPR_BIND_CONF="${conf_mods},${hkey}"
-    HYPR_BIND_LUA="${lua_combo}${hkey}"
-}
-
 # tildaz config.hotkey → COSMIC RON 바인딩 키 `(modifiers: [..], key: "..")`.
 #   modifiers: Super/Ctrl/Alt/Shift, key: xkb keysym 이름(KEY_ prefix 없이) —
 #   letter 소문자("a"), 함수키 "F1", "grave"/"space"(소문자), "Tab"/"Escape"/"Return".
 #   (cosmic-comp 은 keysym 이름을 case-insensitive 로도 매칭하므로 casing 은 best-effort.)
 cosmic_translate_hotkey() {
-    local cfg="$HOME/.config/tildaz/config.json" hk="f1" v=""
+    local cfg="$HOME/.config/tildaz/config_0.json" hk="f1" v=""
     if [[ -f "$cfg" ]]; then
         v="$(grep -oE '"hotkey"[[:space:]]*:[[:space:]]*"[^"]*"' "$cfg" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
         [[ -n "$v" ]] && hk="$v"
@@ -207,7 +178,31 @@ append_marked() {
     return 0
 }
 
-hypr_translate_hotkey
+# 과거 install.sh가 만든 정적 Hyprland hotkey marker+다음 줄만 제거한다.
+# config_N별 런타임 등록과 함께 남으면 같은 키가 두 번 toggle될 수 있다.
+remove_legacy_hypr_hotkey() {
+    local cfg="$1" marker="$2" syntax="$3" tmp
+    [[ -f "$cfg" ]] || return 0
+    tmp="$cfg.tildaz-hotkey-migration-tmp"
+    awk -v m="$marker" -v syntax="$syntax" '
+        function is_legacy_hotkey(line) {
+            if (index(line, "tildaz") == 0 || index(line, "--toggle") == 0) return 0
+            if (syntax == "hyprlang") return line ~ /^[[:space:]]*bind[[:space:]]*=/
+            if (syntax == "lua") return index(line, "hl.bind(") != 0
+            return 0
+        }
+        $0 == m { held=$0; next }
+        held != "" {
+            if (is_legacy_hotkey($0)) { held=""; next }
+            print held
+            held=""
+        }
+        { print }
+        END { if (held != "") print held }
+    ' "$cfg" > "$tmp"
+    mv "$tmp" "$cfg"
+}
+
 HYPR_MSG=""
 if [[ ! -f "$HYPR_CONF" && ! -f "$HYPR_LUA" ]]; then
     if command -v Hyprland >/dev/null 2>&1; then
@@ -219,6 +214,7 @@ if [[ ! -f "$HYPR_CONF" && ! -f "$HYPR_LUA" ]]; then
 fi
 hypr_added=()
 if [[ -f "$HYPR_CONF" ]]; then
+    remove_legacy_hypr_hotkey "$HYPR_CONF" "$TILDAZ_MARKER" hyprlang
     # autogenerated 경고 배너(상단 빨간 overlay)가 top-anchored 드롭다운 위를 가리므로
     # hyprlang 의 `autogenerated = 1` 플래그 줄을 제거한다 (.lua 의 hl.config 배너와 동일
     # 처리). 이 줄은 Hyprland 자동생성 config 에만 있고 사용자가 손댄 config 엔 없다
@@ -228,9 +224,9 @@ if [[ -f "$HYPR_CONF" ]]; then
         hypr_added+=("배너제거")
     fi
     if append_marked "$HYPR_CONF" "$TILDAZ_MARKER" '^[[:space:]]*exec-once[[:space:]]*=.*tildaz' "exec-once = $TILDAZ_EXE"; then hypr_added+=("autostart"); fi
-    if append_marked "$HYPR_CONF" "$TILDAZ_MARKER" '^[[:space:]]*bind[[:space:]]*=.*tildaz' "bind = ${HYPR_BIND_CONF},exec,$TILDAZ_EXE --toggle"; then hypr_added+=("hotkey"); fi
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_CONF  (hyprlang ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_CONF  (이미 설정됨 — 변경 없음)"; fi
 elif [[ -f "$HYPR_LUA" ]]; then
+    remove_legacy_hypr_hotkey "$HYPR_LUA" "$TILDAZ_MARKER_LUA" lua
     # autogenerated 경고 배너(상단 overlay)가 top-anchored 드롭다운 위를 가리므로
     # 그 플래그 줄을 제거한다. 이 줄(`hl.config({ autogenerated = true }) -- remove
     # this line ...`)은 Hyprland 자동생성물에만 있고 사용자가 손댄 config 엔 없다
@@ -240,25 +236,24 @@ elif [[ -f "$HYPR_LUA" ]]; then
         hypr_added+=("배너제거")
     fi
     if append_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" 'hl\.on\(.*tildaz' "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"$TILDAZ_EXE\") end)"; then hypr_added+=("autostart"); fi
-    if append_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" 'hl\.bind\(.*tildaz' "hl.bind(\"$HYPR_BIND_LUA\", hl.dsp.exec_cmd(\"$TILDAZ_EXE --toggle\"))"; then hypr_added+=("hotkey"); fi
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_LUA  (Lua ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_LUA  (이미 설정됨 — 변경 없음)"; fi
 fi
 
 # ~/.config/cosmic/...Shortcuts/v1/custom — COSMIC hotkey. COSMIC(smithay 기반
 # cosmic-comp)은 wlr-layer-shell 지원(drop-down 그대로 동작)이지만
 # xdg-desktop-portal-cosmic 의 GlobalShortcuts 가 미구현(portal-cosmic#4)이라
-# portal 재사용 불가 → sway/Hyprland 처럼 compositor 단축키→`tildaz --toggle`로 건다.
+# portal 재사용 불가 → compositor 단축키→`tildaz --toggle N`으로 건다.
 # COSMIC 단축키는 RON map 파일(`{ (modifiers:[..], key:".."): Spawn("..") }`).
 # 자동실행은 COSMIC 가 XDG autostart(~/.config/autostart)를 지원하므로 tildaz 의
 # autostart 모듈(config.auto_start)이 담당 — 여기선 hotkey 만 등록.
-# 본문 보존: 기존 tildaz --toggle Spawn 줄만 제거 후 현재 hotkey 로 재삽입(멱등 +
+# 본문 보존: 기존 tildaz --toggle Spawn 줄만 제거 후 config_0 hotkey 로 재삽입(멱등 +
 # config=source of truth). RON 형태가 예상(닫는 '}' 독립 줄)과 다르면 안 건드림.
 cosmic_translate_hotkey
 COSMIC_DIR="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1"
 COSMIC_CUSTOM="$COSMIC_DIR/custom"
-COSMIC_ENTRY="    ${COSMIC_BINDING}: Spawn(\"$TILDAZ_EXE --toggle\"),"
+COSMIC_ENTRY="    ${COSMIC_BINDING}: Spawn(\"$TILDAZ_EXE --toggle 0\"),"
 COSMIC_MSG=""
-if [[ "${XDG_CURRENT_DESKTOP,,}" == *cosmic* ]] || command -v cosmic-comp >/dev/null 2>&1 || [[ -f "$COSMIC_CUSTOM" ]]; then
+if [[ "${XDG_CURRENT_DESKTOP:-}" == *[Cc][Oo][Ss][Mm][Ii][Cc]* ]] || command -v cosmic-comp >/dev/null 2>&1 || [[ -f "$COSMIC_CUSTOM" ]]; then
     mkdir -p "$COSMIC_DIR"
     if [[ ! -f "$COSMIC_CUSTOM" ]]; then
         printf '{\n%s\n}\n' "$COSMIC_ENTRY" > "$COSMIC_CUSTOM"
@@ -266,7 +261,7 @@ if [[ "${XDG_CURRENT_DESKTOP,,}" == *cosmic* ]] || command -v cosmic-comp >/dev/
     elif grep -qE '^[[:space:]]*\}[[:space:]]*$' "$COSMIC_CUSTOM"; then
         # pretty multi-line RON map(닫는 '}' 가 독립 줄) — 안전하게 마지막 '}' 직전 삽입.
         cosmic_tmp="$(mktemp)"
-        grep -vF "Spawn(\"$TILDAZ_EXE --toggle\")" "$COSMIC_CUSTOM" > "$cosmic_tmp"
+        grep -vE 'Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)' "$COSMIC_CUSTOM" > "$cosmic_tmp"
         awk -v entry="$COSMIC_ENTRY" '
             { lines[NR] = $0 }
             END {
@@ -277,7 +272,7 @@ if [[ "${XDG_CURRENT_DESKTOP,,}" == *cosmic* ]] || command -v cosmic-comp >/dev/
         rm -f "$cosmic_tmp"
         COSMIC_MSG="$COSMIC_CUSTOM  (hotkey shortcut 등록/갱신)"
     else
-        COSMIC_MSG="$COSMIC_CUSTOM  (형식이 예상과 달라 안 건드림 — 수동 추가: ${COSMIC_BINDING}: Spawn(\"$TILDAZ_EXE --toggle\"),)"
+        COSMIC_MSG="$COSMIC_CUSTOM  (형식이 예상과 달라 안 건드림 — 수동 추가: ${COSMIC_BINDING}: Spawn(\"$TILDAZ_EXE --toggle 0\"),)"
     fi
 fi
 
@@ -365,12 +360,12 @@ echo "  - Cinnamon: 위 extension 이 drop-down 위치/단축키를 담당 (Cinn
 echo "              Wayland 라 로그아웃→로그인해야 활성화됨. X11 세션엔 tildaz 안 뜸."
 echo "  - sway: ~/.config/sway/config 의 exec 로 자동실행(없으면 위에서 생성)."
 echo "          로그인 후 hotkey(기본 F1) 토글. exit 후 재실행은 launcher 에서 'tildaz'."
-echo "  - Hyprland: layer-shell drop-down. hotkey 는 config bind→'tildaz --toggle'(portal 우회, #244 무관)."
-echo "          위에서 hyprland.lua/.conf 에 자동실행+단축키 추가 → 적용하려면 'hyprctl reload' 또는 재로그인."
-echo "  - COSMIC: layer-shell drop-down. hotkey 는 RON shortcut→'tildaz --toggle'(portal 우회)."
+echo "  - Hyprland: layer-shell drop-down. hotkey 는 실행 시 config_N별 hyprctl bind→'tildaz --toggle N'."
+echo "          위에서 hyprland.lua/.conf 에 자동실행 추가 → 적용하려면 'hyprctl reload' 또는 재로그인."
+echo "  - COSMIC: layer-shell drop-down. hotkey 는 RON shortcut→'tildaz --toggle N'(portal 우회)."
 echo "          위에서 ~/.config/cosmic/...Shortcuts/v1/custom 에 등록 → cosmic-comp 가 live 반영(안 되면 재로그인)."
 echo "          자동실행은 config.auto_start=true 면 XDG autostart 로 동작."
 echo "  - 기타 wlroots: layer-shell drop-down. 자동실행은 compositor 의 exec 류로 직접."
-echo "  - config: ~/.config/tildaz/config.json (auto_start/hidden_start/hotkey/위치)"
+echo "  - config: ~/.config/tildaz/config_N.json (instance별 auto_start/hidden_start/hotkey/위치)"
 echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 ~/.config/autostart/"
 echo "    tildaz.desktop 자동 생성. GNOME 은 extension 이 담당하므로 그 파일을 삭제함."

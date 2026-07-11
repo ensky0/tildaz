@@ -118,8 +118,8 @@ re-run:
 Uninstall:
   ./uninstall.sh
 
-Config: ~/.config/tildaz/config.json (auto-created on first run)
-Log:    ~/.local/state/tildaz/tildaz.log
+Config: ~/.config/tildaz/config_0.json (auto-created on first run)
+Log:    ~/.local/state/tildaz/tildaz0.log
 
 GitHub: https://github.com/ensky0/tildaz
 END

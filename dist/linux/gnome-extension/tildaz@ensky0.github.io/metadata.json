@@ -1,7 +1,7 @@
 {
   "uuid": "tildaz@ensky0.github.io",
   "name": "TildaZ Drop-down",
-  "description": "Drop-down (quake) placement + global hotkey for the TildaZ terminal on GNOME. mutter does not implement wlr-layer-shell and Wayland forbids client-side window positioning, so the placement/raise/hotkey must run inside GNOME Shell (this extension). Reads ~/.config/tildaz/config.json as the single source of truth.",
+  "description": "Drop-down placement and numbered global hotkeys for TildaZ on GNOME. Reads ~/.config/tildaz/config_N.json files as the source of truth.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "settings-schema": "org.gnome.shell.extensions.tildaz",
   "url": "https://github.com/ensky0/tildaz"

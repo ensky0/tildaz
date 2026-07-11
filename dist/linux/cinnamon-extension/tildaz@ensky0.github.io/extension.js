@@ -46,7 +46,7 @@
  *     화면 중앙에 그리므로(드롭다운 밖), extension 이 잡아 managed 터미널 위 중앙으로
  *     옮긴다(SPEC §6 "main 위 modal" 실현).
  *
- * config = single source of truth: ~/.config/tildaz/config.json 의 hotkey 와
+ * config = single source of truth: ~/.config/tildaz/config_N.json 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} + hidden_start.
  *
  * Cinnamon ↔ GNOME API 차이(실측으로 확정):
@@ -66,7 +66,6 @@ const Main = imports.ui.main;
 
 const APP_ID = "tildaz";
 const DIALOG_APP_ID = "tildaz-dialog";
-const HOTKEY_NAME = "tildaz-toggle";
 
 // CinnamonWindowTracker.is_window_interesting 의 원본(프로토타입) 메서드 — enable
 // 에서 인스턴스 메서드를 패치할 때 원본 호출용 (disable 에서 delete 로 복원).
@@ -80,12 +79,13 @@ function init(_meta) {}
 function enable() {
   st = {
     mapId: 0,
-    managed: null, // 배치(make_above/stick)한 터미널 창 (disable 시 복원 + dialog 기준)
-    taskbarPatched: null, // is_skip_taskbar override 한 창 (disable 시 복원)
+    managed: new Set(),
+    taskbarPatched: new Set(),
     tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
     expoProto: null, // isExpoWindow 패치한 ExpoWorkspaceThumbnail.prototype (disable 복원)
     origIsExpoWindow: null, // 그 원본 메서드
-    cfg: readConfig(),
+    configs: readConfigs(),
+    hotkeys: new Set(),
   };
 
   // 패널 window-list / workspace-switcher 는 Main.isInteresting → C
@@ -132,9 +132,7 @@ function enable() {
   // hotkey 등록 (config = source of truth). addHotKey(name, accel, cb) — accel 은
   // GTK accelerator(예 "F1" / "<Super>grave"), 여러 개는 "::" 구분. cb 는
   // (display, window, binding) 인자를 받지만 toggle 은 무시.
-  if (st.cfg.accel) {
-    Main.keybindingManager.addHotKey(HOTKEY_NAME, st.cfg.accel, () => toggle());
-  }
+  for (const [index, cfg] of st.configs) registerHotkey(index, cfg);
 
   // 새 창 actor 가 map 될 때마다 검사 — tildaz 터미널이면 drop-down 배치, dialog 면
   // 터미널 위 중앙. window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라
@@ -144,26 +142,22 @@ function enable() {
 }
 
 function disable() {
-  try {
-    Main.keybindingManager.removeHotKey(HOTKEY_NAME);
-  } catch (_e) {}
+  for (const name of st?.hotkeys || []) try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
   if (st && st.mapId) {
     global.window_manager.disconnect(st.mapId);
     st.mapId = 0;
   }
-  if (st && st.managed) {
+  for (const win of st?.managed || []) {
     try {
-      st.managed.unmake_above();
-      st.managed.unstick();
+      win.unmake_above();
+      win.unstick();
     } catch (_e) {}
-    st.managed = null;
   }
-  if (st && st.taskbarPatched) {
+  for (const win of st?.taskbarPatched || []) {
     // own 으로 할당한 메서드를 delete → prototype 의 GObject 메서드 복귀.
     try {
-      delete st.taskbarPatched.is_skip_taskbar;
+      delete win.is_skip_taskbar;
     } catch (_e) {}
-    st.taskbarPatched = null;
   }
   if (st && st.tracker) {
     try {
@@ -181,15 +175,15 @@ function disable() {
   st = null;
 }
 
-/** ~/.config/tildaz/config.json 읽기 (실패 시 안전한 기본값). */
-function readConfig() {
+/** ~/.config/tildaz/config_N.json 읽기 (실패 시 해당 항목 제외). */
+function readConfig(index) {
   const out = { accel: "", dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
   try {
     const path = GLib.build_filenamev([
       GLib.get_home_dir(),
       ".config",
       "tildaz",
-      "config.json",
+      `config_${index}.json`,
     ]);
     const [ok, bytes] = GLib.file_get_contents(path);
     if (ok) {
@@ -209,6 +203,30 @@ function readConfig() {
     global.logError("[tildaz] config read failed: " + e);
   }
   return out;
+}
+
+function readConfigs() {
+  const configs = new Map();
+  try {
+    const path = GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"]);
+    const dir = GLib.Dir.open(path, 0);
+    let name;
+    while ((name = dir.read_name()) !== null) {
+      const match = /^config_(0|[1-9][0-9]*)\.json$/.exec(name);
+      if (match) configs.set(Number(match[1]), readConfig(Number(match[1])));
+    }
+    dir.close();
+  } catch (e) {
+    global.logError("[tildaz] config directory read failed: " + e);
+  }
+  return new Map([...configs.entries()].sort((a, b) => a[0] - b[0]));
+}
+
+function registerHotkey(index, cfg) {
+  const name = `tildaz-toggle-${index}`;
+  if (!cfg.accel || st.hotkeys.has(name)) return;
+  Main.keybindingManager.addHotKey(name, cfg.accel, () => toggle(index));
+  st.hotkeys.add(name);
 }
 
 /** tildaz hotkey 문자열("ctrl+shift+t" / "f1" / "super+grave") → GTK accelerator. */
@@ -260,11 +278,11 @@ function isDialog(win) {
 /** 떠 있는 tildaz 터미널 창 찾기 (없으면 null). global.get_window_actors() 는 muffin·
  *  cinnamon-global.c 에 확실히 있는 API (GNOME 의 display.list_all_windows() 는
  *  muffin 에 없어 toggle 이 예외로 죽었다 — #229 실측). */
-function find() {
+function find(index) {
   const actors = global.get_window_actors();
   for (let i = 0; i < actors.length; i++) {
     const win = metaWindowOf(actors[i]);
-    if (isTildaz(win)) return win;
+    if (isTildaz(win) && win.get_title() === `TildaZ-${index}`) return win;
   }
   return null;
 }
@@ -276,22 +294,27 @@ function onMap(actor) {
     return;
   }
   if (!isTildaz(win)) return;
+  const match = /^TildaZ-(\d+)$/.exec(win.get_title());
+  if (!match) return;
+  const index = Number(match[1]);
   // tildaz 가 뜰 때마다 config 재독 (single source of truth — config 바꾸고 tildaz
   // 만 재실행해도 extension reload 없이 반영). hotkey 변경은 enable 의 addHotKey
   // 라 예외(extension reload/relogin 필요).
-  st.cfg = readConfig();
-  place(win);
+  const cfg = readConfig(index);
+  st.configs.set(index, cfg);
+  registerHotkey(index, cfg);
+  place(win, cfg);
   // hidden_start=true → 배치 후 숨김(첫 hotkey 로 등장). tildaz 는 Cinnamon 에서
   // portal GlobalShortcuts 부재로 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
-  if (st.cfg.hidden) win.minimize();
+  if (cfg.hidden) win.minimize();
 }
 
 // hotkey toggle — extension 이 직접 minimize/unminimize. tildaz 의 --toggle(null
 // buffer)에 맡기지 않는다(위 헤더 주석). focus 면 숨김, 아니면 보임 + 위치 재확정.
-function toggle() {
+function toggle(index) {
   try {
-    const win = find();
+    const win = find(index);
     if (!win) return; // toggle 전용 — 미실행 시 무동작(실행은 autostart/메뉴).
     if (win.has_focus() && !win.minimized) {
       win.minimize();
@@ -301,7 +324,7 @@ function toggle() {
     if (win.minimized) win.unminimize();
     // 재배치 — minimize/unminimize 는 geometry 를 보존하지만, drift / 첫 show /
     // 다른 모니터로 커서 이동 대비해 위치를 다시 확정(커서 모니터 기준).
-    place(win);
+    place(win, st.configs.get(index));
     Main.activateWindow(win);
   } catch (e) {
     global.logError("[tildaz] toggle failed: " + e);
@@ -337,11 +360,10 @@ function defocusAfterHide(win) {
 
 /** config 의 dock_position/width/height/offset 으로 *마우스 커서가 있는 모니터*
  *  workArea 기준 배치 (SPEC: drop-down 은 커서 모니터에). */
-function place(win) {
+function place(win, c) {
   const mi = global.display.get_current_monitor();
   const a = win.get_work_area_for_monitor(mi);
   if (!a) return;
-  const c = st.cfg;
 
   let w = Math.round((a.width * Math.min(c.wp, 100)) / 100);
   let h = Math.round((a.height * Math.min(c.hp, 100)) / 100);
@@ -377,7 +399,7 @@ function place(win) {
   win.make_above();
   win.stick();
   skipTaskbar(win);
-  st.managed = win;
+  st.managed.add(win);
 }
 
 /** dialog(tildaz-dialog)를 managed 터미널 위 중앙에 배치. 터미널이 없으면 커서
@@ -386,7 +408,7 @@ function placeDialog(win) {
   const dr = win.get_frame_rect();
   let cx;
   let cy;
-  const term = st.managed;
+  const term = win.get_transient_for?.() || st.managed.values().next().value;
   if (term) {
     const tr = term.get_frame_rect();
     cx = tr.x + Math.round((tr.width - dr.width) / 2);
@@ -410,7 +432,7 @@ function placeDialog(win) {
 // (패널 window-list·workspace-switcher 는 is_window_interesting 경로 — enable 의
 // tracker 패치가 담당. Expo 는 둘 다 안 닿는 Cinnamon 한계 — 헤더 참고.)
 function skipTaskbar(win) {
-  if (st.taskbarPatched === win) return;
+  if (st.taskbarPatched.has(win)) return;
   win.is_skip_taskbar = () => true;
-  st.taskbarPatched = win;
+  st.taskbarPatched.add(win);
 }
