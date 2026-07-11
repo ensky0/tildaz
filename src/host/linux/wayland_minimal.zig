@@ -5522,6 +5522,19 @@ const Client = struct {
         if (!self.surface_hidden) return;
 
         try self.handleActivatedToggle();
+        // KWin Bug 503121 workaround는 surface/role/active buffer를 유지한 채
+        // layer state를 재전송한다. KWin은 화면을 복원해도 새 configure/non-null
+        // attach를 생략할 수 있어 protocol-state `mapped`가 false로 남는다. display
+        // sync로 remap request 처리 순서를 보장한 뒤, configure가 왔다면 redraw까지
+        // 수행하고 prompt 생성으로 진행한다. 다른 compositor의 recreate path는 아래서
+        // 실제 non-null buffer attach (`mapped=true`)를 계속 기다린다.
+        if (kwinCompositor() and self.layer_surface_id != 0) {
+            try self.roundtrip();
+            try self.maybeRedraw();
+            log.appendLine("dialog", "main remap processed before new-instance prompt (KWin)", .{});
+            return;
+        }
+
         var timer = try std.time.Timer.start();
         while (self.running and !self.mapped and timer.read() < 5 * std.time.ns_per_s) {
             try self.pollAndDispatch(frame_poll_ms);
