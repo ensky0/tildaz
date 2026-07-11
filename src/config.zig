@@ -60,6 +60,17 @@ pub const CAPTURE_MOD_CTRL: u32 = 0x2;
 pub const CAPTURE_MOD_SHIFT: u32 = 0x4;
 pub const CAPTURE_MOD_PRIMARY: u32 = 0x8;
 
+fn modifierFreeCaptureAllowed(key_name: []const u8) bool {
+    const names = [_][]const u8{
+        "F1", "F2", "F3", "F4",  "F5",  "F6",
+        "F7", "F8", "F9", "F10", "F11", "F12",
+    };
+    for (names) |name| {
+        if (std.mem.eql(u8, key_name, name)) return true;
+    }
+    return false;
+}
+
 /// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
 /// key_code의 의미만 platform별이다: Linux keysym, Windows virtual-key,
 /// macOS hardware keyCode. modifier 비트는 위 CAPTURE_MOD_*로 정규화한다.
@@ -70,6 +81,12 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
         .macos => macKeycodeName(key_code),
         else => null,
     } orelse return null;
+
+    // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
+    // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
+    // 허용하는 키는 F1~F12뿐이다. 일반 키는 command 성격의 modifier가 필수다.
+    const command_modifiers = CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
+    if ((modifiers & command_modifiers) == 0 and !modifierFreeCaptureAllowed(key_name)) return null;
 
     var fbs = std.io.fixedBufferStream(buf);
     const writer = fbs.writer();
@@ -203,6 +220,21 @@ test "captured hotkey is formatted canonically" {
         const text = capturedHotkeyText(&buf, 0xffbf, CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT).?;
         try std.testing.expectEqualStrings("Ctrl+Shift+F2", text);
         try std.testing.expect(Hotkey.fromString(text) != null);
+    }
+}
+
+test "modifier-free capture only accepts function keys" {
+    if (builtin.os.tag == .linux) {
+        var buf: [64]u8 = undefined;
+        try std.testing.expectEqualStrings("F3", capturedHotkeyText(&buf, 0xffc0, 0).?);
+        try std.testing.expect(capturedHotkeyText(&buf, 't', 0) == null);
+        try std.testing.expect(capturedHotkeyText(&buf, '3', 0) == null);
+        try std.testing.expect(capturedHotkeyText(&buf, ' ', 0) == null);
+        try std.testing.expect(capturedHotkeyText(&buf, 0xff09, 0) == null);
+        try std.testing.expect(capturedHotkeyText(&buf, '`', 0) == null);
+        try std.testing.expect(capturedHotkeyText(&buf, 't', CAPTURE_MOD_SHIFT) == null);
+        try std.testing.expectEqualStrings("Ctrl+t", capturedHotkeyText(&buf, 't', CAPTURE_MOD_CTRL).?);
+        try std.testing.expectEqualStrings("Ctrl+Shift+t", capturedHotkeyText(&buf, 't', CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT).?);
     }
 }
 
