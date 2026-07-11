@@ -356,7 +356,7 @@ Icon=tildaz
 Terminal=false
 Categories=System;TerminalEmulator;
 StartupWMClass=tildaz
-StartupNotify=true
+StartupNotify=false
 END
     # AppImage root icon — appimagetool 가 hicolor 트리에 자동 인식 시켰지만
     # 일부 환경에서 fallback 용으로 root 에 직접 둠.

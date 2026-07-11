@@ -12,8 +12,9 @@ Exec=__TILDAZ_EXE__
 Icon=tildaz
 Terminal=false
 Categories=System;TerminalEmulator;
-# Wayland xdg_toplevel.set_app_id 와 일치. portal-kde 등이 sender pid 의
-# process 정보 + .desktop 매칭으로 client 식별할 때 같은 식별자.
+# 사용자가 클릭하는 launcher identity. Worker 창은 번호별
+# tildaz.instanceN app_id와 NoDisplay desktop entry를 사용하므로 이 항목과
+# 실행 중 앱으로 묶이지 않는다. 따라서 재클릭도 Exec을 다시 호출한다.
 StartupWMClass=tildaz
 # StartupNotify=false — tildaz 는 Wayland `xdg-activation` 토큰을 소비하지 않아
 # startup notification 시퀀스를 *완료*시키지 못한다. true 면 GNOME 이 만든 시퀀스가

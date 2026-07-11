@@ -42,6 +42,12 @@ truth: stale files and reused PIDs are possible after a crash. Liveness is
 decided only by whether the advisory lock can be acquired. Lock files live in
 the runtime/cache paths specified by `SPEC.md` §11.1, separate from user config.
 
+On Linux, the visible `tildaz.desktop` entry identifies only the launcher. Each
+xdg-shell worker uses `tildaz.instanceN` as its Wayland app ID and has a matching
+`NoDisplay=true` desktop entry. This keeps GNOME's normal icon click connected to
+the launcher `Exec` while giving every worker an identity consistent with its
+config, process lock, systemd scope, and KDE Plasma shortcut component.
+
 ## Windows Pipeline
 
 1. The coordinator starts one locked `--instance N` worker per numbered config;

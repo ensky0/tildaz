@@ -28,8 +28,9 @@
 #   bash dist/linux/install.sh --exe /usr/bin/tildaz
 #
 # KDE Plasma 6 환경: install 후 KRunner (Alt+F2) 또는 Application Menu 에서
-# "TildaZ" 검색 + 실행 → portal-kde 가 app_id=tildaz 인식. terminal 직접 실행
-# 시 portal GlobalShortcuts 동작 안 함 (SPEC.md §1.2 참조).
+# "TildaZ" 검색 + 실행 → launcher desktop entry의 Exec 호출. Worker별
+# portal identity는 실행 후 생성되는 tildaz.instanceN.desktop/systemd scope가 담당
+# (SPEC.md §1.2, §7.1 참조).
 
 set -euo pipefail
 
@@ -368,4 +369,4 @@ echo "          자동실행은 config.auto_start=true 면 XDG autostart 로 동
 echo "  - 기타 wlroots: layer-shell drop-down. 자동실행은 compositor 의 exec 류로 직접."
 echo "  - config: ~/.config/tildaz/config_N.json (instance별 auto_start/hidden_start/hotkey/위치)"
 echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 ~/.config/autostart/"
-echo "    tildaz.desktop 자동 생성. GNOME 은 extension 이 담당하므로 그 파일을 삭제함."
+echo "    tildaz.desktop 자동 생성. GNOME 은 NotShowIn으로 건너뛰고 extension이 담당."

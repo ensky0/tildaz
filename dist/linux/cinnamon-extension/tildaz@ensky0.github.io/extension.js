@@ -5,8 +5,8 @@
  * 는 client 가 자기 창의 화면 위치를 지정하는 것을 금지한다. 따라서 drop-down 배치
  * (상단 anchor + always-on-top + hotkey 토글)는 Cinnamon 셸 프로세스 안(=이 extension)
  * 에서 privileged Meta API(muffin)로만 가능하다. GNOME Shell extension(#228)과 동일
- * 구조를 Cinnamon 용 Cjs(`imports.*`) 로 포팅. tildaz 본체는 평범한 Wayland xdg-shell
- * client(app_id="tildaz")로 그대로 두고, 이 extension 이 그 창을 잡아 배치/토글한다.
+ * 구조를 Cinnamon 용 Cjs(`imports.*`) 로 포팅. TildaZ 본체는 평범한 Wayland xdg-shell
+ * client(app_id="tildaz.instanceN")로 두고, 이 extension이 번호별 창을 잡아 배치/토글한다.
  *
  * 전제: Cinnamon on Wayland 세션 전용. tildaz 는 Wayland client 라 X11 Cinnamon
  * 세션에는 아예 못 뜬다. muffin 이 xdg-shell set_app_id 를 wm_class 로 매핑하므로
@@ -33,10 +33,10 @@
  *     override 는 Cinnamon 이 안 읽어 무효 — #229 실측.)
  *   - Expo(워크스페이스 오버뷰) 숨김: Expo 썸네일은 skip_taskbar / is_window_interesting
  *     을 안 보고 `ExpoWorkspaceThumbnail.prototype.isExpoWindow(win)`(expoThumbnail.js)로
- *     클론 생성을 거른다. 원본은 window TYPE(DESKTOP/DOCK)만 검사 → 일반 창인 tildaz 통과.
+ *     클론 생성을 거른다. 원본은 window TYPE(DESKTOP/DOCK)만 검사 → 일반 worker 창 통과.
  *     이 메서드는 `this.isExpoWindow` 로 호출되는 prototype 메서드라 override 가 내부에
- *     닿는다(is_window_interesting 패치와 동형) → enable 에서 패치해 wm_class=tildaz 클론을
- *     막는다. tildaz 가 stick()(is_on_all_workspaces)이라 전 workspace 썸네일에 뜨던 것 +
+ *     닿는다(is_window_interesting 패치와 동형) → enable 에서 패치해 TildaZ worker 클론을
+ *     막는다. worker가 stick()(is_on_all_workspaces)이라 전 workspace 썸네일에 뜨던 것 +
  *     비활성 workspace 가 stale snapshot 으로 그려져(linuxmint/Cinnamon #8095) 현재만 안 보이고
  *     2·3·4 엔 보이던 비대칭까지 함께 해소(클론 자체를 안 만들므로 active/stale 무관).
  *   - drop-down 은 `stick()`(전 워크스페이스)이라 보이는 동안 워크스페이스를 바꿔도
@@ -64,7 +64,7 @@ const Meta = imports.gi.Meta;
 const Cinnamon = imports.gi.Cinnamon;
 const Main = imports.ui.main;
 
-const APP_ID = "tildaz";
+const WORKER_APP_ID_PREFIX = "tildaz.instance";
 const DIALOG_APP_ID = "tildaz-dialog";
 
 // CinnamonWindowTracker.is_window_interesting 의 원본(프로토타입) 메서드 — enable
@@ -79,6 +79,9 @@ function init(_meta) {}
 function enable() {
   st = {
     mapId: 0,
+    windowCreatedId: 0,
+    dialogClassWatchers: new Map(),
+    dialogIdleIds: new Set(),
     managed: new Set(),
     taskbarPatched: new Set(),
     tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
@@ -93,7 +96,7 @@ function enable() {
   // applet:1438 _shouldAdd, workspace-switcher:413). is_skip_taskbar 메서드 override
   // 는 *C 호출* 인 이 경로엔 안 닿고(muffin 에 set_skip_taskbar 세터도 없음), 게다가
   // window-list 는 _shouldAdd 를 창 생성 시 1회만 평가하므로(map 후 override 는 늦음)
-  // tracker 패치가 race 없이 확실하다. tracker 의 JS proxy 메서드를 패치해 tildaz
+  // tracker 패치가 race 없이 확실하다. tracker 의 JS proxy 메서드를 패치해 TildaZ
   // 터미널을 not-interesting 으로 만든다(Main.isInteresting 이 JS 로 이걸 호출).
   // (Expo 썸네일은 isInteresting 이 아니라 isExpoWindow 로 거르므로 아래에서 별도 패치.)
   st.tracker = Cinnamon.WindowTracker.get_default();
@@ -105,9 +108,10 @@ function enable() {
   // 을 안 보고, ExpoWorkspaceThumbnail.prototype.isExpoWindow(win) 로 클론 생성을 거른다
   // (소스: expoThumbnail.js, this.isExpoWindow 로 호출 → prototype override 가 내부에 닿음
   // — is_window_interesting 패치와 동형). 원본은 window TYPE(DESKTOP/DOCK)만 검사해 일반
-  // 창인 tildaz 가 통과 → 모든 workspace 썸네일에 뜬다(특히 stick() 이라 is_on_all_workspaces
-  // → main.js isWindowActorDisplayedOnWorkspace 가 전 workspace true). wm_class=tildaz 면
-  // false 로 클론 자체를 막는다. (현재 workspace 만 안 보이고 2·3·4 엔 보이던 비대칭은
+  // TildaZ worker가 통과 → 모든 workspace 썸네일에 뜬다(특히 stick() 이라
+  // is_on_all_workspaces → main.js isWindowActorDisplayedOnWorkspace 가 전 workspace true).
+  // 번호별 worker identity면 false 로 클론 자체를 막는다. (현재 workspace 만 안 보이고
+  // 2·3·4 엔 보이던 비대칭은
   // Cinnamon Expo 가 비활성 workspace 를 stale snapshot 으로 그리는 동작(linuxmint/Cinnamon
   // #8095)과 sticky 가 겹친 것 — 클론을 아예 안 만들면 active/stale 무관하게 해소.)
   // ExpoWorkspaceThumbnail 미존재 버전(매우 구형/비표준)이면 guard 로 skip.
@@ -134,10 +138,11 @@ function enable() {
   // (display, window, binding) 인자를 받지만 toggle 은 무시.
   for (const [index, cfg] of st.configs) registerHotkey(index, cfg);
 
-  // 새 창 actor 가 map 될 때마다 검사 — tildaz 터미널이면 drop-down 배치, dialog 면
-  // 터미널 위 중앙. window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라
-  // 놓칠 수 있어 map 을 쓴다. 누가 실행하든(autostart/메뉴) 잡도록 계속 살려두고
-  // disable 에서만 해제.
+  // Worker 배치에는 app_id가 확정된 map을 사용한다. Dialog는 hidden parent 때문에
+  // map되지 않을 수 있어 window-created + notify::wm-class에서 parent를 먼저 복원한다.
+  st.windowCreatedId = global.display.connect("window-created", (_display, win) => {
+    watchDialogBeforeMap(win);
+  });
   st.mapId = global.window_manager.connect("map", (_wm, actor) => onMap(actor));
 }
 
@@ -147,6 +152,18 @@ function disable() {
     global.window_manager.disconnect(st.mapId);
     st.mapId = 0;
   }
+  if (st && st.windowCreatedId) {
+    global.display.disconnect(st.windowCreatedId);
+    st.windowCreatedId = 0;
+  }
+  for (const [win, id] of st?.dialogClassWatchers || []) {
+    try {
+      win.disconnect(id);
+    } catch (_e) {}
+  }
+  for (const id of st?.dialogIdleIds || []) GLib.source_remove(id);
+  st?.dialogClassWatchers.clear();
+  st?.dialogIdleIds.clear();
   for (const win of st?.managed || []) {
     try {
       win.unmake_above();
@@ -265,9 +282,17 @@ function wmClassEq(win, id) {
   return c === id || (c && c.toLowerCase() === id);
 }
 
-/** wm_class === "tildaz" (메인 터미널). Wayland: app_id 가 wm_class 로 매핑됨. */
+/** app_id(wm_class)와 title이 모두 같은 번호인 worker면 index, 아니면 null. */
+function workerIndex(win) {
+  if (!win) return null;
+  const match = /^TildaZ-(0|[1-9][0-9]*)$/.exec(win.get_title?.() || "");
+  if (!match) return null;
+  const index = Number(match[1]);
+  return wmClassEq(win, `${WORKER_APP_ID_PREFIX}${index}`) ? index : null;
+}
+
 function isTildaz(win) {
-  return wmClassEq(win, APP_ID);
+  return workerIndex(win) !== null;
 }
 
 /** wm_class === "tildaz-dialog" (quit confirm / About 등 별도 toplevel). */
@@ -282,9 +307,42 @@ function find(index) {
   const actors = global.get_window_actors();
   for (let i = 0; i < actors.length; i++) {
     const win = metaWindowOf(actors[i]);
-    if (isTildaz(win) && win.get_title() === `TildaZ-${index}`) return win;
+    if (workerIndex(win) === index) return win;
   }
   return null;
+}
+
+// muffin도 minimize된 parent의 transient dialog를 map하지 않을 수 있다. 생성 직후
+// 비어 있는 wm_class는 notify에서 받고, idle에서 set_parent 반영 뒤 parent를 복원한다.
+function watchDialogBeforeMap(win) {
+  let watcherId = 0;
+  const stopWatching = () => {
+    if (!watcherId) return;
+    try {
+      win.disconnect(watcherId);
+    } catch (_e) {}
+    st.dialogClassWatchers.delete(win);
+    watcherId = 0;
+  };
+  const inspect = () => {
+    const c = win.get_wm_class?.();
+    if (!c) return;
+    stopWatching();
+    if (c.toLowerCase() !== DIALOG_APP_ID) return;
+
+    let idleId = 0;
+    idleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      st?.dialogIdleIds.delete(idleId);
+      const term = win.get_transient_for?.() || null;
+      if (term) restoreDialogParent(term);
+      return GLib.SOURCE_REMOVE;
+    });
+    st.dialogIdleIds.add(idleId);
+  };
+
+  watcherId = win.connect("notify::wm-class", inspect);
+  st.dialogClassWatchers.set(win, watcherId);
+  inspect();
 }
 
 function onMap(actor) {
@@ -293,10 +351,8 @@ function onMap(actor) {
     placeDialog(win);
     return;
   }
-  if (!isTildaz(win)) return;
-  const match = /^TildaZ-(\d+)$/.exec(win.get_title());
-  if (!match) return;
-  const index = Number(match[1]);
+  const index = workerIndex(win);
+  if (index === null) return;
   // tildaz 가 뜰 때마다 config 재독 (single source of truth — config 바꾸고 tildaz
   // 만 재실행해도 extension reload 없이 반영). hotkey 변경은 enable 의 addHotKey
   // 라 예외(extension reload/relogin 필요).
@@ -410,6 +466,7 @@ function placeDialog(win) {
   let cy;
   const term = win.get_transient_for?.() || st.managed.values().next().value;
   if (term) {
+    restoreDialogParent(term);
     const tr = term.get_frame_rect();
     cx = tr.x + Math.round((tr.width - dr.width) / 2);
     cy = tr.y + Math.round((tr.height - dr.height) / 2);
@@ -423,6 +480,12 @@ function placeDialog(win) {
   win.move_frame(true, cx, cy);
   win.make_above();
   win.stick();
+  Main.activateWindow(win);
+}
+
+function restoreDialogParent(term) {
+  if (term.minimized) term.unminimize();
+  Main.activateWindow(term);
 }
 
 // Alt-Tab(appSwitcher) / grouped-window-list 에서 창을 숨긴다. 이들은 매번 새로

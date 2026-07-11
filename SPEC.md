@@ -151,8 +151,8 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
   `Spawn("tildaz --toggle N")`로 원자적 갱신(portal-cosmic GlobalShortcuts 미구현).
   XDG autostart 는 지원.
-- **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 tildaz 본체는 평범한
-  xdg-shell client (`app_id="tildaz"`) 로 두고, **Shell extension** 이 창을 잡아
+- **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
+  xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
   담당. hotkey 는 gsettings custom keybinding 으로 자동 등록(extension 활성 시
   중복 grab 회피로 gsettings 등록 skip). config 가 source of truth. 숨김(minimize)
@@ -587,17 +587,22 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
   여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라
   `config_<N>.json` ↔ worker N 대응으로 판정한다.
 - 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 필드를
-  한 다이얼로그에 표시한다. 실제 key 조합을 캡처하기 전에는 **Create**가 비활성이다.
+  한 다이얼로그에 표시한다. prompt 전에 worker 0을 show/restore/activate하며, 표시가
+  반영된 뒤 alert를 연다. 실제 key 조합을 캡처하기 전에는 **Create**가 비활성이다.
   **Create**는 형식과 TildaZ config 간 중복을 검증한 뒤
-  다음 번호의 config를 생성하고, **Cancel**은 아무것도 변경하지 않는다.
+  다음 번호의 config를 생성하고, **Cancel**은 config를 변경하지 않으며 worker 0은
+  보이는 상태를 유지한다.
 - autostart entry는 launcher를 `--autostart`로 한 번 실행한다. launcher는
   `auto_start=true`인 config의 TildaZ worker만 시작하고 종료한다. 수동 실행은 모든
   config를 대상으로 한다.
 - 각 TildaZ worker는 자기 config, process lock, hotkey, toggle endpoint를 독립 소유한다.
   KDE Plasma에서는 portal/KGlobalAccel identity도 `tildaz.instanceN` (내부 app/component ID),
   `TildaZ_N` (표시명), `toggle-N` (action ID)으로 분리해 다른 worker의 shortcut을
-  덮어쓰지 않는다. Wayland 창 app ID `tildaz`는 GNOME/Cinnamon extension의 공통 창
-  식별자로 유지한다.
+  덮어쓰지 않는다. Linux xdg-shell worker 창도 같은 `tildaz.instanceN` app ID를
+  사용하며 GNOME/Cinnamon extension은 창 title의 번호까지 일치할 때만 해당 worker로
+  식별한다. 사용자에게 보이는 `tildaz.desktop`은 launcher 전용 identity라 GNOME에서
+  worker가 실행 중이어도 아이콘 클릭은 기존 창 activate가 아니라 launcher `Exec`를
+  다시 호출한다. 번호별 desktop entry는 worker 식별용이며 `NoDisplay=true`다.
 - worker N은 `instanceN.lock`의 exclusive advisory lock을 process 수명 동안 소유한다.
   파일 존재나 내부 PID가 아니라 **lock 획득 성공/실패**가 실행 상태의 source of truth다.
   owner가 정상·비정상 종료하면 OS가 lock을 해제한다. PID는 lock 획득 뒤 기록하는

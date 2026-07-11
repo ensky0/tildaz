@@ -64,9 +64,10 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     const path = try entryPath(allocator);
     defer allocator.free(path);
 
-    // `StartupWMClass=tildaz` 는 `dist/linux/tildaz.desktop` 의 값과 일치 —
-    // Wayland `xdg_toplevel.set_app_id` + portal-kde 의 client 식별과 같은
-    // identifier 라 두 desktop entry 가 같은 application 으로 인식됨.
+    // `StartupWMClass=tildaz` 는 launcher identity다. Worker 창은 번호별
+    // `tildaz.instanceN`을 사용하므로 launcher와 실행 중 앱으로 묶이지 않는다.
+    // launcher 자신은 창을 만들지 않고 worker를 spawn/request한 뒤 종료하므로
+    // StartupNotify=false로 시작 완료 창을 기다리지 않게 한다.
     //
     // `Hidden=false` + `X-GNOME-Autostart-enabled=true` 는 GNOME / Cinnamon /
     // KDE 모두에서 항목 활성으로 인식되는 표준 조합.
@@ -89,7 +90,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
         \\Terminal=false
         \\Categories=System;TerminalEmulator;
         \\StartupWMClass=tildaz
-        \\StartupNotify=true
+        \\StartupNotify=false
         \\Hidden=false
         \\X-GNOME-Autostart-enabled=true
         \\NotShowIn=GNOME;

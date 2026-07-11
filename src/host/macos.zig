@@ -225,6 +225,8 @@ fn applicationDidBecomeActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
 
 fn createNewInstance() void {
     if (@import("../instance_context.zig").requireWorkerIndex() == 0) {
+        repositionWindow();
+        showWindow();
         @import("../new_instance.zig").handle(g_gpa.allocator());
     } else {
         @import("../instance_request.zig").send() catch {};
