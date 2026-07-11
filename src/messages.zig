@@ -146,42 +146,42 @@ pub const config_parse_failed_format =
 ;
 pub const config_parse_failed_fallback_msg = "Failed to parse config JSON.";
 
-pub const config_error_fallback_msg = "config.json: invalid config.";
-pub const config_top_level_must_be_object_msg = "config.json: top-level must be a JSON object.";
-pub const config_dock_position_invalid_format = "config.json: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right";
-pub const config_dock_position_invalid_fallback_msg = "config.json: window.dock_position invalid";
-pub const config_field_number_required_format = "config.json: \"{s}\" must be a number.";
-pub const config_field_range_required_format = "config.json: \"{s}\" must be in {s}.";
-pub const config_field_integer_range_required_format = "config.json: \"{s}\" must be an integer in {s}.";
-pub const config_unknown_theme_header_format = "config.json: unknown theme \"{s}\"\n\nAvailable themes:\n";
-pub const config_hotkey_invalid_format = "config.json: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
-pub const config_hotkey_invalid_fallback_msg = "config.json: hotkey invalid";
-pub const config_font_family_empty_msg = "config.json: \"font.family\" must not be empty.";
-pub const config_font_chain_too_long_format = "config.json: font.family + glyph_fallback total exceeds {d} entries.";
-pub const config_font_chain_too_long_fallback_msg = "config.json: font chain too long";
-pub const config_type_mismatch_format = "config.json: type mismatch at \"{s}\" — expected {s}, got {s}.";
-pub const config_type_mismatch_fallback_msg = "config.json: type mismatch";
-pub const config_missing_key_format = "config.json: missing required key \"{s}\" in {s}.";
-pub const config_missing_key_fallback_msg = "config.json: missing key";
-pub const config_unknown_key_format = "config.json: unknown key \"{s}\" in {s}.";
-pub const config_unknown_key_fallback_msg = "config.json: unknown key";
+pub const config_error_fallback_msg = "Configuration is invalid.";
+pub const config_top_level_must_be_object_msg = "Configuration: top-level must be a JSON object.";
+pub const config_dock_position_invalid_format = "Configuration: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right";
+pub const config_dock_position_invalid_fallback_msg = "Configuration: window.dock_position invalid";
+pub const config_field_number_required_format = "Configuration: \"{s}\" must be a number.";
+pub const config_field_range_required_format = "Configuration: \"{s}\" must be in {s}.";
+pub const config_field_integer_range_required_format = "Configuration: \"{s}\" must be an integer in {s}.";
+pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{s}\"\n\nAvailable themes:\n";
+pub const config_hotkey_invalid_format = "Configuration: failed to parse \"hotkey\" value \"{s}\".\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
+pub const config_font_family_empty_msg = "Configuration: \"font.family\" must not be empty.";
+pub const config_font_chain_too_long_format = "Configuration: font.family + glyph_fallback total exceeds {d} entries.";
+pub const config_font_chain_too_long_fallback_msg = "Configuration: font chain too long";
+pub const config_type_mismatch_format = "Configuration: type mismatch at \"{s}\" — expected {s}, got {s}.";
+pub const config_type_mismatch_fallback_msg = "Configuration: type mismatch";
+pub const config_missing_key_format = "Configuration: missing required key \"{s}\" in {s}.";
+pub const config_missing_key_fallback_msg = "Configuration: missing key";
+pub const config_unknown_key_format = "Configuration: unknown key \"{s}\" in {s}.";
+pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
 
 pub const shell_empty_format =
-    "config.json: \"shell\" is empty.\n\n{s}\n\nConfig path:\n{s}";
-pub const shell_empty_fallback_msg = "config.json: shell is empty.";
+    "Configuration: \"shell\" is empty.\n\n{s}\n\nConfig path:\n{s}";
+pub const shell_empty_fallback_msg = "Configuration: shell is empty.";
 pub const shell_first_token_empty_format =
-    "config.json: \"shell\" first token is empty.\n\nValue: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
-pub const shell_first_token_empty_fallback_msg = "config.json: shell first token empty.";
+    "Configuration: \"shell\" first token is empty.\n\nValue: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
+pub const shell_first_token_empty_fallback_msg = "Configuration: shell first token empty.";
 pub const shell_executable_not_found_format =
-    "config.json: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
-pub const shell_executable_not_found_fallback_msg = "config.json: shell executable not found.";
+    "Configuration: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
+pub const shell_executable_not_found_fallback_msg = "Configuration: shell executable not found.";
 
 // #248 — 런타임 새 탭 생성 시 shell 바이너리가 사라진 경우 (brew/패키지 업데이트로
 // 경로 변경 등). startup fatal 과 달리 종료하지 않고 OK 하나짜리 알림만.
 pub const shell_new_tab_error_title = "TildaZ — Cannot Open New Tab";
 pub const shell_new_tab_not_found_format =
-    "The configured shell could not be found:\n  \"{s}\"\n\nCheck \"shell\" in config.json:\n  {s}";
-pub const shell_new_tab_not_found_fallback_msg = "The configured shell could not be found. Check \"shell\" in config.json.";
+    "The configured shell could not be found:\n  \"{s}\"\n\nCheck \"shell\" in this instance's config file:\n  {s}";
+pub const shell_new_tab_not_found_fallback_msg = "The configured shell could not be found. Check \"shell\" in this instance's config file.";
 
 pub const shell_examples_windows =
     \\Examples:
@@ -209,7 +209,16 @@ pub const hotkey_registration_failed_format =
     \\Edit the config and restart:
     \\{s}
 ;
-pub const hotkey_registration_failed_fallback_msg = "Failed to register the global hotkey. Edit %APPDATA%\\tildaz\\config.json and restart.";
+pub const hotkey_registration_failed_fallback_msg = "Failed to register the global hotkey. Edit this instance's config file and restart.";
+
+pub const new_instance_title = "Create TildaZ Instance";
+pub const new_instance_hotkey_prompt_format =
+    "A total of {d} TildaZ instances will run.\n\nPress a hotkey for the new instance.";
+pub const new_instance_hotkey_invalid_msg =
+    "That hotkey is invalid. Press another combination, for example F2, Ctrl+Space, or Shift+Cmd+T.";
+pub const new_instance_hotkey_duplicate_msg =
+    "That hotkey is already used by another TildaZ instance. Press another combination.";
+pub const new_instance_create_failed_format = "The new TildaZ instance could not be created.\n\n{s}";
 
 pub const macos_permission_required_title = "TildaZ — Permission required";
 pub const macos_permission_required_format =

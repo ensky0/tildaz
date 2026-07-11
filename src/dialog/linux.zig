@@ -21,6 +21,7 @@ pub const Callbacks = struct {
     ctx: *anyopaque,
     show_info: *const fn (ctx: *anyopaque, severity: dialog.Severity, title: []const u8, message: []const u8) void,
     show_confirm: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) bool,
+    prompt_hotkey: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8,
 };
 
 var g_callbacks: ?Callbacks = null;
@@ -29,6 +30,12 @@ var g_callbacks: ?Callbacks = null;
 /// stderr fallback 대신 host overlay 그림.
 pub fn registerCallbacks(cb: Callbacks) void {
     g_callbacks = cb;
+}
+
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+    if (g_callbacks) |cb| return cb.prompt_hotkey(cb.ctx, allocator, title, message);
+    showStderr(.info, title, message);
+    return null;
 }
 
 /// Host shutdown 직전 호출 — main loop 빠져나간 후 dialog 호출 시 dangling

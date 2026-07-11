@@ -4,7 +4,6 @@ const SessionCore = @import("../session_core.zig").SessionCore;
 const RendererBackend = @import("../renderer.zig").RendererBackend;
 const config_mod = @import("../config.zig");
 const Config = config_mod.Config;
-const autostart = @import("../autostart.zig");
 const log = @import("../log.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
@@ -14,15 +13,11 @@ const themes = @import("../themes.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
-extern "kernel32" fn CreateMutexW(?*anyopaque, c_int, [*:0]const WCHAR) callconv(.c) ?*anyopaque;
-extern "kernel32" fn GetLastError() callconv(.c) u32;
-extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) c_int;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const WCHAR, ?[*]WCHAR, u32) callconv(.c) u32;
 extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.c) c_int;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
-const ERROR_ALREADY_EXISTS: u32 = 183;
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     // #197 — macOS / Linux showPanic 와 동일하게 crash 를 로그에 남긴다 (parity).
@@ -49,18 +44,7 @@ pub fn run() !void {
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    // Single instance check
-    const mutex = CreateMutexW(null, 0, std.unicode.utf8ToUtf16LeStringLiteral("Global\\TildaZ_SingleInstance"));
-    if (mutex != null and GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(mutex);
-        dialog.showInfo(messages.info_title, messages.already_running_msg);
-        return;
-    }
-    defer if (mutex != null) {
-        _ = CloseHandle(mutex);
-    };
-
-    // %APPDATA%\tildaz\tildaz.log 에 부팅 / 종료 라인을 남긴다.
+    // %APPDATA%\tildaz\tildazN.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
     log.logStart(build_options.version);
     defer log.logStop(build_options.version);
@@ -88,14 +72,6 @@ pub fn run() !void {
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
     // 뒤 generic 에러로 끝남 — 사용자에게 어디 고쳐야 할지 안내 안 됨.
     shell_validate.validateOrFatal(alloc, config.shell);
-
-    if (config.auto_start) {
-        autostart.enable(alloc) catch |err| {
-            log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
-        };
-    } else {
-        autostart.disable(alloc);
-    }
 
     var app = App{
         .session = undefined,

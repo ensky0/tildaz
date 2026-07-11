@@ -54,6 +54,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
         \\    <key>ProgramArguments</key>
         \\    <array>
         \\        <string>{s}</string>
+        \\        <string>--autostart</string>
         \\    </array>
         \\    <key>RunAtLoad</key>
         \\    <true/>

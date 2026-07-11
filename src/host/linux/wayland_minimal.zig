@@ -193,7 +193,6 @@ const wp_fractional_scale_v1_request_destroy: u16 = 0;
 const wp_fractional_scale_v1_event_preferred_scale: u16 = 0;
 const fractional_scale_denominator: u32 = 120;
 
-
 // L8-β — wl_output 의 mode / done event. geometry / scale 은 아직 안 씀.
 const wl_output_event_geometry: u16 = 0;
 const wl_output_event_mode: u16 = 1;
@@ -431,7 +430,7 @@ const ShmBuffer = struct {
 pub const DialogOverlay = struct {
     /// `.confirm` — OK + Cancel 두 버튼. Enter = OK (= true), Esc = Cancel (= false).
     /// dismiss 시 호출자가 `pending_confirm_result` 로 결과 받음 (step 4, #203).
-    pub const Kind = enum { none, info, confirm };
+    pub const Kind = enum { none, info, confirm, prompt };
 
     // --- content ---
     kind: Kind = .none,
@@ -440,6 +439,8 @@ pub const DialogOverlay = struct {
     title_len: usize = 0,
     msg_buf: [4096]u8 = undefined,
     msg_len: usize = 0,
+    input_buf: [128]u8 = undefined,
+    input_len: usize = 0,
 
     // --- wayland 객체 ---
     surface_id: u32 = 0,
@@ -462,6 +463,7 @@ pub const DialogOverlay = struct {
     /// 받음 보장. 같은 output 가정상 main 의 preferred_scale 값과 동일.
     fractional_scale_id: u32 = 0,
     active_buffer: ?ShmBuffer = null,
+    retired_buffers: std.ArrayList(ShmBuffer) = .{},
     /// configure event 가 알려준 buffer 크기 (physical px).
     buffer_w: i32 = 0,
     buffer_h: i32 = 0,
@@ -475,6 +477,13 @@ pub const DialogOverlay = struct {
     }
     pub fn active(self: *const DialogOverlay) bool {
         return self.kind != .none;
+    }
+    pub fn input(self: *const DialogOverlay) []const u8 {
+        return self.input_buf[0..self.input_len];
+    }
+
+    pub fn hasPromptInput(self: *const DialogOverlay) bool {
+        return std.mem.trim(u8, self.input(), " \t\r\n").len > 0;
     }
 };
 
@@ -520,7 +529,7 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
 ///   - Hyprland: `$HYPRLAND_INSTANCE_SIGNATURE` (install.sh 가 config `bind`/`hl.bind`)
 ///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — xdg-desktop-portal-cosmic 은
 ///     GlobalShortcuts 미구현(portal-cosmic#4)이라 portal 재사용 불가 → install.sh 가
-///     RON custom shortcut(`Spawn("tildaz --toggle")`)으로 등록.
+///     RON custom shortcut(`Spawn("tildaz --toggle N")`)으로 등록.
 fn compositorHotkeyEnv() bool {
     if (posix.getenv("SWAYSOCK") != null) return true;
     if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) return true;
@@ -542,7 +551,7 @@ fn currentDesktopContains(needle: []const u8) bool {
 }
 
 /// COSMIC (smithay `cosmic-comp`) 세션인지 — hotkey 를 RON custom shortcut
-/// (`Spawn("tildaz --toggle")`) 으로 거는 환경 식별용 (`compositorHotkeyEnv`).
+/// (`Spawn("tildaz --toggle N")`) 으로 거는 환경 식별용 (`compositorHotkeyEnv`).
 fn cosmicCompositor() bool {
     return currentDesktopContains("cosmic");
 }
@@ -626,6 +635,8 @@ const Client = struct {
     ///   - `true` = OK 클릭 / Enter
     ///   - `false` = Cancel 클릭 / Esc / 외부 dismiss (closed event 등)
     pending_confirm_result: ?bool = null,
+    pending_prompt_result: ?bool = null,
+    pending_new_instance_request: bool = false,
     /// #203 Phase C step 4 — Alt+F4 의 deferred quit. Alt+F4 핸들러는 flag 만
     /// set, main loop 의 `drainQuitRequest` 가 multi-tab confirm + `running=false`.
     /// `dialog.showConfirm` 의 inner pump 가 `dispatchBuffered` 의 reentrant
@@ -933,6 +944,8 @@ const Client = struct {
             buffer.deinit();
             self.dialog.active_buffer = null;
         }
+        for (self.dialog.retired_buffers.items) |*buffer| buffer.deinit();
+        self.dialog.retired_buffers.deinit(self.allocator);
         if (self.session) |*session| {
             session.deinit();
             self.session = null;
@@ -972,6 +985,7 @@ const Client = struct {
             .ctx = self,
             .show_info = Client.dialogShowInfoCb,
             .show_confirm = Client.dialogShowConfirmCb,
+            .prompt_hotkey = Client.dialogPromptHotkeyCb,
         });
         defer dialog_linux.unregisterCallbacks();
 
@@ -1063,6 +1077,7 @@ const Client = struct {
             // #213 — Ctrl+Shift+I deferred About. createDialogSurface 의 inner
             // roundtrip 을 outer dispatchBuffered 밖에서 돌려 buffer corrupt 회피.
             self.drainAboutRequest();
+            self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
             // 마지막 탭 닫음을 만나면 shell_exited 트리거.
@@ -1432,7 +1447,9 @@ const Client = struct {
         try self.sendArgs(self.wm_base_id, 2, &.{ self.xdg_surface_id, self.surface_id });
         self.toplevel_id = self.allocId();
         try self.sendNewId(self.xdg_surface_id, 1, self.toplevel_id);
-        try self.sendString(self.toplevel_id, 2, "TildaZ");
+        var title_buf: [32]u8 = undefined;
+        const title = std.fmt.bufPrint(&title_buf, "TildaZ-{d}", .{@import("../../instance_context.zig").requireWorkerIndex()}) catch "TildaZ";
+        try self.sendString(self.toplevel_id, 2, title);
         try self.sendString(self.toplevel_id, 3, "tildaz");
         try self.sendNoArgs(self.surface_id, 6);
         log.appendLineVerbose("wayland", "shell objects (xdg) surface_id={} xdg_surface_id={} toplevel_id={}", .{
@@ -2323,12 +2340,17 @@ const Client = struct {
         if (self.toggle_listener_fd >= 0 and (fds[1].revents & posix.POLL.IN) != 0) {
             // #198 — `tildaz --toggle` 두 번째 인스턴스로부터 toggle 신호.
             // portal `Activated` 와 같은 path 로 hide/show.
-            const did_toggle = single_instance.acceptToggle(self.toggle_listener_fd) catch false;
-            if (did_toggle) {
-                self.handleActivatedToggle() catch |err| {
+            const command = single_instance.acceptCommand(self.toggle_listener_fd) catch null;
+            if (command) |cmd| switch (cmd) {
+                .toggle => self.handleActivatedToggle() catch |err| {
                     log.appendLine("toggle-ipc", "handleActivatedToggle failed: {s}", .{@errorName(err)});
-                };
-            }
+                },
+                .new_instance => {
+                    if (@import("../../instance_context.zig").requireWorkerIndex() == 0) {
+                        self.pending_new_instance_request = true;
+                    }
+                },
+            };
         }
     }
 
@@ -3790,10 +3812,13 @@ const Client = struct {
                 if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
                     log.appendLineVerbose("dialog", "OK hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
+                    if (self.dialog.kind == .prompt and self.dialog.hasPromptInput()) self.pending_prompt_result = true;
+                    if (self.dialog.kind == .prompt and !self.dialog.hasPromptInput()) return;
                     self.requestDismissDialog();
                 } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
                     log.appendLineVerbose("dialog", "Cancel hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
+                    if (self.dialog.kind == .prompt) self.pending_prompt_result = false;
                     self.requestDismissDialog();
                 } else {
                     log.appendLineVerbose("dialog", "button in dialog area but no OK/Cancel rect hit (ok={any} cancel={any})", .{ self.renderer.last_dialog_ok_rect, self.renderer.last_dialog_cancel_rect });
@@ -4292,11 +4317,20 @@ const Client = struct {
             }
         }
 
-        // #203 Phase C — dialog surface 도 동일 release event 흐름. dialog 는
-        // 정적이라 released 표시만 — refresh 시 in-place 재paint.
+        // Dialog active/retired buffer도 main surface와 같은 release 수명으로
+        // 관리한다. 현재 표시 중인 buffer는 compositor가 release하지 않을 수
+        // 있으므로 입력 갱신 때 새 buffer로 교체하고, 여기서 이전 것을 회수한다.
         if (self.dialog.active_buffer) |*buffer| {
             if (buffer.id == id) {
                 buffer.released = true;
+                return true;
+            }
+        }
+        for (self.dialog.retired_buffers.items, 0..) |*buffer, i| {
+            if (buffer.id == id) {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                _ = self.dialog.retired_buffers.orderedRemove(i);
                 return true;
             }
         }
@@ -4377,7 +4411,7 @@ const Client = struct {
         // #227 / #230 — sway / Hyprland / COSMIC 은 portal GlobalShortcuts 를 쓰지
         // 않는다. hotkey 는 compositor keybind → `tildaz --toggle` (sway = sway_ipc
         // 런타임 `bindsym`, Hyprland = install.sh 의 config `bind`/`hl.bind`, COSMIC =
-        // install.sh 의 RON `Spawn("tildaz --toggle")`) 로 거는 게 정공 — portal
+        // RON `Spawn("tildaz --toggle N")`) 로 거는 게 정공 — portal
         // GlobalShortcuts 는 anonymous shortcut + DE 전환 wedge (#244) 라 불안정하거나
         // (Hyprland) 아예 미구현 (xdg-desktop-portal-cosmic, portal-cosmic#4).
         // 특히 xdg-desktop-portal-hyprland 는 GlobalShortcuts 를 *advertise 하면서도*
@@ -4399,7 +4433,8 @@ const Client = struct {
         // konsole / 다른 앱 cgroup 에서 실행됐을 때 portal 이 app-id 를 그 부모로
         // 인식해 hotkey 가 tildaz 에 안 오는 문제 (launch-independent hotkey) 의 근본
         // fix. 이미 app-tildaz scope (proper launch) 면 no-op.
-        portal.ensureAppScope(&self.dbus_session.?);
+        portal.ensureAppScope(self.allocator, &self.dbus_session.?);
+        portal.cleanupLegacyKdeIdentity(self.allocator, &self.dbus_session.?);
         // #228 — GNOME + extension 환경에선 hotkey 를 GNOME Shell extension
         // (Main.wm.addKeybinding) 이 담당한다. portal GlobalShortcuts 는 (1) 불필요,
         // (2) app_id=tildaz 가 portal 기준 invalid 라 BindShortcuts 가 어차피 거부되며,
@@ -4483,7 +4518,7 @@ const Client = struct {
         const self: *Client = @ptrCast(@alignCast(user_data.?));
         // #207 진단 — Activated signal 도달 확인 (시연 단계, fix 확정 후 제거).
         log.appendLineVerbose("portal", "Activated signal received — shortcut_id={s} timestamp={}", .{ shortcut_id, timestamp });
-        if (!std.mem.eql(u8, shortcut_id, std.mem.span(portal.shortcut_id_toggle))) return;
+        if (!std.mem.eql(u8, shortcut_id, std.mem.span(portal.shortcutId()))) return;
         if (timestamp != 0 and timestamp == self.last_toggle_timestamp) return;
         self.last_toggle_timestamp = timestamp;
         self.handleActivatedToggle() catch |err| {
@@ -4674,6 +4709,12 @@ const Client = struct {
         try self.openDialog(.confirm, .info, title, message);
     }
 
+    fn openPromptDialog(self: *Client, title: []const u8, message: []const u8) !void {
+        self.dialog.input_len = 0;
+        self.pending_prompt_result = null;
+        try self.openDialog(.prompt, .info, title, message);
+    }
+
     fn openDialog(self: *Client, kind: DialogOverlay.Kind, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
         const title_len = @min(title.len, self.dialog.title_buf.len);
         const msg_len = @min(message.len, self.dialog.msg_buf.len);
@@ -4688,7 +4729,7 @@ const Client = struct {
 
         // 박스 크기 — 텍스트 폭 / 라인 수 기반 (renderer 가 cell metric 으로
         // 계산). physical → logical 변환해 layer-shell 에 송신.
-        const size = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), kind == .confirm);
+        const size = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), kind != .info, kind == .prompt);
         const logical_w: u32 = @intCast(self.physicalToLogical(size.w));
         const logical_h: u32 = @intCast(self.physicalToLogical(size.h));
 
@@ -4964,6 +5005,37 @@ const Client = struct {
     fn handleDialogKey(self: *Client, key: u32) void {
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
+        if (self.dialog.kind == .prompt) {
+            if (sym == xkb_key_return) {
+                if (self.dialog.hasPromptInput()) {
+                    self.pending_prompt_result = true;
+                    self.requestDismissDialog();
+                }
+                return;
+            }
+            if (sym == xkb_key_escape) {
+                self.pending_prompt_result = false;
+                self.requestDismissDialog();
+                return;
+            }
+            if (sym == xkb_key_backspace) {
+                self.dialog.input_len = 0;
+                self.repaintDialog();
+                return;
+            }
+            var modifiers: u32 = 0;
+            if (self.keyboard.altActive()) modifiers |= config_mod.CAPTURE_MOD_ALT;
+            if (self.keyboard.ctrlActive()) modifiers |= config_mod.CAPTURE_MOD_CTRL;
+            if (self.keyboard.shiftActive()) modifiers |= config_mod.CAPTURE_MOD_SHIFT;
+            if (self.keyboard.superActive()) modifiers |= config_mod.CAPTURE_MOD_PRIMARY;
+            var capture_buf: [64]u8 = undefined;
+            if (config_mod.capturedHotkeyText(&capture_buf, sym, modifiers)) |captured| {
+                @memcpy(self.dialog.input_buf[0..captured.len], captured);
+                self.dialog.input_len = captured.len;
+                self.repaintDialog();
+            }
+            return;
+        }
         switch (sym) {
             xkb_key_return => {
                 if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
@@ -5138,6 +5210,11 @@ const Client = struct {
             buffer.deinit();
             self.dialog.active_buffer = null;
         }
+        for (self.dialog.retired_buffers.items) |*buffer| {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+        }
+        self.dialog.retired_buffers.clearRetainingCapacity();
         if (self.dialog.layer_surface_id != 0) {
             try self.sendNoArgs(self.dialog.layer_surface_id, zwlr_layer_surface_v1_request_destroy);
             self.dialog.layer_surface_id = 0;
@@ -5180,7 +5257,7 @@ const Client = struct {
     /// step 4 — confirm 모드 (`kind == .confirm`) 면 `confirm_focus_ok = true`
     /// 전달 (OK 버튼 + Cancel 버튼 그림). Info 모드 면 null (OK 하나만).
     fn paintDialogBuffer(self: *Client, memory: []u8, w: i32, h: i32, stride: i32) void {
-        const focus_arg: ?bool = if (self.dialog.kind == .confirm) true else null;
+        const focus_arg: ?bool = if (self.dialog.kind == .confirm or self.dialog.kind == .prompt) true else null;
         self.renderer.drawDialogContent(
             memory,
             w,
@@ -5190,7 +5267,43 @@ const Client = struct {
             self.dialog.title(),
             self.dialog.message(),
             focus_arg,
+            if (self.dialog.kind == .prompt) self.dialog.input() else null,
         );
+    }
+
+    fn repaintDialog(self: *Client) void {
+        const current = self.dialog.active_buffer orelse return;
+        var buffer = if (current.released) current else self.createDialogBuffer(current.width, current.height) catch |err| {
+            log.appendLine("dialog", "repaint buffer creation failed: {s}", .{@errorName(err)});
+            return;
+        };
+
+        if (!current.released) {
+            self.dialog.retired_buffers.append(self.allocator, current) catch {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                return;
+            };
+        }
+        self.dialog.active_buffer = null;
+        buffer.released = false;
+        self.paintDialogBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+        self.sendArgs(self.dialog.surface_id, 1, &.{ buffer.id, 0, 0 }) catch {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            return;
+        };
+        self.sendArgs(self.dialog.surface_id, 9, &.{ 0, 0, @as(u32, @intCast(buffer.width)), @as(u32, @intCast(buffer.height)) }) catch {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            return;
+        };
+        self.sendNoArgs(self.dialog.surface_id, 6) catch {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            return;
+        };
+        self.dialog.active_buffer = buffer;
     }
 
     /// dialog surface 용 buffer 생성. main createBuffer 패턴 (memfd + mmap +
@@ -5270,7 +5383,7 @@ const Client = struct {
                     .h = self.logicalToPhysical(h_clamped),
                 };
             }
-            const want = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), false);
+            const want = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), self.dialog.kind != .info, self.dialog.kind == .prompt);
             break :blk .{ .w = want.w, .h = want.h };
         };
         // viewport set_destination — buffer (physical) 를 surface (logical) 에
@@ -5332,8 +5445,12 @@ const Client = struct {
     /// roundtrip 도 main loop 의 drain 시점에서 *outer pump cycle 밖* 에 처리.
     fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
         const self: *Client = @ptrCast(@alignCast(ctx));
+        return self.runConfirmDialog(.confirm, title, message);
+    }
 
+    fn runConfirmDialog(self: *Client, kind: DialogOverlay.Kind, title: []const u8, message: []const u8) bool {
         // Confirm dialog 띄움. 실패 시 안전 default Cancel.
+        std.debug.assert(kind == .confirm);
         self.openConfirmDialog(title, message) catch |err| {
             log.appendLine("dialog", "openConfirmDialog failed: {s} — default Cancel", .{@errorName(err)});
             return false;
@@ -5365,6 +5482,31 @@ const Client = struct {
         self.pending_confirm_result = null;
         log.appendLine("dialog", "confirm result={s} title={s}", .{ if (result) "OK" else "Cancel", title });
         return result;
+    }
+
+    fn dialogPromptHotkeyCb(ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        self.openPromptDialog(title, message) catch return null;
+        while (self.running and self.pending_prompt_result == null) {
+            self.pollAndDispatch(frame_poll_ms) catch {
+                self.pending_prompt_result = false;
+                break;
+            };
+            self.drainPendingDialogDismiss();
+            self.drainExitedTabs();
+            self.dispatchDbusMessages();
+        }
+        const accepted = self.pending_prompt_result orelse false;
+        self.pending_prompt_result = null;
+        if (!accepted) return null;
+        return allocator.dupe(u8, self.dialog.input()) catch null;
+    }
+
+    fn drainNewInstanceRequest(self: *Client) void {
+        if (!self.pending_new_instance_request) return;
+        if (self.dialog.active()) return;
+        self.pending_new_instance_request = false;
+        @import("../../new_instance.zig").handle(self.allocator);
     }
 
     fn logCapabilities(self: *Client) void {
@@ -5484,7 +5626,7 @@ pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Co
     const listener_fd = single_instance.createListener() catch |err| switch (err) {
         error.AlreadyRunning => {
             log.appendLine("toggle-ipc", "already running — sending toggle to existing instance + exiting", .{});
-            single_instance.sendToggle() catch |e| {
+            single_instance.sendToggle(@import("../../instance_context.zig").requireWorkerIndex()) catch |e| {
                 log.appendLine("toggle-ipc", "delegate toggle failed: {s}", .{@errorName(e)});
             };
             return;

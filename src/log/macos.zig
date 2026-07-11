@@ -1,9 +1,10 @@
 // macOS 의 log impl — 시스템 의존 부분만. 공통 formatting / writeRaw 는
-// `log.zig`. 로그 파일은 `~/Library/Logs/tildaz.log` (Apple HIG — Console.app
+// `log.zig`. 로그 파일은 `~/Library/Logs/tildazN.log` (Apple HIG — Console.app
 // 자동 인덱싱).
 
 const std = @import("std");
 const log_time = @import("../log_time.zig");
+const instance_context = @import("../instance_context.zig");
 
 const time_t = i64;
 
@@ -54,14 +55,13 @@ pub fn currentPid() u64 {
     return @intCast(getpid());
 }
 
-/// `~/Library/Logs/tildaz.log` 의 absolute UTF-8 path 를 buf 에 작성하고 slice
+/// `~/Library/Logs/tildazN.log` 의 absolute UTF-8 path 를 buf 에 작성하고 slice
 /// 반환. `~/Library/Logs/` 는 macOS default 로 존재 (수동 생성 불필요). 실패 시 null.
 pub fn resolvePath(buf: []u8) ?[]const u8 {
     const home = std.c.getenv("HOME") orelse return null;
     const home_slice = std.mem.span(home);
-    const suffix = "/Library/Logs/tildaz.log";
-    if (home_slice.len + suffix.len >= buf.len) return null;
+    if (home_slice.len + 48 >= buf.len) return null;
     @memcpy(buf[0..home_slice.len], home_slice);
-    @memcpy(buf[home_slice.len..][0..suffix.len], suffix);
+    const suffix = std.fmt.bufPrint(buf[home_slice.len..], "/Library/Logs/tildaz{d}.log", .{instance_context.workerIndex() orelse 0}) catch return null;
     return buf[0 .. home_slice.len + suffix.len];
 }

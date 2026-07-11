@@ -1,9 +1,10 @@
 // Linux log impl — system-dependent pieces only. Shared formatting / file IO
 // lives in `log.zig`. Log file follows XDG state:
-// `~/.local/state/tildaz/tildaz.log`.
+// `~/.local/state/tildaz/tildazN.log`.
 
 const std = @import("std");
 const log_time = @import("../log_time.zig");
+const instance_context = @import("../instance_context.zig");
 
 pub const TimeFields = log_time.TimeFields;
 
@@ -23,17 +24,31 @@ pub fn currentPid() u64 {
 pub fn resolvePath(buf: []u8) ?[]const u8 {
     const home_slice = std.posix.getenv("HOME") orelse return null;
     const dir_suffix = "/.local/state/tildaz";
-    const file_suffix = "/tildaz.log";
-    if (home_slice.len + dir_suffix.len + file_suffix.len >= buf.len) return null;
+    if (home_slice.len + dir_suffix.len + 32 >= buf.len) return null;
 
     @memcpy(buf[0..home_slice.len], home_slice);
     @memcpy(buf[home_slice.len..][0..dir_suffix.len], dir_suffix);
     const dir_end = home_slice.len + dir_suffix.len;
 
-    std.fs.makeDirAbsolute(buf[0..dir_end]) catch {};
+    ensureDir(buf[0..dir_end]) catch {};
 
-    @memcpy(buf[dir_end..][0..file_suffix.len], file_suffix);
-    return buf[0 .. dir_end + file_suffix.len];
+    const suffix = std.fmt.bufPrint(buf[dir_end..], "/tildaz{d}.log", .{instance_context.workerIndex() orelse 0}) catch return null;
+    return buf[0 .. dir_end + suffix.len];
+}
+
+fn ensureDir(dir: []const u8) !void {
+    std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
+        error.PathAlreadyExists => return,
+        error.FileNotFound => {
+            if (std.fs.path.dirname(dir)) |parent| {
+                try ensureDir(parent);
+                try std.fs.makeDirAbsolute(dir);
+                return;
+            }
+            return err;
+        },
+        else => return err,
+    };
 }
 
 fn currentUtcOffsetSeconds(unix_secs: i64) !i32 {

@@ -192,6 +192,10 @@ pub const Keyboard = struct {
         return self.modActive("Mod1");
     }
 
+    pub fn superActive(self: *Keyboard) bool {
+        return self.modActive("Mod4");
+    }
+
     fn modActive(self: *Keyboard, comptime name: [:0]const u8) bool {
         const api = if (self.api) |*api| api else return false;
         const state = self.state orelse return false;

@@ -30,6 +30,8 @@ const std = @import("std");
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
 const portal = @import("portal.zig");
+const instance_context = @import("../../instance_context.zig");
+const instance_identity = @import("instance_identity.zig");
 
 const c = struct {
     const GSettings = opaque {};
@@ -142,10 +144,23 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
         log.appendLine("gsettings-hotkey", "GSettings schema source not found — skipped", .{});
         return;
     };
+    const index = instance_context.requireWorkerIndex();
+    var gnome_path_buf: [128]u8 = undefined;
+    var cinnamon_path_buf: [128]u8 = undefined;
+    var cinnamon_id_buf: [32]u8 = undefined;
+    const gp = std.fmt.bufPrintZ(&gnome_path_buf, "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-{d}/", .{index}) catch return;
+    const cp = std.fmt.bufPrintZ(&cinnamon_path_buf, "/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-{d}/", .{index}) catch return;
+    const ci = std.fmt.bufPrintZ(&cinnamon_id_buf, "tildaz-{d}", .{index}) catch return;
+    var gnome_instance = gnome_variant;
+    gnome_instance.path = gp.ptr;
+    gnome_instance.list_value = gp.ptr;
+    var cinnamon_instance = cinnamon_variant;
+    cinnamon_instance.path = cp.ptr;
+    cinnamon_instance.list_value = ci.ptr;
 
     switch (de) {
         .gnome => {
-            if (!schemasPresent(&api, source, gnome_variant)) {
+            if (!schemasPresent(&api, source, gnome_instance)) {
                 log.appendLine("gnome", "media-keys custom-keybinding schema not installed (gnome-settings-daemon missing?) — skipped", .{});
                 return;
             }
@@ -155,14 +170,14 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
             if (isExtensionEnabled(&api)) {
                 const media_ext = api.settings_new(gnome_variant.list_schema) orelse return;
                 defer api.object_unref(media_ext);
-                removeFromList(allocator, &api, media_ext, gnome_variant);
+                removeFromList(allocator, &api, media_ext, gnome_instance);
                 log.appendLine("gnome", "tildaz extension active — gsettings hotkey skipped + removed existing custom-keybinding (extension handles hotkey)", .{});
                 return;
             }
-            registerWithVariant(allocator, &api, cfg, gnome_variant);
+            registerWithVariant(allocator, &api, cfg, gnome_instance);
         },
         .cinnamon => {
-            if (!schemasPresent(&api, source, cinnamon_variant)) {
+            if (!schemasPresent(&api, source, cinnamon_instance)) {
                 log.appendLine("cinnamon", "keybindings custom-keybinding schema not installed — skipped", .{});
                 return;
             }
@@ -175,11 +190,11 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
             if (isCinnamonExtensionEnabled(&api)) {
                 const list = api.settings_new(cinnamon_variant.list_schema) orelse return;
                 defer api.object_unref(list);
-                removeFromList(allocator, &api, list, cinnamon_variant);
+                removeFromList(allocator, &api, list, cinnamon_instance);
                 log.appendLine("cinnamon", "tildaz extension active — gsettings hotkey skipped + removed existing custom-keybinding (extension handles hotkey)", .{});
                 return;
             }
-            registerWithVariant(allocator, &api, cfg, cinnamon_variant);
+            registerWithVariant(allocator, &api, cfg, cinnamon_instance);
         },
     }
 }
@@ -203,7 +218,7 @@ fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *cons
         return;
     };
     var cmd_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
-    const command = std.fmt.bufPrintZ(&cmd_buf, "{s} --toggle", .{exe_path}) catch return;
+    const command = std.fmt.bufPrintZ(&cmd_buf, "{s} --toggle {d}", .{ exe_path, instance_context.requireWorkerIndex() }) catch return;
     var accel_buf: [96]u8 = undefined;
     const accel = buildGtkAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers) catch return;
 
@@ -221,7 +236,9 @@ fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *cons
         return;
     };
     defer api.object_unref(kb);
-    _ = api.settings_set_string(kb, "name", "TildaZ");
+    var name_buf: [32]u8 = undefined;
+    const name = instance_identity.displayName(&name_buf, instance_context.requireWorkerIndex()) catch return;
+    _ = api.settings_set_string(kb, "name", name);
     _ = api.settings_set_string(kb, "command", command);
     if (v.binding_is_strv) {
         // Cinnamon `binding` 은 strv — ['<Super>grave'] 형식.

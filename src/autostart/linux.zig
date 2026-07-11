@@ -84,7 +84,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
         \\Name=TildaZ
         \\GenericName=Drop-down Terminal
         \\Comment=Quake-style drop-down terminal for Wayland
-        \\Exec={s}
+        \\Exec={s} --autostart
         \\Icon=tildaz
         \\Terminal=false
         \\Categories=System;TerminalEmulator;
