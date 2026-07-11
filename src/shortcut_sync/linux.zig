@@ -26,18 +26,87 @@ fn desktopContains(name: []const u8) bool {
 fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
+    try removeManagedHyprlandBindings(allocator, exe);
     for (indices) |index| {
         const text = try instances.configHotkeyText(allocator, index);
         defer allocator.free(text);
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
         var accel_buf: [96]u8 = undefined;
         const accel = try hyprlandAccel(&accel_buf, hotkey);
-        _ = try runHyprlandKeyword(allocator, "unbind", accel);
         const binding = try std.fmt.allocPrint(allocator, "{s},exec,{s} --toggle {d}", .{ accel, exe, index });
         defer allocator.free(binding);
         if (!try runHyprlandKeyword(allocator, "bind", binding)) return error.HyprctlFailed;
     }
     log.appendLine("hyprland", "numbered hotkeys synchronized ({d})", .{indices.len});
+}
+
+const HyprlandBind = struct {
+    modmask: u32 = 0,
+    key: []const u8 = "",
+    keycode: u32 = 0,
+    dispatcher: []const u8 = "",
+    arg: []const u8 = "",
+};
+
+const hypr_mod_shift: u32 = 1;
+const hypr_mod_ctrl: u32 = 4;
+const hypr_mod_alt: u32 = 8;
+const hypr_mod_super: u32 = 64;
+const hypr_supported_mods = hypr_mod_shift | hypr_mod_ctrl | hypr_mod_alt | hypr_mod_super;
+
+fn removeManagedHyprlandBindings(allocator: std.mem.Allocator, exe: []const u8) !void {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "hyprctl", "-j", "binds" },
+        .max_output_bytes = 1024 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return error.HyprctlFailed,
+        else => return error.HyprctlFailed,
+    }
+
+    const parsed = try std.json.parseFromSlice([]HyprlandBind, allocator, result.stdout, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+    var removed: usize = 0;
+    for (parsed.value) |binding| {
+        var accel_buf: [96]u8 = undefined;
+        const accel = managedHyprlandAccel(&accel_buf, binding, exe) orelse continue;
+        _ = try runHyprlandKeyword(allocator, "unbind", accel);
+        removed += 1;
+    }
+    log.appendLine("hyprland", "removed managed runtime hotkeys ({d})", .{removed});
+}
+
+fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, binding.dispatcher, "exec")) return null;
+    if (binding.keycode != 0 or binding.key.len == 0) return null;
+    if ((binding.modmask & ~hypr_supported_mods) != 0) return null;
+    if (!managedToggleCommand(binding.arg, exe)) return null;
+
+    var fbs = std.io.fixedBufferStream(buf);
+    const writer = fbs.writer();
+    if ((binding.modmask & hypr_mod_ctrl) != 0) writer.writeAll("CTRL ") catch return null;
+    if ((binding.modmask & hypr_mod_shift) != 0) writer.writeAll("SHIFT ") catch return null;
+    if ((binding.modmask & hypr_mod_alt) != 0) writer.writeAll("ALT ") catch return null;
+    if ((binding.modmask & hypr_mod_super) != 0) writer.writeAll("SUPER ") catch return null;
+    writer.writeByte(',') catch return null;
+    writer.writeAll(binding.key) catch return null;
+    return fbs.getWritten();
+}
+
+fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
+    if (!std.mem.startsWith(u8, arg, exe)) return false;
+    const rest = arg[exe.len..];
+    const prefix = " --toggle ";
+    if (!std.mem.startsWith(u8, rest, prefix)) return false;
+    const index_text = rest[prefix.len..];
+    if (index_text.len == 0) return false;
+    _ = std.fmt.parseInt(u32, index_text, 10) catch return false;
+    return true;
 }
 
 fn runHyprlandKeyword(allocator: std.mem.Allocator, keyword: []const u8, value: []const u8) !bool {
@@ -62,6 +131,45 @@ pub fn hyprlandAccel(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
     try writer.writeByte(',');
     try writer.writeAll(config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
     return fbs.getWritten();
+}
+
+test "managed Hyprland bindings are identified and reconstructed" {
+    const exe = "/home/test/tildaz";
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(",F3", managedHyprlandAccel(&buf, .{
+        .key = "F3",
+        .dispatcher = "exec",
+        .arg = "/home/test/tildaz --toggle 2",
+    }, exe).?);
+    try std.testing.expectEqualStrings("CTRL SHIFT ,F4", managedHyprlandAccel(&buf, .{
+        .modmask = hypr_mod_ctrl | hypr_mod_shift,
+        .key = "F4",
+        .dispatcher = "exec",
+        .arg = "/home/test/tildaz --toggle 3",
+    }, exe).?);
+    try std.testing.expect(managedHyprlandAccel(&buf, .{
+        .key = "F3",
+        .dispatcher = "exec",
+        .arg = "/usr/bin/other --toggle 2",
+    }, exe) == null);
+    try std.testing.expect(managedHyprlandAccel(&buf, .{
+        .key = "F3",
+        .dispatcher = "workspace",
+        .arg = "3",
+    }, exe) == null);
+}
+
+test "Hyprland binds JSON keeps the fields needed for cleanup" {
+    const json =
+        \\[{"modmask":0,"key":"F3","keycode":0,"dispatcher":"exec","arg":"/home/test/tildaz --toggle 2","description":""}]
+    ;
+    const parsed = try std.json.parseFromSlice([]HyprlandBind, std.testing.allocator, json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.len);
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(",F3", managedHyprlandAccel(&buf, parsed.value[0], "/home/test/tildaz").?);
 }
 
 fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
