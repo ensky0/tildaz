@@ -75,11 +75,11 @@ pub fn ensureDesktopEntry(allocator: std.mem.Allocator, index: u32) !void {
         \\Icon=tildaz
         \\Terminal=false
         \\Categories=System;TerminalEmulator;
-        \\StartupWMClass=tildaz
+        \\StartupWMClass=tildaz.instance{d}
         \\StartupNotify=false
         \\NoDisplay=true
         \\
-    , .{ index, index, exe, index });
+    , .{ index, index, exe, index, index });
     defer allocator.free(content);
 
     if (std.fs.openFileAbsolute(path, .{})) |file| {

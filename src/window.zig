@@ -1137,6 +1137,7 @@ pub const Window = struct {
         switch (msg) {
             WM_NEW_INSTANCE_REQUEST => {
                 if (@import("instance_context.zig").requireWorkerIndex() == 0) {
+                    self.show();
                     @import("new_instance.zig").handle(std.heap.page_allocator);
                 }
                 return 0;

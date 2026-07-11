@@ -5,8 +5,9 @@
  * 가 자기 창의 화면 위치를 지정하는 것을 금지한다(보안 + compositor 권한). 따라서
  * drop-down 의 핵심(상단 anchor + always-on-top + hotkey 토글)은 GNOME Shell
  * 프로세스 안(=이 extension)에서 privileged Meta API 로만 가능하다. tildaz 본체는
- * 평범한 Wayland xdg-shell client(app_id="tildaz")로 그대로 두고, 이 extension 이
- * 그 창을 잡아 배치/토글한다. reference: ddterm / quake-terminal 패턴.
+ * 평범한 Wayland xdg-shell client(app_id="tildaz.instanceN")로 두고, 이 extension
+ * 이 번호별 창을 잡아 배치/토글한다. tildaz.desktop은 launcher 전용이라 앱 아이콘
+ * 재클릭도 기존 창 activate가 아니라 launcher Exec을 호출한다.
  *
  * config = single source of truth: ~/.config/tildaz/config_N.json 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} 를 읽는다.
@@ -25,14 +26,30 @@ import Gio from "gi://Gio";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 
-const APP_ID = "tildaz";
+const WORKER_APP_ID_PREFIX = "tildaz.instance";
+const DIALOG_APP_ID = "tildaz-dialog";
 const DESKTOP_ID = "tildaz.desktop";
+
+function workerIndex(win) {
+  if (!win) return null;
+  const match = /^TildaZ-(0|[1-9][0-9]*)$/.exec(win.get_title?.() || "");
+  if (!match) return null;
+  const index = Number(match[1]);
+  const expected = `${WORKER_APP_ID_PREFIX}${index}`;
+  const c = win.get_wm_class?.();
+  const ci = win.get_wm_class_instance?.();
+  const matches = value => typeof value === "string" && value.toLowerCase() === expected;
+  return matches(c) || matches(ci) ? index : null;
+}
 
 export default class TildazExtension extends Extension {
   enable() {
     this._appSystem = Shell.AppSystem.get_default();
     this._configs = this._readConfigs();
     this._mapWaitId = 0;
+    this._windowCreatedId = 0;
+    this._dialogClassWatchers = new Map();
+    this._dialogIdleIds = new Set();
     this._managed = new Set();
     this._placed = new Set();
     this._taskbarPatched = new Set();
@@ -67,6 +84,7 @@ export default class TildazExtension extends Extension {
     // 배치(우측 드롭다운) 핸들러는 auto_start 와 무관하게 *항상* 건다 — 그래야 앱
     // 그리드/터미널로 수동 실행해도(auto_start=false) extension 이 그 창을 잡아
     // 드롭다운으로 만든다. (전엔 _launch 안에서만 걸려 수동 실행이 일반 창으로 떴다.)
+    this._armDialogCreationHandler();
     this._armMapHandler();
 
     // auto_start 면 로그인(enable) 시 미리 launch. 표시/숨김은 map 핸들러가
@@ -106,6 +124,18 @@ export default class TildazExtension extends Extension {
       global.window_manager.disconnect(this._mapWaitId);
       this._mapWaitId = 0;
     }
+    if (this._windowCreatedId) {
+      global.display.disconnect(this._windowCreatedId);
+      this._windowCreatedId = 0;
+    }
+    for (const [win, id] of this._dialogClassWatchers || []) {
+      try {
+        win.disconnect(id);
+      } catch (_e) {}
+    }
+    for (const id of this._dialogIdleIds || []) GLib.source_remove(id);
+    this._dialogClassWatchers?.clear();
+    this._dialogIdleIds?.clear();
     for (const win of this._managed || []) {
       try {
         win.unmake_above();
@@ -130,6 +160,8 @@ export default class TildazExtension extends Extension {
     this._placed = null;
     this._taskbarPatched = null;
     this._accelerators = null;
+    this._dialogClassWatchers = null;
+    this._dialogIdleIds = null;
   }
 
   /** ~/.config/tildaz/config_N.json 읽기 (실패 시 해당 항목 제외). */
@@ -212,14 +244,11 @@ export default class TildazExtension extends Extension {
     return mods + key;
   }
 
-  /** app_id == "tildaz" 인 창 찾기 (Wayland: get_wm_class 가 app_id 를 반환). */
+  /** app_id와 title이 모두 같은 번호인 worker 창 찾기. */
   _find(index) {
     const wins = global.display.list_all_windows();
     for (const w of wins) {
-      const c = w.get_wm_class();
-      const ci = w.get_wm_class_instance ? w.get_wm_class_instance() : null;
-      const title = w.get_title ? w.get_title() : "";
-      if ((c === APP_ID || ci === APP_ID || (c && c.toLowerCase() === APP_ID)) && title === `TildaZ-${index}`) return w;
+      if (workerIndex(w) === index) return w;
     }
     return null;
   }
@@ -305,11 +334,53 @@ export default class TildazExtension extends Extension {
     });
   }
 
+  // Mutter는 minimize된 parent의 transient dialog를 MetaWindow로 생성하지만 map하지
+  // 않는다. map handler만으로는 parent 복원에 진입할 수 없으므로 window-created에서
+  // app_id가 설정될 때까지 기다린 뒤, 같은 Wayland request 묶음의 set_parent가 반영된
+  // idle 시점에 parent를 먼저 복원한다. 일반 worker는 기존 map 경로가 담당한다.
+  _armDialogCreationHandler() {
+    if (this._windowCreatedId) global.display.disconnect(this._windowCreatedId);
+    this._windowCreatedId = global.display.connect("window-created", (_display, win) => {
+      this._watchDialogBeforeMap(win);
+    });
+  }
+
+  _watchDialogBeforeMap(win) {
+    let watcherId = 0;
+    const stopWatching = () => {
+      if (!watcherId) return;
+      try {
+        win.disconnect(watcherId);
+      } catch (_e) {}
+      this._dialogClassWatchers.delete(win);
+      watcherId = 0;
+    };
+    const inspect = () => {
+      const c = win.get_wm_class?.();
+      if (!c) return;
+      stopWatching();
+      if (c.toLowerCase() !== DIALOG_APP_ID) return;
+
+      let idleId = 0;
+      idleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        this._dialogIdleIds?.delete(idleId);
+        const term = win.get_transient_for?.() || null;
+        if (term) this._restoreDialogParent(term);
+        return GLib.SOURCE_REMOVE;
+      });
+      this._dialogIdleIds.add(idleId);
+    };
+
+    watcherId = win.connect("notify::wm-class", inspect);
+    this._dialogClassWatchers.set(win, watcherId);
+    inspect();
+  }
+
   // tildaz 의 map 시그널을 잡아 우측 드롭다운으로 배치하는 핸들러를 건다. enable()
   // 에서 auto_start 와 무관하게 항상 호출 — 앱 그리드/터미널로 *수동* 실행해도
   // extension 이 그 창을 잡아 드롭다운으로 만든다. 표시/숨김은 실행 경로와 무관하게
   // config(hidden_start) 단일 기준(핸들러 안에서 읽음).
-  // window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라 tildaz 를 놓친다
+  // window-created 는 Wayland 에서 app_id(wm_class) 미설정 시점이라 worker를 놓친다
   // (실측). map 은 app_id 확정 후라 wm_class 로 안정 식별 가능 — 여기서 잡는다.
   // 핸들러는 close→relaunch 도 잡도록 계속 살려두고, disable() 에서만 해제한다.
   _armMapHandler() {
@@ -318,10 +389,12 @@ export default class TildazExtension extends Extension {
     this._mapWaitId = wm.connect("map", (_wm, actor) => {
       const win = actor.meta_window;
       const c = win.get_wm_class();
-      if (!(c === APP_ID || (c && c.toLowerCase() === APP_ID))) return;
-      const match = /^TildaZ-(\d+)$/.exec(win.get_title());
-      if (!match) return;
-      const index = Number(match[1]);
+      if (c === DIALOG_APP_ID || (c && c.toLowerCase() === DIALOG_APP_ID)) {
+        this._showParentAndPlaceDialog(win);
+        return;
+      }
+      const index = workerIndex(win);
+      if (index === null) return;
 
       // tildaz 가 뜰 때마다 config 를 다시 읽는다 (config = single source of truth).
       // 사용자가 config_N.json 의 hidden_start / 위치(dock/width/...) 를 바꾸고 tildaz 만
@@ -380,6 +453,47 @@ export default class TildazExtension extends Extension {
         return GLib.SOURCE_REMOVE;
       });
     });
+  }
+
+  // socket 요청을 받은 기존 worker가 만드는 dialog에는 새 launcher의 activation
+  // context가 없다. transient parent가 minimize 상태면 Mutter가 child도 사용자에게
+  // 보이지 않게 두므로 parent를 먼저 복원·활성화하고 dialog를 그 위에 올린다.
+  _showParentAndPlaceDialog(win) {
+    const dr = win.get_frame_rect();
+    const transient =
+      typeof win.get_transient_for === "function" ? win.get_transient_for() : null;
+    const term = transient || this._managed.values().next().value;
+    let x;
+    let y;
+
+    if (term) {
+      this._restoreDialogParent(term);
+
+      const tr = term.get_frame_rect();
+      x = tr.x + Math.round((tr.width - dr.width) / 2);
+      y = tr.y + Math.round((tr.height - dr.height) / 2);
+      win.move_to_monitor(term.get_monitor());
+    } else {
+      const mi = global.display.get_current_monitor();
+      const a = win.get_work_area_for_monitor(mi);
+      if (!a) return;
+      x = a.x + Math.round((a.width - dr.width) / 2);
+      y = a.y + Math.round((a.height - dr.height) / 2);
+      win.move_to_monitor(mi);
+    }
+
+    win.move_frame(true, x, y);
+    win.make_above();
+    win.stick();
+    Main.activateWindow(win);
+  }
+
+  _restoreDialogParent(term) {
+    this._skipEffect(term);
+    const actor = term.get_compositor_private();
+    if (actor) actor.opacity = 255;
+    if (term.minimized) term.unminimize();
+    Main.activateWindow(term);
   }
 
   // tildaz 를 실행. 이미 떠 있으면 no-op. 배치/숨김은 map 핸들러(_armMapHandler,

@@ -36,6 +36,8 @@ const shell_validate = @import("../../shell_validate.zig");
 const system_open = @import("../../system_open.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
+const instance_context = @import("../../instance_context.zig");
+const instance_identity = @import("instance_identity.zig");
 
 const display_id: u32 = 1;
 const registry_id: u32 = 2;
@@ -1447,10 +1449,13 @@ const Client = struct {
         try self.sendArgs(self.wm_base_id, 2, &.{ self.xdg_surface_id, self.surface_id });
         self.toplevel_id = self.allocId();
         try self.sendNewId(self.xdg_surface_id, 1, self.toplevel_id);
+        const index = instance_context.requireWorkerIndex();
         var title_buf: [32]u8 = undefined;
-        const title = std.fmt.bufPrint(&title_buf, "TildaZ-{d}", .{@import("../../instance_context.zig").requireWorkerIndex()}) catch "TildaZ";
+        const title = try std.fmt.bufPrint(&title_buf, "TildaZ-{d}", .{index});
+        var app_id_buf: [32]u8 = undefined;
+        const app_id = try instance_identity.appId(&app_id_buf, index);
         try self.sendString(self.toplevel_id, 2, title);
-        try self.sendString(self.toplevel_id, 3, "tildaz");
+        try self.sendString(self.toplevel_id, 3, app_id);
         try self.sendNoArgs(self.surface_id, 6);
         log.appendLineVerbose("wayland", "shell objects (xdg) surface_id={} xdg_surface_id={} toplevel_id={}", .{
             self.surface_id,
@@ -4437,7 +4442,7 @@ const Client = struct {
         portal.cleanupLegacyKdeIdentity(self.allocator, &self.dbus_session.?);
         // #228 — GNOME + extension 환경에선 hotkey 를 GNOME Shell extension
         // (Main.wm.addKeybinding) 이 담당한다. portal GlobalShortcuts 는 (1) 불필요,
-        // (2) app_id=tildaz 가 portal 기준 invalid 라 BindShortcuts 가 어차피 거부되며,
+        // (2) GNOME 에서는 worker app_id와 무관하게 portal binding을 사용하지 않으며,
         // (3) 무엇보다 로그인 직후 xdg-desktop-portal 이 아직 안 떠 응답이 없으면
         // CreateSession 이 D-Bus 기본 reply timeout(25s) 을 통째로 블록 → 그 뒤에야
         // createShellObjects(창 map) 가 돌아 사용자 체감 startup 이 25초 지연된다(실측).
@@ -5506,7 +5511,26 @@ const Client = struct {
         if (!self.pending_new_instance_request) return;
         if (self.dialog.active()) return;
         self.pending_new_instance_request = false;
+        self.showMainBeforeNewInstancePrompt() catch |err| {
+            log.appendLine("dialog", "show main before new-instance prompt failed: {s}", .{@errorName(err)});
+            return;
+        };
         @import("../../new_instance.zig").handle(self.allocator);
+    }
+
+    fn showMainBeforeNewInstancePrompt(self: *Client) !void {
+        if (!self.surface_hidden) return;
+
+        try self.handleActivatedToggle();
+        var timer = try std.time.Timer.start();
+        while (self.running and !self.mapped and timer.read() < 5 * std.time.ns_per_s) {
+            try self.pollAndDispatch(frame_poll_ms);
+            self.drainPendingDialogDismiss();
+            self.drainExitedTabs();
+            self.dispatchDbusMessages();
+        }
+        if (!self.mapped) return error.MainWindowShowTimeout;
+        log.appendLine("dialog", "main window shown before new-instance prompt", .{});
     }
 
     fn logCapabilities(self: *Client) void {
