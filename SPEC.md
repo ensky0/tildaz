@@ -596,9 +596,11 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 - 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 필드를
   한 다이얼로그에 표시한다. prompt 전에 worker 0을 show/restore/activate하며, 표시가
   반영된 뒤 alert를 연다. 실제 key 조합을 캡처하기 전에는 **Create**가 비활성이다.
-  **Create**는 형식과 TildaZ config 간 중복을 검증한 뒤
-  다음 번호의 config를 생성하고, **Cancel**은 config를 변경하지 않으며 worker 0은
-  보이는 상태를 유지한다.
+  입력 직후와 **Create** 클릭 순간에 Linux · macOS · Windows 공통 validator가 형식과
+  기존 모든 TildaZ config의 hotkey 중복을 검사한다. 중복이면 `Already used by TildaZ N.`을
+  같은 다이얼로그에 표시하고 Create를 비활성화한다. 다른 조합을 입력하면 즉시 다시
+  검사한다. 통과한 Create만 다음 번호의 config를 생성하고, **Cancel** / Esc는 config나
+  system binding을 변경하지 않으며 worker 0은 보이는 상태를 유지한다.
 - autostart entry는 launcher를 `--autostart`로 한 번 실행한다. launcher는
   `auto_start=true`인 config의 TildaZ worker만 시작하고 종료한다. 수동 실행은 모든
   config를 대상으로 한다.
@@ -712,7 +714,9 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
 
-**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다. [sway IPC의 공식 request 목록](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd)에는 현재 binding을 열거하는 request가 없으므로, launcher는 stale binding을 추측해 제거하지 않는다. 삭제/변경 전 binding은 sway 세션 재시작 때 사라진다.
+**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym --no-warn <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. sway IPC에는 runtime binding 열거 request가 없으므로 외부 binding 충돌은 조회하지 않고, Create가 통과한 TildaZ hotkey가 같은 accelerator의 일반 binding을 의도적으로 덮어쓴다([sway IPC request 목록](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd), [`bindsym --no-warn`](https://man.archlinux.org/man/sway.5.en)). `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다. config 삭제/변경 전에 등록된 stale binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고, 재사용하지 않으면 sway 세션 재시작 때 사라진다.
+
+**Wayland hotkey capture inhibitor**: Linux prompt surface가 focus를 가진 동안 compositor가 `zwp_keyboard_shortcuts_inhibit_manager_v1`을 client에게 노출하면 `zwp_keyboard_shortcuts_inhibitor_v1`을 생성한다. 따라서 기존 compositor binding이 있는 F-key도 prompt가 직접 받는다. Create / Cancel / Esc / surface 종료 시 inhibitor를 surface보다 먼저 파괴해 일반 shortcut routing을 즉시 복구한다. protocol을 노출하지 않는 compositor는 기존 입력 경로를 유지한다. sway에서 `--inhibited`로 등록한 특수 binding은 compositor 정책상 예외로 계속 실행될 수 있다([Wayland protocol](https://wayland.app/protocols/keyboard-shortcuts-inhibit-unstable-v1), [sway inhibitor 동작](https://man.archlinux.org/man/sway.5.en)).
 
 **Hyprland (portal `GlobalShortcuts` 미사용) — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.json` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
 
