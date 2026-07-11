@@ -490,7 +490,7 @@ pub const Defaults = struct {
     /// 1.0 = 폰트 그대로, 1.1 = 10% 더 넓음. 세 platform 공통.
     pub const cell_width_ratio: f32 = 1.0;
     pub const theme: []const u8 = "Tilda";
-    pub const hotkey: []const u8 = "f1";
+    pub const hotkey: []const u8 = "F1";
     pub const auto_start: bool = true;
     pub const hidden_start: bool = false;
     pub const max_scroll_lines: u32 = 100_000;
