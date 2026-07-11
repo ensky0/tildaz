@@ -21,7 +21,7 @@ pub const Callbacks = struct {
     ctx: *anyopaque,
     show_info: *const fn (ctx: *anyopaque, severity: dialog.Severity, title: []const u8, message: []const u8) void,
     show_confirm: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) bool,
-    prompt_hotkey: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8,
+    prompt_hotkey: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8,
 };
 
 var g_callbacks: ?Callbacks = null;
@@ -32,8 +32,8 @@ pub fn registerCallbacks(cb: Callbacks) void {
     g_callbacks = cb;
 }
 
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
-    if (g_callbacks) |cb| return cb.prompt_hotkey(cb.ctx, allocator, title, message);
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+    if (g_callbacks) |cb| return cb.prompt_hotkey(cb.ctx, allocator, title, message, validator);
     showStderr(.info, title, message);
     return null;
 }

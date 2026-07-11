@@ -664,6 +664,8 @@ pub const Renderer = struct {
         message: []const u8,
         confirm_focus_ok: ?bool,
         prompt_input: ?[]const u8,
+        prompt_status: ?[]const u8,
+        prompt_available: bool,
     ) void {
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
@@ -735,6 +737,12 @@ pub const Renderer = struct {
             }
             text_y += field_h + @divTrunc(ch, 2);
         }
+        if (prompt_status) |status| {
+            if (status.len > 0) {
+                self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 }, bg);
+            }
+            text_y += ch;
+        }
 
         // (5) 버튼 — Info 모드: OK 하나만 중앙. Confirm 모드: OK + Cancel 그룹,
         // mac NSAlert 표준 — primary (OK) 오른쪽, secondary (Cancel) 왼쪽.
@@ -746,7 +754,7 @@ pub const Renderer = struct {
         // OK 버튼 (primary action, 항상 그림).
         const ok_x: i32 = if (is_confirm) group_x + button_w + button_gap else group_x;
         self.last_dialog_ok_rect = .{ .x = ok_x, .y = button_y, .w = button_w, .h = button_h };
-        const create_enabled = if (prompt_input) |input| std.mem.trim(u8, input, " \t\r\n").len > 0 else true;
+        const create_enabled = if (prompt_input != null) prompt_available else true;
         const ok_bg = if (create_enabled) dialog_button_color else dialog_disabled_button_color;
         const ok_fg = if (create_enabled) dialog_button_text_color else dialog_disabled_button_text_color;
         fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, ok_bg);
@@ -812,7 +820,8 @@ pub const Renderer = struct {
             line_count += 1;
         }
         // 최소 30 cell 폭 — 너무 짧은 title 의 박스가 어색해지지 않게.
-        max_cells = @max(max_cells, 30);
+        const min_cells: usize = if (prompt) 42 else 30;
+        max_cells = @max(max_cells, min_cells);
 
         // 행 (text 영역): title(1) + separator(1) + msg(line_count) + gap(1).
         // 위로 아이콘 (icon_size + 짧은 gap), 아래로 OK 버튼 + bottom pad.
@@ -830,7 +839,7 @@ pub const Renderer = struct {
         // 박스 폭 — 텍스트 폭 vs 버튼 폭 vs 아이콘 폭 + 좌우 여유 중 가장 큰.
         const box_w: i32 = @max(@max(inner_w + pad * 2, buttons_w + pad * 4), icon_size + pad * 2);
         const icon_section: i32 = icon_size + @divTrunc(ch, 2);
-        const prompt_h: i32 = if (prompt) ch * 2 else 0;
+        const prompt_h: i32 = if (prompt) ch * 3 else 0;
         const box_h: i32 = pad * 2 + icon_section + text_rows * ch + prompt_h + button_h;
         // buffer = box + shadow margin × 2 (모든 4 방향).
         return .{ .w = box_w + sm * 2, .h = box_h + sm * 2 };
@@ -2097,5 +2106,5 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const buf = try allocator.alloc(u8, @intCast(stride * ph));
     defer allocator.free(buf);
     @memset(buf, 0);
-    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null, null);
+    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null, null, null, false);
 }

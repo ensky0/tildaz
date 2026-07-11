@@ -186,6 +186,13 @@ const xdg_activation_token_v1_request_commit: u16 = 3;
 const xdg_activation_token_v1_request_destroy: u16 = 4;
 const xdg_activation_token_v1_event_done: u16 = 0;
 
+// keyboard-shortcuts-inhibit-unstable-v1. Prompt가 focus를 가진 동안
+// compositor global binding보다 captured key를 먼저 받는다.
+const keyboard_shortcuts_inhibit_manager_request_inhibit_shortcuts: u16 = 1;
+const keyboard_shortcuts_inhibitor_request_destroy: u16 = 0;
+const keyboard_shortcuts_inhibitor_event_active: u16 = 0;
+const keyboard_shortcuts_inhibitor_event_inactive: u16 = 1;
+
 // wp_fractional_scale_v1 (staging) — compositor 가 권장하는 fractional scale 통보.
 // https://wayland.app/protocols/fractional-scale-v1
 // preferred_scale 의 unit = scale / 120. 즉 240 = 2.0x, 204 = 1.7x, 120 = 1.0x.
@@ -332,6 +339,7 @@ const Capabilities = struct {
     // #203 Phase C — `xdg_activation_v1` (focus return). 활성 surface 가
     // token 발급 → 다른 surface 에 양도. KWin / Mutter / wlroots 모두 지원.
     xdg_activation: Global = .{},
+    keyboard_shortcuts_inhibit: Global = .{},
 
     fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
         if (std.mem.eql(u8, interface, "wl_compositor")) {
@@ -359,6 +367,8 @@ const Capabilities = struct {
             self.cursor_shape_manager = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "xdg_activation_v1")) {
             self.xdg_activation = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "zwp_keyboard_shortcuts_inhibit_manager_v1")) {
+            self.keyboard_shortcuts_inhibit = .{ .name = name, .version = version };
         }
     }
 };
@@ -443,6 +453,9 @@ pub const DialogOverlay = struct {
     msg_len: usize = 0,
     input_buf: [128]u8 = undefined,
     input_len: usize = 0,
+    status_buf: [256]u8 = undefined,
+    status_len: usize = 0,
+    prompt_available: bool = false,
 
     // --- wayland 객체 ---
     surface_id: u32 = 0,
@@ -482,6 +495,9 @@ pub const DialogOverlay = struct {
     }
     pub fn input(self: *const DialogOverlay) []const u8 {
         return self.input_buf[0..self.input_len];
+    }
+    pub fn status(self: *const DialogOverlay) []const u8 {
+        return self.status_buf[0..self.status_len];
     }
 
     pub fn hasPromptInput(self: *const DialogOverlay) bool {
@@ -638,6 +654,8 @@ const Client = struct {
     ///   - `false` = Cancel 클릭 / Esc / 외부 dismiss (closed event 등)
     pending_confirm_result: ?bool = null,
     pending_prompt_result: ?bool = null,
+    prompt_validator: ?dialog_mod.HotkeyValidator = null,
+    prompt_shortcuts_inhibitor_id: u32 = 0,
     pending_new_instance_request: bool = false,
     /// #203 Phase C step 4 — Alt+F4 의 deferred quit. Alt+F4 핸들러는 flag 만
     /// set, main loop 의 `drainQuitRequest` 가 multi-tab confirm + `running=false`.
@@ -694,6 +712,7 @@ const Client = struct {
     // 활성 surface (dialog) 가 token 발급 → main 에 activate. 미advertise
     // 환경은 fallback (focus return 안 됨, 사용자가 main 클릭 필요).
     xdg_activation_id: u32 = 0,
+    keyboard_shortcuts_inhibit_manager_id: u32 = 0,
     // 진행 중 token 발급 단계 추적 — get_activation_token 요청 후 done event
     // 받을 때까지 임시. 받으면 token 문자열을 별 buffer 에 저장 + activate
     // 호출. 동기 roundtrip 으로 wait.
@@ -1200,6 +1219,15 @@ const Client = struct {
                 "xdg_activation_v1",
                 @min(self.caps.xdg_activation.version, 1),
                 self.xdg_activation_id,
+            );
+        }
+        if (self.caps.keyboard_shortcuts_inhibit.name != 0) {
+            self.keyboard_shortcuts_inhibit_manager_id = self.allocId();
+            try self.bind(
+                self.caps.keyboard_shortcuts_inhibit.name,
+                "zwp_keyboard_shortcuts_inhibit_manager_v1",
+                @min(self.caps.keyboard_shortcuts_inhibit.version, 1),
+                self.keyboard_shortcuts_inhibit_manager_id,
             );
         }
         // L10-α — `zwp_text_input_manager_v3` bind + 그 자리에서 바로
@@ -2448,6 +2476,14 @@ const Client = struct {
         }
         if (self.text_input_id != 0 and id == self.text_input_id) {
             try self.handleTextInputEvent(opcode, payload);
+            return;
+        }
+        if (self.prompt_shortcuts_inhibitor_id != 0 and id == self.prompt_shortcuts_inhibitor_id) {
+            if (opcode == keyboard_shortcuts_inhibitor_event_active) {
+                log.appendLineVerbose("dialog", "keyboard shortcuts inhibitor active", .{});
+            } else if (opcode == keyboard_shortcuts_inhibitor_event_inactive) {
+                log.appendLine("dialog", "keyboard shortcuts inhibitor inactive; compositor bindings may intercept prompt input", .{});
+            }
             return;
         }
         if (self.pointer_id != 0 and id == self.pointer_id) {
@@ -3820,8 +3856,8 @@ const Client = struct {
                 if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
                     log.appendLineVerbose("dialog", "OK hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
-                    if (self.dialog.kind == .prompt and self.dialog.hasPromptInput()) self.pending_prompt_result = true;
-                    if (self.dialog.kind == .prompt and !self.dialog.hasPromptInput()) return;
+                    if (self.dialog.kind == .prompt and self.validatePromptInput()) self.pending_prompt_result = true;
+                    if (self.dialog.kind == .prompt and self.pending_prompt_result == null) return;
                     self.requestDismissDialog();
                 } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
                     log.appendLineVerbose("dialog", "Cancel hit — dismiss request", .{});
@@ -4719,8 +4755,23 @@ const Client = struct {
 
     fn openPromptDialog(self: *Client, title: []const u8, message: []const u8) !void {
         self.dialog.input_len = 0;
+        self.dialog.status_len = 0;
+        self.dialog.prompt_available = false;
         self.pending_prompt_result = null;
         try self.openDialog(.prompt, .info, title, message);
+        try self.createPromptShortcutsInhibitor();
+    }
+
+    fn createPromptShortcutsInhibitor(self: *Client) !void {
+        if (self.keyboard_shortcuts_inhibit_manager_id == 0 or self.seat_id == 0 or self.dialog.surface_id == 0) return;
+        std.debug.assert(self.prompt_shortcuts_inhibitor_id == 0);
+        self.prompt_shortcuts_inhibitor_id = self.allocId();
+        try self.sendArgs(
+            self.keyboard_shortcuts_inhibit_manager_id,
+            keyboard_shortcuts_inhibit_manager_request_inhibit_shortcuts,
+            &.{ self.prompt_shortcuts_inhibitor_id, self.dialog.surface_id, self.seat_id },
+        );
+        log.appendLineVerbose("dialog", "keyboard shortcuts inhibitor requested for prompt surface_id={}", .{self.dialog.surface_id});
     }
 
     fn openDialog(self: *Client, kind: DialogOverlay.Kind, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
@@ -5015,7 +5066,7 @@ const Client = struct {
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
         if (self.dialog.kind == .prompt) {
             if (sym == xkb_key_return) {
-                if (self.dialog.hasPromptInput()) {
+                if (self.validatePromptInput()) {
                     self.pending_prompt_result = true;
                     self.requestDismissDialog();
                 }
@@ -5028,6 +5079,8 @@ const Client = struct {
             }
             if (sym == xkb_key_backspace) {
                 self.dialog.input_len = 0;
+                self.dialog.status_len = 0;
+                self.dialog.prompt_available = false;
                 self.repaintDialog();
                 return;
             }
@@ -5040,7 +5093,7 @@ const Client = struct {
             if (config_mod.capturedHotkeyText(&capture_buf, sym, modifiers)) |captured| {
                 @memcpy(self.dialog.input_buf[0..captured.len], captured);
                 self.dialog.input_len = captured.len;
-                self.repaintDialog();
+                _ = self.validatePromptInput();
             }
             return;
         }
@@ -5063,6 +5116,33 @@ const Client = struct {
         return r.w > 0 and
             self.pointer_x_px >= r.x and self.pointer_x_px < r.x + r.w and
             self.pointer_y_px >= r.y and self.pointer_y_px < r.y + r.h;
+    }
+
+    fn validatePromptInput(self: *Client) bool {
+        if (!self.dialog.hasPromptInput()) {
+            self.dialog.status_len = 0;
+            self.dialog.prompt_available = false;
+            self.repaintDialog();
+            return false;
+        }
+        const validator = self.prompt_validator orelse {
+            self.dialog.status_len = 0;
+            self.dialog.prompt_available = false;
+            self.repaintDialog();
+            return false;
+        };
+        const result = validator.validate(self.dialog.input());
+        self.dialog.prompt_available = switch (result) {
+            .available => true,
+            else => false,
+        };
+        var status_buf: [256]u8 = undefined;
+        const status = dialog_mod.hotkeyValidationMessage(&status_buf, result);
+        const len = @min(status.len, self.dialog.status_buf.len);
+        @memcpy(self.dialog.status_buf[0..len], status[0..len]);
+        self.dialog.status_len = len;
+        self.repaintDialog();
+        return self.dialog.prompt_available;
     }
 
     /// 별 layer-shell `overlay` surface 생성. 새 wl_surface + zwlr_layer_surface
@@ -5213,6 +5293,11 @@ const Client = struct {
     fn destroyDialogSurface(self: *Client) !void {
         if (self.dialog.surface_id == 0) return;
 
+        if (self.prompt_shortcuts_inhibitor_id != 0) {
+            try self.sendNoArgs(self.prompt_shortcuts_inhibitor_id, keyboard_shortcuts_inhibitor_request_destroy);
+            self.prompt_shortcuts_inhibitor_id = 0;
+        }
+
         if (self.dialog.active_buffer) |*buffer| {
             self.destroyBufferObject(buffer.id);
             buffer.deinit();
@@ -5276,6 +5361,8 @@ const Client = struct {
             self.dialog.message(),
             focus_arg,
             if (self.dialog.kind == .prompt) self.dialog.input() else null,
+            if (self.dialog.kind == .prompt) self.dialog.status() else null,
+            self.dialog.prompt_available,
         );
     }
 
@@ -5492,8 +5579,10 @@ const Client = struct {
         return result;
     }
 
-    fn dialogPromptHotkeyCb(ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+    fn dialogPromptHotkeyCb(ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog_mod.HotkeyValidator) ?[]u8 {
         const self: *Client = @ptrCast(@alignCast(ctx));
+        self.prompt_validator = validator;
+        defer self.prompt_validator = null;
         self.openPromptDialog(title, message) catch return null;
         while (self.running and self.pending_prompt_result == null) {
             self.pollAndDispatch(frame_poll_ms) catch {
@@ -5557,7 +5646,7 @@ const Client = struct {
         // #197 — production capabilities 요약 (once per boot). lifecycle 성격이라 [startup].
         log.appendLine(
             "startup",
-            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shm_xrgb8888={} shm_argb8888={}",
+            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
@@ -5565,6 +5654,7 @@ const Client = struct {
                 self.caps.layer_shell.name != 0,
                 self.caps.text_input_v3.name != 0,
                 self.caps.data_device_manager.name != 0,
+                self.caps.keyboard_shortcuts_inhibit.name != 0,
                 self.saw_xrgb8888,
                 self.saw_argb8888,
             },

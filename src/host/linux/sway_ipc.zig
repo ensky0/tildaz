@@ -60,7 +60,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
 
     // sway command — `exec` 인자는 sway 가 sh -c 로 실행하므로 path 를 따옴표로.
     var cmd_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
-    const command = std.fmt.bufPrint(&cmd_buf, "bindsym {s} exec \"{s}\" --toggle {d}", .{ accel, exe_path, instance_context.requireWorkerIndex() }) catch {
+    const command = std.fmt.bufPrint(&cmd_buf, "bindsym --no-warn {s} exec \"{s}\" --toggle {d}", .{ accel, exe_path, instance_context.requireWorkerIndex() }) catch {
         log.appendLine("sway", "bindsym command too long — skip", .{});
         return;
     };
