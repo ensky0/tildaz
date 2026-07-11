@@ -71,6 +71,10 @@ fn modifierFreeCaptureAllowed(key_name: []const u8) bool {
     return false;
 }
 
+fn globalHotkeyAllowed(key_name: []const u8, has_command_modifier: bool) bool {
+    return has_command_modifier or modifierFreeCaptureAllowed(key_name);
+}
+
 /// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
 /// key_code의 의미만 platform별이다: Linux keysym, Windows virtual-key,
 /// macOS hardware keyCode. modifier 비트는 위 CAPTURE_MOD_*로 정규화한다.
@@ -86,7 +90,7 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
     // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
     // 허용하는 키는 F1~F12뿐이다. 일반 키는 command 성격의 modifier가 필수다.
     const command_modifiers = CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
-    if ((modifiers & command_modifiers) == 0 and !modifierFreeCaptureAllowed(key_name)) return null;
+    if (!globalHotkeyAllowed(key_name, (modifiers & command_modifiers) != 0)) return null;
 
     var fbs = std.io.fixedBufferStream(buf);
     const writer = fbs.writer();
@@ -136,7 +140,11 @@ const LinuxHotkey = struct {
                 if (linuxKeysymFromName(tok)) |k| keysym = k else return null;
             }
         }
-        return .{ .keysym = keysym orelse return null, .modifiers = modifiers };
+        const resolved = keysym orelse return null;
+        const name = linuxKeysymName(resolved) orelse return null;
+        const command_modifiers = MOD_ALT | MOD_CTRL | MOD_SUPER;
+        if (!globalHotkeyAllowed(name, (modifiers & command_modifiers) != 0)) return null;
+        return .{ .keysym = resolved, .modifiers = modifiers };
     }
 
     /// 키 이름 → xkb keysym. `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_*`.
@@ -238,6 +246,16 @@ test "modifier-free capture only accepts function keys" {
     }
 }
 
+test "config parser rejects unsafe global hotkeys" {
+    if (builtin.os.tag == .linux) {
+        try std.testing.expect(Hotkey.fromString("f3") != null);
+        try std.testing.expect(Hotkey.fromString("t") == null);
+        try std.testing.expect(Hotkey.fromString("shift+t") == null);
+        try std.testing.expect(Hotkey.fromString("ctrl+t") != null);
+        try std.testing.expect(Hotkey.fromString("ctrl+shift+t") != null);
+    }
+}
+
 const WindowsHotkey = struct {
     vkey: u32 = 0x70, // VK_F1
     modifiers: u32 = 0,
@@ -260,7 +278,11 @@ const WindowsHotkey = struct {
                 if (winVkeyFromName(tok)) |k| keycode = k else return null;
             }
         }
-        return .{ .vkey = keycode orelse return null, .modifiers = modifiers };
+        const resolved = keycode orelse return null;
+        const name = windowsVkeyName(resolved) orelse return null;
+        const command_modifiers = CAPTURE_MOD_ALT | CAPTURE_MOD_CTRL | CAPTURE_MOD_PRIMARY;
+        if (!globalHotkeyAllowed(name, (modifiers & command_modifiers) != 0)) return null;
+        return .{ .vkey = resolved, .modifiers = modifiers };
     }
 
     fn winVkeyFromName(name: []const u8) ?u32 {
@@ -345,7 +367,11 @@ const MacHotkey = struct {
                 if (macKeycodeFromName(tok)) |k| keycode = k else return null;
             }
         }
-        return .{ .keycode = keycode orelse return null, .modifiers = modifiers };
+        const resolved = keycode orelse return null;
+        const name = macKeycodeName(resolved) orelse return null;
+        const command_modifiers: u64 = 0x00100000 | 0x00080000 | 0x00040000;
+        if (!globalHotkeyAllowed(name, (modifiers & command_modifiers) != 0)) return null;
+        return .{ .keycode = resolved, .modifiers = modifiers };
     }
 
     fn macKeycodeFromName(name: []const u8) ?u32 {
