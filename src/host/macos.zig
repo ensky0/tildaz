@@ -37,7 +37,6 @@ const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
-const autostart = @import("../autostart.zig");
 const perf = @import("../perf.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
@@ -224,6 +223,23 @@ fn applicationDidBecomeActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
     setPopupWindowLevel();
 }
 
+fn createNewInstance() void {
+    if (@import("../instance_context.zig").requireWorkerIndex() == 0) {
+        @import("../new_instance.zig").handle(g_gpa.allocator());
+    } else {
+        @import("../instance_request.zig").send() catch {};
+    }
+}
+
+fn applicationShouldHandleReopen(_: objc.id, _: objc.SEL, _: objc.id, _: bool) callconv(.c) bool {
+    createNewInstance();
+    return false;
+}
+
+fn newInstanceNotification(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    if (@import("../instance_context.zig").requireWorkerIndex() == 0) createNewInstance();
+}
+
 var g_app_delegate_class: ?objc.Class = null;
 var g_app_delegate_instance: objc.id = null;
 
@@ -241,6 +257,10 @@ fn installAppDelegate() !void {
         return error.AppDelegateAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("applicationDidBecomeActive:"), @ptrCast(&applicationDidBecomeActive), "v@:@"))
         return error.AppDelegateAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("applicationShouldHandleReopen:hasVisibleWindows:"), @ptrCast(&applicationShouldHandleReopen), "B@:@B"))
+        return error.AppDelegateAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("newInstanceNotification:"), @ptrCast(&newInstanceNotification), "v@:@"))
+        return error.AppDelegateAddMethodFailed;
     objc.objc_registerClassPair(cls);
     g_app_delegate_class = cls;
 
@@ -252,6 +272,20 @@ fn installAppDelegate() !void {
 
     const setDelegate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setDelegate(g_app, objc.sel("setDelegate:"), inst);
+
+    const Center = objc.getClass("NSDistributedNotificationCenter");
+    const getCenter = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    if (getCenter(Center, objc.sel("defaultCenter"))) |center| {
+        const addObserver = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id, objc.id) callconv(.c) void);
+        addObserver(
+            center,
+            objc.sel("addObserver:selector:name:object:"),
+            inst,
+            objc.sel("newInstanceNotification:"),
+            objc.nsString(@import("../instance_request/macos.zig").notification_name),
+            null,
+        );
+    }
 }
 
 extern fn MTLCreateSystemDefaultDevice() objc.id;
@@ -2596,7 +2630,7 @@ fn resolveShell(allocator: std.mem.Allocator) []const u8 {
 
 pub fn run() !void {
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
-    // `~/Library/Logs/tildaz.log` — Console.app 이 자동 인덱싱해 GUI 에서
+    // `~/Library/Logs/tildazN.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
     log.logStart(build_options.version);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
@@ -2618,17 +2652,6 @@ pub fn run() !void {
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
     @import("../shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
-
-    // Auto-start (LaunchAgent) — Windows `autostart.enable/disable` 동등.
-    // 사용자 로그인 시 launchd 가 plist 따라 자동 실행. 매 부팅마다 enable
-    // / disable 을 sync 해 사용자가 config 끄면 즉시 효과.
-    if (g_config.auto_start) {
-        autostart.enable(g_gpa.allocator()) catch |err| {
-            log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
-        };
-    } else {
-        autostart.disable(g_gpa.allocator());
-    }
 
     // 1. NSApplication.
     const NSApplication = objc.getClass("NSApplication");
@@ -3493,7 +3516,7 @@ fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callcon
     about.showAboutDialog();
 }
 
-/// Shift+Cmd+P — config.json 을 default editor 로 열기 (#128). About 와 같은
+/// Shift+Cmd+P — 현재 worker의 config_N.json 을 default editor 로 열기 (#128). About 와 같은
 /// NSApplication-level selector 패턴.
 fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
     _ = self;
@@ -3505,7 +3528,7 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     @import("../system_open.zig").openInDefaultApp(allocator, path);
 }
 
-/// Shift+Cmd+L — tildaz.log 를 default editor 로 열기 (#128).
+/// Shift+Cmd+L — 현재 worker의 tildazN.log 를 default editor 로 열기 (#128).
 fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
     _ = self;
     _ = _sel;

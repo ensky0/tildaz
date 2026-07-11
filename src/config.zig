@@ -1,4 +1,4 @@
-// Cross-platform config.json schema + parser. Windows + macOS 같은 nested
+// Cross-platform config_N.json schema + parser. Windows + macOS 같은 nested
 // schema, default 만 OS-specific (font.family / font.size / shell / hotkey
 // 등). `Defaults` struct + `defaultConfigJson(alloc, shell_resolved)` 가 schema
 // single source — createDefault 가 그대로 파일에 저장 + parse 시 user config
@@ -54,6 +54,32 @@ pub const DockPosition = enum {
 /// 받는 `kVK_*` keycode + `kCGEventFlagMask*` modifier mask. 외부 인터페이스는
 /// `Hotkey.fromString(s)` 로 동일.
 pub const Hotkey = if (is_windows) WindowsHotkey else if (is_macos) MacHotkey else LinuxHotkey;
+
+pub const CAPTURE_MOD_ALT: u32 = 0x1;
+pub const CAPTURE_MOD_CTRL: u32 = 0x2;
+pub const CAPTURE_MOD_SHIFT: u32 = 0x4;
+pub const CAPTURE_MOD_PRIMARY: u32 = 0x8;
+
+/// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
+/// key_code의 의미만 platform별이다: Linux keysym, Windows virtual-key,
+/// macOS hardware keyCode. modifier 비트는 위 CAPTURE_MOD_*로 정규화한다.
+pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 {
+    const key_name = switch (builtin.os.tag) {
+        .linux => linuxKeysymName(if (key_code >= 'A' and key_code <= 'Z') key_code + 0x20 else key_code),
+        .windows => windowsVkeyName(key_code),
+        .macos => macKeycodeName(key_code),
+        else => null,
+    } orelse return null;
+
+    var fbs = std.io.fixedBufferStream(buf);
+    const writer = fbs.writer();
+    if ((modifiers & CAPTURE_MOD_CTRL) != 0) writer.writeAll("Ctrl+") catch return null;
+    if ((modifiers & CAPTURE_MOD_SHIFT) != 0) writer.writeAll("Shift+") catch return null;
+    if ((modifiers & CAPTURE_MOD_ALT) != 0) writer.writeAll("Alt+") catch return null;
+    if ((modifiers & CAPTURE_MOD_PRIMARY) != 0) writer.writeAll(if (builtin.os.tag == .macos) "Cmd+" else "Super+") catch return null;
+    writer.writeAll(key_name) catch return null;
+    return fbs.getWritten();
+}
 
 /// XDG Portal `GlobalShortcuts` 등록 + xkb keysym 매핑. Win `WindowsHotkey` /
 /// mac `MacHotkey` 와 같은 토큰 분리 패턴 (`+` 로 token, modifier + 키 이름).
@@ -139,6 +165,47 @@ const LinuxHotkey = struct {
     }
 };
 
+/// 검증된 Linux hotkey keysym을 compositor/portal 설정에 쓰는 표준 이름으로
+/// 되돌린다. fromString의 수용 범위와 반드시 1:1로 유지한다.
+pub fn linuxKeysymName(keysym: u32) ?[]const u8 {
+    return switch (keysym) {
+        0xffbe => "F1",
+        0xffbf => "F2",
+        0xffc0 => "F3",
+        0xffc1 => "F4",
+        0xffc2 => "F5",
+        0xffc3 => "F6",
+        0xffc4 => "F7",
+        0xffc5 => "F8",
+        0xffc6 => "F9",
+        0xffc7 => "F10",
+        0xffc8 => "F11",
+        0xffc9 => "F12",
+        0xff09 => "Tab",
+        0xff0d => "Return",
+        0xff1b => "Escape",
+        'a'...'z', '0'...'9' => &linux_single_char_lookup[keysym - 0x0020],
+        ' ' => "space",
+        '`' => "grave",
+        else => null,
+    };
+}
+
+const linux_single_char_lookup = blk: {
+    var table: [0x7a - 0x20 + 1][1]u8 = undefined;
+    for (0x20..0x7b) |value| table[value - 0x20][0] = @intCast(value);
+    break :blk table;
+};
+
+test "captured hotkey is formatted canonically" {
+    if (builtin.os.tag == .linux) {
+        var buf: [64]u8 = undefined;
+        const text = capturedHotkeyText(&buf, 0xffbf, CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT).?;
+        try std.testing.expectEqualStrings("Ctrl+Shift+F2", text);
+        try std.testing.expect(Hotkey.fromString(text) != null);
+    }
+}
+
 const WindowsHotkey = struct {
     vkey: u32 = 0x70, // VK_F1
     modifiers: u32 = 0,
@@ -190,6 +257,36 @@ const WindowsHotkey = struct {
         }
         return null;
     }
+};
+
+fn windowsVkeyName(vkey: u32) ?[]const u8 {
+    return switch (vkey) {
+        0x70 => "F1",
+        0x71 => "F2",
+        0x72 => "F3",
+        0x73 => "F4",
+        0x74 => "F5",
+        0x75 => "F6",
+        0x76 => "F7",
+        0x77 => "F8",
+        0x78 => "F9",
+        0x79 => "F10",
+        0x7A => "F11",
+        0x7B => "F12",
+        0x20 => "space",
+        0xC0 => "grave",
+        0x09 => "Tab",
+        0x0D => "Return",
+        0x1B => "Escape",
+        'A'...'Z', '0'...'9' => &windows_single_char_lookup[vkey - '0'],
+        else => null,
+    };
+}
+
+const windows_single_char_lookup = blk: {
+    var table: ['Z' - '0' + 1][1]u8 = undefined;
+    for ('0'..'Z' + 1) |value| table[value - '0'][0] = @intCast(value);
+    break :blk table;
 };
 
 const MacHotkey = struct {
@@ -245,6 +342,11 @@ const MacHotkey = struct {
             .{ .name = "u", .code = 0x20 },         .{ .name = "v", .code = 0x09 },
             .{ .name = "w", .code = 0x0D },         .{ .name = "x", .code = 0x07 },
             .{ .name = "y", .code = 0x10 },         .{ .name = "z", .code = 0x06 },
+            .{ .name = "1", .code = 0x12 },         .{ .name = "2", .code = 0x13 },
+            .{ .name = "3", .code = 0x14 },         .{ .name = "4", .code = 0x15 },
+            .{ .name = "5", .code = 0x17 },         .{ .name = "6", .code = 0x16 },
+            .{ .name = "7", .code = 0x1A },         .{ .name = "8", .code = 0x1C },
+            .{ .name = "9", .code = 0x19 },         .{ .name = "0", .code = 0x1D },
         };
         for (map) |entry| {
             if (eqIc(name, entry.name)) return entry.code;
@@ -252,6 +354,40 @@ const MacHotkey = struct {
         return null;
     }
 };
+
+fn macKeycodeName(keycode: u32) ?[]const u8 {
+    const map = [_]struct { code: u32, name: []const u8 }{
+        .{ .code = 0x7A, .name = "F1" },     .{ .code = 0x78, .name = "F2" },
+        .{ .code = 0x63, .name = "F3" },     .{ .code = 0x76, .name = "F4" },
+        .{ .code = 0x60, .name = "F5" },     .{ .code = 0x61, .name = "F6" },
+        .{ .code = 0x62, .name = "F7" },     .{ .code = 0x64, .name = "F8" },
+        .{ .code = 0x65, .name = "F9" },     .{ .code = 0x6D, .name = "F10" },
+        .{ .code = 0x67, .name = "F11" },    .{ .code = 0x6F, .name = "F12" },
+        .{ .code = 0x31, .name = "space" },  .{ .code = 0x32, .name = "grave" },
+        .{ .code = 0x30, .name = "Tab" },    .{ .code = 0x24, .name = "Return" },
+        .{ .code = 0x35, .name = "Escape" }, .{ .code = 0x00, .name = "A" },
+        .{ .code = 0x0B, .name = "B" },      .{ .code = 0x08, .name = "C" },
+        .{ .code = 0x02, .name = "D" },      .{ .code = 0x0E, .name = "E" },
+        .{ .code = 0x03, .name = "F" },      .{ .code = 0x05, .name = "G" },
+        .{ .code = 0x04, .name = "H" },      .{ .code = 0x22, .name = "I" },
+        .{ .code = 0x26, .name = "J" },      .{ .code = 0x28, .name = "K" },
+        .{ .code = 0x25, .name = "L" },      .{ .code = 0x2E, .name = "M" },
+        .{ .code = 0x2D, .name = "N" },      .{ .code = 0x1F, .name = "O" },
+        .{ .code = 0x23, .name = "P" },      .{ .code = 0x0C, .name = "Q" },
+        .{ .code = 0x0F, .name = "R" },      .{ .code = 0x01, .name = "S" },
+        .{ .code = 0x11, .name = "T" },      .{ .code = 0x20, .name = "U" },
+        .{ .code = 0x09, .name = "V" },      .{ .code = 0x0D, .name = "W" },
+        .{ .code = 0x07, .name = "X" },      .{ .code = 0x10, .name = "Y" },
+        .{ .code = 0x06, .name = "Z" },      .{ .code = 0x12, .name = "1" },
+        .{ .code = 0x13, .name = "2" },      .{ .code = 0x14, .name = "3" },
+        .{ .code = 0x15, .name = "4" },      .{ .code = 0x17, .name = "5" },
+        .{ .code = 0x16, .name = "6" },      .{ .code = 0x1A, .name = "7" },
+        .{ .code = 0x1C, .name = "8" },      .{ .code = 0x19, .name = "9" },
+        .{ .code = 0x1D, .name = "0" },
+    };
+    for (map) |entry| if (entry.code == keycode) return entry.name;
+    return null;
+}
 
 fn eqIc(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
@@ -267,7 +403,7 @@ fn eqIc(a: []const u8, b: []const u8) bool {
 //
 // 이 한 곳만 고치면:
 //   (a) `defaultConfigJson(alloc, shell_resolved)` — Defaults 값 그대로 JSON
-//       템플릿 생성. 첫 실행 시 디스크 (`%APPDATA%\tildaz\config.json` 등)
+//       템플릿 생성. 첫 실행 시 디스크의 `config_0.json`
 //       에 저장됨 + parse() 의 `validateStructure` 가 schema 검증 ground
 //       truth 로 사용. shell 만 host 가 첫 실행 시점에 resolveShell 로 결정해
 //       인자로 전달 (Windows 는 항상 Defaults.shell, macOS 는 $SHELL 우선).
@@ -337,7 +473,7 @@ pub const Defaults = struct {
 };
 
 /// `Defaults` + host 가 첫-실행 시 결정한 `shell_resolved` 로부터 JSON 템플릿
-/// 생성. 첫 실행 시 디스크 (`%APPDATA%\tildaz\config.json` 등) 에 저장 +
+/// 생성. 첫 실행 시 디스크의 `config_0.json`에 저장 +
 /// schema 검증 (`validateStructure`) ground truth. Caller 는 반환 slice 를 free.
 ///
 /// `shell_resolved` 는 host 의 `resolveShell` 이 OS 환경에서 결정한 값:
@@ -348,6 +484,14 @@ pub const Defaults = struct {
 pub fn defaultConfigJson(
     allocator: std.mem.Allocator,
     shell_resolved: []const u8,
+) ![]const u8 {
+    return defaultConfigJsonWithHotkey(allocator, shell_resolved, Defaults.hotkey);
+}
+
+pub fn defaultConfigJsonWithHotkey(
+    allocator: std.mem.Allocator,
+    shell_resolved: []const u8,
+    hotkey: []const u8,
 ) ![]const u8 {
     var fb_buf: [1024]u8 = undefined;
     var fb_fbs = std.io.fixedBufferStream(&fb_buf);
@@ -397,7 +541,7 @@ pub fn defaultConfigJson(
         Defaults.line_height_ratio,
         Defaults.theme,
         shell_resolved,
-        Defaults.hotkey,
+        hotkey,
         Defaults.auto_start,
         Defaults.hidden_start,
         Defaults.max_scroll_lines,

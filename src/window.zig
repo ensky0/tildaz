@@ -46,6 +46,7 @@ const WM_KEYDOWN: UINT = 0x0100;
 const WM_KEYUP: UINT = 0x0101;
 const WM_CHAR: UINT = 0x0102;
 const WM_HOTKEY: UINT = 0x0312;
+pub const WM_NEW_INSTANCE_REQUEST: UINT = 0x8000 + 267;
 const WM_TIMER: UINT = 0x0113;
 const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
@@ -492,10 +493,15 @@ pub const Window = struct {
             return error.CreateWindowFailed;
         }
 
+        var title_buf: [32]u16 = undefined;
+        var title_utf8_buf: [32]u8 = undefined;
+        const title_utf8 = std.fmt.bufPrint(&title_utf8_buf, "TildaZ-{d}", .{@import("instance_context.zig").requireWorkerIndex()}) catch "TildaZ";
+        const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title_utf8) catch 0;
+        title_buf[title_len] = 0;
         self.hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             CLASS_NAME,
-            std.unicode.utf8ToUtf16LeStringLiteral("TildaZ"),
+            @ptrCast(title_buf[0..title_len :0]),
             WS_POPUP,
             0,
             0,
@@ -1129,6 +1135,12 @@ pub const Window = struct {
         const self = getSelf(hwnd) orelse return DefWindowProcW(hwnd, msg, wParam, lParam);
 
         switch (msg) {
+            WM_NEW_INSTANCE_REQUEST => {
+                if (@import("instance_context.zig").requireWorkerIndex() == 0) {
+                    @import("new_instance.zig").handle(std.heap.page_allocator);
+                }
+                return 0;
+            },
             WM_HOTKEY => {
                 if (wParam == HOTKEY_ID) {
                     self.toggle();

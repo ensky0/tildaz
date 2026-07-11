@@ -20,6 +20,9 @@
 //! / Request pattern https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Request.html
 
 const std = @import("std");
+const config_mod = @import("../../config.zig");
+const instance_context = @import("../../instance_context.zig");
+const instance_identity = @import("instance_identity.zig");
 const log = @import("../../log.zig");
 const dialog = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
@@ -58,8 +61,14 @@ const list_handle_token: [*:0]const u8 = "tildaz_list";
 
 /// L9-β-2 — 우리가 portal 에 등록하는 유일한 shortcut id. Activated signal 의
 /// `shortcut_id` arg 도 이 값으로 들어옴 — L9-γ 에서 매칭 키.
-pub const shortcut_id_toggle: [*:0]const u8 = "toggle";
-const shortcut_description: [*:0]const u8 = "Show / hide TildaZ";
+var shortcut_id_buf: [32]u8 = undefined;
+pub fn shortcutId() [*:0]const u8 {
+    return (instance_identity.shortcutId(&shortcut_id_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
+}
+var shortcut_description_buf: [64]u8 = undefined;
+fn shortcutDescription() [*:0]const u8 {
+    return (instance_identity.shortcutDescription(&shortcut_description_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
+}
 
 /// portal Response signal 의 응답 code (spec):
 ///   0 = success
@@ -103,7 +112,7 @@ const app_scope_poll_interval_ms: u64 = 5;
 /// `/proc/self/cgroup` 를 한 번 읽어 (1) 우리 전용 app scope (`app-tildaz*`) 안인지
 /// 와 (2) 진단 로그용 leaf cgroup 이름을 함께 돌려준다. leaf 는 호출자 버퍼
 /// (`out`) 로 복사 — 반환 slice 는 `out` 을 가리킨다. 읽기 실패면 null.
-const CgroupState = struct { in_tildaz_scope: bool, leaf: []const u8 };
+const CgroupState = struct { in_instance_scope: bool, leaf: []const u8 };
 fn readCgroupState(out: []u8) ?CgroupState {
     var buf: [4096]u8 = undefined;
     const file = std.fs.openFileAbsolute("/proc/self/cgroup", .{}) catch return null;
@@ -116,11 +125,11 @@ fn readCgroupState(out: []u8) ?CgroupState {
         const slash = std.mem.lastIndexOfScalar(u8, line, '/') orelse continue;
         const leaf = line[slash + 1 ..];
         leaf_slice = leaf; // 마지막 line 의 leaf 를 대표로 (cgroup v2 면 line 1 개)
-        if (std.mem.startsWith(u8, leaf, "app-tildaz")) in_scope = true;
+        if (instance_identity.isScopeForIndex(leaf, instance_context.requireWorkerIndex())) in_scope = true;
     }
     const copy_len = @min(leaf_slice.len, out.len);
     @memcpy(out[0..copy_len], leaf_slice[0..copy_len]);
-    return .{ .in_tildaz_scope = in_scope, .leaf = out[0..copy_len] };
+    return .{ .in_instance_scope = in_scope, .leaf = out[0..copy_len] };
 }
 
 /// `/proc/self/cgroup` 의 leaf scope 가 `app-tildaz*` 인지 — 이미 우리 전용
@@ -129,7 +138,7 @@ fn readCgroupState(out: []u8) ?CgroupState {
 fn alreadyInTildazScope() bool {
     var leaf_buf: [256]u8 = undefined;
     const st = readCgroupState(&leaf_buf) orelse return false;
-    return st.in_tildaz_scope;
+    return st.in_instance_scope;
 }
 
 /// `("Description", <s value>)` — systemd `a(sv)` property 의 STRUCT entry.
@@ -171,20 +180,24 @@ fn appendPidsProperty(api: *const dbus.Api, arr_iter: *dbus.DBusMessageIter, pid
 /// 그 부모로 인식 → GlobalShortcuts hotkey 가 tildaz 가 아닌 그쪽에 귀속돼 안 먹는다
 /// (시연 확정: konsole 에서 실행 시 konsole 이 hotkey 받음).
 ///
-/// 해결: 우리가 `app-tildaz` scope 에 있지 않으면, systemd user manager 에 자기 PID 를
-/// `app-tildaz-<pid>.scope` 로 StartTransientUnit → 이후 portal CreateSession 이
-/// 우리 cgroup 을 읽어 app-id=tildaz 로 인식. **portal 연결 전에 호출**해야 함.
+/// 해결: worker N이 `app-tildaz.instanceN-<pid>.scope`에 있지 않으면 systemd user
+/// manager에 자기 PID를 StartTransientUnit으로 이동한다. 이후 portal CreateSession이
+/// cgroup을 읽어 app-id=`tildaz.instanceN`으로 인식한다. **portal 연결 전에 호출**해야 함.
 /// systemd user manager 부재 / 권한 실패는 graceful (hotkey app-id 부정확 가능하나
 /// 앱 자체는 정상). 출처: systemd.io DESKTOP_ENVIRONMENTS, flatpak/xdg-desktop-portal
 /// app-id cgroup 표준 (PR #581).
-pub fn ensureAppScope(bus: *dbus.SessionBus) void {
+pub fn ensureAppScope(allocator: std.mem.Allocator, bus: *dbus.SessionBus) void {
+    const index = instance_context.requireWorkerIndex();
+    instance_identity.ensureDesktopEntry(allocator, index) catch |err| {
+        log.appendLine("portal", "numbered desktop identity creation failed: {s} — app-id validation may fail", .{@errorName(err)});
+    };
     if (alreadyInTildazScope()) {
-        log.appendLineVerbose("portal", "app-scope: already in app-tildaz scope — no migration needed", .{});
+        log.appendLineVerbose("portal", "app-scope: already in numbered TildaZ scope index={} — no migration needed", .{index});
         return;
     }
     const pid: u32 = @intCast(std.os.linux.getpid());
     var name_buf: [64]u8 = undefined;
-    const scope_name = std.fmt.bufPrintZ(&name_buf, "app-tildaz-{d}.scope", .{pid}) catch return;
+    const scope_name = instance_identity.scopeName(&name_buf, index, pid) catch return;
 
     const call = bus.api.message_new_method_call(systemd1_destination, systemd1_path, systemd1_manager_interface, systemd1_start_transient_unit) orelse return;
     defer bus.api.message_unref(call);
@@ -199,7 +212,9 @@ pub fn ensureAppScope(bus: *dbus.SessionBus) void {
     var props: dbus.DBusMessageIter = .{};
     if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "(sv)", &props) == 0) return;
     appendPidsProperty(&bus.api, &props, pid) catch return;
-    appendStructStringVariant(&bus.api, &props, "Description", "TildaZ terminal") catch return;
+    var description_buf: [64]u8 = undefined;
+    const description = std.fmt.bufPrintZ(&description_buf, "TildaZ_{d} terminal", .{index}) catch return;
+    appendStructStringVariant(&bus.api, &props, "Description", description.ptr) catch return;
     if (bus.api.iter_close_container(&iter, &props) == 0) return;
     // aux: a(sa(sv)) — empty
     var aux: dbus.DBusMessageIter = .{};
@@ -226,14 +241,14 @@ pub fn ensureAppScope(bus: *dbus.SessionBus) void {
     // 실제로 app-tildaz 로 바뀔 때까지 bounded poll 후 반환.
     var leaf_buf0: [256]u8 = undefined;
     if (readCgroupState(&leaf_buf0)) |st0| {
-        log.appendLineVerbose("portal", "app-scope: StartTransientUnit ok ({s}), cgroup right after reply leaf={s} in_scope={}", .{ scope_name, st0.leaf, st0.in_tildaz_scope });
+        log.appendLineVerbose("portal", "app-scope: StartTransientUnit ok ({s}), cgroup right after reply leaf={s} in_scope={}", .{ scope_name, st0.leaf, st0.in_instance_scope });
     }
     const poll_start = std.time.milliTimestamp();
     while (std.time.milliTimestamp() - poll_start < app_scope_migration_timeout_ms) {
         var lb: [256]u8 = undefined;
         if (readCgroupState(&lb)) |st| {
-            if (st.in_tildaz_scope) {
-                log.appendLine("portal", "app-scope: cgroup migration done leaf={s} ({d}ms) — portal app-id=tildaz", .{ st.leaf, std.time.milliTimestamp() - poll_start });
+            if (st.in_instance_scope) {
+                log.appendLine("portal", "app-scope: cgroup migration done leaf={s} ({d}ms) — portal app-id=tildaz-{}", .{ st.leaf, std.time.milliTimestamp() - poll_start, index });
                 return;
             }
         }
@@ -374,7 +389,7 @@ fn extractTriggerDescriptionForToggle(state: *ResponseWaitState, sc_arr: *dbus.D
     var sid_c: ?[*:0]const u8 = null;
     api.iter_get_basic(&struct_iter, @ptrCast(&sid_c));
     const sid = if (sid_c) |s| std.mem.span(s) else return;
-    if (!std.mem.eql(u8, sid, std.mem.span(shortcut_id_toggle))) return;
+    if (!std.mem.eql(u8, sid, std.mem.span(shortcutId()))) return;
 
     // arg 1: a{sv} attrs
     _ = api.iter_next(&struct_iter);
@@ -594,9 +609,18 @@ fn keysymDisplayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     if ((modifiers & 0x1) != 0) w.writeAll("Alt+") catch {};
     if ((modifiers & 0x8) != 0) w.writeAll("Meta+") catch {};
     const word: ?[]const u8 = switch (keysym) {
-        0xffbe => "F1",  0xffbf => "F2",  0xffc0 => "F3",  0xffc1 => "F4",
-        0xffc2 => "F5",  0xffc3 => "F6",  0xffc4 => "F7",  0xffc5 => "F8",
-        0xffc6 => "F9",  0xffc7 => "F10", 0xffc8 => "F11", 0xffc9 => "F12",
+        0xffbe => "F1",
+        0xffbf => "F2",
+        0xffc0 => "F3",
+        0xffc1 => "F4",
+        0xffc2 => "F5",
+        0xffc3 => "F6",
+        0xffc4 => "F7",
+        0xffc5 => "F8",
+        0xffc6 => "F9",
+        0xffc7 => "F10",
+        0xffc8 => "F11",
+        0xffc9 => "F12",
         0xff09 => "Tab",
         0xff0d => "Return",
         0xff1b => "Escape",
@@ -618,50 +642,11 @@ fn keysymDisplayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
 }
 
 pub fn keysymGtkName(keysym: u32) []const u8 {
-    return switch (keysym) {
-        // XKB F1..F12 — `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_F*`.
-        0xffbe => "F1",
-        0xffbf => "F2",
-        0xffc0 => "F3",
-        0xffc1 => "F4",
-        0xffc2 => "F5",
-        0xffc3 => "F6",
-        0xffc4 => "F7",
-        0xffc5 => "F8",
-        0xffc6 => "F9",
-        0xffc7 => "F10",
-        0xffc8 => "F11",
-        0xffc9 => "F12",
-        0xff09 => "Tab",
-        0xff0d => "Return",
-        0xff1b => "Escape",
-        // Latin lowercase a-z / digits 0-9 — keysym 값이 ASCII 와 동일.
-        // GTK 의 1-char accelerator (예: `<Ctrl>a`) 그대로 송신. 우리 buffer
-        // 가 64 bytes 면 안전.
-        'a'...'z', '0'...'9' => single_char_lookup[keysym - 0x0020],
-        ' ' => "space",
-        '`' => "grave",
-        // #208 — `config.linuxKeysymFromName` 의 수용 범위가 이 switch 의
-        // 매핑 범위와 1:1. 도달하면 config 검증을 우회한 keysym (개발 중 신규
-        // key 추가 시 한쪽만 갱신) → 명시 log + 'F1' fallback (서비스 자체는
-        // 유지). silent fallback 막기 위한 defensive layer.
-        else => blk: {
-            log.appendLine("portal", "keysymGtkName: unmapped keysym=0x{x} — config.linuxKeysymFromName out of sync? 'F1' fallback (#208)", .{keysym});
-            break :blk "F1";
-        },
+    return config_mod.linuxKeysymName(keysym) orelse blk: {
+        log.appendLine("portal", "keysymGtkName: unmapped keysym=0x{x} — config.linuxKeysymFromName out of sync? 'F1' fallback (#208)", .{keysym});
+        break :blk "F1";
     };
 }
-
-/// Latin / digit 1-char accelerator 용 정적 string lookup. keysym (= ASCII) -
-/// 0x20 으로 indexing. `'a'` (0x61) → index 0x41 의 `"a"`. zig comptime 으로
-/// 한 글자 string 들 정적 배열로.
-const single_char_lookup: [96][]const u8 = blk: {
-    var arr: [96][]const u8 = undefined;
-    for (0..96) |i| {
-        arr[i] = &[1]u8{@intCast(0x20 + i)};
-    }
-    break :blk arr;
-};
 
 /// portal `GlobalShortcuts.BindShortcuts` 호출 — 단일 "toggle" shortcut 등록.
 /// 첫 호출 시 portal 가 KDE / GNOME UI dialog 띄움 → 사용자 승인 / 거부 / 단축키
@@ -752,11 +737,11 @@ pub fn bindToggleShortcut(
         {
             var struct_iter: dbus.DBusMessageIter = .{};
             if (bus.api.iter_open_container(&arr_iter, dbus.dbus_type_struct, null, &struct_iter) == 0) return error.PortalAppendFailed;
-            var id_var: [*:0]const u8 = shortcut_id_toggle;
+            var id_var: [*:0]const u8 = shortcutId();
             if (bus.api.iter_append_basic(&struct_iter, dbus.dbus_type_string, @ptrCast(&id_var)) == 0) return error.PortalAppendFailed;
             var attrs_iter: dbus.DBusMessageIter = .{};
             if (bus.api.iter_open_container(&struct_iter, dbus.dbus_type_array, "{sv}", &attrs_iter) == 0) return error.PortalAppendFailed;
-            try appendStringVariantEntry(&bus.api, &attrs_iter, "description", shortcut_description);
+            try appendStringVariantEntry(&bus.api, &attrs_iter, "description", shortcutDescription());
             const accel_ptr: [*:0]const u8 = accelerator.ptr;
             try appendStringVariantEntry(&bus.api, &attrs_iter, "preferred_trigger", accel_ptr);
             if (bus.api.iter_close_container(&struct_iter, &attrs_iter) == 0) return error.PortalAppendFailed;
@@ -816,7 +801,7 @@ pub fn bindToggleShortcut(
         return error.PortalBindDenied; // actual_trigger leak 은 위 errdefer 가 해제
     }
 
-    log.appendLine("portal", "shortcut bound id={s}", .{std.mem.span(shortcut_id_toggle)});
+    log.appendLine("portal", "shortcut bound id={s}", .{std.mem.span(shortcutId())});
 
     // L9-δ — 실제 bound trigger 와 우리가 요청한 preferred_trigger 비교. portal-kde
     // 의 사용자 dialog 에서 다른 키 선택 / KDE settings 에서 사용자가 직접 변경 등
@@ -967,8 +952,8 @@ fn kdeTryAutoApply(
     defer if (owner_opt) |*o| o.deinit(allocator);
 
     const is_tildaz_owner = if (owner_opt) |o|
-        std.mem.eql(u8, o.component, std.mem.span(kde_component_tildaz)) and
-            std.mem.eql(u8, o.action, std.mem.span(kde_action_toggle))
+        std.mem.eql(u8, o.component, std.mem.span(kdeComponent())) and
+            std.mem.eql(u8, o.action, std.mem.span(kdeAction()))
     else
         false;
 
@@ -976,7 +961,7 @@ fn kdeTryAutoApply(
         if (!is_tildaz_owner) {
             // 다른 component 가 선점 — 사용자 confirm.
             log.appendLine("portal", "secondary conflict detected — owner={s}/{s} (display: {s} / {s}) qt_key=0x{x}", .{
-                owner.component, owner.action, owner.display_component, owner.display_action,
+                owner.component,            owner.action, owner.display_component, owner.display_action,
                 @as(u32, @bitCast(qt_key)),
             });
             var msg_buf: [512]u8 = undefined;
@@ -1033,10 +1018,22 @@ fn kdeTryAutoApply(
 /// `[tildaz]` group 의 toggle binding — kglobalshortcutsrc 파일 + KGlobalAccel
 /// runtime 의 component 이름. *Konsole 부모 cgroup* 으로 잘못 등록된 경우 대비
 /// 별 component (`org.kde.konsole`) 도 후속 정리 가능 (현재는 우리 own 만).
-const kde_component_tildaz: [*:0]const u8 = "tildaz";
-const kde_action_toggle: [*:0]const u8 = "toggle";
-const kde_component_display: [*:0]const u8 = "TildaZ";
-const kde_action_display: [*:0]const u8 = "Show / hide TildaZ";
+var kde_component_buf: [32]u8 = undefined;
+fn kdeComponent() [*:0]const u8 {
+    return (instance_identity.appId(&kde_component_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
+}
+var kde_action_buf: [32]u8 = undefined;
+fn kdeAction() [*:0]const u8 {
+    return (instance_identity.shortcutId(&kde_action_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
+}
+var kde_component_display_buf: [32]u8 = undefined;
+fn kdeComponentDisplay() [*:0]const u8 {
+    return (instance_identity.displayName(&kde_component_display_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
+}
+var kde_action_display_buf: [64]u8 = undefined;
+fn kdeActionDisplay() [*:0]const u8 {
+    return (instance_identity.shortcutDescription(&kde_action_display_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
+}
 
 /// `org.kde.KGlobalAccel.setShortcut` 의 `flags` argument. KDE source
 /// (`src/kglobalaccel.h`) 의 `KGlobalAccel::SetShortcutFlag` enum:
@@ -1061,7 +1058,7 @@ const kde_set_shortcut_flags: u32 = kde_set_shortcut_flag_no_autoloading | kde_s
 ///
 /// 출처: `gdbus introspect --session --dest org.kde.kglobalaccel
 ///        --object-path /kglobalaccel` (KDE Plasma 6.6.5).
-fn kdeUnregisterToggleShortcut(bus: *dbus.SessionBus, component: [*:0]const u8) !void {
+fn kdeUnregisterShortcut(bus: *dbus.SessionBus, component: [*:0]const u8, action: [*:0]const u8) !void {
     const dest: [*:0]const u8 = "org.kde.kglobalaccel";
     const path: [*:0]const u8 = "/kglobalaccel";
     const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
@@ -1074,7 +1071,7 @@ fn kdeUnregisterToggleShortcut(bus: *dbus.SessionBus, component: [*:0]const u8) 
     bus.api.iter_init_append(call, &iter);
     var comp_var: [*:0]const u8 = component;
     if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&comp_var)) == 0) return error.PortalAppendFailed;
-    var action_var: [*:0]const u8 = kde_action_toggle;
+    var action_var: [*:0]const u8 = action;
     if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&action_var)) == 0) return error.PortalAppendFailed;
 
     var err: dbus.DBusError = .{};
@@ -1093,7 +1090,27 @@ fn kdeUnregisterToggleShortcut(bus: *dbus.SessionBus, component: [*:0]const u8) 
     // 반환 = bool (성공 여부). false 면 KGlobalAccel 측에서 *해당 binding 없음*
     // (이미 unregister 되었거나 다른 component). 우리 의도 (= 다음 BindShortcuts
     // 가 깨끗한 상태에서 시작) 충족이라 success 처리.
-    log.appendLineVerbose("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(kde_action_toggle) });
+    log.appendLineVerbose("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(action) });
+}
+
+/// 0.5.x와 #267 중간 작업본이 사용한 shared KDE component의 action만 제거한다.
+/// 새 component는 `tildaz.instanceN`이라 다른 instance나 다른 앱과 겹치지 않는다.
+pub fn cleanupLegacyKdeIdentity(allocator: std.mem.Allocator, bus: *dbus.SessionBus) void {
+    const de = detectCurrentDesktop(allocator);
+    defer if (de) |value| allocator.free(value);
+    if (de == null or !containsToken(de.?, "KDE")) return;
+
+    const legacy_component: [*:0]const u8 = "tildaz";
+    if (instance_context.requireWorkerIndex() == 0) {
+        kdeUnregisterShortcut(bus, legacy_component, "toggle") catch |err| {
+            log.appendLineVerbose("portal", "legacy KDE action cleanup skipped: {s}", .{@errorName(err)});
+        };
+    }
+    var action_buf: [32]u8 = undefined;
+    const action = std.fmt.bufPrintZ(&action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}) catch return;
+    kdeUnregisterShortcut(bus, legacy_component, action.ptr) catch |err| {
+        log.appendLineVerbose("portal", "legacy numbered KDE action cleanup skipped: {s}", .{@errorName(err)});
+    };
 }
 
 /// XKB keysym + modifier → Qt `KeySequence` packed int. `KGlobalAccel.setShortcut`
@@ -1171,10 +1188,10 @@ fn kdeQueryToggleShortcut(bus: *dbus.SessionBus) ?i32 {
     var arr_iter: dbus.DBusMessageIter = .{};
     if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return null;
     const action_id = [_][*:0]const u8{
-        kde_component_tildaz,
-        kde_action_toggle,
-        kde_component_display,
-        kde_action_display,
+        kdeComponent(),
+        kdeAction(),
+        kdeComponentDisplay(),
+        kdeActionDisplay(),
     };
     for (action_id) |s| {
         var p: [*:0]const u8 = s;
@@ -1412,10 +1429,10 @@ fn kdeSetForeignShortcut(
 /// 시연 확정 (#207): tildaz 자체용 setForeignShortcut 의 thin wrapper.
 fn kdeSetToggleShortcut(_: std.mem.Allocator, bus: *dbus.SessionBus, qt_key: i32) !void {
     const action_id = [_][*:0]const u8{
-        kde_component_tildaz,
-        kde_action_toggle,
-        kde_component_display,
-        kde_action_display,
+        kdeComponent(),
+        kdeAction(),
+        kdeComponentDisplay(),
+        kdeActionDisplay(),
     };
     const keys = [_]i32{qt_key};
     try kdeSetForeignShortcut(bus, &action_id, &keys);
@@ -1625,11 +1642,11 @@ fn callShortcutRequestVerb(
             {
                 var struct_iter: dbus.DBusMessageIter = .{};
                 if (bus.api.iter_open_container(&arr_iter, dbus.dbus_type_struct, null, &struct_iter) == 0) return error.PortalAppendFailed;
-                var id_var: [*:0]const u8 = shortcut_id_toggle;
+                var id_var: [*:0]const u8 = shortcutId();
                 if (bus.api.iter_append_basic(&struct_iter, dbus.dbus_type_string, @ptrCast(&id_var)) == 0) return error.PortalAppendFailed;
                 var attrs_iter: dbus.DBusMessageIter = .{};
                 if (bus.api.iter_open_container(&struct_iter, dbus.dbus_type_array, "{sv}", &attrs_iter) == 0) return error.PortalAppendFailed;
-                try appendStringVariantEntry(&bus.api, &attrs_iter, "description", shortcut_description);
+                try appendStringVariantEntry(&bus.api, &attrs_iter, "description", shortcutDescription());
                 const accel_ptr: [*:0]const u8 = accelerator_opt.?.ptr;
                 try appendStringVariantEntry(&bus.api, &attrs_iter, "preferred_trigger", accel_ptr);
                 if (bus.api.iter_close_container(&struct_iter, &attrs_iter) == 0) return error.PortalAppendFailed;
@@ -1644,7 +1661,7 @@ fn callShortcutRequestVerb(
             // arg 2: as shortcuts — list of ids ("toggle").
             var arr_iter: dbus.DBusMessageIter = .{};
             if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return error.PortalAppendFailed;
-            var id_var: [*:0]const u8 = shortcut_id_toggle;
+            var id_var: [*:0]const u8 = shortcutId();
             if (bus.api.iter_append_basic(&arr_iter, dbus.dbus_type_string, @ptrCast(&id_var)) == 0) return error.PortalAppendFailed;
             if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return error.PortalAppendFailed;
         }

@@ -21,6 +21,7 @@
 //! 결합 (host window 알아야 함) 비용은 있지만 panel 시각이 표준.
 
 const std = @import("std");
+const config = @import("../config.zig");
 const objc = @import("../macos_objc.zig");
 const dialog = @import("../dialog.zig");
 
@@ -137,6 +138,74 @@ fn removeDismissMonitor(monitor: objc.id) void {
     const NSEvent = objc.getClass("NSEvent");
     const rm = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) void);
     rm(NSEvent, objc.sel("removeMonitor:"), monitor);
+}
+
+var prompt_field: objc.id = null;
+var prompt_alert: objc.id = null;
+var prompt_capture_buf: [64]u8 = undefined;
+var prompt_capture_len: usize = 0;
+
+fn promptMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) objc.id {
+    if (event == null) return null;
+    const keyCodeOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) u16);
+    const keycode = keyCodeOf(event, objc.sel("keyCode"));
+    const app = sharedApp();
+    if (keycode == kVK_Escape) {
+        if (app != null) {
+            const stopModal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+            stopModal(app, objc.sel("stopModalWithCode:"), 1001);
+        }
+        return null;
+    }
+    if (keycode == kVK_Return or keycode == kVK_KeypadEnter) {
+        if (prompt_capture_len > 0 and app != null) {
+            const stopModal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+            stopModal(app, objc.sel("stopModalWithCode:"), 1000);
+        }
+        return null;
+    }
+    if (keycode == 51) { // kVK_Delete
+        prompt_capture_len = 0;
+        setPromptFieldText("");
+        setPromptCreateEnabled(prompt_alert, false);
+        return null;
+    }
+
+    const flagsOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
+    const flags = flagsOf(event, objc.sel("modifierFlags"));
+    var modifiers: u32 = 0;
+    if ((flags & (1 << 19)) != 0) modifiers |= config.CAPTURE_MOD_ALT;
+    if ((flags & (1 << 18)) != 0) modifiers |= config.CAPTURE_MOD_CTRL;
+    if ((flags & (1 << 17)) != 0) modifiers |= config.CAPTURE_MOD_SHIFT;
+    if ((flags & (1 << 20)) != 0) modifiers |= config.CAPTURE_MOD_PRIMARY;
+    if (config.capturedHotkeyText(&prompt_capture_buf, keycode, modifiers)) |captured| {
+        prompt_capture_len = captured.len;
+        setPromptFieldText(captured);
+        setPromptCreateEnabled(prompt_alert, true);
+    }
+    return null;
+}
+
+var prompt_monitor_descriptor: BlockDescriptor = .{ .reserved = 0, .size = @sizeOf(DismissMonitorBlock) };
+var prompt_monitor_block: DismissMonitorBlock = .{
+    .isa = null,
+    .flags = BLOCK_IS_GLOBAL,
+    .reserved = 0,
+    .invoke = &promptMonitorInvoke,
+    .descriptor = &prompt_monitor_descriptor,
+};
+
+fn addPromptMonitor() objc.id {
+    prompt_monitor_block.isa = &_NSConcreteGlobalBlock;
+    const NSEvent = objc.getClass("NSEvent");
+    const add = objc.objcSend(fn (objc.Class, objc.SEL, u64, *DismissMonitorBlock) callconv(.c) objc.id);
+    return add(NSEvent, objc.sel("addLocalMonitorForEventsMatchingMask:handler:"), NSEventMaskKeyDown, &prompt_monitor_block);
+}
+
+fn setPromptFieldText(text: []const u8) void {
+    if (prompt_field == null) return;
+    const set = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    set(prompt_field, objc.sel("setStringValue:"), nsStringFromSlice(text));
 }
 
 /// #249 — alert 가 key window 가 아니면 강제로 key 로 승격한다(이미 key 면 no-op).
@@ -399,13 +468,57 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     setMessage(alert, title);
     setInformative(alert, message);
     setStyle(alert, 1); // Informational
-    addButton(alert, "Quit");
+    addButton(alert, "OK");
     addButton(alert, "Cancel");
     setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
 
     const result = runModalOverHost(alert, false);
     // NSAlertFirstButtonReturn = 1000 (= Quit, 첫 추가 버튼 = 기본).
     return result == 1000;
+}
+
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+    if (!nsapp_ready) return null;
+    const alert = newAlert() orelse return null;
+    setMessage(alert, title);
+    setInformative(alert, message);
+    setStyle(alert, 1);
+    addButton(alert, "Create");
+    addButton(alert, "Cancel");
+    setButtonEsc(alert, 1);
+
+    const NSTextField = objc.getClass("NSTextField");
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const field_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
+    const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
+    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 360, .h = 26 }) orelse return null;
+    const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setBool(field, objc.sel("setEditable:"), false);
+    setBool(field, objc.sel("setSelectable:"), false);
+    const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setAccessory(alert, objc.sel("setAccessoryView:"), field);
+    prompt_field = field;
+    prompt_alert = alert;
+    prompt_capture_len = 0;
+    setPromptCreateEnabled(alert, false);
+
+    const monitor = addPromptMonitor();
+    const result = runModalOverHost(alert, false);
+    removeDismissMonitor(monitor);
+    prompt_field = null;
+    prompt_alert = null;
+    if (result != 1000) return null;
+    return allocator.dupe(u8, prompt_capture_buf[0..prompt_capture_len]) catch null;
+}
+
+fn setPromptCreateEnabled(alert: objc.id, enabled: bool) void {
+    if (alert == null) return;
+    const get_buttons = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const buttons = get_buttons(alert, objc.sel("buttons")) orelse return;
+    const obj_at = objc.objcSend(fn (objc.id, objc.SEL, u64) callconv(.c) objc.id);
+    const button = obj_at(buttons, objc.sel("objectAtIndex:"), 0) orelse return;
+    const setEnabled = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setEnabled(button, objc.sel("setEnabled:"), enabled);
 }
 
 /// NSAlert.buttons[index] 의 keyEquivalent 를 Esc(`\x1b`)로 설정. NSAlert 가 Cancel

@@ -49,6 +49,8 @@ const dialog_button_h_pt: u32 = 44;
 const dialog_button_radius_pt: u32 = 16;
 const dialog_button_color: ghostty.color.RGB = .{ .r = 45, .g = 125, .b = 210 }; // macOS 시스템 blue
 const dialog_button_text_color: ghostty.color.RGB = .{ .r = 255, .g = 255, .b = 255 };
+const dialog_disabled_button_color: ghostty.color.RGB = .{ .r = 0xC8, .g = 0xC8, .b = 0xC8 };
+const dialog_disabled_button_text_color: ghostty.color.RGB = .{ .r = 0x78, .g = 0x78, .b = 0x78 };
 /// Confirm dialog 의 Cancel 버튼 색 — macOS secondary action 모양 (회색
 /// 배경 + 검정 글자). OK 와 시각 구분.
 const dialog_cancel_color: ghostty.color.RGB = .{ .r = 0xD8, .g = 0xD8, .b = 0xD8 };
@@ -661,6 +663,7 @@ pub const Renderer = struct {
         title: []const u8,
         message: []const u8,
         confirm_focus_ok: ?bool,
+        prompt_input: ?[]const u8,
     ) void {
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
@@ -722,6 +725,17 @@ pub const Renderer = struct {
             text_y += ch;
         }
 
+        if (prompt_input) |input| {
+            const field_h = ch + @max(@as(i32, 8), @divTrunc(ch, 2));
+            const field_y = text_y;
+            if (input.len > 0) {
+                const input_w: i32 = @intCast(display_width.stringWidth(input) * @as(usize, @intCast(self.cellWidth())));
+                const input_x = text_x + @divTrunc(inner_w - input_w, 2);
+                self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg, bg);
+            }
+            text_y += field_h + @divTrunc(ch, 2);
+        }
+
         // (5) 버튼 — Info 모드: OK 하나만 중앙. Confirm 모드: OK + Cancel 그룹,
         // mac NSAlert 표준 — primary (OK) 오른쪽, secondary (Cancel) 왼쪽.
         const button_y: i32 = box_y + box_h - pad - button_h;
@@ -732,13 +746,16 @@ pub const Renderer = struct {
         // OK 버튼 (primary action, 항상 그림).
         const ok_x: i32 = if (is_confirm) group_x + button_w + button_gap else group_x;
         self.last_dialog_ok_rect = .{ .x = ok_x, .y = button_y, .w = button_w, .h = button_h };
-        fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, dialog_button_color);
-        const ok_text = "OK";
+        const create_enabled = if (prompt_input) |input| std.mem.trim(u8, input, " \t\r\n").len > 0 else true;
+        const ok_bg = if (create_enabled) dialog_button_color else dialog_disabled_button_color;
+        const ok_fg = if (create_enabled) dialog_button_text_color else dialog_disabled_button_text_color;
+        fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, ok_bg);
+        const ok_text = if (prompt_input != null) "Create" else "OK";
         const ok_text_cells = display_width.stringWidth(ok_text);
         const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(self.cellWidth())));
         const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
         const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
-        self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, dialog_button_text_color, dialog_button_color);
+        self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg, ok_bg);
 
         // Cancel 버튼 — confirm 모드 에서만. secondary action (회색 배경 + 검정).
         if (is_confirm) {
@@ -780,6 +797,7 @@ pub const Renderer = struct {
         title: []const u8,
         message: []const u8,
         confirm: bool,
+        prompt: bool,
     ) struct { w: i32, h: i32 } {
         const cw = self.cellWidth();
         const ch = self.cellHeight();
@@ -812,7 +830,8 @@ pub const Renderer = struct {
         // 박스 폭 — 텍스트 폭 vs 버튼 폭 vs 아이콘 폭 + 좌우 여유 중 가장 큰.
         const box_w: i32 = @max(@max(inner_w + pad * 2, buttons_w + pad * 4), icon_size + pad * 2);
         const icon_section: i32 = icon_size + @divTrunc(ch, 2);
-        const box_h: i32 = pad * 2 + icon_section + text_rows * ch + button_h;
+        const prompt_h: i32 = if (prompt) ch * 2 else 0;
+        const box_h: i32 = pad * 2 + icon_section + text_rows * ch + prompt_h + button_h;
         // buffer = box + shadow margin × 2 (모든 4 방향).
         return .{ .w = box_w + sm * 2, .h = box_h + sm * 2 };
     }
@@ -2058,8 +2077,8 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         \\
         \\exe   : /home/ensky0/tildaz/zig-out/bin/tildaz
         \\pid   : 12345
-        \\config: /home/ensky0/.config/tildaz/config.json
-        \\log   : /home/ensky0/.local/state/tildaz/tildaz.log
+        \\config: /home/ensky0/.config/tildaz/config_0.json
+        \\log   : /home/ensky0/.local/state/tildaz/tildaz0.log
         \\
         \\Tip: Ctrl+Shift+P opens config in default editor.
         \\     Ctrl+Shift+L opens log.
@@ -2067,7 +2086,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         \\https://github.com/ensky0/tildaz
     ;
 
-    const size = r.computeDialogSize(title, msg, false);
+    const size = r.computeDialogSize(title, msg, false, false);
     // handleDialogConfigure 의 logical 왕복 재현 (preferred_scale 204/120 = 1.7x):
     // physical → logical(set_size) → KWin echo → logicalToPhysical(buffer).
     const lw = @divFloor(size.w * 120, 204);
@@ -2078,5 +2097,5 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const buf = try allocator.alloc(u8, @intCast(stride * ph));
     defer allocator.free(buf);
     @memset(buf, 0);
-    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null);
+    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null, null);
 }

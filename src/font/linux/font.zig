@@ -189,7 +189,7 @@ pub const Context = struct {
         // L13-β — config.cell_width_ratio / line_height_ratio 적용. measured
         // 값에 곱해 저장 — `Renderer.cellWidth/cellHeight` getter 가 단순
         // 반환만 하면 자동으로 ratio 가 적용됨. 1.0 / 1.1 등 사용자가
-        // config.json 으로 조절 가능 (Config 검증 범위 0.5..2.0).
+        // config_N.json 으로 조절 가능 (Config 검증 범위 0.5..2.0).
         self.cell_width_px = font_spec.ceilPositivePx(@as(f32, @floatFromInt(self.cell_width_px)) * cell_width_ratio);
         self.cell_height_px = font_spec.ceilPositivePx(@as(f32, @floatFromInt(self.cell_height_px)) * line_height_ratio);
         log.appendLineVerbose("font", "applied ratios cell_w={} cell_h={} cell_width_ratio={d:.2} line_height_ratio={d:.2}", .{

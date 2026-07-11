@@ -4,7 +4,6 @@ const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const terminal = @import("../terminal.zig");
 const config_mod = @import("../config.zig");
-const autostart = @import("../autostart.zig");
 const gsettings_hotkey = @import("linux/gsettings_hotkey.zig");
 const wayland = @import("linux/wayland_minimal.zig");
 
@@ -76,7 +75,7 @@ pub fn run() !void {
     defer _ = gpa.deinit();
 
     // L13-α — `Config.load` (cross-platform). 첫 실행 시 `~/.config/tildaz/
-    // config.json` template 생성, 이후 실행은 disk 값 그대로. shell_resolved
+    // config_N.json template 생성, 이후 실행은 disk 값 그대로. shell_resolved
     // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
     // shell path 결정.
     const shell_resolved = resolveShell(gpa.allocator());
@@ -84,25 +83,6 @@ pub fn run() !void {
     defer if (g_config) |*c| c.deinit(gpa.allocator());
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);
-
-    // L11-α — auto-start (XDG autostart `~/.config/autostart/tildaz.desktop`).
-    // mac LaunchAgent / Windows Registry Run 동등. 매 부팅마다 enable / disable
-    // 을 sync 해 사용자가 config 끄면 즉시 효과. install path 가 바뀌었어도
-    // (다른 위치로 binary 옮겼어도) 현재 `selfExePath` 로 자동 갱신.
-    //
-    // 이 `.desktop` 은 전 DE 가 공유한다(`~/.config/autostart`). GNOME 만은
-    // launch 를 extension 이 담당하지만, 예전처럼 GNOME 진입 시 파일을 *삭제*하면
-    // GNOME 을 거친 뒤 KDE/Cinnamon/COSMIC autostart 가 통째로 깨졌다. 대신
-    // `autostart.enable` 이 파일에 `NotShowIn=GNOME;` 을 박아 gnome-session 만
-    // 이 항목을 건너뛰게 한다(autostart/linux.zig 참고) — 그래서 DE 와 무관하게
-    // auto_start 값만 따라 enable/disable 하면 되고, 파일은 DE 왕복에도 살아남는다.
-    if (cfg.auto_start) {
-        autostart.enable(gpa.allocator()) catch |err| {
-            log.appendLine("autostart", "enable failed: {s}", .{@errorName(err)});
-        };
-    } else {
-        autostart.disable(gpa.allocator());
-    }
 
     // GNOME + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
     // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch

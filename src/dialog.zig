@@ -54,3 +54,9 @@ pub fn showFatal(title: []const u8, message: []const u8) noreturn {
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
     return impl.showConfirm(title, message);
 }
+
+/// 실제 key 조합을 캡처하는 modal dialog. Cancel / 닫기면 null, Create면
+/// allocator-owned canonical hotkey 문자열을 반환한다.
+pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8) ?[]u8 {
+    return impl.promptHotkey(allocator, title, message);
+}

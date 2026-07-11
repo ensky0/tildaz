@@ -3,8 +3,8 @@
 //! 으로 prefix 없이 그대로.
 //!
 //! 로그 위치:
-//!   - Windows: `%APPDATA%\tildaz\tildaz.log`
-//!   - macOS:   `~/Library/Logs/tildaz.log`  (Apple HIG — Console.app 자동 인덱싱)
+//!   - Windows: `%APPDATA%\tildaz\tildazN.log`
+//!   - macOS:   `~/Library/Logs/tildazN.log`  (Apple HIG — Console.app 자동 인덱싱)
 //!
 //! 포맷:
 //!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`

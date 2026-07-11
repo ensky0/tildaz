@@ -56,13 +56,15 @@ pub fn enable(_alloc: std.mem.Allocator) !void {
     }
     defer _ = RegCloseKey(hkey);
 
-    // "<exe path>" + NUL — quote 로 감싸 경로 공백 대비
-    var quoted: [path_buf.len + 3]WCHAR = undefined;
+    // "<exe path>" --autostart + NUL — quote 로 감싸 경로 공백 대비
+    const suffix = std.unicode.utf8ToUtf16LeStringLiteral(" --autostart");
+    var quoted: [path_buf.len + suffix.len + 3]WCHAR = undefined;
     quoted[0] = '"';
     @memcpy(quoted[1..][0..path_len], path_buf[0..path_len]);
     quoted[1 + path_len] = '"';
-    quoted[1 + path_len + 1] = 0;
-    const total_wchars: DWORD = @intCast(1 + path_len + 1 + 1); // include NUL terminator
+    @memcpy(quoted[1 + path_len + 1 ..][0..suffix.len], suffix);
+    quoted[1 + path_len + 1 + suffix.len] = 0;
+    const total_wchars: DWORD = @intCast(1 + path_len + 1 + suffix.len + 1);
     const cb_data: DWORD = total_wchars * @sizeOf(WCHAR);
 
     if (RegSetValueExW(hkey, VALUE_NAME, 0, REG_SZ, @ptrCast(&quoted), cb_data) != ERROR_SUCCESS) {
