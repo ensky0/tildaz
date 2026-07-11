@@ -14,21 +14,39 @@ policy, while each host owns the OS event loop and native APIs.
 | Layer | Shared? | Main files | Responsibility |
 |---|---:|---|---|
 | Host | No | `src/host/windows.zig`, `src/host/macos.zig`, `src/host/linux_wayland.zig` + `src/host/linux/wayland_minimal.zig` | OS startup, event loop, global hotkey, window lifecycle |
+| Instance coordinator | Yes with OS request adapters | `src/main.zig`, `src/instances.zig`, `src/new_instance.zig`, `src/instance_request/*` | Numbered config discovery, worker locks/spawn, two-stage instance creation |
 | Window controller | Mostly Windows | `src/window.zig`, `src/app_controller.zig`, `src/app_event.zig` | Win32 message dispatch and app-level event routing |
 | Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues |
 | Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig` | Tab switching, close paths, rename, drag, hit testing |
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
-| Config | Yes | `src/config.zig` | Strict schema, defaults, `_` comment keys |
+| Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, `_` comment keys, current `config_N.json` / `tildazN.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/macos/pty.zig` | ConPTY or POSIX PTY behind the same external API |
 | Renderer | Wrapper | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape |
 | Fonts | Per OS with shared sizing contract | `src/font/spec.zig`, `src/font/windows`, `src/font/macos`, `src/font/linux` | Native font lookup and fallback; separate terminal and fixed-size tab-label contexts/atlases |
 | OS services | Wrapper | `src/autostart.zig`, `src/log.zig`, `src/paths.zig` | Startup registration, logging, platform paths |
 
+## Instance Ownership
+
+The launcher serializes numbered-config discovery and the spawn/dialog decision
+with one platform-local `launcher.lock`. Worker 0 acquires the same lock around
+the hotkey dialog and config-creation transaction. Each `--instance N` worker
+then owns an exclusive advisory lock on `instanceN.lock` for its process
+lifetime. A launcher or config-creation transaction that starts a worker retains
+`launcher.lock` until every new worker has acquired its own lock, preventing
+another launcher from observing a partially started set.
+
+The worker writes its PID only after acquiring `instanceN.lock`. That PID is
+diagnostic metadata and a startup acknowledgement, never the liveness source of
+truth: stale files and reused PIDs are possible after a crash. Liveness is
+decided only by whether the advisory lock can be acquired. Lock files live in
+the runtime/cache paths specified by `SPEC.md` §11.1, separate from user config.
+
 ## Windows Pipeline
 
-1. `host/windows.zig` initializes DPI awareness, single-instance behavior,
-   config, autostart, the Win32 window, renderer, and first tab.
+1. The coordinator starts one locked `--instance N` worker per numbered config;
+   `host/windows.zig` then initializes DPI awareness, config, the Win32 window,
+   renderer, and first tab for that worker.
 2. `window.zig` converts Win32 messages into `app_event.zig`.
 3. `app_controller.zig` applies events to tab/session/selection/rename state.
 4. `session_core.zig` drains PTY output through `libghostty-vt`.
@@ -39,7 +57,8 @@ policy, while each host owns the OS event loop and native APIs.
 
 ## macOS Pipeline
 
-1. `host/macos.zig` owns `NSApplication`, `NSWindow`, global hotkey event tap,
+1. The coordinator starts one locked worker per numbered config. `host/macos.zig`
+   owns that worker's `NSApplication`, `NSWindow`, global hotkey event tap,
    AppKit input callbacks, and a render timer.
 2. `terminal/macos/pty.zig` uses `openpty` + `login_tty` + IUTF8 termios and
    tears down child process groups on tab close.
@@ -52,8 +71,9 @@ policy, while each host owns the OS event loop and native APIs.
 
 ## Linux Pipeline
 
-1. `host/linux_wayland.zig` is the Linux entry point: it resolves config and
-   shell, then connects to `host/linux/wayland_minimal.zig`.
+1. The coordinator starts one locked worker per numbered config and synchronizes
+   compositor shortcuts. `host/linux_wayland.zig` resolves that worker's config
+   and shell, then connects to `host/linux/wayland_minimal.zig`.
 2. `host/linux/wayland_minimal.zig` is a direct Wayland wire-protocol client (no
    GTK / Qt). It owns the registry, `xdg-shell` / `wlr-layer-shell` surfaces,
    `wl_shm` buffers, keyboard / pointer / data-device, `zwp_text_input_v3` IME,

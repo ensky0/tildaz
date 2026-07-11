@@ -114,10 +114,10 @@ tildaz 는 **Wayland 전용** (X11 backend 없음 — §0 / ARCHITECTURE 의 Des
 | compositor 카테고리 | layer-shell drop-down | hotkey 자동 적용 메커니즘 | 대표 DE | 상태 |
 |---|---|---|---|---|
 | **KWin** | ✅ layer-shell | portal `GlobalShortcuts` + `kglobalaccel` takeover | KDE Plasma | ✅완료 (실기 확인) |
-| **wlroots** | ✅ layer-shell | sway = `bindsym` i3-ipc→`tildaz --toggle`, Hyprland = install.sh config bind→`--toggle` (portal 우회) | sway / Hyprland (Wayfire / river / niri 동계열) | ✅완료 (sway / Hyprland 실기 확인) |
+| **wlroots** | ✅ layer-shell | sway = `bindsym` i3-ipc→`tildaz --toggle N`, Hyprland = `hyprctl keyword bind`→`--toggle N` (portal 우회) | sway / Hyprland (Wayfire / river / niri 동계열) | ✅완료 (sway / Hyprland 실기 확인) |
 | **mutter** | tildaz 전용 Shell extension (xdg-shell 창 배치) | gsettings custom keybinding (libgio) + extension 충돌 시 자동 skip | GNOME (Ubuntu / Budgie / Pantheon 동계열) | ✅완료 (실기 확인) |
 | **muffin** | tildaz 전용 Shell extension | gsettings custom keybinding (Cinnamon strv schema) + extension 충돌 skip | Cinnamon | ✅완료 (실기 확인) |
-| **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle` (portal-cosmic GlobalShortcuts 미구현) | COSMIC | ✅완료 (실기 확인) |
+| **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle N` (portal-cosmic GlobalShortcuts 미구현) | COSMIC | ✅완료 (실기 확인) |
 | **X11 전용** | — (Wayland 아님) | — | XFCE / MATE / LXDE | **범위 밖** (별도 backend 필요) |
 
 ### Support Tier 정의
@@ -138,17 +138,19 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   source of truth. drop-down 재표시는 KWin 만 `#205` unmap/remap 워크어라운드(아래
   부록 B 참조).
 - **sway (wlroots).** GlobalShortcuts portal 미지원이라 portal `Activated` 가 안 옴
-  → `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec <self_exe> --toggle`
-  를 런타임 등록. hotkey 실동작은 `#198` single-instance (`$XDG_RUNTIME_DIR/tildaz.sock`).
+  → `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec <self_exe> --toggle N`
+  를 런타임 등록. hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/tildaz-N.sock`).
   runtime-only 라 매 실행 등록 = config 가 source of truth.
 - **Hyprland (wlroots).** layer-shell drop-down 은 sway 와 같은 경로(코드 동일).
-  hotkey 는 portal 우회 — `install.sh` 가 `~/.config/hypr/` config(`.conf` hyprlang /
-  `.lua`)에 bind→`tildaz --toggle` 를 멱등 append. drop-down 은 `on_demand`
+  hotkey 는 portal 우회 — 실행 시 `hyprctl keyword unbind/bind`로 각 config의
+  단축키를 `tildaz --toggle N`에 연결. `install.sh`는 `~/.config/hypr/` config의
+  autostart만 관리한다. drop-down 은 `on_demand`
   keyboard interactivity 로 클릭-어웨이 허용. XDG autostart 미지원이라 autostart 도
   config 의 `exec-once` 로.
 - **COSMIC (smithay).** layer-shell drop-down. hotkey 는 RON custom shortcut
-  (`~/.config/cosmic/.../custom`) 에 `Spawn("tildaz --toggle")` 를 install.sh 가 멱등
-  등록(portal-cosmic GlobalShortcuts 미구현). XDG autostart 는 지원.
+  (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
+  `Spawn("tildaz --toggle N")`로 원자적 갱신(portal-cosmic GlobalShortcuts 미구현).
+  XDG autostart 는 지원.
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 tildaz 본체는 평범한
   xdg-shell client (`app_id="tildaz"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
@@ -175,7 +177,7 @@ minimize/restore.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 윈도우 토글 (drop-down) | F1 (`RegisterHotKey`) | F1 (CGEventTap, config 변경 가능) | F1 portal `GlobalShortcuts.BindShortcuts` (L9) + portal 미가용 환경에선 `tildaz --toggle` Unix socket IPC ([9803c62](https://github.com/ensky0/tildaz/commit/9803c62), #198) | ✅ | ✅ | ✅ |
+| 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | config_N별 portal `GlobalShortcuts.BindShortcuts` + portal 미가용 환경에선 `tildaz --toggle N` Unix socket IPC ([9803c62](https://github.com/ensky0/tildaz/commit/9803c62), #198) | ✅ | ✅ | ✅ |
 | 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
 ### 2.2 탭 관리
@@ -553,7 +555,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
-| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm` | `dialog_windows.zig` (`MessageBoxW`) | `dialog_macos.zig` (NSAlert + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
+| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey` | `dialog_windows.zig` (`MessageBoxW` + key capture window) | `dialog_macos.zig` (NSAlert + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
 | About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showInfo` → Linux backend → layer-shell overlay 그림. 아이콘 (`docs/favicon.svg` raster) + Title + separator + body + OK 버튼 (system blue). | ✅ | ✅ | ✅ |
 | Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` — startup 시점은 wayland client 미초기화라 stderr + log fallback + exit. 런타임은 layer-shell overlay. | ✅ | ✅ | ✅ (런타임) / 🟨 (startup fallback) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → stderr + log fallback + exit (panic 은 일반적으로 runtime 라 overlay 가능하나 안전 fallback 우선) | ✅ | ✅ | ✅ |
@@ -568,10 +570,44 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 같은 nested schema, default 만 OS-specific. *Single source of truth* 패턴 — [`src/config.zig`](src/config.zig) 의 `Defaults` struct (Win/Mac 분기, 같은 필드 순서로 나란히) 한 곳에 모든 default 값. 이로부터:
 
-1. **`DEFAULT_CONFIG_JSON`** 이 `std.fmt.comptimePrint` 으로 자동 생성 — 첫 실행 시 디스크 (`%APPDATA%\tildaz\config.json` 등) 에 저장 + parse() 의 `validateStructure` 검증 ground truth.
+1. **`DEFAULT_CONFIG_JSON`** 이 `std.fmt.comptimePrint` 으로 자동 생성 — 첫 실행 시 디스크의 `config_0.json`에 저장 + parse() 의 `validateStructure` 검증 ground truth.
 2. **`Config` struct field initializer** 가 참조하는 `default_*` const 모두 같은 `Defaults` 에서 derive — 디스크 default 와 메모리 fallback 자동 sync.
 
 이전엔 default 값이 6+ 곳 (JSON literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
+
+### 7.1 번호별 config / process 계약 (#267)
+
+- 활성 설정은 `config_0.json`, `config_1.json`, ... 형식만 인식한다. 기존
+  `config.json`은 읽기·변환·수정·삭제하지 않는다.
+- `config_N.json` 하나가 worker process 하나, global hotkey 하나, `tildazN.log`
+  하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
+  중복 실행을 막는다.
+- 일반 실행은 config index별 실행 상태를 확인하고 빠진 TildaZ worker를 한 번에 모두
+  복구한 뒤 launcher가 종료한다. `config_0.json`이 없으면 다른 번호의 config 존재
+  여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라
+  `config_<N>.json` ↔ worker N 대응으로 판정한다.
+- 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 필드를
+  한 다이얼로그에 표시한다. 실제 key 조합을 캡처하기 전에는 **Create**가 비활성이다.
+  **Create**는 형식과 TildaZ config 간 중복을 검증한 뒤
+  다음 번호의 config를 생성하고, **Cancel**은 아무것도 변경하지 않는다.
+- autostart entry는 launcher를 `--autostart`로 한 번 실행한다. launcher는
+  `auto_start=true`인 config의 TildaZ worker만 시작하고 종료한다. 수동 실행은 모든
+  config를 대상으로 한다.
+- 각 TildaZ worker는 자기 config, process lock, hotkey, toggle endpoint를 독립 소유한다.
+  KDE Plasma에서는 portal/KGlobalAccel identity도 `tildaz.instanceN` (내부 app/component ID),
+  `TildaZ_N` (표시명), `toggle-N` (action ID)으로 분리해 다른 worker의 shortcut을
+  덮어쓰지 않는다. Wayland 창 app ID `tildaz`는 GNOME/Cinnamon extension의 공통 창
+  식별자로 유지한다.
+- worker N은 `instanceN.lock`의 exclusive advisory lock을 process 수명 동안 소유한다.
+  파일 존재나 내부 PID가 아니라 **lock 획득 성공/실패**가 실행 상태의 source of truth다.
+  owner가 정상·비정상 종료하면 OS가 lock을 해제한다. PID는 lock 획득 뒤 기록하는
+  진단 정보이며, crash 뒤 stale PID 또는 PID 재사용 가능성이 있으므로 생존 판정에
+  사용하지 않는다. launcher가 owner 부재를 lock으로 확인했을 때 stale PID를 비운다.
+- `launcher.lock`은 config 열거, index별 생존 확인, 누락 worker spawn, 새-instance 요청
+  결정과 worker 0의 hotkey dialog/config 생성 transaction을 직렬화한다. 누락 worker를
+  spawn한 launcher 또는 새 config를 만든 worker 0은 각 worker가 자기 lock을 획득하고
+  PID를 기록한 것을 확인한 뒤 launcher lock을 해제한다. 따라서 다음 launcher는
+  config 생성/spawn과 worker ownership 사이의 중간 상태를 관찰하지 않는다.
 
 > Zig 0.15.2 의 `std.json` 이 comptime allocator 를 지원 안 해 (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig struct → JSON 방향 (`comptimePrint`) 이 우리 패턴.
 
@@ -610,7 +646,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. 기본값: `"f1"`. config = source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle` Unix socket IPC (#198) + DE native binding 자동 등록 (sway = `bindsym`, 아래 *sway* 단락).
+**Schema**: `string`. `config_0.json` 기본값: `"f1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle N` Unix socket IPC (#198) + DE native binding 자동 등록.
 
 **잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:597-609](src/config.zig#L597-L609), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
 
@@ -662,7 +698,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
 
-**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 #198 single_instance (`tildaz --toggle`). `bindsym` 은 runtime-only (sway reload 시 사라짐, KDE `setForeignShortcut` 과 동일 성격) 이라 *매 실행* 등록 → config 가 source of truth. accel modifier 는 sway 친화 이름 (`Shift` / `Ctrl` / `Alt` / `Super`), key 이름은 `portal.keysymGtkName` (XKB name) 재사용. nested sway 1.12 시연: 등록 → `tildaz --toggle` → hide/show 사슬 확인.
+**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다.
 
 **Display 표기 (사용자 dialog / log)**: `keysymDisplayString` 가 Title case + `+` 분리 (`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`) — KDE 친화. portal-kde D-Bus 송신용 parse format (`LOGO+a`, `SHIFT+CTRL+grave`) 과 분리.
 
@@ -755,10 +791,16 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
-| **config** | `%APPDATA%\tildaz\config.json` (Microsoft 표준) | `~/.config/tildaz/config.json` (XDG, ghostty/alacritty 패턴 — 터미널 사용자 친숙) | `~/.config/tildaz/config.json` (XDG) |
-| **log** | `%APPDATA%\tildaz\tildaz.log` (Microsoft 표준) | `~/Library/Logs/tildaz.log` (Apple HIG — Console.app 자동 인덱싱) | `~/.local/state/tildaz/tildaz.log` (XDG state) |
+| **config** | `%APPDATA%\tildaz\config_N.json` (Microsoft 표준) | `~/.config/tildaz/config_N.json` (XDG, ghostty/alacritty 패턴 — 터미널 사용자 친숙) | `~/.config/tildaz/config_N.json` (XDG) |
+| **log** | `%APPDATA%\tildaz\tildazN.log` (Microsoft 표준) | `~/Library/Logs/tildazN.log` (Apple HIG — Console.app 자동 인덱싱) | `~/.local/state/tildaz/tildazN.log` (XDG state) |
+| **process lock** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
+
+process lock은 config가 아니라 transient runtime/cache state다. `launcher.lock`과
+`instanceN.lock`은 실행 뒤 파일 자체가 남을 수 있으며, 존재 여부는 실행 상태를 뜻하지
+않는다. `instanceN.lock`의 PID는 process 검색을 돕는 진단값이고 실제 생존 여부는
+advisory lock으로만 판정한다.
 
 **stdout / stderr 정책**: 통합 로그가 single source of truth — stdout/stderr 에는 정보성 메시지 안 찍음. 모든 정보 (boot, startup, font/renderer init, tab create, geom, perm, pty, exit) 는 통합 로그로. ghostty-vt 의 `std.log` 호출 (예: `unimplemented mode: ...`) 도 `main.zig` 의 `std_options.logFn` 으로 redirect — 단 `unimplemented mode` noise 는 filter (xterm DECSET 중 ghostty 가 안 구현한 것들, terminal 동작 영향 없음). 권한 안내처럼 첫 부팅 사용자 actionable 인 것은 `dialog.showInfo` 로 messagebox 표시. (예외: macOS IMK system framework 의 stderr noise `IMKCFRunLoopWakeUpReliable` — system framework 가 우리 우회 없이 직접 찍는 것이라 차단 불가, 무시.)
 
@@ -766,8 +808,8 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| Config 열기 | Ctrl+Shift+P | Shift+Cmd+P | Ctrl+Shift+P — `paths.configPath` + `system_open.openInDefaultApp` (xdg-open) | ✅ | ✅ | ✅ |
-| Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L — `paths.logPath` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
+| Config 열기 | Ctrl+Shift+P | Shift+Cmd+P | Ctrl+Shift+P — 현재 worker의 `paths.configPath` + `system_open.openInDefaultApp` (xdg-open) | ✅ | ✅ | ✅ |
+| Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L — 현재 worker의 `paths.logPath` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
 
 > Windows 의 `dump_perf` (스냅샷) 단축키는 Ctrl+Shift+P 와 충돌해 Ctrl+Shift+F12 로 이동 (개발자 dev 도구 컨벤션, F12).
 
@@ -788,10 +830,10 @@ TildaZ v0.3.0
 exe   : /Applications/TildaZ.app/Contents/MacOS/tildaz   (mac)
         C:\Users\<u>\...\tildaz.exe                       (win)
 pid   : 12345
-config: /Users/<u>/.config/tildaz/config.json            (mac)
-        C:\Users\<u>\AppData\Roaming\tildaz\config.json   (win)
-log   : /Users/<u>/Library/Logs/tildaz.log               (mac)
-        C:\Users\<u>\AppData\Roaming\tildaz\tildaz.log    (win)
+config: /Users/<u>/.config/tildaz/config_0.json            (mac)
+        C:\Users\<u>\AppData\Roaming\tildaz\config_0.json   (win)
+log   : /Users/<u>/Library/Logs/tildaz0.log               (mac)
+        C:\Users\<u>\AppData\Roaming\tildaz\tildaz0.log    (win)
 
 Tip: Shift+Cmd+P opens config in default editor.       (mac)
      Shift+Cmd+L opens log.
@@ -883,7 +925,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 마우스 우클릭 paste (양쪽 변경) | ✅ | #119 | Windows 가운데 버튼 (`WM_MBUTTONDOWN`, deprecated) → 우클릭 (`WM_RBUTTONDOWN`). macOS 우클릭 추가. |
 | 스크롤바 마우스 클릭 + 드래그 | ✅ | #123 | `scrollbarScrollToY` (Windows `scrollToY` 패턴 그대로). cross-platform `ScrollbarDragState` + ghostty `Pin` 기반 selection 으로 viewport 이동해도 selection 유지. |
 | autostart (LaunchAgent) | ✅ | #126 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등 |
-| 로그 시스템 (`~/Library/Logs/tildaz.log`) | ✅ | #124 | Windows `tildaz_log.zig` 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
+| 로그 시스템 (`~/Library/Logs/tildazN.log`) | ✅ | #124 | Windows `tildaz_log.zig` 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
 | Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback ad-hoc |
 | config schema 확장 (font.* / shell / max_scroll_lines) | 🟡 | #118 | Windows config 와 동일 schema. macOS 는 현재 dock_position / width / height / offset / opacity / theme / hotkey / auto_start / hidden_start 만. font / shell / max_scroll 모두 hardcoded → JSON 으로. |
 | SIGHUP 무시 셸 fallback (SIGKILL) | ✅ | #129 | `Pty.deinit` 에 grace period (500ms / 5ms polling) + `child_exited` atomic flag. wait_thread 의 waitpid 가 깨어나면 즉시 break, 안 깨어나면 SIGKILL. Cmd+W / 탭 close button 으로만 트리거 (Cmd+Q 는 NSApp `terminate:` → `exit()` 직행). |
