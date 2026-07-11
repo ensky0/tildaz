@@ -79,9 +79,9 @@ First launch creates the default config:
 
 | Platform | Config | Log |
 |---|---|---|
-| Linux | `~/.config/tildaz/config.json` | `~/.local/state/tildaz/tildaz.log` |
-| macOS | `~/.config/tildaz/config.json` | `~/Library/Logs/tildaz.log` |
-| Windows | `%APPDATA%\tildaz\config.json` | `%APPDATA%\tildaz\tildaz.log` |
+| Linux | `~/.config/tildaz/config_0.json` | `~/.local/state/tildaz/tildaz0.log` |
+| macOS | `~/.config/tildaz/config_0.json` | `~/Library/Logs/tildaz0.log` |
+| Windows | `%APPDATA%\tildaz\config_0.json` | `%APPDATA%\tildaz\tildaz0.log` |
 
 macOS releases are ad-hoc signed. If Gatekeeper blocks the first open,
 right-click `TildaZ.app` and choose **Open**, or run:
@@ -96,7 +96,11 @@ window control shortcuts.
 
 ## Configure
 
-Edit `config.json`; the schema is documented in [CONFIG.md](CONFIG.md).
+Edit `config_0.json`; the schema is documented in [CONFIG.md](CONFIG.md). Launch
+TildaZ again while every configured instance is running to create another one.
+Press its global hotkey and choose **Create**; TildaZ writes `config_1.json`,
+`config_2.json`, and so on. Each config owns one process, hotkey, and log file.
+Legacy `config.json` files are left untouched and are not loaded.
 
 Common fields:
 

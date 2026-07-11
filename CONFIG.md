@@ -4,11 +4,16 @@ Config file path (per OS standard):
 
 | OS | Path |
 |---|---|
-| Windows | `%APPDATA%\tildaz\config.json` |
-| macOS | `~/.config/tildaz/config.json` (XDG, ghostty / alacritty pattern) |
-| Linux | `~/.config/tildaz/config.json` (XDG) |
+| Windows | `%APPDATA%\tildaz\configN.json` |
+| macOS | `~/.config/tildaz/configN.json` (XDG, ghostty / alacritty pattern) |
+| Linux | `~/.config/tildaz/configN.json` (XDG) |
 
-If missing, it is auto-created with defaults on first launch. macOS and Linux additionally insert the user's `$SHELL` env (or `/bin/bash`) into the `shell` field on first creation, so the value on disk reflects the user's actual shell.
+The first launch creates `config0.json` with defaults. Launching TildaZ while
+all configured instances are already running shows the resulting instance count
+and a hotkey capture field in one Create/Cancel dialog before writing the next numbered file. Press the desired key combination; **Create** remains disabled until a hotkey is captured. Each
+`configN.json` owns one TildaZ process. A legacy `config.json` is not loaded,
+converted, or deleted. macOS and Linux insert the user's `$SHELL` env (or
+`/bin/bash`) into newly created configs.
 
 > **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Windows, macOS, and Linux apply the same policy.
 >

@@ -97,12 +97,13 @@
             <tr><th>Platform</th><th>Config path</th></tr>
           </thead>
           <tbody>
-            <tr><td>Linux</td><td><code>~/.config/tildaz/config.json</code></td></tr>
-            <tr><td>macOS</td><td><code>~/.config/tildaz/config.json</code></td></tr>
-            <tr><td>Windows</td><td><code>%APPDATA%\tildaz\config.json</code></td></tr>
+            <tr><td>Linux</td><td><code>~/.config/tildaz/config_N.json</code></td></tr>
+            <tr><td>macOS</td><td><code>~/.config/tildaz/config_N.json</code></td></tr>
+            <tr><td>Windows</td><td><code>%APPDATA%\tildaz\config_N.json</code></td></tr>
           </tbody>
         </table>
       </div>
+      <p>The first launch creates <code>config_0.json</code>. When every configured instance is already running, launch TildaZ again, press a new hotkey, and choose <strong>Create</strong>. Each numbered config owns one process, hotkey, and log.</p>
     </section>
   </main>
 

@@ -35,8 +35,12 @@ CONFIG AND LOG
 
 The first launch creates:
 
-    Config: %APPDATA%\tildaz\config.json
-    Log:    %APPDATA%\tildaz\tildaz.log
+    Config: %APPDATA%\tildaz\config_0.json
+    Log:    %APPDATA%\tildaz\tildaz0.log
+
+Launch TildaZ again while every configured instance is running to add
+another one. Press its global hotkey and choose Create. Each numbered
+config owns one process and a matching numbered log.
 
 New shells start in the Windows home directory. WSL commands start
 in the Linux home unless the configured command already supplies
