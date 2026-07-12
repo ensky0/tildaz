@@ -285,8 +285,20 @@ const xkb_key_v_upper: u32 = 0x56;
 const xkb_key_r_lower: u32 = 0x72;
 const xkb_key_r_upper: u32 = 0x52;
 // XKB F1..F12 keysyms — `xkbcommon/xkbcommon-keysyms.h`. F4 = Alt+F4 quit,
-// F12 = Ctrl+Shift+F12 perf dump (#160). (F1 toggle 은 portal hotkey 처리이라 별 매핑 필요 없음.)
+// F-key keysym (연속: F1=0xffbe … F12=0xffc9). Alt+F4 / Ctrl+Shift+F12 외에도
+// #282 A7 로 F1~F12 를 TUI(htop/mc 등)용 xterm escape sequence 로 PTY 전달.
+// (F1 은 보통 전역 hotkey 라 도달 안 하지만 매핑은 둔다 — macOS 동등.)
+const xkb_key_f1: u32 = 0xffbe;
+const xkb_key_f2: u32 = 0xffbf;
+const xkb_key_f3: u32 = 0xffc0;
 const xkb_key_f4: u32 = 0xffc1;
+const xkb_key_f5: u32 = 0xffc2;
+const xkb_key_f6: u32 = 0xffc3;
+const xkb_key_f7: u32 = 0xffc4;
+const xkb_key_f8: u32 = 0xffc5;
+const xkb_key_f9: u32 = 0xffc6;
+const xkb_key_f10: u32 = 0xffc7;
+const xkb_key_f11: u32 = 0xffc8;
 const xkb_key_f12: u32 = 0xffc9;
 // L12-β — tab 단축키. Linux / Windows 의 일반 terminal 관습 (gnome-terminal /
 // kitty) 동등 — `Ctrl+Shift+T` 새 탭 / `Ctrl+Shift+W` 활성 탭 닫기 / `Ctrl+
@@ -594,8 +606,40 @@ fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
         xkb_key_delete => "\x1b[3~",
         xkb_key_page_up => "\x1b[5~",
         xkb_key_page_down => "\x1b[6~",
+        // #282 A7 — F1~F12 xterm sequence (htop/mc 등 TUI). macOS keyCodeToEscape 와 동일.
+        xkb_key_f1 => "\x1bOP",
+        xkb_key_f2 => "\x1bOQ",
+        xkb_key_f3 => "\x1bOR",
+        xkb_key_f4 => "\x1bOS",
+        xkb_key_f5 => "\x1b[15~",
+        xkb_key_f6 => "\x1b[17~",
+        xkb_key_f7 => "\x1b[18~",
+        xkb_key_f8 => "\x1b[19~",
+        xkb_key_f9 => "\x1b[20~",
+        xkb_key_f10 => "\x1b[21~",
+        xkb_key_f11 => "\x1b[23~",
+        xkb_key_f12 => "\x1b[24~",
         else => null,
     };
+}
+
+test "terminalSequenceForKeysym: F1~F12 xterm sequence (#282 A7)" {
+    const T = std.testing;
+    try T.expectEqualStrings("\x1bOP", terminalSequenceForKeysym(xkb_key_f1).?);
+    try T.expectEqualStrings("\x1bOQ", terminalSequenceForKeysym(xkb_key_f2).?);
+    try T.expectEqualStrings("\x1bOR", terminalSequenceForKeysym(xkb_key_f3).?);
+    try T.expectEqualStrings("\x1bOS", terminalSequenceForKeysym(xkb_key_f4).?);
+    try T.expectEqualStrings("\x1b[15~", terminalSequenceForKeysym(xkb_key_f5).?);
+    try T.expectEqualStrings("\x1b[17~", terminalSequenceForKeysym(xkb_key_f6).?);
+    try T.expectEqualStrings("\x1b[18~", terminalSequenceForKeysym(xkb_key_f7).?);
+    try T.expectEqualStrings("\x1b[19~", terminalSequenceForKeysym(xkb_key_f8).?);
+    try T.expectEqualStrings("\x1b[20~", terminalSequenceForKeysym(xkb_key_f9).?);
+    try T.expectEqualStrings("\x1b[21~", terminalSequenceForKeysym(xkb_key_f10).?);
+    try T.expectEqualStrings("\x1b[23~", terminalSequenceForKeysym(xkb_key_f11).?);
+    try T.expectEqualStrings("\x1b[24~", terminalSequenceForKeysym(xkb_key_f12).?);
+    // nav 키는 기존대로 유지 (회귀 없음)
+    try T.expectEqualStrings("\x1b[2~", terminalSequenceForKeysym(xkb_key_insert).?);
+    try T.expectEqualStrings("\x1b[3~", terminalSequenceForKeysym(xkb_key_delete).?);
 }
 
 fn createMemfd(name: [*:0]const u8) !posix.fd_t {

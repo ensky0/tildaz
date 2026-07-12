@@ -607,6 +607,7 @@ fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
         116 => "\x1b[5~", // pgup
         121 => "\x1b[6~", // pgdn
         117 => "\x1b[3~", // forward delete
+        114 => "\x1b[2~", // insert/help (외장 PC 키보드 — Apple 키보드엔 없음, #282 A7 parity)
         // F-keys
         122 => "\x1bOP", // F1 (CGEventTap 이 가로채니 사실 도달 안 함)
         120 => "\x1bOQ", // F2

@@ -245,6 +245,7 @@ const GMEM_MOVEABLE: UINT = 0x0002;
 const CF_UNICODETEXT: UINT = 13;
 const VK_CONTROL: c_int = 0x11;
 const VK_SHIFT: c_int = 0x10;
+const VK_MENU: c_int = 0x12; // Alt
 
 // GDI functions
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
@@ -1453,6 +1454,22 @@ pub const Window = struct {
                         vk_insert => write_fn("\x1b[2~", self.userdata),
                         vk_prior => write_fn("\x1b[5~", self.userdata),
                         vk_next => write_fn("\x1b[6~", self.userdata),
+                        // #282 A7 — F1~F12 xterm sequence (htop/mc 등 TUI). macOS
+                        // keyCodeToEscape / Linux terminalSequenceForKeysym 와 동일.
+                        // Ctrl+Shift+F12(perf)는 위 Ctrl+Shift block 에서 이미 소비.
+                        // F10(0x79)은 Windows 가 메뉴 키로 WM_SYSKEYDOWN 을 보내므로
+                        // 여기 안 옴 — 그쪽 핸들러에서 처리.
+                        0x70 => write_fn("\x1bOP", self.userdata), // F1
+                        0x71 => write_fn("\x1bOQ", self.userdata), // F2
+                        0x72 => write_fn("\x1bOR", self.userdata), // F3
+                        0x73 => write_fn("\x1bOS", self.userdata), // F4
+                        0x74 => write_fn("\x1b[15~", self.userdata), // F5
+                        0x75 => write_fn("\x1b[17~", self.userdata), // F6
+                        0x76 => write_fn("\x1b[18~", self.userdata), // F7
+                        0x77 => write_fn("\x1b[19~", self.userdata), // F8
+                        0x78 => write_fn("\x1b[20~", self.userdata), // F9
+                        0x7A => write_fn("\x1b[23~", self.userdata), // F11
+                        0x7B => write_fn("\x1b[24~", self.userdata), // F12
                         else => {},
                     }
                 }
@@ -1577,6 +1594,10 @@ pub const Window = struct {
                 // 않음 — Windows 기본 경로가 어떤 SC_ 명령을 생성하든 우리가
                 // 정의한 동작 (현재 모니터 `rcWork` ↔ 저장된 dock) 으로 가게.
                 if (wParam == VK_RETURN) {
+                    // #282 A10 — rename 활성 중 Alt+Enter 도 이름을 확정한 뒤 토글
+                    // (macOS/Linux 동등, SPEC §4.1). before_hide_fn(onBeforeHide)은
+                    // "renaming 이면 commitRename" 이라 이 commit 용도에 안전.
+                    if (self.before_hide_fn) |commit| commit(self.userdata);
                     self.toggleFullscreenMode(if (GetAsyncKeyState(VK_SHIFT) < 0) .workarea else .monitor);
                     return 0;
                 }
@@ -1587,6 +1608,13 @@ pub const Window = struct {
                             .switch_tab = wParam - 0x31,
                         },
                     });
+                    return 0;
+                }
+                // #282 A7 — F10 은 Windows 가 메뉴 활성 키로 WM_SYSKEYDOWN 을 보낸다
+                // (WM_KEYDOWN 안 옴). TUI(htop 종료 등)용 xterm sequence 로 PTY 전달하고
+                // DefWindowProc(메뉴 활성)로 넘기지 않는다. Alt 동반이 아닌 순수 F10 만.
+                if (wParam == 0x79 and GetAsyncKeyState(VK_MENU) >= 0) {
+                    if (self.write_fn) |write_fn| write_fn("\x1b[21~", self.userdata);
                     return 0;
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
