@@ -17,9 +17,14 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 
 ## 0. 원칙
 
-1. **Windows reference, macOS / Linux 동등.** Windows 에 있는 기능은 macOS·Linux
-   에도 동등 구현. "마우스 휠로 충분 / optional" 같이 특정 platform 만 빠지는
-   정당화 안 함. (platform 고유 제약은 — 별도 이슈 + 상태 표기로.)
+1. **세 platform 동등이 목표. 맞출 기준은 Windows 로 자동 고정하지 않는다.**
+   Windows 에 있는 기능은 macOS·Linux 에도 동등 구현하고, "마우스 휠로 충분 /
+   optional" 같이 특정 platform 만 빠지는 정당화는 안 한다. 다만 동작·시각의 *기준*
+   은 명시 사양(이 SPEC 의 표·값, `ui_metrics` 상수)이 있으면 그 사양이고, 사양이
+   없는 차이는 어느 한 platform(과거의 "Windows reference")으로 자동 정렬하지 않고
+   항목별로 UX 방향을 결정해 사양화한다 (2026-07-12 결정, [#297](https://github.com/ensky0/tildaz/issues/297)).
+   결정된 예: 터미널 커서 = 세로 막대(bar), 탭 drag reorder = 드래그 탭이 마우스
+   따라 이동. (platform 고유 제약은 — 별도 이슈 + 상태 표기로.)
 2. **platform 표준 / native 동작 우선.** cross-platform 일관성보다 *각 platform
    의 표준 / native 사용자 expectation* 을 우선. modifier 순서 (Apple HIG —
    Control → Option → Shift → Command 라 macOS 는 `Shift+Cmd+P` 가 표준,
