@@ -14,44 +14,8 @@ pub fn fallback() TimeFields {
     return .{ .year = 1970, .month = 1, .day = 1, .hour = 0, .min = 0, .sec = 0, .ms = 0 };
 }
 
-pub fn fromUnixMillis(ms_total: i64, utc_offset_seconds: i32) TimeFields {
-    if (ms_total < 0) return fallback();
-
-    const unix_secs = @divTrunc(ms_total, 1000);
-    const local_secs = std.math.add(i64, unix_secs, utc_offset_seconds) catch return fallback();
-    if (local_secs < 0) return fallback();
-
-    const epoch_secs = std.time.epoch.EpochSeconds{ .secs = @intCast(local_secs) };
-    const year_day = epoch_secs.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_secs = epoch_secs.getDaySeconds();
-
-    return .{
-        .year = @intCast(year_day.year),
-        .month = @intCast(month_day.month.numeric()),
-        .day = @intCast(month_day.day_index + 1),
-        .hour = @intCast(day_secs.getHoursIntoDay()),
-        .min = @intCast(day_secs.getMinutesIntoHour()),
-        .sec = @intCast(day_secs.getSecondsIntoMinute()),
-        .ms = @intCast(@mod(ms_total, 1000)),
-    };
-}
-
-test "UTC offset conversion keeps milliseconds" {
-    const t = fromUnixMillis(1234, 9 * 60 * 60);
-    try std.testing.expectEqual(@as(u16, 1970), t.year);
-    try std.testing.expectEqual(@as(u8, 1), t.month);
-    try std.testing.expectEqual(@as(u8, 1), t.day);
-    try std.testing.expectEqual(@as(u8, 9), t.hour);
-    try std.testing.expectEqual(@as(u8, 0), t.min);
-    try std.testing.expectEqual(@as(u8, 1), t.sec);
-    try std.testing.expectEqual(@as(u16, 234), t.ms);
-}
-
-test "negative UTC offset can cross to previous day" {
-    const t = fromUnixMillis(34 * 60 * 60 * 1000, -12 * 60 * 60);
-    try std.testing.expectEqual(@as(u16, 1970), t.year);
-    try std.testing.expectEqual(@as(u8, 1), t.month);
-    try std.testing.expectEqual(@as(u8, 1), t.day);
-    try std.testing.expectEqual(@as(u8, 22), t.hour);
-}
+// 이전엔 여기 `fromUnixMillis` (unix ms + UTC offset → 필드 분해)가 있었으나, 세
+// platform 모두 시스템 시간 함수로 로컬 시각을 직접 분해받는다 (Windows `GetLocalTime`
+// → SYSTEMTIME, macOS/Linux `localtime_r` → struct tm). Linux 가 자체 TZif 파서로
+// offset 을 구하던 유일한 소비자였고 localtime_r 로 전환되면서 dead code 가 되어 제거.
+// `TimeFields` / `fallback` 만 세 platform 공통으로 남는다.

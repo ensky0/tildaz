@@ -126,19 +126,8 @@ pub fn launcherLockPath(allocator: std.mem.Allocator) ![]u8 {
 
 fn ensureDir(dir: []const u8) !void {
     // makePath = 중간 단계 포함 자동 생성 (`~/.local/state/tildaz` 같이 깊은 경로용).
-    std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
-        error.PathAlreadyExists => return,
-        error.FileNotFound => {
-            // 부모가 없는 경우 (예: ~/.local/state) — 재귀 생성.
-            if (std.fs.path.dirname(dir)) |parent| {
-                try ensureDir(parent);
-                try std.fs.makeDirAbsolute(dir);
-                return;
-            }
-            return err;
-        },
-        else => return err,
-    };
+    // 절대경로 component 는 leading `/` 를 유지해 makeDir 이 dirfd 무시하고 그대로 생성.
+    try std.fs.cwd().makePath(dir);
 }
 
 test "Linux lock directory follows runtime then cache fallback order" {

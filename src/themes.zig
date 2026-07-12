@@ -1,3 +1,4 @@
+const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const RGB = ghostty.color.RGB;
 const Palette = ghostty.color.Palette;
@@ -249,7 +250,7 @@ pub const themes = [_]Theme{
 
 pub fn findTheme(name: []const u8) ?*const Theme {
     for (&themes) |*t| {
-        if (eqlIgnoreCase(t.name, name)) return t;
+        if (std.ascii.eqlIgnoreCase(t.name, name)) return t;
     }
     return null;
 }
@@ -282,16 +283,4 @@ pub fn faintBlend(fg: RGB, bg: RGB) RGB {
         .g = @intCast((@as(u16, fg.g) + bg.g) / 2),
         .b = @intCast((@as(u16, fg.b) + bg.b) / 2),
     };
-}
-
-fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ca, cb| {
-        if (toLower(ca) != toLower(cb)) return false;
-    }
-    return true;
-}
-
-fn toLower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
 }
