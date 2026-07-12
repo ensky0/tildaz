@@ -644,22 +644,29 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const cmd = (flags & NSEventModifierFlagCommand) != 0;
     if (cmd) {
-        // Windows 패턴 — Cmd 단축키는 진행 중 입력 (rename + terminal preedit)
-        // 모두 commit 후 처리. preedit 만 떠 있는 상태로 단축키 → 새 탭 / 다른
-        // 동작으로 넘어가면 preedit 이 dangling 됨.
-        commitPendingInput(self_view);
         const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const kc = get_kc(event, objc.sel("keyCode"));
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
         const shift = (flags & NSEventModifierFlagShift) != 0;
 
-        // keyCode 8 = 'c', 9 = 'v'.
-        if (kc == 8) {
-            handleCopy();
+        // #282 A3 — Cmd+V (kc 9) 은 rename 활성 시 rename buffer 로 paste 해야 하므로
+        // (handlePaste → tab_actions.routePaste), 다른 Cmd 단축키와 달리 rename 을
+        // commit 하지 않는다. rename 이 아니면 진행 중 terminal preedit 을 commit 후
+        // PTY paste (자모 dangling 방지). 이 특례를 아래 일반 commit *앞* 에 둔다.
+        if (kc == 9) {
+            if (!g_rename.isActive()) commitPendingInput(self_view);
+            handlePaste();
             return;
         }
-        if (kc == 9) {
-            handlePaste();
+
+        // 나머지 Cmd 단축키 — 진행 중 입력 (rename + terminal preedit) 모두 commit 후
+        // 처리. preedit 만 떠 있는 상태로 단축키 → 새 탭 / 다른 동작으로 넘어가면
+        // preedit 이 dangling 됨.
+        commitPendingInput(self_view);
+
+        // keyCode 8 = 'c'.
+        if (kc == 8) {
+            handleCopy();
             return;
         }
         // Cmd+T = 새 탭 (kc 0x11 = 'T'). M11.2.
