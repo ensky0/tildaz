@@ -84,6 +84,11 @@ pub fn run() !void {
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);
 
+    // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
+    // Sync and enable the current DE extension in the user session before the
+    // GNOME lifecycle decision below reads enabled-extensions.
+    gsettings_hotkey.ensureShellExtensionReady(gpa.allocator());
+
     // GNOME + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
     // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch
     // 를 유발하므로(실측) 무시 — tildaz 는 항상 창을 만들고, 숨김(hidden_start=true)

@@ -16,12 +16,11 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.6.0 — independent drop-down instances, each with its own config and hotkey.**
-> Launch TildaZ normally: it restores any missing configured workers, or offers
-> to create another instance when all of them are running. Every
-> `config_N.json` owns one process, hotkey, log, and desktop identity. Hotkey
-> capture rejects duplicates before creation and integrates with KDE Plasma,
-> GNOME, Cinnamon, COSMIC, Hyprland, sway, macOS, and Windows.
+> **v0.6.1 — corrected Linux packages and complete Shell integration.**
+> Linux launchers now resolve the installed executable correctly, portable
+> archives install outside the source tree, and every Linux package carries the
+> GNOME and Cinnamon extensions needed for a real drop-down. This patch keeps
+> the independent numbered instances introduced in v0.6.0.
 
 ## Who is TildaZ for?
 

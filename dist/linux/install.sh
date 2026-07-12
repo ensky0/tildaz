@@ -73,10 +73,27 @@ mkdir -p "$APP_DIR" "$ICON_DIR"
 DESKTOP_OUT="$APP_DIR/tildaz.desktop"
 ICON_OUT="$ICON_DIR/tildaz.svg"
 
-sed "s|__TILDAZ_EXE__|$TILDAZ_EXE|" "$SCRIPT_DIR/tildaz.desktop" > "$DESKTOP_OUT"
+ESCAPED_EXE="${TILDAZ_EXE//\\/\\\\}"
+ESCAPED_EXE="${ESCAPED_EXE//&/\\&}"
+ESCAPED_EXE="${ESCAPED_EXE//|/\\|}"
+sed "s|__TILDAZ_EXE__|$ESCAPED_EXE|" "$SCRIPT_DIR/tildaz.desktop" > "$DESKTOP_OUT"
+if grep -qF '__TILDAZ_EXE__' "$DESKTOP_OUT" || ! grep -qxF "Exec=$TILDAZ_EXE" "$DESKTOP_OUT"; then
+    echo "ERROR: failed to resolve desktop Exec path: $DESKTOP_OUT" >&2
+    exit 1
+fi
 chmod 644 "$DESKTOP_OUT"
 
-cp "$REPO_ROOT/docs/favicon.svg" "$ICON_OUT"
+if [[ -f "$SCRIPT_DIR/tildaz.svg" ]]; then
+    # Portable release bundle: icon is packaged next to install.sh.
+    ICON_SRC="$SCRIPT_DIR/tildaz.svg"
+elif [[ -f "$REPO_ROOT/docs/favicon.svg" ]]; then
+    # Repository development install.
+    ICON_SRC="$REPO_ROOT/docs/favicon.svg"
+else
+    echo "ERROR: TildaZ icon not found next to install.sh or in docs/favicon.svg" >&2
+    exit 1
+fi
+cp "$ICON_SRC" "$ICON_OUT"
 chmod 644 "$ICON_OUT"
 
 # best-effort cache refresh — 없거나 실패해도 install 자체는 성공.

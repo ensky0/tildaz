@@ -32,6 +32,7 @@ const config_mod = @import("../../config.zig");
 const portal = @import("portal.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
+const shell_extension = @import("shell_extension.zig");
 
 const c = struct {
     const GSettings = opaque {};
@@ -56,6 +57,39 @@ const schema_gnome_shell = "org.gnome.shell";
 const schema_cinnamon_shell = "org.cinnamon";
 const key_enabled_extensions = "enabled-extensions"; // GNOME · Cinnamon 동일 key 이름.
 const extension_uuid = "tildaz@ensky0.github.io";
+
+/// Packaged extension resources are synchronized into the current user's
+/// Shell extension directory before any startup/autostart decision reads the
+/// enabled list. Package installation itself must not modify per-user settings.
+pub fn ensureShellExtensionReady(allocator: std.mem.Allocator) void {
+    const target: struct { kind: shell_extension.Kind, schema: [*:0]const u8, label: []const u8 } = if (isGnomeDesktop(allocator))
+        .{ .kind = .gnome, .schema = schema_gnome_shell, .label = "gnome" }
+    else if (isCinnamonDesktop(allocator))
+        .{ .kind = .cinnamon, .schema = schema_cinnamon_shell, .label = "cinnamon" }
+    else
+        return;
+
+    const extension_available = shell_extension.syncForCurrentUser(allocator, target.kind) catch |err| {
+        log.appendLine(target.label, "Shell extension resource sync failed: {s}", .{@errorName(err)});
+        return;
+    };
+    if (!extension_available) {
+        log.appendLine(target.label, "Shell extension resources not installed — enable skipped", .{});
+        return;
+    }
+    const api = Api.load() orelse return;
+    const source = api.schema_source_get_default() orelse return;
+    const schema = api.schema_source_lookup(source, target.schema, 1) orelse return;
+    api.schema_unref(schema);
+    const settings = api.settings_new(target.schema) orelse return;
+    defer api.object_unref(settings);
+    ensureInList(allocator, &api, settings, key_enabled_extensions, extension_uuid) catch |err| {
+        log.appendLine(target.label, "Shell extension enable failed: {s}", .{@errorName(err)});
+        return;
+    };
+    api.settings_sync();
+    log.appendLine(target.label, "Shell extension synchronized and enabled", .{});
+}
 
 /// GSettings custom-keybinding 등록의 DE별 차이를 담는 descriptor. GNOME 과
 /// Cinnamon 은 같은 3단계 (리스트에 항목 추가 → relocatable schema 를 우리 path 로
