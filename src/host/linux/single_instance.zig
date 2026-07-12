@@ -52,13 +52,10 @@ fn sendCommand(index: u32, command: u8) !void {
     const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
     defer posix.close(fd);
 
-    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-    if (path.len + 1 > addr.path.len) return error.PathTooLong;
-    @memcpy(addr.path[0..path.len], path);
-    addr.path[path.len] = 0;
-    const addrlen: posix.socklen_t = @intCast(@sizeOf(@TypeOf(addr.family)) + path.len + 1);
-
-    posix.connect(fd, @ptrCast(&addr), addrlen) catch {
+    // #298 — sockaddr_un 수동 조립 → std.net.Address.initUnix (memcpy + null 종단 +
+    // getOsSockLen 을 std 가 처리). filesystem unix socket 경로라 그대로 적용.
+    const addr = std.net.Address.initUnix(path) catch return error.PathTooLong;
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch {
         return error.NoRunningInstance;
     };
 
@@ -72,12 +69,8 @@ fn sendCommand(index: u32, command: u8) !void {
 fn probeRunning(path: [:0]const u8) bool {
     const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch return false;
     defer posix.close(fd);
-    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-    if (path.len + 1 > addr.path.len) return false;
-    @memcpy(addr.path[0..path.len], path);
-    addr.path[path.len] = 0;
-    const addrlen: posix.socklen_t = @intCast(@sizeOf(@TypeOf(addr.family)) + path.len + 1);
-    posix.connect(fd, @ptrCast(&addr), addrlen) catch return false;
+    const addr = std.net.Address.initUnix(path) catch return false;
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch return false;
     return true;
 }
 
@@ -98,16 +91,13 @@ pub fn createListener() !posix.fd_t {
     const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(fd);
 
-    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-    if (path.len + 1 > addr.path.len) return error.PathTooLong;
-    @memcpy(addr.path[0..path.len], path);
-    addr.path[path.len] = 0;
-    const addrlen: posix.socklen_t = @intCast(@sizeOf(@TypeOf(addr.family)) + path.len + 1);
+    // #298 — sockaddr_un 수동 조립 → std.net.Address.initUnix.
+    const addr = std.net.Address.initUnix(path) catch return error.PathTooLong;
 
     // probe 에서 connect 실패 = stale 또는 없음 → 남은 socket file 정리 후 bind.
     posix.unlink(path) catch {};
 
-    posix.bind(fd, @ptrCast(&addr), addrlen) catch |err| return err;
+    posix.bind(fd, &addr.any, addr.getOsSockLen()) catch |err| return err;
     try posix.listen(fd, 4);
 
     log.appendLine("toggle-ipc", "listening on {s}", .{path});
