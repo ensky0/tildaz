@@ -749,6 +749,8 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 > Windows 에서 Linux 홈을 `lpCurrentDirectory` 로 지정할 수 없는 이유 (Windows 경로만 표현 가능 + Linux 홈 위치는 distro 안에서만 알 수 있음) 와 `\\wsl$\...` 대안이 기각된 근거는 [#265 코멘트](https://github.com/ensky0/tildaz/issues/265#issuecomment-4910677101) 참조.
 
+**셸 login 모드 — 각 OS 터미널 관례를 따르는 의도적 차이** (2026-07-12 결정, #282 D5). macOS 는 자식 셸을 **login shell** (`argv = {shell, "-l"}`) 로 띄우고 (Terminal.app / iTerm2 표준 — `~/.zprofile`·`~/.bash_profile` 로드; padding 비대칭 원인이던 non-login + `~/.hushlogin` 문제 해결, 커밋 d801d4c), Linux 는 **비-login** 으로 띄운다 (GNOME Terminal / Konsole 표준 — `~/.zshrc`·`~/.bashrc` 만 로드). 어느 dotfile 이 로드되는지가 platform 간 다르지만, 각 OS 터미널의 관례와 일치시킨 의도된 차이다 (cross-platform 동등성 룰의 명시 예외).
+
 ---
 
 ## 8. PTY 자식 종료
@@ -851,6 +853,8 @@ advisory lock으로만 판정한다.
 기존 About 텍스트 (TildaZ vX.Y.Z / exe / pid) 에 config / log 경로 + 그 경로를 빨리 여는 단축키 Tip 추가. **`~` 같은 단축 안 쓰고 절대 경로** — 사용자가 그대로 복사해서 vim / ls 명령에 paste 가능 + `~` 가 환경에 따라 다른 위치라 ambiguity 제거.
 
 **body 구조는 양쪽 platform 동일** (`messages.about_format`). Tip 라인의 단축키 *토큰* 만 platform native (Windows `Ctrl+Shift+P/L` ↔ macOS `Shift+Cmd+P/L`) — SPEC §0 #2 의 platform 표준 우선 원칙.
+
+**About 본문 복사는 세 platform 이 공통으로 제공해야 하는 동작이 아니다** (2026-07-12 결정, #282 C3). Windows 는 `MessageBoxW` 의 OS 기본 Ctrl+C, macOS 는 accessoryView selection auto-copy (#128) 로 복사가 되지만, **Linux overlay dialog 는 복사를 제공하지 않는다 (의도).** About 이 보여주는 config/log 경로는 Open Config (`Ctrl+Shift+P`) / Open Log (`Ctrl+Shift+L`) 단축키로 직접 열 수 있어 복사의 실용 가치가 대체되기 때문이다.
 
 ```
 TildaZ v0.3.0
