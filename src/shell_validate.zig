@@ -1,12 +1,17 @@
 //! `config.shell` 값이 실제로 실행 가능한 binary 인지 cross-platform 검증.
 //! 실패 시 fatal dialog 띄우고 즉시 종료 — 윈도우 / 렌더러 / PTY 초기화 비용
 //! 다 쓴 뒤 generic "TildaZ failed to start" 다이얼로그로 끝나는 사고 방지.
-//! Windows host / macOS host 가 Config.load 직후 한 번 호출.
+//!
+//! Windows host / macOS host 는 `validateOrFatal` 을 Config.load 직후 한 번 호출한다.
+//! Linux host 는 dialog overlay 를 Wayland 연결 이후에만 그릴 수 있어(연결 전
+//! fire-and-forget showFatal 은 paint 전에 죽는다, #282 F9), `validationMessage` 로
+//! 메시지만 받아 host 가 blocking overlay 로 표시한 뒤 종료한다. token / exists /
+//! 메시지 조립 로직은 세 platform 이 이 모듈로 공유한다.
 //!
 //! OS 별 차이:
 //! - Windows: shell 이 인자를 포함할 수 있고 (`"wsl.exe -d Debian"`),
 //!   첫 토큰만 추출해서 SearchPathW 로 PATH + 절대경로 모두 자동 탐색.
-//! - macOS: SPEC §7 상 absolute binary path + 인자 없음. full string 을 그대로
+//! - macOS / Linux: SPEC §7 상 absolute binary path + 인자 없음. full string 을 그대로
 //!   path 로 보고 POSIX `access(X_OK)` 검사. 첫 실행의 `$SHELL` resolution 은
 //!   host 가 default config 생성 전에 끝내고, 이후 disk config 의 명시값만 사용.
 
@@ -16,41 +21,38 @@ const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
 
-pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
+/// `config.shell` 검증. 유효하면 `null`, 아니면 `out_buf` 에 담은 fatal 메시지
+/// slice 를 반환한다. 반환 slice 는 `out_buf`(또는 static fallback 상수)를 가리키므로,
+/// 호출자는 dialog 에 넘겨 복사가 끝날 때까지 `out_buf` 를 살려둬야 한다.
+///
+/// `validateOrFatal` (Windows / macOS host) 와 Linux host 의 blocking overlay 경로가
+/// 이 함수를 공유해 token / exists / 메시지 조립 로직을 한 곳에 둔다. Linux 는
+/// `dialog.showFatal` 이 fire-and-forget + 즉시 exit 이라 overlay 가 paint 전에 죽어
+/// (#282 F9), host 가 이 메시지를 받아 자체 blocking overlay 로 표시한 뒤 종료한다.
+pub fn validationMessage(allocator: std.mem.Allocator, shell: []const u8, out_buf: []u8) ?[]const u8 {
     const cfg_path_owned: ?[]u8 = paths.configPath(allocator) catch null;
     defer if (cfg_path_owned) |p| allocator.free(p);
     const cfg_path: []const u8 = cfg_path_owned orelse "(unknown)";
 
     if (shell.len == 0) {
-        var msg_buf: [768]u8 = undefined;
-        const msg = std.fmt.bufPrint(
-            &msg_buf,
-            messages.shell_empty_format,
-            .{ examples(), cfg_path },
-        ) catch messages.shell_empty_fallback_msg;
-        dialog.showFatal(messages.config_error_title, msg);
+        return std.fmt.bufPrint(out_buf, messages.shell_empty_format, .{ examples(), cfg_path }) catch messages.shell_empty_fallback_msg;
     }
 
     const tok = firstShellToken(shell);
     if (tok.len == 0) {
-        var msg_buf: [768]u8 = undefined;
-        const msg = std.fmt.bufPrint(
-            &msg_buf,
-            messages.shell_first_token_empty_format,
-            .{ shell, examples(), cfg_path },
-        ) catch messages.shell_first_token_empty_fallback_msg;
-        dialog.showFatal(messages.config_error_title, msg);
+        return std.fmt.bufPrint(out_buf, messages.shell_first_token_empty_format, .{ shell, examples(), cfg_path }) catch messages.shell_first_token_empty_fallback_msg;
     }
 
-    if (executableExists(allocator, tok)) return;
+    if (executableExists(allocator, tok)) return null;
 
+    return std.fmt.bufPrint(out_buf, messages.shell_executable_not_found_format, .{ shell, tok, examples(), cfg_path }) catch messages.shell_executable_not_found_fallback_msg;
+}
+
+pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
     var msg_buf: [1024]u8 = undefined;
-    const msg = std.fmt.bufPrint(
-        &msg_buf,
-        messages.shell_executable_not_found_format,
-        .{ shell, tok, examples(), cfg_path },
-    ) catch messages.shell_executable_not_found_fallback_msg;
-    dialog.showFatal(messages.config_error_title, msg);
+    if (validationMessage(allocator, shell, &msg_buf)) |msg| {
+        dialog.showFatal(messages.config_error_title, msg);
+    }
 }
 
 /// #248 — 런타임 새 탭 생성 *직전* shell 바이너리 재검증. startup `validateOrFatal`
@@ -106,7 +108,7 @@ fn executableExists(allocator: std.mem.Allocator, token: []const u8) bool {
 fn examples() []const u8 {
     return switch (builtin.os.tag) {
         .windows => messages.shell_examples_windows,
-        else => messages.shell_examples_macos,
+        else => messages.shell_examples_posix,
     };
 }
 
