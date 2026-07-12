@@ -505,17 +505,18 @@ pub const DialogOverlay = struct {
     }
 };
 
-/// #282 A1 — rename 활성 중 이 키 조합이 rename 을 확정하고 실행할 전역 단축키인지.
+/// #282 A1 — rename 활성 중 이 키 조합이 rename 을 확정/편집 어느 경로로 갈지 판별.
 /// processKeyEvent 아래에서 실제로 처리되는 조합과 정확히 일치해야 한다. 통과하면
-/// (true) 그 핸들러가 commitPendingInput 으로 rename 을 commit 한 뒤 실행하고,
-/// 아니면(false) 키가 rename 편집(handleRenameKey)으로 라우팅된다. Ctrl+Shift+V(paste)
-/// 는 rename buffer 로 들어가야 하므로 의도적으로 제외한다(#285 routePaste).
+/// (true) 아래 핸들러로 흘러 rename 을 commit 후 실행하고(단, 복사·paste·perf 는 commit
+/// 없이 실행 — 각 핸들러가 처리), 아니면(false) 키가 rename 편집(handleRenameKey)으로
+/// 라우팅된다. Ctrl+Shift+V(paste)는 #282 A4/A2 로 통과 대상이며 rename buffer 로 paste 된다.
 fn renameShortcutYield(sym: u32, ctrl: bool, shift: bool, alt: bool) bool {
-    // Ctrl+Shift+* — 복사 / 새 탭 / 닫기 / 다음·이전 탭 / About / Open Config·Log /
-    // reset / perf. Ctrl+Shift+V(paste) 제외.
+    // Ctrl+Shift+* — 복사 / paste(rename buffer 로) / 새 탭 / 닫기 / 다음·이전 탭 /
+    // About / Open Config·Log / reset / perf.
     if (ctrl and shift and !alt) {
         return switch (sym) {
             xkb_key_c_lower, xkb_key_c_upper, // copy (read-only — commit 없이 실행)
+            xkb_key_v_lower, xkb_key_v_upper, // paste → rename buffer (commit 없이)
             xkb_key_t_lower, xkb_key_t_upper,
             xkb_key_w_lower, xkb_key_w_upper,
             xkb_key_bracketright, xkb_key_braceright,
@@ -541,6 +542,7 @@ test "renameShortcutYield: 전역 단축키는 통과, 편집 키는 rename 으�
     const T = std.testing;
     // 통과: Ctrl+Shift+* (복사/탭/About/config/log/reset/perf)
     try T.expect(renameShortcutYield(xkb_key_c_lower, true, true, false)); // 복사
+    try T.expect(renameShortcutYield(xkb_key_v_lower, true, true, false)); // paste → rename buffer (#285)
     try T.expect(renameShortcutYield(xkb_key_t_lower, true, true, false)); // 새 탭
     try T.expect(renameShortcutYield(xkb_key_w_lower, true, true, false)); // 닫기
     try T.expect(renameShortcutYield(xkb_key_bracketright, true, true, false)); // 다음 탭
@@ -557,8 +559,6 @@ test "renameShortcutYield: 전역 단축키는 통과, 편집 키는 rename 으�
     try T.expect(renameShortcutYield(xkb_key_1, false, false, true)); // Alt+1
     try T.expect(renameShortcutYield(xkb_key_9, false, false, true)); // Alt+9
 
-    // 제외: Ctrl+Shift+V(paste) 는 rename buffer 로 (#285)
-    try T.expect(!renameShortcutYield(xkb_key_v_lower, true, true, false));
     // 제외: 편집 키 — Ctrl+A/E(line nav), Home/End, 방향키, Backspace, Enter, Escape
     try T.expect(!renameShortcutYield(xkb_key_a_lower, true, false, false)); // Ctrl+A
     try T.expect(!renameShortcutYield(xkb_key_e_lower, true, false, false)); // Ctrl+E
@@ -3686,9 +3686,10 @@ const Client = struct {
                     return;
                 }
                 if (sym == xkb_key_v_lower or sym == xkb_key_v_upper) {
-                    // L12-γ-2 — paste 진입 시 preedit / rename commit (macOS
-                    // Cmd 단축키 패턴 동등). preedit 자모를 dangling 시키지 않게.
-                    self.commitPendingInput();
+                    // #282 A4/A2 — rename 활성 중엔 rename 을 commit 하지 않고 paste 를
+                    // rename buffer 로 넣는다(pasteFromClipboard → routePaste). rename 이
+                    // 아니면 진행 중 preedit 을 commit 후 PTY paste (자모 dangling 방지).
+                    if (!self.rename_state.isActive()) self.commitPendingInput();
                     self.pasteFromClipboard();
                     return;
                 }
@@ -4238,7 +4239,10 @@ const Client = struct {
         // deadlock. 우리 buffer 직접 사용.
         if (self.active_data_source_id != 0) {
             if (self.clipboard_text) |text| {
-                session.pasteToActive(text);
+                // #282 A2 — rename 활성 시 paste 를 rename buffer 로, 아니면 PTY 로
+                // (cross-platform tab_actions.routePaste 단일 구현. Windows/macOS 동등).
+                var host = self.buildTabActionsHost();
+                tab_actions.routePaste(&host, text);
                 self.requestRedraw();
             }
             return;
@@ -4274,8 +4278,10 @@ const Client = struct {
             accumulated.appendSlice(self.allocator, buf[0..n]) catch break;
         }
         if (accumulated.items.len == 0) return;
-        if (self.session) |*s| {
-            s.pasteToActive(accumulated.items);
+        if (self.session != null) {
+            // #282 A2 — rename buffer 로 라우팅 or PTY. routePaste 단일 구현.
+            var host = self.buildTabActionsHost();
+            tab_actions.routePaste(&host, accumulated.items);
             self.requestRedraw();
         }
     }
