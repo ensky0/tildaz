@@ -43,7 +43,7 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 | 항목 | 동작 정의 | Windows 구현 | macOS 구현 | Linux 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | Drop-down 위치 | 다른 모든 윈도우 위 | `WS_EX_TOPMOST` + `SetWindowPos(HWND_TOPMOST)` | `NSPopUpMenuWindowLevel` (101) | layer-shell 계열 (KWin / wlroots / smithay): `zwlr_layer_shell_v1.get_layer_surface(layer=top)` (L8-α). mutter(GNOME) / muffin(Cinnamon) 은 layer-shell 미지원이라 tildaz 전용 **Shell extension** 이 일반 xdg-shell 창을 잡아 drop-down 으로 배치 ([#228](https://github.com/ensky0/tildaz/issues/228) / [#229](https://github.com/ensky0/tildaz/issues/229), #215 해소). 자세한 DE 별 동작은 §1.2 | ✅ | ✅ | ✅ (layer-shell + extension) |
-| 표시 모니터 (멀티모니터) | **마우스 커서가 있는 모니터**에 등장 (drop-down 표준 UX). show() / hotkey toggle show 시 적용 — work-area relayout(해상도/DPI 변화)은 현재 모니터 유지 | show() 시 `MonitorFromPoint(GetCursorPos)` ([window.zig:707](src/window.zig#L707)) | `NSEvent.mouseLocation` 을 포함하는 NSScreen (`screenForCursor`, [host/macos.zig](src/host/macos.zig)) — 없으면 `NSScreen.mainScreen` fallback ([#240](https://github.com/ensky0/tildaz/issues/240)) | layer-shell 계열은 compositor 가 커서 출력에 anchor. mutter/muffin fallback 은 GNOME(#228)/Cinnamon(#229) extension 이 `get_current_monitor()`(커서 모니터)로 배치 | ✅ | ✅ ([#240](https://github.com/ensky0/tildaz/issues/240) — `screenForCursor`, 멀티모니터 실기 검증) | ✅ (extension 계열) |
+| 표시 모니터 (멀티모니터) | **마우스 커서가 있는 모니터**에 등장 (drop-down 표준 UX). show() / hotkey toggle show 시 적용 — work-area relayout(해상도/DPI 변화)은 현재 모니터 유지 | show() 시 `MonitorFromPoint(GetCursorPos)` ([window.zig:954](src/window.zig#L954)) | `NSEvent.mouseLocation` 을 포함하는 NSScreen (`screenForCursor`, [host/macos.zig](src/host/macos.zig)) — 없으면 `NSScreen.mainScreen` fallback ([#240](https://github.com/ensky0/tildaz/issues/240)) | layer-shell 계열은 compositor 가 커서 출력에 anchor. mutter/muffin fallback 은 GNOME(#228)/Cinnamon(#229) extension 이 `get_current_monitor()`(커서 모니터)로 배치 | ✅ | ✅ ([#240](https://github.com/ensky0/tildaz/issues/240) — `screenForCursor`, 멀티모니터 실기 검증) | ✅ (extension 계열) |
 | Borderless | titlebar / 사각 모서리 | `WS_POPUP` styleMask | `NSWindowStyleMaskBorderless` + `canBecomeKeyWindow` override | layer-shell 본질 — toplevel 없음, decoration 없음 | ✅ | ✅ | ✅ |
 | Shadow | 없음 (drop-down 정체) | (default 없음) | `setHasShadow:false` 안 함 (default true 시각 자연) | compositor 결정 (KDE / GNOME 모두 layer-surface 에 shadow 안 적용) | ✅ | ✅ | ✅ |
 | 사용자 드래그 차단 | 사용자가 위치 / 크기 변경 못함 | `WS_POPUP` 자연 차단 | `setMovable:false` + non-resizable | layer-shell 본질 — anchor 가 위치 강제, 사용자 drag 불가 | ✅ | ✅ | ✅ |
@@ -199,7 +199,7 @@ minimize/restore.
 |---|---|---|---|---|---|---|
 | 새 탭 | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T (L12-β) | ✅ | ✅ | ✅ |
 | 활성 탭 닫기 | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W (L12-β) | ✅ | ✅ | ✅ |
-| 인덱스 점프 (1..9) | Alt+1..9 ([`window.zig:1194-1200`](src/window.zig#L1194-L1200)) | Cmd+1..9 | Alt+1..9 ([a60fb8e](https://github.com/ensky0/tildaz/commit/a60fb8e)) | ✅ | ✅ | ✅ |
+| 인덱스 점프 (1..9) | Alt+1..9 ([`window.zig:1604-1612`](src/window.zig#L1604-L1612)) | Cmd+1..9 | Alt+1..9 ([a60fb8e](https://github.com/ensky0/tildaz/commit/a60fb8e)) | ✅ | ✅ | ✅ |
 | 이전 탭 | Ctrl+Shift+[ | Shift+Cmd+[ | Ctrl+Shift+[ (L12-β) | ✅ | ✅ | ✅ |
 | 다음 탭 | Ctrl+Shift+] | Shift+Cmd+] | Ctrl+Shift+] (L12-β) | ✅ | ✅ | ✅ |
 
@@ -262,7 +262,7 @@ minimize/restore.
 | 더블클릭 word selection | cell 영역 | `mouse_double_click` → `selectWord` | 동일 (`tildazMouseDown` clickCount >= 2) | 동일 ([eea926d](https://github.com/ensky0/tildaz/commit/eea926d), L6.7 — 500ms 같은 cell 검사 후 `selectWord`) | ✅ | ✅ | ✅ |
 | 더블클릭 후 자동 copy | cell 영역 | `selectWordAt` 안에서 `copyToClipboard` | 동일 — `selectWord` 후 `handleCopy` | 동일 (Wayland `wl_data_source`) | ✅ | ✅ | ✅ |
 | selection finish 후 자동 copy | cell 영역 | `selection.finish()` → `copyToClipboard` | 동일 (`tildazMouseUp` 분기) | 동일 ([1bcdbc9](https://github.com/ensky0/tildaz/commit/1bcdbc9)) | ✅ | ✅ | ✅ |
-| word selection 동작 사양 | cell 영역 | cross-platform 단일 모듈 ([terminal_interaction.zig:8](src/terminal_interaction.zig#L8)) | 동일 모듈 | 동일 모듈 (cross-platform `terminal_interaction`) | ✅ | ✅ | ✅ |
+| word selection 동작 사양 | cell 영역 | cross-platform 단일 모듈 ([terminal_interaction.zig:95](src/terminal_interaction.zig#L95)) | 동일 모듈 | 동일 모듈 (cross-platform `terminal_interaction`) | ✅ | ✅ | ✅ |
 | 우클릭 paste | 어디든 | `WM_RBUTTONDOWN` → `pasteClipboard` | `tildazRightMouseDown` → `handlePaste` | `wl_pointer.button` BTN_RIGHT → `wl_data_offer.receive` ([dfcf9f4](https://github.com/ensky0/tildaz/commit/dfcf9f4)) | ✅ | ✅ | ✅ |
 | 휠 / 트랙패드 scroll | 셀 영역 | `WM_MOUSEWHEEL` → `scrollViewport` | `tildazScrollWheel` → 동일 | `wl_pointer.axis` → 동일 ([fc3b5bb](https://github.com/ensky0/tildaz/commit/fc3b5bb)) | ✅ | ✅ | ✅ |
 | 스크롤바 클릭 + 드래그 | 우측 가장자리 | `mouse.x >= client_w - SCROLLBAR_W` → `scrollToY` | 동일 (`scrollbarScrollToY`, Windows 패턴 그대로) | 동일 ([e671b02](https://github.com/ensky0/tildaz/commit/e671b02), L6.6 — Windows 패턴 그대로) | ✅ | ✅ | ✅ |
@@ -302,7 +302,7 @@ minimize/restore.
 > 3. `<` / `>` 누르는 순간 `tab_scroll_user_override = true` set → 매 frame `ensureActiveTabVisible` skip → 활성 탭이 viewport 밖이어도 그대로. 활성 변경 / 새 탭 / drag reorder 끝나는 시점에 false 로 reset 되어 ensure 재가동.
 > 4. 활성 변경 시 viewport 동작: 활성 탭이 이미 보이면 그대로 (색깔만 변경), 안 보이면 보이는 가장 가까운 위치로 *minimum* 이동 (Chrome / Firefox 동등).
 >
-> **word selection 동작 사양 (cross-platform 단일 구현):** [`terminal_interaction.zig:8`](src/terminal_interaction.zig#L8)
+> **word selection 동작 사양 (cross-platform 단일 구현):** [`terminal_interaction.zig:95`](src/terminal_interaction.zig#L95)
 >
 > 1. **boundary 문자 목록**: space / tab / 따옴표 / 백틱 / 파이프 / `: ; ( ) [ ] { } < >`
 > 2. **시작 cell 이 boundary** (공백 / 따옴표 / 구두점) → 선택 안 함 (false 반환). iTerm2 / Terminal.app 동등 — 터미널에서 공백 더블클릭은 의도가 아님. ghostty default 는 boundary 끼리도 묶지만 우리는 reject.
@@ -311,7 +311,7 @@ minimize/restore.
 >    - `spacer_tail` cell (글자의 right-half) 위 클릭 → main cell (left-half) 로 정규화 후 진행.
 >    - 확장 중 `spacer_tail` 만나면 boundary 검사 *skip* 하고 다음 cell 로 진행 — wide char 가 word body 의 continuation 이므로 음절 사이에서 끊기지 않음.
 >
-> 우리가 ghostty `screen.selectWord` 를 그대로 쓰지 않고 [`terminal_interaction.selectWord`](src/terminal_interaction.zig#L8) 로 직접 구현한 이유: ghostty 가 spacer_tail 을 boundary 처럼 취급해 한글 단어가 음절마다 끊기는 문제 (#122 시연 중 발견).
+> 우리가 ghostty `screen.selectWord` 를 그대로 쓰지 않고 [`terminal_interaction.selectWord`](src/terminal_interaction.zig#L95) 로 직접 구현한 이유: ghostty 가 spacer_tail 을 boundary 처럼 취급해 한글 단어가 음절마다 끊기는 문제 (#122 시연 중 발견).
 
 ---
 
@@ -568,7 +568,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
-| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey` | `dialog_windows.zig` (`MessageBoxW` + key capture window) | `dialog_macos.zig` (NSAlert + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
+| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey` | `dialog/windows.zig` (`MessageBoxW` + key capture window) | `dialog/macos.zig` (NSAlert + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
 | About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showInfo` → Linux backend → layer-shell overlay 그림. 아이콘 (`docs/favicon.svg` raster) + Title + separator + body + OK 버튼 (system blue). | ✅ | ✅ | ✅ |
 | Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | `dialog.showFatal` — startup 시점은 wayland client 미초기화라 stderr + log fallback + exit. 런타임은 layer-shell overlay. | ✅ | ✅ | ✅ (런타임) / 🟨 (startup fallback) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit | 동일 | `dialog.showError` → stderr + log fallback + exit (panic 은 일반적으로 runtime 라 overlay 가능하나 안전 fallback 우선) | ✅ | ✅ | ✅ |
@@ -583,7 +583,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 같은 nested schema, default 만 OS-specific. *Single source of truth* 패턴 — [`src/config.zig`](src/config.zig) 의 `Defaults` struct (Win/Mac 분기, 같은 필드 순서로 나란히) 한 곳에 모든 default 값. 이로부터:
 
-1. **`DEFAULT_CONFIG_JSON`** 이 `std.fmt.comptimePrint` 으로 자동 생성 — 첫 실행 시 디스크의 `config_0.json`에 저장 + parse() 의 `validateStructure` 검증 ground truth.
+1. **`defaultConfigJson(allocator, shell_resolved)`** 이 runtime `allocPrint` 로 default JSON 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.json`에 저장 + parse() 의 `validateStructure` 검증 ground truth.
 2. **`Config` struct field initializer** 가 참조하는 `default_*` const 모두 같은 `Defaults` 에서 derive — 디스크 default 와 메모리 fallback 자동 sync.
 
 이전엔 default 값이 6+ 곳 (JSON literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
@@ -629,7 +629,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
   PID를 기록한 것을 확인한 뒤 launcher lock을 해제한다. 따라서 다음 launcher는
   config 생성/spawn과 worker ownership 사이의 중간 상태를 관찰하지 않는다.
 
-> Zig 0.15.2 의 `std.json` 이 comptime allocator 를 지원 안 해 (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig struct → JSON 방향 (`comptimePrint`) 이 우리 패턴.
+> Zig 0.15.2 의 `std.json` 이 comptime allocator 를 지원 안 해 (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
 
 | 필드 | 의미 | Windows default | macOS default | Linux default / 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
@@ -646,7 +646,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`~/.config/autostart/tildaz.desktop`), L11-α | ✅ | ✅ | ✅ |
-| `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 portal Activated 까지 layer-surface 생성 skip (L11-β). portal 미가용 환경에선 warning + 즉시 show fallback | ✅ | ✅ | ✅ |
+| `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). hotkey 전달 경로 — portal `GlobalShortcuts`(KDE 등) *또는* compositor keybind→`--toggle`(sway/Hyprland/COSMIC, `compositorHotkeyEnv`) — 가 있으면 존중, 그 경로마저 없으면 warning + 즉시 show fallback (영영 못 띄우는 trap 방지). GNOME/Cinnamon + extension 환경은 항상 `false` 로 override — 숨김은 extension 이 map 직후 minimize 로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 100_000 | 100_000 default. ghostty `bytes_per_row × lines` 로 max byte 계산. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + `keysymToAccelerator` + `kdeTryAutoApply` (충돌 owner 진단 + confirm dialog + takeover). 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207) |
 
@@ -668,7 +668,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 **Schema**: `string`. `config_0.json` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle N` Unix socket IPC (#198) + DE native binding 자동 등록.
 
-**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:597-609](src/config.zig#L597-L609), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
+**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:962-974](src/config.zig#L962-L974), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
 
 **일반 입력 보호**: modifier 없이 허용하는 global hotkey는 `F1`~`F12`뿐이다. 문자, 숫자, `Space`, `Tab`, `grave` 등은 `Ctrl` / `Alt` / `Super` (`Cmd`) 중 하나 이상이 있어야 한다. `Shift` 단독 조합도 대문자·기호·`Shift+Tab` 같은 일상 입력을 가로채므로 거부한다. 이 검증은 dialog capture와 config parser 양쪽에 공통 적용된다.
 
@@ -757,9 +757,9 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 탭 닫기 시 자식 정리 | 즉시 종료 + read thread join | `ClosePseudoConsole(hpc)` 한 호출 | `kill(-pid, SIGHUP)` + `wait_thread.join()` | `kill(-pid, SIGHUP)` + `wait_thread.join()` + `read_thread.join()` ([src/terminal/linux/pty.zig:95-130](src/terminal/linux/pty.zig#L95-L130)) | ✅ | ✅ | ✅ |
+| 탭 닫기 시 자식 정리 | 즉시 종료 + read thread join | `ClosePseudoConsole(hpc)` 한 호출 | `kill(-pid, SIGHUP)` + `wait_thread.join()` | `kill(-pid, SIGHUP)` + `wait_thread.join()` + `read_thread.join()` ([src/terminal/linux/pty.zig:103-145](src/terminal/linux/pty.zig#L103-L145)) | ✅ | ✅ | ✅ |
 | Polling sleep 회피 | join 직접 동기화 | (OS API 자동) | wait_thread blocking `waitpid` 으로 즉시 깨어남 | 동일 (`waitpid` blocking + `child_exited` atomic 으로 grace loop break) | ✅ | ✅ | ✅ |
-| SIGHUP 무시 셸 fallback | SIGKILL 강제 | (자동) | 500ms grace (5ms polling, `child_exited` atomic) → SIGKILL | 500ms grace / 5ms polling → `posix.kill(-pid, SIG.KILL)` ([src/terminal/linux/pty.zig:99-115](src/terminal/linux/pty.zig#L99-L115)) | ✅ | ✅ | ✅ |
+| SIGHUP 무시 셸 fallback | SIGKILL 강제 | (자동) | 500ms grace (5ms polling, `child_exited` atomic) → SIGKILL | 500ms grace / 5ms polling → `posix.kill(-pid, SIG.KILL)` ([src/terminal/linux/pty.zig:105-122](src/terminal/linux/pty.zig#L105-L122)) | ✅ | ✅ | ✅ |
 
 ---
 
@@ -771,10 +771,10 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 
 | 환경변수 | 역할 | 우리 default (없을 때 fallback) | Win | Mac | Linux |
 |---|---|---|---|---|---|
-| `TERM` | escape sequence + 256-color capability | `xterm-256color` (Windows ConPTY 자체 default 있음, macOS 명시) | (PTY default) | ✅ | ✅ ([wayland_minimal.zig:603](src/host/linux/wayland_minimal.zig#L603), 5-entry storage) |
+| `TERM` | escape sequence + 256-color capability | `xterm-256color` (Windows ConPTY 자체 default 있음, macOS 명시) | (PTY default) | ✅ | ✅ ([wayland_minimal.zig:1033](src/host/linux/wayland_minimal.zig#L1033), 5-entry storage) |
 | `LANG` | bash readline multi-byte 처리 | `en_US.UTF-8` (안 하면 한글 byte raw 처리, echo 안 됨) | (PTY default) | ✅ | ✅ — `C.UTF-8` (L13-α [ec72010](https://github.com/ensky0/tildaz/commit/ec72010), 한글 IME 회귀 fix) |
 | `LC_CTYPE` | locale, 일부 셸이 `LANG` 안 봄 | `en_US.UTF-8` | (PTY default) | ✅ | ✅ — `C.UTF-8` 동일 |
-| `COLORFGBG` | vim / less / tmux 자동 dark/light colorscheme (구식 TUI 용 통로) | `themes.isDark(theme)` → `15;0` (dark) / `0;15` (light) — *theme 으로 강제* (사용자 환경 override 의도). **spawn 시 1회 스냅샷** — env 는 이미 뜬 프로세스에 갱신 불가 (환경변수 본질 한계) | ✅ | ✅ | ✅ ([wayland_minimal.zig:613](src/host/linux/wayland_minimal.zig#L613)) |
+| `COLORFGBG` | vim / less / tmux 자동 dark/light colorscheme (구식 TUI 용 통로) | `themes.isDark(theme)` → `15;0` (dark) / `0;15` (light) — *theme 으로 강제* (사용자 환경 override 의도). **spawn 시 1회 스냅샷** — env 는 이미 뜬 프로세스에 갱신 불가 (환경변수 본질 한계) | ✅ | ✅ | ✅ ([wayland_minimal.zig:1044](src/host/linux/wayland_minimal.zig#L1044)) |
 | `WSLENV` | WSL 안 process 에 `COLORFGBG` 전달 | `COLORFGBG` 추가 | ✅ | — | — (WSL Linux-host 무관) |
 
 **예외 — `COLORFGBG` 만 우리 값 강제 의도** (theme 따라 결정). 다른 변수는 사용자 환경 우선.
@@ -955,7 +955,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 마우스 우클릭 paste (양쪽 변경) | ✅ | #119 | Windows 가운데 버튼 (`WM_MBUTTONDOWN`, deprecated) → 우클릭 (`WM_RBUTTONDOWN`). macOS 우클릭 추가. |
 | 스크롤바 마우스 클릭 + 드래그 | ✅ | #123 | `scrollbarScrollToY` (Windows `scrollToY` 패턴 그대로). cross-platform `ScrollbarDragState` + ghostty `Pin` 기반 selection 으로 viewport 이동해도 selection 유지. |
 | autostart (LaunchAgent) | ✅ | #126 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등 |
-| 로그 시스템 (`~/Library/Logs/tildazN.log`) | ✅ | #124 | Windows `tildaz_log.zig` 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
+| 로그 시스템 (`~/Library/Logs/tildazN.log`) | ✅ | #124 | Windows 와 공통 `src/log.zig` (+ OS 별 `src/log/{windows,macos,linux}.zig`) 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
 | Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback ad-hoc |
 | config schema 확장 (font.* / shell / max_scroll_lines) | ✅ | #118 | Linux · macOS · Windows가 같은 schema를 사용하고 default만 OS별로 다름. |
 | SIGHUP 무시 셸 fallback (SIGKILL) | ✅ | #129 | `Pty.deinit` 에 grace period (500ms / 5ms polling) + `child_exited` atomic flag. wait_thread 의 waitpid 가 깨어나면 즉시 break, 안 깨어나면 SIGKILL. Cmd+W / 탭 close button 으로만 트리거 (Cmd+Q 는 NSApp `terminate:` → `exit()` 직행). |
@@ -1013,7 +1013,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 > **ZWJ family / wide cluster emoji 다중 paste 줄바꿈 안 됨 상세 ([#141](https://github.com/ensky0/tildaz/issues/141)):**
 >
-> ghostty 가 Mode 2027 (grapheme cluster, [`session_core.zig:205`](src/session_core.zig#L205)) ON 으로 ZWJ cluster (man + ZWJ + woman + ZWJ + girl) 를 받으면 첫 base char (man) 만 cell 차지 (wide = 2 cells), 나머지 codepoint 들은 모두 *같은 cell 의 grapheme extras* 로 append 되고 cursor 안 advance — cluster 1 개 = grid 의 2 cells. 시각적으로는 우리 metal renderer 가 cluster 의 base + extras 를 모아 CTLine 으로 single shape → family ligature 정상 표시 ([`renderer/macos.zig:577-587`](src/renderer/macos.zig#L577-L587)).
+> ghostty 가 Mode 2027 (grapheme cluster, [`session_core.zig:285`](src/session_core.zig#L285)) ON 으로 ZWJ cluster (man + ZWJ + woman + ZWJ + girl) 를 받으면 첫 base char (man) 만 cell 차지 (wide = 2 cells), 나머지 codepoint 들은 모두 *같은 cell 의 grapheme extras* 로 append 되고 cursor 안 advance — cluster 1 개 = grid 의 2 cells. 시각적으로는 우리 metal renderer 가 cluster 의 base + extras 를 모아 CTLine 으로 single shape → family ligature 정상 표시 ([`renderer/macos.zig:777-800`](src/renderer/macos.zig#L777-L800)).
 >
 > 그러나 bash 3.2 (macOS default) 의 readline 은 cluster-unaware POSIX `wcwidth(3)` 로 cell width 계산: codepoint 마다 width 합산 → ZWJ family = man(2) + ZWJ(0) + woman(2) + ZWJ(0) + girl(2) = **6 cells** 로 봄. 매 family 마다 ghostty grid 와 *4 cells mismatch*.
 >
@@ -1073,6 +1073,5 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
-*마지막 업데이트: 2026-05-25 (#203 Phase A — 모든 표에 Linux column 추가 skeleton.
-❓ 행은 Phase B 에서 코드 verify 로 ✅/❌ 채움).
-이 문서는 living document — 코드 변경할 때 같은 PR 안에서 update.*
+*마지막 업데이트: 2026-07-13 (#293 문서-코드 정합 pass — #282 감사 후속).
+이 문서는 living document — 코드 변경할 때 같은 커밋 안에서 update.*

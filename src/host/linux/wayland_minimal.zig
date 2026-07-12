@@ -672,10 +672,13 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
 /// (1) portal GlobalShortcuts 경로(CreateSession/Bind/Activated)를 skip 하고,
 /// (2) hidden_start 를 존중(첫 toggle 이 surface 생성)한다.
 ///   - sway: `$SWAYSOCK` (sway_ipc 가 런타임 `bindsym` 등록)
-///   - Hyprland: `$HYPRLAND_INSTANCE_SIGNATURE` (install.sh 가 config `bind`/`hl.bind`)
+///   - Hyprland: `$HYPRLAND_INSTANCE_SIGNATURE` (launcher 의 `shortcut_sync` 가
+///     `hyprctl keyword bind`/`unbind` 로 런타임 증분 등록 — #267. install.sh 는
+///     legacy 정적 bind 제거만)
 ///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — xdg-desktop-portal-cosmic 은
-///     GlobalShortcuts 미구현(portal-cosmic#4)이라 portal 재사용 불가 → install.sh 가
-///     RON custom shortcut(`Spawn("tildaz --toggle N")`)으로 등록.
+///     GlobalShortcuts 미구현(portal-cosmic#4)이라 portal 재사용 불가 → launcher 의
+///     `shortcut_sync.syncCosmic` 이 RON custom shortcut(`Spawn("tildaz --toggle N")`)
+///     파일을 동기화.
 fn compositorHotkeyEnv() bool {
     if (posix.getenv("SWAYSOCK") != null) return true;
     if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) return true;
@@ -1211,8 +1214,9 @@ const Client = struct {
         // hotkey 전달 경로가 있을 때만 hidden_start 존중 (없으면 사용자가 영영 못
         // 띄우는 trap → show-on-start fallback). 경로: portal GlobalShortcuts(KDE 등),
         // 또는 sway/Hyprland/COSMIC 의 compositor keybind→`tildaz --toggle`
-        // (sway_ipc 자동등록 / Hyprland·COSMIC 은 install.sh 가 config bind / RON
-        // shortcut 으로 그 키를 single_instance socket toggle 로 연결 — compositorHotkeyEnv).
+        // (sway_ipc 자동등록 / Hyprland·COSMIC 은 launcher 의 shortcut_sync 가
+        // hyprctl bind / RON shortcut 으로 single_instance socket toggle 연결 —
+        // compositorHotkeyEnv 주석 참조).
         // 첫 toggle 은 handleActivatedToggle 가 surface_id==0 분기로 createShellObjects.
         const has_compositor_hotkey = compositorHotkeyEnv();
         const hidden_at_start = self.config.hidden_start and (self.portal_session != null or has_compositor_hotkey);
@@ -5989,10 +5993,12 @@ fn linuxTabTerminate(host: *tab_actions.Host) void {
 }
 
 pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !void {
-    // #198 / #230 — single-instance. 이미 살아있는 인스턴스가 있으면 이 두 번째
-    // 전체 실행(앱 아이콘 재실행 / autostart 중복 등)은 toggle 신호만 보내고 종료해
-    // 기존 인스턴스를 보여준다. socket 을 빼앗지 않으므로 orphan/hotkey 라우팅 깨짐
-    // 없음. Client.init(wayland 연결) *전에* 검사 — 두 번째 인스턴스가 창을 안 만든다.
+    // #198 / #230 — single-instance. 이미 살아있는 인스턴스가 있으면 toggle 신호만
+    // 보내고 종료해 기존 인스턴스를 보여준다. #267 이후 중복 재실행(앱 아이콘 /
+    // autostart)은 launcher 의 advisory lock 이 먼저 차단하므로, 이 분기는 lock
+    // 파일 훼손 같은 edge 에서만 도달하는 잔존 방어층이다. socket 을 빼앗지
+    // 않으므로 orphan/hotkey 라우팅 깨짐 없음. Client.init(wayland 연결) *전에*
+    // 검사 — 두 번째 인스턴스가 창을 안 만든다.
     const listener_fd = single_instance.createListener() catch |err| switch (err) {
         error.AlreadyRunning => {
             log.appendLine("toggle-ipc", "already running — sending toggle to existing instance + exiting", .{});
