@@ -11,6 +11,16 @@ pub const TERMINAL_PADDING_PT: u32 = 6;
 /// 우측 scrollbar 너비.
 pub const SCROLLBAR_W_PT: u32 = 10;
 
+/// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
+/// 세 platform 모두 bar 커서로 통일 (이전: Windows/macOS full-cell block
+/// alpha 0.7, Linux 하단 2px underline — 제각각).
+pub const CURSOR_BAR_W_PT: f32 = 2.0;
+
+/// bar 커서 폭의 physical px 변환 — 최소 1px 보장 (scale < 0.5 에서도 소멸 방지).
+pub fn cursorBarWidthPx(scale: f32) f32 {
+    return @max(1.0, @round(CURSOR_BAR_W_PT * scale));
+}
+
 /// scrollbar thumb 의 최소 높이 — scrollback 이 길어 ratio 가 매우 작아도
 /// thumb 가 클릭 가능한 크기 유지.
 pub const SCROLLBAR_MIN_THUMB_H_PT: u32 = 32;
