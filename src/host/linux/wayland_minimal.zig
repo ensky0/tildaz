@@ -33,6 +33,8 @@ const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const shell_validate = @import("../../shell_validate.zig");
+const font_linux = @import("../../font/linux/font.zig");
+const font_validate = @import("../../font/validate.zig");
 const system_open = @import("../../system_open.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
@@ -527,16 +529,26 @@ fn renameShortcutYield(sym: u32, ctrl: bool, shift: bool, alt: bool) bool {
     // About / Open Config·Log / reset / perf.
     if (ctrl and shift and !alt) {
         return switch (sym) {
-            xkb_key_c_lower, xkb_key_c_upper, // copy (read-only — commit 없이 실행)
-            xkb_key_v_lower, xkb_key_v_upper, // paste → rename buffer (commit 없이)
-            xkb_key_t_lower, xkb_key_t_upper,
-            xkb_key_w_lower, xkb_key_w_upper,
-            xkb_key_bracketright, xkb_key_braceright,
-            xkb_key_bracketleft, xkb_key_braceleft,
-            xkb_key_i_lower, xkb_key_i_upper,
-            xkb_key_p_lower, xkb_key_p_upper,
-            xkb_key_l_lower, xkb_key_l_upper,
-            xkb_key_r_lower, xkb_key_r_upper,
+            xkb_key_c_lower,
+            xkb_key_c_upper, // copy (read-only — commit 없이 실행)
+            xkb_key_v_lower,
+            xkb_key_v_upper, // paste → rename buffer (commit 없이)
+            xkb_key_t_lower,
+            xkb_key_t_upper,
+            xkb_key_w_lower,
+            xkb_key_w_upper,
+            xkb_key_bracketright,
+            xkb_key_braceright,
+            xkb_key_bracketleft,
+            xkb_key_braceleft,
+            xkb_key_i_lower,
+            xkb_key_i_upper,
+            xkb_key_p_lower,
+            xkb_key_p_upper,
+            xkb_key_l_lower,
+            xkb_key_l_upper,
+            xkb_key_r_lower,
+            xkb_key_r_upper,
             xkb_key_f12,
             => true,
             else => false,
@@ -1160,6 +1172,27 @@ const Client = struct {
             if (shell_validate.validationMessage(self.allocator, self.config.shell, &shell_msg_buf)) |msg| {
                 // 메시지를 stderr + log 에도 남긴다 — overlay 를 못 띄우는 환경(headless
                 // 등)에서도 원인이 남게. 그 뒤 blocking overlay 로 화면 안내.
+                log.userFacing("fatal", msg);
+                self.runFatalDialog(messages.config_error_title, msg);
+                std.process.exit(1);
+            }
+        }
+
+        // #282 B6 — startup font chain 검증 (#289). Windows(`isFontAvailable`)/
+        // macOS(`CTFontCopyFamilyName`) 는 명시 family 미설치 시 fatal dialog 인데
+        // Linux 만 loader 가 log + skip 으로 조용히 진행해 chain 의미가 달라졌다
+        // (첫 family 미설치면 fallback 이 사실상 primary). 위 C2 shell 검증과 같은
+        // 시점 — Wayland 준비 후, 첫 탭 PTY/renderer 전 — 에 fontconfig 가용성을
+        // 검증하고 blocking overlay 로 안내 후 종료한다. libfontconfig 를 못 여는
+        // 등 판정 불가(unknown)면 미설치로 오판하지 않고 loader 의 기존 에러
+        // 경로에 맡긴다.
+        {
+            const chain = self.config.font_families[0..self.config.font_family_count];
+            for (chain) |family| {
+                if (family.len == 0) continue;
+                if (font_linux.familyInstalled(self.allocator, family) != .missing) continue;
+                var font_msg_buf: [2048]u8 = undefined;
+                const msg = font_validate.notFoundMessage(&font_msg_buf, family, chain);
                 log.userFacing("fatal", msg);
                 self.runFatalDialog(messages.config_error_title, msg);
                 std.process.exit(1);

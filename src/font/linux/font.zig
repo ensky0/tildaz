@@ -217,7 +217,9 @@ pub const Context = struct {
         // 의 path 를 반환한다. generic family ("monospace" 등) 는 substitution 이
         // 의도 — 시스템 default 매치. specific family 는 결과 family 명이 우리
         // 요청과 substring 매치 안 되면 substitution 으로 판단 + skip.
-        if (!isGenericFamily(family) and std.ascii.indexOfIgnoreCase(fc_result.family, family) == null) {
+        // (config 명시 chain 은 boot 검증 — `familyInstalled`, 같은 판정 규칙 —
+        // 을 이미 통과했으므로 여기 skip 은 face 로드 실패류만 남는다, #289 B6.)
+        if (!matchResolvesFamily(family, fc_result.family)) {
             log.appendLine("font", "chain[{d}] skip family={s} (fontconfig substituted to {s})", .{
                 log_idx, family, fc_result.family,
             });
@@ -606,6 +608,44 @@ fn isGenericFamily(family: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(family, g)) return true;
     }
     return false;
+}
+
+/// fontconfig 매치가 요청 family 를 실제로 해석했는지 판정 — `tryLoadFamily`
+/// 의 skip 판정과 boot 검증 (`familyInstalled`) 이 공유하는 단일 규칙.
+/// generic family 는 substitution 이 의도이므로 항상 수용, specific family 는
+/// 반환 family 명이 요청과 substring 매치해야 한다.
+fn matchResolvesFamily(requested: []const u8, matched_family: []const u8) bool {
+    return isGenericFamily(requested) or std.ascii.indexOfIgnoreCase(matched_family, requested) != null;
+}
+
+/// config font chain boot 검증용 가용성 판정 (#289 B6) — Windows
+/// `isFontAvailable` / macOS `CTFontCopyFamilyName` 검증과 동등.
+pub const FamilyAvailability = enum {
+    installed,
+    missing,
+    /// libfontconfig 자체를 못 열거나 lookup 인프라 실패 — 미설치로 오판해
+    /// "Font not found" 를 내지 않고 loader 의 기존 에러 경로에 맡긴다.
+    unknown,
+};
+
+/// `family` 가 시스템에 설치되어 있는지 — fontconfig lookup + substitution
+/// 판정 (`matchResolvesFamily`). caller (Linux host boot 검증) 는 `.missing`
+/// 일 때만 fatal.
+pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyAvailability {
+    const family_z = allocator.allocSentinel(u8, family.len, 0) catch return .unknown;
+    defer allocator.free(family_z);
+    @memcpy(family_z[0..family.len], family);
+
+    const fc_result = fontconfig.lookup(allocator, family_z.ptr) catch |err| switch (err) {
+        // 시스템에 매치가 아예 없는 경우만 미설치 확정.
+        error.FontconfigNoMatch => return .missing,
+        else => return .unknown,
+    };
+    defer {
+        allocator.free(fc_result.family);
+        allocator.free(fc_result.path);
+    }
+    return if (matchResolvesFamily(family, fc_result.family)) .installed else .missing;
 }
 
 fn rasterOne(

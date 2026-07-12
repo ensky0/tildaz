@@ -1,13 +1,17 @@
 //! `config.font.family` chain 의 entry 가 시스템에 없을 때 부르는 fatal helper.
-//! Windows / macOS 동일 메시지 — chain 전체 dump + 미설치 entry 표시 + config
-//! 경로 안내. 다른 config 에러들 (`shell_validate`, hotkey 등록 실패) 와 같은
-//! 풍부한 형식으로 일관성 유지.
+//! 세 OS 동일 메시지 — chain 전체 dump + 미설치 entry 표시 + config 경로 안내.
+//! 다른 config 에러들 (`shell_validate`, hotkey 등록 실패) 와 같은 풍부한
+//! 형식으로 일관성 유지.
 //!
 //! 호출처:
 //! - Windows: `windows_host.zig` 의 chain validation loop — `isFontAvailable`
 //!   실패 시.
 //! - macOS: `macos_font.zig` 의 `CTFontCreateWithName` / `CTFontCopyFamilyName`
 //!   검증 실패 시.
+//! - Linux: `wayland_minimal.zig` 의 boot 검증 (#289 B6) — fontconfig lookup
+//!   substitution 판정 실패 시. dialog 는 host 자체 blocking overlay
+//!   (`runFatalDialog`) 라 `notFoundMessage` 만 사용 (C2 패턴 — boot 단계
+//!   fire-and-forget `showFatal` 은 paint 전에 죽음).
 
 const std = @import("std");
 const dialog = @import("../dialog.zig");
@@ -46,12 +50,19 @@ fn showSchemaErrorFatal(line: []const u8) noreturn {
 /// config 의 font.family 전체 (UTF-8 raw). 본 함수는 dialog.showFatal 로
 /// process 종료.
 pub fn showNotFoundFatal(missing: []const u8, chain: []const []const u8) noreturn {
+    var msg_buf: [2048]u8 = undefined;
+    dialog.showFatal(messages.config_error_title, notFoundMessage(&msg_buf, missing, chain));
+}
+
+/// `showNotFoundFatal` 의 메시지 조립부 — 세 OS 공통 형식의 단일 정의.
+/// Linux host 는 boot 단계에서 자체 blocking overlay 로 표시해야 해서 dialog
+/// 호출과 분리해 이 함수만 쓴다 (#289 B6).
+pub fn notFoundMessage(msg_buf: []u8, missing: []const u8, chain: []const []const u8) []const u8 {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
     const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch "(unknown)";
 
-    var msg_buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&msg_buf);
+    var fbs = std.io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
     w.print("Font not found: \"{s}\"\n\n", .{missing}) catch {};
     w.writeAll("config \"font.family\" chain (in order):\n") catch {};
@@ -68,6 +79,5 @@ pub fn showNotFoundFatal(missing: []const u8, chain: []const []const u8) noretur
         \\
     ) catch {};
     w.print("{s}\n", .{cfg_path}) catch {};
-
-    dialog.showFatal(messages.config_error_title, fbs.getWritten());
+    return fbs.getWritten();
 }
