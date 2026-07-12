@@ -5,7 +5,8 @@
 //
 // LaunchAgent 위치는 Apple 표준 — `man launchd.plist` 참고. plist 자체는
 // 로그인 시 자동 load 라 file drop 만으로 충분 (`launchctl load` 호출 불필요).
-// disable 시 file 삭제 + 현재 세션의 launched 인스턴스도 bootout.
+// disable 시 file 삭제만 — 다음 로그인부터 효과. 현재 세션 즉시 bootout 이
+// 필요하면 수동 (`disable` 의 doc comment 참조).
 //
 // 라벨 (`com.tildaz.app`) 은 reverse-DNS — 다른 사용자 LaunchAgent 와 충돌 방지.
 

@@ -188,15 +188,15 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 # 터미널 환경변수 (TUI dark/light colorscheme)
 
-자식 셸 process 에 다음 환경변수를 *항상* 넘겨요. 한쪽 platform 에 빠지면 사용자가 *터미널 cell 색은 같지만 vim 안 텍스트 색이 다르다* 같은 미묘한 차이를 보고할 가능성이 높아요. macOS 포팅 중 실제 발생 (#113 M13.2) — Windows TildaZ 가 매일 보던 vim 색과 macOS 가 달라 보이는 원인이 이 환경변수였음.
+자식 셸 process 에 다음 환경변수를 넘겨요. 한쪽 platform 에 빠지면 사용자가 *터미널 cell 색은 같지만 vim 안 텍스트 색이 다르다* 같은 미묘한 차이를 보고할 가능성이 높아요. macOS 포팅 중 실제 발생 (#113 M13.2) — Windows TildaZ 가 매일 보던 vim 색과 macOS 가 달라 보이는 원인이 이 환경변수였음. Windows 는 `COLORFGBG` / `WSLENV` 만 명시 설정 (TERM / locale 은 ConPTY 와 WSL 셸 자체 기본에 위임), macOS / Linux 는 5종 모두 명시.
 
 | 환경변수 | 역할 | 값 결정 |
 |---|---|---|
-| `TERM` | escape sequence + 256-color 표준 | `xterm-256color` (양쪽 동일) |
-| `LANG` | bash readline 의 multi-byte 처리 | `en_US.UTF-8` (양쪽 동일) |
-| `LC_CTYPE` | ditto, 일부 셸이 `LANG` 안 봄 | `en_US.UTF-8` (양쪽 동일) |
-| `COLORFGBG` | vim / less / tmux 가 자동 dark/light colorscheme 선택 | theme.background luminance 로 `"15;0"` (dark) / `"0;15"` (light) |
-| `SHELL` | 자식 셸이 자기 path 를 봐야 하는 경우 (`echo $SHELL`, oh-my-zsh detect 등) | spawn 한 셸 path 와 일치하게 설정 |
+| `TERM` | escape sequence + 256-color 표준 | `xterm-256color` (macOS · Linux 명시. Windows 는 ConPTY 기본) |
+| `LANG` | bash readline 의 multi-byte 처리 | macOS `en_US.UTF-8` / Linux `C.UTF-8` (distro 에 en_US 미설치 가능 — setlocale 실패 시 readline 이 single-byte 로 떨어져 한글 paste 깨짐, 사용자 보고로 확정) |
+| `LC_CTYPE` | ditto, 일부 셸이 `LANG` 안 봄 | `LANG` 과 동일 값 |
+| `COLORFGBG` | vim / less / tmux 가 자동 dark/light colorscheme 선택 | theme.background luminance 로 `"15;0"` (dark) / `"0;15"` (light) — 세 OS 공통 |
+| `SHELL` | 자식 셸이 자기 path 를 봐야 하는 경우 (`echo $SHELL`, oh-my-zsh detect 등) | spawn 한 셸 path 와 일치하게 설정 (macOS · Linux. Windows 는 POSIX `$SHELL` 컨벤션 없음) |
 | `WSLENV` | WSL 안 process 에 위 변수들 전달 (Windows 전용) | `COLORFGBG` 추가 |
 
 **환경변수 override 정책:** macOS `pty.spawn` 의 environ 머지는 *extra_env 우선 + 같은 key 부모값 skip*. 부모 environ 의 `SHELL=/bin/bash` 가 우리가 spawn 한 zsh 의 자식 환경에 그대로 전달되면 prompt 와 `$SHELL` 이 어긋나는 #118 이슈 회피. POSIX `getenv` 가 first-match 라 extra_env 를 뒤에 두면 부모값이 wins → 명시 키만 부모에서 빼는 패턴.
@@ -204,9 +204,10 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 **`COLORFGBG` 는 표준 환경변수**로 vim 의 `:set background?` 가 자동 결정하는 근거. tmux / less 도 비슷. 우리 theme 의 background 가 dark 인지 light 인지 OS API query 가 아니라 **theme.background 의 luminance 로 직접 판별**해요 — `themes.isDark(theme: *const Theme) bool` (cross-platform helper, Rec. BT.601 weights 299/587/114, `lum < 128_000` dark).
 
 **구현 위치:**
-- 양쪽 공통: [`src/themes.zig`](src/themes.zig) `isDark()` — luminance 계산.
+- 세 OS 공통: [`src/themes.zig`](src/themes.zig) `isDark()` — luminance 계산.
 - Windows: [`src/host/windows.zig`](src/host/windows.zig) `buildExtraEnv` 가 ConPty 생성 시 `extra_env` 로 전달.
 - macOS: [`src/host/macos.zig`](src/host/macos.zig) `g_extra_env` 에 추가, PTY 생성 시 `extra_env` 로 전달.
+- Linux: [`src/host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) `Client.init` 의 `extra_env_storage` (5-entry), PTY 생성 시 전달.
 
 **새 platform 포팅 시 체크리스트:**
 - TUI 가 dark BG 인식하는지 확인 — `echo $COLORFGBG` 출력 / `vim` 띄워서 colorscheme 자동 적용 여부.

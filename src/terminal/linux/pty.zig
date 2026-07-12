@@ -227,7 +227,7 @@ fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCa
         // EOF 가 안 와도 read thread 안전 종료 → join deadlock 회피).
         if ((fds[1].revents & posix.POLL.IN) != 0) break;
         if ((fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0) {
-            const t0 = perf.now(); // #160 — readloop 계측 (Windows terminal/windows/pty.zig 동등)
+            const t0 = perf.now(); // #160 — readloop 계측 (macOS 와 동등 — read 시간만. Windows 는 유휴 대기 포함, #254 결정)
             const n = posix.read(master_fd, &buf) catch break;
             perf.addTimedBytes(&perf.readloop, t0, @intCast(n));
             if (n == 0) break;
