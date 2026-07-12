@@ -67,21 +67,30 @@
           </ul>
         </article>
         <article class="info-card code-card">
-          <span class="feature-kicker">Example</span>
+          <span class="feature-kicker">Example (Linux)</span>
           <pre><code>{
-  "hotkey": "F1",
-  "theme": "tildaz-dark",
   "window": {
     "dock_position": "top",
-    "width_percent": 100,
-    "height_percent": 45,
-    "opacity_percent": 96
+    "width_percent": 100.0,
+    "height_percent": 45.0,
+    "offset_percent": 0.0,
+    "opacity_percent": 96.0
   },
   "font": {
     "family": "JetBrains Mono",
-    "size_point": 15
-  }
+    "glyph_fallback": ["Noto Sans CJK KR", "Noto Color Emoji"],
+    "size_point": 15,
+    "cell_width_ratio": 1.0,
+    "line_height_ratio": 1.1
+  },
+  "theme": "Tokyo Night",
+  "shell": "/bin/bash",
+  "hotkey": "F1",
+  "auto_start": true,
+  "hidden_start": false,
+  "max_scroll_lines": 100000
 }</code></pre>
+          <p class="code-note">Every key is required (strict schema). <code>shell</code>, <code>font.family</code>, and the fallback fonts must exist on the system; on macOS/Windows use that platform's shell (e.g. <code>cmd.exe</code>) and installed fonts. See <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md">CONFIG.md</a> for every field and the built-in theme names.</p>
         </article>
       </div>
     </section>

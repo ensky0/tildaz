@@ -59,7 +59,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 
 | 항목 | 값 (PT) | Windows scale | macOS scale | Linux scale |
 |---|---|---|---|---|
-| Scale source | — | `GetDpiForWindow(hwnd) / 96.0` | `[window backingScaleFactor]` | `wp_fractional_scale_v1.preferred_scale / 120` |
+| Scale source | — | `GetDpiForWindow(hwnd) / 96.0` | `[window backingScaleFactor]` | `wp_fractional_scale_v1.preferred_scale / 120`, 미advertise 시 `wl_output` 정수 scale fallback (#210/#238) |
 | Scale 재계산 시점 | — | `WM_DPICHANGED` + startup | `NSScreenDidChange` notification + 매 resize | `preferred_scale` event |
 | Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `applyScale(scale_num, scale_den)` |
 | Font pixel height | `font.size_point` | `font_size_point × dpi/96` | `font_size_point × scale_pt` | `font_size_point × preferred_scale / 120` |
@@ -92,9 +92,10 @@ atlas/cache를 소유한다. 따라서 terminal font 크기를 바꿔도 탭 제
 높이는 변하지 않는다. `tabBarHeightPx(scale)`는 fractional scale에서도 세 플랫폼이
 같은 physical pixel 높이를 쓰도록 최종값을 공통 반올림한다.
 
-**fallback**: scale 정보 못 받은 환경 (Linux 의 fractional_scale_manager 미advertise,
-mutter / wlroots) 또는 첫 init 시점 — `scale = 1.0` default, PT 값 그대로 사용
-(기존 1x 환경 동작 보존).
+**fallback**: Linux 는 `wp_fractional_scale_v1` 미advertise 환경 (mutter / wlroots) 이면
+`wl_output` 정수 scale (event opcode 3) 을 fallback 으로 적용한다 (#210/#238). 둘 다 없거나
+(정수 scale 도 안 옴) 첫 init 시점에만 `scale = 1.0` default, PT 값 그대로 사용 (기존 1x
+환경 동작 보존).
 
 `tab_layout.compute(Inputs)` 의 `tab_w` / `arrow_w` / `plus_w` 도 *scaled* 값을
 넣어야 함 (PT 값 직접 넣으면 인접 hit-test 와 좌표 안 맞음). 모든 host 가 위 표의
@@ -287,7 +288,7 @@ minimize/restore.
 
 > **참조 비교:** iTerm2 / Terminal.app 동등 패턴 — 셀 항상 I-beam, 탭바 평상 arrow, 탭 rename 더블클릭 시 그 탭 text 만 I-beam. VSCode / Chrome 탭바는 rename 없어 항상 arrow.
 
-> **z-order 양보 — Linux 미적용 (#195):** Linux Wayland 의 `wp_layer_shell_v1` 은 *categorical* 4 단계 (background / bottom / top / overlay) 라 *normal xdg_toplevel z-order level* 자체가 없음. `set_layer(bottom)` 으로 떨어뜨려도 *desktop wallpaper 바로 위 + 모든 일반 windows 아래* — 사용자 의도 (*다른 새 창 → tildaz → 그 외*) 와 어긋남 (tildaz 가 모든 일반 windows 아래로 가버림). mac `NSWindow.setLevel(NSNormalWindowLevel)` / Win `SetWindowPos(HWND_NOTOPMOST)` 은 우연히 *normal app z-order* 와 mix 자연이라 한 줄 toggle 로 완벽 — Linux 의 categorical 한계 우회 불가. *layer-shell destroy + xdg_toplevel 재생성* 도 시도 가능하나 DE / compositor 마다 동작 다양 + animation glitch + 매 toggle 마다 수십~수백 ms latency 라 사용자가 알아챔. 회피 — layer=top + `keyboard_interactivity=exclusive` 유지. drop-down 본분 (yakuake / guake / Tilda 등 모든 Linux drop-down 동등 한계). 사용자가 hotkey 로 hide 후 다른 app 사용.
+> **z-order 양보 — Linux 미적용 (#195):** Linux Wayland 의 `zwlr_layer_shell_v1` 은 *categorical* 4 단계 (background / bottom / top / overlay) 라 *normal xdg_toplevel z-order level* 자체가 없음. `set_layer(bottom)` 으로 떨어뜨려도 *desktop wallpaper 바로 위 + 모든 일반 windows 아래* — 사용자 의도 (*다른 새 창 → tildaz → 그 외*) 와 어긋남 (tildaz 가 모든 일반 windows 아래로 가버림). mac `NSWindow.setLevel(NSNormalWindowLevel)` / Win `SetWindowPos(HWND_NOTOPMOST)` 은 우연히 *normal app z-order* 와 mix 자연이라 한 줄 toggle 로 완벽 — Linux 의 categorical 한계 우회 불가. *layer-shell destroy + xdg_toplevel 재생성* 도 시도 가능하나 DE / compositor 마다 동작 다양 + animation glitch + 매 toggle 마다 수십~수백 ms latency 라 사용자가 알아챔. 회피 — layer=top + `keyboard_interactivity=exclusive` 유지. drop-down 본분 (yakuake / guake / Tilda 등 모든 Linux drop-down 동등 한계). 사용자가 hotkey 로 hide 후 다른 app 사용.
 
 > **`<` / `>` 화살표 vs 활성 탭 — Firefox 패턴 (#117):**
 >
@@ -344,7 +345,7 @@ minimize/restore.
 | Cmd/Ctrl+Shift+[ / ] (prev/next) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 동일 (Ctrl+Shift+[/]) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
-| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 각 handler 진입 첫 줄 (`commitPendingInput`) — Ctrl+Shift+I·P·L·R 등 신규 핸들러 모두 동일 패턴. reset_terminal 구현 (#214, Ctrl+Shift+R). dump_perf 는 Linux 단축키 미할당 (별 후속) | ✅ | ✅ | 🟨 (show_about / open_config / open_log / reset ✅ / dump_perf Linux 단축키 미할당) |
+| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 각 handler 진입 첫 줄 (`commitPendingInput`) — Ctrl+Shift+I·P·L·R 등 신규 핸들러 모두 동일 패턴. reset_terminal 구현 (#214, Ctrl+Shift+R). dump_perf 는 Ctrl+Shift+F12 로 할당됨 (#160) — 로그만 남기는 dev 도구라 handler 가 `commitPendingInput` 을 호출하진 않지만 관측 가능한 동작 차이는 없음 | ✅ | ✅ | ✅ |
 | F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow` 진입 직전 (visible 이면 `commitPendingInputFromContentView`) | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 
@@ -633,7 +634,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | `window.offset_percent` | float 0.0..100.0 | 100.0 | 100.0 | 100.0 | ✅ | ✅ | ✅ |
 | `window.opacity_percent` | float 0.0..100.0 (memory: 0..255 alpha) | 100.0 | 100.0 | 100.0 (ARGB8888 alpha sweep, L13-γ) | ✅ | ✅ | ✅ |
 | `theme` | string (`themes.findTheme`) | `Tilda` | `Tilda` | `Tilda` | ✅ | ✅ | ✅ |
-| `font.family` | string (primary font, single) | `Cascadia Code` | `Menlo` | host `resolveDefaultFont` (fontconfig substitute `monospace` 결과) | ✅ | ✅ | ✅ |
+| `font.family` | string (primary font, single) | `Cascadia Code` | `Menlo` | `DejaVu Sans Mono` (config.zig Defaults 하드코딩) | ✅ | ✅ | ✅ |
 | `font.glyph_fallback` | string array (max 7 — chain total ≤ 8 with primary). 한글 / 이모지 / 심볼 순. | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Noto Sans CJK KR", "Noto Color Emoji"]` (fontconfig 환경 표준, 심볼은 fontconfig 자동 fallback) | ✅ | ✅ | ✅ |
 | `font.size_point` | integer 8..72 (logical size — host 가 OS scale 적용) | 15 | 15 | 15 | ✅ | ✅ | ✅ |
 | `font.line_height_ratio` | float 0.5..2.0 (측정된 ascent+descent+leading 배율) | 1.1 | 1.1 | 1.1 | ✅ | ✅ | ✅ |
