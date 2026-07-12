@@ -792,6 +792,18 @@ pub const SessionCore = struct {
         }
     }
 
+    /// #282 A8 — Ctrl+C 등 interrupt char 즉시 송신. `write_queue` 의 pending
+    /// (대량 paste 등)을 폐기하고 backend 에 직접 write 해 SIGINT 가 큐 뒤에 밀려
+    /// 늦게 도착("Ctrl+C 안 먹힘")하는 것을 막는다 + #242 로 viewport 를 맨 아래로.
+    /// macOS host 가 쓰던 `Tab.interruptWrite` 경로를 세 platform 공통 진입점으로
+    /// 캡슐화 — Windows / Linux 도 이 경로로 SIGINT 즉시성이 동등해진다.
+    pub fn interruptActive(self: *SessionCore, data: []const u8) void {
+        if (self.activeTab()) |tab| {
+            tab.interruptWrite(data);
+            tab.terminal.scrollViewport(.{ .bottom = {} });
+        }
+    }
+
     /// #242 — 활성 탭 viewport 를 맨 아래로(scroll-on-keystroke). PTY write 없이
     /// scroll 만 필요한 입력 경로용 — IME preedit(조합 중)은 PTY 로 안 가고 화면에
     /// inline 표시만 되므로, 스크롤백 올린 상태에서 조합 시작 시 cursor(맨 아래)로

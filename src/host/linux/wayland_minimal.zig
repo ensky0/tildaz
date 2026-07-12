@@ -4459,7 +4459,14 @@ const Client = struct {
 
     fn queueInput(self: *Client, bytes: []const u8) void {
         if (self.session) |*session| {
-            session.queueInputToActive(bytes);
+            // #282 A8 — Ctrl+C(ETX 0x03) 는 write_queue 우회 즉시 송신(SIGINT). 대량
+            // paste 로 큐가 가득 차면 SIGINT 가 뒤에 밀려 늦게 도착하는 것을 막는다
+            // (macOS/Windows 동등). 단독 0x03 = Ctrl+C (nav 키는 multi-byte escape).
+            if (bytes.len == 1 and bytes[0] == 0x03) {
+                session.interruptActive(bytes);
+            } else {
+                session.queueInputToActive(bytes);
+            }
             self.requestRedraw();
         }
     }
