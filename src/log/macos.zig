@@ -58,10 +58,9 @@ pub fn currentPid() u64 {
 /// `~/Library/Logs/tildazN.log` 의 absolute UTF-8 path 를 buf 에 작성하고 slice
 /// 반환. `~/Library/Logs/` 는 macOS default 로 존재 (수동 생성 불필요). 실패 시 null.
 pub fn resolvePath(buf: []u8) ?[]const u8 {
+    // #298 — 수동 memcpy + 길이 경계검사 → 단일 bufPrint (overflow 시 error 반환).
     const home = std.c.getenv("HOME") orelse return null;
-    const home_slice = std.mem.span(home);
-    if (home_slice.len + 48 >= buf.len) return null;
-    @memcpy(buf[0..home_slice.len], home_slice);
-    const suffix = std.fmt.bufPrint(buf[home_slice.len..], "/Library/Logs/tildaz{d}.log", .{instance_context.workerIndex() orelse 0}) catch return null;
-    return buf[0 .. home_slice.len + suffix.len];
+    return std.fmt.bufPrint(buf, "{s}/Library/Logs/tildaz{d}.log", .{
+        std.mem.span(home), instance_context.workerIndex() orelse 0,
+    }) catch return null;
 }

@@ -1449,10 +1449,9 @@ fn replacementByteRange(snap: *const ImeSnapshot, replacement: NSRange) ?struct 
 }
 
 fn utf8CodepointCount(bytes: []const u8) usize {
-    var count: usize = 0;
-    var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
-    while (iter.nextCodepoint()) |_| count += 1;
-    return count;
+    // #298 — 자체 Utf8Iterator 루프 → std. 입력은 내부 생성 valid UTF-8 이라
+    // 실패 경로 없음(만약을 위해 byte 수 fallback — never-fail 계약 유지).
+    return std.unicode.utf8CountCodepoints(bytes) catch bytes.len;
 }
 
 fn queueBackspaces(tab: anytype, count: usize) void {
@@ -3693,9 +3692,9 @@ fn buildMainMenu(app: objc.id) !void {
     const about_item = initItem(
         about_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        nsString("About TildaZ"),
+        objc.nsString("About TildaZ"),
         objc.sel("tildazShowAbout:"),
-        nsString("i"),
+        objc.nsString("i"),
     ) orelse return error.AboutItemInitFailed;
     const NSEventModifierFlagShift: c_ulong = 1 << 17;
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
@@ -3708,9 +3707,9 @@ fn buildMainMenu(app: objc.id) !void {
     const config_item = initItem(
         config_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        nsString("Open Config"),
+        objc.nsString("Open Config"),
         objc.sel("tildazOpenConfig:"),
-        nsString("p"),
+        objc.nsString("p"),
     ) orelse return error.OpenConfigItemInitFailed;
     setMask(config_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), config_item);
@@ -3720,9 +3719,9 @@ fn buildMainMenu(app: objc.id) !void {
     const log_item = initItem(
         log_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        nsString("Open Log"),
+        objc.nsString("Open Log"),
         objc.sel("tildazOpenLog:"),
-        nsString("l"),
+        objc.nsString("l"),
     ) orelse return error.OpenLogItemInitFailed;
     setMask(log_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), log_item);
@@ -3737,9 +3736,9 @@ fn buildMainMenu(app: objc.id) !void {
     const quit_item = initItem(
         item_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        nsString("Quit TildaZ"),
+        objc.nsString("Quit TildaZ"),
         objc.sel("terminate:"),
-        nsString("q"),
+        objc.nsString("q"),
     ) orelse return error.QuitItemInitFailed;
     addItem(app_menu, objc.sel("addItem:"), quit_item);
 
@@ -3757,7 +3756,7 @@ fn buildMainMenu(app: objc.id) !void {
     addItem(main_menu, objc.sel("addItem:"), edit_item);
 
     const edit_menu_init = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), nsString("Edit")) orelse return error.MenuInitFailed;
+    const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), objc.nsString("Edit")) orelse return error.MenuInitFailed;
 
     // Ctrl+Cmd+Space → tildazShowEmoji: — NSApp.sendEvent 단계에서 menu
     // shortcut 매칭 자동 라우팅 → 우리 view keyDown 까지 안 와서 PTY 안 흘림.
@@ -3769,9 +3768,9 @@ fn buildMainMenu(app: objc.id) !void {
         const item = initItem(
             emoji_alloc,
             objc.sel("initWithTitle:action:keyEquivalent:"),
-            nsString("Emoji & Symbols"),
+            objc.nsString("Emoji & Symbols"),
             objc.sel("tildazShowEmoji:"),
-            nsString(" "),
+            objc.nsString(" "),
         ) orelse return error.EmojiItemInitFailed;
         setMask(item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCtrl | NSEventModifierFlagCommand);
         addItem(edit_menu, objc.sel("addItem:"), item);
@@ -3783,20 +3782,3 @@ fn buildMainMenu(app: objc.id) !void {
     setMainMenu(app, objc.sel("setMainMenu:"), main_menu);
 }
 
-fn nsString(s: [:0]const u8) objc.id {
-    const NSString = objc.getClass("NSString");
-    const stringWithUTF8 = objc.objcSend(fn (objc.Class, objc.SEL, [*:0]const u8) callconv(.c) objc.id);
-    return stringWithUTF8(NSString, objc.sel("stringWithUTF8String:"), s.ptr);
-}
-
-extern fn CGColorSpaceCreateDeviceRGB() ?*anyopaque;
-extern fn CGColorSpaceRelease(cs: ?*anyopaque) void;
-extern fn CGColorCreate(cs: ?*anyopaque, components: [*]const CGFloat) ?*anyopaque;
-extern fn CGColorRelease(c: ?*anyopaque) void;
-
-fn createCGColor(r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) ?*anyopaque {
-    const cs = CGColorSpaceCreateDeviceRGB();
-    defer CGColorSpaceRelease(cs);
-    const components = [_]CGFloat{ r, g, b, a };
-    return CGColorCreate(cs, &components);
-}
