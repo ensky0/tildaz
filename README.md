@@ -155,7 +155,7 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
   hardware across KDE Plasma 6, GNOME (via a Shell extension), Cinnamon,
   COSMIC, Hyprland, and sway. The Linux renderer is still a software path (no GPU
   yet). Z-order yield on focus loss is not implemented on Linux
-  (`wp_layer_shell_v1` categorical layers have no normal-window slot). Hanja
+  (`zwlr_layer_shell_v1` categorical layers have no normal-window slot). Hanja
   conversion of already-committed Hangul (selecting committed Korean text and
   pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no
   reconversion request.

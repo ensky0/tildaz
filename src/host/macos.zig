@@ -2663,7 +2663,7 @@ pub fn run() !void {
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 
-    // 0. Config 읽기 — 잘못된 값 발견 시 macos_config 가 dialog.showFatal 로
+    // 0. Config 읽기 — 잘못된 값 발견 시 config.zig 가 dialog.showFatal 로
     //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
     //
     // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. `$SHELL` env 가
