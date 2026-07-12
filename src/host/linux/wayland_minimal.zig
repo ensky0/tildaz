@@ -1031,6 +1031,25 @@ const Client = struct {
         if (self.keyboard_id != 0) try self.roundtrip();
         self.logBootElapsed("keyboard ready");
 
+        // #282 C2 — startup shell 검증. Windows / macOS host 는 Config.load 직후
+        // `shell_validate.validateOrFatal` 로 잘못된 `config.shell` 을 안내 후 종료하지만
+        // Linux 는 이 검증이 없어, 잘못된 shell 이 안내 없이 첫 탭 execve 127 → 마지막
+        // 탭 종료로 이어져 무설명으로 꺼졌다. dialog overlay 는 Wayland 연결 + globals
+        // + keyboard 준비 이후에만 그릴 수 있으므로(연결 전 fire-and-forget showFatal 은
+        // paint 전에 죽는다, #282 F9), 준비가 끝난 여기서 검증하고 — hidden_start 여부와
+        // 무관하게, 첫 탭 PTY 를 띄우기 전에 — blocking overlay 로 안내한 뒤 종료한다.
+        // 연결 자체가 실패한 환경은 이 지점에 도달하지 못하고 상위에서 stderr fallback.
+        {
+            var shell_msg_buf: [1024]u8 = undefined;
+            if (shell_validate.validationMessage(self.allocator, self.config.shell, &shell_msg_buf)) |msg| {
+                // 메시지를 stderr + log 에도 남긴다 — overlay 를 못 띄우는 환경(headless
+                // 등)에서도 원인이 남게. 그 뒤 blocking overlay 로 화면 안내.
+                log.userFacing("fatal", msg);
+                self.runFatalDialog(messages.config_error_title, msg);
+                std.process.exit(1);
+            }
+        }
+
         // L11-β — hidden_start: portal `GlobalShortcuts` 가 가용한 경우에만
         // surface 생성 skip + `surface_hidden=true` set. 첫 portal Activated
         // 신호 (사용자가 hotkey 누름) 가 `handleActivatedToggle` → `createShellObjects`
@@ -5577,6 +5596,30 @@ const Client = struct {
         self.pending_confirm_result = null;
         log.appendLine("dialog", "confirm result={s} title={s}", .{ if (result) "OK" else "Cancel", title });
         return result;
+    }
+
+    /// #282 C2 — fatal 안내를 overlay 로 띄우고 사용자가 닫을 때까지(Enter / Esc /
+    /// OK 클릭 / 창 닫기) event loop 를 pump 한 뒤 반환한다. info dialog 는
+    /// fire-and-forget 이라 그냥 띄우고 exit 하면 paint 전에 프로세스가 죽어 아무것도
+    /// 안 보인다(#282 F9). confirm pump(`runConfirmDialog`)와 같은 패턴이지만 결과값이
+    /// 없고, main terminal surface 없이도 dialog 는 layer-shell overlay(exclusive
+    /// keyboard) / 독립 xdg_toplevel 로 자체 focus·paint 하므로 startup 시점에도 동작한다.
+    /// 호출자는 반환 후 exit 한다. backend 미가용(dialog 생성 실패) 시 즉시 반환 —
+    /// 메시지는 호출자가 이미 stderr / log 에 남겼다.
+    fn runFatalDialog(self: *Client, title: []const u8, message: []const u8) void {
+        self.openInfoDialog(.err, title, message) catch |err| {
+            log.appendLine("dialog", "openInfoDialog (fatal) failed: {s} — stderr/log only", .{@errorName(err)});
+            return;
+        };
+        // dialog.kind 가 .none 이 되면(= dismiss 처리 완료) 종료. running=false(외부
+        // 종료 신호)면 무한 대기 방지로 함께 탈출.
+        while (self.running and self.dialog.kind != .none) {
+            self.pollAndDispatch(frame_poll_ms) catch |err| {
+                log.appendLine("dialog", "fatal dialog pump pollAndDispatch failed: {s} — break", .{@errorName(err)});
+                break;
+            };
+            self.drainPendingDialogDismiss();
+        }
     }
 
     fn dialogPromptHotkeyCb(ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog_mod.HotkeyValidator) ?[]u8 {

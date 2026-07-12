@@ -190,11 +190,13 @@ pub const shell_examples_windows =
     \\  "wsl.exe -d Debian"
     \\  "C:\\Windows\\System32\\cmd.exe"
 ;
-pub const shell_examples_macos =
-    \\macOS expects an absolute path to an executable. Examples:
-    \\  "/bin/zsh"
+// macOS 와 Linux 공용 — 둘 다 POSIX 절대 경로를 기대한다. Linux startup shell 검증
+// (#282 C2) 이 이 dialog 를 Linux 에서도 띄우므로 "macOS" 로 못박지 않는다.
+pub const shell_examples_posix =
+    \\Expects an absolute path to an executable. Examples:
     \\  "/bin/bash"
-    \\  "/usr/local/bin/fish"
+    \\  "/bin/zsh"
+    \\  "/usr/bin/fish"
 ;
 
 pub const hotkey_registration_failed_title = "TildaZ — Hotkey Registration Failed";
