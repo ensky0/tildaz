@@ -75,6 +75,124 @@ fn globalHotkeyAllowed(key_name: []const u8, has_command_modifier: bool) bool {
     return has_command_modifier or modifierFreeCaptureAllowed(key_name);
 }
 
+// --- 공통 hotkey 토크나이저 (#294 G1) ---
+//
+// 문법 · alias · 일반 입력 보호 규칙은 세 OS 가 동일해야 한다 (SPEC §7.1
+// "모든 platform 동일 문법"). OS 별로 다른 것은 key / modifier 의 *코드 값*
+// 뿐이므로, 각 `fromString` 은 이 파서의 결과를 OS 코드로 변환만 한다.
+
+const HotkeyNamedKey = enum {
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
+    f11,
+    f12,
+    space,
+    grave,
+    tab,
+    escape,
+    @"return",
+};
+
+const HotkeyKeyToken = union(enum) {
+    named: HotkeyNamedKey,
+    /// 소문자 latin letter 또는 digit (ASCII).
+    char: u8,
+};
+
+const ParsedHotkey = struct {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    super: bool,
+    key: HotkeyKeyToken,
+};
+
+fn parseHotkeyString(s: []const u8) ?ParsedHotkey {
+    var ctrl = false;
+    var shift = false;
+    var alt = false;
+    var super = false;
+    var key: ?HotkeyKeyToken = null;
+    var iter = std.mem.tokenizeScalar(u8, s, '+');
+    while (iter.next()) |raw| {
+        const tok = std.mem.trim(u8, raw, " \t");
+        if (eqIc(tok, "ctrl") or eqIc(tok, "control")) {
+            ctrl = true;
+        } else if (eqIc(tok, "shift")) {
+            shift = true;
+        } else if (eqIc(tok, "alt") or eqIc(tok, "option") or eqIc(tok, "opt")) {
+            alt = true;
+        } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd") or
+            eqIc(tok, "meta") or eqIc(tok, "command") or eqIc(tok, "logo"))
+        {
+            // 모두 같은 키 — Linux Super = Windows Win = Mac Cmd = KDE Meta
+            // = Qt Logo. 사용자 친숙한 표기 어떤 것이든 받음.
+            super = true;
+        } else {
+            key = hotkeyKeyFromName(tok) orelse return null;
+        }
+    }
+    const resolved = key orelse return null;
+    // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
+    // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
+    // 허용하는 키는 F1~F12뿐 — capturedHotkeyText 와 동일 규칙.
+    const is_function_key = switch (resolved) {
+        .named => |n| switch (n) {
+            .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => true,
+            else => false,
+        },
+        .char => false,
+    };
+    if (!(ctrl or alt or super) and !is_function_key) return null;
+    return .{ .ctrl = ctrl, .shift = shift, .alt = alt, .super = super, .key = resolved };
+}
+
+/// 키 이름 토큰 → 정규화된 key. 두 표기 모두 받음 (사용자 친화):
+///   - 이름: `f1`, `grave` / `backquote`, `space`, `tab`, `escape` / `esc`,
+///     `return` / `enter`
+///   - literal: `` ` ``, ASCII letter (a-z / A-Z), digit (0-9)
+///
+/// **수용 범위는 portal 송신 시점의 `portal.keysymGtkName` 매핑과 1:1** (#208).
+/// 이전엔 Linux 가 ASCII symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나
+/// `keysymGtkName` 매핑 부재로 portal 송신 시 `"F1"` 로 silent fallback
+/// → 사용자가 모르고 동작 안 함. 명시 reject 로 caller (config load) 의
+/// `dialog.showFatal` 경로 활성 — silent 한 것보다 명확한 parse error 가
+/// 낫다. literal symbol 표현력 확대는 portal-kde 의 `XdgShortcut::parse`
+/// 가 실제 매핑하는 Qt::Key 범위 시연 후 별 sub-task.
+fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
+    const map = [_]struct { name: []const u8, key: HotkeyNamedKey }{
+        .{ .name = "f1", .key = .f1 },            .{ .name = "f2", .key = .f2 },
+        .{ .name = "f3", .key = .f3 },            .{ .name = "f4", .key = .f4 },
+        .{ .name = "f5", .key = .f5 },            .{ .name = "f6", .key = .f6 },
+        .{ .name = "f7", .key = .f7 },            .{ .name = "f8", .key = .f8 },
+        .{ .name = "f9", .key = .f9 },            .{ .name = "f10", .key = .f10 },
+        .{ .name = "f11", .key = .f11 },          .{ .name = "f12", .key = .f12 },
+        .{ .name = "space", .key = .space },      .{ .name = "grave", .key = .grave },
+        .{ .name = "backquote", .key = .grave },  .{ .name = "tab", .key = .tab },
+        .{ .name = "escape", .key = .escape },    .{ .name = "esc", .key = .escape },
+        .{ .name = "return", .key = .@"return" }, .{ .name = "enter", .key = .@"return" },
+    };
+    for (map) |entry| {
+        if (eqIc(name, entry.name)) return .{ .named = entry.key };
+    }
+    if (name.len == 1) {
+        const c = name[0];
+        if (c >= 'A' and c <= 'Z') return .{ .char = c + 0x20 }; // 소문자로 정규화
+        if (c >= 'a' and c <= 'z') return .{ .char = c };
+        if (c >= '0' and c <= '9') return .{ .char = c };
+        if (c == '`') return .{ .named = .grave };
+    }
+    return null;
+}
+
 /// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
 /// key_code의 의미만 platform별이다: Linux keysym, Windows virtual-key,
 /// macOS hardware keyCode. modifier 비트는 위 CAPTURE_MOD_*로 정규화한다.
@@ -119,74 +237,40 @@ const LinuxHotkey = struct {
     pub const MOD_SUPER: u32 = 0x8; // Win key / Super / `cmd` 토큰.
 
     pub fn fromString(s: []const u8) ?LinuxHotkey {
+        const parsed = parseHotkeyString(s) orelse return null;
         var modifiers: u32 = 0;
-        var keysym: ?u32 = null;
-        var iter = std.mem.tokenizeScalar(u8, s, '+');
-        while (iter.next()) |raw| {
-            const tok = std.mem.trim(u8, raw, " \t");
-            if (eqIc(tok, "ctrl") or eqIc(tok, "control")) {
-                modifiers |= MOD_CTRL;
-            } else if (eqIc(tok, "shift")) {
-                modifiers |= MOD_SHIFT;
-            } else if (eqIc(tok, "alt") or eqIc(tok, "option")) {
-                modifiers |= MOD_ALT;
-            } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd") or
-                eqIc(tok, "meta") or eqIc(tok, "command") or eqIc(tok, "logo"))
-            {
-                // 모두 같은 키 — Linux Super = Windows Win = Mac Cmd = KDE Meta
-                // = Qt Logo. 사용자 친숙한 표기 어떤 것이든 받음.
-                modifiers |= MOD_SUPER;
-            } else {
-                if (linuxKeysymFromName(tok)) |k| keysym = k else return null;
-            }
-        }
-        const resolved = keysym orelse return null;
-        const name = linuxKeysymName(resolved) orelse return null;
-        const command_modifiers = MOD_ALT | MOD_CTRL | MOD_SUPER;
-        if (!globalHotkeyAllowed(name, (modifiers & command_modifiers) != 0)) return null;
-        return .{ .keysym = resolved, .modifiers = modifiers };
+        if (parsed.alt) modifiers |= MOD_ALT;
+        if (parsed.ctrl) modifiers |= MOD_CTRL;
+        if (parsed.shift) modifiers |= MOD_SHIFT;
+        if (parsed.super) modifiers |= MOD_SUPER;
+        return .{ .keysym = keysymFromKey(parsed.key), .modifiers = modifiers };
     }
 
-    /// 키 이름 → xkb keysym. `xkbcommon/xkbcommon-keysyms.h` 의 `XKB_KEY_*`.
-    /// 두 표기 모두 받음 (사용자 친화):
-    ///   - xkb keysym name: `f1`, `grave`, `space`, `tab`, `escape`, `return`
-    ///   - literal symbol: `` ` ``, ASCII letter (a-z), digit (0-9)
-    /// Latin 문자 / 숫자 는 ASCII 값 그대로 keysym (xkb 정의).
-    ///
-    /// **수용 범위는 portal 송신 시점의 `portal.keysymGtkName` 매핑과 1:1**
-    /// (#208). 이전엔 ASCII symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나
-    /// `keysymGtkName` 매핑 부재로 portal 송신 시 `"F1"` 로 silent fallback
-    /// → 사용자가 모르고 동작 안 함. 명시 reject 로 caller (config load)
-    /// 의 `dialog.showFatal` 경로 활성 — silent 한 것보다 명확한 parse
-    /// error 가 낫다. literal symbol 표현력 확대는 portal-kde 의 `XdgShortcut::parse`
-    /// 가 실제 매핑하는 Qt::Key 범위 시연 후 별 sub-task.
-    fn linuxKeysymFromName(name: []const u8) ?u32 {
-        const map = [_]struct { name: []const u8, sym: u32 }{
-            .{ .name = "f1", .sym = 0xffbe },     .{ .name = "f2", .sym = 0xffbf },
-            .{ .name = "f3", .sym = 0xffc0 },     .{ .name = "f4", .sym = 0xffc1 },
-            .{ .name = "f5", .sym = 0xffc2 },     .{ .name = "f6", .sym = 0xffc3 },
-            .{ .name = "f7", .sym = 0xffc4 },     .{ .name = "f8", .sym = 0xffc5 },
-            .{ .name = "f9", .sym = 0xffc6 },     .{ .name = "f10", .sym = 0xffc7 },
-            .{ .name = "f11", .sym = 0xffc8 },    .{ .name = "f12", .sym = 0xffc9 },
-            .{ .name = "space", .sym = 0x0020 },  .{ .name = "grave", .sym = 0x0060 },
-            .{ .name = "tab", .sym = 0xff09 },    .{ .name = "escape", .sym = 0xff1b },
-            .{ .name = "esc", .sym = 0xff1b },    .{ .name = "enter", .sym = 0xff0d },
-            .{ .name = "return", .sym = 0xff0d },
+    /// 정규화된 key → xkb keysym. `xkbcommon/xkbcommon-keysyms.h` 의
+    /// `XKB_KEY_*`. Latin 문자 / 숫자 는 ASCII 값 그대로 keysym (xkb 정의).
+    fn keysymFromKey(key: HotkeyKeyToken) u32 {
+        return switch (key) {
+            .char => |c| c,
+            .named => |n| switch (n) {
+                .f1 => 0xffbe,
+                .f2 => 0xffbf,
+                .f3 => 0xffc0,
+                .f4 => 0xffc1,
+                .f5 => 0xffc2,
+                .f6 => 0xffc3,
+                .f7 => 0xffc4,
+                .f8 => 0xffc5,
+                .f9 => 0xffc6,
+                .f10 => 0xffc7,
+                .f11 => 0xffc8,
+                .f12 => 0xffc9,
+                .space => 0x0020,
+                .grave => 0x0060,
+                .tab => 0xff09,
+                .escape => 0xff1b,
+                .@"return" => 0xff0d,
+            },
         };
-        for (map) |entry| {
-            if (eqIc(name, entry.name)) return entry.sym;
-        }
-        // Single-char literal — `portal.keysymGtkName` 의 매핑 범위와 1:1
-        // (#208 fix). Latin letter / digit / grave 만. `~` `=` `-` 등은 reject
-        // → caller 가 `dialog.showFatal` 로 명확히 알림 (silent F1 fallback X).
-        if (name.len == 1) {
-            const c = name[0];
-            if (c >= 'A' and c <= 'Z') return c + 0x20; // 대문자 → 소문자 keysym
-            if (c >= 'a' and c <= 'z') return c;
-            if (c >= '0' and c <= '9') return c;
-            if (c == '`') return c; // = grave (xkb keysym 0x0060)
-        }
-        return null;
     }
 };
 
@@ -256,60 +340,111 @@ test "config parser rejects unsafe global hotkeys" {
     }
 }
 
+// 파서 3벌은 OS API 비의존 순수 로직이라 어느 테스트 호스트에서도 세 OS 분을
+// 전부 검증할 수 있다 (#294 G1).
+
+test "hotkey 문법·alias 는 세 OS 파서가 동일 수용 (#294 G1)" {
+    const accepted = [_][]const u8{
+        "F1",               "f12",          "ctrl+space",     "Ctrl+Shift+T",
+        "alt+f12",          "super+a",      "win+z",          "cmd+grave",
+        "option+space",     "opt+space",    "meta+f1",        "command+t",
+        "logo+1",           "ctrl+`",       "ctrl+backquote", "CTRL+SHIFT+F12",
+        "Ctrl + Shift + G", "shift+f5",     "ctrl+enter",     "alt+Return",
+        "ctrl+esc",         "super+Escape", "ctrl+tab",       "alt+0",
+    };
+    for (accepted) |s| {
+        try std.testing.expect(LinuxHotkey.fromString(s) != null);
+        try std.testing.expect(WindowsHotkey.fromString(s) != null);
+        try std.testing.expect(MacHotkey.fromString(s) != null);
+    }
+    const rejected = [_][]const u8{
+        "",        "t",           "3",         "space",      "grave",  "`",
+        "shift+t", "shift+space", "ctrl",      "ctrl+shift", "ctrl+~", "ctrl+=",
+        "ctrl+-",  "ctrl+f13",    "ctrl+nope",
+    };
+    for (rejected) |s| {
+        try std.testing.expect(LinuxHotkey.fromString(s) == null);
+        try std.testing.expect(WindowsHotkey.fromString(s) == null);
+        try std.testing.expect(MacHotkey.fromString(s) == null);
+    }
+}
+
+test "hotkey 파싱 — OS 코드 값 매핑 (#294 G1)" {
+    const lh = LinuxHotkey.fromString("Ctrl+Shift+F2").?;
+    try std.testing.expectEqual(@as(u32, 0xffbf), lh.keysym);
+    try std.testing.expectEqual(LinuxHotkey.MOD_CTRL | LinuxHotkey.MOD_SHIFT, lh.modifiers);
+
+    const wh = WindowsHotkey.fromString("Ctrl+Shift+F2").?;
+    try std.testing.expectEqual(@as(u32, 0x71), wh.vkey);
+    try std.testing.expectEqual(@as(u32, 0x2 | 0x4), wh.modifiers);
+
+    const mh = MacHotkey.fromString("Ctrl+Shift+F2").?;
+    try std.testing.expectEqual(@as(u32, 0x78), mh.keycode);
+    try std.testing.expectEqual(@as(u64, 0x00040000 | 0x00020000), mh.modifiers);
+
+    // grave 세 표기 (`grave` / `backquote` / literal backtick) 는 같은 코드로 수렴
+    const grave_variants = [_][]const u8{ "ctrl+grave", "ctrl+backquote", "ctrl+`" };
+    for (grave_variants) |s| {
+        try std.testing.expectEqual(@as(u32, 0x0060), LinuxHotkey.fromString(s).?.keysym);
+        try std.testing.expectEqual(@as(u32, 0xC0), WindowsHotkey.fromString(s).?.vkey);
+        try std.testing.expectEqual(@as(u32, 0x32), MacHotkey.fromString(s).?.keycode);
+    }
+
+    // letter 대소문자 정규화 — Linux 소문자 keysym / Windows 대문자 vkey / mac kVK
+    for ([_][]const u8{ "ctrl+t", "ctrl+T" }) |s| {
+        try std.testing.expectEqual(@as(u32, 't'), LinuxHotkey.fromString(s).?.keysym);
+        try std.testing.expectEqual(@as(u32, 'T'), WindowsHotkey.fromString(s).?.vkey);
+        try std.testing.expectEqual(@as(u32, 0x11), MacHotkey.fromString(s).?.keycode);
+    }
+
+    // Super alias 6종 → 같은 modifier 비트
+    const super_aliases = [_][]const u8{ "win+a", "super+a", "cmd+a", "meta+a", "command+a", "logo+a" };
+    for (super_aliases) |s| {
+        try std.testing.expectEqual(LinuxHotkey.MOD_SUPER, LinuxHotkey.fromString(s).?.modifiers);
+        try std.testing.expectEqual(@as(u32, 0x8), WindowsHotkey.fromString(s).?.modifiers);
+        try std.testing.expectEqual(@as(u64, 0x00100000), MacHotkey.fromString(s).?.modifiers);
+    }
+}
+
 const WindowsHotkey = struct {
     vkey: u32 = 0x70, // VK_F1
     modifiers: u32 = 0,
 
     pub fn fromString(s: []const u8) ?WindowsHotkey {
+        const parsed = parseHotkeyString(s) orelse return null;
         var modifiers: u32 = 0;
-        var keycode: ?u32 = null;
-        var iter = std.mem.tokenizeScalar(u8, s, '+');
-        while (iter.next()) |raw| {
-            const tok = std.mem.trim(u8, raw, " \t");
-            if (eqIc(tok, "ctrl") or eqIc(tok, "control")) {
-                modifiers |= 0x2; // MOD_CONTROL
-            } else if (eqIc(tok, "shift")) {
-                modifiers |= 0x4; // MOD_SHIFT
-            } else if (eqIc(tok, "alt")) {
-                modifiers |= 0x1; // MOD_ALT
-            } else if (eqIc(tok, "win") or eqIc(tok, "super") or eqIc(tok, "cmd")) {
-                modifiers |= 0x8; // MOD_WIN — `cmd` token 도 같이 (cross-platform string)
-            } else {
-                if (winVkeyFromName(tok)) |k| keycode = k else return null;
-            }
-        }
-        const resolved = keycode orelse return null;
-        const name = windowsVkeyName(resolved) orelse return null;
-        const command_modifiers = CAPTURE_MOD_ALT | CAPTURE_MOD_CTRL | CAPTURE_MOD_PRIMARY;
-        if (!globalHotkeyAllowed(name, (modifiers & command_modifiers) != 0)) return null;
-        return .{ .vkey = resolved, .modifiers = modifiers };
+        if (parsed.alt) modifiers |= 0x1; // MOD_ALT
+        if (parsed.ctrl) modifiers |= 0x2; // MOD_CONTROL
+        if (parsed.shift) modifiers |= 0x4; // MOD_SHIFT
+        if (parsed.super) modifiers |= 0x8; // MOD_WIN
+        return .{ .vkey = vkeyFromKey(parsed.key), .modifiers = modifiers };
     }
 
-    fn winVkeyFromName(name: []const u8) ?u32 {
-        const map = [_]struct { name: []const u8, code: u32 }{
-            .{ .name = "f1", .code = 0x70 },    .{ .name = "f2", .code = 0x71 },
-            .{ .name = "f3", .code = 0x72 },    .{ .name = "f4", .code = 0x73 },
-            .{ .name = "f5", .code = 0x74 },    .{ .name = "f6", .code = 0x75 },
-            .{ .name = "f7", .code = 0x76 },    .{ .name = "f8", .code = 0x77 },
-            .{ .name = "f9", .code = 0x78 },    .{ .name = "f10", .code = 0x79 },
-            .{ .name = "f11", .code = 0x7A },   .{ .name = "f12", .code = 0x7B },
-            .{ .name = "space", .code = 0x20 },
-            .{ .name = "grave", .code = 0xC0 }, // VK_OEM_3
-            .{ .name = "tab", .code = 0x09 },
-            .{ .name = "escape", .code = 0x1B },
-            .{ .name = "esc", .code = 0x1B },
-            .{ .name = "enter", .code = 0x0D },
-            .{ .name = "return", .code = 0x0D },
+    /// 정규화된 key → virtual-key code. letter / digit 은 대문자 ASCII 값
+    /// 그대로 vkey (`VK_A`..`VK_Z` = 'A'..'Z', `VK_0`..`VK_9` = '0'..'9').
+    fn vkeyFromKey(key: HotkeyKeyToken) u32 {
+        return switch (key) {
+            .char => |c| std.ascii.toUpper(c),
+            .named => |n| switch (n) {
+                .f1 => 0x70,
+                .f2 => 0x71,
+                .f3 => 0x72,
+                .f4 => 0x73,
+                .f5 => 0x74,
+                .f6 => 0x75,
+                .f7 => 0x76,
+                .f8 => 0x77,
+                .f9 => 0x78,
+                .f10 => 0x79,
+                .f11 => 0x7A,
+                .f12 => 0x7B,
+                .space => 0x20,
+                .grave => 0xC0, // VK_OEM_3
+                .tab => 0x09,
+                .escape => 0x1B,
+                .@"return" => 0x0D,
+            },
         };
-        for (map) |entry| {
-            if (eqIc(name, entry.name)) return entry.code;
-        }
-        if (name.len == 1) {
-            const c = std.ascii.toUpper(name[0]);
-            if (c >= 'A' and c <= 'Z') return c;
-            if (c >= '0' and c <= '9') return c;
-        }
-        return null;
     }
 };
 
@@ -350,66 +485,78 @@ const MacHotkey = struct {
     modifiers: u64 = 0,
 
     pub fn fromString(s: []const u8) ?MacHotkey {
+        const parsed = parseHotkeyString(s) orelse return null;
         var modifiers: u64 = 0;
-        var keycode: ?u32 = null;
-        var iter = std.mem.tokenizeScalar(u8, s, '+');
-        while (iter.next()) |raw| {
-            const tok = std.mem.trim(u8, raw, " \t");
-            if (eqIc(tok, "cmd") or eqIc(tok, "command") or eqIc(tok, "win") or eqIc(tok, "super")) {
-                modifiers |= 0x00100000; // kCGEventFlagMaskCommand
-            } else if (eqIc(tok, "shift")) {
-                modifiers |= 0x00020000; // kCGEventFlagMaskShift
-            } else if (eqIc(tok, "alt") or eqIc(tok, "option") or eqIc(tok, "opt")) {
-                modifiers |= 0x00080000; // kCGEventFlagMaskAlternate
-            } else if (eqIc(tok, "ctrl") or eqIc(tok, "control")) {
-                modifiers |= 0x00040000; // kCGEventFlagMaskControl
-            } else {
-                if (macKeycodeFromName(tok)) |k| keycode = k else return null;
-            }
-        }
-        const resolved = keycode orelse return null;
-        const name = macKeycodeName(resolved) orelse return null;
-        const command_modifiers: u64 = 0x00100000 | 0x00080000 | 0x00040000;
-        if (!globalHotkeyAllowed(name, (modifiers & command_modifiers) != 0)) return null;
-        return .{ .keycode = resolved, .modifiers = modifiers };
+        if (parsed.shift) modifiers |= 0x00020000; // kCGEventFlagMaskShift
+        if (parsed.ctrl) modifiers |= 0x00040000; // kCGEventFlagMaskControl
+        if (parsed.alt) modifiers |= 0x00080000; // kCGEventFlagMaskAlternate
+        if (parsed.super) modifiers |= 0x00100000; // kCGEventFlagMaskCommand
+        return .{ .keycode = keycodeFromKey(parsed.key), .modifiers = modifiers };
     }
 
-    fn macKeycodeFromName(name: []const u8) ?u32 {
-        const map = [_]struct { name: []const u8, code: u32 }{
-            .{ .name = "f1", .code = 0x7A },        .{ .name = "f2", .code = 0x78 },
-            .{ .name = "f3", .code = 0x63 },        .{ .name = "f4", .code = 0x76 },
-            .{ .name = "f5", .code = 0x60 },        .{ .name = "f6", .code = 0x61 },
-            .{ .name = "f7", .code = 0x62 },        .{ .name = "f8", .code = 0x64 },
-            .{ .name = "f9", .code = 0x65 },        .{ .name = "f10", .code = 0x6D },
-            .{ .name = "f11", .code = 0x67 },       .{ .name = "f12", .code = 0x6F },
-            .{ .name = "space", .code = 0x31 },     .{ .name = "grave", .code = 0x32 },
-            .{ .name = "backquote", .code = 0x32 }, .{ .name = "tab", .code = 0x30 },
-            .{ .name = "return", .code = 0x24 },    .{ .name = "enter", .code = 0x24 },
-            .{ .name = "escape", .code = 0x35 },    .{ .name = "esc", .code = 0x35 },
-            // 알파벳 — kVK_ANSI_*
-            .{ .name = "a", .code = 0x00 },         .{ .name = "b", .code = 0x0B },
-            .{ .name = "c", .code = 0x08 },         .{ .name = "d", .code = 0x02 },
-            .{ .name = "e", .code = 0x0E },         .{ .name = "f", .code = 0x03 },
-            .{ .name = "g", .code = 0x05 },         .{ .name = "h", .code = 0x04 },
-            .{ .name = "i", .code = 0x22 },         .{ .name = "j", .code = 0x26 },
-            .{ .name = "k", .code = 0x28 },         .{ .name = "l", .code = 0x25 },
-            .{ .name = "m", .code = 0x2E },         .{ .name = "n", .code = 0x2D },
-            .{ .name = "o", .code = 0x1F },         .{ .name = "p", .code = 0x23 },
-            .{ .name = "q", .code = 0x0C },         .{ .name = "r", .code = 0x0F },
-            .{ .name = "s", .code = 0x01 },         .{ .name = "t", .code = 0x11 },
-            .{ .name = "u", .code = 0x20 },         .{ .name = "v", .code = 0x09 },
-            .{ .name = "w", .code = 0x0D },         .{ .name = "x", .code = 0x07 },
-            .{ .name = "y", .code = 0x10 },         .{ .name = "z", .code = 0x06 },
-            .{ .name = "1", .code = 0x12 },         .{ .name = "2", .code = 0x13 },
-            .{ .name = "3", .code = 0x14 },         .{ .name = "4", .code = 0x15 },
-            .{ .name = "5", .code = 0x17 },         .{ .name = "6", .code = 0x16 },
-            .{ .name = "7", .code = 0x1A },         .{ .name = "8", .code = 0x1C },
-            .{ .name = "9", .code = 0x19 },         .{ .name = "0", .code = 0x1D },
+    /// 정규화된 key → `kVK_*` keycode.
+    fn keycodeFromKey(key: HotkeyKeyToken) u32 {
+        return switch (key) {
+            .named => |n| switch (n) {
+                .f1 => 0x7A,
+                .f2 => 0x78,
+                .f3 => 0x63,
+                .f4 => 0x76,
+                .f5 => 0x60,
+                .f6 => 0x61,
+                .f7 => 0x62,
+                .f8 => 0x64,
+                .f9 => 0x65,
+                .f10 => 0x6D,
+                .f11 => 0x67,
+                .f12 => 0x6F,
+                .space => 0x31,
+                .grave => 0x32,
+                .tab => 0x30,
+                .escape => 0x35,
+                .@"return" => 0x24,
+            },
+            // kVK_ANSI_* — parseHotkeyString 의 char 는 소문자 letter / digit 만.
+            .char => |c| switch (c) {
+                'a' => 0x00,
+                'b' => 0x0B,
+                'c' => 0x08,
+                'd' => 0x02,
+                'e' => 0x0E,
+                'f' => 0x03,
+                'g' => 0x05,
+                'h' => 0x04,
+                'i' => 0x22,
+                'j' => 0x26,
+                'k' => 0x28,
+                'l' => 0x25,
+                'm' => 0x2E,
+                'n' => 0x2D,
+                'o' => 0x1F,
+                'p' => 0x23,
+                'q' => 0x0C,
+                'r' => 0x0F,
+                's' => 0x01,
+                't' => 0x11,
+                'u' => 0x20,
+                'v' => 0x09,
+                'w' => 0x0D,
+                'x' => 0x07,
+                'y' => 0x10,
+                'z' => 0x06,
+                '1' => 0x12,
+                '2' => 0x13,
+                '3' => 0x14,
+                '4' => 0x15,
+                '5' => 0x17,
+                '6' => 0x16,
+                '7' => 0x1A,
+                '8' => 0x1C,
+                '9' => 0x19,
+                '0' => 0x1D,
+                else => unreachable,
+            },
         };
-        for (map) |entry| {
-            if (eqIc(name, entry.name)) return entry.code;
-        }
-        return null;
     }
 };
 

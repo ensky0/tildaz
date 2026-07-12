@@ -691,10 +691,10 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 |---|---|---|
 | `ctrl` / `control` | Control | |
 | `shift` | Shift | |
-| `alt` / `option` | Alt | `option` 은 mac 친숙 표기 |
+| `alt` / `option` / `opt` | Alt | `option` / `opt` 은 mac 친숙 표기 |
 | `cmd` / `command` / `super` / `win` / `meta` / `logo` | Super | 모두 같은 키 — Win key / Super / Cmd / KDE Meta / Qt Logo. 어떤 표기든 받음 |
 
-**Key 토큰** (대소문자 무관). Linux 의 `LinuxHotkey.fromString` 이 *받는* 범위 (mac/win 은 별 mapping, 동일 spec 의도):
+**Key 토큰** (대소문자 무관). 세 OS 가 공통 토크나이저(`config.zig` `parseHotkeyString`, [#294](https://github.com/ensky0/tildaz/issues/294) G1)를 거치므로 수용 범위가 아래 표로 동일하고, OS 별 차이는 key code 매핑(keysym / vkey / kVK)뿐:
 
 | 분류 | 토큰 / 글자 | Linux 의 portal-kde 송신 보장 |
 |---|---|---|
@@ -702,7 +702,7 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 | Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ |
 | Digit | `0` ~ `9` | ✅ |
 | Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
-| Backtick | `grave` (이름) 또는 `` ` `` (글자) | ✅ |
+| Backtick | `grave` / `backquote` (이름) 또는 `` ` `` (글자) | ✅ |
 | 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString` 이 *명시 reject* (#208 fix). caller 가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 로 즉시 알림. 이전엔 silent F1 fallback 이었음 (수용 범위 확대는 portal-kde `XdgShortcut::parse` 의 실제 Qt::Key 매핑 시연 후 별 sub-task) |
 
 **계층적 fallback chain — config ≠ system binding 시 자동 보정** (`portal.handleHotkeyMismatch`, #207):
