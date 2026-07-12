@@ -109,12 +109,9 @@ fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []co
     const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     defer posix.close(fd);
 
-    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-    if (sock_path.len + 1 > addr.path.len) return error.PathTooLong;
-    @memcpy(addr.path[0..sock_path.len], sock_path);
-    addr.path[sock_path.len] = 0;
-    const addrlen: posix.socklen_t = @intCast(@sizeOf(@TypeOf(addr.family)) + sock_path.len + 1);
-    try posix.connect(fd, @ptrCast(&addr), addrlen);
+    // #298 — sockaddr_un 수동 조립 → std.net.Address.initUnix ($SWAYSOCK filesystem 경로).
+    const addr = std.net.Address.initUnix(sock_path) catch return error.PathTooLong;
+    try posix.connect(fd, &addr.any, addr.getOsSockLen());
 
     // request — header(magic + len + type) + payload 한 번에.
     var req = try allocator.alloc(u8, ipc_header_len + command.len);

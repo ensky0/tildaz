@@ -2,8 +2,8 @@
 //!
 //! 생성 순서:
 //!   1. `/dev/ptmx` master open
-//!   2. `TIOCSPTLCK` 로 slave unlock
-//!   3. `TIOCGPTN` 으로 `/dev/pts/<n>` slave 경로 확인
+//!   2. glibc `unlockpt` 로 slave unlock
+//!   3. glibc `ptsname_r` 로 `/dev/pts/<n>` slave 경로 확인
 //!   4. child fork 후 `setsid` + `TIOCSCTTY` + stdio dup
 //!   5. shell exec
 
@@ -11,6 +11,13 @@ const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
 const perf = @import("../../perf.zig");
+
+// #298 — PTY slave unlock / 경로 조회를 raw ioctl(`TIOCSPTLCK`/`TIOCGPTN`) + 수동
+// `/dev/pts/{d}` 조립 대신 glibc POSIX ptmx API 로. 둘 다 libc.so.6 본체 심볼
+// (`<stdlib.h>`, libutil 아님)이라 현 `link_libc = true` 로 링크된다. unlockpt 는
+// 내부적으로 TIOCSPTLCK(0), ptsname_r 은 TIOCGPTN + "/dev/pts/%u" 포맷이라 1:1 등가.
+extern "c" fn unlockpt(fd: c_int) c_int;
+extern "c" fn ptsname_r(fd: c_int, buf: [*]u8, buflen: usize) c_int;
 
 pub const Pty = struct {
     master_fd: posix.fd_t,
@@ -44,22 +51,16 @@ pub const Pty = struct {
         const shutdown_fd = posix.eventfd(0, linux.EFD.CLOEXEC) catch return error.OpenPtyFailed;
         errdefer posix.close(shutdown_fd);
 
-        var unlock: c_int = 0;
-        if (posix.errno(linux.ioctl(master_fd, linux.T.IOCSPTLCK, @intFromPtr(&unlock))) != .SUCCESS) {
-            return error.UnlockPtyFailed;
-        }
-
-        var pty_num: c_uint = 0;
-        if (posix.errno(linux.ioctl(master_fd, linux.T.IOCGPTN, @intFromPtr(&pty_num))) != .SUCCESS) {
-            return error.ResolvePtySlaveFailed;
-        }
+        if (unlockpt(master_fd) != 0) return error.UnlockPtyFailed;
 
         var slave_path_buf: [64]u8 = undefined;
-        const slave_path = std.fmt.bufPrintZ(&slave_path_buf, "/dev/pts/{d}", .{pty_num}) catch {
+        if (ptsname_r(master_fd, &slave_path_buf, slave_path_buf.len) != 0) {
             return error.ResolvePtySlaveFailed;
-        };
+        }
+        // ptsname_r 은 null-terminated 경로를 buf 에 기록 → C 문자열로 open.
+        const slave_path: [*:0]const u8 = @ptrCast(&slave_path_buf);
         const slave_fd = posix.openZ(
-            slave_path.ptr,
+            slave_path,
             .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true },
             0,
         ) catch return error.OpenPtyFailed;
