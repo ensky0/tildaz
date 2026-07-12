@@ -505,6 +505,78 @@ pub const DialogOverlay = struct {
     }
 };
 
+/// #282 A1 — rename 활성 중 이 키 조합이 rename 을 확정하고 실행할 전역 단축키인지.
+/// processKeyEvent 아래에서 실제로 처리되는 조합과 정확히 일치해야 한다. 통과하면
+/// (true) 그 핸들러가 commitPendingInput 으로 rename 을 commit 한 뒤 실행하고,
+/// 아니면(false) 키가 rename 편집(handleRenameKey)으로 라우팅된다. Ctrl+Shift+V(paste)
+/// 는 rename buffer 로 들어가야 하므로 의도적으로 제외한다(#285 routePaste).
+fn renameShortcutYield(sym: u32, ctrl: bool, shift: bool, alt: bool) bool {
+    // Ctrl+Shift+* — 복사 / 새 탭 / 닫기 / 다음·이전 탭 / About / Open Config·Log /
+    // reset / perf. Ctrl+Shift+V(paste) 제외.
+    if (ctrl and shift and !alt) {
+        return switch (sym) {
+            xkb_key_c_lower, xkb_key_c_upper, // copy (read-only — commit 없이 실행)
+            xkb_key_t_lower, xkb_key_t_upper,
+            xkb_key_w_lower, xkb_key_w_upper,
+            xkb_key_bracketright, xkb_key_braceright,
+            xkb_key_bracketleft, xkb_key_braceleft,
+            xkb_key_i_lower, xkb_key_i_upper,
+            xkb_key_p_lower, xkb_key_p_upper,
+            xkb_key_l_lower, xkb_key_l_upper,
+            xkb_key_r_lower, xkb_key_r_upper,
+            xkb_key_f12,
+            => true,
+            else => false,
+        };
+    }
+    // Alt+Enter(fullscreen) / Alt+F4(quit) / Alt+1..9(탭 전환). Ctrl 미동반.
+    if (alt and !ctrl) {
+        if (sym == xkb_key_return or sym == xkb_key_f4) return true;
+        if (!shift and sym >= xkb_key_1 and sym <= xkb_key_9) return true;
+    }
+    return false;
+}
+
+test "renameShortcutYield: 전역 단축키는 통과, 편집 키는 rename 으로" {
+    const T = std.testing;
+    // 통과: Ctrl+Shift+* (복사/탭/About/config/log/reset/perf)
+    try T.expect(renameShortcutYield(xkb_key_c_lower, true, true, false)); // 복사
+    try T.expect(renameShortcutYield(xkb_key_t_lower, true, true, false)); // 새 탭
+    try T.expect(renameShortcutYield(xkb_key_w_lower, true, true, false)); // 닫기
+    try T.expect(renameShortcutYield(xkb_key_bracketright, true, true, false)); // 다음 탭
+    try T.expect(renameShortcutYield(xkb_key_bracketleft, true, true, false)); // 이전 탭
+    try T.expect(renameShortcutYield(xkb_key_i_lower, true, true, false)); // About
+    try T.expect(renameShortcutYield(xkb_key_p_lower, true, true, false)); // Open Config
+    try T.expect(renameShortcutYield(xkb_key_l_lower, true, true, false)); // Open Log
+    try T.expect(renameShortcutYield(xkb_key_r_lower, true, true, false)); // reset
+    try T.expect(renameShortcutYield(xkb_key_f12, true, true, false)); // perf
+    // 통과: Alt 계열
+    try T.expect(renameShortcutYield(xkb_key_return, false, false, true)); // Alt+Enter
+    try T.expect(renameShortcutYield(xkb_key_return, false, true, true)); // Shift+Alt+Enter
+    try T.expect(renameShortcutYield(xkb_key_f4, false, false, true)); // Alt+F4
+    try T.expect(renameShortcutYield(xkb_key_1, false, false, true)); // Alt+1
+    try T.expect(renameShortcutYield(xkb_key_9, false, false, true)); // Alt+9
+
+    // 제외: Ctrl+Shift+V(paste) 는 rename buffer 로 (#285)
+    try T.expect(!renameShortcutYield(xkb_key_v_lower, true, true, false));
+    // 제외: 편집 키 — Ctrl+A/E(line nav), Home/End, 방향키, Backspace, Enter, Escape
+    try T.expect(!renameShortcutYield(xkb_key_a_lower, true, false, false)); // Ctrl+A
+    try T.expect(!renameShortcutYield(xkb_key_e_lower, true, false, false)); // Ctrl+E
+    try T.expect(!renameShortcutYield(xkb_key_home, false, false, false));
+    try T.expect(!renameShortcutYield(xkb_key_left, false, false, false));
+    try T.expect(!renameShortcutYield(xkb_key_backspace, false, false, false));
+    try T.expect(!renameShortcutYield(xkb_key_return, false, false, false)); // Enter = commit
+    try T.expect(!renameShortcutYield(xkb_key_escape, false, false, false)); // Esc = cancel
+    // 제외: 평범한 문자 (modifier 없음)
+    try T.expect(!renameShortcutYield(xkb_key_t_lower, false, false, false));
+    // 제외: Ctrl 단독(Shift 없음) tab 단축키 아님 — Ctrl+T 는 shell transpose 로 통과
+    try T.expect(!renameShortcutYield(xkb_key_t_lower, true, false, false));
+    // 제외: Alt+Shift+숫자 (조합 다름)
+    try T.expect(!renameShortcutYield(xkb_key_1, false, true, true));
+    // 제외: Ctrl+Alt 조합 (전역 단축키 아님)
+    try T.expect(!renameShortcutYield(xkb_key_return, true, false, true));
+}
+
 fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
     return switch (sym) {
         xkb_key_return => "\r",
@@ -2954,8 +3026,14 @@ const Client = struct {
         const py_f: f32 = @floatFromInt(py);
         const tab_bar_h_f: f32 = @floatFromInt(self.effectiveTabBarHeightPx());
         const area = tab_layout.hitArea(px_f, py_f, tab_bar_h_f, layout);
+        // #282 A6 — SPEC §4.1 "영역 무관 mouse_down = commit". rename 활성 중 탭바
+        // 컨트롤(화살표 / `+` / `×`) 클릭도 rename 을 확정한다. 예외는 아래 `.tab_area`
+        // 의 *같은 탭* 클릭(커서 이동)뿐 — 그 분기가 자체적으로 commit 을 건너뛴다.
+        // (`.plus` → handleNewTab, `.tab_area` 다른 탭 → 각자 commit 하므로 여기서 중복
+        //  commit 은 rename 비활성 상태에서 no-op.)
         switch (area) {
             .left_arrow => {
+                self.commitPendingInput();
                 if (tab_layout.scrollByArrow(layout_inputs, layout, .left)) |sx| {
                     self.tab_scroll_x = sx;
                     self.tab_scroll_override = true;
@@ -2963,6 +3041,7 @@ const Client = struct {
                 }
             },
             .right_arrow => {
+                self.commitPendingInput();
                 if (tab_layout.scrollByArrow(layout_inputs, layout, .right)) |sx| {
                     self.tab_scroll_x = sx;
                     self.tab_scroll_override = true;
@@ -2972,6 +3051,7 @@ const Client = struct {
             .plus => self.handleNewTab(),
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
             .close => {
+                self.commitPendingInput();
                 var host = self.buildTabActionsHost();
                 const outcome = tab_actions.closeIndex(&host, session.activeIndex());
                 // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
@@ -3444,6 +3524,19 @@ const Client = struct {
     /// intercept 동등 (mac SPEC §5.1 시도/폐기 기록 참조). preedit 자모는 IME
     /// 자체 commit_string 으로 rename buf 에 들어옴 (별도 명시 commit 호출 X
     /// — 같은 batch 안 commit_string + preedit_string(empty) + done 흐름).
+    /// #282 A1 — rename 활성 중 이 키가 전역 단축키라 rename 을 확정하고 실행해야
+    /// 하는지(true) 아니면 rename 편집으로 라우팅해야 하는지(false). 판정 자체는
+    /// modifier / sym 만 보므로 순수 함수 `renameShortcutYield` 로 분리해 테스트한다.
+    fn renameYieldsToShortcut(self: *Client, key: u32) bool {
+        const sym = self.keyboard.oneSym(key + wayland_xkb_keycode_offset) orelse return false;
+        return renameShortcutYield(
+            sym,
+            self.keyboard.ctrlActive(),
+            self.keyboard.shiftActive(),
+            self.keyboard.altActive(),
+        );
+    }
+
     fn handleRenameKey(self: *Client, key: u32) !void {
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
@@ -3540,10 +3633,14 @@ const Client = struct {
             return;
         }
 
-        // L12-γ-2 — rename 모드 활성 시 모든 키를 PTY 가 아니라 RenameState 로
-        // 라우팅 (macOS `g_rename.isActive()` 분기 동등). modifier 단축키
-        // (ctrl+shift+*) 도 무시 — 사용자가 Enter / Escape 로 나가야.
-        if (self.rename_state.isActive()) {
+        // #282 A1 — rename 모드 활성 시, 편집 키·문자·IME 는 RenameState 로 라우팅하되
+        // 전역 단축키(새 탭 / 닫기 / 전환 / 이전·다음 / About / Open Config·Log / reset /
+        // fullscreen / quit / 복사 / perf)는 통과시켜 rename 을 확정한 뒤 실행한다
+        // (SPEC §4.1, Windows/macOS 동등). 통과 대상 키의 아래 핸들러들은 이미
+        // commitPendingInput 으로 rename 을 commit 한다(복사·perf 는 read-only/로그라
+        // commit 없이 실행 — rename 유지). Ctrl+Shift+V(paste)는 rename buffer 로 들어가야
+        // 하므로 통과 대상에서 제외하고 rename 으로 라우팅한다(#285 routePaste).
+        if (self.rename_state.isActive() and !self.renameYieldsToShortcut(key)) {
             try self.handleRenameKey(key);
             return;
         }
@@ -3559,8 +3656,11 @@ const Client = struct {
         //     Ctrl byte 처리 (`commitPendingInput` 이 자모 PTY 송신 + fcitx5
         //     session disable/enable 으로 IME 자모 buffer 도 비움).
         if (self.keyboard.ctrlActive() and self.preedit_text.items.len > 0) {
+            // #282 A5 — Ctrl+C(Shift 없음) 만 discard(SIGINT line abort). Ctrl+Shift+C 는
+            // *복사* 라 자모를 버리지 않고 commit 한다(아래 copy 분기가 read-only 로 실행).
+            // Shift 를 구분하지 않으면 preedit 중 Ctrl+Shift+C 가 자모를 잃어 §5.1 위반.
             const is_ctrl_c = if (sym_opt) |s|
-                (s == xkb_key_c_lower or s == xkb_key_c_upper)
+                ((s == xkb_key_c_lower or s == xkb_key_c_upper) and !self.keyboard.shiftActive())
             else
                 false;
             if (is_ctrl_c) {
@@ -3913,6 +4013,9 @@ const Client = struct {
                 // 우측 스크롤바 영역 클릭 — selection / 더블클릭 보다 우선.
                 // Windows `app_controller.zig:835` 와 동등.
                 if (self.pointer_x_px >= self.window_width - self.renderer.scrollbarWPx()) {
+                    // #282 A6 — SPEC §4.1 "영역 무관 mouse_down = commit". rename 활성 중
+                    // 스크롤바 click 도 rename 을 확정한다(Windows/macOS 동등).
+                    self.commitPendingInput();
                     tab.interaction.scrollbar.begin(self.scrollbarGrabAt(self.pointer_y_px));
                     self.scrollToY(self.pointer_y_px);
                     return;
