@@ -125,6 +125,23 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 100,000 | 100,000 | 100,000 | Scrollback buffer (lines) |
 
+### Hotkey syntax
+
+`hotkey` accepts a single key optionally combined with modifiers, joined by `+`
+(e.g. `"F1"`, `"Ctrl+Space"`, `"Shift+Cmd+T"`). Rules (validated at startup — an
+invalid value shows an error dialog and exits):
+
+- **Modifiers**: `Ctrl`, `Alt`, `Shift`, and the platform key written as `Cmd`
+  (Win key on Windows / Command on macOS / Super on Linux). The `cmd` token maps
+  to each platform's equivalent, so one config value works everywhere.
+- **A modifier-free hotkey must be a function key** (`F1`–`F12`). A plain letter,
+  digit, or `Space` with no modifier is rejected.
+- **`Shift` alone is not a valid trigger modifier** — combine it with
+  `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
+- Key names cover letters, digits, `Space`, `` ` `` (backtick / grave), and
+  `F1`–`F12`. macOS and Windows accept a slightly narrower modifier-alias set
+  than Linux; the tokens above work on all three.
+
 **Ligatures** require a ligature-capable `font.family` (e.g. Fira Code or
 JetBrains Mono — both free). The Windows default (Cascadia Code) includes them;
 the macOS (Menlo) and Linux (DejaVu Sans Mono) defaults do not, so point

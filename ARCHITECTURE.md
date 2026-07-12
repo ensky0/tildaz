@@ -65,7 +65,8 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
 
 1. The coordinator starts one locked worker per numbered config. `host/macos.zig`
    owns that worker's `NSApplication`, `NSWindow`, global hotkey event tap,
-   AppKit input callbacks, and a render timer.
+   AppKit input callbacks, and an `NSWindow.displayLink` (CADisplayLink) render
+   loop that auto-suspends while hidden (#255, min macOS 14).
 2. `terminal/macos/pty.zig` uses `openpty` + `login_tty` + IUTF8 termios and
    tears down child process groups on tab close.
 3. The same `session_core.zig` tab/session model is used as Windows.
