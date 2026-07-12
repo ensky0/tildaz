@@ -219,13 +219,13 @@ pub const DWriteFontContext = struct {
 
         // Store primary family name for MapCharacters fallback (system 의 fallback
         // chain 이 우리 primary 를 base 로 fallback 결정).
-        var i: u32 = 0;
-        while (primary_family_w[i] != 0) : (i += 1) {
-            if (i >= 63) break;
-            self.primary_family_name[i] = primary_family_w[i];
-        }
-        self.primary_family_name[i] = 0;
-        self.primary_family_len = i;
+        // #298 — null-term UTF-16 자체 복사 루프 → std.mem.span (primary_family_w 는
+        // [*:0]const WCHAR sentinel 포인터). 최대 63 units + null.
+        const fam = std.mem.span(primary_family_w);
+        const fam_n = @min(fam.len, self.primary_family_name.len - 1);
+        @memcpy(self.primary_family_name[0..fam_n], fam[0..fam_n]);
+        self.primary_family_name[fam_n] = 0;
+        self.primary_family_len = @intCast(fam_n);
 
         // 4. Calculate em size from primary font metrics
         var metrics: dw.DWRITE_FONT_METRICS = undefined;

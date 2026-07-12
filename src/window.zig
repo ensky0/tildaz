@@ -1838,27 +1838,12 @@ pub const Window = struct {
         // UTF-16 → UTF-8. paste text 통째로 buffer 에 모아서 #142 의 paste event
         // dispatch — rename 활성 시 app_controller 가 rename buffer 로 라우팅,
         // 아니면 PTY 로 한 번에 write.
+        // #298 — UTF-16 surrogate 수동 디코딩 → std.unicode.utf16LeToUtf8
+        // (BMP=3B, surrogate pair=4B 라 len*3+4 로 충분).
         const alloc = std.heap.page_allocator;
-        var u8_buf = alloc.alloc(u8, len * 3 + 4) catch return; // BMP=3, 짝꿍=4
+        const u8_buf = alloc.alloc(u8, len * 3 + 4) catch return;
         defer alloc.free(u8_buf);
-        var u8_len: usize = 0;
-        var i: usize = 0;
-        while (i < len) {
-            const unit = wide_ptr[i];
-            i += 1;
-            var cp: u21 = undefined;
-            if (unit >= 0xD800 and unit <= 0xDBFF) {
-                if (i < len) {
-                    const low = wide_ptr[i];
-                    i += 1;
-                    cp = @intCast((@as(u21, unit - 0xD800) << 10) + @as(u21, low - 0xDC00) + 0x10000);
-                } else break;
-            } else {
-                cp = @intCast(unit);
-            }
-            const n = std.unicode.utf8Encode(cp, u8_buf[u8_len..]) catch continue;
-            u8_len += n;
-        }
+        const u8_len = std.unicode.utf16LeToUtf8(u8_buf, wide_ptr[0..len]) catch return;
         if (u8_len == 0) return;
 
         const utf8 = u8_buf[0..u8_len];
@@ -1877,50 +1862,22 @@ pub const Window = struct {
 
         _ = EmptyClipboard();
 
-        // Convert UTF-8 to UTF-16
-        // Count required UTF-16 units
-        var utf16_len: usize = 0;
-        var view = std.unicode.Utf8View.init(text) catch return;
-        var iter = view.iterator();
-        while (iter.nextCodepoint()) |cp| {
-            if (cp > 0xFFFF) {
-                utf16_len += 2; // surrogate pair
-            } else {
-                utf16_len += 1;
-            }
-        }
-
-        // Allocate global memory (UTF-16 + null terminator)
+        // #298 — UTF-8 → UTF-16 surrogate 수동 인코딩(길이 세기 + 짝꿍 조립)을
+        // std.unicode 로. GlobalAlloc 버퍼(UTF-16 units + null terminator)에 직접 write.
+        const utf16_len = std.unicode.calcUtf16LeLen(text) catch return;
         const alloc_size = (utf16_len + 1) * 2;
         const hmem = GlobalAlloc(GMEM_MOVEABLE, alloc_size) orelse return;
         const raw_lock = GlobalLock(hmem) orelse {
             _ = GlobalFree(hmem);
             return;
         };
-        const ptr: [*]u8 = @ptrCast(raw_lock);
-
-        // Write UTF-16 data
-        var wide_ptr: [*]u16 = @ptrCast(@alignCast(ptr));
-        var view2 = std.unicode.Utf8View.init(text) catch {
+        const wide_ptr: [*]u16 = @ptrCast(@alignCast(raw_lock));
+        const n = std.unicode.utf8ToUtf16Le(wide_ptr[0..utf16_len], text) catch {
             _ = GlobalUnlock(hmem);
             _ = GlobalFree(hmem);
             return;
         };
-        var iter2 = view2.iterator();
-        var idx: usize = 0;
-        while (iter2.nextCodepoint()) |cp| {
-            if (cp > 0xFFFF) {
-                const adj = cp - 0x10000;
-                wide_ptr[idx] = @intCast(0xD800 + (adj >> 10));
-                idx += 1;
-                wide_ptr[idx] = @intCast(0xDC00 + (adj & 0x3FF));
-                idx += 1;
-            } else {
-                wide_ptr[idx] = @intCast(cp);
-                idx += 1;
-            }
-        }
-        wide_ptr[idx] = 0; // null terminator
+        wide_ptr[n] = 0; // null terminator
 
         _ = GlobalUnlock(hmem);
         _ = SetClipboardData(CF_UNICODETEXT, hmem);

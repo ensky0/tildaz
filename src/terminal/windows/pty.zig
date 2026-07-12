@@ -284,10 +284,12 @@ pub const ConPty = struct {
             "\\\\.\\pipe\\tildaz_{d}_{d}",
             .{ pid, seq },
         ) catch return error.CreatePipeFailed;
+        // #298 — ASCII u8→u16 수동 widening → std.unicode.utf8ToUtf16Le (pipe 이름은
+        // ASCII 뿐이라 동작 동일).
         var pipe_name: [128]WCHAR = undefined;
-        for (pipe_name_str, 0..) |c, i| pipe_name[i] = c;
-        pipe_name[pipe_name_str.len] = 0;
-        const pipe_name_z: [*:0]const WCHAR = @ptrCast(pipe_name[0..pipe_name_str.len :0]);
+        const pipe_name_n = std.unicode.utf8ToUtf16Le(&pipe_name, pipe_name_str) catch return error.CreatePipeFailed;
+        pipe_name[pipe_name_n] = 0;
+        const pipe_name_z: [*:0]const WCHAR = @ptrCast(pipe_name[0..pipe_name_n :0]);
 
         const pipe_out_read = CreateNamedPipeW(
             pipe_name_z,
