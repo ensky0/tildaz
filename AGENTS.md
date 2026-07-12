@@ -29,7 +29,7 @@
 README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적용. 확신이 없으면 공식 사이트 표기를 확인하고 써요.
 
 **플랫폼 나열 순서는 항상 `Linux · macOS · Windows`.** 사용자 노출 산문 (README / 사이트 / 마케팅 문구 / 릴리스 소개) 에서 세 플랫폼을 나열할 땐 이 순서를 지켜요 (사용자 지적). 기술 설명 문장이라도 의미를 지키며 Linux 를 먼저 두도록 재배열해요 (예: "a direct Wayland client on Linux, GPU rendering on macOS and Windows"). 사이트의 플랫폼 카드 / 탭 / eyebrow 등 시각 요소도 같은 순서.
-- **예외** — SPEC.md 표의 컬럼 순서, ARCHITECTURE 의 코드 경로 나열, 이미 배포된 과거 릴리스 노트, "Windows reference" 처럼 *Windows 가 기준 구현* 이라는 의미가 고정된 표현은 건드리지 않아요 (사실이 바뀌므로).
+- **예외** — SPEC.md 표의 컬럼 순서, ARCHITECTURE 의 코드 경로 나열, 이미 배포된 과거 릴리스 노트, "Windows reference" 처럼 특정 구현이 기준이라는 의미가 고정된 표현은 건드리지 않아요 (사실이 바뀌므로). 단 *동작·시각 parity 의 기준으로서의* "Windows reference" 는 2026-07-12 폐기됨(#297) — 새 산문에서 Windows 를 기준으로 서술하지 않아요.
 
 **Linux 데스크톱 나열 순서는 `KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, sway`.** "풀 데스크톱(KDE Plasma / GNOME / Cinnamon / COSMIC) → 타일링 WM(Hyprland / sway)" 묶음 안에서 각각 사용자 수 많은 순. 마케팅 문구의 DE 목록은 이 순서로 통일해요. (검증 하드웨어 목록처럼 테스트 순서를 반영하는 기술 노트는 예외.)
 
@@ -105,8 +105,10 @@ README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적�
 - **재현 불가 환경의 판정도 코드로.** 예: 한 DE 에서 dialog 가 안 떠도 그게
   "그 경로를 아예 안 타서" (예: layer-shell 을 advertise 안 함 → `createDialogSurface`
   early return) 인지, "다른 진입점으로 같은 버그가 그대로 사는지" 를 소스로 구분한다.
-- **parity 가 깨지는 것 자체가 버그다.** SPEC §0 #1 (Windows reference,
-  macOS / Linux 동등). 추가로 *Linux 는 모든 DE 에서 drop-down (quake) 동작이
+- **parity 가 깨지는 것 자체가 버그다.** SPEC §0 #1 (세 platform 동등 목표).
+  단 맞출 기준은 Windows 로 자동 고정하지 않는다 — 명시 사양이 있으면 그 사양,
+  없으면 항목별 UX 방향 결정 (2026-07-12, #297; 과거 "Windows reference" 폐기).
+  추가로 *Linux 는 모든 DE 에서 drop-down (quake) 동작이
   목표* — 한 DE / 한 compositor 에서만 되는 기능, 한 platform 에만 있는 동작,
   한 환경에서만 나는 crash 는 모두 이슈로 추적하고 *다른 환경 영향 여부를
   함께 적는다*.
