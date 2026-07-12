@@ -558,13 +558,17 @@ pub const Renderer = struct {
             }
         }
 
+        // Cursor (#297 — 세로 막대 bar, 세 platform 공통). 셀 좌측에 opaque
+        // bar. wide char 는 wide_tail 보정으로 글자 시작 cell 의 좌측에 위치.
+        // 폭은 `ui_metrics.CURSOR_BAR_W_PT` × scale (Windows/macOS 와 동일 식).
         if (self.render_state.cursor.visible) {
             if (self.render_state.cursor.viewport) |vp| {
                 var cx: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
                 if (vp.wide_tail and vp.x > 0) cx -= cw;
                 const cy: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
                 const cursor = colors.cursor orelse ghostty.color.RGB{ .r = 180, .g = 180, .b = 180 };
-                rect(memory, width, height, stride, cx, cy + ch - 3, cw, 2, cursor);
+                const bar_w: i32 = @intFromFloat(ui_metrics.cursorBarWidthPx(self.scale));
+                rect(memory, width, height, stride, cx, cy, bar_w, ch, cursor);
             }
         }
 
@@ -946,25 +950,28 @@ fn drawTabBar(
     for (titles, 0..) |title_default, i| {
         // L12-γ-2 — rename 활성 탭은 title 대신 buffer 사용.
         const renaming_this = if (rename_view) |rv| rv.tab_index == i else false;
-        // L12-γ-3 — drag source 탭은 글자 색 dim (mac / win alpha 0.6 동등 visual).
-        // bg 와 50% blend → drop 위치로 옮겨가는 중임을 시각적으로 표시.
+        // #297 B3 — drag 중인 탭은 마우스 x 를 따라 이동 (Windows/macOS 의
+        // `current_x - tab_w/2 - scroll + tab_area_x` 와 동일 식). 나머지
+        // 탭은 world 슬롯 고정 — source 슬롯엔 TAB_BAR_BG 가 남아 원위치 표시.
         const is_drag_source = if (drag_view) |dv| dv.tab_index == i else false;
-        const effective_text: ghostty.color.RGB = if (is_drag_source) ghostty.color.RGB{
-            .r = blendU8(text_color.r, tab_bar_bg.r, 0.5),
-            .g = blendU8(text_color.g, tab_bar_bg.g, 0.5),
-            .b = blendU8(text_color.b, tab_bar_bg.b, 0.5),
-        } else text_color;
         const title: []const u8 = if (renaming_this) blk: {
             const rv = rename_view.?;
             break :blk rv.text[0..rv.text_len];
         } else title_default;
 
         // tab 의 world (scroll-relative) 좌측. tab_area_x 더하면 surface 좌표.
-        const tab_world_x: i32 = @as(i32, @intCast(i)) * tab_w;
+        const tab_world_x: i32 = if (is_drag_source)
+            drag_view.?.current_x - @divTrunc(tab_w, 2)
+        else
+            @as(i32, @intCast(i)) * tab_w;
         const tab_screen_x: i32 = tab_area_x + tab_world_x - scroll_x_i;
-        // tab 전체가 tab_area 밖 (좌/우) 이면 skip — clipping 효과.
+        // tab 전체가 tab_area 밖 (좌/우) 이면 skip — clipping 효과. drag 탭은
+        // x 가 world 순서와 무관하므로 break (이후 탭도 skip) 하면 안 됨.
         if (tab_screen_x + tab_w <= tab_area_x) continue;
-        if (tab_screen_x >= tab_area_end) break;
+        if (tab_screen_x >= tab_area_end) {
+            if (is_drag_source) continue;
+            break;
+        }
 
         const tab_x: i32 = tab_screen_x + tab_x_inset;
         const is_active = i == active_idx;
@@ -1026,7 +1033,7 @@ fn drawTabBar(
             .tab_bar_h = tab_bar_h,
             .text_baseline = text_baseline,
             .bg = bg,
-            .text_color = effective_text,
+            .text_color = text_color,
             .font_ctx = font_ctx,
         };
 
@@ -1107,25 +1114,6 @@ fn drawTabBar(
             ctx,
             cb_fn,
         );
-    }
-
-    // L12-γ-3 — drop indicator. source 와 drop_idx 가 다를 때만 drop_idx 의
-    // left edge 에 2px wide 세로 line (text_color). drop_idx 는 `DragState.
-    // finish` 와 같은 공식 (`current_x / tab_w` clamped).
-    if (drag_view) |dv| {
-        if (titles.len > 1 and dv.tab_index < titles.len) {
-            const tab_count_c: c_int = @intCast(titles.len);
-            var target_raw: c_int = @divTrunc(dv.current_x, tab_w);
-            target_raw = @max(0, @min(target_raw, tab_count_c - 1));
-            if (target_raw != @as(c_int, @intCast(dv.tab_index))) {
-                const drop_idx: i32 = @intCast(target_raw);
-                const indicator_world_x: i32 = drop_idx * tab_w;
-                const indicator_screen_x: i32 = tab_area_x + indicator_world_x - scroll_x_i;
-                if (indicator_screen_x >= tab_area_x - 1 and indicator_screen_x <= tab_area_end) {
-                    rect(memory, fb_w, fb_h, stride, indicator_screen_x, tab_y, 2, tab_actual_h, text_color);
-                }
-            }
-        }
     }
 
     // --- arrow / plus 버튼 ---

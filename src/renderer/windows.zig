@@ -1251,7 +1251,9 @@ pub const D3d11Renderer = struct {
             self.drawBgInstances(bg_buf[0..block_count]);
         }
 
-        // --- Cursor ---
+        // --- Cursor (#297 — 세로 막대 bar, 세 platform 공통) ---
+        // 셀 좌측에 opaque bar. wide char 는 wide_tail 보정으로 글자 시작
+        // cell 의 좌측에 위치. 폭은 `ui_metrics.CURSOR_BAR_W_PT` × DPI scale.
         if (self.render_state.cursor.visible) {
             if (self.render_state.cursor.viewport) |vp| {
                 var cursor_x: f32 = @floatFromInt(vp.x);
@@ -1259,13 +1261,13 @@ pub const D3d11Renderer = struct {
                 if (vp.wide_tail and vp.x > 0) cursor_x -= 1.0;
                 const cx0 = cursor_x * cw + x_pad;
                 const cy0 = cursor_y * ch + y_off;
-                var cursor_color: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 0.7 };
+                var cursor_color: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0 };
                 if (colors.cursor) |cc| {
-                    cursor_color = .{ colorF(cc.r), colorF(cc.g), colorF(cc.b), 0.7 };
+                    cursor_color = .{ colorF(cc.r), colorF(cc.g), colorF(cc.b), 1.0 };
                 }
                 const cursor_inst = [1]BgInstance{.{
                     .pos = .{ cx0, cy0 },
-                    .size = .{ cw, ch },
+                    .size = .{ ui_metrics.cursorBarWidthPx(self.pixels_per_dip), ch },
                     .color = cursor_color,
                 }};
                 self.drawBgInstances(&cursor_inst);
