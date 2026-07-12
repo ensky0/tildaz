@@ -3,8 +3,8 @@ Type=Application
 Name=TildaZ
 GenericName=Drop-down Terminal
 Comment=Quake-style drop-down terminal for Wayland
-# install 시 사용자 환경의 절대 경로로 치환 — `dist/linux/install.sh` 가
-# `realpath zig-out/bin/tildaz` 결과로 sed.
+# install/package 시 실제 실행 경로로 치환. Portable install은 bundle binary의
+# 절대경로, system package는 /usr/bin/tildaz를 사용한다.
 Exec=__TILDAZ_EXE__
 # hicolor theme scalable apps 의 `tildaz.svg` (install.sh 가 함께 install).
 # docs/favicon.svg 와 동일 출처 — macOS `AppIcon.icns` / Windows `tildaz.ico`

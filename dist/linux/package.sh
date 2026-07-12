@@ -70,6 +70,8 @@ fi
 
 ICON_SRC="$REPO_ROOT/docs/favicon.svg"
 DESKTOP_TEMPLATE="$SCRIPT_DIR/tildaz.desktop"
+GNOME_EXT_SRC="$SCRIPT_DIR/gnome-extension/tildaz@ensky0.github.io"
+CINNAMON_EXT_SRC="$SCRIPT_DIR/cinnamon-extension/tildaz@ensky0.github.io"
 RELEASE_ROOT="$REPO_ROOT/zig-out/release"
 mkdir -p "$RELEASE_ROOT"
 
@@ -77,6 +79,49 @@ mkdir -p "$RELEASE_ROOT"
 write_sha256() {
     local target="$1"
     (cd "$(dirname "$target")" && sha256sum "$(basename "$target")") > "$target.sha256"
+}
+
+validate_desktop_exec() {
+    local desktop="$1" expected="$2"
+    if grep -qF '__TILDAZ_EXE__' "$desktop" || ! grep -qxF "Exec=$expected" "$desktop"; then
+        echo "ERROR: invalid desktop Exec in $desktop (expected: Exec=$expected)" >&2
+        sed -n '/^Exec=/p' "$desktop" >&2
+        exit 1
+    fi
+}
+
+render_system_desktop() {
+    local output="$1"
+    sed 's|__TILDAZ_EXE__|/usr/bin/tildaz|g' "$DESKTOP_TEMPLATE" > "$output"
+    validate_desktop_exec "$output" "/usr/bin/tildaz"
+    chmod 644 "$output"
+}
+
+install_extension_resources() {
+    local root="$1"
+    local gnome="$root/gnome-extension/tildaz@ensky0.github.io"
+    local cinnamon="$root/cinnamon-extension/tildaz@ensky0.github.io"
+    mkdir -p "$gnome" "$cinnamon"
+    cp -a "$GNOME_EXT_SRC/." "$gnome/"
+    cp -a "$CINNAMON_EXT_SRC/." "$cinnamon/"
+}
+
+validate_extension_resources() {
+    local root="$1"
+    local required=(
+        "gnome-extension/tildaz@ensky0.github.io/extension.js"
+        "gnome-extension/tildaz@ensky0.github.io/metadata.json"
+        "gnome-extension/tildaz@ensky0.github.io/schemas/org.gnome.shell.extensions.tildaz.gschema.xml"
+        "cinnamon-extension/tildaz@ensky0.github.io/extension.js"
+        "cinnamon-extension/tildaz@ensky0.github.io/metadata.json"
+    )
+    local relative
+    for relative in "${required[@]}"; do
+        if [[ ! -f "$root/$relative" ]]; then
+            echo "ERROR: Shell extension resource missing: $root/$relative" >&2
+            exit 1
+        fi
+    done
 }
 
 #-----------------------------------------------------------------------
@@ -98,6 +143,8 @@ build_tar_gz() {
     cp "$ICON_SRC" "$STAGE/tildaz.svg"
     cp "$SCRIPT_DIR/install.sh" "$STAGE/install.sh"
     cp "$SCRIPT_DIR/uninstall.sh" "$STAGE/uninstall.sh" 2>/dev/null || true
+    install_extension_resources "$STAGE"
+    validate_extension_resources "$STAGE"
     chmod 755 "$STAGE/install.sh"
     [[ -f "$STAGE/uninstall.sh" ]] && chmod 755 "$STAGE/uninstall.sh"
 
@@ -126,6 +173,31 @@ END
 
     tar -C "$RELEASE_ROOT" -czf "$TARBALL" "$NAME"
     rm -rf "$STAGE"
+
+    # Release archive 자체를 다시 풀어 실제 사용자 install 경로를 검증한다.
+    # target binary는 실행하지 않으므로 aarch64 package도 x86_64 CI에서 검증 가능.
+    local VERIFY
+    VERIFY=$(mktemp -d "$RELEASE_ROOT/tar-install-verify.XXXXXX")
+    tar -C "$VERIFY" -xzf "$TARBALL"
+    HOME="$VERIFY/home" XDG_CURRENT_DESKTOP=TildaZPackageTest \
+        "$VERIFY/$NAME/install.sh" >/dev/null
+    validate_desktop_exec \
+        "$VERIFY/home/.local/share/applications/tildaz.desktop" \
+        "$VERIFY/$NAME/tildaz"
+    [[ -f "$VERIFY/home/.local/share/icons/hicolor/scalable/apps/tildaz.svg" ]] || {
+        echo "ERROR: portable install did not install tildaz.svg" >&2
+        exit 1
+    }
+    [[ -f "$VERIFY/home/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io/extension.js" ]] || {
+        echo "ERROR: portable install did not install the GNOME Shell extension" >&2
+        exit 1
+    }
+    [[ -f "$VERIFY/home/.local/share/cinnamon/extensions/tildaz@ensky0.github.io/extension.js" ]] || {
+        echo "ERROR: portable install did not install the Cinnamon extension" >&2
+        exit 1
+    }
+    rm -rf "$VERIFY"
+
     write_sha256 "$TARBALL"
     echo "--- Output ---"
     ls -l "$TARBALL" "$TARBALL.sha256"
@@ -156,10 +228,10 @@ build_deb() {
 
     install -m 755 "$BINARY" "$STAGE/usr/bin/tildaz"
     # 시스템 install — Exec 절대 경로 /usr/bin/tildaz 로 치환.
-    sed "s|__TILDAZ_EXE__|/usr/bin/tildaz|" "$DESKTOP_TEMPLATE" \
-        > "$STAGE/usr/share/applications/tildaz.desktop"
-    chmod 644 "$STAGE/usr/share/applications/tildaz.desktop"
+    render_system_desktop "$STAGE/usr/share/applications/tildaz.desktop"
     install -m 644 "$ICON_SRC" "$STAGE/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
+    install_extension_resources "$STAGE/usr/share/tildaz"
+    validate_extension_resources "$STAGE/usr/share/tildaz"
     if [[ -f "$REPO_ROOT/LICENSE" ]]; then
         install -m 644 "$REPO_ROOT/LICENSE" "$STAGE/usr/share/doc/tildaz/copyright"
     fi
@@ -212,6 +284,12 @@ END
 
     dpkg-deb --build --root-owner-group "$STAGE" "$DEB"
     rm -rf "$STAGE"
+    local VERIFY
+    VERIFY=$(mktemp -d "$RELEASE_ROOT/deb-verify.XXXXXX")
+    dpkg-deb -x "$DEB" "$VERIFY"
+    validate_desktop_exec "$VERIFY/usr/share/applications/tildaz.desktop" "/usr/bin/tildaz"
+    validate_extension_resources "$VERIFY/usr/share/tildaz"
+    rm -rf "$VERIFY"
     write_sha256 "$DEB"
     echo "--- Output ---"
     ls -l "$DEB" "$DEB.sha256"
@@ -236,9 +314,9 @@ build_rpm() {
     # 여기서 buildroot 로 install.
     install -m 755 "$BINARY" "$RPMTREE/SOURCES/tildaz"
     install -m 644 "$ICON_SRC" "$RPMTREE/SOURCES/tildaz.svg"
-    sed "s|__TILDAZ_EXE__|/usr/bin/tildaz|" "$DESKTOP_TEMPLATE" \
-        > "$RPMTREE/SOURCES/tildaz.desktop"
-    chmod 644 "$RPMTREE/SOURCES/tildaz.desktop"
+    render_system_desktop "$RPMTREE/SOURCES/tildaz.desktop"
+    install_extension_resources "$RPMTREE/SOURCES/tildaz-resources"
+    validate_extension_resources "$RPMTREE/SOURCES/tildaz-resources"
 
     cat > "$RPMTREE/SPECS/tildaz.spec" << END
 Name:           tildaz
@@ -267,6 +345,8 @@ macOS using the same ghostty-vt terminal core.
 install -D -m 0755 %{_sourcedir}/tildaz       %{buildroot}/usr/bin/tildaz
 install -D -m 0644 %{_sourcedir}/tildaz.desktop %{buildroot}/usr/share/applications/tildaz.desktop
 install -D -m 0644 %{_sourcedir}/tildaz.svg   %{buildroot}/usr/share/icons/hicolor/scalable/apps/tildaz.svg
+mkdir -p %{buildroot}/usr/share/tildaz
+cp -a %{_sourcedir}/tildaz-resources/. %{buildroot}/usr/share/tildaz/
 
 %post
 if [ -x /usr/bin/update-desktop-database ]; then
@@ -290,6 +370,7 @@ fi
 /usr/bin/tildaz
 /usr/share/applications/tildaz.desktop
 /usr/share/icons/hicolor/scalable/apps/tildaz.svg
+/usr/share/tildaz
 END
 
     # Ubuntu runner 환경에선 dist tag 가 안 붙어 출력 이름이 tildaz-<ver>-1.<arch>.rpm.
@@ -322,6 +403,14 @@ END
         exit 1
     fi
     cp "$RPM_BUILT" "$RPM"
+    local RPM_DESKTOP="$RPMTREE/packaged-tildaz.desktop"
+    rpm2cpio "$RPM" | cpio -i --to-stdout ./usr/share/applications/tildaz.desktop \
+        > "$RPM_DESKTOP" 2>/dev/null
+    validate_desktop_exec "$RPM_DESKTOP" "/usr/bin/tildaz"
+    local RPM_FILES
+    RPM_FILES="$(rpm -qlp "$RPM")"
+    grep -qxF '/usr/share/tildaz/gnome-extension/tildaz@ensky0.github.io/extension.js' <<< "$RPM_FILES"
+    grep -qxF '/usr/share/tildaz/cinnamon-extension/tildaz@ensky0.github.io/extension.js' <<< "$RPM_FILES"
     rm -rf "$RPMTREE"
     write_sha256 "$RPM"
     echo "--- Output ---"
@@ -342,6 +431,8 @@ build_appimage() {
 
     install -m 755 "$BINARY" "$APPDIR/usr/bin/tildaz"
     install -m 644 "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
+    install_extension_resources "$APPDIR/usr/share/tildaz"
+    validate_extension_resources "$APPDIR/usr/share/tildaz"
 
     # AppImage 가 root 의 .desktop / icon symlink 자동 인식. Exec 은 단순
     # "tildaz" — AppRun 이 PATH 에 usr/bin 추가하거나 직접 호출.
@@ -358,6 +449,7 @@ Categories=System;TerminalEmulator;
 StartupWMClass=tildaz
 StartupNotify=false
 END
+    validate_desktop_exec "$APPDIR/tildaz.desktop" "tildaz"
     # AppImage root icon — appimagetool 가 hicolor 트리에 자동 인식 시켰지만
     # 일부 환경에서 fallback 용으로 root 에 직접 둠.
     cp "$ICON_SRC" "$APPDIR/tildaz.svg"
@@ -422,8 +514,12 @@ build_pkg() {
     mkdir -p "$BUILD"
 
     cp "$BINARY" "$BUILD/tildaz"
-    cp "$DESKTOP_TEMPLATE" "$BUILD/tildaz.desktop"
+    render_system_desktop "$BUILD/tildaz.desktop"
     cp "$ICON_SRC" "$BUILD/tildaz.svg"
+    install_extension_resources "$BUILD/shell-extensions"
+    validate_extension_resources "$BUILD/shell-extensions"
+    tar -C "$BUILD/shell-extensions" -czf "$BUILD/shell-extensions.tar.gz" .
+    rm -rf "$BUILD/shell-extensions"
 
     # 의존성은 deb/rpm 과 동일 정책: core(키보드/폰트) hard depends, ligature/
     # hotkey 용은 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
@@ -442,13 +538,15 @@ optdepends=('harfbuzz: ligature rendering'
             'dbus: KDE portal / KGlobalAccel global hotkey'
             'glib2: GNOME/Cinnamon gsettings global hotkey'
             'xdg-desktop-portal: portal-based global hotkey')
-source=('tildaz' 'tildaz.desktop' 'tildaz.svg')
-sha256sums=('SKIP' 'SKIP' 'SKIP')
+source=('tildaz' 'tildaz.desktop' 'tildaz.svg' 'shell-extensions.tar.gz')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
 options=('!strip' '!debug')
 package() {
   install -Dm755 "\$srcdir/tildaz"         "\$pkgdir/usr/bin/tildaz"
   install -Dm644 "\$srcdir/tildaz.desktop" "\$pkgdir/usr/share/applications/tildaz.desktop"
   install -Dm644 "\$srcdir/tildaz.svg"     "\$pkgdir/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
+  install -d "\$pkgdir/usr/share/tildaz"
+  cp -R "\$srcdir/gnome-extension" "\$srcdir/cinnamon-extension" "\$pkgdir/usr/share/tildaz/"
 }
 END
 
@@ -476,6 +574,11 @@ END
         exit 1
     fi
     mv "$OUT" "$PKG"
+    bsdtar -xOf "$PKG" usr/share/applications/tildaz.desktop \
+        > "$BUILD/packaged-tildaz.desktop"
+    validate_desktop_exec "$BUILD/packaged-tildaz.desktop" "/usr/bin/tildaz"
+    bsdtar -tf "$PKG" | grep -qxF 'usr/share/tildaz/gnome-extension/tildaz@ensky0.github.io/extension.js'
+    bsdtar -tf "$PKG" | grep -qxF 'usr/share/tildaz/cinnamon-extension/tildaz@ensky0.github.io/extension.js'
     rm -rf "$BUILD"
     write_sha256 "$PKG"
     echo "--- Output ---"
