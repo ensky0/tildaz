@@ -5,6 +5,7 @@
 //! 로그 위치:
 //!   - Windows: `%APPDATA%\tildaz\tildazN.log`
 //!   - macOS:   `~/Library/Logs/tildazN.log`  (Apple HIG — Console.app 자동 인덱싱)
+//!   - Linux:   `~/.local/state/tildaz/tildazN.log`  (XDG state)
 //!
 //! 포맷:
 //!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`
@@ -17,6 +18,29 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log_time = @import("log_time.zig");
+
+// #282 D1 — Windows 원자적 append 용 Win32 externs. Windows 에서만 참조되는
+// comptime 분기(writeRaw)에서만 쓰이므로 다른 platform 빌드엔 영향 없음.
+const win32 = if (builtin.os.tag == .windows) struct {
+    const w = std.os.windows;
+    pub extern "kernel32" fn CreateFileW(
+        lpFileName: [*:0]const u16,
+        dwDesiredAccess: w.DWORD,
+        dwShareMode: w.DWORD,
+        lpSecurityAttributes: ?*const anyopaque,
+        dwCreationDisposition: w.DWORD,
+        dwFlagsAndAttributes: w.DWORD,
+        hTemplateFile: ?w.HANDLE,
+    ) callconv(.c) w.HANDLE;
+    pub extern "kernel32" fn WriteFile(
+        hFile: w.HANDLE,
+        lpBuffer: [*]const u8,
+        nNumberOfBytesToWrite: w.DWORD,
+        lpNumberOfBytesWritten: ?*w.DWORD,
+        lpOverlapped: ?*anyopaque,
+    ) callconv(.c) w.BOOL;
+    pub extern "kernel32" fn CloseHandle(hObject: w.HANDLE) callconv(.c) w.BOOL;
+} else struct {};
 
 pub const TimeFields = log_time.TimeFields;
 
@@ -42,10 +66,24 @@ fn writeRaw(text: []const u8) void {
     var path_buf: [520]u8 = undefined;
     const path = impl.resolvePath(&path_buf) orelse return;
     if (builtin.os.tag == .windows) {
-        const f = std.fs.createFileAbsolute(path, .{ .truncate = false, .read = false }) catch return;
-        defer f.close();
-        f.seekFromEnd(0) catch {};
-        f.writeAll(text) catch {};
+        // #282 D1 — POSIX 는 O_APPEND(아래)로 고쳤으나 Windows 는 createFile+seekFromEnd+
+        // writeAll race 였다 (seek 와 write 사이 동시 writer 시 torn line). FILE_APPEND_DATA
+        // 로 열면 OS 가 매 write 를 원자적으로 EOF 에 append — ConPty wait_thread(onPtyExit)
+        // vs main thread 동시 write(shell exit 시점, post-mortem 로그 필요 순간)에도 줄이 안
+        // 섞인다. 한 줄 단일 WriteFile — 작은 크기라 partial 없이 한 번에.
+        const w = std.os.windows;
+        var path_w: [520]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(path_w[0 .. path_w.len - 1], path) catch return;
+        path_w[n] = 0;
+        const FILE_APPEND_DATA: w.DWORD = 0x0004;
+        const FILE_SHARE_RW: w.DWORD = 0x00000001 | 0x00000002; // READ | WRITE
+        const OPEN_ALWAYS: w.DWORD = 4;
+        const FILE_ATTRIBUTE_NORMAL: w.DWORD = 0x80;
+        const handle = win32.CreateFileW(path_w[0..n :0].ptr, FILE_APPEND_DATA, FILE_SHARE_RW, null, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
+        if (handle == w.INVALID_HANDLE_VALUE) return;
+        defer _ = win32.CloseHandle(handle);
+        var written: w.DWORD = undefined;
+        _ = win32.WriteFile(handle, text.ptr, @intCast(text.len), &written, null);
     } else {
         // O_APPEND — 커널이 매 write 를 파일 끝에 원자적으로 append (한 줄 < PIPE_BUF).
         // 여러 프로세스(메인 인스턴스 + `tildaz --toggle` 자식, #230)가 동시에 써도
