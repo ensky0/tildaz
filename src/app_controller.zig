@@ -283,6 +283,13 @@ pub const App = struct {
 
     pub fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
+        // #282 A8 — Ctrl+C(ETX 0x03) 는 write_queue 우회 즉시 송신(SIGINT). 대량 paste
+        // 로 큐가 가득 차면 SIGINT 가 그 뒤에 밀려 "Ctrl+C 안 먹힘" 이 되므로(macOS 동등).
+        // 이 경로는 키보드 write 전용이라 단독 0x03 = Ctrl+C (arrow 등은 multi-byte escape).
+        if (data.len == 1 and data[0] == 0x03) {
+            self.session.interruptActive(data);
+            return;
+        }
         self.session.queueInputToActive(data);
     }
 
