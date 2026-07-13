@@ -1023,7 +1023,37 @@ pub const Window = struct {
         const w = rect.right - rect.left;
         const h = rect.bottom - rect.top;
 
+        // #89 진단 — OS 가 돌려준 monitor/work rect 와 실제 적용 rect.
+        // workarea 가 전체화면처럼 보이는 실기 관측의 판정 근거: rcWork 가
+        // rcMonitor 와 같게 오면 OS(shell) 쪽 상태, 다르게 왔는데 화면이
+        // 덮이면 적용/표시 쪽.
+        log.appendLineVerbose("fullscreen", "apply {s}: monitor=({d},{d},{d},{d}) work=({d},{d},{d},{d}) applied=({d},{d} {d}x{d})", .{
+            @tagName(self.fullscreen_mode),
+            mi.rcMonitor.left,
+            mi.rcMonitor.top,
+            mi.rcMonitor.right,
+            mi.rcMonitor.bottom,
+            mi.rcWork.left,
+            mi.rcWork.top,
+            mi.rcWork.right,
+            mi.rcWork.bottom,
+            x,
+            y,
+            w,
+            h,
+        });
+
         self.applyRect(x, y, w, h);
+
+        // #89 진단 — 요청 rect 와 실제 반영 rect 가 다르면 OS 가 개입한 것.
+        if (self.hwnd) |hw| {
+            var actual: RECT = undefined;
+            if (GetWindowRect(hw, &actual) != 0) {
+                log.appendLineVerbose("fullscreen", "actual after apply=({d},{d},{d},{d})", .{
+                    actual.left, actual.top, actual.right, actual.bottom,
+                });
+            }
+        }
 
         if (!self.layout_transition_active) {
             if (self.resize_fn) |resize_fn| {
@@ -1608,7 +1638,14 @@ pub const Window = struct {
                     // (macOS/Linux 동등, SPEC §4.1). before_hide_fn(onBeforeHide)은
                     // "renaming 이면 commitRename" 이라 이 commit 용도에 안전.
                     if (self.before_hide_fn) |commit| commit(self.userdata);
-                    self.toggleFullscreenMode(if (GetAsyncKeyState(VK_SHIFT) < 0) .workarea else .monitor);
+                    const shift_state = GetAsyncKeyState(VK_SHIFT);
+                    // #89 진단 — shift 검출값 / 현재 모드 / 요청 모드.
+                    log.appendLineVerbose("fullscreen", "syskey enter: shift=0x{x} cur={s} req={s}", .{
+                        @as(u16, @bitCast(shift_state)),
+                        @tagName(self.fullscreen_mode),
+                        if (shift_state < 0) @as([]const u8, "workarea") else "monitor",
+                    });
+                    self.toggleFullscreenMode(if (shift_state < 0) .workarea else .monitor);
                     return 0;
                 }
                 // Alt+1 ~ Alt+9: 탭 전환.
