@@ -318,6 +318,26 @@ pub const D3d11Renderer = struct {
             swapEffectName(selected_swap_effect),
             sc_desc.BufferCount,
         });
+
+        // #89 — DXGI 의 내장 Alt+Enter 감시 차단. DXGI 는 swap chain 이 붙은
+        // 창의 Alt+Enter 를 자체 hook 으로 감지해 exclusive fullscreen 전환을
+        // 시도한다 (WndProc 가 메시지를 소비해도 무관). tildaz 는 Alt+Enter 를
+        // 자체 fullscreen 토글로 쓰므로 이중 처리 — layered+BitBlt 시절엔
+        // 전환이 조용히 실패해 숨어 있다가, flip-model 활성화(7ef7302) 후
+        // 실제 발동해 화면 하단이 검게 덮이는 실기 증상으로 드러남 (창 rect
+        // 는 정상인데 taskbar 영역만 검정 + 클릭은 통과 — DXGI FS 전환의
+        // 전형). NO_WINDOW_CHANGES 로 감시 자체를 끈다.
+        {
+            var factory_ptr: ?*anyopaque = null;
+            if (swap_chain.?.GetParent(&d3d.IID_IDXGIFactory, &factory_ptr) >= 0) {
+                if (factory_ptr) |fp| {
+                    const factory: *d3d.IDXGIFactory = @ptrCast(@alignCast(fp));
+                    const mwa_hr = factory.MakeWindowAssociation(hwnd, d3d.DXGI_MWA_NO_WINDOW_CHANGES | d3d.DXGI_MWA_NO_ALT_ENTER);
+                    log.appendLineVerbose("d3d", "MakeWindowAssociation(NO_WINDOW_CHANGES|NO_ALT_ENTER) hr=0x{x}", .{@as(u32, @bitCast(mwa_hr))});
+                    _ = factory.Release();
+                }
+            }
+        }
         errdefer {
             _ = ctx.?.Release();
             _ = swap_chain.?.Release();

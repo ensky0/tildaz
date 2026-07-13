@@ -378,7 +378,7 @@ pub const IDXGISwapChain = extern struct {
         SetPrivateData: *const anyopaque,
         SetPrivateDataInterface: *const anyopaque,
         GetPrivateData: *const anyopaque,
-        GetParent: *const anyopaque,
+        GetParent: *const fn (*IDXGISwapChain, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
         // IDXGIDeviceSubObject (7)
         GetDevice: *const anyopaque,
         // IDXGISwapChain (8-17)
@@ -401,6 +401,53 @@ pub const IDXGISwapChain = extern struct {
     }
     pub fn ResizeBuffers(self: *IDXGISwapChain, count: u32, w: u32, h: u32, fmt: u32, flags: u32) HRESULT {
         return self.vtable.ResizeBuffers(self, count, w, h, fmt, flags);
+    }
+    pub fn GetParent(self: *IDXGISwapChain, riid: *const GUID, parent: *?*anyopaque) HRESULT {
+        return self.vtable.GetParent(self, riid, parent);
+    }
+};
+
+// --- IDXGIFactory ---
+// IUnknown (3) + IDXGIObject (4) + IDXGIFactory (5) = 12 slots.
+// `MakeWindowAssociation` 만 사용 (#89) — DXGI 의 내장 Alt+Enter 감시가
+// swap chain 을 exclusive fullscreen 으로 자동 전환하는 것을 차단.
+
+pub const DXGI_MWA_NO_WINDOW_CHANGES: u32 = 1;
+pub const DXGI_MWA_NO_ALT_ENTER: u32 = 2;
+
+pub const IID_IDXGIFactory = GUID{
+    .Data1 = 0x7b7166ec,
+    .Data2 = 0x21c7,
+    .Data3 = 0x44ae,
+    .Data4 = .{ 0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69 },
+};
+
+pub const IDXGIFactory = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        // IUnknown (0-2)
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDXGIFactory) callconv(.c) u32,
+        // IDXGIObject (3-6)
+        SetPrivateData: *const anyopaque,
+        SetPrivateDataInterface: *const anyopaque,
+        GetPrivateData: *const anyopaque,
+        GetParent: *const anyopaque,
+        // IDXGIFactory (7-11)
+        EnumAdapters: *const anyopaque,
+        MakeWindowAssociation: *const fn (*IDXGIFactory, ?*anyopaque, u32) callconv(.c) HRESULT,
+        GetWindowAssociation: *const anyopaque,
+        CreateSwapChain: *const anyopaque,
+        CreateSoftwareAdapter: *const anyopaque,
+    };
+
+    pub fn Release(self: *IDXGIFactory) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn MakeWindowAssociation(self: *IDXGIFactory, hwnd: ?*anyopaque, flags: u32) HRESULT {
+        return self.vtable.MakeWindowAssociation(self, hwnd, flags);
     }
 };
 
