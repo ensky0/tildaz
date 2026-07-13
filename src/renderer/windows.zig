@@ -182,7 +182,7 @@ pub const D3d11Renderer = struct {
     swap_chain: *d3d.IDXGISwapChain,
     /// #89 2단계 — 반투명(opacity<255) composition 경로의 DComp 객체.
     /// opacity 100% (hwnd flip-model) 또는 composition 실패 fallback 시 null.
-    dcomp_device: ?*d3d.IDCompositionDevice = null,
+    dcomp_device: ?*d3d.IDCompositionDesktopDevice = null,
     dcomp_target: ?*d3d.IDCompositionTarget = null,
     dcomp_visual: ?*d3d.IDCompositionVisual = null,
     rtv: ?*d3d.ID3D11RenderTargetView = null,
@@ -274,7 +274,7 @@ pub const D3d11Renderer = struct {
         device: *?*d3d.ID3D11Device,
         ctx: *?*d3d.ID3D11DeviceContext,
         swap_chain: *?*d3d.IDXGISwapChain,
-        dcomp_device: *?*d3d.IDCompositionDevice,
+        dcomp_device: *?*d3d.IDCompositionDesktopDevice,
         dcomp_target: *?*d3d.IDCompositionTarget,
         dcomp_visual: *?*d3d.IDCompositionVisual,
     ) bool {
@@ -341,7 +341,7 @@ pub const D3d11Renderer = struct {
         defer comRelease(dxgi_dev.?);
 
         var dcomp_any: ?*anyopaque = null;
-        if (d3d.DCompositionCreateDevice(dxgi_dev.?, &d3d.IID_IDCompositionDevice, &dcomp_any) < 0 or dcomp_any == null) return false;
+        if (d3d.DCompositionCreateDevice3(dxgi_dev.?, &d3d.IID_IDCompositionDesktopDevice, &dcomp_any) < 0 or dcomp_any == null) return false;
         dcomp_device.* = @ptrCast(@alignCast(dcomp_any.?));
         const dd = dcomp_device.*.?;
 
@@ -398,7 +398,7 @@ pub const D3d11Renderer = struct {
         // swap chain(premultiplied alpha) + DComp visual 의 uniform SetOpacity.
         // 렌더 내용은 불투명 그대로라 파이프라인 무변경, LWA_ALPHA 의미론 동일.
         // 실패 시 불투명 flip-model 로 degrade (opacity 미적용 — 검정/미표시보다 안전).
-        var dcomp_device: ?*d3d.IDCompositionDevice = null;
+        var dcomp_device: ?*d3d.IDCompositionDesktopDevice = null;
         var dcomp_target: ?*d3d.IDCompositionTarget = null;
         var dcomp_visual: ?*d3d.IDCompositionVisual = null;
         var composition_active = false;
