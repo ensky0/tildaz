@@ -345,6 +345,11 @@ pub const Window = struct {
     /// F1 hide 직전 호출 (#175). app 측이 rename / preedit 등 진행 중인
     /// 입력 상태를 commit 처리. show 분기는 호출 안 함.
     before_hide_fn: ?*const fn (?*anyopaque) void = null,
+    /// #282 A11 — IME 조합 시작 시 활성 탭을 맨 아래로 (scroll-on-keystroke,
+    /// #242). 스크롤백 올린 상태에서 조합 시작 시 preedit 이 안 보이는 것 방지.
+    /// macOS/Linux 는 preedit 경로에서 이미 호출 — Windows 만 빠져 있었음.
+    /// app 측이 rename 중이면 no-op (탭바 조합은 terminal viewport 무관).
+    scroll_to_bottom_fn: ?*const fn (?*anyopaque) void = null,
     /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
     /// before `SetWindowPos` cascades into `WM_SIZE`.
@@ -1267,6 +1272,9 @@ pub const Window = struct {
                 // IME 조합 시작 — preedit buffer 비우고 default IME composition
                 // window 차단 (return 0). 우리 inline overlay 가 대신 (#164).
                 self.preedit_len = 0;
+                // #282 A11 — 조합 시작 시 활성 탭 맨 아래로 (macOS/Linux 동등).
+                // app 측이 rename 활성이면 no-op.
+                if (self.scroll_to_bottom_fn) |f| f(self.userdata);
                 return 0;
             },
             WM_IME_COMPOSITION => {
@@ -1350,6 +1358,14 @@ pub const Window = struct {
                     0x24 => .home,
                     0x23 => .end,
                     0x2E => .delete,
+                    // #282 A9 — rename 중 PTY 로 새던 nav 키. dispatch 가 rename
+                    // 활성 시 swallow(true), 비활성 시 false → 아래 escape switch
+                    // 로 fall through 해 기존대로 PTY 전달 (히스토리 이동 등).
+                    0x26 => .up,
+                    0x28 => .down,
+                    0x21 => .page_up,
+                    0x22 => .page_down,
+                    0x2D => .insert,
                     else => null,
                 };
                 if (maybe_key) |key| {

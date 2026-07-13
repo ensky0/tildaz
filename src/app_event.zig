@@ -37,6 +37,13 @@ pub const KeyInput = enum {
     home,
     end,
     delete,
+    // #282 A9 — rename 편집에 안 쓰는 nav 키. rename 활성 시 PTY 로 새지 않게
+    // swallow 하려고 dispatch (Windows 만 — macOS/Linux 는 자체 rename 경로).
+    up,
+    down,
+    page_up,
+    page_down,
+    insert,
 };
 
 pub const ScrollEvent = union(enum) {

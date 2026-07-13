@@ -279,6 +279,14 @@ pub const App = struct {
         if (self.isRenaming()) self.commitRename();
     }
 
+    /// #282 A11 — IME 조합 시작 시 활성 탭을 맨 아래로 (macOS/Linux 동등).
+    /// rename(탭바) 조합은 terminal viewport 와 무관하므로 제외.
+    pub fn onImeCompositionStart(userdata: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        if (self.isRenaming()) return;
+        self.session.scrollActiveToBottom();
+    }
+
     // --- Window callbacks (userdata = *App) ---
 
     pub fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
@@ -705,6 +713,10 @@ pub const App = struct {
             .home => .home,
             .end => .end,
             .delete => .delete,
+            // #282 A9 — rename 편집 대상 아님. false 반환 → caller 의
+            // `if (isRenaming()) return true` 가 swallow (PTY 미전송). 비rename
+            // 이면 caller 가 false → host 가 기존 escape sequence 경로로 PTY.
+            .up, .down, .page_up, .page_down, .insert => return false,
         };
 
         switch (self.tab_interaction.rename.handleKey(rename_key)) {

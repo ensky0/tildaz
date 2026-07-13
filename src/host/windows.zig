@@ -103,6 +103,7 @@ pub fn run() !void {
     app.window.app_event_fn = App.onAppEvent;
     app.window.quit_request_fn = App.onQuitRequest;
     app.window.before_hide_fn = App.onBeforeHide;
+    app.window.scroll_to_bottom_fn = App.onImeCompositionStart;
     app.window.cursor_region_fn = App.cursorRegion;
     const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
