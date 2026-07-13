@@ -21,7 +21,23 @@ fn validateHotkey(ctx_ptr: *anyopaque, text: []const u8) dialog.HotkeyValidation
     return if (owner) |index| .{ .duplicate = index } else .available;
 }
 
+/// #301 — 재진입 가드. Windows 에서 `promptHotkey` 의 modal 메시지 루프가 도는
+/// 동안 큐에 쌓인 `WM_NEW_INSTANCE_REQUEST` 가 main WndProc 로 dispatch 되어
+/// `handle` 이 재진입 → 중첩 프롬프트 + nested modal loop 가 hang("응답 없음"),
+/// 그 창(worker 0 UI thread)을 죽이면 coordinator 가 죽어 전 instance 종료.
+/// handle 은 main/UI thread 단일 실행이라 plain bool 로 충분. 진행 중이면 추가
+/// 요청은 drop — macOS(notification coalesce)/Linux(pending bool + dialog skip)의
+/// "연속 요청 1개 병합"과 동일 동작 (그쪽은 상위에서 이미 coalesce 하므로 무해).
+var handling: bool = false;
+
 pub fn handle(allocator: std.mem.Allocator) void {
+    if (handling) {
+        log.appendLine("new-instance", "재진입 요청 drop (프롬프트 진행 중) — #301", .{});
+        return;
+    }
+    handling = true;
+    defer handling = false;
+
     // launcher의 config 열거/spawn 결정과 새 config 생성 transaction이 서로
     // 중간 상태를 관찰하지 않도록 같은 process lock으로 직렬화한다.
     var launcher_lock = instances.acquireLauncherLock(allocator) catch |err| {
