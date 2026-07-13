@@ -1,10 +1,9 @@
-// macOS 의 log impl — 시스템 의존 부분만. 공통 formatting / writeRaw 는
-// `log.zig`. 로그 파일은 `~/Library/Logs/tildazN.log` (Apple HIG — Console.app
-// 자동 인덱싱).
+// macOS 의 log impl — 시스템 의존 부분 (local time / pid) 만. 공통
+// formatting / writeRaw 는 `log.zig`, 로그 파일 경로는 `paths.logPathBuf`
+// (단일 소스, #282 G3).
 
 const std = @import("std");
 const log_time = @import("../log_time.zig");
-const instance_context = @import("../instance_context.zig");
 
 const time_t = i64;
 
@@ -53,14 +52,4 @@ pub fn currentLocalTime() TimeFields {
 
 pub fn currentPid() u64 {
     return @intCast(getpid());
-}
-
-/// `~/Library/Logs/tildazN.log` 의 absolute UTF-8 path 를 buf 에 작성하고 slice
-/// 반환. `~/Library/Logs/` 는 macOS default 로 존재 (수동 생성 불필요). 실패 시 null.
-pub fn resolvePath(buf: []u8) ?[]const u8 {
-    // #298 — 수동 memcpy + 길이 경계검사 → 단일 bufPrint (overflow 시 error 반환).
-    const home = std.c.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/Library/Logs/tildaz{d}.log", .{
-        std.mem.span(home), instance_context.workerIndex() orelse 0,
-    }) catch return null;
 }
