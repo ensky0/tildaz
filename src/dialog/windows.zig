@@ -57,6 +57,19 @@ extern "user32" fn GetSysColorBrush(c_int) callconv(.c) HBRUSH;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) ?*anyopaque;
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
 extern "gdi32" fn DeleteObject(?*anyopaque) callconv(.c) c_int;
+extern "gdi32" fn SelectObject(HDC, ?*anyopaque) callconv(.c) ?*anyopaque;
+extern "user32" fn GetDC(HWND) callconv(.c) HDC;
+extern "user32" fn ReleaseDC(HWND, HDC) callconv(.c) c_int;
+extern "user32" fn DrawTextW(HDC, [*]const WCHAR, c_int, *RECT, UINT) callconv(.c) c_int;
+// AdjustWindowRectExForDpi — Win10 1607+. 원하는 client 사각형 → 창 전체 사각형
+// (title bar / 테두리를 실제 DPI 기준으로 더함). 이 프로세스는 이미 per-monitor
+// DPI aware 라 사용 가능.
+extern "user32" fn AdjustWindowRectExForDpi(*RECT, DWORD, c_int, DWORD, UINT) callconv(.c) c_int;
+
+const RECT = extern struct { left: c_long, top: c_long, right: c_long, bottom: c_long };
+const DT_CALCRECT: UINT = 0x0400;
+const DT_WORDBREAK: UINT = 0x0010;
+const DT_NOPREFIX: UINT = 0x0800;
 extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.c) c_int;
 extern "gdi32" fn SetTextColor(HDC, DWORD) callconv(.c) DWORD;
 
@@ -366,17 +379,55 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     defer {
         if (capture_font != null) _ = DeleteObject(capture_font);
     }
-    const win_w = scaled(520, dpi);
-    const win_h = scaled(250, dpi);
+    // --- 세로 레이아웃: 메시지 실제 높이를 측정해 아래 컨트롤을 쌓고, 필요한
+    //     client 높이에서 창 전체 크기를 역산 (고정 상수 대신 근본 방식 — 어떤
+    //     메시지 길이 / DPI 에서도 안 잘림). 가로는 24pt 여백 + 472pt 폭 고정.
+    const margin = scaled(24, dpi);
+    const content_w = scaled(472, dpi);
+    const gap = scaled(16, dpi);
+
+    // 메시지 높이 측정 — ui_font 를 select 한 DC 에 DT_CALCRECT | DT_WORDBREAK.
+    var msg_h: c_int = scaled(48, dpi);
+    {
+        const dc = GetDC(null);
+        if (dc != null) {
+            const prev = if (ui_font != null) SelectObject(dc, ui_font) else null;
+            var calc = RECT{ .left = 0, .top = 0, .right = content_w, .bottom = 0 };
+            _ = DrawTextW(dc, @ptrCast(message_buf[0..message_len].ptr), @intCast(message_len), &calc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+            if (calc.bottom > 0) msg_h = @intCast(calc.bottom);
+            if (prev != null) _ = SelectObject(dc, prev);
+            _ = ReleaseDC(null, dc);
+        }
+    }
+
+    // client 좌표로 각 컨트롤 위치를 위→아래로 누적.
+    const edit_h = scaled(40, dpi); // 캡처된 키 표시 (큰 폰트)
+    const status_h = scaled(28, dpi); // 에러 상태 텍스트
+    const button_h = scaled(32, dpi);
+    const button_w = scaled(96, dpi);
+    const msg_y = scaled(20, dpi);
+    const edit_y = msg_y + msg_h + gap;
+    const status_y = edit_y + edit_h + scaled(4, dpi);
+    const button_y = status_y + status_h + gap;
+    const client_h = button_y + button_h + scaled(20, dpi);
+    const client_w = margin + content_w + margin;
+    const create_x = client_w - margin - button_w;
+    const cancel_x = create_x - scaled(8, dpi) - button_w;
+
+    // client 사각형 → 창 전체 사각형 (title bar / 테두리 실제 DPI 반영).
+    var wr = RECT{ .left = 0, .top = 0, .right = client_w, .bottom = client_h };
+    _ = AdjustWindowRectExForDpi(&wr, WS_CAPTION | WS_SYSMENU, 0, WS_EX_TOPMOST, dpi);
+    const win_w = wr.right - wr.left;
+    const win_h = wr.bottom - wr.top;
     const win_x = @divTrunc(GetSystemMetrics(SM_CXSCREEN) - win_w, 2);
     const win_y = @divTrunc(GetSystemMetrics(SM_CYSCREEN) - win_h, 2);
     const hwnd = CreateWindowExW(WS_EX_TOPMOST, prompt_class_name, @ptrCast(title_buf[0..title_len :0]), WS_CAPTION | WS_SYSMENU, win_x, win_y, win_w, win_h, null, null, hinstance, null) orelse return null;
     defer _ = DestroyWindow(hwnd);
-    const message_control = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), @ptrCast(message_buf[0..message_len :0]), WS_CHILD | WS_VISIBLE, scaled(24, dpi), scaled(20, dpi), scaled(472, dpi), scaled(48, dpi), hwnd, null, hinstance, null);
-    prompt_edit = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, scaled(24, dpi), scaled(76, dpi), scaled(472, dpi), scaled(36, dpi), hwnd, @ptrFromInt(100), hinstance, null);
-    prompt_status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, scaled(24, dpi), scaled(116, dpi), scaled(472, dpi), scaled(36, dpi), hwnd, null, hinstance, null);
-    const cancel = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Cancel"), WS_CHILD | WS_VISIBLE | WS_TABSTOP, scaled(300, dpi), scaled(174, dpi), scaled(96, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
-    prompt_create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Create"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, scaled(404, dpi), scaled(174, dpi), scaled(96, dpi), scaled(32, dpi), hwnd, @ptrFromInt(IDOK), hinstance, null);
+    const message_control = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), @ptrCast(message_buf[0..message_len :0]), WS_CHILD | WS_VISIBLE, margin, msg_y, content_w, msg_h, hwnd, null, hinstance, null);
+    prompt_edit = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, margin, edit_y, content_w, edit_h, hwnd, @ptrFromInt(100), hinstance, null);
+    prompt_status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, margin, status_y, content_w, status_h, hwnd, null, hinstance, null);
+    const cancel = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Cancel"), WS_CHILD | WS_VISIBLE | WS_TABSTOP, cancel_x, button_y, button_w, button_h, hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
+    prompt_create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral("Create"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, create_x, button_y, button_w, button_h, hwnd, @ptrFromInt(IDOK), hinstance, null);
     if (prompt_create != null) _ = EnableWindow(prompt_create, 0);
     setControlFont(message_control, ui_font);
     setControlFont(prompt_edit, capture_font);
