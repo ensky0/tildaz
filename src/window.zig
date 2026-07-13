@@ -35,7 +35,9 @@ const WS_POPUP: DWORD = 0x80000000;
 const WS_VISIBLE: DWORD = 0x10000000;
 const WS_EX_TOPMOST: DWORD = 0x00000008;
 const WS_EX_TOOLWINDOW: DWORD = 0x00000080;
-const WS_EX_LAYERED: DWORD = 0x00080000;
+/// redirection bitmap 없는 창 (#89 2단계) — 반투명은 DirectComposition 이
+/// 담당하므로 legacy layered(BitBlt) 표면이 아예 안 만들어지게.
+const WS_EX_NOREDIRECTIONBITMAP: DWORD = 0x00200000;
 const CS_DBLCLKS: UINT = 0x0008;
 
 // Window Messages
@@ -108,7 +110,6 @@ const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 const IDC_IBEAM: ?*const anyopaque = @ptrFromInt(32513);
 const GWL_USERDATA: c_int = -21;
 const TRANSPARENT: c_int = 1;
-const LWA_ALPHA: DWORD = 0x00000002;
 /// DwmSetWindowAttribute 의 attribute id. Windows 에 "이 창은 transition 애니
 /// 메이션 (hide/show/resize 시 shrink/grow 효과) 을 사용하지 말라" 고 알림.
 /// WS_POPUP + WS_EX_TOPMOST + WS_EX_LAYERED 창이 Alt+Enter 로 rect 가 바뀐
@@ -210,7 +211,6 @@ extern "user32" fn GetCursorPos(*POINT) callconv(.c) BOOL;
 extern "user32" fn MonitorFromPoint(POINT, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn GetMonitorInfoW(?*anyopaque, *MONITORINFO) callconv(.c) BOOL;
-extern "user32" fn SetLayeredWindowAttributes(HWND, COLORREF, u8, DWORD) callconv(.c) BOOL;
 extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.c) std.os.windows.HRESULT;
 extern "dwmapi" fn DwmFlush() callconv(.c) std.os.windows.HRESULT;
 extern "user32" fn SetWindowLongPtrW(HWND, c_int, isize) callconv(.c) isize;
@@ -504,14 +504,16 @@ pub const Window = struct {
         const title_utf8 = std.fmt.bufPrint(&title_utf8_buf, "TildaZ-{d}", .{@import("instance_context.zig").requireWorkerIndex()}) catch "TildaZ";
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title_utf8) catch 0;
         title_buf[title_len] = 0;
-        // #89 — opacity 100% (기본값) 면 WS_EX_LAYERED 를 걸지 않는다. layered
-        // 창은 renderer 가 구형 BitBlt swap chain(DISCARD, redirection bitmap
-        // 경유)으로 강제되어 fullscreen↔dock rect 전환 시 stale frame stretch
-        // 의 구조적 원인. 불투명 창은 flip-model 로 present 돼 glitch 경로가
-        // 없다. 투명도(<100%)는 기존 layered 경로 유지 (완전 해소는 #89 2단계
-        // DirectComposition).
+        // #89 — WS_EX_LAYERED 를 아예 쓰지 않는다. layered 창은 renderer 가
+        // 구형 BitBlt swap chain(DISCARD, redirection bitmap 경유)으로 강제되어
+        // fullscreen↔dock rect 전환 시 stale frame stretch 의 구조적 원인.
+        // - opacity 100% (기본값): 일반 창 → renderer 가 hwnd flip-model.
+        // - opacity <100% (#89 2단계): WS_EX_NOREDIRECTIONBITMAP 으로
+        //   redirection bitmap 자체를 제거하고, renderer 가 DirectComposition
+        //   swap chain + DComp visual SetOpacity(uniform) 로 반투명 합성 —
+        //   LWA_ALPHA 와 같은 창 전체 균일 알파 의미론.
         const ex_style: DWORD = WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
-            (if (opacity < 255) WS_EX_LAYERED else 0);
+            (if (opacity < 255) WS_EX_NOREDIRECTIONBITMAP else 0);
         self.hwnd = CreateWindowExW(
             ex_style,
             CLASS_NAME,
@@ -535,10 +537,6 @@ pub const Window = struct {
 
         // Store self pointer in window userdata
         _ = SetWindowLongPtrW(self.hwnd, GWL_USERDATA, @intCast(@intFromPtr(self)));
-
-        if (opacity < 255) {
-            _ = SetLayeredWindowAttributes(self.hwnd, 0, opacity, LWA_ALPHA);
-        }
 
         // DWM window transition 애니메이션 비활성화. Alt+Enter 로 fullscreen ↔
         // dock rect 전환 직후 F1 로 SW_HIDE 하면, DWM 이 "현재 rect 에서 이전

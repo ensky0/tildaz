@@ -149,7 +149,7 @@ pub fn run() !void {
 
     // Initialize renderer backend
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, terminal_font, @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg) catch |err| blk: {
+    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, terminal_font, @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg, config.opacity_alpha) catch |err| blk: {
         log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
         break :blk null;
     };

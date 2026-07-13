@@ -745,3 +745,256 @@ pub extern "d3dcompiler_47" fn D3DCompile(
     ppCode: *?*ID3DBlob,
     ppErrorMsgs: *?*ID3DBlob,
 ) callconv(.c) HRESULT;
+
+// --- #89 2단계 — DirectComposition 투명도 경로 (opacity <100%) ---
+// 반투명 창을 WS_EX_LAYERED(BitBlt 강제) 대신 WS_EX_NOREDIRECTIONBITMAP +
+// composition swap chain 으로. 렌더 내용은 불투명 그대로 두고 DComp visual
+// 의 uniform opacity 로 LWA_ALPHA 의미론을 재현한다.
+
+pub extern "d3d11" fn D3D11CreateDevice(
+    pAdapter: ?*anyopaque,
+    DriverType: u32,
+    Software: ?*anyopaque,
+    Flags: u32,
+    pFeatureLevels: ?[*]const u32,
+    FeatureLevels: u32,
+    SDKVersion: u32,
+    ppDevice: *?*ID3D11Device,
+    pFeatureLevel: ?*u32,
+    ppImmediateContext: *?*ID3D11DeviceContext,
+) callconv(.c) HRESULT;
+
+pub extern "dxgi" fn CreateDXGIFactory1(riid: *const GUID, ppFactory: *?*anyopaque) callconv(.c) HRESULT;
+
+pub extern "dcomp" fn DCompositionCreateDevice(
+    dxgiDevice: *anyopaque,
+    iid: *const GUID,
+    dcompositionDevice: *?*anyopaque,
+) callconv(.c) HRESULT;
+
+pub const DXGI_SCALING_STRETCH: u32 = 0;
+pub const DXGI_ALPHA_MODE_PREMULTIPLIED: u32 = 1;
+
+pub const DXGI_SWAP_CHAIN_DESC1 = extern struct {
+    Width: u32,
+    Height: u32,
+    Format: u32,
+    Stereo: i32 = 0,
+    SampleDesc: DXGI_SAMPLE_DESC,
+    BufferUsage: u32,
+    BufferCount: u32,
+    Scaling: u32,
+    SwapEffect: u32,
+    AlphaMode: u32,
+    Flags: u32 = 0,
+};
+
+pub const IID_IDXGIFactory2 = GUID{
+    .Data1 = 0x50c83a1c,
+    .Data2 = 0xe072,
+    .Data3 = 0x4c48,
+    .Data4 = .{ 0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0 },
+};
+
+pub const IID_IDXGIDevice = GUID{
+    .Data1 = 0x54ec77fa,
+    .Data2 = 0x1377,
+    .Data3 = 0x44e6,
+    .Data4 = .{ 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c },
+};
+
+pub const IDXGIFactory2 = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        // IUnknown (0-2)
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDXGIFactory2) callconv(.c) u32,
+        // IDXGIObject (3-6)
+        SetPrivateData: *const anyopaque,
+        SetPrivateDataInterface: *const anyopaque,
+        GetPrivateData: *const anyopaque,
+        GetParent: *const anyopaque,
+        // IDXGIFactory (7-11)
+        EnumAdapters: *const anyopaque,
+        MakeWindowAssociation: *const anyopaque,
+        GetWindowAssociation: *const anyopaque,
+        CreateSwapChain: *const anyopaque,
+        CreateSoftwareAdapter: *const anyopaque,
+        // IDXGIFactory1 (12-13)
+        EnumAdapters1: *const anyopaque,
+        IsCurrent: *const anyopaque,
+        // IDXGIFactory2 (14-24)
+        IsWindowedStereoEnabled: *const anyopaque,
+        CreateSwapChainForHwnd: *const anyopaque,
+        CreateSwapChainForCoreWindow: *const anyopaque,
+        GetSharedResourceAdapterLuid: *const anyopaque,
+        RegisterStereoStatusWindow: *const anyopaque,
+        RegisterStereoStatusEvent: *const anyopaque,
+        UnregisterStereoStatus: *const anyopaque,
+        RegisterOcclusionStatusWindow: *const anyopaque,
+        RegisterOcclusionStatusEvent: *const anyopaque,
+        UnregisterOcclusionStatus: *const anyopaque,
+        CreateSwapChainForComposition: *const fn (*IDXGIFactory2, *anyopaque, *const DXGI_SWAP_CHAIN_DESC1, ?*anyopaque, *?*IDXGISwapChain) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDXGIFactory2) u32 {
+        return self.vtable.Release(self);
+    }
+    /// ppSwapChain 은 실제로 IDXGISwapChain1 이지만 vtable 이 IDXGISwapChain 의
+    /// 상위 호환(선두 18 slot 동일)이라 기존 wrapper 로 그대로 사용.
+    pub fn CreateSwapChainForComposition(self: *IDXGIFactory2, device: *anyopaque, desc: *const DXGI_SWAP_CHAIN_DESC1, restrict_out: ?*anyopaque, out: *?*IDXGISwapChain) HRESULT {
+        return self.vtable.CreateSwapChainForComposition(self, device, desc, restrict_out, out);
+    }
+};
+
+pub const IID_IDCompositionDevice = GUID{
+    .Data1 = 0xC37EA93A,
+    .Data2 = 0xE7AA,
+    .Data3 = 0x450D,
+    .Data4 = .{ 0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3 },
+};
+
+pub const IID_IDCompositionVisual3 = GUID{
+    .Data1 = 0x2775F462,
+    .Data2 = 0xB6C1,
+    .Data3 = 0x4015,
+    .Data4 = .{ 0xB0, 0xBE, 0xB3, 0xE7, 0xD6, 0xA4, 0x97, 0x6D },
+};
+
+pub const IDCompositionDevice = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        // IUnknown (0-2)
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDCompositionDevice) callconv(.c) u32,
+        // IDCompositionDevice (3-)
+        Commit: *const fn (*IDCompositionDevice) callconv(.c) HRESULT, // 3
+        WaitForCommitCompletion: *const anyopaque, // 4
+        GetFrameStatistics: *const anyopaque, // 5
+        CreateTargetForHwnd: *const fn (*IDCompositionDevice, ?*anyopaque, i32, *?*IDCompositionTarget) callconv(.c) HRESULT, // 6
+        CreateVisual: *const fn (*IDCompositionDevice, *?*IDCompositionVisual) callconv(.c) HRESULT, // 7
+    };
+
+    pub fn Release(self: *IDCompositionDevice) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn Commit(self: *IDCompositionDevice) HRESULT {
+        return self.vtable.Commit(self);
+    }
+    pub fn CreateTargetForHwnd(self: *IDCompositionDevice, hwnd: ?*anyopaque, topmost: i32, out: *?*IDCompositionTarget) HRESULT {
+        return self.vtable.CreateTargetForHwnd(self, hwnd, topmost, out);
+    }
+    pub fn CreateVisual(self: *IDCompositionDevice, out: *?*IDCompositionVisual) HRESULT {
+        return self.vtable.CreateVisual(self, out);
+    }
+};
+
+pub const IDCompositionTarget = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDCompositionTarget) callconv(.c) u32,
+        SetRoot: *const fn (*IDCompositionTarget, ?*IDCompositionVisual) callconv(.c) HRESULT, // 3
+    };
+
+    pub fn Release(self: *IDCompositionTarget) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn SetRoot(self: *IDCompositionTarget, visual: ?*IDCompositionVisual) HRESULT {
+        return self.vtable.SetRoot(self, visual);
+    }
+};
+
+// IDCompositionVisual — 각 속성이 (float, animation) 오버로드 쌍. dcomp.h
+// 선언 순서는 float 변형이 먼저 (win32metadata 의 무접미사/2-접미사 순서와
+// 일치). SetContent 는 쌍 내부 순서와 무관하게 slot 15.
+pub const IDCompositionVisual = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        // IUnknown (0-2)
+        QueryInterface: *const fn (*IDCompositionVisual, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDCompositionVisual) callconv(.c) u32,
+        // IDCompositionVisual (3-19)
+        SetOffsetX_f: *const anyopaque, // 3
+        SetOffsetX_anim: *const anyopaque, // 4
+        SetOffsetY_f: *const anyopaque, // 5
+        SetOffsetY_anim: *const anyopaque, // 6
+        SetTransform_m: *const anyopaque, // 7
+        SetTransform_i: *const anyopaque, // 8
+        SetTransformParent: *const anyopaque, // 9
+        SetEffect: *const anyopaque, // 10
+        SetBitmapInterpolationMode: *const anyopaque, // 11
+        SetBorderMode: *const anyopaque, // 12
+        SetClip_r: *const anyopaque, // 13
+        SetClip_i: *const anyopaque, // 14
+        SetContent: *const fn (*IDCompositionVisual, ?*anyopaque) callconv(.c) HRESULT, // 15
+    };
+
+    pub fn Release(self: *IDCompositionVisual) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn SetContent(self: *IDCompositionVisual, content: ?*anyopaque) HRESULT {
+        return self.vtable.SetContent(self, content);
+    }
+    pub fn QueryInterface(self: *IDCompositionVisual, riid: *const GUID, out: *?*anyopaque) HRESULT {
+        return self.vtable.QueryInterface(self, riid, out);
+    }
+};
+
+// IDCompositionVisual3 (: VisualDebug : Visual2 : Visual) — SetOpacity(float)
+// 는 slot 29. slot 산정: Visual(3-19) + Visual2 SetOpacityMode(20)·
+// SetBackFaceVisibility(21) + VisualDebug Enable/DisableHeatMap(22-23)·
+// Enable/DisableRedrawRegions(24-25) + Visual3 SetDepthMode(26)·
+// SetOffsetZ f/anim(27-28)·SetOpacity f(29). 수기 산정 — Windows 실기에서
+// 반투명 표시로 검증 (#89 2단계 계획 댓글).
+pub const IDCompositionVisual3 = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        QueryInterface: *const anyopaque, // 0
+        AddRef: *const anyopaque, // 1
+        Release: *const fn (*IDCompositionVisual3) callconv(.c) u32, // 2
+        pad3: *const anyopaque,
+        pad4: *const anyopaque,
+        pad5: *const anyopaque,
+        pad6: *const anyopaque,
+        pad7: *const anyopaque,
+        pad8: *const anyopaque,
+        pad9: *const anyopaque,
+        pad10: *const anyopaque,
+        pad11: *const anyopaque,
+        pad12: *const anyopaque,
+        pad13: *const anyopaque,
+        pad14: *const anyopaque,
+        pad15: *const anyopaque,
+        pad16: *const anyopaque,
+        pad17: *const anyopaque,
+        pad18: *const anyopaque,
+        pad19: *const anyopaque,
+        pad20: *const anyopaque,
+        pad21: *const anyopaque,
+        pad22: *const anyopaque,
+        pad23: *const anyopaque,
+        pad24: *const anyopaque,
+        pad25: *const anyopaque,
+        pad26: *const anyopaque,
+        pad27: *const anyopaque,
+        pad28: *const anyopaque,
+        SetOpacity: *const fn (*IDCompositionVisual3, f32) callconv(.c) HRESULT, // 29
+    };
+
+    pub fn Release(self: *IDCompositionVisual3) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn SetOpacity(self: *IDCompositionVisual3, opacity: f32) HRESULT {
+        return self.vtable.SetOpacity(self, opacity);
+    }
+};
