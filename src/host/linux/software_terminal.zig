@@ -45,6 +45,57 @@ const dialog_shadow_max_alpha: u8 = 96;
 /// 어려움. PT × scale 패턴으로 모든 DPI 환경에서 일관 크기.
 const dialog_button_w_pt: u32 = 100;
 const dialog_button_h_pt: u32 = 44;
+/// #300 — dialog 메시지 최대 content 폭 (cell 수). 이보다 긴 줄은 word-wrap
+/// 해 박스가 화면 밖으로 넘치지 않게. cell 단위라 scale 독립 (폰트가 커지면
+/// 셀도 커져 물리 폭이 비례). 표준 터미널 폭 감안 72 — 실제 메시지는 훨씬 짧다.
+const dialog_max_content_cells: usize = 72;
+
+/// dialog 메시지를 `\n` 및 `dialog_max_content_cells` 폭 기준으로 접어 한 줄씩
+/// 돌려주는 iterator (#300). `computeDialogSize`(줄 수·폭 산정)와
+/// `drawDialogContent`(그리기)가 **동일 wrap** 을 쓰도록 공용. 각 줄은
+/// message 의 sub-slice. wrap 은 공백 경계 우선, 없으면 codepoint 경계 강제
+/// 분할 (한 codepoint 가 max 보다 넓어도 최소 1개는 담아 무한루프 방지).
+const WrappedLines = struct {
+    msg: []const u8,
+    max_cells: usize,
+    pos: usize = 0,
+
+    fn next(self: *WrappedLines) ?[]const u8 {
+        if (self.pos >= self.msg.len) return null;
+        const start = self.pos;
+        var i = self.pos;
+        var width: usize = 0;
+        var last_space: ?usize = null; // 줄바꿈 가능한 공백의 byte index
+        var last_space_end: usize = start;
+        while (i < self.msg.len) {
+            const b = self.msg[i];
+            if (b == '\n') {
+                self.pos = i + 1; // 개행 소비
+                return self.msg[start..i];
+            }
+            const seq = std.unicode.utf8ByteSequenceLength(b) catch 1;
+            const end = @min(i + seq, self.msg.len);
+            const cp = std.unicode.utf8Decode(self.msg[i..end]) catch 0xFFFD;
+            const w: usize = display_width.codepointWidth(cp);
+            if (cp == ' ') {
+                last_space = i;
+                last_space_end = end;
+            }
+            if (width + w > self.max_cells and i > start) {
+                if (last_space) |sp| {
+                    self.pos = last_space_end; // 공백은 다음 줄로 넘기지 않음
+                    return self.msg[start..sp];
+                }
+                self.pos = i; // 공백 없음 → 강제 분할
+                return self.msg[start..i];
+            }
+            width += w;
+            i = end;
+        }
+        self.pos = i;
+        return self.msg[start..i];
+    }
+};
 const dialog_button_radius_pt: u32 = 16;
 const dialog_button_color: ghostty.color.RGB = .{ .r = 45, .g = 125, .b = 210 }; // macOS 시스템 blue
 const dialog_button_text_color: ghostty.color.RGB = .{ .r = 255, .g = 255, .b = 255 };
@@ -735,9 +786,10 @@ pub const Renderer = struct {
         rect(memory, buffer_w, buffer_h, stride, text_x, text_y + @divTrunc(ch, 2), inner_w, 1, accent);
         text_y += ch;
 
-        // (4) Message lines (\n split).
-        var iter = std.mem.splitScalar(u8, message, '\n');
-        while (iter.next()) |line| {
+        // (4) Message lines — `\n` split + max_content_cells word-wrap (#300).
+        // computeDialogSize 와 동일 WrappedLines 라 박스 높이/폭과 정확히 일치.
+        var wl = WrappedLines{ .msg = message, .max_cells = dialog_max_content_cells };
+        while (wl.next()) |line| {
             self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
             text_y += ch;
         }
@@ -827,13 +879,16 @@ pub const Renderer = struct {
         const pad: i32 = @max(@as(i32, 8), @divTrunc(ch, 2));
         // confirm: Cancel 버튼 너비 추가 분기 (아래 buttons_w 계산).
 
-        var max_cells: usize = display_width.stringWidth(title);
+        // #300 — 긴 줄은 max_content_cells 폭으로 word-wrap. title 폭도 cap
+        // (title 은 짧은 상수라 실제 영향 거의 없음).
+        var max_cells: usize = @min(display_width.stringWidth(title), dialog_max_content_cells);
         var line_count: usize = 0;
-        var iter = std.mem.splitScalar(u8, message, '\n');
-        while (iter.next()) |line| {
+        var wl = WrappedLines{ .msg = message, .max_cells = dialog_max_content_cells };
+        while (wl.next()) |line| {
             max_cells = @max(max_cells, display_width.stringWidth(line));
             line_count += 1;
         }
+        if (line_count == 0) line_count = 1; // 빈 메시지도 최소 1행 확보.
         // 최소 30 cell 폭 — 너무 짧은 title 의 박스가 어색해지지 않게.
         const min_cells: usize = if (prompt) 42 else 30;
         max_cells = @max(max_cells, min_cells);
