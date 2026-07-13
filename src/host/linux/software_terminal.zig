@@ -11,6 +11,7 @@ const font = @import("../../font/linux/font.zig");
 const font_spec = @import("../../font/spec.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
+const cell_color = @import("../../renderer/cell_color.zig");
 const box_drawing = @import("../../box_drawing.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
@@ -20,8 +21,6 @@ const tab_layout = @import("../../tab_layout.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
-
-const scrollbar_thumb_color = ghostty.color.RGB{ .r = 96, .g = 96, .b = 96 };
 
 /// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
 /// NSAlert / Win 11 dialog 의 ~12-16 범위. fractional scaling 환경 에선 그대로
@@ -204,7 +203,7 @@ pub const Renderer = struct {
         return scaledPt(ui_metrics.TERMINAL_PADDING_PT, self.scale);
     }
 
-    /// 우측 스크롤바 thumb 너비. `ui_metrics.SCROLLBAR_W_PT` (8 pt) × scale.
+    /// 우측 스크롤바 thumb 너비. `ui_metrics.SCROLLBAR_W_PT` (10 pt) × scale.
     pub fn scrollbarWPx(self: *const Renderer) i32 {
         return scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale);
     }
@@ -328,7 +327,9 @@ pub const Renderer = struct {
             var x: usize = 0;
             while (x < cols and x < raws.len) {
                 const raw = raws[x];
-                if (raw.wide == .spacer_tail or raw.wide == .spacer_head) {
+                // spacer_head (wide 글자 wrap 직전 행 끝 cell) 는 bg/selection
+                // 은 그리고 text 단계에서만 제외 — Windows/macOS 동일 (#282 B9).
+                if (raw.wide == .spacer_tail) {
                     x += 1;
                     continue;
                 }
@@ -345,7 +346,7 @@ pub const Renderer = struct {
                     rect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, bg);
                 }
 
-                if (!raw.hasText() or raw.codepoint() == 0) {
+                if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) {
                     x += 1;
                     continue;
                 }
@@ -589,7 +590,17 @@ pub const Renderer = struct {
             const thumb_y_px: i32 = @intFromFloat(h.thumbTop());
             const thumb_h_px: i32 = @intFromFloat(h.g.thumb_h);
             const sb_x: i32 = width - sb_w;
-            rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, scrollbar_thumb_color);
+            // 공통 상수 `ui_metrics.SCROLLBAR_COLOR` (흰색 alpha 0.3) — thumb
+            // 밑은 padding (theme 배경) 이라 배경과 blend 한 불투명 색이 GPU
+            // renderer 의 per-pixel alpha 와 같은 결과 (#282 B4, tab hover 패턴).
+            const sc = rgbFromMetrics(ui_metrics.SCROLLBAR_COLOR);
+            const sb_alpha = ui_metrics.SCROLLBAR_COLOR[3];
+            const thumb_color = ghostty.color.RGB{
+                .r = blendU8(sc.r, colors.background.r, sb_alpha),
+                .g = blendU8(sc.g, colors.background.g, sb_alpha),
+                .b = blendU8(sc.b, colors.background.b, sb_alpha),
+            };
+            rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, thumb_color);
         }
 
         // --- L10-β: IME preedit (조합 중) inline overlay ---
@@ -1457,19 +1468,13 @@ fn drawLigatureMatch(
     }
 }
 
+// 색 해석 정책은 공유 모듈 `cell_color.zig` (#282 B2 — 이전 사본은
+// selection/inverse 시 cell 고유 색을 무시하고 theme 전역 fg/bg 를 써서
+// Windows/macOS 의 '색 교환' 렌더와 달랐다). software renderer 는 모든
+// cell 을 직접 칠하므로 null (= cell 고유 bg 없음) 을 theme 배경으로.
+
 fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, selected: bool) ghostty.color.RGB {
-    if (selected) return colors.background;
-    if (style.flags.inverse) return colors.background;
-    const base = style.fg(.{
-        .default = colors.foreground,
-        .palette = &colors.palette,
-        .bold = .bright,
-    });
-    if (style.flags.faint) {
-        const bg = style.bg(raw, &colors.palette) orelse colors.background;
-        return themes.faintBlend(base, bg);
-    }
-    return base;
+    return cell_color.resolveFg(style, raw, colors, selected, style.flags.inverse);
 }
 
 fn resolveBg(
@@ -1478,15 +1483,7 @@ fn resolveBg(
     colors: *const ghostty.RenderState.Colors,
     selected: bool,
 ) ghostty.color.RGB {
-    if (selected) return colors.foreground;
-    if (style.flags.inverse) {
-        return style.fg(.{
-            .default = colors.foreground,
-            .palette = &colors.palette,
-            .bold = .bright,
-        });
-    }
-    return style.bg(raw, &colors.palette) orelse colors.background;
+    return cell_color.resolveBg(style, raw, colors, selected, style.flags.inverse) orelse colors.background;
 }
 
 const isLigatureCandidate = @import("../../font/ligature.zig").isLigatureCandidate;
