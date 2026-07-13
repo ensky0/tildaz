@@ -24,6 +24,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const objc = @import("../macos_objc.zig");
 const dialog = @import("../dialog.zig");
+const log = @import("../log.zig");
 
 var nsapp_ready: bool = false;
 /// 우리 NSWindow (popup level) — alert 띄우는 동안만 normal level 로 낮춰야
@@ -493,9 +494,15 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
 /// (NSAlertFirstButtonReturn=1000). Esc=Cancel 은 NSAlert 가 자동 부여하지 않으므로
 /// 두 번째 버튼(Cancel)에 Esc keyEquivalent 를 명시. 반환: Quit → true.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
-    if (!nsapp_ready) return false; // bootstrap 단계엔 confirm 의미 없음.
+    // #282 C6 — bootstrap(NSApp 미준비) 단계에도 조용히 false 반환하지 않고
+    // `show` 와 동일하게 osascript 로 실제 2-버튼 confirm 을 띄운다 (Windows
+    // MessageBoxW / Linux overlay 처럼 backend 미가용에도 안내 후 사용자 선택).
+    if (!nsapp_ready) return confirmOsascript(title, message);
 
-    const alert = newAlert() orelse return false;
+    const alert = newAlert() orelse {
+        log.userFacing("dialog", "NSAlert 생성 실패 — confirm 을 osascript 로 대체");
+        return confirmOsascript(title, message);
+    };
     setMessage(alert, title);
     setInformative(alert, message);
     setStyle(alert, 1); // Informational
@@ -508,9 +515,45 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     return result == 1000;
 }
 
+/// osascript 2-버튼 confirm — OK → true, Cancel/닫기 → false (#282 C6).
+/// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
+fn confirmOsascript(title: []const u8, message: []const u8) bool {
+    var script_buf: [8192]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&script_buf);
+    const w = fbs.writer();
+    w.writeAll("display dialog \"") catch return false;
+    appendEscaped(w, message) catch return false;
+    w.writeAll("\" buttons {\"Cancel\", \"OK\"} default button \"OK\" cancel button \"Cancel\" with icon caution with title \"") catch return false;
+    appendEscaped(w, title) catch return false;
+    w.writeAll("\"") catch return false;
+    const script = fbs.getWritten();
+
+    var child = std.process.Child.init(
+        &.{ "/usr/bin/osascript", "-e", script },
+        std.heap.page_allocator,
+    );
+    const term = child.spawnAndWait() catch {
+        log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
+        return false;
+    };
+    return switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
 pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
-    if (!nsapp_ready) return null;
-    const alert = newAlert() orelse return null;
+    // #282 C6 — hotkey 캡처는 키 이벤트 modal 이라 osascript 로 대체 불가.
+    // backend 미가용 시 조용히 null 대신 안내 로그 후 null (호출부가 기존
+    // hotkey 유지 등 안전 처리).
+    if (!nsapp_ready) {
+        log.userFacing("dialog", "hotkey 캡처 dialog 를 아직 열 수 없음 (NSApp 미준비) — 변경 취소");
+        return null;
+    }
+    const alert = newAlert() orelse {
+        log.userFacing("dialog", "hotkey 캡처 dialog 생성 실패 — 변경 취소");
+        return null;
+    };
     setMessage(alert, title);
     setInformative(alert, message);
     setStyle(alert, 1);

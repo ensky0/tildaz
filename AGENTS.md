@@ -185,7 +185,7 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 
-panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요.
+패치 실패 / config 검증 / About 등 사용자 안내 dialog 는 모두 같은 경로 (`dialog.zig`) 를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요. **단 panic 은 예외** — Windows / macOS 는 `dialog.showError` + exit(1) 이지만 Linux 는 `showPanic` 이 log + `std.debug.defaultPanic` (stderr backtrace + abort) 으로, dialog 를 호출하지 않아요 (panic 시점엔 renderer / wayland state 가 불안정할 수 있어 overlay 대신 표준 abort — 의도된 차이, SPEC §6).
 
 # 터미널 환경변수 (TUI dark/light colorscheme)
 

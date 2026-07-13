@@ -805,6 +805,18 @@ const Client = struct {
     /// 의 `input_len - offset` 뺄셈이 underflow → integer overflow panic (#213).
     /// quit / dismiss 와 동일하게 deferred 로 reentrancy 제거.
     pending_about_request: bool = false,
+    /// #282 C1 — info/error dialog 도 About 과 같은 deferred. `showInfo` 는
+    /// 탭 한도(Ctrl+Shift+T)·shell 소실 알림에서 `handleNewTab`(= processKeyEvent
+    /// reentrant) 를 통해 동기 호출되는데, `openInfoDialog` → `createDialogSurface`
+    /// 의 roundtrip 이 outer dispatchBuffered 를 corrupt 한다 (About 과 동일 원인).
+    /// callback 은 아래 buffer 에 복사 + flag set 만, main loop 의 `drainInfoRequest`
+    /// 가 reentrancy 밖에서 연다.
+    pending_info_request: bool = false,
+    pending_info_severity: dialog_mod.Severity = .info,
+    pending_info_title_buf: [128]u8 = undefined,
+    pending_info_title_len: usize = 0,
+    pending_info_msg_buf: [512]u8 = undefined,
+    pending_info_msg_len: usize = 0,
     // L8-β — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
@@ -1270,6 +1282,7 @@ const Client = struct {
             // #213 — Ctrl+Shift+I deferred About. createDialogSurface 의 inner
             // roundtrip 을 outer dispatchBuffered 밖에서 돌려 buffer corrupt 회피.
             self.drainAboutRequest();
+            self.drainInfoRequest();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -5739,7 +5752,34 @@ const Client = struct {
     /// `dialog.showAboutAlert` 가 종착점으로 도달.
     fn dialogShowInfoCb(ctx: *anyopaque, severity: dialog_mod.Severity, title: []const u8, message: []const u8) void {
         const self: *Client = @ptrCast(@alignCast(ctx));
-        self.openInfoDialog(severity, title, message) catch |err| {
+        // #282 C1 — 즉시 열지 않고 deferred. 호출부(handleNewTab 등)가 dispatchBuffered
+        // reentrant 라 여기서 createDialogSurface(roundtrip)를 돌리면 buffer corrupt.
+        // title/message 는 호출부 stack buffer 일 수 있어 owned 로 복사.
+        const tlen = @min(title.len, self.pending_info_title_buf.len);
+        const mlen = @min(message.len, self.pending_info_msg_buf.len);
+        @memcpy(self.pending_info_title_buf[0..tlen], title[0..tlen]);
+        @memcpy(self.pending_info_msg_buf[0..mlen], message[0..mlen]);
+        self.pending_info_title_len = tlen;
+        self.pending_info_msg_len = mlen;
+        self.pending_info_severity = severity;
+        self.pending_info_request = true;
+    }
+
+    /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
+    /// 다른 dialog 가 이미 떠 있으면(About/confirm 등) 이번 info 는 버린다
+    /// (advisory 알림 — 탭 한도/shell 소실). fire-and-forget 이라 pump 불필요.
+    fn drainInfoRequest(self: *Client) void {
+        if (!self.pending_info_request) return;
+        self.pending_info_request = false;
+        if (self.dialog.active()) {
+            log.appendLine("dialog", "deferred info dropped — another dialog active", .{});
+            return;
+        }
+        self.openInfoDialog(
+            self.pending_info_severity,
+            self.pending_info_title_buf[0..self.pending_info_title_len],
+            self.pending_info_msg_buf[0..self.pending_info_msg_len],
+        ) catch |err| {
             log.appendLine("dialog", "openInfoDialog failed: {s} — falling back to log only", .{@errorName(err)});
         };
     }
@@ -5824,6 +5864,9 @@ const Client = struct {
         self.prompt_validator = validator;
         defer self.prompt_validator = null;
         self.openPromptDialog(title, message) catch return null;
+        // Inner pump — confirm pump(`runConfirmDialog`)와 동일 work 로 (#282 C4).
+        // 이전엔 key repeat / PTY drain / redraw 를 생략해 캡처 dialog 동안
+        // 배경 터미널이 정지했다 (Windows GetMessageW / macOS runModal 은 계속 그림).
         while (self.running and self.pending_prompt_result == null) {
             self.pollAndDispatch(frame_poll_ms) catch {
                 self.pending_prompt_result = false;
@@ -5832,6 +5875,13 @@ const Client = struct {
             self.drainPendingDialogDismiss();
             self.drainExitedTabs();
             self.dispatchDbusMessages();
+            self.maybeRepeatKey() catch {};
+            if (self.session) |*session| {
+                if (session.drainOutputForRender()) {
+                    self.requestRedraw();
+                }
+            }
+            self.maybeRedraw() catch {};
         }
         const accepted = self.pending_prompt_result orelse false;
         self.pending_prompt_result = null;
