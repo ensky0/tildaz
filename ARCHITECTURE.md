@@ -21,7 +21,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
 | Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, `_` comment keys, current `config_N.json` / `tildazN.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
-| PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/macos/pty.zig`, `src/terminal/linux/pty.zig` | ConPTY or POSIX PTY behind the same external API |
+| PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
 | Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape. Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
 | Renderer (Linux software) | No — host-owned | `src/host/linux/software_terminal.zig` | Software `wl_shm` renderer drawn directly by the Linux host; shares cross-platform pieces (`tab_layout`, `block_element`, `ui_metrics`) |
 | Fonts | Per OS with shared sizing contract | `src/font/spec.zig`, `src/font/windows`, `src/font/macos`, `src/font/linux` | Native font lookup and fallback; separate terminal and fixed-size tab-label contexts/atlases |
@@ -68,8 +68,8 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    owns that worker's `NSApplication`, `NSWindow`, global hotkey event tap,
    AppKit input callbacks, and an `NSWindow.displayLink` (CADisplayLink) render
    loop that auto-suspends while hidden (#255, min macOS 14).
-2. `terminal/macos/pty.zig` uses `openpty` + `login_tty` + IUTF8 termios and
-   tears down child process groups on tab close.
+2. `terminal/posix/pty.zig` (shared with Linux) uses `openpty` + `login_tty` +
+   IUTF8 termios on macOS and tears down child process groups on tab close.
 3. The same `session_core.zig` tab/session model is used as Windows.
 4. `renderer/macos.zig` draws with CoreText glyph rasterization and a Metal
    atlas. `renderTabBar` starts the frame; `renderTerminal` presents it.
@@ -87,8 +87,8 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    `wl_shm` buffers, keyboard / pointer / data-device, `zwp_text_input_v3` IME,
    the D-Bus / XDG-portal global-shortcut path, and the main event loop.
 3. The same `session_core.zig` tab/session model is used as Windows / macOS.
-4. `terminal/linux/pty.zig` opens a POSIX PTY (`/dev/ptmx`, `setsid`,
-   `TIOCSCTTY`) behind the shared `terminal.zig` API.
+4. `terminal/posix/pty.zig` (shared with macOS) opens a POSIX PTY (`/dev/ptmx`,
+   `setsid`, `TIOCSCTTY` on Linux) behind the shared `terminal.zig` API.
 5. `host/linux/software_terminal.zig` is a software `wl_shm` renderer that draws
    the terminal grid and tab bar directly into an ARGB8888 buffer. `xkb.zig`
    (runtime `libxkbcommon`) decodes keys; fonts come from fontconfig + FreeType

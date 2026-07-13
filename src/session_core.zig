@@ -296,7 +296,6 @@ pub const Tab = struct {
             .cols = cols,
             .rows = rows,
             .shell = shell,
-            .theme = theme,
             .extra_env = extra_env,
         });
         errdefer backend.deinit();
