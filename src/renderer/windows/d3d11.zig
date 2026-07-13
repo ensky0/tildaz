@@ -766,8 +766,11 @@ pub extern "d3d11" fn D3D11CreateDevice(
 
 pub extern "dxgi" fn CreateDXGIFactory1(riid: *const GUID, ppFactory: *?*anyopaque) callconv(.c) HRESULT;
 
-pub extern "dcomp" fn DCompositionCreateDevice(
-    dxgiDevice: *anyopaque,
+// v3 — visual 객체의 인터페이스 버전은 *만든 device 버전* 을 따른다. v1
+// DCompositionCreateDevice 의 visual 은 IDCompositionVisual3 QI 가 실패
+// (Windows 실기 실측) → SetOpacity 불가. Device3 로 만들어야 Visual3 지원.
+pub extern "dcomp" fn DCompositionCreateDevice3(
+    renderingDevice: *anyopaque,
     iid: *const GUID,
     dcompositionDevice: *?*anyopaque,
 ) callconv(.c) HRESULT;
@@ -849,11 +852,11 @@ pub const IDXGIFactory2 = extern struct {
     }
 };
 
-pub const IID_IDCompositionDevice = GUID{
-    .Data1 = 0xC37EA93A,
-    .Data2 = 0xE7AA,
-    .Data3 = 0x450D,
-    .Data4 = .{ 0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3 },
+pub const IID_IDCompositionDesktopDevice = GUID{
+    .Data1 = 0x5F4633FE,
+    .Data2 = 0x1E08,
+    .Data3 = 0x4CB8,
+    .Data4 = .{ 0x8C, 0x75, 0xCE, 0x24, 0x33, 0x3F, 0x56, 0x02 },
 };
 
 pub const IID_IDCompositionVisual3 = GUID{
@@ -863,32 +866,55 @@ pub const IID_IDCompositionVisual3 = GUID{
     .Data4 = .{ 0xB0, 0xBE, 0xB3, 0xE7, 0xD6, 0xA4, 0x97, 0x6D },
 };
 
-pub const IDCompositionDevice = extern struct {
+// IDCompositionDesktopDevice (: IDCompositionDevice2) — Device2 메서드
+// 21개(slot 3-23: Commit, WaitForCommitCompletion, GetFrameStatistics,
+// CreateVisual, CreateSurfaceFactory, CreateSurface, CreateVirtualSurface,
+// Translate/Scale/Rotate/Skew/Matrix/Group transform 6, 3D transform 5,
+// EffectGroup, RectangleClip, Animation) 뒤에 DesktopDevice 의
+// CreateTargetForHwnd(24)·CreateSurfaceFromHandle(25)·CreateSurfaceFromHwnd(26).
+pub const IDCompositionDesktopDevice = extern struct {
     vtable: *const VTable,
 
     const VTable = extern struct {
-        // IUnknown (0-2)
-        QueryInterface: *const anyopaque,
-        AddRef: *const anyopaque,
-        Release: *const fn (*IDCompositionDevice) callconv(.c) u32,
-        // IDCompositionDevice (3-)
-        Commit: *const fn (*IDCompositionDevice) callconv(.c) HRESULT, // 3
+        QueryInterface: *const anyopaque, // 0
+        AddRef: *const anyopaque, // 1
+        Release: *const fn (*IDCompositionDesktopDevice) callconv(.c) u32, // 2
+        Commit: *const fn (*IDCompositionDesktopDevice) callconv(.c) HRESULT, // 3
         WaitForCommitCompletion: *const anyopaque, // 4
         GetFrameStatistics: *const anyopaque, // 5
-        CreateTargetForHwnd: *const fn (*IDCompositionDevice, ?*anyopaque, i32, *?*IDCompositionTarget) callconv(.c) HRESULT, // 6
-        CreateVisual: *const fn (*IDCompositionDevice, *?*IDCompositionVisual) callconv(.c) HRESULT, // 7
+        CreateVisual: *const fn (*IDCompositionDesktopDevice, *?*IDCompositionVisual) callconv(.c) HRESULT, // 6
+        CreateSurfaceFactory: *const anyopaque, // 7
+        CreateSurface: *const anyopaque, // 8
+        CreateVirtualSurface: *const anyopaque, // 9
+        CreateTranslateTransform: *const anyopaque, // 10
+        CreateScaleTransform: *const anyopaque, // 11
+        CreateRotateTransform: *const anyopaque, // 12
+        CreateSkewTransform: *const anyopaque, // 13
+        CreateMatrixTransform: *const anyopaque, // 14
+        CreateTransformGroup: *const anyopaque, // 15
+        CreateTranslateTransform3D: *const anyopaque, // 16
+        CreateScaleTransform3D: *const anyopaque, // 17
+        CreateRotateTransform3D: *const anyopaque, // 18
+        CreateMatrixTransform3D: *const anyopaque, // 19
+        CreateTransform3DGroup: *const anyopaque, // 20
+        CreateEffectGroup: *const anyopaque, // 21
+        CreateRectangleClip: *const anyopaque, // 22
+        CreateAnimation: *const anyopaque, // 23
+        CreateTargetForHwnd: *const fn (*IDCompositionDesktopDevice, ?*anyopaque, i32, *?*IDCompositionTarget) callconv(.c) HRESULT, // 24
+        CreateSurfaceFromHandle: *const anyopaque, // 25
+        CreateSurfaceFromHwnd: *const anyopaque, // 26
     };
 
-    pub fn Release(self: *IDCompositionDevice) u32 {
+    pub fn Release(self: *IDCompositionDesktopDevice) u32 {
         return self.vtable.Release(self);
     }
-    pub fn Commit(self: *IDCompositionDevice) HRESULT {
+    pub fn Commit(self: *IDCompositionDesktopDevice) HRESULT {
         return self.vtable.Commit(self);
     }
-    pub fn CreateTargetForHwnd(self: *IDCompositionDevice, hwnd: ?*anyopaque, topmost: i32, out: *?*IDCompositionTarget) HRESULT {
+    pub fn CreateTargetForHwnd(self: *IDCompositionDesktopDevice, hwnd: ?*anyopaque, topmost: i32, out: *?*IDCompositionTarget) HRESULT {
         return self.vtable.CreateTargetForHwnd(self, hwnd, topmost, out);
     }
-    pub fn CreateVisual(self: *IDCompositionDevice, out: *?*IDCompositionVisual) HRESULT {
+    pub fn CreateVisual(self: *IDCompositionDesktopDevice, out: *?*IDCompositionVisual) HRESULT {
         return self.vtable.CreateVisual(self, out);
     }
 };
