@@ -147,14 +147,53 @@ fn rgb(r: u8, g: u8, b: u8) DWORD {
     return @as(DWORD, r) | (@as(DWORD, g) << 8) | (@as(DWORD, b) << 16);
 }
 
+/// UTF-8 을 WCHAR 버퍼에 codepoint 경계에서 잘라 인코딩 — buf 를 넘는 부분은
+/// 버린다 (#282 C5). NUL 자리 위해 마지막 1칸을 비워 둠. 반환 = 기록된 WCHAR
+/// 수(NUL 제외). 불완전/오류 byte 는 U+FFFD 로 치환해 항상 뭔가 표시.
+/// UTF-16 units ≤ UTF-8 bytes 라 truncate 는 codepoint 를 쪼개지 않는다.
+fn encodeTruncated(dst: []WCHAR, src: []const u8) usize {
+    var out: usize = 0;
+    var i: usize = 0;
+    while (i < src.len and out + 2 < dst.len) { // +2: 최대 surrogate pair + NUL 여유
+        const seq_len = std.unicode.utf8ByteSequenceLength(src[i]) catch {
+            dst[out] = 0xFFFD;
+            out += 1;
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > src.len) break;
+        const cp = std.unicode.utf8Decode(src[i .. i + seq_len]) catch {
+            dst[out] = 0xFFFD;
+            out += 1;
+            i += 1;
+            continue;
+        };
+        i += seq_len;
+        if (cp < 0x10000) {
+            if (out + 1 >= dst.len) break;
+            dst[out] = @intCast(cp);
+            out += 1;
+        } else {
+            // astral plane → UTF-16 surrogate pair.
+            if (out + 2 >= dst.len) break;
+            const v = cp - 0x10000;
+            dst[out] = @intCast(0xD800 + (v >> 10));
+            dst[out + 1] = @intCast(0xDC00 + (v & 0x3FF));
+            out += 2;
+        }
+    }
+    return out;
+}
+
 /// UTF-8 title / message 를 NUL-terminated WCHAR 버퍼에 인코딩 후 MessageBoxW
-/// 호출. 변환 실패 / overflow 시 `default` 반환 (caller 가 적절한 fallback 결정).
-fn messageBox(title: []const u8, message: []const u8, flags: c_uint, default: c_int) c_int {
+/// 호출. 한도 초과 시 잘라서라도 항상 표시 (#282 C5 — macOS 8KB / Linux 4096B
+/// truncate 와 정합). 이전엔 overflow 시 dialog 없이 default 반환이라 긴
+/// 메시지(예: config 검증 상세)에서 아무것도 안 떴다.
+fn messageBox(title: []const u8, message: []const u8, flags: c_uint) c_int {
     var title_buf: [256]WCHAR = undefined;
     var msg_buf: [4096]WCHAR = undefined;
-    const tlen = std.unicode.utf8ToUtf16Le(&title_buf, title) catch return default;
-    const mlen = std.unicode.utf8ToUtf16Le(&msg_buf, message) catch return default;
-    if (tlen >= title_buf.len or mlen >= msg_buf.len) return default;
+    const tlen = encodeTruncated(&title_buf, title);
+    const mlen = encodeTruncated(&msg_buf, message);
     title_buf[tlen] = 0;
     msg_buf[mlen] = 0;
 
@@ -171,7 +210,7 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
         .info => MB_ICONINFORMATION,
         .err => MB_ICONERROR,
     };
-    _ = messageBox(title, message, flags, 0);
+    _ = messageBox(title, message, flags);
 }
 
 /// About 다이얼로그 — Windows 의 MessageBoxW 는 자체 ctrl+c 동작 OK 라
@@ -188,11 +227,11 @@ pub fn showAboutAlert(title: []const u8, message: []const u8) void {
 /// 종료 방지' 폐기 — 다이얼로그 출현 자체가 speed bump.)
 /// 반환: OK → true, Cancel / 닫기 → false.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
+    // MessageBoxW 자체 실패(0 반환) 시 result != IDOK → false (안전 default).
     const result = messageBox(
         title,
         message,
         MB_OKCANCEL | MB_ICONQUESTION | MB_TOPMOST,
-        0, // 변환 실패 → false (안전한 default).
     );
     return result == IDOK;
 }
