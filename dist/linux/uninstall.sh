@@ -8,6 +8,9 @@
 #   ~/.config/autostart/tildaz.desktop  (있으면 — autostart enabled 시)
 #   ~/.local/bin/tildaz  (symlink 일 때만 — 사용자가 둔 실제 파일은 보존)
 #   GNOME / Cinnamon TildaZ extension
+#   GNOME / Cinnamon gsettings custom keybinding tildaz-N (extension 비활성 시
+#     runtime 이 등록) — 리스트 항목 + dconf 서브트리
+#   KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] 그룹
 #   ~/.config/sway/config 의 tildaz 블록 (install.sh 가 넣은 marker+exec 2줄만.
 #     파일/본문은 보존, marker 없는 사용자 작성 줄은 안 건드림)
 #   ~/.config/hypr/{hyprland.conf,hyprland.lua} 의 tildaz 블록 (marker + 다음 줄
@@ -101,6 +104,85 @@ fi
 if [[ -d "$CINNAMON_EXT" ]]; then
     rm -rf "$CINNAMON_EXT"
     echo "Removed: $CINNAMON_EXT"
+    removed=$((removed + 1))
+fi
+
+# GNOME / Cinnamon 이 영구 저장하는 custom keybinding 제거 (#292 E2). runtime
+# 이 extension 비활성 fallback 으로 gsettings 에 등록(gsettings_hotkey.zig)한 뒤
+# uninstall 이 안 지우면 삭제된 binary 를 가리키는 hotkey grab 이 남는다.
+# 리스트(custom-keybindings / custom-list)에서 tildaz 항목만 빼고, 해당 dconf
+# 서브트리(`.../custom-keybindings/tildaz-N/`)를 reset 한다. install↔uninstall 대칭.
+# 리스트 요소는 GNOME=full dconf path, Cinnamon=id(tildaz-N) 로 형식이 다르다.
+clean_gsettings_keybindings() {
+    local schema="$1" key="$2" mode="$3" label="$4"
+    command -v gsettings >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    command -v dconf >/dev/null 2>&1 || return 0
+    local cur
+    cur="$(gsettings get "$schema" "$key" 2>/dev/null || true)"
+    [[ -n "$cur" ]] || return 0
+    [[ "$cur" == *tildaz* ]] || return 0
+    # python3: 1행=남길 리스트(GVariant 표기), 이후 각 행=reset 할 dconf path.
+    local out
+    out="$(python3 - "$cur" "$mode" <<'PY'
+import sys
+cur, mode = sys.argv[1].strip(), sys.argv[2]
+i = cur.find('[')
+items = []
+if i >= 0:
+    body = cur[i + 1:cur.rfind(']')]
+    items = [x.strip().strip("'\"") for x in body.split(',') if x.strip()]
+keep, resets = [], []
+for it in items:
+    if mode == 'gnome':
+        is_tildaz = '/custom-keybindings/tildaz-' in it
+        path = it  # GNOME 리스트 요소가 이미 full dconf path
+    else:  # cinnamon: 요소는 id(tildaz-N), path 는 조립
+        is_tildaz = it.startswith('tildaz-')
+        path = '/org/cinnamon/desktop/keybindings/custom-keybindings/%s/' % it
+    if is_tildaz:
+        if not path.endswith('/'):
+            path += '/'
+        resets.append(path)
+    else:
+        keep.append(it)
+print('[' + ', '.join("'%s'" % x for x in keep) + ']')
+for p in resets:
+    print(p)
+PY
+)"
+    [[ -n "$out" ]] || return 0
+    # mapfile 로 줄 분리 — `printf | head/tail` 는 pipefail(set -o) 에서 SIGPIPE
+    # 로 스크립트를 죽일 수 있어 회피. lines[0]=남길 리스트, lines[1..]=reset path.
+    local lines=()
+    mapfile -t lines <<< "$out"
+    [[ ${#lines[@]} -ge 1 && -n "${lines[0]}" ]] || return 0
+    gsettings set "$schema" "$key" "${lines[0]}" 2>/dev/null || true
+    local k
+    for ((k = 1; k < ${#lines[@]}; k++)); do
+        [[ -n "${lines[k]}" ]] || continue
+        dconf reset -f "${lines[k]}" 2>/dev/null || true
+    done
+    echo "Removed: tildaz custom keybindings in gsettings ($label)"
+    removed=$((removed + 1))
+}
+clean_gsettings_keybindings "org.gnome.settings-daemon.plugins.media-keys" "custom-keybindings" "gnome" "GNOME"
+clean_gsettings_keybindings "org.cinnamon.desktop.keybindings" "custom-list" "cinnamon" "Cinnamon"
+
+# KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] component 그룹 제거
+# (#292 E2). runtime 이 KGlobalAccel.setShortcut(NoAutoloading) 로 영구 저장한다
+# (portal.zig). 그룹 헤더부터 다음 그룹([...]) 직전까지 삭제. 현재 세션의
+# in-memory grab 은 로그아웃 시 해제되고, 다음 로그인 땐 정리된 파일을 읽는다.
+KGLOBAL="$HOME/.config/kglobalshortcutsrc"
+if [[ -f "$KGLOBAL" ]] && grep -qE '^\[tildaz\.instance[0-9]+\]' "$KGLOBAL"; then
+    tmp="$KGLOBAL.tildaz-uninstall-tmp"
+    awk '
+        /^\[/ { skip = ($0 ~ /^\[tildaz\.instance[0-9]+\]$/) }
+        skip { next }
+        { print }
+    ' "$KGLOBAL" > "$tmp"
+    mv "$tmp" "$KGLOBAL"
+    echo "Removed: [tildaz.instanceN] groups in $KGLOBAL"
     removed=$((removed + 1))
 fi
 
