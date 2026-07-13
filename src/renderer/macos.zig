@@ -22,7 +22,7 @@ const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
-const themes = @import("../themes.zig");
+const cell_color = @import("cell_color.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
@@ -1553,8 +1553,10 @@ fn emitLigatureMatch(
     }
 }
 
-// --- 색상 해석 (Windows renderer 와 같은 규칙) ---
+// --- 색상 해석 — 공유 모듈 `cell_color.zig` (#282 B2, 세 renderer 공통 정책) ---
 
+/// null (= cell 고유 bg 없음) 을 default-bg float 로 변환만 — 호출부가
+/// is_custom_bg 로 instance 생략하므로 실제로는 도달 안 하는 방어값.
 fn resolveBg(
     style: ghostty.Style,
     raw: *const ghostty.Cell,
@@ -1565,35 +1567,10 @@ fn resolveBg(
     dbg_g: f32,
     dbg_b: f32,
 ) [3]f32 {
-    if (is_selected or is_inverse) {
-        const fg = style.fg(.{ .default = colors.foreground, .palette = &colors.palette });
-        return .{ MetalRenderer.colorF(fg.r), MetalRenderer.colorF(fg.g), MetalRenderer.colorF(fg.b) };
-    }
-    if (style.bg(raw, &colors.palette)) |bg_col| {
-        return .{ MetalRenderer.colorF(bg_col.r), MetalRenderer.colorF(bg_col.g), MetalRenderer.colorF(bg_col.b) };
+    if (cell_color.resolveBg(style, raw, colors, is_selected, is_inverse)) |rgb| {
+        return .{ MetalRenderer.colorF(rgb.r), MetalRenderer.colorF(rgb.g), MetalRenderer.colorF(rgb.b) };
     }
     return .{ dbg_r, dbg_g, dbg_b };
 }
 
-fn resolveFg(
-    style: ghostty.Style,
-    raw: *const ghostty.Cell,
-    colors: *const ghostty.RenderState.Colors,
-    is_selected: bool,
-    is_inverse: bool,
-) ghostty.color.RGB {
-    if (is_selected or is_inverse) {
-        if (style.bg(raw, &colors.palette)) |bg_col| return bg_col;
-        return colors.background;
-    }
-    const base = style.fg(.{
-        .default = colors.foreground,
-        .palette = &colors.palette,
-        .bold = .bright,
-    });
-    if (style.flags.faint) {
-        const bg = style.bg(raw, &colors.palette) orelse colors.background;
-        return themes.faintBlend(base, bg);
-    }
-    return base;
-}
+const resolveFg = cell_color.resolveFg;

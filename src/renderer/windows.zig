@@ -19,8 +19,8 @@ const tab_layout = @import("../tab_layout.zig");
 const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const block_element = @import("block_element.zig");
+const cell_color = @import("cell_color.zig");
 const box_drawing = @import("../box_drawing.zig");
-const themes = @import("../themes.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
@@ -1610,35 +1610,17 @@ pub const D3d11Renderer = struct {
 
     // --- Color helpers ---
 
+    /// 색 해석 정책은 공유 모듈 `cell_color.zig` (#282 B2). 여기선 null
+    /// (= cell 고유 bg 없음) 을 default-bg float 로 변환만 — 호출부가
+    /// is_custom_bg 로 instance 생략하므로 실제로는 도달 안 하는 방어값.
     fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool, dbg_r: f32, dbg_g: f32, dbg_b: f32) [3]f32 {
-        if (is_selected or is_inverse) {
-            const rgb = style.fg(.{
-                .default = colors.foreground,
-                .palette = &colors.palette,
-            });
-            return .{ colorF(rgb.r), colorF(rgb.g), colorF(rgb.b) };
-        }
-        if (style.bg(raw, &colors.palette)) |rgb| {
+        if (cell_color.resolveBg(style, raw, colors, is_selected, is_inverse)) |rgb| {
             return .{ colorF(rgb.r), colorF(rgb.g), colorF(rgb.b) };
         }
         return .{ dbg_r, dbg_g, dbg_b };
     }
 
-    fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool) ghostty.color.RGB {
-        if (is_selected or is_inverse) {
-            return style.bg(raw, &colors.palette) orelse colors.background;
-        }
-        const base = style.fg(.{
-            .default = colors.foreground,
-            .palette = &colors.palette,
-            .bold = .bright,
-        });
-        if (style.flags.faint) {
-            const bg = style.bg(raw, &colors.palette) orelse colors.background;
-            return themes.faintBlend(base, bg);
-        }
-        return base;
-    }
+    const resolveFg = cell_color.resolveFg;
 
     /// Block element + shade 처리는 양 platform 공유 모듈 `block_element.zig` 로
     /// 옮김 (#155). Windows / macOS 가 동일 코드포인트 → cell-fraction 좌표
