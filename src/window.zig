@@ -504,8 +504,16 @@ pub const Window = struct {
         const title_utf8 = std.fmt.bufPrint(&title_utf8_buf, "TildaZ-{d}", .{@import("instance_context.zig").requireWorkerIndex()}) catch "TildaZ";
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title_utf8) catch 0;
         title_buf[title_len] = 0;
+        // #89 — opacity 100% (기본값) 면 WS_EX_LAYERED 를 걸지 않는다. layered
+        // 창은 renderer 가 구형 BitBlt swap chain(DISCARD, redirection bitmap
+        // 경유)으로 강제되어 fullscreen↔dock rect 전환 시 stale frame stretch
+        // 의 구조적 원인. 불투명 창은 flip-model 로 present 돼 glitch 경로가
+        // 없다. 투명도(<100%)는 기존 layered 경로 유지 (완전 해소는 #89 2단계
+        // DirectComposition).
+        const ex_style: DWORD = WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
+            (if (opacity < 255) WS_EX_LAYERED else 0);
         self.hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            ex_style,
             CLASS_NAME,
             @ptrCast(title_buf[0..title_len :0]),
             WS_POPUP,
@@ -528,7 +536,9 @@ pub const Window = struct {
         // Store self pointer in window userdata
         _ = SetWindowLongPtrW(self.hwnd, GWL_USERDATA, @intCast(@intFromPtr(self)));
 
-        _ = SetLayeredWindowAttributes(self.hwnd, 0, opacity, LWA_ALPHA);
+        if (opacity < 255) {
+            _ = SetLayeredWindowAttributes(self.hwnd, 0, opacity, LWA_ALPHA);
+        }
 
         // DWM window transition 애니메이션 비활성화. Alt+Enter 로 fullscreen ↔
         // dock rect 전환 직후 F1 로 SW_HIDE 하면, DWM 이 "현재 rect 에서 이전
