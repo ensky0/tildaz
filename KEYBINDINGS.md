@@ -29,7 +29,9 @@ to all four edges — Alt+Enter covers the panels (`exclusive_zone = -1`),
 Shift+Alt+Enter keeps them visible (`exclusive_zone = 0`); GNOME and Cinnamon
 (no layer-shell) use `xdg_toplevel.set_fullscreen` / `set_maximized`. The toggle
 applies only while the terminal is visible, and the fullscreen state is
-preserved across F1 hide/show. The perf-snapshot shortcut (Ctrl+Shift+F12)
+preserved across F1 hide/show. Each fullscreen mode is exited only by its own
+shortcut: pressing the *other* combination while fullscreen is ignored on all
+three platforms (leave the current mode first, then enter the other one). The perf-snapshot shortcut (Ctrl+Shift+F12)
 writes a render / read-loop timing snapshot to the log and works on all three
 platforms.
 
