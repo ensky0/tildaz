@@ -981,11 +981,15 @@ pub const IDCompositionVisual = extern struct {
 };
 
 // IDCompositionVisual3 (: VisualDebug : Visual2 : Visual) — SetOpacity(float)
-// 는 slot 29. slot 산정: Visual(3-19) + Visual2 SetOpacityMode(20)·
-// SetBackFaceVisibility(21) + VisualDebug Enable/DisableHeatMap(22-23)·
-// Enable/DisableRedrawRegions(24-25) + Visual3 SetDepthMode(26)·
-// SetOffsetZ f/anim(27-28)·SetOpacity f(29). 수기 산정 — Windows 실기에서
-// 반투명 표시로 검증 (#89 2단계 계획 댓글).
+// 는 slot **30**. dcomp 의 오버로드는 vtable 에서 **animation 버전이 float
+// 버전보다 먼저** 온다 (Wine dcomp.idl `SetOffsetXAnimation` → `SetOffsetX(f)`
+// 로 확인 + 실기 crash 로 확인: slot 29 를 float 로 호출하면 그건 실제로는
+// SetOpacity(animation) 라 f32 를 포인터로 해석해 access violation).
+// slot 산정: IUnknown(0-2) + Visual(3-19, SetContent=15 로 실기 검증됨) +
+// Visual2 SetOpacityMode(20)·SetBackFaceVisibility(21) + VisualDebug
+// Enable/DisableHeatMap(22-23)·Enable/DisableRedrawRegions(24-25) + Visual3
+// SetDepthMode(26)·SetOffsetZ anim(27)·SetOffsetZ float(28)·SetOpacity
+// anim(29)·**SetOpacity float(30)**.
 pub const IDCompositionVisual3 = extern struct {
     vtable: *const VTable,
 
@@ -1019,7 +1023,8 @@ pub const IDCompositionVisual3 = extern struct {
         pad26: *const anyopaque,
         pad27: *const anyopaque,
         pad28: *const anyopaque,
-        SetOpacity: *const fn (*IDCompositionVisual3, f32) callconv(.c) HRESULT, // 29
+        pad29: *const anyopaque, // SetOpacity(animation) — 미사용
+        SetOpacity: *const fn (*IDCompositionVisual3, f32) callconv(.c) HRESULT, // 30
     };
 
     pub fn Release(self: *IDCompositionVisual3) u32 {
