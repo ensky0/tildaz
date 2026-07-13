@@ -777,6 +777,11 @@ pub extern "dcomp" fn DCompositionCreateDevice3(
 
 pub const DXGI_SCALING_STRETCH: u32 = 0;
 pub const DXGI_ALPHA_MODE_PREMULTIPLIED: u32 = 1;
+// per-pixel 알파 무시 (내용 불투명 취급). 투명도는 DComp visual 의 uniform
+// SetOpacity 가 담당 — 우리 렌더가 대상 알파를 1 로 보장하지 않아도(기존
+// layered 경로는 per-pixel 알파 미사용) premultiplied 의 '색×0=투명' 으로
+// 창이 통째로 사라지는 문제 회피 (#89 2단계 실기).
+pub const DXGI_ALPHA_MODE_IGNORE: u32 = 3;
 
 pub const DXGI_SWAP_CHAIN_DESC1 = extern struct {
     Width: u32,
