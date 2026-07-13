@@ -8,7 +8,9 @@ const std = @import("std");
 
 const FcConfig = opaque {};
 const FcPattern = opaque {};
+const FcCharSet = opaque {};
 const FcChar8 = u8;
+const FcChar32 = u32;
 
 // FcMatchKind enum.
 const FC_MATCH_PATTERN: c_int = 0;
@@ -42,6 +44,14 @@ const FcPatternGetString = *const fn (
     s: *[*:0]FcChar8,
 ) callconv(.c) c_int;
 const FcFini = *const fn () callconv(.c) void;
+const FcCharSetCreate = *const fn () callconv(.c) ?*FcCharSet;
+const FcCharSetDestroy = *const fn (cs: *FcCharSet) callconv(.c) void;
+const FcCharSetAddChar = *const fn (cs: *FcCharSet, ucs4: FcChar32) callconv(.c) c_int;
+const FcPatternAddCharSet = *const fn (
+    p: *FcPattern,
+    object: [*:0]const u8,
+    cs: *const FcCharSet,
+) callconv(.c) c_int;
 
 const Api = struct {
     handle: *anyopaque,
@@ -54,6 +64,10 @@ const Api = struct {
     font_match: FcFontMatch,
     pattern_get_string: FcPatternGetString,
     fini: FcFini,
+    charset_create: FcCharSetCreate,
+    charset_destroy: FcCharSetDestroy,
+    charset_add_char: FcCharSetAddChar,
+    pattern_add_charset: FcPatternAddCharSet,
 
     fn load() !Api {
         const handle = std.c.dlopen("libfontconfig.so.1", .{ .LAZY = true }) orelse return error.FontconfigLibraryMissing;
@@ -70,6 +84,10 @@ const Api = struct {
             .font_match = lookupSym(handle, FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
             .pattern_get_string = lookupSym(handle, FcPatternGetString, "FcPatternGetString") orelse return error.FontconfigSymbolMissing,
             .fini = lookupSym(handle, FcFini, "FcFini") orelse return error.FontconfigSymbolMissing,
+            .charset_create = lookupSym(handle, FcCharSetCreate, "FcCharSetCreate") orelse return error.FontconfigSymbolMissing,
+            .charset_destroy = lookupSym(handle, FcCharSetDestroy, "FcCharSetDestroy") orelse return error.FontconfigSymbolMissing,
+            .charset_add_char = lookupSym(handle, FcCharSetAddChar, "FcCharSetAddChar") orelse return error.FontconfigSymbolMissing,
+            .pattern_add_charset = lookupSym(handle, FcPatternAddCharSet, "FcPatternAddCharSet") orelse return error.FontconfigSymbolMissing,
         };
     }
 
@@ -110,6 +128,41 @@ pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult 
 
     if (api.pattern_add_string(pattern, "family", family) == 0) return error.FontconfigPatternAddFailed;
 
+    return matchAndExtract(&api, pattern, allocator);
+}
+
+/// `cp` 를 가진 폰트의 fontconfig 매치 (`fc-match ':charset=XXXX'` 동등) —
+/// chain 밖 codepoint 의 system font fallback (#289 B5). Windows
+/// `MapCharacters` / macOS `CTFontCreateForString` 의 per-codepoint fallback
+/// 에 해당.
+///
+/// 주의: FcFontMatch 는 charset 을 *점수* 로만 반영해 시스템 어느 폰트도 cp
+/// 를 안 가져도 "최선" 폰트를 반환한다 (error 아님). caller 가 로드한 face 의
+/// `get_char_index(cp)` 로 실보유를 확인하고, 미보유면 negative cache 에
+/// 기록해 재조회를 막아야 한다.
+pub fn lookupForChar(allocator: std.mem.Allocator, cp: u21) !MatchResult {
+    var api = try Api.load();
+    defer api.deinit();
+
+    if (api.init() == 0) return error.FontconfigInitFailed;
+    defer api.fini();
+
+    const pattern = api.pattern_create() orelse return error.FontconfigPatternCreateFailed;
+    defer api.pattern_destroy(pattern);
+
+    const charset = api.charset_create() orelse return error.FontconfigCharSetCreateFailed;
+    // FcPatternAddCharSet 은 charset 을 복사(FcValueSave)하므로 우리 것은
+    // pattern 과 독립적으로 파괴해도 안전.
+    defer api.charset_destroy(charset);
+    if (api.charset_add_char(charset, cp) == 0) return error.FontconfigCharSetAddFailed;
+    if (api.pattern_add_charset(pattern, "charset", charset) == 0) return error.FontconfigPatternAddFailed;
+
+    return matchAndExtract(&api, pattern, allocator);
+}
+
+/// substitute → match → family/file 추출의 공통 꼬리. `lookup` (family 기반)
+/// 과 `lookupForChar` (charset 기반) 가 공유.
+fn matchAndExtract(api: *const Api, pattern: *FcPattern, allocator: std.mem.Allocator) !MatchResult {
     if (api.config_substitute(null, pattern, FC_MATCH_PATTERN) == 0) return error.FontconfigSubstituteFailed;
     api.default_substitute(pattern);
 

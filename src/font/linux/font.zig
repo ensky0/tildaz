@@ -4,7 +4,9 @@
 //! [src/font/windows/font.zig](../windows/font.zig) (DWriteFontContext) /
 //! [src/font/macos/font.zig](../macos/font.zig) (CoreTextFontContext) 와 같은
 //! 역할. `glyph(cp)` 가 primary → fallback chain 순회로 첫 매치 face 에서
-//! raster + cache. chain 모두 미스면 primary 의 placeholder ('?') 반환.
+//! raster + cache. chain 모두 미스면 fontconfig charset 매치로 system font
+//! fallback (#289 B5 — Windows `MapCharacters` / macOS `CTFontCreateForString`
+//! 동등), 그마저 미보유면 primary 의 placeholder ('?') 반환.
 //!
 //! 8bpp gray (`FT_PIXEL_MODE_GRAY`) 와 color (`FT_PIXEL_MODE_BGRA`, Noto Color
 //! Emoji 등) 둘 다 raster — Glyph.pixel_mode 로 호출자 (`software_terminal.paint`)
@@ -20,6 +22,12 @@ const ligature = @import("../ligature.zig");
 const font_spec = @import("../spec.zig");
 
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
+
+/// #289 B5 — system fallback face 의 상한. chain 밖 codepoint 가 요구하는
+/// 스크립트 다양성의 실사용 범위(수 개)를 넉넉히 덮되, 비정상 입력이 face
+/// 를 무한 로드하지 않게 cap. 도달 시 신규 로드만 중단 (placeholder 로 degrade,
+/// 로그 1줄) — 기로드 face 는 계속 동작.
+const MAX_FALLBACK: usize = 8;
 
 // Cross-platform ligature 타입 re-export — caller (software_terminal.zig)
 // 가 `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
@@ -118,6 +126,17 @@ pub const Context = struct {
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
 
+    /// #289 B5 — chain 밖 codepoint 용 system fallback faces (fontconfig
+    /// charset 매치로 lazy 로드). chain `faces` 와 분리 저장 — `glyphByIndex`
+    /// / shape 경로의 face_idx 는 chain 만 가리키므로 index 충돌 없음.
+    fallback_faces: [MAX_FALLBACK]?Face,
+    fallback_count: usize,
+    /// cp → fallback_faces index. **null = 시스템 전체에 없음** (negative
+    /// cache — 없으면 미보유 cp 가 cell 마다 매 frame fontconfig 왕복 유발).
+    system_fallback: std.AutoHashMap(u21, ?u8),
+    /// chain 로드 시 pixel size — system fallback face 를 같은 크기로 로드.
+    pixel_height: u32,
+
     cell_width_px: u32,
     cell_height_px: u32,
     ascent_px: u32,
@@ -161,6 +180,10 @@ pub const Context = struct {
             .ligature_triple_cache = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
+            .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
+            .fallback_count = 0,
+            .system_fallback = std.AutoHashMap(u21, ?u8).init(allocator),
+            .pixel_height = pixel_height,
             .cell_width_px = pixel_height / 2,
             .cell_height_px = pixel_height,
             .ascent_px = 0,
@@ -321,6 +344,7 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context) void {
         self.freeFaces();
+        self.system_fallback.deinit();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
         self.ligature_pair_cache.deinit();
         self.ligature_triple_cache.deinit();
@@ -341,28 +365,112 @@ pub const Context = struct {
             slot.* = null;
         }
         self.face_count = 0;
+        for (&self.fallback_faces) |*slot| {
+            if (slot.*) |*face| face.deinit(self.ft_api, hb_api_ptr);
+            slot.* = null;
+        }
+        self.fallback_count = 0;
     }
 
     /// `cp` 의 글리프를 chain 순회로 lookup. 첫 매치 face 의 cache 에서 lazy
-    /// raster + insert. chain 모두 미스 (또는 raster / OOM 실패) → placeholder.
+    /// raster + insert. chain 모두 미스면 system fallback (#289 B5), 그마저
+    /// 미보유 (또는 raster / OOM 실패) → placeholder.
     pub fn glyph(self: *Context, cp: u21) *const Glyph {
         for (self.faces[0..self.face_count]) |*slot| {
             const face = if (slot.*) |*f| f else continue;
             const idx = self.ft_api.get_char_index(face.ft_face, cp);
             if (idx == 0) continue;
 
-            if (face.glyph_cache.getPtr(cp)) |cached| return cached;
-
-            const g = rasterOne(self.allocator, self.ft_api, face.ft_face, cp) catch {
-                return &self.placeholder;
-            };
-            face.glyph_cache.put(cp, g) catch {
-                if (g.bitmap.len > 0) self.allocator.free(g.bitmap);
-                return &self.placeholder;
-            };
-            return face.glyph_cache.getPtr(cp).?;
+            return rasterCached(self.allocator, self.ft_api, face, cp) orelse &self.placeholder;
         }
-        return &self.placeholder;
+        return self.systemFallbackGlyph(cp) orelse &self.placeholder;
+    }
+
+    /// #289 B5 — chain 밖 cp 의 system fallback 경로. cp → face 매핑이
+    /// `system_fallback` 에 캐시되어 fontconfig 왕복은 cp 당 최초 1회.
+    fn systemFallbackGlyph(self: *Context, cp: u21) ?*const Glyph {
+        const idx: u8 = blk: {
+            if (self.system_fallback.get(cp)) |entry| {
+                break :blk entry orelse return null; // null = 시스템 전체 미보유 확정
+            }
+            const loaded = self.loadFallbackForCp(cp);
+            self.system_fallback.put(cp, loaded) catch {};
+            break :blk loaded orelse return null;
+        };
+        const face = if (self.fallback_faces[idx]) |*f| f else return null;
+        return rasterCached(self.allocator, self.ft_api, face, cp);
+    }
+
+    /// cp 를 보유한 system fallback face 의 index 를 반환 — 필요 시 fontconfig
+    /// charset 매치로 lazy 로드. null = 시스템 전체 미보유 / 로드 실패 (caller
+    /// 가 negative cache 기록).
+    fn loadFallbackForCp(self: *Context, cp: u21) ?u8 {
+        // 기로드 fallback face 가 cp 를 보유하면 재사용 — fontconfig 왕복 회피
+        // (같은 스크립트의 cp 들이 한 face 로 묶이는 일반 케이스).
+        for (self.fallback_faces[0..self.fallback_count], 0..) |slot, idx| {
+            const existing = slot orelse continue;
+            if (self.ft_api.get_char_index(existing.ft_face, cp) != 0) return @intCast(idx);
+        }
+
+        const fc_result = fontconfig.lookupForChar(self.allocator, cp) catch |err| {
+            log.appendLineVerbose("font", "system fallback lookup failed cp=U+{X} err={s}", .{ cp, @errorName(err) });
+            return null;
+        };
+        var owned_by_face = false;
+        defer if (!owned_by_face) {
+            self.allocator.free(fc_result.family);
+            self.allocator.free(fc_result.path);
+        };
+
+        // 매치 path 가 기로드 face 와 같으면 그 face 는 위 pre-scan 에서 이미
+        // cp 미보유 판정 — fontconfig charset metadata 와 cmap 의 불일치 케이스.
+        for (self.fallback_faces[0..self.fallback_count]) |slot| {
+            const existing = slot orelse continue;
+            if (std.mem.eql(u8, existing.path, fc_result.path)) return null;
+        }
+
+        if (self.fallback_count >= MAX_FALLBACK) {
+            log.appendLine("font", "system fallback cap ({d}) reached — cp=U+{X} placeholder", .{ MAX_FALLBACK, cp });
+            return null;
+        }
+
+        const path_z = self.allocator.allocSentinel(u8, fc_result.path.len, 0) catch return null;
+        defer self.allocator.free(path_z);
+        @memcpy(path_z[0..fc_result.path.len], fc_result.path);
+
+        var ft_face: freetype.FT_Face = undefined;
+        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, 0, &ft_face) != 0) {
+            log.appendLineVerbose("font", "system fallback new_face failed cp=U+{X} path={s}", .{ cp, fc_result.path });
+            return null;
+        }
+        // set_pixel_sizes 실패 시 fixed-strike 선택 — `tryLoadFamily` 와 동일.
+        if (self.ft_api.set_pixel_sizes(ft_face, 0, self.pixel_height) != 0) {
+            if (ft_face.num_fixed_sizes <= 0 or self.ft_api.select_size(ft_face, 0) != 0) {
+                _ = self.ft_api.done_face(ft_face);
+                return null;
+            }
+        }
+        // fontconfig charset 은 폰트 metadata — 실제 cmap 미보유면 확정 miss.
+        if (self.ft_api.get_char_index(ft_face, cp) == 0) {
+            _ = self.ft_api.done_face(ft_face);
+            log.appendLineVerbose("font", "system fallback miss cp=U+{X} (best match {s} lacks glyph)", .{ cp, fc_result.family });
+            return null;
+        }
+
+        self.fallback_faces[self.fallback_count] = .{
+            .allocator = self.allocator,
+            .ft_face = ft_face,
+            .family = fc_result.family,
+            .path = fc_result.path,
+            .glyph_cache = std.AutoHashMap(u21, Glyph).init(self.allocator),
+            .glyph_by_index = std.AutoHashMap(u32, Glyph).init(self.allocator),
+            .hb_font = null,
+        };
+        owned_by_face = true;
+        const idx: u8 = @intCast(self.fallback_count);
+        self.fallback_count += 1;
+        log.appendLineVerbose("font", "system fallback[{d}] family={s} path={s} (cp=U+{X})", .{ idx, fc_result.family, fc_result.path, cp });
+        return idx;
     }
 
     /// 지정 face 의 glyph_index 로 raster + cache. shape 결과의 ligature glyph
@@ -646,6 +754,19 @@ pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyA
         allocator.free(fc_result.path);
     }
     return if (matchResolvesFamily(family, fc_result.family)) .installed else .missing;
+}
+
+/// face 의 per-cp cache 에서 lookup, 미스면 raster + insert. raster / OOM
+/// 실패 → null (caller 가 placeholder 로 degrade). chain 과 system fallback
+/// 경로가 공유.
+fn rasterCached(allocator: std.mem.Allocator, api: freetype.Api, face: *Face, cp: u21) ?*const Glyph {
+    if (face.glyph_cache.getPtr(cp)) |cached| return cached;
+    const g = rasterOne(allocator, api, face.ft_face, cp) catch return null;
+    face.glyph_cache.put(cp, g) catch {
+        if (g.bitmap.len > 0) allocator.free(g.bitmap);
+        return null;
+    };
+    return face.glyph_cache.getPtr(cp).?;
 }
 
 fn rasterOne(
