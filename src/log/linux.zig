@@ -1,6 +1,6 @@
-// Linux log impl — system-dependent pieces only. Shared formatting / file IO
-// lives in `log.zig`. Log file follows XDG state:
-// `~/.local/state/tildaz/tildazN.log`.
+// Linux log impl — system-dependent pieces (local time / pid) only. Shared
+// formatting / file IO lives in `log.zig`, and the log file path comes from
+// `paths.logPathBuf` (single source, #282 G3).
 //
 // #282 후속 — 로컬 시각은 glibc `localtime_r` 로 구한다 (macOS `log/macos.zig` 와
 // 동일 패턴). Linux 는 Wayland/xkbcommon 을 dlopen 하려고 시스템 dynamic loader 를
@@ -11,7 +11,6 @@
 
 const std = @import("std");
 const log_time = @import("../log_time.zig");
-const instance_context = @import("../instance_context.zig");
 
 pub const TimeFields = log_time.TimeFields;
 
@@ -57,26 +56,4 @@ pub fn currentLocalTime() TimeFields {
 
 pub fn currentPid() u64 {
     return @intCast(std.os.linux.getpid());
-}
-
-pub fn resolvePath(buf: []u8) ?[]const u8 {
-    const home_slice = std.posix.getenv("HOME") orelse return null;
-    const dir_suffix = "/.local/state/tildaz";
-    if (home_slice.len + dir_suffix.len + 32 >= buf.len) return null;
-
-    @memcpy(buf[0..home_slice.len], home_slice);
-    @memcpy(buf[home_slice.len..][0..dir_suffix.len], dir_suffix);
-    const dir_end = home_slice.len + dir_suffix.len;
-
-    ensureDir(buf[0..dir_end]) catch {};
-
-    const suffix = std.fmt.bufPrint(buf[dir_end..], "/tildaz{d}.log", .{instance_context.workerIndex() orelse 0}) catch return null;
-    return buf[0 .. dir_end + suffix.len];
-}
-
-fn ensureDir(dir: []const u8) !void {
-    // std.fs.cwd().makePath = 중간 단계 포함 자동 생성 (`~/.local/state/tildaz` 처럼
-    // 깊은 경로). 절대경로라 leading `/` 유지 → cwd dirfd 무시하고 그대로 생성.
-    // paths.zig 와 동일 — 자체 재귀 mkdir 을 std 로 통일 (#282 후속).
-    try std.fs.cwd().makePath(dir);
 }

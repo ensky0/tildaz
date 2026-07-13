@@ -16,6 +16,7 @@
 // 같은 내용이면 file 안 건드림 (timestamp 보존) — macOS 패턴 동등.
 
 const std = @import("std");
+const paths = @import("../paths.zig");
 
 const ENTRY_NAME = "tildaz.desktop";
 
@@ -26,16 +27,11 @@ fn entryPath(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(home);
     const dir = try std.fmt.allocPrint(allocator, "{s}/.config/autostart", .{home});
     defer allocator.free(dir);
-    ensureDir(dir) catch |err| switch (err) {
+    paths.ensureDir(dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, ENTRY_NAME });
-}
-
-fn ensureDir(dir: []const u8) !void {
-    // 자체 재귀 mkdir → std 로 통일 (paths.zig / log/linux.zig 와 동일, #282 후속).
-    try std.fs.cwd().makePath(dir);
 }
 
 /// 현재 실행 중 binary 의 절대 경로. macOS `currentExePath` 동등.

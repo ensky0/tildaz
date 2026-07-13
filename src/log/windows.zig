@@ -1,13 +1,11 @@
-// Windows 의 log impl — 시스템 의존 부분만. 공통 formatting / writeRaw 는
-// `log.zig`. 로그 파일은 `%APPDATA%\tildaz\tildazN.log`.
+// Windows 의 log impl — 시스템 의존 부분 (local time / pid) 만. 공통
+// formatting / writeRaw 는 `log.zig`, 로그 파일 경로는 `paths.logPathBuf`
+// (단일 소스, #282 G3).
 
 const std = @import("std");
 const log_time = @import("../log_time.zig");
-const instance_context = @import("../instance_context.zig");
 
-const WCHAR = u16;
 const DWORD = std.os.windows.DWORD;
-const HANDLE = std.os.windows.HANDLE;
 
 const SYSTEMTIME = extern struct {
     wYear: u16,
@@ -21,7 +19,6 @@ const SYSTEMTIME = extern struct {
 };
 
 extern "kernel32" fn GetLocalTime(*SYSTEMTIME) callconv(.c) void;
-extern "kernel32" fn GetEnvironmentVariableW([*:0]const WCHAR, ?[*]WCHAR, u32) callconv(.c) u32;
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) DWORD;
 
 pub const TimeFields = log_time.TimeFields;
@@ -42,26 +39,4 @@ pub fn currentLocalTime() TimeFields {
 
 pub fn currentPid() u64 {
     return GetCurrentProcessId();
-}
-
-/// `%APPDATA%\tildaz\tildazN.log` 의 full UTF-8 path 를 buf 에 작성하고 slice
-/// 반환. 성공 시 `%APPDATA%\tildaz` 디렉토리 존재 보장. 실패 시 null.
-pub fn resolvePath(buf: []u8) ?[]const u8 {
-    const name = std.unicode.utf8ToUtf16LeStringLiteral("APPDATA");
-    var wbuf: [260]WCHAR = undefined;
-    const wlen = GetEnvironmentVariableW(name, &wbuf, wbuf.len);
-    if (wlen == 0 or wlen >= wbuf.len) return null;
-
-    const appdata_len = std.unicode.utf16LeToUtf8(buf, wbuf[0..wlen]) catch return null;
-
-    const dir_suffix = "\\tildaz";
-    if (appdata_len + dir_suffix.len + 32 >= buf.len) return null;
-
-    @memcpy(buf[appdata_len..][0..dir_suffix.len], dir_suffix);
-    const dir_end = appdata_len + dir_suffix.len;
-
-    std.fs.makeDirAbsolute(buf[0..dir_end]) catch {};
-
-    const suffix = std.fmt.bufPrint(buf[dir_end..], "\\tildaz{d}.log", .{instance_context.workerIndex() orelse 0}) catch return null;
-    return buf[0 .. dir_end + suffix.len];
 }

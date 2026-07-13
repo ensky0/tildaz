@@ -11,13 +11,14 @@
 //!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`
 //!   모든 platform 에서 local time 을 사용한다.
 //!
-//! Platform 모듈 (`log/windows.zig` / `log/macos.zig`) 은 시스템 의존 부분
-//! (local time 변환 / pid / 로그 파일 path) 만 제공 — 그 외 formatting /
-//! file IO 는 이 파일에서 단일 구현.
+//! Platform 모듈 (`log/{windows,macos,linux}.zig`) 은 시스템 의존 부분
+//! (local time 변환 / pid) 만 제공 — 로그 파일 경로는 `paths.logPathBuf`
+//! (단일 소스, #282 G3), formatting / file IO 는 이 파일에서 단일 구현.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const log_time = @import("log_time.zig");
+const paths = @import("paths.zig");
 
 // #282 D1 — Windows 원자적 append 용 Win32 externs. Windows 에서만 참조되는
 // comptime 분기(writeRaw)에서만 쓰이므로 다른 platform 빌드엔 영향 없음.
@@ -56,15 +57,12 @@ const impl = switch (builtin.os.tag) {
         pub fn currentPid() u64 {
             return 0;
         }
-        pub fn resolvePath(_: []u8) ?[]const u8 {
-            return null;
-        }
     },
 };
 
 fn writeRaw(text: []const u8) void {
-    var path_buf: [520]u8 = undefined;
-    const path = impl.resolvePath(&path_buf) orelse return;
+    var path_buf: [paths.LOG_PATH_MAX]u8 = undefined;
+    const path = paths.logPathBuf(&path_buf) orelse return;
     if (builtin.os.tag == .windows) {
         // #282 D1 — POSIX 는 O_APPEND(아래)로 고쳤으나 Windows 는 createFile+seekFromEnd+
         // writeAll race 였다 (seek 와 write 사이 동시 writer 시 torn line). FILE_APPEND_DATA
