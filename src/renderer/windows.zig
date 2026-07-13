@@ -330,7 +330,8 @@ pub const D3d11Renderer = struct {
             .BufferCount = 2,
             .Scaling = d3d.DXGI_SCALING_STRETCH,
             .SwapEffect = d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD,
-            .AlphaMode = d3d.DXGI_ALPHA_MODE_PREMULTIPLIED,
+            // IGNORE — 내용은 불투명, 투명도는 visual SetOpacity 담당 (#89 2단계).
+            .AlphaMode = d3d.DXGI_ALPHA_MODE_IGNORE,
         };
         if (factory2.CreateSwapChainForComposition(@ptrCast(dev), &desc1, null, swap_chain) < 0 or swap_chain.* == null) return false;
 
