@@ -192,6 +192,8 @@ extern "user32" fn PostQuitMessage(c_int) callconv(.c) void;
 extern "user32" fn DefWindowProcW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
 extern "user32" fn PostMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) BOOL;
 extern "user32" fn GetMessageW(*MSG, HWND, UINT, UINT) callconv(.c) BOOL;
+extern "user32" fn PeekMessageW(*MSG, HWND, UINT, UINT, UINT) callconv(.c) BOOL;
+const PM_REMOVE: UINT = 0x0001;
 extern "user32" fn TranslateMessage(*const MSG) callconv(.c) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(.c) LRESULT;
 extern "user32" fn BeginPaint(HWND, *PAINTSTRUCT) callconv(.c) HDC;
@@ -1180,6 +1182,14 @@ pub const Window = struct {
                 if (@import("instance_context.zig").requireWorkerIndex() == 0) {
                     self.show();
                     @import("new_instance.zig").handle(std.heap.page_allocator);
+                    // #301 — 프롬프트가 닫힌 뒤 큐에 남은 중복 요청을 비운다.
+                    // promptHotkey 의 modal 루프는 조합 중 도착분을 dispatch(가드로
+                    // drop)하지만, Cancel 로 루프가 조기 종료되면 아직 retrieve 안 된
+                    // 요청이 큐에 남아 바깥 루프가 2번째 프롬프트를 띄운다. 버스트가
+                    // 정확히 1개 프롬프트가 되도록 잔여를 제거 (macOS notification
+                    // coalesce / Linux pending bool 동등).
+                    var drain: MSG = undefined;
+                    while (PeekMessageW(&drain, hwnd, WM_NEW_INSTANCE_REQUEST, WM_NEW_INSTANCE_REQUEST, PM_REMOVE) != 0) {}
                 }
                 return 0;
             },
