@@ -794,7 +794,7 @@ pub const MetalRenderer = struct {
                         if (result.owned) ct.CFRelease(result.font);
                         if (entry_opt) |entry| {
                             if (entry.w > 0 and entry.h > 0) {
-                                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
+                                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0);
                             }
                         }
                         x += 1;
@@ -855,7 +855,7 @@ pub const MetalRenderer = struct {
                     continue;
                 }
 
-                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, 0, 0);
+                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0);
                 x += 1;
             }
         }
@@ -957,7 +957,8 @@ pub const MetalRenderer = struct {
                 pre_bg_n += 1;
 
                 if (entry.w > 0 and entry.h > 0 and pre_text_n < pre_text_buf.len) {
-                    const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
+                    // #299 — 강조 블록(w_cells 셀) 안 가운데 정렬 (본문과 동일 정책).
+                    const gx = cell_x + glyphCenterDx(entry, w_cells >= 2.0, cw) + @as(f32, @floatFromInt(entry.bearing_x));
                     const gy = pre_y + self.font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
                     pre_text_buf[pre_text_n] = .{
                         .pos = .{ gx, gy },
@@ -1481,6 +1482,16 @@ pub const MetalRenderer = struct {
 /// 한 cell 의 atlas entry 를 `text_buf` 에 instance 로 emit. base cell index `x`
 /// + 추가 dx/dy (`.spacer` 의 cell 별 offset 또는 `.single` 의 0). atlas entry
 /// 의 bearing 으로 glyph 의 cell 안 위치 계산.
+/// wide 글리프(한글/CJK/emoji)를 배정된 셀 영역(1 또는 2셀) 가운데로 (#299 —
+/// Linux software renderer 의 `(cell_w − advance)/2` 와 동일 정책). primary
+/// Latin 은 advance ≈ cell_w 라 0. 정수 px 로 floor — Latin 의 sub-px 이동을
+/// 만들지 않기 위함 (Linux 의 정수 divFloor 와 동일 의미).
+fn glyphCenterDx(entry: macos_glyph_atlas.AtlasEntry, wide: bool, cw: f32) f32 {
+    if (entry.advance <= 0) return 0;
+    const span: f32 = if (wide) 2.0 else 1.0;
+    return @floor((span * cw - entry.advance) / 2.0);
+}
+
 fn emitTextInstance(
     text_buf: []TextInstance,
     text_count: *u32,

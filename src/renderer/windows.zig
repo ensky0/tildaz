@@ -1180,7 +1180,7 @@ pub const D3d11Renderer = struct {
                     @memcpy(cluster[1..][0..take], extras[0..take]);
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |r| {
-                        emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb, 0);
+                        emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
                         x += 1;
                         continue;
                     }
@@ -1236,7 +1236,7 @@ pub const D3d11Renderer = struct {
                     .count = 1,
                     .owned = single.owned,
                 };
-                emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, 0);
+                emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
                 x += 1;
             }
         }
@@ -1315,7 +1315,9 @@ pub const D3d11Renderer = struct {
                 pre_bg_n += 1;
 
                 if (entry.w > 0 and entry.h > 0 and pre_text_n < pre_text_buf.len) {
-                    const gx = cell_x + @as(f32, @floatFromInt(entry.bearing_x));
+                    // #299 — 강조 블록(w_cells 셀) 안 가운데 정렬 (본문과 동일 정책).
+                    const pre_center: f32 = if (entry.advance > 0) @floor((w_cells * cw - entry.advance) / 2.0) else 0;
+                    const gx = cell_x + pre_center + @as(f32, @floatFromInt(entry.bearing_x));
                     const gy = pre_y + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
                     pre_text_buf[pre_text_n] = .{
                         .pos = .{ gx, gy },
@@ -1503,6 +1505,10 @@ pub const D3d11Renderer = struct {
         cw: f32,
         x_pad: f32,
         fg_rgb: ghostty.color.RGB,
+        /// #299 — 글리프를 배정된 셀 영역(span×cw) 가운데 정렬 (Linux 의
+        /// `(cell_w − advance)/2` 와 동일 정책, 정수 px floor). null = 정렬
+        /// 안 함 (ligature 경로 — GPOS offset 사용, ASCII 라 center ≈ 0).
+        span_cells: ?f32,
         /// spacer ligature 의 GPOS x_offset (DWRITE_GLYPH_OFFSET.advanceOffset
         /// 추출, Fira Code `||=` 의 `=` 가 `||` 쪽으로 당겨지는 디자인 등).
         /// 일반 cluster / single-glyph 는 0.
@@ -1532,7 +1538,11 @@ pub const D3d11Renderer = struct {
         if (result.owned) _ = result.face.vtable.Release(result.face);
         if (entry.w == 0 or entry.h == 0) return;
 
-        const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad + dx;
+        const center: f32 = if (span_cells) |span| blk: {
+            if (entry.advance <= 0) break :blk 0;
+            break :blk @floor((span * cw - entry.advance) / 2.0);
+        } else 0;
+        const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad + dx + center;
         const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
         const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(entry.bearing_y));
         text_buf[text_count.*] = .{
@@ -1605,7 +1615,7 @@ pub const D3d11Renderer = struct {
             .count = 1,
             .owned = false,
         };
-        self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb, dx);
+        self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb, null, dx);
     }
 
     // --- Color helpers ---

@@ -28,6 +28,9 @@ pub const AtlasEntry = struct {
     /// SBIX/COLR 컬러 글리프 (Apple Color Emoji 등). 셰이더가 fg 무시하고 atlas
     /// 그대로 출력하는 분기 트리거.
     is_color: bool,
+    /// 글리프 advance (물리 px, retina scale 반영). wide 글리프(한글/CJK/emoji)를
+    /// 배정된 셀 영역 가운데에 정렬할 때 사용 (#299 — Linux 와 동일 정책).
+    advance: f32 = 0,
 };
 
 const GlyphKey = struct {
@@ -182,6 +185,11 @@ pub const GlyphAtlas = struct {
         const traits = ct.CTFontGetSymbolicTraits(font);
         const is_color = (traits & ct.kCTFontTraitColorGlyphs) != 0;
 
+        // 글리프 advance (pt) → 물리 px. 셀 영역 가운데 정렬용 (#299).
+        var adv_size = [1]ct.CGSize{.{ .width = 0, .height = 0 }};
+        _ = ct.CTFontGetAdvancesForGlyphs(font, ct.kCTFontOrientationDefault, &glyphs, &adv_size, 1);
+        const advance_px: f32 = @floatCast(adv_size[0].width * self.scale);
+
         // Retina 스케일 적용 + 정수 픽셀 align.
         const s = self.scale;
         const x0 = @floor(bounding_rect.origin.x * s);
@@ -202,6 +210,7 @@ pub const GlyphAtlas = struct {
                 .bearing_x = @intFromFloat(x0),
                 .bearing_y = @intFromFloat(y0),
                 .is_color = is_color,
+                .advance = advance_px,
             };
         }
 
@@ -299,6 +308,7 @@ pub const GlyphAtlas = struct {
             .bearing_x = @intFromFloat(x0),
             .bearing_y = @intFromFloat(y0),
             .is_color = is_color,
+            .advance = advance_px,
         };
     }
 

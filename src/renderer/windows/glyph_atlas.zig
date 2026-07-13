@@ -32,6 +32,9 @@ pub const AtlasEntry = struct {
     /// fg 와 곱하지 않고 atlas 그대로 출력 + atlas.a 를 mask 로 ClearType blend
     /// state 에 전달. false 면 기존 ClearType subpixel mono path.
     is_color: bool = false,
+    /// 글리프 advance (물리 px, DPI scale 반영). wide 글리프(한글/CJK/emoji)를
+    /// 배정된 셀 영역 가운데에 정렬할 때 사용 (#299 — Linux 와 동일 정책).
+    advance: f32 = 0,
 };
 
 const GlyphKey = struct {
@@ -316,10 +319,24 @@ pub const GlyphAtlas = struct {
         const single_indices = [_]u16{glyph_index};
         const empty_advances = [_]dw.FLOAT{};
         const empty_offsets = [_]dw.DWRITE_GLYPH_OFFSET{};
-        const entry = self.rasterizeColor(face, &single_indices, &empty_advances, &empty_offsets) orelse
+        var entry = self.rasterizeColor(face, &single_indices, &empty_advances, &empty_offsets) orelse
             self.rasterize(face, glyph_index) orelse return null;
+        entry.advance = self.designAdvancePx(face, glyph_index);
         self.cache.put(key, entry) catch return null;
         return entry;
+    }
+
+    /// 글리프의 design advance → 물리 px (#299 — 셀 영역 가운데 정렬용).
+    /// 실패 시 0 — caller 의 center 계산이 offset 없이 degrade.
+    fn designAdvancePx(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) f32 {
+        var fm: dw.DWRITE_FONT_METRICS = undefined;
+        face.GetMetrics(&fm);
+        if (fm.designUnitsPerEm == 0) return 0;
+        const idx = [1]dw.UINT16{glyph_index};
+        var gm: [1]dw.DWRITE_GLYPH_METRICS = undefined;
+        if (face.GetDesignGlyphMetrics(&idx, 1, &gm, 0) < 0) return 0;
+        return @as(f32, @floatFromInt(gm[0].advanceWidth)) /
+            @as(f32, @floatFromInt(fm.designUnitsPerEm)) * self.font_em_size * self.pixels_per_dip;
     }
 
     /// Multi-glyph cluster (#139, ZWJ family 등) atlas entry. GSUB 합성 안 된
@@ -335,7 +352,13 @@ pub const GlyphAtlas = struct {
 
         // Color path 만 multi-glyph 지원 — mono ClearType 의 cluster 는 의미 작음
         // (글자 cluster 는 single glyph 가 일반).
-        const entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse return null;
+        var entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse return null;
+        // cluster advance = placements 합 (DIP) × DPI scale (#299).
+        if (advances.len == glyph_indices.len) {
+            var sum: f32 = 0;
+            for (advances) |a| sum += a;
+            entry.advance = sum * self.pixels_per_dip;
+        }
         self.cluster_cache.put(key, entry) catch return null;
         return entry;
     }
