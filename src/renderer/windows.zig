@@ -28,6 +28,25 @@ const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 extern "user32" fn GetWindowLongPtrW(?*anyopaque, c_int) callconv(.c) isize;
+extern "user32" fn GetClientRect(?*anyopaque, *dw.RECT) callconv(.c) i32;
+
+/// COM IUnknown 최소 layout — QI 로 받은 임시 인터페이스(IDXGIDevice 등)의
+/// Release 전용 (#89 2단계).
+const ComUnknown = extern struct {
+    vtable: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*ComUnknown) callconv(.c) u32,
+    },
+    fn Release(self: *ComUnknown) u32 {
+        return self.vtable.Release(self);
+    }
+};
+
+fn comRelease(ptr: *anyopaque) void {
+    const unk: *ComUnknown = @ptrCast(@alignCast(ptr));
+    _ = unk.Release();
+}
 const GWL_EXSTYLE: c_int = -20;
 const WS_EX_LAYERED: isize = 0x00080000;
 
@@ -161,6 +180,11 @@ pub const D3d11Renderer = struct {
     device: *d3d.ID3D11Device,
     ctx: *d3d.ID3D11DeviceContext,
     swap_chain: *d3d.IDXGISwapChain,
+    /// #89 2단계 — 반투명(opacity<255) composition 경로의 DComp 객체.
+    /// opacity 100% (hwnd flip-model) 또는 composition 실패 fallback 시 null.
+    dcomp_device: ?*d3d.IDCompositionDevice = null,
+    dcomp_target: ?*d3d.IDCompositionTarget = null,
+    dcomp_visual: ?*d3d.IDCompositionVisual = null,
     rtv: ?*d3d.ID3D11RenderTargetView = null,
 
     // Shaders
@@ -239,6 +263,112 @@ pub const D3d11Renderer = struct {
         return (GetWindowLongPtrW(handle, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
     }
 
+    /// #89 2단계 — 반투명 composition 경로 구성: D3D device(단독) → composition
+    /// swap chain(premultiplied) → DComp device/target/visual → SetContent →
+    /// visual3.SetOpacity(uniform) → SetRoot → Commit. 성공 시 out 파라미터를
+    /// 채우고 true. 실패 시 만든 것을 전부 해제·null 후 false — caller 가
+    /// 불투명 hwnd flip-model 로 fallback.
+    fn initCompositionChain(
+        hwnd: ?*anyopaque,
+        opacity: u8,
+        device: *?*d3d.ID3D11Device,
+        ctx: *?*d3d.ID3D11DeviceContext,
+        swap_chain: *?*d3d.IDXGISwapChain,
+        dcomp_device: *?*d3d.IDCompositionDevice,
+        dcomp_target: *?*d3d.IDCompositionTarget,
+        dcomp_visual: *?*d3d.IDCompositionVisual,
+    ) bool {
+        var ok = false;
+        defer if (!ok) {
+            if (dcomp_visual.*) |v| {
+                _ = v.Release();
+                dcomp_visual.* = null;
+            }
+            if (dcomp_target.*) |t| {
+                _ = t.Release();
+                dcomp_target.* = null;
+            }
+            if (dcomp_device.*) |dd| {
+                _ = dd.Release();
+                dcomp_device.* = null;
+            }
+            if (swap_chain.*) |sc| {
+                _ = sc.Release();
+                swap_chain.* = null;
+            }
+            if (ctx.*) |c| {
+                _ = c.Release();
+                ctx.* = null;
+            }
+            if (device.*) |dev| {
+                _ = dev.Release();
+                device.* = null;
+            }
+        };
+
+        if (d3d.D3D11CreateDevice(null, d3d.D3D_DRIVER_TYPE_HARDWARE, null, d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, null, 0, d3d.D3D11_SDK_VERSION, device, null, ctx) < 0) return false;
+        const dev = device.* orelse return false;
+
+        var factory_any: ?*anyopaque = null;
+        if (d3d.CreateDXGIFactory1(&d3d.IID_IDXGIFactory2, &factory_any) < 0 or factory_any == null) return false;
+        const factory2: *d3d.IDXGIFactory2 = @ptrCast(@alignCast(factory_any.?));
+        defer _ = factory2.Release();
+
+        // composition swap chain 은 크기 자동 유도가 없어 명시 필수 — 이후
+        // 크기 변화는 기존 ResizeBuffers 경로가 그대로 처리.
+        var rc = std.mem.zeroes(dw.RECT);
+        _ = GetClientRect(hwnd, &rc);
+        const client_w: u32 = if (rc.right > rc.left) @intCast(rc.right - rc.left) else 800;
+        const client_h: u32 = if (rc.bottom > rc.top) @intCast(rc.bottom - rc.top) else 400;
+
+        const desc1 = d3d.DXGI_SWAP_CHAIN_DESC1{
+            .Width = client_w,
+            .Height = client_h,
+            .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM,
+            .SampleDesc = .{ .Count = 1 },
+            .BufferUsage = d3d.DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            .BufferCount = 2,
+            .Scaling = d3d.DXGI_SCALING_STRETCH,
+            .SwapEffect = d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            .AlphaMode = d3d.DXGI_ALPHA_MODE_PREMULTIPLIED,
+        };
+        if (factory2.CreateSwapChainForComposition(@ptrCast(dev), &desc1, null, swap_chain) < 0 or swap_chain.* == null) return false;
+
+        // D3D device → IDXGIDevice → DComp device.
+        const qi: *const fn (*d3d.ID3D11Device, *const d3d.GUID, *?*anyopaque) callconv(.c) d3d.HRESULT = @ptrCast(@alignCast(dev.vtable.QueryInterface));
+        var dxgi_dev: ?*anyopaque = null;
+        if (qi(dev, &d3d.IID_IDXGIDevice, &dxgi_dev) < 0 or dxgi_dev == null) return false;
+        defer comRelease(dxgi_dev.?);
+
+        var dcomp_any: ?*anyopaque = null;
+        if (d3d.DCompositionCreateDevice(dxgi_dev.?, &d3d.IID_IDCompositionDevice, &dcomp_any) < 0 or dcomp_any == null) return false;
+        dcomp_device.* = @ptrCast(@alignCast(dcomp_any.?));
+        const dd = dcomp_device.*.?;
+
+        if (dd.CreateTargetForHwnd(hwnd, 1, dcomp_target) < 0 or dcomp_target.* == null) return false;
+        if (dd.CreateVisual(dcomp_visual) < 0 or dcomp_visual.* == null) return false;
+        const vis = dcomp_visual.*.?;
+        if (vis.SetContent(@ptrCast(swap_chain.*.?)) < 0) return false;
+
+        // uniform opacity — IDCompositionVisual3.SetOpacity (Win10+). 실패해도
+        // composition 자체는 유지 (불투명 표시로 degrade, 로그로 알림).
+        var vis3_any: ?*anyopaque = null;
+        if (vis.QueryInterface(&d3d.IID_IDCompositionVisual3, &vis3_any) >= 0 and vis3_any != null) {
+            const vis3: *d3d.IDCompositionVisual3 = @ptrCast(@alignCast(vis3_any.?));
+            const hr_op = vis3.SetOpacity(@as(f32, @floatFromInt(opacity)) / 255.0);
+            _ = vis3.Release();
+            if (hr_op < 0) log.appendLine("d3d", "DComp SetOpacity failed hr=0x{x} — opacity 미적용", .{@as(u32, @bitCast(hr_op))});
+        } else {
+            log.appendLine("d3d", "IDCompositionVisual3 QI failed — opacity 미적용", .{});
+        }
+
+        if (dcomp_target.*.?.SetRoot(vis) < 0) return false;
+        if (dd.Commit() < 0) return false;
+
+        ok = true;
+        return true;
+    }
+
     fn swapEffectName(swap_effect: u32) []const u8 {
         return switch (swap_effect) {
             d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD => "flip_discard",
@@ -248,7 +378,7 @@ pub const D3d11Renderer = struct {
         };
     }
 
-    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, spec: font_spec.Spec, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8) !D3d11Renderer {
+    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, spec: font_spec.Spec, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8, opacity: u8) !D3d11Renderer {
         const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
 
         // 1. Create D3D11 device + swap chain
@@ -263,6 +393,22 @@ pub const D3d11Renderer = struct {
         var ctx: ?*d3d.ID3D11DeviceContext = null;
         var swap_chain: ?*d3d.IDXGISwapChain = null;
         const layered_window = isLayeredWindow(hwnd);
+
+        // #89 2단계 — 반투명(opacity<255)은 DirectComposition 경로: composition
+        // swap chain(premultiplied alpha) + DComp visual 의 uniform SetOpacity.
+        // 렌더 내용은 불투명 그대로라 파이프라인 무변경, LWA_ALPHA 의미론 동일.
+        // 실패 시 불투명 flip-model 로 degrade (opacity 미적용 — 검정/미표시보다 안전).
+        var dcomp_device: ?*d3d.IDCompositionDevice = null;
+        var dcomp_target: ?*d3d.IDCompositionTarget = null;
+        var dcomp_visual: ?*d3d.IDCompositionVisual = null;
+        var composition_active = false;
+        if (opacity < 255 and !layered_window) {
+            composition_active = initCompositionChain(hwnd, opacity, &device, &ctx, &swap_chain, &dcomp_device, &dcomp_target, &dcomp_visual);
+            if (!composition_active) {
+                log.appendLine("d3d", "composition path failed — falling back to opaque flip-model (opacity ignored)", .{});
+            }
+        }
+
         const layered_swap_effects = [_]u32{d3d.DXGI_SWAP_EFFECT_DISCARD};
         const standard_swap_effects = [_]u32{
             d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD,
@@ -270,9 +416,10 @@ pub const D3d11Renderer = struct {
             d3d.DXGI_SWAP_EFFECT_DISCARD,
         };
         const swap_effects: []const u32 = if (layered_window) &layered_swap_effects else &standard_swap_effects;
-        var create_hr: d3d.HRESULT = -1;
-        var selected_swap_effect: u32 = d3d.DXGI_SWAP_EFFECT_DISCARD;
-        for (swap_effects) |swap_effect| {
+        var create_hr: d3d.HRESULT = if (composition_active) 0 else -1;
+        var selected_swap_effect: u32 = if (composition_active) d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD else d3d.DXGI_SWAP_EFFECT_DISCARD;
+        if (composition_active) sc_desc.BufferCount = 2;
+        for (if (composition_active) swap_effects[0..0] else swap_effects) |swap_effect| {
             sc_desc.BufferCount = if (swap_effect == d3d.DXGI_SWAP_EFFECT_DISCARD) 1 else 2;
             sc_desc.SwapEffect = swap_effect;
             create_hr = d3d.D3D11CreateDeviceAndSwapChain(
@@ -313,8 +460,9 @@ pub const D3d11Renderer = struct {
             });
             return error.D3D11CreateFailed;
         }
-        log.appendLineVerbose("d3d", "swap chain created: layered={} effect={s} buffers={d}", .{
+        log.appendLineVerbose("d3d", "swap chain created: layered={} composition={} effect={s} buffers={d}", .{
             layered_window,
+            composition_active,
             swapEffectName(selected_swap_effect),
             sc_desc.BufferCount,
         });
@@ -326,8 +474,9 @@ pub const D3d11Renderer = struct {
         // 전환이 조용히 실패해 숨어 있다가, flip-model 활성화(7ef7302) 후
         // 실제 발동해 화면 하단이 검게 덮이는 실기 증상으로 드러남 (창 rect
         // 는 정상인데 taskbar 영역만 검정 + 클릭은 통과 — DXGI FS 전환의
-        // 전형). NO_WINDOW_CHANGES 로 감시 자체를 끈다.
-        {
+        // 전형). NO_WINDOW_CHANGES 로 감시 자체를 끈다. (composition swap
+        // chain 은 hwnd 연동 자체가 없어 해당 없음.)
+        if (!composition_active) {
             var factory_ptr: ?*anyopaque = null;
             if (swap_chain.?.GetParent(&d3d.IID_IDXGIFactory, &factory_ptr) >= 0) {
                 if (factory_ptr) |fp| {
@@ -501,6 +650,9 @@ pub const D3d11Renderer = struct {
             .device = device.?,
             .ctx = ctx.?,
             .swap_chain = swap_chain.?,
+            .dcomp_device = dcomp_device,
+            .dcomp_target = dcomp_target,
+            .dcomp_visual = dcomp_visual,
             .bg_vs = bg_vs.?,
             .bg_ps = bg_ps.?,
             .bg_layout = bg_layout.?,
@@ -545,6 +697,10 @@ pub const D3d11Renderer = struct {
         self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
+        // #89 2단계 — DComp 객체는 swap chain(visual content) 보다 먼저 해제.
+        if (self.dcomp_visual) |v| _ = v.Release();
+        if (self.dcomp_target) |t| _ = t.Release();
+        if (self.dcomp_device) |dd| _ = dd.Release();
         _ = self.swap_chain.Release();
         _ = self.ctx.Release();
         _ = self.device.Release();
