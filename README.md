@@ -162,9 +162,6 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 - macOS releases are ad-hoc signed, so Gatekeeper may require the first-open
   flow above. Developer ID notarization is still blocked by the current signing
   environment.
-- macOS Emoji & Symbols opens as a floating panel rather than a cursor-anchored
-  popover in custom terminal views. This matches Ghostty, iTerm2, Alacritty,
-  Kitty, and similar GPU cell-grid terminals.
 - Holding paste-repeat on very wide ZWJ emoji clusters under macOS bash 3.2 can
   desynchronize shell wrapping. Normal single paste is unaffected; zsh 5.x does
   not exhibit the same mismatch.

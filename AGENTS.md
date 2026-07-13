@@ -246,14 +246,14 @@ panic / 패치 실패 / config 검증 / About 등 모두 같은 경로를 써요
 
 # macOS — emoji 입력 테스트 방법
 
-macOS 의 Show Emoji & Symbols (Apple default `Ctrl+Cmd+Space`) 는 트리거됨.
-단 cursor-anchored popover 가 아니라 화면 floating panel 로 뜨고, system 자동
-dismiss 안 됨 — Apple `CharacterPicker.framework` 가 NSTextView 기반
-firstResponder 만 popover path 활성하는 first-party 우대 한계 ([#130](https://github.com/ensky0/tildaz/issues/130)
-known limitation, ghostty / iTerm2 / Alacritty / Kitty 동등). dismiss 는
-`Esc` 또는 `Ctrl+Cmd+Space` 다시 (toggle). 자세한 분석은 SPEC.md 부록 B.
+macOS 의 Show Emoji & Symbols (Apple default `Ctrl+Cmd+Space`) 는 tildaz 안에서
+cursor 에 anchored 된 popover 로 뜸 — focus loss 자동 dismiss / `Esc` 닫힘 /
+emoji 클릭 즉시 입력 (2026-07-13 macOS 26.5.2 + v0.6.1 실기). 과거 "floating
+panel + no auto-dismiss" 기록 ([#130](https://github.com/ensky0/tildaz/issues/130))
+은 현재 환경에서 재현 안 됨 — 원인 미확정, 이력은 SPEC.md 부록 B 노트 / 현행
+동작은 SPEC.md §5.2.
 
-picker 띄우지 않고 emoji 를 입력해 검증하는 우회 방법:
+picker 띄우지 않고 스크립트로 emoji 를 입력해 검증하는 방법 (자동화·headless 검증에 여전히 유용):
 
 ```sh
 echo "🎉 안녕 ABC"                       # source 에 emoji 직접 (다른 앱에서 복사 → 우클릭 paste)

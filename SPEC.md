@@ -368,6 +368,7 @@ minimize/restore.
 | commit 트리거 | 음절 더 확장 안 되면 자동 | (OS IME 자체) | 동일 | (fcitx5 / ibus 자체) — commit_string event | ✅ | ✅ | ✅ |
 | 한자 / kanji / hanzi 후보 popup 위치 | cursor 옆 추적 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 terminal cursor row / tab rename snapshot 기준 rect 반환 (#166 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 매 redraw (L10-γ) | ✅ | ✅ | ✅ |
 | 후보 popup 안 nav 키 | IME default 따름 — tildaz client 가 키 매핑 강제 / 통일 안 함 (§0 #2 native 우선). 사용자가 IME 별 설정에서 변경 가능 | Win IME native (MS-IME 한국어 default) | mac IM Kit native (한국어 IME default) | IME default (예: fcitx5-hangul = ↑/↓ page nav + Tab/Shift+Tab candidate, ←/→ 미매핑 → cursor 이동 의도로 popup 닫힘) | ✅ | ✅ | ✅ |
+| 한자 변환 트리거 키 (*조합 중* 한글) | 조합 중인 한글에서 한자 후보 popup 을 여는 키. 키 자체는 IME 엔진 소관 — tildaz 는 정의 / 강제하지 않음 (§0 native 우선). *입력 확정된* 한글의 재변환 트리거는 아래 #209 행 참조. | Win IME native — 한자 키 (한국어 키보드; MS-IME default) | Apple 한글 IME — `Option+Return` | IME 엔진 설정 키 (ibus-hangul 은 F9 / 한자 키가 default, fcitx5-hangul 은 설정에서 지정 — IME 버전 따라 다를 수 있음) → IME 자체 후보 popup | ✅ | ✅ | ✅ |
 | 입력 확정된 한글의 한자 변환 ([#209](https://github.com/ensky0/tildaz/issues/209)) | committed text 또는 조합 중 한글 → 후보 popup → 확정 시 replacement. 후보창이 떠 있는 동안 원래 한글은 그대로 보이고, 후보 확정 시에만 한글을 지우고 한자를 입력. Esc / 후보 취소 / focus loss 는 원래 한글 유지. 일반 용어로는 "Hanja reconversion" — *재변환* 이지만 *한자 → 한글* 의미가 아니라 *이미 commit 된 글자를 다시 IME 의 변환 대상으로 되돌려 후보 popup 띄우기*. | Win IME native conversion key / candidate popup 경로. app 은 후보 위치를 `ImmSetCompositionWindow` 로 유지 | `NSTextInputClient` API (`selectedRange`, `markedRange`, `attributedSubstringForProposedRange`, `firstRectForCharacterRange`, `insertText:replacementRange:`) 구현. terminal cursor row 는 PTY `backspace + insert`, tab rename 은 `RenameState` range 치환. 그 외 범위는 안전하게 plain insert fallback (#166, #190 v0.4.3) | ❌ **platform 한계** — *조합 중* 한자 후보는 fcitx5 / ibus 자체 popup 으로 동작 (어느 host 든 OK). *입력 확정된* 한글의 한자 변환은 `zwp_text_input_v3` wire protocol 에 *해당 request 자체가 없어* client → IME 트리거 경로 부재. text-input-v4 의 `set_surrounding_text` 활용 가능성은 별 후속 검토 — Linux 첫 릴리즈는 unsupported 로 출시 | ✅ | ✅ | ❌ (platform-limit) |
 
 ### 5.1 IME preedit × line-nav 키 매트릭스 (#164 follow-up 6, v0.4.0)
@@ -560,6 +561,16 @@ if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
 `dispatchAppEvent` 가 `key_input` 받으면 rename 활성 시만 consume. rename 비활성 시 false 반환 → fall-through → TranslateMessage 가 보낸 WM_CHAR 가 정상 PTY 로 (셸 의 readline Ctrl+A/E 동작). Win Home/End 키는 [window.zig:1217-1218](src/window.zig) 에서 이미 KeyInput.home/end 매핑 — rename 활성 시 자동 작동.
 
 **cross-platform**: `tab_layout.iterTabText` 가 cursor 따라 viewport scroll (RenameState.scroll_offset cached state, [#168](https://github.com/ensky0/tildaz/issues/168)) — nav 후 cursor 위치 자동 따라옴. mac/win 양쪽 같은 helper.
+
+### 5.2 Emoji 입력 (OS emoji picker)
+
+emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker UI 를 구현하지 않는다 (세 platform 공통). Linux 에 앱단 대응물이 없는 것은 결함이 아니라 **라우팅할 OS 표준 picker 가 Linux 에 없기 때문** (의도된 platform 차이).
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| OS picker 진입 | `Win+.` — OS 전역 단축키, 앱 코드 불요 | `Ctrl+Cmd+Space` (system shortcut) — 앱은 menu item 으로 라우팅만 ([#130](https://github.com/ensky0/tildaz/issues/130)) | **없음** — OS 표준 picker 부재. DE 부속 도구는 있으나 tildaz 안 직접 입력 경로 아님 (아래 참고) |
+| tildaz 안 동작 | ✅ OS 가 focused 앱에 직접 입력 | ✅ cursor 에 anchored 된 popover — focus loss 자동 dismiss / `Esc` 닫힘 / emoji 클릭 즉시 입력 (2026-07-13 macOS 26.5.2 + v0.6.1 실기 시연) | emoji 입력은 paste (`Ctrl+Shift+V` / 우클릭) 또는 `echo` / `printf` 로 |
+| 참고 | | 과거 "floating panel + no auto-dismiss" quirk 기록 (2026-05-06, [bc9aa0b](https://github.com/ensky0/tildaz/commit/bc9aa0b) 시점) 은 현재 환경에서 재현 안 됨 — 원인 미확정 (후보: #166/#190 의 NSTextInputClient 표면 확장 또는 macOS 업데이트). Esc dismiss 보강 코드 (`isEmojiPickerOpen()`) 는 무해해서 유지. | *미실측 (DE / 버전 따라 다를 수 있음)*: KDE Plasma `Meta+.` 는 클립보드 복사 방식, GNOME `Ctrl+.` 은 IBus 경유 GTK 앱 전용이라 tildaz (비-GTK Wayland client) 안에서 미동작 |
 
 ---
 
@@ -980,7 +991,6 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 |---|---|---|
 | macOS Metal layer (0,0) 픽셀 미렌더링 | 좌상 1px corner 안 그려짐 | `TERMINAL_PADDING_PT >= 1` 이라 인지 거의 없음 |
 | 한영 jamo replay (IMK mach port timing) | 한영 전환 직후 마지막 jamo 가 두 번 처리될 수 있음 | 사용자 환경 미발생. 우리 코드에 워크어라운드 없음. |
-| macOS emoji picker — floating panel + no system auto-dismiss ([#130](https://github.com/ensky0/tildaz/issues/130)) | `Ctrl+Cmd+Space` picker 는 트리거되나, cursor 옆 popover 가 아닌 화면 floating panel. focus 잃어도 system 이 자동 안 닫음. | Apple-first-party (Terminal.app / TextEdit / Notes) 만 popover path. ghostty / iTerm2 / Alacritty / Kitty / tildaz 등 모든 custom-NSView 기반 modern 터미널 동등 한계. NSTextView 로 architectural rewrite 외 우회 없음 (10M scrollback / GPU atlas / custom IME overlay 잃음). dismiss: `Ctrl+Cmd+Space` 다시 (toggle) 또는 **`Esc`** (우리 boolean 추적 best-effort). emoji 입력 자체 우회: `echo`, `printf`, 다른 앱에서 복사 → 우클릭 paste. |
 | ZWJ family / wide cluster emoji 다중 paste 시 줄바꿈 안 됨 ([#141](https://github.com/ensky0/tildaz/issues/141)) | `Cmd+V` 길게 누름 (key repeat ~30회/초) 으로 `👨‍👩‍👧` 같은 ZWJ family 를 flood 시 같은 줄에 덮어써짐. 1 회 paste 는 정상. | ghostty 의 Mode 2027 (grapheme cluster) 가 cluster = 2 cells 로 처리, bash 3.2 의 wcwidth 는 codepoint sum (man 2 + ZWJ 0 + woman 2 + ZWJ 0 + girl 2 = 6 cells) 으로 계산 → cell 4 mismatch/family. flood 시 bash 의 internal cursor 가 자기 wrap 임계 도달 → `\r` (CR) 출력 → 우리 grid col 0 으로 reset → 같은 자리 덮어써짐. fix path A (Mode 2027 OFF) 는 family ligature 깨짐, B (cluster cell width = codepoint sum + visual ligature 합성) 는 ghostty design 변경 필요 — 둘 다 trade-off 큼. 일반 사용 (1 회 paste) 무영향이라 known limitation 등재. zsh 5.x 등 cluster-aware shell 사용 시 자연 해소. |
 | Fira Code `||=` 의 `=` 분리 갭 — 모든 shaper ([#189](https://github.com/ensky0/tildaz/issues/189) 후속) | `||=` 시퀀스에서 `||` 부분만 합쳐지고 마지막 `=` 가 자연 글리프로 분리되어 시각 갭. 다른 3-char ligature (`===`, `==>`, `<==`, `<=>`, `-->`, `<--` 등) 는 정상 합성. | Fira Code 6.x 의 calt 룰 chain 호환성 문제 — `=` 를 `equal_end.seq` 로 substitute 하는 룰이 mac (CoreText) / Linux (HarfBuzz) / Windows (DirectWrite) 모든 shaper 에서 적용 안 됨. 모든 platform 동일이라 cross-platform 동등성 유지. 폰트 update 또는 다른 폰트로 우회 외 우리 코드 fix 불가. |
 | KDE Plasma floating dock 가림 ([#206](https://github.com/ensky0/tildaz/issues/206)) — Linux, platform-limit | KDE Plasma 6 의 *floating panel* (떠다니는 dock) 이 인접 창에 따라 화면 안쪽으로 떠오르면, 우리 layer-surface 하단이 그 영역을 덮어 dock 일부가 가려짐. dock 이 가장자리에 anchored 인 동안엔 KWin 이 그만큼 줄인 크기를 줘서 충돌 없음. | client (tildaz) 가 정공으로 해결 불가 — compositor (KWin) 가 floating panel 을 drop-down 출현에 **defloat** 시켜야 하는데 layer-shell 에 그 트리거가 없음(아래 상세). KDE 공식 yakuake 도 동일 미해결([KDE Bug 491006](https://bugs.kde.org/show_bug.cgi?id=491006)). **회피책 — panel 의 *Floating* 옵션을 끄면(anchored 고정) 충돌 없음.** |
@@ -997,19 +1007,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 >
 > 관련 검색어: `IMK race condition`, `Korean input duplicate jamo macOS`, `NSTextInputClient markedText timing`. (Apple Developer Forums / ghostty / Alacritty GitHub issues 에 비슷한 보고가 있을 수 있으나 이 SPEC 작성 시점에 specific 1차 reference 확인된 것은 없음.)
 
-> **macOS emoji picker — floating panel + no auto-dismiss 상세 ([#130](https://github.com/ensky0/tildaz/issues/130)):**
->
-> `NSApp.orderFrontCharacterPalette:` (또는 사용자 system shortcut `Ctrl+Cmd+Space`) 는 Apple 의 private `CharacterPicker.framework` 로 들어가 두 path 중 하나로 picker 를 띄움 — (a) cursor 위치에 anchored 된 NSPopover (focus 잃으면 자동 dismiss), (b) standalone NSWindow floating panel (last-known position 기억, 수동 close).
->
-> path 분기 criterion 은 firstResponder 가 NSText / NSTextView 계열 (또는 그에 준하는 internal protocol 통과) 인지에 달림. NSTextInputClient 의 `firstRectForCharacterRange:actualRange:` 만 implement 해도 popover path 활성 안 됨이 검증됨 — 우리 자체 IME 통합으로 그 메서드는 정확한 cursor screen rect 반환하나 system 이 popover 로 띄우지 않음.
->
-> - **언제 발생하나?** 항상. `Ctrl+Cmd+Space` 한 번 누를 때마다 floating panel 로 뜸. 우선순위 🟢 (low) — picker 자체는 동작 + emoji 입력은 정상.
-> - **Esc dismiss 보강** — system 자동 dismiss 가 안 되는 대신 우리 `tildazKeyDown` 에서 modifier 없는 Esc 를 잡아 picker 닫음. picker 는 우리 process 가 아니라 별도 system process (`com.apple.CharacterPaletteIM` 등 Apple Input Method bundle) 가 호스팅하므로 `[NSApp orderedWindows]` 로는 안 보임 — `isEmojiPickerOpen()` helper 가 `CGWindowListCopyWindowInfo` 로 모든 process 의 onscreen 윈도우 순회 + 각 owner PID 를 `NSRunningApplication` 으로 풀어 `bundleIdentifier` prefix `com.apple.Character` 매칭 (locale-independent). owner name 은 localized 라 매칭에 안 씀 (한글: "이모지 및 기호", 영어: "Emoji & Symbols"). 권한: `kCGWindowOwnerPID` 는 Screen Recording 권한 불필요.
-> - **Terminal.app 만 되는 이유** — Apple 첫 party 앱이라 internal heuristic 통과 (정확한 criterion 은 private). 추정: TTView (Terminal.app 의 내부 view class) 가 NSTextView 계열이거나 popover path 를 활성화시키는 private method 를 implement.
-> - **다른 custom-view 터미널 동등 한계** — ghostty / iTerm2 / Alacritty / Kitty / WezTerm / Warp 모두 동일한 floating panel 동작. *high-performance terminal architecture* (cell grid + GPU atlas + custom IME overlay + 10M scrollback) 와 NSTextView 의 character-flow / NSLayoutManager 모델은 근본 충돌이라 popover 만 위해 NSTextView 로 갈 수 없음.
-> - **우리 코드 워크어라운드 없음** — popover path 는 macOS internal 영역.
->
-> 관련 검색어: `orderFrontCharacterPalette`, `CharacterPicker.framework`, `NSTextView popover emoji panel`, `iTerm2 emoji picker floating`.
+> **macOS emoji picker 이력 노트 ([#130](https://github.com/ensky0/tildaz/issues/130)):** 2026-05-06 ([bc9aa0b](https://github.com/ensky0/tildaz/commit/bc9aa0b)) 시점엔 picker 가 cursor 옆 popover 가 아닌 화면 floating panel 로 뜨고 focus loss 에 자동 dismiss 안 되는 quirk 가 이 표에 있었다. 2026-07-13 실기 (macOS 26.5.2 + v0.6.1) 재검증에서 popover + 자동 dismiss 로 정상 동작해 **해소 확인** — 현행 동작은 §5.2. 원인은 미확정 (후보: 그 직후 #166/#190 의 NSTextInputClient 표면 확장, 또는 macOS 업데이트). Esc dismiss 보강 코드 (`isEmojiPickerOpen()`, `src/host/macos.zig` — `CGWindowListCopyWindowInfo` 로 `com.apple.Character*` bundle 의 onscreen 윈도우 감지) 는 무해해서 유지한다. 관련 검색어: `orderFrontCharacterPalette`, `CharacterPicker.framework`.
 
 > **ZWJ family / wide cluster emoji 다중 paste 줄바꿈 안 됨 상세 ([#141](https://github.com/ensky0/tildaz/issues/141)):**
 >

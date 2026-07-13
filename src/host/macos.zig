@@ -3571,11 +3571,10 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
 /// (101) 윈도우가 emoji panel 위에 가리는 문제 회피 위해 잠시 normal level
 /// 로 낮춤. 다음 toggle (F1 / hotkey) 시 `showWindow` 가 popup 으로 복구.
 ///
-/// picker 가 cursor-anchored popover 가 아니라 floating panel 로 뜨는 것 +
-/// focus 잃어도 자동 dismiss 안 되는 것은 macOS 의 Apple-first-party 우대
-/// 한계 (Apple `CharacterPicker.framework` 가 NSTextView 기반 firstResponder
-/// 만 popover path 활성, custom NSView 는 floating panel fallback). ghostty
-/// / iTerm2 / Alacritty / Kitty 동등. 자세한 분석은 SPEC.md 부록 B.
+/// 2026-07-13 실기 (macOS 26.5.2 + v0.6.1) 기준 picker 는 cursor-anchored
+/// popover 로 뜨고 focus loss 에 자동 dismiss 됨 (SPEC.md §5.2). 과거엔
+/// floating panel + no auto-dismiss 였음 — 원인 미확정 (SPEC.md 부록 B
+/// 이력 노트). 아래 Esc dismiss 보강은 구 동작 환경 대비로 유지.
 ///
 /// Esc 로 dismiss 가능 — `tildazKeyDown` 이 `isEmojiPickerOpen()` 으로 panel
 /// 의 *실제 visibility* 를 매번 query (NSApp.orderedWindows 순회 + class name
