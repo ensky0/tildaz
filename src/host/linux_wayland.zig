@@ -108,7 +108,6 @@ fn runPtySmoke(allocator: std.mem.Allocator) !void {
         .cols = 80,
         .rows = 24,
         .shell = "/bin/sh",
-        .theme = null,
     });
     defer backend.deinit();
 

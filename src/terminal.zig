@@ -9,12 +9,11 @@
 //!   resize(cols, rows) → !void
 //!   startReadThread(read_cb, exit_cb, userdata) → !void
 //!
-//! 실제 구현은 `terminal/windows.zig` / `terminal/macos.zig` /
-//! `terminal/linux.zig`. 각 모듈은 동일 API 시그니처를 export.
+//! 실제 구현은 `terminal/windows.zig` (ConPTY) / `terminal/posix.zig`
+//! (Linux · macOS 공용, #294 G2). 각 모듈은 동일 API 시그니처를 export.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const themes = @import("themes.zig");
 
 pub const ReadCallback = *const fn (data: []const u8, userdata: ?*anyopaque) void;
 pub const ExitCallback = *const fn (userdata: ?*anyopaque) void;
@@ -28,8 +27,8 @@ pub const ShellCommand = switch (builtin.os.tag) {
 };
 
 /// 자식 셸에 inject 할 환경변수. 양쪽 platform 동일 type (UTF-8). Windows
-/// Backend 는 init 시 UTF-16 변환 + 호출 후 환경 복원, macOS Backend 는
-/// `KEY=VALUE` allocPrintSentinel 후 execve 환경 배열에 prepend.
+/// Backend 는 init 시 UTF-16 변환 + 호출 후 환경 복원, POSIX Backend 는
+/// 부모 environ 에 override 머지 후 execve 환경 배열로.
 pub const ExtraEnv = struct {
     name: []const u8,
     value: []const u8,
@@ -40,7 +39,6 @@ pub const Options = struct {
     cols: u16,
     rows: u16,
     shell: ShellCommand,
-    theme: ?*const themes.Theme,
     /// 호출자가 자식 셸에 inject 할 env (TERM / LANG / SHELL 등). theme 기반
     /// COLORFGBG / WSLENV (Windows) / 그 외 platform 자동 inject 와는 별개로
     /// 합쳐짐.
@@ -49,8 +47,7 @@ pub const Options = struct {
 
 pub const TerminalBackend = switch (builtin.os.tag) {
     .windows => @import("terminal/windows.zig").Backend,
-    .macos => @import("terminal/macos.zig").Backend,
-    .linux => @import("terminal/linux.zig").Backend,
+    .macos, .linux => @import("terminal/posix.zig").Backend,
     else => UnsupportedTerminalBackend,
 };
 
