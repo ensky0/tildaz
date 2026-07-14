@@ -195,7 +195,7 @@ fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
 
     S.vars[0] = .{
         .name = "COLORFGBG",
-        .value = if (themes.isDark(t)) "15;0" else "0;15",
+        .value = themes.colorFgBg(t),
     };
 
     // WSLENV — 부모 utf-16 query → utf-8 변환 + ":COLORFGBG" suffix.

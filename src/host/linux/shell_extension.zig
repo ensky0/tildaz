@@ -1,4 +1,5 @@
 const std = @import("std");
+const paths = @import("../../paths.zig");
 
 pub const Kind = enum {
     gnome,
@@ -92,26 +93,7 @@ fn syncFile(allocator: std.mem.Allocator, source_path: []const u8, destination_p
     const content = try source.readToEndAlloc(allocator, 4 * 1024 * 1024);
     defer allocator.free(content);
 
-    if (std.fs.openFileAbsolute(destination_path, .{})) |existing| {
-        defer existing.close();
-        const old = existing.readToEndAlloc(allocator, 4 * 1024 * 1024) catch null;
-        if (old) |bytes| {
-            defer allocator.free(bytes);
-            if (std.mem.eql(u8, bytes, content)) return false;
-        }
-    } else |_| {}
-
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-{d}.tmp", .{ destination_path, std.c.getpid() });
-    defer allocator.free(temp_path);
-    errdefer std.fs.deleteFileAbsolute(temp_path) catch {};
-    {
-        const temp = try std.fs.createFileAbsolute(temp_path, .{ .truncate = true, .mode = 0o644 });
-        defer temp.close();
-        try temp.writeAll(content);
-        try temp.sync();
-    }
-    try std.fs.renameAbsolute(temp_path, destination_path);
-    return true;
+    return paths.writeFileIfChanged(allocator, destination_path, content);
 }
 
 fn compileGnomeSchemas(allocator: std.mem.Allocator, extension_dir: []const u8) !void {

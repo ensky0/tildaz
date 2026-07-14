@@ -69,7 +69,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `applyScale(scale_num, scale_den)` |
 | Font pixel height | `font.size_point` | `font_size_point × dpi/96` | `font_size_point × scale_pt` | `font_size_point × preferred_scale / 120` |
 | `TERMINAL_PADDING_PT` | 6 | `App.TERMINAL_PADDING` | `pad_px` | `Renderer.paddingPx()` |
-| `SCROLLBAR_W_PT` | 8 | `App.SCROLLBAR_W` | `scrollbar_w_px` | `Renderer.scrollbarWPx()` |
+| `SCROLLBAR_W_PT` | 10 | `App.SCROLLBAR_W` | `scrollbar_w_px` | `Renderer.scrollbarWPx()` |
 | `SCROLLBAR_MIN_THUMB_H_PT` | 32 | `App.SCROLLBAR_MIN_THUMB_H` | `scrollbar_min_thumb_h_px` | `Renderer.scrollbarMinThumbHPx()` |
 | `TAB_BAR_HEIGHT_PT` | 28 | `ui_metrics.tabBarHeightPx(scale)` | 동일 | 동일 |
 | `TAB_LABEL_FONT_PT` | 13 | tab 전용 DWrite context + atlas | tab 전용 CoreText context + atlas/texture | tab 전용 FreeType context + glyph cache |
@@ -287,7 +287,7 @@ minimize/restore.
 | 탭바 — rename 활성 탭의 *text 입력 영역* | I-beam | rename 진입 (더블클릭) 이후 그 탭의 text 영역만 텍스트 편집 컨텍스트. #268 로 per-tab close 가 사라져 탭 내부 전체가 text 영역 |
 | 탭바 — 우측 끝 `+` / `×` 버튼 | arrow | 버튼 성격 — 클릭 = 새 탭 / 활성 탭 닫기 (#268) |
 | 탭바 — 비활성 탭 본체 / 활성 탭 본체 (rename 비활성) / `<` / `>` / `+` / 빈 영역 / drag 중 | arrow | 탭바의 기본 — 클릭 / 더블클릭 / drag 등 *버튼* 성격 영역 |
-| 스크롤바 (우측 8 PT) | arrow | drag-to-scroll 버튼 |
+| 스크롤바 (우측 10 PT) | arrow | drag-to-scroll 버튼 |
 | 윈도우 padding / 가장자리 | arrow | terminal_padding 영역 |
 | 윈도우 가장자리 (system non-client) | OS 기본 | 우리가 안 건드림 (Win: HTBORDER 등은 `DefWindowProc` 처리, mac: borderless 라 가장자리 없음, Linux: layer-shell 가장자리 없음) |
 

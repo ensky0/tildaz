@@ -165,6 +165,42 @@ pub fn ensureDir(dir: []const u8) !void {
     try std.fs.cwd().makePath(dir);
 }
 
+fn currentPid() u32 {
+    return switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        .linux => @intCast(std.os.linux.getpid()),
+        else => @intCast(std.c.getpid()),
+    };
+}
+
+/// #282 G6 — atomic write-if-changed. `path` 의 기존 내용이 `content` 와 같으면
+/// 아무것도 쓰지 않고 `false`, 다르거나 파일이 없으면 같은 디렉토리의 temp 에
+/// 쓰고 fsync 후 rename 으로 원자 교체하고 `true`. temp 를 대상과 같은 fs 에 두어
+/// rename 원자성을 보장(부분 기록 파일이 남지 않음). mode 0o644 — desktop entry
+/// / plist / 셸 확장 / cosmic 단축키 파일의 표준. autostart·instance_identity·
+/// shell_extension·cosmic sync 의 5벌 복제를 대체.
+pub fn writeFileIfChanged(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !bool {
+    if (std.fs.openFileAbsolute(path, .{})) |existing| {
+        defer existing.close();
+        if (existing.readToEndAlloc(allocator, 4 * 1024 * 1024)) |old| {
+            defer allocator.free(old);
+            if (std.mem.eql(u8, old, content)) return false;
+        } else |_| {}
+    } else |_| {}
+
+    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-{d}.tmp", .{ path, currentPid() });
+    defer allocator.free(temp_path);
+    errdefer std.fs.deleteFileAbsolute(temp_path) catch {};
+    {
+        const temp = try std.fs.createFileAbsolute(temp_path, .{ .truncate = true, .mode = 0o644 });
+        defer temp.close();
+        try temp.writeAll(content);
+        try temp.sync();
+    }
+    try std.fs.renameAbsolute(temp_path, path);
+    return true;
+}
+
 test "logPath (allocator) 와 logPathBuf (buffer) 가 같은 경로를 낸다" {
     // #282 G3 — 'Open Log' (allocator 계열) 와 실제 기록 (buffer 계열) 이
     // 다시 갈라지는 회귀를 차단. 테스트 host 에 HOME/APPDATA 가 없으면 skip.
