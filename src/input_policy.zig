@@ -1,11 +1,11 @@
-//! #296 — 입력 상태(rename / terminal preedit) × 입력 종류의 처리 계약 단일 소스.
+//! #296 — 입력 상태(rename / terminal preedit) × 입력 종류의 처리 정책 단일 소스.
 //!
 //! host 는 native 입력(xkb sym / VK code / NSEvent)을 `Input` 으로 분류하고 IME
 //! 통합만 담당한다. "그래서 무엇을 할지"(rename buffer 로? PTY 로? 단축키 실행?
 //! pending 입력을 commit? preedit 자모 discard?)의 결정은 이 순수 함수 `resolve`
 //! 한 곳에 모은다.
 //!
-//! 이전엔 이 계약이 host 3벌로 복제돼 어긋났다 — Windows `app_controller.onAppEvent`,
+//! 이전엔 이 정책이 host 3벌로 복제돼 어긋났다 — Windows `app_controller.onAppEvent`,
 //! macOS `host/macos.zig` keyDown, Linux `wayland_minimal.renameShortcutYield` 등.
 //! 그 divergence 가 곧 #282 A1·A3·A4·A5·A6·A9·A10 결함이었다. SPEC §4.1(rename
 //! focus_loss 통합 표)/§5.1(preedit·copy 정책)이 canonical 이며, 아래 테스트가 그
@@ -40,7 +40,7 @@ pub const Input = union(enum) {
     shortcut: Shortcut,
 };
 
-/// 전역 단축키 종류. (paste 는 commit 계약이 달라 `Input.paste` 로 분리)
+/// 전역 단축키 종류. (paste 는 commit 정책이 달라 `Input.paste` 로 분리)
 pub const Shortcut = enum {
     new_tab,
     close_tab,
@@ -85,7 +85,7 @@ pub const Disposition = struct {
     target: Target,
 };
 
-/// 계약의 유일한 결정 지점. host 는 이 결과대로 pending 처리 후 target 으로 보낸다.
+/// 정책의 유일한 결정 지점. host 는 이 결과대로 pending 처리 후 target 으로 보낸다.
 pub fn resolve(input: Input, state: State) Disposition {
     switch (input) {
         // 전역 단축키: 어느 상태든 pending(rename/preedit) commit 후 실행.
