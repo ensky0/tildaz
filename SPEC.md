@@ -376,7 +376,7 @@ minimize/restore.
 
 탭 rename 과 terminal cell 양쪽에서 IME 조합 (preedit) 중에 line-nav 키 (Home / End / Ctrl+A / Ctrl+E) 를 누를 때 동작 정의. native textbox / iTerm2 동등.
 
-**원칙:** nav 키는 *commit 후 이동* — 입력 중 자모를 잃지 않음. Ctrl+C 만 예외 (line abort 의미라 discard).
+**원칙:** nav 키는 *commit 후 이동* — 입력 중 자모를 잃지 않음. Ctrl+C 만 예외 (line abort 의미). macOS 는 조합 자모까지 discard, Linux/fcitx5 는 자모를 먼저 확정한 뒤 SIGINT(`가^C`) — 어느 쪽이든 줄이 취소돼 실행 안 되므로 무해(표준 터미널과 동일).
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
 |---|---|---|---|---|---|---|
@@ -390,7 +390,7 @@ minimize/restore.
 | 탭 rename | 마우스 click 다른 영역 | preedit + rename 모두 commit | click 동작 | ✅ | ✅ | ✅ |
 | terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
 | terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | ✅ — `processKeyEvent` 가 Ctrl+letter (Ctrl+C 제외) + preedit 시 `commitPendingInput` → PTY 자모 송신 + IME session reset. 그 다음 utf8 path 가 Ctrl byte 송신 |
-| terminal cell | Ctrl+C | preedit *discard* (예외 — line abort) | SIGINT (`\x03` interruptWrite) | ✅ | ✅ | ✅ |
+| terminal cell | Ctrl+C | line abort — 자모 discard *시도* 후 SIGINT (IME 의존) | SIGINT (`\x03`) | ✅ (`discardMarkedText` 로 완전 discard) | ✅ | 🟨 fcitx5 가 Ctrl+C 에서 자모 먼저 확정 → `가^C` (취소된 줄에 남아 무해); 완전 discard 아님 |
 | terminal cell | Ctrl+L / Ctrl+D 등 | preedit → PTY commit | Ctrl char 발신 | ✅ | ✅ | ✅ |
 | terminal cell | Left / Right / Up / Down | (IME 자체 commit 트리거) | escape sequence 발신 | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
 
@@ -401,7 +401,7 @@ minimize/restore.
 | **Cmd+Left/Right 미매핑** | mac Terminal.app 도 동일 — terminal-style 앱은 Ctrl+A/E 만 받음. Cmd+Left/Right 는 일반 mac textbox 표준 (NSTextField line begin/end) 이지만 우리 앱은 terminal context 우선. Cmd+Left/Right 누르면 cmd 분기에서 commitPendingInput 후 mainMenu dispatch (key match 없으면 그대로 commit 됨). |
 | **Ctrl+A/E + Home/End 매핑** | terminal readline 컨벤션 + native textbox 일부 표준 (NSStandardKeyBindingResponder 의 `moveToBeginningOfParagraph:` 등). 양쪽 fitness 함. |
 | **nav 키 + preedit = commit (Ctrl+C 외)** | iTerm2 / native textbox 동등. 사용자가 입력 중인 자모 잃지 않음. terminal preedit 의 경우 PTY 로 직송 (셸 readline 이 받음), tab rename 의 경우 rename buf 의 cursor 위치에 insert. |
-| **Ctrl+C 만 discard** | line abort 의미 — shell 의 SIGINT 가 "현재 입력 라인 버리기" 라 자모도 같이 버리는 게 자연스러움. 사용자 mental model 일관. |
+| **Ctrl+C = line abort** | shell 의 SIGINT 가 "현재 입력 라인 버리기". macOS 는 조합 자모까지 discard(`discardMarkedText`). Linux/fcitx5 는 Ctrl+C 에서 자모를 먼저 확정해 `가^C`(자모가 취소된 줄에 남음) — gnome-terminal 등 표준 터미널과 동일하고 줄이 취소되어 무해. 완전 discard 는 IME 가 preedit 을 남겨두는 경우에만(best-effort). |
 | **좌측 ellipsis 안 보여줌** | native textbox (TextEdit, Safari URL bar) 도 안 함. cursor 위치 자체로 "긴 텍스트 안 어딘가" 라는 cue 충분. |
 | **우측 ellipsis 도 deferred (#169)** | "탭 이름이 짧아진 듯" 사용자 feedback 으로 시도. 근데 cursor visibility 와 충돌 + zone transition 시 visual jitter 등 edge case 많아 revert. |
 

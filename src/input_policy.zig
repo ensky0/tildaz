@@ -34,7 +34,8 @@ pub const Input = union(enum) {
     nav_key,
     /// 클립보드 paste 요청.
     paste,
-    /// Ctrl+C (SIGINT). 터미널 preedit 중이면 자모 discard 후 SIGINT.
+    /// Ctrl+C (SIGINT = line abort). 터미널 preedit 자모 discard *시도* 후 SIGINT
+    /// (best-effort — Pending.discard 참고).
     interrupt,
     /// 전역 단축키.
     shortcut: Shortcut,
@@ -64,7 +65,10 @@ pub const Pending = enum {
     /// 확정 — rename 이면 현재 값으로 탭 이름 확정, terminal preedit 이면 자모를
     /// PTY 로 flush (SPEC §4.1 모든 focus_loss = commit).
     commit,
-    /// 버림 — terminal preedit 자모를 IME reset 으로 폐기 (Ctrl+C SIGINT, §5.1 A5).
+    /// 버림 — terminal preedit 자모를 폐기 (Ctrl+C = line abort, §5.1). best-effort:
+    /// IME 가 preedit 을 남겨둔 경우만 실제로 폐기된다. Linux fcitx5 는 Ctrl+C 에서
+    /// 자모를 먼저 확정해 preedit 이 비므로 이 분기가 안 타고 `가^C`(확정 후 SIGINT,
+    /// 취소된 줄이라 무해)가 된다. macOS 는 discardMarkedText 로 완전 폐기.
     discard,
 };
 

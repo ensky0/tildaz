@@ -542,7 +542,8 @@ fn classifyInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_policy.Inp
             else => null,
         };
     }
-    // Ctrl+C (Shift 없음) — SIGINT / preedit 자모 discard (#282 A5).
+    // Ctrl+C (Shift 없음) — SIGINT(line abort). preedit 자모 discard 는 best-effort:
+    // fcitx5 는 Ctrl+C 에서 자모를 먼저 확정해 `가^C`(취소된 줄이라 무해, §5.1).
     if (ctrl and !shift and !alt and (sym == xkb_key_c_lower or sym == xkb_key_c_upper)) return .interrupt;
     // Alt+Enter(fullscreen) / Alt+F4(quit) / Alt+1..9(탭 전환). Ctrl 미동반.
     if (alt and !ctrl) {
