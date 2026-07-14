@@ -18,7 +18,7 @@ const display_width = @import("../../font/display_width.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const app_event = @import("../../app_event.zig");
-const input_contract = @import("../../input_contract.zig");
+const input_policy = @import("../../input_policy.zig");
 const themes = @import("../../themes.zig");
 const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
@@ -520,11 +520,11 @@ pub const DialogOverlay = struct {
     }
 };
 
-/// #296 — native xkb sym + modifier 를 공통 계약의 `input_contract.Input` 으로
-/// 분류. null = 계약 대상 아님(터미널 control char / preedit-Ctrl commit / scroll
+/// #296 — native xkb sym + modifier 를 공통 정책의 `input_policy.Input` 으로
+/// 분류. null = 정책 대상 아님(터미널 control char / preedit-Ctrl commit / scroll
 /// 등) → processKeyEvent 의 기존 non-rename 경로로. 상태(rename/preedit)에 따른
-/// "그래서 무엇을 할지" 결정은 여기가 아니라 `input_contract.resolve` 가 한다.
-fn classifyContractInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_contract.Input {
+/// "그래서 무엇을 할지" 결정은 여기가 아니라 `input_policy.resolve` 가 한다.
+fn classifyInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_policy.Input {
     // Ctrl+Shift+* — 클립보드 / 탭 / About / Open Config·Log / reset / perf.
     if (ctrl and shift and !alt) {
         return switch (sym) {
@@ -550,9 +550,9 @@ fn classifyContractInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_co
         if (!shift and sym == xkb_key_f4) return .{ .shortcut = .quit };
         if (!shift and sym >= xkb_key_1 and sym <= xkb_key_9) return .{ .shortcut = .switch_tab };
     }
-    // 그 외 Ctrl/Alt 조합은 계약 대상 아님(터미널 control char, preedit-Ctrl commit).
+    // 그 외 Ctrl/Alt 조합은 정책 대상 아님(터미널 control char, preedit-Ctrl commit).
     if (ctrl or alt) return null;
-    // Shift+PgUp/PgDn = 스크롤(계약 아님) → 기존 scroll 경로.
+    // Shift+PgUp/PgDn = 스크롤(정책 아님) → 기존 scroll 경로.
     if (shift and (sym == xkb_key_page_up or sym == xkb_key_page_down)) return null;
     // 순수 편집키 / nav 키 / 문자.
     return switch (sym) {
@@ -562,10 +562,10 @@ fn classifyContractInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_co
     };
 }
 
-test "#296 classifyContractInput — native xkb → 공통 Input 분류" {
+test "#296 classifyInput — native xkb → 공통 Input 분류" {
     const T = std.testing;
-    const C = classifyContractInput;
-    const I = input_contract.Input;
+    const C = classifyInput;
+    const I = input_policy.Input;
     // Ctrl+Shift+* → shortcut / paste
     try T.expectEqual(@as(?I, .{ .shortcut = .copy_selection }), C(xkb_key_c_lower, true, true, false));
     try T.expectEqual(@as(?I, .paste), C(xkb_key_v_lower, true, true, false));
@@ -3622,7 +3622,7 @@ const Client = struct {
     /// — 같은 batch 안 commit_string + preedit_string(empty) + done 흐름).
     ///
     /// #296 — rename 중 어떤 키가 편집(여기)으로 오고 어떤 게 단축키로 yield 하는지의
-    /// 판정은 이제 `classifyContractInput` + `input_contract.resolve` (processKeyEvent).
+    /// 판정은 이제 `classifyInput` + `input_policy.resolve` (processKeyEvent).
     fn handleRenameKey(self: *Client, key: u32) !void {
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
@@ -3725,13 +3725,13 @@ const Client = struct {
         const shift = self.keyboard.shiftActive();
         const alt = self.keyboard.altActive();
 
-        // #296 — 상태-의존 계약(rename / terminal preedit × 입력)은 공통
-        // input_contract.resolve 한 곳에서 결정한다. host 는 native → Input 분류만.
-        // 계약 대상이 아니면(터미널 control char / preedit-Ctrl commit / scroll) 아래
+        // #296 — 상태-의존 정책(rename / terminal preedit × 입력)은 공통
+        // input_policy.resolve 한 곳에서 결정한다. host 는 native → Input 분류만.
+        // 정책 대상이 아니면(터미널 control char / preedit-Ctrl commit / scroll) 아래
         // 기존 non-rename 경로로 흘린다.
         if (sym_opt) |sym| {
-            if (classifyContractInput(sym, ctrl, shift, alt)) |input| {
-                const disp = input_contract.resolve(input, .{
+            if (classifyInput(sym, ctrl, shift, alt)) |input| {
+                const disp = input_policy.resolve(input, .{
                     .rename_active = self.rename_state.isActive(),
                     .terminal_preedit_active = self.preedit_text.items.len > 0,
                 });
@@ -3768,7 +3768,7 @@ const Client = struct {
                     },
                 }
             } else if (self.rename_state.isActive()) {
-                // rename 중 계약 미분류 키(Ctrl+A/E = home/end 등) → rename 편집.
+                // rename 중 정책 미분류 키(Ctrl+A/E = home/end 등) → rename 편집.
                 try self.handleRenameKey(key);
                 return;
             }
@@ -3777,13 +3777,13 @@ const Client = struct {
             return;
         }
 
-        // ── 기존 non-rename 경로 (계약 target=pty 또는 미분류 키) ──────────────
+        // ── 기존 non-rename 경로 (정책 target=pty 또는 미분류 키) ──────────────
         if (sym_opt) |sym| {
             // Ctrl + 터미널 preedit(Ctrl+C 아님) → 자모를 PTY 로 commit 후 진행
             // (terminal readline 이 자모 먼저 받고 Ctrl byte 처리). Ctrl+C 는 위
             // interrupt 경로가 discard 로 처리하므로 여기 도달 안 함.
             if (ctrl and self.preedit_text.items.len > 0) self.commitPendingInput();
-            // SPEC §2.5 — Shift+PgUp / Shift+PgDn scrollback (계약 아님 — 별도).
+            // SPEC §2.5 — Shift+PgUp / Shift+PgDn scrollback (정책 아님 — 별도).
             if (shift and !ctrl and !alt and (sym == xkb_key_page_up or sym == xkb_key_page_down)) {
                 self.commitPendingInput();
                 if (self.session) |*session| {
