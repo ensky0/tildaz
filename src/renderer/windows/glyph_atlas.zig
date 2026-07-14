@@ -18,29 +18,13 @@ const dw = @import("../../font/windows/directwrite.zig");
 const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
 const tab_icons = @import("../../tab_icons.zig");
+const atlas_common = @import("../glyph_atlas_common.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
-pub const AtlasEntry = struct {
-    x: u16, // position in atlas (pixels)
-    y: u16,
-    w: u16, // glyph dimensions (pixels)
-    h: u16,
-    bearing_x: i16, // offset from cell origin to glyph top-left
-    bearing_y: i16,
-    /// true 면 atlas 의 RGB 가 *컬러 (depremult)*, A 가 alpha mask. shader 가
-    /// fg 와 곱하지 않고 atlas 그대로 출력 + atlas.a 를 mask 로 ClearType blend
-    /// state 에 전달. false 면 기존 ClearType subpixel mono path.
-    is_color: bool = false,
-    /// 글리프 advance (물리 px, DPI scale 반영). wide 글리프(한글/CJK/emoji)를
-    /// 배정된 셀 영역 가운데에 정렬할 때 사용 (#299 — Linux 와 동일 정책).
-    advance: f32 = 0,
-};
-
-const GlyphKey = struct {
-    face: usize, // pointer value as key
-    index: u16,
-};
+// #282 G5 — AtlasEntry / GlyphKey / packing 은 macOS atlas 와 공통(라인 동일).
+pub const AtlasEntry = atlas_common.AtlasEntry;
+const GlyphKey = atlas_common.GlyphKey;
 
 /// Multi-glyph cluster (#139) cache key — glyph_indices hash 만. face_ptr 은
 /// system fallback (MapCharacters + CreateFontFace) 마다 새 instance 라 매번
@@ -313,7 +297,7 @@ pub const GlyphAtlas = struct {
     /// Color emoji 글리프는 `rasterizeColor` (TranslateColorGlyphRun) 를 먼저
     /// 시도; 실패 (DWRITE_E_NOCOLOR 포함) 시 일반 alpha rasterize 로 fall-through.
     pub fn getOrInsert(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        const key = GlyphKey{ .face = @intFromPtr(face), .index = glyph_index };
+        const key = GlyphKey{ .font_ptr = @intFromPtr(face), .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
         const single_indices = [_]u16{glyph_index};
@@ -369,7 +353,7 @@ pub const GlyphAtlas = struct {
     /// 같은 RGBA 경로 — 회색이라 R=G=B=coverage, A=0xFF (subpixel fringing 없음),
     /// `temp_buf` → `UpdateSubresource` 업로드. is_color=false 로 mono shader path.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .face = 0, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_ptr = 0, .index = @intFromEnum(icon) };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 
@@ -791,24 +775,8 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// Simple row-based packing. Returns (x, y) or null if full.
+    /// #282 G5 — 공통 row-based packing 에 위임.
     fn packGlyph(self: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
-        const pad = 1; // 1px padding between glyphs
-
-        if (self.cursor_x + w + pad > ATLAS_SIZE) {
-            // Move to next row
-            self.cursor_x = 0;
-            self.cursor_y += self.row_height + pad;
-            self.row_height = 0;
-        }
-
-        if (self.cursor_y + h > ATLAS_SIZE) return null; // Atlas full
-
-        const x = self.cursor_x;
-        const y = self.cursor_y;
-        self.cursor_x += w + pad;
-        if (h > self.row_height) self.row_height = h;
-
-        return .{ x, y };
+        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, ATLAS_SIZE, w, h);
     }
 };
