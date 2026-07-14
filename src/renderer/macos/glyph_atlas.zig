@@ -15,28 +15,13 @@
 const std = @import("std");
 const ct = @import("../../font/macos/coretext.zig");
 const tab_icons = @import("../../tab_icons.zig");
+const atlas_common = @import("../glyph_atlas_common.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
-pub const AtlasEntry = struct {
-    x: u16, // 아틀라스 내 위치 (pixel).
-    y: u16,
-    w: u16, // 글리프 크기 (pixel).
-    h: u16,
-    bearing_x: i16, // cell origin 에서 글리프 좌상단까지 offset.
-    bearing_y: i16,
-    /// SBIX/COLR 컬러 글리프 (Apple Color Emoji 등). 셰이더가 fg 무시하고 atlas
-    /// 그대로 출력하는 분기 트리거.
-    is_color: bool,
-    /// 글리프 advance (물리 px, retina scale 반영). wide 글리프(한글/CJK/emoji)를
-    /// 배정된 셀 영역 가운데에 정렬할 때 사용 (#299 — Linux 와 동일 정책).
-    advance: f32 = 0,
-};
-
-const GlyphKey = struct {
-    font: usize, // CTFontRef 의 포인터 값을 키로 (라이프타임 동안 stable 가정).
-    index: u16,
-};
+// #282 G5 — AtlasEntry / GlyphKey / packing 은 Windows atlas 와 공통(라인 동일).
+pub const AtlasEntry = atlas_common.AtlasEntry;
+const GlyphKey = atlas_common.GlyphKey;
 
 pub const GlyphAtlas = struct {
     alloc: std.mem.Allocator,
@@ -92,7 +77,7 @@ pub const GlyphAtlas = struct {
 
     /// 글리프 lookup or rasterize. 라스터 실패 시 null.
     pub fn getOrInsert(self: *GlyphAtlas, font: ct.CTFontRef, glyph_index: ct.CGGlyph) ?AtlasEntry {
-        const key = GlyphKey{ .font = @intFromPtr(font), .index = glyph_index };
+        const key = GlyphKey{ .font_ptr = @intFromPtr(font), .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
         const entry = self.rasterize(font, glyph_index) orelse return null;
@@ -107,7 +92,7 @@ pub const GlyphAtlas = struct {
     /// tint 경로 사용. scale 변경 시 `applyScale` 이 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font = 0, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_ptr = 0, .index = @intFromEnum(icon) };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 
@@ -312,24 +297,8 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// 단순 row-based packing — 현재 row 에 안 들어가면 다음 row 로.
-    /// 가득 차면 null (caller 가 reset 후 재시도).
+    /// #282 G5 — 공통 row-based packing 에 위임.
     fn packGlyph(self: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
-        const pad = 1;
-
-        if (self.cursor_x + w + pad > ATLAS_SIZE) {
-            self.cursor_x = 0;
-            self.cursor_y += self.row_height + pad;
-            self.row_height = 0;
-        }
-
-        if (self.cursor_y + h > ATLAS_SIZE) return null;
-
-        const x = self.cursor_x;
-        const y = self.cursor_y;
-        self.cursor_x += w + pad;
-        if (h > self.row_height) self.row_height = h;
-
-        return .{ x, y };
+        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, ATLAS_SIZE, w, h);
     }
 };

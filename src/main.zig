@@ -180,5 +180,20 @@ fn runLauncher(autostart_launch: bool) !void {
 }
 
 fn requestNewInstance() !void {
-    try instance_request.send();
+    // #282 G13 — worker 가 lock+PID 를 기록했어도(waitUntilRunning ack) 요청
+    // endpoint(Windows 창 / Linux socket listener)가 아직 준비 안 됐을 수 있다.
+    // 그 짧은 창에서 send 가 실패하면 잘못된 fatal dialog 가 뜨므로 짧게
+    // 재시도한다(최대 ~200ms). macOS notification 은 fire-and-forget 이라 실패
+    // 신호가 없어 재시도와 무관(#282 D3 별도 추적).
+    var attempt: u32 = 0;
+    while (true) : (attempt += 1) {
+        instance_request.send() catch |err| {
+            if (attempt < 10) {
+                std.Thread.sleep(20 * std.time.ns_per_ms);
+                continue;
+            }
+            return err;
+        };
+        return;
+    }
 }
