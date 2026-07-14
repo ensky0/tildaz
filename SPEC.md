@@ -338,7 +338,9 @@ minimize/restore.
 
 ### 4.1 Rename focus_loss 통합 표 (#175)
 
-탭 rename 활성 중에 어떤 focus_loss 가 발생해도 동일 동작 = **commit** (현재 입력값으로 그 탭 이름 확정). 유일한 예외 = **Esc** (cancel, 변경 안 함).
+> **입력 상태 × 단축키/키 처리 정책은 `src/input_policy.zig` (`resolve`) 단일 소스** — 세 host(Windows `onAppEvent` / macOS keyDown / Linux `processKeyEvent`)가 native 입력을 분류해 `resolve` 에 넘기고 그 결과(pending: leave/commit/discard × target: rename_buffer/pty/run_action/drop)대로 동작한다. 아래 표/§5.1 이 그 정책의 truth table 이며 `input_policy` 의 단위 테스트로 고정 (#296).
+
+탭 rename 활성 중에 어떤 focus_loss 가 발생해도 동일 동작 = **commit** (현재 입력값으로 그 탭 이름 확정). 유일한 예외 = **Esc** (cancel), 그리고 **read-only 단축키(copy_selection / dump_perf)** 는 편집을 끝내지 않음 (#296).
 
 다른 inline rename UX 표준과 일치 — Finder filename rename, iTerm2 tab rename 등. 입력 흐름이 *항상 어딘가 저장* → 사용자 입력 손실 회피. cancel 은 명시적 의도일 때만.
 
