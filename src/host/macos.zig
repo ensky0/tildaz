@@ -31,6 +31,7 @@ const terminal_interaction = @import("../terminal_interaction.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_actions = @import("../tab_actions.zig");
+const input_policy = @import("../input_policy.zig");
 const session_core = @import("../session_core.zig");
 const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
@@ -631,6 +632,26 @@ fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
     interpretKeyEvents(self_view, objc.sel("interpretKeyEvents:"), array);
 }
 
+/// #296 — 현재 입력 상태를 공통 입력 정책(input_policy)용으로.
+fn macInputState() input_policy.State {
+    return .{ .rename_active = g_rename.isActive(), .terminal_preedit_active = g_marked_len > 0 };
+}
+
+/// #296 — macOS Cmd+keyCode 를 입력 정책 Shortcut 으로 분류. 인식 못한 조합은
+/// null (→ mainMenu Cmd+Q 등). `tildazKeyDown` 의 dispatch switch 와 정확히 일치.
+fn macCmdShortcut(kc: c_ushort, shift: bool) ?input_policy.Shortcut {
+    if (kc == 8) return .copy_selection; // Cmd+C
+    if (kc == 0x11 and !shift) return .new_tab; // Cmd+T
+    if (kc == 0x0D and !shift) return .close_tab; // Cmd+W
+    if (keycodeToTabIndex(kc) != null) return .switch_tab; // Cmd+1..9
+    if (shift and kc == 0x21) return .prev_tab; // Shift+Cmd+[
+    if (shift and kc == 0x1E) return .next_tab; // Shift+Cmd+]
+    if (shift and kc == 0x0F) return .reset_terminal; // Shift+Cmd+R
+    if (kc == 0x24) return .fullscreen; // Cmd+Enter / Shift+Cmd+Enter
+    if (shift and kc == 0x6F) return .dump_perf; // Shift+Cmd+F12
+    return null;
+}
+
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     requestRender(); // #255 Phase2 — 키 입력 → 렌더 (스크롤백/탭조작 등 출력 없는 변화 포함).
     const tab = g_session.activeTab() orelse return;
@@ -648,74 +669,37 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
         const shift = (flags & NSEventModifierFlagShift) != 0;
 
-        // #282 A3 — Cmd+V (kc 9) 은 rename 활성 시 rename buffer 로 paste 해야 하므로
-        // (handlePaste → tab_actions.routePaste), 다른 Cmd 단축키와 달리 rename 을
-        // commit 하지 않는다. rename 이 아니면 진행 중 terminal preedit 을 commit 후
-        // PTY paste (자모 dangling 방지). 이 특례를 아래 일반 commit *앞* 에 둔다.
+        // #296 — Cmd 단축키의 rename/preedit commit 여부는 입력 정책(input_policy.
+        // resolve) 한 곳에서 결정. copy(Cmd+C)/perf(Shift+Cmd+F12)는 read-only 라
+        // rename 을 안 끝내고(터미널 preedit 은 자모 보존 위해 flush), 그 외 단축키는
+        // commit 후 실행 (SPEC §4.1). 예전엔 여기서 무조건 commitPendingInput 이라
+        // rename 중 Cmd+C 가 제목을 확정시켰음(Linux A2 와 같은 버그 — 정정).
+        //
+        // #282 A3 — Cmd+V(paste): rename 이면 buffer 로(commit X), 아니면 preedit
+        // commit 후 PTY paste. handlePaste → routePaste 가 대상 분기.
         if (kc == 9) {
-            if (!g_rename.isActive()) commitPendingInput(self_view);
+            if (input_policy.resolve(.paste, macInputState()).pending == .commit)
+                commitPendingInput(self_view);
             handlePaste();
             return;
         }
 
-        // 나머지 Cmd 단축키 — 진행 중 입력 (rename + terminal preedit) 모두 commit 후
-        // 처리. preedit 만 떠 있는 상태로 단축키 → 새 탭 / 다른 동작으로 넘어가면
-        // preedit 이 dangling 됨.
-        commitPendingInput(self_view);
-
-        // keyCode 8 = 'c'.
-        if (kc == 8) {
-            handleCopy();
-            return;
+        // Cmd+kc → 입력 정책 Shortcut 분류. 인식 못한 Cmd+key 는 mainMenu(Cmd+Q 등).
+        const shortcut = macCmdShortcut(kc, shift) orelse return;
+        if (input_policy.resolve(.{ .shortcut = shortcut }, macInputState()).pending == .commit)
+            commitPendingInput(self_view);
+        switch (shortcut) {
+            .copy_selection => handleCopy(), // Cmd+C (kc 8)
+            .new_tab => handleNewTab(), // Cmd+T
+            .close_tab => handleCloseActiveTab(), // Cmd+W
+            .switch_tab => tab_actions.switchTab(&g_host, keycodeToTabIndex(kc).?), // Cmd+1..9
+            .prev_tab => tab_actions.prevTab(&g_host), // Shift+Cmd+[
+            .next_tab => tab_actions.nextTab(&g_host), // Shift+Cmd+]
+            .reset_terminal => tab_actions.resetActive(&g_host), // Shift+Cmd+R (#162)
+            .fullscreen => toggleFullscreenMode(if (shift) .workarea else .monitor), // Cmd/Shift+Cmd+Enter (#162)
+            .dump_perf => perf.dumpAndReset("snapshot"), // Shift+Cmd+F12 (#160)
+            else => {}, // macOS keyDown 이 안 내는 나머지(show_about/config/log/quit=mainMenu)
         }
-        // Cmd+T = 새 탭 (kc 0x11 = 'T'). M11.2.
-        if (kc == 0x11 and !shift) {
-            handleNewTab();
-            return;
-        }
-        // Cmd+W = 활성 탭 닫기 (kc 0x0D = 'W'). M11.3. 마지막 탭이면 앱 종료
-        // (drainExitedTabs 가 다음 frame 에 처리).
-        if (kc == 0x0D and !shift) {
-            handleCloseActiveTab();
-            return;
-        }
-        // Cmd+1..9 = 해당 인덱스 탭 활성화. M11.2.
-        if (keycodeToTabIndex(kc)) |idx| {
-            tab_actions.switchTab(&g_host, idx);
-            return;
-        }
-        // Shift+Cmd+[ / Shift+Cmd+] = 이전 / 다음 탭. M11.2.
-        if (shift and kc == 0x21) {
-            tab_actions.prevTab(&g_host);
-            return;
-        }
-        if (shift and kc == 0x1E) {
-            tab_actions.nextTab(&g_host);
-            return;
-        }
-        // Shift+Cmd+R = 활성 탭 reset (#162, kc 0x0F = 'R'). Windows
-        // Ctrl+Shift+R 동등. session_core.resetActive 가 fullReset + Ctrl+L
-        // (\x0c) 송신 — 다음 render frame 이 새 상태 자동 그림 (60fps timer).
-        if (shift and kc == 0x0F) {
-            tab_actions.resetActive(&g_host);
-            return;
-        }
-        // Cmd+Enter / Shift+Cmd+Enter (kc 0x24 = Return) = 전체화면 / 풀스크린
-        // 토글 (#162). Windows Alt+Enter / Shift+Alt+Enter 동등. self-symmetric
-        // — 들어간 키로만 나옴.
-        if (kc == 0x24) {
-            toggleFullscreenMode(if (shift) .workarea else .monitor);
-            return;
-        }
-        // Shift+Cmd+F12 = perf snapshot dump (#160, dev tool). Windows
-        // Ctrl+Shift+F12 동등. perf 카운터를 통합 로그 파일에 block 형태로
-        // 기록 + 카운터 reset. session_core 가 cross-platform 으로 자동 측정.
-        if (shift and kc == 0x6F) {
-            perf.dumpAndReset("snapshot");
-            return;
-        }
-        // 다른 Cmd+key 는 mainMenu 가 처리 (Cmd+Q 등).
-        // PTY 로 forward 안 함.
         return;
     }
 
