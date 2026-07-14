@@ -88,10 +88,22 @@ pub const Disposition = struct {
 /// 정책의 유일한 결정 지점. host 는 이 결과대로 pending 처리 후 target 으로 보낸다.
 pub fn resolve(input: Input, state: State) Disposition {
     switch (input) {
-        // 전역 단축키: 어느 상태든 pending(rename/preedit) commit 후 실행.
-        // 상태가 없으면 commit 은 no-op 이라 결과 동일 (SPEC §4.1 — copy_selection·
-        // dump_perf 포함 모든 단축키 commit).
-        .shortcut => return .{ .pending = .commit, .target = .run_action },
+        // 전역 단축키:
+        //   - copy_selection / dump_perf 는 read-only(클립보드 읽기 / 로그 덤프).
+        //     rename 편집을 끝내지 않는다 — rename 중엔 새 선택을 만들 수도 없고
+        //     (마우스 클릭이 곧 commit) 기존 선택은 이미 클립보드라, 편집 중 복사가
+        //     제목을 확정시키는 건 부자연스럽다(#296 사용자 검증). 단 터미널 preedit
+        //     중에는 자모를 PTY 로 flush 해 보존(§5.1).
+        //   - 그 외 단축키는 focus-loss 로 rename/preedit 확정(commit) 후 실행.
+        .shortcut => |sc| {
+            const read_only = sc == .copy_selection or sc == .dump_perf;
+            if (read_only) {
+                if (state.terminal_preedit_active and !state.rename_active)
+                    return .{ .pending = .commit, .target = .run_action };
+                return .{ .pending = .leave, .target = .run_action };
+            }
+            return .{ .pending = .commit, .target = .run_action };
+        },
 
         // paste: rename 중이면 commit 없이 rename buffer 로(#285), 아니면 터미널
         // preedit 을 commit 한 뒤 PTY paste(자모 dangling 방지, #282 A4/A2).
@@ -134,14 +146,26 @@ fn expectDisp(input: Input, state: State, pending: Pending, target: Target) !voi
     try std.testing.expectEqual(target, d.target);
 }
 
-test "SPEC §4.1 — rename 중 전역 단축키는 commit 후 실행 (copy·perf 포함)" {
-    // copy_selection·dump_perf 도 commit — Linux 가 이걸 안 해서 divergent 였음(#282).
-    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .copy_selection, .dump_perf, .fullscreen, .quit }) |sc| {
+test "SPEC §4.1 — rename 중 action 단축키는 commit 후 실행" {
+    // 상태를 바꾸는 단축키(탭/reset/about/config/log/fullscreen/quit)는 focus-loss 로
+    // rename 을 확정한 뒤 실행.
+    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .fullscreen, .quit }) |sc| {
         try expectDisp(.{ .shortcut = sc }, rename, .commit, .run_action);
     }
 }
 
-test "상태 없을 때 단축키는 commit(no-op) 후 실행" {
+test "#296 — read-only 단축키(copy/perf)는 rename 을 안 끝냄" {
+    // rename 중 복사는 대상이 원천적으로 없고(마우스 선택=commit, 기존 선택=이미
+    // 클립보드) 제목을 확정시키는 게 부자연스러움 → rename 유지(사용자 검증).
+    try expectDisp(.{ .shortcut = .copy_selection }, rename, .leave, .run_action);
+    try expectDisp(.{ .shortcut = .dump_perf }, rename, .leave, .run_action);
+    // 상태 없을 때도 편집 아니니 leave (no-op commit 불필요).
+    try expectDisp(.{ .shortcut = .copy_selection }, idle, .leave, .run_action);
+    // 터미널 preedit 중에는 자모 보존 위해 flush(commit) 후 실행(§5.1).
+    try expectDisp(.{ .shortcut = .copy_selection }, preedit, .commit, .run_action);
+}
+
+test "상태 없을 때 action 단축키는 commit(no-op) 후 실행" {
     try expectDisp(.{ .shortcut = .new_tab }, idle, .commit, .run_action);
 }
 

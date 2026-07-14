@@ -350,7 +350,8 @@ minimize/restore.
 | Cmd/Ctrl+Shift+[ / ] (prev/next) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 동일 (Ctrl+Shift+[/]) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
-| 그 외 모든 단축키 (reset / dump_perf / show_about / open_config / open_log / copy_selection) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 각 handler 진입 첫 줄 (`commitPendingInput`) — Ctrl+Shift+I·P·L·R 등 신규 핸들러 모두 동일 패턴. reset_terminal 구현 (#214, Ctrl+Shift+R). dump_perf 는 Ctrl+Shift+F12 로 할당됨 (#160) — 로그만 남기는 dev 도구라 handler 가 `commitPendingInput` 을 호출하진 않지만 관측 가능한 동작 차이는 없음 | ✅ | ✅ | ✅ |
+| 그 외 상태변경 단축키 (reset / show_about / open_config / open_log) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | `input_policy.resolve` → pending=commit (Ctrl+Shift+I·P·L·R / reset #214) | ✅ | ✅ | ✅ |
+| copy_selection (Ctrl+Shift+C) / dump_perf (Ctrl+Shift+F12) | **commit 안 함** (read-only) | rename 유지 | rename 유지 | rename 유지 (`input_policy.resolve` read_only → pending=leave, #296) | 🟨 | 🟨 | ✅ |
 | F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow` 진입 직전 (visible 이면 `commitPendingInputFromContentView`) | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 
