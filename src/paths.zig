@@ -1,12 +1,13 @@
-// 사용자 데이터 파일 (config_N.json / tildazN.log) 의 absolute 절대 경로 — OS
+// 사용자 데이터 파일 (config_N.json / tildaz_N.log) 의 absolute 절대 경로 — OS
 // 표준 위치를 따른다 (SPEC.md §11.1, AGENTS.md "platform native first").
+// 로그 파일명은 config 파일명 (config_N.json) 과 같은 `이름_번호` 형식.
 //
 //   Windows: %APPDATA%\tildaz\config_N.json   (Microsoft 표준)
-//            %APPDATA%\tildaz\tildazN.log
+//            %APPDATA%\tildaz\tildaz_N.log
 //   macOS:   $HOME/.config/tildaz/config_N.json (XDG, ghostty/alacritty 패턴)
-//            $HOME/Library/Logs/tildazN.log    (Apple HIG — Console.app 인덱싱)
+//            $HOME/Library/Logs/tildaz_N.log    (Apple HIG — Console.app 인덱싱)
 //   Linux:   $HOME/.config/tildaz/config_N.json (XDG)
-//            $HOME/.local/state/tildaz/tildazN.log
+//            $HOME/.local/state/tildaz/tildaz_N.log
 //
 // 모두 allocator-based — 호출처가 free 책임. 부모 디렉토리는 자동 생성
 // (이미 존재하면 무시). About 다이얼로그 / Open Config & Log 단축키 /
@@ -67,18 +68,18 @@ pub fn logPathBufFor(buf: []u8, index: u32) ?[]const u8 {
         const dir_end = appdata_len + dir_suffix.len;
         ensureDir(buf[0..dir_end]) catch {};
 
-        const file = std.fmt.bufPrint(buf[dir_end..], "\\tildaz{d}.log", .{index}) catch return null;
+        const file = std.fmt.bufPrint(buf[dir_end..], "\\tildaz_{d}.log", .{index}) catch return null;
         return buf[0 .. dir_end + file.len];
     } else if (builtin.os.tag == .macos) {
         // `~/Library/Logs` 는 macOS default 로 항상 존재 — 디렉토리 생성 불필요.
         const home = std.posix.getenv("HOME") orelse return null;
-        return std.fmt.bufPrint(buf, "{s}/Library/Logs/tildaz{d}.log", .{ home, index }) catch return null;
+        return std.fmt.bufPrint(buf, "{s}/Library/Logs/tildaz_{d}.log", .{ home, index }) catch return null;
     } else {
         const home = std.posix.getenv("HOME") orelse return null;
         const dir = std.fmt.bufPrint(buf, "{s}/.local/state/tildaz", .{home}) catch return null;
         ensureDir(dir) catch {};
 
-        const file = std.fmt.bufPrint(buf[dir.len..], "/tildaz{d}.log", .{index}) catch return null;
+        const file = std.fmt.bufPrint(buf[dir.len..], "/tildaz_{d}.log", .{index}) catch return null;
         return buf[0 .. dir.len + file.len];
     }
 }
@@ -179,9 +180,9 @@ test "logPathBufFor 가 OS 표준 위치와 worker index 를 따른다" {
     var buf: [LOG_PATH_MAX]u8 = undefined;
     const path = logPathBufFor(&buf, 7) orelse return error.SkipZigTest;
     try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
-        .windows => "\\tildaz\\tildaz7.log",
-        .macos => "/Library/Logs/tildaz7.log",
-        else => "/.local/state/tildaz/tildaz7.log",
+        .windows => "\\tildaz\\tildaz_7.log",
+        .macos => "/Library/Logs/tildaz_7.log",
+        else => "/.local/state/tildaz/tildaz_7.log",
     }));
 }
 

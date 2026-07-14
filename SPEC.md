@@ -603,7 +603,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 - 활성 설정은 `config_0.json`, `config_1.json`, ... 형식만 인식한다. 기존
   `config.json`은 읽기·변환·수정·삭제하지 않는다.
-- `config_N.json` 하나가 worker process 하나, global hotkey 하나, `tildazN.log`
+- `config_N.json` 하나가 worker process 하나, global hotkey 하나, `tildaz_N.log`
   하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
   중복 실행을 막는다.
 - 일반 실행은 config index별 실행 상태를 확인하고 빠진 TildaZ worker를 한 번에 모두
@@ -842,7 +842,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
 | **config** | `%APPDATA%\tildaz\config_N.json` (Microsoft 표준) | `~/.config/tildaz/config_N.json` (XDG, ghostty/alacritty 패턴 — 터미널 사용자 친숙) | `~/.config/tildaz/config_N.json` (XDG) |
-| **log** | `%APPDATA%\tildaz\tildazN.log` (Microsoft 표준) | `~/Library/Logs/tildazN.log` (Apple HIG — Console.app 자동 인덱싱) | `~/.local/state/tildaz/tildazN.log` (XDG state) |
+| **log** | `%APPDATA%\tildaz\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱) | `~/.local/state/tildaz/tildaz_N.log` (XDG state) |
 | **process lock** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
@@ -884,8 +884,8 @@ exe   : /Applications/TildaZ.app/Contents/MacOS/tildaz   (mac)
 pid   : 12345
 config: /Users/<u>/.config/tildaz/config_0.json            (mac)
         C:\Users\<u>\AppData\Roaming\tildaz\config_0.json   (win)
-log   : /Users/<u>/Library/Logs/tildaz0.log               (mac)
-        C:\Users\<u>\AppData\Roaming\tildaz\tildaz0.log    (win)
+log   : /Users/<u>/Library/Logs/tildaz_0.log               (mac)
+        C:\Users\<u>\AppData\Roaming\tildaz\tildaz_0.log    (win)
 
 Tip: Shift+Cmd+P opens config in default editor.       (mac)
      Shift+Cmd+L opens log.
@@ -975,7 +975,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 마우스 우클릭 paste (양쪽 변경) | ✅ | #119 | Windows 가운데 버튼 (`WM_MBUTTONDOWN`, deprecated) → 우클릭 (`WM_RBUTTONDOWN`). macOS 우클릭 추가. |
 | 스크롤바 마우스 클릭 + 드래그 | ✅ | #123 | `scrollbarScrollToY` (Windows `scrollToY` 패턴 그대로). cross-platform `ScrollbarDragState` + ghostty `Pin` 기반 selection 으로 viewport 이동해도 selection 유지. |
 | autostart (LaunchAgent) | ✅ | #126 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등 |
-| 로그 시스템 (`~/Library/Logs/tildazN.log`) | ✅ | #124 | Windows 와 공통 `src/log.zig` (+ OS 별 `src/log/{windows,macos,linux}.zig`) 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
+| 로그 시스템 (`~/Library/Logs/tildaz_N.log`) | ✅ | #124 | Windows 와 공통 `src/log.zig` (+ OS 별 `src/log/{windows,macos,linux}.zig`) 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
 | Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback ad-hoc |
 | config schema 확장 (font.* / shell / max_scroll_lines) | ✅ | #118 | Linux · macOS · Windows가 같은 schema를 사용하고 default만 OS별로 다름. |
 | SIGHUP 무시 셸 fallback (SIGKILL) | ✅ | #129 | `Pty.deinit` 에 grace period (500ms / 5ms polling) + `child_exited` atomic flag. wait_thread 의 waitpid 가 깨어나면 즉시 break, 안 깨어나면 SIGKILL. Cmd+W / 탭 close button 으로만 트리거 (Cmd+Q 는 NSApp `terminate:` → `exit()` 직행). |
