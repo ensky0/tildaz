@@ -18,6 +18,7 @@ const display_width = @import("../../font/display_width.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const app_event = @import("../../app_event.zig");
+const input_contract = @import("../../input_contract.zig");
 const themes = @import("../../themes.zig");
 const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
@@ -519,86 +520,87 @@ pub const DialogOverlay = struct {
     }
 };
 
-/// #282 A1 — rename 활성 중 이 키 조합이 rename 을 확정/편집 어느 경로로 갈지 판별.
-/// processKeyEvent 아래에서 실제로 처리되는 조합과 정확히 일치해야 한다. 통과하면
-/// (true) 아래 핸들러로 흘러 rename 을 commit 후 실행하고(단, 복사·paste·perf 는 commit
-/// 없이 실행 — 각 핸들러가 처리), 아니면(false) 키가 rename 편집(handleRenameKey)으로
-/// 라우팅된다. Ctrl+Shift+V(paste)는 #282 A4/A2 로 통과 대상이며 rename buffer 로 paste 된다.
-fn renameShortcutYield(sym: u32, ctrl: bool, shift: bool, alt: bool) bool {
-    // Ctrl+Shift+* — 복사 / paste(rename buffer 로) / 새 탭 / 닫기 / 다음·이전 탭 /
-    // About / Open Config·Log / reset / perf.
+/// #296 — native xkb sym + modifier 를 공통 계약의 `input_contract.Input` 으로
+/// 분류. null = 계약 대상 아님(터미널 control char / preedit-Ctrl commit / scroll
+/// 등) → processKeyEvent 의 기존 non-rename 경로로. 상태(rename/preedit)에 따른
+/// "그래서 무엇을 할지" 결정은 여기가 아니라 `input_contract.resolve` 가 한다.
+fn classifyContractInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_contract.Input {
+    // Ctrl+Shift+* — 클립보드 / 탭 / About / Open Config·Log / reset / perf.
     if (ctrl and shift and !alt) {
         return switch (sym) {
-            xkb_key_c_lower,
-            xkb_key_c_upper, // copy (read-only — commit 없이 실행)
-            xkb_key_v_lower,
-            xkb_key_v_upper, // paste → rename buffer (commit 없이)
-            xkb_key_t_lower,
-            xkb_key_t_upper,
-            xkb_key_w_lower,
-            xkb_key_w_upper,
-            xkb_key_bracketright,
-            xkb_key_braceright,
-            xkb_key_bracketleft,
-            xkb_key_braceleft,
-            xkb_key_i_lower,
-            xkb_key_i_upper,
-            xkb_key_p_lower,
-            xkb_key_p_upper,
-            xkb_key_l_lower,
-            xkb_key_l_upper,
-            xkb_key_r_lower,
-            xkb_key_r_upper,
-            xkb_key_f12,
-            => true,
-            else => false,
+            xkb_key_c_lower, xkb_key_c_upper => .{ .shortcut = .copy_selection },
+            xkb_key_v_lower, xkb_key_v_upper => .paste,
+            xkb_key_t_lower, xkb_key_t_upper => .{ .shortcut = .new_tab },
+            xkb_key_w_lower, xkb_key_w_upper => .{ .shortcut = .close_tab },
+            xkb_key_bracketright, xkb_key_braceright => .{ .shortcut = .next_tab },
+            xkb_key_bracketleft, xkb_key_braceleft => .{ .shortcut = .prev_tab },
+            xkb_key_i_lower, xkb_key_i_upper => .{ .shortcut = .show_about },
+            xkb_key_p_lower, xkb_key_p_upper => .{ .shortcut = .open_config },
+            xkb_key_l_lower, xkb_key_l_upper => .{ .shortcut = .open_log },
+            xkb_key_r_lower, xkb_key_r_upper => .{ .shortcut = .reset_terminal },
+            xkb_key_f12 => .{ .shortcut = .dump_perf },
+            else => null,
         };
     }
+    // Ctrl+C (Shift 없음) — SIGINT / preedit 자모 discard (#282 A5).
+    if (ctrl and !shift and !alt and (sym == xkb_key_c_lower or sym == xkb_key_c_upper)) return .interrupt;
     // Alt+Enter(fullscreen) / Alt+F4(quit) / Alt+1..9(탭 전환). Ctrl 미동반.
     if (alt and !ctrl) {
-        if (sym == xkb_key_return or sym == xkb_key_f4) return true;
-        if (!shift and sym >= xkb_key_1 and sym <= xkb_key_9) return true;
+        if (sym == xkb_key_return) return .{ .shortcut = .fullscreen };
+        if (!shift and sym == xkb_key_f4) return .{ .shortcut = .quit };
+        if (!shift and sym >= xkb_key_1 and sym <= xkb_key_9) return .{ .shortcut = .switch_tab };
     }
-    return false;
+    // 그 외 Ctrl/Alt 조합은 계약 대상 아님(터미널 control char, preedit-Ctrl commit).
+    if (ctrl or alt) return null;
+    // Shift+PgUp/PgDn = 스크롤(계약 아님) → 기존 scroll 경로.
+    if (shift and (sym == xkb_key_page_up or sym == xkb_key_page_down)) return null;
+    // 순수 편집키 / nav 키 / 문자.
+    return switch (sym) {
+        xkb_key_return, xkb_key_escape, xkb_key_backspace, xkb_key_delete, xkb_key_left, xkb_key_right, xkb_key_home, xkb_key_end => .edit_key,
+        xkb_key_up, xkb_key_down, xkb_key_page_up, xkb_key_page_down, xkb_key_insert => .nav_key,
+        else => .text,
+    };
 }
 
-test "renameShortcutYield: 전역 단축키는 통과, 편집 키는 rename 으로" {
+test "#296 classifyContractInput — native xkb → 공통 Input 분류" {
     const T = std.testing;
-    // 통과: Ctrl+Shift+* (복사/탭/About/config/log/reset/perf)
-    try T.expect(renameShortcutYield(xkb_key_c_lower, true, true, false)); // 복사
-    try T.expect(renameShortcutYield(xkb_key_v_lower, true, true, false)); // paste → rename buffer (#285)
-    try T.expect(renameShortcutYield(xkb_key_t_lower, true, true, false)); // 새 탭
-    try T.expect(renameShortcutYield(xkb_key_w_lower, true, true, false)); // 닫기
-    try T.expect(renameShortcutYield(xkb_key_bracketright, true, true, false)); // 다음 탭
-    try T.expect(renameShortcutYield(xkb_key_bracketleft, true, true, false)); // 이전 탭
-    try T.expect(renameShortcutYield(xkb_key_i_lower, true, true, false)); // About
-    try T.expect(renameShortcutYield(xkb_key_p_lower, true, true, false)); // Open Config
-    try T.expect(renameShortcutYield(xkb_key_l_lower, true, true, false)); // Open Log
-    try T.expect(renameShortcutYield(xkb_key_r_lower, true, true, false)); // reset
-    try T.expect(renameShortcutYield(xkb_key_f12, true, true, false)); // perf
-    // 통과: Alt 계열
-    try T.expect(renameShortcutYield(xkb_key_return, false, false, true)); // Alt+Enter
-    try T.expect(renameShortcutYield(xkb_key_return, false, true, true)); // Shift+Alt+Enter
-    try T.expect(renameShortcutYield(xkb_key_f4, false, false, true)); // Alt+F4
-    try T.expect(renameShortcutYield(xkb_key_1, false, false, true)); // Alt+1
-    try T.expect(renameShortcutYield(xkb_key_9, false, false, true)); // Alt+9
-
-    // 제외: 편집 키 — Ctrl+A/E(line nav), Home/End, 방향키, Backspace, Enter, Escape
-    try T.expect(!renameShortcutYield(xkb_key_a_lower, true, false, false)); // Ctrl+A
-    try T.expect(!renameShortcutYield(xkb_key_e_lower, true, false, false)); // Ctrl+E
-    try T.expect(!renameShortcutYield(xkb_key_home, false, false, false));
-    try T.expect(!renameShortcutYield(xkb_key_left, false, false, false));
-    try T.expect(!renameShortcutYield(xkb_key_backspace, false, false, false));
-    try T.expect(!renameShortcutYield(xkb_key_return, false, false, false)); // Enter = commit
-    try T.expect(!renameShortcutYield(xkb_key_escape, false, false, false)); // Esc = cancel
-    // 제외: 평범한 문자 (modifier 없음)
-    try T.expect(!renameShortcutYield(xkb_key_t_lower, false, false, false));
-    // 제외: Ctrl 단독(Shift 없음) tab 단축키 아님 — Ctrl+T 는 shell transpose 로 통과
-    try T.expect(!renameShortcutYield(xkb_key_t_lower, true, false, false));
-    // 제외: Alt+Shift+숫자 (조합 다름)
-    try T.expect(!renameShortcutYield(xkb_key_1, false, true, true));
-    // 제외: Ctrl+Alt 조합 (전역 단축키 아님)
-    try T.expect(!renameShortcutYield(xkb_key_return, true, false, true));
+    const C = classifyContractInput;
+    const I = input_contract.Input;
+    // Ctrl+Shift+* → shortcut / paste
+    try T.expectEqual(@as(?I, .{ .shortcut = .copy_selection }), C(xkb_key_c_lower, true, true, false));
+    try T.expectEqual(@as(?I, .paste), C(xkb_key_v_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .new_tab }), C(xkb_key_t_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .close_tab }), C(xkb_key_w_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .next_tab }), C(xkb_key_bracketright, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .prev_tab }), C(xkb_key_bracketleft, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .show_about }), C(xkb_key_i_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .open_config }), C(xkb_key_p_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .open_log }), C(xkb_key_l_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .reset_terminal }), C(xkb_key_r_lower, true, true, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .dump_perf }), C(xkb_key_f12, true, true, false));
+    // Alt 계열 (fullscreen 은 shift 로 cover/avoid — 분류는 동일)
+    try T.expectEqual(@as(?I, .{ .shortcut = .fullscreen }), C(xkb_key_return, false, false, true));
+    try T.expectEqual(@as(?I, .{ .shortcut = .fullscreen }), C(xkb_key_return, false, true, true));
+    try T.expectEqual(@as(?I, .{ .shortcut = .quit }), C(xkb_key_f4, false, false, true));
+    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_1, false, false, true));
+    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_9, false, false, true));
+    // Ctrl+C (Shift 없음) → interrupt
+    try T.expectEqual(@as(?I, .interrupt), C(xkb_key_c_lower, true, false, false));
+    // 편집키 / nav / 문자 (modifier 없음)
+    try T.expectEqual(@as(?I, .edit_key), C(xkb_key_home, false, false, false));
+    try T.expectEqual(@as(?I, .edit_key), C(xkb_key_left, false, false, false));
+    try T.expectEqual(@as(?I, .edit_key), C(xkb_key_backspace, false, false, false));
+    try T.expectEqual(@as(?I, .edit_key), C(xkb_key_return, false, false, false)); // Enter = rename commit
+    try T.expectEqual(@as(?I, .edit_key), C(xkb_key_escape, false, false, false)); // Esc = rename cancel
+    try T.expectEqual(@as(?I, .nav_key), C(xkb_key_up, false, false, false));
+    try T.expectEqual(@as(?I, .text), C(xkb_key_t_lower, false, false, false));
+    // 미분류(null → rename fallback / 기존 PTY 경로):
+    try T.expectEqual(@as(?I, null), C(xkb_key_a_lower, true, false, false)); // Ctrl+A = rename home / 터미널 \x01
+    try T.expectEqual(@as(?I, null), C(xkb_key_e_lower, true, false, false)); // Ctrl+E = rename end / 터미널 \x05
+    try T.expectEqual(@as(?I, null), C(xkb_key_page_up, false, true, false)); // Shift+PgUp = scroll
+    try T.expectEqual(@as(?I, null), C(xkb_key_t_lower, true, false, false)); // Ctrl+T = shell transpose
+    try T.expectEqual(@as(?I, null), C(xkb_key_1, false, true, true)); // Alt+Shift+숫자
+    try T.expectEqual(@as(?I, null), C(xkb_key_return, true, false, true)); // Ctrl+Alt+Enter
 }
 
 fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
@@ -3618,19 +3620,9 @@ const Client = struct {
     /// intercept 동등 (mac SPEC §5.1 시도/폐기 기록 참조). preedit 자모는 IME
     /// 자체 commit_string 으로 rename buf 에 들어옴 (별도 명시 commit 호출 X
     /// — 같은 batch 안 commit_string + preedit_string(empty) + done 흐름).
-    /// #282 A1 — rename 활성 중 이 키가 전역 단축키라 rename 을 확정하고 실행해야
-    /// 하는지(true) 아니면 rename 편집으로 라우팅해야 하는지(false). 판정 자체는
-    /// modifier / sym 만 보므로 순수 함수 `renameShortcutYield` 로 분리해 테스트한다.
-    fn renameYieldsToShortcut(self: *Client, key: u32) bool {
-        const sym = self.keyboard.oneSym(key + wayland_xkb_keycode_offset) orelse return false;
-        return renameShortcutYield(
-            sym,
-            self.keyboard.ctrlActive(),
-            self.keyboard.shiftActive(),
-            self.keyboard.altActive(),
-        );
-    }
-
+    ///
+    /// #296 — rename 중 어떤 키가 편집(여기)으로 오고 어떤 게 단축키로 yield 하는지의
+    /// 판정은 이제 `classifyContractInput` + `input_contract.resolve` (processKeyEvent).
     fn handleRenameKey(self: *Client, key: u32) !void {
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym = self.keyboard.oneSym(xkb_key) orelse return;
@@ -3727,182 +3719,82 @@ const Client = struct {
             return;
         }
 
-        // #282 A1 — rename 모드 활성 시, 편집 키·문자·IME 는 RenameState 로 라우팅하되
-        // 전역 단축키(새 탭 / 닫기 / 전환 / 이전·다음 / About / Open Config·Log / reset /
-        // fullscreen / quit / 복사 / perf)는 통과시켜 rename 을 확정한 뒤 실행한다
-        // (SPEC §4.1, Windows/macOS 동등). 통과 대상 키의 아래 핸들러들은 이미
-        // commitPendingInput 으로 rename 을 commit 한다(복사·perf 는 read-only/로그라
-        // commit 없이 실행 — rename 유지). Ctrl+Shift+V(paste)는 rename buffer 로 들어가야
-        // 하므로 통과 대상에서 제외하고 rename 으로 라우팅한다(#285 routePaste).
-        if (self.rename_state.isActive() and !self.renameYieldsToShortcut(key)) {
+        const xkb_key = key + wayland_xkb_keycode_offset;
+        const sym_opt = self.keyboard.oneSym(xkb_key);
+        const ctrl = self.keyboard.ctrlActive();
+        const shift = self.keyboard.shiftActive();
+        const alt = self.keyboard.altActive();
+
+        // #296 — 상태-의존 계약(rename / terminal preedit × 입력)은 공통
+        // input_contract.resolve 한 곳에서 결정한다. host 는 native → Input 분류만.
+        // 계약 대상이 아니면(터미널 control char / preedit-Ctrl commit / scroll) 아래
+        // 기존 non-rename 경로로 흘린다.
+        if (sym_opt) |sym| {
+            if (classifyContractInput(sym, ctrl, shift, alt)) |input| {
+                const disp = input_contract.resolve(input, .{
+                    .rename_active = self.rename_state.isActive(),
+                    .terminal_preedit_active = self.preedit_text.items.len > 0,
+                });
+                switch (disp.pending) {
+                    .leave => {},
+                    // SPEC §4.1 — rename/preedit 을 현재 값으로 확정(단축키·paste 진입).
+                    .commit => self.commitPendingInput(),
+                    // #282 A5 §5.1 — Ctrl+C: 터미널 preedit 자모 폐기(SIGINT line abort,
+                    // fcitx5 IME state 도 다음 typing 에서 reset).
+                    .discard => {
+                        self.pending_preedit.clearRetainingCapacity();
+                        self.pending_commit.clearRetainingCapacity();
+                        self.preedit_text.clearRetainingCapacity();
+                        self.renderer.preedit_text = "";
+                        self.needs_redraw = true;
+                    },
+                }
+                switch (disp.target) {
+                    .drop => return,
+                    .run_action => {
+                        self.runShortcutForKey(sym, shift);
+                        return;
+                    },
+                    // paste → rename buffer(#285), 그 외(문자/편집키) → rename 편집.
+                    .rename_buffer => {
+                        if (input == .paste) self.pasteFromClipboard() else try self.handleRenameKey(key);
+                        return;
+                    },
+                    // .pty: paste 는 즉시(#282 A4/A2 — preedit 은 위 commit 이 이미 flush),
+                    // 나머지(interrupt \x03 / 문자 / 편집키 / nav)는 아래 escape / utf8 로.
+                    .pty => if (input == .paste) {
+                        self.pasteFromClipboard();
+                        return;
+                    },
+                }
+            } else if (self.rename_state.isActive()) {
+                // rename 중 계약 미분류 키(Ctrl+A/E = home/end 등) → rename 편집.
+                try self.handleRenameKey(key);
+                return;
+            }
+        } else if (self.rename_state.isActive()) {
             try self.handleRenameKey(key);
             return;
         }
 
-        const xkb_key = key + wayland_xkb_keycode_offset;
-        const sym_opt = self.keyboard.oneSym(xkb_key);
-
-        // SPEC §2.6 / §5.1 — Ctrl+key + preedit 정책 (사용자 시연 발견 후 정정).
-        //   Ctrl+C 만 *discard* — shell line abort (\\x03 SIGINT) 의도와 일관.
-        //     fcitx5 의 자체 IME state 도 reset 가정.
-        //   그 외 모든 Ctrl+letter (Ctrl+A / Ctrl+E / Ctrl+L / Ctrl+D 등) 는
-        //     *commit to PTY* — terminal readline 이 자모 먼저 받고 그 다음
-        //     Ctrl byte 처리 (`commitPendingInput` 이 자모 PTY 송신 + fcitx5
-        //     session disable/enable 으로 IME 자모 buffer 도 비움).
-        if (self.keyboard.ctrlActive() and self.preedit_text.items.len > 0) {
-            // #282 A5 — Ctrl+C(Shift 없음) 만 discard(SIGINT line abort). Ctrl+Shift+C 는
-            // *복사* 라 자모를 버리지 않고 commit 한다(아래 copy 분기가 read-only 로 실행).
-            // Shift 를 구분하지 않으면 preedit 중 Ctrl+Shift+C 가 자모를 잃어 §5.1 위반.
-            const is_ctrl_c = if (sym_opt) |s|
-                ((s == xkb_key_c_lower or s == xkb_key_c_upper) and !self.keyboard.shiftActive())
-            else
-                false;
-            if (is_ctrl_c) {
-                self.pending_preedit.clearRetainingCapacity();
-                self.pending_commit.clearRetainingCapacity();
-                self.preedit_text.clearRetainingCapacity();
-                self.renderer.preedit_text = "";
-                self.needs_redraw = true;
-            } else {
-                self.commitPendingInput();
-            }
-        }
-
+        // ── 기존 non-rename 경로 (계약 target=pty 또는 미분류 키) ──────────────
         if (sym_opt) |sym| {
-            // Ctrl+Shift+C / V — SPEC.md §2.3 클립보드. Linux 도 Windows 와 같은
-            // native modifier (Ctrl+Shift). 분기 안에서 utf8 PTY 송신은 차단해서
-            // xkb 가 만든 noise byte 가 shell 에 들어가지 않게 한다.
-            if (self.keyboard.ctrlActive() and self.keyboard.shiftActive()) {
-                if (sym == xkb_key_c_lower or sym == xkb_key_c_upper) {
-                    // copy 는 read-only — commitPendingInput 호출 안 함 (preedit
-                    // / rename 상태 무관 동작).
-                    self.copyActiveSelection();
-                    return;
-                }
-                if (sym == xkb_key_v_lower or sym == xkb_key_v_upper) {
-                    // #282 A4/A2 — rename 활성 중엔 rename 을 commit 하지 않고 paste 를
-                    // rename buffer 로 넣는다(pasteFromClipboard → routePaste). rename 이
-                    // 아니면 진행 중 preedit 을 commit 후 PTY paste (자모 dangling 방지).
-                    if (!self.rename_state.isActive()) self.commitPendingInput();
-                    self.pasteFromClipboard();
-                    return;
-                }
-                // L12-β — tab 단축키 모두 `Ctrl+Shift+*` 자리. Ctrl 단독은
-                // shell 통과 (Ctrl+T transpose / Ctrl+W kill-word / Ctrl+Tab
-                // 일부 shell 단축키). gnome-terminal / kitty 와 동등 관습.
-                if (sym == xkb_key_t_lower or sym == xkb_key_t_upper) {
-                    self.handleNewTab();
-                    return;
-                }
-                if (sym == xkb_key_w_lower or sym == xkb_key_w_upper) {
-                    self.handleCloseTab();
-                    return;
-                }
-                if (sym == xkb_key_bracketright or sym == xkb_key_braceright) {
-                    self.handleNextTab();
-                    return;
-                }
-                if (sym == xkb_key_bracketleft or sym == xkb_key_braceleft) {
-                    self.handlePrevTab();
-                    return;
-                }
-                // SPEC §2.4 — Ctrl+Shift+I : About 다이얼로그 (Win 동등 native).
-                // §4.1 — 단축키 진입 시 rename commit (commitPendingInput).
-                // #213 — About 의 `createDialogSurface` 가 roundtrip (inner
-                // dispatchBuffered) 을 돌려서, 여기 (outer dispatchBuffered 의
-                // reentrant context) 에서 직접 열면 outer buffer state corrupt →
-                // overflow. quit / dismiss 와 동일하게 flag 만 set, main loop 의
-                // `drainAboutRequest` 가 reentrancy 밖에서 연다.
-                if (sym == xkb_key_i_lower or sym == xkb_key_i_upper) {
-                    self.commitPendingInput();
-                    self.pending_about_request = true;
-                    return;
-                }
-                // SPEC §11.2 — Ctrl+Shift+P : Open Config (default editor 로).
-                if (sym == xkb_key_p_lower or sym == xkb_key_p_upper) {
-                    self.commitPendingInput();
-                    const cfg_path = paths.configPath(self.allocator) catch return;
-                    defer self.allocator.free(cfg_path);
-                    system_open.openInDefaultApp(self.allocator, cfg_path);
-                    return;
-                }
-                // SPEC §11.2 — Ctrl+Shift+L : Open Log.
-                if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
-                    self.commitPendingInput();
-                    const log_path = paths.logPath(self.allocator) catch return;
-                    defer self.allocator.free(log_path);
-                    system_open.openInDefaultApp(self.allocator, log_path);
-                    return;
-                }
-                // SPEC §2 / §4.1 — Ctrl+Shift+R : 활성 탭 화면 reset (Win
-                // `Ctrl+Shift+R` / mac `Shift+Cmd+R` 동등, #214). resetActive 가
-                // fullReset + Ctrl+L (`\x0c`) 송신. §4.1 — 단축키 진입 시 rename
-                // / preedit commit. utf8 PTY 송신은 return 으로 차단.
-                if (sym == xkb_key_r_lower or sym == xkb_key_r_upper) {
-                    self.commitPendingInput();
-                    if (self.session) |*session| {
-                        if (session.resetActive()) self.requestRedraw();
-                    }
-                    return;
-                }
-                // #160 — Ctrl+Shift+F12 : perf snapshot 을 통합 로그에 block 으로 dump +
-                // 카운터 reset (dev tool). Windows Ctrl+Shift+F12 / macOS Shift+Cmd+F12
-                // 동등. session_core 가 cross-platform 으로 자동 측정하므로 Linux 도 동일.
-                if (sym == xkb_key_f12) {
-                    perf.dumpAndReset("snapshot");
-                    return;
-                }
-            }
-            // SPEC §2.5 — Shift+PgUp / Shift+PgDn : scrollback (한 페이지 단위).
-            // mac `tab.terminal.scrollViewport({-rows / +rows})` 와 동등하게
-            // `session.scrollActive({.page = .up/.down}, visible_rows)` 사용
-            // — wheel 분기와 같은 통로. Ctrl 동반 X.
-            if (self.keyboard.shiftActive() and !self.keyboard.ctrlActive() and !self.keyboard.altActive()) {
-                if (sym == xkb_key_page_up or sym == xkb_key_page_down) {
-                    self.commitPendingInput();
-                    if (self.session) |*session| {
-                        const ch = self.renderer.cellHeight();
-                        const usable_h = @max(0, self.window_height - self.effectiveTabBarHeightPx() - self.renderer.paddingPx() * 2);
-                        const rows_i32 = @divTrunc(usable_h, ch);
-                        const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
-                        const dir: app_event.PageDirection = if (sym == xkb_key_page_up) .up else .down;
-                        const did = session.scrollActive(.{ .page = dir }, visible_rows);
-                        if (did) self.requestRedraw();
-                    }
-                    return;
-                }
-            }
-            // SPEC §2.1 — Alt+F4 : 앱 종료 (Win 동등 native, Linux desktop 표준).
-            // step 4 — multi-tab / 단일 탭 *모두* confirm dialog (mac
-            // `applicationShouldTerminate:` / Win `onQuitRequest` 동등). flag 만
-            // set, main loop 의 `drainQuitRequest` 가 *outer dispatchBuffered
-            // reentrancy 밖* 에서 dialog.showConfirm 호출. OK 면 종료, Cancel 이면
-            // 무시.
-            //
-            // 시연 진단으로 발견 — KDE Plasma 6 + KWin 의 Alt+F4 는 *system
-            // shortcut* 으로 F4 key event 를 우리 client 에 안 보냄. 대신 main
-            // layer-surface 에 `zwlr_layer_surface_v1.closed` event 발송. 그
-            // 경로는 `handleEvent` 의 layer_surface closed 분기에서 동일하게
-            // pending_quit_request 처리. 이 keysym 분기는 *KWin 외 compositor*
-            // (예: sway / hyprland / GNOME mutter) 에서 F4 가 도달하는 경우 대비
-            // 유지.
-            if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and !self.keyboard.shiftActive() and sym == xkb_key_f4) {
+            // Ctrl + 터미널 preedit(Ctrl+C 아님) → 자모를 PTY 로 commit 후 진행
+            // (terminal readline 이 자모 먼저 받고 Ctrl byte 처리). Ctrl+C 는 위
+            // interrupt 경로가 discard 로 처리하므로 여기 도달 안 함.
+            if (ctrl and self.preedit_text.items.len > 0) self.commitPendingInput();
+            // SPEC §2.5 — Shift+PgUp / Shift+PgDn scrollback (계약 아님 — 별도).
+            if (shift and !ctrl and !alt and (sym == xkb_key_page_up or sym == xkb_key_page_down)) {
                 self.commitPendingInput();
-                self.pending_quit_request = true;
-                return;
-            }
-            // #87 — Alt+Enter: fullscreen 덮음(cover) / Shift+Alt+Enter: 패널 회피
-            // (avoid) 토글. Ctrl 미동반. layer-shell 계열 전용 (fallback 은 no-op).
-            if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and sym == xkb_key_return) {
-                self.commitPendingInput();
-                self.toggleFullscreen(if (self.keyboard.shiftActive()) .avoid else .cover);
-                return;
-            }
-            // SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등). Ctrl / Shift 미동반
-            // 만 trigger — Alt+Shift+숫자 / Alt+Ctrl+숫자 같은 다른 조합은 shell /
-            // X 의 통과로 둠. Alt+0 은 사용 안 (spec 9 까지만).
-            if (self.keyboard.altActive() and !self.keyboard.ctrlActive() and !self.keyboard.shiftActive() and sym >= xkb_key_1 and sym <= xkb_key_9) {
-                self.handleSwitchTab(@intCast(sym - xkb_key_1));
+                if (self.session) |*session| {
+                    const ch = self.renderer.cellHeight();
+                    const usable_h = @max(0, self.window_height - self.effectiveTabBarHeightPx() - self.renderer.paddingPx() * 2);
+                    const rows_i32 = @divTrunc(usable_h, ch);
+                    const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
+                    const dir: app_event.PageDirection = if (sym == xkb_key_page_up) .up else .down;
+                    const did = session.scrollActive(.{ .page = dir }, visible_rows);
+                    if (did) self.requestRedraw();
+                }
                 return;
             }
             if (terminalSequenceForKeysym(sym)) |seq| {
@@ -3914,6 +3806,45 @@ const Client = struct {
         var buf: [64]u8 = undefined;
         const bytes = self.keyboard.utf8(xkb_key, &buf);
         if (bytes.len > 0) self.queueInput(bytes);
+    }
+
+    /// #296 — resolve 가 run_action 으로 판정한 전역 단축키 실행. pending(rename/
+    /// preedit) commit 은 resolve 의 `.commit` 이 이미 처리하므로 여기선 action 만.
+    fn runShortcutForKey(self: *Client, sym: u32, shift: bool) void {
+        if (sym == xkb_key_c_lower or sym == xkb_key_c_upper) {
+            self.copyActiveSelection();
+        } else if (sym == xkb_key_t_lower or sym == xkb_key_t_upper) {
+            self.handleNewTab();
+        } else if (sym == xkb_key_w_lower or sym == xkb_key_w_upper) {
+            self.handleCloseTab();
+        } else if (sym == xkb_key_bracketright or sym == xkb_key_braceright) {
+            self.handleNextTab();
+        } else if (sym == xkb_key_bracketleft or sym == xkb_key_braceleft) {
+            self.handlePrevTab();
+        } else if (sym == xkb_key_i_lower or sym == xkb_key_i_upper) {
+            // #213 — About 은 reentrancy 밖 drainAboutRequest 가 열도록 flag 만.
+            self.pending_about_request = true;
+        } else if (sym == xkb_key_p_lower or sym == xkb_key_p_upper) {
+            const cfg_path = paths.configPath(self.allocator) catch return;
+            defer self.allocator.free(cfg_path);
+            system_open.openInDefaultApp(self.allocator, cfg_path);
+        } else if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
+            const log_path = paths.logPath(self.allocator) catch return;
+            defer self.allocator.free(log_path);
+            system_open.openInDefaultApp(self.allocator, log_path);
+        } else if (sym == xkb_key_r_lower or sym == xkb_key_r_upper) {
+            if (self.session) |*session| {
+                if (session.resetActive()) self.requestRedraw();
+            }
+        } else if (sym == xkb_key_f12) {
+            perf.dumpAndReset("snapshot");
+        } else if (sym == xkb_key_f4) {
+            self.pending_quit_request = true;
+        } else if (sym == xkb_key_return) {
+            self.toggleFullscreen(if (shift) .avoid else .cover);
+        } else if (sym >= xkb_key_1 and sym <= xkb_key_9) {
+            self.handleSwitchTab(@intCast(sym - xkb_key_1));
+        }
     }
 
     fn handleKeyboardModifiers(self: *Client, payload: []const u8) void {
