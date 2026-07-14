@@ -37,6 +37,18 @@ lifetime. A launcher or config-creation transaction that starts a worker retains
 `launcher.lock` until every new worker has acquired its own lock, preventing
 another launcher from observing a partially started set.
 
+Windows manual launches have one additional session-local request mutex. A
+launcher tries to acquire it before blocking on `launcher.lock`; only the winner
+performs recovery or requests a new instance, while overlapping launchers are
+coalesced. If all workers are already running, the winner releases
+`launcher.lock` and sends `WM_NEW_INSTANCE_REQUEST` with `SendMessageW`. It keeps
+the request mutex until worker 0 returns from the complete Create/Cancel handler.
+This ordering is mandatory: waiting synchronously while still owning
+`launcher.lock` would deadlock when worker 0 tries to acquire that lock. A launch
+that begins after the handler returns can acquire the mutex immediately and is a
+new request; there is no cooldown or queue-wide message deletion. Autostart is
+not a new-instance request and does not participate in this mutex.
+
 The worker writes its PID only after acquiring `instanceN.lock`. That PID is
 diagnostic metadata and a startup acknowledgement, never the liveness source of
 truth: stale files and reused PIDs are possible after a crash. Liveness is
@@ -54,12 +66,14 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
 1. The coordinator starts one locked `--instance N` worker per numbered config;
    `host/windows.zig` then initializes DPI awareness, config, the Win32 window,
    renderer, and first tab for that worker.
-2. `window.zig` converts Win32 messages into `app_event.zig`.
-3. `app_controller.zig` applies events to tab/session/selection/rename state.
-4. `session_core.zig` drains PTY output through `libghostty-vt`.
-5. `terminal/windows/pty.zig` creates ConPTY, preferring bundled
+2. A manual launcher owns the request mutex across the synchronous worker-0
+   new-instance handler, coalescing concurrent launches without a time heuristic.
+3. `window.zig` converts Win32 messages into `app_event.zig`.
+4. `app_controller.zig` applies events to tab/session/selection/rename state.
+5. `session_core.zig` drains PTY output through `libghostty-vt`.
+6. `terminal/windows/pty.zig` creates ConPTY, preferring bundled
    `conpty.dll` / `OpenConsole.exe` and falling back to system ConPTY.
-6. `renderer/windows.zig` draws with DirectWrite glyph rasterization and a
+7. `renderer/windows.zig` draws with DirectWrite glyph rasterization and a
    Direct3D 11 / HLSL atlas pipeline.
 
 ## macOS Pipeline

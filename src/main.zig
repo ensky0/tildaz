@@ -9,6 +9,7 @@ const host = switch (builtin.os.tag) {
 const autostart = @import("autostart.zig");
 const config = @import("config.zig");
 const instance_context = @import("instance_context.zig");
+const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
 
@@ -109,52 +110,75 @@ fn runLauncher(autostart_launch: bool) !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // config discovery와 spawn/dialog 결정을 직렬화한다. spawn한 모든 worker가
-    // index lock을 소유할 때까지 기다린 뒤 launcher lock을 풀어, 다음 launcher가
-    // 중간 상태를 관찰하지 못하게 한다.
-    var launcher_lock = try instances.acquireLauncherLock(allocator);
-    defer launcher_lock.deinit();
-
-    var indices = try instances.listConfigIndices(allocator);
-    defer allocator.free(indices);
-    if (indices.len == 0 or indices[0] != 0) {
-        const shell = try instances.defaultShell(allocator);
-        defer allocator.free(shell);
-        try instances.createDefaultConfig(allocator, 0, shell, config.Defaults.hotkey);
-        const expanded = try allocator.alloc(u32, indices.len + 1);
-        expanded[0] = 0;
-        @memcpy(expanded[1..], indices);
-        allocator.free(indices);
-        indices = expanded;
-    }
-
-    var any_auto_start = false;
-    for (indices) |index| {
-        if (try instances.configAutoStart(allocator, index)) any_auto_start = true;
-    }
+    // #301 — Windows plain-launch burst는 blocking launcher_lock보다 먼저 대표
+    // 하나를 선출한다. 대표가 동기 새-instance 처리를 끝낼 때까지 gate를 보유.
+    // autostart는 prompt 요청이 아니므로 기존 launcher_lock 직렬화만 사용한다.
+    var request_gate: ?instance_request.RequestGate = null;
     if (!autostart_launch) {
-        if (any_auto_start) try autostart.enable(allocator) else autostart.disable(allocator);
+        request_gate = try instance_request.tryAcquireGate();
+        if (request_gate == null) return;
     }
+    defer if (request_gate) |*gate| gate.deinit();
 
-    try shortcut_sync.sync(allocator, indices);
+    // Windows 동기 request는 이 block 밖에서 전송해 launcher_lock을 먼저 푼다.
+    // Linux/macOS의 기존 비동기 adapter는 lock 안에서 보내 기존 순서를 유지한다.
+    const send_after_unlock = launcher: {
+        // config discovery와 spawn/dialog 결정을 직렬화한다. spawn한 모든 worker가
+        // index lock을 소유할 때까지 기다린 뒤 launcher lock을 풀어, 다음 launcher가
+        // 중간 상태를 관찰하지 못하게 한다.
+        var launcher_lock = try instances.acquireLauncherLock(allocator);
+        defer launcher_lock.deinit();
 
-    var spawned = false;
-    for (indices) |index| {
-        if (autostart_launch and !try instances.configAutoStart(allocator, index)) continue;
-        if (!try instances.isRunning(allocator, index)) {
-            try instances.spawnWorker(allocator, index);
-            try instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s);
-            spawned = true;
+        var indices = try instances.listConfigIndices(allocator);
+        defer allocator.free(indices);
+        if (indices.len == 0 or indices[0] != 0) {
+            const shell = try instances.defaultShell(allocator);
+            defer allocator.free(shell);
+            try instances.createDefaultConfig(allocator, 0, shell, config.Defaults.hotkey);
+            const expanded = try allocator.alloc(u32, indices.len + 1);
+            expanded[0] = 0;
+            @memcpy(expanded[1..], indices);
+            allocator.free(indices);
+            indices = expanded;
         }
-    }
-    if (spawned or autostart_launch) return;
 
-    // config index별 TildaZ worker가 모두 실행 중일 때만 worker 0에 새 instance
-    // 요청을 보낸다. 하나라도 빠졌다면 위 loop가 누락 worker를 전부 시작했고
-    // spawned=true로 이미 반환했다.
-    try requestNewInstance();
+        var any_auto_start = false;
+        for (indices) |index| {
+            if (try instances.configAutoStart(allocator, index)) any_auto_start = true;
+        }
+        if (!autostart_launch) {
+            if (any_auto_start) try autostart.enable(allocator) else autostart.disable(allocator);
+        }
+
+        try shortcut_sync.sync(allocator, indices);
+
+        var spawned = false;
+        for (indices) |index| {
+            if (autostart_launch and !try instances.configAutoStart(allocator, index)) continue;
+            if (!try instances.isRunning(allocator, index)) {
+                try instances.spawnWorker(allocator, index);
+                try instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s);
+                spawned = true;
+            }
+        }
+        if (spawned or autostart_launch) break :launcher false;
+
+        // config index별 TildaZ worker가 모두 실행 중일 때만 worker 0에 새 instance
+        // 요청을 보낸다. 하나라도 빠졌다면 위 loop가 누락 worker를 전부 시작했다.
+        if (comptime builtin.os.tag == .windows) break :launcher true;
+        try requestNewInstance();
+        break :launcher false;
+    };
+
+    if (send_after_unlock) {
+        try requestNewInstance();
+        // WndProc가 반환한 바로 이 지점이 burst 병합의 끝 경계. 이후 시작된
+        // launcher는 즉시 다음 요청의 gate를 얻을 수 있게 성공 path에서 해제한다.
+        if (request_gate) |*gate| gate.deinit();
+        request_gate = null;
+    }
 }
 
 fn requestNewInstance() !void {
-    try @import("instance_request.zig").send();
+    try instance_request.send();
 }

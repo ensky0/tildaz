@@ -621,6 +621,12 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 - autostart entry는 launcher를 `--autostart`로 한 번 실행한다. launcher는
   `auto_start=true`인 config의 TildaZ worker만 시작하고 종료한다. 수동 실행은 모든
   config를 대상으로 한다.
+- Windows에서 동시에 진행 중인 일반 launcher는 하나의 새-instance 요청으로 병합한다.
+  첫 launcher만 config/worker 상태를 확인하고, 모든 worker가 이미 실행 중이면 worker 0의
+  Create/Cancel 처리가 끝날 때까지 해당 요청을 소유한다. 그동안 시작된 추가 launcher는
+  별도 prompt를 만들지 않는다. 처리가 반환한 **뒤** 시작된 launcher는 시간 간격과 무관하게
+  즉시 다음 새-instance 요청으로 처리한다. `--autostart`는 prompt 요청이 아니므로 이 병합
+  대상이 아니다.
 - 각 TildaZ worker는 자기 config, process lock, hotkey, toggle endpoint를 독립 소유한다.
   KDE Plasma에서는 portal/KGlobalAccel identity도 `tildaz.instanceN` (내부 app/component ID),
   `TildaZ_N` (표시명), `toggle-N` (action ID)으로 분리해 다른 worker의 shortcut을
@@ -638,7 +644,10 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
   결정과 worker 0의 hotkey dialog/config 생성 transaction을 직렬화한다. 누락 worker를
   spawn한 launcher 또는 새 config를 만든 worker 0은 각 worker가 자기 lock을 획득하고
   PID를 기록한 것을 확인한 뒤 launcher lock을 해제한다. 따라서 다음 launcher는
-  config 생성/spawn과 worker ownership 사이의 중간 상태를 관찰하지 않는다.
+  config 생성/spawn과 worker ownership 사이의 중간 상태를 관찰하지 않는다. Windows의
+  일반 launcher는 동기 새-instance IPC 전에 이 lock을 먼저 해제하고, worker 0이 dialog/
+  config transaction을 위해 다시 획득한다. launcher가 lock을 쥔 채 worker의 처리를
+  기다리는 순환 대기는 허용하지 않는다.
 
 > Zig 0.15.2 의 `std.json` 이 comptime allocator 를 지원 안 해 (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
 
