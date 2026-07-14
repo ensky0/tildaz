@@ -11,6 +11,7 @@
 // 라벨 (`com.tildaz.app`) 은 reverse-DNS — 다른 사용자 LaunchAgent 와 충돌 방지.
 
 const std = @import("std");
+const paths = @import("../paths.zig");
 
 const LABEL = "com.tildaz.app";
 
@@ -65,17 +66,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     , .{ LABEL, exe });
     defer allocator.free(plist);
 
-    if (std.fs.openFileAbsolute(path, .{})) |existing_file| {
-        defer existing_file.close();
-        if (existing_file.readToEndAlloc(allocator, 64 * 1024)) |existing| {
-            defer allocator.free(existing);
-            if (std.mem.eql(u8, existing, plist)) return;
-        } else |_| {}
-    } else |_| {}
-
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(plist);
+    _ = try paths.writeFileIfChanged(allocator, path, plist);
 }
 
 /// auto-start 비활성화 — plist 파일 삭제. 다음 로그인부터 효과 발생 (launchd 가

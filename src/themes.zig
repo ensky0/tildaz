@@ -263,6 +263,13 @@ pub fn isDark(theme: *const Theme) bool {
     return isDarkRgb(theme.background.r, theme.background.g, theme.background.b);
 }
 
+/// #282 G4 — COLORFGBG 환경변수 값 단일 소스. TUI(vim/less/tmux)가 dark/light
+/// colorscheme 자동 판별에 참조하는 표준: dark = "15;0" (fg 15=흰, bg 0=검),
+/// light = "0;15". 세 host 의 extra_env 구성이 공유 (theme null 처리는 host별).
+pub fn colorFgBg(theme: *const Theme) []const u8 {
+    return if (isDark(theme)) "15;0" else "0;15";
+}
+
 /// Theme 밖의 RGB (예: OSC 11 로 런타임 변경된 ghostty terminal 배경색) 에도
 /// 같은 기준을 적용하는 raw 버전 (#266 color scheme DSR 응답).
 pub fn isDarkRgb(r: u8, g: u8, b: u8) bool {

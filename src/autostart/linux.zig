@@ -89,17 +89,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     , .{exe});
     defer allocator.free(entry);
 
-    if (std.fs.openFileAbsolute(path, .{})) |existing_file| {
-        defer existing_file.close();
-        if (existing_file.readToEndAlloc(allocator, 64 * 1024)) |existing| {
-            defer allocator.free(existing);
-            if (std.mem.eql(u8, existing, entry)) return;
-        } else |_| {}
-    } else |_| {}
-
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(entry);
+    _ = try paths.writeFileIfChanged(allocator, path, entry);
 }
 
 /// auto-start 비활성화 — desktop entry 파일 삭제. 다음 로그인부터 효과.

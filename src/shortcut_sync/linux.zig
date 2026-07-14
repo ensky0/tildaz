@@ -2,6 +2,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const instances = @import("../instances.zig");
 const log = @import("../log.zig");
+const paths = @import("../paths.zig");
 const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
 const portal = @import("../host/linux/portal.zig");
@@ -288,22 +289,11 @@ fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
         offset = if (end < content.len) end + 1 else content.len;
     }
 
-    if (std.mem.eql(u8, content, output.items)) {
+    if (try paths.writeFileIfChanged(allocator, path, output.items)) {
+        log.appendLine("cosmic", "numbered hotkeys synchronized ({d})", .{indices.len});
+    } else {
         log.appendLine("cosmic", "numbered hotkeys already synchronized ({d})", .{indices.len});
-        return;
     }
-
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-tmp", .{path});
-    defer allocator.free(temp_path);
-    errdefer std.fs.deleteFileAbsolute(temp_path) catch {};
-    {
-        const temp = try std.fs.createFileAbsolute(temp_path, .{ .truncate = true });
-        defer temp.close();
-        try temp.writeAll(output.items);
-        try temp.sync();
-    }
-    try std.fs.renameAbsolute(temp_path, path);
-    log.appendLine("cosmic", "numbered hotkeys synchronized ({d})", .{indices.len});
 }
 
 pub fn findClosingMapLine(content: []const u8) ?usize {

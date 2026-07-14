@@ -56,15 +56,17 @@ pub const App = struct {
     /// address 잡힌 후 채움 (콜백이 user_data → *App cast).
     host: tab_actions.Host = undefined,
 
-    // DPI-scaled values (initialized in run())
+    // DPI-scaled values (initialized in run()). 기본값은 96dpi(scale 1.0) 기준
+    // = ui_metrics 의 PT 값 (#282 G11 — 리터럴 대신 단일 소스 참조). run() 초기
+    // applyDpiScale 가 실제 scale 로 모두 덮어써 이 기본값은 transient.
     dpi_scale: f32 = 1.0,
-    TAB_BAR_HEIGHT: c_int = 28,
-    TAB_WIDTH: c_int = 150,
-    TAB_ARROW_W: c_int = 28,
-    TAB_PLUS_W: c_int = 28,
-    TAB_CLOSE_W: c_int = 28,
-    TAB_PADDING: c_int = 6,
-    SCROLLBAR_W: c_int = 8,
+    TAB_BAR_HEIGHT: c_int = @intCast(ui_metrics.TAB_BAR_HEIGHT_PT),
+    TAB_WIDTH: c_int = @intCast(ui_metrics.TAB_WIDTH_PT),
+    TAB_ARROW_W: c_int = @intCast(ui_metrics.TAB_ARROW_W_PT),
+    TAB_PLUS_W: c_int = @intCast(ui_metrics.TAB_PLUS_W_PT),
+    TAB_CLOSE_W: c_int = @intCast(ui_metrics.TAB_CLOSE_W_PT),
+    TAB_PADDING: c_int = @intCast(ui_metrics.TAB_PADDING_PT),
+    SCROLLBAR_W: c_int = @intCast(ui_metrics.SCROLLBAR_W_PT),
     // Minimum scrollback thumb height — clamps the thumb so a deeply scrolled
     // buffer (e.g. 10k lines visible 30) doesn't shrink the thumb below a
     // draggable size. Must stay in sync between renderer (draw size) and the
@@ -319,11 +321,11 @@ pub const App = struct {
         const scale: f32 = effective / 96.0;
         self.dpi_scale = scale;
         self.TAB_BAR_HEIGHT = @intCast(ui_metrics.tabBarHeightPx(scale));
-        self.TAB_WIDTH = @intFromFloat(@round(150.0 * scale));
+        self.TAB_WIDTH = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * scale));
         self.TAB_ARROW_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * scale));
         self.TAB_PLUS_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * scale));
         self.TAB_CLOSE_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT)) * scale));
-        self.TAB_PADDING = @intFromFloat(@round(6.0 * scale));
+        self.TAB_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * scale));
         self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
         self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
         self.TERMINAL_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TERMINAL_PADDING_PT)) * scale));

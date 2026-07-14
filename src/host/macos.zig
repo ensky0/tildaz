@@ -2968,7 +2968,7 @@ pub fn run() !void {
     // light 자동 판별 (Windows `host/windows.zig` 의 buildExtraEnv 와 동등).
     // SHELL = 우리가 spawn 한 셸 path (부모의 SHELL 과 어긋남 방지).
     const colorfgbg_value: []const u8 = if (g_config.theme) |t|
-        (if (themes.isDark(t)) "15;0" else "0;15")
+        themes.colorFgBg(t)
     else
         "15;0";
     g_shell_path = try allocator.dupe(u8, shell_path);

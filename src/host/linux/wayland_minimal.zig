@@ -1056,7 +1056,7 @@ const Client = struct {
                 // 확정.
                 .{ .name = "LANG", .value = "C.UTF-8" },
                 .{ .name = "LC_CTYPE", .value = "C.UTF-8" },
-                .{ .name = "COLORFGBG", .value = if (themes.isDark(theme)) "15;0" else "0;15" },
+                .{ .name = "COLORFGBG", .value = themes.colorFgBg(theme) },
                 .{ .name = "SHELL", .value = cfg.shell },
             },
         };

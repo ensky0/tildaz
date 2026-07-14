@@ -1,4 +1,5 @@
 const std = @import("std");
+const paths = @import("../../paths.zig");
 
 /// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
 /// 값은 desktop entry 삭제 스윕이 순회할 최대 번호로도 쓰인다.
@@ -84,17 +85,7 @@ pub fn ensureDesktopEntry(allocator: std.mem.Allocator, index: u32) !void {
     , .{ index, index, exe, index, index });
     defer allocator.free(content);
 
-    if (std.fs.openFileAbsolute(path, .{})) |file| {
-        defer file.close();
-        if (file.readToEndAlloc(allocator, 64 * 1024)) |existing| {
-            defer allocator.free(existing);
-            if (std.mem.eql(u8, existing, content)) return;
-        } else |_| {}
-    } else |_| {}
-
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(content);
+    _ = try paths.writeFileIfChanged(allocator, path, content);
 }
 
 pub fn syncDesktopEntries(allocator: std.mem.Allocator, indices: []const u32) !void {
