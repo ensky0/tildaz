@@ -1,6 +1,8 @@
 const std = @import("std");
 
-pub const max_index = 999;
+/// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
+/// 값은 desktop entry 삭제 스윕이 순회할 최대 번호로도 쓰인다.
+pub const max_index = @import("../../instances.zig").max_config_index;
 
 pub fn appId(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintZ(buf, "tildaz.instance{d}", .{index});

@@ -30,12 +30,12 @@ pub fn begin(indices: []const u32) !Session {
 fn broadcast(indices: []const u32, message: UINT) !void {
     for (indices) |index| {
         var title_utf8: [32]u8 = undefined;
-        const title = std.fmt.bufPrint(&title_utf8, "TildaZ-{d}", .{index}) catch return error.InvalidInstanceTitle;
+        const title = @import("../instances.zig").windowTitle(&title_utf8, index) catch return error.InvalidInstanceTitle;
         var title_utf16: [32]u16 = undefined;
         const title_len = std.unicode.utf8ToUtf16Le(&title_utf16, title) catch return error.InvalidInstanceTitle;
         title_utf16[title_len] = 0;
         const hwnd = FindWindowW(
-            std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow"),
+            std.unicode.utf8ToUtf16LeStringLiteral(@import("../instances.zig").window_class_name),
             @ptrCast(title_utf16[0..title_len :0]),
         ) orelse continue;
         var result: usize = 0;

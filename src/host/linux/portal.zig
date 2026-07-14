@@ -978,7 +978,7 @@ fn kdeTryAutoApply(
                 const dmsg = std.fmt.bufPrint(&declined_buf, messages.hotkey_takeover_declined_format, .{
                     preferred_display, owner.display_component,
                 }) catch {
-                    dialog.showInfo(messages.hotkey_takeover_declined_title, "Hotkey unchanged.");
+                    dialog.showInfo(messages.hotkey_takeover_declined_title, messages.hotkey_takeover_declined_fallback_msg);
                     return;
                 };
                 dialog.showInfo(messages.hotkey_takeover_declined_title, dmsg);
@@ -1656,7 +1656,7 @@ fn containsToken(haystack: []const u8, needle: []const u8) bool {
 fn showHotkeyUpdatedDialog(allocator: std.mem.Allocator, was: []const u8, now: []const u8) void {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, messages.hotkey_updated_format, .{ was, now }) catch {
-        dialog.showInfo(messages.hotkey_updated_title, "System hotkey updated to match config.");
+        dialog.showInfo(messages.hotkey_updated_title, messages.hotkey_updated_fallback_msg);
         return;
     };
     dialog.showInfo(messages.hotkey_updated_title, msg);
@@ -1666,7 +1666,7 @@ fn showHotkeyUpdatedDialog(allocator: std.mem.Allocator, was: []const u8, now: [
 fn showMismatchPersistsDialog(allocator: std.mem.Allocator, preferred: []const u8, actual: []const u8) void {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, messages.hotkey_mismatch_persists_format, .{ preferred, actual }) catch {
-        dialog.showInfo(messages.hotkey_mismatch_persists_title, "Hotkey mismatch — adjust in your desktop's Global Shortcuts settings.");
+        dialog.showInfo(messages.hotkey_mismatch_persists_title, messages.hotkey_mismatch_persists_fallback_msg);
         return;
     };
     dialog.showInfo(messages.hotkey_mismatch_persists_title, msg);
