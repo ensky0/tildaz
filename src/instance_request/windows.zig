@@ -52,9 +52,10 @@ pub fn tryAcquireGate() !?RequestGate {
 }
 
 pub fn send() !void {
+    const instances = @import("../instances.zig");
     const hwnd = FindWindowW(
-        std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow"),
-        std.unicode.utf8ToUtf16LeStringLiteral("TildaZ-0"),
+        std.unicode.utf8ToUtf16LeStringLiteral(instances.window_class_name),
+        std.unicode.utf8ToUtf16LeStringLiteral(instances.window_title_prefix ++ "0"),
     ) orelse return error.CoordinatorNotRunning;
     // 동기 반환이 request gate의 정확한 끝 경계다. caller는 launcher.lock을
     // 반드시 먼저 해제해야 한다 — worker 0 handle이 같은 lock을 획득한다.

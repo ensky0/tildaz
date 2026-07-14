@@ -445,7 +445,7 @@ pub const Window = struct {
     hotkey_modifiers: UINT = 0,
     hotkey_registered: bool = false,
 
-    const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZWindow");
+    const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral(@import("instances.zig").window_class_name);
     const HOTKEY_ID: c_int = 1;
     const VK_F1: UINT = 0x70;
     const VK_RETURN: WPARAM = 0x0D;
@@ -506,7 +506,7 @@ pub const Window = struct {
 
         var title_buf: [32]u16 = undefined;
         var title_utf8_buf: [32]u8 = undefined;
-        const title_utf8 = std.fmt.bufPrint(&title_utf8_buf, "TildaZ-{d}", .{@import("instance_context.zig").requireWorkerIndex()}) catch "TildaZ";
+        const title_utf8 = @import("instances.zig").windowTitle(&title_utf8_buf, @import("instance_context.zig").requireWorkerIndex()) catch "TildaZ";
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title_utf8) catch 0;
         title_buf[title_len] = 0;
         // #89 — WS_EX_LAYERED 를 아예 쓰지 않는다. layered 창은 renderer 가

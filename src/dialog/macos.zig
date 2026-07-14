@@ -25,6 +25,7 @@ const config = @import("../config.zig");
 const objc = @import("../macos_objc.zig");
 const dialog = @import("../dialog.zig");
 const log = @import("../log.zig");
+const messages = @import("../messages.zig");
 
 var nsapp_ready: bool = false;
 /// 우리 NSWindow (popup level) — alert 띄우는 동안만 normal level 로 낮춰야
@@ -374,7 +375,7 @@ fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8
     const alert = newAlert() orelse return;
     setMessage(alert, title);
     setInformative(alert, message);
-    addButton(alert, "OK");
+    addButton(alert, messages.button_ok);
     setStyle(alert, alertStyleFor(severity));
     _ = runModalOverHost(alert, true);
 }
@@ -447,7 +448,7 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     const alert = newAlert() orelse return;
     setMessage(alert, title);
     setStyle(alert, 1); // Informational
-    addButton(alert, "OK");
+    addButton(alert, messages.button_ok);
 
     // accessoryView: NSTextView. width 580 / height 110 — exe / config / log
     // 절대 경로 한 줄 다 들어감. selectable + editable=NO + monospace.
@@ -506,8 +507,8 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     setMessage(alert, title);
     setInformative(alert, message);
     setStyle(alert, 1); // Informational
-    addButton(alert, "OK");
-    addButton(alert, "Cancel");
+    addButton(alert, messages.button_ok);
+    addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
 
     const result = runModalOverHost(alert, false);
@@ -557,8 +558,8 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     setMessage(alert, title);
     setInformative(alert, message);
     setStyle(alert, 1);
-    addButton(alert, "Create");
-    addButton(alert, "Cancel");
+    addButton(alert, messages.button_create);
+    addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1);
 
     const NSView = objc.getClass("NSView");

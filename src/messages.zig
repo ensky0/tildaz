@@ -3,6 +3,13 @@
 //! 같은 의미의 메시지를 platform 별로 두 번 작성하지 않게 한다. format string
 //! 은 여기서 정의하고 실제 표시는 호출처가 `dialog.zig` 로 위임.
 
+/// #282 G9 — 자체 그리기 dialog 의 버튼 라벨 단일 소스 (macOS NSAlert · Windows
+/// 자체 hotkey 프롬프트 · Linux overlay 공용). Windows 표준 MessageBoxW 의
+/// OK/Cancel 은 OS 가 제공하므로 해당 없음.
+pub const button_ok = "OK";
+pub const button_cancel = "Cancel";
+pub const button_create = "Create";
+
 pub const config_error_title = "TildaZ Config Error";
 pub const about_title = "About TildaZ";
 pub const error_title = "TildaZ Error";
@@ -41,6 +48,12 @@ pub const hotkey_takeover_format =
 ;
 pub const hotkey_takeover_declined_title = "Hotkey unchanged";
 pub const hotkey_takeover_declined_format = "Kept the existing binding. To use \"{s}\" for TildaZ, free it from {s} in your desktop's Global Shortcuts settings.";
+
+/// #282 G10 — 위 format bufPrint 실패 시 표시할 fallback (사용자 노출 문자열은
+/// 모두 messages.zig 에). Linux portal hotkey 경로에서만 발동(희귀).
+pub const hotkey_takeover_declined_fallback_msg = "Hotkey unchanged.";
+pub const hotkey_updated_fallback_msg = "System hotkey updated to match config.";
+pub const hotkey_mismatch_persists_fallback_msg = "Hotkey mismatch — adjust in your desktop's Global Shortcuts settings.";
 
 /// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
 /// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L

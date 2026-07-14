@@ -57,6 +57,14 @@ const impl = switch (builtin.os.tag) {
     else => @compileError("unsupported platform"),
 };
 
+/// #282 G8 — 종료 확인 메시지 조립. 탭 수 복수형 계산 + `quit_confirm_format`
+/// 조립을 host 별 복제 대신 한 곳에 (n==0 skip 은 호출처 정책이라 여기 안 둠).
+/// 반환 null = bufPrint 실패 → 호출처가 안전 종료로 판단.
+pub fn quitConfirmMessage(buf: []u8, tab_count: usize) ?[]const u8 {
+    const plural: []const u8 = if (tab_count == 1) "" else "s";
+    return std.fmt.bufPrint(buf, messages.quit_confirm_format, .{ tab_count, plural }) catch null;
+}
+
 pub fn showInfo(title: []const u8, message: []const u8) void {
     impl.show(.info, title, message);
 }

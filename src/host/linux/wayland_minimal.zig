@@ -1664,7 +1664,7 @@ const Client = struct {
         try self.sendNewId(self.xdg_surface_id, 1, self.toplevel_id);
         const index = instance_context.requireWorkerIndex();
         var title_buf: [32]u8 = undefined;
-        const title = try std.fmt.bufPrint(&title_buf, "TildaZ-{d}", .{index});
+        const title = try @import("../../instances.zig").windowTitle(&title_buf, index);
         var app_id_buf: [32]u8 = undefined;
         const app_id = try instance_identity.appId(&app_id_buf, index);
         try self.sendString(self.toplevel_id, 2, title);
@@ -5179,9 +5179,8 @@ const Client = struct {
             return;
         }
 
-        const plural: []const u8 = if (n == 1) "" else "s";
         var msg_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, messages.quit_confirm_format, .{ n, plural }) catch {
+        const msg = dialog_mod.quitConfirmMessage(&msg_buf, n) orelse {
             self.running = false;
             return;
         };

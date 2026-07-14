@@ -196,10 +196,8 @@ const NSTerminateNow: c_long = 1;
 fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) c_long {
     const n = g_session.count();
     if (n == 0) return NSTerminateNow;
-    const plural: []const u8 = if (n == 1) "" else "s";
     var msg_buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&msg_buf, messages.quit_confirm_format, .{ n, plural }) catch
-        return NSTerminateNow;
+    const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return NSTerminateNow;
     return if (dialog.showConfirm(messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
 }
 

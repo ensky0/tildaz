@@ -21,6 +21,7 @@ const tab_layout = @import("../../tab_layout.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
+const messages = @import("../../messages.zig");
 
 /// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
 /// NSAlert / Win 11 dialog 의 ~12-16 범위. fractional scaling 환경 에선 그대로
@@ -825,7 +826,7 @@ pub const Renderer = struct {
         const ok_bg = if (create_enabled) dialog_button_color else dialog_disabled_button_color;
         const ok_fg = if (create_enabled) dialog_button_text_color else dialog_disabled_button_text_color;
         fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, ok_bg);
-        const ok_text = if (prompt_input != null) "Create" else "OK";
+        const ok_text = if (prompt_input != null) messages.button_create else messages.button_ok;
         const ok_text_cells = display_width.stringWidth(ok_text);
         const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(self.cellWidth())));
         const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
@@ -837,7 +838,7 @@ pub const Renderer = struct {
             const cancel_x: i32 = group_x;
             self.last_dialog_cancel_rect = .{ .x = cancel_x, .y = button_y, .w = button_w, .h = button_h };
             fillRoundedRect(memory, buffer_w, buffer_h, stride, cancel_x, button_y, button_w, button_h, button_r, dialog_cancel_color);
-            const cancel_text = "Cancel";
+            const cancel_text = messages.button_cancel;
             const cancel_text_cells = display_width.stringWidth(cancel_text);
             const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(self.cellWidth())));
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);

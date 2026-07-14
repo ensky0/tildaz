@@ -4,6 +4,20 @@ const paths = @import("paths.zig");
 
 pub const max_config_index: u32 = 999;
 
+/// #282 G12 — instance 창 식별자 단일 소스. Windows 는 이 값들로 worker 창을
+/// IPC 조회한다: `instance_request` 가 FindWindowW 로 coordinator 를 찾고,
+/// `hotkey_capture` 가 각 worker 로 broadcast, `window` 가 창을 생성 — 셋이
+/// 같은 클래스명·타이틀 형식을 써야 한다(불일치 시 hotkey_capture 는 무음
+/// no-op, instance_request 는 CoordinatorNotRunning 오해석). Linux 는 같은
+/// 타이틀 형식을 xdg_toplevel 표시 타이틀로 재사용(형식 일관성).
+pub const window_class_name = "TildaZWindow";
+pub const window_title_prefix = "TildaZ-";
+
+/// 창 타이틀 = `TildaZ-<worker index>` (예 "TildaZ-0" = coordinator).
+pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
+    return std.fmt.bufPrint(buf, window_title_prefix ++ "{d}", .{index});
+}
+
 pub const ProcessLock = struct {
     file: std.fs.File,
     clear_pid_on_close: bool,
