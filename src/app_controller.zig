@@ -1,6 +1,7 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
+const input_policy = @import("input_policy.zig");
 const session_core = @import("session_core.zig");
 const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
@@ -808,6 +809,23 @@ pub const App = struct {
         }
     }
 
+    /// #296 — app_event.Shortcut → 입력 정책 Shortcut 매핑 (commit 여부 판정용).
+    fn appShortcutToPolicy(sc: app_event.Shortcut) input_policy.Shortcut {
+        return switch (sc) {
+            .new_tab => .new_tab,
+            .close_active_tab => .close_tab,
+            .reset_terminal => .reset_terminal,
+            .dump_perf => .dump_perf,
+            .show_about => .show_about,
+            .open_config => .open_config,
+            .open_log => .open_log,
+            .switch_tab => .switch_tab,
+            .next_tab => .next_tab,
+            .prev_tab => .prev_tab,
+            .copy_selection => .copy_selection,
+        };
+    }
+
     pub fn onAppEvent(event: app_event.Event, userdata: ?*anyopaque) bool {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         switch (event) {
@@ -833,9 +851,15 @@ pub const App = struct {
                 return true;
             },
             .shortcut => |shortcut| {
-                // rename 활성 중 어떤 단축키든 = focus_loss → 현재 입력값으로
-                // commit 후 단축키 실행 (#175). mac `commitPendingInput` 동등.
-                if (self.isRenaming()) self.commitRename();
+                // #296 — rename 중 단축키의 commit 여부는 입력 정책(input_policy)
+                // 한 곳에서. copy_selection/dump_perf 는 read-only → rename 을 안
+                // 끝냄(rename 중 복사할 대상이 없음 — macOS/Linux 와 같은 정정).
+                // 그 외 단축키는 focus_loss 로 현재 값 commit 후 실행 (SPEC §4.1).
+                if (self.isRenaming() and
+                    input_policy.resolve(.{ .shortcut = appShortcutToPolicy(shortcut) }, .{ .rename_active = true }).pending == .commit)
+                {
+                    self.commitRename();
+                }
                 switch (shortcut) {
                     .new_tab => {
                         self.handleNewTab();
