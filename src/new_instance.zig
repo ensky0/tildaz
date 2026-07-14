@@ -21,13 +21,11 @@ fn validateHotkey(ctx_ptr: *anyopaque, text: []const u8) dialog.HotkeyValidation
     return if (owner) |index| .{ .duplicate = index } else .available;
 }
 
-/// #301 — 재진입 가드. Windows 에서 `promptHotkey` 의 modal 메시지 루프가 도는
-/// 동안 큐에 쌓인 `WM_NEW_INSTANCE_REQUEST` 가 main WndProc 로 dispatch 되어
-/// `handle` 이 재진입 → 중첩 프롬프트 + nested modal loop 가 hang("응답 없음"),
-/// 그 창(worker 0 UI thread)을 죽이면 coordinator 가 죽어 전 instance 종료.
-/// handle 은 main/UI thread 단일 실행이라 plain bool 로 충분. 진행 중이면 추가
-/// 요청은 drop — macOS(notification coalesce)/Linux(pending bool + dialog skip)의
-/// "연속 요청 1개 병합"과 동일 동작 (그쪽은 상위에서 이미 coalesce 하므로 무해).
+/// #301 — nested modal 재진입 최종 방어. 정상 Windows plain launch는 sender가
+/// request gate를 선점하고 SendMessageW 반환까지 보유하므로 여기서 겹치지 않는다.
+/// 다만 gate owner가 prompt 도중 비정상 종료하면 다음 launcher가 abandoned mutex를
+/// 얻어 동기 요청할 수 있으므로, 진행 중 요청은 여기서 병합해 worker 0 UI thread의
+/// 중첩 prompt/hang을 막는다. handle은 main/UI thread 단일 실행이라 plain bool로 충분.
 var handling: bool = false;
 
 pub fn handle(allocator: std.mem.Allocator) void {
