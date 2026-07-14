@@ -14,8 +14,8 @@ const instances = @import("instances.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
 
 /// `std.log` 호출 (ghostty-vt 의 `unimplemented mode` 등) 을 우리 통합 로그로
-/// redirect — stdout/stderr 안 찍힘. macOS 는 `~/Library/Logs/tildazN.log`,
-/// Windows 는 `%APPDATA%\tildaz\tildazN.log` 의 `[std.log:<scope>]` category.
+/// redirect — stdout/stderr 안 찍힘. macOS 는 `~/Library/Logs/tildaz_N.log`,
+/// Windows 는 `%APPDATA%\tildaz\tildaz_N.log` 의 `[std.log:<scope>]` category.
 pub const std_options: std.Options = .{
     .logFn = tildazLogFn,
     .log_level = .warn,
@@ -77,7 +77,7 @@ pub fn main() void {
         if (toggle_index) |index| {
             instance_context.setWorkerIndex(index);
             const si = @import("host/linux/single_instance.zig");
-            // 결과를 tildazN.log 에도 남긴다 — `tildaz --toggle N` 은 별 process 라
+            // 결과를 tildaz_N.log 에도 남긴다 — `tildaz --toggle N` 은 별 process 라
             // stderr 가 compositor 저널로 가 진단이 어렵다 (#230). 매 hotkey 마다
             // 기존 인스턴스에 닿았는지(sent) / 없는지(NoRunningInstance) 기록.
             si.sendToggle(index) catch |err| {

@@ -2127,7 +2127,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         \\exe   : /home/ensky0/tildaz/zig-out/bin/tildaz
         \\pid   : 12345
         \\config: /home/ensky0/.config/tildaz/config_0.json
-        \\log   : /home/ensky0/.local/state/tildaz/tildaz0.log
+        \\log   : /home/ensky0/.local/state/tildaz/tildaz_0.log
         \\
         \\Tip: Ctrl+Shift+P opens config in default editor.
         \\     Ctrl+Shift+L opens log.

@@ -19,7 +19,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues |
 | Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig` | Tab switching, close paths, rename, drag, hit testing |
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
-| Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, `_` comment keys, current `config_N.json` / `tildazN.log` paths |
+| Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, `_` comment keys, current `config_N.json` / `tildaz_N.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
 | Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape. Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |

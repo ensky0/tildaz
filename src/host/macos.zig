@@ -2654,7 +2654,7 @@ fn resolveShell(allocator: std.mem.Allocator) []const u8 {
 
 pub fn run() !void {
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
-    // `~/Library/Logs/tildazN.log` — Console.app 이 자동 인덱싱해 GUI 에서
+    // `~/Library/Logs/tildaz_N.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
     log.logStart(build_options.version);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
@@ -3556,7 +3556,7 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     @import("../system_open.zig").openInDefaultApp(allocator, path);
 }
 
-/// Shift+Cmd+L — 현재 worker의 tildazN.log 를 default editor 로 열기 (#128).
+/// Shift+Cmd+L — 현재 worker의 tildaz_N.log 를 default editor 로 열기 (#128).
 fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
     _ = self;
     _ = _sel;

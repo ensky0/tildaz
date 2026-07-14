@@ -44,7 +44,7 @@ pub fn run() !void {
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    // %APPDATA%\tildaz\tildazN.log 에 부팅 / 종료 라인을 남긴다.
+    // %APPDATA%\tildaz\tildaz_N.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
     log.logStart(build_options.version);
     defer log.logStop(build_options.version);
