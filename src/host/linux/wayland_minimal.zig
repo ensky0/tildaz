@@ -228,6 +228,10 @@ const OutputSlot = struct {
     width: i32 = 0, // 물리 px — mode(CURRENT) event
     height: i32 = 0,
     scale: i32 = 1, // wl_output.scale (정수 배율)
+    // #295 — main surface 가 현재 이 output 에 걸쳐있는지 (`wl_surface.enter`
+    // 로 set, `leave` 로 clear). 한 surface 가 동시에 여러 output 에 걸칠 수
+    // 있어(spec) 집합으로 추적 — basis 선택 안정화에 사용.
+    entered: bool = false,
 };
 const wl_output_mode_flag_current: u32 = 0x1;
 // L8-β — wl_output 없는 환경 fallback. 정상 Wayland session 에선 늘 advertise
@@ -849,11 +853,19 @@ const Client = struct {
     screen_width: i32 = 0,
     screen_height: i32 = 0,
     outputs: [max_tracked_outputs]OutputSlot = [_]OutputSlot{.{}} ** max_tracked_outputs,
-    // #295 — wl_surface.enter 로 확정된 기준 output 의 object id. 0 = 아직 enter
-    // 못 받음 (startup / 재생성 직후) → 첫 bind output 이 기준. leave 는 무시 —
-    // output 이동 시 새 output 의 enter 가 곧바로 따라온다 (양쪽에 걸친 transient
-    // 상태에선 마지막 enter 기준 유지).
+    // #295 — 현재 basis 로 쓰는 output 의 object id. 0 = 아직 미확정 (startup /
+    // 재생성 직후) → 첫 bind output 이 기준. `wl_surface.enter`/`leave` 로 갱신되는
+    // OutputSlot.entered 집합에서 batch 종료 후 안정적으로 선택 (drainSurfaceOutputs):
+    // 현재 basis 가 여전히 집합에 있으면 유지한다. 이 "유지" 규칙이 핵심 —
+    // sway/wlroots 는 인접 output 경계에 flush 인 layer surface 에 *양쪽* output
+    // 의 enter 를 보내는데(KWin 은 실제 픽셀 덮는 output 만), enter 마다 basis 를
+    // 뒤집으면 재생성 surface 가 또 양쪽 enter → 무한 recreate 진동이 된다
+    // (기본 config offset=100 우측 패널 + 오른쪽 인접 모니터에서 실측 재현).
     current_output_object_id: u32 = 0,
+    // #295 — 이번 dispatch batch 에 surface 의 enter/leave 가 있었음. batch 종료
+    // 후 drainSurfaceOutputs 가 entered 집합을 보고 basis 를 한 번만 재선택한다
+    // (intra-batch 의 중간 enter 값으로 recreate 예약하던 진동 제거). batch-local.
+    surface_outputs_dirty: bool = false,
     // #295 — bindGlobals 완료 표시. 이후 도착하는 wl_output global (hotplug 연결)
     // 은 handleRegistryGlobal 이 즉시 bind, 이전 (startup registry dump) 은
     // bindGlobals 가 일괄 bind.
@@ -1307,6 +1319,12 @@ const Client = struct {
             // #203 Phase C step 4 — Alt+F4 deferred quit. confirm 의 inner pump
             // 도 outer dispatchBuffered 밖에서 호출.
             self.drainQuitRequest();
+            // #295 — batch 종료 후 surface 의 enter/leave 집합으로 basis 재선택.
+            // drainOutputRecreate 보다 먼저 — mapped basis 전환은 여기서
+            // pending_output_recreate 를 set 하고 아래 drain 이 같은 iteration 에 처리.
+            self.drainSurfaceOutputs() catch |err| {
+                log.appendLineVerbose("wayland", "drainSurfaceOutputs 실패: {s}", .{@errorName(err)});
+            };
             // #241 — visible 상태 output topology 변화로 closed 된 경우의 재생성도
             // outer dispatchBuffered 밖에서(swapMainSurfaceSeamless 가 configure pump).
             self.drainOutputRecreate();
@@ -2135,14 +2153,62 @@ const Client = struct {
         }
     }
 
-    /// #295 — main surface 가 놓인 output 확정 (`wl_surface.enter`). compositor 는
-    /// output=NULL layer surface 를 focused output 에 놓으므로, 소환된 모니터가
-    /// 계산 기준 output 과 달라질 수 있고 그걸 알려주는 유일한 신호가 이 event.
-    /// 기준 전환 후 mode/scale 이 기존 기준과 다르면 screen dims + scale 재동기
-    /// + layout 재송신 + grid 재계산 — mixed-monitor 크기/선명도 증상의 해소 지점.
-    fn handleSurfaceOutputEnter(self: *Client, output_object_id: u32) !void {
+    /// #295 — entered 집합에서 basis 로 쓸 output 을 안정적으로 고른다. batch 종료
+    /// 후 drainSurfaceOutputs 가 호출. 규칙 (진동 방지 우선):
+    ///   1. 현재 basis 가 여전히 걸쳐있으면 그대로 유지 (surface 가 인접 output
+    ///      경계에 flush 라 양쪽에 걸쳐도 basis 를 안 뒤집는다).
+    ///   2. 아니면 build 기준(첫 bind output_id)이 걸쳐있으면 그것.
+    ///   3. 아니면 걸쳐있는 첫 output.
+    ///   4. 아무 데도 안 걸쳐있으면 null → 호출측이 현재 basis 유지.
+    fn pickBasisOutput(self: *Client) ?u32 {
+        if (self.current_output_object_id != 0) {
+            if (self.findOutputSlot(.{ .object_id = self.current_output_object_id })) |s| {
+                if (s.entered) return self.current_output_object_id;
+            }
+        }
+        if (self.output_id != 0) {
+            if (self.findOutputSlot(.{ .object_id = self.output_id })) |s| {
+                if (s.entered) return self.output_id;
+            }
+        }
+        for (&self.outputs) |*s| {
+            if (s.object_id != 0 and s.entered) return s.object_id;
+        }
+        return null;
+    }
+
+    /// #295 — dispatch batch 종료 후 entered 집합을 보고 basis 를 재선택 (main loop
+    /// drain). enter/leave 마다 즉시 반응하지 않는 이유는 위 field 주석 참고 —
+    /// sway/wlroots 의 양쪽-enter 진동을 막는 핵심.
+    fn drainSurfaceOutputs(self: *Client) !void {
+        if (!self.surface_outputs_dirty) return;
+        self.surface_outputs_dirty = false;
+        const basis = self.pickBasisOutput();
+        var entered_buf: [64]u8 = undefined;
+        var w: usize = 0;
+        for (&self.outputs) |*s| {
+            if (s.object_id != 0 and s.entered) {
+                if (std.fmt.bufPrint(entered_buf[w..], "{} ", .{s.object_id})) |written| {
+                    w += written.len;
+                } else |_| {}
+            }
+        }
+        log.appendLineVerbose("wayland", "drainSurfaceOutputs entered=[{s}] current={} picked={} (#295)", .{
+            entered_buf[0..w], self.current_output_object_id, basis orelse 0,
+        });
+        const chosen = basis orelse return; // 안 걸침 → 현 basis 유지
+        if (chosen == self.current_output_object_id) return; // 변화 없음
+        try self.applyBasisOutput(chosen);
+    }
+
+    /// #295 — 선택된 basis output 으로 전환. compositor 는 output=NULL layer surface
+    /// 를 focused output 에 놓으므로 소환된 모니터가 계산 기준과 달라질 수 있고,
+    /// wl_surface.enter 집합이 그 유일한 신호. 전환 후 mode/scale 이 기존 기준과
+    /// 다르면 screen dims + scale 재동기 + layout 재송신/재생성 + grid 재계산 —
+    /// mixed-monitor 크기/선명도 증상의 해소 지점.
+    fn applyBasisOutput(self: *Client, output_object_id: u32) !void {
         const slot = self.findOutputSlot(.{ .object_id = output_object_id }) orelse {
-            log.appendLineVerbose("wayland", "surface enter unknown output object_id={} — ignored (#295)", .{output_object_id});
+            log.appendLineVerbose("wayland", "basis output unknown object_id={} — ignored (#295)", .{output_object_id});
             return;
         };
         self.current_output_object_id = output_object_id;
@@ -2151,7 +2217,7 @@ const Client = struct {
         const dims_changed = slot.width != self.screen_width or slot.height != self.screen_height;
         self.screen_width = slot.width;
         self.screen_height = slot.height;
-        log.appendLineVerbose("wayland", "surface enter output object_id={} {}x{} scale={} dims_changed={} (#295)", .{
+        log.appendLineVerbose("wayland", "basis output object_id={} {}x{} scale={} dims_changed={} (#295)", .{
             output_object_id,
             slot.width,
             slot.height,
@@ -2799,13 +2865,17 @@ const Client = struct {
             try self.handleOutputEvent(slot, opcode, payload);
             return;
         }
-        // #295 — main surface 의 enter/leave (surface 가 올라간 output 알림).
-        // leave 는 무시 — output 이동 시 새 output 의 enter 가 곧바로 따라온다.
+        // #295 — main surface 의 enter/leave (surface 가 걸친 output 알림). 여기선
+        // entered 집합만 갱신하고 basis 판정은 batch 종료 후 drainSurfaceOutputs 로
+        // 미룬다 — 한 batch 에 여러 enter 가 와도 중간값으로 recreate 예약하지 않게.
         if (self.surface_id != 0 and id == self.surface_id and
             (opcode == wl_surface_event_enter or opcode == wl_surface_event_leave))
         {
-            if (opcode == wl_surface_event_enter and payload.len >= 4) {
-                try self.handleSurfaceOutputEnter(readU32(payload[0..4]));
+            if (payload.len >= 4) {
+                if (self.findOutputSlot(.{ .object_id = readU32(payload[0..4]) })) |slot| {
+                    slot.entered = (opcode == wl_surface_event_enter);
+                    self.surface_outputs_dirty = true;
+                }
             }
             return;
         }
@@ -4963,6 +5033,10 @@ const Client = struct {
         // 재 map 후 첫 attachAndCommit 가 새 frame request — reset 필수.
         self.frame_callback_id = 0;
         self.awaiting_frame = false;
+        // #295 — unmap 하면 output 소속이 무효 (remap 시 새 enter 를 받는다). stale
+        // entered flag 를 남기면 다른 output 으로 재소환해도 옛 basis 를 유지해
+        // 폭/dims 가 안 바뀐다 (sway focus 이동 후 hide/show 실측). clear.
+        for (&self.outputs) |*s| s.entered = false;
     }
 
     /// #205 — kitty pattern show: layer properties 재송신 + commit. KWin Bug
@@ -5193,6 +5267,11 @@ const Client = struct {
         self.mapped = false;
         self.frame_callback_id = 0;
         self.awaiting_frame = false;
+        // #295 — 옛 surface 의 entered 집합은 새 surface 에 무효. 새 surface 가
+        // enter 를 새로 받으므로 clear (dirty 는 set 안 함 — 새 enter 도착 시 set).
+        // current_output_object_id 는 유지 (새 surface 가 같은 basis 로 map → 그
+        // enter 가 current 를 그대로 확인, 다른 데 놓이면 그 enter 가 전환).
+        for (&self.outputs) |*s| s.entered = false;
 
         // 새 surface 생성 + 첫 frame 동기 paint (옛 frame 위에 동일 내용 올림).
         self.createShellObjects() catch |err| {
