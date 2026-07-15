@@ -210,6 +210,25 @@ const wl_output_event_geometry: u16 = 0;
 const wl_output_event_mode: u16 = 1;
 const wl_output_event_done: u16 = 2;
 const wl_output_event_scale: u16 = 3;
+
+// #295 — main surface 가 어느 output 에 올라갔는지 알려주는 유일한 신호.
+// enter payload = 해당 wl_output 의 (우리가 bind 한) object id.
+const wl_surface_event_enter: u16 = 0;
+const wl_surface_event_leave: u16 = 1;
+
+/// #295 — advertise 된 모든 wl_output 의 per-output 상태. 첫 output 만 저장하던
+/// L8-β scope 를 확장 — mixed-monitor 에서 surface 가 놓인 output 과 layout/scale
+/// 계산 기준 output 이 달라지는 구조 문제의 해소 단위. 고정 배열 (일반 데스크탑
+/// 은 output 몇 개 수준, 초과분은 무시 + 로그).
+const max_tracked_outputs = 8;
+const OutputSlot = struct {
+    global_name: u32 = 0, // registry global name (0 = 빈 slot)
+    version: u32 = 0, // advertise 된 interface version
+    object_id: u32 = 0, // bind 된 proxy id (0 = 미bind)
+    width: i32 = 0, // 물리 px — mode(CURRENT) event
+    height: i32 = 0,
+    scale: i32 = 1, // wl_output.scale (정수 배율)
+};
 const wl_output_mode_flag_current: u32 = 0x1;
 // L8-β — wl_output 없는 환경 fallback. 정상 Wayland session 에선 늘 advertise
 // 되므로 거의 안 닿음 — 닿으면 startup 로그에 fallback 명시.
@@ -341,10 +360,8 @@ const Capabilities = struct {
     layer_shell: Global = .{},
     text_input_v3: Global = .{},
     data_device_manager: Global = .{},
-    // L8-β — 화면 해상도 알아내기 위해 wl_output bind. multi-monitor 환경에선
-    // wl_output 여러 개 advertise 되지만 L8-β scope 에선 첫 번째만 사용 (multi-
-    // monitor 선택은 후속 sub-step).
-    output: Global = .{},
+    // (#295: wl_output 은 여기 아닌 Client.outputs slot 이 *전부* 추적 —
+    // handleRegistryGlobal 참고. 첫 번째만 쓰던 L8-β scope 제한 해소.)
     // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등.
     viewporter: Global = .{},
     fractional_scale_manager: Global = .{},
@@ -371,9 +388,6 @@ const Capabilities = struct {
             self.text_input_v3 = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "wl_data_device_manager")) {
             self.data_device_manager = .{ .name = name, .version = version };
-        } else if (std.mem.eql(u8, interface, "wl_output") and self.output.name == 0) {
-            // 첫 번째만 저장 (multi-monitor 시 후속 wl_output 무시 — L8-β scope).
-            self.output = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "wp_viewporter")) {
             self.viewporter = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "wp_fractional_scale_manager_v1")) {
@@ -820,12 +834,30 @@ const Client = struct {
     pending_info_title_len: usize = 0,
     pending_info_msg_buf: [512]u8 = undefined,
     pending_info_msg_len: usize = 0,
-    // L8-β — wl_output binding + 화면 해상도. layer-shell anchor / size /
+    // L8-β / #295 — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
+    //
+    // #295 — screen_width/height 는 "현재 기준 output" 의 해상도. 기준 output 은
+    //   1. main surface 의 `wl_surface.enter` 가 가리킨 output (최우선), 없으면
+    //   2. 첫 bind output (`output_id`).
+    // advertise 된 모든 wl_output 을 `outputs` slot 에 bind/추적 — mixed-monitor
+    // 에서 compositor 가 layer surface 를 focused output 에 놓았을 때 그 output
+    // 의 mode/scale 로 layout 을 재계산한다 (sway headless 실측: 기준 불일치 시
+    // 이종 해상도 폭 50%→62.5%, 이종 배율 50%→25% + 1x buffer upscale blur).
     output_id: u32 = 0,
     screen_width: i32 = 0,
     screen_height: i32 = 0,
+    outputs: [max_tracked_outputs]OutputSlot = [_]OutputSlot{.{}} ** max_tracked_outputs,
+    // #295 — wl_surface.enter 로 확정된 기준 output 의 object id. 0 = 아직 enter
+    // 못 받음 (startup / 재생성 직후) → 첫 bind output 이 기준. leave 는 무시 —
+    // output 이동 시 새 output 의 enter 가 곧바로 따라온다 (양쪽에 걸친 transient
+    // 상태에선 마지막 enter 기준 유지).
+    current_output_object_id: u32 = 0,
+    // #295 — bindGlobals 완료 표시. 이후 도착하는 wl_output global (hotplug 연결)
+    // 은 handleRegistryGlobal 이 즉시 bind, 이전 (startup registry dump) 은
+    // bindGlobals 가 일괄 bind.
+    globals_bound: bool = false,
     // #241 — 모니터 hotplug 대응 플래그.
     //  - output_topology_pending: 이번 dispatch batch 에 output topology 변화가
     //    있었음 — wl_output 의 global 추가(모니터 연결/재구성) 또는 우리 bind 한
@@ -835,14 +867,13 @@ const Client = struct {
     //    + 이 flag" 면 사용자 Alt+F4 가 아니라 output re-home 으로 보고 recreate.
     //    batch-local — drain 끝에서 clear 해 다음의 *진짜* Alt+F4 가 오인되지 않게.
     //    (batch 내 이벤트 순서 무관 — closed 가 topology 이벤트보다 먼저 와도 OK.)
-    //  - output_rebind_pending: 우리 output 이 제거된 뒤 재연결된 새 wl_output 을
-    //    재bind 해야 함을 표시(long-lived — replug 까지 유지). startup 첫
-    //    bind(bindGlobals)와 구분.
     //  - pending_output_recreate: visible 상태 output topology 변화로 closed 된
     //    경우의 deferred 재생성 요청. closed/drain 은 swapMainSurfaceSeamless(내부
     //    configure pump=reentrant) 를 직접 못 부르므로 main loop 에서 처리.
+    //  (#295 note: 이전의 output_rebind_pending 은 "첫 output 재bind 전용" 이라
+    //   제거 — 이제 모든 신규 wl_output global 이 즉시 bind 되므로 replug 는
+    //   일반 add 경로로 처리된다.)
     output_topology_pending: bool = false,
-    output_rebind_pending: bool = false,
     pending_output_recreate: bool = false,
     // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등. compositor 가
     // advertise 안 한 환경 (GNOME mutter / wlroots 등) 에선 0 이라 미사용 — `preferred_scale`
@@ -1353,19 +1384,19 @@ const Client = struct {
                 self.layer_shell_id,
             );
         }
-        // L8-β — wl_output bind. mode event 에서 screen_width / screen_height
-        // 받아 layer-shell anchor / size / margin 계산에 사용. multi-monitor
-        // 환경에선 첫 번째 wl_output 만 — `Capabilities.record` 가 첫 advertise
-        // 만 저장. 정상 Wayland session 에선 항상 advertise — 없으면 fallback.
-        if (self.caps.output.name != 0) {
-            self.output_id = self.allocId();
-            try self.bind(
-                self.caps.output.name,
-                "wl_output",
-                @min(self.caps.output.version, 2),
-                self.output_id,
-            );
+        // L8-β / #295 — wl_output bind. mode event 에서 screen_width /
+        // screen_height 받아 layer-shell anchor / size / margin 계산에 사용.
+        // #295: advertise 된 *모든* wl_output 을 bind (registry dump 중
+        // handleRegistryGlobal 이 `outputs` slot 에 기록). 첫 bind output 이
+        // enter 이전의 기본 기준. v≤2 로 bind — release destructor 가 v3 부터라
+        // 제거된 output 의 proxy id 는 그냥 버린다 (#241 주석 참고).
+        for (&self.outputs) |*slot| {
+            if (slot.global_name == 0 or slot.object_id != 0) continue;
+            slot.object_id = self.allocId();
+            try self.bind(slot.global_name, "wl_output", @min(slot.version, 2), slot.object_id);
+            if (self.output_id == 0) self.output_id = slot.object_id;
         }
+        self.globals_bound = true;
         // fractional scaling — wp_viewporter + wp_fractional_scale_manager_v1.
         // 둘 다 advertise 된 환경 (KDE Plasma 6) 에서만 fractional scale 정확.
         // 한 쪽만 있어도 effective 0 (둘 다 묶여야 의미) — 그래도 bind 시도.
@@ -2060,37 +2091,106 @@ const Client = struct {
         self.requestRedraw();
     }
 
-    /// L8-β — wl_output 의 mode (current flag) / scale 처리. geometry / done /
-    /// transform 은 미사용(일반 monitor default 0 가정).
+    /// L8-β / #295 — wl_output 의 mode (current flag) / scale 처리. geometry /
+    /// done / transform 은 미사용(일반 monitor default 0 가정).
+    /// #295: 이벤트는 해당 output 의 slot 에 기록하고, 그 output 이 현재 기준
+    /// (`basisOutputObjectId`) 일 때만 screen dims / 앱 scale 에 반영.
     /// #238 — `wl_output.scale`(정수) 는 `wp_fractional_scale_v1` 미advertise 환경
     /// (GNOME mutter / Cinnamon muffin) 의 scale source fallback. fractional manager
     /// 가 advertise 된 환경(KDE)은 그쪽이 우선이라 wl_output scale 을 무시한다.
-    fn handleOutputEvent(self: *Client, opcode: u16, payload: []const u8) !void {
+    fn handleOutputEvent(self: *Client, slot: *OutputSlot, opcode: u16, payload: []const u8) !void {
+        const is_basis = slot.object_id == self.basisOutputObjectId();
         switch (opcode) {
             wl_output_event_mode => {
                 if (payload.len < 16) return;
                 const flags = readU32(payload[0..4]);
                 if ((flags & wl_output_mode_flag_current) == 0) return;
-                self.screen_width = readI32(payload[4..8]);
-                self.screen_height = readI32(payload[8..12]);
-                log.appendLineVerbose("wayland", "output mode width={} height={} refresh={}", .{
-                    self.screen_width,
-                    self.screen_height,
+                slot.width = readI32(payload[4..8]);
+                slot.height = readI32(payload[8..12]);
+                if (is_basis) {
+                    self.screen_width = slot.width;
+                    self.screen_height = slot.height;
+                }
+                log.appendLineVerbose("wayland", "output mode object_id={} width={} height={} refresh={} basis={}", .{
+                    slot.object_id,
+                    slot.width,
+                    slot.height,
                     readI32(payload[12..16]),
+                    is_basis,
                 });
             },
             wl_output_event_scale => {
                 if (payload.len < 4) return;
                 const factor = readI32(payload[0..4]);
+                if (factor < 1) return;
+                slot.scale = factor;
                 // fractional manager 가 있으면 그쪽이 source of truth → 무시.
                 if (self.fractional_scale_manager_id != 0) return;
-                if (factor < 1) return;
+                if (!is_basis) return;
                 const new_scale: u32 = @as(u32, @intCast(factor)) * fractional_scale_denominator;
                 try self.applyScaleChange(new_scale, "wl_output");
             },
             // geometry / done / transform 은 미사용.
             else => {},
         }
+    }
+
+    /// #295 — main surface 가 놓인 output 확정 (`wl_surface.enter`). compositor 는
+    /// output=NULL layer surface 를 focused output 에 놓으므로, 소환된 모니터가
+    /// 계산 기준 output 과 달라질 수 있고 그걸 알려주는 유일한 신호가 이 event.
+    /// 기준 전환 후 mode/scale 이 기존 기준과 다르면 screen dims + scale 재동기
+    /// + layout 재송신 + grid 재계산 — mixed-monitor 크기/선명도 증상의 해소 지점.
+    fn handleSurfaceOutputEnter(self: *Client, output_object_id: u32) !void {
+        const slot = self.findOutputSlot(.{ .object_id = output_object_id }) orelse {
+            log.appendLineVerbose("wayland", "surface enter unknown output object_id={} — ignored (#295)", .{output_object_id});
+            return;
+        };
+        self.current_output_object_id = output_object_id;
+        // mode event 이전이면 보류 — 도착 시 handleOutputEvent 가 basis 로 반영.
+        if (slot.width <= 0 or slot.height <= 0) return;
+        const dims_changed = slot.width != self.screen_width or slot.height != self.screen_height;
+        self.screen_width = slot.width;
+        self.screen_height = slot.height;
+        log.appendLineVerbose("wayland", "surface enter output object_id={} {}x{} scale={} dims_changed={} (#295)", .{
+            output_object_id,
+            slot.width,
+            slot.height,
+            slot.scale,
+            dims_changed,
+        });
+        // scale 동기 — fractional manager 있으면 per-surface `preferred_scale` 이
+        // source of truth (output 이동 시 compositor 가 새 preferred_scale 을
+        // 발신하고 그 handler 가 relayout). 없으면 이 output 의 정수 scale 적용.
+        // 아래 재생성보다 먼저 — 재생성 경로가 새 scale 로 layout 을 계산하도록.
+        var scale_applied = false;
+        if (self.fractional_scale_manager_id == 0) {
+            const new_scale: u32 = @as(u32, @intCast(@max(slot.scale, 1))) * fractional_scale_denominator;
+            if (new_scale != self.preferred_scale) {
+                // applyScaleChange 가 renderer scale + layout 재송신 + grid 재계산
+                // + redraw 까지 처리.
+                try self.applyScaleChange(new_scale, "wl_output/enter");
+                scale_applied = true;
+            }
+        }
+        if (!dims_changed) return;
+        // mapped layer surface 의 margin-only 재송신은 sway 1.7 (wlroots 0.15)
+        // 이 다음 전역 arrange 까지 시각 반영하지 않는다 (실측: 새 configure 는
+        // 보내면서 surface box 는 안 옮김 — output 설정 no-op 재적용으로 강제
+        // arrange 하면 즉시 반영됨). 그래서 in-place 재송신 대신 #241 의
+        // swapMainSurfaceSeamless (create-before-destroy, 깜빡임 없음) 재생성을
+        // 예약한다 — 신규 map 은 모든 compositor 가 즉시 정확히 배치.
+        // (직접 호출 금지 — 내부 configure pump 가 reentrant. main loop 의
+        // drainOutputRecreate 가 dispatch 밖에서 처리, #241 과 동일.)
+        if (self.layer_surface_id != 0 and self.mapped and !self.surface_hidden) {
+            self.pending_output_recreate = true;
+            log.appendLineVerbose("wayland", "basis output changed while mapped — seamless recreate scheduled (#295)", .{});
+            return;
+        }
+        // 미mapped (첫 configure 전) / xdg 경로 — in-place 재계산으로 충분.
+        if (scale_applied) return; // applyScaleChange 가 이미 전부 처리.
+        if (self.layer_surface_id != 0) try self.sendLayerSurfaceLayout();
+        if (self.session != null) try self.ensureSessionGrid();
+        self.requestRedraw();
     }
 
     fn waitForConfigure(self: *Client) !void {
@@ -2695,8 +2795,18 @@ const Client = struct {
             return;
         }
         if (self.handleBufferEvent(id, opcode)) return;
-        if (self.output_id != 0 and id == self.output_id) {
-            try self.handleOutputEvent(opcode, payload);
+        if (self.findOutputSlot(.{ .object_id = id })) |slot| {
+            try self.handleOutputEvent(slot, opcode, payload);
+            return;
+        }
+        // #295 — main surface 의 enter/leave (surface 가 올라간 output 알림).
+        // leave 는 무시 — output 이동 시 새 output 의 enter 가 곧바로 따라온다.
+        if (self.surface_id != 0 and id == self.surface_id and
+            (opcode == wl_surface_event_enter or opcode == wl_surface_event_leave))
+        {
+            if (opcode == wl_surface_event_enter and payload.len >= 4) {
+                try self.handleSurfaceOutputEnter(readU32(payload[0..4]));
+            }
             return;
         }
         // #203 Phase C — xdg_activation_token_v1.done(token: string) event.
@@ -4550,49 +4660,85 @@ const Client = struct {
         const interface = try p.readString();
         const version = try p.readU32();
         self.caps.record(name, interface, version);
-        // #241 — wl_output 의 global 추가(모니터 연결/재구성). 이번 batch 안에서
-        // 들어오는 layer-surface closed 는 사용자 Alt+F4 가 아니라 output re-home
-        // 이다 → drain 단계에서 quit 대신 recreate 로 전환(batch-local 판정).
+        // #241/#295 — wl_output 의 global 추가(모니터 연결/재구성). 이번 batch
+        // 안에서 들어오는 layer-surface closed 는 사용자 Alt+F4 가 아니라 output
+        // re-home 이다 → drain 단계에서 quit 대신 recreate 로 전환(batch-local 판정).
+        // #295: 모든 wl_output 을 `outputs` slot 에 기록. startup registry dump 는
+        // bindGlobals 가 일괄 bind, 그 이후 (hotplug 연결/재연결) 는 여기서 즉시
+        // bind — 새 output 이 geometry/mode/scale/done 자동 발신 → handleOutputEvent
+        // 가 slot 갱신 (+기준 output 이면 screen dims/scale 재동기).
         if (std.mem.eql(u8, interface, "wl_output")) {
             self.output_topology_pending = true;
-            // hotplug 재연결: global_remove 가 output_id=0 + caps.output reset +
-            // output_rebind_pending 을 set 해둔 상태. 방금 record 된 wl_output 이
-            // 우리 것이면(caps.output.name == name) 즉시 재bind → 새 output 이
-            // geometry/mode/scale/done 자동 발신 → handleOutputEvent 가 screen dims
-            // + scale 재동기(applyScaleChange 가 visible 이면 relayout). startup 첫
-            // bind 는 bindGlobals 담당 — output_rebind_pending 으로 구분.
-            if (self.output_rebind_pending and self.output_id == 0 and self.caps.output.name == name) {
-                self.output_rebind_pending = false;
-                self.output_id = self.allocId();
-                self.bind(self.caps.output.name, "wl_output", @min(self.caps.output.version, 2), self.output_id) catch |err| {
-                    log.appendLine("wayland", "wl_output rebind failed: {s} (#241)", .{@errorName(err)});
+            const slot = self.findOutputSlot(.{ .global_name = name }) orelse self.findOutputSlot(.empty) orelse {
+                log.appendLine("wayland", "wl_output name={} ignored — {} tracked outputs 초과 (#295)", .{ name, max_tracked_outputs });
+                return;
+            };
+            if (slot.global_name == 0) slot.* = .{ .global_name = name, .version = version };
+            if (self.globals_bound and slot.object_id == 0) {
+                slot.object_id = self.allocId();
+                self.bind(slot.global_name, "wl_output", @min(slot.version, 2), slot.object_id) catch |err| {
+                    log.appendLine("wayland", "wl_output bind failed: {s} (#241)", .{@errorName(err)});
+                    slot.* = .{};
                     return;
                 };
-                log.appendLine("wayland", "wl_output rebound after hotplug name={} output_id={} (#241)", .{ self.caps.output.name, self.output_id });
+                if (self.output_id == 0) self.output_id = slot.object_id;
+                log.appendLine("wayland", "wl_output bound after hotplug name={} object_id={} (#241/#295)", .{ slot.global_name, slot.object_id });
             }
         }
     }
 
-    /// #241 — `wl_registry.global_remove` (opcode 1). payload = 제거된 global
-    /// name (u32). 우리가 bind 한 wl_output 이 사라진 경우(모니터 분리 등)만 처리:
+    /// #295 — `outputs` slot 조회. `.empty` = 빈 slot, `.global_name`/`.object_id`
+    /// = 해당 키 매칭.
+    const OutputSlotKey = union(enum) { empty, global_name: u32, object_id: u32 };
+    fn findOutputSlot(self: *Client, key: OutputSlotKey) ?*OutputSlot {
+        for (&self.outputs) |*slot| {
+            switch (key) {
+                .empty => if (slot.global_name == 0) return slot,
+                .global_name => |n| if (slot.global_name != 0 and slot.global_name == n) return slot,
+                .object_id => |id| if (slot.object_id != 0 and slot.object_id == id) return slot,
+            }
+        }
+        return null;
+    }
+
+    /// #295 — 현재 layout/scale 계산 기준 output 의 object id.
+    /// wl_surface.enter 로 확정된 output 최우선, 없으면 첫 bind output.
+    fn basisOutputObjectId(self: *const Client) u32 {
+        if (self.current_output_object_id != 0) return self.current_output_object_id;
+        return self.output_id;
+    }
+
+    /// #241/#295 — `wl_registry.global_remove` (opcode 1). payload = 제거된
+    /// global name (u32). 우리가 bind 한 wl_output 이 사라진 경우(모니터 분리 등):
     /// (1) output_topology_pending set — 이번 batch 의 layer-surface closed 를
     ///     quit 아닌 output 변화로 보게 함(판정은 main loop drain, batch-local).
-    /// (2) stale 추적 제거 + 재bind 예약. wl_output 은 v≤2 로 bind 해 release(v3)
-    ///     destructor 가 없으므로 proxy id 는 그냥 버린다(server 측 이미 소멸).
-    ///     screen_width/height 는 새 output 의 mode event 가 갱신할 때까지
-    ///     last-known 유지 — replug 전 transient fallback layout 회피.
+    /// (2) 해당 slot clear. wl_output 은 v≤2 로 bind 해 release(v3) destructor 가
+    ///     없으므로 proxy id 는 그냥 버린다(server 측 이미 소멸).
+    ///     screen_width/height 는 대체 output 의 mode event 또는 재생성 surface 의
+    ///     enter 가 갱신할 때까지 last-known 유지 — replug 전 transient fallback
+    ///     layout 회피.
+    /// (3) #295: 기준 output 이 제거됐으면 기준을 남은 첫 output 으로 fall back.
     fn handleRegistryGlobalRemove(self: *Client, payload: []const u8) void {
         if (payload.len < 4) return;
         const name = readU32(payload[0..4]);
-        if (self.caps.output.name == 0 or name != self.caps.output.name) {
+        const slot = self.findOutputSlot(.{ .global_name = name }) orelse {
             log.appendLineVerbose("wayland", "registry global_remove name={} (not bound output) (#241)", .{name});
             return;
-        }
+        };
+        const removed_object_id = slot.object_id;
+        slot.* = .{};
         self.output_topology_pending = true;
-        self.output_rebind_pending = true;
-        self.output_id = 0;
-        self.caps.output = .{};
-        log.appendLine("wayland", "bound wl_output removed name={} (hotplug) — reset + rebind pending, topology_pending set (#241)", .{name});
+        if (self.current_output_object_id == removed_object_id) self.current_output_object_id = 0;
+        if (self.output_id == removed_object_id) {
+            self.output_id = 0;
+            for (&self.outputs) |*s| {
+                if (s.object_id != 0) {
+                    self.output_id = s.object_id;
+                    break;
+                }
+            }
+        }
+        log.appendLine("wayland", "bound wl_output removed name={} object_id={} — slot cleared, topology_pending set (#241/#295)", .{ name, removed_object_id });
     }
 
     fn handleDisplayError(_: *Client, payload: []const u8) !void {
