@@ -924,17 +924,21 @@ pub const Window = struct {
         const monitor_w = mi.rcMonitor.right - mi.rcMonitor.left;
         const monitor_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
 
-        // If the work area still spans an entire monitor axis, inset that axis
-        // symmetrically by 1 px per edge so Windows keeps treating the taskbar
-        // as a separate appbar instead of collapsing it under a "fullscreen"
-        // popup.
-        if (work_w == monitor_w and work_w > 2) {
-            rect.left += 1;
-            rect.right -= 1;
-        }
-        if (work_h == monitor_h and work_h > 2) {
-            rect.top += 1;
-            rect.bottom -= 1;
+        // Shell fullscreen detection (taskbar collapse) and the DWM direct-flip
+        // path only trigger when the window rect covers the ENTIRE monitor —
+        // which for a work-area rect happens only with an auto-hide taskbar
+        // (rcWork == rcMonitor). Only then inset 1 px per edge to break the
+        // exact match. A visible taskbar already shrinks one axis, so no inset
+        // is needed and the rect fills the work area edge-to-edge.
+        if (work_w == monitor_w and work_h == monitor_h) {
+            if (work_w > 2) {
+                rect.left += 1;
+                rect.right -= 1;
+            }
+            if (work_h > 2) {
+                rect.top += 1;
+                rect.bottom -= 1;
+            }
         }
 
         return rect;
