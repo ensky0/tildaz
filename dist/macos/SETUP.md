@@ -7,10 +7,10 @@
 식별해 코드가 바뀌어도 같은 앱으로 인식 → 권한 한 번 부여로 계속 유지.
 
 ⚠️ **회사 / 학교 등 관리되는 macOS 환경 (MDM, keychain password 정책)** 에서는
-이 셋업이 안 될 수 있어요. keychain access dialog 의 password 가 macOS 로그인
-password 와 다른 별도 정책 password 를 요구하는 경우가 있고, 그 password 는
-사용자가 모르거나 회사 IT 만 알기도 합니다. 이런 환경에서는 그냥 ad-hoc 빌드
-(`zig build` 인자 없이) 로 유지하고 매 빌드마다 권한 다시 부여하세요.
+keychain access dialog 의 password 가 로그인 password 와 어긋나 막힐 수 있어요.
+많은 경우 아래 [문제 해결](#문제-해결) 의 `security set-keychain-password` 로
+풀립니다. 그래도 안 되면 옵션 A (ad-hoc) 으로 유지하고 매 빌드마다 권한 다시
+부여하세요.
 
 ## 옵션 A: ad-hoc (default, 항상 동작)
 
@@ -80,7 +80,8 @@ F1 첫 누름에 macOS 권한 요구:
 - System Settings → Privacy & Security → Accessibility → tildaz ON
 
 이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast` 로 빌드 + 다시 실행해도
-**권한 유지** — signing identity stable.
+**권한 유지** — signing identity stable. (codesign 창이나 권한 재요구가 다시
+나오면 [문제 해결](#문제-해결) 참고.)
 
 ### 검증
 
@@ -90,25 +91,50 @@ codesign -dv zig-out/TildaZ.app 2>&1 | grep -i 'authority\|identifier'
 # Identifier=me.ensky0.tildaz
 ```
 
-## 옵션 C: CLI 자동화 시도 (`setup-cert.sh`)
+## 옵션 C: CLI 자동화 (`setup-cert.sh`) — 권장
 
-`dist/macos/setup-cert.sh` 가 openssl + security 명령으로 위 GUI 절차를
-자동화하려는 시도예요. 그러나 macOS 의 keychain ACL / partition-list / system
-trust 가 여러 단계의 사용자 password 입력을 요구해 우리 환경에 따라 어느
-단계에서 막힐 수 있음.
+`dist/macos/setup-cert.sh` 가 옵션 B 의 전 과정을 한 번에 자동화해요:
 
 ```bash
-bash dist/macos/setup-cert.sh
+./dist/macos/setup-cert.sh
 ```
 
-순서:
-1. openssl 로 self-signed code-signing cert 생성.
-2. login keychain 에 import (`-A` flag — any-app 접근).
-3. cert 파일을 `~/.tildaz/TildazLocal.crt` 로 export.
-4. system trust 추가 명령을 stdout 으로 출력 — 사용자가 별도 터미널에서
-   직접 `sudo` 실행 (script 가 GUI dialog 환경 못 받는 case 회피).
+- 이미 유효한 `TildazLocal` identity 가 있으면 **즉시 종료** (몇 번 돌려도 안전).
+- 없으면: 옛 잔재 정리 → openssl 로 cert 생성 → login keychain import →
+  **`sudo add-trusted-cert` 를 스크립트가 직접** 실행 (system trust) → 결과 검증.
+- 비번을 두 번 물어요: 로그인 비번(osascript 창, keychain unlock) + admin
+  비번(터미널 `sudo`, system trust).
 
-CLI 시도가 막히면 옵션 B 로 fallback.
+끝에 `find-identity` 에 `TildazLocal` 가 valid 로 나오면 성공. 이후 빌드·권한
+부여는 옵션 B 의 3·4 와 동일. CLI 가 막히면 옵션 B(GUI) 로 fallback.
+
+## 문제 해결
+
+### 빌드 시 codesign 키체인 창이 계속 뜸
+
+첫 서명에 뜨는 "codesign 이 키 접근을 허용하고자 합니다" 창에서 반드시
+**"항상 허용"** 을 누르세요. "허용" 은 한 번만이라 다음 빌드에 또 뜹니다.
+
+### "항상 허용" 을 눌러도 로그인 비번이 거부되거나 창이 계속 뜸
+
+관리되는 Mac (MDM, 비밀번호 회전) 에서 **로그인 키체인 암호가 로그인 암호와
+어긋난** 경우예요. 키체인 접근 GUI 의 "암호 변경" 은 MDM 이 막을 수 있지만,
+CLI 로는 재설정되는 사례가 있어요:
+
+```bash
+security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
+# 옛 암호 → 새 암호(로그인 암호와 동일하게) 순으로 입력
+```
+
+재설정 후 codesign 이 키에 접근 가능해집니다. (회사 Mac 1대에서 확인 — 환경에
+따라 다를 수 있어요. 그래도 안 되면 옵션 A ad-hoc 으로 fallback.)
+
+### 인증서가 여러 개 쌓였거나 이름이 제각각
+
+과거 셋업을 여러 번 하면 `TildazLocal` / `TildaZ Local` / `tildaz Local` 같은
+변형 인증서·키가 키체인에 쌓일 수 있어요. `setup-cert.sh` 가 이제 실행 시
+잔재를 정리하고 하나만 다시 만들어요. 전부 지우려면
+[`uninstall.sh --purge`](./uninstall.sh) 사용.
 
 ## ReleaseFast 빌드 + Applications 설치
 
