@@ -268,10 +268,8 @@ pub const App = struct {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         const n = self.session.count();
         if (n == 0) return true;
-        const plural: []const u8 = if (n == 1) "" else "s";
         var msg_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, messages.quit_confirm_format, .{ n, plural }) catch
-            return true;
+        const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return true;
         return dialog.showConfirm(messages.quit_confirm_title, msg);
     }
 
