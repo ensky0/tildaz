@@ -10,6 +10,8 @@ const messages = @import("../messages.zig");
 const shell_validate = @import("../shell_validate.zig");
 const terminal = @import("../terminal.zig");
 const themes = @import("../themes.zig");
+const instance_context = @import("../instance_context.zig");
+const instances = @import("../instances.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
@@ -32,11 +34,7 @@ pub fn showFatalRunError(err: anyerror) void {
     log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
 
     var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(
-        &buf,
-        messages.run_failed_format,
-        .{@errorName(err)},
-    ) catch messages.run_failed_fallback_msg;
+    const text = messages.runFailureMessage(&buf, err);
     dialog.showError(messages.error_title, text);
 }
 
@@ -168,6 +166,9 @@ pub fn run() !void {
         log.appendLine("startup", "show window", .{});
         app.window.show();
     }
+    // #304 — HWND 생성만으로는 충분하지 않다. renderer와 첫 tab, 표시 정책을
+    // 모두 적용한 뒤 message loop 진입 직전에 request endpoint를 ready로 공개한다.
+    try instances.recordEndpointState(alloc, instance_context.requireWorkerIndex(), .ready);
     log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();
     log.appendLine("startup", "message loop exited", .{});

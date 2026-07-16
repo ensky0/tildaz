@@ -39,6 +39,8 @@ const messages = @import("../messages.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
+const instance_context = @import("../instance_context.zig");
+const instances = @import("../instances.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
@@ -51,7 +53,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
 pub fn showFatalRunError(err: anyerror) void {
     log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
     var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch messages.run_failed_fallback_msg;
+    const text = messages.runFailureMessage(&buf, err);
     dialog.showError(messages.error_title, text);
 }
 
@@ -251,6 +253,7 @@ fn hotkeyCaptureEndNotification(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c
 
 var g_app_delegate_class: ?objc.Class = null;
 var g_app_delegate_instance: objc.id = null;
+var g_new_instance_observer_registered = false;
 
 fn installAppDelegate() !void {
     if (g_app_delegate_instance != null) return;
@@ -298,6 +301,7 @@ fn installAppDelegate() !void {
             objc.nsString(@import("../instance_request/macos.zig").notification_name),
             null,
         );
+        g_new_instance_observer_registered = true;
         const capture = @import("../hotkey_capture/macos.zig");
         addObserver(center, objc.sel("addObserver:selector:name:object:"), inst, objc.sel("hotkeyCaptureBeginNotification:"), objc.nsString(capture.begin_notification_name), null);
         addObserver(center, objc.sel("addObserver:selector:name:object:"), inst, objc.sel("hotkeyCaptureEndNotification:"), objc.nsString(capture.end_notification_name), null);
@@ -3008,6 +3012,14 @@ pub fn run() !void {
     }
 
     // 7. 이벤트 루프.
+    // #304 — observer뿐 아니라 window, renderer, 첫 tab, display link까지 준비된
+    // 시점이다. distributed notification center가 없으면 앱은 계속 실행하되
+    // launcher가 요청을 보내지 않도록 unavailable을 기록한다.
+    try instances.recordEndpointState(
+        allocator,
+        instance_context.requireWorkerIndex(),
+        if (g_new_instance_observer_registered) .ready else .unavailable,
+    );
     log.appendLine("startup", "enter NSApp run loop", .{});
     const runApp = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
     runApp(g_app, objc.sel("run"));
@@ -3762,4 +3774,3 @@ fn buildMainMenu(app: objc.id) !void {
     const setMainMenu = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setMainMenu(app, objc.sel("setMainMenu:"), main_menu);
 }
-

@@ -40,6 +40,7 @@ const system_open = @import("../../system_open.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
 const instance_context = @import("../../instance_context.zig");
+const instances = @import("../../instances.zig");
 const instance_identity = @import("instance_identity.zig");
 
 const display_id: u32 = 1;
@@ -1297,6 +1298,15 @@ const Client = struct {
 
             log.appendLine("linux", "Wayland terminal window mapped", .{});
         }
+
+        // #304 — listener만 먼저 열린 시점이 아니라 Wayland globals, 입력,
+        // renderer/첫 tab 또는 hidden-start 경로까지 준비된 뒤 endpoint 상태를
+        // 공개한다. listener 실패는 terminal 실행을 막지 않고 unavailable로 남긴다.
+        try instances.recordEndpointState(
+            self.allocator,
+            instance_context.requireWorkerIndex(),
+            if (self.toggle_listener_fd >= 0) .ready else .unavailable,
+        );
 
         while (self.running) {
             try self.pollAndDispatch(frame_poll_ms);

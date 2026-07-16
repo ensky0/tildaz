@@ -150,6 +150,14 @@ pub fn instanceLockPath(allocator: std.mem.Allocator, index: u32) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.lock", .{ dir, sep, index });
 }
 
+pub fn instanceEndpointStatePath(allocator: std.mem.Allocator, index: u32) ![]u8 {
+    const dir = try lockDir(allocator);
+    defer allocator.free(dir);
+    try ensureDir(dir);
+    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
+    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.endpoint", .{ dir, sep, index });
+}
+
 pub fn launcherLockPath(allocator: std.mem.Allocator) ![]u8 {
     const dir = try lockDir(allocator);
     defer allocator.free(dir);

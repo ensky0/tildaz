@@ -51,7 +51,7 @@ pub fn showFatalRunError(err: anyerror) void {
         },
         else => {
             var buf: [256]u8 = undefined;
-            const text = std.fmt.bufPrint(&buf, messages.run_failed_format, .{@errorName(err)}) catch messages.run_failed_fallback_msg;
+            const text = messages.runFailureMessage(&buf, err);
             log.userFacing("fatal", text);
         },
     }

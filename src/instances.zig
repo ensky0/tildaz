@@ -29,6 +29,29 @@ pub const ProcessLock = struct {
     }
 };
 
+/// #304 — worker process 생존과 request endpoint 준비는 서로 다른 상태다.
+/// lock owner PID와 같은 PID의 상태만 유효하며, 이전 process가 남긴 파일은
+/// launcher가 ready로 인정하지 않는다.
+pub const EndpointState = enum {
+    starting,
+    ready,
+    unavailable,
+};
+
+const EndpointSnapshot = struct {
+    pid: u32,
+    state: EndpointState,
+};
+
+const EndpointProbeResult = enum {
+    starting,
+    ready,
+    unavailable,
+    worker_exited,
+};
+
+const endpoint_poll_interval_ns = 10 * std.time.ns_per_ms;
+
 pub fn parseConfigFileName(name: []const u8) ?u32 {
     if (!std.mem.startsWith(u8, name, "config_") or !std.mem.endsWith(u8, name, ".json")) return null;
     const digits = name["config_".len .. name.len - ".json".len];
@@ -82,6 +105,9 @@ pub fn acquireWorkerLock(allocator: std.mem.Allocator, index: u32) !?ProcessLock
     defer allocator.free(path);
     var lock = (try tryAcquireProcessLock(path)) orelse return null;
     errdefer lock.deinit();
+    // 새 PID를 lock 파일에 공개하기 전에 이전 endpoint 상태를 starting으로
+    // 원자 교체한다. PID가 재사용돼도 stale ready를 관찰할 틈이 없다.
+    try recordEndpointStateForPid(allocator, index, currentProcessId(), .starting);
     try writeOwnerPid(lock.file);
     lock.clear_pid_on_close = true;
     return lock;
@@ -105,6 +131,10 @@ pub fn acquireLauncherLock(allocator: std.mem.Allocator) !ProcessLock {
 pub fn isRunning(allocator: std.mem.Allocator, index: u32) !bool {
     const path = try paths.instanceLockPath(allocator, index);
     defer allocator.free(path);
+    return workerLockOwned(path);
+}
+
+fn workerLockOwned(path: []const u8) !bool {
     var lock = (try tryAcquireProcessLock(path)) orelse return true;
     // lock을 얻었다는 사실이 owner 부재를 증명한다. 이전 crash가 남긴 PID를
     // lock 아래에서 비워 다음 worker의 PID 기록을 startup acknowledgment로 쓴다.
@@ -125,6 +155,152 @@ pub fn waitUntilRunning(allocator: std.mem.Allocator, index: u32, timeout_ns: u6
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
     return error.WorkerStartTimeout;
+}
+
+pub fn recordEndpointState(allocator: std.mem.Allocator, index: u32, state: EndpointState) !void {
+    try recordEndpointStateForPid(allocator, index, currentProcessId(), state);
+}
+
+fn recordEndpointStateForPid(
+    allocator: std.mem.Allocator,
+    index: u32,
+    pid: u32,
+    state: EndpointState,
+) !void {
+    const path = try paths.instanceEndpointStatePath(allocator, index);
+    defer allocator.free(path);
+    try writeEndpointSnapshot(allocator, path, pid, state);
+}
+
+fn writeEndpointSnapshot(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    pid: u32,
+    state: EndpointState,
+) !void {
+    var buf: [64]u8 = undefined;
+    const content = try std.fmt.bufPrint(&buf, "v1 {d} {s}\n", .{ pid, @tagName(state) });
+    _ = try paths.writeFileIfChanged(allocator, path, content);
+}
+
+/// 실제 worker 0 요청을 보내기 직전에만 사용한다. fixed retry 대신 worker가
+/// 기록한 endpoint 상태를 기다리며, unavailable/종료는 timeout 전에 반환한다.
+pub fn waitUntilEndpointReady(allocator: std.mem.Allocator, index: u32, timeout_ns: u64) !void {
+    const lock_path = try paths.instanceLockPath(allocator, index);
+    defer allocator.free(lock_path);
+    const endpoint_path = try paths.instanceEndpointStatePath(allocator, index);
+    defer allocator.free(endpoint_path);
+
+    var probe = FileEndpointProbe{
+        .lock_path = lock_path,
+        .endpoint_path = endpoint_path,
+        .timer = try std.time.Timer.start(),
+    };
+    try waitUntilEndpointReadyWithProbe(&probe, timeout_ns);
+}
+
+const FileEndpointProbe = struct {
+    lock_path: []const u8,
+    endpoint_path: []const u8,
+    timer: std.time.Timer,
+
+    fn poll(self: *@This()) !EndpointProbeResult {
+        return probeEndpointFiles(self.lock_path, self.endpoint_path);
+    }
+
+    fn elapsedNs(self: *@This()) u64 {
+        return self.timer.read();
+    }
+
+    fn sleep(_: *@This(), duration_ns: u64) void {
+        std.Thread.sleep(duration_ns);
+    }
+};
+
+fn waitUntilEndpointReadyWithProbe(probe: anytype, timeout_ns: u64) !void {
+    while (probe.elapsedNs() < timeout_ns) {
+        switch (try probe.poll()) {
+            .starting => {},
+            .ready => return,
+            .unavailable => return error.RequestEndpointUnavailable,
+            .worker_exited => return error.WorkerExitedBeforeEndpointReady,
+        }
+
+        const elapsed = probe.elapsedNs();
+        if (elapsed >= timeout_ns) break;
+        probe.sleep(@min(endpoint_poll_interval_ns, timeout_ns - elapsed));
+    }
+    return error.RequestEndpointReadyTimeout;
+}
+
+fn probeEndpointFiles(lock_path: []const u8, endpoint_path: []const u8) !EndpointProbeResult {
+    const snapshot = try readEndpointSnapshot(endpoint_path);
+    const owner_pid = try readOwnerPid(lock_path);
+
+    if (owner_pid == null) {
+        // acquireWorkerLock은 lock을 가진 뒤 starting을 먼저 쓰고 PID를 쓴다.
+        // 따라서 상태가 있으면 lock probe가 안전하며, free면 이미 종료한 것.
+        if (snapshot != null) {
+            return if (try workerLockOwned(lock_path)) .starting else .worker_exited;
+        }
+        return .starting;
+    }
+
+    if (!try workerLockOwned(lock_path)) return .worker_exited;
+
+    // lock 생존 판정 사이에 owner가 바뀌지 않았는지 다시 확인한다.
+    const confirmed_pid = (try readOwnerPid(lock_path)) orelse return .worker_exited;
+    if (confirmed_pid != owner_pid.?) return .starting;
+
+    const current = snapshot orelse return .starting;
+    if (current.pid != confirmed_pid) return .starting;
+    return switch (current.state) {
+        .starting => .starting,
+        .ready => .ready,
+        .unavailable => .unavailable,
+    };
+}
+
+fn readOwnerPid(path: []const u8) !?u32 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close();
+    var buf: [32]u8 = undefined;
+    const n = try file.readAll(&buf);
+    if (n == 0) return null;
+    if (n == buf.len and try file.getEndPos() > buf.len) return error.InvalidWorkerOwnerPid;
+    const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    if (text.len == 0) return null;
+    const pid = std.fmt.parseInt(u32, text, 10) catch return error.InvalidWorkerOwnerPid;
+    if (pid == 0) return error.InvalidWorkerOwnerPid;
+    return pid;
+}
+
+fn readEndpointSnapshot(path: []const u8) !?EndpointSnapshot {
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close();
+    var buf: [64]u8 = undefined;
+    const n = try file.readAll(&buf);
+    if (n == buf.len and try file.getEndPos() > buf.len) return error.InvalidEndpointState;
+    return try parseEndpointSnapshot(buf[0..n]);
+}
+
+fn parseEndpointSnapshot(content: []const u8) !EndpointSnapshot {
+    var fields = std.mem.tokenizeAny(u8, content, " \t\r\n");
+    if (!std.mem.eql(u8, fields.next() orelse return error.InvalidEndpointState, "v1"))
+        return error.InvalidEndpointState;
+    const pid_text = fields.next() orelse return error.InvalidEndpointState;
+    const pid = std.fmt.parseInt(u32, pid_text, 10) catch return error.InvalidEndpointState;
+    if (pid == 0) return error.InvalidEndpointState;
+    const state_text = fields.next() orelse return error.InvalidEndpointState;
+    const state = std.meta.stringToEnum(EndpointState, state_text) orelse return error.InvalidEndpointState;
+    if (fields.next() != null) return error.InvalidEndpointState;
+    return .{ .pid = pid, .state = state };
 }
 
 fn ownerPidWritten(path: []const u8) bool {
@@ -271,4 +447,126 @@ test "process lock records pid and excludes a second owner" {
     }
     var next = (try tryAcquireProcessLock(path)).?;
     next.deinit();
+}
+
+test "endpoint state parser requires version pid and known state" {
+    try std.testing.expectEqualDeep(
+        EndpointSnapshot{ .pid = 42, .state = .ready },
+        try parseEndpointSnapshot("v1 42 ready\n"),
+    );
+    try std.testing.expectError(error.InvalidEndpointState, parseEndpointSnapshot("42 ready\n"));
+    try std.testing.expectError(error.InvalidEndpointState, parseEndpointSnapshot("v1 0 ready\n"));
+    try std.testing.expectError(error.InvalidEndpointState, parseEndpointSnapshot("v1 42 unknown\n"));
+    try std.testing.expectError(error.InvalidEndpointState, parseEndpointSnapshot("v1 42 ready extra\n"));
+}
+
+test "endpoint probe requires live lock and matching owner pid" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const lock_path = try std.fs.path.join(allocator, &.{ root, "instance0.lock" });
+    defer allocator.free(lock_path);
+    const endpoint_path = try std.fs.path.join(allocator, &.{ root, "instance0.endpoint" });
+    defer allocator.free(endpoint_path);
+
+    const pid = currentProcessId();
+    const other_pid = if (pid == std.math.maxInt(u32)) pid - 1 else pid + 1;
+    {
+        var worker_lock = (try tryAcquireProcessLock(lock_path)).?;
+        defer worker_lock.deinit();
+
+        // acquireWorkerLock의 실제 순서: lock 아래 starting이 owner PID보다 먼저다.
+        try writeEndpointSnapshot(allocator, endpoint_path, pid, .starting);
+        try std.testing.expectEqual(
+            EndpointProbeResult.starting,
+            try probeEndpointFiles(lock_path, endpoint_path),
+        );
+
+        try writeOwnerPid(worker_lock.file);
+        worker_lock.clear_pid_on_close = true;
+        try writeEndpointSnapshot(allocator, endpoint_path, other_pid, .ready);
+        try std.testing.expectEqual(
+            EndpointProbeResult.starting,
+            try probeEndpointFiles(lock_path, endpoint_path),
+        );
+
+        try writeEndpointSnapshot(allocator, endpoint_path, pid, .ready);
+        try std.testing.expectEqual(
+            EndpointProbeResult.ready,
+            try probeEndpointFiles(lock_path, endpoint_path),
+        );
+
+        try writeEndpointSnapshot(allocator, endpoint_path, pid, .unavailable);
+        try std.testing.expectEqual(
+            EndpointProbeResult.unavailable,
+            try probeEndpointFiles(lock_path, endpoint_path),
+        );
+    }
+
+    // clean exit 뒤 남은 endpoint 파일은 같은 PID여도 ready로 인정하지 않는다.
+    try std.testing.expectEqual(
+        EndpointProbeResult.worker_exited,
+        try probeEndpointFiles(lock_path, endpoint_path),
+    );
+}
+
+const FakeEndpointProbe = struct {
+    results: []const EndpointProbeResult,
+    next_result: usize = 0,
+    elapsed_ns: u64 = 0,
+
+    fn poll(self: *@This()) !EndpointProbeResult {
+        const index = @min(self.next_result, self.results.len - 1);
+        self.next_result += 1;
+        return self.results[index];
+    }
+
+    fn elapsedNs(self: *@This()) u64 {
+        return self.elapsed_ns;
+    }
+
+    fn sleep(self: *@This(), duration_ns: u64) void {
+        self.elapsed_ns += duration_ns;
+    }
+};
+
+test "endpoint ready wait succeeds after more than fixed 200ms" {
+    const starting = [_]EndpointProbeResult{.starting} ** 22;
+    const results = starting ++ .{.ready};
+    var probe = FakeEndpointProbe{ .results = &results };
+    try waitUntilEndpointReadyWithProbe(&probe, std.time.ns_per_s);
+    try std.testing.expect(probe.elapsed_ns > 200 * std.time.ns_per_ms);
+}
+
+test "endpoint ready wait reports unavailable without waiting for timeout" {
+    const results = [_]EndpointProbeResult{.unavailable};
+    var probe = FakeEndpointProbe{ .results = &results };
+    try std.testing.expectError(
+        error.RequestEndpointUnavailable,
+        waitUntilEndpointReadyWithProbe(&probe, std.time.ns_per_s),
+    );
+    try std.testing.expectEqual(@as(u64, 0), probe.elapsed_ns);
+}
+
+test "endpoint ready wait reports worker exit without waiting for timeout" {
+    const results = [_]EndpointProbeResult{ .starting, .worker_exited };
+    var probe = FakeEndpointProbe{ .results = &results };
+    try std.testing.expectError(
+        error.WorkerExitedBeforeEndpointReady,
+        waitUntilEndpointReadyWithProbe(&probe, std.time.ns_per_s),
+    );
+    try std.testing.expectEqual(endpoint_poll_interval_ns, probe.elapsed_ns);
+}
+
+test "endpoint ready wait has a finite timeout" {
+    const results = [_]EndpointProbeResult{.starting};
+    var probe = FakeEndpointProbe{ .results = &results };
+    const timeout_ns = 25 * std.time.ns_per_ms;
+    try std.testing.expectError(
+        error.RequestEndpointReadyTimeout,
+        waitUntilEndpointReadyWithProbe(&probe, timeout_ns),
+    );
+    try std.testing.expectEqual(timeout_ns, probe.elapsed_ns);
 }
