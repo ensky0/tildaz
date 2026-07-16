@@ -232,6 +232,7 @@ pub const Context = struct {
         @memcpy(family_z[0..family.len], family);
 
         const fc_result = try fontconfig.lookup(self.allocator, family_z.ptr);
+        defer fc_result.deinitAdditionalFamilies(self.allocator);
         defer self.allocator.free(fc_result.family);
         var path_owned_by_face = false;
         defer if (!path_owned_by_face) self.allocator.free(fc_result.path);
@@ -239,10 +240,11 @@ pub const Context = struct {
         // fontconfig 는 정확한 매치 없으면 fallback substitution 으로 다른 family
         // 의 path 를 반환한다. generic family ("monospace" 등) 는 substitution 이
         // 의도 — 시스템 default 매치. specific family 는 결과 family 명이 우리
-        // 요청과 substring 매치 안 되면 substitution 으로 판단 + skip.
+        // 요청과 반환 family/alias 항목이 exact match가 아니면 substitution으로
+        // 판단 + skip. 이름 내부의 부분 문자열은 설치 증거가 아니다.
         // (config 명시 chain 은 boot 검증 — `familyInstalled`, 같은 판정 규칙 —
         // 을 이미 통과했으므로 여기 skip 은 face 로드 실패류만 남는다, #289 B6.)
-        if (!matchResolvesFamily(family, fc_result.family)) {
+        if (!matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) {
             log.appendLine("font", "chain[{d}] skip family={s} (fontconfig substituted to {s})", .{
                 log_idx, family, fc_result.family,
             });
@@ -416,6 +418,7 @@ pub const Context = struct {
             log.appendLineVerbose("font", "system fallback lookup failed cp=U+{X} err={s}", .{ cp, @errorName(err) });
             return null;
         };
+        defer fc_result.deinitAdditionalFamilies(self.allocator);
         var owned_by_face = false;
         defer if (!owned_by_face) {
             self.allocator.free(fc_result.family);
@@ -708,7 +711,7 @@ pub const Context = struct {
 };
 
 /// fontconfig 가 fallback substitution 으로 시스템 default 매치하는 게 의도된
-/// generic family. 그 외는 결과 family 명이 요청과 다르면 substitution 으로
+/// generic family. 그 외는 결과 family/alias 항목이 요청과 다르면 substitution으로
 /// 판단해서 chain 에 안 추가.
 fn isGenericFamily(family: []const u8) bool {
     const generic = [_][]const u8{ "monospace", "sans-serif", "serif" };
@@ -721,9 +724,31 @@ fn isGenericFamily(family: []const u8) bool {
 /// fontconfig 매치가 요청 family 를 실제로 해석했는지 판정 — `tryLoadFamily`
 /// 의 skip 판정과 boot 검증 (`familyInstalled`) 이 공유하는 단일 규칙.
 /// generic family 는 substitution 이 의도이므로 항상 수용, specific family 는
-/// 반환 family 명이 요청과 substring 매치해야 한다.
-fn matchResolvesFamily(requested: []const u8, matched_family: []const u8) bool {
-    return isGenericFamily(requested) or std.ascii.indexOfIgnoreCase(matched_family, requested) != null;
+/// 반환 family/alias 중 한 항목과 대소문자 무시 exact match해야 한다.
+fn matchResolvesFamily(requested: []const u8, primary_family: []const u8, additional_families: anytype) bool {
+    if (isGenericFamily(requested)) return true;
+    if (std.ascii.eqlIgnoreCase(requested, primary_family)) return true;
+    for (additional_families) |family| {
+        if (std.ascii.eqlIgnoreCase(requested, family)) return true;
+    }
+    return false;
+}
+
+test "explicit family resolution requires an exact family or alias" {
+    const no_aliases = [_][]const u8{};
+    try std.testing.expect(!matchResolvesFamily("Mono", "Noto Sans Mono", &no_aliases));
+    try std.testing.expect(!matchResolvesFamily("Sans", "Noto Sans", &no_aliases));
+    try std.testing.expect(matchResolvesFamily("nOtO sAnS mOnO", "Noto Sans Mono", &no_aliases));
+
+    const condensed_aliases = [_][]const u8{"DejaVu Sans Condensed"};
+    try std.testing.expect(matchResolvesFamily("DejaVu Sans Condensed", "DejaVu Sans", &condensed_aliases));
+}
+
+test "generic family resolution keeps fontconfig substitution" {
+    const no_aliases = [_][]const u8{};
+    try std.testing.expect(matchResolvesFamily("monospace", "Noto Sans Mono", &no_aliases));
+    try std.testing.expect(matchResolvesFamily("SANS-SERIF", "Noto Sans", &no_aliases));
+    try std.testing.expect(matchResolvesFamily("serif", "Noto Serif", &no_aliases));
 }
 
 /// config font chain boot 검증용 가용성 판정 (#289 B6) — Windows
@@ -749,11 +774,8 @@ pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyA
         error.FontconfigNoMatch => return .missing,
         else => return .unknown,
     };
-    defer {
-        allocator.free(fc_result.family);
-        allocator.free(fc_result.path);
-    }
-    return if (matchResolvesFamily(family, fc_result.family)) .installed else .missing;
+    defer fc_result.deinit(allocator);
+    return if (matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) .installed else .missing;
 }
 
 /// face 의 per-cp cache 에서 lookup, 미스면 raster + insert. raster / OOM

@@ -17,6 +17,10 @@ const FC_MATCH_PATTERN: c_int = 0;
 
 // FcResult enum.
 const FC_RESULT_MATCH: c_int = 0;
+const FC_RESULT_NO_MATCH: c_int = 1;
+const FC_RESULT_TYPE_MISMATCH: c_int = 2;
+const FC_RESULT_NO_ID: c_int = 3;
+const FC_RESULT_OUT_OF_MEMORY: c_int = 4;
 
 const FcInit = *const fn () callconv(.c) c_int;
 const FcPatternCreate = *const fn () callconv(.c) ?*FcPattern;
@@ -102,20 +106,34 @@ fn lookupSym(handle: *anyopaque, comptime T: type, name: [*:0]const u8) ?T {
 }
 
 pub const MatchResult = struct {
-    /// fontconfig 가 *반환한* family 명. 우리가 *요청한* family 와 다르면 fallback
-    /// substitution 발생 — caller 가 비교해서 skip 여부 결정.
+    /// fontconfig가 반환한 index 0의 primary family 명.
     family: []u8,
+    /// `FC_FAMILY` index 1 이후의 정당한 family/alias. explicit family 검증은
+    /// primary와 이 항목들을 모두 대소문자 무시 exact 비교해야 한다.
+    additional_families: [][]u8,
     /// 매치된 폰트 파일 path.
     path: []u8,
+
+    pub fn deinitAdditionalFamilies(self: MatchResult, allocator: std.mem.Allocator) void {
+        for (self.additional_families) |family| allocator.free(family);
+        allocator.free(self.additional_families);
+    }
+
+    pub fn deinit(self: MatchResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.family);
+        self.deinitAdditionalFamilies(allocator);
+        allocator.free(self.path);
+    }
 };
 
-/// `family` 에 해당하는 폰트의 fontconfig 매치 결과 (반환 family + 파일 path) 를
-/// caller-owned 슬라이스로 반환.
+/// `family` 에 해당하는 폰트의 fontconfig 매치 결과 (반환 family/alias 전체 +
+/// 파일 path)를 caller-owned 슬라이스로 반환.
 ///
 /// 주의: fontconfig 는 정확한 매치가 없으면 fallback substitution 으로 *다른*
-/// family 의 path 를 반환할 수 있다. caller 가 `result.family` 를 우리가 요청한
-/// family 와 비교해서 substitution 여부를 판단해야 한다. generic family
-/// ("monospace" / "sans-serif" / "serif") 만 substitution 허용 의도.
+/// family 의 path 를 반환할 수 있다. caller 가 `result.family`와
+/// `result.additional_families`를 요청 family와 비교해서 substitution 여부를
+/// 판단해야 한다. generic family("monospace" / "sans-serif" / "serif")만
+/// substitution 허용 의도.
 pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult {
     var api = try Api.load();
     defer api.deinit();
@@ -178,7 +196,42 @@ fn matchAndExtract(api: *const Api, pattern: *FcPattern, allocator: std.mem.Allo
 
     const family_dup = try allocator.dupe(u8, std.mem.span(family_ptr));
     errdefer allocator.free(family_dup);
+
+    // FcResultNoId = object는 존재하지만 요청 index의 값은 없음. index 1부터
+    // 그 결과가 나올 때까지 순회해야 localized name/alias를 놓치지 않는다.
+    var additional: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (additional.items) |family| allocator.free(family);
+        additional.deinit(allocator);
+    }
+    var family_index: c_int = 1;
+    while (true) : (family_index += 1) {
+        var additional_ptr: [*:0]FcChar8 = undefined;
+        switch (api.pattern_get_string(match, "family", family_index, &additional_ptr)) {
+            FC_RESULT_MATCH => {
+                const dup = try allocator.dupe(u8, std.mem.span(additional_ptr));
+                additional.append(allocator, dup) catch |err| {
+                    allocator.free(dup);
+                    return err;
+                };
+            },
+            FC_RESULT_NO_ID => break,
+            FC_RESULT_NO_MATCH => return error.FontconfigNoFamily,
+            FC_RESULT_TYPE_MISMATCH => return error.FontconfigFamilyTypeMismatch,
+            FC_RESULT_OUT_OF_MEMORY => return error.OutOfMemory,
+            else => return error.FontconfigFamilyQueryFailed,
+        }
+    }
+    const additional_owned = try additional.toOwnedSlice(allocator);
+    errdefer {
+        for (additional_owned) |family| allocator.free(family);
+        allocator.free(additional_owned);
+    }
     const path_dup = try allocator.dupe(u8, std.mem.span(file_ptr));
 
-    return .{ .family = family_dup, .path = path_dup };
+    return .{
+        .family = family_dup,
+        .additional_families = additional_owned,
+        .path = path_dup,
+    };
 }
