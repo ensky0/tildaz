@@ -65,6 +65,15 @@ pub fn quitConfirmMessage(buf: []u8, tab_count: usize) ?[]const u8 {
     return std.fmt.bufPrint(buf, messages.quit_confirm_format, .{ tab_count, plural }) catch null;
 }
 
+test "quit confirm message handles singular plural and small buffers" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("This will close 1 open tab.", quitConfirmMessage(&buf, 1).?);
+    try std.testing.expectEqualStrings("This will close 2 open tabs.", quitConfirmMessage(&buf, 2).?);
+
+    var too_small: [1]u8 = undefined;
+    try std.testing.expect(quitConfirmMessage(&too_small, 2) == null);
+}
+
 pub fn showInfo(title: []const u8, message: []const u8) void {
     impl.show(.info, title, message);
 }
