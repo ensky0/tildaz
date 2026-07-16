@@ -1,0 +1,458 @@
+//! Linux custom dialog의 content-driven layout 계산 (#306).
+//!
+//! renderer/Wayland 객체와 분리된 순수 계산만 둔다. 호출자는 output의 physical
+//! viewport와 현재 scale에서 만든 physical pixel metrics를 전달한다.
+
+const std = @import("std");
+const display_width = @import("../../font/display_width.zig");
+const messages = @import("../../messages.zig");
+
+pub const Kind = enum { info, confirm, prompt };
+
+pub const Metrics = struct {
+    body_cell_w: i32,
+    body_cell_h: i32,
+    title_cell_w: i32,
+    title_cell_h: i32,
+    padding: i32,
+    shadow_margin: i32,
+    viewport_margin: i32,
+    icon_size: i32,
+    icon_gap: i32,
+    button_w: i32,
+    button_h: i32,
+    button_gap: i32,
+};
+
+pub const Size = struct { w: i32, h: i32 };
+
+pub const Layout = struct {
+    size: Size,
+    wrap_cells: usize,
+    message_rows: usize,
+    show_icon: bool,
+    fits: bool,
+};
+
+pub const WrappedLines = struct {
+    msg: []const u8,
+    max_cells: usize,
+    pos: usize = 0,
+
+    pub fn next(self: *WrappedLines) ?[]const u8 {
+        if (self.pos >= self.msg.len) return null;
+        const start = self.pos;
+        var i = self.pos;
+        var width: usize = 0;
+        var last_space: ?usize = null;
+        var last_space_end: usize = start;
+        const max_cells = @max(self.max_cells, 1);
+        while (i < self.msg.len) {
+            const b = self.msg[i];
+            if (b == '\n') {
+                self.pos = i + 1;
+                return self.msg[start..i];
+            }
+            const seq = std.unicode.utf8ByteSequenceLength(b) catch 1;
+            const end = @min(i + seq, self.msg.len);
+            const cp = std.unicode.utf8Decode(self.msg[i..end]) catch 0xFFFD;
+            const w: usize = display_width.codepointWidth(cp);
+            if (cp == ' ') {
+                last_space = i;
+                last_space_end = end;
+            }
+            if (width + w > max_cells and i > start) {
+                if (last_space) |sp| {
+                    self.pos = last_space_end;
+                    return self.msg[start..sp];
+                }
+                self.pos = i;
+                return self.msg[start..i];
+            }
+            width += w;
+            i = end;
+        }
+        self.pos = i;
+        return self.msg[start..i];
+    }
+};
+
+const Measurement = struct {
+    rows: usize,
+    max_cells: usize,
+};
+
+fn longestExplicitLine(message: []const u8) usize {
+    var longest: usize = 0;
+    var current: usize = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = message, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        if (cp == '\n') {
+            longest = @max(longest, current);
+            current = 0;
+        } else {
+            current += display_width.codepointWidth(@intCast(cp));
+        }
+    }
+    return @max(longest, current);
+}
+
+fn measure(message: []const u8, wrap_cells: usize) Measurement {
+    var result = Measurement{ .rows = 0, .max_cells = 0 };
+    var lines = WrappedLines{ .msg = message, .max_cells = wrap_cells };
+    while (lines.next()) |line| {
+        result.rows += 1;
+        result.max_cells = @max(result.max_cells, display_width.stringWidth(line));
+    }
+    if (result.rows == 0) result.rows = 1;
+    return result;
+}
+
+pub fn compute(
+    title: []const u8,
+    message: []const u8,
+    kind: Kind,
+    metrics: Metrics,
+    viewport: Size,
+) Layout {
+    return computeWithinSurface(title, message, kind, metrics, .{
+        .w = @max(1, viewport.w - metrics.viewport_margin * 2),
+        .h = @max(1, viewport.h - metrics.viewport_margin * 2),
+    });
+}
+
+/// compositor가 요청과 다른 최종 surface 크기를 configure한 경우의 재계산.
+/// `surface` 자체가 이미 output 바깥 여백을 제외한 값이므로 viewport margin을
+/// 다시 빼지 않는다.
+pub fn computeForSurface(
+    title: []const u8,
+    message: []const u8,
+    kind: Kind,
+    metrics: Metrics,
+    surface: Size,
+) Layout {
+    return computeWithinSurface(title, message, kind, metrics, .{
+        .w = @max(1, surface.w),
+        .h = @max(1, surface.h),
+    });
+}
+
+fn computeWithinSurface(
+    title: []const u8,
+    message: []const u8,
+    kind: Kind,
+    metrics: Metrics,
+    max_surface: Size,
+) Layout {
+    std.debug.assert(metrics.body_cell_w > 0);
+    std.debug.assert(metrics.body_cell_h > 0);
+    std.debug.assert(metrics.title_cell_w > 0);
+    std.debug.assert(metrics.title_cell_h > 0);
+
+    const content_room_w = @max(
+        metrics.body_cell_w,
+        max_surface.w - metrics.shadow_margin * 2 - metrics.padding * 2,
+    );
+    const max_wrap_cells: usize = @intCast(@max(1, @divTrunc(content_room_w, metrics.body_cell_w)));
+    const min_cells: usize = if (kind == .prompt) 42 else 30;
+    const natural_cells = longestExplicitLine(message);
+    const wrap_cells = @min(@max(natural_cells, min_cells), max_wrap_cells);
+    const measured = measure(message, wrap_cells);
+
+    const body_w: i32 = @intCast(measured.max_cells * @as(usize, @intCast(metrics.body_cell_w)));
+    const title_w: i32 = @intCast(display_width.stringWidth(title) * @as(usize, @intCast(metrics.title_cell_w)));
+    const inner_w = @max(body_w, title_w);
+    const buttons_w = switch (kind) {
+        .info => metrics.button_w,
+        .confirm, .prompt => metrics.button_w * 2 + metrics.button_gap,
+    };
+    const box_w = @max(
+        @max(inner_w + metrics.padding * 2, buttons_w + metrics.padding * 4),
+        metrics.icon_size + metrics.padding * 2,
+    );
+    const desired_w = box_w + metrics.shadow_margin * 2;
+
+    const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 3 else 0;
+    const rows_h: i32 = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
+    const fixed_h = metrics.padding * 2 +
+        metrics.title_cell_h +
+        metrics.body_cell_h + // separator row
+        rows_h +
+        metrics.body_cell_h + // message-to-button gap
+        prompt_h +
+        metrics.button_h;
+    const full_h = fixed_h + metrics.icon_size + metrics.icon_gap + metrics.shadow_margin * 2;
+    const compact_h = fixed_h + metrics.shadow_margin * 2;
+    const show_icon = full_h <= max_surface.h;
+    const desired_h = if (show_icon) full_h else compact_h;
+
+    return .{
+        .size = .{
+            .w = @min(desired_w, max_surface.w),
+            .h = @min(desired_h, max_surface.h),
+        },
+        .wrap_cells = wrap_cells,
+        .message_rows = measured.rows,
+        .show_icon = show_icon,
+        .fits = desired_w <= max_surface.w and desired_h <= max_surface.h,
+    };
+}
+
+test "current config error fits 640x480 logical viewport" {
+    const message =
+        \\Configuration: shell executable not found.
+        \\
+        \\"shell" value: "/definitely/missing/tildaz-306-shell"
+        \\Lookup token: "/definitely/missing/tildaz-306-shell"
+        \\
+        \\Expects an absolute path to an executable. Examples:
+        \\  "/bin/bash"
+        \\  "/bin/zsh"
+        \\  "/usr/bin/fish"
+        \\
+        \\Config path:
+        \\/tmp/tildaz-306-current-home/.config/tildaz/config_98.json
+    ;
+    const layout = compute("TildaZ Config Error", message, .info, testMetrics(1), .{ .w = 640, .h = 480 });
+    try std.testing.expect(layout.fits);
+    try std.testing.expect(layout.size.w <= 640 - 32);
+    try std.testing.expect(layout.size.h <= 480 - 32);
+    try std.testing.expect(layout.wrap_cells < longestExplicitLine(message));
+}
+
+test "same logical viewport fits at 1x 1.7x and 2x" {
+    const message = "A moderately long dialog line that should keep the same logical layout at every output scale.";
+    const scales = [_]u32{ 100, 170, 200 };
+    for (scales) |scale_percent| {
+        const layout = compute(
+            "TildaZ",
+            message,
+            .info,
+            testMetrics(scale_percent),
+            .{
+                .w = @divTrunc(640 * @as(i32, @intCast(scale_percent)), 100),
+                .h = @divTrunc(480 * @as(i32, @intCast(scale_percent)), 100),
+            },
+        );
+        try std.testing.expect(layout.fits);
+    }
+}
+
+test "wide viewport is not limited to 72 cells" {
+    const message = "x" ** 100;
+    const layout = compute("TildaZ", message, .info, testMetrics(1), .{ .w = 1280, .h = 720 });
+    try std.testing.expect(layout.fits);
+    try std.testing.expectEqual(@as(usize, 100), layout.wrap_cells);
+    try std.testing.expectEqual(@as(usize, 1), layout.message_rows);
+}
+
+test "compact layout removes decorative icon before content or buttons" {
+    const message = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve";
+    const layout = compute("TildaZ", message, .confirm, testMetrics(1), .{ .w = 640, .h = 360 });
+    try std.testing.expect(layout.fits);
+    try std.testing.expect(!layout.show_icon);
+    try std.testing.expectEqual(@as(usize, 12), layout.message_rows);
+}
+
+test "final compositor surface size recomputes wrapping without viewport margin" {
+    const message = "A compositor may configure a narrower final surface than the client initially requested for this dialog message.";
+    const initial = compute("TildaZ", message, .info, testMetrics(1), .{ .w = 1280, .h = 720 });
+    const configured = computeForSurface("TildaZ", message, .info, testMetrics(1), .{ .w = 480, .h = 448 });
+    try std.testing.expect(configured.fits);
+    try std.testing.expect(configured.wrap_cells < initial.wrap_cells);
+    try std.testing.expect(configured.message_rows > initial.message_rows);
+    try std.testing.expect(configured.size.w <= 480);
+    try std.testing.expect(configured.size.h <= 448);
+}
+
+test "current Linux dialog messages fit the 640x480 logical minimum" {
+    const themes = @import("../../themes.zig");
+
+    var quit_buf: [128]u8 = undefined;
+    const quit_msg = try std.fmt.bufPrint(&quit_buf, messages.quit_confirm_format, .{ 32, "s" });
+
+    var tab_limit_buf: [128]u8 = undefined;
+    const tab_limit_msg = try std.fmt.bufPrint(&tab_limit_buf, messages.tab_limit_format, .{32});
+
+    var about_buf: [2048]u8 = undefined;
+    const about_msg = try std.fmt.bufPrint(&about_buf, messages.about_format, .{
+        "0.6.1",
+        "/home/example/.local/bin/tildaz",
+        123456,
+        "/home/example/.config/tildaz/config_0.json",
+        "/home/example/.local/state/tildaz/tildaz0.log",
+        "Ctrl+Shift+P",
+        "Ctrl+Shift+L",
+    });
+
+    var parse_buf: [512]u8 = undefined;
+    const parse_msg = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_format, .{
+        "/home/example/.config/tildaz/config_0.json",
+        "SyntaxError",
+    });
+
+    var hotkey_invalid_buf: [384]u8 = undefined;
+    const hotkey_invalid_msg = try std.fmt.bufPrint(
+        &hotkey_invalid_buf,
+        messages.config_hotkey_invalid_format,
+        .{"shift+t"},
+    );
+
+    var theme_buf: [512]u8 = undefined;
+    var theme_stream = std.io.fixedBufferStream(&theme_buf);
+    const theme_writer = theme_stream.writer();
+    try theme_writer.print(messages.config_unknown_theme_header_format, .{"Not A Theme"});
+    for (themes.themes, 0..) |theme, i| {
+        if (i > 0) try theme_writer.writeAll(", ");
+        try theme_writer.writeAll(theme.name);
+    }
+    const theme_msg = theme_stream.getWritten();
+
+    var shell_buf: [1024]u8 = undefined;
+    const shell_msg = try std.fmt.bufPrint(&shell_buf, messages.shell_executable_not_found_format, .{
+        "/opt/example/TildaZ Shell/bin/example-shell",
+        "/opt/example/TildaZ Shell/bin/example-shell",
+        messages.shell_examples_posix,
+        "/home/example/.config/tildaz/config_98.json",
+    });
+
+    var new_tab_buf: [1024]u8 = undefined;
+    const new_tab_msg = try std.fmt.bufPrint(&new_tab_buf, messages.shell_new_tab_not_found_format, .{
+        "/opt/example/TildaZ Shell/bin/example-shell",
+        "/home/example/.config/tildaz/config_98.json",
+    });
+
+    var font_buf: [2048]u8 = undefined;
+    var font_stream = std.io.fixedBufferStream(&font_buf);
+    const font_writer = font_stream.writer();
+    try font_writer.writeAll("Font not found: \"Missing Example Font\"\n\n");
+    try font_writer.writeAll("config \"font.family\" chain (in order):\n");
+    const font_families = [_][]const u8{
+        "Missing Example Font",
+        "Noto Sans Mono CJK KR",
+        "Noto Color Emoji",
+        "Symbols Nerd Font Mono",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "Unifont",
+        "FreeMono",
+    };
+    for (font_families) |family| {
+        const marker = if (std.mem.eql(u8, family, font_families[0])) " ← not installed" else "";
+        try font_writer.print("  - \"{s}\"{s}\n", .{ family, marker });
+    }
+    try font_writer.writeAll(
+        \\All families listed in font.family must be installed on the system.
+        \\
+        \\Config path:
+        \\/home/example/.config/tildaz/config_98.json
+    );
+    const font_msg = font_stream.getWritten();
+
+    var takeover_buf: [512]u8 = undefined;
+    const takeover_msg = try std.fmt.bufPrint(&takeover_buf, messages.hotkey_takeover_format, .{
+        "Ctrl+Shift+Space",
+        "KWin",
+        "Show Desktop Grid",
+    });
+
+    var mismatch_buf: [256]u8 = undefined;
+    const mismatch_msg = try std.fmt.bufPrint(&mismatch_buf, messages.hotkey_mismatch_persists_format, .{
+        "Ctrl+Shift+Space",
+        "Meta+Ctrl+Space",
+    });
+
+    var prompt_buf: [256]u8 = undefined;
+    const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{32});
+
+    var create_error_buf: [512]u8 = undefined;
+    const create_error_msg = try std.fmt.bufPrint(
+        &create_error_buf,
+        messages.new_instance_create_failed_format,
+        .{"RequestEndpointReadyTimeout"},
+    );
+
+    const cases = [_]struct {
+        title: []const u8,
+        message: []const u8,
+        kind: Kind,
+    }{
+        .{ .title = messages.quit_confirm_title, .message = quit_msg, .kind = .confirm },
+        .{ .title = messages.tab_limit_title, .message = tab_limit_msg, .kind = .info },
+        .{ .title = messages.about_title, .message = about_msg, .kind = .info },
+        .{ .title = messages.config_error_title, .message = parse_msg, .kind = .info },
+        .{ .title = messages.config_error_title, .message = hotkey_invalid_msg, .kind = .info },
+        .{ .title = messages.config_error_title, .message = theme_msg, .kind = .info },
+        .{ .title = messages.config_error_title, .message = shell_msg, .kind = .info },
+        .{ .title = messages.shell_new_tab_error_title, .message = new_tab_msg, .kind = .info },
+        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info },
+        .{ .title = messages.hotkey_takeover_title, .message = takeover_msg, .kind = .confirm },
+        .{ .title = messages.hotkey_mismatch_persists_title, .message = mismatch_msg, .kind = .info },
+        .{ .title = messages.new_instance_title, .message = prompt_msg, .kind = .prompt },
+        .{ .title = messages.new_instance_title, .message = create_error_msg, .kind = .info },
+        .{ .title = messages.error_title, .message = messages.request_endpoint_unavailable_msg, .kind = .info },
+        .{ .title = messages.error_title, .message = messages.worker_exited_before_endpoint_ready_msg, .kind = .info },
+        .{ .title = messages.error_title, .message = messages.request_endpoint_ready_timeout_msg, .kind = .info },
+    };
+
+    for (cases) |case| try expectFitsLogicalMinimum(case.title, case.message, case.kind);
+}
+
+fn expectFitsLogicalMinimum(title: []const u8, message: []const u8, kind: Kind) !void {
+    const scales = [_]u32{ 100, 170, 200 };
+    for (scales) |scale_percent| {
+        const metric_cases = [_]Metrics{
+            testMetrics(scale_percent),
+            testWideCellMetrics(scale_percent),
+        };
+        for (metric_cases) |metrics| {
+            const layout = compute(
+                title,
+                message,
+                kind,
+                metrics,
+                .{
+                    .w = @divTrunc(640 * @as(i32, @intCast(scale_percent)), 100),
+                    .h = @divTrunc(480 * @as(i32, @intCast(scale_percent)), 100),
+                },
+            );
+            if (!layout.fits) {
+                std.debug.print(
+                    "dialog does not fit: title={s} scale={d}% body_cell_w={} size={}x{} rows={} wrap={}\n",
+                    .{ title, scale_percent, metrics.body_cell_w, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_cells },
+                );
+            }
+            try std.testing.expect(layout.fits);
+        }
+    }
+}
+
+fn testMetrics(scale_percent: u32) Metrics {
+    return testMetricsWithCellWidths(scale_percent, 9, 11);
+}
+
+fn testWideCellMetrics(scale_percent: u32) Metrics {
+    return testMetricsWithCellWidths(scale_percent, 15, 18);
+}
+
+fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w: i32) Metrics {
+    const scale = struct {
+        fn value(v: i32, percent: u32) i32 {
+            return @divTrunc(v * @as(i32, @intCast(percent)) + 99, 100);
+        }
+    }.value;
+    return .{
+        .body_cell_w = scale(body_cell_w, scale_percent),
+        .body_cell_h = scale(17, scale_percent),
+        .title_cell_w = scale(title_cell_w, scale_percent),
+        .title_cell_h = scale(20, scale_percent),
+        .padding = scale(8, scale_percent),
+        .shadow_margin = scale(12, scale_percent),
+        .viewport_margin = scale(16, scale_percent),
+        .icon_size = scale(64, scale_percent),
+        .icon_gap = scale(8, scale_percent),
+        .button_w = scale(100, scale_percent),
+        .button_h = scale(44, scale_percent),
+        .button_gap = scale(12, scale_percent),
+    };
+}
