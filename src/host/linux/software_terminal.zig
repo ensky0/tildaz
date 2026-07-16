@@ -971,6 +971,24 @@ pub const Renderer = struct {
     }
 };
 
+const TabClipDecision = enum { skip, draw, stop };
+
+/// index 순서의 tab loop clipping 판단. drag 중이 아니면 tab x가 단조 증가하므로
+/// 우측 viewport 밖 첫 탭에서 stop 가능하다. drag 중에는 source tab만 mouse x를
+/// 따라 index 순서를 벗어나므로 뒤 index에 화면 안 source가 있을 수 있다 — 이때
+/// 우측 밖 일반 탭은 skip만 하고 loop를 계속한다 (#309).
+fn tabClipDecision(
+    tab_left: i32,
+    tab_width: i32,
+    viewport_left: i32,
+    viewport_right: i32,
+    drag_active: bool,
+) TabClipDecision {
+    if (tab_left + tab_width <= viewport_left) return .skip;
+    if (tab_left >= viewport_right) return if (drag_active) .skip else .stop;
+    return .draw;
+}
+
 /// L12-α/β/γ tab bar — cross-platform `tab_layout.Layout` 따라 영역 분할 + 각
 /// 탭 그리기. `[<][tabs+][+][>]` (arrows_visible) 또는 `[tabs+][+]`. tab area
 /// 안 탭들은 `scroll_x` 만큼 좌측 밀려 그려지고 area 범위 밖은 clip. 활성 =
@@ -1043,12 +1061,12 @@ fn drawTabBar(
         else
             @as(i32, @intCast(i)) * tab_w;
         const tab_screen_x: i32 = tab_area_x + tab_world_x - scroll_x_i;
-        // tab 전체가 tab_area 밖 (좌/우) 이면 skip — clipping 효과. drag 탭은
-        // x 가 world 순서와 무관하므로 break (이후 탭도 skip) 하면 안 됨.
-        if (tab_screen_x + tab_w <= tab_area_x) continue;
-        if (tab_screen_x >= tab_area_end) {
-            if (is_drag_source) continue;
-            break;
+        // tab 전체가 tab_area 밖이면 skip/stop — clipping 효과. drag 활성 시
+        // loop 전체의 x 단조성이 깨지므로 우측 밖 일반 탭에서도 계속 진행한다.
+        switch (tabClipDecision(tab_screen_x, tab_w, tab_area_x, tab_area_end, drag_view != null)) {
+            .skip => continue,
+            .stop => break,
+            .draw => {},
         }
 
         const tab_x: i32 = tab_screen_x + tab_x_inset;
@@ -2111,6 +2129,53 @@ fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
     const g: u32 = (@as(u32, fg.g) * a + @as(u32, bg.g) * inv) / 255;
     const b: u32 = (@as(u32, fg.b) * a + @as(u32, bg.b) * inv) / 255;
     return (r << 16) | (g << 8) | b;
+}
+
+test "#309 tab clipping keeps a high-index drag source reachable" {
+    const left: i32 = 24;
+    const right: i32 = 324;
+    const tab_w: i32 = 100;
+
+    // Exact boundaries and partial overlap.
+    try std.testing.expectEqual(TabClipDecision.skip, tabClipDecision(left - tab_w, tab_w, left, right, false));
+    try std.testing.expectEqual(TabClipDecision.draw, tabClipDecision(left - tab_w + 1, tab_w, left, right, false));
+    try std.testing.expectEqual(TabClipDecision.draw, tabClipDecision(right - 1, tab_w, left, right, false));
+    try std.testing.expectEqual(TabClipDecision.stop, tabClipDecision(right, tab_w, left, right, false));
+    try std.testing.expectEqual(TabClipDecision.skip, tabClipDecision(right, tab_w, left, right, true));
+
+    // indices 3..6 are ordinary tabs beyond the right edge, while high index 7
+    // is the drag source moved under the pointer into the viewport. The old
+    // source-only guard stopped at index 3 and never reached index 7.
+    const dragged_positions = [_]i32{ 24, 124, 224, 324, 424, 524, 624, 74 };
+    var reached_drag_source = false;
+    for (dragged_positions, 0..) |tab_x, i| {
+        switch (tabClipDecision(tab_x, tab_w, left, right, true)) {
+            .skip => continue,
+            .stop => break,
+            .draw => if (i == 7) {
+                reached_drag_source = true;
+            },
+        }
+    }
+    try std.testing.expect(reached_drag_source);
+
+    // Without a drag, positions remain monotonic and the existing early stop
+    // optimization must remain active at the exact right boundary.
+    const ordered_positions = [_]i32{ 24, 124, 224, 324, 424 };
+    var draw_count: usize = 0;
+    var stop_index: ?usize = null;
+    for (ordered_positions, 0..) |tab_x, i| {
+        switch (tabClipDecision(tab_x, tab_w, left, right, false)) {
+            .skip => continue,
+            .stop => {
+                stop_index = i;
+                break;
+            },
+            .draw => draw_count += 1,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), draw_count);
+    try std.testing.expectEqual(@as(?usize, 3), stop_index);
 }
 
 // #213 재현 — About dialog paint 경로 (compositor 무관). KDE Plasma 1.7x 에서
