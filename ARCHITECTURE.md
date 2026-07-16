@@ -55,6 +55,19 @@ truth: stale files and reused PIDs are possible after a crash. Liveness is
 decided only by whether the advisory lock can be acquired. Lock files live in
 the runtime/cache paths specified by `SPEC.md` §11.1, separate from user config.
 
+Request readiness is a separate policy. After taking `instanceN.lock`, a worker
+atomically writes `v1 <PID> starting` to `instanceN.endpoint` before publishing
+the owner PID. The host later replaces it with `ready` or `unavailable`. The
+launcher accepts `ready` only when the endpoint PID matches the lock owner PID
+and the advisory lock is still owned, so a stale file or reused PID cannot pass.
+For an actual worker-0 new-instance request, the launcher waits for this state
+with a finite timeout and sends only once; the initial launcher still returns
+after the existing lock/PID acknowledgement. The ready points are, in platform
+order: Linux after the socket and Wayland UI path have initialized; macOS after
+the distributed-notification observer, window, renderer, first tab, and display
+link are installed; Windows after the HWND, renderer, first tab, and visibility
+policy are complete immediately before the message loop.
+
 On Linux, the visible `tildaz.desktop` entry identifies only the launcher. Each
 xdg-shell worker uses `tildaz.instanceN` as its Wayland app ID and has a matching
 `NoDisplay=true` desktop entry. This keeps GNOME's normal icon click connected to

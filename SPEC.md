@@ -602,7 +602,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 이전엔 default 값이 6+ 곳 (JSON literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
 
-### 7.1 번호별 config / process 계약 (#267)
+### 7.1 번호별 config / process 정책 (#267)
 
 - 활성 설정은 `config_0.json`, `config_1.json`, ... 형식만 인식한다. 기존
   `config.json`은 읽기·변환·수정·삭제하지 않는다.
@@ -643,6 +643,18 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
   owner가 정상·비정상 종료하면 OS가 lock을 해제한다. PID는 lock 획득 뒤 기록하는
   진단 정보이며, crash 뒤 stale PID 또는 PID 재사용 가능성이 있으므로 생존 판정에
   사용하지 않는다. launcher가 owner 부재를 lock으로 확인했을 때 stale PID를 비운다.
+- request endpoint 준비 상태는 별도 transient 파일 `instanceN.endpoint`에
+  `v1 <PID> <starting|ready|unavailable>` 형식으로 기록한다. worker는 lock을 획득한
+  직후 owner PID보다 먼저 `starting`을 원자적으로 기록한다. launcher는 endpoint PID와
+  lock owner PID가 같고 advisory lock도 실제로 살아 있을 때만 `ready`를 인정하므로,
+  이전 process의 stale 파일과 PID 재사용은 성공 판정이 될 수 없다.
+- 실제 worker 0 새-instance 요청은 endpoint가 `ready`가 될 때까지 유한 시간 기다린 뒤
+  한 번만 전송한다. `unavailable` 또는 ready 전 worker 종료는 즉시 구분된 오류로 끝난다.
+  ready 지점은 Linux의 socket·Wayland 초기화·첫 tab 또는 hidden-start 준비 완료,
+  macOS의 distributed notification observer·window·renderer·첫 tab·display link 준비
+  완료, Windows의 HWND·renderer·첫 tab·표시 정책 적용 후 message loop 진입 직전이다.
+  최초 launcher는 기존처럼 worker lock/PID까지만 확인하고 반환하므로 endpoint 실패가
+  terminal 자체 실행을 막지 않는 graceful-degradation 동작은 유지한다.
 - `launcher.lock`은 config 열거, index별 생존 확인, 누락 worker spawn, 새-instance 요청
   결정과 worker 0의 hotkey dialog/config 생성 transaction을 직렬화한다. 누락 worker를
   spawn한 launcher 또는 새 config를 만든 worker 0은 각 worker가 자기 lock을 획득하고
@@ -846,14 +858,15 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 |---|---|---|---|
 | **config** | `%APPDATA%\tildaz\config_N.json` (Microsoft 표준) | `~/.config/tildaz/config_N.json` (XDG, ghostty/alacritty 패턴 — 터미널 사용자 친숙) | `~/.config/tildaz/config_N.json` (XDG) |
 | **log** | `%APPDATA%\tildaz\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱) | `~/.local/state/tildaz/tildaz_N.log` (XDG state) |
-| **process lock** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
+| **process / endpoint state** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`, `instanceN.endpoint`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
 
-process lock은 config가 아니라 transient runtime/cache state다. `launcher.lock`과
-`instanceN.lock`은 실행 뒤 파일 자체가 남을 수 있으며, 존재 여부는 실행 상태를 뜻하지
-않는다. `instanceN.lock`의 PID는 process 검색을 돕는 진단값이고 실제 생존 여부는
-advisory lock으로만 판정한다.
+process lock과 endpoint 상태는 config가 아니라 transient runtime/cache state다.
+`launcher.lock`, `instanceN.lock`, `instanceN.endpoint`는 실행 뒤 파일 자체가 남을 수
+있으며, 존재 여부는 실행 상태를 뜻하지 않는다. `instanceN.lock`의 PID는 process 검색을
+돕는 진단값이고 실제 생존 여부는 advisory lock으로만 판정한다. endpoint 상태는 같은
+lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 
 **stdout / stderr 정책**: 통합 로그가 single source of truth — stdout/stderr 에는 정보성 메시지 안 찍음. 모든 정보 (boot, startup, font/renderer init, tab create, geom, perm, pty, exit) 는 통합 로그로. ghostty-vt 의 `std.log` 호출 (예: `unimplemented mode: ...`) 도 `main.zig` 의 `std_options.logFn` 으로 redirect — 단 `unimplemented mode` noise 는 filter (xterm DECSET 중 ghostty 가 안 구현한 것들, terminal 동작 영향 없음). 권한 안내처럼 첫 부팅 사용자 actionable 인 것은 `dialog.showInfo` 로 messagebox 표시. (예외: macOS IMK system framework 의 stderr noise `IMKCFRunLoopWakeUpReliable` — system framework 가 우리 우회 없이 직접 찍는 것이라 차단 불가, 무시.)
 

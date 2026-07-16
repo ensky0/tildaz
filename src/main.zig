@@ -166,12 +166,12 @@ fn runLauncher(autostart_launch: bool) !void {
         // config index별 TildaZ worker가 모두 실행 중일 때만 worker 0에 새 instance
         // 요청을 보낸다. 하나라도 빠졌다면 위 loop가 누락 worker를 전부 시작했다.
         if (comptime builtin.os.tag == .windows) break :launcher true;
-        try requestNewInstance();
+        try requestNewInstance(allocator);
         break :launcher false;
     };
 
     if (send_after_unlock) {
-        try requestNewInstance();
+        try requestNewInstance(allocator);
         // WndProc가 반환한 바로 이 지점이 burst 병합의 끝 경계. 이후 시작된
         // launcher는 즉시 다음 요청의 gate를 얻을 수 있게 성공 path에서 해제한다.
         if (request_gate) |*gate| gate.deinit();
@@ -179,21 +179,9 @@ fn runLauncher(autostart_launch: bool) !void {
     }
 }
 
-fn requestNewInstance() !void {
-    // #282 G13 — worker 가 lock+PID 를 기록했어도(waitUntilRunning ack) 요청
-    // endpoint(Windows 창 / Linux socket listener)가 아직 준비 안 됐을 수 있다.
-    // 그 짧은 창에서 send 가 실패하면 잘못된 fatal dialog 가 뜨므로 짧게
-    // 재시도한다(최대 ~200ms). macOS notification 은 fire-and-forget 이라 실패
-    // 신호가 없어 재시도와 무관(#282 D3 별도 추적).
-    var attempt: u32 = 0;
-    while (true) : (attempt += 1) {
-        instance_request.send() catch |err| {
-            if (attempt < 10) {
-                std.Thread.sleep(20 * std.time.ns_per_ms);
-                continue;
-            }
-            return err;
-        };
-        return;
-    }
+fn requestNewInstance(allocator: std.mem.Allocator) !void {
+    // #304 — lock+PID는 process 생존만 뜻한다. 실제 endpoint와 UI event loop가
+    // 준비됐다는 같은 PID의 ready 상태를 확인한 뒤 한 번만 전송한다.
+    try instances.waitUntilEndpointReady(allocator, 0, 10 * std.time.ns_per_s);
+    try instance_request.send();
 }

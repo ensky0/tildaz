@@ -3,6 +3,8 @@
 //! 같은 의미의 메시지를 platform 별로 두 번 작성하지 않게 한다. format string
 //! 은 여기서 정의하고 실제 표시는 호출처가 `dialog.zig` 로 위임.
 
+const std = @import("std");
+
 /// #282 G9 — 자체 그리기 dialog 의 버튼 라벨 단일 소스 (macOS NSAlert · Windows
 /// 자체 hotkey 프롬프트 · Linux overlay 공용). Windows 표준 MessageBoxW 의
 /// OK/Cancel 은 OS 가 제공하므로 해당 없음.
@@ -78,6 +80,43 @@ pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";
 pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
 pub const run_failed_fallback_msg = "TildaZ failed to start.";
+pub const request_endpoint_unavailable_msg =
+    "TildaZ is running, but it cannot receive a request to create another instance. Restart TildaZ and try again. If this continues, check the TildaZ log.";
+pub const worker_exited_before_endpoint_ready_msg =
+    "TildaZ exited before it was ready to receive a request to create another instance. Start TildaZ again and check the log if this continues.";
+pub const request_endpoint_ready_timeout_msg =
+    "TildaZ did not become ready to create another instance in time. Restart TildaZ and try again. If this continues, check the TildaZ log.";
+
+/// run/launcher 오류를 세 platform에서 같은 사용자 문구로 변환한다.
+pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
+    return switch (err) {
+        error.RequestEndpointUnavailable => request_endpoint_unavailable_msg,
+        error.WorkerExitedBeforeEndpointReady => worker_exited_before_endpoint_ready_msg,
+        error.RequestEndpointReadyTimeout => request_endpoint_ready_timeout_msg,
+        else => std.fmt.bufPrint(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
+    };
+}
+
+test "request endpoint run errors have specific user messages" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        request_endpoint_unavailable_msg,
+        runFailureMessage(&buf, error.RequestEndpointUnavailable),
+    );
+    try std.testing.expectEqualStrings(
+        worker_exited_before_endpoint_ready_msg,
+        runFailureMessage(&buf, error.WorkerExitedBeforeEndpointReady),
+    );
+    try std.testing.expectEqualStrings(
+        request_endpoint_ready_timeout_msg,
+        runFailureMessage(&buf, error.RequestEndpointReadyTimeout),
+    );
+    try std.testing.expectEqualStrings(
+        "TildaZ failed to start.\n\nError: ExampleFailure",
+        runFailureMessage(&buf, error.ExampleFailure),
+    );
+}
+
 pub const linux_backend_not_ready_msg =
     \\TildaZ for Linux is not implemented yet.
     \\
