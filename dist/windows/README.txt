@@ -36,7 +36,7 @@ CONFIG AND LOG
 The first launch creates:
 
     Config: %APPDATA%\tildaz\config_0.json
-    Log:    %APPDATA%\tildaz\tildaz0.log
+    Log:    %APPDATA%\tildaz\tildaz_0.log
 
 Launch TildaZ again while every configured instance is running to add
 another one. Press its global hotkey and choose Create. Each numbered
