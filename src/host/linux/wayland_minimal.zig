@@ -4866,8 +4866,9 @@ const Client = struct {
     fn tryConnectDbus(self: *Client) void {
         // #227 / #230 — sway / Hyprland / COSMIC 은 portal GlobalShortcuts 를 쓰지
         // 않는다. hotkey 는 compositor keybind → `tildaz --toggle` (sway = sway_ipc
-        // 런타임 `bindsym`, Hyprland = install.sh 의 config `bind`/`hl.bind`, COSMIC =
-        // RON `Spawn("tildaz --toggle N")`) 로 거는 게 정공 — portal
+        // 런타임 `bindsym`, Hyprland = launcher `shortcut_sync.syncHyprland` 의
+        // `hyprctl keyword bind`/`unbind` 런타임 증분 동기화, COSMIC = RON
+        // `Spawn("tildaz --toggle N")`) 로 거는 게 정공 — portal
         // GlobalShortcuts 는 anonymous shortcut + DE 전환 wedge (#244) 라 불안정하거나
         // (Hyprland) 아예 미구현 (xdg-desktop-portal-cosmic, portal-cosmic#4).
         // 특히 xdg-desktop-portal-hyprland 는 GlobalShortcuts 를 *advertise 하면서도*

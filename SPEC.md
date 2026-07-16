@@ -43,7 +43,7 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 | 항목 | 동작 정의 | Windows 구현 | macOS 구현 | Linux 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | Drop-down 위치 | 다른 모든 윈도우 위 | `WS_EX_TOPMOST` + `SetWindowPos(HWND_TOPMOST)` | `NSPopUpMenuWindowLevel` (101) | layer-shell 계열 (KWin / wlroots / smithay): `zwlr_layer_shell_v1.get_layer_surface(layer=top)` (L8-α). mutter(GNOME) / muffin(Cinnamon) 은 layer-shell 미지원이라 tildaz 전용 **Shell extension** 이 일반 xdg-shell 창을 잡아 drop-down 으로 배치 ([#228](https://github.com/ensky0/tildaz/issues/228) / [#229](https://github.com/ensky0/tildaz/issues/229), #215 해소). 자세한 DE 별 동작은 §1.2 | ✅ | ✅ | ✅ (layer-shell + extension) |
-| 표시 모니터 (멀티모니터) | **마우스 커서가 있는 모니터**에 등장 (drop-down 표준 UX). show() / hotkey toggle show 시 적용 — work-area relayout(해상도/DPI 변화)은 현재 모니터 유지 | show() 시 `MonitorFromPoint(GetCursorPos)` ([window.zig:954](src/window.zig#L954)) | `NSEvent.mouseLocation` 을 포함하는 NSScreen (`screenForCursor`, [host/macos.zig](src/host/macos.zig)) — 없으면 `NSScreen.mainScreen` fallback ([#240](https://github.com/ensky0/tildaz/issues/240)) | layer-shell 계열은 compositor 가 커서 출력에 anchor. mutter/muffin fallback 은 GNOME(#228)/Cinnamon(#229) extension 이 `get_current_monitor()`(커서 모니터)로 배치 | ✅ | ✅ ([#240](https://github.com/ensky0/tildaz/issues/240) — `screenForCursor`, 멀티모니터 실기 검증) | ✅ (extension 계열) |
+| 표시 모니터 (멀티모니터) | **마우스 커서가 있는 모니터**에 등장 (drop-down 표준 UX). show() / hotkey toggle show 시 적용 — work-area relayout(해상도/DPI 변화)은 현재 모니터 유지 | show() 시 [`Window.monitorInfoFor(.cursor)`](src/window.zig) → `GetCursorPos` / `MonitorFromPoint` | `NSEvent.mouseLocation` 을 포함하는 NSScreen (`screenForCursor`, [host/macos.zig](src/host/macos.zig)) — 없으면 `NSScreen.mainScreen` fallback ([#240](https://github.com/ensky0/tildaz/issues/240)) | layer-shell 계열은 compositor 가 커서 출력에 anchor. mutter/muffin fallback 은 GNOME(#228)/Cinnamon(#229) extension 이 `get_current_monitor()`(커서 모니터)로 배치 | ✅ | ✅ ([#240](https://github.com/ensky0/tildaz/issues/240) — `screenForCursor`, 멀티모니터 실기 검증) | ✅ (extension 계열) |
 | Borderless | titlebar / 사각 모서리 | `WS_POPUP` styleMask | `NSWindowStyleMaskBorderless` + `canBecomeKeyWindow` override | layer-shell 본질 — toplevel 없음, decoration 없음 | ✅ | ✅ | ✅ |
 | Shadow | 없음 (drop-down 정체) | (default 없음) | `setHasShadow:false` 안 함 (default true 시각 자연) | compositor 결정 (KDE / GNOME 모두 layer-surface 에 shadow 안 적용) | ✅ | ✅ | ✅ |
 | 사용자 드래그 차단 | 사용자가 위치 / 크기 변경 못함 | `WS_POPUP` 자연 차단 | `setMovable:false` + non-resizable | layer-shell 본질 — anchor 가 위치 강제, 사용자 drag 불가 | ✅ | ✅ | ✅ |
@@ -52,7 +52,7 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 | 위치 offset (config) | dock 안 시작 위치 0..100 | `setPosition` | `repositionWindow` | opposing edge anchor + margin (L8-β) | ✅ | ✅ | ✅ |
 | Opacity (config) | 0..100 percent → alpha | 100%: normal flip-model; below 100%: `WS_EX_NOREDIRECTIONBITMAP` + DirectComposition visual opacity ([#89](https://github.com/ensky0/tildaz/issues/89)) | `NSWindow.setAlphaValue:` | ARGB8888 alpha sweep ([4020879](https://github.com/ensky0/tildaz/commit/4020879), L13-γ) | ✅ | ✅ | ✅ |
 | Theme (config) | 16-color palette + bg/fg | `themes.findTheme` → ghostty Terminal.Colors | 동일 | 동일 (cross-platform `themes` 모듈) | ✅ | ✅ | ✅ |
-| 단일 탭 시 탭바 | 자리 없음 (Cmd+Q/W 만 종료) | (탭바 항상 표시) | `tabBarHeightPx == 0` 분기 | `Renderer.tabBarHeightPx(tab_count)` 가 count < 2 시 0 반환 (#127). 호출자 `Client.effectiveTabBarHeightPx()` 가 `session.count()` 전달 — mac `tabBarHeightPx(scale)` 의 `g_session.count() < 2 ? 0 : ...` 동등 | ✅ | ✅ | ✅ |
+| 단일 탭 시 탭바 | 자리 없음 | `App.effectiveTabBarHeight()`가 count ≤ 1이면 0 (#127) | `tabBarHeightPx == 0` 분기 | `Renderer.tabBarHeightPx(tab_count)` 가 count < 2 시 0 반환 (#127). 호출자 `Client.effectiveTabBarHeightPx()` 가 `session.count()` 전달 — mac `tabBarHeightPx(scale)` 의 `g_session.count() < 2 ? 0 : ...` 동등 | ✅ | ✅ | ✅ |
 | Live tracking | 모니터 / DPI 변화 시 재적용 | WM_DPICHANGED + `font_change_fn` | NSScreenDidChange notification | `wp_fractional_scale_v1.preferred_scale` event → `applyScale` (L8-δ) | ✅ | ✅ | ✅ |
 | Drag-resize 사용자 차단 | 사용자가 크기 못 바꿈 | `WS_POPUP` styleMask | borderless + non-resizable | layer-shell 본질 (위 동등) | ✅ | ✅ | ✅ |
 
@@ -213,7 +213,7 @@ minimize/restore.
 |---|---|---|---|---|---|---|
 | 새 탭 | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T (L12-β) | ✅ | ✅ | ✅ |
 | 활성 탭 닫기 | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W (L12-β) | ✅ | ✅ | ✅ |
-| 인덱스 점프 (1..9) | Alt+1..9 ([`window.zig:1604-1612`](src/window.zig#L1604-L1612)) | Cmd+1..9 | Alt+1..9 ([a60fb8e](https://github.com/ensky0/tildaz/commit/a60fb8e)) | ✅ | ✅ | ✅ |
+| 인덱스 점프 (1..9) | Alt+1..9 ([`Window.wndProc`의 `WM_SYSKEYDOWN`](src/window.zig)) | Cmd+1..9 | Alt+1..9 ([a60fb8e](https://github.com/ensky0/tildaz/commit/a60fb8e)) | ✅ | ✅ | ✅ |
 | 이전 탭 | Ctrl+Shift+[ | Shift+Cmd+[ | Ctrl+Shift+[ (L12-β) | ✅ | ✅ | ✅ |
 | 다음 탭 | Ctrl+Shift+] | Shift+Cmd+] | Ctrl+Shift+] (L12-β) | ✅ | ✅ | ✅ |
 
@@ -340,7 +340,7 @@ minimize/restore.
 | PTY exit → 그 탭만 정리 | read thread → main thread 안전 | `WM_TAB_CLOSED` post + `closeTabByPtr` | `Tab.exit_flag` atomic + `drainExitedTabs` | 동일 (Linux PTY `Tab.exit_flag` atomic) | ✅ | ✅ | ✅ |
 | 마지막 탭 종료 → 앱 종료 | count == 0 시 | `closeAfterShellExit` | `NSApp.terminate:` | wayland event loop break + `exit(0)` | ✅ | ✅ | ✅ |
 | Drag reorder 5px 임계 | drag 가 5px 미만 = click | `DragState.move` | 동일 (cross-platform `tab_interaction.zig`) | 동일 모듈 (L12-γ-3) | ✅ | ✅ | ✅ |
-| Rename — cursor 표시 | always-visible 1px vertical bar | `cursor_instances` | 동일 (`drawTabBar`) | 동일 (`drawTabBar` cross-platform) | ✅ | ✅ | ✅ |
+| Rename — cursor 표시 | always-visible 1px vertical bar, text cell 위·아래 2px inset | `cursor_instances`: 현재 `ch - 2`라 아래 inset 누락 ([#315](https://github.com/ensky0/tildaz/issues/315)) | `drawTabBar`: `text_y_top + 2`, `ch - 4` | `drawTabBar`: `text_y_top + 2`, `cell_h - 4` | 🟨 (#315) | ✅ | ✅ |
 | Rename — IME UTF-8 입력 | 한글 / 일본어 등 multi-byte | `RenameState.insertCodepoint` | 동일 (`imeInsertText` rename 분기) | 동일 (`zwp_text_input_v3.commit_string` → RenameState, L12-γ-2) | ✅ | ✅ | ✅ |
 | Rename — IME preedit 위치 | 탭바 cursor 옆 inline (보라 배경) | `WM_IME_*` 가로채기 + `ImmGetCompositionStringW` + renderer overlay (#164 v0.4.0) | `drawTabBar` 의 preedit 인자 | text-input-v3 preedit_string → `drawTabBar` overlay (L12-γ-2, foot 패턴) | ✅ | ✅ | ✅ |
 | Rename — 마우스 클릭 cursor 이동 | 같은 탭 text 영역 클릭 → cursor 이동 (commit X). 다른 영역 → commit. preedit 활성 시 manual commit + IME state cancel. | `tryRenameClickMoveCursor` + `imeCancelComposition` (#164 v0.4.0) | `tryRenameClickMoveCursor` + `discardMarkedText` 동일 | `tryRenameClickMoveCursor` + text-input reset (L12-γ-2) | ✅ | ✅ | ✅ |
@@ -367,7 +367,7 @@ minimize/restore.
 | Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
 | 그 외 상태변경 단축키 (reset / show_about / open_config / open_log) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | `input_policy.resolve` → pending=commit (Ctrl+Shift+I·P·L·R / reset #214) | ✅ | ✅ | ✅ |
-| copy_selection (Ctrl+Shift+C) / dump_perf (Ctrl+Shift+F12) | **commit 안 함** (read-only) | rename 유지 | rename 유지 | rename 유지 (`input_policy.resolve` read_only → pending=leave, #296) | 🟨 | 🟨 | ✅ |
+| copy_selection (Ctrl+Shift+C) / dump_perf (Ctrl+Shift+F12) | **commit 안 함** (read-only) | rename 유지 (`input_policy.resolve`의 pending=leave 확인 후 action 실행) | rename 유지 (`input_policy.resolve`의 pending=leave) | rename 유지 (`input_policy.resolve` read_only → pending=leave, #296) | ✅ | ✅ | ✅ |
 | F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow` 진입 직전 (visible 이면 `commitPendingInputFromContentView`) | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 
@@ -793,8 +793,8 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 |---|---|---|---|
 | Windows — 일반 exe (`cmd.exe` / PowerShell 등) | `CreateProcessW` 의 `lpCurrentDirectory` 에 `%USERPROFILE%` (환경변수 없으면 null = 부모 디렉토리 상속) | [src/terminal/windows/pty.zig](src/terminal/windows/pty.zig) | ✅ |
 | Windows — 셸이 `wsl` / `wsl.exe` | 명령줄에 `--cd ~` 삽입 → **Linux 홈**에서 시작. Windows Terminal 의 `MangleStartingDirectoryForWSL` 과 동일 규칙 ([microsoft/terminal PR #9223](https://github.com/microsoft/terminal/pull/9223)) — 사용자가 이미 `--cd` 나 단독 `~` 인자를 넣었으면 삽입 안 함 (사용자 값이 이김) | 동일 파일 `wslCdInsertion` | ✅ |
-| macOS | fork 자식에서 `execve` 전 `chdir(getenv("HOME"))` — 실패 시 무시하고 진행 | [src/terminal/macos/pty.zig](src/terminal/macos/pty.zig) | ✅ |
-| Linux | 동일 — `chdir(getenv("HOME"))` | [src/terminal/linux/pty.zig](src/terminal/linux/pty.zig) | ✅ |
+| macOS | fork 자식에서 `execve` 전 `chdir(getenv("HOME"))` — 실패 시 무시하고 진행 | 공통 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `childExec` | ✅ |
+| Linux | 동일 — `chdir(getenv("HOME"))` | 공통 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `childExec` | ✅ |
 
 > Windows 에서 Linux 홈을 `lpCurrentDirectory` 로 지정할 수 없는 이유 (Windows 경로만 표현 가능 + Linux 홈 위치는 distro 안에서만 알 수 있음) 와 `\\wsl$\...` 대안이 기각된 근거는 [#265 코멘트](https://github.com/ensky0/tildaz/issues/265#issuecomment-4910677101) 참조.
 
@@ -806,9 +806,9 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 탭 닫기 시 자식 정리 | 즉시 종료 + read thread join | `ClosePseudoConsole(hpc)` 한 호출 | `kill(-pid, SIGHUP)` + `wait_thread.join()` | `kill(-pid, SIGHUP)` + `wait_thread.join()` + `read_thread.join()` ([src/terminal/linux/pty.zig:103-145](src/terminal/linux/pty.zig#L103-L145)) | ✅ | ✅ | ✅ |
+| 탭 닫기 시 자식 정리 | 즉시 종료 + read thread join | `ClosePseudoConsole(hpc)` 한 호출 | 공통 `Pty.deinit`: `kill(-pid, SIGHUP)` + `wait_thread.join()` + `read_thread.join()` | macOS와 같은 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.deinit` | ✅ | ✅ | ✅ |
 | Polling sleep 회피 | join 직접 동기화 | (OS API 자동) | wait_thread blocking `waitpid` 으로 즉시 깨어남 | 동일 (`waitpid` blocking + `child_exited` atomic 으로 grace loop break) | ✅ | ✅ | ✅ |
-| SIGHUP 무시 셸 fallback | SIGKILL 강제 | (자동) | 500ms grace (5ms polling, `child_exited` atomic) → SIGKILL | 500ms grace / 5ms polling → `posix.kill(-pid, SIG.KILL)` ([src/terminal/linux/pty.zig:105-122](src/terminal/linux/pty.zig#L105-L122)) | ✅ | ✅ | ✅ |
+| SIGHUP 무시 셸 fallback | SIGKILL 강제 | (자동) | 공통 `Pty.deinit`: 500ms grace (5ms polling, `child_exited` atomic) → SIGKILL | macOS와 같은 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.deinit` | ✅ | ✅ | ✅ |
 
 ---
 
@@ -816,17 +816,18 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 `AGENTS.md # 터미널 환경변수` 와 동일. 우리 코드 자체엔 사용 X — 모두 자식 셸 / vim / less 같은 TUI 가 보는 변수.
 
-**정책:** 부모 environ 모두 복사 + extra_env 뒤 추가. POSIX `getenv` first-match 라 *부모 환경에 있으면 그것 우선, 없으면 우리 값 fallback*. `.app` GUI launch (`open TildaZ.app`) 는 부모 환경 거의 비어 있어 fallback 적용. CLI 직접 실행은 사용자 셸의 값 우선.
+**정책:** 부모 environ을 map으로 복사한 뒤 `extra_env`를 `put`해 같은 이름을 덮어쓴다. 즉 명시한 변수는 실행 방식과 무관하게 **우리 값 우선**, 그 외 부모 변수는 그대로 보존한다. Linux · macOS 공통 구현과 override 단위 테스트는 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.init`에 있다 (#118).
 
-| 환경변수 | 역할 | 우리 default (없을 때 fallback) | Win | Mac | Linux |
+| 환경변수 | 역할 | 우리 명시값 | Win | Mac | Linux |
 |---|---|---|---|---|---|
-| `TERM` | escape sequence + 256-color capability | `xterm-256color` (Windows ConPTY 자체 default 있음, macOS 명시) | (PTY default) | ✅ | ✅ ([wayland_minimal.zig:1033](src/host/linux/wayland_minimal.zig#L1033), 5-entry storage) |
+| `TERM` | escape sequence + 256-color capability | `xterm-256color` (Windows ConPTY 자체 default 있음, Linux · macOS 명시) | (PTY default) | ✅ | ✅ ([`Client.extra_env_storage`](src/host/linux/wayland_minimal.zig), 5-entry storage) |
 | `LANG` | bash readline multi-byte 처리 | `en_US.UTF-8` (안 하면 한글 byte raw 처리, echo 안 됨) | (PTY default) | ✅ | ✅ — `C.UTF-8` (L13-α [ec72010](https://github.com/ensky0/tildaz/commit/ec72010), 한글 IME 회귀 fix) |
 | `LC_CTYPE` | locale, 일부 셸이 `LANG` 안 봄 | `en_US.UTF-8` | (PTY default) | ✅ | ✅ — `C.UTF-8` 동일 |
-| `COLORFGBG` | vim / less / tmux 자동 dark/light colorscheme (구식 TUI 용 통로) | `themes.isDark(theme)` → `15;0` (dark) / `0;15` (light) — *theme 으로 강제* (사용자 환경 override 의도). **spawn 시 1회 스냅샷** — env 는 이미 뜬 프로세스에 갱신 불가 (환경변수 본질 한계) | ✅ | ✅ | ✅ ([wayland_minimal.zig:1044](src/host/linux/wayland_minimal.zig#L1044)) |
+| `COLORFGBG` | vim / less / tmux 자동 dark/light colorscheme (구식 TUI 용 통로) | `themes.isDark(theme)` → `15;0` (dark) / `0;15` (light) — *theme 으로 강제*. **spawn 시 1회 스냅샷** — env 는 이미 뜬 프로세스에 갱신 불가 (환경변수 본질 한계) | ✅ | ✅ | ✅ ([`Client.extra_env_storage`](src/host/linux/wayland_minimal.zig)) |
+| `SHELL` | spawn한 POSIX 셸 경로 (`echo $SHELL`, prompt/tool 감지) | 실제 spawn에 사용한 셸 path | — | ✅ | ✅ |
 | `WSLENV` | WSL 안 process 에 `COLORFGBG` 전달 | `COLORFGBG` 추가 | ✅ | — | — (WSL Linux-host 무관) |
 
-**예외 — `COLORFGBG` 만 우리 값 강제 의도** (theme 따라 결정). 다른 변수는 사용자 환경 우선.
+**override 범위:** Linux · macOS는 표의 `TERM` / `LANG` / `LC_CTYPE` / `COLORFGBG` / `SHELL` 다섯 이름을 명시해 부모의 같은 이름보다 우선한다. Windows는 ConPTY와 WSL 관례에 따라 `COLORFGBG` / `WSLENV`만 명시한다. 표에 없는 부모 환경변수는 그대로 전달한다.
 
 **dark/light 판별 통로는 두 겹** ([#266](https://github.com/ensky0/tildaz/issues/266)): `COLORFGBG` 는 질의를 안 보내는 구식 TUI 용 spawn 스냅샷이고, 질의를 보내는 앱 (fish 4 / neovim / 최신 vim) 은 §9.1 의 OSC 11 · DSR `?996n` 응답으로 *현재* 배경색 (OSC 로 런타임 변경 반영, ssh 너머 동작) 을 받는다. 두 통로의 판별 공식은 [`themes.isDarkRgb`](src/themes.zig) 하나로 공유 — 서로 어긋날 수 없음.
 
@@ -934,7 +935,9 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 ### 11.4 config error 시 dialog 경로 안내
 
-잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *해당 config 파일 경로* 명시 — 사용자가 어디 고쳐야 할지 즉시 알게.
+**목표 정책:** 잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *해당 config 파일 절대경로*를 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다.
+
+현재 JSON parse 오류와 font type/not-found 계열은 경로를 표시한다. hotkey invalid, `font.family` empty, 일부 range/schema·unknown theme 경로는 아직 공통 path helper를 거치지 않아 누락된다. Linux · macOS · Windows 공통 parser의 이 gap은 [#316](https://github.com/ensky0/tildaz/issues/316)에서 단일 진입점으로 정리한다. **현재 상태: 🟨 (#316).**
 
 ---
 
@@ -1110,5 +1113,5 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
-*마지막 업데이트: 2026-07-16 (#308 문서-코드 정합 감사 후속).
+*마지막 업데이트: 2026-07-16 (#311 SPEC·코드 정합 감사 후속).
 이 문서는 living document — 코드 변경할 때 같은 커밋 안에서 update.*
