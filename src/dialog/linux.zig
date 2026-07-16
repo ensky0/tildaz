@@ -26,6 +26,25 @@ pub const Callbacks = struct {
 
 var g_callbacks: ?Callbacks = null;
 
+/// Linux custom dialog가 저장하는 사용자 메시지의 UTF-8 byte 상한. active
+/// overlay와 deferred info request가 같은 값을 사용해야 callback을 거치면서
+/// 더 작은 상한으로 줄지 않는다 (#310).
+pub const message_capacity: usize = 4096;
+
+/// 고정 buffer에 온전한 UTF-8 prefix만 복사한다. 상한이 multibyte codepoint
+/// 중간이거나 입력 자체가 잘못된 UTF-8이면 직전 유효 경계에서 멈춘다.
+pub fn copyMessage(dest: []u8, source: []const u8) usize {
+    var len: usize = 0;
+    while (len < source.len and len < dest.len) {
+        const seq_len: usize = std.unicode.utf8ByteSequenceLength(source[len]) catch break;
+        if (seq_len > source.len - len or seq_len > dest.len - len) break;
+        _ = std.unicode.utf8Decode(source[len..][0..seq_len]) catch break;
+        len += seq_len;
+    }
+    @memcpy(dest[0..len], source[0..len]);
+    return len;
+}
+
 /// Host (wayland_minimal Client) 가 init 마지막에 호출. 이후 dialog.* 가
 /// stderr fallback 대신 host overlay 그림.
 pub fn registerCallbacks(cb: Callbacks) void {
@@ -78,4 +97,40 @@ fn showStderr(severity: dialog.Severity, title: []const u8, message: []const u8)
     };
     std.debug.print("[{s}] {s}\n{s}\n", .{ prefix, title, message });
     log.appendLine("dialog", "{s} title={s} msg={s} (stderr fallback)", .{ prefix, title, message });
+}
+
+test "Linux dialog message copy keeps the 4096-byte capacity" {
+    var source: [message_capacity + 1]u8 = undefined;
+    @memset(&source, 'x');
+    var dest: [message_capacity]u8 = undefined;
+
+    const lengths = [_]usize{ 511, 512, 513, 2048, 2049, 4096, 4097 };
+    for (lengths) |source_len| {
+        const copied = copyMessage(&dest, source[0..source_len]);
+        try std.testing.expectEqual(@min(source_len, message_capacity), copied);
+        try std.testing.expectEqualSlices(u8, source[0..copied], dest[0..copied]);
+    }
+}
+
+test "Linux dialog message copy stops at a valid UTF-8 boundary" {
+    var split_hangul: [message_capacity + 2]u8 = undefined;
+    @memset(split_hangul[0 .. message_capacity - 1], 'x');
+    @memcpy(split_hangul[message_capacity - 1 ..], "한");
+
+    var dest: [message_capacity]u8 = undefined;
+    const split_len = copyMessage(&dest, &split_hangul);
+    try std.testing.expectEqual(message_capacity - 1, split_len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(dest[0..split_len]));
+
+    var exact_hangul: [message_capacity]u8 = undefined;
+    @memset(exact_hangul[0 .. message_capacity - 3], 'x');
+    @memcpy(exact_hangul[message_capacity - 3 ..], "한");
+    const exact_len = copyMessage(&dest, &exact_hangul);
+    try std.testing.expectEqual(message_capacity, exact_len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(dest[0..exact_len]));
+
+    var small_dest: [16]u8 = undefined;
+    const invalid_len = copyMessage(&small_dest, "abc\xffdef");
+    try std.testing.expectEqual(@as(usize, 3), invalid_len);
+    try std.testing.expectEqualStrings("abc", small_dest[0..invalid_len]);
 }
