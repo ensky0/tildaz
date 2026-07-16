@@ -24,7 +24,7 @@ const paths = @import("paths.zig");
 /// §11.3. 사용자가 그대로 vim / explorer 명령에 paste 가능 + 환경 ambiguity 제거.
 pub fn showAboutDialog() void {
     var path_buf: [1024]u8 = undefined;
-    const exe_path = currentExePath(&path_buf) catch "(unknown)";
+    const exe_path = currentExePath(&path_buf) catch messages.unknown_path_msg;
 
     const pid: u64 = @intCast(switch (builtin.os.tag) {
         .windows => getCurrentProcessIdWindows(),
@@ -34,8 +34,8 @@ pub fn showAboutDialog() void {
     var heap_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&heap_buf);
     const alloc = fba.allocator();
-    const config_path = paths.configPath(alloc) catch "(unknown)";
-    const log_path = paths.logPath(alloc) catch "(unknown)";
+    const config_path = paths.configPath(alloc) catch messages.unknown_path_msg;
+    const log_path = paths.logPath(alloc) catch messages.unknown_path_msg;
 
     // Tip 라인의 단축키 — platform native modifier (SPEC §0 #2). macOS 만
     // Cmd 기반, Windows / Linux 는 Ctrl 기반 표준. body 구조는 양쪽 동일하고

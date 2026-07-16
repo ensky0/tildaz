@@ -149,7 +149,14 @@ pub const linux_wayland_socket_unavailable_format =
     \\and that the socket path above exists.
 ;
 pub const already_running_msg = "TildaZ is already running.";
-pub const font_not_found_format = "Font not found: \"{s}\"";
+pub const unknown_path_msg = "(unknown)";
+pub const font_schema_error_path_format = "\n\nConfig path:\n  {s}";
+pub const font_not_found_format = "Font not found: \"{s}\"\n\n";
+pub const font_chain_header_msg = "config \"font.family\" chain (in order):\n";
+pub const font_chain_entry_format = "  - \"{s}\"{s}\n";
+pub const font_not_installed_marker = " ← not installed";
+pub const font_chain_footer_format =
+    "\nAll families listed in font.family must be installed on the system.\n\nConfig path:\n{s}\n";
 
 /// glyph fallback chain 의 모든 명시 폰트 lookup 실패 — chain 비어있는 케이스
 /// (사용자가 모두 잘못된 이름 명시) 등 edge. strict 검증 path 는 한 개 이름을
@@ -277,6 +284,13 @@ pub const new_instance_hotkey_duplicate_fallback =
 pub const new_instance_hotkey_check_failed_msg =
     "Could not check existing TildaZ hotkeys.";
 pub const new_instance_create_failed_format = "The new TildaZ instance could not be created.\n\n{s}";
+pub const new_instance_create_failed_fallback_msg = "The new TildaZ instance could not be created.";
+
+pub const macos_menu_open_config_label = "Open Config";
+pub const macos_menu_open_log_label = "Open Log";
+pub const macos_menu_quit_label = "Quit TildaZ";
+pub const macos_menu_edit_label = "Edit";
+pub const macos_menu_emoji_symbols_label = "Emoji & Symbols";
 
 pub const macos_permission_required_title = "TildaZ — Permission required";
 pub const macos_permission_required_format =
@@ -314,3 +328,16 @@ pub const macos_permission_required_format =
 pub const macos_permission_required_fallback_msg = "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
 pub const permission_status_granted = "GRANTED";
 pub const permission_status_missing = "MISSING";
+
+test "macOS menu labels and new-instance fallback preserve user text" {
+    try std.testing.expectEqualStrings("About TildaZ", about_title);
+    try std.testing.expectEqualStrings("Open Config", macos_menu_open_config_label);
+    try std.testing.expectEqualStrings("Open Log", macos_menu_open_log_label);
+    try std.testing.expectEqualStrings("Quit TildaZ", macos_menu_quit_label);
+    try std.testing.expectEqualStrings("Edit", macos_menu_edit_label);
+    try std.testing.expectEqualStrings("Emoji & Symbols", macos_menu_emoji_symbols_label);
+    try std.testing.expectEqualStrings(
+        "The new TildaZ instance could not be created.",
+        new_instance_create_failed_fallback_msg,
+    );
+}
