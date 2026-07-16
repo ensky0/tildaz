@@ -111,6 +111,6 @@ pub fn handle(allocator: std.mem.Allocator) void {
 
 fn showCreateError(err: anyerror) void {
     var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, messages.new_instance_create_failed_format, .{@errorName(err)}) catch "The new TildaZ instance could not be created.";
+    const msg = std.fmt.bufPrint(&buf, messages.new_instance_create_failed_format, .{@errorName(err)}) catch messages.new_instance_create_failed_fallback_msg;
     dialog.showError(messages.new_instance_title, msg);
 }

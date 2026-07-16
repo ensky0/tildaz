@@ -34,16 +34,18 @@ pub fn showGlyphFallbackMustBeListFatal() noreturn {
 fn showSchemaErrorFatal(line: []const u8) noreturn {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch "(unknown)";
+    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
 
     var msg_buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&msg_buf);
+    dialog.showFatal(messages.config_error_title, schemaErrorMessage(&msg_buf, line, cfg_path));
+}
+
+fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []const u8 {
+    var fbs = std.io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
     w.writeAll(line) catch {};
-    w.writeAll("\n\nConfig path:\n  ") catch {};
-    w.writeAll(cfg_path) catch {};
-
-    dialog.showFatal(messages.config_error_title, fbs.getWritten());
+    w.print(messages.font_schema_error_path_format, .{cfg_path}) catch {};
+    return fbs.getWritten();
 }
 
 /// `missing` 은 시스템에서 lookup 실패한 chain entry 이름. `chain` 은 사용자
@@ -60,24 +62,46 @@ pub fn showNotFoundFatal(missing: []const u8, chain: []const []const u8) noretur
 pub fn notFoundMessage(msg_buf: []u8, missing: []const u8, chain: []const []const u8) []const u8 {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch "(unknown)";
+    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
 
+    return notFoundMessageWithPath(msg_buf, missing, chain, cfg_path);
+}
+
+fn notFoundMessageWithPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8) []const u8 {
     var fbs = std.io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
-    w.print("Font not found: \"{s}\"\n\n", .{missing}) catch {};
-    w.writeAll("config \"font.family\" chain (in order):\n") catch {};
+    w.print(messages.font_not_found_format, .{missing}) catch {};
+    w.writeAll(messages.font_chain_header_msg) catch {};
     for (chain) |fam| {
         if (fam.len == 0) continue;
-        const marker = if (std.mem.eql(u8, fam, missing)) " \u{2190} not installed" else "";
-        w.print("  - \"{s}\"{s}\n", .{ fam, marker }) catch {};
+        const marker = if (std.mem.eql(u8, fam, missing)) messages.font_not_installed_marker else "";
+        w.print(messages.font_chain_entry_format, .{ fam, marker }) catch {};
     }
-    w.writeAll(
-        \\
-        \\All families listed in font.family must be installed on the system.
-        \\
-        \\Config path:
-        \\
-    ) catch {};
-    w.print("{s}\n", .{cfg_path}) catch {};
+    w.print(messages.font_chain_footer_format, .{cfg_path}) catch {};
     return fbs.getWritten();
+}
+
+test "font validation messages preserve runtime values and final newline" {
+    var schema_buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "Invalid config: font.family must be a string (font name).\n\nConfig path:\n  /tmp/config_3.json",
+        schemaErrorMessage(
+            &schema_buf,
+            messages.font_family_must_be_string_msg,
+            "/tmp/config_3.json",
+        ),
+    );
+
+    var missing_buf: [1024]u8 = undefined;
+    const chain = [_][]const u8{ "DejaVu Sans Mono", "Missing Font", "Noto Color Emoji" };
+    try std.testing.expectEqualStrings(
+        "Font not found: \"Missing Font\"\n\n" ++
+            "config \"font.family\" chain (in order):\n" ++
+            "  - \"DejaVu Sans Mono\"\n" ++
+            "  - \"Missing Font\" ← not installed\n" ++
+            "  - \"Noto Color Emoji\"\n" ++
+            "\nAll families listed in font.family must be installed on the system.\n\n" ++
+            "Config path:\n/tmp/config_3.json\n",
+        notFoundMessageWithPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json"),
+    );
 }

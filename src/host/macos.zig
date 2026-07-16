@@ -3685,7 +3685,7 @@ fn buildMainMenu(app: objc.id) !void {
     const about_item = initItem(
         about_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString("About TildaZ"),
+        objc.nsString(messages.about_title),
         objc.sel("tildazShowAbout:"),
         objc.nsString("i"),
     ) orelse return error.AboutItemInitFailed;
@@ -3700,7 +3700,7 @@ fn buildMainMenu(app: objc.id) !void {
     const config_item = initItem(
         config_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString("Open Config"),
+        objc.nsString(messages.macos_menu_open_config_label),
         objc.sel("tildazOpenConfig:"),
         objc.nsString("p"),
     ) orelse return error.OpenConfigItemInitFailed;
@@ -3712,7 +3712,7 @@ fn buildMainMenu(app: objc.id) !void {
     const log_item = initItem(
         log_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString("Open Log"),
+        objc.nsString(messages.macos_menu_open_log_label),
         objc.sel("tildazOpenLog:"),
         objc.nsString("l"),
     ) orelse return error.OpenLogItemInitFailed;
@@ -3729,7 +3729,7 @@ fn buildMainMenu(app: objc.id) !void {
     const quit_item = initItem(
         item_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString("Quit TildaZ"),
+        objc.nsString(messages.macos_menu_quit_label),
         objc.sel("terminate:"),
         objc.nsString("q"),
     ) orelse return error.QuitItemInitFailed;
@@ -3749,7 +3749,7 @@ fn buildMainMenu(app: objc.id) !void {
     addItem(main_menu, objc.sel("addItem:"), edit_item);
 
     const edit_menu_init = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), objc.nsString("Edit")) orelse return error.MenuInitFailed;
+    const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), objc.nsString(messages.macos_menu_edit_label)) orelse return error.MenuInitFailed;
 
     // Ctrl+Cmd+Space → tildazShowEmoji: — NSApp.sendEvent 단계에서 menu
     // shortcut 매칭 자동 라우팅 → 우리 view keyDown 까지 안 와서 PTY 안 흘림.
@@ -3761,7 +3761,7 @@ fn buildMainMenu(app: objc.id) !void {
         const item = initItem(
             emoji_alloc,
             objc.sel("initWithTitle:action:keyEquivalent:"),
-            objc.nsString("Emoji & Symbols"),
+            objc.nsString(messages.macos_menu_emoji_symbols_label),
             objc.sel("tildazShowEmoji:"),
             objc.nsString(" "),
         ) orelse return error.EmojiItemInitFailed;

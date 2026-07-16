@@ -568,7 +568,7 @@ pub const Window = struct {
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-            const cfg_path = paths.configPath(fba.allocator()) catch "(unknown)";
+            const cfg_path = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
             var msg_buf: [1024]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &msg_buf,
