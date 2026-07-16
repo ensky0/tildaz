@@ -50,7 +50,7 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 | Dock 위치 (config) | top / bottom / left / right | `setPosition` | `repositionWindow` | `set_anchor(top\|bottom\|left\|right)` ([c27d470](https://github.com/ensky0/tildaz/commit/c27d470), L8-β) | ✅ | ✅ | ✅ |
 | 크기 비율 (config) | width / height percent | `setPosition` | `repositionWindow` | `wl_output.mode` × percent → `set_size` (L8-β) | ✅ | ✅ | ✅ |
 | 위치 offset (config) | dock 안 시작 위치 0..100 | `setPosition` | `repositionWindow` | opposing edge anchor + margin (L8-β) | ✅ | ✅ | ✅ |
-| Opacity (config) | 0..100 percent → alpha | `SetLayeredWindowAttributes` (LWA_ALPHA) | `NSWindow.setAlphaValue:` | ARGB8888 alpha sweep ([4020879](https://github.com/ensky0/tildaz/commit/4020879), L13-γ) | ✅ | ✅ | ✅ |
+| Opacity (config) | 0..100 percent → alpha | 100%: normal flip-model; below 100%: `WS_EX_NOREDIRECTIONBITMAP` + DirectComposition visual opacity ([#89](https://github.com/ensky0/tildaz/issues/89)) | `NSWindow.setAlphaValue:` | ARGB8888 alpha sweep ([4020879](https://github.com/ensky0/tildaz/commit/4020879), L13-γ) | ✅ | ✅ | ✅ |
 | Theme (config) | 16-color palette + bg/fg | `themes.findTheme` → ghostty Terminal.Colors | 동일 | 동일 (cross-platform `themes` 모듈) | ✅ | ✅ | ✅ |
 | 단일 탭 시 탭바 | 자리 없음 (Cmd+Q/W 만 종료) | (탭바 항상 표시) | `tabBarHeightPx == 0` 분기 | `Renderer.tabBarHeightPx(tab_count)` 가 count < 2 시 0 반환 (#127). 호출자 `Client.effectiveTabBarHeightPx()` 가 `session.count()` 전달 — mac `tabBarHeightPx(scale)` 의 `g_session.count() < 2 ? 0 : ...` 동등 | ✅ | ✅ | ✅ |
 | Live tracking | 모니터 / DPI 변화 시 재적용 | WM_DPICHANGED + `font_change_fn` | NSScreenDidChange notification | `wp_fractional_scale_v1.preferred_scale` event → `applyScale` (L8-δ) | ✅ | ✅ | ✅ |
@@ -101,6 +101,20 @@ atlas/cache를 소유한다. 따라서 terminal font 크기를 바꿔도 탭 제
 `wl_output` 정수 scale (event opcode 3) 을 fallback 으로 적용한다 (#210/#238). 둘 다 없거나
 (정수 scale 도 안 옴) 첫 init 시점에만 `scale = 1.0` default, PT 값 그대로 사용 (기존 1x
 환경 동작 보존).
+
+**Linux mixed-output basis**: The client binds and tracks advertised `wl_output`
+objects, up to the fixed limit of eight, and records the set reported by the main
+surface's `wl_surface.enter` / `wl_surface.leave` events. At the end of each
+dispatch batch it keeps the current basis while that output remains in the set;
+otherwise it prefers the first-bound output when present, then the first entered
+output. An empty set preserves the current basis. Batch-level selection prevents
+wlroots compositors from oscillating when a surface flush with an adjacent output
+receives enter events for both outputs. The selected output's current mode drives
+percentage layout. Its integer scale is the fallback when
+`wp_fractional_scale_v1` is unavailable; per-surface `preferred_scale` remains
+authoritative otherwise. A mapped layer surface is replaced create-before-destroy
+when its basis dimensions change so the compositor applies the new layout
+immediately ([#295](https://github.com/ensky0/tildaz/issues/295)).
 
 `tab_layout.compute(Inputs)` 의 `tab_w` / `arrow_w` / `plus_w` 도 *scaled* 값을
 넣어야 함 (PT 값 직접 넣으면 인접 hit-test 와 좌표 안 맞음). 모든 host 가 위 표의
@@ -1096,5 +1110,5 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
-*마지막 업데이트: 2026-07-13 (#293 문서-코드 정합 pass — #282 감사 후속).
+*마지막 업데이트: 2026-07-16 (#308 문서-코드 정합 감사 후속).
 이 문서는 living document — 코드 변경할 때 같은 커밋 안에서 update.*
