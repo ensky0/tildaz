@@ -25,6 +25,7 @@ const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
+const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
 const dbus = @import("dbus.zig");
 const portal = @import("portal.zig");
@@ -490,6 +491,9 @@ pub const DialogOverlay = struct {
     status_buf: [256]u8 = undefined,
     status_len: usize = 0,
     prompt_available: bool = false,
+    wrap_cells: usize = 1,
+    show_icon: bool = true,
+    layout_fits: bool = true,
 
     // --- wayland 객체 ---
     surface_id: u32 = 0,
@@ -2102,14 +2106,24 @@ const Client = struct {
         });
         // renderer scale apply — paint 가 1x layout 그리면 큰 buffer 안 작은
         // content (#210). 실패해도 default scale 로 진행.
-        self.renderer.applyScale(
-            self.allocator,
-            self.config,
-            new_scale,
-            fractional_scale_denominator,
-        ) catch |err| {
-            log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
+        const renderer_scale_applied = blk: {
+            self.renderer.applyScale(
+                self.allocator,
+                self.config,
+                new_scale,
+                fractional_scale_denominator,
+            ) catch |err| {
+                log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
+                break :blk false;
+            };
+            break :blk true;
         };
+        // dialog surface가 map된 뒤 preferred_scale이 도착할 수 있다. font만
+        // 바꾸고 1x 요청 폭을 유지하면 본문이 불필요하게 더 wrap되므로 dialog
+        // role의 size/margin도 같은 scale에서 다시 요청한다 (#306).
+        if (renderer_scale_applied and self.dialog.surface_id != 0) {
+            try self.sendDialogSurfaceLayout(source);
+        }
         // layer surface 재송신 + grid 재계산. layer 없으면(xdg/GNOME) skip —
         // configure 가 viewport/size 처리. boot 중 dialog 가 main 이전이면 main skip.
         if (self.layer_surface_id != 0) {
@@ -2301,6 +2315,17 @@ const Client = struct {
         // 계산은 그 정확한 값을 직접 사용 (이 함수 미사용).
         if (physical <= 0) return 0;
         return @divFloor(physical * den, num);
+    }
+
+    /// dialog surface 요청은 계산한 physical content보다 작아지면 마지막 glyph가
+    /// 잘릴 수 있으므로 positive ceil을 쓴다. configure의 logical→physical floor와
+    /// 짝을 이뤄 요청한 buffer 크기를 보존한다 (#306).
+    fn physicalToLogicalCeil(self: *const Client, physical: i32) i32 {
+        if (physical <= 0) return 0;
+        const num: i64 = @intCast(self.preferred_scale);
+        const den: i64 = fractional_scale_denominator;
+        const value: i64 = @intCast(physical);
+        return @intCast(@divFloor(value * den + num - 1, num));
     }
 
     fn applyPendingSize(self: *Client) void {
@@ -5129,6 +5154,96 @@ const Client = struct {
         self.awaiting_frame = false;
     }
 
+    fn dialogViewportPhysicalSize(self: *const Client) dialog_layout.Size {
+        return .{
+            .w = if (self.screen_width > 0) self.screen_width else screen_fallback_width,
+            .h = if (self.screen_height > 0) self.screen_height else screen_fallback_height,
+        };
+    }
+
+    fn dialogLayoutKind(kind: DialogOverlay.Kind) dialog_layout.Kind {
+        return switch (kind) {
+            .none, .info => .info,
+            .confirm => .confirm,
+            .prompt => .prompt,
+        };
+    }
+
+    fn computeCurrentDialogLayout(self: *const Client) dialog_layout.Layout {
+        const viewport = self.dialogViewportPhysicalSize();
+        return self.renderer.computeDialogLayout(
+            self.dialog.title(),
+            self.dialog.message(),
+            dialogLayoutKind(self.dialog.kind),
+            viewport.w,
+            viewport.h,
+        );
+    }
+
+    fn applyCurrentDialogLayout(self: *Client) dialog_layout.Layout {
+        const layout = self.computeCurrentDialogLayout();
+        self.dialog.wrap_cells = layout.wrap_cells;
+        self.dialog.show_icon = layout.show_icon;
+        self.dialog.layout_fits = layout.fits;
+        return layout;
+    }
+
+    fn applyCurrentDialogLayoutForSurface(self: *Client, surface: dialog_layout.Size) dialog_layout.Layout {
+        const layout = self.renderer.computeDialogLayoutForSurface(
+            self.dialog.title(),
+            self.dialog.message(),
+            dialogLayoutKind(self.dialog.kind),
+            surface.w,
+            surface.h,
+        );
+        self.dialog.wrap_cells = layout.wrap_cells;
+        self.dialog.show_icon = layout.show_icon;
+        self.dialog.layout_fits = layout.fits;
+        return layout;
+    }
+
+    fn sendDialogSurfaceLayout(self: *Client, source: []const u8) !void {
+        if (!self.dialog.active() or self.dialog.surface_id == 0) return;
+
+        const layout = self.applyCurrentDialogLayout();
+        const logical_w: u32 = @intCast(self.physicalToLogicalCeil(layout.size.w));
+        const logical_h: u32 = @intCast(self.physicalToLogicalCeil(layout.size.h));
+
+        if (self.dialog.layer_surface_id != 0) {
+            try self.sendArgs(
+                self.dialog.layer_surface_id,
+                zwlr_layer_surface_v1_request_set_size,
+                &.{ logical_w, logical_h },
+            );
+            const center = self.dialogCenterMargins(@intCast(logical_w), @intCast(logical_h));
+            var margin = Msg.init(self.dialog.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
+            try margin.putI32(center.top);
+            try margin.putI32(0);
+            try margin.putI32(0);
+            try margin.putI32(center.left);
+            try margin.send(self.stream);
+        } else if (self.dialog.xdg_toplevel_id != 0) {
+            try self.sendArgs(self.dialog.xdg_toplevel_id, 7, &.{ logical_w, logical_h });
+            try self.sendArgs(self.dialog.xdg_toplevel_id, 8, &.{ logical_w, logical_h });
+            self.dialog.pending_w_logical = logical_w;
+            self.dialog.pending_h_logical = logical_h;
+        } else {
+            // createDialogSurface의 fractional-scale roundtrip 중 아직 role을
+            // 만들기 전이면 caller가 갱신된 scale로 최초 요청을 계산한다.
+            return;
+        }
+
+        try self.sendNoArgs(self.dialog.surface_id, 6);
+        log.appendLine("dialog", "relayout source={s} logical={}x{} wrap_cells={} icon={} fits={}", .{
+            source,
+            logical_w,
+            logical_h,
+            layout.wrap_cells,
+            layout.show_icon,
+            layout.fits,
+        });
+    }
+
     /// #203 Phase C — info / error dialog 표시. content 저장 + box 크기 계산 →
     /// dialog surface 생성 (이미 떠 있으면 새 크기로 재생성). cross-platform
     /// `dialog.showInfo` / `dialog.showAboutAlert` 등의 종착점 (dialog/linux.zig
@@ -5177,11 +5292,19 @@ const Client = struct {
         // Confirm pending 새로 시작 — 이전 dialog 의 result 가 남아 있을 가능성 0.
         self.pending_confirm_result = null;
 
-        // 박스 크기 — 텍스트 폭 / 라인 수 기반 (renderer 가 cell metric 으로
-        // 계산). physical → logical 변환해 layer-shell 에 송신.
-        const size = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), kind != .info, kind == .prompt);
-        const logical_w: u32 = @intCast(self.physicalToLogical(size.w));
-        const logical_h: u32 = @intCast(self.physicalToLogical(size.h));
+        // #306 — basis output viewport 안에서 실제 텍스트 폭/줄 수로 surface를
+        // 계산한다. physical→logical은 ceil로 왕복 축소를 막는다.
+        const layout = self.applyCurrentDialogLayout();
+        const logical_w: u32 = @intCast(self.physicalToLogicalCeil(layout.size.w));
+        const logical_h: u32 = @intCast(self.physicalToLogicalCeil(layout.size.h));
+        if (!layout.fits) {
+            log.appendLine("dialog", "content exceeds supported viewport={}x{} title={s} msg_len={} (#306)", .{
+                self.dialogViewportPhysicalSize().w,
+                self.dialogViewportPhysicalSize().h,
+                self.dialog.title(),
+                msg_len,
+            });
+        }
 
         // 이미 떠 있으면 destroy 후 새 크기로 재생성. 같은 surface 에 set_size
         // 만 다시 보낼 수도 있으나, buffer 크기 / configure 흐름 일관성을 위해
@@ -5189,9 +5312,14 @@ const Client = struct {
         if (self.dialog.surface_id != 0) {
             try self.destroyDialogSurface();
         }
-        try self.createDialogSurface(logical_w, logical_h);
-        log.appendLine("dialog", "open {s} severity={s} title={s} msg_len={d} logical={}x{}", .{
-            @tagName(kind), @tagName(severity), self.dialog.title(), msg_len, logical_w, logical_h,
+        const requested = try self.createDialogSurface(logical_w, logical_h);
+        log.appendLine("dialog", "open {s} severity={s} title={s} msg_len={d} initial_logical={}x{}", .{
+            @tagName(kind),
+            @tagName(severity),
+            self.dialog.title(),
+            msg_len,
+            requested.w,
+            requested.h,
         });
     }
 
@@ -5545,15 +5673,20 @@ const Client = struct {
     /// set_keyboard_interactivity=exclusive). 첫 commit 은 buffer 없이 send —
     /// layer-shell spec: "buffer 는 첫 configure event ack 전에 attach 불가".
     /// `handleDialogConfigure` 가 ack + buffer attach 담당.
-    fn createDialogSurface(self: *Client, logical_w: u32, logical_h: u32) !void {
-        if (self.dialog.surface_id != 0) return;
+    fn createDialogSurface(self: *Client, initial_logical_w: u32, initial_logical_h: u32) !dialog_layout.Size {
+        if (self.dialog.surface_id != 0) return .{
+            .w = @intCast(initial_logical_w),
+            .h = @intCast(initial_logical_h),
+        };
+        var logical_w = initial_logical_w;
+        var logical_h = initial_logical_h;
         if (self.layer_shell_id == 0 and self.wm_base_id == 0) {
             // role object 를 만들 protocol 이 전혀 없음 — surface 만 만들면 영영
             // 안 뜨는 trap 이라 skip. (createShellObjects 가 wm_base 를 필수로
             // 요구하므로 실제로는 거의 도달 안 함.)
             log.appendLine("dialog", "createDialogSurface skipped — neither layer-shell nor xdg_wm_base available", .{});
             self.dialog.kind = .none;
-            return;
+            return .{ .w = 0, .h = 0 };
         }
         self.dialog.surface_id = self.allocId();
         try self.sendNewId(self.compositor_id, 0, self.dialog.surface_id);
@@ -5581,6 +5714,12 @@ const Client = struct {
                 &.{ self.dialog.fractional_scale_id, self.dialog.surface_id },
             );
             try self.roundtrip();
+            // Boot fatal dialog는 main surface보다 먼저 열릴 수 있다. dialog 자체
+            // preferred_scale을 받은 뒤 고정 15/18 typography와 viewport를 다시
+            // 계산해야 첫 1x 추정 크기가 fractional output에 남지 않는다 (#306).
+            const scaled_layout = self.applyCurrentDialogLayout();
+            logical_w = @intCast(self.physicalToLogicalCeil(scaled_layout.size.w));
+            logical_h = @intCast(self.physicalToLogicalCeil(scaled_layout.size.h));
         }
 
         // role object — surface 종류만 compositor 별로 갈린다. 그리기/버퍼/
@@ -5673,6 +5812,7 @@ const Client = struct {
                 self.toplevel_id,
             });
         }
+        return .{ .w = @intCast(logical_w), .h = @intCast(logical_h) };
     }
 
     /// dialog surface 의 모든 wayland 객체 destroy. content state (kind /
@@ -5758,6 +5898,8 @@ const Client = struct {
             if (self.dialog.kind == .prompt) self.dialog.input() else null,
             if (self.dialog.kind == .prompt) self.dialog.status() else null,
             self.dialog.prompt_available,
+            self.dialog.wrap_cells,
+            self.dialog.show_icon,
         );
     }
 
@@ -5864,17 +6006,27 @@ const Client = struct {
         // compositor 가 0 으로 답하면 (= "you decide") 우리 요청 크기 그대로 —
         // 새로 계산 (openInfoDialog 가 보낸 set_size 값 회수). 다만 그 값은
         // 이미 보냈으니 0 fall-back 은 거의 안 닿음. 보수적으로 renderer 재계산.
-        const physical: struct { w: i32, h: i32 } = blk: {
+        const physical: dialog_layout.Size = blk: {
             if (w_logical > 0 and h_logical > 0) {
                 const w_clamped: i32 = @intCast(@min(w_logical, @as(u32, std.math.maxInt(i32))));
                 const h_clamped: i32 = @intCast(@min(h_logical, @as(u32, std.math.maxInt(i32))));
-                break :blk .{
+                const configured = dialog_layout.Size{
                     .w = self.logicalToPhysical(w_clamped),
                     .h = self.logicalToPhysical(h_clamped),
                 };
+                const configured_layout = self.applyCurrentDialogLayoutForSurface(configured);
+                if (!configured_layout.fits) {
+                    log.appendLine("dialog", "configured surface cannot fit content: physical={}x{} title={s} msg_len={} (#306)", .{
+                        configured.w,
+                        configured.h,
+                        self.dialog.title(),
+                        self.dialog.message().len,
+                    });
+                }
+                break :blk configured;
             }
-            const want = self.renderer.computeDialogSize(self.dialog.title(), self.dialog.message(), self.dialog.kind != .info, self.dialog.kind == .prompt);
-            break :blk .{ .w = want.w, .h = want.h };
+            const want = self.applyCurrentDialogLayout();
+            break :blk .{ .w = want.size.w, .h = want.size.h };
         };
         // viewport set_destination — buffer (physical) 를 surface (logical) 에
         // 1:1 매핑. compositor 자체 stretch 차단.
@@ -5909,8 +6061,14 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.surface_id, 6);
         }
         self.dialog.configured = true;
-        log.appendLineVerbose("dialog", "dialog paint logical={}x{} physical={}x{}", .{
-            w_logical, h_logical, physical.w, physical.h,
+        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_cells={} icon={} fits={}", .{
+            w_logical,
+            h_logical,
+            physical.w,
+            physical.h,
+            self.dialog.wrap_cells,
+            self.dialog.show_icon,
+            self.dialog.layout_fits,
         });
     }
 

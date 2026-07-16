@@ -120,6 +120,12 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    the terminal grid and tab bar directly into an ARGB8888 buffer. `xkb.zig`
    (runtime `libxkbcommon`) decodes keys; fonts come from fontconfig + FreeType
    + HarfBuzz via `src/font/linux/*`, all `dlopen`-loaded.
+6. Linux custom dialogs use the same font family and fallback chain as the
+   terminal, but fixed 15-point body/button and 18-point title contexts.
+   `host/linux/dialog_layout.zig` measures the actual message, wraps it within
+   the basis output viewport, and returns one content-sized surface layout to
+   both the Wayland host and software renderer. The decorative icon is omitted
+   only when the full message and buttons otherwise need the vertical space.
 
 The host probes compositor capabilities at startup and degrades gracefully:
 `xdg_wm_base` (baseline window — fatal if missing), `zwlr_layer_shell_v1` (true

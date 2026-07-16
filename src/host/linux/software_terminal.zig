@@ -22,6 +22,7 @@ const tab_icons = @import("../../tab_icons.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
+const dialog_layout = @import("dialog_layout.zig");
 
 /// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
 /// NSAlert / Win 11 dialog 의 ~12-16 범위. fractional scaling 환경 에선 그대로
@@ -32,7 +33,7 @@ const dialog_corner_radius_pt: u32 = 16;
 
 /// #203 Phase C step 3.2 — drop shadow 너비 (PT, 논리 점). 박스 outer edge 에서
 /// 그림자가 fade out 되는 거리. buffer 가 box 보다 4 방향 각 `dialog_shadow_margin`
-/// 만큼 큼 — set_size 와 computeDialogSize 모두 합산 포함.
+/// 만큼 큼 — set_size 와 computeDialogLayout 모두 합산 포함.
 const dialog_shadow_margin_pt: u32 = 12;
 
 /// drop shadow 의 최대 alpha — 박스 edge 바로 바깥 픽셀 의 검정 alpha. 거기서
@@ -46,57 +47,6 @@ const dialog_shadow_max_alpha: u8 = 96;
 /// 어려움. PT × scale 패턴으로 모든 DPI 환경에서 일관 크기.
 const dialog_button_w_pt: u32 = 100;
 const dialog_button_h_pt: u32 = 44;
-/// #300 — dialog 메시지 최대 content 폭 (cell 수). 이보다 긴 줄은 word-wrap
-/// 해 박스가 화면 밖으로 넘치지 않게. cell 단위라 scale 독립 (폰트가 커지면
-/// 셀도 커져 물리 폭이 비례). 표준 터미널 폭 감안 72 — 실제 메시지는 훨씬 짧다.
-const dialog_max_content_cells: usize = 72;
-
-/// dialog 메시지를 `\n` 및 `dialog_max_content_cells` 폭 기준으로 접어 한 줄씩
-/// 돌려주는 iterator (#300). `computeDialogSize`(줄 수·폭 산정)와
-/// `drawDialogContent`(그리기)가 **동일 wrap** 을 쓰도록 공용. 각 줄은
-/// message 의 sub-slice. wrap 은 공백 경계 우선, 없으면 codepoint 경계 강제
-/// 분할 (한 codepoint 가 max 보다 넓어도 최소 1개는 담아 무한루프 방지).
-const WrappedLines = struct {
-    msg: []const u8,
-    max_cells: usize,
-    pos: usize = 0,
-
-    fn next(self: *WrappedLines) ?[]const u8 {
-        if (self.pos >= self.msg.len) return null;
-        const start = self.pos;
-        var i = self.pos;
-        var width: usize = 0;
-        var last_space: ?usize = null; // 줄바꿈 가능한 공백의 byte index
-        var last_space_end: usize = start;
-        while (i < self.msg.len) {
-            const b = self.msg[i];
-            if (b == '\n') {
-                self.pos = i + 1; // 개행 소비
-                return self.msg[start..i];
-            }
-            const seq = std.unicode.utf8ByteSequenceLength(b) catch 1;
-            const end = @min(i + seq, self.msg.len);
-            const cp = std.unicode.utf8Decode(self.msg[i..end]) catch 0xFFFD;
-            const w: usize = display_width.codepointWidth(cp);
-            if (cp == ' ') {
-                last_space = i;
-                last_space_end = end;
-            }
-            if (width + w > self.max_cells and i > start) {
-                if (last_space) |sp| {
-                    self.pos = last_space_end; // 공백은 다음 줄로 넘기지 않음
-                    return self.msg[start..sp];
-                }
-                self.pos = i; // 공백 없음 → 강제 분할
-                return self.msg[start..i];
-            }
-            width += w;
-            i = end;
-        }
-        self.pos = i;
-        return self.msg[start..i];
-    }
-};
 const dialog_button_radius_pt: u32 = 16;
 const dialog_button_color: ghostty.color.RGB = .{ .r = 45, .g = 125, .b = 210 }; // macOS 시스템 blue
 const dialog_button_text_color: ghostty.color.RGB = .{ .r = 255, .g = 255, .b = 255 };
@@ -113,6 +63,9 @@ const dialog_button_gap_pt: u32 = 12;
 /// 의 viewBox=64×64 를 그대로 줄여 그림. tildaz 의 monitor + `>_` 표지. 사용자
 /// 시연 발견 — 이전 48 physical 고정 + 1.7x 환경에서 *논리 28* 로 너무 작음.
 const dialog_icon_size_pt: u32 = 64;
+const dialog_padding_pt: u32 = 8;
+const dialog_icon_gap_pt: u32 = 8;
+const dialog_viewport_margin_pt: u32 = 16;
 
 /// #203 Phase C step 3.6 — dialog 배경 / 텍스트 색. 터미널 theme (`render_state
 /// .colors`) 와 분리 — Tilda 같은 어두운 테마라도 dialog 는 *시스템 표준 밝은
@@ -139,6 +92,8 @@ pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
+    dialog_font_ctx: font.Context,
+    dialog_title_font_ctx: font.Context,
     /// L10-β — IME 조합 중 (preedit) 텍스트. host (wayland_minimal) 가 매
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
@@ -193,16 +148,42 @@ pub const Renderer = struct {
         );
         errdefer tab_ctx.deinit();
 
+        const dialog_spec = ui_metrics.dialogBodyFontSpec();
+        const dialog_pixel_height = scaledFontPixelHeight(dialog_spec, scale_num, scale_den);
+        var dialog_ctx = try font.Context.init(
+            allocator,
+            chain,
+            dialog_pixel_height,
+            dialog_spec.cell_width_ratio,
+            dialog_spec.line_height_ratio,
+        );
+        errdefer dialog_ctx.deinit();
+
+        const dialog_title_spec = ui_metrics.dialogTitleFontSpec();
+        const dialog_title_pixel_height = scaledFontPixelHeight(dialog_title_spec, scale_num, scale_den);
+        var dialog_title_ctx = try font.Context.init(
+            allocator,
+            chain,
+            dialog_title_pixel_height,
+            dialog_title_spec.cell_width_ratio,
+            dialog_title_spec.line_height_ratio,
+        );
+        errdefer dialog_title_ctx.deinit();
+
         return .{
             .render_state = .empty,
             .font_ctx = terminal_ctx,
             .tab_font_ctx = tab_ctx,
+            .dialog_font_ctx = dialog_ctx,
+            .dialog_title_font_ctx = dialog_title_ctx,
             .scale = scaleFactor(scale_num, scale_den),
         };
     }
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.render_state.deinit(allocator);
+        self.dialog_title_font_ctx.deinit();
+        self.dialog_font_ctx.deinit();
         self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
     }
@@ -241,10 +222,36 @@ pub const Renderer = struct {
         );
         errdefer new_tab_ctx.deinit();
 
+        const dialog_spec = ui_metrics.dialogBodyFontSpec();
+        const dialog_pixel_height = scaledFontPixelHeight(dialog_spec, scale_num, scale_den);
+        var new_dialog_ctx = try font.Context.init(
+            allocator,
+            chain,
+            dialog_pixel_height,
+            dialog_spec.cell_width_ratio,
+            dialog_spec.line_height_ratio,
+        );
+        errdefer new_dialog_ctx.deinit();
+
+        const dialog_title_spec = ui_metrics.dialogTitleFontSpec();
+        const dialog_title_pixel_height = scaledFontPixelHeight(dialog_title_spec, scale_num, scale_den);
+        var new_dialog_title_ctx = try font.Context.init(
+            allocator,
+            chain,
+            dialog_title_pixel_height,
+            dialog_title_spec.cell_width_ratio,
+            dialog_title_spec.line_height_ratio,
+        );
+        errdefer new_dialog_title_ctx.deinit();
+
+        self.dialog_title_font_ctx.deinit();
+        self.dialog_font_ctx.deinit();
         self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
         self.font_ctx = new_ctx;
         self.tab_font_ctx = new_tab_ctx;
+        self.dialog_font_ctx = new_dialog_ctx;
+        self.dialog_title_font_ctx = new_dialog_title_ctx;
         self.scale = scaleFactor(scale_num, scale_den);
     }
 
@@ -733,10 +740,15 @@ pub const Renderer = struct {
         prompt_input: ?[]const u8,
         prompt_status: ?[]const u8,
         prompt_available: bool,
+        wrap_cells: usize,
+        show_icon: bool,
     ) void {
-        const ch = self.cellHeight();
-        const ascent: i32 = @intCast(self.font_ctx.ascent_px);
-        const pad: i32 = @max(@as(i32, 8), @divTrunc(ch, 2));
+        const cw: i32 = @intCast(self.dialog_font_ctx.cell_width_px);
+        const ch: i32 = @intCast(self.dialog_font_ctx.cell_height_px);
+        const ascent: i32 = @intCast(self.dialog_font_ctx.ascent_px);
+        const title_ch: i32 = @intCast(self.dialog_title_font_ctx.cell_height_px);
+        const title_ascent: i32 = @intCast(self.dialog_title_font_ctx.ascent_px);
+        const pad: i32 = scaledPt(dialog_padding_pt, self.scale);
         // PT × scale → physical pixel. 한 번씩 계산해서 layout 일관 보장.
         const sm: i32 = scaledPt(dialog_shadow_margin_pt, self.scale);
         const corner_r: i32 = scaledPt(dialog_corner_radius_pt, self.scale);
@@ -770,28 +782,29 @@ pub const Renderer = struct {
         rect(memory, buffer_w, buffer_h, stride, box_x, box_y, box_w, box_h, bg);
 
         // (2) 아이콘 — 박스 가로 중앙, 박스 상단 padding 아래.
-        const icon_x: i32 = box_x + @divTrunc(box_w - icon_size, 2);
-        const icon_y: i32 = box_y + pad;
-        drawDialogIcon(memory, buffer_w, buffer_h, stride, icon_x, icon_y, icon_size);
-
         const text_x: i32 = box_x + pad;
-        // 텍스트 시작 — 아이콘 하단 + 작은 gap (ch/2).
-        var text_y: i32 = icon_y + icon_size + @divTrunc(ch, 2);
+        var text_y: i32 = box_y + pad;
+        if (show_icon) {
+            const icon_x: i32 = box_x + @divTrunc(box_w - icon_size, 2);
+            const icon_y: i32 = text_y;
+            drawDialogIcon(memory, buffer_w, buffer_h, stride, icon_x, icon_y, icon_size);
+            text_y += icon_size + scaledPt(dialog_icon_gap_pt, self.scale);
+        }
 
         // (3) Title.
-        self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, title, fg, bg);
-        text_y += ch;
+        self.drawDialogTextLine(&self.dialog_title_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + title_ascent, title, fg, bg);
+        text_y += title_ch;
 
         // (3) separator line — title 과 message 구분.
         const inner_w: i32 = box_w - pad * 2;
         rect(memory, buffer_w, buffer_h, stride, text_x, text_y + @divTrunc(ch, 2), inner_w, 1, accent);
         text_y += ch;
 
-        // (4) Message lines — `\n` split + max_content_cells word-wrap (#300).
-        // computeDialogSize 와 동일 WrappedLines 라 박스 높이/폭과 정확히 일치.
-        var wl = WrappedLines{ .msg = message, .max_cells = dialog_max_content_cells };
+        // (4) Message lines — output viewport에서 계산한 content-driven 폭으로
+        // wrap. computeDialogLayout과 같은 iterator/폭이라 측정과 그림이 일치.
+        var wl = dialog_layout.WrappedLines{ .msg = message, .max_cells = wrap_cells };
         while (wl.next()) |line| {
-            self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
+            self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
             text_y += ch;
         }
 
@@ -799,15 +812,15 @@ pub const Renderer = struct {
             const field_h = ch + @max(@as(i32, 8), @divTrunc(ch, 2));
             const field_y = text_y;
             if (input.len > 0) {
-                const input_w: i32 = @intCast(display_width.stringWidth(input) * @as(usize, @intCast(self.cellWidth())));
+                const input_w: i32 = @intCast(display_width.stringWidth(input) * @as(usize, @intCast(cw)));
                 const input_x = text_x + @divTrunc(inner_w - input_w, 2);
-                self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg, bg);
+                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg, bg);
             }
             text_y += field_h + @divTrunc(ch, 2);
         }
         if (prompt_status) |status| {
             if (status.len > 0) {
-                self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 }, bg);
+                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 }, bg);
             }
             text_y += ch;
         }
@@ -828,10 +841,10 @@ pub const Renderer = struct {
         fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, ok_bg);
         const ok_text = if (prompt_input != null) messages.button_create else messages.button_ok;
         const ok_text_cells = display_width.stringWidth(ok_text);
-        const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(self.cellWidth())));
+        const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(cw)));
         const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
         const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
-        self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg, ok_bg);
+        self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg, ok_bg);
 
         // Cancel 버튼 — confirm 모드 에서만. secondary action (회색 배경 + 검정).
         if (is_confirm) {
@@ -840,9 +853,9 @@ pub const Renderer = struct {
             fillRoundedRect(memory, buffer_w, buffer_h, stride, cancel_x, button_y, button_w, button_h, button_r, dialog_cancel_color);
             const cancel_text = messages.button_cancel;
             const cancel_text_cells = display_width.stringWidth(cancel_text);
-            const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(self.cellWidth())));
+            const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(cw)));
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
-            self.drawDialogTextLine(memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color, dialog_cancel_color);
+            self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color, dialog_cancel_color);
         } else {
             self.last_dialog_cancel_rect = .{}; // info 모드: Cancel 그리지 않음.
         }
@@ -864,56 +877,52 @@ pub const Renderer = struct {
         );
     }
 
-    /// #203 Phase C step 3 — dialog buffer 의 physical pixel 크기 계산. 박스
-    /// (텍스트 폭 × cell_w + padding + 라인 수 × cell_h + 버튼) + 4 방향 shadow
-    /// margin. `openInfoDialog` 가 surface set_size 보내기 전 호출 — 전체
-    /// surface / buffer 크기 결정.
-    pub fn computeDialogSize(
+    /// #306 — basis output viewport와 고정 dialog typography로 content-driven
+    /// surface 크기/wrap 폭을 계산한다. 실제 메시지가 640×480 logical 최소 화면에
+    /// 들어오는지 pure dialog_layout 테스트에서 검증한다.
+    pub fn computeDialogLayout(
         self: *const Renderer,
         title: []const u8,
         message: []const u8,
-        confirm: bool,
-        prompt: bool,
-    ) struct { w: i32, h: i32 } {
-        const cw = self.cellWidth();
-        const ch = self.cellHeight();
-        const pad: i32 = @max(@as(i32, 8), @divTrunc(ch, 2));
-        // confirm: Cancel 버튼 너비 추가 분기 (아래 buttons_w 계산).
+        kind: dialog_layout.Kind,
+        viewport_w: i32,
+        viewport_h: i32,
+    ) dialog_layout.Layout {
+        return dialog_layout.compute(title, message, kind, self.dialogLayoutMetrics(), .{
+            .w = viewport_w,
+            .h = viewport_h,
+        });
+    }
 
-        // #300 — 긴 줄은 max_content_cells 폭으로 word-wrap. title 폭도 cap
-        // (title 은 짧은 상수라 실제 영향 거의 없음).
-        var max_cells: usize = @min(display_width.stringWidth(title), dialog_max_content_cells);
-        var line_count: usize = 0;
-        var wl = WrappedLines{ .msg = message, .max_cells = dialog_max_content_cells };
-        while (wl.next()) |line| {
-            max_cells = @max(max_cells, display_width.stringWidth(line));
-            line_count += 1;
-        }
-        if (line_count == 0) line_count = 1; // 빈 메시지도 최소 1행 확보.
-        // 최소 30 cell 폭 — 너무 짧은 title 의 박스가 어색해지지 않게.
-        const min_cells: usize = if (prompt) 42 else 30;
-        max_cells = @max(max_cells, min_cells);
+    pub fn computeDialogLayoutForSurface(
+        self: *const Renderer,
+        title: []const u8,
+        message: []const u8,
+        kind: dialog_layout.Kind,
+        surface_w: i32,
+        surface_h: i32,
+    ) dialog_layout.Layout {
+        return dialog_layout.computeForSurface(title, message, kind, self.dialogLayoutMetrics(), .{
+            .w = surface_w,
+            .h = surface_h,
+        });
+    }
 
-        // 행 (text 영역): title(1) + separator(1) + msg(line_count) + gap(1).
-        // 위로 아이콘 (icon_size + 짧은 gap), 아래로 OK 버튼 + bottom pad.
-        // box_h = pad(top) + icon + gap + text_rows*ch + button_h + pad(bottom)
-        const text_rows: i32 = 1 + 1 + @as(i32, @intCast(line_count)) + 1;
-        const inner_w: i32 = @intCast(max_cells * @as(usize, @intCast(cw)));
-        // PT × scale — drawDialogContent 와 같은 변환식 사용해 layout 좌표 일관.
-        const button_w: i32 = scaledPt(dialog_button_w_pt, self.scale);
-        const button_h: i32 = scaledPt(dialog_button_h_pt, self.scale);
-        const icon_size: i32 = scaledPt(dialog_icon_size_pt, self.scale);
-        const sm: i32 = scaledPt(dialog_shadow_margin_pt, self.scale);
-        const button_gap: i32 = scaledPt(dialog_button_gap_pt, self.scale);
-        // Confirm 모드 시 OK + Cancel 두 버튼 + gap. Info 모드 는 OK 하나.
-        const buttons_w: i32 = if (confirm) button_w * 2 + button_gap else button_w;
-        // 박스 폭 — 텍스트 폭 vs 버튼 폭 vs 아이콘 폭 + 좌우 여유 중 가장 큰.
-        const box_w: i32 = @max(@max(inner_w + pad * 2, buttons_w + pad * 4), icon_size + pad * 2);
-        const icon_section: i32 = icon_size + @divTrunc(ch, 2);
-        const prompt_h: i32 = if (prompt) ch * 3 else 0;
-        const box_h: i32 = pad * 2 + icon_section + text_rows * ch + prompt_h + button_h;
-        // buffer = box + shadow margin × 2 (모든 4 방향).
-        return .{ .w = box_w + sm * 2, .h = box_h + sm * 2 };
+    fn dialogLayoutMetrics(self: *const Renderer) dialog_layout.Metrics {
+        return .{
+            .body_cell_w = @intCast(self.dialog_font_ctx.cell_width_px),
+            .body_cell_h = @intCast(self.dialog_font_ctx.cell_height_px),
+            .title_cell_w = @intCast(self.dialog_title_font_ctx.cell_width_px),
+            .title_cell_h = @intCast(self.dialog_title_font_ctx.cell_height_px),
+            .padding = scaledPt(dialog_padding_pt, self.scale),
+            .shadow_margin = scaledPt(dialog_shadow_margin_pt, self.scale),
+            .viewport_margin = scaledPt(dialog_viewport_margin_pt, self.scale),
+            .icon_size = scaledPt(dialog_icon_size_pt, self.scale),
+            .icon_gap = scaledPt(dialog_icon_gap_pt, self.scale),
+            .button_w = scaledPt(dialog_button_w_pt, self.scale),
+            .button_h = scaledPt(dialog_button_h_pt, self.scale),
+            .button_gap = scaledPt(dialog_button_gap_pt, self.scale),
+        };
     }
 
     /// drawDialogContent helper — UTF-8 line 을 codepoint 별 glyph draw.
@@ -921,6 +930,7 @@ pub const Renderer = struct {
     /// cluster shape 안 필요.
     fn drawDialogTextLine(
         self: *Renderer,
+        font_ctx: *font.Context,
         memory: []u8,
         fb_w: i32,
         fb_h: i32,
@@ -931,15 +941,16 @@ pub const Renderer = struct {
         fg: ghostty.color.RGB,
         bg: ghostty.color.RGB,
     ) void {
-        const cw = self.cellWidth();
-        const ch_metric = self.cellHeight();
+        _ = self;
+        const cw: i32 = @intCast(font_ctx.cell_width_px);
+        const ch_metric: i32 = @intCast(font_ctx.cell_height_px);
         var x: i32 = start_x;
         var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
         while (iter.nextCodepoint()) |cp| {
             if (x >= fb_w) break;
             const cells = display_width.codepointWidth(@intCast(cp));
             const adv: i32 = cw * @as(i32, @intCast(cells));
-            const gl = self.font_ctx.glyph(cp);
+            const gl = font_ctx.glyph(cp);
             if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                 drawGlyphBgra(memory, fb_w, fb_h, stride, x, baseline_y - ch_metric, adv, ch_metric, gl);
             } else {
@@ -2136,7 +2147,8 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         \\https://github.com/ensky0/tildaz
     ;
 
-    const size = r.computeDialogSize(title, msg, false, false);
+    const layout = r.computeDialogLayout(title, msg, .info, 1920, 1080);
+    const size = layout.size;
     // handleDialogConfigure 의 logical 왕복 재현 (preferred_scale 204/120 = 1.7x):
     // physical → logical(set_size) → KWin echo → logicalToPhysical(buffer).
     const lw = @divFloor(size.w * 120, 204);
@@ -2147,5 +2159,5 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const buf = try allocator.alloc(u8, @intCast(stride * ph));
     defer allocator.free(buf);
     @memset(buf, 0);
-    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null, null, null, false);
+    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null, null, null, false, layout.wrap_cells, layout.show_icon);
 }

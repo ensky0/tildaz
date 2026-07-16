@@ -33,6 +33,10 @@ pub const TAB_BAR_HEIGHT_PT: u32 = 28;
 /// 터미널 콘텐츠 font와 독립된 탭 제목 logical size. 같은 font family/fallback을
 /// 사용하되 terminal의 `font.size_point` 변경에는 영향받지 않는다.
 pub const TAB_LABEL_FONT_PT: u32 = 13;
+/// Linux custom dialog typography (#306). Family/fallback stays aligned with
+/// the terminal, while size remains independent from terminal font settings.
+pub const DIALOG_BODY_FONT_PT: u32 = 15;
+pub const DIALOG_TITLE_FONT_PT: u32 = 18;
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
 /// 인접 탭 사이와 탭바 상하에 보이는 윤곽선의 logical gap.
@@ -108,6 +112,22 @@ pub fn tabLabelFontSpec() font_spec.Spec {
     };
 }
 
+pub fn dialogBodyFontSpec() font_spec.Spec {
+    return .{
+        .size_logical = @floatFromInt(DIALOG_BODY_FONT_PT),
+        .cell_width_ratio = 1.0,
+        .line_height_ratio = 1.1,
+    };
+}
+
+pub fn dialogTitleFontSpec() font_spec.Spec {
+    return .{
+        .size_logical = @floatFromInt(DIALOG_TITLE_FONT_PT),
+        .cell_width_ratio = 1.0,
+        .line_height_ratio = 1.1,
+    };
+}
+
 pub fn tabBarHeightPx(scale: f32) u32 {
     return @intFromFloat(@round(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale));
 }
@@ -138,6 +158,17 @@ test "tab label font uses a fixed logical size" {
     try std.testing.expectEqual(@as(f32, @floatFromInt(TAB_LABEL_FONT_PT)), spec.size_logical);
     try std.testing.expectEqual(@as(f32, 1.0), spec.cell_width_ratio);
     try std.testing.expectEqual(@as(f32, 1.0), spec.line_height_ratio);
+}
+
+test "dialog fonts use fixed 15pt body and 18pt title sizes" {
+    const body = dialogBodyFontSpec();
+    const title = dialogTitleFontSpec();
+    try std.testing.expectEqual(@as(f32, 15.0), body.size_logical);
+    try std.testing.expectEqual(@as(f32, 18.0), title.size_logical);
+    try std.testing.expectEqual(@as(f32, 1.0), body.cell_width_ratio);
+    try std.testing.expectEqual(@as(f32, 1.1), body.line_height_ratio);
+    try std.testing.expectEqual(@as(f32, 1.0), title.cell_width_ratio);
+    try std.testing.expectEqual(@as(f32, 1.1), title.line_height_ratio);
 }
 
 test "tab bar height uses common rounded physical pixels" {
