@@ -484,7 +484,7 @@ pub const DialogOverlay = struct {
     severity: dialog_mod.Severity = .info,
     title_buf: [128]u8 = undefined,
     title_len: usize = 0,
-    msg_buf: [4096]u8 = undefined,
+    msg_buf: [dialog_linux.message_capacity]u8 = undefined,
     msg_len: usize = 0,
     input_buf: [128]u8 = undefined,
     input_len: usize = 0,
@@ -841,7 +841,7 @@ const Client = struct {
     pending_info_severity: dialog_mod.Severity = .info,
     pending_info_title_buf: [128]u8 = undefined,
     pending_info_title_len: usize = 0,
-    pending_info_msg_buf: [512]u8 = undefined,
+    pending_info_msg_buf: [dialog_linux.message_capacity]u8 = undefined,
     pending_info_msg_len: usize = 0,
     // L8-β / #295 — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
@@ -5282,13 +5282,19 @@ const Client = struct {
 
     fn openDialog(self: *Client, kind: DialogOverlay.Kind, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
         const title_len = @min(title.len, self.dialog.title_buf.len);
-        const msg_len = @min(message.len, self.dialog.msg_buf.len);
+        const msg_len = dialog_linux.copyMessage(&self.dialog.msg_buf, message);
         @memcpy(self.dialog.title_buf[0..title_len], title[0..title_len]);
-        @memcpy(self.dialog.msg_buf[0..msg_len], message[0..msg_len]);
         self.dialog.title_len = title_len;
         self.dialog.msg_len = msg_len;
         self.dialog.kind = kind;
         self.dialog.severity = severity;
+        if (msg_len != message.len) {
+            log.appendLine("dialog", "message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
+                message.len,
+                msg_len,
+                dialog_linux.message_capacity,
+            });
+        }
         // Confirm pending 새로 시작 — 이전 dialog 의 result 가 남아 있을 가능성 0.
         self.pending_confirm_result = null;
 
@@ -6080,13 +6086,19 @@ const Client = struct {
         // reentrant 라 여기서 createDialogSurface(roundtrip)를 돌리면 buffer corrupt.
         // title/message 는 호출부 stack buffer 일 수 있어 owned 로 복사.
         const tlen = @min(title.len, self.pending_info_title_buf.len);
-        const mlen = @min(message.len, self.pending_info_msg_buf.len);
+        const mlen = dialog_linux.copyMessage(&self.pending_info_msg_buf, message);
         @memcpy(self.pending_info_title_buf[0..tlen], title[0..tlen]);
-        @memcpy(self.pending_info_msg_buf[0..mlen], message[0..mlen]);
         self.pending_info_title_len = tlen;
         self.pending_info_msg_len = mlen;
         self.pending_info_severity = severity;
         self.pending_info_request = true;
+        if (mlen != message.len) {
+            log.appendLine("dialog", "deferred info message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
+                message.len,
+                mlen,
+                dialog_linux.message_capacity,
+            });
+        }
     }
 
     /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
