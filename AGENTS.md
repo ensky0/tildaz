@@ -190,7 +190,7 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 앱이 사용자에게 보여주는 모든 텍스트와 다이얼로그는 두 모듈을 반드시 거쳐요.
 
 - **`src/messages.zig`**: 사용자에게 노출되는 모든 텍스트 상수 / format string 의 단일 진입점. 새 메시지가 필요하면 여기 먼저 추가하고 호출처는 이 상수만 import 해요. 같은 의미의 메시지를 platform 별로 두 번 작성하지 않아요.
-- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/windows.zig` (`MessageBoxW`), `dialog/macos.zig` (`NSAlert`, 일부 경로는 `osascript` fallback), `dialog/linux.zig` (host 의 layer-shell overlay — #203) 가 선택돼요.
+- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/windows.zig` (`MessageBoxW`, About 전용 scrollable window), `dialog/macos.zig` (`NSAlert`, About 본문 `NSScrollView`, 일부 경로는 `osascript` fallback), `dialog/linux.zig` (host 의 layer-shell overlay — #203) 가 선택돼요.
 
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 

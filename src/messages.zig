@@ -75,6 +75,8 @@ pub const about_format =
     \\
     \\https://github.com/ensky0/tildaz
 ;
+pub const about_prepare_failed_msg =
+    "TildaZ could not prepare the full About information. Check the TildaZ log for details.";
 
 pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";

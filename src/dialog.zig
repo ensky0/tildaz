@@ -78,10 +78,9 @@ pub fn showInfo(title: []const u8, message: []const u8) void {
     impl.show(.info, title, message);
 }
 
-/// About 다이얼로그 — `showInfo` 의 특수 케이스. macOS 는 NSTextView
-/// accessoryView 로 path 가독성 + cmd+c 정상 동작 (NSAlert 의 informativeText
-/// 는 NSTextField 라 modal 안에서 firstResponder 라우팅이 깨짐). Windows 는
-/// MessageBoxW 자체 ctrl+c 가 동작하므로 `showInfo` 와 동일.
+/// About 다이얼로그 — `showInfo` 의 긴 본문 특수 케이스. 세 platform 모두
+/// 본문이 화면을 넘을 때만 세로 scroll을 제공한다. Linux 는 layer-shell overlay,
+/// macOS 는 NSScrollView + NSTextView, Windows 는 read-only EDIT를 사용한다.
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
     impl.showAboutAlert(title, message);
 }

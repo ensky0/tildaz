@@ -1,10 +1,12 @@
-//! Windows 의 dialog 구현 — `MessageBoxW`. UTF-8 → UTF-16 변환 후 호출.
+//! Windows dialog 구현. 일반 info/error/confirm은 `MessageBoxW`, 긴 About은
+//! read-only multiline EDIT를 둔 전용 modal window로 표시한다.
 //! `dialog.zig` 에서 comptime 으로 select.
 
 const std = @import("std");
 const config = @import("../config.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
+const ui_metrics = @import("../ui_metrics.zig");
 
 const WCHAR = u16;
 const HWND = ?*anyopaque;
@@ -13,6 +15,7 @@ const HMENU = ?*anyopaque;
 const HDC = ?*anyopaque;
 const HBRUSH = ?*anyopaque;
 const HFONT = ?*anyopaque;
+const HMONITOR = ?*anyopaque;
 const UINT = c_uint;
 const WPARAM = usize;
 const LPARAM = isize;
@@ -36,6 +39,7 @@ const WNDCLASSEXW = extern struct {
 const MSG = extern struct { hwnd: HWND, message: UINT, wParam: WPARAM, lParam: LPARAM, time: DWORD, pt_x: c_long, pt_y: c_long, lPrivate: DWORD };
 
 extern "kernel32" fn GetModuleHandleW(?[*:0]const WCHAR) callconv(.c) HINSTANCE;
+extern "kernel32" fn GetCurrentProcessId() callconv(.c) DWORD;
 extern "user32" fn RegisterClassExW(*const WNDCLASSEXW) callconv(.c) u16;
 extern "user32" fn CreateWindowExW(DWORD, [*:0]const WCHAR, [*:0]const WCHAR, DWORD, c_int, c_int, c_int, c_int, HWND, HMENU, HINSTANCE, ?*anyopaque) callconv(.c) HWND;
 extern "user32" fn DefWindowProcW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
@@ -52,7 +56,13 @@ extern "user32" fn SetWindowTextW(HWND, [*:0]const WCHAR) callconv(.c) c_int;
 extern "user32" fn EnableWindow(HWND, c_int) callconv(.c) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn GetDpiForSystem() callconv(.c) UINT;
+extern "user32" fn GetDpiForWindow(HWND) callconv(.c) UINT;
 extern "user32" fn GetSystemMetrics(c_int) callconv(.c) c_int;
+extern "user32" fn GetForegroundWindow() callconv(.c) HWND;
+extern "user32" fn SetForegroundWindow(HWND) callconv(.c) c_int;
+extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.c) DWORD;
+extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) HMONITOR;
+extern "user32" fn GetMonitorInfoW(HMONITOR, *MONITORINFO) callconv(.c) c_int;
 extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
 extern "user32" fn GetSysColorBrush(c_int) callconv(.c) HBRUSH;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) ?*anyopaque;
@@ -68,8 +78,16 @@ extern "user32" fn DrawTextW(HDC, [*]const WCHAR, c_int, *RECT, UINT) callconv(.
 extern "user32" fn AdjustWindowRectExForDpi(*RECT, DWORD, c_int, DWORD, UINT) callconv(.c) c_int;
 
 const RECT = extern struct { left: c_long, top: c_long, right: c_long, bottom: c_long };
+const MONITORINFO = extern struct {
+    cbSize: DWORD,
+    rcMonitor: RECT,
+    rcWork: RECT,
+    dwFlags: DWORD,
+};
 const DT_CALCRECT: UINT = 0x0400;
+const DT_SINGLELINE: UINT = 0x0020;
 const DT_WORDBREAK: UINT = 0x0010;
+const DT_EDITCONTROL: UINT = 0x2000;
 const DT_NOPREFIX: UINT = 0x0800;
 extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.c) c_int;
 extern "gdi32" fn SetTextColor(HDC, DWORD) callconv(.c) DWORD;
@@ -114,9 +132,15 @@ const WS_CHILD: DWORD = 0x40000000;
 const WS_CAPTION: DWORD = 0x00C00000;
 const WS_SYSMENU: DWORD = 0x00080000;
 const WS_TABSTOP: DWORD = 0x00010000;
+const WS_BORDER: DWORD = 0x00800000;
+const WS_VSCROLL: DWORD = 0x00200000;
 const SS_CENTER: DWORD = 0x00000001;
 const SS_CENTERIMAGE: DWORD = 0x00000200;
 const BS_DEFPUSHBUTTON: DWORD = 0x0001;
+const ES_MULTILINE: DWORD = 0x0004;
+const ES_AUTOVSCROLL: DWORD = 0x0040;
+const ES_NOHIDESEL: DWORD = 0x0100;
+const ES_READONLY: DWORD = 0x0800;
 const WS_EX_TOPMOST: DWORD = 0x00000008;
 const SW_SHOW: c_int = 5;
 const SM_CXSCREEN: c_int = 0;
@@ -127,6 +151,8 @@ const CLEARTYPE_QUALITY: DWORD = 5;
 const FW_NORMAL: c_int = 400;
 const FW_SEMIBOLD: c_int = 600;
 const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
+const EM_SETSEL: UINT = 0x00B1;
+const MONITOR_DEFAULTTONEAREST: DWORD = 2;
 
 fn scaled(value: c_int, dpi: UINT) c_int {
     return @intCast(@divTrunc(@as(i64, value) * dpi + 48, 96));
@@ -227,12 +253,282 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
     _ = messageBox(title, message, flags);
 }
 
-/// About 다이얼로그 — Windows 의 MessageBoxW 는 자체 ctrl+c 동작 OK 라
-/// `show(.info, ...)` 로 forward. macOS 측은 NSTextView accessoryView 로
-/// path 가독성 + cmd+c 라우팅을 따로 처리. wrapper 시그니처 통일을 위해
-/// 양쪽 platform 모두 같은 이름으로 노출.
+var about_done = false;
+var about_class_registered = false;
+const about_class_name = std.unicode.utf8ToUtf16LeStringLiteral("TildaZAboutWindow");
+
+fn aboutWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.c) LRESULT {
+    if (msg == WM_COMMAND and (wparam & 0xffff) == IDOK) {
+        about_done = true;
+        return 0;
+    }
+    if (msg == WM_CLOSE) {
+        about_done = true;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+fn ensureAboutClass(hinstance: HINSTANCE) bool {
+    if (about_class_registered) return true;
+    const wc = WNDCLASSEXW{
+        .cbSize = @sizeOf(WNDCLASSEXW),
+        .style = 0,
+        .lpfnWndProc = aboutWndProc,
+        .cbClsExtra = 0,
+        .cbWndExtra = 0,
+        .hInstance = hinstance,
+        .hIcon = null,
+        .hCursor = LoadCursorW(null, IDC_ARROW),
+        .hbrBackground = @ptrFromInt(COLOR_BTNFACE + 1),
+        .lpszMenuName = null,
+        .lpszClassName = about_class_name,
+        .hIconSm = null,
+    };
+    if (RegisterClassExW(&wc) == 0) return false;
+    about_class_registered = true;
+    return true;
+}
+
+fn aboutEditTextAlloc(allocator: std.mem.Allocator, body: []const u8) ![:0]WCHAR {
+    var extra: usize = 0;
+    for (body, 0..) |byte, i| {
+        if (byte == '\n' and (i == 0 or body[i - 1] != '\r')) extra += 1;
+    }
+    const normalized = try allocator.alloc(u8, body.len + extra);
+    defer allocator.free(normalized);
+
+    var out: usize = 0;
+    for (body, 0..) |byte, i| {
+        if (byte == '\n' and (i == 0 or body[i - 1] != '\r')) {
+            normalized[out] = '\r';
+            out += 1;
+        }
+        normalized[out] = byte;
+        out += 1;
+    }
+    return std.unicode.utf8ToUtf16LeAllocZ(allocator, normalized);
+}
+
+test "#314 Windows About conversion preserves long UTF-8 and normalizes line endings" {
+    const body = "첫째 줄\n" ++ ("경로" ** 800) ++ "\n마지막 줄";
+    const wide = try aboutEditTextAlloc(std.testing.allocator, body);
+    defer std.testing.allocator.free(wide);
+    const round_trip = try std.unicode.utf16LeToUtf8Alloc(std.testing.allocator, wide);
+    defer std.testing.allocator.free(round_trip);
+
+    try std.testing.expect(round_trip.len > 2048);
+    try std.testing.expect(std.mem.startsWith(u8, round_trip, "첫째 줄\r\n"));
+    try std.testing.expect(std.mem.endsWith(u8, round_trip, "\r\n마지막 줄"));
+}
+
+fn longestExplicitLineWidth(dc: HDC, text: []const WCHAR) c_int {
+    var longest: c_int = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= text.len) : (i += 1) {
+        if (i < text.len and text[i] != '\r' and text[i] != '\n') continue;
+        var line = RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        _ = DrawTextW(dc, text.ptr + start, @intCast(i - start), &line, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        longest = @max(longest, @as(c_int, @intCast(line.right)));
+        if (i < text.len and text[i] == '\r' and i + 1 < text.len and text[i + 1] == '\n') i += 1;
+        start = i + 1;
+    }
+    return longest;
+}
+
+fn aboutWorkArea(owner: HWND) RECT {
+    const monitor = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
+    if (monitor != null) {
+        var info = MONITORINFO{
+            .cbSize = @sizeOf(MONITORINFO),
+            .rcMonitor = undefined,
+            .rcWork = undefined,
+            .dwFlags = 0,
+        };
+        if (GetMonitorInfoW(monitor, &info) != 0) return info.rcWork;
+    }
+    return .{
+        .left = 0,
+        .top = 0,
+        .right = GetSystemMetrics(SM_CXSCREEN),
+        .bottom = GetSystemMetrics(SM_CYSCREEN),
+    };
+}
+
+fn aboutOwner() HWND {
+    const candidate = GetForegroundWindow();
+    if (candidate == null) return null;
+    var process_id: DWORD = 0;
+    _ = GetWindowThreadProcessId(candidate, &process_id);
+    return if (process_id == GetCurrentProcessId()) candidate else null;
+}
+
+fn showScrollableAbout(title: []const u8, body: []const u8) bool {
+    const allocator = std.heap.page_allocator;
+    const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, title) catch return false;
+    defer allocator.free(title_w);
+    const body_w = aboutEditTextAlloc(allocator, body) catch return false;
+    defer allocator.free(body_w);
+
+    const hinstance = GetModuleHandleW(null);
+    if (!ensureAboutClass(hinstance)) return false;
+
+    // About 단축키를 받은 현재 TildaZ window만 owner로 삼는다. focus가 다른
+    // process로 넘어간 찰나에 그 앱 window를 disable하는 일은 없어야 한다.
+    const owner = aboutOwner();
+    const window_dpi = if (owner != null) GetDpiForWindow(owner) else 0;
+    const dpi = if (window_dpi != 0) window_dpi else GetDpiForSystem();
+    const body_font = createDialogFont(dpi, ui_metrics.DIALOG_BODY_FONT_PT, FW_NORMAL);
+    defer {
+        if (body_font != null) _ = DeleteObject(body_font);
+    }
+    const ui_font = createDialogFont(dpi, 10, FW_NORMAL);
+    defer {
+        if (ui_font != null) _ = DeleteObject(ui_font);
+    }
+
+    const work = aboutWorkArea(owner);
+    const screen_w = work.right - work.left;
+    const screen_h = work.bottom - work.top;
+    const viewport_margin = scaled(16, dpi);
+    const margin = scaled(24, dpi);
+    const frame_style = WS_CAPTION | WS_SYSMENU;
+    const frame_ex_style = WS_EX_TOPMOST;
+    var frame = RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    _ = AdjustWindowRectExForDpi(&frame, frame_style, 0, frame_ex_style, dpi);
+    const frame_w = frame.right - frame.left;
+    const frame_h = frame.bottom - frame.top;
+
+    const available_window_w = @max(1, screen_w - viewport_margin * 2);
+    const max_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_ABOUT_MAX_WIDTH_PT), dpi), available_window_w);
+    const max_client_w = @max(1, max_window_w - frame_w);
+    const max_content_w = @max(1, max_client_w - margin * 2);
+    const min_content_w = @min(scaled(472, dpi), max_content_w);
+    const edit_horizontal_inset = scaled(8, dpi);
+    const edit_vertical_inset = scaled(6, dpi);
+
+    var content_w = min_content_w;
+    var wrapped_h = scaled(130, dpi);
+    const dc = GetDC(null);
+    if (dc != null) {
+        const previous = if (body_font != null) SelectObject(dc, body_font) else null;
+        const natural_w = longestExplicitLineWidth(dc, body_w);
+        // EDIT의 border/formatting inset만큼 control 폭을 더 확보한 뒤 실제
+        // formatting 폭으로 wrap 높이를 재서 경계의 마지막 줄도 보존한다.
+        const desired_content_w = @as(i64, natural_w) + @as(i64, edit_horizontal_inset);
+        content_w = @intCast(std.math.clamp(desired_content_w, @as(i64, min_content_w), @as(i64, max_content_w)));
+        const format_w = @max(1, content_w - edit_horizontal_inset);
+        var wrapped = RECT{ .left = 0, .top = 0, .right = format_w, .bottom = 0 };
+        _ = DrawTextW(dc, body_w.ptr, @intCast(body_w.len), &wrapped, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+        if (wrapped.bottom > 0) wrapped_h = @as(c_int, @intCast(wrapped.bottom)) + edit_vertical_inset;
+        if (previous != null) _ = SelectObject(dc, previous);
+        _ = ReleaseDC(null, dc);
+    }
+
+    const top = scaled(20, dpi);
+    const gap = scaled(16, dpi);
+    const button_h = scaled(32, dpi);
+    const button_w = scaled(96, dpi);
+    const bottom = scaled(20, dpi);
+    const max_window_h = @max(1, screen_h - viewport_margin * 2);
+    const max_client_h = @max(1, max_window_h - frame_h);
+    const max_body_h = @max(1, max_client_h - top - gap - button_h - bottom);
+    const body_h = @min(wrapped_h, max_body_h);
+    const overflow = wrapped_h > body_h;
+    const client_w = margin + content_w + margin;
+    const button_y = top + body_h + gap;
+    const client_h = button_y + button_h + bottom;
+
+    var wr = RECT{ .left = 0, .top = 0, .right = client_w, .bottom = client_h };
+    _ = AdjustWindowRectExForDpi(&wr, frame_style, 0, frame_ex_style, dpi);
+    const win_w = wr.right - wr.left;
+    const win_h = wr.bottom - wr.top;
+    const win_x = work.left + @divTrunc(screen_w - win_w, 2);
+    const win_y = work.top + @divTrunc(screen_h - win_h, 2);
+    const hwnd = CreateWindowExW(
+        frame_ex_style,
+        about_class_name,
+        title_w.ptr,
+        frame_style,
+        win_x,
+        win_y,
+        win_w,
+        win_h,
+        owner,
+        null,
+        hinstance,
+        null,
+    ) orelse return false;
+    defer _ = DestroyWindow(hwnd);
+    if (owner != null) {
+        _ = EnableWindow(owner, 0);
+        defer {
+            _ = EnableWindow(owner, 1);
+            _ = SetForegroundWindow(owner);
+        }
+    }
+
+    const edit_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_READONLY |
+        (if (overflow) WS_VSCROLL else 0);
+    const edit = CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("EDIT"),
+        std.unicode.utf8ToUtf16LeStringLiteral(""),
+        edit_style,
+        margin,
+        top,
+        content_w,
+        body_h,
+        hwnd,
+        null,
+        hinstance,
+        null,
+    ) orelse return false;
+    if (SetWindowTextW(edit, body_w.ptr) == 0) return false;
+    _ = SendMessageW(edit, EM_SETSEL, 0, 0);
+
+    const button_x = @divTrunc(client_w - button_w, 2);
+    const ok = CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"),
+        std.unicode.utf8ToUtf16LeStringLiteral(messages.button_ok),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        button_x,
+        button_y,
+        button_w,
+        button_h,
+        hwnd,
+        @ptrFromInt(IDOK),
+        hinstance,
+        null,
+    ) orelse return false;
+    setControlFont(edit, body_font);
+    setControlFont(ok, ui_font);
+
+    _ = ShowWindow(hwnd, SW_SHOW);
+    _ = SetFocus(edit);
+    about_done = false;
+    var msg: MSG = undefined;
+    while (!about_done and GetMessageW(&msg, null, 0, 0) > 0) {
+        if ((msg.message == WM_KEYDOWN or msg.message == WM_SYSKEYDOWN) and
+            (msg.wParam == VK_RETURN or msg.wParam == VK_ESCAPE))
+        {
+            about_done = true;
+            continue;
+        }
+        if (IsDialogMessageW(hwnd, &msg) == 0) {
+            _ = TranslateMessage(&msg);
+            _ = DispatchMessageW(&msg);
+        }
+    }
+    return true;
+}
+
+/// About 전용 scrollable window. 일반 info/error/confirm은 기존 MessageBoxW를
+/// 유지하며, 사용자 정의 window 준비 실패 시 About도 MessageBoxW로 표시한다.
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
-    show(.info, title, message);
+    if (!showScrollableAbout(title, message)) show(.info, title, message);
 }
 
 /// OK / Cancel 두 버튼 확인 다이얼로그. #250 — 표준 매핑(Enter=OK, Esc=Cancel)

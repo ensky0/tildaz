@@ -105,6 +105,8 @@ pub const Renderer = struct {
     /// 아니면 cancel rect 의 `w == 0` (그리지 않음).
     last_dialog_ok_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     last_dialog_cancel_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
+    last_dialog_scrollbar_track_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
+    last_dialog_scrollbar_thumb_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     /// L13-γ — 매 픽셀의 alpha byte (ARGB8888 의 high byte). `config.opacity_
     /// alpha` 가 그대로. 100% → 255 (완전 opaque, 시각 변화 없음), <100 →
     /// compositor 가 배경과 alpha blending. `Client.init` 에서 채움.
@@ -741,6 +743,9 @@ pub const Renderer = struct {
         prompt_status: ?[]const u8,
         prompt_available: bool,
         wrap_cells: usize,
+        message_rows: usize,
+        visible_message_rows: usize,
+        message_scroll_row: usize,
         show_icon: bool,
     ) void {
         const cw: i32 = @intCast(self.dialog_font_ctx.cell_width_px);
@@ -802,10 +807,46 @@ pub const Renderer = struct {
 
         // (4) Message lines — output viewport에서 계산한 content-driven 폭으로
         // wrap. computeDialogLayout과 같은 iterator/폭이라 측정과 그림이 일치.
+        const message_y = text_y;
+        var row: usize = 0;
+        var drawn_rows: usize = 0;
         var wl = dialog_layout.WrappedLines{ .msg = message, .max_cells = wrap_cells };
         while (wl.next()) |line| {
-            self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
-            text_y += ch;
+            if (row >= message_scroll_row and drawn_rows < visible_message_rows) {
+                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
+                text_y += ch;
+                drawn_rows += 1;
+            }
+            row += 1;
+            if (drawn_rows == visible_message_rows) break;
+        }
+
+        self.last_dialog_scrollbar_track_rect = .{};
+        self.last_dialog_scrollbar_thumb_rect = .{};
+        if (message_rows > visible_message_rows) {
+            const sb_w = scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale);
+            const track_h: i32 = @intCast(visible_message_rows * @as(usize, @intCast(ch)));
+            const track_x = box_x + box_w - pad - sb_w;
+            self.last_dialog_scrollbar_track_rect = .{ .x = track_x, .y = message_y, .w = sb_w, .h = track_h };
+            if (scrollbar.geom(
+                message_rows,
+                visible_message_rows,
+                message_scroll_row,
+                @floatFromInt(track_h),
+                @floatFromInt(scaledPt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, self.scale)),
+            )) |g| {
+                const thumb_y = message_y + @as(i32, @intFromFloat(g.thumb_y_rel));
+                const thumb_h: i32 = @intFromFloat(g.thumb_h);
+                const sc = rgbFromMetrics(ui_metrics.SCROLLBAR_COLOR);
+                const alpha = ui_metrics.SCROLLBAR_COLOR[3];
+                const thumb_color = ghostty.color.RGB{
+                    .r = blendU8(sc.r, bg.r, alpha),
+                    .g = blendU8(sc.g, bg.g, alpha),
+                    .b = blendU8(sc.b, bg.b, alpha),
+                };
+                rect(memory, buffer_w, buffer_h, stride, track_x, thumb_y, sb_w, thumb_h, thumb_color);
+                self.last_dialog_scrollbar_thumb_rect = .{ .x = track_x, .y = thumb_y, .w = sb_w, .h = thumb_h };
+            }
         }
 
         if (prompt_input) |input| {
@@ -922,6 +963,9 @@ pub const Renderer = struct {
             .button_w = scaledPt(dialog_button_w_pt, self.scale),
             .button_h = scaledPt(dialog_button_h_pt, self.scale),
             .button_gap = scaledPt(dialog_button_gap_pt, self.scale),
+            .about_max_w = scaledPt(ui_metrics.DIALOG_ABOUT_MAX_WIDTH_PT, self.scale),
+            .scrollbar_w = scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale),
+            .scrollbar_gap = scaledPt(ui_metrics.DIALOG_SCROLLBAR_GAP_PT, self.scale),
         };
     }
 
@@ -2224,5 +2268,82 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const buf = try allocator.alloc(u8, @intCast(stride * ph));
     defer allocator.free(buf);
     @memset(buf, 0);
-    r.drawDialogContent(buf, pw, ph, stride, .info, title, msg, null, null, null, false, layout.wrap_cells, layout.show_icon);
+    r.drawDialogContent(
+        buf,
+        pw,
+        ph,
+        stride,
+        .info,
+        title,
+        msg,
+        null,
+        null,
+        null,
+        false,
+        layout.wrap_cells,
+        layout.message_rows,
+        layout.visible_message_rows,
+        0,
+        layout.show_icon,
+    );
+}
+
+test "#314 overflow About renderer draws movable scrollbar thumb at 1.7x" {
+    const allocator = std.testing.allocator;
+    const cfg = config_mod.Config{};
+    var r = Renderer.init(allocator, &cfg, 204, 120) catch return error.SkipZigTest;
+    defer r.deinit(allocator);
+
+    const title = "About TildaZ";
+    const msg = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
+    const layout = r.computeDialogLayout(title, msg, .about, 1088, 816);
+    try std.testing.expect(layout.message_scroll_max > 0);
+    try std.testing.expect(layout.visible_message_rows < layout.message_rows);
+
+    const stride = layout.size.w * 4;
+    const buf = try allocator.alloc(u8, @intCast(stride * layout.size.h));
+    defer allocator.free(buf);
+    @memset(buf, 0);
+
+    r.drawDialogContent(
+        buf,
+        layout.size.w,
+        layout.size.h,
+        stride,
+        .info,
+        title,
+        msg,
+        null,
+        null,
+        null,
+        false,
+        layout.wrap_cells,
+        layout.message_rows,
+        layout.visible_message_rows,
+        0,
+        layout.show_icon,
+    );
+    const first_thumb_y = r.last_dialog_scrollbar_thumb_rect.y;
+    try std.testing.expect(r.last_dialog_scrollbar_track_rect.w > 0);
+    try std.testing.expect(r.last_dialog_scrollbar_thumb_rect.h > 0);
+
+    r.drawDialogContent(
+        buf,
+        layout.size.w,
+        layout.size.h,
+        stride,
+        .info,
+        title,
+        msg,
+        null,
+        null,
+        null,
+        false,
+        layout.wrap_cells,
+        layout.message_rows,
+        layout.visible_message_rows,
+        layout.message_scroll_max,
+        layout.show_icon,
+    );
+    try std.testing.expect(r.last_dialog_scrollbar_thumb_rect.y > first_thumb_y);
 }

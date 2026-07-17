@@ -7,7 +7,7 @@ const std = @import("std");
 const display_width = @import("../../font/display_width.zig");
 const messages = @import("../../messages.zig");
 
-pub const Kind = enum { info, confirm, prompt };
+pub const Kind = enum { info, about, confirm, prompt };
 
 pub const Metrics = struct {
     body_cell_w: i32,
@@ -22,6 +22,9 @@ pub const Metrics = struct {
     button_w: i32,
     button_h: i32,
     button_gap: i32,
+    about_max_w: i32,
+    scrollbar_w: i32,
+    scrollbar_gap: i32,
 };
 
 pub const Size = struct { w: i32, h: i32 };
@@ -30,6 +33,8 @@ pub const Layout = struct {
     size: Size,
     wrap_cells: usize,
     message_rows: usize,
+    visible_message_rows: usize,
+    message_scroll_max: usize,
     show_icon: bool,
     fits: bool,
 };
@@ -142,12 +147,21 @@ fn computeWithinSurface(
     message: []const u8,
     kind: Kind,
     metrics: Metrics,
-    max_surface: Size,
+    available_surface: Size,
 ) Layout {
     std.debug.assert(metrics.body_cell_w > 0);
     std.debug.assert(metrics.body_cell_h > 0);
     std.debug.assert(metrics.title_cell_w > 0);
     std.debug.assert(metrics.title_cell_h > 0);
+    std.debug.assert(metrics.about_max_w > 0);
+
+    const max_surface = Size{
+        .w = if (kind == .about)
+            @min(available_surface.w, metrics.about_max_w)
+        else
+            available_surface.w,
+        .h = available_surface.h,
+    };
 
     const content_room_w = @max(
         metrics.body_cell_w,
@@ -156,14 +170,51 @@ fn computeWithinSurface(
     const max_wrap_cells: usize = @intCast(@max(1, @divTrunc(content_room_w, metrics.body_cell_w)));
     const min_cells: usize = if (kind == .prompt) 42 else 30;
     const natural_cells = longestExplicitLine(message);
-    const wrap_cells = @min(@max(natural_cells, min_cells), max_wrap_cells);
-    const measured = measure(message, wrap_cells);
+    var wrap_cells = @min(@max(natural_cells, min_cells), max_wrap_cells);
+    var measured = measure(message, wrap_cells);
 
-    const body_w: i32 = @intCast(measured.max_cells * @as(usize, @intCast(metrics.body_cell_w)));
+    const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 3 else 0;
+    const fixed_h = metrics.padding * 2 +
+        metrics.title_cell_h +
+        metrics.body_cell_h + // separator row
+        metrics.body_cell_h + // message-to-button gap
+        prompt_h +
+        metrics.button_h +
+        metrics.shadow_margin * 2;
+    const icon_h = metrics.icon_size + metrics.icon_gap;
+    var rows_h: i32 = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
+    var show_icon = fixed_h + rows_h + icon_h <= max_surface.h;
+    var visible_message_rows = measured.rows;
+    var message_scroll_max: usize = 0;
+
+    // About만 overflow viewport를 사용한다. scrollbar 공간을 먼저 제외하고 다시
+    // wrap해야 측정 행 수와 실제 그리기 행 수가 정확히 같다.
+    if (kind == .about and fixed_h + rows_h + (if (show_icon) icon_h else 0) > max_surface.h) {
+        const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
+        const scroll_content_room_w = @max(
+            metrics.body_cell_w,
+            content_room_w - scrollbar_room,
+        );
+        const scroll_wrap_max: usize = @intCast(@max(1, @divTrunc(scroll_content_room_w, metrics.body_cell_w)));
+        wrap_cells = @min(@max(natural_cells, min_cells), scroll_wrap_max);
+        measured = measure(message, wrap_cells);
+        rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
+        show_icon = false;
+
+        const row_room = max_surface.h - fixed_h;
+        visible_message_rows = @min(
+            measured.rows,
+            @as(usize, @intCast(@max(1, @divTrunc(row_room, metrics.body_cell_h)))),
+        );
+        message_scroll_max = measured.rows - visible_message_rows;
+    }
+
+    const scroll_extra = if (message_scroll_max > 0) metrics.scrollbar_w + metrics.scrollbar_gap else 0;
+    const body_w = @as(i32, @intCast(measured.max_cells * @as(usize, @intCast(metrics.body_cell_w)))) + scroll_extra;
     const title_w: i32 = @intCast(display_width.stringWidth(title) * @as(usize, @intCast(metrics.title_cell_w)));
     const inner_w = @max(body_w, title_w);
     const buttons_w = switch (kind) {
-        .info => metrics.button_w,
+        .info, .about => metrics.button_w,
         .confirm, .prompt => metrics.button_w * 2 + metrics.button_gap,
     };
     const box_w = @max(
@@ -172,19 +223,8 @@ fn computeWithinSurface(
     );
     const desired_w = box_w + metrics.shadow_margin * 2;
 
-    const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 3 else 0;
-    const rows_h: i32 = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
-    const fixed_h = metrics.padding * 2 +
-        metrics.title_cell_h +
-        metrics.body_cell_h + // separator row
-        rows_h +
-        metrics.body_cell_h + // message-to-button gap
-        prompt_h +
-        metrics.button_h;
-    const full_h = fixed_h + metrics.icon_size + metrics.icon_gap + metrics.shadow_margin * 2;
-    const compact_h = fixed_h + metrics.shadow_margin * 2;
-    const show_icon = full_h <= max_surface.h;
-    const desired_h = if (show_icon) full_h else compact_h;
+    const visible_rows_h: i32 = @intCast(visible_message_rows * @as(usize, @intCast(metrics.body_cell_h)));
+    const desired_h = fixed_h + visible_rows_h + (if (show_icon) icon_h else 0);
 
     return .{
         .size = .{
@@ -193,6 +233,8 @@ fn computeWithinSurface(
         },
         .wrap_cells = wrap_cells,
         .message_rows = measured.rows,
+        .visible_message_rows = visible_message_rows,
+        .message_scroll_max = message_scroll_max,
         .show_icon = show_icon,
         .fits = desired_w <= max_surface.w and desired_h <= max_surface.h,
     };
@@ -379,7 +421,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     }{
         .{ .title = messages.quit_confirm_title, .message = quit_msg, .kind = .confirm },
         .{ .title = messages.tab_limit_title, .message = tab_limit_msg, .kind = .info },
-        .{ .title = messages.about_title, .message = about_msg, .kind = .info },
+        .{ .title = messages.about_title, .message = about_msg, .kind = .about },
         .{ .title = messages.config_error_title, .message = parse_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = hotkey_invalid_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = theme_msg, .kind = .info },
@@ -454,5 +496,42 @@ fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w:
         .button_w = scale(100, scale_percent),
         .button_h = scale(44, scale_percent),
         .button_gap = scale(12, scale_percent),
+        .about_max_w = scale(960, scale_percent),
+        .scrollbar_w = scale(10, scale_percent),
+        .scrollbar_gap = scale(8, scale_percent),
     };
+}
+
+test "#314 About uses overflow rows only when content exceeds viewport" {
+    const ordinary = "TildaZ v0.6.1\n\nexe: /home/example/tildaz\nconfig: /home/example/config.json";
+    const ordinary_layout = compute("About TildaZ", ordinary, .about, testMetrics(100), .{ .w = 640, .h = 480 });
+    try std.testing.expect(ordinary_layout.fits);
+    try std.testing.expectEqual(@as(usize, 0), ordinary_layout.message_scroll_max);
+    try std.testing.expectEqual(ordinary_layout.message_rows, ordinary_layout.visible_message_rows);
+
+    const long_message = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
+    const overflow = compute("About TildaZ", long_message, .about, testMetrics(100), .{ .w = 640, .h = 480 });
+    try std.testing.expect(overflow.fits);
+    try std.testing.expect(overflow.message_scroll_max > 0);
+    try std.testing.expect(overflow.visible_message_rows < overflow.message_rows);
+    try std.testing.expect(overflow.size.w <= 640 - 32);
+    try std.testing.expect(overflow.size.h <= 480 - 32);
+}
+
+test "#314 About maximum width scales in logical points" {
+    const message = "x" ** 2000;
+    const scales = [_]u32{ 100, 170, 200 };
+    for (scales) |scale_percent| {
+        const layout = compute(
+            "About TildaZ",
+            message,
+            .about,
+            testMetrics(scale_percent),
+            .{
+                .w = @divTrunc(2200 * @as(i32, @intCast(scale_percent)), 100),
+                .h = @divTrunc(1200 * @as(i32, @intCast(scale_percent)), 100),
+            },
+        );
+        try std.testing.expect(layout.size.w <= @divTrunc(960 * @as(i32, @intCast(scale_percent)) + 99, 100));
+    }
 }

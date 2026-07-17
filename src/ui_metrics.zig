@@ -37,6 +37,10 @@ pub const TAB_LABEL_FONT_PT: u32 = 13;
 /// the terminal, while size remains independent from terminal font settings.
 pub const DIALOG_BODY_FONT_PT: u32 = 15;
 pub const DIALOG_TITLE_FONT_PT: u32 = 18;
+/// About 본문이 긴 절대경로 하나 때문에 화면 전체 폭으로 늘어나지 않게 하는
+/// logical 최대 폭. 일반 본문은 content-driven 자연 폭을 그대로 사용한다.
+pub const DIALOG_ABOUT_MAX_WIDTH_PT: u32 = 960;
+pub const DIALOG_SCROLLBAR_GAP_PT: u32 = 8;
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
 /// 인접 탭 사이와 탭바 상하에 보이는 윤곽선의 logical gap.
