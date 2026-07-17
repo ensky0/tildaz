@@ -477,7 +477,7 @@ const ShmBuffer = struct {
 pub const DialogOverlay = struct {
     /// `.confirm` — OK + Cancel 두 버튼. Enter = OK (= true), Esc = Cancel (= false).
     /// dismiss 시 호출자가 `pending_confirm_result` 로 결과 받음 (step 4, #203).
-    pub const Kind = enum { none, info, confirm, prompt };
+    pub const Kind = enum { none, info, about, confirm, prompt };
 
     // --- content ---
     kind: Kind = .none,
@@ -486,12 +486,19 @@ pub const DialogOverlay = struct {
     title_len: usize = 0,
     msg_buf: [dialog_linux.message_capacity]u8 = undefined,
     msg_len: usize = 0,
+    about_msg_owned: ?[]u8 = null,
     input_buf: [128]u8 = undefined,
     input_len: usize = 0,
     status_buf: [256]u8 = undefined,
     status_len: usize = 0,
     prompt_available: bool = false,
     wrap_cells: usize = 1,
+    message_rows: usize = 1,
+    visible_message_rows: usize = 1,
+    message_scroll_row: usize = 0,
+    message_scroll_max: usize = 0,
+    scrollbar_drag_grab: ?f64 = null,
+    scroll_axis_remainder_fixed: i64 = 0,
     show_icon: bool = true,
     layout_fits: bool = true,
 
@@ -526,6 +533,7 @@ pub const DialogOverlay = struct {
         return self.title_buf[0..self.title_len];
     }
     pub fn message(self: *const DialogOverlay) []const u8 {
+        if (self.about_msg_owned) |owned| return owned;
         return self.msg_buf[0..self.msg_len];
     }
     pub fn active(self: *const DialogOverlay) bool {
@@ -843,6 +851,8 @@ const Client = struct {
     pending_info_title_len: usize = 0,
     pending_info_msg_buf: [dialog_linux.message_capacity]u8 = undefined,
     pending_info_msg_len: usize = 0,
+    pending_info_is_about: bool = false,
+    pending_about_msg_owned: ?[]u8 = null,
     // L8-β / #295 — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
@@ -1161,6 +1171,10 @@ const Client = struct {
         }
         for (self.dialog.retired_buffers.items) |*buffer| buffer.deinit();
         self.dialog.retired_buffers.deinit(self.allocator);
+        if (self.dialog.about_msg_owned) |message| self.allocator.free(message);
+        self.dialog.about_msg_owned = null;
+        if (self.pending_about_msg_owned) |message| self.allocator.free(message);
+        self.pending_about_msg_owned = null;
         if (self.session) |*session| {
             session.deinit();
             self.session = null;
@@ -1199,6 +1213,7 @@ const Client = struct {
         dialog_linux.registerCallbacks(.{
             .ctx = self,
             .show_info = Client.dialogShowInfoCb,
+            .show_about = Client.dialogShowAboutCb,
             .show_confirm = Client.dialogShowConfirmCb,
             .prompt_hotkey = Client.dialogPromptHotkeyCb,
         });
@@ -2063,29 +2078,6 @@ const Client = struct {
                 .stretch_h = stretch_h,
             },
         };
-    }
-
-    /// #231 — KDE/layer dialog 를 *터미널 위 중앙* 에 놓기 위한 margin(logical,
-    /// top/left). GNOME 의 transient-over-parent 배치와 시각 통일. 모든 dock 이
-    /// 4-edge anchor + 4 margin 이라 터미널 rect = 화면에서 그 4 margin 만큼 inset
-    /// (= `x=ml, y=mt, w=sw−ml−mr, h=sh−mt−mb`, uniform). 그 rect 중앙에 dialog
-    /// (logical_w×logical_h)를 놓고 화면 밖으로 안 나가게 clamp.
-    fn dialogCenterMargins(self: *const Client, logical_w: i32, logical_h: i32) struct { top: i32, left: i32 } {
-        const sw_i: i32 = if (self.screen_width > 0) self.screen_width else screen_fallback_width;
-        const sh_i: i32 = if (self.screen_height > 0) self.screen_height else screen_fallback_height;
-        const main = self.computeLayerLayout();
-        // 터미널 rect → logical.
-        const tx_l = self.physicalToLogical(main.margin_left);
-        const ty_l = self.physicalToLogical(main.margin_top);
-        const tw_l = self.physicalToLogical(sw_i - main.margin_left - main.margin_right);
-        const th_l = self.physicalToLogical(sh_i - main.margin_top - main.margin_bottom);
-        const sw_l = self.physicalToLogical(sw_i);
-        const sh_l = self.physicalToLogical(sh_i);
-        var dx = tx_l + @divTrunc(tw_l - logical_w, 2);
-        var dy = ty_l + @divTrunc(th_l - logical_h, 2);
-        dx = std.math.clamp(dx, 0, @max(0, sw_l - logical_w));
-        dy = std.math.clamp(dy, 0, @max(0, sh_l - logical_h));
-        return .{ .top = dy, .left = dx };
     }
 
     /// #210/#238 — preferred_scale 변경 적용. 두 scale source 의 단일 진입점:
@@ -4150,6 +4142,13 @@ const Client = struct {
         self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
         // #193 — region 변경 시만 set_shape (캐시 hit 시 no-op).
         self.updateCursorShape() catch {};
+
+        // About scrollbar drag는 modal dialog 입력이므로 terminal selection/tab
+        // drag보다 먼저 처리한다. 다른 dialog motion도 뒤 terminal로 통과시키지 않는다.
+        if (self.dialog.active()) {
+            if (self.dialog.scrollbar_drag_grab != null) self.scrollDialogToPointer();
+            return;
+        }
         // #268 2b — 탭바 컨트롤 버튼 hover 갱신 (변경 시에만 재렌더).
         self.updateTabHover();
 
@@ -4189,8 +4188,8 @@ const Client = struct {
         const state = readU32(payload[12..16]);
 
         // #203 Phase C — dialog 활성 시 모든 클릭 무시 (modal). 단 *dialog
-        // surface 위 + OK / Cancel 버튼 좌표 안* 의 누름만 dismiss 트리거. 사용자
-        // 대화로 확정된 정책 (mac NSAlert / Win MessageBoxW 표준 동등):
+        // surface 위 + OK / Cancel 버튼 좌표 안* 의 누름만 dismiss 트리거이고,
+        // About overflow scrollbar는 왼쪽 누름/drag만 자체 처리한다.
         //   - 본문 (텍스트 / 여백) 누름 → 무시 + dismiss X (포커스 회복만)
         //   - terminal 영역 누름 → 무시 + dismiss X
         //   - OK 버튼 → dismiss + result=true (confirm 시)
@@ -4211,10 +4210,19 @@ const Client = struct {
                 self.pointer_x_px,
                 self.pointer_y_px,
             });
+            if (button == wl_pointer_button_left and state == wl_pointer_button_state_released) {
+                self.dialog.scrollbar_drag_grab = null;
+                return;
+            }
             if (state == wl_pointer_button_state_pressed and
                 self.last_pointer_enter_surface_id == self.dialog.surface_id)
             {
-                if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
+                if (button == wl_pointer_button_left and
+                    self.hitDialogRect(self.renderer.last_dialog_scrollbar_track_rect) and
+                    self.beginDialogScrollbarDrag())
+                {
+                    return;
+                } else if (self.hitDialogRect(self.renderer.last_dialog_ok_rect)) {
                     log.appendLineVerbose("dialog", "OK hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = true;
                     if (self.dialog.kind == .prompt and self.validatePromptInput()) self.pending_prompt_result = true;
@@ -4386,6 +4394,22 @@ const Client = struct {
         const axis = readU32(payload[4..8]);
         if (axis != wl_pointer_axis_vertical) return;
         const value_fixed = readI32(payload[8..12]);
+
+        if (self.dialog.active()) {
+            if (self.dialog.kind == .about and
+                self.dialog.message_scroll_max > 0 and
+                self.last_pointer_enter_surface_id == self.dialog.surface_id)
+            {
+                self.dialog.scroll_axis_remainder_fixed += @as(i64, value_fixed);
+                const rows = @divTrunc(self.dialog.scroll_axis_remainder_fixed * 3, 2560);
+                if (rows != 0) {
+                    self.dialog.scroll_axis_remainder_fixed -= @divTrunc(rows * 2560, 3);
+                    // Wayland positive axis = 아래로 이동 = 더 뒤의 본문 행 표시.
+                    self.scrollDialogRows(@intCast(rows));
+                }
+            }
+            return;
+        }
 
         // 한 notch (2560) → -120, 부호 반전 + magnitude 정규화.
         const wheel_i32: i32 = -@divTrunc(value_fixed * 120, 2560);
@@ -5165,6 +5189,7 @@ const Client = struct {
     fn dialogLayoutKind(kind: DialogOverlay.Kind) dialog_layout.Kind {
         return switch (kind) {
             .none, .info => .info,
+            .about => .about,
             .confirm => .confirm,
             .prompt => .prompt,
         };
@@ -5184,6 +5209,10 @@ const Client = struct {
     fn applyCurrentDialogLayout(self: *Client) dialog_layout.Layout {
         const layout = self.computeCurrentDialogLayout();
         self.dialog.wrap_cells = layout.wrap_cells;
+        self.dialog.message_rows = layout.message_rows;
+        self.dialog.visible_message_rows = layout.visible_message_rows;
+        self.dialog.message_scroll_max = layout.message_scroll_max;
+        self.dialog.message_scroll_row = @min(self.dialog.message_scroll_row, layout.message_scroll_max);
         self.dialog.show_icon = layout.show_icon;
         self.dialog.layout_fits = layout.fits;
         return layout;
@@ -5198,6 +5227,10 @@ const Client = struct {
             surface.h,
         );
         self.dialog.wrap_cells = layout.wrap_cells;
+        self.dialog.message_rows = layout.message_rows;
+        self.dialog.visible_message_rows = layout.visible_message_rows;
+        self.dialog.message_scroll_max = layout.message_scroll_max;
+        self.dialog.message_scroll_row = @min(self.dialog.message_scroll_row, layout.message_scroll_max);
         self.dialog.show_icon = layout.show_icon;
         self.dialog.layout_fits = layout.fits;
         return layout;
@@ -5216,12 +5249,18 @@ const Client = struct {
                 zwlr_layer_surface_v1_request_set_size,
                 &.{ logical_w, logical_h },
             );
-            const center = self.dialogCenterMargins(@intCast(logical_w), @intCast(logical_h));
+            // anchor=0이면 compositor가 현재 output 중앙에 배치한다. main 창의
+            // dock/width_percent margin과 분리해 오른쪽 50% 설정에도 화면 중앙 유지.
+            try self.sendArgs(
+                self.dialog.layer_surface_id,
+                zwlr_layer_surface_v1_request_set_anchor,
+                &.{0},
+            );
             var margin = Msg.init(self.dialog.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
-            try margin.putI32(center.top);
             try margin.putI32(0);
             try margin.putI32(0);
-            try margin.putI32(center.left);
+            try margin.putI32(0);
+            try margin.putI32(0);
             try margin.send(self.stream);
         } else if (self.dialog.xdg_toplevel_id != 0) {
             try self.sendArgs(self.dialog.xdg_toplevel_id, 7, &.{ logical_w, logical_h });
@@ -5253,6 +5292,10 @@ const Client = struct {
         try self.openDialog(.info, severity, title, message);
     }
 
+    fn openAboutDialog(self: *Client, title: []const u8, message: []const u8) !void {
+        try self.openDialog(.about, .info, title, message);
+    }
+
     /// #203 Phase C step 4 — confirm dialog (OK + Cancel). `dialogShowConfirmCb`
     /// 의 inner pump 가 결과 (`pending_confirm_result`) 를 받아 호출자에게 반환.
     /// dismiss 전 default `pending_confirm_result = null` — Cancel 등 명시 결정.
@@ -5282,17 +5325,28 @@ const Client = struct {
     }
 
     fn openDialog(self: *Client, kind: DialogOverlay.Kind, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
+        var about_owned = if (kind == .about) try self.allocator.dupe(u8, message) else null;
+        errdefer if (about_owned) |owned| self.allocator.free(owned);
+
         const title_len = @min(title.len, self.dialog.title_buf.len);
-        const msg_len = dialog_linux.copyMessage(&self.dialog.msg_buf, message);
         @memcpy(self.dialog.title_buf[0..title_len], title[0..title_len]);
         self.dialog.title_len = title_len;
-        self.dialog.msg_len = msg_len;
+        if (self.dialog.about_msg_owned) |old| self.allocator.free(old);
+        self.dialog.about_msg_owned = about_owned;
+        about_owned = null;
+        self.dialog.msg_len = if (self.dialog.about_msg_owned) |owned|
+            owned.len
+        else
+            dialog_linux.copyMessage(&self.dialog.msg_buf, message);
         self.dialog.kind = kind;
         self.dialog.severity = severity;
-        if (msg_len != message.len) {
+        self.dialog.message_scroll_row = 0;
+        self.dialog.scrollbar_drag_grab = null;
+        self.dialog.scroll_axis_remainder_fixed = 0;
+        if (kind != .about and self.dialog.msg_len != message.len) {
             log.appendLine("dialog", "message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
                 message.len,
-                msg_len,
+                self.dialog.msg_len,
                 dialog_linux.message_capacity,
             });
         }
@@ -5309,7 +5363,7 @@ const Client = struct {
                 self.dialogViewportPhysicalSize().w,
                 self.dialogViewportPhysicalSize().h,
                 self.dialog.title(),
-                msg_len,
+                self.dialog.message().len,
             });
         }
 
@@ -5324,7 +5378,7 @@ const Client = struct {
             @tagName(kind),
             @tagName(severity),
             self.dialog.title(),
-            msg_len,
+            self.dialog.message().len,
             requested.w,
             requested.h,
         });
@@ -5524,6 +5578,13 @@ const Client = struct {
         self.destroyDialogSurface() catch |err| {
             log.appendLine("dialog", "destroyDialogSurface in dismiss failed: {s}", .{@errorName(err)});
         };
+        if (self.dialog.about_msg_owned) |message| self.allocator.free(message);
+        self.dialog.about_msg_owned = null;
+        self.dialog.msg_len = 0;
+        self.dialog.message_scroll_row = 0;
+        self.dialog.message_scroll_max = 0;
+        self.dialog.scrollbar_drag_grab = null;
+        self.dialog.scroll_axis_remainder_fixed = 0;
     }
 
     /// #203 Phase C — xdg-activation-v1 표준으로 main surface 에 focus 양도.
@@ -5640,6 +5701,62 @@ const Client = struct {
         }
     }
 
+    fn dialogScrollbarGeom(self: *const Client) ?scrollbar.Geom {
+        if (self.dialog.kind != .about or self.dialog.message_scroll_max == 0) return null;
+        const track = self.renderer.last_dialog_scrollbar_track_rect;
+        if (track.h <= 0) return null;
+        const scale_num: i64 = @intCast(self.preferred_scale);
+        const scale_den: i64 = fractional_scale_denominator;
+        const min_thumb_h = @divTrunc(
+            @as(i64, ui_metrics.SCROLLBAR_MIN_THUMB_H_PT) * scale_num + @divTrunc(scale_den, 2),
+            scale_den,
+        );
+        return scrollbar.geom(
+            self.dialog.message_rows,
+            self.dialog.visible_message_rows,
+            self.dialog.message_scroll_row,
+            @floatFromInt(track.h),
+            @floatFromInt(min_thumb_h),
+        );
+    }
+
+    fn beginDialogScrollbarDrag(self: *Client) bool {
+        const geom = self.dialogScrollbarGeom() orelse return false;
+        const track = self.renderer.last_dialog_scrollbar_track_rect;
+        self.dialog.scrollbar_drag_grab = scrollbar.grabOffset(
+            geom,
+            @floatFromInt(self.pointer_y_px - track.y),
+        );
+        self.scrollDialogToPointer();
+        return true;
+    }
+
+    fn scrollDialogToPointer(self: *Client) void {
+        const grab = self.dialog.scrollbar_drag_grab orelse return;
+        const geom = self.dialogScrollbarGeom() orelse return;
+        const track = self.renderer.last_dialog_scrollbar_track_rect;
+        const target = scrollbar.targetOffset(
+            self.dialog.message_rows,
+            self.dialog.visible_message_rows,
+            geom,
+            @floatFromInt(self.pointer_y_px - track.y),
+            grab,
+        );
+        if (target == self.dialog.message_scroll_row) return;
+        self.dialog.message_scroll_row = target;
+        self.repaintDialog();
+    }
+
+    fn scrollDialogRows(self: *Client, delta: i32) void {
+        if (self.dialog.kind != .about or self.dialog.message_scroll_max == 0 or delta == 0) return;
+        const current: i64 = @intCast(self.dialog.message_scroll_row);
+        const max_row: i64 = @intCast(self.dialog.message_scroll_max);
+        const target: usize = @intCast(std.math.clamp(current + @as(i64, delta), 0, max_row));
+        if (target == self.dialog.message_scroll_row) return;
+        self.dialog.message_scroll_row = target;
+        self.repaintDialog();
+    }
+
     /// pointer 가 *dialog surface-local* rect 안인지. `last_dialog_*_rect`
     /// 가 그리기 때 set + destroyDialogSurface 가 reset (w == 0 → 자동 miss).
     fn hitDialogRect(self: *const Client, r: anytype) bool {
@@ -5748,20 +5865,18 @@ const Client = struct {
                 zwlr_layer_surface_v1_request_set_size,
                 &.{ logical_w, logical_h },
             );
-            // #231 — anchor=0(화면 중앙) 대신 top|left + margin 으로 *터미널 위
-            // 중앙* 에 배치 (GNOME 의 transient-over-parent 와 시각 통일). margin 은
-            // 터미널 rect 중앙에 dialog 를 놓는 logical 오프셋.
+            // anchor=0 — layer-shell compositor가 현재 output 중앙에 배치한다.
+            // main 창의 dock/width_percent와 독립이므로 오른쪽 50%에서도 화면 중앙.
             try self.sendArgs(
                 self.dialog.layer_surface_id,
                 zwlr_layer_surface_v1_request_set_anchor,
-                &.{zwlr_layer_surface_anchor_top | zwlr_layer_surface_anchor_left},
+                &.{0},
             );
-            const c = self.dialogCenterMargins(@intCast(logical_w), @intCast(logical_h));
             var dlg_margin = Msg.init(self.dialog.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
-            try dlg_margin.putI32(c.top);
-            try dlg_margin.putI32(0); // right (anchor 안 함 → 무시)
-            try dlg_margin.putI32(0); // bottom (anchor 안 함 → 무시)
-            try dlg_margin.putI32(c.left);
+            try dlg_margin.putI32(0);
+            try dlg_margin.putI32(0);
+            try dlg_margin.putI32(0);
+            try dlg_margin.putI32(0);
             try dlg_margin.send(self.stream);
             // exclusive — modal 입력. 사용자가 main surface 클릭해도 키 입력은
             // 우리 dialog 로 옴.
@@ -5884,6 +5999,9 @@ const Client = struct {
         // 미설정 시 default Cancel 보장).
         self.renderer.last_dialog_ok_rect = .{};
         self.renderer.last_dialog_cancel_rect = .{};
+        self.renderer.last_dialog_scrollbar_track_rect = .{};
+        self.renderer.last_dialog_scrollbar_thumb_rect = .{};
+        self.dialog.scrollbar_drag_grab = null;
         log.appendLineVerbose("dialog", "destroyDialogSurface", .{});
     }
 
@@ -5906,6 +6024,9 @@ const Client = struct {
             if (self.dialog.kind == .prompt) self.dialog.status() else null,
             self.dialog.prompt_available,
             self.dialog.wrap_cells,
+            self.dialog.message_rows,
+            self.dialog.visible_message_rows,
+            self.dialog.message_scroll_row,
             self.dialog.show_icon,
         );
     }
@@ -6068,12 +6189,15 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.surface_id, 6);
         }
         self.dialog.configured = true;
-        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_cells={} icon={} fits={}", .{
+        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_cells={} rows={}/{} scroll_max={} icon={} fits={}", .{
             w_logical,
             h_logical,
             physical.w,
             physical.h,
             self.dialog.wrap_cells,
+            self.dialog.visible_message_rows,
+            self.dialog.message_rows,
+            self.dialog.message_scroll_max,
             self.dialog.show_icon,
             self.dialog.layout_fits,
         });
@@ -6083,17 +6207,36 @@ const Client = struct {
     /// `dialog.showAboutAlert` 가 종착점으로 도달.
     fn dialogShowInfoCb(ctx: *anyopaque, severity: dialog_mod.Severity, title: []const u8, message: []const u8) void {
         const self: *Client = @ptrCast(@alignCast(ctx));
+        self.queueInfoDialog(severity, title, message, false);
+    }
+
+    fn dialogShowAboutCb(ctx: *anyopaque, title: []const u8, message: []const u8) void {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        self.queueInfoDialog(.info, title, message, true);
+    }
+
+    fn queueInfoDialog(self: *Client, severity: dialog_mod.Severity, title: []const u8, message: []const u8, is_about: bool) void {
         // #282 C1 — 즉시 열지 않고 deferred. 호출부(handleNewTab 등)가 dispatchBuffered
         // reentrant 라 여기서 createDialogSurface(roundtrip)를 돌리면 buffer corrupt.
         // title/message 는 호출부 stack buffer 일 수 있어 owned 로 복사.
+        if (self.pending_about_msg_owned) |old| self.allocator.free(old);
+        self.pending_about_msg_owned = null;
         const tlen = @min(title.len, self.pending_info_title_buf.len);
-        const mlen = dialog_linux.copyMessage(&self.pending_info_msg_buf, message);
+        const mlen = if (is_about) blk: {
+            const owned = self.allocator.dupe(u8, message) catch {
+                log.appendLine("dialog", "About deferred message allocation failed — using fallback", .{});
+                break :blk dialog_linux.copyMessage(&self.pending_info_msg_buf, messages.about_prepare_failed_msg);
+            };
+            self.pending_about_msg_owned = owned;
+            break :blk owned.len;
+        } else dialog_linux.copyMessage(&self.pending_info_msg_buf, message);
         @memcpy(self.pending_info_title_buf[0..tlen], title[0..tlen]);
         self.pending_info_title_len = tlen;
         self.pending_info_msg_len = mlen;
         self.pending_info_severity = severity;
+        self.pending_info_is_about = is_about;
         self.pending_info_request = true;
-        if (mlen != message.len) {
+        if (!is_about and mlen != message.len) {
             log.appendLine("dialog", "deferred info message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
                 message.len,
                 mlen,
@@ -6102,22 +6245,40 @@ const Client = struct {
         }
     }
 
+    fn pendingInfoMessage(self: *const Client) []const u8 {
+        if (self.pending_about_msg_owned) |message| return message;
+        return self.pending_info_msg_buf[0..self.pending_info_msg_len];
+    }
+
+    fn clearPendingAboutMessage(self: *Client) void {
+        if (self.pending_about_msg_owned) |message| self.allocator.free(message);
+        self.pending_about_msg_owned = null;
+    }
+
     /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
     /// 다른 dialog 가 이미 떠 있으면(About/confirm 등) 이번 info 는 버린다
     /// (advisory 알림 — 탭 한도/shell 소실). fire-and-forget 이라 pump 불필요.
     fn drainInfoRequest(self: *Client) void {
         if (!self.pending_info_request) return;
         self.pending_info_request = false;
+        defer self.clearPendingAboutMessage();
         if (self.dialog.active()) {
             log.appendLine("dialog", "deferred info dropped — another dialog active", .{});
             return;
         }
-        self.openInfoDialog(
-            self.pending_info_severity,
-            self.pending_info_title_buf[0..self.pending_info_title_len],
-            self.pending_info_msg_buf[0..self.pending_info_msg_len],
-        ) catch |err| {
+        const title = self.pending_info_title_buf[0..self.pending_info_title_len];
+        const message = self.pendingInfoMessage();
+        const result = if (self.pending_info_is_about)
+            self.openAboutDialog(title, message)
+        else
+            self.openInfoDialog(self.pending_info_severity, title, message);
+        result catch |err| {
             log.appendLine("dialog", "openInfoDialog failed: {s} — falling back to log only", .{@errorName(err)});
+            if (self.pending_info_is_about) {
+                self.openInfoDialog(.info, title, messages.about_prepare_failed_msg) catch |fallback_err| {
+                    log.appendLine("dialog", "About fallback dialog failed: {s}", .{@errorName(fallback_err)});
+                };
+            }
         };
     }
 

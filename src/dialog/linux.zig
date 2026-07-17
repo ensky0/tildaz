@@ -20,6 +20,7 @@ const log = @import("../log.zig");
 pub const Callbacks = struct {
     ctx: *anyopaque,
     show_info: *const fn (ctx: *anyopaque, severity: dialog.Severity, title: []const u8, message: []const u8) void,
+    show_about: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) void,
     show_confirm: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) bool,
     prompt_hotkey: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8,
 };
@@ -74,7 +75,11 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
 }
 
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
-    show(.info, title, message);
+    if (g_callbacks) |cb| {
+        cb.show_about(cb.ctx, title, message);
+        return;
+    }
+    showStderr(.info, title, message);
 }
 
 /// "되돌릴 수 없는 작업" 직전 확인. Host 콜백 가용 시 modal 그림 + inner

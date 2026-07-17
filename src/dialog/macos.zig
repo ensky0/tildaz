@@ -381,7 +381,19 @@ fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8
 }
 
 const NSAlertRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
+const NSAlertSize = extern struct { w: f64, h: f64 };
 const NSAlertRange = extern struct { location: usize, length: usize };
+
+fn aboutTextNaturalHeight(tv: objc.id, layout_manager: objc.id, text_container: objc.id, minimum: f64) f64 {
+    if (layout_manager == null or text_container == null) return minimum;
+    const ensureLayout = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    ensureLayout(layout_manager, objc.sel("ensureLayoutForTextContainer:"), text_container);
+    const usedRect = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) NSAlertRect);
+    const used = usedRect(layout_manager, objc.sel("usedRectForTextContainer:"), text_container);
+    const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
+    const inset = getSize(tv, objc.sel("textContainerInset"));
+    return @max(minimum, @ceil(used.h + inset.h * 2.0));
+}
 
 /// About 다이얼로그 NSTextView 의 delegate — selection 변경 시 즉시
 /// selected text 를 clipboard 로 (#122 의 selection auto-copy 패턴과 일관).
@@ -450,19 +462,57 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     setStyle(alert, 1); // Informational
     addButton(alert, messages.button_ok);
 
-    // accessoryView: NSTextView. width 580 / height 110 — exe / config / log
-    // 절대 경로 한 줄 다 들어감. selectable + editable=NO + monospace.
+    // accessoryView: 세로 NSScrollView + NSTextView. 평소에는 본문 자연 높이,
+    // 화면 가용 높이를 넘을 때만 AppKit scroller가 나타난다.
+    const NSScreen = objc.getClass("NSScreen");
+    const mainScreen = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const screen = mainScreen(NSScreen, objc.sel("mainScreen"));
+    const visible_frame = if (screen != null) blk: {
+        const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
+        break :blk getRect(screen, objc.sel("visibleFrame"));
+    } else NSAlertRect{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    const accessory_w = @max(320.0, @min(580.0, visible_frame.w - 96.0));
+    const max_accessory_h = @max(130.0, visible_frame.h * 0.55);
+
+    const NSScrollView = objc.getClass("NSScrollView");
     const NSTextView = objc.getClass("NSTextView");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return;
     const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const tv = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 580, .h = 130 }) orelse return;
+    const scroll = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = 130 }) orelse return;
 
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setBool(scroll, objc.sel("setHasVerticalScroller:"), true);
+    setBool(scroll, objc.sel("setHasHorizontalScroller:"), false);
+    setBool(scroll, objc.sel("setAutohidesScrollers:"), true);
+    setBool(scroll, objc.sel("setDrawsBackground:"), false);
+    const setBorder = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) void);
+    setBorder(scroll, objc.sel("setBorderType:"), 0); // NSNoBorder
+
+    const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
+    const initial_content = getSize(scroll, objc.sel("contentSize"));
+    const tv = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = initial_content.w, .h = initial_content.h }) orelse return;
+
     setBool(tv, objc.sel("setEditable:"), false);
     setBool(tv, objc.sel("setSelectable:"), true);
     setBool(tv, objc.sel("setDrawsBackground:"), false);
     setBool(tv, objc.sel("setRichText:"), false);
+    setBool(tv, objc.sel("setVerticallyResizable:"), true);
+    setBool(tv, objc.sel("setHorizontallyResizable:"), false);
+
+    const setSize = objc.objcSend(fn (objc.id, objc.SEL, NSAlertSize) callconv(.c) void);
+    setSize(tv, objc.sel("setMinSize:"), .{ .w = 0, .h = initial_content.h });
+    setSize(tv, objc.sel("setMaxSize:"), .{ .w = 10_000_000, .h = 10_000_000 });
+    const setMask = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) void);
+    setMask(tv, objc.sel("setAutoresizingMask:"), 2); // NSViewWidthSizable
+
+    const getObj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const text_container = getObj(tv, objc.sel("textContainer"));
+    if (text_container != null) {
+        setSize(text_container, objc.sel("setContainerSize:"), .{ .w = initial_content.w, .h = 10_000_000 });
+        setBool(text_container, objc.sel("setWidthTracksTextView:"), true);
+    }
 
     const NSFont = objc.getClass("NSFont");
     const fixedFont = objc.objcSend(fn (objc.Class, objc.SEL, f64) callconv(.c) objc.id);
@@ -475,6 +525,33 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     const setStr = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setStr(tv, objc.sel("setString:"), nsStringFromSlice(body));
 
+    const layout_manager = getObj(tv, objc.sel("layoutManager"));
+    const setDocument = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setDocument(scroll, objc.sel("setDocumentView:"), tv);
+
+    // scroller가 나타나면 document 가용 폭이 줄고 wrap 행이 늘 수 있다. AppKit이
+    // 실제로 준 contentSize로 폭/높이를 다시 재는 pass를 반복해 마지막 줄까지
+    // document frame에 포함한다. 짧은 본문은 첫 자연 높이에 수렴해 scroller가 숨는다.
+    var natural_h = initial_content.h;
+    var pass: u8 = 0;
+    while (pass < 3) : (pass += 1) {
+        const viewport_h = if (pass == 0) max_accessory_h else @min(natural_h, max_accessory_h);
+        setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = viewport_h });
+        const content = getSize(scroll, objc.sel("contentSize"));
+        setSize(tv, objc.sel("setFrameSize:"), .{ .w = content.w, .h = @max(natural_h, content.h) });
+        if (text_container != null) {
+            setSize(text_container, objc.sel("setContainerSize:"), .{ .w = content.w, .h = 10_000_000 });
+        }
+        natural_h = aboutTextNaturalHeight(tv, layout_manager, text_container, initial_content.h);
+    }
+    const accessory_h = @min(natural_h, max_accessory_h);
+    setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = accessory_h });
+    const final_content = getSize(scroll, objc.sel("contentSize"));
+    setSize(tv, objc.sel("setFrameSize:"), .{ .w = final_content.w, .h = @max(natural_h, final_content.h) });
+    if (text_container != null) {
+        setSize(text_container, objc.sel("setContainerSize:"), .{ .w = final_content.w, .h = 10_000_000 });
+    }
+
     // selection 자동 copy — #122 의 터미널 selection finish auto-copy 와
     // 일관. NSAlert modal 안에서 cmd+c 라우팅 안 되는 문제도 회피.
     if (registerAboutDelegate()) |delegate| {
@@ -483,7 +560,7 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     }
 
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setAccessory(alert, objc.sel("setAccessoryView:"), tv);
+    setAccessory(alert, objc.sel("setAccessoryView:"), scroll);
 
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
     // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard_dismiss=true).
@@ -671,15 +748,14 @@ fn appendEscaped(w: anytype, s: []const u8) !void {
     };
 }
 
-/// `[]const u8` slice → NSString (UTF-8). stack buffer 에 복사 + null terminate
-/// 후 stringWithUTF8String: — NSString 이 자기 복사 만드므로 함수 return 후
-/// 안전. 8KB 한도 (긴 메시지엔 truncate).
+/// `[]const u8` slice → NSString (UTF-8). 길이를 함께 전달하므로 NUL 종료나
+/// 고정 stack buffer가 필요 없고, NSString이 전체 byte를 자기 storage로 복사한다.
 fn nsStringFromSlice(s: []const u8) objc.id {
-    var buf: [8192]u8 = undefined;
-    const n = @min(s.len, buf.len - 1);
-    @memcpy(buf[0..n], s[0..n]);
-    buf[n] = 0;
     const NSString = objc.getClass("NSString");
-    const stringWithUTF8 = objc.objcSend(fn (objc.Class, objc.SEL, [*:0]const u8) callconv(.c) objc.id);
-    return stringWithUTF8(NSString, objc.sel("stringWithUTF8String:"), @ptrCast(&buf));
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const raw = alloc(NSString, objc.sel("alloc")) orelse return null;
+    const initBytes = objc.objcSend(fn (objc.id, objc.SEL, [*]const u8, usize, usize) callconv(.c) objc.id);
+    const value = initBytes(raw, objc.sel("initWithBytes:length:encoding:"), s.ptr, s.len, 4) orelse return null; // NSUTF8StringEncoding
+    const autorelease = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    return autorelease(value, objc.sel("autorelease"));
 }

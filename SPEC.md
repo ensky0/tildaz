@@ -230,7 +230,7 @@ minimize/restore.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| About 표시 | Ctrl+Shift+I (`MessageBoxW`) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I (Win 동등 native) — `about.showAboutDialog()` → 별 layer-shell `overlay` surface (§6 step 3, #203) | ✅ | ✅ | ✅ |
+| About 표시 | Ctrl+Shift+I (read-only multiline EDIT 전용 window) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I — `about.showAboutDialog()` → 별 layer-shell `overlay` surface (§6 step 3, #203) | ✅ | ✅ | ✅ |
 
 ### 2.5 스크롤 / 화면 reset
 
@@ -615,14 +615,15 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
-| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey` | `dialog/windows.zig` (`MessageBoxW` + key capture window) | `dialog/macos.zig` (NSAlert + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
-| About 다이얼로그 | 버전 / exe / pid 표시 | `MessageBoxW` (Windows) | NSAlert + popup level 우회 (host window level 잠깐 normal) | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showInfo` → Linux backend → layer-shell overlay 그림. 아이콘 (`docs/favicon.svg` raster) + Title + separator + body + OK 버튼 (system blue). | ✅ | ✅ | ✅ |
+| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey / showAboutAlert` | `dialog/windows.zig` (`MessageBoxW` + key capture window + About 전용 window) | `dialog/macos.zig` (NSAlert + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
+| About 다이얼로그 | 버전 / exe / pid / config / log 경로를 잘림 없이 표시. 실제 입력 길이만큼 본문을 할당하고 화면 높이를 넘을 때만 세로 scroll ([#314](https://github.com/ensky0/tildaz/issues/314)) | read-only multiline EDIT 전용 modal window. wheel·scrollbar drag·selection·Ctrl+C는 OS control 동작 | NSAlert accessoryView의 NSScrollView + selectable NSTextView. scrollbar 자동 숨김 | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showAboutAlert` → layer-shell overlay. 아이콘 + Title + separator + body + OK 버튼. overflow 때 아이콘을 생략하고 wheel/touchpad·scrollbar drag 지원 | ✅ | ✅ | ✅ |
 | Config 에러 (잘못된 값) | dialog 띄우고 종료 (`showFatal`) | `dialog.showFatal` | 동일 (NSApp init 전 osascript fallback) | wayland 연결 *후* startup 검증 (예: #283 C2 shell 검증) 은 `runFatalDialog` 가 layer-shell overlay(GNOME/Cinnamon 은 xdg fallback)로 안내 후 exit(1). 연결 *전* 실패는 stderr + log + exit(1) fallback. **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ (연결 후 overlay) / 🟨 (연결 전 stderr) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit(1) | 동일 | **dialog 호출 안 함** — `showPanic` 이 log(`panic`) + `std.debug.defaultPanic` (stderr 에 file:line + backtrace 후 abort). panic 은 renderer/wayland state 가 이미 불안정할 수 있어 overlay 대신 표준 abort 경로 (의도된 차이). | ✅ | ✅ | 🟨 (dialog 없이 log+abort) |
 | 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | `dialog.showConfirm` (`MessageBoxW MB_OKCANCEL`) — `app_controller.onQuitRequest` 가 호출 | NSAlert OK/Cancel — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
-| Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X (mac NSAlert / Win MessageBoxW 표준). | OS modal 표준 자체 | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
+| Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X. | 일반 dialog는 MessageBoxW 표준, About은 소유자 window를 disable한 전용 modal loop | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. About scrollbar drag 외 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
 | dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
-| Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기 | DWrite native | NSAlert native | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 현재 앱이 생성하는 About·config·font·shell·hotkey·새 instance·실행 오류 문구는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 전체 표시한다. 높이가 부족하면 장식 아이콘만 생략하며 scroll 입력·scrollbar는 두지 않는다 ([#306](https://github.com/ensky0/tildaz/issues/306)). | ✅ | ✅ | ✅ |
+| Dialog 위치 | 현재 monitor 중앙 | About은 같은 TildaZ process의 foreground window를 owner로 삼고 그 monitor work area 중앙. 다른 process window는 owner로 사용하지 않음 | NSAlert의 OS modal 배치 | layer-shell 경로(KDE Plasma, COSMIC, Hyprland, sway)는 `anchor=0`으로 현재 output 중앙에 두며 main 창의 dock/width margin과 분리 ([#314](https://github.com/ensky0/tildaz/issues/314), KDE Plasma 1.7x 실기). xdg-toplevel fallback(GNOME, Cinnamon)은 Wayland에 절대 위치 지정 API가 없어 compositor의 transient 배치를 따름 | ✅ | ✅ | ✅ (layer-shell) / 🟨 (xdg compositor 배치) |
+| Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기 | About window는 현재 monitor DPI와 work area 사용, 최대 폭 960 logical pt | NSAlert native, About accessory 폭은 최대 580pt | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 일반 dialog의 현재 메시지는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 전체 표시하고 scroll을 두지 않는다 ([#306](https://github.com/ensky0/tildaz/issues/306)). About은 최대 폭 960 logical pt이며 overflow 때만 세로 scroll을 둔다 ([#314](https://github.com/ensky0/tildaz/issues/314)). | ✅ | ✅ | ✅ |
 
 ---
 
@@ -922,9 +923,9 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 
 기존 About 텍스트 (TildaZ vX.Y.Z / exe / pid) 에 config / log 경로 + 그 경로를 빨리 여는 단축키 Tip 추가. **`~` 같은 단축 안 쓰고 절대 경로** — 사용자가 그대로 복사해서 vim / ls 명령에 paste 가능 + `~` 가 환경에 따라 다른 위치라 ambiguity 제거.
 
-**body 구조는 양쪽 platform 동일** (`messages.about_format`). Tip 라인의 단축키 *토큰* 만 platform native (Windows `Ctrl+Shift+P/L` ↔ macOS `Shift+Cmd+P/L`) — SPEC §0 #2 의 platform 표준 우선 원칙.
+**body 구조는 세 platform 동일** (`messages.about_format`). Tip 라인의 단축키 *토큰* 만 platform native다. Linux는 `Ctrl+Shift+P/L`, macOS는 `Shift+Cmd+P/L`, Windows는 `Ctrl+Shift+P/L` — SPEC §0 #2 의 platform 표준 우선 원칙.
 
-**About 본문 복사는 세 platform 이 공통으로 제공해야 하는 동작이 아니다** (2026-07-12 결정, #282 C3). Windows 는 `MessageBoxW` 의 OS 기본 Ctrl+C, macOS 는 accessoryView selection auto-copy (#128) 로 복사가 되지만, **Linux overlay dialog 는 복사를 제공하지 않는다 (의도).** About 이 보여주는 config/log 경로는 Open Config (`Ctrl+Shift+P`) / Open Log (`Ctrl+Shift+L`) 단축키로 직접 열 수 있어 복사의 실용 가치가 대체되기 때문이다.
+**About 본문 복사는 세 platform 이 공통으로 제공해야 하는 동작이 아니다** (2026-07-12 결정, #282 C3). **Linux overlay dialog 는 복사를 제공하지 않는다 (의도).** macOS는 accessoryView selection auto-copy (#128), Windows는 read-only EDIT의 selection/Ctrl+C로 복사한다. About 이 보여주는 config/log 경로는 Open Config (`Ctrl+Shift+P`) / Open Log (`Ctrl+Shift+L`) 단축키로 직접 열 수 있어 복사의 실용 가치가 대체되기 때문이다.
 
 ```
 TildaZ v0.3.0
@@ -947,9 +948,9 @@ https://github.com/ensky0/tildaz
 
 env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자가 단축키 까먹어도 Shift+Cmd+I / Ctrl+Shift+I 로 About → 경로 확인 → Tip 의 단축키로 editor 직행.
 
-**텍스트 selection / copy — body 는 같지만 dialog 메커니즘은 platform native** (각 OS 표준 dialog 의 자체 copy 흐름 따름):
+**텍스트 selection / copy — body 는 같지만 dialog 메커니즘은 platform native** (각 OS control의 자체 copy 흐름 따름):
 
-- **Windows**: `MessageBoxW` 표준 dialog — `Ctrl+C` 가 본문 + 제목 + 버튼 전체를 클립보드로 (Win 내장 동작). path 만 골라내고 싶으면 paste 후 trim, 또는 Tip 의 `Ctrl+Shift+P/L` 로 editor 바로 열기 (path 자체 필요한 경우는 보통 editor 가 더 유용).
+- **Windows**: read-only multiline EDIT — 필요한 본문 범위를 선택해 `Ctrl+C`. 또는 Tip 의 `Ctrl+Shift+P/L` 로 editor를 바로 연다.
 - **macOS**: `NSAlert.accessoryView` 의 `NSTextView` (selectable / monospace) 로 본문 표시 + selection 변경 시 자동 clipboard copy (NSTextView delegate 의 `textViewDidChangeSelection:`) — 우리 터미널 selection finish auto-copy (#122) 와 같은 패턴. NSAlert modal 안에서 NSTextView 가 firstResponder 를 안정적으로 못 잡아 `Cmd+C` 의 `copy:` 액션이 OK 버튼 쪽으로 라우팅되는 macOS quirk (AGENTS.md macOS Cocoa quirks #4) 우회.
 
 ### 11.4 config error 시 dialog 경로 안내
@@ -1040,7 +1041,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 컬러 emoji + grapheme cluster shaping | ✅ | [#134](https://github.com/ensky0/tildaz/issues/134), [#136](https://github.com/ensky0/tildaz/issues/136), [#139](https://github.com/ensky0/tildaz/issues/139) | macOS #132 동등성. (a) `IDWriteFactory2.TranslateColorGlyphRun` + Direct2D D3D11-backed RT (`CreateDxgiSurfaceRenderTarget`) 으로 layer 별 `DrawGlyphRun` (`GRAYSCALE` antialias) + 2x super-sampling + `SetTextRenderingParams` (gamma=1.0) → atlas 에 premultiplied BGRA 로 저장. shader color path 가 `atlas.rgba` (premult) + `atlas.aaaa` 로 dual-source blend (Win Terminal `BackendD3D` 동등). (b) `IDWriteTextAnalyzer` 로 grapheme cluster shaping (skin tone, ZWJ). (c) `mode 2027` (grapheme cluster) ON. (d) ZWJ family glyph (`👨‍👩‍👧` 등) 는 `IDWriteTextAnalyzer.GetGlyphPlacements` 로 multi-glyph cluster 의 advance/offset 받아 visual 결합 (#139, WT 동등). |
 | IME inline preedit (cell + tab rename) | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) v0.4.0 | macOS 의 `g_preedit_buf` + 보라 overlay 동등. `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (`GCS_COMPSTR`) / `WM_IME_ENDCOMPOSITION` 가로채기 + `ImmGetCompositionStringW` UTF-16 → UTF-8 → `Window.preedit_buf` → renderer overlay (cell 시 cursor 위치 / rename 시 cursor 옆 inline). |
 | IME 후보 popup cursor 추적 | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) 1d v0.4.0 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame onRender 끝에 호출. 일본 / 중국 / 한국 IME 의 한자 후보 popup 이 cursor 옆 자연 추적. `D3d11Renderer.last_cursor_px_x/_y` 에 cursor 그릴 때 보관 (terminal cell / tab rename 양쪽). |
-| About 다이얼로그 본문 복사 | ✅ | #128 | Windows는 `MessageBoxW`의 Ctrl+C, macOS는 selectable `NSTextView` selection 변경 시 자동 copy로 NSAlert firstResponder 제약을 우회. |
+| About 다이얼로그 본문 복사 | ✅ | #128, #314 | Windows는 read-only multiline EDIT의 selection/Ctrl+C, macOS는 selectable `NSTextView` selection 변경 시 자동 copy로 NSAlert firstResponder 제약을 우회. |
 
 ---
 
