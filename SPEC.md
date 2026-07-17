@@ -244,9 +244,9 @@ minimize/restore.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| Ctrl+C → SIGINT (\\x03) | `WM_CHAR` 자동 ASCII control char | NSEvent.characters 직접 PTY write | xkb modifier check + utf8 fallback ([dfcf9f4](https://github.com/ensky0/tildaz/commit/dfcf9f4)) | ✅ | ✅ | ✅ |
+| Ctrl+C → SIGINT (\\x03) | `WM_KEYDOWN` → 공통 입력 정책 → `interruptActive`; TranslateMessage가 만든 짝꿍 `WM_CHAR`는 consume해 ETX 정확히 1회 | NSEvent.characters 직접 PTY write | xkb modifier check + utf8 fallback ([dfcf9f4](https://github.com/ensky0/tildaz/commit/dfcf9f4)) | ✅ | ✅ | ✅ |
 | Ctrl+A ~ Ctrl+Z 일반 control | 동일 | 동일 (Ctrl+] tag jump, Ctrl+W vim window 등) | 동일 (xkb ctrl modifier compose) | ✅ | ✅ | ✅ |
-| 한글 IME 조합 중 Ctrl+C | (해당 없음) | `discardMarkedText` + preedit overlay 비움 + \\x03 직송 — shell 의 "입력 라인 버리기" 의도와 일관 | text-input-v3 reset + preedit_buf 비움 + \\x03 ([5f55caa](https://github.com/ensky0/tildaz/commit/5f55caa), L10-γ) | — | ✅ | ✅ |
+| 한글 IME 조합 중 Ctrl+C | `ImmNotifyIME(CPS_CANCEL)` + preedit overlay 비움 + \\x03 직송; queued `WM_CHAR` consume — discard와 ETX 각각 정확히 1회 | `discardMarkedText` + preedit overlay 비움 + \\x03 직송 — shell 의 "입력 라인 버리기" 의도와 일관 | text-input-v3 reset + preedit_buf 비움 + \\x03 ([5f55caa](https://github.com/ensky0/tildaz/commit/5f55caa), L10-γ) | ✅ | ✅ | ✅ |
 
 ### 2.7 Key repeat (길게 누름 반복)
 
@@ -392,7 +392,22 @@ minimize/restore.
 
 탭 rename 과 terminal cell 양쪽에서 IME 조합 (preedit) 중에 line-nav 키 (Home / End / Ctrl+A / Ctrl+E) 를 누를 때 동작 정의. native textbox / iTerm2 동등.
 
-**원칙:** nav 키는 *commit 후 이동* — 입력 중 자모를 잃지 않음. Ctrl+C 만 예외 (line abort 의미). macOS 는 조합 자모까지 discard, Linux/fcitx5 는 자모를 먼저 확정한 뒤 SIGINT(`가^C`) — 어느 쪽이든 줄이 취소돼 실행 안 되므로 무해(표준 터미널과 동일).
+**원칙:** nav 키와 focus-loss action은 *commit 후 이동/action* — 입력 중 자모를
+잃지 않고, 결과 문자가 action보다 먼저 원래 tab/prompt/rename 제목에 정확히 한 번
+들어간다. paste는 preedit commit 뒤 paste payload 순서라 `하` 조합 중 `X`를 붙이면
+`하X`다. Ctrl+C만 예외(line abort 의미). Windows와 macOS는 조합 자모까지 discard,
+Linux/fcitx5는 자모를 먼저 확정한 뒤 SIGINT(`가^C`) — 어느 쪽이든 줄이 취소돼 실행
+안 되므로 무해(표준 터미널과 동일).
+
+Windows adapter는 실제 `rename_active`, `imePreeditSlice().len`, 보류된 IME result
+상태로 `input_policy.resolve`를 호출한다. commit이면 `ImmNotifyIME(CPS_COMPLETE)`가
+nested 발생시킨 `GCS_RESULTSTR`를 `WM_IME_COMPOSITION` 안에서 원래 대상에 동기
+전달하고 message를 소비한 뒤 rename commit과 action을 순서대로 실행한다.
+discard면 `CPS_CANCEL` 뒤 ETX를 직접 한 번 보내고 translated `WM_CHAR`를 소비한다.
+read-only rename action보다 result가 먼저 오면 action까지 보류하고 leave 정책에
+따라 `ImmSetCompositionStringW(SCS_SETSTR)`로 실제 IMM composition을 복원한다. 이
+순서는 shortcut, Ctrl+Shift+V, 우클릭 paste, F1, Alt+Enter, Alt+F4, Ctrl+C에 공통이다
+([#313](https://github.com/ensky0/tildaz/issues/313)).
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
 |---|---|---|---|---|---|---|
@@ -402,13 +417,17 @@ minimize/restore.
 | 탭 rename | Backspace | (IME 자체 — 자모 단위 되돌리기) | (preedit 안의 음절 처리) | ✅ | ✅ | ✅ (`handleRenameKey` mapping + IME 자모 처리) |
 | 탭 rename | Esc | preedit cancel + rename cancel | rename 종료 (변경 안 함) | ✅ | ✅ | ✅ |
 | 탭 rename | Enter | preedit 자모 commit + rename commit | rename 종료 (변경 적용) | ✅ | ✅ | ✅ |
-| 탭 rename | Cmd / Ctrl+T·W·… 단축키 | preedit + rename 모두 commit | 단축키 동작 | ✅ | ✅ | ✅ |
+| 탭 rename | Cmd / Ctrl+T·W·… 단축키, F1, Alt/Cmd+Enter, Alt+F4/Cmd+Q | preedit 결과를 rename buf에 반영 후 rename commit | 단축키 / hide / fullscreen / quit 동작 | ✅ | ✅ | ✅ |
+| 탭 rename | read-only copy / perf | preedit와 rename 유지 | 복사 / perf dump만 실행 | ✅ | ✅ | ✅ |
+| 탭 rename | paste (`X`) | preedit 유지 | rename buffer에 paste payload 전달 | ✅ | ✅ | ✅ |
 | 탭 rename | 마우스 click 다른 영역 | preedit + rename 모두 commit | click 동작 | ✅ | ✅ | ✅ |
 | terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
 | terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | ✅ — `processKeyEvent` 가 Ctrl+letter (Ctrl+C 제외) + preedit 시 `commitPendingInput` → PTY 자모 송신 + IME session reset. 그 다음 utf8 path 가 Ctrl byte 송신 |
 | terminal cell | Ctrl+C | line abort — 자모 discard *시도* 후 SIGINT (IME 의존) | SIGINT (`\x03`) | ✅ (`discardMarkedText` 로 완전 discard) | ✅ | 🟨 fcitx5 가 Ctrl+C 에서 자모 먼저 확정 → `가^C` (취소된 줄에 남아 무해); 완전 discard 아님 |
 | terminal cell | Ctrl+L / Ctrl+D 등 | preedit → PTY commit | Ctrl char 발신 | ✅ | ✅ | ✅ |
 | terminal cell | Left / Right / Up / Down | (IME 자체 commit 트리거) | escape sequence 발신 | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
+| terminal cell | action 단축키 / F1 / fullscreen / quit | preedit → 원래 PTY commit | commit 처리 뒤 action | ✅ | ✅ | ✅ |
+| terminal cell | paste (`X`) | preedit → 원래 PTY commit | paste payload 전달 (`하X`) | ✅ | ✅ | ✅ |
 
 #### 의사결정 rationale
 
