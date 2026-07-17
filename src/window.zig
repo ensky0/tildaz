@@ -264,17 +264,20 @@ extern "gdi32" fn BitBlt(HDC, c_int, c_int, c_int, c_int, HDC, c_int, c_int, DWO
 extern "gdi32" fn DeleteDC(HDC) callconv(.c) BOOL;
 
 // === Imm32 (IME) ===
-// HIMC = IME context handle. GCS_COMPSTR = preedit (조합 중) 추출, GCS_RESULTSTR
-// = commit 된 결과 (Windows 가 WM_CHAR 로 자동 dispatch — 우리가 받음). 우리는
-// COMPSTR 만 inline overlay 로 그리고 RESULTSTR 은 default 처리.
+// HIMC = IME context handle. GCS_COMPSTR = preedit (조합 중), GCS_RESULTSTR =
+// commit 결과. 둘 다 직접 추출한다. RESULTSTR를 DefWindowProcW에 넘기면 WM_CHAR가
+// action 뒤에 queue되므로, 원래 입력 대상에 동기 dispatch한 뒤 message를 소비한다.
 const HIMC = ?*opaque {};
 extern "imm32" fn ImmGetContext(HWND) callconv(.c) HIMC;
 extern "imm32" fn ImmReleaseContext(HWND, HIMC) callconv(.c) BOOL;
 extern "imm32" fn ImmGetCompositionStringW(HIMC, DWORD, ?*anyopaque, DWORD) callconv(.c) c_long;
+extern "imm32" fn ImmSetCompositionStringW(HIMC, DWORD, ?*const anyopaque, DWORD, ?*const anyopaque, DWORD) callconv(.c) BOOL;
 extern "imm32" fn ImmNotifyIME(HIMC, DWORD, DWORD, DWORD) callconv(.c) BOOL;
 extern "imm32" fn ImmSetCompositionWindow(HIMC, *COMPOSITIONFORM) callconv(.c) BOOL;
 const NI_COMPOSITIONSTR: DWORD = 0x0015;
+const CPS_COMPLETE: DWORD = 0x1;
 const CPS_CANCEL: DWORD = 0x4;
+const SCS_SETSTR: DWORD = 0x0009;
 const CFS_POINT: DWORD = 0x0002;
 /// IME composition / candidate window 위치 지정 (#164 1d). dwStyle = CFS_POINT
 /// 면 IME 가 ptCurrentPos 근처에 popup. 일본 / 중국 IME 의 한자 후보 list 가
@@ -437,10 +440,21 @@ pub const Window = struct {
     /// IME composition (preedit) 버퍼 — UTF-8. WM_IME_COMPOSITION 의 GCS_COMPSTR
     /// 를 ImmGetCompositionStringW 로 받아 UTF-16 → UTF-8 변환 후 저장 (#164).
     /// renderer 가 매 frame 읽어 cursor 옆 inline overlay (mac 동등). 한글 / 일본
-    /// 어 / 중국어 등 모든 IMM 기반 IME 가 같은 path. GCS_RESULTSTR (commit 된
-    /// 텍스트) 는 default 처리 — Windows 가 WM_CHAR 로 따로 보냄.
+    /// 어 / 중국어 등 모든 IMM 기반 IME 가 같은 path. GCS_RESULTSTR도 이 message
+    /// 안에서 동기 처리해 action보다 먼저 원래 입력 대상에 반영한다 (#313).
     preedit_buf: [256]u8 = undefined,
     preedit_len: usize = 0,
+    /// `imeCompleteComposition`의 ImmNotifyIME가 nested WM_IME_COMPOSITION을
+    /// 동기 발생시켰는지 확인한다. 결과를 동기 처리하지 못하면 caller가 action을
+    /// 보류해 queued WM_CHAR가 새 탭/새 prompt로 이동하지 않게 한다.
+    ime_complete_in_progress: bool = false,
+    ime_complete_result_ok: bool = false,
+    /// Ctrl chord의 실제 key가 preedit result보다 늦게 queue될 수 있어, 바로
+    /// 앞의 GCS_RESULTSTR를 target에 보내지 않고 잠깐 보관한다. 다음 non-modifier
+    /// key/action에서 input_policy에 따라 commit/discard/IMM composition 복원 중
+    /// 하나로 정확히 한 번 소비한다 (#313 B1).
+    ime_deferred_result: ?[]u8 = null,
+    ime_preserve_requested: bool = false,
     hotkey_vkey: UINT = 0,
     hotkey_modifiers: UINT = 0,
     hotkey_registered: bool = false,
@@ -668,6 +682,7 @@ pub const Window = struct {
     }
 
     pub fn deinit(self: *Window) void {
+        self.imeClearDeferredResult(false);
         if (self.hwnd) |hwnd| {
             _ = KillTimer(hwnd, RENDER_TIMER_ID);
             if (self.hotkey_registered) _ = UnregisterHotKey(hwnd, HOTKEY_ID);
@@ -1204,7 +1219,7 @@ pub const Window = struct {
             },
             WM_HOTKEY => {
                 if (wParam == HOTKEY_ID) {
-                    self.toggle();
+                    if (!self.dispatchAppEvent(.{ .shortcut = .toggle_visibility })) self.toggle();
                 }
                 return 0;
             },
@@ -1283,20 +1298,51 @@ pub const Window = struct {
                 return 0;
             },
             WM_IME_COMPOSITION => {
-                // GCS_COMPSTR (조합 중 preedit) 만 가로채서 inline 그리기. GCS_
-                // RESULTSTR (commit 된 결과) 는 Windows 가 WM_CHAR 로 자동 보냄
-                // — DefWindowProc 를 통과시켜 그 path 발동. 한글 / 일본어 / 중국
-                // 어 / 베트남어 / 인디크 모두 같은 IMM API.
+                // RESULTSTR를 먼저 원래 대상에 동기 dispatch한다. DefWindowProcW에
+                // 넘기면 결과 WM_CHAR가 현재 KEYDOWN action 뒤에 queue되어 새 탭,
+                // 새 prompt 또는 rename 종료 뒤로 이동한다 (#313).
                 const lp_dword: DWORD = @truncate(@as(usize, @bitCast(lParam)));
+                var handled = false;
+                if ((lp_dword & GCS_RESULTSTR) != 0) {
+                    const result = self.imeReadCompositionResult() orelse {
+                        // 읽기/변환/dispatch 실패 시 OS default를 보존한다. 강제
+                        // complete caller는 action을 보류하므로 target이 바뀌지 않는다.
+                        return DefWindowProcW(hwnd, msg, wParam, lParam);
+                    };
+                    defer std.heap.page_allocator.free(result);
+
+                    // MS-IME는 Ctrl keydown만으로도 실제 shortcut key보다 먼저
+                    // result/end를 queue할 수 있다. Ctrl chord 중이면 다음
+                    // non-modifier keydown이 policy action인지 확인할 때까지 보류한다.
+                    const defer_for_policy = !self.ime_complete_in_progress and
+                        (self.ime_preserve_requested or GetKeyState(VK_CONTROL) < 0);
+                    if (defer_for_policy) {
+                        if (!self.imeStoreDeferredResult(result)) {
+                            if (!self.imeDispatchCommittedText(result)) return DefWindowProcW(hwnd, msg, wParam, lParam);
+                            self.preedit_len = 0;
+                        }
+                    } else {
+                        if (!self.imeDispatchCommittedText(result)) return DefWindowProcW(hwnd, msg, wParam, lParam);
+                        self.preedit_len = 0;
+                        if (self.ime_complete_in_progress) self.ime_complete_result_ok = true;
+                    }
+                    handled = true;
+                }
                 if ((lp_dword & GCS_COMPSTR) != 0) {
                     self.imeReadCompositionPreedit();
-                    // RESULTSTR 도 같이 들어왔으면 default 도 호출 — 그래야 commit 된 글자가 WM_CHAR 로 dispatch.
-                    if ((lp_dword & GCS_RESULTSTR) != 0) return DefWindowProcW(hwnd, msg, wParam, lParam);
-                    return 0;
+                    handled = true;
                 }
+                if (handled) return 0;
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_IME_ENDCOMPOSITION => {
+                if (self.ime_deferred_result != null) {
+                    // read-only action이 먼저 실행된 순서면 여기서 실제 IMM
+                    // composition을 복원. result가 action보다 먼저였으면 action
+                    // resolver가 commit/preserve/discard를 결정할 때까지 유지.
+                    if (self.ime_preserve_requested) _ = self.imeRestoreDeferredComposition();
+                    return 0;
+                }
                 self.preedit_len = 0;
                 return 0;
             },
@@ -1354,6 +1400,27 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYDOWN => {
+                // Ctrl keydown이 먼저 끝낸 composition result는 modifier keydown을
+                // 건너뛰어 실제 chord key까지 유지한다. leave 정책이 필요한
+                // C(copy/interrupt), Ctrl+Shift+V(paste), F12(perf)는 app resolver가
+                // preserve/commit/discard를 결정한다. 그 밖의 key는 여기서 먼저
+                // commit해 Ctrl+A/E/control char나 state-changing action보다 앞선다.
+                if (self.ime_deferred_result != null and
+                    wParam != @as(WPARAM, @intCast(VK_CONTROL)) and
+                    wParam != @as(WPARAM, @intCast(VK_SHIFT)) and
+                    !imeKeyDownUsesDeferredPolicy(wParam))
+                {
+                    if (!self.imeDispatchDeferredResult()) return 0;
+                }
+                // Ctrl+C는 WM_CHAR(ETX)보다 먼저 공통 입력 정책으로 보낸다.
+                // terminal preedit는 IMM cancel, rename에서는 drop, 그 외에는 ETX를
+                // 한 번 전송한다. TranslateMessage가 queue할 짝꿍 WM_CHAR는 swallow.
+                if (wParam == 0x43 and GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
+                    if (self.dispatchAppEvent(.{ .interrupt = {} })) {
+                        self.swallow_next_wm_char = true;
+                        return 0;
+                    }
+                }
                 const maybe_key: ?app_event.KeyInput = switch (wParam) {
                     0x0D => .enter,
                     0x1B => .escape,
@@ -1523,6 +1590,16 @@ pub const Window = struct {
                 }
                 return 0;
             },
+            WM_KEYUP => {
+                // preserve 요청 뒤 IME result가 전혀 오지 않은 IME에서는 chord가
+                // 끝날 때 요청만 해제. 예상 read-only result가 보류됐는데 action이
+                // 소비하지 못한 예외에는 결과를 확정해 입력 손실/가짜 overlay 방지.
+                if (GetKeyState(VK_CONTROL) >= 0 and GetKeyState(VK_SHIFT) >= 0) {
+                    self.ime_preserve_requested = false;
+                    if (self.ime_deferred_result != null) _ = self.imeDispatchDeferredResult();
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+            },
             WM_SIZE => {
                 if (!self.layout_transition_active) {
                     if (self.resize_fn) |resize_fn| {
@@ -1642,11 +1719,10 @@ pub const Window = struct {
                 // 않음 — Windows 기본 경로가 어떤 SC_ 명령을 생성하든 우리가
                 // 정의한 동작 (현재 모니터 `rcWork` ↔ 저장된 dock) 으로 가게.
                 if (wParam == VK_RETURN) {
-                    // #282 A10 — rename 활성 중 Alt+Enter 도 이름을 확정한 뒤 토글
-                    // (macOS/Linux 동등, SPEC §4.1). before_hide_fn(onBeforeHide)은
-                    // "renaming 이면 commitRename" 이라 이 commit 용도에 안전.
-                    if (self.before_hide_fn) |commit| commit(self.userdata);
-                    self.toggleFullscreenMode(if (GetAsyncKeyState(VK_SHIFT) < 0) .workarea else .monitor);
+                    const workarea = GetAsyncKeyState(VK_SHIFT) < 0;
+                    if (!self.dispatchAppEvent(.{ .shortcut = .{ .fullscreen = workarea } })) {
+                        self.toggleFullscreenMode(if (workarea) .workarea else .monitor);
+                    }
                     return 0;
                 }
                 // Alt+1 ~ Alt+9: 탭 전환.
@@ -1854,17 +1930,174 @@ pub const Window = struct {
         _ = ImmSetCompositionWindow(himc, &form);
     }
 
+    /// GCS_RESULTSTR를 UTF-16으로 읽고 소유 UTF-8 slice로 변환한다. caller가
+    /// page_allocator로 해제한다.
+    fn imeReadCompositionResult(self: *Window) ?[]u8 {
+        const hwnd = self.hwnd orelse return null;
+        const himc = ImmGetContext(hwnd);
+        if (himc == null) return null;
+        defer _ = ImmReleaseContext(hwnd, himc);
+
+        const len_bytes_raw = ImmGetCompositionStringW(himc, GCS_RESULTSTR, null, 0);
+        if (len_bytes_raw <= 0 or @mod(len_bytes_raw, 2) != 0) return null;
+        const len_bytes: usize = @intCast(len_bytes_raw);
+        const len_units = len_bytes / 2;
+        const alloc = std.heap.page_allocator;
+        const w16_buf = alloc.alloc(u16, len_units) catch return null;
+        defer alloc.free(w16_buf);
+        const got_raw = ImmGetCompositionStringW(himc, GCS_RESULTSTR, w16_buf.ptr, @intCast(len_bytes));
+        if (got_raw <= 0 or got_raw > len_bytes_raw or @mod(got_raw, 2) != 0) return null;
+        const got_units: usize = @intCast(@divTrunc(got_raw, 2));
+        return std.unicode.utf16LeToUtf8Alloc(alloc, w16_buf[0..got_units]) catch null;
+    }
+
+    /// 이미 읽은 commit 결과를 현재 app 입력 대상에 동기 반영한다. 이 함수가
+    /// 성공한 WM_IME_COMPOSITION은 caller가 소비하므로 같은 결과의 WM_CHAR가
+    /// 생성되지 않는다. 다중 codepoint도 원래 순서대로 정확히 한 번 처리한다.
+    fn imeDispatchCommittedText(self: *Window, utf8: []const u8) bool {
+        if (utf8.len == 0) return false;
+        var view = std.unicode.Utf8View.init(utf8) catch return false;
+        var iter = view.iterator();
+        while (iter.nextCodepoint()) |cp| {
+            if (self.dispatchAppEvent(.{ .text_input = cp })) continue;
+            const write_fn = self.write_fn orelse return false;
+            var encoded: [4]u8 = undefined;
+            const encoded_len = std.unicode.utf8Encode(cp, &encoded) catch return false;
+            write_fn(encoded[0..encoded_len], self.userdata);
+        }
+        return true;
+    }
+
+    /// Ctrl chord result를 input_policy까지 가져가야 하는 leave/discard 경계.
+    /// 나머지는 WM_KEYDOWN 시작에서 commit해 key/action보다 먼저 처리한다.
+    fn imeKeyDownUsesDeferredPolicy(wParam: WPARAM) bool {
+        if (GetKeyState(VK_CONTROL) >= 0) return false;
+        if (wParam == 0x43) return true;
+        if (GetKeyState(VK_SHIFT) >= 0) return false;
+        return wParam == 0x56 or wParam == 0x7B;
+    }
+
+    fn imeStoreDeferredResult(self: *Window, utf8: []const u8) bool {
+        const alloc = std.heap.page_allocator;
+        if (self.ime_deferred_result) |previous| {
+            const joined = alloc.alloc(u8, previous.len + utf8.len) catch {
+                // 극단적인 allocation 실패에서도 먼저 도착한 결과를 먼저
+                // 반영하고 현재 결과는 다시 보류해 입력 순서/손실을 지킨다.
+                if (!self.imeDispatchDeferredResult()) return false;
+                self.ime_deferred_result = alloc.dupe(u8, utf8) catch return false;
+                if (utf8.len <= self.preedit_buf.len) {
+                    @memcpy(self.preedit_buf[0..utf8.len], utf8);
+                    self.preedit_len = utf8.len;
+                }
+                return true;
+            };
+            @memcpy(joined[0..previous.len], previous);
+            @memcpy(joined[previous.len..], utf8);
+            alloc.free(previous);
+            self.ime_deferred_result = joined;
+        } else {
+            self.ime_deferred_result = alloc.dupe(u8, utf8) catch return false;
+        }
+        const deferred = self.ime_deferred_result.?;
+        if (deferred.len <= self.preedit_buf.len) {
+            @memcpy(self.preedit_buf[0..deferred.len], deferred);
+            self.preedit_len = deferred.len;
+        }
+        return true;
+    }
+
+    fn imeClearDeferredResult(self: *Window, clear_preedit: bool) void {
+        if (self.ime_deferred_result) |result| std.heap.page_allocator.free(result);
+        self.ime_deferred_result = null;
+        self.ime_preserve_requested = false;
+        if (clear_preedit) self.preedit_len = 0;
+    }
+
+    pub fn imeHasDeferredResult(self: *const Window) bool {
+        return self.ime_deferred_result != null;
+    }
+
+    fn imeDispatchDeferredResult(self: *Window) bool {
+        const result = self.ime_deferred_result orelse return true;
+        if (!self.imeDispatchCommittedText(result)) return false;
+        self.imeClearDeferredResult(true);
+        return true;
+    }
+
+    fn imeSetCompositionString(self: *Window, utf8: []const u8) bool {
+        const utf16_len = std.unicode.calcUtf16LeLen(utf8) catch return false;
+        if (utf16_len == 0) return false;
+        const alloc = std.heap.page_allocator;
+        const utf16 = alloc.alloc(u16, utf16_len) catch return false;
+        defer alloc.free(utf16);
+        const written = std.unicode.utf8ToUtf16Le(utf16, utf8) catch return false;
+        const hwnd = self.hwnd orelse return false;
+        const himc = ImmGetContext(hwnd);
+        if (himc == null) return false;
+        defer _ = ImmReleaseContext(hwnd, himc);
+        return ImmSetCompositionStringW(himc, SCS_SETSTR, utf16[0..written].ptr, @intCast(written * 2), null, 0) != 0;
+    }
+
+    /// read-only action 앞에서 MS-IME가 이미 result/end를 낸 경우 그 결과를
+    /// 실제 IMM composition으로 되돌린다. 복원 실패 시 결과를 한 번 commit해
+    /// 입력을 잃거나 renderer에 가짜 overlay만 남기지 않는다.
+    fn imeRestoreDeferredComposition(self: *Window) bool {
+        const result = self.ime_deferred_result orelse return true;
+        self.ime_preserve_requested = false;
+        if (self.imeSetCompositionString(result)) {
+            self.imeClearDeferredResult(false);
+            return true;
+        }
+        return self.imeDispatchDeferredResult();
+    }
+
+    /// pending=leave인 rename input에서 실제 IMM composition을 유지한다.
+    /// result가 이미 보류됐으면 즉시 복원하고, action이 먼저면 뒤따르는
+    /// result/end에서 복원하도록 요청을 기록한다. mouse paste처럼 IMM이
+    /// composition을 끝내지 않는 action은 native state를 그대로 둔다.
+    pub fn imePreserveComposition(self: *Window) bool {
+        if (self.ime_deferred_result != null) return self.imeRestoreDeferredComposition();
+        if (self.preedit_len == 0) return true;
+        if (GetKeyState(VK_CONTROL) < 0) self.ime_preserve_requested = true;
+        return true;
+    }
+
+    /// 현재 IMM composition을 강제 complete. 한국어 IME 실기에서
+    /// ImmNotifyIME가 GCS_RESULTSTR/END를 nested dispatch한다. RESULTSTR를 위에서
+    /// 동기 처리한 경우에만 true라 action이 결과 문자 뒤에 실행됨을 보장한다.
+    pub fn imeCompleteComposition(self: *Window) bool {
+        if (self.ime_deferred_result != null) return self.imeDispatchDeferredResult();
+        if (self.preedit_len == 0) return true;
+        const hwnd = self.hwnd orelse return false;
+        const himc = ImmGetContext(hwnd);
+        if (himc == null) return false;
+        defer _ = ImmReleaseContext(hwnd, himc);
+
+        self.ime_complete_in_progress = true;
+        self.ime_complete_result_ok = false;
+        defer self.ime_complete_in_progress = false;
+        if (ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_COMPLETE, 0) == 0) return false;
+        return self.ime_complete_result_ok;
+    }
+
     /// IME composition 강제 cancel — preedit_buf 비우고 IME state 도 reset.
     /// 호출처 (마우스 클릭 시 manual commit 후) 가 이미 자모를 rename buf 에
     /// 추가했으니 IME 가 다음 GCS_RESULTSTR 보내지 않게 cancel. 한국어 / 일본어
     /// / 중국어 모두 같은 IMM API path. (#164 follow-up)
-    pub fn imeCancelComposition(self: *Window) void {
-        const hwnd = self.hwnd orelse return;
+    pub fn imeCancelComposition(self: *Window) bool {
+        if (self.ime_deferred_result != null) {
+            self.imeClearDeferredResult(true);
+            return true;
+        }
+        self.ime_preserve_requested = false;
+        if (self.preedit_len == 0) return true;
+        const hwnd = self.hwnd orelse return false;
         const himc = ImmGetContext(hwnd);
-        if (himc == null) return;
+        if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
-        _ = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+        const ok = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0) != 0;
         self.preedit_len = 0;
+        return ok;
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {

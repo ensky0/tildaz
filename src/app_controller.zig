@@ -2,6 +2,7 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
+const windows_input_adapter = @import("windows_input_adapter.zig");
 const session_core = @import("session_core.zig");
 const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
@@ -266,6 +267,10 @@ pub const App = struct {
     /// 처리되지만 안전 가드. macOS `applicationShouldTerminate:` 와 같은 정책.
     pub fn onQuitRequest(userdata: ?*anyopaque) bool {
         const self: *App = @ptrCast(@alignCast(userdata.?));
+        // Alt+F4/WM_CLOSE도 다른 focus-loss action과 같은 Windows 입력 정책을
+        // 거친다. IME 결과와 rename commit이 confirm dialog보다 먼저 끝나야
+        // Cancel 뒤에도 원래 탭/제목에 확정 결과가 남는다 (#313).
+        _ = self.resolveWindowsInput(.{ .shortcut = .quit }) orelse return false;
         const n = self.session.count();
         if (n == 0) return true;
         var msg_buf: [256]u8 = undefined;
@@ -277,7 +282,9 @@ pub const App = struct {
     /// 정책 (SPEC §4.1). preedit 은 hide 시점에 IME 가 OS 차원에서 자동 처리.
     pub fn onBeforeHide(userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        if (self.isRenaming()) self.commitRename();
+        // WM_HOTKEY는 app event로 먼저 이 정책을 적용한다. 이 callback은 다른
+        // 내부 hide 진입점도 같은 불변식을 지키게 하는 idempotent fallback.
+        _ = self.resolveWindowsInput(.{ .shortcut = .toggle_visibility });
     }
 
     /// #282 A11 — IME 조합 시작 시 활성 탭을 맨 아래로 (macOS/Linux 동등).
@@ -555,7 +562,7 @@ pub const App = struct {
             while (commit_iter.nextCodepoint()) |cp| {
                 if (cp >= 0x20) _ = self.tab_interaction.rename.insertCodepoint(cp);
             }
-            self.window.imeCancelComposition();
+            _ = self.window.imeCancelComposition();
         }
 
         // commit 반영된 새 view 로 mouse → byte 매핑.
@@ -821,7 +828,31 @@ pub const App = struct {
             .next_tab => .next_tab,
             .prev_tab => .prev_tab,
             .copy_selection => .copy_selection,
+            .toggle_visibility => .toggle_visibility,
+            .fullscreen => .fullscreen,
         };
+    }
+
+    /// Windows의 실제 rename/IMM preedit 상태로 공통 입력 정책을 resolve하고,
+    /// native pending → rename commit 순으로 적용한다. `imeCompleteComposition`
+    /// 안에서 GCS_RESULTSTR가 동기 text_input으로 원래 대상에 먼저 들어온다.
+    /// complete가 실패하면 action을 보류해 queued WM_CHAR가 다른 대상에 들어가는
+    /// 것을 막는다. cancel은 정책대로 best-effort이며 ETX는 호출자가 한 번 보낸다.
+    fn resolveWindowsInput(self: *App, input: input_policy.Input) ?input_policy.Disposition {
+        const resolution = windows_input_adapter.resolve(input, .{
+            .rename_active = self.isRenaming(),
+            .ime_preedit_len = self.window.imePreeditSlice().len,
+            .ime_result_deferred = self.window.imeHasDeferredResult(),
+        });
+
+        switch (resolution.native_pending) {
+            .none => {},
+            .preserve_ime => if (!self.window.imePreserveComposition()) return null,
+            .complete_ime => if (!self.window.imeCompleteComposition()) return null,
+            .cancel_ime => _ = self.window.imeCancelComposition(),
+        }
+        if (resolution.commit_rename_after_ime) self.commitRename();
+        return resolution.disposition;
     }
 
     pub fn onAppEvent(event: app_event.Event, userdata: ?*anyopaque) bool {
@@ -845,7 +876,15 @@ pub const App = struct {
                 // rename routing (printable cp 만 → handleRenameChar) 또는 일반
                 // PTY paste (bracketed paste + wrap 은 session 가). 양쪽 분기
                 // helper. mac handlePaste 와 같은 path.
-                tab_actions.routePaste(&self.host, bytes);
+                const disposition = self.resolveWindowsInput(.paste) orelse return true;
+                if (disposition.target == .rename_buffer or disposition.target == .pty) {
+                    tab_actions.routePaste(&self.host, bytes);
+                }
+                return true;
+            },
+            .interrupt => {
+                const disposition = self.resolveWindowsInput(.interrupt) orelse return true;
+                if (disposition.target == .pty) self.session.interruptActive("\x03");
                 return true;
             },
             .shortcut => |shortcut| {
@@ -853,11 +892,8 @@ pub const App = struct {
                 // 한 곳에서. copy_selection/dump_perf 는 read-only → rename 을 안
                 // 끝냄(rename 중 복사할 대상이 없음 — macOS/Linux 와 같은 정정).
                 // 그 외 단축키는 focus_loss 로 현재 값 commit 후 실행 (SPEC §4.1).
-                if (self.isRenaming() and
-                    input_policy.resolve(.{ .shortcut = appShortcutToPolicy(shortcut) }, .{ .rename_active = true }).pending == .commit)
-                {
-                    self.commitRename();
-                }
+                const disposition = self.resolveWindowsInput(.{ .shortcut = appShortcutToPolicy(shortcut) }) orelse return true;
+                if (disposition.target != .run_action) return true;
                 switch (shortcut) {
                     .new_tab => {
                         self.handleNewTab();
@@ -914,6 +950,14 @@ pub const App = struct {
                         // (#120). 드래그 직후 finishTerminalSelection 이 자동 copy
                         // 하지만, 그 후 사용자가 키로 다시 트리거하고 싶을 때.
                         tab_actions.copyActiveSelection(&self.host, self.allocator);
+                        return true;
+                    },
+                    .toggle_visibility => {
+                        self.window.toggle();
+                        return true;
+                    },
+                    .fullscreen => |workarea| {
+                        self.window.toggleFullscreenMode(if (workarea) .workarea else .monitor);
                         return true;
                     },
                 }

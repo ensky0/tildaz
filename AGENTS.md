@@ -52,10 +52,19 @@ README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적�
 - **macOS**: NSTextInputClient protocol — `interpretKeyEvents:` → `setMarkedText:`
   (조합 중) / `insertText:` (commit) / `doCommandBySelector:` (special key) 콜백.
   preedit overlay 는 우리 metal renderer 가 `cursor.viewport` 위치에 직접 그림.
-- **Windows**: OS IME 자체 candidate window 가 표시 + commit 만 `WM_CHAR` 로 전달.
-  *의도된 platform 차이* (#110 close 사유, SPEC.md §5) — Windows 사용자가 OS
-  candidate window 에 익숙 + IMM 통합 시 모든 IME 종류 (한글 / 일본어 / 중국어
-  / 베트남어 등) 책임지는 부담 회피. cross-platform 동등성 룰의 명시 예외.
+- **Windows**: `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` /
+  `WM_IME_ENDCOMPOSITION` + IMM. `GCS_COMPSTR` 를 UTF-8 preedit buffer 로 받아
+  Direct3D renderer 가 terminal cursor 또는 tab rename cursor 옆에 inline overlay 로
+  그려요. `GCS_RESULTSTR` 는 message 안에서 원래 terminal/rename 대상에 동기 전달하고
+  그 message 를 소비해 뒤따르는 `WM_CHAR` 중복을 막아요. shortcut / paste / F1 /
+  상태를 바꾸는 shortcut / terminal paste / F1 / Alt+Enter / Alt+F4 전에는
+  `ImmNotifyIME(CPS_COMPLETE)` 로 결과를 먼저 정확히 한 번 반영하고, Ctrl+C 는
+  `CPS_CANCEL` 뒤 ETX(`\x03`)를 정확히 한 번 보내요. Tab rename의 read-only
+  copy/perf와 paste는 preedit를 유지해요. MS-IME가 Ctrl shortcut보다 먼저
+  `GCS_RESULTSTR`를 보내도 결과를 보류한 뒤, 유지 정책이면
+  `ImmSetCompositionStringW(SCS_SETSTR)`로 실제 IMM composition을 복원해요.
+  한자 / kanji / hanzi 변환 후보 목록은 OS IME popup 을 그대로 쓰고
+  `ImmSetCompositionWindow` 로 cursor 위치만 알려요.
 
 # 근본 해결 원칙
 

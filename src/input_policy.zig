@@ -54,6 +54,7 @@ pub const Shortcut = enum {
     open_log,
     copy_selection,
     dump_perf,
+    toggle_visibility,
     fullscreen,
     quit,
 };
@@ -153,7 +154,7 @@ fn expectDisp(input: Input, state: State, pending: Pending, target: Target) !voi
 test "SPEC §4.1 — rename 중 action 단축키는 commit 후 실행" {
     // 상태를 바꾸는 단축키(탭/reset/about/config/log/fullscreen/quit)는 focus-loss 로
     // rename 을 확정한 뒤 실행.
-    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .fullscreen, .quit }) |sc| {
+    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .quit }) |sc| {
         try expectDisp(.{ .shortcut = sc }, rename, .commit, .run_action);
     }
 }
