@@ -1230,7 +1230,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
         fn notify(_: usize, _: ?*anyopaque) void {}
     };
     const shell = std.unicode.utf8ToUtf16LeStringLiteral(
-        "cmd.exe /d /c \"title TILDAZ_OSC_TEST & echo ready\"",
+        "cmd.exe /d /q /c \"title TILDAZ_OSC_TEST& ping -n 2 127.0.0.1 >nul\"",
     );
     var session = SessionCore.init(
         std.testing.allocator,
