@@ -89,9 +89,11 @@ pub fn showError(title: []const u8, message: []const u8) void {
     impl.show(.err, title, message);
 }
 
-/// 에러 다이얼로그 표시 후 즉시 종료. config 검증 실패 같은 fatal 상황.
+/// 에러 다이얼로그 표시 후 즉시 종료. config 검증 실패 같은 fatal 상황. platform
+/// backend는 짧은 native 표시를 유지하고, 본문이 화면/저장 상한을 넘을 때만 세로
+/// scroll 가능한 경로로 전환한다 (#316).
 pub fn showFatal(title: []const u8, message: []const u8) noreturn {
-    impl.show(.err, title, message);
+    impl.showFatal(title, message);
     std.process.exit(1);
 }
 

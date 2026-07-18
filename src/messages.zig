@@ -208,6 +208,8 @@ pub const config_parse_failed_format =
 pub const config_parse_failed_fallback_msg = "Failed to parse config JSON.";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
+pub const config_error_with_path_format = "{s}\n\nConfig path:\n  {s}";
+pub const config_error_with_path_fallback_msg = "Configuration is invalid.\n\nConfig path:\n  (unknown)";
 pub const config_top_level_must_be_object_msg = "Configuration: top-level must be a JSON object.";
 pub const config_dock_position_invalid_format = "Configuration: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right";
 pub const config_dock_position_invalid_fallback_msg = "Configuration: window.dock_position invalid";

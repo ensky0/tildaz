@@ -229,9 +229,15 @@ fn encodeTruncated(dst: []WCHAR, src: []const u8) usize {
 /// 호출. 한도 초과 시 잘라서라도 항상 표시 (#282 C5 — macOS 8KB / Linux 4096B
 /// truncate 와 정합). 이전엔 overflow 시 dialog 없이 default 반환이라 긴
 /// 메시지(예: config 검증 상세)에서 아무것도 안 떴다.
+const message_box_text_capacity: usize = 4096;
+
+fn fatalNeedsScrollableText(visual_overflow: bool, utf16_len: usize) bool {
+    return visual_overflow or utf16_len >= message_box_text_capacity - 1;
+}
+
 fn messageBox(title: []const u8, message: []const u8, flags: c_uint) c_int {
     var title_buf: [256]WCHAR = undefined;
-    var msg_buf: [4096]WCHAR = undefined;
+    var msg_buf: [message_box_text_capacity]WCHAR = undefined;
     const tlen = encodeTruncated(&title_buf, title);
     const mlen = encodeTruncated(&msg_buf, message);
     title_buf[tlen] = 0;
@@ -364,7 +370,7 @@ fn aboutOwner() HWND {
     return if (process_id == GetCurrentProcessId()) candidate else null;
 }
 
-fn showScrollableAbout(title: []const u8, body: []const u8) bool {
+fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: bool) bool {
     const allocator = std.heap.page_allocator;
     const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, title) catch return false;
     defer allocator.free(title_w);
@@ -436,6 +442,9 @@ fn showScrollableAbout(title: []const u8, body: []const u8) bool {
     const max_body_h = @max(1, max_client_h - top - gap - button_h - bottom);
     const body_h = @min(wrapped_h, max_body_h);
     const overflow = wrapped_h > body_h;
+    // 짧은 fatal은 기존 MessageBoxW를 유지한다. 화면 overflow가 없더라도
+    // MessageBoxW 변환 buffer를 넘는 본문은 custom EDIT로 보내 전체를 보존한다.
+    if (only_if_overflow and !fatalNeedsScrollableText(overflow, body_w.len)) return false;
     const client_w = margin + content_w + margin;
     const button_y = top + body_h + gap;
     const client_h = button_y + button_h + bottom;
@@ -528,7 +537,20 @@ fn showScrollableAbout(title: []const u8, body: []const u8) bool {
 /// About 전용 scrollable window. 일반 info/error/confirm은 기존 MessageBoxW를
 /// 유지하며, 사용자 정의 window 준비 실패 시 About도 MessageBoxW로 표시한다.
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
-    if (!showScrollableAbout(title, message)) show(.info, title, message);
+    if (!showScrollableText(title, message, false)) show(.info, title, message);
+}
+
+/// 짧은 fatal은 native MessageBoxW를 유지하고, 화면 또는 4096 UTF-16 변환
+/// 상한을 넘을 때만 read-only EDIT + 세로 scrollbar를 사용한다 (#316).
+pub fn showFatal(title: []const u8, message: []const u8) void {
+    if (!showScrollableText(title, message, true)) show(.err, title, message);
+}
+
+test "#316 Windows fatal uses scrollable text before MessageBox truncation" {
+    try std.testing.expect(!fatalNeedsScrollableText(false, message_box_text_capacity - 2));
+    try std.testing.expect(fatalNeedsScrollableText(true, 100));
+    try std.testing.expect(fatalNeedsScrollableText(false, message_box_text_capacity - 1));
+    try std.testing.expect(fatalNeedsScrollableText(false, message_box_text_capacity + 100));
 }
 
 /// OK / Cancel 두 버튼 확인 다이얼로그. #250 — 표준 매핑(Enter=OK, Esc=Cancel)

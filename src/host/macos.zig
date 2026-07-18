@@ -2648,8 +2648,19 @@ pub fn run() !void {
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 
-    // 0. Config 읽기 — 잘못된 값 발견 시 config.zig 가 dialog.showFatal 로
-    //    다이얼로그 띄우고 즉시 종료 (Windows host 와 동일 정책).
+    // 0. NSApplication. config fatal이 긴 경로를 포함해도 osascript의 8192-byte
+    //    bootstrap buffer로 떨어지지 않고 NSAlert + overflow scroll을 쓸 수 있도록
+    //    config 읽기 전에 AppKit dialog backend부터 준비한다 (#316).
+    const NSApplication = objc.getClass("NSApplication");
+    const sharedApp = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    g_app = sharedApp(NSApplication, objc.sel("sharedApplication")) orelse return error.NSApplicationFailed;
+
+    const setActivationPolicy = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) bool);
+    _ = setActivationPolicy(g_app, objc.sel("setActivationPolicy:"), NSApplicationActivationPolicyAccessory);
+    @import("../dialog/macos.zig").markNSAppReady();
+
+    // 1. Config 읽기 — 잘못된 값 발견 시 config.zig 가 dialog.showFatal 로
+    //    다이얼로그를 띄우고 즉시 종료 (Windows host 와 동일 정책).
     //
     // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. `$SHELL` env 가
     // 있으면 사용자 환경값을 그대로, 없으면 `Defaults.shell` (= `/bin/bash`).
@@ -2662,14 +2673,6 @@ pub fn run() !void {
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
     @import("../shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
-
-    // 1. NSApplication.
-    const NSApplication = objc.getClass("NSApplication");
-    const sharedApp = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    g_app = sharedApp(NSApplication, objc.sel("sharedApplication")) orelse return error.NSApplicationFailed;
-
-    const setActivationPolicy = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) bool);
-    _ = setActivationPolicy(g_app, objc.sel("setActivationPolicy:"), NSApplicationActivationPolicyAccessory);
 
     // macOS "Press and Hold" 기능 끔 — 영어 키 길게 눌러도 accent picker
     // (à á â) 안 뜨고 정상 key repeat 발생. 한글 자모는 IME 경로라 영향
@@ -2685,10 +2688,6 @@ pub fn run() !void {
             setBoolForKey(defaults, objc.sel("setBool:forKey:"), false, objc.nsString("ApplePressAndHoldEnabled"));
         }
     }
-
-    // dialog/macos 가 NSAlert path 쓰도록 — 이 시점부터 우리 NSApp 안에서
-    // alert 띄울 때 popup level 보다 위에 올바르게 표시.
-    @import("../dialog/macos.zig").markNSAppReady();
 
     try buildMainMenu(g_app);
 
