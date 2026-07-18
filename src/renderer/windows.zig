@@ -205,8 +205,8 @@ pub const D3d11Renderer = struct {
     text_buffer: *d3d.ID3D11Buffer,
     cb: *d3d.ID3D11Buffer,
 
-    // Default background
-    default_bg: [3]f32,
+    // active terminal 이 배경색을 제공하지 않을 때만 쓰는 init theme fallback.
+    fallback_bg: [3]f32,
 
     // ClearType tuning (from system settings)
     sys_enhanced_contrast: f32,
@@ -666,7 +666,7 @@ pub const D3d11Renderer = struct {
             .bg_buffer = bg_buffer.?,
             .text_buffer = text_buffer.?,
             .cb = cb.?,
-            .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
+            .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .sys_enhanced_contrast = sys_enhanced_contrast,
             .gamma_ratios = gamma_ratios,
         };
@@ -797,6 +797,9 @@ pub const D3d11Renderer = struct {
         self: *D3d11Renderer,
         tab_titles: []const []const u8,
         active_tab: usize,
+        /// #282 B8 — active terminal 의 현재 background (OSC 11 포함).
+        /// null 은 terminal 에 배경이 없을 때만 init theme fallback 사용.
+        terminal_background: ?ghostty.color.RGB,
         tab_bar_height: c_int,
         client_w: c_int,
         client_h: c_int,
@@ -827,14 +830,15 @@ pub const D3d11Renderer = struct {
     ) void {
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
+        const frame_bg = cell_color.resolveFrameBackground(terminal_background, self.fallback_bg);
 
         // tab_bar_height == 0 면 탭바 자체를 그리지 않고 clear 만 하고 종료
         // (#127 — 단일 탭에서는 app_controller.effectiveTabBarHeight() 가 0).
-        // clear 는 항상 필요 — renderTerminal 보다 먼저 불려서 default_bg 로
-        // 채우는 역할.
+        // clear 는 항상 필요 — renderTerminal 보다 먼저 active terminal 의 현재
+        // background 로 채운다.
         if (tab_bar_height <= 0) {
             self.setupFrame(rtv);
-            const clear_color = [4]d3d.FLOAT{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
+            const clear_color = [4]d3d.FLOAT{ frame_bg[0], frame_bg[1], frame_bg[2], 1.0 };
             self.ctx.ClearRenderTargetView(rtv, &clear_color);
             return;
         }
@@ -856,8 +860,8 @@ pub const D3d11Renderer = struct {
         // Update viewport and constant buffer
         self.setupFrame(rtv);
 
-        // Clear with default background
-        const clear_color = [4]d3d.FLOAT{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
+        // Clear with the active terminal's current background.
+        const clear_color = [4]d3d.FLOAT{ frame_bg[0], frame_bg[1], frame_bg[2], 1.0 };
         self.ctx.ClearRenderTargetView(rtv, &clear_color);
 
         // Build background instances for tab bar
@@ -881,14 +885,17 @@ pub const D3d11Renderer = struct {
                 @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
             else
                 @as(f32, @floatFromInt(i)) * tw - sx + tax;
-            const c = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG[0] else self.default_bg[0];
+            const tab_bg = if (i == active_tab)
+                ui_metrics.TAB_ACTIVE_BG
+            else
+                [4]f32{ frame_bg[0], frame_bg[1], frame_bg[2], 1.0 };
             bg_instances[bg_count] = .{
                 .pos = .{ tab_x + tab_gap.tab_horizontal_inset, tab_gap.tab_vertical_inset },
                 .size = .{
                     @max(tw - tab_gap.tab_horizontal_inset * 2.0, 1.0),
                     @max(tbh - tab_gap.tab_vertical_inset * 2.0, 1.0),
                 },
-                .color = .{ c, c, c, 1 },
+                .color = tab_bg,
             };
             bg_count += 1;
         }

@@ -395,9 +395,14 @@ pub const App = struct {
                 for (tabs[0..n], 0..) |t, i| {
                     tab_titles[i] = t.title[0..t.title_len];
                 }
+                const terminal_bg = if (self.activeTabPtr()) |tab|
+                    tab.terminal.colors.background.get()
+                else
+                    null;
                 r.renderTabBar(
                     tab_titles[0..n],
                     self.session.activeIndex(),
+                    terminal_bg,
                     tab_bar_h,
                     size.w,
                     size.h,

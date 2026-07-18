@@ -14,6 +14,18 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../themes.zig");
 
+/// GPU renderer frame clear와 비활성 탭이 함께 쓰는 active terminal 배경.
+/// OSC 11의 현재 RGB가 있으면 그것을 정규화하고, terminal이 값을 제공하지 않는
+/// 예외에만 renderer init theme fallback을 유지한다 (#282 B8).
+pub fn resolveFrameBackground(background: ?ghostty.color.RGB, fallback: [3]f32) [3]f32 {
+    const bg = background orelse return fallback;
+    return .{
+        @as(f32, @floatFromInt(bg.r)) / 255.0,
+        @as(f32, @floatFromInt(bg.g)) / 255.0,
+        @as(f32, @floatFromInt(bg.b)) / 255.0,
+    };
+}
+
 pub fn resolveFg(
     style: ghostty.Style,
     raw: *const ghostty.Cell,
@@ -61,6 +73,15 @@ const test_colors = ghostty.RenderState.Colors{
     .cursor = null,
     .palette = ghostty.color.default,
 };
+
+test "frame background — current terminal RGB 전체를 사용하고 null만 fallback" {
+    const fallback = [3]f32{ 0.9, 0.8, 0.7 };
+    const actual = resolveFrameBackground(.{ .r = 51, .g = 102, .b = 204 }, fallback);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), actual[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), actual[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), actual[2], 0.0001);
+    try std.testing.expectEqual(fallback, resolveFrameBackground(null, fallback));
+}
 
 test "평시 — cell 고유 색 없으면 fg=theme fg, bg=null" {
     const style = ghostty.Style{};
