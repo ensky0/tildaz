@@ -2892,8 +2892,8 @@ pub fn run() !void {
         break :blk env_chain[0..1];
     } else g_config.font_families[0..g_config.font_family_count];
 
-    // theme 의 background 를 metal renderer 의 default_bg 로 — clear pass color
-    // (cell 이 그리지 않는 영역) + 비활성 탭 BG 에 사용.
+    // active terminal 에 background가 없는 예외에 쓸 renderer fallback.
+    // 정상 frame은 terminal의 현재 값(OSC 11 포함)을 renderTabBar에 전달한다.
     const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
     g_renderer = renderer_module.RendererBackend.init(
         allocator,
@@ -3153,6 +3153,7 @@ fn renderFrameTick() void {
     g_renderer.?.renderTabBar(
         titles,
         g_session.active_tab,
+        tab.terminal.colors.background.get(),
         g_rename.view(),
         tab_rename_preedit,
         g_drag.view(),

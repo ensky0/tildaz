@@ -206,6 +206,7 @@ pub const TabBarLayout = tab_layout.Layout;
 const PendingTabs = struct {
     titles: []const []const u8,
     active: usize,
+    terminal_bg: [3]f32,
     rename_view: ?tab_interaction.RenameView,
     rename_preedit: []const u8,
     drag_view: ?tab_interaction.DragView,
@@ -266,8 +267,8 @@ pub const MetalRenderer = struct {
     /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
     pending_tabs: ?PendingTabs = null,
 
-    // 기본 배경색 (theme 미설정 시).
-    default_bg: [3]f32,
+    // active terminal 이 배경색을 제공하지 않을 때만 쓰는 init theme fallback.
+    fallback_bg: [3]f32,
 
     // viewport (pixel 단위).
     vp_width: u32 = 0,
@@ -381,7 +382,7 @@ pub const MetalRenderer = struct {
             .atlas_texture = atlas_tex,
             .tab_atlas_texture = tab_atlas_tex,
             .constants_buffer = const_buf,
-            .default_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
+            .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .scale = scale,
             .font_families = font_families,
             .terminal_font = terminal_font,
@@ -455,6 +456,9 @@ pub const MetalRenderer = struct {
         /// 으로 보고 cell grid 가 풀 화면 사용.
         tab_titles: []const []const u8,
         active_tab: usize,
+        /// #282 B8 — active terminal 의 현재 background (OSC 11 포함).
+        /// null 은 terminal 에 배경이 없을 때만 init theme fallback 사용.
+        terminal_background: ?ghostty.color.RGB,
         /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림 (#111 M11.6b).
         /// null = rename 비활성. cross-platform `tab_interaction.RenameView` 그대로.
         rename_view: ?tab_interaction.RenameView,
@@ -473,6 +477,7 @@ pub const MetalRenderer = struct {
         /// #268 2b — hover 중인 컨트롤 버튼 (.none = 없음). 강조 배경 박스.
         tab_hover: tab_layout.Area,
     ) void {
+        const frame_bg = cell_color.resolveFrameBackground(terminal_background, self.fallback_bg);
         const drawable = objc.msgSend(self.layer, objc.sel("nextDrawable"));
         if (drawable == null) {
             self.pending_tabs = null;
@@ -509,9 +514,9 @@ pub const MetalRenderer = struct {
 
         const ClearColor = extern struct { r: f64, g: f64, b: f64, a: f64 };
         const clear = ClearColor{
-            .r = @floatCast(self.default_bg[0]),
-            .g = @floatCast(self.default_bg[1]),
-            .b = @floatCast(self.default_bg[2]),
+            .r = @floatCast(frame_bg[0]),
+            .g = @floatCast(frame_bg[1]),
+            .b = @floatCast(frame_bg[2]),
             .a = 1.0,
         };
         const setClearColorFn: *const fn (objc.id, objc.SEL, ClearColor) callconv(.c) void = @ptrCast(objc.msgSend_raw);
@@ -529,6 +534,7 @@ pub const MetalRenderer = struct {
         self.pending_tabs = .{
             .titles = tab_titles,
             .active = active_tab,
+            .terminal_bg = frame_bg,
             .rename_view = rename_view,
             .rename_preedit = tab_rename_preedit,
             .drag_view = drag_view,
@@ -566,7 +572,7 @@ pub const MetalRenderer = struct {
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
-                self.drawTabBar(encoder, t.titles, t.active, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout, t.hover);
+                self.drawTabBar(encoder, t.titles, t.active, t.terminal_bg, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout, t.hover);
             }
         }
 
@@ -983,7 +989,7 @@ pub const MetalRenderer = struct {
     /// 윈도우 상단 탭바 (#111 M11.4 + M11.4-fix). Windows `D3d11Renderer.renderTabBar`
     /// 와 같은 시각 디자인:
     ///   - 탭바 BG 는 매우 어둡게 (TAB_BAR_BG = 20/255).
-    ///   - 비활성 탭 BG = renderer 의 `default_bg` (terminal 배경) → cell grid 와
+    ///   - 비활성 탭 BG = active terminal 의 현재 배경 → cell grid 와
     ///     자연스럽게 이어짐.
     ///   - 활성 탭 BG = TAB_ACTIVE_BG (50/255) → 어두운 BG 대비 두드러짐.
     ///   - 탭 placement: 좌우 1pt + 상하 2pt gap에 화면 scale을 곱함 → 그 gap으로
@@ -994,6 +1000,7 @@ pub const MetalRenderer = struct {
         encoder: objc.id,
         tab_titles: []const []const u8,
         active_tab: usize,
+        terminal_bg: [3]f32,
         rename_view: ?tab_interaction.RenameView,
         rename_preedit: []const u8,
         drag_view: ?tab_interaction.DragView,
@@ -1009,7 +1016,7 @@ pub const MetalRenderer = struct {
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
         const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
         const tab_gap = ui_metrics.tabGapPx(self.scale);
-        const inactive_bg: [4]f32 = .{ self.default_bg[0], self.default_bg[1], self.default_bg[2], 1.0 };
+        const inactive_bg: [4]f32 = .{ terminal_bg[0], terminal_bg[1], terminal_bg[2], 1.0 };
 
         const MAX_BG: usize = 64;
         const MAX_TEXT: usize = 512;
