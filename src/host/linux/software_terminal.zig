@@ -73,7 +73,13 @@ const dialog_viewport_margin_pt: u32 = 16;
 /// dark 자동 감지는 별 작업 (portal `org.freedesktop.appearance.color-scheme`).
 const dialog_bg_color: ghostty.color.RGB = .{ .r = 0xF2, .g = 0xF2, .b = 0xF2 };
 const dialog_text_color: ghostty.color.RGB = .{ .r = 0x1A, .g = 0x1A, .b = 0x1A };
-const dialog_separator_color: ghostty.color.RGB = .{ .r = 0xC8, .g = 0xC8, .b = 0xC8 };
+/// `docs/style.css --brand-orange` / `docs/favicon.svg`의 Zig Z와 같은 색.
+/// dialog 종류나 severity와 무관하게 제목 separator 하나에만 사용한다.
+const dialog_separator_color: ghostty.color.RGB = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D };
+const dialog_separator_thickness_pt: u32 = 2;
+/// 밝은 dialog 배경에서 thumb가 보이도록 유지하는 중립 회색. 브랜드 accent와
+/// 역할이 다르므로 separator 색을 바꿔도 scrollbar 색은 따라가지 않는다.
+const dialog_scrollbar_color: ghostty.color.RGB = .{ .r = 0xC8, .g = 0xC8, .b = 0xC8 };
 
 /// `ui_metrics.zig` 의 PT (logical point) 값을 `scale` 곱해 physical pixel 로
 /// 변환. mac `backingScaleFactor` / Win `dpi/96.0` 동등 패턴. 1.0x 면 PT 그대로.
@@ -738,7 +744,7 @@ pub const Renderer = struct {
         buffer_w: i32,
         buffer_h: i32,
         stride: i32,
-        severity: dialog_mod.Severity,
+        _: dialog_mod.Severity,
         title: []const u8,
         message: []const u8,
         confirm_focus_ok: ?bool,
@@ -773,10 +779,6 @@ pub const Renderer = struct {
         // dialog 색 — terminal theme 와 분리, 시스템 표준 light dialog.
         const fg = dialog_text_color;
         const bg = dialog_bg_color;
-        const accent: ghostty.color.RGB = switch (severity) {
-            .info => dialog_separator_color,
-            .err => .{ .r = 220, .g = 80, .b = 80 },
-        };
         // step 4 — confirm_focus_ok != null 이면 confirm 모드 (OK + Cancel 두
         // 버튼). null 이면 info 모드 (OK 하나만, 가로 중앙). focus 표시 (.true =
         // OK, .false = Cancel) 는 차후 시각 강조 (tab focus 등) — 현재는 동작 결정
@@ -805,7 +807,9 @@ pub const Renderer = struct {
 
         // (3) separator line — title 과 message 구분.
         const inner_w: i32 = box_w - pad * 2;
-        rect(memory, buffer_w, buffer_h, stride, text_x, text_y + @divTrunc(ch, 2), inner_w, 1, accent);
+        const separator_h = scaledPt(dialog_separator_thickness_pt, self.scale);
+        const separator_y = text_y + @divTrunc(ch, 2) - @divTrunc(separator_h, 2);
+        rect(memory, buffer_w, buffer_h, stride, text_x, separator_y, inner_w, separator_h, dialog_separator_color);
         text_y += ch;
 
         // (4) Message lines — output viewport에서 계산한 content-driven 폭으로
@@ -845,8 +849,8 @@ pub const Renderer = struct {
                 const thumb_h: i32 = @intFromFloat(g.thumb_h);
                 // Terminal scrollbar의 white/30%는 dark theme용이다. 밝은 dialog
                 // 배경에 blend하면 RGB 242→246이라 thumb가 사실상 사라진다.
-                // 같은 dialog palette의 separator gray를 써 가시 대비를 유지한다.
-                rect(memory, buffer_w, buffer_h, stride, track_x, thumb_y, sb_w, thumb_h, dialog_separator_color);
+                // 중립 회색을 써 가시 대비를 유지하고 제목 accent와 분리한다.
+                rect(memory, buffer_w, buffer_h, stride, track_x, thumb_y, sb_w, thumb_h, dialog_scrollbar_color);
                 self.last_dialog_scrollbar_thumb_rect = .{ .x = track_x, .y = thumb_y, .w = sb_w, .h = thumb_h };
             }
         }
@@ -2290,7 +2294,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     );
 }
 
-test "#314 overflow About renderer draws movable scrollbar thumb at 1.7x" {
+test "#314 overflow About renderer draws 2pt brand separator and movable gray scrollbar at 1.7x" {
     const allocator = std.testing.allocator;
     const cfg = config_mod.Config{};
     var r = Renderer.init(allocator, &cfg, 204, 120) catch return error.SkipZigTest;
@@ -2325,6 +2329,26 @@ test "#314 overflow About renderer draws movable scrollbar thumb at 1.7x" {
         0,
         layout.show_icon,
     );
+    const ch: i32 = @intCast(r.dialog_font_ctx.cell_height_px);
+    const title_ch: i32 = @intCast(r.dialog_title_font_ctx.cell_height_px);
+    const sm = scaledPt(dialog_shadow_margin_pt, r.scale);
+    const pad = scaledPt(dialog_padding_pt, r.scale);
+    const separator_x = sm + pad + 1;
+    const separator_h = scaledPt(dialog_separator_thickness_pt, r.scale);
+    try std.testing.expectEqual(@as(i32, 3), separator_h);
+    const separator_center_y = sm + pad +
+        (if (layout.show_icon) scaledPt(dialog_icon_size_pt + dialog_icon_gap_pt, r.scale) else 0) +
+        title_ch + @divTrunc(ch, 2);
+    const separator_y = separator_center_y - @divTrunc(separator_h, 2);
+    var separator_row: i32 = 0;
+    while (separator_row < separator_h) : (separator_row += 1) {
+        const separator_off: usize = @intCast((separator_y + separator_row) * stride + separator_x * 4);
+        const info_separator = std.mem.readInt(u32, buf[separator_off..][0..4], .little) & 0x00FF_FFFF;
+        try std.testing.expectEqual(pack(dialog_separator_color), info_separator);
+    }
+    const separator_center_off: usize = @intCast(separator_center_y * stride + separator_x * 4);
+    const info_separator = std.mem.readInt(u32, buf[separator_center_off..][0..4], .little) & 0x00FF_FFFF;
+
     const first_thumb_y = r.last_dialog_scrollbar_thumb_rect.y;
     try std.testing.expect(r.last_dialog_scrollbar_track_rect.w > 0);
     try std.testing.expect(r.last_dialog_scrollbar_thumb_rect.h > 0);
@@ -2343,8 +2367,30 @@ test "#314 overflow About renderer draws movable scrollbar thumb at 1.7x" {
     // drawDialogContent는 마지막에 surface opacity를 high alpha byte에 채운다.
     // 가시 대비 판정은 같은 alpha를 제외한 RGB channel을 비교한다.
     const thumb_rgb = thumb_pixel & 0x00FF_FFFF;
-    try std.testing.expectEqual(pack(dialog_separator_color), thumb_rgb);
+    try std.testing.expectEqual(pack(dialog_scrollbar_color), thumb_rgb);
     try std.testing.expect(thumb_rgb != pack(dialog_bg_color));
+    try std.testing.expect(thumb_rgb != info_separator);
+
+    r.drawDialogContent(
+        buf,
+        layout.size.w,
+        layout.size.h,
+        stride,
+        .err,
+        title,
+        msg,
+        null,
+        null,
+        null,
+        false,
+        layout.wrap_cells,
+        layout.message_rows,
+        layout.visible_message_rows,
+        0,
+        layout.show_icon,
+    );
+    const error_separator = std.mem.readInt(u32, buf[separator_center_off..][0..4], .little) & 0x00FF_FFFF;
+    try std.testing.expectEqual(info_separator, error_separator);
 
     r.drawDialogContent(
         buf,
