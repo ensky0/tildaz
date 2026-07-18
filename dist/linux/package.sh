@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# tildaz Linux 릴리즈 artifact 생성 — 4 format 통합 entry.
+# tildaz Linux 릴리즈 artifact 생성 — 5 format 통합 entry.
 #
 # 입력:
 #   --version <ver>                          필수 (예: 0.4.3)
 #   --arch x86_64|aarch64                    필수
-#   --format tar.gz|deb|rpm|AppImage         필수
+#   --format tar.gz|deb|rpm|AppImage|pkg     필수
 #   --bindir <dir>                           optional. 기본 zig-out/bin/
 #
 # 산출물 (zig-out/release/):
@@ -12,6 +12,7 @@
 #   deb      → tildaz_<ver>_<debarch>.deb   (debarch: x86_64→amd64, aarch64→arm64)
 #   rpm      → tildaz-<ver>-1.<arch>.rpm
 #   AppImage → TildaZ-<ver>-<arch>.AppImage
+#   pkg      → tildaz-<ver>-1-x86_64.pkg.tar.zst (Arch Linux, x86_64 전용)
 #
 # 각 옆에 .sha256 sidecar 생성 (GNU sha256sum -c 호환).
 #
@@ -21,10 +22,12 @@
 #   rpm      — rpmbuild (apt install rpm 또는 RHEL 계열 native)
 #   AppImage — appimagetool (없으면 자동 다운로드 — github continuous release)
 #              FUSE 없이 --appimage-extract-and-run 으로 실행
+#   pkg      — makepkg / bsdtar (Arch Linux base-devel / libarchive)
 #
 # 사용법:
 #   dist/linux/package.sh --version 0.4.3 --arch x86_64 --format tar.gz
 #   dist/linux/package.sh --version 0.4.3 --arch aarch64 --format deb
+#   dist/linux/package.sh --version 0.4.3 --arch x86_64 --format pkg
 
 set -euo pipefail
 
@@ -43,7 +46,9 @@ while [[ $# -gt 0 ]]; do
         --format)  FORMAT="$2";  shift 2 ;;
         --bindir)  BINDIR="$2";  shift 2 ;;
         -h|--help)
-            grep '^#' "$0" | sed 's/^# \?//'
+            # 첫 빈 줄 전의 상단 설명 블록만 출력한다. 파일 전체 주석을 grep하면
+            # format 구현 상세와 heredoc 안 shebang까지 사용자 도움말에 섞인다.
+            sed -n '2,/^$/s/^# \?//p' "$0"
             exit 0
             ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
