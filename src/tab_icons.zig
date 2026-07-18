@@ -121,8 +121,9 @@ test "rasterize — 중심선이 채워지고 모서리는 비어야" {
     try std.testing.expect(center > 250);
     // 좌상단 모서리는 어느 선에서도 멀어 비어 있어야.
     try std.testing.expectEqual(@as(u8, 0), buf[0]);
-    // 수평선 위 (y=중앙, x=끝 근처) 는 채워짐.
-    try std.testing.expect(buf[(size / 2) * size + (size - 2)] > 200);
+    // 수평선 위 (y=중앙, x=정의된 R 끝점 안쪽) 는 완전히 채워짐.
+    // size-2는 둥근 cap의 AA 경계라 완전 coverage 검증점이 아니다.
+    try std.testing.expect(buf[(size / 2) * size + (size - 3)] > 200);
 }
 
 test "rasterize — × 는 대각선, 축은 비어야" {

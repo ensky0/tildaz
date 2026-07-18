@@ -82,6 +82,14 @@ pub fn build(b: *std.Build) void {
     }
 
     const is_macos_target = target_os == .macos;
+    const macos_sdk_root = if (is_macos_target)
+        b.option(
+            []const u8,
+            "macos-sdk",
+            "macOS SDK root (cross-compile 시 필수, native 는 비워둠). 예: $(xcrun --show-sdk-path)",
+        ) orelse ""
+    else
+        "";
     if (is_macos_target) {
         // macos_host 가 사용하는 프레임워크 (M2 = AppKit + Metal + QuartzCore +
         // CoreGraphics + CoreFoundation, libobjc 는 `extern "objc"` 의 링크 대상).
@@ -106,14 +114,9 @@ pub fn build(b: *std.Build) void {
         // searched paths: none 으로 실패. `-Dmacos-sdk=` 로 받음 (CI 는
         // `xcrun --show-sdk-path` 결과 주입). native 빌드는 미지정 → zig 자동
         // 검색에 위임 (현재 동작 유지).
-        const sdk_root = b.option(
-            []const u8,
-            "macos-sdk",
-            "macOS SDK root (cross-compile 시 필수, native 는 비워둠). 예: $(xcrun --show-sdk-path)",
-        ) orelse "";
-        if (sdk_root.len > 0) {
-            exe_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{sdk_root}) });
-            exe_mod.addSystemFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk_root}) });
+        if (macos_sdk_root.len > 0) {
+            exe_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{macos_sdk_root}) });
+            exe_mod.addSystemFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{macos_sdk_root}) });
         }
     }
 
@@ -219,9 +222,45 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     run_step.dependOn(&run_cmd.step);
 
-    // 테스트 단계
+    // 테스트 단계 — `main.zig`를 test root로 재사용하면 runtime main의 lazy
+    // import가 test build에서 도달되지 않아 0개가 수집된다 (#318). test block이
+    // 있는 모듈을 명시한 aggregate root를 별도 module로 구성한다.
     const test_step = b.step("test", "테스트 실행");
-    const exe_tests = b.addTest(.{ .root_module = exe_mod });
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_mod.addOptions("build_options", build_opts);
+    if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .simd = simd,
+        .optimize = optimize,
+        .@"emit-lib-vt" = true,
+        .@"font-backend" = .freetype,
+    })) |dep| {
+        test_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+    }
+    if (is_linux_target) test_mod.link_libc = true;
+    if (is_macos_target) {
+        test_mod.linkSystemLibrary("objc", .{});
+        test_mod.linkFramework("AppKit", .{});
+        test_mod.linkFramework("Metal", .{});
+        test_mod.linkFramework("QuartzCore", .{});
+        test_mod.linkFramework("CoreGraphics", .{});
+        test_mod.linkFramework("CoreFoundation", .{});
+        test_mod.linkFramework("ApplicationServices", .{});
+
+        if (macos_sdk_root.len > 0) {
+            test_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{macos_sdk_root}) });
+            test_mod.addSystemFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{macos_sdk_root}) });
+        }
+    }
+    const exe_tests = b.addTest(.{ .root_module = test_mod });
+    if (is_linux_target) {
+        exe_tests.use_llvm = true;
+        exe_tests.use_lld = true;
+    }
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
     // 6-target compile-only check 단계 (#201).

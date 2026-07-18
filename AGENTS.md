@@ -190,7 +190,9 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 앱이 사용자에게 보여주는 모든 텍스트와 다이얼로그는 두 모듈을 반드시 거쳐요.
 
 - **`src/messages.zig`**: 사용자에게 노출되는 모든 텍스트 상수 / format string 의 단일 진입점. 새 메시지가 필요하면 여기 먼저 추가하고 호출처는 이 상수만 import 해요. 같은 의미의 메시지를 platform 별로 두 번 작성하지 않아요.
-- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/windows.zig` (`MessageBoxW`, About 및 overflow config fatal용 scrollable window), `dialog/macos.zig` (`NSAlert`, About 및 overflow config fatal 본문 `NSScrollView`, 일부 경로는 `osascript` fallback), `dialog/linux.zig` (host 의 layer-shell overlay — #203, Wayland 연결 전 config fatal은 stderr + log fallback) 가 선택돼요.
+- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/linux.zig` (host 의 layer-shell overlay — #203, Wayland 연결 전 config fatal은 stderr + log fallback), `dialog/macos.zig` (짧은 본문은 `NSAlert`, overflow 본문은 `NSScrollView`, 일부 경로는 `osascript` fallback), `dialog/windows.zig` (짧은 본문은 `MessageBoxW`/key capture window, overflow 본문은 read-only `EDIT`)가 선택돼요.
+
+**Dialog overflow 정책은 Linux · macOS · Windows 공통**이에요. 먼저 실제 텍스트를 측정해 화면 안에 들어오도록 창을 키우고, 그래도 화면을 넘을 때만 본문에 세로 scroll을 둬요. 제목과 button, prompt의 input/status는 고정해요. About이나 fatal만의 예외가 아니라 info/error/confirm/prompt를 포함한 모든 dialog에 적용해요.
 
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 

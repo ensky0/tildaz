@@ -853,7 +853,12 @@ pub const SessionCore = struct {
         const other: u8 = if (nl == '\n') '\r' else '\n';
         if (std.mem.indexOfScalar(u8, data, other) == null) return null;
 
-        const buf = alloc.alloc(u8, data.len) catch return null;
+        // CRLF만 2→1로 줄고, 단독 CR/LF와 나머지 byte는 모두 1→1이다.
+        // 정확한 결과 길이로 할당해야 반환 slice를 그대로 free할 수 있다.
+        // 입력 길이로 할당한 뒤 짧은 slice를 반환하면 allocator의 allocation/free
+        // size가 달라져 paste 호출부와 테스트에서 invalid free가 된다 (#318).
+        const normalized_len = data.len - std.mem.count(u8, data, "\r\n");
+        const buf = alloc.alloc(u8, normalized_len) catch return null;
         var n: usize = 0;
         var i: usize = 0;
         while (i < data.len) {

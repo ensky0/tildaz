@@ -58,6 +58,7 @@ pub fn resolveBg(
 const test_colors = ghostty.RenderState.Colors{
     .background = .{ .r = 10, .g = 20, .b = 30 },
     .foreground = .{ .r = 200, .g = 210, .b = 220 },
+    .cursor = null,
     .palette = ghostty.color.default,
 };
 
