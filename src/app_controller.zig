@@ -927,8 +927,7 @@ pub const App = struct {
                         return true;
                     },
                     .open_log => {
-                        const path = paths.logPath(self.allocator) catch return true;
-                        defer self.allocator.free(path);
+                        const path = log.filePath() orelse return true;
                         self.window.yieldTopmostUntilNextShow();
                         system_open.openInDefaultApp(self.allocator, path);
                         return true;

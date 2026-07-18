@@ -1,6 +1,6 @@
 // Linux log impl — system-dependent pieces (local time / pid) only. Shared
 // formatting / file IO lives in `log.zig`, and the log file path comes from
-// `paths.logPathBuf` (single source, #282 G3).
+// process-lifetime 로그 파일 경로는 `log.zig`가 단일 값으로 보관한다.
 //
 // #282 후속 — 로컬 시각은 glibc `localtime_r` 로 구한다 (macOS `log/macos.zig` 와
 // 동일 패턴). Linux 는 Wayland/xkbcommon 을 dlopen 하려고 시스템 dynamic loader 를

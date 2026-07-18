@@ -4037,8 +4037,7 @@ const Client = struct {
             defer self.allocator.free(cfg_path);
             system_open.openInDefaultApp(self.allocator, cfg_path);
         } else if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
-            const log_path = paths.logPath(self.allocator) catch return;
-            defer self.allocator.free(log_path);
+            const log_path = log.filePath() orelse return;
             system_open.openInDefaultApp(self.allocator, log_path);
         } else if (sym == xkb_key_r_lower or sym == xkb_key_r_upper) {
             if (self.session) |*session| {

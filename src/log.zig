@@ -12,27 +12,20 @@
 //!   모든 platform 에서 local time 을 사용한다.
 //!
 //! Platform 모듈 (`log/{windows,macos,linux}.zig`) 은 시스템 의존 부분
-//! (local time 변환 / pid) 만 제공 — 로그 파일 경로는 `paths.logPathBuf`
-//! (단일 소스, #282 G3), formatting / file IO 는 이 파일에서 단일 구현.
+//! (local time 변환 / pid) 만 제공. 로그 파일 경로는 처음 사용할 때 실제
+//! 길이만큼 한 번 준비해 프로세스 수명 동안 보관하며, 기록 / About /
+//! Open Log가 이 값을 함께 쓴다. formatting / file IO 는 이 파일에서 단일 구현.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const log_time = @import("log_time.zig");
+const messages = @import("messages.zig");
 const paths = @import("paths.zig");
 
 // #282 D1 — Windows 원자적 append 용 Win32 externs. Windows 에서만 참조되는
 // comptime 분기(writeRaw)에서만 쓰이므로 다른 platform 빌드엔 영향 없음.
 const win32 = if (builtin.os.tag == .windows) struct {
     const w = std.os.windows;
-    pub extern "kernel32" fn CreateFileW(
-        lpFileName: [*:0]const u16,
-        dwDesiredAccess: w.DWORD,
-        dwShareMode: w.DWORD,
-        lpSecurityAttributes: ?*const anyopaque,
-        dwCreationDisposition: w.DWORD,
-        dwFlagsAndAttributes: w.DWORD,
-        hTemplateFile: ?w.HANDLE,
-    ) callconv(.c) w.HANDLE;
     pub extern "kernel32" fn WriteFile(
         hFile: w.HANDLE,
         lpBuffer: [*]const u8,
@@ -60,25 +53,76 @@ const impl = switch (builtin.os.tag) {
     },
 };
 
+const CachedPath = if (builtin.os.tag == .windows)
+    struct {
+        utf8: []const u8,
+        native: *const std.os.windows.PathSpace,
+    }
+else
+    struct {
+        utf8: []const u8,
+    };
+
+var g_path_mutex: std.Thread.Mutex = .{};
+var g_path_attempted = false;
+var g_cached_path: ?CachedPath = null;
+
+/// worker index 가 정해진 뒤 처음 호출될 때 경로를 동적으로 준비한다. 보관
+/// 메모리는 process lifetime 이며, 이후 로그 기록 / About / Open Log가 같은
+/// slice를 사용한다. 준비 실패는 로그 자체에 쓸 수 없으므로 stderr에 한 번
+/// 명시하고 이후 null을 반환한다.
+fn cachedPath() ?CachedPath {
+    g_path_mutex.lock();
+    defer g_path_mutex.unlock();
+
+    if (g_cached_path) |path| return path;
+    if (g_path_attempted) return null;
+    g_path_attempted = true;
+
+    g_cached_path = prepareCachedPath() catch |err| {
+        std.debug.print(messages.log_path_prepare_failed_format ++ "\n", .{@errorName(err)});
+        return null;
+    };
+    return g_cached_path;
+}
+
+fn prepareCachedPath() !CachedPath {
+    const allocator = std.heap.page_allocator;
+    const utf8 = try paths.logPath(allocator);
+    errdefer allocator.free(utf8);
+
+    if (comptime builtin.os.tag == .windows) {
+        const native = try allocator.create(std.os.windows.PathSpace);
+        errdefer allocator.destroy(native);
+        native.* = try std.os.windows.sliceToPrefixedFileW(null, utf8);
+        return .{ .utf8 = utf8, .native = native };
+    }
+    return .{ .utf8 = utf8 };
+}
+
+/// 실제 기록 파일 경로. process lifetime borrowed slice이며 호출자가 해제하지
+/// 않는다. 기록 경로 준비가 실패한 경우에만 null.
+pub fn filePath() ?[]const u8 {
+    const path = cachedPath() orelse return null;
+    return path.utf8;
+}
+
 fn writeRaw(text: []const u8) void {
-    var path_buf: [paths.LOG_PATH_MAX]u8 = undefined;
-    const path = paths.logPathBuf(&path_buf) orelse return;
+    const path = cachedPath() orelse return;
     if (builtin.os.tag == .windows) {
         // #282 D1 — POSIX 는 O_APPEND(아래)로 고쳤으나 Windows 는 createFile+seekFromEnd+
         // writeAll race 였다 (seek 와 write 사이 동시 writer 시 torn line). FILE_APPEND_DATA
         // 로 열면 OS 가 매 write 를 원자적으로 EOF 에 append — ConPty wait_thread(onPtyExit)
         // vs main thread 동시 write(shell exit 시점, post-mortem 로그 필요 순간)에도 줄이 안
         // 섞인다. 한 줄 단일 WriteFile — 작은 크기라 partial 없이 한 번에.
+        // `sliceToPrefixedFileW`가 만든 NT namespace 경로를 보관해 Win32
+        // MAX_PATH / 이전 520 UTF-16 배열에 의존하지 않는다. OpenFile은 이
+        // prefixed 경로를 그대로 NtCreateFile에 전달한다.
         const w = std.os.windows;
-        var path_w: [520]u16 = undefined;
-        const n = std.unicode.utf8ToUtf16Le(path_w[0 .. path_w.len - 1], path) catch return;
-        path_w[n] = 0;
-        const FILE_APPEND_DATA: w.DWORD = 0x0004;
-        const FILE_SHARE_RW: w.DWORD = 0x00000001 | 0x00000002; // READ | WRITE
-        const OPEN_ALWAYS: w.DWORD = 4;
-        const FILE_ATTRIBUTE_NORMAL: w.DWORD = 0x80;
-        const handle = win32.CreateFileW(path_w[0..n :0].ptr, FILE_APPEND_DATA, FILE_SHARE_RW, null, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
-        if (handle == w.INVALID_HANDLE_VALUE) return;
+        const handle = w.OpenFile(path.native.span(), .{
+            .access_mask = w.FILE_APPEND_DATA | w.SYNCHRONIZE,
+            .creation = w.FILE_OPEN_IF,
+        }) catch return;
         defer _ = win32.CloseHandle(handle);
         var written: w.DWORD = undefined;
         _ = win32.WriteFile(handle, text.ptr, @intCast(text.len), &written, null);
@@ -89,7 +133,7 @@ fn writeRaw(text: []const u8) void {
         // race 라 동시 writer 시 torn line 이 났다. 한 줄 단일 write — 작은 크기라
         // partial write 없이 한 번에 atomic append.
         const posix = std.posix;
-        const fd = posix.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
+        const fd = posix.open(path.utf8, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
         defer posix.close(fd);
         _ = posix.write(fd, text) catch {};
     }
@@ -174,4 +218,12 @@ pub fn logConfigLoaded(cfg: anytype) void {
 pub fn userFacing(category: []const u8, text: []const u8) void {
     std.debug.print("{s}\n", .{text});
     appendLine(category, "{s}", .{text});
+}
+
+test "filePath returns one process-lifetime path" {
+    const first = filePath() orelse return error.SkipZigTest;
+    const second = filePath() orelse return error.SkipZigTest;
+
+    try std.testing.expectEqualStrings(first, second);
+    try std.testing.expectEqual(@intFromPtr(first.ptr), @intFromPtr(second.ptr));
 }

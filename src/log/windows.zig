@@ -1,5 +1,5 @@
 // Windows 의 log impl — 시스템 의존 부분 (local time / pid) 만. 공통
-// formatting / writeRaw 는 `log.zig`, 로그 파일 경로는 `paths.logPathBuf`
+// formatting / writeRaw / process-lifetime 로그 파일 경로는 `log.zig`
 // (단일 소스, #282 G3).
 
 const std = @import("std");

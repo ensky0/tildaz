@@ -10,14 +10,9 @@
 //            $HOME/.local/state/tildaz/tildaz_N.log
 //
 // 모두 allocator-based — 호출처가 free 책임. 부모 디렉토리는 자동 생성
-// (이미 존재하면 무시). About 다이얼로그 / Open Config & Log 단축키 /
-// 모듈 (`config.zig` / `log.zig` / host 별 파일) 에서 사용.
-//
-// 로그 경로만은 buffer 기반 `logPathBuf` 가 단일 소스 (#282 G3) — 매 로그
-// 라인마다 불리는 `log.zig` `writeRaw` 가 allocation-free 로 소비하고,
-// allocator 기반 `logPath` (About / Open Log) 는 그 결과를 dupe 만 한다.
-// 두 소비 계열이 같은 규칙을 쓰므로 'Open Log' 가 실제 기록 파일과
-// 갈라질 수 없다.
+// (이미 존재하면 무시). config 모듈과 log 모듈에서 사용한다. 로그 경로는
+// `log.zig`가 프로세스 수명 동안 한 번만 보관하고, 기록 / About / Open Log가
+// 그 값을 함께 써 실제 파일과 사용자에게 보이는 경로가 갈라지지 않는다.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -35,53 +30,36 @@ pub fn configPathFor(allocator: std.mem.Allocator, index: u32) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}{c}config_{d}.json", .{ dir, sep, index });
 }
 
-/// 로그 경로 buffer 의 최소 크기. buffer 기반 / allocator 기반 두 소비 계열이
-/// 같은 한도를 공유해야 한쪽만 성공하는 경로가 안 생긴다 (Windows worst case:
-/// `%APPDATA%` UTF-16 → UTF-8 3 byte/unit 팽창 고려).
-pub const LOG_PATH_MAX = 1024;
-
 pub fn logPath(allocator: std.mem.Allocator) ![]u8 {
-    var buf: [LOG_PATH_MAX]u8 = undefined;
-    const path = logPathBuf(&buf) orelse return error.LogPathUnavailable;
-    return allocator.dupe(u8, path);
+    return logPathFor(allocator, instance_context.workerIndex() orelse 0);
 }
 
-/// 로그 파일 경로의 단일 소스 — allocation-free (#282 G3). 매 로그 라인마다
-/// 불리는 `log.zig` `writeRaw` 가 직접 소비하므로 allocator 를 받지 않는다.
-/// 부모 디렉토리 생성 포함 (macOS `~/Library/Logs` 는 default 존재라 생략).
-/// env 부재 / buf 부족 시 null.
-pub fn logPathBuf(buf: []u8) ?[]const u8 {
-    return logPathBufFor(buf, instance_context.workerIndex() orelse 0);
+pub fn logPathFor(allocator: std.mem.Allocator, index: u32) ![]u8 {
+    const dir = try logDir(allocator);
+    defer allocator.free(dir);
+    try ensureDir(dir);
+    return logPathFromDir(allocator, dir, index);
 }
 
-pub fn logPathBufFor(buf: []u8, index: u32) ?[]const u8 {
+fn logDir(allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
-        const appdata = std.process.getenvW(std.unicode.utf8ToUtf16LeStringLiteral("APPDATA")) orelse return null;
-        // utf16LeToUtf8 은 목적지 bounds-check 가 없다 — UTF-8 worst case
-        // (3 byte/unit) 를 먼저 보장 (이전 log/windows.zig 구현의 잠재 overflow 해소).
-        if (appdata.len * 3 > buf.len) return null;
-        const appdata_len = std.unicode.utf16LeToUtf8(buf, appdata) catch return null;
-
-        const dir_suffix = "\\tildaz";
-        if (appdata_len + dir_suffix.len > buf.len) return null;
-        @memcpy(buf[appdata_len..][0..dir_suffix.len], dir_suffix);
-        const dir_end = appdata_len + dir_suffix.len;
-        ensureDir(buf[0..dir_end]) catch {};
-
-        const file = std.fmt.bufPrint(buf[dir_end..], "\\tildaz_{d}.log", .{index}) catch return null;
-        return buf[0 .. dir_end + file.len];
+        const appdata = try std.process.getEnvVarOwned(allocator, "APPDATA");
+        defer allocator.free(appdata);
+        return std.fmt.allocPrint(allocator, "{s}\\tildaz", .{appdata});
     } else if (builtin.os.tag == .macos) {
-        // `~/Library/Logs` 는 macOS default 로 항상 존재 — 디렉토리 생성 불필요.
-        const home = std.posix.getenv("HOME") orelse return null;
-        return std.fmt.bufPrint(buf, "{s}/Library/Logs/tildaz_{d}.log", .{ home, index }) catch return null;
+        const home = try std.process.getEnvVarOwned(allocator, "HOME");
+        defer allocator.free(home);
+        return std.fmt.allocPrint(allocator, "{s}/Library/Logs", .{home});
     } else {
-        const home = std.posix.getenv("HOME") orelse return null;
-        const dir = std.fmt.bufPrint(buf, "{s}/.local/state/tildaz", .{home}) catch return null;
-        ensureDir(dir) catch {};
-
-        const file = std.fmt.bufPrint(buf[dir.len..], "/tildaz_{d}.log", .{index}) catch return null;
-        return buf[0 .. dir.len + file.len];
+        const home = try std.process.getEnvVarOwned(allocator, "HOME");
+        defer allocator.free(home);
+        return std.fmt.allocPrint(allocator, "{s}/.local/state/tildaz", .{home});
     }
+}
+
+fn logPathFromDir(allocator: std.mem.Allocator, dir: []const u8, index: u32) ![]u8 {
+    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
+    return std.fmt.allocPrint(allocator, "{s}{c}tildaz_{d}.log", .{ dir, sep, index });
 }
 
 pub fn configDir(allocator: std.mem.Allocator) ![]u8 {
@@ -209,24 +187,30 @@ pub fn writeFileIfChanged(allocator: std.mem.Allocator, path: []const u8, conten
     return true;
 }
 
-test "logPath (allocator) 와 logPathBuf (buffer) 가 같은 경로를 낸다" {
-    // #282 G3 — 'Open Log' (allocator 계열) 와 실제 기록 (buffer 계열) 이
-    // 다시 갈라지는 회귀를 차단. 테스트 host 에 HOME/APPDATA 가 없으면 skip.
+test "logPathFor 가 OS 표준 위치와 worker index 를 따른다" {
     const allocator = std.testing.allocator;
-    var buf: [LOG_PATH_MAX]u8 = undefined;
-    const from_buf = logPathBuf(&buf) orelse return error.SkipZigTest;
-    const allocated = try logPath(allocator);
-    defer allocator.free(allocated);
-    try std.testing.expectEqualStrings(from_buf, allocated);
-}
-
-test "logPathBufFor 가 OS 표준 위치와 worker index 를 따른다" {
-    var buf: [LOG_PATH_MAX]u8 = undefined;
-    const path = logPathBufFor(&buf, 7) orelse return error.SkipZigTest;
+    if (!std.process.hasEnvVarConstant(if (builtin.os.tag == .windows) "APPDATA" else "HOME"))
+        return error.SkipZigTest;
+    const path = try logPathFor(allocator, 7);
+    defer allocator.free(path);
     try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
         .windows => "\\tildaz\\tildaz_7.log",
         .macos => "/Library/Logs/tildaz_7.log",
         else => "/.local/state/tildaz/tildaz_7.log",
+    }));
+}
+
+test "log path builder preserves paths beyond the old fixed limit" {
+    const allocator = std.testing.allocator;
+    const long_dir = "/base/" ++ ("가" ** 1200);
+    const path = try logPathFromDir(allocator, long_dir, 42);
+    defer allocator.free(path);
+
+    try std.testing.expect(path.len > 1024);
+    try std.testing.expect(std.mem.startsWith(u8, path, long_dir));
+    try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
+        .windows => "\\tildaz_42.log",
+        else => "/tildaz_42.log",
     }));
 }
 

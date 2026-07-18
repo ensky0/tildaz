@@ -897,6 +897,13 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
 
+로그 경로는 worker index가 정해진 뒤 처음 사용할 때 실제 길이만큼 동적으로
+준비해 process lifetime 동안 하나의 값으로 보관한다. 로그 기록, About의 `log`
+표시, Open Log가 이 동일한 값을 사용하므로 서로 다른 파일을 가리킬 수 없다.
+앱 자체의 고정 경로 버퍼 상한은 두지 않으며, Windows 기록은 prefixed NT path와
+`FILE_APPEND_DATA`를 함께 사용해 장경로에서도 원자 append를 유지한다. 경로 준비가
+실패하면 조용히 생략하지 않고 stderr에 한 번 이유를 남긴다 ([#314](https://github.com/ensky0/tildaz/issues/314)).
+
 process lock과 endpoint 상태는 config가 아니라 transient runtime/cache state다.
 `launcher.lock`, `instanceN.lock`, `instanceN.endpoint`는 실행 뒤 파일 자체가 남을 수
 있으며, 존재 여부는 실행 상태를 뜻하지 않는다. `instanceN.lock`의 PID는 process 검색을
@@ -910,7 +917,7 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | Config 열기 | Ctrl+Shift+P | Shift+Cmd+P | Ctrl+Shift+P — 현재 worker의 `paths.configPath` + `system_open.openInDefaultApp` (xdg-open) | ✅ | ✅ | ✅ |
-| Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L — 현재 worker의 `paths.logPath` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
+| Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L — 현재 worker의 `log.filePath` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
 
 > Windows 의 `dump_perf` (스냅샷) 단축키는 Ctrl+Shift+P 와 충돌해 Ctrl+Shift+F12 로 이동 (개발자 dev 도구 컨벤션, F12).
 

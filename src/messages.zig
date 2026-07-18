@@ -77,6 +77,8 @@ pub const about_format =
 ;
 pub const about_prepare_failed_msg =
     "TildaZ could not prepare the full About information. Check the TildaZ log for details.";
+pub const log_path_prepare_failed_format =
+    "TildaZ could not prepare the log file path: {s}";
 
 pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";
