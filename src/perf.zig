@@ -2,7 +2,13 @@
 // Writes snapshots to the unified log file (`log.zig`) on dumpAndReset().
 
 const std = @import("std");
+const builtin = @import("builtin");
 const log = @import("log.zig");
+
+const win32 = if (builtin.os.tag == .windows) struct {
+    /// Windows 10+ working-state clock. 100ns 단위이며 sleep/hibernate를 세지 않는다.
+    pub extern "kernel32" fn QueryUnbiasedInterruptTimePrecise(*u64) callconv(.c) void;
+} else struct {};
 
 pub const Counter = struct {
     calls: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -19,24 +25,47 @@ pub var render: Counter = .{}; // renderTerminal excluding Present
 pub var present: Counter = .{}; // swap_chain.Present
 pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count
 
-/// Cross-platform elapsed-time timestamp. Linux = CLOCK_BOOTTIME, macOS =
-/// CLOCK_UPTIME_RAW, Windows = QueryPerformanceCounter. Clock 미지원이면 해당
-/// diagnostic sample만 생략한다.
-pub const Timestamp = ?std.time.Instant;
+/// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
+/// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
+/// 세 clock 모두 system sleep/hibernate를 세지 않는다. 이 모듈의 성능 진단에만
+/// 쓰며 기능 동작용 std.time.Timer의 elapsed-time 의미는 바꾸지 않는다.
+pub const Timestamp = ?u64;
 
 pub fn now() Timestamp {
-    return std.time.Instant.now() catch null;
+    if (comptime builtin.os.tag == .windows) {
+        var ticks_100ns: u64 = 0;
+        win32.QueryUnbiasedInterruptTimePrecise(&ticks_100ns);
+        return ticks100nsToNs(ticks_100ns);
+    }
+
+    const ts = if (comptime builtin.os.tag == .linux)
+        std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch return null
+    else if (comptime builtin.os.tag == .macos)
+        std.posix.clock_gettime(std.posix.CLOCK.UPTIME_RAW) catch return null
+    else
+        return null;
+    return timePartsToNs(@intCast(ts.sec), @intCast(ts.nsec));
 }
 
-fn elapsedNs(start: std.time.Instant, end: std.time.Instant) ?u64 {
-    if (end.order(start) == .lt) return null;
-    return end.since(start);
+fn ticks100nsToNs(ticks: u64) ?u64 {
+    return std.math.mul(u64, ticks, 100) catch null;
+}
+
+fn timePartsToNs(seconds: i128, nanoseconds: i128) ?u64 {
+    if (seconds < 0 or nanoseconds < 0 or nanoseconds >= std.time.ns_per_s) return null;
+    const whole = std.math.mul(u64, @intCast(seconds), std.time.ns_per_s) catch return null;
+    return std.math.add(u64, whole, @intCast(nanoseconds)) catch null;
+}
+
+fn elapsedNs(start: u64, end: u64) ?u64 {
+    if (end < start) return null;
+    return end - start;
 }
 
 pub fn nsSince(start: Timestamp) ?u64 {
-    const start_instant = start orelse return null;
+    const start_ns = start orelse return null;
     const end = now() orelse return null;
-    return elapsedNs(start_instant, end);
+    return elapsedNs(start_ns, end);
 }
 
 pub fn addTimed(c: *Counter, start: Timestamp) void {
@@ -102,14 +131,24 @@ pub fn dumpAndReset(label: []const u8) void {
     log.appendBlock(text);
 }
 
-test "Instant duration rejects reversed samples" {
-    const start = try std.time.Instant.now();
+test "working-time duration rejects reversed samples" {
+    const start = now() orelse return error.SkipZigTest;
     std.Thread.sleep(5 * std.time.ns_per_ms);
-    const end = try std.time.Instant.now();
+    const end = now() orelse return error.SkipZigTest;
 
     try std.testing.expectEqual(@as(?u64, 0), elapsedNs(start, start));
     try std.testing.expect((elapsedNs(start, end) orelse 0) > 0);
     try std.testing.expectEqual(@as(?u64, null), elapsedNs(end, start));
+}
+
+test "platform clock units convert to nanoseconds with checked boundaries" {
+    try std.testing.expectEqual(@as(?u64, 12_300), ticks100nsToNs(123));
+    try std.testing.expectEqual(@as(?u64, null), ticks100nsToNs(std.math.maxInt(u64)));
+
+    try std.testing.expectEqual(@as(?u64, 2_000_000_003), timePartsToNs(2, 3));
+    try std.testing.expectEqual(@as(?u64, null), timePartsToNs(-1, 0));
+    try std.testing.expectEqual(@as(?u64, null), timePartsToNs(0, std.time.ns_per_s));
+    try std.testing.expectEqual(@as(?u64, null), timePartsToNs(std.math.maxInt(u64), 0));
 }
 
 test "unavailable clock sample does not update counters" {

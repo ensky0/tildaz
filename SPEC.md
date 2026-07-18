@@ -929,6 +929,16 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 
 > Windows 의 `dump_perf` (스냅샷) 단축키는 Ctrl+Shift+P 와 충돌해 Ctrl+Shift+F12 로 이동 (개발자 dev 도구 컨벤션, F12).
 
+`dump_perf`의 구간별 성능 계측은 system sleep/hibernate를 제외한 working-state
+elapsed time을 사용한다. Linux는 `CLOCK_MONOTONIC`, macOS는 `CLOCK_UPTIME_RAW`,
+Windows는 `QueryUnbiasedInterruptTimePrecise`를 사용하고 `src/perf.zig`에서 모두
+nanosecond로 수렴한다. 이 정책은 PTY read·ring push/drain·parse·render·present·
+onrender 진단 수치에만 적용한다. instance timeout이나 Linux startup/show처럼 기능
+동작의 실제 경과 시간을 재는 `std.time.Timer`는 기존 의미를 유지한다
+([Linux clock_gettime](https://www.man7.org/linux/man-pages/man2/clock_gettime.2.html),
+[Apple uptime clock](https://developer.apple.com/documentation/driverkit/kiotimerclockuptimeraw),
+[Windows unbiased interrupt time](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryunbiasedinterrupttimeprecise)).
+
 **메커니즘:**
 - Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.json` / `.log` 의 file association).
 - macOS: `[NSWorkspace openURL:]` 또는 `system("open <path>")` — Finder 가 file extension 따라 default app.
@@ -1148,5 +1158,5 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
-*마지막 업데이트: 2026-07-18 (#282 XDG base directory 정합).
+*마지막 업데이트: 2026-07-18 (#282 XDG base directory·perf clock 정합).
 이 문서는 living document — 코드 변경할 때 같은 커밋 안에서 update.*
