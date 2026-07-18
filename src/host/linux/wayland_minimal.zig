@@ -1275,12 +1275,12 @@ const Client = struct {
         // 무관하게, 첫 탭 PTY 를 띄우기 전에 — blocking overlay 로 안내한 뒤 종료한다.
         // 연결 자체가 실패한 환경은 이 지점에 도달하지 못하고 상위에서 stderr fallback.
         {
-            var shell_msg_buf: [1024]u8 = undefined;
-            if (shell_validate.validationMessage(self.allocator, self.config.shell, &shell_msg_buf)) |msg| {
+            if (shell_validate.validationMessage(self.allocator, self.config.shell)) |message| {
                 // 메시지를 stderr + log 에도 남긴다 — overlay 를 못 띄우는 환경(headless
                 // 등)에서도 원인이 남게. 그 뒤 blocking overlay 로 화면 안내.
-                log.userFacing("fatal", msg);
-                self.runFatalDialog(messages.config_error_title, msg);
+                log.userFacing("fatal", message.text);
+                self.runFatalDialog(messages.config_error_title, message.text);
+                message.deinit(self.allocator);
                 std.process.exit(1);
             }
         }
