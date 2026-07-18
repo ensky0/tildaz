@@ -715,7 +715,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | `font.line_height_ratio` | float 0.5..2.0 (측정된 ascent+descent+leading 배율) | 1.1 | 1.1 | 1.1 | ✅ | ✅ | ✅ |
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
-| `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`~/.config/autostart/tildaz.desktop`), L11-α | ✅ | ✅ | ✅ |
+| `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`$XDG_CONFIG_HOME/autostart/tildaz.desktop`, fallback `~/.config`), L11-α | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). hotkey 전달 경로 — portal `GlobalShortcuts`(KDE 등) *또는* compositor keybind→`--toggle`(sway/Hyprland/COSMIC, `compositorHotkeyEnv`) — 가 있으면 존중, 그 경로마저 없으면 warning + 즉시 show fallback (영영 못 띄우는 trap 방지). GNOME/Cinnamon + extension 환경은 항상 `false` 로 override — 숨김은 extension 이 map 직후 minimize 로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 100_000 | 100_000 default. ghostty `bytes_per_row × lines` 로 max byte 계산. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + `keysymToAccelerator` + `kdeTryAutoApply` (충돌 owner 진단 + confirm dialog + takeover). 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207) |
@@ -892,11 +892,18 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
-| **config** | `%APPDATA%\tildaz\config_N.json` (Microsoft 표준) | `~/.config/tildaz/config_N.json` (XDG, ghostty/alacritty 패턴 — 터미널 사용자 친숙) | `~/.config/tildaz/config_N.json` (XDG) |
-| **log** | `%APPDATA%\tildaz\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱) | `~/.local/state/tildaz/tildaz_N.log` (XDG state) |
+| **config** | `%APPDATA%\tildaz\config_N.json` (Microsoft 표준) | `$XDG_CONFIG_HOME/tildaz/config_N.json` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/tildaz/config_N.json` (fallback `~/.config`) |
+| **log** | `%APPDATA%\tildaz\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱) | `$XDG_STATE_HOME/tildaz/tildaz_N.log` (fallback `~/.local/state`) |
 | **process / endpoint state** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`, `instanceN.endpoint`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
+
+Linux · macOS config는 유효한 절대 `XDG_CONFIG_HOME`을 우선하고, Linux log는
+유효한 절대 `XDG_STATE_HOME`을 우선한다. unset/empty/relative 값은 위 표의
+기본 경로로 fallback한다. Linux user autostart도 같은 config base의
+`autostart/tildaz.desktop`을 사용한다. custom XDG를 처음 적용할 때는 사용자
+config/log를 복사·이동하지 않으며, 구버전이 기본 위치에 만든 TildaZ autostart
+entry만 중복 실행 방지를 위해 정리한다 ([XDG Base Directory](https://specifications.freedesktop.org/basedir/), [Desktop Application Autostart](https://specifications.freedesktop.org/autostart/0.5/)).
 
 로그 경로는 worker index가 정해진 뒤 처음 사용할 때 실제 길이만큼 동적으로
 준비해 process lifetime 동안 하나의 값으로 보관한다. 로그 기록, About의 `log`
@@ -1141,5 +1148,5 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
-*마지막 업데이트: 2026-07-16 (#311 SPEC·코드 정합 감사 후속).
+*마지막 업데이트: 2026-07-18 (#282 XDG base directory 정합).
 이 문서는 living document — 코드 변경할 때 같은 커밋 안에서 update.*

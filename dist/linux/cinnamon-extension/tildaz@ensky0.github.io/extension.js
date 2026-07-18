@@ -46,7 +46,8 @@
  *     화면 중앙에 그리므로(드롭다운 밖), extension 이 잡아 managed 터미널 위 중앙으로
  *     옮긴다(SPEC §6 "main 위 modal" 실현).
  *
- * config = single source of truth: ~/.config/tildaz/config_N.json 의 hotkey 와
+ * config = single source of truth: $XDG_CONFIG_HOME/tildaz/config_N.json
+ * (fallback: ~/.config/tildaz) 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} + hidden_start.
  *
  * Cinnamon ↔ GNOME API 차이(실측으로 확정):
@@ -67,6 +68,14 @@ const Main = imports.ui.main;
 
 const WORKER_APP_ID_PREFIX = "tildaz.instance";
 const DIALOG_APP_ID = "tildaz-dialog";
+
+function configDirPath() {
+  const xdgConfigHome = GLib.getenv("XDG_CONFIG_HOME");
+  const base = xdgConfigHome && GLib.path_is_absolute(xdgConfigHome)
+    ? xdgConfigHome
+    : GLib.build_filenamev([GLib.get_home_dir(), ".config"]);
+  return GLib.build_filenamev([base, "tildaz"]);
+}
 
 // CinnamonWindowTracker.is_window_interesting 의 원본(프로토타입) 메서드 — enable
 // 에서 인스턴스 메서드를 패치할 때 원본 호출용 (disable 에서 delete 로 복원).
@@ -143,7 +152,7 @@ function enable() {
   for (const [index, cfg] of st.configs) registerHotkey(index, cfg);
 
   const configDir = Gio.File.new_for_path(
-    GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"])
+    configDirPath()
   );
   try {
     st.configMonitor = configDir.monitor_directory(Gio.FileMonitorFlags.NONE, null);
@@ -216,14 +225,12 @@ function disable() {
   st = null;
 }
 
-/** ~/.config/tildaz/config_N.json 읽기 (실패 시 해당 항목 제외). */
+/** XDG config의 config_N.json 읽기 (실패 시 해당 항목 제외). */
 function readConfig(index) {
   const out = { accel: "", dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
   try {
     const path = GLib.build_filenamev([
-      GLib.get_home_dir(),
-      ".config",
-      "tildaz",
+      configDirPath(),
       `config_${index}.json`,
     ]);
     const [ok, bytes] = GLib.file_get_contents(path);
@@ -249,7 +256,7 @@ function readConfig(index) {
 function readConfigs() {
   const configs = new Map();
   try {
-    const path = GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"]);
+    const path = configDirPath();
     const dir = GLib.Dir.open(path, 0);
     let name;
     while ((name = dir.read_name()) !== null) {

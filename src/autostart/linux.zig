@@ -1,4 +1,5 @@
-// Linux auto-start: `~/.config/autostart/tildaz.desktop`
+// Linux auto-start: `$XDG_CONFIG_HOME/autostart/tildaz.desktop`
+// (unset/empty/relative fallback: `~/.config/autostart/tildaz.desktop`)
 //
 // XDG Autostart Specification 의 desktop entry. 사용자 로그인 후 세션이 시작될
 // 때 desktop environment (GNOME / KDE / Cinnamon / XFCE 등) 가 이 경로의
@@ -20,18 +21,34 @@ const paths = @import("../paths.zig");
 
 const ENTRY_NAME = "tildaz.desktop";
 
-/// `~/.config/autostart/tildaz.desktop` 경로. 부모 디렉토리 (`~/.config/autostart`)
-/// 가 없으면 자동 생성.
+/// XDG user autostart 경로. config base와 같은 `paths.configHome`을 사용해
+/// 본체 config와 autostart가 서로 다른 XDG 해석을 갖지 않게 한다.
 fn entryPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    const dir = try std.fmt.allocPrint(allocator, "{s}/.config/autostart", .{home});
+    const config_home = try paths.configHome(allocator);
+    defer allocator.free(config_home);
+    const dir = try std.fmt.allocPrint(allocator, "{s}/autostart", .{config_home});
     defer allocator.free(dir);
     paths.ensureDir(dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, ENTRY_NAME });
+}
+
+/// XDG 지원 전 버전이 항상 쓴 기본 위치. custom XDG_CONFIG_HOME을 쓰는 경우
+/// 이 generated entry를 남기면 두 autostart directory에서 중복 실행된다.
+fn legacyEntryPath(allocator: std.mem.Allocator) ![]u8 {
+    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home);
+    return std.fmt.allocPrint(allocator, "{s}/.config/autostart/{s}", .{ home, ENTRY_NAME });
+}
+
+fn removeLegacyEntryIfDifferent(allocator: std.mem.Allocator, current_path: []const u8) void {
+    const legacy_path = legacyEntryPath(allocator) catch return;
+    defer allocator.free(legacy_path);
+    if (!std.mem.eql(u8, current_path, legacy_path)) {
+        std.fs.deleteFileAbsolute(legacy_path) catch {};
+    }
 }
 
 /// 현재 실행 중 binary 의 절대 경로. macOS `currentExePath` 동등.
@@ -67,7 +84,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     // 담당하므로(mutter 엔 wlr-layer-shell 이 없어 placement 가 셸 안에서만 가능)
     // gnome-session 의 XDG autostart 로는 *띄우지 않는다*. 이 키 하나로 GNOME 만
     // 이 항목을 건너뛰고(extension 이 대신 launch), KDE/Cinnamon/COSMIC 등은 그대로
-    // honor 한다. 이 파일은 전 DE 가 공유하므로(`~/.config/autostart`), 예전처럼
+    // honor 한다. 이 파일은 전 DE 가 공유하므로(XDG user autostart), 예전처럼
     // GNOME 진입 시 파일을 삭제하면 GNOME 을 거친 뒤 KDE/Cinnamon autostart 가
     // 통째로 깨졌다 — NotShowIn 으로 파일을 지우지 않고 DE 왕복에도 살아남게 한다.
     const entry = try std.fmt.allocPrint(allocator,
@@ -90,6 +107,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     defer allocator.free(entry);
 
     _ = try paths.writeFileIfChanged(allocator, path, entry);
+    removeLegacyEntryIfDifferent(allocator, path);
 }
 
 /// auto-start 비활성화 — desktop entry 파일 삭제. 다음 로그인부터 효과.
@@ -97,4 +115,5 @@ pub fn disable(allocator: std.mem.Allocator) void {
     const path = entryPath(allocator) catch return;
     defer allocator.free(path);
     std.fs.deleteFileAbsolute(path) catch {};
+    removeLegacyEntryIfDifferent(allocator, path);
 }

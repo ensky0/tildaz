@@ -30,7 +30,11 @@ APP="${TILDAZ_INSTALL_PATH:-/Applications/TildaZ.app}"
 LAUNCH_LABEL="com.tildaz.app"                                   # autostart/macos.zig
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
 CACHE="$HOME/Library/Caches/TildaZ"                             # paths.zig lockDir
-CONFIG_DIR="$HOME/.config/tildaz"                               # paths.zig configDir
+if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
+    CONFIG_DIR="$XDG_CONFIG_HOME/tildaz"
+else
+    CONFIG_DIR="$HOME/.config/tildaz"
+fi
 CERT_NAME="TildazLocal"
 CERT_CRT="$HOME/.tildaz/${CERT_NAME}.crt"
 SYSTEM_KEYCHAIN="/Library/Keychains/System.keychain"
@@ -62,7 +66,7 @@ if [[ -d "$CACHE" ]]; then
 fi
 
 if [[ "$PURGE" == "1" ]]; then
-    # --- config (~/.config/tildaz/config_N.json) ---
+    # --- config ($XDG_CONFIG_HOME/tildaz, fallback ~/.config/tildaz) ---
     if [[ -d "$CONFIG_DIR" ]]; then
         rm -rf "$CONFIG_DIR"
         echo "Removed: $CONFIG_DIR (config)"

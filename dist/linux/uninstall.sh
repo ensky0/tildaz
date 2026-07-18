@@ -5,7 +5,7 @@
 #   ~/.local/share/applications/tildaz.desktop
 #   ~/.local/share/applications/tildaz.instanceN.desktop
 #   ~/.local/share/icons/hicolor/scalable/apps/tildaz.svg
-#   ~/.config/autostart/tildaz.desktop  (있으면 — autostart enabled 시)
+#   $XDG_CONFIG_HOME/autostart/tildaz.desktop  (fallback: ~/.config)
 #   ~/.local/bin/tildaz  (symlink 일 때만 — 사용자가 둔 실제 파일은 보존)
 #   GNOME / Cinnamon TildaZ extension
 #   GNOME / Cinnamon gsettings custom keybinding tildaz-N (extension 비활성 시
@@ -17,17 +17,31 @@
 #     2줄만. .conf=exec-once / .lua=hl.on, 동일 규칙. 본문 보존)
 #
 # 보존:
-#   ~/.config/tildaz/config_N.json  (사용자 설정 — 명시 삭제 옵션 안 만들음)
-#   ~/.local/state/tildaz/         (log)
+#   $XDG_CONFIG_HOME/tildaz/config_N.json  (fallback: ~/.config, 사용자 설정)
+#   $XDG_STATE_HOME/tildaz/               (fallback: ~/.local/state, log)
 #
 # 사용법:
 #   bash dist/linux/uninstall.sh
 
 set -euo pipefail
 
+if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
+    CONFIG_HOME="$XDG_CONFIG_HOME"
+else
+    CONFIG_HOME="$HOME/.config"
+fi
+if [[ "${XDG_STATE_HOME:-}" == /* ]]; then
+    STATE_HOME="$XDG_STATE_HOME"
+else
+    STATE_HOME="$HOME/.local/state"
+fi
+TILDAZ_CONFIG_DIR="$CONFIG_HOME/tildaz"
+TILDAZ_STATE_DIR="$STATE_HOME/tildaz"
+
 DESKTOP="$HOME/.local/share/applications/tildaz.desktop"
 ICON="$HOME/.local/share/icons/hicolor/scalable/apps/tildaz.svg"
-AUTOSTART="$HOME/.config/autostart/tildaz.desktop"
+AUTOSTART="$CONFIG_HOME/autostart/tildaz.desktop"
+LEGACY_AUTOSTART="$HOME/.config/autostart/tildaz.desktop"
 SYMLINK="$HOME/.local/bin/tildaz"
 SWAY_CFG="$HOME/.config/sway/config"
 HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
@@ -42,7 +56,7 @@ TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes 
 TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
 
 removed=0
-for f in "$DESKTOP" "$ICON" "$AUTOSTART"; do
+for f in "$DESKTOP" "$ICON" "$AUTOSTART" "$LEGACY_AUTOSTART"; do
     if [[ -f "$f" ]]; then
         rm "$f"
         echo "Removed: $f"
@@ -227,5 +241,5 @@ gtk-update-icon-cache -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
 echo ""
 echo "Preserved (delete manually if desired):"
-echo "  ~/.config/tildaz/        (config)"
-echo "  ~/.local/state/tildaz/   (log)"
+echo "  $TILDAZ_CONFIG_DIR/   (config)"
+echo "  $TILDAZ_STATE_DIR/   (log)"

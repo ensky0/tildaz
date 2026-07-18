@@ -74,8 +74,8 @@ pub fn run() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
 
-    // L13-α — `Config.load` (cross-platform). 첫 실행 시 `~/.config/tildaz/
-    // config_N.json template 생성, 이후 실행은 disk 값 그대로. shell_resolved
+    // L13-α — `Config.load` (cross-platform). 첫 실행 시 XDG config 아래
+    // `tildaz/config_N.json` template 생성, 이후 실행은 disk 값 그대로. shell_resolved
     // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
     // shell path 결정.
     const shell_resolved = resolveShell(gpa.allocator());

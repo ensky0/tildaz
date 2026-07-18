@@ -4,7 +4,7 @@
     <key name="toggle-hotkey" type="as">
       <default><![CDATA[['<Super>grave']]]></default>
       <summary>Toggle the TildaZ drop-down</summary>
-      <description>GTK accelerator fallback. Numbered accelerators are read from ~/.config/tildaz/config_N.json files.</description>
+      <description>GTK accelerator fallback. Numbered accelerators are read from $XDG_CONFIG_HOME/tildaz/config_N.json files, with the standard ~/.config fallback.</description>
     </key>
   </schema>
 </schemalist>
