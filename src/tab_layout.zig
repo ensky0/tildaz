@@ -186,6 +186,22 @@ pub fn cursorReserve(cw: f32) f32 {
     return cw;
 }
 
+pub const RenameCursorVertical = struct {
+    y: f32,
+    height: f32,
+};
+
+/// Rename cursor의 text cell 안 세로 경계. 입력과 결과는 renderer가 사용하는
+/// physical pixel 좌표다. 위·아래 2px inset을 같은 계산에서 만들어 한쪽만
+/// 빠지는 회귀를 막는다 (#315).
+pub fn renameCursorVertical(cell_top: f32, cell_height: f32) RenameCursorVertical {
+    const inset_px: f32 = 2;
+    return .{
+        .y = cell_top + inset_px,
+        .height = cell_height - inset_px * 2,
+    };
+}
+
 /// rename text 의 cursor follow scroll — native textbox 패턴 (#168). cursor 가
 /// 현재 viewport [0, max-reserve] 안이면 prev_offset 유지. 우측 out 시 우측
 /// align (cursor + preedit 끝이 max-reserve 에 pin), 좌측 out 시 좌측 align
@@ -586,4 +602,24 @@ test "one-cell cursor reserve keeps wide preedit commit scroll stable" {
     );
     try std.testing.expectEqual(@as(f32, 20), ascii_offset);
     try std.testing.expectEqual(@as(f32, 50), 7 * cw - ascii_offset);
+}
+
+test "#315 rename cursor keeps symmetric vertical inset across scales" {
+    const Case = struct {
+        scale: f32,
+        cell_height: f32,
+    };
+    const cases = [_]Case{
+        .{ .scale = 1.0, .cell_height = 16 },
+        .{ .scale = 1.5, .cell_height = 24 },
+        .{ .scale = 2.0, .cell_height = 32 },
+    };
+
+    for (cases) |case| {
+        const cell_top = 10 * case.scale;
+        const cursor = renameCursorVertical(cell_top, case.cell_height);
+        try std.testing.expectEqual(cell_top + 2, cursor.y);
+        try std.testing.expectEqual(case.cell_height - 4, cursor.height);
+        try std.testing.expectEqual(cell_top + case.cell_height - 2, cursor.y + cursor.height);
+    }
 }

@@ -1005,15 +1005,18 @@ pub const D3d11Renderer = struct {
                     switch (cmd) {
                         .glyph => |g| emitGlyph(c, g.cp, g.x, .main),
                         .cursor => |cur| {
-                            const cy_px = c.baseline_y2 - c.self.tab_font.ascent_px + 2;
+                            const cursor_vertical = tab_layout.renameCursorVertical(
+                                c.baseline_y2 - c.self.tab_font.ascent_px,
+                                c.ch,
+                            );
                             c.cursor_instances[0] = .{
-                                .pos = .{ cur.x, cy_px },
-                                .size = .{ 1, c.ch - 2 },
+                                .pos = .{ cur.x, cursor_vertical.y },
+                                .size = .{ 1, cursor_vertical.height },
                                 .color = ui_metrics.TAB_TEXT_COLOR,
                             };
                             c.cursor_count.* = 1;
                             c.self.last_cursor_px_x = @intFromFloat(cur.x);
-                            c.self.last_cursor_px_y = @intFromFloat(cy_px);
+                            c.self.last_cursor_px_y = @intFromFloat(cursor_vertical.y);
                         },
                         .preedit_bg => |pbg| {
                             if (c.pre_bg_n.* >= c.pre_bg_buf.len) return;
