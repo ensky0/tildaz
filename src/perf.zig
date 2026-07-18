@@ -6,8 +6,32 @@ const builtin = @import("builtin");
 const log = @import("log.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
+    const QueryUnbiasedInterruptTimePreciseFn = *const fn (*u64) callconv(.c) void;
+
+    extern "kernel32" fn LoadLibraryW([*:0]const u16) callconv(.c) ?*anyopaque;
+    extern "kernel32" fn GetProcAddress(*anyopaque, [*:0]const u8) callconv(.c) ?*const anyopaque;
+
+    var query_unbiased_interrupt_time_precise: ?QueryUnbiasedInterruptTimePreciseFn = null;
+    var query_once = std.once(resolveQueryUnbiasedInterruptTimePrecise);
+
+    fn resolveQueryUnbiasedInterruptTimePrecise() void {
+        // API-set contract를 사용해 실제 구현 DLL(KernelBase 등)의 위치와 분리한다.
+        // Windows 10 10.0.10240부터 이 contract가 precise clock을 제공한다.
+        const module_name = std.unicode.utf8ToUtf16LeStringLiteral("api-ms-win-core-realtime-l1-1-1.dll");
+        const module = LoadLibraryW(module_name) orelse return;
+        query_unbiased_interrupt_time_precise = @ptrCast(@alignCast(GetProcAddress(
+            module,
+            "QueryUnbiasedInterruptTimePrecise",
+        )));
+    }
+
     /// Windows 10+ working-state clock. 100ns 단위이며 sleep/hibernate를 세지 않는다.
-    pub extern "kernel32" fn QueryUnbiasedInterruptTimePrecise(*u64) callconv(.c) void;
+    fn queryUnbiasedInterruptTimePrecise(ticks_100ns: *u64) bool {
+        query_once.call();
+        const query = query_unbiased_interrupt_time_precise orelse return false;
+        query(ticks_100ns);
+        return true;
+    }
 } else struct {};
 
 pub const Counter = struct {
@@ -34,7 +58,7 @@ pub const Timestamp = ?u64;
 pub fn now() Timestamp {
     if (comptime builtin.os.tag == .windows) {
         var ticks_100ns: u64 = 0;
-        win32.QueryUnbiasedInterruptTimePrecise(&ticks_100ns);
+        if (!win32.queryUnbiasedInterruptTimePrecise(&ticks_100ns)) return null;
         return ticks100nsToNs(ticks_100ns);
     }
 
