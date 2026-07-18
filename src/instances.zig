@@ -250,10 +250,10 @@ fn probeEndpointFiles(lock_path: []const u8, endpoint_path: []const u8) !Endpoin
 
     // lock 생존 판정 사이에 owner가 바뀌지 않았는지 다시 확인한다.
     const confirmed_pid = (try readOwnerPid(lock_path)) orelse return .worker_exited;
-    if (confirmed_pid != owner_pid.?) return .starting;
+    if (!std.meta.eql(confirmed_pid, owner_pid.?)) return .starting;
 
     const current = snapshot orelse return .starting;
-    if (current.pid != confirmed_pid) return .starting;
+    if (!ownerMatchesSnapshot(confirmed_pid, current.pid)) return .starting;
     return switch (current.state) {
         .starting => .starting,
         .ready => .ready,
@@ -261,21 +261,57 @@ fn probeEndpointFiles(lock_path: []const u8, endpoint_path: []const u8) !Endpoin
     };
 }
 
-fn readOwnerPid(path: []const u8) !?u32 {
+const OwnerPid = union(enum) {
+    versioned: u32,
+    /// #304 수정 전 형식은 잠긴 byte 0부터 PID를 썼다. Windows launcher는
+    /// 첫 byte를 읽을 수 없으므로 나머지 숫자를 endpoint PID와 대조한다.
+    legacy_suffix: struct {
+        value: u32,
+        digits: u8,
+    },
+};
+
+fn readOwnerPid(path: []const u8) !?OwnerPid {
     const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
     defer file.close();
+    // Zig의 Windows File.lock은 byte 0을 잠근다. PID는 그 다음 byte부터
+    // 보관해 launcher의 별도 handle이 lock 보유 중에도 읽을 수 있게 한다.
+    try file.seekTo(1);
     var buf: [32]u8 = undefined;
     const n = try file.readAll(&buf);
     if (n == 0) return null;
     if (n == buf.len and try file.getEndPos() > buf.len) return error.InvalidWorkerOwnerPid;
     const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
-    if (text.len == 0) return null;
-    const pid = std.fmt.parseInt(u32, text, 10) catch return error.InvalidWorkerOwnerPid;
-    if (pid == 0) return error.InvalidWorkerOwnerPid;
-    return pid;
+    if (std.mem.startsWith(u8, text, "v1 ")) {
+        const pid = std.fmt.parseInt(u32, text[3..], 10) catch return error.InvalidWorkerOwnerPid;
+        if (pid == 0) return error.InvalidWorkerOwnerPid;
+        return .{ .versioned = pid };
+    }
+
+    // 실행 중인 구버전 worker와의 migration 경로. byte 0의 첫 숫자는 lock에
+    // 가려지므로 suffix만 보존하고 endpoint snapshot과 함께 검증한다.
+    for (text) |c| if (!std.ascii.isDigit(c)) return error.InvalidWorkerOwnerPid;
+    const suffix = if (text.len == 0) 0 else std.fmt.parseInt(u32, text, 10) catch return error.InvalidWorkerOwnerPid;
+    return .{ .legacy_suffix = .{ .value = suffix, .digits = @intCast(text.len) } };
+}
+
+fn ownerMatchesSnapshot(owner: OwnerPid, snapshot_pid: u32) bool {
+    return switch (owner) {
+        .versioned => |pid| pid == snapshot_pid,
+        .legacy_suffix => |suffix| blk: {
+            var buf: [16]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "{d}", .{snapshot_pid}) catch break :blk false;
+            if (text.len == 0 or text.len - 1 != suffix.digits) break :blk false;
+            const value = if (text.len == 1)
+                0
+            else
+                std.fmt.parseInt(u32, text[1..], 10) catch break :blk false;
+            break :blk value == suffix.value;
+        },
+    };
 }
 
 fn readEndpointSnapshot(path: []const u8) !?EndpointSnapshot {
@@ -323,8 +359,8 @@ fn tryAcquireProcessLock(path: []const u8) !?ProcessLock {
 }
 
 fn writeOwnerPid(file: std.fs.File) !void {
-    var buf: [32]u8 = undefined;
-    const text = try std.fmt.bufPrint(&buf, "{d}\n", .{currentProcessId()});
+    var buf: [36]u8 = undefined;
+    const text = try std.fmt.bufPrint(&buf, "\nv1 {d}\n", .{currentProcessId()});
     try file.setEndPos(0);
     try file.seekTo(0);
     try file.writeAll(text);
@@ -439,10 +475,11 @@ test "process lock records pid and excludes a second owner" {
         try writeOwnerPid(first.file);
         first.clear_pid_on_close = true;
 
-        try first.file.seekTo(0);
-        var pid_buf: [32]u8 = undefined;
-        const pid_text = std.mem.trim(u8, pid_buf[0..try first.file.readAll(&pid_buf)], "\r\n");
-        try std.testing.expectEqual(currentProcessId(), try std.fmt.parseInt(u32, pid_text, 10));
+        const owner = (try readOwnerPid(path)).?;
+        switch (owner) {
+            .versioned => |pid| try std.testing.expectEqual(currentProcessId(), pid),
+            .legacy_suffix => return error.TestUnexpectedResult,
+        }
         try std.testing.expect((try tryAcquireProcessLock(path)) == null);
     }
     var next = (try tryAcquireProcessLock(path)).?;
@@ -481,6 +518,19 @@ test "endpoint probe requires live lock and matching owner pid" {
         try writeEndpointSnapshot(allocator, endpoint_path, pid, .starting);
         try std.testing.expectEqual(
             EndpointProbeResult.starting,
+            try probeEndpointFiles(lock_path, endpoint_path),
+        );
+
+        // 수정 전 worker가 byte 0부터 쓴 PID도 endpoint의 전체 PID와 suffix를
+        // 대조해 업그레이드 중인 launcher가 ready 상태를 계속 읽을 수 있다.
+        var legacy_buf: [32]u8 = undefined;
+        const legacy_text = try std.fmt.bufPrint(&legacy_buf, "{d}\n", .{pid});
+        try worker_lock.file.setEndPos(0);
+        try worker_lock.file.seekTo(0);
+        try worker_lock.file.writeAll(legacy_text);
+        try writeEndpointSnapshot(allocator, endpoint_path, pid, .ready);
+        try std.testing.expectEqual(
+            EndpointProbeResult.ready,
             try probeEndpointFiles(lock_path, endpoint_path),
         );
 
