@@ -446,20 +446,18 @@ fn registerAboutDelegate() ?objc.id {
     return inst;
 }
 
-/// About 전용 다이얼로그 — informativeText 대신 accessoryView 로 NSTextView
-/// 를 붙인다. 이유: NSAlert 의 NSTextField (informativeText) 는
+/// 긴 본문 다이얼로그 — informativeText 대신 accessoryView 로 NSTextView
+/// 를 붙인다. About은 항상 이 경로를 쓰고, fatal은 overflow일 때만 사용한다.
+/// 이유: NSAlert 의 NSTextField (informativeText) 는
 /// `setSelectable:YES` 만 줘도 cmd+c (copy:) 가 firstResponder 라우팅 안 돼
 /// OK 버튼으로 흘러 클립보드 복사 안 됨. NSTextView 는 자체적으로 copy:
 /// 처리 + firstResponder 정상 동작 + monospace 로 path 가독성 좋음.
-pub fn showAboutAlert(title: []const u8, body: []const u8) void {
-    if (!nsapp_ready) {
-        showOsascript(.info, title, body);
-        return;
-    }
+fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []const u8, only_if_overflow: bool) bool {
+    if (!nsapp_ready) return false;
 
-    const alert = newAlert() orelse return;
+    const alert = newAlert() orelse return false;
     setMessage(alert, title);
-    setStyle(alert, 1); // Informational
+    setStyle(alert, alertStyleFor(severity));
     addButton(alert, messages.button_ok);
 
     // accessoryView: 세로 NSScrollView + NSTextView. 평소에는 본문 자연 높이,
@@ -477,10 +475,10 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     const NSScrollView = objc.getClass("NSScrollView");
     const NSTextView = objc.getClass("NSTextView");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return;
-    const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return;
+    const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return false;
+    const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return false;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const scroll = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = 130 }) orelse return;
+    const scroll = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = 130 }) orelse return false;
 
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     setBool(scroll, objc.sel("setHasVerticalScroller:"), true);
@@ -492,7 +490,7 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
 
     const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
     const initial_content = getSize(scroll, objc.sel("contentSize"));
-    const tv = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = initial_content.w, .h = initial_content.h }) orelse return;
+    const tv = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = initial_content.w, .h = initial_content.h }) orelse return false;
 
     setBool(tv, objc.sel("setEditable:"), false);
     setBool(tv, objc.sel("setSelectable:"), true);
@@ -544,6 +542,7 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
         }
         natural_h = aboutTextNaturalHeight(tv, layout_manager, text_container, initial_content.h);
     }
+    if (only_if_overflow and natural_h <= max_accessory_h) return false;
     const accessory_h = @min(natural_h, max_accessory_h);
     setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = accessory_h });
     const final_content = getSize(scroll, objc.sel("contentSize"));
@@ -565,6 +564,17 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
     // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard_dismiss=true).
     _ = runModalOverHost(alert, true);
+    return true;
+}
+
+pub fn showAboutAlert(title: []const u8, body: []const u8) void {
+    if (!showScrollableText(.info, title, body, false)) show(.info, title, body);
+}
+
+/// 짧은 fatal은 기존 NSAlert informativeText를 유지하고, 화면 높이를 넘을 때만
+/// NSScrollView/NSTextView 경로로 전체 본문을 보존한다 (#316).
+pub fn showFatal(title: []const u8, body: []const u8) void {
+    if (!showScrollableText(.err, title, body, true)) show(.err, title, body);
 }
 
 /// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=Quit, Esc=Cancel.

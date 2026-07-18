@@ -74,6 +74,12 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
     showStderr(severity, title, message);
 }
 
+/// Config parsing은 Wayland backend 등록 전에 실행되므로 이 경로는 stderr·log에
+/// 동적 본문 전체를 남긴다. runtime fatal은 기존 overlay 경로를 사용한다 (#316).
+pub fn showFatal(title: []const u8, message: []const u8) void {
+    show(.err, title, message);
+}
+
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
     if (g_callbacks) |cb| {
         cb.show_about(cb.ctx, title, message);
