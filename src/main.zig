@@ -11,6 +11,7 @@ const config = @import("config.zig");
 const instance_context = @import("instance_context.zig");
 const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
+const messages = @import("messages.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
 
 /// `std.log` 호출 (ghostty-vt 의 `unimplemented mode` 등) 을 우리 통합 로그로
@@ -73,8 +74,8 @@ pub fn main() void {
     // 자기 DE 의 keyboard shortcut 설정에서 이 명령에 단축키 binding —
     // GlobalShortcuts portal 안 advertise 하는 환경 (Cinnamon / mutter /
     // wlroots) 에서도 hotkey toggle 가능.
-    if (builtin.os.tag == .linux) {
-        if (toggle_index) |index| {
+    if (toggle_index) |index| {
+        if (builtin.os.tag == .linux) {
             instance_context.setWorkerIndex(index);
             const si = @import("host/linux/single_instance.zig");
             // 결과를 tildaz_N.log 에도 남긴다 — `tildaz --toggle N` 은 별 process 라
@@ -86,6 +87,9 @@ pub fn main() void {
             };
             @import("log.zig").appendLine("toggle-ipc", "--toggle sent to running instance", .{});
             std.process.exit(0);
+        } else {
+            std.debug.print("{s}\n", .{messages.toggle_unsupported_msg});
+            std.process.exit(2);
         }
     }
 

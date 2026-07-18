@@ -90,6 +90,8 @@ pub const worker_exited_before_endpoint_ready_msg =
     "TildaZ exited before it was ready to receive a request to create another instance. Start TildaZ again and check the log if this continues.";
 pub const request_endpoint_ready_timeout_msg =
     "TildaZ did not become ready to create another instance in time. Restart TildaZ and try again. If this continues, check the TildaZ log.";
+pub const toggle_unsupported_msg =
+    "The --toggle option is only supported on Linux.";
 
 /// run/launcher 오류를 세 platform에서 같은 사용자 문구로 변환한다.
 pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
