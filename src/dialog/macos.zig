@@ -1,6 +1,7 @@
 //! macOS 의 dialog 구현 — 두 path:
 //!
-//! 1. **NSAlert** (NSApp init 후): About / 일반 info 다이얼로그.
+//! 1. **NSAlert** (NSApp init 후): 짧은 본문은 native informativeText, 화면을
+//!    넘는 본문은 NSScrollView + NSTextView accessoryView.
 //! 2. **`osascript display dialog`** (NSApp init 전 fallback): config 에러
 //!    같이 부트스트랩 실패 시. NSApp 무관 별도 process 라 항상 동작.
 //!
@@ -26,6 +27,7 @@ const objc = @import("../macos_objc.zig");
 const dialog = @import("../dialog.zig");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
+const ui_metrics = @import("../ui_metrics.zig");
 
 var nsapp_ready: bool = false;
 /// 우리 NSWindow (popup level) — alert 띄우는 동안만 normal level 로 낮춰야
@@ -374,9 +376,9 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
 fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     const alert = newAlert() orelse return;
     setMessage(alert, title);
-    setInformative(alert, message);
     addButton(alert, messages.button_ok);
     setStyle(alert, alertStyleFor(severity));
+    if (!attachScrollableBody(alert, message, true)) setInformative(alert, message);
     _ = runModalOverHost(alert, true);
 }
 
@@ -446,20 +448,20 @@ fn registerAboutDelegate() ?objc.id {
     return inst;
 }
 
-/// 긴 본문 다이얼로그 — informativeText 대신 accessoryView 로 NSTextView
-/// 를 붙인다. About은 항상 이 경로를 쓰고, fatal은 overflow일 때만 사용한다.
+const ScrollableBody = struct {
+    view: objc.id,
+    width: f64,
+    height: f64,
+};
+
+/// 긴 본문 다이얼로그용 NSScrollView + NSTextView를 만든다. `reserved_h`는
+/// prompt input처럼 같은 accessoryView 안에 고정할 높이다. 짧은 본문에서
+/// `only_if_overflow`가 true면 null을 돌려 native informativeText를 유지한다.
 /// 이유: NSAlert 의 NSTextField (informativeText) 는
 /// `setSelectable:YES` 만 줘도 cmd+c (copy:) 가 firstResponder 라우팅 안 돼
 /// OK 버튼으로 흘러 클립보드 복사 안 됨. NSTextView 는 자체적으로 copy:
 /// 처리 + firstResponder 정상 동작 + monospace 로 path 가독성 좋음.
-fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []const u8, only_if_overflow: bool) bool {
-    if (!nsapp_ready) return false;
-
-    const alert = newAlert() orelse return false;
-    setMessage(alert, title);
-    setStyle(alert, alertStyleFor(severity));
-    addButton(alert, messages.button_ok);
-
+fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, reserved_h: f64) ?ScrollableBody {
     // accessoryView: 세로 NSScrollView + NSTextView. 평소에는 본문 자연 높이,
     // 화면 가용 높이를 넘을 때만 AppKit scroller가 나타난다.
     const NSScreen = objc.getClass("NSScreen");
@@ -470,15 +472,28 @@ fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []cons
         break :blk getRect(screen, objc.sel("visibleFrame"));
     } else NSAlertRect{ .x = 0, .y = 0, .w = 800, .h = 600 };
     const accessory_w = @max(320.0, @min(580.0, visible_frame.w - 96.0));
-    const max_accessory_h = @max(130.0, visible_frame.h * 0.55);
+
+    // 제목·icon·button을 배치한 NSAlert의 실제 base 높이를 먼저 재고, visible
+    // screen에서 그 높이와 prompt 고정 영역, 16pt 상하 여백을 뺀 나머지를 본문
+    // 상한으로 쓴다. 화면 비율 상수로 일찍 자르지 않아 큰 화면에서는 자연 높이를
+    // 더 많이 보존한다.
+    const layoutAlert = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
+    layoutAlert(alert, objc.sel("layout"));
+    const getObjForWindow = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const alert_window = getObjForWindow(alert, objc.sel("window")) orelse return null;
+    const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
+    const base_alert_h = getRect(alert_window, objc.sel("frame")).h;
+    const max_accessory_h = @max(130.0, visible_frame.h - base_alert_h - reserved_h - 32.0);
 
     const NSScrollView = objc.getClass("NSScrollView");
     const NSTextView = objc.getClass("NSTextView");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return false;
-    const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return false;
+    const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return null;
+    const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const scroll = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = 130 }) orelse return false;
+    const scroll_owned = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = 130 }) orelse return null;
+    const autorelease = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const scroll = autorelease(scroll_owned, objc.sel("autorelease"));
 
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     setBool(scroll, objc.sel("setHasVerticalScroller:"), true);
@@ -490,7 +505,8 @@ fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []cons
 
     const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
     const initial_content = getSize(scroll, objc.sel("contentSize"));
-    const tv = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = initial_content.w, .h = initial_content.h }) orelse return false;
+    const tv_owned = initWithFrame(tv_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = initial_content.w, .h = initial_content.h }) orelse return null;
+    const tv = autorelease(tv_owned, objc.sel("autorelease"));
 
     setBool(tv, objc.sel("setEditable:"), false);
     setBool(tv, objc.sel("setSelectable:"), true);
@@ -514,7 +530,7 @@ fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []cons
 
     const NSFont = objc.getClass("NSFont");
     const fixedFont = objc.objcSend(fn (objc.Class, objc.SEL, f64) callconv(.c) objc.id);
-    const font = fixedFont(NSFont, objc.sel("userFixedPitchFontOfSize:"), 12.0);
+    const font = fixedFont(NSFont, objc.sel("userFixedPitchFontOfSize:"), @floatFromInt(ui_metrics.DIALOG_BODY_FONT_PT));
     if (font != null) {
         const setFont = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         setFont(tv, objc.sel("setFont:"), font);
@@ -542,7 +558,7 @@ fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []cons
         }
         natural_h = aboutTextNaturalHeight(tv, layout_manager, text_container, initial_content.h);
     }
-    if (only_if_overflow and natural_h <= max_accessory_h) return false;
+    if (only_if_overflow and natural_h <= max_accessory_h) return null;
     const accessory_h = @min(natural_h, max_accessory_h);
     setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = accessory_h });
     const final_content = getSize(scroll, objc.sel("contentSize"));
@@ -558,8 +574,23 @@ fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []cons
         setDelegate(tv, objc.sel("setDelegate:"), delegate);
     }
 
+    return .{ .view = scroll, .width = accessory_w, .height = accessory_h };
+}
+
+fn attachScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool) bool {
+    const scrollable = makeScrollableBody(alert, body, only_if_overflow, 0) orelse return false;
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setAccessory(alert, objc.sel("setAccessoryView:"), scroll);
+    setAccessory(alert, objc.sel("setAccessoryView:"), scrollable.view);
+    return true;
+}
+
+fn showAboutText(title: []const u8, body: []const u8) bool {
+    if (!nsapp_ready) return false;
+    const alert = newAlert() orelse return false;
+    setMessage(alert, title);
+    setStyle(alert, alertStyleFor(.info));
+    addButton(alert, messages.button_ok);
+    if (!attachScrollableBody(alert, body, false)) return false;
 
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
     // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard_dismiss=true).
@@ -568,13 +599,13 @@ fn showScrollableText(severity: dialog.Severity, title: []const u8, body: []cons
 }
 
 pub fn showAboutAlert(title: []const u8, body: []const u8) void {
-    if (!showScrollableText(.info, title, body, false)) show(.info, title, body);
+    if (!showAboutText(title, body)) show(.info, title, body);
 }
 
 /// 짧은 fatal은 기존 NSAlert informativeText를 유지하고, 화면 높이를 넘을 때만
 /// NSScrollView/NSTextView 경로로 전체 본문을 보존한다 (#316).
 pub fn showFatal(title: []const u8, body: []const u8) void {
-    if (!showScrollableText(.err, title, body, true)) show(.err, title, body);
+    show(.err, title, body);
 }
 
 /// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=Quit, Esc=Cancel.
@@ -592,11 +623,11 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
         return confirmOsascript(title, message);
     };
     setMessage(alert, title);
-    setInformative(alert, message);
     setStyle(alert, 1); // Informational
     addButton(alert, messages.button_ok);
     addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
+    if (!attachScrollableBody(alert, message, true)) setInformative(alert, message);
 
     const result = runModalOverHost(alert, false);
     // NSAlertFirstButtonReturn = 1000 (= Quit, 첫 추가 버튼 = 기본).
@@ -643,11 +674,17 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
         return null;
     };
     setMessage(alert, title);
-    setInformative(alert, message);
     setStyle(alert, 1);
     addButton(alert, messages.button_create);
     addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1);
+
+    const prompt_controls_h = 52.0;
+    const prompt_body_gap = 16.0;
+    const scrollable_body = makeScrollableBody(alert, message, true, prompt_controls_h + prompt_body_gap);
+    if (scrollable_body == null) setInformative(alert, message);
+    const container_w = if (scrollable_body) |body| @max(360.0, body.width) else 360.0;
+    const container_h = if (scrollable_body) |body| body.height + prompt_body_gap + prompt_controls_h else prompt_controls_h;
 
     const NSView = objc.getClass("NSView");
     const NSTextField = objc.getClass("NSTextField");
@@ -656,9 +693,9 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const field_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const status_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const container = initWithFrame(container_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 360, .h = 52 }) orelse return null;
-    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 26, .w = 360, .h = 26 }) orelse return null;
-    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = 360, .h = 22 }) orelse return null;
+    const container = initWithFrame(container_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = container_w, .h = container_h }) orelse return null;
+    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 26, .w = container_w, .h = 26 }) orelse return null;
+    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = container_w, .h = 22 }) orelse return null;
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     for ([_]objc.id{ field, status }) |label| {
         setBool(label, objc.sel("setEditable:"), false);
@@ -679,6 +716,11 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     addSubview(container, objc.sel("addSubview:"), field);
     addSubview(container, objc.sel("addSubview:"), status);
+    if (scrollable_body) |body| {
+        const setOrigin = objc.objcSend(fn (objc.id, objc.SEL, NSAlertSize) callconv(.c) void);
+        setOrigin(body.view, objc.sel("setFrameOrigin:"), .{ .w = 0, .h = prompt_controls_h + prompt_body_gap });
+        addSubview(container, objc.sel("addSubview:"), body.view);
+    }
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setAccessory(alert, objc.sel("setAccessoryView:"), container);
     prompt_field = field;

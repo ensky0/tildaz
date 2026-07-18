@@ -486,7 +486,7 @@ pub const DialogOverlay = struct {
     title_len: usize = 0,
     msg_buf: [dialog_linux.message_capacity]u8 = undefined,
     msg_len: usize = 0,
-    about_msg_owned: ?[]u8 = null,
+    message_owned: ?[]u8 = null,
     input_buf: [128]u8 = undefined,
     input_len: usize = 0,
     status_buf: [256]u8 = undefined,
@@ -533,7 +533,7 @@ pub const DialogOverlay = struct {
         return self.title_buf[0..self.title_len];
     }
     pub fn message(self: *const DialogOverlay) []const u8 {
-        if (self.about_msg_owned) |owned| return owned;
+        if (self.message_owned) |owned| return owned;
         return self.msg_buf[0..self.msg_len];
     }
     pub fn active(self: *const DialogOverlay) bool {
@@ -852,7 +852,7 @@ const Client = struct {
     pending_info_msg_buf: [dialog_linux.message_capacity]u8 = undefined,
     pending_info_msg_len: usize = 0,
     pending_info_is_about: bool = false,
-    pending_about_msg_owned: ?[]u8 = null,
+    pending_info_msg_owned: ?[]u8 = null,
     // L8-β / #295 — wl_output binding + 화면 해상도. layer-shell anchor / size /
     // margin 계산에 사용. mode event (flag CURRENT) 에서 width / height 받음.
     // 0 이면 못 받은 상태 — `screen_fallback_*` 로 대체.
@@ -1171,10 +1171,10 @@ const Client = struct {
         }
         for (self.dialog.retired_buffers.items) |*buffer| buffer.deinit();
         self.dialog.retired_buffers.deinit(self.allocator);
-        if (self.dialog.about_msg_owned) |message| self.allocator.free(message);
-        self.dialog.about_msg_owned = null;
-        if (self.pending_about_msg_owned) |message| self.allocator.free(message);
-        self.pending_about_msg_owned = null;
+        if (self.dialog.message_owned) |message| self.allocator.free(message);
+        self.dialog.message_owned = null;
+        if (self.pending_info_msg_owned) |message| self.allocator.free(message);
+        self.pending_info_msg_owned = null;
         if (self.session) |*session| {
             session.deinit();
             self.session = null;
@@ -4142,7 +4142,7 @@ const Client = struct {
         // #193 — region 변경 시만 set_shape (캐시 hit 시 no-op).
         self.updateCursorShape() catch {};
 
-        // About scrollbar drag는 modal dialog 입력이므로 terminal selection/tab
+        // Dialog 본문 scrollbar drag는 modal 입력이므로 terminal selection/tab
         // drag보다 먼저 처리한다. 다른 dialog motion도 뒤 terminal로 통과시키지 않는다.
         if (self.dialog.active()) {
             if (self.dialog.scrollbar_drag_grab != null) self.scrollDialogToPointer();
@@ -4395,8 +4395,7 @@ const Client = struct {
         const value_fixed = readI32(payload[8..12]);
 
         if (self.dialog.active()) {
-            if (self.dialog.kind == .about and
-                self.dialog.message_scroll_max > 0 and
+            if (self.dialog.message_scroll_max > 0 and
                 self.last_pointer_enter_surface_id == self.dialog.surface_id)
             {
                 self.dialog.scroll_axis_remainder_fixed += @as(i64, value_fixed);
@@ -5324,16 +5323,14 @@ const Client = struct {
     }
 
     fn openDialog(self: *Client, kind: DialogOverlay.Kind, severity: dialog_mod.Severity, title: []const u8, message: []const u8) !void {
-        var about_owned = if (kind == .about) try self.allocator.dupe(u8, message) else null;
-        errdefer if (about_owned) |owned| self.allocator.free(owned);
+        const message_owned = self.allocator.dupe(u8, message) catch null;
 
         const title_len = @min(title.len, self.dialog.title_buf.len);
         @memcpy(self.dialog.title_buf[0..title_len], title[0..title_len]);
         self.dialog.title_len = title_len;
-        if (self.dialog.about_msg_owned) |old| self.allocator.free(old);
-        self.dialog.about_msg_owned = about_owned;
-        about_owned = null;
-        self.dialog.msg_len = if (self.dialog.about_msg_owned) |owned|
+        if (self.dialog.message_owned) |old| self.allocator.free(old);
+        self.dialog.message_owned = message_owned;
+        self.dialog.msg_len = if (self.dialog.message_owned) |owned|
             owned.len
         else
             dialog_linux.copyMessage(&self.dialog.msg_buf, message);
@@ -5342,7 +5339,7 @@ const Client = struct {
         self.dialog.message_scroll_row = 0;
         self.dialog.scrollbar_drag_grab = null;
         self.dialog.scroll_axis_remainder_fixed = 0;
-        if (kind != .about and self.dialog.msg_len != message.len) {
+        if (self.dialog.msg_len != message.len) {
             log.appendLine("dialog", "message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
                 message.len,
                 self.dialog.msg_len,
@@ -5577,8 +5574,8 @@ const Client = struct {
         self.destroyDialogSurface() catch |err| {
             log.appendLine("dialog", "destroyDialogSurface in dismiss failed: {s}", .{@errorName(err)});
         };
-        if (self.dialog.about_msg_owned) |message| self.allocator.free(message);
-        self.dialog.about_msg_owned = null;
+        if (self.dialog.message_owned) |message| self.allocator.free(message);
+        self.dialog.message_owned = null;
         self.dialog.msg_len = 0;
         self.dialog.message_scroll_row = 0;
         self.dialog.message_scroll_max = 0;
@@ -5701,7 +5698,7 @@ const Client = struct {
     }
 
     fn dialogScrollbarGeom(self: *const Client) ?scrollbar.Geom {
-        if (self.dialog.kind != .about or self.dialog.message_scroll_max == 0) return null;
+        if (self.dialog.message_scroll_max == 0) return null;
         const track = self.renderer.last_dialog_scrollbar_track_rect;
         if (track.h <= 0) return null;
         const scale_num: i64 = @intCast(self.preferred_scale);
@@ -5747,7 +5744,7 @@ const Client = struct {
     }
 
     fn scrollDialogRows(self: *Client, delta: i32) void {
-        if (self.dialog.kind != .about or self.dialog.message_scroll_max == 0 or delta == 0) return;
+        if (self.dialog.message_scroll_max == 0 or delta == 0) return;
         const current: i64 = @intCast(self.dialog.message_scroll_row);
         const max_row: i64 = @intCast(self.dialog.message_scroll_max);
         const target: usize = @intCast(std.math.clamp(current + @as(i64, delta), 0, max_row));
@@ -6218,16 +6215,13 @@ const Client = struct {
         // #282 C1 — 즉시 열지 않고 deferred. 호출부(handleNewTab 등)가 dispatchBuffered
         // reentrant 라 여기서 createDialogSurface(roundtrip)를 돌리면 buffer corrupt.
         // title/message 는 호출부 stack buffer 일 수 있어 owned 로 복사.
-        if (self.pending_about_msg_owned) |old| self.allocator.free(old);
-        self.pending_about_msg_owned = null;
+        if (self.pending_info_msg_owned) |old| self.allocator.free(old);
+        self.pending_info_msg_owned = null;
         const tlen = @min(title.len, self.pending_info_title_buf.len);
-        const mlen = if (is_about) blk: {
-            const owned = self.allocator.dupe(u8, message) catch {
-                log.appendLine("dialog", "About deferred message allocation failed — using fallback", .{});
-                break :blk dialog_linux.copyMessage(&self.pending_info_msg_buf, messages.about_prepare_failed_msg);
-            };
-            self.pending_about_msg_owned = owned;
-            break :blk owned.len;
+        const owned = self.allocator.dupe(u8, message) catch null;
+        const mlen = if (owned) |full_message| blk: {
+            self.pending_info_msg_owned = full_message;
+            break :blk full_message.len;
         } else dialog_linux.copyMessage(&self.pending_info_msg_buf, message);
         @memcpy(self.pending_info_title_buf[0..tlen], title[0..tlen]);
         self.pending_info_title_len = tlen;
@@ -6235,7 +6229,7 @@ const Client = struct {
         self.pending_info_severity = severity;
         self.pending_info_is_about = is_about;
         self.pending_info_request = true;
-        if (!is_about and mlen != message.len) {
+        if (mlen != message.len) {
             log.appendLine("dialog", "deferred info message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
                 message.len,
                 mlen,
@@ -6245,13 +6239,13 @@ const Client = struct {
     }
 
     fn pendingInfoMessage(self: *const Client) []const u8 {
-        if (self.pending_about_msg_owned) |message| return message;
+        if (self.pending_info_msg_owned) |message| return message;
         return self.pending_info_msg_buf[0..self.pending_info_msg_len];
     }
 
-    fn clearPendingAboutMessage(self: *Client) void {
-        if (self.pending_about_msg_owned) |message| self.allocator.free(message);
-        self.pending_about_msg_owned = null;
+    fn clearPendingInfoMessage(self: *Client) void {
+        if (self.pending_info_msg_owned) |message| self.allocator.free(message);
+        self.pending_info_msg_owned = null;
     }
 
     /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
@@ -6260,7 +6254,7 @@ const Client = struct {
     fn drainInfoRequest(self: *Client) void {
         if (!self.pending_info_request) return;
         self.pending_info_request = false;
-        defer self.clearPendingAboutMessage();
+        defer self.clearPendingInfoMessage();
         if (self.dialog.active()) {
             log.appendLine("dialog", "deferred info dropped — another dialog active", .{});
             return;

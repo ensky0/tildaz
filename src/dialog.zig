@@ -78,9 +78,9 @@ pub fn showInfo(title: []const u8, message: []const u8) void {
     impl.show(.info, title, message);
 }
 
-/// About 다이얼로그 — `showInfo` 의 긴 본문 특수 케이스. 세 platform 모두
-/// 본문이 화면을 넘을 때만 세로 scroll을 제공한다. Linux 는 layer-shell overlay,
-/// macOS 는 NSScrollView + NSTextView, Windows 는 read-only EDIT를 사용한다.
+/// 모든 dialog는 본문 자연 크기를 우선하고 화면을 넘을 때만 본문에 세로
+/// scroll을 제공한다. 제목·button·prompt input/status는 고정한다. About은
+/// 본문 selection/copy도 제공하므로 전용 진입점을 유지한다.
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
     impl.showAboutAlert(title, message);
 }
@@ -90,8 +90,7 @@ pub fn showError(title: []const u8, message: []const u8) void {
 }
 
 /// 에러 다이얼로그 표시 후 즉시 종료. config 검증 실패 같은 fatal 상황. platform
-/// backend는 짧은 native 표시를 유지하고, 본문이 화면/저장 상한을 넘을 때만 세로
-/// scroll 가능한 경로로 전환한다 (#316).
+/// backend의 공통 overflow 정책을 따르며 Windows 저장 상한도 보존한다 (#316).
 pub fn showFatal(title: []const u8, message: []const u8) noreturn {
     impl.showFatal(title, message);
     std.process.exit(1);

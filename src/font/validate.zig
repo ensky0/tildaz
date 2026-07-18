@@ -64,10 +64,12 @@ pub fn notFoundMessage(msg_buf: []u8, missing: []const u8, chain: []const []cons
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
     const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
 
-    return notFoundMessageWithPath(msg_buf, missing, chain, cfg_path);
+    return notFoundMessageForPath(msg_buf, missing, chain, cfg_path);
 }
 
-fn notFoundMessageWithPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8) []const u8 {
+/// 경로 조회와 분리한 순수 formatter. dialog layout 같은 사용자 메시지 경계
+/// 테스트도 이 함수를 사용해 실제 producer와 다른 문구를 복제하지 않는다.
+pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8) []const u8 {
     var fbs = std.io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
     w.print(messages.font_not_found_format, .{missing}) catch {};
@@ -102,6 +104,6 @@ test "font validation messages preserve runtime values and final newline" {
             "  - \"Noto Color Emoji\"\n" ++
             "\nAll families listed in font.family must be installed on the system.\n\n" ++
             "Config path:\n/tmp/config_3.json\n",
-        notFoundMessageWithPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json"),
+        notFoundMessageForPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json"),
     );
 }

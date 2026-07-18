@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const display_width = @import("../../font/display_width.zig");
+const font_validate = @import("../../font/validate.zig");
 const messages = @import("../../messages.zig");
 
 pub const Kind = enum { info, about, confirm, prompt };
@@ -187,9 +188,11 @@ fn computeWithinSurface(
     var visible_message_rows = measured.rows;
     var message_scroll_max: usize = 0;
 
-    // About만 overflow viewport를 사용한다. scrollbar 공간을 먼저 제외하고 다시
-    // wrap해야 측정 행 수와 실제 그리기 행 수가 정확히 같다.
-    if (kind == .about and fixed_h + rows_h + (if (show_icon) icon_h else 0) > max_surface.h) {
+    // 모든 dialog는 먼저 본문 자연 높이를 사용하고, 화면을 넘을 때만 message
+    // viewport를 만든다. scrollbar 공간을 먼저 제외하고 다시 wrap해야 측정 행
+    // 수와 실제 그리기 행 수가 정확히 같다. prompt input과 button은 fixed_h에
+    // 포함되어 항상 viewport 밖에 고정된다.
+    if (fixed_h + rows_h + (if (show_icon) icon_h else 0) > max_surface.h) {
         const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
         const scroll_content_room_w = @max(
             metrics.body_cell_w,
@@ -255,11 +258,16 @@ test "current config error fits 640x480 logical viewport" {
         \\Config path:
         \\/tmp/tildaz-306-current-home/.config/tildaz/config_98.json
     ;
-    const layout = compute("TildaZ Config Error", message, .info, testMetrics(1), .{ .w = 640, .h = 480 });
+    const layout = compute("TildaZ Config Error", message, .info, testMetrics(100), .{ .w = 640, .h = 480 });
+    if (!layout.fits) {
+        std.debug.print(
+            "current config layout: fits={} size={}x{} rows={} wrap={} longest={}\n",
+            .{ layout.fits, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_cells, longestExplicitLine(message) },
+        );
+    }
     try std.testing.expect(layout.fits);
     try std.testing.expect(layout.size.w <= 640 - 32);
     try std.testing.expect(layout.size.h <= 480 - 32);
-    try std.testing.expect(layout.wrap_cells < longestExplicitLine(message));
 }
 
 test "same logical viewport fits at 1x 1.7x and 2x" {
@@ -282,7 +290,7 @@ test "same logical viewport fits at 1x 1.7x and 2x" {
 
 test "wide viewport is not limited to 72 cells" {
     const message = "x" ** 100;
-    const layout = compute("TildaZ", message, .info, testMetrics(1), .{ .w = 1280, .h = 720 });
+    const layout = compute("TildaZ", message, .info, testMetrics(100), .{ .w = 1280, .h = 720 });
     try std.testing.expect(layout.fits);
     try std.testing.expectEqual(@as(usize, 100), layout.wrap_cells);
     try std.testing.expectEqual(@as(usize, 1), layout.message_rows);
@@ -290,7 +298,7 @@ test "wide viewport is not limited to 72 cells" {
 
 test "compact layout removes decorative icon before content or buttons" {
     const message = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve";
-    const layout = compute("TildaZ", message, .confirm, testMetrics(1), .{ .w = 640, .h = 360 });
+    const layout = compute("TildaZ", message, .confirm, testMetrics(100), .{ .w = 640, .h = 400 });
     try std.testing.expect(layout.fits);
     try std.testing.expect(!layout.show_icon);
     try std.testing.expectEqual(@as(usize, 12), layout.message_rows);
@@ -298,8 +306,8 @@ test "compact layout removes decorative icon before content or buttons" {
 
 test "final compositor surface size recomputes wrapping without viewport margin" {
     const message = "A compositor may configure a narrower final surface than the client initially requested for this dialog message.";
-    const initial = compute("TildaZ", message, .info, testMetrics(1), .{ .w = 1280, .h = 720 });
-    const configured = computeForSurface("TildaZ", message, .info, testMetrics(1), .{ .w = 480, .h = 448 });
+    const initial = compute("TildaZ", message, .info, testMetrics(100), .{ .w = 1280, .h = 720 });
+    const configured = computeForSurface("TildaZ", message, .info, testMetrics(100), .{ .w = 480, .h = 448 });
     try std.testing.expect(configured.fits);
     try std.testing.expect(configured.wrap_cells < initial.wrap_cells);
     try std.testing.expect(configured.message_rows > initial.message_rows);
@@ -365,10 +373,6 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     });
 
     var font_buf: [2048]u8 = undefined;
-    var font_stream = std.io.fixedBufferStream(&font_buf);
-    const font_writer = font_stream.writer();
-    try font_writer.writeAll("Font not found: \"Missing Example Font\"\n\n");
-    try font_writer.writeAll("config \"font.family\" chain (in order):\n");
     const font_families = [_][]const u8{
         "Missing Example Font",
         "Noto Sans Mono CJK KR",
@@ -379,17 +383,12 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         "Unifont",
         "FreeMono",
     };
-    for (font_families) |family| {
-        const marker = if (std.mem.eql(u8, family, font_families[0])) " ← not installed" else "";
-        try font_writer.print("  - \"{s}\"{s}\n", .{ family, marker });
-    }
-    try font_writer.writeAll(
-        \\All families listed in font.family must be installed on the system.
-        \\
-        \\Config path:
-        \\/home/example/.config/tildaz/config_98.json
+    const font_msg = font_validate.notFoundMessageForPath(
+        &font_buf,
+        font_families[0],
+        &font_families,
+        "/home/example/.config/tildaz/config_98.json",
     );
-    const font_msg = font_stream.getWritten();
 
     var takeover_buf: [512]u8 = undefined;
     const takeover_msg = try std.fmt.bufPrint(&takeover_buf, messages.hotkey_takeover_format, .{
@@ -447,7 +446,7 @@ fn expectFitsLogicalMinimum(title: []const u8, message: []const u8, kind: Kind) 
             testMetrics(scale_percent),
             testWideCellMetrics(scale_percent),
         };
-        for (metric_cases) |metrics| {
+        for (metric_cases, 0..) |metrics, metric_index| {
             const layout = compute(
                 title,
                 message,
@@ -460,11 +459,14 @@ fn expectFitsLogicalMinimum(title: []const u8, message: []const u8, kind: Kind) 
             );
             if (!layout.fits) {
                 std.debug.print(
-                    "dialog does not fit: title={s} scale={d}% body_cell_w={} size={}x{} rows={} wrap={}\n",
-                    .{ title, scale_percent, metrics.body_cell_w, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_cells },
+                    "dialog does not fit: title={s} scale={d}% body_cell_w={} size={}x{} rows={} wrap={} message_len={} preview={s}\n",
+                    .{ title, scale_percent, metrics.body_cell_w, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_cells, message.len, message[0..@min(message.len, 80)] },
                 );
             }
             try std.testing.expect(layout.fits);
+            // 현재 제공하는 메시지는 표준 dialog font에서 자연 크기로 들어온다.
+            // 보수적인 wide-cell 경계만 필요할 때 overflow viewport를 허용한다.
+            if (metric_index == 0) try std.testing.expectEqual(@as(usize, 0), layout.message_scroll_max);
         }
     }
 }
@@ -502,7 +504,7 @@ fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w:
     };
 }
 
-test "#314 About uses overflow rows only when content exceeds viewport" {
+test "dialogs use overflow rows only when content exceeds viewport" {
     const ordinary = "TildaZ v0.6.1\n\nexe: /home/example/tildaz\nconfig: /home/example/config.json";
     const ordinary_layout = compute("About TildaZ", ordinary, .about, testMetrics(100), .{ .w = 640, .h = 480 });
     try std.testing.expect(ordinary_layout.fits);
@@ -516,6 +518,14 @@ test "#314 About uses overflow rows only when content exceeds viewport" {
     try std.testing.expect(overflow.visible_message_rows < overflow.message_rows);
     try std.testing.expect(overflow.size.w <= 640 - 32);
     try std.testing.expect(overflow.size.h <= 480 - 32);
+
+    const info_overflow = compute("TildaZ Error", long_message, .info, testMetrics(100), .{ .w = 640, .h = 480 });
+    try std.testing.expect(info_overflow.fits);
+    try std.testing.expect(info_overflow.message_scroll_max > 0);
+
+    const prompt_overflow = compute("TildaZ", long_message, .prompt, testMetrics(100), .{ .w = 640, .h = 480 });
+    try std.testing.expect(prompt_overflow.fits);
+    try std.testing.expect(prompt_overflow.message_scroll_max > 0);
 }
 
 test "#314 About maximum width scales in logical points" {
