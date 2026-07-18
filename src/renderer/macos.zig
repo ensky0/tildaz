@@ -301,6 +301,7 @@ pub const MetalRenderer = struct {
         const cmd_queue = objc.msgSend(device, objc.sel("newCommandQueue"));
 
         var font_ctx = try CoreTextFontContext.init(
+            alloc,
             font_families,
             terminal_font,
             scale,
@@ -312,6 +313,7 @@ pub const MetalRenderer = struct {
 
         const tab_spec = ui_metrics.tabLabelFontSpec();
         var tab_font_ctx = try CoreTextFontContext.init(
+            alloc,
             font_families,
             tab_spec,
             scale,
@@ -399,6 +401,7 @@ pub const MetalRenderer = struct {
 
         // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
         var new_font = try CoreTextFontContext.init(
+            self.alloc,
             self.font_families,
             self.terminal_font,
             new_scale,
@@ -406,6 +409,7 @@ pub const MetalRenderer = struct {
         errdefer new_font.deinit();
 
         var new_tab_font = try CoreTextFontContext.init(
+            self.alloc,
             self.font_families,
             ui_metrics.tabLabelFontSpec(),
             new_scale,

@@ -51,8 +51,10 @@ pub const CoreTextFontContext = struct {
     /// 에 사용 (Windows DWriteFontContext 와 동등). [0] 은 primary 와 동일.
     fallback_fonts: [MAX_FALLBACK_FONTS]ct.CTFontRef,
     fallback_count: usize,
+    ligature_cache: ligature.Cache,
 
     pub fn init(
+        allocator: std.mem.Allocator,
         font_families: []const []const u8,
         spec: font_spec.Spec,
         retina_scale: f32,
@@ -187,6 +189,7 @@ pub const CoreTextFontContext = struct {
             .font_family = font_family,
             .fallback_fonts = fallback_fonts,
             .fallback_count = fallback_count,
+            .ligature_cache = ligature.Cache.init(allocator),
         };
     }
 
@@ -195,6 +198,7 @@ pub const CoreTextFontContext = struct {
     // Windows / macOS 같은 메시지 형식 사용.
 
     pub fn deinit(self: *CoreTextFontContext) void {
+        self.ligature_cache.deinit();
         for (self.fallback_fonts[0..self.fallback_count]) |f| {
             ct.CFRelease(f);
         }
@@ -297,14 +301,20 @@ pub const CoreTextFontContext = struct {
     /// `.single` glyph 또는 `.spacer` glyphs 를 `primary_font` 기준 atlas 에
     /// raster.
     pub fn ligaturePair(self: *CoreTextFontContext, cp0: u21, cp1: u21) ?LigatureMatch {
+        if (self.ligature_cache.getPair(cp0, cp1)) |cached| return cached;
         var cps = [_]u21{ cp0, cp1 };
-        return self.ligatureShape(&cps);
+        const result = self.ligatureShape(&cps);
+        self.ligature_cache.putPair(cp0, cp1, result);
+        return result;
     }
 
     /// 3-char ligature lookup. `===` / `!==` / `<=>` / `<--` / `-->` 등.
     pub fn ligatureTriple(self: *CoreTextFontContext, cp0: u21, cp1: u21, cp2: u21) ?LigatureMatch {
+        if (self.ligature_cache.getTriple(cp0, cp1, cp2)) |cached| return cached;
         var cps = [_]u21{ cp0, cp1, cp2 };
-        return self.ligatureShape(&cps);
+        const result = self.ligatureShape(&cps);
+        self.ligature_cache.putTriple(cp0, cp1, cp2, result);
+        return result;
     }
 
     /// CTLine 짧은 line shape + `ligature.classify`. natural indices 는 primary

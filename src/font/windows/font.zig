@@ -146,6 +146,8 @@ pub const DWriteFontContext = struct {
     // Caches (codepoint → face/index). Keeps fallback faces alive so atlas
     // cache keys — which use the face pointer — remain stable.
     glyph_map: std.AutoHashMap(u21, CachedGlyph),
+    /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
+    ligature_cache: ligature.Cache,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -215,6 +217,7 @@ pub const DWriteFontContext = struct {
             .cell_width_px = cell_w,
             .cell_height_px = cell_h,
             .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
+            .ligature_cache = ligature.Cache.init(alloc),
         };
 
         // Store primary family name for MapCharacters fallback (system 의 fallback
@@ -293,6 +296,7 @@ pub const DWriteFontContext = struct {
             _ = v.face.vtable.Release(v.face);
         }
         self.glyph_map.deinit();
+        self.ligature_cache.deinit();
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
@@ -479,15 +483,21 @@ pub const DWriteFontContext = struct {
     ///
     /// Latin ligature 는 primary 의 GSUB — fallback chain 안 봄.
     pub fn ligaturePair(self: *DWriteFontContext, cp0: u21, cp1: u21) ?LigatureMatch {
+        if (self.ligature_cache.getPair(cp0, cp1)) |cached| return cached;
         var cps = [_]u21{ cp0, cp1 };
-        return self.ligatureShape(&cps);
+        const result = self.ligatureShape(&cps);
+        self.ligature_cache.putPair(cp0, cp1, result);
+        return result;
     }
 
     /// 3-char ligature lookup. `===` / `!==` / `<=>` / `<--` / `-->` / `<->` /
     /// `<==` / `==>` / `||=` / `>>=` 등.
     pub fn ligatureTriple(self: *DWriteFontContext, cp0: u21, cp1: u21, cp2: u21) ?LigatureMatch {
+        if (self.ligature_cache.getTriple(cp0, cp1, cp2)) |cached| return cached;
         var cps = [_]u21{ cp0, cp1, cp2 };
-        return self.ligatureShape(&cps);
+        const result = self.ligatureShape(&cps);
+        self.ligature_cache.putTriple(cp0, cp1, cp2, result);
+        return result;
     }
 
     /// primary face 로 shape + `ligature.classify`. natural indices 는 primary
