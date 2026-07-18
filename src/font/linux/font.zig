@@ -111,18 +111,8 @@ pub const Context = struct {
     hb_api: ?harfbuzz.Api = null,
     /// shape 호출 사이 reuse 하는 buffer. shape 마다 clear_contents 호출 후 재사용.
     hb_buffer: ?*harfbuzz.hb_buffer_t = null,
-    /// 2-char ligature lookahead cache. `paint` loop 가 매 cell-pair 마다
-    /// `ligaturePair(cp0, cp1)` 호출 — cache miss 면 shape + `detectLigatureMatch`
-    /// 분류 후 store. key `= cp0 << 32 | cp1` (u53 packed in u64). value
-    /// `.single` = 단일-glyph ligature, `.spacer` = Fira Code 식 다중-glyph
-    /// ligature, `null` = ligature 아님 (자연 그대로). HashMap lookup 이 shape
-    /// 호출 보다 훨씬 빠름 — terminal 의 같은 ASCII pair 가 매 frame 반복
-    /// 호출되는 패턴 최적화.
-    ligature_pair_cache: std.AutoHashMap(u64, ?LigatureMatch),
-    /// 3-char ligature cache. `paint` loop 가 2-char 보다 먼저 3-char 시도
-    /// (`===` / `<=>` / `!==` / `<--` 등 흔한 3-char ligature).
-    /// key = `cp0 << 42 | cp1 << 21 | cp2` (3 × 21 bits = 63 bits, u64 안).
-    ligature_triple_cache: std.AutoHashMap(u64, ?LigatureMatch),
+    /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
+    ligature_cache: ligature.Cache,
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
 
@@ -176,8 +166,7 @@ pub const Context = struct {
             .ft_lib = ft_lib,
             .hb_api = hb_api,
             .hb_buffer = hb_buffer,
-            .ligature_pair_cache = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
-            .ligature_triple_cache = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
+            .ligature_cache = ligature.Cache.init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
             .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
@@ -348,8 +337,7 @@ pub const Context = struct {
         self.freeFaces();
         self.system_fallback.deinit();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
-        self.ligature_pair_cache.deinit();
-        self.ligature_triple_cache.deinit();
+        self.ligature_cache.deinit();
         if (self.hb_api) |*api| {
             if (self.hb_buffer) |b| api.buffer_destroy(b);
             api.deinit();
@@ -617,8 +605,7 @@ pub const Context = struct {
     /// ```
     pub fn ligaturePair(self: *Context, cp0: u21, cp1: u21) ?LigatureMatch {
         if (self.face_count == 0 or self.hb_api == null) return null;
-        const key: u64 = (@as(u64, cp0) << 32) | @as(u64, cp1);
-        if (self.ligature_pair_cache.get(key)) |cached| return cached;
+        if (self.ligature_cache.getPair(cp0, cp1)) |cached| return cached;
 
         // cache miss — shape 실행. 결과 1 glyph 면 single-glyph ligature (JetBrains
         // Mono 등), N glyph 인데 indices 가 natural 과 다르면 spacer ligature
@@ -629,7 +616,7 @@ pub const Context = struct {
         const n = self.shapeRun(&pair_cps, &shape_buf);
 
         const result = detectLigatureMatch(self, &pair_cps, &shape_buf, n);
-        self.ligature_pair_cache.put(key, result) catch {};
+        self.ligature_cache.putPair(cp0, cp1, result);
         return result;
     }
 
@@ -642,15 +629,14 @@ pub const Context = struct {
     /// key 는 3 × 21 bits = 63 bits packed in u64 — 충돌 없는 unique 식별.
     pub fn ligatureTriple(self: *Context, cp0: u21, cp1: u21, cp2: u21) ?LigatureMatch {
         if (self.face_count == 0 or self.hb_api == null) return null;
-        const key: u64 = (@as(u64, cp0) << 42) | (@as(u64, cp1) << 21) | @as(u64, cp2);
-        if (self.ligature_triple_cache.get(key)) |cached| return cached;
+        if (self.ligature_cache.getTriple(cp0, cp1, cp2)) |cached| return cached;
 
         var triple_cps: [3]u21 = .{ cp0, cp1, cp2 };
         var shape_buf: [4]ShapedGlyph = undefined;
         const n = self.shapeRun(&triple_cps, &shape_buf);
 
         const result = detectLigatureMatch(self, &triple_cps, &shape_buf, n);
-        self.ligature_triple_cache.put(key, result) catch {};
+        self.ligature_cache.putTriple(cp0, cp1, cp2, result);
         return result;
     }
 

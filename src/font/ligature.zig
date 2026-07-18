@@ -70,6 +70,52 @@ pub const LigatureMatch = union(enum) {
     spacer: LigatureSpacer,
 };
 
+/// Printable ASCII ligature lookahead 결과 cache. 세 font backend가 같은 key와
+/// positive/negative 저장 정책을 사용한다. `null` 결과도 저장해야 ligature가
+/// 아닌 흔한 pair/triple을 매 frame 다시 shape하지 않는다 (#282 B7).
+pub const Cache = struct {
+    pair: std.AutoHashMap(u64, ?LigatureMatch),
+    triple: std.AutoHashMap(u64, ?LigatureMatch),
+
+    pub fn init(allocator: std.mem.Allocator) Cache {
+        return .{
+            .pair = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
+            .triple = std.AutoHashMap(u64, ?LigatureMatch).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Cache) void {
+        self.pair.deinit();
+        self.triple.deinit();
+    }
+
+    /// outer null = cache miss, outer value의 payload = cached match 또는
+    /// cached negative result(null).
+    pub fn getPair(self: *const Cache, cp0: u21, cp1: u21) ??LigatureMatch {
+        return self.pair.get(pairKey(cp0, cp1));
+    }
+
+    pub fn putPair(self: *Cache, cp0: u21, cp1: u21, result: ?LigatureMatch) void {
+        self.pair.put(pairKey(cp0, cp1), result) catch {};
+    }
+
+    pub fn getTriple(self: *const Cache, cp0: u21, cp1: u21, cp2: u21) ??LigatureMatch {
+        return self.triple.get(tripleKey(cp0, cp1, cp2));
+    }
+
+    pub fn putTriple(self: *Cache, cp0: u21, cp1: u21, cp2: u21, result: ?LigatureMatch) void {
+        self.triple.put(tripleKey(cp0, cp1, cp2), result) catch {};
+    }
+
+    fn pairKey(cp0: u21, cp1: u21) u64 {
+        return (@as(u64, cp0) << 32) | @as(u64, cp1);
+    }
+
+    fn tripleKey(cp0: u21, cp1: u21, cp2: u21) u64 {
+        return (@as(u64, cp0) << 42) | (@as(u64, cp1) << 21) | @as(u64, cp2);
+    }
+};
+
 /// Shape 결과의 한 slot — caller 가 `classify` 호출 시 채워서 넘김.
 /// platform 별 shape API 의 결과를 이 형태로 normalize.
 ///
@@ -171,6 +217,24 @@ test "classify: single-glyph ligature (n < input)" {
     try std.testing.expect(result != null);
     try std.testing.expect(result.? == .single);
     try std.testing.expectEqual(@as(u32, 999), result.?.single.glyph_index);
+}
+
+test "Cache stores matches and negative results independently" {
+    var cache = Cache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    try std.testing.expect(cache.getPair('=', '>') == null);
+    cache.putPair('=', '>', .{ .single = .{ .glyph_index = 42 } });
+    const pair = cache.getPair('=', '>');
+    try std.testing.expect(pair != null);
+    try std.testing.expect(pair.? != null);
+    try std.testing.expectEqual(@as(u32, 42), pair.?.?.single.glyph_index);
+
+    try std.testing.expect(cache.getTriple('=', '=', '=') == null);
+    cache.putTriple('=', '=', '=', null);
+    const triple = cache.getTriple('=', '=', '=');
+    try std.testing.expect(triple != null);
+    try std.testing.expect(triple.? == null);
 }
 
 test "classify: spacer pattern (n == input, indices differ)" {
