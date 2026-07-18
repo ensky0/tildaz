@@ -64,9 +64,7 @@ pub fn showAboutDialog() void {
     defer if (config_path_owned) |path| allocator.free(path);
     const config_path = config_path_owned orelse messages.unknown_path_msg;
 
-    const log_path_owned = paths.logPath(allocator) catch null;
-    defer if (log_path_owned) |path| allocator.free(path);
-    const log_path = log_path_owned orelse messages.unknown_path_msg;
+    const log_path = log.filePath() orelse messages.unknown_path_msg;
 
     // Tip 라인의 단축키 — platform native modifier (SPEC §0 #2). macOS 만
     // Cmd 기반, Linux / Windows 는 Ctrl 기반 표준. body 구조는 세 platform이

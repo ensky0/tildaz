@@ -3555,8 +3555,7 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     _ = _sel;
     _ = sender;
     const allocator = g_gpa.allocator();
-    const path = @import("../paths.zig").logPath(allocator) catch return;
-    defer allocator.free(path);
+    const path = log.filePath() orelse return;
     @import("../system_open.zig").openInDefaultApp(allocator, path);
 }
 
