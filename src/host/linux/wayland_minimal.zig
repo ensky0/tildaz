@@ -498,6 +498,9 @@ pub const DialogOverlay = struct {
     message_scroll_row: usize = 0,
     message_scroll_max: usize = 0,
     scrollbar_drag_grab: ?f64 = null,
+    /// Pointer motion batch 안의 여러 drag 위치를 마지막 row 하나로 합친다.
+    /// `takeRepaintRequest`가 batch 뒤 한 번만 소비한다.
+    repaint_requested: bool = false,
     scroll_axis_remainder_fixed: i64 = 0,
     show_icon: bool = true,
     layout_fits: bool = true,
@@ -549,7 +552,30 @@ pub const DialogOverlay = struct {
     pub fn hasPromptInput(self: *const DialogOverlay) bool {
         return std.mem.trim(u8, self.input(), " \t\r\n").len > 0;
     }
+
+    fn setDragScrollRow(self: *DialogOverlay, row: usize) bool {
+        if (row == self.message_scroll_row) return false;
+        self.message_scroll_row = row;
+        self.repaint_requested = true;
+        return true;
+    }
+
+    fn takeRepaintRequest(self: *DialogOverlay) bool {
+        const requested = self.repaint_requested;
+        self.repaint_requested = false;
+        return requested;
+    }
 };
+
+test "#314 dialog drag repaint requests coalesce to the latest row" {
+    var dialog: DialogOverlay = .{};
+    try std.testing.expect(dialog.setDragScrollRow(3));
+    try std.testing.expect(dialog.setDragScrollRow(11));
+    try std.testing.expect(!dialog.setDragScrollRow(11));
+    try std.testing.expectEqual(@as(usize, 11), dialog.message_scroll_row);
+    try std.testing.expect(dialog.takeRepaintRequest());
+    try std.testing.expect(!dialog.takeRepaintRequest());
+}
 
 /// #296 — native xkb sym + modifier 를 공통 정책의 `input_policy.Input` 으로
 /// 분류. null = 정책 대상 아님(터미널 control char / preedit-Ctrl commit / scroll
@@ -1335,6 +1361,7 @@ const Client = struct {
             // outer buffer state corrupt (사용자 시연 발견 — `BadMessage offset
             // input_len=0` 진단). deferred 로 reentrancy 해소.
             self.drainPendingDialogDismiss();
+            self.drainDialogRepaint();
             // #241 — batch 전체 처리 후 판정: visible 상태에서 들어온 quit 요청
             // (layer-surface closed)이 이번 batch 의 output topology 변화(모니터
             // 연결/분리)와 함께 온 것이면 사용자 Alt+F4 가 아니라 output re-home →
@@ -1569,8 +1596,12 @@ const Client = struct {
     fn updateCursorShape(self: *Client) !void {
         if (self.cursor_shape_device_id == 0) return; // protocol 미advertise
         if (self.last_pointer_enter_serial == 0) return; // enter event 아직
-        const want_text = self.pointerInCellArea() or self.pointerInRenameText();
-        const shape: u32 = if (want_text) wp_cursor_shape_v1_text else wp_cursor_shape_v1_default;
+        const shape = cursorShapeForSurface(
+            self.last_pointer_enter_surface_id,
+            self.surface_id,
+            self.pointerInCellArea(),
+            self.pointerInRenameText(),
+        );
         if (shape == self.last_cursor_shape) return; // 캐시 hit — spam 회피
         // spec: serial = pointer enter event serial (latest 권장). keyboard /
         // button serial 보내면 compositor reject + cursor 안 바뀜 (시연 회귀).
@@ -4217,7 +4248,7 @@ const Client = struct {
                 self.last_pointer_enter_surface_id == self.dialog.surface_id)
             {
                 if (button == wl_pointer_button_left and
-                    self.hitDialogRect(self.renderer.last_dialog_scrollbar_track_rect) and
+                    self.hitDialogRect(self.renderer.last_dialog_scrollbar_hit_rect) and
                     self.beginDialogScrollbarDrag())
                 {
                     return;
@@ -5338,6 +5369,7 @@ const Client = struct {
         self.dialog.severity = severity;
         self.dialog.message_scroll_row = 0;
         self.dialog.scrollbar_drag_grab = null;
+        self.dialog.repaint_requested = false;
         self.dialog.scroll_axis_remainder_fixed = 0;
         if (self.dialog.msg_len != message.len) {
             log.appendLine("dialog", "message truncated at UTF-8 boundary original_len={} stored_len={} capacity={}", .{
@@ -5738,9 +5770,7 @@ const Client = struct {
             @floatFromInt(self.pointer_y_px - track.y),
             grab,
         );
-        if (target == self.dialog.message_scroll_row) return;
-        self.dialog.message_scroll_row = target;
-        self.repaintDialog();
+        _ = self.dialog.setDragScrollRow(target);
     }
 
     fn scrollDialogRows(self: *Client, delta: i32) void {
@@ -5996,8 +6026,10 @@ const Client = struct {
         self.renderer.last_dialog_ok_rect = .{};
         self.renderer.last_dialog_cancel_rect = .{};
         self.renderer.last_dialog_scrollbar_track_rect = .{};
+        self.renderer.last_dialog_scrollbar_hit_rect = .{};
         self.renderer.last_dialog_scrollbar_thumb_rect = .{};
         self.dialog.scrollbar_drag_grab = null;
+        self.dialog.repaint_requested = false;
         log.appendLineVerbose("dialog", "destroyDialogSurface", .{});
     }
 
@@ -6060,6 +6092,15 @@ const Client = struct {
             return;
         };
         self.dialog.active_buffer = buffer;
+    }
+
+    /// 한 번의 Wayland 입력 batch에서 들어온 drag motion을 최신 row 하나로
+    /// 합쳐 전체 dialog buffer를 한 번만 다시 그린다. 즉시 repaint하면 긴 About
+    /// 의 13MB대 buffer paint가 pointer event 처리를 막아 thumb가 뒤처진다.
+    fn drainDialogRepaint(self: *Client) void {
+        if (!self.dialog.takeRepaintRequest()) return;
+        if (!self.dialog.active() or self.dialog.surface_id == 0) return;
+        self.repaintDialog();
     }
 
     /// dialog surface 용 buffer 생성. main createBuffer 패턴 (memfd + mmap +
@@ -6309,6 +6350,7 @@ const Client = struct {
                 break;
             };
             self.drainPendingDialogDismiss();
+            self.drainDialogRepaint();
             self.drainExitedTabs();
             self.dispatchDbusMessages();
             self.maybeRepeatKey() catch {};
@@ -6347,6 +6389,7 @@ const Client = struct {
                 break;
             };
             self.drainPendingDialogDismiss();
+            self.drainDialogRepaint();
         }
     }
 
@@ -6364,6 +6407,7 @@ const Client = struct {
                 break;
             };
             self.drainPendingDialogDismiss();
+            self.drainDialogRepaint();
             self.drainExitedTabs();
             self.dispatchDbusMessages();
             self.maybeRepeatKey() catch {};
@@ -6734,6 +6778,39 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
             writeU32(memory[y * s + x * 4 ..][0..4], color);
         }
     }
+}
+
+/// Surface-local pointer 좌표는 서로 비교할 수 없으므로, terminal text cursor는
+/// main surface 위에서만 선택한다. Dialog surface는 같은 좌표가 terminal cell
+/// 범위와 겹쳐도 기본 arrow를 유지한다.
+fn cursorShapeForSurface(focused_surface_id: u32, main_surface_id: u32, in_cell: bool, in_rename: bool) u32 {
+    if (focused_surface_id != 0 and
+        focused_surface_id == main_surface_id and
+        (in_cell or in_rename)) return wp_cursor_shape_v1_text;
+    return wp_cursor_shape_v1_default;
+}
+
+test "#314 dialog surface keeps arrow cursor while main text areas use I-beam" {
+    try std.testing.expectEqual(
+        wp_cursor_shape_v1_default,
+        cursorShapeForSurface(200, 100, true, true),
+    );
+    try std.testing.expectEqual(
+        wp_cursor_shape_v1_text,
+        cursorShapeForSurface(100, 100, true, false),
+    );
+    try std.testing.expectEqual(
+        wp_cursor_shape_v1_text,
+        cursorShapeForSurface(100, 100, false, true),
+    );
+    try std.testing.expectEqual(
+        wp_cursor_shape_v1_default,
+        cursorShapeForSurface(100, 100, false, false),
+    );
+    try std.testing.expectEqual(
+        wp_cursor_shape_v1_default,
+        cursorShapeForSurface(0, 0, true, true),
+    );
 }
 
 /// paste 인입으로 받아들일 mime. 셋 중 하나만 광고돼도 paste 가능. 셋 다

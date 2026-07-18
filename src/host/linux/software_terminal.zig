@@ -106,6 +106,9 @@ pub const Renderer = struct {
     last_dialog_ok_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     last_dialog_cancel_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     last_dialog_scrollbar_track_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
+    /// 보이는 track 왼쪽의 dialog 전용 빈 gap까지 포함한 pointer hit target.
+    /// thumb 자체는 `SCROLLBAR_W_PT` 폭으로 유지하고 조작 영역만 넓힌다.
+    last_dialog_scrollbar_hit_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     last_dialog_scrollbar_thumb_rect: struct { x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0 } = .{},
     /// L13-γ — 매 픽셀의 alpha byte (ARGB8888 의 high byte). `config.opacity_
     /// alpha` 가 그대로. 100% → 255 (완전 opaque, 시각 변화 없음), <100 →
@@ -822,12 +825,15 @@ pub const Renderer = struct {
         }
 
         self.last_dialog_scrollbar_track_rect = .{};
+        self.last_dialog_scrollbar_hit_rect = .{};
         self.last_dialog_scrollbar_thumb_rect = .{};
         if (message_rows > visible_message_rows) {
             const sb_w = scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale);
+            const sb_gap = scaledPt(ui_metrics.DIALOG_SCROLLBAR_GAP_PT, self.scale);
             const track_h: i32 = @intCast(visible_message_rows * @as(usize, @intCast(ch)));
             const track_x = box_x + box_w - pad - sb_w;
             self.last_dialog_scrollbar_track_rect = .{ .x = track_x, .y = message_y, .w = sb_w, .h = track_h };
+            self.last_dialog_scrollbar_hit_rect = .{ .x = track_x - sb_gap, .y = message_y, .w = sb_gap + sb_w, .h = track_h };
             if (scrollbar.geom(
                 message_rows,
                 visible_message_rows,
@@ -837,14 +843,10 @@ pub const Renderer = struct {
             )) |g| {
                 const thumb_y = message_y + @as(i32, @intFromFloat(g.thumb_y_rel));
                 const thumb_h: i32 = @intFromFloat(g.thumb_h);
-                const sc = rgbFromMetrics(ui_metrics.SCROLLBAR_COLOR);
-                const alpha = ui_metrics.SCROLLBAR_COLOR[3];
-                const thumb_color = ghostty.color.RGB{
-                    .r = blendU8(sc.r, bg.r, alpha),
-                    .g = blendU8(sc.g, bg.g, alpha),
-                    .b = blendU8(sc.b, bg.b, alpha),
-                };
-                rect(memory, buffer_w, buffer_h, stride, track_x, thumb_y, sb_w, thumb_h, thumb_color);
+                // Terminal scrollbar의 white/30%는 dark theme용이다. 밝은 dialog
+                // 배경에 blend하면 RGB 242→246이라 thumb가 사실상 사라진다.
+                // 같은 dialog palette의 separator gray를 써 가시 대비를 유지한다.
+                rect(memory, buffer_w, buffer_h, stride, track_x, thumb_y, sb_w, thumb_h, dialog_separator_color);
                 self.last_dialog_scrollbar_thumb_rect = .{ .x = track_x, .y = thumb_y, .w = sb_w, .h = thumb_h };
             }
         }
@@ -2326,6 +2328,23 @@ test "#314 overflow About renderer draws movable scrollbar thumb at 1.7x" {
     const first_thumb_y = r.last_dialog_scrollbar_thumb_rect.y;
     try std.testing.expect(r.last_dialog_scrollbar_track_rect.w > 0);
     try std.testing.expect(r.last_dialog_scrollbar_thumb_rect.h > 0);
+    try std.testing.expectEqual(@as(i32, 17), r.last_dialog_scrollbar_track_rect.w);
+    try std.testing.expectEqual(@as(i32, 31), r.last_dialog_scrollbar_hit_rect.w);
+    try std.testing.expectEqual(
+        r.last_dialog_scrollbar_track_rect.x,
+        r.last_dialog_scrollbar_hit_rect.x + 14,
+    );
+    const thumb = r.last_dialog_scrollbar_thumb_rect;
+    const thumb_center_off: usize = @intCast(
+        (thumb.y + @divTrunc(thumb.h, 2)) * stride +
+            (thumb.x + @divTrunc(thumb.w, 2)) * 4,
+    );
+    const thumb_pixel = std.mem.readInt(u32, buf[thumb_center_off..][0..4], .little);
+    // drawDialogContent는 마지막에 surface opacity를 high alpha byte에 채운다.
+    // 가시 대비 판정은 같은 alpha를 제외한 RGB channel을 비교한다.
+    const thumb_rgb = thumb_pixel & 0x00FF_FFFF;
+    try std.testing.expectEqual(pack(dialog_separator_color), thumb_rgb);
+    try std.testing.expect(thumb_rgb != pack(dialog_bg_color));
 
     r.drawDialogContent(
         buf,
