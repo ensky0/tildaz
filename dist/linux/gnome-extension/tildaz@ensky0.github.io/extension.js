@@ -9,7 +9,8 @@
  * 이 번호별 창을 잡아 배치/토글한다. tildaz.desktop은 launcher 전용이라 앱 아이콘
  * 재클릭도 기존 창 activate가 아니라 launcher Exec을 호출한다.
  *
- * config = single source of truth: ~/.config/tildaz/config_N.json 의 hotkey 와
+ * config = single source of truth: $XDG_CONFIG_HOME/tildaz/config_N.json
+ * (fallback: ~/.config/tildaz) 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} 를 읽는다.
  *
  * 동작: app_id 감지 + config 기반 placement(move_resize_frame) + make_above +
@@ -29,6 +30,14 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
 const WORKER_APP_ID_PREFIX = "tildaz.instance";
 const DIALOG_APP_ID = "tildaz-dialog";
 const DESKTOP_ID = "tildaz.desktop";
+
+function configDirPath() {
+  const xdgConfigHome = GLib.getenv("XDG_CONFIG_HOME");
+  const base = xdgConfigHome && GLib.path_is_absolute(xdgConfigHome)
+    ? xdgConfigHome
+    : GLib.build_filenamev([GLib.get_home_dir(), ".config"]);
+  return GLib.build_filenamev([base, "tildaz"]);
+}
 
 function workerIndex(win) {
   if (!win) return null;
@@ -64,7 +73,7 @@ export default class TildazExtension extends Extension {
       }
     );
     this._registerAccelerators();
-    const configDir = Gio.File.new_for_path(GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"]));
+    const configDir = Gio.File.new_for_path(configDirPath());
     try {
       this._configMonitor = configDir.monitor_directory(Gio.FileMonitorFlags.NONE, null);
       this._configMonitorId = this._configMonitor.connect("changed", () => {
@@ -164,7 +173,7 @@ export default class TildazExtension extends Extension {
     this._dialogIdleIds = null;
   }
 
-  /** ~/.config/tildaz/config_N.json 읽기 (실패 시 해당 항목 제외). */
+  /** XDG config의 config_N.json 읽기 (실패 시 해당 항목 제외). */
   _readConfig(index) {
     const out = {
       accel: "<Super>grave",
@@ -177,9 +186,7 @@ export default class TildazExtension extends Extension {
     };
     try {
       const path = GLib.build_filenamev([
-        GLib.get_home_dir(),
-        ".config",
-        "tildaz",
+        configDirPath(),
         `config_${index}.json`,
       ]);
       const [ok, bytes] = GLib.file_get_contents(path);
@@ -205,7 +212,7 @@ export default class TildazExtension extends Extension {
 
   _readConfigs() {
     const configs = new Map();
-    const dirPath = GLib.build_filenamev([GLib.get_home_dir(), ".config", "tildaz"]);
+    const dirPath = configDirPath();
     try {
       const dir = GLib.Dir.open(dirPath, 0);
       let name;

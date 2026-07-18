@@ -3,7 +3,7 @@
 //!
 //!   - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 //!   - macOS:   `~/Library/LaunchAgents/com.tildaz.app.plist` (launchd)
-//!   - Linux:   `~/.config/autostart/tildaz.desktop` (XDG Autostart)
+//!   - Linux:   `$XDG_CONFIG_HOME/autostart/tildaz.desktop` (fallback `~/.config`)
 //!
 //! API 시그니처는 세 platform 동일 — `enable(allocator)` / `disable(allocator)`.
 //! Windows 는 allocator 를 무시 (fixed buffer + Win32 API), macOS / Linux 는

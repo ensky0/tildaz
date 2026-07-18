@@ -4,10 +4,10 @@
 //
 //   Windows: %APPDATA%\tildaz\config_N.json   (Microsoft 표준)
 //            %APPDATA%\tildaz\tildaz_N.log
-//   macOS:   $HOME/.config/tildaz/config_N.json (XDG, ghostty/alacritty 패턴)
+//   macOS:   $XDG_CONFIG_HOME/tildaz/config_N.json (fallback: $HOME/.config)
 //            $HOME/Library/Logs/tildaz_N.log    (Apple HIG — Console.app 인덱싱)
-//   Linux:   $HOME/.config/tildaz/config_N.json (XDG)
-//            $HOME/.local/state/tildaz/tildaz_N.log
+//   Linux:   $XDG_CONFIG_HOME/tildaz/config_N.json (fallback: $HOME/.config)
+//            $XDG_STATE_HOME/tildaz/tildaz_N.log (fallback: $HOME/.local/state)
 //
 // 모두 allocator-based — 호출처가 free 책임. 부모 디렉토리는 자동 생성
 // (이미 존재하면 무시). config 모듈과 log 모듈에서 사용한다. 로그 경로는
@@ -51,9 +51,9 @@ fn logDir(allocator: std.mem.Allocator) ![]u8 {
         defer allocator.free(home);
         return std.fmt.allocPrint(allocator, "{s}/Library/Logs", .{home});
     } else {
-        const home = try std.process.getEnvVarOwned(allocator, "HOME");
-        defer allocator.free(home);
-        return std.fmt.allocPrint(allocator, "{s}/.local/state/tildaz", .{home});
+        const base = try stateHome(allocator);
+        defer allocator.free(base);
+        return std.fmt.allocPrint(allocator, "{s}/tildaz", .{base});
     }
 }
 
@@ -68,9 +68,43 @@ pub fn configDir(allocator: std.mem.Allocator) ![]u8 {
         defer allocator.free(appdata);
         return std.fmt.allocPrint(allocator, "{s}\\tildaz", .{appdata});
     }
+    const base = try configHome(allocator);
+    defer allocator.free(base);
+    return std.fmt.allocPrint(allocator, "{s}/tildaz", .{base});
+}
+
+/// Linux · macOS 사용자 config base. 유효한 절대 XDG_CONFIG_HOME을 우선하고
+/// unset/empty/relative 값은 XDG 기본인 $HOME/.config로 fallback한다.
+pub fn configHome(allocator: std.mem.Allocator) ![]u8 {
+    return xdgHome(allocator, "XDG_CONFIG_HOME", "/.config");
+}
+
+/// Linux 사용자 state base. log가 여기에 tildaz/를 붙인다.
+fn stateHome(allocator: std.mem.Allocator) ![]u8 {
+    return xdgHome(allocator, "XDG_STATE_HOME", "/.local/state");
+}
+
+fn xdgHome(allocator: std.mem.Allocator, env_name: []const u8, fallback_suffix: []const u8) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, env_name) catch null) |dir| {
+        if (dir.len != 0 and std.fs.path.isAbsolute(dir)) return dir;
+        allocator.free(dir);
+    }
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.config/tildaz", .{home});
+    return resolveXdgHome(allocator, null, home, fallback_suffix);
+}
+
+/// env를 읽지 않는 pure helper — empty/relative/absolute 경계를 단위 테스트한다.
+fn resolveXdgHome(
+    allocator: std.mem.Allocator,
+    candidate: ?[]const u8,
+    home: []const u8,
+    fallback_suffix: []const u8,
+) ![]u8 {
+    if (candidate) |dir| {
+        if (dir.len != 0 and std.fs.path.isAbsolute(dir)) return allocator.dupe(u8, dir);
+    }
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ home, fallback_suffix });
 }
 
 pub fn ensureConfigDir(allocator: std.mem.Allocator) !void {
@@ -98,11 +132,11 @@ pub fn lockDir(allocator: std.mem.Allocator) ![]u8 {
 
     if (std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch null) |runtime_dir| {
         defer allocator.free(runtime_dir);
-        if (runtime_dir.len != 0) return linuxLockDir(allocator, runtime_dir, null, "");
+        if (runtime_dir.len != 0 and std.fs.path.isAbsolute(runtime_dir)) return linuxLockDir(allocator, runtime_dir, null, "");
     }
     if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME") catch null) |cache_dir| {
         defer allocator.free(cache_dir);
-        if (cache_dir.len != 0) return linuxLockDir(allocator, null, cache_dir, "");
+        if (cache_dir.len != 0 and std.fs.path.isAbsolute(cache_dir)) return linuxLockDir(allocator, null, cache_dir, "");
     }
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
@@ -196,7 +230,7 @@ test "logPathFor 가 OS 표준 위치와 worker index 를 따른다" {
     try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
         .windows => "\\tildaz\\tildaz_7.log",
         .macos => "/Library/Logs/tildaz_7.log",
-        else => "/.local/state/tildaz/tildaz_7.log",
+        else => "/tildaz/tildaz_7.log",
     }));
 }
 
@@ -228,4 +262,24 @@ test "Linux lock directory follows runtime then cache fallback order" {
     const home = try linuxLockDir(allocator, null, null, "/home/test");
     defer allocator.free(home);
     try std.testing.expectEqualStrings("/home/test/.cache/tildaz/run", home);
+}
+
+test "XDG home accepts only absolute non-empty values" {
+    const allocator = std.testing.allocator;
+
+    const custom = try resolveXdgHome(allocator, "/custom/config", "/home/test", "/.config");
+    defer allocator.free(custom);
+    try std.testing.expectEqualStrings("/custom/config", custom);
+
+    const empty = try resolveXdgHome(allocator, "", "/home/test", "/.config");
+    defer allocator.free(empty);
+    try std.testing.expectEqualStrings("/home/test/.config", empty);
+
+    const relative = try resolveXdgHome(allocator, "relative/config", "/home/test", "/.config");
+    defer allocator.free(relative);
+    try std.testing.expectEqualStrings("/home/test/.config", relative);
+
+    const state = try resolveXdgHome(allocator, null, "/home/test", "/.local/state");
+    defer allocator.free(state);
+    try std.testing.expectEqualStrings("/home/test/.local/state", state);
 }

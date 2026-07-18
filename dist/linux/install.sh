@@ -36,6 +36,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
+    CONFIG_HOME="$XDG_CONFIG_HOME"
+else
+    CONFIG_HOME="$HOME/.config"
+fi
+TILDAZ_CONFIG_DIR="$CONFIG_HOME/tildaz"
 
 TILDAZ_EXE=""
 while [[ $# -gt 0 ]]; do
@@ -107,7 +113,7 @@ BIN_LINK="$HOME/.local/bin/tildaz"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 
-# ~/.config/sway/config — sway 는 XDG autostart(~/.config/autostart) 를 native 로
+# ~/.config/sway/config — sway 는 XDG user autostart 를 native 로
 # 안 읽으므로 (설계상 autostart 부재), sway 세션 자동실행엔 sway config 의 `exec`
 # 한 줄이 필요하다. 이 파일은 sway 만 읽어 Plasma/GNOME 등 다른 DE 세션에선 무시 —
 # install 시점 세션 감지 없이 DE 왕복에 안전하고, 다른 DE 의 autostart 와 공존.
@@ -157,7 +163,7 @@ TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh rem
 #   letter 소문자("a"), 함수키 "F1", "grave"/"space"(소문자), "Tab"/"Escape"/"Return".
 #   (cosmic-comp 은 keysym 이름을 case-insensitive 로도 매칭하므로 casing 은 best-effort.)
 cosmic_translate_hotkey() {
-    local cfg="$HOME/.config/tildaz/config_0.json" hk="f1" v=""
+    local cfg="$TILDAZ_CONFIG_DIR/config_0.json" hk="f1" v=""
     if [[ -f "$cfg" ]]; then
         v="$(grep -oE '"hotkey"[[:space:]]*:[[:space:]]*"[^"]*"' "$cfg" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
         [[ -n "$v" ]] && hk="$v"
@@ -262,7 +268,7 @@ fi
 # xdg-desktop-portal-cosmic 의 GlobalShortcuts 가 미구현(portal-cosmic#4)이라
 # portal 재사용 불가 → compositor 단축키→`tildaz --toggle N`으로 건다.
 # COSMIC 단축키는 RON map 파일(`{ (modifiers:[..], key:".."): Spawn("..") }`).
-# 자동실행은 COSMIC 가 XDG autostart(~/.config/autostart)를 지원하므로 tildaz 의
+# 자동실행은 COSMIC 가 XDG user autostart를 지원하므로 tildaz 의
 # autostart 모듈(config.auto_start)이 담당 — 여기선 hotkey 만 등록.
 # 본문 보존: 기존 tildaz --toggle Spawn 줄만 제거 후 config_0 hotkey 로 재삽입(멱등 +
 # config=source of truth). RON 형태가 예상(닫는 '}' 독립 줄)과 다르면 안 건드림.
@@ -384,6 +390,6 @@ echo "  - COSMIC: layer-shell drop-down. hotkey 는 RON shortcut→'tildaz --tog
 echo "          위에서 ~/.config/cosmic/...Shortcuts/v1/custom 에 등록 → cosmic-comp 가 live 반영(안 되면 재로그인)."
 echo "          자동실행은 config.auto_start=true 면 XDG autostart 로 동작."
 echo "  - 기타 wlroots: layer-shell drop-down. 자동실행은 compositor 의 exec 류로 직접."
-echo "  - config: ~/.config/tildaz/config_N.json (instance별 auto_start/hidden_start/hotkey/위치)"
-echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 ~/.config/autostart/"
+echo "  - config: $TILDAZ_CONFIG_DIR/config_N.json (instance별 auto_start/hidden_start/hotkey/위치)"
+echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 $CONFIG_HOME/autostart/"
 echo "    tildaz.desktop 자동 생성. GNOME 은 NotShowIn으로 건너뛰고 extension이 담당."

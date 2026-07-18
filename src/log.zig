@@ -5,7 +5,7 @@
 //! 로그 위치:
 //!   - Windows: `%APPDATA%\tildaz\tildaz_N.log`
 //!   - macOS:   `~/Library/Logs/tildaz_N.log`  (Apple HIG — Console.app 자동 인덱싱)
-//!   - Linux:   `~/.local/state/tildaz/tildaz_N.log`  (XDG state)
+//!   - Linux:   `$XDG_STATE_HOME/tildaz/tildaz_N.log` (fallback `~/.local/state`)
 //!
 //! 포맷:
 //!   `[YYYY-MM-DD HH:MM:SS.mmm] [category] <message>\n`

@@ -78,9 +78,13 @@ First launch creates the default config:
 
 | Platform | Config | Log |
 |---|---|---|
-| Linux | `~/.config/tildaz/config_0.json` | `~/.local/state/tildaz/tildaz_0.log` |
-| macOS | `~/.config/tildaz/config_0.json` | `~/Library/Logs/tildaz_0.log` |
+| Linux | `$XDG_CONFIG_HOME/tildaz/config_0.json` | `$XDG_STATE_HOME/tildaz/tildaz_0.log` |
+| macOS | `$XDG_CONFIG_HOME/tildaz/config_0.json` | `~/Library/Logs/tildaz_0.log` |
 | Windows | `%APPDATA%\tildaz\config_0.json` | `%APPDATA%\tildaz\tildaz_0.log` |
+
+On Linux and macOS, `XDG_CONFIG_HOME` defaults to `~/.config`. On Linux,
+`XDG_STATE_HOME` defaults to `~/.local/state`. Empty or relative XDG values use
+those defaults.
 
 macOS releases are ad-hoc signed. If Gatekeeper blocks the first open,
 right-click `TildaZ.app` and choose **Open**, or run:
