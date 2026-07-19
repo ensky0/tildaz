@@ -75,8 +75,11 @@ const dialog_bg_color: ghostty.color.RGB = .{ .r = 0xF2, .g = 0xF2, .b = 0xF2 };
 const dialog_text_color: ghostty.color.RGB = .{ .r = 0x1A, .g = 0x1A, .b = 0x1A };
 /// `docs/style.css --brand-orange` / `docs/favicon.svg`의 Zig Z와 같은 색.
 /// dialog 종류나 severity와 무관하게 제목 separator 하나에만 사용한다.
-const dialog_separator_color: ghostty.color.RGB = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D };
-const dialog_separator_thickness_pt: u32 = 2;
+const dialog_separator_color: ghostty.color.RGB = .{
+    .r = ui_metrics.DIALOG_SEPARATOR_COLOR.r,
+    .g = ui_metrics.DIALOG_SEPARATOR_COLOR.g,
+    .b = ui_metrics.DIALOG_SEPARATOR_COLOR.b,
+};
 /// 밝은 dialog 배경에서 thumb가 보이도록 유지하는 중립 회색. 브랜드 accent와
 /// 역할이 다르므로 separator 색을 바꿔도 scrollbar 색은 따라가지 않는다.
 const dialog_scrollbar_color: ghostty.color.RGB = .{ .r = 0xC8, .g = 0xC8, .b = 0xC8 };
@@ -807,7 +810,7 @@ pub const Renderer = struct {
 
         // (3) separator line — title 과 message 구분.
         const inner_w: i32 = box_w - pad * 2;
-        const separator_h = scaledPt(dialog_separator_thickness_pt, self.scale);
+        const separator_h = scaledPt(ui_metrics.DIALOG_SEPARATOR_THICKNESS_PT, self.scale);
         const separator_y = text_y + @divTrunc(ch, 2) - @divTrunc(separator_h, 2);
         rect(memory, buffer_w, buffer_h, stride, text_x, separator_y, inner_w, separator_h, dialog_separator_color);
         text_y += ch;
@@ -2334,7 +2337,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
     const sm = scaledPt(dialog_shadow_margin_pt, r.scale);
     const pad = scaledPt(dialog_padding_pt, r.scale);
     const separator_x = sm + pad + 1;
-    const separator_h = scaledPt(dialog_separator_thickness_pt, r.scale);
+    const separator_h = scaledPt(ui_metrics.DIALOG_SEPARATOR_THICKNESS_PT, r.scale);
     try std.testing.expectEqual(@as(i32, 3), separator_h);
     const separator_center_y = sm + pad +
         (if (layout.show_icon)

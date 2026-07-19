@@ -1,7 +1,9 @@
 //! macOS 의 dialog 구현 — 두 path:
 //!
-//! 1. **NSAlert** (NSApp init 후): 짧은 본문은 native informativeText, 화면을
-//!    넘는 본문은 NSScrollView + NSTextView accessoryView.
+//! 1. **NSAlert** (NSApp init 후): native TildaZ icon/modal/button은 유지하고,
+//!    18pt title + orange separator + 15pt read-only NSTextView accessoryView를
+//!    모든 정상 info/error/confirm/About/prompt에 사용한다. 화면을 넘을 때만
+//!    본문 NSScrollView에 세로 scroller가 나타난다.
 //! 2. **`osascript display dialog`** (NSApp init 전 fallback): config 에러
 //!    같이 부트스트랩 실패 시. NSApp 무관 별도 process 라 항상 동작.
 //!
@@ -309,16 +311,20 @@ fn newAlert() ?objc.id {
 
     // 모든 안내·오류·확인·prompt·About이 system severity icon 대신 bundle의
     // TildaZ icon을 사용한다. 각 entry가 모두 newAlert()를 거치므로 단일 지점.
-    const app = sharedApp();
-    if (app != null) {
-        const getIcon = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-        const icon = getIcon(app, objc.sel("applicationIconImage"));
-        if (icon != null) {
-            const setIcon = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-            setIcon(alert, objc.sel("setIcon:"), icon);
-        }
-    }
+    setAlertIcon(alert, applicationIcon());
     return alert;
+}
+
+fn applicationIcon() objc.id {
+    const app = sharedApp();
+    if (app == null) return null;
+    const getIcon = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    return getIcon(app, objc.sel("applicationIconImage"));
+}
+
+fn setAlertIcon(alert: objc.id, icon: objc.id) void {
+    const setIcon = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setIcon(alert, objc.sel("setIcon:"), icon);
 }
 
 /// NSAlert 의 `setMessageText:`. nil-safe.
@@ -391,7 +397,7 @@ fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8
     setMessage(alert, title);
     addButton(alert, messages.button_ok);
     setStyle(alert, alertStyleFor(severity));
-    if (!attachScrollableBody(alert, message, true)) setInformative(alert, message);
+    _ = attachBrandedContent(alert, title, message);
     _ = runModalOverHost(alert, true);
 }
 
@@ -399,7 +405,39 @@ const NSAlertRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
 const NSAlertSize = extern struct { w: f64, h: f64 };
 const NSAlertRange = extern struct { location: usize, length: usize };
 
-fn aboutTextNaturalHeight(tv: objc.id, layout_manager: objc.id, text_container: objc.id, minimum: f64) f64 {
+const BrandedHeaderGeometry = struct {
+    separator_y: f64,
+    separator_h: f64,
+    title_y: f64,
+    title_h: f64,
+    total_h: f64,
+};
+
+fn brandedHeaderGeometry(body_top: f64) BrandedHeaderGeometry {
+    const separator_h: f64 = @floatFromInt(ui_metrics.DIALOG_SEPARATOR_THICKNESS_PT);
+    const separator_row_h: f64 = @floatFromInt(ui_metrics.DIALOG_BODY_FONT_PT + 8);
+    const title_h: f64 = @floatFromInt(ui_metrics.DIALOG_TITLE_FONT_PT + 8);
+    const separator_y = body_top + (separator_row_h - separator_h) / 2.0;
+    const title_y = body_top + separator_row_h;
+    return .{
+        .separator_y = separator_y,
+        .separator_h = separator_h,
+        .title_y = title_y,
+        .title_h = title_h,
+        .total_h = title_y + title_h,
+    };
+}
+
+test "macOS branded dialog header uses common logical point metrics" {
+    const header = brandedHeaderGeometry(100.0);
+    try std.testing.expectEqual(@as(f64, 2.0), header.separator_h);
+    try std.testing.expect(header.separator_y >= 100.0);
+    try std.testing.expect(header.separator_y + header.separator_h <= header.title_y);
+    try std.testing.expectEqual(@as(f64, 26.0), header.title_h);
+    try std.testing.expectEqual(header.title_y + header.title_h, header.total_h);
+}
+
+fn dialogTextNaturalSize(tv: objc.id, layout_manager: objc.id, text_container: objc.id, minimum: NSAlertSize) NSAlertSize {
     if (layout_manager == null or text_container == null) return minimum;
     const ensureLayout = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     ensureLayout(layout_manager, objc.sel("ensureLayoutForTextContainer:"), text_container);
@@ -407,7 +445,10 @@ fn aboutTextNaturalHeight(tv: objc.id, layout_manager: objc.id, text_container: 
     const used = usedRect(layout_manager, objc.sel("usedRectForTextContainer:"), text_container);
     const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
     const inset = getSize(tv, objc.sel("textContainerInset"));
-    return @max(minimum, @ceil(used.h + inset.h * 2.0));
+    return .{
+        .w = @max(minimum.w, @ceil(used.w + inset.w * 2.0)),
+        .h = @max(minimum.h, @ceil(used.h + inset.h * 2.0)),
+    };
 }
 
 /// About 다이얼로그 NSTextView 의 delegate — selection 변경 시 즉시
@@ -461,30 +502,33 @@ fn registerAboutDelegate() ?objc.id {
     return inst;
 }
 
-const ScrollableBody = struct {
+const DialogBodyView = struct {
     view: objc.id,
     width: f64,
     height: f64,
 };
 
-/// 긴 본문 다이얼로그용 NSScrollView + NSTextView를 만든다. `reserved_h`는
-/// prompt input처럼 같은 accessoryView 안에 고정할 높이다. 짧은 본문에서
-/// `only_if_overflow`가 true면 null을 돌려 native informativeText를 유지한다.
-/// 이유: NSAlert 의 NSTextField (informativeText) 는
-/// `setSelectable:YES` 만 줘도 cmd+c (copy:) 가 firstResponder 라우팅 안 돼
-/// OK 버튼으로 흘러 클립보드 복사 안 됨. NSTextView 는 자체적으로 copy:
-/// 처리 + firstResponder 정상 동작 + monospace 로 path 가독성 좋음.
-fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, reserved_h: f64) ?ScrollableBody {
+/// 모든 정상 다이얼로그의 본문 NSScrollView + NSTextView. `reserved_h`는
+/// branded header와 prompt input/status처럼 accessoryView 안에 고정할 높이다.
+/// 짧은 본문은 자연 높이를 사용하고 scroller가 숨으며, 화면을 넘을 때만 본문
+/// viewport가 줄어든다. NSTextView라 read-only selection/copy도 모든 길이에서 같다.
+fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: f64) ?DialogBodyView {
     // accessoryView: 세로 NSScrollView + NSTextView. 평소에는 본문 자연 높이,
     // 화면 가용 높이를 넘을 때만 AppKit scroller가 나타난다.
-    const NSScreen = objc.getClass("NSScreen");
-    const mainScreen = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const screen = mainScreen(NSScreen, objc.sel("mainScreen"));
+    const getScreen = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    var screen: objc.id = if (host_window != null) getScreen(host_window, objc.sel("screen")) else null;
+    if (screen == null) {
+        const NSScreen = objc.getClass("NSScreen");
+        const mainScreen = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+        screen = mainScreen(NSScreen, objc.sel("mainScreen"));
+    }
     const visible_frame = if (screen != null) blk: {
         const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
         break :blk getRect(screen, objc.sel("visibleFrame"));
     } else NSAlertRect{ .x = 0, .y = 0, .w = 800, .h = 600 };
-    const accessory_w = @max(320.0, @min(580.0, visible_frame.w - 96.0));
+    const max_accessory_w = @max(1.0, @min(580.0, visible_frame.w - 96.0));
+    const min_accessory_w = @min(minimum_w, max_accessory_w);
+    var accessory_w = max_accessory_w;
 
     // 제목·icon·button을 배치한 NSAlert의 실제 base 높이를 먼저 재고, visible
     // screen에서 그 높이와 prompt 고정 영역, 16pt 상하 여백을 뺀 나머지를 본문
@@ -496,7 +540,7 @@ fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, 
     const alert_window = getObjForWindow(alert, objc.sel("window")) orelse return null;
     const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
     const base_alert_h = getRect(alert_window, objc.sel("frame")).h;
-    const max_accessory_h = @max(130.0, visible_frame.h - base_alert_h - reserved_h - 32.0);
+    const max_accessory_h = @max(32.0, visible_frame.h - base_alert_h - reserved_h - 32.0);
 
     const NSScrollView = objc.getClass("NSScrollView");
     const NSTextView = objc.getClass("NSTextView");
@@ -504,7 +548,8 @@ fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, 
     const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return null;
     const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const scroll_owned = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = 130 }) orelse return null;
+    const initial_body_h: f64 = @floatFromInt(ui_metrics.DIALOG_BODY_FONT_PT + 8);
+    const scroll_owned = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = initial_body_h }) orelse return null;
     const autorelease = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const scroll = autorelease(scroll_owned, objc.sel("autorelease"));
 
@@ -556,10 +601,21 @@ fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, 
     const setDocument = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setDocument(scroll, objc.sel("setDocumentView:"), tv);
 
+    // 최대 폭에서 먼저 layout해 실제 longest rendered line 폭을 얻은 뒤 공통
+    // 최소/최대 폭으로 clamp한다. 짧은 문구가 항상 580pt로 벌어지지 않고, 긴
+    // path는 화면 경계까지 넓힌 뒤 세로 wrap/scroll 계산으로 넘어간다.
+    const first_natural = dialogTextNaturalSize(
+        tv,
+        layout_manager,
+        text_container,
+        .{ .w = min_accessory_w, .h = initial_content.h },
+    );
+    accessory_w = @min(max_accessory_w, @max(min_accessory_w, first_natural.w + 4.0));
+
     // scroller가 나타나면 document 가용 폭이 줄고 wrap 행이 늘 수 있다. AppKit이
     // 실제로 준 contentSize로 폭/높이를 다시 재는 pass를 반복해 마지막 줄까지
     // document frame에 포함한다. 짧은 본문은 첫 자연 높이에 수렴해 scroller가 숨는다.
-    var natural_h = initial_content.h;
+    var natural_h = first_natural.h;
     var pass: u8 = 0;
     while (pass < 3) : (pass += 1) {
         const viewport_h = if (pass == 0) max_accessory_h else @min(natural_h, max_accessory_h);
@@ -569,9 +625,13 @@ fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, 
         if (text_container != null) {
             setSize(text_container, objc.sel("setContainerSize:"), .{ .w = content.w, .h = 10_000_000 });
         }
-        natural_h = aboutTextNaturalHeight(tv, layout_manager, text_container, initial_content.h);
+        natural_h = dialogTextNaturalSize(
+            tv,
+            layout_manager,
+            text_container,
+            .{ .w = min_accessory_w, .h = initial_content.h },
+        ).h;
     }
-    if (only_if_overflow and natural_h <= max_accessory_h) return null;
     const accessory_h = @min(natural_h, max_accessory_h);
     setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = accessory_h });
     const final_content = getSize(scroll, objc.sel("contentSize"));
@@ -590,10 +650,118 @@ fn makeScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool, 
     return .{ .view = scroll, .width = accessory_w, .height = accessory_h };
 }
 
-fn attachScrollableBody(alert: objc.id, body: []const u8, only_if_overflow: bool) bool {
-    const scrollable = makeScrollableBody(alert, body, only_if_overflow, 0) orelse return false;
+const BrandedContent = struct {
+    view: objc.id,
+    width: f64,
+    height: f64,
+};
+
+fn restoreNativeAlertContent(alert: objc.id, title: []const u8, body: []const u8) void {
+    setAlertIcon(alert, applicationIcon());
+    setMessage(alert, title);
+    setInformative(alert, body);
+}
+
+/// NSAlert의 modal panel과 native button은 유지하고 content만 공통 visual
+/// language로 구성한다. AppKit 좌표는 logical point라 backing scale 변환은 OS가 한다.
+fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reserved_bottom_h: f64, minimum_w: f64) ?BrandedContent {
+    const icon = applicationIcon();
+    if (icon == null) return null;
+
+    // NSAlert.icon=nil은 icon 숨김이 아니라 app icon 복원이다(Apple 공식 문서).
+    // 빈 image dummy 없이 native TildaZ icon을 유지하고 message/informative 영역만
+    // 비워 제목/font/separator/body를 accessory hierarchy에서 한 번만 표시한다.
+    setAlertIcon(alert, icon);
+    setMessage(alert, "");
+    setInformative(alert, "");
+
+    const header_at_zero = brandedHeaderGeometry(0.0);
+    const body_view = makeDialogBody(alert, body, header_at_zero.total_h + reserved_bottom_h, minimum_w) orelse return null;
+    const body_y = reserved_bottom_h;
+    const header = brandedHeaderGeometry(body_y + body_view.height);
+    const content_w = body_view.width;
+
+    const NSView = objc.getClass("NSView");
+    const NSTextField = objc.getClass("NSTextField");
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
+    const autorelease = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+
+    const container_owned = initWithFrame(alloc(NSView, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = content_w, .h = header.total_h }) orelse return null;
+    const container = autorelease(container_owned, objc.sel("autorelease"));
+
+    const title_owned = initWithFrame(alloc(NSTextField, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{
+        .x = 0,
+        .y = header.title_y,
+        .w = content_w,
+        .h = header.title_h,
+    }) orelse return null;
+    const title_view = autorelease(title_owned, objc.sel("autorelease"));
+    const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    setBool(title_view, objc.sel("setEditable:"), false);
+    setBool(title_view, objc.sel("setSelectable:"), false);
+    setBool(title_view, objc.sel("setBezeled:"), false);
+    setBool(title_view, objc.sel("setDrawsBackground:"), false);
+    setBool(title_view, objc.sel("setUsesSingleLineMode:"), true);
+    const setString = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setString(title_view, objc.sel("setStringValue:"), nsStringFromSlice(title));
+    const NSFont = objc.getClass("NSFont");
+    const systemFont = objc.objcSend(fn (objc.Class, objc.SEL, f64) callconv(.c) objc.id);
+    const title_font = systemFont(NSFont, objc.sel("systemFontOfSize:"), @floatFromInt(ui_metrics.DIALOG_TITLE_FONT_PT));
+    if (title_font != null) {
+        const setFont = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        setFont(title_view, objc.sel("setFont:"), title_font);
+    }
+
+    const separator_owned = initWithFrame(alloc(NSView, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{
+        .x = 0,
+        .y = header.separator_y,
+        .w = content_w,
+        .h = header.separator_h,
+    }) orelse return null;
+    const separator = autorelease(separator_owned, objc.sel("autorelease"));
+    setBool(separator, objc.sel("setWantsLayer:"), true);
+    const getObj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const layer = getObj(separator, objc.sel("layer"));
+    if (layer == null) return null;
+    const color = ui_metrics.DIALOG_SEPARATOR_COLOR;
+    const NSColor = objc.getClass("NSColor");
+    const makeColor = objc.objcSend(fn (objc.Class, objc.SEL, f64, f64, f64, f64) callconv(.c) objc.id);
+    const orange = makeColor(
+        NSColor,
+        objc.sel("colorWithSRGBRed:green:blue:alpha:"),
+        @as(f64, @floatFromInt(color.r)) / 255.0,
+        @as(f64, @floatFromInt(color.g)) / 255.0,
+        @as(f64, @floatFromInt(color.b)) / 255.0,
+        1.0,
+    );
+    if (orange == null) return null;
+    const cg_color = getObj(orange, objc.sel("CGColor"));
+    if (cg_color == null) return null;
+    const setColor = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setColor(layer, objc.sel("setBackgroundColor:"), cg_color);
+
+    const setOrigin = objc.objcSend(fn (objc.id, objc.SEL, NSAlertSize) callconv(.c) void);
+    setOrigin(body_view.view, objc.sel("setFrameOrigin:"), .{ .w = 0, .h = body_y });
+    const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    addSubview(container, objc.sel("addSubview:"), body_view.view);
+    addSubview(container, objc.sel("addSubview:"), separator);
+    addSubview(container, objc.sel("addSubview:"), title_view);
+
+    const getWindow = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    if (getWindow(alert, objc.sel("window"))) |window| {
+        setString(window, objc.sel("setTitle:"), nsStringFromSlice(title));
+    }
+    return .{ .view = container, .width = content_w, .height = header.total_h };
+}
+
+fn attachBrandedContent(alert: objc.id, title: []const u8, body: []const u8) bool {
+    const content = makeBrandedContent(alert, title, body, 0, 320.0) orelse {
+        restoreNativeAlertContent(alert, title, body);
+        return false;
+    };
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setAccessory(alert, objc.sel("setAccessoryView:"), scrollable.view);
+    setAccessory(alert, objc.sel("setAccessoryView:"), content.view);
     return true;
 }
 
@@ -603,7 +771,7 @@ fn showAboutText(title: []const u8, body: []const u8) bool {
     setMessage(alert, title);
     setStyle(alert, alertStyleFor(.info));
     addButton(alert, messages.button_ok);
-    if (!attachScrollableBody(alert, body, false)) return false;
+    _ = attachBrandedContent(alert, title, body);
 
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
     // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard_dismiss=true).
@@ -615,8 +783,8 @@ pub fn showAboutAlert(title: []const u8, body: []const u8) void {
     if (!showAboutText(title, body)) show(.info, title, body);
 }
 
-/// 짧은 fatal은 기존 NSAlert informativeText를 유지하고, 화면 높이를 넘을 때만
-/// NSScrollView/NSTextView 경로로 전체 본문을 보존한다 (#316).
+/// fatal도 같은 branded NSAlert content를 사용하고, 화면을 넘을 때만 본문을
+/// scroll해 전체 경로와 마지막 줄을 보존한다 (#316, #237).
 pub fn showFatal(title: []const u8, body: []const u8) void {
     show(.err, title, body);
 }
@@ -640,7 +808,7 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     addButton(alert, messages.button_ok);
     addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
-    if (!attachScrollableBody(alert, message, true)) setInformative(alert, message);
+    _ = attachBrandedContent(alert, title, message);
 
     const result = runModalOverHost(alert, false);
     // NSAlertFirstButtonReturn = 1000 (= Quit, 첫 추가 버튼 = 기본).
@@ -699,19 +867,17 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
 
     const prompt_controls_h = 52.0;
     const prompt_body_gap = 16.0;
-    const scrollable_body = makeScrollableBody(alert, message, true, prompt_controls_h + prompt_body_gap);
-    if (scrollable_body == null) setInformative(alert, message);
-    const container_w = if (scrollable_body) |body| @max(360.0, body.width) else 360.0;
-    const container_h = if (scrollable_body) |body| body.height + prompt_body_gap + prompt_controls_h else prompt_controls_h;
+    const branded = makeBrandedContent(alert, title, message, prompt_controls_h + prompt_body_gap, 360.0) orelse {
+        restoreNativeAlertContent(alert, title, message);
+        return null;
+    };
+    const container_w = branded.width;
 
-    const NSView = objc.getClass("NSView");
     const NSTextField = objc.getClass("NSTextField");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const container_alloc = alloc(NSView, objc.sel("alloc")) orelse return null;
     const field_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const status_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const container = initWithFrame(container_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = container_w, .h = container_h }) orelse return null;
     const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 26, .w = container_w, .h = 26 }) orelse return null;
     const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = container_w, .h = 22 }) orelse return null;
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
@@ -732,15 +898,10 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
         setColor(status, objc.sel("setTextColor:"), red);
     }
     const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    addSubview(container, objc.sel("addSubview:"), field);
-    addSubview(container, objc.sel("addSubview:"), status);
-    if (scrollable_body) |body| {
-        const setOrigin = objc.objcSend(fn (objc.id, objc.SEL, NSAlertSize) callconv(.c) void);
-        setOrigin(body.view, objc.sel("setFrameOrigin:"), .{ .w = 0, .h = prompt_controls_h + prompt_body_gap });
-        addSubview(container, objc.sel("addSubview:"), body.view);
-    }
+    addSubview(branded.view, objc.sel("addSubview:"), field);
+    addSubview(branded.view, objc.sel("addSubview:"), status);
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setAccessory(alert, objc.sel("setAccessoryView:"), container);
+    setAccessory(alert, objc.sel("setAccessoryView:"), branded.view);
     prompt_field = field;
     prompt_status = status;
     prompt_alert = alert;
