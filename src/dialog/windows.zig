@@ -1,6 +1,6 @@
-//! Windows dialog 구현. 짧은 info/error/confirm은 TildaZ `MB_USERICON`을 둔
-//! `MessageBoxIndirectW`, 화면을 넘는 본문은 같은 icon + read-only multiline
-//! EDIT를 둔 전용 modal window로 표시한다.
+//! Windows dialog 구현. 모든 정상 info/error/confirm/About/prompt는 TildaZ
+//! branded custom modal window로 표시한다. custom window 생성 실패 때만
+//! `MessageBoxIndirectW + MB_USERICON`을 비상 fallback으로 사용한다.
 //! `dialog.zig` 에서 comptime 으로 select.
 
 const std = @import("std");
@@ -69,6 +69,7 @@ extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT
 extern "user32" fn GetSysColorBrush(c_int) callconv(.c) HBRUSH;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) ?*anyopaque;
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
+extern "gdi32" fn CreateSolidBrush(DWORD) callconv(.c) HBRUSH;
 extern "gdi32" fn DeleteObject(?*anyopaque) callconv(.c) c_int;
 extern "gdi32" fn SelectObject(HDC, ?*anyopaque) callconv(.c) ?*anyopaque;
 extern "user32" fn GetDC(HWND) callconv(.c) HDC;
@@ -149,6 +150,7 @@ const WS_VSCROLL: DWORD = 0x00200000;
 const SS_CENTER: DWORD = 0x00000001;
 const SS_ICON: DWORD = 0x00000003;
 const SS_REALSIZECONTROL: DWORD = 0x00000040;
+const SS_NOPREFIX: DWORD = 0x00000080;
 const SS_CENTERIMAGE: DWORD = 0x00000200;
 const BS_DEFPUSHBUTTON: DWORD = 0x0001;
 const ES_MULTILINE: DWORD = 0x0004;
@@ -178,6 +180,43 @@ fn scaled(value: c_int, dpi: UINT) c_int {
 
 fn dialogIconSize(dpi: UINT) c_int {
     return scaled(@intCast(ui_metrics.DIALOG_ICON_SIZE_PT), dpi);
+}
+
+fn dialogSeparatorHeight(dpi: UINT) c_int {
+    return @max(1, scaled(@intCast(ui_metrics.DIALOG_SEPARATOR_THICKNESS_PT), dpi));
+}
+
+const DialogHeaderGeometry = struct {
+    title_y: c_int,
+    title_h: c_int,
+    separator_y: c_int,
+    separator_h: c_int,
+    body_y: c_int,
+};
+
+fn dialogHeaderGeometry(icon_y: c_int, title_h: c_int, body_line_h: c_int, dpi: UINT) DialogHeaderGeometry {
+    const title_y = icon_y + dialogIconSize(dpi) + scaled(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), dpi);
+    const separator_h = dialogSeparatorHeight(dpi);
+    const separator_row_h = @max(body_line_h, separator_h);
+    const separator_y = title_y + title_h + @divTrunc(separator_row_h - separator_h, 2);
+    return .{
+        .title_y = title_y,
+        .title_h = title_h,
+        .separator_y = separator_y,
+        .separator_h = separator_h,
+        .body_y = title_y + title_h + separator_row_h,
+    };
+}
+
+fn dialogSeparatorColor() DWORD {
+    const color = ui_metrics.DIALOG_SEPARATOR_COLOR;
+    return rgb(color.r, color.g, color.b);
+}
+
+fn dialogBodyEditStyle(overflow: bool, preserve_selection: bool) DWORD {
+    return WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY |
+        (if (preserve_selection) ES_NOHIDESEL else 0) |
+        (if (overflow) WS_VSCROLL else 0);
 }
 
 fn brandedMessageBoxStyle(flags: c_uint) DWORD {
@@ -210,6 +249,23 @@ fn createDialogIconControl(parent: HWND, hinstance: HINSTANCE, icon: HICON, dpi:
     const icon_param: LPARAM = @bitCast(@intFromPtr(icon.?));
     _ = SendMessageW(control, STM_SETIMAGE, IMAGE_ICON, icon_param);
     return true;
+}
+
+fn createDialogSeparatorControl(parent: HWND, hinstance: HINSTANCE, dpi: UINT, x: c_int, y: c_int, width: c_int) HWND {
+    return CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+        std.unicode.utf8ToUtf16LeStringLiteral(""),
+        WS_CHILD | WS_VISIBLE,
+        x,
+        y,
+        width,
+        dialogSeparatorHeight(dpi),
+        parent,
+        null,
+        hinstance,
+        null,
+    );
 }
 
 fn createDialogFont(dpi: UINT, point_size: u32, weight: c_int) HFONT {
@@ -286,10 +342,6 @@ fn encodeTruncated(dst: []WCHAR, src: []const u8) usize {
 /// 메시지(예: config 검증 상세)에서 아무것도 안 떴다.
 const message_box_text_capacity: usize = 4096;
 
-fn needsScrollableText(visual_overflow: bool, utf16_len: usize) bool {
-    return visual_overflow or utf16_len >= message_box_text_capacity - 1;
-}
-
 fn messageBox(title: []const u8, message: []const u8, flags: c_uint) c_int {
     var title_buf: [256]WCHAR = undefined;
     var msg_buf: [message_box_text_capacity]WCHAR = undefined;
@@ -323,16 +375,37 @@ test "Windows native and custom dialog icon metrics are branded and DPI-aware" {
     try std.testing.expectEqual(@as(c_int, 64), dialogIconSize(96));
     try std.testing.expectEqual(@as(c_int, 96), dialogIconSize(144));
     try std.testing.expectEqual(@as(c_int, 128), dialogIconSize(192));
+
+    const dpis = [_]UINT{ 96, 144, 192 };
+    const separator_heights = [_]c_int{ 2, 3, 4 };
+    for (dpis, separator_heights) |dpi, expected_height| {
+        const icon_y = scaled(20, dpi);
+        const title_h = scaled(24, dpi);
+        const body_line_h = scaled(20, dpi);
+        const header = dialogHeaderGeometry(icon_y, title_h, body_line_h, dpi);
+        try std.testing.expectEqual(expected_height, dialogSeparatorHeight(dpi));
+        try std.testing.expectEqual(icon_y + dialogIconSize(dpi) + scaled(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), dpi), header.title_y);
+        try std.testing.expectEqual(title_h, header.title_h);
+        try std.testing.expect(header.separator_y >= header.title_y + header.title_h);
+        try std.testing.expect(header.separator_y + header.separator_h <= header.body_y);
+        try std.testing.expect(header.body_y > header.title_y + header.title_h);
+    }
+    try std.testing.expectEqual(@as(DWORD, 0), dialogBodyEditStyle(false, true) & WS_BORDER);
+    try std.testing.expectEqual(@as(DWORD, 0), dialogBodyEditStyle(true, false) & WS_BORDER);
+    try std.testing.expect((dialogBodyEditStyle(false, true) & WS_VSCROLL) == 0);
+    try std.testing.expect((dialogBodyEditStyle(true, false) & WS_VSCROLL) != 0);
 }
 
 pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
-    if (showScrollableText(title, message, true, false) == null) {
+    if (showScrollableText(title, message, false) == null) {
         showNative(severity, title, message);
     }
 }
 
 var scroll_done = false;
 var scroll_result = false;
+var scroll_separator: HWND = null;
+var scroll_separator_brush: HBRUSH = null;
 var scroll_class_registered = false;
 const scroll_class_name = std.unicode.utf8ToUtf16LeStringLiteral("TildaZScrollableDialogWindow");
 
@@ -354,6 +427,16 @@ fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
         scroll_result = false;
         scroll_done = true;
         return 0;
+    }
+    if (msg == WM_CTLCOLORSTATIC) {
+        const child: HWND = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (child == scroll_separator and scroll_separator_brush != null) {
+            return @bitCast(@intFromPtr(scroll_separator_brush.?));
+        }
+        const dc: HDC = @ptrFromInt(wparam);
+        _ = SetBkMode(dc, TRANSPARENT);
+        const brush = GetSysColorBrush(COLOR_BTNFACE) orelse return 0;
+        return @bitCast(@intFromPtr(brush));
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -457,7 +540,7 @@ fn dialogOwner() HWND {
 /// null이면 본문이 화면 안에 들어오거나 custom window 준비에 실패해 caller가
 /// native 경로를 사용해야 한다. 값이 있으면 window를 표시했으며 confirm 여부에
 /// 따라 OK(true) / Cancel(false) 결과를 돌려준다.
-fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: bool, confirm: bool) ?bool {
+fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool {
     const allocator = std.heap.page_allocator;
     const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, title) catch return null;
     defer allocator.free(title_w);
@@ -472,6 +555,10 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     const owner = dialogOwner();
     const window_dpi = if (owner != null) GetDpiForWindow(owner) else 0;
     const dpi = if (window_dpi != 0) window_dpi else GetDpiForSystem();
+    const title_font = createDialogFont(dpi, ui_metrics.DIALOG_TITLE_FONT_PT, FW_NORMAL);
+    defer {
+        if (title_font != null) _ = DeleteObject(title_font);
+    }
     const body_font = createDialogFont(dpi, ui_metrics.DIALOG_BODY_FONT_PT, FW_NORMAL);
     defer {
         if (body_font != null) _ = DeleteObject(body_font);
@@ -503,13 +590,33 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
 
     var content_w = min_content_w;
     var wrapped_h = scaled(130, dpi);
+    var title_h = scaled(24, dpi);
+    var body_line_h = scaled(20, dpi);
     const dc = GetDC(null);
     if (dc != null) {
-        const previous = if (body_font != null) SelectObject(dc, body_font) else null;
+        const previous = if (title_font != null)
+            SelectObject(dc, title_font)
+        else if (body_font != null)
+            SelectObject(dc, body_font)
+        else
+            null;
+        var title_rect = RECT{ .left = 0, .top = 0, .right = max_content_w, .bottom = 0 };
+        _ = DrawTextW(dc, title_w.ptr, @intCast(title_w.len), &title_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        if (title_rect.bottom > 0) title_h = @intCast(title_rect.bottom);
+        const title_natural_w = @max(0, title_rect.right - title_rect.left);
+
+        if (body_font != null) _ = SelectObject(dc, body_font);
+        var body_line_rect = RECT{ .left = 0, .top = 0, .right = max_content_w, .bottom = 0 };
+        const body_line_sample = std.unicode.utf8ToUtf16LeStringLiteral("Ag");
+        _ = DrawTextW(dc, body_line_sample, 2, &body_line_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        if (body_line_rect.bottom > 0) body_line_h = @intCast(body_line_rect.bottom);
         const natural_w = longestExplicitLineWidth(dc, body_w);
         // EDIT의 border/formatting inset만큼 control 폭을 더 확보한 뒤 실제
         // formatting 폭으로 wrap 높이를 재서 경계의 마지막 줄도 보존한다.
-        const desired_content_w = @as(i64, natural_w) + @as(i64, edit_horizontal_inset);
+        const desired_content_w = @max(
+            @as(i64, title_natural_w),
+            @as(i64, natural_w) + @as(i64, edit_horizontal_inset),
+        );
         content_w = @intCast(std.math.clamp(desired_content_w, @as(i64, min_content_w), @as(i64, max_content_w)));
         const format_w = @max(1, content_w - edit_horizontal_inset);
         var wrapped = RECT{ .left = 0, .top = 0, .right = format_w, .bottom = 0 };
@@ -520,9 +627,8 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     }
 
     const top = scaled(20, dpi);
-    const icon_size = dialogIconSize(dpi);
-    const icon_gap = scaled(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), dpi);
-    const body_y = top + icon_size + icon_gap;
+    const header = dialogHeaderGeometry(top, title_h, body_line_h, dpi);
+    const body_y = header.body_y;
     const gap = scaled(16, dpi);
     const button_h = scaled(32, dpi);
     const button_w = scaled(96, dpi);
@@ -532,9 +638,6 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     const max_body_h = @max(1, max_client_h - body_y - gap - button_h - bottom);
     const body_h = @min(wrapped_h, max_body_h);
     const overflow = wrapped_h > body_h;
-    // 짧은 본문은 native MessageBoxIndirectW를 유지한다. 화면 overflow가
-    // 없더라도 native 변환 buffer를 넘는 본문은 custom EDIT로 보내 전체를 보존한다.
-    if (only_if_overflow and !needsScrollableText(overflow, body_w.len)) return null;
     const client_w = margin + content_w + margin;
     const button_y = body_y + body_h + gap;
     const client_h = button_y + button_h + bottom;
@@ -547,6 +650,12 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     const win_y = work.top + @divTrunc(screen_h - win_h, 2);
     const dialog_icon = loadDialogIcon(hinstance, dpi) orelse return null;
     defer _ = DestroyIcon(dialog_icon);
+    const separator_brush = CreateSolidBrush(dialogSeparatorColor()) orelse return null;
+    defer _ = DeleteObject(separator_brush);
+    defer {
+        scroll_separator = null;
+        scroll_separator_brush = null;
+    }
     const hwnd = CreateWindowExW(
         frame_ex_style,
         scroll_class_name,
@@ -571,8 +680,27 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     }
     if (!createDialogIconControl(hwnd, hinstance, dialog_icon, dpi, client_w, top)) return null;
 
-    const edit_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_READONLY |
-        (if (overflow) WS_VSCROLL else 0);
+    const title_control = CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+        title_w.ptr,
+        WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+        margin,
+        header.title_y,
+        content_w,
+        header.title_h,
+        hwnd,
+        null,
+        hinstance,
+        null,
+    ) orelse return null;
+    setControlFont(title_control, title_font);
+
+    const separator = createDialogSeparatorControl(hwnd, hinstance, dpi, margin, header.separator_y, content_w) orelse return null;
+    scroll_separator = separator;
+    scroll_separator_brush = separator_brush;
+
+    const edit_style = dialogBodyEditStyle(overflow, true);
     const edit = CreateWindowExW(
         0,
         std.unicode.utf8ToUtf16LeStringLiteral("EDIT"),
@@ -651,20 +779,13 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
 /// About은 본문 선택·복사를 위해 항상 custom text window를 사용한다. 짧으면
 /// 본문 자연 높이만 쓰고, 화면을 넘을 때만 OS scrollbar가 나타난다.
 pub fn showAboutAlert(title: []const u8, message: []const u8) void {
-    if (showScrollableText(title, message, false, false) == null) showNative(.info, title, message);
+    if (showScrollableText(title, message, false) == null) showNative(.info, title, message);
 }
 
-/// 짧은 fatal은 native MessageBoxIndirectW를 유지하고, 화면 또는 4096 UTF-16 변환
-/// 상한을 넘을 때만 read-only EDIT + 세로 scrollbar를 사용한다 (#316).
+/// 모든 정상 fatal은 branded custom layout을 사용한다. custom window 생성 자체가
+/// 실패할 때만 native MessageBoxIndirectW로 메시지를 보존한다.
 pub fn showFatal(title: []const u8, message: []const u8) void {
-    if (showScrollableText(title, message, true, false) == null) showNative(.err, title, message);
-}
-
-test "Windows dialogs use scrollable text before MessageBox truncation" {
-    try std.testing.expect(!needsScrollableText(false, message_box_text_capacity - 2));
-    try std.testing.expect(needsScrollableText(true, 100));
-    try std.testing.expect(needsScrollableText(false, message_box_text_capacity - 1));
-    try std.testing.expect(needsScrollableText(false, message_box_text_capacity + 100));
+    if (showScrollableText(title, message, false) == null) showNative(.err, title, message);
 }
 
 /// OK / Cancel 두 버튼 확인 다이얼로그. #250 — 표준 매핑(Enter=OK, Esc=Cancel)
@@ -673,7 +794,7 @@ test "Windows dialogs use scrollable text before MessageBox truncation" {
 /// 종료 방지' 폐기 — 다이얼로그 출현 자체가 speed bump.)
 /// 반환: OK → true, Cancel / 닫기 → false.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
-    if (showScrollableText(title, message, true, true)) |result| return result;
+    if (showScrollableText(title, message, true)) |result| return result;
     // MessageBoxIndirectW 자체 실패(0 반환) 시 result != IDOK → false (안전 default).
     const result = messageBox(
         title,
@@ -688,6 +809,8 @@ var prompt_ok = false;
 var prompt_edit: HWND = null;
 var prompt_create: HWND = null;
 var prompt_status: HWND = null;
+var prompt_separator: HWND = null;
+var prompt_separator_brush: HBRUSH = null;
 var prompt_validator: ?dialog.HotkeyValidator = null;
 var prompt_class_registered = false;
 const prompt_class_name = std.unicode.utf8ToUtf16LeStringLiteral("TildaZPromptWindow");
@@ -711,9 +834,12 @@ fn promptWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
         prompt_done = true;
         return 0;
     } else if (msg == WM_CTLCOLORSTATIC) {
+        const child: HWND = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (child == prompt_separator and prompt_separator_brush != null) {
+            return @bitCast(@intFromPtr(prompt_separator_brush.?));
+        }
         const dc: HDC = @ptrFromInt(wparam);
         _ = SetBkMode(dc, TRANSPARENT);
-        const child: HWND = @ptrFromInt(@as(usize, @bitCast(lparam)));
         if (child == prompt_status) _ = SetTextColor(dc, rgb(196, 43, 28));
         const brush = GetSysColorBrush(COLOR_BTNFACE) orelse return 0;
         return @bitCast(@intFromPtr(brush));
@@ -808,6 +934,10 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const owner = dialogOwner();
     const window_dpi = if (owner != null) GetDpiForWindow(owner) else 0;
     const dpi = if (window_dpi != 0) window_dpi else GetDpiForSystem();
+    const title_font = createDialogFont(dpi, ui_metrics.DIALOG_TITLE_FONT_PT, FW_NORMAL);
+    defer {
+        if (title_font != null) _ = DeleteObject(title_font);
+    }
     const ui_font = createDialogFont(dpi, ui_metrics.DIALOG_BODY_FONT_PT, FW_NORMAL);
     defer {
         if (ui_font != null) _ = DeleteObject(ui_font);
@@ -835,10 +965,25 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     // 먼저 실제 wrap 높이를 재고, 고정 input/status/button을 제외한 화면 높이를
     // 넘을 때만 message control을 read-only EDIT + 세로 scrollbar로 바꾼다.
     var msg_h: c_int = scaled(48, dpi);
+    var title_h: c_int = scaled(24, dpi);
+    var body_line_h: c_int = scaled(20, dpi);
     {
         const dc = GetDC(null);
         if (dc != null) {
-            const prev = if (ui_font != null) SelectObject(dc, ui_font) else null;
+            const prev = if (title_font != null)
+                SelectObject(dc, title_font)
+            else if (ui_font != null)
+                SelectObject(dc, ui_font)
+            else
+                null;
+            var title_rect = RECT{ .left = 0, .top = 0, .right = content_w, .bottom = 0 };
+            _ = DrawTextW(dc, title_w.ptr, @intCast(title_w.len), &title_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+            if (title_rect.bottom > 0) title_h = @intCast(title_rect.bottom);
+            if (ui_font != null) _ = SelectObject(dc, ui_font);
+            var body_line_rect = RECT{ .left = 0, .top = 0, .right = content_w, .bottom = 0 };
+            const body_line_sample = std.unicode.utf8ToUtf16LeStringLiteral("Ag");
+            _ = DrawTextW(dc, body_line_sample, 2, &body_line_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+            if (body_line_rect.bottom > 0) body_line_h = @intCast(body_line_rect.bottom);
             var calc = RECT{ .left = 0, .top = 0, .right = content_w, .bottom = 0 };
             _ = DrawTextW(dc, message_w.ptr, @intCast(message_w.len), &calc, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
             if (calc.bottom > 0) msg_h = @intCast(calc.bottom);
@@ -853,9 +998,8 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const button_h = scaled(32, dpi);
     const button_w = scaled(96, dpi);
     const icon_y = scaled(20, dpi);
-    const icon_size = dialogIconSize(dpi);
-    const icon_gap = scaled(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), dpi);
-    const msg_y = icon_y + icon_size + icon_gap;
+    const header = dialogHeaderGeometry(icon_y, title_h, body_line_h, dpi);
+    const msg_y = header.body_y;
     const bottom = scaled(20, dpi);
     const max_window_h = @max(1, screen_h - viewport_margin * 2);
     const max_client_h = @max(1, max_window_h - frame_h);
@@ -880,6 +1024,12 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const win_y = work.top + @divTrunc(screen_h - win_h, 2);
     const dialog_icon = loadDialogIcon(hinstance, dpi) orelse return null;
     defer _ = DestroyIcon(dialog_icon);
+    const separator_brush = CreateSolidBrush(dialogSeparatorColor()) orelse return null;
+    defer _ = DeleteObject(separator_brush);
+    defer {
+        prompt_separator = null;
+        prompt_separator_brush = null;
+    }
     const hwnd = CreateWindowExW(frame_ex_style, prompt_class_name, title_w.ptr, frame_style, win_x, win_y, win_w, win_h, owner, null, hinstance, null) orelse return null;
     defer _ = DestroyWindow(hwnd);
     if (owner != null) {
@@ -890,17 +1040,29 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
         }
     }
     if (!createDialogIconControl(hwnd, hinstance, dialog_icon, dpi, client_w, icon_y)) return null;
+    const title_control = CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+        title_w.ptr,
+        WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+        margin,
+        header.title_y,
+        content_w,
+        header.title_h,
+        hwnd,
+        null,
+        hinstance,
+        null,
+    ) orelse return null;
+    setControlFont(title_control, title_font);
+    const separator = createDialogSeparatorControl(hwnd, hinstance, dpi, margin, header.separator_y, content_w) orelse return null;
+    prompt_separator = separator;
+    prompt_separator_brush = separator_brush;
     const message_control = CreateWindowExW(
         0,
-        if (message_overflow)
-            std.unicode.utf8ToUtf16LeStringLiteral("EDIT")
-        else
-            std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+        std.unicode.utf8ToUtf16LeStringLiteral("EDIT"),
         message_w.ptr,
-        WS_CHILD | WS_VISIBLE | (if (message_overflow)
-            WS_TABSTOP | WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY
-        else
-            @as(DWORD, 0)),
+        dialogBodyEditStyle(message_overflow, false),
         margin,
         msg_y,
         content_w,

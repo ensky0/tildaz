@@ -42,6 +42,11 @@ pub const DIALOG_TITLE_FONT_PT: u32 = 18;
 /// NSAlert가 bundle icon을 native 크기로 배치한다.
 pub const DIALOG_ICON_SIZE_PT: u32 = 64;
 pub const DIALOG_ICON_GAP_PT: u32 = 8;
+
+/// `docs/style.css --brand-orange` / `docs/favicon.svg`와 같은 dialog accent.
+/// platform backend는 이 RGB를 native color 형식으로 변환해 사용한다.
+pub const DIALOG_SEPARATOR_COLOR = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D };
+pub const DIALOG_SEPARATOR_THICKNESS_PT: u32 = 2;
 /// About 본문이 긴 절대경로 하나 때문에 화면 전체 폭으로 늘어나지 않게 하는
 /// logical 최대 폭. 일반 본문은 content-driven 자연 폭을 그대로 사용한다.
 pub const DIALOG_ABOUT_MAX_WIDTH_PT: u32 = 960;
@@ -183,6 +188,10 @@ test "dialog fonts use fixed 15pt body and 18pt title sizes" {
 test "dialog icon uses common logical size and gap" {
     try std.testing.expectEqual(@as(u32, 64), DIALOG_ICON_SIZE_PT);
     try std.testing.expectEqual(@as(u32, 8), DIALOG_ICON_GAP_PT);
+    try std.testing.expectEqual(@as(u8, 0xF7), DIALOG_SEPARATOR_COLOR.r);
+    try std.testing.expectEqual(@as(u8, 0xA4), DIALOG_SEPARATOR_COLOR.g);
+    try std.testing.expectEqual(@as(u8, 0x1D), DIALOG_SEPARATOR_COLOR.b);
+    try std.testing.expectEqual(@as(u32, 2), DIALOG_SEPARATOR_THICKNESS_PT);
 }
 
 test "tab bar height uses common rounded physical pixels" {
