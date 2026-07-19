@@ -66,12 +66,14 @@ extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.c) DWORD;
 extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) HMONITOR;
 extern "user32" fn GetMonitorInfoW(HMONITOR, *MONITORINFO) callconv(.c) c_int;
 extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
+extern "user32" fn GetSysColor(c_int) callconv(.c) DWORD;
 extern "user32" fn GetSysColorBrush(c_int) callconv(.c) HBRUSH;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) ?*anyopaque;
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
 extern "gdi32" fn CreateSolidBrush(DWORD) callconv(.c) HBRUSH;
 extern "gdi32" fn DeleteObject(?*anyopaque) callconv(.c) c_int;
 extern "gdi32" fn SelectObject(HDC, ?*anyopaque) callconv(.c) ?*anyopaque;
+extern "gdi32" fn SetBkColor(HDC, DWORD) callconv(.c) DWORD;
 extern "user32" fn GetDC(HWND) callconv(.c) HDC;
 extern "user32" fn ReleaseDC(HWND, HDC) callconv(.c) c_int;
 extern "user32" fn DrawTextW(HDC, [*]const WCHAR, c_int, *RECT, UINT) callconv(.c) c_int;
@@ -163,11 +165,13 @@ const SM_CXSCREEN: c_int = 0;
 const SM_CYSCREEN: c_int = 1;
 const COLOR_BTNFACE: c_int = 15;
 const TRANSPARENT: c_int = 1;
+const OPAQUE: c_int = 2;
 const CLEARTYPE_QUALITY: DWORD = 5;
 const FW_NORMAL: c_int = 400;
 const FW_SEMIBOLD: c_int = 600;
 const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 const EM_SETSEL: UINT = 0x00B1;
+const EM_GETRECT: UINT = 0x00B2;
 const STM_SETIMAGE: UINT = 0x0172;
 const IMAGE_ICON: UINT = 1;
 const LR_DEFAULTCOLOR: UINT = 0;
@@ -217,6 +221,53 @@ fn dialogBodyEditStyle(overflow: bool, preserve_selection: bool) DWORD {
     return WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY |
         (if (preserve_selection) ES_NOHIDESEL else 0) |
         (if (overflow) WS_VSCROLL else 0);
+}
+
+/// DrawTextW의 wrap 폭과 실제 multiline EDIT의 formatting 폭을 동일하게 한다.
+/// EDIT의 기본 inset은 DPI/font에 따라 정해지므로 logical pixel 상수로 추정하지
+/// 않고, 동일 font/style의 숨은 control에서 EM_GETRECT로 직접 측정한다.
+fn dialogEditHorizontalInset(hinstance: HINSTANCE, parent_class: [*:0]const WCHAR, font: HFONT, dpi: UINT, work: RECT) ?c_int {
+    const scratch_w = scaled(512, dpi);
+    const scratch_h = scaled(128, dpi);
+    const empty = std.unicode.utf8ToUtf16LeStringLiteral("");
+    const parent = CreateWindowExW(0, parent_class, empty, 0, work.left, work.top, scratch_w, scratch_h, null, null, hinstance, null) orelse return null;
+    defer _ = DestroyWindow(parent);
+    const edit = CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("EDIT"),
+        empty,
+        dialogBodyEditStyle(false, false) & ~@as(DWORD, WS_VISIBLE),
+        0,
+        0,
+        scratch_w,
+        scratch_h,
+        parent,
+        null,
+        hinstance,
+        null,
+    ) orelse return null;
+    setControlFont(edit, font);
+
+    var formatting = RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    _ = SendMessageW(edit, EM_GETRECT, 0, @bitCast(@intFromPtr(&formatting)));
+    const format_w = formatting.right - formatting.left;
+    if (format_w <= 0 or format_w > scratch_w) return null;
+    return scratch_w - format_w;
+}
+
+fn dialogEditFormatWidth(control_w: c_int, horizontal_inset: c_int) c_int {
+    return @max(1, control_w - horizontal_inset);
+}
+
+fn dialogControlBackgroundMode(child: HWND, body: HWND) c_int {
+    return if (child == body) OPAQUE else TRANSPARENT;
+}
+
+fn dialogControlBrush(dc: HDC, child: HWND, body: HWND) HBRUSH {
+    const mode = dialogControlBackgroundMode(child, body);
+    _ = SetBkMode(dc, mode);
+    if (mode == OPAQUE) _ = SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+    return GetSysColorBrush(COLOR_BTNFACE);
 }
 
 fn brandedMessageBoxStyle(flags: c_uint) DWORD {
@@ -404,6 +455,7 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
 
 var scroll_done = false;
 var scroll_result = false;
+var scroll_body: HWND = null;
 var scroll_separator: HWND = null;
 var scroll_separator_brush: HBRUSH = null;
 var scroll_class_registered = false;
@@ -433,9 +485,7 @@ fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
         if (child == scroll_separator and scroll_separator_brush != null) {
             return @bitCast(@intFromPtr(scroll_separator_brush.?));
         }
-        const dc: HDC = @ptrFromInt(wparam);
-        _ = SetBkMode(dc, TRANSPARENT);
-        const brush = GetSysColorBrush(COLOR_BTNFACE) orelse return 0;
+        const brush = dialogControlBrush(@ptrFromInt(wparam), child, scroll_body) orelse return 0;
         return @bitCast(@intFromPtr(brush));
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -567,8 +617,8 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     defer {
         if (ui_font != null) _ = DeleteObject(ui_font);
     }
-
     const work = dialogWorkArea(owner);
+    const edit_horizontal_inset = dialogEditHorizontalInset(hinstance, scroll_class_name, body_font, dpi, work) orelse return null;
     const screen_w = work.right - work.left;
     const screen_h = work.bottom - work.top;
     const viewport_margin = scaled(16, dpi);
@@ -585,9 +635,6 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     const max_client_w = @max(1, max_window_w - frame_w);
     const max_content_w = @max(1, max_client_w - margin * 2);
     const min_content_w = @min(scaled(472, dpi), max_content_w);
-    const edit_horizontal_inset = scaled(8, dpi);
-    const edit_vertical_inset = scaled(6, dpi);
-
     var content_w = min_content_w;
     var wrapped_h = scaled(130, dpi);
     var title_h = scaled(24, dpi);
@@ -618,10 +665,10 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
             @as(i64, natural_w) + @as(i64, edit_horizontal_inset),
         );
         content_w = @intCast(std.math.clamp(desired_content_w, @as(i64, min_content_w), @as(i64, max_content_w)));
-        const format_w = @max(1, content_w - edit_horizontal_inset);
+        const format_w = dialogEditFormatWidth(content_w, edit_horizontal_inset);
         var wrapped = RECT{ .left = 0, .top = 0, .right = format_w, .bottom = 0 };
         _ = DrawTextW(dc, body_w.ptr, @intCast(body_w.len), &wrapped, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
-        if (wrapped.bottom > 0) wrapped_h = @as(c_int, @intCast(wrapped.bottom)) + edit_vertical_inset;
+        if (wrapped.bottom > 0) wrapped_h = @as(c_int, @intCast(wrapped.bottom)) + scaled(6, dpi);
         if (previous != null) _ = SelectObject(dc, previous);
         _ = ReleaseDC(null, dc);
     }
@@ -653,6 +700,7 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     const separator_brush = CreateSolidBrush(dialogSeparatorColor()) orelse return null;
     defer _ = DeleteObject(separator_brush);
     defer {
+        scroll_body = null;
         scroll_separator = null;
         scroll_separator_brush = null;
     }
@@ -715,6 +763,7 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
         hinstance,
         null,
     ) orelse return null;
+    scroll_body = edit;
     if (SetWindowTextW(edit, body_w.ptr) == 0) return null;
     _ = SendMessageW(edit, EM_SETSEL, 0, 0);
 
@@ -809,6 +858,7 @@ var prompt_ok = false;
 var prompt_edit: HWND = null;
 var prompt_create: HWND = null;
 var prompt_status: HWND = null;
+var prompt_message: HWND = null;
 var prompt_separator: HWND = null;
 var prompt_separator_brush: HBRUSH = null;
 var prompt_validator: ?dialog.HotkeyValidator = null;
@@ -839,9 +889,8 @@ fn promptWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
             return @bitCast(@intFromPtr(prompt_separator_brush.?));
         }
         const dc: HDC = @ptrFromInt(wparam);
-        _ = SetBkMode(dc, TRANSPARENT);
         if (child == prompt_status) _ = SetTextColor(dc, rgb(196, 43, 28));
-        const brush = GetSysColorBrush(COLOR_BTNFACE) orelse return 0;
+        const brush = dialogControlBrush(dc, child, prompt_message) orelse return 0;
         return @bitCast(@intFromPtr(brush));
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -947,6 +996,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
         if (capture_font != null) _ = DeleteObject(capture_font);
     }
     const work = dialogWorkArea(owner);
+    const edit_horizontal_inset = dialogEditHorizontalInset(hinstance, prompt_class_name, ui_font, dpi, work) orelse return null;
     const screen_w = work.right - work.left;
     const screen_h = work.bottom - work.top;
     const viewport_margin = scaled(16, dpi);
@@ -984,7 +1034,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
             const body_line_sample = std.unicode.utf8ToUtf16LeStringLiteral("Ag");
             _ = DrawTextW(dc, body_line_sample, 2, &body_line_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
             if (body_line_rect.bottom > 0) body_line_h = @intCast(body_line_rect.bottom);
-            var calc = RECT{ .left = 0, .top = 0, .right = content_w, .bottom = 0 };
+            var calc = RECT{ .left = 0, .top = 0, .right = dialogEditFormatWidth(content_w, edit_horizontal_inset), .bottom = 0 };
             _ = DrawTextW(dc, message_w.ptr, @intCast(message_w.len), &calc, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
             if (calc.bottom > 0) msg_h = @intCast(calc.bottom);
             if (prev != null) _ = SelectObject(dc, prev);
@@ -1027,6 +1077,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const separator_brush = CreateSolidBrush(dialogSeparatorColor()) orelse return null;
     defer _ = DeleteObject(separator_brush);
     defer {
+        prompt_message = null;
         prompt_separator = null;
         prompt_separator_brush = null;
     }
@@ -1072,6 +1123,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
         hinstance,
         null,
     ) orelse return null;
+    prompt_message = message_control;
     prompt_edit = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, margin, edit_y, content_w, edit_h, hwnd, @ptrFromInt(100), hinstance, null);
     prompt_status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, margin, status_y, content_w, status_h, hwnd, null, hinstance, null);
     const cancel = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral(messages.button_cancel), WS_CHILD | WS_VISIBLE | WS_TABSTOP, cancel_x, button_y, button_w, button_h, hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
