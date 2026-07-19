@@ -212,10 +212,24 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
 
     var fbs = std.io.fixedBufferStream(buf);
     const writer = fbs.writer();
-    if ((modifiers & CAPTURE_MOD_CTRL) != 0) writer.writeAll("Ctrl+") catch return null;
-    if ((modifiers & CAPTURE_MOD_SHIFT) != 0) writer.writeAll("Shift+") catch return null;
-    if ((modifiers & CAPTURE_MOD_ALT) != 0) writer.writeAll("Alt+") catch return null;
-    if ((modifiers & CAPTURE_MOD_PRIMARY) != 0) writer.writeAll(if (builtin.os.tag == .macos) "Cmd+" else "Super+") catch return null;
+    const ModifierPart = struct { bit: u32, text: []const u8 };
+    const modifier_parts = if (builtin.os.tag == .macos)
+        [_]ModifierPart{
+            .{ .bit = CAPTURE_MOD_CTRL, .text = "Control+" },
+            .{ .bit = CAPTURE_MOD_ALT, .text = "Option+" },
+            .{ .bit = CAPTURE_MOD_SHIFT, .text = "Shift+" },
+            .{ .bit = CAPTURE_MOD_PRIMARY, .text = "Command+" },
+        }
+    else
+        [_]ModifierPart{
+            .{ .bit = CAPTURE_MOD_CTRL, .text = "Ctrl+" },
+            .{ .bit = CAPTURE_MOD_SHIFT, .text = "Shift+" },
+            .{ .bit = CAPTURE_MOD_ALT, .text = "Alt+" },
+            .{ .bit = CAPTURE_MOD_PRIMARY, .text = "Super+" },
+        };
+    for (modifier_parts) |part| {
+        if ((modifiers & part.bit) != 0) writer.writeAll(part.text) catch return null;
+    }
     writer.writeAll(key_name) catch return null;
     return fbs.getWritten();
 }
@@ -312,6 +326,23 @@ test "captured hotkey is formatted canonically" {
         const text = capturedHotkeyText(&buf, 0xffbf, CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT).?;
         try std.testing.expectEqualStrings("Ctrl+Shift+F2", text);
         try std.testing.expect(Hotkey.fromString(text) != null);
+    }
+}
+
+test "macOS captured hotkey uses native modifier names and keeps legacy aliases" {
+    if (builtin.os.tag == .macos) {
+        var buf: [64]u8 = undefined;
+        const text = capturedHotkeyText(
+            &buf,
+            0x11, // kVK_ANSI_T
+            CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_SHIFT | CAPTURE_MOD_PRIMARY,
+        ).?;
+        try std.testing.expectEqualStrings("Control+Option+Shift+Command+T", text);
+
+        const native = MacHotkey.fromString(text).?;
+        const legacy = MacHotkey.fromString("Ctrl+Alt+Shift+Cmd+T").?;
+        try std.testing.expectEqual(native.keycode, legacy.keycode);
+        try std.testing.expectEqual(native.modifiers, legacy.modifiers);
     }
 }
 
