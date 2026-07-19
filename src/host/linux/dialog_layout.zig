@@ -414,11 +414,13 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{"RequestEndpointReadyTimeout"},
     );
 
-    const cases = [_]struct {
+    const Case = struct {
         title: []const u8,
         message: []const u8,
         kind: Kind,
-    }{
+        standard_scroll_by_scale: [3]usize = .{ 0, 0, 0 },
+    };
+    const cases = [_]Case{
         .{ .title = messages.quit_confirm_title, .message = quit_msg, .kind = .confirm },
         .{ .title = messages.tab_limit_title, .message = tab_limit_msg, .kind = .info },
         .{ .title = messages.about_title, .message = about_msg, .kind = .about },
@@ -427,7 +429,9 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.config_error_title, .message = theme_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = shell_msg, .kind = .info },
         .{ .title = messages.shell_new_tab_error_title, .message = new_tab_msg, .kind = .info },
-        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info },
+        // 64pt branded icon을 고정하면 최대 8-entry font 오류는 640x480에서
+        // 본문만 3/4/3행 overflow한다. 1.7x는 고정 chrome 반올림으로 한 행 적다.
+        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 3, 4, 3 } },
         .{ .title = messages.hotkey_takeover_title, .message = takeover_msg, .kind = .confirm },
         .{ .title = messages.hotkey_mismatch_persists_title, .message = mismatch_msg, .kind = .info },
         .{ .title = messages.new_instance_title, .message = prompt_msg, .kind = .prompt },
@@ -437,12 +441,17 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.error_title, .message = messages.request_endpoint_ready_timeout_msg, .kind = .info },
     };
 
-    for (cases) |case| try expectFitsLogicalMinimum(case.title, case.message, case.kind);
+    for (cases) |case| try expectFitsLogicalMinimum(case.title, case.message, case.kind, case.standard_scroll_by_scale);
 }
 
-fn expectFitsLogicalMinimum(title: []const u8, message: []const u8, kind: Kind) !void {
+fn expectFitsLogicalMinimum(
+    title: []const u8,
+    message: []const u8,
+    kind: Kind,
+    standard_scroll_by_scale: [3]usize,
+) !void {
     const scales = [_]u32{ 100, 170, 200 };
-    for (scales) |scale_percent| {
+    for (scales, 0..) |scale_percent, scale_index| {
         const metric_cases = [_]Metrics{
             testMetrics(scale_percent),
             testWideCellMetrics(scale_percent),
@@ -466,9 +475,9 @@ fn expectFitsLogicalMinimum(title: []const u8, message: []const u8, kind: Kind) 
             }
             try std.testing.expect(layout.fits);
             try std.testing.expect(layout.show_icon);
-            // 현재 제공하는 메시지는 표준 dialog font에서 자연 크기로 들어온다.
-            // 보수적인 wide-cell 경계만 필요할 때 overflow viewport를 허용한다.
-            if (metric_index == 0) try std.testing.expectEqual(@as(usize, 0), layout.message_scroll_max);
+            // 표준 dialog font는 producer별 정확한 overflow 경계를 확인한다.
+            // 보수적인 wide-cell 조건은 더 많은 wrap 행이 생길 수 있다.
+            if (metric_index == 0) try std.testing.expectEqual(standard_scroll_by_scale[scale_index], layout.message_scroll_max);
         }
     }
 }
