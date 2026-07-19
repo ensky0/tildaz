@@ -7,6 +7,7 @@ const std = @import("std");
 const display_width = @import("../../font/display_width.zig");
 const font_validate = @import("../../font/validate.zig");
 const messages = @import("../../messages.zig");
+const ui_metrics = @import("../../ui_metrics.zig");
 
 pub const Kind = enum { info, about, confirm, prompt };
 
@@ -184,7 +185,7 @@ fn computeWithinSurface(
         metrics.shadow_margin * 2;
     const icon_h = metrics.icon_size + metrics.icon_gap;
     var rows_h: i32 = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
-    var show_icon = fixed_h + rows_h + icon_h <= max_surface.h;
+    const show_icon = true;
     var visible_message_rows = measured.rows;
     var message_scroll_max: usize = 0;
 
@@ -192,7 +193,7 @@ fn computeWithinSurface(
     // viewport를 만든다. scrollbar 공간을 먼저 제외하고 다시 wrap해야 측정 행
     // 수와 실제 그리기 행 수가 정확히 같다. prompt input과 button은 fixed_h에
     // 포함되어 항상 viewport 밖에 고정된다.
-    if (fixed_h + rows_h + (if (show_icon) icon_h else 0) > max_surface.h) {
+    if (fixed_h + rows_h + icon_h > max_surface.h) {
         const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
         const scroll_content_room_w = @max(
             metrics.body_cell_w,
@@ -202,9 +203,7 @@ fn computeWithinSurface(
         wrap_cells = @min(@max(natural_cells, min_cells), scroll_wrap_max);
         measured = measure(message, wrap_cells);
         rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
-        show_icon = false;
-
-        const row_room = max_surface.h - fixed_h;
+        const row_room = max_surface.h - fixed_h - icon_h;
         visible_message_rows = @min(
             measured.rows,
             @as(usize, @intCast(@max(1, @divTrunc(row_room, metrics.body_cell_h)))),
@@ -296,12 +295,14 @@ test "wide viewport is not limited to 72 cells" {
     try std.testing.expectEqual(@as(usize, 1), layout.message_rows);
 }
 
-test "compact layout removes decorative icon before content or buttons" {
+test "compact layout keeps branded icon and scrolls only the message" {
     const message = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve";
     const layout = compute("TildaZ", message, .confirm, testMetrics(100), .{ .w = 640, .h = 400 });
     try std.testing.expect(layout.fits);
-    try std.testing.expect(!layout.show_icon);
+    try std.testing.expect(layout.show_icon);
     try std.testing.expectEqual(@as(usize, 12), layout.message_rows);
+    try std.testing.expectEqual(@as(usize, 9), layout.visible_message_rows);
+    try std.testing.expectEqual(@as(usize, 3), layout.message_scroll_max);
 }
 
 test "final compositor surface size recomputes wrapping without viewport margin" {
@@ -464,6 +465,7 @@ fn expectFitsLogicalMinimum(title: []const u8, message: []const u8, kind: Kind) 
                 );
             }
             try std.testing.expect(layout.fits);
+            try std.testing.expect(layout.show_icon);
             // 현재 제공하는 메시지는 표준 dialog font에서 자연 크기로 들어온다.
             // 보수적인 wide-cell 경계만 필요할 때 overflow viewport를 허용한다.
             if (metric_index == 0) try std.testing.expectEqual(@as(usize, 0), layout.message_scroll_max);
@@ -493,8 +495,8 @@ fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w:
         .padding = scale(8, scale_percent),
         .shadow_margin = scale(12, scale_percent),
         .viewport_margin = scale(16, scale_percent),
-        .icon_size = scale(64, scale_percent),
-        .icon_gap = scale(8, scale_percent),
+        .icon_size = scale(@intCast(ui_metrics.DIALOG_ICON_SIZE_PT), scale_percent),
+        .icon_gap = scale(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), scale_percent),
         .button_w = scale(100, scale_percent),
         .button_h = scale(44, scale_percent),
         .button_gap = scale(12, scale_percent),
@@ -514,6 +516,7 @@ test "dialogs use overflow rows only when content exceeds viewport" {
     const long_message = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
     const overflow = compute("About TildaZ", long_message, .about, testMetrics(100), .{ .w = 640, .h = 480 });
     try std.testing.expect(overflow.fits);
+    try std.testing.expect(overflow.show_icon);
     try std.testing.expect(overflow.message_scroll_max > 0);
     try std.testing.expect(overflow.visible_message_rows < overflow.message_rows);
     try std.testing.expect(overflow.size.w <= 640 - 32);
@@ -521,10 +524,12 @@ test "dialogs use overflow rows only when content exceeds viewport" {
 
     const info_overflow = compute("TildaZ Error", long_message, .info, testMetrics(100), .{ .w = 640, .h = 480 });
     try std.testing.expect(info_overflow.fits);
+    try std.testing.expect(info_overflow.show_icon);
     try std.testing.expect(info_overflow.message_scroll_max > 0);
 
     const prompt_overflow = compute("TildaZ", long_message, .prompt, testMetrics(100), .{ .w = 640, .h = 480 });
     try std.testing.expect(prompt_overflow.fits);
+    try std.testing.expect(prompt_overflow.show_icon);
     try std.testing.expect(prompt_overflow.message_scroll_max > 0);
 }
 

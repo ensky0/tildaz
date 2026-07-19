@@ -62,9 +62,9 @@ const dialog_button_gap_pt: u32 = 12;
 /// #203 Phase C step 3.3 — dialog 상단 아이콘 크기 (PT, 논리 점). `docs/favicon.svg`
 /// 의 viewBox=64×64 를 그대로 줄여 그림. tildaz 의 monitor + `>_` 표지. 사용자
 /// 시연 발견 — 이전 48 physical 고정 + 1.7x 환경에서 *논리 28* 로 너무 작음.
-const dialog_icon_size_pt: u32 = 64;
+const dialog_icon_size_pt: u32 = ui_metrics.DIALOG_ICON_SIZE_PT;
 const dialog_padding_pt: u32 = 8;
-const dialog_icon_gap_pt: u32 = 8;
+const dialog_icon_gap_pt: u32 = ui_metrics.DIALOG_ICON_GAP_PT;
 const dialog_viewport_margin_pt: u32 = 16;
 
 /// #203 Phase C step 3.6 — dialog 배경 / 텍스트 색. 터미널 theme (`render_state

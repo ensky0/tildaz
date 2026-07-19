@@ -1,5 +1,6 @@
-//! Windows dialog 구현. 짧은 info/error/confirm은 `MessageBoxW`, 화면을 넘는
-//! 본문은 read-only multiline EDIT를 둔 전용 modal window로 표시한다.
+//! Windows dialog 구현. 짧은 info/error/confirm은 TildaZ `MB_USERICON`을 둔
+//! `MessageBoxIndirectW`, 화면을 넘는 본문은 같은 icon + read-only multiline
+//! EDIT를 둔 전용 modal window로 표시한다.
 //! `dialog.zig` 에서 comptime 으로 select.
 
 const std = @import("std");
@@ -15,6 +16,7 @@ const HMENU = ?*anyopaque;
 const HDC = ?*anyopaque;
 const HBRUSH = ?*anyopaque;
 const HFONT = ?*anyopaque;
+const HICON = ?*anyopaque;
 const HMONITOR = ?*anyopaque;
 const UINT = c_uint;
 const WPARAM = usize;
@@ -84,6 +86,20 @@ const MONITORINFO = extern struct {
     rcWork: RECT,
     dwFlags: DWORD,
 };
+const MSGBOXPARAMSW = extern struct {
+    cbSize: UINT,
+    hwndOwner: HWND,
+    hInstance: HINSTANCE,
+    lpszText: [*:0]const WCHAR,
+    lpszCaption: [*:0]const WCHAR,
+    dwStyle: DWORD,
+    // MB_USERICON이면 문자열 pointer 대신 MAKEINTRESOURCE low-word 값도 받는다.
+    // opaque pointer로 선언해야 resource ID 1의 의도된 비정렬 주소를 보존한다.
+    lpszIcon: ?*const anyopaque,
+    dwContextHelpId: usize,
+    lpfnMsgBoxCallback: ?*const anyopaque,
+    dwLanguageId: DWORD,
+};
 const DT_CALCRECT: UINT = 0x0400;
 const DT_SINGLELINE: UINT = 0x0020;
 const DT_WORDBREAK: UINT = 0x0010;
@@ -92,18 +108,14 @@ const DT_NOPREFIX: UINT = 0x0800;
 extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.c) c_int;
 extern "gdi32" fn SetTextColor(HDC, DWORD) callconv(.c) DWORD;
 
-extern "user32" fn MessageBoxW(
-    hWnd: ?*anyopaque,
-    lpText: [*:0]const WCHAR,
-    lpCaption: [*:0]const WCHAR,
-    uType: c_uint,
-) callconv(.c) c_int;
+extern "user32" fn MessageBoxIndirectW(*const MSGBOXPARAMSW) callconv(.c) c_int;
+extern "user32" fn LoadIconW(HINSTANCE, ?*const anyopaque) callconv(.c) HICON;
+extern "user32" fn LoadImageW(HINSTANCE, ?*const anyopaque, UINT, c_int, c_int, UINT) callconv(.c) HICON;
+extern "user32" fn DestroyIcon(HICON) callconv(.c) c_int;
 
 const MB_OK: c_uint = 0x0;
 const MB_OKCANCEL: c_uint = 0x1;
-const MB_ICONINFORMATION: c_uint = 0x40;
-const MB_ICONERROR: c_uint = 0x10;
-const MB_ICONQUESTION: c_uint = 0x20;
+const MB_USERICON: c_uint = 0x80;
 const MB_DEFBUTTON2: c_uint = 0x100;
 /// 다이얼로그 자체에 `WS_EX_TOPMOST` 부여 — 우리 메인 창이 topmost 라
 /// 일반 z-order 의 MessageBox 가 그 뒤에 가려져 버튼을 누를 수 없는 사고
@@ -135,6 +147,8 @@ const WS_TABSTOP: DWORD = 0x00010000;
 const WS_BORDER: DWORD = 0x00800000;
 const WS_VSCROLL: DWORD = 0x00200000;
 const SS_CENTER: DWORD = 0x00000001;
+const SS_ICON: DWORD = 0x00000003;
+const SS_REALSIZECONTROL: DWORD = 0x00000040;
 const SS_CENTERIMAGE: DWORD = 0x00000200;
 const BS_DEFPUSHBUTTON: DWORD = 0x0001;
 const ES_MULTILINE: DWORD = 0x0004;
@@ -152,10 +166,50 @@ const FW_NORMAL: c_int = 400;
 const FW_SEMIBOLD: c_int = 600;
 const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 const EM_SETSEL: UINT = 0x00B1;
+const STM_SETIMAGE: UINT = 0x0172;
+const IMAGE_ICON: UINT = 1;
+const LR_DEFAULTCOLOR: UINT = 0;
 const MONITOR_DEFAULTTONEAREST: DWORD = 2;
+const tildaz_icon_resource: ?*const anyopaque = @ptrFromInt(1);
 
 fn scaled(value: c_int, dpi: UINT) c_int {
     return @intCast(@divTrunc(@as(i64, value) * dpi + 48, 96));
+}
+
+fn dialogIconSize(dpi: UINT) c_int {
+    return scaled(@intCast(ui_metrics.DIALOG_ICON_SIZE_PT), dpi);
+}
+
+fn brandedMessageBoxStyle(flags: c_uint) DWORD {
+    return flags | MB_USERICON;
+}
+
+fn loadDialogIcon(hinstance: HINSTANCE, dpi: UINT) HICON {
+    const size = dialogIconSize(dpi);
+    return LoadImageW(hinstance, tildaz_icon_resource, IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
+}
+
+fn createDialogIconControl(parent: HWND, hinstance: HINSTANCE, icon: HICON, dpi: UINT, client_w: c_int, y: c_int) bool {
+    if (parent == null or icon == null) return false;
+    const size = dialogIconSize(dpi);
+    const x = @divTrunc(client_w - size, 2);
+    const control = CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+        std.unicode.utf8ToUtf16LeStringLiteral(""),
+        WS_CHILD | WS_VISIBLE | SS_ICON | SS_REALSIZECONTROL,
+        x,
+        y,
+        size,
+        size,
+        parent,
+        null,
+        hinstance,
+        null,
+    ) orelse return false;
+    const icon_param: LPARAM = @bitCast(@intFromPtr(icon.?));
+    _ = SendMessageW(control, STM_SETIMAGE, IMAGE_ICON, icon_param);
+    return true;
 }
 
 fn createDialogFont(dpi: UINT, point_size: u32, weight: c_int) HFONT {
@@ -225,7 +279,8 @@ fn encodeTruncated(dst: []WCHAR, src: []const u8) usize {
     return out;
 }
 
-/// UTF-8 title / message 를 NUL-terminated WCHAR 버퍼에 인코딩 후 MessageBoxW
+/// UTF-8 title / message 를 NUL-terminated WCHAR 버퍼에 인코딩 후
+/// MessageBoxIndirectW + PE resource ID 1의 TildaZ icon으로 표시한다.
 /// 호출. 한도 초과 시 잘라서라도 항상 표시 (#282 C5 — macOS 8KB / Linux 4096B
 /// truncate 와 정합). 이전엔 overflow 시 dialog 없이 default 반환이라 긴
 /// 메시지(예: config 검증 상세)에서 아무것도 안 떴다.
@@ -243,20 +298,31 @@ fn messageBox(title: []const u8, message: []const u8, flags: c_uint) c_int {
     title_buf[tlen] = 0;
     msg_buf[mlen] = 0;
 
-    return MessageBoxW(
-        null,
-        @ptrCast(msg_buf[0..mlen :0]),
-        @ptrCast(title_buf[0..tlen :0]),
-        flags,
-    );
+    const params = MSGBOXPARAMSW{
+        .cbSize = @sizeOf(MSGBOXPARAMSW),
+        .hwndOwner = null,
+        .hInstance = GetModuleHandleW(null),
+        .lpszText = @ptrCast(msg_buf[0..mlen :0]),
+        .lpszCaption = @ptrCast(title_buf[0..tlen :0]),
+        .dwStyle = brandedMessageBoxStyle(flags),
+        .lpszIcon = tildaz_icon_resource,
+        .dwContextHelpId = 0,
+        .lpfnMsgBoxCallback = null,
+        .dwLanguageId = 0,
+    };
+    return MessageBoxIndirectW(&params);
 }
 
 fn showNative(severity: dialog.Severity, title: []const u8, message: []const u8) void {
-    const flags = MB_OK | MB_TOPMOST | switch (severity) {
-        .info => MB_ICONINFORMATION,
-        .err => MB_ICONERROR,
-    };
-    _ = messageBox(title, message, flags);
+    _ = severity;
+    _ = messageBox(title, message, MB_OK | MB_TOPMOST);
+}
+
+test "Windows native and custom dialog icon metrics are branded and DPI-aware" {
+    try std.testing.expect((brandedMessageBoxStyle(MB_OK) & MB_USERICON) != 0);
+    try std.testing.expectEqual(@as(c_int, 64), dialogIconSize(96));
+    try std.testing.expectEqual(@as(c_int, 96), dialogIconSize(144));
+    try std.testing.expectEqual(@as(c_int, 128), dialogIconSize(192));
 }
 
 pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
@@ -294,6 +360,7 @@ fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
 
 fn ensureScrollClass(hinstance: HINSTANCE) bool {
     if (scroll_class_registered) return true;
+    const class_icon = LoadIconW(hinstance, tildaz_icon_resource);
     const wc = WNDCLASSEXW{
         .cbSize = @sizeOf(WNDCLASSEXW),
         .style = 0,
@@ -301,12 +368,12 @@ fn ensureScrollClass(hinstance: HINSTANCE) bool {
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = hinstance,
-        .hIcon = null,
+        .hIcon = class_icon,
         .hCursor = LoadCursorW(null, IDC_ARROW),
         .hbrBackground = @ptrFromInt(COLOR_BTNFACE + 1),
         .lpszMenuName = null,
         .lpszClassName = scroll_class_name,
-        .hIconSm = null,
+        .hIconSm = class_icon,
     };
     if (RegisterClassExW(&wc) == 0) return false;
     scroll_class_registered = true;
@@ -453,20 +520,23 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     }
 
     const top = scaled(20, dpi);
+    const icon_size = dialogIconSize(dpi);
+    const icon_gap = scaled(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), dpi);
+    const body_y = top + icon_size + icon_gap;
     const gap = scaled(16, dpi);
     const button_h = scaled(32, dpi);
     const button_w = scaled(96, dpi);
     const bottom = scaled(20, dpi);
     const max_window_h = @max(1, screen_h - viewport_margin * 2);
     const max_client_h = @max(1, max_window_h - frame_h);
-    const max_body_h = @max(1, max_client_h - top - gap - button_h - bottom);
+    const max_body_h = @max(1, max_client_h - body_y - gap - button_h - bottom);
     const body_h = @min(wrapped_h, max_body_h);
     const overflow = wrapped_h > body_h;
-    // 짧은 본문은 기존 MessageBoxW를 유지한다. 화면 overflow가 없더라도
-    // MessageBoxW 변환 buffer를 넘는 본문은 custom EDIT로 보내 전체를 보존한다.
+    // 짧은 본문은 native MessageBoxIndirectW를 유지한다. 화면 overflow가
+    // 없더라도 native 변환 buffer를 넘는 본문은 custom EDIT로 보내 전체를 보존한다.
     if (only_if_overflow and !needsScrollableText(overflow, body_w.len)) return null;
     const client_w = margin + content_w + margin;
-    const button_y = top + body_h + gap;
+    const button_y = body_y + body_h + gap;
     const client_h = button_y + button_h + bottom;
 
     var wr = RECT{ .left = 0, .top = 0, .right = client_w, .bottom = client_h };
@@ -475,6 +545,8 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
     const win_h = wr.bottom - wr.top;
     const win_x = work.left + @divTrunc(screen_w - win_w, 2);
     const win_y = work.top + @divTrunc(screen_h - win_h, 2);
+    const dialog_icon = loadDialogIcon(hinstance, dpi) orelse return null;
+    defer _ = DestroyIcon(dialog_icon);
     const hwnd = CreateWindowExW(
         frame_ex_style,
         scroll_class_name,
@@ -497,6 +569,7 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
             _ = SetForegroundWindow(owner);
         }
     }
+    if (!createDialogIconControl(hwnd, hinstance, dialog_icon, dpi, client_w, top)) return null;
 
     const edit_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_READONLY |
         (if (overflow) WS_VSCROLL else 0);
@@ -506,7 +579,7 @@ fn showScrollableText(title: []const u8, body: []const u8, only_if_overflow: boo
         std.unicode.utf8ToUtf16LeStringLiteral(""),
         edit_style,
         margin,
-        top,
+        body_y,
         content_w,
         body_h,
         hwnd,
@@ -581,7 +654,7 @@ pub fn showAboutAlert(title: []const u8, message: []const u8) void {
     if (showScrollableText(title, message, false, false) == null) showNative(.info, title, message);
 }
 
-/// 짧은 fatal은 native MessageBoxW를 유지하고, 화면 또는 4096 UTF-16 변환
+/// 짧은 fatal은 native MessageBoxIndirectW를 유지하고, 화면 또는 4096 UTF-16 변환
 /// 상한을 넘을 때만 read-only EDIT + 세로 scrollbar를 사용한다 (#316).
 pub fn showFatal(title: []const u8, message: []const u8) void {
     if (showScrollableText(title, message, true, false) == null) showNative(.err, title, message);
@@ -601,11 +674,11 @@ test "Windows dialogs use scrollable text before MessageBox truncation" {
 /// 반환: OK → true, Cancel / 닫기 → false.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
     if (showScrollableText(title, message, true, true)) |result| return result;
-    // MessageBoxW 자체 실패(0 반환) 시 result != IDOK → false (안전 default).
+    // MessageBoxIndirectW 자체 실패(0 반환) 시 result != IDOK → false (안전 default).
     const result = messageBox(
         title,
         message,
-        MB_OKCANCEL | MB_ICONQUESTION | MB_TOPMOST,
+        MB_OKCANCEL | MB_TOPMOST,
     );
     return result == IDOK;
 }
@@ -716,7 +789,8 @@ fn handlePromptKey(vkey: usize) bool {
 
 fn ensurePromptClass(hinstance: HINSTANCE) bool {
     if (prompt_class_registered) return true;
-    const wc = WNDCLASSEXW{ .cbSize = @sizeOf(WNDCLASSEXW), .style = 0, .lpfnWndProc = promptWndProc, .cbClsExtra = 0, .cbWndExtra = 0, .hInstance = hinstance, .hIcon = null, .hCursor = LoadCursorW(null, IDC_ARROW), .hbrBackground = @ptrFromInt(COLOR_BTNFACE + 1), .lpszMenuName = null, .lpszClassName = prompt_class_name, .hIconSm = null };
+    const class_icon = LoadIconW(hinstance, tildaz_icon_resource);
+    const wc = WNDCLASSEXW{ .cbSize = @sizeOf(WNDCLASSEXW), .style = 0, .lpfnWndProc = promptWndProc, .cbClsExtra = 0, .cbWndExtra = 0, .hInstance = hinstance, .hIcon = class_icon, .hCursor = LoadCursorW(null, IDC_ARROW), .hbrBackground = @ptrFromInt(COLOR_BTNFACE + 1), .lpszMenuName = null, .lpszClassName = prompt_class_name, .hIconSm = class_icon };
     if (RegisterClassExW(&wc) == 0) return false;
     prompt_class_registered = true;
     return true;
@@ -778,7 +852,10 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const status_h = scaled(28, dpi); // 에러 상태 텍스트
     const button_h = scaled(32, dpi);
     const button_w = scaled(96, dpi);
-    const msg_y = scaled(20, dpi);
+    const icon_y = scaled(20, dpi);
+    const icon_size = dialogIconSize(dpi);
+    const icon_gap = scaled(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), dpi);
+    const msg_y = icon_y + icon_size + icon_gap;
     const bottom = scaled(20, dpi);
     const max_window_h = @max(1, screen_h - viewport_margin * 2);
     const max_client_h = @max(1, max_window_h - frame_h);
@@ -801,6 +878,8 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const win_h = wr.bottom - wr.top;
     const win_x = work.left + @divTrunc(screen_w - win_w, 2);
     const win_y = work.top + @divTrunc(screen_h - win_h, 2);
+    const dialog_icon = loadDialogIcon(hinstance, dpi) orelse return null;
+    defer _ = DestroyIcon(dialog_icon);
     const hwnd = CreateWindowExW(frame_ex_style, prompt_class_name, title_w.ptr, frame_style, win_x, win_y, win_w, win_h, owner, null, hinstance, null) orelse return null;
     defer _ = DestroyWindow(hwnd);
     if (owner != null) {
@@ -810,6 +889,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
             _ = SetForegroundWindow(owner);
         }
     }
+    if (!createDialogIconControl(hwnd, hinstance, dialog_icon, dpi, client_w, icon_y)) return null;
     const message_control = CreateWindowExW(
         0,
         if (message_overflow)
