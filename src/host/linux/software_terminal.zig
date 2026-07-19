@@ -2337,7 +2337,10 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
     const separator_h = scaledPt(dialog_separator_thickness_pt, r.scale);
     try std.testing.expectEqual(@as(i32, 3), separator_h);
     const separator_center_y = sm + pad +
-        (if (layout.show_icon) scaledPt(dialog_icon_size_pt + dialog_icon_gap_pt, r.scale) else 0) +
+        (if (layout.show_icon)
+            scaledPt(dialog_icon_size_pt, r.scale) + scaledPt(dialog_icon_gap_pt, r.scale)
+        else
+            0) +
         title_ch + @divTrunc(ch, 2);
     const separator_y = separator_center_y - @divTrunc(separator_h, 2);
     var separator_row: i32 = 0;
