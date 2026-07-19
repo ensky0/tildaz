@@ -305,7 +305,20 @@ fn newAlert() ?objc.id {
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const a = alloc(NSAlert, objc.sel("alloc")) orelse return null;
-    return init_obj(a, objc.sel("init"));
+    const alert = init_obj(a, objc.sel("init")) orelse return null;
+
+    // 모든 안내·오류·확인·prompt·About이 system severity icon 대신 bundle의
+    // TildaZ icon을 사용한다. 각 entry가 모두 newAlert()를 거치므로 단일 지점.
+    const app = sharedApp();
+    if (app != null) {
+        const getIcon = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        const icon = getIcon(app, objc.sel("applicationIconImage"));
+        if (icon != null) {
+            const setIcon = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+            setIcon(alert, objc.sel("setIcon:"), icon);
+        }
+    }
+    return alert;
 }
 
 /// NSAlert 의 `setMessageText:`. nil-safe.
@@ -637,19 +650,24 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
 /// osascript 2-버튼 confirm — OK → true, Cancel/닫기 → false (#282 C6).
 /// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
 fn confirmOsascript(title: []const u8, message: []const u8) bool {
-    var script_buf: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&script_buf);
-    const w = fbs.writer();
+    const allocator = std.heap.page_allocator;
+    var script_buf: std.ArrayList(u8) = .empty;
+    defer script_buf.deinit(allocator);
+    const w = script_buf.writer(allocator);
     w.writeAll("display dialog \"") catch return false;
     appendEscaped(w, message) catch return false;
-    w.writeAll("\" buttons {\"Cancel\", \"OK\"} default button \"OK\" cancel button \"Cancel\" with icon caution with title \"") catch return false;
+    w.writeAll("\" buttons {\"Cancel\", \"OK\"} default button \"OK\" cancel button \"Cancel\"") catch return false;
+    if (!(appendBundleIconClause(w) catch return false)) {
+        log.appendLine("dialog", "bundle AppIcon.icns unavailable — osascript confirm without icon", .{});
+    }
+    w.writeAll(" with title \"") catch return false;
     appendEscaped(w, title) catch return false;
     w.writeAll("\"") catch return false;
-    const script = fbs.getWritten();
+    const script = script_buf.items;
 
     var child = std.process.Child.init(
         &.{ "/usr/bin/osascript", "-e", script },
-        std.heap.page_allocator,
+        allocator,
     );
     const term = child.spawnAndWait() catch {
         log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
@@ -768,28 +786,54 @@ fn setButtonEsc(alert: objc.id, index: u64) void {
 
 /// AppleScript fallback — NSApp 무관, config 에러 같이 부트스트랩 실패 시.
 fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const u8) void {
-    var script_buf: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&script_buf);
-    const w = fbs.writer();
+    _ = severity;
+    const allocator = std.heap.page_allocator;
+    var script_buf: std.ArrayList(u8) = .empty;
+    defer script_buf.deinit(allocator);
+    const w = script_buf.writer(allocator);
 
     w.writeAll("display dialog \"") catch return;
     appendEscaped(w, message) catch return;
-    w.writeAll("\" buttons {\"OK\"} default button \"OK\" with icon ") catch return;
-    w.writeAll(switch (severity) {
-        .info => "note",
-        .err => "stop",
-    }) catch return;
+    w.writeAll("\" buttons {\"OK\"} default button \"OK\"") catch return;
+    if (!(appendBundleIconClause(w) catch return)) {
+        log.appendLine("dialog", "bundle AppIcon.icns unavailable — osascript alert without icon", .{});
+    }
     w.writeAll(" with title \"") catch return;
     appendEscaped(w, title) catch return;
     w.writeAll("\"") catch return;
 
-    const script = fbs.getWritten();
+    const script = script_buf.items;
 
     var child = std.process.Child.init(
         &.{ "/usr/bin/osascript", "-e", script },
-        std.heap.page_allocator,
+        allocator,
     );
     _ = child.spawnAndWait() catch {};
+}
+
+/// signed app bundle의 AppIcon.icns 절대경로. osascript fallback도 NSAlert와
+/// 같은 TildaZ icon을 쓰기 위해 NSBundle의 실제 resource lookup을 사용한다.
+fn bundleIconPath() ?[]const u8 {
+    const NSBundle = objc.getClass("NSBundle");
+    const getBundle = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const bundle = getBundle(NSBundle, objc.sel("mainBundle")) orelse return null;
+    const getPath = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.id) callconv(.c) objc.id);
+    const path = getPath(bundle, objc.sel("pathForResource:ofType:"), objc.nsString("AppIcon"), objc.nsString("icns"));
+    if (path == null) return null;
+    const getLen = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+    const len = getLen(path, objc.sel("lengthOfBytesUsingEncoding:"), 4); // NSUTF8StringEncoding
+    if (len == 0) return null;
+    const getUtf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+    const utf8 = getUtf8(path, objc.sel("UTF8String"));
+    return utf8[0..len];
+}
+
+fn appendBundleIconClause(w: anytype) !bool {
+    const path = bundleIconPath() orelse return false;
+    try w.writeAll(" with icon POSIX file \"");
+    try appendEscaped(w, path);
+    try w.writeAll("\"");
+    return true;
 }
 
 fn appendEscaped(w: anytype, s: []const u8) !void {

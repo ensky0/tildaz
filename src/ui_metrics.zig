@@ -37,6 +37,11 @@ pub const TAB_LABEL_FONT_PT: u32 = 13;
 /// the terminal, while size remains independent from terminal font settings.
 pub const DIALOG_BODY_FONT_PT: u32 = 15;
 pub const DIALOG_TITLE_FONT_PT: u32 = 18;
+/// 안내·오류·확인·prompt·About에 공통으로 표시하는 TildaZ 앱 아이콘.
+/// Linux와 Windows는 이 logical 크기에 현재 scale/DPI를 곱하고, macOS는
+/// NSAlert가 bundle icon을 native 크기로 배치한다.
+pub const DIALOG_ICON_SIZE_PT: u32 = 64;
+pub const DIALOG_ICON_GAP_PT: u32 = 8;
 /// About 본문이 긴 절대경로 하나 때문에 화면 전체 폭으로 늘어나지 않게 하는
 /// logical 최대 폭. 일반 본문은 content-driven 자연 폭을 그대로 사용한다.
 pub const DIALOG_ABOUT_MAX_WIDTH_PT: u32 = 960;
@@ -173,6 +178,11 @@ test "dialog fonts use fixed 15pt body and 18pt title sizes" {
     try std.testing.expectEqual(@as(f32, 1.1), body.line_height_ratio);
     try std.testing.expectEqual(@as(f32, 1.0), title.cell_width_ratio);
     try std.testing.expectEqual(@as(f32, 1.1), title.line_height_ratio);
+}
+
+test "dialog icon uses common logical size and gap" {
+    try std.testing.expectEqual(@as(u32, 64), DIALOG_ICON_SIZE_PT);
+    try std.testing.expectEqual(@as(u32, 8), DIALOG_ICON_GAP_PT);
 }
 
 test "tab bar height uses common rounded physical pixels" {
