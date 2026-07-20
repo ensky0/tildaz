@@ -24,7 +24,8 @@ pub const Metrics = struct {
     button_w: i32,
     button_h: i32,
     button_gap: i32,
-    about_max_w: i32,
+    preferred_w: i32,
+    max_w: i32,
     scrollbar_w: i32,
     scrollbar_gap: i32,
 };
@@ -155,24 +156,27 @@ fn computeWithinSurface(
     std.debug.assert(metrics.body_cell_h > 0);
     std.debug.assert(metrics.title_cell_w > 0);
     std.debug.assert(metrics.title_cell_h > 0);
-    std.debug.assert(metrics.about_max_w > 0);
+    std.debug.assert(metrics.preferred_w > 0);
+    std.debug.assert(metrics.max_w >= metrics.preferred_w);
 
     const max_surface = Size{
-        .w = if (kind == .about)
-            @min(available_surface.w, metrics.about_max_w)
-        else
-            available_surface.w,
+        .w = @min(available_surface.w, metrics.max_w),
         .h = available_surface.h,
     };
-
-    const content_room_w = @max(
+    const preferred_surface_w = @min(max_surface.w, metrics.preferred_w);
+    const preferred_content_room_w = @max(
+        metrics.body_cell_w,
+        preferred_surface_w - metrics.shadow_margin * 2 - metrics.padding * 2,
+    );
+    const max_content_room_w = @max(
         metrics.body_cell_w,
         max_surface.w - metrics.shadow_margin * 2 - metrics.padding * 2,
     );
-    const max_wrap_cells: usize = @intCast(@max(1, @divTrunc(content_room_w, metrics.body_cell_w)));
+    const preferred_wrap_cells: usize = @intCast(@max(1, @divTrunc(preferred_content_room_w, metrics.body_cell_w)));
+    const max_wrap_cells: usize = @intCast(@max(1, @divTrunc(max_content_room_w, metrics.body_cell_w)));
     const min_cells: usize = if (kind == .prompt) 42 else 30;
     const natural_cells = longestExplicitLine(message);
-    var wrap_cells = @min(@max(natural_cells, min_cells), max_wrap_cells);
+    var wrap_cells = @min(@max(natural_cells, min_cells), preferred_wrap_cells);
     var measured = measure(message, wrap_cells);
 
     const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 3 else 0;
@@ -186,8 +190,19 @@ fn computeWithinSurface(
     const icon_h = metrics.icon_size + metrics.icon_gap;
     var rows_h: i32 = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
     const show_icon = true;
-    var visible_message_rows = measured.rows;
     var message_scroll_max: usize = 0;
+    var expanded_to_max = false;
+
+    // preferred 폭에서 자연 높이를 먼저 측정하고, 고정 chrome까지 합쳐 화면을
+    // 넘을 때만 maximum 폭으로 다시 wrap한다.
+    if (fixed_h + rows_h + icon_h > max_surface.h and preferred_wrap_cells < max_wrap_cells) {
+        expanded_to_max = true;
+        wrap_cells = @min(@max(natural_cells, min_cells), max_wrap_cells);
+        measured = measure(message, wrap_cells);
+        rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
+    }
+
+    var visible_message_rows = measured.rows;
 
     // 모든 dialog는 먼저 본문 자연 높이를 사용하고, 화면을 넘을 때만 message
     // viewport를 만든다. scrollbar 공간을 먼저 제외하고 다시 wrap해야 측정 행
@@ -197,7 +212,7 @@ fn computeWithinSurface(
         const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
         const scroll_content_room_w = @max(
             metrics.body_cell_w,
-            content_room_w - scrollbar_room,
+            max_content_room_w - scrollbar_room,
         );
         const scroll_wrap_max: usize = @intCast(@max(1, @divTrunc(scroll_content_room_w, metrics.body_cell_w)));
         wrap_cells = @min(@max(natural_cells, min_cells), scroll_wrap_max);
@@ -227,10 +242,11 @@ fn computeWithinSurface(
 
     const visible_rows_h: i32 = @intCast(visible_message_rows * @as(usize, @intCast(metrics.body_cell_h)));
     const desired_h = fixed_h + visible_rows_h + (if (show_icon) icon_h else 0);
+    const width_limit = if (expanded_to_max) max_surface.w else preferred_surface_w;
 
     return .{
         .size = .{
-            .w = @min(desired_w, max_surface.w),
+            .w = @min(desired_w, width_limit),
             .h = @min(desired_h, max_surface.h),
         },
         .wrap_cells = wrap_cells,
@@ -238,7 +254,7 @@ fn computeWithinSurface(
         .visible_message_rows = visible_message_rows,
         .message_scroll_max = message_scroll_max,
         .show_icon = show_icon,
-        .fits = desired_w <= max_surface.w and desired_h <= max_surface.h,
+        .fits = desired_w <= width_limit and desired_h <= max_surface.h,
     };
 }
 
@@ -289,7 +305,9 @@ test "same logical viewport fits at 1x 1.7x and 2x" {
 
 test "wide viewport is not limited to 72 cells" {
     const message = "x" ** 100;
-    const layout = compute("TildaZ", message, .info, testMetrics(100), .{ .w = 1280, .h = 720 });
+    // preferred 폭에서는 2행이라 화면을 넘고, maximum 폭의 100열 1행은
+    // 들어오는 높이다. 과거 72-cell 상한이 되살아나면 이 경계가 실패한다.
+    const layout = compute("TildaZ", message, .info, testMetrics(100), .{ .w = 1280, .h = 264 });
     try std.testing.expect(layout.fits);
     try std.testing.expectEqual(@as(usize, 100), layout.wrap_cells);
     try std.testing.expectEqual(@as(usize, 1), layout.message_rows);
@@ -509,7 +527,8 @@ fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w:
         .button_w = scale(100, scale_percent),
         .button_h = scale(44, scale_percent),
         .button_gap = scale(12, scale_percent),
-        .about_max_w = scale(960, scale_percent),
+        .preferred_w = scale(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), scale_percent),
+        .max_w = scale(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), scale_percent),
         .scrollbar_w = scale(10, scale_percent),
         .scrollbar_gap = scale(8, scale_percent),
     };
@@ -542,7 +561,16 @@ test "dialogs use overflow rows only when content exceeds viewport" {
     try std.testing.expect(prompt_overflow.message_scroll_max > 0);
 }
 
-test "#314 About maximum width scales in logical points" {
+test "dialogs use common preferred then maximum width in logical points" {
+    const compact = compute(
+        "Quit TildaZ?",
+        "1 terminal tab is still running. Quit TildaZ?",
+        .confirm,
+        testMetrics(100),
+        .{ .w = 1400, .h = 900 },
+    );
+    try std.testing.expect(compact.size.w <= @as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)));
+
     const message = "x" ** 2000;
     const scales = [_]u32{ 100, 170, 200 };
     for (scales) |scale_percent| {
@@ -553,9 +581,14 @@ test "#314 About maximum width scales in logical points" {
             testMetrics(scale_percent),
             .{
                 .w = @divTrunc(2200 * @as(i32, @intCast(scale_percent)), 100),
-                .h = @divTrunc(1200 * @as(i32, @intCast(scale_percent)), 100),
+                // preferred 580pt에서는 넘지만 maximum 960pt에서는 자연
+                // 높이로 들어오는 경계를 모든 scale에서 동일하게 만든다.
+                .h = @divTrunc(650 * @as(i32, @intCast(scale_percent)), 100),
             },
         );
-        try std.testing.expect(layout.size.w <= @divTrunc(960 * @as(i32, @intCast(scale_percent)) + 99, 100));
+        const preferred = @divTrunc(@as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)) * @as(i32, @intCast(scale_percent)) + 99, 100);
+        const maximum = @divTrunc(@as(i32, @intCast(ui_metrics.DIALOG_MAX_WIDTH_PT)) * @as(i32, @intCast(scale_percent)) + 99, 100);
+        try std.testing.expect(layout.size.w > preferred);
+        try std.testing.expect(layout.size.w <= maximum);
     }
 }

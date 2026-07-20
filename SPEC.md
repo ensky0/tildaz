@@ -232,6 +232,26 @@ minimize/restore.
 |---|---|---|---|---|---|---|
 | About 표시 | Ctrl+Shift+I (read-only multiline EDIT 전용 window) | Shift+Cmd+I (mainMenu keyEquivalent + NSAlert) | Ctrl+Shift+I — `about.showAboutDialog()` → 별 layer-shell `overlay` surface (§6 step 3, #203) | ✅ | ✅ | ✅ |
 
+macOS의 info/error/fatal/confirm/About/new-instance prompt는 같은 branded NSAlert
+action row를 사용한다. action button은 48 logical pt frame, 15pt medium 글자,
+AccessoryBar bezel(Swift의 `recessed`)로 표시한다. macOS 26 이상에서는
+`NSControlSizeExtraLarge`, 그 이전에는 같은 48pt frame에 `NSControlSizeLarge`를
+사용한다([Apple `NSControl.ControlSize`](https://developer.apple.com/documentation/appkit/nscontrol/controlsize-swift.enum),
+[#237](https://github.com/ensky0/tildaz/issues/237)). 활성 primary action(OK/Create)은
+[`NSButton.bezelColor`](https://developer.apple.com/documentation/appkit/nsbutton/bezelcolor)에
+[`NSColor.controlAccentColor`](https://developer.apple.com/documentation/appkit/nscolor/controlaccentcolor)를
+적용하고, Cancel과 disabled Create는 neutral native appearance를 유지한다. AppKit logical point 좌표라
+현재 screen의 `backingScaleFactor`에 맞춰 물리 픽셀로 자동 변환된다.
+
+Dialog 본문 폭은 Linux · macOS · Windows 공통으로 preferred 580 logical pt에서
+실제 wrap 높이를 먼저 측정한다. 고정 header/action/prompt controls까지 현재 screen
+높이를 넘을 때만 maximum 960pt로 확장해 다시 측정하고, 그래도 넘을 때만 본문을
+scroll한다. macOS는 현재 screen의 좌우에 각각 최소 48pt를 남기도록 더 작은 값을
+선택한다. macOS error는 AppKit의
+critical style이 만드는 caution icon+app badge 조합을 사용하지 않고 warning style과
+TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.apple.com/documentation/appkit/nscriticalalertstyle),
+[#237](https://github.com/ensky0/tildaz/issues/237)).
+
 ### 2.5 스크롤 / 화면 reset
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |

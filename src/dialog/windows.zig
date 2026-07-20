@@ -560,6 +560,17 @@ fn longestExplicitLineWidth(dc: HDC, text: []const WCHAR) c_int {
     return longest;
 }
 
+fn wrappedDialogTextHeight(dc: HDC, text: []const WCHAR, content_w: c_int, horizontal_inset: c_int) c_int {
+    var rect = RECT{
+        .left = 0,
+        .top = 0,
+        .right = dialogEditFormatWidth(content_w, horizontal_inset),
+        .bottom = 0,
+    };
+    _ = DrawTextW(dc, text.ptr, @intCast(text.len), &rect, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+    return @max(0, rect.bottom);
+}
+
 fn dialogWorkArea(owner: HWND) RECT {
     const monitor = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
     if (monitor != null) {
@@ -631,10 +642,13 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     const frame_h = frame.bottom - frame.top;
 
     const available_window_w = @max(1, screen_w - viewport_margin * 2);
-    const max_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_ABOUT_MAX_WIDTH_PT), dpi), available_window_w);
+    const max_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), dpi), available_window_w);
+    const preferred_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), dpi), max_window_w);
     const max_client_w = @max(1, max_window_w - frame_w);
+    const preferred_client_w = @max(1, preferred_window_w - frame_w);
     const max_content_w = @max(1, max_client_w - margin * 2);
-    const min_content_w = @min(scaled(472, dpi), max_content_w);
+    const preferred_content_w = @max(1, preferred_client_w - margin * 2);
+    const min_content_w = @min(scaled(472, dpi), preferred_content_w);
     var content_w = min_content_w;
     var wrapped_h = scaled(130, dpi);
     var title_h = scaled(24, dpi);
@@ -664,11 +678,9 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
             @as(i64, title_natural_w),
             @as(i64, natural_w) + @as(i64, edit_horizontal_inset),
         );
-        content_w = @intCast(std.math.clamp(desired_content_w, @as(i64, min_content_w), @as(i64, max_content_w)));
-        const format_w = dialogEditFormatWidth(content_w, edit_horizontal_inset);
-        var wrapped = RECT{ .left = 0, .top = 0, .right = format_w, .bottom = 0 };
-        _ = DrawTextW(dc, body_w.ptr, @intCast(body_w.len), &wrapped, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
-        if (wrapped.bottom > 0) wrapped_h = @as(c_int, @intCast(wrapped.bottom)) + scaled(6, dpi);
+        content_w = @intCast(std.math.clamp(desired_content_w, @as(i64, min_content_w), @as(i64, preferred_content_w)));
+        const measured_h = wrappedDialogTextHeight(dc, body_w, content_w, edit_horizontal_inset);
+        if (measured_h > 0) wrapped_h = measured_h + scaled(6, dpi);
         if (previous != null) _ = SelectObject(dc, previous);
         _ = ReleaseDC(null, dc);
     }
@@ -683,6 +695,20 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     const max_window_h = @max(1, screen_h - viewport_margin * 2);
     const max_client_h = @max(1, max_window_h - frame_h);
     const max_body_h = @max(1, max_client_h - body_y - gap - button_h - bottom);
+
+    // preferred 폭에서 고정 chrome까지 합친 자연 높이가 screen을 넘을 때만
+    // maximum 폭으로 확장해 다시 wrap한다.
+    if (wrapped_h > max_body_h and content_w < max_content_w) {
+        content_w = max_content_w;
+        const measure_dc = GetDC(null);
+        if (measure_dc != null) {
+            const previous = if (body_font != null) SelectObject(measure_dc, body_font) else null;
+            const measured_h = wrappedDialogTextHeight(measure_dc, body_w, content_w, edit_horizontal_inset);
+            if (measured_h > 0) wrapped_h = measured_h + scaled(6, dpi);
+            if (previous != null) _ = SelectObject(measure_dc, previous);
+            _ = ReleaseDC(null, measure_dc);
+        }
+    }
     const body_h = @min(wrapped_h, max_body_h);
     const overflow = wrapped_h > body_h;
     const client_w = margin + content_w + margin;
@@ -1008,9 +1034,13 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     _ = AdjustWindowRectExForDpi(&frame, frame_style, 0, frame_ex_style, dpi);
     const frame_w = frame.right - frame.left;
     const frame_h = frame.bottom - frame.top;
-    const max_window_w = @max(1, screen_w - viewport_margin * 2);
+    const available_window_w = @max(1, screen_w - viewport_margin * 2);
+    const max_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), dpi), available_window_w);
+    const preferred_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), dpi), max_window_w);
     const max_client_w = @max(1, max_window_w - frame_w);
-    const content_w = @max(1, @min(scaled(472, dpi), max_client_w - margin * 2));
+    const preferred_client_w = @max(1, preferred_window_w - frame_w);
+    const max_content_w = @max(1, max_client_w - margin * 2);
+    var content_w = @max(1, preferred_client_w - margin * 2);
 
     // 먼저 실제 wrap 높이를 재고, 고정 input/status/button을 제외한 화면 높이를
     // 넘을 때만 message control을 read-only EDIT + 세로 scrollbar로 바꾼다.
@@ -1034,9 +1064,8 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
             const body_line_sample = std.unicode.utf8ToUtf16LeStringLiteral("Ag");
             _ = DrawTextW(dc, body_line_sample, 2, &body_line_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
             if (body_line_rect.bottom > 0) body_line_h = @intCast(body_line_rect.bottom);
-            var calc = RECT{ .left = 0, .top = 0, .right = dialogEditFormatWidth(content_w, edit_horizontal_inset), .bottom = 0 };
-            _ = DrawTextW(dc, message_w.ptr, @intCast(message_w.len), &calc, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
-            if (calc.bottom > 0) msg_h = @intCast(calc.bottom);
+            const measured_h = wrappedDialogTextHeight(dc, message_w, content_w, edit_horizontal_inset);
+            if (measured_h > 0) msg_h = measured_h;
             if (prev != null) _ = SelectObject(dc, prev);
             _ = ReleaseDC(null, dc);
         }
@@ -1055,6 +1084,18 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const max_client_h = @max(1, max_window_h - frame_h);
     const fixed_after_message = gap + edit_h + scaled(4, dpi) + status_h + gap + button_h + bottom;
     const max_message_h = @max(1, max_client_h - msg_y - fixed_after_message);
+
+    if (msg_h > max_message_h and content_w < max_content_w) {
+        content_w = max_content_w;
+        const measure_dc = GetDC(null);
+        if (measure_dc != null) {
+            const previous = if (ui_font != null) SelectObject(measure_dc, ui_font) else null;
+            const measured_h = wrappedDialogTextHeight(measure_dc, message_w, content_w, edit_horizontal_inset);
+            if (measured_h > 0) msg_h = measured_h;
+            if (previous != null) _ = SelectObject(measure_dc, previous);
+            _ = ReleaseDC(null, measure_dc);
+        }
+    }
     const message_overflow = msg_h > max_message_h;
     msg_h = @min(msg_h, max_message_h);
     const edit_y = msg_y + msg_h + gap;

@@ -37,6 +37,9 @@ pub const TAB_LABEL_FONT_PT: u32 = 13;
 /// the terminal, while size remains independent from terminal font settings.
 pub const DIALOG_BODY_FONT_PT: u32 = 15;
 pub const DIALOG_TITLE_FONT_PT: u32 = 18;
+/// Dialog action controls use logical points. Native backends convert this
+/// through their current screen scale (AppKit does so automatically).
+pub const DIALOG_ACTION_BUTTON_HEIGHT_PT: u32 = 48;
 /// 안내·오류·확인·prompt·About에 공통으로 표시하는 TildaZ 앱 아이콘.
 /// Linux와 Windows는 이 logical 크기에 현재 scale/DPI를 곱하고, macOS는
 /// NSAlert가 bundle icon을 native 크기로 배치한다.
@@ -47,9 +50,11 @@ pub const DIALOG_ICON_GAP_PT: u32 = 8;
 /// platform backend는 이 RGB를 native color 형식으로 변환해 사용한다.
 pub const DIALOG_SEPARATOR_COLOR = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D };
 pub const DIALOG_SEPARATOR_THICKNESS_PT: u32 = 2;
-/// About 본문이 긴 절대경로 하나 때문에 화면 전체 폭으로 늘어나지 않게 하는
-/// logical 최대 폭. 일반 본문은 content-driven 자연 폭을 그대로 사용한다.
-pub const DIALOG_ABOUT_MAX_WIDTH_PT: u32 = 960;
+/// Dialog는 preferred 폭 안에서 먼저 실제 wrap 높이를 측정한다. 고정 chrome을
+/// 포함해 현재 screen 높이를 넘을 때만 maximum 폭으로 확장한 뒤 다시 측정한다.
+pub const DIALOG_PREFERRED_WIDTH_PT: u32 = 580;
+/// 긴 절대경로에서도 screen 전체 폭을 차지하지 않게 하는 logical 최대 폭.
+pub const DIALOG_MAX_WIDTH_PT: u32 = 960;
 pub const DIALOG_SCROLLBAR_GAP_PT: u32 = 8;
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
@@ -186,12 +191,15 @@ test "dialog fonts use fixed 15pt body and 18pt title sizes" {
 }
 
 test "dialog icon uses common logical size and gap" {
+    try std.testing.expectEqual(@as(u32, 48), DIALOG_ACTION_BUTTON_HEIGHT_PT);
     try std.testing.expectEqual(@as(u32, 64), DIALOG_ICON_SIZE_PT);
     try std.testing.expectEqual(@as(u32, 8), DIALOG_ICON_GAP_PT);
     try std.testing.expectEqual(@as(u8, 0xF7), DIALOG_SEPARATOR_COLOR.r);
     try std.testing.expectEqual(@as(u8, 0xA4), DIALOG_SEPARATOR_COLOR.g);
     try std.testing.expectEqual(@as(u8, 0x1D), DIALOG_SEPARATOR_COLOR.b);
     try std.testing.expectEqual(@as(u32, 2), DIALOG_SEPARATOR_THICKNESS_PT);
+    try std.testing.expectEqual(@as(u32, 580), DIALOG_PREFERRED_WIDTH_PT);
+    try std.testing.expectEqual(@as(u32, 960), DIALOG_MAX_WIDTH_PT);
 }
 
 test "tab bar height uses common rounded physical pixels" {
