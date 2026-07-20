@@ -16,6 +16,14 @@ pub fn build(b: *std.Build) void {
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
     const is_linux_target = target_os == .linux;
+    // macOS code-signing identity. 일반 install build와 universal package build가
+    // 반드시 같은 값을 사용해야 최종 `.app`의 identity가 중간 arch build와
+    // 어긋나지 않는다 (#109). default `-`는 ad-hoc.
+    const macos_sign_identity = b.option(
+        []const u8,
+        "macos-sign-identity",
+        "macOS codesign identity. default `-` (ad-hoc). stable self-signed cert 사용 시 그 이름 (예: \"TildazLocal\").",
+    ) orelse "-";
     // #200 — default 가 ReleaseFast 면 runtime safety check 모두 비활성
     // (overflow / null deref / array bounds 등 silently 통과) → 개발 사이클의
     // 버그가 production 까지 새어 나감. Debug 가 default — 안전성 + 진단 가능성
@@ -172,11 +180,6 @@ pub fn build(b: *std.Build) void {
         // 로컬 개발 시 `-Dmacos-sign-identity=TildazLocal` 로 self-signed
         // code-signing 인증서 사용 → identity stable → 권한 한 번만 부여하면
         // 다음 빌드에도 유지. self-signed 인증서 만드는 법: dist/macos/SETUP.md.
-        const sign_identity = b.option(
-            []const u8,
-            "macos-sign-identity",
-            "macOS codesign identity. default `-` (ad-hoc). 로컬에서 권한 유지 용 self-signed cert 사용 시 그 이름 (예: \"TildazLocal\").",
-        ) orelse "-";
         // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
         // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133
         // universal 작업 중 두 prefix 로 install 할 때 mismatch 원인.
@@ -185,7 +188,7 @@ pub fn build(b: *std.Build) void {
             "codesign",
             "--force",
             "--sign",
-            sign_identity,
+            macos_sign_identity,
             app_path,
         });
         sign.step.dependOn(&install_macos_exe.step);
@@ -357,6 +360,8 @@ pub fn build(b: *std.Build) void {
             "dist/macos/package.sh",
             "--version",
             tildaz_version,
+            "--sign-identity",
+            macos_sign_identity,
         });
         package_step.dependOn(&package_cmd.step);
     } else if (is_linux_target) {
