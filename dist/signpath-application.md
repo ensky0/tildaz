@@ -109,8 +109,9 @@ Apple Silicon/Intel DMG on `macos-15`, and Windows AMD64/ARM64 packages on
 3. Fetches dependencies (`zig build --fetch`).
 4. Builds ReleaseFast artifacts and packages them in the platform's supported
    formats.
-5. Creates or appends to the GitHub Release with each artifact, its SHA256
-   sidecar, and `dist/release-notes/v<ver>.md` as the release body.
+5. Creates or appends to the GitHub Release with each artifact and its SHA256
+   sidecar. Stable releases use `dist/release-notes/v<ver>.md` as the release
+   body; prerelease validation tags may omit it.
 
 The trigger is a `v*` tag push on `main`. There is no local/manual release
 path for the authoritative binary — all shipped artifacts come from CI.
