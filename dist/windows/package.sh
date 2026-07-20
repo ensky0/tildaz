@@ -15,9 +15,9 @@
 #   macOS / Linux                         → zip 커맨드
 #
 # 사용법:
-#   dist/windows/package.sh --version 0.2.9                    # 기본 x64
-#   dist/windows/package.sh --version 0.2.9 --arch arm64       # ARM64
-#   dist/windows/package.sh --version 0.2.9 --clean
+#   dist/windows/package.sh --version 0.6.2-dev.1                    # 기본 x64
+#   dist/windows/package.sh --version 0.6.2-dev.1 --arch arm64       # ARM64
+#   dist/windows/package.sh --version 0.6.2-dev.1 --clean
 
 set -euo pipefail
 
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$VERSION" ]]; then
-    echo "ERROR: --version is required (e.g. --version 0.2.9)" >&2
+    echo "ERROR: --version is required (e.g. --version 0.6.2-dev.1)" >&2
     exit 2
 fi
 

@@ -1,4 +1,6 @@
 const std = @import("std");
+const manifest = @import("build.zig.zon");
+const versioning = @import("build/version.zig");
 
 // 빌드:
 //   zig build                       -- 기본 빌드 (Debug, SIMD 비활성, #200)
@@ -7,15 +9,16 @@ const std = @import("std");
 //   zig build package               -- Windows 릴리즈 zip + .sha256 생성 (자동 ReleaseFast)
 //   zig build check                 -- 6-target compile-only verify (#201)
 //
-// 릴리즈 버전. 태그 / GitHub Release / dist/release-notes/ 와 동기화 필요.
-// src/tildaz.rc 의 FILEVERSION / PRODUCTVERSION / 문자열 블록도 같이 갱신.
-const tildaz_version = "0.6.1";
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
     const is_linux_target = target_os == .linux;
+    const is_macos_target = target_os == .macos;
+    // 릴리즈 version의 단일 원본은 build.zig.zon. About/log, platform metadata,
+    // package 이름은 검증된 파생 규칙(build/version.zig)으로만 만든다.
+    const app_version = versioning.derive(b.allocator, manifest.version) catch |err|
+        std.debug.panic("invalid build.zig.zon version '{s}': {s}", .{ manifest.version, @errorName(err) });
     // #200 — default 가 ReleaseFast 면 runtime safety check 모두 비활성
     // (overflow / null deref / array bounds 등 silently 통과) → 개발 사이클의
     // 버그가 production 까지 새어 나감. Debug 가 default — 안전성 + 진단 가능성
@@ -35,7 +38,7 @@ pub fn build(b: *std.Build) void {
 
     // 컴파일 타임 상수 — About 다이얼로그 / tildaz.log 의 boot 엔트리에서 사용.
     const build_opts = b.addOptions();
-    build_opts.addOption([]const u8, "version", tildaz_version);
+    build_opts.addOption([]const u8, "version", app_version.full);
     exe_mod.addOptions("build_options", build_opts);
 
     // SIMD: 현재 Windows 에서 동작하지 않습니다. Zig 0.15 빌드 시스템이 ghostty 의
@@ -71,7 +74,23 @@ pub fn build(b: *std.Build) void {
 
     if (is_windows_target) {
         // PE VERSIONINFO 리소스 (Explorer 속성 / Task Manager 에서 버전 표시).
-        exe_mod.addWin32ResourceFile(.{ .file = b.path("src/tildaz.rc") });
+        const windows_resource = b.addConfigHeader(.{
+            .style = .{ .autoconf_at = b.path("src/tildaz.rc.in") },
+            .include_path = "tildaz.rc",
+        }, .{
+            .VERSION_MAJOR = app_version.windows_major,
+            .VERSION_MINOR = app_version.windows_minor,
+            .VERSION_PATCH = app_version.windows_patch,
+            .VERSION_REVISION = app_version.windows_revision,
+            .WINDOWS_FILE_FLAGS = app_version.windows_file_flags,
+            .VERSION_FULL = app_version.full,
+        });
+        exe_mod.addWin32ResourceFile(.{
+            .file = windows_resource.getOutputFile(),
+            // generated RC와 icon의 디렉터리가 다르므로 llvm-rc include path로
+            // source icon을 찾는다. 물리 경로를 template에 하드코딩하지 않는다.
+            .include_paths = &.{b.path("src")},
+        });
     }
 
     if (is_linux_target) {
@@ -81,7 +100,6 @@ pub fn build(b: *std.Build) void {
         exe_mod.link_libc = true;
     }
 
-    const is_macos_target = target_os == .macos;
     const macos_sdk_root = if (is_macos_target)
         b.option(
             []const u8,
@@ -157,7 +175,12 @@ pub fn build(b: *std.Build) void {
         // Ctrl+C 로 종료) 또는 `open ./zig-out/TildaZ.app` (LaunchServices).
         const install_macos_exe = b.addInstallFile(exe.getEmittedBin(), "TildaZ.app/Contents/MacOS/tildaz");
         b.getInstallStep().dependOn(&install_macos_exe.step);
-        const install_macos_plist = b.addInstallFile(b.path("dist/macos/Info.plist"), "TildaZ.app/Contents/Info.plist");
+        // ConfigHeader는 모든 출력 첫 줄에 C 주석을 넣으므로 XML plist에는 쓸
+        // 수 없다. build runner가 @embedFile로 template 변경을 추적하고,
+        // WriteFile은 주석 없이 정확한 XML만 생성한다.
+        const macos_metadata = b.addWriteFiles();
+        const macos_plist = macos_metadata.add("Info.plist", renderMacosPlist(b, app_version));
+        const install_macos_plist = b.addInstallFile(macos_plist, "TildaZ.app/Contents/Info.plist");
         b.getInstallStep().dependOn(&install_macos_plist.step);
         // App icon — Info.plist 의 CFBundleIconFile=AppIcon 이 Resources/AppIcon.icns
         // 를 찾음 (#145). docs/favicon.svg 에서 sips + iconutil 로 만든 .icns commit.
@@ -263,6 +286,16 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
+    // package-manager / bundle / PE version 파생은 runtime source와 독립된 build
+    // helper라 별도 test root로 수집한다. `zig build test`에서 항상 함께 실행.
+    const version_test_mod = b.createModule(.{
+        .root_source_file = b.path("build/version.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const version_tests = b.addTest(.{ .root_module = version_test_mod });
+    test_step.dependOn(&b.addRunArtifact(version_tests).step);
+
     // 6-target compile-only check 단계 (#201).
     //
     //   zig build check
@@ -323,7 +356,7 @@ pub fn build(b: *std.Build) void {
     //   zig build package                              → x64 (기본)
     //   zig build package -Dtarget=aarch64-windows     → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + conpty.dll + OpenConsole.exe
-    //     → bash dist/windows/package.sh --version <tildaz_version> --arch <x64|arm64>
+    //     → bash dist/windows/package.sh --version <full-version> --arch <x64|arm64>
     //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip
     //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip.sha256
     //
@@ -341,7 +374,7 @@ pub fn build(b: *std.Build) void {
             "bash",
             "dist/windows/package.sh",
             "--version",
-            tildaz_version,
+            app_version.full,
             "--arch",
             arch_arg,
         });
@@ -356,7 +389,7 @@ pub fn build(b: *std.Build) void {
             "bash",
             "dist/macos/package.sh",
             "--version",
-            tildaz_version,
+            app_version.full,
         });
         package_step.dependOn(&package_cmd.step);
     } else if (is_linux_target) {
@@ -374,11 +407,21 @@ pub fn build(b: *std.Build) void {
             .aarch64 => "aarch64",
             else => @panic("unsupported Linux arch for package step — only x86_64 / aarch64"),
         };
+        const linux_package_version = if (std.mem.eql(u8, format, "deb"))
+            app_version.debian_package
+        else if (std.mem.eql(u8, format, "rpm"))
+            app_version.rpm_package
+        else if (std.mem.eql(u8, format, "pkg"))
+            app_version.arch_package
+        else
+            app_version.full;
         const package_cmd = b.addSystemCommand(&.{
             "bash",
             "dist/linux/package.sh",
             "--version",
-            tildaz_version,
+            app_version.full,
+            "--package-version",
+            linux_package_version,
             "--arch",
             linux_arch_arg,
             "--format",
@@ -390,4 +433,30 @@ pub fn build(b: *std.Build) void {
         const package_fail = b.addFail("package step은 Windows / macOS / Linux 대상에서만 동작합니다.");
         package_step.dependOn(&package_fail.step);
     }
+}
+
+fn renderMacosPlist(b: *std.Build, version: versioning.Derived) []const u8 {
+    const template = @embedFile("dist/macos/Info.plist.in");
+    const short_token = "@MACOS_SHORT_VERSION@";
+    const build_token = "@MACOS_BUILD_VERSION@";
+    if (std.mem.count(u8, template, short_token) != 1 or
+        std.mem.count(u8, template, build_token) != 1)
+    {
+        @panic("dist/macos/Info.plist.in must contain each version token exactly once");
+    }
+
+    const with_short = std.mem.replaceOwned(
+        u8,
+        b.allocator,
+        template,
+        short_token,
+        version.macos_short,
+    ) catch @panic("OOM rendering macOS Info.plist");
+    return std.mem.replaceOwned(
+        u8,
+        b.allocator,
+        with_short,
+        build_token,
+        version.macos_build,
+    ) catch @panic("OOM rendering macOS Info.plist");
 }
