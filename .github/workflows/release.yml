@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (must already exist, e.g. v0.2.9)'
+        description: 'Tag to release (must already exist, e.g. v0.6.2-dev.1)'
         required: true
 
 permissions:
@@ -89,13 +89,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-          # prerelease (-rc* / -beta* / -alpha*) tag 는 base version (= 첫 `-` 앞까지) 만 build.zig 와 매칭.
-          # `0.5.0-rc1` → `0.5.0` 비교. build.zig 의 tildaz_version 은 base 유지.
-          BASE_VER="${{ steps.vars.outputs.version }}"
-          BASE_VER="${BASE_VER%-*}"
-          if [[ "$BZIG_VER" != "$BASE_VER" ]]; then
-            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
+          ZON_VER=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)",[[:space:]]*$/\1/p' build.zig.zon)
+          if [[ -z "$ZON_VER" ]]; then
+            echo "ERROR: could not parse build.zig.zon version"
+            exit 1
+          fi
+          if [[ "$ZON_VER" != "${{ steps.vars.outputs.version }}" ]]; then
+            echo "ERROR: build.zig.zon version ($ZON_VER) != tag version (${{ steps.vars.outputs.version }})"
             exit 1
           fi
 
@@ -122,7 +122,7 @@ jobs:
             exit 1
           fi
 
-          echo "build.zig version : $BZIG_VER"
+          echo "build.zig.zon version : $ZON_VER"
           echo "release notes     : $NOTES"
           echo "pinned deps       : OK"
 
@@ -164,15 +164,9 @@ jobs:
       - name: Verify artifacts
         id: verify
         shell: bash
-        # package.sh 가 만드는 file 이름은 `tildaz_version` (build.zig 의 base
-        # version) 만 사용. tag 가 prerelease 인 경우 (`v0.5.0-rc3`) 도 file
-        # 이름은 `tildaz-v0.5.0-win-x64.zip`. 각 release 의 tag page 가 따로라
-        # 사용자가 file 이름으로 *어떤 RC* 인지 식별 못 하는 단점 acceptable
-        # (release page 에서 확인).
         run: |
-          BASE_VER="${{ steps.vars.outputs.version }}"
-          BASE_VER="${BASE_VER%-*}"
-          ZIP="zig-out/release/tildaz-v${BASE_VER}-win-${{ matrix.arch }}.zip"
+          VERSION="${{ steps.vars.outputs.version }}"
+          ZIP="zig-out/release/tildaz-v${VERSION}-win-${{ matrix.arch }}.zip"
           SHA="$ZIP.sha256"
           if [[ ! -f "$ZIP" || ! -f "$SHA" ]]; then
             echo "ERROR: expected artifacts missing — looked for $ZIP / $SHA"
@@ -198,7 +192,7 @@ jobs:
             ${{ steps.verify.outputs.zip }}
             ${{ steps.verify.outputs.sha }}
           draft: false
-          prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
+          prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
           fail_on_unmatched_files: true
 
   # macOS 빌드는 Apple Silicon runner (macos-15 = aarch64) 에서 cross-build 로
@@ -248,17 +242,13 @@ jobs:
       - name: Sanity checks (version / release notes / pinned deps)
         run: |
           set -euo pipefail
-          BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-          # prerelease (-rc* / -beta* / -alpha*) tag 는 base version 만 build.zig 와 매칭.
-          BASE_VER="${{ steps.vars.outputs.version }}"
-          BASE_VER="${BASE_VER%-*}"
-          if [[ "$BZIG_VER" != "$BASE_VER" ]]; then
-            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
+          ZON_VER=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)",[[:space:]]*$/\1/p' build.zig.zon)
+          if [[ -z "$ZON_VER" ]]; then
+            echo "ERROR: could not parse build.zig.zon version"
             exit 1
           fi
-          PLIST_VER=$(sed -n '/<key>CFBundleShortVersionString<\/key>/{n;s/.*<string>\([^<]*\)<\/string>.*/\1/p;}' dist/macos/Info.plist)
-          if [[ "$PLIST_VER" != "$BASE_VER" ]]; then
-            echo "ERROR: macOS Info.plist version ($PLIST_VER) != tag base version ($BASE_VER)"
+          if [[ "$ZON_VER" != "${{ steps.vars.outputs.version }}" ]]; then
+            echo "ERROR: build.zig.zon version ($ZON_VER) != tag version (${{ steps.vars.outputs.version }})"
             exit 1
           fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
@@ -293,9 +283,8 @@ jobs:
       - name: Verify artifacts
         id: verify
         run: |
-          BASE_VER="${{ steps.vars.outputs.version }}"
-          BASE_VER="${BASE_VER%-*}"
-          DMG="zig-out/release/tildaz-v${BASE_VER}-macos.dmg"
+          VERSION="${{ steps.vars.outputs.version }}"
+          DMG="zig-out/release/tildaz-v${VERSION}-macos.dmg"
           SHA="$DMG.sha256"
           if [[ ! -f "$DMG" || ! -f "$SHA" ]]; then
             echo "ERROR: expected artifacts missing — looked for $DMG / $SHA"
@@ -331,10 +320,9 @@ jobs:
             ${{ steps.verify.outputs.dmg }}
             ${{ steps.verify.outputs.sha }}
           draft: false
-          # vX.Y.Z-rc* / -beta* 같이 prerelease 표기 포함된 tag 면 GitHub Release
-          # 의 prerelease 플래그도 같이 set — release listing 에서 stable 위에
-          # 안 올라오게 (#133 RC 검증).
-          prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
+          # supported prerelease는 full SemVer에서 '-'가 있으므로 dev/alpha/beta/rc를
+          # 개별 나열하지 않고 같은 규칙으로 GitHub prerelease 표시.
+          prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
           fail_on_unmatched_files: true
 
   # Linux 배포 — 4 format × 2 arch = 8 artifact (#202).
@@ -445,12 +433,13 @@ jobs:
       - name: Sanity checks (version / release notes)
         run: |
           set -euo pipefail
-          BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-          # prerelease (-rc* / -beta* / -alpha*) tag 는 base version 만 build.zig 와 매칭.
-          BASE_VER="${{ steps.vars.outputs.version }}"
-          BASE_VER="${BASE_VER%-*}"
-          if [[ "$BZIG_VER" != "$BASE_VER" ]]; then
-            echo "ERROR: build.zig tildaz_version ($BZIG_VER) != tag base version ($BASE_VER, full tag ${{ steps.vars.outputs.tag }})"
+          ZON_VER=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)",[[:space:]]*$/\1/p' build.zig.zon)
+          if [[ -z "$ZON_VER" ]]; then
+            echo "ERROR: could not parse build.zig.zon version"
+            exit 1
+          fi
+          if [[ "$ZON_VER" != "${{ steps.vars.outputs.version }}" ]]; then
+            echo "ERROR: build.zig.zon version ($ZON_VER) != tag version (${{ steps.vars.outputs.version }})"
             exit 1
           fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
@@ -479,22 +468,25 @@ jobs:
         id: artifact
         run: |
           set -euo pipefail
-          # base version 만 사용 — package.sh 가 build.zig 의 `tildaz_version`
-          # (= base version, prerelease suffix 없음) 으로 file 이름 생성.
-          BASE_VER="${{ steps.vars.outputs.version }}"
-          BASE_VER="${BASE_VER%-*}"
+          shopt -s nullglob
           ARCH="${{ matrix.arch }}"
           case "$ARCH" in
               x86_64)  DEBARCH=amd64 ;;
               aarch64) DEBARCH=arm64 ;;
           esac
           case "${{ matrix.format }}" in
-              tar.gz)   NAME="tildaz-v${BASE_VER}-linux-${ARCH}.tar.gz" ;;
-              deb)      NAME="tildaz_${BASE_VER}_${DEBARCH}.deb" ;;
-              rpm)      NAME="tildaz-${BASE_VER}-1.${ARCH}.rpm" ;;
-              AppImage) NAME="TildaZ-${BASE_VER}-${ARCH}.AppImage" ;;
-              pkg)      NAME="tildaz-${BASE_VER}-1-x86_64.pkg.tar.zst" ;;
+              tar.gz)   MATCHES=(zig-out/release/tildaz-v*-linux-${ARCH}.tar.gz) ;;
+              deb)      MATCHES=(zig-out/release/tildaz_*_${DEBARCH}.deb) ;;
+              rpm)      MATCHES=(zig-out/release/tildaz-*-1.${ARCH}.rpm) ;;
+              AppImage) MATCHES=(zig-out/release/TildaZ-*-${ARCH}.AppImage) ;;
+              pkg)      MATCHES=(zig-out/release/tildaz-*-1-x86_64.pkg.tar.zst) ;;
           esac
+          if [[ ${#MATCHES[@]} -ne 1 ]]; then
+            echo "ERROR: expected exactly one ${{ matrix.format }} artifact, found ${#MATCHES[@]}"
+            ls -la zig-out/release/ || true
+            exit 1
+          fi
+          NAME=$(basename "${MATCHES[0]}")
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "path=zig-out/release/$NAME" >> "$GITHUB_OUTPUT"
 
@@ -520,5 +512,5 @@ jobs:
             ${{ steps.artifact.outputs.path }}
             ${{ steps.artifact.outputs.path }}.sha256
           draft: false
-          prerelease: ${{ contains(steps.vars.outputs.tag, '-rc') || contains(steps.vars.outputs.tag, '-beta') || contains(steps.vars.outputs.tag, '-alpha') }}
+          prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
           fail_on_unmatched_files: true

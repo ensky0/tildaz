@@ -2,7 +2,8 @@
 # tildaz Linux 릴리즈 artifact 생성 — 5 format 통합 entry.
 #
 # 입력:
-#   --version <ver>                          필수 (예: 0.4.3)
+#   --version <full-semver>                  필수 (예: 0.6.2-dev.1)
+#   --package-version <ver>                  optional. deb/rpm/pkg metadata용
 #   --arch x86_64|aarch64                    필수
 #   --format tar.gz|deb|rpm|AppImage|pkg     필수
 #   --bindir <dir>                           optional. 기본 zig-out/bin/
@@ -25,9 +26,9 @@
 #   pkg      — makepkg / bsdtar (Arch Linux base-devel / libarchive)
 #
 # 사용법:
-#   dist/linux/package.sh --version 0.4.3 --arch x86_64 --format tar.gz
-#   dist/linux/package.sh --version 0.4.3 --arch aarch64 --format deb
-#   dist/linux/package.sh --version 0.4.3 --arch x86_64 --format pkg
+#   dist/linux/package.sh --version 0.6.2-dev.1 --arch x86_64 --format tar.gz
+#   dist/linux/package.sh --version 0.6.2-dev.1 --package-version 0.6.2~dev.1-1 --arch aarch64 --format deb
+#   dist/linux/package.sh --version 0.6.2-dev.1 --package-version 0.6.2dev.1 --arch x86_64 --format pkg
 
 set -euo pipefail
 
@@ -35,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 VERSION=""
+PACKAGE_VERSION=""
 ARCH=""
 FORMAT=""
 BINDIR=""
@@ -42,6 +44,7 @@ BINDIR=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
+        --package-version) PACKAGE_VERSION="$2"; shift 2 ;;
         --arch)    ARCH="$2";    shift 2 ;;
         --format)  FORMAT="$2";  shift 2 ;;
         --bindir)  BINDIR="$2";  shift 2 ;;
@@ -56,6 +59,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$VERSION" ]] && { echo "ERROR: --version required" >&2; exit 2; }
+PACKAGE_VERSION="${PACKAGE_VERSION:-$VERSION}"
 case "$ARCH" in
     x86_64|aarch64) ;;
     *) echo "ERROR: --arch must be x86_64 or aarch64 (got '$ARCH')" >&2; exit 2 ;;
@@ -221,7 +225,7 @@ build_deb() {
         x86_64)  DEBARCH="amd64" ;;
         aarch64) DEBARCH="arm64" ;;
     esac
-    local DEB="$RELEASE_ROOT/tildaz_${VERSION}_${DEBARCH}.deb"
+    local DEB="$RELEASE_ROOT/tildaz_${PACKAGE_VERSION}_${DEBARCH}.deb"
     local STAGE="$RELEASE_ROOT/deb-stage-${ARCH}"
 
     rm -rf "$STAGE" "$DEB" "$DEB.sha256"
@@ -246,7 +250,7 @@ build_deb() {
 
     cat > "$STAGE/DEBIAN/control" << END
 Package: tildaz
-Version: ${VERSION}
+Version: ${PACKAGE_VERSION}
 Section: utils
 Priority: optional
 Architecture: ${DEBARCH}
@@ -309,7 +313,7 @@ build_rpm() {
         exit 1
     }
     local RPMARCH="$ARCH"  # rpm 이 x86_64 / aarch64 그대로 사용
-    local RPM="$RELEASE_ROOT/tildaz-${VERSION}-1.${RPMARCH}.rpm"
+    local RPM="$RELEASE_ROOT/tildaz-${PACKAGE_VERSION}-1.${RPMARCH}.rpm"
     local RPMTREE="$RELEASE_ROOT/rpmtree-${ARCH}"
 
     rm -rf "$RPMTREE" "$RPM" "$RPM.sha256"
@@ -325,7 +329,7 @@ build_rpm() {
 
     cat > "$RPMTREE/SPECS/tildaz.spec" << END
 Name:           tildaz
-Version:        ${VERSION}
+Version:        ${PACKAGE_VERSION}
 Release:        1%{?dist}
 Summary:        Quake-style drop-down terminal for Wayland
 
@@ -401,7 +405,7 @@ END
         --target "$RPMARCH" \
         "$RPMTREE/SPECS/tildaz.spec"
 
-    local RPM_BUILT="$RPMTREE/RPMS/$RPMARCH/tildaz-${VERSION}-1.$RPMARCH.rpm"
+    local RPM_BUILT="$RPMTREE/RPMS/$RPMARCH/tildaz-${PACKAGE_VERSION}-1.$RPMARCH.rpm"
     if [[ ! -f "$RPM_BUILT" ]]; then
         echo "ERROR: rpmbuild succeeded but expected output missing: $RPM_BUILT" >&2
         ls -la "$RPMTREE/RPMS/" >&2
@@ -513,7 +517,7 @@ build_pkg() {
         exit 1
     fi
     local BUILD="$RELEASE_ROOT/arch-build"
-    local PKG="$RELEASE_ROOT/tildaz-${VERSION}-1-x86_64.pkg.tar.zst"
+    local PKG="$RELEASE_ROOT/tildaz-${PACKAGE_VERSION}-1-x86_64.pkg.tar.zst"
 
     rm -rf "$BUILD" "$PKG" "$PKG.sha256"
     mkdir -p "$BUILD"
@@ -528,11 +532,11 @@ build_pkg() {
 
     # 의존성은 deb/rpm 과 동일 정책: core(키보드/폰트) hard depends, ligature/
     # hotkey 용은 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
-    # 런타임 변수라 heredoc 에서 escape — \${VERSION} 만 여기서 확장.
+    # 런타임 변수라 heredoc 에서 escape — ${PACKAGE_VERSION}만 여기서 확장.
     cat > "$BUILD/PKGBUILD" << END
 # Maintainer: ensky0 <bongjun.yi@navercorp.com>
 pkgname=tildaz
-pkgver=${VERSION}
+pkgver=${PACKAGE_VERSION}
 pkgrel=1
 pkgdesc='Quake-style drop-down terminal for Wayland'
 arch=('x86_64')
@@ -572,7 +576,7 @@ END
     fi
 
     local OUT
-    OUT=$(ls "$BUILD"/tildaz-${VERSION}-1-x86_64.pkg.tar.zst 2>/dev/null | head -1)
+    OUT=$(ls "$BUILD"/tildaz-${PACKAGE_VERSION}-1-x86_64.pkg.tar.zst 2>/dev/null | head -1)
     if [[ -z "$OUT" ]]; then
         echo "ERROR: makepkg did not produce the expected package" >&2
         ls -la "$BUILD" >&2

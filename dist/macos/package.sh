@@ -17,7 +17,7 @@
 #   - Input Monitoring + Accessibility 권한 한 번 부여
 #
 # 사용법:
-#   bash dist/macos/package.sh --version 0.6.1
+#   bash dist/macos/package.sh --version 0.6.2-dev.1
 #
 # 옵션:
 #   --version <ver>    필수. release 파일 이름에 사용.
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$VERSION" ]]; then
-    echo "ERROR: --version is required (e.g. --version 0.6.1)" >&2
+    echo "ERROR: --version is required (e.g. --version 0.6.2-dev.1)" >&2
     exit 2
 fi
 
