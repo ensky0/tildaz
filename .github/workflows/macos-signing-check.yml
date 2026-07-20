@@ -1,0 +1,89 @@
+name: macOS signing smoke test
+
+# release/tag 자산을 만들거나 교체하지 않고 GitHub-hosted runner의 certificate
+# import → universal package → signature 검증 전체를 수동 확인한다 (#109).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  MACOS_SIGN_IDENTITY: TildazLocal
+  MACOS_CERTIFICATE_SHA1: 49A04E831C72FA3F4079DB379E31A02E2943C5A3
+
+jobs:
+  macos-signing:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Verify Zig
+        run: zig version
+
+      - name: Prefetch dependencies
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if zig build --fetch; then
+              exit 0
+            fi
+            [[ $i -eq 5 ]] && exit 1
+            sleep 10
+          done
+
+      - name: Install macOS signing identity
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: ./dist/macos/ci-signing.sh install
+
+      - name: Build signed universal package
+        run: zig build package -Doptimize=ReleaseFast -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
+
+      - name: Verify signed package
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)",[[:space:]]*$/\1/p' build.zig.zon)
+          if [[ -z "$VERSION" ]]; then
+            echo "ERROR: could not parse build.zig.zon version" >&2
+            exit 1
+          fi
+          DMG="zig-out/release/tildaz-v${VERSION}-macos.dmg"
+          SHA="$DMG.sha256"
+
+          if [[ ! -f "$DMG" || ! -f "$SHA" ]]; then
+            echo "ERROR: expected package artifacts are missing" >&2
+            exit 1
+          fi
+          (
+            cd zig-out/release
+            shasum -a 256 -c "$(basename "$SHA")"
+          )
+
+          ARCHS=$(lipo -archs zig-out/TildaZ.app/Contents/MacOS/tildaz)
+          if [[ "$ARCHS" != *arm64* || "$ARCHS" != *x86_64* ]]; then
+            echo "ERROR: expected arm64 + x86_64 universal binary; got: $ARCHS" >&2
+            exit 1
+          fi
+          echo "Universal architectures: $ARCHS"
+
+          ./dist/macos/verify-signing.sh \
+            zig-out/TildaZ.app \
+            "$MACOS_SIGN_IDENTITY" \
+            "$MACOS_CERTIFICATE_SHA1"
+
+      - name: Clean up macOS signing identity
+        if: ${{ always() }}
+        run: |
+          if [[ -x dist/macos/ci-signing.sh ]]; then
+            ./dist/macos/ci-signing.sh cleanup
+          fi

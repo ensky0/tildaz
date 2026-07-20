@@ -227,7 +227,8 @@ while adapting it to each platform's native constraints:
 The release workflow checks that:
 
 - the complete tag version matches `build.zig.zon`'s `.version`;
-- `dist/release-notes/v<ver>.md` exists on the tag;
+- `dist/release-notes/v<ver>.md` exists for a stable tag (optional for a
+  prerelease validation tag);
 - dependencies in `build.zig.zon` are pinned to 40-character commit SHA tarball
   URLs rather than rolling branch references.
 
