@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (must already exist, e.g. v0.6.2-dev.1)'
+        description: 'Tag to release (must already exist, e.g. v0.6.2-dev.2)'
         required: true
 
 permissions:
@@ -317,13 +317,6 @@ jobs:
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Clean up macOS signing identity
-        if: ${{ always() }}
-        run: |
-          if [[ -x dist/macos/ci-signing.sh ]]; then
-            ./dist/macos/ci-signing.sh cleanup
-          fi
-
       # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
       # softprops/action-gh-release 의 default 동작.
       - name: Upload to GitHub Release
@@ -339,6 +332,15 @@ jobs:
           # 개별 나열하지 않고 같은 규칙으로 GitHub prerelease 표시.
           prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
           fail_on_unmatched_files: true
+
+      # cleanup은 upload 뒤에 둔다. trustd/Keychain cleanup이 지연돼도 이미
+      # 검증된 DMG upload를 막지 않으며, always()로 실패 경로에서도 실행한다.
+      - name: Clean up macOS signing identity
+        if: ${{ always() }}
+        run: |
+          if [[ -x dist/macos/ci-signing.sh ]]; then
+            ./dist/macos/ci-signing.sh cleanup
+          fi
 
   # Linux 배포 — 4 format × 2 arch = 8 artifact (#202).
   # ubuntu-22.04 단일 runner 에서 모든 (arch, format) cross-build / cross-package:

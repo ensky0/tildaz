@@ -29,6 +29,21 @@ P12_PATH="$RUNNER_TEMP_DIR/tildaz-signing.p12"
 CERTIFICATE_PATH="$RUNNER_TEMP_DIR/tildaz-signing.cer"
 ORIGINAL_KEYCHAINS_PATH="$RUNNER_TEMP_DIR/tildaz-original-keychains"
 SYSTEM_TRUST_MARKER_PATH="$RUNNER_TEMP_DIR/tildaz-system-trust-installed"
+CLEANUP_TIMEOUT_SECONDS=20
+
+run_cleanup_command() {
+    local label="$1"
+    shift
+    local status
+
+    echo "Cleanup start: $label"
+    if "$@"; then
+        echo "Cleanup complete: $label"
+    else
+        status=$?
+        echo "::warning title=macOS signing cleanup::$label did not complete successfully (status $status)"
+    fi
+}
 
 cleanup() {
     local original_keychains=()
@@ -42,23 +57,37 @@ cleanup() {
         done < "$ORIGINAL_KEYCHAINS_PATH"
 
         if [[ ${#original_keychains[@]} -gt 0 ]]; then
-            security list-keychains -d user -s "${original_keychains[@]}"
+            run_cleanup_command \
+                "restore user Keychain search list" \
+                /usr/bin/perl -e 'alarm shift; exec @ARGV' \
+                "$CLEANUP_TIMEOUT_SECONDS" \
+                security list-keychains -d user -s "${original_keychains[@]}"
         fi
     fi
 
     if [[ -f "$SYSTEM_TRUST_MARKER_PATH" && -f "$CERTIFICATE_PATH" ]]; then
-        sudo security remove-trusted-cert -d "$CERTIFICATE_PATH" >/dev/null 2>&1 || true
+        run_cleanup_command \
+            "remove temporary System trust" \
+            sudo -n /usr/bin/perl -e 'alarm shift; exec @ARGV' \
+            "$CLEANUP_TIMEOUT_SECONDS" \
+            security remove-trusted-cert -d "$CERTIFICATE_PATH"
     fi
     if [[ -f "$KEYCHAIN_PATH" ]]; then
-        security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+        run_cleanup_command \
+            "delete temporary Keychain" \
+            /usr/bin/perl -e 'alarm shift; exec @ARGV' \
+            "$CLEANUP_TIMEOUT_SECONDS" \
+            security delete-keychain "$KEYCHAIN_PATH"
     fi
 
+    echo "Cleanup start: remove temporary signing files"
     rm -f \
         "$KEYCHAIN_PASSWORD_PATH" \
         "$P12_PATH" \
         "$CERTIFICATE_PATH" \
         "$ORIGINAL_KEYCHAINS_PATH" \
         "$SYSTEM_TRUST_MARKER_PATH"
+    echo "Cleanup complete: remove temporary signing files"
 }
 
 install() {
