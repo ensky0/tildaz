@@ -12,7 +12,7 @@
 # 사용자 첫 실행:
 #   - DMG 더블클릭 → Finder 에 가상 디스크 마운트
 #   - .app 을 Applications 폴더 alias 로 드래그
-#   - 첫 실행 시 macOS 가 ad-hoc 서명에 대해 차단 → 우클릭 \"Open\" 또는
+#   - Developer ID/notarization이 없어 macOS가 첫 실행을 차단하면 우클릭 \"Open\" 또는
 #     `xattr -d com.apple.quarantine /Applications/TildaZ.app`
 #   - Input Monitoring + Accessibility 권한 한 번 부여
 #
@@ -21,7 +21,8 @@
 #
 # 옵션:
 #   --version <ver>    필수. release 파일 이름에 사용.
-#   --sign-identity <id>  codesign identity. default `-` (ad-hoc).
+#   --sign-identity <id>  두 architecture와 최종 app의 codesign identity.
+#                         default `-` (ad-hoc).
 
 set -euo pipefail
 
