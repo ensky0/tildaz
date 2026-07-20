@@ -85,6 +85,7 @@ jobs:
         run: zig version
 
       - name: Sanity checks (version / release notes / pinned deps)
+        id: sanity
         shell: bash
         run: |
           set -euo pipefail
@@ -100,7 +101,12 @@ jobs:
           fi
 
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
-          if [[ ! -f "$NOTES" ]]; then
+          if [[ -f "$NOTES" ]]; then
+            echo "notes_path=$NOTES" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.vars.outputs.version }}" == *-* ]]; then
+            echo "notes_path=" >> "$GITHUB_OUTPUT"
+            echo "prerelease notes not provided (allowed): $NOTES"
+          else
             echo "ERROR: release notes missing at $NOTES"
             exit 1
           fi
@@ -123,7 +129,11 @@ jobs:
           fi
 
           echo "build.zig.zon version : $ZON_VER"
-          echo "release notes     : $NOTES"
+          if [[ -f "$NOTES" ]]; then
+            echo "release notes     : $NOTES"
+          else
+            echo "release notes     : omitted for prerelease"
+          fi
           echo "pinned deps       : OK"
 
       # Zig 0.15 의 Windows HTTP client 가 github.com 에서 transitive deps
@@ -187,7 +197,9 @@ jobs:
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
-          body_path: dist/release-notes/${{ steps.vars.outputs.tag }}.md
+          # body_path는 optional. stable은 sanity에서 파일을 강제하고,
+          # 파일 없는 prerelease test는 빈 값으로 release body를 생략한다.
+          body_path: ${{ steps.sanity.outputs.notes_path }}
           files: |
             ${{ steps.verify.outputs.zip }}
             ${{ steps.verify.outputs.sha }}
@@ -252,9 +264,12 @@ jobs:
             exit 1
           fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
-          if [[ ! -f "$NOTES" ]]; then
+          if [[ ! -f "$NOTES" && "${{ steps.vars.outputs.version }}" != *-* ]]; then
             echo "ERROR: release notes missing at $NOTES"
             exit 1
+          fi
+          if [[ ! -f "$NOTES" ]]; then
+            echo "prerelease notes not provided (allowed): $NOTES"
           fi
 
       - name: Prefetch dependencies
@@ -443,9 +458,12 @@ jobs:
             exit 1
           fi
           NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
-          if [[ ! -f "$NOTES" ]]; then
+          if [[ ! -f "$NOTES" && "${{ steps.vars.outputs.version }}" != *-* ]]; then
             echo "ERROR: release notes missing at $NOTES"
             exit 1
+          fi
+          if [[ ! -f "$NOTES" ]]; then
+            echo "prerelease notes not provided (allowed): $NOTES"
           fi
 
       - name: Prefetch dependencies

@@ -14,7 +14,7 @@
 #
 # 사전 조건:
 #   - build.zig.zon 의 version 이 --version 과 일치
-#   - dist/release-notes/v<ver>.md 파일 존재 (릴리즈 노트)
+#   - 정식 버전은 dist/release-notes/v<ver>.md 파일 존재 (prerelease는 optional)
 #   - git working tree clean
 #
 # 사용법:
@@ -74,9 +74,9 @@ if [[ "$ZON_VER" != "$VERSION" ]]; then
     exit 1
 fi
 
-# 1c. release-notes 파일 존재
+# 1c. 정식 버전은 release-notes 파일 필수. prerelease test는 optional.
 NOTES_FILE="dist/release-notes/v${VERSION}.md"
-if [[ ! -f "$NOTES_FILE" ]]; then
+if [[ ! -f "$NOTES_FILE" && "$VERSION" != *-* ]]; then
     echo "ERROR: release notes not found at $NOTES_FILE" >&2
     echo "       Create it first (see dist/release-notes/v0.2.8.md for format)." >&2
     exit 1
@@ -103,7 +103,11 @@ if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
 fi
 
 echo "  build.zig.zon version: $ZON_VER ✓"
-echo "  release notes       : $NOTES_FILE ✓"
+if [[ -f "$NOTES_FILE" ]]; then
+    echo "  release notes       : $NOTES_FILE ✓"
+else
+    echo "  release notes       : omitted for prerelease ✓"
+fi
 echo "  git working tree    : clean ✓"
 echo "  tag v${VERSION}     : available ✓"
 
@@ -148,7 +152,11 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "=== DRY-RUN complete ==="
     echo "  Would run: git tag v${VERSION} && git push origin v${VERSION}"
     if [[ "$LOCAL_UPLOAD" -eq 1 ]]; then
-        echo "  Would then: gh release create v${VERSION} --notes-file $NOTES_FILE ..."
+        if [[ -f "$NOTES_FILE" ]]; then
+            echo "  Would then: gh release create v${VERSION} --notes-file $NOTES_FILE ..."
+        else
+            echo "  Would then: gh release create v${VERSION} ..."
+        fi
     fi
     exit 0
 fi
@@ -164,9 +172,11 @@ echo "  Pushed tag v${VERSION} to origin."
 if [[ "$LOCAL_UPLOAD" -eq 1 ]]; then
     echo ""
     echo "=== 4/4 gh release create (local upload) ==="
-    gh release create "v${VERSION}" "$ARTIFACT" "$SHA256" \
-        --title "v${VERSION}" \
-        --notes-file "$NOTES_FILE"
+    RELEASE_ARGS=("v${VERSION}" "$ARTIFACT" "$SHA256" --title "v${VERSION}")
+    if [[ -f "$NOTES_FILE" ]]; then
+        RELEASE_ARGS+=(--notes-file "$NOTES_FILE")
+    fi
+    gh release create "${RELEASE_ARGS[@]}"
     echo "  Release created: $(gh release view "v${VERSION}" --json url -q .url)"
 else
     echo ""

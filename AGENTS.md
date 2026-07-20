@@ -347,7 +347,8 @@ libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문
    Linux package metadata, macOS `Info.plist`, Windows `VERSIONINFO`, artifact
    파일명의 단일 원본이에요. 정식 버전은 `X.Y.Z`, prerelease는
    `X.Y.Z-dev.N` / `-alpha.N` / `-beta.N` / `-rc.N` 형식만 사용해요.
-2. `dist/release-notes/vX.Y.Z.md`를 작성해요.
+2. 정식 버전은 `dist/release-notes/vX.Y.Z.md`를 작성해요. GitHub Actions
+   검증용 prerelease (`-dev.N` 등)는 릴리즈 노트를 생략할 수 있어요.
 3. 커밋하고 `git push origin main` 해요.
 4. `git tag vX.Y.Z && git push origin vX.Y.Z`로 Actions를 트리거해요.
 5. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
