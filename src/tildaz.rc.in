@@ -1,8 +1,6 @@
-// tildaz PE VERSIONINFO resource.
+// tildaz PE VERSIONINFO resource template.
 //
-// 릴리즈마다 FILEVERSION / PRODUCTVERSION 네 숫자와 FileVersion / ProductVersion
-// 문자열을 갱신. build.zig 의 tildaz_version 상수와 동기화 유지.
-//
+// Version values are generated from build.zig.zon by build/version.zig.
 // winver.h / winres.h 를 include 하지 않도록 VS_VERSION_INFO = 1 을 직접 사용하고,
 // FILEOS / FILETYPE 상수도 리터럴로 박는다. llvm-rc + Zig 크로스 빌드 호환.
 
@@ -10,15 +8,15 @@
 
 // 앱 아이콘 (#145). docs/favicon.svg 에서 sips 로 PNG 6 size (16/32/48/64/128/256)
 // 만든 후 Python 으로 multi-resolution ICO 로 묶음. Windows Explorer 가 가장
-// 작은 ID 를 default 로 채택하므로 IDI_ICON 1 로 등록. 파일은 RC 컴파일러가
-// .rc 와 같은 디렉토리에서 찾도록 src/ 안에 둠.
+// 작은 ID 를 default 로 채택하므로 IDI_ICON 1 로 등록. generated RC는 build.zig가
+// src/를 llvm-rc include path로 전달해 이 파일을 찾는다.
 1 ICON "tildaz.ico"
 
 1 VERSIONINFO
- FILEVERSION    0,6,1,0
- PRODUCTVERSION 0,6,1,0
+ FILEVERSION    @VERSION_MAJOR@,@VERSION_MINOR@,@VERSION_PATCH@,@VERSION_REVISION@
+ PRODUCTVERSION @VERSION_MAJOR@,@VERSION_MINOR@,@VERSION_PATCH@,@VERSION_REVISION@
  FILEFLAGSMASK  0x3FL
- FILEFLAGS      0x0L
+ FILEFLAGS      @WINDOWS_FILE_FLAGS@L
  FILEOS         0x00040004L   // VOS_NT_WINDOWS32
  FILETYPE       0x00000001L   // VFT_APP
  FILESUBTYPE    0x00000000L
@@ -29,12 +27,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "ensky0"
             VALUE "FileDescription",  "TildaZ - drop-down terminal for Linux, macOS, and Windows"
-            VALUE "FileVersion",      "0.6.1"
+            VALUE "FileVersion",      "@VERSION_FULL@"
             VALUE "InternalName",     "tildaz"
             VALUE "LegalCopyright",   "(c) 2026 ensky0. AGPL-3.0-or-later."
             VALUE "OriginalFilename", "tildaz.exe"
             VALUE "ProductName",      "TildaZ"
-            VALUE "ProductVersion",   "0.6.1"
+            VALUE "ProductVersion",   "@VERSION_FULL@"
         END
     END
     BLOCK "VarFileInfo"

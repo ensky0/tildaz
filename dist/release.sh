@@ -13,14 +13,14 @@
 # (Actions 가 없거나 다운됐을 때의 비상용).
 #
 # 사전 조건:
-#   - build.zig 의 tildaz_version 이 --version 과 일치
+#   - build.zig.zon 의 version 이 --version 과 일치
 #   - dist/release-notes/v<ver>.md 파일 존재 (릴리즈 노트)
 #   - git working tree clean
 #
 # 사용법:
-#   dist/release.sh --version 0.2.9
-#   dist/release.sh --version 0.2.9 --dry-run
-#   dist/release.sh --version 0.2.9 --local-upload
+#   dist/release.sh --version 0.6.2-dev.1
+#   dist/release.sh --version 0.6.2-dev.1 --dry-run
+#   dist/release.sh --version 0.6.2-dev.1 --local-upload
 
 set -euo pipefail
 
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$VERSION" ]]; then
-    echo "ERROR: --version is required (e.g. --version 0.2.9)" >&2
+    echo "ERROR: --version is required (e.g. --version 0.6.2-dev.1)" >&2
     exit 2
 fi
 
@@ -62,15 +62,15 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-# 1b. build.zig version 일치
-BZIG_VER=$(sed -n 's/^const tildaz_version = "\([^"]*\)";.*/\1/p' build.zig)
-if [[ -z "$BZIG_VER" ]]; then
-    echo "ERROR: could not parse tildaz_version from build.zig" >&2
+# 1b. build.zig.zon version 일치
+ZON_VER=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)",[[:space:]]*$/\1/p' build.zig.zon)
+if [[ -z "$ZON_VER" ]]; then
+    echo "ERROR: could not parse version from build.zig.zon" >&2
     exit 1
 fi
-if [[ "$BZIG_VER" != "$VERSION" ]]; then
-    echo "ERROR: build.zig tildaz_version ($BZIG_VER) != --version ($VERSION)." >&2
-    echo "       Update build.zig first, then re-run." >&2
+if [[ "$ZON_VER" != "$VERSION" ]]; then
+    echo "ERROR: build.zig.zon version ($ZON_VER) != --version ($VERSION)." >&2
+    echo "       Update build.zig.zon first, then re-run." >&2
     exit 1
 fi
 
@@ -102,7 +102,7 @@ if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
     fi
 fi
 
-echo "  build.zig version   : $BZIG_VER ✓"
+echo "  build.zig.zon version: $ZON_VER ✓"
 echo "  release notes       : $NOTES_FILE ✓"
 echo "  git working tree    : clean ✓"
 echo "  tag v${VERSION}     : available ✓"
