@@ -1,9 +1,10 @@
 //! macOS 의 dialog 구현 — 두 path:
 //!
-//! 1. **NSAlert** (NSApp init 후): native TildaZ icon/modal/button은 유지하고,
-//!    18pt title + orange separator + 15pt read-only NSTextView accessoryView를
-//!    모든 정상 info/error/confirm/About/prompt에 사용한다. 화면을 넘을 때만
-//!    본문 NSScrollView에 세로 scroller가 나타난다.
+//! 1. **NSAlert** (NSApp init 후): native TildaZ icon/modal panel은 유지하고,
+//!    18pt title + orange separator + 15pt read-only NSTextView + 48pt native
+//!    NSButton(AccessoryBar bezel, 15pt) action row를 모든 정상
+//!    info/error/confirm/About/prompt에 사용한다.
+//!    화면을 넘을 때만 본문 NSScrollView에 세로 scroller가 나타난다.
 //! 2. **`osascript display dialog`** (NSApp init 전 fallback): config 에러
 //!    같이 부트스트랩 실패 시. NSApp 무관 별도 process 라 항상 동작.
 //!
@@ -100,11 +101,20 @@ const DismissMonitorBlock = extern struct {
     descriptor: *const BlockDescriptor,
 };
 extern const _NSConcreteGlobalBlock: anyopaque;
+extern const NSFontWeightMedium: f64;
 const BLOCK_IS_GLOBAL: c_int = 1 << 28;
 const NSEventMaskKeyDown: u64 = 1 << 10;
 const kVK_Return: u16 = 36;
 const kVK_Escape: u16 = 53;
 const kVK_KeypadEnter: u16 = 76;
+
+const KeyboardDismissMode = enum {
+    none,
+    single,
+    confirm,
+};
+
+var keyboard_dismiss_mode: KeyboardDismissMode = .none;
 
 /// local monitor block 의 invoke — 닫기 키(Esc/Return/키패드 Enter)면 modal 종료 + 이벤트
 /// 삼킴(null 반환), 아니면 그대로 통과(event 반환).
@@ -113,10 +123,15 @@ fn dismissMonitorInvoke(_: *DismissMonitorBlock, event: objc.id) callconv(.c) ob
     const keyCodeOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) u16);
     const code = keyCodeOf(event, objc.sel("keyCode"));
     if (code == kVK_Escape or code == kVK_Return or code == kVK_KeypadEnter) {
+        const response: c_long = switch (keyboard_dismiss_mode) {
+            .none => return event,
+            .single => 1000,
+            .confirm => if (code == kVK_Escape) 1001 else 1000,
+        };
         const app = sharedApp();
         if (app != null) {
             const stopModal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
-            stopModal(app, objc.sel("stopModalWithCode:"), 0);
+            stopModal(app, objc.sel("stopModalWithCode:"), response);
         }
         return null;
     }
@@ -148,14 +163,14 @@ fn removeDismissMonitor(monitor: objc.id) void {
 
 var prompt_field: objc.id = null;
 var prompt_status: objc.id = null;
-var prompt_alert: objc.id = null;
+var prompt_create_button: objc.id = null;
 var prompt_capture_buf: [64]u8 = undefined;
 var prompt_capture_len: usize = 0;
 var prompt_validator: ?dialog.HotkeyValidator = null;
 
 fn updatePromptValidation() bool {
     if (prompt_capture_len == 0) {
-        setPromptCreateEnabled(prompt_alert, false);
+        setPromptCreateEnabled(false);
         setPromptStatusText("");
         return false;
     }
@@ -167,7 +182,7 @@ fn updatePromptValidation() bool {
         .available => true,
         else => false,
     };
-    setPromptCreateEnabled(prompt_alert, available);
+    setPromptCreateEnabled(available);
     var status_buf: [256]u8 = undefined;
     const status = dialog.hotkeyValidationMessage(&status_buf, result);
     setPromptStatusText(status);
@@ -339,14 +354,58 @@ fn setInformative(alert: objc.id, text: []const u8) void {
     setText(alert, objc.sel("setInformativeText:"), nsStringFromSlice(text));
 }
 
-/// NSAlert 의 `addButtonWithTitle:` — 추가 순서대로 cmd+1, cmd+2... 단축키 + 첫
-/// 버튼이 default. 반환된 NSButton 은 우리가 retain 안 함 (alert 가 lifetime 관리).
-fn addButton(alert: objc.id, title: []const u8) void {
+/// NSAlert 의 `addButtonWithTitle:` — branded content 생성 실패 시 native fallback,
+/// 그리고 NSAlert 자체 modal button model을 유지하는 데 사용한다. Branded 성공
+/// 시 이 button들은 hidden 처리하고 accessory의 40pt native NSButton만 표시한다.
+fn addButton(alert: objc.id, title: []const u8) objc.id {
     const add = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    _ = add(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice(title));
+    return add(alert, objc.sel("addButtonWithTitle:"), nsStringFromSlice(title));
 }
 
-/// NSAlertStyle: Warning=0, Informational=1, Critical=2.
+fn setNativeButtonsHidden(alert: objc.id, hidden: bool) void {
+    const get_buttons = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const buttons = get_buttons(alert, objc.sel("buttons")) orelse return;
+    const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
+    const count = get_count(buttons, objc.sel("count"));
+    const obj_at = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) objc.id);
+    const set_hidden = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    for (0..count) |i| {
+        const button = obj_at(buttons, objc.sel("objectAtIndex:"), i) orelse continue;
+        set_hidden(button, objc.sel("setHidden:"), hidden);
+    }
+}
+
+fn dialogActionPressed(_: objc.id, _: objc.SEL, sender: objc.id) callconv(.c) void {
+    if (sender == null) return;
+    const get_tag = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    const response = get_tag(sender, objc.sel("tag"));
+    const app = sharedApp();
+    if (app == null) return;
+    const stop_modal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+    stop_modal(app, objc.sel("stopModalWithCode:"), response);
+}
+
+var dialog_action_target_class: ?objc.Class = null;
+var dialog_action_target_instance: objc.id = null;
+
+fn dialogActionTarget() ?objc.id {
+    if (dialog_action_target_instance != null) return dialog_action_target_instance;
+    if (dialog_action_target_class == null) {
+        const NSObject = objc.getClass("NSObject");
+        const cls = objc.objc_allocateClassPair(NSObject, "TildazDialogActionTarget", 0) orelse return null;
+        if (!objc.class_addMethod(cls, objc.sel("dialogActionPressed:"), @ptrCast(&dialogActionPressed), "v@:@")) return null;
+        objc.objc_registerClassPair(cls);
+        dialog_action_target_class = cls;
+    }
+    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    dialog_action_target_instance = init_obj(alloc(dialog_action_target_class.?, objc.sel("alloc")) orelse return null, objc.sel("init")) orelse return null;
+    return dialog_action_target_instance;
+}
+
+const NSAlertStyleWarning: c_long = 0;
+const NSAlertStyleInformational: c_long = 1;
+
 fn setStyle(alert: objc.id, style: c_long) void {
     const set = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
     set(alert, objc.sel("setAlertStyle:"), style);
@@ -354,9 +413,17 @@ fn setStyle(alert: objc.id, style: c_long) void {
 
 fn alertStyleFor(severity: dialog.Severity) c_long {
     return switch (severity) {
-        .info => 1,
-        .err => 2,
+        .info => NSAlertStyleInformational,
+        // Apple의 critical style은 caution icon에 app icon을 badge한다. Branded
+        // error는 title/body로 severity를 전달하고 warning style을 사용해
+        // standalone TildaZ icon을 보존한다.
+        .err => NSAlertStyleWarning,
     };
+}
+
+test "macOS branded error avoids the critical caution badge" {
+    try std.testing.expectEqual(NSAlertStyleInformational, alertStyleFor(.info));
+    try std.testing.expectEqual(NSAlertStyleWarning, alertStyleFor(.err));
 }
 
 /// host window level 을 잠깐 normal 로 낮춰 alert 가 위에 표시되게 한 뒤 `runModal`
@@ -364,18 +431,20 @@ fn alertStyleFor(severity: dialog.Severity) c_long {
 ///
 /// 포커스(alert 가 key window 가 되는 것)는 `scheduleForceKey` 한 곳이 책임진다 — accessory
 /// 앱은 active 가 아니면 alert 가 key 가 못 돼 키보드를 못 받기 때문(#249).
-/// `keyboard_dismiss` 가 true 면 runModal 동안 닫기 키(Esc/Enter) local monitor 를 단다 —
-/// 단일 버튼(OK 하나) alert 전용. 확인창은 두 버튼의 의미가 달라(Quit/Cancel) monitor 를
-/// 안 쓰고 기본 버튼 Return + Cancel 버튼 Esc keyEquivalent 로 처리하므로 false.
-fn runModalOverHost(alert: objc.id, keyboard_dismiss: bool) c_long {
+/// `keyboard_mode`가 single/confirm이면 runModal 동안 local monitor가 first
+/// responder와 무관하게 Enter/Esc를 정확한 modal response로 변환한다. Prompt는
+/// key capture monitor가 같은 역할을 하므로 none을 사용한다.
+fn runModalOverHost(alert: objc.id, keyboard_mode: KeyboardDismissMode) c_long {
     lowerHostLevel();
     defer restoreHostLevel();
     // #249 — alert 가 key 가 아니면(권한창 등) 키보드를 못 받으므로 modal 루프 안에서 key 로
     // 승격. 이미 key 인 런타임 다이얼로그는 dialogForceKeyFn 이 no-op.
     scheduleForceKey(alert);
     defer cancelForceKey();
-    const monitor: objc.id = if (keyboard_dismiss) addDismissMonitor() else null;
-    defer if (keyboard_dismiss) removeDismissMonitor(monitor);
+    keyboard_dismiss_mode = keyboard_mode;
+    defer keyboard_dismiss_mode = .none;
+    const monitor: objc.id = if (keyboard_mode != .none) addDismissMonitor() else null;
+    defer if (keyboard_mode != .none) removeDismissMonitor(monitor);
     const runModal = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     return runModal(alert, objc.sel("runModal"));
 }
@@ -395,10 +464,11 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
 fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     const alert = newAlert() orelse return;
     setMessage(alert, title);
-    addButton(alert, messages.button_ok);
+    _ = addButton(alert, messages.button_ok);
     setStyle(alert, alertStyleFor(severity));
-    _ = attachBrandedContent(alert, title, message);
-    _ = runModalOverHost(alert, true);
+    const actions = [_]DialogAction{.{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" }};
+    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    _ = runModalOverHost(alert, .single);
 }
 
 const NSAlertRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
@@ -449,6 +519,35 @@ fn dialogTextNaturalSize(tv: objc.id, layout_manager: objc.id, text_container: o
         .w = @max(minimum.w, @ceil(used.w + inset.w * 2.0)),
         .h = @max(minimum.h, @ceil(used.h + inset.h * 2.0)),
     };
+}
+
+const dialog_screen_horizontal_margin_pt: f64 = 96.0;
+
+fn dialogMaxAccessoryWidth(visible_frame_w: f64) f64 {
+    const common_max: f64 = @floatFromInt(ui_metrics.DIALOG_MAX_WIDTH_PT);
+    return @max(1.0, @min(common_max, visible_frame_w - dialog_screen_horizontal_margin_pt));
+}
+
+fn dialogPreferredAccessoryWidth(visible_frame_w: f64) f64 {
+    const common_preferred: f64 = @floatFromInt(ui_metrics.DIALOG_PREFERRED_WIDTH_PT);
+    return @min(common_preferred, dialogMaxAccessoryWidth(visible_frame_w));
+}
+
+fn dialogBodyNeedsScroller(natural_h: f64, maximum_h: f64) bool {
+    return natural_h > maximum_h;
+}
+
+test "macOS dialog width uses the common cap and preserves screen margins" {
+    try std.testing.expectEqual(@as(f64, 580.0), dialogPreferredAccessoryWidth(2560.0));
+    try std.testing.expectEqual(@as(f64, 580.0), dialogPreferredAccessoryWidth(1512.0));
+    try std.testing.expectEqual(@as(f64, 580.0), dialogPreferredAccessoryWidth(800.0));
+    try std.testing.expectEqual(@as(f64, 1.0), dialogPreferredAccessoryWidth(80.0));
+    try std.testing.expectEqual(@as(f64, 960.0), dialogMaxAccessoryWidth(2560.0));
+    try std.testing.expectEqual(@as(f64, 960.0), dialogMaxAccessoryWidth(1512.0));
+    try std.testing.expectEqual(@as(f64, 704.0), dialogMaxAccessoryWidth(800.0));
+    try std.testing.expectEqual(@as(f64, 1.0), dialogMaxAccessoryWidth(80.0));
+    try std.testing.expect(!dialogBodyNeedsScroller(54.0, 54.0));
+    try std.testing.expect(dialogBodyNeedsScroller(55.0, 54.0));
 }
 
 /// About 다이얼로그 NSTextView 의 delegate — selection 변경 시 즉시
@@ -508,6 +607,28 @@ const DialogBodyView = struct {
     height: f64,
 };
 
+fn measureDialogBodyAtWidth(
+    scroll: objc.id,
+    tv: objc.id,
+    layout_manager: objc.id,
+    text_container: objc.id,
+    width: f64,
+    viewport_h: f64,
+    minimum: NSAlertSize,
+) NSAlertSize {
+    const set_size = objc.objcSend(fn (objc.id, objc.SEL, NSAlertSize) callconv(.c) void);
+    const get_size = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
+    set_size(scroll, objc.sel("setFrameSize:"), .{ .w = width, .h = viewport_h });
+    const content = get_size(scroll, objc.sel("contentSize"));
+    set_size(tv, objc.sel("setFrameSize:"), .{ .w = content.w, .h = @max(minimum.h, content.h) });
+    if (text_container != null) {
+        set_size(text_container, objc.sel("setContainerSize:"), .{ .w = content.w, .h = 10_000_000 });
+    }
+    const natural = dialogTextNaturalSize(tv, layout_manager, text_container, minimum);
+    set_size(tv, objc.sel("setFrameSize:"), .{ .w = content.w, .h = @max(natural.h, content.h) });
+    return dialogTextNaturalSize(tv, layout_manager, text_container, minimum);
+}
+
 /// 모든 정상 다이얼로그의 본문 NSScrollView + NSTextView. `reserved_h`는
 /// branded header와 prompt input/status처럼 accessoryView 안에 고정할 높이다.
 /// 짧은 본문은 자연 높이를 사용하고 scroller가 숨으며, 화면을 넘을 때만 본문
@@ -526,9 +647,10 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
         break :blk getRect(screen, objc.sel("visibleFrame"));
     } else NSAlertRect{ .x = 0, .y = 0, .w = 800, .h = 600 };
-    const max_accessory_w = @max(1.0, @min(580.0, visible_frame.w - 96.0));
+    const max_accessory_w = dialogMaxAccessoryWidth(visible_frame.w);
+    const preferred_accessory_w = dialogPreferredAccessoryWidth(visible_frame.w);
     const min_accessory_w = @min(minimum_w, max_accessory_w);
-    var accessory_w = max_accessory_w;
+    var accessory_w = @max(min_accessory_w, preferred_accessory_w);
 
     // 제목·icon·button을 배치한 NSAlert의 실제 base 높이를 먼저 재고, visible
     // screen에서 그 높이와 prompt 고정 영역, 16pt 상하 여백을 뺀 나머지를 본문
@@ -554,7 +676,10 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const scroll = autorelease(scroll_owned, objc.sel("autorelease"));
 
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    setBool(scroll, objc.sel("setHasVerticalScroller:"), true);
+    // 실제 overflow가 확인되기 전에는 scroller 자체를 만들지 않는다. enabled
+    // button의 AppKit re-layout 때 exact-fit body에도 auto-hide overlay가 잠깐
+    // 나타나던 원인이 hasVerticalScroller=true의 선설정이었다(#237).
+    setBool(scroll, objc.sel("setHasVerticalScroller:"), false);
     setBool(scroll, objc.sel("setHasHorizontalScroller:"), false);
     setBool(scroll, objc.sel("setAutohidesScrollers:"), true);
     setBool(scroll, objc.sel("setDrawsBackground:"), false);
@@ -601,41 +726,61 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const setDocument = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setDocument(scroll, objc.sel("setDocumentView:"), tv);
 
-    // 최대 폭에서 먼저 layout해 실제 longest rendered line 폭을 얻은 뒤 공통
-    // 최소/최대 폭으로 clamp한다. 짧은 문구가 항상 580pt로 벌어지지 않고, 긴
-    // path는 화면 경계까지 넓힌 뒤 세로 wrap/scroll 계산으로 넘어간다.
-    const first_natural = dialogTextNaturalSize(
+    // preferred 폭에서 먼저 실제 wrap 높이를 잰다. 그 높이가 screen을 넘을
+    // 때만 maximum 폭으로 확장한다. 짧은 prose는 compact하게 유지되고 긴
+    // path만 가로 공간을 더 써서 scroll 전에 최대한 자연 높이를 확보한다.
+    const minimum_size = NSAlertSize{ .w = min_accessory_w, .h = initial_body_h };
+    const first_natural = measureDialogBodyAtWidth(
+        scroll,
         tv,
         layout_manager,
         text_container,
-        .{ .w = min_accessory_w, .h = initial_content.h },
+        accessory_w,
+        max_accessory_h,
+        minimum_size,
     );
-    accessory_w = @min(max_accessory_w, @max(min_accessory_w, first_natural.w + 4.0));
-
-    // scroller가 나타나면 document 가용 폭이 줄고 wrap 행이 늘 수 있다. AppKit이
-    // 실제로 준 contentSize로 폭/높이를 다시 재는 pass를 반복해 마지막 줄까지
-    // document frame에 포함한다. 짧은 본문은 첫 자연 높이에 수렴해 scroller가 숨는다.
-    var natural_h = first_natural.h;
-    var pass: u8 = 0;
-    while (pass < 3) : (pass += 1) {
-        const viewport_h = if (pass == 0) max_accessory_h else @min(natural_h, max_accessory_h);
-        setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = viewport_h });
-        const content = getSize(scroll, objc.sel("contentSize"));
-        setSize(tv, objc.sel("setFrameSize:"), .{ .w = content.w, .h = @max(natural_h, content.h) });
-        if (text_container != null) {
-            setSize(text_container, objc.sel("setContainerSize:"), .{ .w = content.w, .h = 10_000_000 });
-        }
-        natural_h = dialogTextNaturalSize(
+    accessory_w = @min(preferred_accessory_w, @max(min_accessory_w, first_natural.w + 4.0));
+    var natural = measureDialogBodyAtWidth(
+        scroll,
+        tv,
+        layout_manager,
+        text_container,
+        accessory_w,
+        max_accessory_h,
+        minimum_size,
+    );
+    if (natural.h > max_accessory_h and accessory_w < max_accessory_w) {
+        accessory_w = max_accessory_w;
+        natural = measureDialogBodyAtWidth(
+            scroll,
             tv,
             layout_manager,
             text_container,
-            .{ .w = min_accessory_w, .h = initial_content.h },
-        ).h;
+            accessory_w,
+            max_accessory_h,
+            minimum_size,
+        );
     }
-    const accessory_h = @min(natural_h, max_accessory_h);
+
+    const overflow = dialogBodyNeedsScroller(natural.h, max_accessory_h);
+    setBool(scroll, objc.sel("setHasVerticalScroller:"), overflow);
+    if (overflow) {
+        // scroller가 차지하는 실제 content 폭에서 다시 wrap해 마지막 줄까지
+        // document frame에 포함한다.
+        natural = measureDialogBodyAtWidth(
+            scroll,
+            tv,
+            layout_manager,
+            text_container,
+            accessory_w,
+            max_accessory_h,
+            minimum_size,
+        );
+    }
+    const accessory_h = @min(natural.h, max_accessory_h);
     setSize(scroll, objc.sel("setFrameSize:"), .{ .w = accessory_w, .h = accessory_h });
     const final_content = getSize(scroll, objc.sel("contentSize"));
-    setSize(tv, objc.sel("setFrameSize:"), .{ .w = final_content.w, .h = @max(natural_h, final_content.h) });
+    setSize(tv, objc.sel("setFrameSize:"), .{ .w = final_content.w, .h = @max(natural.h, final_content.h) });
     if (text_container != null) {
         setSize(text_container, objc.sel("setContainerSize:"), .{ .w = final_content.w, .h = 10_000_000 });
     }
@@ -656,14 +801,159 @@ const BrandedContent = struct {
     height: f64,
 };
 
+const DialogAction = struct {
+    title: []const u8,
+    response: c_long,
+    key_equivalent: []const u8,
+};
+
+const BrandedContentWithActions = struct {
+    content: BrandedContent,
+    primary_button: objc.id,
+};
+
+const dialog_action_group_width_pt: f64 = 230.0;
+const dialog_action_gap_pt: f64 = 12.0;
+const dialog_action_body_gap_pt: f64 = 16.0;
+const NSControlSizeLarge: c_ulong = 3;
+const NSControlSizeExtraLarge: c_ulong = 4;
+/// Swift의 `.recessed`가 현재 AppKit header에서 매핑되는 공식 enum 이름.
+const NSBezelStyleAccessoryBar: c_ulong = 13;
+
+const NSOperatingSystemVersion = extern struct {
+    major: c_long,
+    minor: c_long,
+    patch: c_long,
+};
+
+fn dialogActionControlSize(extra_large_available: bool) c_ulong {
+    return if (extra_large_available) NSControlSizeExtraLarge else NSControlSizeLarge;
+}
+
+fn dialogActionUsesAccent(response: c_long) bool {
+    return response == 1000;
+}
+
+/// ExtraLarge는 macOS 26.0부터 제공된다. 이전 macOS에는 알 수 없는 enum 값을
+/// 넘기지 않고 같은 48pt frame에 Large를 사용한다(#237 사용자 결정).
+fn supportsExtraLargeControlSize() bool {
+    const NSProcessInfo = objc.getClass("NSProcessInfo");
+    const process_info = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const info = process_info(NSProcessInfo, objc.sel("processInfo")) orelse return false;
+    const is_at_least = objc.objcSend(fn (objc.id, objc.SEL, NSOperatingSystemVersion) callconv(.c) bool);
+    return is_at_least(
+        info,
+        objc.sel("isOperatingSystemAtLeastVersion:"),
+        .{ .major = 26, .minor = 0, .patch = 0 },
+    );
+}
+
+const DialogActionRowGeometry = struct {
+    group_x: f64,
+    button_w: f64,
+};
+
+fn dialogActionRowGeometry(content_w: f64, action_count: usize) ?DialogActionRowGeometry {
+    if (action_count == 0 or action_count > 2 or content_w <= 0) return null;
+    const group_w = @min(content_w, dialog_action_group_width_pt);
+    const gap_count: f64 = @floatFromInt(action_count - 1);
+    const usable_w = group_w - dialog_action_gap_pt * gap_count;
+    if (usable_w <= 0) return null;
+    return .{
+        .group_x = (content_w - group_w) / 2.0,
+        .button_w = usable_w / @as(f64, @floatFromInt(action_count)),
+    };
+}
+
+fn dialogActionReservedHeight() f64 {
+    return @as(f64, @floatFromInt(ui_metrics.DIALOG_ACTION_BUTTON_HEIGHT_PT)) + dialog_action_body_gap_pt;
+}
+
+test "macOS branded action row uses a 48pt centered native button group" {
+    const single = dialogActionRowGeometry(580.0, 1).?;
+    try std.testing.expectEqual(@as(f64, 175.0), single.group_x);
+    try std.testing.expectEqual(@as(f64, 230.0), single.button_w);
+
+    const pair = dialogActionRowGeometry(580.0, 2).?;
+    try std.testing.expectEqual(@as(f64, 175.0), pair.group_x);
+    try std.testing.expectEqual(@as(f64, 109.0), pair.button_w);
+    try std.testing.expectEqual(@as(f64, 64.0), dialogActionReservedHeight());
+    try std.testing.expectEqual(NSControlSizeLarge, dialogActionControlSize(false));
+    try std.testing.expectEqual(NSControlSizeExtraLarge, dialogActionControlSize(true));
+    try std.testing.expect(dialogActionUsesAccent(1000));
+    try std.testing.expect(!dialogActionUsesAccent(1001));
+}
+
+/// primary action만 현재 system accent를 사용한다. Prompt Create가 disabled면
+/// nil로 되돌려 neutral native disabled 표현을 유지하고, enabled 때 다시 적용한다.
+fn setDialogPrimaryAccent(button: objc.id, accented: bool) void {
+    if (button == null) return;
+    const set_bezel_color = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    if (!accented) {
+        set_bezel_color(button, objc.sel("setBezelColor:"), null);
+        return;
+    }
+    const NSColor = objc.getClass("NSColor");
+    const get_accent = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const accent = get_accent(NSColor, objc.sel("controlAccentColor"));
+    if (accent != null) set_bezel_color(button, objc.sel("setBezelColor:"), accent);
+}
+
+fn addDialogActionRow(content: BrandedContent, actions: []const DialogAction) ?objc.id {
+    const geometry = dialogActionRowGeometry(content.width, actions.len) orelse return null;
+    const target = dialogActionTarget() orelse return null;
+    const NSButton = objc.getClass("NSButton");
+    const button_with_title = objc.objcSend(fn (objc.Class, objc.SEL, objc.id, objc.id, objc.SEL) callconv(.c) objc.id);
+    const set_frame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) void);
+    const set_control_size = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
+    const set_bezel_style = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
+    const set_font = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    const set_tag = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
+    const set_key = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    const add_subview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    const button_h: f64 = @floatFromInt(ui_metrics.DIALOG_ACTION_BUTTON_HEIGHT_PT);
+    const control_size = dialogActionControlSize(supportsExtraLargeControlSize());
+    const NSFont = objc.getClass("NSFont");
+    const system_font = objc.objcSend(fn (objc.Class, objc.SEL, f64, f64) callconv(.c) objc.id);
+    const button_font = system_font(
+        NSFont,
+        objc.sel("systemFontOfSize:weight:"),
+        @floatFromInt(ui_metrics.DIALOG_BODY_FONT_PT),
+        NSFontWeightMedium,
+    );
+
+    var primary_button: objc.id = null;
+    for (actions, 0..) |action, i| {
+        const button = button_with_title(
+            NSButton,
+            objc.sel("buttonWithTitle:target:action:"),
+            nsStringFromSlice(action.title),
+            target,
+            objc.sel("dialogActionPressed:"),
+        ) orelse return null;
+        const x = geometry.group_x + @as(f64, @floatFromInt(i)) * (geometry.button_w + dialog_action_gap_pt);
+        set_frame(button, objc.sel("setFrame:"), .{ .x = x, .y = 0, .w = geometry.button_w, .h = button_h });
+        set_control_size(button, objc.sel("setControlSize:"), control_size);
+        set_bezel_style(button, objc.sel("setBezelStyle:"), NSBezelStyleAccessoryBar);
+        if (button_font != null) set_font(button, objc.sel("setFont:"), button_font);
+        set_tag(button, objc.sel("setTag:"), action.response);
+        set_key(button, objc.sel("setKeyEquivalent:"), nsStringFromSlice(action.key_equivalent));
+        if (dialogActionUsesAccent(action.response)) setDialogPrimaryAccent(button, true);
+        add_subview(content.view, objc.sel("addSubview:"), button);
+        if (action.response == 1000) primary_button = button;
+    }
+    return if (primary_button != null) primary_button else null;
+}
+
 fn restoreNativeAlertContent(alert: objc.id, title: []const u8, body: []const u8) void {
+    setNativeButtonsHidden(alert, false);
     setAlertIcon(alert, applicationIcon());
     setMessage(alert, title);
     setInformative(alert, body);
 }
 
-/// NSAlert의 modal panel과 native button은 유지하고 content만 공통 visual
-/// language로 구성한다. AppKit 좌표는 logical point라 backing scale 변환은 OS가 한다.
+/// NSAlert의 modal panel/icon은 유지하고 content/action을 공통 visual language로
+/// 구성한다. AppKit 좌표는 logical point라 backing scale 변환은 OS가 한다.
 fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reserved_bottom_h: f64, minimum_w: f64) ?BrandedContent {
     const icon = applicationIcon();
     if (icon == null) return null;
@@ -755,14 +1045,34 @@ fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reser
     return .{ .view = container, .width = content_w, .height = header.total_h };
 }
 
-fn attachBrandedContent(alert: objc.id, title: []const u8, body: []const u8) bool {
-    const content = makeBrandedContent(alert, title, body, 0, 320.0) orelse {
+fn attachBrandedContent(
+    alert: objc.id,
+    title: []const u8,
+    body: []const u8,
+    extra_reserved_bottom_h: f64,
+    minimum_w: f64,
+    actions: []const DialogAction,
+) ?BrandedContentWithActions {
+    // NSAlert는 addButton 호출이 없어도 기본 OK를 한 개 만든다. Public hidden
+    // state를 layout 전에 적용하면 AppKit이 native footer 높이도 함께 회수한다.
+    setNativeButtonsHidden(alert, true);
+    const content = makeBrandedContent(
+        alert,
+        title,
+        body,
+        dialogActionReservedHeight() + extra_reserved_bottom_h,
+        minimum_w,
+    ) orelse {
         restoreNativeAlertContent(alert, title, body);
-        return false;
+        return null;
+    };
+    const primary_button = addDialogActionRow(content, actions) orelse {
+        restoreNativeAlertContent(alert, title, body);
+        return null;
     };
     const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setAccessory(alert, objc.sel("setAccessoryView:"), content.view);
-    return true;
+    return .{ .content = content, .primary_button = primary_button };
 }
 
 fn showAboutText(title: []const u8, body: []const u8) bool {
@@ -770,12 +1080,13 @@ fn showAboutText(title: []const u8, body: []const u8) bool {
     const alert = newAlert() orelse return false;
     setMessage(alert, title);
     setStyle(alert, alertStyleFor(.info));
-    addButton(alert, messages.button_ok);
-    _ = attachBrandedContent(alert, title, body);
+    _ = addButton(alert, messages.button_ok);
+    const actions = [_]DialogAction{.{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" }};
+    _ = attachBrandedContent(alert, title, body, 0, 320.0, actions[0..]);
 
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
-    // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard_dismiss=true).
-    _ = runModalOverHost(alert, true);
+    // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard mode=single).
+    _ = runModalOverHost(alert, .single);
     return true;
 }
 
@@ -789,10 +1100,9 @@ pub fn showFatal(title: []const u8, body: []const u8) void {
     show(.err, title, body);
 }
 
-/// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=Quit, Esc=Cancel.
-/// NSAlert 의 첫 추가 버튼 = 기본(Return) + 맨 오른쪽이라 Quit 을 먼저 → Enter=Quit
-/// (NSAlertFirstButtonReturn=1000). Esc=Cancel 은 NSAlert 가 자동 부여하지 않으므로
-/// 두 번째 버튼(Cancel)에 Esc keyEquivalent 를 명시. 반환: Quit → true.
+/// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=OK,
+/// Esc=Cancel. Visible accessory button과 local monitor가 같은 modal response
+/// (1000/1001)를 사용한다. 반환: OK → true.
 pub fn showConfirm(title: []const u8, message: []const u8) bool {
     // #282 C6 — bootstrap(NSApp 미준비) 단계에도 조용히 false 반환하지 않고
     // `show` 와 동일하게 osascript 로 실제 2-버튼 confirm 을 띄운다 (Windows
@@ -805,13 +1115,16 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
     };
     setMessage(alert, title);
     setStyle(alert, 1); // Informational
-    addButton(alert, messages.button_ok);
-    addButton(alert, messages.button_cancel);
+    _ = addButton(alert, messages.button_ok);
+    _ = addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1); // Cancel(두 번째 버튼) → Esc.
-    _ = attachBrandedContent(alert, title, message);
+    const actions = [_]DialogAction{
+        .{ .title = messages.button_cancel, .response = 1001, .key_equivalent = "\x1b" },
+        .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
+    };
+    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
 
-    const result = runModalOverHost(alert, false);
-    // NSAlertFirstButtonReturn = 1000 (= Quit, 첫 추가 버튼 = 기본).
+    const result = runModalOverHost(alert, .confirm);
     return result == 1000;
 }
 
@@ -861,25 +1174,35 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     };
     setMessage(alert, title);
     setStyle(alert, 1);
-    addButton(alert, messages.button_create);
-    addButton(alert, messages.button_cancel);
+    _ = addButton(alert, messages.button_create);
+    _ = addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1);
 
     const prompt_controls_h = 52.0;
     const prompt_body_gap = 16.0;
-    const branded = makeBrandedContent(alert, title, message, prompt_controls_h + prompt_body_gap, 360.0) orelse {
-        restoreNativeAlertContent(alert, title, message);
-        return null;
+    const actions = [_]DialogAction{
+        .{ .title = messages.button_cancel, .response = 1001, .key_equivalent = "\x1b" },
+        .{ .title = messages.button_create, .response = 1000, .key_equivalent = "\r" },
     };
+    const attached = attachBrandedContent(
+        alert,
+        title,
+        message,
+        prompt_controls_h + prompt_body_gap,
+        360.0,
+        actions[0..],
+    ) orelse return null;
+    const branded = attached.content;
     const container_w = branded.width;
+    const prompt_controls_y = dialogActionReservedHeight();
 
     const NSTextField = objc.getClass("NSTextField");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const field_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const status_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 26, .w = container_w, .h = 26 }) orelse return null;
-    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = container_w, .h = 22 }) orelse return null;
+    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = prompt_controls_y + 26, .w = container_w, .h = 26 }) orelse return null;
+    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = prompt_controls_y, .w = container_w, .h = 22 }) orelse return null;
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     for ([_]objc.id{ field, status }) |label| {
         setBool(label, objc.sel("setEditable:"), false);
@@ -900,38 +1223,33 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     addSubview(branded.view, objc.sel("addSubview:"), field);
     addSubview(branded.view, objc.sel("addSubview:"), status);
-    const setAccessory = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setAccessory(alert, objc.sel("setAccessoryView:"), branded.view);
     prompt_field = field;
     prompt_status = status;
-    prompt_alert = alert;
+    prompt_create_button = attached.primary_button;
     prompt_capture_len = 0;
     prompt_validator = validator;
     defer prompt_validator = null;
-    setPromptCreateEnabled(alert, false);
+    setPromptCreateEnabled(false);
 
     const monitor = addPromptMonitor();
     defer removeDismissMonitor(monitor);
     defer {
         prompt_field = null;
         prompt_status = null;
-        prompt_alert = null;
+        prompt_create_button = null;
     }
     while (true) {
-        const result = runModalOverHost(alert, false);
+        const result = runModalOverHost(alert, .none);
         if (result != 1000) return null;
         if (updatePromptValidation()) return allocator.dupe(u8, prompt_capture_buf[0..prompt_capture_len]) catch null;
     }
 }
 
-fn setPromptCreateEnabled(alert: objc.id, enabled: bool) void {
-    if (alert == null) return;
-    const get_buttons = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-    const buttons = get_buttons(alert, objc.sel("buttons")) orelse return;
-    const obj_at = objc.objcSend(fn (objc.id, objc.SEL, u64) callconv(.c) objc.id);
-    const button = obj_at(buttons, objc.sel("objectAtIndex:"), 0) orelse return;
+fn setPromptCreateEnabled(enabled: bool) void {
+    if (prompt_create_button == null) return;
     const setEnabled = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-    setEnabled(button, objc.sel("setEnabled:"), enabled);
+    setDialogPrimaryAccent(prompt_create_button, enabled);
+    setEnabled(prompt_create_button, objc.sel("setEnabled:"), enabled);
 }
 
 /// NSAlert.buttons[index] 의 keyEquivalent 를 Esc(`\x1b`)로 설정. NSAlert 가 Cancel
