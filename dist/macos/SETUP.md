@@ -157,13 +157,96 @@ TILDAZ_SIGN_IDENTITY=TildazLocal \
 
 ## CI 빌드 (`.github/workflows/release.yml`)
 
-GitHub Actions `macos-15` runner 에서 `zig build package` 실행 — `dist/macos/package.sh` 가:
+GitHub-hosted runner는 로컬 Keychain을 직접 볼 수 없어요. `TildazLocal`의
+certificate + private key를 password-protected PKCS#12(`.p12`)로 내보내고,
+다음 두 repository secret으로 저장해요.
+
+- `MACOS_CERTIFICATE_P12_BASE64`: `.p12` 파일의 Base64
+- `MACOS_CERTIFICATE_PASSWORD`: `.p12` export 비밀번호
+
+Base64는 암호화가 아니며 전송용 인코딩일 뿐이에요. 보호 경계는 GitHub Actions
+secret과 `.p12`의 별도 비밀번호입니다. private key, `.p12`, 비밀번호는 repository,
+이슈, workflow log에 넣지 않아요. 공식 절차:
+
+- [Installing an Apple certificate on macOS runners for Xcode development](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications)
+- [Using secrets in GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
+
+### 최초 등록 / rotation
+
+먼저 다른 identity가 섞이지 않는지 확인해요. 여러 identity가 보이면
+`security export -t identities`를 쓰지 말고 Keychain Access의 **My Certificates**에서
+`TildazLocal` 하나만 `.p12`로 export해야 해요.
+
+```bash
+security find-identity -v -p codesigning ~/Library/Keychains/login.keychain-db
+```
+
+`TildazLocal` 하나만 유효한 현재 개발 환경에서는 repository 밖의 권한 제한 TEMP에
+export한 뒤 secret을 stdin으로 등록해요. 아래의 실제 비밀번호와 Base64는 출력하지
+않아야 합니다.
+
+```bash
+SIGNING_TEMP=$(mktemp -d "${TMPDIR%/}/tildaz-signing.XXXXXX")
+chmod 700 "$SIGNING_TEMP"
+openssl rand -hex 32 -out "$SIGNING_TEMP/p12-password"
+perl -pi -e 'chomp if eof' "$SIGNING_TEMP/p12-password"
+chmod 600 "$SIGNING_TEMP/p12-password"
+
+security export \
+  -k ~/Library/Keychains/login.keychain-db \
+  -t identities \
+  -f pkcs12 \
+  -P "$(cat "$SIGNING_TEMP/p12-password")" \
+  -o "$SIGNING_TEMP/TildazLocal.p12"
+base64 -i "$SIGNING_TEMP/TildazLocal.p12" \
+  -o "$SIGNING_TEMP/TildazLocal.p12.base64"
+
+gh secret set MACOS_CERTIFICATE_P12_BASE64 \
+  --repo ensky0/tildaz \
+  < "$SIGNING_TEMP/TildazLocal.p12.base64"
+gh secret set MACOS_CERTIFICATE_PASSWORD \
+  --repo ensky0/tildaz \
+  < "$SIGNING_TEMP/p12-password"
+```
+
+등록은 값이 아니라 이름과 갱신 시각만 확인해요.
+
+```bash
+gh secret list --repo ensky0/tildaz
+```
+
+확인 후 TEMP의 `.p12`, Base64, 비밀번호를 삭제해요. 인증서를 새로 만들면 다음 공개
+fingerprint 상수도 함께 바꿔야 해요.
+
+- `.github/workflows/release.yml`의 `MACOS_CERTIFICATE_SHA1`
+- `.github/workflows/macos-signing-check.yml`의 `MACOS_CERTIFICATE_SHA1`
+
+### runner 동작
+
+GitHub Actions `macos-15` runner에서 `dist/macos/ci-signing.sh install`이 secret을
+`RUNNER_TEMP`에 복원하고, 임시 Keychain에 import하고, self-signed certificate를
+passwordless `sudo`로 runner System Keychain의 code-signing trust에 임시 등록하고,
+공개 fingerprint를 검증해요. GitHub는 Linux/macOS hosted VM이 passwordless `sudo`로
+실행됨을 [공식 문서](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)에 명시해요. 로컬 실행에서는 기존 system trust만 읽고
+trust 설정을 바꾸지 않아요. 이어서
+`zig build package -Dmacos-sign-identity=TildazLocal`을 실행하면
+`dist/macos/package.sh`가:
+
 1. `aarch64-macos` 빌드 (Apple Silicon)
 2. `x86_64-macos` 빌드 (Intel) — Apple Silicon runner 에서 cross-compile, build.zig 가 `-Dmacos-sdk=$(xcrun --show-sdk-path)` 받음
 3. `lipo -create` 로 universal binary 합침
-4. `.app` 번들 조립 + 재 codesign (ad-hoc — runner 에 self-signed cert 없음)
+4. `.app` 번들 조립 + `TildazLocal`로 재 codesign
 5. `hdiutil create` 로 DMG (volume 안에 `.app` + `Applications` symlink)
+
+`dist/macos/verify-signing.sh`는 strict signature, bundle identifier, signer name,
+designated requirement의 certificate fingerprint를 검증해요. `always()` cleanup은
+임시 Keychain과 certificate/password 파일을 지웁니다. publish 없이 이 경로만 확인할
+때는 **macOS signing smoke test** workflow를 수동 실행해요.
 
 산출물: `tildaz-vX.Y.Z-macos.dmg` 한 파일 — Apple Silicon / Intel Mac 모두 동작 (#133).
 
-사용자 첫 실행: DMG 더블클릭 → 마운트된 디스크에서 `.app` 을 `Applications` 폴더로 드래그 → ad-hoc 서명이라 macOS 가 차단 시 우클릭 \"Open\" 또는 `xattr -d com.apple.quarantine /Applications/TildaZ.app` → Input Monitoring + Accessibility 권한 한 번 부여. CI 빌드의 ad-hoc identity 는 빌드 환경 hash 가 같은 DMG 안에서 일정해 release 끼리는 권한 유지 안 되지만 *같은 DMG 내* 에서는 일정.
+`TildazLocal`은 Apple Developer ID가 아닌 자체 서명 identity예요. release 사이
+designated requirement가 안정돼 TCC 권한 identity는 유지되지만 notarization이나
+다른 Mac의 Gatekeeper trust를 제공하지 않아요. 사용자 첫 실행은 DMG를 마운트해
+`.app`을 `Applications`로 드래그한 뒤, macOS가 차단하면 우클릭 \"Open\" 또는
+`xattr -d com.apple.quarantine /Applications/TildaZ.app`이 여전히 필요할 수 있어요.

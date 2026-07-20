@@ -206,12 +206,16 @@ jobs:
   # binary (Mach-O fat) 로 합쳐 단일 DMG 로 배포 — Intel + Apple Silicon 모두 실행
   # 가능 (#133, dist/macos/package.sh).
   #
-  # Apple Developer 계정이 없어 ad-hoc 서명 — 사용자 첫 다운로드 시 quarantine
-  # 우회 (`xattr -d com.apple.quarantine ./TildaZ.app`) + Input Monitoring /
-  # Accessibility 권한 한 번 부여 필요. CI 빌드의 ad-hoc identity 는 stable 이라
-  # 다음 릴리즈에서도 권한 유지.
+  # Apple Developer 계정은 없지만 #109부터 로컬과 같은 self-signed
+  # `TildazLocal` identity를 Actions secret에서 임시 Keychain으로 가져와 서명.
+  # release 사이 designated requirement가 안정돼 TCC 권한 identity가 유지된다.
+  # Developer ID/notarization은 아니므로 첫 다운로드의 quarantine/Gatekeeper
+  # 처리는 여전히 별개다.
   release-macos:
     runs-on: macos-15
+    env:
+      MACOS_SIGN_IDENTITY: TildazLocal
+      MACOS_CERTIFICATE_SHA1: 49A04E831C72FA3F4079DB379E31A02E2943C5A3
     steps:
       - name: Resolve tag / version
         id: vars
@@ -274,10 +278,17 @@ jobs:
             sleep 10
           done
 
+      - name: Install macOS signing identity
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: ./dist/macos/ci-signing.sh install
+
       - name: Build + package
         # `-Doptimize=ReleaseFast` 명시 (#200) — default 가 Debug 가 된 후
-        # 매크로 OS package 도 명시 적용.
-        run: zig build package -Doptimize=ReleaseFast
+        # macOS package도 명시 적용. self-signed identity는 package.sh의 두
+        # architecture build와 lipo 후 최종 app 재서명에 모두 전달 (#109).
+        run: zig build package -Doptimize=ReleaseFast -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
 
       - name: Verify artifacts
         id: verify
@@ -295,8 +306,19 @@ jobs:
           echo "sha256 : $(cat "$SHA")"
           echo "universal binary architectures:"
           lipo -info "zig-out/TildaZ.app/Contents/MacOS/tildaz"
+          ./dist/macos/verify-signing.sh \
+            zig-out/TildaZ.app \
+            "$MACOS_SIGN_IDENTITY" \
+            "$MACOS_CERTIFICATE_SHA1"
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up macOS signing identity
+        if: ${{ always() }}
+        run: |
+          if [[ -x dist/macos/ci-signing.sh ]]; then
+            ./dist/macos/ci-signing.sh cleanup
+          fi
 
       # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
       # softprops/action-gh-release 의 default 동작.
