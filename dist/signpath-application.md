@@ -99,11 +99,11 @@ EDR, would let a single cert-level approval cover all future releases.
 
 Builds are produced entirely on GitHub-hosted runners via GitHub Actions. The
 release workflow is committed at `.github/workflows/release.yml` on the default
-branch. It builds Windows AMD64/ARM64 packages on `windows-2022`, a universal
-Apple Silicon/Intel DMG on `macos-15`, and Linux x86_64/aarch64 packages on
-Ubuntu runners. For each platform it:
+branch. It builds Linux x86_64/aarch64 packages on Ubuntu runners, a universal
+Apple Silicon/Intel DMG on `macos-15`, and Windows AMD64/ARM64 packages on
+`windows-2022`. For each platform it:
 
-1. Validates the tag matches `build.zig`'s `tildaz_version` constant.
+1. Validates the complete tag version matches `.version` in `build.zig.zon`.
 2. Validates `build.zig.zon` dependencies are pinned to 40-hex-digit commit
    SHAs (no rolling branch/tag URLs).
 3. Fetches dependencies (`zig build --fetch`).
