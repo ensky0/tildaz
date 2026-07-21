@@ -23,7 +23,7 @@ const builtin = @import("builtin");
 const posix = std.posix;
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
-const portal = @import("portal.zig");
+const hotkey_format = @import("hotkey_format.zig");
 const instance_context = @import("../../instance_context.zig");
 
 const native_endian = builtin.target.cpu.arch.endian();
@@ -88,7 +88,7 @@ fn isSwayDesktop() bool {
 }
 
 /// `config.hotkey` → sway accel 문자열. modifier prefix 는 sway 가 수용하는
-/// 친화 이름 (`Shift` / `Ctrl` / `Alt` / `Super`), key 이름은 `portal.keysymGtkName`
+/// 친화 이름 (`Shift` / `Ctrl` / `Alt` / `Super`), key 이름은 공통 `hotkey_format.gtkName`
 /// 재사용 (XKB keysym name — sway bindsym 과 1:1, nested 시연 확인).
 fn buildAccel(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     const H = config_mod.Hotkey;
@@ -98,7 +98,7 @@ fn buildAccel(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     if ((modifiers & H.MOD_CTRL) != 0) w.writeAll("Ctrl+") catch {};
     if ((modifiers & H.MOD_ALT) != 0) w.writeAll("Alt+") catch {};
     if ((modifiers & H.MOD_SUPER) != 0) w.writeAll("Super+") catch {};
-    w.writeAll(portal.keysymGtkName(keysym)) catch {};
+    w.writeAll(hotkey_format.gtkName(keysym)) catch {};
     return fbs.getWritten();
 }
 

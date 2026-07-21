@@ -1,6 +1,6 @@
-//! Runtime libdbus-1 wrapper for XDG Desktop Portal integration.
+//! Runtime libdbus-1 wrapper for Linux desktop integrations.
 //!
-//! L9 의 portal `GlobalShortcuts` 사용을 위한 session bus client. wayland 의
+//! portal `GlobalShortcuts`와 KDE KGlobalAccel이 공유하는 session bus client. Wayland의
 //! libxkbcommon / FreeType 처럼 runtime dlopen — macOS-hosted Linux cross build
 //! 가 dbus headers / link 없이 통과 + Linux runtime 에선 거의 모든 distro
 //! (Alpine / musl 포함) 의 `libdbus-1.so.3` 으로 동작 (systemd 비의존).
@@ -40,8 +40,7 @@ pub const DBusMessageIter = extern struct {
     bytes: [80]u8 align(8) = @splat(0),
 };
 
-/// `DBusBusType::DBUS_BUS_SESSION` (= 0). xdg-desktop-portal 은 session bus
-/// 에 등록됨.
+/// `DBusBusType::DBUS_BUS_SESSION` (= 0).
 const dbus_bus_type_session: c_int = 0;
 
 /// libdbus type codes — `dbus/dbus-protocol.h` 의 `DBUS_TYPE_*` 매크로. ASCII
@@ -50,6 +49,7 @@ pub const dbus_type_invalid: c_int = 0;
 pub const dbus_type_string: c_int = 's';
 pub const dbus_type_int32: c_int = 'i';
 pub const dbus_type_uint32: c_int = 'u';
+pub const dbus_type_int64: c_int = 'x';
 pub const dbus_type_uint64: c_int = 't';
 pub const dbus_type_object_path: c_int = 'o';
 pub const dbus_type_array: c_int = 'a';
@@ -85,6 +85,7 @@ const DBusMessageNewMethodCall = *const fn (
     iface: [*:0]const u8,
     member: [*:0]const u8,
 ) callconv(.c) ?*DBusMessage;
+const DBusMessageSetAutoStart = *const fn (msg: *DBusMessage, auto_start: c_int) callconv(.c) void;
 const DBusMessageUnref = *const fn (msg: *DBusMessage) callconv(.c) void;
 const DBusMessageIsSignal = *const fn (
     msg: *DBusMessage,
@@ -147,6 +148,7 @@ pub const Api = struct {
     error_free: DBusErrorFree,
     error_is_set: DBusErrorIsSet,
     message_new_method_call: DBusMessageNewMethodCall,
+    message_set_auto_start: DBusMessageSetAutoStart,
     message_unref: DBusMessageUnref,
     message_is_signal: DBusMessageIsSignal,
     message_get_path: DBusMessageGetPath,
@@ -183,6 +185,7 @@ pub const Api = struct {
             .error_free = lookupSymbol(handle, DBusErrorFree, "dbus_error_free"),
             .error_is_set = lookupSymbol(handle, DBusErrorIsSet, "dbus_error_is_set"),
             .message_new_method_call = lookupSymbol(handle, DBusMessageNewMethodCall, "dbus_message_new_method_call"),
+            .message_set_auto_start = lookupSymbol(handle, DBusMessageSetAutoStart, "dbus_message_set_auto_start"),
             .message_unref = lookupSymbol(handle, DBusMessageUnref, "dbus_message_unref"),
             .message_is_signal = lookupSymbol(handle, DBusMessageIsSignal, "dbus_message_is_signal"),
             .message_get_path = lookupSymbol(handle, DBusMessageGetPath, "dbus_message_get_path"),
@@ -220,8 +223,8 @@ fn lookupSymbol(handle: *anyopaque, comptime T: type, name: [*:0]const u8) T {
     return @ptrCast(@alignCast(symbol));
 }
 
-/// session bus 연결 + unique_name 로그 + cleanup 책임. method call / signal
-/// subscribe API 는 portal.zig 가 `api` field 통해 사용.
+/// session bus 연결 + unique_name 로그 + cleanup 책임. 각 desktop integration은
+/// `api` field를 통해 method call과 signal subscription을 구성한다.
 pub const SessionBus = struct {
     api: Api,
     conn: *DBusConnection,
