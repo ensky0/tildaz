@@ -65,7 +65,7 @@ Download the latest artifact from
 | Platform | Artifact | Notes |
 |---|---|---|
 | Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then `./install.sh` installs the `.desktop` and icon under `~/.local/share`. The binary stays in the extracted directory by default. |
-| Linux Debian / Ubuntu | `tildaz_X.Y.Z_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
+| Linux Debian / Ubuntu | `tildaz_X.Y.Z-1_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
 | Linux Arch / Manjaro / EndeavourOS | `tildaz-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst` (x86_64). |
@@ -135,7 +135,7 @@ Outputs:
 
 | Platform | Local build output | Package output |
 |---|---|---|
-| Linux | `zig-out/bin/tildaz` (with `-Dtarget={x86_64,aarch64}-linux-gnu.2.28`) | `zig-out/release/{tildaz-v<ver>-linux-<arch>.tar.gz,tildaz_<ver>_<debarch>.deb,tildaz-<ver>-1.<arch>.rpm,TildaZ-<ver>-<arch>.AppImage}` (`-Dformat=tar.gz\|deb\|rpm\|AppImage`) |
+| Linux | `zig-out/bin/tildaz` (with `-Dtarget={x86_64,aarch64}-linux-gnu.2.28`) | `zig-out/release/{tildaz-v<ver>-linux-<arch>.tar.gz,tildaz_<ver>-1_<debarch>.deb,tildaz-<ver>-1.<arch>.rpm,TildaZ-<ver>-<arch>.AppImage}` (`-Dformat=tar.gz\|deb\|rpm\|AppImage`) |
 | macOS | `zig-out/TildaZ.app` | `zig-out/release/tildaz-v<ver>-macos.dmg` |
 | Windows x64 | `zig-out/bin/tildaz.exe` | `zig-out/release/tildaz-v<ver>-win-x64.zip` |
 | Windows ARM64 | `zig-out/bin/tildaz.exe` (with `-Dtarget=aarch64-windows`) | `zig-out/release/tildaz-v<ver>-win-arm64.zip` |

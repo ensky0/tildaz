@@ -1094,7 +1094,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 스크롤바 마우스 클릭 + 드래그 | ✅ | #123 | `scrollbarScrollToY` (Windows `scrollToY` 패턴 그대로). cross-platform `ScrollbarDragState` + ghostty `Pin` 기반 selection 으로 viewport 이동해도 selection 유지. |
 | autostart (LaunchAgent) | ✅ | #126 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등 |
 | 로그 시스템 (`~/Library/Logs/tildaz_N.log`) | ✅ | #124 | Windows 와 공통 `src/log.zig` (+ OS 별 `src/log/{windows,macos,linux}.zig`) 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
-| Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback ad-hoc |
+| Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback은 stable self-signed TildaZ identity |
 | config schema 확장 (font.* / shell / max_scroll_lines) | ✅ | #118 | Linux · macOS · Windows가 같은 schema를 사용하고 default만 OS별로 다름. |
 | SIGHUP 무시 셸 fallback (SIGKILL) | ✅ | #129 | `Pty.deinit` 에 grace period (500ms / 5ms polling) + `child_exited` atomic flag. wait_thread 의 waitpid 가 깨어나면 즉시 break, 안 깨어나면 SIGKILL. Cmd+W / 탭 close button 으로만 트리거 (Cmd+Q 는 NSApp `terminate:` → `exit()` 직행). |
 ### A.2 Windows 미구현 (macOS 기능 → Windows 추가)

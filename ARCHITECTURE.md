@@ -176,7 +176,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 
 | Area | Issue | State |
 |---|---:|---|
-| macOS Developer ID signing / notarization | [#109](https://github.com/ensky0/tildaz/issues/109) | Blocked by current signing environment; releases are ad-hoc signed |
+| macOS Developer ID signing / notarization | [#109](https://github.com/ensky0/tildaz/issues/109) | Blocked by current signing environment; releases use a stable self-signed TildaZ identity |
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux renderer (EGL/OpenGL ES) | [#277](https://github.com/ensky0/tildaz/issues/277) | The Wayland backend shipped in v0.5.0; replacing the correct software `wl_shm` path with a GPU renderer remains future work. |
@@ -220,7 +220,7 @@ while adapting it to each platform's native constraints:
 | Platform | Artifact | Signing |
 |---|---|---|
 | Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.{tar.gz,deb,rpm,AppImage}`, the AppImage as `TildaZ-...`, plus an Arch package `tildaz-<ver>-1-x86_64.pkg.tar.zst` (x86_64 only) | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. The `.deb` / `.rpm` packages declare the core libraries (xkbcommon, freetype, fontconfig) as dependencies so a fresh install pulls them in. |
-| macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), ad-hoc signed |
+| macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), stable self-signed TildaZ identity; not Apple-notarized |
 | Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
 | Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
 
