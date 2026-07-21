@@ -14,8 +14,8 @@
  * window.{dock_position,width_percent,height_percent,offset_percent} 를 읽는다.
  *
  * 동작: app_id 감지 + config 기반 placement(move_resize_frame) + make_above +
- * stick + skip_taskbar(overview/Alt-Tab 에서 숨김) + hotkey 토글(focus 면 minimize
- * / 아니면 show). hotkey 는 toggle 전용 — tildaz 가 안 떠 있으면 무동작(KDE/sway/
+ * stick + skip_taskbar(overview/Alt-Tab 에서 숨김) + hotkey 토글(visible 이면 minimize
+ * / minimized 면 show). hotkey 는 toggle 전용 — tildaz 가 안 떠 있으면 무동작(KDE/sway/
  * Win/mac 과 동일한 일관모델). 실행은 autostart(enable 시 launch)/메뉴가 담당.
  * slide 애니메이션 / 멀티모니터 선택은 향후.
  */
@@ -270,9 +270,9 @@ export default class TildazExtension extends Extension {
       return;
     }
 
-    // 떠 있고 focus → 숨김. minimize 의 mutter 기본 애니메이션은 skip
+    // 떠 있고 visible → focus 유무와 관계없이 숨김. minimize 의 mutter 기본 애니메이션은 skip
     // (drop-down 은 즉시 사라지는 게 자연스러움; slide 는 Phase 2).
-    if (win.has_focus() && !win.minimized) {
+    if (!win.minimized) {
       this._skipEffect(win);
       win.minimize();
       this._defocusAfterHide(win);
