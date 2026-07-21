@@ -416,12 +416,6 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         "Show Desktop Grid",
     });
 
-    var mismatch_buf: [256]u8 = undefined;
-    const mismatch_msg = try std.fmt.bufPrint(&mismatch_buf, messages.hotkey_mismatch_persists_format, .{
-        "Ctrl+Shift+Space",
-        "Meta+Ctrl+Space",
-    });
-
     var prompt_buf: [256]u8 = undefined;
     const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{32});
 
@@ -451,7 +445,6 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         // 본문만 3/4/3행 overflow한다. 1.7x는 고정 chrome 반올림으로 한 행 적다.
         .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 3, 4, 3 } },
         .{ .title = messages.hotkey_takeover_title, .message = takeover_msg, .kind = .confirm },
-        .{ .title = messages.hotkey_mismatch_persists_title, .message = mismatch_msg, .kind = .info },
         .{ .title = messages.new_instance_title, .message = prompt_msg, .kind = .prompt },
         .{ .title = messages.new_instance_title, .message = create_error_msg, .kind = .info },
         .{ .title = messages.error_title, .message = messages.request_endpoint_unavailable_msg, .kind = .info },

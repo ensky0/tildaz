@@ -1,12 +1,12 @@
-//! #198 — portal `GlobalShortcuts` 가용 안 한 DE (Cinnamon / mutter / wlroots 등)
-//! 에서 `tildaz --toggle` CLI 를 통한 hide/show toggle. 사용자가 자기 DE 의
+//! #198 — Linux desktop/compositor에서 `tildaz --toggle` CLI를 통한
+//! hide/show toggle. 사용자가 자기 DE의
 //! keyboard shortcut 설정 (KDE Plasma System Settings, GNOME Settings, sway
 //! config 등) 에서 `tildaz --toggle` 명령 등록 → 그 단축키가 두 번째 tildaz
 //! 인스턴스 시작 → 우리는 Unix domain socket 으로 첫 인스턴스에 신호 + exit.
 //!
 //! worker N은 시작 시 `$XDG_RUNTIME_DIR/tildaz-N.sock` listen. `--toggle N` process는
 //! 해당 socket에 connect + 1 byte ('T') 송신 + exit. worker N의 main loop가
-//! accept + read → portal `Activated`와 같은 `handleActivatedToggle` 경로로 hide/show.
+//! accept + read → 공통 `handleActivatedToggle` 경로로 hide/show.
 //!
 //! DE별 global hotkey backend와 공존 — hotkey와 `tildaz --toggle` 모두 같은
 //! `handleActivatedToggle` 경로로 수렴한다.

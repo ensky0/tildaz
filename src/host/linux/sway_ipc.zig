@@ -1,9 +1,8 @@
-//! #207 — sway global hotkey 자동 등록. sway (wlroots) 는 XDG `GlobalShortcuts`
-//! portal 을 지원하지 않으므로 (xdg-desktop-portal-wlr 미구현), tildaz 의 hotkey
-//! 실동작은 #198 single_instance (`tildaz --toggle`) 경로다. 이 모듈은 그
+//! #207 — sway global hotkey 자동 등록. hotkey 실동작은 #198 single_instance
+//! (`tildaz --toggle`) 경로다. 이 모듈은 그
 //! `tildaz --toggle` 을 sway 의 `bindsym` 으로 *자동* 등록한다 — 사용자가 sway
 //! config 를 손대지 않아도 `config.hotkey` 값이 system binding 에 반영된다
-//! (config = source of truth, KDE `setForeignShortcut` 자동 적용과 동등 정책).
+//! (config = source of truth, KDE `setShortcutKeys` 자동 적용과 동등 정책).
 //!
 //! IPC 는 sway 의 i3-ipc protocol. `$SWAYSOCK` 의 AF_UNIX socket 에 RUN_COMMAND
 //! 메시지를 직접 송신한다 — magic `"i3-ipc"` + payload_len (u32 native endian) +

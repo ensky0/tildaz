@@ -29,7 +29,6 @@ const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
 const dbus = @import("dbus.zig");
 const kglobalaccel = @import("kglobalaccel.zig");
-const portal = @import("portal.zig");
 const single_instance = @import("single_instance.zig");
 const sway_ipc = @import("sway_ipc.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
@@ -521,7 +520,7 @@ pub const DialogOverlay = struct {
     viewport_id: u32 = 0,
     /// #210 — dialog 자체 fractional_scale 객체. main 의 fractional_scale 와
     /// 독립 — dialog 가 main createShellObjects *이전* 띄울 때 (예: boot 중
-    /// portal Hotkey updated) main 의 preferred_scale event 아직 안 받음 →
+    /// startup hotkey dialog) main 의 preferred_scale event 아직 안 받음 →
     /// dialog 가 1x 로 표시 + click 좌표 변환 mismatch 의 cause. dialog 자체
     /// 객체 + roundtrip 으로 dialog 가 자기 surface 의 preferred_scale event
     /// 받음 보장. 같은 output 가정상 main 의 preferred_scale 값과 동일.
@@ -728,16 +727,14 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
     };
 }
 
-/// hotkey 를 portal `GlobalShortcuts` 가 아니라 **compositor keybind → `tildaz
-/// --toggle`** (#198 single-instance socket) 로 거는 환경인지. 이 환경이면
-/// (1) portal GlobalShortcuts 경로(CreateSession/Bind/Activated)를 skip 하고,
-/// (2) hidden_start 를 존중(첫 toggle 이 surface 생성)한다.
+/// hotkey 를 **compositor keybind → `tildaz --toggle`** (#198 single-instance
+/// socket) 로 거는 환경인지. 이 환경이면 hidden_start 를 존중한다(첫 toggle 이
+/// surface 생성).
 ///   - sway: `$SWAYSOCK` (sway_ipc 가 런타임 `bindsym` 등록)
 ///   - Hyprland: `$HYPRLAND_INSTANCE_SIGNATURE` (launcher 의 `shortcut_sync` 가
 ///     `hyprctl keyword bind`/`unbind` 로 런타임 증분 등록 — #267. install.sh 는
 ///     legacy 정적 bind 제거만)
-///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — xdg-desktop-portal-cosmic 은
-///     GlobalShortcuts 미구현(portal-cosmic#4)이라 portal 재사용 불가 → launcher 의
+///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — launcher 의
 ///     `shortcut_sync.syncCosmic` 이 RON custom shortcut(`Spawn("tildaz --toggle N")`)
 ///     파일을 동기화.
 fn compositorHotkeyEnv() bool {
@@ -780,7 +777,7 @@ fn kwinCompositor() bool {
 const Client = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
-    // #198 — portal-less hotkey IPC. `tildaz --toggle` 보낸 두 번째 인스턴스의
+    // #198 — native hotkey IPC. `tildaz --toggle` 보낸 두 번째 인스턴스의
     // 신호를 받는 Unix domain socket listener. -1 = listener 생성 실패 (이미
     // 다른 인스턴스가 사용 중 — 정상). createListener 가 실패해도 시작은 계속.
     toggle_listener_fd: posix.fd_t = -1,
@@ -969,37 +966,21 @@ const Client = struct {
     /// preferred_scale event 가 받는 numerator. denominator = 120.
     /// physical_px = logical_px × preferred_scale / 120.
     preferred_scale: u32 = fractional_scale_denominator,
-    // L9-α — D-Bus session bus client (libdbus-1 dlopen). portal `GlobalShortcuts`
-    // 의 진입 자리. 연결 실패는 fatal 아님 — minimal Wayland session (portal
-    // 없음) 에선 hotkey 기능 없이 terminal 자체는 정상. L9-β-1 부터 method call /
-    // signal subscribe.
+    // #244 — KDE Plasma direct KGlobalAccel용 D-Bus session bus client
+    // (libdbus-1 dlopen). 연결 실패는 fatal 아님 — hotkey 없이 terminal 자체는
+    // 정상이며 hidden_start는 즉시 표시로 fallback한다.
     dbus_session: ?dbus.SessionBus = null,
-    // L9-β-1 — portal `GlobalShortcuts.CreateSession` 결과. session_handle 은
-    // 후속 `BindShortcuts` (L9-β-2) / `Activated` signal subscribe (L9-γ) 에서
-    // 사용. dbus_session null 이거나 CreateSession 실패 시 null — hotkey 기능
-    // 미제공 graceful degrade.
-    portal_session: ?portal.GlobalShortcutsSession = null,
-    // L9-γ — portal `Activated` signal subscription. BindShortcuts 성공 후
-    // 등록 — compositor 가 hotkey 누름마다 portal 통해 Activated signal 보내고
-    // filter callback (`onPortalActivated`) 가 toggle 호출. heap 할당 — filter
-    // user_data 가 stable address 요구.
-    portal_subscription: ?*portal.ActivatedSubscription = null,
-    // #244 — KDE Plasma에서는 portal을 거치지 않고 KGlobalAccel에 직접 등록한다.
+    // #244 — KDE Plasma KGlobalAccel direct client.
     // heap stable address는 D-Bus filter user_data가 참조하며, dbus_session보다
     // 먼저 deinit해야 한다.
     kglobalaccel_client: ?*kglobalaccel.Client = null,
     // KGlobalAccel filter 안에서는 Wayland roundtrip을 시작하지 않는다. Pressed
     // callback은 이 flag만 세우고 main loop가 D-Bus dispatch 반환 뒤 toggle한다.
     kglobalaccel_toggle_pending: bool = false,
-    // L9-γ — surface visibility toggle state. macOS `g_visible` 동등. false
+    // surface visibility toggle state. macOS `g_visible` 동등. false
     // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
-    // commit 송신 끝난 상태). 다음 Activated → flip + re-attach.
+    // commit 송신 끝난 상태). 다음 toggle → flip + re-attach.
     surface_hidden: bool = false,
-    // L9-γ — 중복 Activated debounce. 일부 compositor 가 같은 hotkey press
-    // 에 대해 portal 통해 두 번 signal 보낼 가능성 (key repeat 자체는 보통
-    // compositor 가 차단 — repeat_info 와 다른 channel). 같은 timestamp 면
-    // 같은 누름으로 간주. 0 timestamp 면 debounce 안 함 (compositor 미채움).
-    last_toggle_timestamp: u64 = 0,
     seat_id: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
@@ -1165,19 +1146,10 @@ const Client = struct {
             single_instance.cleanup();
             self.toggle_listener_fd = -1;
         }
-        if (self.portal_subscription) |sub| {
-            sub.deinit();
-            self.allocator.destroy(sub);
-            self.portal_subscription = null;
-        }
         if (self.kglobalaccel_client) |client| {
             client.deinit();
             self.allocator.destroy(client);
             self.kglobalaccel_client = null;
-        }
-        if (self.portal_session) |*session| {
-            session.deinit();
-            self.portal_session = null;
         }
         if (self.dbus_session) |*session| {
             session.deinit();
@@ -1270,8 +1242,8 @@ const Client = struct {
         try self.roundtrip();
         self.logCapabilities();
         self.logBootElapsed("bind globals");
-        self.tryConnectDbus();
-        self.logBootElapsed("dbus+portal");
+        self.tryConnectKGlobalAccel();
+        self.logBootElapsed("KGlobalAccel");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
         if (!self.saw_argb8888) return error.WaylandShmArgb8888Missing;
@@ -1329,8 +1301,7 @@ const Client = struct {
         // hotkey backend 미가용 환경에서 hidden_start=true 면
         // 사용자가 영영 볼 수 없는 trap — warning log + 즉시 show 로 fallback.
         // hotkey 전달 경로가 있을 때만 hidden_start 존중 (없으면 사용자가 영영 못
-        // 띄우는 trap → show-on-start fallback). 경로: KGlobalAccel(KDE Plasma),
-        // portal GlobalShortcuts fallback,
+        // 띄우는 trap → show-on-start fallback). 경로: KGlobalAccel(KDE Plasma)
         // 또는 sway/Hyprland/COSMIC 의 compositor keybind→`tildaz --toggle`
         // (sway_ipc 자동등록 / Hyprland·COSMIC 은 launcher 의 shortcut_sync 가
         // hyprctl bind / RON shortcut 으로 single_instance socket toggle 연결 —
@@ -1338,9 +1309,9 @@ const Client = struct {
         // 첫 toggle 은 handleActivatedToggle 가 surface_id==0 분기로 createShellObjects.
         const has_compositor_hotkey = compositorHotkeyEnv();
         const has_kde_hotkey = if (self.kglobalaccel_client) |client| client.registered() else false;
-        const hidden_at_start = self.config.hidden_start and (self.portal_session != null or has_kde_hotkey or has_compositor_hotkey);
+        const hidden_at_start = self.config.hidden_start and (has_kde_hotkey or has_compositor_hotkey);
         if (self.config.hidden_start and !hidden_at_start) {
-            log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/portal/sway/Hyprland/COSMIC), showing on start", .{});
+            log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/GNOME/Cinnamon/COSMIC/Hyprland/sway), showing on start", .{});
         }
         if (hidden_at_start) {
             self.surface_hidden = true;
@@ -1411,8 +1382,7 @@ const Client = struct {
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
             // 마지막 탭 닫음을 만나면 shell_exited 트리거.
             self.drainExitedTabs();
-            // L9-γ — portal Activated signal 등 dbus message dispatch (filter
-            // callback 통해 onPortalActivated → handleActivatedToggle).
+            // KGlobalAccel Pressed / NameOwnerChanged D-Bus signal dispatch.
             self.dispatchDbusMessages();
             // L12-γ-5 — Wayland client-side key repeat timer 검사.
             try self.maybeRepeatKey();
@@ -1808,7 +1778,7 @@ const Client = struct {
     /// `zwlr_layer_shell_v1` advertise 한 경우. config 의 dock_position /
     /// width_percent / height_percent / offset_percent 를 anchor / size /
     /// margin 으로 변환해 송신. L8-γ slide animation 은 SPEC 아님,
-    /// L9 portal hotkey toggle 은 별도.
+    /// global hotkey toggle 은 별도.
     fn createLayerSurface(self: *Client) !void {
         self.layer_surface_id = self.allocId();
         // get_layer_surface(new_id, surface, output=NULL, layer=TOP, namespace)
@@ -2419,7 +2389,7 @@ const Client = struct {
     }
 
     /// #205 — show phase elapsed log. `show_timer` 는 매 `handleActivatedToggle`
-    /// show 분기 시작에 reset. portal Activated → first frame 까지.
+    /// show 분기 시작에 reset. hotkey activation → first frame 까지.
     fn logShowElapsed(self: *Client, phase: []const u8) void {
         if (self.show_timer) |*t| {
             const elapsed_ms = t.read() / std.time.ns_per_ms;
@@ -2799,7 +2769,7 @@ const Client = struct {
         }
         if (self.toggle_listener_fd >= 0 and (fds[1].revents & posix.POLL.IN) != 0) {
             // #198 — `tildaz --toggle` 두 번째 인스턴스로부터 toggle 신호.
-            // portal `Activated` 와 같은 path 로 hide/show.
+            // 모든 native hotkey backend와 같은 path로 hide/show.
             const command = single_instance.acceptCommand(self.toggle_listener_fd) catch null;
             if (command) |cmd| switch (cmd) {
                 .toggle => self.handleActivatedToggle() catch |err| {
@@ -4924,120 +4894,34 @@ const Client = struct {
         return error.WaylandDisplayError;
     }
 
-    /// L9-α — D-Bus session bus 연결 시도. 실패는 fatal 아님 (portal 없는
-    /// minimal Wayland session, libdbus 미설치 등) — log 만 남기고 진행.
-    /// dbus_session 이 null 이면 후속 L9 sub-step 도 skip — hotkey 기능 미제공.
-    /// L9-β-1 — 성공 시 곧바로 portal `CreateSession` 호출. 실패해도 fatal 아님
-    /// (portal 미설치 / 사용자 거부 등).
-    /// L9-γ — BindShortcuts 성공 후 곧바로 `Activated` signal subscribe.
-    /// subscribe 실패해도 fatal 아님 — hotkey 미동작이라도 terminal 자체는 OK.
-    fn tryConnectDbus(self: *Client) void {
-        // #227 / #230 — sway / Hyprland / COSMIC 은 portal GlobalShortcuts 를 쓰지
-        // 않는다. hotkey 는 compositor keybind → `tildaz --toggle` (sway = sway_ipc
-        // 런타임 `bindsym`, Hyprland = launcher `shortcut_sync.syncHyprland` 의
-        // `hyprctl keyword bind`/`unbind` 런타임 증분 동기화, COSMIC = RON
-        // `Spawn("tildaz --toggle N")`) 로 거는 게 정공 — portal
-        // GlobalShortcuts 는 anonymous shortcut + DE 전환 wedge (#244) 라 불안정하거나
-        // (Hyprland) 아예 미구현 (xdg-desktop-portal-cosmic, portal-cosmic#4).
-        // 특히 xdg-desktop-portal-hyprland 는 GlobalShortcuts 를 *advertise 하면서도*
-        // binding 을 비워(anonymous) 돌려줘 BindShortcuts 가 mismatch → KDE 가 아닌데도
-        // "Hotkey mismatch" dialog 가 뜬다 (sway 는 portal 이 GlobalShortcuts 미advertise
-        // 라 CreateSession 단계에서 graceful fail → dialog 안 떴음, Hyprland 만 노출).
-        // compositor hotkey 경로면 portal 경로 (CreateSession/Bind/Activated) 자체를
-        // 건너뛴다 — hidden_start 는 has_compositor_hotkey 로 이미 별도 존중.
-        if (compositorHotkeyEnv()) {
-            log.appendLine("portal", "sway/Hyprland/COSMIC detected — hotkey via compositor bind→--toggle, GlobalShortcuts portal skipped", .{});
-            return;
-        }
+    /// #244 — KDE Plasma에서만 session bus에 연결해 KGlobalAccel에 direct
+    /// 등록한다. 다른 desktop은 launcher/extension/compositor가 `--toggle N`
+    /// IPC를 호출하므로 worker에서 D-Bus hotkey client를 만들지 않는다.
+    /// 연결·등록 실패는 fatal이 아니며 hidden_start는 즉시 표시로 fallback한다.
+    fn tryConnectKGlobalAccel(self: *Client) void {
+        if (!kglobalaccel.isCurrentDesktop()) return;
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey disabled", .{@errorName(err)});
             return;
         };
         self.dbus_session = session;
-        // #244 — KDE Plasma는 portal app scope 보정이나 GlobalShortcuts session을
-        // 만들지 않는다. KGlobalAccel direct 등록이 성공한 뒤에만 hidden_start가
-        // surface 생성을 미룰 수 있다.
-        if (kglobalaccel.isCurrentDesktop()) {
-            kglobalaccel.cleanupLegacyIdentity(self.allocator, &self.dbus_session.?);
-            const client = kglobalaccel.Client.create(
-                self.allocator,
-                &self.dbus_session.?,
-                self.config.hotkey.keysym,
-                self.config.hotkey.modifiers,
-                onKGlobalAccelPressed,
-                self,
-            ) catch |err| {
-                log.appendLine("kglobalaccel", "direct hotkey registration failed: {s} — hotkey disabled", .{@errorName(err)});
-                return;
-            };
-            self.kglobalaccel_client = client;
-            return;
-        }
-        // #207 — portal 연결 *전에* 우리 전용 systemd app scope 로 이동. 터미널 /
-        // konsole / 다른 앱 cgroup 에서 실행됐을 때 portal 이 app-id 를 그 부모로
-        // 인식해 hotkey 가 tildaz 에 안 오는 문제 (launch-independent hotkey) 의 근본
-        // fix. 이미 app-tildaz scope (proper launch) 면 no-op.
-        portal.ensureAppScope(self.allocator, &self.dbus_session.?);
-        // #228 — GNOME + extension 환경에선 hotkey 를 GNOME Shell extension
-        // (Main.wm.addKeybinding) 이 담당한다. portal GlobalShortcuts 는 (1) 불필요,
-        // (2) GNOME 에서는 worker app_id와 무관하게 portal binding을 사용하지 않으며,
-        // (3) 무엇보다 로그인 직후 xdg-desktop-portal 이 아직 안 떠 응답이 없으면
-        // CreateSession 이 D-Bus 기본 reply timeout(25s) 을 통째로 블록 → 그 뒤에야
-        // createShellObjects(창 map) 가 돌아 사용자 체감 startup 이 25초 지연된다(실측).
-        // 그러니 GNOME+extension 이면 GlobalShortcuts 경로 자체를 건너뛴다.
-        if (gsettings_hotkey.isGnomeWithExtension(self.allocator)) {
-            log.appendLine("portal", "GNOME extension handles hotkey — GlobalShortcuts CreateSession skipped (avoids 25s login delay)", .{});
-            return;
-        }
-        const portal_session = portal.createGlobalShortcutsSession(self.allocator, &self.dbus_session.?) catch |err| {
-            log.appendLine("portal", "CreateSession skipped: {s} — hotkey disabled", .{@errorName(err)});
-            return;
-        };
-        self.portal_session = portal_session;
-        // #207 — 매 실행 BindShortcuts (= portal/KDE 단축키 dialog) 회피. CreateSession
-        // 의 loadActions 가 이미 이전 session 의 binding 을 KGlobalAccel 에 재등록하므로
-        // (portal-kde globalshortcuts.cpp 확인), 이미 bound + config 일치면 BindShortcuts
-        // 를 skip 해도 Activated 는 그대로 발화 = hotkey 동작 유지 + dialog 안 뜸.
-        // 첫 등록 / config 변경 시에만 BindShortcuts (이때만 dialog 1 회). 실패해도
-        // fatal 아님 — session 살아 있고 다음 실행 재시도 가능.
-        if (portal.toggleAlreadyBoundMatchingConfig(
+        // direct 등록이 성공한 뒤에만 hidden_start가 surface 생성을 미룬다.
+        kglobalaccel.cleanupLegacyIdentity(self.allocator, &self.dbus_session.?);
+        const client = kglobalaccel.Client.create(
             self.allocator,
             &self.dbus_session.?,
-            self.portal_session.?.session_handle,
             self.config.hotkey.keysym,
             self.config.hotkey.modifiers,
-        )) {
-            log.appendLine("portal", "hotkey already registered (matches config) — BindShortcuts skipped (no dialog)", .{});
-        } else {
-            portal.bindToggleShortcut(
-                self.allocator,
-                &self.dbus_session.?,
-                self.portal_session.?.session_handle,
-                self.config.hotkey.keysym,
-                self.config.hotkey.modifiers,
-            ) catch |err| {
-                log.appendLine("portal", "BindShortcuts skipped: {s} — hotkey disabled", .{@errorName(err)});
-                return;
-            };
-        }
-        // L9-γ — Activated signal subscribe. 이후 main loop 의
-        // `dispatchDbusMessages` 가 매 iteration `read_write_dispatch(0)` 호출
-        // → filter callback (`onPortalActivated`) 가 우리 toggle 발동.
-        log.appendLineVerbose("portal", "subscribing Activated signal...", .{});
-        const sub = portal.subscribeActivatedSignal(
-            self.allocator,
-            &self.dbus_session.?,
-            self.portal_session.?.session_handle,
-            onPortalActivated,
+            onKGlobalAccelPressed,
             self,
         ) catch |err| {
-            log.appendLine("portal", "Activated subscribe skipped: {s} — hotkey disabled", .{@errorName(err)});
+            log.appendLine("kglobalaccel", "direct hotkey registration failed: {s} — hotkey disabled", .{@errorName(err)});
             return;
         };
-        self.portal_subscription = sub;
+        self.kglobalaccel_client = client;
     }
 
-    /// L9-γ — main loop 매 iteration 마다 dbus 의 들어온 message 를 dispatch.
+    /// main loop 매 iteration 마다 D-Bus message를 dispatch.
     /// `read_write_dispatch(conn, 0)` 는 socket 의 pending data read + 누적된
     /// message dispatch (filter callback 호출 포함) + 0 timeout 이라 즉시 반환.
     /// dbus fd 를 wayland fd 와 함께 poll 통합하는 대신 매 iteration 0-timeout
@@ -5046,9 +4930,9 @@ const Client = struct {
     fn dispatchDbusMessages(self: *Client) void {
         if (self.dbus_session) |*bus| {
             const r = bus.api.read_write_dispatch(bus.conn, 0);
-            // r == 0 은 connection disconnected — fatal 아니지만 hotkey 더 안 옴.
+            // r == 0 은 connection disconnected — fatal 아니지만 KDE hotkey 더 안 옴.
             if (r == 0) {
-                log.appendLine("portal", "dbus connection disconnected — hotkey routing stopped", .{});
+                log.appendLine("dbus", "connection disconnected — KDE hotkey routing stopped", .{});
             }
         }
         if (self.kglobalaccel_client) |client| {
@@ -5068,23 +4952,7 @@ const Client = struct {
         self.kglobalaccel_toggle_pending = true;
     }
 
-    /// L9-γ — portal `Activated` signal filter callback. `shortcut_id` 가
-    /// "toggle" 이면 surface visibility flip. 같은 timestamp 의 중복 호출은
-    /// debounce (compositor 가 한 누름에 두 번 보낼 가능성 hedge). 0 timestamp
-    /// 면 debounce 안 함 (compositor 미채움 — 매번 toggle).
-    fn onPortalActivated(user_data: ?*anyopaque, shortcut_id: []const u8, timestamp: u64) void {
-        const self: *Client = @ptrCast(@alignCast(user_data.?));
-        // #207 진단 — Activated signal 도달 확인 (시연 단계, fix 확정 후 제거).
-        log.appendLineVerbose("portal", "Activated signal received — shortcut_id={s} timestamp={}", .{ shortcut_id, timestamp });
-        if (!std.mem.eql(u8, shortcut_id, std.mem.span(portal.shortcutId()))) return;
-        if (timestamp != 0 and timestamp == self.last_toggle_timestamp) return;
-        self.last_toggle_timestamp = timestamp;
-        self.handleActivatedToggle() catch |err| {
-            log.appendLine("portal", "toggle failed: {s}", .{@errorName(err)});
-        };
-    }
-
-    /// L9-γ — surface visibility flip. mac `toggleWindow` 동등 — hide 시점에
+    /// surface visibility flip. mac `toggleWindow` 동등 — hide 시점에
     /// `commitPendingInput` (preedit / rename buf 보존). show 는 `mapped=false`
     /// + `requestRedraw` 로 maybeRedraw 가 buffer 다시 attach (자연 re-map).
     ///
@@ -5095,7 +4963,7 @@ const Client = struct {
     /// - [wlr-layer-shell spec](https://wayland.app/protocols/wlr-layer-shell-unstable-v1)
     ///   는 "perform a commit without any buffer attached, waiting for a
     ///   configure event" 로 re-map 가능하다고 명시.
-    /// - 시연 사이클 (KDE Plasma 6.6.5 + xdg-desktop-portal-kde) 에서 그 sequence
+    /// - KDE Plasma 6.6.5 시연에서 그 sequence
     ///   가 동작 안 함 — `commit only` 후 compositor 가 configure event 안 보냄.
     ///   KWin 의 wlr-layer-shell impl 이 spec 의 commit-only re-map 안 따르는
     ///   것으로 보임. 검증된 reference (wlroots compositor: Sway / Hyprland)
@@ -5108,19 +4976,19 @@ const Client = struct {
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
         if (self.surface_hidden) {
-            // #205 — show phase elapsed timer. portal Activated → first frame.
+            // #205 — show phase elapsed timer. hotkey activation → first frame.
             // configure handler / ensureSessionGrid / redraw 가 후속 호출에서
             // 발생하므로 그 site 에 별도 logShowElapsed.
             self.show_timer = std.time.Timer.start() catch null;
             self.surface_hidden = false;
-            // 첫 show (hidden_start=true 의 첫 portal Activated) 면 surface 아직
+            // 첫 show (hidden_start=true 의 첫 hotkey activation) 면 surface 아직
             // 안 만들어졌으므로 full create. 이후 hide/show cycle 은 unmap/remap
             // path (#205 — wl_surface + layer_surface 유지가 ~165ms → ~16ms 줄임,
             // KWin Bug 503121 의 kitty workaround pattern).
             if (self.surface_id == 0) {
                 try self.createShellObjects();
                 self.logShowElapsed("createShellObjects (first show)");
-                log.appendLine("portal", "toggle show — created shell objects (first)", .{});
+                log.appendLine("toggle", "show — created shell objects (first)", .{});
             } else {
                 try self.remapShellObjects();
                 self.logShowElapsed("remapShellObjects");
@@ -5900,7 +5768,7 @@ const Client = struct {
         }
         // #210 — dialog 자체 fractional_scale 객체 + roundtrip 으로 preferred_scale
         // event 받음 보장. dialog 가 main createShellObjects *이전* 호출 시
-        // (boot 중 portal Hotkey updated 등) main 의 preferred_scale 가 아직
+        // (boot 중 hotkey dialog 등) main 의 preferred_scale 가 아직
         // default 120 (1x) → dialog physical=logical (1x 표시) → click 좌표
         // 변환 mismatch (main 의 1.7x 변환 잘못 적용) 의 cause. main 의
         // createShellObjects 와 같은 pattern.
@@ -6649,12 +6517,11 @@ pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Co
     var client = try Client.init(allocator, cfg);
     defer client.deinit();
     client.toggle_listener_fd = listener_fd;
-    // #207 — sway 는 GlobalShortcuts portal 미지원이라 portal Activated 가 안 온다.
-    // toggle listener 가 준비된 직후, sway 세션이면 `tildaz --toggle` 을 sway 의
+    // #207 — toggle listener가 준비된 직후, sway 세션이면 `tildaz --toggle`을 sway의
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     sway_ipc.registerToggleIfSway(allocator, cfg);
-    // #207 / #229 — GNOME · Cinnamon 도 layer-shell / portal GlobalShortcuts 가
-    // 없거나 불안정 → 두 세션이면 `tildaz --toggle` 을 custom keybinding (GSettings)
+    // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
+    // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
     gsettings_hotkey.registerToggleHotkey(allocator, cfg);
     try client.run();

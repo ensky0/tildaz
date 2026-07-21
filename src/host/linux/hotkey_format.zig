@@ -1,6 +1,6 @@
 //! Linux desktop hotkey 표기 공통 helper.
 //!
-//! portal, GNOME/Cinnamon GSettings, sway, KGlobalAccel이 같은 XKB keysym을
+//! GNOME/Cinnamon GSettings, sway, KGlobalAccel이 같은 XKB keysym을
 //! 서로 다른 외부 형식으로 보낼 때 key 이름과 사용자 표시 문자열을 한 곳에서
 //! 공유한다. 등록 backend의 수명주기와 무관한 순수 formatting 책임만 둔다.
 
@@ -23,8 +23,8 @@ pub fn gtkName(keysym: u32) []const u8 {
 pub fn displayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     var fbs = std.io.fixedBufferStream(buf);
     const w = fbs.writer();
-    if ((modifiers & 0x4) != 0) w.writeAll("Shift+") catch {};
     if ((modifiers & 0x2) != 0) w.writeAll("Ctrl+") catch {};
+    if ((modifiers & 0x4) != 0) w.writeAll("Shift+") catch {};
     if ((modifiers & 0x1) != 0) w.writeAll("Alt+") catch {};
     if ((modifiers & 0x8) != 0) w.writeAll("Meta+") catch {};
     const word: ?[]const u8 = switch (keysym) {

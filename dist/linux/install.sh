@@ -145,8 +145,8 @@ else
 fi
 
 # ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`). Hyprland 은
-# XDG autostart 미지원이고 GlobalShortcuts portal 도 DE 전환에 불안정(#244)+anonymous
-# shortcut 이라, 실행된 TildaZ가 `hyprctl keyword bind`로 config_N별 단축키를 건다.
+# XDG autostart 미지원이므로 실행된 TildaZ가 `hyprctl keyword bind`로
+# config_N별 native 단축키를 건다.
 # Hyprland 0.55+ 는 기본 config 가 Lua(hyprland.lua), 구버전/사용자는 hyprlang(.conf):
 #   - .conf → `exec-once = <bin>` (주석 #)
 #   - .lua  → `hl.on(...exec_cmd)` (주석 --)
@@ -265,8 +265,7 @@ fi
 
 # ~/.config/cosmic/...Shortcuts/v1/custom — COSMIC hotkey. COSMIC(smithay 기반
 # cosmic-comp)은 wlr-layer-shell 지원(drop-down 그대로 동작)이지만
-# xdg-desktop-portal-cosmic 의 GlobalShortcuts 가 미구현(portal-cosmic#4)이라
-# portal 재사용 불가 → compositor 단축키→`tildaz --toggle N`으로 건다.
+# compositor 단축키→`tildaz --toggle N`으로 건다.
 # COSMIC 단축키는 RON map 파일(`{ (modifiers:[..], key:".."): Spawn("..") }`).
 # 자동실행은 COSMIC 가 XDG user autostart를 지원하므로 tildaz 의
 # autostart 모듈(config.auto_start)이 담당 — 여기선 hotkey 만 등록.
