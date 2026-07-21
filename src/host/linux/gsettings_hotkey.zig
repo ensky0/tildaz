@@ -58,23 +58,63 @@ const schema_cinnamon_shell = "org.cinnamon";
 const key_enabled_extensions = "enabled-extensions"; // GNOME · Cinnamon 동일 key 이름.
 const extension_uuid = "tildaz@ensky0.github.io";
 
+/// 일반 xdg-shell TildaZ 창의 placement/show/hide lifecycle을 맡는 Shell extension.
+/// GNOME과 Cinnamon이 같은 소유권 계약을 공유하도록 startup 판정의 단일 결과로 쓴다.
+pub const ShellExtensionOwner = enum {
+    gnome,
+    cinnamon,
+
+    pub fn displayName(self: ShellExtensionOwner) []const u8 {
+        return switch (self) {
+            .gnome => "GNOME",
+            .cinnamon => "Cinnamon",
+        };
+    }
+
+    fn logCategory(self: ShellExtensionOwner) []const u8 {
+        return switch (self) {
+            .gnome => "gnome",
+            .cinnamon => "cinnamon",
+        };
+    }
+};
+
+const ShellExtensionTarget = struct {
+    owner: ShellExtensionOwner,
+    kind: shell_extension.Kind,
+    schema: [*:0]const u8,
+};
+
+/// `XDG_CURRENT_DESKTOP`의 콜론 구분 토큰을 exact/case-insensitive로 판정한다.
+/// GNOME을 먼저 보는 기존 우선순위를 보존한다.
+fn shellExtensionTargetForDesktopValue(value: []const u8) ?ShellExtensionTarget {
+    if (desktopValueHasToken(value, &.{"GNOME"})) {
+        return .{ .owner = .gnome, .kind = .gnome, .schema = schema_gnome_shell };
+    }
+    if (desktopValueHasToken(value, &.{ "X-Cinnamon", "Cinnamon" })) {
+        return .{ .owner = .cinnamon, .kind = .cinnamon, .schema = schema_cinnamon_shell };
+    }
+    return null;
+}
+
+fn currentShellExtensionTarget() ?ShellExtensionTarget {
+    const desktop = std.posix.getenv("XDG_CURRENT_DESKTOP") orelse return null;
+    return shellExtensionTargetForDesktopValue(desktop);
+}
+
 /// Packaged extension resources are synchronized into the current user's
 /// Shell extension directory before any startup/autostart decision reads the
 /// enabled list. Package installation itself must not modify per-user settings.
 pub fn ensureShellExtensionReady(allocator: std.mem.Allocator) void {
-    const target: struct { kind: shell_extension.Kind, schema: [*:0]const u8, label: []const u8 } = if (isGnomeDesktop(allocator))
-        .{ .kind = .gnome, .schema = schema_gnome_shell, .label = "gnome" }
-    else if (isCinnamonDesktop(allocator))
-        .{ .kind = .cinnamon, .schema = schema_cinnamon_shell, .label = "cinnamon" }
-    else
-        return;
+    const target = currentShellExtensionTarget() orelse return;
+    const label = target.owner.logCategory();
 
     const extension_available = shell_extension.syncForCurrentUser(allocator, target.kind) catch |err| {
-        log.appendLine(target.label, "Shell extension resource sync failed: {s}", .{@errorName(err)});
+        log.appendLine(label, "Shell extension resource sync failed: {s}", .{@errorName(err)});
         return;
     };
     if (!extension_available) {
-        log.appendLine(target.label, "Shell extension resources not installed — enable skipped", .{});
+        log.appendLine(label, "Shell extension resources not installed — enable skipped", .{});
         return;
     }
     const api = Api.load() orelse return;
@@ -84,11 +124,11 @@ pub fn ensureShellExtensionReady(allocator: std.mem.Allocator) void {
     const settings = api.settings_new(target.schema) orelse return;
     defer api.object_unref(settings);
     ensureInList(allocator, &api, settings, key_enabled_extensions, extension_uuid) catch |err| {
-        log.appendLine(target.label, "Shell extension enable failed: {s}", .{@errorName(err)});
+        log.appendLine(label, "Shell extension enable failed: {s}", .{@errorName(err)});
         return;
     };
     api.settings_sync();
-    log.appendLine(target.label, "Shell extension synchronized and enabled", .{});
+    log.appendLine(label, "Shell extension synchronized and enabled", .{});
 }
 
 /// GSettings custom-keybinding 등록의 DE별 차이를 담는 descriptor. GNOME 과
@@ -163,12 +203,8 @@ const Api = struct {
 /// 실패는 모두 graceful — log 만 남기고 반환. single_instance toggle listener 는
 /// 그대로 살아 있어 사용자 수동 등록도 가능.
 pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
-    const de: enum { gnome, cinnamon } = if (isGnomeDesktop(allocator))
-        .gnome
-    else if (isCinnamonDesktop(allocator))
-        .cinnamon
-    else
-        return;
+    const target = currentShellExtensionTarget() orelse return;
+    const de = target.owner;
 
     const api = Api.load() orelse {
         log.appendLine("gsettings-hotkey", "libgio-2.0 dlopen failed — custom keybinding auto-register skipped", .{});
@@ -201,7 +237,7 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
             // tildaz GNOME Shell extension(#228) 이 활성이면 그 extension 이 hotkey 를
             // 전담한다 (extension 의 addKeybinding 과 gsettings custom keybinding 이
             // 같은 키를 두 곳에 등록하면 충돌). 등록을 skip 하고 기존 항목도 제거한다.
-            if (isExtensionEnabled(&api)) {
+            if (isExtensionEnabledInSchema(&api, target.schema)) {
                 const media_ext = api.settings_new(gnome_variant.list_schema) orelse return;
                 defer api.object_unref(media_ext);
                 removeFromList(allocator, &api, media_ext, gnome_instance);
@@ -221,7 +257,7 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
             // `tildaz --toggle` 의 null-buffer hide 가 extension 배치를 깨므로(#229
             // 실측) 등록을 skip 하고 기존 항목도 제거한다. 미설치면 일반 xdg 창 +
             // gsettings F1 fallback.
-            if (isCinnamonExtensionEnabled(&api)) {
+            if (isExtensionEnabledInSchema(&api, target.schema)) {
                 const list = api.settings_new(cinnamon_variant.list_schema) orelse return;
                 defer api.object_unref(list);
                 removeFromList(allocator, &api, list, cinnamon_instance);
@@ -237,12 +273,8 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
 /// `registerToggleHotkey`에서 담당하고, 여기서는 list actual에서 삭제된 config의
 /// TildaZ 항목만 제거한다. extension이 활성인 DE는 fallback 항목 전체가 stale이다.
 pub fn syncNumberedEntries(allocator: std.mem.Allocator, indices: []const u32) void {
-    const de: enum { gnome, cinnamon } = if (isGnomeDesktop(allocator))
-        .gnome
-    else if (isCinnamonDesktop(allocator))
-        .cinnamon
-    else
-        return;
+    const target = currentShellExtensionTarget() orelse return;
+    const de = target.owner;
     const api = Api.load() orelse return;
     const source = api.schema_source_get_default() orelse return;
     const base = switch (de) {
@@ -251,10 +283,7 @@ pub fn syncNumberedEntries(allocator: std.mem.Allocator, indices: []const u32) v
     };
     if (!schemasPresent(&api, source, base)) return;
 
-    const extension_active = switch (de) {
-        .gnome => isExtensionEnabled(&api),
-        .cinnamon => isCinnamonExtensionEnabled(&api),
-    };
+    const extension_active = isExtensionEnabledInSchema(&api, target.schema);
     const list = api.settings_new(base.list_schema) orelse return;
     defer api.object_unref(list);
     const existing = api.settings_get_strv(list, base.list_key);
@@ -427,25 +456,15 @@ fn removeFromList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GS
     _ = api.settings_set_strv(settings, v.list_key, list.items.ptr);
 }
 
-/// GNOME 세션 + tildaz extension 활성 여부.
-/// (1) `host/linux_wayland.zig` — hidden_start 를 false 로 override (extension 이
-///     map 직후 minimize 로 숨김을 담당, surface 보류는 무한 재launch 유발).
-/// autostart `.desktop` 은 삭제하지 않고 유지한다 — `NotShowIn=GNOME;` 키로
-/// GNOME 만 제외 (`autostart/linux.zig` 참조; DE 전환 시 KDE/Cinnamon autostart 보존).
-pub fn isGnomeWithExtension(allocator: std.mem.Allocator) bool {
-    if (!isGnomeDesktop(allocator)) return false;
-    const api = Api.load() orelse return false;
-    return isExtensionEnabled(&api);
-}
-
-/// `org.gnome.shell` 의 `enabled-extensions` 에 tildaz extension uuid 가 있나.
-fn isExtensionEnabled(api: *const Api) bool {
-    return isExtensionEnabledInSchema(api, schema_gnome_shell);
-}
-
-/// `org.cinnamon` 의 `enabled-extensions` 에 tildaz extension uuid 가 있나.
-fn isCinnamonExtensionEnabled(api: *const Api) bool {
-    return isExtensionEnabledInSchema(api, schema_cinnamon_shell);
+/// 현재 GNOME/Cinnamon 세션에서 TildaZ Shell extension이 enabled이면 window
+/// lifecycle owner를 반환한다. `host/linux_wayland.zig`은 이 경우 in-memory
+/// hidden_start만 false로 바꿔 surface를 항상 만들고, extension은 디스크 config의
+/// 원래 hidden_start를 읽어 map 직후 minimize한다. schema/API 부재는 null이다.
+pub fn enabledShellExtensionOwner() ?ShellExtensionOwner {
+    const target = currentShellExtensionTarget() orelse return null;
+    const api = Api.load() orelse return null;
+    if (!isExtensionEnabledInSchema(&api, target.schema)) return null;
+    return target.owner;
 }
 
 /// `<schema>` 의 `enabled-extensions` (strv) 에 tildaz uuid 가 있나. GNOME
@@ -468,23 +487,8 @@ fn isExtensionEnabledInSchema(api: *const Api, schema: [*:0]const u8) bool {
     return false;
 }
 
-/// `XDG_CURRENT_DESKTOP` (콜론 구분 다중 토큰, 예 `ubuntu:GNOME`) 에 GNOME 토큰 여부.
-pub fn isGnomeDesktop(allocator: std.mem.Allocator) bool {
-    return desktopHasToken(allocator, &.{"GNOME"});
-}
-
-/// `XDG_CURRENT_DESKTOP` 에 Cinnamon 토큰 여부. Linux Mint 는 `X-Cinnamon`,
-/// 일부 배포 / 설정은 `Cinnamon` — 둘 다 인정.
-pub fn isCinnamonDesktop(allocator: std.mem.Allocator) bool {
-    return desktopHasToken(allocator, &.{ "X-Cinnamon", "Cinnamon" });
-}
-
-/// `XDG_CURRENT_DESKTOP` 의 콜론 구분 토큰 중 하나라도 `wanted` 에 (대소문자 무시)
-/// 들어 있나.
-fn desktopHasToken(allocator: std.mem.Allocator, wanted: []const []const u8) bool {
-    const de = std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch return false;
-    defer allocator.free(de);
-    var it = std.mem.tokenizeScalar(u8, de, ':');
+fn desktopValueHasToken(value: []const u8, wanted: []const []const u8) bool {
+    var it = std.mem.tokenizeScalar(u8, value, ':');
     while (it.next()) |tok| {
         for (wanted) |w| {
             if (std.ascii.eqlIgnoreCase(tok, w)) return true;
@@ -508,4 +512,25 @@ fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     try w.writeByte(0);
     const written = fbs.getWritten();
     return written[0 .. written.len - 1 :0];
+}
+
+test "Shell extension target follows exact GNOME and Cinnamon desktop tokens" {
+    const T = std.testing;
+
+    const gnome = shellExtensionTargetForDesktopValue("ubuntu:GNOME").?;
+    try T.expectEqual(ShellExtensionOwner.gnome, gnome.owner);
+    try T.expectEqual(shell_extension.Kind.gnome, gnome.kind);
+    try T.expectEqualStrings(schema_gnome_shell, std.mem.span(gnome.schema));
+
+    const cinnamon = shellExtensionTargetForDesktopValue("X-Cinnamon").?;
+    try T.expectEqual(ShellExtensionOwner.cinnamon, cinnamon.owner);
+    try T.expectEqual(shell_extension.Kind.cinnamon, cinnamon.kind);
+    try T.expectEqualStrings(schema_cinnamon_shell, std.mem.span(cinnamon.schema));
+
+    try T.expectEqual(ShellExtensionOwner.cinnamon, shellExtensionTargetForDesktopValue("cinnamon").?.owner);
+    try T.expectEqual(ShellExtensionOwner.gnome, shellExtensionTargetForDesktopValue("GNOME:X-Cinnamon").?.owner);
+    try T.expect(shellExtensionTargetForDesktopValue("") == null);
+    try T.expect(shellExtensionTargetForDesktopValue("KDE") == null);
+    try T.expect(shellExtensionTargetForDesktopValue("KDESomething") == null);
+    try T.expect(shellExtensionTargetForDesktopValue("GNOME-Classic") == null);
 }
