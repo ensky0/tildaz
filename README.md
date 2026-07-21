@@ -16,11 +16,10 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.6.1 — corrected Linux packages and complete Shell integration.**
-> Linux launchers now resolve the installed executable correctly, portable
-> archives install outside the source tree, and every Linux package carries the
-> GNOME and Cinnamon extensions needed for a real drop-down. This patch keeps
-> the independent numbered instances introduced in v0.6.0.
+> **v0.6.2 — more reliable input, dialogs, and desktop integration.**
+> IME and tab-renaming input now follows the same rules across platforms, long
+> dialogs remain readable, Windows transparency is stable, and Linux
+> mixed-monitor geometry follows the output that actually contains TildaZ.
 
 ## Who is TildaZ for?
 
@@ -86,8 +85,9 @@ On Linux and macOS, `XDG_CONFIG_HOME` defaults to `~/.config`. On Linux,
 `XDG_STATE_HOME` defaults to `~/.local/state`. Empty or relative XDG values use
 those defaults.
 
-macOS releases are ad-hoc signed. If Gatekeeper blocks the first open,
-right-click `TildaZ.app` and choose **Open**, or run:
+macOS releases use a stable self-signed TildaZ identity. They are not signed
+with an Apple Developer ID or notarized, so if Gatekeeper blocks the first
+open, right-click `TildaZ.app` and choose **Open**, or run:
 
 ```sh
 xattr -d com.apple.quarantine /Applications/TildaZ.app
@@ -163,9 +163,9 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
   conversion of already-committed Hangul (selecting committed Korean text and
   pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no
   reconversion request.
-- macOS releases are ad-hoc signed, so Gatekeeper may require the first-open
-  flow above. Developer ID notarization is still blocked by the current signing
-  environment.
+- macOS releases use a stable self-signed identity, so Gatekeeper may still
+  require the first-open flow above. Apple Developer ID signing and
+  notarization are not currently available.
 - Holding paste-repeat on very wide ZWJ emoji clusters under macOS bash 3.2 can
   desynchronize shell wrapping. Normal single paste is unaffected; zsh 5.x does
   not exhibit the same mismatch.
