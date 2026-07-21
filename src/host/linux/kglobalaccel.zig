@@ -25,6 +25,7 @@ const component_pressed: [*:0]const u8 = "globalShortcutPressed";
 const dbus_interface: [*:0]const u8 = "org.freedesktop.DBus";
 const dbus_name_owner_changed: [*:0]const u8 = "NameOwnerChanged";
 const method_call_timeout_ms: c_int = 25_000;
+const qkeysequence_slots: usize = 4;
 
 var component_buf: [32]u8 = undefined;
 pub fn component() [*:0]const u8 {
@@ -412,6 +413,9 @@ fn queryKeySequencesForAction(allocator: std.mem.Allocator, bus: *dbus.SessionBu
             sequence.append(allocator, key) catch return null;
             if (bus.api.iter_next(&keys) == 0) break;
         }
+        // KDE의 QKeySequence D-Bus operator는 count와 무관하게 정확히 4개
+        // int를 직렬화하고, 역직렬화도 4개를 무조건 읽는다.
+        if (sequence.items.len != qkeysequence_slots) return null;
         const owned = sequence.toOwnedSlice(allocator) catch return null;
         sequences.append(allocator, owned) catch {
             allocator.free(owned);
@@ -458,6 +462,7 @@ fn setForeignShortcutKeys(bus: *dbus.SessionBus, action_id: []const [*:0]const u
     var outer: dbus.DBusMessageIter = .{};
     if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "(ai)", &outer) == 0) return error.KGlobalAccelAppendFailed;
     for (sequences) |sequence_values| {
+        if (sequence_values.len != qkeysequence_slots) return error.KGlobalAccelInvalidKeySequence;
         var sequence: dbus.DBusMessageIter = .{};
         if (bus.api.iter_open_container(&outer, dbus.dbus_type_struct, null, &sequence) == 0) return error.KGlobalAccelAppendFailed;
         var keys: dbus.DBusMessageIter = .{};
@@ -522,7 +527,11 @@ fn takeoverConflict(allocator: std.mem.Allocator, bus: *dbus.SessionBus, owner: 
 }
 
 fn isExactSingleKey(sequence: []const i32, key: i32) bool {
-    return sequence.len == 1 and sequence[0] == key;
+    return sequence.len == qkeysequence_slots and
+        sequence[0] == key and
+        sequence[1] == 0 and
+        sequence[2] == 0 and
+        sequence[3] == 0;
 }
 
 pub const PressedCallback = *const fn (user_data: ?*anyopaque, timestamp: i64) void;
@@ -805,8 +814,10 @@ fn setShortcutKeys(api: *const dbus.Api, conn: *dbus.DBusConnection, qt_key: i32
     if (api.iter_open_container(&sequences, dbus.dbus_type_struct, null, &sequence) == 0) return error.KGlobalAccelAppendFailed;
     var keys: dbus.DBusMessageIter = .{};
     if (api.iter_open_container(&sequence, dbus.dbus_type_array, "i", &keys) == 0) return error.KGlobalAccelAppendFailed;
-    var key = qt_key;
-    if (api.iter_append_basic(&keys, dbus.dbus_type_int32, @ptrCast(&key)) == 0) return error.KGlobalAccelAppendFailed;
+    var sequence_values = [_]i32{ qt_key, 0, 0, 0 };
+    for (&sequence_values) |*key| {
+        if (api.iter_append_basic(&keys, dbus.dbus_type_int32, @ptrCast(key)) == 0) return error.KGlobalAccelAppendFailed;
+    }
     if (api.iter_close_container(&sequence, &keys) == 0) return error.KGlobalAccelAppendFailed;
     if (api.iter_close_container(&sequences, &sequence) == 0) return error.KGlobalAccelAppendFailed;
     if (api.iter_close_container(&iter, &sequences) == 0) return error.KGlobalAccelAppendFailed;
@@ -838,10 +849,15 @@ fn replyHasSingleKey(api: *const dbus.Api, reply: *dbus.DBusMessage, expected: i
     if (api.iter_get_arg_type(&sequence) != dbus.dbus_type_array) return false;
     var keys: dbus.DBusMessageIter = .{};
     api.iter_recurse(&sequence, &keys);
-    if (api.iter_get_arg_type(&keys) != dbus.dbus_type_int32) return false;
-    var actual: i32 = 0;
-    api.iter_get_basic(&keys, @ptrCast(&actual));
-    if (actual != expected or api.iter_next(&keys) != 0) return false;
+    var actual: [qkeysequence_slots]i32 = @splat(0);
+    for (&actual, 0..) |*value, index| {
+        if (api.iter_get_arg_type(&keys) != dbus.dbus_type_int32) return false;
+        api.iter_get_basic(&keys, @ptrCast(value));
+        const has_next = api.iter_next(&keys) != 0;
+        if (index + 1 < actual.len and !has_next) return false;
+        if (index + 1 == actual.len and has_next) return false;
+    }
+    if (!isExactSingleKey(&actual, expected)) return false;
     return api.iter_next(&entries) == 0;
 }
 
@@ -1038,8 +1054,9 @@ test "XKB to Qt key conversion keeps function offsets and modifiers" {
 
 test "conflict takeover removes only an exact one-chord key sequence" {
     const target: i32 = 0x01000030;
-    try std.testing.expect(isExactSingleKey(&.{target}, target));
-    try std.testing.expect(!isExactSingleKey(&.{ target, 0x01000031 }, target));
-    try std.testing.expect(!isExactSingleKey(&.{0x01000031}, target));
+    try std.testing.expect(isExactSingleKey(&.{ target, 0, 0, 0 }, target));
+    try std.testing.expect(!isExactSingleKey(&.{ target, 0x01000031, 0, 0 }, target));
+    try std.testing.expect(!isExactSingleKey(&.{ 0x01000031, 0, 0, 0 }, target));
+    try std.testing.expect(!isExactSingleKey(&.{target}, target));
     try std.testing.expect(!isExactSingleKey(&.{}, target));
 }
