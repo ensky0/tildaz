@@ -8,7 +8,8 @@
 //! 해당 socket에 connect + 1 byte ('T') 송신 + exit. worker N의 main loop가
 //! accept + read → portal `Activated`와 같은 `handleActivatedToggle` 경로로 hide/show.
 //!
-//! portal `GlobalShortcuts` 와 공존 — 둘 다 작동하는 환경 (KDE Plasma 6 등)
+//! DE별 global hotkey backend와 공존 — hotkey와 `tildaz --toggle` 모두 같은
+//! `handleActivatedToggle` 경로로 수렴한다.
 //! 에선 둘 다 trigger 가능. fallback 안 함, 둘 다 active.
 
 const std = @import("std");

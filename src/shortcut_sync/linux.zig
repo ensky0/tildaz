@@ -5,12 +5,12 @@ const log = @import("../log.zig");
 const paths = @import("../paths.zig");
 const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
-const portal = @import("../host/linux/portal.zig");
+const kglobalaccel = @import("../host/linux/kglobalaccel.zig");
 
 pub fn sync(allocator: std.mem.Allocator, indices: []const u32) !void {
     try instance_identity.syncDesktopEntries(allocator, indices);
     gsettings_hotkey.syncNumberedEntries(allocator, indices);
-    portal.syncNumberedKdeIdentities(allocator, indices);
+    kglobalaccel.syncNumberedIdentities(allocator, indices);
     if (desktopContains("hyprland")) syncHyprland(allocator, indices) catch |err| {
         log.appendLine("hyprland", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});
     };

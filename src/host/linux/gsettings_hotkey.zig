@@ -29,7 +29,7 @@
 const std = @import("std");
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
-const portal = @import("portal.zig");
+const hotkey_format = @import("hotkey_format.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
 const shell_extension = @import("shell_extension.zig");
@@ -497,7 +497,7 @@ fn desktopHasToken(allocator: std.mem.Allocator, wanted: []const []const u8) boo
 
 /// `config.hotkey` → GTK accelerator (GNOME `binding` 형식, Cinnamon strv 의 원소).
 /// modifier 는 `<Control><Shift><Alt><Super>` (gtk_accelerator_parse 표준), key
-/// 이름은 `portal.keysymGtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
+/// 이름은 공통 `hotkey_format.gtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
 fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     const H = config_mod.Hotkey;
     var fbs = std.io.fixedBufferStream(buf);
@@ -506,7 +506,7 @@ fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     if ((modifiers & H.MOD_SHIFT) != 0) try w.writeAll("<Shift>");
     if ((modifiers & H.MOD_ALT) != 0) try w.writeAll("<Alt>");
     if ((modifiers & H.MOD_SUPER) != 0) try w.writeAll("<Super>");
-    try w.writeAll(portal.keysymGtkName(keysym));
+    try w.writeAll(hotkey_format.gtkName(keysym));
     try w.writeByte(0);
     const written = fbs.getWritten();
     return written[0 .. written.len - 1 :0];

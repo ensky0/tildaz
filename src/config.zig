@@ -234,10 +234,10 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
     return fbs.getWritten();
 }
 
-/// XDG Portal `GlobalShortcuts` 등록 + xkb keysym 매핑. Win `WindowsHotkey` /
+/// Linux global-hotkey backend 공통 xkb keysym 매핑. Win `WindowsHotkey` /
 /// mac `MacHotkey` 와 같은 토큰 분리 패턴 (`+` 로 token, modifier + 키 이름).
-/// `keysymToAccelerator` (`src/host/linux/portal.zig`) 가 이 `keysym + modifiers`
-/// 를 GTK accelerator 문자열 (`<Control>F1` 등) 으로 변환해 portal 에 송신.
+/// DE별 backend가 이 `keysym + modifiers`를 KGlobalAccel의 Qt key 또는 GTK/XKB
+/// accelerator 문자열로 변환한다.
 const LinuxHotkey = struct {
     /// keysym (xkb). `f1` = 0xffbe (xkbcommon `XKB_KEY_F1`).
     keysym: u32 = 0xffbe,

@@ -24,9 +24,9 @@ const config_mod = @import("../../config.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
 const log = @import("../../log.zig");
-const dialog = @import("../../dialog.zig");
-const messages = @import("../../messages.zig");
 const dbus = @import("dbus.zig");
+const hotkey_format = @import("hotkey_format.zig");
+const kglobalaccel = @import("kglobalaccel.zig");
 
 const portal_destination: [*:0]const u8 = "org.freedesktop.portal.Desktop";
 const portal_path: [*:0]const u8 = "/org/freedesktop/portal/desktop";
@@ -587,7 +587,7 @@ fn keysymToAccelerator(allocator: std.mem.Allocator, keysym: u32, modifiers: u32
     if ((modifiers & 0x2) != 0) try w.writeAll("CTRL+");
     if ((modifiers & 0x1) != 0) try w.writeAll("ALT+");
     if ((modifiers & 0x8) != 0) try w.writeAll("LOGO+");
-    try w.writeAll(keysymGtkName(keysym));
+    try w.writeAll(hotkey_format.gtkName(keysym));
     return allocator.dupeZ(u8, fbs.getWritten());
 }
 
@@ -601,53 +601,6 @@ fn keysymToAccelerator(allocator: std.mem.Allocator, keysym: u32, modifiers: u32
 /// modifier prefix (Title case + `+` 분리): `Shift+` / `Ctrl+` / `Alt+` / `Meta+`.
 /// key: F1..F12 / `Tab` / `Return` / `Escape` / `Space` 는 단어, Latin letter
 /// 는 대문자 (`A`-`Z`), digit 은 그대로, 그 외 symbol 은 literal (`` ` ``, `~`, etc).
-fn keysymDisplayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
-    if ((modifiers & 0x4) != 0) w.writeAll("Shift+") catch {};
-    if ((modifiers & 0x2) != 0) w.writeAll("Ctrl+") catch {};
-    if ((modifiers & 0x1) != 0) w.writeAll("Alt+") catch {};
-    if ((modifiers & 0x8) != 0) w.writeAll("Meta+") catch {};
-    const word: ?[]const u8 = switch (keysym) {
-        0xffbe => "F1",
-        0xffbf => "F2",
-        0xffc0 => "F3",
-        0xffc1 => "F4",
-        0xffc2 => "F5",
-        0xffc3 => "F6",
-        0xffc4 => "F7",
-        0xffc5 => "F8",
-        0xffc6 => "F9",
-        0xffc7 => "F10",
-        0xffc8 => "F11",
-        0xffc9 => "F12",
-        0xff09 => "Tab",
-        0xff0d => "Return",
-        0xff1b => "Escape",
-        0x0020 => "Space",
-        else => null,
-    };
-    if (word) |s| {
-        w.writeAll(s) catch {};
-    } else if (keysym >= 'a' and keysym <= 'z') {
-        const c: u8 = @intCast(keysym - 0x20); // Latin letter 는 대문자
-        w.writeAll(&[1]u8{c}) catch {};
-    } else if (keysym >= 0x20 and keysym <= 0x7e) {
-        const c: u8 = @intCast(keysym); // digit + symbol literal
-        w.writeAll(&[1]u8{c}) catch {};
-    } else {
-        w.writeAll("?") catch {};
-    }
-    return fbs.getWritten();
-}
-
-pub fn keysymGtkName(keysym: u32) []const u8 {
-    return config_mod.linuxKeysymName(keysym) orelse blk: {
-        log.appendLine("portal", "keysymGtkName: unmapped keysym=0x{x} — config.linuxKeysymFromName out of sync? 'F1' fallback (#208)", .{keysym});
-        break :blk "F1";
-    };
-}
-
 /// portal `GlobalShortcuts.BindShortcuts` 호출 — 단일 "toggle" shortcut 등록.
 /// 첫 호출 시 portal 가 KDE / GNOME UI dialog 띄움 → 사용자 승인 / 거부 / 단축키
 /// 변경. 이후엔 cached (compositor 측). 흐름은 `createGlobalShortcutsSession`
@@ -823,10 +776,10 @@ pub fn bindToggleShortcut(
         // 가 현재 store 의 Qt KeySequence packed int 직접 반환 — 우리 의도된
         // qt_key 와 비교 (사용자 시연 진단 #207 — 두 표기가 *같은 binding* 인데
         // string-equal 항상 다름).
-        const our_qt_key = xkbToQtKey(hotkey_keysym, hotkey_modifiers);
-        const stored_qt_key = kdeQueryToggleShortcut(bus);
+        const our_qt_key = kglobalaccel.qtKey(hotkey_keysym, hotkey_modifiers);
+        const stored_qt_key = kglobalaccel.queryToggleShortcut(bus);
         var disp_buf: [64]u8 = undefined;
-        const config_display = keysymDisplayString(&disp_buf, hotkey_keysym, hotkey_modifiers);
+        const config_display = hotkey_format.displayString(&disp_buf, hotkey_keysym, hotkey_modifiers);
         if (stored_qt_key) |sk| {
             if (sk == our_qt_key) {
                 log.appendLine("portal", "hotkey trigger confirmed ({s} / qt=0x{x}) — portal text=\"{s}\"", .{ config_display, @as(u32, @bitCast(our_qt_key)), actual });
@@ -877,7 +830,7 @@ fn handleHotkeyMismatch(
     // dialog / log 용 KDE 친화 표기 (`Meta+A`). `preferred` 는 portal-kde 의
     // parse format (`LOGO+a`) — 사용자에게 표시하면 혼란 (#207 사용자 발견).
     var display_buf: [64]u8 = undefined;
-    const preferred_display = keysymDisplayString(&display_buf, keysym, modifiers);
+    const preferred_display = hotkey_format.displayString(&display_buf, keysym, modifiers);
 
     // 1차 — XDG portal UnbindShortcuts + 재 BindShortcuts.
     unbindToggleShortcut(allocator, bus, session_handle) catch |e| {
@@ -892,7 +845,7 @@ fn handleHotkeyMismatch(
 
     // 1차 성공.
     log.appendLine("portal", "hotkey updated (portal): {s} → {s}", .{ actual, preferred_display });
-    showHotkeyUpdatedDialog(allocator, actual, preferred_display);
+    kglobalaccel.showHotkeyUpdatedDialog(allocator, actual, preferred_display);
 }
 
 /// 2차 — `XDG_CURRENT_DESKTOP` 감지 + DE 의 native API. KDE 만 우선 구현
@@ -911,766 +864,27 @@ fn tryDeSpecificHotkeyFix(
 
     // dialog / log 용 KDE 친화 표기 (`Meta+A`).
     var display_buf: [64]u8 = undefined;
-    const preferred_display = keysymDisplayString(&display_buf, keysym, modifiers);
+    const preferred_display = hotkey_format.displayString(&display_buf, keysym, modifiers);
 
     const de = detectCurrentDesktop(allocator);
     defer if (de) |s| allocator.free(s);
 
     if (de) |d| {
-        if (containsToken(d, "KDE")) {
-            kdeTryAutoApply(allocator, bus, keysym, modifiers, preferred_display, actual);
+        if (kglobalaccel.isKdeDesktopValue(d)) {
+            kglobalaccel.tryAutoApply(allocator, bus, keysym, modifiers, preferred_display, actual);
             return;
         }
         log.appendLine("portal", "secondary DE={s} not implemented — tertiary fallback", .{d});
     } else {
         log.appendLine("portal", "secondary XDG_CURRENT_DESKTOP not set — tertiary fallback", .{});
     }
-    showMismatchPersistsDialog(allocator, preferred_display, actual);
-}
-
-/// 2차 KDE-specific path. 충돌 owner 사전 진단 + (있으면) 사용자 confirm
-/// dialog 후 takeover. flow:
-///
-///   1. `action(qt_key)` 로 현재 owner 조회
-///   2. owner 없음 또는 tildaz 자체 → 단순 `setForeignShortcut(tildaz)`
-///   3. owner = 다른 component → `dialog.showConfirm` (Cancel default)
-///      - OK: owner 에서 해당 키만 회수 (`setForeignShortcut(owner, filtered)`)
-///            → `setForeignShortcut(tildaz)` → 성공 dialog
-///      - Cancel: 기존 binding 유지 → "수동 변경 안내" dialog
-fn kdeTryAutoApply(
-    allocator: std.mem.Allocator,
-    bus: *dbus.SessionBus,
-    keysym: u32,
-    modifiers: u32,
-    preferred_display: []const u8,
-    actual: []const u8,
-) void {
-    const qt_key = xkbToQtKey(keysym, modifiers);
-
-    // 충돌 owner 진단.
-    var owner_opt = kdeQueryOwnerForKey(allocator, bus, qt_key);
-    defer if (owner_opt) |*o| o.deinit(allocator);
-
-    const is_tildaz_owner = if (owner_opt) |o|
-        std.mem.eql(u8, o.component, std.mem.span(kdeComponent())) and
-            std.mem.eql(u8, o.action, std.mem.span(kdeAction()))
-    else
-        false;
-
-    if (owner_opt) |owner| {
-        if (!is_tildaz_owner) {
-            // 다른 component 가 선점 — 사용자 confirm.
-            log.appendLine("portal", "secondary conflict detected — owner={s}/{s} (display: {s} / {s}) qt_key=0x{x}", .{
-                owner.component,            owner.action, owner.display_component, owner.display_action,
-                @as(u32, @bitCast(qt_key)),
-            });
-            var msg_buf: [512]u8 = undefined;
-            const confirm_msg = std.fmt.bufPrint(&msg_buf, messages.hotkey_takeover_format, .{
-                preferred_display, owner.display_component, owner.display_action,
-            }) catch {
-                showMismatchPersistsDialog(allocator, preferred_display, actual);
-                return;
-            };
-            const ok = dialog.showConfirm(messages.hotkey_takeover_title, confirm_msg);
-            if (!ok) {
-                log.appendLine("portal", "takeover declined (Cancel) — existing binding retained", .{});
-                var declined_buf: [256]u8 = undefined;
-                const dmsg = std.fmt.bufPrint(&declined_buf, messages.hotkey_takeover_declined_format, .{
-                    preferred_display, owner.display_component,
-                }) catch {
-                    dialog.showInfo(messages.hotkey_takeover_declined_title, messages.hotkey_takeover_declined_fallback_msg);
-                    return;
-                };
-                dialog.showInfo(messages.hotkey_takeover_declined_title, dmsg);
-                return;
-            }
-
-            kdeTakeoverConflict(allocator, bus, &owner, qt_key) catch |e| {
-                log.appendLine("portal", "takeover D-Bus call failed ({s}) — fallback dialog", .{@errorName(e)});
-                showMismatchPersistsDialog(allocator, preferred_display, actual);
-                return;
-            };
-        }
-    }
-
-    // tildaz 자체 binding set (이미 tildaz owner 였든 / 회수 직후든 동일 path).
-    kdeSetToggleShortcut(allocator, bus, qt_key) catch |e| {
-        log.appendLine("portal", "KDE setForeignShortcut(tildaz) failed ({s}) — fallback dialog", .{@errorName(e)});
-        showMismatchPersistsDialog(allocator, preferred_display, actual);
-        return;
-    };
-
-    // 검증 — 적용 후 query 가 우리 qt_key 와 일치.
-    if (kdeQueryToggleShortcut(bus)) |stored| {
-        if (stored != qt_key) {
-            log.appendLine("portal", "KDE post-set verification failed — stored=0x{x} expected=0x{x}", .{
-                @as(u32, @bitCast(stored)), @as(u32, @bitCast(qt_key)),
-            });
-            showMismatchPersistsDialog(allocator, preferred_display, actual);
-            return;
-        }
-    }
-
-    log.appendLine("portal", "hotkey updated (KDE D-Bus): \"{s}\" → {s}", .{ actual, preferred_display });
-    showHotkeyUpdatedDialog(allocator, actual, preferred_display);
-}
-
-/// `[tildaz]` group 의 toggle binding — kglobalshortcutsrc 파일 + KGlobalAccel
-/// runtime 의 component 이름. *Konsole 부모 cgroup* 으로 잘못 등록된 경우 대비
-/// 별 component (`org.kde.konsole`) 도 후속 정리 가능 (현재는 우리 own 만).
-var kde_component_buf: [32]u8 = undefined;
-fn kdeComponent() [*:0]const u8 {
-    return (instance_identity.appId(&kde_component_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
-}
-var kde_action_buf: [32]u8 = undefined;
-fn kdeAction() [*:0]const u8 {
-    return (instance_identity.shortcutId(&kde_action_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
-}
-var kde_component_display_buf: [32]u8 = undefined;
-fn kdeComponentDisplay() [*:0]const u8 {
-    return (instance_identity.displayName(&kde_component_display_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
-}
-var kde_action_display_buf: [64]u8 = undefined;
-fn kdeActionDisplay() [*:0]const u8 {
-    return (instance_identity.shortcutDescription(&kde_action_display_buf, instance_context.requireWorkerIndex()) catch unreachable).ptr;
-}
-
-/// `org.kde.KGlobalAccel.setShortcut` 의 `flags` argument. KDE source
-/// (`src/kglobalaccel.h`) 의 `KGlobalAccel::SetShortcutFlag` enum:
-///   - `SetPresent = 2`
-///   - `NoAutoloading = 4`
-///   - `IsDefault = 8`
-///
-/// 우리 케이스 = `NoAutoloading | SetPresent = 6` — autoload skip (우리 set
-/// 값 그대로) + binding 활성화 마크. 이전 잘못된 값 `1` 은 enum 정의에 없음
-/// (no-op 처럼 동작했으나 kglobalshortcutsrc 영구 저장 안 됨 시연 발견 —
-/// process 종료 시 [tildaz] group 사라짐).
-const kde_set_shortcut_flag_set_present: u32 = 2;
-const kde_set_shortcut_flag_no_autoloading: u32 = 4;
-const kde_set_shortcut_flags: u32 = kde_set_shortcut_flag_no_autoloading | kde_set_shortcut_flag_set_present;
-
-/// KDE 의 `org.kde.kglobalaccel` D-Bus interface 호출:
-///   `unregister(in s componentUnique, in s shortcutUnique, out b arg_0)`
-///
-/// kglobalshortcutsrc 의 `[<componentUnique>]` group 안 `<shortcutUnique>` line
-/// 의 binding 을 *runtime + on-disk* 모두 삭제. 그 후 우리 portal BindShortcuts
-/// 가 *처음 등록* path 로 새 trigger 적용 (KDE 가 user dialog 띄울 수 있음).
-///
-/// 출처: `gdbus introspect --session --dest org.kde.kglobalaccel
-///        --object-path /kglobalaccel` (KDE Plasma 6.6.5).
-fn kdeUnregisterShortcut(bus: *dbus.SessionBus, component: [*:0]const u8, action: [*:0]const u8) !void {
-    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
-    const path: [*:0]const u8 = "/kglobalaccel";
-    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
-    const method: [*:0]const u8 = "unregister";
-
-    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return error.PortalMessageAllocFailed;
-    defer bus.api.message_unref(call);
-
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-    var comp_var: [*:0]const u8 = component;
-    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&comp_var)) == 0) return error.PortalAppendFailed;
-    var action_var: [*:0]const u8 = action;
-    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&action_var)) == 0) return error.PortalAppendFailed;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
-            log.appendLine("portal", "kglobalaccel unregister failed: {s}", .{m});
-        }
-        return error.PortalMethodCallFailed;
-    };
-    defer bus.api.message_unref(reply);
-
-    // 반환 = bool (성공 여부). false 면 KGlobalAccel 측에서 *해당 binding 없음*
-    // (이미 unregister 되었거나 다른 component). 우리 의도 (= 다음 BindShortcuts
-    // 가 깨끗한 상태에서 시작) 충족이라 success 처리.
-    log.appendLineVerbose("portal", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component), std.mem.span(action) });
-}
-
-/// KGlobalAccel의 현재 component를 열거해 config에서 사라진 numbered TildaZ
-/// action만 해제한다. 동일한 component/action은 worker의 기존 등록 경로가
-/// 그대로 유지하므로 매 launcher 실행마다 전체 재등록하지 않는다.
-pub fn syncNumberedKdeIdentities(allocator: std.mem.Allocator, indices: []const u32) void {
-    const de = detectCurrentDesktop(allocator);
-    defer if (de) |value| allocator.free(value);
-    if (de == null or !containsToken(de.?, "KDE")) return;
-
-    var bus = dbus.SessionBus.connect() catch |err| {
-        log.appendLineVerbose("portal", "KDE numbered identity query skipped: {s}", .{@errorName(err)});
-        return;
-    };
-    defer bus.deinit();
-
-    const paths = kdeAllComponentPaths(allocator, &bus) catch |err| {
-        log.appendLineVerbose("portal", "KDE component enumeration skipped: {s}", .{@errorName(err)});
-        return;
-    };
-    defer {
-        for (paths) |path| allocator.free(path);
-        allocator.free(paths);
-    }
-
-    var kept: usize = 0;
-    var removed: usize = 0;
-    for (paths) |path| {
-        const unique_name = kdeComponentUniqueName(allocator, &bus, path) catch continue;
-        defer allocator.free(unique_name);
-        const index = numberedKdeComponentIndex(unique_name) orelse continue;
-        if (containsInstanceIndex(indices, index)) {
-            kept += 1;
-            continue;
-        }
-
-        const component_z = allocator.dupeZ(u8, unique_name) catch continue;
-        defer allocator.free(component_z);
-        var action_buf: [32]u8 = undefined;
-        const action = std.fmt.bufPrintZ(&action_buf, "toggle-{d}", .{index}) catch continue;
-        kdeUnregisterShortcut(&bus, component_z.ptr, action.ptr) catch |err| {
-            log.appendLineVerbose("portal", "stale KDE action cleanup skipped for instance {}: {s}", .{ index, @errorName(err) });
-            continue;
-        };
-        removed += 1;
-    }
-    log.appendLine("portal", "KDE numbered hotkeys synchronized desired={} kept={} removed={}", .{ indices.len, kept, removed });
-}
-
-fn kdeAllComponentPaths(allocator: std.mem.Allocator, bus: *dbus.SessionBus) ![][]u8 {
-    const call = bus.api.message_new_method_call(
-        "org.kde.kglobalaccel",
-        "/kglobalaccel",
-        "org.kde.KGlobalAccel",
-        "allComponents",
-    ) orelse return error.PortalMessageAllocFailed;
-    defer bus.api.message_unref(call);
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse return error.PortalMethodCallFailed;
-    defer bus.api.message_unref(reply);
-
-    var reply_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_init(reply, &reply_iter) == 0 or bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_array) {
-        return error.PortalReplyBadType;
-    }
-    var array_iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_recurse(&reply_iter, &array_iter);
-
-    var paths: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (paths.items) |path| allocator.free(path);
-        paths.deinit(allocator);
-    }
-    while (bus.api.iter_get_arg_type(&array_iter) != dbus.dbus_type_invalid) {
-        if (bus.api.iter_get_arg_type(&array_iter) != dbus.dbus_type_object_path) return error.PortalReplyBadType;
-        var path_c: ?[*:0]const u8 = null;
-        bus.api.iter_get_basic(&array_iter, @ptrCast(&path_c));
-        if (path_c) |path| try paths.append(allocator, try allocator.dupe(u8, std.mem.span(path)));
-        if (bus.api.iter_next(&array_iter) == 0) break;
-    }
-    return paths.toOwnedSlice(allocator);
-}
-
-fn kdeComponentUniqueName(allocator: std.mem.Allocator, bus: *dbus.SessionBus, path: []const u8) ![]u8 {
-    const path_z = try allocator.dupeZ(u8, path);
-    defer allocator.free(path_z);
-    const call = bus.api.message_new_method_call(
-        "org.kde.kglobalaccel",
-        path_z.ptr,
-        "org.freedesktop.DBus.Properties",
-        "Get",
-    ) orelse return error.PortalMessageAllocFailed;
-    defer bus.api.message_unref(call);
-
-    var append_iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &append_iter);
-    var interface_name: [*:0]const u8 = "org.kde.kglobalaccel.Component";
-    if (bus.api.iter_append_basic(&append_iter, dbus.dbus_type_string, @ptrCast(&interface_name)) == 0) return error.PortalAppendFailed;
-    var property_name: [*:0]const u8 = "uniqueName";
-    if (bus.api.iter_append_basic(&append_iter, dbus.dbus_type_string, @ptrCast(&property_name)) == 0) return error.PortalAppendFailed;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse return error.PortalMethodCallFailed;
-    defer bus.api.message_unref(reply);
-
-    var reply_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_init(reply, &reply_iter) == 0 or bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_variant) {
-        return error.PortalReplyBadType;
-    }
-    var value_iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_recurse(&reply_iter, &value_iter);
-    if (bus.api.iter_get_arg_type(&value_iter) != dbus.dbus_type_string) return error.PortalReplyBadType;
-    var value_c: ?[*:0]const u8 = null;
-    bus.api.iter_get_basic(&value_iter, @ptrCast(&value_c));
-    return allocator.dupe(u8, if (value_c) |value| std.mem.span(value) else "");
-}
-
-fn numberedKdeComponentIndex(component: []const u8) ?u32 {
-    const prefix = "tildaz.instance";
-    if (!std.mem.startsWith(u8, component, prefix)) return null;
-    const number = component[prefix.len..];
-    if (number.len == 0 or (number.len > 1 and number[0] == '0')) return null;
-    return std.fmt.parseInt(u32, number, 10) catch null;
-}
-
-fn containsInstanceIndex(indices: []const u32, needle: u32) bool {
-    for (indices) |index| {
-        if (index == needle) return true;
-    }
-    return false;
-}
-
-test "numbered KDE component identity is parsed strictly" {
-    try std.testing.expectEqual(@as(?u32, 0), numberedKdeComponentIndex("tildaz.instance0"));
-    try std.testing.expectEqual(@as(?u32, 42), numberedKdeComponentIndex("tildaz.instance42"));
-    try std.testing.expect(numberedKdeComponentIndex("tildaz.instance") == null);
-    try std.testing.expect(numberedKdeComponentIndex("tildaz.instance01") == null);
-    try std.testing.expect(numberedKdeComponentIndex("tildaz.instance2.extra") == null);
-    try std.testing.expect(numberedKdeComponentIndex("other.instance2") == null);
-}
-
-/// 0.5.x와 #267 중간 작업본이 사용한 shared KDE component의 action만 제거한다.
-/// 새 component는 `tildaz.instanceN`이라 다른 instance나 다른 앱과 겹치지 않는다.
-pub fn cleanupLegacyKdeIdentity(allocator: std.mem.Allocator, bus: *dbus.SessionBus) void {
-    const de = detectCurrentDesktop(allocator);
-    defer if (de) |value| allocator.free(value);
-    if (de == null or !containsToken(de.?, "KDE")) return;
-
-    const legacy_component: [*:0]const u8 = "tildaz";
-    if (instance_context.requireWorkerIndex() == 0) {
-        kdeUnregisterShortcut(bus, legacy_component, "toggle") catch |err| {
-            log.appendLineVerbose("portal", "legacy KDE action cleanup skipped: {s}", .{@errorName(err)});
-        };
-    }
-    var action_buf: [32]u8 = undefined;
-    const action = std.fmt.bufPrintZ(&action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}) catch return;
-    kdeUnregisterShortcut(bus, legacy_component, action.ptr) catch |err| {
-        log.appendLineVerbose("portal", "legacy numbered KDE action cleanup skipped: {s}", .{@errorName(err)});
-    };
-}
-
-/// XKB keysym + modifier → Qt `KeySequence` packed int. `KGlobalAccel.setShortcut`
-/// 의 `keys: ai` argument 형식. Qt 의 `Qt::Key_*` (CamelCase 무관) 와 modifier
-/// 비트 (`Qt::*Modifier`) 의 OR.
-///
-/// modifier 매핑 (`config.zig` LinuxHotkey MOD_* → Qt 비트):
-///   - MOD_SHIFT (0x4) → Qt::ShiftModifier (0x02000000)
-///   - MOD_CTRL  (0x2) → Qt::ControlModifier (0x04000000)
-///   - MOD_ALT   (0x1) → Qt::AltModifier (0x08000000)
-///   - MOD_SUPER (0x8) → Qt::MetaModifier (0x10000000)
-///
-/// key code (Qt 의 `qnamespace.h` 의 `Qt::Key` enum):
-///   - F1..F12 = 0x01000030..0x0100003B (xkb 0xffbe..0xffc9)
-///   - Tab = 0x01000001 (xkb 0xff09)
-///   - Return = 0x01000004 (xkb 0xff0d)
-///   - Escape = 0x01000000 (xkb 0xff1b)
-///   - Space = 0x20 (xkb 0x20, 동일)
-///   - QuoteLeft (grave) = 0x60 (xkb 0x60, 동일)
-///   - 0-9 = 0x30..0x39 (xkb 동일)
-///   - A-Z = 0x41..0x5A (xkb a-z 의 *대문자 변환*)
-fn xkbToQtKey(keysym: u32, modifiers: u32) i32 {
-    var key: i32 = 0;
-    if ((modifiers & 0x4) != 0) key |= 0x02000000; // SHIFT
-    if ((modifiers & 0x2) != 0) key |= 0x04000000; // CTRL
-    if ((modifiers & 0x1) != 0) key |= 0x08000000; // ALT
-    if ((modifiers & 0x8) != 0) key |= 0x10000000; // META (Super)
-
-    const key_code: i32 = switch (keysym) {
-        // Qt::Key_F1..F12 = 0x01000030..0x0100003b (consecutive). 이전 F7~F12
-        // 가 1 offset 잘못 — 0x01000036 부터 시작해야 (사용자 시연 진단 #207).
-        0xffbe => 0x01000030, // F1
-        0xffbf => 0x01000031, // F2
-        0xffc0 => 0x01000032, // F3
-        0xffc1 => 0x01000033, // F4
-        0xffc2 => 0x01000034, // F5
-        0xffc3 => 0x01000035, // F6
-        0xffc4 => 0x01000036, // F7
-        0xffc5 => 0x01000037, // F8
-        0xffc6 => 0x01000038, // F9
-        0xffc7 => 0x01000039, // F10
-        0xffc8 => 0x0100003a, // F11
-        0xffc9 => 0x0100003b, // F12
-        0xff09 => 0x01000001, // Tab
-        0xff0d => 0x01000004, // Return
-        0xff1b => 0x01000000, // Escape
-        0x0020 => 0x20, // Space
-        0x0060 => 0x60, // QuoteLeft (grave)
-        '0'...'9' => @intCast(keysym), // 동일 (0x30..0x39)
-        'a'...'z' => @intCast(keysym - 0x20), // Qt A-Z (0x41..0x5a)
-        else => 0,
-    };
-    return key | key_code;
-}
-
-/// `org.kde.KGlobalAccel.shortcut(actionId: as) → ai` — 현재 적용된 keys 의 Qt
-/// KeySequence packed int 배열 직접 받음 (machine-readable). portal 응답의
-/// human-readable string (`Ctrl+\`` 등) vs 우리 송신 표기 (`CTRL+grave`) 의
-/// false-positive 비교 회피.
-///
-/// 반환:
-///   - 적용된 keys 의 첫 Qt int (single shortcut 기준)
-///   - null = entry 없음 또는 empty binding
-fn kdeQueryToggleShortcut(bus: *dbus.SessionBus) ?i32 {
-    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
-    const path: [*:0]const u8 = "/kglobalaccel";
-    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
-    const method: [*:0]const u8 = "shortcut";
-
-    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return null;
-    defer bus.api.message_unref(call);
-
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-    var arr_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return null;
-    const action_id = [_][*:0]const u8{
-        kdeComponent(),
-        kdeAction(),
-        kdeComponentDisplay(),
-        kdeActionDisplay(),
-    };
-    for (action_id) |s| {
-        var p: [*:0]const u8 = s;
-        if (bus.api.iter_append_basic(&arr_iter, dbus.dbus_type_string, @ptrCast(&p)) == 0) return null;
-    }
-    if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return null;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
-            log.appendLine("portal", "kglobalaccel shortcut query failed: {s}", .{m});
-        }
-        return null;
-    };
-    defer bus.api.message_unref(reply);
-
-    var reply_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_init(reply, &reply_iter) == 0) return null;
-    if (bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_array) return null;
-    var keys_arr: dbus.DBusMessageIter = .{};
-    bus.api.iter_recurse(&reply_iter, &keys_arr);
-    if (bus.api.iter_get_arg_type(&keys_arr) != dbus.dbus_type_int32) return null;
-    var qt_key: i32 = 0;
-    bus.api.iter_get_basic(&keys_arr, @ptrCast(&qt_key));
-    return qt_key;
-}
-
-/// KGlobalAccel actionId — 4-string tuple. `[component, action,
-/// displayComponent, displayAction]`. action / displayAction 은 사용자
-/// 친화 표기 (예: `"활동간 전환"`) — dialog 본문에 직접 노출.
-const KdeOwnerActionId = struct {
-    component: []u8,
-    action: []u8,
-    display_component: []u8,
-    display_action: []u8,
-
-    fn deinit(self: *KdeOwnerActionId, alloc: std.mem.Allocator) void {
-        alloc.free(self.component);
-        alloc.free(self.action);
-        alloc.free(self.display_component);
-        alloc.free(self.display_action);
-    }
-};
-
-/// `org.kde.KGlobalAccel.action(key: i) → as` — 주어진 Qt KeySequence packed
-/// int 를 *현재 소유* 중인 component / action 의 4-string tuple. 비어있으면
-/// null (소유자 없음). 충돌 사전 진단 + dialog 본문 (`plasmashell` / `활동간
-/// 전환` 등) 용. caller 가 deinit.
-fn kdeQueryOwnerForKey(allocator: std.mem.Allocator, bus: *dbus.SessionBus, qt_key: i32) ?KdeOwnerActionId {
-    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
-    const path: [*:0]const u8 = "/kglobalaccel";
-    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
-    const method: [*:0]const u8 = "action";
-
-    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return null;
-    defer bus.api.message_unref(call);
-
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-    var k: i32 = qt_key;
-    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_int32, @ptrCast(&k)) == 0) return null;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
-            log.appendLine("portal", "kglobalaccel action query failed: {s}", .{m});
-        }
-        return null;
-    };
-    defer bus.api.message_unref(reply);
-
-    var reply_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_init(reply, &reply_iter) == 0) return null;
-    if (bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_array) return null;
-    var arr_iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_recurse(&reply_iter, &arr_iter);
-
-    var strs: [4][]u8 = .{ &.{}, &.{}, &.{}, &.{} };
-    var got: [4]bool = .{ false, false, false, false };
-    var i: usize = 0;
-    while (i < 4 and bus.api.iter_get_arg_type(&arr_iter) == dbus.dbus_type_string) : (i += 1) {
-        var raw: [*:0]const u8 = undefined;
-        bus.api.iter_get_basic(&arr_iter, @ptrCast(&raw));
-        const span = std.mem.span(raw);
-        strs[i] = allocator.dupe(u8, span) catch {
-            // OOM mid-parse — free 누적분.
-            var j: usize = 0;
-            while (j < i) : (j += 1) allocator.free(strs[j]);
-            return null;
-        };
-        got[i] = true;
-        _ = bus.api.iter_next(&arr_iter);
-    }
-    if (!(got[0] and got[1] and got[2] and got[3])) {
-        // 빈 array 또는 4 미만 — owner 없음 (KGlobalAccel 응답 convention).
-        var j: usize = 0;
-        while (j < 4) : (j += 1) {
-            if (got[j]) allocator.free(strs[j]);
-        }
-        return null;
-    }
-    if (strs[0].len == 0) {
-        // KGlobalAccel 가 0-length component 로 "owner 없음" 표시 — defensive.
-        for (strs) |s| allocator.free(s);
-        return null;
-    }
-    return .{
-        .component = strs[0],
-        .action = strs[1],
-        .display_component = strs[2],
-        .display_action = strs[3],
-    };
-}
-
-/// `org.kde.KGlobalAccel.shortcut(actionId: as) → ai` — 주어진 actionId 의
-/// 현재 keys 전체 (multi-binding 가능 — 예: kwin ExposeClass = [Meta+F7, Ctrl+F7]).
-/// caller 가 free. null = entry 없음 / query fail.
-fn kdeQueryKeysForAction(allocator: std.mem.Allocator, bus: *dbus.SessionBus, action_id: []const []const u8) ?[]i32 {
-    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
-    const path: [*:0]const u8 = "/kglobalaccel";
-    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
-    const method: [*:0]const u8 = "shortcut";
-
-    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return null;
-    defer bus.api.message_unref(call);
-
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-    var arr_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return null;
-    // action_id 의 각 string 은 D-Bus 에 null-terminated 로 전송 필요.
-    // [:0]u8 sentinel-terminated buffer 로 변환 후 ptr 보냄.
-    var tmpbuf: [4][128]u8 = undefined;
-    for (action_id, 0..) |s, idx| {
-        if (idx >= 4) break;
-        if (s.len + 1 > tmpbuf[idx].len) return null;
-        @memcpy(tmpbuf[idx][0..s.len], s);
-        tmpbuf[idx][s.len] = 0;
-        var p: [*:0]const u8 = @ptrCast(&tmpbuf[idx]);
-        if (bus.api.iter_append_basic(&arr_iter, dbus.dbus_type_string, @ptrCast(&p)) == 0) return null;
-    }
-    if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return null;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
-            log.appendLine("portal", "kglobalaccel shortcut(action) query failed: {s}", .{m});
-        }
-        return null;
-    };
-    defer bus.api.message_unref(reply);
-
-    var reply_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_init(reply, &reply_iter) == 0) return null;
-    if (bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_array) return null;
-    var keys_arr: dbus.DBusMessageIter = .{};
-    bus.api.iter_recurse(&reply_iter, &keys_arr);
-
-    var list = std.ArrayList(i32){};
-    defer list.deinit(allocator);
-    while (bus.api.iter_get_arg_type(&keys_arr) == dbus.dbus_type_int32) {
-        var qk: i32 = 0;
-        bus.api.iter_get_basic(&keys_arr, @ptrCast(&qk));
-        list.append(allocator, qk) catch return null;
-        _ = bus.api.iter_next(&keys_arr);
-    }
-    return list.toOwnedSlice(allocator) catch null;
-}
-
-/// `org.kde.KGlobalAccel.setForeignShortcut(actionId: as, keys: ai)` (void return)
-/// — **외부 (foreign) D-Bus client 가 다른 component 의 binding 직접 set** 의도
-/// method. `setShortcut` 은 Qt 내부 client API 라 외부 D-Bus 호출 시 *empty
-/// 반환 + 거부* (시연 #207). `setForeignShortcut` 은 외부용 정공.
-///
-/// `keys` 는 비어있어도 됨 — 해당 actionId 의 binding 전체 회수 의미.
-/// kglobalshortcutsrc 파일은 *runtime cache only* — process 재시작 시 reset 가능.
-fn kdeSetForeignShortcut(
-    bus: *dbus.SessionBus,
-    action_id: []const [*:0]const u8,
-    keys: []const i32,
-) !void {
-    const dest: [*:0]const u8 = "org.kde.kglobalaccel";
-    const path: [*:0]const u8 = "/kglobalaccel";
-    const iface: [*:0]const u8 = "org.kde.KGlobalAccel";
-    const method: [*:0]const u8 = "setForeignShortcut";
-
-    const call = bus.api.message_new_method_call(dest, path, iface, method) orelse return error.PortalMessageAllocFailed;
-    defer bus.api.message_unref(call);
-
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-
-    var arr_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "s", &arr_iter) == 0) return error.PortalAppendFailed;
-    for (action_id) |s| {
-        var p: [*:0]const u8 = s;
-        if (bus.api.iter_append_basic(&arr_iter, dbus.dbus_type_string, @ptrCast(&p)) == 0) return error.PortalAppendFailed;
-    }
-    if (bus.api.iter_close_container(&iter, &arr_iter) == 0) return error.PortalAppendFailed;
-
-    var keys_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "i", &keys_iter) == 0) return error.PortalAppendFailed;
-    for (keys) |qk| {
-        var k: i32 = qk;
-        if (bus.api.iter_append_basic(&keys_iter, dbus.dbus_type_int32, @ptrCast(&k)) == 0) return error.PortalAppendFailed;
-    }
-    if (bus.api.iter_close_container(&iter, &keys_iter) == 0) return error.PortalAppendFailed;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const m = if (err.message) |x| std.mem.span(x) else "(no message)";
-            log.appendLine("portal", "kglobalaccel setForeignShortcut failed: {s}", .{m});
-        }
-        return error.PortalMethodCallFailed;
-    };
-    defer bus.api.message_unref(reply);
-}
-
-/// 시연 확정 (#207): tildaz 자체용 setForeignShortcut 의 thin wrapper.
-fn kdeSetToggleShortcut(_: std.mem.Allocator, bus: *dbus.SessionBus, qt_key: i32) !void {
-    const action_id = [_][*:0]const u8{
-        kdeComponent(),
-        kdeAction(),
-        kdeComponentDisplay(),
-        kdeActionDisplay(),
-    };
-    const keys = [_]i32{qt_key};
-    try kdeSetForeignShortcut(bus, &action_id, &keys);
-    log.appendLineVerbose("portal", "kglobalaccel setForeignShortcut(tildaz) succeeded — qt_key=0x{x}", .{@as(u32, @bitCast(qt_key))});
-}
-
-/// `owner` 의 keys list 에서 `our_qt_key` 만 제거 후 `setForeignShortcut` 으로
-/// 갱신. 예: kwin/ExposeClass `[Meta+F7, Ctrl+F7]` 에서 `Ctrl+F7` 빼서
-/// `[Meta+F7]` 로 set — `Meta+F7` 은 그대로 사용 가능 (#207 takeover).
-///
-/// owner 의 keys 가 query 실패 / 비어 있으면 silent return (already cleared).
-fn kdeTakeoverConflict(
-    allocator: std.mem.Allocator,
-    bus: *dbus.SessionBus,
-    owner: *const KdeOwnerActionId,
-    our_qt_key: i32,
-) !void {
-    const action_id_slices = [_][]const u8{
-        owner.component,
-        owner.action,
-        owner.display_component,
-        owner.display_action,
-    };
-    const owner_keys = kdeQueryKeysForAction(allocator, bus, &action_id_slices) orelse {
-        log.appendLine("portal", "takeover: owner '{s}' keys query null — skip", .{owner.component});
-        return;
-    };
-    defer allocator.free(owner_keys);
-
-    // our_qt_key 제외한 keys 만 남김.
-    var filtered = std.ArrayList(i32){};
-    defer filtered.deinit(allocator);
-    for (owner_keys) |k| {
-        if (k != our_qt_key) filtered.append(allocator, k) catch return error.OutOfMemory;
-    }
-    if (filtered.items.len == owner_keys.len) {
-        // owner 가 our_qt_key 안 들고 있음 — KGlobalAccel.action 결과와 불일치.
-        // race condition 가능 — skip.
-        log.appendLine("portal", "takeover: owner '{s}' keys missing our_qt_key=0x{x} — skipped", .{ owner.component, @as(u32, @bitCast(our_qt_key)) });
-        return;
-    }
-
-    // setForeignShortcut 은 D-Bus 송신 시 `[*:0]const u8` 필요. owner 의
-    // string 은 sentinel 없는 `[]u8` — sentinel buffer 로 복사.
-    var bufs: [4][128]u8 = undefined;
-    var owner_actionid_sentinels: [4][*:0]const u8 = undefined;
-    inline for (.{ owner.component, owner.action, owner.display_component, owner.display_action }, 0..) |s, idx| {
-        if (s.len + 1 > bufs[idx].len) return error.PortalAppendFailed;
-        @memcpy(bufs[idx][0..s.len], s);
-        bufs[idx][s.len] = 0;
-        owner_actionid_sentinels[idx] = @ptrCast(&bufs[idx]);
-    }
-    try kdeSetForeignShortcut(bus, &owner_actionid_sentinels, filtered.items);
-    log.appendLineVerbose("portal", "takeover: from '{s}/{s}' reclaimed qt_key=0x{x} (remaining keys = {})", .{
-        owner.component,
-        owner.action,
-        @as(u32, @bitCast(our_qt_key)),
-        filtered.items.len,
-    });
+    kglobalaccel.showMismatchPersistsDialog(allocator, preferred_display, actual);
 }
 
 /// `XDG_CURRENT_DESKTOP` env — 콜론 (`:`) 으로 다중 토큰 가능 (예: `Unity:GNOME`).
 /// caller 가 free.
 fn detectCurrentDesktop(allocator: std.mem.Allocator) ?[]u8 {
     return std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch null;
-}
-
-/// `:` 분리된 다중 토큰 안에 *대소문자 무관* `needle` 있는지.
-fn containsToken(haystack: []const u8, needle: []const u8) bool {
-    var iter = std.mem.tokenizeScalar(u8, haystack, ':');
-    while (iter.next()) |tok| {
-        if (std.ascii.eqlIgnoreCase(tok, needle)) return true;
-    }
-    return false;
-}
-
-fn showHotkeyUpdatedDialog(allocator: std.mem.Allocator, was: []const u8, now: []const u8) void {
-    var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, messages.hotkey_updated_format, .{ was, now }) catch {
-        dialog.showInfo(messages.hotkey_updated_title, messages.hotkey_updated_fallback_msg);
-        return;
-    };
-    dialog.showInfo(messages.hotkey_updated_title, msg);
-    _ = allocator;
-}
-
-fn showMismatchPersistsDialog(allocator: std.mem.Allocator, preferred: []const u8, actual: []const u8) void {
-    var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, messages.hotkey_mismatch_persists_format, .{ preferred, actual }) catch {
-        dialog.showInfo(messages.hotkey_mismatch_persists_title, messages.hotkey_mismatch_persists_fallback_msg);
-        return;
-    };
-    dialog.showInfo(messages.hotkey_mismatch_persists_title, msg);
-    _ = allocator;
 }
 
 /// portal `GlobalShortcuts.UnbindShortcuts` (spec v2, since 2). 같은 session 의
@@ -2005,7 +1219,7 @@ fn listToggleShortcut(
 /// 그대로 발화 (portal-kde globalshortcuts.cpp 확인 — skip 해도 hotkey 동작 유지).
 /// false 면 첫 등록 / config 변경 / 미지원 → 호출자가 BindShortcuts.
 ///
-/// 비교: KDE 는 `kdeQueryToggleShortcut` (KGlobalAccel 의 packed Qt key) 직접
+/// 비교: KDE 는 `kglobalaccel.queryToggleShortcut` (KGlobalAccel 의 packed Qt key) 직접
 /// 비교가 정확 (human-readable trigger 표기 차이에 안 흔들림). 非KDE (GNOME 등)
 /// 는 portal trigger_description 과 우리 accelerator 를 대소문자 무관 비교.
 pub fn toggleAlreadyBoundMatchingConfig(
@@ -2025,11 +1239,11 @@ pub fn toggleAlreadyBoundMatchingConfig(
     };
     defer allocator.free(trig);
 
-    const our_qt = xkbToQtKey(keysym, modifiers);
+    const our_qt = kglobalaccel.qtKey(keysym, modifiers);
     var disp_buf: [64]u8 = undefined;
-    const cfg_disp = keysymDisplayString(&disp_buf, keysym, modifiers);
+    const cfg_disp = hotkey_format.displayString(&disp_buf, keysym, modifiers);
 
-    if (kdeQueryToggleShortcut(bus)) |stored| {
+    if (kglobalaccel.queryToggleShortcut(bus)) |stored| {
         const ok = (stored == our_qt);
         log.appendLineVerbose("portal", "ListShortcuts: toggle bound (portal=\"{s}\") — KDE stored qt=0x{x} config={s} qt=0x{x} match={} → BindShortcuts {s}", .{
             trig, @as(u32, @bitCast(stored)), cfg_disp, @as(u32, @bitCast(our_qt)), ok, if (ok) "skip" else "needed (config changed)",
