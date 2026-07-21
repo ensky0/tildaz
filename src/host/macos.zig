@@ -197,6 +197,10 @@ const NSTerminateNow: c_long = 1;
 /// 종료 직전 confirm. count == 0 (마지막 탭 PTY exit 후 자동 종료) 만 skip —
 /// 이미 사용자 의도된 종료 path. 단일 탭 (count==1) 도 confirm — 사용자 정책.
 fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) c_long {
+    // #317 — programmatic `terminate:`도 confirm 전에 공통 shortcut 정책을
+    // 적용한다. 메뉴 Cmd+Q는 tildazQuit:에서 먼저 적용하므로 여기서는 no-op이고,
+    // Cancel 뒤 재시도도 첫 호출에서 pending 상태가 이미 비어 no-op이다.
+    applyShortcutInputPolicy(.quit);
     const n = g_session.count();
     if (n == 0) return NSTerminateNow;
     var msg_buf: [256]u8 = undefined;
@@ -590,6 +594,35 @@ fn tildazAcceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) bool {
     return true;
 }
 
+/// #317 — AppKit은 Command key equivalent를 keyDown:보다 먼저 key window의
+/// view hierarchy에 보낸다. terminal marked input이 Cmd+Q를 소비하기 전에 custom
+/// NSTextInputClient인 이 view가 공통 입력 정책을 적용한다. terminal marked-input
+/// 첫 event는 mainMenu가 매칭하지 않는 것이 실기로 확인됐으므로, 기존 macOS
+/// main-queue deferral로 custom Quit selector를 다음 turn에 실행한다. 다른 key는
+/// false로 기존 NSMenu routing을 유지한다.
+fn tildazPerformKeyEquivalent(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) bool {
+    if (event == null) return false;
+
+    const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
+    const flags = get_flags(event, objc.sel("modifierFlags"));
+    const NSEventModifierFlagShift: c_ulong = 1 << 17;
+    const NSEventModifierFlagControl: c_ulong = 1 << 18;
+    const NSEventModifierFlagOption: c_ulong = 1 << 19;
+    const NSEventModifierFlagCommand: c_ulong = 1 << 20;
+    const relevant = NSEventModifierFlagShift |
+        NSEventModifierFlagControl |
+        NSEventModifierFlagOption |
+        NSEventModifierFlagCommand;
+    if (flags & relevant != NSEventModifierFlagCommand) return false;
+
+    const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+    if (get_kc(event, objc.sel("keyCode")) != 0x0C) return false; // Q
+
+    applyShortcutInputPolicy(.quit);
+    dispatch_async_f(&_dispatch_main_q, null, tildazQuitTrampoline);
+    return true;
+}
+
 const NSEventTypeKeyDown: c_long = 10;
 const NSUTF8StringEncoding: usize = 4;
 
@@ -641,6 +674,27 @@ fn macInputState() input_policy.State {
     return .{ .rename_active = g_rename.isActive(), .terminal_preedit_active = g_marked_len > 0 };
 }
 
+/// #317 — macOS의 모든 shortcut 진입점이 같은 pending 입력 정책을 적용한다.
+/// `keyDown:` Cmd shortcut뿐 아니라 NSMenu selector, Cmd+Q의
+/// `applicationShouldTerminate:`, F1 event tap도 이 helper를 action 전에 호출한다.
+/// read-only copy/perf의 `.leave`와 상태변경 action의 `.commit` 구분은 오직
+/// `input_policy.resolve`가 결정한다.
+fn applyShortcutInputPolicy(shortcut: input_policy.Shortcut) void {
+    const disposition = input_policy.resolve(.{ .shortcut = shortcut }, macInputState());
+    switch (disposition.pending) {
+        .leave => {},
+        .commit => {
+            if (g_window == null) return;
+            const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+            const cv = contentView_get(g_window, objc.sel("contentView"));
+            if (cv != null) commitPendingInput(cv);
+        },
+        // shortcut 정책에는 discard가 없다. Ctrl+C interrupt의 discard는
+        // tildazKeyDown의 별도 IME/SIGINT 순서가 담당한다.
+        .discard => unreachable,
+    }
+}
+
 /// #296 — macOS Cmd+keyCode 를 입력 정책 Shortcut 으로 분류. 인식 못한 조합은
 /// null (→ mainMenu Cmd+Q 등). `tildazKeyDown` 의 dispatch switch 와 정확히 일치.
 fn macCmdShortcut(kc: c_ushort, shift: bool) ?input_policy.Shortcut {
@@ -690,8 +744,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
 
         // Cmd+kc → 입력 정책 Shortcut 분류. 인식 못한 Cmd+key 는 mainMenu(Cmd+Q 등).
         const shortcut = macCmdShortcut(kc, shift) orelse return;
-        if (input_policy.resolve(.{ .shortcut = shortcut }, macInputState()).pending == .commit)
-            commitPendingInput(self_view);
+        applyShortcutInputPolicy(shortcut);
         switch (shortcut) {
             .copy_selection => handleCopy(), // Cmd+C (kc 8)
             .new_tab => handleNewTab(), // Cmd+T
@@ -2032,6 +2085,11 @@ fn commitPreeditPreserving(self_view: objc.id) void {
 fn commitPendingInput(self_view: objc.id) void {
     commitPreeditPreserving(self_view);
     commitOrCancelRename(true);
+    // NSMenu selector / applicationShouldTerminate: 는 keyDown:/mouseDown: 을
+    // 우회한다. 내부 rename/marked state 만 지우고 render 를 요청하지 않으면
+    // 마지막 보라색 preedit frame 이 화면에 남으므로, 상태 변경의 공통 지점에서
+    // 반드시 다음 frame 을 요청한다 (#317).
+    requestRender();
 }
 
 /// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
@@ -2552,6 +2610,8 @@ fn registerTildazViewClass() !objc.Class {
     const cls = objc.objc_allocateClassPair(NSView, "TildazView", 0) orelse
         return error.ViewSubclassAllocFailed;
     if (!objc.class_addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&tildazAcceptsFirstResponder), "B@:"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("performKeyEquivalent:"), @ptrCast(&tildazPerformKeyEquivalent), "B@:@"))
         return error.ViewSubclassAddMethodFailed;
     // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
@@ -3497,11 +3557,8 @@ fn hideWindow() void {
 
 fn toggleWindow() void {
     if (g_visible) {
-        // #175 — F1 hide 도 focus_loss = commit. preedit + rename 둘 다.
-        // contentView 통해 commitPendingInput (IME state discard 위해 view 필요).
-        const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-        const cv = contentView_get(g_window, objc.sel("contentView"));
-        if (cv != null) commitPendingInput(cv);
+        // #175/#317 — F1 hide도 공통 shortcut 정책의 focus_loss = commit.
+        applyShortcutInputPolicy(.toggle_visibility);
         // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
         log.appendLineVerbose("toggle", "hide", .{});
         hideWindow();
@@ -3535,6 +3592,7 @@ fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callcon
     _ = self;
     _ = _sel;
     _ = sender;
+    applyShortcutInputPolicy(.show_about);
     about.showAboutDialog();
 }
 
@@ -3544,6 +3602,7 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     _ = self;
     _ = _sel;
     _ = sender;
+    applyShortcutInputPolicy(.open_config);
     const allocator = g_gpa.allocator();
     const path = @import("../paths.zig").configPath(allocator) catch return;
     defer allocator.free(path);
@@ -3555,9 +3614,31 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     _ = self;
     _ = _sel;
     _ = sender;
+    applyShortcutInputPolicy(.open_log);
     const allocator = g_gpa.allocator();
     const path = log.filePath() orelse return;
     @import("../system_open.zig").openInDefaultApp(allocator, path);
+}
+
+/// Cmd+Q / Quit TildaZ menu action. 표준 `terminate:`를 menu item에 직접
+/// 연결하면 applicationShouldTerminate: 안에서 commit한 뒤 원래 key event의
+/// IME 후속 `insertText:`가 Cancel 복귀 시 terminal로 한 번 더 들어간다 (#317).
+/// 다른 상태변경 menu action처럼 native action 진입 전에 공통 정책을 적용한 뒤
+/// terminate:를 호출한다. delegate의 두 번째 적용은 pending이 비어 no-op이다.
+fn requestApplicationQuit(sender: objc.id) void {
+    const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    terminate(g_app, objc.sel("terminate:"), sender);
+}
+
+fn tildazQuitTrampoline(_: ?*anyopaque) callconv(.c) void {
+    tildazQuitAction(g_app, objc.sel("tildazQuit:"), null);
+}
+
+fn tildazQuitAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
+    _ = self;
+    _ = _sel;
+    applyShortcutInputPolicy(.quit);
+    requestApplicationQuit(sender);
 }
 
 /// Ctrl+Cmd+Space — Show Emoji & Symbols picker (#130). 우리 popup-level
@@ -3652,9 +3733,8 @@ fn buildMainMenu(app: objc.id) !void {
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
 
-    // About / Open Config / Open Log 핸들러를 NSApplication 인스턴스 메서드로
-    // 등록 — Quit (`terminate:`) 과 같은 패턴. 윈도우 hide 상태라도 NSApp
-    // 에서 dispatch.
+    // About / Open Config / Open Log / Quit 핸들러를 NSApplication 인스턴스
+    // 메서드로 등록. 윈도우 hide 상태라도 NSApp에서 dispatch.
     const NSApplication = objc.getClass("NSApplication");
     if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowAbout:"), @ptrCast(&tildazShowAboutAction), "v@:@"))
         return error.AddAboutMethodFailed;
@@ -3662,6 +3742,8 @@ fn buildMainMenu(app: objc.id) !void {
         return error.AddOpenConfigMethodFailed;
     if (!objc.class_addMethod(NSApplication, objc.sel("tildazOpenLog:"), @ptrCast(&tildazOpenLogAction), "v@:@"))
         return error.AddOpenLogMethodFailed;
+    if (!objc.class_addMethod(NSApplication, objc.sel("tildazQuit:"), @ptrCast(&tildazQuitAction), "v@:@"))
+        return error.AddQuitMethodFailed;
     if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowEmoji:"), @ptrCast(&tildazShowEmojiAction), "v@:@"))
         return error.AddShowEmojiMethodFailed;
 
@@ -3729,7 +3811,7 @@ fn buildMainMenu(app: objc.id) !void {
         item_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
         objc.nsString(messages.macos_menu_quit_label),
-        objc.sel("terminate:"),
+        objc.sel("tildazQuit:"),
         objc.nsString("q"),
     ) orelse return error.QuitItemInitFailed;
     addItem(app_menu, objc.sel("addItem:"), quit_item);

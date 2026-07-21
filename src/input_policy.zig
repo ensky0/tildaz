@@ -174,6 +174,13 @@ test "상태 없을 때 action 단축키는 commit(no-op) 후 실행" {
     try expectDisp(.{ .shortcut = .new_tab }, idle, .commit, .run_action);
 }
 
+test "#317 — macOS menu/key-equivalent 상태변경 shortcut은 pending 입력 commit 후 실행" {
+    for ([_]Shortcut{ .show_about, .open_config, .open_log, .quit }) |sc| {
+        try expectDisp(.{ .shortcut = sc }, preedit, .commit, .run_action);
+        try expectDisp(.{ .shortcut = sc }, rename, .commit, .run_action);
+    }
+}
+
 test "SPEC §4.1 — rename 중 문자/편집키는 rename buffer 로" {
     try expectDisp(.text, rename, .leave, .rename_buffer);
     try expectDisp(.edit_key, rename, .leave, .rename_buffer);

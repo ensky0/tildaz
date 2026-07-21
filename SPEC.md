@@ -386,9 +386,9 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | Cmd/Ctrl+Shift+[ / ] (prev/next) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 동일 (Ctrl+Shift+[/]) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
-| 그 외 상태변경 단축키 (reset / show_about / open_config / open_log) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | `input_policy.resolve` → pending=commit (Ctrl+Shift+I·P·L·R / reset #214) | ✅ | ✅ | ✅ |
+| 그 외 상태변경 단축키 (reset / show_about / open_config / open_log) | commit | 동일 (`.shortcut` 진입 첫 줄) | `keyDown:`과 NSMenu selector가 공통 `applyShortcutInputPolicy` → `input_policy.resolve` → pending=commit 뒤 action (#317) | `input_policy.resolve` → pending=commit (Ctrl+Shift+I·P·L·R / reset #214) | ✅ | ✅ | ✅ |
 | copy_selection (Ctrl+Shift+C) / dump_perf (Ctrl+Shift+F12) | **commit 안 함** (read-only) | rename 유지 (`input_policy.resolve`의 pending=leave 확인 후 action 실행) | rename 유지 (`input_policy.resolve`의 pending=leave) | rename 유지 (`input_policy.resolve` read_only → pending=leave, #296) | ✅ | ✅ | ✅ |
-| F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow` 진입 직전 (visible 이면 `commitPendingInputFromContentView`) | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
+| F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow`의 공통 `applyShortcutInputPolicy(.toggle_visibility)` | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 
 ---
@@ -428,6 +428,26 @@ read-only rename action보다 result가 먼저 오면 action까지 보류하고 
 따라 `ImmSetCompositionStringW(SCS_SETSTR)`로 실제 IMM composition을 복원한다. 이
 순서는 shortcut, Ctrl+Shift+V, 우클릭 paste, F1, Alt+Enter, Alt+F4, Ctrl+C에 공통이다
 ([#313](https://github.com/ensky0/tildaz/issues/313)).
+
+macOS는 `keyDown:` Cmd shortcut, F1 event tap, About/Config/Log/Quit NSMenu
+selector, Cmd+Q의 `TildazView.performKeyEquivalent:`,
+`applicationShouldTerminate:`가 모두 action 전에 같은
+`applyShortcutInputPolicy`를 호출한다. helper가 `macInputState()`를
+`input_policy.resolve`에 전달하고 pending을 처리하므로 NSMenu가 `keyDown:`을
+우회해도 terminal/rename preedit은 원래 sink에 정확히 한 번 반영된다. 공통
+`commitPendingInput`은 상태를 비운 뒤 render를 요청해 NSMenu/종료 확인 창 뒤에도
+마지막 preedit frame이 남지 않는다. AppKit이 Command key equivalent를
+`keyDown:`보다 먼저 key window의 view hierarchy에 전달하므로, custom
+NSTextInputClient인 TildazView가 Cmd+Q의 pending 입력을 먼저 처리한다. terminal
+marked-input 첫 event를 main menu가 매칭하지 않는 경로에서는 기존 custom Quit
+selector를 기존 macOS main-queue deferral(`dispatch_async_f`)로 다음 turn에 실행해
+현재 event dispatch가 끝난 뒤 같은 action을 실행한다
+([Apple Cocoa Event Handling Guide](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingKeyEvents/HandlingKeyEvents.html)).
+menu click/hidden window는 custom selector가 같은 순서로 처리한다. 따라서 terminal
+marked input에서도 첫 Cmd+Q action이 유실되지 않고, Cancel 복귀 시 IME 후속 commit이
+terminal로 중복 전달되지 않는다. `applicationShouldTerminate:`의 재적용과 Quit
+Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모두 no-op이다
+([#317](https://github.com/ensky0/tildaz/issues/317)).
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
 |---|---|---|---|---|---|---|
