@@ -69,11 +69,10 @@ pub fn main() void {
         }
     }
 
-    // #198 — Linux portal-less hotkey support. `tildaz --toggle N` 명령은
+    // #198 — Linux native hotkey IPC. `tildaz --toggle N` 명령은
     // worker N의 Unix domain socket으로 toggle 신호 송신 + 즉시 exit. 사용자가
     // 자기 DE 의 keyboard shortcut 설정에서 이 명령에 단축키 binding —
-    // GlobalShortcuts portal 안 advertise 하는 환경 (Cinnamon / mutter /
-    // wlroots) 에서도 hotkey toggle 가능.
+    // desktop/compositor binding에서 worker의 hotkey toggle을 전달한다.
     if (toggle_index) |index| {
         if (builtin.os.tag == .linux) {
             instance_context.setWorkerIndex(index);

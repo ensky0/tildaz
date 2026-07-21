@@ -133,11 +133,11 @@ tildaz 는 **Wayland 전용** (X11 backend 없음 — §0 / ARCHITECTURE 의 Des
 
 | compositor 카테고리 | layer-shell drop-down | hotkey 자동 적용 메커니즘 | 대표 DE | 상태 |
 |---|---|---|---|---|
-| **KWin** | ✅ layer-shell | portal `GlobalShortcuts` + `kglobalaccel` takeover | KDE Plasma | ✅완료 (실기 확인) |
-| **wlroots** | ✅ layer-shell | sway = `bindsym` i3-ipc→`tildaz --toggle N`, Hyprland = `hyprctl keyword bind`→`--toggle N` (portal 우회) | sway / Hyprland (Wayfire / river / niri 동계열) | ✅완료 (sway / Hyprland 실기 확인) |
+| **KWin** | ✅ layer-shell | direct KGlobalAccel D-Bus 등록·Pressed signal | KDE Plasma | ✅완료 (실기 확인) |
+| **wlroots** | ✅ layer-shell | Hyprland = `hyprctl keyword bind`→`tildaz --toggle N`, sway = `bindsym` i3-ipc→`--toggle N` | Hyprland / sway (Wayfire / river / niri 동계열) | ✅완료 (Hyprland / sway 실기 확인) |
 | **mutter** | tildaz 전용 Shell extension (xdg-shell 창 배치) | gsettings custom keybinding (libgio) + extension 충돌 시 자동 skip | GNOME (Ubuntu / Budgie / Pantheon 동계열) | ✅완료 (실기 확인) |
 | **muffin** | tildaz 전용 Shell extension | gsettings custom keybinding (Cinnamon strv schema) + extension 충돌 skip | Cinnamon | ✅완료 (실기 확인) |
-| **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle N` (portal-cosmic GlobalShortcuts 미구현) | COSMIC | ✅완료 (실기 확인) |
+| **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle N` | COSMIC | ✅완료 (실기 확인) |
 | **X11 전용** | — (Wayland 아님) | — | XFCE / MATE / LXDE | **범위 밖** (별도 backend 필요) |
 
 ### Support Tier 정의
@@ -152,21 +152,22 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
 
 ### DE 별 동작 (요약)
 
-- **KWin (KDE Plasma).** layer-shell drop-down. hotkey 는 portal `GlobalShortcuts`
-  로 등록하고, 그 키를 이미 다른 component 가 쓰고 있으면 `kglobalaccel`
-  `setForeignShortcut` 로 그 키만 회수(takeover)한 뒤 우리 binding 적용 — config 가
-  source of truth. launcher 는 KGlobalAccel component 목록에서 정확히
+- **KWin (KDE Plasma).** layer-shell drop-down. worker가 KGlobalAccel D-Bus에
+  instance별 action을 직접 등록하고 Component의 `globalShortcutPressed`를 받는다.
+  그 키를 이미 다른 component가 쓰고 있으면 사용자 확인 뒤 그 key sequence만
+  회수(takeover)하고 다른 binding은 보존한다. config가 source of truth다.
+  launcher는 KGlobalAccel component 목록에서 정확히
   `tildaz.instanceN`인 항목만 비교해 config 에 없는 번호의 `toggle-N` action 을
   증분 해제한다. drop-down 재표시는 KWin 만 `#205` unmap/remap 워크어라운드(아래
   부록 B 참조).
-- **sway (wlroots).** GlobalShortcuts portal 미지원이라 portal `Activated` 가 안 옴
-  → `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym <accel> exec <self_exe> --toggle N`
+- **sway (wlroots).** `$SWAYSOCK`의 i3-ipc `RUN_COMMAND`로
+  `bindsym <accel> exec <self_exe> --toggle N`
   를 런타임 등록. hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/tildaz-N.sock`).
   runtime-only 라 매 실행 등록 = config 가 source of truth. 단 sway IPC 는 현재
   binding 열거 요청을 제공하지 않아 세션 중 stale binding 증분 제거는 지원하지
   않는다. config 삭제/변경 전에 등록된 binding 은 sway 세션 재시작 때 사라진다.
 - **Hyprland (wlroots).** layer-shell drop-down 은 sway 와 같은 경로(코드 동일).
-  hotkey 는 portal 우회 — 실행 시 `hyprctl -j binds` actual 과 config desired 를
+  hotkey는 실행 시 `hyprctl -j binds` actual과 config desired를
   비교해 TildaZ `--toggle N` binding 의 차이만 `unbind/bind`한다. `install.sh`는
   `~/.config/hypr/` config의
   autostart만 관리한다. drop-down 은 `on_demand`
@@ -175,7 +176,7 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
 - **COSMIC (smithay).** layer-shell drop-down. hotkey 는 RON custom shortcut
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
   `Spawn("tildaz --toggle N")`로 원자적 갱신하되, 기존 bytes 와 같으면 write/rename 을
-  생략한다(portal-cosmic GlobalShortcuts 미구현). XDG autostart 는 지원.
+  생략한다. XDG autostart는 지원.
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
   xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
@@ -204,7 +205,7 @@ minimize/restore.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | config_N별 portal `GlobalShortcuts.BindShortcuts` + portal 미가용 환경에선 `tildaz --toggle N` Unix socket IPC ([9803c62](https://github.com/ensky0/tildaz/commit/9803c62), #198) | ✅ | ✅ | ✅ |
+| 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | KDE Plasma는 direct KGlobalAccel, 그 외 지원 desktop은 native binding→`tildaz --toggle N` Unix socket IPC ([9803c62](https://github.com/ensky0/tildaz/commit/9803c62), #198) | ✅ | ✅ | ✅ |
 | 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
 ### 2.2 탭 관리
@@ -388,7 +389,7 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
 | 그 외 상태변경 단축키 (reset / show_about / open_config / open_log) | commit | 동일 (`.shortcut` 진입 첫 줄) | `keyDown:`과 NSMenu selector가 공통 `applyShortcutInputPolicy` → `input_policy.resolve` → pending=commit 뒤 action (#317) | `input_policy.resolve` → pending=commit (Ctrl+Shift+I·P·L·R / reset #214) | ✅ | ✅ | ✅ |
 | copy_selection (Ctrl+Shift+C) / dump_perf (Ctrl+Shift+F12) | **commit 안 함** (read-only) | rename 유지 (`input_policy.resolve`의 pending=leave 확인 후 action 실행) | rename 유지 (`input_policy.resolve`의 pending=leave) | rename 유지 (`input_policy.resolve` read_only → pending=leave, #296) | ✅ | ✅ | ✅ |
-| F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow`의 공통 `applyShortcutInputPolicy(.toggle_visibility)` | portal `Activated` callback 안 (`commitPendingInput`) + `--toggle` IPC accept 안 | ✅ | ✅ | ✅ |
+| F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow`의 공통 `applyShortcutInputPolicy(.toggle_visibility)` | KGlobalAccel Pressed 또는 `--toggle` IPC가 공통 `handleActivatedToggle` 진입 후 `commitPendingInput` | ✅ | ✅ | ✅ |
 | **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
 
 ---
@@ -756,9 +757,9 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`) | XDG autostart (`$XDG_CONFIG_HOME/autostart/tildaz.desktop`, fallback `~/.config`), L11-α | ✅ | ✅ | ✅ |
-| `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). hotkey 전달 경로 — portal `GlobalShortcuts`(KDE 등) *또는* compositor keybind→`--toggle`(sway/Hyprland/COSMIC, `compositorHotkeyEnv`) — 가 있으면 존중, 그 경로마저 없으면 warning + 즉시 show fallback (영영 못 띄우는 trap 방지). GNOME/Cinnamon + extension 환경은 항상 `false` 로 override — 숨김은 extension 이 map 직후 minimize 로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
+| `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 100_000 | 100_000 default. ghostty `bytes_per_row × lines` 로 max byte 계산. | 동일 | ✅ | ✅ | ✅ |
-| `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + `keysymToAccelerator` + `kdeTryAutoApply` (충돌 owner 진단 + confirm dialog + takeover). 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207) |
+| `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
 
 > **glyph fallback chain** (#135, v0.4.1 schema breaking): chain = `font.family` (primary, single string) + `font.glyph_fallback` (array of strings). codepoint 별로 chain 순회 → 글리프 가진 첫 폰트 사용. chain 에 없는 codepoint 는 양쪽 OS 모두 system fallback 이 자동 처리 — Windows DirectWrite `IDWriteFontFallback.MapCharacters`, macOS CoreText `CTFontCreateForString`. 사용자가 별도 폰트를 추가하고 싶으면 `glyph_fallback` 끝에 append.
 >
@@ -776,9 +777,9 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. `config_0.json` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows 는 `RegisterHotKey`, macOS 는 `CGEventTap`, Linux 는 XDG portal `GlobalShortcuts.BindShortcuts` 로 OS / DE 의 global shortcut service 에 등록. portal `GlobalShortcuts` 미지원 DE 는 `tildaz --toggle N` Unix socket IPC (#198) + DE native binding 자동 등록.
+**Schema**: `string`. `config_0.json` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 GSettings·Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
 
-**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:962-974](src/config.zig#L962-L974), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux 의 portal-kde 송신 가능 여부는 아래 *Key 토큰 표* 의 "Linux 의 portal-kde 송신 보장" 열 참조.
+**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:962-974](src/config.zig#L962-L974), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux native backend 변환 가능 여부는 아래 *Key 토큰 표*를 따른다.
 
 **일반 입력 보호**: modifier 없이 허용하는 global hotkey는 `F1`~`F12`뿐이다. 문자, 숫자, `Space`, `Tab`, `grave` 등은 `Ctrl` / `Alt` / `Super` (`Cmd`) 중 하나 이상이 있어야 한다. `Shift` 단독 조합도 대문자·기호·`Shift+Tab` 같은 일상 입력을 가로채므로 거부한다. 이 검증은 dialog capture와 config parser 양쪽에 공통 적용된다.
 
@@ -806,45 +807,65 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 **Key 토큰** (대소문자 무관). 세 OS 가 공통 토크나이저(`config.zig` `parseHotkeyString`, [#294](https://github.com/ensky0/tildaz/issues/294) G1)를 거치므로 수용 범위가 아래 표로 동일하고, OS 별 차이는 key code 매핑(keysym / vkey / kVK)뿐:
 
-| 분류 | 토큰 / 글자 | Linux 의 portal-kde 송신 보장 |
+| 분류 | 토큰 / 글자 | Linux native backend 변환 |
 |---|---|---|
 | Function key | `f1` ~ `f12` | ✅ |
 | Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ |
 | Digit | `0` ~ `9` | ✅ |
 | Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
 | Backtick | `grave` / `backquote` (이름) 또는 `` ` `` (글자) | ✅ |
-| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString` 이 *명시 reject* (#208 fix). caller 가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 로 즉시 알림. 이전엔 silent F1 fallback 이었음 (수용 범위 확대는 portal-kde `XdgShortcut::parse` 의 실제 Qt::Key 매핑 시연 후 별 sub-task) |
+| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString`이 명시 reject(#208). caller가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)`로 즉시 알린다. 수용 범위 확대는 모든 native backend의 실제 key-code mapping 검증 후 별도 진행한다. |
 
-**계층적 fallback chain — config ≠ system binding 시 자동 보정** (`portal.handleHotkeyMismatch`, #207):
+**KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 
-1. **1차 (cross-DE 정공)**: XDG portal `UnbindShortcuts` (spec v2) + 재 `BindShortcuts`. portal-kde 6.6.5 는 v2 미구현이라 KDE 에선 항상 fail. portal upstream 가 v2 추가 시 모든 portal-가용 DE 에서 cross-DE 일관 동작.
+1. instance별 action ID `[tildaz.instanceN, toggle-N, TildaZ_N, Toggle TildaZ N]`을
+   `doRegister(as)`로 만들거나 기존 persistent action을 재사용한다.
+2. `getComponent(s) → o`가 반환한 object path의
+   `globalShortcutPressed(s,s,x)`만 구독한다. Repeated/Released는 구독하지 않아
+   한 번 누름이 정확히 한 번 toggle된다.
+3. `action(qt_key) → as`로 현재 owner를 조회한다. 다른 component가 점유하면
+   `dialog.showConfirm`으로 사용자 승인을 받은 뒤 그 action의
+   `shortcutKeys(as) → a(ai)`에서 정확히 일치하는 single-key sequence만 제거해
+   다른 binding과 multi-key sequence를 보존한다.
+4. config key를 `setShortcutKeys(as, a(ai), flags=SetPresent|NoAutoloading)`로
+   적용한다. KDE의 QKeySequence D-Bus wire shape는 sequence마다 int 4개이므로
+   single key도 반드시 `[key, 0, 0, 0]`으로 직렬화한다
+   ([공식 serializer](https://github.com/KDE/kglobalaccel/blob/master/src/kglobalshortcutinfo_dbus.cpp)).
+5. method 반환 sequence와 `action(qt_key)` owner가 모두 우리 identity인지
+   검증한 뒤에만 등록 성공으로 판정한다. config가 source of truth다.
+6. `org.kde.kglobalaccel`의 `NameOwnerChanged`에서 owner 재등장을 감지하면
+   D-Bus filter 밖 main loop에서 같은 등록·검증 순서를 다시 실행한다. 정상 종료는
+   auto-start를 끈 `setInactive(as)` 뒤 match/filter를 해제한다.
 
-2. **2차 (KDE-specific, `kdeTryAutoApply`)**:
-   - `org.kde.KGlobalAccel.action(qt_key) → as` 로 현재 owner 진단 (4-string actionId).
-   - owner ≠ tildaz 면 `dialog.showConfirm` (OK/Cancel — Enter=OK / Esc=Cancel (#250), Wayland modal layer-shell overlay, #203 의 dialog backend).
-   - 사용자 OK 시 → `shortcut(as) → ai` query 로 owner 의 현재 keys 전체 가져와 → 해당 키만 filter out → `setForeignShortcut(owner, filtered)` 로 *그 키만* 회수 (다른 binding 보존. 예: kwin `ExposeClass` 의 `[Meta+F7, Ctrl+F7]` 에서 `Ctrl+F7` 빼면 `Meta+F7` 유지).
-   - `setForeignShortcut(tildaz_actionId, [qt_key])` 로 우리 binding 적용.
-   - `shortcut(tildaz_actionId)` 재 query 로 검증 — 우리 qt_key 와 다르면 fallback dialog.
-   - **runtime cache only** — `kglobalshortcutsrc` 파일은 미갱신, KGlobalAccel daemon 재시작 시 reset 가능. tildaz 매 실행마다 mismatch 감지 → takeover 자동 재 적용.
-   - **GNOME / Cinnamon** — `tryDeSpecificHotkeyFix` 의 분기에서 미구현. 각 DE 의 dconf 경로가 달라 현재는 3차 fallback dialog 로 간다. (Hyprland와 sway는 portal mismatch 경로가 아니라 아래 별도 runtime binding 경로.)
+공식 계약:
+[KGlobalAccel root D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml),
+[Component D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml).
 
-3. **3차 fallback**: `dialog.showInfo` overlay (layer-shell) 로 *수동 변경 안내* — 사용자가 KDE Settings / GNOME Settings / sway config 등에서 수동 조정.
-
-**sway (portal `GlobalShortcuts` 미지원) — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207): sway (xdg-desktop-portal-wlr) 는 GlobalShortcuts portal 이 없어 portal `Activated` 가 오지 않는다. 따라서 위 mismatch chain 이 아니라 *별도 boot 진입점*으로 처리 — `SWAYSOCK` 존재 (또는 `XDG_CURRENT_DESKTOP=sway`) 시, `$SWAYSOCK` 의 i3-ipc `RUN_COMMAND` 로 `bindsym --no-warn <accel> exec "<self_exe>" --toggle N` 를 자동 등록 (`swaymsg` subprocess 아닌 직접 socket). hotkey 실동작은 번호별 single-instance socket. sway IPC에는 runtime binding 열거 request가 없으므로 외부 binding 충돌은 조회하지 않고, Create가 통과한 TildaZ hotkey가 같은 accelerator의 일반 binding을 의도적으로 덮어쓴다([sway IPC request 목록](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd), [`bindsym --no-warn`](https://man.archlinux.org/man/sway.5.en)). `bindsym` 은 runtime-only라 매 worker 실행 시 등록한다. config 삭제/변경 전에 등록된 stale binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고, 재사용하지 않으면 sway 세션 재시작 때 사라진다.
+**sway — `bindsym` 자동 등록** (`sway_ipc.registerToggleIfSway`, #207):
+`SWAYSOCK` 존재(또는 `XDG_CURRENT_DESKTOP=sway`) 시 `$SWAYSOCK`의 i3-ipc
+`RUN_COMMAND`로 `bindsym --no-warn <accel> exec "<self_exe>" --toggle N`을
+자동 등록한다(`swaymsg` subprocess가 아닌 직접 socket). hotkey 실동작은 번호별
+single-instance socket이다. sway IPC에는 runtime binding 열거 request가 없으므로
+외부 binding 충돌은 조회하지 않고, Create가 통과한 TildaZ hotkey가 같은
+accelerator의 일반 binding을 의도적으로 덮어쓴다
+([sway IPC request 목록](https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd),
+[`bindsym --no-warn`](https://man.archlinux.org/man/sway.5.en)). `bindsym`은
+runtime-only라 매 worker 실행 시 등록한다. config 삭제/변경 전에 등록된 stale
+binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고, 재사용하지
+않으면 sway 세션 재시작 때 사라진다.
 
 **Wayland hotkey capture inhibitor**: Linux prompt surface가 focus를 가진 동안 compositor가 `zwp_keyboard_shortcuts_inhibit_manager_v1`을 client에게 노출하면 `zwp_keyboard_shortcuts_inhibitor_v1`을 생성한다. 따라서 기존 compositor binding이 있는 F-key도 prompt가 직접 받는다. Create / Cancel / Esc / surface 종료 시 inhibitor를 surface보다 먼저 파괴해 일반 shortcut routing을 즉시 복구한다. protocol을 노출하지 않는 compositor는 기존 입력 경로를 유지한다. sway에서 `--inhibited`로 등록한 특수 binding은 compositor 정책상 예외로 계속 실행될 수 있다([Wayland protocol](https://wayland.app/protocols/keyboard-shortcuts-inhibit-unstable-v1), [sway inhibitor 동작](https://man.archlinux.org/man/sway.5.en)).
 
-**Hyprland (portal `GlobalShortcuts` 미사용) — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.json` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
+**Hyprland — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.json` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
 
 **KDE Plasma / GNOME / Cinnamon — persistent binding 증분 정리**: launcher는 KDE Plasma에서 KGlobalAccel `allComponents()`와 Component `uniqueName`을 조회해 config에서 사라진 `tildaz.instanceN`의 `toggle-N`만 `unregister`한다([KGlobalAccel D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml), [Component interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml)). GNOME/Cinnamon의 GSettings fallback도 custom keybinding 목록에서 TildaZ numbered entry만 식별해 사라진 번호를 제거하며 사용자 항목은 보존한다. GNOME/Cinnamon Shell extension은 config directory monitor로 변경을 받고 동일 index/accelerator는 유지한다.
 
-**Display 표기 (사용자 dialog / log)**: `keysymDisplayString` 가 Title case + `+` 분리 (`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`) — KDE 친화. portal-kde D-Bus 송신용 parse format (`LOGO+a`, `SHIFT+CTRL+grave`) 과 분리.
+**Display 표기 (사용자 dialog / log)**: `hotkey_format.displayString`이 Title case + `+` 분리(`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`)로 표시한다. backend wire 형식과 분리된 사용자용 표기다.
 
-**기타 KDE 제약 / 시도 학습**:
-- portal-kde 의 `XdgShortcut::parse` 가 *대문자 modifier만* (`CTRL`/`SHIFT`/`ALT`/`LOGO`) case-sensitive HashMap — `keysymToAccelerator` 가 대문자 송신.
-- portal-kde 의 *key 부분* 은 `^([\w\d_]+).*$` regex 로 alphanumeric + underscore — literal symbol 은 xkb name (예: `` ` `` → `grave`) 거쳐 송신 필요.
-- `KGlobalAccel.setShortcut` 은 Qt 내부 client API 라 외부 D-Bus 거부. `setForeignShortcut` 이 외부용 정공 (void return).
-- `KGlobalAccel.unregister` 는 *binding + listener 둘 다 해제* — invasive, 사용 X.
+**KDE wire 제약**:
+- action ID는 `[componentUnique, actionUnique, componentFriendly, actionFriendly]` 4-string array다.
+- `setShortcutKeys`와 `shortcutKeys`의 각 `(ai)` QKeySequence는 항상 int 4개다. single key의 나머지 세 slot은 0이다.
+- 정상 종료에는 `unregister`가 아니라 `setInactive(as)`를 사용한다. `unregister`는 persistent action 자체를 제거하므로 config에서 사라진 numbered identity 정리에만 쓴다.
 
 ### 7.2 셸 시작 디렉토리 ([#265](https://github.com/ensky0/tildaz/issues/265))
 

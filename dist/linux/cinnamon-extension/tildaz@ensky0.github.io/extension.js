@@ -407,7 +407,7 @@ function onMap(actor) {
   registerHotkey(index, cfg);
   place(win, cfg);
   // hidden_start=true → 배치 후 숨김(첫 hotkey 로 등장). tildaz 는 Cinnamon 에서
-  // portal GlobalShortcuts 부재로 자기 hidden_start 를 무시하고 항상 창을 만들어
+  // native shortcut 경로에서는 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
   if (cfg.hidden) win.minimize();
 }

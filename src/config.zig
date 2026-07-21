@@ -160,13 +160,12 @@ fn parseHotkeyString(s: []const u8) ?ParsedHotkey {
 ///     `return` / `enter`
 ///   - literal: `` ` ``, ASCII letter (a-z / A-Z), digit (0-9)
 ///
-/// **수용 범위는 portal 송신 시점의 `portal.keysymGtkName` 매핑과 1:1** (#208).
-/// 이전엔 Linux 가 ASCII symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나
-/// `keysymGtkName` 매핑 부재로 portal 송신 시 `"F1"` 로 silent fallback
-/// → 사용자가 모르고 동작 안 함. 명시 reject 로 caller (config load) 의
-/// `dialog.showFatal` 경로 활성 — silent 한 것보다 명확한 parse error 가
-/// 낫다. literal symbol 표현력 확대는 portal-kde 의 `XdgShortcut::parse`
-/// 가 실제 매핑하는 Qt::Key 범위 시연 후 별 sub-task.
+/// **수용 범위는 Linux native backend가 공통으로 변환하는 key set과 1:1** (#208).
+/// 이전엔 Linux가 ASCII symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나
+/// backend key-name 매핑 부재로 `"F1"` silent fallback이 발생했다. 명시 reject로
+/// caller(config load)의 `dialog.showFatal` 경로를 활성화해 잘못된 binding을
+/// 조용히 만드는 일을 막는다. literal symbol 확대는 모든 native backend의
+/// 실제 key-code 매핑을 검증하는 별도 작업이다.
 fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
     const map = [_]struct { name: []const u8, key: HotkeyNamedKey }{
         .{ .name = "f1", .key = .f1 },            .{ .name = "f2", .key = .f2 },
@@ -288,7 +287,7 @@ const LinuxHotkey = struct {
     }
 };
 
-/// 검증된 Linux hotkey keysym을 compositor/portal 설정에 쓰는 표준 이름으로
+/// 검증된 Linux hotkey keysym을 desktop/compositor 설정에 쓰는 표준 이름으로
 /// 되돌린다. fromString의 수용 범위와 반드시 1:1로 유지한다.
 pub fn linuxKeysymName(keysym: u32) ?[]const u8 {
     return switch (keysym) {

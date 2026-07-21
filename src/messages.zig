@@ -29,14 +29,6 @@ pub const quit_confirm_format = "This will close {d} open tab{s}.";
 pub const tab_limit_title = "Tab limit reached";
 pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
 
-/// Linux portal `BindShortcuts` response 의 actual trigger 가 config 의 preferred
-/// 와 다를 때 — 우리가 `UnbindShortcuts` + 재 `BindShortcuts` 로 자동 보정 한 후
-/// 사용자에게 결과 알림. config 이 source of truth (cross-platform parity).
-pub const hotkey_updated_title = "Hotkey updated";
-pub const hotkey_updated_format = "System binding was {s}. Updated to match config: {s}.";
-pub const hotkey_mismatch_persists_title = "Hotkey mismatch";
-pub const hotkey_mismatch_persists_format = "Tried to set hotkey to {s} (config) but system still reports {s}. Adjust in your desktop's Global Shortcuts settings.";
-
 /// Linux KDE — 우리 config 의 hotkey 가 *다른 KDE 컴포넌트* (kwin / plasmashell
 /// 등) 의 단축키와 충돌 시 사용자 확인 (#207). OK = 충돌 컴포넌트에서 해당 키만
 /// 회수하고 tildaz 로 가져옴, Cancel = 기존 binding 유지.
@@ -52,10 +44,8 @@ pub const hotkey_takeover_declined_title = "Hotkey unchanged";
 pub const hotkey_takeover_declined_format = "Kept the existing binding. To use \"{s}\" for TildaZ, free it from {s} in your desktop's Global Shortcuts settings.";
 
 /// #282 G10 — 위 format bufPrint 실패 시 표시할 fallback (사용자 노출 문자열은
-/// 모두 messages.zig 에). Linux portal hotkey 경로에서만 발동(희귀).
+/// 모두 messages.zig 에). Linux native hotkey 경로에서만 발동(희귀).
 pub const hotkey_takeover_declined_fallback_msg = "Hotkey unchanged.";
-pub const hotkey_updated_fallback_msg = "System hotkey updated to match config.";
-pub const hotkey_mismatch_persists_fallback_msg = "Hotkey mismatch — adjust in your desktop's Global Shortcuts settings.";
 
 /// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
 /// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L

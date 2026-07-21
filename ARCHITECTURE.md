@@ -112,7 +112,7 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
 2. `host/linux/wayland_minimal.zig` is a direct Wayland wire-protocol client (no
    GTK / Qt). It owns the registry, `xdg-shell` / `wlr-layer-shell` surfaces,
    `wl_shm` buffers, keyboard / pointer / data-device, `zwp_text_input_v3` IME,
-   the D-Bus / XDG-portal global-shortcut path, and the main event loop.
+   the KDE Plasma direct KGlobalAccel D-Bus client, and the main event loop.
 3. The same `session_core.zig` tab/session model is used as Windows / macOS.
 4. `terminal/posix/pty.zig` (shared with macOS) opens a POSIX PTY (`/dev/ptmx`,
    `setsid`, `TIOCSCTTY` on Linux) behind the shared `terminal.zig` API.
@@ -131,9 +131,10 @@ The host probes compositor capabilities at startup and degrades gracefully:
 `xdg_wm_base` (baseline window — fatal if missing), `zwlr_layer_shell_v1` (true
 drop-down; falls back to a normal `xdg-shell` window or a Shell extension on
 mutter / muffin), `libxkbcommon` (keymaps), Wayland data-device (clipboard),
-XDG-portal `GlobalShortcuts` (global toggle; otherwise per-DE config bind to
-`tildaz --toggle`), and `zwp_text_input_v3` (IME). Each missing capability is
-logged and surfaced as a documented limitation rather than a crash.
+and `zwp_text_input_v3` (IME). Global hotkeys use native desktop paths:
+direct KGlobalAccel on KDE Plasma, GSettings / Shell extensions on GNOME and
+Cinnamon, and compositor bindings to `tildaz --toggle N` on COSMIC, Hyprland,
+and sway. An unrecognized desktop can bind that IPC command manually.
 
 ## Design Choices
 
@@ -244,11 +245,14 @@ Metal path is comparable to the Windows D3D11 path, but formal numbers should
 be collected under a dedicated performance issue before being treated as a
 published claim.
 
-## Linux Protocol References
+## Linux Integration References
 
-- XDG Desktop Portal `GlobalShortcuts` — permissioned cross-desktop API for
-  registering shortcuts outside app focus:
-  <https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html>
+- KGlobalAccel root D-Bus interface — action registration, shortcut assignment,
+  owner lookup, and component discovery:
+  <https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml>
+- KGlobalAccel Component D-Bus interface — pressed signal and inactive
+  lifecycle:
+  <https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml>
 - `wlr-layer-shell` — desktop layer surfaces anchored to an output edge:
   <https://wayland.app/protocols/wlr-layer-shell-unstable-v1>
 - `xdg-shell` — baseline Wayland protocol for normal toplevel windows:

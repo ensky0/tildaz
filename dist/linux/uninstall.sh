@@ -184,8 +184,8 @@ clean_gsettings_keybindings "org.gnome.settings-daemon.plugins.media-keys" "cust
 clean_gsettings_keybindings "org.cinnamon.desktop.keybindings" "custom-list" "cinnamon" "Cinnamon"
 
 # KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] component 그룹 제거
-# (#292 E2). runtime 이 KGlobalAccel.setShortcut(NoAutoloading) 로 영구 저장한다
-# (portal.zig). 그룹 헤더부터 다음 그룹([...]) 직전까지 삭제. 현재 세션의
+# (#292 E2). runtime이 KGlobalAccel.setShortcutKeys(NoAutoloading)로 저장한다
+# (kglobalaccel.zig). 그룹 헤더부터 다음 그룹([...]) 직전까지 삭제. 현재 세션의
 # in-memory grab 은 로그아웃 시 해제되고, 다음 로그인 땐 정리된 파일을 읽는다.
 KGLOBAL="$HOME/.config/kglobalshortcutsrc"
 if [[ -f "$KGLOBAL" ]] && grep -qE '^\[tildaz\.instance[0-9]+\]' "$KGLOBAL"; then

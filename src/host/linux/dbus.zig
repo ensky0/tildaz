@@ -1,13 +1,12 @@
 //! Runtime libdbus-1 wrapper for Linux desktop integrations.
 //!
-//! portal `GlobalShortcuts`와 KDE KGlobalAccel이 공유하는 session bus client. Wayland의
+//! KDE KGlobalAccel용 session bus client. Wayland의
 //! libxkbcommon / FreeType 처럼 runtime dlopen — macOS-hosted Linux cross build
 //! 가 dbus headers / link 없이 통과 + Linux runtime 에선 거의 모든 distro
 //! (Alpine / musl 포함) 의 `libdbus-1.so.3` 으로 동작 (systemd 비의존).
 //!
-//! L9-α scope: session bus connect + unique_name. L9-β-1: message build /
-//! parse + filter + match + sync method call + read_write_dispatch loop —
-//! portal `CreateSession` 등 method 호출 인프라.
+//! session bus connect + unique_name, message build/parse, filter/match,
+//! synchronous method call, read_write_dispatch loop을 제공한다.
 //!
 //! libdbus API 출처: https://dbus.freedesktop.org/doc/api/html/
 

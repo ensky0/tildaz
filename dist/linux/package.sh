@@ -256,7 +256,7 @@ Priority: optional
 Architecture: ${DEBARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libxkbcommon0, libfreetype6, libfontconfig1
-Recommends: libharfbuzz0b, libdbus-1-3, libglib2.0-0, xdg-desktop-portal
+Recommends: libharfbuzz0b, libdbus-1-3, libglib2.0-0
 Maintainer: ensky0 <bongjun.yi@navercorp.com>
 Homepage: https://github.com/ensky0/tildaz
 Description: Quake-style drop-down terminal for Wayland
@@ -341,9 +341,9 @@ AutoReqProv:    no
 # 단, core 라이브러리(키보드/폰트)는 명시 Requires. distro 간 패키지명 차이
 # (Fedora freetype ↔ openSUSE libfreetype6) 를 피하려 이름 대신 SONAME
 # capability 를 쓴다 — rpm 이 각 lib 에 대해 자동 Provides 하므로 distro 무관.
-# ligature / hotkey 용 lib 와 portal 서비스는 dlopen graceful degrade 라 weak Recommends.
+# ligature / native hotkey용 library는 dlopen graceful degrade라 weak Recommends.
 Requires:       libxkbcommon.so.0()(64bit) libfreetype.so.6()(64bit) libfontconfig.so.1()(64bit)
-Recommends:     libharfbuzz.so.0()(64bit) libdbus-1.so.3()(64bit) libgio-2.0.so.0()(64bit) xdg-desktop-portal
+Recommends:     libharfbuzz.so.0()(64bit) libdbus-1.so.3()(64bit) libgio-2.0.so.0()(64bit)
 
 %description
 TildaZ is a drop-down terminal with native Wayland support (layer-shell)
@@ -531,7 +531,7 @@ build_pkg() {
     rm -rf "$BUILD/shell-extensions"
 
     # 의존성은 deb/rpm 과 동일 정책: core(키보드/폰트) hard depends, ligature/
-    # hotkey 용은 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
+    # native hotkey용 library는 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
     # 런타임 변수라 heredoc 에서 escape — ${PACKAGE_VERSION}만 여기서 확장.
     cat > "$BUILD/PKGBUILD" << END
 # Maintainer: ensky0 <bongjun.yi@navercorp.com>
@@ -544,9 +544,8 @@ url='https://github.com/ensky0/tildaz'
 license=('AGPL-3.0-or-later')
 depends=('libxkbcommon' 'freetype2' 'fontconfig')
 optdepends=('harfbuzz: ligature rendering'
-            'dbus: KDE portal / KGlobalAccel global hotkey'
-            'glib2: GNOME/Cinnamon gsettings global hotkey'
-            'xdg-desktop-portal: portal-based global hotkey')
+            'dbus: KDE Plasma KGlobalAccel global hotkey'
+            'glib2: GNOME/Cinnamon gsettings global hotkey')
 source=('tildaz' 'tildaz.desktop' 'tildaz.svg' 'shell-extensions.tar.gz')
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
 options=('!strip' '!debug')

@@ -427,11 +427,9 @@ fn removeFromList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GS
     _ = api.settings_set_strv(settings, v.list_key, list.items.ptr);
 }
 
-/// GNOME 세션 + tildaz extension 활성 여부. 호출처 둘:
+/// GNOME 세션 + tildaz extension 활성 여부.
 /// (1) `host/linux_wayland.zig` — hidden_start 를 false 로 override (extension 이
 ///     map 직후 minimize 로 숨김을 담당, surface 보류는 무한 재launch 유발).
-/// (2) `wayland_minimal.tryConnectDbus` — portal GlobalShortcuts 경로 skip
-///     (extension 이 hotkey 담당 + 로그인 직후 portal 미기동 시 25s 블록 회피, #228).
 /// autostart `.desktop` 은 삭제하지 않고 유지한다 — `NotShowIn=GNOME;` 키로
 /// GNOME 만 제외 (`autostart/linux.zig` 참조; DE 전환 시 KDE/Cinnamon autostart 보존).
 pub fn isGnomeWithExtension(allocator: std.mem.Allocator) bool {

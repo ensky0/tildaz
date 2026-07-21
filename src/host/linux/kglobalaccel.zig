@@ -1,8 +1,8 @@
 //! KDE Plasma KGlobalAccel D-Bus integration.
 //!
 //! instance/action identity, Qt key conversion, conflict diagnosis/takeover,
-//! persistent numbered identity cleanup을 portal lifecycle과 분리한다. direct
-//! registration과 Component signal client도 이 모듈에 둔다.
+//! persistent numbered identity cleanup, direct registration, Component
+//! signal client를 한 모듈에 둔다.
 //!
 //! Official interfaces:
 //! - https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml
@@ -256,37 +256,6 @@ pub fn qtKey(keysym: u32, modifiers: u32) i32 {
     return key | key_code;
 }
 
-pub fn queryToggleShortcut(bus: *dbus.SessionBus) ?i32 {
-    const call = bus.api.message_new_method_call(destination, root_path, root_interface, "shortcut") orelse return null;
-    defer bus.api.message_unref(call);
-
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-    const action_id = actionId();
-    appendStringArray(&bus.api, &iter, &action_id) catch return null;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const msg = if (err.message) |value| std.mem.span(value) else "(no message)";
-            log.appendLine("kglobalaccel", "kglobalaccel shortcut query failed: {s}", .{msg});
-        }
-        return null;
-    };
-    defer bus.api.message_unref(reply);
-
-    var reply_iter: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_init(reply, &reply_iter) == 0 or bus.api.iter_get_arg_type(&reply_iter) != dbus.dbus_type_array) return null;
-    var keys: dbus.DBusMessageIter = .{};
-    bus.api.iter_recurse(&reply_iter, &keys);
-    if (bus.api.iter_get_arg_type(&keys) != dbus.dbus_type_int32) return null;
-    var qt_key: i32 = 0;
-    bus.api.iter_get_basic(&keys, @ptrCast(&qt_key));
-    return qt_key;
-}
-
 const OwnerActionId = struct {
     component: []u8,
     action: []u8,
@@ -426,33 +395,6 @@ fn queryKeySequencesForAction(allocator: std.mem.Allocator, bus: *dbus.SessionBu
     return .{ .items = sequences.toOwnedSlice(allocator) catch return null };
 }
 
-fn setForeignShortcut(bus: *dbus.SessionBus, action_id: []const [*:0]const u8, keys: []const i32) !void {
-    const call = bus.api.message_new_method_call(destination, root_path, root_interface, "setForeignShortcut") orelse return error.KGlobalAccelMessageAllocFailed;
-    defer bus.api.message_unref(call);
-    var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
-    try appendStringArray(&bus.api, &iter, action_id);
-    var key_array: dbus.DBusMessageIter = .{};
-    if (bus.api.iter_open_container(&iter, dbus.dbus_type_array, "i", &key_array) == 0) return error.KGlobalAccelAppendFailed;
-    for (keys) |value| {
-        var key = value;
-        if (bus.api.iter_append_basic(&key_array, dbus.dbus_type_int32, @ptrCast(&key)) == 0) return error.KGlobalAccelAppendFailed;
-    }
-    if (bus.api.iter_close_container(&iter, &key_array) == 0) return error.KGlobalAccelAppendFailed;
-
-    var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
-            const msg = if (err.message) |value| std.mem.span(value) else "(no message)";
-            log.appendLine("kglobalaccel", "kglobalaccel setForeignShortcut failed: {s}", .{msg});
-        }
-        return error.KGlobalAccelMethodCallFailed;
-    };
-    defer bus.api.message_unref(reply);
-}
-
 fn setForeignShortcutKeys(bus: *dbus.SessionBus, action_id: []const [*:0]const u8, sequences: []const []const i32) !void {
     const call = bus.api.message_new_method_call(destination, root_path, root_interface, "setForeignShortcutKeys") orelse return error.KGlobalAccelMessageAllocFailed;
     defer bus.api.message_unref(call);
@@ -481,13 +423,6 @@ fn setForeignShortcutKeys(bus: *dbus.SessionBus, action_id: []const [*:0]const u
     defer bus.api.error_free(&err);
     const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse return error.KGlobalAccelMethodCallFailed;
     bus.api.message_unref(reply);
-}
-
-fn setToggleShortcut(bus: *dbus.SessionBus, qt_key: i32) !void {
-    const action_id = actionId();
-    const keys = [_]i32{qt_key};
-    try setForeignShortcut(bus, &action_id, &keys);
-    log.appendLineVerbose("kglobalaccel", "kglobalaccel setForeignShortcut(tildaz) succeeded — qt_key=0x{x}", .{@as(u32, @bitCast(qt_key))});
 }
 
 fn takeoverConflict(allocator: std.mem.Allocator, bus: *dbus.SessionBus, owner: *const OwnerActionId, our_qt_key: i32) !void {
@@ -916,82 +851,6 @@ fn signalFilter(conn: *dbus.DBusConnection, message: *dbus.DBusMessage, user_dat
     return dbus.dbus_handler_result_not_yet_handled;
 }
 
-pub fn tryAutoApply(
-    allocator: std.mem.Allocator,
-    bus: *dbus.SessionBus,
-    keysym: u32,
-    modifiers: u32,
-    preferred_display: []const u8,
-    actual: []const u8,
-) void {
-    const qt_key = qtKey(keysym, modifiers);
-    var owner_opt = queryOwnerForKey(allocator, bus, qt_key);
-    defer if (owner_opt) |*owner| owner.deinit(allocator);
-
-    const ours = if (owner_opt) |owner|
-        std.mem.eql(u8, owner.component, std.mem.span(component())) and
-            std.mem.eql(u8, owner.action, std.mem.span(action()))
-    else
-        false;
-
-    if (owner_opt) |owner| {
-        if (!ours) {
-            log.appendLine("kglobalaccel", "secondary conflict detected — owner={s}/{s} (display: {s} / {s}) qt_key=0x{x}", .{
-                owner.component,
-                owner.action,
-                owner.display_component,
-                owner.display_action,
-                @as(u32, @bitCast(qt_key)),
-            });
-            var message_buf: [512]u8 = undefined;
-            const confirm_message = std.fmt.bufPrint(&message_buf, messages.hotkey_takeover_format, .{
-                preferred_display,
-                owner.display_component,
-                owner.display_action,
-            }) catch {
-                showMismatchPersistsDialog(allocator, preferred_display, actual);
-                return;
-            };
-            if (!dialog.showConfirm(messages.hotkey_takeover_title, confirm_message)) {
-                log.appendLine("kglobalaccel", "takeover declined (Cancel) — existing binding retained", .{});
-                var declined_buf: [256]u8 = undefined;
-                const declined_message = std.fmt.bufPrint(&declined_buf, messages.hotkey_takeover_declined_format, .{
-                    preferred_display,
-                    owner.display_component,
-                }) catch {
-                    dialog.showInfo(messages.hotkey_takeover_declined_title, messages.hotkey_takeover_declined_fallback_msg);
-                    return;
-                };
-                dialog.showInfo(messages.hotkey_takeover_declined_title, declined_message);
-                return;
-            }
-            takeoverConflict(allocator, bus, &owner, qt_key) catch |err| {
-                log.appendLine("kglobalaccel", "takeover D-Bus call failed ({s}) — fallback dialog", .{@errorName(err)});
-                showMismatchPersistsDialog(allocator, preferred_display, actual);
-                return;
-            };
-        }
-    }
-
-    setToggleShortcut(bus, qt_key) catch |err| {
-        log.appendLine("kglobalaccel", "KDE setForeignShortcut(tildaz) failed ({s}) — fallback dialog", .{@errorName(err)});
-        showMismatchPersistsDialog(allocator, preferred_display, actual);
-        return;
-    };
-    if (queryToggleShortcut(bus)) |stored| {
-        if (stored != qt_key) {
-            log.appendLine("kglobalaccel", "KDE post-set verification failed — stored=0x{x} expected=0x{x}", .{
-                @as(u32, @bitCast(stored)),
-                @as(u32, @bitCast(qt_key)),
-            });
-            showMismatchPersistsDialog(allocator, preferred_display, actual);
-            return;
-        }
-    }
-    log.appendLine("kglobalaccel", "hotkey updated (KDE D-Bus): \"{s}\" → {s}", .{ actual, preferred_display });
-    showHotkeyUpdatedDialog(allocator, actual, preferred_display);
-}
-
 pub fn isKdeDesktopValue(value: []const u8) bool {
     var tokens = std.mem.tokenizeScalar(u8, value, ':');
     while (tokens.next()) |token| {
@@ -1003,26 +862,6 @@ pub fn isKdeDesktopValue(value: []const u8) bool {
 pub fn isCurrentDesktop() bool {
     const value = std.posix.getenv("XDG_CURRENT_DESKTOP") orelse return false;
     return isKdeDesktopValue(value);
-}
-
-pub fn showHotkeyUpdatedDialog(allocator: std.mem.Allocator, was: []const u8, now: []const u8) void {
-    var buf: [256]u8 = undefined;
-    const message = std.fmt.bufPrint(&buf, messages.hotkey_updated_format, .{ was, now }) catch {
-        dialog.showInfo(messages.hotkey_updated_title, messages.hotkey_updated_fallback_msg);
-        return;
-    };
-    dialog.showInfo(messages.hotkey_updated_title, message);
-    _ = allocator;
-}
-
-pub fn showMismatchPersistsDialog(allocator: std.mem.Allocator, preferred: []const u8, actual: []const u8) void {
-    var buf: [256]u8 = undefined;
-    const message = std.fmt.bufPrint(&buf, messages.hotkey_mismatch_persists_format, .{ preferred, actual }) catch {
-        dialog.showInfo(messages.hotkey_mismatch_persists_title, messages.hotkey_mismatch_persists_fallback_msg);
-        return;
-    };
-    dialog.showInfo(messages.hotkey_mismatch_persists_title, message);
-    _ = allocator;
 }
 
 test "numbered KDE component identity is parsed strictly" {
