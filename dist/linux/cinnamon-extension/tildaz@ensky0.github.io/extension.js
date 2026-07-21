@@ -413,12 +413,12 @@ function onMap(actor) {
 }
 
 // hotkey toggle — extension 이 직접 minimize/unminimize. tildaz 의 --toggle(null
-// buffer)에 맡기지 않는다(위 헤더 주석). focus 면 숨김, 아니면 보임 + 위치 재확정.
+// buffer)에 맡기지 않는다(위 헤더 주석). visible 이면 숨김, minimized 면 보임 + 위치 재확정.
 function toggle(index) {
   try {
     const win = find(index);
     if (!win) return; // toggle 전용 — 미실행 시 무동작(실행은 autostart/메뉴).
-    if (win.has_focus() && !win.minimized) {
+    if (!win.minimized) {
       win.minimize();
       defocusAfterHide(win);
       return;
