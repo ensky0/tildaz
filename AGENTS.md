@@ -278,7 +278,7 @@ zsh -c "echo \$'\\U0001F389'"            # zsh unicode escape (macOS bash 3.2 �
 
 색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
 
-**bash / zsh** (WSL Debian, macOS, Linux — TildaZ 기본 탭이 WSL bash 라 *이게 메인*):
+**bash / zsh** (Linux · macOS · Windows에서 WSL shell을 선택적으로 사용하는 탭):
 
 ```sh
 echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋🏾👋🏿\n👨‍👩‍👧👨‍👨‍👦‍👦\nABCDEFG abcdefg 0123456789\n한글 ABC 가나다라마바사\n▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏\n▐░▒▓▔▕\n"
@@ -306,16 +306,23 @@ chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo �
 
 # 실행 환경
 
-Windows 환경에서 작업 중이면 **모든 명령은 WSL에서 실행하는 것을 먼저 고려**해요.
-`git`, `gh`, 파일 조작 등은 `.gitconfig`, SSH 키, 기타 설정이 WSL 쪽에 있는 경우가 많아서 Windows 셸에서 직접 실행하면 인증이나 환경 차이로 불안한 문제가 생길 수 있어요.
+Windows 환경에서는 **Windows native PowerShell을 기본 셸**로 사용해요. WSL distro가
+설치되지 않은 상태가 기본이며, `git`, `gh`, 파일 조작, Zig 빌드와 검증 모두 Windows에
+설치된 도구와 `C:\...` Windows 로컬 checkout에서 실행해요. WSL의 `.gitconfig`, SSH 키,
+파일 경로, `bash`가 있다고 가정하지 않아요.
 
-예외: `tildaz.exe` 자체는 **Windows 프로그램**이므로 빌드와 실행은 Windows 쪽에서 해야 해요.
-`zig build`는 Windows 셸에서 실행하되, 소스는 UNC 경로(`\\wsl$\Debian\...`)로 접근하고 캐시는 `C:/ziglang/tildaz-cache` 같은 Windows 로컬 경로를 사용해요.
+`tildaz.exe`는 Windows 프로그램이므로 빌드와 실행도 Windows에서 해요. Zig local/global
+cache는 `C:/ziglang/tildaz-cache`처럼 Windows 로컬 경로를 사용해요. `zig build package`의
+Windows 경로는 `dist/windows/package.ps1`을 PowerShell로 호출하며 WSL/Git Bash가 필요하지
+않아요.
 
-WSL 파일을 Windows 경로로 접근해야 할 때는 반드시 `\\wsl$\Debian\...` 형식을 사용해요. `\\wsl.localhost\Debian\...`는 사용하지 않아요.
+사용자가 명시적으로 WSL 안의 checkout을 작업 대상으로 준 예외적인 경우에만 `\\wsl$\<distro>\...`
+UNC 경로를 사용해요. distro 이름을 `Debian`으로 가정하거나 `\\wsl.localhost\...` 경로를
+기본값으로 쓰지 않아요.
 
 **빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`-Clean` / `-Optimize` / `-Check` / `-Test` 지원). 직접 호출 시:
 - 전체 빌드: `zig build -Doptimize=ReleaseFast`
+- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast`
 - **컴파일 검증**: `zig build check` — Linux · macOS · Windows × (x86_64 / aarch64) 6 타겟을 *compile-only* (link 없이 `.o` 만) 로 돌려, mac / Linux host 코드의 type / 컴파일 에러를 Windows 한 머신에서 한 번에 잡아요 (#201). cross-platform 변경 후 필수.
 - 단위 테스트: `zig build test` (이 머신에서 debug `.sframe` 링커 에러 나면 `-Doptimize=ReleaseSafe`).
 - 순수 모듈만 빠르게: `zig test src/<module>.zig` (ghostty 의존성 없는 모듈 한정, 예: `src/scrollbar.zig`).
@@ -329,17 +336,20 @@ WSL 파일을 Windows 경로로 접근해야 할 때는 반드시 `\\wsl$\Debian
 - 그 이전 pin (3a1482d, 2026-04-21) 은 symlink 가 없어서 개발자 모드 없이도 빌드됐어요 — 과거 문서의 "Developer Mode 없어도 됩니다" 는 그 시점 기준.
 - CI (windows-2022 러너) 는 **별도 조치 없이 unpack 성공 확인** — [`windows-fetch-check.yml`](.github/workflows/windows-fetch-check.yml) (workflow_dispatch, release.yml 의 fetch 이전 step 과 동일 구성) 수동 실행으로 검증 ([run 28923076087](https://github.com/ensky0/tildaz/actions/runs/28923076087), 2026-07-08 success). ghostty pin 을 올릴 때마다 이 workflow 로 태그 전에 재검증하면 돼요.
 
-libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문단) — 개발자 모드는 ghostty 자체 tarball 때문에 필요한 것. WSL 소스를 UNC 로 받는 경우 글로벌 캐시도 Windows 로컬(예 `C:/ziglang/tildaz-cache`)로 두면 빨라요 (`ZIG_GLOBAL_CACHE_DIR` 설정).
+libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문단) — 개발자 모드는 ghostty 자체 tarball 때문에 필요한 것. 글로벌 캐시도 Windows 로컬(예 `C:/ziglang/tildaz-cache`)로 두면 빨라요 (`ZIG_GLOBAL_CACHE_DIR` 설정).
 
 **`zig build --fetch=all` 은 쓰지 않아요.** `--fetch=all` 은 폰트용 lazy 의존성 (ghostty → fontconfig → libxml2) 까지 전부 받는데, libxml2 tarball 은 Unix 심볼릭 링크 (test fixtures) 를 담고 있어 **심볼릭 링크 생성 권한 없는 Windows (Developer Mode off) 환경에선 unpack 이 `AccessDenied` 로 실패**해요. 근본 차단은 [`build.zig`](build.zig) 가 ghostty 의존성에 `font-backend = .freetype` 을 명시한 것 — ghostty 의 `SharedDeps.init` 은 `emit-lib-vt` 여부와 무관하게 항상 돌며 `font_backend.hasFontconfig()` 이 true 면 `lazyDependency("fontconfig")` 를 호출하는데, 기본값(`FontBackend.default`)이 Linux 등에서 `fontconfig_freetype` 이라 끌려와요. `.freetype` 은 `hasFontconfig()=false` 라 그 경로를 통째로 스킵해 libxml2 를 아예 안 받아요 (VT 파서 모듈은 폰트 백엔드 미사용 — 값 무방, 그래프 평가만 통과). prefetch 도 needed (`--fetch`) 만 써요. CI 도 동일 ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
 
-**git push 인증 (이 레포 특이사항).** 커밋 author 는 WSL `.gitconfig` 에 있지만 (`ensky0`), 원격은 https 라 push 는 **Windows Git Credential Manager** 의 저장된 자격으로 돼요 (`git -C <repo> push origin main` 을 Windows 셸에서). WSL 의 gh 토큰은 `workflow` scope 가 없어 `.github/workflows/*` 변경을 거부하고, WSL `~/.ssh/id_ed25519` 는 GitHub 에 등록돼 있지 않아 ssh push 도 안 돼요. 새 환경에선 Windows 셸 push 를 먼저 시도해요.
+**git / GitHub 인증.** Windows native Git과 GitHub CLI의 설정·자격 증명을 사용해요.
+WSL 설정이나 token이 있다고 가정하지 말고, 필요하면 Windows PowerShell에서
+`git config`, `git remote -v`, `gh auth status`로 현재 상태를 확인해요.
 
 # 릴리즈
 
 릴리즈 바이너리는 **반드시 GitHub Actions를 통해 생성**해요.
 로컬에서 만든 zip은 업로드하지 않아요.
-`v*` 태그 push가 `.github/workflows/release.yml`을 트리거해서 `windows-2022` 러너에서 빌드하고 서명 가능한 아티팩트와 SHA256을 만들고 GitHub Release까지 한 번에 처리해요.
+`v*` 태그 push가 `.github/workflows/release.yml`을 트리거해서 Linux · macOS · Windows
+runner에서 각 platform/architecture 아티팩트와 SHA256을 만들고 GitHub Release까지 한 번에 처리해요.
 
 순서는 아래와 같아요.
 
@@ -350,7 +360,13 @@ libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문
 2. 정식 버전은 `dist/release-notes/vX.Y.Z.md`를 작성해요. GitHub Actions
    검증용 prerelease (`-dev.N` 등)는 릴리즈 노트를 생략할 수 있어요.
 3. 커밋하고 `git push origin main` 해요.
-4. `git tag vX.Y.Z && git push origin vX.Y.Z`로 Actions를 트리거해요.
+4. Windows PowerShell에서 아래 두 명령으로 태그를 push해 Actions를 트리거해요.
+
+   ```powershell
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
 5. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
 
 # 의존성 관리
