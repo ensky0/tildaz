@@ -18,8 +18,14 @@ pub const Layout = struct {
     arrow_w: f32,
     plus_w: f32,
     plus_x: f32,
+    /// #329 — MAX_TABS 도달 시에도 `+` 는 자리를 유지하고 비활성(색 / hover
+    /// 없음 / click noop)이 된다. arrow 의 left_enabled/right_enabled 와 같은
+    /// 패턴. 한도 판단은 host 가 Inputs.plus_enabled 로 전달한다.
+    plus_enabled: bool = true,
     close_w: f32,
     close_x: f32,
+    more_w: f32,
+    more_x: f32,
     left_arrow_x: f32 = 0,
     right_arrow_x: f32 = 0,
     left_enabled: bool = false,
@@ -32,25 +38,25 @@ pub const Inputs = struct {
     tab_w: f32,
     arrow_w: f32,
     plus_w: f32,
+    /// tab_count < MAX_TABS. host 가 채운다 — tab_layout 은 한도 상수를 모른다.
+    plus_enabled: bool = true,
     close_w: f32,
+    more_w: f32,
     scroll_x: f32,
 };
 
 /// 탭바 layout 계산 — viewport / tab count / scroll 기반 영역 분할.
-/// `[<][tabs][>][×][+]` (arrows_visible) 또는 `[tabs][×][+]` (no arrows).
+/// `[<][tabs][>][+][×][…]` (arrows_visible) 또는 `[tabs][+][×][…]`
+/// (no arrows).
 ///
-/// #268 — `×` (활성 탭 닫기) / `+` (새 탭) 는 탭을 따라다니지 않고 **우측 끝
+/// #268/#329 — `+` (새 탭) / `×` (활성 탭 닫기) / `…` (메뉴)는 탭을
+/// 따라다니지 않고 **우측 끝
 /// 고정 클러스터**. 클러스터가 탭 본체와 분리돼 per-tab X misclick 사고 방지
 /// + 위치 고정으로 근육 기억. per-tab close 는 제거됨 (#199 대체).
-///
-/// 클러스터 안 순서는 `+` 가 최우측 구석: (1) 최상단 우측 구석의 × 는 "창
-/// 닫기" 버튼으로 읽힘 (titlebar X 관례와 충돌 — 사용자 결정), (2) 구석은
-/// 가장 맞히기 쉬운 자리 (Fitts) 라 파괴적 × 보다 빈번+안전한 + 가 적합.
 pub fn compute(inputs: Inputs) Layout {
     const total = inputs.tab_w * @as(f32, @floatFromInt(inputs.tab_count));
-    const cluster_w = inputs.plus_w + inputs.close_w;
-    const plus_x = inputs.viewport_w - inputs.plus_w;
-    const close_x = plus_x - inputs.close_w;
+    const controls = computeControls(inputs.viewport_w, inputs.plus_w, inputs.close_w, inputs.more_w);
+    const cluster_w = inputs.plus_w + inputs.close_w + inputs.more_w;
     const arrows_visible = total > inputs.viewport_w - cluster_w;
     if (!arrows_visible) {
         return .{
@@ -58,15 +64,18 @@ pub fn compute(inputs: Inputs) Layout {
             .tab_area_w = @max(0, inputs.viewport_w - cluster_w),
             .arrows_visible = false,
             .arrow_w = inputs.arrow_w,
-            .plus_w = inputs.plus_w,
-            .plus_x = plus_x,
-            .close_w = inputs.close_w,
-            .close_x = close_x,
+            .plus_w = controls.plus_w,
+            .plus_x = controls.plus_x,
+            .plus_enabled = inputs.plus_enabled,
+            .close_w = controls.close_w,
+            .close_x = controls.close_x,
+            .more_w = controls.more_w,
+            .more_x = controls.more_x,
         };
     }
     const tab_area_x = inputs.arrow_w;
     const tab_area_w = @max(0, inputs.viewport_w - inputs.arrow_w * 2 - cluster_w);
-    const right_arrow_x = close_x - inputs.arrow_w;
+    const right_arrow_x = @max(0, controls.plus_x - inputs.arrow_w);
     const left_enabled = inputs.scroll_x > 0;
     const right_enabled = inputs.scroll_x + tab_area_w < total;
     return .{
@@ -74,10 +83,13 @@ pub fn compute(inputs: Inputs) Layout {
         .tab_area_w = tab_area_w,
         .arrows_visible = true,
         .arrow_w = inputs.arrow_w,
-        .plus_w = inputs.plus_w,
-        .plus_x = plus_x,
-        .close_w = inputs.close_w,
-        .close_x = close_x,
+        .plus_w = controls.plus_w,
+        .plus_x = controls.plus_x,
+        .plus_enabled = inputs.plus_enabled,
+        .close_w = controls.close_w,
+        .close_x = controls.close_x,
+        .more_w = controls.more_w,
+        .more_x = controls.more_x,
         .left_arrow_x = 0,
         .right_arrow_x = right_arrow_x,
         .left_enabled = left_enabled,
@@ -147,23 +159,137 @@ pub fn scrollByArrow(inputs: Inputs, layout: Layout, dir: ArrowDir) ?f32 {
     return sx;
 }
 
-pub const Area = enum { left_arrow, right_arrow, plus, close, tab_area, none };
+pub const Area = enum { left_arrow, right_arrow, plus, close, more, tab_area, none };
+
+/// 탭 영역을 포함하지 않는 우측 control cluster geometry. 단일 탭 overlay는
+/// 이것만 사용해 숨은 상단 activation zone이 terminal click을 가로채지 않게 한다.
+pub const ControlLayout = struct {
+    plus_w: f32,
+    plus_x: f32,
+    close_w: f32,
+    close_x: f32,
+    more_w: f32,
+    more_x: f32,
+};
+
+/// `[+][×][…]`를 viewport 우측에 고정한다. 아주 좁은 viewport에서도 음수
+/// 좌표를 만들지 않고 왼쪽 0부터 clip되게 한다.
+pub fn computeControls(viewport_w: f32, plus_w: f32, close_w: f32, more_w: f32) ControlLayout {
+    const cluster_w = plus_w + close_w + more_w;
+    const cluster_x = @max(0, viewport_w - cluster_w);
+    return .{
+        .plus_w = plus_w,
+        .plus_x = cluster_x,
+        .close_w = close_w,
+        .close_x = cluster_x + plus_w,
+        .more_w = more_w,
+        .more_x = cluster_x + plus_w + close_w,
+    };
+}
+
+pub fn hitControls(px: f32, py: f32, control_h: f32, layout: ControlLayout) Area {
+    if (px < 0 or py < 0 or py >= control_h) return .none;
+    if (px >= layout.more_x and px < layout.more_x + layout.more_w) return .more;
+    if (px >= layout.close_x and px < layout.close_x + layout.close_w) return .close;
+    if (px >= layout.plus_x and px < layout.plus_x + layout.plus_w) return .plus;
+    return .none;
+}
 
 /// 픽셀 좌표 (px, py) 가 탭바의 어느 영역에 있는지. py 가 [0, tab_bar_h) 밖 또는
 /// px 가 음수면 .none. arrows_visible=false 면 좌/우 화살표 검사 skip.
 /// `.close` = 우측 끝 활성 탭 닫기 버튼 (#268).
 pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
     if (px < 0 or py < 0 or py >= tab_bar_h) return .none;
+    const control_hit = hitControls(px, py, tab_bar_h, .{
+        .plus_w = layout.plus_w,
+        .plus_x = layout.plus_x,
+        .close_w = layout.close_w,
+        .close_x = layout.close_x,
+        .more_w = layout.more_w,
+        .more_x = layout.more_x,
+    });
+    if (control_hit != .none) return control_hit;
     if (layout.arrows_visible) {
         if (px >= layout.left_arrow_x and px < layout.left_arrow_x + layout.arrow_w)
             return .left_arrow;
         if (px >= layout.right_arrow_x and px < layout.right_arrow_x + layout.arrow_w)
             return .right_arrow;
     }
-    if (px >= layout.close_x and px < layout.close_x + layout.close_w) return .close;
-    if (px >= layout.plus_x and px < layout.plus_x + layout.plus_w) return .plus;
     if (px >= layout.tab_area_x and px < layout.tab_area_x + layout.tab_area_w) return .tab_area;
     return .none;
+}
+
+test "#329 tab controls are ordered plus close more and use half-open hit bounds" {
+    const controls = computeControls(300, 24, 24, 24);
+    try std.testing.expectEqual(@as(f32, 228), controls.plus_x);
+    try std.testing.expectEqual(@as(f32, 252), controls.close_x);
+    try std.testing.expectEqual(@as(f32, 276), controls.more_x);
+    try std.testing.expectEqual(Area.plus, hitControls(228, 0, 28, controls));
+    try std.testing.expectEqual(Area.close, hitControls(252, 27.999, 28, controls));
+    try std.testing.expectEqual(Area.more, hitControls(299.999, 0, 28, controls));
+    try std.testing.expectEqual(Area.none, hitControls(300, 0, 28, controls));
+    try std.testing.expectEqual(Area.none, hitControls(228, 28, 28, controls));
+}
+
+test "#329 multi-tab layout includes more in normal overflow and max-tab cluster" {
+    const normal = compute(.{
+        .viewport_w = 500,
+        .tab_count = 2,
+        .tab_w = 150,
+        .arrow_w = 24,
+        .plus_w = 24,
+        .close_w = 24,
+        .more_w = 24,
+        .scroll_x = 0,
+    });
+    try std.testing.expect(!normal.arrows_visible);
+    try std.testing.expectEqual(@as(f32, 428), normal.plus_x);
+    try std.testing.expectEqual(@as(f32, 452), normal.close_x);
+    try std.testing.expectEqual(@as(f32, 476), normal.more_x);
+    try std.testing.expectEqual(@as(f32, 428), normal.tab_area_w);
+
+    const overflow = compute(.{
+        .viewport_w = 400,
+        .tab_count = 3,
+        .tab_w = 150,
+        .arrow_w = 24,
+        .plus_w = 24,
+        .close_w = 24,
+        .more_w = 24,
+        .scroll_x = 0,
+    });
+    try std.testing.expect(overflow.arrows_visible);
+    try std.testing.expect(overflow.plus_enabled);
+    try std.testing.expectEqual(@as(f32, 304), overflow.right_arrow_x);
+    try std.testing.expectEqual(@as(f32, 328), overflow.plus_x);
+
+    // #329 정책 변경 (2026-07-22) — MAX_TABS 에서도 `+` 는 자리를 유지하고
+    // 비활성 플래그만 내려간다. 세 버튼 좌표는 평소와 동일하고 hit 도 `.plus`
+    // 를 그대로 반환한다 (noop 처리는 host 클릭 분기).
+    const at_limit = compute(.{
+        .viewport_w = 500,
+        .tab_count = 32,
+        .tab_w = 150,
+        .arrow_w = 24,
+        .plus_w = 24,
+        .plus_enabled = false,
+        .close_w = 24,
+        .more_w = 24,
+        .scroll_x = 0,
+    });
+    try std.testing.expect(!at_limit.plus_enabled);
+    try std.testing.expectEqual(@as(f32, 24), at_limit.plus_w);
+    try std.testing.expectEqual(@as(f32, 428), at_limit.plus_x);
+    try std.testing.expectEqual(@as(f32, 452), at_limit.close_x);
+    try std.testing.expectEqual(@as(f32, 476), at_limit.more_x);
+    try std.testing.expectEqual(Area.plus, hitArea(430, 10, 28, at_limit));
+}
+
+test "#329 control layout never produces negative coordinates in a narrow viewport" {
+    const controls = computeControls(40, 24, 24, 24);
+    try std.testing.expect(controls.plus_x >= 0);
+    try std.testing.expect(controls.close_x >= 0);
+    try std.testing.expect(controls.more_x >= 0);
 }
 
 /// rename / IME preedit 의 cross-platform 산술 — mac/win 양쪽 renderer 와 host

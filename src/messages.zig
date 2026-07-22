@@ -19,13 +19,43 @@ pub const crash_title = "TildaZ Crash";
 pub const info_title = "TildaZ";
 pub const quit_confirm_title = "Quit TildaZ?";
 
+pub const command_toggle_visibility = "Show / Hide TildaZ";
+pub const command_new_tab = "New Tab";
+pub const command_close_active_tab = "Close Active Tab";
+pub const command_copy_selection = "Copy Selection";
+pub const command_paste = "Paste";
+/// toggle 의미 + 320pt 메뉴 폭에서 hint 와 공존하는 짧은 문구 (#334 피드백 —
+/// "Enter / Exit Full Screen" 은 길어서 hint 가 숨겨졌음).
+pub const command_full_screen = "Toggle Full Screen";
+pub const command_open_config = "Open Config";
+pub const command_keyboard_shortcuts = "Keyboard Shortcuts";
+pub const command_about = "About TildaZ";
+pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md";
+pub const shortcut_new_tab = "Ctrl+Shift+T";
+pub const shortcut_new_tab_macos = "Cmd+T";
+pub const shortcut_close_tab = "Ctrl+Shift+W";
+pub const shortcut_close_tab_macos = "Cmd+W";
+pub const shortcut_copy = "Drag / Ctrl+Shift+C";
+pub const shortcut_copy_macos = "Drag / Cmd+C";
+pub const shortcut_paste = "Right-click / Ctrl+Shift+V";
+pub const shortcut_paste_macos = "Right-click / Cmd+V";
+pub const shortcut_full_screen = "Alt+Enter";
+pub const shortcut_full_screen_macos = "Cmd+Enter";
+/// workarea 전체화면 상태에서 메뉴의 Toggle Full Screen 이 하는 일(해제)과
+/// 같은 키 — 상태 의존 hint (#334 사용자 결정). 표기는 KEYBINDINGS.md /
+/// SPEC §2 의 기존 확립 표기(`Shift+Alt+Enter`)를 따른다.
+pub const shortcut_full_screen_workarea = "Shift+Alt+Enter";
+pub const shortcut_full_screen_workarea_macos = "Shift+Cmd+Enter";
+pub const shortcut_open_config = "Ctrl+Shift+P";
+pub const shortcut_open_config_macos = "Shift+Cmd+P";
+
 /// 종료 확인 (#116). 한 번에 사라지는 탭 수를 본문에 박아 사용자가 잃을
 /// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
 pub const quit_confirm_format = "This will close {d} open tab{s}.";
 
-/// 새 탭 한도 도달 시 (`session_core.MAX_TABS`). `+` 버튼은 layout 에서 자동
-/// 사라지지만 단축키 (Cmd+T / Ctrl+Shift+T) 시도 시 무반응 = 사용자 인지 어려움
-/// → 명시적 dialog. {d} 는 한도 (현재 32).
+/// 새 탭 한도 도달 시 (`session_core.MAX_TABS`). `+` 버튼은 비활성 색 + noop
+/// (#329 — 회색이 곧 피드백) 이지만 단축키 (Cmd+T / Ctrl+Shift+T) 는 시각
+/// 피드백이 없어 이 dialog 로 안내. {d} 는 한도 (현재 32).
 pub const tab_limit_title = "Tab limit reached";
 pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
 
@@ -293,7 +323,7 @@ pub const macos_menu_emoji_symbols_label = "Emoji & Symbols";
 pub const macos_permission_required_title = "TildaZ — Permission required";
 pub const macos_permission_required_format =
     \\TildaZ needs two macOS permissions to work.
-    \\Without them the F1 hotkey will not respond.
+    \\Without them the {s} hotkey will not respond.
     \\(Cmd+Q from the menu still works either way.)
     \\
     \\Please follow these steps:

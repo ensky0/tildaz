@@ -14,6 +14,10 @@ pub const Event = union(enum) {
     mouse_double_click: MouseEvent,
     mouse_move: MouseMoveEvent,
     mouse_up: MouseEvent,
+    /// 우클릭 pressed edge (#329). true 반환 = 소비 (열린 command menu 닫기).
+    /// false 면 window 가 기존 즉시 paste 를 수행한다 — menu 가 pointer button
+    /// 보다 우선하는 SPEC §5.3 라우팅용.
+    mouse_right_down: void,
     tab_closed: usize,
 };
 

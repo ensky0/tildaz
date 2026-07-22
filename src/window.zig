@@ -246,6 +246,7 @@ const CF_UNICODETEXT: UINT = 13;
 const VK_CONTROL: c_int = 0x11;
 const VK_SHIFT: c_int = 0x10;
 const VK_MENU: c_int = 0x12; // Alt
+const VK_LBUTTON: c_int = 0x01;
 
 // GDI functions
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
@@ -1115,6 +1116,13 @@ pub const Window = struct {
     /// 가는" 현상이 났음. `applyFullscreen` 이 `rcWork` 를 쓰므로 direct-flip
     /// 이 engage 되지 않고, 단순 `SetWindowPos` 하나로도 rect 가 안정적으로
     /// 반영된다 — hide/show 가 필요 없음.
+    /// #329 — command menu 의 Shift+Tab 역방향 이동 판정용. WM_CHAR 0x09 에는
+    /// shift 정보가 없어 host 가 이 helper 로 확인한다.
+    pub fn isShiftDown(self: *const Window) bool {
+        _ = self;
+        return GetKeyState(VK_SHIFT) < 0;
+    }
+
     /// Set a concrete fullscreen mode, or `.none` to restore the saved docked rect.
     pub fn setFullscreenMode(self: *Window, mode: FullscreenMode) void {
         const previous_mode = self.fullscreen_mode;
@@ -1750,7 +1758,16 @@ pub const Window = struct {
                         .y = getMouseY(lParam),
                     },
                 });
-                _ = SetCapture(hwnd);
+                // capture 는 drag(selection / tab / scrollbar) 추적용 — 버튼이
+                // *아직 눌려 있을 때만* 잡는다. callback 이 동기 modal(About 등)
+                // 을 열면 그 사이 release 가 끝나 있는데, 그때 무조건 잡으면
+                // 버튼도 안 눌린 stale capture 가 다음 click 을 가로챈다 (#329).
+                // GetKeyState(비동기 아님) = 큐에서 처리된 메시지 기준의 **논리**
+                // 버튼 — modal 이 pump 한 WM_LBUTTONUP 을 반영하고, 좌우 스왑
+                // 사용자도 올바르다 (GetAsyncKeyState 는 물리 버튼이라 스왑
+                // 사용자에게 항상 false — 재감사 발견. wParam 스냅샷도 modal
+                // 이후 상태를 못 봄).
+                if (GetKeyState(VK_LBUTTON) < 0) _ = SetCapture(hwnd);
                 return 0;
             },
             WM_LBUTTONDBLCLK => {
@@ -1820,6 +1837,9 @@ pub const Window = struct {
             // (WM_MBUTTONDOWN) 은 deprecated. macOS 의 tildazRightMouseDown 과
             // 동등. SPEC.md §3 / §11 참고.
             WM_RBUTTONDOWN => {
+                // #329 — 열린 command menu 가 우클릭을 소비하면 (menu 닫기)
+                // paste 하지 않는다. 그 외에는 기존 즉시 paste 유지 (#119).
+                if (self.dispatchAppEvent(.mouse_right_down)) return 0;
                 if (self.write_fn) |write_fn| {
                     self.pasteClipboard(write_fn);
                 }
@@ -2134,6 +2154,10 @@ pub const Window = struct {
         // 호출이라 bracketed paste wrap 적용 못 됨.
         _ = self.dispatchAppEvent(.{ .paste = utf8 });
         _ = write_fn;
+    }
+
+    pub fn requestPaste(self: *Window) void {
+        if (self.write_fn) |write_fn| self.pasteClipboard(write_fn);
     }
 
     pub fn copyToClipboard(self: *Window, text: [:0]const u8) void {
