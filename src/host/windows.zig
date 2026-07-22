@@ -91,6 +91,8 @@ pub fn run() !void {
     // *App 으로 cast 후 invalidateRenderer / handleRenameChar / window.copyToClipboard
     // 등 instance 메서드 호출.
     app.setupHost();
+    var hotkey_hint_buf: [64]u8 = undefined;
+    app.setToggleHotkeyHint(config_mod.hotkeyDisplay(&hotkey_hint_buf, config.hotkey));
 
     // Set up window
     app.window.userdata = &app;

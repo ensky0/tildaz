@@ -23,6 +23,7 @@ const themes = @import("../../themes.zig");
 const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
+const command_menu = @import("../../command_menu.zig");
 const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
 const dialog_layout = @import("dialog_layout.zig");
@@ -1047,6 +1048,15 @@ const Client = struct {
     /// #268 2b — 탭바 컨트롤 버튼 (`<` `>` `×` `+`) 의 hover 대상. pointer
     /// motion 마다 갱신, 변경 시에만 재렌더. 렌더러가 hover 배경 박스를 그림.
     tab_hover: tab_layout.Area = .none,
+    /// #329 command/shortcut menu 표시 상태.
+    command_menu_open: bool = false,
+    command_menu_hover: ?command_menu.Command = null,
+    /// #329 — 메뉴 keyboard focus (Up/Down/Home/End/Tab 이동, Enter/Space 실행).
+    command_menu_focus: ?command_menu.Command = null,
+    /// #329 — 작은 viewport 에서 entry 단위 scroll 의 첫 표시 entry 인덱스.
+    command_menu_first: usize = 0,
+    /// wheel fixed(1/256) 값 누적 — notch(2560) 단위 menu scroll (dialog 동일 패턴).
+    command_menu_axis_remainder: i64 = 0,
     /// L12-β — read thread → main thread pending close queue. shell process
     /// 가 exit (PTY EOF) 시 read thread 가 `linuxTabExit` 호출 → 직접 close
     /// 면 다른 탭의 read thread join 시 deadlock 가능 + multi-tab 시 잘못된
@@ -1598,13 +1608,34 @@ const Client = struct {
         self.last_cursor_shape = shape;
     }
 
+    /// #329 정책 변경 (2026-07-22) — MAX_TABS 도달 시 `+` 는 자리 유지 +
+    /// 비활성 (색 / hover 없음 / click noop). 단축키 경로 dialog 는 그대로.
+    fn tabPlusEnabled(self: *const Client) bool {
+        const session = if (self.session) |*s| s else return true;
+        return session.count() < session_core.MAX_TABS;
+    }
+
     /// #268 2b — 탭바 컨트롤 버튼 hover 갱신. 버튼 (`<` `>` `×` `+`) 위에서만
     /// hover, 탭 본체 / 탭바 밖은 .none. 변경 시에만 재렌더.
     fn updateTabHover(self: *Client) void {
+        if (self.command_menu_open) {
+            const hover = self.commandMenuHit(self.pointer_x_px, self.pointer_y_px);
+            if (hover != self.command_menu_hover or self.tab_hover != .none) {
+                self.command_menu_hover = hover;
+                // #329 — pointer 가 항목 위로 오면 keyboard focus 도 동기화 (표준
+                // 메뉴 동작). 안 하면 마우스로 건너뛴 뒤 ↑↓ 가 옛 위치에서 출발.
+                if (hover) |h| self.command_menu_focus = h;
+                self.tab_hover = .none;
+                self.needs_redraw = true;
+            }
+            return;
+        }
+        self.command_menu_hover = null;
         const new_hover: tab_layout.Area = blk: {
             const session = if (self.session) |*s2| s2 else break :blk .none;
             const x = self.pointer_x_px;
             const y = self.pointer_y_px;
+            if (session.count() == 1) break :blk self.singleControlHit(x, y);
             const tab_bar_h = self.effectiveTabBarHeightPx();
             if (x < 0 or y < 0 or y >= tab_bar_h) break :blk .none;
             const layout_inputs = tab_layout.Inputs{
@@ -1613,7 +1644,9 @@ const Client = struct {
                 .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
                 .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
                 .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+                .plus_enabled = self.tabPlusEnabled(),
                 .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+                .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
                 .scroll_x = self.tab_scroll_x,
             };
             const layout = tab_layout.compute(layout_inputs);
@@ -1623,7 +1656,9 @@ const Client = struct {
                 @floatFromInt(tab_bar_h),
                 layout,
             )) {
-                .left_arrow, .right_arrow, .plus, .close => |a| a,
+                // #329 — 비활성 `+` 는 hover 강조도 없음.
+                .plus => if (layout.plus_enabled) tab_layout.Area.plus else .none,
+                .left_arrow, .right_arrow, .close, .more => |a| a,
                 .tab_area, .none => .none,
             };
         };
@@ -1633,12 +1668,45 @@ const Client = struct {
         }
     }
 
+    fn singleControlHit(self: *const Client, x: i32, y: i32) tab_layout.Area {
+        const session = if (self.session) |*s| s else return .none;
+        if (session.count() != 1 or x < 0 or y < 0) return .none;
+        const layout = tab_layout.compute(.{
+            .viewport_w = @floatFromInt(self.window_width),
+            .tab_count = 1,
+            .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
+            .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+            .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .plus_enabled = self.tabPlusEnabled(),
+            .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+            .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
+            .scroll_x = 0,
+        });
+        return switch (tab_layout.hitArea(
+            @floatFromInt(x),
+            @floatFromInt(y),
+            @floatFromInt(self.renderer.chromeHeightPx()),
+            layout,
+        )) {
+            .plus, .close, .more => |a| a,
+            else => .none,
+        };
+    }
+
     /// 현재 pointer 위치 (physical px) 가 cell 영역인지. 좌표가 음수 (pointer
     /// 영역 밖) 면 false.
     fn pointerInCellArea(self: *const Client) bool {
         const x = self.pointer_x_px;
         const y = self.pointer_y_px;
         if (x < 0 or y < 0) return false;
+        if (self.singleControlHit(x, y) != .none) return false;
+        if (self.command_menu_open) {
+            const scale = self.renderer.scale;
+            const menu = self.commandMenuView().rect;
+            const px = @as(f32, @floatFromInt(x)) / scale;
+            const py = @as(f32, @floatFromInt(y)) / scale;
+            if (px >= menu.x and px < menu.x + menu.w and py >= menu.y and py < menu.y + menu.h) return false;
+        }
         const pad = self.renderer.paddingPx();
         const tab_bar_h = self.effectiveTabBarHeightPx();
         const sbw = self.renderer.scrollbarWPx();
@@ -1664,7 +1732,9 @@ const Client = struct {
             .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .plus_enabled = self.tabPlusEnabled(),
             .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+            .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -2378,6 +2448,13 @@ const Client = struct {
         return self.renderer.tabBarHeightPx(count);
     }
 
+    /// #329 — scrollbar는 단일 탭의 항상-visible control strip과도 겹치지
+    /// 않아야 한다. Terminal grid top과 분리된 scrollbar 전용 inset.
+    fn scrollbarTopInsetPx(self: *const Client) i32 {
+        const session = if (self.session) |*s| s else return 0;
+        return if (session.count() > 0) self.renderer.chromeHeightPx() else 0;
+    }
+
     /// #205 — boot phase elapsed log. `boot_timer` 가 `runBaselineWindow` 진입에
     /// start 됐을 때만 동작. 사용자 *체감* 1-2 sec startup latency 가 어느
     /// phase 에 모이는지 확정 위한 진단.
@@ -2607,7 +2684,9 @@ const Client = struct {
                     .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
                     .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
                     .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+                    .plus_enabled = self.tabPlusEnabled(),
                     .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+                    .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
                     .scroll_x = self.tab_scroll_x,
                 };
                 const layout = tab_layout.compute(layout_inputs);
@@ -2615,6 +2694,8 @@ const Client = struct {
                     const sx = tab_layout.ensureActiveVisible(layout_inputs, layout, @intCast(session.active_tab));
                     self.tab_scroll_x = sx;
                 }
+                var hotkey_hint_buf: [64]u8 = undefined;
+                const hotkey_hint = config_mod.hotkeyDisplay(&hotkey_hint_buf, self.config.hotkey);
                 self.renderer.paint(
                     self.allocator,
                     memory,
@@ -2630,6 +2711,14 @@ const Client = struct {
                     self.rename_state.view(),
                     self.tab_drag.view(),
                     self.tab_hover,
+                    .{
+                        .open = self.command_menu_open,
+                        .hover = self.command_menu_hover,
+                        .focused = self.command_menu_focus,
+                        .first_visible = self.command_menu_first,
+                        .fullscreen_workarea = self.fullscreen_mode == .avoid,
+                    },
+                    hotkey_hint,
                 );
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
@@ -3338,7 +3427,9 @@ const Client = struct {
             .tab_w = @floatFromInt(tab_w_px),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .plus_enabled = self.tabPlusEnabled(),
             .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+            .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -3368,7 +3459,9 @@ const Client = struct {
                     self.needs_redraw = true;
                 }
             },
-            .plus => self.handleNewTab(),
+            // #329 — MAX_TABS 도달 시 비활성 `+` 클릭은 완전 noop (dialog
+            // 없음 — 비활성 overflow 화살표와 같은 관례).
+            .plus => if (layout.plus_enabled) self.handleNewTab(),
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
             .close => {
                 self.commitPendingInput();
@@ -3381,6 +3474,12 @@ const Client = struct {
                     };
                 }
                 self.last_tab_click_idx = std.math.maxInt(usize);
+            },
+            .more => {
+                self.commitPendingInput();
+                self.command_menu_open = !self.command_menu_open;
+                self.command_menu_hover = null;
+                self.needs_redraw = true;
             },
             .tab_area => {
                 const hit_index = tab_layout.hitTab(
@@ -3467,7 +3566,9 @@ const Client = struct {
             .tab_w = @floatFromInt(tab_w_px),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .plus_enabled = self.tabPlusEnabled(),
             .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+            .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -3590,7 +3691,9 @@ const Client = struct {
             .tab_w = @floatFromInt(tab_w_px),
             .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
             .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .plus_enabled = self.tabPlusEnabled(),
             .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+            .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
             .scroll_x = self.tab_scroll_x,
         };
         const layout = tab_layout.compute(layout_inputs);
@@ -3943,6 +4046,24 @@ const Client = struct {
             return;
         }
 
+        // #329 — command menu 가 열려 있으면 키는 메뉴 계층이 소비한다.
+        // 단 Ctrl/Alt 조합(단축키·paste·interrupt)은 **메뉴를 닫고 아래 기존
+        // 경로로 정상 실행** — SPEC §3 "단축키·명시적 paste 는 메뉴 닫고
+        // 정상 실행" + Ctrl+C 도 동일(2026-07-23 사용자 확정 (a)). 재감사에서
+        // Linux 만 모든 키를 삼켜 Ctrl+Shift+T 가 noop 이고 Alt+Enter 가
+        // Return 으로 오인돼 focus 항목을 실행하던 결함 수정. Windows
+        // (.shortcut/.paste/.interrupt 이벤트에서 close 후 실행) / macOS
+        // (Cmd·Ctrl 조합이면 close 후 기존 경로)와 대칭.
+        if (self.command_menu_open) {
+            if (self.keyboard.ctrlActive() or self.keyboard.altActive()) {
+                self.closeCommandMenu();
+                // fallthrough — 아래 classifyInput → input_policy 경로가 처리.
+            } else {
+                self.handleCommandMenuKey(key);
+                return;
+            }
+        }
+
         const xkb_key = key + wayland_xkb_keycode_offset;
         const sym_opt = self.keyboard.oneSym(xkb_key);
         const ctrl = self.keyboard.ctrlActive();
@@ -4070,6 +4191,124 @@ const Client = struct {
         }
     }
 
+    fn executeCommandMenu(self: *Client, command: command_menu.Command) void {
+        self.closeCommandMenu();
+        switch (command) {
+            .toggle_visibility => self.handleActivatedToggle() catch |err| {
+                log.appendLine("command-menu", "toggle failed: {s}", .{@errorName(err)});
+            },
+            .new_tab => self.handleNewTab(),
+            .close_active_tab => self.handleCloseTab(),
+            .copy_selection => self.copyActiveSelection(),
+            .paste => self.pasteFromClipboard(),
+            // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
+            // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
+            .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),
+            .open_config => {
+                const path = paths.configPath(self.allocator) catch return;
+                defer self.allocator.free(path);
+                system_open.openInDefaultApp(self.allocator, path);
+            },
+            .keyboard_shortcuts => system_open.openInDefaultApp(self.allocator, messages.keyboard_shortcuts_url),
+            .about => self.pending_about_request = true,
+        }
+        self.needs_redraw = true;
+    }
+
+    /// #329 — 현재 viewport / scroll 기준의 menu View (renderer 와 같은 계산).
+    fn commandMenuView(self: *const Client) command_menu.View {
+        const scale = self.renderer.scale;
+        return command_menu.view(
+            @as(f32, @floatFromInt(self.window_width)) / scale,
+            @as(f32, @floatFromInt(self.window_height)) / scale,
+            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+            self.command_menu_first,
+        );
+    }
+
+    /// #329 — 메뉴 닫기 공통 지점. focus / scroll / wheel 누적까지 초기화해
+    /// 다음 열기가 항상 처음 상태에서 시작한다.
+    fn closeCommandMenu(self: *Client) void {
+        self.command_menu_open = false;
+        self.command_menu_hover = null;
+        self.command_menu_focus = null;
+        self.command_menu_first = 0;
+        self.command_menu_axis_remainder = 0;
+        self.needs_redraw = true;
+    }
+
+    fn commandMenuHit(self: *const Client, x: i32, y: i32) ?command_menu.Command {
+        if (!self.command_menu_open or x < 0 or y < 0) return null;
+        // #329 — software renderer 의 draw 와 같은 `@round` px 경계로 판정.
+        // pt 공간 비교는 1.7x 같은 fractional scale 에서 draw 의 round 와
+        // 어긋나 경계에 ~1px dead band 가 생겼다 (pointer 는 정수 px).
+        const scale = self.renderer.scale;
+        const v = self.commandMenuView();
+        const mx: i32 = @intFromFloat(@round(v.rect.x * scale));
+        const my: i32 = @intFromFloat(@round(v.rect.y * scale));
+        const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
+        const mh: i32 = @intFromFloat(@round(v.rect.h * scale));
+        if (x < mx or x >= mx + mw or y < my or y >= my + mh) return null;
+        for (v.first..v.first + v.count) |i| {
+            const command = command_menu.entries[i] orelse continue;
+            const r = command_menu.entryRect(v, i).?;
+            const ix: i32 = @intFromFloat(@round(r.x * scale));
+            const iy: i32 = @intFromFloat(@round(r.y * scale));
+            const iw: i32 = @intFromFloat(@round(r.w * scale));
+            const ih: i32 = @intFromFloat(@round(r.h * scale));
+            if (x >= ix and x < ix + iw and y >= iy and y < iy + ih) return command;
+        }
+        return null;
+    }
+
+    /// #329 — 메뉴가 열린 동안의 키 입력 (Ctrl/Alt 조합은 호출 전에
+    /// processKeyEvent 가 메뉴를 닫고 기존 단축키 경로로 보냄 — 여기 오는
+    /// 키는 modifier 없는 navigation/문자뿐). 메뉴 계층이 소비한다 (native
+    /// menu 동등) — PTY / rename 으로 보내지 않는다.
+    fn handleCommandMenuKey(self: *Client, key: u32) void {
+        const xkb_key = key + wayland_xkb_keycode_offset;
+        const sym = self.keyboard.oneSym(xkb_key) orelse return;
+        const shift = self.keyboard.shiftActive();
+        const menu_key: command_menu.MenuKey = switch (sym) {
+            0xff1b => .escape, // XKB_KEY_Escape
+            0xff52 => .up, // XKB_KEY_Up
+            0xff54 => .down, // XKB_KEY_Down
+            0xff50 => .home, // XKB_KEY_Home
+            0xff57 => .end, // XKB_KEY_End
+            0xff09 => if (shift) command_menu.MenuKey.shift_tab else .tab, // XKB_KEY_Tab
+            0xfe20 => .shift_tab, // XKB_KEY_ISO_Left_Tab (Shift+Tab)
+            0xff0d, 0xff8d => .enter, // Return / KP_Enter
+            ' ' => .space,
+            else => .other,
+        };
+        switch (command_menu.onKey(menu_key, &self.command_menu_focus)) {
+            .consumed => {
+                // #334 — 키보드를 쓰는 순간 pointer hover 강조를 지운다.
+                // 마우스가 항목 위에 머물러 있으면 hover 가 focus 를 덮어
+                // 키보드 이동이 화면에 안 보였다 (사용자 시연 발견). 마우스를
+                // 다시 움직이면 hover 가 재적용되며 focus 도 동기화된다.
+                self.command_menu_hover = null;
+                if (self.command_menu_focus) |focused| {
+                    const scale = self.renderer.scale;
+                    self.command_menu_first = command_menu.ensureVisible(
+                        @as(f32, @floatFromInt(self.window_width)) / scale,
+                        @as(f32, @floatFromInt(self.window_height)) / scale,
+                        @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+                        self.command_menu_first,
+                        focused,
+                    );
+                }
+                self.needs_redraw = true;
+            },
+            .close => self.closeCommandMenu(),
+            .activate => |command| {
+                // outside click 실행과 동일 — pending 입력 commit 후 실행.
+                self.commitPendingInput();
+                self.executeCommandMenu(command);
+            },
+        }
+    }
+
     fn handleKeyboardModifiers(self: *Client, payload: []const u8) void {
         if (payload.len < 20) return;
         self.keyboard.updateMask(
@@ -4143,6 +4382,12 @@ const Client = struct {
         // #268 2b — 창 밖으로 나가면 hover 해제 (안 하면 강조 박스가 남음).
         if (self.tab_hover != .none) {
             self.tab_hover = .none;
+            self.needs_redraw = true;
+        }
+        // #334 재감사 — 메뉴 항목 hover 도 창 이탈 시 해제 (keyboard focus
+        // 는 유지 — 표준 메뉴의 마지막 selection 기억과 동일).
+        if (self.command_menu_hover != null) {
+            self.command_menu_hover = null;
             self.needs_redraw = true;
         }
     }
@@ -4258,6 +4503,13 @@ const Client = struct {
         }
 
         if (button == wl_pointer_button_right) {
+            // #329 — 열린 menu 는 모든 pointer button 보다 우선. 우클릭은
+            // 메뉴만 닫고 paste 하지 않는다 (SPEC §5.3 — menu 밖 click 은 닫고
+            // 해당 click 은 terminal 에 전달하지 않음).
+            if (self.command_menu_open) {
+                if (state == wl_pointer_button_state_pressed) self.closeCommandMenu();
+                return;
+            }
             // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /
             // macOS 와 같은 정책. SPEC.md §3).
             if (state == wl_pointer_button_state_pressed) self.pasteFromClipboard();
@@ -4268,6 +4520,51 @@ const Client = struct {
         const tab = self.activeTabOrNull() orelse return;
         switch (state) {
             wl_pointer_button_state_pressed => {
+                if (self.command_menu_open) {
+                    // #334 — 스크롤 표시 행 클릭 = 한 entry 스크롤, 메뉴 유지.
+                    {
+                        const menu_view = self.commandMenuView();
+                        const s = self.renderer.scale;
+                        const px_pt = @as(f32, @floatFromInt(self.pointer_x_px)) / s;
+                        const py_pt = @as(f32, @floatFromInt(self.pointer_y_px)) / s;
+                        if (command_menu.hitScrollIndicator(menu_view, px_pt, py_pt)) |dir| {
+                            self.command_menu_first = command_menu.scrollStep(menu_view, dir == .down);
+                            self.needs_redraw = true;
+                            return;
+                        }
+                    }
+                    const hit = self.commandMenuHit(self.pointer_x_px, self.pointer_y_px);
+                    self.closeCommandMenu();
+                    // #329 — menu 위 클릭(항목 실행)이든 외부 클릭(close)이든
+                    // outside click — 진행 중 입력(cell preedit / rename)을 먼저
+                    // commit. macOS tildazMouseDown 의 공통 commit 지점과 동등.
+                    self.commitPendingInput();
+                    if (hit) |command| self.executeCommandMenu(command);
+                    return;
+                }
+                if (self.session.?.count() == 1) {
+                    switch (self.singleControlHit(self.pointer_x_px, self.pointer_y_px)) {
+                        .plus => {
+                            tab.interaction.cancelPointerModes();
+                            self.handleNewTab();
+                            return;
+                        },
+                        .close => {
+                            tab.interaction.cancelPointerModes();
+                            self.handleCloseTab();
+                            return;
+                        },
+                        .more => {
+                            tab.interaction.cancelPointerModes();
+                            self.commitPendingInput();
+                            self.command_menu_open = !self.command_menu_open;
+                            self.command_menu_hover = null;
+                            self.needs_redraw = true;
+                            return;
+                        },
+                        else => {},
+                    }
+                }
                 // L12-β/γ — tab bar 영역 클릭 → tab_layout.hitArea 로 분기.
                 // 다른 모든 pointer mode (scrollbar / selection / 더블클릭)
                 // 보다 *우선* 검사 — tab bar 안에서 selection drag 안 시작.
@@ -4371,7 +4668,7 @@ const Client = struct {
             sb.len,
             sb.offset,
             @floatFromInt(self.window_height),
-            @floatFromInt(self.effectiveTabBarHeightPx()),
+            @floatFromInt(self.scrollbarTopInsetPx()),
             @floatFromInt(self.renderer.paddingPx()),
             @floatFromInt(self.renderer.scrollbarMinThumbHPx()),
         );
@@ -4421,6 +4718,24 @@ const Client = struct {
                     // Wayland positive axis = 아래로 이동 = 더 뒤의 본문 행 표시.
                     self.scrollDialogRows(@intCast(rows));
                 }
+            }
+            return;
+        }
+
+        // #329 — 열린 menu 는 wheel 도 소비한다. 작은 viewport 에서 잘린
+        // 항목에 pointer 로 도달하는 경로 (entry 단위 scroll). terminal
+        // scrollback 으로 보내지 않는다.
+        if (self.command_menu_open) {
+            self.command_menu_axis_remainder += @as(i64, value_fixed);
+            var steps = @divTrunc(self.command_menu_axis_remainder, 2560);
+            self.command_menu_axis_remainder -= steps * 2560;
+            while (steps != 0) {
+                const down = steps > 0; // Wayland positive axis = 아래
+                const next = command_menu.scrollStep(self.commandMenuView(), down);
+                if (next == self.command_menu_first) break;
+                self.command_menu_first = next;
+                self.needs_redraw = true;
+                steps += if (down) @as(i64, -1) else 1;
             }
             return;
         }
@@ -5000,6 +5315,9 @@ const Client = struct {
         // hide 진입 — mac #175 동등 정책: preedit / rename buf commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
         self.commitPendingInput();
+        // #329 — 열린 menu 는 hide 때 닫는다. global hotkey 로 show 했을 때
+        // 이전 menu 가 남아 있지 않게 (transient overlay 는 복원 대상 아님).
+        if (self.command_menu_open) self.closeCommandMenu();
         // hide/show 재표시는 **기본이 destroy/recreate** (다음 show 는 surface_id==0
         // → createShellObjects, 첫 show 와 동일 경로 = 모든 compositor 에서 동작).
         // 단 KWin 만 surface 재생성이 ~165ms 로 느려(Bug 503121) #205 의 unmap→remap
