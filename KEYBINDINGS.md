@@ -42,12 +42,30 @@ Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the
 ## Tab bar controls
 
 Tab controls stay at the right edge instead of putting a destructive close
-target inside every tab. The normal order is `[tabs][×][+]`; when tabs overflow,
-it becomes `[<][tabs][>][×][+]`.
+target inside every tab. With one tab, a compact `[+][×][…]` strip overlays the
+top-right corner without reserving a full tab bar or moving the terminal grid.
+With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it becomes
+`[<][tabs][>][+][×][…]`.
 
 - `<` / `>` scroll the visible tab strip and disable at the corresponding end.
 - `×` closes the active tab, matching Cmd+W / Ctrl+Shift+W.
-- `+` opens a tab and hides at the 32-tab limit.
+- `+` opens a tab. At the 32-tab limit it stays in place, turns gray, and
+  ignores clicks.
+- `…` opens the command menu. It lists the common tab, clipboard, fullscreen,
+  config, shortcut-reference, and About actions together with their shortcuts.
+  Its first item toggles TildaZ and shows the current instance's configured
+  global hotkey rather than assuming F1.
+- While the menu is open it captures the keyboard: `Esc` closes it,
+  `Up` / `Down` / `Home` / `End` / `Tab` / `Shift+Tab` move focus, and
+  `Enter` / `Space` run the focused command. Hovering an item with the mouse
+  moves the keyboard focus there too. Other keys do nothing and are not sent
+  to the terminal. Clicking outside (including right-click) only closes the
+  menu. If the window is too short, the menu trims whole rows, shows chevron
+  rows at the top and bottom (gray when that end is reached), and the mouse
+  wheel, arrow keys, or a click on a chevron row scrolls the hidden items
+  into view.
+- The single-tab scrollbar starts below the 28-point control strip, while the
+  terminal grid continues to use the full height behind it.
 - Clicking a tab only activates it. Dragging a tab reorders it.
 
 ## Tab rename
@@ -76,4 +94,5 @@ Double-click a tab to rename. While renaming:
 | Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` \| : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
 | Mouse wheel | Scroll viewport |
 | Right-click | Paste from clipboard |
+| Click `…` | Open the command menu and shortcut hints |
 | Scrollbar click / drag | Jump or follow viewport |

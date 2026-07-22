@@ -58,14 +58,13 @@ pub const DIALOG_MAX_WIDTH_PT: u32 = 960;
 pub const DIALOG_SCROLLBAR_GAP_PT: u32 = 8;
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
-/// 인접 탭 사이와 탭바 상하에 보이는 윤곽선의 logical gap.
-/// 각 탭은 좌우에 절반(1pt), 상하에 전체(2pt)를 inset으로 사용한다.
-/// 컨트롤 hover 박스도 네 방향에 전체(2pt)를 사용한다.
+/// 컨트롤 hover 박스의 네 방향 inset(2pt)과 탭 제목 x offset 의 근원 gap.
+/// #334 개편 전에는 탭 배경 사각형의 상하/좌우 inset 으로도 쓰였으나, 탭
+/// 배경이 탭바와 통일되며 그 용도는 사라졌다 (`tab_vertical_inset` 제거).
 pub const TAB_GAP_PT: u32 = 2;
 
 pub const TabGapPx = struct {
     tab_horizontal_inset: f32,
-    tab_vertical_inset: f32,
     control_hover_inset: f32,
 };
 
@@ -74,16 +73,47 @@ pub fn tabGapPx(scale: f32) TabGapPx {
     const gap_px = @as(f32, @floatFromInt(TAB_GAP_PT)) * scale;
     return .{
         .tab_horizontal_inset = gap_px / 2.0,
-        .tab_vertical_inset = gap_px,
         .control_hover_inset = gap_px,
     };
 }
 
-/// 활성 탭 배경 (50/255 ≈ 0.196). Windows `TAB_ACTIVE_R` 와 동일.
-pub const TAB_ACTIVE_BG: [4]f32 = .{ 50.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0 };
-/// 탭바 배경 (탭 사이 + 외곽). 20/255 ≈ 0.078. Windows `TAB_BAR_R` 와 동일.
-/// 비활성 탭과 활성 탭 *주변* 의 어두운 영역 — 탭의 윤곽선 역할.
-pub const TAB_BAR_BG: [4]f32 = .{ 20.0 / 255.0, 20.0 / 255.0, 20.0 / 255.0, 1.0 };
+/// 탭바 배경 = 모든 탭(활성 포함)의 배경 (#334 2026-07-22 결정 — Tilda 문법).
+/// 이전의 "활성 탭만 밝은 회색 + 비활성은 terminal 배경(#282)" 정책을 대체:
+/// 탭바 전체가 하나의 회색 띠가 되고, 활성 탭은 amber 밑줄로만 구분한다.
+/// 33/35/38 은 사용자가 Tilda(Breeze dark)에서 실측한 값 — 순수 중성 회색
+/// (52/52/52)은 상대적으로 따뜻하게(갈색 끼) 보였고, 살짝 파란 끼의 이
+/// 회색이 더 예쁘다는 사용자 확정 (2026-07-22).
+pub const TAB_BAR_BG: [4]f32 = .{ 33.0 / 255.0, 35.0 / 255.0, 38.0 / 255.0, 1.0 };
+/// #334 — 탭 사이 세로 구분선과 탭바-터미널 가로 경계선의 공통 색·두께
+/// (두께는 `TAB_BOTTOM_BORDER_PT`). 탭과 탭바가 같은 색이라 경계는 명시적인
+/// 밝은 선으로. drag 재배열 중 빈 원위치 슬롯도 이 구분선 + 제목 부재로
+/// 인지한다. 100/255 는 시연 피드백 반영값 (79 는 밝아진 탭 배경 52/255
+/// 위에서 어두워 보였음) — 계속 튜닝 예정.
+pub const TAB_SEPARATOR_COLOR: [4]f32 = .{ 100.0 / 255.0, 100.0 / 255.0, 106.0 / 255.0, 1.0 };
+/// #334 — 활성 탭 하단 accent 밑줄. TildaZ amber (#F7A41D) — dialog 구분선
+/// (`DIALOG_SEPARATOR_COLOR`) 과 같은 색으로 "강조 = amber" 문법 통일.
+/// 같은 제목 탭이 흔한 터미널에서 배경 밝기 차이만으로는 활성 탭이 곁눈에
+/// 안 들어와 accent 밑줄로 보강 (Tilda 의 파란 밑줄과 같은 자리).
+pub const TAB_ACCENT_COLOR: [4]f32 = .{ 247.0 / 255.0, 164.0 / 255.0, 29.0 / 255.0, 1.0 };
+/// #334 — 활성 탭 amber 밑줄 두께 (logical pt). 탭바-터미널 가로 경계선
+/// **바로 위**, 활성 탭 슬롯 구간에만 얹힌다 (2026-07-22 사용자 정정 —
+/// 경계선 자체는 활성 구간에서도 끊기지 않고 항상 전체 폭). 시연 튜닝 예정.
+pub const TAB_ACTIVE_UNDERLINE_PT: u32 = 2;
+/// #334 — 탭바와 터미널 사이 가로 경계선 두께 (logical pt). 전체 폭 항상,
+/// `TAB_SEPARATOR_COLOR`.
+pub const TAB_BOTTOM_BORDER_PT: u32 = 1;
+/// #334 — command menu 스크롤 표시 chevron 의 비트맵 한 변 (logical pt).
+/// 탭바 아이콘(10pt)보다 크게 — 메뉴 폭에 어울리는 납작한 꺾쇠.
+pub const MENU_INDICATOR_ICON_PT: u32 = 14;
+// command menu 색 (#329/#334) — 배경은 `TAB_BAR_BG`, 테두리/구분선은
+// `TAB_SEPARATOR_COLOR` 를 그대로 재사용 (탭바와 한 문법, 2026-07-22 사용자
+// 확정). 아래 셋은 메뉴 고유 값 — 세 renderer 가 이 상수만 참조한다.
+/// 메뉴 항목의 hover / keyboard focus 강조 배경.
+pub const MENU_HOVER_BG: [4]f32 = .{ 0.25, 0.25, 0.28, 1.0 };
+/// 메뉴 항목 label 텍스트 색.
+pub const MENU_LABEL_COLOR: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 };
+/// 메뉴 우측 단축키 hint 색 — label 보다 어둡게 (독립 값).
+pub const MENU_HINT_COLOR: [4]f32 = .{ 0.65, 0.65, 0.68, 1.0 };
 /// 탭 텍스트 색 (180/255 ≈ 0.706). Windows `TAB_TEXT_R` 와 동일.
 pub const TAB_TEXT_COLOR: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0 };
 
@@ -99,13 +129,14 @@ pub const TAB_TEXT_COLOR: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.
 /// `<` / `>` 좌우 스크롤 화살표. 탭 viewport 가 탭으로 가득 차야 양 끝에 등장.
 /// 한 번 클릭에 1 탭 너비씩 viewport 이동.
 pub const TAB_ARROW_W_PT: u32 = 24;
-/// `+` 새 탭 버튼. layout `[<][tabs][>][×][+]` — 우측 끝 고정 클러스터의
-/// 최우측 구석 (#268 — 구석의 × 는 창 닫기로 읽혀서 + 가 구석).
-/// MAX_TABS 도달 시 사라짐.
+/// `+` 새 탭 버튼. #329부터 우측 고정 클러스터는 `[+][×][…]` 순서.
+/// MAX_TABS 도달 시에도 자리 유지 — 비활성 색 + click noop (2026-07-22 결정).
 pub const TAB_PLUS_W_PT: u32 = 24;
-/// `×` 활성 탭 닫기 버튼 — 우측 끝 고정 클러스터의 `+` 왼쪽 자리 (#268).
+/// `×` 활성 탭 닫기 버튼 — 우측 고정 클러스터의 가운데 자리.
 /// per-tab close 를 대체: 탭 전환 클릭과 물리적으로 분리해 misclick 방지.
 pub const TAB_CLOSE_W_PT: u32 = 24;
+/// `…` command/shortcut menu 버튼 — 우측 고정 클러스터의 최우측 자리.
+pub const TAB_MORE_W_PT: u32 = 24;
 /// 활성 화살표 / `+` 색 — 탭 텍스트보다 더 밝게 (강조).
 pub const TAB_CTRL_ACTIVE_COLOR: [4]f32 = .{ 0.95, 0.95, 0.95, 1.0 };
 /// 탭바 컨트롤 버튼 hover 배경 (#268 2b — VSCode 패턴의 은은한 밝은 박스).
@@ -115,13 +146,16 @@ pub const TAB_CTRL_HOVER_BG: [4]f32 = .{ 1.0, 1.0, 1.0, 0.12 };
 /// 너무 어둡지 않게. Firefox 의 disabled chevron 과 동등 시각.
 pub const TAB_ARROW_DISABLED_COLOR: [4]f32 = .{ 0.4, 0.4, 0.4, 1.0 };
 
-// 탭바 컨트롤 아이콘 (`< > × +`) 절차적 그리기 (#199 / #268) — 폰트 독립.
+// 탭바 컨트롤 아이콘 (`< > + × …`) 절차적 그리기 (#199 / #268 / #329) — 폰트 독립.
 // `src/tab_icons.zig` 가 선분 geometry 를 알파 커버리지 비트맵으로 rasterize,
 // 세 renderer 가 같은 비트맵을 glyph 처럼 그림 (세 platform 픽셀 동일).
 /// 아이콘 한 변 (bounding square). 버튼 box (24pt) 안에 여백 두고 들어가는 크기.
 pub const TAB_ICON_SIZE_PT: u32 = 10;
 /// 아이콘 선 두께 (pt). `pt × scale` 로 px 두께. AA 로 fractional scale 도 또렷.
 pub const TAB_ICON_STROKE_PT: f32 = 1.5;
+/// `…`의 점은 같은 1.5pt stroke로 그리면 `+`/`×`보다 가늘어 보이므로
+/// diameter만 별도로 광학 보정한다.
+pub const TAB_MORE_DOT_DIAMETER_PT: f32 = 2.2;
 
 pub fn tabLabelFontSpec() font_spec.Spec {
     return .{
@@ -167,7 +201,6 @@ test "tab gap scales from logical points to physical pixels" {
     for (cases) |case| {
         const gap = tabGapPx(case.scale);
         try std.testing.expectApproxEqAbs(case.horizontal, gap.tab_horizontal_inset, 0.0001);
-        try std.testing.expectApproxEqAbs(case.vertical, gap.tab_vertical_inset, 0.0001);
         try std.testing.expectApproxEqAbs(case.vertical, gap.control_hover_inset, 0.0001);
     }
 }
@@ -207,4 +240,11 @@ test "tab bar height uses common rounded physical pixels" {
     try std.testing.expectEqual(@as(u32, 42), tabBarHeightPx(1.5));
     try std.testing.expectEqual(@as(u32, 48), tabBarHeightPx(1.7));
     try std.testing.expectEqual(@as(u32, 56), tabBarHeightPx(2.0));
+}
+
+test "#329 three-button cluster uses single common metrics" {
+    try std.testing.expectEqual(@as(u32, 24), TAB_PLUS_W_PT);
+    try std.testing.expectEqual(@as(u32, 24), TAB_CLOSE_W_PT);
+    try std.testing.expectEqual(@as(u32, 24), TAB_MORE_W_PT);
+    try std.testing.expectEqual(@as(u32, 72), TAB_PLUS_W_PT + TAB_CLOSE_W_PT + TAB_MORE_W_PT);
 }

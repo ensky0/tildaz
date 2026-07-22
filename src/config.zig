@@ -233,6 +233,42 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
     return fbs.getWritten();
 }
 
+/// Parsed platform-native hotkey를 command menu에 표시할 canonical 문자열로
+/// 되돌린다. config가 source of truth이며 F1을 별도로 hardcode하지 않는다.
+pub fn hotkeyDisplay(buf: []u8, hotkey: Hotkey) []const u8 {
+    const native = switch (builtin.os.tag) {
+        .linux => .{ .key = hotkey.keysym, .modifiers = hotkey.modifiers },
+        .windows => .{ .key = hotkey.vkey, .modifiers = hotkey.modifiers },
+        .macos => blk: {
+            var modifiers: u32 = 0;
+            if ((hotkey.modifiers & 0x00040000) != 0) modifiers |= CAPTURE_MOD_CTRL;
+            if ((hotkey.modifiers & 0x00080000) != 0) modifiers |= CAPTURE_MOD_ALT;
+            if ((hotkey.modifiers & 0x00020000) != 0) modifiers |= CAPTURE_MOD_SHIFT;
+            if ((hotkey.modifiers & 0x00100000) != 0) modifiers |= CAPTURE_MOD_PRIMARY;
+            break :blk .{ .key = hotkey.keycode, .modifiers = modifiers };
+        },
+        else => return "?",
+    };
+    const text = capturedHotkeyText(buf, native.key, native.modifiers) orelse return "?";
+    // Linux 의 캡처 canonical 은 소문자 문자 키 (`Ctrl+Shift+t` — parser 정규화와
+    // round-trip). 사용자 *표시* 관례는 세 platform 모두 대문자 (`Ctrl+Shift+T`,
+    // KDE / GNOME 표기 동일) 라 표시 시점에만 대문자화한다. 문자 키 토큰은
+    // 항상 마지막 + 단일 char — `space` / `grave` 같은 이름 키는 건드리지 않음.
+    if (text.len >= 1) {
+        const is_single_char_key = text.len == 1 or text[text.len - 2] == '+';
+        const last = &buf[text.len - 1];
+        if (is_single_char_key and last.* >= 'a' and last.* <= 'z') last.* -= 0x20;
+    }
+    return text;
+}
+
+test "configured hotkey display is derived from the parsed native value" {
+    var buf: [64]u8 = undefined;
+    const parsed = Hotkey.fromString("ctrl+shift+t").?;
+    const expected = if (builtin.os.tag == .macos) "Control+Shift+T" else "Ctrl+Shift+T";
+    try std.testing.expectEqualStrings(expected, hotkeyDisplay(&buf, parsed));
+}
+
 /// Linux global-hotkey backend 공통 xkb keysym 매핑. Win `WindowsHotkey` /
 /// mac `MacHotkey` 와 같은 토큰 분리 패턴 (`+` 로 token, modifier + 키 이름).
 /// DE별 backend가 이 `keysym + modifiers`를 KGlobalAccel의 Qt key 또는 GTK/XKB

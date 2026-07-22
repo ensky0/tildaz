@@ -22,6 +22,7 @@ const tab_icons = @import("../../tab_icons.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
+const command_menu = @import("../../command_menu.zig");
 const dialog_layout = @import("dialog_layout.zig");
 
 /// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
@@ -298,6 +299,12 @@ pub const Renderer = struct {
         return @intCast(ui_metrics.tabBarHeightPx(self.scale));
     }
 
+    /// 단일 탭 overlay와 다중 탭 bar가 공유하는 chrome 높이. Terminal grid의
+    /// y-offset과 분리해 단일 탭에서는 grid를 밀지 않고 control/scrollbar에만 쓴다.
+    pub fn chromeHeightPx(self: *const Renderer) i32 {
+        return @intCast(ui_metrics.tabBarHeightPx(self.scale));
+    }
+
     /// 한 탭의 너비. `ui_metrics.TAB_WIDTH_PT` (150 pt) × scale.
     pub fn tabWidthPx(self: *const Renderer) i32 {
         return scaledPt(ui_metrics.TAB_WIDTH_PT, self.scale);
@@ -324,6 +331,11 @@ pub const Renderer = struct {
     /// 탭바 `+` 새 탭 버튼 너비. `ui_metrics.TAB_PLUS_W_PT` (24 pt) × scale.
     pub fn tabPlusWPx(self: *const Renderer) i32 {
         return scaledPt(ui_metrics.TAB_PLUS_W_PT, self.scale);
+    }
+
+    /// 탭바 `…` command menu 버튼 너비.
+    pub fn tabMoreWPx(self: *const Renderer) i32 {
+        return scaledPt(ui_metrics.TAB_MORE_W_PT, self.scale);
     }
 
     /// `Config.terminalFontSpec().size_logical` 의미는 cross-platform 동등 —
@@ -360,6 +372,8 @@ pub const Renderer = struct {
         rename_view: ?tab_interaction.RenameView,
         drag_view: ?tab_interaction.DragView,
         tab_hover: tab_layout.Area,
+        menu_ui: command_menu.Ui,
+        toggle_hotkey: []const u8,
     ) void {
         self.render_state.update(allocator, terminal) catch {
             fill(memory, width, height, stride, theme.background);
@@ -374,14 +388,15 @@ pub const Renderer = struct {
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
         const pad: i32 = self.paddingPx();
         const tab_bar_h: i32 = self.tabBarHeightPx(tab_titles.len);
+        const scrollbar_top: i32 = if (tab_titles.len > 0) self.chromeHeightPx() else 0;
         const sb_w: i32 = self.scrollbarWPx();
         const sb_min_thumb: i32 = self.scrollbarMinThumbHPx();
 
         // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
-        // plus / scroll 모두 적용. 활성 = `TAB_ACTIVE_BG`, 비활성 = renderer
-        // background (cell 영역과 자연 이음, Windows 패턴 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, colors.background, self.scale, &self.tab_font_ctx);
+        // plus / scroll 모두 적용. #334 — 탭 배경은 탭바와 같은 색, 활성은
+        // amber 밑줄, 탭 경계는 세로 구분선 (Windows/macOS 동일).
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, rename_view, drag_view, self.preedit_text, self.scale, &self.tab_font_ctx);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -656,7 +671,7 @@ pub const Renderer = struct {
             sb.len,
             sb.offset,
             @floatFromInt(height),
-            @floatFromInt(tab_bar_h),
+            @floatFromInt(scrollbar_top),
             @floatFromInt(pad),
             @floatFromInt(sb_min_thumb),
         )) |h| {
@@ -710,6 +725,44 @@ pub const Renderer = struct {
             }
         }
 
+        // #329 — 단일 탭은 terminal grid를 y=0에 둔 채 우측 상단
+        // `[+][×][…]` 72×28pt만 마지막 chrome layer로 overlay한다.
+        if (tab_titles.len == 1) {
+            const controls = tab_layout.computeControls(
+                @floatFromInt(width),
+                @floatFromInt(self.tabPlusWPx()),
+                @floatFromInt(self.tabCloseWPx()),
+                @floatFromInt(self.tabMoreWPx()),
+            );
+            const overlay_layout = tab_layout.Layout{
+                .tab_area_x = 0,
+                .tab_area_w = 0,
+                .arrows_visible = false,
+                .arrow_w = 0,
+                .plus_w = controls.plus_w,
+                .plus_x = controls.plus_x,
+                .close_w = controls.close_w,
+                .close_x = controls.close_x,
+                .more_w = controls.more_w,
+                .more_x = controls.more_x,
+            };
+            drawTabBarControls(
+                memory,
+                width,
+                height,
+                stride,
+                self.chromeHeightPx(),
+                overlay_layout,
+                tab_hover,
+                self.scale,
+                // 단일 탭 strip 은 하단 가로 경계선이 없다 — hover 보정 0.
+                0,
+                &self.tab_font_ctx,
+            );
+        }
+
+        if (menu_ui.open) self.drawCommandMenu(memory, width, height, stride, menu_ui, toggle_hotkey);
+
         // --- L13-γ: opacity alpha sweep ---
         // ARGB8888 buffer 의 alpha byte 를 self.opacity_alpha 로 일괄 채움.
         // pack / rect / drawGlyph / drawGlyphBgra 등 모든 pixel write 함수가
@@ -725,6 +778,109 @@ pub const Renderer = struct {
                 while (px < width) : (px += 1) {
                     const off: usize = @intCast(py * stride + px * 4);
                     memory[off + 3] = opacity;
+                }
+            }
+        }
+    }
+
+    fn drawCommandMenu(self: *Renderer, memory: []u8, width: i32, height: i32, stride: i32, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+        const scale = self.scale;
+        // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
+        // 는 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
+        const v = command_menu.view(
+            @as(f32, @floatFromInt(width)) / scale,
+            @as(f32, @floatFromInt(height)) / scale,
+            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+            ui.first_visible,
+        );
+        const mx: i32 = @intFromFloat(@round(v.rect.x * scale));
+        const my: i32 = @intFromFloat(@round(v.rect.y * scale));
+        const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
+        const mh: i32 = @intFromFloat(@round(v.rect.h * scale));
+        const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
+        const fg = rgbFromMetrics(ui_metrics.MENU_LABEL_COLOR);
+        const hint_fg = rgbFromMetrics(ui_metrics.MENU_HINT_COLOR);
+        // border / separator 는 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
+        const line_px: i32 = @max(1, scaledPt(1, scale));
+        rect(memory, width, height, stride, mx - line_px, my - line_px, mw + line_px * 2, mh + line_px * 2, rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR));
+        rect(memory, width, height, stride, mx, my, mw, mh, bg);
+        // 강조는 pointer hover 우선, 없으면 keyboard focus.
+        if (ui.hover orelse ui.focused) |command| {
+            if (command_menu.itemRect(v, command)) |item| {
+                rect(
+                    memory,
+                    width,
+                    height,
+                    stride,
+                    @intFromFloat(@round((item.x + 2) * scale)),
+                    @intFromFloat(@round((item.y + 1) * scale)),
+                    @intFromFloat(@round((item.w - 4) * scale)),
+                    @intFromFloat(@round((item.h - 2) * scale)),
+                    rgbFromMetrics(ui_metrics.MENU_HOVER_BG),
+                );
+            }
+        }
+
+        // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
+        // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
+        if (v.clipped) {
+            const ind_size_i: i32 = scaledPt(ui_metrics.MENU_INDICATOR_ICON_PT, scale);
+            const ind_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), ind_size_i)));
+            const ind_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+            const active_fg = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
+            const disabled_fg = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
+            const sz_i: i32 = @intCast(ind_size);
+            const ind_cx: i32 = mx + @divTrunc(mw - sz_i, 2);
+            const up_y: i32 = @intFromFloat(@round((v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5));
+            const down_y: i32 = @intFromFloat(@round((v.rect.y + v.rect.h - command_menu.PADDING_PT - command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5));
+            const pairs = [2]struct { kind: tab_icons.Icon, y: i32, enabled: bool }{
+                .{ .kind = .chevron_up, .y = up_y, .enabled = v.can_scroll_up },
+                .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
+            };
+            var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
+            for (pairs) |p| {
+                tab_icons.rasterize(p.kind, ind_size, ind_stroke, &cov);
+                const fg_ind = if (p.enabled) active_fg else disabled_fg;
+                var row: u32 = 0;
+                while (row < ind_size) : (row += 1) {
+                    var col: u32 = 0;
+                    while (col < ind_size) : (col += 1) {
+                        const alpha = cov[row * ind_size + col];
+                        if (alpha == 0) continue;
+                        const px = ind_cx + @as(i32, @intCast(col));
+                        const py = p.y + @as(i32, @intCast(row));
+                        if (px < 0 or py < 0 or px >= width or py >= height) continue;
+                        const off: usize = @intCast(py * stride + px * 4);
+                        std.mem.writeInt(u32, memory[off..][0..4], blendPixel(fg_ind, bg, alpha), .little);
+                    }
+                }
+            }
+        }
+
+        const cw: i32 = @intCast(self.tab_font_ctx.cell_width_px);
+        const ch: i32 = @intCast(self.tab_font_ctx.cell_height_px);
+        for (v.first..v.first + v.count) |i| {
+            const item = command_menu.entryRect(v, i).?;
+            const command = command_menu.entries[i] orelse {
+                const sep_y: i32 = @intFromFloat(@round((item.y + item.h / 2) * scale));
+                rect(memory, width, height, stride, mx + scaledPt(8, scale), sep_y, mw - scaledPt(16, scale), line_px, rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR));
+                continue;
+            };
+            const ix: i32 = @intFromFloat(@round(item.x * scale));
+            const iy: i32 = @intFromFloat(@round(item.y * scale));
+            const iw: i32 = @intFromFloat(@round(item.w * scale));
+            const ih: i32 = @intFromFloat(@round(item.h * scale));
+            const baseline = iy + @divFloor(ih - ch, 2) + @as(i32, @intCast(self.tab_font_ctx.ascent_px));
+            const label = command_menu.label(command);
+            self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + scaledPt(8, scale), baseline, label, fg, bg);
+            const hint = command_menu.shortcut(command, false, toggle_hotkey, ui.fullscreen_workarea);
+            if (hint.len > 0) {
+                const hint_w = @as(i32, @intCast(display_width.stringWidth(hint))) * cw;
+                const label_w = @as(i32, @intCast(display_width.stringWidth(label))) * cw;
+                // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면
+                // hint 를 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
+                if (command_menu.hintFits(item.w, @as(f32, @floatFromInt(label_w)) / scale, @as(f32, @floatFromInt(hint_w)) / scale)) {
+                    self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + iw - scaledPt(8, scale) - hint_w, baseline, hint, hint_fg, bg);
                 }
             }
         }
@@ -1045,8 +1201,9 @@ fn tabClipDecision(
 
 /// L12-α/β/γ tab bar — cross-platform `tab_layout.Layout` 따라 영역 분할 + 각
 /// 탭 그리기. `[<][tabs+][+][>]` (arrows_visible) 또는 `[tabs+][+]`. tab area
-/// 안 탭들은 `scroll_x` 만큼 좌측 밀려 그려지고 area 범위 밖은 clip. 활성 =
-/// `TAB_ACTIVE_BG`, 비활성 = `inactive_bg` (cell 영역 background 와 자연 이음).
+/// 안 탭들은 `scroll_x` 만큼 좌측 밀려 그려지고 area 범위 밖은 clip.
+/// #334 (2026-07-22) — 탭 배경(활성 포함) = 탭바 색, 활성은 amber 밑줄로만
+/// 구분, 탭 경계는 세로 구분선 (Tilda 문법, mac/win 동등).
 fn drawTabBar(
     memory: []u8,
     fb_w: i32,
@@ -1063,7 +1220,6 @@ fn drawTabBar(
     rename_view: ?tab_interaction.RenameView,
     drag_view: ?tab_interaction.DragView,
     preedit_text: []const u8,
-    inactive_bg: ghostty.color.RGB,
     scale: f32,
     font_ctx: *font.Context,
 ) void {
@@ -1071,7 +1227,13 @@ fn drawTabBar(
     const tab_bar_bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
     rect(memory, fb_w, fb_h, stride, 0, 0, fb_w, tab_bar_h, tab_bar_bg);
 
-    const active_bg = rgbFromMetrics(ui_metrics.TAB_ACTIVE_BG);
+    const accent = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
+    const underline_px: i32 = @max(1, scaledPt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale));
+    const border_px: i32 = @max(1, scaledPt(ui_metrics.TAB_BOTTOM_BORDER_PT, scale));
+    const separator = rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR);
+    // #334 — 탭바-터미널 가로 경계선. 전체 폭, 활성 구간에서도 끊기지 않고
+    // 항상 (2026-07-22 사용자 정정).
+    rect(memory, fb_w, fb_h, stride, 0, tab_bar_h - border_px, fb_w, border_px, separator);
     const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
     const ascent: i32 = @intCast(font_ctx.ascent_px);
     const descent: i32 = @intCast(font_ctx.descent_px);
@@ -1079,9 +1241,6 @@ fn drawTabBar(
 
     const tab_gap = ui_metrics.tabGapPx(scale);
     const tab_x_inset: i32 = @intFromFloat(@round(tab_gap.tab_horizontal_inset));
-    const tab_y: i32 = @intFromFloat(@round(tab_gap.tab_vertical_inset));
-    const tab_actual_h: i32 = @max(tab_bar_h - tab_y * 2, 1);
-    const tab_actual_w: i32 = @max(tab_w - tab_x_inset * 2, 1);
     // mac / win 동등 — text 영역 y 위치는 cell height 기준 vertical center.
     // cursor / preedit_bg 의 y 도 이 값. close 'x' / title text glyph baseline
     // 도 동일.
@@ -1125,14 +1284,18 @@ fn drawTabBar(
 
         const tab_x: i32 = tab_screen_x + tab_x_inset;
         const is_active = i == active_idx;
-        const bg = if (is_active) active_bg else inactive_bg;
-        // rect helper 의 (x, w) → 자동 clip 단, 우리는 tab_area 경계 안에서
-        // 그리도록 보정. min/max 로 clipping. (fb 의 외부 clip 은 rect 의 내부
-        // clamp 가 처리, tab_area 경계 clip 만 우리가.)
-        const clip_x: i32 = @max(tab_x, tab_area_x);
-        const clip_w: i32 = @min(tab_x + tab_actual_w, tab_area_end) - clip_x;
-        if (clip_w > 0) {
-            rect(memory, fb_w, fb_h, stride, clip_x, tab_y, clip_w, tab_actual_h, bg);
+        // #334 (2026-07-22 개편) — 탭 배경은 탭바와 같은 색이라 따로 그리지
+        // 않는다 (Tilda 문법). 글리프 알파 블렌드 배경도 tab_bar_bg.
+        const bg = tab_bar_bg;
+        if (is_active) {
+            // #334 — 활성 탭 amber 밑줄. 가로 경계선 **바로 위**, 슬롯 폭
+            // 전체 (Tilda 문법). drag 중이면 drag 위치를 따라간다.
+            // tab_area 경계 clip 은 배경과 같은 방식.
+            const u_clip_x: i32 = @max(tab_screen_x, tab_area_x);
+            const u_clip_w: i32 = @min(tab_screen_x + tab_w, tab_area_end) - u_clip_x;
+            if (u_clip_w > 0) {
+                rect(memory, fb_w, fb_h, stride, u_clip_x, tab_bar_h - border_px - underline_px, u_clip_w, underline_px, accent);
+            }
         }
 
         // L12-γ-2/3 — title text 그리기를 cross-platform `tab_layout.
@@ -1267,7 +1430,25 @@ fn drawTabBar(
     }
 
     // --- arrow / plus 버튼 ---
-    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx);
+    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, border_px, font_ctx);
+    // #334 — 가로 경계선 복원: 컨트롤 fill 이 전체 높이를 덮으므로 그 위에
+    // 다시 긋는다 (`+`/`×`/`…` 버튼 아래까지 항상 이어짐 — 사용자 피드백).
+    rect(memory, fb_w, fb_h, stride, 0, tab_bar_h - border_px, fb_w, border_px, separator);
+    // #334 — 탭 슬롯 경계 세로 구분선. **모두 중심 정렬** — 모든 슬롯이
+    // 좌우 절반씩 균등 부담해 탭의 보이는 폭이 전부 동일하다 (안쪽 정렬은
+    // 끝 탭만 좁아져 기각 — 사용자 지적). 컨트롤 fill·amber 밑줄 **뒤에**
+    // 그려 화살표 옆에서도, 활성 탭 위에서도 항상 온전한 두께. world(슬롯)
+    // 기준 고정이라 drag 중 빈 원위치 슬롯의 경계도 유지된다. 화살표 옆에는
+    // 끝 탭이 완전히 보일 때만 (슬롯 경계 정렬 시) 선이 온다 — overflow
+    // 에서는 첫 탭의 왼쪽 경계(bi=0)도 후보.
+    {
+        var bi: usize = if (layout.arrows_visible) 0 else 1;
+        while (bi <= titles.len) : (bi += 1) {
+            const x = tab_area_x + @as(i32, @intCast(bi)) * tab_w - scroll_x_i;
+            if (x < tab_area_x or x > tab_area_end) continue;
+            rect(memory, fb_w, fb_h, stride, x - @divTrunc(border_px, 2), 0, border_px, @max(tab_bar_h - border_px, 1), separator);
+        }
+    }
 }
 
 /// `<` / `>` / `×` / `+` 버튼 그리기. 제목을 그린 뒤 컨트롤 전체 box를
@@ -1282,12 +1463,16 @@ fn drawTabBarControls(
     layout: tab_layout.Layout,
     tab_hover: tab_layout.Area,
     scale: f32,
+    /// hover 박스 하단을 추가로 올릴 값 (#334). 다중 탭 탭바는 하단 1pt 를
+    /// 가로 경계선이 차지하므로 border 두께를 넘겨 상하 여백을 대칭으로
+    /// 만든다. 단일 탭 strip 은 경계선이 없어 0.
+    hover_bottom_extra: i32,
     _: *font.Context,
 ) void {
     const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
     // mac / win 동등 — enabled = `TAB_CTRL_ACTIVE_COLOR` (밝은 흰색 0.95),
     // disabled = `TAB_ARROW_DISABLED_COLOR` (회색 0.4). scroll 왼쪽 끝이면
-    // `<` 회색, 우측 끝이면 `>` 회색. plus 는 항상 enabled.
+    // `<` 회색, 우측 끝이면 `>` 회색. `+` 는 MAX_TABS 도달 시 회색 (#329).
     const active_color = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
     const disabled_color = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
 
@@ -1317,6 +1502,7 @@ fn drawTabBarControls(
     }
     fillControlBg(memory, fb_w, fb_h, stride, layout.close_x, layout.close_w, tab_bar_h, bg);
     fillControlBg(memory, fb_w, fb_h, stride, layout.plus_x, layout.plus_w, tab_bar_h, bg);
+    fillControlBg(memory, fb_w, fb_h, stride, layout.more_x, layout.more_w, tab_bar_h, bg);
 
     // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
     // 알파 커버리지 비트맵으로 만든 뒤 box 중앙에 blit (폰트 독립). mac/win 은
@@ -1324,6 +1510,7 @@ fn drawTabBarControls(
     const icon_size_i: i32 = scaledPt(ui_metrics.TAB_ICON_SIZE_PT, scale);
     const icon_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), icon_size_i)));
     const stroke_px: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+    const more_stroke_px: f32 = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * scale);
 
     const drawIcon = struct {
         fn call(
@@ -1376,6 +1563,10 @@ fn drawTabBarControls(
                 hover_x = layout.close_x;
                 hover_w = layout.close_w;
             },
+            .more => {
+                hover_x = layout.more_x;
+                hover_w = layout.more_w;
+            },
             .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
                 hover_x = layout.left_arrow_x;
                 hover_w = layout.arrow_w;
@@ -1404,7 +1595,7 @@ fn drawTabBarControls(
                 hover_x_i + hover_inset,
                 hover_inset,
                 hover_w_i - hover_inset * 2,
-                @max(tab_bar_h - hover_inset * 2, 1),
+                @max(tab_bar_h - hover_inset * 2 - hover_bottom_extra, 1),
                 hover_bg,
             );
         }
@@ -1421,11 +1612,16 @@ fn drawTabBarControls(
     }
     const plus_x: i32 = @intFromFloat(layout.plus_x);
     const plus_w: i32 = @intFromFloat(layout.plus_w);
-    drawIcon(memory, fb_w, fb_h, stride, .plus, plus_x, plus_w, tab_bar_h, icon_size, stroke_px, active_color, bg);
+    // #329 — MAX_TABS 도달 시 `+` 는 자리 유지 + 비활성 색 (arrow 동일 관례).
+    const plus_color = if (layout.plus_enabled) active_color else disabled_color;
+    drawIcon(memory, fb_w, fb_h, stride, .plus, plus_x, plus_w, tab_bar_h, icon_size, stroke_px, plus_color, bg);
     // #268 — 우측 끝 활성 탭 닫기 버튼. `×` 아이콘을 tab_icons 로 직접 그림.
     const close_x: i32 = @intFromFloat(layout.close_x);
     const close_w: i32 = @intFromFloat(layout.close_w);
     drawIcon(memory, fb_w, fb_h, stride, .close, close_x, close_w, tab_bar_h, icon_size, stroke_px, active_color, bg);
+    const more_x: i32 = @intFromFloat(layout.more_x);
+    const more_w: i32 = @intFromFloat(layout.more_w);
+    drawIcon(memory, fb_w, fb_h, stride, .more, more_x, more_w, tab_bar_h, icon_size, more_stroke_px, active_color, bg);
 }
 
 /// `a * weight + b * (1 - weight)` 의 u8 클램프. close 'x' 의 dim 색 등에 사용.

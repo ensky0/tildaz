@@ -26,6 +26,7 @@ const cell_color = @import("cell_color.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
+const command_menu = @import("../command_menu.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
@@ -206,7 +207,6 @@ pub const TabBarLayout = tab_layout.Layout;
 const PendingTabs = struct {
     titles: []const []const u8,
     active: usize,
-    terminal_bg: [3]f32,
     rename_view: ?tab_interaction.RenameView,
     rename_preedit: []const u8,
     drag_view: ?tab_interaction.DragView,
@@ -538,7 +538,6 @@ pub const MetalRenderer = struct {
         self.pending_tabs = .{
             .titles = tab_titles,
             .active = active_tab,
-            .terminal_bg = frame_bg,
             .rename_view = rename_view,
             .rename_preedit = tab_rename_preedit,
             .drag_view = drag_view,
@@ -557,8 +556,11 @@ pub const MetalRenderer = struct {
         cell_w: i32,
         cell_h: i32,
         y_offset: i32,
+        scrollbar_y_offset: i32,
         padding: i32,
         preedit_utf8: []const u8,
+        menu_ui: command_menu.Ui,
+        toggle_hotkey: []const u8,
     ) void {
         const encoder = self.current_encoder;
         if (encoder == null) return;
@@ -571,14 +573,21 @@ pub const MetalRenderer = struct {
             self.uploadAtlas(&self.atlas, self.atlas_texture);
             self.atlas.dirty = false;
         }
+        // 탭 glyph/icon atlas도 main atlas와 같은 2-frame 정책: 이전 frame에서
+        // 만든 내용을 draw 전에 upload한다. 삽입 직후 같은 Metal encoder에서
+        // sample하면 정적인 단일 탭 최초 frame의 icon이 투명하게 남았다.
+        self.uploadTabAtlasIfDirty();
 
-        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, padding, preedit_utf8);
+        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, scrollbar_y_offset, padding, preedit_utf8);
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
-                self.drawTabBar(encoder, t.titles, t.active, t.terminal_bg, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout, t.hover);
+                self.drawTabBar(encoder, t.titles, t.active, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout, t.hover);
+            } else if (t.titles.len == 1) {
+                self.drawSingleControlStrip(encoder, t.layout, t.hover);
             }
         }
+        if (menu_ui.open) self.drawCommandMenu(encoder, menu_ui, toggle_hotkey);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         perf.addTimed(&perf.render, render_t0);
@@ -611,6 +620,7 @@ pub const MetalRenderer = struct {
         cell_w: i32,
         cell_h: i32,
         y_offset: i32,
+        scrollbar_y_offset: i32,
         padding: i32,
         preedit_utf8: []const u8,
     ) void {
@@ -911,7 +921,7 @@ pub const MetalRenderer = struct {
             sb.len,
             sb.offset,
             @floatFromInt(self.vp_height),
-            @floatFromInt(y_offset),
+            @floatFromInt(scrollbar_y_offset),
             @floatFromInt(padding),
             @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * self.scale,
         )) |h| {
@@ -990,21 +1000,17 @@ pub const MetalRenderer = struct {
         }
     }
 
-    /// 윈도우 상단 탭바 (#111 M11.4 + M11.4-fix). Windows `D3d11Renderer.renderTabBar`
-    /// 와 같은 시각 디자인:
-    ///   - 탭바 BG 는 매우 어둡게 (TAB_BAR_BG = 20/255).
-    ///   - 비활성 탭 BG = active terminal 의 현재 배경 → cell grid 와
-    ///     자연스럽게 이어짐.
-    ///   - 활성 탭 BG = TAB_ACTIVE_BG (50/255) → 어두운 BG 대비 두드러짐.
-    ///   - 탭 placement: 좌우 1pt + 상하 2pt gap에 화면 scale을 곱함 → 그 gap으로
-    ///     TAB_BAR_BG가 보여 탭의 명확한 윤곽선 역할.
-    ///   - 우측 끝에 'x' 글리프 (close 버튼) — dim 회색. 클릭 처리는 M11.5.
+    /// 윈도우 상단 탭바 (#111 M11.4, #334 2026-07-22 개편). Windows
+    /// `D3d11Renderer.renderTabBar` 와 같은 시각 디자인 (Tilda 문법):
+    ///   - 탭 배경(활성 포함) = 탭바 배경(TAB_BAR_BG) — 탭바 전체가 하나의
+    ///     회색 띠. 활성 탭은 하단 amber 밑줄로만 구분.
+    ///   - 탭 사이 경계는 세로 구분선(TAB_SEPARATOR_COLOR) — 슬롯(world) 기준
+    ///     고정이라 drag 재배열 중 빈 원위치 슬롯도 구분선+제목 부재로 인지.
     fn drawTabBar(
         self: *MetalRenderer,
         encoder: objc.id,
         tab_titles: []const []const u8,
         active_tab: usize,
-        terminal_bg: [3]f32,
         rename_view: ?tab_interaction.RenameView,
         rename_preedit: []const u8,
         drag_view: ?tab_interaction.DragView,
@@ -1020,7 +1026,6 @@ pub const MetalRenderer = struct {
         const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
         const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
         const tab_gap = ui_metrics.tabGapPx(self.scale);
-        const inactive_bg: [4]f32 = .{ terminal_bg[0], terminal_bg[1], terminal_bg[2], 1.0 };
 
         const MAX_BG: usize = 64;
         const MAX_TEXT: usize = 512;
@@ -1036,7 +1041,15 @@ pub const MetalRenderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         bg_n += 1;
-
+        // 1b. 탭바-터미널 가로 경계선 — 전체 폭, 활성 구간에서도 끊기지 않고
+        //     항상 (#334 2026-07-22 사용자 정정).
+        const border_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_BOTTOM_BORDER_PT)) * self.scale);
+        bg_buf[bg_n] = .{
+            .pos = .{ 0, tab_bar_h_px - border_px },
+            .size = .{ @floatFromInt(self.vp_width), border_px },
+            .color = ui_metrics.TAB_SEPARATOR_COLOR,
+        };
+        bg_n += 1;
         // 각 탭의 좌상단 x 좌표 — world (`i × tab_w_px`) - scroll + tab_area_x.
         // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
         // drag.current_x (c_int, *world*) 를 f32 로 cast 후 같은 변환.
@@ -1048,37 +1061,24 @@ pub const MetalRenderer = struct {
             }
         }.f;
 
-        // 2. 각 탭 배경 — 좌우 1pt + 상하 2pt sandwich. 화면 scale을 곱하며,
-        //    drag 탭은 마지막에 그려서 다른 탭 위에 올라오게 한다.
-        for (tab_titles, 0..) |_, i| {
-            if (bg_n >= MAX_BG) break;
-            if (drag_view) |d| if (d.tab_index == i) continue;
-            const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px, tax);
-            const color = if (i == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
+        // 2. 탭 슬롯 경계 세로 구분선 (#334) — 탭 배경이 탭바와 같은 색이라
+        //    경계는 명시적인 선으로. world(슬롯) 기준 고정: drag 탭이 움직여도
+        //    원위치 빈 슬롯의 경계가 유지된다. 각 탭의 오른쪽 경계마다 하나
+        //    (마지막 탭 끝 포함 — 탭 영역과 빈 탭바의 경계 표시).
+        // 2. 활성 탭 amber 밑줄 (#334) — 활성 구분의 유일한 표시. 가로
+        //    경계선 **바로 위**, 슬롯 폭 전체 (Tilda 문법). drag 중이면
+        //    drag 위치를 따라간다. 세로 구분선은 2차 batch(컨트롤 fill 뒤)
+        //    에서 이 위에 그려진다 — 밑줄이 선을 침범하지 않게 (좌우 대칭).
+        if (active_tab < tab_titles.len and bg_n < MAX_BG) {
+            const underline_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT)) * self.scale);
+            const tab_x = tabXFor(active_tab, tab_w_px, drag_view, tab_scroll_x_px, tax);
             bg_buf[bg_n] = .{
-                .pos = .{ tab_x + tab_gap.tab_horizontal_inset, tab_gap.tab_vertical_inset },
-                .size = .{
-                    @max(tab_w_px - tab_gap.tab_horizontal_inset * 2.0, 1.0),
-                    @max(tab_bar_h_px - tab_gap.tab_vertical_inset * 2.0, 1.0),
-                },
-                .color = color,
+                .pos = .{ tab_x, tab_bar_h_px - border_px - underline_px },
+                .size = .{ tab_w_px, underline_px },
+                .color = ui_metrics.TAB_ACCENT_COLOR,
             };
             bg_n += 1;
         }
-        // drag 중인 탭 BG (다른 탭 위에 그려지도록 마지막).
-        if (drag_view) |d| if (d.tab_index < tab_titles.len and bg_n < MAX_BG) {
-            const tab_x = tabXFor(d.tab_index, tab_w_px, drag_view, tab_scroll_x_px, tax);
-            const color = if (d.tab_index == active_tab) ui_metrics.TAB_ACTIVE_BG else inactive_bg;
-            bg_buf[bg_n] = .{
-                .pos = .{ tab_x + tab_gap.tab_horizontal_inset, tab_gap.tab_vertical_inset },
-                .size = .{
-                    @max(tab_w_px - tab_gap.tab_horizontal_inset * 2.0, 1.0),
-                    @max(tab_bar_h_px - tab_gap.tab_vertical_inset * 2.0, 1.0),
-                },
-                .color = color,
-            };
-            bg_n += 1;
-        };
 
         // 3. 각 탭 제목 텍스트.
         const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
@@ -1187,7 +1187,6 @@ pub const MetalRenderer = struct {
         // 1차 batch — 탭 BG / 텍스트 그림.
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) {
-            self.uploadTabAtlasIfDirty();
             self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
         }
 
@@ -1223,8 +1222,44 @@ pub const MetalRenderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         bg_n += 1;
+        bg_buf[bg_n] = .{
+            .pos = .{ layout.more_x, 0 },
+            .size = .{ layout.more_w, tab_bar_h_px },
+            .color = ui_metrics.TAB_BAR_BG,
+        };
+        bg_n += 1;
+        // #334 — 가로 경계선 복원: 위 컨트롤 fill 이 전체 높이를 덮으므로 그
+        // 위에 다시 긋는다 (`+`/`×`/`…` 버튼 아래까지 항상 이어짐 — 사용자
+        // 피드백).
+        bg_buf[bg_n] = .{
+            .pos = .{ 0, tab_bar_h_px - border_px },
+            .size = .{ @floatFromInt(self.vp_width), border_px },
+            .color = ui_metrics.TAB_SEPARATOR_COLOR,
+        };
+        bg_n += 1;
+        // #334 — 탭 슬롯 경계 세로 구분선. **모두 중심 정렬** — 모든 슬롯이
+        // 좌우 절반씩 균등 부담해 탭의 보이는 폭이 전부 동일하다 (안쪽 정렬은
+        // 끝 탭만 좁아져 기각 — 사용자 지적). 컨트롤 fill·amber 밑줄 **뒤에**
+        // 그려 화살표 옆에서도, 활성 탭 위에서도 항상 온전한 두께. 화살표
+        // 옆에는 끝 탭이 완전히 보일 때만 (슬롯 경계 정렬 시) 선이 온다 —
+        // overflow 에서는 첫 탭의 왼쪽 경계(bi=0)도 후보.
+        {
+            const tab_area_end = layout.tab_area_x + layout.tab_area_w;
+            const first_border: usize = if (layout.arrows_visible) 0 else 1;
+            for (first_border..tab_titles.len + 1) |bi| {
+                if (bg_n >= MAX_BG) break;
+                const x = tax + @as(f32, @floatFromInt(bi)) * tab_w_px - tab_scroll_x_px;
+                if (x < layout.tab_area_x or x > tab_area_end) continue;
+                bg_buf[bg_n] = .{
+                    .pos = .{ x - border_px * 0.5, 0 },
+                    .size = .{ border_px, @max(tab_bar_h_px - border_px, 1.0) },
+                    .color = ui_metrics.TAB_SEPARATOR_COLOR,
+                };
+                bg_n += 1;
+            }
+        }
         // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 네 방향 2pt
-        // inset에 화면 scale을 곱한다. 비활성 화살표 / 숨은 + (MAX_TABS)는 제외.
+        // inset에 화면 scale을 곱한다. 비활성 화살표 / 비활성 +(host가 hover 억제)는 제외.
         {
             var hover_x: f32 = 0;
             var hover_w: f32 = 0;
@@ -1236,6 +1271,10 @@ pub const MetalRenderer = struct {
                 .close => {
                     hover_x = layout.close_x;
                     hover_w = layout.close_w;
+                },
+                .more => {
+                    hover_x = layout.more_x;
+                    hover_w = layout.more_w;
                 },
                 .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
                     hover_x = layout.left_arrow_x;
@@ -1255,7 +1294,10 @@ pub const MetalRenderer = struct {
                     },
                     .size = .{
                         hover_w - tab_gap.control_hover_inset * 2.0,
-                        tab_bar_h_px - tab_gap.control_hover_inset * 2.0,
+                        // 하단은 가로 경계선(border_px)이 1pt 를 차지하므로 그만큼
+                        // 더 올려 경계선 위 기준 상하 2pt 대칭 (#334 사용자 발견 —
+                        // 아래 여백만 1pt 로 보였음).
+                        tab_bar_h_px - tab_gap.control_hover_inset * 2.0 - border_px,
                     },
                     .color = ui_metrics.TAB_CTRL_HOVER_BG,
                 };
@@ -1268,6 +1310,7 @@ pub const MetalRenderer = struct {
         // Linux / Windows 와 같은 비트맵 → 세 platform 픽셀 동일. box 중앙 정렬.
         const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.scale));
         const icon_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.scale);
+        const more_stroke: f32 = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * self.scale);
         const drawIcon = struct {
             fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
                 if (n.* >= buf.len) return;
@@ -1295,15 +1338,226 @@ pub const MetalRenderer = struct {
             drawIcon(self, .chevron_left, layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, left_color, &text_buf, &text_n);
             drawIcon(self, .chevron_right, layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, right_color, &text_buf, &text_n);
         }
-        drawIcon(self, .plus, layout.plus_x, layout.plus_w, tab_bar_h_px, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
+        // #329 — MAX_TABS 도달 시 `+` 는 자리 유지 + 비활성 색 (arrow 동일 관례).
+        const plus_color = if (layout.plus_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+        drawIcon(self, .plus, layout.plus_x, layout.plus_w, tab_bar_h_px, icon_size, icon_stroke, plus_color, &text_buf, &text_n);
         // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
         drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
+        drawIcon(self, .more, layout.more_x, layout.more_w, tab_bar_h_px, icon_size, more_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
 
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) {
-            self.uploadTabAtlasIfDirty();
             self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
         }
+    }
+
+    /// #329 — 단일 탭 terminal 위에 우측 `[+][×][…]`만 최종 합성한다.
+    /// 전체 tabbar 배경은 그리지 않아 terminal grid/y-offset을 그대로 유지한다.
+    fn drawSingleControlStrip(
+        self: *MetalRenderer,
+        encoder: objc.id,
+        layout: TabBarLayout,
+        hover: tab_layout.Area,
+    ) void {
+        const h: f32 = @floatFromInt(ui_metrics.tabBarHeightPx(self.scale));
+        const gap = ui_metrics.tabGapPx(self.scale);
+        var bg: [4]BgInstance = undefined;
+        var bg_n: usize = 0;
+        inline for (.{
+            .{ layout.plus_x, layout.plus_w },
+            .{ layout.close_x, layout.close_w },
+            .{ layout.more_x, layout.more_w },
+        }) |control| {
+            if (control[1] > 0) {
+                bg[bg_n] = .{
+                    .pos = .{ control[0], 0 },
+                    .size = .{ control[1], h },
+                    .color = ui_metrics.TAB_BAR_BG,
+                };
+                bg_n += 1;
+            }
+        }
+        const hover_rect: ?struct { x: f32, w: f32 } = switch (hover) {
+            .plus => .{ .x = layout.plus_x, .w = layout.plus_w },
+            .close => .{ .x = layout.close_x, .w = layout.close_w },
+            .more => .{ .x = layout.more_x, .w = layout.more_w },
+            else => null,
+        };
+        if (hover_rect) |hr| if (hr.w > gap.control_hover_inset * 2 and bg_n < bg.len) {
+            bg[bg_n] = .{
+                .pos = .{ hr.x + gap.control_hover_inset, gap.control_hover_inset },
+                .size = .{ hr.w - gap.control_hover_inset * 2, h - gap.control_hover_inset * 2 },
+                .color = ui_metrics.TAB_CTRL_HOVER_BG,
+            };
+            bg_n += 1;
+        };
+        if (bg_n > 0) self.drawBgInstances(encoder, bg[0..bg_n]);
+
+        var text_buf: [3]TextInstance = undefined;
+        var text_n: usize = 0;
+        const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.scale));
+        const icon_stroke = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.scale);
+        const more_stroke = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * self.scale);
+        const emit = struct {
+            fn icon(rself: *MetalRenderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, size: u32, stroke: f32, out: []TextInstance, count: *usize) void {
+                if (w <= 0 or count.* >= out.len) return;
+                const entry = rself.tab_atlas.getOrInsertIcon(kind, size, stroke) orelse return;
+                const size_f: f32 = @floatFromInt(size);
+                out[count.*] = .{
+                    .pos = .{ x + (w - size_f) * 0.5, (bar_h - size_f) * 0.5 },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = ui_metrics.TAB_CTRL_ACTIVE_COLOR,
+                    .color_flag = 0,
+                };
+                count.* += 1;
+            }
+        }.icon;
+        emit(self, .plus, layout.plus_x, layout.plus_w, h, icon_size, icon_stroke, &text_buf, &text_n);
+        emit(self, .close, layout.close_x, layout.close_w, h, icon_size, icon_stroke, &text_buf, &text_n);
+        emit(self, .more, layout.more_x, layout.more_w, h, icon_size, more_stroke, &text_buf, &text_n);
+        if (text_n > 0) {
+            // 여기서 uploadTabAtlasIfDirty 를 부르면 안 된다 — 같은 encoder 의
+            // insert/upload/sample 은 정적 첫 frame 에서 icon 이 투명하게 남고
+            // (실기 확정), dirty 를 지워 host 의 tabAtlasDirty() 후속-frame
+            // 요청까지 꺼진다. 새 항목은 renderTerminal 시작의 2-frame upload
+            // 가 다음 frame 에 반영한다 (main glyph atlas 와 같은 정책).
+            self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
+        }
+    }
+
+    fn drawCommandMenu(self: *MetalRenderer, encoder: objc.id, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+        const scale = self.scale;
+        // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
+        // 는 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
+        const v = command_menu.view(
+            @as(f32, @floatFromInt(self.vp_width)) / scale,
+            @as(f32, @floatFromInt(self.vp_height)) / scale,
+            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+            ui.first_visible,
+        );
+        const mx = v.rect.x * scale;
+        const my = v.rect.y * scale;
+        const mw = v.rect.w * scale;
+        const mh = v.rect.h * scale;
+        // border / separator 는 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
+        const line_px = @max(1.0, scale);
+        var boxes = [_]BgInstance{
+            .{ .pos = .{ mx - line_px, my - line_px }, .size = .{ mw + line_px * 2, mh + line_px * 2 }, .color = ui_metrics.TAB_SEPARATOR_COLOR },
+            .{ .pos = .{ mx, my }, .size = .{ mw, mh }, .color = ui_metrics.TAB_BAR_BG },
+        };
+        self.drawBgInstances(encoder, &boxes);
+        for (v.first..v.first + v.count) |i| {
+            if (command_menu.entries[i] != null) continue;
+            const r = command_menu.entryRect(v, i).?;
+            const sep = [1]BgInstance{.{
+                .pos = .{ mx + 8 * scale, (r.y + r.h / 2) * scale },
+                .size = .{ mw - 16 * scale, line_px },
+                .color = ui_metrics.TAB_SEPARATOR_COLOR,
+            }};
+            self.drawBgInstances(encoder, &sep);
+        }
+        // 강조는 pointer hover 우선, 없으면 keyboard focus.
+        if (ui.hover orelse ui.focused) |command| {
+            if (command_menu.itemRect(v, command)) |item| {
+                const hover_bg = [1]BgInstance{.{
+                    .pos = .{ (item.x + 2) * scale, (item.y + 1) * scale },
+                    .size = .{ (item.w - 4) * scale, (item.h - 2) * scale },
+                    .color = ui_metrics.MENU_HOVER_BG,
+                }};
+                self.drawBgInstances(encoder, &hover_bg);
+            }
+        }
+
+        // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
+        // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
+        if (v.clipped) {
+            const ind_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.MENU_INDICATOR_ICON_PT)) * scale));
+            const ind_stroke = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+            const size_f: f32 = @floatFromInt(ind_size);
+            const ind_cx = mx + mw * 0.5 - size_f * 0.5;
+            const up_y = (v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5;
+            const down_y = (v.rect.y + v.rect.h - command_menu.PADDING_PT - command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5;
+            const pairs = [2]struct { kind: tab_icons.Icon, y: f32, enabled: bool }{
+                .{ .kind = .chevron_up, .y = up_y, .enabled = v.can_scroll_up },
+                .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
+            };
+            var ind: [2]TextInstance = undefined;
+            var ind_n: usize = 0;
+            for (pairs) |p| {
+                const entry = self.tab_atlas.getOrInsertIcon(p.kind, ind_size, ind_stroke) orelse continue;
+                ind[ind_n] = .{
+                    .pos = .{ ind_cx, p.y },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = if (p.enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR,
+                    .color_flag = 0,
+                };
+                ind_n += 1;
+            }
+            if (ind_n > 0) self.drawTextInstancesWithTexture(encoder, ind[0..ind_n], self.tab_atlas_texture);
+        }
+
+        var glyphs: [512]TextInstance = undefined;
+        var glyph_n: usize = 0;
+        const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
+        const emit = struct {
+            fn text(r: *MetalRenderer, bytes: []const u8, start_x: f32, text_top: f32, color: [4]f32, out: []TextInstance, n: *usize) void {
+                var x = start_x;
+                var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+                while (iter.nextCodepoint()) |cp| {
+                    if (n.* >= out.len) return;
+                    const result = r.tab_font.resolveGlyph(@intCast(cp)) orelse continue;
+                    const entry = r.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                        if (result.owned) ct.CFRelease(result.font);
+                        continue;
+                    };
+                    if (result.owned) ct.CFRelease(result.font);
+                    if (entry.w > 0 and entry.h > 0) {
+                        out[n.*] = .{
+                            .pos = .{ x + @as(f32, @floatFromInt(entry.bearing_x)), text_top + r.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = color,
+                            .color_flag = if (entry.is_color) 1 else 0,
+                        };
+                        n.* += 1;
+                    }
+                    x += @as(f32, @floatFromInt(display_width.codepointWidth(@intCast(cp)))) * @as(f32, @floatFromInt(r.tab_font.cell_width_px));
+                }
+            }
+        }.text;
+        for (v.first..v.first + v.count) |i| {
+            const command = command_menu.entries[i] orelse continue;
+            const item = command_menu.entryRect(v, i).?;
+            const ix = item.x * scale;
+            const iy = item.y * scale;
+            const iw = item.w * scale;
+            const ih = item.h * scale;
+            const text_top = iy + (ih - ch) * 0.5;
+            emit(self, command_menu.label(command), ix + 8 * scale, text_top, ui_metrics.MENU_LABEL_COLOR, &glyphs, &glyph_n);
+            const hint = command_menu.shortcut(command, true, toggle_hotkey, ui.fullscreen_workarea);
+            if (hint.len > 0) {
+                const hint_w = @as(f32, @floatFromInt(display_width.stringWidth(hint))) * cw;
+                const label_w = @as(f32, @floatFromInt(display_width.stringWidth(command_menu.label(command)))) * cw;
+                // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면
+                // hint 를 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
+                if (command_menu.hintFits(item.w, label_w / scale, hint_w / scale)) {
+                    emit(self, hint, ix + iw - 8 * scale - hint_w, text_top, ui_metrics.MENU_HINT_COLOR, &glyphs, &glyph_n);
+                }
+            }
+        }
+        if (glyph_n > 0) {
+            self.drawTextInstancesWithTexture(encoder, glyphs[0..glyph_n], self.tab_atlas_texture);
+        }
+    }
+
+    pub fn tabAtlasDirty(self: *const MetalRenderer) bool {
+        return self.tab_atlas.dirty;
     }
 
     fn updateConstants(self: *MetalRenderer) void {

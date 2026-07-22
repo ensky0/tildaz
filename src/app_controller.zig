@@ -23,6 +23,7 @@ const paths = @import("paths.zig");
 const system_open = @import("system_open.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const command_menu = @import("command_menu.zig");
 const shell_validate = @import("shell_validate.zig");
 
 pub const App = struct {
@@ -50,9 +51,22 @@ pub const App = struct {
     /// 가려져도 그대로 (Firefox 패턴). 활성 탭 변경 / drag reorder 끝 / 새 탭
     /// 생성 시 false 로 리셋 → 그 시점부터 다시 ensure 동작.
     tab_scroll_user_override: bool = false,
-    /// 탭바 컨트롤 버튼 (`<` `>` `+` `×`) 의 hover 대상 (#268 2b). mouse move
-    /// 마다 갱신, 변경 시에만 재렌더. 렌더러가 hover 배경 박스를 그림.
+    /// 탭바 컨트롤 버튼 (`<` `>` `+` `×` `…`) 의 hover 대상 (#268/#329).
+    /// mouse move마다 갱신, 변경 시에만 재렌더. 렌더러가 hover 배경 박스를 그림.
     tab_hover: tab_layout.Area = .none,
+    /// #329 command/shortcut menu 표시/hover 상태. 공통 `command_menu.zig`
+    /// model로 세 platform의 layout과 hit-test를 맞춘다.
+    command_menu_open: bool = false,
+    command_menu_hover: ?command_menu.Command = null,
+    /// #329 — 메뉴 keyboard focus (Up/Down/Home/End/Tab 이동, Enter/Space 실행).
+    command_menu_focus: ?command_menu.Command = null,
+    /// #329 — 작은 viewport 에서 entry 단위 scroll 의 첫 표시 entry 인덱스.
+    command_menu_first: usize = 0,
+    /// #334 — 메뉴 wheel delta 누적 (WHEEL_DELTA=120 미만 정밀 휠도 스크롤
+    /// 되게 나머지 보존 — Linux 의 fixed 누적과 같은 패턴).
+    command_menu_wheel_accum: i32 = 0,
+    toggle_hotkey_hint: [64]u8 = [_]u8{0} ** 64,
+    toggle_hotkey_hint_len: usize = 0,
     /// `tab_actions.Host` 인스턴스 — App member (session / override flag) 를
     /// cross-platform helper API 로 노출. `setupHost()` 가 self 의 stable
     /// address 잡힌 후 채움 (콜백이 user_data → *App cast).
@@ -67,6 +81,7 @@ pub const App = struct {
     TAB_ARROW_W: c_int = @intCast(ui_metrics.TAB_ARROW_W_PT),
     TAB_PLUS_W: c_int = @intCast(ui_metrics.TAB_PLUS_W_PT),
     TAB_CLOSE_W: c_int = @intCast(ui_metrics.TAB_CLOSE_W_PT),
+    TAB_MORE_W: c_int = @intCast(ui_metrics.TAB_MORE_W_PT),
     TAB_PADDING: c_int = @intCast(ui_metrics.TAB_PADDING_PT),
     SCROLLBAR_W: c_int = @intCast(ui_metrics.SCROLLBAR_W_PT),
     // Minimum scrollback thumb height — clamps the thumb so a deeply scrolled
@@ -90,6 +105,11 @@ pub const App = struct {
             .terminate = winHostTerminate,
             .user_data = self,
         };
+    }
+
+    pub fn setToggleHotkeyHint(self: *App, hint: []const u8) void {
+        self.toggle_hotkey_hint_len = @min(hint.len, self.toggle_hotkey_hint.len);
+        @memcpy(self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len], hint[0..self.toggle_hotkey_hint_len]);
     }
 
     fn winHostInvalidate(host: *tab_actions.Host) void {
@@ -154,6 +174,12 @@ pub const App = struct {
         return if (self.session.count() > 1) self.TAB_BAR_HEIGHT else 0;
     }
 
+    /// 단일 탭에서도 우측 control strip 아래부터 scrollbar track을 시작한다.
+    /// terminal grid offset은 `effectiveTabBarHeight` 그대로 0이다.
+    fn scrollbarTopInset(self: *const App) c_int {
+        return if (self.session.count() > 0) self.TAB_BAR_HEIGHT else 0;
+    }
+
     /// #193 — Windows host 의 `WM_SETCURSOR` callback. SPEC.md §3.1:
     /// - cell 영역 → I-beam (`.cell`)
     /// - rename 활성 탭의 text 입력 영역 (close 'x' 박스 제외) → I-beam
@@ -161,6 +187,13 @@ pub const App = struct {
     pub fn cursorRegion(x: c_int, y: c_int, userdata: ?*anyopaque) Window.CursorRegion {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         const tab_bar_h = self.effectiveTabBarHeight();
+        if (self.singleControlHit(x, y) != .none) return .other;
+        if (self.command_menu_open) {
+            const menu = self.commandMenuView().rect;
+            const px = @as(f32, @floatFromInt(x)) / self.dpi_scale;
+            const py = @as(f32, @floatFromInt(y)) / self.dpi_scale;
+            if (px >= menu.x and px < menu.x + menu.w and py >= menu.y and py < menu.y + menu.h) return .other;
+        }
         // 탭바 영역 — rename 활성 탭 text 면 I-beam, 그 외 arrow.
         if (y < tab_bar_h) {
             if (self.tab_interaction.rename.isActive()) {
@@ -201,17 +234,19 @@ pub const App = struct {
     /// shape 으로 변환만. Windows 는 c_int → f32 cast.
     fn tabBarLayoutInputs(self: *const App) tab_layout.Inputs {
         const vp = self.window.getClientSize().w;
-        // count >= MAX_TABS 면 plus 버튼 사라짐. close (`x`, 활성 탭 닫기) 는
-        // 탭바가 보이는 한 항상 표시 (#268 — 우측 끝 고정 클러스터).
+        // #329 정책 변경 (2026-07-22) — count >= MAX_TABS 여도 `+` 는 자리를
+        // 유지하고 비활성 색 + click noop. `[+][×][…]` 세 버튼이 항상 같은
+        // 자리에 있게 한다. 단축키 경로의 한도 dialog 는 그대로.
         const at_limit = self.session.count() >= session_core.MAX_TABS;
-        const plus_w_eff: c_int = if (at_limit) 0 else self.TAB_PLUS_W;
         return .{
             .viewport_w = @floatFromInt(vp),
             .tab_count = @intCast(self.session.count()),
             .tab_w = @floatFromInt(self.TAB_WIDTH),
             .arrow_w = @floatFromInt(self.TAB_ARROW_W),
-            .plus_w = @floatFromInt(plus_w_eff),
+            .plus_w = @floatFromInt(self.TAB_PLUS_W),
+            .plus_enabled = !at_limit,
             .close_w = @floatFromInt(self.TAB_CLOSE_W),
+            .more_w = @floatFromInt(self.TAB_MORE_W),
             .scroll_x = @floatFromInt(self.tab_scroll_x),
         };
     }
@@ -331,6 +366,7 @@ pub const App = struct {
         self.TAB_ARROW_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * scale));
         self.TAB_PLUS_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * scale));
         self.TAB_CLOSE_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT)) * scale));
+        self.TAB_MORE_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_MORE_W_PT)) * scale));
         self.TAB_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * scale));
         self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
         self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
@@ -426,12 +462,23 @@ pub const App = struct {
                         size.w,
                         size.h,
                         tab_bar_h,
+                        self.scrollbarTopInset(),
                         self.TERMINAL_PADDING,
                         self.SCROLLBAR_W,
                         self.SCROLLBAR_MIN_THUMB_H,
                         // rename 중이면 cell preedit 빈 slice — IME 자모는 탭바
                         // (1c) 로 라우팅. 아니면 cursor 옆 inline overlay (#164).
                         if (self.isRenaming()) &.{} else self.window.imePreeditSlice(),
+                        self.tabBarLayout(),
+                        self.tab_hover,
+                        .{
+                            .open = self.command_menu_open,
+                            .hover = self.command_menu_hover,
+                            .focused = self.command_menu_focus,
+                            .first_visible = self.command_menu_first,
+                            .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
+                        },
+                        self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
                     );
                 }
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국
@@ -499,7 +546,7 @@ pub const App = struct {
         if (self.window.hwnd == null) return null;
         const sb = tab.terminal.screens.active.pages.scrollbar();
         const client_h = self.window.getClientSize().h;
-        const tbh = self.effectiveTabBarHeight();
+        const tbh = self.scrollbarTopInset();
         return scrollbar.hit(
             sb.total,
             sb.len,
@@ -539,6 +586,104 @@ pub const App = struct {
     fn tabBarHitArea(self: *const App, mouse_x: c_int, layout: TabBarLayout) TabBarHit {
         _ = self;
         return tab_layout.hitArea(@floatFromInt(mouse_x), 0, std.math.floatMax(f32), layout);
+    }
+
+    fn singleControlHit(self: *const App, mouse_x: c_int, mouse_y: c_int) TabBarHit {
+        if (self.session.count() != 1 or mouse_y < 0 or mouse_y >= self.scrollbarTopInset()) return .none;
+        return switch (self.tabBarHitArea(mouse_x, self.tabBarLayout())) {
+            .plus, .close, .more => |a| a,
+            else => .none,
+        };
+    }
+
+    /// #329 — 현재 viewport / scroll 기준의 menu View (renderer 와 같은 계산).
+    fn commandMenuView(self: *const App) command_menu.View {
+        const size = self.window.getClientSize();
+        return command_menu.view(
+            @as(f32, @floatFromInt(size.w)) / self.dpi_scale,
+            @as(f32, @floatFromInt(size.h)) / self.dpi_scale,
+            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+            self.command_menu_first,
+        );
+    }
+
+    /// #329 — 메뉴 닫기 공통 지점. focus / scroll 까지 초기화해 다음 열기가
+    /// 항상 처음 상태에서 시작한다.
+    fn closeCommandMenu(self: *App) void {
+        self.command_menu_open = false;
+        self.command_menu_hover = null;
+        self.command_menu_focus = null;
+        self.command_menu_first = 0;
+        self.command_menu_wheel_accum = 0;
+        self.invalidateRenderer();
+    }
+
+    fn commandMenuHit(self: *const App, mouse_x: c_int, mouse_y: c_int) ?command_menu.Command {
+        if (!self.command_menu_open or mouse_x < 0 or mouse_y < 0) return null;
+        return command_menu.hit(self.commandMenuView(), @as(f32, @floatFromInt(mouse_x)) / self.dpi_scale, @as(f32, @floatFromInt(mouse_y)) / self.dpi_scale);
+    }
+
+    /// #329 — 메뉴가 열린 동안의 키 입력. 모든 키를 메뉴 계층이 소비한다
+    /// (native menu 동등) — PTY / rename 으로 보내지 않는다.
+    fn handleCommandMenuKey(self: *App, menu_key: command_menu.MenuKey) void {
+        switch (command_menu.onKey(menu_key, &self.command_menu_focus)) {
+            .consumed => {
+                // #334 — 키보드를 쓰는 순간 pointer hover 강조를 지운다.
+                // 마우스가 항목 위에 머물러 있으면 hover 가 focus 를 덮어
+                // 키보드 이동이 화면에 안 보였다 (사용자 시연 발견). 마우스를
+                // 다시 움직이면 hover 가 재적용되며 focus 도 동기화된다.
+                self.command_menu_hover = null;
+                if (self.command_menu_focus) |focused| {
+                    const size = self.window.getClientSize();
+                    self.command_menu_first = command_menu.ensureVisible(
+                        @as(f32, @floatFromInt(size.w)) / self.dpi_scale,
+                        @as(f32, @floatFromInt(size.h)) / self.dpi_scale,
+                        @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+                        self.command_menu_first,
+                        focused,
+                    );
+                }
+                self.invalidateRenderer();
+            },
+            .close => self.closeCommandMenu(),
+            .activate => |command| self.executeCommandMenu(command),
+        }
+    }
+
+    /// 메뉴 / 탭바 버튼의 상태 변경 명령 공통 진입 — keyboard shortcut 과 같은
+    /// 입력 정책(IMM complete → rename commit → action)을 거친다 (#329).
+    /// false 면 IMM complete 실패 등으로 action 을 보류해야 한다.
+    fn resolveRunAction(self: *App, sc: input_policy.Shortcut) bool {
+        const disposition = self.resolveWindowsInput(.{ .shortcut = sc }) orelse return false;
+        return disposition.target == .run_action;
+    }
+
+    fn executeCommandMenu(self: *App, command: command_menu.Command) void {
+        self.closeCommandMenu();
+        // paste 만 commit 정책이 다른 `Input.paste` 경로 — requestPaste 가
+        // onAppEvent(.paste) → resolveWindowsInput(.paste) 를 그대로 탄다.
+        switch (command) {
+            .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
+            .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
+            .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
+            .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
+            .paste => self.window.requestPaste(),
+            // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
+            // 해제, 아니면 monitor 진입 (키보드 self-symmetric 정책은 그대로).
+            .fullscreen => if (self.resolveRunAction(.fullscreen)) self.window.toggleFullscreenMode(if (self.window.fullscreen_mode != .none) self.window.fullscreen_mode else .monitor),
+            .open_config => if (self.resolveRunAction(.open_config)) {
+                const path = paths.configPath(self.allocator) catch return;
+                defer self.allocator.free(path);
+                self.window.yieldTopmostUntilNextShow();
+                system_open.openInDefaultApp(self.allocator, path);
+            },
+            .keyboard_shortcuts => if (self.resolveRunAction(.open_shortcuts)) {
+                self.window.yieldTopmostUntilNextShow();
+                system_open.openInDefaultApp(self.allocator, messages.keyboard_shortcuts_url);
+            },
+            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(),
+        }
+        self.invalidateRenderer();
     }
 
     /// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
@@ -585,15 +730,32 @@ pub const App = struct {
         return false;
     }
 
-    /// #268 2b — 탭바 컨트롤 버튼 hover 갱신. 버튼 (`<` `>` `+` `×`) 위에서만
+    /// #268/#329 — 탭바 컨트롤 버튼 hover 갱신.
     /// hover, 탭 본체 / 탭바 밖은 .none. 변경 시에만 재렌더 (mouse move 마다
     /// 그리지 않게).
     fn updateTabHover(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+        if (self.command_menu_open) {
+            const menu_hover = self.commandMenuHit(mouse_x, mouse_y);
+            if (menu_hover != self.command_menu_hover or self.tab_hover != .none) {
+                self.command_menu_hover = menu_hover;
+                // #329 — pointer 가 항목 위로 오면 keyboard focus 도 그 항목으로
+                // 동기화 (표준 메뉴 동작). 안 하면 마우스로 건너뛴 뒤 ↑↓ 가
+                // 옛 focus 위치에서 출발한다 (사용자 시연 발견).
+                if (menu_hover) |h| self.command_menu_focus = h;
+                self.tab_hover = .none;
+                self.invalidateRenderer();
+            }
+            return;
+        }
+        self.command_menu_hover = null;
         const new_hover: tab_layout.Area = blk: {
+            if (self.session.count() == 1) break :blk self.singleControlHit(mouse_x, mouse_y);
             if (mouse_y < 0 or mouse_y >= self.effectiveTabBarHeight()) break :blk .none;
             const layout = self.tabBarLayout();
             break :blk switch (self.tabBarHitArea(mouse_x, layout)) {
-                .left_arrow, .right_arrow, .plus, .close => |a| a,
+                // #329 — 비활성 `+` 는 hover 강조도 없음.
+                .plus => if (layout.plus_enabled) tab_layout.Area.plus else .none,
+                .left_arrow, .right_arrow, .close, .more => |a| a,
                 .tab_area, .none => .none,
             };
         };
@@ -604,13 +766,16 @@ pub const App = struct {
     }
 
     pub fn handleTabClick(self: *App, mouse_x: c_int, mouse_y: c_int) void {
-        // 단일 탭이면 effectiveTabBarHeight==0 → 모든 클릭이 below 로 분류
-        // (탭 클릭 자체가 의미 없음). count<=1 일 때 내부 분기에서 빨리 종료.
-        if (mouse_y >= self.effectiveTabBarHeight()) return; // Below tab bar
         if (self.session.count() == 0) return;
 
         const layout = self.tabBarLayout();
-        switch (self.tabBarHitArea(mouse_x, layout)) {
+        const area = if (self.session.count() == 1)
+            self.singleControlHit(mouse_x, mouse_y)
+        else if (mouse_y < self.effectiveTabBarHeight())
+            self.tabBarHitArea(mouse_x, layout)
+        else
+            .none;
+        switch (area) {
             .left_arrow => {
                 if (layout.left_enabled) self.scrollTabsByArrow(.left);
                 return;
@@ -620,12 +785,22 @@ pub const App = struct {
                 return;
             },
             .plus => {
-                self.handleNewTab();
+                // #329 — MAX_TABS 도달 시 비활성 `+` 클릭은 완전 noop (dialog
+                // 없음 — 비활성 overflow 화살표와 같은 관례).
+                if (!layout.plus_enabled) return;
+                if (self.resolveRunAction(.new_tab)) self.handleNewTab();
                 return;
             },
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
             .close => {
-                self.closeTab(self.session.activeIndex());
+                if (self.resolveRunAction(.close_tab)) self.closeTab(self.session.activeIndex());
+                return;
+            },
+            .more => {
+                if (!self.resolveRunAction(.open_command_menu)) return;
+                self.command_menu_open = !self.command_menu_open;
+                self.command_menu_hover = null;
+                self.invalidateRenderer();
                 return;
             },
             .none => return,
@@ -642,6 +817,10 @@ pub const App = struct {
         const tab_index: usize = @intCast(tab_index_raw);
         if (tab_index >= self.session.count()) return;
 
+        // #329 — mouse 탭 전환도 keyboard switch_tab 과 같은 정책: 터미널
+        // preedit 을 이전 탭에 먼저 commit (늦은 GCS_RESULTSTR 가 새 활성
+        // 탭으로 새는 것 방지).
+        if (!self.resolveRunAction(.switch_tab)) return;
         if (self.session.setActiveTab(tab_index)) {
             self.tab_scroll_user_override = false;
             self.invalidateRenderer();
@@ -864,6 +1043,18 @@ pub const App = struct {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         switch (event) {
             .text_input => |cp| {
+                // #329 — 메뉴가 열려 있으면 문자도 메뉴 계층이 소비 (Space =
+                // 실행, Tab = 이동, 그 외 noop — native menu 동등).
+                if (self.command_menu_open) {
+                    self.handleCommandMenuKey(switch (cp) {
+                        ' ' => .space,
+                        // WM_CHAR 0x09 는 shift 를 안 담음 — Shift+Tab 역방향
+                        // 이동을 위해 직접 확인 (재감사 발견, mac/linux 대칭).
+                        0x09 => if (self.window.isShiftDown()) command_menu.MenuKey.shift_tab else .tab,
+                        else => command_menu.MenuKey.other,
+                    });
+                    return true;
+                }
                 if (self.isRenaming()) {
                     if (cp >= 0x20) { // printable characters only
                         self.handleRenameChar(cp);
@@ -873,11 +1064,26 @@ pub const App = struct {
                 return false;
             },
             .key_input => |key| {
+                // #329 — 메뉴 keyboard navigation. PTY escape seq 로 안 새게 소비.
+                if (self.command_menu_open) {
+                    self.handleCommandMenuKey(switch (key) {
+                        .escape => .escape,
+                        .enter => .enter,
+                        .up => .up,
+                        .down => .down,
+                        .home => .home,
+                        .end => .end,
+                        else => command_menu.MenuKey.other,
+                    });
+                    return true;
+                }
                 if (self.handleRenameKey(key)) return true;
                 if (self.isRenaming()) return true; // swallow rename editing keys
                 return false;
             },
             .paste => |bytes| {
+                // #329 — 명시적 paste 명령(Ctrl+Shift+V)은 메뉴를 닫고 정상 실행.
+                if (self.command_menu_open) self.closeCommandMenu();
                 // rename routing (printable cp 만 → handleRenameChar) 또는 일반
                 // PTY paste (bracketed paste + wrap 은 session 가). 양쪽 분기
                 // helper. mac handlePaste 와 같은 path.
@@ -888,11 +1094,25 @@ pub const App = struct {
                 return true;
             },
             .interrupt => {
+                if (self.command_menu_open) self.closeCommandMenu();
                 const disposition = self.resolveWindowsInput(.interrupt) orelse return true;
                 if (disposition.target == .pty) self.session.interruptActive("\x03");
                 return true;
             },
+            .mouse_right_down => {
+                // #329 — 열린 menu 는 모든 pointer button 보다 우선. 우클릭은
+                // 메뉴만 닫고 paste 하지 않는다 (SPEC §5.3). false 면 window 가
+                // 기존 즉시 paste (#119).
+                if (self.command_menu_open) {
+                    self.closeCommandMenu();
+                    return true;
+                }
+                return false;
+            },
             .shortcut => |shortcut| {
+                // #329 — 단축키는 메뉴를 먼저 닫고 정상 실행 (toggle 로 hide
+                // 해도 열린 메뉴가 남지 않음).
+                if (self.command_menu_open) self.closeCommandMenu();
                 // #296 — rename 중 단축키의 commit 여부는 입력 정책(input_policy)
                 // 한 곳에서. copy_selection/dump_perf 는 read-only → rename 을 안
                 // 끝냄(rename 중 복사할 대상이 없음 — macOS/Linux 와 같은 정정).
@@ -973,9 +1193,23 @@ pub const App = struct {
                     if (self.tryRenameClickMoveCursor(mouse.x, mouse.y)) return true;
                     self.commitRename();
                 }
-                // count<=1 면 effectiveTabBarHeight==0 → 탭바 영역 자체가 없으므로
-                // 모든 클릭이 터미널/스크롤바 라우팅으로 흘러간다 (#127).
-                if (mouse.y < self.effectiveTabBarHeight()) {
+                if (self.command_menu_open) {
+                    // #334 — 스크롤 표시 행 클릭 = 한 entry 스크롤, 메뉴 유지.
+                    const menu_view = self.commandMenuView();
+                    const px_pt = @as(f32, @floatFromInt(mouse.x)) / self.dpi_scale;
+                    const py_pt = @as(f32, @floatFromInt(mouse.y)) / self.dpi_scale;
+                    if (command_menu.hitScrollIndicator(menu_view, px_pt, py_pt)) |dir| {
+                        self.command_menu_first = command_menu.scrollStep(menu_view, dir == .down);
+                        self.invalidateRenderer();
+                        return true;
+                    }
+                    const hit = self.commandMenuHit(mouse.x, mouse.y);
+                    self.closeCommandMenu();
+                    if (hit) |command| self.executeCommandMenu(command);
+                    return true;
+                }
+                const single_control = self.singleControlHit(mouse.x, mouse.y);
+                if (mouse.y < self.effectiveTabBarHeight() or single_control != .none) {
                     if (self.activeTabPtr()) |tab| tab.interaction.cancelPointerModes();
                     self.handleTabClick(mouse.x, mouse.y);
                     // drag begin 은 *탭 영역* 안에서만 — 화살표 / + 위 클릭은
@@ -1002,6 +1236,7 @@ pub const App = struct {
                 return true;
             },
             .mouse_double_click => |mouse| {
+                if (self.singleControlHit(mouse.x, mouse.y) != .none) return true;
                 if (mouse.y < self.effectiveTabBarHeight()) {
                     // #117 — 탭 영역 안에서만 rename, 화살표/+ 위 더블클릭은 무시.
                     const layout = self.tabBarLayout();
@@ -1051,6 +1286,30 @@ pub const App = struct {
                 return true;
             },
             .scroll => |scroll_event| {
+                // #329 — 열린 menu 는 wheel 도 소비한다. 작은 viewport 에서
+                // 잘린 항목 도달 경로 (entry 단위 scroll). terminal 로 안 보냄.
+                if (self.command_menu_open) {
+                    switch (scroll_event) {
+                        .wheel => |wheel| {
+                            // #334 — 정밀 휠/터치패드(delta<120)도 스크롤되게
+                            // 누적 + 나머지 보존 (재감사 발견 — divTrunc 단독은
+                            // 120 미만에서 항상 0).
+                            self.command_menu_wheel_accum += wheel;
+                            var steps = @divTrunc(self.command_menu_wheel_accum, 120);
+                            self.command_menu_wheel_accum -= steps * 120;
+                            while (steps != 0) {
+                                const down = steps < 0; // 양수 = 위로 (WHEEL_DELTA)
+                                const next = command_menu.scrollStep(self.commandMenuView(), down);
+                                if (next == self.command_menu_first) break;
+                                self.command_menu_first = next;
+                                self.invalidateRenderer();
+                                steps += if (down) @as(i32, 1) else -1;
+                            }
+                        },
+                        .page => {},
+                    }
+                    return true;
+                }
                 self.handleScroll(scroll_event);
                 return true;
             },

@@ -1,4 +1,5 @@
-//! 탭바 컨트롤 아이콘 (`< > × +`) 의 절차적 rasterizer — 폰트 독립 (#199 / #268).
+//! 탭바 컨트롤 아이콘 (`< > + × …`) 의 절차적 rasterizer — 폰트 독립
+//! (#199 / #268 / #329).
 //!
 //! 아이콘 모양을 정규화 [0,1]² 선분(segment)으로 **한 번** 정의하고, 8-bit 알파
 //! 커버리지 비트맵으로 rasterize 한다. 세 renderer (Linux software blit / macOS
@@ -12,7 +13,7 @@
 
 const std = @import("std");
 
-pub const Icon = enum { chevron_left, chevron_right, close, plus };
+pub const Icon = enum { chevron_left, chevron_right, chevron_up, chevron_down, close, plus, more };
 
 /// 정규화 좌표계 [0,1]² 의 선분. (0,0) = 좌상단, (1,1) = 우하단.
 const Seg = struct { x0: f32, y0: f32, x1: f32, y1: f32 };
@@ -31,6 +32,8 @@ const R: f32 = 0.42; // `+` 팔 / `×` 대각선 끝점의 중심 거리 (box �
 const D: f32 = R * 0.70710678; // `×` 대각선의 축 성분 (R/√2) — 끝점이 R 원 위
 const CW: f32 = 0.30; // chevron 반너비
 const CH: f32 = 0.34; // chevron 반높이 (폭 0.60 × 높이 0.68 — 살짝 세로 긴 꺾쇠)
+const MCW: f32 = 0.42; // menu chevron 반너비 — 납작하고 넓게 (#334 피드백)
+const MCH: f32 = 0.14; // menu chevron 반높이 (폭 0.84 × 높이 0.28)
 
 /// 아이콘별 선분 정의 (정규화 [0,1]², 중심 0.5). 두께는 rasterize 의 stroke.
 fn segsFor(icon: Icon) []const Seg {
@@ -50,6 +53,23 @@ fn segsFor(icon: Icon) []const Seg {
         .chevron_right => &[_]Seg{
             .{ .x0 = 0.5 - CW, .y0 = 0.5 - CH, .x1 = 0.5 + CW, .y1 = 0.5 },
             .{ .x0 = 0.5 + CW, .y0 = 0.5, .x1 = 0.5 - CW, .y1 = 0.5 + CH },
+        },
+        // #334 — command menu 의 스크롤 표시 (위/아래 더 있음). 메뉴 폭에
+        // 어울리게 납작하고 넓은 꺾쇠 (사용자 피드백 — 좁은 꺾쇠는 어색).
+        .chevron_up => &[_]Seg{
+            .{ .x0 = 0.5 - MCW, .y0 = 0.5 + MCH, .x1 = 0.5, .y1 = 0.5 - MCH },
+            .{ .x0 = 0.5, .y0 = 0.5 - MCH, .x1 = 0.5 + MCW, .y1 = 0.5 + MCH },
+        },
+        .chevron_down => &[_]Seg{
+            .{ .x0 = 0.5 - MCW, .y0 = 0.5 - MCH, .x1 = 0.5, .y1 = 0.5 + MCH },
+            .{ .x0 = 0.5, .y0 = 0.5 + MCH, .x1 = 0.5 + MCW, .y1 = 0.5 - MCH },
+        },
+        // 길이 0 선분은 distToSeg에서 둥근 점으로 rasterize된다. 세 점을 같은
+        // 중심선에 놓아 font glyph와 무관한 ellipsis를 만든다 (#329).
+        .more => &[_]Seg{
+            .{ .x0 = 0.20, .y0 = 0.5, .x1 = 0.20, .y1 = 0.5 },
+            .{ .x0 = 0.50, .y0 = 0.5, .x1 = 0.50, .y1 = 0.5 },
+            .{ .x0 = 0.80, .y0 = 0.5, .x1 = 0.80, .y1 = 0.5 },
         },
     };
 }
@@ -157,4 +177,28 @@ test "rasterize — stroke 최소 1px 보장 (size 커도 안 사라짐)" {
     var sum: u32 = 0;
     for (buf[0 .. size * size]) |v| sum += v;
     try std.testing.expect(sum > @as(u32, size) * 100);
+}
+
+test "#329 rasterize — ellipsis 세 점은 대칭이고 사라지지 않아야" {
+    var buf: [MAX_SIZE * MAX_SIZE]u8 = undefined;
+    const size: u32 = 20;
+    rasterize(.more, size, 2.0, &buf);
+
+    // 중심 행에서 coverage가 있는 연속 구간 수 = 점 세 개.
+    const y = size / 2;
+    var runs: u32 = 0;
+    var inside = false;
+    var x: u32 = 0;
+    while (x < size) : (x += 1) {
+        const filled = buf[y * size + x] > 0;
+        if (filled and !inside) runs += 1;
+        inside = filled;
+    }
+    try std.testing.expectEqual(@as(u32, 3), runs);
+
+    // 좌우 반사 대칭.
+    x = 0;
+    while (x < size) : (x += 1) {
+        try std.testing.expectEqual(buf[y * size + x], buf[y * size + (size - 1 - x)]);
+    }
 }
