@@ -6,7 +6,7 @@ const versioning = @import("build/version.zig");
 //   zig build                       -- 기본 빌드 (Debug, SIMD 비활성, #200)
 //   zig build -Doptimize=ReleaseFast -- 릴리즈 최적화 빌드
 //   zig build -Dsimd=true           -- SIMD 활성 (현재 Windows / Zig 0.15 에서 동작하지 않음)
-//   zig build package               -- Windows 릴리즈 zip + .sha256 생성 (자동 ReleaseFast)
+//   zig build package -Doptimize=ReleaseFast -- 릴리즈 package + SHA256 생성
 //   zig build check                 -- 6-target compile-only verify (#201)
 //
 pub fn build(b: *std.Build) void {
@@ -30,8 +30,8 @@ pub fn build(b: *std.Build) void {
     // #200 — default 가 ReleaseFast 면 runtime safety check 모두 비활성
     // (overflow / null deref / array bounds 등 silently 통과) → 개발 사이클의
     // 버그가 production 까지 새어 나감. Debug 가 default — 안전성 + 진단 가능성
-    // 우선. 빌드 시간 손해는 dev 경험에서 회복. 릴리즈 / packaging 은 명시
-    // `-Doptimize=ReleaseFast` (CI / `package` step / `dist/release.sh`).
+    // 우선. 빌드 시간 손해는 dev 경험에서 회복. 릴리즈는 GitHub Actions가
+    // `-Doptimize=ReleaseFast`를 명시한다.
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",

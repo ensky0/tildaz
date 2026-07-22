@@ -1,7 +1,7 @@
 name: Release
 
 # 트리거
-#   - 태그 푸시 (v*): dist/release.sh 가 tag + push 하면 자동 실행
+#   - 태그 푸시 (v*): 해당 태그를 checkout해 자동 실행
 #   - workflow_dispatch: 수동 재시도 / Actions 단독 실행. 태그 이름 입력 필수.
 on:
   push:
