@@ -26,10 +26,11 @@ if ! has_identity; then
 fi
 
 cd "$REPO_ROOT"
-echo "--- Build TildaZ (ReleaseFast, identity: $SIGN_IDENTITY) ---"
+echo "--- Build TildaZ (ReleaseFast + SIMD, identity: $SIGN_IDENTITY) ---"
 zig build \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
-    -Doptimize=ReleaseFast
+    -Doptimize=ReleaseFast \
+    -Dsimd=true
 
 echo "--- Install $INSTALL_PATH ---"
 mkdir -p "$(dirname "$INSTALL_PATH")"

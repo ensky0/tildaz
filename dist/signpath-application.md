@@ -106,8 +106,10 @@ Apple Silicon/Intel DMG on `macos-15`, and Windows AMD64/ARM64 packages on
 1. Validates the complete tag version matches `.version` in `build.zig.zon`.
 2. Validates `build.zig.zon` dependencies are pinned to 40-hex-digit commit
    SHAs (no rolling branch/tag URLs).
-3. Fetches dependencies (`zig build --fetch`).
-4. Builds ReleaseFast artifacts and packages them in the platform's supported
+3. Prefetches the top-level release dependency graph
+   (`zig build -Dsimd=true --fetch`).
+4. Builds ReleaseFast artifacts with SIMD enabled, resolving selected nested
+   lazy dependencies as needed, and packages them in the platform's supported
    formats.
 5. Creates or appends to the GitHub Release with each artifact and its SHA256
    sidecar. Stable releases use `dist/release-notes/v<ver>.md` as the release

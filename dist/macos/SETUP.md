@@ -15,7 +15,7 @@ keychain access dialog 의 password 가 로그인 password 와 어긋나 막힐 
 ## 옵션 A: ad-hoc (default, 항상 동작)
 
 ```bash
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=ReleaseFast -Dsimd=true
 ```
 
 `codesign --sign -` (ad-hoc) 으로 서명. 매 빌드마다 hash 변경 → macOS 가 새
@@ -60,7 +60,7 @@ security find-identity -v -p codesigning
 ### 3. 빌드
 
 ```bash
-zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast
+zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true
 ```
 
 처음 빌드 시 keychain access dialog 가 뜸. **macOS 로그인 password** 입력 +
@@ -79,7 +79,7 @@ F1 첫 누름에 macOS 권한 요구:
 - System Settings → Privacy & Security → Input Monitoring → tildaz ON
 - System Settings → Privacy & Security → Accessibility → tildaz ON
 
-이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast` 로 빌드 + 다시 실행해도
+이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true` 로 빌드 + 다시 실행해도
 **권한 유지** — signing identity stable. (codesign 창이나 권한 재요구가 다시
 나오면 [문제 해결](#문제-해결) 참고.)
 
@@ -229,7 +229,7 @@ passwordless `sudo`로 runner System Keychain의 code-signing trust에 임시 �
 공개 fingerprint를 검증해요. GitHub는 Linux/macOS hosted VM이 passwordless `sudo`로
 실행됨을 [공식 문서](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)에 명시해요. 로컬 실행에서는 기존 system trust만 읽고
 trust 설정을 바꾸지 않아요. 이어서
-`zig build package -Dmacos-sign-identity=TildazLocal`을 실행하면
+`zig build package -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true`를 실행하면
 `dist/macos/package.sh`가:
 
 1. `aarch64-macos` 빌드 (Apple Silicon)

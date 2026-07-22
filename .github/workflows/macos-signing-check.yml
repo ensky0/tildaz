@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in 1 2 3 4 5; do
-            if zig build --fetch; then
+            if zig build -Dsimd=true --fetch; then
               exit 0
             fi
             [[ $i -eq 5 ]] && exit 1
@@ -47,7 +47,7 @@ jobs:
         run: ./dist/macos/ci-signing.sh install
 
       - name: Build signed universal package
-        run: zig build package -Doptimize=ReleaseFast -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
+        run: zig build package -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
 
       - name: Verify signed package
         run: |

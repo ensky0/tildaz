@@ -2,15 +2,27 @@ const std = @import("std");
 const manifest = @import("build.zig.zon");
 const versioning = @import("build/version.zig");
 
+// Ghostty는 Windows target query의 ABI가 null이면 내부 target만 MSVC로
+// 바꾼다. TildaZ root는 Zig가 이미 resolve한 GNU ABI를 계속 써서 두 module의
+// ABI가 갈라지고, SIMD C++ source가 MSVC SDK header를 찾지 못한다 (#19).
+// result는 건드리지 않고 그 resolved ABI를 query에도 명시해 dependency 경계에서
+// 같은 target 의미를 보존한다. 명시적으로 요청한 ABI는 그대로 둔다.
+fn preserveResolvedWindowsAbi(target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    var explicit_target = target;
+    if (target.result.os.tag == .windows and target.query.abi == null) {
+        explicit_target.query.abi = target.result.abi;
+    }
+    return explicit_target;
+}
+
 // 빌드:
 //   zig build                       -- 기본 빌드 (Debug, SIMD 비활성, #200)
-//   zig build -Doptimize=ReleaseFast -- 릴리즈 최적화 빌드
-//   zig build -Dsimd=true           -- SIMD 활성 (현재 Windows / Zig 0.15 에서 동작하지 않음)
-//   zig build package -Doptimize=ReleaseFast -- 릴리즈 package + SHA256 생성
+//   zig build -Doptimize=ReleaseFast -Dsimd=true -- 릴리즈 최적화 + SIMD (#19)
+//   zig build package -Doptimize=ReleaseFast -Dsimd=true -- 릴리즈 package + SHA256
 //   zig build check                 -- 6-target compile-only verify (#201)
 //
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = preserveResolvedWindowsAbi(b.standardTargetOptions(.{}));
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
     const is_linux_target = target_os == .linux;
@@ -49,10 +61,12 @@ pub fn build(b: *std.Build) void {
     build_opts.addOption([]const u8, "version", app_version.full);
     exe_mod.addOptions("build_options", build_opts);
 
-    // SIMD: 현재 Windows 에서 동작하지 않습니다. Zig 0.15 빌드 시스템이 ghostty 의
-    // SIMD C++ 소스(highway, simdutf)에 C++ 표준 라이브러리 include path 를
-    // 전달하지 못하는 문제가 있어, upstream 수정 전까지 기본값을 false 로 둡니다.
-    const simd = b.option(bool, "simd", "SIMD 가속 활성화 (Windows / Zig 0.15 에서는 동작하지 않음)") orelse false;
+    // #19 — 현재 Ghostty pin + Zig 0.15.2에서 Linux · macOS · Windows native
+    // compile/link와 representative corpus 이득을 검증했다. 공식 ReleaseFast
+    // pipeline은 `-Dsimd=true`를 명시한다. 기본 false는 Debug 개발 빌드와
+    // 6-target cross-host check가 C++ toolchain/SDK까지 요구하지 않게 보존한다.
+    const simd = b.option(bool, "simd", "ghostty VT stream SIMD 가속 활성화 (default: false; official release callers pass true)") orelse false;
+    const simd_arg = if (simd) "true" else "false";
 
     // ghostty 의 build.zig 는 macOS 타겟이면 기본적으로 xcframework / macOS app
     // 까지 빌드하려고 들어서 (`Config.zig` 의 `emit_xcframework` / `emit_macos_app`
@@ -322,7 +336,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "macos-aarch64", .query = .{ .os_tag = .macos, .cpu_arch = .aarch64 } },
     };
     for (check_targets) |c| {
-        const check_target = b.resolveTargetQuery(c.query);
+        const check_target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query));
         const check_mod = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = check_target,
@@ -356,8 +370,8 @@ pub fn build(b: *std.Build) void {
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
-    //   zig build package -Doptimize=ReleaseFast                          → native Windows arch
-    //   zig build package -Dtarget=aarch64-windows -Doptimize=ReleaseFast → arm64
+    //   zig build package -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
+    //   zig build package -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + conpty.dll + OpenConsole.exe
     //     → PowerShell dist/windows/package.ps1 -Version <full-version>
     //        (세 PE header에서 x64/arm64를 판정하고 서로 일치하는지 검증)
@@ -393,6 +407,8 @@ pub fn build(b: *std.Build) void {
             app_version.full,
             "--sign-identity",
             macos_sign_identity,
+            "--simd",
+            simd_arg,
         });
         package_step.dependOn(&package_cmd.step);
     } else if (is_linux_target) {
