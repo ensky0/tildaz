@@ -3,8 +3,9 @@
 # Windows 기본 셸인 PowerShell 에서 바로 실행해요. 실제 빌드는 zig 가 담당하고,
 # 이 스크립트는 인자 파싱 + 캐시 디렉토리 관리 + clean 옵션 처리만 해요.
 #
-# zig 가 WSL UNC 경로 (\\wsl$\...) 를 source root 로 받을 때 Windows 로컬
-# 캐시가 있어야 속도가 나오므로 기본 캐시를 C:\ziglang\tildaz-cache 로 잡아요.
+# Windows 로컬 checkout에서 빌드 산출물과 dependency cache를 모두 native
+# filesystem에 두도록 기본 캐시를 C:\ziglang\tildaz-cache 로 잡아요.
+# WSL distro나 UNC source path는 필요하지 않아요.
 #
 # `zig build --fetch=all` 은 쓰지 않아요 — 폰트용 lazy 의존성
 # (ghostty → fontconfig → libxml2) 의 libxml2 tarball 이 Unix 심볼릭 링크

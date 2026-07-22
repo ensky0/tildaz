@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # (로컬 테스트 보조) 방금 빌드한 tildaz.exe / tildaz.pdb 를 외부 디렉토리로 복사.
 #
-# 개발자 로컬 검증 편의용 — 예를 들어 WSL UNC 경로 (\\wsl.localhost\...) 에서
-# 직접 실행하는 대신 Windows 로컬 디렉토리로 복사해 돌릴 때 사용해요.
-# 릴리즈 파이프라인과는 무관합니다 (릴리즈 zip 은 dist/windows/package.sh 가 담당).
+# 개발자 로컬 검증 편의용 — 방금 만든 실행 파일을 별도 Windows 로컬
+# 디렉토리로 복사해 실행할 때 사용해요. 릴리즈 파이프라인과는 무관합니다
+# (릴리즈 zip 은 dist/windows/package.ps1이 담당).
 #
 # 사용법:
 #   dist/windows/deploy.sh --dest C:/tildaz_win/zig-out/bin

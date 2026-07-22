@@ -356,30 +356,28 @@ pub fn build(b: *std.Build) void {
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
-    //   zig build package                              → x64 (기본)
-    //   zig build package -Dtarget=aarch64-windows     → arm64
+    //   zig build package -Doptimize=ReleaseFast                          → native Windows arch
+    //   zig build package -Dtarget=aarch64-windows -Doptimize=ReleaseFast → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + conpty.dll + OpenConsole.exe
-    //     → bash dist/windows/package.sh --version <full-version> --arch <x64|arm64>
+    //     → PowerShell dist/windows/package.ps1 -Version <full-version>
+    //        (세 PE header에서 x64/arm64를 판정하고 서로 일치하는지 검증)
     //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip
     //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip.sha256
     //
-    // bash 는 PATH 에서 해석돼요:
-    //   Windows - Git for Windows 의 C:\Program Files\Git\usr\bin\bash.exe
-    //   macOS / Linux - 시스템 기본 bash
+    // Windows package는 Windows PowerShell만 사용한다. WSL/Git Bash가 없는
+    // 기본 Windows 개발 환경에서도 같은 native 경로로 동작한다 (#332).
+    // macOS / Linux package만 각 host의 시스템 Bash를 사용한다.
     const package_step = b.step("package", "릴리즈 artifact + SHA256 sidecar 생성 (Windows zip / macOS dmg / Linux tar.gz·deb·rpm·AppImage)");
     if (is_windows_target) {
-        const arch_arg: []const u8 = switch (target.result.cpu.arch) {
-            .x86_64 => "x64",
-            .aarch64 => "arm64",
-            else => @panic("unsupported Windows arch for package step"),
-        };
         const package_cmd = b.addSystemCommand(&.{
-            "bash",
-            "dist/windows/package.sh",
-            "--version",
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "dist/windows/package.ps1",
+            "-Version",
             app_version.full,
-            "--arch",
-            arch_arg,
         });
         package_cmd.step.dependOn(b.getInstallStep());
         package_step.dependOn(&package_cmd.step);
