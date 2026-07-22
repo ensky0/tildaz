@@ -17,12 +17,13 @@
 #   - Input Monitoring + Accessibility 권한 한 번 부여
 #
 # 사용법:
-#   bash dist/macos/package.sh --version 0.6.2-dev.1
+#   bash dist/macos/package.sh --version 0.6.2-dev.1 --simd true
 #
 # 옵션:
 #   --version <ver>    필수. release 파일 이름에 사용.
 #   --sign-identity <id>  두 architecture와 최종 app의 codesign identity.
 #                         default `-` (ad-hoc).
+#   --simd <true|false>   두 architecture의 ghostty VT SIMD. default false.
 
 set -euo pipefail
 
@@ -31,11 +32,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 VERSION=""
 SIGN_IDENTITY="-"
+SIMD="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
         --sign-identity) SIGN_IDENTITY="$2"; shift 2 ;;
+        --simd)
+            [[ $# -ge 2 ]] || { echo "ERROR: --simd requires true or false" >&2; exit 2; }
+            SIMD="$2"
+            shift 2
+            ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \?//'
             exit 0
@@ -48,6 +55,10 @@ if [[ -z "$VERSION" ]]; then
     echo "ERROR: --version is required (e.g. --version 0.6.2-dev.1)" >&2
     exit 2
 fi
+case "$SIMD" in
+    true|false) ;;
+    *) echo "ERROR: --simd must be 'true' or 'false' (got '$SIMD')" >&2; exit 2 ;;
+esac
 
 # Xcode SDK path. cross-compile (host arch != target arch) 시 zig 가 system
 # library 자동 검색 안 해서 build.zig 가 -Dmacos-sdk= 로 받음.
@@ -73,6 +84,7 @@ rm -rf "$ARM_PREFIX"
 zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=ReleaseFast \
+    "-Dsimd=$SIMD" \
     -p "$ARM_PREFIX"
 
 echo "--- 2. Build x86_64-macos (Intel) ---"
@@ -80,6 +92,7 @@ rm -rf "$X86_PREFIX"
 zig build -Dtarget=x86_64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=ReleaseFast \
+    "-Dsimd=$SIMD" \
     -p "$X86_PREFIX"
 
 echo "--- 3. Universal binary via lipo ---"

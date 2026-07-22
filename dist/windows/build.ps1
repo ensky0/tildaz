@@ -15,7 +15,8 @@
 # 아예 안 받아요 (AGENTS.md "실행 환경" 참고).
 #
 # 사용법:
-#   dist\windows\build.ps1                      # 전체 빌드 (ReleaseFast)
+#   dist\windows\build.ps1                      # 전체 빌드 (ReleaseFast + SIMD)
+#   dist\windows\build.ps1 -NoSimd              # scalar 진단 빌드
 #   dist\windows\build.ps1 -Clean
 #   dist\windows\build.ps1 -Optimize Debug
 #   dist\windows\build.ps1 -CacheDir C:\tmp\zig-cache
@@ -28,7 +29,8 @@ param(
     [string]$Optimize = "ReleaseFast",
     [string]$CacheDir = "C:\ziglang\tildaz-cache",
     [switch]$Check,
-    [switch]$Test
+    [switch]$Test,
+    [switch]$NoSimd
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,8 +70,11 @@ if ($Check) {
     Write-Host "--- Pre-build zig-out\bin ---"
     if (Test-Path zig-out\bin) { Get-ChildItem zig-out\bin } else { Write-Host "(no zig-out\bin)" }
 
-    Write-Host "--- zig build -Doptimize=$Optimize ---"
-    Invoke-Zig @("-Doptimize=$Optimize")
+    # 공식 구성과 같은 ReleaseFast는 SIMD on. Debug 등 다른 mode와 -NoSimd
+    # 진단 빌드는 scalar를 유지한다 (#19).
+    $SimdValue = if ($Optimize -eq "ReleaseFast" -and -not $NoSimd) { "true" } else { "false" }
+    Write-Host "--- zig build -Doptimize=$Optimize -Dsimd=$SimdValue ---"
+    Invoke-Zig @("-Doptimize=$Optimize", "-Dsimd=$SimdValue")
 
     Write-Host "--- Post-build zig-out\bin ---"
     if (Test-Path zig-out\bin) {

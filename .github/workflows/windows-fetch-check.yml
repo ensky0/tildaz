@@ -37,4 +37,4 @@ jobs:
 
       - name: Fetch pinned dependencies (symlink unpack check)
         shell: bash
-        run: zig build --fetch
+        run: zig build -Dsimd=true --fetch
