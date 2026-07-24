@@ -49,6 +49,11 @@ pub fn showFatalRunError(err: anyerror) void {
         error.WaylandSocketUnavailable => {
             log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
         },
+        // #336 — bringUpInitialSurface 가 이미 showError(host overlay 또는 stderr
+        // fallback)로 안내했다. 여기선 log 만 — generic 본문을 다시 내면 그 안내를 가린다.
+        error.MainSurfaceUnmappable => {
+            log.appendLine("fatal", "run failed: main surface unmappable before first frame (#336)", .{});
+        },
         else => {
             var buf: [256]u8 = undefined;
             const text = messages.runFailureMessage(&buf, err);
