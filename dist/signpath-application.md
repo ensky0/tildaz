@@ -42,8 +42,10 @@ drop-down-first; TildaZ focuses on that interaction model.
 Design decisions of note for a security-review audience:
 - **Bundled OpenConsole / ConPTY**: TildaZ ships Microsoft's
   `Microsoft.Windows.Console.ConPTY` NuGet package (`OpenConsole.exe` +
-  `conpty.dll`) to stabilize behavior across Windows versions. It falls back to
-  the system `kernel32` ConPTY if the bundle is missing.
+  `conpty.dll`) to stabilize behavior across Windows versions. These are
+  bundled in an `_internal\` folder beside `tildaz.exe` and are required; if
+  either is missing, TildaZ shows an error dialog at startup and exits rather
+  than running against a different console host.
 - **Pseudoconsole spawning**: TildaZ creates child processes via ConPTY for the
   user's chosen shell (cmd.exe, PowerShell, wsl.exe, etc.). This is the same
   pattern used by Windows Terminal, WezTerm, Alacritty on Windows.

@@ -71,29 +71,15 @@ extern "kernel32" fn CreatePipe(
     nSize: DWORD,
 ) callconv(.c) BOOL;
 
-extern "kernel32" fn CreatePseudoConsole(
-    size: COORD,
-    hInput: HANDLE,
-    hOutput: HANDLE,
-    dwFlags: DWORD,
-    phPC: *HPCON,
-) callconv(.c) HRESULT;
-
-extern "kernel32" fn ResizePseudoConsole(
-    hPC: HPCON,
-    size: COORD,
-) callconv(.c) HRESULT;
-
-extern "kernel32" fn ClosePseudoConsole(
-    hPC: HPCON,
-) callconv(.c) void;
-
 extern "kernel32" fn LoadLibraryW(lpLibFileName: [*:0]const WCHAR) callconv(.c) ?*anyopaque;
 extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.c) ?*const anyopaque;
+extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]WCHAR, nSize: DWORD) callconv(.c) DWORD;
+extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const WCHAR) callconv(.c) DWORD;
+const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
 
 // conpty.dll (Microsoft.Windows.Console.ConPTY nupkg) 의 함수 포인터.
-// tildaz.exe 와 같은 폴더에 conpty.dll 이 있으면 LoadLibrary 로 해결되고,
-// 없으면 null 로 남아 kernel32 CreatePseudoConsole 로 자동 fallback.
+// tildaz.exe 옆 번들 `_internal\conpty.dll` 을 LoadLibrary 로 해결한다. 번들
+// 런타임은 필수 — 시작 시 hard-fail 로 검증하며 kernel32 fallback 은 없다 (#339).
 const ConptyCreateFn = *const fn (COORD, HANDLE, HANDLE, DWORD, *HPCON) callconv(.c) HRESULT;
 const ConptyResizeFn = *const fn (HPCON, COORD) callconv(.c) HRESULT;
 const ConptyCloseFn = *const fn (HPCON) callconv(.c) void;
@@ -105,12 +91,45 @@ var conpty_resize_fn: ?ConptyResizeFn = null;
 var conpty_close_fn: ?ConptyCloseFn = null;
 var conpty_show_hide_fn: ?ConptyShowHideFn = null;
 
+// `buf` 의 dir prefix (`dir_end` 까지) 뒤에 `_internal\...` suffix + NUL 을 써서
+// 절대경로를 만든다. 버퍼가 모자라면 null. 반환 슬라이스는 buf 를 가리키므로
+// 다음 호출이 덮어쓴다 (호출처가 즉시 사용).
+fn buildInternalPath(buf: *[512]WCHAR, dir_end: usize, comptime suffix_utf8: []const u8) ?[:0]const WCHAR {
+    const suffix = std.unicode.utf8ToUtf16LeStringLiteral(suffix_utf8);
+    if (dir_end + suffix.len + 1 > buf.len) return null; // suffix + NUL 공간 부족
+    @memcpy(buf[dir_end..][0..suffix.len], suffix);
+    buf[dir_end + suffix.len] = 0;
+    return buf[0 .. dir_end + suffix.len :0];
+}
+
+// tildaz.exe 옆 번들 `_internal\conpty.dll` 을 절대경로로 로드한다. 릴리즈 번들은
+// Microsoft 런타임 2개 (conpty.dll + OpenConsole.exe) 를 `_internal\` 하위에 숨겨
+// 최상위엔 tildaz.exe 만 보이게 하고, conpty.dll 이 sibling OpenConsole.exe 를
+// 스폰한다. 두 파일의 존재는 시작 시 bundledRuntimeFilesPresent() 가 hard-fail 로
+// 보장하므로 (#339) 여기선 conpty.dll 로드만 한다.
+//
+// bare name 대신 절대경로 로드라 CWD / PATH 에 심어진 가짜 conpty.dll 을 무는
+// DLL search-order hijacking 도 피한다.
+fn loadConptyFromInternal() ?*anyopaque {
+    var buf: [512]WCHAR = undefined;
+    const n = GetModuleFileNameW(null, &buf, buf.len);
+    if (n == 0 or n >= buf.len) return null; // 0 = 실패, ==len = 경로 잘림
+    // tildaz.exe 파일명을 지우고 마지막 경로 구분자 다음 = dir prefix 끝.
+    var dir_end: usize = n;
+    while (dir_end > 0) : (dir_end -= 1) {
+        if (buf[dir_end - 1] == '\\' or buf[dir_end - 1] == '/') break;
+    }
+    const dll = buildInternalPath(&buf, dir_end, "_internal\\conpty.dll") orelse return null;
+    return LoadLibraryW(dll.ptr);
+}
+
 fn ensureConptyDll() void {
     if (conpty_dll_loaded) return;
     conpty_dll_loaded = true;
-    const name = std.unicode.utf8ToUtf16LeStringLiteral("conpty.dll");
-    const mod = LoadLibraryW(name) orelse {
-        log.appendLine("conpty", "conpty.dll not found — falling back to kernel32", .{});
+    const mod = loadConptyFromInternal() orelse {
+        // 파일 존재는 시작 시 이미 hard-fail 검증됨 — 여기 도달 = 로드 자체 실패
+        // (손상 / arch mismatch 등). ConPty.init 이 create_fn null 을 에러로 처리.
+        log.appendLine("conpty", "bundled _internal\\conpty.dll could not be loaded", .{});
         return;
     };
     // ARM64 Windows 의 fn ptr alignment 가 4 (x64 는 1) — `GetProcAddress`
@@ -124,14 +143,34 @@ fn ensureConptyDll() void {
     // 활성화한다.
     conpty_show_hide_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyShowHidePseudoConsole")));
     if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null) {
-        log.appendLine("conpty", "conpty.dll loaded but symbols missing — falling back to kernel32", .{});
+        log.appendLine("conpty", "bundled conpty.dll loaded but required symbols missing", .{});
         conpty_create_fn = null;
         conpty_resize_fn = null;
         conpty_close_fn = null;
         conpty_show_hide_fn = null;
         return;
     }
-    log.appendLineVerbose("conpty", "conpty.dll loaded, using bundled OpenConsole", .{});
+    // 성공 로그는 두지 않는다 — fallback 이 없어 "앱이 돌아감 = 번들 사용" 이
+    // 자명하므로 (#339). 진단에 의미 있는 건 위의 실패 로그들뿐이다.
+}
+
+/// 번들 `_internal\` 런타임이 tildaz.exe 옆에 완전히 있는지 (conpty.dll +
+/// OpenConsole.exe 둘 다). Windows 는 이 둘이 필수라 host 가 시작 시 이 검사로
+/// hard-fail 한다 (#339). 파일이 확실히 없을 때만 false — exe 경로 판정 불가 등
+/// 불확실한 경우엔 시작을 막지 않도록 true 를 반환한다 (확신할 때만 차단).
+pub fn bundledRuntimeFilesPresent() bool {
+    var buf: [512]WCHAR = undefined;
+    const n = GetModuleFileNameW(null, &buf, buf.len);
+    if (n == 0 or n >= buf.len) return true; // 경로 판정 불가 → 차단 안 함
+    var dir_end: usize = n;
+    while (dir_end > 0) : (dir_end -= 1) {
+        if (buf[dir_end - 1] == '\\' or buf[dir_end - 1] == '/') break;
+    }
+    const dll = buildInternalPath(&buf, dir_end, "_internal\\conpty.dll") orelse return true;
+    if (GetFileAttributesW(dll.ptr) == INVALID_FILE_ATTRIBUTES) return false;
+    const oc = buildInternalPath(&buf, dir_end, "_internal\\OpenConsole.exe") orelse return true;
+    if (GetFileAttributesW(oc.ptr) == INVALID_FILE_ATTRIBUTES) return false;
+    return true;
 }
 
 extern "kernel32" fn InitializeProcThreadAttributeList(
@@ -330,23 +369,23 @@ pub const ConPty = struct {
         };
         errdefer _ = CloseHandle(read_event);
 
-        // ── Pseudo console
+        // ── Pseudo console (번들 _internal conpty.dll 필수 — kernel32 fallback 없음, #339)
         ensureConptyDll();
-        const create_fn = conpty_create_fn;
+        const create_fn = conpty_create_fn orelse {
+            // 파일 존재는 시작 시 bundledRuntimeFilesPresent() 가 hard-fail 로 이미
+            // 검증했다. 여기서 null 이면 파일은 있으나 conpty.dll 로드 / 심볼 해석
+            // 실패 (손상 / arch mismatch) — degrade 없이 에러.
+            _ = CloseHandle(pipe_in_read);
+            _ = CloseHandle(pipe_out_write);
+            return error.ConptyRuntimeUnavailable;
+        };
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
         var hpc: HPCON = undefined;
-        // 0x8 = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES (Win11). 미지원 시 0 으로 fallback.
-        var hr: HRESULT = if (create_fn) |f|
-            f(size, pipe_in_read, pipe_out_write, 0x8, &hpc)
-        else
-            CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0x8, &hpc);
+        // 0x8 = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES (Win11). 미지원 시 0 으로 재시도.
+        var hr: HRESULT = create_fn(size, pipe_in_read, pipe_out_write, 0x8, &hpc);
         if (hr < 0) {
-            hr = if (create_fn) |f|
-                f(size, pipe_in_read, pipe_out_write, 0, &hpc)
-            else
-                CreatePseudoConsole(size, pipe_in_read, pipe_out_write, 0, &hpc);
-            const backend: []const u8 = if (create_fn != null) "conpty.dll" else "kernel32";
-            log.appendLine("conpty", "CreatePseudoConsole flags=0x8 failed, retried with 0x0 (backend={s}, hr=0x{x})", .{ backend, @as(u32, @bitCast(hr)) });
+            hr = create_fn(size, pipe_in_read, pipe_out_write, 0, &hpc);
+            log.appendLine("conpty", "CreatePseudoConsole flags=0x8 failed, retried with 0x0 (hr=0x{x})", .{@as(u32, @bitCast(hr))});
         }
 
         // CreatePseudoConsole 는 handle 을 내부 duplicate — 우리 쪽 사본은 닫아야 한다.
@@ -354,9 +393,7 @@ pub const ConPty = struct {
         _ = CloseHandle(pipe_out_write);
 
         if (hr < 0) return error.CreatePseudoConsoleFailed;
-        errdefer {
-            if (conpty_close_fn) |f| f(hpc) else ClosePseudoConsole(hpc);
-        }
+        errdefer conpty_close_fn.?(hpc);
 
         // ── ShowHide: pseudo window 를 "visible" 로 마킹 (Windows Terminal 순서 복제)
         // microsoft/terminal `ConptyConnection::Start()` 가 CreateProcessW 전에
@@ -538,7 +575,7 @@ pub const ConPty = struct {
         // `_deviceAttributes` flag 만 확인하므로 query 전에 응답이 도착해도
         // 파서가 바이트를 소비하면서 flag 를 set → WaitUntilDA1 이 즉시 반환.
         // race-free. 최소 유효 응답: `\x1b[?61c` (VT500 conformance level).
-        if (create_fn != null) {
+        {
             const da1 = "\x1b[?61c";
             var da1_written: DWORD = 0;
             _ = WriteFile(pipe_in_write, da1.ptr, @intCast(da1.len), &da1_written, null);
@@ -561,7 +598,7 @@ pub const ConPty = struct {
     /// (`kill(-pid, SIGHUP)`) 로 자식 종료를 직접 trigger 해야 함.
     pub fn deinit(self: *ConPty) void {
         // ClosePseudoConsole 가 output pipe 를 끊어주므로 readLoop 가 빠져나옴
-        if (conpty_close_fn) |f| f(self.hpc) else ClosePseudoConsole(self.hpc);
+        conpty_close_fn.?(self.hpc);
 
         if (self.read_thread) |t| {
             t.join();
@@ -596,7 +633,7 @@ pub const ConPty = struct {
 
     pub fn resize(self: *ConPty, cols: u16, rows: u16) !void {
         const size = COORD{ .x = @intCast(cols), .y = @intCast(rows) };
-        const hr = if (conpty_resize_fn) |f| f(self.hpc, size) else ResizePseudoConsole(self.hpc, size);
+        const hr = conpty_resize_fn.?(self.hpc, size);
         if (hr < 0) return error.ResizeFailed;
     }
 
@@ -720,10 +757,15 @@ test "wslCdInsertion: wsl 판정 + 삽입 위치" {
     }
 }
 
-// Simple test: verify ConPTY can be created and destroyed
+// Simple test: verify ConPTY can be created and destroyed. 번들 _internal
+// 런타임이 필수라, 테스트 바이너리 옆에 `_internal\conpty.dll` 이 없는 CI / 로컬
+// 환경에서는 ConptyRuntimeUnavailable 로 skip 한다 (fallback 제거, #339).
 test "conpty create and destroy" {
     const shell = std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
-    var pty = try ConPty.init(std.testing.allocator, 80, 24, shell, null);
+    var pty = ConPty.init(std.testing.allocator, 80, 24, shell, null) catch |err| switch (err) {
+        error.ConptyRuntimeUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
     defer pty.deinit();
     try std.testing.expect(pty.isProcessAlive());
 }

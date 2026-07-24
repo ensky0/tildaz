@@ -28,9 +28,13 @@ if not exist "%SRC%\tildaz.exe" (
 echo --- Install to: %DEST% ---
 if not exist "%DEST%" mkdir "%DEST%"
 copy /Y "%SRC%\tildaz.exe" "%DEST%\tildaz.exe" >nul
-if exist "%SRC%\conpty.dll" copy /Y "%SRC%\conpty.dll" "%DEST%\conpty.dll" >nul
-if exist "%SRC%\OpenConsole.exe" copy /Y "%SRC%\OpenConsole.exe" "%DEST%\OpenConsole.exe" >nul
-echo Copied: tildaz.exe (+ conpty.dll / OpenConsole.exe)
+REM Microsoft ConPTY runtime lives in _internal\ (conpty.dll + OpenConsole.exe).
+if exist "%SRC%\_internal" (
+    if not exist "%DEST%\_internal" mkdir "%DEST%\_internal"
+    if exist "%SRC%\_internal\conpty.dll" copy /Y "%SRC%\_internal\conpty.dll" "%DEST%\_internal\conpty.dll" >nul
+    if exist "%SRC%\_internal\OpenConsole.exe" copy /Y "%SRC%\_internal\OpenConsole.exe" "%DEST%\_internal\OpenConsole.exe" >nul
+)
+echo Copied: tildaz.exe (+ _internal\conpty.dll / _internal\OpenConsole.exe)
 
 echo --- Create Start Menu shortcut ---
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%'); $s.TargetPath='%DEST%\tildaz.exe'; $s.WorkingDirectory='%DEST%'; $s.Save()"
