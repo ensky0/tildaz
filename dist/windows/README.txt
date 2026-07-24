@@ -19,15 +19,17 @@ Release notes and checksums:
 PACKAGE CONTENTS
 ================================================================
 
-    tildaz.exe        TildaZ application
-    conpty.dll        Bundled ConPTY runtime (Microsoft, MIT)
-    OpenConsole.exe   Bundled PTY host (Microsoft, MIT)
-    README.txt        This file
+    tildaz.exe            TildaZ application - run this
+    README.txt            This file
+    _internal\            Bundled Microsoft runtime (do not run)
+        conpty.dll        Bundled ConPTY runtime (Microsoft, MIT)
+        OpenConsole.exe   Bundled PTY host (Microsoft, MIT)
 
-Keep tildaz.exe, conpty.dll, and OpenConsole.exe in the same
-directory. TildaZ prefers the bundled runtime and falls back to
-the system ConPTY implementation if the two Microsoft files are
-missing.
+Run tildaz.exe. The _internal folder holds Microsoft's ConPTY
+runtime (conpty.dll + OpenConsole.exe) - you never launch anything
+inside it. Keep the _internal folder next to tildaz.exe: it is
+required. If it is missing, TildaZ shows an error at startup and
+exits, so re-extract or reinstall keeping _internal beside tildaz.exe.
 
 ================================================================
 CONFIG AND LOG

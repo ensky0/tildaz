@@ -286,6 +286,21 @@ pub const shell_examples_posix =
     \\  "/usr/bin/fish"
 ;
 
+/// #339 — Windows 전용. 번들 ConPTY 런타임(`_internal\conpty.dll` +
+/// `_internal\OpenConsole.exe`)은 필수다. 시작 시 하나라도 없으면 시스템 conhost
+/// 로 조용히 degrade 하지 않고 이 fatal 다이얼로그를 띄운 뒤 종료한다 (보통
+/// `_internal` 폴더가 tildaz.exe 옆에서 분리 / 삭제 / AV 격리된 신호).
+pub const conpty_missing_title = "TildaZ — Cannot Start";
+pub const conpty_missing_msg =
+    \\TildaZ is missing its bundled console runtime and cannot start.
+    \\
+    \\The "_internal" folder next to tildaz.exe must contain both conpty.dll and OpenConsole.exe, but one or both are missing.
+    \\
+    \\This usually means the "_internal" folder was separated from tildaz.exe (for example, only tildaz.exe was copied elsewhere), it was deleted, or security software quarantined it.
+    \\
+    \\Re-extract or reinstall TildaZ, keeping the "_internal" folder together with tildaz.exe.
+;
+
 pub const hotkey_registration_failed_title = "TildaZ — Hotkey Registration Failed";
 pub const hotkey_registration_failed_format =
     \\Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).

@@ -238,9 +238,11 @@ pub fn build(b: *std.Build) void {
 
     if (is_windows_target) {
         // 번들 ConPTY 런타임(Microsoft.Windows.Console.ConPTY).
-        // tildaz.exe 와 같은 폴더로 복사되어 conpty.dll 의 ConptyCreatePseudoConsole
-        // 이 sibling OpenConsole.exe 를 찾아 스폰합니다. 누락 시 src/conpty.zig 가
-        // kernel32 CreatePseudoConsole 로 fallback 합니다.
+        // tildaz.exe 옆 `_internal\` 하위로 복사되어 conpty.dll 의
+        // ConptyCreatePseudoConsole 이 sibling OpenConsole.exe 를 찾아 스폰합니다.
+        // 최상위엔 tildaz.exe 만 남겨 사용자가 실행할 파일 혼동을 막고,
+        // pty.zig 가 <exe dir>\_internal\conpty.dll 을 절대경로로 로드합니다.
+        // 두 파일은 필수 — 누락 시 시작 검사가 에러로 막습니다 (fallback 없음, #339).
         //
         // target arch 별 native binary 선택 — PE32+ x86_64 / ARM64 별도 (PE loader
         // 가 arch mismatch 시 STATUS_INVALID_IMAGE_FORMAT 로 거부).
@@ -251,8 +253,8 @@ pub fn build(b: *std.Build) void {
         };
         const conpty_dll_path = b.fmt("{s}/conpty.dll", .{conpty_arch_dir});
         const open_console_path = b.fmt("{s}/OpenConsole.exe", .{conpty_arch_dir});
-        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(conpty_dll_path), "conpty.dll").step);
-        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(open_console_path), "OpenConsole.exe").step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(conpty_dll_path), "_internal/conpty.dll").step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(open_console_path), "_internal/OpenConsole.exe").step);
     }
 
     // 실행 단계
@@ -372,7 +374,7 @@ pub fn build(b: *std.Build) void {
     //
     //   zig build package -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
     //   zig build package -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
-    //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + conpty.dll + OpenConsole.exe
+    //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + _internal/{conpty.dll,OpenConsole.exe}
     //     → PowerShell dist/windows/package.ps1 -Version <full-version>
     //        (세 PE header에서 x64/arm64를 판정하고 서로 일치하는지 검증)
     //        → zig-out/release/tildaz-v<ver>-win-<arch>.zip

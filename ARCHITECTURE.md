@@ -84,8 +84,9 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
 3. `window.zig` converts Win32 messages into `app_event.zig`.
 4. `app_controller.zig` applies events to tab/session/selection/rename state.
 5. `session_core.zig` drains PTY output through `libghostty-vt`.
-6. `terminal/windows/pty.zig` creates ConPTY, preferring bundled
-   `conpty.dll` / `OpenConsole.exe` and falling back to system ConPTY.
+6. `terminal/windows/pty.zig` creates ConPTY using the bundled
+   `_internal\conpty.dll` / `OpenConsole.exe`, which are required (startup
+   hard-fails with an error dialog if either is missing; no system fallback).
 7. `renderer/windows.zig` draws with DirectWrite glyph rasterization and a
    Direct3D 11 / HLSL atlas pipeline.
 
