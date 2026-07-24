@@ -4187,13 +4187,20 @@ const Client = struct {
         // 기존 non-rename 경로로 흘린다.
         if (sym_opt) |sym| {
             if (classifyInput(sym, ctrl, shift, alt)) |input| {
+                // #333 — paste 는 우클릭 / command menu 와 공통 semantic helper(requestPaste)
+                // 로 정책을 정확히 한 번 적용한다. generic resolve/switch 보다 먼저 분기해
+                // 이중 commit 을 막는다.
+                if (input == .paste) {
+                    self.requestPaste();
+                    return;
+                }
                 const disp = input_policy.resolve(input, .{
                     .rename_active = self.rename_state.isActive(),
                     .terminal_preedit_active = self.preedit_text.items.len > 0,
                 });
                 switch (disp.pending) {
                     .leave => {},
-                    // SPEC §4.1 — rename/preedit 을 현재 값으로 확정(단축키·paste 진입).
+                    // SPEC §4.1 — rename/preedit 을 현재 값으로 확정(단축키 진입).
                     .commit => self.commitPendingInput(),
                     // #282 A5 §5.1 — Ctrl+C: 터미널 preedit 자모 폐기(SIGINT line abort,
                     // fcitx5 IME state 도 다음 typing 에서 reset).
@@ -4211,17 +4218,13 @@ const Client = struct {
                         self.runShortcutForKey(sym, shift);
                         return;
                     },
-                    // paste → rename buffer(#285), 그 외(문자/편집키) → rename 편집.
+                    // rename 편집키(문자/편집키) → rename buffer. paste 는 위에서 처리.
                     .rename_buffer => {
-                        if (input == .paste) self.pasteFromClipboard() else try self.handleRenameKey(key);
+                        try self.handleRenameKey(key);
                         return;
                     },
-                    // .pty: paste 는 즉시(#282 A4/A2 — preedit 은 위 commit 이 이미 flush),
-                    // 나머지(interrupt \x03 / 문자 / 편집키 / nav)는 아래 escape / utf8 로.
-                    .pty => if (input == .paste) {
-                        self.pasteFromClipboard();
-                        return;
-                    },
+                    // interrupt \x03 / 문자 / 편집키 / nav 는 아래 escape / utf8 로. paste 는 위에서 처리.
+                    .pty => {},
                 }
             } else if (self.rename_state.isActive()) {
                 // rename 중 정책 미분류 키(Ctrl+A/E = home/end 등) → rename 편집.
@@ -4311,7 +4314,7 @@ const Client = struct {
             .new_tab => self.handleNewTab(),
             .close_active_tab => self.handleCloseTab(),
             .copy_selection => self.copyActiveSelection(),
-            .paste => self.pasteFromClipboard(),
+            .paste => self.requestPaste(),
             // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
             // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),
@@ -4622,8 +4625,8 @@ const Client = struct {
                 return;
             }
             // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /
-            // macOS 와 같은 정책. SPEC.md §3).
-            if (state == wl_pointer_button_state_pressed) self.pasteFromClipboard();
+            // macOS 와 같은 정책. SPEC.md §3). #333 — preedit/rename 정책은 requestPaste.
+            if (state == wl_pointer_button_state_pressed) self.requestPaste();
             return;
         }
         if (button != wl_pointer_button_left) return;
@@ -4933,6 +4936,20 @@ const Client = struct {
     /// 우클릭 paste — Windows / macOS 와 같은 패턴 ([SPEC.md §3 우클릭 paste]).
     /// 현재 paste_offer 가 utf8 광고했으면 pipe 만든 뒤 wl_data_offer.receive 로
     /// write end 를 송신측에 넘기고, read end 에서 끝까지 읽어 PTY 로 paste.
+    /// #333 — paste semantic entry. 우클릭(BTN_RIGHT) / keyboard / command menu 가
+    /// 공통으로 이걸 거쳐 input_policy.resolve(.paste)를 정확히 한 번 적용한다. terminal
+    /// preedit 이면 먼저 commit(자모 flush 로 '하'+'X' 순서 보존, #282 A2/A4), rename 이면
+    /// 유지(.leave). target(pty / rename_buffer)은 pasteFromClipboard → routePaste 가
+    /// rename 활성 여부로 자체 판단하므로 여기선 분기하지 않는다.
+    fn requestPaste(self: *Client) void {
+        const disp = input_policy.resolve(.paste, .{
+            .rename_active = self.rename_state.isActive(),
+            .terminal_preedit_active = self.preedit_text.items.len > 0,
+        });
+        if (disp.pending == .commit) self.commitPendingInput();
+        self.pasteFromClipboard();
+    }
+
     fn pasteFromClipboard(self: *Client) void {
         if (self.paste_offer_id == 0 or !self.paste_offer_has_utf8) return;
         const session = if (self.session) |*s| s else return;
