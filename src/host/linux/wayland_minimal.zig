@@ -967,6 +967,15 @@ const Client = struct {
     /// preferred_scale event 가 받는 numerator. denominator = 120.
     /// physical_px = logical_px × preferred_scale / 120.
     preferred_scale: u32 = fractional_scale_denominator,
+    /// #336 — preferred_scale event 를 한 번이라도 받았는지. layer-shell 의 첫
+    /// 실제 layout commit 을 scale 확정까지 보류하는 boot 대기(settleInitialLayout)
+    /// 의 종료 조건. 값이 안 바뀌는 100%(120→120) 케이스도 event 수신 자체로 확정
+    /// 처리하려고 applyScaleChange 의 값 비교와 별개로 event handler 가 set 한다.
+    preferred_scale_received: bool = false,
+    /// #336 — 첫 frame(map) 이전에 layer-surface 가 closed 된 신호. boot 표시
+    /// 경로가 이걸 보고 quit 이 아니라 destroy + 재생성(상한)으로 처리한다. map
+    /// 이후의 pending_quit_request(Alt+F4 / output re-home, #241)와 구분된다.
+    init_layer_closed: bool = false,
     // #244 — KDE Plasma direct KGlobalAccel용 D-Bus session bus client
     // (libdbus-1 dlopen). 연결 실패는 fatal 아님 — hotkey 없이 terminal 자체는
     // 정상이며 hidden_start는 즉시 표시로 fallback한다.
@@ -1328,9 +1337,7 @@ const Client = struct {
             log.appendLine("startup", "hidden_start — surface deferred until first hotkey toggle", .{});
             self.logBootElapsed("ready (hidden_start, awaiting first hotkey)");
         } else {
-            try self.createShellObjects();
-            self.logBootElapsed("createShellObjects");
-            try self.waitForConfigure();
+            try self.bringUpInitialSurface();
             self.logBootElapsed("first configure");
             try self.ensureSessionGrid();
             self.logBootElapsed("session+PTY");
@@ -1861,7 +1868,12 @@ const Client = struct {
         try msg.putString("tildaz");
         try msg.send(self.stream);
 
-        try self.sendLayerSurfaceLayout();
+        // #336 — 첫 commit 은 preferred_scale 확정 전이라 scale=1.0 로 물리 margin 을
+        // logical 로 오해할 수 있다(낮은 height_percent + fractional 이면 유효 높이
+        // 음수 → compositor 가 surface 를 closed). 그래서 여기선 scale 무관 항상 유효한
+        // 초기 안전 layout(4-edge span)만 commit 해 output 배정을 트리거하고, 실제 config
+        // layout 은 settleInitialLayout 이 preferred_scale 을 받은(또는 타임아웃) 뒤 보낸다.
+        try self.sendLayerSurfaceLayout(true);
     }
 
     /// layer-surface 의 set_anchor / set_size / set_exclusive_zone / set_margin
@@ -1874,14 +1886,20 @@ const Client = struct {
     /// no-op → physical 단위 그대로 송신 → KWin 이 logical 단위로 해석해 surface
     /// 가 over-scaled 됨. preferred_scale event handler 가 이 함수 재호출 하면
     /// 새 scale 로 정확히 변환된 layout 송신 + 두 번째 configure event 가 정확.
-    fn sendLayerSurfaceLayout(self: *Client) !void {
+    fn sendLayerSurfaceLayout(self: *Client, initial_safe: bool) !void {
         if (self.layer_surface_id == 0) return;
         const layout = self.computeLayerLayout();
         // #87 — fullscreen 이면 config layout 대신 output 전체로 override:
         // 4-edge anchor + size 0 (compositor 가 anchored span 채움) + margin 0.
         // exclusive_zone 은 아래에서 cover=-1 (패널 덮음) / avoid=0 (work-area).
+        //
+        // #336 — initial_safe: preferred_scale 확정 전 boot 첫 commit. scale 무관
+        // 항상 유효한 4-edge span + size 0 + margin 0 으로 output 배정만 트리거해
+        // compositor 가 preferred_scale 을 보내게 한다 (buffer attach 전이라 화면
+        // 안 보임). fullscreen 과 같은 span 배치라 같은 분기를 재사용 — exclusive_zone
+        // 은 아래에서 fs 로 별도 판정(.none → 0)하므로 초기 commit 은 work-area 존중.
         const fs = self.fullscreen_mode;
-        const fullscreen = fs != .none;
+        const fullscreen = fs != .none or initial_safe;
         const all_anchor: u32 = zwlr_layer_surface_anchor_top | zwlr_layer_surface_anchor_bottom | zwlr_layer_surface_anchor_left | zwlr_layer_surface_anchor_right;
         // #205 — set_layer 재송신 (kitty workaround pattern, `layer_set_properties`
         // 의 `during_creation=false` 분기). get_layer_surface 시 layer argument
@@ -2029,7 +2047,7 @@ const Client = struct {
         self.fullscreen_mode = next;
 
         if (self.layer_surface_id != 0) {
-            self.sendLayerSurfaceLayout() catch |err| {
+            self.sendLayerSurfaceLayout(false) catch |err| {
                 log.appendLine("wayland", "fullscreen relayout failed: {s}", .{@errorName(err)});
                 return;
             };
@@ -2205,7 +2223,10 @@ const Client = struct {
         // layer surface 재송신 + grid 재계산. layer 없으면(xdg/GNOME) skip —
         // configure 가 viewport/size 처리. boot 중 dialog 가 main 이전이면 main skip.
         if (self.layer_surface_id != 0) {
-            try self.sendLayerSurfaceLayout();
+            // boot 중 preferred_scale 도착이면 여기서 실제 layout 이 나간다. 뒤이어
+            // settleInitialLayout 도 한 번 더 보내지만 double-buffered commit 이라
+            // idempotent (#336).
+            try self.sendLayerSurfaceLayout(false);
         }
         if (self.session != null) try self.ensureSessionGrid();
         self.requestRedraw();
@@ -2356,14 +2377,90 @@ const Client = struct {
         }
         // 미mapped (첫 configure 전) / xdg 경로 — in-place 재계산으로 충분.
         if (scale_applied) return; // applyScaleChange 가 이미 전부 처리.
-        if (self.layer_surface_id != 0) try self.sendLayerSurfaceLayout();
+        if (self.layer_surface_id != 0) try self.sendLayerSurfaceLayout(false);
         if (self.session != null) try self.ensureSessionGrid();
         self.requestRedraw();
     }
 
+    /// #336 — 초기 안전 commit(createLayerSurface 의 4-edge span) 후 실제 config
+    /// layout 을 보내기 전에, compositor 의 preferred_scale 이 도착하길 최대 100ms
+    /// 대기한다. 이 대기가 없으면 첫 실제 layout 이 scale=1.0 로 계산돼 낮은
+    /// height_percent + fractional 환경에서 유효 높이가 음수가 되고 surface 가 closed 된다.
+    ///
+    /// wp_fractional_scale_manager_v1 미advertise 환경(GNOME xdg / non-fractional
+    /// wlroots)은 preferred_scale 이 default 120(1.0x, no-op 변환)으로 이미 정확하니
+    /// 대기 없이 즉시 실제 layout 을 보낸다. (KWin 은 layer role + 첫 commit 이후에야
+    /// preferred_scale 을 보내므로 "commit 없이 기다리기"는 불가 — 초기 안전 commit 이
+    /// output 배정을 먼저 트리거해야 한다.)
+    ///
+    /// 실측(#336 로그): preferred_scale 은 첫 commit 과 같은 ms 에 도착 — 실제 대기는
+    /// roundtrip 수 ms 수준이고 100ms 는 안전 상한. 상한 초과 시엔 현재 scale 로 실제
+    /// layout 을 보내고(fallback), map 전 closed 는 bringUpInitialSurface 가 destroy+재생성.
+    fn settleInitialLayout(self: *Client) !void {
+        if (self.layer_surface_id == 0) return; // xdg-shell(GNOME) 경로 — 무관.
+        if (self.fractional_scale_manager_id == 0) {
+            // fractional 미advertise — scale 확정 불필요, 즉시 실제 layout.
+            try self.sendLayerSurfaceLayout(false);
+            return;
+        }
+        // #336 — preferred_scale 도착은 실측 <0.14ms(첫 commit 과 사실상 동시 — KWin
+        // Plasma 6, 1.7x fractional 에서 7/7 회 28~137us)라 정상 boot 는 첫 poll 에서
+        // 즉시 확정된다. 상한은 event 가 아예 안 오는 극단에서만 걸리고 그땐 (b) 재생성
+        // 이 받는다. 실측 근거로 10ms(도착의 ~70배 여유). poll 도 2ms 로 짧게 — 상한이
+        // 기본 frame poll(16ms)보다 작아 극단에서 첫 poll 한 번이 상한을 넘겨버리지 않도록.
+        const settle_budget_ns: u64 = 10 * std.time.ns_per_ms;
+        const settle_poll_ms: i32 = 2;
+        var timer = try std.time.Timer.start();
+        while (!self.preferred_scale_received and !self.init_layer_closed and timer.read() < settle_budget_ns) {
+            try self.pollAndDispatch(settle_poll_ms);
+        }
+        if (self.init_layer_closed) return; // boot 루프가 destroy+재생성으로 처리.
+        if (!self.preferred_scale_received) {
+            log.appendLine("wayland", "preferred_scale not received within 10ms — layout at current scale={d}/120 (#336)", .{self.preferred_scale});
+        }
+        // 도착 케이스: applyScaleChange 가 이미 실제 layout 을 보냈을 수 있으나(값이
+        // 바뀐 경우), 120→120 no-op 이면 미송신이므로 여기서 보장 송신(idempotent).
+        try self.sendLayerSurfaceLayout(false);
+    }
+
     fn waitForConfigure(self: *Client) !void {
         while (!self.configured) {
+            // #336 — map 전 closed 는 boot 재시도 신호. quit(pending_quit_request)이
+            // 아니라 여기서 빠져나가 bringUpInitialSurface 가 destroy+재생성한다.
+            if (self.init_layer_closed) return error.InitLayerClosed;
             try self.readAndDispatch();
+        }
+    }
+
+    /// #336 — boot 첫 표시 시퀀스. createShellObjects 의 초기 안전 commit(4-edge
+    /// span) → preferred_scale 대기(settleInitialLayout) → 실제 config layout →
+    /// configure 를 한 세트로 돌린다. 첫 frame(map) 전에 layer-surface 가 closed
+    /// 되면(첫 실제 layout 이 잘못 나가 compositor 가 거부한 극단) quit 이 아니라
+    /// destroy + 재생성으로 재시도하고, 상한(3회)을 넘기면 정직하게 안내(showError,
+    /// host overlay 또는 stderr fallback) 후 실패를 반환한다. (a)가 정상 동작하면
+    /// 재시도 분기는 거의 타지 않는 순수 안전망이다.
+    fn bringUpInitialSurface(self: *Client) !void {
+        const max_attempts: u8 = 3;
+        var attempt: u8 = 0;
+        while (true) {
+            attempt += 1;
+            try self.createShellObjects();
+            self.logBootElapsed("createShellObjects");
+            try self.settleInitialLayout();
+            self.waitForConfigure() catch |err| switch (err) {
+                error.InitLayerClosed => {
+                    log.appendLine("input", "main layer-surface closed before first map (attempt {d}/{d}) — destroy + recreate, NOT quit (#336)", .{ attempt, max_attempts });
+                    try self.destroyShellObjects();
+                    self.init_layer_closed = false;
+                    if (attempt >= max_attempts) {
+                        dialog_mod.showError(messages.startup_layer_unmappable_title, messages.startup_layer_unmappable_msg);
+                        return error.MainSurfaceUnmappable;
+                    }
+                    continue;
+                },
+                else => return err,
+            };
+            return;
         }
     }
 
@@ -3031,6 +3128,10 @@ const Client = struct {
         if (matches_main or matches_dialog) {
             if (opcode == wp_fractional_scale_v1_event_preferred_scale and payload.len >= 4) {
                 const new_scale = readU32(payload[0..4]);
+                // #336 — main surface 의 preferred_scale 수신 표시. settleInitialLayout
+                // 의 대기 종료 조건 (값이 안 바뀌는 100%(120→120) 케이스도 event 수신
+                // 자체로 확정 처리 — applyScaleChange 의 값 비교와 무관).
+                if (matches_main) self.preferred_scale_received = true;
                 try self.applyScaleChange(new_scale, if (matches_dialog) "fractional/dialog" else "fractional/main");
             }
             return;
@@ -3195,6 +3296,16 @@ const Client = struct {
                 if (self.surface_hidden) {
                     log.appendLine("input", "main layer-surface closed while hidden (output gone) — destroy + recreate on next show, NOT quit (#241)", .{});
                     try self.destroyShellObjects();
+                    return;
+                }
+                // #336 — 아직 map(첫 frame) 전이면 이 closed 는 사용자 Alt+F4 가 아니라
+                // 첫 실제 layout 이 잘못 나가 compositor 가 거부한 것(fractional + 낮은
+                // height_percent). quit 이 아니라 boot 재시도 신호만 세운다 —
+                // waitForConfigure 가 error.InitLayerClosed 로 빠져 bringUpInitialSurface
+                // 가 destroy+재생성(상한)한다. map 이후 closed(아래)만 Alt+F4 / output re-home.
+                if (!self.mapped) {
+                    log.appendLine("input", "main layer-surface closed before first map — boot retry signal, NOT quit (#336)", .{});
+                    self.init_layer_closed = true;
                     return;
                 }
                 // #241 Fix B — visible 상태의 closed 는 즉시 판정하지 않는다.
@@ -5377,7 +5488,7 @@ const Client = struct {
     /// 다음 main loop redraw 가 active_buffer (유지된 것) 재 attach + commit.
     fn remapShellObjects(self: *Client) !void {
         if (self.layer_surface_id != 0) {
-            try self.sendLayerSurfaceLayout();
+            try self.sendLayerSurfaceLayout(false);
         } else if (self.surface_id != 0) {
             // xdg-shell fallback (mutter 등) — set_* 같은 toplevel state 송신
             // 필요. 일단 commit 만 — 충분한지 검증 필요 (현재 xdg-shell 환경

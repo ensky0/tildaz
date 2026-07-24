@@ -104,6 +104,9 @@ pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";
 pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
 pub const run_failed_fallback_msg = "TildaZ failed to start.";
+pub const startup_layer_unmappable_title = "TildaZ could not open its window";
+pub const startup_layer_unmappable_msg =
+    "The drop-down window could not be placed at the configured size on this display. Try increasing \"window.height_percent\" in the config, then start TildaZ again. If this continues, check the TildaZ log.";
 pub const request_endpoint_unavailable_msg =
     "TildaZ is running, but it cannot receive a request to create another instance. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const worker_exited_before_endpoint_ready_msg =
