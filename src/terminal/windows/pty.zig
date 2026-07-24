@@ -61,6 +61,7 @@ const LPPROC_THREAD_ATTRIBUTE_LIST = *anyopaque;
 const HPCON = *anyopaque;
 
 const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
+const STARTF_USESTDHANDLES: DWORD = 0x00000100;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 
 extern "kernel32" fn CreatePipe(
@@ -395,6 +396,14 @@ pub const ConPty = struct {
         var startup_info = std.mem.zeroes(STARTUPINFOEXW);
         startup_info.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
         startup_info.lpAttributeList = attr_list;
+        // STARTF_USESTDHANDLES + NULL std handle (zeroes) — 이 플래그가 없으면
+        // CreateProcess 가 부모(tildaz)의 비콘솔 std handle(리다이렉트된
+        // 파이프/파일)을 자식 셸에 복제한다. 그러면 셸의 콘솔은 pseudoconsole
+        // 인데 stdio 는 부모의 리다이렉트 대상을 가리켜, stdin 이 파이프면
+        // PowerShell/cmd 가 비대화형으로 판단해 EOF 즉시 종료한다 (#338).
+        // NULL std handle 로 시작한 콘솔 subsystem 자식은 자기 콘솔(=ConPTY)로
+        // stdio 를 바인딩한다 — Windows Terminal ConptyConnection 과 동일.
+        startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
 
         var process_info: PROCESS_INFORMATION = undefined;
 
