@@ -9,6 +9,7 @@ const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const shell_validate = @import("../shell_validate.zig");
 const terminal = @import("../terminal.zig");
+const windows_pty = @import("../terminal/windows/pty.zig");
 const themes = @import("../themes.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
@@ -70,6 +71,15 @@ pub fn run() !void {
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
     // 뒤 generic 에러로 끝남 — 사용자에게 어디 고쳐야 할지 안내 안 됨.
     shell_validate.validateOrFatal(alloc, config.shell);
+
+    // #339 — 번들 ConPTY 런타임(_internal\conpty.dll + OpenConsole.exe)은 Windows
+    // 필수다. 하나라도 없으면 시스템 conhost 로 조용히 느리게 도는 대신 시작 시
+    // 바로 fatal 로 막아 사용자가 설치를 고치게 한다 (압축 해제 후 _internal 분리 /
+    // 삭제 / AV 격리 등). showFatal 은 다이얼로그 표시 후 프로세스를 종료한다.
+    if (!windows_pty.bundledRuntimeFilesPresent()) {
+        log.appendLine("conpty", "bundled _internal runtime missing — cannot start", .{});
+        dialog.showFatal(messages.conpty_missing_title, messages.conpty_missing_msg);
+    }
 
     var app = App{
         .session = undefined,
@@ -168,6 +178,7 @@ pub fn run() !void {
         log.appendLine("startup", "show window", .{});
         app.window.show();
     }
+
     // #304 — HWND 생성만으로는 충분하지 않다. renderer와 첫 tab, 표시 정책을
     // 모두 적용한 뒤 message loop 진입 직전에 request endpoint를 ready로 공개한다.
     try instances.recordEndpointState(alloc, instance_context.requireWorkerIndex(), .ready);

@@ -1,8 +1,16 @@
 # tildaz Windows 릴리즈 번들 zip + SHA256 sidecar 생성.
 #
-# zig-out\bin의 tildaz.exe / conpty.dll / OpenConsole.exe와
-# dist\windows\README.txt만 flat zip으로 묶어요. Windows PowerShell 5.1의
-# Compress-Archive / Get-FileHash만 사용하므로 WSL과 Git Bash가 필요하지 않아요.
+# zip 레이아웃:
+#   tildaz.exe                  (최상위 — 사용자가 실행할 단 하나의 exe)
+#   README.txt
+#   _internal\conpty.dll
+#   _internal\OpenConsole.exe
+# Microsoft 런타임 2개는 _internal\ 하위로 숨겨 사용자가 tildaz.exe 만 실행하도록
+# 유도해요. conpty.dll 이 sibling OpenConsole.exe 를 찾으므로 둘은 같은 폴더에
+# 있어야 하고, tildaz.exe 는 <exe dir>\_internal\conpty.dll 을 절대경로로 로드해요.
+# 소스는 zig-out\bin (tildaz.exe) + zig-out\bin\_internal (런타임 2개)로, build.zig
+# install 단계가 같은 구조로 떨궈요. Windows PowerShell 5.1의 Compress-Archive /
+# Get-FileHash만 사용하므로 WSL과 Git Bash가 필요하지 않아요.
 #
 # 사용법:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File dist\windows\package.ps1 -Version 0.6.2
@@ -23,6 +31,7 @@ if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {
 
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $SourceBin = Join-Path $RepoRoot "zig-out\bin"
+$SourceInternal = Join-Path $SourceBin "_internal"
 $SourceReadme = Join-Path $PSScriptRoot "README.txt"
 $ReleaseRoot = Join-Path $RepoRoot "zig-out\release"
 
@@ -33,11 +42,19 @@ if (-not $ReleaseRootFull.StartsWith($RepoPrefix, [System.StringComparison]::Ord
     throw "Release path escaped the repository: $ReleaseRootFull"
 }
 
-$RequiredFiles = @("tildaz.exe", "conpty.dll", "OpenConsole.exe")
-foreach ($FileName in $RequiredFiles) {
+# 최상위 exe 와 _internal\ 하위 런타임을 나눠 검증. (PE arch 검사 대상이기도 함.)
+$RootFiles = @("tildaz.exe")
+$InternalFiles = @("conpty.dll", "OpenConsole.exe")
+foreach ($FileName in $RootFiles) {
     $Source = Join-Path $SourceBin $FileName
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
         throw "Missing artifact '$FileName' at $SourceBin. Run 'zig build' first."
+    }
+}
+foreach ($FileName in $InternalFiles) {
+    $Source = Join-Path $SourceInternal $FileName
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Missing artifact '_internal\$FileName' at $SourceInternal. Run 'zig build' first."
     }
 }
 if (-not (Test-Path -LiteralPath $SourceReadme -PathType Leaf)) {
@@ -81,14 +98,15 @@ function Get-PeArchitecture {
     }
 }
 
+$PeFiles = @(Join-Path $SourceBin "tildaz.exe")
+foreach ($FileName in $InternalFiles) { $PeFiles += (Join-Path $SourceInternal $FileName) }
 $Arch = $null
-foreach ($FileName in $RequiredFiles) {
-    $Source = Join-Path $SourceBin $FileName
+foreach ($Source in $PeFiles) {
     $FileArch = Get-PeArchitecture -Path $Source
     if ($null -eq $Arch) {
         $Arch = $FileArch
     } elseif ($FileArch -ne $Arch) {
-        throw "PE architecture mismatch: $FileName is $FileArch, expected $Arch"
+        throw "PE architecture mismatch: $Source is $FileArch, expected $Arch"
     }
 }
 Write-Host "--- Detected PE architecture: $Arch ---"
@@ -112,19 +130,28 @@ foreach ($Path in @($Stage, $Zip, $Sha256)) {
 New-Item -ItemType Directory -Path $Stage | Out-Null
 
 Write-Host "--- Staging to $Stage ---"
-$StagedFiles = @()
-foreach ($FileName in $RequiredFiles) {
-    $Destination = Join-Path $Stage $FileName
-    Copy-Item -LiteralPath (Join-Path $SourceBin $FileName) -Destination $Destination
-    $StagedFiles += $Destination
+$StageInternal = Join-Path $Stage "_internal"
+New-Item -ItemType Directory -Path $StageInternal | Out-Null
+
+foreach ($FileName in $RootFiles) {
+    Copy-Item -LiteralPath (Join-Path $SourceBin $FileName) -Destination (Join-Path $Stage $FileName)
 }
-$StagedReadme = Join-Path $Stage "README.txt"
-Copy-Item -LiteralPath $SourceReadme -Destination $StagedReadme
-$StagedFiles += $StagedReadme
+foreach ($FileName in $InternalFiles) {
+    Copy-Item -LiteralPath (Join-Path $SourceInternal $FileName) -Destination (Join-Path $StageInternal $FileName)
+}
+Copy-Item -LiteralPath $SourceReadme -Destination (Join-Path $Stage "README.txt")
 Get-ChildItem -LiteralPath $Stage | Format-Table Mode, Length, Name
+Get-ChildItem -LiteralPath $StageInternal | Format-Table Mode, Length, Name
 
 Write-Host "--- Creating $Zip ---"
-Compress-Archive -LiteralPath $StagedFiles -DestinationPath $Zip -CompressionLevel Optimal
+# 최상위 파일 + _internal 디렉터리를 -LiteralPath 로 넘겨요. Compress-Archive 는
+# 디렉터리를 재귀 포함하며 zip 안에 _internal\ 구조를 그대로 보존해요.
+$ArchiveInputs = @(
+    (Join-Path $Stage "tildaz.exe"),
+    (Join-Path $Stage "README.txt"),
+    $StageInternal
+)
+Compress-Archive -LiteralPath $ArchiveInputs -DestinationPath $Zip -CompressionLevel Optimal
 
 Write-Host "--- Creating $Sha256 ---"
 $Hash = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant()

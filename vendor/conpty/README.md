@@ -10,10 +10,13 @@ tildaz 는 시스템 `conhost.exe` (kernel32 `CreatePseudoConsole` 이 스폰) �
 VT 출력 시 flush 타이밍이 보수적이라 throughput 병목이 되는데, 번들 OpenConsole
 은 Windows Terminal 과 같은 최신 버전으로 동일 조건에서 2배 이상 빠릅니다.
 
-conpty.dll 의 `ConptyCreatePseudoConsole` export 가 자동으로 sibling 폴더의
-OpenConsole.exe 를 찾아 스폰하므로, tildaz.exe 옆에 두 파일만 함께 배포하면
-됩니다. 런타임에 `conpty.dll` 이 없으면 kernel32 의 시스템 conhost 로 자동
-fallback 합니다 (`src/conpty.zig` 참조).
+conpty.dll 의 `ConptyCreatePseudoConsole` export 가 자동으로 sibling (같은 폴더)
+의 OpenConsole.exe 를 찾아 스폰합니다. 릴리즈 번들은 이 두 파일을 tildaz.exe 옆
+`_internal\` 하위에 함께 두어 (build.zig install 단계) 최상위엔 tildaz.exe 만
+노출하고, tildaz.exe 가 `_internal\conpty.dll` 을 절대경로로 로드합니다
+(`src/terminal/windows/pty.zig`). 이 번들 런타임은 **필수**입니다 — `_internal\`
+에 두 파일이 다 있어야 하며, 하나라도 없으면 tildaz 가 시작 시 에러 다이얼로그를
+띄우고 종료합니다 (kernel32 시스템 conhost 로의 fallback 은 제거됨, #339).
 
 ## 출처 및 버전
 

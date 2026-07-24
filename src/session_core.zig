@@ -1242,7 +1242,12 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
         null,
     );
     defer session.deinit();
-    try session.createTab(80, 24);
+    // 번들 _internal 런타임이 테스트 바이너리 옆에 없으면 ConPty 를 못 만든다
+    // (fallback 제거, #339) — 그 환경에선 skip.
+    session.createTab(80, 24) catch |err| switch (err) {
+        error.ConptyRuntimeUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
     try session.createTab(80, 24);
     try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
     try std.testing.expectEqual(@as(usize, 0), session.tabAt(0).?.title_len);
@@ -1291,7 +1296,11 @@ test "Windows ConPTY without OSC shows default title after initial grace" {
         null,
     );
     defer session.deinit();
-    try session.createTab(80, 24);
+    // 번들 _internal 런타임이 없으면 skip (fallback 제거, #339).
+    session.createTab(80, 24) catch |err| switch (err) {
+        error.ConptyRuntimeUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
     try std.testing.expectEqual(@as(usize, 0), session.activeTab().?.title_len);
 
     var elapsed = try std.time.Timer.start();
