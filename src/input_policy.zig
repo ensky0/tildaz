@@ -71,6 +71,10 @@ pub const Pending = enum {
     /// 확정 — rename 이면 현재 값으로 탭 이름 확정, terminal preedit 이면 자모를
     /// PTY 로 flush (SPEC §4.1 모든 focus_loss = commit).
     commit,
+    /// IME preedit(조합 자모)만 sink(rename 활성 시 rename buf cursor 위치, 아니면
+    /// PTY)로 확정하고 rename 편집은 유지. rename 중 paste 가 native textbox 처럼
+    /// 조합을 먼저 확정한 뒤 payload 를 잇게 한다 (#340 — '하' 조합 + 'X' = '하X').
+    commit_preedit,
     /// 버림 — terminal preedit 자모를 폐기 (Ctrl+C = line abort, §5.1). best-effort:
     /// IME 가 preedit 을 남겨둔 경우만 실제로 폐기된다. Linux fcitx5 는 Ctrl+C 에서
     /// 자모를 먼저 확정해 preedit 이 비므로 이 분기가 안 타고 `가^C`(확정 후 SIGINT,
@@ -115,10 +119,12 @@ pub fn resolve(input: Input, state: State) Disposition {
             return .{ .pending = .commit, .target = .run_action };
         },
 
-        // paste: rename 중이면 commit 없이 rename buffer 로(#285), 아니면 터미널
-        // preedit 을 commit 한 뒤 PTY paste(자모 dangling 방지, #282 A4/A2).
+        // paste: 조합을 먼저 확정하고 payload 를 잇는다 — native textbox 동등(#340,
+        // '하' 조합 + 'X' paste = '하X'). rename 중이면 preedit 만 rename buf 로
+        // 확정(rename 은 유지)하고 payload 도 rename buf 로(#285 라우팅), 아니면
+        // 터미널 preedit 을 commit 한 뒤 PTY paste(자모 dangling 방지, #282 A4/A2).
         .paste => {
-            if (state.rename_active) return .{ .pending = .leave, .target = .rename_buffer };
+            if (state.rename_active) return .{ .pending = .commit_preedit, .target = .rename_buffer };
             return .{ .pending = .commit, .target = .pty };
         },
 
@@ -201,8 +207,8 @@ test "#282 A9 — rename 중 nav 키는 삼킴, 아니면 PTY" {
     try expectDisp(.nav_key, idle, .leave, .pty);
 }
 
-test "#285 — paste 는 rename 중 buffer, 아니면 preedit commit 후 PTY" {
-    try expectDisp(.paste, rename, .leave, .rename_buffer);
+test "#285/#340 — paste 는 rename 중 preedit 확정(rename 유지) 후 buffer, 아니면 preedit commit 후 PTY" {
+    try expectDisp(.paste, rename, .commit_preedit, .rename_buffer);
     try expectDisp(.paste, idle, .commit, .pty);
     try expectDisp(.paste, preedit, .commit, .pty);
 }

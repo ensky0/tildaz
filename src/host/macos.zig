@@ -708,8 +708,33 @@ fn applyShortcutInputPolicy(shortcut: input_policy.Shortcut) void {
             const cv = contentView_get(g_window, objc.sel("contentView"));
             if (cv != null) commitPendingInput(cv);
         },
-        // shortcut 정책에는 discard가 없다. Ctrl+C interrupt의 discard는
-        // tildazKeyDown의 별도 IME/SIGINT 순서가 담당한다.
+        // shortcut 정책에는 discard/commit_preedit 이 없다. Ctrl+C interrupt의
+        // discard는 tildazKeyDown의 별도 IME/SIGINT 순서가, commit_preedit(#340)은
+        // paste 전용으로 applyPasteInputPolicy 가 담당한다.
+        .discard, .commit_preedit => unreachable,
+    }
+}
+
+/// #340 — paste semantic entry 의 pending 정책 적용. Cmd+V / 우클릭 공통 —
+/// 예전엔 우클릭(tildazRightMouseDown)이 정책 없이 handlePaste 직행이라 터미널
+/// 조합 중 우클릭 paste 가 'X하' 순서가 될 수 있었다 (#333 의 macOS 형제).
+/// - terminal preedit(.commit): 전체 commit (rename 비활성이라 preedit → PTY flush)
+/// - rename 조합(.commit_preedit): preedit 만 rename buf 로 확정, rename 유지
+///   → payload 가 이어져 '하X' (native textbox 동등)
+fn applyPasteInputPolicy() void {
+    const disposition = input_policy.resolve(.paste, macInputState());
+    if (g_window == null) return;
+    const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const cv = contentView_get(g_window, objc.sel("contentView"));
+    if (cv == null) return;
+    switch (disposition.pending) {
+        .leave => {},
+        .commit => commitPendingInput(cv),
+        .commit_preedit => {
+            commitPreeditPreserving(cv);
+            requestRender();
+        },
+        // paste 정책에 discard 없음 (input_policy.resolve 참고).
         .discard => unreachable,
     }
 }
@@ -780,11 +805,11 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // commit 후 실행 (SPEC §4.1). 예전엔 여기서 무조건 commitPendingInput 이라
         // rename 중 Cmd+C 가 제목을 확정시켰음(Linux A2 와 같은 버그 — 정정).
         //
-        // #282 A3 — Cmd+V(paste): rename 이면 buffer 로(commit X), 아니면 preedit
-        // commit 후 PTY paste. handlePaste → routePaste 가 대상 분기.
+        // #282 A3 / #340 — Cmd+V(paste): 조합을 먼저 확정하고 payload 를 잇는다.
+        // pending 적용은 우클릭과 공통 helper(applyPasteInputPolicy) 한 곳.
+        // handlePaste → routePaste 가 대상(rename buffer / PTY) 분기.
         if (kc == 9) {
-            if (input_policy.resolve(.paste, macInputState()).pending == .commit)
-                commitPendingInput(self_view);
+            applyPasteInputPolicy();
             handlePaste();
             return;
         }
@@ -2714,6 +2739,8 @@ fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
         closeCommandMenu();
         return;
     }
+    // #340 — Cmd+V 와 같은 pending 정책 적용 (조합 확정 후 payload — '하X').
+    applyPasteInputPolicy();
     handlePaste();
 }
 
