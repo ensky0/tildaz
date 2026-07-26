@@ -462,7 +462,7 @@ Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모�
 | 탭 rename | Enter | preedit 자모 commit + rename commit | rename 종료 (변경 적용) | ✅ | ✅ | ✅ |
 | 탭 rename | Cmd / Ctrl+T·W·… 단축키, F1, Alt/Cmd+Enter, Alt+F4/Cmd+Q | preedit 결과를 rename buf에 반영 후 rename commit | 단축키 / hide / fullscreen / quit 동작 | ✅ | ✅ | ✅ |
 | 탭 rename | read-only copy / perf | preedit와 rename 유지 | 복사 / perf dump만 실행 | ✅ | ✅ | ✅ |
-| 탭 rename | paste (`X`) | preedit 유지 | rename buffer에 paste payload 전달 | ✅ | ✅ | ✅ |
+| 탭 rename | paste (`X`) | preedit 자모 → rename buf cursor 위치 insert (조합 확정, rename 은 유지 — [#340](https://github.com/ensky0/tildaz/issues/340)) | payload 를 그 뒤에 insert (`하X`) | ✅ | ✅ | ✅ |
 | 탭 rename | 마우스 click 다른 영역 | preedit + rename 모두 commit | click 동작 | ✅ | ✅ | ✅ |
 | terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
 | terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | ✅ — `processKeyEvent` 가 Ctrl+letter (Ctrl+C 제외) + preedit 시 `commitPendingInput` → PTY 자모 송신 + IME session reset. 그 다음 utf8 path 가 Ctrl byte 송신 |

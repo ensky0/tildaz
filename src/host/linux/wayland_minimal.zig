@@ -3429,7 +3429,11 @@ const Client = struct {
     /// 등 "지금 멈춰" 시점에 진행 중인 모든 입력 (cell preedit + rename buf
     /// + IME pending) 을 적절한 곳으로 **commit** (cancel 아님). Escape 만
     /// 명시적 cancel — macOS Cocoa quirk (#175) 동등 정책.
-    fn commitPendingInput(self: *Client) void {
+    /// #340 — IME preedit(조합 자모)만 sink 로 확정 + IME 상태 클리어. rename
+    /// 편집은 *유지* (macOS `commitPreeditPreserving` 대응).
+    /// - rename 활성: preedit 자모를 rename buf 의 cursor 위치로 insert
+    /// - rename 비활성: preedit 자모를 활성 탭 PTY 로 직송
+    fn commitPreeditPreserving(self: *Client) void {
         const had_preedit = self.preedit_text.items.len > 0 or self.pending_preedit.items.len > 0;
         // 1) Cell preedit (terminal IME 조합 중) — rename 활성 시 rename buf
         //    으로 자모 commit, 비활성 시 PTY 로 직접 송신.
@@ -3448,19 +3452,7 @@ const Client = struct {
         // 2) Wayland text-input pending (다음 done 안 온 batch) 도 cleanup.
         self.pending_preedit.clearRetainingCapacity();
         self.pending_commit.clearRetainingCapacity();
-        // 3) Rename 활성이면 buf 의 현재 값으로 setCustomTitle (commit).
-        if (self.rename_state.isActive()) {
-            if (self.session) |*session| {
-                if (self.rename_state.commitRequest()) |req| {
-                    const tabs = session.tabsSlice();
-                    if (req.tab_index < tabs.len) {
-                        tabs[req.tab_index].setCustomTitle(req.title);
-                    }
-                }
-            }
-            self.rename_state.clear();
-        }
-        // 4) 시연 사이클 발견: client 가 preedit 자모를 PTY 송신해도 fcitx5
+        // 3) 시연 사이클 발견: client 가 preedit 자모를 PTY 송신해도 fcitx5
         //    의 internal IME state 의 자모 buffer 는 그대로 남음 → 다음
         //    typing 시 *이전 자모 + 새 자모* 가 한 음절로 commit 됨 (사용자
         //    보고: 터미널 한글 후 탭바 한글 시 터미널 한글이 탭바에 다시 써짐).
@@ -3473,6 +3465,23 @@ const Client = struct {
             self.enableTextInput() catch {};
         }
         self.needs_redraw = true;
+    }
+
+    fn commitPendingInput(self: *Client) void {
+        self.commitPreeditPreserving();
+        // Rename 활성이면 buf 의 현재 값으로 setCustomTitle (commit).
+        if (self.rename_state.isActive()) {
+            if (self.session) |*session| {
+                if (self.rename_state.commitRequest()) |req| {
+                    const tabs = session.tabsSlice();
+                    if (req.tab_index < tabs.len) {
+                        tabs[req.tab_index].setCustomTitle(req.title);
+                    }
+                }
+            }
+            self.rename_state.clear();
+            self.needs_redraw = true;
+        }
     }
 
     /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
@@ -4202,6 +4211,9 @@ const Client = struct {
                     .leave => {},
                     // SPEC §4.1 — rename/preedit 을 현재 값으로 확정(단축키 진입).
                     .commit => self.commitPendingInput(),
+                    // commit_preedit 은 paste 전용(#340) — paste 는 위에서
+                    // requestPaste 로 분기해 이 switch 에 도달하지 않는다.
+                    .commit_preedit => unreachable,
                     // #282 A5 §5.1 — Ctrl+C: 터미널 preedit 자모 폐기(SIGINT line abort,
                     // fcitx5 IME state 도 다음 typing 에서 reset).
                     .discard => {
@@ -4946,7 +4958,16 @@ const Client = struct {
             .rename_active = self.rename_state.isActive(),
             .terminal_preedit_active = self.preedit_text.items.len > 0,
         });
-        if (disp.pending == .commit) self.commitPendingInput();
+        switch (disp.pending) {
+            .leave => {},
+            // terminal preedit — commit 후 PTY paste ('하X', #282 A4/A2).
+            .commit => self.commitPendingInput(),
+            // #340 — rename 조합 중: preedit 만 rename buf cursor 로 확정하고
+            // rename 은 유지. payload 가 이어져 rename buf 도 '하X'.
+            .commit_preedit => self.commitPreeditPreserving(),
+            // paste 정책에 discard 없음 (input_policy.resolve 참고).
+            .discard => unreachable,
+        }
         self.pasteFromClipboard();
     }
 
