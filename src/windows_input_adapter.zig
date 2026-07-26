@@ -50,6 +50,9 @@ pub fn resolve(input: input_policy.Input, snapshot: Snapshot) Resolution {
         .native_pending = switch (disposition.pending) {
             .leave => if (has_ime_preedit) .preserve_ime else .none,
             .commit => if (has_ime_preedit) .complete_ime else .none,
+            // #340 — 조합만 확정(complete 의 동기 GCS_RESULTSTR 가 rename buffer 로),
+            // rename 은 유지 (아래 commit_rename_after_ime 가 .commit 한정이라 false).
+            .commit_preedit => if (has_ime_preedit) .complete_ime else .none,
             .discard => if (has_ime_preedit) .cancel_ime else .none,
         },
         .commit_rename_after_ime = snapshot.rename_active and disposition.pending == .commit,
@@ -93,9 +96,13 @@ test "Windows adapter — read-only shortcut은 rename/preedit을 유지" {
     try expectResolution(.{ .shortcut = .copy_selection }, .{ .rename_active = true, .ime_preedit_len = 0, .ime_result_deferred = true }, .leave, .run_action, .preserve_ime, false);
 }
 
-test "Windows adapter — paste는 terminal complete, rename leave" {
+test "Windows adapter — paste는 terminal/rename 모두 IMM complete, rename은 유지(#340)" {
     try expectResolution(.paste, .{ .rename_active = false, .ime_preedit_len = 3 }, .commit, .pty, .complete_ime, false);
-    try expectResolution(.paste, .{ .rename_active = true, .ime_preedit_len = 3 }, .leave, .rename_buffer, .preserve_ime, false);
+    // rename 조합 중 paste: complete 로 '하'를 rename buffer 에 먼저 확정하되
+    // rename commit(제목 확정)은 하지 않는다 — payload 가 이어져 '하X'.
+    try expectResolution(.paste, .{ .rename_active = true, .ime_preedit_len = 3 }, .commit_preedit, .rename_buffer, .complete_ime, false);
+    // 보류된 GCS_RESULTSTR(deferred result)도 같은 confirm 대상이다.
+    try expectResolution(.paste, .{ .rename_active = true, .ime_preedit_len = 0, .ime_result_deferred = true }, .commit_preedit, .rename_buffer, .complete_ime, false);
 }
 
 test "Windows adapter — Ctrl+C는 terminal cancel, rename drop" {
