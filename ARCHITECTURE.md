@@ -17,7 +17,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Instance coordinator | Yes with OS request adapters | `src/main.zig`, `src/instances.zig`, `src/new_instance.zig`, `src/instance_request/*` | Numbered config discovery, worker locks/spawn, two-stage instance creation |
 | Window controller | Mostly Windows | `src/window.zig`, `src/app_controller.zig`, `src/app_event.zig` | Win32 message dispatch and app-level event routing |
 | Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues |
-| Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig` | Tab switching, close paths, rename, drag, hit testing |
+| Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig` | Tab switching, close paths, drag, hit testing |
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
 | Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, `_` comment keys, current `config_N.json` / `tildaz_N.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
@@ -82,7 +82,7 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
 2. A manual launcher owns the request mutex across the synchronous worker-0
    new-instance handler, coalescing concurrent launches without a time heuristic.
 3. `window.zig` converts Win32 messages into `app_event.zig`.
-4. `app_controller.zig` applies events to tab/session/selection/rename state.
+4. `app_controller.zig` applies events to tab/session/selection state.
 5. `session_core.zig` drains PTY output through `libghostty-vt`.
 6. `terminal/windows/pty.zig` creates ConPTY using the bundled
    `_internal\conpty.dll` / `OpenConsole.exe`, which are required (startup
@@ -103,7 +103,7 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    atlas. `renderTabBar` starts the frame; `renderTerminal` presents it.
 5. `host/macos.zig` implements `NSTextInputClient` for Korean / Japanese /
    Chinese IME pre-edit and reconversion. Since v0.4.3, committed-text Hanja /
-   kanji reconversion works for the active terminal row and tab rename.
+   kanji reconversion works for the active terminal row.
 
 ## Linux Pipeline
 
@@ -148,7 +148,7 @@ rasterization because they already understand each platform's font fallback,
 emoji, CJK, and antialiasing behavior. TildaZ caches glyphs in GPU atlases.
 
 **Shared policy, native interaction.** User-visible policy is shared where it
-matters: tab lifecycle, rename commit/cancel semantics, IME pre-edit display,
+matters: tab lifecycle, IME pre-edit display,
 selection behavior, config schema, dialogs, and child shell environment. OS
 conventions remain native: Windows uses Ctrl/Alt patterns; macOS uses Cmd/Shift
 Cmd patterns and AppKit input callbacks.

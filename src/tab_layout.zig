@@ -292,271 +292,59 @@ test "#329 control layout never produces negative coordinates in a narrow viewpo
     try std.testing.expect(controls.more_x >= 0);
 }
 
-/// rename / IME preedit 의 cross-platform 산술 — mac/win 양쪽 renderer 와 host
-/// 가 동일 호출. 한 곳 (helper) 변경 시 양쪽 자동 반영. (#163 통합 옵션 A)
-/// preedit text 의 codepoint 별 advance 합 — wide char (CJK) 자모 = 2 cell.
-pub fn computeAdvanceTotal(preedit_text: []const u8, cw: f32) f32 {
-    var total: f32 = 0;
-    var iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
-    while (iter.nextCodepoint()) |cp| {
-        const cells = display_width.codepointWidth(@intCast(cp));
-        total += cw * @as(f32, @floatFromInt(cells));
-    }
-    return total;
-}
-
-/// cursor 우측 reserve (1 cell). preedit 폭은 cursorScrollOffset이 별도로 더한다.
-/// preedit 활성/비활성 무관 고정 — transition jump 없음 (한글 typing 빠를 때
-/// cursor 안정).
-pub fn cursorReserve(cw: f32) f32 {
-    return cw;
-}
-
-pub const RenameCursorVertical = struct {
-    y: f32,
-    height: f32,
-};
-
-/// Rename cursor의 text cell 안 세로 경계. 입력과 결과는 renderer가 사용하는
-/// physical pixel 좌표다. 위·아래 2px inset을 같은 계산에서 만들어 한쪽만
-/// 빠지는 회귀를 막는다 (#315).
-pub fn renameCursorVertical(cell_top: f32, cell_height: f32) RenameCursorVertical {
-    const inset_px: f32 = 2;
-    return .{
-        .y = cell_top + inset_px,
-        .height = cell_height - inset_px * 2,
-    };
-}
-
-/// rename text 의 cursor follow scroll — native textbox 패턴 (#168). cursor 가
-/// 현재 viewport [0, max-reserve] 안이면 prev_offset 유지. 우측 out 시 우측
-/// align (cursor + preedit 끝이 max-reserve 에 pin), 좌측 out 시 좌측 align
-/// (cursor 가 0). cached state — caller 가 매 frame 새 값 받아 RenameState
-/// 에 write back.
-pub fn cursorScrollOffset(
-    title: []const u8,
-    cursor_byte: usize,
-    cw: f32,
-    max_text_w: f32,
-    preedit_advance_total: f32,
-    prev_offset: f32,
-) f32 {
-    var cursor_x: f32 = 0;
-    var probe_iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
-    var probe_byte: usize = 0;
-    while (probe_iter.nextCodepoint()) |pcp| {
-        if (probe_byte >= cursor_byte) break;
-        const pcw = display_width.codepointWidth(@intCast(pcp));
-        cursor_x += cw * @as(f32, @floatFromInt(pcw));
-        const plen = std.unicode.utf8CodepointSequenceLength(pcp) catch 1;
-        probe_byte += plen;
-    }
-    const reserve = cursorReserve(cw);
-    const right_limit = max_text_w - reserve;
-    const cursor_visual = cursor_x - prev_offset;
-    const preedit_end_visual = cursor_visual + preedit_advance_total;
-
-    // cursor + preedit 우측 out → 우측 align.
-    if (preedit_end_visual > right_limit) {
-        return cursor_x + preedit_advance_total - right_limit;
-    }
-    // cursor 좌측 out → 좌측 align (cursor visual = 0).
-    if (cursor_visual < 0) {
-        return cursor_x;
-    }
-    return prev_offset;
-}
-
-/// 탭바 title text 의 codepoint 별 layout 명령. iterTabText 가 codepoint 별로
-/// 호출자의 callback 에 emit. 호출자가 platform native 그리기 (mac
-/// CoreText/Metal, win DirectWrite/D3D11 — atlas / instance buffer / glyph y
-/// 좌표 계산 등) 처리. (#163 옵션 A 확장)
-pub const TextCmd = union(enum) {
-    /// title codepoint 또는 synthetic truncation ellipsis (viewport 안).
-    /// 호출자가 atlas resolve + glyph instance.
-    glyph: struct { cp: u21, x: f32, advance: f32 },
-    /// rename cursor 1 px vertical bar.
-    cursor: struct { x: f32 },
-    /// preedit cell BG (보라). cursor 뒤 inline.
-    preedit_bg: struct { x: f32, advance: f32 },
-    /// preedit cell glyph. preedit_bg 와 동일 위치.
-    preedit_glyph: struct { cp: u21, x: f32, advance: f32 },
-};
-
 const truncate_ellipsis_cp: u21 = '…';
 
+/// 탭바 title text 의 glyph layout — codepoint 별 cb 호출. iterTabText 가
+/// emit 하고 호출자가 platform native 그리기 (mac CoreText/Metal, win
+/// DirectWrite/D3D11, Linux software — atlas / instance buffer / glyph y 좌표
+/// 계산 등) 처리. (#163 옵션 A)
+pub const Glyph = struct { cp: u21, x: f32, advance: f32 };
+
 /// 탭바 title text 의 cross-platform layout iter — codepoint 별 cb 호출.
-/// cursor follow scroll / preedit push-right (cursor 뒤 main text 우측 이동) /
-/// truncate ellipsis / max 잘림 모두 처리. mac/win 양쪽이 같은 helper 호출 →
-/// 같은 fix 양쪽 자동 반영 (#159 / #163 / #164 패턴 확장).
+/// truncate ellipsis / max 잘림 처리. 세 platform 이 같은 helper 호출 →
+/// 같은 fix 전부 자동 반영 (#159 / #163 패턴).
 ///
 /// 인자:
-///   title: rename buf (rename 활성) 또는 tab title
-///   cursor_byte: rename 활성 시 cursor 위치 (null = rename 비활성)
-///   preedit_text: IME preedit (rename 활성 시 cursor 옆 inline)
+///   title: tab title
 ///   text_x_start: 탭 내 text 시작 x — 화면 절대 좌표 (`tab_x + tab_pad`)
 ///   cw: cell width (DPI scaled)
 ///   max_text_w: text 영역 너비 (`tab_w - close_w - 3*pad` 등)
-///   is_renaming: 이 탭이 rename 활성 여부
-///   needs_truncate: commit 후 (rename 비활성) + total > max → ellipsis
+///   needs_truncate: total > max → ellipsis
 ///   ctx: callback 의 사용자 context (anytype — closure 대용)
-///   cb: comptime callback. 매 cmd 마다 호출. zero-overhead inline.
+///   cb: comptime callback. 매 glyph 마다 호출. zero-overhead inline.
 pub fn iterTabText(
     title: []const u8,
-    cursor_byte: ?usize,
-    preedit_text: []const u8,
     text_x_start: f32,
     cw: f32,
     max_text_w: f32,
-    is_renaming: bool,
     needs_truncate: bool,
-    /// rename 활성 시 RenameState.scroll_offset 의 ptr (helper 가 갱신).
-    /// rename 비활성 시 null.
-    rename_scroll_offset_inout: ?*f32,
     ctx: anytype,
-    comptime cb: fn (@TypeOf(ctx), TextCmd) void,
+    comptime cb: fn (@TypeOf(ctx), Glyph) void,
 ) void {
-    const reserve = cursorReserve(cw);
     const ellipsis_cells = display_width.codepointWidth(truncate_ellipsis_cp);
     const ellipsis_w = cw * @as(f32, @floatFromInt(ellipsis_cells));
     const truncate_at = if (needs_truncate) max_text_w - ellipsis_w else max_text_w;
-    const preedit_advance = if (is_renaming) computeAdvanceTotal(preedit_text, cw) else 0;
 
-    const scroll_offset: f32 = blk: {
-        if (is_renaming and cursor_byte != null and rename_scroll_offset_inout != null) {
-            const new_offset = cursorScrollOffset(
-                title,
-                cursor_byte.?,
-                cw,
-                max_text_w,
-                preedit_advance,
-                rename_scroll_offset_inout.?.*,
-            );
-            rename_scroll_offset_inout.?.* = new_offset;
-            break :blk new_offset;
-        }
-        break :blk 0;
-    };
-
-    var text_x = text_x_start - scroll_offset;
-    var byte_idx: usize = 0;
-    var cursor_drawn = false;
-    var cursor_x: f32 = text_x;
-    var truncated = false;
-
+    var text_x = text_x_start;
     var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
     while (iter.nextCodepoint()) |cp| {
         const cp_w_cells = display_width.codepointWidth(@intCast(cp));
         const advance = cw * @as(f32, @floatFromInt(cp_w_cells));
-        const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
 
-        // truncate threshold (rename 비활성, long text)
+        // truncate threshold (long text)
         if (text_x - text_x_start + advance > truncate_at) {
             if (needs_truncate) {
-                cb(ctx, .{ .glyph = .{
+                cb(ctx, .{
                     .cp = truncate_ellipsis_cp,
                     .x = text_x,
                     .advance = ellipsis_w,
-                } });
+                });
             }
-            truncated = true;
             break;
         }
-        // rename 중 close 와 reserve 간격 보장 — max - reserve 도달 시 잘림
-        if (is_renaming and text_x - text_x_start + advance > max_text_w - reserve) break;
-
-        // cursor mid (byte_idx 가 cursor_byte 도달)
-        if (cursor_byte) |cb_pos| {
-            if (byte_idx == cb_pos and !cursor_drawn) {
-                cursor_x = text_x;
-                if (text_x >= text_x_start) cb(ctx, .{ .cursor = .{ .x = text_x } });
-                cursor_drawn = true;
-                // cursor 통과 — main text 의 cursor 뒤 글자를 preedit advance 만큼 우측 이동.
-                text_x += preedit_advance;
-            }
-        }
-        byte_idx += cp_len;
-
-        // viewport 좌측 잘림 — advance 만 누적, glyph X
-        if (text_x < text_x_start) {
-            text_x += advance;
-            continue;
-        }
-        cb(ctx, .{ .glyph = .{ .cp = @intCast(cp), .x = text_x, .advance = advance } });
+        cb(ctx, .{ .cp = @intCast(cp), .x = text_x, .advance = advance });
         text_x += advance;
     }
-
-    // cursor at end (cursor_byte == title.len). truncated 면 X.
-    if (is_renaming and !cursor_drawn and !truncated) {
-        if (cursor_byte) |cb_pos| if (cb_pos >= title.len) {
-            cursor_x = text_x;
-            if (text_x >= text_x_start) cb(ctx, .{ .cursor = .{ .x = text_x } });
-        };
-    }
-
-    // preedit overlay — cursor_x 부터 codepoint 별 보라 BG + glyph.
-    if (is_renaming and preedit_text.len > 0) {
-        var pre_x = cursor_x;
-        var pre_iter = std.unicode.Utf8Iterator{ .bytes = preedit_text, .i = 0 };
-        while (pre_iter.nextCodepoint()) |pcp| {
-            const pcells = display_width.codepointWidth(@intCast(pcp));
-            const padv = cw * @as(f32, @floatFromInt(pcells));
-            // close 영역까지만 (preedit 길어지면 close 까지 — textbox 일반).
-            if (pre_x + padv > text_x_start + max_text_w) break;
-            if (pre_x < text_x_start) {
-                pre_x += padv;
-                continue;
-            }
-            cb(ctx, .{ .preedit_bg = .{ .x = pre_x, .advance = padv } });
-            cb(ctx, .{ .preedit_glyph = .{ .cp = @intCast(pcp), .x = pre_x, .advance = padv } });
-            pre_x += padv;
-        }
-    }
-}
-
-/// rename text 영역 안 마우스 위치 → text 안 byte index. cursor follow scroll
-/// 결과 좌측 잘림 영역도 처리. mouse_x 가 viewport 밖이면 null. native textbox
-/// UX — caller 가 RenameState.setCursor 호출 후 commit 안 함 (#164 follow-up).
-///
-/// 인자:
-///   - title: 현재 rename buffer text
-///   - scroll_offset: RenameState.scroll_offset (#168 cached state — render 와
-///     동일 시점 값 사용 → click 위치 visual 일치)
-///   - text_x_start: 탭 내 text 시작 x — 화면 좌표 (`tab_x + tab_pad`)
-///   - cw: cell width
-///   - max_text_w: text 영역 너비 (`tab_w - close_w - 3*pad` 등 host 별 동등)
-///   - mouse_x: 마우스 x (탭바 좌표)
-///
-/// 반환: byte index (mouse 가 codepoint 의 우반에 있으면 그 codepoint 끝, 좌반
-/// 이면 시작). title 끝 이후면 title.len. mouse_x 가 영역 밖이면 null.
-pub fn renameTextHit(
-    title: []const u8,
-    scroll_offset: f32,
-    text_x_start: f32,
-    cw: f32,
-    max_text_w: f32,
-    mouse_x: f32,
-) ?usize {
-    if (mouse_x < text_x_start or mouse_x >= text_x_start + max_text_w) return null;
-
-    // mouse_x → text 안 byte 매핑.
-    const target_x = mouse_x - text_x_start;
-    var x_off: f32 = -scroll_offset;
-    var byte_idx: usize = 0;
-    var iter = std.unicode.Utf8Iterator{ .bytes = title, .i = 0 };
-    while (iter.nextCodepoint()) |cp| {
-        const cp_w_cells = display_width.codepointWidth(@intCast(cp));
-        const advance = cw * @as(f32, @floatFromInt(cp_w_cells));
-        const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-        if (target_x >= x_off and target_x < x_off + advance) {
-            // mouse 가 codepoint 우반 → 그 codepoint 끝, 좌반 → 시작.
-            if (target_x - x_off < advance / 2) return byte_idx;
-            return byte_idx + cp_len;
-        }
-        byte_idx += cp_len;
-        x_off += advance;
-    }
-    return byte_idx; // mouse_x 가 text 끝 이후 → title.len
 }
 
 /// tab_area 안에서 px → 탭 인덱스. 호출자가 먼저 hitArea 가 .tab_area 인지
@@ -577,26 +365,6 @@ pub fn hitTab(
     return tab_index;
 }
 
-/// #193 — cursor shape (I-beam) 결정용 — rename 활성 탭의 text 입력 영역 hit.
-/// rename 비활성, 다른 탭, 탭바 밖 모두 false. SPEC.md §3.1
-/// "탭바 — rename 활성 탭의 text 입력 영역" 행.
-pub fn hitRenameText(
-    px: f32,
-    py: f32,
-    layout: Layout,
-    tab_w: f32,
-    tab_bar_h: f32,
-    scroll_x: f32,
-    tab_count: u32,
-    rename_tab_index: ?usize,
-) bool {
-    const idx = rename_tab_index orelse return false;
-    if (py < 0 or py >= tab_bar_h) return false;
-    if (hitArea(px, py, tab_bar_h, layout) != .tab_area) return false;
-    const hit = hitTab(px, layout, tab_w, scroll_x, tab_count) orelse return false;
-    return hit == idx;
-}
-
 test "committed title truncation emits one-cell ellipsis and preserves more ASCII" {
     const Trace = struct {
         cps: [16]u21 = undefined,
@@ -604,35 +372,18 @@ test "committed title truncation emits one-cell ellipsis and preserves more ASCI
         advances: [16]f32 = undefined,
         len: usize = 0,
 
-        fn emit(self: *@This(), cmd: TextCmd) void {
-            switch (cmd) {
-                .glyph => |glyph| {
-                    self.cps[self.len] = glyph.cp;
-                    self.xs[self.len] = glyph.x;
-                    self.advances[self.len] = glyph.advance;
-                    self.len += 1;
-                },
-                else => {},
-            }
+        fn emit(self: *@This(), glyph: Glyph) void {
+            self.cps[self.len] = glyph.cp;
+            self.xs[self.len] = glyph.x;
+            self.advances[self.len] = glyph.advance;
+            self.len += 1;
         }
     };
 
     try std.testing.expectEqual(@as(u8, 1), display_width.codepointWidth(truncate_ellipsis_cp));
 
     var trace: Trace = .{};
-    iterTabText(
-        "ABCDEFG",
-        null,
-        "",
-        0,
-        10,
-        60,
-        false,
-        true,
-        null,
-        &trace,
-        Trace.emit,
-    );
+    iterTabText("ABCDEFG", 0, 10, 60, true, &trace, Trace.emit);
 
     const expected = [_]u21{ 'A', 'B', 'C', 'D', 'E', truncate_ellipsis_cp };
     try std.testing.expectEqualSlices(u21, &expected, trace.cps[0..trace.len]);
@@ -647,105 +398,20 @@ test "committed CJK title truncation keeps wide glyph boundaries and one ellipsi
         advances: [16]f32 = undefined,
         len: usize = 0,
 
-        fn emit(self: *@This(), cmd: TextCmd) void {
-            switch (cmd) {
-                .glyph => |glyph| {
-                    self.cps[self.len] = glyph.cp;
-                    self.xs[self.len] = glyph.x;
-                    self.advances[self.len] = glyph.advance;
-                    self.len += 1;
-                },
-                else => {},
-            }
+        fn emit(self: *@This(), glyph: Glyph) void {
+            self.cps[self.len] = glyph.cp;
+            self.xs[self.len] = glyph.x;
+            self.advances[self.len] = glyph.advance;
+            self.len += 1;
         }
     };
 
     var trace: Trace = .{};
-    iterTabText(
-        "가나다라",
-        null,
-        "",
-        0,
-        10,
-        60,
-        false,
-        true,
-        null,
-        &trace,
-        Trace.emit,
-    );
+    iterTabText("가나다라", 0, 10, 60, true, &trace, Trace.emit);
 
     const expected = [_]u21{ '가', '나', truncate_ellipsis_cp };
     try std.testing.expectEqualSlices(u21, &expected, trace.cps[0..trace.len]);
     try std.testing.expectEqual(@as(f32, 40), trace.xs[trace.len - 1]);
     try std.testing.expectEqual(@as(f32, 10), trace.advances[trace.len - 1]);
     try std.testing.expect(trace.xs[trace.len - 1] + trace.advances[trace.len - 1] <= 60);
-}
-
-test "one-cell cursor reserve keeps wide preedit commit scroll stable" {
-    const cw: f32 = 10;
-    const max_text_w: f32 = 60;
-    try std.testing.expectEqual(cw, cursorReserve(cw));
-
-    const preedit = "한";
-    const preedit_advance = computeAdvanceTotal(preedit, cw);
-    try std.testing.expectEqual(@as(f32, 20), preedit_advance);
-
-    const before_commit = "ABCDE";
-    const during_preedit = cursorScrollOffset(
-        before_commit,
-        before_commit.len,
-        cw,
-        max_text_w,
-        preedit_advance,
-        0,
-    );
-    try std.testing.expectEqual(@as(f32, 20), during_preedit);
-
-    const after_commit = "ABCDE한";
-    const after_preedit = cursorScrollOffset(
-        after_commit,
-        after_commit.len,
-        cw,
-        max_text_w,
-        0,
-        during_preedit,
-    );
-    try std.testing.expectEqual(during_preedit, after_preedit);
-
-    const cursor_x = 5 * cw + preedit_advance - after_preedit;
-    try std.testing.expectEqual(@as(f32, 50), cursor_x);
-    try std.testing.expectEqual(cw, max_text_w - cursor_x);
-
-    const long_ascii = "ABCDEFG";
-    const ascii_offset = cursorScrollOffset(
-        long_ascii,
-        long_ascii.len,
-        cw,
-        max_text_w,
-        0,
-        0,
-    );
-    try std.testing.expectEqual(@as(f32, 20), ascii_offset);
-    try std.testing.expectEqual(@as(f32, 50), 7 * cw - ascii_offset);
-}
-
-test "#315 rename cursor keeps symmetric vertical inset across scales" {
-    const Case = struct {
-        scale: f32,
-        cell_height: f32,
-    };
-    const cases = [_]Case{
-        .{ .scale = 1.0, .cell_height = 16 },
-        .{ .scale = 1.5, .cell_height = 24 },
-        .{ .scale = 2.0, .cell_height = 32 },
-    };
-
-    for (cases) |case| {
-        const cell_top = 10 * case.scale;
-        const cursor = renameCursorVertical(cell_top, case.cell_height);
-        try std.testing.expectEqual(cell_top + 2, cursor.y);
-        try std.testing.expectEqual(case.cell_height - 4, cursor.height);
-        try std.testing.expectEqual(cell_top + case.cell_height - 2, cursor.y + cursor.height);
-    }
 }

@@ -68,19 +68,14 @@ With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it bec
   terminal grid continues to use the full height behind it.
 - Clicking a tab only activates it. Dragging a tab reorders it.
 
-## Tab rename
+## Tab titles
 
-Double-click a tab to rename. While renaming:
-
-- Type to insert characters (IME-aware, multi-byte friendly). The IME pre-edit appears inline at the cursor on a purple background on Linux, macOS, and Windows.
-- Backspace / Left / Right / Delete edit the name
-- **Line begin / end navigation**: `Home` and `End` keys (all platforms), plus `Ctrl+A` and `Ctrl+E` (terminal-style, all platforms — matches mac Terminal.app and `readline` convention)
-- Enter commits, Escape cancels
-- `Ctrl+Shift+V` (Linux / Windows) / `Cmd+V` (macOS) pastes clipboard text into the name (printable codepoints only — newlines and control chars are dropped)
-- **Click inside the same tab's text** → cursor jumps to the click position; any in-progress IME pre-edit is committed in place. Click outside (other tabs, the close button, the terminal, the arrows) commits and ends the rename.
-- **Mid-string typing** pushes only the characters after the cursor by the pre-edit's width. Commit drops the new characters there; Escape returns the trailing characters back to where they were.
-- **IME pre-edit + line nav**: pressing Home / End / Ctrl+A / Ctrl+E while a Korean / Japanese / Chinese syllable is composing commits the pre-edit's jamo into the rename buffer at the current cursor position, *then* moves the cursor (no syllable lost). Esc still cancels (pre-edit discarded).
-- **Click on a long name + cursor jumps** ([#168](https://github.com/ensky0/tildaz/issues/168)): on long tab names, clicking the middle keeps the cursor at the click position — no more "snaps to right edge" (v0.4.0).
+Tab titles follow the shell automatically (OSC 0/2 window titles — most shells
+and programs like vim or ssh set them). A new tab starts blank and falls back
+to `Tab N` if the shell doesn't send a title within a second. To set a title
+yourself, use your shell — e.g. `printf '\033]0;my title\007'` or your shell
+prompt configuration. (Inline tab renaming was removed in
+[#341](https://github.com/ensky0/tildaz/issues/341).)
 
 ## Tab limit
 

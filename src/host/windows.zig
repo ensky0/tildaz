@@ -98,7 +98,7 @@ pub fn run() !void {
     );
     defer app.session.deinit();
     // tab_actions.Host 콜백 — &app 안정 후 한 번만. helper 가 user_data 통해
-    // *App 으로 cast 후 invalidateRenderer / handleRenameChar / window.copyToClipboard
+    // *App 으로 cast 후 invalidateRenderer / window.copyToClipboard
     // 등 instance 메서드 호출.
     app.setupHost();
     var hotkey_hint_buf: [64]u8 = undefined;

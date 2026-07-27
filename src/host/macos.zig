@@ -343,7 +343,7 @@ var g_pending_close_buf: std.ArrayList(usize) = .{};
 var g_pending_close_mutex: std.Thread.Mutex = .{};
 /// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
 /// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainOutputForRender 반환)
-/// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ rename/preedit/autoscroll(force_render).
+/// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ preedit/autoscroll(force_render).
 /// 셋 다 아니고 화면 표시까지 확정(frameWasPresented)되면 그 frame 의 render 작업을
 /// skip(GPU 안 씀) — displayLink 는 visible 동안 계속 돌아 다음 변화를 다음 frame 이
 /// 즉시 잡는다. 입력 핸들러·renderFrameTick 모두 main thread 라 atomic 불필요.
@@ -393,10 +393,6 @@ var g_command_menu_scroll_accum: f64 = 0;
 /// `ensureActiveTabVisible` skip — 활성 탭 가려져도 그대로 (Firefox).
 /// 활성 탭 변경 / drag reorder 끝 / 새 탭 생성 시 false 로 리셋.
 var g_tab_scroll_user_override: bool = false;
-/// 탭 이름 변경 state (#111 M11.6b). 더블클릭으로 시작, Enter commit / Escape cancel.
-/// 활성화 동안 모든 키 입력 / 텍스트 입력 (IME insertText 포함) 이 PTY 대신
-/// 이쪽으로 라우팅.
-var g_rename: tab_interaction.RenameState = .{};
 /// `tab_actions.Host` 인스턴스 — module-level state (g_session 등) 를 cross-
 /// platform helper API 로 노출. 모든 콜백은 mac specific (NSPasteboard, NSApp
 /// terminate). invalidate 는 noop — mac 60fps timer 가 자동 redraw.
@@ -404,22 +400,12 @@ var g_host: tab_actions.Host = .{
     .session = &g_session,
     .override_ptr = &g_tab_scroll_user_override,
     .invalidate = macHostInvalidate,
-    .rename_active = macHostRenameActive,
-    .insert_rename_cp = macHostInsertRenameCp,
     .clipboard_copy = macHostClipboardCopy,
     .terminate = macHostTerminate,
 };
 
 fn macHostInvalidate(_: *tab_actions.Host) void {
     // mac 은 renderFrameTick 이 vsync 마다 자동 호출 — 즉시 redraw 트리거 불필요.
-}
-
-fn macHostRenameActive(_: *const tab_actions.Host) bool {
-    return g_rename.isActive();
-}
-
-fn macHostInsertRenameCp(_: *tab_actions.Host, cp: u21) void {
-    _ = g_rename.insertCodepoint(cp);
 }
 
 /// NSPasteboard.general → clearContents → setString:forType:NSPasteboardTypeString.
@@ -690,7 +676,7 @@ fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
 
 /// #296 — 현재 입력 상태를 공통 입력 정책(input_policy)용으로.
 fn macInputState() input_policy.State {
-    return .{ .rename_active = g_rename.isActive(), .terminal_preedit_active = g_marked_len > 0 };
+    return .{ .terminal_preedit_active = g_marked_len > 0 };
 }
 
 /// #317 — macOS의 모든 shortcut 진입점이 같은 pending 입력 정책을 적용한다.
@@ -708,19 +694,17 @@ fn applyShortcutInputPolicy(shortcut: input_policy.Shortcut) void {
             const cv = contentView_get(g_window, objc.sel("contentView"));
             if (cv != null) commitPendingInput(cv);
         },
-        // shortcut 정책에는 discard/commit_preedit 이 없다. Ctrl+C interrupt의
-        // discard는 tildazKeyDown의 별도 IME/SIGINT 순서가, commit_preedit(#340)은
-        // paste 전용으로 applyPasteInputPolicy 가 담당한다.
-        .discard, .commit_preedit => unreachable,
+        // shortcut 정책에는 discard 가 없다. Ctrl+C interrupt의 discard는
+        // tildazKeyDown의 별도 IME/SIGINT 순서가 담당한다.
+        .discard => unreachable,
     }
 }
 
 /// #340 — paste semantic entry 의 pending 정책 적용. Cmd+V / 우클릭 공통 —
 /// 예전엔 우클릭(tildazRightMouseDown)이 정책 없이 handlePaste 직행이라 터미널
 /// 조합 중 우클릭 paste 가 'X하' 순서가 될 수 있었다 (#333 의 macOS 형제).
-/// - terminal preedit(.commit): 전체 commit (rename 비활성이라 preedit → PTY flush)
-/// - rename 조합(.commit_preedit): preedit 만 rename buf 로 확정, rename 유지
-///   → payload 가 이어져 '하X' (native textbox 동등)
+/// terminal preedit(.commit): 전체 commit (preedit → PTY flush) 후 payload 가
+/// 이어져 '하X' (native textbox 동등).
 fn applyPasteInputPolicy() void {
     const disposition = input_policy.resolve(.paste, macInputState());
     if (g_window == null) return;
@@ -730,10 +714,6 @@ fn applyPasteInputPolicy() void {
     switch (disposition.pending) {
         .leave => {},
         .commit => commitPendingInput(cv),
-        .commit_preedit => {
-            commitPreeditPreserving(cv);
-            requestRender();
-        },
         // paste 정책에 discard 없음 (input_policy.resolve 참고).
         .discard => unreachable,
     }
@@ -799,15 +779,13 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         const NSEventModifierFlagShift: c_ulong = 1 << 17;
         const shift = (flags & NSEventModifierFlagShift) != 0;
 
-        // #296 — Cmd 단축키의 rename/preedit commit 여부는 입력 정책(input_policy.
-        // resolve) 한 곳에서 결정. copy(Cmd+C)/perf(Shift+Cmd+F12)는 read-only 라
-        // rename 을 안 끝내고(터미널 preedit 은 자모 보존 위해 flush), 그 외 단축키는
-        // commit 후 실행 (SPEC §4.1). 예전엔 여기서 무조건 commitPendingInput 이라
-        // rename 중 Cmd+C 가 제목을 확정시켰음(Linux A2 와 같은 버그 — 정정).
+        // #296 — Cmd 단축키의 preedit commit 여부는 입력 정책(input_policy.
+        // resolve) 한 곳에서 결정. copy(Cmd+C)/perf(Shift+Cmd+F12)는 read-only,
+        // 터미널 preedit 은 자모 보존 위해 flush. 그 외 단축키는 commit 후 실행
+        // (SPEC §4.1).
         //
         // #282 A3 / #340 — Cmd+V(paste): 조합을 먼저 확정하고 payload 를 잇는다.
         // pending 적용은 우클릭과 공통 helper(applyPasteInputPolicy) 한 곳.
-        // handlePaste → routePaste 가 대상(rename buffer / PTY) 분기.
         if (kc == 9) {
             applyPasteInputPolicy();
             handlePaste();
@@ -855,44 +833,6 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             interpretSingleKeyEvent(self_view, event);
             if (!g_hanja_candidate_active) cancelHanjaState();
         }
-        return;
-    }
-
-    // rename (#111 M11.6b) 진행 중이면 비-Cmd 키는 모두 interpretKeyEvents 로
-    // 위임 → IME / NSResponder 가 imeInsertText / imeDoCommand 콜백 호출 →
-    // 거기서 RenameState 로 라우팅. PTY 로 안 흘림.
-    if (g_rename.isActive()) {
-        if (g_hanja_candidate_active) {
-            interpretSingleKeyEvent(self_view, event);
-            return;
-        }
-
-        // line begin/end navigation 직접 keyCode intercept — interpretKeyEvents
-        // 의 StandardKeyBinding dispatch 가 우리 custom NSView 에선 일부 키
-        // (Home/End fn 변형, ^a/^e) 에 안 잡히는 케이스 발견. 신뢰성 위해 직접.
-        // Home/End 는 fn+Left/Right (Apple 노트북) 와 외장 키보드 Home/End 키
-        // 모두 keyCode 115/119. Ctrl+A/E 는 keyCode 0/14 + Ctrl modifier.
-        const NSEventModifierFlagControlEarly: c_ulong = 1 << 18;
-        const ctrl_early = (flags & NSEventModifierFlagControlEarly) != 0;
-        const get_kc_early = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
-        const kc_early = get_kc_early(event, objc.sel("keyCode"));
-        const rename_nav: ?tab_interaction.RenameKey = blk: {
-            if (kc_early == 115) break :blk .home;
-            if (kc_early == 119) break :blk .end;
-            if (ctrl_early and kc_early == 0) break :blk .home; // Ctrl+A
-            if (ctrl_early and kc_early == 14) break :blk .end; // Ctrl+E
-            break :blk null;
-        };
-        if (rename_nav) |k| {
-            // preedit 활성 시 먼저 rename buf 로 commit 후 cursor 이동 — native
-            // textbox 동작 (자모 보존). preedit 없으면 no-op.
-            commitPreeditPreserving(self_view);
-            _ = g_rename.handleKey(k);
-            const setNeeds = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
-            setNeeds(self_view, objc.sel("setNeedsDisplay:"), true);
-            return;
-        }
-        interpretSingleKeyEvent(self_view, event);
         return;
     }
 
@@ -1036,7 +976,6 @@ var g_hanja_pending_commit_buf: [128]u8 = undefined;
 var g_hanja_pending_commit_len: usize = 0;
 var g_hanja_pending_commit_range: NSRange = .{ .location = 0, .length = 0 };
 var g_hanja_pending_commit_delete_count: usize = 0;
-var g_hanja_target_virtual: bool = false;
 var g_ime_panel_window_lowered: bool = false;
 
 const ImeRectPx = struct {
@@ -1130,7 +1069,6 @@ fn clearHanjaPendingCommit() void {
     g_hanja_pending_commit_len = 0;
     g_hanja_pending_commit_range = .{ .location = 0, .length = 0 };
     g_hanja_pending_commit_delete_count = 0;
-    g_hanja_target_virtual = false;
 }
 
 fn clearHanjaState() void {
@@ -1140,20 +1078,7 @@ fn clearHanjaState() void {
     restoreWindowLevelAfterImePanel();
 }
 
-fn restoreVirtualHanjaTarget() void {
-    if (!g_hanja_target_virtual) return;
-    if (!g_hanja_pending_commit_active or g_hanja_pending_commit_len == 0) return;
-    if (!g_rename.isActive()) return;
-    const target = g_hanja_pending_commit_buf[0..g_hanja_pending_commit_len];
-    var iter = std.unicode.Utf8Iterator{ .bytes = target, .i = 0 };
-    while (iter.nextCodepoint()) |cp| {
-        if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
-    }
-    g_hanja_target_virtual = false;
-}
-
 fn cancelHanjaState() void {
-    restoreVirtualHanjaTarget();
     clearImeMarkedState();
     clearHanjaState();
 }
@@ -1394,55 +1319,6 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
     };
 }
 
-fn buildRenameImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
-    const rv = g_rename.view() orelse return false;
-    if (g_renderer == null) return false;
-    const r = &g_renderer.?;
-    const text = rv.text[0..rv.text_len];
-
-    const tab_bar_h_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
-    const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
-    const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
-    const cw: f32 = @floatFromInt(r.font.cell_width_px);
-    const ch: f32 = @floatFromInt(r.font.cell_height_px);
-    const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
-    const layout = tabBarLayout();
-    const tab_x = @as(f32, @floatFromInt(rv.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
-    const text_x_start = tab_x + tab_pad_px;
-
-    var x = text_x_start - rv.scroll_offset.*;
-    snap.* = .{};
-    try snap.initPositions(allocator, .{ .x = x, .y = text_y_top, .w = cw, .h = ch });
-
-    var selected_set = false;
-    var pending_hanja_inserted = false;
-    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
-    while (iter.nextCodepoint()) |cp| {
-        const byte_end = iter.i;
-        const byte_start = byte_end - (std.unicode.utf8CodepointSequenceLength(cp) catch 1);
-        if (!selected_set and rv.cursor <= byte_start) {
-            snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
-            selected_set = true;
-            _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
-            pending_hanja_inserted = true;
-        }
-        const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * cw;
-        const start = ImeRectPx{ .x = x, .y = text_y_top, .w = @max(advance, cw), .h = ch };
-        x += advance;
-        const end = ImeRectPx{ .x = x, .y = text_y_top, .w = cw, .h = ch };
-        try snap.appendCodepoint(allocator, cp, start, end);
-    }
-
-    if (!selected_set) {
-        snap.selected = .{ .location = utf16LenOfUtf8Prefix(text, @min(rv.cursor, text.len)), .length = 0 };
-        if (snap.selected.location > snap.utf16Len()) snap.selected.location = snap.utf16Len();
-    }
-    if (!pending_hanja_inserted) {
-        _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
-    }
-    return true;
-}
-
 fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
     if (g_renderer == null) return false;
     const tab = g_session.activeTab() orelse return false;
@@ -1523,9 +1399,6 @@ fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !b
 
 fn buildImeSnapshot(allocator: std.mem.Allocator) ?ImeSnapshot {
     var snap = ImeSnapshot{};
-    if (buildRenameImeSnapshot(allocator, &snap) catch false) return snap;
-    snap.deinit(allocator);
-    snap = .{};
     if (buildTerminalImeSnapshot(allocator, &snap) catch false) return snap;
     snap.deinit(allocator);
     return null;
@@ -1585,17 +1458,6 @@ fn writeUserInput(tab: anytype, bytes: []const u8) void {
     tab.terminal.scrollViewport(.{ .bottom = {} });
 }
 
-fn replaceRenameBytes(byte_start: usize, byte_end: usize) void {
-    if (!g_rename.isActive()) return;
-    const start = @min(byte_start, g_rename.len);
-    const end = @min(@max(byte_end, start), g_rename.len);
-    if (end > start) {
-        std.mem.copyForwards(u8, g_rename.buf[start .. g_rename.len - (end - start)], g_rename.buf[end..g_rename.len]);
-        g_rename.len -= end - start;
-    }
-    g_rename.cursor = start;
-}
-
 /// NSAttributedString 이거나 NSString 인 input → NSString 추출.
 fn imeStringFromInput(text: objc.id) objc.id {
     if (text == null) return text;
@@ -1629,35 +1491,6 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(str, objc.sel("UTF8String"));
     const commit = cstr[0..len];
-
-    if (g_rename.isActive()) {
-        var snap = buildImeSnapshot(g_gpa.allocator());
-        defer if (snap) |*s| s.deinit(g_gpa.allocator());
-        const should_reconvert_committed_preedit = g_hanja_preedit_commit_requested and isOnlyHangulSyllables(commit);
-        const pending_range_start = if (snap) |*s| @min(s.selected.location, s.utf16Len()) else 0;
-        clearImeMarkedState();
-        if (should_reconvert_committed_preedit) {
-            if (storeHanjaPendingCommit(commit, pending_range_start)) {
-                g_hanja_target_virtual = true;
-            }
-            return;
-        }
-        if (!g_hanja_target_virtual) {
-            if (snap) |*s| {
-                if (replacementByteRange(s, replacement)) |r| {
-                    replaceRenameBytes(r.byte_start, r.byte_end);
-                }
-            }
-        }
-        // rename (#111 M11.6b) 진행 중이면 PTY 대신 rename buf 로 라우팅.
-        // codepoint 단위 iter 후 각각 insertCodepoint — 한글 등 multi-byte 도 지원.
-        var iter = std.unicode.Utf8Iterator{ .bytes = commit, .i = 0 };
-        while (iter.nextCodepoint()) |cp| {
-            _ = g_rename.insertCodepoint(cp);
-        }
-        if (!should_reconvert_committed_preedit) clearHanjaState();
-        return;
-    }
 
     var snap = buildImeSnapshot(g_gpa.allocator());
     defer if (snap) |*s| s.deinit(g_gpa.allocator());
@@ -1720,15 +1553,13 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     g_preedit_len = copy_len;
     // #242 — preedit(조합 중)도 사용자 입력 → 맨 아래로(scroll-on-keystroke).
     // composition 은 cursor(맨 아래 live line)에 inline 표시되므로, 스크롤백 올린
-    // 상태에서 조합 시작 시 안 내려가면 자기 조합이 안 보임. rename(탭바) 조합은
-    // terminal viewport 와 무관하므로 제외. commit 은 imeInsertText 가 scroll.
-    if (!g_rename.isActive()) g_session.scrollActiveToBottom();
+    // 상태에서 조합 시작 시 안 내려가면 자기 조합이 안 보임. commit 은
+    // imeInsertText 가 scroll.
+    g_session.scrollActiveToBottom();
     if (isReplacingRange(replacement_range)) {
         g_hanja_candidate_active = true;
         g_hanja_candidate_range = replacement_range;
-        g_hanja_candidate_delete_count = if (g_hanja_target_virtual)
-            0
-        else if (reconversion_delete_count > 0)
+        g_hanja_candidate_delete_count = if (reconversion_delete_count > 0)
             reconversion_delete_count
         else
             replacement_range.length;
@@ -1843,25 +1674,6 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
 
     if (g_hanja_candidate_active and cmd_sel == objc.sel("cancelOperation:")) {
         cancelHanjaState();
-        return;
-    }
-
-    // rename (#111 M11.6b) 진행 중이면 PTY 로 안 보내고 RenameState 로 라우팅.
-    if (g_rename.isActive()) {
-        const key: ?tab_interaction.RenameKey =
-            if (cmd_sel == objc.sel("insertNewline:")) .enter else if (cmd_sel == objc.sel("cancelOperation:")) .escape else if (cmd_sel == objc.sel("deleteBackward:")) .backspace else if (cmd_sel == objc.sel("deleteForward:")) .delete else if (cmd_sel == objc.sel("moveLeft:")) .left else if (cmd_sel == objc.sel("moveRight:")) .right else if (cmd_sel == objc.sel("moveToBeginningOfLine:")) .home else if (cmd_sel == objc.sel("moveToEndOfLine:")) .end
-            // Home/End 물리 키 — mac Cocoa StandardKeyBinding 이 NSHome/NSEnd
-            // FunctionKey 를 moveTo*OfDocument: 으로 dispatch (single-line
-            // 이라 line begin/end 와 동등).
-            else if (cmd_sel == objc.sel("moveToBeginningOfDocument:")) .home else if (cmd_sel == objc.sel("moveToEndOfDocument:")) .end else null;
-        if (key) |k| {
-            switch (g_rename.handleKey(k)) {
-                .commit => commitOrCancelRename(true),
-                .cancel => commitOrCancelRename(false),
-                else => {},
-            }
-        }
-        // rename 진행 중엔 다른 selector 모두 무시 (Tab key 등이 PTY 로 안 가게).
         return;
     }
 
@@ -2121,7 +1933,7 @@ fn closeCommandMenu() void {
     g_command_menu_focus = null;
     g_command_menu_first = 0;
     g_command_menu_scroll_accum = 0;
-    invalidateRenameCursorRects();
+    invalidateCursorRects();
     requestRender();
 }
 
@@ -2132,7 +1944,7 @@ fn commandMenuHit(px: f32, py: f32) ?command_menu.Command {
 }
 
 /// #329 — 메뉴가 열린 동안의 키 입력. 모든 키를 메뉴 계층이 소비한다
-/// (native menu 동등) — PTY / rename 으로 보내지 않는다.
+/// (native menu 동등) — PTY 로 보내지 않는다.
 fn handleCommandMenuKey(menu_key: command_menu.MenuKey) void {
     switch (command_menu.onKey(menu_key, &g_command_menu_focus)) {
         .consumed => {
@@ -2207,36 +2019,11 @@ fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
     );
 }
 
-/// rename 진행 중이면 종료. `commit=true` 면 buf 의 텍스트를 그 탭의 title 로
-/// 적용, false 면 단순 cancel.
-fn commitOrCancelRename(commit: bool) void {
-    if (commit) {
-        if (g_rename.commitRequest()) |req| {
-            if (req.tab_index < g_session.count()) {
-                g_session.tabs.items[req.tab_index].setCustomTitle(req.title);
-            }
-        }
-    }
-    g_rename.clear();
-    // #193 — rename end → cursor rect 재계산 (text rect 제거).
-    invalidateRenameCursorRects();
-}
-
-/// IME preedit (g_preedit_buf) 을 적절한 sink 로 commit + IME 상태 클리어.
-/// rename 은 *유지*. 호출 후 typing 계속 가능. (rename 끝낼 때는 후속
-/// commitOrCancelRename 호출.)
-/// - rename 활성: preedit 자모 rename buf 에 cursor 위치로 insert
-/// - rename 비활성: preedit 자모 활성 탭 PTY 로 직송
+/// IME preedit (g_preedit_buf) 을 활성 탭 PTY 로 commit + IME 상태 클리어.
+/// 호출 후 typing 계속 가능.
 fn commitPreeditPreserving(self_view: objc.id) void {
     if (g_preedit_len == 0) return;
-    if (g_rename.isActive()) {
-        var iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
-        while (iter.nextCodepoint()) |cp| {
-            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
-        }
-    } else {
-        g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
-    }
+    g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
     g_preedit_len = 0;
     g_marked_len = 0;
     clearHanjaState();
@@ -2248,81 +2035,27 @@ fn commitPreeditPreserving(self_view: objc.id) void {
     }
 }
 
-/// 진행 중인 모든 입력 (rename text + IME preedit) 을 적절한 곳으로 확정 +
-/// IME 상태 클리어. focus 이탈 / 단축키 등 "지금 멈춰" 시점에 호출.
-/// - rename 활성 + preedit: preedit 자모를 rename buf 로 commit, rename 도 commit
-/// - rename 비활성 + terminal preedit: preedit 을 활성 탭 PTY 로 commit
-/// 둘 다 native textbox / Win IME 동등 동작 (cancel 아님).
+/// 진행 중인 IME preedit 을 활성 탭 PTY 로 확정 + IME 상태 클리어. focus
+/// 이탈 / 단축키 등 "지금 멈춰" 시점에 호출. native textbox / Win IME 동등
+/// 동작 (cancel 아님).
 /// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
 fn commitPendingInput(self_view: objc.id) void {
     commitPreeditPreserving(self_view);
-    commitOrCancelRename(true);
     // NSMenu selector / applicationShouldTerminate: 는 keyDown:/mouseDown: 을
-    // 우회한다. 내부 rename/marked state 만 지우고 render 를 요청하지 않으면
+    // 우회한다. 내부 marked state 만 지우고 render 를 요청하지 않으면
     // 마지막 보라색 preedit frame 이 화면에 남으므로, 상태 변경의 공통 지점에서
     // 반드시 다음 frame 을 요청한다 (#317).
     requestRender();
 }
 
-/// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
-/// 영역 밖 / 다른 탭 / close 버튼 / 터미널 등은 false → caller 가 commit.
-fn tryRenameClickMoveCursor(self_view: objc.id, event: objc.id) bool {
-    const rv = g_rename.view() orelse return false;
-    if (g_renderer == null or g_session.count() < 2) return false;
-
-    const r = &g_renderer.?;
-    const xy = eventToWindowPx(self_view, event);
-    const layout = tabBarLayout();
-
-    // 탭바 안 + tab_area 안만.
-    if (tabBarHitArea(xy.x, xy.y, layout) != .tab_area) return false;
-    const hit = tabBarTabHitTest(xy.x, layout) orelse return false;
-    if (hit != rv.tab_index) return false;
-
-    // preedit 활성 시 manual commit — preedit 자모 들을 현재 cursor 위치 다음에
-    // insert. 그 후 IME marked text state 도 정리 (discardMarkedText). native
-    // textbox UX (#164 follow-up).
-    if (g_preedit_len > 0) {
-        var commit_iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
-        while (commit_iter.nextCodepoint()) |cp| {
-            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
-        }
-        g_preedit_len = 0;
-        g_marked_len = 0;
-        clearHanjaState();
-        const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-        const ic = get_ic(self_view, objc.sel("inputContext"));
-        if (ic != null) {
-            const discard = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
-            discard(ic, objc.sel("discardMarkedText"));
-        }
-    }
-
-    // commit 반영된 새 view + mouse → byte 매핑.
-    const rv_new = g_rename.view() orelse return false;
-    const tab_w_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
-    const tab_pad_px: f32 = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * r.scale;
-    const cw: f32 = @floatFromInt(r.font.cell_width_px);
-    const tab_x = @as(f32, @floatFromInt(rv_new.tab_index)) * tab_w_px - g_tab_scroll_x_px + layout.tab_area_x;
-    const text_x_start = tab_x + tab_pad_px;
-    // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
-    const max_text_w = tab_w_px - tab_pad_px * 2;
-
-    if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], g_rename.scroll_offset, text_x_start, cw, max_text_w, xy.x)) |new_byte| {
-        g_rename.setCursor(new_byte);
-        return true;
-    }
-    return false;
-}
-
 /// #193 — OS mouse cursor shape. NSView 의 `resetCursorRects` override. SPEC.md
-/// §3.1: cell 영역 → I-beam, rename 활성 탭 text 영역 → I-beam, 그 외 → arrow.
+/// §3.1: cell 영역 → I-beam, 그 외 → arrow.
 /// NSView default coordinate (Y-up, bottom-left origin) 라 paint 좌표계 (Y-down)
 /// 와 flip 변환.
 ///
 /// resetCursorRects 자동 호출 경로: view bounds 변경 (`setFrame:`) / mouse 가
-/// view 위로 들어옴 / `[window invalidateCursorRectsForView:]`. rename
-/// begin/end 시 명시 invalidate 필요 (`invalidateRenameCursorRects`).
+/// view 위로 들어옴 / `[window invalidateCursorRectsForView:]`. command menu
+/// 열림/닫힘 시 명시 invalidate 필요 (`invalidateCursorRects`).
 fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
     const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
     const bounds = get_rect(self_view, objc.sel("bounds"));
@@ -2371,51 +2104,11 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
         add_rect(self_view, objc.sel("addCursorRect:cursor:"), menu_rect, arrow);
     }
 
-    // SPEC.md §3.1 — rename 활성 탭의 text 영역. close 'x' 박스 + tab area
-    // viewport clamping 적용. PT 단위 layout 재계산 (paint 의 px layout 을
-    // scale 로 나눠도 동등).
-    if (g_rename.isActive() and g_session.count() > 1 and g_renderer != null) blk: {
-        // RenameState.tab_index 는 ?usize — isActive() true 면 not null 보장
-        // 이지만 zig type checker 가 그것 추론 안 함. 명시 unwrap (안전 fallback).
-        const tab_idx_v = g_rename.tab_index orelse break :blk;
-        const scale: f64 = g_renderer.?.scale;
-        const tab_w_pt: f64 = @floatFromInt(ui_metrics.TAB_WIDTH_PT);
-        // #329 — `+` 는 MAX_TABS 에서도 자리 유지 (비활성). px layout 과 동일.
-        const plus_w_pt: f64 = @floatFromInt(ui_metrics.TAB_PLUS_W_PT);
-        // scroll_x 는 Inputs 의 field — Layout 결과에는 없으니 별도 변수 보관.
-        const scroll_x_pt: f64 = @as(f64, g_tab_scroll_x_px) / scale;
-        const layout_pt = tab_layout.compute(.{
-            .viewport_w = @floatCast(w),
-            .tab_count = @intCast(g_session.count()),
-            .tab_w = @floatCast(tab_w_pt),
-            .arrow_w = @floatCast(@as(f64, @floatFromInt(ui_metrics.TAB_ARROW_W_PT))),
-            .plus_w = @floatCast(plus_w_pt),
-            .close_w = @floatCast(@as(f64, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT))),
-            .more_w = @floatCast(@as(f64, @floatFromInt(ui_metrics.TAB_MORE_W_PT))),
-            .scroll_x = @floatCast(scroll_x_pt),
-        });
-        const tab_pad_pt: f64 = @floatFromInt(ui_metrics.TAB_PADDING_PT);
-        const idx: f64 = @floatFromInt(tab_idx_v);
-        const tab_world_x = idx * tab_w_pt - scroll_x_pt;
-        const tab_x_view = layout_pt.tab_area_x + tab_world_x;
-        // viewport clamp (`<` `>` arrow 영역 안 침범)
-        const text_left = @max(tab_x_view, layout_pt.tab_area_x);
-        // #268 — per-tab close 제거로 text 영역이 탭 우측 padding 까지.
-        const text_right_uncliped = tab_x_view + tab_w_pt - tab_pad_pt;
-        const text_right = @min(text_right_uncliped, layout_pt.tab_area_x + layout_pt.tab_area_w);
-        if (text_right > text_left) {
-            // 탭바 paint top = view top (Y-down), Y-up 변환: y_min = h - tab_bar_h.
-            const rename_rect = NSRect{
-                .origin = .{ .x = text_left, .y = h - tab_bar_h_pt },
-                .size = .{ .width = text_right - text_left, .height = tab_bar_h_pt },
-            };
-            add_rect(self_view, objc.sel("addCursorRect:cursor:"), rename_rect, ibeam);
-        }
-    }
 }
 
-/// #193 — rename state 변화 직후 cursor rect 재계산. mouse 안 움직여도 변경 적용.
-fn invalidateRenameCursorRects() void {
+/// #193 — cursor rect 재계산 (command menu 열림/닫힘 등 state 변화 직후).
+/// mouse 안 움직여도 변경 적용.
+fn invalidateCursorRects() void {
     if (g_window == null) return;
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const cv = contentView_get(g_window, objc.sel("contentView"));
@@ -2429,14 +2122,8 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
 
-    // rename 활성 탭의 text 영역 안 클릭 → cursor 위치만 변경 (commit X). native
-    // textbox UX (#164 follow-up). 그 외 (다른 탭 / close 버튼 / terminal 등)
-    // 는 기존 동작 — commit + 다른 logic.
-    if (tryRenameClickMoveCursor(self_view, event)) return;
-
-    // 어떤 클릭이든 진행 중 rename 우선 commit. 더블클릭의 경우 commit 후 새
-    // rename begin (clear → begin 순서) 라 영향 없음. preedit / marked text 도
-    // cancel — terminal click 시 cell preedit 으로 옮겨가지 않게.
+    // 어떤 클릭이든 진행 중 preedit / marked text 우선 commit — terminal
+    // click 시 cell preedit 으로 옮겨가지 않게.
     commitPendingInput(self_view);
 
     if (g_command_menu_open) {
@@ -2474,7 +2161,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                 tab.interaction.cancelPointerModes();
                 g_command_menu_open = !g_command_menu_open;
                 g_command_menu_hover = null;
-                invalidateRenameCursorRects();
+                invalidateCursorRects();
                 g_needs_render = true;
                 return;
             },
@@ -2482,8 +2169,8 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         }
     }
 
-    // 탭바 영역 클릭 (멀티탭 시) → 화살표 / + / × / 탭 전환 / drag-begin /
-    // rename. Windows (app_controller mouse_down) / Linux (handlePointerButton)
+    // 탭바 영역 클릭 (멀티탭 시) → 화살표 / + / × / 탭 전환 / drag-begin.
+    // Windows (app_controller mouse_down) / Linux (handlePointerButton)
     // 와 동일하게 **탭바 분기가 스크롤바보다 먼저** (#268 — 우측 끝 × 버튼이
     // 스크롤바 x 밴드와 겹치므로 순서가 정답. 탭바 안 클릭은 여기서 전부
     // return 하고, .none (= 탭바 밖) 만 아래로 fallthrough).
@@ -2520,7 +2207,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             .more => {
                 g_command_menu_open = !g_command_menu_open;
                 g_command_menu_hover = null;
-                invalidateRenameCursorRects();
+                invalidateCursorRects();
                 g_needs_render = true;
                 return;
             },
@@ -2533,16 +2220,9 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                 if (tabBarTabHitTest(xy.x, layout)) |hit_index| {
                     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
                     const click_count = get_count(event, objc.sel("clickCount"));
-                    // 더블클릭 → rename 시작.
-                    if (click_count >= 2) {
-                        if (hit_index < g_session.count()) {
-                            const t = g_session.tabs.items[hit_index];
-                            g_rename.begin(hit_index, t.title[0..t.title_len]);
-                            // #193 — rename begin → cursor rect 갱신 (text rect 추가).
-                            invalidateRenameCursorRects();
-                        }
-                        return;
-                    }
+                    // 더블클릭은 소비만 (rename 은 #341 로 제거 — Windows
+                    // mouse_double_click noop 동등).
+                    if (click_count >= 2) return;
                     // 본체 클릭 → 활성 전환 + drag-begin. DragState world 좌표.
                     _ = g_session.setActiveTab(hit_index);
                     g_tab_scroll_user_override = false;
@@ -2853,8 +2533,7 @@ fn handlePaste() void {
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
 
-    // rename routing (printable cp 만 → g_rename) 또는 일반 PTY paste
-    // (bracketed paste + wrap 은 session.pasteToActive 가) — 양쪽 분기 helper.
+    // PTY paste (bracketed paste + wrap 은 session.pasteToActive 가).
     tab_actions.routePaste(&g_host, cstr[0..len]);
 }
 
@@ -3456,8 +3135,8 @@ fn renderFrameTick() void {
     // 반환값은 활성 탭 본문 또는 어느 탭이든 제목이 바뀌어 현재 화면 redraw가
     // 필요한지 나타낸다. 비활성 탭 본문만 바뀌면 parse하되 GPU render는 생략한다.
     const had_output = g_session.drainOutputForRender();
-    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ rename/preedit/autoscroll.
-    const force_render = g_rename.isActive() or g_preedit_len > 0 or did_autoscroll;
+    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ preedit/autoscroll.
+    const force_render = g_preedit_len > 0 or did_autoscroll;
     if (!had_output and !force_render and !g_needs_render) {
         // 변화 없음(idle) → 비싼 render 작업(GPU encode/present) skip. displayLink
         // 는 계속 돌므로 다음 출력/입력은 다음 frame 이 즉시 잡는다(별도 wake 불필요).
@@ -3495,25 +3174,17 @@ fn renderFrameTick() void {
     }
     const titles = titles_buf[0..tab_count];
 
-    // IME preedit (`g_preedit_buf`) 라우팅 — rename 활성 시 탭바 cursor 옆에
-    // 인라인 표시 (`tab_rename_preedit` 인자), 아니면 cell grid 의 cursor 위치
-    // (`cell_preedit` 인자). 둘 동시에 안 나오게 — rename 활성이면 cell 빈 slice.
-    const preedit_slice: []const u8 =
-        if (g_rename.isActive() and g_hanja_target_virtual and g_hanja_pending_commit_active)
-            g_hanja_pending_commit_buf[0..g_hanja_pending_commit_len]
-        else if (g_preedit_len > 0 and !g_hanja_candidate_active)
+    // IME preedit (`g_preedit_buf`) — cell grid 의 cursor 위치 inline overlay.
+    const cell_preedit: []const u8 =
+        if (g_preedit_len > 0 and !g_hanja_candidate_active)
             g_preedit_buf[0..g_preedit_len]
         else
             &.{};
-    const cell_preedit: []const u8 = if (g_rename.isActive()) &.{} else preedit_slice;
-    const tab_rename_preedit: []const u8 = if (g_rename.isActive()) preedit_slice else &.{};
 
     g_renderer.?.renderTabBar(
         titles,
         g_session.active_tab,
         tab.terminal.colors.background.get(),
-        g_rename.view(),
-        tab_rename_preedit,
         g_drag.view(),
         g_tab_scroll_x_px,
         tabBarLayout(),
