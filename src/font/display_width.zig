@@ -2,7 +2,7 @@
 //! 를 반환. UAX #11 (East Asian Width) 의 W (Wide) / F (Fullwidth) → 2,
 //! 일반 prinatable → 1, combining mark / 제어문자 / zero-width → 0.
 //!
-//! 사용처: 탭 제목 / rename 입력 등 *고정폭 cell layout* 으로 그려야 하는
+//! 사용처: 탭 제목 등 *고정폭 cell layout* 으로 그려야 하는
 //! 텍스트. 한글 / CJK / 일본어 / 중국어 등 wide 글자가 다음 글리프와 겹쳐
 //! 보이는 사고 방지 (cell advance 를 이 폭으로 갱신). 터미널 cell 자체는
 //! ghostty 가 grapheme cluster 단위로 wide / spacer_tail 을 따로 다룸.

@@ -346,13 +346,12 @@ pub const Window = struct {
     /// macOS `applicationShouldTerminate:` 와 같은 역할 (#116). 다중 탭 confirm
     /// 다이얼로그는 app 측에서 띄우고 결과만 반환.
     quit_request_fn: ?*const fn (?*anyopaque) bool = null,
-    /// F1 hide 직전 호출 (#175). app 측이 rename / preedit 등 진행 중인
+    /// F1 hide 직전 호출 (#175). app 측이 preedit 등 진행 중인
     /// 입력 상태를 commit 처리. show 분기는 호출 안 함.
     before_hide_fn: ?*const fn (?*anyopaque) void = null,
     /// #282 A11 — IME 조합 시작 시 활성 탭을 맨 아래로 (scroll-on-keystroke,
     /// #242). 스크롤백 올린 상태에서 조합 시작 시 preedit 이 안 보이는 것 방지.
     /// macOS/Linux 는 preedit 경로에서 이미 호출 — Windows 만 빠져 있었음.
-    /// app 측이 rename 중이면 no-op (탭바 조합은 terminal viewport 무관).
     scroll_to_bottom_fn: ?*const fn (?*anyopaque) void = null,
     /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
@@ -425,7 +424,7 @@ pub const Window = struct {
 
     /// BMP 밖 codepoint (이모지 U+1F300+ 등) 입력 시 Windows 가 UTF-16 surrogate
     /// pair 로 두 번 WM_CHAR 를 보냄 — 첫 번째 high surrogate (0xD800..0xDBFF)
-    /// 는 단독으론 invalid codepoint 라 PTY 전송 / rename 입력 둘 다 실패. 첫
+    /// 는 단독으론 invalid codepoint 라 PTY 전송 실패. 첫
     /// surrogate 를 보관 → 두 번째 (low surrogate, 0xDC00..0xDFFF) 도착하면
     /// 결합해 단일 u21 codepoint 로 dispatch. emoji picker (`Win+.`) 입력이
     /// 안 되던 사고 (시연 중 발견 — 2026-05-03).
@@ -433,9 +432,9 @@ pub const Window = struct {
 
     /// WM_KEYDOWN 가 소비한 키가 TranslateMessage 로 동시에 WM_CHAR (Enter `\r`,
     /// Escape `\x1b`, Backspace `\x08`) 를 큐에 넣는다. KEYDOWN 핸들러의 `return 0`
-    /// 만으로는 그 WM_CHAR 가 막히지 않아 PTY 로 새어 들어감 (예: 탭바 rename
-    /// commit 후 prompt 에 빈 줄 입력). KEYDOWN 에서 해당 키를 소비하면 이 flag
-    /// 를 set, WM_CHAR 진입 즉시 swallow + clear.
+    /// 만으로는 그 WM_CHAR 가 막히지 않아 PTY 로 새어 들어감 (예: command menu
+    /// 가 소비한 Enter 가 prompt 에 빈 줄 입력). KEYDOWN 에서 해당 키를 소비하면
+    /// 이 flag 를 set, WM_CHAR 진입 즉시 swallow + clear.
     swallow_next_wm_char: bool = false,
 
     /// IME composition (preedit) 버퍼 — UTF-8. WM_IME_COMPOSITION 의 GCS_COMPSTR
@@ -1301,14 +1300,13 @@ pub const Window = struct {
                 // window 차단 (return 0). 우리 inline overlay 가 대신 (#164).
                 self.preedit_len = 0;
                 // #282 A11 — 조합 시작 시 활성 탭 맨 아래로 (macOS/Linux 동등).
-                // app 측이 rename 활성이면 no-op.
                 if (self.scroll_to_bottom_fn) |f| f(self.userdata);
                 return 0;
             },
             WM_IME_COMPOSITION => {
                 // RESULTSTR를 먼저 원래 대상에 동기 dispatch한다. DefWindowProcW에
-                // 넘기면 결과 WM_CHAR가 현재 KEYDOWN action 뒤에 queue되어 새 탭,
-                // 새 prompt 또는 rename 종료 뒤로 이동한다 (#313).
+                // 넘기면 결과 WM_CHAR가 현재 KEYDOWN action 뒤에 queue되어 새 탭
+                // 또는 새 prompt 뒤로 이동한다 (#313).
                 const lp_dword: DWORD = @truncate(@as(usize, @bitCast(lParam)));
                 var handled = false;
                 if ((lp_dword & GCS_RESULTSTR) != 0) {
@@ -1356,7 +1354,7 @@ pub const Window = struct {
             },
             WM_CHAR => {
                 // KEYDOWN 가 같은 키를 소비했으면 짝꿍 WM_CHAR 도 swallow.
-                // (rename Enter / Escape commit/cancel 후 PTY 로 \r / \x1b 새는
+                // (menu Enter / Escape 소비 후 PTY 로 \r / \x1b 새는
                 // 사고 방지 — 소비자 입장에선 한 번의 keypress.)
                 if (self.swallow_next_wm_char) {
                     self.swallow_next_wm_char = false;
@@ -1367,7 +1365,7 @@ pub const Window = struct {
                 // UTF-16 surrogate pair → single u21 codepoint 결합. 이모지 같은
                 // BMP 밖 codepoint (U+10000+) 는 high (0xD800..0xDBFF) + low
                 // (0xDC00..0xDFFF) 두 WM_CHAR 로 따로 도착. high 단독은 invalid
-                // codepoint 라 utf8Encode 실패해 PTY 전송 / rename 입력 안 됨
+                // codepoint 라 utf8Encode 실패해 PTY 전송이 안 됨
                 // (`Win+.` 이모지 picker 가 ❤️ 같은 BMP 외엔 다 누락하던 사고).
                 const w16: u16 = @intCast(wParam);
                 const cp: u21 = blk: {
@@ -1421,8 +1419,8 @@ pub const Window = struct {
                     if (!self.imeDispatchDeferredResult()) return 0;
                 }
                 // Ctrl+C는 WM_CHAR(ETX)보다 먼저 공통 입력 정책으로 보낸다.
-                // terminal preedit는 IMM cancel, rename에서는 drop, 그 외에는 ETX를
-                // 한 번 전송한다. TranslateMessage가 queue할 짝꿍 WM_CHAR는 swallow.
+                // terminal preedit는 IMM cancel, 그 외에는 ETX를 한 번
+                // 전송한다. TranslateMessage가 queue할 짝꿍 WM_CHAR는 swallow.
                 if (wParam == 0x43 and GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
                     if (self.dispatchAppEvent(.{ .interrupt = {} })) {
                         self.swallow_next_wm_char = true;
@@ -1438,9 +1436,9 @@ pub const Window = struct {
                     0x24 => .home,
                     0x23 => .end,
                     0x2E => .delete,
-                    // #282 A9 — rename 중 PTY 로 새던 nav 키. dispatch 가 rename
-                    // 활성 시 swallow(true), 비활성 시 false → 아래 escape switch
-                    // 로 fall through 해 기존대로 PTY 전달 (히스토리 이동 등).
+                    // dispatch 가 command menu 열림 시 swallow(true), 아니면
+                    // false → 아래 escape switch 로 fall through 해 기존대로
+                    // PTY 전달 (히스토리 이동 등).
                     0x26 => .up,
                     0x28 => .down,
                     0x21 => .page_up,
@@ -1458,26 +1456,6 @@ pub const Window = struct {
                             else => {},
                         }
                         return 0;
-                    }
-                }
-                // Ctrl+A / Ctrl+E — rename 중이면 line begin/end (terminal
-                // readline 컨벤션, mac/win 통일). rename 비활성이면 dispatch 가
-                // false 반환 → fall through → WM_CHAR 0x01/0x05 가 PTY 로 (셸
-                // readline 정상). Ctrl+Shift+A/E 는 별 단축키 (Ctrl+Shift block
-                // 아래에서 처리).
-                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
-                    const ctrl_rename_key: ?app_event.KeyInput = switch (wParam) {
-                        0x41 => .home, // 'A'
-                        0x45 => .end, // 'E'
-                        else => null,
-                    };
-                    if (ctrl_rename_key) |k| {
-                        if (self.dispatchAppEvent(.{ .key_input = k })) {
-                            // rename consumed — TranslateMessage 가 보낼 짝꿍
-                            // WM_CHAR (0x01 / 0x05) 가 PTY 로 안 가게 swallow.
-                            self.swallow_next_wm_char = true;
-                            return 0;
-                        }
                     }
                 }
                 // Ctrl+Shift shortcuts
@@ -2071,7 +2049,7 @@ pub const Window = struct {
         return self.imeDispatchDeferredResult();
     }
 
-    /// pending=leave인 rename input에서 실제 IMM composition을 유지한다.
+    /// pending=leave인 input에서 실제 IMM composition을 유지한다.
     /// result가 이미 보류됐으면 즉시 복원하고, action이 먼저면 뒤따르는
     /// result/end에서 복원하도록 요청을 기록한다. mouse paste처럼 IMM이
     /// composition을 끝내지 않는 action은 native state를 그대로 둔다.
@@ -2101,8 +2079,7 @@ pub const Window = struct {
     }
 
     /// IME composition 강제 cancel — preedit_buf 비우고 IME state 도 reset.
-    /// 호출처 (마우스 클릭 시 manual commit 후) 가 이미 자모를 rename buf 에
-    /// 추가했으니 IME 가 다음 GCS_RESULTSTR 보내지 않게 cancel. 한국어 / 일본어
+    /// IME 가 다음 GCS_RESULTSTR 보내지 않게 cancel. 한국어 / 일본어
     /// / 중국어 모두 같은 IMM API path. (#164 follow-up)
     pub fn imeCancelComposition(self: *Window) bool {
         if (self.ime_deferred_result != null) {
@@ -2137,8 +2114,7 @@ pub const Window = struct {
         if (len == 0) return;
 
         // UTF-16 → UTF-8. paste text 통째로 buffer 에 모아서 #142 의 paste event
-        // dispatch — rename 활성 시 app_controller 가 rename buffer 로 라우팅,
-        // 아니면 PTY 로 한 번에 write.
+        // dispatch — app_controller 가 PTY 로 한 번에 write.
         // #298 — UTF-16 surrogate 수동 디코딩 → std.unicode.utf16LeToUtf8
         // (BMP=3B, surrogate pair=4B 라 len*3+4 로 충분).
         const alloc = std.heap.page_allocator;
@@ -2148,10 +2124,10 @@ pub const Window = struct {
         if (u8_len == 0) return;
 
         const utf8 = u8_buf[0..u8_len];
-        // app_controller.onAppEvent(.paste) 가 항상 처리 — rename 활성 시
-        // rename buffer 로, 비활성 시 SessionCore.pasteToActive (bracketed
-        // paste mode 검사 + wrap). 이전엔 비활성 시 false 반환 + write_fn 직접
-        // 호출이라 bracketed paste wrap 적용 못 됨.
+        // app_controller.onAppEvent(.paste) 가 항상 처리 —
+        // SessionCore.pasteToActive (bracketed paste mode 검사 + wrap).
+        // 이전엔 false 반환 + write_fn 직접 호출이라 bracketed paste wrap
+        // 적용 못 됨.
         _ = self.dispatchAppEvent(.{ .paste = utf8 });
         _ = write_fn;
     }

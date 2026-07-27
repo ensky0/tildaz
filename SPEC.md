@@ -90,7 +90,7 @@ scale을 적용한 최종 cell 정수 크기는 Linux · macOS · Windows 모두
 사용한다. 세 host 모두 현재 화면 scale을 곱하며, Linux software renderer는
 최종 physical pixel 좌표에서 가장 가까운 정수로 반올림한다.
 
-**탭 제목 font 분리**: 탭 제목·rename cursor·rename preedit은 terminal의
+**탭 제목 font 분리**: 탭 제목은 terminal의
 `font.size_point`와 무관한 고정 13 logical pt를 쓴다. 같은 font family/fallback
 chain을 사용하되 Linux · macOS · Windows 모두 terminal과 별도인 font context와
 atlas/cache를 소유한다. 따라서 terminal font 크기를 바꿔도 탭 제목과 28pt 탭바
@@ -307,12 +307,11 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | 탭바 — 활성 탭 표시·시각 대비 ([#334](https://github.com/ensky0/tildaz/issues/334) 2026-07-22 확정) | **모든 탭 배경(활성 포함) = 탭바 배경**(`TAB_BAR_BG` 33/35/38 — 사용자가 Tilda 에서 실측한 살짝 파란 끼의 회색. 순수 중성 회색은 갈색 끼로 보임) — 탭바 전체가 하나의 회색 띠 (Tilda 문법). **탭바-터미널 가로 경계선**(`TAB_BOTTOM_BORDER_PT` 1pt, `TAB_SEPARATOR_COLOR` 100/100/106)은 `+`/`×`/`…` 버튼 아래까지 **전체 폭 항상** — 컨트롤 fill 이 못 덮게 fill 뒤 재긋기. 활성 탭은 **가로 경계선 바로 위, 슬롯 폭 전체의 amber(`#F7A41D`) 2pt 밑줄로만** 구분 (drag 중이면 따라감). 탭 슬롯 경계는 **세로 구분선** — 경계선과 같은 색·두께, 맨 위(y=0)부터 가로 경계선까지, **모두 중심 정렬**(모든 탭 폭 동일) + 컨트롤 fill·밑줄 **뒤**에 그려 항상 온전한 두께. 화살표 옆에는 끝 탭이 완전히 보일 때만 선. hover 박스 하단은 경계선 위 기준 상하 2pt 대칭. world(슬롯) 기준 고정이라 drag 재배열 중 빈 원위치 슬롯도 구분선+제목 부재로 인지. 이 결정은 비활성 탭이 terminal 배경을 따르던 [#282](https://github.com/ensky0/tildaz/issues/282) 정책을 대체. 색·두께는 시연 튜닝 예정, 테마 연동은 [#335](https://github.com/ensky0/tildaz/issues/335) | 공통 [`ui_metrics.zig`](src/ui_metrics.zig) 상수 + D3D11 | 동일 상수 + Metal | 동일 상수 + software | ✅ | ✅ | ✅ |
 | 탭바 — drag reorder | 탭 본체 drag | `DragState` (5px 임계) → `reorderTabs` | 동일 (`g_drag`) | 동일 (L12-γ-3, [4f7e724](https://github.com/ensky0/tildaz/commit/4f7e724)) | ✅ | ✅ | ✅ |
 | 탭바 — drag follow 시각 | drag 중 탭 마우스 따라 이동 ([#297](https://github.com/ensky0/tildaz/issues/297) B3 결정. source 슬롯엔 탭바 배경이 남아 원위치 표시. z-order 최상위는 macOS 만 — Windows/Linux 는 그리기 순서대로) | `dragged_tab + drag_x` 인자 | 동일 (`TabDragView`, drag 탭 bg 마지막에 그려 z-top) | 동일 (#297 B3 — 이전의 source dim + drop indicator 방식 폐기) + 가장자리 auto-scroll | ✅ | ✅ | ✅ |
-| 탭바 — 더블클릭 rename | 탭 본체 더블클릭 | `RenameState.begin` | 동일 (`g_rename`) | 동일 (L12-γ-2, [04cec33](https://github.com/ensky0/tildaz/commit/04cec33)) | ✅ | ✅ | ✅ |
-| 탭바 — 셸 OSC 0/2 자동 제목 ([#269](https://github.com/ensky0/tildaz/issues/269)) | 탭 제목. 새 탭은 제목 없이 시작하고, 1초 안에 non-empty OSC가 없을 때만 `Tab N` fallback 표시. 1초 직전에 OSC가 도착해 pending 중이면 fallback을 끼워 넣지 않음. 셸이 보낸 raw window title 이 150ms 동안 동일하게 유지되면 반영 (짧은 명령의 순간 왕복 억제). 초기 상태가 끝난 뒤 빈 title 은 최초 `Tab N` 으로 복귀. 사용자가 더블클릭 rename 한 뒤에는 수동 제목이 우선. 활성 탭과 비활성 탭 출력을 공통 8ms frame 예산 안에서 번갈아 파싱하므로 탭 전환 없이 제목 갱신 | readonly VT parse 뒤 `Terminal.getTitle()` 동기화 (#266 의 ConPTY query-response 차단 유지) | `Effects.title_changed` → 공통 pending 제목 상태 | `Effects.title_changed` → 공통 pending 제목 상태 | ✅ | ✅ | ✅ |
-| 탭바 — 긴 확정 제목 truncate ([#271](https://github.com/ensky0/tildaz/issues/271)) | text 영역을 넘으면 glyph 경계에서 자르고 마지막에 U+2026 `…` 한 글자(1 cell) 표시. CJK wide glyph를 반으로 자르지 않으므로 최대 1 cell이 남을 수 있음. rename 중에는 ellipsis 없이 cursor follow scroll | 공통 `tab_layout.iterTabText` → 일반 Unicode glyph path | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 탭바 — 셸 OSC 0/2 자동 제목 ([#269](https://github.com/ensky0/tildaz/issues/269)) | 탭 제목. 새 탭은 제목 없이 시작하고, 1초 안에 non-empty OSC가 없을 때만 `Tab N` fallback 표시. 1초 직전에 OSC가 도착해 pending 중이면 fallback을 끼워 넣지 않음. 셸이 보낸 raw window title 이 150ms 동안 동일하게 유지되면 반영 (짧은 명령의 순간 왕복 억제). 초기 상태가 끝난 뒤 빈 title 은 최초 `Tab N` 으로 복귀. 활성 탭과 비활성 탭 출력을 공통 8ms frame 예산 안에서 번갈아 파싱하므로 탭 전환 없이 제목 갱신 | readonly VT parse 뒤 `Terminal.getTitle()` 동기화 (#266 의 ConPTY query-response 차단 유지) | `Effects.title_changed` → 공통 pending 제목 상태 | `Effects.title_changed` → 공통 pending 제목 상태 | ✅ | ✅ | ✅ |
+| 탭바 — 긴 확정 제목 truncate ([#271](https://github.com/ensky0/tildaz/issues/271)) | text 영역을 넘으면 glyph 경계에서 자르고 마지막에 U+2026 `…` 한 글자(1 cell) 표시. CJK wide glyph를 반으로 자르지 않으므로 최대 1 cell이 남을 수 있음 | 공통 `tab_layout.iterTabText` → 일반 Unicode glyph path | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 탭바 — `<` / `>` 화살표 클릭 | 탭바 양 끝 화살표 (#117) | `scrollTabsByArrow` — viewport 만 1 탭 너비씩 이동, **활성 탭 안 바뀜** + `tab_scroll_user_override=true` | 동일 (`scrollTabsByArrow`) | 동일 (L12-γ-1, [1eb51ee](https://github.com/ensky0/tildaz/commit/1eb51ee) — cross-platform `tab_layout`) | ✅ | ✅ | ✅ |
 | 탭바 — `+` 클릭 | control cluster 첫 버튼. 새 탭 생성 → 활성 → ensure가 viewport 우측 끝으로 정렬. 32-tab limit에서는 자리를 유지하고 비활성 색 + 클릭 noop ([#329](https://github.com/ensky0/tildaz/issues/329) 2026-07-22 결정 — 숨김 정책 대체. 단축키 경로 dialog 는 유지) | `handleNewTab` + `tab_layout.Layout.plus_enabled` | 동일 | 동일 | ✅ | ✅ | ✅ |
-| 탭바 — `…` command menu ([#329](https://github.com/ensky0/tildaz/issues/329)) | 2.2pt diameter로 광학 보정한 원 3개 procedural icon (`+`/`×`는 1.5pt stroke 유지). Show / Hide TildaZ + 현재 instance의 실제 configured hotkey / 구분선 / New Tab / Close Active Tab / Copy Selection / Paste / Toggle Full Screen (hint 는 상태 의존 — workarea 전체화면 중에는 해제 키 `Shift+Alt+Enter`/`Shift+Cmd+Enter` 표시, 클릭은 어떤 모드든 상태 기준 토글) / Open Config / 구분선 / Keyboard Shortcuts / About TildaZ. Copy에는 drag, Paste에는 right-click 안내를 함께 표시. Keyboard Shortcuts는 canonical [`KEYBINDINGS.md`](KEYBINDINGS.md) URL을 기본 브라우저로 연다. **메뉴가 열린 동안은 modal 계층**: 모든 키는 메뉴가 소비 — Esc 닫기, Up/Down/Home/End/Tab/Shift+Tab focus 이동, Enter/Space 실행, 그 외 noop (PTY 로 안 감). pointer 가 항목 위로 오면 keyboard focus 도 그 항목으로 동기화 (표준 메뉴 — 마우스로 건너뛴 뒤 ↑↓ 가 그 자리에서 이어감). 단축키·명시적 paste·**Ctrl+C(interrupt — 2026-07-23 확정)** 는 메뉴를 닫고 정상 실행, global hotkey hide 도 메뉴를 닫음. menu 밖 click 은 닫고 그 click 은 terminal 에 전달하지 않음 — **우클릭도 닫기만 하고 paste 하지 않음**. viewport 높이가 모자라면 entry 단위로 잘라 wheel/키로 scroll (부분 행 없음, wheel 은 세 platform 모두 delta 누적 + 나머지 보존) 하고 **상/하단에 chevron 스크롤 표시 행** 이 생김 (탭바 `<`/`>` 관례 — 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤 + 메뉴 유지). 좁은 폭·긴 hotkey 에서는 shortcut hint 를 먼저 숨김 (label 우선). 행 높이 22pt / 폭 320pt (#334 피드백 — 시연 튜닝). 메뉴 명령 실행은 열기/실행 모두 pending 입력(rename / terminal preedit) commit 후 — keyboard shortcut 과 같은 입력 정책 경유 | 공통 `command_menu.zig` View/hit/onKey + D3D11 overlay + `resolveWindowsInput` 경유 action | 공통 View/hit/onKey + Metal overlay + mouseDown 공통 commit 경유 action | 공통 View/hit/onKey + software overlay + `commitPendingInput` 경유 action | ✅ | ✅ | ✅ |
+| 탭바 — `…` command menu ([#329](https://github.com/ensky0/tildaz/issues/329)) | 2.2pt diameter로 광학 보정한 원 3개 procedural icon (`+`/`×`는 1.5pt stroke 유지). Show / Hide TildaZ + 현재 instance의 실제 configured hotkey / 구분선 / New Tab / Close Active Tab / Copy Selection / Paste / Toggle Full Screen (hint 는 상태 의존 — workarea 전체화면 중에는 해제 키 `Shift+Alt+Enter`/`Shift+Cmd+Enter` 표시, 클릭은 어떤 모드든 상태 기준 토글) / Open Config / 구분선 / Keyboard Shortcuts / About TildaZ. Copy에는 drag, Paste에는 right-click 안내를 함께 표시. Keyboard Shortcuts는 canonical [`KEYBINDINGS.md`](KEYBINDINGS.md) URL을 기본 브라우저로 연다. **메뉴가 열린 동안은 modal 계층**: 모든 키는 메뉴가 소비 — Esc 닫기, Up/Down/Home/End/Tab/Shift+Tab focus 이동, Enter/Space 실행, 그 외 noop (PTY 로 안 감). pointer 가 항목 위로 오면 keyboard focus 도 그 항목으로 동기화 (표준 메뉴 — 마우스로 건너뛴 뒤 ↑↓ 가 그 자리에서 이어감). 단축키·명시적 paste·**Ctrl+C(interrupt — 2026-07-23 확정)** 는 메뉴를 닫고 정상 실행, global hotkey hide 도 메뉴를 닫음. menu 밖 click 은 닫고 그 click 은 terminal 에 전달하지 않음 — **우클릭도 닫기만 하고 paste 하지 않음**. viewport 높이가 모자라면 entry 단위로 잘라 wheel/키로 scroll (부분 행 없음, wheel 은 세 platform 모두 delta 누적 + 나머지 보존) 하고 **상/하단에 chevron 스크롤 표시 행** 이 생김 (탭바 `<`/`>` 관례 — 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤 + 메뉴 유지). 좁은 폭·긴 hotkey 에서는 shortcut hint 를 먼저 숨김 (label 우선). 행 높이 22pt / 폭 320pt (#334 피드백 — 시연 튜닝). 메뉴 명령 실행은 열기/실행 모두 pending 입력(terminal preedit) commit 후 — keyboard shortcut 과 같은 입력 정책 경유 | 공통 `command_menu.zig` View/hit/onKey + D3D11 overlay + `resolveWindowsInput` 경유 action | 공통 View/hit/onKey + Metal overlay + mouseDown 공통 commit 경유 action | 공통 View/hit/onKey + software overlay + `commitPendingInput` 경유 action | ✅ | ✅ | ✅ |
 | OS mouse cursor shape (#193) | 아래 §3.1 표 참고 | `WM_SETCURSOR` 가 `App.cursorRegion` 호출 → `IDC_IBEAM` 또는 `IDC_ARROW` `SetCursor` ([src/window.zig](src/window.zig)) | NSView `resetCursorRects` 가 cell rect 에 `NSCursor.IBeamCursor` add ([src/host/macos.zig](src/host/macos.zig) `tildazResetCursorRects`) | `wp_cursor_shape_v1.set_shape(serial, text=9 / default=1)` ([ab8e4b9](https://github.com/ensky0/tildaz/commit/ab8e4b9), #193). compositor advertise 미지원 환경 graceful degrade | ✅ | ✅ | ✅ |
 | z-order 양보 on focus loss (#195) | 다른 app 활성화 시 우리 z-order *level* 만 떨어뜨려서 그 app 이 위로. 우리는 *visible 유지* (hide 안 함, 다른 app 뒤에 보임). 다시 우리 app 활성화 시 원래 level 복귀. **Linux 미적용 — layer-shell categorical 한계, 아래 note** | `WM_ACTIVATEAPP wParam=0` → `SetWindowPos(HWND_NOTOPMOST)`, wParam=1 → `SetWindowPos(HWND_TOPMOST)` ([src/window.zig](src/window.zig)) | `applicationDidResignActive:` → `setMainWindowLevel(NSNormalWindowLevel)`, `applicationDidBecomeActive:` → `setPopupWindowLevel()` ([src/host/macos.zig](src/host/macos.zig)) | **❌ platform-limit** — layer-shell 의 4 단계 categorical layer (background/bottom/top/overlay) 가 normal app z-order 와 mix 안 됨. layer=top + exclusive 유지 ([f19a1d6](https://github.com/ensky0/tildaz/commit/f19a1d6), 아래 §3.1 note 참조) | ✅ | ✅ | ❌ (platform-limit) |
 
@@ -320,15 +319,14 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 
 | 영역 | hover 시 cursor | 비고 |
 |---|---|---|
-| 셀 (terminal grid) 영역 | I-beam | rename / preedit / 기타 상태 무관, 셀 영역은 *항상* 텍스트 편집 컨텍스트 |
-| 탭바 — rename 활성 탭의 *text 입력 영역* | I-beam | rename 진입 (더블클릭) 이후 그 탭의 text 영역만 텍스트 편집 컨텍스트. #268 로 per-tab close 가 사라져 탭 내부 전체가 text 영역 |
+| 셀 (terminal grid) 영역 | I-beam | preedit / 기타 상태 무관, 셀 영역은 *항상* 텍스트 편집 컨텍스트 |
 | 탭바 — 우측 `+` / `×` / `…` 버튼 | arrow | 버튼 성격 — 클릭 = 새 탭 / 활성 탭 닫기 / command menu (#268, #329) |
-| 탭바 — 비활성 탭 본체 / 활성 탭 본체 (rename 비활성) / `<` / `>` / `+` / `×` / `…` / 빈 영역 / drag 중 | arrow | 탭바의 기본 — 클릭 / 더블클릭 / drag 등 *버튼* 성격 영역 |
+| 탭바 — 탭 본체 / `<` / `>` / `+` / `×` / `…` / 빈 영역 / drag 중 | arrow | 탭바의 기본 — 클릭 / drag 등 *버튼* 성격 영역 |
 | 스크롤바 (우측 10 PT) | arrow | drag-to-scroll 버튼 |
 | 윈도우 padding / 가장자리 | arrow | terminal_padding 영역 |
 | 윈도우 가장자리 (system non-client) | OS 기본 | 우리가 안 건드림 (Win: HTBORDER 등은 `DefWindowProc` 처리, mac: borderless 라 가장자리 없음, Linux: layer-shell 가장자리 없음) |
 
-> **참조 비교:** iTerm2 / Terminal.app 동등 패턴 — 셀 항상 I-beam, 탭바 평상 arrow, 탭 rename 더블클릭 시 그 탭 text 만 I-beam. VSCode / Chrome 탭바는 rename 없어 항상 arrow.
+> **참조 비교:** VSCode / Chrome 탭바 동등 패턴 — 셀(내용 영역) I-beam, 탭바는 항상 arrow. (탭 inline rename 은 [#341](https://github.com/ensky0/tildaz/issues/341) 로 제거 — rename 활성 탭 text 영역의 I-beam 예외도 함께 삭제.)
 
 > **z-order 양보 — Linux 미적용 (#195):** Linux Wayland 의 `zwlr_layer_shell_v1` 은 *categorical* 4 단계 (background / bottom / top / overlay) 라 *normal xdg_toplevel z-order level* 자체가 없음. `set_layer(bottom)` 으로 떨어뜨려도 *desktop wallpaper 바로 위 + 모든 일반 windows 아래* — 사용자 의도 (*다른 새 창 → tildaz → 그 외*) 와 어긋남 (tildaz 가 모든 일반 windows 아래로 가버림). mac `NSWindow.setLevel(NSNormalWindowLevel)` / Win `SetWindowPos(HWND_NOTOPMOST)` 은 우연히 *normal app z-order* 와 mix 자연이라 한 줄 toggle 로 완벽 — Linux 의 categorical 한계 우회 불가. *layer-shell destroy + xdg_toplevel 재생성* 도 시도 가능하나 DE / compositor 마다 동작 다양 + animation glitch + 매 toggle 마다 수십~수백 ms latency 라 사용자가 알아챔. 회피 — layer=top + `keyboard_interactivity=exclusive` 유지. drop-down 본분 (yakuake / guake / Tilda 등 모든 Linux drop-down 동등 한계). 사용자가 hotkey 로 hide 후 다른 app 사용.
 
@@ -363,36 +361,15 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | PTY exit → 그 탭만 정리 | read thread → main thread 안전 | `WM_TAB_CLOSED` post + `closeTabByPtr` | `Tab.exit_flag` atomic + `drainExitedTabs` | 동일 (Linux PTY `Tab.exit_flag` atomic) | ✅ | ✅ | ✅ |
 | 마지막 탭 종료 → 앱 종료 | count == 0 시 | `closeAfterShellExit` | `NSApp.terminate:` | wayland event loop break + `exit(0)` | ✅ | ✅ | ✅ |
 | Drag reorder 5px 임계 | drag 가 5px 미만 = click | `DragState.move` | 동일 (cross-platform `tab_interaction.zig`) | 동일 모듈 (L12-γ-3) | ✅ | ✅ | ✅ |
-| Rename — cursor 표시 | always-visible 1px vertical bar, text cell 위·아래 2px inset | `cursor_instances`: `tab_layout.renameCursorVertical`의 cell top + 2, `ch - 4` ([#315](https://github.com/ensky0/tildaz/issues/315)) | `drawTabBar`: `text_y_top + 2`, `ch - 4` | `drawTabBar`: `text_y_top + 2`, `cell_h - 4` | ✅ | ✅ | ✅ |
-| Rename — IME UTF-8 입력 | 한글 / 일본어 등 multi-byte | `RenameState.insertCodepoint` | 동일 (`imeInsertText` rename 분기) | 동일 (`zwp_text_input_v3.commit_string` → RenameState, L12-γ-2) | ✅ | ✅ | ✅ |
-| Rename — IME preedit 위치 | 탭바 cursor 옆 inline (보라 배경) | `WM_IME_*` 가로채기 + `ImmGetCompositionStringW` + renderer overlay (#164 v0.4.0) | `drawTabBar` 의 preedit 인자 | text-input-v3 preedit_string → `drawTabBar` overlay (L12-γ-2, foot 패턴) | ✅ | ✅ | ✅ |
-| Rename — 마우스 클릭 cursor 이동 | 같은 탭 text 영역 클릭 → cursor 이동 (commit X). 다른 영역 → commit. preedit 활성 시 manual commit + IME state cancel. | `tryRenameClickMoveCursor` + `imeCancelComposition` (#164 v0.4.0) | `tryRenameClickMoveCursor` + `discardMarkedText` 동일 | `tryRenameClickMoveCursor` + text-input reset (L12-γ-2) | ✅ | ✅ | ✅ |
-| Rename — preedit 가운데 입력 push-right | cursor 뒤 main text 가 preedit advance 만큼 우측 이동, commit 시 자연 삽입 | `x_off += preedit_advance_total` (#164 v0.4.0) | 동일 (`text_x += preedit_advance_total`) | 동일 (cross-platform `drawTabBar`) | ✅ | ✅ | ✅ |
-| Rename — cursor follow scroll reserve | 1 cell (cw) 고정. preedit 폭은 별도 합산하고 활성/비활성 모두 같은 reserve 유지 → typing/commit 때 cursor 안정 + 좌우 여백 비대칭 축소 (#271) | `tab_layout.cursorReserve` / `cursorScrollOffset` (#163 v0.4.0 helper) | 동일 (양쪽 같은 helper) | 동일 (cross-platform `tab_layout`) | ✅ | ✅ | ✅ |
-| Rename — MAX_TABS 32 한도 + dialog | `+` 는 자리 유지 + 비활성 색 + 클릭 noop ([#329](https://github.com/ensky0/tildaz/issues/329)), 단축키 시 dialog | `tab_actions.checkAtLimitAndDialog` (#159 v0.4.0) | 동일 (양쪽 같은 helper) | 동일 helper — dialog UI 는 §6 step 3 후 layer-shell overlay (#203) | ✅ | ✅ | ✅ |
-| Rename — IME 후보 popup 위치 / 한자 치환 | cursor 옆 자연 추적 (한자 / kanji / hanzi). macOS Option+Return 은 조합 중 한글을 먼저 rename buffer 에 commit 한 뒤 후보창을 즉시 띄우고, 후보 확정 시에만 원래 한글 range 를 선택 한자로 치환. Esc / focus loss 는 원래 한글 유지. | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 tab rename snapshot 기준 rect 반환 + `insertText:replacementRange:` 로 range 치환 (#166, #190 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 가 IME 후보 popup 위치 — `updateCursorRectangle` 가 `physicalToLogical` 변환 적용 (L10-γ + 사용자 시연 fix). *입력 확정된 한글* 의 한자 변환은 §5 표 참조 (❌ platform-limit) | ✅ | ✅ | 🟨 (cursor 위치 ✅ / 입력 확정된 한글의 한자 변환 ❌ — §5 행) |
-| Rename auto-commit on focus loss | 아래 §4.1 통합 표 참조 — 모든 focus_loss = commit, Esc 만 cancel | (각 host 의 호출 site) | (각 host 의 호출 site) | (각 호출 site — §4.1 참조) | ✅ | ✅ | 🟨 (일부 path 미구현 — §4.1 참조) |
+| 탭 — MAX_TABS 32 한도 + dialog | `+` 는 자리 유지 + 비활성 색 + 클릭 noop ([#329](https://github.com/ensky0/tildaz/issues/329)), 단축키 시 dialog | `tab_actions.checkAtLimitAndDialog` (#159 v0.4.0) | 동일 (양쪽 같은 helper) | 동일 helper — dialog UI 는 §6 step 3 후 layer-shell overlay (#203) | ✅ | ✅ | ✅ |
 
-### 4.1 Rename focus_loss 통합 표 (#175)
+### 4.1 Pending 입력 (terminal preedit) focus_loss 정책 (#175, #296)
 
-> **입력 상태 × 단축키/키 처리 정책은 `src/input_policy.zig` (`resolve`) 단일 소스** — 세 host(Windows `onAppEvent` / macOS keyDown / Linux `processKeyEvent`)가 native 입력을 분류해 `resolve` 에 넘기고 그 결과(pending: leave/commit/discard × target: rename_buffer/pty/run_action/drop)대로 동작한다. 아래 표/§5.1 이 그 정책의 truth table 이며 `input_policy` 의 단위 테스트로 고정 (#296).
+> **입력 상태 × 단축키/키 처리 정책은 `src/input_policy.zig` (`resolve`) 단일 소스** — 세 host(Windows `onAppEvent` / macOS keyDown / Linux `processKeyEvent`)가 native 입력을 분류해 `resolve` 에 넘기고 그 결과(pending: leave/commit/discard × target: pty/run_action)대로 동작한다. §5.1 이 그 정책의 truth table 이며 `input_policy` 의 단위 테스트로 고정 (#296).
 
-탭 rename 활성 중에 어떤 focus_loss 가 발생해도 동일 동작 = **commit** (현재 입력값으로 그 탭 이름 확정). 유일한 예외 = **Esc** (cancel), 그리고 **read-only 단축키(copy_selection / dump_perf)** 는 편집을 끝내지 않음 (#296).
+terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 클릭 / 상태 변경 단축키 / F1 hide / quit) 가 발생해도 동일 동작 = **commit** (자모를 PTY 로 flush — 사용자 입력 손실 회피). 예외 둘: **Ctrl+C** 는 discard (line abort, §5.1), **read-only 단축키(copy_selection / dump_perf)** 는 preedit 을 유지하되 자모 보존이 필요한 terminal preedit 은 flush 후 실행한다.
 
-다른 inline rename UX 표준과 일치 — Finder filename rename, iTerm2 tab rename 등. 입력 흐름이 *항상 어딘가 저장* → 사용자 입력 손실 회피. cancel 은 명시적 의도일 때만.
-
-| Focus_loss 액션 | Spec | Windows 호출 site | macOS 호출 site | Linux 호출 site | Win | Mac | Linux |
-|---|---|---|---|---|---|---|---|
-| 마우스로 다른 탭 클릭 | commit | `mouse_down` 진입 첫 줄 (`isRenaming` → `commitRename`) | `tildazMouseDown` 진입 첫 줄 (`commitPendingInput`) | `wl_pointer.button` BTN_LEFT 핸들러 진입 (`commitPendingInput`) | ✅ | ✅ | ✅ |
-| 마우스로 터미널 영역 클릭 | commit | 동일 (영역 무관, 모든 `mouse_down`) | 동일 (영역 무관, 모든 `tildazMouseDown`) | 동일 (영역 무관) | ✅ | ✅ | ✅ |
-| Cmd/Ctrl+숫자 (탭 전환) | commit | `onAppEvent .shortcut` 분기 진입 첫 줄 (`isRenaming` → `commitRename`) | `tildazKeyDown` 의 Cmd 분기 진입 직전 (`commitPendingInput`) | XKB Alt+숫자 핸들러 진입 (`commitPendingInput`) | ✅ | ✅ | ✅ |
-| Cmd/Ctrl+Shift+[ / ] (prev/next) | commit | 동일 (`.shortcut` 진입 첫 줄) | 동일 | 동일 (Ctrl+Shift+[/]) | ✅ | ✅ | ✅ |
-| Cmd/Ctrl+T (새 탭) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+T) | ✅ | ✅ | ✅ |
-| Cmd/Ctrl+W (탭 닫기) | commit | 동일 | 동일 | 동일 (Ctrl+Shift+W) | ✅ | ✅ | ✅ |
-| 그 외 상태변경 단축키 (reset / show_about / open_config / open_log) | commit | 동일 (`.shortcut` 진입 첫 줄) | `keyDown:`과 NSMenu selector가 공통 `applyShortcutInputPolicy` → `input_policy.resolve` → pending=commit 뒤 action (#317) | `input_policy.resolve` → pending=commit (Ctrl+Shift+I·P·L·R / reset #214) | ✅ | ✅ | ✅ |
-| copy_selection (Ctrl+Shift+C) / dump_perf (Ctrl+Shift+F12) | **commit 안 함** (read-only) | rename 유지 (`input_policy.resolve`의 pending=leave 확인 후 action 실행) | rename 유지 (`input_policy.resolve`의 pending=leave) | rename 유지 (`input_policy.resolve` read_only → pending=leave, #296) | ✅ | ✅ | ✅ |
-| F1 hide (윈도우 숨김) | commit | `WM_HOTKEY` → `toggle` 호출 직전 (`before_hide_fn` callback) | `toggleWindow`의 공통 `applyShortcutInputPolicy(.toggle_visibility)` | KGlobalAccel Pressed 또는 `--toggle` IPC가 공통 `handleActivatedToggle` 진입 후 `commitPendingInput` | ✅ | ✅ | ✅ |
-| **Esc** | **cancel** (유일 예외) | `handleRenameKey` 의 `.cancel` 분기 | `tildazKeyDown` 의 Esc keycode 분기 | XKB_KEY_Escape 의 rename cancel 분기 | ✅ | ✅ | ✅ |
+(탭 inline rename 과 그 focus_loss commit 표는 [#341](https://github.com/ensky0/tildaz/issues/341) 로 제거 — 과거 표는 그 이슈와 git 이력 참조.)
 
 ---
 
@@ -402,32 +379,32 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 
 | 항목 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 조합 중 (preedit) inline 표시 | cursor 위치에 보라색 배경 + 글자 | `WM_IME_*` 가로채기 + `ImmGetCompositionStringW(GCS_COMPSTR)` → preedit_buf → cell / tab rename overlay (#164 v0.4.0) | `g_preedit_buf` + cell `renderFrame` 의 preedit 영역 + tab rename overlay | `zwp_text_input_v3.preedit_string` event → `preedit_buf` → cell / tab rename overlay ([9127ba7](https://github.com/ensky0/tildaz/commit/9127ba7), L10-β) | ✅ | ✅ | ✅ |
+| 조합 중 (preedit) inline 표시 | cursor 위치에 보라색 배경 + 글자 | `WM_IME_*` 가로채기 + `ImmGetCompositionStringW(GCS_COMPSTR)` → preedit_buf → cell overlay (#164 v0.4.0) | `g_preedit_buf` + cell `renderFrame` 의 preedit 영역 | `zwp_text_input_v3.preedit_string` event → `preedit_buf` → cell overlay ([9127ba7](https://github.com/ensky0/tildaz/commit/9127ba7), L10-β) | ✅ | ✅ | ✅ |
 | 음절 단위 backspace | 자모 / 음절 단위 되돌리기 | (OS IME 자체) | 동일 | (fcitx5 / ibus 자체) | ✅ | ✅ | ✅ |
 | 화살표 / 영문 / space → 음절 commit | IME 가 모르는 키 = 음절 자동 확정 | (OS IME 자체) | `interpretKeyEvents` → IME → callback | text-input-v3 의 commit_string + preedit_string done-apply batch ([5f55caa](https://github.com/ensky0/tildaz/commit/5f55caa), L10-γ) | ✅ | ✅ | ✅ |
 | commit 트리거 | 음절 더 확장 안 되면 자동 | (OS IME 자체) | 동일 | (fcitx5 / ibus 자체) — commit_string event | ✅ | ✅ | ✅ |
-| 한자 / kanji / hanzi 후보 popup 위치 | cursor 옆 추적 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 terminal cursor row / tab rename snapshot 기준 rect 반환 (#166 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 매 redraw (L10-γ) | ✅ | ✅ | ✅ |
+| 한자 / kanji / hanzi 후보 popup 위치 | cursor 옆 추적 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame (#164 v0.4.0) | `NSTextInputClient.firstRectForCharacterRange` 가 terminal cursor row 기준 rect 반환 (#166 v0.4.3) | `zwp_text_input_v3.set_cursor_rectangle` 매 redraw (L10-γ) | ✅ | ✅ | ✅ |
 | 후보 popup 안 nav 키 | IME default 따름 — tildaz client 가 키 매핑 강제 / 통일 안 함 (§0 #2 native 우선). 사용자가 IME 별 설정에서 변경 가능 | Win IME native (MS-IME 한국어 default) | mac IM Kit native (한국어 IME default) | IME default (예: fcitx5-hangul = ↑/↓ page nav + Tab/Shift+Tab candidate, ←/→ 미매핑 → cursor 이동 의도로 popup 닫힘) | ✅ | ✅ | ✅ |
 | 한자 변환 트리거 키 (*조합 중* 한글) | 조합 중인 한글에서 한자 후보 popup 을 여는 키. 키 자체는 IME 엔진 소관 — tildaz 는 정의 / 강제하지 않음 (§0 native 우선). *입력 확정된* 한글의 재변환 트리거는 아래 #209 행 참조. | Win IME native — 한자 키 (한국어 키보드; MS-IME default) | Apple 한글 IME — `Option+Return` | IME 엔진 설정 키 (ibus-hangul 은 F9 / 한자 키가 default, fcitx5-hangul 은 설정에서 지정 — IME 버전 따라 다를 수 있음) → IME 자체 후보 popup | ✅ | ✅ | ✅ |
-| 입력 확정된 한글의 한자 변환 ([#209](https://github.com/ensky0/tildaz/issues/209)) | committed text 또는 조합 중 한글 → 후보 popup → 확정 시 replacement. 후보창이 떠 있는 동안 원래 한글은 그대로 보이고, 후보 확정 시에만 한글을 지우고 한자를 입력. Esc / 후보 취소 / focus loss 는 원래 한글 유지. 일반 용어로는 "Hanja reconversion" — *재변환* 이지만 *한자 → 한글* 의미가 아니라 *이미 commit 된 글자를 다시 IME 의 변환 대상으로 되돌려 후보 popup 띄우기*. | Win IME native conversion key / candidate popup 경로. app 은 후보 위치를 `ImmSetCompositionWindow` 로 유지 | `NSTextInputClient` API (`selectedRange`, `markedRange`, `attributedSubstringForProposedRange`, `firstRectForCharacterRange`, `insertText:replacementRange:`) 구현. terminal cursor row 는 PTY `backspace + insert`, tab rename 은 `RenameState` range 치환. 그 외 범위는 안전하게 plain insert fallback (#166, #190 v0.4.3) | ❌ **platform 한계** — *조합 중* 한자 후보는 fcitx5 / ibus 자체 popup 으로 동작 (어느 host 든 OK). *입력 확정된* 한글의 한자 변환은 `zwp_text_input_v3` wire protocol 에 *해당 request 자체가 없어* client → IME 트리거 경로 부재. text-input-v4 의 `set_surrounding_text` 활용 가능성은 별 후속 검토 — Linux 첫 릴리즈는 unsupported 로 출시 | ✅ | ✅ | ❌ (platform-limit) |
+| 입력 확정된 한글의 한자 변환 ([#209](https://github.com/ensky0/tildaz/issues/209)) | committed text 또는 조합 중 한글 → 후보 popup → 확정 시 replacement. 후보창이 떠 있는 동안 원래 한글은 그대로 보이고, 후보 확정 시에만 한글을 지우고 한자를 입력. Esc / 후보 취소 / focus loss 는 원래 한글 유지. 일반 용어로는 "Hanja reconversion" — *재변환* 이지만 *한자 → 한글* 의미가 아니라 *이미 commit 된 글자를 다시 IME 의 변환 대상으로 되돌려 후보 popup 띄우기*. | Win IME native conversion key / candidate popup 경로. app 은 후보 위치를 `ImmSetCompositionWindow` 로 유지 | `NSTextInputClient` API (`selectedRange`, `markedRange`, `attributedSubstringForProposedRange`, `firstRectForCharacterRange`, `insertText:replacementRange:`) 구현. terminal cursor row 는 PTY `backspace + insert`. 그 외 범위는 안전하게 plain insert fallback (#166, #190 v0.4.3) | ❌ **platform 한계** — *조합 중* 한자 후보는 fcitx5 / ibus 자체 popup 으로 동작 (어느 host 든 OK). *입력 확정된* 한글의 한자 변환은 `zwp_text_input_v3` wire protocol 에 *해당 request 자체가 없어* client → IME 트리거 경로 부재. text-input-v4 의 `set_surrounding_text` 활용 가능성은 별 후속 검토 — Linux 첫 릴리즈는 unsupported 로 출시 | ✅ | ✅ | ❌ (platform-limit) |
 
 ### 5.1 IME preedit × line-nav 키 매트릭스 (#164 follow-up 6, v0.4.0)
 
-탭 rename 과 terminal cell 양쪽에서 IME 조합 (preedit) 중에 line-nav 키 (Home / End / Ctrl+A / Ctrl+E) 를 누를 때 동작 정의. native textbox / iTerm2 동등.
+terminal cell 에서 IME 조합 (preedit) 중에 line-nav 키 (Home / End / Ctrl+A / Ctrl+E) 를 누를 때 동작 정의. native textbox / iTerm2 동등.
 
 **원칙:** nav 키와 focus-loss action은 *commit 후 이동/action* — 입력 중 자모를
-잃지 않고, 결과 문자가 action보다 먼저 원래 tab/prompt/rename 제목에 정확히 한 번
+잃지 않고, 결과 문자가 action보다 먼저 원래 prompt 에 정확히 한 번
 들어간다. paste는 preedit commit 뒤 paste payload 순서라 `하` 조합 중 `X`를 붙이면
 `하X`다. Ctrl+C만 예외(line abort 의미). Windows와 macOS는 조합 자모까지 discard,
 Linux/fcitx5는 자모를 먼저 확정한 뒤 SIGINT(`가^C`) — 어느 쪽이든 줄이 취소돼 실행
 안 되므로 무해(표준 터미널과 동일).
 
-Windows adapter는 실제 `rename_active`, `imePreeditSlice().len`, 보류된 IME result
+Windows adapter는 실제 `imePreeditSlice().len`, 보류된 IME result
 상태로 `input_policy.resolve`를 호출한다. commit이면 `ImmNotifyIME(CPS_COMPLETE)`가
 nested 발생시킨 `GCS_RESULTSTR`를 `WM_IME_COMPOSITION` 안에서 원래 대상에 동기
-전달하고 message를 소비한 뒤 rename commit과 action을 순서대로 실행한다.
+전달하고 message를 소비한 뒤 action을 실행한다.
 discard면 `CPS_CANCEL` 뒤 ETX를 직접 한 번 보내고 translated `WM_CHAR`를 소비한다.
-read-only rename action보다 result가 먼저 오면 action까지 보류하고 leave 정책에
+read-only action보다 result가 먼저 오면 action까지 보류하고 leave 정책에
 따라 `ImmSetCompositionStringW(SCS_SETSTR)`로 실제 IMM composition을 복원한다. 이
 순서는 shortcut, Ctrl+Shift+V, 우클릭 paste, F1, Alt+Enter, Alt+F4, Ctrl+C에 공통이다
 ([#313](https://github.com/ensky0/tildaz/issues/313)).
@@ -437,7 +414,7 @@ selector, Cmd+Q의 `TildazView.performKeyEquivalent:`,
 `applicationShouldTerminate:`가 모두 action 전에 같은
 `applyShortcutInputPolicy`를 호출한다. helper가 `macInputState()`를
 `input_policy.resolve`에 전달하고 pending을 처리하므로 NSMenu가 `keyDown:`을
-우회해도 terminal/rename preedit은 원래 sink에 정확히 한 번 반영된다. 공통
+우회해도 terminal preedit은 원래 sink에 정확히 한 번 반영된다. 공통
 `commitPendingInput`은 상태를 비운 뒤 render를 요청해 NSMenu/종료 확인 창 뒤에도
 마지막 preedit frame이 남지 않는다. AppKit이 Command key equivalent를
 `keyDown:`보다 먼저 key window의 view hierarchy에 전달하므로, custom
@@ -454,16 +431,6 @@ Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모�
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
 |---|---|---|---|---|---|---|
-| 탭 rename | Home / Ctrl+A | preedit 자모 → rename buf cursor 위치 insert | cursor 맨 앞 | ✅ | ✅ | ✅ (`handleRenameKey` mapping — Home / Ctrl+A 모두 .home 로 변환) |
-| 탭 rename | End / Ctrl+E | (동일) | cursor 맨 끝 | ✅ | ✅ | ✅ (End / Ctrl+E 모두 .end 로 변환) |
-| 탭 rename | Left / Right | (IME 자체 commit 트리거 — 음절 확정) | cursor 한 자 이동 | ✅ | ✅ | ✅ (`handleRenameKey` mapping + IME commit trigger) |
-| 탭 rename | Backspace | (IME 자체 — 자모 단위 되돌리기) | (preedit 안의 음절 처리) | ✅ | ✅ | ✅ (`handleRenameKey` mapping + IME 자모 처리) |
-| 탭 rename | Esc | preedit cancel + rename cancel | rename 종료 (변경 안 함) | ✅ | ✅ | ✅ |
-| 탭 rename | Enter | preedit 자모 commit + rename commit | rename 종료 (변경 적용) | ✅ | ✅ | ✅ |
-| 탭 rename | Cmd / Ctrl+T·W·… 단축키, F1, Alt/Cmd+Enter, Alt+F4/Cmd+Q | preedit 결과를 rename buf에 반영 후 rename commit | 단축키 / hide / fullscreen / quit 동작 | ✅ | ✅ | ✅ |
-| 탭 rename | read-only copy / perf | preedit와 rename 유지 | 복사 / perf dump만 실행 | ✅ | ✅ | ✅ |
-| 탭 rename | paste (`X`) | preedit 자모 → rename buf cursor 위치 insert (조합 확정, rename 은 유지 — [#340](https://github.com/ensky0/tildaz/issues/340)) | payload 를 그 뒤에 insert (`하X`) | ✅ | ✅ | ✅ |
-| 탭 rename | 마우스 click 다른 영역 | preedit + rename 모두 commit | click 동작 | ✅ | ✅ | ✅ |
 | terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
 | terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | ✅ — `processKeyEvent` 가 Ctrl+letter (Ctrl+C 제외) + preedit 시 `commitPendingInput` → PTY 자모 송신 + IME session reset. 그 다음 utf8 path 가 Ctrl byte 송신 |
 | terminal cell | Ctrl+C | line abort — 자모 discard *시도* 후 SIGINT (IME 의존) | SIGINT (`\x03`) | ✅ (`discardMarkedText` 로 완전 discard) | ✅ | 🟨 fcitx5 가 Ctrl+C 에서 자모 먼저 확정 → `가^C` (취소된 줄에 남아 무해); 완전 discard 아님 |
@@ -477,11 +444,8 @@ Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모�
 | 결정 | 이유 |
 |---|---|
 | **Cmd+Left/Right 미매핑** | mac Terminal.app 도 동일 — terminal-style 앱은 Ctrl+A/E 만 받음. Cmd+Left/Right 는 일반 mac textbox 표준 (NSTextField line begin/end) 이지만 우리 앱은 terminal context 우선. Cmd+Left/Right 누르면 cmd 분기에서 commitPendingInput 후 mainMenu dispatch (key match 없으면 그대로 commit 됨). |
-| **Ctrl+A/E + Home/End 매핑** | terminal readline 컨벤션 + native textbox 일부 표준 (NSStandardKeyBindingResponder 의 `moveToBeginningOfParagraph:` 등). 양쪽 fitness 함. |
-| **nav 키 + preedit = commit (Ctrl+C 외)** | iTerm2 / native textbox 동등. 사용자가 입력 중인 자모 잃지 않음. terminal preedit 의 경우 PTY 로 직송 (셸 readline 이 받음), tab rename 의 경우 rename buf 의 cursor 위치에 insert. |
+| **nav 키 + preedit = commit (Ctrl+C 외)** | iTerm2 / native textbox 동등. 사용자가 입력 중인 자모 잃지 않음. terminal preedit 은 PTY 로 직송 (셸 readline 이 받음). |
 | **Ctrl+C = line abort** | shell 의 SIGINT 가 "현재 입력 라인 버리기". macOS 는 조합 자모까지 discard(`discardMarkedText`). Linux/fcitx5 는 Ctrl+C 에서 자모를 먼저 확정해 `가^C`(자모가 취소된 줄에 남음) — gnome-terminal 등 표준 터미널과 동일하고 줄이 취소되어 무해. 완전 discard 는 IME 가 preedit 을 남겨두는 경우에만(best-effort). |
-| **좌측 ellipsis 안 보여줌** | native textbox (TextEdit, Safari URL bar) 도 안 함. cursor 위치 자체로 "긴 텍스트 안 어딘가" 라는 cue 충분. |
-| **우측 ellipsis 도 deferred (#169)** | "탭 이름이 짧아진 듯" 사용자 feedback 으로 시도. 근데 cursor visibility 와 충돌 + zone transition 시 visual jitter 등 edge case 많아 revert. |
 
 #### 시도 / 폐기 기록 (2026-05-10 세션)
 
@@ -504,85 +468,11 @@ Apple `StandardKeyBinding.dict` (시스템 표준 키바인딩 정의) 에 따�
 - `NSTextView` 가 아니라 `NSResponder` 직속 custom view 라 일부 selector 매핑이 path 안 거침
 - 또는 fn modifier (외장 키보드 Home/End) 가 StandardKeyBinding lookup 우회
 
-해결: `tildazKeyDown` 의 rename 분기에 직접 keyCode intercept 추가. Cocoa StandardKeyBinding mechanism 우회. mac virtual keycode (`kVK_Home` = 115, `kVK_End` = 119, `kVK_ANSI_A` = 0, `kVK_ANSI_E` = 14) 직접 검사. 외장 키보드 / fn+Left/Right / Ctrl+A/E 모두 동일 처리.
+해결 (당시): `tildazKeyDown` 에 직접 keyCode intercept 추가. Cocoa StandardKeyBinding mechanism 우회. mac virtual keycode (`kVK_Home` = 115, `kVK_End` = 119, `kVK_ANSI_A` = 0, `kVK_ANSI_E` = 14) 직접 검사. 외장 키보드 / fn+Left/Right / Ctrl+A/E 모두 동일 처리.
 
 → **교훈:** custom NSView 에서 line-nav 키는 StandardKeyBinding 의존 X, 직접 keyCode intercept.
 
-**2. rename 우측 ellipsis cue (#169 deferred)**
-
-긴 탭 이름 rename 중 cursor 맨 앞으로 옮기면 우측에 hidden text 있다는 visual cue 가 없어 "탭 이름이 짧아진 느낌" 이라는 사용자 feedback (시연 5/10).
-
-시도한 구현:
-- `iterTabText` 에 우측 "..." 3 dots emit
-- `break_at` 을 `max - reserve - ellipsis_w` 앞당겨 dots 가 글자랑 안 겹치게 (text 가 ellipsis 자리까지 못 그리게 break)
-- 가드: `can_show_right_ellipsis = scroll_offset == 0 AND total > max - reserve AND cursor_x_visual < max - reserve - ellipsis_w`
-- 좌측 ellipsis 도 시도했다 native textbox 안 함이라 제거
-
-발견된 문제:
-- **Cursor visibility 충돌**: cursor 가 ellipsis zone (max - reserve - ellipsis_w 근처) 으로 이동하면 loop break 가 cursor byte 도달 전이라 cursor 안 그려짐 (typing at front 진행 시 발생)
-- **Visual jitter**: cursor 위치에 따라 가드 조건 통과/미통과 transition → ellipsis 갑자기 사라지거나 나타남
-- **사용자 시연 결과 "이상함"**: dots 가 글씨랑 겹치고 단일 dot 이 앞으로 오는 등 정렬 이슈
-
-revert 후 [#169](https://github.com/ensky0/tildaz/issues/169) 로 deferred. cursor 동작 자체 (Home/End/Ctrl+A/E + #168 click cursor jump fix) 만 v0.4.0 출시.
-
-향후 접근 옵션 (#169):
-- **A.** 그대로 둠 — native textbox 동작 (cursor 위치만으로 판단)
-- **B.** dots 대신 다른 cue (gradient fade, edge shadow, 단일 "…" 문자)
-- **C.** dots 시도 — cursor 가 ellipsis zone 들어올 때 reserve 영역 동적 조정 + 가드 정밀화
-
-→ **교훈:** native textbox 가 안 하는 visual cue 추가는 textbox 폭이 좁은 우리 환경에서 의미 있을 수 있으나, cursor + ellipsis 의 공간 경쟁이 까다로움. 단순한 break_at 조정만으로 부족 — typing 진행 중 cursor visibility 가 동적으로 변함.
-
 #### 구현 디테일
-
-**`commitPreeditPreserving` helper 분리 ([host/macos.zig:1095-1116](src/host/macos.zig))**
-
-```zig
-fn commitPreeditPreserving(self_view: objc.id) void {
-    if (g_preedit_len == 0) return;
-    if (g_rename.isActive()) {
-        // rename 활성: preedit 자모 → rename buf cursor 위치 insert
-        var iter = std.unicode.Utf8Iterator{ .bytes = g_preedit_buf[0..g_preedit_len], .i = 0 };
-        while (iter.nextCodepoint()) |cp| {
-            if (cp >= 0x20) _ = g_rename.insertCodepoint(cp);
-        }
-    } else {
-        // rename 비활성: preedit 자모 → 활성 탭 PTY 직송
-        g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
-    }
-    g_preedit_len = 0;
-    g_marked_len = 0;
-    // discardMarkedText — IME 가 더 이상 인식 안 함
-}
-
-fn commitPendingInput(self_view: objc.id) void {
-    commitPreeditPreserving(self_view);
-    commitOrCancelRename(true);
-}
-```
-
-이전엔 `commitPendingInput` 한 함수에 모든 commit 로직 + rename 종료 합쳐져 있어서 "preedit 만 commit 하고 rename 유지" 케이스 (nav 키 처리) 에 재사용 어려웠음. 분리해 양쪽 모두 동일 helper 사용.
-
-**direct keyCode intercept ([host/macos.zig:631-657](src/host/macos.zig))**
-
-`tildazKeyDown` 의 rename 분기 안:
-
-```zig
-const rename_nav: ?tab_interaction.RenameKey = blk: {
-    if (kc == 115) break :blk .home;            // Home key (외장 키보드)
-    if (kc == 119) break :blk .end;             // End key
-    if (ctrl and kc == 0) break :blk .home;     // Ctrl+A
-    if (ctrl and kc == 14) break :blk .end;     // Ctrl+E
-    break :blk null;
-};
-if (rename_nav) |k| {
-    commitPreeditPreserving(self_view);  // preedit 보존
-    _ = g_rename.handleKey(k);            // cursor 이동
-    setNeedsDisplay(self_view, true);
-    return;
-}
-```
-
-`interpretKeyEvents` 우회. Apple 키보드 fn+Left/Right (= NSHomeFunctionKey = keyCode 115) 와 외장 Home 키 동일 keyCode 라 같이 처리.
 
 **터미널 Ctrl 분기 ([host/macos.zig:661-697](src/host/macos.zig))**
 
@@ -616,30 +506,6 @@ if (g_marked_len > 0) {
     }
 }
 ```
-
-**Win window.zig WM_KEYDOWN Ctrl+A/E ([window.zig:1235-1255](src/window.zig))**
-
-```zig
-if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
-    const ctrl_rename_key: ?app_event.KeyInput = switch (wParam) {
-        0x41 => .home,  // 'A'
-        0x45 => .end,   // 'E'
-        else => null,
-    };
-    if (ctrl_rename_key) |k| {
-        if (self.dispatchAppEvent(.{ .key_input = k })) {
-            // rename consumed → swallow next WM_CHAR (0x01/0x05) 가 PTY 로 안 가게
-            self.swallow_next_wm_char = true;
-            return 0;
-        }
-        // rename 비활성 → fall-through → WM_CHAR 정상 PTY 송신 (셸 readline)
-    }
-}
-```
-
-`dispatchAppEvent` 가 `key_input` 받으면 rename 활성 시만 consume. rename 비활성 시 false 반환 → fall-through → TranslateMessage 가 보낸 WM_CHAR 가 정상 PTY 로 (셸 의 readline Ctrl+A/E 동작). Win Home/End 키는 [window.zig:1217-1218](src/window.zig) 에서 이미 KeyInput.home/end 매핑 — rename 활성 시 자동 작동.
-
-**cross-platform**: `tab_layout.iterTabText` 가 cursor 따라 viewport scroll (RenameState.scroll_offset cached state, [#168](https://github.com/ensky0/tildaz/issues/168)) — nav 후 cursor 위치 자동 따라옴. mac/win 양쪽 같은 helper.
 
 ### 5.2 Emoji 입력 (OS emoji picker)
 
@@ -1127,8 +993,8 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 이전 / 다음 탭 단축키 | ✅ | #125 | Windows: Ctrl+Shift+[ / Ctrl+Shift+] (macOS Shift+Cmd+[/] 와 동일 키 pair, modifier 만 Windows 네이티브). macOS: Shift+Cmd+[/]. |
 | 단일 탭 시 탭바 자리 reserve 버그 | ✅ | #127 | `App.effectiveTabBarHeight()` + count 1↔2 전환 시 `resizeAll`. `renderer/windows.zig` 도 height==0 면 탭바 skip. |
 | 컬러 emoji + grapheme cluster shaping | ✅ | [#134](https://github.com/ensky0/tildaz/issues/134), [#136](https://github.com/ensky0/tildaz/issues/136), [#139](https://github.com/ensky0/tildaz/issues/139) | macOS #132 동등성. (a) `IDWriteFactory2.TranslateColorGlyphRun` + Direct2D D3D11-backed RT (`CreateDxgiSurfaceRenderTarget`) 으로 layer 별 `DrawGlyphRun` (`GRAYSCALE` antialias) + 2x super-sampling + `SetTextRenderingParams` (gamma=1.0) → atlas 에 premultiplied BGRA 로 저장. shader color path 가 `atlas.rgba` (premult) + `atlas.aaaa` 로 dual-source blend (Win Terminal `BackendD3D` 동등). (b) `IDWriteTextAnalyzer` 로 grapheme cluster shaping (skin tone, ZWJ). (c) `mode 2027` (grapheme cluster) ON. (d) ZWJ family glyph (`👨‍👩‍👧` 등) 는 `IDWriteTextAnalyzer.GetGlyphPlacements` 로 multi-glyph cluster 의 advance/offset 받아 visual 결합 (#139, WT 동등). |
-| IME inline preedit (cell + tab rename) | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) v0.4.0 | macOS 의 `g_preedit_buf` + 보라 overlay 동등. `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (`GCS_COMPSTR`) / `WM_IME_ENDCOMPOSITION` 가로채기 + `ImmGetCompositionStringW` UTF-16 → UTF-8 → `Window.preedit_buf` → renderer overlay (cell 시 cursor 위치 / rename 시 cursor 옆 inline). |
-| IME 후보 popup cursor 추적 | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) 1d v0.4.0 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame onRender 끝에 호출. 일본 / 중국 / 한국 IME 의 한자 후보 popup 이 cursor 옆 자연 추적. `D3d11Renderer.last_cursor_px_x/_y` 에 cursor 그릴 때 보관 (terminal cell / tab rename 양쪽). |
+| IME inline preedit (cell) | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) v0.4.0 | macOS 의 `g_preedit_buf` + 보라 overlay 동등. `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (`GCS_COMPSTR`) / `WM_IME_ENDCOMPOSITION` 가로채기 + `ImmGetCompositionStringW` UTF-16 → UTF-8 → `Window.preedit_buf` → renderer overlay (cursor 위치 inline). |
+| IME 후보 popup cursor 추적 | ✅ | [#164](https://github.com/ensky0/tildaz/issues/164) 1d v0.4.0 | `ImmSetCompositionWindow(CFS_POINT, cursor_pixel)` 매 frame onRender 끝에 호출. 일본 / 중국 / 한국 IME 의 한자 후보 popup 이 cursor 옆 자연 추적. `D3d11Renderer.last_cursor_px_x/_y` 에 cursor 그릴 때 보관. |
 | About 다이얼로그 본문 복사 | ✅ | #128, #314 | Windows는 read-only multiline EDIT의 selection/Ctrl+C, macOS는 selectable `NSTextView` selection 변경 시 자동 copy로 NSAlert firstResponder 제약을 우회. |
 
 ---
