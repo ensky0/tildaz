@@ -947,7 +947,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 interpretSingleKeyEvent(self_view, event);
                 return;
             }
-            commitPreeditPreserving(self_view);
+            commitPreeditToPty(self_view);
             writeUserInput(tab, esc);
             return;
         }
@@ -1319,7 +1319,9 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
     };
 }
 
-fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+/// 활성 탭 cursor row 를 NSTextInputClient 용 snapshot 으로 채운다. 실패 시
+/// `snap` 은 *부분 생성 상태* 로 남으므로 호출자(`buildImeSnapshot`)가 정리한다.
+fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
     if (g_renderer == null) return false;
     const tab = g_session.activeTab() orelse return false;
     var r = &g_renderer.?;
@@ -1397,9 +1399,16 @@ fn buildTerminalImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !b
     return true;
 }
 
+/// NSTextInputClient 진입점들의 공용 snapshot 빌더. 실패하면 부분 생성물을
+/// 정리하고 null.
+///
+/// `fillImeSnapshot` 과 분리된 채로 둔다 — 이 정리 계약을 한 함수로 합칠 수 없다.
+/// `errdefer` 는 `error` 반환에만 걸리고 `return null` 에는 안 걸리므로, 합치면
+/// 실패 경로마다 수동 deinit 을 흩뿌려야 하고 하나 빠지면 누수다. (#341 로 rename
+/// snapshot 분기가 사라져 호출 대상이 하나뿐이지만, 그게 병합 근거는 아니다.)
 fn buildImeSnapshot(allocator: std.mem.Allocator) ?ImeSnapshot {
     var snap = ImeSnapshot{};
-    if (buildTerminalImeSnapshot(allocator, &snap) catch false) return snap;
+    if (fillImeSnapshot(allocator, &snap) catch false) return snap;
     snap.deinit(allocator);
     return null;
 }
@@ -2020,8 +2029,9 @@ fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
 }
 
 /// IME preedit (g_preedit_buf) 을 활성 탭 PTY 로 commit + IME 상태 클리어.
-/// 호출 후 typing 계속 가능.
-fn commitPreeditPreserving(self_view: objc.id) void {
+/// 호출 후 typing 계속 가능. render 요청은 하지 않는다 — 호출자가 뒤이어
+/// 화면을 바꾸는 경우(escape 송신 등)가 있어 `commitPendingInput` 이 그걸 맡는다.
+fn commitPreeditToPty(self_view: objc.id) void {
     if (g_preedit_len == 0) return;
     g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
     g_preedit_len = 0;
@@ -2040,7 +2050,7 @@ fn commitPreeditPreserving(self_view: objc.id) void {
 /// 동작 (cancel 아님).
 /// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
 fn commitPendingInput(self_view: objc.id) void {
-    commitPreeditPreserving(self_view);
+    commitPreeditToPty(self_view);
     // NSMenu selector / applicationShouldTerminate: 는 keyDown:/mouseDown: 을
     // 우회한다. 내부 marked state 만 지우고 render 를 요청하지 않으면
     // 마지막 보라색 preedit frame 이 화면에 남으므로, 상태 변경의 공통 지점에서
@@ -2103,7 +2113,6 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
         };
         add_rect(self_view, objc.sel("addCursorRect:cursor:"), menu_rect, arrow);
     }
-
 }
 
 /// #193 — cursor rect 재계산 (command menu 열림/닫힘 등 state 변화 직후).
