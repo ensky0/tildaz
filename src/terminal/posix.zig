@@ -3,7 +3,6 @@
 //! (ConPTY). #294 G2 — 이전 `terminal/linux.zig` ↔ `terminal/macos.zig` 2벌
 //! (라인 수준 동일) 통합.
 
-const std = @import("std");
 const terminal = @import("../terminal.zig");
 const Pty = @import("posix/pty.zig").Pty;
 

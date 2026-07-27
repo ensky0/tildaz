@@ -8,7 +8,6 @@ const paths = @import("paths.zig");
 const dwrite_font = @import("font/windows/font.zig");
 const font_spec = @import("font/spec.zig");
 
-const HANDLE = windows.HANDLE;
 const BOOL = windows.BOOL;
 const DWORD = windows.DWORD;
 const UINT = c_uint;
@@ -313,10 +312,6 @@ const TEXTMETRICW = extern struct {
     tmPitchAndFamily: u8,
     tmCharSet: u8,
 };
-
-fn rgb(r: u8, g: u8, b: u8) COLORREF {
-    return @as(COLORREF, r) | (@as(COLORREF, g) << 8) | (@as(COLORREF, b) << 16);
-}
 
 pub const FullscreenMode = enum { none, monitor, workarea };
 

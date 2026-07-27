@@ -22,9 +22,9 @@ const WCHAR = u16;
 
 pub const MAX_FONT_FAMILIES = font_constants.MAX_CHAIN;
 
+// Linux 는 이 둘이 아닌 `else` 분기 — 별 술어를 두지 않는다.
 const is_windows = builtin.os.tag == .windows;
 const is_macos = builtin.os.tag == .macos;
-const is_linux = builtin.os.tag == .linux;
 
 // --- DockPosition (cross-platform) ---
 
