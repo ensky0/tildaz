@@ -864,11 +864,9 @@ pub const D3d11Renderer = struct {
         // Tab bar background
         bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = ui_metrics.TAB_BAR_BG };
         bg_count += 1;
-        // 탭바-터미널 가로 경계선 — 전체 폭, 활성 구간에서도 끊기지 않고
-        // 항상 (#334 2026-07-22 사용자 정정).
-        const border_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_BOTTOM_BORDER_PT)) * self.pixels_per_dip);
-        bg_instances[bg_count] = .{ .pos = .{ 0, tbh - border_px }, .size = .{ w_f, border_px }, .color = ui_metrics.TAB_SEPARATOR_COLOR };
-        bg_count += 1;
+        // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
+        // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
+        const sep_w_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_SEPARATOR_W_PT)) * self.pixels_per_dip);
 
         // #117 — 모든 탭 x = world(`i × tw` or drag world) - scroll + tab_area_x.
         // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
@@ -879,9 +877,15 @@ pub const D3d11Renderer = struct {
         // 않는다 (Tilda 문법). 탭 슬롯 경계는 세로 구분선 — world(슬롯) 기준
         // 고정이라 drag 재배열 중 빈 원위치 슬롯도 구분선+제목 부재로 인지.
         // 각 탭의 오른쪽 경계마다 하나 (마지막 탭 끝 포함).
-        // 활성 탭 amber 밑줄 (#334) — 활성 구분의 유일한 표시. 가로 경계선
-        // **바로 위**, 슬롯 폭 전체 (Tilda 문법). drag 중이면 drag 위치를
+        // 활성 탭 amber 밑줄 (#334) — 활성 구분의 유일한 표시. #342 로 가로
+        // 경계선이 없어져 탭바 **맨 아래 모서리**. drag 중이면 drag 위치를
         // 따라간다.
+        //
+        // #342 — 세로 구분선을 나중에 덮어 가리지 않고 **밑줄 자체를 줄인다**.
+        // 세로선은 경계 중심 정렬이라 슬롯 안으로 좌우 `sep_w/2` 씩 들어오므로
+        // 그만큼 물러난다. 단 선이 실제로 그려지는 경계에서만 — 판정은 아래
+        // 세로선 루프와 같은 `tab_layout.hasSeparator` 로 단일화.
+        const tab_area_end = layout.tab_area_x + layout.tab_area_w;
         if (active_tab < tab_count and bg_count < 128) {
             const underline_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT)) * self.pixels_per_dip);
             const is_dragged = if (drag_view) |d| (active_tab == d.tab_index) else false;
@@ -889,9 +893,22 @@ pub const D3d11Renderer = struct {
                 @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
             else
                 @as(f32, @floatFromInt(active_tab)) * tw - sx + tax;
+            const edges = tab_layout.activeUnderlineEdges(
+                active_tab,
+                tab_count,
+                is_dragged,
+                layout.arrows_visible,
+                layout.tab_area_x,
+                tab_area_end,
+                tw,
+                sx,
+            );
+            const half = sep_w_px * 0.5;
+            const cut_l: f32 = if (edges.inset_left) half else 0;
+            const cut_r: f32 = if (edges.inset_right) half else 0;
             bg_instances[bg_count] = .{
-                .pos = .{ tab_x, tbh - border_px - underline_px },
-                .size = .{ tw, underline_px },
+                .pos = .{ tab_x + cut_l, tbh - underline_px },
+                .size = .{ @max(tw - cut_l - cut_r, 1.0), underline_px },
                 .color = ui_metrics.TAB_ACCENT_COLOR,
             };
             bg_count += 1;
@@ -1007,15 +1024,7 @@ pub const D3d11Renderer = struct {
             .color = ui_metrics.TAB_BAR_BG,
         };
         ctrl_bg_n += 1;
-        // #334 — 가로 경계선 복원: 위 컨트롤 fill 이 전체 높이를 덮으므로 그
-        // 위에 다시 긋는다 (`+`/`×`/`…` 버튼 아래까지 항상 이어짐 — 사용자
-        // 피드백).
-        ctrl_bg_buf[ctrl_bg_n] = .{
-            .pos = .{ 0, tbh - border_px },
-            .size = .{ w_f, border_px },
-            .color = ui_metrics.TAB_SEPARATOR_COLOR,
-        };
-        ctrl_bg_n += 1;
+        // #342 — 가로 경계선이 제거되어 컨트롤 fill 뒤 재-그리기도 함께 사라졌다.
         // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 네 방향 2pt
         // inset에 DPI scale을 곱한다. 비활성 화살표 / 비활성 +(host가 hover 억제)는 제외.
         var hover_x: f32 = 0;
@@ -1051,9 +1060,9 @@ pub const D3d11Renderer = struct {
                 },
                 .size = .{
                     hover_w - tab_gap.control_hover_inset * 2.0,
-                    // 하단은 가로 경계선(border_px)이 1pt 를 차지하므로 그만큼
-                    // 더 올려 경계선 위 기준 상하 2pt 대칭 (#334 사용자 발견).
-                    tbh - tab_gap.control_hover_inset * 2.0 - border_px,
+                    // #342 — 가로 경계선이 사라져 하단 보정도 불필요해졌다
+                    // (#334 의 `- border_px` 는 경계선이 1pt 를 차지하던 보정).
+                    tbh - tab_gap.control_hover_inset * 2.0,
                 },
                 .color = ui_metrics.TAB_CTRL_HOVER_BG,
             };
@@ -1070,15 +1079,24 @@ pub const D3d11Renderer = struct {
         {
             var sep_buf: [64]BgInstance = undefined;
             var sep_n: u32 = 0;
-            const tab_area_end = layout.tab_area_x + layout.tab_area_w;
-            const first_border: usize = if (layout.arrows_visible) 0 else 1;
-            for (first_border..tab_count + 1) |bi| {
+            for (0..tab_count + 1) |bi| {
                 if (sep_n >= sep_buf.len) break;
+                // #342 — 밑줄 inset 과 같은 판정 (단일 정의).
+                if (!tab_layout.hasSeparator(
+                    bi,
+                    tab_count,
+                    layout.arrows_visible,
+                    layout.tab_area_x,
+                    tab_area_end,
+                    tw,
+                    sx,
+                )) continue;
                 const x = tax + @as(f32, @floatFromInt(bi)) * tw - sx;
-                if (x < layout.tab_area_x or x > tab_area_end) continue;
                 sep_buf[sep_n] = .{
-                    .pos = .{ x - border_px * 0.5, 0 },
-                    .size = .{ border_px, @max(tbh - border_px, 1.0) },
+                    .pos = .{ x - sep_w_px * 0.5, 0 },
+                    // #342 — 가로 경계선이 없어져 탭바 전체 높이. 밑줄이 이미
+                    // 물러나 있으므로 겹치는 픽셀이 없다.
+                    .size = .{ sep_w_px, tbh },
                     .color = ui_metrics.TAB_SEPARATOR_COLOR,
                 };
                 sep_n += 1;
@@ -1607,10 +1625,17 @@ pub const D3d11Renderer = struct {
         const mw = v.rect.w * scale;
         const mh = v.rect.h * scale;
         const bg_color = ui_metrics.TAB_BAR_BG;
-        // border / separator 는 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
+        // 내부 구분선은 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
         const line_px = @max(1.0, scale);
+        // #342 — 메뉴 **외곽선 없음** (2026-07-27 시연 후 사용자 확정). 탭바에서
+        // 가로 경계선을 없앤 것과 같은 문법: chrome 과 terminal 의 경계는 배경
+        // 명도 차이만으로 둔다. 내부 구분선은 유지 (역할이 다름 — 면의 경계가
+        // 아니라 항목 그룹).
+        //
+        // 이전 테두리는 `my - line_px` 라 탭바 마지막 행을 1px 침범했는데,
+        // 같은 색 가로 경계선이 그 자리를 덮고 있어 보이지 않았다. 가로선을
+        // 없애자 드러난 것 — 덮어써서 가려지던 지오메트리 오류였다.
         var boxes = [_]BgInstance{
-            .{ .pos = .{ mx - line_px, my - line_px }, .size = .{ mw + line_px * 2, mh + line_px * 2 }, .color = ui_metrics.TAB_SEPARATOR_COLOR },
             .{ .pos = .{ mx, my }, .size = .{ mw, mh }, .color = bg_color },
         };
         self.drawBgInstances(&boxes);

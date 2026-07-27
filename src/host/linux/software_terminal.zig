@@ -749,8 +749,6 @@ pub const Renderer = struct {
                 overlay_layout,
                 tab_hover,
                 self.scale,
-                // 단일 탭 strip 은 하단 가로 경계선이 없다 — hover 보정 0.
-                0,
                 &self.tab_font_ctx,
             );
         }
@@ -794,9 +792,16 @@ pub const Renderer = struct {
         const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
         const fg = rgbFromMetrics(ui_metrics.MENU_LABEL_COLOR);
         const hint_fg = rgbFromMetrics(ui_metrics.MENU_HINT_COLOR);
-        // border / separator 는 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
+        // 내부 구분선은 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
         const line_px: i32 = @max(1, scaledPt(1, scale));
-        rect(memory, width, height, stride, mx - line_px, my - line_px, mw + line_px * 2, mh + line_px * 2, rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR));
+        // #342 — 메뉴 **외곽선 없음** (2026-07-27 시연 후 사용자 확정). 탭바에서
+        // 가로 경계선을 없앤 것과 같은 문법: chrome 과 terminal 의 경계는 배경
+        // 명도 차이만으로 둔다. 내부 구분선은 유지 (역할이 다름 — 면의 경계가
+        // 아니라 항목 그룹).
+        //
+        // 이전 테두리는 `my - line_px` 라 탭바 마지막 행을 1px 침범했는데,
+        // 같은 색 가로 경계선이 그 자리를 덮고 있어 보이지 않았다. 가로선을
+        // 없애자 드러난 것 — 덮어써서 가려지던 지오메트리 오류였다.
         rect(memory, width, height, stride, mx, my, mw, mh, bg);
         // 강조는 pointer hover 우선, 없으면 keyboard focus.
         if (ui.hover orelse ui.focused) |command| {
@@ -1221,11 +1226,10 @@ fn drawTabBar(
 
     const accent = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
     const underline_px: i32 = @max(1, scaledPt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale));
-    const border_px: i32 = @max(1, scaledPt(ui_metrics.TAB_BOTTOM_BORDER_PT, scale));
+    const sep_w_px: i32 = @max(1, scaledPt(ui_metrics.TAB_SEPARATOR_W_PT, scale));
     const separator = rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR);
-    // #334 — 탭바-터미널 가로 경계선. 전체 폭, 활성 구간에서도 끊기지 않고
-    // 항상 (2026-07-22 사용자 정정).
-    rect(memory, fb_w, fb_h, stride, 0, tab_bar_h - border_px, fb_w, border_px, separator);
+    // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
+    // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
     const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
     const ascent: i32 = @intCast(font_ctx.ascent_px);
     const descent: i32 = @intCast(font_ctx.descent_px);
@@ -1269,13 +1273,35 @@ fn drawTabBar(
         // 않는다 (Tilda 문법). 글리프 알파 블렌드 배경도 tab_bar_bg.
         const bg = tab_bar_bg;
         if (is_active) {
-            // #334 — 활성 탭 amber 밑줄. 가로 경계선 **바로 위**, 슬롯 폭
-            // 전체 (Tilda 문법). drag 중이면 drag 위치를 따라간다.
+            // #334 — 활성 탭 amber 밑줄. #342 로 가로 경계선이 없어져 탭바
+            // **맨 아래 모서리**. drag 중이면 drag 위치를 따라간다.
             // tab_area 경계 clip 은 배경과 같은 방식.
-            const u_clip_x: i32 = @max(tab_screen_x, tab_area_x);
-            const u_clip_w: i32 = @min(tab_screen_x + tab_w, tab_area_end) - u_clip_x;
+            //
+            // #342 — 세로 구분선을 나중에 덮어 가리지 않고 **밑줄 자체를 줄인다**.
+            // 정수 렌더러라 세로선은 `[b − divTrunc(w,2), b − divTrunc(w,2) + w)`
+            // 를 차지한다 — 슬롯 안으로 들어오는 양이 왼쪽 `w − divTrunc(w,2)`,
+            // 오른쪽 `divTrunc(w,2)` 로 **w 가 홀수면 비대칭** (w=1 이면 좌 1 / 우 0).
+            // f32 renderer 의 좌우 `w/2` 대칭과 다르므로 여기서 따로 계산한다.
+            // 선이 실제로 그려지는 경계인지는 세로선 루프와 같은 판정을 쓴다.
+            const sep_half_lo: i32 = @divTrunc(sep_w_px, 2);
+            const edges = tab_layout.activeUnderlineEdges(
+                i,
+                titles.len,
+                is_drag_source,
+                layout.arrows_visible,
+                @floatFromInt(tab_area_x),
+                @floatFromInt(tab_area_end),
+                @floatFromInt(tab_w),
+                @floatFromInt(scroll_x_i),
+            );
+            const cut_l: i32 = if (edges.inset_left) sep_w_px - sep_half_lo else 0;
+            const cut_r: i32 = if (edges.inset_right) sep_half_lo else 0;
+            const u_x: i32 = tab_screen_x + cut_l;
+            const u_w: i32 = tab_w - cut_l - cut_r;
+            const u_clip_x: i32 = @max(u_x, tab_area_x);
+            const u_clip_w: i32 = @min(u_x + u_w, tab_area_end) - u_clip_x;
             if (u_clip_w > 0) {
-                rect(memory, fb_w, fb_h, stride, u_clip_x, tab_bar_h - border_px - underline_px, u_clip_w, underline_px, accent);
+                rect(memory, fb_w, fb_h, stride, u_clip_x, tab_bar_h - underline_px, u_clip_w, underline_px, accent);
             }
         }
 
@@ -1361,10 +1387,8 @@ fn drawTabBar(
     }
 
     // --- arrow / plus 버튼 ---
-    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, border_px, font_ctx);
-    // #334 — 가로 경계선 복원: 컨트롤 fill 이 전체 높이를 덮으므로 그 위에
-    // 다시 긋는다 (`+`/`×`/`…` 버튼 아래까지 항상 이어짐 — 사용자 피드백).
-    rect(memory, fb_w, fb_h, stride, 0, tab_bar_h - border_px, fb_w, border_px, separator);
+    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx);
+    // #342 — 가로 경계선이 제거되어 컨트롤 fill 뒤 재-그리기도 함께 사라졌다.
     // #334 — 탭 슬롯 경계 세로 구분선. **모두 중심 정렬** — 모든 슬롯이
     // 좌우 절반씩 균등 부담해 탭의 보이는 폭이 전부 동일하다 (안쪽 정렬은
     // 끝 탭만 좁아져 기각 — 사용자 지적). 컨트롤 fill·amber 밑줄 **뒤에**
@@ -1373,11 +1397,23 @@ fn drawTabBar(
     // 끝 탭이 완전히 보일 때만 (슬롯 경계 정렬 시) 선이 온다 — overflow
     // 에서는 첫 탭의 왼쪽 경계(bi=0)도 후보.
     {
-        var bi: usize = if (layout.arrows_visible) 0 else 1;
+        var bi: usize = 0;
         while (bi <= titles.len) : (bi += 1) {
+            // #342 — 밑줄 inset 과 같은 판정 (단일 정의). i32 를 그대로 승격해
+            // 넘겨 정수 비교와 결과가 어긋나지 않게 한다.
+            if (!tab_layout.hasSeparator(
+                bi,
+                titles.len,
+                layout.arrows_visible,
+                @floatFromInt(tab_area_x),
+                @floatFromInt(tab_area_end),
+                @floatFromInt(tab_w),
+                @floatFromInt(scroll_x_i),
+            )) continue;
             const x = tab_area_x + @as(i32, @intCast(bi)) * tab_w - scroll_x_i;
-            if (x < tab_area_x or x > tab_area_end) continue;
-            rect(memory, fb_w, fb_h, stride, x - @divTrunc(border_px, 2), 0, border_px, @max(tab_bar_h - border_px, 1), separator);
+            // #342 — 가로 경계선이 없어져 탭바 전체 높이. 밑줄이 이미 물러나
+            // 있으므로 겹치는 픽셀이 없다.
+            rect(memory, fb_w, fb_h, stride, x - @divTrunc(sep_w_px, 2), 0, sep_w_px, tab_bar_h, separator);
         }
     }
 }
@@ -1394,10 +1430,6 @@ fn drawTabBarControls(
     layout: tab_layout.Layout,
     tab_hover: tab_layout.Area,
     scale: f32,
-    /// hover 박스 하단을 추가로 올릴 값 (#334). 다중 탭 탭바는 하단 1pt 를
-    /// 가로 경계선이 차지하므로 border 두께를 넘겨 상하 여백을 대칭으로
-    /// 만든다. 단일 탭 strip 은 경계선이 없어 0.
-    hover_bottom_extra: i32,
     _: *font.Context,
 ) void {
     const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
@@ -1526,7 +1558,9 @@ fn drawTabBarControls(
                 hover_x_i + hover_inset,
                 hover_inset,
                 hover_w_i - hover_inset * 2,
-                @max(tab_bar_h - hover_inset * 2 - hover_bottom_extra, 1),
+                // #342 — 가로 경계선이 사라져 하단 보정(`hover_bottom_extra`)이
+                // 불필요해졌다. 탭바 상하 기준 그대로 대칭.
+                @max(tab_bar_h - hover_inset * 2, 1),
                 hover_bg,
             );
         }

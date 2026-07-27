@@ -219,6 +219,108 @@ pub fn hitArea(px: f32, py: f32, tab_bar_h: f32, layout: Layout) Area {
     return .none;
 }
 
+/// 탭 슬롯 경계 `bi` 에 세로 구분선이 그려지는가 (#342).
+///
+/// renderer 3곳의 세로선 루프와 **활성 탭 amber 밑줄의 inset 계산이 같은 판정을
+/// 써야** 한다. 밑줄은 선이 실제로 그려지는 경계에서만 물러나야 하는데, 두 곳이
+/// 따로 판정하면 반드시 어긋난다 — 한쪽만 아는 경계에서 밑줄이 선을 침범하거나
+/// (덮어써서 가려짐) 반대로 선이 없는데 물러나 틈이 생긴다.
+///
+/// 좌표는 호출처의 수 체계 그대로 받는다. Linux software renderer 는 i32 로
+/// 계산하므로 `@floatFromInt` 로 승격해 넘기면 (이 크기에서 정확) 정수 비교와
+/// 같은 결과가 나온다 — f32 원본을 넘겨 truncation 차이가 끼어드는 걸 막는다.
+///
+/// 경계는 `bi ∈ [first, tab_count]`. `first` 는 화살표가 없으면 1 — 탭 영역
+/// 맨 왼쪽(bi=0)에는 선을 두지 않는다. 화살표가 있으면 0 도 후보라 좌우 대칭이
+/// 된다 (#334 4차 결정). tab_area 밖으로 잘린 경계는 그리지 않는다.
+pub fn hasSeparator(
+    bi: usize,
+    tab_count: usize,
+    arrows_visible: bool,
+    tab_area_x: f32,
+    tab_area_end: f32,
+    tab_w: f32,
+    scroll_x: f32,
+) bool {
+    const first: usize = if (arrows_visible) 0 else 1;
+    if (bi < first or bi > tab_count) return false;
+    const x = tab_area_x + @as(f32, @floatFromInt(bi)) * tab_w - scroll_x;
+    return x >= tab_area_x and x <= tab_area_end;
+}
+
+/// 활성 탭 amber 밑줄이 세로 구분선과 겹치지 않도록 양 끝에서 물러날지 (#342).
+///
+/// 세로선은 경계에 **중심 정렬**돼 슬롯 안쪽으로 일부가 들어온다 (안쪽 정렬은
+/// 끝 탭만 좁아져 #334 에서 기각). 물러날 **양**은 renderer 의 수 체계마다 달라
+/// 여기서 정하지 않는다 — f32 renderer 는 좌우 `w/2` 로 대칭이지만, 정수
+/// 렌더러는 `w − divTrunc(w,2)` / `divTrunc(w,2)` 로 `w` 가 홀수면 비대칭이다.
+/// 이 함수는 *어느 쪽에 선이 있는지*만 알려주고 양은 호출처가 자기 좌표계로 뺀다.
+///
+/// drag 중인 탭은 `current_x − tab_w/2` 라 슬롯 경계에 정렬되지 않는다. 양 끝에
+/// 접하는 선이 없으므로 물러나지 않는다 (슬롯 폭 전체).
+pub const UnderlineEdges = struct {
+    inset_left: bool,
+    inset_right: bool,
+};
+
+pub fn activeUnderlineEdges(
+    active_index: usize,
+    tab_count: usize,
+    dragging: bool,
+    arrows_visible: bool,
+    tab_area_x: f32,
+    tab_area_end: f32,
+    tab_w: f32,
+    scroll_x: f32,
+) UnderlineEdges {
+    if (dragging) return .{ .inset_left = false, .inset_right = false };
+    return .{
+        .inset_left = hasSeparator(active_index, tab_count, arrows_visible, tab_area_x, tab_area_end, tab_w, scroll_x),
+        .inset_right = hasSeparator(active_index + 1, tab_count, arrows_visible, tab_area_x, tab_area_end, tab_w, scroll_x),
+    };
+}
+
+test "#342 separator skips the strip's left edge unless arrows are visible" {
+    // 탭 4개 × 150, 화살표 없음, scroll 0 — 경계 1..4 만 선.
+    try std.testing.expect(!hasSeparator(0, 4, false, 0, 600, 150, 0));
+    try std.testing.expect(hasSeparator(1, 4, false, 0, 600, 150, 0));
+    try std.testing.expect(hasSeparator(4, 4, false, 0, 600, 150, 0));
+    // 탭 수를 넘는 경계는 없음.
+    try std.testing.expect(!hasSeparator(5, 4, false, 0, 600, 150, 0));
+    // 화살표가 있으면 bi=0 도 후보 (좌우 대칭, #334 4차).
+    try std.testing.expect(hasSeparator(0, 4, true, 24, 624, 150, 0));
+}
+
+test "#342 separator is clipped outside the tab area" {
+    // scroll 로 경계가 tab_area 왼쪽 밖으로 나가면 안 그린다.
+    try std.testing.expect(!hasSeparator(1, 4, false, 0, 400, 150, 200));
+    // 오른쪽 끝과 정확히 정렬되면 (== tab_area_end) 그린다.
+    try std.testing.expect(hasSeparator(2, 4, false, 0, 300, 150, 0));
+    try std.testing.expect(!hasSeparator(3, 4, false, 0, 300, 150, 0));
+}
+
+test "#342 active underline insets only on edges that actually have a separator" {
+    // 첫 탭 활성 + 화살표 없음 → 왼쪽 경계(bi=0)엔 선이 없어 물러나지 않는다.
+    const first = activeUnderlineEdges(0, 4, false, false, 0, 600, 150, 0);
+    try std.testing.expect(!first.inset_left);
+    try std.testing.expect(first.inset_right);
+
+    // 가운데 탭은 양쪽 다.
+    const middle = activeUnderlineEdges(1, 4, false, false, 0, 600, 150, 0);
+    try std.testing.expect(middle.inset_left);
+    try std.testing.expect(middle.inset_right);
+
+    // 마지막 탭 — 오른쪽 경계가 tab_area 끝과 정렬되면 선이 있다.
+    const last = activeUnderlineEdges(3, 4, false, false, 0, 600, 150, 0);
+    try std.testing.expect(last.inset_left);
+    try std.testing.expect(last.inset_right);
+
+    // drag 중이면 슬롯 경계에 정렬되지 않으므로 양쪽 다 물러나지 않는다.
+    const dragged = activeUnderlineEdges(1, 4, true, false, 0, 600, 150, 0);
+    try std.testing.expect(!dragged.inset_left);
+    try std.testing.expect(!dragged.inset_right);
+}
+
 test "#329 tab controls are ordered plus close more and use half-open hit bounds" {
     const controls = computeControls(300, 24, 24, 24);
     try std.testing.expectEqual(@as(f32, 228), controls.plus_x);
