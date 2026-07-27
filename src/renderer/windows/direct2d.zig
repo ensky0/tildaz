@@ -9,11 +9,8 @@
 // 작은 사이즈 emoji 의 가장자리 부드러움. CoInit 는 D2D path 에서 불필요
 // (CoCreateInstance 안 씀, D2D1CreateFactory 가 자체 COM 초기화).
 
-const std = @import("std");
-
 const HRESULT = i32;
 const FLOAT = f32;
-const UINT32 = u32;
 
 pub const GUID = extern struct { d1: u32, d2: u16, d3: u16, d4: [8]u8 };
 
