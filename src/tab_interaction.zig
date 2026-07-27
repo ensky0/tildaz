@@ -65,10 +65,6 @@ pub const DragState = struct {
     }
 };
 
-pub const TabInteraction = struct {
-    drag: DragState = .{},
-};
-
 test "drag finish returns clamped reorder request" {
     var drag = DragState{};
     try std.testing.expect(drag.begin(10, 100, 3));

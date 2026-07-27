@@ -14,7 +14,6 @@ const terminal_interaction = @import("../../terminal_interaction.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
-const display_width = @import("../../font/display_width.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const app_event = @import("../../app_event.zig");
@@ -296,12 +295,13 @@ const xkb_key_insert: u32 = 0xff63;
 const xkb_key_delete: u32 = 0xffff;
 const xkb_key_iso_left_tab: u32 = 0xfe20;
 // 알파벳 키는 ASCII codepoint — xkb 가 Shift 활성 시 대문자 keysym 을 돌려준다.
+// 그래서 Shift 를 쓰는 단축키만 `_upper` 가 필요하다. Ctrl+A / Ctrl+E 는 Shift
+// 없이 판정하므로 `_lower` 만 둔다 — #341 로 rename 의 Ctrl+A/E 매핑(양쪽 다
+// 받았음)이 사라져 그 둘의 `_upper` 는 쓰이지 않게 됐다.
 const xkb_key_a_lower: u32 = 0x61;
-const xkb_key_a_upper: u32 = 0x41;
 const xkb_key_c_lower: u32 = 0x63;
 const xkb_key_c_upper: u32 = 0x43;
 const xkb_key_e_lower: u32 = 0x65;
-const xkb_key_e_upper: u32 = 0x45;
 const xkb_key_i_lower: u32 = 0x69;
 const xkb_key_i_upper: u32 = 0x49;
 const xkb_key_l_lower: u32 = 0x6c;

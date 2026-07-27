@@ -9,7 +9,6 @@ const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_actions = @import("tab_actions.zig");
-const display_width = @import("font/display_width.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const Window = @import("window.zig").Window;
 const renderer_backend = @import("renderer.zig");
@@ -35,7 +34,9 @@ pub const App = struct {
     shell: []const u8 = "",
     renderer: ?RendererBackend = null,
     last_render_ms: i64 = 0,
-    tab_interaction: tab_interaction.TabInteraction = .{},
+    /// 탭 drag-and-drop reorder state. cross-platform `tab_interaction.DragState`
+    /// — macOS `g_drag` / Linux `tab_drag` 와 같은 모듈.
+    tab_drag: tab_interaction.DragState = .{},
     // terminal_interaction (mouse selection / scrollbar drag) state 는 per-tab —
     // session_core.Tab.interaction (cross-platform field, macOS 와 동등) 사용.
     // App level 에는 더 이상 글로벌 state 없음. 탭 전환 시 자동으로 새 탭의
@@ -385,7 +386,7 @@ pub const App = struct {
             // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중인 동안은
             // handleDragMove 가 직접 auto-scroll 하므로 skip. 사용자 화살표
             // override 중에도 skip — 활성 탭 변경 시 reset 되어 재가동.
-            if (!self.tab_interaction.drag.active and !self.tab_scroll_user_override)
+            if (!self.tab_drag.active and !self.tab_scroll_user_override)
                 self.ensureActiveTabVisible();
 
             if (should_render or force_render) {
@@ -413,7 +414,7 @@ pub const App = struct {
                     self.TAB_WIDTH,
                     self.TAB_PADDING,
                     self.dpi_scale,
-                    self.tab_interaction.drag.view(),
+                    self.tab_drag.view(),
                     self.tab_scroll_x,
                     self.tabBarLayout(),
                     self.tab_hover,
@@ -751,7 +752,7 @@ pub const App = struct {
         // tab_area_x) + scroll_x. tab_area_x = 화살표 있으면 ARROW_W, 없으면 0.
         const layout = self.tabBarLayout();
         const world_x = (mouse_x - @as(c_int, @intFromFloat(layout.tab_area_x))) + self.tab_scroll_x;
-        _ = self.tab_interaction.drag.begin(world_x, self.TAB_WIDTH, self.session.count());
+        _ = self.tab_drag.begin(world_x, self.TAB_WIDTH, self.session.count());
     }
 
     pub fn handleDragMove(self: *App, mouse_x: c_int) void {
@@ -773,11 +774,11 @@ pub const App = struct {
             }
         }
         const world_x = (mouse_x - tab_area_x_int) + self.tab_scroll_x;
-        _ = self.tab_interaction.drag.move(world_x);
+        _ = self.tab_drag.move(world_x);
     }
 
     pub fn handleDragEnd(self: *App) void {
-        if (self.tab_interaction.drag.finish(self.TAB_WIDTH, self.session.count())) |request| {
+        if (self.tab_drag.finish(self.TAB_WIDTH, self.session.count())) |request| {
             if (self.session.reorderTabs(request.from, request.to) catch false) {
                 // drag reorder 끝 — 활성 탭 위치 변경, ensure 재가동.
                 self.tab_scroll_user_override = false;
@@ -1070,11 +1071,11 @@ pub const App = struct {
                         tab.interaction.scrollbar.begin(self.scrollbarGrabAt(mouse.y));
                         tab.interaction.selection.cancel();
                     }
-                    self.tab_interaction.drag.reset();
+                    self.tab_drag.reset();
                     self.scrollToY(mouse.y);
                     return true;
                 }
-                self.tab_interaction.drag.reset();
+                self.tab_drag.reset();
                 if (self.activeTabPtr()) |tab| tab.interaction.scrollbar.end();
                 self.startTerminalSelection(mouse.x, mouse.y);
                 return true;
@@ -1092,7 +1093,7 @@ pub const App = struct {
                     const tab_opt = self.activeTabPtr();
                     if (tab_opt != null and tab_opt.?.interaction.scrollbar.active) {
                         self.scrollToY(mouse.y);
-                    } else if (self.tab_interaction.drag.active) {
+                    } else if (self.tab_drag.active) {
                         self.handleDragMove(mouse.x);
                     } else if (tab_opt != null and tab_opt.?.interaction.selection.active) {
                         self.updateTerminalSelection(mouse.x, mouse.y);
@@ -1110,7 +1111,7 @@ pub const App = struct {
                         return true;
                     }
                 }
-                if (self.tab_interaction.drag.active) {
+                if (self.tab_drag.active) {
                     self.handleDragEnd();
                 } else {
                     self.finishTerminalSelection();
