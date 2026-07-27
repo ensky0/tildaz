@@ -25,7 +25,6 @@ const box_drawing = @import("../box_drawing.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
-const WCHAR = u16;
 const MAX_INSTANCES: u32 = 32768;
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 extern "user32" fn GetWindowLongPtrW(?*anyopaque, c_int) callconv(.c) isize;

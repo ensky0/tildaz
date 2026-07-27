@@ -1,5 +1,3 @@
-const std = @import("std");
-
 pub const TimeFields = struct {
     year: u16,
     month: u8,

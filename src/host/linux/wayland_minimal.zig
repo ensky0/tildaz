@@ -3688,21 +3688,6 @@ const Client = struct {
         self.last_cursor_rect_h = rect.h;
     }
 
-    fn disableTextInput(self: *Client) !void {
-        if (self.text_input_id == 0 or !self.text_input_enabled) return;
-        try self.sendNoArgs(self.text_input_id, text_input_request_disable);
-        try self.sendNoArgs(self.text_input_id, text_input_request_commit);
-        self.text_input_enabled = false;
-        // focus 떠나는 시점에 preedit overlay 도 같이 사라져야 자연. pending
-        // batch 잔여물도 초기화 — disable 직전에 들어온 preedit 가 다음 enable
-        // 시 잘못 적용되지 않게.
-        self.pending_preedit.clearRetainingCapacity();
-        self.pending_commit.clearRetainingCapacity();
-        self.preedit_text.clearRetainingCapacity();
-        self.renderer.preedit_text = "";
-        log.appendLineVerbose("wayland", "text_input disabled id={}", .{self.text_input_id});
-    }
-
     /// L10-α + L10-β — zwp_text_input_v3 server → client events. spec 상
     /// preedit / commit / delete 는 한 batch 로 들어와 `done(serial)` 에서 한
     /// 번에 apply. preedit/commit 텍스트는 pending buffer 에 누적했다가 done
@@ -6869,22 +6854,6 @@ fn isAcceptableTextMime(mime: []const u8) bool {
     return std.mem.eql(u8, mime, clipboard_mime_utf8) or
         std.mem.eql(u8, mime, clipboard_mime_utf8_string) or
         std.mem.eql(u8, mime, clipboard_mime_text_plain);
-}
-
-/// wayland wire string parsing — `u32 length + (length bytes, null 포함)` +
-/// 4-byte 정렬 padding. length 가 null 을 포함하는 게 일반적이지만 일부
-/// compositor 가 안 포함하는 경우 대비해 마지막 byte 가 null 이면 빼고
-/// 반환. payload 가 짧거나 length 가 0 이면 null.
-fn readWaylandString(payload: []const u8) ?[]const u8 {
-    if (payload.len < 4) return null;
-    const len = readU32(payload[0..4]);
-    if (len == 0) return null;
-    const total: usize = @intCast(len);
-    if (payload.len < 4 + total) return null;
-    if (payload[4 + total - 1] == 0) {
-        return payload[4 .. 4 + total - 1];
-    }
-    return payload[4 .. 4 + total];
 }
 
 /// wl_fixed_t (signed 24.8 fixed-point packed in i32) → integer pixel.
