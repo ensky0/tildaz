@@ -674,8 +674,11 @@ pub const Renderer = struct {
             @floatFromInt(pad),
             @floatFromInt(sb_min_thumb),
         )) |h| {
-            const thumb_y_px: i32 = @intFromFloat(h.thumbTop());
-            const thumb_h_px: i32 = @intFromFloat(h.g.thumb_h);
+            // #344 — 정수화는 공통 `scrollbar.thumbPx` 가 담당한다. 여기서
+            // 윗변과 높이를 따로 절단하면 아래 여백만 1px 커졌다.
+            const t = h.thumb();
+            const thumb_y_px: i32 = @intFromFloat(t.top);
+            const thumb_h_px: i32 = @intFromFloat(t.h);
             const sb_x: i32 = width - sb_w;
             // 공통 상수 `ui_metrics.SCROLLBAR_COLOR` (흰색 alpha 0.3) — thumb
             // 밑은 padding (theme 배경) 이라 배경과 blend 한 불투명 색이 GPU
@@ -1003,8 +1006,11 @@ pub const Renderer = struct {
                 @floatFromInt(track_h),
                 @floatFromInt(scaledPt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, self.scale)),
             )) |g| {
-                const thumb_y = message_y + @as(i32, @intFromFloat(g.thumb_y_rel));
-                const thumb_h: i32 = @intFromFloat(g.thumb_h);
+                // #344 — terminal scrollbar 와 같은 공통 스냅. dialog track 도
+                // 위·아래 여백이 같아야 한다.
+                const t = scrollbar.thumbPx(@floatFromInt(message_y), g);
+                const thumb_y: i32 = @intFromFloat(t.top);
+                const thumb_h: i32 = @intFromFloat(t.h);
                 // Terminal scrollbar의 white/30%는 dark theme용이다. 밝은 dialog
                 // 배경에 blend하면 RGB 242→246이라 thumb가 사실상 사라진다.
                 // 중립 회색을 써 가시 대비를 유지하고 제목 accent와 분리한다.

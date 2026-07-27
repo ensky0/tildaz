@@ -917,9 +917,12 @@ pub const MetalRenderer = struct {
             const sbw: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * self.scale;
             const vp_wf: f32 = @floatFromInt(self.vp_width);
             const track_x: f32 = vp_wf - sbw;
+            // #344 — 정수 픽셀 스냅은 공통 `scrollbar.thumbPx`. 세 platform 이
+            // 같은 값을 그려 track 위·아래 여백이 항상 같다.
+            const t = h.thumb();
             const scrollbar_inst = [1]BgInstance{.{
-                .pos = .{ track_x, @floatCast(h.thumbTop()) },
-                .size = .{ sbw, @floatCast(h.g.thumb_h) },
+                .pos = .{ track_x, @floatCast(t.top) },
+                .size = .{ sbw, @floatCast(t.h) },
                 .color = ui_metrics.SCROLLBAR_COLOR,
             }};
             self.drawBgInstances(encoder, &scrollbar_inst);
