@@ -196,7 +196,6 @@ const shader_source =
 
 // --- Renderer ---
 
-/// rename 시각 정보 — drawTabBar 가 활성 탭 title 대신 이 텍스트를 그림.
 /// 탭바 layout (#117 Firefox 패턴) — cross-platform `tab_layout.Layout` 그대로
 /// 사용 (#163 4-i-2). 호출처 host 가 `tab_layout.compute()` 결과를 그대로 넘김
 /// — renderer struct 변환 cast block 사라짐.
@@ -207,8 +206,6 @@ pub const TabBarLayout = tab_layout.Layout;
 const PendingTabs = struct {
     titles: []const []const u8,
     active: usize,
-    rename_view: ?tab_interaction.RenameView,
-    rename_preedit: []const u8,
     drag_view: ?tab_interaction.DragView,
     scroll_x_px: f32,
     layout: TabBarLayout,
@@ -463,12 +460,6 @@ pub const MetalRenderer = struct {
         /// #282 B8 — active terminal 의 현재 background (OSC 11 포함).
         /// null 은 terminal 에 배경이 없을 때만 init theme fallback 사용.
         terminal_background: ?ghostty.color.RGB,
-        /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림 (#111 M11.6b).
-        /// null = rename 비활성. cross-platform `tab_interaction.RenameView` 그대로.
-        rename_view: ?tab_interaction.RenameView,
-        /// rename 활성 탭의 cursor 옆에 IME 조합 중 자모 inline 표시. mac 전용
-        /// (Win 은 system IME UI — #164). 빈 slice = 표시 안 함.
-        tab_rename_preedit: []const u8,
         /// drag 진행 중이면 그 탭을 마우스 위치 따라 이동시켜 그림. null = drag
         /// 안 함 또는 5px 임계 미만. `current_x` (c_int) 는 *world* 좌표 (#117) —
         /// 화면 위치는 `current_x - tab_scroll_x_px + tab_area_x`.
@@ -538,8 +529,6 @@ pub const MetalRenderer = struct {
         self.pending_tabs = .{
             .titles = tab_titles,
             .active = active_tab,
-            .rename_view = rename_view,
-            .rename_preedit = tab_rename_preedit,
             .drag_view = drag_view,
             .scroll_x_px = tab_scroll_x_px,
             .layout = tab_bar_layout,
@@ -582,7 +571,7 @@ pub const MetalRenderer = struct {
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
-                self.drawTabBar(encoder, t.titles, t.active, t.rename_view, t.rename_preedit, t.drag_view, t.scroll_x_px, t.layout, t.hover);
+                self.drawTabBar(encoder, t.titles, t.active, t.drag_view, t.scroll_x_px, t.layout, t.hover);
             } else if (t.titles.len == 1) {
                 self.drawSingleControlStrip(encoder, t.layout, t.hover);
             }
@@ -1011,8 +1000,6 @@ pub const MetalRenderer = struct {
         encoder: objc.id,
         tab_titles: []const []const u8,
         active_tab: usize,
-        rename_view: ?tab_interaction.RenameView,
-        rename_preedit: []const u8,
         drag_view: ?tab_interaction.DragView,
         /// 탭바 스크롤 오프셋 (픽셀, #117). 각 탭 / drag 탭의 화면 x =
         /// `world_x - tab_scroll_x_px + tab_area_x`.
@@ -1086,100 +1073,54 @@ pub const MetalRenderer = struct {
         const text_y_top: f32 = (tab_bar_h_px - ch) * 0.5;
         // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
         const max_text_w_px = tab_w_px - tab_pad_px * 2;
-        // rename preedit 배경색 (cell preedit 과 동일 — 보라 회색).
-        const preedit_bg_color: [4]f32 = .{ 0.25, 0.25, 0.5, 1.0 };
 
-        for (tab_titles, 0..) |orig_title, i| {
+        for (tab_titles, 0..) |title, i| {
             const tab_x = tabXFor(i, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const text_x_start = tab_x + tab_pad_px;
             const viewport_left = text_x_start;
 
-            // rename 진행 중인 탭이면 그 buf 의 텍스트를 대신 표시 + cursor +
-            // preedit (IME 자모) 인라인. preedit 은 별도 인자 (mac 전용 — Win
-            // 은 system IME UI #164).
-            const renaming_this = if (rename_view) |rv| (rv.tab_index == i) else false;
-            const title = if (renaming_this) rename_view.?.text[0..rename_view.?.text_len] else orig_title;
-            const cursor_byte: ?usize = if (renaming_this) rename_view.?.cursor else null;
-            const preedit_text: []const u8 = if (renaming_this) rename_preedit else &.{};
-
-            // 긴 title 의 ellipsis 처리 (#161). typing 중 (renaming_this) 은
-            // truncate 안 함. iterTabText 가 cursor follow scroll / preedit
-            // advance / truncate ellipsis 모두 처리.
+            // 긴 title 의 ellipsis 처리 (#161). iterTabText 가 truncate
+            // ellipsis 처리.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
-            const needs_truncate = !renaming_this and (total_text_w > max_text_w_px);
-            // cross-platform iterTabText — codepoint 별 cb 호출. mac/win 양쪽
-            // 같은 helper 호출 → fix 한 곳 양쪽 자동 반영. (#163 옵션 A 확장)
+            const needs_truncate = total_text_w > max_text_w_px;
+            // cross-platform iterTabText — codepoint 별 cb 호출. 세 platform 이
+            // 같은 helper 호출 → fix 한 곳 전부 자동 반영. (#163 옵션 A)
             const Ctx = struct {
                 self: *MetalRenderer,
-                bg_buf: *[MAX_BG]BgInstance,
-                bg_n: *usize,
                 text_buf: *[MAX_TEXT]TextInstance,
                 text_n: *usize,
                 text_y_top: f32,
-                ch: f32,
-                preedit_bg_color: [4]f32,
                 viewport_left: f32,
             };
             const ctx = Ctx{
                 .self = self,
-                .bg_buf = &bg_buf,
-                .bg_n = &bg_n,
                 .text_buf = &text_buf,
                 .text_n = &text_n,
                 .text_y_top = text_y_top,
-                .ch = ch,
-                .preedit_bg_color = preedit_bg_color,
                 .viewport_left = viewport_left,
             };
-            const emitGlyph = struct {
-                fn run(c: Ctx, cp: u21, x: f32, fg: [4]f32) void {
+            tab_layout.iterTabText(title, text_x_start, cw, max_text_w_px, needs_truncate, ctx, struct {
+                fn cb(c: Ctx, g: tab_layout.Glyph) void {
                     if (c.text_n.* >= MAX_TEXT) return;
-                    if (x < c.viewport_left) return;
-                    const result = c.self.tab_font.resolveGlyph(@intCast(cp)) orelse return;
+                    if (g.x < c.viewport_left) return;
+                    const result = c.self.tab_font.resolveGlyph(@intCast(g.cp)) orelse return;
                     const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                         if (result.owned) ct.CFRelease(result.font);
                         return;
                     };
                     if (result.owned) ct.CFRelease(result.font);
                     if (entry.w == 0 or entry.h == 0) return;
-                    const gx = x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
                     const gy = c.text_y_top + c.self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
                     c.text_buf[c.text_n.*] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = fg,
+                        .fg_color = ui_metrics.TAB_TEXT_COLOR,
                         .color_flag = if (entry.is_color) 1 else 0,
                     };
                     c.text_n.* += 1;
-                }
-            }.run;
-            const rename_scroll_inout: ?*f32 = if (renaming_this) rename_view.?.scroll_offset else null;
-            tab_layout.iterTabText(title, cursor_byte, preedit_text, text_x_start, cw, max_text_w_px, renaming_this, needs_truncate, rename_scroll_inout, ctx, struct {
-                fn cb(c: Ctx, cmd: tab_layout.TextCmd) void {
-                    switch (cmd) {
-                        .glyph => |g| emitGlyph(c, g.cp, g.x, ui_metrics.TAB_TEXT_COLOR),
-                        .cursor => |cur| {
-                            if (c.bg_n.* >= MAX_BG) return;
-                            c.bg_buf[c.bg_n.*] = .{
-                                .pos = .{ cur.x, c.text_y_top + 2 },
-                                .size = .{ 1, c.ch - 4 },
-                                .color = ui_metrics.TAB_TEXT_COLOR,
-                            };
-                            c.bg_n.* += 1;
-                        },
-                        .preedit_bg => |pbg| {
-                            if (c.bg_n.* >= MAX_BG) return;
-                            c.bg_buf[c.bg_n.*] = .{
-                                .pos = .{ pbg.x, c.text_y_top },
-                                .size = .{ pbg.advance, c.ch },
-                                .color = c.preedit_bg_color,
-                            };
-                            c.bg_n.* += 1;
-                        },
-                        .preedit_glyph => |pg| emitGlyph(c, pg.cp, pg.x, ui_metrics.TAB_TEXT_COLOR),
-                    }
                 }
             }.cb);
         }

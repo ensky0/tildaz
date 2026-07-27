@@ -99,8 +99,6 @@ pub const App = struct {
             .session = &self.session,
             .override_ptr = &self.tab_scroll_user_override,
             .invalidate = winHostInvalidate,
-            .rename_active = winHostRenameActive,
-            .insert_rename_cp = winHostInsertRenameCp,
             .clipboard_copy = winHostClipboardCopy,
             .terminate = winHostTerminate,
             .user_data = self,
@@ -115,16 +113,6 @@ pub const App = struct {
     fn winHostInvalidate(host: *tab_actions.Host) void {
         const self: *App = @ptrCast(@alignCast(host.user_data.?));
         self.invalidateRenderer();
-    }
-
-    fn winHostRenameActive(host: *const tab_actions.Host) bool {
-        const self: *const App = @ptrCast(@alignCast(host.user_data.?));
-        return self.isRenaming();
-    }
-
-    fn winHostInsertRenameCp(host: *tab_actions.Host, cp: u21) void {
-        const self: *App = @ptrCast(@alignCast(host.user_data.?));
-        self.handleRenameChar(cp);
     }
 
     fn winHostClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
@@ -182,8 +170,7 @@ pub const App = struct {
 
     /// #193 — Windows host 의 `WM_SETCURSOR` callback. SPEC.md §3.1:
     /// - cell 영역 → I-beam (`.cell`)
-    /// - rename 활성 탭의 text 입력 영역 (close 'x' 박스 제외) → I-beam
-    /// - 그 외 (탭바 일반 / 스크롤바 / padding) → arrow (`.other`)
+    /// - 그 외 (탭바 / 스크롤바 / padding) → arrow (`.other`)
     pub fn cursorRegion(x: c_int, y: c_int, userdata: ?*anyopaque) Window.CursorRegion {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         const tab_bar_h = self.effectiveTabBarHeight();
@@ -194,25 +181,8 @@ pub const App = struct {
             const py = @as(f32, @floatFromInt(y)) / self.dpi_scale;
             if (px >= menu.x and px < menu.x + menu.w and py >= menu.y and py < menu.y + menu.h) return .other;
         }
-        // 탭바 영역 — rename 활성 탭 text 면 I-beam, 그 외 arrow.
-        if (y < tab_bar_h) {
-            if (self.tab_interaction.rename.isActive()) {
-                const inputs = self.tabBarLayoutInputs();
-                const layout = tab_layout.compute(inputs);
-                const hit_text = tab_layout.hitRenameText(
-                    @floatFromInt(x),
-                    @floatFromInt(y),
-                    layout,
-                    @floatFromInt(self.TAB_WIDTH),
-                    @floatFromInt(tab_bar_h),
-                    @floatFromInt(self.tab_scroll_x),
-                    @intCast(self.session.count()),
-                    self.tab_interaction.rename.tab_index,
-                );
-                if (hit_text) return .cell;
-            }
-            return .other;
-        }
+        // 탭바 영역 — 버튼 성격 영역이라 arrow.
+        if (y < tab_bar_h) return .other;
         const size = self.window.getClientSize();
         if (x >= size.w - self.SCROLLBAR_W) return .other; // 스크롤바
         const pad = self.TERMINAL_PADDING;
@@ -303,8 +273,8 @@ pub const App = struct {
     pub fn onQuitRequest(userdata: ?*anyopaque) bool {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         // Alt+F4/WM_CLOSE도 다른 focus-loss action과 같은 Windows 입력 정책을
-        // 거친다. IME 결과와 rename commit이 confirm dialog보다 먼저 끝나야
-        // Cancel 뒤에도 원래 탭/제목에 확정 결과가 남는다 (#313).
+        // 거친다. IME 결과가 confirm dialog보다 먼저 끝나야 Cancel 뒤에도
+        // 원래 탭에 확정 결과가 남는다 (#313).
         _ = self.resolveWindowsInput(.{ .shortcut = .quit }) orelse return false;
         const n = self.session.count();
         if (n == 0) return true;
@@ -313,8 +283,8 @@ pub const App = struct {
         return dialog.showConfirm(messages.quit_confirm_title, msg);
     }
 
-    /// F1 hide 직전 — rename 활성 시 commit (#175). 모든 focus_loss = commit
-    /// 정책 (SPEC §4.1). preedit 은 hide 시점에 IME 가 OS 차원에서 자동 처리.
+    /// F1 hide 직전 — 진행 중 preedit commit (#175). 모든 focus_loss = commit
+    /// 정책 (SPEC §4.1).
     pub fn onBeforeHide(userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         // WM_HOTKEY는 app event로 먼저 이 정책을 적용한다. 이 callback은 다른
@@ -323,10 +293,8 @@ pub const App = struct {
     }
 
     /// #282 A11 — IME 조합 시작 시 활성 탭을 맨 아래로 (macOS/Linux 동등).
-    /// rename(탭바) 조합은 terminal viewport 와 무관하므로 제외.
     pub fn onImeCompositionStart(userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
-        if (self.isRenaming()) return;
         self.session.scrollActiveToBottom();
     }
 
@@ -409,10 +377,10 @@ pub const App = struct {
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
             const should_render = self.session.prepareActiveFrame(&self.last_render_ms);
-            // rename / IME preedit 활성 시 throttle 우회 — 두 UI 는 PTY 출력과
+            // IME preedit 활성 시 throttle 우회 — preedit UI 는 PTY 출력과
             // 무관한 매 keystroke 즉시 화면 갱신 필요 (mac 동등). throttle 만
             // 적용하면 typing 도중 preedit 안 보이거나 늦게 따라옴 (#164 회귀).
-            const force_render = self.isRenaming() or self.window.imePreeditSlice().len > 0;
+            const force_render = self.window.imePreeditSlice().len > 0;
 
             // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중인 동안은
             // handleDragMove 가 직접 auto-scroll 하므로 skip. 사용자 화살표
@@ -446,10 +414,6 @@ pub const App = struct {
                     self.TAB_PADDING,
                     self.dpi_scale,
                     self.tab_interaction.drag.view(),
-                    self.tab_interaction.rename.view(),
-                    // rename 활성 시 IME preedit 을 탭바 cursor 옆 inline 으로
-                    // (mac 동등). 비활성이면 cell preedit (renderTerminal) 로.
-                    if (self.isRenaming()) self.window.imePreeditSlice() else &.{},
                     self.tab_scroll_x,
                     self.tabBarLayout(),
                     self.tab_hover,
@@ -466,9 +430,8 @@ pub const App = struct {
                         self.TERMINAL_PADDING,
                         self.SCROLLBAR_W,
                         self.SCROLLBAR_MIN_THUMB_H,
-                        // rename 중이면 cell preedit 빈 slice — IME 자모는 탭바
-                        // (1c) 로 라우팅. 아니면 cursor 옆 inline overlay (#164).
-                        if (self.isRenaming()) &.{} else self.window.imePreeditSlice(),
+                        // IME 자모는 cursor 옆 inline overlay (#164).
+                        self.window.imePreeditSlice(),
                         self.tabBarLayout(),
                         self.tab_hover,
                         .{
@@ -624,7 +587,7 @@ pub const App = struct {
     }
 
     /// #329 — 메뉴가 열린 동안의 키 입력. 모든 키를 메뉴 계층이 소비한다
-    /// (native menu 동등) — PTY / rename 으로 보내지 않는다.
+    /// (native menu 동등) — PTY 로 보내지 않는다.
     fn handleCommandMenuKey(self: *App, menu_key: command_menu.MenuKey) void {
         switch (command_menu.onKey(menu_key, &self.command_menu_focus)) {
             .consumed => {
@@ -651,7 +614,7 @@ pub const App = struct {
     }
 
     /// 메뉴 / 탭바 버튼의 상태 변경 명령 공통 진입 — keyboard shortcut 과 같은
-    /// 입력 정책(IMM complete → rename commit → action)을 거친다 (#329).
+    /// 입력 정책(IMM complete → action)을 거친다 (#329).
     /// false 면 IMM complete 실패 등으로 action 을 보류해야 한다.
     fn resolveRunAction(self: *App, sc: input_policy.Shortcut) bool {
         const disposition = self.resolveWindowsInput(.{ .shortcut = sc }) orelse return false;
@@ -684,50 +647,6 @@ pub const App = struct {
             .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(),
         }
         self.invalidateRenderer();
-    }
-
-    /// rename 활성 탭의 text 영역 안 마우스 클릭 시 cursor 위치 변경 후 true.
-    /// 영역 밖 / 다른 탭 / close 버튼 / 터미널 등은 false → caller 가 commit.
-    /// (#164 follow-up — native textbox UX)
-    fn tryRenameClickMoveCursor(self: *App, mouse_x: c_int, mouse_y: c_int) bool {
-        const rv = self.tab_interaction.rename.view() orelse return false;
-        if (mouse_y >= self.effectiveTabBarHeight()) return false;
-        const layout = self.tabBarLayout();
-        if (self.tabBarHitArea(mouse_x, layout) != .tab_area) return false;
-
-        const local_x = mouse_x - @as(c_int, @intFromFloat(layout.tab_area_x));
-        const tab_index_raw = @divTrunc(local_x + self.tab_scroll_x, self.TAB_WIDTH);
-        if (tab_index_raw < 0) return false;
-        const tab_index: usize = @intCast(tab_index_raw);
-        if (tab_index != rv.tab_index) return false;
-
-        const tab_x_int = @as(c_int, @intCast(rv.tab_index)) * self.TAB_WIDTH - self.tab_scroll_x + @as(c_int, @intFromFloat(layout.tab_area_x));
-
-        // preedit 활성 시 manual commit — preedit 자모 들을 현재 cursor 위치
-        // 다음에 insert (rename buf 에). 그 후 IME state cancel — 다음
-        // GCS_RESULTSTR 안 받게. native textbox UX (#164 follow-up).
-        const preedit = self.window.imePreeditSlice();
-        if (preedit.len > 0) {
-            var commit_iter = std.unicode.Utf8Iterator{ .bytes = preedit, .i = 0 };
-            while (commit_iter.nextCodepoint()) |cp| {
-                if (cp >= 0x20) _ = self.tab_interaction.rename.insertCodepoint(cp);
-            }
-            _ = self.window.imeCancelComposition();
-        }
-
-        // commit 반영된 새 view 로 mouse → byte 매핑.
-        const rv_new = self.tab_interaction.rename.view() orelse return false;
-        const cw: f32 = @floatFromInt(self.window.cell_width_px);
-        const text_x_start: f32 = @floatFromInt(tab_x_int + self.TAB_PADDING);
-        // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
-        const max_text_w: f32 = @floatFromInt(self.TAB_WIDTH - self.TAB_PADDING * 2);
-
-        if (tab_layout.renameTextHit(rv_new.text[0..rv_new.text_len], self.tab_interaction.rename.scroll_offset, text_x_start, cw, max_text_w, @floatFromInt(mouse_x))) |new_byte| {
-            self.tab_interaction.rename.setCursor(new_byte);
-            self.invalidateRenderer();
-            return true;
-        }
-        return false;
     }
 
     /// #268/#329 — 탭바 컨트롤 버튼 hover 갱신.
@@ -867,63 +786,6 @@ pub const App = struct {
         }
     }
 
-    fn startRename(self: *App, tab_index: usize) void {
-        const tab = self.session.tabAt(tab_index) orelse return;
-        self.tab_interaction.rename.begin(tab_index, tab.title[0..tab.title_len]);
-        self.invalidateRenderer();
-    }
-
-    fn commitRename(self: *App) void {
-        const request = self.tab_interaction.rename.commitRequest() orelse return;
-        if (request.title.len > 0) {
-            if (self.session.tabAt(request.tab_index)) |tab| {
-                tab.setCustomTitle(request.title);
-            }
-        }
-        self.tab_interaction.rename.clear();
-        self.invalidateRenderer();
-    }
-
-    fn cancelRename(self: *App) void {
-        self.tab_interaction.rename.clear();
-        self.invalidateRenderer();
-    }
-
-    fn handleRenameChar(self: *App, cp: u21) void {
-        if (self.tab_interaction.rename.insertCodepoint(cp)) {
-            self.invalidateRenderer();
-        }
-    }
-
-    fn handleRenameKey(self: *App, key: app_event.KeyInput) bool {
-        const rename_key: tab_interaction.RenameKey = switch (key) {
-            .enter => .enter,
-            .escape => .escape,
-            .backspace => .backspace,
-            .left => .left,
-            .right => .right,
-            .home => .home,
-            .end => .end,
-            .delete => .delete,
-            // #282 A9 — rename 편집 대상 아님. false 반환 → caller 의
-            // `if (isRenaming()) return true` 가 swallow (PTY 미전송). 비rename
-            // 이면 caller 가 false → host 가 기존 escape sequence 경로로 PTY.
-            .up, .down, .page_up, .page_down, .insert => return false,
-        };
-
-        switch (self.tab_interaction.rename.handleKey(rename_key)) {
-            .none => return false,
-            .changed => self.invalidateRenderer(),
-            .commit => self.commitRename(),
-            .cancel => self.cancelRename(),
-        }
-        return true;
-    }
-
-    fn isRenaming(self: *const App) bool {
-        return self.tab_interaction.rename.isActive();
-    }
-
     fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) terminal_interaction.Cell {
         const cw = self.window.cell_width_px;
         const ch = self.window.cell_height_px;
@@ -1017,14 +879,13 @@ pub const App = struct {
         };
     }
 
-    /// Windows의 실제 rename/IMM preedit 상태로 공통 입력 정책을 resolve하고,
-    /// native pending → rename commit 순으로 적용한다. `imeCompleteComposition`
-    /// 안에서 GCS_RESULTSTR가 동기 text_input으로 원래 대상에 먼저 들어온다.
-    /// complete가 실패하면 action을 보류해 queued WM_CHAR가 다른 대상에 들어가는
-    /// 것을 막는다. cancel은 정책대로 best-effort이며 ETX는 호출자가 한 번 보낸다.
+    /// Windows의 실제 IMM preedit 상태로 공통 입력 정책을 resolve하고 native
+    /// pending 을 적용한다. `imeCompleteComposition` 안에서 GCS_RESULTSTR가
+    /// 동기 text_input으로 원래 대상에 먼저 들어온다. complete가 실패하면
+    /// action을 보류해 queued WM_CHAR가 다른 대상에 들어가는 것을 막는다.
+    /// cancel은 정책대로 best-effort이며 ETX는 호출자가 한 번 보낸다.
     fn resolveWindowsInput(self: *App, input: input_policy.Input) ?input_policy.Disposition {
         const resolution = windows_input_adapter.resolve(input, .{
-            .rename_active = self.isRenaming(),
             .ime_preedit_len = self.window.imePreeditSlice().len,
             .ime_result_deferred = self.window.imeHasDeferredResult(),
         });
@@ -1035,7 +896,6 @@ pub const App = struct {
             .complete_ime => if (!self.window.imeCompleteComposition()) return null,
             .cancel_ime => _ = self.window.imeCancelComposition(),
         }
-        if (resolution.commit_rename_after_ime) self.commitRename();
         return resolution.disposition;
     }
 
@@ -1055,12 +915,6 @@ pub const App = struct {
                     });
                     return true;
                 }
-                if (self.isRenaming()) {
-                    if (cp >= 0x20) { // printable characters only
-                        self.handleRenameChar(cp);
-                    }
-                    return true;
-                }
                 return false;
             },
             .key_input => |key| {
@@ -1077,18 +931,15 @@ pub const App = struct {
                     });
                     return true;
                 }
-                if (self.handleRenameKey(key)) return true;
-                if (self.isRenaming()) return true; // swallow rename editing keys
                 return false;
             },
             .paste => |bytes| {
                 // #329 — 명시적 paste 명령(Ctrl+Shift+V)은 메뉴를 닫고 정상 실행.
                 if (self.command_menu_open) self.closeCommandMenu();
-                // rename routing (printable cp 만 → handleRenameChar) 또는 일반
-                // PTY paste (bracketed paste + wrap 은 session 가). 양쪽 분기
-                // helper. mac handlePaste 와 같은 path.
+                // PTY paste (bracketed paste + wrap 은 session 가). mac
+                // handlePaste 와 같은 path.
                 const disposition = self.resolveWindowsInput(.paste) orelse return true;
-                if (disposition.target == .rename_buffer or disposition.target == .pty) {
+                if (disposition.target == .pty) {
                     tab_actions.routePaste(&self.host, bytes);
                 }
                 return true;
@@ -1113,10 +964,9 @@ pub const App = struct {
                 // #329 — 단축키는 메뉴를 먼저 닫고 정상 실행 (toggle 로 hide
                 // 해도 열린 메뉴가 남지 않음).
                 if (self.command_menu_open) self.closeCommandMenu();
-                // #296 — rename 중 단축키의 commit 여부는 입력 정책(input_policy)
-                // 한 곳에서. copy_selection/dump_perf 는 read-only → rename 을 안
-                // 끝냄(rename 중 복사할 대상이 없음 — macOS/Linux 와 같은 정정).
-                // 그 외 단축키는 focus_loss 로 현재 값 commit 후 실행 (SPEC §4.1).
+                // #296 — 단축키의 preedit commit 여부는 입력 정책(input_policy)
+                // 한 곳에서. 상태 변경 단축키는 focus_loss 로 preedit 을 commit
+                // 후 실행 (SPEC §4.1).
                 const disposition = self.resolveWindowsInput(.{ .shortcut = appShortcutToPolicy(shortcut) }) orelse return true;
                 if (disposition.target != .run_action) return true;
                 switch (shortcut) {
@@ -1187,12 +1037,6 @@ pub const App = struct {
                 }
             },
             .mouse_down => |mouse| {
-                // rename 활성 탭 text 영역 안 클릭 → cursor 위치만 변경 (commit X).
-                // native textbox UX (#164 follow-up). 그 외는 기존 동작.
-                if (self.isRenaming()) {
-                    if (self.tryRenameClickMoveCursor(mouse.x, mouse.y)) return true;
-                    self.commitRename();
-                }
                 if (self.command_menu_open) {
                     // #334 — 스크롤 표시 행 클릭 = 한 entry 스크롤, 메뉴 유지.
                     const menu_view = self.commandMenuView();
@@ -1237,20 +1081,8 @@ pub const App = struct {
             },
             .mouse_double_click => |mouse| {
                 if (self.singleControlHit(mouse.x, mouse.y) != .none) return true;
-                if (mouse.y < self.effectiveTabBarHeight()) {
-                    // #117 — 탭 영역 안에서만 rename, 화살표/+ 위 더블클릭은 무시.
-                    const layout = self.tabBarLayout();
-                    if (self.tabBarHitArea(mouse.x, layout) == .tab_area) {
-                        const local_x = mouse.x - @as(c_int, @intFromFloat(layout.tab_area_x));
-                        const tab_index_raw = @divTrunc(local_x + self.tab_scroll_x, self.TAB_WIDTH);
-                        if (tab_index_raw >= 0) {
-                            const tab_index: usize = @intCast(tab_index_raw);
-                            if (tab_index < self.session.count()) {
-                                self.startRename(tab_index);
-                            }
-                        }
-                    }
-                } else {
+                // 탭바 더블클릭은 소비만 (rename 은 #341 로 제거).
+                if (mouse.y >= self.effectiveTabBarHeight()) {
                     self.selectWordAt(mouse.x, mouse.y);
                 }
                 return true;

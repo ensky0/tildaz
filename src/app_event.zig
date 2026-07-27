@@ -2,9 +2,8 @@ pub const Event = union(enum) {
     text_input: u21,
     key_input: KeyInput,
     shortcut: Shortcut,
-    /// 클립보드 paste (#142). UTF-8 bytes. 탭 rename 활성 시
-    /// `app_controller` 가 rename buffer 로 라우팅 (true 반환), 아니면 false
-    /// 반환해서 host 가 PTY 로 쓴다.
+    /// 클립보드 paste (#142). UTF-8 bytes. `app_controller` 가 입력 정책
+    /// (preedit commit) 적용 후 PTY 로 라우팅한다.
     paste: []const u8,
     /// Ctrl+C. Windows adapter가 terminal preedit discard와 ETX 전송을
     /// 하나의 입력 정책 순서로 처리하기 위해 WM_CHAR 경로와 분리한다.
@@ -47,8 +46,8 @@ pub const KeyInput = enum {
     home,
     end,
     delete,
-    // #282 A9 — rename 편집에 안 쓰는 nav 키. rename 활성 시 PTY 로 새지 않게
-    // swallow 하려고 dispatch (Windows 만 — macOS/Linux 는 자체 rename 경로).
+    // command menu 가 열린 동안 swallow 하려고 dispatch (Windows 만 —
+    // macOS/Linux 는 자체 menu key 경로).
     up,
     down,
     page_up,

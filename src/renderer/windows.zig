@@ -171,7 +171,7 @@ pub const D3d11Renderer = struct {
     pixels_per_dip: f32 = 1.0,
     render_state: ghostty.RenderState = .empty,
     /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
-    /// renderTerminal cell cursor 또는 renderTabBar rename cursor 그리면서
+    /// renderTerminal cell cursor 그리면서
     /// 갱신. App 가 IME composition 활성 시 ImmSetCompositionWindow(CFS_POINT)
     /// 로 IME 후보 popup 을 이 위치 근처에 띄움 (#164 1d).
     last_cursor_px_x: c_int = 0,
@@ -813,13 +813,6 @@ pub const D3d11Renderer = struct {
         /// (c_int) 는 *world* 좌표 (#117) — 화면 위치는 `current_x -
         /// tab_scroll_x + tab_area_x`. cross-platform `tab_interaction.DragView`.
         drag_view: ?tab_interaction.DragView,
-        /// rename 진행 중이면 그 탭의 title 대신 이 텍스트를 그림. null = rename
-        /// 비활성. cross-platform `tab_interaction.RenameView`.
-        rename_view: ?tab_interaction.RenameView,
-        /// rename 활성 탭의 cursor 옆에 IME 조합 중 자모 inline 표시 (#164 1c).
-        /// 빈 slice = 표시 안 함. host 가 rename 활성 시 IME preedit 을 cell 대신
-        /// 여기로 라우팅.
-        rename_preedit: []const u8,
         /// 탭바 스크롤 오프셋 (#117). 각 탭 / drag 탭의 화면 x = world - 이 값
         /// + tab_area_x 오프셋.
         tab_scroll_x: c_int,
@@ -911,17 +904,6 @@ pub const D3d11Renderer = struct {
         // Tab title text + close buttons via glyph atlas
         var text_instances: [512]TextInstance = undefined;
         var text_count: u32 = 0;
-        // IME preedit overlay 별 buffer — main text drawTextInstances 후에
-        // 별도 호출하기 위함. 같은 buffer 에 두면 main bg → main text → preedit
-        // bg → preedit text 의 layer 순서 보장 못 함 (main text 가 preedit bg
-        // 위에 그려져 cursor 뒤 글자가 보라 위에 보임). #164 1c-fix2.
-        var pre_bg_buf: [16]BgInstance = undefined;
-        var pre_bg_n: u32 = 0;
-        var pre_text_buf: [16]TextInstance = undefined;
-        var pre_text_n: u32 = 0;
-
-        var cursor_instances: [1]BgInstance = undefined;
-        var cursor_count: u32 = 0;
         for (0..tab_count) |i| {
             const is_dragged = if (drag_view) |d| (i == d.tab_index) else false;
             const tab_x: f32 = if (is_dragged)
@@ -929,8 +911,7 @@ pub const D3d11Renderer = struct {
             else
                 @as(f32, @floatFromInt(i)) * tw - sx + tax;
 
-            const is_renaming = if (rename_view) |rv| (i == rv.tab_index) else false;
-            const title = if (is_renaming) rename_view.?.text[0..rename_view.?.text_len] else tab_titles[i];
+            const title = tab_titles[i];
             const baseline_y2 = (tbh + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2.0;
 
             // Max text width — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
@@ -938,110 +919,48 @@ pub const D3d11Renderer = struct {
             // 탭 제목의 실제 시각 폭 — wide char (한글/CJK/Fullwidth/주요 emoji)
             // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
             const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
-            const needs_truncate = !is_renaming and (total_text_w > max_text_w);
-            const rename_cursor_pos: ?usize = if (is_renaming) rename_view.?.cursor else null;
+            const needs_truncate = total_text_w > max_text_w;
 
-            // cross-platform iterTabText — codepoint 별 cb 호출. mac/win 양쪽
-            // 같은 helper 호출 → fix 한 곳 양쪽 자동 반영. (#163 옵션 A 확장)
+            // cross-platform iterTabText — codepoint 별 cb 호출. 세 platform 이
+            // 같은 helper 호출 → fix 한 곳 전부 자동 반영. (#163 옵션 A)
             // text_x_start = absolute x (tab 내 text 시작점). cb 가 받는 x 도
-            // absolute. preedit BG / glyph 은 별 buffer (1c-fix2) 라 main text
-            // drawCall 후 별도 호출 — cb 가 cmd 종류로 분기.
+            // absolute.
             const text_x_start = tab_x + pad;
             const Ctx = struct {
                 self: *D3d11Renderer,
                 text_instances: *[512]TextInstance,
                 text_count: *u32,
-                cursor_instances: *[1]BgInstance,
-                cursor_count: *u32,
-                pre_bg_buf: *[16]BgInstance,
-                pre_bg_n: *u32,
-                pre_text_buf: *[16]TextInstance,
-                pre_text_n: *u32,
-                ch: f32,
                 baseline_y2: f32,
                 text_x_start: f32,
-                pre_bg_color: [4]f32,
             };
             const ctx = Ctx{
                 .self = self,
                 .text_instances = &text_instances,
                 .text_count = &text_count,
-                .cursor_instances = &cursor_instances,
-                .cursor_count = &cursor_count,
-                .pre_bg_buf = &pre_bg_buf,
-                .pre_bg_n = &pre_bg_n,
-                .pre_text_buf = &pre_text_buf,
-                .pre_text_n = &pre_text_n,
-                .ch = ch,
                 .baseline_y2 = baseline_y2,
                 .text_x_start = text_x_start,
-                .pre_bg_color = .{ 0.25, 0.25, 0.5, 1 },
             };
-            const Target = enum { main, preedit };
-            const emitGlyph = struct {
-                fn run(c: Ctx, cp: u21, x: f32, into: Target) void {
-                    if (x < c.text_x_start) return;
-                    const result = c.self.tab_font.resolveGlyph(cp) orelse return;
+            tab_layout.iterTabText(title, text_x_start, cw, max_text_w, needs_truncate, ctx, struct {
+                fn cb(c: Ctx, g: tab_layout.Glyph) void {
+                    if (g.x < c.text_x_start) return;
+                    const result = c.self.tab_font.resolveGlyph(g.cp) orelse return;
                     const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         return;
                     };
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     if (entry.w == 0 or entry.h == 0) return;
-                    const gx = x + @as(f32, @floatFromInt(entry.bearing_x));
+                    const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
                     const gy = c.baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
-                    const inst: TextInstance = .{
+                    if (c.text_count.* >= 510) return;
+                    c.text_instances[c.text_count.*] = .{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .fg_color = ui_metrics.TAB_TEXT_COLOR,
                     };
-                    switch (into) {
-                        .main => {
-                            if (c.text_count.* >= 510) return;
-                            c.text_instances[c.text_count.*] = inst;
-                            c.text_count.* += 1;
-                        },
-                        .preedit => {
-                            if (c.pre_text_n.* >= c.pre_text_buf.len) return;
-                            c.pre_text_buf[c.pre_text_n.*] = inst;
-                            c.pre_text_n.* += 1;
-                        },
-                    }
-                }
-            }.run;
-            const rename_scroll_inout: ?*f32 = if (is_renaming) rename_view.?.scroll_offset else null;
-            tab_layout.iterTabText(title, rename_cursor_pos, rename_preedit, text_x_start, cw, max_text_w, is_renaming, needs_truncate, rename_scroll_inout, ctx, struct {
-                fn cb(c: Ctx, cmd: tab_layout.TextCmd) void {
-                    switch (cmd) {
-                        .glyph => |g| emitGlyph(c, g.cp, g.x, .main),
-                        .cursor => |cur| {
-                            const cursor_vertical = tab_layout.renameCursorVertical(
-                                c.baseline_y2 - c.self.tab_font.ascent_px,
-                                c.ch,
-                            );
-                            c.cursor_instances[0] = .{
-                                .pos = .{ cur.x, cursor_vertical.y },
-                                .size = .{ 1, cursor_vertical.height },
-                                .color = ui_metrics.TAB_TEXT_COLOR,
-                            };
-                            c.cursor_count.* = 1;
-                            c.self.last_cursor_px_x = @intFromFloat(cur.x);
-                            c.self.last_cursor_px_y = @intFromFloat(cursor_vertical.y);
-                        },
-                        .preedit_bg => |pbg| {
-                            if (c.pre_bg_n.* >= c.pre_bg_buf.len) return;
-                            const cell_top = c.baseline_y2 - c.self.tab_font.ascent_px;
-                            c.pre_bg_buf[c.pre_bg_n.*] = .{
-                                .pos = .{ pbg.x, cell_top },
-                                .size = .{ pbg.advance, c.ch },
-                                .color = c.pre_bg_color,
-                            };
-                            c.pre_bg_n.* += 1;
-                        },
-                        .preedit_glyph => |pg| emitGlyph(c, pg.cp, pg.x, .preedit),
-                    }
+                    c.text_count.* += 1;
                 }
             }.cb);
         }
@@ -1049,14 +968,6 @@ pub const D3d11Renderer = struct {
         if (text_count > 0) {
             self.drawTextInstancesWithAtlas(text_instances[0..text_count], &self.tab_atlas);
         }
-        if (cursor_count > 0) {
-            self.drawBgInstances(cursor_instances[0..cursor_count]);
-        }
-        // IME preedit overlay — main text drawCall *후* 그려 cursor 뒤 main
-        // 글자가 보라 BG 에 가리도록 (#164 1c-fix2). 1c-fix2 commit msg 의
-        // "main text 후 별도 호출" 작업이 실제 코드에 누락 → preedit 안 보임.
-        if (pre_bg_n > 0) self.drawBgInstances(pre_bg_buf[0..pre_bg_n]);
-        if (pre_text_n > 0) self.drawTextInstancesWithAtlas(pre_text_buf[0..pre_text_n], &self.tab_atlas);
 
         // #117 — 화살표 / + 영역. 탭 BG / 텍스트 그린 *후* 별도 batch 로 그려야
         // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:

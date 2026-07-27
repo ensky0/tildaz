@@ -1,7 +1,7 @@
 //! 탭 단위 사용자 action — cross-platform helper 모듈 (#159 Phase 2). 양쪽
 //! host (host/macos.zig, app_controller.zig) 가 자기 `Host` 인스턴스 + 콜백
-//! 채워서 호출. helper 안에서 platform-specific 동작 (invalidate / clipboard
-//! / rename routing) 은 콜백 통해 위임.
+//! 채워서 호출. helper 안에서 platform-specific 동작 (invalidate / clipboard)
+//! 은 콜백 통해 위임.
 //!
 //! 추상화 경계:
 //!   - SessionCore 호출 (mutating / query) — helper 가 직접
@@ -32,13 +32,6 @@ pub const Host = struct {
     /// 즉시 redraw. mac 은 60fps timer 가 자동 그리니 보통 noop, win 은
     /// `self.renderer.invalidate()`. helper 가 mutating 후 한 번만 호출.
     invalidate: *const fn (*Host) void,
-
-    /// 활성 rename 모드 검사. mac `g_rename.isActive()` / win `self.isRenaming()`.
-    rename_active: *const fn (*const Host) bool,
-
-    /// rename 모드 codepoint 추가. paste routing 에서 printable cp 만 forward.
-    /// mac `g_rename.insertCodepoint(cp)` / win `self.handleRenameChar(cp)`.
-    insert_rename_cp: *const fn (*Host, u21) void,
 
     /// 텍스트를 platform clipboard 로 복사. mac NSPasteboard / win
     /// `self.window.copyToClipboard(text)`. ghostty 의 `selectionString` 이
@@ -173,16 +166,8 @@ pub fn copyActiveSelection(host: *Host, alloc: std.mem.Allocator) void {
     host.clipboard_copy(host, text);
 }
 
-/// paste 텍스트 라우팅. rename 활성 시 codepoint 단위 (printable cp >= 0x20 만)
-/// 로 host.insert_rename_cp. 아니면 session.pasteToActive — bracketed paste mode
-/// 검사 + wrap 은 거기서 처리.
+/// paste 텍스트 라우팅 — session.pasteToActive. bracketed paste mode 검사 +
+/// wrap 은 거기서 처리.
 pub fn routePaste(host: *Host, bytes: []const u8) void {
-    if (host.rename_active(host)) {
-        var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
-        while (iter.nextCodepoint()) |cp| {
-            if (cp >= 0x20) host.insert_rename_cp(host, cp);
-        }
-        return;
-    }
     host.session.pasteToActive(bytes);
 }
