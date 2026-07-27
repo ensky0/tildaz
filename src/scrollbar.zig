@@ -52,6 +52,34 @@ pub fn geom(total: usize, len: usize, offset: usize, track_h: f64, min_thumb_h: 
     return .{ .thumb_h = thumb_h, .thumb_y_rel = thumb_y_rel, .available = available };
 }
 
+/// 정수 픽셀 격자에 스냅한 thumb 사각형 (#344).
+pub const ThumbPx = struct {
+    /// 윈도우 좌상 기준 thumb 윗변 (정수값을 담은 f64).
+    top: f64,
+    /// thumb 높이 (정수값, 최소 1).
+    h: f64,
+};
+
+/// thumb 을 정수 픽셀에 스냅한다 (#344). **양 끝을 각각 반올림한 뒤 높이를 뺀다** —
+/// 이 순서가 핵심이다.
+///
+/// track 아랫변 `track_top + track_h` 는 정수인데, 맨 아래로 내렸을 때 thumb 아랫변이
+/// 정확히 거기에 떨어져야 위·아래 여백이 같아진다. 윗변과 높이를 *따로* 정수화하면
+/// 두 절단 오차가 누적돼 `⌊T − thumb_h⌋ + ⌊thumb_h⌋ = T − 1` 이 되어 **아래 여백만
+/// 1px 커진다**. 양 끝을 각각 반올림하면 아랫변이 `round(T) = T` 로 보존된다.
+///
+/// 세 renderer 가 이 함수 하나만 쓰게 해서 platform 픽셀을 일치시킨다. 이전에는
+/// Linux 만 `@intFromFloat` 로 절단하고 macOS / Windows 는 f32 를 그대로 GPU 에
+/// 넘겨 결과가 달랐다 (같은 부류의 정수/실수 갈래는 #343 에서 통째로 정리).
+///
+/// hit-test 는 계속 f64 원본(`track_top` + `Geom`)을 쓴다 — 그리기만 격자에 맞추고
+/// 클릭 매핑은 연속값을 유지해, 스냅 때문에 드래그가 튀지 않는다.
+pub fn thumbPx(track_top: f64, g: Geom) ThumbPx {
+    const top = @round(track_top + g.thumb_y_rel);
+    const bottom = @round(track_top + g.thumb_y_rel + g.thumb_h);
+    return .{ .top = top, .h = @max(1, bottom - top) };
+}
+
 /// mouse-down 시 grab offset 산출. `mouse_rel_y = mouse_y - track_top`.
 /// thumb 위를 잡으면 잡은 지점을 유지(`mouse_rel_y - thumb_y_rel`), thumb 밖(빈
 /// track) 을 잡으면 thumb 가 커서 중심에 오게(`thumb_h/2`) — 잡은 지점이 커서 아래
@@ -88,9 +116,15 @@ pub const Hit = struct {
         return targetOffset(self.total, self.len, self.g, mouse_y - self.track_top, grab_off);
     }
 
-    /// thumb 윗변의 절대 Y (px) — 렌더러가 그릴 위치.
+    /// thumb 윗변의 절대 Y (px), 스냅 전 연속값. **그리기에는 `thumb()` 을 쓴다** —
+    /// 이 값을 renderer 가 각자 정수화하면 platform 마다 결과가 갈린다 (#344).
     pub fn thumbTop(self: Hit) f64 {
         return self.track_top + self.g.thumb_y_rel;
+    }
+
+    /// 정수 픽셀에 스냅한 thumb 사각형 — 세 renderer 의 유일한 그리기 입력 (#344).
+    pub fn thumb(self: Hit) ThumbPx {
+        return thumbPx(self.track_top, self.g);
     }
 };
 
@@ -165,4 +199,62 @@ test "hit: single entry point ties geom + track" {
     // down at thumb top (y=34) → grab 0
     try std.testing.expectApproxEqAbs(@as(f64, 0), h.grab(34), 0.001);
     try std.testing.expect(hit(10, 10, 0, 600, 28, 6, 32) == null);
+}
+
+test "#344 thumb snapping keeps the top and bottom track gaps equal" {
+    // 위 여백 = track_top - tab_bar_h, 아래 여백 = viewport_h - thumb 아랫변.
+    // 둘 다 pad 여야 한다 — 어떤 total/len 조합에서도.
+    const pad: f64 = 6;
+    const tab_bar_h: f64 = 28;
+    const viewport_h: f64 = 600;
+    const tr = track(viewport_h, tab_bar_h, pad);
+
+    const cases = [_][2]usize{
+        .{ 1000, 50 }, .{ 333, 40 }, .{ 97, 31 }, .{ 5000, 54 }, .{ 61, 60 },
+    };
+    for (cases) |c| {
+        const total = c[0];
+        const len = c[1];
+        const g_top = geom(total, len, 0, tr.h, 32) orelse continue;
+        const g_bot = geom(total, len, total - len, tr.h, 32) orelse continue;
+
+        const t_top = thumbPx(tr.top, g_top);
+        const t_bot = thumbPx(tr.top, g_bot);
+
+        try std.testing.expectEqual(pad, t_top.top - tab_bar_h);
+        try std.testing.expectEqual(pad, viewport_h - (t_bot.top + t_bot.h));
+    }
+}
+
+test "#344 snapped thumb is integral and never collapses" {
+    const tr = track(480, 28, 6);
+    var offset: usize = 0;
+    while (offset <= 900) : (offset += 37) {
+        const g = geom(1000, 100, offset, tr.h, 32) orelse continue;
+        const t = thumbPx(tr.top, g);
+        try std.testing.expectEqual(t.top, @round(t.top));
+        try std.testing.expectEqual(t.h, @round(t.h));
+        try std.testing.expect(t.h >= 1);
+        // 아랫변이 track 을 넘지 않는다.
+        try std.testing.expect(t.top + t.h <= tr.top + tr.h);
+    }
+}
+
+test "#344 the old two-truncation approach loses a pixel at the bottom" {
+    // 회귀 근거 기록 — 왜 양 끝을 각각 반올림해야 하는지.
+    //
+    // thumb_h 가 **소수일 때만** 오차가 누적된다. min_thumb 로 clamp 되어 32 같은
+    // 정수가 나오는 조합(예 total=1000, len=50)에서는 옛 방식도 우연히 맞는다.
+    // 실사용에서는 `track_h / total * len` 이 거의 항상 소수다.
+    const tr = track(600, 28, 6); // top=34, h=560 → 아랫변 594
+    const g = geom(333, 40, 333 - 40, tr.h, 32).?;
+    try std.testing.expect(g.thumb_h != @round(g.thumb_h)); // 소수임을 명시
+
+    const exact_bottom = tr.top + tr.h;
+    const old_top = @floor(tr.top + g.thumb_y_rel);
+    const old_bottom = old_top + @floor(g.thumb_h);
+    try std.testing.expectEqual(exact_bottom - 1, old_bottom); // 정확히 1px 모자람
+
+    const t = thumbPx(tr.top, g);
+    try std.testing.expectEqual(exact_bottom, t.top + t.h); // 새 방식은 정확히 도달
 }
