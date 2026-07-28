@@ -77,6 +77,20 @@ pub fn tabGapPx(scale: f32) TabGapPx {
     };
 }
 
+// ── chrome 색 anchor (#335) ─────────────────────────────────────────
+// 아래 9개 색 상수는 **anchor** 다 — Tilda (순수 검정) 배경에서의 값이고 #334 /
+// #342 가 시연으로 확정했다. renderer 는 이 상수를 직접 참조하지 않고
+// [`chrome_palette.derive`](chrome_palette.zig) 가 현재 theme 배경으로 옮긴 결과를
+// 쓴다. bg = 검정이면 파생 결과가 anchor 와 같으므로 Tilda 는 아래 값 그대로다.
+//
+// 모두 **8-bit 격자 위의 값**을 `N.0/255.0` 으로 적는다 (파생이 anchor 를 8-bit 로
+// 확정해 쓰므로 격자에서 벗어나면 Tilda 재현이 어긋난다). 예전에 `0.25` / `0.92`
+// 처럼 소수로 적힌 상수는 Linux 의 truncate 와 GPU 의 round 가 1/255 갈렸는데
+// (`MENU_HOVER_BG` 63 vs 64 등), 8-bit 로 적으면서 세 platform 이 같아졌다.
+//
+// amber accent (`TAB_ACCENT_COLOR`) 는 브랜드 색이라 파생하지 않는다 — 2026-07-28
+// 사용자 확정. 밝은 theme 에서 밑줄 대비가 1.35~1.46 으로 낮아지는 것은 알려진 귀결.
+
 /// 탭바 배경 = 모든 탭(활성 포함)의 배경 (#334 2026-07-22 결정 — Tilda 문법).
 /// 이전의 "활성 탭만 밝은 회색 + 비활성은 terminal 배경(#282)" 정책을 대체:
 /// 탭바 전체가 하나의 회색 띠가 되고, 활성 탭은 amber 밑줄로만 구분한다.
@@ -116,11 +130,11 @@ pub const MENU_INDICATOR_ICON_PT: u32 = 14;
 // `TAB_SEPARATOR_COLOR` 를 그대로 재사용 (탭바와 한 문법, 2026-07-22 사용자
 // 확정). 아래 셋은 메뉴 고유 값 — 세 renderer 가 이 상수만 참조한다.
 /// 메뉴 항목의 hover / keyboard focus 강조 배경.
-pub const MENU_HOVER_BG: [4]f32 = .{ 0.25, 0.25, 0.28, 1.0 };
+pub const MENU_HOVER_BG: [4]f32 = .{ 64.0 / 255.0, 64.0 / 255.0, 71.0 / 255.0, 1.0 };
 /// 메뉴 항목 label 텍스트 색.
-pub const MENU_LABEL_COLOR: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 };
+pub const MENU_LABEL_COLOR: [4]f32 = .{ 235.0 / 255.0, 235.0 / 255.0, 240.0 / 255.0, 1.0 };
 /// 메뉴 우측 단축키 hint 색 — label 보다 어둡게 (독립 값).
-pub const MENU_HINT_COLOR: [4]f32 = .{ 0.65, 0.65, 0.68, 1.0 };
+pub const MENU_HINT_COLOR: [4]f32 = .{ 166.0 / 255.0, 166.0 / 255.0, 173.0 / 255.0, 1.0 };
 /// 탭 텍스트 색 (180/255 ≈ 0.706). Windows `TAB_TEXT_R` 와 동일.
 pub const TAB_TEXT_COLOR: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0 };
 
@@ -145,13 +159,23 @@ pub const TAB_CLOSE_W_PT: u32 = 24;
 /// `…` command/shortcut menu 버튼 — 우측 고정 클러스터의 최우측 자리.
 pub const TAB_MORE_W_PT: u32 = 24;
 /// 활성 화살표 / `+` 색 — 탭 텍스트보다 더 밝게 (강조).
-pub const TAB_CTRL_ACTIVE_COLOR: [4]f32 = .{ 0.95, 0.95, 0.95, 1.0 };
+pub const TAB_CTRL_ACTIVE_COLOR: [4]f32 = .{ 242.0 / 255.0, 242.0 / 255.0, 242.0 / 255.0, 1.0 };
 /// 탭바 컨트롤 버튼 hover 배경 (#268 2b — VSCode 패턴의 은은한 밝은 박스).
-/// 흰색 12% 알파 — 어두운 탭바 배경 위에서만 살짝 떠 보임.
-pub const TAB_CTRL_HOVER_BG: [4]f32 = .{ 1.0, 1.0, 1.0, 0.12 };
+/// 어두운 탭바 배경 위에서만 살짝 떠 보이는 밝기.
+///
+/// #335 — 이전엔 `{ 1, 1, 1, 0.12 }` (흰색 12% 알파) 였다. 파생이 anchor 를 색으로
+/// 받아야 하므로 **합성 결과 solid** 로 바꿨다. 값은 세 platform 이 실제로 그리던
+/// 것과 같다 — 블렌드가 gamma space 에서 일어나기 때문이다 (Windows swapchain
+/// `DXGI_FORMAT_B8G8R8A8_UNORM` = `_SRGB` 아님 · macOS layer pixelFormat 80
+/// `BGRA8Unorm` · Linux `blendU8` 이 u8 값에서 혼합). linear space 였다면
+/// `102/103/105` 였을 것이므로 확인이 필요했다.
+///
+/// 단 Linux 만 `@intFromFloat` 로 truncate 해 `59.64 → 59` 였다 (R 채널 1 낮음).
+/// 이제 세 platform 이 같은 `60` 을 쓴다.
+pub const TAB_CTRL_HOVER_BG: [4]f32 = .{ 60.0 / 255.0, 61.0 / 255.0, 64.0 / 255.0, 1.0 };
 /// 비활성 화살표 (더 갈 곳 없음) 의 색 — 활성과 명확히 구분되도록 어둡지만
 /// 너무 어둡지 않게. Firefox 의 disabled chevron 과 동등 시각.
-pub const TAB_ARROW_DISABLED_COLOR: [4]f32 = .{ 0.4, 0.4, 0.4, 1.0 };
+pub const TAB_ARROW_DISABLED_COLOR: [4]f32 = .{ 102.0 / 255.0, 102.0 / 255.0, 102.0 / 255.0, 1.0 };
 
 // 탭바 컨트롤 아이콘 (`< > + × …`) 절차적 그리기 (#199 / #268 / #329) — 폰트 독립.
 // `src/tab_icons.zig` 가 선분 geometry 를 알파 커버리지 비트맵으로 rasterize,
@@ -247,6 +271,23 @@ test "tab bar height uses common rounded physical pixels" {
     try std.testing.expectEqual(@as(u32, 42), tabBarHeightPx(1.5));
     try std.testing.expectEqual(@as(u32, 48), tabBarHeightPx(1.7));
     try std.testing.expectEqual(@as(u32, 56), tabBarHeightPx(2.0));
+}
+
+test "#335 chrome 색 anchor 는 8-bit 격자 위에 있다" {
+    // `chrome_palette` 가 anchor 를 8-bit 로 확정해 파생하므로, 격자에서 벗어난
+    // 값이 섞이면 Tilda 재현이 1/255 어긋난다.
+    const anchors = [_][4]f32{
+        TAB_BAR_BG,            TAB_SEPARATOR_COLOR,      TAB_TEXT_COLOR,
+        TAB_CTRL_ACTIVE_COLOR, TAB_ARROW_DISABLED_COLOR, TAB_CTRL_HOVER_BG,
+        MENU_HOVER_BG,         MENU_LABEL_COLOR,         MENU_HINT_COLOR,
+    };
+    for (anchors) |a| {
+        try std.testing.expectEqual(@as(f32, 1.0), a[3]);
+        for (a[0..3]) |c| {
+            const scaled = c * 255.0;
+            try std.testing.expectApproxEqAbs(@round(scaled), scaled, 1e-3);
+        }
+    }
 }
 
 test "#329 three-button cluster uses single common metrics" {

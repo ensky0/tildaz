@@ -16,6 +16,7 @@ const box_drawing = @import("../../box_drawing.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
+const chrome_palette = @import("../../chrome_palette.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const tab_icons = @import("../../tab_icons.zig");
@@ -130,6 +131,15 @@ pub const Renderer = struct {
     /// 환경 또는 첫 init 시점.
     scale: f32 = 1.0,
 
+    /// #335 — theme 배경에서 파생한 탭바 / command menu chrome 색. theme 은
+    /// runtime 에 바뀌지 않으므로 init 에서 한 번 계산해 보관한다. 탭바 그리기는
+    /// `ui_metrics` 색 상수를 직접 참조하지 않고 이 값만 쓴다 (자유 함수엔 인자로
+    /// 전달 — #343 이 rect 목록 생성 함수의 인자로 그대로 흡수하도록).
+    ///
+    /// 기본값을 두지 않는다 — `derive` 는 `std.math.pow` 를 쓰고 comptime 에서는
+    /// 평가되지 않는다. `Renderer.init` 이 항상 채운다.
+    chrome: chrome_palette.Palette,
+
     /// `scale_num / scale_den` — fractional scaling factor (e.g. 204/120 = 1.7x).
     /// 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가 아직
     /// 안 왔을 수 있어 default 120/120 = 1.0x. event 받은 후 `applyScale` 로
@@ -185,6 +195,11 @@ pub const Renderer = struct {
         );
         errdefer dialog_title_ctx.deinit();
 
+        // #335 — chrome 색 파생. null theme fallback 은 `wayland_minimal.zig` 의
+        // `fallback_theme` (= themes 첫 entry "Tilda") 와 같은 선택이다.
+        const chrome_theme = cfg.theme orelse &themes.themes[0];
+        const chrome_bg = chrome_theme.background;
+
         return .{
             .render_state = .empty,
             .font_ctx = terminal_ctx,
@@ -192,6 +207,10 @@ pub const Renderer = struct {
             .dialog_font_ctx = dialog_ctx,
             .dialog_title_font_ctx = dialog_title_ctx,
             .scale = scaleFactor(scale_num, scale_den),
+            .chrome = chrome_palette.derive(
+                .{ chrome_bg.r, chrome_bg.g, chrome_bg.b },
+                themes.isDark(chrome_theme),
+            ),
         };
     }
 
@@ -395,7 +414,7 @@ pub const Renderer = struct {
         // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
         // plus / scroll 모두 적용. #334 — 탭 배경은 탭바와 같은 색, 활성은
         // amber 밑줄, 탭 경계는 세로 구분선 (Windows/macOS 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, drag_view, self.scale, &self.tab_font_ctx);
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, drag_view, self.scale, &self.tab_font_ctx, &self.chrome);
 
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
@@ -753,6 +772,7 @@ pub const Renderer = struct {
                 tab_hover,
                 self.scale,
                 &self.tab_font_ctx,
+                &self.chrome,
             );
         }
 
@@ -792,9 +812,9 @@ pub const Renderer = struct {
         const my: i32 = @intFromFloat(@round(v.rect.y * scale));
         const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
         const mh: i32 = @intFromFloat(@round(v.rect.h * scale));
-        const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
-        const fg = rgbFromMetrics(ui_metrics.MENU_LABEL_COLOR);
-        const hint_fg = rgbFromMetrics(ui_metrics.MENU_HINT_COLOR);
+        const bg = rgbFromMetrics(self.chrome.tab_bar_bg);
+        const fg = rgbFromMetrics(self.chrome.menu_label);
+        const hint_fg = rgbFromMetrics(self.chrome.menu_hint);
         // 내부 구분선은 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
         const line_px: i32 = @max(1, scaledPt(1, scale));
         // #342 — 메뉴 **외곽선 없음** (2026-07-27 시연 후 사용자 확정). 탭바에서
@@ -818,7 +838,7 @@ pub const Renderer = struct {
                     @intFromFloat(@round((item.y + 1) * scale)),
                     @intFromFloat(@round((item.w - 4) * scale)),
                     @intFromFloat(@round((item.h - 2) * scale)),
-                    rgbFromMetrics(ui_metrics.MENU_HOVER_BG),
+                    rgbFromMetrics(self.chrome.menu_hover_bg),
                 );
             }
         }
@@ -829,8 +849,8 @@ pub const Renderer = struct {
             const ind_size_i: i32 = scaledPt(ui_metrics.MENU_INDICATOR_ICON_PT, scale);
             const ind_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), ind_size_i)));
             const ind_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
-            const active_fg = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
-            const disabled_fg = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
+            const active_fg = rgbFromMetrics(self.chrome.ctrl_active);
+            const disabled_fg = rgbFromMetrics(self.chrome.arrow_disabled);
             const sz_i: i32 = @intCast(ind_size);
             const ind_cx: i32 = mx + @divTrunc(mw - sz_i, 2);
             const up_y: i32 = @intFromFloat(@round((v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5));
@@ -865,7 +885,7 @@ pub const Renderer = struct {
             const item = command_menu.entryRect(v, i).?;
             const command = command_menu.entries[i] orelse {
                 const sep_y: i32 = @intFromFloat(@round((item.y + item.h / 2) * scale));
-                rect(memory, width, height, stride, mx + scaledPt(8, scale), sep_y, mw - scaledPt(16, scale), line_px, rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR));
+                rect(memory, width, height, stride, mx + scaledPt(8, scale), sep_y, mw - scaledPt(16, scale), line_px, rgbFromMetrics(self.chrome.separator));
                 continue;
             };
             const ix: i32 = @intFromFloat(@round(item.x * scale));
@@ -1225,18 +1245,21 @@ fn drawTabBar(
     drag_view: ?tab_interaction.DragView,
     scale: f32,
     font_ctx: *font.Context,
+    /// #335 — theme 배경에서 파생한 chrome 색 (`Renderer.chrome`).
+    chrome: *const chrome_palette.Palette,
 ) void {
     if (tab_bar_h <= 0 or fb_w <= 0 or titles.len == 0) return;
-    const tab_bar_bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
+    const tab_bar_bg = rgbFromMetrics(chrome.tab_bar_bg);
     rect(memory, fb_w, fb_h, stride, 0, 0, fb_w, tab_bar_h, tab_bar_bg);
 
+    // amber accent 는 브랜드 색이라 파생하지 않는다 (#335 2026-07-28 확정).
     const accent = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
     const underline_px: i32 = @max(1, scaledPt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale));
     const sep_w_px: i32 = @max(1, scaledPt(ui_metrics.TAB_SEPARATOR_W_PT, scale));
-    const separator = rgbFromMetrics(ui_metrics.TAB_SEPARATOR_COLOR);
+    const separator = rgbFromMetrics(chrome.separator);
     // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
     // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
-    const text_color = rgbFromMetrics(ui_metrics.TAB_TEXT_COLOR);
+    const text_color = rgbFromMetrics(chrome.tab_text);
     const ascent: i32 = @intCast(font_ctx.ascent_px);
     const descent: i32 = @intCast(font_ctx.descent_px);
     const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
@@ -1393,7 +1416,7 @@ fn drawTabBar(
     }
 
     // --- arrow / plus 버튼 ---
-    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx);
+    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx, chrome);
     // #342 — 가로 경계선이 제거되어 컨트롤 fill 뒤 재-그리기도 함께 사라졌다.
     // #334 — 탭 슬롯 경계 세로 구분선. **모두 중심 정렬** — 모든 슬롯이
     // 좌우 절반씩 균등 부담해 탭의 보이는 폭이 전부 동일하다 (안쪽 정렬은
@@ -1437,13 +1460,15 @@ fn drawTabBarControls(
     tab_hover: tab_layout.Area,
     scale: f32,
     _: *font.Context,
+    /// #335 — theme 배경에서 파생한 chrome 색 (`Renderer.chrome`).
+    chrome: *const chrome_palette.Palette,
 ) void {
-    const bg = rgbFromMetrics(ui_metrics.TAB_BAR_BG);
-    // mac / win 동등 — enabled = `TAB_CTRL_ACTIVE_COLOR` (밝은 흰색 0.95),
-    // disabled = `TAB_ARROW_DISABLED_COLOR` (회색 0.4). scroll 왼쪽 끝이면
-    // `<` 회색, 우측 끝이면 `>` 회색. `+` 는 MAX_TABS 도달 시 회색 (#329).
-    const active_color = rgbFromMetrics(ui_metrics.TAB_CTRL_ACTIVE_COLOR);
-    const disabled_color = rgbFromMetrics(ui_metrics.TAB_ARROW_DISABLED_COLOR);
+    const bg = rgbFromMetrics(chrome.tab_bar_bg);
+    // mac / win 동등 — enabled = `ctrl_active` (밝은 흰색), disabled =
+    // `arrow_disabled` (회색). scroll 왼쪽 끝이면 `<` 회색, 우측 끝이면 `>` 회색.
+    // `+` 는 MAX_TABS 도달 시 회색 (#329).
+    const active_color = rgbFromMetrics(chrome.ctrl_active);
+    const disabled_color = rgbFromMetrics(chrome.arrow_disabled);
 
     // 탭 제목 뒤에 컨트롤 배경을 다시 그려 tab_area 경계를 실제 clip처럼 만든다.
     // glyph 시작점만 tab_area_end 안에 있고 bitmap 끝이 경계를 넘는 경우도 이
@@ -1550,12 +1575,11 @@ fn drawTabBarControls(
         const hover_x_i: i32 = @intFromFloat(hover_x);
         const hover_w_i: i32 = @intFromFloat(hover_w);
         if (hover_w_i > hover_inset * 2) {
-            const alpha = ui_metrics.TAB_CTRL_HOVER_BG[3];
-            const hover_bg = ghostty.color.RGB{
-                .r = blendU8(255, bg.r, alpha),
-                .g = blendU8(255, bg.g, alpha),
-                .b = blendU8(255, bg.b, alpha),
-            };
+            // #335 — 이전엔 `TAB_CTRL_HOVER_BG` 의 알파(12%)를 여기서 흰색과
+            // 미리 섞었다. 이제 파생 팔레트가 합성 결과를 solid 로 주므로 그대로
+            // 그린다 (세 platform 이 같은 8-bit 값 — mac/win 은 GPU 블렌드 대신
+            // 불투명 rect).
+            const hover_bg = rgbFromMetrics(chrome.ctrl_hover_bg);
             rect(
                 memory,
                 fb_w,
