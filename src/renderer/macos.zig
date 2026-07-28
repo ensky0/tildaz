@@ -15,6 +15,8 @@ const CoreTextFontContext = mac_font.CoreTextFontContext;
 const font_spec = @import("../font/spec.zig");
 const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const chrome_palette = @import("../chrome_palette.zig");
+const themes = @import("../themes.zig");
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
@@ -267,6 +269,11 @@ pub const MetalRenderer = struct {
     // active terminal 이 배경색을 제공하지 않을 때만 쓰는 init theme fallback.
     fallback_bg: [3]f32,
 
+    /// #335 — theme 배경에서 파생한 탭바 / command menu chrome 색. theme 은
+    /// runtime 에 바뀌지 않으므로 init 에서 한 번 계산해 보관한다. 탭바 그리기는
+    /// `ui_metrics` 색 상수를 직접 참조하지 않고 이 값만 쓴다.
+    chrome: chrome_palette.Palette,
+
     // viewport (pixel 단위).
     vp_width: u32 = 0,
     vp_height: u32 = 0,
@@ -382,6 +389,7 @@ pub const MetalRenderer = struct {
             .tab_atlas_texture = tab_atlas_tex,
             .constants_buffer = const_buf,
             .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
+            .chrome = chrome_palette.derive(bg, themes.isDarkRgb(bg[0], bg[1], bg[2])),
             .scale = scale,
             .font_families = font_families,
             .terminal_font = terminal_font,
@@ -1028,7 +1036,7 @@ pub const MetalRenderer = struct {
         bg_buf[bg_n] = .{
             .pos = .{ 0, 0 },
             .size = .{ @floatFromInt(self.vp_width), tab_bar_h_px },
-            .color = ui_metrics.TAB_BAR_BG,
+            .color = self.chrome.tab_bar_bg,
         };
         bg_n += 1;
         // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
@@ -1133,7 +1141,7 @@ pub const MetalRenderer = struct {
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = ui_metrics.TAB_TEXT_COLOR,
+                        .fg_color = c.self.chrome.tab_text,
                         .color_flag = if (entry.is_color) 1 else 0,
                     };
                     c.text_n.* += 1;
@@ -1156,33 +1164,33 @@ pub const MetalRenderer = struct {
             bg_buf[bg_n] = .{
                 .pos = .{ layout.left_arrow_x, 0 },
                 .size = .{ layout.arrow_w, tab_bar_h_px },
-                .color = ui_metrics.TAB_BAR_BG,
+                .color = self.chrome.tab_bar_bg,
             };
             bg_n += 1;
             bg_buf[bg_n] = .{
                 .pos = .{ layout.right_arrow_x, 0 },
                 .size = .{ layout.arrow_w, tab_bar_h_px },
-                .color = ui_metrics.TAB_BAR_BG,
+                .color = self.chrome.tab_bar_bg,
             };
             bg_n += 1;
         }
         bg_buf[bg_n] = .{
             .pos = .{ layout.plus_x, 0 },
             .size = .{ layout.plus_w, tab_bar_h_px },
-            .color = ui_metrics.TAB_BAR_BG,
+            .color = self.chrome.tab_bar_bg,
         };
         bg_n += 1;
         // #268 — 우측 끝 `×` (활성 탭 닫기) 버튼 배경.
         bg_buf[bg_n] = .{
             .pos = .{ layout.close_x, 0 },
             .size = .{ layout.close_w, tab_bar_h_px },
-            .color = ui_metrics.TAB_BAR_BG,
+            .color = self.chrome.tab_bar_bg,
         };
         bg_n += 1;
         bg_buf[bg_n] = .{
             .pos = .{ layout.more_x, 0 },
             .size = .{ layout.more_w, tab_bar_h_px },
-            .color = ui_metrics.TAB_BAR_BG,
+            .color = self.chrome.tab_bar_bg,
         };
         bg_n += 1;
         // #342 — 가로 경계선이 제거되어 컨트롤 fill 뒤 재-그리기도 함께 사라졌다.
@@ -1211,7 +1219,7 @@ pub const MetalRenderer = struct {
                     // #342 — 가로 경계선이 없어져 탭바 전체 높이. 밑줄이 이미
                     // 물러나 있으므로 겹치는 픽셀이 없다.
                     .size = .{ sep_w_px, tab_bar_h_px },
-                    .color = ui_metrics.TAB_SEPARATOR_COLOR,
+                    .color = self.chrome.separator,
                 };
                 bg_n += 1;
             }
@@ -1257,7 +1265,7 @@ pub const MetalRenderer = struct {
                         // 이제 탭바 상하 기준 그대로 2pt 대칭.
                         tab_bar_h_px - tab_gap.control_hover_inset * 2.0,
                     },
-                    .color = ui_metrics.TAB_CTRL_HOVER_BG,
+                    .color = self.chrome.ctrl_hover_bg,
                 };
                 bg_n += 1;
             }
@@ -1291,17 +1299,17 @@ pub const MetalRenderer = struct {
         }.run;
 
         if (layout.arrows_visible) {
-            const left_color = if (layout.left_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
-            const right_color = if (layout.right_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+            const left_color = if (layout.left_enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled;
+            const right_color = if (layout.right_enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled;
             drawIcon(self, .chevron_left, layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, left_color, &text_buf, &text_n);
             drawIcon(self, .chevron_right, layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, right_color, &text_buf, &text_n);
         }
         // #329 — MAX_TABS 도달 시 `+` 는 자리 유지 + 비활성 색 (arrow 동일 관례).
-        const plus_color = if (layout.plus_enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR;
+        const plus_color = if (layout.plus_enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled;
         drawIcon(self, .plus, layout.plus_x, layout.plus_w, tab_bar_h_px, icon_size, icon_stroke, plus_color, &text_buf, &text_n);
         // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
-        drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
-        drawIcon(self, .more, layout.more_x, layout.more_w, tab_bar_h_px, icon_size, more_stroke, ui_metrics.TAB_CTRL_ACTIVE_COLOR, &text_buf, &text_n);
+        drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, self.chrome.ctrl_active, &text_buf, &text_n);
+        drawIcon(self, .more, layout.more_x, layout.more_w, tab_bar_h_px, icon_size, more_stroke, self.chrome.ctrl_active, &text_buf, &text_n);
 
         if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
         if (text_n > 0) {
@@ -1330,7 +1338,7 @@ pub const MetalRenderer = struct {
                 bg[bg_n] = .{
                     .pos = .{ control[0], 0 },
                     .size = .{ control[1], h },
-                    .color = ui_metrics.TAB_BAR_BG,
+                    .color = self.chrome.tab_bar_bg,
                 };
                 bg_n += 1;
             }
@@ -1345,7 +1353,7 @@ pub const MetalRenderer = struct {
             bg[bg_n] = .{
                 .pos = .{ hr.x + gap.control_hover_inset, gap.control_hover_inset },
                 .size = .{ hr.w - gap.control_hover_inset * 2, h - gap.control_hover_inset * 2 },
-                .color = ui_metrics.TAB_CTRL_HOVER_BG,
+                .color = self.chrome.ctrl_hover_bg,
             };
             bg_n += 1;
         };
@@ -1366,7 +1374,7 @@ pub const MetalRenderer = struct {
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                    .fg_color = ui_metrics.TAB_CTRL_ACTIVE_COLOR,
+                    .fg_color = rself.chrome.ctrl_active,
                     .color_flag = 0,
                 };
                 count.* += 1;
@@ -1410,7 +1418,7 @@ pub const MetalRenderer = struct {
         // 같은 색 가로 경계선이 그 자리를 덮고 있어 보이지 않았다. 가로선을
         // 없애자 드러난 것 — 덮어써서 가려지던 지오메트리 오류였다.
         var boxes = [_]BgInstance{
-            .{ .pos = .{ mx, my }, .size = .{ mw, mh }, .color = ui_metrics.TAB_BAR_BG },
+            .{ .pos = .{ mx, my }, .size = .{ mw, mh }, .color = self.chrome.tab_bar_bg },
         };
         self.drawBgInstances(encoder, &boxes);
         for (v.first..v.first + v.count) |i| {
@@ -1419,7 +1427,7 @@ pub const MetalRenderer = struct {
             const sep = [1]BgInstance{.{
                 .pos = .{ mx + 8 * scale, (r.y + r.h / 2) * scale },
                 .size = .{ mw - 16 * scale, line_px },
-                .color = ui_metrics.TAB_SEPARATOR_COLOR,
+                .color = self.chrome.separator,
             }};
             self.drawBgInstances(encoder, &sep);
         }
@@ -1429,7 +1437,7 @@ pub const MetalRenderer = struct {
                 const hover_bg = [1]BgInstance{.{
                     .pos = .{ (item.x + 2) * scale, (item.y + 1) * scale },
                     .size = .{ (item.w - 4) * scale, (item.h - 2) * scale },
-                    .color = ui_metrics.MENU_HOVER_BG,
+                    .color = self.chrome.menu_hover_bg,
                 }};
                 self.drawBgInstances(encoder, &hover_bg);
             }
@@ -1457,7 +1465,7 @@ pub const MetalRenderer = struct {
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                    .fg_color = if (p.enabled) ui_metrics.TAB_CTRL_ACTIVE_COLOR else ui_metrics.TAB_ARROW_DISABLED_COLOR,
+                    .fg_color = if (p.enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled,
                     .color_flag = 0,
                 };
                 ind_n += 1;
@@ -1504,7 +1512,7 @@ pub const MetalRenderer = struct {
             const iw = item.w * scale;
             const ih = item.h * scale;
             const text_top = iy + (ih - ch) * 0.5;
-            emit(self, command_menu.label(command), ix + 8 * scale, text_top, ui_metrics.MENU_LABEL_COLOR, &glyphs, &glyph_n);
+            emit(self, command_menu.label(command), ix + 8 * scale, text_top, self.chrome.menu_label, &glyphs, &glyph_n);
             const hint = command_menu.shortcut(command, true, toggle_hotkey, ui.fullscreen_workarea);
             if (hint.len > 0) {
                 const hint_w = @as(f32, @floatFromInt(display_width.stringWidth(hint))) * cw;
@@ -1512,7 +1520,7 @@ pub const MetalRenderer = struct {
                 // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면
                 // hint 를 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
                 if (command_menu.hintFits(item.w, label_w / scale, hint_w / scale)) {
-                    emit(self, hint, ix + iw - 8 * scale - hint_w, text_top, ui_metrics.MENU_HINT_COLOR, &glyphs, &glyph_n);
+                    emit(self, hint, ix + iw - 8 * scale - hint_w, text_top, self.chrome.menu_hint, &glyphs, &glyph_n);
                 }
             }
         }
