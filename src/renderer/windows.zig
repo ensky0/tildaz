@@ -1544,10 +1544,14 @@ pub const D3d11Renderer = struct {
             // #344 — 정수 픽셀 스냅은 공통 `scrollbar.thumbPx`. 세 platform 이
             // 같은 값을 그려 track 위·아래 여백이 항상 같다.
             const t = h.thumb();
+            // #346 — 섞는 색을 배경 명도로 뒤집는다. 판정 입력은 terminal 의
+            // 현재 배경 (OSC 11 · reverse_colors 반영된 `RenderState.Colors`)
+            // 이라 셸이 배경을 바꿔도 thumb 이 따라 전환된다.
+            const sb_dark = themes.isDarkRgb(colors.background.r, colors.background.g, colors.background.b);
             const scrollbar_inst = [1]BgInstance{.{
                 .pos = .{ track_x, @floatCast(t.top) },
                 .size = .{ sbw, @floatCast(t.h) },
-                .color = ui_metrics.SCROLLBAR_COLOR,
+                .color = ui_metrics.scrollbarColor(sb_dark),
             }};
             self.drawBgInstances(&scrollbar_inst);
         }
