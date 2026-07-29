@@ -213,6 +213,15 @@ pub extern "CoreGraphics" fn CGColorSpaceCreateDeviceGray() ?CGColorSpaceRef;
 pub extern "CoreGraphics" fn CGColorSpaceCreateDeviceRGB() ?CGColorSpaceRef;
 pub extern "CoreGraphics" fn CGColorSpaceRelease(space: CGColorSpaceRef) void;
 
+/// 이름으로 표준 색공간을 얻는다 (#349 — Metal layer 색공간 명시에 사용).
+/// 없는 이름이면 null 을 돌려준다 (실측 확인).
+pub extern "CoreGraphics" fn CGColorSpaceCreateWithName(name: CFStringRef) ?CGColorSpaceRef;
+
+/// sRGB 색공간 이름 상수. 이 이름으로 만든 색공간은 immortal singleton 이라
+/// `CFGetRetainCount` 가 `UINT_MAX` 고 `CGColorSpaceRelease` 는 no-op 이지만,
+/// Create/Release 쌍은 관례대로 맞춘다 (#349 실측).
+pub extern const kCGColorSpaceSRGB: CFStringRef;
+
 pub extern "CoreGraphics" fn CGBitmapContextCreate(
     data: ?[*]u8,
     width: usize,
