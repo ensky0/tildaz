@@ -469,7 +469,7 @@ fn scrollbarTopInsetPx(scale: f32) i32 {
 /// 픽셀 단위 탭 너비 (DPI scale 적용). hit-test / drag / scroll 모두 같은 값.
 fn tabWidthPx() f32 {
     if (g_renderer == null) return 0;
-    return @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale;
+    return ui_metrics.scaledPxF(ui_metrics.TAB_WIDTH_PT, g_renderer.?.scale);
 }
 
 /// `tab_layout.Layout` alias — 본문 정의는 cross-platform 모듈 (#159 Phase 1).
@@ -488,11 +488,11 @@ fn tabBarLayoutInputs() ?tab_layout.Inputs {
         .viewport_w = @floatFromInt(r.vp_width),
         .tab_count = @intCast(g_session.count()),
         .tab_w = tabWidthPx(),
-        .arrow_w = @as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * r.scale,
-        .plus_w = @as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * r.scale,
+        .arrow_w = ui_metrics.scaledPxF(ui_metrics.TAB_ARROW_W_PT, r.scale),
+        .plus_w = ui_metrics.scaledPxF(ui_metrics.TAB_PLUS_W_PT, r.scale),
         .plus_enabled = !at_limit,
-        .close_w = @as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT)) * r.scale,
-        .more_w = @as(f32, @floatFromInt(ui_metrics.TAB_MORE_W_PT)) * r.scale,
+        .close_w = ui_metrics.scaledPxF(ui_metrics.TAB_CLOSE_W_PT, r.scale),
+        .more_w = ui_metrics.scaledPxF(ui_metrics.TAB_MORE_W_PT, r.scale),
         .scroll_x = g_tab_scroll_x_px,
     };
 }
@@ -545,13 +545,13 @@ fn syncTerminalGeometry() void {
     const r = &g_renderer.?;
     const cell_w = r.font.cell_width_px;
     const cell_h = r.font.cell_height_px;
-    const pad: u32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale);
+    const pad: u32 = ui_metrics.scaledPx(u32, TERMINAL_PADDING_PT, r.scale);
     const tab_bar: u32 = @intCast(tabBarHeightPx(r.scale));
     const top_reserved = pad + tab_bar;
     const usable_h = if (r.vp_height > top_reserved + pad) r.vp_height - top_reserved - pad else cell_h;
     // #350 — 열 수는 공통 `ui_metrics.terminalCols` (좌우 padding + scrollbar 자리
     // 차감). 이전에는 `vp_width - 2*pad` 만 빼서 마지막 열이 scrollbar 와 겹쳤다.
-    const sb_px: u32 = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * r.scale);
+    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, r.scale);
     const new_cols: u16 = ui_metrics.terminalCols(r.vp_width, pad, sb_px, cell_w);
     const new_rows: u16 = @intCast(@max(1, usable_h / cell_h));
 
@@ -1339,7 +1339,7 @@ fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
 
     const cw: f32 = @floatFromInt(r.font.cell_width_px);
     const ch: f32 = @floatFromInt(r.font.cell_height_px);
-    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale;
+    const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, r.scale);
     const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
     const row_y = pad_px + tab_bar_px + @as(f32, @floatFromInt(vp.y)) * ch;
     const cursor_col: usize = if (vp.wide_tail and vp.x > 0) vp.x - 1 else vp.x;
@@ -1783,12 +1783,12 @@ fn syncGeometryAfterScreenChange() void {
     //    변경. ghostty Terminal + PTY 도 같은 cols/rows 로 resize.
     const cell_w_px = g_renderer.?.font.cell_width_px;
     const cell_h_px = g_renderer.?.font.cell_height_px;
-    const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
+    const pad_px: u32 = ui_metrics.scaledPx(u32, TERMINAL_PADDING_PT, @floatCast(scale_pt));
     const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
     const top_reserved = pad_px + tab_bar_px;
     const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
     // #350 — 열 수는 공통 `ui_metrics.terminalCols` (scrollbar 자리 차감).
-    const sb_px: u32 = @intFromFloat(@as(f64, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale_pt);
+    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, @floatCast(scale_pt));
     const new_cols: u16 = ui_metrics.terminalCols(vp_w_px, pad_px, sb_px, cell_w_px);
     const new_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
@@ -1840,7 +1840,7 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     const scale = g_renderer.?.scale;
     const cell_w_px = g_renderer.?.font.cell_width_px;
     const cell_h_px = g_renderer.?.font.cell_height_px;
-    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * scale;
+    const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale);
     const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
     const cell_top_px = pad_px + tab_bar_px;
 
@@ -1869,7 +1869,7 @@ fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, d
     const scale = g_renderer.?.scale;
     const cell_w_px = g_renderer.?.font.cell_width_px;
     const cell_h_px = g_renderer.?.font.cell_height_px;
-    const pad_px: f32 = @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * scale;
+    const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale);
     const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
     const cell_top_px = pad_px + tab_bar_px;
     const col_i: i32 = @intFromFloat(@floor((x - pad_px) / @as(f32, @floatFromInt(cell_w_px))));
@@ -2021,7 +2021,7 @@ fn executeCommandMenu(command: command_menu.Command) void {
 fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
     if (g_renderer == null) return null;
     const r = &g_renderer.?;
-    const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale;
+    const tab_w_px = ui_metrics.scaledPxF(ui_metrics.TAB_WIDTH_PT, r.scale);
     return tab_layout.hitTab(
         px,
         layout,
@@ -2238,7 +2238,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                     // 본체 클릭 → 활성 전환 + drag-begin. DragState world 좌표.
                     _ = g_session.setActiveTab(hit_index);
                     g_tab_scroll_user_override = false;
-                    const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * g_renderer.?.scale);
+                    const tab_w_int: c_int = ui_metrics.scaledPx(c_int, ui_metrics.TAB_WIDTH_PT, g_renderer.?.scale);
                     const world_x: f32 = (xy.x - layout.tab_area_x) + g_tab_scroll_x_px;
                     _ = g_drag.begin(@intFromFloat(world_x), tab_w_int, g_session.count());
                     return;
@@ -2253,7 +2253,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     // (y ≥ tab_bar_h). cell selection 보다는 우선.
     if (g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
-        const sbw_px: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * g_renderer.?.scale;
+        const sbw_px: f32 = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, g_renderer.?.scale);
         const vp_w_f: f32 = @floatFromInt(g_renderer.?.vp_width);
         if (xy.x >= vp_w_f - sbw_px) {
             // 새 scrollbar drag 시작 = 기존 selection drag 정리 (Windows
@@ -2350,7 +2350,7 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     // 탭 drag 완료 (#111 M11.6a). dragging 임계 (5px) 넘었으면 reorder.
     if (g_drag.active) {
         if (g_renderer) |*r| {
-            const tab_w_int: c_int = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * r.scale);
+            const tab_w_int: c_int = ui_metrics.scaledPx(c_int, ui_metrics.TAB_WIDTH_PT, r.scale);
             if (g_drag.finish(tab_w_int, g_session.count())) |req| {
                 _ = g_session.reorderTabs(req.from, req.to) catch |err| {
                     log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
@@ -2450,8 +2450,8 @@ fn scrollbarHit() ?scrollbar.Hit {
         sb.offset,
         @floatFromInt(r.vp_height),
         @floatFromInt(scrollbarTopInsetPx(r.scale)),
-        @as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale,
-        @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * r.scale,
+        ui_metrics.scaledPxF(TERMINAL_PADDING_PT, r.scale),
+        ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, r.scale),
     );
 }
 
@@ -2973,7 +2973,7 @@ pub fn run() !void {
 
     const cell_w_px: u32 = g_renderer.?.font.cell_width_px;
     const cell_h_px: u32 = g_renderer.?.font.cell_height_px;
-    const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
+    const pad_px: u32 = ui_metrics.scaledPx(u32, TERMINAL_PADDING_PT, @floatCast(scale_pt));
     log.appendLine("startup", "renderer init: vp={d}x{d}px scale={d:.2} cell={d}x{d}px pad={d}px font={s}", .{
         vp_w_px,
         vp_h_px,
@@ -2995,7 +2995,7 @@ pub fn run() !void {
     const top_reserved = pad_px + tab_bar_px;
     const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
     // #350 — 열 수는 공통 `ui_metrics.terminalCols` (scrollbar 자리 차감).
-    const sb_px: u32 = @intFromFloat(@as(f64, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale_pt);
+    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, @floatCast(scale_pt));
     const term_cols: u16 = ui_metrics.terminalCols(vp_w_px, pad_px, sb_px, cell_w_px);
     const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
@@ -3175,7 +3175,7 @@ fn renderFrameTick() void {
     if (!g_drag.active and !g_tab_scroll_user_override) ensureActiveTabVisible();
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width_px);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height_px);
-    const pad_px: i32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * g_renderer.?.scale);
+    const pad_px: i32 = ui_metrics.scaledPx(i32, TERMINAL_PADDING_PT, g_renderer.?.scale);
     const tab_bar_px = tabBarHeightPx(g_renderer.?.scale);
 
     // 탭 제목 stack-allocated slice. 매 프레임 만들지만 alloc 없음. session_core

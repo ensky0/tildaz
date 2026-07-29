@@ -80,10 +80,25 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `arrow_w_px` | `Renderer.tabArrowWPx()` |
 | `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `plus_w_px` | `Renderer.tabPlusWPx()` |
 
+**`pt → px` 변환은 반올림이고 공통 함수만 쓴다** ([#350](https://github.com/ensky0/tildaz/issues/350) 2026-07-30 확정). 위 표의 각 `*_PT` 를 physical pixel 로 바꿀 때 세 platform 이 **같은 규칙**을 쓰고, 계산은 [`src/ui_metrics.zig`](src/ui_metrics.zig) 의 세 함수에만 있다. host / renderer 가 `@intFromFloat(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 적지 않는다.
+
+| 함수 | 결과 | 쓰는 자리 |
+|---|---|---|
+| `scaledPx(T, pt, scale)` | 정수 px, **반올림** (`@round`). `T` 로 호출처 정수 타입 지정 | 격자 / 레이아웃처럼 정수 픽셀이 필요한 곳 |
+| `scaledPxF(pt, scale)` | f32 px, 정수 스냅 없음 | 그리기 좌표 (서브픽셀 유지) |
+| `strokePx(pt, scale)` | f32 px + **최소 1px** | 선 두께 (separator / underline / 아이콘 stroke) — scale 이 작아도 선이 사라지지 않게 |
+
+`scaledPx` 는 `scaledPxF` 를 반올림한 것으로 정의해 두 함수가 어긋날 수 없다. 반올림을 택한 것은 다수 규칙(당시 18곳)에 맞춘 것이고, 버림보다 원래 pt 크기에 가깝다 (`round(12.5) = 13` vs `trunc(12.5) = 12`).
+
+**왜 사양으로 못 박는가.** 이전에는 같은 변환이 세 platform 에 흩어져 있었고 **규칙이 갈렸다** — Linux (`scaledPt`) 와 Windows (`app_controller`) 는 반올림, macOS `host/macos.zig` 9곳은 버림이었다 (`TERMINAL_PADDING_PT` 5곳 · `SCROLLBAR_W_PT` 3곳 · `TAB_WIDTH_PT` 2곳). macOS 안에서도 `renderer/macos.zig` 의 아이콘 크기는 반올림이라 파일마다 달랐다. `backingScaleFactor` 가 1.0 / 2.0 이라 정수 배율에서는 두 규칙의 결과가 같아 증상이 드러나지 않았을 뿐이고 (fractional scale 에서 1px 갈린다), 같은 상수를 platform 마다 다른 픽셀로 바꾸는 것은 §0 #1 (세 platform 동등) 에 어긋난다. 바로 위 항목의 격자 열 수 식에 들어가는 `TERMINAL_PADDING` · `SCROLLBAR_W` 가 이 변환의 결과다.
+
+**예외 하나 — Wayland dialog scrollbar 의 최소 thumb 높이.** [`wayland_minimal.dialogScrollbarGeom`](src/host/linux/wayland_minimal.zig) 은 helper 를 쓰지 않고 `preferred_scale` 을 **유리수 그대로** (204/120 등) 정수 산술로 반올림한다 (`(pt × num + den/2) / den`) — f32 변환 오차를 아예 만들지 않기 위해서다 (`src/font/spec.zig` 의 rational scale 과 같은 이유). **규칙(반올림)은 helper 와 같으므로 결과도 일치한다.**
+
 `font.size_point`는 호환성을 위해 유지하는 외부 key 이름이며 물리적인 1/72 inch
 point가 아니다. 내부 의미는 logical size이고 실제 raster 크기는 위 표의 OS scale을
 적용한다. 실제 mm 보정은 하지 않는다. 폰트 metric에 cell width/line height ratio와
-scale을 적용한 최종 cell 정수 크기는 Linux · macOS · Windows 모두 `ceil`한다.
+scale을 적용한 최종 cell 정수 크기는 Linux · macOS · Windows 모두 `ceil`한다 — 위
+`scaledPx` 의 반올림과 다른 규칙인데, cell 은 글리프가 잘리면 안 되므로 올림이다.
 
 **탭 gap / hover inset**: `TAB_GAP_PT`를 기준으로 각 탭 배경은 좌우에 절반인
 1pt, 상하에 2pt를 inset으로 사용한다. 컨트롤 hover 박스는 네 방향에 2pt를
