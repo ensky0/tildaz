@@ -282,6 +282,37 @@ printf '\xf0\x9f\x8e\x89\n'              # UTF-8 byte 직접 (🎉 = F0 9F 8E 89
 zsh -c "echo \$'\\U0001F389'"            # zsh unicode escape (macOS bash 3.2 미지원)
 ```
 
+# macOS — 색 실측 방법
+
+macOS 는 Metal layer 내용을 **sRGB 로 보고 디스플레이 색공간으로 변환해** 합성해요 ([#349](https://github.com/ensky0/tildaz/issues/349)). 그래서 `screencapture` 로 찍은 PNG 은 디스플레이 공간 값이고, 디스플레이 프리셋이 wide-gamut (`Apple XDR Display` 등) 이면 **앱이 그린 값과 다르게 읽혀요** — 실측에서 파생색 45개 중 30개가 어긋났고 (1비트 22개 · 2비트 8개), amber (`#F7A41D` → `#EBA842`) 는 37 차이였어요.
+
+**하지 말 것 — 캡처를 사후에 sRGB 로 역변환.** ImageMagick `-profile` 과 `sips --matchTo` 가 결과가 갈려서 신뢰할 수 없어요 ([#335](https://github.com/ensky0/tildaz/issues/335#issuecomment-5113614333) 에서 7건이 1비트씩 어긋나 보였고, 어느 도구도 전부 맞추지 못했어요).
+
+**할 것 — 출력 색공간을 sRGB 로 지정해 캡처.** [`dist/macos/color-capture.m`](dist/macos/color-capture.m) 이 `SCStreamConfiguration.colorSpaceName` 을 sRGB 로 두고 창을 캡처해요. 캡처 파이프라인이 출력 버퍼를 sRGB 로 만들어 주니, 다 찍은 PNG 을 사후에 변환하는 8-bit 왕복이 없어요.
+
+```sh
+clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit \
+      -framework ImageIO -framework UniformTypeIdentifiers \
+      -o /tmp/color-capture dist/macos/color-capture.m
+/tmp/color-capture --list                              # windowID 찾기
+/tmp/color-capture --window <id> out.png               # 출력 색공간 = sRGB
+magick out.png -format "%[pixel:p{40,40}]\n" info:     # 값 읽기
+```
+
+이러면 **디스플레이 프리셋을 바꾸지 않아도** raw 픽셀이 앱이 그린 값이에요 (#349 에서 46색 46/46 일치 확인). 결과 PNG 은 sRGB 로 태깅되니 ImageMagick / sips 로 읽어도 값이 같아요. 프리셋을 `Internet & Web (sRGB)` 로 바꾸는 예전 우회는 더 필요 없어요.
+
+측정 전제 (빠뜨리면 색이 안 나오거나 다른 색을 읽어요):
+
+- **탭바는 탭 2개 이상에서만** 그려져요.
+- **테마는 runtime 에 안 바뀌어요** — config 를 고치고 재시작한 뒤 로그의 `[startup] config loaded: theme=…` 로 실제 적용을 확인해요.
+- **hover 색은 포인터를 실제로 올려야** 나와요 (`ctrl_hover_bg` = `+` 위, `menu_hover_bg` = 메뉴 항목 위). 자동화로 포인터를 옮길 때 `CGWarpMouseCursorPosition` 만 쓰면 커서 위치만 바뀌고 **이동 이벤트가 없어서 hover 가 안 걸려요** — `kCGEventMouseMoved` 를 함께 보내야 해요.
+- **`arrow_disabled` 는 탭바 overflow 를 만들어야** 나와요. 필요한 탭 수는 창 폭에 따라 달라요 — 탭 하나가 `TAB_WIDTH_PT` (150pt) 라서 1512pt 짜리 외장 모니터 창에서는 8개로는 overflow 가 안 생겼어요 (#349 실측). `창 폭 ÷ 150` 보다 넉넉히 만들어요.
+- **색이 "있는지" 만 보는 검사는 오탐이 나요.** 밝은 테마에서는 글리프 안티에일리어싱이 `arrow_disabled` (`#828282`) 와 똑같은 회색을 만들어서, 화살표가 없는 2탭 화면에서도 "있음" 으로 읽혔어요 (#349). **해당 요소가 그려지는 영역** (화살표는 컨트롤 왼쪽 24pt × 2) 으로 좁히고, 그 요소가 없는 상태 캡처와 **비교** 해서 판정해요.
+- **기대값은 이슈 표를 베끼지 말고** [`chrome_palette.zig`](src/chrome_palette.zig) 의 `derive()` 를 임시 드라이버로 호출해 덤프해요 — ghostty 비의존 모듈이라 `zig run` 으로 단독 실행돼요. 측정이 끝나면 드라이버를 지우고 트리 clean 을 확인해요.
+- 화면이 절전으로 꺼져 있거나 잠금 화면이면 캡처가 실패해요 (`캡처 실패` / 창 목록에 `Display 1 Shield`).
+
+Linux 는 software renderer + 프로파일 없는 캡처라 이 절차가 아예 없고, Windows 는 swapchain 이 `DXGI_FORMAT_B8G8R8A8_UNORM` 이라 raw 픽셀이 곧 앱 출력이에요. **macOS 만 이 절차가 필요해요.**
+
 # 터미널 시각 회귀 테스트 (한 줄)
 
 색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
