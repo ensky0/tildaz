@@ -25,8 +25,39 @@ pub fn cursorBarWidthPx(scale: f32) f32 {
 /// thumb 가 클릭 가능한 크기 유지.
 pub const SCROLLBAR_MIN_THUMB_H_PT: u32 = 32;
 
-/// scrollbar thumb 색상 — 흰색 알파 30%, 어떤 배경 위에서도 살짝 보임.
-pub const SCROLLBAR_COLOR: [4]f32 = .{ 1, 1, 1, 0.3 };
+/// scrollbar thumb 의 알파. 배경과 미리 합성하지 않고 반투명으로 얹어 thumb
+/// 밑이 비치게 둔다 (#346 — solid 전환 대신 알파 유지 결정).
+pub const SCROLLBAR_ALPHA: f32 = 0.3;
+
+/// scrollbar thumb 색 — **섞는 색을 배경 명도로 뒤집는다** (#346).
+///
+/// 이전에는 흰색 고정이었고 주석이 *"어떤 배경 위에서도 살짝 보임"* 이라고
+/// 적었지만 성립하지 않았다. 흰 배경에 흰색을 30% 섞으면 아무 일도 일어나지
+/// 않아 밝은 테마 4종에서 대비가 **1.02~1.04** 로 소멸했다. 어두운 배경엔
+/// 흰색, 밝은 배경엔 검정을 섞어 18종 전부에서 **2.09 이상**을 확보한다
+/// (어두운 14종 2.465~2.713 / 밝은 4종 2.087~2.102).
+///
+/// `dark` 는 [`themes.isDarkRgb`](themes.zig) 의 결과를 받는다 — 명도 판정의
+/// 단일 정의를 그 모듈에 두고 여기선 결과만 쓴다. `chrome_palette.derive` 와
+/// 같은 패턴이며, 덕분에 이 모듈이 ghostty 에 의존하지 않는다.
+///
+/// 판정 입력은 **terminal 의 현재 배경** (`RenderState.Colors.background`) 이다 —
+/// OSC 11 과 `reverse_colors` 가 반영된 실효 배경이다. 탭바 chrome 은 config
+/// theme 배경을 쓰지만 (#335) thumb 은 chrome 이 아니라 terminal 표면 *위에*
+/// 얹히므로 그 면을 따른다. config theme 를 기준으로 두면 셸이 OSC 11 로 명도를
+/// 뒤집는 순간 thumb 이 다시 소멸한다. #266 의 color scheme DSR 도 같은 기준
+/// (terminal 의 현재 배경) 을 쓴다.
+///
+/// 알려진 귀결 — 배경이 **중간 명도**면 어느 쪽을 섞어도 대비가 낮다
+/// (`#808080` 에서 1.62 / 1.76). 내장 테마 18종에는 그런 배경이 없어 실사용에서는
+/// 걸리지 않지만 OSC 11 로는 가능하다. 대비를 모든 배경에서 일정하게 고정하려면
+/// `chrome_palette` 의 파생식(solid)이 필요한데, #346 은 최소 변경을 택했다.
+pub fn scrollbarColor(dark: bool) [4]f32 {
+    return if (dark)
+        .{ 1, 1, 1, SCROLLBAR_ALPHA }
+    else
+        .{ 0, 0, 0, SCROLLBAR_ALPHA };
+}
 
 // 탭바 — Windows `d3d11_renderer.zig` 의 TAB_* 상수와 같은 디자인 (시각 일관성).
 pub const TAB_BAR_HEIGHT_PT: u32 = 28;
@@ -288,4 +319,87 @@ test "#329 three-button cluster uses single common metrics" {
     try std.testing.expectEqual(@as(u32, 24), TAB_CLOSE_W_PT);
     try std.testing.expectEqual(@as(u32, 24), TAB_MORE_W_PT);
     try std.testing.expectEqual(@as(u32, 72), TAB_PLUS_W_PT + TAB_CLOSE_W_PT + TAB_MORE_W_PT);
+}
+
+test "#346 scrollbar thumb — 섞는 색이 배경 명도로 뒤집히고 알파는 유지된다" {
+    const on_dark = scrollbarColor(true);
+    const on_light = scrollbarColor(false);
+    // 어두운 배경엔 흰색 (현행 유지 — 어두운 테마는 픽셀 불변이어야 한다).
+    try std.testing.expectEqual([4]f32{ 1, 1, 1, SCROLLBAR_ALPHA }, on_dark);
+    // 밝은 배경엔 검정.
+    try std.testing.expectEqual([4]f32{ 0, 0, 0, SCROLLBAR_ALPHA }, on_light);
+    // 알파는 양쪽 동일 — solid 로 바꾸지 않았다.
+    try std.testing.expectEqual(on_dark[3], on_light[3]);
+    try std.testing.expectEqual(@as(f32, 0.3), SCROLLBAR_ALPHA);
+}
+
+/// 내장 theme 18종의 배경 — `themes.zig` 와 같은 값. 이 모듈은 ghostty 에
+/// 의존하지 않아야 해서 (`chrome_palette` 가 이 모듈을 참조한다) 값을 직접 적고,
+/// `dark` 도 `themes.isDarkRgb` 의 결과를 리터럴로 둔다. `chrome_palette.zig` 의
+/// `test_themes` 와 같은 집합·같은 패턴이다.
+const sb_test_themes = [_]struct { name: []const u8, bg: [3]u8, dark: bool }{
+    .{ .name = "Tilda", .bg = .{ 0x00, 0x00, 0x00 }, .dark = true },
+    .{ .name = "Ghostty", .bg = .{ 0x1d, 0x1f, 0x21 }, .dark = true },
+    .{ .name = "Windows Terminal", .bg = .{ 0x0c, 0x0c, 0x0c }, .dark = true },
+    .{ .name = "Catppuccin Mocha", .bg = .{ 0x1e, 0x1e, 0x2e }, .dark = true },
+    .{ .name = "Dracula", .bg = .{ 0x28, 0x2a, 0x36 }, .dark = true },
+    .{ .name = "Gruvbox Dark", .bg = .{ 0x28, 0x28, 0x28 }, .dark = true },
+    .{ .name = "Tokyo Night", .bg = .{ 0x1a, 0x1b, 0x26 }, .dark = true },
+    .{ .name = "Nord", .bg = .{ 0x2e, 0x34, 0x40 }, .dark = true },
+    .{ .name = "One Half Dark", .bg = .{ 0x28, 0x2c, 0x34 }, .dark = true },
+    .{ .name = "Solarized Dark", .bg = .{ 0x00, 0x1e, 0x27 }, .dark = true },
+    .{ .name = "Monokai Soda", .bg = .{ 0x1a, 0x1a, 0x1a }, .dark = true },
+    .{ .name = "Rose Pine", .bg = .{ 0x19, 0x17, 0x24 }, .dark = true },
+    .{ .name = "Kanagawa", .bg = .{ 0x1f, 0x1f, 0x28 }, .dark = true },
+    .{ .name = "Everforest Dark", .bg = .{ 0x1e, 0x23, 0x26 }, .dark = true },
+    .{ .name = "Catppuccin Latte", .bg = .{ 0xef, 0xf1, 0xf5 }, .dark = false },
+    .{ .name = "Solarized Light", .bg = .{ 0xfd, 0xf6, 0xe3 }, .dark = false },
+    .{ .name = "Gruvbox Light", .bg = .{ 0xfb, 0xf1, 0xc7 }, .dark = false },
+    .{ .name = "One Half Light", .bg = .{ 0xfa, 0xfa, 0xfa }, .dark = false },
+};
+
+fn sbSrgbToLinear(v: f64) f64 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f64, (v + 0.055) / 1.055, 2.4);
+}
+
+fn sbLuminance(c: [3]f64) f64 {
+    var l: [3]f64 = undefined;
+    for (0..3) |i| l[i] = sbSrgbToLinear(c[i] / 255.0);
+    return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
+}
+
+fn sbContrast(a: [3]f64, b: [3]f64) f64 {
+    const la = sbLuminance(a);
+    const lb = sbLuminance(b);
+    return (@max(la, lb) + 0.05) / (@min(la, lb) + 0.05);
+}
+
+test "#346 thumb 이 18종 theme 배경 전부에서 대비 2.0 이상" {
+    // 이전 흰색 고정 방식은 밝은 4종에서 1.02~1.04 로 소멸했다. 실측 최소는
+    // 어두운 쪽 2.465 (Tilda) / 밝은 쪽 2.087 (Gruvbox Light) 이므로 하한 2.0.
+    for (sb_test_themes) |t| {
+        const col = scrollbarColor(t.dark);
+        const bg = [3]f64{
+            @floatFromInt(t.bg[0]),
+            @floatFromInt(t.bg[1]),
+            @floatFromInt(t.bg[2]),
+        };
+        // renderer 가 하는 것과 같은 gamma space 알파 합성.
+        var mixed: [3]f64 = undefined;
+        for (0..3) |i| {
+            mixed[i] = bg[i] * (1.0 - @as(f64, col[3])) + @as(f64, col[i]) * 255.0 * @as(f64, col[3]);
+        }
+        const cr = sbContrast(mixed, bg);
+        std.testing.expect(cr >= 2.0) catch |err| {
+            std.debug.print("theme {s}: contrast {d:.3} < 2.0\n", .{ t.name, cr });
+            return err;
+        };
+    }
+}
+
+test "#346 어두운 배경은 픽셀 불변 — Tilda 합성값이 이전과 같다" {
+    // 어두운 테마는 이번 변경으로 바뀌면 안 된다 (흰색 30% 그대로).
+    const col = scrollbarColor(true);
+    const mixed = 0.0 * (1.0 - col[3]) + col[0] * 255.0 * col[3];
+    try std.testing.expectApproxEqAbs(@as(f32, 76.5), mixed, 1e-4);
 }
