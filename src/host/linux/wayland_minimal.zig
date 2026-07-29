@@ -2468,15 +2468,16 @@ const Client = struct {
         const ch = self.renderer.cellHeight();
         const pad = self.renderer.paddingPx();
         const tab_bar_h = self.effectiveTabBarHeightPx();
-        const usable_w = @max(cw, self.window_width - pad * 2);
         // L12-α — 상단 tab bar 영역만큼 grid height 축소. 단일 탭이면
         // `effectiveTabBarHeightPx` 가 0 → 탭바 자리 안 띄움 (#127, mac /
         // Win 동등).
         const usable_h = @max(ch, self.window_height - tab_bar_h - pad * 2);
-        const cols_i32 = @max(1, @divTrunc(usable_w, cw));
         const rows_i32 = @max(1, @divTrunc(usable_h, ch));
         return .{
-            .cols = @intCast(@min(cols_i32, std.math.maxInt(u16))),
+            // #350 — 열 수는 공통 `ui_metrics.terminalCols` (좌우 padding +
+            // scrollbar 자리 차감). 이전에는 scrollbar 를 안 빼서 마지막 열이
+            // scrollbar 와 겹쳤다.
+            .cols = ui_metrics.terminalCols(self.window_width, pad, self.renderer.scrollbarWPx(), cw),
             .rows = @intCast(@min(rows_i32, std.math.maxInt(u16))),
         };
     }
