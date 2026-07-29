@@ -699,11 +699,16 @@ pub const Renderer = struct {
             const thumb_y_px: i32 = @intFromFloat(t.top);
             const thumb_h_px: i32 = @intFromFloat(t.h);
             const sb_x: i32 = width - sb_w;
-            // 공통 상수 `ui_metrics.SCROLLBAR_COLOR` (흰색 alpha 0.3) — thumb
-            // 밑은 padding (theme 배경) 이라 배경과 blend 한 불투명 색이 GPU
+            // 공통 `ui_metrics.scrollbarColor` — 배경과 blend 한 불투명 색이 GPU
             // renderer 의 per-pixel alpha 와 같은 결과 (#282 B4, tab hover 패턴).
-            const sc = rgbFromMetrics(ui_metrics.SCROLLBAR_COLOR);
-            const sb_alpha = ui_metrics.SCROLLBAR_COLOR[3];
+            //
+            // #346 — 섞는 색을 배경 명도로 뒤집는다 (어두우면 흰색, 밝으면 검정).
+            // 판정 입력은 terminal 의 현재 배경 (OSC 11 · reverse_colors 반영된
+            // `RenderState.Colors`) 이라 셸이 배경을 바꿔도 thumb 이 따라 전환된다.
+            const sb_dark = themes.isDarkRgb(colors.background.r, colors.background.g, colors.background.b);
+            const sb_color = ui_metrics.scrollbarColor(sb_dark);
+            const sc = rgbFromMetrics(sb_color);
+            const sb_alpha = sb_color[3];
             const thumb_color = ghostty.color.RGB{
                 .r = blendU8(sc.r, colors.background.r, sb_alpha),
                 .g = blendU8(sc.g, colors.background.g, sb_alpha),
