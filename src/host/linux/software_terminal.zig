@@ -88,8 +88,13 @@ const dialog_scrollbar_color: ghostty.color.RGB = .{ .r = 0xC8, .g = 0xC8, .b = 
 
 /// `ui_metrics.zig` 의 PT (logical point) 값을 `scale` 곱해 physical pixel 로
 /// 변환. mac `backingScaleFactor` / Win `dpi/96.0` 동등 패턴. 1.0x 면 PT 그대로.
-fn scaledPt(pt: u32, scale: f32) i32 {
-    return @intFromFloat(@round(@as(f32, @floatFromInt(pt)) * scale));
+///
+/// **변환 규칙은 [`ui_metrics.scaledPx`](../../ui_metrics.zig) 한 곳에만 있다** (#350).
+/// 이 함수는 Linux 호출처(48곳)가 쓰는 `i32` 를 돌려주는 alias 일 뿐 계산을
+/// 따로 쓰지 않는다 — 이전에는 세 platform 이 같은 식을 각자 적었고 macOS 만
+/// 반올림이 빠져 있었다.
+fn scaledPt(pt: anytype, scale: f32) i32 {
+    return ui_metrics.scaledPx(i32, pt, scale);
 }
 
 /// preferred_scale (= scale_num/scale_den, e.g. 204/120 = 1.7x) 을 f32 factor 로.
@@ -853,7 +858,7 @@ pub const Renderer = struct {
         if (v.clipped) {
             const ind_size_i: i32 = scaledPt(ui_metrics.MENU_INDICATOR_ICON_PT, scale);
             const ind_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), ind_size_i)));
-            const ind_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+            const ind_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
             const active_fg = rgbFromMetrics(self.chrome.ctrl_active);
             const disabled_fg = rgbFromMetrics(self.chrome.arrow_disabled);
             const sz_i: i32 = @intCast(ind_size);
@@ -1508,8 +1513,8 @@ fn drawTabBarControls(
     // 같은 비트맵을 atlas 에 올려 그림 → 세 platform 픽셀 동일.
     const icon_size_i: i32 = scaledPt(ui_metrics.TAB_ICON_SIZE_PT, scale);
     const icon_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), icon_size_i)));
-    const stroke_px: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
-    const more_stroke_px: f32 = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * scale);
+    const stroke_px: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+    const more_stroke_px: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, scale);
 
     const drawIcon = struct {
         fn call(

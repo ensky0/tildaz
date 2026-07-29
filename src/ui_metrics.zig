@@ -35,12 +35,61 @@ pub fn terminalCols(viewport_w: i64, pad: i64, scrollbar_w: i64, cell_w: i64) u1
     return @intCast(@min(@divTrunc(usable, cell_w), @as(i64, std.math.maxInt(u16))));
 }
 
+// --- pt → px 변환 (#350) ---
+//
+// 이 모듈의 `*_PT` 상수는 logical point 단위이고, 그리는 쪽은 현재 화면 scale 을
+// 곱해 physical px 로 바꿔 쓴다. **그 변환은 여기 세 함수에만 있다** — 호출처가
+// `@intFromFloat(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 쓰지 않는다.
+//
+// 한 곳에 모은 이유. 이전에는 같은 변환이 세 platform 에 61곳으로 복붙돼 있었고
+// **규칙이 갈렸다** — Linux(`scaledPt`) 와 Windows(`app_controller`) 는 `@round`,
+// macOS `host/macos.zig` 9곳은 `@round` 없이 버림이었다. macOS 안에서조차
+// `renderer/macos.zig` 의 아이콘 크기는 `@round` 를 써서 파일마다 달랐다.
+// `backingScaleFactor` 가 1.0 / 2.0 이라 정수 배율에서는 두 규칙의 결과가 같아
+// 증상이 드러나지 않았을 뿐이다 (fractional scale 에서 1px 갈린다).
+// 같은 상수를 platform 마다 다른 픽셀로 바꾸는 것은 SPEC §0 #1 (세 platform
+// 동등) 에 어긋나고, 이 이슈의 격자 버그가 정확히 "같은 계산 복붙" 이었다.
+//
+// 반올림을 택한 것은 다수 규칙(18곳)에 맞춘 것이고, 버림보다 원래 pt 크기에
+// 가깝다 (`round(10.2) = 10` vs `trunc(10.2) = 10`, `round(17.0) = 17`).
+
+/// `pt × scale` 을 정수 physical px 로 — **반올림**. 격자 / 레이아웃처럼 정수
+/// 픽셀이 필요한 자리에 쓴다.
+///
+/// `T` 는 호출처가 쓰는 정수 타입 (`u32` / `i32` / `c_int`) 을 그대로 지정한다 —
+/// 캐스팅을 호출처마다 반복하지 않기 위해서다. `pt` 는 `u32` 상수와 `f32` 상수를
+/// 모두 받는다 (`TERMINAL_PADDING_PT` 는 `u32`, `TAB_ICON_STROKE_PT` 는 `f32`).
+///
+/// 음수 결과는 없다 (`pt` · `scale` 모두 음수가 아니므로). `T` 가 부호 없는
+/// 타입이어도 안전하다.
+pub fn scaledPx(comptime T: type, pt: anytype, scale: f32) T {
+    return @intFromFloat(@round(scaledPxF(pt, scale)));
+}
+
+/// `pt × scale` 을 f32 physical px 로 — 정수 스냅 없이 소수를 유지한다. 그리기
+/// 좌표처럼 서브픽셀 정밀도를 그대로 쓰는 자리용.
+pub fn scaledPxF(pt: anytype, scale: f32) f32 {
+    const pt_f: f32 = switch (@typeInfo(@TypeOf(pt))) {
+        .int, .comptime_int => @floatFromInt(pt),
+        else => pt,
+    };
+    return pt_f * scale;
+}
+
+/// `pt × scale` 을 f32 physical px 로 하되 **최소 1px 보장** — 선 두께용.
+/// scale 이 작아도 선이 0px 로 사라지지 않게 한다 (separator / underline /
+/// 아이콘 stroke).
+pub fn strokePx(pt: anytype, scale: f32) f32 {
+    return @max(1.0, scaledPxF(pt, scale));
+}
+
 /// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
 /// 세 platform 모두 bar 커서로 통일 (이전: Windows/macOS full-cell block
 /// alpha 0.7, Linux 하단 2px underline — 제각각).
 pub const CURSOR_BAR_W_PT: f32 = 2.0;
 
 /// bar 커서 폭의 physical px 변환 — 최소 1px 보장 (scale < 0.5 에서도 소멸 방지).
+/// `strokePx` 와 달리 정수로 스냅한다 (커서는 셀 경계에 딱 붙어야 흐리지 않다).
 pub fn cursorBarWidthPx(scale: f32) f32 {
     return @max(1.0, @round(CURSOR_BAR_W_PT * scale));
 }
@@ -125,7 +174,7 @@ pub const TabGapPx = struct {
 
 /// logical gap을 현재 화면 scale에 맞는 physical pixel inset으로 변환한다.
 pub fn tabGapPx(scale: f32) TabGapPx {
-    const gap_px = @as(f32, @floatFromInt(TAB_GAP_PT)) * scale;
+    const gap_px = scaledPxF(TAB_GAP_PT, scale);
     return .{
         .tab_horizontal_inset = gap_px / 2.0,
         .control_hover_inset = gap_px,
@@ -261,7 +310,7 @@ pub fn dialogTitleFontSpec() font_spec.Spec {
 }
 
 pub fn tabBarHeightPx(scale: f32) u32 {
-    return @intFromFloat(@round(@as(f32, @floatFromInt(TAB_BAR_HEIGHT_PT)) * scale));
+    return scaledPx(u32, TAB_BAR_HEIGHT_PT, scale);
 }
 
 test "tab gap scales from logical points to physical pixels" {
@@ -455,4 +504,43 @@ test "#346 어두운 배경은 픽셀 불변 — Tilda 합성값이 이전과 �
     const col = scrollbarColor(true);
     const mixed = 0.0 * (1.0 - col[3]) + col[0] * 255.0 * col[3];
     try std.testing.expectApproxEqAbs(@as(f32, 76.5), mixed, 1e-4);
+}
+
+test "#350 pt→px 변환은 세 platform 공통 — 반올림, 타입 무관" {
+    // 이 이슈 이전에는 macOS `host/macos.zig` 9곳만 버림이었고 나머지 18곳은
+    // 반올림이었다. 통일된 규칙이 반올림임을 고정한다.
+    try std.testing.expectEqual(@as(u32, 10), scaledPx(u32, TERMINAL_PADDING_PT, 1.7)); // 10.2 → 10
+    try std.testing.expectEqual(@as(u32, 17), scaledPx(u32, SCROLLBAR_W_PT, 1.7)); // 17.0 → 17
+    try std.testing.expectEqual(@as(u32, 9), scaledPx(u32, SCROLLBAR_W_PT, 0.9)); // 9.0  → 9
+    try std.testing.expectEqual(@as(u32, 8), scaledPx(u32, TERMINAL_PADDING_PT, 1.25)); // 7.5  → 8 (버림이면 7)
+    try std.testing.expectEqual(@as(u32, 13), scaledPx(u32, SCROLLBAR_W_PT, 1.25)); // 12.5 → 13 (버림이면 12)
+
+    // 정수 배율에서는 버림과 결과가 같다 — 현행 macOS(1.0/2.0) 가 픽셀 불변인 근거.
+    try std.testing.expectEqual(@as(u32, 12), scaledPx(u32, TERMINAL_PADDING_PT, 2.0));
+    try std.testing.expectEqual(@as(u32, 20), scaledPx(u32, SCROLLBAR_W_PT, 2.0));
+    try std.testing.expectEqual(@as(u32, 300), scaledPx(u32, TAB_WIDTH_PT, 2.0));
+
+    // 호출처가 쓰는 정수 타입을 그대로 받는다 (캐스팅을 호출처에 반복하지 않는다).
+    try std.testing.expectEqual(@as(i32, 12), scaledPx(i32, TERMINAL_PADDING_PT, 2.0));
+    try std.testing.expectEqual(@as(c_int, 300), scaledPx(c_int, TAB_WIDTH_PT, 2.0));
+
+    // f32 상수도 같은 함수로 받는다.
+    try std.testing.expectEqual(@as(u32, 3), scaledPx(u32, TAB_ICON_STROKE_PT, 2.0));
+}
+
+test "#350 strokePx 는 최소 1px 을 보장하고 scaledPxF 는 소수를 유지한다" {
+    // 선 두께는 scale 이 작아도 사라지면 안 된다.
+    try std.testing.expectEqual(@as(f32, 1.0), strokePx(TAB_ICON_STROKE_PT, 0.1));
+    try std.testing.expectEqual(@as(f32, 1.0), strokePx(@as(u32, 1), 0.5));
+    try std.testing.expectEqual(@as(f32, 3.0), strokePx(TAB_ICON_STROKE_PT, 2.0));
+
+    // scaledPxF 는 스냅하지 않는다 — 서브픽셀 그리기 좌표용.
+    try std.testing.expectApproxEqAbs(@as(f32, 10.2), scaledPxF(TERMINAL_PADDING_PT, 1.7), 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), scaledPxF(@as(f32, 0.2), 1.5), 1e-6);
+
+    // scaledPx 는 scaledPxF 를 반올림한 것과 같다 (한 정의에서 파생).
+    inline for (.{ 1.0, 1.25, 1.5, 1.7, 2.0 }) |s| {
+        const expect: u32 = @intFromFloat(@round(scaledPxF(SCROLLBAR_W_PT, s)));
+        try std.testing.expectEqual(expect, scaledPx(u32, SCROLLBAR_W_PT, s));
+    }
 }

@@ -874,7 +874,7 @@ pub const D3d11Renderer = struct {
         bg_count += 1;
         // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
         // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
-        const sep_w_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_SEPARATOR_W_PT)) * self.pixels_per_dip);
+        const sep_w_px = ui_metrics.strokePx(ui_metrics.TAB_SEPARATOR_W_PT, self.pixels_per_dip);
 
         // #117 — 모든 탭 x = world(`i × tw` or drag world) - scroll + tab_area_x.
         // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
@@ -895,7 +895,7 @@ pub const D3d11Renderer = struct {
         // 세로선 루프와 같은 `tab_layout.hasSeparator` 로 단일화.
         const tab_area_end = layout.tab_area_x + layout.tab_area_w;
         if (active_tab < tab_count and bg_count < 128) {
-            const underline_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT)) * self.pixels_per_dip);
+            const underline_px = ui_metrics.strokePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, self.pixels_per_dip);
             const is_dragged = if (drag_view) |d| (active_tab == d.tab_index) else false;
             const tab_x: f32 = if (is_dragged)
                 @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
@@ -1119,9 +1119,9 @@ pub const D3d11Renderer = struct {
         // 동일 scale — 역산 아님).
         var ctrl_text_buf: [5]TextInstance = undefined;
         var ctrl_text_n: u32 = 0;
-        const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.pixels_per_dip));
-        const icon_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.pixels_per_dip);
-        const more_stroke: f32 = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * self.pixels_per_dip);
+        const icon_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, self.pixels_per_dip);
+        const icon_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, self.pixels_per_dip);
+        const more_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, self.pixels_per_dip);
         const drawIcon = struct {
             fn run(rself: *D3d11Renderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh_: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
                 if (n.* >= buf.len) return;
@@ -1569,7 +1569,7 @@ pub const D3d11Renderer = struct {
 
     /// #329 — 단일 탭 terminal 위에 우측 `[+][×][…]`만 최종 합성한다.
     fn drawSingleControlStrip(self: *D3d11Renderer, layout: TabBarLayout, hover: tab_layout.Area) void {
-        const h = @as(f32, @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT)) * self.pixels_per_dip;
+        const h = ui_metrics.scaledPxF(ui_metrics.TAB_BAR_HEIGHT_PT, self.pixels_per_dip);
         const gap = ui_metrics.tabGapPx(self.pixels_per_dip);
         var bg: [4]BgInstance = undefined;
         var bg_n: usize = 0;
@@ -1601,9 +1601,9 @@ pub const D3d11Renderer = struct {
 
         var icons: [3]TextInstance = undefined;
         var icon_n: u32 = 0;
-        const size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.pixels_per_dip));
-        const stroke = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.pixels_per_dip);
-        const more_stroke = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * self.pixels_per_dip);
+        const size: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, self.pixels_per_dip);
+        const stroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, self.pixels_per_dip);
+        const more_stroke = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, self.pixels_per_dip);
         const emit = struct {
             fn icon(r: *D3d11Renderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, icon_size: u32, icon_stroke: f32, out: []TextInstance, n: *u32) void {
                 if (w <= 0 or n.* >= out.len) return;
@@ -1679,8 +1679,8 @@ pub const D3d11Renderer = struct {
         // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
         // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
         if (v.clipped) {
-            const ind_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.MENU_INDICATOR_ICON_PT)) * scale));
-            const ind_stroke = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+            const ind_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.MENU_INDICATOR_ICON_PT, scale);
+            const ind_stroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
             const size_f: f32 = @floatFromInt(ind_size);
             const ind_cx = mx + mw * 0.5 - size_f * 0.5;
             const up_y = (v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5;

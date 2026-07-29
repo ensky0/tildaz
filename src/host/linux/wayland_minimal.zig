@@ -5786,6 +5786,11 @@ const Client = struct {
         if (track.h <= 0) return null;
         const scale_num: i64 = @intCast(self.preferred_scale);
         const scale_den: i64 = fractional_scale_denominator;
+        // 여기만 `ui_metrics.scaledPx` 를 쓰지 않는다 (#350). 그 helper 는 f32
+        // scale 을 받는데, 이 자리는 `preferred_scale` 을 **유리수 그대로**
+        // (204/120 등) 정수 산술로 반올림해 f32 변환 오차를 아예 만들지 않는다
+        // (`+ den/2` 후 나누기 = 반올림). `font/spec.zig` 의 rational scale 과
+        // 같은 이유다. 규칙(반올림)은 helper 와 동일하므로 결과도 일치한다.
         const min_thumb_h = @divTrunc(
             @as(i64, ui_metrics.SCROLLBAR_MIN_THUMB_H_PT) * scale_num + @divTrunc(scale_den, 2),
             scale_den,
