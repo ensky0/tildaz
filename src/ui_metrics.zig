@@ -138,13 +138,6 @@ pub const MENU_HINT_COLOR: [4]f32 = .{ 166.0 / 255.0, 166.0 / 255.0, 173.0 / 255
 /// 탭 텍스트 색 (180/255 ≈ 0.706). Windows `TAB_TEXT_R` 와 동일.
 pub const TAB_TEXT_COLOR: [4]f32 = .{ 180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0 };
 
-// 비활성 탭 배경은 상수가 아니라 active terminal 의 현재 배경(OSC 11 포함)을
-// 사용해요. cell grid 와 같은 색이라 비활성 탭이 cell 영역과 자연스럽게
-// 이어지고 활성 탭만 두드러지는 효과.
-// 탭 placement 는 좌우 1pt + 상하 2pt gap 을 두고 sandwich. 현재 화면 scale을
-// 곱한 physical pixel inset으로 변환하며, 그 gap으로 TAB_BAR_BG가 보여 탭의
-// 명확한 윤곽선 역할을 한다.
-
 // 탭바 컨트롤 버튼 (#117 — Firefox 패턴). width < height 로 살짝 세로 길쭉
 // (탭바 height 28 vs width 24) — 가로 넓적하지 않은 chevron 느낌.
 /// `<` / `>` 좌우 스크롤 화살표. 탭 viewport 가 탭으로 가득 차야 양 끝에 등장.
