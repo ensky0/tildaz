@@ -11,6 +11,30 @@ pub const TERMINAL_PADDING_PT: u32 = 6;
 /// 우측 scrollbar 너비.
 pub const SCROLLBAR_W_PT: u32 = 10;
 
+/// 터미널 격자의 **열 수** — 좌우 padding 과 **scrollbar 자리**를 뺀 폭을 cell 폭으로
+/// 나눈다 (#350).
+///
+/// scrollbar 자리는 **항상** 비운다. scrollbar 는 스크롤백이 있을 때만 그려지지만
+/// (`scrollbar.hit` 이 `total <= len` 이면 null), 보일 때만 비우면 스크롤백이 처음
+/// 생기는 순간 열 수가 줄어 셸이 reflow 한다 — 출력 중에 레이아웃이 흔들린다
+/// (2026-07-29 사용자 결정).
+///
+/// **단일 정의로 모은 이유.** 이전에는 세 platform 이 `viewport − 2·pad` 를 각자
+/// 계산했고 (macOS 는 세 곳, 합 다섯 곳), **다섯 곳 전부 scrollbar 를 빼지 않아**
+/// 마지막 열이 scrollbar 열과 겹쳤다. hit-test 는 이미 `viewport − pad − SCROLLBAR_W`
+/// 를 셀 밖으로 처리하고 있었으므로 (주석까지 *"스크롤바 옆"*) 의도는 처음부터
+/// 비워두는 것이었고 격자 계산만 빠졌다 — 그리기와 hit-test 가 어긋나 마지막 열이
+/// 클릭·선택되지 않았다. 같은 누락이 반복되지 않도록 여기 한 곳에 둔다.
+///
+/// 인자는 모두 physical px 이고 `i64` 라 호출처의 `c_int` / `u32` / `i32` 가 캐스팅
+/// 없이 들어온다. 창이 극단적으로 좁아 cell 하나도 못 담으면 1 열을 보장한다.
+pub fn terminalCols(viewport_w: i64, pad: i64, scrollbar_w: i64, cell_w: i64) u16 {
+    if (cell_w <= 0) return 1;
+    const usable = viewport_w - 2 * pad - scrollbar_w;
+    if (usable < cell_w) return 1;
+    return @intCast(@min(@divTrunc(usable, cell_w), @as(i64, std.math.maxInt(u16))));
+}
+
 /// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
 /// 세 platform 모두 bar 커서로 통일 (이전: Windows/macOS full-cell block
 /// alpha 0.7, Linux 하단 2px underline — 제각각).
@@ -319,6 +343,35 @@ test "#329 three-button cluster uses single common metrics" {
     try std.testing.expectEqual(@as(u32, 24), TAB_CLOSE_W_PT);
     try std.testing.expectEqual(@as(u32, 24), TAB_MORE_W_PT);
     try std.testing.expectEqual(@as(u32, 72), TAB_PLUS_W_PT + TAB_CLOSE_W_PT + TAB_MORE_W_PT);
+}
+
+test "#350 격자 열 수가 scrollbar 자리를 비운다" {
+    // Windows scale 1.0 실측 환경: client 960 / pad 6 / scrollbar 10 / cell 9.
+    // 이전 식 `(960 - 12) / 9` 은 105 였고 셀이 x 6..950 까지 가서 scrollbar
+    // (x 950..959) 와 x=950 한 열이 겹쳤다. 이제 104 로 x 6..942 에서 끝난다.
+    try std.testing.expectEqual(@as(u16, 104), terminalCols(960, 6, 10, 9));
+    try std.testing.expectEqual(@as(u16, 105), @as(u16, @intCast(@divTrunc(960 - 2 * 6, 9)))); // 이전 식 (회귀 근거)
+
+    // 열 오른쪽 끝이 hit-test 경계 (`viewport − pad − SCROLLBAR_W`) 를 넘지 않는다.
+    // hit-test 는 `x >= w - pad - SCROLLBAR_W` 를 셀 밖으로 처리한다.
+    const cases = [_][4]i64{
+        // viewport, pad, scrollbar_w, cell_w
+        .{ 960, 6, 10, 9 },    .{ 960, 9, 15, 14 },   .{ 1920, 6, 10, 9 },
+        .{ 3024, 12, 20, 19 }, .{ 1029, 10, 17, 15 }, .{ 800, 6, 10, 8 },
+    };
+    for (cases) |c| {
+        const cols = terminalCols(c[0], c[1], c[2], c[3]);
+        const right_edge = c[1] + @as(i64, cols) * c[3];
+        try std.testing.expect(right_edge <= c[0] - c[1] - c[2]);
+    }
+
+    // 창이 극단적으로 좁아도 최소 1 열, cell_w 0 도 안전.
+    try std.testing.expectEqual(@as(u16, 1), terminalCols(20, 6, 10, 9));
+    try std.testing.expectEqual(@as(u16, 1), terminalCols(0, 6, 10, 9));
+    try std.testing.expectEqual(@as(u16, 1), terminalCols(960, 6, 10, 0));
+    // scrollbar 를 빼면 정확히 한 열이 줄어드는 경계.
+    try std.testing.expectEqual(@as(u16, 104), terminalCols(960, 6, 9, 9));
+    try std.testing.expectEqual(@as(u16, 105), terminalCols(960, 6, 0, 9));
 }
 
 test "#346 scrollbar thumb — 섞는 색이 배경 명도로 뒤집히고 알파는 유지된다" {

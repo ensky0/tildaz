@@ -251,9 +251,14 @@ pub const App = struct {
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
         if (self.window.hwnd == null) return .{ .cols = 120, .rows = 30 };
         const size = self.window.getClientSize();
-        const w = size.w - 2 * self.TERMINAL_PADDING;
         const h = size.h - self.effectiveTabBarHeight() - 2 * self.TERMINAL_PADDING;
-        const cols: u16 = if (self.window.cell_width_px > 0) @intCast(@max(1, @divTrunc(@max(w, 1), self.window.cell_width_px))) else 120;
+        // #350 — 열 수는 공통 `ui_metrics.terminalCols` 가 계산한다 (좌우 padding +
+        // scrollbar 자리 차감). 이전에는 여기서 `size.w - 2*pad` 만 빼서 마지막 열이
+        // scrollbar 와 겹쳤고 hit-test 경계와 어긋났다.
+        const cols: u16 = if (self.window.cell_width_px > 0)
+            ui_metrics.terminalCols(size.w, self.TERMINAL_PADDING, self.SCROLLBAR_W, self.window.cell_width_px)
+        else
+            120;
         const rows: u16 = if (self.window.cell_height_px > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height_px))) else 30;
         return .{ .cols = cols, .rows = rows };
     }

@@ -548,9 +548,11 @@ fn syncTerminalGeometry() void {
     const pad: u32 = @intFromFloat(@as(f32, @floatFromInt(TERMINAL_PADDING_PT)) * r.scale);
     const tab_bar: u32 = @intCast(tabBarHeightPx(r.scale));
     const top_reserved = pad + tab_bar;
-    const usable_w = if (r.vp_width > 2 * pad) r.vp_width - 2 * pad else cell_w;
     const usable_h = if (r.vp_height > top_reserved + pad) r.vp_height - top_reserved - pad else cell_h;
-    const new_cols: u16 = @intCast(@max(1, usable_w / cell_w));
+    // #350 — 열 수는 공통 `ui_metrics.terminalCols` (좌우 padding + scrollbar 자리
+    // 차감). 이전에는 `vp_width - 2*pad` 만 빼서 마지막 열이 scrollbar 와 겹쳤다.
+    const sb_px: u32 = @intFromFloat(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * r.scale);
+    const new_cols: u16 = ui_metrics.terminalCols(r.vp_width, pad, sb_px, cell_w);
     const new_rows: u16 = @intCast(@max(1, usable_h / cell_h));
 
     for (g_session.tabs.items) |t| {
@@ -1784,9 +1786,10 @@ fn syncGeometryAfterScreenChange() void {
     const pad_px: u32 = @intFromFloat(@as(f64, @floatFromInt(TERMINAL_PADDING_PT)) * scale_pt);
     const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
     const top_reserved = pad_px + tab_bar_px;
-    const usable_w = if (vp_w_px > 2 * pad_px) vp_w_px - 2 * pad_px else cell_w_px;
     const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
-    const new_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
+    // #350 — 열 수는 공통 `ui_metrics.terminalCols` (scrollbar 자리 차감).
+    const sb_px: u32 = @intFromFloat(@as(f64, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale_pt);
+    const new_cols: u16 = ui_metrics.terminalCols(vp_w_px, pad_px, sb_px, cell_w_px);
     const new_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
     // 모든 탭의 terminal+pty 를 같이 resize 해야 해요 — 보이지 않는 탭의 grid
@@ -2990,9 +2993,10 @@ pub fn run() !void {
 
     const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
     const top_reserved = pad_px + tab_bar_px;
-    const usable_w = if (vp_w_px > 2 * pad_px) vp_w_px - 2 * pad_px else cell_w_px;
     const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
-    const term_cols: u16 = @intCast(@max(1, usable_w / cell_w_px));
+    // #350 — 열 수는 공통 `ui_metrics.terminalCols` (scrollbar 자리 차감).
+    const sb_px: u32 = @intFromFloat(@as(f64, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale_pt);
+    const term_cols: u16 = ui_metrics.terminalCols(vp_w_px, pad_px, sb_px, cell_w_px);
     const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
 
     // 자식 셸 환경변수. macOS .app launch 시 부모 environ 에 없을 수 있어 명시
