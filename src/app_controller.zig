@@ -336,15 +336,15 @@ pub const App = struct {
         const scale: f32 = effective / 96.0;
         self.dpi_scale = scale;
         self.TAB_BAR_HEIGHT = @intCast(ui_metrics.tabBarHeightPx(scale));
-        self.TAB_WIDTH = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * scale));
-        self.TAB_ARROW_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ARROW_W_PT)) * scale));
-        self.TAB_PLUS_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PLUS_W_PT)) * scale));
-        self.TAB_CLOSE_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_CLOSE_W_PT)) * scale));
-        self.TAB_MORE_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_MORE_W_PT)) * scale));
-        self.TAB_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * scale));
-        self.SCROLLBAR_W = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * scale));
-        self.SCROLLBAR_MIN_THUMB_H = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * scale));
-        self.TERMINAL_PADDING = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TERMINAL_PADDING_PT)) * scale));
+        self.TAB_WIDTH = ui_metrics.scaledPx(c_int, ui_metrics.TAB_WIDTH_PT, scale);
+        self.TAB_ARROW_W = ui_metrics.scaledPx(c_int, ui_metrics.TAB_ARROW_W_PT, scale);
+        self.TAB_PLUS_W = ui_metrics.scaledPx(c_int, ui_metrics.TAB_PLUS_W_PT, scale);
+        self.TAB_CLOSE_W = ui_metrics.scaledPx(c_int, ui_metrics.TAB_CLOSE_W_PT, scale);
+        self.TAB_MORE_W = ui_metrics.scaledPx(c_int, ui_metrics.TAB_MORE_W_PT, scale);
+        self.TAB_PADDING = ui_metrics.scaledPx(c_int, ui_metrics.TAB_PADDING_PT, scale);
+        self.SCROLLBAR_W = ui_metrics.scaledPx(c_int, ui_metrics.SCROLLBAR_W_PT, scale);
+        self.SCROLLBAR_MIN_THUMB_H = ui_metrics.scaledPx(c_int, ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, scale);
+        self.TERMINAL_PADDING = ui_metrics.scaledPx(c_int, ui_metrics.TERMINAL_PADDING_PT, scale);
     }
 
     /// WM_DPICHANGED path (called from `window.wndProc` after

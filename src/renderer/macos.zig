@@ -920,9 +920,9 @@ pub const MetalRenderer = struct {
             @floatFromInt(self.vp_height),
             @floatFromInt(scrollbar_y_offset),
             @floatFromInt(padding),
-            @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT)) * self.scale,
+            ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, self.scale),
         )) |h| {
-            const sbw: f32 = @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT)) * self.scale;
+            const sbw: f32 = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, self.scale);
             const vp_wf: f32 = @floatFromInt(self.vp_width);
             const track_x: f32 = vp_wf - sbw;
             // #344 — 정수 픽셀 스냅은 공통 `scrollbar.thumbPx`. 세 platform 이
@@ -1025,8 +1025,8 @@ pub const MetalRenderer = struct {
         hover: tab_layout.Area,
     ) void {
         const tab_bar_h_px: f32 = @floatFromInt(ui_metrics.tabBarHeightPx(self.scale));
-        const tab_w_px = @as(f32, @floatFromInt(ui_metrics.TAB_WIDTH_PT)) * self.scale;
-        const tab_pad_px = @as(f32, @floatFromInt(ui_metrics.TAB_PADDING_PT)) * self.scale;
+        const tab_w_px = ui_metrics.scaledPxF(ui_metrics.TAB_WIDTH_PT, self.scale);
+        const tab_pad_px = ui_metrics.scaledPxF(ui_metrics.TAB_PADDING_PT, self.scale);
         const tab_gap = ui_metrics.tabGapPx(self.scale);
 
         const MAX_BG: usize = 64;
@@ -1045,7 +1045,7 @@ pub const MetalRenderer = struct {
         bg_n += 1;
         // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
         // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
-        const sep_w_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_SEPARATOR_W_PT)) * self.scale);
+        const sep_w_px = ui_metrics.strokePx(ui_metrics.TAB_SEPARATOR_W_PT, self.scale);
         // 각 탭의 좌상단 x 좌표 — world (`i × tab_w_px`) - scroll + tab_area_x.
         // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
         // drag.current_x (c_int, *world*) 를 f32 로 cast 후 같은 변환.
@@ -1071,7 +1071,7 @@ pub const MetalRenderer = struct {
         //    세로선 루프와 같은 `tab_layout.hasSeparator` 로 단일화.
         const tab_area_end = layout.tab_area_x + layout.tab_area_w;
         if (active_tab < tab_titles.len and bg_n < MAX_BG) {
-            const underline_px = @max(1.0, @as(f32, @floatFromInt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT)) * self.scale);
+            const underline_px = ui_metrics.strokePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, self.scale);
             const tab_x = tabXFor(active_tab, tab_w_px, drag_view, tab_scroll_x_px, tax);
             const is_dragged = if (drag_view) |d| d.tab_index == active_tab else false;
             const edges = tab_layout.activeUnderlineEdges(
@@ -1278,9 +1278,9 @@ pub const MetalRenderer = struct {
         // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
         // 알파 커버리지 비트맵을 만들어 atlas 커스텀 엔트리로 그림 (폰트 독립).
         // Linux / Windows 와 같은 비트맵 → 세 platform 픽셀 동일. box 중앙 정렬.
-        const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.scale));
-        const icon_stroke: f32 = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.scale);
-        const more_stroke: f32 = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * self.scale);
+        const icon_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, self.scale);
+        const icon_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, self.scale);
+        const more_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, self.scale);
         const drawIcon = struct {
             fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
                 if (n.* >= buf.len) return;
@@ -1365,9 +1365,9 @@ pub const MetalRenderer = struct {
 
         var text_buf: [3]TextInstance = undefined;
         var text_n: usize = 0;
-        const icon_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.TAB_ICON_SIZE_PT)) * self.scale));
-        const icon_stroke = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * self.scale);
-        const more_stroke = @max(1.0, ui_metrics.TAB_MORE_DOT_DIAMETER_PT * self.scale);
+        const icon_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, self.scale);
+        const icon_stroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, self.scale);
+        const more_stroke = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, self.scale);
         const emit = struct {
             fn icon(rself: *MetalRenderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, size: u32, stroke: f32, out: []TextInstance, count: *usize) void {
                 if (w <= 0 or count.* >= out.len) return;
@@ -1450,8 +1450,8 @@ pub const MetalRenderer = struct {
         // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
         // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
         if (v.clipped) {
-            const ind_size: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(ui_metrics.MENU_INDICATOR_ICON_PT)) * scale));
-            const ind_stroke = @max(1.0, ui_metrics.TAB_ICON_STROKE_PT * scale);
+            const ind_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.MENU_INDICATOR_ICON_PT, scale);
+            const ind_stroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
             const size_f: f32 = @floatFromInt(ind_size);
             const ind_cx = mx + mw * 0.5 - size_f * 0.5;
             const up_y = (v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5;
