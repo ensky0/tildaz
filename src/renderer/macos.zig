@@ -372,6 +372,26 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid1(layer, objc.sel("setDevice:"), device);
         objc.msgSendVoid1(layer, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
 
+        // #349 — layer 색공간을 sRGB 로 명시. 우리 색 상수는 sRGB 로 설계 · 튜닝됐고
+        // (#334 / #342 anchor, #335 파생식) window server 는 이 태그를 보고 디스플레이
+        // 색공간으로 변환한다.
+        //
+        // 명시하는 이유: 바로 위 `setPixelFormat:` 호출이 colorspace 를 자동으로
+        // `kCGColorSpaceSRGB` 로 채우는데 (실측) 이건 문서에 없는 동작이다. Apple 문서와
+        // `CAMetalLayer.h` 가 적어 둔 기본값은 `nil` = "no colormatching" 이라, 문서만
+        // 읽으면 우리가 색 변환을 안 한다고 정반대로 이해하게 된다. 자동 기본값에
+        // 색 정확성을 맡기지 않고 같은 값을 직접 넣는다 — 실측으로 자동값과 **같은
+        // 싱글턴 인스턴스**라 픽셀은 한 비트도 바뀌지 않는다.
+        //
+        // null 이면 지정하지 않는다: `colorspace = nil` 은 변환을 없애서 wide-gamut
+        // 디스플레이에서 실제로 색이 진해진다 (실측: amber `#F7A41D` 가 P3 원색으로).
+        if (ct.CGColorSpaceCreateWithName(ct.kCGColorSpaceSRGB)) |cs| {
+            defer ct.CGColorSpaceRelease(cs);
+            objc.msgSendVoid1(layer, objc.sel("setColorspace:"), cs);
+        } else {
+            std.log.warn("sRGB 색공간 생성 실패 — layer colorspace 를 그대로 둠", .{});
+        }
+
         return .{
             .alloc = alloc,
             .font = font_ctx,
