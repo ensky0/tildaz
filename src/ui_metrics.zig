@@ -98,9 +98,51 @@ pub fn cursorBarWidthPx(scale: f32) f32 {
 /// thumb 가 클릭 가능한 크기 유지.
 pub const SCROLLBAR_MIN_THUMB_H_PT: u32 = 32;
 
-/// scrollbar thumb 의 알파. 배경과 미리 합성하지 않고 반투명으로 얹어 thumb
-/// 밑이 비치게 둔다 (#346 — solid 전환 대신 알파 유지 결정).
+/// scrollbar thumb 의 알파. 값의 의미는 그대로 "30%" 이고, **합성은 renderer 가
+/// 아니라 `blendOverRgb` 가 한 번만 수행**한다 (#353).
 pub const SCROLLBAR_ALPHA: f32 = 0.3;
+
+/// 알파 합성을 **이 한 곳에서만** 수행한다 (#353). `src` 를 `dst` 위에 `alpha`
+/// 로 얹은 8bit 결과.
+///
+/// **왜 renderer 에 맡기지 않는가.** 이전에는 세 platform 이 각자의 합성 지점에서
+/// 8bit 로 떨어뜨렸고 **규칙이 셋으로 갈렸다** — Linux 는 f32 곱 + 버림, macOS 는
+/// 고정밀 곱 + 최근접 반올림, Windows 는 알파를 8bit 로 양자화한 뒤 최근접 반올림.
+/// 같은 알파를 같은 배경에 얹어도 배경의 약 45% 에서 채널당 1 이 갈렸다 (음영은 2).
+/// Windows 쪽은 blend factor 를 render target 정밀도로 양자화하는 **하드웨어 동작**
+/// 이라 우리 코드로 맞출 수 없었다 — D3D11 명세가 blend 정밀도를 "RT format 이상"
+/// 으로만 요구하므로 GPU / 드라이버마다 달라질 수 있다.
+///
+/// 여기서 한 번 합성해 **알파 1.0 solid** 를 renderer 에 넘기면 하드웨어가 합성에
+/// 관여하지 않으므로 세 platform 이 *정의상* 일치한다. 반올림 tie 방향도 이 함수가
+/// 결정하므로 platform 간 문제가 되지 않는다.
+///
+/// 반올림은 **최근접**이다 — 정확값에 가장 가까운 정수이고, 버림은 원래 알파가
+/// 의도한 색에서 더 멀어진다. tie (`x.5`) 는 `@round` 가 0 에서 먼 쪽으로
+/// 보내는데, **이 함수 하나가 그 방향을 결정하므로 platform 간 갈래가 되지
+/// 않는다** (이전에는 renderer 마다 tie 방향이 달랐다).
+///
+/// **`f64` 로 계산하는 이유.** `src`·`dst` 가 `u8` 이고 `alpha` 가 `f32` 이면 곱과
+/// 합이 `f64` 안에서 **오차 없이** 떨어진다 (필요 비트 ~40 < 53). `f32` 로 하면
+/// 곱 결과가 `f32` 격자로 반올림되면서 정확값이 `x.5` 가 아닌데도 tie 로 보이는
+/// 경우가 생겨 (예: `245 × (1−0.3f)` 는 정확히 `171.4999970…` 인데 `f32` 에서는
+/// `171.5`) 반올림 방향이 뒤집힌다.
+pub fn blendOverU8(src: u8, dst: u8, alpha: f32) u8 {
+    const a: f64 = alpha;
+    const s: f64 = @floatFromInt(src);
+    const d: f64 = @floatFromInt(dst);
+    const mixed = s * a + d * (1.0 - a);
+    return @intFromFloat(@round(@max(0.0, @min(255.0, mixed))));
+}
+
+/// [`blendOverU8`] 을 3 채널에 적용. 합성은 채널 독립이다.
+pub fn blendOverRgb(src: [3]u8, dst: [3]u8, alpha: f32) [3]u8 {
+    return .{
+        blendOverU8(src[0], dst[0], alpha),
+        blendOverU8(src[1], dst[1], alpha),
+        blendOverU8(src[2], dst[2], alpha),
+    };
+}
 
 /// scrollbar thumb 색 — **섞는 색을 배경 명도로 뒤집는다** (#346).
 ///
@@ -124,12 +166,16 @@ pub const SCROLLBAR_ALPHA: f32 = 0.3;
 /// 알려진 귀결 — 배경이 **중간 명도**면 어느 쪽을 섞어도 대비가 낮다
 /// (`#808080` 에서 1.62 / 1.76). 내장 테마 18종에는 그런 배경이 없어 실사용에서는
 /// 걸리지 않지만 OSC 11 로는 가능하다. 대비를 모든 배경에서 일정하게 고정하려면
-/// `chrome_palette` 의 파생식(solid)이 필요한데, #346 은 최소 변경을 택했다.
-pub fn scrollbarColor(dark: bool) [4]f32 {
-    return if (dark)
-        .{ 1, 1, 1, SCROLLBAR_ALPHA }
-    else
-        .{ 0, 0, 0, SCROLLBAR_ALPHA };
+/// `chrome_palette` 의 파생식이 필요한데, #346 은 최소 변경을 택했다.
+///
+/// **`bg` 와 미리 합성한 solid 를 돌려준다** (#353) — 세 renderer 는 이 값을 알파
+/// 1.0 으로 그린다. 이전에는 알파를 그대로 넘겨 renderer 마다 다른 규칙으로
+/// 합성했고 값이 갈렸다 (`blendOverU8` 주석 참고). thumb 은 격자 밖 (#350 이
+/// scrollbar 자리를 항상 비운다) 이라 밑에 cell 이 오지 않으므로 solid 로 바꿔도
+/// 시각적 손실이 없다.
+pub fn scrollbarColor(bg: [3]u8, dark: bool) [3]u8 {
+    const src: u8 = if (dark) 255 else 0;
+    return blendOverRgb(.{ src, src, src }, bg, SCROLLBAR_ALPHA);
 }
 
 // 탭바 — Windows `d3d11_renderer.zig` 의 TAB_* 상수와 같은 디자인 (시각 일관성).
@@ -423,16 +469,44 @@ test "#350 격자 열 수가 scrollbar 자리를 비운다" {
     try std.testing.expectEqual(@as(u16, 105), terminalCols(960, 6, 0, 9));
 }
 
-test "#346 scrollbar thumb — 섞는 색이 배경 명도로 뒤집히고 알파는 유지된다" {
-    const on_dark = scrollbarColor(true);
-    const on_light = scrollbarColor(false);
-    // 어두운 배경엔 흰색 (현행 유지 — 어두운 테마는 픽셀 불변이어야 한다).
-    try std.testing.expectEqual([4]f32{ 1, 1, 1, SCROLLBAR_ALPHA }, on_dark);
-    // 밝은 배경엔 검정.
-    try std.testing.expectEqual([4]f32{ 0, 0, 0, SCROLLBAR_ALPHA }, on_light);
-    // 알파는 양쪽 동일 — solid 로 바꾸지 않았다.
-    try std.testing.expectEqual(on_dark[3], on_light[3]);
+test "#346 scrollbar thumb — 섞는 색이 배경 명도로 뒤집힌다" {
+    // 어두운 배경엔 흰색을 30% → 밝아진다.
+    try std.testing.expectEqual([3]u8{ 77, 77, 77 }, scrollbarColor(.{ 0, 0, 0 }, true));
+    // 밝은 배경엔 검정을 30% → 어두워진다. (흰색을 섞으면 250 → 252 로 소멸했다.)
+    try std.testing.expectEqual([3]u8{ 175, 175, 175 }, scrollbarColor(.{ 250, 250, 250 }, false));
+    // 알파의 *의미* 는 30% 그대로다 — solid 로 바뀐 것은 renderer 에 넘기는 형태다.
     try std.testing.expectEqual(@as(f32, 0.3), SCROLLBAR_ALPHA);
+}
+
+test "#353 알파 합성은 한 곳에서 최근접 반올림 — f32 로 계산하면 갈리는 자리를 고정한다" {
+    // 경계 — 알파 0 은 배경 그대로, 1 은 src 그대로.
+    try std.testing.expectEqual(@as(u8, 200), blendOverU8(50, 200, 0.0));
+    try std.testing.expectEqual(@as(u8, 50), blendOverU8(50, 200, 1.0));
+    // clamp — 255 를 넘거나 0 아래로 가지 않는다.
+    try std.testing.expectEqual(@as(u8, 255), blendOverU8(255, 255, 0.3));
+    try std.testing.expectEqual(@as(u8, 0), blendOverU8(0, 0, 0.3));
+
+    // **f64 로 계산해야 맞는 자리.** `(1−0.3f) × 245` 의 정확값은 171.4999970… 라
+    // 최근접이 171 인데, f32 로 곱하면 결과가 f32 격자의 171.5 로 반올림돼 tie 처럼
+    // 보이고 172 가 된다. 이 단언이 그 갈래를 고정한다 (Catppuccin Latte 의 B 채널).
+    try std.testing.expectEqual(@as(u8, 171), blendOverU8(0, 245, 0.3));
+    // 같은 이유로 Catppuccin Latte 전체가 #A7A9AB 다.
+    try std.testing.expectEqual([3]u8{ 0xA7, 0xA9, 0xAB }, scrollbarColor(.{ 0xEF, 0xF1, 0xF5 }, false));
+
+    // **런타임 알파도 같은 helper 를 탄다** — box-drawing AA 의 `cov` 는 셀 크기에
+    // 따라 픽셀별로 계산되는 값이지만 상수일 필요가 없다. `cov == 1` 인 crisp rect 는
+    // 합성 결과가 `fg` 그대로여서 픽셀이 안 바뀌는 것을 고정한다.
+    try std.testing.expectEqual(@as(u8, 200), blendOverU8(200, 30, 1.0));
+    try std.testing.expectEqual([3]u8{ 10, 20, 30 }, blendOverRgb(.{ 10, 20, 30 }, .{ 200, 200, 200 }, 1.0));
+    // 중간 coverage 는 정확값의 최근접 — cov 0.5 로 fg 255 를 bg 0 에 얹으면 127.5 →
+    // `@round` 가 0 에서 먼 쪽으로 보내 128.
+    try std.testing.expectEqual(@as(u8, 128), blendOverU8(255, 0, 0.5));
+
+    // 채널 독립 — rgb 버전이 채널별 결과와 같다.
+    const rgb = blendOverRgb(.{ 10, 20, 30 }, .{ 200, 210, 220 }, 0.3);
+    try std.testing.expectEqual(blendOverU8(10, 200, 0.3), rgb[0]);
+    try std.testing.expectEqual(blendOverU8(20, 210, 0.3), rgb[1]);
+    try std.testing.expectEqual(blendOverU8(30, 220, 0.3), rgb[2]);
 }
 
 /// 내장 theme 18종의 배경 — `themes.zig` 와 같은 값. 이 모듈은 ghostty 에
@@ -480,17 +554,19 @@ test "#346 thumb 이 18종 theme 배경 전부에서 대비 2.0 이상" {
     // 이전 흰색 고정 방식은 밝은 4종에서 1.02~1.04 로 소멸했다. 실측 최소는
     // 어두운 쪽 2.465 (Tilda) / 밝은 쪽 2.087 (Gruvbox Light) 이므로 하한 2.0.
     for (sb_test_themes) |t| {
-        const col = scrollbarColor(t.dark);
+        // #353 — 합성은 `scrollbarColor` 가 이미 했다. 테스트가 renderer 의 합성을
+        // 흉내낼 필요가 없어졌다 (그게 platform 마다 갈렸던 지점이다).
+        const thumb = scrollbarColor(t.bg, t.dark);
         const bg = [3]f64{
             @floatFromInt(t.bg[0]),
             @floatFromInt(t.bg[1]),
             @floatFromInt(t.bg[2]),
         };
-        // renderer 가 하는 것과 같은 gamma space 알파 합성.
-        var mixed: [3]f64 = undefined;
-        for (0..3) |i| {
-            mixed[i] = bg[i] * (1.0 - @as(f64, col[3])) + @as(f64, col[i]) * 255.0 * @as(f64, col[3]);
-        }
+        const mixed = [3]f64{
+            @floatFromInt(thumb[0]),
+            @floatFromInt(thumb[1]),
+            @floatFromInt(thumb[2]),
+        };
         const cr = sbContrast(mixed, bg);
         std.testing.expect(cr >= 2.0) catch |err| {
             std.debug.print("theme {s}: contrast {d:.3} < 2.0\n", .{ t.name, cr });
@@ -499,11 +575,16 @@ test "#346 thumb 이 18종 theme 배경 전부에서 대비 2.0 이상" {
     }
 }
 
-test "#346 어두운 배경은 픽셀 불변 — Tilda 합성값이 이전과 같다" {
-    // 어두운 테마는 이번 변경으로 바뀌면 안 된다 (흰색 30% 그대로).
-    const col = scrollbarColor(true);
-    const mixed = 0.0 * (1.0 - col[3]) + col[0] * 255.0 * col[3];
-    try std.testing.expectApproxEqAbs(@as(f32, 76.5), mixed, 1e-4);
+test "#353 Tilda thumb 은 77 — 정확값이 0.5 를 넘기 때문이다" {
+    // `0.3` 은 f32 로 정확히 표현되지 않아 `0.30000001192…` 이고, ×255 의 정확값은
+    // **76.50000303983688** 로 0.5 를 살짝 넘는다. 따라서 최근접은 77 이다.
+    //
+    // 이 자리가 세 platform 이 갈렸던 대표 지점이다 — 이전에는 Linux 가 76 (f32 곱
+    // 후 버림), Windows 가 76 (알파를 8bit 76 으로 양자화), macOS 만 77 (고정밀 곱 +
+    // 최근접) 이었다. 합성을 한 곳으로 모은 뒤로 셋 다 77 이다 (#353).
+    try std.testing.expectEqual([3]u8{ 77, 77, 77 }, scrollbarColor(.{ 0, 0, 0 }, true));
+    // f32 로 곱하면 정확히 76.5 가 되어 tie 로 보이고, 버림 renderer 는 76 을 냈다.
+    try std.testing.expectEqual(@as(u8, 77), blendOverU8(255, 0, SCROLLBAR_ALPHA));
 }
 
 test "#350 pt→px 변환은 세 platform 공통 — 반올림, 타입 무관" {
