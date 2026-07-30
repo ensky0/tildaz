@@ -94,6 +94,32 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 
 **예외 하나 — Wayland dialog scrollbar 의 최소 thumb 높이.** [`wayland_minimal.dialogScrollbarGeom`](src/host/linux/wayland_minimal.zig) 은 helper 를 쓰지 않고 `preferred_scale` 을 **유리수 그대로** (204/120 등) 정수 산술로 반올림한다 (`(pt × num + den/2) / den`) — f32 변환 오차를 아예 만들지 않기 위해서다 (`src/font/spec.zig` 의 rational scale 과 같은 이유). **규칙(반올림)은 helper 와 같으므로 결과도 일치한다.**
 
+### 알파 합성 — renderer 가 아니라 공유 코드가 한 번만 한다 ([#353](https://github.com/ensky0/tildaz/issues/353))
+
+**반투명 요소는 알파를 renderer 에 넘기지 않는다.** 배경과의 합성을 공통 [`ui_metrics.blendOverU8` / `blendOverRgb`](src/ui_metrics.zig) 가 **한 곳에서 한 번** 수행하고, 세 renderer 는 그 결과를 **알파 1.0 불투명**으로 그린다.
+
+| 요소 | 알파 | 합성 입력 |
+|---|---|---|
+| scrollbar thumb | `SCROLLBAR_ALPHA` 0.3 | terminal 의 **현재** 배경 (아래 §스크롤바 thumb 색) |
+| 음영 `░▒▓` (U+2591–2593) | 0.25 / 0.5 / 0.75 | **그 셀의 배경** (`cell_color.resolveBg` → null 이면 `colors.background`) |
+| box-drawing AA — 호 `╭╮╰╯` · 대각선 `╱╲╳` | `box_drawing.Rect.cov` (**런타임** 값) | 동일 |
+
+**알파가 런타임 값이어도 된다.** helper 는 `alpha: f32` 를 인자로 받으므로 상수일 필요가 없다. box AA 의 `cov` 는 셀 크기에 따라 픽셀별로 계산되지만, [`boxRects`](src/box_drawing.zig) 의 emitter 가 **한 픽셀에 rect 를 하나만** 내보낸다 — 대각선은 두 선의 coverage 를 `@max` 로, 호는 arm·arc 거리를 `@min` 으로 합친 **뒤** emit 하고, `rounded` 분기는 arm 까지 같은 루프가 전담해 별도 불투명 arm rect 와 섞이지 않는다. 그래서 한 픽셀의 blend 가 정확히 한 번이고, **배경과 미리 합성한 결과가 순차 blend 와 같다.** `cov = 1` 인 crisp rect 는 합성 결과가 `fg` 그대로다.
+
+계산은 **`f64` 로 하고 최근접 반올림**한다. `u8 × f32` 의 곱과 합은 `f64` 안에서 오차 없이 떨어지므로(필요 비트 ~40 < 53) 결과가 정확값의 최근접 정수다. `f32` 로 하면 곱이 f32 격자로 반올림되면서 정확값이 `x.5` 가 아닌데도 tie 로 보이는 자리가 생겨 방향이 뒤집힌다 (예: `(1−0.3f) × 245` 는 정확히 `171.4999970…` 인데 f32 에서는 `171.5`). tie 방향은 `@round` (0 에서 먼 쪽) 인데, **이 함수 하나가 결정하므로 platform 간 갈래가 되지 않는다.**
+
+**왜 사양으로 못 박는가.** 이전에는 세 renderer 가 각자의 합성 지점에서 8bit 로 떨어뜨렸고 **규칙이 셋으로 갈렸다.**
+
+| platform | 이전 규칙 |
+|---|---|
+| Linux | `blendU8` — f32 곱 + **버림** (음영은 `blendRect` 로 알파 8bit 버림 + 정수 버림, 즉 Linux 안에서도 둘) |
+| macOS | 셰이더 premultiply → 고정밀 곱 + 최근접 반올림 |
+| Windows | non-premultiplied + `SRC_ALPHA` → blend factor 가 **render target 정밀도(8bit)로 양자화**된 뒤 최근접 반올림 |
+
+같은 알파를 같은 배경에 얹어도 배경의 **약 45%** 에서 채널당 1 이 갈렸고 (음영은 최대 2), Windows 쪽은 blend factor 양자화가 **하드웨어 동작**이라 우리 코드로 맞출 수 없었다 — D3D11 명세가 blend 정밀도를 "render target format 이상" 으로만 요구하므로 GPU / 드라이버마다 달라질 수 있다. 합성을 공유 코드로 옮기면 하드웨어가 합성에 관여하지 않아 **정의상 일치**한다.
+
+**비범위 — 글리프 anti-alias.** 폰트 글리프의 AA 는 별개 경로다 (Linux 는 FreeType coverage → `blendPixel`, Windows 는 ClearType dual-source blend `ct_blend`, macOS 는 Core Text). 알파 상수가 아니라 rasterizer 가 만드는 커버리지이고 platform 마다 rasterizer 자체가 다르므로 이 규칙의 대상이 아니다.
+
 `font.size_point`는 호환성을 위해 유지하는 외부 key 이름이며 물리적인 1/72 inch
 point가 아니다. 내부 의미는 logical size이고 실제 raster 크기는 위 표의 OS scale을
 적용한다. 실제 mm 보정은 하지 않는다. 폰트 metric에 cell width/line height ratio와
@@ -316,7 +342,7 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | 우클릭 paste | 어디든 | `WM_RBUTTONDOWN` → `pasteClipboard` | `tildazRightMouseDown` → `handlePaste` | `wl_pointer.button` BTN_RIGHT → `wl_data_offer.receive` ([dfcf9f4](https://github.com/ensky0/tildaz/commit/dfcf9f4)) | ✅ | ✅ | ✅ |
 | 휠 / 트랙패드 scroll | 셀 영역 | `WM_MOUSEWHEEL` → `scrollViewport` | `tildazScrollWheel` → 동일 | `wl_pointer.axis` → 동일 ([fc3b5bb](https://github.com/ensky0/tildaz/commit/fc3b5bb)) | ✅ | ✅ | ✅ |
 | 스크롤바 클릭 + 드래그 | 우측 가장자리. **track** = `top = tab_bar_h + pad`, `h = viewport_h − tab_bar_h − 2·pad` (`pad` = `TERMINAL_PADDING_PT`) — thumb 을 맨 위로 올렸을 때 위 여백과 맨 아래로 내렸을 때 아래 여백이 **같아야 한다**. **thumb 의 정수 픽셀 스냅은 공통 `scrollbar.thumbPx()` 하나만 사용**하고, 위치와 크기를 따로 정수화하지 않는다 — 양 끝을 각각 반올림한 뒤 크기를 빼야 track 아랫변(정수)이 보존된다. 따로 절단하면 `⌊T−h⌋+⌊h⌋ = T−1` 로 아래 여백만 1pt 커진다 ([#344](https://github.com/ensky0/tildaz/issues/344), Linux 실기 발견). hit-test 는 계속 f64 연속값을 써서 드래그가 스냅에 끌리지 않는다. 같은 규칙을 dialog 본문 scrollbar 에도 적용 | `mouse.x >= client_w - SCROLLBAR_W` → `scrollToY` | 동일 (`scrollbarScrollToY`, Windows 패턴 그대로) | 동일 ([e671b02](https://github.com/ensky0/tildaz/commit/e671b02), L6.6 — Windows 패턴 그대로) | ✅ | ✅ | ✅ |
-| 스크롤바 thumb 색 — **터미널 현재 배경 명도로 섞는 색을 뒤집음** ([#346](https://github.com/ensky0/tildaz/issues/346) 2026-07-29 확정) | 반투명을 유지하고 (`SCROLLBAR_ALPHA` 0.3) **섞는 색만** 배경 명도로 바꾼다 — 어두우면 흰색, 밝으면 검정. 판정은 `themes.isDarkRgb` 에 **terminal 의 현재 배경** (`RenderState.Colors.background` — OSC 11 과 `reverse_colors` 가 반영된 실효 배경) 을 넣는다. 탭바 chrome 이 **config theme** 배경을 쓰는 것과 기준이 다른데, thumb 은 chrome 이 아니라 **terminal 표면 위에** 얹히므로 그 면을 따른다 — config 기준이면 셸이 OSC 11 로 명도를 뒤집는 순간 thumb 이 소멸한다. [#266](https://github.com/ensky0/tildaz/issues/266) 의 color scheme DSR 도 같은 기준. 이전 흰색 고정은 밝은 테마 4종에서 대비가 **1.02~1.04** 로 소멸했고, 이제 18종 전부 **2.09 이상** (어두운 14종 2.465~2.713 / 밝은 4종 2.087~2.102). **어두운 테마는 픽셀 불변.** `track`(홈)은 그리지 않는다 — thumb 만 (고정된 외관이 필요하면 track 도입이 수단이지만 시각 디자인 변경이라 비범위). 알려진 귀결 — 배경이 **중간 명도**면 어느 쪽을 섞어도 대비가 낮다 (`#808080` 에서 1.62 / 1.76). 내장 18종엔 그런 배경이 없고 OSC 11 로만 가능하다 | 우측 가장자리 thumb | 공통 [`ui_metrics.scrollbarColor(dark)`](src/ui_metrics.zig) + D3D11 alpha instance | 동일 + Metal alpha instance | 동일 + `blendU8` 로 미리 합성 (GPU per-pixel alpha 와 같은 결과) | ✅ | ✅ | ✅ |
+| 스크롤바 thumb 색 — **터미널 현재 배경 명도로 섞는 색을 뒤집음** ([#346](https://github.com/ensky0/tildaz/issues/346) 2026-07-29 확정) | 알파의 세기는 30% 그대로 두고 (`SCROLLBAR_ALPHA` 0.3) **섞는 색만** 배경 명도로 바꾼다 — 어두우면 흰색, 밝으면 검정. 판정은 `themes.isDarkRgb` 에 **terminal 의 현재 배경** (`RenderState.Colors.background` — OSC 11 과 `reverse_colors` 가 반영된 실효 배경) 을 넣는다. 탭바 chrome 이 **config theme** 배경을 쓰는 것과 기준이 다른데, thumb 은 chrome 이 아니라 **terminal 표면 위에** 얹히므로 그 면을 따른다 — config 기준이면 셸이 OSC 11 로 명도를 뒤집는 순간 thumb 이 소멸한다. [#266](https://github.com/ensky0/tildaz/issues/266) 의 color scheme DSR 도 같은 기준. 이전 흰색 고정은 밝은 테마 4종에서 대비가 **1.02~1.04** 로 소멸했고, 이제 18종 전부 **2.09 이상** (어두운 14종 2.465~2.713 / 밝은 4종 2.087~2.102). 합성을 공유 코드로 옮긴 뒤 (#353) 세 platform 이 **같은 값**을 낸다 — Tilda 는 `#4D4D4D` (정확값 `76.50000304` 의 최근접). 그 전에는 Linux · Windows 가 `#4C4C4C`, macOS 만 `#4D4D4D` 였다. `track`(홈)은 그리지 않는다 — thumb 만 (고정된 외관이 필요하면 track 도입이 수단이지만 시각 디자인 변경이라 비범위). 알려진 귀결 — 배경이 **중간 명도**면 어느 쪽을 섞어도 대비가 낮다 (`#808080` 에서 1.62 / 1.76). 내장 18종엔 그런 배경이 없고 OSC 11 로만 가능하다 | 우측 가장자리 thumb | 공통 [`ui_metrics.scrollbarColor(bg, dark)`](src/ui_metrics.zig) 가 **합성까지 끝낸 solid** 를 준다 — 세 platform 이 알파 1.0 으로 그린다 ([#353](https://github.com/ensky0/tildaz/issues/353), §알파 합성) | 동일 | 동일 | ✅ | ✅ | ✅ |
 | viewport 이동 시 selection 유지 | 어디든 | ghostty `Selection` 이 `Pin` (page list 절대 위치) 기반 — viewport 는 보는 창문 | 동일 (같은 ghostty 모듈) | 동일 (같은 ghostty 모듈) | ✅ | ✅ | ✅ |
 | 탭바 — 탭 클릭 | 상단 탭 영역 | `handleTabClick` → `setActiveTab` | 동일 (`tabBarHitTest`) | 동일 (L12-β, cross-platform `tab_interaction`) | ✅ | ✅ | ✅ |
 | 탭바 — × 클릭 (**활성 탭 닫기**) | 우측 control cluster의 `×` ([#268](https://github.com/ensky0/tildaz/issues/268)). 단일 탭 `[+][×][…]`, 멀티탭 `[탭들][+][×][…]`, overflow `[<][탭들][>][+][×][…]`. per-tab close는 두지 않아 탭 전환 misclick을 막는다. 탭 본체 클릭은 어디든 전환만 | `handleTabClick` `.close` → `closeTab(activeIndex)` | `.close` → `handleCloseActiveTab` (Cmd+W 와 동일 helper) | `.close` → `closeIndex(activeIndex)` + `ensureSessionGrid` | ✅ | ✅ | ✅ |

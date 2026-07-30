@@ -469,7 +469,22 @@ pub const Renderer = struct {
                 // 인접 셀 사이 갭 / overlap 제거. Windows d3d11 / macOS Metal 가
                 // 같은 모듈을 동일 의미로 사용 ([renderer/windows.zig], [renderer/macos.zig]).
                 if (block_element.blockElementRect(cp)) |br| {
-                    drawBlockRect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, br, fg);
+                    // #353 — 음영 ░▒▓ (alpha 0.25/0.5/0.75) 은 공통
+                    // `ui_metrics.blendOverRgb` 로 **여기서 한 번** 합성한다. 합성
+                    // 대상은 이 셀의 배경 `bg` 다 — cell bg rect 를 안 그리는 경우
+                    // (`style.bg` 없음 · 미선택 · 비반전) 에도 `resolveBg` 가
+                    // `colors.background` 를 돌려주고 프레임버퍼도 그 값이라 일치한다.
+                    // 솔리드 블록 (alpha 1.0) 은 합성 결과가 `fg` 그대로다.
+                    const blended = ui_metrics.blendOverRgb(
+                        .{ fg.r, fg.g, fg.b },
+                        .{ bg.r, bg.g, bg.b },
+                        br.alpha,
+                    );
+                    drawBlockRect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, br, .{
+                        .r = blended[0],
+                        .g = blended[1],
+                        .b = blended[2],
+                    });
                     x += 1;
                     continue;
                 }
@@ -481,8 +496,19 @@ pub const Renderer = struct {
                     var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
                     if (box_drawing.boxRects(cp, @floatFromInt(cell_w), @floatFromInt(ch), &box_rects)) |bn| {
                         for (box_rects[0..bn]) |br| {
-                            // br.cov = AA coverage → src-over 블렌딩 가중치.
-                            blendRect(
+                            // #353 — `br.cov` (AA coverage) 도 공통
+                            // `ui_metrics.blendOverRgb` 로 미리 합성하고 불투명 rect 로
+                            // 그린다. **emitter 가 픽셀당 rect 를 하나만 내보내므로**
+                            // (대각선은 두 선을 `@max` 로, 호는 arm·arc 거리를 `@min`
+                            // 으로 합친 *뒤* emit) 한 픽셀에 blend 가 한 번뿐이고,
+                            // 배경과 미리 합성한 결과가 순차 blend 와 같다.
+                            // `cov == 1` 인 crisp rect 는 합성 결과가 `fg` 그대로다.
+                            const cov_blend = ui_metrics.blendOverRgb(
+                                .{ fg.r, fg.g, fg.b },
+                                .{ bg.r, bg.g, bg.b },
+                                br.cov,
+                            );
+                            rect(
                                 memory,
                                 width,
                                 height,
@@ -491,8 +517,7 @@ pub const Renderer = struct {
                                 cell_y + @as(i32, @intFromFloat(br.y)),
                                 @as(i32, @intFromFloat(br.w)),
                                 @as(i32, @intFromFloat(br.h)),
-                                fg,
-                                br.cov,
+                                .{ .r = cov_blend[0], .g = cov_blend[1], .b = cov_blend[2] },
                             );
                         }
                         x += 1;
@@ -704,21 +729,17 @@ pub const Renderer = struct {
             const thumb_y_px: i32 = @intFromFloat(t.top);
             const thumb_h_px: i32 = @intFromFloat(t.h);
             const sb_x: i32 = width - sb_w;
-            // 공통 `ui_metrics.scrollbarColor` — 배경과 blend 한 불투명 색이 GPU
-            // renderer 의 per-pixel alpha 와 같은 결과 (#282 B4, tab hover 패턴).
-            //
             // #346 — 섞는 색을 배경 명도로 뒤집는다 (어두우면 흰색, 밝으면 검정).
             // 판정 입력은 terminal 의 현재 배경 (OSC 11 · reverse_colors 반영된
             // `RenderState.Colors`) 이라 셸이 배경을 바꿔도 thumb 이 따라 전환된다.
+            //
+            // #353 — 합성은 공통 `ui_metrics.scrollbarColor` 가 이미 끝냈고 여기서는
+            // 불투명 rect 로 그린다. 이전에는 이 자리에서 `blendU8` 로 직접 섞었는데
+            // 그 규칙(f32 곱 + 버림)이 macOS·Windows 의 renderer 합성과 갈렸다.
+            const sb_bg = [3]u8{ colors.background.r, colors.background.g, colors.background.b };
             const sb_dark = themes.isDarkRgb(colors.background.r, colors.background.g, colors.background.b);
-            const sb_color = ui_metrics.scrollbarColor(sb_dark);
-            const sc = rgbFromMetrics(sb_color);
-            const sb_alpha = sb_color[3];
-            const thumb_color = ghostty.color.RGB{
-                .r = blendU8(sc.r, colors.background.r, sb_alpha),
-                .g = blendU8(sc.g, colors.background.g, sb_alpha),
-                .b = blendU8(sc.b, colors.background.b, sb_alpha),
-            };
+            const sb_col = ui_metrics.scrollbarColor(sb_bg, sb_dark);
+            const thumb_color = ghostty.color.RGB{ .r = sb_col[0], .g = sb_col[1], .b = sb_col[2] };
             rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, thumb_color);
         }
 
@@ -1629,13 +1650,10 @@ fn drawTabBarControls(
     drawIcon(memory, fb_w, fb_h, stride, .more, more_x, more_w, tab_bar_h, icon_size, more_stroke_px, active_color, bg);
 }
 
-/// `a * weight + b * (1 - weight)` 의 u8 클램프. close 'x' 의 dim 색 등에 사용.
-fn blendU8(a: u8, b: u8, weight: f32) u8 {
-    const a_f: f32 = @floatFromInt(a);
-    const b_f: f32 = @floatFromInt(b);
-    const mixed = a_f * weight + b_f * (1.0 - weight);
-    return @intFromFloat(@max(0.0, @min(255.0, mixed)));
-}
+// #353 — 알파 합성 전용이었던 `blendU8` 은 제거했다. 규칙(f32 곱 + 버림)이
+// macOS·Windows 의 renderer 합성과 갈렸고, 합성 자체를 공통
+// `ui_metrics.blendOverU8` 한 곳으로 모았다. 유일한 호출처였던 scrollbar thumb 은
+// 이제 `ui_metrics.scrollbarColor` 가 합성한 색을 그대로 그린다.
 
 fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
     return .{
@@ -1860,46 +1878,10 @@ fn rect(
     }
 }
 
-/// `rect` 의 anti-alias 버전 — cov(0~1) 를 src-over 가중치로 기존 픽셀과 블렌딩.
-/// box-drawing 의 호/대각선 AA 용 (#258). cov>=1 이면 불투명 rect 와 동일.
-fn blendRect(
-    memory: []u8,
-    width: i32,
-    height: i32,
-    stride: i32,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    color: ghostty.color.RGB,
-    cov: f32,
-) void {
-    if (cov <= 0) return;
-    if (cov >= 0.999) {
-        rect(memory, width, height, stride, x, y, w, h, color);
-        return;
-    }
-    const x0 = @max(0, x);
-    const y0 = @max(0, y);
-    const x1 = @min(width, x + w);
-    const y1 = @min(height, y + h);
-    if (x1 <= x0 or y1 <= y0) return;
-    const a: u8 = @intFromFloat(@max(0, @min(255, cov * 255)));
-    var py = y0;
-    while (py < y1) : (py += 1) {
-        var px = x0;
-        while (px < x1) : (px += 1) {
-            const off: usize = @intCast(py * stride + px * 4);
-            const cur = std.mem.readInt(u32, memory[off..][0..4], .little);
-            const bg: ghostty.color.RGB = .{
-                .r = @intCast((cur >> 16) & 0xff),
-                .g = @intCast((cur >> 8) & 0xff),
-                .b = @intCast(cur & 0xff),
-            };
-            std.mem.writeInt(u32, memory[off..][0..4], blendPixel(color, bg, a), .little);
-        }
-    }
-}
+// #353 — box-drawing AA 전용이었던 `blendRect` 는 제거했다. 규칙(알파 8bit
+// 버림 + 정수 버림)이 macOS·Windows 의 renderer 합성과 갈렸고, 합성 자체를
+// 공통 `ui_metrics.blendOverRgb` 한 곳으로 모았다. 유일한 호출처였던 호·대각선
+// AA 는 이제 미리 합성한 색을 불투명 `rect` 로 그린다.
 
 /// #203 Phase C step 3.4 — 둥근 사각형 채우기. dialog 의 OK / Cancel button
 /// 등. SDF (signed distance function) 기반으로 내부 = 솔리드 color, edge
@@ -2331,7 +2313,9 @@ fn drawBlockRect(
     cell_w: i32,
     cell_h: i32,
     br: block_element.BlockRect,
-    fg: ghostty.color.RGB,
+    /// **`br.alpha` 를 셀 배경과 이미 합성한 색** (#353). 호출처가 공통
+    /// `ui_metrics.blendOverRgb` 로 만든다 — 이 함수는 알파를 다시 적용하지 않는다.
+    color: ghostty.color.RGB,
 ) void {
     const cw_f: f32 = @floatFromInt(cell_w);
     const ch_f: f32 = @floatFromInt(cell_h);
@@ -2341,8 +2325,10 @@ fn drawBlockRect(
     const y1: i32 = cell_y + @as(i32, @intFromFloat(br.y1 * ch_f));
 
     if (br.shade < 0.5) {
-        // 솔리드/음영 — br.alpha 로 blend (음영 ░▒▓ = 0.25/0.5/0.75, 블록 = 1.0).
-        blendRect(memory, fb_w, fb_h, stride, x0, y0, x1 - x0, y1 - y0, fg, br.alpha);
+        // 솔리드/음영 — 합성이 끝난 색이라 불투명 rect 로 그린다 (#353). 이전에는
+        // 여기서 `blendRect` 로 `br.alpha` 를 적용했고 그 규칙(알파 8bit 버림 + 정수
+        // 버림)이 macOS·Windows 의 renderer 합성과 갈렸다.
+        rect(memory, fb_w, fb_h, stride, x0, y0, x1 - x0, y1 - y0, color);
         return;
     }
 
@@ -2352,7 +2338,7 @@ fn drawBlockRect(
     const cy1 = @min(fb_h, y1);
     if (cx1 <= cx0 or cy1 <= cy0) return;
 
-    const fg_packed = pack(fg);
+    const fg_packed = pack(color);
     var py = cy0;
     while (py < cy1) : (py += 1) {
         var px = cx0;

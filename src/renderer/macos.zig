@@ -738,13 +738,25 @@ pub const MetalRenderer = struct {
                     };
                     const block_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                     const block_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
-                    // bg blend 가 premultiplied (One, OneMinusSrcAlpha) 라 음영(alpha<1)
-                    // 은 rgb 에도 alpha 를 곱해야 함. 솔리드(alpha=1)는 변화 없음.
-                    const a = rect.alpha;
+                    // #353 — 음영 ░▒▓ (alpha 0.25/0.5/0.75) 을 공통
+                    // `ui_metrics.blendOverRgb` 로 **여기서 한 번** 합성하고 알파 1.0
+                    // 으로 그린다. 이전에는 알파를 blend unit 에 맡겨 세 platform 이
+                    // 서로 다른 정밀도로 8bit 를 만들었다 (최대 차 2).
+                    //
+                    // 합성 대상은 bg pass 가 이 셀에 칠한 색과 같아야 한다 — 같은
+                    // `cell_color.resolveBg` 를 쓰고 null 이면 `colors.background`
+                    // (bg pass 의 `dbg_*` 와 동일) 로 떨어진다. 솔리드 블록
+                    // (alpha 1.0) 은 합성 결과가 `fg_rgb` 그대로다.
+                    const block_bg = cell_color.resolveBg(style_b, &raw, &colors, is_selected_b, is_inverse_b) orelse colors.background;
+                    const blended = ui_metrics.blendOverRgb(
+                        .{ fg_rgb.r, fg_rgb.g, fg_rgb.b },
+                        .{ block_bg.r, block_bg.g, block_bg.b },
+                        rect.alpha,
+                    );
                     bg_buf[bg_count] = .{
                         .pos = .{ block_x + rect.x0 * block_w, fy + rect.y0 * ch },
                         .size = .{ (rect.x1 - rect.x0) * block_w, (rect.y1 - rect.y0) * ch },
-                        .color = .{ colorF(fg_rgb.r) * a, colorF(fg_rgb.g) * a, colorF(fg_rgb.b) * a, a },
+                        .color = .{ colorF(blended[0]), colorF(blended[1]), colorF(blended[2]), 1 },
                         .shade = rect.shade,
                     };
                     bg_count += 1;
@@ -768,14 +780,22 @@ pub const MetalRenderer = struct {
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
                         const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x);
                         const box_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
-                        // cov = AA coverage. bg blend 가 (One, OneMinusSrcAlpha)
-                        // premultiplied 라 rgb 에도 cov 를 곱한다.
+                        // #353 — `br.cov` (AA coverage) 를 공통 `ui_metrics.blendOverRgb`
+                        // 로 미리 합성하고 알파 1.0 으로 그린다. **emitter 가 픽셀당
+                        // rect 를 하나만 내보내므로** (대각선은 두 선을 `@max` 로, 호는
+                        // arm·arc 거리를 `@min` 으로 합친 *뒤* emit) 한 픽셀에 blend 가
+                        // 한 번뿐이고, 배경과 미리 합성한 결과가 순차 blend 와 같다.
+                        const box_bg = cell_color.resolveBg(style_x, &raw, &colors, is_selected_x, is_inverse_x) orelse colors.background;
                         for (box_rects[0..bn]) |br| {
-                            const cv = br.cov;
+                            const cov_blend = ui_metrics.blendOverRgb(
+                                .{ fg_rgb_x.r, fg_rgb_x.g, fg_rgb_x.b },
+                                .{ box_bg.r, box_bg.g, box_bg.b },
+                                br.cov,
+                            );
                             bg_buf[bg_count] = .{
                                 .pos = .{ box_x + br.x, fy + br.y },
                                 .size = .{ br.w, br.h },
-                                .color = .{ colorF(fg_rgb_x.r) * cv, colorF(fg_rgb_x.g) * cv, colorF(fg_rgb_x.b) * cv, cv },
+                                .color = .{ colorF(cov_blend[0]), colorF(cov_blend[1]), colorF(cov_blend[2]), 1 },
                                 .shade = 0,
                             };
                             bg_count += 1;
@@ -931,11 +951,17 @@ pub const MetalRenderer = struct {
             // #346 — 섞는 색을 배경 명도로 뒤집는다. 판정 입력은 terminal 의
             // 현재 배경 (OSC 11 · reverse_colors 반영된 `RenderState.Colors`)
             // 이라 셸이 배경을 바꿔도 thumb 이 따라 전환된다.
+            //
+            // #353 — 합성은 `scrollbarColor` 가 이미 끝냈고 여기서는 알파 1.0 으로
+            // 그린다. 이전에는 알파를 그대로 넘겨 blend unit 이 곱했고, 그 정밀도가
+            // Linux(CPU 버림) · Windows(알파 8bit 양자화) 와 갈렸다.
+            const sb_bg = [3]u8{ colors.background.r, colors.background.g, colors.background.b };
             const sb_dark = themes.isDarkRgb(colors.background.r, colors.background.g, colors.background.b);
+            const sb_col = ui_metrics.scrollbarColor(sb_bg, sb_dark);
             const scrollbar_inst = [1]BgInstance{.{
                 .pos = .{ track_x, @floatCast(t.top) },
                 .size = .{ sbw, @floatCast(t.h) },
-                .color = ui_metrics.scrollbarColor(sb_dark),
+                .color = .{ colorF(sb_col[0]), colorF(sb_col[1]), colorF(sb_col[2]), 1 },
             }};
             self.drawBgInstances(encoder, &scrollbar_inst);
         }
