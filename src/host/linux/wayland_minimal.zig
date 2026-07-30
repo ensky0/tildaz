@@ -240,9 +240,9 @@ const wl_output_mode_flag_current: u32 = 0x1;
 // 되므로 거의 안 닿음 — 닿으면 startup 로그에 fallback 명시.
 const screen_fallback_width: i32 = 1920;
 const screen_fallback_height: i32 = 1080;
-// width_percent / height_percent 가 거의 100 일 때 opposing edge anchor 로
-// stretch (full screen 한 축). 정확히 100.0 비교는 부동소수점 위험.
-const stretch_threshold_pct: f32 = 99.9;
+// #351 — `stretch_threshold_pct` (99.9) 는 제거했다. logical 로 계산하면
+// `width_percent`/`height_percent` 100 에서 margin 이 정확히 0 이 되므로 "거의 100"
+// 을 따로 판정할 이유가 없다. 이 상수는 그 강제 0 과 overscan gating 에만 쓰였다.
 
 // wl_data_device_manager / wl_data_device / wl_data_source / wl_data_offer
 // opcodes (request side, used by us).
@@ -420,6 +420,10 @@ const Capabilities = struct {
 /// F1 hide/show 가 이 상태를 보존 (sendLayerSurfaceLayout 이 매 재배치/재생성에서 반영).
 const FullscreenMode = enum { none, cover, avoid };
 
+/// #351 — 모든 값이 **logical (surface-local) 픽셀** 이다. layer-shell 의
+/// `set_size` / `set_margin` 이 그 단위이므로 (spec: *"in surface-local
+/// coordinates"*) 변환 없이 그대로 송신한다. 이전에는 physical 로 계산해 송신 시
+/// `physicalToLogical` 로 버림 변환했고, 그 오차를 `overscan(-1)` 으로 보정했다.
 const LayerLayout = struct {
     anchor: u32,
     width: u32,
@@ -428,11 +432,6 @@ const LayerLayout = struct {
     margin_right: i32,
     margin_bottom: i32,
     margin_left: i32,
-    /// 해당 축이 화면을 꽉 채우는가 (percent ≥ stretch_threshold_pct). #233 의
-    /// overscan 판정에 씀 — stretch 축의 먼 변(right/bottom)은 KWin 이 full-span
-    /// snap (또는 panel exclusive zone 회피) 으로 정확히 놓으므로 overscan 금지.
-    stretch_w: bool,
-    stretch_h: bool,
 };
 
 /// L8-β — 화면 한 축 (가로 또는 세로) 의 percent 점유율을 픽셀로. clamp 후
@@ -880,6 +879,32 @@ const Client = struct {
     output_id: u32 = 0,
     screen_width: i32 = 0,
     screen_height: i32 = 0,
+    // #351 — layout 계산에 쓰는 **logical** work-area. compositor 가 알려준 값이고
+    // 우리가 physical 에서 추정하지 않는다. 0 = 아직 못 받음.
+    //
+    // 출처는 `createShellObjects` 의 초기 안전 commit (#336) 이다 — 4-edge anchor
+    // + `set_size(0,0)` + `set_margin(0,0,0,0)` + `exclusive_zone(0)` 상태의
+    // configure 가 정확히 work-area (다른 panel 의 exclusive zone 을 뺀 영역) 다.
+    // layer-shell spec: *"If you pass 0 for either value, the compositor will
+    // assign it and inform you of the assignment in the configure event."*
+    //
+    // 왜 추정하지 않는가 — physical → logical 유도 규칙이 compositor 마다 다르다
+    // (실측: 3840/1.7=2258.8 을 KWin 은 2259 로 올리고, 1280/1.7=752.9 를 sway 는
+    // 752 로 내린다).
+    // `physicalToLogical` 로 계산하면 KWin 에서 2258 이 나와 실제(2259)와 1 어긋나고,
+    // 그 오차를 보정하려던 것이 overscan 이었다 (#220 → #233 → #351 로 세 번 반복).
+    screen_logical_w: i32 = 0,
+    screen_logical_h: i32 = 0,
+    // #351 — 초기 안전 commit 을 보내고 그 configure 를 아직 못 받았는가. 두 가지를
+    // 담당한다:
+    //   ① 그 상태의 configure 만 work-area 로 latch (아래 configure 핸들러).
+    //      **one-shot** — Hyprland 는 한 상태에서 configure 를 여러 번 보낸다 (실측 14회).
+    //   ② 그 사이 실제 layout 송신을 **보류**. 두 state 가 동시에 outstanding 이면
+    //      도착한 configure 가 어느 state 의 것인지 특정할 수 없다 (configure 를 commit
+    //      마다 1:1 로 보내는 것은 spec 보장이 아니다 — coalesce 하는 compositor 에서는
+    //      실제 layout 의 크기를 work-area 로 오인 latch 하게 된다). 보류한 송신은
+    //      latch 직후 configure 핸들러가 이어서 보낸다 (continuation) — 유실이 아니다.
+    initial_safe_pending: bool = false,
     outputs: [max_tracked_outputs]OutputSlot = [_]OutputSlot{.{}} ** max_tracked_outputs,
     // #295 — 현재 basis 로 쓰는 output 의 object id. 0 = 아직 미확정 (startup /
     // 재생성 직후) → 첫 bind output 이 기준. `wl_surface.enter`/`leave` 로 갱신되는
@@ -1832,6 +1857,19 @@ const Client = struct {
     /// 새 scale 로 정확히 변환된 layout 송신 + 두 번째 configure event 가 정확.
     fn sendLayerSurfaceLayout(self: *Client, initial_safe: bool) !void {
         if (self.layer_surface_id == 0) return;
+        // #351 — 초기 안전 commit 의 configure 를 기다리는 중이면 실제 layout 송신을
+        // 보류한다. outstanding state 를 항상 하나로 유지해 도착한 configure 가 어느
+        // state 의 것인지 모호해지지 않게 하는 것 (필드 주석 참고). 보류한 송신은
+        // configure 핸들러가 latch 직후 이어서 보낸다.
+        //
+        // `!configured` 를 함께 보는 이유 — 보류가 필요한 구간은 map 전(첫 configure
+        // 전)뿐이다. 그 이후 경로 (remapShellObjects / toggleFullscreen /
+        // applyBasisOutput / applyScaleChange) 는 pending 이 어떤 값이든 막히지 않는다.
+        if (!initial_safe and self.initial_safe_pending and !self.configured) {
+            log.appendLineVerbose("wayland", "layout send deferred — awaiting initial-safe configure (#351)", .{});
+            return;
+        }
+        self.initial_safe_pending = initial_safe;
         const layout = self.computeLayerLayout();
         // #87 — fullscreen 이면 config layout 대신 output 전체로 override:
         // 4-edge anchor + size 0 (compositor 가 anchored span 채움) + margin 0.
@@ -1866,9 +1904,11 @@ const Client = struct {
             &.{if (fullscreen) all_anchor else layout.anchor},
         );
         // layer-shell spec: set_size / set_margin 은 *surface-local logical pixel*
-        // 단위. 우리 layout 은 physical 이라 송신 시 logical 변환.
-        const logical_w: u32 = if (fullscreen) 0 else @intCast(self.physicalToLogical(@intCast(layout.width)));
-        const logical_h: u32 = if (fullscreen) 0 else @intCast(self.physicalToLogical(@intCast(layout.height)));
+        // 단위이고, #351 이후 `LayerLayout` 이 이미 logical 이라 변환이 없다.
+        // (현재 `computeLayerLayout` 은 항상 4-edge anchor + size 0 을 쓰므로 두 값은
+        // 0 이다 — spec: 0 이면 compositor 가 정하고 configure 로 알려준다.)
+        const logical_w: u32 = if (fullscreen) 0 else layout.width;
+        const logical_h: u32 = if (fullscreen) 0 else layout.height;
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_size,
@@ -1876,7 +1916,14 @@ const Client = struct {
         );
         // set_exclusive_zone — 평소 0 (다른 panel exclusive zone 회피). #87 cover
         // fullscreen 만 -1 로 패널 위까지 덮음 (avoid / non-fullscreen 은 0).
-        const ez_i32: i32 = if (fs == .cover) -1 else 0;
+        //
+        // #351 — 초기 안전 commit 은 cover fullscreen 중에도 0 이다. 이 commit 의
+        // configure 를 logical work-area 로 latch 하는데, -1 이면 패널을 포함한 화면
+        // 전체가 와서 work-area 가 아니게 된다 (fullscreen 을 빠져나온 뒤 layout 이
+        // 패널을 침범 — #233 회귀). buffer attach 전이라 화면에 안 보이고, 뒤이어
+        // continuation 이 실제 layout(-1) 을 보낸다. boot 는 이미 이 값(fs=.none → 0)
+        // 으로 #336 검증을 통과한 경로라, recreate 도 같은 값으로 통일된다.
+        const ez_i32: i32 = if (fs == .cover and !initial_safe) -1 else 0;
         const ez_u32: u32 = @bitCast(ez_i32);
         try self.sendArgs(
             self.layer_surface_id,
@@ -1910,20 +1957,22 @@ const Client = struct {
             try margin_msg.putI32(0);
             try margin_msg.send(self.stream);
         } else {
-            const a = layout.anchor;
-            const mt = self.physicalToLogical(layout.margin_top);
-            const mr = self.physicalToLogical(layout.margin_right);
-            const mb = self.physicalToLogical(layout.margin_bottom);
-            const ml = self.physicalToLogical(layout.margin_left);
-            const ov: i32 = -1;
-            // right/bottom = 화면 먼 끝. 그 축이 부분(non-stretch)이고 여백 0(flush)일 때만 올림.
-            const overscan_right = (a & zwlr_layer_surface_anchor_right) != 0 and mr == 0 and !layout.stretch_w;
-            const overscan_bottom = (a & zwlr_layer_surface_anchor_bottom) != 0 and mb == 0 and !layout.stretch_h;
+            // #351 — margin 은 `computeLayerLayout` 이 이미 **logical** 로 계산했다.
+            // 변환도 overscan 보정도 없다.
+            //
+            // 이전에는 physical 로 계산해 여기서 `physicalToLogical` (버림) 했고,
+            // 그 버림 오차 때문에 먼 끝이 1px 안 맞아 `overscan(-1)` 로 보정했다.
+            // 오차의 정체는 "compositor 의 logical work-area 를 우리가 추정한 것"
+            // 이고, 그 추정을 없앤 지금은 보정할 것이 없다.
+            //
+            // 실측 근거 — KWin · sway · Hyprland · cosmic-comp 네 compositor 에서
+            // overscan 없이 먼 끝이 물리적으로 flush 이고, KWin scale 1.0 에서는
+            // overscan 이 오히려 창 마지막 물리 열을 화면 밖으로 밀어냈다 (#351).
             var margin_msg = Msg.init(self.layer_surface_id, zwlr_layer_surface_v1_request_set_margin);
-            try margin_msg.putI32(mt); // top = 원점 변, 항상 그대로 (overscan 안 함)
-            try margin_msg.putI32(if (overscan_right) ov else mr);
-            try margin_msg.putI32(if (overscan_bottom) ov else mb);
-            try margin_msg.putI32(ml); // left = 원점 변, 항상 그대로
+            try margin_msg.putI32(layout.margin_top);
+            try margin_msg.putI32(layout.margin_right);
+            try margin_msg.putI32(layout.margin_bottom);
+            try margin_msg.putI32(layout.margin_left);
             try margin_msg.send(self.stream);
         }
         // set_keyboard_interactivity(on_demand) — show 시 키보드 포커스를 받되 *독점
@@ -1951,12 +2000,18 @@ const Client = struct {
         // wl_surface.commit (opcode 6) — pending double-buffered state 적용.
         try self.sendNoArgs(self.surface_id, 6);
 
-        log.appendLineVerbose("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity={s} (layer_shell v{})", .{
+        // #351 — `work_area` 는 layout 계산의 기준값이다. `latched=true` 면 초기 안전
+        // commit 의 configure 로 받은 compositor 의 logical work-area, false 면 아직
+        // 못 받아 physical 에서 추정한 fallback (변환 오차 ±1 가능).
+        log.appendLineVerbose("wayland", "shell objects (layer-shell) surface_id={} layer_surface_id={} dock={s} screen={}x{} work_area={}x{} latched={} scale={d}/120 anchor=0x{x} size={}x{} (logical {}x{}) margin=({},{},{},{}) keyboard_interactivity={s} (layer_shell v{})", .{
             self.surface_id,
             self.layer_surface_id,
             @tagName(self.config.dock_position),
             self.screen_width,
             self.screen_height,
+            self.screenLogicalWidth(),
+            self.screenLogicalHeight(),
+            self.screen_logical_w > 0 and self.screen_logical_h > 0,
             self.preferred_scale,
             layout.anchor,
             layout.width,
@@ -2027,14 +2082,35 @@ const Client = struct {
         try self.sendNoArgs(self.surface_id, 6);
     }
 
+    /// #351 — layout 계산의 기준이 되는 **logical work-area**. 우선순위:
+    ///   ① `screen_logical_*` — 초기 안전 commit 의 configure 로 compositor 가 알려준
+    ///      값 (패널의 exclusive zone 을 뺀 영역). 정확하다.
+    ///   ② physical → logical 추정 — ①을 아직 못 받은 구간 (첫 configure 전, 또는
+    ///      output dims 변경 후 재생성 전) 의 fallback. 유도 규칙이 compositor 마다
+    ///      달라 ±1 오차가 가능하다 (실측: 3840/1.7 을 KWin 은 2259 로 올리고 sway 는
+    ///      1280/1.7 을 752 로 내린다). ①이 도착하면 교정된다.
+    ///   ③ output mode 도 아직 모르는 boot 극초기 — 고정 fallback 상수.
+    fn screenLogicalWidth(self: *const Client) i32 {
+        if (self.screen_logical_w > 0) return self.screen_logical_w;
+        if (self.screen_width > 0) return self.physicalToLogical(self.screen_width);
+        return screen_fallback_width;
+    }
+
+    fn screenLogicalHeight(self: *const Client) i32 {
+        if (self.screen_logical_h > 0) return self.screen_logical_h;
+        if (self.screen_height > 0) return self.physicalToLogical(self.screen_height);
+        return screen_fallback_height;
+    }
+
     /// L8-β — config 의 dock_position / width_percent / height_percent /
     /// offset_percent 를 layer-shell 의 anchor mask / set_size args / margin
-    /// args 로 변환. mac `screenFrameForDock` 와 동등 시각 결과 — 한 축 anchor
-    /// 두 edge 면 stretch, 한 edge 면 percent 기반 size + cross-axis margin.
+    /// args 로 변환. mac `screenFrameForDock` 와 동등 시각 결과 — 4-edge anchor
+    /// + size 0 + 양쪽 margin 으로 표현하고, 점유율은 margin 차이로 낸다.
     fn computeLayerLayout(self: *const Client) LayerLayout {
         const cfg = self.config;
-        const sw_i: i32 = if (self.screen_width > 0) self.screen_width else screen_fallback_width;
-        const sh_i: i32 = if (self.screen_height > 0) self.screen_height else screen_fallback_height;
+        // #351 — **logical 단위로 계산한다** (layer-shell 의 native 단위).
+        const sw_i: i32 = self.screenLogicalWidth();
+        const sh_i: i32 = self.screenLogicalHeight();
         const sw_f: f32 = @floatFromInt(sw_i);
         const sh_f: f32 = @floatFromInt(sh_i);
         const off_pct = std.math.clamp(cfg.offset_percent, 0.0, 100.0);
@@ -2042,11 +2118,10 @@ const Client = struct {
         const want_h: u32 = pctToPx(sh_f, cfg.height_percent);
         const want_w_i: i32 = @intCast(@min(want_w, @as(u32, std.math.maxInt(i32))));
         const want_h_i: i32 = @intCast(@min(want_h, @as(u32, std.math.maxInt(i32))));
-        // 가로/세로 점유율이 거의 100 이면 opposing edge 두 개 anchor —
-        // compositor 가 자동 stretch. size 의 해당 축은 0 으로 (spec: anchor 가
-        // 양 edge 에 잡힌 축은 set_size 무시).
-        const stretch_w = cfg.width_percent >= stretch_threshold_pct;
-        const stretch_h = cfg.height_percent >= stretch_threshold_pct;
+        // 점유율 100% 는 특수 분기가 필요 없다 (#351) — logical 로 계산하면
+        // `want == screen` 이라 margin 이 **정확히 0** 이 된다. 이전에는 physical
+        // 계산 + 버림 변환의 잔차를 없애려고 `stretch_w`/`stretch_h` 로 강제 0 을
+        // 넣었고, 그 플래그가 overscan 판정에도 쓰였다. 둘 다 사라졌다.
 
         const a_top = zwlr_layer_surface_anchor_top;
         const a_bottom = zwlr_layer_surface_anchor_bottom;
@@ -2065,21 +2140,23 @@ const Client = struct {
         // (KDE Plasma 의 floating dock 등도 자동 회피). size 를 명시하면 compositor
         // 가 그대로 깔아서 dock 영역까지 침범 — Plasma 시연으로 확인된 패턴.
         // 가로/세로 양 edge 의 margin 을 *둘 다* 지정해 4-edge anchor + size=0
-        // 패턴으로 보낸다. 한 축 stretch + 한 축 partial 케이스도 동일 — 양쪽
-        // margin 모두 지정 (한 쪽은 0). 이유: width / margin 둘 다 physical →
-        // logical 변환을 거치는데 KWin 이 받은 두 logical 값을 *각각* round-trip
-        // 하면 누적 오차로 인접 surface 와 1-2px 갭. 4-edge anchor + 양쪽 margin
-        // 만 보내면 surface width 는 KWin 이 `screen_logical − margin_l − margin_r`
-        // 로 자체 계산 → margin 두 개의 rounding error 만 합산되고, 반대편 edge
-        // 는 정확히 screen edge 에 fit. width 차이를 *외형* 가 아닌 *margin 차이*
-        // 로 표현하는 게 핵심.
-        const margin_h_extra = sw_i - want_w_i; // cross-axis 빈 공간 (가로)
-        const margin_v_extra = sh_i - want_h_i; // cross-axis 빈 공간 (세로)
+        // 패턴으로 보낸다. 한 축이 100% 인 케이스도 동일 — 양쪽 margin 모두 지정
+        // (한 쪽은 0). 이유: size 를 명시하면 compositor 가 그 크기를 놓고 반대편
+        // edge 위치를 우리 계산에 맡기지만, size=0 + 양쪽 margin 이면 surface 크기를
+        // compositor 가 `screen_logical − margin_start − margin_end` 로 **자기 좌표계
+        // 안에서** 계산한다. #351 이후 우리 margin 도 그 screen_logical 을 그대로 쓴
+        // logical 값이라 이 식이 정수로 정확히 닫히고, 먼 edge 가 구조적으로 flush 다
+        // (예전에는 physical 계산 + 버림 변환의 잔차 때문에 여기서 1px 이 어긋났고
+        // overscan 으로 보정했다). 폭 차이를 *size* 가 아니라 *margin 차이* 로
+        // 표현하는 게 핵심.
+        const margin_h_extra = sw_i - want_w_i; // 남는 공간 (가로)
+        const margin_v_extra = sh_i - want_h_i; // 남는 공간 (세로)
+        // cross-axis (docked 축이 아닌 축) — 남는 공간을 offset_percent 로 분배.
         const ml = pxOffset(margin_h_extra, off_pct);
         const mr = margin_h_extra - ml;
         const mt = pxOffset(margin_v_extra, off_pct);
         const mb = margin_v_extra - mt;
-
+        // docked 축 — 붙는 edge 는 margin 0, 반대 edge 가 남는 공간 전부.
         return switch (cfg.dock_position) {
             .top => LayerLayout{
                 .anchor = a_top | a_bottom | a_left | a_right,
@@ -2087,32 +2164,26 @@ const Client = struct {
                 .height = 0,
                 .margin_top = 0,
                 .margin_right = mr,
-                .margin_bottom = if (stretch_h) 0 else (sh_i - want_h_i),
+                .margin_bottom = margin_v_extra,
                 .margin_left = ml,
-                .stretch_w = stretch_w,
-                .stretch_h = stretch_h,
             },
             .bottom => LayerLayout{
                 .anchor = a_top | a_bottom | a_left | a_right,
                 .width = 0,
                 .height = 0,
-                .margin_top = if (stretch_h) 0 else (sh_i - want_h_i),
+                .margin_top = margin_v_extra,
                 .margin_right = mr,
                 .margin_bottom = 0,
                 .margin_left = ml,
-                .stretch_w = stretch_w,
-                .stretch_h = stretch_h,
             },
             .left => LayerLayout{
                 .anchor = a_top | a_bottom | a_left | a_right,
                 .width = 0,
                 .height = 0,
                 .margin_top = mt,
-                .margin_right = if (stretch_w) 0 else (sw_i - want_w_i),
+                .margin_right = margin_h_extra,
                 .margin_bottom = mb,
                 .margin_left = 0,
-                .stretch_w = stretch_w,
-                .stretch_h = stretch_h,
             },
             .right => LayerLayout{
                 .anchor = a_top | a_bottom | a_left | a_right,
@@ -2121,9 +2192,7 @@ const Client = struct {
                 .margin_top = mt,
                 .margin_right = 0,
                 .margin_bottom = mb,
-                .margin_left = if (stretch_w) 0 else (sw_i - want_w_i),
-                .stretch_w = stretch_w,
-                .stretch_h = stretch_h,
+                .margin_left = margin_h_extra,
             },
         };
     }
@@ -2284,6 +2353,19 @@ const Client = struct {
         const dims_changed = slot.width != self.screen_width or slot.height != self.screen_height;
         self.screen_width = slot.width;
         self.screen_height = slot.height;
+        if (dims_changed) {
+            // #351 — work-area 가 바뀌었으니 latch 를 버린다. 다음 초기 안전 commit 의
+            // configure 가 정확한 값으로 다시 채운다 — mapped 면 아래에서 예약하는
+            // seamless 재생성이, hidden 중 output 소멸이면 `closed` 핸들러의
+            // destroyShellObjects → 다음 show 의 createShellObjects 가 보낸다.
+            // 그 사이 layout 은 physical 추정 fallback 을 쓴다 (변환 오차 ±1 — #351
+            // 이전 동작). 재생성 없이 같은 output 의 mode 만 바뀌는 경로는 다음 재생성
+            // 까지 그 fallback 에 머문다 (remapShellObjects 는 재latch 하지 않는다 —
+            // 보이는 상태에서 초기 안전 commit 을 보내면 창이 한 frame 동안 work-area
+            // 전체로 보이므로). 드문 경로라 ±1 을 감수한다.
+            self.screen_logical_w = 0;
+            self.screen_logical_h = 0;
+        }
         log.appendLineVerbose("wayland", "basis output object_id={} {}x{} scale={} dims_changed={} (#295)", .{
             output_object_id,
             slot.width,
@@ -2364,6 +2446,13 @@ const Client = struct {
         }
         // 도착 케이스: applyScaleChange 가 이미 실제 layout 을 보냈을 수 있으나(값이
         // 바뀐 경우), 120→120 no-op 이면 미송신이므로 여기서 보장 송신(idempotent).
+        //
+        // #351 — 초기 안전 commit 의 configure 가 아직 안 왔으면 이 송신은 보류되고,
+        // 뒤이은 waitForConfigure 가 그 configure 를 받아 work-area 를 latch 한 뒤
+        // continuation 이 보낸다. 실측(KWin Plasma 6): 그 configure 는 초기 안전
+        // commit 과 거의 동시에 socket 에 도착해 있으므로 boot 지연이 없다 — 기존에
+        // 관측된 63ms 간격은 compositor 지연이 아니라 그 사이의 renderer.applyScale
+        // (font chain 재빌드) 이 socket 을 안 읽은 시간이었다.
         try self.sendLayerSurfaceLayout(false);
     }
 
@@ -3200,6 +3289,28 @@ const Client = struct {
                 // 우리 코드 내부는 physical 이라 변환.
                 const w_logical: i32 = @intCast(@min(w, @as(u32, std.math.maxInt(i32))));
                 const h_logical: i32 = @intCast(@min(h, @as(u32, std.math.maxInt(i32))));
+                // #351 — 초기 안전 commit (4-edge span + size 0 + margin 0 +
+                // exclusive_zone 0) 의 configure 는 곧 **logical work-area** 다.
+                // 이후 layout 계산이 이 값을 쓴다. **one-shot** — Hyprland 는 같은
+                // 상태에서 configure 를 여러 번 보내므로 (실측 14회) 플래그를 바로
+                // 내려 재latch 와 무한 전환을 막는다 (`configured` 도 이 핸들러 끝에서
+                // 세워지므로 두 조건 다 재진입을 막는다).
+                if (self.initial_safe_pending and !self.configured and w > 0 and h > 0) {
+                    self.initial_safe_pending = false;
+                    self.screen_logical_w = w_logical;
+                    self.screen_logical_h = h_logical;
+                    log.appendLineVerbose("wayland", "logical work-area latched {}x{} (initial-safe configure, #351)", .{ w_logical, h_logical });
+                    // continuation — 보류했던 실제 layout 을 이제 정확한 work-area 로
+                    // 보낸다. 이 지점이 초기 안전 commit 을 보내는 모든 경로
+                    // (boot 의 bringUpInitialSurface, #241/#295 의 swapMainSurfaceSeamless)
+                    // 에서 실제 layout 송신을 보장하는 단일 위치다.
+                    try self.sendLayerSurfaceLayout(false);
+                }
+                // 아래 크기 적용 / grid 생성 / `configured` 는 이 configure 로 그대로
+                // 진행한다 (#351 이 바꾸지 않음). `width_percent`=`height_percent`=100
+                // 이면 실제 layout 의 크기가 초기 안전 commit 과 같아 compositor 가 두
+                // 번째 configure 를 안 보낼 수 있으므로, 이 configure 를 boot 진행
+                // 신호로 계속 써야 한다 (안 그러면 그 config 에서 boot 가 멈춘다).
                 if (w > 0) self.pending_width = self.logicalToPhysical(w_logical);
                 if (h > 0) self.pending_height = self.logicalToPhysical(h_logical);
                 self.applyPendingSize();
@@ -5252,6 +5363,9 @@ const Client = struct {
 
         self.mapped = false;
         self.configured = false;
+        // #351 — 이 surface 의 초기 안전 configure 는 이제 오지 않는다 (surface destroy).
+        // 남겨두면 다음 surface 의 첫 실제 layout 송신이 보류 조건에 걸린다.
+        self.initial_safe_pending = false;
         // issue #196: surface destroy → 이전 frame callback 은 더 이상 fire
         // 안 함 (surface 가 사라졌으니 compositor 가 callback 발신 안 함).
         // 재생성 (show) 후 첫 redraw 가 막히지 않도록 reset.
