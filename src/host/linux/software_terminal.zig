@@ -1318,6 +1318,8 @@ fn drawTabBar(
     // 것은 이 renderer 고유인 glyph 그리기뿐이다. 탭 x 와 화면 밖 판정도 공통
     // 모듈(`tabX` / `tabClip`) 을 쓴다 — 밑줄과 제목이 어긋나지 않게 한다.
     for (titles, 0..) |title, i| {
+        // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
+        if (built.deferred_title) |d| if (d == i) continue;
         const tab_screen_x: i32 = @intFromFloat(tab_chrome.tabX(i, chrome_in));
         switch (tab_chrome.tabClip(
             @floatFromInt(tab_screen_x),
@@ -1331,97 +1333,136 @@ fn drawTabBar(
             .draw => {},
         }
 
-        const tab_x: i32 = tab_screen_x + tab_x_inset;
-        // #334 (2026-07-22 개편) — 탭 배경은 탭바와 같은 색이라 따로 그리지
-        // 않는다 (Tilda 문법). 글리프 알파 블렌드 배경도 tab_bar_bg.
-        const bg = tab_bar_bg;
-
-        // L12-γ-2/3 — title text 그리기를 cross-platform `tab_layout.
-        // iterTabText` 로 — truncate ellipsis 자동. mac / win renderer 의
-        // 호출 패턴과 인자 / cb 모두 동등.
-        const text_x_start: i32 = tab_x + tab_pad;
-        const cw_f: f32 = @floatFromInt(cell_w);
-        const max_text_w_f: f32 = @floatFromInt(max_text_w_metric);
-
-        // mac/win 동등 — 짧은 title 은 truncate 안 함 (ellipsis 안 그림).
-        const total_text_w_f: f32 = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw_f;
-        const needs_truncate = total_text_w_f > max_text_w_f;
-
-        const TextCtx = struct {
-            memory: []u8,
-            fb_w: i32,
-            fb_h: i32,
-            stride: i32,
-            viewport_left: i32,
-            tab_area_end: i32,
-            tab_bar_h: i32,
-            text_baseline: i32,
-            bg: ghostty.color.RGB,
-            text_color: ghostty.color.RGB,
-            font_ctx: *font.Context,
-        };
-        const ctx = TextCtx{
+        drawTabTitle(.{
             .memory = memory,
             .fb_w = fb_w,
             .fb_h = fb_h,
             .stride = stride,
-            // L12-γ scroll 잘림 fix — 부분 잘린 첫 보이는 탭은 `text_x_start`
-            // 가 `tab_area_x` 보다 왼쪽으로 음수 가능 → glyph clip 검사
-            // (`px < viewport_left`) 가 무효화되어 화살표 영역 invade. mac
-            // 은 Metal scissor / NSView bounds 가 추가 clip 해서 발현 안
-            // 함. software 는 수동 max clamp.
-            .viewport_left = @max(text_x_start, tab_area_x),
-            .tab_area_end = tab_area_end,
             .tab_bar_h = tab_bar_h,
+            .tab_x = tab_screen_x + tab_x_inset,
+            .tab_pad = tab_pad,
+            .tab_area_x = tab_area_x,
+            .tab_area_end = tab_area_end,
             .text_baseline = text_baseline,
-            .bg = bg,
+            .cell_w = cell_w,
+            .max_text_w = max_text_w_metric,
+            .title = title,
+            .bg = tab_bar_bg,
             .text_color = text_color,
             .font_ctx = font_ctx,
-        };
-
-        const cb_fn = struct {
-            fn emit(c: TextCtx, g: tab_layout.Glyph) void {
-                // mac / win 동등 — glyph 만 viewport_left 검사 (scroll
-                // 좌측 잘림 영역 skip).
-                const px: i32 = @intFromFloat(g.x);
-                if (px < c.viewport_left) return;
-                if (px >= c.tab_area_end) return;
-                const gl = c.font_ctx.glyph(g.cp);
-                if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                    const adv: i32 = @intFromFloat(g.advance);
-                    drawGlyphBgra(c.memory, c.fb_w, c.fb_h, c.stride, px, 0, adv, c.tab_bar_h, gl);
-                } else {
-                    drawGlyph(
-                        c.memory,
-                        c.fb_w,
-                        c.fb_h,
-                        c.stride,
-                        px + gl.bitmap_left,
-                        c.text_baseline - gl.bitmap_top,
-                        gl,
-                        c.text_color,
-                        c.bg,
-                    );
-                }
-            }
-        }.emit;
-
-        tab_layout.iterTabText(
-            title,
-            @floatFromInt(text_x_start),
-            cw_f,
-            max_text_w_f,
-            needs_truncate,
-            ctx,
-            cb_fn,
-        );
+        });
     }
 
-    // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선. 순서와
-    // 지오메트리는 `tab_chrome` 이 정한다 (세 renderer 정본 순서).
+    // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선 → (드래그 중이면)
+    // 집어 든 탭의 밑줄. 순서와 지오메트리는 `tab_chrome` 이 정한다.
     for (built.rects[built.before_titles..]) |r| fillChromeRect(memory, fb_w, fb_h, stride, r);
+
+    // #343 — 드래그 중인 탭의 제목을 **맨 마지막에** — 집어 든 탭이 다른 탭의
+    // 세로선·제목 위로 온다 (2026-07-31 사용자 결정). 텍스트끼리는 잘라 낼 수
+    // 없으므로 이것만은 지오메트리가 아니라 layer 순서로 표현한다. 세로선 ↔ 밑줄
+    // 처럼 잘라 낼 수 있는 쌍은 `tab_chrome` 이 이미 겹치지 않게 만들어 둔다.
+    if (built.deferred_title) |di| {
+        if (di < titles.len) {
+            const dx: i32 = @intFromFloat(tab_chrome.tabX(di, chrome_in));
+            if (tab_chrome.tabClip(
+                @floatFromInt(dx),
+                @floatFromInt(tab_w),
+                @floatFromInt(tab_area_x),
+                @floatFromInt(tab_area_end),
+                true,
+            ) == .draw) {
+                drawTabTitle(.{
+                    .memory = memory,
+                    .fb_w = fb_w,
+                    .fb_h = fb_h,
+                    .stride = stride,
+                    .tab_bar_h = tab_bar_h,
+                    .tab_x = dx + tab_x_inset,
+                    .tab_pad = tab_pad,
+                    .tab_area_x = tab_area_x,
+                    .tab_area_end = tab_area_end,
+                    .text_baseline = text_baseline,
+                    .cell_w = cell_w,
+                    .max_text_w = max_text_w_metric,
+                    .title = titles[di],
+                    .bg = tab_bar_bg,
+                    .text_color = text_color,
+                    .font_ctx = font_ctx,
+                });
+            }
+        }
+    }
+
     // 아이콘은 이 renderer 고유 (알파 커버리지 비트맵을 직접 blit) — 마지막.
     drawTabBarControlIcons(memory, fb_w, fb_h, stride, tab_bar_h, layout, scale, chrome);
+}
+
+/// 탭 제목 한 개를 그린다. 두 번 호출된다 — 일반 탭 loop 에서 한 번, 드래그 중인
+/// 탭은 세로선 뒤에 한 번 (집어 든 탭이 맨 위 layer, #343).
+///
+/// L12-γ-2/3 — truncate / ellipsis 는 cross-platform `tab_layout.iterTabText` 가
+/// 처리한다. glyph clip 은 `tab_area` 양쪽 명시 clamp (#343 단계 1).
+const TabTitleArgs = struct {
+    memory: []u8,
+    fb_w: i32,
+    fb_h: i32,
+    stride: i32,
+    tab_bar_h: i32,
+    /// 탭 슬롯 좌측 (inset 적용 후).
+    tab_x: i32,
+    tab_pad: i32,
+    tab_area_x: i32,
+    tab_area_end: i32,
+    text_baseline: i32,
+    cell_w: i32,
+    max_text_w: i32,
+    title: []const u8,
+    bg: ghostty.color.RGB,
+    text_color: ghostty.color.RGB,
+    font_ctx: *font.Context,
+};
+
+fn drawTabTitle(a: TabTitleArgs) void {
+    const text_x_start: i32 = a.tab_x + a.tab_pad;
+    const cw_f: f32 = @floatFromInt(a.cell_w);
+    const max_text_w_f: f32 = @floatFromInt(a.max_text_w);
+    // mac/win 동등 — 짧은 title 은 truncate 안 함 (ellipsis 안 그림).
+    const total_text_w_f: f32 = @as(f32, @floatFromInt(display_width.stringWidth(a.title))) * cw_f;
+    const needs_truncate = total_text_w_f > max_text_w_f;
+
+    const Ctx = struct {
+        a: TabTitleArgs,
+        /// L12-γ scroll 잘림 fix — 부분 잘린 첫 보이는 탭은 `text_x_start` 가
+        /// `tab_area_x` 보다 왼쪽으로 음수 가능 → clip 검사가 무효화되어 화살표
+        /// 영역을 침범한다. 좌측도 `tab_area_x` 로 clamp 한다.
+        viewport_left: i32,
+    };
+    const ctx = Ctx{ .a = a, .viewport_left = @max(text_x_start, a.tab_area_x) };
+
+    tab_layout.iterTabText(a.title, @floatFromInt(text_x_start), cw_f, max_text_w_f, needs_truncate, ctx, struct {
+        fn emit(c: Ctx, g: tab_layout.Glyph) void {
+            const px: i32 = @intFromFloat(g.x);
+            if (px < c.viewport_left) return;
+            if (px >= c.a.tab_area_end) return;
+            const gl = c.a.font_ctx.glyph(g.cp);
+            if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                const adv: i32 = @intFromFloat(g.advance);
+                drawGlyphBgra(c.a.memory, c.a.fb_w, c.a.fb_h, c.a.stride, px, 0, adv, c.a.tab_bar_h, gl);
+            } else {
+                drawGlyph(
+                    c.a.memory,
+                    c.a.fb_w,
+                    c.a.fb_h,
+                    c.a.stride,
+                    px + gl.bitmap_left,
+                    c.a.text_baseline - gl.bitmap_top,
+                    gl,
+                    c.a.text_color,
+                    c.a.bg,
+                );
+            }
+        }
+    }.emit);
 }
 
 /// #343 — `tab_chrome.Rect` (f32) 를 정수 격자에 스냅해 그린다. 스냅 규칙은

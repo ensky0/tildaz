@@ -913,73 +913,82 @@ pub const D3d11Renderer = struct {
         // Tab title text + close buttons via glyph atlas
         var text_instances: [512]TextInstance = undefined;
         var text_count: u32 = 0;
+        // 제목 emit — 두 번 쓰인다: 일반 탭(1차 batch) 과 드래그 중인 탭(세로선 뒤).
+        // 후자는 공통 계약 `Chrome.deferred_title` 이 정한다.
+        const TitleCtx = struct {
+            self: *D3d11Renderer,
+            text_instances: *[512]TextInstance,
+            text_count: *u32,
+            baseline_y2: f32,
+            /// #343 — glyph clip 을 **명시** 로 통일. 이전에는 좌측만
+            /// (`text_x_start`) 보고 우측은 나중에 그리는 컨트롤 fill 이 덮어
+            /// 가렸다. 좌측도 `tab_area_x` 로 clamp 한다.
+            viewport_left: f32,
+            tab_area_end: f32,
+        };
+        const emitTitle = struct {
+            fn f(
+                rself: *D3d11Renderer,
+                title: []const u8,
+                tab_x: f32,
+                pad_: f32,
+                area_x: f32,
+                area_end: f32,
+                cw_: f32,
+                max_w: f32,
+                baseline: f32,
+                buf: *[512]TextInstance,
+                n: *u32,
+            ) void {
+                const text_x_start = tab_x + pad_;
+                const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw_;
+                const ctx = TitleCtx{
+                    .self = rself,
+                    .text_instances = buf,
+                    .text_count = n,
+                    .baseline_y2 = baseline,
+                    .viewport_left = @max(text_x_start, area_x),
+                    .tab_area_end = area_end,
+                };
+                tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
+                    fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
+                        if (g.x < c.viewport_left) return;
+                        if (g.x >= c.tab_area_end) return;
+                        const result = c.self.tab_font.resolveGlyph(g.cp) orelse return;
+                        const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
+                            if (result.owned) _ = result.face.vtable.Release(result.face);
+                            return;
+                        };
+                        if (result.owned) _ = result.face.vtable.Release(result.face);
+                        if (entry.w == 0 or entry.h == 0) return;
+                        const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
+                        const gy = c.baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
+                        if (c.text_count.* >= 510) return;
+                        c.text_instances[c.text_count.*] = .{
+                            .pos = .{ gx, gy },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = c.self.chrome.tab_text,
+                            .color_flag = if (entry.is_color) 1 else 0,
+                        };
+                        c.text_count.* += 1;
+                    }
+                }.cb);
+            }
+        }.f;
+
         for (0..tab_count) |i| {
+            // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
+            if (built.deferred_title) |d| if (d == i) continue;
             const tab_x = tab_chrome.tabX(i, chrome_in);
             switch (tab_chrome.tabClip(tab_x, tw, layout.tab_area_x, tab_area_end, drag_view != null)) {
                 .skip => continue,
                 .stop => break,
                 .draw => {},
             }
-
-            const title = tab_titles[i];
             const baseline_y2 = (tbh + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2.0;
-
-            // Max text width — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
-            const max_text_w = tw - pad * 2;
-            // 탭 제목의 실제 시각 폭 — wide char (한글/CJK/Fullwidth/주요 emoji)
-            // 는 셀 2 칸. byte length × cw 로 추정하면 ASCII / CJK 모두 어긋남.
-            const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
-            const needs_truncate = total_text_w > max_text_w;
-
-            // cross-platform iterTabText — codepoint 별 cb 호출. 세 platform 이
-            // 같은 helper 호출 → fix 한 곳 전부 자동 반영. (#163 옵션 A)
-            // text_x_start = absolute x (tab 내 text 시작점). cb 가 받는 x 도
-            // absolute.
-            const text_x_start = tab_x + pad;
-            const Ctx = struct {
-                self: *D3d11Renderer,
-                text_instances: *[512]TextInstance,
-                text_count: *u32,
-                baseline_y2: f32,
-                /// #343 — glyph clip 을 **명시** 로 통일. 이전에는 좌측만
-                /// (`text_x_start`) 보고 우측은 나중에 그리는 컨트롤 fill 이
-                /// 덮어 가렸다. 좌측도 `tab_area_x` 로 clamp 한다 — 부분 잘린
-                /// 첫 탭은 `text_x_start` 가 tab_area 왼쪽으로 넘어갈 수 있다.
-                viewport_left: f32,
-                tab_area_end: f32,
-            };
-            const ctx = Ctx{
-                .self = self,
-                .text_instances = &text_instances,
-                .text_count = &text_count,
-                .baseline_y2 = baseline_y2,
-                .viewport_left = @max(text_x_start, layout.tab_area_x),
-                .tab_area_end = tab_area_end,
-            };
-            tab_layout.iterTabText(title, text_x_start, cw, max_text_w, needs_truncate, ctx, struct {
-                fn cb(c: Ctx, g: tab_layout.Glyph) void {
-                    if (g.x < c.viewport_left) return;
-                    if (g.x >= c.tab_area_end) return;
-                    const result = c.self.tab_font.resolveGlyph(g.cp) orelse return;
-                    const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
-                        if (result.owned) _ = result.face.vtable.Release(result.face);
-                        return;
-                    };
-                    if (result.owned) _ = result.face.vtable.Release(result.face);
-                    if (entry.w == 0 or entry.h == 0) return;
-                    const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = c.baseline_y2 + @as(f32, @floatFromInt(entry.bearing_y));
-                    if (c.text_count.* >= 510) return;
-                    c.text_instances[c.text_count.*] = .{
-                        .pos = .{ gx, gy },
-                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = c.self.chrome.tab_text,
-                    };
-                    c.text_count.* += 1;
-                }
-            }.cb);
+            emitTitle(self, tab_titles[i], tab_x, pad, layout.tab_area_x, tab_area_end, cw, tw - pad * 2, baseline_y2, &text_instances, &text_count);
         }
 
         if (text_count > 0) {
@@ -998,6 +1007,22 @@ pub const D3d11Renderer = struct {
                 tail_n += 1;
             }
             if (tail_n > 0) self.drawBgInstances(tail_buf[0..tail_n]);
+        }
+
+        // #343 — 드래그 중인 탭의 제목을 세로선 **뒤에** 별도 batch 로 — 집어 든
+        // 탭이 다른 탭의 세로선·제목 위로 온다 (2026-07-31 사용자 결정). 텍스트끼리는
+        // 지오메트리로 잘라 낼 수 없어 이 항목만 layer 순서로 표현한다.
+        if (built.deferred_title) |di| {
+            if (di < tab_count) {
+                const dx = tab_chrome.tabX(di, chrome_in);
+                if (tab_chrome.tabClip(dx, tw, layout.tab_area_x, tab_area_end, true) == .draw) {
+                    var drag_text: [512]TextInstance = undefined;
+                    var drag_n: u32 = 0;
+                    const baseline_y2 = (tbh + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2.0;
+                    emitTitle(self, tab_titles[di], dx, pad, layout.tab_area_x, tab_area_end, cw, tw - pad * 2, baseline_y2, &drag_text, &drag_n);
+                    if (drag_n > 0) self.drawTextInstancesWithAtlas(drag_text[0..drag_n], &self.tab_atlas);
+                }
+            }
         }
 
         // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
