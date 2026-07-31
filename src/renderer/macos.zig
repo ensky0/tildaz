@@ -27,6 +27,7 @@ const box_drawing = @import("../box_drawing.zig");
 const cell_color = @import("cell_color.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_chrome = @import("../tab_chrome.zig");
+const ui_rect = @import("../ui_rect.zig");
 const tab_icons = @import("../tab_icons.zig");
 const session_core = @import("../session_core.zig");
 const tab_interaction = @import("../tab_interaction.zig");
@@ -1148,14 +1149,12 @@ pub const MetalRenderer = struct {
                     .text_buf = buf,
                     .text_n = n,
                     .text_y_top = y_top,
-                    .viewport_left = @max(text_x_start, area_x),
+                    .viewport_left = area_x,
                     .tab_area_end = area_end,
                 };
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         if (c.text_n.* >= MAX_TEXT) return;
-                        if (g.x < c.viewport_left) return;
-                        if (g.x >= c.tab_area_end) return;
                         const result = c.self.tab_font.resolveGlyph(@intCast(g.cp)) orelse return;
                         const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                             if (result.owned) ct.CFRelease(result.font);
@@ -1165,11 +1164,14 @@ pub const MetalRenderer = struct {
                         if (entry.w == 0 or entry.h == 0) return;
                         const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
                         const gy = c.text_y_top + c.self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
+                        // #343 A-2 — glyph 를 `tab_area` 에서 **잘라** 안쪽만 그린다.
+                        // quad 와 atlas UV 를 같은 양만큼 민다 (텍셀 1:1).
+                        const cl = ui_rect.clipX(gx, @floatFromInt(entry.w), c.viewport_left, c.tab_area_end) orelse return;
                         c.text_buf[c.text_n.*] = .{
-                            .pos = .{ gx, gy },
-                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .pos = .{ cl.x, gy },
+                            .size = .{ cl.w, @floatFromInt(entry.h) },
+                            .uv_pos = .{ @as(f32, @floatFromInt(entry.x)) + cl.cut_left, @floatFromInt(entry.y) },
+                            .uv_size = .{ cl.w, @floatFromInt(entry.h) },
                             .fg_color = c.self.chrome.tab_text,
                             .color_flag = if (entry.is_color) 1 else 0,
                         };

@@ -554,7 +554,7 @@ pub const Renderer = struct {
                     if (self.font_ctx.resolveCluster(cluster[0 .. 1 + take])) |cg| {
                         const cluster_glyph = self.font_ctx.glyphByIndex(cg.face_idx, cg.glyph_index);
                         if (cluster_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                            drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, cluster_glyph);
+                            drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, cluster_glyph, 0, width);
                         } else {
                             const baseline = cell_y + ascent;
                             const glyph_advance_i32: i32 = @intCast(cluster_glyph.advance);
@@ -569,6 +569,8 @@ pub const Renderer = struct {
                                 cluster_glyph,
                                 fg,
                                 bg,
+                                0,
+                                width,
                             );
                         }
                         x += 1;
@@ -672,7 +674,7 @@ pub const Renderer = struct {
                 if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                     // color emoji — bitmap 이 보통 strike size (~109px) 라 cell 안 ratio
                     // 유지 scale down + cell 가운데 fit. emoji 색 자체 사용 (fg 무시).
-                    drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, glyph);
+                    drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, glyph, 0, width);
                 } else {
                     // proportional 폰트 (`fc-match monospace` 가 NotoSansCJK 같은 sans-serif
                     // 로 매치되는 환경 등) 라도 글자가 cell 안 가운데에 균일하게 분포하도록
@@ -691,6 +693,8 @@ pub const Renderer = struct {
                         glyph,
                         fg,
                         bg,
+                        0,
+                        width,
                     );
                 }
                 x += 1;
@@ -1200,7 +1204,7 @@ pub const Renderer = struct {
             const adv: i32 = cw * @as(i32, @intCast(cells));
             const gl = font_ctx.glyph(cp);
             if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                drawGlyphBgra(memory, fb_w, fb_h, stride, x, baseline_y - ch_metric, adv, ch_metric, gl);
+                drawGlyphBgra(memory, fb_w, fb_h, stride, x, baseline_y - ch_metric, adv, ch_metric, gl, 0, fb_w);
             } else {
                 drawGlyph(
                     memory,
@@ -1212,6 +1216,8 @@ pub const Renderer = struct {
                     gl,
                     fg,
                     bg,
+                    0,
+                    fb_w,
                 );
             }
             x += adv;
@@ -1437,17 +1443,17 @@ fn drawTabTitle(a: TabTitleArgs) void {
         /// 영역을 침범한다. 좌측도 `tab_area_x` 로 clamp 한다.
         viewport_left: i32,
     };
-    const ctx = Ctx{ .a = a, .viewport_left = @max(text_x_start, a.tab_area_x) };
+    const ctx = Ctx{ .a = a, .viewport_left = a.tab_area_x };
 
     tab_layout.iterTabText(a.title, @floatFromInt(text_x_start), cw_f, max_text_w_f, needs_truncate, ctx, struct {
         fn emit(c: Ctx, g: tab_layout.Glyph) void {
             const px: i32 = @intFromFloat(g.x);
-            if (px < c.viewport_left) return;
-            if (px >= c.a.tab_area_end) return;
+            // #343 A-2 — glyph 를 통째로 버리지 않고 `tab_area` 경계에서 **픽셀
+            // 단위로 잘라** 안쪽만 그린다. 경계에 걸친 글자의 남은 조각이 보인다.
             const gl = c.a.font_ctx.glyph(g.cp);
             if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                 const adv: i32 = @intFromFloat(g.advance);
-                drawGlyphBgra(c.a.memory, c.a.fb_w, c.a.fb_h, c.a.stride, px, 0, adv, c.a.tab_bar_h, gl);
+                drawGlyphBgra(c.a.memory, c.a.fb_w, c.a.fb_h, c.a.stride, px, 0, adv, c.a.tab_bar_h, gl, c.viewport_left, c.a.tab_area_end);
             } else {
                 drawGlyph(
                     c.a.memory,
@@ -1459,6 +1465,8 @@ fn drawTabTitle(a: TabTitleArgs) void {
                     gl,
                     c.a.text_color,
                     c.a.bg,
+                    c.viewport_left,
+                    c.a.tab_area_end,
                 );
             }
         }
@@ -1615,7 +1623,7 @@ fn drawPreeditOverlay(
         const glyph = font_ctx.glyph(cp);
         if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
             // emoji 가 preedit 으로 올 일 거의 없지만 안전하게 동일 path 분기.
-            drawGlyphBgra(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, glyph);
+            drawGlyphBgra(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, glyph, 0, fb_w);
         } else {
             const glyph_advance_i32: i32 = @intCast(glyph.advance);
             const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
@@ -1629,6 +1637,8 @@ fn drawPreeditOverlay(
                 glyph,
                 fg,
                 preedit_bg,
+                0,
+                fb_w,
             );
         }
 
@@ -1690,7 +1700,7 @@ fn drawLigatureMatch(
             const ligature_glyph = font_ctx.glyphByIndex(lg.face_idx, lg.glyph_index);
             const ligature_w: i32 = @intCast(count * @as(usize, @intCast(cw)));
             if (ligature_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                drawGlyphBgra(memory, fb_w, fb_h, stride, base_cell_x, cell_y, ligature_w, ch, ligature_glyph);
+                drawGlyphBgra(memory, fb_w, fb_h, stride, base_cell_x, cell_y, ligature_w, ch, ligature_glyph, 0, fb_w);
             } else {
                 const baseline = cell_y + ascent;
                 const glyph_advance_i32: i32 = @intCast(ligature_glyph.advance);
@@ -1705,6 +1715,8 @@ fn drawLigatureMatch(
                     ligature_glyph,
                     fg,
                     bg,
+                    0,
+                    fb_w,
                 );
             }
         },
@@ -1715,7 +1727,7 @@ fn drawLigatureMatch(
                 const gx_cell: i32 = pad + @as(i32, @intCast(x + i)) * cw;
                 const g_glyph = font_ctx.glyphByIndex(sp.face_idx, sp.glyph_indices[i]);
                 if (g_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                    drawGlyphBgra(memory, fb_w, fb_h, stride, gx_cell, cell_y, cw, ch, g_glyph);
+                    drawGlyphBgra(memory, fb_w, fb_h, stride, gx_cell, cell_y, cw, ch, g_glyph, 0, fb_w);
                 } else {
                     const baseline = cell_y + ascent;
                     const glyph_advance_i32: i32 = @intCast(g_glyph.advance);
@@ -1730,6 +1742,8 @@ fn drawLigatureMatch(
                         g_glyph,
                         fg,
                         bg,
+                        0,
+                        fb_w,
                     );
                 }
             }
@@ -2114,6 +2128,9 @@ fn applyShadowAndMask(
 
 /// 8bpp alpha bitmap 을 fg/bg 알파 블렌딩으로 XRGB8888 buffer 에 그린다.
 /// glyph buffer 가 비어 있거나 (space) 좌표가 화면 밖이면 무시.
+/// #343 A-2 — `clip_x0` / `clip_x1` 는 가로 clip 경계 (반열림 `[x0, x1)`). 탭 제목이
+/// `tab_area` 경계에 걸칠 때 glyph 를 통째로 버리지 않고 **픽셀 단위로 잘라** 안쪽만
+/// 그린다. 그 외 호출처는 framebuffer 전체를 넘겨 이전과 같다.
 fn drawGlyph(
     memory: []u8,
     width: i32,
@@ -2124,6 +2141,8 @@ fn drawGlyph(
     glyph: *const font.Glyph,
     fg: ghostty.color.RGB,
     bg: ghostty.color.RGB,
+    clip_x0: i32,
+    clip_x1: i32,
 ) void {
     if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
 
@@ -2135,6 +2154,7 @@ fn drawGlyph(
             if (alpha == 0) continue;
             const px = draw_x + @as(i32, @intCast(col));
             const py = draw_y + @as(i32, @intCast(row));
+            if (px < clip_x0 or px >= clip_x1) continue;
             if (px < 0 or py < 0 or px >= width or py >= height) continue;
             const off: usize = @intCast(py * stride + px * 4);
             const blended = blendPixel(fg, bg, alpha);
@@ -2147,6 +2167,7 @@ fn drawGlyph(
 /// center fit + alpha 블렌딩으로 XRGB8888 buffer 에 그린다. emoji 색 자체 사용
 /// (fg 무시). nearest neighbor sampling — 작은 cell 에 큰 emoji bitmap (보통
 /// strike 109px) 가 들어갈 때 quality 보다 단순성 우선.
+/// #343 A-2 — `clip_x0` / `clip_x1` 는 가로 clip 경계 (`drawGlyph` 와 같은 계약).
 fn drawGlyphBgra(
     memory: []u8,
     fb_w: i32,
@@ -2157,6 +2178,8 @@ fn drawGlyphBgra(
     cell_w: i32,
     cell_h: i32,
     glyph: *const font.Glyph,
+    clip_x0: i32,
+    clip_x1: i32,
 ) void {
     if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
     if (cell_w <= 0 or cell_h <= 0) return;
@@ -2190,6 +2213,7 @@ fn drawGlyphBgra(
 
             const px = cell_x + off_x + dx;
             const py = cell_y + off_y + dy;
+            if (px < clip_x0 or px >= clip_x1) continue;
             if (px < 0 or py < 0 or px >= fb_w or py >= fb_h) continue;
 
             const dst_off: usize = @intCast(py * stride + px * 4);
