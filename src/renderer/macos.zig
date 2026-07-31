@@ -1113,68 +1113,82 @@ pub const MetalRenderer = struct {
         // #268 — per-tab close 제거로 text 영역이 탭 전체 (양쪽 padding 제외).
         const max_text_w_px = tab_w_px - tab_pad_px * 2;
 
+        // 제목 emit — 두 번 쓰인다: 일반 탭(1차 batch) 과 드래그 중인 탭(2차
+        // batch, 세로선 뒤). 후자는 공통 계약 `Chrome.deferred_title` 이 정한다.
+        const TitleCtx = struct {
+            self: *MetalRenderer,
+            text_buf: *[MAX_TEXT]TextInstance,
+            text_n: *usize,
+            text_y_top: f32,
+            viewport_left: f32,
+            tab_area_end: f32,
+        };
+        const emitTitle = struct {
+            fn f(
+                rself: *MetalRenderer,
+                title: []const u8,
+                tab_x: f32,
+                pad: f32,
+                area_x: f32,
+                area_end: f32,
+                cw_: f32,
+                max_w: f32,
+                y_top: f32,
+                buf: *[MAX_TEXT]TextInstance,
+                n: *usize,
+            ) void {
+                const text_x_start = tab_x + pad;
+                // #343 — glyph clip 을 **명시** 로 통일했다. 이전에는 좌측만 보고
+                // (`text_x_start`) 우측은 나중에 그리는 컨트롤 fill 이 덮어 가렸다.
+                // 좌측도 `tab_area_x` 로 clamp — 부분 잘린 첫 탭은 `text_x_start`
+                // 가 tab_area 왼쪽으로 넘어갈 수 있다.
+                const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw_;
+                const ctx = TitleCtx{
+                    .self = rself,
+                    .text_buf = buf,
+                    .text_n = n,
+                    .text_y_top = y_top,
+                    .viewport_left = @max(text_x_start, area_x),
+                    .tab_area_end = area_end,
+                };
+                tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
+                    fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
+                        if (c.text_n.* >= MAX_TEXT) return;
+                        if (g.x < c.viewport_left) return;
+                        if (g.x >= c.tab_area_end) return;
+                        const result = c.self.tab_font.resolveGlyph(@intCast(g.cp)) orelse return;
+                        const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                            if (result.owned) ct.CFRelease(result.font);
+                            return;
+                        };
+                        if (result.owned) ct.CFRelease(result.font);
+                        if (entry.w == 0 or entry.h == 0) return;
+                        const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
+                        const gy = c.text_y_top + c.self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
+                        c.text_buf[c.text_n.*] = .{
+                            .pos = .{ gx, gy },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = c.self.chrome.tab_text,
+                            .color_flag = if (entry.is_color) 1 else 0,
+                        };
+                        c.text_n.* += 1;
+                    }
+                }.cb);
+            }
+        }.f;
+
         for (tab_titles, 0..) |title, i| {
+            // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
+            if (built.deferred_title) |d| if (d == i) continue;
             const tab_x = tab_chrome.tabX(i, chrome_in);
             switch (tab_chrome.tabClip(tab_x, tab_w_px, layout.tab_area_x, tab_area_end, drag_view != null)) {
                 .skip => continue,
                 .stop => break,
                 .draw => {},
             }
-            const text_x_start = tab_x + tab_pad_px;
-            // #343 — glyph clip 을 **명시** 로 통일했다. 이전에는 좌측만 보고
-            // (`text_x_start`) 우측은 나중에 그리는 컨트롤 fill 이 덮어 가렸는데,
-            // 그리기 순서에 기대는 방식이라 순서를 리팩터링하는 이 작업에서
-            // 특히 위험하다. 좌측도 `tab_area_x` 로 clamp 한다 — 부분 잘린 첫
-            // 탭은 `text_x_start` 가 tab_area 왼쪽으로 넘어갈 수 있다.
-            const viewport_left = @max(text_x_start, layout.tab_area_x);
-
-            // 긴 title 의 ellipsis 처리 (#161). iterTabText 가 truncate
-            // ellipsis 처리.
-            const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw;
-            const needs_truncate = total_text_w > max_text_w_px;
-            // cross-platform iterTabText — codepoint 별 cb 호출. 세 platform 이
-            // 같은 helper 호출 → fix 한 곳 전부 자동 반영. (#163 옵션 A)
-            const Ctx = struct {
-                self: *MetalRenderer,
-                text_buf: *[MAX_TEXT]TextInstance,
-                text_n: *usize,
-                text_y_top: f32,
-                viewport_left: f32,
-                tab_area_end: f32,
-            };
-            const ctx = Ctx{
-                .self = self,
-                .text_buf = &text_buf,
-                .text_n = &text_n,
-                .text_y_top = text_y_top,
-                .viewport_left = viewport_left,
-                .tab_area_end = tab_area_end,
-            };
-            tab_layout.iterTabText(title, text_x_start, cw, max_text_w_px, needs_truncate, ctx, struct {
-                fn cb(c: Ctx, g: tab_layout.Glyph) void {
-                    if (c.text_n.* >= MAX_TEXT) return;
-                    if (g.x < c.viewport_left) return;
-                    if (g.x >= c.tab_area_end) return;
-                    const result = c.self.tab_font.resolveGlyph(@intCast(g.cp)) orelse return;
-                    const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                        if (result.owned) ct.CFRelease(result.font);
-                        return;
-                    };
-                    if (result.owned) ct.CFRelease(result.font);
-                    if (entry.w == 0 or entry.h == 0) return;
-                    const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
-                    const gy = c.text_y_top + c.self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
-                    c.text_buf[c.text_n.*] = .{
-                        .pos = .{ gx, gy },
-                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
-                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
-                        .fg_color = c.self.chrome.tab_text,
-                        .color_flag = if (entry.is_color) 1 else 0,
-                    };
-                    c.text_n.* += 1;
-                }
-            }.cb);
+            emitTitle(self, title, tab_x, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top, &text_buf, &text_n);
         }
 
         // 1차 batch — 탭 BG / 텍스트 그림.
@@ -1193,6 +1207,18 @@ pub const MetalRenderer = struct {
             if (bg_n >= MAX_BG) break;
             bg_buf[bg_n] = bgFromChrome(r);
             bg_n += 1;
+        }
+
+        // #343 — 드래그 중인 탭의 제목을 2차 batch 에 넣는다 — 세로선·다른 탭 제목
+        // **위**로 온다 (집어 든 탭이 맨 위 layer, 2026-07-31 사용자 결정).
+        // 텍스트끼리는 지오메트리로 잘라 낼 수 없어 이 항목만 layer 순서로 표현한다.
+        if (built.deferred_title) |di| {
+            if (di < tab_titles.len) {
+                const dx = tab_chrome.tabX(di, chrome_in);
+                if (tab_chrome.tabClip(dx, tab_w_px, layout.tab_area_x, tab_area_end, true) == .draw) {
+                    emitTitle(self, tab_titles[di], dx, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top, &text_buf, &text_n);
+                }
+            }
         }
 
         // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
