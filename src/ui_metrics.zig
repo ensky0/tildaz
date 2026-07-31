@@ -102,11 +102,43 @@ pub fn scaledPxF(pt: anytype, scale: f32) f32 {
     return pt_f * scale;
 }
 
-/// `pt × scale` 을 f32 physical px 로 하되 **최소 1px 보장** — 선 두께용.
-/// scale 이 작아도 선이 0px 로 사라지지 않게 한다 (separator / underline /
-/// 아이콘 stroke).
+/// `pt × scale` 을 f32 physical px 로 하되 **최소 1px 보장**. 소수를 유지한다 —
+/// **아이콘 stroke 전용**이다 (`TAB_ICON_STROKE_PT` · `TAB_MORE_DOT_DIAMETER_PT`).
+/// `tab_icons.rasterize` 가 이 값으로 안티에일리어싱 커버리지를 만들므로 소수가
+/// 그대로 의미를 갖는다.
+///
+/// **격자에 놓이는 실선(separator / underline)에는 쓰지 않는다** — 그쪽은
+/// `linePx` 다 ([#357](https://github.com/ensky0/tildaz/issues/357)). 두 용도가 이
+/// 함수 하나에 섞여 있었고, 그 때문에 선 두께가 분수 배율에서 갈렸다.
 pub fn strokePx(pt: anytype, scale: f32) f32 {
     return @max(1.0, scaledPxF(pt, scale));
+}
+
+/// **선 두께** — `pt × scale` 을 **정수** physical px 로 (최소 1px).
+/// ([#357](https://github.com/ensky0/tildaz/issues/357))
+///
+/// 탭바 세로 구분선 · 활성 탭 amber 밑줄 · command menu 항목 구분선처럼 픽셀 격자에
+/// 놓이는 실선의 두께에 쓴다. 반환형이 f32 인 것은 호출처(`tab_chrome.Inputs` ·
+/// `command_menu.rects`)가 f32 좌표계라서다 — 값은 항상 정수다.
+///
+/// ## 왜 정수여야 하는가
+///
+/// 라스터화 규칙은 "픽셀 **중심**이 도형 안이면 칠한다" 이므로, 두께 `t` 의 선이
+/// `top` 에 놓일 때 덮는 행은 `[round(top), round(top + t))` 다 (`ui_rect.snap` 의
+/// 정의와 같고 GPU 도 같다). `t` 가 **정수면 `round(top + t) = round(top) + t` 가
+/// 항상 성립**하므로 위치 소수부가 무엇이든 정확히 `t` 픽셀이 나온다. 소수면
+/// 그렇지 않다 — 예: 두께 1.7px 은 `top` 의 소수부가 0.85 면 2px, 0.55 면 1px 이라
+/// **같은 화면 안 두 구분선의 두께가 갈린다.**
+///
+/// 그 갈림이 [#357](https://github.com/ensky0/tildaz/issues/357) 의 증상이었고,
+/// 동시에 Linux(두께를 미리 정수로 반올림) 와 macOS · Windows(소수를 그대로 GPU 로)
+/// 사이의 **platform 갈래**이기도 했다. 배율 1.0 · 2.0 에서는 두 규칙의 결과가 같아
+/// 증상이 드러나지 않았을 뿐이다 (1.25 · 1.75 에서 갈린다 — Windows 의 125% · 175%).
+///
+/// **위치 규칙은 건드리지 않는다** (`ui_rect.snap` 그대로). 두께만 정수로 만들면
+/// 위치는 어디든 두께가 보존되기 때문이다.
+pub fn linePx(pt: anytype, scale: f32) f32 {
+    return @max(1, @round(scaledPxF(pt, scale)));
 }
 
 /// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
@@ -689,6 +721,68 @@ test "#350 pt→px 변환은 세 platform 공통 — 반올림, 타입 무관" {
 
     // f32 상수도 같은 함수로 받는다.
     try std.testing.expectEqual(@as(u32, 3), scaledPx(u32, TAB_ICON_STROKE_PT, 2.0));
+}
+
+test "#357 linePx 는 선 두께를 정수로 양자화한다 — 최소 1px" {
+    // 정수 배율은 이미 정수라 그대로.
+    try std.testing.expectEqual(@as(f32, 1.0), linePx(TAB_SEPARATOR_W_PT, 1.0));
+    try std.testing.expectEqual(@as(f32, 2.0), linePx(TAB_SEPARATOR_W_PT, 2.0));
+    try std.testing.expectEqual(@as(f32, 2.0), linePx(TAB_ACTIVE_UNDERLINE_PT, 1.0));
+    try std.testing.expectEqual(@as(f32, 4.0), linePx(TAB_ACTIVE_UNDERLINE_PT, 2.0));
+
+    // 분수 배율 — 반올림. 1pt 선은 1.25 → 1, 1.7 → 2.
+    try std.testing.expectEqual(@as(f32, 1.0), linePx(TAB_SEPARATOR_W_PT, 1.25));
+    try std.testing.expectEqual(@as(f32, 2.0), linePx(TAB_SEPARATOR_W_PT, 1.5));
+    try std.testing.expectEqual(@as(f32, 2.0), linePx(TAB_SEPARATOR_W_PT, 1.7));
+    try std.testing.expectEqual(@as(f32, 2.0), linePx(TAB_SEPARATOR_W_PT, 1.75));
+    // 2pt 밑줄.
+    try std.testing.expectEqual(@as(f32, 3.0), linePx(TAB_ACTIVE_UNDERLINE_PT, 1.25));
+    try std.testing.expectEqual(@as(f32, 3.0), linePx(TAB_ACTIVE_UNDERLINE_PT, 1.7));
+
+    // scale 이 작아도 선이 사라지지 않는다.
+    try std.testing.expectEqual(@as(f32, 1.0), linePx(TAB_SEPARATOR_W_PT, 0.1));
+    try std.testing.expectEqual(@as(f32, 1.0), linePx(TAB_SEPARATOR_W_PT, 0.4));
+
+    // 값은 항상 정수다 (반환형만 f32).
+    inline for (.{ 0.5, 1.0, 1.25, 1.4, 1.5, 1.7, 1.75, 2.0, 2.5 }) |s| {
+        const t = linePx(TAB_SEPARATOR_W_PT, s);
+        try std.testing.expectEqual(t, @round(t));
+        const u = linePx(TAB_ACTIVE_UNDERLINE_PT, s);
+        try std.testing.expectEqual(u, @round(u));
+    }
+}
+
+test "#357 정수 두께는 위치 소수부와 무관하게 두께가 보존된다 — 소수 두께는 갈린다" {
+    // 이 테스트가 `linePx` 의 존재 이유를 고정한다. 라스터화 규칙은
+    // `[round(top), round(top + t))` — `ui_rect.snap` 과 GPU 가 같다.
+    const rows = struct {
+        fn n(top: f32, t: f32) i32 {
+            return @as(i32, @intFromFloat(@round(top + t))) - @as(i32, @intFromFloat(@round(top)));
+        }
+    }.n;
+
+    // 정수 두께 — 위치 소수부 전부에서 정확히 t 픽셀.
+    inline for (.{ 1.0, 2.0, 3.0 }) |t| {
+        inline for (.{ 0.0, 0.05, 0.25, 0.45, 0.5, 0.55, 0.75, 0.85, 0.95 }) |frac| {
+            try std.testing.expectEqual(@as(i32, @intFromFloat(t)), rows(100.0 + frac, t));
+        }
+    }
+
+    // 소수 두께 1.7 (= 이전 mac/win 의 1pt @1.7) — 소수부에 따라 2px / 1px 로 갈린다.
+    // #357 에서 실측한 두 구분선의 소수부가 정확히 이 두 값이었다 (0.85 / 0.55).
+    try std.testing.expectEqual(@as(i32, 2), rows(102.85, 1.7));
+    try std.testing.expectEqual(@as(i32, 1), rows(342.55, 1.7));
+    // 같은 자리에 `linePx` 를 쓰면 둘 다 2px 로 균일해진다.
+    const t17 = linePx(TAB_SEPARATOR_W_PT, 1.7);
+    try std.testing.expectEqual(@as(i32, 2), rows(102.85, t17));
+    try std.testing.expectEqual(@as(i32, 2), rows(342.55, t17));
+
+    // 소수 두께 1.25 (= 이전 mac/win 의 1pt @1.25, 탭 슬롯 경계 짝/홀 phase).
+    try std.testing.expectEqual(@as(i32, 2), rows(100.375, 1.25)); // 짝
+    try std.testing.expectEqual(@as(i32, 1), rows(100.875, 1.25)); // 홀
+    const t125 = linePx(TAB_SEPARATOR_W_PT, 1.25);
+    try std.testing.expectEqual(@as(i32, 1), rows(100.375, t125));
+    try std.testing.expectEqual(@as(i32, 1), rows(100.875, t125));
 }
 
 test "#350 strokePx 는 최소 1px 을 보장하고 scaledPxF 는 소수를 유지한다" {
