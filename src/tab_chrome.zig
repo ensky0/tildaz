@@ -39,21 +39,17 @@
 //! · [macOS](https://github.com/ensky0/tildaz/issues/343#issuecomment-5114134914) 코멘트.
 
 const std = @import("std");
+const ui_rect = @import("ui_rect.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_interaction = @import("tab_interaction.zig");
 const ui_metrics = @import("ui_metrics.zig");
 const chrome_palette = @import("chrome_palette.zig");
 
-/// device pixel 단위 사각형. 색은 `chrome_palette` 와 같은 linear-free `[4]f32`
-/// (renderer 가 자기 형식으로 옮긴다 — macOS · Windows 는 `BgInstance` 에 그대로,
-/// Linux 는 `snap()` 으로 정수화 후 8-bit RGB).
-pub const Rect = struct {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    color: [4]f32,
-};
+/// 사각형 타입과 정수 스냅은 `ui_rect` 한 곳에 있다 — scrollbar · command menu 도
+/// 같은 타입을 쓰기 때문이다 (#343 단계 2·3). 여기서는 이름만 다시 노출한다.
+pub const Rect = ui_rect.Rect;
+pub const IRect = ui_rect.IRect;
+pub const snap = ui_rect.snap;
 
 pub const Inputs = struct {
     /// 창 전체 폭 (탭바 배경이 가로 전체를 덮는다).
@@ -109,29 +105,6 @@ pub fn tabClip(tab_left: f32, tab_w: f32, area_left: f32, area_right: f32, drag_
     if (tab_left + tab_w <= area_left) return .skip;
     if (tab_left >= area_right) return if (drag_active) .skip else .stop;
     return .draw;
-}
-
-/// 정수 rasterizer (Linux software renderer) 전용 변환. **양 끝을 각각 반올림한 뒤
-/// 크기를 뺀다** — 위치와 크기를 따로 절단하면 오차가 누적돼 아랫변이 1px 모자란다
-/// ([#344](https://github.com/ensky0/tildaz/issues/344) 에서 scrollbar thumb 이
-/// 실제로 그랬다). `scrollbar.thumbPx` 와 같은 계약이다.
-///
-/// [#277](https://github.com/ensky0/tildaz/issues/277) 이 Linux 를 EGL/OpenGL ES
-/// (f32) 로 바꾸면 **이 함수와 그 호출부만** 걷어내면 된다 — rect 목록을 만드는
-/// 위 코드는 그대로 남는다.
-pub const IRect = struct { x: i32, y: i32, w: i32, h: i32 };
-
-pub fn snap(r: Rect) IRect {
-    const x0 = @round(r.x);
-    const y0 = @round(r.y);
-    const x1 = @round(r.x + r.w);
-    const y1 = @round(r.y + r.h);
-    return .{
-        .x = @intFromFloat(x0),
-        .y = @intFromFloat(y0),
-        .w = @max(1, @as(i32, @intFromFloat(x1 - x0))),
-        .h = @max(1, @as(i32, @intFromFloat(y1 - y0))),
-    };
 }
 
 fn push(out: []Rect, n: *usize, r: Rect) void {
@@ -387,22 +360,6 @@ test "build — 버퍼가 모자라면 넘치지 않는다" {
     var buf: [3]Rect = undefined;
     const c = build(&buf, in);
     try testing.expectEqual(@as(usize, 3), c.rects.len);
-}
-
-test "snap — 양 끝을 각각 반올림한다 (아랫변 보존)" {
-    // 0.4 에서 시작해 높이 10.2 → 아랫변 10.6. 각각 반올림하면 0..11 = 11.
-    // 위치·크기를 따로 절단하면 0 + 10 = 10 으로 아랫변이 모자란다 (#344).
-    const r = Rect{ .x = 0, .y = 0.4, .w = 5, .h = 10.2, .color = .{ 0, 0, 0, 1 } };
-    const i = snap(r);
-    try testing.expectEqual(@as(i32, 0), i.y);
-    try testing.expectEqual(@as(i32, 11), i.h);
-}
-
-test "snap — 폭 0 이어도 최소 1px" {
-    const r = Rect{ .x = 3.2, .y = 0, .w = 0.1, .h = 0.1, .color = .{ 0, 0, 0, 1 } };
-    const i = snap(r);
-    try testing.expectEqual(@as(i32, 1), i.w);
-    try testing.expectEqual(@as(i32, 1), i.h);
 }
 
 test "#343 이전 Linux 정수 식과 결과가 같다 — sep 1px (scale 1.0)" {
