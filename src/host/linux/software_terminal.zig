@@ -847,38 +847,17 @@ pub const Renderer = struct {
             ui.first_visible,
         );
         const mx: i32 = @intFromFloat(@round(v.rect.x * scale));
-        const my: i32 = @intFromFloat(@round(v.rect.y * scale));
         const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
-        const mh: i32 = @intFromFloat(@round(v.rect.h * scale));
         const bg = rgbFromMetrics(self.chrome.tab_bar_bg);
         const fg = rgbFromMetrics(self.chrome.menu_label);
         const hint_fg = rgbFromMetrics(self.chrome.menu_hint);
-        // 내부 구분선은 1 logical pt — HiDPI 에서 상대 두께 유지 (#329).
-        const line_px: i32 = @max(1, scaledPt(1, scale));
-        // #342 — 메뉴 **외곽선 없음** (2026-07-27 시연 후 사용자 확정). 탭바에서
-        // 가로 경계선을 없앤 것과 같은 문법: chrome 과 terminal 의 경계는 배경
-        // 명도 차이만으로 둔다. 내부 구분선은 유지 (역할이 다름 — 면의 경계가
-        // 아니라 항목 그룹).
-        //
-        // 이전 테두리는 `my - line_px` 라 탭바 마지막 행을 1px 침범했는데,
-        // 같은 색 가로 경계선이 그 자리를 덮고 있어 보이지 않았다. 가로선을
-        // 없애자 드러난 것 — 덮어써서 가려지던 지오메트리 오류였다.
-        rect(memory, width, height, stride, mx, my, mw, mh, bg);
-        // 강조는 pointer hover 우선, 없으면 keyboard focus.
-        if (ui.hover orelse ui.focused) |command| {
-            if (command_menu.itemRect(v, command)) |item| {
-                rect(
-                    memory,
-                    width,
-                    height,
-                    stride,
-                    @intFromFloat(@round((item.x + 2) * scale)),
-                    @intFromFloat(@round((item.y + 1) * scale)),
-                    @intFromFloat(@round((item.w - 4) * scale)),
-                    @intFromFloat(@round((item.h - 2) * scale)),
-                    rgbFromMetrics(self.chrome.menu_hover_bg),
-                );
-            }
+
+        // #343 단계 3 — 메뉴 배경 · 강조 박스 · 항목 구분선의 rect 와 그 순서는
+        // 공통 `command_menu.rects` 한 곳이 만든다. 여기 남은 것은 텍스트와 스크롤
+        // 표시 아이콘 (이 renderer 고유) 뿐이다.
+        var menu_rects: [command_menu.MAX_RECTS]tab_chrome.Rect = undefined;
+        for (command_menu.rects(&menu_rects, v, ui, scale, &self.chrome)) |r| {
+            fillChromeRect(memory, width, height, stride, r);
         }
 
         // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
@@ -920,12 +899,8 @@ pub const Renderer = struct {
         const cw: i32 = @intCast(self.tab_font_ctx.cell_width_px);
         const ch: i32 = @intCast(self.tab_font_ctx.cell_height_px);
         for (v.first..v.first + v.count) |i| {
+            const command = command_menu.entries[i] orelse continue; // 구분선은 위에서
             const item = command_menu.entryRect(v, i).?;
-            const command = command_menu.entries[i] orelse {
-                const sep_y: i32 = @intFromFloat(@round((item.y + item.h / 2) * scale));
-                rect(memory, width, height, stride, mx + scaledPt(8, scale), sep_y, mw - scaledPt(16, scale), line_px, rgbFromMetrics(self.chrome.separator));
-                continue;
-            };
             const ix: i32 = @intFromFloat(@round(item.x * scale));
             const iy: i32 = @intFromFloat(@round(item.y * scale));
             const iw: i32 = @intFromFloat(@round(item.w * scale));
