@@ -1437,40 +1437,24 @@ pub const D3d11Renderer = struct {
         // drag hit-test in `main.zig` to keep click → offset mapping
         // consistent with what's drawn.
         const sb = terminal.screens.active.pages.scrollbar();
-        // #259 — drag hit-test (`app_controller.scrollbarHit`) 와 같은 `scrollbar.hit`
-        // 입력을 써서 thumb 그림 영역과 클릭 영역을 일치시킨다. track = `y_offset`
-        // (탭바) 아래 + 위/아래 padding 반영.
-        if (scrollbar.hit(
+        // #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
+        // 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
+        // #259 — drag hit-test (`app_controller.scrollbarHit`) 와 같은 입력을 써서
+        // thumb 그림 영역과 클릭 영역을 일치시킨다. track = `y_offset` (탭바) 아래 +
+        // 위/아래 padding 반영.
+        if (scrollbar.thumbRect(
             sb.total,
             sb.len,
             sb.offset,
+            @floatFromInt(vp_w),
             @floatFromInt(vp_h),
             @floatFromInt(scrollbar_y_offset),
             @floatFromInt(padding),
             @floatFromInt(scrollbar_min_thumb_h),
-        )) |h| {
-            const sbw: f32 = @floatFromInt(scrollbar_w);
-            const vp_wf: f32 = @floatFromInt(vp_w);
-            const track_x: f32 = vp_wf - sbw;
-            // #344 — 정수 픽셀 스냅은 공통 `scrollbar.thumbPx`. 세 platform 이
-            // 같은 값을 그려 track 위·아래 여백이 항상 같다.
-            const t = h.thumb();
-            // #346 — 섞는 색을 배경 명도로 뒤집는다. 판정 입력은 terminal 의
-            // 현재 배경 (OSC 11 · reverse_colors 반영된 `RenderState.Colors`)
-            // 이라 셸이 배경을 바꿔도 thumb 이 따라 전환된다.
-            //
-            // #353 — 합성은 `scrollbarColor` 가 이미 끝냈고 여기서는 알파 1.0 으로
-            // 그린다. 이전에는 알파를 그대로 넘겨 `SRC_ALPHA` blend factor 가 곱했고,
-            // 그 factor 가 render target 정밀도(8bit)로 양자화되는 하드웨어 동작
-            // 때문에 Linux(CPU 버림) · macOS(고정밀 반올림) 와 값이 갈렸다.
-            const sb_bg = [3]u8{ colors.background.r, colors.background.g, colors.background.b };
-            const sb_dark = themes.isDarkRgb(colors.background.r, colors.background.g, colors.background.b);
-            const sb_col = ui_metrics.scrollbarColor(sb_bg, sb_dark);
-            const scrollbar_inst = [1]BgInstance{.{
-                .pos = .{ track_x, @floatCast(t.top) },
-                .size = .{ sbw, @floatCast(t.h) },
-                .color = .{ colorF(sb_col[0]), colorF(sb_col[1]), colorF(sb_col[2]), 1 },
-            }};
+            @floatFromInt(scrollbar_w),
+            .{ colors.background.r, colors.background.g, colors.background.b },
+        )) |r| {
+            const scrollbar_inst = [1]BgInstance{bgFromChrome(r)};
             self.drawBgInstances(&scrollbar_inst);
         }
 
