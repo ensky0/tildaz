@@ -245,9 +245,15 @@ pub const MAX_RECTS: usize = blk: {
     break :blk 2 + seps;
 };
 
+/// 모든 rect 를 **정수 격자에 맞춰** 내보낸다 (#357 — `ui_rect.snapped`).
+/// `tab_chrome.push` 와 대칭이다. 소수 좌표에서는 Linux 의 `snap`(양 끝 반올림)과
+/// GPU 반열림 래스터화의 tie-break 가 갈린다 — 항목 구분선 y 가 `(r.y + r.h/2)`
+/// 라 **항상 `.5`** 가 남아, 배율 1.0 에서 Windows 는 픽셀 `60`, Linux 는 `61` 로
+/// 갈렸다 ([Windows 실측](https://github.com/ensky0/tildaz/issues/357#issuecomment-5143421541)).
+/// 탭바에서 닫은 갈래가 메뉴에만 남아 있던 것을 여기서 닫는다.
 fn push(out: []ui_rect.Rect, n: *usize, r: ui_rect.Rect) void {
     if (n.* >= out.len) return; // 호출처 버퍼 상한 — `MAX_RECTS` 로 산정한다.
-    out[n.*] = r;
+    out[n.*] = ui_rect.snapped(r);
     n.* += 1;
 }
 
@@ -509,9 +515,11 @@ test "#343 rects — 정본 순서와 지오메트리 (배경 → 강조 → 구
     try std.testing.expectEqual(@as(f32, 304), with_hover[2].w);
     try std.testing.expectEqual(@as(f32, 1), with_hover[2].h);
     try std.testing.expectEqual(palette.separator, with_hover[2].color);
-    // 첫 구분선 [56,65) 의 중앙 = 60.5, 두 번째 [197,206) 의 중앙 = 201.5.
-    try std.testing.expectEqual(@as(f32, 60.5), with_hover[2].y);
-    try std.testing.expectEqual(@as(f32, 201.5), with_hover[3].y);
+    // 첫 구분선 [56,65) 의 중앙 = 60.5, 두 번째 [197,206) 의 중앙 = 201.5 →
+    // #357 로 **정수 격자에 맞춰** 61 / 202 로 나온다. 소수 `.5` 를 그대로 두면
+    // Linux(`@round` → 61) 와 GPU(`[60.5,61.5)` → 60) 가 갈렸다 (Windows 실측).
+    try std.testing.expectEqual(@as(f32, 61), with_hover[2].y);
+    try std.testing.expectEqual(@as(f32, 202), with_hover[3].y);
 
     // hover 도 focus 도 없으면 강조 rect 를 만들지 않는다.
     const plain = rects(&buf, v, .{ .open = true }, 1.0, &palette);
