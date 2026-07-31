@@ -82,7 +82,13 @@ const TextInstance = extern struct {
     fg_color: [4]f32,
     /// 0 = mono / ClearType (atlas RGB = subpixel mask, shader 가 fg_color 곱).
     /// 1 = color emoji (atlas RGB = 컬러, atlas A = alpha mask).
-    color_flag: f32 = 0.0,
+    ///
+    /// #359 — **기본값을 두지 않는다.** 기본값이 있으면 emit 자리에서 빠뜨려도
+    /// 컴파일이 통과하고, 빠뜨리면 색 emoji 가 조용히 mono 경로로 그려진다
+    /// (atlas 컬러가 subpixel mask 로 해석돼 `fg_color` 와 곱해지며 색이 죽는다).
+    /// 실제로 탭 제목 emit 이 그 함정에 빠져 있었다. macOS 는 같은 필드에 기본값이
+    /// 없어서 이 부류를 아예 겪지 않았다 — 그 규약에 맞춘다.
+    color_flag: f32,
 };
 
 // Constant buffer (must be 16-byte aligned, multiple of 16 bytes)
@@ -1052,6 +1058,8 @@ pub const D3d11Renderer = struct {
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = color,
+                    // 아이콘은 `tab_icons` 의 알파 커버리지라 mono 경로 (#359).
+                    .color_flag = 0,
                 };
                 n.* += 1;
             }
@@ -1547,6 +1555,7 @@ pub const D3d11Renderer = struct {
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = r.chrome.ctrl_active,
+                    .color_flag = 0, // 아이콘 — mono (#359)
                 };
                 n.* += 1;
             }
@@ -1605,6 +1614,7 @@ pub const D3d11Renderer = struct {
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = if (p.enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled,
+                    .color_flag = 0, // 스크롤 표시 아이콘 — mono (#359)
                 };
                 ind_n += 1;
             }
@@ -1634,6 +1644,10 @@ pub const D3d11Renderer = struct {
                             .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                             .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                             .fg_color = color,
+                            // #359 — command menu 의 label / hint. 지금은 ASCII
+                            // 고정 문자열만 오지만 텍스트 경로이므로 다른 emit 과
+                            // 같은 판정을 쓴다 (미발현 상태로 두지 않는다).
+                            .color_flag = if (entry.is_color) 1 else 0,
                         };
                         n.* += 1;
                     }
