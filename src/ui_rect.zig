@@ -43,6 +43,26 @@ pub fn snapped(r: Rect) Rect {
     };
 }
 
+/// #343 A-2 — 가로 clip. `[x, x+w)` 를 `[left, right)` 안으로 자르고, 왼쪽에서
+/// 잘려 나간 양(`cut_left`)을 함께 준다. `null` = 완전히 밖.
+///
+/// glyph 를 경계에서 **잘라** 안쪽만 그리는 데 쓴다. 이전에는 세 renderer 가
+/// glyph **원점**이 경계 밖이면 그 글자를 통째로 버렸다 — 경계에 걸친 글자는
+/// 안쪽에 보일 부분이 있어도 사라졌다 (macOS 실측: 좌측 부분 스크롤된 첫 탭의
+/// `\WW…` 가 `WW…` 로, Windows 는 배율에 따라 14~64px).
+///
+/// atlas 를 쓰는 renderer (macOS · Windows) 는 `cut_left` 만큼 **UV 도 같이** 민다
+/// — glyph quad 는 텍셀과 1:1 이라 픽셀 이동량이 곧 텍셀 이동량이다. software
+/// renderer (Linux) 는 비트맵 열 범위를 그만큼 좁힌다.
+pub const XClip = struct { x: f32, w: f32, cut_left: f32 };
+
+pub fn clipX(x: f32, w: f32, left: f32, right: f32) ?XClip {
+    const x0 = @max(x, left);
+    const x1 = @min(x + w, right);
+    if (x1 <= x0) return null;
+    return .{ .x = x0, .w = x1 - x0, .cut_left = x0 - x };
+}
+
 pub const IRect = struct { x: i32, y: i32, w: i32, h: i32 };
 
 /// 정수 rasterizer (Linux software renderer) 전용 변환. **양 끝을 각각 반올림한 뒤
@@ -108,4 +128,25 @@ test "#357 snapped 뒤에는 snap 이 no-op 이다 (#277 대비)" {
     try testing.expectEqual(@as(i32, @intFromFloat(r.w)), i.w);
     try testing.expectEqual(@as(i32, @intFromFloat(r.y)), i.y);
     try testing.expectEqual(@as(i32, @intFromFloat(r.h)), i.h);
+}
+
+test "#343 clipX — 경계에 걸친 조각만 남기고 UV 이동량을 준다" {
+    // 완전히 안쪽 — 그대로.
+    const inside = clipX(100, 10, 50, 200).?;
+    try testing.expectEqual(@as(f32, 100), inside.x);
+    try testing.expectEqual(@as(f32, 10), inside.w);
+    try testing.expectEqual(@as(f32, 0), inside.cut_left);
+    // 왼쪽에 걸침 — 잘린 만큼 x 가 밀리고 cut_left 로 UV 도 민다.
+    const l = clipX(45, 10, 50, 200).?;
+    try testing.expectEqual(@as(f32, 50), l.x);
+    try testing.expectEqual(@as(f32, 5), l.w);
+    try testing.expectEqual(@as(f32, 5), l.cut_left);
+    // 오른쪽에 걸침 — 폭만 줄고 UV 시작은 그대로.
+    const r = clipX(195, 10, 50, 200).?;
+    try testing.expectEqual(@as(f32, 195), r.x);
+    try testing.expectEqual(@as(f32, 5), r.w);
+    try testing.expectEqual(@as(f32, 0), r.cut_left);
+    // 완전히 밖 — null (이전의 all-or-nothing 과 같은 결과).
+    try testing.expect(clipX(10, 10, 50, 200) == null);
+    try testing.expect(clipX(200, 10, 50, 200) == null);
 }
