@@ -19,7 +19,9 @@ const ui_metrics = @import("../../ui_metrics.zig");
 const chrome_palette = @import("../../chrome_palette.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const tab_layout = @import("../../tab_layout.zig");
+const tab_chrome = @import("../../tab_chrome.zig");
 const tab_icons = @import("../../tab_icons.zig");
+const session_core = @import("../../session_core.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
@@ -793,16 +795,36 @@ pub const Renderer = struct {
                 .more_w = controls.more_w,
                 .more_x = controls.more_x,
             };
-            drawTabBarControls(
+            // #343 — 컨트롤 bg fill · hover 는 탭바 경로와 같은 `tab_chrome`
+            // (`buildControlsOnly`) 이 만든다. 탭바 전체 배경 · 밑줄 · 구분선은
+            // 단일 탭 overlay 에 없으므로 컨트롤 구간만 쓴다.
+            const overlay_in = tab_chrome.Inputs{
+                .viewport_w = @floatFromInt(width),
+                .tab_bar_h = @floatFromInt(self.chromeHeightPx()),
+                .tab_w = 0,
+                .sep_w = 0,
+                .underline_h = 0,
+                .hover_inset = @round(ui_metrics.tabGapPx(self.scale).control_hover_inset),
+                .tab_count = 0,
+                .active_idx = 0,
+                .scroll_x = 0,
+                .drag = null,
+                .layout = overlay_layout,
+                .hover = tab_hover,
+                .palette = &self.chrome,
+            };
+            var overlay_rects: [tab_chrome.maxRects(0)]tab_chrome.Rect = undefined;
+            for (tab_chrome.buildControlsOnly(&overlay_rects, overlay_in)) |r| {
+                fillChromeRect(memory, width, height, stride, r);
+            }
+            drawTabBarControlIcons(
                 memory,
                 width,
                 height,
                 stride,
                 self.chromeHeightPx(),
                 overlay_layout,
-                tab_hover,
                 self.scale,
-                &self.tab_font_ctx,
                 &self.chrome,
             );
         }
@@ -1281,13 +1303,36 @@ fn drawTabBar(
 ) void {
     if (tab_bar_h <= 0 or fb_w <= 0 or titles.len == 0) return;
     const tab_bar_bg = rgbFromMetrics(chrome.tab_bar_bg);
-    rect(memory, fb_w, fb_h, stride, 0, 0, fb_w, tab_bar_h, tab_bar_bg);
 
-    // amber accent 는 브랜드 색이라 파생하지 않는다 (#335 2026-07-28 확정).
-    const accent = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
+    // #343 — rect 목록과 그 순서는 공통 `tab_chrome` 이 만든다. 여기서는 그것을
+    // 정수로 스냅해 그리고, 사이사이에 이 renderer 고유인 텍스트 / 아이콘을 끼운다.
+    //
+    // 넘기는 metric 은 **이 renderer 가 쓰던 값 그대로**다 (`scaledPt` 로 이미
+    // 반올림된 정수). f32 renderer 는 소수를 그대로 넘긴다 — 모듈은 단위에
+    // 관여하지 않고 받은 값으로 rect 를 만든다. 입력 metric 자체의 정수/소수
+    // 갈래는 별 항목이다 (#343 코멘트).
     const underline_px: i32 = @max(1, scaledPt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale));
     const sep_w_px: i32 = @max(1, scaledPt(ui_metrics.TAB_SEPARATOR_W_PT, scale));
-    const separator = rgbFromMetrics(chrome.separator);
+    const hover_inset_px: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).control_hover_inset));
+    const chrome_in = tab_chrome.Inputs{
+        .viewport_w = @floatFromInt(fb_w),
+        .tab_bar_h = @floatFromInt(tab_bar_h),
+        .tab_w = @floatFromInt(tab_w),
+        .sep_w = @floatFromInt(sep_w_px),
+        .underline_h = @floatFromInt(underline_px),
+        .hover_inset = @floatFromInt(hover_inset_px),
+        .tab_count = titles.len,
+        .active_idx = active_idx,
+        .scroll_x = scroll_x,
+        .drag = drag_view,
+        .layout = layout,
+        .hover = tab_hover,
+        .palette = chrome,
+    };
+    var chrome_rects: [tab_chrome.maxRects(session_core.MAX_TABS)]tab_chrome.Rect = undefined;
+    const built = tab_chrome.build(&chrome_rects, chrome_in);
+    for (built.rects[0..built.before_titles]) |r| fillChromeRect(memory, fb_w, fb_h, stride, r);
+
     // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
     // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
     const text_color = rgbFromMetrics(chrome.tab_text);
@@ -1304,66 +1349,29 @@ fn drawTabBar(
     const tab_area_x: i32 = @intFromFloat(layout.tab_area_x);
     const tab_area_w: i32 = @intFromFloat(layout.tab_area_w);
     const tab_area_end: i32 = tab_area_x + tab_area_w;
-    const scroll_x_i: i32 = @intFromFloat(scroll_x);
 
-    // --- 각 탭 (tab_area 안에서 clipping) ---
+    // --- 각 탭의 제목 (tab_area 안에서 clipping) ---
+    // #343 — 탭 배경 · amber 밑줄은 `tab_chrome` 이 위에서 이미 그렸다. 여기 남은
+    // 것은 이 renderer 고유인 glyph 그리기뿐이다. 탭 x 와 화면 밖 판정도 공통
+    // 모듈(`tabX` / `tabClip`) 을 쓴다 — 밑줄과 제목이 어긋나지 않게 한다.
     for (titles, 0..) |title, i| {
-        // #297 B3 — drag 중인 탭은 마우스 x 를 따라 이동 (Windows/macOS 의
-        // `current_x - tab_w/2 - scroll + tab_area_x` 와 동일 식). 나머지
-        // 탭은 world 슬롯 고정 — source 슬롯엔 TAB_BAR_BG 가 남아 원위치 표시.
-        const is_drag_source = if (drag_view) |dv| dv.tab_index == i else false;
-
-        // tab 의 world (scroll-relative) 좌측. tab_area_x 더하면 surface 좌표.
-        const tab_world_x: i32 = if (is_drag_source)
-            drag_view.?.current_x - @divTrunc(tab_w, 2)
-        else
-            @as(i32, @intCast(i)) * tab_w;
-        const tab_screen_x: i32 = tab_area_x + tab_world_x - scroll_x_i;
-        // tab 전체가 tab_area 밖이면 skip/stop — clipping 효과. drag 활성 시
-        // loop 전체의 x 단조성이 깨지므로 우측 밖 일반 탭에서도 계속 진행한다.
-        switch (tabClipDecision(tab_screen_x, tab_w, tab_area_x, tab_area_end, drag_view != null)) {
+        const tab_screen_x: i32 = @intFromFloat(tab_chrome.tabX(i, chrome_in));
+        switch (tab_chrome.tabClip(
+            @floatFromInt(tab_screen_x),
+            @floatFromInt(tab_w),
+            @floatFromInt(tab_area_x),
+            @floatFromInt(tab_area_end),
+            drag_view != null,
+        )) {
             .skip => continue,
             .stop => break,
             .draw => {},
         }
 
         const tab_x: i32 = tab_screen_x + tab_x_inset;
-        const is_active = i == active_idx;
         // #334 (2026-07-22 개편) — 탭 배경은 탭바와 같은 색이라 따로 그리지
         // 않는다 (Tilda 문법). 글리프 알파 블렌드 배경도 tab_bar_bg.
         const bg = tab_bar_bg;
-        if (is_active) {
-            // #334 — 활성 탭 amber 밑줄. #342 로 가로 경계선이 없어져 탭바
-            // **맨 아래 모서리**. drag 중이면 drag 위치를 따라간다.
-            // tab_area 경계 clip 은 배경과 같은 방식.
-            //
-            // #342 — 세로 구분선을 나중에 덮어 가리지 않고 **밑줄 자체를 줄인다**.
-            // 정수 렌더러라 세로선은 `[b − divTrunc(w,2), b − divTrunc(w,2) + w)`
-            // 를 차지한다 — 슬롯 안으로 들어오는 양이 왼쪽 `w − divTrunc(w,2)`,
-            // 오른쪽 `divTrunc(w,2)` 로 **w 가 홀수면 비대칭** (w=1 이면 좌 1 / 우 0).
-            // f32 renderer 의 좌우 `w/2` 대칭과 다르므로 여기서 따로 계산한다.
-            // 선이 실제로 그려지는 경계인지는 세로선 루프와 같은 판정을 쓴다.
-            const sep_half_lo: i32 = @divTrunc(sep_w_px, 2);
-            const edges = tab_layout.activeUnderlineEdges(
-                i,
-                titles.len,
-                is_drag_source,
-                layout.arrows_visible,
-                @floatFromInt(tab_area_x),
-                @floatFromInt(tab_area_end),
-                @floatFromInt(tab_w),
-                @floatFromInt(scroll_x_i),
-            );
-            const cut_l: i32 = if (edges.inset_left) sep_w_px - sep_half_lo else 0;
-            const cut_r: i32 = if (edges.inset_right) sep_half_lo else 0;
-            const u_x: i32 = tab_screen_x + cut_l;
-            const u_w: i32 = tab_w - cut_l - cut_r;
-            const u_clip_x: i32 = @max(u_x, tab_area_x);
-            const u_clip_w: i32 = @min(u_x + u_w, tab_area_end) - u_clip_x;
-            if (u_clip_w > 0) {
-                rect(memory, fb_w, fb_h, stride, u_clip_x, tab_bar_h - underline_px, u_clip_w, underline_px, accent);
-            }
-        }
 
         // L12-γ-2/3 — title text 그리기를 cross-platform `tab_layout.
         // iterTabText` 로 — truncate ellipsis 자동. mac / win renderer 의
@@ -1446,88 +1454,41 @@ fn drawTabBar(
         );
     }
 
-    // --- arrow / plus 버튼 ---
-    drawTabBarControls(memory, fb_w, fb_h, stride, tab_bar_h, layout, tab_hover, scale, font_ctx, chrome);
-    // #342 — 가로 경계선이 제거되어 컨트롤 fill 뒤 재-그리기도 함께 사라졌다.
-    // #334 — 탭 슬롯 경계 세로 구분선. **모두 중심 정렬** — 모든 슬롯이
-    // 좌우 절반씩 균등 부담해 탭의 보이는 폭이 전부 동일하다 (안쪽 정렬은
-    // 끝 탭만 좁아져 기각 — 사용자 지적). 컨트롤 fill·amber 밑줄 **뒤에**
-    // 그려 화살표 옆에서도, 활성 탭 위에서도 항상 온전한 두께. world(슬롯)
-    // 기준 고정이라 drag 중 빈 원위치 슬롯의 경계도 유지된다. 화살표 옆에는
-    // 끝 탭이 완전히 보일 때만 (슬롯 경계 정렬 시) 선이 온다 — overflow
-    // 에서는 첫 탭의 왼쪽 경계(bi=0)도 후보.
-    {
-        var bi: usize = 0;
-        while (bi <= titles.len) : (bi += 1) {
-            // #342 — 밑줄 inset 과 같은 판정 (단일 정의). i32 를 그대로 승격해
-            // 넘겨 정수 비교와 결과가 어긋나지 않게 한다.
-            if (!tab_layout.hasSeparator(
-                bi,
-                titles.len,
-                layout.arrows_visible,
-                @floatFromInt(tab_area_x),
-                @floatFromInt(tab_area_end),
-                @floatFromInt(tab_w),
-                @floatFromInt(scroll_x_i),
-            )) continue;
-            const x = tab_area_x + @as(i32, @intCast(bi)) * tab_w - scroll_x_i;
-            // #342 — 가로 경계선이 없어져 탭바 전체 높이. 밑줄이 이미 물러나
-            // 있으므로 겹치는 픽셀이 없다.
-            rect(memory, fb_w, fb_h, stride, x - @divTrunc(sep_w_px, 2), 0, sep_w_px, tab_bar_h, separator);
-        }
-    }
+    // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선. 순서와
+    // 지오메트리는 `tab_chrome` 이 정한다 (세 renderer 정본 순서).
+    for (built.rects[built.before_titles..]) |r| fillChromeRect(memory, fb_w, fb_h, stride, r);
+    // 아이콘은 이 renderer 고유 (알파 커버리지 비트맵을 직접 blit) — 마지막.
+    drawTabBarControlIcons(memory, fb_w, fb_h, stride, tab_bar_h, layout, scale, chrome);
 }
 
-/// `<` / `>` / `×` / `+` 버튼 그리기. 제목을 그린 뒤 컨트롤 전체 box를
-/// TAB_BAR_BG로 먼저 채워 탭 viewport 밖 glyph 픽셀을 가리고, 그 위에 hover와
-/// 아이콘을 그린다. macOS / Windows renderer와 같은 layer 순서.
-fn drawTabBarControls(
+/// #343 — `tab_chrome.Rect` (f32) 를 정수 격자에 스냅해 그린다. 스냅 규칙은
+/// `tab_chrome.snap` 한 곳에만 있다 (#344 의 `scrollbar.thumbPx` 와 같은 계약).
+fn fillChromeRect(memory: []u8, fb_w: i32, fb_h: i32, stride: i32, r: tab_chrome.Rect) void {
+    const i = tab_chrome.snap(r);
+    rect(memory, fb_w, fb_h, stride, i.x, i.y, i.w, i.h, rgbFromMetrics(r.color));
+}
+
+/// `<` / `>` / `×` / `+` / `…` **아이콘** 그리기. 컨트롤 bg fill 과 hover 박스는
+/// #343 이후 공통 `tab_chrome` 이 rect 로 만들고 호출처가 이 함수 **직전에** 그린다
+/// — 여기 남은 것은 알파 커버리지 비트맵 blit (이 renderer 고유) 뿐이다.
+fn drawTabBarControlIcons(
     memory: []u8,
     fb_w: i32,
     fb_h: i32,
     stride: i32,
     tab_bar_h: i32,
     layout: tab_layout.Layout,
-    tab_hover: tab_layout.Area,
     scale: f32,
-    _: *font.Context,
     /// #335 — theme 배경에서 파생한 chrome 색 (`Renderer.chrome`).
     chrome: *const chrome_palette.Palette,
 ) void {
+    // 아이콘 알파를 섞을 배경 — 바로 앞 layer 인 컨트롤 bg fill 과 같은 색.
     const bg = rgbFromMetrics(chrome.tab_bar_bg);
     // mac / win 동등 — enabled = `ctrl_active` (밝은 흰색), disabled =
     // `arrow_disabled` (회색). scroll 왼쪽 끝이면 `<` 회색, 우측 끝이면 `>` 회색.
     // `+` 는 MAX_TABS 도달 시 회색 (#329).
     const active_color = rgbFromMetrics(chrome.ctrl_active);
     const disabled_color = rgbFromMetrics(chrome.arrow_disabled);
-
-    // 탭 제목 뒤에 컨트롤 배경을 다시 그려 tab_area 경계를 실제 clip처럼 만든다.
-    // glyph 시작점만 tab_area_end 안에 있고 bitmap 끝이 경계를 넘는 경우도 이
-    // layer가 덮으므로, 탭과 `>` 사이 separator에는 TAB_BAR_BG만 남는다.
-    const fillControlBg = struct {
-        fn call(
-            mem: []u8,
-            w: i32,
-            h: i32,
-            s: i32,
-            x: f32,
-            box_w: f32,
-            bar_h: i32,
-            color: ghostty.color.RGB,
-        ) void {
-            const x_i: i32 = @intFromFloat(x);
-            const box_w_i: i32 = @intFromFloat(box_w);
-            if (box_w_i <= 0) return;
-            rect(mem, w, h, s, x_i, 0, box_w_i, bar_h, color);
-        }
-    }.call;
-    if (layout.arrows_visible) {
-        fillControlBg(memory, fb_w, fb_h, stride, layout.left_arrow_x, layout.arrow_w, tab_bar_h, bg);
-        fillControlBg(memory, fb_w, fb_h, stride, layout.right_arrow_x, layout.arrow_w, tab_bar_h, bg);
-    }
-    fillControlBg(memory, fb_w, fb_h, stride, layout.close_x, layout.close_w, tab_bar_h, bg);
-    fillControlBg(memory, fb_w, fb_h, stride, layout.plus_x, layout.plus_w, tab_bar_h, bg);
-    fillControlBg(memory, fb_w, fb_h, stride, layout.more_x, layout.more_w, tab_bar_h, bg);
 
     // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
     // 알파 커버리지 비트맵으로 만든 뒤 box 중앙에 blit (폰트 독립). mac/win 은
@@ -1572,60 +1533,6 @@ fn drawTabBarControls(
             }
         }
     }.call;
-
-    // #268 2b — hover 강조 박스 (아이콘보다 먼저 → 아이콘이 위에). software
-    // 렌더러엔 알파 블렌드 rect 가 없지만 박스 밑이 균일한 TAB_BAR_BG 라
-    // 미리 섞은 단색이 픽셀 동일 (`TAB_CTRL_HOVER_BG` 알파 12%).
-    {
-        var hover_x: f32 = -1;
-        var hover_w: f32 = 0;
-        switch (tab_hover) {
-            .plus => {
-                hover_x = layout.plus_x;
-                hover_w = layout.plus_w;
-            },
-            .close => {
-                hover_x = layout.close_x;
-                hover_w = layout.close_w;
-            },
-            .more => {
-                hover_x = layout.more_x;
-                hover_w = layout.more_w;
-            },
-            .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
-                hover_x = layout.left_arrow_x;
-                hover_w = layout.arrow_w;
-            },
-            .right_arrow => if (layout.arrows_visible and layout.right_enabled) {
-                hover_x = layout.right_arrow_x;
-                hover_w = layout.arrow_w;
-            },
-            .tab_area, .none => {},
-        }
-        const hover_inset: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).control_hover_inset));
-        const hover_x_i: i32 = @intFromFloat(hover_x);
-        const hover_w_i: i32 = @intFromFloat(hover_w);
-        if (hover_w_i > hover_inset * 2) {
-            // #335 — 이전엔 `TAB_CTRL_HOVER_BG` 의 알파(12%)를 여기서 흰색과
-            // 미리 섞었다. 이제 파생 팔레트가 합성 결과를 solid 로 주므로 그대로
-            // 그린다 (세 platform 이 같은 8-bit 값 — mac/win 은 GPU 블렌드 대신
-            // 불투명 rect).
-            const hover_bg = rgbFromMetrics(chrome.ctrl_hover_bg);
-            rect(
-                memory,
-                fb_w,
-                fb_h,
-                stride,
-                hover_x_i + hover_inset,
-                hover_inset,
-                hover_w_i - hover_inset * 2,
-                // #342 — 가로 경계선이 사라져 하단 보정(`hover_bottom_extra`)이
-                // 불필요해졌다. 탭바 상하 기준 그대로 대칭.
-                @max(tab_bar_h - hover_inset * 2, 1),
-                hover_bg,
-            );
-        }
-    }
 
     if (layout.arrows_visible) {
         const left_x: i32 = @intFromFloat(layout.left_arrow_x);
