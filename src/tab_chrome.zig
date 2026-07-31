@@ -7,8 +7,8 @@
 //! 편집을 세 번 해야 했다.
 //!
 //! 여기서 만드는 것은 **rect 목록과 그 순서** 뿐이다. 계산·판정은 이미 공유
-//! 모듈이 담당한다 — `tab_layout` (버튼 layout / hit-test / `hasSeparator` /
-//! `activeUnderlineEdges`), `tab_icons` (아이콘 비트맵), `chrome_palette` (색),
+//! 모듈이 담당한다 — `tab_layout` (버튼 layout / hit-test / `hasSeparator`),
+//! `tab_icons` (아이콘 비트맵), `chrome_palette` (색),
 //! `ui_metrics` (pt→px). 텍스트와 아이콘만 renderer 고유로 남는다 (glyph atlas
 //! vs 직접 rasterize).
 //!
@@ -79,9 +79,10 @@ pub const Chrome = struct {
 };
 
 /// `build` 가 만들 수 있는 rect 최대 개수 — 호출처 고정 버퍼 크기 산정용.
-/// 탭바 배경 1 + 밑줄 1 + 컨트롤 fill 5 + hover 1 + 구분선 `tab_count + 1`.
+/// 탭바 배경 1 + 밑줄 **최대 3조각** (세로선 2개가 가로지르는 드래그 중) +
+/// 컨트롤 fill 5 + hover 1 + 구분선 `tab_count + 1`.
 pub fn maxRects(tab_count: usize) usize {
-    return 8 + tab_count + 1;
+    return 10 + tab_count + 1;
 }
 
 /// 탭 `i` 의 화면 x. drag 중인 탭은 포인터를 따라간다 (나머지는 world 슬롯 고정 —
@@ -113,6 +114,58 @@ fn push(out: []Rect, n: *usize, r: Rect) void {
     n.* += 1;
 }
 
+/// 활성 탭 amber 밑줄을 **세로 구분선과 겹치지 않게** 조각으로 낸다.
+///
+/// 이전에는 한 밑줄에 두 방식이 섞여 있었다 — 슬롯에 정렬된 평상시에는 밑줄이 양
+/// 끝에서 `sep_w/2` 씩 물러났고 ([#342](https://github.com/ensky0/tildaz/issues/342)),
+/// 슬롯에 정렬되지 않는 **드래그 중**에는 물러날 자리가 없어 세로선을 밑줄 *뒤에*
+/// 그려 덮어 가렸다 ([#334](https://github.com/ensky0/tildaz/issues/334)). 뒤쪽은
+/// 지오메트리가 아니라 그리기 순서에 기대는 overdraw 라 AGENTS.md `# 근본 해결 원칙`
+/// 에 어긋난다 — 순서가 조금만 바뀌면 조용히 깨진다.
+///
+/// 지금은 두 경우가 같은 규칙이다: 밑줄 구간에서 세로선이 차지하는 x 를 빼고 남은
+/// 조각만 emit 한다. **세로선은 온전히 유지되고 밑줄이 그 사이에만 그려진다**
+/// (2026-07-31 사용자 결정).
+///
+/// - 정렬된 경우 결과가 이전의 `sep_w/2` 물러남과 **정확히 같다** (조각 1개) —
+///   `tab_layout.activeUnderlineEdges` 가 하던 판정을 이 분할이 포섭하므로 그 함수는
+///   더 이상 필요 없다. 판정 술어는 세로선 emit 과 같은 `hasSeparator` 하나다.
+/// - 드래그 중에는 조각이 2~3개가 되고, 화면 결과는 덮어 가리던 것과 같다 —
+///   **픽셀은 그대로, overdraw 만 없어진다.**
+fn pushUnderlineSegments(out: []Rect, n: *usize, in: Inputs, left: f32, right: f32, area_left: f32, area_right: f32) void {
+    // tab_area 로 명시 clip — 컨트롤 영역까지 그려 놓고 나중에 덮지 않는다.
+    var seg_x = @max(left, area_left);
+    const seg_end = @min(right, area_right);
+    if (seg_end <= seg_x) return;
+
+    const y = in.tab_bar_h - in.underline_h;
+    var bi: usize = 0;
+    while (bi <= in.tab_count) : (bi += 1) {
+        if (!tab_layout.hasSeparator(
+            bi,
+            in.tab_count,
+            in.layout.arrows_visible,
+            area_left,
+            area_right,
+            in.tab_w,
+            in.scroll_x,
+        )) continue;
+        // 세로선이 차지하는 구간 — emit 과 같은 식 (중심 정렬).
+        const s0 = area_left + @as(f32, @floatFromInt(bi)) * in.tab_w - in.scroll_x - in.sep_w * 0.5;
+        const s1 = s0 + in.sep_w;
+        if (s1 <= seg_x) continue; // 아직 밑줄 왼쪽 밖
+        if (s0 >= seg_end) break; // 경계는 x 오름차순 — 더 볼 것 없다
+        if (s0 > seg_x) {
+            push(out, n, .{ .x = seg_x, .y = y, .w = s0 - seg_x, .h = in.underline_h, .color = ui_metrics.TAB_ACCENT_COLOR });
+        }
+        seg_x = @max(seg_x, s1);
+        if (seg_x >= seg_end) return;
+    }
+    if (seg_x < seg_end) {
+        push(out, n, .{ .x = seg_x, .y = y, .w = seg_end - seg_x, .h = in.underline_h, .color = ui_metrics.TAB_ACCENT_COLOR });
+    }
+}
+
 pub fn build(out: []Rect, in: Inputs) Chrome {
     var n: usize = 0;
     const area_left = in.layout.tab_area_x;
@@ -129,38 +182,11 @@ pub fn build(out: []Rect, in: Inputs) Chrome {
     });
 
     // 2. 활성 탭 amber 밑줄 — 활성 구분의 유일한 표시 (#334). #342 로 가로
-    //    경계선이 없어져 탭바 **맨 아래 모서리**. 세로 구분선과 겹치지 않도록
-    //    밑줄 자체가 물러난다 (덮어 가리기가 아니라 지오메트리, #342).
+    //    경계선이 없어져 탭바 **맨 아래 모서리**. 세로 구분선과 겹치는 구간을
+    //    빼고 조각으로 낸다 (아래 `pushUnderlineSegments`).
     if (in.active_idx < in.tab_count) {
         const tx = tabX(in.active_idx, in);
-        const is_dragged = if (in.drag) |d| d.tab_index == in.active_idx else false;
-        const edges = tab_layout.activeUnderlineEdges(
-            in.active_idx,
-            in.tab_count,
-            is_dragged,
-            in.layout.arrows_visible,
-            area_left,
-            area_right,
-            in.tab_w,
-            in.scroll_x,
-        );
-        const half = in.sep_w * 0.5;
-        const cut_l: f32 = if (edges.inset_left) half else 0;
-        const cut_r: f32 = if (edges.inset_right) half else 0;
-        const ux = tx + cut_l;
-        const uw = in.tab_w - cut_l - cut_r;
-        // tab_area 로 명시 clip — 컨트롤 영역까지 그려 놓고 나중에 덮지 않는다.
-        const cx = @max(ux, area_left);
-        const cw = @min(ux + uw, area_right) - cx;
-        if (cw > 0) {
-            push(out, &n, .{
-                .x = cx,
-                .y = in.tab_bar_h - in.underline_h,
-                .w = cw,
-                .h = in.underline_h,
-                .color = ui_metrics.TAB_ACCENT_COLOR,
-            });
-        }
+        pushUnderlineSegments(out, &n, in, tx, tx + in.tab_w, area_left, area_right);
     }
 
     const before_titles = n;
@@ -451,6 +477,48 @@ test "buildControlsOnly — 단일 탭 overlay 는 컨트롤 rect 만" {
     try testing.expectEqual(@as(usize, 4), rects.len);
     for (rects[0..3]) |r| try testing.expectEqual(p.tab_bar_bg, r.color);
     try testing.expectEqual(p.ctrl_hover_bg, rects[3].color);
+}
+
+test "#343 밑줄이 세로선 자리를 비우고 조각으로 나온다 — 정렬 시 조각 1개" {
+    const p = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    var in = testInputs(&p);
+    in.active_idx = 1; // 양쪽 경계(150 / 300)에 세로선이 있는 가운데 탭
+    var buf: [32]Rect = undefined;
+    const c = build(&buf, in);
+
+    // 밑줄 조각은 정확히 1개 (배경 다음).
+    try testing.expectEqual(@as(usize, 2), c.before_titles);
+    const u = c.rects[1];
+    // 이전 `sep_w/2` 물러남과 같은 값 — 150.5 .. 299.5.
+    try testing.expectEqual(@as(f32, 150.5), u.x);
+    try testing.expectEqual(@as(f32, 149), u.w);
+}
+
+test "#343 드래그 중 밑줄은 세로선을 비껴 2~3 조각이 되고 세로선과 겹치지 않는다" {
+    const p = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    var in = testInputs(&p);
+    in.active_idx = 1;
+    // 슬롯에 정렬되지 않은 위치로 드래그 — 밑줄 span 200..350 이 경계 300 을 지난다.
+    in.drag = .{ .tab_index = 1, .current_x = 275 };
+    var buf: [32]Rect = undefined;
+    const c = build(&buf, in);
+
+    const segs = c.rects[1..c.before_titles];
+    try testing.expectEqual(@as(usize, 2), segs.len);
+    // 경계 300 의 세로선 [299.5, 300.5) 를 비운다.
+    try testing.expectEqual(@as(f32, 200), segs[0].x);
+    try testing.expectEqual(@as(f32, 99.5), segs[0].w); // 200 .. 299.5
+    try testing.expectEqual(@as(f32, 300.5), segs[1].x);
+    try testing.expectEqual(@as(f32, 49.5), segs[1].w); // 300.5 .. 350
+
+    // 어떤 조각도 세로선 rect 와 겹치지 않는다 — overdraw 가 아니라 지오메트리.
+    for (segs) |u| {
+        for (c.rects[c.before_titles..]) |r| {
+            if (!std.meta.eql(r.color, p.separator)) continue;
+            const overlap = @min(u.x + u.w, r.x + r.w) - @max(u.x, r.x);
+            try testing.expect(overlap <= 0);
+        }
+    }
 }
 
 test "tabClip — drag 중에는 우측 밖에서도 stop 하지 않는다" {

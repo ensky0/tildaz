@@ -248,38 +248,6 @@ pub fn hasSeparator(
     return x >= tab_area_x and x <= tab_area_end;
 }
 
-/// 활성 탭 amber 밑줄이 세로 구분선과 겹치지 않도록 양 끝에서 물러날지 (#342).
-///
-/// 세로선은 경계에 **중심 정렬**돼 슬롯 안쪽으로 일부가 들어온다 (안쪽 정렬은
-/// 끝 탭만 좁아져 #334 에서 기각). 물러날 **양**은 renderer 의 수 체계마다 달라
-/// 여기서 정하지 않는다 — f32 renderer 는 좌우 `w/2` 로 대칭이지만, 정수
-/// 렌더러는 `w − divTrunc(w,2)` / `divTrunc(w,2)` 로 `w` 가 홀수면 비대칭이다.
-/// 이 함수는 *어느 쪽에 선이 있는지*만 알려주고 양은 호출처가 자기 좌표계로 뺀다.
-///
-/// drag 중인 탭은 `current_x − tab_w/2` 라 슬롯 경계에 정렬되지 않는다. 양 끝에
-/// 접하는 선이 없으므로 물러나지 않는다 (슬롯 폭 전체).
-pub const UnderlineEdges = struct {
-    inset_left: bool,
-    inset_right: bool,
-};
-
-pub fn activeUnderlineEdges(
-    active_index: usize,
-    tab_count: usize,
-    dragging: bool,
-    arrows_visible: bool,
-    tab_area_x: f32,
-    tab_area_end: f32,
-    tab_w: f32,
-    scroll_x: f32,
-) UnderlineEdges {
-    if (dragging) return .{ .inset_left = false, .inset_right = false };
-    return .{
-        .inset_left = hasSeparator(active_index, tab_count, arrows_visible, tab_area_x, tab_area_end, tab_w, scroll_x),
-        .inset_right = hasSeparator(active_index + 1, tab_count, arrows_visible, tab_area_x, tab_area_end, tab_w, scroll_x),
-    };
-}
-
 test "#342 separator skips the strip's left edge unless arrows are visible" {
     // 탭 4개 × 150, 화살표 없음, scroll 0 — 경계 1..4 만 선.
     try std.testing.expect(!hasSeparator(0, 4, false, 0, 600, 150, 0));
@@ -297,28 +265,6 @@ test "#342 separator is clipped outside the tab area" {
     // 오른쪽 끝과 정확히 정렬되면 (== tab_area_end) 그린다.
     try std.testing.expect(hasSeparator(2, 4, false, 0, 300, 150, 0));
     try std.testing.expect(!hasSeparator(3, 4, false, 0, 300, 150, 0));
-}
-
-test "#342 active underline insets only on edges that actually have a separator" {
-    // 첫 탭 활성 + 화살표 없음 → 왼쪽 경계(bi=0)엔 선이 없어 물러나지 않는다.
-    const first = activeUnderlineEdges(0, 4, false, false, 0, 600, 150, 0);
-    try std.testing.expect(!first.inset_left);
-    try std.testing.expect(first.inset_right);
-
-    // 가운데 탭은 양쪽 다.
-    const middle = activeUnderlineEdges(1, 4, false, false, 0, 600, 150, 0);
-    try std.testing.expect(middle.inset_left);
-    try std.testing.expect(middle.inset_right);
-
-    // 마지막 탭 — 오른쪽 경계가 tab_area 끝과 정렬되면 선이 있다.
-    const last = activeUnderlineEdges(3, 4, false, false, 0, 600, 150, 0);
-    try std.testing.expect(last.inset_left);
-    try std.testing.expect(last.inset_right);
-
-    // drag 중이면 슬롯 경계에 정렬되지 않으므로 양쪽 다 물러나지 않는다.
-    const dragged = activeUnderlineEdges(1, 4, true, false, 0, 600, 150, 0);
-    try std.testing.expect(!dragged.inset_left);
-    try std.testing.expect(!dragged.inset_right);
 }
 
 test "#329 tab controls are ordered plus close more and use half-open hit bounds" {
