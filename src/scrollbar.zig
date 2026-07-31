@@ -8,6 +8,9 @@
 //! 위 좁은 띠에서만 잡힘)했다. 이 모듈로 수렴하면서 그 버그를 함께 고친다.
 
 const std = @import("std");
+const ui_rect = @import("ui_rect.zig");
+const ui_metrics = @import("ui_metrics.zig");
+const themes = @import("themes.zig");
 
 /// thumb 의 세로 geometry. track_top 기준 상대 좌표.
 pub const Geom = struct {
@@ -257,4 +260,53 @@ test "#344 the old two-truncation approach loses a pixel at the bottom" {
 
     const t = thumbPx(tr.top, g);
     try std.testing.expectEqual(exact_bottom, t.top + t.h); // 새 방식은 정확히 도달
+}
+
+/// #343 단계 2 — 터미널 우측 scrollbar thumb 의 **사각형과 색**. 세 renderer 가
+/// 이 함수 하나를 호출한다. `null` = 스크롤백이 없어 그리지 않음 (`hit` 과 동일 판정).
+///
+/// 이전에는 세 renderer 가 각자 `hit` → `thumb()` → 색 합성 → rect 방출을 적어
+/// 뒀다. 계산(`hit` / `thumbPx`, #344) 과 색(`ui_metrics.scrollbarColor`, #346·#353)
+/// 은 이미 공유였고 **마지막 rect 한 줄과 색 3줄만 삼중**이었다 — 그것을 없앤다.
+///
+/// 색 판정 입력은 terminal 의 현재 배경 (OSC 11 · reverse_colors 반영) 이라 셸이
+/// 배경을 바꾸면 thumb 도 따라 전환된다 (#346). 합성은 `scrollbarColor` 가 끝내므로
+/// 알파는 1.0 — renderer 의 blend unit 정밀도 차이를 타지 않는다 (#353).
+pub fn thumbRect(
+    total: usize,
+    len: usize,
+    offset: usize,
+    viewport_w: f64,
+    viewport_h: f64,
+    track_top: f64,
+    pad: f64,
+    min_thumb_h: f64,
+    sb_w: f64,
+    terminal_bg: [3]u8,
+) ?ui_rect.Rect {
+    const h = hit(total, len, offset, viewport_h, track_top, pad, min_thumb_h) orelse return null;
+    const t = h.thumb();
+    const dark = themes.isDarkRgb(terminal_bg[0], terminal_bg[1], terminal_bg[2]);
+    const c = ui_metrics.scrollbarColor(terminal_bg, dark);
+    const f = struct {
+        fn v(x: u8) f32 {
+            return @as(f32, @floatFromInt(x)) / 255.0;
+        }
+    }.v;
+    return .{
+        .x = @floatCast(viewport_w - sb_w),
+        .y = @floatCast(t.top),
+        .w = @floatCast(sb_w),
+        .h = @floatCast(t.h),
+        .color = .{ f(c[0]), f(c[1]), f(c[2]), 1 },
+    };
+}
+
+test "thumbRect — 스크롤백 없으면 null, 있으면 우측 끝에 붙는다" {
+    try std.testing.expect(thumbRect(10, 10, 0, 800, 600, 0, 6, 32, 10, .{ 0, 0, 0 }) == null);
+    const r = thumbRect(1000, 60, 0, 800, 600, 0, 6, 32, 10, .{ 0, 0, 0 }).?;
+    try std.testing.expectEqual(@as(f32, 790), r.x);
+    try std.testing.expectEqual(@as(f32, 10), r.w);
+    // 어두운 배경 → 흰색 30% 합성 = 77 (#353).
+    try std.testing.expectEqual(@as(f32, 77.0 / 255.0), r.color[0]);
 }
