@@ -18,6 +18,8 @@ const perf = @import("../perf.zig");
 const log = @import("../log.zig");
 const display_width = @import("../font/display_width.zig");
 const tab_layout = @import("../tab_layout.zig");
+const tab_chrome = @import("../tab_chrome.zig");
+const session_core = @import("../session_core.zig");
 const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
@@ -64,6 +66,12 @@ const BgInstance = extern struct {
     /// 글리프 fallback 보다 일관성 (font 무관).
     shade: f32 = 0,
 };
+
+/// #343 — 공통 `tab_chrome.Rect` 를 D3D11 `BgInstance` 로. 필드가 이미 같은
+/// shape 라 옮기기만 한다 (`shade` 는 기본값 0 = solid fill).
+fn bgFromChrome(r: tab_chrome.Rect) BgInstance {
+    return .{ .pos = .{ r.x, r.y }, .size = .{ r.w, r.h }, .color = r.color };
+}
 
 const TextInstance = extern struct {
     pos: [2]f32,
@@ -865,62 +873,35 @@ pub const D3d11Renderer = struct {
         const clear_color = [4]d3d.FLOAT{ frame_bg[0], frame_bg[1], frame_bg[2], 1.0 };
         self.ctx.ClearRenderTargetView(rtv, &clear_color);
 
-        // Build background instances for tab bar
+        // #343 — rect 목록과 그 순서는 공통 `tab_chrome` 이 만든다. 여기서는
+        // `BgInstance` 로 옮기고, 사이사이에 이 renderer 고유인 텍스트 / 아이콘
+        // batch 를 끼운다 (`before_titles` 경계).
+        const chrome_in = tab_chrome.Inputs{
+            .viewport_w = w_f,
+            .tab_bar_h = tbh,
+            .tab_w = tw,
+            .sep_w = ui_metrics.strokePx(ui_metrics.TAB_SEPARATOR_W_PT, self.pixels_per_dip),
+            .underline_h = ui_metrics.strokePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, self.pixels_per_dip),
+            .hover_inset = tab_gap.control_hover_inset,
+            .tab_count = tab_count,
+            .active_idx = active_tab,
+            .scroll_x = @floatFromInt(tab_scroll_x),
+            .drag = drag_view,
+            .layout = layout,
+            .hover = hover,
+            .palette = &self.chrome,
+        };
+        var chrome_rects: [tab_chrome.maxRects(session_core.MAX_TABS)]tab_chrome.Rect = undefined;
+        const built = tab_chrome.build(&chrome_rects, chrome_in);
+
         var bg_instances: [128]BgInstance = undefined;
         var bg_count: u32 = 0;
-
-        // Tab bar background
-        bg_instances[bg_count] = .{ .pos = .{ 0, 0 }, .size = .{ w_f, tbh }, .color = self.chrome.tab_bar_bg };
-        bg_count += 1;
-        // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
-        // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
-        const sep_w_px = ui_metrics.strokePx(ui_metrics.TAB_SEPARATOR_W_PT, self.pixels_per_dip);
-
-        // #117 — 모든 탭 x = world(`i × tw` or drag world) - scroll + tab_area_x.
-        // tab_area_x 는 화살표 있을 때 ARROW_W (좌측 화살표 자리), 없으면 0.
-        const sx: f32 = @floatFromInt(tab_scroll_x);
-        const tax: f32 = layout.tab_area_x;
-
-        // #334 (2026-07-22 개편) — 탭 배경은 탭바와 같은 색이라 따로 그리지
-        // 않는다 (Tilda 문법). 탭 슬롯 경계는 세로 구분선 — world(슬롯) 기준
-        // 고정이라 drag 재배열 중 빈 원위치 슬롯도 구분선+제목 부재로 인지.
-        // 각 탭의 오른쪽 경계마다 하나 (마지막 탭 끝 포함).
-        // 활성 탭 amber 밑줄 (#334) — 활성 구분의 유일한 표시. #342 로 가로
-        // 경계선이 없어져 탭바 **맨 아래 모서리**. drag 중이면 drag 위치를
-        // 따라간다.
-        //
-        // #342 — 세로 구분선을 나중에 덮어 가리지 않고 **밑줄 자체를 줄인다**.
-        // 세로선은 경계 중심 정렬이라 슬롯 안으로 좌우 `sep_w/2` 씩 들어오므로
-        // 그만큼 물러난다. 단 선이 실제로 그려지는 경계에서만 — 판정은 아래
-        // 세로선 루프와 같은 `tab_layout.hasSeparator` 로 단일화.
-        const tab_area_end = layout.tab_area_x + layout.tab_area_w;
-        if (active_tab < tab_count and bg_count < 128) {
-            const underline_px = ui_metrics.strokePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, self.pixels_per_dip);
-            const is_dragged = if (drag_view) |d| (active_tab == d.tab_index) else false;
-            const tab_x: f32 = if (is_dragged)
-                @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
-            else
-                @as(f32, @floatFromInt(active_tab)) * tw - sx + tax;
-            const edges = tab_layout.activeUnderlineEdges(
-                active_tab,
-                tab_count,
-                is_dragged,
-                layout.arrows_visible,
-                layout.tab_area_x,
-                tab_area_end,
-                tw,
-                sx,
-            );
-            const half = sep_w_px * 0.5;
-            const cut_l: f32 = if (edges.inset_left) half else 0;
-            const cut_r: f32 = if (edges.inset_right) half else 0;
-            bg_instances[bg_count] = .{
-                .pos = .{ tab_x + cut_l, tbh - underline_px },
-                .size = .{ @max(tw - cut_l - cut_r, 1.0), underline_px },
-                .color = ui_metrics.TAB_ACCENT_COLOR,
-            };
+        for (built.rects[0..built.before_titles]) |r| {
+            if (bg_count >= bg_instances.len) break;
+            bg_instances[bg_count] = bgFromChrome(r);
             bg_count += 1;
         }
+        const tab_area_end = layout.tab_area_x + layout.tab_area_w;
 
         // Draw backgrounds
         self.drawBgInstances(bg_instances[0..bg_count]);
@@ -929,11 +910,12 @@ pub const D3d11Renderer = struct {
         var text_instances: [512]TextInstance = undefined;
         var text_count: u32 = 0;
         for (0..tab_count) |i| {
-            const is_dragged = if (drag_view) |d| (i == d.tab_index) else false;
-            const tab_x: f32 = if (is_dragged)
-                @as(f32, @floatFromInt(drag_view.?.current_x)) - tw / 2.0 - sx + tax
-            else
-                @as(f32, @floatFromInt(i)) * tw - sx + tax;
+            const tab_x = tab_chrome.tabX(i, chrome_in);
+            switch (tab_chrome.tabClip(tab_x, tw, layout.tab_area_x, tab_area_end, drag_view != null)) {
+                .skip => continue,
+                .stop => break,
+                .draw => {},
+            }
 
             const title = tab_titles[i];
             const baseline_y2 = (tbh + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2.0;
@@ -955,18 +937,25 @@ pub const D3d11Renderer = struct {
                 text_instances: *[512]TextInstance,
                 text_count: *u32,
                 baseline_y2: f32,
-                text_x_start: f32,
+                /// #343 — glyph clip 을 **명시** 로 통일. 이전에는 좌측만
+                /// (`text_x_start`) 보고 우측은 나중에 그리는 컨트롤 fill 이
+                /// 덮어 가렸다. 좌측도 `tab_area_x` 로 clamp 한다 — 부분 잘린
+                /// 첫 탭은 `text_x_start` 가 tab_area 왼쪽으로 넘어갈 수 있다.
+                viewport_left: f32,
+                tab_area_end: f32,
             };
             const ctx = Ctx{
                 .self = self,
                 .text_instances = &text_instances,
                 .text_count = &text_count,
                 .baseline_y2 = baseline_y2,
-                .text_x_start = text_x_start,
+                .viewport_left = @max(text_x_start, layout.tab_area_x),
+                .tab_area_end = tab_area_end,
             };
             tab_layout.iterTabText(title, text_x_start, cw, max_text_w, needs_truncate, ctx, struct {
                 fn cb(c: Ctx, g: tab_layout.Glyph) void {
-                    if (g.x < c.text_x_start) return;
+                    if (g.x < c.viewport_left) return;
+                    if (g.x >= c.tab_area_end) return;
                     const result = c.self.tab_font.resolveGlyph(g.cp) orelse return;
                     const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
@@ -993,123 +982,18 @@ pub const D3d11Renderer = struct {
             self.drawTextInstancesWithAtlas(text_instances[0..text_count], &self.tab_atlas);
         }
 
-        // #117 — 화살표 / + 영역. 탭 BG / 텍스트 그린 *후* 별도 batch 로 그려야
-        // viewport 끝의 탭이 화살표 영역에 침범한 픽셀이 가려짐 (사용자 제안:
-        // 탭 너비 줄이는 효과). 색은 활성 (밝은 흰색) / 비활성 (어두운 회색)
-        // 명확히 구분.
-        var ctrl_bg_buf: [7]BgInstance = undefined;
-        var ctrl_bg_n: u32 = 0;
-        if (layout.arrows_visible) {
-            ctrl_bg_buf[ctrl_bg_n] = .{
-                .pos = .{ layout.left_arrow_x, 0 },
-                .size = .{ layout.arrow_w, tbh },
-                .color = self.chrome.tab_bar_bg,
-            };
-            ctrl_bg_n += 1;
-            ctrl_bg_buf[ctrl_bg_n] = .{
-                .pos = .{ layout.right_arrow_x, 0 },
-                .size = .{ layout.arrow_w, tbh },
-                .color = self.chrome.tab_bar_bg,
-            };
-            ctrl_bg_n += 1;
-        }
-        ctrl_bg_buf[ctrl_bg_n] = .{
-            .pos = .{ layout.plus_x, 0 },
-            .size = .{ layout.plus_w, tbh },
-            .color = self.chrome.tab_bar_bg,
-        };
-        ctrl_bg_n += 1;
-        // #268 — 우측 끝 `x` (활성 탭 닫기) 버튼 배경.
-        ctrl_bg_buf[ctrl_bg_n] = .{
-            .pos = .{ layout.close_x, 0 },
-            .size = .{ layout.close_w, tbh },
-            .color = self.chrome.tab_bar_bg,
-        };
-        ctrl_bg_n += 1;
-        ctrl_bg_buf[ctrl_bg_n] = .{
-            .pos = .{ layout.more_x, 0 },
-            .size = .{ layout.more_w, tbh },
-            .color = self.chrome.tab_bar_bg,
-        };
-        ctrl_bg_n += 1;
-        // #342 — 가로 경계선이 제거되어 컨트롤 fill 뒤 재-그리기도 함께 사라졌다.
-        // #268 2b — hover 강조 박스 (버튼 bg 위 / 글리프 아래). 네 방향 2pt
-        // inset에 DPI scale을 곱한다. 비활성 화살표 / 비활성 +(host가 hover 억제)는 제외.
-        var hover_x: f32 = 0;
-        var hover_w: f32 = 0;
-        switch (hover) {
-            .plus => {
-                hover_x = layout.plus_x;
-                hover_w = layout.plus_w;
-            },
-            .close => {
-                hover_x = layout.close_x;
-                hover_w = layout.close_w;
-            },
-            .more => {
-                hover_x = layout.more_x;
-                hover_w = layout.more_w;
-            },
-            .left_arrow => if (layout.arrows_visible and layout.left_enabled) {
-                hover_x = layout.left_arrow_x;
-                hover_w = layout.arrow_w;
-            },
-            .right_arrow => if (layout.arrows_visible and layout.right_enabled) {
-                hover_x = layout.right_arrow_x;
-                hover_w = layout.arrow_w;
-            },
-            .tab_area, .none => {},
-        }
-        if (hover_w > tab_gap.control_hover_inset * 2.0) {
-            ctrl_bg_buf[ctrl_bg_n] = .{
-                .pos = .{
-                    hover_x + tab_gap.control_hover_inset,
-                    tab_gap.control_hover_inset,
-                },
-                .size = .{
-                    hover_w - tab_gap.control_hover_inset * 2.0,
-                    // #342 — 가로 경계선이 사라져 하단 보정도 불필요해졌다
-                    // (#334 의 `- border_px` 는 경계선이 1pt 를 차지하던 보정).
-                    tbh - tab_gap.control_hover_inset * 2.0,
-                },
-                .color = self.chrome.ctrl_hover_bg,
-            };
-            ctrl_bg_n += 1;
-        }
-        self.drawBgInstances(ctrl_bg_buf[0..ctrl_bg_n]);
-
-        // #334 — 탭 슬롯 경계 세로 구분선. **모두 중심 정렬** — 모든 슬롯이
-        // 좌우 절반씩 균등 부담해 탭의 보이는 폭이 전부 동일하다 (안쪽 정렬은
-        // 끝 탭만 좁아져 기각 — 사용자 지적). 컨트롤 fill·amber 밑줄 **뒤에**
-        // 그려 화살표 옆에서도, 활성 탭 위에서도 항상 온전한 두께. 화살표
-        // 옆에는 끝 탭이 완전히 보일 때만 (슬롯 경계 정렬 시) 선이 온다 —
-        // overflow 에서는 첫 탭의 왼쪽 경계(bi=0)도 후보.
+        // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선.
+        // 별도 batch 로 그리는 이유는 그대로다 (#117) — 탭 텍스트 *후* 여야
+        // 컨트롤 영역이 온전하다. 어떤 rect 를 어떤 순서로 놓을지는 이제 공통
+        // `tab_chrome` 이 정한다 (세 renderer 정본 순서).
         {
-            var sep_buf: [64]BgInstance = undefined;
-            var sep_n: u32 = 0;
-            for (0..tab_count + 1) |bi| {
-                if (sep_n >= sep_buf.len) break;
-                // #342 — 밑줄 inset 과 같은 판정 (단일 정의).
-                if (!tab_layout.hasSeparator(
-                    bi,
-                    tab_count,
-                    layout.arrows_visible,
-                    layout.tab_area_x,
-                    tab_area_end,
-                    tw,
-                    sx,
-                )) continue;
-                const x = tax + @as(f32, @floatFromInt(bi)) * tw - sx;
-                sep_buf[sep_n] = .{
-                    .pos = .{ x - sep_w_px * 0.5, 0 },
-                    // #342 — 가로 경계선이 없어져 탭바 전체 높이. 밑줄이 이미
-                    // 물러나 있으므로 겹치는 픽셀이 없다.
-                    .size = .{ sep_w_px, tbh },
-                    .color = self.chrome.separator,
-                };
-                sep_n += 1;
+            var tail_buf: [tab_chrome.maxRects(session_core.MAX_TABS)]BgInstance = undefined;
+            var tail_n: u32 = 0;
+            for (built.rects[built.before_titles..]) |r| {
+                tail_buf[tail_n] = bgFromChrome(r);
+                tail_n += 1;
             }
-            if (sep_n > 0) self.drawBgInstances(sep_buf[0..sep_n]);
+            if (tail_n > 0) self.drawBgInstances(tail_buf[0..tail_n]);
         }
 
         // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
@@ -1605,32 +1489,31 @@ pub const D3d11Renderer = struct {
     fn drawSingleControlStrip(self: *D3d11Renderer, layout: TabBarLayout, hover: tab_layout.Area) void {
         const h = ui_metrics.scaledPxF(ui_metrics.TAB_BAR_HEIGHT_PT, self.pixels_per_dip);
         const gap = ui_metrics.tabGapPx(self.pixels_per_dip);
-        var bg: [4]BgInstance = undefined;
+        // #343 — 컨트롤 bg fill · hover 는 탭바 경로와 같은 `tab_chrome`
+        // (`buildControlsOnly`) 이 만든다. 탭바 전체 배경 · 밑줄 · 구분선은
+        // 단일 탭 overlay 에 없으므로 컨트롤 구간만 쓴다.
+        const chrome_in = tab_chrome.Inputs{
+            .viewport_w = 0,
+            .tab_bar_h = h,
+            .tab_w = 0,
+            .sep_w = 0,
+            .underline_h = 0,
+            .hover_inset = gap.control_hover_inset,
+            .tab_count = 0,
+            .active_idx = 0,
+            .scroll_x = 0,
+            .drag = null,
+            .layout = layout,
+            .hover = hover,
+            .palette = &self.chrome,
+        };
+        var chrome_rects: [tab_chrome.maxRects(0)]tab_chrome.Rect = undefined;
+        var bg: [tab_chrome.maxRects(0)]BgInstance = undefined;
         var bg_n: usize = 0;
-        inline for (.{
-            .{ layout.plus_x, layout.plus_w },
-            .{ layout.close_x, layout.close_w },
-            .{ layout.more_x, layout.more_w },
-        }) |control| {
-            if (control[1] > 0) {
-                bg[bg_n] = .{ .pos = .{ control[0], 0 }, .size = .{ control[1], h }, .color = self.chrome.tab_bar_bg };
-                bg_n += 1;
-            }
-        }
-        const hover_rect: ?struct { x: f32, w: f32 } = switch (hover) {
-            .plus => .{ .x = layout.plus_x, .w = layout.plus_w },
-            .close => .{ .x = layout.close_x, .w = layout.close_w },
-            .more => .{ .x = layout.more_x, .w = layout.more_w },
-            else => null,
-        };
-        if (hover_rect) |hr| if (hr.w > gap.control_hover_inset * 2 and bg_n < bg.len) {
-            bg[bg_n] = .{
-                .pos = .{ hr.x + gap.control_hover_inset, gap.control_hover_inset },
-                .size = .{ hr.w - gap.control_hover_inset * 2, h - gap.control_hover_inset * 2 },
-                .color = self.chrome.ctrl_hover_bg,
-            };
+        for (tab_chrome.buildControlsOnly(&chrome_rects, chrome_in)) |r| {
+            bg[bg_n] = bgFromChrome(r);
             bg_n += 1;
-        };
+        }
         if (bg_n > 0) self.drawBgInstances(bg[0..bg_n]);
 
         var icons: [3]TextInstance = undefined;
