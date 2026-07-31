@@ -1271,15 +1271,18 @@ fn drawTabBar(
     // 반올림된 정수). f32 renderer 는 소수를 그대로 넘긴다 — 모듈은 단위에
     // 관여하지 않고 받은 값으로 rect 를 만든다. 입력 metric 자체의 정수/소수
     // 갈래는 별 항목이다 (#343 코멘트).
-    const underline_px: i32 = @max(1, scaledPt(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale));
-    const sep_w_px: i32 = @max(1, scaledPt(ui_metrics.TAB_SEPARATOR_W_PT, scale));
+    // #357 — 선 두께는 공통 `ui_metrics.linePx` 한 곳에서 정수 px 로 온다. 이전에는
+    // 여기서만 정수로 반올림하고 mac/win 은 소수 `strokePx` 를 넘겨 값이 갈렸다
+    // (배율 1.0 · 1.7 에서는 결과가 같아 #343 단계 1 검증에 안 걸렸다).
+    const underline_line = ui_metrics.linePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale);
+    const sep_w_line = ui_metrics.linePx(ui_metrics.TAB_SEPARATOR_W_PT, scale);
     const hover_inset_px: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).control_hover_inset));
     const chrome_in = tab_chrome.Inputs{
         .viewport_w = @floatFromInt(fb_w),
         .tab_bar_h = @floatFromInt(tab_bar_h),
         .tab_w = @floatFromInt(tab_w),
-        .sep_w = @floatFromInt(sep_w_px),
-        .underline_h = @floatFromInt(underline_px),
+        .sep_w = sep_w_line,
+        .underline_h = underline_line,
         .hover_inset = @floatFromInt(hover_inset_px),
         .tab_count = titles.len,
         .active_idx = active_idx,
