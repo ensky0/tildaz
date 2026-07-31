@@ -711,38 +711,23 @@ pub const Renderer = struct {
             }
         }
 
-        // 우측 스크롤바 thumb — scrollback 있을 때만. track 자체는 별도 색 안 그림
-        // (배경 그대로). Windows / macOS 패턴 동일 (`renderer/macos.zig:662` 참고).
-        // #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은
-        // `scrollbar.hit` 입력. track = 탭바 아래 + 위/아래 padding 반영.
+        // #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
+        // 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
+        // #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은 입력.
         const sb = terminal.screens.active.pages.scrollbar();
-        if (scrollbar.hit(
+        if (scrollbar.thumbRect(
             sb.total,
             sb.len,
             sb.offset,
+            @floatFromInt(width),
             @floatFromInt(height),
             @floatFromInt(scrollbar_top),
             @floatFromInt(pad),
             @floatFromInt(sb_min_thumb),
-        )) |h| {
-            // #344 — 정수화는 공통 `scrollbar.thumbPx` 가 담당한다. 여기서
-            // 윗변과 높이를 따로 절단하면 아래 여백만 1px 커졌다.
-            const t = h.thumb();
-            const thumb_y_px: i32 = @intFromFloat(t.top);
-            const thumb_h_px: i32 = @intFromFloat(t.h);
-            const sb_x: i32 = width - sb_w;
-            // #346 — 섞는 색을 배경 명도로 뒤집는다 (어두우면 흰색, 밝으면 검정).
-            // 판정 입력은 terminal 의 현재 배경 (OSC 11 · reverse_colors 반영된
-            // `RenderState.Colors`) 이라 셸이 배경을 바꿔도 thumb 이 따라 전환된다.
-            //
-            // #353 — 합성은 공통 `ui_metrics.scrollbarColor` 가 이미 끝냈고 여기서는
-            // 불투명 rect 로 그린다. 이전에는 이 자리에서 `blendU8` 로 직접 섞었는데
-            // 그 규칙(f32 곱 + 버림)이 macOS·Windows 의 renderer 합성과 갈렸다.
-            const sb_bg = [3]u8{ colors.background.r, colors.background.g, colors.background.b };
-            const sb_dark = themes.isDarkRgb(colors.background.r, colors.background.g, colors.background.b);
-            const sb_col = ui_metrics.scrollbarColor(sb_bg, sb_dark);
-            const thumb_color = ghostty.color.RGB{ .r = sb_col[0], .g = sb_col[1], .b = sb_col[2] };
-            rect(memory, width, height, stride, sb_x, thumb_y_px, sb_w, thumb_h_px, thumb_color);
+            @floatFromInt(sb_w),
+            .{ colors.background.r, colors.background.g, colors.background.b },
+        )) |r| {
+            fillChromeRect(memory, width, height, stride, r);
         }
 
         // --- L10-β: IME preedit (조합 중) inline overlay ---
