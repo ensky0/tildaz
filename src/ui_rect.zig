@@ -16,6 +16,33 @@ pub const Rect = struct {
     color: [4]f32,
 };
 
+/// #357 — rect 를 **정수 device pixel 격자에 맞춘다** (양 끝 각각 반올림).
+///
+/// 공통 모듈이 정수 좌표를 내보내면 세 platform 이 같은 픽셀을 그린다:
+///   - GPU (macOS · Windows) 는 픽셀 중심이 도형 안일 때 칠한다 —
+///     `k + 0.5 ∈ [x, x+w)`. `x` · `w` 가 정수면 정확히 `x … x+w−1`.
+///   - Linux software 는 `snap` 후 `[x, x+w)` 를 칠한다. `@round` 가 정수에
+///     항등이라 역시 `x … x+w−1`.
+/// 소수 좌표에서는 이 둘의 tie-break 가 갈렸다 — 홀수 두께 선이 Linux 는 픽셀 `B`,
+/// mac/win 은 `B−1` (Windows 실측: 배율 100% 탭 구분선이 149/299/449).
+///
+/// 두께를 정수로 만든 `ui_metrics.linePx` 와 같은 논증의 **위치 판**이다. 두 규칙이
+/// 함께 있어야 "같은 두께가 같은 자리에" 가 성립한다.
+///
+/// 부수 효과 — Linux 의 `snap` 이 no-op 이 되므로 [#277](https://github.com/ensky0/tildaz/issues/277)
+/// 로 software renderer 를 EGL/OpenGL ES(f32) 로 옮겨도 픽셀이 흔들리지 않는다.
+pub fn snapped(r: Rect) Rect {
+    const x0 = @round(r.x);
+    const y0 = @round(r.y);
+    return .{
+        .x = x0,
+        .y = y0,
+        .w = @max(1, @round(r.x + r.w) - x0),
+        .h = @max(1, @round(r.y + r.h) - y0),
+        .color = r.color,
+    };
+}
+
 pub const IRect = struct { x: i32, y: i32, w: i32, h: i32 };
 
 /// 정수 rasterizer (Linux software renderer) 전용 변환. **양 끝을 각각 반올림한 뒤
@@ -55,4 +82,30 @@ test "snap — 폭 0 이어도 최소 1px" {
     const i = snap(r);
     try testing.expectEqual(@as(i32, 1), i.w);
     try testing.expectEqual(@as(i32, 1), i.h);
+}
+
+test "#357 snapped — 정수 rect 는 그대로, 소수는 양 끝 반올림" {
+    const c = [4]f32{ 0, 0, 0, 1 };
+    // 정수 입력은 항등 (Linux 픽셀 불변의 근거).
+    const same = snapped(.{ .x = 150, .y = 0, .w = 1, .h = 28, .color = c });
+    try testing.expectEqual(@as(f32, 150), same.x);
+    try testing.expectEqual(@as(f32, 1), same.w);
+    // 홀수 두께 선의 중심 정렬 — 149.5 .. 150.5 → 150, 폭 1 (Linux 값).
+    const line = snapped(.{ .x = 149.5, .y = 0, .w = 1, .h = 28, .color = c });
+    try testing.expectEqual(@as(f32, 150), line.x);
+    try testing.expectEqual(@as(f32, 1), line.w);
+    // 폭이 0 으로 무너지지 않는다.
+    const thin = snapped(.{ .x = 10.2, .y = 0, .w = 0.1, .h = 0.1, .color = c });
+    try testing.expectEqual(@as(f32, 1), thin.w);
+    try testing.expectEqual(@as(f32, 1), thin.h);
+}
+
+test "#357 snapped 뒤에는 snap 이 no-op 이다 (#277 대비)" {
+    const c = [4]f32{ 0, 0, 0, 1 };
+    const r = snapped(.{ .x = 40.8, .y = 0.6, .w = 187.5, .h = 47.6, .color = c });
+    const i = snap(r);
+    try testing.expectEqual(@as(i32, @intFromFloat(r.x)), i.x);
+    try testing.expectEqual(@as(i32, @intFromFloat(r.w)), i.w);
+    try testing.expectEqual(@as(i32, @intFromFloat(r.y)), i.y);
+    try testing.expectEqual(@as(i32, @intFromFloat(r.h)), i.h);
 }

@@ -76,13 +76,21 @@ pub const Chrome = struct {
     /// `rects[0..before_titles]` 를 그린 뒤 탭 제목을, 나머지를 그린 뒤 아이콘을
     /// 그린다 (위 "그리는 순서" 참고).
     before_titles: usize,
+    /// 이 인덱스의 탭 제목은 제목 loop 에서 **건너뛰고**, `rects` 를 다 그린 뒤
+    /// 마지막에 그린다 — 집어 든(드래그 중인) 탭이 다른 탭의 세로선·제목 위로
+    /// 오게 하는 layer 결정이다 (2026-07-31 사용자 결정).
+    ///
+    /// 텍스트끼리는 지오메트리로 잘라 낼 수 없어 이 항목만 layer 순서로 표현한다.
+    /// 잘라 낼 수 있는 쌍 (세로선 ↔ 밑줄) 은 이 모듈이 이미 겹치지 않게 만든다.
+    /// **정책을 여기 둔 이유** — renderer 세 곳이 각자 판단하면 다시 갈라진다.
+    deferred_title: ?usize,
 };
 
 /// `build` 가 만들 수 있는 rect 최대 개수 — 호출처 고정 버퍼 크기 산정용.
-/// 탭바 배경 1 + 밑줄 **최대 3조각** (세로선 2개가 가로지르는 드래그 중) +
-/// 컨트롤 fill 5 + hover 1 + 구분선 `tab_count + 1`.
+/// 탭바 배경 1 + 밑줄 최대 3조각 + 드래그 탭 배경 1 + 컨트롤 fill 5 + hover 1 +
+/// 구분선 `tab_count + 1`.
 pub fn maxRects(tab_count: usize) usize {
-    return 10 + tab_count + 1;
+    return 11 + tab_count + 1;
 }
 
 /// 탭 `i` 의 화면 x. drag 중인 탭은 포인터를 따라간다 (나머지는 world 슬롯 고정 —
@@ -108,9 +116,12 @@ pub fn tabClip(tab_left: f32, tab_w: f32, area_left: f32, area_right: f32, drag_
     return .draw;
 }
 
+/// 모든 rect 는 **정수 격자에 맞춰** 내보낸다 (#357 — `ui_rect.snapped`).
+/// 소수 좌표에서 Linux 의 `snap` 과 GPU 라스터화의 tie-break 가 갈리므로, 공통
+/// 모듈에서 한 번 맞춰 세 platform 이 같은 픽셀을 그리게 한다.
 fn push(out: []Rect, n: *usize, r: Rect) void {
     if (n.* >= out.len) return; // 호출처 버퍼 상한 — `maxRects` 로 산정한다.
-    out[n.*] = r;
+    out[n.*] = ui_rect.snapped(r);
     n.* += 1;
 }
 
@@ -123,15 +134,14 @@ fn push(out: []Rect, n: *usize, r: Rect) void {
 /// 지오메트리가 아니라 그리기 순서에 기대는 overdraw 라 AGENTS.md `# 근본 해결 원칙`
 /// 에 어긋난다 — 순서가 조금만 바뀌면 조용히 깨진다.
 ///
-/// 지금은 두 경우가 같은 규칙이다: 밑줄 구간에서 세로선이 차지하는 x 를 빼고 남은
-/// 조각만 emit 한다. **세로선은 온전히 유지되고 밑줄이 그 사이에만 그려진다**
-/// (2026-07-31 사용자 결정).
+/// 지금은 **평상시(슬롯 정렬)** 경로가 이 함수다: 밑줄 구간에서 세로선이 차지하는
+/// x 를 빼고 남은 조각만 emit 한다 — 세로선 격자가 온전히 유지된다. 결과가 이전의
+/// `sep_w/2` 물러남과 **정확히 같아** (조각 1개) `tab_layout.activeUnderlineEdges`
+/// 가 하던 판정을 포섭하므로 그 함수는 제거했다. 판정 술어는 세로선 emit 과 같은
+/// `hasSeparator` 하나다.
 ///
-/// - 정렬된 경우 결과가 이전의 `sep_w/2` 물러남과 **정확히 같다** (조각 1개) —
-///   `tab_layout.activeUnderlineEdges` 가 하던 판정을 이 분할이 포섭하므로 그 함수는
-///   더 이상 필요 없다. 판정 술어는 세로선 emit 과 같은 `hasSeparator` 하나다.
-/// - 드래그 중에는 조각이 2~3개가 되고, 화면 결과는 덮어 가리던 것과 같다 —
-///   **픽셀은 그대로, overdraw 만 없어진다.**
+/// 드래그 중인 활성 탭은 이 경로를 타지 않는다 — 그쪽은 밑줄이 온전하고 세로선이
+/// 양보한다 (`build` 2번 주석).
 fn pushUnderlineSegments(out: []Rect, n: *usize, in: Inputs, left: f32, right: f32, area_left: f32, area_right: f32) void {
     // tab_area 로 명시 clip — 컨트롤 영역까지 그려 놓고 나중에 덮지 않는다.
     var seg_x = @max(left, area_left);
@@ -150,9 +160,10 @@ fn pushUnderlineSegments(out: []Rect, n: *usize, in: Inputs, left: f32, right: f
             in.tab_w,
             in.scroll_x,
         )) continue;
-        // 세로선이 차지하는 구간 — emit 과 같은 식 (중심 정렬).
-        const s0 = area_left + @as(f32, @floatFromInt(bi)) * in.tab_w - in.scroll_x - in.sep_w * 0.5;
-        const s1 = s0 + in.sep_w;
+        // 세로선이 차지하는 구간 — emit 과 **같은 정수 좌표**여야 조각이 정확히
+        // 맞물린다 (#357 이후 세로선도 `snapped` 로 정수다).
+        const s0 = @round(area_left + @as(f32, @floatFromInt(bi)) * in.tab_w - in.scroll_x - in.sep_w * 0.5);
+        const s1 = s0 + @round(in.sep_w);
         if (s1 <= seg_x) continue; // 아직 밑줄 왼쪽 밖
         if (s0 >= seg_end) break; // 경계는 x 오름차순 — 더 볼 것 없다
         if (s0 > seg_x) {
@@ -182,11 +193,27 @@ pub fn build(out: []Rect, in: Inputs) Chrome {
     });
 
     // 2. 활성 탭 amber 밑줄 — 활성 구분의 유일한 표시 (#334). #342 로 가로
-    //    경계선이 없어져 탭바 **맨 아래 모서리**. 세로 구분선과 겹치는 구간을
-    //    빼고 조각으로 낸다 (아래 `pushUnderlineSegments`).
+    //    경계선이 없어져 탭바 **맨 아래 모서리**.
+    //
+    //    세로 구분선과 절대 겹치지 않게 하되, **어느 쪽을 양보시키는지가 상태마다
+    //    다르다** (2026-07-31 사용자 결정):
+    //      • 평상시 (슬롯 정렬) — 밑줄이 세로선 자리를 비운다. 격자가 온전하다.
+    //      • 드래그 중 — 집어 든 탭이 곧 활성 탭이라 **그 밑줄이 맨 위로 온전히**
+    //        보여야 한다. 밑줄을 끊지 않고, 대신 그 구간을 지나는 세로선의 높이를
+    //        밑줄 위까지로 줄인다 (아래 5번). 두 rect 가 y 로 분리돼 겹침이 없다.
+    var dragged_slot: ?struct { x0: f32, x1: f32 } = null;
     if (in.active_idx < in.tab_count) {
         const tx = tabX(in.active_idx, in);
-        pushUnderlineSegments(out, &n, in, tx, tx + in.tab_w, area_left, area_right);
+        const is_dragged = if (in.drag) |d| d.tab_index == in.active_idx else false;
+        if (is_dragged) {
+            // rect 는 여기서 내보내지 않는다 — 세로선 **뒤**(아래 6번)에 둔다.
+            // 구간만 기록해 두면 세로선이 그만큼 높이를 양보한다.
+            const x0 = @round(@max(tx, area_left));
+            const x1 = @round(@min(tx + in.tab_w, area_right));
+            if (x1 > x0) dragged_slot = .{ .x0 = x0, .x1 = x1 };
+        } else {
+            pushUnderlineSegments(out, &n, in, tx, tx + in.tab_w, area_left, area_right);
+        }
     }
 
     const before_titles = n;
@@ -209,9 +236,15 @@ pub fn build(out: []Rect, in: Inputs) Chrome {
                 in.tab_w,
                 in.scroll_x,
             )) continue;
-            const x = area_left + @as(f32, @floatFromInt(bi)) * in.tab_w - in.scroll_x;
+            const sx = @round(area_left + @as(f32, @floatFromInt(bi)) * in.tab_w - in.scroll_x - in.sep_w * 0.5);
+            // 드래그 중인 탭이 덮는 구간에는 **아예 그리지 않는다**. 집어 든 탭은
+            // 불투명 면을 가진 떠 있는 요소라 그 아래 격자는 보이지 않는 것이 맞고,
+            // "그려 놓고 덮기" 가 아니라 지오메트리로 빼는 것이 이 모듈의 규칙이다.
+            if (dragged_slot) |u| {
+                if (sx + in.sep_w > u.x0 and sx < u.x1) continue;
+            }
             push(out, &n, .{
-                .x = x - in.sep_w * 0.5,
+                .x = sx,
                 .y = 0,
                 .w = in.sep_w,
                 .h = in.tab_bar_h,
@@ -220,7 +253,33 @@ pub fn build(out: []Rect, in: Inputs) Chrome {
         }
     }
 
-    return .{ .rects = out[0..n], .before_titles = before_titles };
+    // 6. 드래그 중인 탭 — 집어 든 탭은 **자기 면을 가진 떠 있는 요소**다 (2026-07-31
+    //    사용자 결정). 불투명 배경 → 밑줄 순으로 세로선보다 뒤에 낸다. 배경이
+    //    있어야 겹친 다른 탭의 제목이 비쳐 보이지 않는다 (#334 문법상 탭에는 자체
+    //    배경이 없어 드래그 중에 두 제목이 겹쳐 읽혔다). 그 구간의 세로선은 위
+    //    5번에서 **아예 빼 두었다** — 덮어 가리는 것이 아니다.
+    if (dragged_slot) |u| {
+        push(out, &n, .{
+            .x = u.x0,
+            .y = 0,
+            .w = u.x1 - u.x0,
+            .h = in.tab_bar_h,
+            .color = in.palette.tab_bar_bg,
+        });
+        push(out, &n, .{
+            .x = u.x0,
+            .y = in.tab_bar_h - in.underline_h,
+            .w = u.x1 - u.x0,
+            .h = in.underline_h,
+            .color = ui_metrics.TAB_ACCENT_COLOR,
+        });
+    }
+
+    return .{
+        .rects = out[0..n],
+        .before_titles = before_titles,
+        .deferred_title = if (dragged_slot != null) in.active_idx else null,
+    };
 }
 
 /// #329 — 단일 탭일 때는 탭바를 띄우지 않고 우측 상단 `[+][×][…]` 만 overlay 한다.
@@ -489,35 +548,41 @@ test "#343 밑줄이 세로선 자리를 비우고 조각으로 나온다 — �
     // 밑줄 조각은 정확히 1개 (배경 다음).
     try testing.expectEqual(@as(usize, 2), c.before_titles);
     const u = c.rects[1];
-    // 이전 `sep_w/2` 물러남과 같은 값 — 150.5 .. 299.5.
-    try testing.expectEqual(@as(f32, 150.5), u.x);
+    // 이전 `sep_w/2` 물러남과 같은 값 — 150.5 .. 299.5 를 정수 격자에 맞춰 151 .. 300.
+    try testing.expectEqual(@as(f32, 151), u.x);
     try testing.expectEqual(@as(f32, 149), u.w);
 }
 
-test "#343 드래그 중 밑줄은 세로선을 비껴 2~3 조각이 되고 세로선과 겹치지 않는다" {
+test "#343 드래그 탭은 불투명 배경 + 온전한 밑줄, 그 구간 세로선은 아예 안 그린다" {
     const p = chrome_palette.derive(.{ 0, 0, 0 }, true);
     var in = testInputs(&p);
     in.active_idx = 1;
-    // 슬롯에 정렬되지 않은 위치로 드래그 — 밑줄 span 200..350 이 경계 300 을 지난다.
+    // 슬롯에 정렬되지 않은 위치로 드래그 — span 200..350 이 경계 300 을 지난다.
     in.drag = .{ .tab_index = 1, .current_x = 275 };
     var buf: [32]Rect = undefined;
     const c = build(&buf, in);
 
-    const segs = c.rects[1..c.before_titles];
-    try testing.expectEqual(@as(usize, 2), segs.len);
-    // 경계 300 의 세로선 [299.5, 300.5) 를 비운다.
-    try testing.expectEqual(@as(f32, 200), segs[0].x);
-    try testing.expectEqual(@as(f32, 99.5), segs[0].w); // 200 .. 299.5
-    try testing.expectEqual(@as(f32, 300.5), segs[1].x);
-    try testing.expectEqual(@as(f32, 49.5), segs[1].w); // 300.5 .. 350
+    // 드래그 탭 rect 는 맨 뒤 두 개 — 불투명 배경, 그 위에 밑줄.
+    try testing.expectEqual(@as(usize, 1), c.before_titles); // 앞 구간엔 탭바 배경만
+    const bg = c.rects[c.rects.len - 2];
+    const u = c.rects[c.rects.len - 1];
+    try testing.expectEqual(p.tab_bar_bg, bg.color);
+    try testing.expectEqual(@as(f32, 200), bg.x);
+    try testing.expectEqual(@as(f32, 150), bg.w);
+    try testing.expectEqual(@as(f32, 0), bg.y);
+    try testing.expectEqual(@as(f32, 28), bg.h); // 탭바 전체 높이
+    try testing.expectEqual(ui_metrics.TAB_ACCENT_COLOR, u.color);
+    try testing.expectEqual(@as(f32, 200), u.x);
+    try testing.expectEqual(@as(f32, 150), u.w); // 끊기지 않는다
+    try testing.expectEqual(@as(f32, 26), u.y);
 
-    // 어떤 조각도 세로선 rect 와 겹치지 않는다 — overdraw 가 아니라 지오메트리.
-    for (segs) |u| {
-        for (c.rects[c.before_titles..]) |r| {
-            if (!std.meta.eql(r.color, p.separator)) continue;
-            const overlap = @min(u.x + u.w, r.x + r.w) - @max(u.x, r.x);
-            try testing.expect(overlap <= 0);
-        }
+    // 제목은 맨 마지막에 (집어 든 탭이 맨 위 layer).
+    try testing.expectEqual(@as(?usize, 1), c.deferred_title);
+
+    // 드래그 구간(200..350)을 지나는 세로선(경계 300)은 emit 되지 않는다.
+    for (c.rects[c.before_titles .. c.rects.len - 2]) |r| {
+        if (!std.meta.eql(r.color, p.separator)) continue;
+        try testing.expect(r.x + r.w <= bg.x or r.x >= bg.x + bg.w);
     }
 }
 
