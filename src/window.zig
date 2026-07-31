@@ -327,7 +327,13 @@ pub const Window = struct {
     cell_width_px: c_int = 8,
     cell_height_px: c_int = 16,
     render_fn: ?*const fn (*Window) void = null,
-    resize_fn: ?*const fn (u16, u16, ?*anyopaque) void = null,
+    /// #352 — "창 크기가 바뀌었다" 는 **알림만** 한다. 이전에는 `fn (u16, u16, …)` 로
+    /// 터미널 격자 cols/rows 를 인자로 넘겼는데, window layer 는 padding · scrollbar ·
+    /// 탭바를 몰라서 (그건 `App` 소유) 그 값을 만들려고 `getGridSize` 라는 *두 번째,
+    /// 틀린* 격자 함수를 길러야 했고 — 정작 콜백(`App.onResize`)은 인자를 버리고
+    /// `getTerminalGridSize` 로 다시 계산했다. 계약에서 격자를 빼면 그 함수와 그 안의
+    /// 가짜 fallback 이 함께 사라진다.
+    resize_fn: ?*const fn (?*anyopaque) void = null,
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
@@ -895,10 +901,7 @@ pub const Window = struct {
         if (!self.position_set) return;
         self.applyDockedRect(self.dock, self.width_percent, self.height_percent, self.offset_percent, .window);
         if (!self.layout_transition_active) {
-            if (self.resize_fn) |resize_fn| {
-                const grid = self.getGridSize();
-                resize_fn(grid.cols, grid.rows, self.userdata);
-            }
+            if (self.resize_fn) |resize_fn| resize_fn(self.userdata);
         }
     }
 
@@ -1062,10 +1065,7 @@ pub const Window = struct {
         self.applyRect(x, y, w, h);
 
         if (!self.layout_transition_active) {
-            if (self.resize_fn) |resize_fn| {
-                const grid = self.getGridSize();
-                resize_fn(grid.cols, grid.rows, self.userdata);
-            }
+            if (self.resize_fn) |resize_fn| resize_fn(self.userdata);
         }
     }
 
@@ -1088,10 +1088,7 @@ pub const Window = struct {
     }
 
     fn syncLayout(self: *Window) void {
-        if (self.resize_fn) |resize_fn| {
-            const grid = self.getGridSize();
-            resize_fn(grid.cols, grid.rows, self.userdata);
-        }
+        if (self.resize_fn) |resize_fn| resize_fn(self.userdata);
     }
 
     fn presentNow(self: *Window) void {
@@ -1583,10 +1580,7 @@ pub const Window = struct {
             },
             WM_SIZE => {
                 if (!self.layout_transition_active) {
-                    if (self.resize_fn) |resize_fn| {
-                        const grid = self.getGridSize();
-                        resize_fn(grid.cols, grid.rows, self.userdata);
-                    }
+                    if (self.resize_fn) |resize_fn| resize_fn(self.userdata);
                 }
                 // `resize_fn` 이 D3D11 swap chain 을 `ResizeBuffers` 로 새
                 // 크기에 맞춘 직후, 같은 WM_SIZE 턴에서 곧바로 새 크기
@@ -1845,10 +1839,19 @@ pub const Window = struct {
         return @ptrFromInt(@as(usize, @intCast(ptr)));
     }
 
+    /// client 영역 크기 (px). 창이 없거나 `GetClientRect` 가 실패하면 `{0, 0}`.
+    ///
+    /// #352 — 이전에는 창이 없을 때 `{800, 400}` (창 생성 시 초기 크기) 을 돌려줬다.
+    /// 일어날 수 없는 상태에 그럴듯한 가짜 값을 채운 것이다 — `Window.init` 은
+    /// `CreateWindowExW` 실패 시 `error.CreateWindowFailed` 를 반환하고 host 가 `try`
+    /// 로 받아 `run()` 을 중단하므로, 이 함수가 불리는 시점에 `hwnd` 는 항상 있다.
+    /// 그리고 `GetClientRect` 의 `BOOL` 을 버려서 **실패 시 초기화되지 않은 `rect` 를
+    /// 읽었다** — 그쪽이 진짜 문제였다. 이제 실패를 `{0, 0}` 으로 드러내고, 격자
+    /// 계산은 `ui_metrics.terminalCols` / `terminalRows` 의 "최소 1" 계약이 받는다.
     pub fn getClientSize(self: *const Window) struct { w: c_int, h: c_int } {
-        if (self.hwnd == null) return .{ .w = 800, .h = 400 };
-        var rect: RECT = undefined;
-        _ = GetClientRect(self.hwnd, &rect);
+        const hwnd = self.hwnd orelse return .{ .w = 0, .h = 0 };
+        var rect: RECT = std.mem.zeroes(RECT);
+        if (GetClientRect(hwnd, &rect) == 0) return .{ .w = 0, .h = 0 };
         return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
     }
 
@@ -2157,17 +2160,6 @@ pub const Window = struct {
 
         _ = GlobalUnlock(hmem);
         _ = SetClipboardData(CF_UNICODETEXT, hmem);
-    }
-
-    pub fn getGridSize(self: *const Window) struct { cols: u16, rows: u16 } {
-        if (self.hwnd == null) return .{ .cols = 120, .rows = 30 };
-        var rect: RECT = undefined;
-        _ = GetClientRect(self.hwnd, &rect);
-        const w = rect.right - rect.left;
-        const h = rect.bottom - rect.top;
-        const cols: u16 = if (self.cell_width_px > 0) @intCast(@max(1, @divTrunc(w, self.cell_width_px))) else 120;
-        const rows: u16 = if (self.cell_height_px > 0) @intCast(@max(1, @divTrunc(h, self.cell_height_px))) else 30;
-        return .{ .cols = cols, .rows = rows };
     }
 
     /// Re-export — config.DockPosition 이 cross-platform single source.
