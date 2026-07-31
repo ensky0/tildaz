@@ -11,6 +11,8 @@
 
 const std = @import("std");
 const messages = @import("messages.zig");
+const ui_rect = @import("ui_rect.zig");
+const chrome_palette = @import("chrome_palette.zig");
 
 /// 메뉴 폭. 320 → 280 (#334 행 높이 축소와 함께) → 300 (workarea 상태의
 /// `Shift+Cmd+Enter` hint 가 label 과 함께 들어가게) → 320 (300 도 1pt 차이로 탈락 — 최장 조합 기준 여유 확보).
@@ -26,6 +28,12 @@ pub const INDICATOR_HEIGHT_PT: f32 = 14;
 pub const BOTTOM_MARGIN_PT: f32 = 8;
 /// 항목 rect 안 텍스트 좌우 inset (label 시작 / hint 끝 기준).
 pub const TEXT_INSET_PT: f32 = 8;
+/// hover / focus 강조 박스가 항목 rect 안으로 물러나는 양. 좌우가 위아래보다 큰
+/// 이유는 항목이 세로로 촘촘해서 (22pt) 위아래를 더 깎으면 띠가 얇아지기 때문.
+pub const HIGHLIGHT_INSET_X_PT: f32 = 2;
+pub const HIGHLIGHT_INSET_Y_PT: f32 = 1;
+/// 항목 구분선이 메뉴 좌우 끝에서 물러나는 양 — 선이 면 경계까지 닿지 않게.
+pub const SEPARATOR_INSET_PT: f32 = 8;
 /// label 과 shortcut hint 사이 최소 간격 — 못 지키면 hint 를 숨긴다.
 pub const HINT_GAP_PT: f32 = 16;
 
@@ -224,6 +232,99 @@ pub fn ensureVisible(viewport_w_pt: f32, viewport_h_pt: f32, top_pt: f32, first_
     }
 }
 
+// ── 그리기 rect (#343 단계 3) ────────────────────────────────────────────────
+
+/// `rects` 가 만들 수 있는 rect 최대 개수 — 호출처 고정 버퍼 크기 산정용.
+/// 메뉴 배경 1 + 강조 박스 1 + 구분선 (`entries` 의 `null` 개수).
+pub const MAX_RECTS: usize = blk: {
+    var seps: usize = 0;
+    for (entries) |entry| {
+        if (entry == null) seps += 1;
+    }
+    break :blk 2 + seps;
+};
+
+fn push(out: []ui_rect.Rect, n: *usize, r: ui_rect.Rect) void {
+    if (n.* >= out.len) return; // 호출처 버퍼 상한 — `MAX_RECTS` 로 산정한다.
+    out[n.*] = r;
+    n.* += 1;
+}
+
+/// #343 단계 3 — 메뉴의 **색칠된 사각형 목록**. 세 renderer 가 이 함수 하나를
+/// 호출하고, 목록을 그린 뒤 자기 고유의 텍스트 (label · hint) 와 아이콘
+/// (`chevron_up` / `chevron_down` 스크롤 표시) 을 그린다.
+///
+/// ## 그리는 순서 (정본)
+///
+/// ```
+///   메뉴 배경 → hover/focus 강조 → 항목 구분선 × n
+///   (renderer)  텍스트 · 스크롤 표시 아이콘
+/// ```
+///
+/// 통합 전 Linux 는 `배경 → 강조 → 구분선`, macOS · Windows 는 `배경 → 구분선 →
+/// 강조` 였다 ([`macos.zig:1336`](renderer/macos.zig) 과 Windows 는 서로 같은
+/// 코드였고 Linux 만 갈라졌다). 구분선은 `null` entry 의 행 중앙에, 강조는
+/// command 항목 행에 놓이므로 **서로 다른 행이라 겹치는 픽셀이 없다** — 순서
+/// 통일은 시각에 영향을 주지 않는다.
+///
+/// 또한 통합 전 Linux 는 구분선을 항목 loop 안에서 텍스트와 교대로 방출했다.
+/// 여기서는 "구분선 전부 → 텍스트 전부" 로 평탄화되는데, GPU renderer 는 어차피
+/// 버퍼 단위 flush 라 이미 평탄한 순서로 그리고 있었다.
+///
+/// 좌표는 device px f32. Linux software rasterizer 는 `ui_rect.snap` 으로 정수화
+/// 한다 — 위치와 크기를 따로 반올림하던 것이 이 통합으로 사라진다
+/// ([#344](https://github.com/ensky0/tildaz/issues/344) 와 같은 계약).
+pub fn rects(
+    out: []ui_rect.Rect,
+    v: View,
+    ui: Ui,
+    scale: f32,
+    palette: *const chrome_palette.Palette,
+) []const ui_rect.Rect {
+    var n: usize = 0;
+
+    // 1. 메뉴 배경. #342 — **외곽선 없음** (2026-07-27 시연 후 사용자 확정).
+    //    탭바에서 가로 경계선을 없앤 것과 같은 문법: chrome 과 terminal 의 경계는
+    //    배경 명도 차이만으로 둔다. 내부 구분선은 유지 (역할이 다름 — 면의 경계가
+    //    아니라 항목 그룹).
+    push(out, &n, .{
+        .x = v.rect.x * scale,
+        .y = v.rect.y * scale,
+        .w = v.rect.w * scale,
+        .h = v.rect.h * scale,
+        .color = palette.tab_bar_bg,
+    });
+
+    // 2. 강조는 pointer hover 우선, 없으면 keyboard focus.
+    if (ui.hover orelse ui.focused) |command| {
+        if (itemRect(v, command)) |item| {
+            push(out, &n, .{
+                .x = (item.x + HIGHLIGHT_INSET_X_PT) * scale,
+                .y = (item.y + HIGHLIGHT_INSET_Y_PT) * scale,
+                .w = (item.w - HIGHLIGHT_INSET_X_PT * 2) * scale,
+                .h = (item.h - HIGHLIGHT_INSET_Y_PT * 2) * scale,
+                .color = palette.menu_hover_bg,
+            });
+        }
+    }
+
+    // 3. 항목 구분선 — 1 logical pt 두께로 HiDPI 에서 상대 두께를 유지한다 (#329).
+    const line_px = @max(1.0, scale);
+    for (v.first..v.first + v.count) |i| {
+        if (entries[i] != null) continue;
+        const r = entryRect(v, i).?;
+        push(out, &n, .{
+            .x = v.rect.x * scale + SEPARATOR_INSET_PT * scale,
+            .y = (r.y + r.h / 2) * scale,
+            .w = v.rect.w * scale - SEPARATOR_INSET_PT * 2 * scale,
+            .h = line_px,
+            .color = palette.separator,
+        });
+    }
+
+    return out[0..n];
+}
+
 // ── keyboard modality ────────────────────────────────────────────────────────
 
 pub const MenuKey = enum { up, down, home, end, tab, shift_tab, enter, space, escape, other };
@@ -373,6 +474,75 @@ test "#329 menu keyboard focus cycles, activates, and consumes unknown keys" {
     var blank: ?Command = null;
     try std.testing.expectEqual(KeyOutcome.consumed, onKey(.enter, &blank));
     try std.testing.expectEqual(Command.toggle_visibility, blank.?);
+}
+
+test "#343 rects — 정본 순서와 지오메트리 (배경 → 강조 → 구분선)" {
+    const palette = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    var buf: [MAX_RECTS]ui_rect.Rect = undefined;
+
+    // 잘림 없는 뷰 (viewport 800x600, 탭바 28) — entry 11개 전부 보이고 구분선 2개.
+    const v = view(800, 600, 28, 0);
+    const with_hover = rects(&buf, v, .{ .open = true, .hover = .new_tab }, 1.0, &palette);
+    try std.testing.expectEqual(@as(usize, 4), with_hover.len); // bg + 강조 + 구분선 2
+
+    // 배경 — View.rect 그대로.
+    try std.testing.expectEqual(@as(f32, 480), with_hover[0].x);
+    try std.testing.expectEqual(@as(f32, 28), with_hover[0].y);
+    try std.testing.expectEqual(@as(f32, 320), with_hover[0].w);
+    try std.testing.expectEqual(@as(f32, HEIGHT_PT), with_hover[0].h);
+    try std.testing.expectEqual(palette.tab_bar_bg, with_hover[0].color);
+
+    // 강조 — new_tab 항목 [65,87) 에서 좌우 2 / 위아래 1 물러난다.
+    const item = itemRect(v, .new_tab).?;
+    try std.testing.expectEqual(item.x + 2, with_hover[1].x);
+    try std.testing.expectEqual(item.y + 1, with_hover[1].y);
+    try std.testing.expectEqual(item.w - 4, with_hover[1].w);
+    try std.testing.expectEqual(item.h - 2, with_hover[1].h);
+    try std.testing.expectEqual(palette.menu_hover_bg, with_hover[1].color);
+
+    // 구분선 — 메뉴 좌우에서 8 물러나고 두께 1pt, `null` entry 행 중앙.
+    try std.testing.expectEqual(@as(f32, 488), with_hover[2].x);
+    try std.testing.expectEqual(@as(f32, 304), with_hover[2].w);
+    try std.testing.expectEqual(@as(f32, 1), with_hover[2].h);
+    try std.testing.expectEqual(palette.separator, with_hover[2].color);
+    // 첫 구분선 [56,65) 의 중앙 = 60.5, 두 번째 [197,206) 의 중앙 = 201.5.
+    try std.testing.expectEqual(@as(f32, 60.5), with_hover[2].y);
+    try std.testing.expectEqual(@as(f32, 201.5), with_hover[3].y);
+
+    // hover 도 focus 도 없으면 강조 rect 를 만들지 않는다.
+    const plain = rects(&buf, v, .{ .open = true }, 1.0, &palette);
+    try std.testing.expectEqual(@as(usize, 3), plain.len);
+    // hover 가 없으면 keyboard focus 가 강조를 받는다 (hover orelse focused).
+    const focused = rects(&buf, v, .{ .open = true, .focused = .about }, 1.0, &palette);
+    try std.testing.expectEqual(@as(usize, 4), focused.len);
+    try std.testing.expectEqual(itemRect(v, .about).?.y + 1, focused[1].y);
+    // 스크롤로 안 보이는 항목이 focus 면 강조를 만들지 않는다 (itemRect = null).
+    const short = view(800, 200, 28, 0);
+    try std.testing.expect(itemRect(short, .about) == null);
+    const off = rects(&buf, short, .{ .open = true, .focused = .about }, 1.0, &palette);
+    try std.testing.expectEqual(@as(usize, 2), off.len); // bg + 보이는 구분선 1개
+}
+
+test "#343 rects — scale 을 곱하고 구분선은 최소 1px" {
+    const palette = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    var buf: [MAX_RECTS]ui_rect.Rect = undefined;
+    const v = view(800, 600, 28, 0);
+
+    const r17 = rects(&buf, v, .{ .open = true }, 1.7, &palette);
+    try std.testing.expectEqual(@as(f32, 480 * 1.7), r17[0].x);
+    try std.testing.expectEqual(@as(f32, 320 * 1.7), r17[0].w);
+    try std.testing.expectEqual(@as(f32, 1.7), r17[1].h); // 구분선 = 1pt × scale
+
+    // Linux 정수 스냅 — 양 끝을 각각 반올림하므로 우측 끝이 참값에 붙는다.
+    // 배율 1.7 · 구분선 x = 480*1.7 + 13.6 = 829.6, 우측 끝 = 829.6 + 516.8 = 1346.4.
+    // (`r17` 은 `buf` 를 가리키므로 다음 `rects` 호출 전에 확인한다.)
+    const i = ui_rect.snap(r17[1]);
+    try std.testing.expectEqual(@as(i32, 830), i.x);
+    try std.testing.expectEqual(@as(i32, 1346 - 830), i.w);
+
+    // scale < 1 에서도 구분선이 사라지지 않는다.
+    const r05 = rects(&buf, v, .{ .open = true }, 0.5, &palette);
+    try std.testing.expectEqual(@as(f32, 1), r05[1].h);
 }
 
 test "#329 hint hides before label truncates in a narrow menu" {
