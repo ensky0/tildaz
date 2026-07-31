@@ -86,11 +86,14 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 |---|---|---|
 | `scaledPx(T, pt, scale)` | 정수 px, **반올림** (`@round`). `T` 로 호출처 정수 타입 지정 | 격자 / 레이아웃처럼 정수 픽셀이 필요한 곳 |
 | `scaledPxF(pt, scale)` | f32 px, 정수 스냅 없음 | 그리기 좌표 (서브픽셀 유지) |
-| `strokePx(pt, scale)` | f32 px + **최소 1px** | 선 두께 (separator / underline / 아이콘 stroke) — scale 이 작아도 선이 사라지지 않게 |
+| `strokePx(pt, scale)` | f32 px + **최소 1px**, 소수 유지 | **아이콘 stroke 전용** (`TAB_ICON_STROKE_PT` · `TAB_MORE_DOT_DIAMETER_PT`) — `tab_icons.rasterize` 가 안티에일리어싱 커버리지를 만들어 소수가 의미를 갖는다 |
+| `linePx(pt, scale)` | **정수** px + 최소 1px | **선 두께** (탭바 세로 구분선 · 활성 탭 amber 밑줄 · command menu 항목 구분선) — 격자에 놓이는 실선 |
 
 `scaledPx` 는 `scaledPxF` 를 반올림한 것으로 정의해 두 함수가 어긋날 수 없다. 반올림을 택한 것은 다수 규칙(당시 18곳)에 맞춘 것이고, 버림보다 원래 pt 크기에 가깝다 (`round(12.5) = 13` vs `trunc(12.5) = 12`).
 
 **왜 사양으로 못 박는가.** 이전에는 같은 변환이 세 platform 에 흩어져 있었고 **규칙이 갈렸다** — Linux (`scaledPt`) 와 Windows (`app_controller`) 는 반올림, macOS `host/macos.zig` 9곳은 버림이었다 (`TERMINAL_PADDING_PT` 5곳 · `SCROLLBAR_W_PT` 3곳 · `TAB_WIDTH_PT` 2곳). macOS 안에서도 `renderer/macos.zig` 의 아이콘 크기는 반올림이라 파일마다 달랐다. `backingScaleFactor` 가 1.0 / 2.0 이라 정수 배율에서는 두 규칙의 결과가 같아 증상이 드러나지 않았을 뿐이고 (fractional scale 에서 1px 갈린다), 같은 상수를 platform 마다 다른 픽셀로 바꾸는 것은 §0 #1 (세 platform 동등) 에 어긋난다. 바로 위 항목의 격자 열 수 식에 들어가는 `TERMINAL_PADDING` · `SCROLLBAR_W` 가 이 변환의 결과다.
+
+**선 두께는 정수 px 다** ([#357](https://github.com/ensky0/tildaz/issues/357) 2026-07-31 확정). 격자에 놓이는 실선의 두께는 `linePx` 로 **먼저 정수로 양자화**하고, 위치 규칙(`ui_rect.snap`)은 건드리지 않는다. 근거는 라스터화 규칙이다 — 두께 `t` 의 선이 `top` 에 놓일 때 덮는 행은 `[round(top), round(top + t))` 이고 (`ui_rect.snap` 의 정의이자 GPU 의 pixel-center 규칙), `t` 가 정수면 `round(top + t) = round(top) + t` 가 **항상** 성립해 위치 소수부와 무관하게 정확히 `t` 픽셀이 나온다. 소수 두께는 그렇지 않아 **같은 화면 안 선들의 두께가 갈렸다** — 예: 1pt × 1.7 = 1.7px 은 `top` 소수부 0.85 에서 2px, 0.55 에서 1px 이라 command menu 의 두 구분선 두께가 달랐다. 동시에 이것은 platform 갈래이기도 했다: Linux 는 두께를 미리 정수로 반올림하고 macOS · Windows 는 소수를 그대로 GPU 에 넘겨, `150pt × scale` 이 정수가 아닌 배율(1.25 · 1.75 = Windows 125% · 175%)에서 탭바 세로 구분선이 어긋났다. 배율 1.0 · 1.7 에서는 두 규칙의 결과가 같아 [#343](https://github.com/ensky0/tildaz/issues/343) 단계 1 의 픽셀 검증(1.0 · 1.7)에 걸리지 않았다.
 
 **예외 하나 — Wayland dialog scrollbar 의 최소 thumb 높이.** [`wayland_minimal.dialogScrollbarGeom`](src/host/linux/wayland_minimal.zig) 은 helper 를 쓰지 않고 `preferred_scale` 을 **유리수 그대로** (204/120 등) 정수 산술로 반올림한다 (`(pt × num + den/2) / den`) — f32 변환 오차를 아예 만들지 않기 위해서다 (`src/font/spec.zig` 의 rational scale 과 같은 이유). **규칙(반올림)은 helper 와 같으므로 결과도 일치한다.**
 

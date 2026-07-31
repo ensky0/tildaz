@@ -12,6 +12,7 @@
 const std = @import("std");
 const messages = @import("messages.zig");
 const ui_rect = @import("ui_rect.zig");
+const ui_metrics = @import("ui_metrics.zig");
 const chrome_palette = @import("chrome_palette.zig");
 
 /// 메뉴 폭. 320 → 280 (#334 행 높이 축소와 함께) → 300 (workarea 상태의
@@ -309,7 +310,10 @@ pub fn rects(
     }
 
     // 3. 항목 구분선 — 1 logical pt 두께로 HiDPI 에서 상대 두께를 유지한다 (#329).
-    const line_px = @max(1.0, scale);
+    //    #357 — 두께는 **정수 px** 다. 소수로 두면 선의 y 소수부에 따라 덮는 행 수가
+    //    갈려 같은 메뉴 안 두 구분선의 두께가 달라졌다 (@1.7 에서 2px / 1px).
+    //    탭바 세로 구분선과 같은 상수·같은 함수를 쓴다.
+    const line_px = ui_metrics.linePx(ui_metrics.TAB_SEPARATOR_W_PT, scale);
     for (v.first..v.first + v.count) |i| {
         if (entries[i] != null) continue;
         const r = entryRect(v, i).?;
@@ -531,7 +535,9 @@ test "#343 rects — scale 을 곱하고 구분선은 최소 1px" {
     const r17 = rects(&buf, v, .{ .open = true }, 1.7, &palette);
     try std.testing.expectEqual(@as(f32, 480 * 1.7), r17[0].x);
     try std.testing.expectEqual(@as(f32, 320 * 1.7), r17[0].w);
-    try std.testing.expectEqual(@as(f32, 1.7), r17[1].h); // 구분선 = 1pt × scale
+    // #357 — 구분선 두께는 **정수** px (`ui_metrics.linePx`). 1pt × 1.7 = 1.7 → 2.
+    // 소수(1.7)로 두면 선의 y 소수부에 따라 2px / 1px 로 갈렸다.
+    try std.testing.expectEqual(@as(f32, 2), r17[1].h);
 
     // Linux 정수 스냅 — 양 끝을 각각 반올림하므로 우측 끝이 참값에 붙는다.
     // 배율 1.7 · 구분선 x = 480*1.7 + 13.6 = 829.6, 우측 끝 = 829.6 + 516.8 = 1346.4.
@@ -543,6 +549,30 @@ test "#343 rects — scale 을 곱하고 구분선은 최소 1px" {
     // scale < 1 에서도 구분선이 사라지지 않는다.
     const r05 = rects(&buf, v, .{ .open = true }, 0.5, &palette);
     try std.testing.expectEqual(@as(f32, 1), r05[1].h);
+}
+
+test "#357 한 메뉴 안 두 구분선의 두께가 분수 배율에서도 균일하다" {
+    // #357 의 증상 그 자체를 고정한다. 통합 전에는 두께가 소수(1pt × scale)라
+    // 선의 y 소수부에 따라 덮는 행 수가 갈렸다 — @1.7 에서 첫 구분선(중심 60.5pt →
+    // 102.85px)은 2px, 둘째(201.5pt → 342.55px)는 1px 이었다.
+    const palette = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    var buf: [MAX_RECTS]ui_rect.Rect = undefined;
+    const v = view(800, 600, 28, 0);
+
+    inline for (.{ 1.0, 1.25, 1.5, 1.7, 1.75, 2.0, 2.5 }) |scale| {
+        const rs = rects(&buf, v, .{ .open = true }, scale, &palette);
+        try std.testing.expectEqual(@as(usize, 3), rs.len); // bg + 구분선 2
+
+        // 두 구분선이 **같은 두께**이고, 정수 스냅 후에도 같아야 한다.
+        try std.testing.expectEqual(rs[1].h, rs[2].h);
+        const a = ui_rect.snap(rs[1]);
+        const b = ui_rect.snap(rs[2]);
+        try std.testing.expectEqual(a.h, b.h);
+        try std.testing.expectEqual(a.w, b.w);
+        // 두께는 1pt 를 반올림한 정수 px 이고 최소 1px 이다.
+        try std.testing.expectEqual(ui_metrics.linePx(ui_metrics.TAB_SEPARATOR_W_PT, scale), rs[1].h);
+        try std.testing.expect(a.h >= 1);
+    }
 }
 
 test "#329 hint hides before label truncates in a narrow menu" {

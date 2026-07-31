@@ -880,8 +880,12 @@ pub const D3d11Renderer = struct {
             .viewport_w = w_f,
             .tab_bar_h = tbh,
             .tab_w = tw,
-            .sep_w = ui_metrics.strokePx(ui_metrics.TAB_SEPARATOR_W_PT, self.pixels_per_dip),
-            .underline_h = ui_metrics.strokePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, self.pixels_per_dip),
+            // #357 — 선 두께는 정수 px (`linePx`). 소수 두께는 위치 소수부에 따라
+            // 덮는 픽셀 수가 갈려 같은 화면 안 구분선들의 두께가 달라졌고, 두께를
+            // 미리 정수로 반올림하는 Linux 와도 값이 어긋났다. 125% / 175% DPI 에서
+            // 탭 슬롯 경계의 짝/홀 phase 가 갈라져 실제로 드러난다.
+            .sep_w = ui_metrics.linePx(ui_metrics.TAB_SEPARATOR_W_PT, self.pixels_per_dip),
+            .underline_h = ui_metrics.linePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, self.pixels_per_dip),
             .hover_inset = tab_gap.control_hover_inset,
             .tab_count = tab_count,
             .active_idx = active_tab,
