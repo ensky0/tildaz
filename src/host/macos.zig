@@ -535,6 +535,26 @@ fn scrollTabsByArrow(dir: tab_layout.ArrowDir) void {
     }
 }
 
+/// #352 — 터미널 격자 크기. 계산은 공통 `ui_metrics` 가 한다 (열 수 #350 / 행 수 #352).
+///
+/// **세 호출처의 9줄 복붙을 없애려고 둔 지역 helper 다.** `syncTerminalGeometry` ·
+/// `syncGeometryAfterScreenChange` · 첫 탭 생성 세 곳이 `cell_w` / `cell_h` / `pad` /
+/// `tab_bar` / `top_reserved` / `usable_h` / `sb_px` / `cols` / `rows` 를 똑같이 적어
+/// 두고 있었고, 실질 입력은 `(vp_w, vp_h, scale)` 셋뿐이었다. Linux `Client.gridSize` ·
+/// Windows `App.getTerminalGridSize` 와 같은 모양이 된다.
+///
+/// `cell_*` 는 `g_renderer` 에서 읽는다 — 세 호출처가 모두 renderer 가 있는 시점이고,
+/// 같은 파일의 `tabBarHeightPx` 도 이미 `g_session` 전역을 읽는다 (탭 < 2 면 0, #127).
+fn terminalGrid(vp_w: u32, vp_h: u32, scale: f32) struct { cols: u16, rows: u16 } {
+    const font = &g_renderer.?.font;
+    const pad: u32 = ui_metrics.scaledPx(u32, TERMINAL_PADDING_PT, scale);
+    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, scale);
+    return .{
+        .cols = ui_metrics.terminalCols(vp_w, pad, sb_px, font.cell_width_px),
+        .rows = ui_metrics.terminalRows(vp_h, tabBarHeightPx(scale), pad, font.cell_height_px),
+    };
+}
+
 /// 현재 viewport / cell 크기 + 탭 수에 따른 cols/rows 재계산 후 모든 탭의
 /// terminal + pty 동기화. 탭 1↔2 전환 시 탭바 등장/사라짐으로 cell 영역이
 /// 변하므로 호출 필요. screen change / 탭 추가 / 탭 닫기 모두 같은 함수 사용.
@@ -543,17 +563,9 @@ fn syncTerminalGeometry() void {
     if (g_session.count() == 0) return;
 
     const r = &g_renderer.?;
-    const cell_w = r.font.cell_width_px;
-    const cell_h = r.font.cell_height_px;
-    const pad: u32 = ui_metrics.scaledPx(u32, TERMINAL_PADDING_PT, r.scale);
-    const tab_bar: u32 = @intCast(tabBarHeightPx(r.scale));
-    const top_reserved = pad + tab_bar;
-    const usable_h = if (r.vp_height > top_reserved + pad) r.vp_height - top_reserved - pad else cell_h;
-    // #350 — 열 수는 공통 `ui_metrics.terminalCols` (좌우 padding + scrollbar 자리
-    // 차감). 이전에는 `vp_width - 2*pad` 만 빼서 마지막 열이 scrollbar 와 겹쳤다.
-    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, r.scale);
-    const new_cols: u16 = ui_metrics.terminalCols(r.vp_width, pad, sb_px, cell_w);
-    const new_rows: u16 = @intCast(@max(1, usable_h / cell_h));
+    const grid = terminalGrid(r.vp_width, r.vp_height, r.scale);
+    const new_cols = grid.cols;
+    const new_rows = grid.rows;
 
     for (g_session.tabs.items) |t| {
         if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
@@ -1781,16 +1793,9 @@ fn syncGeometryAfterScreenChange() void {
 
     // 4. 새 viewport 에 맞춰 cols/rows 재계산. cell 크기 같으면 viewport 만
     //    변경. ghostty Terminal + PTY 도 같은 cols/rows 로 resize.
-    const cell_w_px = g_renderer.?.font.cell_width_px;
-    const cell_h_px = g_renderer.?.font.cell_height_px;
-    const pad_px: u32 = ui_metrics.scaledPx(u32, TERMINAL_PADDING_PT, @floatCast(scale_pt));
-    const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
-    const top_reserved = pad_px + tab_bar_px;
-    const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
-    // #350 — 열 수는 공통 `ui_metrics.terminalCols` (scrollbar 자리 차감).
-    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, @floatCast(scale_pt));
-    const new_cols: u16 = ui_metrics.terminalCols(vp_w_px, pad_px, sb_px, cell_w_px);
-    const new_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
+    const grid = terminalGrid(vp_w_px, vp_h_px, @floatCast(scale_pt));
+    const new_cols = grid.cols;
+    const new_rows = grid.rows;
 
     // 모든 탭의 terminal+pty 를 같이 resize 해야 해요 — 보이지 않는 탭의 grid
     // 도 같은 cols/rows 로 유지 (탭 전환 시 화면 깨짐 방지).
@@ -2991,13 +2996,9 @@ pub fn run() !void {
     // 그대로 읽음. 빈 문자열은 `shell_validate.validateOrFatal` 가 잡음.
     const shell_path: []const u8 = g_config.shell;
 
-    const tab_bar_px: u32 = @intCast(tabBarHeightPx(@floatCast(scale_pt)));
-    const top_reserved = pad_px + tab_bar_px;
-    const usable_h = if (vp_h_px > top_reserved + pad_px) vp_h_px - top_reserved - pad_px else cell_h_px;
-    // #350 — 열 수는 공통 `ui_metrics.terminalCols` (scrollbar 자리 차감).
-    const sb_px: u32 = ui_metrics.scaledPx(u32, ui_metrics.SCROLLBAR_W_PT, @floatCast(scale_pt));
-    const term_cols: u16 = ui_metrics.terminalCols(vp_w_px, pad_px, sb_px, cell_w_px);
-    const term_rows: u16 = @intCast(@max(1, usable_h / cell_h_px));
+    const grid = terminalGrid(vp_w_px, vp_h_px, @floatCast(scale_pt));
+    const term_cols = grid.cols;
+    const term_rows = grid.rows;
 
     // 자식 셸 환경변수. macOS .app launch 시 부모 environ 에 없을 수 있어 명시
     // 설정. TERM = xterm-256color, LANG = en_US.UTF-8 (bash readline multi-byte

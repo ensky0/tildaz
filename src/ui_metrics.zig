@@ -35,6 +35,32 @@ pub fn terminalCols(viewport_w: i64, pad: i64, scrollbar_w: i64, cell_w: i64) u1
     return @intCast(@min(@divTrunc(usable, cell_w), @as(i64, std.math.maxInt(u16))));
 }
 
+/// 터미널 격자의 **행 수** — 상단 탭바와 위아래 padding 을 뺀 높이를 cell 높이로
+/// 나눈다 ([#352](https://github.com/ensky0/tildaz/issues/352)).
+///
+/// `terminalCols` 와 **대칭**이다 — 열 수가 `scrollbar_w` 를 빼는 자리에 행 수는
+/// `tab_bar_h` 를 뺀다. 탭바는 단일 탭이면 0 이다 (`tabBarHeightPx` 가 count < 2 에서
+/// 0, #127) — 그 판정은 호출처(host)가 하고 여기서는 받은 값만 뺀다.
+///
+/// **단일 정의로 모은 이유.** #350 이 열 수를 여기로 모을 때 행 수는 같은 다섯 곳에
+/// 남아 있었고, 그래서 **같은 함수 안에서 `cols` 는 방어되고 바로 다음 줄의 `rows` 는
+/// 안 되는** 비대칭이 생겼다. 게다가 세 platform 이 같은 위험을 각자 다른 방식으로
+/// 막고 있었다 — Linux 는 분자를 `cell_h` 로 clamp + `u16` 상한, Windows 는 분자를
+/// `1` 로 clamp + `cell_h == 0` guard, macOS 는 `u32` 라 언더플로 wrap 을 막는 명시
+/// `if` guard (상한 clamp 없음). 산술 결과는 도달 가능한 입력 전부에서 같았지만
+/// (#352 본문의 경계 4케이스 표), 방어가 네 갈래라 다음 사람이 "왜 여긴 없지" 를
+/// 판단해야 했다. 그 갈래를 이 함수 안으로 흡수한다.
+///
+/// 인자는 모두 physical px 이고 `i64` 라 호출처의 `i32` (Linux) / `c_int` (Windows) /
+/// `u32` (macOS) 가 캐스팅 없이 들어온다 — 부호 없는 타입의 언더플로 wrap 이 원천
+/// 차단된다. 창이 극단적으로 낮아 cell 하나도 못 담으면 1 행을 보장한다.
+pub fn terminalRows(viewport_h: i64, tab_bar_h: i64, pad: i64, cell_h: i64) u16 {
+    if (cell_h <= 0) return 1;
+    const usable = viewport_h - tab_bar_h - 2 * pad;
+    if (usable < cell_h) return 1;
+    return @intCast(@min(@divTrunc(usable, cell_h), @as(i64, std.math.maxInt(u16))));
+}
+
 // --- pt → px 변환 (#350) ---
 //
 // 이 모듈의 `*_PT` 상수는 logical point 단위이고, 그리는 쪽은 현재 화면 scale 을
@@ -467,6 +493,62 @@ test "#350 격자 열 수가 scrollbar 자리를 비운다" {
     // scrollbar 를 빼면 정확히 한 열이 줄어드는 경계.
     try std.testing.expectEqual(@as(u16, 104), terminalCols(960, 6, 9, 9));
     try std.testing.expectEqual(@as(u16, 105), terminalCols(960, 6, 0, 9));
+}
+
+test "#352 격자 행 수는 탭바와 위아래 padding 을 뺀다 — terminalCols 와 대칭" {
+    // 정상 케이스. 탭 2개 이상 (탭바 28) / pad 6 / cell 19.
+    // (600 − 28 − 12) / 19 = 560/19 = 29.
+    try std.testing.expectEqual(@as(u16, 29), terminalRows(600, 28, 6, 19));
+    // 단일 탭이면 호출처가 tab_bar_h = 0 을 준다 (#127) → 한 행 이상 늘어난다.
+    try std.testing.expectEqual(@as(u16, 30), terminalRows(600, 0, 6, 19));
+
+    // 대칭 확인 — 열 수가 scrollbar 를 빼는 자리에 행 수는 탭바를 뺀다.
+    // 같은 숫자를 넣으면 같은 값이 나와야 한다.
+    try std.testing.expectEqual(terminalCols(600, 6, 28, 19), terminalRows(600, 28, 6, 19));
+}
+
+test "#352 행 수의 경계 4케이스 — 세 platform 의 갈린 방어가 한 함수로 수렴한다" {
+    // #352 본문의 표를 그대로 고정한다. 통합 전에는 Linux 가 분자를 cell_h 로
+    // clamp, Windows 가 분자를 1 로 clamp, macOS 가 명시 if guard 로 각각 막았고
+    // 결과만 같았다.
+    const cell: i64 = 19;
+
+    // ① usable ≥ cell (정상)
+    try std.testing.expectEqual(@as(u16, 2), terminalRows(28 + 12 + 2 * cell, 28, 6, cell));
+    // ② 1 ≤ usable < cell → 1
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(28 + 12 + 1, 28, 6, cell));
+    // ③ usable == 0 → 1
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(28 + 12, 28, 6, cell));
+    // ④ usable < 0 → 1. macOS 는 u32 라 이 자리에서 wrap 하면 거대한 rows 가 됐다.
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(0, 28, 6, cell));
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(10, 28, 6, cell));
+
+    // cell_h <= 0 방어 — Windows 만 갖고 있던 guard (도달 불가지만 계약으로 고정).
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(600, 28, 6, 0));
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(600, 28, 6, -5));
+
+    // u16 상한 clamp — Linux 만 갖고 있었다.
+    try std.testing.expectEqual(@as(u16, std.math.maxInt(u16)), terminalRows(1 << 40, 0, 0, 1));
+}
+
+test "#352 행 수는 호출처 정수 타입과 무관하다" {
+    // 세 platform 이 각자 다른 타입을 쓴다 — Linux i32 / Windows c_int / macOS u32.
+    // i64 인자라 캐스팅 없이 들어오고 결과가 같아야 한다.
+    const vp_h_i32: i32 = 600;
+    const vp_h_u32: u32 = 600;
+    const vp_h_cint: c_int = 600;
+    const tab_i32: i32 = 28;
+    const pad_u32: u32 = 6;
+    const cell_cint: c_int = 19;
+
+    const expect: u16 = 29;
+    try std.testing.expectEqual(expect, terminalRows(vp_h_i32, tab_i32, pad_u32, cell_cint));
+    try std.testing.expectEqual(expect, terminalRows(vp_h_u32, tab_i32, pad_u32, cell_cint));
+    try std.testing.expectEqual(expect, terminalRows(vp_h_cint, tab_i32, pad_u32, cell_cint));
+
+    // 부호 없는 viewport 가 탭바+padding 보다 작아도 wrap 하지 않는다 (macOS 경로).
+    const tiny: u32 = 10;
+    try std.testing.expectEqual(@as(u16, 1), terminalRows(tiny, tab_i32, pad_u32, cell_cint));
 }
 
 test "#346 scrollbar thumb — 섞는 색이 배경 명도로 뒤집힌다" {

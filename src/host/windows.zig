@@ -145,6 +145,12 @@ pub fn run() !void {
     }
     const font_chain: []const [*:0]const u16 = font_chain_arr[0..config.font_family_count];
     const terminal_font = config.terminalFontSpec();
+    // #352 — 이 `try` 가 "이후 `window.hwnd` 는 항상 있다" 는 불변식을 세운다.
+    // `CreateWindowExW` 실패는 `error.CreateWindowFailed` 로 여기서 `run()` 을
+    // 중단시키므로, 아래의 `applyDpiScale(GetDpiForWindow(hwnd))` 부터 첫
+    // `createTab()` 까지 hwnd 를 다시 검사할 필요가 없다. `app_controller` 의
+    // `getTerminalGridSize` 는 이 불변식을 assert 로만 밝히고 가짜 fallback 을
+    // 두지 않는다.
     try app.window.init(font_chain, terminal_font, config.opacity_alpha, config.hotkey.vkey, config.hotkey.modifiers);
     log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,

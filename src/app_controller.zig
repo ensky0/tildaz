@@ -248,19 +248,24 @@ pub const App = struct {
         }
     }
 
+    /// 터미널 격자 크기. 계산은 공통 `ui_metrics` 가 한다 — 열 수는 좌우 padding +
+    /// scrollbar 자리 차감 (#350), 행 수는 탭바 + 위아래 padding 차감 (#352).
+    ///
+    /// #352 — 이전에는 `hwnd == null → {120, 30}` 과 `cell_*_px > 0` 두 갈래의 매직
+    /// fallback 이 있었다. 둘 다 **도달 불가**다. `hwnd` 는 [`host/windows.run`] 의
+    /// `try app.window.init(...)` 이 성공한 뒤에만 이 함수가 불리므로 항상 있고
+    /// (실패는 `error.CreateWindowFailed` 로 `run()` 을 중단시킨다), `cell_*_px` 는
+    /// `font/spec.ceilPositivePx` 를 거쳐 0 이 될 수 없다. 일어날 수 없는 상태에
+    /// 그럴듯한 값을 채우는 것은 그 값이 어디까지 흘러가는지 추적을 어렵게 만든다 —
+    /// 이제 불변식은 아래 assert 로 밝히고, 극단값 방어는 `terminalCols` /
+    /// `terminalRows` 의 "최소 1" 계약 한 곳에 있다.
     fn getTerminalGridSize(self: *const App) struct { cols: u16, rows: u16 } {
-        if (self.window.hwnd == null) return .{ .cols = 120, .rows = 30 };
+        std.debug.assert(self.window.hwnd != null);
         const size = self.window.getClientSize();
-        const h = size.h - self.effectiveTabBarHeight() - 2 * self.TERMINAL_PADDING;
-        // #350 — 열 수는 공통 `ui_metrics.terminalCols` 가 계산한다 (좌우 padding +
-        // scrollbar 자리 차감). 이전에는 여기서 `size.w - 2*pad` 만 빼서 마지막 열이
-        // scrollbar 와 겹쳤고 hit-test 경계와 어긋났다.
-        const cols: u16 = if (self.window.cell_width_px > 0)
-            ui_metrics.terminalCols(size.w, self.TERMINAL_PADDING, self.SCROLLBAR_W, self.window.cell_width_px)
-        else
-            120;
-        const rows: u16 = if (self.window.cell_height_px > 0) @intCast(@max(1, @divTrunc(@max(h, 1), self.window.cell_height_px))) else 30;
-        return .{ .cols = cols, .rows = rows };
+        return .{
+            .cols = ui_metrics.terminalCols(size.w, self.TERMINAL_PADDING, self.SCROLLBAR_W, self.window.cell_width_px),
+            .rows = ui_metrics.terminalRows(size.h, self.effectiveTabBarHeight(), self.TERMINAL_PADDING, self.window.cell_height_px),
+        };
     }
 
     fn activeTabPtr(self: *App) ?*SessionTab {
@@ -318,7 +323,10 @@ pub const App = struct {
         self.session.queueInputToActive(data);
     }
 
-    pub fn onResize(_: u16, _: u16, userdata: ?*anyopaque) void {
+    /// #352 — `resize_fn` 은 "창 크기가 바뀌었다" 는 알림만 준다. 이전 시그니처는
+    /// cols/rows 를 받았지만 여기서 `getTerminalGridSize` 로 다시 계산하고 인자는
+    /// 버렸다 (window layer 는 padding · scrollbar · 탭바를 모른다).
+    pub fn onResize(userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         if (self.renderer) |*r| {
             const size = self.window.getClientSize();
