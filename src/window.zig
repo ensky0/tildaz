@@ -682,8 +682,33 @@ pub const Window = struct {
         self.current_dpi = new_dpi;
     }
 
+    /// #358 — `init` 성공 이후 `hwnd` 는 항상 있다. `CreateWindowExW` 실패는
+    /// `init` 이 `error.CreateWindowFailed` 로 올리고 host 의 `try` 가 `run()` 을
+    /// 중단시키므로 (`host/windows.zig` 의 `try app.window.init(...)`), 그 뒤로
+    /// "창이 없는 Window" 는 도달 불가다.
+    ///
+    /// 그 불변식을 이 접근자 하나로 모은다. 이전에는 호출 지점 15곳이 각자
+    /// `orelse return` / `orelse return null` / `orelse return false` 로 조용히
+    /// no-op 해서 호출처가 실패를 구분할 수 없었고, "도달 불가 분기도 뭔가를
+    /// 돌려줘야 한다" 는 압력이 #352 에서 걷어낸 가짜 값 (`120x30` · `800x400`)
+    /// 을 낳은 원인이었다.
+    ///
+    /// `.?` 가 아니라 `orelse @panic` 인 이유: `.?` 는 ReleaseFast 에서 검사가
+    /// 빠져 UB 가 된다. 공식 빌드가 ReleaseFast 라 그러면 "위반 시 즉시 드러난다"
+    /// 는 이 접근자의 취지가 사라진다.
+    ///
+    /// 이름이 `handle` 이 아닌 이유: 이 파일에 `handle` 이라는 지역 상수가 이미
+    /// 둘 (`WM_SETCURSOR` 의 `HCURSOR`, `pasteClipboard` 의 clipboard handle) 있어
+    /// Zig 가 shadowing 을 거부한다.
+    fn requireHwnd(self: *const Window) *anyopaque {
+        return self.hwnd orelse @panic("Window used before init (#358)");
+    }
+
     pub fn deinit(self: *Window) void {
         self.imeClearDeferredResult(false);
+        // #358 — 여기는 `requireHwnd()` 로 바꾸지 않는다. 정리 함수가 불변식을 강제해
+        // panic 하면, 실패 처리 순서를 바꿀 때 곧바로 crash 가 된다. 이 검사는
+        // 도달 불가 방어가 아니라 "만들어졌으면 정리한다" 는 계약이다.
         if (self.hwnd) |hwnd| {
             _ = KillTimer(hwnd, RENDER_TIMER_ID);
             if (self.hotkey_registered) _ = UnregisterHotKey(hwnd, HOTKEY_ID);
@@ -747,29 +772,28 @@ pub const Window = struct {
     }
 
     pub fn show(self: *Window) void {
-        if (self.hwnd) |hwnd| {
-            self.layout_transition_active = true;
-            defer self.layout_transition_active = false;
-            self.visible = true;
-            _ = ShowWindow(hwnd, SW_SHOW);
+        const hwnd = self.requireHwnd();
+        self.layout_transition_active = true;
+        defer self.layout_transition_active = false;
+        self.visible = true;
+        _ = ShowWindow(hwnd, SW_SHOW);
 
-            // fullscreen 상태였으면 fullscreen 을 복원, 아니면 dock 설정 복원.
-            // F1 hide 는 fullscreen 필드를 건드리지 않으므로 "Alt+Enter → F1
-            // hide → F1 show" 는 여전히 fullscreen 상태로 돌아옴.
-            // show() 만 cursor-follow 를 유지하고, visible 상태의 relayout 은
-            // 창이 이미 올라가 있는 모니터를 기준으로 재계산한다.
-            self.applyLayoutFor(.cursor);
-            self.syncLayout();
+        // fullscreen 상태였으면 fullscreen 을 복원, 아니면 dock 설정 복원.
+        // F1 hide 는 fullscreen 필드를 건드리지 않으므로 "Alt+Enter → F1
+        // hide → F1 show" 는 여전히 fullscreen 상태로 돌아옴.
+        // show() 만 cursor-follow 를 유지하고, visible 상태의 relayout 은
+        // 창이 이미 올라가 있는 모니터를 기준으로 재계산한다.
+        self.applyLayoutFor(.cursor);
+        self.syncLayout();
 
-            forceForegroundActivation(hwnd);
+        forceForegroundActivation(hwnd);
 
-            // `applyLayout` 의 SetWindowPos 가 현재 rect 과 동일해서 WM_SIZE
-            // 를 생략한 경우 대비 safety net — swap chain / terminal grid 를
-            // idempotent 하게 재동기화.
-            self.presentNow();
+        // `applyLayout` 의 SetWindowPos 가 현재 rect 과 동일해서 WM_SIZE
+        // 를 생략한 경우 대비 safety net — swap chain / terminal grid 를
+        // idempotent 하게 재동기화.
+        self.presentNow();
 
-            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
-        }
+        _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
     }
 
     /// F1 으로 호출되는 hide. `SW_HIDE` 로 Windows 가 창을 공식적으로 hidden
@@ -780,13 +804,12 @@ pub const Window = struct {
     /// fullscreen 을 그대로 복원한다.
     /// Hide the window without changing the saved fullscreen mode.
     pub fn hide(self: *Window) void {
-        if (self.hwnd) |hwnd| {
-            self.breakMonitorFullscreenSurface();
-            _ = KillTimer(hwnd, RENDER_TIMER_ID);
-            self.visible = false;
-            _ = ShowWindow(hwnd, SW_HIDE);
-            _ = DwmFlush();
-        }
+        const hwnd = self.requireHwnd();
+        self.breakMonitorFullscreenSurface();
+        _ = KillTimer(hwnd, RENDER_TIMER_ID);
+        self.visible = false;
+        _ = ShowWindow(hwnd, SW_HIDE);
+        _ = DwmFlush();
     }
 
     /// `WS_EX_TOPMOST` 를 잠시 해제 — TildaZ 는 그대로 보이지만 z-order 가
@@ -796,9 +819,7 @@ pub const Window = struct {
     /// 뒤로 가려져 안 보였던 사고). 사용자가 F1 toggle 해 다시 show() 가 호출
     /// 되면 `applyRect` 의 `HWND_TOPMOST` 가 다시 topmost 로 복귀시킴.
     pub fn yieldTopmostUntilNextShow(self: *Window) void {
-        if (self.hwnd) |hwnd| {
-            _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
+        _ = SetWindowPos(self.requireHwnd(), HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     pub fn toggle(self: *Window) void {
@@ -920,7 +941,7 @@ pub const Window = struct {
     /// 재적용) 가 이 함수를 지나게 해서 "커지는 방향 / 줄어드는 방향" 동작을
     /// 대칭으로 유지.
     fn applyRect(self: *Window, x: c_int, y: c_int, w: c_int, h: c_int) void {
-        const hwnd = self.hwnd orelse return;
+        const hwnd = self.requireHwnd();
         self.expected_x = x;
         self.expected_y = y;
         self.expected_w = w;
@@ -983,10 +1004,7 @@ pub const Window = struct {
                 _ = GetCursorPos(&cursor_pos);
                 break :blk MonitorFromPoint(cursor_pos, MONITOR_DEFAULTTOPRIMARY);
             },
-            .window => blk: {
-                const hwnd = self.hwnd orelse return null;
-                break :blk MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-            },
+            .window => MonitorFromWindow(self.requireHwnd(), MONITOR_DEFAULTTOPRIMARY),
         };
         var mi: MONITORINFO = undefined;
         mi.cbSize = @sizeOf(MONITORINFO);
@@ -1158,11 +1176,11 @@ pub const Window = struct {
     /// mouse_up(off) 가 호출.
     pub fn setAutoScroll(self: *Window, on: bool) void {
         if (on == self.auto_scroll_active) return;
-        if (self.hwnd == null) return;
+        const hwnd = self.requireHwnd();
         if (on) {
-            _ = SetTimer(self.hwnd, AUTOSCROLL_TIMER_ID, AUTOSCROLL_INTERVAL_MS, null);
+            _ = SetTimer(hwnd, AUTOSCROLL_TIMER_ID, AUTOSCROLL_INTERVAL_MS, null);
         } else {
-            _ = KillTimer(self.hwnd, AUTOSCROLL_TIMER_ID);
+            _ = KillTimer(hwnd, AUTOSCROLL_TIMER_ID);
         }
         self.auto_scroll_active = on;
     }
@@ -1848,8 +1866,10 @@ pub const Window = struct {
     /// 그리고 `GetClientRect` 의 `BOOL` 을 버려서 **실패 시 초기화되지 않은 `rect` 를
     /// 읽었다** — 그쪽이 진짜 문제였다. 이제 실패를 `{0, 0}` 으로 드러내고, 격자
     /// 계산은 `ui_metrics.terminalCols` / `terminalRows` 의 "최소 1" 계약이 받는다.
+    /// #358 — 위 문단의 "hwnd 는 항상 있다" 를 이제 `requireHwnd()` 가 표현한다. 남은
+    /// `{0, 0}` 은 `GetClientRect` 실패용이고, 그건 도달 불가가 아니다.
     pub fn getClientSize(self: *const Window) struct { w: c_int, h: c_int } {
-        const hwnd = self.hwnd orelse return .{ .w = 0, .h = 0 };
+        const hwnd = self.requireHwnd();
         var rect: RECT = std.mem.zeroes(RECT);
         if (GetClientRect(hwnd, &rect) == 0) return .{ .w = 0, .h = 0 };
         return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
@@ -1857,22 +1877,18 @@ pub const Window = struct {
 
     pub fn closeAfterShellExit(self: *Window) void {
         self.shell_exited = true;
-        if (self.hwnd) |hwnd| {
-            _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-        }
+        _ = PostMessageW(self.requireHwnd(), WM_CLOSE, 0, 0);
     }
 
     pub fn postTabClosed(self: *const Window, tab_ptr: usize) void {
-        if (self.hwnd) |hwnd| {
-            _ = PostMessageW(hwnd, WM_TAB_CLOSED, tab_ptr, 0);
-        }
+        _ = PostMessageW(self.requireHwnd(), WM_TAB_CLOSED, tab_ptr, 0);
     }
 
     /// WM_IME_COMPOSITION (GCS_COMPSTR) → ImmGetCompositionStringW UTF-16 → UTF-8
     /// `preedit_buf` 저장. 길이 0 / 음수 / 변환 실패 시 preedit_len = 0. 한글 /
     /// 일본어 / 중국어 / 베트남어 등 모든 IMM IME 가 같은 API path.
     fn imeReadCompositionPreedit(self: *Window) void {
-        const hwnd = self.hwnd orelse return;
+        const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) {
             self.preedit_len = 0;
@@ -1914,7 +1930,7 @@ pub const Window = struct {
     /// cursor 옆 자연스럽게 따라옴. 한국어는 후보 popup 거의 X — 영향 미미.
     /// (#164 1d) 매 frame onRender 끝에 호출 — cursor 이동 시 popup 도 따라감.
     pub fn imeSetCompositionPos(self: *const Window, x_px: c_int, y_px: c_int) void {
-        const hwnd = self.hwnd orelse return;
+        const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) return;
         defer _ = ImmReleaseContext(hwnd, himc);
@@ -1929,7 +1945,7 @@ pub const Window = struct {
     /// GCS_RESULTSTR를 UTF-16으로 읽고 소유 UTF-8 slice로 변환한다. caller가
     /// page_allocator로 해제한다.
     fn imeReadCompositionResult(self: *Window) ?[]u8 {
-        const hwnd = self.hwnd orelse return null;
+        const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) return null;
         defer _ = ImmReleaseContext(hwnd, himc);
@@ -2027,7 +2043,7 @@ pub const Window = struct {
         const utf16 = alloc.alloc(u16, utf16_len) catch return false;
         defer alloc.free(utf16);
         const written = std.unicode.utf8ToUtf16Le(utf16, utf8) catch return false;
-        const hwnd = self.hwnd orelse return false;
+        const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
@@ -2064,7 +2080,7 @@ pub const Window = struct {
     pub fn imeCompleteComposition(self: *Window) bool {
         if (self.ime_deferred_result != null) return self.imeDispatchDeferredResult();
         if (self.preedit_len == 0) return true;
-        const hwnd = self.hwnd orelse return false;
+        const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
@@ -2086,7 +2102,7 @@ pub const Window = struct {
         }
         self.ime_preserve_requested = false;
         if (self.preedit_len == 0) return true;
-        const hwnd = self.hwnd orelse return false;
+        const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
