@@ -27,6 +27,7 @@ const dialog_mod = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
 const dialog_layout = @import("dialog_layout.zig");
+const log = @import("../../log.zig");
 
 /// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
 /// NSAlert / Win 11 dialog 의 ~12-16 범위. fractional scaling 환경 에선 그대로
@@ -284,8 +285,15 @@ pub const Renderer = struct {
     layer: FrameLayer = .{},
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
-    dialog_font_ctx: font.Context,
-    dialog_title_font_ctx: font.Context,
+    /// #368 — dialog 폰트는 **처음 dialog 를 열 때** 만든다. 대부분의 세션은 dialog 를
+    /// 열지 않는데, 미리 구우면 시작 시간의 절반을 거기 쓴다 (실측 44 ms 중 22 ms,
+    /// fractional scale 이면 재초기화까지 43 ms).
+    dialog_font_ctx: ?font.Context = null,
+    dialog_title_font_ctx: ?font.Context = null,
+    /// 지연 생성에 필요한 것 — `Renderer.init` 이 받은 그대로 보관한다.
+    font_chain: []const []const u8 = &.{},
+    scale_num: u32 = 120,
+    scale_den: u32 = 120,
     /// L10-β — IME 조합 중 (preedit) 텍스트. host (wayland_minimal) 가 매
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
@@ -354,28 +362,6 @@ pub const Renderer = struct {
         );
         errdefer tab_ctx.deinit();
 
-        const dialog_spec = ui_metrics.dialogBodyFontSpec();
-        const dialog_pixel_height = scaledFontPixelHeight(dialog_spec, scale_num, scale_den);
-        var dialog_ctx = try font.Context.init(
-            allocator,
-            chain,
-            dialog_pixel_height,
-            dialog_spec.cell_width_ratio,
-            dialog_spec.line_height_ratio,
-        );
-        errdefer dialog_ctx.deinit();
-
-        const dialog_title_spec = ui_metrics.dialogTitleFontSpec();
-        const dialog_title_pixel_height = scaledFontPixelHeight(dialog_title_spec, scale_num, scale_den);
-        var dialog_title_ctx = try font.Context.init(
-            allocator,
-            chain,
-            dialog_title_pixel_height,
-            dialog_title_spec.cell_width_ratio,
-            dialog_title_spec.line_height_ratio,
-        );
-        errdefer dialog_title_ctx.deinit();
-
         // #335 — chrome 색 파생. null theme fallback 은 `wayland_minimal.zig` 의
         // `fallback_theme` (= themes 첫 entry "Tilda") 와 같은 선택이다.
         const chrome_theme = cfg.theme orelse &themes.themes[0];
@@ -385,8 +371,9 @@ pub const Renderer = struct {
             .render_state = .empty,
             .font_ctx = terminal_ctx,
             .tab_font_ctx = tab_ctx,
-            .dialog_font_ctx = dialog_ctx,
-            .dialog_title_font_ctx = dialog_title_ctx,
+            .font_chain = chain,
+            .scale_num = scale_num,
+            .scale_den = scale_den,
             .scale = scaleFactor(scale_num, scale_den),
             .chrome = chrome_palette.derive(
                 .{ chrome_bg.r, chrome_bg.g, chrome_bg.b },
@@ -398,8 +385,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.layer.deinit(allocator);
         self.render_state.deinit(allocator);
-        self.dialog_title_font_ctx.deinit();
-        self.dialog_font_ctx.deinit();
+        self.releaseDialogFonts();
         self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
     }
@@ -438,37 +424,81 @@ pub const Renderer = struct {
         );
         errdefer new_tab_ctx.deinit();
 
-        const dialog_spec = ui_metrics.dialogBodyFontSpec();
-        const dialog_pixel_height = scaledFontPixelHeight(dialog_spec, scale_num, scale_den);
-        var new_dialog_ctx = try font.Context.init(
-            allocator,
-            chain,
-            dialog_pixel_height,
-            dialog_spec.cell_width_ratio,
-            dialog_spec.line_height_ratio,
-        );
-        errdefer new_dialog_ctx.deinit();
-
-        const dialog_title_spec = ui_metrics.dialogTitleFontSpec();
-        const dialog_title_pixel_height = scaledFontPixelHeight(dialog_title_spec, scale_num, scale_den);
-        var new_dialog_title_ctx = try font.Context.init(
-            allocator,
-            chain,
-            dialog_title_pixel_height,
-            dialog_title_spec.cell_width_ratio,
-            dialog_title_spec.line_height_ratio,
-        );
-        errdefer new_dialog_title_ctx.deinit();
-
-        self.dialog_title_font_ctx.deinit();
-        self.dialog_font_ctx.deinit();
+        // #368 — dialog 폰트는 **다시 만들지 않고 버린다.** 다음에 dialog 를 열 때
+        // 새 scale 로 만들어진다. 대부분의 세션은 그 순간이 오지 않는다.
+        self.releaseDialogFonts();
         self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
         self.font_ctx = new_ctx;
         self.tab_font_ctx = new_tab_ctx;
-        self.dialog_font_ctx = new_dialog_ctx;
-        self.dialog_title_font_ctx = new_dialog_title_ctx;
+        self.scale_num = scale_num;
+        self.scale_den = scale_den;
         self.scale = scaleFactor(scale_num, scale_den);
+    }
+
+    /// #368 — dialog 폰트를 지금 만든다 (없으면). dialog 진입점이 부른다.
+    ///
+    /// 실패하면 **탭 폰트로 대신 그린다** — 같은 family / fallback chain 이 이미
+    /// 로드돼 있으므로 크기만 다르고 읽을 수 있다. `Renderer.init` 에서 실패하면 앱이
+    /// 아예 못 뜨지만, 이 시점의 실패는 dialog 하나의 문제여야 한다.
+    pub fn ensureDialogFonts(self: *Renderer, allocator: std.mem.Allocator) void {
+        if (self.dialog_font_ctx != null and self.dialog_title_font_ctx != null) return;
+        const chain = self.font_chain;
+        if (self.dialog_font_ctx == null) {
+            const spec = ui_metrics.dialogBodyFontSpec();
+            self.dialog_font_ctx = font.Context.init(
+                allocator,
+                chain,
+                scaledFontPixelHeight(spec, self.scale_num, self.scale_den),
+                spec.cell_width_ratio,
+                spec.line_height_ratio,
+            ) catch |err| blk: {
+                log.appendLine("font", "dialog 본문 폰트 생성 실패 ({s}) — 탭 폰트로 대신 그린다", .{@errorName(err)});
+                break :blk null;
+            };
+        }
+        if (self.dialog_title_font_ctx == null) {
+            const spec = ui_metrics.dialogTitleFontSpec();
+            self.dialog_title_font_ctx = font.Context.init(
+                allocator,
+                chain,
+                scaledFontPixelHeight(spec, self.scale_num, self.scale_den),
+                spec.cell_width_ratio,
+                spec.line_height_ratio,
+            ) catch |err| blk: {
+                log.appendLine("font", "dialog 제목 폰트 생성 실패 ({s}) — 탭 폰트로 대신 그린다", .{@errorName(err)});
+                break :blk null;
+            };
+        }
+    }
+
+    fn releaseDialogFonts(self: *Renderer) void {
+        if (self.dialog_font_ctx) |*c| c.deinit();
+        if (self.dialog_title_font_ctx) |*c| c.deinit();
+        self.dialog_font_ctx = null;
+        self.dialog_title_font_ctx = null;
+    }
+
+    /// dialog 본문 폰트 — 생성 실패 시 탭 폰트로 떨어진다 (`ensureDialogFonts` 참고).
+    fn dialogFont(self: *Renderer) *font.Context {
+        if (self.dialog_font_ctx) |*c| return c;
+        return &self.tab_font_ctx;
+    }
+
+    fn dialogTitleFont(self: *Renderer) *font.Context {
+        if (self.dialog_title_font_ctx) |*c| return c;
+        return &self.tab_font_ctx;
+    }
+
+    /// `dialogLayoutMetrics` 는 `*const Renderer` 라 const 판이 따로 필요하다.
+    fn dialogFontConst(self: *const Renderer) *const font.Context {
+        if (self.dialog_font_ctx) |*c| return c;
+        return &self.tab_font_ctx;
+    }
+
+    fn dialogTitleFontConst(self: *const Renderer) *const font.Context {
+        if (self.dialog_title_font_ctx) |*c| return c;
+        return &self.tab_font_ctx;
     }
 
     /// 터미널 영역 안쪽 padding (cell grid 가 surface 모서리에서 떨어진 거리).
@@ -1512,11 +1542,11 @@ pub const Renderer = struct {
         message_scroll_row: usize,
         show_icon: bool,
     ) void {
-        const cw: i32 = @intCast(self.dialog_font_ctx.cell_width_px);
-        const ch: i32 = @intCast(self.dialog_font_ctx.cell_height_px);
-        const ascent: i32 = @intCast(self.dialog_font_ctx.ascent_px);
-        const title_ch: i32 = @intCast(self.dialog_title_font_ctx.cell_height_px);
-        const title_ascent: i32 = @intCast(self.dialog_title_font_ctx.ascent_px);
+        const cw: i32 = @intCast(self.dialogFont().cell_width_px);
+        const ch: i32 = @intCast(self.dialogFont().cell_height_px);
+        const ascent: i32 = @intCast(self.dialogFont().ascent_px);
+        const title_ch: i32 = @intCast(self.dialogTitleFont().cell_height_px);
+        const title_ascent: i32 = @intCast(self.dialogTitleFont().ascent_px);
         const pad: i32 = scaledPt(dialog_padding_pt, self.scale);
         // PT × scale → physical pixel. 한 번씩 계산해서 layout 일관 보장.
         const sm: i32 = scaledPt(dialog_shadow_margin_pt, self.scale);
@@ -1557,7 +1587,7 @@ pub const Renderer = struct {
         }
 
         // (3) Title.
-        self.drawDialogTextLine(&self.dialog_title_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + title_ascent, title, fg);
+        self.drawDialogTextLine(self.dialogTitleFont(), memory, buffer_w, buffer_h, stride, text_x, text_y + title_ascent, title, fg);
         text_y += title_ch;
 
         // (3) separator line — title 과 message 구분.
@@ -1575,7 +1605,7 @@ pub const Renderer = struct {
         var wl = dialog_layout.WrappedLines{ .msg = message, .max_cells = wrap_cells };
         while (wl.next()) |line| {
             if (row >= message_scroll_row and drawn_rows < visible_message_rows) {
-                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg);
+                self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg);
                 text_y += ch;
                 drawn_rows += 1;
             }
@@ -1619,13 +1649,13 @@ pub const Renderer = struct {
             if (input.len > 0) {
                 const input_w: i32 = @intCast(display_width.stringWidth(input) * @as(usize, @intCast(cw)));
                 const input_x = text_x + @divTrunc(inner_w - input_w, 2);
-                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg);
+                self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg);
             }
             text_y += field_h + @divTrunc(ch, 2);
         }
         if (prompt_status) |status| {
             if (status.len > 0) {
-                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 });
+                self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 });
             }
             text_y += ch;
         }
@@ -1649,7 +1679,7 @@ pub const Renderer = struct {
         const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(cw)));
         const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
         const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
-        self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg);
+        self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg);
 
         // Cancel 버튼 — confirm 모드 에서만. secondary action (회색 배경 + 검정).
         if (is_confirm) {
@@ -1660,7 +1690,7 @@ pub const Renderer = struct {
             const cancel_text_cells = display_width.stringWidth(cancel_text);
             const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(cw)));
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
-            self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color);
+            self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color);
         } else {
             self.last_dialog_cancel_rect = .{}; // info 모드: Cancel 그리지 않음.
         }
@@ -1715,10 +1745,10 @@ pub const Renderer = struct {
 
     fn dialogLayoutMetrics(self: *const Renderer) dialog_layout.Metrics {
         return .{
-            .body_cell_w = @intCast(self.dialog_font_ctx.cell_width_px),
-            .body_cell_h = @intCast(self.dialog_font_ctx.cell_height_px),
-            .title_cell_w = @intCast(self.dialog_title_font_ctx.cell_width_px),
-            .title_cell_h = @intCast(self.dialog_title_font_ctx.cell_height_px),
+            .body_cell_w = @intCast(self.dialogFontConst().cell_width_px),
+            .body_cell_h = @intCast(self.dialogFontConst().cell_height_px),
+            .title_cell_w = @intCast(self.dialogTitleFontConst().cell_width_px),
+            .title_cell_h = @intCast(self.dialogTitleFontConst().cell_height_px),
             .padding = scaledPt(dialog_padding_pt, self.scale),
             .shadow_margin = scaledPt(dialog_shadow_margin_pt, self.scale),
             .viewport_margin = scaledPt(dialog_viewport_margin_pt, self.scale),
@@ -2654,6 +2684,9 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         return error.SkipZigTest;
     };
     defer r.deinit(allocator);
+    // #368 — dialog 폰트는 지연 생성이다. host 는 dialog 를 열 때 이걸 부른다
+    // (`openDialogSurface`) — 테스트도 같은 순서를 밟아야 실제 경로와 같다.
+    r.ensureDialogFonts(allocator);
 
     const title = "About TildaZ";
     const msg =
@@ -2706,6 +2739,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
     const allocator = std.testing.allocator;
     const cfg = config_mod.Config{};
     var r = Renderer.init(allocator, &cfg, 204, 120) catch return error.SkipZigTest;
+    // #368 — dialog 폰트는 지연 생성이다. host 는 dialog 를 열 때 이걸 부른다
+    // (`openDialogSurface`) — 테스트도 같은 순서를 밟아야 실제 경로와 같다.
+    r.ensureDialogFonts(allocator);
     defer r.deinit(allocator);
 
     const title = "About TildaZ";
@@ -2737,8 +2773,10 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         0,
         layout.show_icon,
     );
-    const ch: i32 = @intCast(r.dialog_font_ctx.cell_height_px);
-    const title_ch: i32 = @intCast(r.dialog_title_font_ctx.cell_height_px);
+    // #368 — dialog 폰트는 지연 생성이라 이 시점엔 이미 만들어져 있어야 한다
+    // (`drawDialogContent` 가 위에서 불렸다). 없으면 그 자체가 회귀다.
+    const ch: i32 = @intCast(r.dialog_font_ctx.?.cell_height_px);
+    const title_ch: i32 = @intCast(r.dialog_title_font_ctx.?.cell_height_px);
     const sm = scaledPt(dialog_shadow_margin_pt, r.scale);
     const pad = scaledPt(dialog_padding_pt, r.scale);
     const separator_x = sm + pad + 1;
