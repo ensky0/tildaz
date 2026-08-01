@@ -30,6 +30,8 @@ const xkb = @import("xkb.zig");
 const gbm = @import("gbm.zig");
 const egl = @import("egl.zig");
 const gl_rects = @import("gl_rects.zig");
+const gl_atlas = @import("gl_atlas.zig");
+const gl_text = @import("gl_text.zig");
 const dbus = @import("dbus.zig");
 const kglobalaccel = @import("kglobalaccel.zig");
 const single_instance = @import("single_instance.zig");
@@ -908,6 +910,9 @@ const Client = struct {
     gl_render_enabled: bool = false,
     // #277 S2-3 — 단색 사각형 정점 배치. GL context 와 함께 만들고 매 frame 재사용한다.
     gl_batch: ?gl_rects.Batch = null,
+    // #277 S2-4 — 글리프 atlas 와 텍스트 정점 배치. 역시 context 수명과 같이 간다.
+    gl_atlas_store: ?gl_atlas.Atlas = null,
+    gl_text_batch: ?gl_text.Batch = null,
     // #277 — GPU 경로 전용 scratch (일반 RAM).
     //
     // dma-buf 매핑은 write-combined (비캐시) 메모리라 **읽기가 매우 느린데**,
@@ -1332,6 +1337,14 @@ const Client = struct {
             if (self.gl_batch) |*batch| {
                 batch.deinit(&ctx.api, self.allocator);
                 self.gl_batch = null;
+            }
+            if (self.gl_text_batch) |*batch| {
+                batch.deinit(&ctx.api, self.allocator);
+                self.gl_text_batch = null;
+            }
+            if (self.gl_atlas_store) |*atlas| {
+                atlas.deinit(&ctx.api, self.allocator);
+                self.gl_atlas_store = null;
             }
             ctx.deinit();
             self.gl_context = null;
@@ -2383,6 +2396,13 @@ const Client = struct {
             };
             break :blk true;
         };
+        // #277 S2-4 — 폰트를 새 크기로 다시 raster 했으므로 GL atlas 의 캐시는
+        // 이제 이전 크기의 그림을 가리킨다. 비우지 않으면 scale 이 바뀐 뒤에도
+        // 작은 글리프가 계속 나온다 (캐시 키는 codepoint / glyph_index 라 크기를
+        // 구분하지 않는다).
+        if (renderer_scale_applied) {
+            if (self.gl_atlas_store) |*atlas| atlas.invalidate();
+        }
         // dialog surface가 map된 뒤 preferred_scale이 도착할 수 있다. font만
         // 바꾸고 1x 요청 폭을 유지하면 본문이 불필요하게 더 wrap되므로 dialog
         // role의 size/margin도 같은 scale에서 다시 요청한다 (#306).
@@ -2961,14 +2981,21 @@ const Client = struct {
         if (self.gl_modifier != null and glRenderRequested()) {
             if (egl.Context.create(device)) |ctx| {
                 self.gl_context = ctx;
-                // 셰이더 / 정점 버퍼는 context 와 수명을 같이 한다. 실패하면 GL
-                // 경로를 켜지 않는다 — 사각형을 못 그리면 화면이 배경뿐이다.
-                if (gl_rects.Batch.create(&self.gl_context.?.api)) |batch| {
+                // 셰이더 / 정점 버퍼 / atlas 는 context 와 수명을 같이 한다. 하나라도
+                // 실패하면 GL 경로를 켜지 않는다 — 반만 그리면 화면이 깨진다.
+                const gl_api = &self.gl_context.?.api;
+                if (gl_rects.Batch.create(gl_api)) |batch| {
                     self.gl_batch = batch;
-                    self.gl_render_enabled = true;
-                    self.gpu_enabled = true;
-                    log.appendLine("gpu", "GL 렌더 활성 (TILDAZ_GL_RENDER) — modifier=0x{x:0>16}", .{self.gl_modifier.?});
-                    return;
+                    if (gl_text.Batch.create(gl_api)) |text_batch| {
+                        self.gl_text_batch = text_batch;
+                        self.gl_atlas_store = gl_atlas.Atlas.create(gl_api, self.allocator);
+                        self.gl_render_enabled = true;
+                        self.gpu_enabled = true;
+                        log.appendLine("gpu", "GL 렌더 활성 (TILDAZ_GL_RENDER) — modifier=0x{x:0>16}", .{self.gl_modifier.?});
+                        return;
+                    }
+                    self.gl_batch.?.deinit(gl_api, self.allocator);
+                    self.gl_batch = null;
                 }
                 log.appendLine("gpu", "GL 렌더 요청됐지만 셰이더 준비 실패 — 기존 경로로", .{});
                 self.gl_context.?.deinit();
@@ -3177,18 +3204,93 @@ const Client = struct {
     ///
     /// false = 이번 frame 을 그리지 못했다. 호출처는 attach 하지 않는다 (덜 그린
     /// buffer 를 붙이면 깨진 화면이 보인다).
+    /// u8 색 채널 → GL 의 0..1. 한 방향 변환만 한다 (왕복하면 1 비트가 깎인다 —
+    /// `software_terminal.SolidRect` 주석 참고).
+    fn colorF(v: u8) f32 {
+        return @as(f32, @floatFromInt(v)) / 255.0;
+    }
+
+    /// #277 S2-4 — 사각형 목록 한 계층을 그린다.
+    fn glDrawRects(
+        self: *Client,
+        ctx: egl.Context,
+        batch: *gl_rects.Batch,
+        rects: []const software_terminal.SolidRect,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) void {
+        if (rects.len == 0) return;
+        batch.clear();
+        for (rects) |r| {
+            batch.add(self.allocator, .{
+                .x = @floatFromInt(r.x),
+                .y = @floatFromInt(r.y),
+                .w = @floatFromInt(r.w),
+                .h = @floatFromInt(r.h),
+                .color = .{ colorF(r.color.r), colorF(r.color.g), colorF(r.color.b), 1.0 },
+            }, r.shade);
+        }
+        batch.flush(&ctx.api, viewport_w, viewport_h);
+    }
+
+    /// #277 S2-4 — 글리프 목록 한 계층을 그린다. atlas 에 없는 글리프는 여기서
+    /// 업로드된다 (목록이 이미 raster 결과를 들고 있어 폰트를 다시 조회하지 않는다).
+    ///
+    /// 위치는 목록의 값 그대로다. 컬러 글리프만 공통 `colorGlyphFit` 으로 대상
+    /// 사각형을 구하는데, 그 함수는 software 경로의 `drawGlyphBgra` 도 쓴다.
+    fn glDrawGlyphs(
+        self: *Client,
+        ctx: egl.Context,
+        batch: *gl_text.Batch,
+        atlas: *gl_atlas.Atlas,
+        items: []const software_terminal.GlyphItem,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) void {
+        if (items.len == 0) return;
+        batch.clear();
+        for (items) |*item| {
+            const entry = atlas.glyphForItem(&ctx.api, self.allocator, item) orelse continue;
+            if (entry.is_color) {
+                const fit = software_terminal.colorGlyphFit(item.w, item.h, item.glyph.width, item.glyph.height) orelse continue;
+                batch.add(self.allocator, .{
+                    .x = @floatFromInt(item.x + fit.off_x),
+                    .y = @floatFromInt(item.y + fit.off_y),
+                    .w = @floatFromInt(fit.w),
+                    .h = @floatFromInt(fit.h),
+                    .entry = entry,
+                    // 컬러 텍셀을 그대로 쓴다 — rgb 는 무시되고 알파만 곱해진다.
+                    .color = .{ 0, 0, 0, 1.0 },
+                });
+            } else {
+                batch.add(self.allocator, .{
+                    .x = @floatFromInt(item.x),
+                    .y = @floatFromInt(item.y),
+                    .w = @floatFromInt(entry.w),
+                    .h = @floatFromInt(entry.h),
+                    .entry = entry,
+                    .color = .{ colorF(item.fg.r), colorF(item.fg.g), colorF(item.fg.b), 1.0 },
+                });
+            }
+        }
+        batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
+    }
+
     fn paintIntoBuffer(self: *Client, buffer: *SurfaceBuffer) bool {
-        // #277 S2 — GL 경로. 지금은 **측정용 껍데기**다: 배경만 칠하고 끝낸다.
-        // 목적은 "래스터화를 GPU 로 옮겼을 때의 하한 비용" 을 실제 앱 루프에서
-        // 재는 것 — 이 값이 CPU 경로와 비슷하면 GLES 렌더러를 만들 이유가 없다.
-        // 셀 / chrome / 텍스트는 이 측정 후에 붙인다.
+        // #277 S2-4 — GL 경로. **그리기 목록은 CPU 경로와 같은 수집기가 만든다**
+        // (`buildGlFrame` → `collectTerminalLayer`). 여기서 하는 일은 그 목록을
+        // 정점으로 옮기는 것뿐이고, "무엇을 어디에" 는 한 글자도 다시 쓰지 않는다.
+        //
+        // chrome (탭바 · 단일 탭 컨트롤 · command menu) 은 아직 목록에 없어 GL 경로가
+        // 그리지 않는다 — opt-in 인 이유 중 하나다.
         if (buffer.gl_target) |target| {
             const ctx = buffer.gl_ctx orelse return false;
-            const inv: f32 = 1.0 / 255.0;
             const theme = self.config.theme orelse fallback_theme;
 
-            // 프레임 기술을 만든다 — CPU 경로와 **같은 수집기**를 쓴다.
-            var frame: software_terminal.GlFrame = .{ .background = theme.background, .rects = &.{} };
+            var frame: software_terminal.GlFrame = .{
+                .background = theme.background,
+                .layer = self.renderer.emptyLayer(),
+            };
             if (self.session) |*session| {
                 if (session.activeTab()) |tab| {
                     frame = self.renderer.buildGlFrame(
@@ -3196,6 +3298,8 @@ const Client = struct {
                         &tab.terminal,
                         theme,
                         session.count(),
+                        buffer.width,
+                        buffer.height,
                     );
                 }
             }
@@ -3203,33 +3307,34 @@ const Client = struct {
             ctx.api.bindFramebuffer(egl.GL_FRAMEBUFFER, target.framebuffer);
             ctx.api.viewport(0, 0, buffer.width, buffer.height);
             ctx.api.clearColor(
-                @as(f32, @floatFromInt(frame.background.r)) * inv,
-                @as(f32, @floatFromInt(frame.background.g)) * inv,
-                @as(f32, @floatFromInt(frame.background.b)) * inv,
-                @as(f32, @floatFromInt(self.renderer.opacity_alpha)) * inv,
+                colorF(frame.background.r),
+                colorF(frame.background.g),
+                colorF(frame.background.b),
+                colorF(self.renderer.opacity_alpha),
             );
             ctx.api.clear(egl.GL_COLOR_BUFFER_BIT);
+            // L13-γ — 알파는 `glClear` 가 칠한 `opacity_alpha` 하나로 끝낸다. 이후
+            // 드로가 알파를 건드리지 못하게 막으면 software 경로가 마지막에 도는
+            // "alpha sweep" 과 정확히 같은 결과가 된다. 막지 않으면 사각형이 그린
+            // 자리만 불투명해져 반투명 창이 얼룩진다.
+            ctx.api.colorMask(1, 1, 1, 0);
 
-            // 셀 배경 사각형. 색은 u8 원본을 여기서 한 방향으로만 f32 로 바꾼다
-            // (왕복하면 1 비트가 깎일 수 있다 — `SolidRect` 주석 참고).
+            const viewport_w: f32 = @floatFromInt(buffer.width);
+            const viewport_h: f32 = @floatFromInt(buffer.height);
             if (self.gl_batch) |*batch| {
-                batch.clear();
-                for (frame.rects) |r| {
-                    batch.add(self.allocator, .{
-                        .x = @floatFromInt(r.x),
-                        .y = @floatFromInt(r.y),
-                        .w = @floatFromInt(r.w),
-                        .h = @floatFromInt(r.h),
-                        .color = .{
-                            @as(f32, @floatFromInt(r.color.r)) * inv,
-                            @as(f32, @floatFromInt(r.color.g)) * inv,
-                            @as(f32, @floatFromInt(r.color.b)) * inv,
-                            1.0,
-                        },
-                    });
+                if (self.gl_text_batch) |*text_batch| {
+                    if (self.gl_atlas_store) |*atlas| {
+                        // 목록 순서 그대로 (`TerminalLayer` 참고). 계층마다 flush 하는
+                        // 것이 곧 그 순서를 지키는 방법이다.
+                        self.glDrawRects(ctx, batch, frame.layer.cell_bg.items, viewport_w, viewport_h);
+                        self.glDrawGlyphs(ctx, text_batch, atlas, frame.layer.glyphs.items, viewport_w, viewport_h);
+                        self.glDrawRects(ctx, batch, frame.layer.overlay.items, viewport_w, viewport_h);
+                        self.glDrawRects(ctx, batch, frame.layer.preedit_bg.items, viewport_w, viewport_h);
+                        self.glDrawGlyphs(ctx, text_batch, atlas, frame.layer.preedit_glyphs.items, viewport_w, viewport_h);
+                    }
                 }
-                batch.flush(&ctx.api, @floatFromInt(buffer.width), @floatFromInt(buffer.height));
             }
+            ctx.api.colorMask(1, 1, 1, 1);
 
             // compositor 는 dma-buf 의 implicit fence 를 기다린다. glFinish 로
             // 동기 대기하면 그 비용이 프레임 시간에 섞이므로 flush 만 한다.
