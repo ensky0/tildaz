@@ -154,30 +154,20 @@ const WriteQueue = struct {
 };
 
 const TITLE_DEBOUNCE_NS: u64 = 150 * std.time.ns_per_ms;
-const INITIAL_TITLE_GRACE_NS: u64 = std.time.ns_per_s;
 
-/// 새 탭의 첫 non-empty OSC 제목을 기다리는 표시 유예 상태. 이 시간은 셸의
-/// OSC 지원 여부를 판정하지 않는다. 1초 동안 usable title이 없을 때만 기존
-/// `Tab N` fallback을 표시하기 위한 명시적인 UI grace period다.
+/// 새 탭이 아직 첫 non-empty OSC 제목을 받지 못한 상태. 시간 개념이 없다 —
+/// 탭 생성 시점에 이미 `Tab N` 을 표시해 두므로 (#364) "언제 fallback 을 쓸지"
+/// 를 판정할 필요가 없고, 첫 제목이 올 때까지 계속 waiting 이다. 이 flag 의
+/// 유일한 용도는 그 첫 제목을 debounce 없이 즉시 반영하는 것.
 const InitialTitleState = struct {
-    since_ns: u64 = 0,
     waiting: bool = false,
 
-    fn begin(self: *InitialTitleState, now_ns: u64) void {
-        self.since_ns = now_ns;
+    fn begin(self: *InitialTitleState) void {
         self.waiting = true;
     }
 
     fn clear(self: *InitialTitleState) void {
-        self.since_ns = 0;
         self.waiting = false;
-    }
-
-    fn fallbackDue(self: *InitialTitleState, now_ns: u64) bool {
-        if (!self.waiting) return false;
-        if (now_ns - self.since_ns < INITIAL_TITLE_GRACE_NS) return false;
-        self.clear();
-        return true;
     }
 };
 
@@ -210,9 +200,11 @@ const PendingTitle = struct {
         self.active = true;
     }
 
-    fn flush(self: *PendingTitle, dest: []u8, dest_len: *usize, now_ns: u64) bool {
+    /// `immediate` 는 첫 제목 전용 — 화면에 `Tab N` 만 있고 아직 화면에서
+    /// 밀어낼 중간 제목이 없으므로 debounce 를 건너뛴다 (#364).
+    fn flush(self: *PendingTitle, dest: []u8, dest_len: *usize, now_ns: u64, immediate: bool) bool {
         if (!self.active) return false;
-        if (now_ns - self.since_ns < TITLE_DEBOUNCE_NS) return false;
+        if (!immediate and now_ns - self.since_ns < TITLE_DEBOUNCE_NS) return false;
 
         const changed = !std.mem.eql(u8, dest[0..dest_len.*], self.buf[0..self.len]);
         if (changed) {
@@ -463,17 +455,20 @@ pub const Tab = struct {
         }
     }
 
+    /// 새 탭 제목 초기화. **첫 OSC 를 기다리는 동안 제목 자리가 비지 않도록
+    /// `Tab N` 을 먼저 써 둔다** (#364). OSC 를 보내는 셸은 곧 자기 제목으로
+    /// 교체하고, 안 보내는 셸 (cmd / PowerShell / POSIX `sh` / rc 없는 zsh) 은
+    /// 이 값이 그대로 남는다 — 이전 구현은 1 초를 기다린 뒤에야 이걸 썼다.
     fn beginInitialTitle(tab: *Tab, title_id: usize) void {
         tab.default_title_id = title_id;
         tab.pending_title.clear();
-        tab.title_len = 0;
-        tab.initial_title.begin(tab.title_clock.read());
+        writeDefaultTitle(&tab.title, &tab.title_len, title_id);
+        tab.initial_title.begin();
     }
 
     fn syncTerminalTitle(tab: *Tab) void {
         const terminal_title: ?[]const u8 = if (tab.terminal.getTitle()) |title| title else null;
         queueAutomaticTitle(
-            &tab.initial_title,
             &tab.pending_title,
             tab.title[0..tab.title_len],
             tab.default_title_id,
@@ -488,7 +483,6 @@ pub const Tab = struct {
             &tab.pending_title,
             &tab.title,
             &tab.title_len,
-            tab.default_title_id,
             tab.title_clock.read(),
         );
     }
@@ -539,22 +533,17 @@ fn applyAutomaticTitle(
     writeDefaultTitle(dest, len, default_title_id);
 }
 
-/// OSC title을 공통 pending 상태에 넣는다. 초기 grace 중에는 non-empty OSC만
-/// usable title로 인정한다. empty OSC는 진행 중인 첫 제목 후보를 취소하지만,
-/// 초기 상태가 끝난 뒤에는 기존 정책대로 `Tab N` 후보가 된다.
+/// OSC title을 공통 pending 상태에 넣는다. 빈 OSC payload (ghostty
+/// `getTitle() == null`) 의 후보는 `Tab N` 이고, 그 값은 탭 생성 시점부터 이미
+/// 표시돼 있으므로 (#364) `PendingTitle.queue` 가 "표시 제목과 같다" 로 폐기한다
+/// — 별도의 초기 상태 분기가 필요 없다.
 fn queueAutomaticTitle(
-    initial: *InitialTitleState,
     pending: *PendingTitle,
     displayed: []const u8,
     default_title_id: usize,
     automatic_title: ?[]const u8,
     now_ns: u64,
 ) void {
-    if (initial.waiting and (automatic_title == null or automatic_title.?.len == 0)) {
-        pending.clear();
-        return;
-    }
-
     var candidate: [64]u8 = undefined;
     var candidate_len: usize = 0;
     applyAutomaticTitle(
@@ -566,26 +555,35 @@ fn queueAutomaticTitle(
     pending.queue(displayed, candidate[0..candidate_len], now_ns);
 }
 
-/// 첫 OSC pending이 있으면 1초 fallback보다 항상 우선한다. pending이 150ms
-/// 안정화되어 반영된 순간 초기 상태를 끝내고, pending 없이 grace가 끝난 경우에만
-/// stable id 기반 `Tab N`을 표시한다.
+/// **첫 제목은 debounce 없이 즉시 반영한다** (#364). 화면에는 탭 생성 시점부터
+/// `Tab N` 이 있고 아직 화면에서 밀어낼 중간 제목이 없으므로, 150ms 를 기다리면
+/// 지연만 생긴다. 두 번째 제목부터는 평소대로 trailing-edge debounce 를 탄다.
+///
+/// 전제 — 셸이 시작 직후 서로 다른 제목을 150ms 안에 두 번 이상 보내지 않는다.
+/// Linux · Windows 실측에서 5개 셸 계열 (bash `/etc/bash.bashrc` PS1 /
+/// zsh + Powerlevel10k / fish 기본 `fish_title` / Git Bash `git-prompt.sh` /
+/// WSL Debian `~/.bashrc` PS1) 이 모두 "시작 직후 제목 1회 (구별 1)" 였다:
+///   - https://github.com/ensky0/tildaz/issues/364#issuecomment-5151754093 (Linux)
+///   - https://github.com/ensky0/tildaz/issues/364#issuecomment-5151857026 (Windows)
+///
+/// 이 전제를 깨는 두 경우를 알고 있다.
+///   1. **macOS 는 미측정.** login shell (`-l`, #282 D5) 이라 rc 를 더 읽는다.
+///   2. **Windows 시스템 conhost 경로** (kernel32 `CreatePseudoConsole`) 는
+///      conhost 가 exe 경로를 첫 제목으로 보낸다 (`cmd` →
+///      `C:\Windows\SYSTEM32\cmd.exe`). tildaz 는 번들 런타임만 쓰고 이
+///      fallback 을 없앴으므로 (#339) 현행 코드엔 해당하지 않지만, **되살리면
+///      즉시 반영이 exe 경로를 먼저 보여주므로 여기를 재검토해야 한다.**
 fn flushAutomaticTitle(
     initial: *InitialTitleState,
     pending: *PendingTitle,
     dest: []u8,
     dest_len: *usize,
-    default_title_id: usize,
     now_ns: u64,
 ) bool {
-    if (pending.active) {
-        const changed = pending.flush(dest, dest_len, now_ns);
-        if (!pending.active) initial.clear();
-        return changed;
-    }
-
-    if (!initial.fallbackDue(now_ns)) return false;
-    writeDefaultTitle(dest, dest_len, default_title_id);
-    return true;
+    if (!pending.active) return false;
+    const changed = pending.flush(dest, dest_len, now_ns, initial.waiting);
+    if (!pending.active) initial.clear();
+    return changed;
 }
 
 /// 탭 동시 존재 한도. 사용자 의도된 작업 흐름 + 탭바 가독성 + renderer
@@ -1001,117 +999,105 @@ test "OSC 0 and 2 update automatic tab title and empty title restores default" {
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
 }
 
-test "initial tab title stays blank until exact one second fallback boundary" {
+test "no fallback timer: default title is present from tab creation" {
+    // #364 — 이전 구현은 1초 유예가 끝날 때 `Tab N` 을 썼다. 이제 탭 생성 시점
+    // (`beginInitialTitle`) 에 이미 쓰여 있고, pending 이 없으면 시간이 얼마나
+    // 흘러도 제목을 건드리지 않는다.
     var title: [64]u8 = undefined;
     var title_len: usize = 0;
+    writeDefaultTitle(&title, &title_len, 7);
     var initial: InitialTitleState = .{};
     var pending: PendingTitle = .{};
-    initial.begin(0);
+    initial.begin();
 
     try std.testing.expect(!flushAutomaticTitle(
         &initial,
         &pending,
         &title,
         &title_len,
-        7,
-        INITIAL_TITLE_GRACE_NS - 1,
-    ));
-    try std.testing.expectEqual(@as(usize, 0), title_len);
-    try std.testing.expect(initial.waiting);
-
-    try std.testing.expect(flushAutomaticTitle(
-        &initial,
-        &pending,
-        &title,
-        &title_len,
-        7,
-        INITIAL_TITLE_GRACE_NS,
+        5 * std.time.ns_per_s,
     ));
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
-    try std.testing.expect(!initial.waiting);
+    try std.testing.expect(initial.waiting);
 }
 
-test "initial OSC pending suppresses fallback until debounce completes" {
+test "first OSC title applies immediately and the next one debounces" {
     var title: [64]u8 = undefined;
     var title_len: usize = 0;
+    writeDefaultTitle(&title, &title_len, 7);
     var initial: InitialTitleState = .{};
     var pending: PendingTitle = .{};
-    initial.begin(0);
+    initial.begin();
 
-    const received_ns = 950 * std.time.ns_per_ms;
-    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "~", received_ns);
-
-    try std.testing.expect(!flushAutomaticTitle(
-        &initial,
-        &pending,
-        &title,
-        &title_len,
-        7,
-        INITIAL_TITLE_GRACE_NS,
-    ));
-    try std.testing.expectEqual(@as(usize, 0), title_len);
-    try std.testing.expect(initial.waiting);
-    try std.testing.expect(pending.active);
-
-    try std.testing.expect(!flushAutomaticTitle(
-        &initial,
-        &pending,
-        &title,
-        &title_len,
-        7,
-        received_ns + TITLE_DEBOUNCE_NS - 1,
-    ));
+    // bash 실측 (~9ms) — 도착한 frame 에서 바로 반영된다.
+    const received_ns = 9 * std.time.ns_per_ms;
+    queueAutomaticTitle(&pending, title[0..title_len], 7, "~", received_ns);
     try std.testing.expect(flushAutomaticTitle(
         &initial,
         &pending,
         &title,
         &title_len,
-        7,
-        received_ns + TITLE_DEBOUNCE_NS,
+        received_ns,
     ));
     try std.testing.expectEqualStrings("~", title[0..title_len]);
     try std.testing.expect(!initial.waiting);
-}
 
-test "initial empty OSC falls back and late non-empty OSC still replaces it" {
-    var title: [64]u8 = undefined;
-    var title_len: usize = 0;
-    var initial: InitialTitleState = .{};
-    var pending: PendingTitle = .{};
-    initial.begin(0);
-
-    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "transient", 800 * std.time.ns_per_ms);
-    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, null, 900 * std.time.ns_per_ms);
-    try std.testing.expect(!pending.active);
-    try std.testing.expect(flushAutomaticTitle(
-        &initial,
-        &pending,
-        &title,
-        &title_len,
-        7,
-        INITIAL_TITLE_GRACE_NS,
-    ));
-    try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
-
-    const late_ns = 1200 * std.time.ns_per_ms;
-    queueAutomaticTitle(&initial, &pending, title[0..title_len], 7, "late title", late_ns);
+    // 두 번째 제목부터는 150ms debounce 를 다시 탄다 — 즉시 반영이 첫 회
+    // 한정임을 고정한다 (이게 없으면 debounce 무력화 회귀를 못 잡는다).
+    const second_ns = received_ns + 50 * std.time.ns_per_ms;
+    queueAutomaticTitle(&pending, title[0..title_len], 7, "~/work", second_ns);
     try std.testing.expect(!flushAutomaticTitle(
         &initial,
         &pending,
         &title,
         &title_len,
-        7,
-        late_ns + TITLE_DEBOUNCE_NS - 1,
+        second_ns + TITLE_DEBOUNCE_NS - 1,
     ));
+    try std.testing.expectEqualStrings("~", title[0..title_len]);
     try std.testing.expect(flushAutomaticTitle(
         &initial,
         &pending,
         &title,
         &title_len,
-        7,
-        late_ns + TITLE_DEBOUNCE_NS,
+        second_ns + TITLE_DEBOUNCE_NS,
     ));
-    try std.testing.expectEqualStrings("late title", title[0..title_len]);
+    try std.testing.expectEqualStrings("~/work", title[0..title_len]);
+}
+
+test "empty OSC keeps default title and a late first title still applies immediately" {
+    var title: [64]u8 = undefined;
+    var title_len: usize = 0;
+    writeDefaultTitle(&title, &title_len, 7);
+    var initial: InitialTitleState = .{};
+    var pending: PendingTitle = .{};
+    initial.begin();
+
+    // 빈 OSC 의 후보는 `Tab N` 이고 그게 이미 표시 중이라 후보가 폐기된다
+    // (초기 상태 전용 분기 없이 `PendingTitle.queue` 가 처리).
+    queueAutomaticTitle(&pending, title[0..title_len], 7, null, 800 * std.time.ns_per_ms);
+    try std.testing.expect(!pending.active);
+    try std.testing.expect(!flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        900 * std.time.ns_per_ms,
+    ));
+    try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+    try std.testing.expect(initial.waiting);
+
+    // WSL cold 실측 (2.15~2.26초) — 아무리 늦게 와도 첫 제목이면 즉시 반영.
+    const late_ns = 2_200 * std.time.ns_per_ms;
+    queueAutomaticTitle(&pending, title[0..title_len], 7, "ensky0@host: ~", late_ns);
+    try std.testing.expect(flushAutomaticTitle(
+        &initial,
+        &pending,
+        &title,
+        &title_len,
+        late_ns,
+    ));
+    try std.testing.expectEqualStrings("ensky0@host: ~", title[0..title_len]);
+    try std.testing.expect(!initial.waiting);
 }
 
 test "automatic title debounce suppresses short command round trip" {
@@ -1120,13 +1106,13 @@ test "automatic title debounce suppresses short command round trip" {
     var pending: PendingTitle = .{};
 
     pending.queue(title[0..title_len], "true ~", 0);
-    try std.testing.expect(!pending.flush(&title, &title_len, 149 * std.time.ns_per_ms));
+    try std.testing.expect(!pending.flush(&title, &title_len, 149 * std.time.ns_per_ms, false));
     try std.testing.expectEqualStrings("~", title[0..title_len]);
 
     // 32ms 뒤 fish prompt 가 원래 cwd 제목으로 돌아오면 command title 취소.
     pending.queue(title[0..title_len], "~", 32 * std.time.ns_per_ms);
     try std.testing.expect(!pending.active);
-    try std.testing.expect(!pending.flush(&title, &title_len, 500 * std.time.ns_per_ms));
+    try std.testing.expect(!pending.flush(&title, &title_len, 500 * std.time.ns_per_ms, false));
     try std.testing.expectEqualStrings("~", title[0..title_len]);
 }
 
@@ -1138,13 +1124,13 @@ test "automatic title debounce applies stable title at exact boundary" {
     pending.queue(title[0..title_len], "sleep 3 ~", 0);
     // 같은 값 반복은 timestamp를 reset하지 않는다.
     pending.queue(title[0..title_len], "sleep 3 ~", 100 * std.time.ns_per_ms);
-    try std.testing.expect(!pending.flush(&title, &title_len, 149 * std.time.ns_per_ms));
-    try std.testing.expect(pending.flush(&title, &title_len, 150 * std.time.ns_per_ms));
+    try std.testing.expect(!pending.flush(&title, &title_len, 149 * std.time.ns_per_ms, false));
+    try std.testing.expect(pending.flush(&title, &title_len, 150 * std.time.ns_per_ms, false));
     try std.testing.expectEqualStrings("sleep 3 ~", title[0..title_len]);
 
     pending.queue(title[0..title_len], "~", 3 * std.time.ns_per_s);
-    try std.testing.expect(!pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 149 * std.time.ns_per_ms));
-    try std.testing.expect(pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 150 * std.time.ns_per_ms));
+    try std.testing.expect(!pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 149 * std.time.ns_per_ms, false));
+    try std.testing.expect(pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 150 * std.time.ns_per_ms, false));
     try std.testing.expectEqualStrings("~", title[0..title_len]);
 }
 
@@ -1157,8 +1143,50 @@ test "automatic title debounce supports default reset" {
 
     var pending: PendingTitle = .{};
     pending.queue(title[0..title_len], candidate[0..candidate_len], 0);
-    try std.testing.expect(pending.flush(&title, &title_len, TITLE_DEBOUNCE_NS));
+    try std.testing.expect(pending.flush(&title, &title_len, TITLE_DEBOUNCE_NS, false));
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
+}
+
+test "POSIX: new tab shows Tab N from creation, before any shell output" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    // #364 — 셸 출력과 무관한 불변식만 본다. `/bin/sh` 는 Linux · macOS 양쪽에
+    // 있고 OSC 제목을 보내지 않으므로 (Linux 실측 5/5 미전송) 이 테스트는 어느
+    // 머신의 rc 구성에도 흔들리지 않는다.
+    var session = SessionCore.init(
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    try session.createTab(80, 24);
+    {
+        const tab = session.activeTab().?;
+        try std.testing.expectEqualStrings("Tab 1", tab.title[0..tab.title_len]);
+    }
+    try session.createTab(80, 24);
+    {
+        const tab = session.activeTab().?;
+        try std.testing.expectEqualStrings("Tab 2", tab.title[0..tab.title_len]);
+    }
+
+    // 유예가 없으니 어느 시점에도 제목 자리가 비지 않는다. 셸이 제목을 보내는
+    // 구성 (macOS 는 `sh -l` 이라 `~/.profile` 을 읽는다) 에서도 성립하도록
+    // 같은 문자열이 아니라 **비어 있지 않음**을 본다.
+    for (0..20) |_| {
+        _ = session.drainOutputForRender();
+        try std.testing.expect(session.tabAt(0).?.title_len > 0);
+        try std.testing.expect(session.tabAt(1).?.title_len > 0);
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
 }
 
 test "Windows ConPTY updates active and inactive tab titles without switching" {
@@ -1188,8 +1216,13 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
     };
     try session.createTab(80, 24);
     try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
-    try std.testing.expectEqual(@as(usize, 0), session.tabAt(0).?.title_len);
-    try std.testing.expectEqual(@as(usize, 0), session.tabAt(1).?.title_len);
+    // #364 — 탭 생성 시점부터 `Tab N` 이 들어 있다 (이전엔 1초 동안 빈 제목).
+    {
+        const t0 = session.tabAt(0).?;
+        const t1 = session.tabAt(1).?;
+        try std.testing.expectEqualStrings("Tab 1", t0.title[0..t0.title_len]);
+        try std.testing.expectEqualStrings("Tab 2", t1.title[0..t1.title_len]);
+    }
 
     var active_observed = false;
     var inactive_observed = false;
@@ -1215,7 +1248,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
     try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
 }
 
-test "Windows ConPTY without OSC shows default title after initial grace" {
+test "Windows ConPTY without OSC keeps default title from tab creation" {
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 
     const Exit = struct {
@@ -1239,26 +1272,22 @@ test "Windows ConPTY without OSC shows default title after initial grace" {
         error.ConptyRuntimeUnavailable => return error.SkipZigTest,
         else => return err,
     };
-    try std.testing.expectEqual(@as(usize, 0), session.activeTab().?.title_len);
-
-    var elapsed = try std.time.Timer.start();
-    while (elapsed.read() < 750 * std.time.ns_per_ms) {
-        _ = session.drainOutputForRender();
-        try std.testing.expectEqual(@as(usize, 0), session.activeTab().?.title_len);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+    // #364 — cmd 는 OSC 0/2 를 보내지 않는다 (Windows 실측 10/10 미전송). 생성
+    // 직후부터 `Tab 1` 이고, 유예가 없으니 빈 제목 구간도 교체도 없다.
+    {
+        const tab = session.activeTab().?;
+        try std.testing.expectEqualStrings("Tab 1", tab.title[0..tab.title_len]);
     }
 
-    var fallback_observed = false;
+    // 이후로도 제목 자리가 비지 않는다. 문자열을 고정하지 않는 이유: conhost 가
+    // 종료 시점 등에 제목을 보낼지는 우리 계약이 아니라 환경 사실이다 (실측에서
+    // cmd 는 10/10 미전송이었지만 그걸 테스트로 못 박지 않는다).
+    var elapsed = try std.time.Timer.start();
     while (elapsed.read() < 1500 * std.time.ns_per_ms) {
         _ = session.drainOutputForRender();
-        const tab = session.activeTab().?;
-        if (std.mem.eql(u8, tab.title[0..tab.title_len], "Tab 1")) {
-            fallback_observed = true;
-            break;
-        }
+        try std.testing.expect(session.activeTab().?.title_len > 0);
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
-    try std.testing.expect(fallback_observed);
 }
 
 test "tab title truncation preserves valid UTF-8 boundary" {
