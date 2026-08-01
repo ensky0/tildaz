@@ -338,10 +338,28 @@ const Report = struct {
     protocol_error: bool = false,
     failure_note: []const u8 = "",
 
-    fn gpuPathViable(self: *const Report) bool {
-        return self.gbm_device and self.bo_linear and self.cpu_buffer_created and
-            self.cpu_frame_shown and self.egl_image_import and self.gl_fbo_complete and
-            self.gl_buffer_created and self.gl_frame_shown and !self.protocol_error;
+    // compositor 가 공표한 modifier 로 시도한 결과 (LINEAR 가 없는 환경 —
+    // 실측된 예: NVIDIA + KWin — 에서 GPU 경로가 가능한지 가리는 항목이다).
+    neg_attempted: bool = false,
+    neg_modifier: u64 = DRM_FORMAT_MOD_INVALID,
+    neg_allocated: bool = false,
+    neg_image_import: bool = false,
+    neg_fbo_complete: bool = false,
+    neg_buffer_created: bool = false,
+    neg_frame_shown: bool = false,
+
+    /// 현재 구현(S1: CPU 가 dma-buf 에 그린다)이 이 환경에서 동작하는가.
+    fn s1Viable(self: *const Report) bool {
+        return self.gbm_device and self.bo_linear and self.bo_map and
+            self.cpu_buffer_created and self.cpu_frame_shown and !self.protocol_error;
+    }
+
+    /// GLES 렌더러(S2)가 이 환경에서 동작할 수 있는가. LINEAR 든 compositor 가
+    /// 공표한 modifier 든 **하나라도** 끝까지 가면 가능하다.
+    fn s2Viable(self: *const Report) bool {
+        const via_linear = self.gl_fbo_complete and self.gl_buffer_created and self.gl_frame_shown;
+        const via_negotiated = self.neg_fbo_complete and self.neg_buffer_created and self.neg_frame_shown;
+        return (via_linear or via_negotiated) and !self.protocol_error;
     }
 };
 
@@ -803,20 +821,6 @@ pub fn main() !u8 {
     // 새 bo 를 쓴다 — 1 단계 버퍼는 compositor 가 아직 들고 있을 수 있어
     // 덮어쓰면 경합이 된다.
     gl_phase: {
-        const gl_bo = gbm.bo_create_with_modifiers(dev, w, h, GBM_FORMAT_ARGB8888, &linear_mods, linear_mods.len) orelse break :gl_phase;
-        defer gbm.bo_destroy(gl_bo);
-        const gl_stride = gbm.bo_get_stride(gl_bo);
-        const gl_offset = gbm.bo_get_offset(gl_bo, 0);
-        const gl_mod = gbm.bo_get_modifier(gl_bo);
-
-        // GPU 가 정말 이 버퍼에 썼는지 증명하기 위해 CPU 로 마젠타를 먼저 칠한다.
-        var s2: u32 = 0;
-        var d2: ?*anyopaque = null;
-        if (gbm.bo_map(gl_bo, 0, 0, w, h, GBM_BO_TRANSFER_WRITE, &s2, &d2)) |m2| {
-            fillSolid(@ptrCast(m2), w, h, s2, magenta);
-            gbm.bo_unmap(gl_bo, d2);
-        }
-
         var egl = Egl.load() catch |err| {
             std.debug.print("  EGL 로드 실패: {s}\n", .{@errorName(err)});
             break :gl_phase;
@@ -840,85 +844,184 @@ pub fn main() !u8 {
         report.gl_renderer = cstr(egl.getString(GL_RENDERER));
         report.gl_version = cstr(egl.getString(GL_VERSION));
 
-        const gl_fd = gbm.bo_get_fd(gl_bo);
-        if (gl_fd < 0) break :gl_phase;
+        // 2 단계 — LINEAR 로 시도. CPU 도 접근할 수 있는 modifier 라 S1 이 쓰는 것.
+        const lin = try runGlPhase(&state, &gbm, dev, &egl, dpy, &linear_mods, w, h, 2500, true);
+        report.egl_image_import = lin.image_import;
+        report.gl_fbo_complete = lin.fbo_complete;
+        report.gl_buffer_created = lin.buffer_created;
+        report.gl_frame_shown = lin.frame_shown;
 
-        const img_attrs = [_]i32{
-            EGL_WIDTH,                          @intCast(w),
-            EGL_HEIGHT,                         @intCast(h),
-            EGL_LINUX_DRM_FOURCC_EXT,           @bitCast(GBM_FORMAT_ARGB8888),
-            EGL_DMA_BUF_PLANE0_FD_EXT,          gl_fd,
-            EGL_DMA_BUF_PLANE0_OFFSET_EXT,      @intCast(gl_offset),
-            EGL_DMA_BUF_PLANE0_PITCH_EXT,       @intCast(gl_stride),
-            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, @bitCast(@as(u32, @truncate(gl_mod & 0xffff_ffff))),
-            EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, @bitCast(@as(u32, @truncate(gl_mod >> 32))),
-            EGL_NONE,
-        };
-        const image = egl.createImageKHR(dpy, null, EGL_LINUX_DMA_BUF_EXT, null, &img_attrs) orelse {
-            std.debug.print("  eglCreateImageKHR 실패 err=0x{x}\n", .{egl.getError()});
-            posix.close(gl_fd);
-            break :gl_phase;
-        };
-        report.egl_image_import = true;
-
-        var tex: u32 = 0;
-        egl.genTextures(1, @ptrCast(&tex));
-        egl.bindTexture(GL_TEXTURE_2D, tex);
-        egl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        egl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        egl.imageTargetTexture2DOES(GL_TEXTURE_2D, image);
-
-        var fb: u32 = 0;
-        egl.genFramebuffers(1, @ptrCast(&fb));
-        egl.bindFramebuffer(GL_FRAMEBUFFER, fb);
-        egl.framebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-        if (egl.checkFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            _ = egl.destroyImageKHR(dpy, image);
-            posix.close(gl_fd);
-            break :gl_phase;
+        // 3 단계 — compositor 가 공표한 modifier 를 **하나씩** 시험한다.
+        //
+        // 목록 전체를 GBM 에 넘기면 GBM 이 고른 하나만 보게 되는데, 그게 쓸 수
+        // 있는 것이라는 보장이 없다 — AMD 실측에서 GBM 은 DCC(압축) modifier 를
+        // 골랐고 그건 EGLImage import 가 실패했다. GLES 렌더러가 실제로 쓸 수
+        // 있는 modifier 를 찾으려면 후보를 개별로 확인해야 한다.
+        //
+        // LINEAR 를 아예 공표하지 않는 환경도 실재한다 (NVIDIA + KWin 실측:
+        // ARGB8888 modifier 13 종에 LINEAR 없음). 그 환경에서 GPU 경로가
+        // 가능한지가 여기서 갈린다.
+        if (state.argb_mod_count > 0) {
+            report.neg_attempted = true;
+            std.debug.print("\nmodifier 후보별 확인 (할당 / import / FBO):\n", .{});
+            var winner: ?u64 = null;
+            for (state.argb_mods[0..state.argb_mod_count]) |m| {
+                const one = [_]u64{m};
+                const t = try runGlPhase(&state, &gbm, dev, &egl, dpy, &one, w, h, 0, false);
+                std.debug.print("  0x{x:0>16}  {s} / {s} / {s}\n", .{
+                    m,
+                    if (t.allocated) "할당" else "  X ",
+                    if (t.image_import) "import" else "  X   ",
+                    if (t.fbo_complete) "FBO" else " X ",
+                });
+                if (winner == null and t.fbo_complete) winner = m;
+            }
+            if (winner) |m| {
+                const one = [_]u64{m};
+                const neg = try runGlPhase(&state, &gbm, dev, &egl, dpy, &one, w, h, 2500, true);
+                report.neg_allocated = neg.allocated;
+                report.neg_modifier = neg.modifier;
+                report.neg_image_import = neg.image_import;
+                report.neg_fbo_complete = neg.fbo_complete;
+                report.neg_buffer_created = neg.buffer_created;
+                report.neg_frame_shown = neg.frame_shown;
+            }
         }
-        report.gl_fbo_complete = true;
-
-        // 좌표 — dma-buf 를 FBO 로 쓰면 GL 의 y=0 행이 메모리 첫 행이고 Wayland 는
-        // 그 행을 화면 맨 위에 표시한다. 즉 y-flip 보정을 하지 않는다 (top-down).
-        egl.viewport(0, 0, @intCast(w), @intCast(h));
-        egl.enable(GL_SCISSOR_TEST);
-        const hw: i32 = @intCast(w / 2);
-        const hh: i32 = @intCast(h / 2);
-        const iw: i32 = @intCast(w);
-        const ih: i32 = @intCast(h);
-        const quads = [_]struct { x: i32, y: i32, w: i32, h: i32, c: u32 }{
-            .{ .x = 0, .y = 0, .w = hw, .h = hh, .c = quad_tl },
-            .{ .x = hw, .y = 0, .w = iw - hw, .h = hh, .c = quad_tr },
-            .{ .x = 0, .y = hh, .w = hw, .h = ih - hh, .c = quad_bl },
-            .{ .x = hw, .y = hh, .w = iw - hw, .h = ih - hh, .c = quad_br },
-        };
-        for (quads) |q| {
-            const c = clearColorOf(q.c);
-            egl.scissor(q.x, q.y, q.w, q.h);
-            egl.clearColor(c[0], c[1], c[2], c[3]);
-            egl.clear(GL_COLOR_BUFFER_BIT);
-        }
-        egl.scissor(0, 0, 24, 24);
-        egl.clearColor(0, 0, 0, 1);
-        egl.clear(GL_COLOR_BUFFER_BIT);
-
-        // implicit sync 로 충분한지 보려고 glFinish 대신 glFlush 만 한다.
-        egl.flush();
-
-        const buf = try state.createDmabufBuffer(gl_fd, w, h, gl_stride, gl_offset, gl_mod);
-        posix.close(gl_fd);
-        if (buf) |bid| {
-            report.gl_buffer_created = true;
-            report.gl_frame_shown = try state.presentAndWait(bid, w, h, 2500);
-        }
-        _ = egl.destroyImageKHR(dpy, image);
     }
 
     if (state.got_error) report.protocol_error = true;
 
     printReport(&report);
-    return if (report.gpuPathViable()) 0 else 1;
+    return if (report.s1Viable()) 0 else 1;
+}
+
+const GlPhaseResult = struct {
+    allocated: bool = false,
+    modifier: u64 = DRM_FORMAT_MOD_INVALID,
+    image_import: bool = false,
+    fbo_complete: bool = false,
+    buffer_created: bool = false,
+    frame_shown: bool = false,
+};
+
+/// 주어진 modifier 목록으로 dma-buf 를 할당해 GLES 로 그리고 화면에 올린다.
+/// LINEAR 시도와 "compositor 공표 modifier" 시도가 같은 코드를 쓴다 — 두 경로가
+/// 갈리면 어느 쪽이 왜 실패했는지 비교할 수 없다.
+///
+/// 매핑이 되는 modifier 면 CPU 로 마젠타를 먼저 칠한다. 화면에 마젠타가 남으면
+/// GPU 가 그 버퍼에 못 썼다는 뜻이라 눈으로도 판정된다 (tiled 는 매핑이 안 될 수
+/// 있고, 그때는 이 증명이 생략될 뿐 판정 자체는 유효하다).
+fn runGlPhase(
+    state: *State,
+    gbm: *const Gbm,
+    dev: ?*anyopaque,
+    egl: *Egl,
+    dpy: ?*anyopaque,
+    mods: []const u64,
+    w: u32,
+    h: u32,
+    hold_ms: i64,
+    present: bool,
+) !GlPhaseResult {
+    var r = GlPhaseResult{};
+
+    const bo = gbm.bo_create_with_modifiers(dev, w, h, GBM_FORMAT_ARGB8888, mods.ptr, @intCast(mods.len)) orelse return r;
+    defer gbm.bo_destroy(bo);
+    r.allocated = true;
+    r.modifier = gbm.bo_get_modifier(bo);
+    const stride = gbm.bo_get_stride(bo);
+    const offset = gbm.bo_get_offset(bo, 0);
+
+    var map_stride: u32 = 0;
+    var map_data: ?*anyopaque = null;
+    if (gbm.bo_map(bo, 0, 0, w, h, GBM_BO_TRANSFER_WRITE, &map_stride, &map_data)) |mapped| {
+        fillSolid(@ptrCast(mapped), w, h, map_stride, magenta);
+        gbm.bo_unmap(bo, map_data);
+    }
+
+    const fd = gbm.bo_get_fd(bo);
+    if (fd < 0) return r;
+
+    const img_attrs = [_]i32{
+        EGL_WIDTH,                          @intCast(w),
+        EGL_HEIGHT,                         @intCast(h),
+        EGL_LINUX_DRM_FOURCC_EXT,           @bitCast(GBM_FORMAT_ARGB8888),
+        EGL_DMA_BUF_PLANE0_FD_EXT,          fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT,      @intCast(offset),
+        EGL_DMA_BUF_PLANE0_PITCH_EXT,       @intCast(stride),
+        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, @bitCast(@as(u32, @truncate(r.modifier & 0xffff_ffff))),
+        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, @bitCast(@as(u32, @truncate(r.modifier >> 32))),
+        EGL_NONE,
+    };
+    const image = egl.createImageKHR(dpy, null, EGL_LINUX_DMA_BUF_EXT, null, &img_attrs) orelse {
+        std.debug.print("  eglCreateImageKHR 실패 (modifier=0x{x:0>16}) err=0x{x}\n", .{ r.modifier, egl.getError() });
+        posix.close(fd);
+        return r;
+    };
+    r.image_import = true;
+
+    var tex: u32 = 0;
+    egl.genTextures(1, @ptrCast(&tex));
+    egl.bindTexture(GL_TEXTURE_2D, tex);
+    egl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    egl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    egl.imageTargetTexture2DOES(GL_TEXTURE_2D, image);
+
+    var fb: u32 = 0;
+    egl.genFramebuffers(1, @ptrCast(&fb));
+    egl.bindFramebuffer(GL_FRAMEBUFFER, fb);
+    egl.framebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    if (egl.checkFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std.debug.print("  FBO 불완전 (modifier=0x{x:0>16})\n", .{r.modifier});
+        _ = egl.destroyImageKHR(dpy, image);
+        posix.close(fd);
+        return r;
+    }
+    r.fbo_complete = true;
+
+    // 좌표 — dma-buf 를 FBO 로 쓰면 GL 의 y=0 행이 메모리 첫 행이고 Wayland 는
+    // 그 행을 화면 맨 위에 표시한다. 즉 y-flip 보정을 하지 않는다 (top-down).
+    egl.viewport(0, 0, @intCast(w), @intCast(h));
+    egl.enable(GL_SCISSOR_TEST);
+    const hw: i32 = @intCast(w / 2);
+    const hh: i32 = @intCast(h / 2);
+    const iw: i32 = @intCast(w);
+    const ih: i32 = @intCast(h);
+    const quads = [_]struct { x: i32, y: i32, w: i32, h: i32, c: u32 }{
+        .{ .x = 0, .y = 0, .w = hw, .h = hh, .c = quad_tl },
+        .{ .x = hw, .y = 0, .w = iw - hw, .h = hh, .c = quad_tr },
+        .{ .x = 0, .y = hh, .w = hw, .h = ih - hh, .c = quad_bl },
+        .{ .x = hw, .y = hh, .w = iw - hw, .h = ih - hh, .c = quad_br },
+    };
+    for (quads) |q| {
+        const c = clearColorOf(q.c);
+        egl.scissor(q.x, q.y, q.w, q.h);
+        egl.clearColor(c[0], c[1], c[2], c[3]);
+        egl.clear(GL_COLOR_BUFFER_BIT);
+    }
+    egl.scissor(0, 0, 24, 24);
+    egl.clearColor(0, 0, 0, 1);
+    egl.clear(GL_COLOR_BUFFER_BIT);
+
+    // implicit sync 로 충분한지 보려고 glFinish 대신 glFlush 만 한다.
+    egl.flush();
+
+    if (!present) {
+        // modifier 후보를 훑는 단계에서는 화면에 올리지 않는다 — 후보마다
+        // 2.5 초씩 기다리면 진단이 너무 느려진다.
+        posix.close(fd);
+        _ = egl.destroyImageKHR(dpy, image);
+        return r;
+    }
+
+    const buf = try state.createDmabufBuffer(fd, w, h, stride, offset, r.modifier);
+    posix.close(fd);
+    if (buf) |bid| {
+        r.buffer_created = true;
+        r.frame_shown = try state.presentAndWait(bid, w, h, hold_ms);
+    }
+    _ = egl.destroyImageKHR(dpy, image);
+    return r;
 }
 
 fn printReport(r: *const Report) void {
@@ -949,14 +1052,6 @@ fn printReport(r: *const Report) void {
         \\  [{s}] FBO complete
         \\  [{s}] GPU 버퍼 → wl_buffer 생성
         \\  [{s}] GPU 프레임 표시 (frame callback)
-        \\  [{s}] protocol error 없음
-        \\
-        \\종합: {s}
-        \\{s}{s}
-        \\눈으로 볼 것: 두 번째 화면에 마젠타(자홍)가 남아 있으면 GPU 가 그 버퍼에
-        \\쓰지 못한 것이다. 4 분면(어두운 회색 / 주황 / 회색 / 밝은 회색)이 보이고
-        \\좌상단에 검은 사각형이 있으면 정상이다.
-        \\==============================================================
         \\
     , .{
         r.desktop,
@@ -981,8 +1076,38 @@ fn printReport(r: *const Report) void {
         mark(r.gl_fbo_complete),
         mark(r.gl_buffer_created),
         mark(r.gl_frame_shown),
+    });
+
+    // 두 번으로 나눠 출력한다 — Zig 의 format 호출은 인자 32 개가 상한이다.
+    std.debug.print(
+        \\compositor 공표 modifier 로 재시도 (LINEAR 이 없는 환경용)
+        \\  선택된 modifier      : 0x{x:0>16}
+        \\  [{s}] dma-buf 할당
+        \\  [{s}] EGLImage import
+        \\  [{s}] FBO complete
+        \\  [{s}] wl_buffer 생성
+        \\  [{s}] 프레임 표시
+        \\
+        \\  [{s}] protocol error 없음
+        \\
+        \\종합
+        \\  현재 구현 (CPU 가 dma-buf 에 그림) : {s}
+        \\  GLES 렌더러 (계획)                 : {s}
+        \\{s}{s}
+        \\눈으로 볼 것: 마젠타(자홍)가 남아 있으면 GPU 가 그 버퍼에 쓰지 못한 것이다.
+        \\4 분면(어두운 회색 / 주황 / 회색 / 밝은 회색) + 좌상단 검은 사각형이면 정상.
+        \\==============================================================
+        \\
+    , .{
+        r.neg_modifier,
+        if (r.neg_attempted) mark(r.neg_allocated) else "skip",
+        if (r.neg_attempted) mark(r.neg_image_import) else "skip",
+        if (r.neg_attempted) mark(r.neg_fbo_complete) else "skip",
+        if (r.neg_attempted) mark(r.neg_buffer_created) else "skip",
+        if (r.neg_attempted) mark(r.neg_frame_shown) else "skip",
         mark(!r.protocol_error),
-        if (r.gpuPathViable()) "GPU 경로 성립" else "GPU 경로 불가 — software wl_shm 으로 동작 (앱은 정상)",
+        if (r.s1Viable()) "동작함 (GPU 경로 사용)" else "불가 — software wl_shm 으로 동작 (앱은 정상)",
+        if (r.s2Viable()) "가능함" else "불가 — 이 환경에서는 software 가 유일한 경로",
         if (r.failure_note.len == 0) "" else "사유: ",
         if (r.failure_note.len == 0) "" else r.failure_note,
     });
