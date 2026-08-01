@@ -25,6 +25,7 @@ const egl = @import("egl.zig");
 const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
+const software_terminal = @import("software_terminal.zig");
 
 pub const AtlasEntry = atlas_common.AtlasEntry;
 
@@ -34,11 +35,21 @@ pub const ATLAS_SIZE: u32 = 2048;
 /// 글리프 캐시 키. Linux 폰트 경로는 codepoint lookup 과 glyph_index lookup 두
 /// 갈래가 있어 (`Context.glyph` / `Context.glyphByIndex`) 어느 쪽인지 구분해야
 /// 한다 — 같은 숫자가 다른 글리프를 뜻할 수 있다.
+///
+/// 어느 갈래인지는 그리기 목록의 [`software_terminal.GlyphRef`] 가 이미 들고 있다
+/// — 여기서 다시 판단하지 않고 그 값을 키로 옮기기만 한다.
 const Key = struct {
     /// glyph_index 경로면 face index, codepoint 경로면 0xFF.
     face: u8,
     /// codepoint 또는 glyph_index.
     value: u32,
+
+    fn fromRef(ref: software_terminal.GlyphRef) Key {
+        return switch (ref) {
+            .codepoint => |cp| .{ .face = codepoint_face, .value = cp },
+            .indexed => |ix| .{ .face = ix.face, .value = ix.index },
+        };
+    }
 };
 
 const codepoint_face: u8 = 0xFF;
@@ -76,10 +87,17 @@ const Surface = struct {
         return .{ .texture = texture };
     }
 
-    fn reset(self: *Surface) void {
+    /// 패킹 커서를 처음으로 되돌린다. 텍스처 내용은 그대로 두고 덮어쓴다.
+    fn rewind(self: *Surface) void {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
+    }
+
+    /// 가득 차서 비우는 경우 — 진단 카운터를 올린다. 폰트가 바뀌어 비우는
+    /// (`Atlas.invalidate`) 경우와 구분해야 "atlas 가 작다" 를 오판하지 않는다.
+    fn reset(self: *Surface) void {
+        self.rewind();
         self.resets += 1;
     }
 };
@@ -110,32 +128,27 @@ pub const Atlas = struct {
         api.deleteTextures(1, @ptrCast(&color_tex));
     }
 
-    /// codepoint 글리프를 atlas 에 확보한다. 이미 있으면 캐시에서 돌려준다.
-    pub fn glyphForCodepoint(
+    /// 그리기 목록의 글리프 하나를 atlas 에 확보한다. 이미 있으면 캐시에서 돌려준다.
+    ///
+    /// **raster 결과를 넘겨받는다** — atlas 가 `font.Context` 를 다시 조회하지 않는다.
+    /// 조회는 수집기(`collectTerminalLayer`)가 위치를 계산하며 이미 했고, 그 결과가
+    /// [`software_terminal.GlyphItem`] 에 실려 온다. 여기서 또 조회하면 폰트 chain
+    /// 탐색이 프레임마다 두 번 돈다.
+    pub fn glyphForItem(
         self: *Atlas,
         api: *const egl.Api,
         allocator: std.mem.Allocator,
-        ctx: *font.Context,
-        cp: u21,
+        item: *const software_terminal.GlyphItem,
     ) ?AtlasEntry {
-        return self.ensure(api, allocator, .{ .face = codepoint_face, .value = cp }, ctx.glyph(cp));
+        return self.ensure(api, allocator, Key.fromRef(item.ref), &item.glyph);
     }
 
-    /// shape 결과의 glyph_index 글리프 (ligature 등).
-    pub fn glyphForIndex(
-        self: *Atlas,
-        api: *const egl.Api,
-        allocator: std.mem.Allocator,
-        ctx: *font.Context,
-        face_idx: u8,
-        glyph_index: u32,
-    ) ?AtlasEntry {
-        return self.ensure(
-            api,
-            allocator,
-            .{ .face = face_idx, .value = glyph_index },
-            ctx.glyphByIndex(face_idx, glyph_index),
-        );
+    /// 폰트가 다시 raster 된 뒤 (scale 변경 등) 캐시를 버린다. 같은 키가 이제 다른
+    /// 그림을 뜻하므로 비우지 않으면 이전 크기의 글리프가 그대로 나온다.
+    pub fn invalidate(self: *Atlas) void {
+        self.cache.clearRetainingCapacity();
+        self.gray.rewind();
+        self.color.rewind();
     }
 
     fn ensure(

@@ -122,7 +122,9 @@ const GlBufferData = *const fn (target: u32, size: isize, data: ?*const anyopaqu
 const GlEnableVertexAttribArray = *const fn (index: u32) callconv(.c) void;
 const GlVertexAttribPointer = *const fn (index: u32, size: i32, kind: u32, normalized: u8, stride: i32, offset: ?*const anyopaque) callconv(.c) void;
 const GlDrawArrays = *const fn (mode: u32, first: i32, count: i32) callconv(.c) void;
+const GlEnable = *const fn (cap: u32) callconv(.c) void;
 const GlDisable = *const fn (cap: u32) callconv(.c) void;
+const GlColorMask = *const fn (r: u8, g: u8, b: u8, a: u8) callconv(.c) void;
 const GlTexImage2D = *const fn (target: u32, level: i32, internal: i32, w: i32, h: i32, border: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
 const GlTexSubImage2D = *const fn (target: u32, level: i32, x: i32, y: i32, w: i32, h: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
 const GlPixelStorei = *const fn (pname: u32, param: i32) callconv(.c) void;
@@ -188,7 +190,9 @@ pub const Api = struct {
     enableVertexAttribArray: GlEnableVertexAttribArray,
     vertexAttribPointer: GlVertexAttribPointer,
     drawArrays: GlDrawArrays,
+    enable: GlEnable,
     disable: GlDisable,
+    colorMask: GlColorMask,
     texImage2D: GlTexImage2D,
     texSubImage2D: GlTexSubImage2D,
     pixelStorei: GlPixelStorei,
@@ -267,7 +271,9 @@ pub const Api = struct {
             .enableVertexAttribArray = lookup(gles_handle, GlEnableVertexAttribArray, "glEnableVertexAttribArray") orelse return error.GlSymbolMissing,
             .vertexAttribPointer = lookup(gles_handle, GlVertexAttribPointer, "glVertexAttribPointer") orelse return error.GlSymbolMissing,
             .drawArrays = lookup(gles_handle, GlDrawArrays, "glDrawArrays") orelse return error.GlSymbolMissing,
+            .enable = lookup(gles_handle, GlEnable, "glEnable") orelse return error.GlSymbolMissing,
             .disable = lookup(gles_handle, GlDisable, "glDisable") orelse return error.GlSymbolMissing,
+            .colorMask = lookup(gles_handle, GlColorMask, "glColorMask") orelse return error.GlSymbolMissing,
             .texImage2D = lookup(gles_handle, GlTexImage2D, "glTexImage2D") orelse return error.GlSymbolMissing,
             .texSubImage2D = lookup(gles_handle, GlTexSubImage2D, "glTexSubImage2D") orelse return error.GlSymbolMissing,
             .pixelStorei = lookup(gles_handle, GlPixelStorei, "glPixelStorei") orelse return error.GlSymbolMissing,
