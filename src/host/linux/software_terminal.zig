@@ -136,11 +136,19 @@ pub const GlyphRef = union(enum) {
     indexed: struct { face: u8, index: u32 },
 };
 
+/// #277 S2-5 — 글리프를 어느 폰트에서 구웠는지. atlas 캐시 키의 일부다 — 터미널
+/// 폰트와 탭바 폰트는 크기가 달라 같은 codepoint 라도 다른 그림이다.
+pub const FontId = enum(u8) {
+    terminal,
+    tab,
+};
+
 /// #277 S2-4 — 그릴 글리프 하나. **"어느 글리프를 어디에" 는 전부 여기 들어 있고,
 /// 두 경로는 이 값을 읽기만 한다** — shaping / ligature / wide 중앙정렬 / bearing
 /// 이 모두 수집기에서 끝난다.
 pub const GlyphItem = struct {
     ref: GlyphRef,
+    font: FontId = .terminal,
     /// raster 결과의 **값 사본**. `bitmap` 은 font cache 가 소유하므로 이 프레임
     /// 동안만 유효하다 (다음 `applyScale` 까지). 포인터가 아니라 값으로 두는 이유는
     /// 수집 중에 새 글리프가 캐시에 들어가면 HashMap 이 재해싱되어 앞서 얻은
@@ -154,63 +162,126 @@ pub const GlyphItem = struct {
     w: i32 = 0,
     h: i32 = 0,
     /// 마스크 글리프의 전경색. 컬러 글리프는 텍셀 색을 그대로 쓰므로 무시된다.
+    /// 바탕색은 싣지 않는다 — 두 경로 모두 **프레임버퍼와** 섞는다 (#277 S2-4).
     fg: ghostty.color.RGB,
-    /// CPU 가 알파를 섞을 바탕색. GL 은 실제 프레임버퍼와 섞으므로 쓰지 않는다.
-    bg: ghostty.color.RGB,
 };
 
-/// #277 S2-4 — 터미널 레이어 한 프레임의 그리기 목록. **CPU 와 GL 이 이 목록만
+/// #277 S2-5 — 아이콘 하나 (`< > + × …`). 폰트 글리프가 아니라 공통
+/// [`tab_icons`](../../tab_icons.zig) 가 그려 주는 알파 커버리지 비트맵이다.
+///
+/// **비트맵을 목록에 싣지 않고 (종류, 크기, 굵기) 만 싣는다.** 래스터화는 순수
+/// 함수라 두 경로가 각자 불러도 같은 그림이 나오고 — CPU 는 매 프레임, GL 은 atlas
+/// 가 비었을 때만 부른다 — 목록이 픽셀 소유권을 지지 않아도 된다. "어디에" 는 여기
+/// 이미 정해져 있다.
+pub const IconItem = struct {
+    kind: tab_icons.Icon,
+    /// 한 변 (px). `tab_icons.MAX_SIZE` 이하.
+    size: u32,
+    stroke: f32,
+    /// 비트맵 좌상단.
+    x: i32,
+    y: i32,
+    color: ghostty.color.RGB,
+};
+
+/// #277 S2-5 — chrome 그리기 명령 하나.
+///
+/// chrome 은 터미널 레이어와 달리 **순서 그대로의 명령 목록**이다. 탭바가
+/// `사각형 → 제목 → 사각형 → 집어 든 제목 → 아이콘` 으로 실제 교차하고 (#343 이
+/// 정한 layer 순서), 항목이 수백 개뿐이라 계층으로 쪼개는 것보다 순서를 그대로
+/// 지키는 편이 안전하다. GL 은 종류가 바뀔 때만 batch 를 flush 한다.
+pub const ChromeItem = union(enum) {
+    rect: SolidRect,
+    glyph: ChromeGlyph,
+    icon: IconItem,
+};
+
+/// chrome 글리프 — 터미널 글리프에 **가로 clip 경계**가 붙는다. 탭 제목은 탭 영역
+/// 밖으로 나가면 픽셀 단위로 잘린다 (#343 A-2 — 통째로 버리지 않고 남은 조각을
+/// 보여 준다).
+pub const ChromeGlyph = struct {
+    item: GlyphItem,
+    clip_x0: i32,
+    clip_x1: i32,
+};
+
+/// #277 S2-4/S2-5 — 한 프레임의 그리기 목록 전체. **CPU 와 GL 이 이 목록만
 /// 소비한다** — "무엇을 어디에" 판단이 한 벌뿐이라 두 경로가 구조적으로 어긋날 수
 /// 없다.
 ///
-/// 목록이 다섯인 것은 **그리는 순서가 의미를 갖기** 때문이다. 아래 순서는
+/// 목록이 나뉜 것은 **그리는 순서가 의미를 갖기** 때문이다. 터미널 부분의 순서는
 /// macOS · Windows renderer 와 같다 (`renderer/macos.zig` · `renderer/windows.zig`
 /// 의 bg pass → text pass → block pass → cursor → scrollbar → preedit) — #361 에서
-/// "셀 배경을 전부 먼저" 로 정한 규칙의 연장이고, 세 platform 이 같은 순서를 쓴다.
+/// "셀 배경을 전부 먼저" 로 정한 규칙의 연장이다.
 ///
-///   1. `cell_bg`        셀 배경
-///   2. `glyphs`         터미널 텍스트
-///   3. `overlay`        block element · box drawing · 커서 · scrollbar thumb
-///   4. `preedit_bg`     IME 조합 중 배경
-///   5. `preedit_glyphs` IME 조합 중 글자
+///   1. `chrome_before`  탭바 (터미널 격자 위쪽)
+///   2. `cell_bg`        셀 배경
+///   3. `glyphs`         터미널 텍스트
+///   4. `overlay`        block element · box drawing · 커서 · scrollbar thumb
+///   5. `preedit_bg`     IME 조합 중 배경
+///   6. `preedit_glyphs` IME 조합 중 글자
+///   7. `chrome_after`   단일 탭 컨트롤 overlay · command menu
 ///
 /// 매 프레임 `clearRetainingCapacity` 로 비우므로 할당은 초반 몇 프레임에만 난다.
-pub const TerminalLayer = struct {
+pub const FrameLayer = struct {
+    chrome_before: std.ArrayList(ChromeItem) = .{},
     cell_bg: std.ArrayList(SolidRect) = .{},
     glyphs: std.ArrayList(GlyphItem) = .{},
     overlay: std.ArrayList(SolidRect) = .{},
     preedit_bg: std.ArrayList(SolidRect) = .{},
     preedit_glyphs: std.ArrayList(GlyphItem) = .{},
+    chrome_after: std.ArrayList(ChromeItem) = .{},
 
-    fn clear(self: *TerminalLayer) void {
+    fn clear(self: *FrameLayer) void {
+        self.chrome_before.clearRetainingCapacity();
         self.cell_bg.clearRetainingCapacity();
         self.glyphs.clearRetainingCapacity();
         self.overlay.clearRetainingCapacity();
         self.preedit_bg.clearRetainingCapacity();
         self.preedit_glyphs.clearRetainingCapacity();
+        self.chrome_after.clearRetainingCapacity();
     }
 
-    fn deinit(self: *TerminalLayer, allocator: std.mem.Allocator) void {
+    fn deinit(self: *FrameLayer, allocator: std.mem.Allocator) void {
+        self.chrome_before.deinit(allocator);
         self.cell_bg.deinit(allocator);
         self.glyphs.deinit(allocator);
         self.overlay.deinit(allocator);
         self.preedit_bg.deinit(allocator);
         self.preedit_glyphs.deinit(allocator);
+        self.chrome_after.deinit(allocator);
     }
+};
+
+/// #277 S2-5 — 한 프레임의 입력. `paint` (CPU) 와 `buildGlFrame` (GL) 이 **같은
+/// 값을 받는다** — 입력이 갈리면 목록을 공유해도 소용이 없다.
+pub const FrameInputs = struct {
+    terminal: *ghostty.Terminal,
+    theme: *const themes.Theme,
+    width: i32,
+    height: i32,
+    tab_titles: []const []const u8,
+    active_tab_idx: usize,
+    layout: tab_layout.Layout,
+    tab_scroll_x: f32,
+    drag_view: ?tab_interaction.DragView,
+    tab_hover: tab_layout.Area,
+    menu_ui: command_menu.Ui,
+    toggle_hotkey: []const u8,
 };
 
 /// #277 S2-3 — GL 경로가 한 프레임을 그리는 데 필요한 기술. `buildGlFrame` 이
 /// 돌려준다. host 는 `ghostty` 를 import 하지 않으므로 타입에 이름을 준다.
 pub const GlFrame = struct {
     background: ghostty.color.RGB,
-    layer: *const TerminalLayer,
+    layer: *const FrameLayer,
 };
 
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
-    /// #277 S2-3/S2-4 — 프레임마다 재사용하는 터미널 레이어 그리기 목록.
-    /// `collectTerminalLayer` 가 채우고 CPU · GL 이 소비한다.
-    layer: TerminalLayer = .{},
+    /// #277 S2-3/S2-4/S2-5 — 프레임마다 재사용하는 그리기 목록. `collectFrame` 이
+    /// 채우고 CPU · GL 이 소비한다.
+    layer: FrameLayer = .{},
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
     dialog_font_ctx: font.Context,
@@ -495,26 +566,18 @@ pub const Renderer = struct {
     ///
     /// render_state 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
     /// 화면이지만 CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
-    pub fn buildGlFrame(
-        self: *Renderer,
-        allocator: std.mem.Allocator,
-        terminal: *ghostty.Terminal,
-        theme: *const themes.Theme,
-        tab_count: usize,
-        width: i32,
-        height: i32,
-    ) GlFrame {
-        self.render_state.update(allocator, terminal) catch {
+    pub fn buildGlFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) GlFrame {
+        self.render_state.update(allocator, in.terminal) catch {
             self.layer.clear();
-            return .{ .background = theme.background, .layer = &self.layer };
+            return .{ .background = in.theme.background, .layer = &self.layer };
         };
-        self.collectTerminalLayer(allocator, terminal, tab_count, width, height);
+        self.collectFrame(allocator, in);
         return .{ .background = self.render_state.colors.background, .layer = &self.layer };
     }
 
     /// 그릴 세션이 없는 프레임용 — 목록을 비우고 그 자리를 돌려준다. 배경만 칠하는
     /// 프레임에서도 GL 경로가 지난 프레임의 목록을 다시 그리지 않게 한다.
-    pub fn emptyLayer(self: *Renderer) *const TerminalLayer {
+    pub fn emptyLayer(self: *Renderer) *const FrameLayer {
         self.layer.clear();
         return &self.layer;
     }
@@ -532,22 +595,18 @@ pub const Renderer = struct {
     /// `render_state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
     /// 할당 실패는 조용히 무시한다 — 그 프레임의 일부가 빠질 뿐이고, 다음 프레임에
     /// 다시 시도한다. 여기서 화면 전체를 포기하는 것보다 낫다.
-    pub fn collectTerminalLayer(
-        self: *Renderer,
-        allocator: std.mem.Allocator,
-        terminal: *ghostty.Terminal,
-        tab_count: usize,
-        width: i32,
-        height: i32,
-    ) void {
+    pub fn collectFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
         self.layer.clear();
 
-        const tab_bar_h = self.tabBarHeightPx(tab_count);
+        const tab_bar_h = self.tabBarHeightPx(in.tab_titles.len);
+        self.collectTabBar(allocator, in, tab_bar_h);
         self.collectCellBgRects(allocator, tab_bar_h);
         self.collectCellText(allocator, tab_bar_h);
         self.collectCursor(allocator, tab_bar_h);
-        self.collectScrollbar(allocator, terminal, tab_count, width, height);
+        self.collectScrollbar(allocator, in);
         self.collectPreedit(allocator, tab_bar_h);
+        self.collectSingleTabControls(allocator, in);
+        if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
     }
 
     /// #277 S2-3 / #361 — 셀 배경 사각형.
@@ -744,7 +803,6 @@ pub const Renderer = struct {
                             .x_offset = cg.x_offset,
                             .y_offset = cg.y_offset,
                             .fg = fg,
-                            .bg = bg,
                         });
                         x += 1;
                         continue;
@@ -777,7 +835,7 @@ pub const Renderer = struct {
                         next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
                     {
                         if (self.font_ctx.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
-                            self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 3, fg, bg);
+                            self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 3, fg);
                             x += 3;
                             continue;
                         }
@@ -790,7 +848,7 @@ pub const Renderer = struct {
                         next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
                     {
                         if (self.font_ctx.ligaturePair(cp, next.codepoint())) |lm| {
-                            self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 2, fg, bg);
+                            self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 2, fg);
                             x += 2;
                             continue;
                         }
@@ -806,7 +864,6 @@ pub const Renderer = struct {
                     .cell_h = ch,
                     .ascent = ascent,
                     .fg = fg,
-                    .bg = bg,
                 });
                 x += 1;
             }
@@ -831,7 +888,6 @@ pub const Renderer = struct {
         ascent: i32,
         count: usize,
         fg: ghostty.color.RGB,
-        bg: ghostty.color.RGB,
     ) void {
         switch (match) {
             .single => |lg| {
@@ -847,7 +903,6 @@ pub const Renderer = struct {
                     .x_offset = lg.x_offset,
                     .y_offset = lg.y_offset,
                     .fg = fg,
-                    .bg = bg,
                 });
             },
             .spacer => |sp| {
@@ -865,7 +920,6 @@ pub const Renderer = struct {
                         .x_offset = sp.x_offsets[i],
                         .y_offset = sp.y_offsets[i],
                         .fg = fg,
-                        .bg = bg,
                     });
                 }
             },
@@ -895,23 +949,16 @@ pub const Renderer = struct {
     /// #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
     /// 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
     /// #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은 입력.
-    fn collectScrollbar(
-        self: *Renderer,
-        allocator: std.mem.Allocator,
-        terminal: *ghostty.Terminal,
-        tab_count: usize,
-        width: i32,
-        height: i32,
-    ) void {
+    fn collectScrollbar(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
         const colors = self.render_state.colors;
-        const scrollbar_top: i32 = if (tab_count > 0) self.chromeHeightPx() else 0;
-        const sb = terminal.screens.active.pages.scrollbar();
+        const scrollbar_top: i32 = if (in.tab_titles.len > 0) self.chromeHeightPx() else 0;
+        const sb = in.terminal.screens.active.pages.scrollbar();
         const r = scrollbar.thumbRect(
             sb.total,
             sb.len,
             sb.offset,
-            @floatFromInt(width),
-            @floatFromInt(height),
+            @floatFromInt(in.width),
+            @floatFromInt(in.height),
             @floatFromInt(scrollbar_top),
             @floatFromInt(self.paddingPx()),
             @floatFromInt(self.scrollbarMinThumbHPx()),
@@ -975,112 +1022,333 @@ pub const Renderer = struct {
                 .cell_h = ch,
                 .ascent = ascent,
                 .fg = fg,
-                .bg = preedit_bg,
             });
             col += w_cells;
         }
+    }
+
+    /// #277 S2-5 — 탭바. rect 목록과 그 **순서**는 공통 `tab_chrome` 이 만들고
+    /// (#343), 여기서는 사이사이에 이 renderer 고유인 제목 / 아이콘을 끼운다.
+    ///
+    /// 넘기는 metric 은 이 renderer 가 쓰던 값 그대로다 (`scaledPt` 로 이미 반올림된
+    /// 정수). f32 renderer 는 소수를 그대로 넘긴다 — 모듈은 단위에 관여하지 않는다.
+    /// #357 — 선 두께는 공통 `ui_metrics.linePx` 한 곳에서 정수 px 로 온다.
+    fn collectTabBar(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs, tab_bar_h: i32) void {
+        if (tab_bar_h <= 0 or in.width <= 0 or in.tab_titles.len == 0) return;
+
+        const scale = self.scale;
+        const tab_w = self.tabWidthPx();
+        const tab_pad = self.tabPaddingPx();
+        const chrome_in = tab_chrome.Inputs{
+            .viewport_w = @floatFromInt(in.width),
+            .tab_bar_h = @floatFromInt(tab_bar_h),
+            .tab_w = @floatFromInt(tab_w),
+            .sep_w = ui_metrics.linePx(ui_metrics.TAB_SEPARATOR_W_PT, scale),
+            .underline_h = ui_metrics.linePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale),
+            .hover_inset = @round(ui_metrics.tabGapPx(scale).control_hover_inset),
+            .tab_count = in.tab_titles.len,
+            .active_idx = in.active_tab_idx,
+            .scroll_x = in.tab_scroll_x,
+            .drag = in.drag_view,
+            .layout = in.layout,
+            .hover = in.tab_hover,
+            .palette = &self.chrome,
+        };
+        var chrome_rects: [tab_chrome.maxRects(session_core.MAX_TABS)]tab_chrome.Rect = undefined;
+        const built = tab_chrome.build(&chrome_rects, chrome_in);
+        for (built.rects[0..built.before_titles]) |r| self.appendChromeRect(allocator, &self.layer.chrome_before, r);
+
+        // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
+        const text_color = rgbFromMetrics(self.chrome.tab_text);
+        const ascent: i32 = @intCast(self.tab_font_ctx.ascent_px);
+        const descent: i32 = @intCast(self.tab_font_ctx.descent_px);
+        const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
+        const tab_x_inset: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).tab_horizontal_inset));
+        // max_text_w — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
+        const max_text_w: i32 = tab_w - tab_pad * 2;
+        const tab_area_x: i32 = @intFromFloat(in.layout.tab_area_x);
+        const tab_area_end: i32 = tab_area_x + @as(i32, @intFromFloat(in.layout.tab_area_w));
+
+        // --- 각 탭의 제목 (tab_area 안에서 clipping) ---
+        // 탭 x 와 화면 밖 판정도 공통 모듈(`tabX` / `tabClip`) 을 쓴다 — 밑줄과
+        // 제목이 어긋나지 않게 한다.
+        for (in.tab_titles, 0..) |title, i| {
+            // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
+            if (built.deferred_title) |d| if (d == i) continue;
+            const tab_screen_x: i32 = @intFromFloat(tab_chrome.tabX(i, chrome_in));
+            switch (tab_chrome.tabClip(
+                @floatFromInt(tab_screen_x),
+                @floatFromInt(tab_w),
+                @floatFromInt(tab_area_x),
+                @floatFromInt(tab_area_end),
+                in.drag_view != null,
+            )) {
+                .skip => continue,
+                .stop => break,
+                .draw => {},
+            }
+            self.collectTabTitle(allocator, .{
+                .tab_bar_h = tab_bar_h,
+                .tab_x = tab_screen_x + tab_x_inset,
+                .tab_pad = tab_pad,
+                .tab_area_x = tab_area_x,
+                .tab_area_end = tab_area_end,
+                .text_baseline = text_baseline,
+                .max_text_w = max_text_w,
+                .title = title,
+                .text_color = text_color,
+            });
+        }
+
+        // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선 →
+        // (드래그 중이면) 집어 든 탭의 밑줄.
+        for (built.rects[built.before_titles..]) |r| self.appendChromeRect(allocator, &self.layer.chrome_before, r);
+
+        // #343 — 드래그 중인 탭의 제목을 **맨 마지막에** — 집어 든 탭이 다른 탭의
+        // 세로선·제목 위로 온다 (2026-07-31 사용자 결정). 텍스트끼리는 잘라 낼 수
+        // 없으므로 이것만은 지오메트리가 아니라 layer 순서로 표현한다.
+        if (built.deferred_title) |di| {
+            if (di < in.tab_titles.len) {
+                const dx: i32 = @intFromFloat(tab_chrome.tabX(di, chrome_in));
+                if (tab_chrome.tabClip(
+                    @floatFromInt(dx),
+                    @floatFromInt(tab_w),
+                    @floatFromInt(tab_area_x),
+                    @floatFromInt(tab_area_end),
+                    true,
+                ) == .draw) {
+                    self.collectTabTitle(allocator, .{
+                        .tab_bar_h = tab_bar_h,
+                        .tab_x = dx + tab_x_inset,
+                        .tab_pad = tab_pad,
+                        .tab_area_x = tab_area_x,
+                        .tab_area_end = tab_area_end,
+                        .text_baseline = text_baseline,
+                        .max_text_w = max_text_w,
+                        .title = in.tab_titles[di],
+                        .text_color = text_color,
+                    });
+                }
+            }
+        }
+
+        self.collectControlIcons(allocator, &self.layer.chrome_before, tab_bar_h, in.layout);
+    }
+
+    const TabTitle = struct {
+        tab_bar_h: i32,
+        tab_x: i32,
+        tab_pad: i32,
+        tab_area_x: i32,
+        tab_area_end: i32,
+        text_baseline: i32,
+        max_text_w: i32,
+        title: []const u8,
+        text_color: ghostty.color.RGB,
+    };
+
+    /// 탭 제목 한 개. 글자 위치와 ellipsis 판단은 공통 `tab_layout.iterTabText` 가
+    /// 한다 — 세 platform 이 같은 자리에 같은 글자를 놓는다.
+    fn collectTabTitle(self: *Renderer, allocator: std.mem.Allocator, t: TabTitle) void {
+        const cw_f: f32 = @floatFromInt(self.tab_font_ctx.cell_width_px);
+        const max_text_w_f: f32 = @floatFromInt(t.max_text_w);
+        // mac/win 동등 — 짧은 title 은 truncate 안 함 (ellipsis 안 그림).
+        const total_text_w_f: f32 = @as(f32, @floatFromInt(display_width.stringWidth(t.title))) * cw_f;
+        const needs_truncate = total_text_w_f > max_text_w_f;
+
+        const Ctx = struct {
+            renderer: *Renderer,
+            allocator: std.mem.Allocator,
+            t: TabTitle,
+            /// L12-γ scroll 잘림 fix — 부분 잘린 첫 보이는 탭은 시작 x 가
+            /// `tab_area_x` 보다 왼쪽으로 음수 가능 → clip 검사가 무효화되어 화살표
+            /// 영역을 침범한다. 좌측도 `tab_area_x` 로 clamp 한다.
+            viewport_left: i32,
+        };
+        const ctx = Ctx{
+            .renderer = self,
+            .allocator = allocator,
+            .t = t,
+            .viewport_left = t.tab_area_x,
+        };
+
+        tab_layout.iterTabText(
+            t.title,
+            @floatFromInt(t.tab_x + t.tab_pad),
+            cw_f,
+            max_text_w_f,
+            needs_truncate,
+            ctx,
+            struct {
+                fn emit(c: Ctx, g: tab_layout.Glyph) void {
+                    // #343 A-2 — glyph 를 통째로 버리지 않고 `tab_area` 경계에서
+                    // **픽셀 단위로 잘라** 안쪽만 그린다.
+                    appendChromeGlyph(&c.renderer.layer.chrome_before, c.allocator, .{
+                        .ref = .{ .codepoint = g.cp },
+                        .glyph = c.renderer.tab_font_ctx.glyph(g.cp),
+                        .pen_x = @intFromFloat(g.x),
+                        .baseline = c.t.text_baseline,
+                        .box_y = 0,
+                        .box_w = @intFromFloat(g.advance),
+                        .box_h = c.t.tab_bar_h,
+                        .fg = c.t.text_color,
+                        .clip_x0 = c.viewport_left,
+                        .clip_x1 = c.t.tab_area_end,
+                    });
+                }
+            }.emit,
+        );
+    }
+
+    /// #268 — 컨트롤 아이콘 (`< > × + …`). 공통 `tab_icons` 가 알파 커버리지
+    /// 비트맵을 만든다 (폰트 독립). mac/win 은 같은 비트맵을 atlas 에 올려 그리므로
+    /// 세 platform 픽셀이 같다.
+    ///
+    /// enabled = `ctrl_active` (밝은 흰색), disabled = `arrow_disabled` (회색).
+    /// scroll 왼쪽 끝이면 `<` 회색, 우측 끝이면 `>` 회색. `+` 는 MAX_TABS 도달 시
+    /// 회색 (#329) — 자리는 유지한다.
+    fn collectControlIcons(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        list: *std.ArrayList(ChromeItem),
+        bar_h: i32,
+        layout: tab_layout.Layout,
+    ) void {
+        const scale = self.scale;
+        const active_color = rgbFromMetrics(self.chrome.ctrl_active);
+        const disabled_color = rgbFromMetrics(self.chrome.arrow_disabled);
+        const size_i: i32 = scaledPt(ui_metrics.TAB_ICON_SIZE_PT, scale);
+        const size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), size_i)));
+        const stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+        const more_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, scale);
+
+        if (layout.arrows_visible) {
+            const arrow_w: i32 = @intFromFloat(layout.arrow_w);
+            self.appendIcon(allocator, list, .chevron_left, @intFromFloat(layout.left_arrow_x), arrow_w, bar_h, size, stroke, if (layout.left_enabled) active_color else disabled_color);
+            self.appendIcon(allocator, list, .chevron_right, @intFromFloat(layout.right_arrow_x), arrow_w, bar_h, size, stroke, if (layout.right_enabled) active_color else disabled_color);
+        }
+        self.appendIcon(allocator, list, .plus, @intFromFloat(layout.plus_x), @intFromFloat(layout.plus_w), bar_h, size, stroke, if (layout.plus_enabled) active_color else disabled_color);
+        // #268 — 우측 끝 활성 탭 닫기 버튼.
+        self.appendIcon(allocator, list, .close, @intFromFloat(layout.close_x), @intFromFloat(layout.close_w), bar_h, size, stroke, active_color);
+        self.appendIcon(allocator, list, .more, @intFromFloat(layout.more_x), @intFromFloat(layout.more_w), bar_h, size, more_stroke, active_color);
+    }
+
+    /// 아이콘을 box 가운데에 놓는다.
+    fn appendIcon(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        list: *std.ArrayList(ChromeItem),
+        kind: tab_icons.Icon,
+        box_x: i32,
+        box_w: i32,
+        box_h: i32,
+        size: u32,
+        stroke: f32,
+        color: ghostty.color.RGB,
+    ) void {
+        _ = self;
+        const size_i: i32 = @intCast(size);
+        list.append(allocator, .{ .icon = .{
+            .kind = kind,
+            .size = size,
+            .stroke = stroke,
+            .x = box_x + @divFloor(box_w - size_i, 2),
+            .y = @divFloor(box_h - size_i, 2),
+            .color = color,
+        } }) catch {};
+    }
+
+    /// #329 — 단일 탭은 terminal grid 를 y=0 에 둔 채 우측 상단 `[+][×][…]`
+    /// 72×28pt 만 마지막 chrome layer 로 overlay 한다.
+    fn collectSingleTabControls(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
+        if (in.tab_titles.len != 1) return;
+        const bar_h = self.chromeHeightPx();
+        const controls = tab_layout.computeControls(
+            @floatFromInt(in.width),
+            @floatFromInt(self.tabPlusWPx()),
+            @floatFromInt(self.tabCloseWPx()),
+            @floatFromInt(self.tabMoreWPx()),
+        );
+        const overlay_layout = tab_layout.Layout{
+            .tab_area_x = 0,
+            .tab_area_w = 0,
+            .arrows_visible = false,
+            .arrow_w = 0,
+            .plus_w = controls.plus_w,
+            .plus_x = controls.plus_x,
+            .close_w = controls.close_w,
+            .close_x = controls.close_x,
+            .more_w = controls.more_w,
+            .more_x = controls.more_x,
+        };
+        // #343 — 컨트롤 bg fill · hover 는 탭바 경로와 같은 `tab_chrome`
+        // (`buildControlsOnly`) 이 만든다. 탭바 전체 배경 · 밑줄 · 구분선은 단일 탭
+        // overlay 에 없으므로 컨트롤 구간만 쓴다.
+        var overlay_rects: [tab_chrome.maxRects(0)]tab_chrome.Rect = undefined;
+        for (tab_chrome.buildControlsOnly(&overlay_rects, .{
+            .viewport_w = @floatFromInt(in.width),
+            .tab_bar_h = @floatFromInt(bar_h),
+            .tab_w = 0,
+            .sep_w = 0,
+            .underline_h = 0,
+            .hover_inset = @round(ui_metrics.tabGapPx(self.scale).control_hover_inset),
+            .tab_count = 0,
+            .active_idx = 0,
+            .scroll_x = 0,
+            .drag = null,
+            .layout = overlay_layout,
+            .hover = in.tab_hover,
+            .palette = &self.chrome,
+        })) |r| self.appendChromeRect(allocator, &self.layer.chrome_after, r);
+
+        self.collectControlIcons(allocator, &self.layer.chrome_after, bar_h, overlay_layout);
+    }
+
+    /// chrome 사각형 — 정수 격자 스냅과 색 변환은 한 곳(`tab_chrome.snap` +
+    /// `rgbFromMetrics`)에서만 한다 (#357).
+    fn appendChromeRect(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        list: *std.ArrayList(ChromeItem),
+        r: tab_chrome.Rect,
+    ) void {
+        _ = self;
+        const i = tab_chrome.snap(r);
+        list.append(allocator, .{ .rect = .{
+            .x = i.x,
+            .y = i.y,
+            .w = i.w,
+            .h = i.h,
+            .color = rgbFromMetrics(r.color),
+        } }) catch {};
     }
 
     pub fn paint(
         self: *Renderer,
         allocator: std.mem.Allocator,
         memory: []u8,
-        width: i32,
-        height: i32,
         stride: i32,
-        terminal: *ghostty.Terminal,
-        theme: *const themes.Theme,
-        tab_titles: []const []const u8,
-        active_tab_idx: usize,
-        layout: tab_layout.Layout,
-        tab_scroll_x: f32,
-        drag_view: ?tab_interaction.DragView,
-        tab_hover: tab_layout.Area,
-        menu_ui: command_menu.Ui,
-        toggle_hotkey: []const u8,
+        in: FrameInputs,
     ) void {
-        self.render_state.update(allocator, terminal) catch {
-            fill(memory, width, height, stride, theme.background);
+        const width = in.width;
+        const height = in.height;
+        self.render_state.update(allocator, in.terminal) catch {
+            fill(memory, width, height, stride, in.theme.background);
             return;
         };
 
-        const colors = self.render_state.colors;
-        fill(memory, width, height, stride, colors.background);
+        fill(memory, width, height, stride, self.render_state.colors.background);
 
-        const tab_bar_h: i32 = self.tabBarHeightPx(tab_titles.len);
-
-        // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
-        // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
-        // plus / scroll 모두 적용. #334 — 탭 배경은 탭바와 같은 색, 활성은
-        // amber 밑줄, 탭 경계는 세로 구분선 (Windows/macOS 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, drag_view, self.scale, &self.tab_font_ctx, &self.chrome);
-
-        // #277 S2-4 — 터미널 레이어. **목록은 GL 경로와 같은 수집기가 만들고 여기서는
-        // 그리기만 한다.** 순서(배경 → 글리프 → block/box · 커서 · scrollbar →
-        // preedit)는 `TerminalLayer` 가 정의하고 두 경로가 그대로 따른다.
-        self.collectTerminalLayer(allocator, terminal, tab_titles.len, width, height);
+        // #277 S2-4/S2-5 — **목록은 GL 경로와 같은 수집기가 만들고 여기서는 그리기만
+        // 한다.** 순서는 `FrameLayer` 가 정의하고 두 경로가 그대로 따른다.
+        self.collectFrame(allocator, in);
+        for (self.layer.chrome_before.items) |it| drawChromeItem(memory, width, height, stride, it);
         for (self.layer.cell_bg.items) |r| drawSolidRect(memory, width, height, stride, r);
         for (self.layer.glyphs.items) |*g| drawGlyphItem(memory, width, height, stride, g);
         for (self.layer.overlay.items) |r| drawSolidRect(memory, width, height, stride, r);
         for (self.layer.preedit_bg.items) |r| drawSolidRect(memory, width, height, stride, r);
         for (self.layer.preedit_glyphs.items) |*g| drawGlyphItem(memory, width, height, stride, g);
-
-        // #329 — 단일 탭은 terminal grid를 y=0에 둔 채 우측 상단
-        // `[+][×][…]` 72×28pt만 마지막 chrome layer로 overlay한다.
-        if (tab_titles.len == 1) {
-            const controls = tab_layout.computeControls(
-                @floatFromInt(width),
-                @floatFromInt(self.tabPlusWPx()),
-                @floatFromInt(self.tabCloseWPx()),
-                @floatFromInt(self.tabMoreWPx()),
-            );
-            const overlay_layout = tab_layout.Layout{
-                .tab_area_x = 0,
-                .tab_area_w = 0,
-                .arrows_visible = false,
-                .arrow_w = 0,
-                .plus_w = controls.plus_w,
-                .plus_x = controls.plus_x,
-                .close_w = controls.close_w,
-                .close_x = controls.close_x,
-                .more_w = controls.more_w,
-                .more_x = controls.more_x,
-            };
-            // #343 — 컨트롤 bg fill · hover 는 탭바 경로와 같은 `tab_chrome`
-            // (`buildControlsOnly`) 이 만든다. 탭바 전체 배경 · 밑줄 · 구분선은
-            // 단일 탭 overlay 에 없으므로 컨트롤 구간만 쓴다.
-            const overlay_in = tab_chrome.Inputs{
-                .viewport_w = @floatFromInt(width),
-                .tab_bar_h = @floatFromInt(self.chromeHeightPx()),
-                .tab_w = 0,
-                .sep_w = 0,
-                .underline_h = 0,
-                .hover_inset = @round(ui_metrics.tabGapPx(self.scale).control_hover_inset),
-                .tab_count = 0,
-                .active_idx = 0,
-                .scroll_x = 0,
-                .drag = null,
-                .layout = overlay_layout,
-                .hover = tab_hover,
-                .palette = &self.chrome,
-            };
-            var overlay_rects: [tab_chrome.maxRects(0)]tab_chrome.Rect = undefined;
-            for (tab_chrome.buildControlsOnly(&overlay_rects, overlay_in)) |r| {
-                fillChromeRect(memory, width, height, stride, r);
-            }
-            drawTabBarControlIcons(
-                memory,
-                width,
-                height,
-                stride,
-                self.chromeHeightPx(),
-                overlay_layout,
-                self.scale,
-                &self.chrome,
-            );
-        }
-
-        if (menu_ui.open) self.drawCommandMenu(memory, width, height, stride, menu_ui, toggle_hotkey);
+        for (self.layer.chrome_after.items) |it| drawChromeItem(memory, width, height, stride, it);
 
         // --- L13-γ: opacity alpha sweep ---
         // ARGB8888 buffer 의 alpha byte 를 self.opacity_alpha 로 일괄 채움.
@@ -1102,32 +1370,33 @@ pub const Renderer = struct {
         }
     }
 
-    fn drawCommandMenu(self: *Renderer, memory: []u8, width: i32, height: i32, stride: i32, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+    /// #277 S2-5 — command menu. #343 단계 3 — 메뉴 배경 · 강조 박스 · 항목
+    /// 구분선의 rect 와 그 순서는 공통 `command_menu.rects` 한 곳이 만든다. 여기
+    /// 남은 것은 텍스트와 스크롤 표시 아이콘뿐이다.
+    fn collectCommandMenu(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
         const scale = self.scale;
-        // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
-        // 는 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
+        const ui = in.menu_ui;
+        // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry 는
+        // 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
         const v = command_menu.view(
-            @as(f32, @floatFromInt(width)) / scale,
-            @as(f32, @floatFromInt(height)) / scale,
+            @as(f32, @floatFromInt(in.width)) / scale,
+            @as(f32, @floatFromInt(in.height)) / scale,
             @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
             ui.first_visible,
         );
         const mx: i32 = @intFromFloat(@round(v.rect.x * scale));
         const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
-        const bg = rgbFromMetrics(self.chrome.tab_bar_bg);
         const fg = rgbFromMetrics(self.chrome.menu_label);
         const hint_fg = rgbFromMetrics(self.chrome.menu_hint);
+        const list = &self.layer.chrome_after;
 
-        // #343 단계 3 — 메뉴 배경 · 강조 박스 · 항목 구분선의 rect 와 그 순서는
-        // 공통 `command_menu.rects` 한 곳이 만든다. 여기 남은 것은 텍스트와 스크롤
-        // 표시 아이콘 (이 renderer 고유) 뿐이다.
         var menu_rects: [command_menu.MAX_RECTS]tab_chrome.Rect = undefined;
         for (command_menu.rects(&menu_rects, v, ui, scale, &self.chrome)) |r| {
-            fillChromeRect(memory, width, height, stride, r);
+            self.appendChromeRect(allocator, list, r);
         }
 
-        // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
-        // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
+        // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례: 끝에 닿으면
+        // 비활성 색, 클릭 = 한 entry 스크롤).
         if (v.clipped) {
             const ind_size_i: i32 = scaledPt(ui_metrics.MENU_INDICATOR_ICON_PT, scale);
             const ind_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), ind_size_i)));
@@ -1142,23 +1411,15 @@ pub const Renderer = struct {
                 .{ .kind = .chevron_up, .y = up_y, .enabled = v.can_scroll_up },
                 .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
             };
-            var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
             for (pairs) |p| {
-                tab_icons.rasterize(p.kind, ind_size, ind_stroke, &cov);
-                const fg_ind = if (p.enabled) active_fg else disabled_fg;
-                var row: u32 = 0;
-                while (row < ind_size) : (row += 1) {
-                    var col: u32 = 0;
-                    while (col < ind_size) : (col += 1) {
-                        const alpha = cov[row * ind_size + col];
-                        if (alpha == 0) continue;
-                        const px = ind_cx + @as(i32, @intCast(col));
-                        const py = p.y + @as(i32, @intCast(row));
-                        if (px < 0 or py < 0 or px >= width or py >= height) continue;
-                        const off: usize = @intCast(py * stride + px * 4);
-                        std.mem.writeInt(u32, memory[off..][0..4], blendPixel(fg_ind, bg, alpha), .little);
-                    }
-                }
+                list.append(allocator, .{ .icon = .{
+                    .kind = p.kind,
+                    .size = ind_size,
+                    .stroke = ind_stroke,
+                    .x = ind_cx,
+                    .y = p.y,
+                    .color = if (p.enabled) active_fg else disabled_fg,
+                } }) catch {};
             }
         }
 
@@ -1168,22 +1429,56 @@ pub const Renderer = struct {
             const command = command_menu.entries[i] orelse continue; // 구분선은 위에서
             const item = command_menu.entryRect(v, i).?;
             const ix: i32 = @intFromFloat(@round(item.x * scale));
-            const iy: i32 = @intFromFloat(@round(item.y * scale));
             const iw: i32 = @intFromFloat(@round(item.w * scale));
             const ih: i32 = @intFromFloat(@round(item.h * scale));
+            const iy: i32 = @intFromFloat(@round(item.y * scale));
             const baseline = iy + @divFloor(ih - ch, 2) + @as(i32, @intCast(self.tab_font_ctx.ascent_px));
             const label = command_menu.label(command);
-            self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + scaledPt(8, scale), baseline, label, fg);
-            const hint = command_menu.shortcut(command, false, toggle_hotkey, ui.fullscreen_workarea);
-            if (hint.len > 0) {
-                const hint_w = @as(i32, @intCast(display_width.stringWidth(hint))) * cw;
-                const label_w = @as(i32, @intCast(display_width.stringWidth(label))) * cw;
-                // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면
-                // hint 를 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
-                if (command_menu.hintFits(item.w, @as(f32, @floatFromInt(label_w)) / scale, @as(f32, @floatFromInt(hint_w)) / scale)) {
-                    self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + iw - scaledPt(8, scale) - hint_w, baseline, hint, hint_fg);
-                }
+            self.collectChromeText(allocator, list, ix + scaledPt(8, scale), baseline, ch, label, fg, in.width);
+            const hint = command_menu.shortcut(command, false, in.toggle_hotkey, ui.fullscreen_workarea);
+            if (hint.len == 0) continue;
+            const hint_w = @as(i32, @intCast(display_width.stringWidth(hint))) * cw;
+            const label_w = @as(i32, @intCast(display_width.stringWidth(label))) * cw;
+            // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면 hint 를
+            // 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
+            if (command_menu.hintFits(item.w, @as(f32, @floatFromInt(label_w)) / scale, @as(f32, @floatFromInt(hint_w)) / scale)) {
+                self.collectChromeText(allocator, list, ix + iw - scaledPt(8, scale) - hint_w, baseline, ch, hint, hint_fg, in.width);
             }
+        }
+    }
+
+    /// cell-aligned chrome 텍스트 한 줄 (탭 폰트). ligature / cluster shape 이
+    /// 필요 없는 자리 — 메뉴 항목처럼 짧은 label 에 쓴다.
+    fn collectChromeText(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        list: *std.ArrayList(ChromeItem),
+        start_x: i32,
+        baseline: i32,
+        line_h: i32,
+        text: []const u8,
+        fg: ghostty.color.RGB,
+        clip_x1: i32,
+    ) void {
+        const cw: i32 = @intCast(self.tab_font_ctx.cell_width_px);
+        var x: i32 = start_x;
+        var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+        while (iter.nextCodepoint()) |cp| {
+            if (x >= clip_x1) break;
+            const adv: i32 = cw * @as(i32, @intCast(display_width.codepointWidth(cp)));
+            appendChromeGlyph(list, allocator, .{
+                .ref = .{ .codepoint = cp },
+                .glyph = self.tab_font_ctx.glyph(cp),
+                .pen_x = x,
+                .baseline = baseline,
+                .box_y = baseline - line_h,
+                .box_w = adv,
+                .box_h = line_h,
+                .fg = fg,
+                .clip_x0 = 0,
+                .clip_x1 = clip_x1,
+            });
+            x += adv;
         }
     }
 
@@ -1509,331 +1804,6 @@ fn tabClipDecision(
 /// 안 탭들은 `scroll_x` 만큼 좌측 밀려 그려지고 area 범위 밖은 clip.
 /// #334 (2026-07-22) — 탭 배경(활성 포함) = 탭바 색, 활성은 amber 밑줄로만
 /// 구분, 탭 경계는 세로 구분선 (Tilda 문법, mac/win 동등).
-fn drawTabBar(
-    memory: []u8,
-    fb_w: i32,
-    fb_h: i32,
-    stride: i32,
-    tab_bar_h: i32,
-    tab_w: i32,
-    tab_pad: i32,
-    titles: []const []const u8,
-    active_idx: usize,
-    layout: tab_layout.Layout,
-    tab_hover: tab_layout.Area,
-    scroll_x: f32,
-    drag_view: ?tab_interaction.DragView,
-    scale: f32,
-    font_ctx: *font.Context,
-    /// #335 — theme 배경에서 파생한 chrome 색 (`Renderer.chrome`).
-    chrome: *const chrome_palette.Palette,
-) void {
-    if (tab_bar_h <= 0 or fb_w <= 0 or titles.len == 0) return;
-    const tab_bar_bg = rgbFromMetrics(chrome.tab_bar_bg);
-
-    // #343 — rect 목록과 그 순서는 공통 `tab_chrome` 이 만든다. 여기서는 그것을
-    // 정수로 스냅해 그리고, 사이사이에 이 renderer 고유인 텍스트 / 아이콘을 끼운다.
-    //
-    // 넘기는 metric 은 **이 renderer 가 쓰던 값 그대로**다 (`scaledPt` 로 이미
-    // 반올림된 정수). f32 renderer 는 소수를 그대로 넘긴다 — 모듈은 단위에
-    // 관여하지 않고 받은 값으로 rect 를 만든다. 입력 metric 자체의 정수/소수
-    // 갈래는 별 항목이다 (#343 코멘트).
-    // #357 — 선 두께는 공통 `ui_metrics.linePx` 한 곳에서 정수 px 로 온다. 이전에는
-    // 여기서만 정수로 반올림하고 mac/win 은 소수 `strokePx` 를 넘겨 값이 갈렸다
-    // (배율 1.0 · 1.7 에서는 결과가 같아 #343 단계 1 검증에 안 걸렸다).
-    const underline_line = ui_metrics.linePx(ui_metrics.TAB_ACTIVE_UNDERLINE_PT, scale);
-    const sep_w_line = ui_metrics.linePx(ui_metrics.TAB_SEPARATOR_W_PT, scale);
-    const hover_inset_px: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).control_hover_inset));
-    const chrome_in = tab_chrome.Inputs{
-        .viewport_w = @floatFromInt(fb_w),
-        .tab_bar_h = @floatFromInt(tab_bar_h),
-        .tab_w = @floatFromInt(tab_w),
-        .sep_w = sep_w_line,
-        .underline_h = underline_line,
-        .hover_inset = @floatFromInt(hover_inset_px),
-        .tab_count = titles.len,
-        .active_idx = active_idx,
-        .scroll_x = scroll_x,
-        .drag = drag_view,
-        .layout = layout,
-        .hover = tab_hover,
-        .palette = chrome,
-    };
-    var chrome_rects: [tab_chrome.maxRects(session_core.MAX_TABS)]tab_chrome.Rect = undefined;
-    const built = tab_chrome.build(&chrome_rects, chrome_in);
-    for (built.rects[0..built.before_titles]) |r| fillChromeRect(memory, fb_w, fb_h, stride, r);
-
-    // #342 — 탭바-터미널 가로 경계선은 제거됐다 (2026-07-27 사용자 결정).
-    // 탭바와 terminal 의 경계는 배경색 차이만으로 둔다.
-    const text_color = rgbFromMetrics(chrome.tab_text);
-    const ascent: i32 = @intCast(font_ctx.ascent_px);
-    const descent: i32 = @intCast(font_ctx.descent_px);
-    const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
-
-    const tab_gap = ui_metrics.tabGapPx(scale);
-    const tab_x_inset: i32 = @intFromFloat(@round(tab_gap.tab_horizontal_inset));
-    const cell_w: i32 = @intCast(font_ctx.cell_width_px);
-    // max_text_w — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
-    // mac `tab_w - tab_pad_px * 2` 동등.
-    const max_text_w_metric: i32 = tab_w - tab_pad * 2;
-    const tab_area_x: i32 = @intFromFloat(layout.tab_area_x);
-    const tab_area_w: i32 = @intFromFloat(layout.tab_area_w);
-    const tab_area_end: i32 = tab_area_x + tab_area_w;
-
-    // --- 각 탭의 제목 (tab_area 안에서 clipping) ---
-    // #343 — 탭 배경 · amber 밑줄은 `tab_chrome` 이 위에서 이미 그렸다. 여기 남은
-    // 것은 이 renderer 고유인 glyph 그리기뿐이다. 탭 x 와 화면 밖 판정도 공통
-    // 모듈(`tabX` / `tabClip`) 을 쓴다 — 밑줄과 제목이 어긋나지 않게 한다.
-    for (titles, 0..) |title, i| {
-        // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
-        if (built.deferred_title) |d| if (d == i) continue;
-        const tab_screen_x: i32 = @intFromFloat(tab_chrome.tabX(i, chrome_in));
-        switch (tab_chrome.tabClip(
-            @floatFromInt(tab_screen_x),
-            @floatFromInt(tab_w),
-            @floatFromInt(tab_area_x),
-            @floatFromInt(tab_area_end),
-            drag_view != null,
-        )) {
-            .skip => continue,
-            .stop => break,
-            .draw => {},
-        }
-
-        drawTabTitle(.{
-            .memory = memory,
-            .fb_w = fb_w,
-            .fb_h = fb_h,
-            .stride = stride,
-            .tab_bar_h = tab_bar_h,
-            .tab_x = tab_screen_x + tab_x_inset,
-            .tab_pad = tab_pad,
-            .tab_area_x = tab_area_x,
-            .tab_area_end = tab_area_end,
-            .text_baseline = text_baseline,
-            .cell_w = cell_w,
-            .max_text_w = max_text_w_metric,
-            .title = title,
-            .bg = tab_bar_bg,
-            .text_color = text_color,
-            .font_ctx = font_ctx,
-        });
-    }
-
-    // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선 → (드래그 중이면)
-    // 집어 든 탭의 밑줄. 순서와 지오메트리는 `tab_chrome` 이 정한다.
-    for (built.rects[built.before_titles..]) |r| fillChromeRect(memory, fb_w, fb_h, stride, r);
-
-    // #343 — 드래그 중인 탭의 제목을 **맨 마지막에** — 집어 든 탭이 다른 탭의
-    // 세로선·제목 위로 온다 (2026-07-31 사용자 결정). 텍스트끼리는 잘라 낼 수
-    // 없으므로 이것만은 지오메트리가 아니라 layer 순서로 표현한다. 세로선 ↔ 밑줄
-    // 처럼 잘라 낼 수 있는 쌍은 `tab_chrome` 이 이미 겹치지 않게 만들어 둔다.
-    if (built.deferred_title) |di| {
-        if (di < titles.len) {
-            const dx: i32 = @intFromFloat(tab_chrome.tabX(di, chrome_in));
-            if (tab_chrome.tabClip(
-                @floatFromInt(dx),
-                @floatFromInt(tab_w),
-                @floatFromInt(tab_area_x),
-                @floatFromInt(tab_area_end),
-                true,
-            ) == .draw) {
-                drawTabTitle(.{
-                    .memory = memory,
-                    .fb_w = fb_w,
-                    .fb_h = fb_h,
-                    .stride = stride,
-                    .tab_bar_h = tab_bar_h,
-                    .tab_x = dx + tab_x_inset,
-                    .tab_pad = tab_pad,
-                    .tab_area_x = tab_area_x,
-                    .tab_area_end = tab_area_end,
-                    .text_baseline = text_baseline,
-                    .cell_w = cell_w,
-                    .max_text_w = max_text_w_metric,
-                    .title = titles[di],
-                    .bg = tab_bar_bg,
-                    .text_color = text_color,
-                    .font_ctx = font_ctx,
-                });
-            }
-        }
-    }
-
-    // 아이콘은 이 renderer 고유 (알파 커버리지 비트맵을 직접 blit) — 마지막.
-    drawTabBarControlIcons(memory, fb_w, fb_h, stride, tab_bar_h, layout, scale, chrome);
-}
-
-/// 탭 제목 한 개를 그린다. 두 번 호출된다 — 일반 탭 loop 에서 한 번, 드래그 중인
-/// 탭은 세로선 뒤에 한 번 (집어 든 탭이 맨 위 layer, #343).
-///
-/// L12-γ-2/3 — truncate / ellipsis 는 cross-platform `tab_layout.iterTabText` 가
-/// 처리한다. glyph clip 은 `tab_area` 양쪽 명시 clamp (#343 단계 1).
-const TabTitleArgs = struct {
-    memory: []u8,
-    fb_w: i32,
-    fb_h: i32,
-    stride: i32,
-    tab_bar_h: i32,
-    /// 탭 슬롯 좌측 (inset 적용 후).
-    tab_x: i32,
-    tab_pad: i32,
-    tab_area_x: i32,
-    tab_area_end: i32,
-    text_baseline: i32,
-    cell_w: i32,
-    max_text_w: i32,
-    title: []const u8,
-    bg: ghostty.color.RGB,
-    text_color: ghostty.color.RGB,
-    font_ctx: *font.Context,
-};
-
-fn drawTabTitle(a: TabTitleArgs) void {
-    const text_x_start: i32 = a.tab_x + a.tab_pad;
-    const cw_f: f32 = @floatFromInt(a.cell_w);
-    const max_text_w_f: f32 = @floatFromInt(a.max_text_w);
-    // mac/win 동등 — 짧은 title 은 truncate 안 함 (ellipsis 안 그림).
-    const total_text_w_f: f32 = @as(f32, @floatFromInt(display_width.stringWidth(a.title))) * cw_f;
-    const needs_truncate = total_text_w_f > max_text_w_f;
-
-    const Ctx = struct {
-        a: TabTitleArgs,
-        /// L12-γ scroll 잘림 fix — 부분 잘린 첫 보이는 탭은 `text_x_start` 가
-        /// `tab_area_x` 보다 왼쪽으로 음수 가능 → clip 검사가 무효화되어 화살표
-        /// 영역을 침범한다. 좌측도 `tab_area_x` 로 clamp 한다.
-        viewport_left: i32,
-    };
-    const ctx = Ctx{ .a = a, .viewport_left = a.tab_area_x };
-
-    tab_layout.iterTabText(a.title, @floatFromInt(text_x_start), cw_f, max_text_w_f, needs_truncate, ctx, struct {
-        fn emit(c: Ctx, g: tab_layout.Glyph) void {
-            const px: i32 = @intFromFloat(g.x);
-            // #343 A-2 — glyph 를 통째로 버리지 않고 `tab_area` 경계에서 **픽셀
-            // 단위로 잘라** 안쪽만 그린다. 경계에 걸친 글자의 남은 조각이 보인다.
-            const gl = c.a.font_ctx.glyph(g.cp);
-            if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                const adv: i32 = @intFromFloat(g.advance);
-                drawGlyphBgra(c.a.memory, c.a.fb_w, c.a.fb_h, c.a.stride, px, 0, adv, c.a.tab_bar_h, gl, c.viewport_left, c.a.tab_area_end);
-            } else {
-                drawGlyph(
-                    c.a.memory,
-                    c.a.fb_w,
-                    c.a.fb_h,
-                    c.a.stride,
-                    px + gl.bitmap_left,
-                    c.a.text_baseline - gl.bitmap_top,
-                    gl,
-                    c.a.text_color,
-                    c.viewport_left,
-                    c.a.tab_area_end,
-                );
-            }
-        }
-    }.emit);
-}
-
-/// #343 — `tab_chrome.Rect` (f32) 를 정수 격자에 스냅해 그린다. 스냅 규칙은
-/// `tab_chrome.snap` 한 곳에만 있다 (#344 의 `scrollbar.thumbPx` 와 같은 계약).
-fn fillChromeRect(memory: []u8, fb_w: i32, fb_h: i32, stride: i32, r: tab_chrome.Rect) void {
-    const i = tab_chrome.snap(r);
-    rect(memory, fb_w, fb_h, stride, i.x, i.y, i.w, i.h, rgbFromMetrics(r.color));
-}
-
-/// `<` / `>` / `×` / `+` / `…` **아이콘** 그리기. 컨트롤 bg fill 과 hover 박스는
-/// #343 이후 공통 `tab_chrome` 이 rect 로 만들고 호출처가 이 함수 **직전에** 그린다
-/// — 여기 남은 것은 알파 커버리지 비트맵 blit (이 renderer 고유) 뿐이다.
-fn drawTabBarControlIcons(
-    memory: []u8,
-    fb_w: i32,
-    fb_h: i32,
-    stride: i32,
-    tab_bar_h: i32,
-    layout: tab_layout.Layout,
-    scale: f32,
-    /// #335 — theme 배경에서 파생한 chrome 색 (`Renderer.chrome`).
-    chrome: *const chrome_palette.Palette,
-) void {
-    // 아이콘 알파를 섞을 배경 — 바로 앞 layer 인 컨트롤 bg fill 과 같은 색.
-    const bg = rgbFromMetrics(chrome.tab_bar_bg);
-    // mac / win 동등 — enabled = `ctrl_active` (밝은 흰색), disabled =
-    // `arrow_disabled` (회색). scroll 왼쪽 끝이면 `<` 회색, 우측 끝이면 `>` 회색.
-    // `+` 는 MAX_TABS 도달 시 회색 (#329).
-    const active_color = rgbFromMetrics(chrome.ctrl_active);
-    const disabled_color = rgbFromMetrics(chrome.arrow_disabled);
-
-    // #268 직접 그리기 — 아이콘 (`< > × +`) 을 `tab_icons` 공통 rasterizer 로
-    // 알파 커버리지 비트맵으로 만든 뒤 box 중앙에 blit (폰트 독립). mac/win 은
-    // 같은 비트맵을 atlas 에 올려 그림 → 세 platform 픽셀 동일.
-    const icon_size_i: i32 = scaledPt(ui_metrics.TAB_ICON_SIZE_PT, scale);
-    const icon_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), icon_size_i)));
-    const stroke_px: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
-    const more_stroke_px: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, scale);
-
-    const drawIcon = struct {
-        fn call(
-            mem: []u8,
-            w: i32,
-            h: i32,
-            s: i32,
-            icon: tab_icons.Icon,
-            x_left: i32,
-            box_w: i32,
-            bar_h: i32,
-            sz: u32,
-            stroke: f32,
-            fg: ghostty.color.RGB,
-            bg_color: ghostty.color.RGB,
-        ) void {
-            var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
-            tab_icons.rasterize(icon, sz, stroke, &cov);
-            const sz_i: i32 = @intCast(sz);
-            const draw_x: i32 = x_left + @divFloor(box_w - sz_i, 2);
-            const draw_y: i32 = @divFloor(bar_h - sz_i, 2);
-            var row: u32 = 0;
-            while (row < sz) : (row += 1) {
-                var col: u32 = 0;
-                while (col < sz) : (col += 1) {
-                    const alpha = cov[row * sz + col];
-                    if (alpha == 0) continue;
-                    const px = draw_x + @as(i32, @intCast(col));
-                    const py = draw_y + @as(i32, @intCast(row));
-                    if (px < 0 or py < 0 or px >= w or py >= h) continue;
-                    const off: usize = @intCast(py * s + px * 4);
-                    std.mem.writeInt(u32, mem[off..][0..4], blendPixel(fg, bg_color, alpha), .little);
-                }
-            }
-        }
-    }.call;
-
-    if (layout.arrows_visible) {
-        const left_x: i32 = @intFromFloat(layout.left_arrow_x);
-        const right_x: i32 = @intFromFloat(layout.right_arrow_x);
-        const arrow_w: i32 = @intFromFloat(layout.arrow_w);
-        const left_color = if (layout.left_enabled) active_color else disabled_color;
-        const right_color = if (layout.right_enabled) active_color else disabled_color;
-        drawIcon(memory, fb_w, fb_h, stride, .chevron_left, left_x, arrow_w, tab_bar_h, icon_size, stroke_px, left_color, bg);
-        drawIcon(memory, fb_w, fb_h, stride, .chevron_right, right_x, arrow_w, tab_bar_h, icon_size, stroke_px, right_color, bg);
-    }
-    const plus_x: i32 = @intFromFloat(layout.plus_x);
-    const plus_w: i32 = @intFromFloat(layout.plus_w);
-    // #329 — MAX_TABS 도달 시 `+` 는 자리 유지 + 비활성 색 (arrow 동일 관례).
-    const plus_color = if (layout.plus_enabled) active_color else disabled_color;
-    drawIcon(memory, fb_w, fb_h, stride, .plus, plus_x, plus_w, tab_bar_h, icon_size, stroke_px, plus_color, bg);
-    // #268 — 우측 끝 활성 탭 닫기 버튼. `×` 아이콘을 tab_icons 로 직접 그림.
-    const close_x: i32 = @intFromFloat(layout.close_x);
-    const close_w: i32 = @intFromFloat(layout.close_w);
-    drawIcon(memory, fb_w, fb_h, stride, .close, close_x, close_w, tab_bar_h, icon_size, stroke_px, active_color, bg);
-    const more_x: i32 = @intFromFloat(layout.more_x);
-    const more_w: i32 = @intFromFloat(layout.more_w);
-    drawIcon(memory, fb_w, fb_h, stride, .more, more_x, more_w, tab_bar_h, icon_size, more_stroke_px, active_color, bg);
-}
-
-// #353 — 알파 합성 전용이었던 `blendU8` 은 제거했다. 규칙(f32 곱 + 버림)이
-// macOS·Windows 의 renderer 합성과 갈렸고, 합성 자체를 공통
-// `ui_metrics.blendOverU8` 한 곳으로 모았다. 유일한 호출처였던 scrollbar thumb 은
-// 이제 `ui_metrics.scrollbarColor` 가 합성한 색을 그대로 그린다.
-
 fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
     return .{
         .r = @intFromFloat(@max(0.0, @min(255.0, c[0] * 255.0))),
@@ -1855,7 +1825,6 @@ const GlyphPlacement = struct {
     x_offset: i32 = 0,
     y_offset: i32 = 0,
     fg: ghostty.color.RGB,
-    bg: ghostty.color.RGB,
 };
 
 /// #277 S2-4 — 글리프 하나를 그리기 목록에 넣는다. **"어디에" 의 단일 정의다.**
@@ -1883,7 +1852,6 @@ fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p:
             .w = p.cell_w,
             .h = p.cell_h,
             .fg = p.fg,
-            .bg = p.bg,
         }) catch return;
         return;
     }
@@ -1896,8 +1864,96 @@ fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p:
         .x = p.cell_x + center_off + glyph.bitmap_left + p.x_offset,
         .y = p.cell_y + p.ascent - glyph.bitmap_top - p.y_offset,
         .fg = p.fg,
-        .bg = p.bg,
     }) catch return;
+}
+
+/// [`appendChromeGlyph`] 의 인자 묶음.
+const ChromeGlyphPlacement = struct {
+    ref: GlyphRef,
+    glyph: *const font.Glyph,
+    /// 펜 위치 (advance 기준 좌측) 와 baseline.
+    pen_x: i32,
+    baseline: i32,
+    /// 컬러 글리프가 들어갈 상자 — 마스크 글리프는 쓰지 않는다.
+    box_y: i32,
+    box_w: i32,
+    box_h: i32,
+    fg: ghostty.color.RGB,
+    clip_x0: i32,
+    clip_x1: i32,
+};
+
+/// #277 S2-5 — chrome 글리프 하나를 목록에 넣는다.
+///
+/// 터미널 셀과 달리 **중앙 정렬을 하지 않는다** — chrome 텍스트는 격자가 아니라
+/// 펜 위치로 흐르므로 `pen_x + bearing` 이 그대로 글리프 자리다. 폰트는 항상 탭
+/// 폰트라 `font` 를 여기서 채운다 (atlas 키가 터미널 폰트와 갈린다).
+fn appendChromeGlyph(list: *std.ArrayList(ChromeItem), allocator: std.mem.Allocator, p: ChromeGlyphPlacement) void {
+    const glyph = p.glyph;
+    if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
+
+    const item: GlyphItem = if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) .{
+        .ref = p.ref,
+        .font = .tab,
+        .glyph = glyph.*,
+        .x = p.pen_x,
+        .y = p.box_y,
+        .w = p.box_w,
+        .h = p.box_h,
+        .fg = p.fg,
+    } else .{
+        .ref = p.ref,
+        .font = .tab,
+        .glyph = glyph.*,
+        .x = p.pen_x + glyph.bitmap_left,
+        .y = p.baseline - glyph.bitmap_top,
+        .fg = p.fg,
+    };
+    list.append(allocator, .{ .glyph = .{
+        .item = item,
+        .clip_x0 = p.clip_x0,
+        .clip_x1 = p.clip_x1,
+    } }) catch return;
+}
+
+/// [`ChromeItem`] 하나를 그린다 (CPU 경로).
+fn drawChromeItem(memory: []u8, width: i32, height: i32, stride: i32, it: ChromeItem) void {
+    switch (it) {
+        .rect => |r| drawSolidRect(memory, width, height, stride, r),
+        .glyph => |g| {
+            if (g.item.glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+                drawGlyphBgra(memory, width, height, stride, g.item.x, g.item.y, g.item.w, g.item.h, &g.item.glyph, g.clip_x0, g.clip_x1);
+            } else {
+                drawGlyph(memory, width, height, stride, g.item.x, g.item.y, &g.item.glyph, g.item.fg, g.clip_x0, g.clip_x1);
+            }
+        },
+        .icon => |ic| {
+            // 래스터화는 순수 함수라 매 프레임 다시 불러도 같은 그림이다 (GL 은
+            // atlas 가 비었을 때만 부른다). 알파는 프레임버퍼와 섞는다 —
+            // `drawGlyph` 와 같은 규칙 (#277 S2-4).
+            var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
+            if (ic.size == 0 or ic.size > tab_icons.MAX_SIZE) return;
+            tab_icons.rasterize(ic.kind, ic.size, ic.stroke, &cov);
+            var row: u32 = 0;
+            while (row < ic.size) : (row += 1) {
+                var col: u32 = 0;
+                while (col < ic.size) : (col += 1) {
+                    const alpha = cov[row * ic.size + col];
+                    if (alpha == 0) continue;
+                    const px = ic.x + @as(i32, @intCast(col));
+                    const py = ic.y + @as(i32, @intCast(row));
+                    if (px < 0 or py < 0 or px >= width or py >= height) continue;
+                    const off: usize = @intCast(py * stride + px * 4);
+                    const dst = ghostty.color.RGB{
+                        .b = memory[off],
+                        .g = memory[off + 1],
+                        .r = memory[off + 2],
+                    };
+                    std.mem.writeInt(u32, memory[off..][0..4], blendPixel(ic.color, dst, alpha), .little);
+                }
+            }
+        },
+    }
 }
 
 /// `block_element.BlockRect.shade` (f32) 를 [`SolidRect`] 의 패턴 코드로. 경계

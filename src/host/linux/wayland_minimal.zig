@@ -3233,6 +3233,102 @@ const Client = struct {
         batch.flush(&ctx.api, viewport_w, viewport_h);
     }
 
+    /// #277 S2-5 — chrome 명령 목록을 **순서 그대로** 그린다.
+    ///
+    /// 종류(사각형 / 글리프)나 clip 경계가 바뀌는 지점에서만 batch 를 flush 한다 —
+    /// 그 지점이 곧 software 경로의 그리기 순서 경계다. 탭바 한 프레임에서 전환은
+    /// 몇 번뿐이라 draw call 이 늘어나는 폭이 작다.
+    ///
+    /// 아이콘은 글리프와 같은 회색 atlas 를 쓰므로 같은 batch 에 들어간다.
+    fn glDrawChrome(
+        self: *Client,
+        ctx: egl.Context,
+        rect_batch: *gl_rects.Batch,
+        text_batch: *gl_text.Batch,
+        atlas: *gl_atlas.Atlas,
+        items: []const software_terminal.ChromeItem,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) void {
+        if (items.len == 0) return;
+        const Kind = enum { none, rect, glyph };
+        var kind: Kind = .none;
+        var clip: [2]i32 = .{ 0, 0 };
+        rect_batch.clear();
+        text_batch.clear();
+
+        for (items) |item| {
+            const item_kind: Kind = switch (item) {
+                .rect => .rect,
+                .glyph, .icon => .glyph,
+            };
+            const item_clip: [2]i32 = switch (item) {
+                .glyph => |g| .{ g.clip_x0, g.clip_x1 },
+                else => .{ 0, @intFromFloat(viewport_w) },
+            };
+            if (kind != .none and (item_kind != kind or !std.mem.eql(i32, &item_clip, &clip))) {
+                self.glFlushChrome(ctx, rect_batch, text_batch, atlas, kind == .rect, clip, viewport_w, viewport_h);
+            }
+            kind = item_kind;
+            clip = item_clip;
+
+            switch (item) {
+                .rect => |r| rect_batch.add(self.allocator, .{
+                    .x = @floatFromInt(r.x),
+                    .y = @floatFromInt(r.y),
+                    .w = @floatFromInt(r.w),
+                    .h = @floatFromInt(r.h),
+                    .color = .{ colorF(r.color.r), colorF(r.color.g), colorF(r.color.b), 1.0 },
+                }, r.shade),
+                .glyph => |g| self.glAddGlyph(ctx, text_batch, atlas, &g.item),
+                .icon => |ic| {
+                    const entry = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke) orelse continue;
+                    text_batch.add(self.allocator, .{
+                        .x = @floatFromInt(ic.x),
+                        .y = @floatFromInt(ic.y),
+                        .w = @floatFromInt(entry.w),
+                        .h = @floatFromInt(entry.h),
+                        .entry = entry,
+                        .color = .{ colorF(ic.color.r), colorF(ic.color.g), colorF(ic.color.b), 1.0 },
+                    });
+                },
+            }
+        }
+        if (kind != .none) {
+            self.glFlushChrome(ctx, rect_batch, text_batch, atlas, kind == .rect, clip, viewport_w, viewport_h);
+        }
+    }
+
+    /// clip 이 화면 전체가 아니면 `glScissor` 로 자른다. scissor 는 `gl_FragCoord`
+    /// 와 같은 window 좌표계라 세로는 손대지 않고 가로만 준다 (#277 S0-b — 우리
+    /// FBO 는 GL y=0 행이 화면 최상단이다).
+    fn glFlushChrome(
+        self: *Client,
+        ctx: egl.Context,
+        rect_batch: *gl_rects.Batch,
+        text_batch: *gl_text.Batch,
+        atlas: *gl_atlas.Atlas,
+        is_rect: bool,
+        clip: [2]i32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) void {
+        _ = self;
+        const clipped = clip[0] > 0 or clip[1] < @as(i32, @intFromFloat(viewport_w));
+        if (clipped) {
+            ctx.api.enable(egl.GL_SCISSOR_TEST);
+            ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @intFromFloat(viewport_h));
+        }
+        if (is_rect) {
+            rect_batch.flush(&ctx.api, viewport_w, viewport_h);
+            rect_batch.clear();
+        } else {
+            text_batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
+            text_batch.clear();
+        }
+        if (clipped) ctx.api.disable(egl.GL_SCISSOR_TEST);
+    }
+
     /// #277 S2-4 — 글리프 목록 한 계층을 그린다. atlas 에 없는 글리프는 여기서
     /// 업로드된다 (목록이 이미 raster 결과를 들고 있어 폰트를 다시 조회하지 않는다).
     ///
@@ -3249,31 +3345,42 @@ const Client = struct {
     ) void {
         if (items.len == 0) return;
         batch.clear();
-        for (items) |*item| {
-            const entry = atlas.glyphForItem(&ctx.api, self.allocator, item) orelse continue;
-            if (entry.is_color) {
-                const fit = software_terminal.colorGlyphFit(item.w, item.h, item.glyph.width, item.glyph.height) orelse continue;
-                batch.add(self.allocator, .{
-                    .x = @floatFromInt(item.x + fit.off_x),
-                    .y = @floatFromInt(item.y + fit.off_y),
-                    .w = @floatFromInt(fit.w),
-                    .h = @floatFromInt(fit.h),
-                    .entry = entry,
-                    // 컬러 텍셀을 그대로 쓴다 — rgb 는 무시되고 알파만 곱해진다.
-                    .color = .{ 0, 0, 0, 1.0 },
-                });
-            } else {
-                batch.add(self.allocator, .{
-                    .x = @floatFromInt(item.x),
-                    .y = @floatFromInt(item.y),
-                    .w = @floatFromInt(entry.w),
-                    .h = @floatFromInt(entry.h),
-                    .entry = entry,
-                    .color = .{ colorF(item.fg.r), colorF(item.fg.g), colorF(item.fg.b), 1.0 },
-                });
-            }
-        }
+        for (items) |*item| self.glAddGlyph(ctx, batch, atlas, item);
         batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
+    }
+
+    /// 글리프 하나를 atlas 에 확보하고 정점을 쌓는다. 위치는 목록의 값 그대로다 —
+    /// 컬러 글리프만 공통 `colorGlyphFit` 으로 대상 사각형을 구하는데, 그 함수는
+    /// software 경로의 `drawGlyphBgra` 도 쓴다.
+    fn glAddGlyph(
+        self: *Client,
+        ctx: egl.Context,
+        batch: *gl_text.Batch,
+        atlas: *gl_atlas.Atlas,
+        item: *const software_terminal.GlyphItem,
+    ) void {
+        const entry = atlas.glyphForItem(&ctx.api, self.allocator, item) orelse return;
+        if (entry.is_color) {
+            const fit = software_terminal.colorGlyphFit(item.w, item.h, item.glyph.width, item.glyph.height) orelse return;
+            batch.add(self.allocator, .{
+                .x = @floatFromInt(item.x + fit.off_x),
+                .y = @floatFromInt(item.y + fit.off_y),
+                .w = @floatFromInt(fit.w),
+                .h = @floatFromInt(fit.h),
+                .entry = entry,
+                // 컬러 텍셀을 그대로 쓴다 — rgb 는 무시되고 알파만 곱해진다.
+                .color = .{ 0, 0, 0, 1.0 },
+            });
+            return;
+        }
+        batch.add(self.allocator, .{
+            .x = @floatFromInt(item.x),
+            .y = @floatFromInt(item.y),
+            .w = @floatFromInt(entry.w),
+            .h = @floatFromInt(entry.h),
+            .entry = entry,
+            .color = .{ colorF(item.fg.r), colorF(item.fg.g), colorF(item.fg.b), 1.0 },
+        });
     }
 
     fn paintIntoBuffer(self: *Client, buffer: *SurfaceBuffer) bool {
@@ -3287,20 +3394,22 @@ const Client = struct {
             const ctx = buffer.gl_ctx orelse return false;
             const theme = self.config.theme orelse fallback_theme;
 
+            var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
+            var hotkey_hint_buf: [64]u8 = undefined;
             var frame: software_terminal.GlFrame = .{
                 .background = theme.background,
                 .layer = self.renderer.emptyLayer(),
             };
             if (self.session) |*session| {
                 if (session.activeTab()) |tab| {
-                    frame = self.renderer.buildGlFrame(
-                        self.allocator,
-                        &tab.terminal,
-                        theme,
-                        session.count(),
+                    frame = self.renderer.buildGlFrame(self.allocator, self.frameInputs(
+                        session,
+                        tab,
                         buffer.width,
                         buffer.height,
-                    );
+                        &titles_storage,
+                        &hotkey_hint_buf,
+                    ));
                 }
             }
 
@@ -3326,11 +3435,13 @@ const Client = struct {
                     if (self.gl_atlas_store) |*atlas| {
                         // 목록 순서 그대로 (`TerminalLayer` 참고). 계층마다 flush 하는
                         // 것이 곧 그 순서를 지키는 방법이다.
+                        self.glDrawChrome(ctx, batch, text_batch, atlas, frame.layer.chrome_before.items, viewport_w, viewport_h);
                         self.glDrawRects(ctx, batch, frame.layer.cell_bg.items, viewport_w, viewport_h);
                         self.glDrawGlyphs(ctx, text_batch, atlas, frame.layer.glyphs.items, viewport_w, viewport_h);
                         self.glDrawRects(ctx, batch, frame.layer.overlay.items, viewport_w, viewport_h);
                         self.glDrawRects(ctx, batch, frame.layer.preedit_bg.items, viewport_w, viewport_h);
                         self.glDrawGlyphs(ctx, text_batch, atlas, frame.layer.preedit_glyphs.items, viewport_w, viewport_h);
+                        self.glDrawChrome(ctx, batch, text_batch, atlas, frame.layer.chrome_after.items, viewport_w, viewport_h);
                     }
                 }
             }
@@ -3434,66 +3545,79 @@ const Client = struct {
         };
     }
 
+    /// #277 S2-5 — 한 프레임의 렌더 입력을 모은다. **CPU 경로(`paintBuffer`)와 GL
+    /// 경로(`paintIntoBuffer`)가 같은 함수를 쓴다** — 입력이 갈리면 그리기 목록을
+    /// 공유해도 소용이 없다.
+    ///
+    /// `titles_storage` / `hotkey_buf` 는 호출처 stack 이고 반환값이 그 안을
+    /// 가리킨다 — paint 가 끝날 때까지 살아 있어야 한다.
+    fn frameInputs(
+        self: *Client,
+        session: *session_core.SessionCore,
+        tab: *session_core.Tab,
+        width: i32,
+        height: i32,
+        titles_storage: *[session_core.MAX_TABS][]const u8,
+        hotkey_buf: *[64]u8,
+    ) software_terminal.FrameInputs {
+        const tabs = session.tabsSlice();
+        const count = @min(tabs.len, titles_storage.len);
+        for (tabs[0..count], 0..) |t, i| {
+            titles_storage[i] = t.title[0..t.title_len];
+        }
+        // L12-γ — tab_layout.compute 로 arrow/plus/tab area 영역 분할. override 가
+        // false 면 ensureActiveVisible 로 활성 탭이 보이는 위치로 scroll_x 보정.
+        // compute / ensureActiveVisible 둘 다 cross-platform pure function —
+        // side effect 없음, client field 갱신은 여기서.
+        const layout_inputs = tab_layout.Inputs{
+            .viewport_w = @floatFromInt(width),
+            .tab_count = @intCast(count),
+            .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
+            .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
+            .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
+            .plus_enabled = self.tabPlusEnabled(),
+            .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
+            .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
+            .scroll_x = self.tab_scroll_x,
+        };
+        const layout = tab_layout.compute(layout_inputs);
+        if (!self.tab_scroll_override) {
+            self.tab_scroll_x = tab_layout.ensureActiveVisible(layout_inputs, layout, @intCast(session.active_tab));
+        }
+        return .{
+            .terminal = &tab.terminal,
+            .theme = self.config.theme orelse fallback_theme,
+            .width = width,
+            .height = height,
+            .tab_titles = titles_storage[0..count],
+            .active_tab_idx = session.active_tab,
+            .layout = layout,
+            .tab_scroll_x = self.tab_scroll_x,
+            .drag_view = self.tab_drag.view(),
+            .tab_hover = self.tab_hover,
+            .menu_ui = .{
+                .open = self.command_menu_open,
+                .hover = self.command_menu_hover,
+                .focused = self.command_menu_focus,
+                .first_visible = self.command_menu_first,
+                .fullscreen_workarea = self.fullscreen_mode == .avoid,
+            },
+            .toggle_hotkey = config_mod.hotkeyDisplay(hotkey_buf, self.config.hotkey),
+        };
+    }
+
     fn paintBuffer(self: *Client, memory: []u8, width: i32, height: i32, stride: i32) void {
         // #160 — render(그리기, present 제외) 계측. Windows renderer/windows.zig 동등.
         const render_t0 = perf.now();
         defer perf.addTimed(&perf.render, render_t0);
         if (self.session) |*session| {
             if (session.activeTab()) |tab| {
-                // Titles slice — stack 의 임시 array. session_core.MAX_TABS (= 32)
-                // 안. paint 호출 동안만 valid (각 title slice 는 Tab.title 의 view).
+                // Titles slice / hotkey 힌트는 **호출처 stack** 에 둔다 —
+                // `FrameInputs` 가 그 안을 가리키므로 paint 동안만 valid 하다.
                 var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-                const tabs = session.tabsSlice();
-                const count = @min(tabs.len, titles_storage.len);
-                for (tabs[0..count], 0..) |t, i| {
-                    titles_storage[i] = t.title[0..t.title_len];
-                }
-                // L12-γ — tab_layout.compute 로 arrow/plus/tab area 영역 분할.
-                // override 가 false 면 ensureActiveVisible 로 활성 탭이 보이는
-                // 위치로 scroll_x 보정. compute / ensureActiveVisible 둘 다
-                // cross-platform pure function — side effect 없음, client field
-                // 갱신은 여기서.
-                const layout_inputs = tab_layout.Inputs{
-                    .viewport_w = @floatFromInt(width),
-                    .tab_count = @intCast(count),
-                    .tab_w = @floatFromInt(self.renderer.tabWidthPx()),
-                    .arrow_w = @floatFromInt(self.renderer.tabArrowWPx()),
-                    .plus_w = @floatFromInt(self.renderer.tabPlusWPx()),
-                    .plus_enabled = self.tabPlusEnabled(),
-                    .close_w = @floatFromInt(self.renderer.tabCloseWPx()),
-                    .more_w = @floatFromInt(self.renderer.tabMoreWPx()),
-                    .scroll_x = self.tab_scroll_x,
-                };
-                const layout = tab_layout.compute(layout_inputs);
-                if (!self.tab_scroll_override) {
-                    const sx = tab_layout.ensureActiveVisible(layout_inputs, layout, @intCast(session.active_tab));
-                    self.tab_scroll_x = sx;
-                }
                 var hotkey_hint_buf: [64]u8 = undefined;
-                const hotkey_hint = config_mod.hotkeyDisplay(&hotkey_hint_buf, self.config.hotkey);
-                self.renderer.paint(
-                    self.allocator,
-                    memory,
-                    width,
-                    height,
-                    stride,
-                    &tab.terminal,
-                    self.config.theme orelse fallback_theme,
-                    titles_storage[0..count],
-                    session.active_tab,
-                    layout,
-                    self.tab_scroll_x,
-                    self.tab_drag.view(),
-                    self.tab_hover,
-                    .{
-                        .open = self.command_menu_open,
-                        .hover = self.command_menu_hover,
-                        .focused = self.command_menu_focus,
-                        .first_visible = self.command_menu_first,
-                        .fullscreen_workarea = self.fullscreen_mode == .avoid,
-                    },
-                    hotkey_hint,
-                );
+                const in = self.frameInputs(session, tab, width, height, &titles_storage, &hotkey_hint_buf);
+                self.renderer.paint(self.allocator, memory, stride, in);
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
                 // 근처에 정렬되도록. error 는 main loop 멈추지 않게 swallow.

@@ -26,6 +26,7 @@ const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const software_terminal = @import("software_terminal.zig");
+const tab_icons = @import("../../tab_icons.zig");
 
 pub const AtlasEntry = atlas_common.AtlasEntry;
 
@@ -39,20 +40,36 @@ pub const ATLAS_SIZE: u32 = 2048;
 /// 어느 갈래인지는 그리기 목록의 [`software_terminal.GlyphRef`] 가 이미 들고 있다
 /// — 여기서 다시 판단하지 않고 그 값을 키로 옮기기만 한다.
 const Key = struct {
-    /// glyph_index 경로면 face index, codepoint 경로면 0xFF.
+    /// 어느 폰트에서 구운 그림인지. 터미널 폰트와 탭바 폰트는 크기가 달라 같은
+    /// codepoint 라도 다른 그림이다. 아이콘은 폰트가 아니므로 별도 값을 쓴다.
+    source: u8,
+    /// glyph_index 경로면 face index, codepoint 경로면 0xFF, 아이콘이면 종류.
     face: u8,
-    /// codepoint 또는 glyph_index.
+    /// codepoint / glyph_index / 아이콘 크기+굵기.
     value: u32,
 
-    fn fromRef(ref: software_terminal.GlyphRef) Key {
-        return switch (ref) {
-            .codepoint => |cp| .{ .face = codepoint_face, .value = cp },
-            .indexed => |ix| .{ .face = ix.face, .value = ix.index },
+    fn fromItem(item: *const software_terminal.GlyphItem) Key {
+        const source: u8 = @intFromEnum(item.font);
+        return switch (item.ref) {
+            .codepoint => |cp| .{ .source = source, .face = codepoint_face, .value = cp },
+            .indexed => |ix| .{ .source = source, .face = ix.face, .value = ix.index },
+        };
+    }
+
+    /// 아이콘 키 — 같은 종류라도 크기 · 굵기가 다르면 다른 그림이다. 굵기는
+    /// 1/16 px 로 양자화해 넣는다 (그보다 미세한 차이는 래스터 결과가 같다).
+    fn fromIcon(kind: tab_icons.Icon, size: u32, stroke: f32) Key {
+        const stroke_q: u32 = @intFromFloat(@max(0.0, @round(stroke * 16.0)));
+        return .{
+            .source = icon_source,
+            .face = @intFromEnum(kind),
+            .value = (size & 0xFFFF) | (stroke_q << 16),
         };
     }
 };
 
 const codepoint_face: u8 = 0xFF;
+const icon_source: u8 = 0xFE;
 
 /// 한 텍스처와 그 패킹 상태.
 const Surface = struct {
@@ -140,7 +157,43 @@ pub const Atlas = struct {
         allocator: std.mem.Allocator,
         item: *const software_terminal.GlyphItem,
     ) ?AtlasEntry {
-        return self.ensure(api, allocator, Key.fromRef(item.ref), &item.glyph);
+        const key = Key.fromItem(item);
+        if (self.cache.get(key)) |entry| return entry;
+        const g = &item.glyph;
+        return self.upload(api, allocator, key, .{
+            .pixels = g.bitmap,
+            .w = g.width,
+            .h = g.height,
+            .is_color = g.pixel_mode == freetype.FT_PIXEL_MODE_BGRA,
+            .advance = @floatFromInt(g.advance),
+        });
+    }
+
+    /// #277 S2-5 — chrome 아이콘 (`< > + × …`). 폰트 글리프가 아니라 공통
+    /// `tab_icons` 가 그리는 알파 커버리지 비트맵이라, atlas 가 비었을 때만
+    /// 래스터화한다 (software 경로는 매 프레임 래스터화한다 — 순수 함수라 결과가
+    /// 같다).
+    pub fn iconEntry(
+        self: *Atlas,
+        api: *const egl.Api,
+        allocator: std.mem.Allocator,
+        kind: tab_icons.Icon,
+        size: u32,
+        stroke: f32,
+    ) ?AtlasEntry {
+        if (size == 0 or size > tab_icons.MAX_SIZE) return null;
+        const key = Key.fromIcon(kind, size, stroke);
+        if (self.cache.get(key)) |entry| return entry;
+
+        var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
+        tab_icons.rasterize(kind, size, stroke, &cov);
+        return self.upload(api, allocator, key, .{
+            .pixels = cov[0 .. size * size],
+            .w = size,
+            .h = size,
+            .is_color = false,
+            .advance = @floatFromInt(size),
+        });
     }
 
     /// 폰트가 다시 raster 된 뒤 (scale 변경 등) 캐시를 버린다. 같은 키가 이제 다른
@@ -151,17 +204,24 @@ pub const Atlas = struct {
         self.color.rewind();
     }
 
-    fn ensure(
+    /// atlas 에 올릴 비트맵 하나. 폰트 글리프든 아이콘이든 여기서는 같다.
+    const Bitmap = struct {
+        pixels: []const u8,
+        w: u32,
+        h: u32,
+        is_color: bool,
+        advance: f32,
+    };
+
+    fn upload(
         self: *Atlas,
         api: *const egl.Api,
         allocator: std.mem.Allocator,
         key: Key,
-        glyph: *const font.Glyph,
+        bmp: Bitmap,
     ) ?AtlasEntry {
-        if (self.cache.get(key)) |entry| return entry;
-
-        // 보이지 않는 글리프 (공백 등) 도 캐시한다 — 매번 raster 를 다시 묻지 않게.
-        if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) {
+        // 보이지 않는 그림 (공백 등) 도 캐시한다 — 매번 raster 를 다시 묻지 않게.
+        if (bmp.w == 0 or bmp.h == 0 or bmp.pixels.len == 0) {
             const empty = AtlasEntry{
                 .x = 0,
                 .y = 0,
@@ -169,13 +229,13 @@ pub const Atlas = struct {
                 .h = 0,
                 .bearing_x = 0,
                 .bearing_y = 0,
-                .advance = @floatFromInt(glyph.advance),
+                .advance = bmp.advance,
             };
             self.cache.put(key, empty) catch {};
             return empty;
         }
 
-        const is_color = glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA;
+        const is_color = bmp.is_color;
         const surface = if (is_color) &self.color else &self.gray;
 
         const placed = atlas_common.packRow(
@@ -183,8 +243,8 @@ pub const Atlas = struct {
             &surface.cursor_y,
             &surface.row_height,
             ATLAS_SIZE,
-            glyph.width,
-            glyph.height,
+            bmp.w,
+            bmp.h,
         ) orelse blk: {
             // 가득 찼다 — 비우고 한 번만 재시도한다. 캐시도 함께 버려야 이전
             // 좌표를 가리키는 entry 가 남지 않는다.
@@ -200,25 +260,25 @@ pub const Atlas = struct {
                 &surface.cursor_y,
                 &surface.row_height,
                 ATLAS_SIZE,
-                glyph.width,
-                glyph.height,
-            ) orelse return null; // 글리프 하나가 atlas 보다 크다 — 포기.
+                bmp.w,
+                bmp.h,
+            ) orelse return null; // 그림 하나가 atlas 보다 크다 — 포기.
         };
 
         const pixels: [*]const u8 = if (is_color) blk: {
             // GLES 에는 `GL_BGRA` 가 없다. FreeType 의 BGRA (premultiplied) 를
             // RGBA 순서로 바꿔 올린다 — 알파는 그대로다.
-            const count = @as(usize, glyph.width) * glyph.height * 4;
+            const count = @as(usize, bmp.w) * bmp.h * 4;
             self.swizzle.resize(allocator, count) catch return null;
             var i: usize = 0;
             while (i < count) : (i += 4) {
-                self.swizzle.items[i + 0] = glyph.bitmap[i + 2]; // R ← B
-                self.swizzle.items[i + 1] = glyph.bitmap[i + 1]; // G
-                self.swizzle.items[i + 2] = glyph.bitmap[i + 0]; // B ← R
-                self.swizzle.items[i + 3] = glyph.bitmap[i + 3]; // A
+                self.swizzle.items[i + 0] = bmp.pixels[i + 2]; // R ← B
+                self.swizzle.items[i + 1] = bmp.pixels[i + 1]; // G
+                self.swizzle.items[i + 2] = bmp.pixels[i + 0]; // B ← R
+                self.swizzle.items[i + 3] = bmp.pixels[i + 3]; // A
             }
             break :blk self.swizzle.items.ptr;
-        } else glyph.bitmap.ptr;
+        } else bmp.pixels.ptr;
 
         api.bindTexture(egl.GL_TEXTURE_2D, surface.texture);
         api.texSubImage2D(
@@ -226,8 +286,8 @@ pub const Atlas = struct {
             0,
             @intCast(placed[0]),
             @intCast(placed[1]),
-            @intCast(glyph.width),
-            @intCast(glyph.height),
+            @intCast(bmp.w),
+            @intCast(bmp.h),
             @bitCast(if (is_color) egl.GL_RGBA else egl.GL_ALPHA),
             egl.GL_UNSIGNED_BYTE,
             pixels,
@@ -236,12 +296,13 @@ pub const Atlas = struct {
         const entry = AtlasEntry{
             .x = @intCast(placed[0]),
             .y = @intCast(placed[1]),
-            .w = @intCast(glyph.width),
-            .h = @intCast(glyph.height),
-            .bearing_x = @intCast(glyph.bitmap_left),
-            .bearing_y = @intCast(glyph.bitmap_top),
+            .w = @intCast(bmp.w),
+            .h = @intCast(bmp.h),
+            // bearing 은 수집기가 이미 좌표에 반영했다 — atlas 는 그림만 안다.
+            .bearing_x = 0,
+            .bearing_y = 0,
             .is_color = is_color,
-            .advance = @floatFromInt(glyph.advance),
+            .advance = bmp.advance,
         };
         self.cache.put(key, entry) catch {};
         return entry;
@@ -265,7 +326,32 @@ pub const Atlas = struct {
 test "codepoint 키와 glyph_index 키는 값이 같아도 구분된다" {
     // 같은 숫자 65 가 codepoint 'A' 와 face 0 의 glyph_index 65 를 동시에 뜻할 수
     // 있다. 키가 이를 구분하지 않으면 엉뚱한 글리프가 캐시에서 나온다.
-    const a: Key = .{ .face = codepoint_face, .value = 65 };
-    const b: Key = .{ .face = 0, .value = 65 };
+    const a: Key = .{ .source = 0, .face = codepoint_face, .value = 65 };
+    const b: Key = .{ .source = 0, .face = 0, .value = 65 };
     try std.testing.expect(!std.meta.eql(a, b));
+}
+
+test "#277 S2-5 — 폰트가 다르면 같은 codepoint 도 다른 키다" {
+    // 터미널 폰트와 탭바 폰트는 크기가 다르다. 구분하지 않으면 탭 제목이 터미널
+    // 크기로 (또는 그 반대로) 나온다.
+    var terminal_item: software_terminal.GlyphItem = .{
+        .ref = .{ .codepoint = 'A' },
+        .font = .terminal,
+        .glyph = undefined,
+        .x = 0,
+        .y = 0,
+        .fg = .{ .r = 0, .g = 0, .b = 0 },
+    };
+    var tab_item = terminal_item;
+    tab_item.font = .tab;
+    try std.testing.expect(!std.meta.eql(Key.fromItem(&terminal_item), Key.fromItem(&tab_item)));
+}
+
+test "#277 S2-5 — 아이콘 키는 종류 · 크기 · 굵기를 구분한다" {
+    const a = Key.fromIcon(.plus, 16, 1.5);
+    try std.testing.expect(!std.meta.eql(a, Key.fromIcon(.close, 16, 1.5)));
+    try std.testing.expect(!std.meta.eql(a, Key.fromIcon(.plus, 20, 1.5)));
+    try std.testing.expect(!std.meta.eql(a, Key.fromIcon(.plus, 16, 2.5)));
+    // 폰트 글리프 키와도 겹치지 않는다.
+    try std.testing.expect(a.source != 0 and a.source != 1);
 }
