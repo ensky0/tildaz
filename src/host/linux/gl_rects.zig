@@ -24,7 +24,7 @@ const ui_rect = @import("../../ui_rect.zig");
 /// u8 로 바꾸는 단계가 하나 더 있다).
 pub const Rect = ui_rect.Rect;
 
-/// 정점 하나 — 위치(px) + 색(0~1 premultiplied 아님, 불투명 사각형 전용).
+/// 정점 하나 — 위치(px) + 색(0~1 premultiplied 아님, 불투명 사각형 전용) + 음영 코드.
 const Vertex = extern struct {
     x: f32,
     y: f32,
@@ -32,27 +32,67 @@ const Vertex = extern struct {
     g: f32,
     b: f32,
     a: f32,
+    /// `software_terminal.SolidRect.shade` — 0 은 채움, 1·2·3 은 `░▒▓` 패턴.
+    shade: f32,
 };
 
 const vertex_src: [*:0]const u8 =
     \\precision highp float;
     \\attribute vec2 a_pos;
     \\attribute vec4 a_color;
+    \\attribute float a_shade;
     \\uniform vec2 u_viewport;
     \\varying vec4 v_color;
+    \\varying float v_shade;
     \\void main() {
     \\    // 픽셀 좌표(좌상단 원점) → clip space. y 를 뒤집지 않는다 — 위 주석 참고.
     \\    vec2 ndc = vec2(a_pos.x / u_viewport.x * 2.0 - 1.0,
     \\                    a_pos.y / u_viewport.y * 2.0 - 1.0);
     \\    gl_Position = vec4(ndc, 0.0, 1.0);
     \\    v_color = a_color;
+    \\    v_shade = a_shade;
     \\}
 ;
 
+/// 음영 `░▒▓` 은 **절대 픽셀 좌표**로 패턴을 결정한다 — software 의 `drawSolidRect`
+/// / d3d11 `bg_shader_src` / macOS Metal `bg_fs` 와 같은 식이라 인접 셀 사이에서
+/// 끊기지 않는다.
+///
+/// `gl_FragCoord` 는 프레임버퍼 좌하단 원점이지만, 우리 dma-buf FBO 는 GL 의 y=0 행이
+/// 메모리 첫 행 = 화면 최상단이므로 (#277 S0-b 실측) `floor(gl_FragCoord.y)` 가 곧
+/// software 경로의 행 번호다. y 보정을 넣으면 오히려 갈린다.
+///
+/// **`highp` 가 필요하다.** `mediump` 는 상대 정밀도가 ~2^-10 이라 1600 px 짜리
+/// 좌표에서 정수를 구분하지 못해 패턴이 뭉개진다.
+///
+/// GLSL ES 1.00 에는 정수 나머지 연산자(`%`)도 비트 연산자도 없어 `mod()` 로 쓴다 —
+/// `mod(x, 4.0) < 0.5` 가 `(x & 3) == 0` 과 같다 (x 는 음이 아닌 정수).
+///
+/// 사각형 하나짜리 프로그램을 따로 두지 않고 한 프로그램에서 분기하는 이유는
+/// **그리기 순서** 때문이다. 목록 순서대로 한 batch 에 담아야 커서가 음영 셀 위에
+/// 오는 것 같은 겹침이 software 경로와 같아진다.
 const fragment_src: [*:0]const u8 =
+    \\#ifdef GL_FRAGMENT_PRECISION_HIGH
+    \\precision highp float;
+    \\#else
     \\precision mediump float;
+    \\#endif
     \\varying vec4 v_color;
+    \\varying float v_shade;
     \\void main() {
+    \\    if (v_shade > 0.5) {
+    \\        float px = floor(gl_FragCoord.x);
+    \\        float py = floor(gl_FragCoord.y);
+    \\        bool on;
+    \\        if (v_shade < 1.5) {
+    \\            on = mod(px + 2.0 * py, 4.0) < 0.5;        // U+2591 LIGHT
+    \\        } else if (v_shade < 2.5) {
+    \\            on = mod(px + py, 2.0) < 0.5;              // U+2592 MEDIUM
+    \\        } else {
+    \\            on = mod(px + 2.0 * py, 4.0) >= 0.5;       // U+2593 DARK
+    \\        }
+    \\        if (!on) discard;
+    \\    }
     \\    gl_FragColor = v_color;
     \\}
 ;
@@ -62,6 +102,7 @@ pub const Batch = struct {
     buffer: u32,
     attr_pos: u32 = 0,
     attr_color: u32 = 1,
+    attr_shade: u32 = 2,
     uniform_viewport: i32,
     vertices: std.ArrayList(Vertex) = .{},
 
@@ -77,6 +118,7 @@ pub const Batch = struct {
         // location 을 고정한다 — 드라이버가 배정하는 순서에 의존하지 않는다.
         api.bindAttribLocation(program, 0, "a_pos");
         api.bindAttribLocation(program, 1, "a_color");
+        api.bindAttribLocation(program, 2, "a_shade");
         api.linkProgram(program);
         var linked: i32 = 0;
         api.getProgramiv(program, egl.GL_LINK_STATUS, &linked);
@@ -106,12 +148,16 @@ pub const Batch = struct {
     }
 
     /// 사각형 하나를 삼각형 2 개로 쌓는다. 폭/높이가 0 이하면 무시한다.
-    pub fn add(self: *Batch, allocator: std.mem.Allocator, rect: Rect) void {
+    ///
+    /// `shade` 는 `software_terminal.SolidRect.shade` 를 그대로 넘긴 값이다 (0 =
+    /// 채움). 판단은 수집기에서 이미 끝났고 여기서는 셰이더로 옮기기만 한다.
+    pub fn add(self: *Batch, allocator: std.mem.Allocator, rect: Rect, shade: u8) void {
         if (rect.w <= 0 or rect.h <= 0) return;
         const r = rect.color[0];
         const g = rect.color[1];
         const b = rect.color[2];
         const a = rect.color[3];
+        const s: f32 = @floatFromInt(shade);
         const x0 = rect.x;
         const y0 = rect.y;
         const x1 = rect.x + rect.w;
@@ -121,7 +167,7 @@ pub const Batch = struct {
             .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 },
         };
         for (corners) |c| {
-            self.vertices.append(allocator, .{ .x = c[0], .y = c[1], .r = r, .g = g, .b = b, .a = a }) catch return;
+            self.vertices.append(allocator, .{ .x = c[0], .y = c[1], .r = r, .g = g, .b = b, .a = a, .shade = s }) catch return;
         }
     }
 
@@ -150,6 +196,15 @@ pub const Batch = struct {
             @sizeOf(Vertex),
             @ptrFromInt(@offsetOf(Vertex, "r")),
         );
+        api.enableVertexAttribArray(self.attr_shade);
+        api.vertexAttribPointer(
+            self.attr_shade,
+            1,
+            egl.GL_FLOAT,
+            0,
+            @sizeOf(Vertex),
+            @ptrFromInt(@offsetOf(Vertex, "shade")),
+        );
         api.drawArrays(egl.GL_TRIANGLES, 0, @intCast(self.vertices.items.len));
     }
 };
@@ -171,15 +226,15 @@ fn compile(api: *const egl.Api, kind: u32, source: [*:0]const u8) ?u32 {
 test "빈 batch 는 그릴 것이 없다" {
     var batch = Batch{ .program = 0, .buffer = 0, .uniform_viewport = -1 };
     defer batch.vertices.deinit(std.testing.allocator);
-    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 0, .h = 10, .color = .{ 1, 0, 0, 1 } });
-    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 10, .h = -1, .color = .{ 1, 0, 0, 1 } });
+    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 0, .h = 10, .color = .{ 1, 0, 0, 1 } }, 0);
+    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 10, .h = -1, .color = .{ 1, 0, 0, 1 } }, 0);
     try std.testing.expectEqual(@as(usize, 0), batch.vertices.items.len);
 }
 
 test "사각형 하나는 정점 여섯 개" {
     var batch = Batch{ .program = 0, .buffer = 0, .uniform_viewport = -1 };
     defer batch.vertices.deinit(std.testing.allocator);
-    batch.add(std.testing.allocator, .{ .x = 2, .y = 4, .w = 8, .h = 16, .color = .{ 1, 0, 0, 1 } });
+    batch.add(std.testing.allocator, .{ .x = 2, .y = 4, .w = 8, .h = 16, .color = .{ 1, 0, 0, 1 } }, 0);
     try std.testing.expectEqual(@as(usize, 6), batch.vertices.items.len);
     // 좌상단이 (2,4), 우하단이 (10,20) 이어야 한다 (top-down 좌표).
     try std.testing.expectEqual(@as(f32, 2), batch.vertices.items[0].x);

@@ -58,7 +58,11 @@ const vertex_src: [*:0]const u8 =
 /// grayscale — atlas 의 `.a` 를 커버리지로 쓰고 fg 색을 곱한다. 결과는
 /// premultiplied 다 (rgb 에 이미 a 가 곱해져 나간다).
 const fragment_gray_src: [*:0]const u8 =
+    \\#ifdef GL_FRAGMENT_PRECISION_HIGH
+    \\precision highp float;
+    \\#else
     \\precision mediump float;
+    \\#endif
     \\uniform sampler2D u_atlas;
     \\varying vec2 v_uv;
     \\varying vec4 v_color;
@@ -71,7 +75,11 @@ const fragment_gray_src: [*:0]const u8 =
 /// 컬러 emoji — FreeType 이 premultiplied BGRA 로 주고 atlas 에 RGBA 순서로
 /// 올렸으므로 텍셀을 그대로 낸다 (fg 색을 곱하지 않는다).
 const fragment_color_src: [*:0]const u8 =
+    \\#ifdef GL_FRAGMENT_PRECISION_HIGH
+    \\precision highp float;
+    \\#else
     \\precision mediump float;
+    \\#endif
     \\uniform sampler2D u_atlas;
     \\varying vec2 v_uv;
     \\varying vec4 v_color;
@@ -81,10 +89,18 @@ const fragment_color_src: [*:0]const u8 =
 ;
 
 /// 그릴 글리프 하나 — atlas 위치와 화면 위치, 색.
+///
+/// 위치와 크기는 **그리기 목록이 준 값 그대로**다. 알파 마스크는 목록의 좌상단과
+/// atlas entry 크기를, 컬러 글리프는 공통 `colorGlyphFit` 이 계산한 사각형을 쓴다 —
+/// 이 모듈은 "어디에 얼마 크기로" 를 판단하지 않는다.
 pub const Quad = struct {
-    /// 글리프 좌상단 화면 좌표 (px). bearing 이 이미 반영된 값.
+    /// 대상 사각형 좌상단 화면 좌표 (px).
     x: f32,
     y: f32,
+    /// 대상 사각형 크기 (px). 알파 마스크면 atlas entry 크기와 같고, 컬러 글리프면
+    /// 셀에 맞춘 축소 크기다.
+    w: f32,
+    h: f32,
     entry: gl_atlas.AtlasEntry,
     /// 0..1. 컬러 글리프면 rgb 는 무시되고 a 만 쓰인다.
     color: [4]f32,
@@ -135,6 +151,7 @@ pub const Batch = struct {
     /// 글리프 하나를 삼각형 2 개로 쌓는다. 크기 0 인 글리프(공백 등)는 무시한다.
     pub fn add(self: *Batch, allocator: std.mem.Allocator, quad: Quad) void {
         if (quad.entry.w == 0 or quad.entry.h == 0) return;
+        if (quad.w <= 0 or quad.h <= 0) return;
         const list = if (quad.entry.is_color) &self.color else &self.gray;
 
         const inv_atlas: f32 = 1.0 / @as(f32, @floatFromInt(gl_atlas.ATLAS_SIZE));
@@ -145,8 +162,8 @@ pub const Batch = struct {
 
         const x0 = quad.x;
         const y0 = quad.y;
-        const x1 = quad.x + @as(f32, @floatFromInt(quad.entry.w));
-        const y1 = quad.y + @as(f32, @floatFromInt(quad.entry.h));
+        const x1 = quad.x + quad.w;
+        const y1 = quad.y + quad.h;
 
         const corners = [6][4]f32{
             .{ x0, y0, uv_x0, uv_y0 },
@@ -269,8 +286,8 @@ test "컬러 글리프와 회색 글리프가 다른 목록에 쌓인다" {
     }
     const gray_entry: gl_atlas.AtlasEntry = .{ .x = 0, .y = 0, .w = 8, .h = 16, .bearing_x = 0, .bearing_y = 0 };
     const color_entry: gl_atlas.AtlasEntry = .{ .x = 0, .y = 0, .w = 8, .h = 16, .bearing_x = 0, .bearing_y = 0, .is_color = true };
-    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .entry = gray_entry, .color = .{ 1, 1, 1, 1 } });
-    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .entry = color_entry, .color = .{ 1, 1, 1, 1 } });
+    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 8, .h = 16, .entry = gray_entry, .color = .{ 1, 1, 1, 1 } });
+    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 8, .h = 16, .entry = color_entry, .color = .{ 1, 1, 1, 1 } });
     try std.testing.expectEqual(@as(usize, 6), batch.gray.items.len);
     try std.testing.expectEqual(@as(usize, 6), batch.color.items.len);
 }
@@ -284,6 +301,6 @@ test "크기 0 글리프는 정점을 만들지 않는다" {
     defer batch.gray.deinit(std.testing.allocator);
     defer batch.color.deinit(std.testing.allocator);
     const empty: gl_atlas.AtlasEntry = .{ .x = 0, .y = 0, .w = 0, .h = 0, .bearing_x = 0, .bearing_y = 0 };
-    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .entry = empty, .color = .{ 1, 1, 1, 1 } });
+    batch.add(std.testing.allocator, .{ .x = 0, .y = 0, .w = 0, .h = 0, .entry = empty, .color = .{ 1, 1, 1, 1 } });
     try std.testing.expectEqual(@as(usize, 0), batch.gray.items.len);
 }

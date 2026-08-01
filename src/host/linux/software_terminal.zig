@@ -120,20 +120,97 @@ pub const SolidRect = struct {
     w: i32,
     h: i32,
     color: ghostty.color.RGB,
+    /// #277 S2-4 — 0 이면 불투명 채움. 1·2·3 은 음영 `░▒▓` 의 픽셀 패턴
+    /// (`block_element.BlockRect.shade`). 패턴은 **절대 픽셀 좌표**로 결정되므로
+    /// 인접 셀 사이에서 끊기지 않는다 — CPU 는 `drawSolidRect`, GL 은 셰이더가
+    /// 같은 식을 쓴다.
+    shade: u8 = 0,
+};
+
+/// #277 S2-4 — 글리프를 어느 lookup 으로 찾았는지. atlas 의 캐시 키이자 CPU 가
+/// 다시 조회할 때의 좌표다. Linux 폰트 경로는 codepoint 와 glyph_index 두 갈래가
+/// 있어 (`Context.glyph` / `Context.glyphByIndex`) 같은 숫자가 다른 글리프를 뜻할
+/// 수 있다.
+pub const GlyphRef = union(enum) {
+    codepoint: u21,
+    indexed: struct { face: u8, index: u32 },
+};
+
+/// #277 S2-4 — 그릴 글리프 하나. **"어느 글리프를 어디에" 는 전부 여기 들어 있고,
+/// 두 경로는 이 값을 읽기만 한다** — shaping / ligature / wide 중앙정렬 / bearing
+/// 이 모두 수집기에서 끝난다.
+pub const GlyphItem = struct {
+    ref: GlyphRef,
+    /// raster 결과의 **값 사본**. `bitmap` 은 font cache 가 소유하므로 이 프레임
+    /// 동안만 유효하다 (다음 `applyScale` 까지). 포인터가 아니라 값으로 두는 이유는
+    /// 수집 중에 새 글리프가 캐시에 들어가면 HashMap 이 재해싱되어 앞서 얻은
+    /// 포인터가 무효가 되기 때문이다 — 값 사본은 그 영향을 받지 않는다.
+    glyph: font.Glyph,
+    /// 알파 마스크 글리프면 **bitmap 좌상단** (bearing · 중앙정렬 반영 완료).
+    /// 컬러(BGRA) 글리프면 fit 대상 사각형의 좌상단.
+    x: i32,
+    y: i32,
+    /// 컬러 글리프의 fit 대상 사각형 크기 (셀 또는 ligature 폭). 마스크면 0.
+    w: i32 = 0,
+    h: i32 = 0,
+    /// 마스크 글리프의 전경색. 컬러 글리프는 텍셀 색을 그대로 쓰므로 무시된다.
+    fg: ghostty.color.RGB,
+    /// CPU 가 알파를 섞을 바탕색. GL 은 실제 프레임버퍼와 섞으므로 쓰지 않는다.
+    bg: ghostty.color.RGB,
+};
+
+/// #277 S2-4 — 터미널 레이어 한 프레임의 그리기 목록. **CPU 와 GL 이 이 목록만
+/// 소비한다** — "무엇을 어디에" 판단이 한 벌뿐이라 두 경로가 구조적으로 어긋날 수
+/// 없다.
+///
+/// 목록이 다섯인 것은 **그리는 순서가 의미를 갖기** 때문이다. 아래 순서는
+/// macOS · Windows renderer 와 같다 (`renderer/macos.zig` · `renderer/windows.zig`
+/// 의 bg pass → text pass → block pass → cursor → scrollbar → preedit) — #361 에서
+/// "셀 배경을 전부 먼저" 로 정한 규칙의 연장이고, 세 platform 이 같은 순서를 쓴다.
+///
+///   1. `cell_bg`        셀 배경
+///   2. `glyphs`         터미널 텍스트
+///   3. `overlay`        block element · box drawing · 커서 · scrollbar thumb
+///   4. `preedit_bg`     IME 조합 중 배경
+///   5. `preedit_glyphs` IME 조합 중 글자
+///
+/// 매 프레임 `clearRetainingCapacity` 로 비우므로 할당은 초반 몇 프레임에만 난다.
+pub const TerminalLayer = struct {
+    cell_bg: std.ArrayList(SolidRect) = .{},
+    glyphs: std.ArrayList(GlyphItem) = .{},
+    overlay: std.ArrayList(SolidRect) = .{},
+    preedit_bg: std.ArrayList(SolidRect) = .{},
+    preedit_glyphs: std.ArrayList(GlyphItem) = .{},
+
+    fn clear(self: *TerminalLayer) void {
+        self.cell_bg.clearRetainingCapacity();
+        self.glyphs.clearRetainingCapacity();
+        self.overlay.clearRetainingCapacity();
+        self.preedit_bg.clearRetainingCapacity();
+        self.preedit_glyphs.clearRetainingCapacity();
+    }
+
+    fn deinit(self: *TerminalLayer, allocator: std.mem.Allocator) void {
+        self.cell_bg.deinit(allocator);
+        self.glyphs.deinit(allocator);
+        self.overlay.deinit(allocator);
+        self.preedit_bg.deinit(allocator);
+        self.preedit_glyphs.deinit(allocator);
+    }
 };
 
 /// #277 S2-3 — GL 경로가 한 프레임을 그리는 데 필요한 기술. `buildGlFrame` 이
 /// 돌려준다. host 는 `ghostty` 를 import 하지 않으므로 타입에 이름을 준다.
 pub const GlFrame = struct {
     background: ghostty.color.RGB,
-    rects: []const SolidRect,
+    layer: *const TerminalLayer,
 };
 
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
-    /// #277 S2-3 — 프레임마다 재사용하는 셀 배경 사각형 목록. 매 frame
-    /// `clearRetainingCapacity` 로 비우므로 할당은 첫 프레임에만 일어난다.
-    solid_rects: std.ArrayList(SolidRect) = .{},
+    /// #277 S2-3/S2-4 — 프레임마다 재사용하는 터미널 레이어 그리기 목록.
+    /// `collectTerminalLayer` 가 채우고 CPU · GL 이 소비한다.
+    layer: TerminalLayer = .{},
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
     dialog_font_ctx: font.Context,
@@ -248,7 +325,7 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
-        self.solid_rects.deinit(allocator);
+        self.layer.deinit(allocator);
         self.render_state.deinit(allocator);
         self.dialog_title_font_ctx.deinit();
         self.dialog_font_ctx.deinit();
@@ -409,44 +486,75 @@ pub const Renderer = struct {
         return @intCast(self.font_ctx.cell_height_px);
     }
 
-    /// #277 S2-3 — GL 경로용 프레임 준비. `render_state` 를 갱신하고 셀 배경 사각형
+    /// #277 S2-3 — GL 경로용 프레임 준비. `render_state` 를 갱신하고 터미널 레이어
     /// 목록을 만들어 돌려준다. 표면 배경색도 함께 준다 (GL 은 `glClear` 로 칠한다).
     ///
-    /// CPU 경로의 `paint` 과 **같은 `collectCellBgRects` 를 쓴다** — 그게 두 경로가
-    /// 갈리지 않는 이유다. 텍스트 · chrome 은 아직 여기 없다 (S2-4 에서 추가).
+    /// CPU 경로의 `paint` 과 **같은 `collectTerminalLayer` 를 쓴다** — 그게 두 경로가
+    /// 갈리지 않는 이유다. chrome (탭바 · 단일 탭 컨트롤 · command menu) 은 아직
+    /// 여기 없다.
     ///
-    /// render_state 갱신이 실패하면 배경색만 돌려준다 — 그 프레임은 빈 화면이지만
-    /// CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
+    /// render_state 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
+    /// 화면이지만 CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
     pub fn buildGlFrame(
         self: *Renderer,
         allocator: std.mem.Allocator,
         terminal: *ghostty.Terminal,
         theme: *const themes.Theme,
         tab_count: usize,
+        width: i32,
+        height: i32,
     ) GlFrame {
         self.render_state.update(allocator, terminal) catch {
-            self.solid_rects.clearRetainingCapacity();
-            return .{ .background = theme.background, .rects = &.{} };
+            self.layer.clear();
+            return .{ .background = theme.background, .layer = &self.layer };
         };
-        self.collectCellBgRects(allocator, self.tabBarHeightPx(tab_count));
-        return .{ .background = self.render_state.colors.background, .rects = self.solid_rects.items };
+        self.collectTerminalLayer(allocator, terminal, tab_count, width, height);
+        return .{ .background = self.render_state.colors.background, .layer = &self.layer };
     }
 
-    /// #277 S2-3 / #361 — 셀 배경 사각형 목록을 만든다. `self.solid_rects` 에 쌓고
-    /// 호출처가 그린다 (CPU 는 `rect()`, GL 은 정점 배치).
+    /// 그릴 세션이 없는 프레임용 — 목록을 비우고 그 자리를 돌려준다. 배경만 칠하는
+    /// 프레임에서도 GL 경로가 지난 프레임의 목록을 다시 그리지 않게 한다.
+    pub fn emptyLayer(self: *Renderer) *const TerminalLayer {
+        self.layer.clear();
+        return &self.layer;
+    }
+
+    /// #277 S2-3/S2-4 — 터미널 레이어의 그리기 목록을 만든다. CPU 경로(`paint`)와
+    /// GL 경로(`buildGlFrame`)가 **이 함수 하나를 공유한다.**
     ///
-    /// **두 경로가 이 함수를 공유하는 것이 요점이다.** "어느 셀에 어떤 배경색" 판단이
-    /// 두 벌이 되면 화면이 조용히 갈린다 — GL 렌더러를 별도로 쓰지 않는 이유다.
+    /// **요점은 "무엇을 어디에" 가 여기에만 있다는 것이다.** 셀 배경색 판단, shaping,
+    /// ligature, wide 중앙정렬, block element · box drawing 의 절차적 사각형, 커서,
+    /// IME preedit 까지 전부 여기서 끝난다. 어느 한쪽 renderer 에 이 판단을 다시
+    /// 적으면 그 순간부터 두 경로가 조용히 갈린다.
     ///
-    /// 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지 않는다. 표면 전체가
-    /// 이미 `fill` 로 배경색이라 덧그릴 필요가 없다.
+    /// 목록의 순서는 `TerminalLayer` 주석 참고 (macOS · Windows 와 같은 계층 순서).
     ///
     /// `render_state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
-    /// 할당 실패는 조용히 무시한다 — 그 프레임의 배경 일부가 빠질 뿐이고, 다음
-    /// 프레임에 다시 시도한다. 여기서 화면 전체를 포기하는 것보다 낫다.
-    pub fn collectCellBgRects(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
-        self.solid_rects.clearRetainingCapacity();
+    /// 할당 실패는 조용히 무시한다 — 그 프레임의 일부가 빠질 뿐이고, 다음 프레임에
+    /// 다시 시도한다. 여기서 화면 전체를 포기하는 것보다 낫다.
+    pub fn collectTerminalLayer(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        terminal: *ghostty.Terminal,
+        tab_count: usize,
+        width: i32,
+        height: i32,
+    ) void {
+        self.layer.clear();
 
+        const tab_bar_h = self.tabBarHeightPx(tab_count);
+        self.collectCellBgRects(allocator, tab_bar_h);
+        self.collectCellText(allocator, tab_bar_h);
+        self.collectCursor(allocator, tab_bar_h);
+        self.collectScrollbar(allocator, terminal, tab_count, width, height);
+        self.collectPreedit(allocator, tab_bar_h);
+    }
+
+    /// #277 S2-3 / #361 — 셀 배경 사각형.
+    ///
+    /// 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지 않는다. 표면 전체가
+    /// 이미 배경색이라 (CPU 는 `fill`, GL 은 `glClear`) 덧그릴 필요가 없다.
+    fn collectCellBgRects(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
         const colors = self.render_state.colors;
         const cw = self.cellWidth();
         const ch = self.cellHeight();
@@ -471,7 +579,7 @@ pub const Renderer = struct {
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 if (!(is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null)) continue;
-                self.solid_rects.append(allocator, .{
+                self.layer.cell_bg.append(allocator, .{
                     .x = pad + @as(i32, @intCast(x)) * cw,
                     .y = tab_bar_h + pad + @as(i32, @intCast(y)) * ch,
                     .w = if (raw.wide == .wide) cw * 2 else cw,
@@ -482,59 +590,24 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn paint(
-        self: *Renderer,
-        allocator: std.mem.Allocator,
-        memory: []u8,
-        width: i32,
-        height: i32,
-        stride: i32,
-        terminal: *ghostty.Terminal,
-        theme: *const themes.Theme,
-        tab_titles: []const []const u8,
-        active_tab_idx: usize,
-        layout: tab_layout.Layout,
-        tab_scroll_x: f32,
-        drag_view: ?tab_interaction.DragView,
-        tab_hover: tab_layout.Area,
-        menu_ui: command_menu.Ui,
-        toggle_hotkey: []const u8,
-    ) void {
-        self.render_state.update(allocator, terminal) catch {
-            fill(memory, width, height, stride, theme.background);
-            return;
-        };
-
+    /// #277 S2-4 — 셀 텍스트. 글리프는 `layer.glyphs` 에, block element 와 box
+    /// drawing 의 절차적 사각형은 `layer.overlay` 에 쌓는다.
+    ///
+    /// 두 목록으로 나뉘는 것이 곧 **그리기 순서**다 — 글리프를 전부 그린 뒤 절차적
+    /// 사각형을 그린다 (macOS · Windows 와 동일). 이전에는 셀 순서로 번갈아 그려서
+    /// 셀을 넘은 글리프가 이웃의 box drawing 위에 남을지 지워질지가 *방향에 따라*
+    /// 갈렸다 — #361 이 셀 배경에서 없앤 것과 같은 종류의 비대칭이다.
+    fn collectCellText(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
         const colors = self.render_state.colors;
-        fill(memory, width, height, stride, colors.background);
-
         const cw = self.cellWidth();
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
-        const pad: i32 = self.paddingPx();
-        const tab_bar_h: i32 = self.tabBarHeightPx(tab_titles.len);
-        const scrollbar_top: i32 = if (tab_titles.len > 0) self.chromeHeightPx() else 0;
-        const sb_w: i32 = self.scrollbarWPx();
-        const sb_min_thumb: i32 = self.scrollbarMinThumbHPx();
-
-        // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
-        // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
-        // plus / scroll 모두 적용. #334 — 탭 배경은 탭바와 같은 색, 활성은
-        // amber 밑줄, 탭 경계는 세로 구분선 (Windows/macOS 동일).
-        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, drag_view, self.scale, &self.tab_font_ctx, &self.chrome);
-
+        const pad = self.paddingPx();
         const rows = self.render_state.rows;
         const cols = self.render_state.cols;
         const row_slice = self.render_state.row_data.slice();
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
-
-        // #361 — 셀 배경을 **전부 먼저** 그린다. 목록은 `collectCellBgRects` 가
-        // 만들고 (GL 경로도 같은 목록을 쓴다) 여기서는 그리기만 한다.
-        self.collectCellBgRects(allocator, tab_bar_h);
-        for (self.solid_rects.items) |r| {
-            rect(memory, width, height, stride, r.x, r.y, r.w, r.h, r.color);
-        }
 
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
@@ -562,8 +635,6 @@ pub const Renderer = struct {
                 const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
                 const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
 
-                // 배경은 위의 선행 패스가 이미 그렸다 (#361). 여기서는 텍스트만
-                // 그린다 — `bg` 는 글리프 알파 블렌딩의 바탕색으로만 쓴다.
                 if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) {
                     x += 1;
                     continue;
@@ -587,11 +658,20 @@ pub const Renderer = struct {
                         .{ bg.r, bg.g, bg.b },
                         br.alpha,
                     );
-                    drawBlockRect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, br, .{
-                        .r = blended[0],
-                        .g = blended[1],
-                        .b = blended[2],
-                    });
+                    const cw_f: f32 = @floatFromInt(cell_w);
+                    const ch_f: f32 = @floatFromInt(ch);
+                    const bx0: i32 = cell_x + @as(i32, @intFromFloat(br.x0 * cw_f));
+                    const by0: i32 = cell_y + @as(i32, @intFromFloat(br.y0 * ch_f));
+                    const bx1: i32 = cell_x + @as(i32, @intFromFloat(br.x1 * cw_f));
+                    const by1: i32 = cell_y + @as(i32, @intFromFloat(br.y1 * ch_f));
+                    self.layer.overlay.append(allocator, .{
+                        .x = bx0,
+                        .y = by0,
+                        .w = bx1 - bx0,
+                        .h = by1 - by0,
+                        .color = .{ .r = blended[0], .g = blended[1], .b = blended[2] },
+                        .shade = shadeCode(br.shade),
+                    }) catch {};
                     x += 1;
                     continue;
                 }
@@ -615,17 +695,13 @@ pub const Renderer = struct {
                                 .{ bg.r, bg.g, bg.b },
                                 br.cov,
                             );
-                            rect(
-                                memory,
-                                width,
-                                height,
-                                stride,
-                                cell_x + @as(i32, @intFromFloat(br.x)),
-                                cell_y + @as(i32, @intFromFloat(br.y)),
-                                @as(i32, @intFromFloat(br.w)),
-                                @as(i32, @intFromFloat(br.h)),
-                                .{ .r = cov_blend[0], .g = cov_blend[1], .b = cov_blend[2] },
-                            );
+                            self.layer.overlay.append(allocator, .{
+                                .x = cell_x + @as(i32, @intFromFloat(br.x)),
+                                .y = cell_y + @as(i32, @intFromFloat(br.y)),
+                                .w = @as(i32, @intFromFloat(br.w)),
+                                .h = @as(i32, @intFromFloat(br.h)),
+                                .color = .{ .r = cov_blend[0], .g = cov_blend[1], .b = cov_blend[2] },
+                            }) catch {};
                         }
                         x += 1;
                         continue;
@@ -657,27 +733,19 @@ pub const Renderer = struct {
                     const take = @min(extras.len, cluster.len - 1);
                     @memcpy(cluster[1..][0..take], extras[0..take]);
                     if (self.font_ctx.resolveCluster(cluster[0 .. 1 + take])) |cg| {
-                        const cluster_glyph = self.font_ctx.glyphByIndex(cg.face_idx, cg.glyph_index);
-                        if (cluster_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                            drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, cluster_glyph, 0, width);
-                        } else {
-                            const baseline = cell_y + ascent;
-                            const glyph_advance_i32: i32 = @intCast(cluster_glyph.advance);
-                            const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
-                            drawGlyph(
-                                memory,
-                                width,
-                                height,
-                                stride,
-                                cell_x + center_off + cluster_glyph.bitmap_left + cg.x_offset,
-                                baseline - cluster_glyph.bitmap_top - cg.y_offset,
-                                cluster_glyph,
-                                fg,
-                                bg,
-                                0,
-                                width,
-                            );
-                        }
+                        appendGlyph(&self.layer.glyphs, allocator, .{
+                            .ref = .{ .indexed = .{ .face = cg.face_idx, .index = cg.glyph_index } },
+                            .glyph = self.font_ctx.glyphByIndex(cg.face_idx, cg.glyph_index),
+                            .cell_x = cell_x,
+                            .cell_y = cell_y,
+                            .cell_w = cell_w,
+                            .cell_h = ch,
+                            .ascent = ascent,
+                            .x_offset = cg.x_offset,
+                            .y_offset = cg.y_offset,
+                            .fg = fg,
+                            .bg = bg,
+                        });
                         x += 1;
                         continue;
                     }
@@ -686,23 +754,20 @@ pub const Renderer = struct {
                     // 무시되지만 base 는 emoji face 등에서 매치 → 시각상 합리).
                 }
 
-                // L5-2-β: 2-char ligature lookahead. 다음 cell 도 plain single
+                // L5-2-β: ligature lookahead. 다음 cell 들도 plain single
                 // codepoint + non-wide + same style + ASCII printable 범위면
-                // `ligaturePair(cp, next_cp)` 시도. HarfBuzz shape 결과 1 glyph 면
-                // ligature 확정 → 첫 cell 위치에 ligature glyph (2 cell 너비) +
-                // 다음 cell 의 cell area 는 bg 만 (다음 cell skip). cache 가
-                // 같은 ASCII pair 결과 보관해 매 frame 매 cell pair shape 호출
-                // 회피.
+                // `ligaturePair` / `ligatureTriple` 시도. HarfBuzz shape 결과가
+                // ligature 면 첫 cell 위치에 N-cell 너비 글리프 (또는 cell 별
+                // spacer glyph). cache 가 같은 ASCII 조합 결과를 보관해 매 frame
+                // 매 cell shape 호출을 피한다.
                 //
-                // 조건: 둘 다 narrow, single codepoint, style_id 일치 (= 같은
+                // 조건: 전부 narrow, single codepoint, style_id 일치 (= 같은
                 // attribute, fg / bg / flags 등). 다른 색 / underline 등 다른
                 // style 의 cell pair 는 ligature 안 — terminal 의 자연스러운
                 // 의미 (color 분리 = 의도된 두 문자).
-                // 3-char ligature lookahead 먼저. Fira Code / JetBrains Mono /
-                // Cascadia Code 의 흔한 3-char ligature (`===` / `!==` / `<=>` /
-                // `<--` / `-->` / `<->` / `<==` / `==>` / `||=` 등). 2-char
-                // 보다 *먼저* 시도해야 `===` 가 `==` + `=` 로 분해되지 않음.
-                // cache miss 시 1 회 shape — 같은 triple 반복 호출은 캐시 hit.
+                //
+                // 3-char 를 2-char 보다 *먼저* 시도해야 `===` 가 `==` + `=` 로
+                // 분해되지 않는다.
                 if (x + 2 < cols and x + 2 < raws.len and raw.wide == .narrow and isLigatureCandidate(cp)) {
                     const next = raws[x + 1];
                     const next2 = raws[x + 2];
@@ -711,30 +776,8 @@ pub const Renderer = struct {
                         next2.wide == .narrow and next2.hasText() and next2.codepoint() != 0 and
                         next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
                     {
-                        const next_cp = next.codepoint();
-                        const next2_cp = next2.codepoint();
-                        if (self.font_ctx.ligatureTriple(cp, next_cp, next2_cp)) |lm| {
-                            drawLigatureMatch(
-                                &self.font_ctx,
-                                memory,
-                                width,
-                                height,
-                                stride,
-                                raws,
-                                styles,
-                                sel_range,
-                                &colors,
-                                pad,
-                                cell_y,
-                                cw,
-                                ch,
-                                ascent,
-                                x,
-                                3,
-                                lm,
-                                fg,
-                                bg,
-                            );
+                        if (self.font_ctx.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
+                            self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 3, fg, bg);
                             x += 3;
                             continue;
                         }
@@ -746,127 +789,241 @@ pub const Renderer = struct {
                     if (next.wide == .narrow and next.hasText() and next.codepoint() != 0 and
                         next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
                     {
-                        const next_cp = next.codepoint();
-                        if (self.font_ctx.ligaturePair(cp, next_cp)) |lm| {
-                            drawLigatureMatch(
-                                &self.font_ctx,
-                                memory,
-                                width,
-                                height,
-                                stride,
-                                raws,
-                                styles,
-                                sel_range,
-                                &colors,
-                                pad,
-                                cell_y,
-                                cw,
-                                ch,
-                                ascent,
-                                x,
-                                2,
-                                lm,
-                                fg,
-                                bg,
-                            );
+                        if (self.font_ctx.ligaturePair(cp, next.codepoint())) |lm| {
+                            self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 2, fg, bg);
                             x += 2;
                             continue;
                         }
                     }
                 }
 
-                const glyph = self.font_ctx.glyph(cp);
-                if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                    // color emoji — bitmap 이 보통 strike size (~109px) 라 cell 안 ratio
-                    // 유지 scale down + cell 가운데 fit. emoji 색 자체 사용 (fg 무시).
-                    drawGlyphBgra(memory, width, height, stride, cell_x, cell_y, cell_w, ch, glyph, 0, width);
-                } else {
-                    // proportional 폰트 (`fc-match monospace` 가 NotoSansCJK 같은 sans-serif
-                    // 로 매치되는 환경 등) 라도 글자가 cell 안 가운데에 균일하게 분포하도록
-                    // advance-center 정렬. monospace 면 글리프 advance == cell width 라 offset
-                    // = 0 (그대로). wide glyph 의 fallback (placeholder '?') 도 cell-pair 가운데로.
-                    const baseline = cell_y + ascent;
-                    const glyph_advance_i32: i32 = @intCast(glyph.advance);
-                    const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
-                    drawGlyph(
-                        memory,
-                        width,
-                        height,
-                        stride,
-                        cell_x + center_off + glyph.bitmap_left,
-                        baseline - glyph.bitmap_top,
-                        glyph,
-                        fg,
-                        bg,
-                        0,
-                        width,
-                    );
-                }
+                appendGlyph(&self.layer.glyphs, allocator, .{
+                    .ref = .{ .codepoint = cp },
+                    .glyph = self.font_ctx.glyph(cp),
+                    .cell_x = cell_x,
+                    .cell_y = cell_y,
+                    .cell_w = cell_w,
+                    .cell_h = ch,
+                    .ascent = ascent,
+                    .fg = fg,
+                    .bg = bg,
+                });
                 x += 1;
             }
         }
+    }
 
-        // Cursor (#297 — 세로 막대 bar, 세 platform 공통). 셀 좌측에 opaque
-        // bar. wide char 는 wide_tail 보정으로 글자 시작 cell 의 좌측에 위치.
-        // 폭은 `ui_metrics.CURSOR_BAR_W_PT` × scale (Windows/macOS 와 동일 식).
-        if (self.render_state.cursor.visible) {
-            if (self.render_state.cursor.viewport) |vp| {
-                var cx: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
-                if (vp.wide_tail and vp.x > 0) cx -= cw;
-                const cy: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
-                const cursor = colors.cursor orelse ghostty.color.RGB{ .r = 180, .g = 180, .b = 180 };
-                const bar_w: i32 = @intFromFloat(ui_metrics.cursorBarWidthPx(self.scale));
-                rect(memory, width, height, stride, cx, cy, bar_w, ch, cursor);
-            }
+    /// 2-cell 또는 3-cell ligature. `LigatureMatch` 의 `.single` (입력 N chars →
+    /// 1 glyph, N-cell wide draw, JetBrains Mono / Cascadia Code 패턴) 과
+    /// `.spacer` (입력 N chars → N glyphs each at own cell, Fira Code 패턴) 둘 다.
+    ///
+    /// 뒤따르는 N-1 cells 의 배경은 여기서 만들지 않는다 — `collectCellBgRects` 가
+    /// 셀을 하나씩 순회하며 이미 같은 조건으로 만든다 (#361 이 배경을 선행 패스로
+    /// 옮기면서 중복이 됐다).
+    fn collectLigatureMatch(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        match: font.LigatureMatch,
+        cell_x: i32,
+        cell_y: i32,
+        cw: i32,
+        ch: i32,
+        ascent: i32,
+        count: usize,
+        fg: ghostty.color.RGB,
+        bg: ghostty.color.RGB,
+    ) void {
+        switch (match) {
+            .single => |lg| {
+                // 1 glyph 이 N-cell 너비 차지 — center 정렬 (count × cw 안).
+                appendGlyph(&self.layer.glyphs, allocator, .{
+                    .ref = .{ .indexed = .{ .face = lg.face_idx, .index = lg.glyph_index } },
+                    .glyph = self.font_ctx.glyphByIndex(lg.face_idx, lg.glyph_index),
+                    .cell_x = cell_x,
+                    .cell_y = cell_y,
+                    .cell_w = cw * @as(i32, @intCast(count)),
+                    .cell_h = ch,
+                    .ascent = ascent,
+                    .x_offset = lg.x_offset,
+                    .y_offset = lg.y_offset,
+                    .fg = fg,
+                    .bg = bg,
+                });
+            },
+            .spacer => |sp| {
+                // N glyph 을 각 cell 에 (1-cell wide each). Fira Code 의 spacer pattern.
+                const n = @min(@as(usize, sp.count), count);
+                for (0..n) |i| {
+                    appendGlyph(&self.layer.glyphs, allocator, .{
+                        .ref = .{ .indexed = .{ .face = sp.face_idx, .index = sp.glyph_indices[i] } },
+                        .glyph = self.font_ctx.glyphByIndex(sp.face_idx, sp.glyph_indices[i]),
+                        .cell_x = cell_x + @as(i32, @intCast(i)) * cw,
+                        .cell_y = cell_y,
+                        .cell_w = cw,
+                        .cell_h = ch,
+                        .ascent = ascent,
+                        .x_offset = sp.x_offsets[i],
+                        .y_offset = sp.y_offsets[i],
+                        .fg = fg,
+                        .bg = bg,
+                    });
+                }
+            },
         }
+    }
 
-        // #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
-        // 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
-        // #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은 입력.
+    /// Cursor (#297 — 세로 막대 bar, 세 platform 공통). 셀 좌측에 opaque bar.
+    /// wide char 는 wide_tail 보정으로 글자 시작 cell 의 좌측에 위치. 폭은
+    /// `ui_metrics.CURSOR_BAR_W_PT` × scale (Windows/macOS 와 동일 식).
+    fn collectCursor(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
+        if (!self.render_state.cursor.visible) return;
+        const vp = self.render_state.cursor.viewport orelse return;
+        const cw = self.cellWidth();
+        const ch = self.cellHeight();
+        const pad = self.paddingPx();
+        var cx: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
+        if (vp.wide_tail and vp.x > 0) cx -= cw;
+        self.layer.overlay.append(allocator, .{
+            .x = cx,
+            .y = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch,
+            .w = @intFromFloat(ui_metrics.cursorBarWidthPx(self.scale)),
+            .h = ch,
+            .color = self.render_state.colors.cursor orelse .{ .r = 180, .g = 180, .b = 180 },
+        }) catch {};
+    }
+
+    /// #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
+    /// 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
+    /// #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은 입력.
+    fn collectScrollbar(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        terminal: *ghostty.Terminal,
+        tab_count: usize,
+        width: i32,
+        height: i32,
+    ) void {
+        const colors = self.render_state.colors;
+        const scrollbar_top: i32 = if (tab_count > 0) self.chromeHeightPx() else 0;
         const sb = terminal.screens.active.pages.scrollbar();
-        if (scrollbar.thumbRect(
+        const r = scrollbar.thumbRect(
             sb.total,
             sb.len,
             sb.offset,
             @floatFromInt(width),
             @floatFromInt(height),
             @floatFromInt(scrollbar_top),
-            @floatFromInt(pad),
-            @floatFromInt(sb_min_thumb),
-            @floatFromInt(sb_w),
+            @floatFromInt(self.paddingPx()),
+            @floatFromInt(self.scrollbarMinThumbHPx()),
+            @floatFromInt(self.scrollbarWPx()),
             .{ colors.background.r, colors.background.g, colors.background.b },
-        )) |r| {
-            fillChromeRect(memory, width, height, stride, r);
-        }
+        ) orelse return;
+        // 정수 격자 스냅과 색 변환은 chrome 그리기와 같은 규칙을 쓴다 (#357).
+        const i = tab_chrome.snap(r);
+        self.layer.overlay.append(allocator, .{
+            .x = i.x,
+            .y = i.y,
+            .w = i.w,
+            .h = i.h,
+            .color = rgbFromMetrics(r.color),
+        }) catch {};
+    }
 
-        // --- L10-β: IME preedit (조합 중) inline overlay ---
-        // cursor 위치부터 preedit_text 의 codepoint 별로 보라색 배경 + foreground
-        // 글자. AGENTS.md "한글 IME 동작 스펙" — "강조 배경 (보라색 계열) + 글자
-        // 로 inline 표시. 별도 candidate window 안 띄움". macOS / Windows 와
-        // 동등 색 (`renderer/macos.zig:686`, `renderer/windows.zig:1144`).
-        // PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가 commit_string 으로
-        // 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
-        if (self.preedit_text.len > 0) {
-            if (self.render_state.cursor.viewport) |vp| {
-                drawPreeditOverlay(
-                    memory,
-                    width,
-                    height,
-                    stride,
-                    pad,
-                    tab_bar_h,
-                    cw,
-                    ch,
-                    ascent,
-                    @intCast(vp.x),
-                    @intCast(vp.y),
-                    cols,
-                    self.preedit_text,
-                    colors.foreground,
-                    &self.font_ctx,
-                );
-            }
+    /// L10-β — IME preedit (조합 중) inline overlay. cursor 위치부터 preedit_text
+    /// 의 codepoint 별로 보라색 배경 + foreground 글자. AGENTS.md "한글 IME 동작
+    /// 스펙" — "강조 배경 (보라색 계열) + 글자로 inline 표시. 별도 candidate window
+    /// 안 띄움". macOS / Windows 와 동등 색 (`renderer/macos.zig:686`,
+    /// `renderer/windows.zig:1144`). PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가
+    /// commit_string 으로 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
+    fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
+        if (self.preedit_text.len == 0) return;
+        const vp = self.render_state.cursor.viewport orelse return;
+
+        // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
+        // 동일 색. 8-bit RGB 환산 64 / 64 / 128.
+        const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
+        const cw = self.cellWidth();
+        const ch = self.cellHeight();
+        const ascent: i32 = @intCast(self.font_ctx.ascent_px);
+        const pad = self.paddingPx();
+        const cols = self.render_state.cols;
+        const fg = self.render_state.colors.foreground;
+        const pre_y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
+
+        var col: i32 = @intCast(vp.x);
+        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = self.preedit_text, .i = 0 };
+        while (utf8_iter.nextCodepoint()) |cp| {
+            const w_cells: i32 = @intCast(display_width.codepointWidth(cp));
+            if (w_cells <= 0) continue;
+            if (col + w_cells > @as(i32, @intCast(cols))) break;
+
+            const cell_x: i32 = pad + col * cw;
+            const cell_w: i32 = w_cells * cw;
+            self.layer.preedit_bg.append(allocator, .{
+                .x = cell_x,
+                .y = pre_y,
+                .w = cell_w,
+                .h = ch,
+                .color = preedit_bg,
+            }) catch {};
+            appendGlyph(&self.layer.preedit_glyphs, allocator, .{
+                .ref = .{ .codepoint = cp },
+                .glyph = self.font_ctx.glyph(cp),
+                .cell_x = cell_x,
+                .cell_y = pre_y,
+                .cell_w = cell_w,
+                .cell_h = ch,
+                .ascent = ascent,
+                .fg = fg,
+                .bg = preedit_bg,
+            });
+            col += w_cells;
         }
+    }
+
+    pub fn paint(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        memory: []u8,
+        width: i32,
+        height: i32,
+        stride: i32,
+        terminal: *ghostty.Terminal,
+        theme: *const themes.Theme,
+        tab_titles: []const []const u8,
+        active_tab_idx: usize,
+        layout: tab_layout.Layout,
+        tab_scroll_x: f32,
+        drag_view: ?tab_interaction.DragView,
+        tab_hover: tab_layout.Area,
+        menu_ui: command_menu.Ui,
+        toggle_hotkey: []const u8,
+    ) void {
+        self.render_state.update(allocator, terminal) catch {
+            fill(memory, width, height, stride, theme.background);
+            return;
+        };
+
+        const colors = self.render_state.colors;
+        fill(memory, width, height, stride, colors.background);
+
+        const tab_bar_h: i32 = self.tabBarHeightPx(tab_titles.len);
+
+        // L12-α/β/γ — 상단 tab bar 영역. cross-platform tab_layout 의 Layout
+        // (`<`[tabs][+]`>` 또는 `[tabs][+]` 영역 분할) 따라 그리기. arrow /
+        // plus / scroll 모두 적용. #334 — 탭 배경은 탭바와 같은 색, 활성은
+        // amber 밑줄, 탭 경계는 세로 구분선 (Windows/macOS 동일).
+        drawTabBar(memory, width, height, stride, tab_bar_h, self.tabWidthPx(), self.tabPaddingPx(), tab_titles, active_tab_idx, layout, tab_hover, tab_scroll_x, drag_view, self.scale, &self.tab_font_ctx, &self.chrome);
+
+        // #277 S2-4 — 터미널 레이어. **목록은 GL 경로와 같은 수집기가 만들고 여기서는
+        // 그리기만 한다.** 순서(배경 → 글리프 → block/box · 커서 · scrollbar →
+        // preedit)는 `TerminalLayer` 가 정의하고 두 경로가 그대로 따른다.
+        self.collectTerminalLayer(allocator, terminal, tab_titles.len, width, height);
+        for (self.layer.cell_bg.items) |r| drawSolidRect(memory, width, height, stride, r);
+        for (self.layer.glyphs.items) |*g| drawGlyphItem(memory, width, height, stride, g);
+        for (self.layer.overlay.items) |r| drawSolidRect(memory, width, height, stride, r);
+        for (self.layer.preedit_bg.items) |r| drawSolidRect(memory, width, height, stride, r);
+        for (self.layer.preedit_glyphs.items) |*g| drawGlyphItem(memory, width, height, stride, g);
 
         // #329 — 단일 탭은 terminal grid를 y=0에 둔 채 우측 상단
         // `[+][×][…]` 72×28pt만 마지막 chrome layer로 overlay한다.
@@ -1016,7 +1173,7 @@ pub const Renderer = struct {
             const ih: i32 = @intFromFloat(@round(item.h * scale));
             const baseline = iy + @divFloor(ih - ch, 2) + @as(i32, @intCast(self.tab_font_ctx.ascent_px));
             const label = command_menu.label(command);
-            self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + scaledPt(8, scale), baseline, label, fg, bg);
+            self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + scaledPt(8, scale), baseline, label, fg);
             const hint = command_menu.shortcut(command, false, toggle_hotkey, ui.fullscreen_workarea);
             if (hint.len > 0) {
                 const hint_w = @as(i32, @intCast(display_width.stringWidth(hint))) * cw;
@@ -1024,7 +1181,7 @@ pub const Renderer = struct {
                 // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면
                 // hint 를 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
                 if (command_menu.hintFits(item.w, @as(f32, @floatFromInt(label_w)) / scale, @as(f32, @floatFromInt(hint_w)) / scale)) {
-                    self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + iw - scaledPt(8, scale) - hint_w, baseline, hint, hint_fg, bg);
+                    self.drawDialogTextLine(&self.tab_font_ctx, memory, width, height, stride, ix + iw - scaledPt(8, scale) - hint_w, baseline, hint, hint_fg);
                 }
             }
         }
@@ -1105,7 +1262,7 @@ pub const Renderer = struct {
         }
 
         // (3) Title.
-        self.drawDialogTextLine(&self.dialog_title_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + title_ascent, title, fg, bg);
+        self.drawDialogTextLine(&self.dialog_title_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + title_ascent, title, fg);
         text_y += title_ch;
 
         // (3) separator line — title 과 message 구분.
@@ -1123,7 +1280,7 @@ pub const Renderer = struct {
         var wl = dialog_layout.WrappedLines{ .msg = message, .max_cells = wrap_cells };
         while (wl.next()) |line| {
             if (row >= message_scroll_row and drawn_rows < visible_message_rows) {
-                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg, bg);
+                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg);
                 text_y += ch;
                 drawn_rows += 1;
             }
@@ -1167,13 +1324,13 @@ pub const Renderer = struct {
             if (input.len > 0) {
                 const input_w: i32 = @intCast(display_width.stringWidth(input) * @as(usize, @intCast(cw)));
                 const input_x = text_x + @divTrunc(inner_w - input_w, 2);
-                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg, bg);
+                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, input_x, field_y + @divTrunc(field_h - ch, 2) + ascent, input, fg);
             }
             text_y += field_h + @divTrunc(ch, 2);
         }
         if (prompt_status) |status| {
             if (status.len > 0) {
-                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 }, bg);
+                self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 });
             }
             text_y += ch;
         }
@@ -1197,7 +1354,7 @@ pub const Renderer = struct {
         const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(cw)));
         const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
         const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
-        self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg, ok_bg);
+        self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg);
 
         // Cancel 버튼 — confirm 모드 에서만. secondary action (회색 배경 + 검정).
         if (is_confirm) {
@@ -1208,7 +1365,7 @@ pub const Renderer = struct {
             const cancel_text_cells = display_width.stringWidth(cancel_text);
             const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(cw)));
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
-            self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color, dialog_cancel_color);
+            self.drawDialogTextLine(&self.dialog_font_ctx, memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color);
         } else {
             self.last_dialog_cancel_rect = .{}; // info 모드: Cancel 그리지 않음.
         }
@@ -1295,8 +1452,8 @@ pub const Renderer = struct {
         start_x: i32,
         baseline_y: i32,
         text: []const u8,
+        /// 배경색 인자는 없다 — `drawGlyph` 가 프레임버퍼와 직접 섞는다 (#277 S2-4).
         fg: ghostty.color.RGB,
-        bg: ghostty.color.RGB,
     ) void {
         _ = self;
         const cw: i32 = @intCast(font_ctx.cell_width_px);
@@ -1320,7 +1477,6 @@ pub const Renderer = struct {
                     baseline_y - gl.bitmap_top,
                     gl,
                     fg,
-                    bg,
                     0,
                     fb_w,
                 );
@@ -1569,7 +1725,6 @@ fn drawTabTitle(a: TabTitleArgs) void {
                     c.a.text_baseline - gl.bitmap_top,
                     gl,
                     c.a.text_color,
-                    c.a.bg,
                     c.viewport_left,
                     c.a.tab_area_end,
                 );
@@ -1687,172 +1842,113 @@ fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
     };
 }
 
-/// L10-β preedit overlay — cursor 위치부터 UTF-8 codepoint 별로 cell 너비
-/// (display_width.codepointWidth) 만큼 보라색 배경 + foreground 글자. wide
-/// char (한글 등) 는 2 cell. 가로 cols 넘어가면 truncate (wrap 안 함 — 다음
-/// done event 가 새 preedit 보내주면 갱신).
-fn drawPreeditOverlay(
-    memory: []u8,
-    fb_w: i32,
-    fb_h: i32,
-    stride: i32,
-    pad: i32,
-    tab_bar_h: i32,
-    cw: i32,
-    ch: i32,
-    ascent: i32,
-    start_col: i32,
-    cy_cell: i32,
-    cols: usize,
-    text: []const u8,
-    fg: ghostty.color.RGB,
-    font_ctx: *font.Context,
-) void {
-    // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
-    // 동일 색. 8-bit RGB 환산 64 / 64 / 128.
-    const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
-    const pre_y: i32 = tab_bar_h + pad + cy_cell * ch;
-    const baseline: i32 = pre_y + ascent;
-
-    var col: i32 = start_col;
-    var utf8_iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
-    while (utf8_iter.nextCodepoint()) |cp| {
-        const w_cells: i32 = @intCast(display_width.codepointWidth(cp));
-        if (w_cells <= 0) continue;
-        if (col + w_cells > @as(i32, @intCast(cols))) break;
-
-        const cell_x: i32 = pad + col * cw;
-        const cell_w: i32 = w_cells * cw;
-        rect(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, preedit_bg);
-
-        const glyph = font_ctx.glyph(cp);
-        if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-            // emoji 가 preedit 으로 올 일 거의 없지만 안전하게 동일 path 분기.
-            drawGlyphBgra(memory, fb_w, fb_h, stride, cell_x, pre_y, cell_w, ch, glyph, 0, fb_w);
-        } else {
-            const glyph_advance_i32: i32 = @intCast(glyph.advance);
-            const center_off: i32 = @divFloor(cell_w - glyph_advance_i32, 2);
-            drawGlyph(
-                memory,
-                fb_w,
-                fb_h,
-                stride,
-                cell_x + center_off + glyph.bitmap_left,
-                baseline - glyph.bitmap_top,
-                glyph,
-                fg,
-                preedit_bg,
-                0,
-                fb_w,
-            );
-        }
-
-        col += w_cells;
-    }
-}
-
-/// 2-cell 또는 3-cell ligature 의 단일 그리기 경로. `LigatureMatch` 의
-/// `.single` (입력 N chars → 1 glyph, N-cell wide draw, JetBrains Mono /
-/// Cascadia Code 패턴) 과 `.spacer` (입력 N chars → N glyphs each at own
-/// cell, Fira Code 패턴) 둘 다 처리. caller 는 `x` (base cell index) +
-/// `count` (2 또는 3) + `match` 만 전달.
-///
-/// 둘 다 다음 N-1 cells 의 bg/selection rect 는 *spacer 의 경우* 본 함수가
-/// 그림 (per-cell width=cw); .single 의 경우는 caller 가 base bg 그렸으니
-/// 추가 N-1 cells 도 그림. `cell_x` (= `pad + x * cw`) 는 함수 안 재계산.
-fn drawLigatureMatch(
-    font_ctx: *font.Context,
-    memory: []u8,
-    fb_w: i32,
-    fb_h: i32,
-    stride: i32,
-    raws: []const ghostty.Cell,
-    styles: []const ghostty.Style,
-    sel_range: ?[2]u16,
-    colors: *const ghostty.RenderState.Colors,
-    pad: i32,
+/// [`appendGlyph`] 의 인자 묶음 — 셀 기하와 색.
+const GlyphPlacement = struct {
+    ref: GlyphRef,
+    glyph: *const font.Glyph,
+    cell_x: i32,
     cell_y: i32,
-    cw: i32,
-    ch: i32,
+    cell_w: i32,
+    cell_h: i32,
     ascent: i32,
-    x: usize,
-    count: usize,
-    match: font.LigatureMatch,
+    /// shaping 결과의 보정 (ligature · cluster). 없으면 0.
+    x_offset: i32 = 0,
+    y_offset: i32 = 0,
     fg: ghostty.color.RGB,
     bg: ghostty.color.RGB,
-) void {
-    const base_cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
+};
 
-    // 다음 (count-1) cells 의 selection / bg 그리기 — 둘 다 (.single / .spacer)
-    // 공통. base cell 의 bg 는 caller 가 이미 그림.
-    for (1..count) |off| {
-        const ox = x + off;
-        if (ox >= raws.len) break;
-        const ocell = raws[ox];
-        const ostyle = if (ocell.style_id != 0) styles[ox] else ghostty.Style{};
-        const ox16: u16 = @intCast(ox);
-        const ois_selected = if (sel_range) |sr| (ox16 >= sr[0] and ox16 <= sr[1]) else false;
-        const obg = resolveBg(ostyle, &ocell, colors, ois_selected);
-        const ocell_x: i32 = pad + @as(i32, @intCast(ox)) * cw;
-        if (ois_selected or ostyle.flags.inverse or ostyle.bg(&ocell, &colors.palette) != null) {
-            rect(memory, fb_w, fb_h, stride, ocell_x, cell_y, cw, ch, obg);
-        }
+/// #277 S2-4 — 글리프 하나를 그리기 목록에 넣는다. **"어디에" 의 단일 정의다.**
+///
+/// 컬러(BGRA) 글리프는 대상 사각형 안에 비율 유지 fit 하므로 셀 사각형을 그대로
+/// 싣고 (fit 계산은 그리는 쪽이 [`colorGlyphFit`] 로 한다 — 역시 한 곳), 알파 마스크
+/// 글리프는 여기서 최종 bitmap 좌상단까지 계산해 싣는다.
+///
+/// proportional 폰트 (`fc-match monospace` 가 NotoSansCJK 같은 sans-serif 로
+/// 매치되는 환경 등) 라도 글자가 cell 안 가운데에 균일하게 분포하도록 advance-center
+/// 정렬한다. monospace 면 글리프 advance == cell width 라 offset = 0 (그대로).
+/// wide glyph 의 fallback (placeholder `?`) 도 cell-pair 가운데로.
+///
+/// 보이지 않는 글리프 (공백 등) 는 목록에 넣지 않는다 — 두 경로 모두 그릴 것이 없다.
+fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p: GlyphPlacement) void {
+    const glyph = p.glyph;
+    if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
+
+    if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+        list.append(allocator, .{
+            .ref = p.ref,
+            .glyph = glyph.*,
+            .x = p.cell_x,
+            .y = p.cell_y,
+            .w = p.cell_w,
+            .h = p.cell_h,
+            .fg = p.fg,
+            .bg = p.bg,
+        }) catch return;
+        return;
     }
 
-    switch (match) {
-        .single => |lg| {
-            // 1 glyph 이 N-cell 너비 차지 — center 정렬 (count × cw 안).
-            const ligature_glyph = font_ctx.glyphByIndex(lg.face_idx, lg.glyph_index);
-            const ligature_w: i32 = @intCast(count * @as(usize, @intCast(cw)));
-            if (ligature_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                drawGlyphBgra(memory, fb_w, fb_h, stride, base_cell_x, cell_y, ligature_w, ch, ligature_glyph, 0, fb_w);
-            } else {
-                const baseline = cell_y + ascent;
-                const glyph_advance_i32: i32 = @intCast(ligature_glyph.advance);
-                const center_off: i32 = @divFloor(ligature_w - glyph_advance_i32, 2);
-                drawGlyph(
-                    memory,
-                    fb_w,
-                    fb_h,
-                    stride,
-                    base_cell_x + center_off + ligature_glyph.bitmap_left + lg.x_offset,
-                    baseline - ligature_glyph.bitmap_top - lg.y_offset,
-                    ligature_glyph,
-                    fg,
-                    bg,
-                    0,
-                    fb_w,
-                );
-            }
-        },
-        .spacer => |sp| {
-            // N glyph 을 각 cell 에 (1-cell wide each). Fira Code 의 spacer pattern.
-            const n = @min(@as(usize, sp.count), count);
-            for (0..n) |i| {
-                const gx_cell: i32 = pad + @as(i32, @intCast(x + i)) * cw;
-                const g_glyph = font_ctx.glyphByIndex(sp.face_idx, sp.glyph_indices[i]);
-                if (g_glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                    drawGlyphBgra(memory, fb_w, fb_h, stride, gx_cell, cell_y, cw, ch, g_glyph, 0, fb_w);
-                } else {
-                    const baseline = cell_y + ascent;
-                    const glyph_advance_i32: i32 = @intCast(g_glyph.advance);
-                    const center_off: i32 = @divFloor(cw - glyph_advance_i32, 2);
-                    drawGlyph(
-                        memory,
-                        fb_w,
-                        fb_h,
-                        stride,
-                        gx_cell + center_off + g_glyph.bitmap_left + sp.x_offsets[i],
-                        baseline - g_glyph.bitmap_top - sp.y_offsets[i],
-                        g_glyph,
-                        fg,
-                        bg,
-                        0,
-                        fb_w,
-                    );
-                }
-            }
-        },
+    const advance: i32 = @intCast(glyph.advance);
+    const center_off: i32 = @divFloor(p.cell_w - advance, 2);
+    list.append(allocator, .{
+        .ref = p.ref,
+        .glyph = glyph.*,
+        .x = p.cell_x + center_off + glyph.bitmap_left + p.x_offset,
+        .y = p.cell_y + p.ascent - glyph.bitmap_top - p.y_offset,
+        .fg = p.fg,
+        .bg = p.bg,
+    }) catch return;
+}
+
+/// `block_element.BlockRect.shade` (f32) 를 [`SolidRect`] 의 패턴 코드로. 경계
+/// 판정은 이 함수 하나에만 있다.
+fn shadeCode(shade: f32) u8 {
+    if (shade < 0.5) return 0;
+    if (shade < 1.5) return 1; // U+2591 LIGHT
+    if (shade < 2.5) return 2; // U+2592 MEDIUM
+    return 3; // U+2593 DARK
+}
+
+/// 컬러(BGRA) 글리프를 대상 사각형 안에 **비율 유지 + 가운데** 로 넣은 결과.
+pub const ColorGlyphFit = struct {
+    /// 대상 사각형 좌상단 기준 offset (px).
+    off_x: i32,
+    off_y: i32,
+    w: i32,
+    h: i32,
+};
+
+/// #277 S2-4 — 컬러 글리프의 fit 계산. **CPU 와 GL 이 같은 함수를 쓴다** — emoji 가
+/// 어디에 얼마 크기로 앉는지가 두 벌이 되면 화면이 갈린다.
+///
+/// emoji bitmap 은 보통 폰트의 strike size (~109px) 라 cell 보다 크다. 비율을
+/// 유지한 채 cell 에 들어가는 최대 크기로 줄이고 가운데 정렬한다.
+pub fn colorGlyphFit(cell_w: i32, cell_h: i32, glyph_w: u32, glyph_h: u32) ?ColorGlyphFit {
+    if (cell_w <= 0 or cell_h <= 0 or glyph_w == 0 or glyph_h == 0) return null;
+    const gw_f: f64 = @floatFromInt(glyph_w);
+    const gh_f: f64 = @floatFromInt(glyph_h);
+    const scale: f64 = @min(
+        @as(f64, @floatFromInt(cell_w)) / gw_f,
+        @as(f64, @floatFromInt(cell_h)) / gh_f,
+    );
+    const w: i32 = @intFromFloat(gw_f * scale);
+    const h: i32 = @intFromFloat(gh_f * scale);
+    if (w <= 0 or h <= 0) return null;
+    return .{
+        .off_x = @divFloor(cell_w - w, 2),
+        .off_y = @divFloor(cell_h - h, 2),
+        .w = w,
+        .h = h,
+    };
+}
+
+/// [`GlyphItem`] 하나를 그린다 (CPU 경로). 터미널 셀 글리프는 셀에 클립하지 않는다 —
+/// 표면 전체에만 클립한다 (#361 에서 확정한 "번짐 보존").
+fn drawGlyphItem(memory: []u8, width: i32, height: i32, stride: i32, item: *const GlyphItem) void {
+    if (item.glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
+        drawGlyphBgra(memory, width, height, stride, item.x, item.y, item.w, item.h, &item.glyph, 0, width);
+    } else {
+        drawGlyph(memory, width, height, stride, item.x, item.y, &item.glyph, item.fg, 0, width);
     }
 }
 
@@ -2236,6 +2332,13 @@ fn applyShadowAndMask(
 /// #343 A-2 — `clip_x0` / `clip_x1` 는 가로 clip 경계 (반열림 `[x0, x1)`). 탭 제목이
 /// `tab_area` 경계에 걸칠 때 glyph 를 통째로 버리지 않고 **픽셀 단위로 잘라** 안쪽만
 /// 그린다. 그 외 호출처는 framebuffer 전체를 넘겨 이전과 같다.
+/// 알파 마스크 글리프를 프레임버퍼에 합성한다.
+///
+/// **바탕은 프레임버퍼에 이미 있는 픽셀이다** — 호출처가 넘긴 배경색이 아니다
+/// (#277 S2-4). 이전에는 "이 셀의 배경색" 을 인자로 받아 그것과 섞었는데, 글리프가
+/// 셀을 넘어 다른 배경 위로 번지거나 글리프끼리 겹치면 실제로 밑에 있는 색과 달랐다.
+/// GPU 블렌드 유닛은 언제나 프레임버퍼와 섞으므로, 두 경로를 같게 만들려면 CPU 도
+/// 그래야 한다. 겹치지 않는 보통의 셀에서는 두 값이 같으므로 결과도 같다.
 fn drawGlyph(
     memory: []u8,
     width: i32,
@@ -2245,7 +2348,6 @@ fn drawGlyph(
     draw_y: i32,
     glyph: *const font.Glyph,
     fg: ghostty.color.RGB,
-    bg: ghostty.color.RGB,
     clip_x0: i32,
     clip_x1: i32,
 ) void {
@@ -2262,16 +2364,26 @@ fn drawGlyph(
             if (px < clip_x0 or px >= clip_x1) continue;
             if (px < 0 or py < 0 or px >= width or py >= height) continue;
             const off: usize = @intCast(py * stride + px * 4);
-            const blended = blendPixel(fg, bg, alpha);
-            std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
+            const dst = ghostty.color.RGB{
+                .b = memory[off],
+                .g = memory[off + 1],
+                .r = memory[off + 2],
+            };
+            std.mem.writeInt(u32, memory[off..][0..4], blendPixel(fg, dst, alpha), .little);
         }
     }
 }
 
-/// FT_PIXEL_MODE_BGRA bitmap (premultiplied alpha) 를 cell 안 ratio 유지 scale +
-/// center fit + alpha 블렌딩으로 XRGB8888 buffer 에 그린다. emoji 색 자체 사용
-/// (fg 무시). nearest neighbor sampling — 작은 cell 에 큰 emoji bitmap (보통
-/// strike 109px) 가 들어갈 때 quality 보다 단순성 우선.
+/// FT_PIXEL_MODE_BGRA bitmap (premultiplied alpha) 를 대상 사각형 안 ratio 유지
+/// scale + center fit + alpha 블렌딩으로 XRGB8888 buffer 에 그린다. emoji 색 자체
+/// 사용 (fg 무시).
+///
+/// fit 계산은 [`colorGlyphFit`] 한 곳에 있다 — GL 경로가 정점을 만들 때 같은 함수를
+/// 쓴다.
+///
+/// **샘플링은 대상 픽셀의 중심**이다 (`(d + 0.5) × src / dst`). GL_NEAREST 텍스처
+/// 샘플링이 정확히 그 지점을 고르므로, 이 규칙이라야 두 경로가 같은 텍셀을 집는다
+/// (#277 S2-4). 이전에는 `d × src / dst` 라 반 픽셀 왼쪽·위로 치우쳐 있었다.
 /// #343 A-2 — `clip_x0` / `clip_x1` 는 가로 clip 경계 (`drawGlyph` 와 같은 계약).
 fn drawGlyphBgra(
     memory: []u8,
@@ -2287,27 +2399,19 @@ fn drawGlyphBgra(
     clip_x1: i32,
 ) void {
     if (glyph.width == 0 or glyph.height == 0 or glyph.bitmap.len == 0) return;
-    if (cell_w <= 0 or cell_h <= 0) return;
+    const fit = colorGlyphFit(cell_w, cell_h, glyph.width, glyph.height) orelse return;
 
     const gw_f: f64 = @floatFromInt(glyph.width);
     const gh_f: f64 = @floatFromInt(glyph.height);
-    const cw_f: f64 = @floatFromInt(cell_w);
-    const ch_f: f64 = @floatFromInt(cell_h);
-    const scale: f64 = @min(cw_f / gw_f, ch_f / gh_f);
-    const target_w: i32 = @intFromFloat(gw_f * scale);
-    const target_h: i32 = @intFromFloat(gh_f * scale);
-    if (target_w <= 0 or target_h <= 0) return;
-    const off_x: i32 = @divFloor(cell_w - target_w, 2);
-    const off_y: i32 = @divFloor(cell_h - target_h, 2);
+    const tw_f: f64 = @floatFromInt(fit.w);
+    const th_f: f64 = @floatFromInt(fit.h);
 
     var dy: i32 = 0;
-    while (dy < target_h) : (dy += 1) {
+    while (dy < fit.h) : (dy += 1) {
         var dx: i32 = 0;
-        while (dx < target_w) : (dx += 1) {
-            const src_xf: f64 = @as(f64, @floatFromInt(dx)) / scale;
-            const src_yf: f64 = @as(f64, @floatFromInt(dy)) / scale;
-            const src_x: u32 = @intFromFloat(src_xf);
-            const src_y: u32 = @intFromFloat(src_yf);
+        while (dx < fit.w) : (dx += 1) {
+            const src_x: u32 = @intFromFloat((@as(f64, @floatFromInt(dx)) + 0.5) * gw_f / tw_f);
+            const src_y: u32 = @intFromFloat((@as(f64, @floatFromInt(dy)) + 0.5) * gh_f / th_f);
             if (src_x >= glyph.width or src_y >= glyph.height) continue;
             const src_off: usize = (@as(usize, src_y) * glyph.width + src_x) * 4;
             const b = glyph.bitmap[src_off];
@@ -2316,8 +2420,8 @@ fn drawGlyphBgra(
             const a = glyph.bitmap[src_off + 3];
             if (a == 0) continue;
 
-            const px = cell_x + off_x + dx;
-            const py = cell_y + off_y + dy;
+            const px = cell_x + fit.off_x + dx;
+            const py = cell_y + fit.off_y + dy;
             if (px < clip_x0 or px >= clip_x1) continue;
             if (px < 0 or py < 0 or px >= fb_w or py >= fb_h) continue;
 
@@ -2326,10 +2430,11 @@ fn drawGlyphBgra(
             const dst_g = memory[dst_off + 1];
             const dst_r = memory[dst_off + 2];
             const inv: u32 = 255 - @as(u32, a);
-            // premultiplied: out = src + (1 - a) * dst.
-            const out_b: u8 = @intCast(@min(@as(u32, 255), @as(u32, b) + (@as(u32, dst_b) * inv) / 255));
-            const out_g: u8 = @intCast(@min(@as(u32, 255), @as(u32, g) + (@as(u32, dst_g) * inv) / 255));
-            const out_r: u8 = @intCast(@min(@as(u32, 255), @as(u32, r) + (@as(u32, dst_r) * inv) / 255));
+            // premultiplied: out = src + (1 - a) * dst. 반올림은 최근접 —
+            // `blendPixel` 과 같은 이유로 GPU 블렌드 유닛에 맞춘다 (#277 S2-4).
+            const out_b: u8 = @intCast(@min(@as(u32, 255), @as(u32, b) + (@as(u32, dst_b) * inv + 127) / 255));
+            const out_g: u8 = @intCast(@min(@as(u32, 255), @as(u32, g) + (@as(u32, dst_g) * inv + 127) / 255));
+            const out_r: u8 = @intCast(@min(@as(u32, 255), @as(u32, r) + (@as(u32, dst_r) * inv + 127) / 255));
             memory[dst_off] = out_b;
             memory[dst_off + 1] = out_g;
             memory[dst_off + 2] = out_r;
@@ -2337,61 +2442,41 @@ fn drawGlyphBgra(
     }
 }
 
-/// Block element rect (`U+2580..U+2595`) 를 셀 안 fraction → 절대 pixel 좌표로
-/// 옮겨 그린다. shade == 0 면 solid fg rect. shade ∈ {1,2,3} 이면 d3d11
-/// `bg_shader_src` / macOS Metal `bg_fs` 와 동일 식의 procedural dot mask 적용
-/// — 픽셀의 absolute (px, py) 로 패턴을 결정해 인접 셀 사이 끊김 없이 대각
-/// zigzag 가 이어진다. dot 픽셀만 fg 색으로 set, 나머지는 이미 그려진 배경
-/// 그대로 (셰이더의 `discard` 동등).
-fn drawBlockRect(
-    memory: []u8,
-    fb_w: i32,
-    fb_h: i32,
-    stride: i32,
-    cell_x: i32,
-    cell_y: i32,
-    cell_w: i32,
-    cell_h: i32,
-    br: block_element.BlockRect,
-    /// **`br.alpha` 를 셀 배경과 이미 합성한 색** (#353). 호출처가 공통
-    /// `ui_metrics.blendOverRgb` 로 만든다 — 이 함수는 알파를 다시 적용하지 않는다.
-    color: ghostty.color.RGB,
-) void {
-    const cw_f: f32 = @floatFromInt(cell_w);
-    const ch_f: f32 = @floatFromInt(cell_h);
-    const x0: i32 = cell_x + @as(i32, @intFromFloat(br.x0 * cw_f));
-    const y0: i32 = cell_y + @as(i32, @intFromFloat(br.y0 * ch_f));
-    const x1: i32 = cell_x + @as(i32, @intFromFloat(br.x1 * cw_f));
-    const y1: i32 = cell_y + @as(i32, @intFromFloat(br.y1 * ch_f));
-
-    if (br.shade < 0.5) {
-        // 솔리드/음영 — 합성이 끝난 색이라 불투명 rect 로 그린다 (#353). 이전에는
-        // 여기서 `blendRect` 로 `br.alpha` 를 적용했고 그 규칙(알파 8bit 버림 + 정수
-        // 버림)이 macOS·Windows 의 renderer 합성과 갈렸다.
-        rect(memory, fb_w, fb_h, stride, x0, y0, x1 - x0, y1 - y0, color);
+/// [`SolidRect`] 하나를 그린다 (CPU 경로).
+///
+/// `shade == 0` 이면 불투명 채움. `1·2·3` 이면 d3d11 `bg_shader_src` / macOS Metal
+/// `bg_fs` / GL `gl_rects` 셰이더와 **동일 식**의 procedural dot mask 를 적용한다 —
+/// 픽셀의 absolute (px, py) 로 패턴을 결정해 인접 셀 사이 끊김 없이 대각 zigzag 가
+/// 이어진다. dot 픽셀만 색을 쓰고 나머지는 이미 그려진 배경 그대로 (셰이더의
+/// `discard` 동등).
+///
+/// 색은 **알파를 이미 배경과 합성한 값** (#353) — 수집기가 공통
+/// `ui_metrics.blendOverRgb` 로 만든다. 여기서 알파를 다시 적용하지 않는다.
+fn drawSolidRect(memory: []u8, fb_w: i32, fb_h: i32, stride: i32, r: SolidRect) void {
+    if (r.shade == 0) {
+        rect(memory, fb_w, fb_h, stride, r.x, r.y, r.w, r.h, r.color);
         return;
     }
 
-    const cx0 = @max(0, x0);
-    const cy0 = @max(0, y0);
-    const cx1 = @min(fb_w, x1);
-    const cy1 = @min(fb_h, y1);
+    const cx0 = @max(0, r.x);
+    const cy0 = @max(0, r.y);
+    const cx1 = @min(fb_w, r.x + r.w);
+    const cy1 = @min(fb_h, r.y + r.h);
     if (cx1 <= cx0 or cy1 <= cy0) return;
 
-    const fg_packed = pack(color);
+    const fg_packed = pack(r.color);
     var py = cy0;
     while (py < cy1) : (py += 1) {
         var px = cx0;
         while (px < cx1) : (px += 1) {
-            const on: bool = if (br.shade < 1.5)
+            const on: bool = switch (r.shade) {
                 // U+2591 LIGHT 25% — diagonal sparse
-                ((px + 2 * py) & 3) == 0
-            else if (br.shade < 2.5)
+                1 => ((px + 2 * py) & 3) == 0,
                 // U+2592 MEDIUM 50% — checkerboard
-                ((px + py) & 1) == 0
-            else
+                2 => ((px + py) & 1) == 0,
                 // U+2593 DARK 75% — LIGHT 의 inverse (diagonal dense)
-                ((px + 2 * py) & 3) != 0;
+                else => ((px + 2 * py) & 3) != 0,
+            };
             if (!on) continue;
             const off: usize = @intCast(py * stride + px * 4);
             std.mem.writeInt(u32, memory[off..][0..4], fg_packed, .little);
@@ -2403,13 +2488,49 @@ fn pack(color: ghostty.color.RGB) u32 {
     return (@as(u32, color.r) << 16) | (@as(u32, color.g) << 8) | color.b;
 }
 
+/// 알파 합성 한 픽셀. **반올림은 최근접**이다 — 공통 [`ui_metrics.blendOverU8`]
+/// (#353) 과 같은 규칙이고, GPU 의 블렌드 유닛과도 같다.
+///
+/// `(x + 127) / 255` 가 `round(x / 255)` 와 **정확히** 같다: `x = 255k + r` 이면
+/// `r ≤ 127` 일 때 `k`, `r ≥ 128` 일 때 `k+1` 이 나온다. 정수 `x` 에 대해
+/// `x / 255 = k + 0.5` 는 성립할 수 없으므로 tie 자체가 없다.
+///
+/// 이전에는 버림(`/ 255`)이었다. 같은 화면을 GL 로 그리면 GPU 가 최근접으로
+/// 반올림해 안티에일리어싱 픽셀이 채널당 1 씩 어긋났고, 저장소 자신의 합성 규칙
+/// (`blendOverU8`) 과도 어긋나 있었다 (#277 S2-4).
 fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
     const a: u32 = alpha;
     const inv: u32 = 255 - a;
-    const r: u32 = (@as(u32, fg.r) * a + @as(u32, bg.r) * inv) / 255;
-    const g: u32 = (@as(u32, fg.g) * a + @as(u32, bg.g) * inv) / 255;
-    const b: u32 = (@as(u32, fg.b) * a + @as(u32, bg.b) * inv) / 255;
+    const r: u32 = (@as(u32, fg.r) * a + @as(u32, bg.r) * inv + 127) / 255;
+    const g: u32 = (@as(u32, fg.g) * a + @as(u32, bg.g) * inv + 127) / 255;
+    const b: u32 = (@as(u32, fg.b) * a + @as(u32, bg.b) * inv + 127) / 255;
     return (r << 16) | (g << 8) | b;
+}
+
+test "#277 S2-4 — blendPixel 은 최근접 반올림 (GPU 블렌드 유닛과 같은 규칙)" {
+    const white = ghostty.color.RGB{ .r = 255, .g = 255, .b = 255 };
+    const black = ghostty.color.RGB{ .r = 0, .g = 0, .b = 0 };
+    // alpha=128 → 255*128/255 = 128.0 정확. 버림/반올림 무관.
+    try std.testing.expectEqual(@as(u32, 0x808080), blendPixel(white, black, 128));
+    // alpha=1 → 255/255 = 1.0 정확.
+    try std.testing.expectEqual(@as(u32, 0x010101), blendPixel(white, black, 1));
+    // fg=1 bg=0 alpha=200 → 200/255 = 0.784 → 최근접 1 (버림이면 0).
+    const one = ghostty.color.RGB{ .r = 1, .g = 1, .b = 1 };
+    try std.testing.expectEqual(@as(u32, 0x010101), blendPixel(one, black, 200));
+    // 모든 (fg, bg, alpha) 조합에서 공통 `blendOverU8` 과 일치해야 한다.
+    for ([_]u8{ 0, 1, 63, 127, 128, 200, 254, 255 }) |fg_v| {
+        for ([_]u8{ 0, 7, 64, 129, 200, 255 }) |bg_v| {
+            for ([_]u8{ 0, 1, 17, 127, 128, 199, 254, 255 }) |a| {
+                const packed_rgb = blendPixel(
+                    .{ .r = fg_v, .g = fg_v, .b = fg_v },
+                    .{ .r = bg_v, .g = bg_v, .b = bg_v },
+                    a,
+                );
+                const expected = ui_metrics.blendOverU8(fg_v, bg_v, @as(f32, @floatFromInt(a)) / 255.0);
+                try std.testing.expectEqual(@as(u32, expected), packed_rgb & 0xFF);
+            }
+        }
+    }
 }
 
 test "#309 tab clipping keeps a high-index drag source reachable" {
