@@ -3002,7 +3002,10 @@ const Client = struct {
         // LINEAR 여부와 무관하게 돌린다: NVIDIA 처럼 **지금 경로는 불가한데 GLES
         // 는 가능한** 환경이 실재하고, 그 사실이 로그에 남아야 실기 없이도 데이터가
         // 쌓인다.
-        self.negotiateGlModifier();
+        // 창 크기를 아직 모르므로 작은 크기로 판정한다 — 이 단계의 목적은 "이
+        // 환경에서 GLES 렌더가 가능한가" 를 로그에 남기는 것이다. 실제로 쓸
+        // modifier 는 첫 buffer 를 만들 때 그 크기로 다시 고른다 (#367).
+        self.negotiateGlModifier(256, 256);
 
         // #277 S2 — GL 로 그린다 (기본). 켜지면 CPU 매핑이 필요 없으므로 LINEAR
         // 제약이 사라진다 — NVIDIA 처럼 LINEAR 를 공표하지 않는 환경이 이 경로로만
@@ -3165,14 +3168,21 @@ const Client = struct {
     /// 이유는 실측이다 — NVIDIA (RTX 3060 Ti / 610.43.03) 는 context 생성이 비싸서,
     /// 협상용과 렌더용을 따로 만들면 부팅이 **120 ms** 더 걸렸다 (AMD · Intel 은
     /// 30 ms 안쪽이라 안 드러났다).
-    fn negotiateGlModifier(self: *Client) void {
+    fn negotiateGlModifier(self: *Client, probe_w: u32, probe_h: u32) void {
         const gpu = if (self.gpu) |*g| g else return;
         if (self.dmabuf_mod_count == 0) return;
+        self.gl_modifier = null;
 
-        var ctx = egl.Context.create(gpu.device) orelse {
-            log.appendLine("gpu", "GLES 렌더러 불가 — EGL context 생성 실패", .{});
-            return;
-        };
+        // 이미 열어 둔 context 가 있으면 그것을 쓴다 (재협상). 없으면 만든다.
+        var owned_ctx: ?egl.Context = null;
+        if (self.gl_context == null) {
+            owned_ctx = egl.Context.create(gpu.device) orelse {
+                log.appendLine("gpu", "GLES 렌더러 불가 — EGL context 생성 실패", .{});
+                return;
+            };
+            self.gl_context = owned_ctx;
+        }
+        var ctx = self.gl_context.?;
 
         // v3 평면 목록에는 tranche 가 없다 — 전체를 한 묶음으로 본다. 그러면 아래
         // 루프가 그 묶음 안에서 드라이버에게 고르게 하므로, feedback 이 없는
@@ -3182,10 +3192,11 @@ const Client = struct {
             self.dmabuf_tranche_end_count = 1;
         }
 
-        // 창 크기가 아직 정해지기 전에 불리므로 고정 크기로 시험한다. modifier 의
-        // import / FBO 가능 여부는 크기에 의존하지 않는다.
-        const probe_w: u32 = 256;
-        const probe_h: u32 = 256;
+        // **시험 크기가 중요하다.** 압축 modifier (AMD DCC / Intel CCS) 는 표면 크기와
+        // 정렬에 제약이 있어, 작은 시험 크기에서 되던 것이 실제 창 크기에서 할당
+        // 실패할 수 있다 — AMD 실기에서 256×256 으로 고른 DCC 가 실제 창에서
+        // `gbm_bo_create_with_modifiers` 를 실패시켜 software 로 떨어졌다 (#367).
+        // 그래서 실제 크기를 아는 시점(첫 buffer 생성)에 다시 부른다.
 
         // **tranche 단위로 드라이버에게 고르게 하고 검증한다** (#367).
         //
@@ -3291,9 +3302,25 @@ const Client = struct {
         // GL 로 그릴 때는 협상된 modifier 를 쓴다 (CPU 매핑이 필요 없으므로 LINEAR
         // 가 아니어도 된다). CPU 로 그릴 때는 매핑이 되는 LINEAR 여야 한다.
         const want_modifier = if (self.gl_render_enabled) self.gl_modifier.? else gbm.MOD_LINEAR;
-        const bo = gpu.api.createWithModifier(gpu.device, want_modifier, @intCast(width), @intCast(height)) orelse {
-            self.disableGpu("gbm 할당 실패");
-            return null;
+        const bo = gpu.api.createWithModifier(gpu.device, want_modifier, @intCast(width), @intCast(height)) orelse blk: {
+            // #367 — 시험 크기에서 되던 modifier 가 실제 크기에서 실패할 수 있다
+            // (압축은 표면 크기·정렬 제약이 있다). GPU 를 통째로 포기하기 전에
+            // **이 크기로 다시 고른다** — 협상 루프가 할당까지 검증하므로, 이 크기에
+            // 안 되는 후보는 자연히 걸러진다.
+            if (!self.gl_render_enabled) {
+                self.disableGpu("gbm 할당 실패");
+                return null;
+            }
+            log.appendLine("gpu", "modifier 0x{x:0>16} 이 {d}x{d} 에서 할당 실패 — 이 크기로 재협상", .{ want_modifier, width, height });
+            self.negotiateGlModifier(@intCast(width), @intCast(height));
+            const retry_modifier = self.gl_modifier orelse {
+                self.disableGpu("이 크기에 쓸 수 있는 modifier 가 없다");
+                return null;
+            };
+            break :blk gpu.api.createWithModifier(gpu.device, retry_modifier, @intCast(width), @intCast(height)) orelse {
+                self.disableGpu("재협상 후에도 gbm 할당 실패");
+                return null;
+            };
         };
         var planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
         const plane_count = gpu.api.exportPlanes(bo, &planes) orelse {
