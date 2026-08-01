@@ -39,6 +39,16 @@ pub const GL_NEAREST: i32 = 0x2600;
 pub const GL_RENDERER: u32 = 0x1F01;
 pub const GL_VERSION: u32 = 0x1F02;
 
+pub const GL_VERTEX_SHADER: u32 = 0x8B31;
+pub const GL_FRAGMENT_SHADER: u32 = 0x8B30;
+pub const GL_COMPILE_STATUS: u32 = 0x8B81;
+pub const GL_LINK_STATUS: u32 = 0x8B82;
+pub const GL_ARRAY_BUFFER: u32 = 0x8892;
+pub const GL_STREAM_DRAW: u32 = 0x88E0;
+pub const GL_FLOAT: u32 = 0x1406;
+pub const GL_TRIANGLES: u32 = 0x0004;
+pub const GL_BLEND: u32 = 0x0BE2;
+
 const EglGetProcAddress = *const fn (name: [*:0]const u8) callconv(.c) ?*anyopaque;
 const EglGetPlatformDisplay = *const fn (platform: u32, native: ?*anyopaque, attrs: ?[*]const isize) callconv(.c) ?*anyopaque;
 const EglInitialize = *const fn (dpy: ?*anyopaque, major: ?*i32, minor: ?*i32) callconv(.c) c_uint;
@@ -69,6 +79,31 @@ const GlFlush = *const fn () callconv(.c) void;
 const GlFinish = *const fn () callconv(.c) void;
 const GlGetString = *const fn (name: u32) callconv(.c) ?[*:0]const u8;
 const GlGetError = *const fn () callconv(.c) u32;
+
+const GlCreateShader = *const fn (kind: u32) callconv(.c) u32;
+const GlShaderSource = *const fn (shader: u32, count: i32, strings: [*]const [*:0]const u8, lengths: ?[*]const i32) callconv(.c) void;
+const GlCompileShader = *const fn (shader: u32) callconv(.c) void;
+const GlGetShaderiv = *const fn (shader: u32, pname: u32, out: *i32) callconv(.c) void;
+const GlGetShaderInfoLog = *const fn (shader: u32, max: i32, len: ?*i32, out: [*]u8) callconv(.c) void;
+const GlDeleteShader = *const fn (shader: u32) callconv(.c) void;
+const GlCreateProgram = *const fn () callconv(.c) u32;
+const GlAttachShader = *const fn (program: u32, shader: u32) callconv(.c) void;
+const GlLinkProgram = *const fn (program: u32) callconv(.c) void;
+const GlGetProgramiv = *const fn (program: u32, pname: u32, out: *i32) callconv(.c) void;
+const GlGetProgramInfoLog = *const fn (program: u32, max: i32, len: ?*i32, out: [*]u8) callconv(.c) void;
+const GlDeleteProgram = *const fn (program: u32) callconv(.c) void;
+const GlUseProgram = *const fn (program: u32) callconv(.c) void;
+const GlGetUniformLocation = *const fn (program: u32, name: [*:0]const u8) callconv(.c) i32;
+const GlUniform2f = *const fn (location: i32, x: f32, y: f32) callconv(.c) void;
+const GlBindAttribLocation = *const fn (program: u32, index: u32, name: [*:0]const u8) callconv(.c) void;
+const GlGenBuffers = *const fn (n: i32, out: [*]u32) callconv(.c) void;
+const GlDeleteBuffers = *const fn (n: i32, items: [*]const u32) callconv(.c) void;
+const GlBindBuffer = *const fn (target: u32, buffer: u32) callconv(.c) void;
+const GlBufferData = *const fn (target: u32, size: isize, data: ?*const anyopaque, usage: u32) callconv(.c) void;
+const GlEnableVertexAttribArray = *const fn (index: u32) callconv(.c) void;
+const GlVertexAttribPointer = *const fn (index: u32, size: i32, kind: u32, normalized: u8, stride: i32, offset: ?*const anyopaque) callconv(.c) void;
+const GlDrawArrays = *const fn (mode: u32, first: i32, count: i32) callconv(.c) void;
+const GlDisable = *const fn (cap: u32) callconv(.c) void;
 
 pub const Api = struct {
     egl_handle: *anyopaque,
@@ -104,6 +139,31 @@ pub const Api = struct {
     finish: GlFinish,
     getString: GlGetString,
     glGetError: GlGetError,
+
+    createShader: GlCreateShader,
+    shaderSource: GlShaderSource,
+    compileShader: GlCompileShader,
+    getShaderiv: GlGetShaderiv,
+    getShaderInfoLog: GlGetShaderInfoLog,
+    deleteShader: GlDeleteShader,
+    createProgram: GlCreateProgram,
+    attachShader: GlAttachShader,
+    linkProgram: GlLinkProgram,
+    getProgramiv: GlGetProgramiv,
+    getProgramInfoLog: GlGetProgramInfoLog,
+    deleteProgram: GlDeleteProgram,
+    useProgram: GlUseProgram,
+    getUniformLocation: GlGetUniformLocation,
+    uniform2f: GlUniform2f,
+    bindAttribLocation: GlBindAttribLocation,
+    genBuffers: GlGenBuffers,
+    deleteBuffers: GlDeleteBuffers,
+    bindBuffer: GlBindBuffer,
+    bufferData: GlBufferData,
+    enableVertexAttribArray: GlEnableVertexAttribArray,
+    vertexAttribPointer: GlVertexAttribPointer,
+    drawArrays: GlDrawArrays,
+    disable: GlDisable,
 
     pub fn load() !Api {
         const egl_handle = std.c.dlopen("libEGL.so.1", .{ .LAZY = true }) orelse return error.EglLibraryMissing;
@@ -153,6 +213,30 @@ pub const Api = struct {
             .finish = lookup(gles_handle, GlFinish, "glFinish") orelse return error.GlSymbolMissing,
             .getString = lookup(gles_handle, GlGetString, "glGetString") orelse return error.GlSymbolMissing,
             .glGetError = lookup(gles_handle, GlGetError, "glGetError") orelse return error.GlSymbolMissing,
+            .createShader = lookup(gles_handle, GlCreateShader, "glCreateShader") orelse return error.GlSymbolMissing,
+            .shaderSource = lookup(gles_handle, GlShaderSource, "glShaderSource") orelse return error.GlSymbolMissing,
+            .compileShader = lookup(gles_handle, GlCompileShader, "glCompileShader") orelse return error.GlSymbolMissing,
+            .getShaderiv = lookup(gles_handle, GlGetShaderiv, "glGetShaderiv") orelse return error.GlSymbolMissing,
+            .getShaderInfoLog = lookup(gles_handle, GlGetShaderInfoLog, "glGetShaderInfoLog") orelse return error.GlSymbolMissing,
+            .deleteShader = lookup(gles_handle, GlDeleteShader, "glDeleteShader") orelse return error.GlSymbolMissing,
+            .createProgram = lookup(gles_handle, GlCreateProgram, "glCreateProgram") orelse return error.GlSymbolMissing,
+            .attachShader = lookup(gles_handle, GlAttachShader, "glAttachShader") orelse return error.GlSymbolMissing,
+            .linkProgram = lookup(gles_handle, GlLinkProgram, "glLinkProgram") orelse return error.GlSymbolMissing,
+            .getProgramiv = lookup(gles_handle, GlGetProgramiv, "glGetProgramiv") orelse return error.GlSymbolMissing,
+            .getProgramInfoLog = lookup(gles_handle, GlGetProgramInfoLog, "glGetProgramInfoLog") orelse return error.GlSymbolMissing,
+            .deleteProgram = lookup(gles_handle, GlDeleteProgram, "glDeleteProgram") orelse return error.GlSymbolMissing,
+            .useProgram = lookup(gles_handle, GlUseProgram, "glUseProgram") orelse return error.GlSymbolMissing,
+            .getUniformLocation = lookup(gles_handle, GlGetUniformLocation, "glGetUniformLocation") orelse return error.GlSymbolMissing,
+            .uniform2f = lookup(gles_handle, GlUniform2f, "glUniform2f") orelse return error.GlSymbolMissing,
+            .bindAttribLocation = lookup(gles_handle, GlBindAttribLocation, "glBindAttribLocation") orelse return error.GlSymbolMissing,
+            .genBuffers = lookup(gles_handle, GlGenBuffers, "glGenBuffers") orelse return error.GlSymbolMissing,
+            .deleteBuffers = lookup(gles_handle, GlDeleteBuffers, "glDeleteBuffers") orelse return error.GlSymbolMissing,
+            .bindBuffer = lookup(gles_handle, GlBindBuffer, "glBindBuffer") orelse return error.GlSymbolMissing,
+            .bufferData = lookup(gles_handle, GlBufferData, "glBufferData") orelse return error.GlSymbolMissing,
+            .enableVertexAttribArray = lookup(gles_handle, GlEnableVertexAttribArray, "glEnableVertexAttribArray") orelse return error.GlSymbolMissing,
+            .vertexAttribPointer = lookup(gles_handle, GlVertexAttribPointer, "glVertexAttribPointer") orelse return error.GlSymbolMissing,
+            .drawArrays = lookup(gles_handle, GlDrawArrays, "glDrawArrays") orelse return error.GlSymbolMissing,
+            .disable = lookup(gles_handle, GlDisable, "glDisable") orelse return error.GlSymbolMissing,
         };
     }
 
