@@ -131,8 +131,9 @@ scale을 적용한 최종 cell 정수 크기는 Linux · macOS · Windows 모두
 
 **탭 gap / hover inset**: `TAB_GAP_PT`를 기준으로 각 탭 배경은 좌우에 절반인
 1pt, 상하에 2pt를 inset으로 사용한다. 컨트롤 hover 박스는 네 방향에 2pt를
-사용한다. 세 host 모두 현재 화면 scale을 곱하며, Linux software renderer는
-최종 physical pixel 좌표에서 가장 가까운 정수로 반올림한다.
+사용한다. 세 host 모두 현재 화면 scale을 곱하며, Linux는
+최종 physical pixel 좌표에서 가장 가까운 정수로 반올림한다 (CPU · GPU 두 경로가
+같은 `tab_chrome.snap` 결과를 쓴다).
 
 **탭 제목 font 분리**: 탭 제목은 terminal의
 `font.size_point`와 무관한 고정 13 logical pt를 쓴다. 같은 font family/fallback
@@ -1058,7 +1059,8 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | ZWJ family / wide cluster emoji 다중 paste 시 줄바꿈 안 됨 ([#141](https://github.com/ensky0/tildaz/issues/141)) | `Cmd+V` 길게 누름 (key repeat ~30회/초) 으로 `👨‍👩‍👧` 같은 ZWJ family 를 flood 시 같은 줄에 덮어써짐. 1 회 paste 는 정상. | ghostty 의 Mode 2027 (grapheme cluster) 가 cluster = 2 cells 로 처리, bash 3.2 의 wcwidth 는 codepoint sum (man 2 + ZWJ 0 + woman 2 + ZWJ 0 + girl 2 = 6 cells) 으로 계산 → cell 4 mismatch/family. flood 시 bash 의 internal cursor 가 자기 wrap 임계 도달 → `\r` (CR) 출력 → 우리 grid col 0 으로 reset → 같은 자리 덮어써짐. fix path A (Mode 2027 OFF) 는 family ligature 깨짐, B (cluster cell width = codepoint sum + visual ligature 합성) 는 ghostty design 변경 필요 — 둘 다 trade-off 큼. 일반 사용 (1 회 paste) 무영향이라 known limitation 등재. zsh 5.x 등 cluster-aware shell 사용 시 자연 해소. |
 | Fira Code `||=` 의 `=` 분리 갭 — 모든 shaper ([#189](https://github.com/ensky0/tildaz/issues/189) 후속) | `||=` 시퀀스에서 `||` 부분만 합쳐지고 마지막 `=` 가 자연 글리프로 분리되어 시각 갭. 다른 3-char ligature (`===`, `==>`, `<==`, `<=>`, `-->`, `<--` 등) 는 정상 합성. | Fira Code 6.x 의 calt 룰 chain 호환성 문제 — `=` 를 `equal_end.seq` 로 substitute 하는 룰이 mac (CoreText) / Linux (HarfBuzz) / Windows (DirectWrite) 모든 shaper 에서 적용 안 됨. 모든 platform 동일이라 cross-platform 동등성 유지. 폰트 update 또는 다른 폰트로 우회 외 우리 코드 fix 불가. |
 | KDE Plasma floating dock 가림 ([#206](https://github.com/ensky0/tildaz/issues/206)) — Linux, platform-limit | KDE Plasma 6 의 *floating panel* (떠다니는 dock) 이 인접 창에 따라 화면 안쪽으로 떠오르면, 우리 layer-surface 하단이 그 영역을 덮어 dock 일부가 가려짐. dock 이 가장자리에 anchored 인 동안엔 KWin 이 그만큼 줄인 크기를 줘서 충돌 없음. | client (tildaz) 가 정공으로 해결 불가 — compositor (KWin) 가 floating panel 을 drop-down 출현에 **defloat** 시켜야 하는데 layer-shell 에 그 트리거가 없음(아래 상세). KDE 공식 yakuake 도 동일 미해결([KDE Bug 491006](https://bugs.kde.org/show_bug.cgi?id=491006)). **회피책 — panel 의 *Floating* 옵션을 끄면(anchored 고정) 충돌 없음.** |
-| Linux software `wl_shm` renderer 는 임시 | Linux 는 현재 software-only `wl_shm` 렌더러를 쓴다 (Windows D3D11 / macOS Metal 과 달리 GPU 렌더러 아님). | bring-up 용 경로 — PTY / parser / resize / frame lifecycle 검증이 목적. 향후 EGL/OpenGL ES 경로로 교체 예정 (ARCHITECTURE 의 Linux Pipeline / Open Work 참조). 사용자 영향은 없음(렌더 결과 동일). |
+| Linux GPU 렌더의 안티에일리어싱 ±1 ([#277](https://github.com/ensky0/tildaz/issues/277)) | Linux 도 GPU 렌더러(GBM + dma-buf + OpenGL ES)를 기본으로 쓴다. software `wl_shm` 은 영구 fallback. 두 경로의 화면은 같지만, **회색 배경 위 텍스트의 안티에일리어싱 픽셀이 채널당 최대 1** 다르다. | GPU 가 premultiplied source 를 render target 정밀도(8bit)로 양자화한 뒤 블렌드해 반올림이 두 번 일어나는 **하드웨어 동작** — [#353](https://github.com/ensky0/tildaz/issues/353) 이 Windows D3D11 에서 확인한 것과 같고 우리 코드로 못 맞춘다. macOS · Windows 도 GPU 라 같은 성질을 가지므로 세 platform 이 같은 쪽으로 정렬된 결과다 (2026-08-02 결정). 검은 배경에서는 dst 항이 0 이라 나타나지 않는다. |
+| Linux GPU 렌더의 컬러 emoji 축소 필터 ([#277](https://github.com/ensky0/tildaz/issues/277)) | GPU 경로는 컬러 emoji 를 **bilinear** 로 축소하고 software 경로는 nearest 로 축소한다 — 같은 emoji 가 두 경로에서 미세하게 다르게 보인다. | emoji bitmap 은 폰트 strike (~109px) 라 cell 로 크게 축소되는데 nearest 는 텍셀을 통째로 버려 가장자리가 거칠다. GPU 가 공짜로 해 주는 보간을 포기할 이유가 없어 화질을 택했다 (2026-08-02 결정, ghostty · foot 도 같은 선택). software 경로는 픽셀당 보간이 CPU 비용이라 nearest 를 유지한다. |
 
 > **한영 jamo replay 상세:**
 >
