@@ -106,8 +106,34 @@ fn scaleFactor(scale_num: u32, scale_den: u32) f32 {
     return @as(f32, @floatFromInt(scale_num)) / @as(f32, @floatFromInt(scale_den));
 }
 
+/// #277 S2-3 — 셀 배경 사각형 하나. CPU 경로와 GL 경로가 **같은 목록**을 소비해
+/// "어느 셀에 어떤 배경색" 판단이 한 곳에만 있게 한다.
+///
+/// 색을 `ui_rect.Rect` 의 `[4]f32` 가 아니라 u8 로 들고 있는 이유: 셀 색은
+/// ghostty 가 u8 로 주는 원본이다. f32 로 통일하면 CPU 경로가 u8 → f32 → u8 왕복을
+/// 하게 되고, `255 * (k / 255)` 가 f32 에서 `k` 보다 미세하게 작을 수 있어 truncate
+/// 시 1 비트가 깎인다. GL 은 f32 를 원하므로 그쪽에서만 한 방향으로 변환한다.
+/// (chrome 색은 반대로 f32 가 원본이라 `ui_rect.Rect` 를 그대로 쓴다.)
+pub const SolidRect = struct {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: ghostty.color.RGB,
+};
+
+/// #277 S2-3 — GL 경로가 한 프레임을 그리는 데 필요한 기술. `buildGlFrame` 이
+/// 돌려준다. host 는 `ghostty` 를 import 하지 않으므로 타입에 이름을 준다.
+pub const GlFrame = struct {
+    background: ghostty.color.RGB,
+    rects: []const SolidRect,
+};
+
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
+    /// #277 S2-3 — 프레임마다 재사용하는 셀 배경 사각형 목록. 매 frame
+    /// `clearRetainingCapacity` 로 비우므로 할당은 첫 프레임에만 일어난다.
+    solid_rects: std.ArrayList(SolidRect) = .{},
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
     dialog_font_ctx: font.Context,
@@ -222,6 +248,7 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
+        self.solid_rects.deinit(allocator);
         self.render_state.deinit(allocator);
         self.dialog_title_font_ctx.deinit();
         self.dialog_font_ctx.deinit();
@@ -382,6 +409,79 @@ pub const Renderer = struct {
         return @intCast(self.font_ctx.cell_height_px);
     }
 
+    /// #277 S2-3 — GL 경로용 프레임 준비. `render_state` 를 갱신하고 셀 배경 사각형
+    /// 목록을 만들어 돌려준다. 표면 배경색도 함께 준다 (GL 은 `glClear` 로 칠한다).
+    ///
+    /// CPU 경로의 `paint` 과 **같은 `collectCellBgRects` 를 쓴다** — 그게 두 경로가
+    /// 갈리지 않는 이유다. 텍스트 · chrome 은 아직 여기 없다 (S2-4 에서 추가).
+    ///
+    /// render_state 갱신이 실패하면 배경색만 돌려준다 — 그 프레임은 빈 화면이지만
+    /// CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
+    pub fn buildGlFrame(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        terminal: *ghostty.Terminal,
+        theme: *const themes.Theme,
+        tab_count: usize,
+    ) GlFrame {
+        self.render_state.update(allocator, terminal) catch {
+            self.solid_rects.clearRetainingCapacity();
+            return .{ .background = theme.background, .rects = &.{} };
+        };
+        self.collectCellBgRects(allocator, self.tabBarHeightPx(tab_count));
+        return .{ .background = self.render_state.colors.background, .rects = self.solid_rects.items };
+    }
+
+    /// #277 S2-3 / #361 — 셀 배경 사각형 목록을 만든다. `self.solid_rects` 에 쌓고
+    /// 호출처가 그린다 (CPU 는 `rect()`, GL 은 정점 배치).
+    ///
+    /// **두 경로가 이 함수를 공유하는 것이 요점이다.** "어느 셀에 어떤 배경색" 판단이
+    /// 두 벌이 되면 화면이 조용히 갈린다 — GL 렌더러를 별도로 쓰지 않는 이유다.
+    ///
+    /// 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지 않는다. 표면 전체가
+    /// 이미 `fill` 로 배경색이라 덧그릴 필요가 없다.
+    ///
+    /// `render_state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
+    /// 할당 실패는 조용히 무시한다 — 그 프레임의 배경 일부가 빠질 뿐이고, 다음
+    /// 프레임에 다시 시도한다. 여기서 화면 전체를 포기하는 것보다 낫다.
+    pub fn collectCellBgRects(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
+        self.solid_rects.clearRetainingCapacity();
+
+        const colors = self.render_state.colors;
+        const cw = self.cellWidth();
+        const ch = self.cellHeight();
+        const pad = self.paddingPx();
+        const rows = self.render_state.rows;
+        const cols = self.render_state.cols;
+        const row_slice = self.render_state.row_data.slice();
+        const all_cells = row_slice.items(.cells);
+        const all_sels = row_slice.items(.selection);
+
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            var x: usize = 0;
+            while (x < cols and x < raws.len) : (x += 1) {
+                const raw = raws[x];
+                if (raw.wide == .spacer_tail) continue;
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                if (!(is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null)) continue;
+                self.solid_rects.append(allocator, .{
+                    .x = pad + @as(i32, @intCast(x)) * cw,
+                    .y = tab_bar_h + pad + @as(i32, @intCast(y)) * ch,
+                    .w = if (raw.wide == .wide) cw * 2 else cw,
+                    .h = ch,
+                    .color = resolveBg(style, &raw, &colors, is_selected),
+                }) catch return;
+            }
+        }
+    }
+
     pub fn paint(
         self: *Renderer,
         allocator: std.mem.Allocator,
@@ -429,41 +529,11 @@ pub const Renderer = struct {
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
 
-        // #361 — 셀 배경을 **전부 먼저** 그린다.
-        //
-        // 이전에는 셀마다 배경 → 텍스트를 번갈아 그렸다. 그래서 같은 줄에서 뒤
-        // 셀의 배경이 나중에 그려져 앞 글리프의 오른쪽으로 삐져나온 부분을 지웠고,
-        // 윗줄은 이미 그려진 뒤라 위로 삐져나온 부분은 남았다 — 방향에 따라 결과가
-        // 갈리는 비대칭이었다 (실측: 오른쪽 잉크 0 픽셀 / 위쪽 12 픽셀).
-        //
-        // macOS 는 배경 인스턴스를 모아 그린 뒤 텍스트를 그려 번짐이 남는다. 같은
-        // 내용이 두 platform 에서 다르게 보이던 것이라 (SPEC §0 #1) 두 패스로
-        // 바꿔 macOS 에 맞춘다 (2026-08-01 사용자 결정, #361 안 A).
-        //
-        // 터미널 셀 글리프는 셀에 클립되지 않는다 (`clip_x0 = 0, clip_x1 = width`)
-        // — 그래서 이 순서가 결과를 바꾼다.
-        for (0..rows) |y| {
-            if (y >= all_cells.len) break;
-            const cell_slice = all_cells[y].slice();
-            const raws = cell_slice.items(.raw);
-            const styles = cell_slice.items(.style);
-            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
-            var x: usize = 0;
-            while (x < cols and x < raws.len) : (x += 1) {
-                const raw = raws[x];
-                if (raw.wide == .spacer_tail) continue;
-                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
-                const x16: u16 = @intCast(x);
-                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                // 배경 사각형을 그리는 조건은 아래 텍스트 패스와 같아야 한다 —
-                // 평범한 셀은 이미 `fill` 로 칠해진 배경 그대로 둔다.
-                if (!(is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null)) continue;
-                const bg = resolveBg(style, &raw, &colors, is_selected);
-                const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
-                const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
-                const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
-                rect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, bg);
-            }
+        // #361 — 셀 배경을 **전부 먼저** 그린다. 목록은 `collectCellBgRects` 가
+        // 만들고 (GL 경로도 같은 목록을 쓴다) 여기서는 그리기만 한다.
+        self.collectCellBgRects(allocator, tab_bar_h);
+        for (self.solid_rects.items) |r| {
+            rect(memory, width, height, stride, r.x, r.y, r.w, r.h, r.color);
         }
 
         for (0..rows) |y| {
