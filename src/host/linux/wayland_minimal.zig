@@ -886,6 +886,22 @@ const Client = struct {
     // modifier 를 고르는 데 쓴다 (LINEAR 를 공표하지 않는 환경 — NVIDIA 실측 — 대응).
     dmabuf_mods: [max_dmabuf_mods]u64 = undefined,
     dmabuf_mod_count: usize = 0,
+    // #277 S2-6 — dmabuf feedback (v4+). compositor 가 지원 목록을 **선호 내림차순
+    // tranche** 로 준다 — v3 의 평면 `modifier` 목록에는 순서 정의가 아예 없어서
+    // "처음 통과하는 것" 이 벤더마다 다른 품질의 선택이 됐다 (Intel 실기에서 LINEAR).
+    dmabuf_feedback_id: u32 = 0,
+    /// 후보 목록이 **이미 선호 순**인가 (feedback 경로). v3 평면 목록은 순서가
+    /// 없으므로 false — 그때만 우리가 tiled 우선 규칙을 적용한다.
+    dmabuf_mods_ordered: bool = false,
+    /// `format_table` 로 받은 mmap. 항목은 16 byte {u32 format, 4 pad, u64 modifier}.
+    dmabuf_format_table: ?[]align(std.heap.page_size_min) const u8 = null,
+    dmabuf_main_device: u64 = 0,
+    /// 현재 수신 중인 tranche 의 상태. `tranche_done` 에서 확정한다.
+    dmabuf_tranche_device: u64 = 0,
+    dmabuf_tranche_scanout: bool = false,
+    dmabuf_tranche_mods: [max_dmabuf_mods]u64 = undefined,
+    dmabuf_tranche_count: usize = 0,
+    dmabuf_tranche_index: u32 = 0,
     // #277 — 위 후보 중 "할당 → EGLImage import → FBO complete" 까지 통과한 첫
     // modifier. null 이면 이 환경에서는 GLES 렌더러를 쓸 수 없다는 뜻이다.
     // 지금은 판정과 로그만 하고 실제 그리기에는 아직 쓰지 않는다.
@@ -1589,19 +1605,25 @@ const Client = struct {
         try self.bind(self.caps.shm.name, "wl_shm", 1, self.shm_id);
         self.wm_base_id = self.allocId();
         try self.bind(self.caps.xdg_wm_base.name, "xdg_wm_base", 1, self.wm_base_id);
-        // #277 — GPU (dma-buf) 경로. v3 으로 bind 해서 `format` / `modifier`
-        // event 로 지원 modifier 를 받는다. v4+ 는 그 event 가 deprecated 이고
-        // `get_default_feedback` 을 써야 하는데, v3 bind 는 v4/v5 compositor 에서도
-        // 허용되므로 (bind 는 advertise 된 버전 이하면 된다) 한 경로로 전부 덮인다.
-        // feedback 경로 (main device 선택 등) 는 이후 단계에서 다룬다.
+        // #277 — GPU (dma-buf) 경로. **v4 가 있으면 v4 로 bind 하고 feedback 을 쓴다.**
+        // v4 부터 `format` / `modifier` event 는 deprecated 이고 compositor 가 보내지
+        // *않으므로* (프로토콜 명시), v4 로 bind 하면 feedback 이 유일한 정보원이다.
+        // 그 대신 tranche 가 **선호 내림차순**으로 오고 scanout 힌트가 붙는다 —
+        // v3 의 평면 목록에는 순서 정의가 없어서 우리가 임의로 골라야 했다.
         if (self.caps.linux_dmabuf.name != 0) {
+            const version = @min(self.caps.linux_dmabuf.version, 4);
             self.linux_dmabuf_id = self.allocId();
             try self.bind(
                 self.caps.linux_dmabuf.name,
                 "zwp_linux_dmabuf_v1",
-                @min(self.caps.linux_dmabuf.version, 3),
+                version,
                 self.linux_dmabuf_id,
             );
+            if (version >= 4) {
+                // zwp_linux_dmabuf_v1.get_default_feedback (opcode 2, since v4).
+                self.dmabuf_feedback_id = self.allocId();
+                try self.sendNewId(self.linux_dmabuf_id, 2, self.dmabuf_feedback_id);
+            }
         }
         if (self.caps.seat.name != 0) {
             self.seat_id = self.allocId();
@@ -3044,6 +3066,89 @@ const Client = struct {
         return !std.mem.eql(u8, value, "0");
     }
 
+    /// wayland array 인자에서 `dev_t` (8 byte) 를 읽는다. 앞 4 byte 는 배열 크기다.
+    fn readDevT(payload: []const u8) u64 {
+        if (payload.len < 12) return 0;
+        const size = readU32(payload[0..4]);
+        if (size < 8) return 0;
+        return (@as(u64, readU32(payload[8..12])) << 32) | @as(u64, readU32(payload[4..8]));
+    }
+
+    /// `tranche_formats` — 표 index 배열을 modifier 로 풀어 현재 tranche 에 모은다.
+    /// 표가 없으면 (format_table 이 안 왔거나 mmap 실패) 아무것도 못 한다.
+    fn collectTrancheFormats(self: *Client, payload: []const u8) void {
+        const table = self.dmabuf_format_table orelse return;
+        if (payload.len < 4) return;
+        const size: usize = @intCast(readU32(payload[0..4]));
+        const body = payload[4..];
+        const count = @min(size, body.len) / 2;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const index: usize = @as(usize, body[i * 2]) | (@as(usize, body[i * 2 + 1]) << 8);
+            const entry = index * 16;
+            if (entry + 16 > table.len) continue;
+            const format = std.mem.readInt(u32, table[entry..][0..4], .little);
+            if (format != gbm.FORMAT_ARGB8888) continue;
+            const modifier = std.mem.readInt(u64, table[entry + 8 ..][0..8], .little);
+            if (modifier == gbm.MOD_INVALID) continue; // 명시 modifier 를 넘길 수 없다.
+            if (self.dmabuf_tranche_count >= max_dmabuf_mods) return;
+            self.dmabuf_tranche_mods[self.dmabuf_tranche_count] = modifier;
+            self.dmabuf_tranche_count += 1;
+        }
+    }
+
+    /// `tranche_done` — 모인 modifier 를 후보 목록 **뒤에** 붙인다. tranche 자체가
+    /// 선호 내림차순이므로 순서를 그대로 보존하면 된다.
+    ///
+    /// 다른 device 를 겨냥한 tranche 는 건너뛴다 — 우리는 한 device 에만 할당한다.
+    /// tranche 안에서는 모든 항목의 선호가 같으므로 (프로토콜 명시) 거기서만
+    /// tiled 를 LINEAR 보다 앞에 둔다: GPU 렌더 타깃은 tiled 가 유리하고
+    /// (https://docs.mesa3d.org/isl/tiling.html), GL 이 그리는 지금은 CPU 매핑이
+    /// 필요 없어 LINEAR 를 고를 이유가 없다.
+    fn flushDmabufTranche(self: *Client) void {
+        defer {
+            self.dmabuf_tranche_count = 0;
+            self.dmabuf_tranche_scanout = false;
+            self.dmabuf_tranche_index += 1;
+        }
+        if (self.dmabuf_main_device != 0 and self.dmabuf_tranche_device != self.dmabuf_main_device) {
+            log.appendLineVerbose("gpu", "dmabuf tranche {d} 건너뜀 — 다른 device (0x{x} != 0x{x})", .{
+                self.dmabuf_tranche_index,
+                self.dmabuf_tranche_device,
+                self.dmabuf_main_device,
+            });
+            return;
+        }
+        for ([2]bool{ false, true }) |take_linear| {
+            for (self.dmabuf_tranche_mods[0..self.dmabuf_tranche_count]) |modifier| {
+                if ((modifier == gbm.MOD_LINEAR) != take_linear) continue;
+                if (modifier == gbm.MOD_LINEAR) self.dmabuf_linear_supported = true;
+                if (self.dmabuf_mod_count >= max_dmabuf_mods) return;
+                self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
+                self.dmabuf_mod_count += 1;
+            }
+        }
+        log.appendLineVerbose("gpu", "dmabuf tranche {d}: ARGB8888 {d} 종{s}", .{
+            self.dmabuf_tranche_index,
+            self.dmabuf_tranche_count,
+            if (self.dmabuf_tranche_scanout) @as([]const u8, " (scanout)") else "",
+        });
+    }
+
+    /// `done` — 표는 더 필요 없다. 결과를 한 줄로 남긴다.
+    fn finishDmabufFeedback(self: *Client) void {
+        self.dmabuf_mods_ordered = self.dmabuf_mod_count > 0;
+        if (self.dmabuf_format_table) |table| {
+            posix.munmap(@constCast(table));
+            self.dmabuf_format_table = null;
+        }
+        log.appendLine("gpu", "dmabuf feedback — main_device=0x{x} tranche {d} 개, ARGB8888 후보 {d} 종 (선호 순)", .{
+            self.dmabuf_main_device,
+            self.dmabuf_tranche_index,
+            self.dmabuf_mod_count,
+        });
+    }
+
     /// 협상에 쓴 EGL context 를 **버리지 않고 `self.gl_context` 에 남긴다.** 호출처가
     /// GL 을 켜면 그대로 쓰고, 안 켜면 정리한다.
     ///
@@ -3064,20 +3169,41 @@ const Client = struct {
         const probe_w: u32 = 256;
         const probe_h: u32 = 256;
 
-        for (self.dmabuf_mods[0..self.dmabuf_mod_count]) |modifier| {
-            const bo = gpu.api.createWithModifier(gpu.device, modifier, probe_w, probe_h) orelse continue;
-            defer gpu.api.destroyBo(bo);
-            const fd = gpu.api.exportFd(bo) orelse continue;
-            defer posix.close(fd);
-            const target = ctx.importAsTarget(fd, bo) orelse continue;
-            ctx.destroyTarget(target);
-            self.gl_modifier = modifier;
-            break;
+        // **목록 순서대로** 시험하고 처음 통과하는 것을 쓴다. 그 순서를 누가 정하는지가
+        // 핵심이다:
+        //
+        //   - feedback (v4+) 경로면 **compositor 가 정한 선호 내림차순**이다. 그대로
+        //     따른다 — compositor 는 자기가 무엇을 direct scanout 할 수 있는지 안다.
+        //   - v3 평면 목록이면 **순서 정의가 아예 없다** (프로토콜 명시). 그때만
+        //     `flushDmabufTranche` 와 같은 규칙으로 tiled 를 LINEAR 앞에 둔다 —
+        //     GPU 렌더 타깃은 tiled 가 유리하고 (https://docs.mesa3d.org/isl/tiling.html
+        //     — linear 는 *"very bad cache locality"*), GL 이 그리는 지금은 CPU
+        //     매핑이 필요 없어 LINEAR 를 고를 이유가 사라졌다. Intel 실기에서 그
+        //     "순서 없는 목록의 첫 항목" 이 LINEAR 였다.
+        //
+        // 어느 경우든 LINEAR 는 후보로 남는다 — 그것만 통과하는 환경이 있을 수 있고,
+        // 동작하는 것이 빠른 것보다 먼저다.
+        const passes: []const bool = if (self.dmabuf_mods_ordered) &.{true} else &.{ false, true };
+        for (passes) |allow_linear| {
+            for (self.dmabuf_mods[0..self.dmabuf_mod_count]) |modifier| {
+                if (!self.dmabuf_mods_ordered and (modifier == gbm.MOD_LINEAR) != allow_linear) continue;
+                const bo = gpu.api.createWithModifier(gpu.device, modifier, probe_w, probe_h) orelse continue;
+                defer gpu.api.destroyBo(bo);
+                const fd = gpu.api.exportFd(bo) orelse continue;
+                defer posix.close(fd);
+                const target = ctx.importAsTarget(fd, bo) orelse continue;
+                ctx.destroyTarget(target);
+                self.gl_modifier = modifier;
+                break;
+            }
+            if (self.gl_modifier != null) break;
         }
 
         if (self.gl_modifier) |modifier| {
-            log.appendLine("gpu", "GLES 렌더러 가능 — modifier=0x{x:0>16} renderer={s} version={s}", .{
+            log.appendLine("gpu", "GLES 렌더러 가능 — modifier=0x{x:0>16}{s}{s} renderer={s} version={s}", .{
                 modifier,
+                if (modifier == gbm.MOD_LINEAR) @as([]const u8, " (LINEAR)") else " (tiled)",
+                if (self.dmabuf_mods_ordered) @as([]const u8, " feedback-선호") else " v3-목록",
                 ctx.rendererName(),
                 ctx.versionName(),
             });
@@ -3889,6 +4015,48 @@ const Client = struct {
                     self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
                     self.dmabuf_mod_count += 1;
                 }
+            }
+            return;
+        }
+        // #277 S2-6 — zwp_linux_dmabuf_feedback_v1 (v4+).
+        //
+        //   0 done                   모든 파라미터 전송 끝
+        //   1 format_table  (fd, u32 size)      16 byte 항목 표 (fd 는 cmsg 로)
+        //   2 main_device   (array dev_t)
+        //   3 tranche_done                      현재 tranche 확정
+        //   4 tranche_target_device (array dev_t)
+        //   5 tranche_formats (array of u16)    표의 index 목록
+        //   6 tranche_flags (uint)              bit 0 = scanout
+        //
+        // tranche 는 **선호 내림차순**으로 온다. 우리는 그 순서를 그대로
+        // `dmabuf_mods` 에 쌓아 협상이 앞에서부터 시험하게 한다.
+        if (self.dmabuf_feedback_id != 0 and id == self.dmabuf_feedback_id) {
+            switch (opcode) {
+                0 => self.finishDmabufFeedback(),
+                1 => {
+                    const fd = self.takeReceivedFd() catch return;
+                    defer posix.close(fd);
+                    if (payload.len < 4) return;
+                    const size: usize = @intCast(readU32(payload[0..4]));
+                    if (size == 0) return;
+                    if (self.dmabuf_format_table) |old| posix.munmap(@constCast(old));
+                    self.dmabuf_format_table = posix.mmap(
+                        null,
+                        size,
+                        linux.PROT.READ,
+                        .{ .TYPE = .PRIVATE },
+                        fd,
+                        0,
+                    ) catch null;
+                },
+                2 => self.dmabuf_main_device = readDevT(payload),
+                3 => self.flushDmabufTranche(),
+                4 => self.dmabuf_tranche_device = readDevT(payload),
+                5 => self.collectTrancheFormats(payload),
+                6 => if (payload.len >= 4) {
+                    self.dmabuf_tranche_scanout = (readU32(payload[0..4]) & 1) != 0;
+                },
+                else => {},
             }
             return;
         }
