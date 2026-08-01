@@ -48,6 +48,7 @@ pub const GL_STREAM_DRAW: u32 = 0x88E0;
 pub const GL_FLOAT: u32 = 0x1406;
 pub const GL_TRIANGLES: u32 = 0x0004;
 pub const GL_BLEND: u32 = 0x0BE2;
+pub const GL_SCISSOR_TEST: u32 = 0x0C11;
 
 // 텍스처 — GLES2 코어 포맷만 쓴다. `GL_R8` 은 GLES3 이상이라 쓰지 않는다:
 // grayscale 글리프는 `GL_ALPHA` (1 byte, 셰이더에서 `.a` 로 읽는다), 컬러 emoji 는
@@ -125,6 +126,7 @@ const GlDrawArrays = *const fn (mode: u32, first: i32, count: i32) callconv(.c) 
 const GlEnable = *const fn (cap: u32) callconv(.c) void;
 const GlDisable = *const fn (cap: u32) callconv(.c) void;
 const GlColorMask = *const fn (r: u8, g: u8, b: u8, a: u8) callconv(.c) void;
+const GlScissor = *const fn (x: i32, y: i32, w: i32, h: i32) callconv(.c) void;
 const GlTexImage2D = *const fn (target: u32, level: i32, internal: i32, w: i32, h: i32, border: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
 const GlTexSubImage2D = *const fn (target: u32, level: i32, x: i32, y: i32, w: i32, h: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
 const GlPixelStorei = *const fn (pname: u32, param: i32) callconv(.c) void;
@@ -193,6 +195,7 @@ pub const Api = struct {
     enable: GlEnable,
     disable: GlDisable,
     colorMask: GlColorMask,
+    scissor: GlScissor,
     texImage2D: GlTexImage2D,
     texSubImage2D: GlTexSubImage2D,
     pixelStorei: GlPixelStorei,
@@ -274,6 +277,7 @@ pub const Api = struct {
             .enable = lookup(gles_handle, GlEnable, "glEnable") orelse return error.GlSymbolMissing,
             .disable = lookup(gles_handle, GlDisable, "glDisable") orelse return error.GlSymbolMissing,
             .colorMask = lookup(gles_handle, GlColorMask, "glColorMask") orelse return error.GlSymbolMissing,
+            .scissor = lookup(gles_handle, GlScissor, "glScissor") orelse return error.GlSymbolMissing,
             .texImage2D = lookup(gles_handle, GlTexImage2D, "glTexImage2D") orelse return error.GlSymbolMissing,
             .texSubImage2D = lookup(gles_handle, GlTexSubImage2D, "glTexSubImage2D") orelse return error.GlSymbolMissing,
             .pixelStorei = lookup(gles_handle, GlPixelStorei, "glPixelStorei") orelse return error.GlSymbolMissing,
