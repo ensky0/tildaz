@@ -27,6 +27,7 @@ const freetype = @import("../../font/linux/freetype.zig");
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const software_terminal = @import("software_terminal.zig");
 const tab_icons = @import("../../tab_icons.zig");
+const log = @import("../../log.zig");
 
 pub const AtlasEntry = atlas_common.AtlasEntry;
 
@@ -255,6 +256,11 @@ pub const Atlas = struct {
             // 불가능한 지점이라 정직하게 남긴다 (`resets` 로 빈도를 관찰한다).
             self.cache.clearRetainingCapacity();
             surface.reset();
+            // 사용자 로그에 남긴다 — 이 줄이 자주 보이면 `ATLAS_SIZE` 를 키울 근거다.
+            log.appendLine("gpu", "GL atlas {s} 가득 참 — 비우고 다시 채운다 (누적 {d} 회)", .{
+                if (is_color) "컬러" else "회색",
+                surface.resets,
+            });
             break :blk atlas_common.packRow(
                 &surface.cursor_x,
                 &surface.cursor_y,
