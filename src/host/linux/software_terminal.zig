@@ -429,6 +429,43 @@ pub const Renderer = struct {
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
 
+        // #361 — 셀 배경을 **전부 먼저** 그린다.
+        //
+        // 이전에는 셀마다 배경 → 텍스트를 번갈아 그렸다. 그래서 같은 줄에서 뒤
+        // 셀의 배경이 나중에 그려져 앞 글리프의 오른쪽으로 삐져나온 부분을 지웠고,
+        // 윗줄은 이미 그려진 뒤라 위로 삐져나온 부분은 남았다 — 방향에 따라 결과가
+        // 갈리는 비대칭이었다 (실측: 오른쪽 잉크 0 픽셀 / 위쪽 12 픽셀).
+        //
+        // macOS 는 배경 인스턴스를 모아 그린 뒤 텍스트를 그려 번짐이 남는다. 같은
+        // 내용이 두 platform 에서 다르게 보이던 것이라 (SPEC §0 #1) 두 패스로
+        // 바꿔 macOS 에 맞춘다 (2026-08-01 사용자 결정, #361 안 A).
+        //
+        // 터미널 셀 글리프는 셀에 클립되지 않는다 (`clip_x0 = 0, clip_x1 = width`)
+        // — 그래서 이 순서가 결과를 바꾼다.
+        for (0..rows) |y| {
+            if (y >= all_cells.len) break;
+            const cell_slice = all_cells[y].slice();
+            const raws = cell_slice.items(.raw);
+            const styles = cell_slice.items(.style);
+            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            var x: usize = 0;
+            while (x < cols and x < raws.len) : (x += 1) {
+                const raw = raws[x];
+                if (raw.wide == .spacer_tail) continue;
+                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const x16: u16 = @intCast(x);
+                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                // 배경 사각형을 그리는 조건은 아래 텍스트 패스와 같아야 한다 —
+                // 평범한 셀은 이미 `fill` 로 칠해진 배경 그대로 둔다.
+                if (!(is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null)) continue;
+                const bg = resolveBg(style, &raw, &colors, is_selected);
+                const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
+                const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
+                const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
+                rect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, bg);
+            }
+        }
+
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
             const cell_slice = all_cells[y].slice();
@@ -455,10 +492,8 @@ pub const Renderer = struct {
                 const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
                 const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
 
-                if (is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null) {
-                    rect(memory, width, height, stride, cell_x, cell_y, cell_w, ch, bg);
-                }
-
+                // 배경은 위의 선행 패스가 이미 그렸다 (#361). 여기서는 텍스트만
+                // 그린다 — `bg` 는 글리프 알파 블렌딩의 바탕색으로만 쓴다.
                 if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) {
                     x += 1;
                     continue;
