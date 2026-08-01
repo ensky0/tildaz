@@ -44,6 +44,23 @@ const GbmBoGetStride = *const fn (bo: ?*anyopaque) callconv(.c) u32;
 const GbmBoGetOffset = *const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) u32;
 const GbmBoGetModifier = *const fn (bo: ?*anyopaque) callconv(.c) u64;
 const GbmBoGetPlaneCount = *const fn (bo: ?*anyopaque) callconv(.c) c_int;
+// plane 별 조회 — libgbm 21.1+ (2021). 없으면 단일 plane 만 다룬다 (아래 `Api.load`).
+const GbmBoGetFdForPlane = *const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) c_int;
+const GbmBoGetStrideForPlane = *const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) u32;
+
+/// dma-buf 의 plane 하나. 압축 modifier (AMD DCC / Intel CCS) 는 픽셀 평면 외에
+/// **압축 메타데이터 평면**을 더 갖는다 ([#367](https://github.com/ensky0/tildaz/issues/367)).
+pub const Plane = struct {
+    /// 이 plane 의 dma-buf fd. **소유권은 `Bo` 가 아니라 호출처**에 있다 —
+    /// `exportPlanes` 로 받아 쓰고 닫는다.
+    fd: posix.fd_t = -1,
+    offset: u32 = 0,
+    stride: u32 = 0,
+};
+
+/// 한 buffer 가 가질 수 있는 plane 수 상한. `EGL_EXT_image_dma_buf_import_modifiers`
+/// 가 정의하는 것이 plane 3 까지이고, 실제 압축 포맷은 2 개를 쓴다.
+pub const MAX_PLANES: usize = 4;
 
 /// 할당된 dma-buf 하나. 기하 정보는 할당 직후 한 번 조회해 보관한다 — 매 frame
 /// 재조회할 값이 아니고, `zwp_linux_dmabuf_v1.params.add` 가 그대로 요구하는 값이다.
@@ -51,9 +68,11 @@ pub const Bo = struct {
     ptr: *anyopaque,
     width: u32,
     height: u32,
+    /// plane 0 의 stride. CPU 매핑 경로(S1)와 `paintIntoBuffer` 가 쓰는 값이다.
     stride: u32,
     offset: u32,
     modifier: u64,
+    plane_count: usize = 1,
 };
 
 /// `map` 결과. `data` 에 그리고 반드시 `unmap` 해야 compositor 가 읽기 전에
@@ -77,6 +96,9 @@ pub const Api = struct {
     bo_get_offset: GbmBoGetOffset,
     bo_get_modifier: GbmBoGetModifier,
     bo_get_plane_count: GbmBoGetPlaneCount,
+    /// 없을 수 있다 (libgbm < 21.1) — 그러면 다중 plane buffer 를 다루지 않는다.
+    bo_get_fd_for_plane: ?GbmBoGetFdForPlane,
+    bo_get_stride_for_plane: ?GbmBoGetStrideForPlane,
 
     pub fn load() !Api {
         const handle = std.c.dlopen("libgbm.so.1", .{ .LAZY = true }) orelse return error.GbmLibraryMissing;
@@ -95,6 +117,10 @@ pub const Api = struct {
             .bo_get_offset = lookup(handle, GbmBoGetOffset, "gbm_bo_get_offset") orelse return error.GbmSymbolMissing,
             .bo_get_modifier = lookup(handle, GbmBoGetModifier, "gbm_bo_get_modifier") orelse return error.GbmSymbolMissing,
             .bo_get_plane_count = lookup(handle, GbmBoGetPlaneCount, "gbm_bo_get_plane_count") orelse return error.GbmSymbolMissing,
+            // 이 둘이 없으면 (libgbm < 21.1) 압축 modifier 를 쓸 수 없다 — 후보
+            // 판정에서 다중 plane 을 걸러 예전 동작으로 degrade 한다.
+            .bo_get_fd_for_plane = lookup(handle, GbmBoGetFdForPlane, "gbm_bo_get_fd_for_plane"),
+            .bo_get_stride_for_plane = lookup(handle, GbmBoGetStrideForPlane, "gbm_bo_get_stride_for_plane"),
         };
     }
 
@@ -123,14 +149,29 @@ pub const Api = struct {
         return self.createWithModifier(dev, MOD_LINEAR, width, height);
     }
 
-    /// 지정한 modifier 로 ARGB8888 buffer 를 할당한다. 요청한 modifier 가 그대로
-    /// 나오지 않거나 다중 plane 이면 실패로 본다 — 그런 buffer 는 우리가 프로토콜에
-    /// 정확히 기술할 수 없다.
-    pub fn createWithModifier(self: *const Api, dev: ?*anyopaque, modifier: u64, width: u32, height: u32) ?Bo {
-        const mods = [_]u64{modifier};
-        const ptr = self.bo_create_with_modifiers(dev, width, height, FORMAT_ARGB8888, &mods, mods.len) orelse return null;
+    /// 후보 목록을 넘기고 **드라이버가 고르게 한다** ([#367](https://github.com/ensky0/tildaz/issues/367)).
+    ///
+    /// 예전에는 modifier 하나씩 넘겨 우리가 골랐는데, 그러면 같은 tranche 안에서
+    /// (프로토콜상 선호가 같아 순서에 의미가 없는 구간) 목록의 첫 항목을 집게 된다 —
+    /// Intel 실기에서 Y_TILED 가 있는데도 X_TILED 를 골랐다. 드라이버는 자기 tiling
+    /// 순위를 알고 있으므로 그쪽에 맡기고, 우리는 고른 결과를 **검증**한다
+    /// (호출처가 import + FBO 로 확인하고, 실패하면 그 modifier 를 빼고 재시도).
+    ///
+    /// 다중 plane 도 그대로 받는다. 단 plane 별 조회 심볼이 없는 오래된 libgbm 에서는
+    /// 단일 plane 만 받아 예전 동작으로 degrade 한다.
+    pub fn createWithModifiers(self: *const Api, dev: ?*anyopaque, mods: []const u64, width: u32, height: u32) ?Bo {
+        if (mods.len == 0) return null;
+        const ptr = self.bo_create_with_modifiers(dev, width, height, FORMAT_ARGB8888, mods.ptr, @intCast(mods.len)) orelse return null;
         const actual = self.bo_get_modifier(ptr);
-        if (actual != modifier or self.bo_get_plane_count(ptr) != 1) {
+        // 고른 것이 후보 안에 있어야 한다 — 드라이버가 목록 밖 (implicit 등) 을
+        // 돌려주면 compositor 에 정확히 기술할 수 없다.
+        var in_list = false;
+        for (mods) |m| {
+            if (m == actual) in_list = true;
+        }
+        const planes = self.bo_get_plane_count(ptr);
+        const multi_plane_ok = self.bo_get_fd_for_plane != null and self.bo_get_stride_for_plane != null;
+        if (!in_list or planes < 1 or planes > MAX_PLANES or (planes > 1 and !multi_plane_ok)) {
             self.bo_destroy(ptr);
             return null;
         }
@@ -141,7 +182,14 @@ pub const Api = struct {
             .stride = self.bo_get_stride(ptr),
             .offset = self.bo_get_offset(ptr, 0),
             .modifier = actual,
+            .plane_count = @intCast(planes),
         };
+    }
+
+    /// 지정한 modifier 하나로 할당한다 (협상이 끝난 뒤의 실제 buffer 용).
+    pub fn createWithModifier(self: *const Api, dev: ?*anyopaque, modifier: u64, width: u32, height: u32) ?Bo {
+        const mods = [_]u64{modifier};
+        return self.createWithModifiers(dev, &mods, width, height);
     }
 
     pub fn destroyBo(self: *const Api, bo: Bo) void {
@@ -150,10 +198,35 @@ pub const Api = struct {
 
     /// compositor 에 넘길 dma-buf fd. 호출할 때마다 새 fd 를 돌려주므로 (dup),
     /// 송신 후 호출자가 닫는다.
-    pub fn exportFd(self: *const Api, bo: Bo) ?posix.fd_t {
-        const fd = self.bo_get_fd(bo.ptr);
-        if (fd < 0) return null;
-        return fd;
+    /// plane 별 fd · offset · stride 를 뽑는다. **fd 소유권은 호출처**다 — 다 쓰면
+    /// 전부 닫아야 한다 (`closePlanes`).
+    ///
+    /// 단일 plane 이면 plane 별 심볼 없이도 되므로 (`gbm_bo_get_fd` 는 plane 0)
+    /// 오래된 libgbm 에서도 동작한다.
+    pub fn exportPlanes(self: *const Api, bo: Bo, out: *[MAX_PLANES]Plane) ?usize {
+        var i: usize = 0;
+        while (i < bo.plane_count) : (i += 1) {
+            const fd: posix.fd_t = if (i == 0 and self.bo_get_fd_for_plane == null)
+                self.bo_get_fd(bo.ptr)
+            else
+                (self.bo_get_fd_for_plane orelse unreachable)(bo.ptr, @intCast(i));
+            if (fd < 0) {
+                closePlanes(out[0..i]);
+                return null;
+            }
+            out[i] = .{
+                .fd = fd,
+                .offset = self.bo_get_offset(bo.ptr, @intCast(i)),
+                .stride = if (self.bo_get_stride_for_plane) |f| f(bo.ptr, @intCast(i)) else bo.stride,
+            };
+        }
+        return bo.plane_count;
+    }
+
+    pub fn closePlanes(planes: []const Plane) void {
+        for (planes) |p| {
+            if (p.fd >= 0) posix.close(p.fd);
+        }
     }
 
     pub fn map(self: *const Api, bo: Bo) ?Mapping {
