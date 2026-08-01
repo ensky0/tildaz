@@ -29,6 +29,7 @@ const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
 const gbm = @import("gbm.zig");
 const egl = @import("egl.zig");
+const gl_rects = @import("gl_rects.zig");
 const dbus = @import("dbus.zig");
 const kglobalaccel = @import("kglobalaccel.zig");
 const single_instance = @import("single_instance.zig");
@@ -905,6 +906,8 @@ const Client = struct {
     // #277 S2 — GL 로 그리기 (`TILDAZ_GL_RENDER=1`). 완성 전까지는 opt-in 이다 —
     // 중간 상태로 화면이 깨지는 것을 기본 동작으로 만들지 않는다.
     gl_render_enabled: bool = false,
+    // #277 S2-3 — 단색 사각형 정점 배치. GL context 와 함께 만들고 매 frame 재사용한다.
+    gl_batch: ?gl_rects.Batch = null,
     // #277 — GPU 경로 전용 scratch (일반 RAM).
     //
     // dma-buf 매핑은 write-combined (비캐시) 메모리라 **읽기가 매우 느린데**,
@@ -1324,6 +1327,12 @@ const Client = struct {
         // #277 S2 — GL context 도 buffer 정리 뒤에 없앤다 (target 파괴가 context 를
         // 필요로 한다).
         if (self.gl_context) |*ctx| {
+            // batch (셰이더 / 버퍼) 를 context 파괴 **전에** 정리한다 — GL 객체라
+            // context 가 살아 있어야 지울 수 있다.
+            if (self.gl_batch) |*batch| {
+                batch.deinit(&ctx.api, self.allocator);
+                self.gl_batch = null;
+            }
             ctx.deinit();
             self.gl_context = null;
             self.gl_render_enabled = false;
@@ -2952,12 +2961,21 @@ const Client = struct {
         if (self.gl_modifier != null and glRenderRequested()) {
             if (egl.Context.create(device)) |ctx| {
                 self.gl_context = ctx;
-                self.gl_render_enabled = true;
-                self.gpu_enabled = true;
-                log.appendLine("gpu", "GL 렌더 활성 (TILDAZ_GL_RENDER) — modifier=0x{x:0>16}", .{self.gl_modifier.?});
-                return;
+                // 셰이더 / 정점 버퍼는 context 와 수명을 같이 한다. 실패하면 GL
+                // 경로를 켜지 않는다 — 사각형을 못 그리면 화면이 배경뿐이다.
+                if (gl_rects.Batch.create(&self.gl_context.?.api)) |batch| {
+                    self.gl_batch = batch;
+                    self.gl_render_enabled = true;
+                    self.gpu_enabled = true;
+                    log.appendLine("gpu", "GL 렌더 활성 (TILDAZ_GL_RENDER) — modifier=0x{x:0>16}", .{self.gl_modifier.?});
+                    return;
+                }
+                log.appendLine("gpu", "GL 렌더 요청됐지만 셰이더 준비 실패 — 기존 경로로", .{});
+                self.gl_context.?.deinit();
+                self.gl_context = null;
+            } else {
+                log.appendLine("gpu", "GL 렌더 요청됐지만 EGL context 생성 실패 — 기존 경로로", .{});
             }
-            log.appendLine("gpu", "GL 렌더 요청됐지만 EGL context 생성 실패 — 기존 경로로", .{});
         }
 
         // 현재 그리기는 CPU 가 하므로 `gbm_bo_map` 이 되는 LINEAR 가 필요하다.
@@ -3166,21 +3184,55 @@ const Client = struct {
         // 셀 / chrome / 텍스트는 이 측정 후에 붙인다.
         if (buffer.gl_target) |target| {
             const ctx = buffer.gl_ctx orelse return false;
-            const theme = self.config.theme orelse fallback_theme;
-            const bg = theme.background;
             const inv: f32 = 1.0 / 255.0;
+            const theme = self.config.theme orelse fallback_theme;
+
+            // 프레임 기술을 만든다 — CPU 경로와 **같은 수집기**를 쓴다.
+            var frame: software_terminal.GlFrame = .{ .background = theme.background, .rects = &.{} };
+            if (self.session) |*session| {
+                if (session.activeTab()) |tab| {
+                    frame = self.renderer.buildGlFrame(
+                        self.allocator,
+                        &tab.terminal,
+                        theme,
+                        session.count(),
+                    );
+                }
+            }
+
             ctx.api.bindFramebuffer(egl.GL_FRAMEBUFFER, target.framebuffer);
             ctx.api.viewport(0, 0, buffer.width, buffer.height);
             ctx.api.clearColor(
-                @as(f32, @floatFromInt(bg.r)) * inv,
-                @as(f32, @floatFromInt(bg.g)) * inv,
-                @as(f32, @floatFromInt(bg.b)) * inv,
+                @as(f32, @floatFromInt(frame.background.r)) * inv,
+                @as(f32, @floatFromInt(frame.background.g)) * inv,
+                @as(f32, @floatFromInt(frame.background.b)) * inv,
                 @as(f32, @floatFromInt(self.renderer.opacity_alpha)) * inv,
             );
             ctx.api.clear(egl.GL_COLOR_BUFFER_BIT);
+
+            // 셀 배경 사각형. 색은 u8 원본을 여기서 한 방향으로만 f32 로 바꾼다
+            // (왕복하면 1 비트가 깎일 수 있다 — `SolidRect` 주석 참고).
+            if (self.gl_batch) |*batch| {
+                batch.clear();
+                for (frame.rects) |r| {
+                    batch.add(self.allocator, .{
+                        .x = @floatFromInt(r.x),
+                        .y = @floatFromInt(r.y),
+                        .w = @floatFromInt(r.w),
+                        .h = @floatFromInt(r.h),
+                        .color = .{
+                            @as(f32, @floatFromInt(r.color.r)) * inv,
+                            @as(f32, @floatFromInt(r.color.g)) * inv,
+                            @as(f32, @floatFromInt(r.color.b)) * inv,
+                            1.0,
+                        },
+                    });
+                }
+                batch.flush(&ctx.api, @floatFromInt(buffer.width), @floatFromInt(buffer.height));
+            }
+
             // compositor 는 dma-buf 의 implicit fence 를 기다린다. glFinish 로
-            // 동기 대기하면 그 비용이 측정에 섞이므로 flush 만 한다 (spike 에서
-            // 이 방식으로 정상 표시를 확인했다).
+            // 동기 대기하면 그 비용이 프레임 시간에 섞이므로 flush 만 한다.
             ctx.api.flush();
             return true;
         }
