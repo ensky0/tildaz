@@ -41,7 +41,7 @@ you do not.
 - **Same reflex, every OS.** The same drop-down terminal on Linux, macOS, and Windows — one JSON config shape, one muscle memory.
 - **Familiar config everywhere.** Config paths differ by platform, but the schema, themes, hotkey, font, shell, opacity, and geometry settings stay familiar.
 - **Wayland coverage that matters.** KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway all get a real drop-down and global hotkey path.
-- **Native where it counts.** No Electron, no GTK or Qt runtime dependency — direct Wayland on Linux, GPU rendering on macOS and Windows, and the fast `libghostty-vt` core.
+- **Native where it counts.** No Electron, no GTK or Qt runtime dependency — direct Wayland on Linux, GPU rendering on all three, and the fast `libghostty-vt` core.
 - **Pretty TUIs, serious text.** Tabs, themes, true color, ligatures, color emoji, full CJK, procedural box-drawing, smooth shaded blocks, and inline IME for Korean / Japanese / Chinese.
 - **Personal, not nosy.** No telemetry, no analytics, no auto-update phone-home — only local config and logs.
 
@@ -157,8 +157,7 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 
 - Linux is Wayland-only (no X11) and shipped in v0.5.0. It is verified on real
   hardware across KDE Plasma 6, GNOME (via a Shell extension), Cinnamon,
-  COSMIC, Hyprland, and sway. The Linux renderer is still a software path (no GPU
-  yet). Z-order yield on focus loss is not implemented on Linux
+  COSMIC, Hyprland, and sway. Z-order yield on focus loss is not implemented on Linux
   (`zwlr_layer_shell_v1` categorical layers have no normal-window slot). Hanja
   conversion of already-committed Hangul (selecting committed Korean text and
   pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no

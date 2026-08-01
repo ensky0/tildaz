@@ -905,8 +905,7 @@ const Client = struct {
     // #277 S2 — GL 렌더용 EGL context. `gl_modifier` 가 정해지고 opt-in 이 켜진
     // 경우에만 유지한다. 있으면 buffer 를 GL 로 그리고, 없으면 CPU 가 그린다.
     gl_context: ?egl.Context = null,
-    // #277 S2 — GL 로 그리기 (`TILDAZ_GL_RENDER=1`). 완성 전까지는 opt-in 이다 —
-    // 중간 상태로 화면이 깨지는 것을 기본 동작으로 만들지 않는다.
+    // #277 S2-6 — GL 로 그린다. 기본값이고 `TILDAZ_GL_RENDER=0` 으로 끈다.
     gl_render_enabled: bool = false,
     // #277 S2-3 — 단색 사각형 정점 배치. GL context 와 함께 만들고 매 frame 재사용한다.
     gl_batch: ?gl_rects.Batch = null,
@@ -2974,10 +2973,9 @@ const Client = struct {
         // 쌓인다.
         self.negotiateGlModifier();
 
-        // #277 S2 — GL 로 그리기 (opt-in). 켜지면 CPU 매핑이 필요 없으므로
-        // LINEAR 제약이 사라진다 — NVIDIA 처럼 LINEAR 가 없는 환경이 이 경로로
-        // 열린다. 완성 전까지 opt-in 인 이유는 중간 상태로 화면이 깨지는 것을
-        // 기본 동작으로 만들지 않기 위해서다.
+        // #277 S2 — GL 로 그린다 (기본). 켜지면 CPU 매핑이 필요 없으므로 LINEAR
+        // 제약이 사라진다 — NVIDIA 처럼 LINEAR 를 공표하지 않는 환경이 이 경로로만
+        // 열린다. 실패하면 아래 LINEAR 검사로 내려가 S1 또는 software 로 떨어진다.
         if (self.gl_modifier != null and glRenderRequested()) {
             if (egl.Context.create(device)) |ctx| {
                 self.gl_context = ctx;
@@ -2991,7 +2989,7 @@ const Client = struct {
                         self.gl_atlas_store = gl_atlas.Atlas.create(gl_api, self.allocator);
                         self.gl_render_enabled = true;
                         self.gpu_enabled = true;
-                        log.appendLine("gpu", "GL 렌더 활성 (TILDAZ_GL_RENDER) — modifier=0x{x:0>16}", .{self.gl_modifier.?});
+                        log.appendLine("gpu", "GL 렌더 활성 — modifier=0x{x:0>16}", .{self.gl_modifier.?});
                         return;
                     }
                     self.gl_batch.?.deinit(gl_api, self.allocator);
@@ -3035,9 +3033,16 @@ const Client = struct {
     /// 지금은 **판정과 로그만** 한다 — 그리기는 아직 CPU 라 이 값이 실제 할당에
     /// 쓰이지 않는다. 그래도 켜 두는 이유는, 사용자 로그에 "이 환경에서 GLES
     /// 렌더러가 가능한가" 가 남아 실기 없이도 데이터가 쌓이기 때문이다.
-    /// #277 S2 — GL 렌더 opt-in 여부. 완성되면 이 게이트를 없애고 기본으로 켠다.
+    /// #277 S2-6 — GL 렌더가 **기본**이다 (2026-08-02 사용자 결정). 되돌리는 길을
+    /// 두 단계로 남긴다:
+    ///
+    ///   `TILDAZ_GL_RENDER=0`   GPU buffer 는 쓰되 CPU 가 그린다 (S1)
+    ///   `TILDAZ_DISABLE_GPU=1` GPU 를 아예 안 쓴다 (software `wl_shm`)
+    ///
+    /// 둘을 나눠 둔 이유는 진단 축이 다르기 때문이다 — 전자는 "GL 래스터가 문제인가",
+    /// 후자는 "dma-buf 배관이 문제인가" 를 가른다. 어느 쪽이든 화면은 나온다.
     fn glRenderRequested() bool {
-        const value = posix.getenv("TILDAZ_GL_RENDER") orelse return false;
+        const value = posix.getenv("TILDAZ_GL_RENDER") orelse return true;
         return !std.mem.eql(u8, value, "0");
     }
 
@@ -3395,8 +3400,8 @@ const Client = struct {
         // (`buildGlFrame` → `collectTerminalLayer`). 여기서 하는 일은 그 목록을
         // 정점으로 옮기는 것뿐이고, "무엇을 어디에" 는 한 글자도 다시 쓰지 않는다.
         //
-        // chrome (탭바 · 단일 탭 컨트롤 · command menu) 은 아직 목록에 없어 GL 경로가
-        // 그리지 않는다 — opt-in 인 이유 중 하나다.
+        // dialog 만 이 경로 밖이다 — layer-shell dialog surface 는 항상 `wl_shm` 이라
+        // GPU buffer 가 붙지 않는다.
         if (buffer.gl_target) |target| {
             const ctx = buffer.gl_ctx orelse return false;
             const theme = self.config.theme orelse fallback_theme;

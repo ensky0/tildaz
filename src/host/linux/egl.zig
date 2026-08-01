@@ -36,6 +36,7 @@ pub const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
 pub const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
 pub const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
 pub const GL_NEAREST: i32 = 0x2600;
+pub const GL_LINEAR: i32 = 0x2601;
 pub const GL_RENDERER: u32 = 0x1F01;
 pub const GL_VERSION: u32 = 0x1F02;
 

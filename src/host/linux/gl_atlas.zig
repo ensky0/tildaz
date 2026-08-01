@@ -8,9 +8,14 @@
 //! 로 두면 메모리·업로드 대역폭이 4 배 유리하다.
 //!
 //!   - `gray`  : `GL_ALPHA` (1 byte). `FT_PIXEL_MODE_GRAY` 글리프. 셰이더가 fg 색을
-//!               곱한다.
+//!               곱한다. **`GL_NEAREST`** — 1:1 로 그리므로 샘플이 텍셀 중심에
+//!               정확히 떨어지고, software 경로와 픽셀이 같아진다.
 //!   - `color` : `GL_RGBA` (4 byte). `FT_PIXEL_MODE_BGRA` 컬러 emoji. premultiplied
-//!               이므로 셰이더가 그대로 출력한다.
+//!               이므로 셰이더가 그대로 출력한다. **`GL_LINEAR`** — emoji bitmap 은
+//!               보통 폰트 strike (~109px) 라 cell 로 크게 축소되는데, nearest 는
+//!               텍셀을 통째로 버려 가장자리가 거칠다 (2026-08-02 사용자 결정,
+//!               ghostty · foot 도 같은 선택). software 경로의 nearest 와는 이
+//!               항목만 의도적으로 갈린다.
 //!
 //! GLES2 코어 포맷만 쓴다 — `GL_R8` 은 GLES3 이상이고, `GL_BGRA` 는 GLES 에 없다
 //! (그래서 업로드 시 R/B 를 바꿔 넣는다).
@@ -81,12 +86,17 @@ const Surface = struct {
     /// atlas 가 가득 차 초기화된 횟수. 진단용 (자주 일어나면 크기를 늘려야 한다).
     resets: u32 = 0,
 
-    fn create(api: *const egl.Api, format: i32) Surface {
+    /// `zeros` 는 텍스처를 0 으로 채워 두기 위한 버퍼다 (null 이면 미초기화).
+    /// **`GL_LINEAR` 면 0 초기화가 필수다** — 선형 보간은 글리프 가장자리에서 바로
+    /// 바깥 텍셀을 함께 읽는데, 그 자리가 미초기화면 쓰레기가 섞여 보인다.
+    /// `packRow` 가 글리프 사이에 1px 를 띄우므로, 그 1px 가 0 (= 투명) 이면
+    /// premultiplied 합성에서 가장자리가 투명 쪽으로 부드럽게 떨어진다.
+    fn create(api: *const egl.Api, format: i32, filter: i32, zeros: ?[]const u8) Surface {
         var texture: u32 = 0;
         api.genTextures(1, @ptrCast(&texture));
         api.bindTexture(egl.GL_TEXTURE_2D, texture);
-        api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MIN_FILTER, egl.GL_NEAREST);
-        api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MAG_FILTER, egl.GL_NEAREST);
+        api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MIN_FILTER, filter);
+        api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MAG_FILTER, filter);
         // 글리프 경계 밖을 샘플링하지 않게 clamp — 인접 글리프가 새어 들어오는
         // 것을 막는다 (`packRow` 가 1px padding 을 주지만 clamp 가 2 차 방어다).
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_WRAP_S, egl.GL_CLAMP_TO_EDGE);
@@ -100,7 +110,7 @@ const Surface = struct {
             0,
             @bitCast(format),
             egl.GL_UNSIGNED_BYTE,
-            null,
+            if (zeros) |z| z.ptr else null,
         );
         return .{ .texture = texture };
     }
@@ -130,9 +140,17 @@ pub const Atlas = struct {
     pub fn create(api: *const egl.Api, allocator: std.mem.Allocator) Atlas {
         // 1 byte 정렬 — 글리프 폭이 4 의 배수가 아닐 때 행이 밀리는 것을 막는다.
         api.pixelStorei(egl.GL_UNPACK_ALIGNMENT, 1);
+        // 컬러 텍스처만 0 으로 채운다 — `GL_LINEAR` 가 글리프 가장자리에서 바깥
+        // 텍셀을 함께 읽기 때문이다 (`Surface.create` 주석). 회색은 `GL_NEAREST` 에
+        // UV 가 글리프 사각형과 1:1 이라 업로드한 영역 밖을 절대 안 읽으므로 4 MB
+        // 업로드를 아낀다. 할당 실패하면 미초기화로 만든다 — 컬러 emoji 가장자리
+        // 한 줄이 지저분할 수 있지만 렌더 자체는 계속된다.
+        const zeros: ?[]u8 = allocator.alloc(u8, ATLAS_SIZE * ATLAS_SIZE * 4) catch null;
+        defer if (zeros) |z| allocator.free(z);
+        if (zeros) |z| @memset(z, 0);
         return .{
-            .gray = Surface.create(api, egl.GL_ALPHA),
-            .color = Surface.create(api, egl.GL_RGBA),
+            .gray = Surface.create(api, egl.GL_ALPHA, egl.GL_NEAREST, null),
+            .color = Surface.create(api, egl.GL_RGBA, egl.GL_LINEAR, zeros),
             .cache = std.AutoHashMap(Key, AtlasEntry).init(allocator),
         };
     }

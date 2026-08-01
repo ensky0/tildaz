@@ -5,8 +5,9 @@ configuration, tab, dialog, theme, and interaction core.
 
 The project deliberately does not wrap an existing terminal app. Windows uses
 ConPTY and Direct3D 11 directly; macOS uses POSIX PTY and Metal directly;
-Linux uses a direct Wayland client + software `wl_shm` renderer (no GTK / Qt
-toolkit dependency, no X11). The shared code owns terminal state and UI
+Linux uses a direct Wayland client + GBM/dma-buf + OpenGL ES renderer, with the
+software `wl_shm` renderer kept as a permanent fallback (no GTK / Qt toolkit
+dependency, no X11). The shared code owns terminal state and UI
 policy, while each host owns the OS event loop and native APIs.
 
 ## Layers
@@ -23,7 +24,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
 | Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape. Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
-| Renderer (Linux software) | No — host-owned | `src/host/linux/software_terminal.zig` | Software `wl_shm` renderer drawn directly by the Linux host; shares cross-platform pieces (`tab_layout`, `block_element`, `ui_metrics`) |
+| Renderer (Linux) | No — host-owned | `src/host/linux/software_terminal.zig`, `gl_*.zig` | `software_terminal.zig` owns the draw lists (`FrameLayer` — what to draw where) and the CPU rasterizer; `gl_atlas.zig` / `gl_text.zig` / `gl_rects.zig` consume the *same* lists on the GPU. Shares cross-platform pieces (`tab_layout`, `tab_chrome`, `block_element`, `ui_metrics`) |
 | Fonts | Per OS with shared sizing policy | `src/font/spec.zig`, `src/font/windows`, `src/font/macos`, `src/font/linux` | Native font lookup and fallback; separate terminal and fixed-size tab-label contexts/atlases |
 | OS services | Wrapper | `src/autostart.zig`, `src/log.zig`, `src/paths.zig` | Startup registration, logging, platform paths |
 
@@ -112,13 +113,20 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    and shell, then connects to `host/linux/wayland_minimal.zig`.
 2. `host/linux/wayland_minimal.zig` is a direct Wayland wire-protocol client (no
    GTK / Qt). It owns the registry, `xdg-shell` / `wlr-layer-shell` surfaces,
-   `wl_shm` buffers, keyboard / pointer / data-device, `zwp_text_input_v3` IME,
+   `wl_shm` / `zwp_linux_dmabuf_v1` buffers, keyboard / pointer / data-device,
+   `zwp_text_input_v3` IME,
    the KDE Plasma direct KGlobalAccel D-Bus client, and the main event loop.
 3. The same `session_core.zig` tab/session model is used as Windows / macOS.
 4. `terminal/posix/pty.zig` (shared with macOS) opens a POSIX PTY (`/dev/ptmx`,
    `setsid`, `TIOCSCTTY` on Linux) behind the shared `terminal.zig` API.
-5. `host/linux/software_terminal.zig` is a software `wl_shm` renderer that draws
-   the terminal grid and tab bar directly into an ARGB8888 buffer. `xkb.zig`
+5. `host/linux/software_terminal.zig` builds the per-frame draw lists (cell
+   backgrounds, glyphs, procedural rectangles, chrome) and rasterizes them on
+   the CPU into an ARGB8888 buffer. The GL path (`gl_rects.zig` / `gl_text.zig`
+   / `gl_atlas.zig`, via `egl.zig` + `gbm.zig`) consumes the *same* lists and
+   draws into a dma-buf, so the two paths cannot silently diverge. GL is the
+   default; `TILDAZ_GL_RENDER=0` falls back to CPU rasterizing into the dma-buf
+   and `TILDAZ_DISABLE_GPU=1` to `wl_shm`. Dialog surfaces are always `wl_shm`.
+   `xkb.zig`
    (runtime `libxkbcommon`) decodes keys; fonts come from fontconfig + FreeType
    + HarfBuzz via `src/font/linux/*`, all `dlopen`-loaded.
 6. Linux custom dialogs use the same font family and fallback chain as the
@@ -181,7 +189,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | macOS Developer ID signing / notarization | [#109](https://github.com/ensky0/tildaz/issues/109) | Blocked by current signing environment; releases use a stable self-signed TildaZ identity |
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
-| Linux renderer (EGL/OpenGL ES) | [#277](https://github.com/ensky0/tildaz/issues/277) | The Wayland backend shipped in v0.5.0; replacing the correct software `wl_shm` path with a GPU renderer remains future work. |
+| Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
 | Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
 
 Completed cross-platform unification work is tracked in
