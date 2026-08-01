@@ -488,8 +488,19 @@ const SurfaceBuffer = struct {
     /// 묶음이라 복사가 싸고, 이렇게 두면 그 부류의 버그가 아예 성립하지 않는다.
     gbm_api: ?gbm.Api = null,
     bo: ?gbm.Bo = null,
+    /// #277 S2 — GL 로 그리는 buffer 의 렌더 타깃 (EGLImage + texture + FBO).
+    /// null 이면 CPU 가 그리는 buffer 다.
+    gl_target: ?egl.Target = null,
+    /// target 을 파괴하려면 EGL display 와 GL 함수가 필요하다. `gbm_api` 와 같은
+    /// 이유로 **값**으로 담는다 — `deinit` 이 인자 없이 자기 자원을 정리해야 하고
+    /// (호출처가 20 곳), context 가 먼저 사라져도 dangling 이 되지 않는다.
+    gl_ctx: ?egl.Context = null,
 
     fn deinit(self: *SurfaceBuffer) void {
+        if (self.gl_target) |target| {
+            if (self.gl_ctx) |ctx| ctx.destroyTarget(target);
+            self.gl_target = null;
+        }
         if (self.gbm_api) |api| {
             if (self.bo) |bo| api.destroyBo(bo);
             self.bo = null;
@@ -888,6 +899,12 @@ const Client = struct {
     // (`sendDmabufCreate` 가 결과까지 기다림) 라 한 번에 하나만 뜬다.
     pending_dmabuf_params: u32 = 0,
     pending_dmabuf_result: ?DmabufResult = null,
+    // #277 S2 — GL 렌더용 EGL context. `gl_modifier` 가 정해지고 opt-in 이 켜진
+    // 경우에만 유지한다. 있으면 buffer 를 GL 로 그리고, 없으면 CPU 가 그린다.
+    gl_context: ?egl.Context = null,
+    // #277 S2 — GL 로 그리기 (`TILDAZ_GL_RENDER=1`). 완성 전까지는 opt-in 이다 —
+    // 중간 상태로 화면이 깨지는 것을 기본 동작으로 만들지 않는다.
+    gl_render_enabled: bool = false,
     // #277 — GPU 경로 전용 scratch (일반 RAM).
     //
     // dma-buf 매핑은 write-combined (비캐시) 메모리라 **읽기가 매우 느린데**,
@@ -1303,6 +1320,13 @@ const Client = struct {
         if (self.gpu_scratch) |scratch| {
             self.allocator.free(scratch);
             self.gpu_scratch = null;
+        }
+        // #277 S2 — GL context 도 buffer 정리 뒤에 없앤다 (target 파괴가 context 를
+        // 필요로 한다).
+        if (self.gl_context) |*ctx| {
+            ctx.deinit();
+            self.gl_context = null;
+            self.gl_render_enabled = false;
         }
         // #277 — GPU 자원은 **모든 buffer 를 정리한 뒤에** 없앤다. bo 파괴에
         // device 가 필요하므로 순서가 뒤바뀌면 안 된다.
@@ -2921,6 +2945,21 @@ const Client = struct {
         // 쌓인다.
         self.negotiateGlModifier();
 
+        // #277 S2 — GL 로 그리기 (opt-in). 켜지면 CPU 매핑이 필요 없으므로
+        // LINEAR 제약이 사라진다 — NVIDIA 처럼 LINEAR 가 없는 환경이 이 경로로
+        // 열린다. 완성 전까지 opt-in 인 이유는 중간 상태로 화면이 깨지는 것을
+        // 기본 동작으로 만들지 않기 위해서다.
+        if (self.gl_modifier != null and glRenderRequested()) {
+            if (egl.Context.create(device)) |ctx| {
+                self.gl_context = ctx;
+                self.gl_render_enabled = true;
+                self.gpu_enabled = true;
+                log.appendLine("gpu", "GL 렌더 활성 (TILDAZ_GL_RENDER) — modifier=0x{x:0>16}", .{self.gl_modifier.?});
+                return;
+            }
+            log.appendLine("gpu", "GL 렌더 요청됐지만 EGL context 생성 실패 — 기존 경로로", .{});
+        }
+
         // 현재 그리기는 CPU 가 하므로 `gbm_bo_map` 이 되는 LINEAR 가 필요하다.
         // 없으면 GPU 자원을 놓고 software 로 돈다 (아직 쓸 데가 없으므로).
         if (!self.dmabuf_linear_supported) {
@@ -2951,6 +2990,12 @@ const Client = struct {
     /// 지금은 **판정과 로그만** 한다 — 그리기는 아직 CPU 라 이 값이 실제 할당에
     /// 쓰이지 않는다. 그래도 켜 두는 이유는, 사용자 로그에 "이 환경에서 GLES
     /// 렌더러가 가능한가" 가 남아 실기 없이도 데이터가 쌓이기 때문이다.
+    /// #277 S2 — GL 렌더 opt-in 여부. 완성되면 이 게이트를 없애고 기본으로 켠다.
+    fn glRenderRequested() bool {
+        const value = posix.getenv("TILDAZ_GL_RENDER") orelse return false;
+        return !std.mem.eql(u8, value, "0");
+    }
+
     fn negotiateGlModifier(self: *Client) void {
         const gpu = if (self.gpu) |*g| g else return;
         if (self.dmabuf_mod_count == 0) return;
@@ -3007,8 +3052,11 @@ const Client = struct {
     /// compositor / 드라이버 조합에서 앱이 죽지 않게 하는 것이 이 선택의 목적이다.
     fn createDmabufBuffer(self: *Client, width: i32, height: i32) ?SurfaceBuffer {
         const gpu = if (self.gpu) |*g| g else return null;
-        const bo = gpu.api.createLinear(gpu.device, @intCast(width), @intCast(height)) orelse {
-            self.disableGpu("gbm LINEAR 할당 실패");
+        // GL 로 그릴 때는 협상된 modifier 를 쓴다 (CPU 매핑이 필요 없으므로 LINEAR
+        // 가 아니어도 된다). CPU 로 그릴 때는 매핑이 되는 LINEAR 여야 한다.
+        const want_modifier = if (self.gl_render_enabled) self.gl_modifier.? else gbm.MOD_LINEAR;
+        const bo = gpu.api.createWithModifier(gpu.device, want_modifier, @intCast(width), @intCast(height)) orelse {
+            self.disableGpu("gbm 할당 실패");
             return null;
         };
         const fd = gpu.api.exportFd(bo) orelse {
@@ -3029,7 +3077,7 @@ const Client = struct {
             return null;
         };
 
-        return .{
+        var buffer: SurfaceBuffer = .{
             .id = buffer_id,
             .fd = -1,
             .memory = null,
@@ -3040,6 +3088,29 @@ const Client = struct {
             .gbm_api = gpu.api,
             .bo = bo,
         };
+
+        // #277 S2 — GL 로 그릴 buffer 면 렌더 타깃까지 붙여 둔다. 매 frame 만들지
+        // 않고 buffer 수명과 함께 간다 (buffer 는 재사용되므로).
+        if (self.gl_render_enabled) {
+            const ctx = self.gl_context.?;
+            // import 용 fd 를 다시 얻는다 — 위에서 프로토콜에 넘긴 fd 는 닫혔다.
+            const gl_fd = gpu.api.exportFd(bo) orelse {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                self.disableGpu("GL import 용 dma-buf fd export 실패");
+                return null;
+            };
+            defer posix.close(gl_fd);
+            buffer.gl_target = ctx.importAsTarget(gl_fd, bo) orelse {
+                self.destroyBufferObject(buffer.id);
+                buffer.deinit();
+                self.disableGpu("dma-buf 를 GL 렌더 타깃으로 만들지 못함");
+                return null;
+            };
+            buffer.gl_ctx = ctx;
+        }
+
+        return buffer;
     }
 
     /// `zwp_linux_buffer_params_v1` 왕복. `created` 면 server 가 할당한 wl_buffer
@@ -3089,6 +3160,30 @@ const Client = struct {
     /// false = 이번 frame 을 그리지 못했다. 호출처는 attach 하지 않는다 (덜 그린
     /// buffer 를 붙이면 깨진 화면이 보인다).
     fn paintIntoBuffer(self: *Client, buffer: *SurfaceBuffer) bool {
+        // #277 S2 — GL 경로. 지금은 **측정용 껍데기**다: 배경만 칠하고 끝낸다.
+        // 목적은 "래스터화를 GPU 로 옮겼을 때의 하한 비용" 을 실제 앱 루프에서
+        // 재는 것 — 이 값이 CPU 경로와 비슷하면 GLES 렌더러를 만들 이유가 없다.
+        // 셀 / chrome / 텍스트는 이 측정 후에 붙인다.
+        if (buffer.gl_target) |target| {
+            const ctx = buffer.gl_ctx orelse return false;
+            const theme = self.config.theme orelse fallback_theme;
+            const bg = theme.background;
+            const inv: f32 = 1.0 / 255.0;
+            ctx.api.bindFramebuffer(egl.GL_FRAMEBUFFER, target.framebuffer);
+            ctx.api.viewport(0, 0, buffer.width, buffer.height);
+            ctx.api.clearColor(
+                @as(f32, @floatFromInt(bg.r)) * inv,
+                @as(f32, @floatFromInt(bg.g)) * inv,
+                @as(f32, @floatFromInt(bg.b)) * inv,
+                @as(f32, @floatFromInt(self.renderer.opacity_alpha)) * inv,
+            );
+            ctx.api.clear(egl.GL_COLOR_BUFFER_BIT);
+            // compositor 는 dma-buf 의 implicit fence 를 기다린다. glFinish 로
+            // 동기 대기하면 그 비용이 측정에 섞이므로 flush 만 한다 (spike 에서
+            // 이 방식으로 정상 표시를 확인했다).
+            ctx.api.flush();
+            return true;
+        }
         if (buffer.bo) |bo| {
             const api = buffer.gbm_api orelse return false;
             const len: usize = @as(usize, @intCast(buffer.height)) * bo.stride;
