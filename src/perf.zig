@@ -109,7 +109,7 @@ pub fn incExtra(c: *Counter) void {
     _ = c.extra.fetchAdd(1, .monotonic);
 }
 
-fn snapshot(c: *Counter) [4]u64 {
+pub fn snapshot(c: *Counter) [4]u64 {
     return .{
         c.calls.swap(0, .monotonic),
         c.ns.swap(0, .monotonic),

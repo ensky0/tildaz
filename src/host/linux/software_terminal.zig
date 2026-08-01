@@ -278,6 +278,16 @@ pub const GlFrame = struct {
     layer: *const FrameLayer,
 };
 
+/// #362 진단 — 프레임 CPU 를 `render_state.update` (ghostty 스냅샷) 와
+/// `collectFrame` (우리 수집기) 으로 나눠 본다. GPU 로 래스터화를 옮긴 뒤 남은
+/// CPU 가 어디인지 이 둘의 비율이 말해 준다.
+///
+/// `TILDAZ_GPU_TIMING=1` 일 때만 잰다 — 매 프레임 시계를 두 번 읽는 비용을 평소에
+/// 지불하지 않는다.
+pub var timing_enabled: bool = false;
+pub var last_update_ns: u64 = 0;
+pub var last_collect_ns: u64 = 0;
+
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     /// #277 S2-3/S2-4/S2-5 — 프레임마다 재사용하는 그리기 목록. `collectFrame` 이
@@ -597,9 +607,15 @@ pub const Renderer = struct {
     /// render_state 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
     /// 화면이지만 CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
     pub fn buildGlFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) GlFrame {
+        const t_start = if (timing_enabled) std.time.nanoTimestamp() else 0;
         self.render_state.update(allocator, in.terminal) catch {
             self.layer.clear();
             return .{ .background = in.theme.background, .layer = &self.layer };
+        };
+        const t_updated = if (timing_enabled) std.time.nanoTimestamp() else 0;
+        defer if (timing_enabled) {
+            last_update_ns = @intCast(t_updated - t_start);
+            last_collect_ns = @intCast(std.time.nanoTimestamp() - t_updated);
         };
         self.collectFrame(allocator, in);
         return .{ .background = self.render_state.colors.background, .layer = &self.layer };
