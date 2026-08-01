@@ -27,6 +27,7 @@ const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
 const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
+const gbm = @import("gbm.zig");
 const dbus = @import("dbus.zig");
 const kglobalaccel = @import("kglobalaccel.zig");
 const single_instance = @import("single_instance.zig");
@@ -379,6 +380,8 @@ const Capabilities = struct {
     // token 발급 → 다른 surface 에 양도. KWin / Mutter / wlroots 모두 지원.
     xdg_activation: Global = .{},
     keyboard_shortcuts_inhibit: Global = .{},
+    // #277 — GPU (dma-buf) 렌더 경로. 미advertise 면 software `wl_shm` 으로 돈다.
+    linux_dmabuf: Global = .{},
 
     fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
         if (std.mem.eql(u8, interface, "wl_compositor")) {
@@ -405,6 +408,8 @@ const Capabilities = struct {
             self.xdg_activation = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "zwp_keyboard_shortcuts_inhibit_manager_v1")) {
             self.keyboard_shortcuts_inhibit = .{ .name = name, .version = version };
+        } else if (std.mem.eql(u8, interface, "zwp_linux_dmabuf_v1")) {
+            self.linux_dmabuf = .{ .name = name, .version = version };
         }
     }
 };
@@ -451,18 +456,69 @@ fn pxOffset(remaining: i32, off_pct: f32) i32 {
     return @intFromFloat(@round(rem_f * off_pct / 100.0));
 }
 
-const ShmBuffer = struct {
+/// surface 에 attach 하는 buffer 하나. #277 이전엔 `wl_shm` 전용이었고 지금은
+/// GPU (dma-buf) 경로도 같은 타입으로 담는다 — 두 경로의 shape 이 같아서
+/// (id / 크기 / stride / released) 타입을 쪼개지 않고 항목별로 분기한다
+/// (AGENTS.md `# 크로스 플랫폼 코드 스타일 — single definition 우선`).
+///
+/// 구분은 `bo` 의 유무다. `bo != null` 이면 GPU 경로 (memory 는 매 frame
+/// `gbm_bo_map` 으로 잠깐 얻는다), null 이면 software 경로 (memfd + 상주 mmap).
+const SurfaceBuffer = struct {
     id: u32,
+    /// software 경로의 memfd. GPU 경로에선 -1 (dma-buf fd 는 송신 즉시 닫는다 —
+    /// compositor 가 자기 참조를 갖고, 우리는 `bo` 로 buffer 를 유지한다).
     fd: posix.fd_t,
-    memory: []align(std.heap.page_size_min) u8,
+    /// software 경로의 상주 mapping. GPU 경로에선 null.
+    memory: ?[]align(std.heap.page_size_min) u8 = null,
     width: i32,
     height: i32,
     stride: i32,
     released: bool = false,
+    /// #277 — GPU 경로일 때만 non-null. 이 buffer 를 만든 api 를 같이 들고 있어야
+    /// `deinit` 이 인자 없이 자기 자원을 정리한다 (호출처가 20 곳이라 인자를
+    /// 늘리지 않는 편이 안전하다).
+    ///
+    /// 포인터가 아니라 **값**으로 담는다. GPU 경로를 도중에 끄면
+    /// (`Client.disableGpu`) `Client.gpu` 가 null 이 되는데, 아직 살아 있는
+    /// buffer 가 그 안을 가리키고 있으면 dangling 이 된다. api 는 함수 포인터
+    /// 묶음이라 복사가 싸고, 이렇게 두면 그 부류의 버그가 아예 성립하지 않는다.
+    gbm_api: ?gbm.Api = null,
+    bo: ?gbm.Bo = null,
 
-    fn deinit(self: *ShmBuffer) void {
-        posix.munmap(self.memory);
-        posix.close(self.fd);
+    fn deinit(self: *SurfaceBuffer) void {
+        if (self.gbm_api) |api| {
+            if (self.bo) |bo| api.destroyBo(bo);
+            self.bo = null;
+            return;
+        }
+        if (self.memory) |m| posix.munmap(m);
+        if (self.fd >= 0) posix.close(self.fd);
+    }
+};
+
+/// #277 — GPU (dma-buf) 경로 자원. `Client.gpu` 가 null 이면 software `wl_shm`
+/// 으로 그린다.
+///
+/// 초기화에 실패하거나 도중에 한 번이라도 실패하면 null 로 되돌리고 다시
+/// 시도하지 않는다 (`Client.disableGpu`). 매 frame 실패를 반복하는 것보다
+/// 조용히 software 로 도는 편이 낫다 — 두 경로의 렌더 결과는 같으므로 사용자
+/// 눈에 보이는 차이가 없고, 어느 경로인지는 로그에 남는다.
+/// `zwp_linux_buffer_params_v1` 의 결과. `created` 는 **server 가 할당한**
+/// wl_buffer id 다 (event 의 new_id 라 우리 id 공간이 아니다).
+const DmabufResult = union(enum) {
+    created: u32,
+    failed,
+};
+
+const Gpu = struct {
+    api: gbm.Api,
+    device: *anyopaque,
+    drm_fd: posix.fd_t,
+
+    fn deinit(self: *Gpu) void {
+        self.api.destroyDevice(self.device);
+        posix.close(self.drm_fd);
+        self.api.deinit();
     }
 };
 
@@ -525,8 +581,8 @@ pub const DialogOverlay = struct {
     /// 객체 + roundtrip 으로 dialog 가 자기 surface 의 preferred_scale event
     /// 받음 보장. 같은 output 가정상 main 의 preferred_scale 값과 동일.
     fractional_scale_id: u32 = 0,
-    active_buffer: ?ShmBuffer = null,
-    retired_buffers: std.ArrayList(ShmBuffer) = .{},
+    active_buffer: ?SurfaceBuffer = null,
+    retired_buffers: std.ArrayList(SurfaceBuffer) = .{},
     /// configure event 가 알려준 buffer 크기 (physical px).
     buffer_w: i32 = 0,
     buffer_h: i32 = 0,
@@ -798,10 +854,27 @@ const Client = struct {
     // true 로 남아 다음 iter 에 재시도). `wl_callback.done` 도착 시 false.
     frame_callback_id: u32 = 0,
     awaiting_frame: bool = false,
-    active_buffer: ?ShmBuffer = null,
-    retired_buffers: std.ArrayList(ShmBuffer) = .{},
+    active_buffer: ?SurfaceBuffer = null,
+    retired_buffers: std.ArrayList(SurfaceBuffer) = .{},
     compositor_id: u32 = 0,
     shm_id: u32 = 0,
+    // #277 — `zwp_linux_dmabuf_v1`. 0 이면 compositor 가 노출하지 않은 것.
+    linux_dmabuf_id: u32 = 0,
+    // #277 — dmabuf v3 `modifier` event 로 확인한 "ARGB8888 + LINEAR" 지원 여부.
+    // GPU 경로는 CPU 로도 그려야 하므로 (S1 단계) LINEAR 가 없으면 쓰지 않는다.
+    dmabuf_linear_supported: bool = false,
+    // #277 — GPU 경로 자원. null 이면 처음부터 software `wl_shm` 으로 그린다.
+    // 한 번 만들면 `Client.deinit` 까지 유지한다 — 아직 살아 있는 buffer 의 bo 를
+    // 파괴하려면 device 가 필요하므로, 중간에 없애면 파괴 순서가 위험해진다.
+    gpu: ?Gpu = null,
+    // #277 — 새 buffer 를 GPU 로 할당할지. GPU 경로에서 한 번이라도 실패하면
+    // false 로 내리고 (`disableGpu`) 다시 시도하지 않는다. 이미 할당된 GPU
+    // buffer 는 평소 경로로 자연스럽게 회수된다.
+    gpu_enabled: bool = false,
+    // #277 — dmabuf buffer 생성 왕복 중인 params 객체와 그 결과. 생성은 동기
+    // (`sendDmabufCreate` 가 결과까지 기다림) 라 한 번에 하나만 뜬다.
+    pending_dmabuf_params: u32 = 0,
+    pending_dmabuf_result: ?DmabufResult = null,
     wm_base_id: u32 = 0,
     surface_id: u32 = 0,
     xdg_surface_id: u32 = 0,
@@ -1204,6 +1277,13 @@ const Client = struct {
         }
         for (self.dialog.retired_buffers.items) |*buffer| buffer.deinit();
         self.dialog.retired_buffers.deinit(self.allocator);
+        // #277 — GPU 자원은 **모든 buffer 를 정리한 뒤에** 없앤다. bo 파괴에
+        // device 가 필요하므로 순서가 뒤바뀌면 안 된다.
+        if (self.gpu) |*gpu| {
+            gpu.deinit();
+            self.gpu = null;
+            self.gpu_enabled = false;
+        }
         if (self.dialog.message_owned) |message| self.allocator.free(message);
         self.dialog.message_owned = null;
         if (self.pending_info_msg_owned) |message| self.allocator.free(message);
@@ -1262,6 +1342,8 @@ const Client = struct {
 
         try self.bindGlobals();
         try self.roundtrip();
+        // #277 — roundtrip 이후여야 dmabuf 의 modifier event 가 다 도착해 있다.
+        self.initGpuIfAvailable();
         self.logCapabilities();
         self.logBootElapsed("bind globals");
         self.tryConnectKGlobalAccel();
@@ -1435,6 +1517,20 @@ const Client = struct {
         try self.bind(self.caps.shm.name, "wl_shm", 1, self.shm_id);
         self.wm_base_id = self.allocId();
         try self.bind(self.caps.xdg_wm_base.name, "xdg_wm_base", 1, self.wm_base_id);
+        // #277 — GPU (dma-buf) 경로. v3 으로 bind 해서 `format` / `modifier`
+        // event 로 지원 modifier 를 받는다. v4+ 는 그 event 가 deprecated 이고
+        // `get_default_feedback` 을 써야 하는데, v3 bind 는 v4/v5 compositor 에서도
+        // 허용되므로 (bind 는 advertise 된 버전 이하면 된다) 한 경로로 전부 덮인다.
+        // feedback 경로 (main device 선택 등) 는 이후 단계에서 다룬다.
+        if (self.caps.linux_dmabuf.name != 0) {
+            self.linux_dmabuf_id = self.allocId();
+            try self.bind(
+                self.caps.linux_dmabuf.name,
+                "zwp_linux_dmabuf_v1",
+                @min(self.caps.linux_dmabuf.version, 3),
+                self.linux_dmabuf_id,
+            );
+        }
         if (self.caps.seat.name != 0) {
             self.seat_id = self.allocId();
             try self.bind(self.caps.seat.name, "wl_seat", @min(self.caps.seat.version, 7), self.seat_id);
@@ -2663,7 +2759,13 @@ const Client = struct {
         if (self.active_buffer) |*buffer| {
             if (buffer.width == self.window_width and buffer.height == self.window_height) {
                 if (buffer.released) {
-                    self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+                    // #277 — 그리지 못했으면 attach 하지 않는다. GPU 경로에서
+                    // 매핑이 실패한 경우인데, `disableGpu` 가 이미 걸려 있어
+                    // 다음 frame 은 software buffer 를 새로 만들어 정상 복귀한다.
+                    if (!self.paintIntoBuffer(buffer)) {
+                        self.disableGpu("dma-buf 재매핑 실패");
+                        return false;
+                    }
                     self.logShowElapsed("paint done (reuse)");
                     try self.attachAndCommit(buffer.*);
                     self.logShowElapsed("commit done (reuse)");
@@ -2685,7 +2787,12 @@ const Client = struct {
             self.destroyBufferObject(buffer.id);
             buffer.deinit();
         }
-        self.paintBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+        if (!self.paintIntoBuffer(&buffer)) {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            self.disableGpu("dma-buf 매핑 실패");
+            return false;
+        }
         self.logShowElapsed("paint done (new buf)");
         try self.retireActiveBuffer();
         try self.attachAndCommit(buffer);
@@ -2723,7 +2830,7 @@ const Client = struct {
         }
     }
 
-    fn takeReusableBuffer(self: *Client, width: i32, height: i32) ?ShmBuffer {
+    fn takeReusableBuffer(self: *Client, width: i32, height: i32) ?SurfaceBuffer {
         for (self.retired_buffers.items, 0..) |*buffer, i| {
             if (buffer.released and buffer.width == width and buffer.height == height) {
                 return self.retired_buffers.orderedRemove(i);
@@ -2743,7 +2850,181 @@ const Client = struct {
         return count;
     }
 
-    fn createBuffer(self: *Client, width: i32, height: i32) !ShmBuffer {
+    /// #277 — GPU (dma-buf) 경로를 쓸 수 있으면 준비한다.
+    ///
+    /// 실패는 전부 **조용한 software fallback** 이다. 어느 한 단계라도 안 되면
+    /// `gpu_enabled` 를 false 로 두고 기존 `wl_shm` 경로로 돈다 — 두 경로의 렌더
+    /// 결과가 같으므로 사용자에게 보이는 차이는 없고, 어느 쪽인지는 로그에 남는다.
+    /// 대상 환경: NVIDIA proprietary · llvmpipe · VM · render node 없는 시스템.
+    fn initGpuIfAvailable(self: *Client) void {
+        // 진단용 탈출구. GPU 경로를 강제로 끈다 (`TILDAZ_DISABLE_GPU=1`).
+        // 두 가지 용도가 있다 — (1) 사용자 문제 보고에서 렌더 경로를 원인
+        // 후보에서 배제하고 재현, (2) #277 의 "픽셀 동일" 검증에서 **같은
+        // 바이너리로** software / GPU 두 경로를 각각 찍어 비교.
+        if (posix.getenv("TILDAZ_DISABLE_GPU")) |value| {
+            if (!std.mem.eql(u8, value, "0")) {
+                log.appendLine("gpu", "software 경로 — TILDAZ_DISABLE_GPU 로 비활성화", .{});
+                return;
+            }
+        }
+        if (self.linux_dmabuf_id == 0) {
+            log.appendLineVerbose("gpu", "software 경로 — compositor 가 zwp_linux_dmabuf_v1 을 노출하지 않음", .{});
+            return;
+        }
+        if (!self.dmabuf_linear_supported) {
+            log.appendLineVerbose("gpu", "software 경로 — ARGB8888 + LINEAR modifier 미지원", .{});
+            return;
+        }
+        var api = gbm.Api.load() catch |err| {
+            log.appendLineVerbose("gpu", "software 경로 — libgbm 로드 실패 ({s})", .{@errorName(err)});
+            return;
+        };
+        const drm_fd = gbm.openRenderNode() orelse {
+            log.appendLineVerbose("gpu", "software 경로 — DRM render node 를 열 수 없음", .{});
+            api.deinit();
+            return;
+        };
+        const device = api.createDevice(drm_fd) orelse {
+            log.appendLineVerbose("gpu", "software 경로 — gbm device 생성 실패", .{});
+            posix.close(drm_fd);
+            api.deinit();
+            return;
+        };
+        self.gpu = .{ .api = api, .device = device, .drm_fd = drm_fd };
+        self.gpu_enabled = true;
+    }
+
+    /// GPU 경로에서 실패했을 때 software 로 되돌린다. 자원(gbm device)은 그대로
+    /// 두고 **새 할당만** 멈춘다 — 살아 있는 buffer 의 bo 를 파괴하려면 device 가
+    /// 필요해서, 여기서 device 를 없애면 파괴 순서가 위험해진다. 이미 붙어 있는
+    /// GPU buffer 는 평소 회수 경로(`released` → `discard…`)로 자연히 빠진다.
+    fn disableGpu(self: *Client, reason: []const u8) void {
+        if (!self.gpu_enabled) return;
+        self.gpu_enabled = false;
+        log.appendLine("gpu", "dmabuf 경로 중단 — {s}. software wl_shm 으로 되돌린다", .{reason});
+    }
+
+    /// #277 — GPU 경로 buffer 하나. 실패하면 null 을 돌려주고 호출처가 shm 으로
+    /// 떨어진다 (여기서 fatal 로 만들지 않는다).
+    ///
+    /// `create_immed` 가 아니라 `create` 를 쓴다. compositor 가 이 dma-buf 를
+    /// 거부할 때 `create_immed` 는 **protocol error (연결 종료 = 앱 종료)** 지만
+    /// `create` 는 `failed` 이벤트로 와서 조용히 fallback 할 수 있다. 낯선
+    /// compositor / 드라이버 조합에서 앱이 죽지 않게 하는 것이 이 선택의 목적이다.
+    fn createDmabufBuffer(self: *Client, width: i32, height: i32) ?SurfaceBuffer {
+        const gpu = if (self.gpu) |*g| g else return null;
+        const bo = gpu.api.createLinear(gpu.device, @intCast(width), @intCast(height)) orelse {
+            self.disableGpu("gbm LINEAR 할당 실패");
+            return null;
+        };
+        const fd = gpu.api.exportFd(bo) orelse {
+            gpu.api.destroyBo(bo);
+            self.disableGpu("dma-buf fd export 실패");
+            return null;
+        };
+        defer posix.close(fd);
+
+        const params_id = self.allocId();
+        const buffer_id = self.sendDmabufCreate(params_id, fd, bo) catch {
+            gpu.api.destroyBo(bo);
+            self.disableGpu("dmabuf 프로토콜 송신 실패");
+            return null;
+        } orelse {
+            gpu.api.destroyBo(bo);
+            self.disableGpu("compositor 가 dma-buf 를 거부 (params.failed)");
+            return null;
+        };
+
+        return .{
+            .id = buffer_id,
+            .fd = -1,
+            .memory = null,
+            .width = width,
+            .height = height,
+            .stride = @intCast(bo.stride),
+            .released = false,
+            .gbm_api = gpu.api,
+            .bo = bo,
+        };
+    }
+
+    /// `zwp_linux_buffer_params_v1` 왕복. `created` 면 server 가 할당한 wl_buffer
+    /// id, `failed` 면 null.
+    fn sendDmabufCreate(self: *Client, params_id: u32, fd: posix.fd_t, bo: gbm.Bo) !?u32 {
+        // zwp_linux_dmabuf_v1.create_params (opcode 1).
+        try self.sendArgs(self.linux_dmabuf_id, 1, &.{params_id});
+        {
+            // params.add (opcode 1) — (fd, plane_idx, offset, stride, mod_hi, mod_lo).
+            var msg = Msg.init(params_id, 1);
+            try msg.putU32(0);
+            try msg.putU32(bo.offset);
+            try msg.putU32(bo.stride);
+            try msg.putU32(@truncate(bo.modifier >> 32));
+            try msg.putU32(@truncate(bo.modifier & 0xffff_ffff));
+            try msg.sendWithFd(self.stream, fd);
+        }
+        {
+            // params.create (opcode 2) — (width, height, format, flags).
+            var msg = Msg.init(params_id, 2);
+            try msg.putI32(@intCast(bo.width));
+            try msg.putI32(@intCast(bo.height));
+            try msg.putU32(gbm.FORMAT_ARGB8888);
+            try msg.putU32(0);
+            try msg.send(self.stream);
+        }
+
+        self.pending_dmabuf_params = params_id;
+        self.pending_dmabuf_result = null;
+        defer self.pending_dmabuf_params = 0;
+        while (self.pending_dmabuf_result == null) try self.readAndDispatch();
+        // params 객체는 결과와 무관하게 더 쓰지 않는다 (spec: create 이후 destroy).
+        self.sendNoArgs(params_id, 0) catch {};
+        return switch (self.pending_dmabuf_result.?) {
+            .created => |bid| bid,
+            .failed => null,
+        };
+    }
+
+    /// buffer 의 픽셀을 채운다. software 경로는 상주 mapping 에 바로 그리고,
+    /// GPU 경로는 `gbm_bo_map` / `unmap` 으로 감싼다 — unmap 이 있어야 compositor
+    /// 가 읽기 전에 우리 쓰기가 보이는 것이 보장된다.
+    ///
+    /// **그리기 자체(`paintBuffer`)는 두 경로가 완전히 같은 코드다.** #277 S1 의
+    /// 판정 기준이 "픽셀 동일" 인 근거가 이것이다 — 바뀐 것은 픽셀을 담는 그릇뿐이다.
+    ///
+    /// false = 이번 frame 을 그리지 못했다. 호출처는 attach 하지 않는다 (덜 그린
+    /// buffer 를 붙이면 깨진 화면이 보인다).
+    fn paintIntoBuffer(self: *Client, buffer: *SurfaceBuffer) bool {
+        if (buffer.bo) |bo| {
+            const api = buffer.gbm_api orelse return false;
+            const mapping = api.map(bo) orelse return false;
+            defer api.unmap(bo, mapping);
+            // compositor 는 `params.add` 로 알려준 `bo.stride` 로 읽는다. CPU
+            // mapping 의 stride 가 그와 다르면 서로 다른 배치를 보게 되므로
+            // 그리지 않는다 (실측 환경에선 항상 같았지만 계약상 보장은 없다).
+            if (mapping.stride != bo.stride) return false;
+            const len: usize = @as(usize, @intCast(buffer.height)) * mapping.stride;
+            self.paintBuffer(mapping.data[0..len], buffer.width, buffer.height, @intCast(mapping.stride));
+            return true;
+        }
+        const memory = buffer.memory orelse return false;
+        self.paintBuffer(memory, buffer.width, buffer.height, buffer.stride);
+        return true;
+    }
+
+    fn createBuffer(self: *Client, width: i32, height: i32) !SurfaceBuffer {
+        // #277 — GPU 경로 우선. 실패하면 아래 software 경로로 그대로 흘러간다
+        // (`disableGpu` 가 이미 불려서 다음 frame 부터는 시도조차 하지 않는다).
+        if (self.gpu_enabled) {
+            if (self.createDmabufBuffer(width, height)) |gpu_buffer| {
+                var owned = gpu_buffer;
+                if (self.paintIntoBuffer(&owned)) return owned;
+                self.destroyBufferObject(owned.id);
+                owned.deinit();
+                self.disableGpu("dma-buf CPU 매핑 실패");
+            }
+        }
+
         const stride: i32 = width * 4;
         const size_i32: i32 = stride * height;
         const size: usize = @intCast(size_i32);
@@ -2858,7 +3139,7 @@ const Client = struct {
         fillBuffer(memory, width, height, stride);
     }
 
-    fn attachAndCommit(self: *Client, buffer: ShmBuffer) !void {
+    fn attachAndCommit(self: *Client, buffer: SurfaceBuffer) !void {
         // #160 — present(attach + damage + commit) 계측. Windows present(swap) 동등.
         const present_t0 = perf.now();
         defer perf.addTimed(&perf.present, present_t0);
@@ -3078,6 +3359,27 @@ const Client = struct {
             const fmt = readU32(payload[0..4]);
             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
             if (fmt == shm_format_argb8888) self.saw_argb8888 = true;
+            return;
+        }
+        // #277 — zwp_linux_dmabuf_v1.modifier (opcode 1, since v3):
+        // (format, modifier_hi, modifier_lo). v1~v2 의 `format` event (opcode 0)
+        // 는 modifier 를 알려주지 않아 무시한다 — LINEAR 를 명시로 확인할 수 없으면
+        // GPU 경로를 켜지 않는다.
+        if (self.linux_dmabuf_id != 0 and id == self.linux_dmabuf_id and opcode == 1 and payload.len >= 12) {
+            const format = readU32(payload[0..4]);
+            const modifier = (@as(u64, readU32(payload[4..8])) << 32) | @as(u64, readU32(payload[8..12]));
+            if (format == gbm.FORMAT_ARGB8888 and modifier == gbm.MOD_LINEAR) {
+                self.dmabuf_linear_supported = true;
+            }
+            return;
+        }
+        // #277 — zwp_linux_buffer_params_v1: created (0, new_id) / failed (1).
+        if (self.pending_dmabuf_params != 0 and id == self.pending_dmabuf_params) {
+            if (opcode == 0 and payload.len >= 4) {
+                self.pending_dmabuf_result = .{ .created = readU32(payload[0..4]) };
+            } else if (opcode == 1) {
+                self.pending_dmabuf_result = .failed;
+            }
             return;
         }
         if (id == self.seat_id) {
@@ -6243,7 +6545,15 @@ const Client = struct {
         }
         self.dialog.active_buffer = null;
         buffer.released = false;
-        self.paintDialogBuffer(buffer.memory, buffer.width, buffer.height, buffer.stride);
+        // #277 — dialog surface 는 항상 software `wl_shm` 이다 (GPU 경로는 main
+        // surface 에만 적용). `createDialogBuffer` 가 memfd mapping 을 반드시
+        // 채우므로 null 이 될 수 없지만, panic 대신 조용히 건너뛴다.
+        const dialog_memory = buffer.memory orelse {
+            self.destroyBufferObject(buffer.id);
+            buffer.deinit();
+            return;
+        };
+        self.paintDialogBuffer(dialog_memory, buffer.width, buffer.height, buffer.stride);
         self.sendArgs(self.dialog.surface_id, 1, &.{ buffer.id, 0, 0 }) catch {
             self.destroyBufferObject(buffer.id);
             buffer.deinit();
@@ -6274,7 +6584,7 @@ const Client = struct {
     /// dialog surface 용 buffer 생성. main createBuffer 패턴 (memfd + mmap +
     /// shm pool + wl_buffer). main 의 retired_buffers cycle 미사용 — dialog 는
     /// configure 한 번에 그리고 dismiss 까지 그대로.
-    fn createDialogBuffer(self: *Client, width: i32, height: i32) !ShmBuffer {
+    fn createDialogBuffer(self: *Client, width: i32, height: i32) !SurfaceBuffer {
         const stride: i32 = width * 4;
         const size_i32: i32 = stride * height;
         const size: usize = @intCast(size_i32);
@@ -6639,7 +6949,7 @@ const Client = struct {
         // #197 — production capabilities 요약 (once per boot). lifecycle 성격이라 [startup].
         log.appendLine(
             "startup",
-            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={}",
+            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_linear={} render_path={s}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
@@ -6650,6 +6960,11 @@ const Client = struct {
                 self.caps.keyboard_shortcuts_inhibit.name != 0,
                 self.saw_xrgb8888,
                 self.saw_argb8888,
+                self.caps.linux_dmabuf.name != 0,
+                self.dmabuf_linear_supported,
+                // #277 — 어느 경로로 그리는지. 사용자 보고를 진단할 때 첫 번째로
+                // 볼 값이라 capability 줄에 같이 남긴다.
+                if (self.gpu_enabled) @as([]const u8, "gpu-dmabuf") else "software-shm",
             },
         );
     }
