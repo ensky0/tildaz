@@ -28,6 +28,7 @@ const software_terminal = @import("software_terminal.zig");
 const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
 const gbm = @import("gbm.zig");
+const egl = @import("egl.zig");
 const dbus = @import("dbus.zig");
 const kglobalaccel = @import("kglobalaccel.zig");
 const single_instance = @import("single_instance.zig");
@@ -65,6 +66,9 @@ const frame_poll_ms: i32 = 16;
 const sel_autoscroll_interval_ms: i64 = 40;
 const sel_autoscroll_step: isize = 3;
 const max_buffers_per_size: usize = 2;
+/// #277 — compositor 가 공표하는 ARGB8888 modifier 후보 상한. 실측은 AMD 8 종 /
+/// NVIDIA 13 종이었다. 넘치면 앞쪽만 본다 (뒤쪽이 더 나을 이유가 없다).
+const max_dmabuf_mods: usize = 64;
 const wl_seat_capability_pointer: u32 = 1;
 const wl_seat_capability_keyboard: u32 = 2;
 const wl_keyboard_keymap_format_xkb_v1: u32 = 1;
@@ -861,8 +865,17 @@ const Client = struct {
     // #277 — `zwp_linux_dmabuf_v1`. 0 이면 compositor 가 노출하지 않은 것.
     linux_dmabuf_id: u32 = 0,
     // #277 — dmabuf v3 `modifier` event 로 확인한 "ARGB8888 + LINEAR" 지원 여부.
-    // GPU 경로는 CPU 로도 그려야 하므로 (S1 단계) LINEAR 가 없으면 쓰지 않는다.
+    // 현재 그리기는 CPU 가 하므로 (`gbm_bo_map` 필요) LINEAR 가 없으면 GPU 경로를
+    // 쓰지 않는다. GLES 렌더러가 오면 이 제약이 사라진다.
     dmabuf_linear_supported: bool = false,
+    // #277 — compositor 가 공표한 ARGB8888 modifier 후보. GLES 렌더러가 쓸 수 있는
+    // modifier 를 고르는 데 쓴다 (LINEAR 를 공표하지 않는 환경 — NVIDIA 실측 — 대응).
+    dmabuf_mods: [max_dmabuf_mods]u64 = undefined,
+    dmabuf_mod_count: usize = 0,
+    // #277 — 위 후보 중 "할당 → EGLImage import → FBO complete" 까지 통과한 첫
+    // modifier. null 이면 이 환경에서는 GLES 렌더러를 쓸 수 없다는 뜻이다.
+    // 지금은 판정과 로그만 하고 실제 그리기에는 아직 쓰지 않는다.
+    gl_modifier: ?u64 = null,
     // #277 — GPU 경로 자원. null 이면 처음부터 software `wl_shm` 으로 그린다.
     // 한 번 만들면 `Client.deinit` 까지 유지한다 — 아직 살아 있는 buffer 의 bo 를
     // 파괴하려면 device 가 필요하므로, 중간에 없애면 파괴 순서가 위험해진다.
@@ -2885,10 +2898,6 @@ const Client = struct {
             log.appendLineVerbose("gpu", "software 경로 — compositor 가 zwp_linux_dmabuf_v1 을 노출하지 않음", .{});
             return;
         }
-        if (!self.dmabuf_linear_supported) {
-            log.appendLineVerbose("gpu", "software 경로 — ARGB8888 + LINEAR modifier 미지원", .{});
-            return;
-        }
         var api = gbm.Api.load() catch |err| {
             log.appendLineVerbose("gpu", "software 경로 — libgbm 로드 실패 ({s})", .{@errorName(err)});
             return;
@@ -2905,7 +2914,78 @@ const Client = struct {
             return;
         };
         self.gpu = .{ .api = api, .device = device, .drm_fd = drm_fd };
+
+        // GLES 렌더러가 이 환경에서 가능한지 먼저 판정한다 (로그용 — S2 준비).
+        // LINEAR 여부와 무관하게 돌린다: NVIDIA 처럼 **지금 경로는 불가한데 GLES
+        // 는 가능한** 환경이 실재하고, 그 사실이 로그에 남아야 실기 없이도 데이터가
+        // 쌓인다.
+        self.negotiateGlModifier();
+
+        // 현재 그리기는 CPU 가 하므로 `gbm_bo_map` 이 되는 LINEAR 가 필요하다.
+        // 없으면 GPU 자원을 놓고 software 로 돈다 (아직 쓸 데가 없으므로).
+        if (!self.dmabuf_linear_supported) {
+            log.appendLineVerbose("gpu", "software 경로 — ARGB8888 + LINEAR modifier 미지원 (CPU 가 dma-buf 에 그려야 함)", .{});
+            if (self.gpu) |*gpu| {
+                gpu.deinit();
+                self.gpu = null;
+            }
+            return;
+        }
         self.gpu_enabled = true;
+    }
+
+    /// #277 — GLES 렌더러가 쓸 수 있는 modifier 를 고른다.
+    ///
+    /// compositor 가 공표한 후보를 "할당 → EGLImage import → FBO complete" 까지
+    /// 시도해 **처음 통과한 것**을 채택한다. 고정 규칙으로는 벤더를 못 덮는다는
+    /// 것이 실측으로 확인됐다:
+    ///
+    ///   - AMD (Radeon 780M / Mesa): DCC(압축) modifier 는 할당은 되지만 import 가
+    ///     `EGL_BAD_MATCH`. LINEAR 는 정상.
+    ///   - NVIDIA (RTX 3060 Ti / 610.43.03): LINEAR 는 공표조차 안 하고, 억지로
+    ///     할당해도 FBO 가 불완전. tiled 12 종은 전부 정상.
+    ///
+    /// 두 제약이 정반대라 "LINEAR 를 쓴다" 도 "GBM 이 고르게 둔다" 도 한쪽에서
+    /// 깨진다. 실제로 시도해 보는 것만이 양쪽을 덮는다.
+    ///
+    /// 지금은 **판정과 로그만** 한다 — 그리기는 아직 CPU 라 이 값이 실제 할당에
+    /// 쓰이지 않는다. 그래도 켜 두는 이유는, 사용자 로그에 "이 환경에서 GLES
+    /// 렌더러가 가능한가" 가 남아 실기 없이도 데이터가 쌓이기 때문이다.
+    fn negotiateGlModifier(self: *Client) void {
+        const gpu = if (self.gpu) |*g| g else return;
+        if (self.dmabuf_mod_count == 0) return;
+
+        var ctx = egl.Context.create(gpu.device) orelse {
+            log.appendLine("gpu", "GLES 렌더러 불가 — EGL context 생성 실패", .{});
+            return;
+        };
+        defer ctx.deinit();
+
+        // 창 크기가 아직 정해지기 전에 불리므로 고정 크기로 시험한다. modifier 의
+        // import / FBO 가능 여부는 크기에 의존하지 않는다.
+        const probe_w: u32 = 256;
+        const probe_h: u32 = 256;
+
+        for (self.dmabuf_mods[0..self.dmabuf_mod_count]) |modifier| {
+            const bo = gpu.api.createWithModifier(gpu.device, modifier, probe_w, probe_h) orelse continue;
+            defer gpu.api.destroyBo(bo);
+            const fd = gpu.api.exportFd(bo) orelse continue;
+            defer posix.close(fd);
+            const target = ctx.importAsTarget(fd, bo) orelse continue;
+            ctx.destroyTarget(target);
+            self.gl_modifier = modifier;
+            break;
+        }
+
+        if (self.gl_modifier) |modifier| {
+            log.appendLine("gpu", "GLES 렌더러 가능 — modifier=0x{x:0>16} renderer={s} version={s}", .{
+                modifier,
+                ctx.rendererName(),
+                ctx.versionName(),
+            });
+        } else {
+            log.appendLine("gpu", "GLES 렌더러 불가 — 공표 modifier {d} 종이 모두 FBO 실패", .{self.dmabuf_mod_count});
+        }
     }
 
     /// GPU 경로에서 실패했을 때 software 로 되돌린다. 자원(gbm device)은 그대로
@@ -3401,8 +3481,13 @@ const Client = struct {
         if (self.linux_dmabuf_id != 0 and id == self.linux_dmabuf_id and opcode == 1 and payload.len >= 12) {
             const format = readU32(payload[0..4]);
             const modifier = (@as(u64, readU32(payload[4..8])) << 32) | @as(u64, readU32(payload[8..12]));
-            if (format == gbm.FORMAT_ARGB8888 and modifier == gbm.MOD_LINEAR) {
-                self.dmabuf_linear_supported = true;
+            if (format == gbm.FORMAT_ARGB8888) {
+                if (modifier == gbm.MOD_LINEAR) self.dmabuf_linear_supported = true;
+                // INVALID 는 후보가 아니다 — 명시 modifier 를 넘길 수 없다.
+                if (modifier != gbm.MOD_INVALID and self.dmabuf_mod_count < max_dmabuf_mods) {
+                    self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
+                    self.dmabuf_mod_count += 1;
+                }
             }
             return;
         }
@@ -6982,7 +7067,7 @@ const Client = struct {
         // #197 — production capabilities 요약 (once per boot). lifecycle 성격이라 [startup].
         log.appendLine(
             "startup",
-            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_linear={} render_path={s}",
+            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_linear={} dmabuf_modifiers={} gles_capable={} render_path={s}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
@@ -6995,6 +7080,10 @@ const Client = struct {
                 self.saw_argb8888,
                 self.caps.linux_dmabuf.name != 0,
                 self.dmabuf_linear_supported,
+                self.dmabuf_mod_count,
+                // #277 — GLES 렌더러(S2)가 이 환경에서 가능한가. 사용자 보고에서
+                // "이 머신은 GPU 로 갈 수 있는가" 를 한 줄로 판정하는 값이다.
+                self.gl_modifier != null,
                 // #277 — 어느 경로로 그리는지. 사용자 보고를 진단할 때 첫 번째로
                 // 볼 값이라 capability 줄에 같이 남긴다.
                 if (self.gpu_enabled) @as([]const u8, "gpu-dmabuf") else "software-shm",
