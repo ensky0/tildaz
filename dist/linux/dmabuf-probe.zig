@@ -1,5 +1,9 @@
 //! Linux GPU 렌더 경로 진단 도구 ([#277](https://github.com/ensky0/tildaz/issues/277)).
 //!
+//! **Linux 전용이다.** Wayland wire protocol · GBM · dma-buf 를 직접 다루므로
+//! Windows / macOS 에서는 빌드되지 않는다 (그쪽은 Direct3D / Metal 로 그린다).
+//! Intel 그래픽을 확인하려면 Intel GPU 가 달린 *Linux* 시스템이 필요하다.
+//!
 //! tildaz 본체 빌드에 들어가지 않는 독립 측정 도구다 (`dist/macos/color-capture.m`
 //! 와 같은 위치의 물건). 어떤 배포판 / 데스크톱 / GPU 드라이버에서든 **GPU 경로가
 //! 성립하는지**를 한 번에 판정해서, 결과를 이슈에 그대로 붙일 수 있는 형태로 출력한다.
@@ -30,8 +34,20 @@
 //! 종료 코드: 0 = GPU 경로 성립, 1 = 성립하지 않음 (fallback 필요).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const linux = std.os.linux;
+
+// Linux 전용이다. Wayland wire protocol · GBM · dma-buf 를 직접 다루므로 다른
+// OS 에서는 성립하지 않는다 (Windows 는 Direct3D, macOS 는 Metal 로 그린다).
+// 가드가 없으면 `std.posix.getenv is unavailable for Windows …` 같은 std 내부
+// 에러가 나와 원인을 짐작하기 어렵다 — 실제로 겪었다.
+comptime {
+    if (builtin.os.tag != .linux) @compileError(
+        "dmabuf-probe 는 Linux 전용 진단 도구다 (Wayland + GBM + dma-buf). " ++
+            "Intel 그래픽을 확인하려면 Intel GPU 가 달린 **Linux** 시스템에서 빌드해야 한다.",
+    );
+}
 
 // ----------------------------------------------------------------- wire 기본
 //
