@@ -287,6 +287,10 @@ pub const GlFrame = struct {
 pub var timing_enabled: bool = false;
 pub var last_update_ns: u64 = 0;
 pub var last_collect_ns: u64 = 0;
+/// 누적 — 한 프레임 표본은 스케줄링·캐시 상태에 크게 흔들린다. 평균으로 본다.
+pub var acc_update_ns: u64 = 0;
+pub var acc_collect_ns: u64 = 0;
+pub var acc_frames: u64 = 0;
 
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
@@ -616,6 +620,9 @@ pub const Renderer = struct {
         defer if (timing_enabled) {
             last_update_ns = @intCast(t_updated - t_start);
             last_collect_ns = @intCast(std.time.nanoTimestamp() - t_updated);
+            acc_update_ns += last_update_ns;
+            acc_collect_ns += last_collect_ns;
+            acc_frames += 1;
         };
         self.collectFrame(allocator, in);
         return .{ .background = self.render_state.colors.background, .layer = &self.layer };
@@ -725,13 +732,21 @@ pub const Renderer = struct {
             var x: usize = 0;
             while (x < cols and x < raws.len) {
                 const raw = raws[x];
-                // spacer_head (wide 글자 wrap 직전 행 끝 cell) 는 bg/selection
-                // 은 그리고 text 단계에서만 제외 — Windows/macOS 동일 (#282 B9).
                 if (raw.wide == .spacer_tail) {
                     x += 1;
                     continue;
                 }
 
+                // **그릴 것이 없는 셀은 여기서 끝낸다.** 터미널 화면은 대부분 빈
+                // 칸이라 이 검사를 앞에 두는 것이 곧 성능이다 — 예전에는 style 조회 ·
+                // 배경색 해석 · 좌표 계산을 다 한 뒤에 버렸다 (#362).
+                //
+                // spacer_head (wide 글자 wrap 직전 행 끝 cell) 는 배경만 있고 글자는
+                // 없다 — 배경은 `collectCellBgRects` 가 따로 만든다 (#282 B9).
+                if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) {
+                    x += 1;
+                    continue;
+                }
                 const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
@@ -739,11 +754,6 @@ pub const Renderer = struct {
                 const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
                 const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
                 const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
-
-                if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) {
-                    x += 1;
-                    continue;
-                }
                 const fg = resolveFg(style, &raw, &colors, is_selected);
                 const cp = raw.codepoint();
 
