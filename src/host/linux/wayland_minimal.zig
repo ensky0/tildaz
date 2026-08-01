@@ -875,6 +875,16 @@ const Client = struct {
     // (`sendDmabufCreate` 가 결과까지 기다림) 라 한 번에 하나만 뜬다.
     pending_dmabuf_params: u32 = 0,
     pending_dmabuf_result: ?DmabufResult = null,
+    // #277 — GPU 경로 전용 scratch (일반 RAM).
+    //
+    // dma-buf 매핑은 write-combined (비캐시) 메모리라 **읽기가 매우 느린데**,
+    // 우리 그리기는 알파 블렌딩에서 프레임버퍼를 읽는다 (`blendPixel`). 매핑에
+    // 직접 그렸더니 같은 워크로드에서 CPU 점유가 shm 5.0% 대비 14.8% 로 3 배였다.
+    // 그래서 일반 RAM 에 그린 뒤 dma-buf 로 한 번에 복사한다 — WC 는 순차 쓰기는
+    // 빠르므로 읽기를 전부 캐시 메모리에서 끝내는 것이 이득이다.
+    //
+    // 크기가 바뀌면 재할당한다. software 경로에서는 쓰지 않는다.
+    gpu_scratch: ?[]align(std.heap.page_size_min) u8 = null,
     wm_base_id: u32 = 0,
     surface_id: u32 = 0,
     xdg_surface_id: u32 = 0,
@@ -1277,6 +1287,10 @@ const Client = struct {
         }
         for (self.dialog.retired_buffers.items) |*buffer| buffer.deinit();
         self.dialog.retired_buffers.deinit(self.allocator);
+        if (self.gpu_scratch) |scratch| {
+            self.allocator.free(scratch);
+            self.gpu_scratch = null;
+        }
         // #277 — GPU 자원은 **모든 buffer 를 정리한 뒤에** 없앤다. bo 파괴에
         // device 가 필요하므로 순서가 뒤바뀌면 안 된다.
         if (self.gpu) |*gpu| {
@@ -2997,19 +3011,38 @@ const Client = struct {
     fn paintIntoBuffer(self: *Client, buffer: *SurfaceBuffer) bool {
         if (buffer.bo) |bo| {
             const api = buffer.gbm_api orelse return false;
+            const len: usize = @as(usize, @intCast(buffer.height)) * bo.stride;
+            const scratch = self.ensureGpuScratch(len) orelse return false;
+
+            // 그리기는 **일반 RAM 에서** 끝낸다 (위 `gpu_scratch` 주석 참고 —
+            // WC 메모리에 직접 그리면 블렌딩의 읽기 때문에 CPU 가 3 배 든다).
+            self.paintBuffer(scratch, buffer.width, buffer.height, @intCast(bo.stride));
+
             const mapping = api.map(bo) orelse return false;
             defer api.unmap(bo, mapping);
             // compositor 는 `params.add` 로 알려준 `bo.stride` 로 읽는다. CPU
             // mapping 의 stride 가 그와 다르면 서로 다른 배치를 보게 되므로
             // 그리지 않는다 (실측 환경에선 항상 같았지만 계약상 보장은 없다).
             if (mapping.stride != bo.stride) return false;
-            const len: usize = @as(usize, @intCast(buffer.height)) * mapping.stride;
-            self.paintBuffer(mapping.data[0..len], buffer.width, buffer.height, @intCast(mapping.stride));
+            @memcpy(mapping.data[0..len], scratch[0..len]);
             return true;
         }
         const memory = buffer.memory orelse return false;
         self.paintBuffer(memory, buffer.width, buffer.height, buffer.stride);
         return true;
+    }
+
+    /// GPU 경로 scratch 확보. 크기가 모자라면 재할당한다. 실패하면 null —
+    /// 호출처가 이번 frame 을 건너뛰고 software 로 되돌린다.
+    fn ensureGpuScratch(self: *Client, len: usize) ?[]align(std.heap.page_size_min) u8 {
+        if (self.gpu_scratch) |existing| {
+            if (existing.len >= len) return existing;
+            self.allocator.free(existing);
+            self.gpu_scratch = null;
+        }
+        const fresh = self.allocator.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), len) catch return null;
+        self.gpu_scratch = fresh;
+        return fresh;
     }
 
     fn createBuffer(self: *Client, width: i32, height: i32) !SurfaceBuffer {
