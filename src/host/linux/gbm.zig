@@ -120,10 +120,17 @@ pub const Api = struct {
     /// 다중 plane buffer 는 지원하지 않는다 — 우리 포맷은 항상 1 plane 이고,
     /// 그렇지 않게 나오면 이 경로를 쓰지 않는 편이 안전하다.
     pub fn createLinear(self: *const Api, dev: ?*anyopaque, width: u32, height: u32) ?Bo {
-        const mods = [_]u64{MOD_LINEAR};
+        return self.createWithModifier(dev, MOD_LINEAR, width, height);
+    }
+
+    /// 지정한 modifier 로 ARGB8888 buffer 를 할당한다. 요청한 modifier 가 그대로
+    /// 나오지 않거나 다중 plane 이면 실패로 본다 — 그런 buffer 는 우리가 프로토콜에
+    /// 정확히 기술할 수 없다.
+    pub fn createWithModifier(self: *const Api, dev: ?*anyopaque, modifier: u64, width: u32, height: u32) ?Bo {
+        const mods = [_]u64{modifier};
         const ptr = self.bo_create_with_modifiers(dev, width, height, FORMAT_ARGB8888, &mods, mods.len) orelse return null;
-        const modifier = self.bo_get_modifier(ptr);
-        if (modifier != MOD_LINEAR or self.bo_get_plane_count(ptr) != 1) {
+        const actual = self.bo_get_modifier(ptr);
+        if (actual != modifier or self.bo_get_plane_count(ptr) != 1) {
             self.bo_destroy(ptr);
             return null;
         }
@@ -133,7 +140,7 @@ pub const Api = struct {
             .height = height,
             .stride = self.bo_get_stride(ptr),
             .offset = self.bo_get_offset(ptr, 0),
-            .modifier = modifier,
+            .modifier = actual,
         };
     }
 
