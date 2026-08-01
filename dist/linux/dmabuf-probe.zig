@@ -196,6 +196,9 @@ const Gbm = struct {
     bo_get_offset: *const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) u32,
     bo_get_modifier: *const fn (bo: ?*anyopaque) callconv(.c) u64,
     bo_get_plane_count: *const fn (bo: ?*anyopaque) callconv(.c) c_int,
+    // plane 별 조회 — libgbm 21.1+. 없으면 단일 plane 만 다룬다 (앱과 같은 degrade).
+    bo_get_fd_for_plane: ?*const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) c_int,
+    bo_get_stride_for_plane: ?*const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) u32,
     bo_destroy: *const fn (bo: ?*anyopaque) callconv(.c) void,
     device_destroy: *const fn (dev: ?*anyopaque) callconv(.c) void,
 
@@ -212,6 +215,8 @@ const Gbm = struct {
             .bo_get_offset = lib.lookup(@FieldType(Gbm, "bo_get_offset"), "gbm_bo_get_offset") orelse return error.MissingSymbol,
             .bo_get_modifier = lib.lookup(@FieldType(Gbm, "bo_get_modifier"), "gbm_bo_get_modifier") orelse return error.MissingSymbol,
             .bo_get_plane_count = lib.lookup(@FieldType(Gbm, "bo_get_plane_count"), "gbm_bo_get_plane_count") orelse return error.MissingSymbol,
+            .bo_get_fd_for_plane = lib.lookup(@typeInfo(@FieldType(Gbm, "bo_get_fd_for_plane")).optional.child, "gbm_bo_get_fd_for_plane"),
+            .bo_get_stride_for_plane = lib.lookup(@typeInfo(@FieldType(Gbm, "bo_get_stride_for_plane")).optional.child, "gbm_bo_get_stride_for_plane"),
             .bo_destroy = lib.lookup(@FieldType(Gbm, "bo_destroy"), "gbm_bo_destroy") orelse return error.MissingSymbol,
             .device_destroy = lib.lookup(@FieldType(Gbm, "device_destroy"), "gbm_device_destroy") orelse return error.MissingSymbol,
         };
@@ -235,6 +240,30 @@ const EGL_DMA_BUF_PLANE0_OFFSET_EXT: i32 = 0x3273;
 const EGL_DMA_BUF_PLANE0_PITCH_EXT: i32 = 0x3274;
 const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: i32 = 0x3443;
 const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: i32 = 0x3444;
+const EGL_DMA_BUF_PLANE1_FD_EXT: i32 = 0x3275;
+const EGL_DMA_BUF_PLANE1_OFFSET_EXT: i32 = 0x3276;
+const EGL_DMA_BUF_PLANE1_PITCH_EXT: i32 = 0x3277;
+const EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT: i32 = 0x3445;
+const EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT: i32 = 0x3446;
+const EGL_DMA_BUF_PLANE2_FD_EXT: i32 = 0x3278;
+const EGL_DMA_BUF_PLANE2_OFFSET_EXT: i32 = 0x3279;
+const EGL_DMA_BUF_PLANE2_PITCH_EXT: i32 = 0x327A;
+const EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT: i32 = 0x3447;
+const EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT: i32 = 0x3448;
+const EGL_DMA_BUF_PLANE3_FD_EXT: i32 = 0x3440;
+const EGL_DMA_BUF_PLANE3_OFFSET_EXT: i32 = 0x3441;
+const EGL_DMA_BUF_PLANE3_PITCH_EXT: i32 = 0x3442;
+const EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT: i32 = 0x3449;
+const EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT: i32 = 0x344A;
+const MAX_PLANES: usize = 4;
+
+/// 프로토콜에 제출할 plane 하나 (앱의 `gbm.Plane` 과 같은 역할).
+const ProbePlane = struct {
+    index: usize,
+    fd: c_int,
+    offset: u32,
+    stride: u32,
+};
 
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_FRAMEBUFFER: u32 = 0x8D40;
@@ -584,24 +613,23 @@ const State = struct {
     /// 안전하기 때문이다. tildaz 본체도 같은 이유로 이 방식을 쓸 예정이다.
     fn createDmabufBuffer(
         self: *State,
-        fd: c_int,
+        planes: []const ProbePlane,
         w: u32,
         h: u32,
-        stride: u32,
-        offset: u32,
         modifier: u64,
     ) !?u32 {
         self.params_id = self.allocId();
         self.params_result = .pending;
         try self.sendArgs(self.dmabuf_id, 1, &.{self.params_id}); // create_params
-        {
+        // plane 마다 한 번씩 — 압축 modifier 는 메타데이터 평면을 더 갖는다 (#367).
+        for (planes) |plane| {
             var m = Msg.init(self.params_id, 1); // add
-            try m.putU32(0); // plane_idx
-            try m.putU32(offset);
-            try m.putU32(stride);
+            try m.putU32(@intCast(plane.index));
+            try m.putU32(plane.offset);
+            try m.putU32(plane.stride);
             try m.putU32(@truncate(modifier >> 32));
             try m.putU32(@truncate(modifier & 0xffff_ffff));
-            try m.sendWithFd(self.stream, fd);
+            try m.sendWithFd(self.stream, plane.fd);
         }
         {
             var m = Msg.init(self.params_id, 2); // create
@@ -823,7 +851,9 @@ pub fn main() !u8 {
 
     const cpu_fd = gbm.bo_get_fd(cpu_bo);
     if (cpu_fd >= 0) {
-        const buf = try state.createDmabufBuffer(cpu_fd, w, h, cpu_stride, cpu_offset, cpu_mod);
+        // CPU 경로는 정의상 단일 plane (LINEAR).
+        const cpu_planes = [_]ProbePlane{.{ .index = 0, .fd = cpu_fd, .offset = cpu_offset, .stride = cpu_stride }};
+        const buf = try state.createDmabufBuffer(&cpu_planes, w, h, cpu_mod);
         posix.close(cpu_fd);
         if (buf) |bid| {
             report.cpu_buffer_created = true;
@@ -914,6 +944,7 @@ pub fn main() !u8 {
 const GlPhaseResult = struct {
     allocated: bool = false,
     modifier: u64 = DRM_FORMAT_MOD_INVALID,
+    plane_count: usize = 0,
     image_import: bool = false,
     fbo_complete: bool = false,
     buffer_created: bool = false,
@@ -955,23 +986,64 @@ fn runGlPhase(
         gbm.bo_unmap(bo, map_data);
     }
 
-    const fd = gbm.bo_get_fd(bo);
-    if (fd < 0) return r;
-
-    const img_attrs = [_]i32{
-        EGL_WIDTH,                          @intCast(w),
-        EGL_HEIGHT,                         @intCast(h),
-        EGL_LINUX_DRM_FOURCC_EXT,           @bitCast(GBM_FORMAT_ARGB8888),
-        EGL_DMA_BUF_PLANE0_FD_EXT,          fd,
-        EGL_DMA_BUF_PLANE0_OFFSET_EXT,      @intCast(offset),
-        EGL_DMA_BUF_PLANE0_PITCH_EXT,       @intCast(stride),
-        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, @bitCast(@as(u32, @truncate(r.modifier & 0xffff_ffff))),
-        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, @bitCast(@as(u32, @truncate(r.modifier >> 32))),
-        EGL_NONE,
+    // **다중 plane 을 앱과 같은 방식으로 다룬다** (#367). 예전엔 이 도구가 plane 0 만
+    // 넘겨 압축 modifier 를 "import 실패" 로 보고했고, 앱은 할당 단계에서 걸렀다 —
+    // 두 경로가 갈려 원인을 잘못 지목했다. 이제 둘이 같은 것을 시험한다.
+    const plane_count: usize = blk: {
+        const n = gbm.bo_get_plane_count(bo);
+        if (n < 1) break :blk 1;
+        break :blk @min(@as(usize, @intCast(n)), MAX_PLANES);
     };
-    const image = egl.createImageKHR(dpy, null, EGL_LINUX_DMA_BUF_EXT, null, &img_attrs) orelse {
-        std.debug.print("  eglCreateImageKHR 실패 (modifier=0x{x:0>16}) err=0x{x}\n", .{ r.modifier, egl.getError() });
-        posix.close(fd);
+    r.plane_count = plane_count;
+    if (plane_count > 1 and (gbm.bo_get_fd_for_plane == null or gbm.bo_get_stride_for_plane == null)) {
+        std.debug.print("  plane {d} 인데 libgbm 에 plane 별 조회 심볼이 없다 (21.1+ 필요) — 건너뜀\n", .{plane_count});
+        return r;
+    }
+
+    var fds: [MAX_PLANES]c_int = @splat(-1);
+    defer for (fds) |f| {
+        if (f >= 0) posix.close(f);
+    };
+    var img_attrs: [6 + MAX_PLANES * 10 + 1]i32 = undefined;
+    const names = [MAX_PLANES][5]i32{
+        .{ EGL_DMA_BUF_PLANE0_FD_EXT, EGL_DMA_BUF_PLANE0_OFFSET_EXT, EGL_DMA_BUF_PLANE0_PITCH_EXT, EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT },
+        .{ EGL_DMA_BUF_PLANE1_FD_EXT, EGL_DMA_BUF_PLANE1_OFFSET_EXT, EGL_DMA_BUF_PLANE1_PITCH_EXT, EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT },
+        .{ EGL_DMA_BUF_PLANE2_FD_EXT, EGL_DMA_BUF_PLANE2_OFFSET_EXT, EGL_DMA_BUF_PLANE2_PITCH_EXT, EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT },
+        .{ EGL_DMA_BUF_PLANE3_FD_EXT, EGL_DMA_BUF_PLANE3_OFFSET_EXT, EGL_DMA_BUF_PLANE3_PITCH_EXT, EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT },
+    };
+    const mod_lo: i32 = @bitCast(@as(u32, @truncate(r.modifier & 0xffff_ffff)));
+    const mod_hi: i32 = @bitCast(@as(u32, @truncate(r.modifier >> 32)));
+    img_attrs[0] = EGL_WIDTH;
+    img_attrs[1] = @intCast(w);
+    img_attrs[2] = EGL_HEIGHT;
+    img_attrs[3] = @intCast(h);
+    img_attrs[4] = EGL_LINUX_DRM_FOURCC_EXT;
+    img_attrs[5] = @bitCast(GBM_FORMAT_ARGB8888);
+    var n_attr: usize = 6;
+    var i: usize = 0;
+    while (i < plane_count) : (i += 1) {
+        fds[i] = if (i == 0 and gbm.bo_get_fd_for_plane == null)
+            gbm.bo_get_fd(bo)
+        else
+            (gbm.bo_get_fd_for_plane orelse unreachable)(bo, @intCast(i));
+        if (fds[i] < 0) return r;
+        img_attrs[n_attr] = names[i][0];
+        img_attrs[n_attr + 1] = fds[i];
+        img_attrs[n_attr + 2] = names[i][1];
+        img_attrs[n_attr + 3] = @intCast(if (i == 0) offset else gbm.bo_get_offset(bo, @intCast(i)));
+        img_attrs[n_attr + 4] = names[i][2];
+        img_attrs[n_attr + 5] = @intCast(if (gbm.bo_get_stride_for_plane) |f| f(bo, @intCast(i)) else stride);
+        img_attrs[n_attr + 6] = names[i][3];
+        img_attrs[n_attr + 7] = mod_lo;
+        img_attrs[n_attr + 8] = names[i][4];
+        img_attrs[n_attr + 9] = mod_hi;
+        n_attr += 10;
+    }
+    img_attrs[n_attr] = EGL_NONE;
+    n_attr += 1;
+
+    const image = egl.createImageKHR(dpy, null, EGL_LINUX_DMA_BUF_EXT, null, img_attrs[0..n_attr].ptr) orelse {
+        std.debug.print("  eglCreateImageKHR 실패 (modifier=0x{x:0>16}, plane {d}) err=0x{x}\n", .{ r.modifier, plane_count, egl.getError() });
         return r;
     };
     r.image_import = true;
@@ -990,7 +1062,6 @@ fn runGlPhase(
     if (egl.checkFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         std.debug.print("  FBO 불완전 (modifier=0x{x:0>16})\n", .{r.modifier});
         _ = egl.destroyImageKHR(dpy, image);
-        posix.close(fd);
         return r;
     }
     r.fbo_complete = true;
@@ -1025,13 +1096,20 @@ fn runGlPhase(
     if (!present) {
         // modifier 후보를 훑는 단계에서는 화면에 올리지 않는다 — 후보마다
         // 2.5 초씩 기다리면 진단이 너무 느려진다.
-        posix.close(fd);
         _ = egl.destroyImageKHR(dpy, image);
         return r;
     }
 
-    const buf = try state.createDmabufBuffer(fd, w, h, stride, offset, r.modifier);
-    posix.close(fd);
+    var submit: [MAX_PLANES]ProbePlane = undefined;
+    for (0..plane_count) |pi| {
+        submit[pi] = .{
+            .index = pi,
+            .fd = fds[pi],
+            .offset = if (pi == 0) offset else gbm.bo_get_offset(bo, @intCast(pi)),
+            .stride = if (gbm.bo_get_stride_for_plane) |f| f(bo, @intCast(pi)) else stride,
+        };
+    }
+    const buf = try state.createDmabufBuffer(submit[0..plane_count], w, h, r.modifier);
     if (buf) |bid| {
         r.buffer_created = true;
         r.frame_shown = try state.presentAndWait(bid, w, h, hold_ms);
