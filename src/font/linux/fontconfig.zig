@@ -134,19 +134,42 @@ pub const MatchResult = struct {
 /// `result.additional_families`를 요청 family와 비교해서 substitution 여부를
 /// 판단해야 한다. generic family("monospace" / "sans-serif" / "serif")만
 /// substitution 허용 의도.
-pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult {
-    var api = try Api.load();
-    defer api.deinit();
+/// **fontconfig 는 프로세스당 한 번만 초기화한다** (#368).
+///
+/// 예전에는 lookup 마다 `FcInit` → `FcFini` 를 반복했다. `FcInit` 은 시스템의
+/// fontconfig 설정 전체를 파싱하므로 실측 **호출당 4.2~4.8 ms** 이고, 시작 시
+/// 12 번 불려 (폰트 컨텍스트 4 벌 × chain 3 family) 거기에만 ~54 ms 를 썼다.
+/// 정작 match 자체는 0.5 ms 다.
+///
+/// 그래서 `FcFini` 를 부르지 않고 초기화 상태를 유지한다 — fontconfig 의 정상
+/// 사용 패턴이고, 이게 아니면 런타임의 system fallback 조회 (`lookupForChar`,
+/// 처음 보는 codepoint 마다) 도 매번 4.5 ms 를 문다.
+///
+/// 라이브러리도 `dlclose` 하지 않는다 — fontconfig 내부 상태가 살아 있는 채로
+/// 닫으면 그 상태를 가리키는 포인터가 무효가 된다.
+var cached_api: ?Api = null;
 
-    if (api.init() == 0) return error.FontconfigInitFailed;
-    defer api.fini();
+fn sharedApi() !*Api {
+    if (cached_api == null) {
+        var api = try Api.load();
+        if (api.init() == 0) {
+            api.deinit();
+            return error.FontconfigInitFailed;
+        }
+        cached_api = api;
+    }
+    return &cached_api.?;
+}
+
+pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult {
+    const api = try sharedApi();
 
     const pattern = api.pattern_create() orelse return error.FontconfigPatternCreateFailed;
     defer api.pattern_destroy(pattern);
 
     if (api.pattern_add_string(pattern, "family", family) == 0) return error.FontconfigPatternAddFailed;
 
-    return matchAndExtract(&api, pattern, allocator);
+    return matchAndExtract(api, pattern, allocator);
 }
 
 /// `cp` 를 가진 폰트의 fontconfig 매치 (`fc-match ':charset=XXXX'` 동등) —
@@ -159,11 +182,7 @@ pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult 
 /// `get_char_index(cp)` 로 실보유를 확인하고, 미보유면 negative cache 에
 /// 기록해 재조회를 막아야 한다.
 pub fn lookupForChar(allocator: std.mem.Allocator, cp: u21) !MatchResult {
-    var api = try Api.load();
-    defer api.deinit();
-
-    if (api.init() == 0) return error.FontconfigInitFailed;
-    defer api.fini();
+    const api = try sharedApi();
 
     const pattern = api.pattern_create() orelse return error.FontconfigPatternCreateFailed;
     defer api.pattern_destroy(pattern);
@@ -175,7 +194,7 @@ pub fn lookupForChar(allocator: std.mem.Allocator, cp: u21) !MatchResult {
     if (api.charset_add_char(charset, cp) == 0) return error.FontconfigCharSetAddFailed;
     if (api.pattern_add_charset(pattern, "charset", charset) == 0) return error.FontconfigPatternAddFailed;
 
-    return matchAndExtract(&api, pattern, allocator);
+    return matchAndExtract(api, pattern, allocator);
 }
 
 /// substitute → match → family/file 추출의 공통 꼬리. `lookup` (family 기반)
