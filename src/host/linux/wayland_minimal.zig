@@ -2977,11 +2977,11 @@ const Client = struct {
         // 제약이 사라진다 — NVIDIA 처럼 LINEAR 를 공표하지 않는 환경이 이 경로로만
         // 열린다. 실패하면 아래 LINEAR 검사로 내려가 S1 또는 software 로 떨어진다.
         if (self.gl_modifier != null and glRenderRequested()) {
-            if (egl.Context.create(device)) |ctx| {
-                self.gl_context = ctx;
+            // context 는 협상이 이미 열어 뒀다 (`negotiateGlModifier`).
+            if (self.gl_context) |*ctx| {
                 // 셰이더 / 정점 버퍼 / atlas 는 context 와 수명을 같이 한다. 하나라도
                 // 실패하면 GL 경로를 켜지 않는다 — 반만 그리면 화면이 깨진다.
-                const gl_api = &self.gl_context.?.api;
+                const gl_api = &ctx.api;
                 if (gl_rects.Batch.create(gl_api)) |batch| {
                     self.gl_batch = batch;
                     if (gl_text.Batch.create(gl_api)) |text_batch| {
@@ -2995,13 +2995,11 @@ const Client = struct {
                     self.gl_batch.?.deinit(gl_api, self.allocator);
                     self.gl_batch = null;
                 }
-                log.appendLine("gpu", "GL 렌더 요청됐지만 셰이더 준비 실패 — 기존 경로로", .{});
-                self.gl_context.?.deinit();
-                self.gl_context = null;
-            } else {
-                log.appendLine("gpu", "GL 렌더 요청됐지만 EGL context 생성 실패 — 기존 경로로", .{});
+                log.appendLine("gpu", "셰이더 준비 실패 — GL 없이 기존 경로로", .{});
             }
         }
+        // 여기까지 왔으면 GL 을 쓰지 않는다 — 협상용 context 를 놓는다.
+        self.releaseNegotiationContext();
 
         // 현재 그리기는 CPU 가 하므로 `gbm_bo_map` 이 되는 LINEAR 가 필요하다.
         // 없으면 GPU 자원을 놓고 software 로 돈다 (아직 쓸 데가 없으므로).
@@ -3046,6 +3044,12 @@ const Client = struct {
         return !std.mem.eql(u8, value, "0");
     }
 
+    /// 협상에 쓴 EGL context 를 **버리지 않고 `self.gl_context` 에 남긴다.** 호출처가
+    /// GL 을 켜면 그대로 쓰고, 안 켜면 정리한다.
+    ///
+    /// 이유는 실측이다 — NVIDIA (RTX 3060 Ti / 610.43.03) 는 context 생성이 비싸서,
+    /// 협상용과 렌더용을 따로 만들면 부팅이 **120 ms** 더 걸렸다 (AMD · Intel 은
+    /// 30 ms 안쪽이라 안 드러났다).
     fn negotiateGlModifier(self: *Client) void {
         const gpu = if (self.gpu) |*g| g else return;
         if (self.dmabuf_mod_count == 0) return;
@@ -3054,7 +3058,6 @@ const Client = struct {
             log.appendLine("gpu", "GLES 렌더러 불가 — EGL context 생성 실패", .{});
             return;
         };
-        defer ctx.deinit();
 
         // 창 크기가 아직 정해지기 전에 불리므로 고정 크기로 시험한다. modifier 의
         // import / FBO 가능 여부는 크기에 의존하지 않는다.
@@ -3080,6 +3083,16 @@ const Client = struct {
             });
         } else {
             log.appendLine("gpu", "GLES 렌더러 불가 — 공표 modifier {d} 종이 모두 FBO 실패", .{self.dmabuf_mod_count});
+        }
+        self.gl_context = ctx;
+    }
+
+    /// 협상용으로 열어 둔 context 를 쓰지 않기로 했을 때 정리한다.
+    fn releaseNegotiationContext(self: *Client) void {
+        if (self.gl_render_enabled) return; // 렌더에 쓰는 중이면 건드리지 않는다.
+        if (self.gl_context) |*ctx| {
+            ctx.deinit();
+            self.gl_context = null;
         }
     }
 
