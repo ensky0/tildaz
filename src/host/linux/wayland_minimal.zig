@@ -895,6 +895,10 @@ const Client = struct {
     dmabuf_tranche_end_count: usize = 0,
     /// 채택한 modifier 의 plane 수 (압축이면 2 이상).
     gl_plane_count: usize = 1,
+    /// #369 — 프레임 GPU 시간 측정 (`TILDAZ_GPU_TIMING=1`). timer query 가 동기점을
+    /// 만들 수 있어 평소에는 끈다.
+    gpu_timer: ?egl.GpuTimer = null,
+    gpu_timer_frames: u64 = 0,
     // #277 S2-6 — dmabuf feedback (v4+). compositor 가 지원 목록을 **선호 내림차순
     // tranche** 로 준다 — v3 의 평면 `modifier` 목록에는 순서 정의가 아예 없어서
     // "처음 통과하는 것" 이 벤더마다 다른 품질의 선택이 됐다 (Intel 실기에서 LINEAR).
@@ -1369,6 +1373,10 @@ const Client = struct {
             if (self.gl_atlas_store) |*atlas| {
                 atlas.deinit(&ctx.api, self.allocator);
                 self.gl_atlas_store = null;
+            }
+            if (self.gpu_timer) |*t| {
+                t.deinit(&ctx.api);
+                self.gpu_timer = null;
             }
             ctx.deinit();
             self.gl_context = null;
@@ -3027,6 +3035,12 @@ const Client = struct {
                     if (gl_text.Batch.create(gl_api)) |text_batch| {
                         self.gl_text_batch = text_batch;
                         self.gl_atlas_store = gl_atlas.Atlas.create(gl_api, self.allocator);
+                        if (gpuTimingRequested()) {
+                            self.gpu_timer = egl.GpuTimer.create(gl_api);
+                            log.appendLine("gpu", "GPU 시간 계측 {s} (TILDAZ_GPU_TIMING)", .{
+                                if (self.gpu_timer != null) @as([]const u8, "켬") else "불가 — GL_EXT_disjoint_timer_query 없음",
+                            });
+                        }
                         self.gl_render_enabled = true;
                         self.gpu_enabled = true;
                         log.appendLine("gpu", "GL 렌더 활성 — modifier=0x{x:0>16}", .{self.gl_modifier.?});
@@ -3079,6 +3093,21 @@ const Client = struct {
     ///
     /// 둘을 나눠 둔 이유는 진단 축이 다르기 때문이다 — 전자는 "GL 래스터가 문제인가",
     /// 후자는 "dma-buf 배관이 문제인가" 를 가른다. 어느 쪽이든 화면은 나온다.
+    /// #369 — `TILDAZ_GPU_TIMING=1` 이면 프레임 GPU 시간을 잰다.
+    fn gpuTimingRequested() bool {
+        const value = posix.getenv("TILDAZ_GPU_TIMING") orelse return false;
+        return !std.mem.eql(u8, value, "0");
+    }
+
+    /// #369 — `TILDAZ_GL_MODIFIER=<hex>` 로 modifier 를 고정한다 (A/B 측정용).
+    /// 협상 결과를 무시하므로 **진단 전용**이다 — 그 modifier 로 할당·import 가
+    /// 안 되면 평소 경로대로 software 로 떨어진다.
+    fn forcedModifier() ?u64 {
+        const value = posix.getenv("TILDAZ_GL_MODIFIER") orelse return null;
+        const trimmed = if (std.mem.startsWith(u8, value, "0x")) value[2..] else value;
+        return std.fmt.parseInt(u64, trimmed, 16) catch null;
+    }
+
     fn glRenderRequested() bool {
         const value = posix.getenv("TILDAZ_GL_RENDER") orelse return true;
         return !std.mem.eql(u8, value, "0");
@@ -3203,6 +3232,31 @@ const Client = struct {
         // 실패할 수 있다 — AMD 실기에서 256×256 으로 고른 DCC 가 실제 창에서
         // `gbm_bo_create_with_modifiers` 를 실패시켜 software 로 떨어졌다 (#367).
         // 그래서 실제 크기를 아는 시점(첫 buffer 생성)에 다시 부른다.
+
+        // #369 — 진단용 고정. A/B 측정에서 modifier 만 바꿔 같은 워크로드를 돌린다.
+        if (forcedModifier()) |forced| {
+            const bo = gpu.api.createWithModifier(gpu.device, forced, probe_w, probe_h);
+            if (bo) |b| {
+                var planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
+                if (gpu.api.exportPlanes(b, &planes)) |n| {
+                    if (ctx.importAsTarget(planes[0..n], b)) |t| {
+                        ctx.destroyTarget(t);
+                        self.gl_modifier = forced;
+                        self.gl_plane_count = n;
+                    }
+                    gbm.Api.closePlanes(planes[0..n]);
+                }
+                gpu.api.destroyBo(b);
+            }
+            log.appendLine("gpu", "modifier 고정 요청 0x{x:0>16} — {s} (TILDAZ_GL_MODIFIER)", .{
+                forced,
+                if (self.gl_modifier != null) @as([]const u8, "채택") else "실패, 협상으로",
+            });
+            if (self.gl_modifier != null) {
+                self.gl_context = ctx;
+                return;
+            }
+        }
 
         // **tranche 단위로 드라이버에게 고르게 하고 검증한다** (#367).
         //
@@ -3641,6 +3695,7 @@ const Client = struct {
                 }
             }
 
+            if (self.gpu_timer) |*t| t.begin(&ctx.api);
             ctx.api.bindFramebuffer(egl.GL_FRAMEBUFFER, target.framebuffer);
             ctx.api.viewport(0, 0, buffer.width, buffer.height);
             ctx.api.clearColor(
@@ -3678,6 +3733,25 @@ const Client = struct {
             // compositor 는 dma-buf 의 implicit fence 를 기다린다. glFinish 로
             // 동기 대기하면 그 비용이 프레임 시간에 섞이므로 flush 만 한다.
             ctx.api.flush();
+            if (self.gpu_timer) |*t| {
+                t.end(&ctx.api);
+                self.gpu_timer_frames += 1;
+                // 120 프레임마다 한 줄. 매 프레임 찍으면 로그가 계측을 방해한다.
+                if (self.gpu_timer_frames % 120 == 0) {
+                    if (t.averageNs()) |avg| {
+                        log.appendLine("gpu", "프레임 GPU 시간 평균 {d:.1} µs (표본 {d}, 버린 것 {d}, {d}x{d}, modifier=0x{x:0>16} plane={d})", .{
+                            @as(f64, @floatFromInt(avg)) / 1000.0,
+                            t.samples,
+                            t.discarded,
+                            buffer.width,
+                            buffer.height,
+                            self.gl_modifier orelse 0,
+                            self.gl_plane_count,
+                        });
+                    }
+                    t.reset();
+                }
+            }
             return true;
         }
         if (buffer.bo) |bo| {

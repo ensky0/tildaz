@@ -66,6 +66,12 @@ pub const GL_FLOAT: u32 = 0x1406;
 pub const GL_TRIANGLES: u32 = 0x0004;
 pub const GL_BLEND: u32 = 0x0BE2;
 pub const GL_SCISSOR_TEST: u32 = 0x0C11;
+// GL_EXT_disjoint_timer_query (#369) — 우리 드로 구간의 **GPU 시간**을 잰다.
+// CPU 지표(`/proc` utime+stime)로는 안 보이는 축이다.
+pub const GL_TIME_ELAPSED_EXT: u32 = 0x88BF;
+pub const GL_QUERY_RESULT_EXT: u32 = 0x8866;
+pub const GL_QUERY_RESULT_AVAILABLE_EXT: u32 = 0x8867;
+pub const GL_GPU_DISJOINT_EXT: u32 = 0x8FBB;
 
 // 텍스처 — GLES2 코어 포맷만 쓴다. `GL_R8` 은 GLES3 이상이라 쓰지 않는다:
 // grayscale 글리프는 `GL_ALPHA` (1 byte, 셰이더에서 `.a` 로 읽는다), 컬러 emoji 는
@@ -143,6 +149,13 @@ const GlDrawArrays = *const fn (mode: u32, first: i32, count: i32) callconv(.c) 
 const GlEnable = *const fn (cap: u32) callconv(.c) void;
 const GlDisable = *const fn (cap: u32) callconv(.c) void;
 const GlColorMask = *const fn (r: u8, g: u8, b: u8, a: u8) callconv(.c) void;
+const GlGenQueries = *const fn (n: i32, out: [*]u32) callconv(.c) void;
+const GlDeleteQueries = *const fn (n: i32, items: [*]const u32) callconv(.c) void;
+const GlBeginQuery = *const fn (target: u32, id: u32) callconv(.c) void;
+const GlEndQuery = *const fn (target: u32) callconv(.c) void;
+const GlGetQueryObjectuiv = *const fn (id: u32, pname: u32, out: *u32) callconv(.c) void;
+const GlGetQueryObjectui64v = *const fn (id: u32, pname: u32, out: *u64) callconv(.c) void;
+const GlGetIntegerv = *const fn (pname: u32, out: *i32) callconv(.c) void;
 const GlScissor = *const fn (x: i32, y: i32, w: i32, h: i32) callconv(.c) void;
 const GlTexImage2D = *const fn (target: u32, level: i32, internal: i32, w: i32, h: i32, border: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
 const GlTexSubImage2D = *const fn (target: u32, level: i32, x: i32, y: i32, w: i32, h: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
@@ -213,6 +226,14 @@ pub const Api = struct {
     disable: GlDisable,
     colorMask: GlColorMask,
     scissor: GlScissor,
+    /// #369 — timer query. 확장이 없으면 null (벤더마다 다르다).
+    gen_queries: ?GlGenQueries,
+    delete_queries: ?GlDeleteQueries,
+    begin_query: ?GlBeginQuery,
+    end_query: ?GlEndQuery,
+    get_query_objectuiv: ?GlGetQueryObjectuiv,
+    get_query_objectui64v: ?GlGetQueryObjectui64v,
+    get_integerv: ?GlGetIntegerv,
     texImage2D: GlTexImage2D,
     texSubImage2D: GlTexSubImage2D,
     pixelStorei: GlPixelStorei,
@@ -295,6 +316,15 @@ pub const Api = struct {
             .disable = lookup(gles_handle, GlDisable, "glDisable") orelse return error.GlSymbolMissing,
             .colorMask = lookup(gles_handle, GlColorMask, "glColorMask") orelse return error.GlSymbolMissing,
             .scissor = lookup(gles_handle, GlScissor, "glScissor") orelse return error.GlSymbolMissing,
+            // 확장 진입점은 `eglGetProcAddress` 로만 얻을 수 있다 (라이브러리에 심볼이
+            // 없을 수 있다). 하나라도 없으면 계측을 통째로 끈다 — `Api.hasTimerQuery`.
+            .gen_queries = procFn(get_proc, GlGenQueries, "glGenQueriesEXT"),
+            .delete_queries = procFn(get_proc, GlDeleteQueries, "glDeleteQueriesEXT"),
+            .begin_query = procFn(get_proc, GlBeginQuery, "glBeginQueryEXT"),
+            .end_query = procFn(get_proc, GlEndQuery, "glEndQueryEXT"),
+            .get_query_objectuiv = procFn(get_proc, GlGetQueryObjectuiv, "glGetQueryObjectuivEXT"),
+            .get_query_objectui64v = procFn(get_proc, GlGetQueryObjectui64v, "glGetQueryObjectui64vEXT"),
+            .get_integerv = lookup(gles_handle, GlGetIntegerv, "glGetIntegerv"),
             .texImage2D = lookup(gles_handle, GlTexImage2D, "glTexImage2D") orelse return error.GlSymbolMissing,
             .texSubImage2D = lookup(gles_handle, GlTexSubImage2D, "glTexSubImage2D") orelse return error.GlSymbolMissing,
             .pixelStorei = lookup(gles_handle, GlPixelStorei, "glPixelStorei") orelse return error.GlSymbolMissing,
@@ -304,16 +334,112 @@ pub const Api = struct {
         };
     }
 
+    pub fn hasTimerQuery(self: *const Api) bool {
+        return self.gen_queries != null and self.delete_queries != null and
+            self.begin_query != null and self.end_query != null and
+            self.get_query_objectuiv != null and self.get_query_objectui64v != null and
+            self.get_integerv != null;
+    }
+
     pub fn deinit(self: *Api) void {
         _ = std.c.dlclose(self.gles_handle);
         _ = std.c.dlclose(self.egl_handle);
     }
 };
 
+fn procFn(get_proc: EglGetProcAddress, comptime T: type, name: [*:0]const u8) ?T {
+    const p = get_proc(name) orelse return null;
+    return @ptrCast(@alignCast(p));
+}
+
 fn lookup(handle: *anyopaque, comptime T: type, name: [*:0]const u8) ?T {
     const symbol = std.c.dlsym(handle, name) orelse return null;
     return @ptrCast(@alignCast(symbol));
 }
+
+/// #369 — 프레임 GPU 시간 측정기 (`GL_EXT_disjoint_timer_query`).
+///
+/// timer query 는 **결과가 즉시 안 나온다** — GPU 가 그 구간을 끝내야 읽을 수 있다.
+/// 그래서 query 객체를 여러 개 돌려 쓰고 몇 프레임 뒤에 읽는다. 하나만 쓰면 매
+/// 프레임 GPU 를 기다리게 되어 (동기점) 재려던 것 자체가 바뀐다.
+///
+/// `GL_GPU_DISJOINT_EXT` 가 서면 그 표본은 버린다 — 드라이버가 "이 구간의 타이머를
+/// 믿지 말라" 고 말하는 것이다 (전원 상태 변화 등).
+pub const GpuTimer = struct {
+    const SLOTS = 4;
+
+    ids: [SLOTS]u32 = @splat(0),
+    /// 그 slot 에 측정이 걸려 있는가.
+    pending: [SLOTS]bool = @splat(false),
+    next: usize = 0,
+    active: bool = false,
+
+    total_ns: u64 = 0,
+    samples: u64 = 0,
+    discarded: u64 = 0,
+
+    pub fn create(api: *const Api) ?GpuTimer {
+        if (!api.hasTimerQuery()) return null;
+        var self = GpuTimer{};
+        (api.gen_queries orelse return null)(SLOTS, &self.ids);
+        for (self.ids) |id| {
+            if (id == 0) return null;
+        }
+        return self;
+    }
+
+    pub fn deinit(self: *GpuTimer, api: *const Api) void {
+        if (api.delete_queries) |f| f(SLOTS, &self.ids);
+    }
+
+    pub fn begin(self: *GpuTimer, api: *const Api) void {
+        if (self.active) return;
+        // 이 slot 에 이전 측정이 남아 있으면 먼저 거둔다 (4 프레임 전 것이라 보통 끝나 있다).
+        self.collectSlot(api, self.next);
+        if (self.pending[self.next]) return; // 아직 안 끝났다 — 이번 프레임은 건너뛴다.
+        (api.begin_query orelse return)(GL_TIME_ELAPSED_EXT, self.ids[self.next]);
+        self.active = true;
+    }
+
+    pub fn end(self: *GpuTimer, api: *const Api) void {
+        if (!self.active) return;
+        (api.end_query orelse return)(GL_TIME_ELAPSED_EXT);
+        self.pending[self.next] = true;
+        self.next = (self.next + 1) % SLOTS;
+        self.active = false;
+    }
+
+    fn collectSlot(self: *GpuTimer, api: *const Api, slot: usize) void {
+        if (!self.pending[slot]) return;
+        var available: u32 = 0;
+        (api.get_query_objectuiv orelse return)(self.ids[slot], GL_QUERY_RESULT_AVAILABLE_EXT, &available);
+        if (available == 0) return;
+        self.pending[slot] = false;
+
+        var disjoint: i32 = 0;
+        if (api.get_integerv) |f| f(GL_GPU_DISJOINT_EXT, &disjoint);
+        var ns: u64 = 0;
+        (api.get_query_objectui64v orelse return)(self.ids[slot], GL_QUERY_RESULT_EXT, &ns);
+        if (disjoint != 0) {
+            self.discarded += 1;
+            return;
+        }
+        self.total_ns += ns;
+        self.samples += 1;
+    }
+
+    /// 모인 표본의 평균 (ns). 표본이 없으면 null.
+    pub fn averageNs(self: *const GpuTimer) ?u64 {
+        if (self.samples == 0) return null;
+        return self.total_ns / self.samples;
+    }
+
+    pub fn reset(self: *GpuTimer) void {
+        self.total_ns = 0;
+        self.samples = 0;
+        self.discarded = 0;
+    }
+};
 
 /// 초기화된 EGL display + surfaceless GLES context 한 벌.
 pub const Context = struct {
