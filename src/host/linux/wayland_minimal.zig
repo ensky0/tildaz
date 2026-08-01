@@ -3036,6 +3036,7 @@ const Client = struct {
                         self.gl_text_batch = text_batch;
                         self.gl_atlas_store = gl_atlas.Atlas.create(gl_api, self.allocator);
                         if (gpuTimingRequested()) {
+                            software_terminal.timing_enabled = true;
                             self.gpu_timer = egl.GpuTimer.create(gl_api);
                             log.appendLine("gpu", "GPU 시간 계측 {s} (TILDAZ_GPU_TIMING)", .{
                                 if (self.gpu_timer != null) @as([]const u8, "켬") else "불가 — GL_EXT_disjoint_timer_query 없음",
@@ -3684,6 +3685,7 @@ const Client = struct {
             };
             if (self.session) |*session| {
                 if (session.activeTab()) |tab| {
+                    const collect_t0 = perf.now();
                     frame = self.renderer.buildGlFrame(self.allocator, self.frameInputs(
                         session,
                         tab,
@@ -3692,6 +3694,10 @@ const Client = struct {
                         &titles_storage,
                         &hotkey_hint_buf,
                     ));
+                    // #362 — 목록 생성 비용. GPU 로 옮긴 뒤 남은 CPU 의 어디가
+                    // 무거운지 보려면 이 값이 필요하다 (계측은 GPU 타이밍과 같은
+                    // 스위치로 켠다).
+                    if (self.gpu_timer != null) perf.addTimed(&perf.render, collect_t0);
                 }
             }
 
@@ -3739,6 +3745,13 @@ const Client = struct {
                 // 120 프레임마다 한 줄. 매 프레임 찍으면 로그가 계측을 방해한다.
                 if (self.gpu_timer_frames % 120 == 0) {
                     if (t.averageNs()) |avg| {
+                        const rc = perf.snapshot(&perf.render);
+                        log.appendLine("gpu", "목록 생성 평균 {d:.1} µs (호출 {d}) — 마지막 프레임 update={d:.1} collect={d:.1} µs", .{
+                            if (rc[0] > 0) @as(f64, @floatFromInt(rc[1])) / @as(f64, @floatFromInt(rc[0])) / 1000.0 else 0.0,
+                            rc[0],
+                            @as(f64, @floatFromInt(software_terminal.last_update_ns)) / 1000.0,
+                            @as(f64, @floatFromInt(software_terminal.last_collect_ns)) / 1000.0,
+                        });
                         log.appendLine("gpu", "프레임 GPU 시간 평균 {d:.1} µs (표본 {d}, 버린 것 {d}, {d}x{d}, modifier=0x{x:0>16} plane={d})", .{
                             @as(f64, @floatFromInt(avg)) / 1000.0,
                             t.samples,
