@@ -3085,7 +3085,14 @@ const Client = struct {
     fn disableGpu(self: *Client, reason: []const u8) void {
         if (!self.gpu_enabled) return;
         self.gpu_enabled = false;
-        log.appendLine("gpu", "dmabuf 경로 중단 — {s}. software wl_shm 으로 되돌린다", .{reason});
+        // GL 렌더도 함께 끈다 — dma-buf 없이는 렌더 타깃이 없다. 남겨 두면 상태가
+        // 사실과 어긋나고 `render_path` 로그가 거짓을 말한다.
+        const was_gl = self.gl_render_enabled;
+        self.gl_render_enabled = false;
+        log.appendLine("gpu", "{s} 경로 중단 — {s}. software wl_shm 으로 되돌린다", .{
+            if (was_gl) @as([]const u8, "GL 렌더") else "dmabuf",
+            reason,
+        });
     }
 
     /// #277 — GPU 경로 buffer 하나. 실패하면 null 을 돌려주고 호출처가 shm 으로
@@ -7461,8 +7468,16 @@ const Client = struct {
                 // "이 머신은 GPU 로 갈 수 있는가" 를 한 줄로 판정하는 값이다.
                 self.gl_modifier != null,
                 // #277 — 어느 경로로 그리는지. 사용자 보고를 진단할 때 첫 번째로
-                // 볼 값이라 capability 줄에 같이 남긴다.
-                if (self.gpu_enabled) @as([]const u8, "gpu-dmabuf") else "software-shm",
+                // 볼 값이라 capability 줄에 같이 남긴다. **래스터화 주체까지
+                // 구분한다** — `gpu-dmabuf` 는 GPU buffer 에 CPU 가 그리는 S1 이고
+                // `gpu-gl` 은 GPU 가 그리는 S2 다. 둘을 뭉치면 사용자 로그만 보고
+                // 어느 쪽 문제인지 가릴 수 없다.
+                if (!self.gpu_enabled)
+                    @as([]const u8, "software-shm")
+                else if (self.gl_render_enabled)
+                    "gpu-gl"
+                else
+                    "gpu-dmabuf",
             },
         );
     }
