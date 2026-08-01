@@ -72,6 +72,8 @@ const max_buffers_per_size: usize = 2;
 /// #277 — compositor 가 공표하는 ARGB8888 modifier 후보 상한. 실측은 AMD 8 종 /
 /// NVIDIA 13 종이었다. 넘치면 앞쪽만 본다 (뒤쪽이 더 나을 이유가 없다).
 const max_dmabuf_mods: usize = 64;
+/// #367 — feedback tranche 수 상한. 실측은 세 기기 모두 3 개.
+const max_dmabuf_tranches: usize = 16;
 const wl_seat_capability_pointer: u32 = 1;
 const wl_seat_capability_keyboard: u32 = 2;
 const wl_keyboard_keymap_format_xkb_v1: u32 = 1;
@@ -886,6 +888,13 @@ const Client = struct {
     // modifier 를 고르는 데 쓴다 (LINEAR 를 공표하지 않는 환경 — NVIDIA 실측 — 대응).
     dmabuf_mods: [max_dmabuf_mods]u64 = undefined,
     dmabuf_mod_count: usize = 0,
+    /// #367 — tranche 경계 (배타적 끝 index). 협상이 **tranche 단위로** 시도하려면
+    /// 평탄화만으로는 부족하다 — tranche *사이*는 선호 순서지만 *안*은 동등해서,
+    /// 안쪽 순위는 드라이버에게 맡겨야 하기 때문이다.
+    dmabuf_tranche_ends: [max_dmabuf_tranches]usize = undefined,
+    dmabuf_tranche_end_count: usize = 0,
+    /// 채택한 modifier 의 plane 수 (압축이면 2 이상).
+    gl_plane_count: usize = 1,
     // #277 S2-6 — dmabuf feedback (v4+). compositor 가 지원 목록을 **선호 내림차순
     // tranche** 로 준다 — v3 의 평면 `modifier` 목록에는 순서 정의가 아예 없어서
     // "처음 통과하는 것" 이 벤더마다 다른 품질의 선택이 됐다 (Intel 실기에서 LINEAR).
@@ -3101,10 +3110,9 @@ const Client = struct {
     /// 선호 내림차순이므로 순서를 그대로 보존하면 된다.
     ///
     /// 다른 device 를 겨냥한 tranche 는 건너뛴다 — 우리는 한 device 에만 할당한다.
-    /// tranche 안에서는 모든 항목의 선호가 같으므로 (프로토콜 명시) 거기서만
-    /// tiled 를 LINEAR 보다 앞에 둔다: GPU 렌더 타깃은 tiled 가 유리하고
-    /// (https://docs.mesa3d.org/isl/tiling.html), GL 이 그리는 지금은 CPU 매핑이
-    /// 필요 없어 LINEAR 를 고를 이유가 없다.
+    /// tranche 안에서는 모든 항목의 선호가 같으므로 (프로토콜 명시) 순서를 그대로
+    /// 두고, **안쪽 순위는 협상이 드라이버에게 맡긴다** (#367) — 드라이버는 자기
+    /// tiling·압축 순위를 안다.
     fn flushDmabufTranche(self: *Client) void {
         defer {
             self.dmabuf_tranche_count = 0;
@@ -3119,14 +3127,16 @@ const Client = struct {
             });
             return;
         }
-        for ([2]bool{ false, true }) |take_linear| {
-            for (self.dmabuf_tranche_mods[0..self.dmabuf_tranche_count]) |modifier| {
-                if ((modifier == gbm.MOD_LINEAR) != take_linear) continue;
-                if (modifier == gbm.MOD_LINEAR) self.dmabuf_linear_supported = true;
-                if (self.dmabuf_mod_count >= max_dmabuf_mods) return;
-                self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
-                self.dmabuf_mod_count += 1;
-            }
+        for (self.dmabuf_tranche_mods[0..self.dmabuf_tranche_count]) |modifier| {
+            if (modifier == gbm.MOD_LINEAR) self.dmabuf_linear_supported = true;
+            if (self.dmabuf_mod_count >= max_dmabuf_mods) break;
+            self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
+            self.dmabuf_mod_count += 1;
+        }
+        // 경계를 남긴다 — 협상이 이 묶음 단위로 드라이버에게 고르게 한다.
+        if (self.dmabuf_tranche_count > 0 and self.dmabuf_tranche_end_count < max_dmabuf_tranches) {
+            self.dmabuf_tranche_ends[self.dmabuf_tranche_end_count] = self.dmabuf_mod_count;
+            self.dmabuf_tranche_end_count += 1;
         }
         log.appendLineVerbose("gpu", "dmabuf tranche {d}: ARGB8888 {d} 종{s}", .{
             self.dmabuf_tranche_index,
@@ -3164,45 +3174,75 @@ const Client = struct {
             return;
         };
 
+        // v3 평면 목록에는 tranche 가 없다 — 전체를 한 묶음으로 본다. 그러면 아래
+        // 루프가 그 묶음 안에서 드라이버에게 고르게 하므로, feedback 이 없는
+        // compositor 에서도 순위 판단이 드라이버 몫이 된다.
+        if (self.dmabuf_tranche_end_count == 0 and self.dmabuf_mod_count > 0) {
+            self.dmabuf_tranche_ends[0] = self.dmabuf_mod_count;
+            self.dmabuf_tranche_end_count = 1;
+        }
+
         // 창 크기가 아직 정해지기 전에 불리므로 고정 크기로 시험한다. modifier 의
         // import / FBO 가능 여부는 크기에 의존하지 않는다.
         const probe_w: u32 = 256;
         const probe_h: u32 = 256;
 
-        // **목록 순서대로** 시험하고 처음 통과하는 것을 쓴다. 그 순서를 누가 정하는지가
-        // 핵심이다:
+        // **tranche 단위로 드라이버에게 고르게 하고 검증한다** (#367).
         //
-        //   - feedback (v4+) 경로면 **compositor 가 정한 선호 내림차순**이다. 그대로
-        //     따른다 — compositor 는 자기가 무엇을 direct scanout 할 수 있는지 안다.
-        //   - v3 평면 목록이면 **순서 정의가 아예 없다** (프로토콜 명시). 그때만
-        //     `flushDmabufTranche` 와 같은 규칙으로 tiled 를 LINEAR 앞에 둔다 —
-        //     GPU 렌더 타깃은 tiled 가 유리하고 (https://docs.mesa3d.org/isl/tiling.html
-        //     — linear 는 *"very bad cache locality"*), GL 이 그리는 지금은 CPU
-        //     매핑이 필요 없어 LINEAR 를 고를 이유가 사라졌다. Intel 실기에서 그
-        //     "순서 없는 목록의 첫 항목" 이 LINEAR 였다.
+        //   바깥 루프 = tranche 순서  → compositor 가 정한 선호 내림차순
+        //   안쪽      = GBM 에 목록 통째로 → 드라이버가 자기 순위로 고른다
+        //   그다음    = import + FBO 검증 → 실패하면 그 modifier 를 빼고 재시도
         //
-        // 어느 경우든 LINEAR 는 후보로 남는다 — 그것만 통과하는 환경이 있을 수 있고,
-        // 동작하는 것이 빠른 것보다 먼저다.
-        const passes: []const bool = if (self.dmabuf_mods_ordered) &.{true} else &.{ false, true };
-        for (passes) |allow_linear| {
-            for (self.dmabuf_mods[0..self.dmabuf_mod_count]) |modifier| {
-                if (!self.dmabuf_mods_ordered and (modifier == gbm.MOD_LINEAR) != allow_linear) continue;
-                const bo = gpu.api.createWithModifier(gpu.device, modifier, probe_w, probe_h) orelse continue;
-                defer gpu.api.destroyBo(bo);
-                const fd = gpu.api.exportFd(bo) orelse continue;
-                defer posix.close(fd);
-                const target = ctx.importAsTarget(fd, bo) orelse continue;
-                ctx.destroyTarget(target);
-                self.gl_modifier = modifier;
-                break;
+        // 두 선호 원천이 각자 맞는 층에서 작동한다. tranche 안은 프로토콜상 선호가
+        // 같아 우리가 순서를 정할 근거가 없고, 드라이버는 Y_TILED > X_TILED 같은
+        // 자기 순위를 안다 (Intel 실기에서 우리 규칙은 X_TILED 를 골랐다).
+        //
+        // 예전에 GBM 위임을 버린 이유는 "AMD 에서 DCC 를 골랐는데 EGL import 가
+        // EGL_BAD_MATCH" 였는데, 그건 아래 **검증 후 재시도** 가 흡수한다.
+        var pool: [max_dmabuf_mods]u64 = undefined;
+        var tranche_start: usize = 0;
+        for (self.dmabuf_tranche_ends[0..self.dmabuf_tranche_end_count]) |tranche_end| {
+            defer tranche_start = tranche_end;
+            if (tranche_end <= tranche_start) continue;
+            var pool_len = tranche_end - tranche_start;
+            @memcpy(pool[0..pool_len], self.dmabuf_mods[tranche_start..tranche_end]);
+
+            while (pool_len > 0) {
+                const bo = gpu.api.createWithModifiers(gpu.device, pool[0..pool_len], probe_w, probe_h) orelse break;
+                const chosen = bo.modifier;
+                var planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
+                const plane_count = gpu.api.exportPlanes(bo, &planes) orelse {
+                    gpu.api.destroyBo(bo);
+                    break;
+                };
+                const target = ctx.importAsTarget(planes[0..plane_count], bo);
+                gbm.Api.closePlanes(planes[0..plane_count]);
+                gpu.api.destroyBo(bo);
+                if (target) |t| {
+                    ctx.destroyTarget(t);
+                    self.gl_modifier = chosen;
+                    self.gl_plane_count = plane_count;
+                    break;
+                }
+                // 드라이버가 고른 것을 GL 이 못 받는다 — 빼고 다시 고르게 한다.
+                log.appendLineVerbose("gpu", "modifier 0x{x:0>16} (plane {d}) import 실패 — 후보에서 제외", .{ chosen, plane_count });
+                var w: usize = 0;
+                for (pool[0..pool_len]) |m| {
+                    if (m == chosen) continue;
+                    pool[w] = m;
+                    w += 1;
+                }
+                if (w == pool_len) break; // 못 지웠다 — 무한 루프 방지
+                pool_len = w;
             }
             if (self.gl_modifier != null) break;
         }
 
         if (self.gl_modifier) |modifier| {
-            log.appendLine("gpu", "GLES 렌더러 가능 — modifier=0x{x:0>16}{s}{s} renderer={s} version={s}", .{
+            log.appendLine("gpu", "GLES 렌더러 가능 — modifier=0x{x:0>16}{s} plane={d}{s} renderer={s} version={s}", .{
                 modifier,
                 if (modifier == gbm.MOD_LINEAR) @as([]const u8, " (LINEAR)") else " (tiled)",
+                self.gl_plane_count,
                 if (self.dmabuf_mods_ordered) @as([]const u8, " feedback-선호") else " v3-목록",
                 ctx.rendererName(),
                 ctx.versionName(),
@@ -3255,15 +3295,16 @@ const Client = struct {
             self.disableGpu("gbm 할당 실패");
             return null;
         };
-        const fd = gpu.api.exportFd(bo) orelse {
+        var planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
+        const plane_count = gpu.api.exportPlanes(bo, &planes) orelse {
             gpu.api.destroyBo(bo);
             self.disableGpu("dma-buf fd export 실패");
             return null;
         };
-        defer posix.close(fd);
+        defer gbm.Api.closePlanes(planes[0..plane_count]);
 
         const params_id = self.allocId();
-        const buffer_id = self.sendDmabufCreate(params_id, fd, bo) catch {
+        const buffer_id = self.sendDmabufCreate(params_id, planes[0..plane_count], bo) catch {
             gpu.api.destroyBo(bo);
             self.disableGpu("dmabuf 프로토콜 송신 실패");
             return null;
@@ -3289,15 +3330,16 @@ const Client = struct {
         // 않고 buffer 수명과 함께 간다 (buffer 는 재사용되므로).
         if (self.gl_render_enabled) {
             const ctx = self.gl_context.?;
-            // import 용 fd 를 다시 얻는다 — 위에서 프로토콜에 넘긴 fd 는 닫혔다.
-            const gl_fd = gpu.api.exportFd(bo) orelse {
+            // import 용 fd 를 다시 얻는다 — 위에서 프로토콜에 넘긴 fd 는 곧 닫힌다.
+            var gl_planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
+            const gl_plane_count = gpu.api.exportPlanes(bo, &gl_planes) orelse {
                 self.destroyBufferObject(buffer.id);
                 buffer.deinit();
                 self.disableGpu("GL import 용 dma-buf fd export 실패");
                 return null;
             };
-            defer posix.close(gl_fd);
-            buffer.gl_target = ctx.importAsTarget(gl_fd, bo) orelse {
+            defer gbm.Api.closePlanes(gl_planes[0..gl_plane_count]);
+            buffer.gl_target = ctx.importAsTarget(gl_planes[0..gl_plane_count], bo) orelse {
                 self.destroyBufferObject(buffer.id);
                 buffer.deinit();
                 self.disableGpu("dma-buf 를 GL 렌더 타깃으로 만들지 못함");
@@ -3311,18 +3353,20 @@ const Client = struct {
 
     /// `zwp_linux_buffer_params_v1` 왕복. `created` 면 server 가 할당한 wl_buffer
     /// id, `failed` 면 null.
-    fn sendDmabufCreate(self: *Client, params_id: u32, fd: posix.fd_t, bo: gbm.Bo) !?u32 {
+    fn sendDmabufCreate(self: *Client, params_id: u32, planes: []const gbm.Plane, bo: gbm.Bo) !?u32 {
         // zwp_linux_dmabuf_v1.create_params (opcode 1).
         try self.sendArgs(self.linux_dmabuf_id, 1, &.{params_id});
-        {
-            // params.add (opcode 1) — (fd, plane_idx, offset, stride, mod_hi, mod_lo).
+        // params.add (opcode 1) — (fd, plane_idx, offset, stride, mod_hi, mod_lo).
+        // **plane 마다 한 번씩** 보낸다 (#367 — 압축 modifier 는 메타데이터 평면을
+        // 더 갖는다). modifier 는 plane 마다 같은 값을 반복한다 (프로토콜 계약).
+        for (planes, 0..) |plane, i| {
             var msg = Msg.init(params_id, 1);
-            try msg.putU32(0);
-            try msg.putU32(bo.offset);
-            try msg.putU32(bo.stride);
+            try msg.putU32(@intCast(i));
+            try msg.putU32(plane.offset);
+            try msg.putU32(plane.stride);
             try msg.putU32(@truncate(bo.modifier >> 32));
             try msg.putU32(@truncate(bo.modifier & 0xffff_ffff));
-            try msg.sendWithFd(self.stream, fd);
+            try msg.sendWithFd(self.stream, plane.fd);
         }
         {
             // params.create (opcode 2) — (width, height, format, flags).

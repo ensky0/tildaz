@@ -27,6 +27,22 @@ pub const DMA_BUF_PLANE0_OFFSET_EXT: i32 = 0x3273;
 pub const DMA_BUF_PLANE0_PITCH_EXT: i32 = 0x3274;
 pub const DMA_BUF_PLANE0_MODIFIER_LO_EXT: i32 = 0x3443;
 pub const DMA_BUF_PLANE0_MODIFIER_HI_EXT: i32 = 0x3444;
+// plane 1 / 2 — 압축 modifier (AMD DCC / Intel CCS) 의 메타데이터 평면용 (#367).
+pub const DMA_BUF_PLANE1_FD_EXT: i32 = 0x3275;
+pub const DMA_BUF_PLANE1_OFFSET_EXT: i32 = 0x3276;
+pub const DMA_BUF_PLANE1_PITCH_EXT: i32 = 0x3277;
+pub const DMA_BUF_PLANE1_MODIFIER_LO_EXT: i32 = 0x3445;
+pub const DMA_BUF_PLANE1_MODIFIER_HI_EXT: i32 = 0x3446;
+pub const DMA_BUF_PLANE2_FD_EXT: i32 = 0x3278;
+pub const DMA_BUF_PLANE2_OFFSET_EXT: i32 = 0x3279;
+pub const DMA_BUF_PLANE2_PITCH_EXT: i32 = 0x327A;
+pub const DMA_BUF_PLANE2_MODIFIER_LO_EXT: i32 = 0x3447;
+pub const DMA_BUF_PLANE2_MODIFIER_HI_EXT: i32 = 0x3448;
+pub const DMA_BUF_PLANE3_FD_EXT: i32 = 0x3440;
+pub const DMA_BUF_PLANE3_OFFSET_EXT: i32 = 0x3441;
+pub const DMA_BUF_PLANE3_PITCH_EXT: i32 = 0x3442;
+pub const DMA_BUF_PLANE3_MODIFIER_LO_EXT: i32 = 0x3449;
+pub const DMA_BUF_PLANE3_MODIFIER_HI_EXT: i32 = 0x344A;
 
 pub const GL_TEXTURE_2D: u32 = 0x0DE1;
 pub const GL_FRAMEBUFFER: u32 = 0x8D40;
@@ -361,22 +377,51 @@ pub const Context = struct {
     /// dma-buf 를 EGLImage 로 가져와 texture 에 붙이고 FBO 의 color attachment 로
     /// 만든다. 성공하면 `Target`, 아니면 null.
     ///
-    /// **modifier 마다 되고 안 되고가 갈린다.** AMD 실측에서 DCC(압축) modifier 는
-    /// 할당은 되지만 이 import 가 `EGL_BAD_MATCH` 로 실패했다. 그래서 호출처는
-    /// 후보를 순회하며 되는 것을 고른다 (`negotiate`).
-    pub fn importAsTarget(self: *const Context, fd: std.posix.fd_t, bo: gbm.Bo) ?Target {
-        const attrs = [_]i32{
-            WIDTH,                          @intCast(bo.width),
-            HEIGHT,                         @intCast(bo.height),
-            LINUX_DRM_FOURCC_EXT,           @bitCast(gbm.FORMAT_ARGB8888),
-            DMA_BUF_PLANE0_FD_EXT,          fd,
-            DMA_BUF_PLANE0_OFFSET_EXT,      @intCast(bo.offset),
-            DMA_BUF_PLANE0_PITCH_EXT,       @intCast(bo.stride),
-            DMA_BUF_PLANE0_MODIFIER_LO_EXT, @bitCast(@as(u32, @truncate(bo.modifier & 0xffff_ffff))),
-            DMA_BUF_PLANE0_MODIFIER_HI_EXT, @bitCast(@as(u32, @truncate(bo.modifier >> 32))),
-            EGL_NONE,
+    /// **modifier 마다 되고 안 되고가 갈린다.** 그래서 호출처는 후보를 순회하며
+    /// 되는 것을 고른다 (`negotiateGlModifier`).
+    ///
+    /// plane 이 여러 개일 수 있다 — 압축 modifier (AMD DCC / Intel CCS) 는 픽셀 평면
+    /// 외에 메타데이터 평면을 갖는다 (#367). modifier 는 **plane 마다 반복해서**
+    /// 넘긴다 (`EGL_EXT_image_dma_buf_import_modifiers` 계약).
+    pub fn importAsTarget(self: *const Context, planes: []const gbm.Plane, bo: gbm.Bo) ?Target {
+        if (planes.len == 0 or planes.len > gbm.MAX_PLANES) return null;
+        const mod_lo: i32 = @bitCast(@as(u32, @truncate(bo.modifier & 0xffff_ffff)));
+        const mod_hi: i32 = @bitCast(@as(u32, @truncate(bo.modifier >> 32)));
+
+        // plane 별 속성 이름표. EGL 은 enum 이 연속이 아니라 표로 든다.
+        const names = [gbm.MAX_PLANES][5]i32{
+            .{ DMA_BUF_PLANE0_FD_EXT, DMA_BUF_PLANE0_OFFSET_EXT, DMA_BUF_PLANE0_PITCH_EXT, DMA_BUF_PLANE0_MODIFIER_LO_EXT, DMA_BUF_PLANE0_MODIFIER_HI_EXT },
+            .{ DMA_BUF_PLANE1_FD_EXT, DMA_BUF_PLANE1_OFFSET_EXT, DMA_BUF_PLANE1_PITCH_EXT, DMA_BUF_PLANE1_MODIFIER_LO_EXT, DMA_BUF_PLANE1_MODIFIER_HI_EXT },
+            .{ DMA_BUF_PLANE2_FD_EXT, DMA_BUF_PLANE2_OFFSET_EXT, DMA_BUF_PLANE2_PITCH_EXT, DMA_BUF_PLANE2_MODIFIER_LO_EXT, DMA_BUF_PLANE2_MODIFIER_HI_EXT },
+            .{ DMA_BUF_PLANE3_FD_EXT, DMA_BUF_PLANE3_OFFSET_EXT, DMA_BUF_PLANE3_PITCH_EXT, DMA_BUF_PLANE3_MODIFIER_LO_EXT, DMA_BUF_PLANE3_MODIFIER_HI_EXT },
         };
-        const image = self.api.createImage(self.display, null, LINUX_DMA_BUF_EXT, null, &attrs) orelse return null;
+
+        var attrs: [6 + gbm.MAX_PLANES * 10 + 1]i32 = undefined;
+        var n: usize = 0;
+        attrs[n] = WIDTH;
+        attrs[n + 1] = @intCast(bo.width);
+        attrs[n + 2] = HEIGHT;
+        attrs[n + 3] = @intCast(bo.height);
+        attrs[n + 4] = LINUX_DRM_FOURCC_EXT;
+        attrs[n + 5] = @bitCast(gbm.FORMAT_ARGB8888);
+        n += 6;
+        for (planes, 0..) |plane, i| {
+            const name = names[i];
+            attrs[n] = name[0];
+            attrs[n + 1] = plane.fd;
+            attrs[n + 2] = name[1];
+            attrs[n + 3] = @intCast(plane.offset);
+            attrs[n + 4] = name[2];
+            attrs[n + 5] = @intCast(plane.stride);
+            attrs[n + 6] = name[3];
+            attrs[n + 7] = mod_lo;
+            attrs[n + 8] = name[4];
+            attrs[n + 9] = mod_hi;
+            n += 10;
+        }
+        attrs[n] = EGL_NONE;
+        n += 1;
+        const image = self.api.createImage(self.display, null, LINUX_DMA_BUF_EXT, null, attrs[0..n].ptr) orelse return null;
 
         var texture: u32 = 0;
         self.api.genTextures(1, @ptrCast(&texture));
