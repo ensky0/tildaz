@@ -2436,6 +2436,12 @@ const Client = struct {
         // dialog surface가 map된 뒤 preferred_scale이 도착할 수 있다. font만
         // 바꾸고 1x 요청 폭을 유지하면 본문이 불필요하게 더 wrap되므로 dialog
         // role의 size/margin도 같은 scale에서 다시 요청한다 (#306).
+        // #368 — dialog 가 떠 있는 동안 scale 이 바뀌면 `applyScale` 이 dialog 폰트를
+        // 버린다 (지연 생성 정책). 그 상태로 다시 그리면 탭 폰트로 떨어지므로, 열려
+        // 있을 때만 즉시 새 scale 로 다시 만든다.
+        if (renderer_scale_applied and self.dialog.surface_id != 0) {
+            self.renderer.ensureDialogFonts(self.allocator);
+        }
         if (renderer_scale_applied and self.dialog.surface_id != 0) {
             try self.sendDialogSurfaceLayout(source);
         }
@@ -6603,6 +6609,11 @@ const Client = struct {
         }
         // Confirm pending 새로 시작 — 이전 dialog 의 result 가 남아 있을 가능성 0.
         self.pending_confirm_result = null;
+
+        // #368 — dialog 폰트를 여기서 만든다 (지연 생성). 아래 layout 계산부터
+        // 이미 dialog 폰트의 cell 크기를 쓰므로 **그보다 먼저** 있어야 한다.
+        // 대부분의 세션은 이 지점에 오지 않아 시작 시간에서 그만큼을 아낀다.
+        self.renderer.ensureDialogFonts(self.allocator);
 
         // #306 — basis output viewport 안에서 실제 텍스트 폭/줄 수로 surface를
         // 계산한다. physical→logical은 ceil로 왕복 축소를 막는다.
