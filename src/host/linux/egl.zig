@@ -49,6 +49,25 @@ pub const GL_FLOAT: u32 = 0x1406;
 pub const GL_TRIANGLES: u32 = 0x0004;
 pub const GL_BLEND: u32 = 0x0BE2;
 
+// 텍스처 — GLES2 코어 포맷만 쓴다. `GL_R8` 은 GLES3 이상이라 쓰지 않는다:
+// grayscale 글리프는 `GL_ALPHA` (1 byte, 셰이더에서 `.a` 로 읽는다), 컬러 emoji 는
+// `GL_RGBA` (FreeType 의 BGRA premultiplied 를 업로드 시 R/B 만 바꿔 넣는다 —
+// GLES2 에는 `GL_BGRA` 가 없다).
+pub const GL_ALPHA: i32 = 0x1906;
+pub const GL_RGBA: i32 = 0x1908;
+pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
+pub const GL_TEXTURE0: u32 = 0x84C0;
+pub const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
+pub const GL_CLAMP_TO_EDGE: i32 = 0x812F;
+pub const GL_TEXTURE_WRAP_S: u32 = 0x2802;
+pub const GL_TEXTURE_WRAP_T: u32 = 0x2803;
+
+// 블렌딩 — 셰이더가 **premultiplied** 색을 내보내므로 `ONE / ONE_MINUS_SRC_ALPHA`.
+// 프레임버퍼가 비-sRGB 라 gamma space 에서 섞이고, 그게 software 경로의
+// `blendPixel` (역시 gamma space 직선 블렌드) 과 같은 결과를 준다.
+pub const GL_ONE: u32 = 1;
+pub const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
+
 const EglGetProcAddress = *const fn (name: [*:0]const u8) callconv(.c) ?*anyopaque;
 const EglGetPlatformDisplay = *const fn (platform: u32, native: ?*anyopaque, attrs: ?[*]const isize) callconv(.c) ?*anyopaque;
 const EglInitialize = *const fn (dpy: ?*anyopaque, major: ?*i32, minor: ?*i32) callconv(.c) c_uint;
@@ -104,6 +123,12 @@ const GlEnableVertexAttribArray = *const fn (index: u32) callconv(.c) void;
 const GlVertexAttribPointer = *const fn (index: u32, size: i32, kind: u32, normalized: u8, stride: i32, offset: ?*const anyopaque) callconv(.c) void;
 const GlDrawArrays = *const fn (mode: u32, first: i32, count: i32) callconv(.c) void;
 const GlDisable = *const fn (cap: u32) callconv(.c) void;
+const GlTexImage2D = *const fn (target: u32, level: i32, internal: i32, w: i32, h: i32, border: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
+const GlTexSubImage2D = *const fn (target: u32, level: i32, x: i32, y: i32, w: i32, h: i32, format: u32, kind: u32, pixels: ?*const anyopaque) callconv(.c) void;
+const GlPixelStorei = *const fn (pname: u32, param: i32) callconv(.c) void;
+const GlActiveTexture = *const fn (unit: u32) callconv(.c) void;
+const GlUniform1i = *const fn (location: i32, value: i32) callconv(.c) void;
+const GlBlendFunc = *const fn (src: u32, dst: u32) callconv(.c) void;
 
 pub const Api = struct {
     egl_handle: *anyopaque,
@@ -164,6 +189,12 @@ pub const Api = struct {
     vertexAttribPointer: GlVertexAttribPointer,
     drawArrays: GlDrawArrays,
     disable: GlDisable,
+    texImage2D: GlTexImage2D,
+    texSubImage2D: GlTexSubImage2D,
+    pixelStorei: GlPixelStorei,
+    activeTexture: GlActiveTexture,
+    uniform1i: GlUniform1i,
+    blendFunc: GlBlendFunc,
 
     pub fn load() !Api {
         const egl_handle = std.c.dlopen("libEGL.so.1", .{ .LAZY = true }) orelse return error.EglLibraryMissing;
@@ -237,6 +268,12 @@ pub const Api = struct {
             .vertexAttribPointer = lookup(gles_handle, GlVertexAttribPointer, "glVertexAttribPointer") orelse return error.GlSymbolMissing,
             .drawArrays = lookup(gles_handle, GlDrawArrays, "glDrawArrays") orelse return error.GlSymbolMissing,
             .disable = lookup(gles_handle, GlDisable, "glDisable") orelse return error.GlSymbolMissing,
+            .texImage2D = lookup(gles_handle, GlTexImage2D, "glTexImage2D") orelse return error.GlSymbolMissing,
+            .texSubImage2D = lookup(gles_handle, GlTexSubImage2D, "glTexSubImage2D") orelse return error.GlSymbolMissing,
+            .pixelStorei = lookup(gles_handle, GlPixelStorei, "glPixelStorei") orelse return error.GlSymbolMissing,
+            .activeTexture = lookup(gles_handle, GlActiveTexture, "glActiveTexture") orelse return error.GlSymbolMissing,
+            .uniform1i = lookup(gles_handle, GlUniform1i, "glUniform1i") orelse return error.GlSymbolMissing,
+            .blendFunc = lookup(gles_handle, GlBlendFunc, "glBlendFunc") orelse return error.GlSymbolMissing,
         };
     }
 
