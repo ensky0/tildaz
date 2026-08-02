@@ -150,11 +150,11 @@ pub const FontId = enum(u8) {
 pub const GlyphItem = struct {
     ref: GlyphRef,
     font: FontId = .terminal,
-    /// raster 결과의 **값 사본**. `bitmap` 은 font cache 가 소유하므로 이 프레임
-    /// 동안만 유효하다 (다음 `applyScale` 까지). 포인터가 아니라 값으로 두는 이유는
-    /// 수집 중에 새 글리프가 캐시에 들어가면 HashMap 이 재해싱되어 앞서 얻은
-    /// 포인터가 무효가 되기 때문이다 — 값 사본은 그 영향을 받지 않는다.
-    glyph: font.Glyph,
+    /// raster 결과. font cache 가 소유하며 **주소가 고정**이라 포인터로 든다 —
+    /// 캐시가 글리프를 개별 할당하므로 재해싱이 주소를 옮기지 않는다 (#362).
+    /// 유효 범위는 폰트를 다시 로드하기 전까지 (`applyScale`) 이고, 프레임 목록은
+    /// 매 프레임 새로 만들어지므로 항상 그 안이다.
+    glyph: *const font.Glyph,
     /// 알파 마스크 글리프면 **bitmap 좌상단** (bearing · 중앙정렬 반영 완료).
     /// 컬러(BGRA) 글리프면 fit 대상 사각형의 좌상단.
     x: i32,
@@ -1912,7 +1912,7 @@ fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p:
     if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
         list.append(allocator, .{
             .ref = p.ref,
-            .glyph = glyph.*,
+            .glyph = glyph,
             .x = p.cell_x,
             .y = p.cell_y,
             .w = p.cell_w,
@@ -1926,7 +1926,7 @@ fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p:
     const center_off: i32 = @divFloor(p.cell_w - advance, 2);
     list.append(allocator, .{
         .ref = p.ref,
-        .glyph = glyph.*,
+        .glyph = glyph,
         .x = p.cell_x + center_off + glyph.bitmap_left + p.x_offset,
         .y = p.cell_y + p.ascent - glyph.bitmap_top - p.y_offset,
         .fg = p.fg,
@@ -1961,7 +1961,7 @@ fn appendChromeGlyph(list: *std.ArrayList(ChromeItem), allocator: std.mem.Alloca
     const item: GlyphItem = if (glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) .{
         .ref = p.ref,
         .font = .tab,
-        .glyph = glyph.*,
+        .glyph = glyph,
         .x = p.pen_x,
         .y = p.box_y,
         .w = p.box_w,
@@ -1970,7 +1970,7 @@ fn appendChromeGlyph(list: *std.ArrayList(ChromeItem), allocator: std.mem.Alloca
     } else .{
         .ref = p.ref,
         .font = .tab,
-        .glyph = glyph.*,
+        .glyph = glyph,
         .x = p.pen_x + glyph.bitmap_left,
         .y = p.baseline - glyph.bitmap_top,
         .fg = p.fg,
@@ -1988,9 +1988,9 @@ fn drawChromeItem(memory: []u8, width: i32, height: i32, stride: i32, it: Chrome
         .rect => |r| drawSolidRect(memory, width, height, stride, r),
         .glyph => |g| {
             if (g.item.glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-                drawGlyphBgra(memory, width, height, stride, g.item.x, g.item.y, g.item.w, g.item.h, &g.item.glyph, g.clip_x0, g.clip_x1);
+                drawGlyphBgra(memory, width, height, stride, g.item.x, g.item.y, g.item.w, g.item.h, g.item.glyph, g.clip_x0, g.clip_x1);
             } else {
-                drawGlyph(memory, width, height, stride, g.item.x, g.item.y, &g.item.glyph, g.item.fg, g.clip_x0, g.clip_x1);
+                drawGlyph(memory, width, height, stride, g.item.x, g.item.y, g.item.glyph, g.item.fg, g.clip_x0, g.clip_x1);
             }
         },
         .icon => |ic| {
@@ -2068,9 +2068,9 @@ pub fn colorGlyphFit(cell_w: i32, cell_h: i32, glyph_w: u32, glyph_h: u32) ?Colo
 /// 표면 전체에만 클립한다 (#361 에서 확정한 "번짐 보존").
 fn drawGlyphItem(memory: []u8, width: i32, height: i32, stride: i32, item: *const GlyphItem) void {
     if (item.glyph.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
-        drawGlyphBgra(memory, width, height, stride, item.x, item.y, item.w, item.h, &item.glyph, 0, width);
+        drawGlyphBgra(memory, width, height, stride, item.x, item.y, item.w, item.h, item.glyph, 0, width);
     } else {
-        drawGlyph(memory, width, height, stride, item.x, item.y, &item.glyph, item.fg, 0, width);
+        drawGlyph(memory, width, height, stride, item.x, item.y, item.glyph, item.fg, 0, width);
     }
 }
 
@@ -2627,6 +2627,25 @@ fn blendPixel(fg: ghostty.color.RGB, bg: ghostty.color.RGB, alpha: u8) u32 {
     const g: u32 = (@as(u32, fg.g) * a + @as(u32, bg.g) * inv + 127) / 255;
     const b: u32 = (@as(u32, fg.b) * a + @as(u32, bg.b) * inv + 127) / 255;
     return (r << 16) | (g << 8) | b;
+}
+
+test "#362 — 줄 경계는 쓰인 칸을 절대 빼먹지 않는다" {
+    // `Cell` 의 zero value 가 "한 번도 쓰인 적 없는 칸" 이라는 것이 근거다.
+    // 여기서 고정하는 것은 **한쪽으로만 틀린다** 는 성질 — 넘치게 도는 것은
+    // 괜찮고, 쓰인 칸을 건너뛰는 것은 화면이 틀리는 것이다.
+    var cells: [40]ghostty.Cell = @splat(.{});
+    cells[3] = .{ .content_tag = .codepoint, .content = .{ .codepoint = 'A' } };
+    cells[20] = .{ .content_tag = .codepoint, .content = .{ .codepoint = 'B' } };
+
+    // 마지막으로 쓰인 칸(20) 다음까지.
+    try std.testing.expectEqual(@as(usize, 21), Renderer.rowLimit(&cells, 40, null));
+    // 선택이 그 뒤까지 걸리면 경계를 늘린다 (빈 칸도 배경을 그려야 한다).
+    try std.testing.expectEqual(@as(usize, 31), Renderer.rowLimit(&cells, 40, .{ 25, 30 }));
+    // 선택이 쓰인 범위 안이면 경계는 그대로.
+    try std.testing.expectEqual(@as(usize, 21), Renderer.rowLimit(&cells, 40, .{ 1, 5 }));
+    // 전부 빈 줄은 볼 것이 없다.
+    const blank: [40]ghostty.Cell = @splat(.{});
+    try std.testing.expectEqual(@as(usize, 0), Renderer.rowLimit(&blank, 40, null));
 }
 
 test "#277 S2-4 — blendPixel 은 최근접 반올림 (GPU 블렌드 유닛과 같은 규칙)" {

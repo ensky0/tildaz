@@ -29,6 +29,17 @@ pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 /// 로그 1줄) — 기로드 face 는 계속 동작.
 const MAX_FALLBACK: usize = 8;
 
+/// #362 — 해석 캐시의 배열 갈래가 덮는 범위 (`0x20`~`0x7E`, printable ASCII).
+/// 터미널 텍스트의 대부분이라 이 구간만 해시를 피해도 대부분을 피한다.
+const ASCII_LO: u21 = 0x20;
+const ASCII_HI: u21 = 0x7E;
+const ASCII_SPAN: usize = ASCII_HI - ASCII_LO + 1;
+
+fn asciiSlot(cp: u21) ?usize {
+    if (cp < ASCII_LO or cp > ASCII_HI) return null;
+    return cp - ASCII_LO;
+}
+
 // Cross-platform ligature 타입 re-export — caller (software_terminal.zig)
 // 가 `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
 pub const LigatureGlyph = ligature.LigatureGlyph;
@@ -72,10 +83,15 @@ pub const Face = struct {
     /// 로딩 시 fontconfig 가 반환한 파일 path — chain 중복 제거에 사용.
     path: []u8,
     /// codepoint → Glyph cache (단순 lookup path, `Context.glyph` 가 사용).
-    glyph_cache: std.AutoHashMap(u21, Glyph),
+    ///
+    /// **`Glyph` 를 값이 아니라 개별 할당한 포인터로 담는다** — 그래야 주소가
+    /// 고정되어 캐시에 들어간 글리프를 프레임 목록이 포인터로 들 수 있다. 값으로
+    /// 담으면 재해싱 때 주소가 움직여 먼저 얻은 포인터가 무효가 되고, 그것 때문에
+    /// `GlyphItem` 이 48 B 를 통째로 복사해야 했다 (#362).
+    glyph_cache: std.AutoHashMap(u21, *Glyph),
     /// glyph_index → Glyph cache (shape 결과의 ligature glyph 등 codepoint 와
     /// 다른 idx 의 cache). `Context.shapeRun` 의 결과 raster 가 사용.
-    glyph_by_index: std.AutoHashMap(u32, Glyph),
+    glyph_by_index: std.AutoHashMap(u32, *Glyph),
     /// HarfBuzz hb_font (FT_Face 의 referenced wrap). HarfBuzz API 가 advertise
     /// 안 되거나 dlopen 실패 시 null — 그 경우 `shapeRun` 도 fallback (= 단순
     /// codepoint loop).
@@ -83,13 +99,15 @@ pub const Face = struct {
 
     fn deinit(self: *Face, ft_api: freetype.Api, hb_api: ?*const harfbuzz.Api) void {
         var it = self.glyph_cache.valueIterator();
-        while (it.next()) |g| {
-            if (g.bitmap.len > 0) self.allocator.free(g.bitmap);
+        while (it.next()) |slot| {
+            if (slot.*.bitmap.len > 0) self.allocator.free(slot.*.bitmap);
+            self.allocator.destroy(slot.*);
         }
         self.glyph_cache.deinit();
         var it2 = self.glyph_by_index.valueIterator();
-        while (it2.next()) |g| {
-            if (g.bitmap.len > 0) self.allocator.free(g.bitmap);
+        while (it2.next()) |slot| {
+            if (slot.*.bitmap.len > 0) self.allocator.free(slot.*.bitmap);
+            self.allocator.destroy(slot.*);
         }
         self.glyph_by_index.deinit();
         if (self.hb_font) |hb| {
@@ -124,6 +142,12 @@ pub const Context = struct {
     /// cp → fallback_faces index. **null = 시스템 전체에 없음** (negative
     /// cache — 없으면 미보유 cp 가 cell 마다 매 frame fontconfig 왕복 유발).
     system_fallback: std.AutoHashMap(u21, ?u8),
+
+    /// #362 — cp → 최종 글리프. `glyph` 가 chain 순회 · `FT_Get_Char_Index` ·
+    /// face 캐시 조회 · system fallback 조회를 통째로 건너뛰게 해 준다.
+    /// ASCII (`0x20`~`0x7E`) 는 배열, 나머지는 맵. `freeFaces` 가 비운다.
+    resolved_ascii: [ASCII_SPAN]?*const Glyph,
+    resolved: std.AutoHashMap(u21, *const Glyph),
     /// chain 로드 시 pixel size — system fallback face 를 같은 크기로 로드.
     pixel_height: u32,
 
@@ -172,6 +196,8 @@ pub const Context = struct {
             .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
             .fallback_count = 0,
             .system_fallback = std.AutoHashMap(u21, ?u8).init(allocator),
+            .resolved_ascii = @splat(null),
+            .resolved = std.AutoHashMap(u21, *const Glyph).init(allocator),
             .pixel_height = pixel_height,
             .cell_width_px = pixel_height / 2,
             .cell_height_px = pixel_height,
@@ -296,8 +322,8 @@ pub const Context = struct {
             .ft_face = ft_face,
             .family = family_owned,
             .path = fc_result.path,
-            .glyph_cache = std.AutoHashMap(u21, Glyph).init(self.allocator),
-            .glyph_by_index = std.AutoHashMap(u32, Glyph).init(self.allocator),
+            .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
+            .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
             .hb_font = hb_font,
         };
         path_owned_by_face = true;
@@ -336,6 +362,7 @@ pub const Context = struct {
     pub fn deinit(self: *Context) void {
         self.freeFaces();
         self.system_fallback.deinit();
+        self.resolved.deinit();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
         self.ligature_cache.deinit();
         if (self.hb_api) |*api| {
@@ -349,6 +376,11 @@ pub const Context = struct {
     }
 
     fn freeFaces(self: *Context) void {
+        // face 를 버리면 그 안의 글리프도 사라진다 — 해석 캐시가 죽은 포인터를
+        // 들고 있으면 안 된다 (#362).
+        self.resolved_ascii = @splat(null);
+        self.resolved.clearRetainingCapacity();
+
         const hb_api_ptr: ?*const harfbuzz.Api = if (self.hb_api) |*api| api else null;
         for (&self.faces) |*slot| {
             if (slot.*) |*face| face.deinit(self.ft_api, hb_api_ptr);
@@ -362,10 +394,36 @@ pub const Context = struct {
         self.fallback_count = 0;
     }
 
-    /// `cp` 의 글리프를 chain 순회로 lookup. 첫 매치 face 의 cache 에서 lazy
-    /// raster + insert. chain 모두 미스면 system fallback (#289 B5), 그마저
-    /// 미보유 (또는 raster / OOM 실패) → placeholder.
+    /// `cp` 의 글리프. **해석 결과를 codepoint 당 한 번만 구한다** (#362).
+    ///
+    /// 원래는 셀마다 매 프레임 chain 을 돌며 face 마다 `FT_Get_Char_Index` 를
+    /// 부르고, 그다음 face 의 캐시를 해시로 찾고, chain 이 다 미스면
+    /// `system_fallback` 을 또 해시로 찾았다. 결과는 codepoint 만의 함수인데
+    /// 매번 다시 구한 것이다 — 프로파일에서 해싱이 프레임 CPU 의 14 % 였다.
+    ///
+    /// ASCII 는 해시조차 안 쓴다 (배열 직접 인덱싱). 터미널 텍스트의 대부분이라
+    /// 이 갈래 하나가 곧 성능이다.
+    ///
+    /// 캐시가 포인터를 들 수 있는 근거는 `Face.glyph_cache` 가 글리프를 개별
+    /// 할당해 **주소가 고정**이기 때문이다. 폰트를 다시 로드하면 (`freeFaces`)
+    /// 이 캐시도 함께 비운다.
     pub fn glyph(self: *Context, cp: u21) *const Glyph {
+        if (asciiSlot(cp)) |i| {
+            if (self.resolved_ascii[i]) |g| return g;
+            const g = self.resolveGlyph(cp);
+            self.resolved_ascii[i] = g;
+            return g;
+        }
+        if (self.resolved.get(cp)) |g| return g;
+        const g = self.resolveGlyph(cp);
+        self.resolved.put(cp, g) catch {};
+        return g;
+    }
+
+    /// chain 순회 → 첫 매치 face 의 cache 에서 lazy raster + insert. chain 모두
+    /// 미스면 system fallback (#289 B5), 그마저 미보유 (또는 raster / OOM 실패)
+    /// → placeholder. **codepoint 당 한 번만 불린다** (`glyph` 가 결과를 캐시).
+    fn resolveGlyph(self: *Context, cp: u21) *const Glyph {
         for (self.faces[0..self.face_count]) |*slot| {
             const face = if (slot.*) |*f| f else continue;
             const idx = self.ft_api.get_char_index(face.ft_face, cp);
@@ -453,8 +511,8 @@ pub const Context = struct {
             .ft_face = ft_face,
             .family = fc_result.family,
             .path = fc_result.path,
-            .glyph_cache = std.AutoHashMap(u21, Glyph).init(self.allocator),
-            .glyph_by_index = std.AutoHashMap(u32, Glyph).init(self.allocator),
+            .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
+            .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
             .hb_font = null,
         };
         owned_by_face = true;
@@ -472,15 +530,21 @@ pub const Context = struct {
     pub fn glyphByIndex(self: *Context, face_idx: u8, glyph_index: u32) *const Glyph {
         if (face_idx >= self.face_count) return &self.placeholder;
         const face = if (self.faces[face_idx]) |*f| f else return &self.placeholder;
-        if (face.glyph_by_index.getPtr(glyph_index)) |cached| return cached;
+        if (face.glyph_by_index.get(glyph_index)) |cached| return cached;
         const g = rasterByIndex(self.allocator, self.ft_api, face.ft_face, glyph_index) catch {
             return &self.placeholder;
         };
-        face.glyph_by_index.put(glyph_index, g) catch {
+        const slot = self.allocator.create(Glyph) catch {
             if (g.bitmap.len > 0) self.allocator.free(g.bitmap);
             return &self.placeholder;
         };
-        return face.glyph_by_index.getPtr(glyph_index).?;
+        slot.* = g;
+        face.glyph_by_index.put(glyph_index, slot) catch {
+            if (g.bitmap.len > 0) self.allocator.free(g.bitmap);
+            self.allocator.destroy(slot);
+            return &self.placeholder;
+        };
+        return slot;
     }
 
     /// Latin (또는 모든 single-face shape-able) codepoint sequence 를 HarfBuzz
@@ -768,13 +832,19 @@ pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyA
 /// 실패 → null (caller 가 placeholder 로 degrade). chain 과 system fallback
 /// 경로가 공유.
 fn rasterCached(allocator: std.mem.Allocator, api: freetype.Api, face: *Face, cp: u21) ?*const Glyph {
-    if (face.glyph_cache.getPtr(cp)) |cached| return cached;
+    if (face.glyph_cache.get(cp)) |cached| return cached;
     const g = rasterOne(allocator, api, face.ft_face, cp) catch return null;
-    face.glyph_cache.put(cp, g) catch {
+    const slot = allocator.create(Glyph) catch {
         if (g.bitmap.len > 0) allocator.free(g.bitmap);
         return null;
     };
-    return face.glyph_cache.getPtr(cp).?;
+    slot.* = g;
+    face.glyph_cache.put(cp, slot) catch {
+        if (g.bitmap.len > 0) allocator.free(g.bitmap);
+        allocator.destroy(slot);
+        return null;
+    };
+    return slot;
 }
 
 fn rasterOne(
