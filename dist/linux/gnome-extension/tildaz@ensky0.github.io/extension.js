@@ -63,6 +63,8 @@ export default class TildazExtension extends Extension {
     this._placed = new Set();
     this._taskbarPatched = new Set();
     this._startupHookId = 0; // hidden preload 의 startup-complete overview 닫기 hook
+    this._monitorsChangedId = 0; // #373 해상도 / 모니터 구성 변경 시 재배치
+    this._workAreasChangedId = 0; // #373 work-area 확정 시점의 재계산
 
     this._accelerators = new Map();
     this._acceleratorSignalId = global.display.connect(
@@ -96,6 +98,29 @@ export default class TildazExtension extends Extension {
     this._armDialogCreationHandler();
     this._armMapHandler();
 
+    // #373 — 해상도 / 모니터 구성 변경 시 재배치. 이게 없으면 _ensurePlacedOnce 의
+    // 1회 가드 때문에 tildaz 를 재시작할 때까지 옛 work-area 기준 크기로 남는다.
+    // 세 platform 의 동작(Windows WM_DISPLAYCHANGE / macOS
+    // NSApplicationDidChangeScreenParameters / Linux layer-shell wl_output.mode)과 맞춘다.
+    //
+    // **두 시그널을 모두 듣는 이유** — `monitors-changed` 는 패널 strut 이 반영되기
+    // *전에* 온다. 그 시점의 `get_work_area_for_monitor` 는 아직 옛 값(혹은 패널을 안
+    // 뺀 전체 화면)이라, 여기서만 배치하면 틀린 rect 를 요청하게 된다. Cinnamon 실측
+    // (2026-08-02): 2560x1440 으로 내릴 때 `monitors-changed` 시점 work-area 가
+    // 2560x1440 이고 확정값 2560x1400 은 뒤이은 `workareas-changed` 에서 온다. 그동안
+    // 결과가 맞아 보였던 건 muffin 이 사후에 창을 work-area 로 clamp 해줬기 때문이고,
+    // 그 보정에 기대면 타이밍에 따라 어긋난다 (사용자가 본 간헐적 오배치).
+    // `workareas-changed` 는 확정값과 함께 오므로 여기서 다시 계산해 바로잡는다.
+    // 반대로 `monitors-changed` 만 오고 work-area 가 안 바뀌는 경우(모니터 재배열로
+    // *커서 모니터* 만 달라짐)도 있어 둘 다 필요하다. 중복 호출은 아래 `_place` 의
+    // 멱등 가드가 흡수한다.
+    this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () =>
+      this._replaceAllForMonitorChange()
+    );
+    this._workAreasChangedId = global.display.connect("workareas-changed", () =>
+      this._replaceAllForMonitorChange()
+    );
+
     // auto_start 면 로그인(enable) 시 미리 launch. 표시/숨김은 map 핸들러가
     // config(hidden_start) 로 결정한다 (false → 우측에 바로 표시, true → 배치 후
     // 숨김, hotkey 로 등장). auto_start=false 면 로그인 시 안 뜨고(앱 그리드/터미널로
@@ -124,6 +149,18 @@ export default class TildazExtension extends Extension {
   }
 
   disable() {
+    if (this._monitorsChangedId) {
+      try {
+        Main.layoutManager.disconnect(this._monitorsChangedId);
+      } catch (_e) {}
+      this._monitorsChangedId = 0;
+    }
+    if (this._workAreasChangedId) {
+      try {
+        global.display.disconnect(this._workAreasChangedId);
+      } catch (_e) {}
+      this._workAreasChangedId = 0;
+    }
     if (this._acceleratorSignalId) global.display.disconnect(this._acceleratorSignalId);
     this._unregisterAccelerators();
     if (this._configMonitorId) this._configMonitor.disconnect(this._configMonitorId);
@@ -565,11 +602,38 @@ export default class TildazExtension extends Extension {
     }
 
     win.move_to_monitor(mi);
-    win.move_resize_frame(false, x, y, w, h);
+    // #373 — 목표 rect 가 지금과 같으면 창을 건드리지 않는다. monitors-changed 가
+    // 예상보다 자주 오더라도 *크기가 실제로 달라질 때만* move_resize_frame 이 나가므로
+    // 위 _ensurePlacedOnce 주석의 flicker 우려가 코드로 닫힌다. (Windows 는
+    // WM_DISPLAYCHANGE 의 lParam 해상도를 캐시해 spurious broadcast 를 거르고 —
+    // window.zig 의 last_display_w/h — Linux layer-shell 은 wl_output.mode 를 이전 값과
+    // 비교한다. 같은 규칙을 여기에도 둔다.)
+    const cur = win.get_frame_rect();
+    if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h)
+      win.move_resize_frame(false, x, y, w, h);
     win.make_above();
     win.stick();
     this._skipTaskbar(win);
     this._managed.add(win);
+  }
+
+  // #373 — 해상도 / 모니터 구성이 바뀌면 관리 중인 창을 모두 다시 배치한다.
+  // _ensurePlacedOnce 를 우회하고 _place 를 직접 부르는 게 핵심 — 그 1회 가드가
+  // "show 마다 재배치" 를 막으면서 "해상도가 바뀌어도 재배치 안 함" 까지 같이 막고
+  // 있었다. minimized(hidden_start / F1 로 숨긴) 창도 재배치한다: mutter 가 minimize
+  // 중에도 frame geometry 를 보존하므로 지금 맞춰 두면 다음 show 가 옳은 크기로 뜬다.
+  _replaceAllForMonitorChange() {
+    for (const win of this._managed || []) {
+      try {
+        const index = workerIndex(win);
+        if (index === null) continue;
+        const cfg = this._configs?.get(index);
+        if (!cfg) continue;
+        this._place(win, cfg);
+      } catch (e) {
+        console.log(`[tildaz] monitors-changed replace failed: ${e}`);
+      }
+    }
   }
 
   // overview(Activities)/Alt-Tab window switcher 에서 창을 숨긴다. mutter 가
