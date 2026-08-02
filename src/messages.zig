@@ -304,6 +304,31 @@ pub const conpty_missing_msg =
     \\Re-extract or reinstall TildaZ, keeping the "_internal" folder together with tildaz.exe.
 ;
 
+/// #363 — Windows 전용. Direct3D 11 하드웨어 device 생성이 실패하면 renderer 가
+/// 스스로 WARP (OS 내장 소프트웨어 래스터라이저) 로 재시도하고, 그것마저 실패해
+/// error 가 host 까지 올라왔을 때만 이 fatal 을 띄운 뒤 종료한다. 이전엔 renderer
+/// 를 null 로 둔 채 계속 실행해서 창은 뜨지만 그리는 주체가 없는 빈 창이 됐다 —
+/// 사용자가 원인을 알 수 없는 상태였다.
+/// `{s}` 두 개는 각각 최종 error 이름과 로그 파일 경로. 하드웨어 실패 원인은
+/// 로그의 `[d3d] hardware renderer failed:` 줄에 남는다.
+pub const renderer_init_failed_title = "TildaZ — Cannot Start";
+pub const renderer_init_failed_format =
+    \\TildaZ could not initialize its renderer and cannot start.
+    \\
+    \\Both the GPU (hardware) and CPU (software, WARP) rendering paths failed: {s}
+    \\
+    \\This usually means the graphics driver is missing, outdated, or malfunctioning. Updating or reinstalling the graphics driver is the most common fix.
+    \\
+    \\Full details were written to the log:
+    \\{s}
+;
+/// 위 format 의 bufPrint 가 실패했을 때만 쓰는 고정 문구.
+pub const renderer_init_failed_fallback_msg =
+    \\TildaZ could not initialize its renderer and cannot start.
+    \\
+    \\Both the GPU (hardware) and CPU (software) rendering paths failed. This usually means the graphics driver is missing, outdated, or malfunctioning.
+;
+
 pub const hotkey_registration_failed_title = "TildaZ — Hotkey Registration Failed";
 pub const hotkey_registration_failed_format =
     \\Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).
