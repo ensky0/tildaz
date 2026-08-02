@@ -178,7 +178,7 @@ pub const Atlas = struct {
     ) ?AtlasEntry {
         const key = Key.fromItem(item);
         if (self.cache.get(key)) |entry| return entry;
-        const g = &item.glyph;
+        const g = item.glyph;
         return self.upload(api, allocator, key, .{
             .pixels = g.bitmap,
             .w = g.width,
