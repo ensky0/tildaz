@@ -2465,6 +2465,55 @@ const Client = struct {
         self.requestRedraw();
     }
 
+    /// #356 — **화면 dims 가 바뀌었을 때의 처리를 모아 둔 단일 지점.** 출처가 둘이다:
+    ///   (1) 같은 output 의 mode 변경 — `handleOutputEvent` 의 `wl_output.mode`
+    ///   (2) basis output 전환으로 dims 가 달라짐 — `applyBasisOutput`
+    /// 규칙이 두 곳으로 갈리지 않게 여기 하나로 모은다 (AGENTS.md single definition).
+    ///
+    /// `caller_resends_layout` — 호출측이 직후에 layout 을 다시 보낼 예정이면 true.
+    /// `applyBasisOutput` 의 scale 동기(`applyScaleChange`)가 그 경우다 — 여기서 한 번
+    /// 더 보내면 같은 내용이 두 번 나간다.
+    ///
+    /// 호출 순서 주의 — `applyBasisOutput` 은 **scale 동기보다 먼저** 이 helper 를
+    /// 불러야 한다. 아래 ①이 latch 를 버려야 뒤따르는 `applyScaleChange` 의 layout
+    /// 재송신이 stale work-area 를 쓰지 않는다.
+    fn applyScreenDimsChange(self: *Client, source: []const u8, caller_resends_layout: bool) !void {
+        // ① #351 이 latch 한 work-area 는 옛 화면 크기 기준이라 버린다. 새 값은 다음
+        //    초기 안전 commit 의 configure 가 채운다(`initial_safe_pending` 경로).
+        //    그 사이의 layout 계산은 physical → logical 추정 fallback 을 쓴다.
+        self.screen_logical_w = 0;
+        self.screen_logical_h = 0;
+        // ② #241 판정 보정 — compositor 가 stale margin 으로 폭 0 을 계산해 `closed` 를
+        //    보내면, 그 `closed` 는 **같은 dispatch batch** 안에 있다 (KWin 실기: mode /
+        //    closed / drainQuitRequest 가 같은 ms). topology 플래그를 안 세우면 main
+        //    loop 의 판정이 사용자 Alt+F4 로 오해해 "해상도만 바꿨는데 종료 확인
+        //    다이얼로그" 가 뜬다. 이 플래그는 batch-local 이라 iteration 끝에서 clear
+        //    되므로 다음의 *진짜* Alt+F4 를 오염시키지 않는다.
+        self.output_topology_pending = true;
+        log.appendLineVerbose("wayland", "screen dims changed ({s}) — work-area latch dropped + topology pending (#356)", .{source});
+        // ③ mapped + visible layer surface — in-place 재송신은 sway 1.7(wlroots 0.15)
+        //    이 다음 전역 arrange 까지 시각 반영하지 않으므로 #241 의 seamless 재생성
+        //    (create-before-destroy, 깜빡임 없음) 으로 간다. 신규 map 은 모든
+        //    compositor 가 즉시 정확히 배치하고, 그 새 surface 의 초기 안전 commit 이
+        //    돌아오는 configure 에서 ①이 비운 latch 가 새 값으로 다시 채워진다(#351).
+        //    직접 호출 금지(내부 configure pump 가 reentrant) — 예약만 하고 main loop
+        //    의 `drainOutputRecreate` 가 dispatch 밖에서 처리한다 (#241 / #295 동일).
+        if (self.layer_surface_id != 0 and self.mapped and !self.surface_hidden) {
+            self.pending_output_recreate = true;
+            log.appendLineVerbose("wayland", "screen dims changed while mapped — seamless recreate scheduled (#356)", .{});
+            return;
+        }
+        // ④ 그 외 — in-place 재계산으로 충분.
+        //    · 미mapped(첫 configure 전) / hidden 중 shell 객체가 정리된 상태:
+        //      다음 show 의 createShellObjects 가 새 latch 를 받는다.
+        //    · xdg-shell(GNOME / Cinnamon): 보낼 layout 이 없다 — 크기는 compositor 의
+        //      xdg configure 가 준다. grid / redraw 만 맞춘다.
+        if (caller_resends_layout) return;
+        if (self.layer_surface_id != 0) try self.sendLayerSurfaceLayout(false);
+        if (self.session != null) try self.ensureSessionGrid();
+        self.requestRedraw();
+    }
+
     /// L8-β / #295 — wl_output 의 mode (current flag) / scale 처리. geometry /
     /// done / transform 은 미사용(일반 monitor default 0 가정).
     /// #295: 이벤트는 해당 output 의 slot 에 기록하고, 그 output 이 현재 기준
@@ -2479,19 +2528,39 @@ const Client = struct {
                 if (payload.len < 16) return;
                 const flags = readU32(payload[0..4]);
                 if ((flags & wl_output_mode_flag_current) == 0) return;
-                slot.width = readI32(payload[4..8]);
-                slot.height = readI32(payload[8..12]);
+                const new_width = readI32(payload[4..8]);
+                const new_height = readI32(payload[8..12]);
+                // #356 — **이전 값과 비교해 실제 dims 변경만** 처리한다. 세 가지가
+                // 걸러진다:
+                //  - boot 첫 mode event: `slot.width` 초기값이 0 이라 "변경" 이 아니다.
+                //    이 가드가 없으면 부팅마다 surface 재생성이 걸린다.
+                //  - refresh rate 만 바뀐 mode: w/h 가 같아 자연히 no-op.
+                //  - compositor 가 같은 값을 다시 보내는 경우: 마찬가지로 no-op.
+                // (Windows 의 `WM_DISPLAYCHANGE` 도 lParam 해상도를 캐시해 같은 방식으로
+                //  spurious broadcast 를 거른다 — `window.zig` 의 `last_display_w/h`.)
+                const had_dims = slot.width > 0 and slot.height > 0;
+                const dims_changed = had_dims and (new_width != slot.width or new_height != slot.height);
+                slot.width = new_width;
+                slot.height = new_height;
                 if (is_basis) {
                     self.screen_width = slot.width;
                     self.screen_height = slot.height;
                 }
-                log.appendLineVerbose("wayland", "output mode object_id={} width={} height={} refresh={} basis={}", .{
+                log.appendLineVerbose("wayland", "output mode object_id={} width={} height={} refresh={} basis={} dims_changed={}", .{
                     slot.object_id,
                     slot.width,
                     slot.height,
                     readI32(payload[12..16]),
                     is_basis,
+                    dims_changed,
                 });
+                // #356 — 기준 output 의 해상도가 실제로 바뀐 경우에만 재계산. 이 분기가
+                // 없던 게 이슈의 원인이었다 — `applyBasisOutput` 의 `dims_changed` 는
+                // basis 가 *다른 output 으로 바뀔 때만* 불리므로 같은 output 의 mode
+                // 변경은 어디서도 처리되지 않았다.
+                if (is_basis and dims_changed) {
+                    try self.applyScreenDimsChange("wl_output.mode", false);
+                }
             },
             wl_output_event_scale => {
                 if (payload.len < 4) return;
@@ -2573,19 +2642,6 @@ const Client = struct {
         const dims_changed = slot.width != self.screen_width or slot.height != self.screen_height;
         self.screen_width = slot.width;
         self.screen_height = slot.height;
-        if (dims_changed) {
-            // #351 — work-area 가 바뀌었으니 latch 를 버린다. 다음 초기 안전 commit 의
-            // configure 가 정확한 값으로 다시 채운다 — mapped 면 아래에서 예약하는
-            // seamless 재생성이, hidden 중 output 소멸이면 `closed` 핸들러의
-            // destroyShellObjects → 다음 show 의 createShellObjects 가 보낸다.
-            // 그 사이 layout 은 physical 추정 fallback 을 쓴다 (변환 오차 ±1 — #351
-            // 이전 동작). 재생성 없이 같은 output 의 mode 만 바뀌는 경로는 다음 재생성
-            // 까지 그 fallback 에 머문다 (remapShellObjects 는 재latch 하지 않는다 —
-            // 보이는 상태에서 초기 안전 commit 을 보내면 창이 한 frame 동안 work-area
-            // 전체로 보이므로). 드문 경로라 ±1 을 감수한다.
-            self.screen_logical_w = 0;
-            self.screen_logical_h = 0;
-        }
         log.appendLineVerbose("wayland", "basis output object_id={} {}x{} scale={} dims_changed={} (#295)", .{
             output_object_id,
             slot.width,
@@ -2596,36 +2652,24 @@ const Client = struct {
         // scale 동기 — fractional manager 있으면 per-surface `preferred_scale` 이
         // source of truth (output 이동 시 compositor 가 새 preferred_scale 을
         // 발신하고 그 handler 가 relayout). 없으면 이 output 의 정수 scale 적용.
-        // 아래 재생성보다 먼저 — 재생성 경로가 새 scale 로 layout 을 계산하도록.
-        var scale_applied = false;
-        if (self.fractional_scale_manager_id == 0) {
+        //
+        // #356 — 여기서는 *바뀌는지 판정만* 하고 적용은 dims 처리 뒤로 미룬다. 이유는
+        // 두 가지다: (1) `applyScreenDimsChange` 가 latch 를 버려야 `applyScaleChange`
+        // 의 layout 재송신이 stale work-area 를 쓰지 않는다, (2) 재생성 경로도 갱신된
+        // scale 로 layout 을 계산해야 하는데 재생성 자체는 main loop 의
+        // `drainOutputRecreate` 라 어차피 이 뒤에 일어난다.
+        const pending_scale: ?u32 = blk: {
+            if (self.fractional_scale_manager_id != 0) break :blk null;
             const new_scale: u32 = @as(u32, @intCast(@max(slot.scale, 1))) * fractional_scale_denominator;
-            if (new_scale != self.preferred_scale) {
-                // applyScaleChange 가 renderer scale + layout 재송신 + grid 재계산
-                // + redraw 까지 처리.
-                try self.applyScaleChange(new_scale, "wl_output/enter");
-                scale_applied = true;
-            }
-        }
-        if (!dims_changed) return;
-        // mapped layer surface 의 margin-only 재송신은 sway 1.7 (wlroots 0.15)
-        // 이 다음 전역 arrange 까지 시각 반영하지 않는다 (실측: 새 configure 는
-        // 보내면서 surface box 는 안 옮김 — output 설정 no-op 재적용으로 강제
-        // arrange 하면 즉시 반영됨). 그래서 in-place 재송신 대신 #241 의
-        // swapMainSurfaceSeamless (create-before-destroy, 깜빡임 없음) 재생성을
-        // 예약한다 — 신규 map 은 모든 compositor 가 즉시 정확히 배치.
-        // (직접 호출 금지 — 내부 configure pump 가 reentrant. main loop 의
-        // drainOutputRecreate 가 dispatch 밖에서 처리, #241 과 동일.)
-        if (self.layer_surface_id != 0 and self.mapped and !self.surface_hidden) {
-            self.pending_output_recreate = true;
-            log.appendLineVerbose("wayland", "basis output changed while mapped — seamless recreate scheduled (#295)", .{});
-            return;
-        }
-        // 미mapped (첫 configure 전) / xdg 경로 — in-place 재계산으로 충분.
-        if (scale_applied) return; // applyScaleChange 가 이미 전부 처리.
-        if (self.layer_surface_id != 0) try self.sendLayerSurfaceLayout(false);
-        if (self.session != null) try self.ensureSessionGrid();
-        self.requestRedraw();
+            break :blk if (new_scale != self.preferred_scale) new_scale else null;
+        };
+        // #356 — 화면 dims 변경 처리는 `wl_output.mode` 경로와 **같은 helper** 로 간다.
+        // scale 을 곧 적용할 예정이면 helper 의 in-place 재송신은 생략한다 (아래
+        // applyScaleChange 가 같은 일을 한다).
+        if (dims_changed) try self.applyScreenDimsChange("basis output 전환", pending_scale != null);
+        // applyScaleChange 가 renderer scale + layout 재송신 + grid 재계산 + redraw 를
+        // 모두 처리한다.
+        if (pending_scale) |new_scale| try self.applyScaleChange(new_scale, "wl_output/enter");
     }
 
     /// #336 — 초기 안전 commit(createLayerSurface 의 4-edge span) 후 실제 config
