@@ -292,6 +292,10 @@ pub var acc_update_ns: u64 = 0;
 pub var acc_collect_ns: u64 = 0;
 pub var acc_frames: u64 = 0;
 
+/// #362 — `collect` 안에서 **셀 순회**가 차지하는 몫. 나머지 (탭바 · 커서 ·
+/// scrollbar · preedit · 메뉴) 는 항목이 수백 개뿐이라 합쳐서 수 µs 다.
+pub var acc_cells_ns: u64 = 0;
+
 pub const Renderer = struct {
     render_state: ghostty.RenderState = .empty,
     /// #277 S2-3/S2-4/S2-5 — 프레임마다 재사용하는 그리기 목록. `collectFrame` 이
@@ -653,8 +657,9 @@ pub const Renderer = struct {
 
         const tab_bar_h = self.tabBarHeightPx(in.tab_titles.len);
         self.collectTabBar(allocator, in, tab_bar_h);
-        self.collectCellBgRects(allocator, tab_bar_h);
-        self.collectCellText(allocator, tab_bar_h);
+        const t_cells = if (timing_enabled) std.time.nanoTimestamp() else 0;
+        self.collectCells(allocator, tab_bar_h);
+        if (timing_enabled) acc_cells_ns += @intCast(std.time.nanoTimestamp() - t_cells);
         self.collectCursor(allocator, tab_bar_h);
         self.collectScrollbar(allocator, in);
         self.collectPreedit(allocator, tab_bar_h);
@@ -662,54 +667,42 @@ pub const Renderer = struct {
         if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
     }
 
-    /// #277 S2-3 / #361 — 셀 배경 사각형.
-    ///
-    /// 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지 않는다. 표면 전체가
-    /// 이미 배경색이라 (CPU 는 `fill`, GL 은 `glClear`) 덧그릴 필요가 없다.
-    fn collectCellBgRects(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
-        const colors = self.render_state.colors;
-        const cw = self.cellWidth();
-        const ch = self.cellHeight();
-        const pad = self.paddingPx();
-        const rows = self.render_state.rows;
-        const cols = self.render_state.cols;
-        const row_slice = self.render_state.row_data.slice();
-        const all_cells = row_slice.items(.cells);
-        const all_sels = row_slice.items(.selection);
 
-        for (0..rows) |y| {
-            if (y >= all_cells.len) break;
-            const cell_slice = all_cells[y].slice();
-            const raws = cell_slice.items(.raw);
-            const styles = cell_slice.items(.style);
-            const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
-            var x: usize = 0;
-            while (x < cols and x < raws.len) : (x += 1) {
-                const raw = raws[x];
-                if (raw.wide == .spacer_tail) continue;
-                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
-                const x16: u16 = @intCast(x);
-                const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                if (!(is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null)) continue;
-                self.layer.cell_bg.append(allocator, .{
-                    .x = pad + @as(i32, @intCast(x)) * cw,
-                    .y = tab_bar_h + pad + @as(i32, @intCast(y)) * ch,
-                    .w = if (raw.wide == .wide) cw * 2 else cw,
-                    .h = ch,
-                    .color = resolveBg(style, &raw, &colors, is_selected),
-                }) catch return;
-            }
+    /// #362 — 한 줄에서 실제로 볼 필요가 있는 칸의 개수.
+    ///
+    /// 터미널 한 줄은 대부분 **한 번도 쓰인 적 없는** 칸이다 — 4K 는 한 줄이 424
+    /// 칸인데 프롬프트나 로그 한 줄은 그중 일부만 쓴다. `ghostty.Cell` 은
+    /// `packed struct(u64)` 이고 그 문서가 "**0 이 곧 유효한 빈 칸**" 임을 보장하므로,
+    /// 뒤에서부터 u64 비교 하나로 경계를 찾는다. 비교 400 번은 셀 본문 400 번보다
+    /// 한 자릿수 싸다.
+    ///
+    /// **선택 영역은 예외다** — 빈 칸이라도 선택되면 배경 사각형을 그려야 하므로
+    /// 경계를 선택 끝까지 늘린다. 커서 · scrollbar · preedit 는 각자 수집기가
+    /// 따로 그리므로 여기 경계와 무관하다.
+    fn rowLimit(raws: []const ghostty.Cell, cols: usize, sel_range: ?[2]u16) usize {
+        var limit = @min(cols, raws.len);
+        while (limit > 0 and @as(u64, @bitCast(raws[limit - 1])) == 0) limit -= 1;
+        if (sel_range) |sr| {
+            const sel_end = @as(usize, sr[1]) + 1;
+            limit = @max(limit, @min(sel_end, @min(cols, raws.len)));
         }
+        return limit;
     }
 
-    /// #277 S2-4 — 셀 텍스트. 글리프는 `layer.glyphs` 에, block element 와 box
-    /// drawing 의 절차적 사각형은 `layer.overlay` 에 쌓는다.
+    /// #277 S2-3/S2-4 · #361 · #362 — 셀 배경 사각형과 셀 텍스트를 **한 번의
+    /// 순회**로 만든다. 배경은 `layer.cell_bg`, 글리프는 `layer.glyphs`, block
+    /// element 와 box drawing 의 절차적 사각형은 `layer.overlay` 에 쌓는다.
     ///
-    /// 두 목록으로 나뉘는 것이 곧 **그리기 순서**다 — 글리프를 전부 그린 뒤 절차적
-    /// 사각형을 그린다 (macOS · Windows 와 동일). 이전에는 셀 순서로 번갈아 그려서
-    /// 셀을 넘은 글리프가 이웃의 box drawing 위에 남을지 지워질지가 *방향에 따라*
-    /// 갈렸다 — #361 이 셀 배경에서 없앤 것과 같은 종류의 비대칭이다.
-    fn collectCellText(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
+    /// 목록이 여럿으로 나뉘는 것이 곧 **그리기 순서**다 — 배경을 전부 그린 뒤
+    /// 글리프, 그다음 절차적 사각형 (macOS · Windows 와 동일). 이전에는 셀 순서로
+    /// 번갈아 그려서 셀을 넘은 글리프가 이웃의 box drawing 위에 남을지 지워질지가
+    /// *방향에 따라* 갈렸다 — #361 이 셀 배경에서 없앤 것과 같은 종류의 비대칭이다.
+    ///
+    /// **그런데 목록이 나뉘는 것과 순회가 나뉘는 것은 별개다.** 예전에는 배경과
+    /// 텍스트가 각자 전체 셀을 돌아 4K 에서 프레임마다 95,824 번 방문했다. 셀 방문
+    /// 자체가 수집 비용의 대부분이라 (셀당 작업을 셋이나 꺼도 8% 밖에 안 줄었다)
+    /// 한 번만 도는 것이 곧 성능이다 (#362).
+    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
         const colors = self.render_state.colors;
         const cw = self.cellWidth();
         const ch = self.cellHeight();
@@ -729,31 +722,48 @@ pub const Renderer = struct {
             const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
 
-            var x: usize = 0;
-            while (x < cols and x < raws.len) {
-                const raw = raws[x];
-                if (raw.wide == .spacer_tail) {
-                    x += 1;
-                    continue;
-                }
+            // ligature 가 삼킨 뒤따르는 셀은 **텍스트만** 건너뛴다. 배경은 셀마다
+            // 그대로 만들어야 한다 — 예전에 두 순회가 나뉘어 있을 때 배경 쪽이
+            // 자연히 하던 일이다.
+            var text_skip: usize = 0;
 
-                // **그릴 것이 없는 셀은 여기서 끝낸다.** 터미널 화면은 대부분 빈
-                // 칸이라 이 검사를 앞에 두는 것이 곧 성능이다 — 예전에는 style 조회 ·
-                // 배경색 해석 · 좌표 계산을 다 한 뒤에 버렸다 (#362).
-                //
-                // spacer_head (wide 글자 wrap 직전 행 끝 cell) 는 배경만 있고 글자는
-                // 없다 — 배경은 `collectCellBgRects` 가 따로 만든다 (#282 B9).
-                if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) {
-                    x += 1;
-                    continue;
-                }
+            var x: usize = 0;
+            const limit = rowLimit(raws, cols, sel_range);
+            while (x < limit) : (x += 1) {
+                const raw = raws[x];
+                if (raw.wide == .spacer_tail) continue;
+
                 const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const bg = resolveBg(style, &raw, &colors, is_selected);
                 const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
                 const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
                 const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
+
+                // 셀 배경 — 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지
+                // 않는다. 표면 전체가 이미 배경색이라 (CPU 는 `fill`, GL 은
+                // `glClear`) 덧그릴 필요가 없다.
+                if (is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null) {
+                    self.layer.cell_bg.append(allocator, .{
+                        .x = cell_x,
+                        .y = cell_y,
+                        .w = cell_w,
+                        .h = ch,
+                        .color = resolveBg(style, &raw, &colors, is_selected),
+                    }) catch {};
+                }
+
+                // 여기부터 셀 텍스트.
+                if (text_skip > 0) {
+                    text_skip -= 1;
+                    continue;
+                }
+
+                // **그릴 것이 없는 셀은 여기서 끝낸다.** spacer_head (wide 글자 wrap
+                // 직전 행 끝 cell) 는 배경만 있고 글자는 없다 (#282 B9) — 그 배경은
+                // 바로 위에서 이미 만들었다.
+                if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) continue;
+
                 const fg = resolveFg(style, &raw, &colors, is_selected);
                 const cp = raw.codepoint();
 
@@ -768,6 +778,10 @@ pub const Renderer = struct {
                     // (`style.bg` 없음 · 미선택 · 비반전) 에도 `resolveBg` 가
                     // `colors.background` 를 돌려주고 프레임버퍼도 그 값이라 일치한다.
                     // 솔리드 블록 (alpha 1.0) 은 합성 결과가 `fg` 그대로다.
+                    //
+                    // `bg` 는 여기와 아래 box drawing 에서만 쓴다 — 평범한 글리프
+                    // 셀에서는 해석하지 않는다 (#362).
+                    const bg = resolveBg(style, &raw, &colors, is_selected);
                     const blended = ui_metrics.blendOverRgb(
                         .{ fg.r, fg.g, fg.b },
                         .{ bg.r, bg.g, bg.b },
@@ -787,7 +801,6 @@ pub const Renderer = struct {
                         .color = .{ .r = blended[0], .g = blended[1], .b = blended[2] },
                         .shade = shadeCode(br.shade),
                     }) catch {};
-                    x += 1;
                     continue;
                 }
 
@@ -797,6 +810,7 @@ pub const Renderer = struct {
                 if (cp >= 0x2500 and cp <= 0x257F) {
                     var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
                     if (box_drawing.boxRects(cp, @floatFromInt(cell_w), @floatFromInt(ch), &box_rects)) |bn| {
+                        const bg = resolveBg(style, &raw, &colors, is_selected);
                         for (box_rects[0..bn]) |br| {
                             // #353 — `br.cov` (AA coverage) 도 공통
                             // `ui_metrics.blendOverRgb` 로 미리 합성하고 불투명 rect 로
@@ -818,7 +832,6 @@ pub const Renderer = struct {
                                 .color = .{ .r = cov_blend[0], .g = cov_blend[1], .b = cov_blend[2] },
                             }) catch {};
                         }
-                        x += 1;
                         continue;
                     }
                 }
@@ -860,7 +873,6 @@ pub const Renderer = struct {
                             .y_offset = cg.y_offset,
                             .fg = fg,
                         });
-                        x += 1;
                         continue;
                     }
                     // resolveCluster null → primary face 에 cluster 매치 없음.
@@ -892,7 +904,7 @@ pub const Renderer = struct {
                     {
                         if (self.font_ctx.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
                             self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 3, fg);
-                            x += 3;
+                            text_skip = 2;
                             continue;
                         }
                     }
@@ -905,7 +917,7 @@ pub const Renderer = struct {
                     {
                         if (self.font_ctx.ligaturePair(cp, next.codepoint())) |lm| {
                             self.collectLigatureMatch(allocator, lm, cell_x, cell_y, cw, ch, ascent, 2, fg);
-                            x += 2;
+                            text_skip = 1;
                             continue;
                         }
                     }
@@ -921,7 +933,6 @@ pub const Renderer = struct {
                     .ascent = ascent,
                     .fg = fg,
                 });
-                x += 1;
             }
         }
     }
@@ -930,9 +941,8 @@ pub const Renderer = struct {
     /// 1 glyph, N-cell wide draw, JetBrains Mono / Cascadia Code 패턴) 과
     /// `.spacer` (입력 N chars → N glyphs each at own cell, Fira Code 패턴) 둘 다.
     ///
-    /// 뒤따르는 N-1 cells 의 배경은 여기서 만들지 않는다 — `collectCellBgRects` 가
-    /// 셀을 하나씩 순회하며 이미 같은 조건으로 만든다 (#361 이 배경을 선행 패스로
-    /// 옮기면서 중복이 됐다).
+    /// 뒤따르는 N-1 cells 의 배경은 여기서 만들지 않는다 — 부르는 쪽 루프가 셀을
+    /// 하나씩 돌며 (`text_skip` 은 텍스트만 건너뛴다) 이미 같은 조건으로 만든다.
     fn collectLigatureMatch(
         self: *Renderer,
         allocator: std.mem.Allocator,

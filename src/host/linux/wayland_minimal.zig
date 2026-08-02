@@ -3747,14 +3747,16 @@ const Client = struct {
                     if (t.averageNs()) |avg| {
                         const rc = perf.snapshot(&perf.render);
                         const nf = @max(software_terminal.acc_frames, 1);
-                        log.appendLine("gpu", "프레임 CPU 평균 update={d:.1} collect={d:.1} µs (프레임 {d}) [전체 {d:.1} µs]", .{
+                        log.appendLine("gpu", "프레임 CPU 평균 update={d:.1} collect={d:.1} µs (셀 순회 {d:.1}) (프레임 {d}) [전체 {d:.1} µs]", .{
                             @as(f64, @floatFromInt(software_terminal.acc_update_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             @as(f64, @floatFromInt(software_terminal.acc_collect_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
+                            @as(f64, @floatFromInt(software_terminal.acc_cells_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             software_terminal.acc_frames,
                             if (rc[0] > 0) @as(f64, @floatFromInt(rc[1])) / @as(f64, @floatFromInt(rc[0])) / 1000.0 else 0.0,
                         });
                         software_terminal.acc_update_ns = 0;
                         software_terminal.acc_collect_ns = 0;
+                        software_terminal.acc_cells_ns = 0;
                         software_terminal.acc_frames = 0;
                         log.appendLine("gpu", "프레임 GPU 시간 평균 {d:.1} µs (표본 {d}, 버린 것 {d}, {d}x{d}, modifier=0x{x:0>16} plane={d})", .{
                             @as(f64, @floatFromInt(avg)) / 1000.0,
