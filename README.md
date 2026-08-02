@@ -16,10 +16,11 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.6.2 — more reliable input, dialogs, and desktop integration.**
-> IME and tab-renaming input now follows the same rules across platforms, long
-> dialogs remain readable, Windows transparency is stable, and Linux
-> mixed-monitor geometry follows the output that actually contains TildaZ.
+> **v0.7.0 — GPU rendering on Linux, and a command menu in every window.**
+> Linux now draws through the GPU instead of a software buffer, cutting CPU use
+> during scrolling and typing and making startup about three times faster.
+> Every window carries a small `[+][×][…]` strip whose `…` opens a command menu
+> listing the common actions with their shortcuts.
 
 ## Who is TildaZ for?
 
