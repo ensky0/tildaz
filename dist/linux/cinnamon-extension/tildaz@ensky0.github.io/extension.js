@@ -102,6 +102,8 @@ function enable() {
     configMonitor: null,
     configMonitorId: 0,
     configReloadId: 0,
+    monitorsChangedId: 0, // #373 해상도 / 모니터 구성 변경 시 재배치
+    workAreasChangedId: 0, // #373 work-area 확정 시점의 재계산
   };
 
   // 패널 window-list / workspace-switcher 는 Main.isInteresting → C
@@ -174,9 +176,61 @@ function enable() {
     watchDialogBeforeMap(win);
   });
   st.mapId = global.window_manager.connect("map", (_wm, actor) => onMap(actor));
+
+  // #373 — 해상도 / 모니터 구성 변경 시 재배치. 이게 없으면 보이는 중에 해상도를
+  // 바꿨을 때 옛 work-area 기준 크기로 남는다 (다음 F1 hide→show 의 place() 가
+  // 뒤늦게 교정할 뿐이다). 세 platform 의 동작(Windows WM_DISPLAYCHANGE / macOS
+  // NSApplicationDidChangeScreenParameters / Linux layer-shell wl_output.mode)과 맞춘다.
+  //
+  // **두 시그널을 모두 듣는 이유** — `monitors-changed` 는 패널 strut 이 반영되기
+  // *전에* 온다 (layout.js 의 `_monitorsChanged` 가 `_updateMonitors` / `_updateBoxes`
+  // 만 하고 emit 한다). 그 시점의 `get_work_area_for_monitor` 는 아직 확정값이 아니라
+  // 여기서만 배치하면 틀린 rect 를 요청한다. 실측 (2026-08-02, Cinnamon 6.6.9 Wayland):
+  // 2560x1440 으로 내릴 때 `monitors-changed` 의 work-area 는 2560x1440 이고 확정값
+  // 2560x1400 은 뒤이은 `workareas-changed` 에서 왔다. 그런데도 결과가 맞아 보였던 건
+  // muffin 이 사후에 창을 work-area 로 clamp 해줬기 때문이고, 그 보정에 기대면 타이밍에
+  // 따라 어긋난다 (사용자가 본 간헐적 오배치). `workareas-changed` 는 확정값과 함께
+  // 오므로 여기서 다시 계산해 바로잡는다. 반대로 `monitors-changed` 만 오고 work-area 는
+  // 그대로인 경우(모니터 재배열로 *커서 모니터* 만 달라짐 — place() 는 커서 모니터
+  // 기준이다)도 있어 둘 다 필요하다. 중복 호출은 place() 의 멱등 가드가 흡수한다.
+  st.monitorsChangedId = Main.layoutManager.connect("monitors-changed", () =>
+    replaceAllForMonitorChange()
+  );
+  st.workAreasChangedId = global.display.connect("workareas-changed", () =>
+    replaceAllForMonitorChange()
+  );
+}
+
+// #373 — 관리 중인 창을 모두 다시 배치. minimized(hidden_start / F1 로 숨긴) 창도
+// 포함한다: muffin 이 minimize 중에도 frame geometry 를 보존하므로 지금 맞춰 두면
+// 다음 show 가 옳은 크기로 뜬다.
+function replaceAllForMonitorChange() {
+  for (const win of st?.managed || []) {
+    try {
+      const index = workerIndex(win);
+      if (index === null) continue;
+      const cfg = st.configs.get(index);
+      if (!cfg) continue;
+      place(win, cfg);
+    } catch (e) {
+      global.logError("[tildaz] monitors-changed replace failed: " + e);
+    }
+  }
 }
 
 function disable() {
+  if (st?.monitorsChangedId) {
+    try {
+      Main.layoutManager.disconnect(st.monitorsChangedId);
+    } catch (_e) {}
+    st.monitorsChangedId = 0;
+  }
+  if (st?.workAreasChangedId) {
+    try {
+      global.display.disconnect(st.workAreasChangedId);
+    } catch (_e) {}
+    st.workAreasChangedId = 0;
+  }
   for (const name of st?.hotkeys?.keys() || []) try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
   if (st?.configMonitorId) st.configMonitor.disconnect(st.configMonitorId);
   if (st?.configMonitor) st.configMonitor.cancel();
@@ -497,7 +551,14 @@ function place(win, c) {
   }
 
   win.move_to_monitor(mi);
-  win.move_resize_frame(false, x, y, w, h);
+  // #373 — 목표 rect 가 지금과 같으면 창을 건드리지 않는다. monitors-changed 와
+  // toggle 이 같은 place() 를 쓰므로, *크기가 실제로 달라질 때만* move_resize_frame 이
+  // 나가게 해서 불필요한 재배치를 없앤다. (Windows 는 WM_DISPLAYCHANGE 의 lParam
+  // 해상도를 캐시해 spurious broadcast 를 거르고 — window.zig 의 last_display_w/h —
+  // Linux layer-shell 은 wl_output.mode 를 이전 값과 비교한다. 같은 규칙이다.)
+  const cur = win.get_frame_rect();
+  if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h)
+    win.move_resize_frame(false, x, y, w, h);
   win.make_above();
   win.stick();
   skipTaskbar(win);
