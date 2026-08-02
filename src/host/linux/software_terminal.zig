@@ -667,7 +667,6 @@ pub const Renderer = struct {
         if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
     }
 
-
     /// #362 — 한 줄에서 실제로 볼 필요가 있는 칸의 개수.
     ///
     /// 터미널 한 줄은 대부분 **한 번도 쓰인 적 없는** 칸이다 — 4K 는 한 줄이 424
