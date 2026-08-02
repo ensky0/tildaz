@@ -71,10 +71,11 @@ With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it bec
 ## Tab titles
 
 Tab titles follow the shell automatically (OSC 0/2 window titles — most shells
-and programs like vim or ssh set them). A new tab starts blank and falls back
-to `Tab N` if the shell doesn't send a title within a second. To set a title
-yourself, use your shell — e.g. `printf '\033]0;my title\007'` or your shell
-prompt configuration. (Inline tab renaming was removed in
+and programs like vim or ssh set them). A new tab is labeled `Tab N` as soon as
+it opens, and the shell's first title replaces it as soon as it arrives; shells
+that never send one keep `Tab N`. Later title changes are debounced so a busy
+program doesn't flicker the tab. To set a title yourself, use your shell —
+e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline tab renaming was removed in
 [#341](https://github.com/ensky0/tildaz/issues/341).)
 
 ## Tab limit
