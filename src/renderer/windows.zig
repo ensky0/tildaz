@@ -178,6 +178,9 @@ const text_shader_src =
 
 pub const D3d11Renderer = struct {
     alloc: std.mem.Allocator,
+    /// #363 — 이 renderer 가 실제로 어느 경로로 만들어졌는지. `init` 이 하드웨어 →
+    /// WARP 순으로 시도하므로 결과를 여기 남긴다. host 는 `renderPath()` 로 읽는다.
+    driver_type: DriverType,
     font: DWriteFontContext,
     atlas: GlyphAtlas,
     tab_font: DWriteFontContext,
@@ -293,6 +296,7 @@ pub const D3d11Renderer = struct {
     fn initCompositionChain(
         hwnd: ?*anyopaque,
         opacity: u8,
+        driver_value: u32,
         device: *?*d3d.ID3D11Device,
         ctx: *?*d3d.ID3D11DeviceContext,
         swap_chain: *?*d3d.IDXGISwapChain,
@@ -328,7 +332,7 @@ pub const D3d11Renderer = struct {
             }
         };
 
-        if (d3d.D3D11CreateDevice(null, d3d.D3D_DRIVER_TYPE_HARDWARE, null, d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, null, 0, d3d.D3D11_SDK_VERSION, device, null, ctx) < 0) return false;
+        if (d3d.D3D11CreateDevice(null, driver_value, null, d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, null, 0, d3d.D3D11_SDK_VERSION, device, null, ctx) < 0) return false;
         const dev = device.* orelse return false;
 
         var factory_any: ?*anyopaque = null;
@@ -392,6 +396,43 @@ pub const D3d11Renderer = struct {
         return true;
     }
 
+    /// #363 — D3D 상수를 이 모듈 안에만 두기 위한 얇은 enum. host 는 이 타입도,
+    /// `d3d.D3D_DRIVER_TYPE_*` 도 알 필요가 없다 (`renderer.zig` 의 "호출처가
+    /// platform 별 그래픽스 API 를 직접 다루지 않게" 원칙). tag 이름이 그대로
+    /// 로그의 `render_path=` 값이다.
+    const DriverType = enum {
+        hardware,
+        warp,
+
+        fn d3dValue(self: DriverType) u32 {
+            return switch (self) {
+                .hardware => d3d.D3D_DRIVER_TYPE_HARDWARE,
+                .warp => d3d.D3D_DRIVER_TYPE_WARP,
+            };
+        }
+    };
+
+    /// host 진입점. GPU (하드웨어) 로 먼저 만들고 실패하면 WARP 로 재시도한다.
+    /// WARP 는 Microsoft 가 OS 에 내장해 제공하는 소프트웨어 래스터라이저로, 같은
+    /// D3D11 API 를 쓰므로 셰이더 · 렌더러 코드가 그대로다. Windows 8 부터 "GPU
+    /// 없는 시스템의 seamless fallback" 이 공식 시나리오다 (#363).
+    /// https://learn.microsoft.com/en-us/windows/win32/direct3darticles/directx-warp
+    ///
+    /// 둘 다 실패하면 WARP 쪽 에러를 그대로 올린다 — host 가 안내 후 종료한다.
+    /// 하드웨어 실패 원인은 아래 로그에 남는다.
+    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, spec: font_spec.Spec, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8, opacity: u8) !D3d11Renderer {
+        return initWithDriver(alloc, hwnd, font_chain, spec, cell_w, cell_h, bg_rgb, opacity, .hardware) catch |hw_err| {
+            log.appendLine("d3d", "hardware renderer failed: {s} — retrying with WARP", .{@errorName(hw_err)});
+            return initWithDriver(alloc, hwnd, font_chain, spec, cell_w, cell_h, bg_rgb, opacity, .warp);
+        };
+    }
+
+    /// 이 renderer 가 쓰는 경로 이름 (`"hardware"` / `"warp"`). startup 로그의
+    /// `render_path=` 값 — Linux 의 같은 이름 로그와 어휘를 맞춘다.
+    pub fn renderPath(self: *const D3d11Renderer) []const u8 {
+        return @tagName(self.driver_type);
+    }
+
     fn swapEffectName(swap_effect: u32) []const u8 {
         return switch (swap_effect) {
             d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD => "flip_discard",
@@ -401,8 +442,17 @@ pub const D3d11Renderer = struct {
         };
     }
 
-    pub fn init(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, spec: font_spec.Spec, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8, opacity: u8) !D3d11Renderer {
+    /// 주어진 driver type 하나로 renderer 전체를 만든다. 하드웨어 → WARP 재시도는
+    /// `init` 이 담당한다.
+    ///
+    /// 재시도를 device 생성부가 아니라 이 함수 전체에 거는 이유: device 는
+    /// 만들어지는데 그 뒤 셰이더 / layout / blend / buffer 생성이 실패하는 경우도
+    /// 드라이버 문제일 수 있다 — WARP 문서의 "Providing Driver Behavior Isolation"
+    /// 이 그 시나리오다. 또 device 생성 지점이 둘 (composition 경로 · 주 경로) 이라
+    /// 한 곳만 재시도하면 둘이 어긋난다.
+    fn initWithDriver(alloc: std.mem.Allocator, hwnd: ?*anyopaque, font_chain: []const [*:0]const u16, spec: font_spec.Spec, cell_w: u32, cell_h: u32, bg_rgb: ?[3]u8, opacity: u8, driver_type: DriverType) !D3d11Renderer {
         const bg = bg_rgb orelse [3]u8{ 30, 30, 30 };
+        const driver_value = driver_type.d3dValue();
 
         // 1. Create D3D11 device + swap chain
         var sc_desc = d3d.DXGI_SWAP_CHAIN_DESC{
@@ -426,7 +476,7 @@ pub const D3d11Renderer = struct {
         var dcomp_visual: ?*d3d.IDCompositionVisual = null;
         var composition_active = false;
         if (opacity < 255 and !layered_window) {
-            composition_active = initCompositionChain(hwnd, opacity, &device, &ctx, &swap_chain, &dcomp_device, &dcomp_target, &dcomp_visual);
+            composition_active = initCompositionChain(hwnd, opacity, driver_value, &device, &ctx, &swap_chain, &dcomp_device, &dcomp_target, &dcomp_visual);
             if (!composition_active) {
                 log.appendLine("d3d", "composition path failed — falling back to opaque flip-model (opacity ignored)", .{});
             }
@@ -447,7 +497,7 @@ pub const D3d11Renderer = struct {
             sc_desc.SwapEffect = swap_effect;
             create_hr = d3d.D3D11CreateDeviceAndSwapChain(
                 null,
-                d3d.D3D_DRIVER_TYPE_HARDWARE,
+                driver_value,
                 null,
                 d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, // D2D interop 필요 (#136)
                 null,
@@ -477,13 +527,15 @@ pub const D3d11Renderer = struct {
             }
         }
         if (create_hr < 0) {
-            log.appendLine("d3d", "swap chain create failed: layered={} hr=0x{x}", .{
+            log.appendLine("d3d", "swap chain create failed: driver={s} layered={} hr=0x{x}", .{
+                @tagName(driver_type),
                 layered_window,
                 @as(u32, @bitCast(create_hr)),
             });
             return error.D3D11CreateFailed;
         }
-        log.appendLineVerbose("d3d", "swap chain created: layered={} composition={} effect={s} buffers={d}", .{
+        log.appendLineVerbose("d3d", "swap chain created: driver={s} layered={} composition={} effect={s} buffers={d}", .{
+            @tagName(driver_type),
             layered_window,
             composition_active,
             swapEffectName(selected_swap_effect),
@@ -510,7 +562,15 @@ pub const D3d11Renderer = struct {
                 }
             }
         }
+        // #363 — DComp 자원도 함께 정리한다. 이전엔 ctx / swap_chain / device 만
+        // 풀어서, composition 경로가 성공한 뒤 폰트 · 셰이더 단계에서 실패하면
+        // dcomp_* 세 개가 샜다. 실패하면 host 가 renderer 를 null 로 두고 그대로
+        // 살았기 때문에 드러나지 않았지만, 이제 host 가 WARP 로 재시도하므로 첫
+        // 시도가 남긴 자원 위에 두 번째 시도가 쌓인다.
         errdefer {
+            if (dcomp_visual) |v| _ = v.Release();
+            if (dcomp_target) |t| _ = t.Release();
+            if (dcomp_device) |dd| _ = dd.Release();
             _ = ctx.?.Release();
             _ = swap_chain.?.Release();
             _ = device.?.Release();
@@ -665,6 +725,7 @@ pub const D3d11Renderer = struct {
         // 12. Create initial render target view
         var self = D3d11Renderer{
             .alloc = alloc,
+            .driver_type = driver_type,
             .font = font_ctx,
             .atlas = atlas,
             .tab_font = tab_resources.font,

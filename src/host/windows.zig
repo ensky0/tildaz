@@ -166,11 +166,24 @@ pub fn run() !void {
 
     // Initialize renderer backend
     const theme_bg: ?[3]u8 = if (config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
-    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, terminal_font, @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg, config.opacity_alpha) catch |err| blk: {
-        log.appendLine("startup", "renderer disabled: {s}", .{@errorName(err)});
-        break :blk null;
+    // #363 — renderer 초기화 실패를 더 이상 삼키지 않는다. 이전엔 `catch → null`
+    // 로 두고 계속 실행해서, 창은 뜨고 PTY 도 돌지만 그리는 주체가 없는 빈 창이
+    // 됐고 원인은 로그에만 남았다.
+    //
+    // GPU → WARP (OS 내장 소프트웨어 래스터라이저) 재시도는 renderer 안에서 한다.
+    // 여기까지 error 가 올라왔다는 것은 두 경로가 모두 실패했다는 뜻이므로 안내 후
+    // 종료 — `dialog.showFatal` 이 noreturn 이라 이 줄 아래로는 renderer 가 반드시
+    // 있다.
+    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, terminal_font, @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg, config.opacity_alpha) catch |err| {
+        log.appendLine("startup", "renderer init failed: {s}", .{@errorName(err)});
+        var msg_buf: [1024]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, messages.renderer_init_failed_format, .{
+            @errorName(err),
+            log.filePath() orelse messages.unknown_path_msg,
+        }) catch messages.renderer_init_failed_fallback_msg;
+        dialog.showFatal(messages.renderer_init_failed_title, msg);
     };
-    log.appendLine("startup", "renderer active={}", .{app.renderer != null});
+    log.appendLine("startup", "render_path={s}", .{app.renderer.?.renderPath()});
     defer if (app.renderer) |*r| r.deinit();
 
     // Apply position from config

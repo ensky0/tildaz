@@ -21,7 +21,15 @@ pub const IID_ID3D11Texture2D = GUID{
 
 // --- Constants ---
 
+// `D3D_DRIVER_TYPE` (d3dcommon.h) — UNKNOWN=0 부터 선언 순서대로.
+// https://learn.microsoft.com/en-us/windows/win32/api/d3dcommon/ne-d3dcommon-d3d_driver_type
 pub const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
+/// #363 — GPU 를 못 쓸 때의 소프트웨어 래스터라이저. Microsoft 가 OS 에 내장해
+/// 제공하며 같은 D3D11 API 로 동작해 셰이더 / 렌더러 코드가 그대로다. 이 값을
+/// 넘기면 "런타임이 WARP device 를 만들고 하드웨어 device 는 초기화하지 않는다".
+/// Windows 8 이상의 WARP 는 feature level 9_1~11_1 을 지원한다.
+/// https://learn.microsoft.com/en-us/windows/win32/direct3darticles/directx-warp
+pub const D3D_DRIVER_TYPE_WARP: u32 = 5;
 pub const D3D11_SDK_VERSION: u32 = 7;
 pub const D3D11_CREATE_DEVICE_DEBUG: u32 = 0x2;
 pub const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
