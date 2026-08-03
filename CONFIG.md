@@ -119,7 +119,7 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
-| `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. It always starts in your home directory; WSL tabs start in the *Linux* home (TildaZ adds `--cd ~` to `wsl.exe` automatically — skipped if your command already has `--cd`). Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
+| `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. A new tab starts in the **active tab's current directory**, falling back to your home directory when that location can't be determined or entered (see "New tab working directory" below). WSL tabs use *Linux* paths — TildaZ passes `--cd` to `wsl.exe` automatically, skipped if your command already has `--cd`. Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
 | `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | "F1" | "F1" | "F1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
@@ -141,6 +141,41 @@ invalid value shows an error dialog and exits):
 - Key names cover letters, digits, `Space`, `` ` `` (backtick / grave), and
   `F1`–`F12`. macOS and Windows accept a slightly narrower modifier-alias set
   than Linux; the tokens above work on all three.
+
+### New tab working directory
+
+A new tab starts in the **active tab's current directory**. When that location
+can't be determined or entered, it falls back to your **home directory**. There is
+no config switch — to start clean, run `cd ~` in the new tab.
+
+TildaZ finds the location in two ways, in order:
+
+1. **The shell tells us** via the `OSC 7` escape sequence. Shells that already do
+   this need no setup (fish, and bash/zsh with a prompt hook installed).
+2. **We ask the OS** for the shell process's working directory. This works on
+   Linux and macOS regardless of which shell you use, so **no shell configuration
+   is required there**.
+
+On **Windows** the second way is not possible (PowerShell keeps its location
+per-runspace, and the `cmd`-only alternative relies on an undocumented API), so
+TildaZ makes the shell report instead:
+
+| Shell | What TildaZ sets |
+|---|---|
+| `cmd` | Prepends a reporting fragment to the `PROMPT` environment variable. Your existing prompt is preserved — it is only added in front, so `echo %PROMPT%` shows the extra fragment |
+| PowerShell / pwsh | Appends `-NoExit -EncodedCommand …` to the command line, which wraps the existing `prompt` function **after your profile loads**. Custom prompts (oh-my-posh, Starship, …) keep working. Skipped if your `shell` value already passes `-Command`, `-EncodedCommand`, or `-File` |
+| WSL (bash) | Passes `PROMPT_COMMAND` through `WSLENV` |
+| WSL (fish) | Nothing — fish reports on its own |
+
+Combinations that fall back to the home directory:
+
+| Situation | Why |
+|---|---|
+| Inside **tmux** | tmux absorbs the escape sequence, so the new tab opens where the shell was **before** tmux started. Other terminals share this limitation; use tmux's own `#{pane_current_path}` for tmux windows |
+| **zsh inside WSL** | Requires placing a file inside the WSL filesystem, which TildaZ does not do |
+| **Over ssh** | The remote host name doesn't match this machine, so the remote path is ignored (it wouldn't exist locally) |
+| The directory was deleted, or isn't a directory | Checked before spawning |
+| A shell whose prompt hook was overwritten by your rc file | For bash, assigning `PROMPT_COMMAND=` in `.bashrc` replaces what TildaZ passed in |
 
 **Ligatures** require a ligature-capable `font.family` (e.g. Fira Code or
 JetBrains Mono — both free). The Windows default (Cascadia Code) includes them;
