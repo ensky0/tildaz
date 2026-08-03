@@ -57,7 +57,14 @@ const Key = struct {
     fn fromItem(item: *const software_terminal.GlyphItem) Key {
         const source: u8 = @intFromEnum(item.font);
         return switch (item.ref) {
-            .codepoint => |cp| .{ .source = source, .face = codepoint_face, .value = cp },
+            // #375 — codepoint 경로는 `face` 가 `codepoint_face` 로 고정이라 face 정보가
+            // 키에 없다. 변종을 `value` 의 상위 비트에 실어 bold `A` 와 regular `A` 가
+            // 같은 칸을 덮어쓰지 않게 한다 (codepoint 는 u21 이라 자리가 남는다).
+            .codepoint => |cp| .{
+                .source = source,
+                .face = codepoint_face,
+                .value = @as(u32, cp) | (@as(u32, @intCast(item.face_style.index())) << 21),
+            },
             .indexed => |ix| .{ .source = source, .face = ix.face, .value = ix.index },
         };
     }

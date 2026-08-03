@@ -13,6 +13,7 @@ const ct = @import("../font/macos/coretext.zig");
 const mac_font = @import("../font/macos/font.zig");
 const CoreTextFontContext = mac_font.CoreTextFontContext;
 const font_spec = @import("../font/spec.zig");
+const font_constants = @import("../font/constants.zig");
 const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const chrome_palette = @import("../chrome_palette.zig");
@@ -977,7 +978,12 @@ pub const MetalRenderer = struct {
                     text_count = 0;
                 }
 
-                const result = self.font.resolveGlyph(cp) orelse {
+                const result = self.font.resolveGlyph(
+                    cp,
+                    // #375 — SGR 1 / 3 이 요구하는 face 변종. 없는 family 는 폰트
+                    // 모듈이 regular 로 떨어뜨린다.
+                    font_constants.FaceStyle.from(style.flags.bold, style.flags.italic),
+                ) orelse {
                     x += 1;
                     continue;
                 };
@@ -1074,7 +1080,7 @@ pub const MetalRenderer = struct {
             var utf8_iter = std.unicode.Utf8Iterator{ .bytes = preedit_utf8, .i = 0 };
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
-                const result = self.font.resolveGlyph(@intCast(cp)) orelse continue;
+                const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
                 const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                     if (result.owned) ct.CFRelease(result.font);
                     continue;
@@ -1227,7 +1233,7 @@ pub const MetalRenderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         if (c.text_n.* >= MAX_TEXT) return;
-                        const result = c.self.tab_font.resolveGlyph(@intCast(g.cp)) orelse return;
+                        const result = c.self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
                         const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                             if (result.owned) ct.CFRelease(result.font);
                             return;
@@ -1477,7 +1483,7 @@ pub const MetalRenderer = struct {
                 var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
-                    const result = r.tab_font.resolveGlyph(@intCast(cp)) orelse continue;
+                    const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse continue;
                     const entry = r.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
                         if (result.owned) ct.CFRelease(result.font);
                         continue;

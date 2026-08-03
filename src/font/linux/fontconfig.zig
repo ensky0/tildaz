@@ -5,6 +5,7 @@
 //! Linux header / linker 셋업 없이도 cross-compile 된다.
 
 const std = @import("std");
+const font_constants = @import("../constants.zig");
 
 const FcConfig = opaque {};
 const FcPattern = opaque {};
@@ -29,6 +30,13 @@ const FcPatternAddString = *const fn (
     p: *FcPattern,
     object: [*:0]const u8,
     s: [*:0]const FcChar8,
+) callconv(.c) c_int;
+/// #375 — weight / slant 를 pattern 에 넣어 같은 family 의 bold · italic face 를
+/// 찾는다. 기존에는 `FcPatternAddString` (family) 만 바인딩돼 있었다.
+const FcPatternAddInteger = *const fn (
+    p: *FcPattern,
+    object: [*:0]const u8,
+    i: c_int,
 ) callconv(.c) c_int;
 const FcConfigSubstitute = *const fn (
     config: ?*FcConfig,
@@ -63,6 +71,7 @@ const Api = struct {
     pattern_create: FcPatternCreate,
     pattern_destroy: FcPatternDestroy,
     pattern_add_string: FcPatternAddString,
+    pattern_add_integer: FcPatternAddInteger,
     config_substitute: FcConfigSubstitute,
     default_substitute: FcDefaultSubstitute,
     font_match: FcFontMatch,
@@ -83,6 +92,7 @@ const Api = struct {
             .pattern_create = lookupSym(handle, FcPatternCreate, "FcPatternCreate") orelse return error.FontconfigSymbolMissing,
             .pattern_destroy = lookupSym(handle, FcPatternDestroy, "FcPatternDestroy") orelse return error.FontconfigSymbolMissing,
             .pattern_add_string = lookupSym(handle, FcPatternAddString, "FcPatternAddString") orelse return error.FontconfigSymbolMissing,
+            .pattern_add_integer = lookupSym(handle, FcPatternAddInteger, "FcPatternAddInteger") orelse return error.FontconfigSymbolMissing,
             .config_substitute = lookupSym(handle, FcConfigSubstitute, "FcConfigSubstitute") orelse return error.FontconfigSymbolMissing,
             .default_substitute = lookupSym(handle, FcDefaultSubstitute, "FcDefaultSubstitute") orelse return error.FontconfigSymbolMissing,
             .font_match = lookupSym(handle, FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
@@ -162,12 +172,38 @@ fn sharedApi() !*Api {
 }
 
 pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult {
+    return lookupStyled(allocator, family, .regular);
+}
+
+// fontconfig 의 weight / slant 값 (fontconfig.h). 100 단위 weight 체계가 아니라
+// 자체 스케일이다.
+const FC_WEIGHT_REGULAR: c_int = 80;
+const FC_WEIGHT_BOLD: c_int = 200;
+const FC_SLANT_ROMAN: c_int = 0;
+const FC_SLANT_ITALIC: c_int = 100;
+
+/// #375 — 같은 family 의 face 변종을 찾는다.
+///
+/// **fontconfig 는 요청과 가장 근접한 face 를 돌려준다** (매치 실패가 아니다).
+/// 그래서 bold face 가 없는 family 는 자연히 regular 가 오고, 호출부가 "없으면
+/// regular" 를 따로 판정할 필요가 없다 — macOS · Windows 백엔드와 같은 성질이다.
+pub fn lookupStyled(
+    allocator: std.mem.Allocator,
+    family: [*:0]const u8,
+    style: font_constants.FaceStyle,
+) !MatchResult {
     const api = try sharedApi();
 
     const pattern = api.pattern_create() orelse return error.FontconfigPatternCreateFailed;
     defer api.pattern_destroy(pattern);
 
     if (api.pattern_add_string(pattern, "family", family) == 0) return error.FontconfigPatternAddFailed;
+    if (style != .regular) {
+        const weight: c_int = if (style.isBold()) FC_WEIGHT_BOLD else FC_WEIGHT_REGULAR;
+        const slant: c_int = if (style.isItalic()) FC_SLANT_ITALIC else FC_SLANT_ROMAN;
+        if (api.pattern_add_integer(pattern, "weight", weight) == 0) return error.FontconfigPatternAddFailed;
+        if (api.pattern_add_integer(pattern, "slant", slant) == 0) return error.FontconfigPatternAddFailed;
+    }
 
     return matchAndExtract(api, pattern, allocator);
 }
