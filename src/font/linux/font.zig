@@ -133,6 +133,19 @@ pub const Context = struct {
     ligature_cache: ligature.Cache,
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
+    /// #375 — bold · italic · bold_italic chain. regular 는 위 `faces` 가 담당하므로
+    /// 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
+    ///
+    /// **처음 필요할 때 로드한다** (`ensureStyledChain`). chain 이 최대 8 이라 즉시
+    /// 로드하면 face 가 32 개가 되고, dialog 폰트를 lazy 로 돌린 것과 같은 이유로
+    /// (#368 — 시작 시간의 절반) 시작이 느려진다. bold / italic 을 안 쓰는 세션이
+    /// 대부분이다.
+    ///
+    /// `null` 인 칸은 **regular face 를 그대로 쓴다** — 해당 변종 face 가 없거나
+    /// (fontconfig 가 regular 와 같은 파일을 돌려준 경우) 로드에 실패한 경우다.
+    styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?Face,
+    /// 변종 chain 로드를 시도했는가. 실패해도 true 라 매 프레임 재시도하지 않는다.
+    styled_loaded: [font_constants.FaceStyle.count - 1]bool,
 
     /// #289 B5 — chain 밖 codepoint 용 system fallback faces (fontconfig
     /// charset 매치로 lazy 로드). chain `faces` 와 분리 저장 — `glyphByIndex`
@@ -146,8 +159,9 @@ pub const Context = struct {
     /// #362 — cp → 최종 글리프. `glyph` 가 chain 순회 · `FT_Get_Char_Index` ·
     /// face 캐시 조회 · system fallback 조회를 통째로 건너뛰게 해 준다.
     /// ASCII (`0x20`~`0x7E`) 는 배열, 나머지는 맵. `freeFaces` 가 비운다.
-    resolved_ascii: [ASCII_SPAN]?*const Glyph,
-    resolved: std.AutoHashMap(u21, *const Glyph),
+    /// #375 — face 변종별로 나눈다. 같은 cp 라도 bold 와 regular 는 다른 글리프다.
+    resolved_ascii: [font_constants.FaceStyle.count][ASCII_SPAN]?*const Glyph,
+    resolved: [font_constants.FaceStyle.count]std.AutoHashMap(u21, *const Glyph),
     /// chain 로드 시 pixel size — system fallback face 를 같은 크기로 로드.
     pixel_height: u32,
 
@@ -193,11 +207,13 @@ pub const Context = struct {
             .ligature_cache = ligature.Cache.init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
+            .styled_faces = .{[_]?Face{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
+            .styled_loaded = .{false} ** (font_constants.FaceStyle.count - 1),
             .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
             .fallback_count = 0,
             .system_fallback = std.AutoHashMap(u21, ?u8).init(allocator),
-            .resolved_ascii = @splat(null),
-            .resolved = std.AutoHashMap(u21, *const Glyph).init(allocator),
+            .resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count,
+            .resolved = .{std.AutoHashMap(u21, *const Glyph).init(allocator)} ** font_constants.FaceStyle.count,
             .pixel_height = pixel_height,
             .cell_width_px = pixel_height / 2,
             .cell_height_px = pixel_height,
@@ -362,7 +378,7 @@ pub const Context = struct {
     pub fn deinit(self: *Context) void {
         self.freeFaces();
         self.system_fallback.deinit();
-        self.resolved.deinit();
+        for (&self.resolved) |*m| m.deinit();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
         self.ligature_cache.deinit();
         if (self.hb_api) |*api| {
@@ -378,8 +394,8 @@ pub const Context = struct {
     fn freeFaces(self: *Context) void {
         // face 를 버리면 그 안의 글리프도 사라진다 — 해석 캐시가 죽은 포인터를
         // 들고 있으면 안 된다 (#362).
-        self.resolved_ascii = @splat(null);
-        self.resolved.clearRetainingCapacity();
+        self.resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count;
+        for (&self.resolved) |*m| m.clearRetainingCapacity();
 
         const hb_api_ptr: ?*const harfbuzz.Api = if (self.hb_api) |*api| api else null;
         for (&self.faces) |*slot| {
@@ -387,6 +403,15 @@ pub const Context = struct {
             slot.* = null;
         }
         self.face_count = 0;
+        // #375 — 변종 chain 도 함께 버리고 "미로드" 로 돌린다 (폰트 재로드 시 새
+        // 크기로 다시 만들어야 한다).
+        for (&self.styled_faces) |*chain| {
+            for (chain) |*slot| {
+                if (slot.*) |*face| face.deinit(self.ft_api, hb_api_ptr);
+                slot.* = null;
+            }
+        }
+        self.styled_loaded = .{false} ** (font_constants.FaceStyle.count - 1);
         for (&self.fallback_faces) |*slot| {
             if (slot.*) |*face| face.deinit(self.ft_api, hb_api_ptr);
             slot.* = null;
@@ -407,25 +432,108 @@ pub const Context = struct {
     /// 캐시가 포인터를 들 수 있는 근거는 `Face.glyph_cache` 가 글리프를 개별
     /// 할당해 **주소가 고정**이기 때문이다. 폰트를 다시 로드하면 (`freeFaces`)
     /// 이 캐시도 함께 비운다.
-    pub fn glyph(self: *Context, cp: u21) *const Glyph {
+    pub fn glyph(self: *Context, cp: u21, style: font_constants.FaceStyle) *const Glyph {
+        const si = style.index();
         if (asciiSlot(cp)) |i| {
-            if (self.resolved_ascii[i]) |g| return g;
-            const g = self.resolveGlyph(cp);
-            self.resolved_ascii[i] = g;
+            if (self.resolved_ascii[si][i]) |g| return g;
+            const g = self.resolveGlyph(cp, style);
+            self.resolved_ascii[si][i] = g;
             return g;
         }
-        if (self.resolved.get(cp)) |g| return g;
-        const g = self.resolveGlyph(cp);
-        self.resolved.put(cp, g) catch {};
+        if (self.resolved[si].get(cp)) |g| return g;
+        const g = self.resolveGlyph(cp, style);
+        self.resolved[si].put(cp, g) catch {};
         return g;
+    }
+
+    /// #375 — 변종 chain 을 **처음 필요할 때** 만든다. 실패해도 다시 시도하지 않는다
+    /// (매 프레임 fontconfig 왕복을 막는다). 만들지 못한 칸은 `null` 로 남고
+    /// [`faceFor`](#faceFor) 가 regular face 로 떨어뜨린다.
+    fn ensureStyledChain(self: *Context, style: font_constants.FaceStyle) void {
+        if (style == .regular) return;
+        const slot = style.index() - 1;
+        if (self.styled_loaded[slot]) return;
+        self.styled_loaded[slot] = true;
+
+        for (self.faces[0..self.face_count], 0..) |maybe_base, i| {
+            const base = maybe_base orelse continue;
+            self.styled_faces[slot][i] = self.loadStyledFace(base, style) catch |err| {
+                log.appendLineVerbose("font", "styled chain[{d}] skip family={s} style={s} err={s}", .{
+                    i, base.family, @tagName(style), @errorName(err),
+                });
+                continue;
+            };
+        }
+    }
+
+    /// 같은 family 의 변종 face 하나. **fontconfig 가 regular 와 같은 파일을 돌려주면
+    /// `null`** 을 준다 — 그 family 에 해당 변종이 없다는 뜻이고, 같은 파일을 두 번
+    /// 열어 메모리와 atlas 를 낭비할 이유가 없다.
+    fn loadStyledFace(self: *Context, base: Face, style: font_constants.FaceStyle) !?Face {
+        const family_z = try self.allocator.allocSentinel(u8, base.family.len, 0);
+        defer self.allocator.free(family_z);
+        @memcpy(family_z[0..base.family.len], base.family);
+
+        const fc_result = try fontconfig.lookupStyled(self.allocator, family_z.ptr, style);
+        defer fc_result.deinitAdditionalFamilies(self.allocator);
+        defer self.allocator.free(fc_result.family);
+        var path_owned_by_face = false;
+        defer if (!path_owned_by_face) self.allocator.free(fc_result.path);
+
+        if (std.mem.eql(u8, fc_result.path, base.path)) return null;
+
+        const path_z = try self.allocator.allocSentinel(u8, fc_result.path.len, 0);
+        defer self.allocator.free(path_z);
+        @memcpy(path_z[0..fc_result.path.len], fc_result.path);
+
+        var ft_face: freetype.FT_Face = undefined;
+        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, 0, &ft_face) != 0) {
+            return error.FreetypeNewFaceFailed;
+        }
+        errdefer _ = self.ft_api.done_face(ft_face);
+
+        if (self.ft_api.set_pixel_sizes(ft_face, 0, self.pixel_height) != 0) {
+            if (ft_face.num_fixed_sizes <= 0 or self.ft_api.select_size(ft_face, 0) != 0) {
+                return error.FreetypeSetSizeFailed;
+            }
+        }
+
+        const family_owned = try self.allocator.dupe(u8, base.family);
+        errdefer self.allocator.free(family_owned);
+
+        const hb_font: ?*harfbuzz.hb_font_t = if (self.hb_api) |*api|
+            api.ft_font_create_referenced(@ptrCast(ft_face))
+        else
+            null;
+
+        path_owned_by_face = true;
+        return .{
+            .allocator = self.allocator,
+            .ft_face = ft_face,
+            .family = family_owned,
+            .path = fc_result.path,
+            .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
+            .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
+            .hb_font = hb_font,
+        };
+    }
+
+    /// chain 의 `i` 번째 face — 변종이 있으면 그것, 없으면 regular.
+    fn faceFor(self: *Context, i: usize, style: font_constants.FaceStyle) ?*Face {
+        if (style != .regular) {
+            if (self.styled_faces[style.index() - 1][i]) |*f| return f;
+        }
+        if (self.faces[i]) |*f| return f;
+        return null;
     }
 
     /// chain 순회 → 첫 매치 face 의 cache 에서 lazy raster + insert. chain 모두
     /// 미스면 system fallback (#289 B5), 그마저 미보유 (또는 raster / OOM 실패)
     /// → placeholder. **codepoint 당 한 번만 불린다** (`glyph` 가 결과를 캐시).
-    fn resolveGlyph(self: *Context, cp: u21) *const Glyph {
-        for (self.faces[0..self.face_count]) |*slot| {
-            const face = if (slot.*) |*f| f else continue;
+    fn resolveGlyph(self: *Context, cp: u21, style: font_constants.FaceStyle) *const Glyph {
+        self.ensureStyledChain(style);
+        for (0..self.face_count) |i| {
+            const face = self.faceFor(i, style) orelse continue;
             const idx = self.ft_api.get_char_index(face.ft_face, cp);
             if (idx == 0) continue;
 

@@ -133,6 +133,14 @@ pub const DWriteFontContext = struct {
     /// 안정 (deinit 까지 Release 안 함) — atlas cache key 가 face 포인터라
     /// 안정성 필수.
     chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN,
+    /// #375 — bold · italic · bold_italic chain. regular 는 위 `chain_faces` 가
+    /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
+    ///
+    /// `GetFirstMatchingFont` 은 **요청과 가장 근접한 face** 를 돌려주므로 (실패하지
+    /// 않는다) bold face 가 없는 family 는 자연히 regular 가 들어온다 — "없으면
+    /// regular" 를 우리가 따로 판정하지 않아도 된다.
+    styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
+        .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
     chain_count: u8 = 0,
     rendering_params: ?*dw.IDWriteRenderingParams = null,
     number_sub: ?*dw.IUnknown = null,
@@ -172,6 +180,8 @@ pub const DWriteFontContext = struct {
         //    isFontAvailable loop) 했지만 race 방지 위해 여기서도 missing 시 error.
         //    중간 실패 시 errdefer 가 이미 만든 faces 모두 release.
         var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN;
+        var styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
+            .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var chain_count: u8 = 0;
         errdefer {
             for (chain_faces[0..chain_count]) |maybe_face| {
@@ -202,6 +212,25 @@ pub const DWriteFontContext = struct {
             var face: ?*dw.IDWriteFontFace = null;
             if (dw_font.?.CreateFontFace(&face) < 0) return error.FontFaceFailed;
             chain_faces[chain_count] = face.?;
+
+            // #375 — 같은 family 의 변종 face. weight / style 인자만 바꾼다.
+            inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
+                var styled_font: ?*dw.IDWriteFont = null;
+                if (family_obj.?.GetFirstMatchingFont(
+                    if (fs.isBold()) dw.DWRITE_FONT_WEIGHT_BOLD else dw.DWRITE_FONT_WEIGHT_NORMAL,
+                    dw.DWRITE_FONT_STRETCH_NORMAL,
+                    if (fs.isItalic()) dw.DWRITE_FONT_STYLE_ITALIC else dw.DWRITE_FONT_STYLE_NORMAL,
+                    &styled_font,
+                ) >= 0) {
+                    defer _ = styled_font.?.vtable.Release(styled_font.?);
+                    var styled_face: ?*dw.IDWriteFontFace = null;
+                    if (styled_font.?.CreateFontFace(&styled_face) >= 0) {
+                        styled_faces[fs.index() - 1][chain_count] = styled_face.?;
+                    }
+                }
+                // 실패하면 null 로 남고 `chainFor` 가 regular face 로 떨어뜨린다.
+            }
+
             chain_count += 1;
         }
 
@@ -213,6 +242,7 @@ pub const DWriteFontContext = struct {
             .factory = factory.?,
             .font_collection = collection.?,
             .chain_faces = chain_faces,
+            .styled_faces = styled_faces,
             .chain_count = chain_count,
             .cell_width_px = cell_w,
             .cell_height_px = cell_h,
@@ -304,6 +334,12 @@ pub const DWriteFontContext = struct {
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             if (maybe_face) |f| _ = f.vtable.Release(f);
         }
+        // #375 — 변종 chain. 만들지 못한 칸은 null 이라 건너뛴다.
+        for (&self.styled_faces) |*chain| {
+            for (chain[0..self.chain_count]) |maybe_face| {
+                if (maybe_face) |f| _ = f.vtable.Release(f);
+            }
+        }
         _ = self.font_collection.vtable.Release(self.font_collection);
         if (self.factory2) |f2| _ = f2.Release();
         _ = self.factory.Release();
@@ -318,7 +354,20 @@ pub const DWriteFontContext = struct {
     /// 안정적이라 cache miss 시에도 같은 codepoint → 같은 face. system fallback
     /// 으로 resolve 된 face 만 glyph_map 에 cache 해서 pointer 안정성 유지.
     /// `owned` 는 항상 false — context 가 소유.
-    pub fn resolveGlyph(self: *DWriteFontContext, codepoint: u21) ?GlyphResult {
+    /// #375 — 요청한 변종의 chain. 해당 변종 face 가 없는 칸은 regular 로 떨어뜨린다.
+    fn faceAt(self: *const DWriteFontContext, i: usize, style: font_constants.FaceStyle) ?*dw.IDWriteFontFace {
+        if (style != .regular) {
+            if (self.styled_faces[style.index() - 1][i]) |f| return f;
+        }
+        return self.chain_faces[i];
+    }
+
+    /// `style` (#375) 은 SGR `1` · `3` 이 요구하는 face 변종이다. chain 순회만 이
+    /// 값을 따르고, system fallback (`MapCharacters`) 경로와 grapheme · ligature 는
+    /// regular 를 쓴다 — 컬러 emoji 에 굵기는 의미가 없다.
+    pub fn resolveGlyph(self: *DWriteFontContext, codepoint: u21, style: font_constants.FaceStyle) ?GlyphResult {
+        // 캐시는 **chain 밖** cp 의 system fallback 결과만 담는다 (chain 히트는 아래에서
+        // 바로 반환하고 캐시에 넣지 않는다) — 그래서 변종이 캐시와 충돌하지 않는다.
         if (self.glyph_map.get(codepoint)) |c| {
             return .{ .face = c.face, .index = c.index, .owned = false };
         }
@@ -327,8 +376,8 @@ pub const DWriteFontContext = struct {
         var glyph_index: dw.UINT16 = 0;
 
         // 1. user chain — config.font.family 순서대로. 글리프 가진 첫 face 반환.
-        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
-            const face = maybe_face orelse continue;
+        for (0..self.chain_count) |i| {
+            const face = self.faceAt(i, style) orelse continue;
             glyph_index = 0;
             _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
             if (glyph_index != 0) {

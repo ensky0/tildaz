@@ -147,6 +147,25 @@ pub const kCTFontTraitColorGlyphs: u32 = 1 << 13; // 0x2000
 
 pub extern "CoreText" fn CTFontGetSymbolicTraits(font: CTFontRef) u32;
 
+// --- 폰트 face 변종 (bold · italic) — #375 ---
+//
+// 같은 family 안에서 굵기 / 기울기 face 를 얻는다. `CTFontCreateCopyWithSymbolicTraits`
+// 는 **요청한 트레이트를 가진 face 가 없으면 null** 을 돌려주므로, 그 결과로
+// "이 family 에 bold 가 있나" 를 그대로 판정할 수 있다 (별도 조회가 필요 없다).
+//
+// `traits` 에 켜고 싶은 비트를, `mask` 에 **판단 대상 비트**를 넣는다. 예를 들어
+// italic 만 켜고 bold 는 건드리지 않으려면 둘 다 italic 비트만 준다.
+pub const kCTFontTraitItalic: u32 = 1 << 0;
+pub const kCTFontTraitBold: u32 = 1 << 1;
+
+pub extern "CoreText" fn CTFontCreateCopyWithSymbolicTraits(
+    font: CTFontRef,
+    size: CGFloat,
+    matrix: ?*const anyopaque,
+    symTraitValue: u32,
+    symTraitMask: u32,
+) ?CTFontRef;
+
 // --- CoreText shaping (CTLine) — grapheme cluster shaping (#132 B) ---
 //
 // emoji presentation (VS-16 = U+FE0F), skin tone modifier (U+1F3FB-FF), ZWJ

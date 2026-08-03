@@ -51,7 +51,21 @@ pub const CoreTextFontContext = struct {
     /// 에 사용 (Windows DWriteFontContext 와 동등). [0] 은 primary 와 동일.
     fallback_fonts: [MAX_FALLBACK_FONTS]ct.CTFontRef,
     fallback_count: usize,
+    /// #375 — bold · italic · bold_italic chain. regular 는 위 `fallback_fonts` 가
+    /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
+    ///
+    /// **해당 트레이트 face 가 없는 family 는 regular face 를 retain 해서 넣는다** —
+    /// 조회가 언제나 성공하므로 호출부에 "없으면 regular" 분기를 두지 않아도 된다
+    /// (synthetic 은 만들지 않는다는 결정의 자연스러운 귀결).
+    styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef,
     ligature_cache: ligature.Cache,
+
+    /// #375 — 요청한 변종의 chain. `regular` 는 기존 배열을 그대로 돌려주므로
+    /// 이 기능이 들어와도 평시 경로의 동작이 바뀌지 않는다.
+    fn chainFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const ct.CTFontRef {
+        if (style == .regular) return self.fallback_fonts[0..self.fallback_count];
+        return self.styled_fonts[style.index() - 1][0..self.fallback_count];
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -177,6 +191,17 @@ pub const CoreTextFontContext = struct {
             @as(u32, @intFromFloat(@round(descent * retina_scale))),
         });
 
+        // #375 — 변종 chain. `CTFontCreateCopyWithSymbolicTraits` 는 해당 face 가
+        // 없으면 null 을 주므로, 그 결과가 곧 "이 family 에 bold / italic 이 있나" 의
+        // 답이다. 없으면 regular 를 retain 해 넣어 조회가 언제나 성공하게 한다.
+        var styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef = undefined;
+        inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
+            const slot = fs.index() - 1;
+            for (fallback_fonts[0..fallback_count], 0..) |base, i| {
+                styled_fonts[slot][i] = styledCopy(base, spec.size_logical, fs);
+            }
+        }
+
         return .{
             .primary_font = font,
             .font_em_size = spec.size_logical,
@@ -189,6 +214,7 @@ pub const CoreTextFontContext = struct {
             .font_family = font_family,
             .fallback_fonts = fallback_fonts,
             .fallback_count = fallback_count,
+            .styled_fonts = styled_fonts,
             .ligature_cache = ligature.Cache.init(allocator),
         };
     }
@@ -202,6 +228,24 @@ pub const CoreTextFontContext = struct {
         for (self.fallback_fonts[0..self.fallback_count]) |f| {
             ct.CFRelease(f);
         }
+        // #375 — 변종 chain. face 가 없어 regular 를 retain 한 칸도 여기서 release 되어
+        // 참조 수가 맞는다.
+        for (&self.styled_fonts) |*chain| {
+            for (chain[0..self.fallback_count]) |f| ct.CFRelease(f);
+        }
+    }
+
+    /// #375 — 같은 family 의 변종 face. 없으면 `base` 를 retain 해 돌려준다
+    /// (호출부가 소유권을 일관되게 다루도록 — 어느 쪽이든 `CFRelease` 한 번).
+    fn styledCopy(base: ct.CTFontRef, size_logical: f32, style: font_constants.FaceStyle) ct.CTFontRef {
+        var traits: u32 = 0;
+        if (style.isBold()) traits |= ct.kCTFontTraitBold;
+        if (style.isItalic()) traits |= ct.kCTFontTraitItalic;
+        const mask = ct.kCTFontTraitBold | ct.kCTFontTraitItalic;
+        if (ct.CTFontCreateCopyWithSymbolicTraits(base, @floatCast(size_logical), null, traits, mask)) |f| {
+            return f;
+        }
+        return @ptrCast(ct.CFRetain(base));
     }
 
     /// grapheme cluster (base + extras) 통째 shape → 첫 run 의 첫 glyph 반환.
@@ -441,7 +485,11 @@ pub const CoreTextFontContext = struct {
     /// 첫 번째 글리프 가진 폰트 사용 (Windows DWriteFontContext 와 동등). chain
     /// 모두 없으면 `CTFontCreateForString` 의 system auto fallback (Apple Color
     /// Emoji 등). system fallback 결과는 `owned = true` — caller 가 CFRelease.
-    pub fn resolveGlyph(self: *CoreTextFontContext, codepoint: u21) ?GlyphResult {
+    /// `style` (#375) 은 SGR `1` · `3` 이 요구하는 face 변종이다. chain 순회만
+    /// 이 값을 따르고, grapheme cluster (emoji 등) · ligature 경로는 regular 를
+    /// 그대로 쓴다 — 컬러 emoji 에 굵기는 의미가 없고, ligature 는 `style_id` 가
+    /// 같은 구간에서만 일어나므로 섞이지 않는다.
+    pub fn resolveGlyph(self: *CoreTextFontContext, codepoint: u21, style: font_constants.FaceStyle) ?GlyphResult {
         // codepoint 를 UTF-16 surrogate pair (또는 single unit) 으로.
         var utf16_buf: [2]u16 = undefined;
         var utf16_len: usize = undefined;
@@ -456,7 +504,7 @@ pub const CoreTextFontContext = struct {
         }
 
         // 1. chain 순회 — 글리프 가진 첫 폰트 사용.
-        for (self.fallback_fonts[0..self.fallback_count]) |f| {
+        for (self.chainFor(style)) |f| {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
