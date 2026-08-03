@@ -784,14 +784,15 @@ pub const Renderer = struct {
                         resolveFg(style, &raw, &colors, is_selected),
                         &colors.palette,
                         @floatFromInt(ascent),
+                        @floatFromInt(cell_w),
                         @floatFromInt(ch),
                         &deco,
                     );
                     for (deco[0..dn]) |d| {
                         self.layer.cell_bg.append(allocator, .{
-                            .x = cell_x,
+                            .x = cell_x + @as(i32, @intFromFloat(d.x)),
                             .y = cell_y + @as(i32, @intFromFloat(d.y)),
-                            .w = cell_w,
+                            .w = @intFromFloat(d.w),
                             .h = @intFromFloat(d.h),
                             .color = d.color,
                         }) catch {};

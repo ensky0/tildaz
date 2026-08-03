@@ -1064,7 +1064,8 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | `53` / `55` | `overline` / reset | ✅ 세 platform |
 | `58` / `59` | `underline_color` / reset | ✅ 세 platform |
 | `8` / `28` | `invisible` / reset | ✅ 세 platform |
-| `4:3` / `4:4` / `4:5` | `curly` / `dotted` / `dashed` | ⛔ [#374](https://github.com/ensky0/tildaz/issues/374) — **`single` 로 fallback** (아래) |
+| `4:4` / `4:5` | `dotted` / `dashed` | ✅ 세 platform ([#374](https://github.com/ensky0/tildaz/issues/374)) |
+| `4:3` | `curly` | ⛔ [#374](https://github.com/ensky0/tildaz/issues/374) — **`single` 로 fallback** (아래) |
 | `3` / `1` | `italic` / `bold` 굵기 | ⛔ [#375](https://github.com/ensky0/tildaz/issues/375) — 폰트 face 문제 |
 | `5` / `25` | `blink` | ⛔ [#376](https://github.com/ensky0/tildaz/issues/376) — 지원 여부 미결정 |
 
@@ -1079,14 +1080,18 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | 이중 밑줄 | 단일 밑줄 자리를 **비우고** 위아래로 두께만큼 (전체 3×두께) |
 | 취소선 **중심** | baseline − `0.30 × ascent` (정석 `x_height / 2` 의 근사) |
 | 윗줄 top | 셀 top (0) |
+| 점선 (`4:4`) | 셀을 `round(셀폭 / 2×두께)` 등분해 각 구간 **중앙**에 `두께 × 두께` 정사각형 |
+| 파선 (`4:5`) | `dash = floor(셀폭/3) + 1` 을 한 칸 걸러 배치 → 셀당 2 개, 마지막은 셀 폭에서 자름 |
+
+**점선·파선은 셀 경계 위상을 맞추지 않는다.** 셀마다 **정수 개**를 균등 배치하고, 셀 폭이 모두 같으므로 이웃 셀과 자연히 같은 리듬이 된다 (ghostty 와 같은 접근). 절대 x 좌표를 위상에 넣는 처리는 필요 없다. wide char 는 셀 폭이 2배라 조각 수도 2배가 되어 **밀도가 유지**된다 — 한글 구간과 ASCII 구간의 점선 간격이 같다.
+
+`curly` (`4:3`) 는 사인파라 사각형으로 표현되지 않아 세 platform 의 셰이더와 CPU 래스터라이저를 모두 손대야 한다. 그때까지 **직선 밑줄로 낮춰** 그린다 — 아무것도 안 그리면 neovim 의 LSP 진단 밑줄이 통째로 사라지기 때문이다. *ghostty 파서가 미지원 스타일을 `single` 로 떨어뜨리는 것과는 층위가 다르다* — 그쪽은 `4:6` 이상의 미정의 숫자에만 해당하고 `4:3` 은 파서가 `.curly` 로 정확히 넘긴다. 우리는 **렌더 단계에서** 낮추는 것이다.
 
 폰트 metric 을 쓰지 않는 이유: 밑줄 position/thickness 는 세 폰트 API 가 모두 주지만 **취소선과 x_height 는 Linux (FreeType) 와 macOS (CoreText) 에 없어** OS/2 테이블을 직접 읽어야 한다. 폰트값을 쓰면 *밑줄은 폰트값 · 취소선은 상수* 로 갈리고 API 별 단위 변환 차이로 platform 간 1px 이 어긋난다.
 
 **선 색.** 밑줄은 `underline_color` (SGR 58) 가 있으면 그 색, 없으면 `fg`. 취소선과 윗줄은 `underline_color` 를 보지 않고 항상 `fg`. 여기서 `fg` 는 [`cell_color.resolveFg`](src/renderer/cell_color.zig) 의 결과라 selection / inverse 교환이 이미 반영돼 있다.
 
 **`invisible` (SGR 8) 은 선까지 전부 숨긴다.** 글리프뿐 아니라 block element · box drawing · 선을 모두 그리지 않는다. xterm · ghostty 와 같은 정책이고, Alacritty 처럼 "텍스트만 숨기고 선은 남기는" 방식과 갈리는 지점이다 (2026-08-03 결정).
-
-**미지원 밑줄 스타일은 `single` 로 떨어뜨린다.** `curly` / `dotted` / `dashed` 를 아무것도 안 그리면 neovim 의 LSP 진단 밑줄이 통째로 사라지므로 최소한 직선으로는 보이게 한다. ghostty 파서도 모르는 스타일을 `single` 로 떨어뜨린다.
 
 **선은 텍스트가 없는 셀에도 그린다** — `\e[4m` 뒤의 공백에 밑줄이 이어져야 하기 때문이다. 반대로 한 번도 쓰지 않은 셀은 `style_id` 가 0 이라 선이 생기지 않는다.
 
