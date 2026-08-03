@@ -7,6 +7,7 @@ const Config = config_mod.Config;
 const log = @import("../log.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
+const shell_integration = @import("../shell_integration.zig");
 const shell_validate = @import("../shell_validate.zig");
 const terminal = @import("../terminal.zig");
 const windows_pty = @import("../terminal/windows/pty.zig");
@@ -215,6 +216,11 @@ pub fn run() !void {
 ///   - `WSLENV` — WSL 자식 프로세스에 어떤 env 를 forward 할지 hint. 부모의
 ///     기존 WSLENV (있으면) 에 ":COLORFGBG" 를 append. WSL 환경 외에서는
 ///     무해.
+///   - `PROMPT` — cmd 가 프롬프트를 그릴 때마다 OSC 7 로 현재 위치를 알리게 (#366).
+///     새 탭이 그 위치에서 시작한다. 조립은 `shell_integration.cmdPrompt` 가 하고,
+///     **기존 값 앞에만 덧붙이므로** 사용자 프롬프트 모양이 유지된다. PowerShell 은
+///     이 변수를 쓰지 않고 (별도 주입), WSLENV 에 넣지 않으므로 WSL 안 셸에도 전달되지
+///     않는다 — cmd 탭에만 효과가 있다.
 ///
 /// Buffer lifetime: process lifetime static (다음 호출 시 덮어쓰지만 SessionCore
 /// 가 슬라이스를 들고 있는 동안 유효).
@@ -223,7 +229,8 @@ fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
     const S = struct {
         var wslenv_buf: [768]u8 = undefined;
         var wslenv_len: usize = 0;
-        var vars: [2]terminal.ExtraEnv = undefined;
+        var prompt_buf: [1024]u8 = undefined;
+        var vars: [3]terminal.ExtraEnv = undefined;
     };
 
     S.vars[0] = .{
@@ -255,5 +262,21 @@ fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
         .value = S.wslenv_buf[0..S.wslenv_len],
     };
 
-    return &S.vars;
+    // PROMPT — 부모의 기존 값을 읽어 보고 조각을 앞에 덧붙인다 (#366). 조립이 실패
+    // (버퍼 부족) 하면 이 항목만 빼고 나머지는 그대로 전달한다 — 새 탭이 홈에서
+    // 시작하는 기존 동작으로 열화한다.
+    var pbuf: [512]WCHAR = undefined;
+    const prompt_name = std.unicode.utf8ToUtf16LeStringLiteral("PROMPT");
+    const existing_wide = GetEnvironmentVariableW(prompt_name, &pbuf, pbuf.len);
+    var existing_storage: [1024]u8 = undefined;
+    var existing: []const u8 = &.{};
+    if (existing_wide > 0 and existing_wide < pbuf.len) {
+        const utf8_len = std.unicode.utf16LeToUtf8(&existing_storage, pbuf[0..existing_wide]) catch 0;
+        existing = existing_storage[0..utf8_len];
+    }
+    if (shell_integration.cmdPrompt(&S.prompt_buf, existing)) |value| {
+        S.vars[2] = .{ .name = "PROMPT", .value = value };
+        return S.vars[0..3];
+    }
+    return S.vars[0..2];
 }
