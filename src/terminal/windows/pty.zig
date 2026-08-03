@@ -304,7 +304,9 @@ pub const ConPty = struct {
     pub const ExitCallback = *const fn (userdata: ?*anyopaque) void;
     pub const EnvVar = struct { name: [*:0]const u16, value: [*:0]const u16 };
 
-    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR, extra_env: ?[]const EnvVar) !ConPty {
+    /// `cwd` — 셸의 시작 디렉토리 (#366). `null` 이면 홈 (#265). 일반 셸은 Windows
+    /// 경로 (`C:\…`), WSL 탭은 Linux 경로 (`/home/me`) 를 받는다 (`isWslCommand`).
+    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, shell: [*:0]const WCHAR, extra_env: ?[]const EnvVar, cwd: ?[:0]const WCHAR) !ConPty {
         // ── Input pipe (익명, sync): 우리 = write, conhost = read
         var pipe_in_read: HANDLE = undefined;
         var pipe_in_write: HANDLE = undefined;
@@ -449,20 +451,36 @@ pub const ConPty = struct {
         // small fixed buffer.
         const shell_len = std.mem.len(shell);
 
-        // ── 시작 디렉토리를 홈으로 (#265)
+        // ── 시작 디렉토리 — 홈 (#265) 또는 활성 탭에서 물려받은 경로 (#366)
         //
-        // 일반 exe (cmd.exe / PowerShell 등) 는 lpCurrentDirectory 에
-        // %USERPROFILE% 를 넘기면 되지만, WSL 탭의 목표는 Linux 홈 (`~`) —
-        // Windows 경로로 표현 불가 + Windows 쪽에서는 그 위치를 알 수도 없다.
-        // Windows Terminal 과 같은 방식으로 wsl 명령줄에 `--cd ~` 를 끼워 넣어
-        // wsl 자신에게 위임한다 (microsoft/terminal PR #9223 의
-        // MangleStartingDirectoryForWSL 패턴). 사용자가 이미 `--cd` 나 단독
-        // `~` 인자를 넣었으면 충돌하므로 건드리지 않는다.
+        // 일반 exe (cmd.exe / PowerShell 등) 는 lpCurrentDirectory 로 넘기면 되지만,
+        // WSL 탭의 목표 위치는 Linux 쪽 경로 — Windows 경로로 표현 불가 + Windows
+        // 쪽에서는 그 위치를 확인할 수도 없다. Windows Terminal 과 같은 방식으로
+        // wsl 명령줄에 `--cd` 를 끼워 넣어 wsl 자신에게 위임한다
+        // (microsoft/terminal PR #9223 의 MangleStartingDirectoryForWSL 패턴).
+        // 사용자가 이미 `--cd` 나 단독 `~` 인자를 넣었으면 충돌하므로 건드리지 않는다.
+        const L = std.unicode.utf8ToUtf16LeStringLiteral;
         const wsl_cd = wslCdInsertion(shell[0..shell_len]);
-        const insert: []const u16 = if (wsl_cd.insert)
-            std.unicode.utf8ToUtf16LeStringLiteral(" --cd ~")
-        else
-            &.{};
+
+        // WSL 탭에 끼워 넣을 인자 — 물려받은 경로가 있으면 그 경로, 없으면 Linux 홈.
+        // 공백이 있는 경로도 한 인자로 가도록 `"` 로 감싼다. 경로 안에 `"` 가 있으면
+        // 인용이 깨지므로 (그리고 Linux 파일 이름에 `"` 는 허용된다) 그때는 상속을
+        // 포기하고 홈으로 간다.
+        var wsl_insert_buf: [wsl_insert_max]u16 = undefined;
+        const insert: []const u16 = blk: {
+            if (!wsl_cd.insert) break :blk &.{};
+            if (wsl_cd.is_wsl) if (cwd) |dir| {
+                const prefix = L(" --cd \"");
+                const total = prefix.len + dir.len + 1;
+                if (std.mem.indexOfScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
+                    @memcpy(wsl_insert_buf[0..prefix.len], prefix);
+                    @memcpy(wsl_insert_buf[prefix.len..][0..dir.len], dir);
+                    wsl_insert_buf[total - 1] = '"';
+                    break :blk wsl_insert_buf[0..total];
+                }
+            };
+            break :blk L(" --cd ~");
+        };
 
         const cmd_len = shell_len + insert.len;
         const cmd_buf = try allocator.alloc(WCHAR, cmd_len + 1);
@@ -475,8 +493,8 @@ pub const ConPty = struct {
         );
         cmd_buf[cmd_len] = 0;
 
-        // WSL 이 아닌 경우의 시작 디렉토리 = %USERPROFILE%. 환경변수가 없으면
-        // null (기존 동작 — 부모의 현재 디렉토리 상속).
+        // WSL 이 아닌 경우의 홈 = %USERPROFILE%. 환경변수가 없으면 null (기존 동작 —
+        // 부모의 현재 디렉토리 상속).
         var home_buf: ?[]u16 = null;
         defer if (home_buf) |b| allocator.free(b);
         if (!wsl_cd.is_wsl) {
@@ -493,7 +511,14 @@ pub const ConPty = struct {
                 }
             }
         }
-        const cwd: ?[*:0]const WCHAR = if (home_buf) |b| @ptrCast(b.ptr) else null;
+        const home_dir: ?[*:0]const WCHAR = if (home_buf) |b| @ptrCast(b.ptr) else null;
+        // 물려받은 경로는 일반 셸에서만 lpCurrentDirectory 로 쓴다 — WSL 탭은 위
+        // `--cd` 로 이미 넘겼고, Linux 경로를 Windows 쪽 시작 디렉토리로 줄 수 없다.
+        const inherited_dir: ?[*:0]const WCHAR = if (!wsl_cd.is_wsl)
+            if (cwd) |dir| dir.ptr else null
+        else
+            null;
+        const start_dir = inherited_dir orelse home_dir;
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
         const MAX_EXTRA_ENV = 8;
@@ -537,23 +562,60 @@ pub const ConPty = struct {
             }
         }.restore;
 
-        if (CreateProcessW(
-            null,
+        // CreateProcessW 는 lpCommandLine 을 제자리에서 고칠 수 있다 ([MS 문서]
+        // (https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
+        // — *"can modify the contents of this string"*). 재시도가 있을 수 있으니
+        // 원본 사본을 미리 떠 둔다.
+        const retry_buf: ?[]WCHAR = if (inherited_dir != null and home_dir != null)
+            try allocator.dupe(WCHAR, cmd_buf[0 .. cmd_len + 1])
+        else
+            null;
+        defer if (retry_buf) |b| allocator.free(b);
+
+        const spawn = struct {
+            fn f(
+                cmd: [*:0]WCHAR,
+                dir: ?[*:0]const WCHAR,
+                si: *STARTUPINFOEXW,
+                pi: *PROCESS_INFORMATION,
+            ) bool {
+                return CreateProcessW(
+                    null,
+                    cmd,
+                    null,
+                    null,
+                    0,
+                    EXTENDED_STARTUPINFO_PRESENT,
+                    null,
+                    dir,
+                    si,
+                    pi,
+                ) != 0;
+            }
+        }.f;
+
+        var spawned = spawn(
             @ptrCast(cmd_buf[0..cmd_len :0].ptr),
-            null,
-            null,
-            0,
-            EXTENDED_STARTUPINFO_PRESENT,
-            null,
-            cwd,
+            start_dir,
             &startup_info,
             &process_info,
-        ) == 0) {
-            restore_env(allocator, extra_env, &saved_vals);
-            return error.CreateProcessFailed;
+        );
+        if (!spawned) {
+            // 물려받은 경로가 spawn 직전에 사라졌을 수 있다 (#366). lpCurrentDirectory
+            // 가 없는 디렉토리면 CreateProcessW 자체가 실패하므로, 그대로 두면 새 탭이
+            // 아예 열리지 않는다. 홈으로 한 번 되돌려 다시 시도한다.
+            if (retry_buf) |b| {
+                spawned = spawn(
+                    @ptrCast(b[0..cmd_len :0].ptr),
+                    home_dir,
+                    &startup_info,
+                    &process_info,
+                );
+            }
         }
 
         restore_env(allocator, extra_env, &saved_vals);
+        if (!spawned) return error.CreateProcessFailed;
 
         // ── DA1 pre-response (번들 OpenConsole 3초 지연 회피)
         //
@@ -671,6 +733,17 @@ pub const ConPty = struct {
     }
 };
 
+/// WSL 탭에 끼워 넣는 `--cd "<경로>"` 인자의 최대 길이 (UTF-16 unit). Linux PATH_MAX
+/// (4096 바이트) 가 UTF-16 으로 늘어나도 담기게 여유를 둔다 — 넘치면 홈으로 열화한다.
+const wsl_insert_max = 4200;
+
+/// 이 명령줄이 WSL 탭인지 (#366). WSL 안 셸은 OSC 7 로 **Linux 경로**를 보고하고
+/// 새 탭도 `wsl --cd <Linux 경로>` 로 받으므로, 경로 표기를 host OS 기준으로 정하면
+/// 안 된다. `terminal.isWslShell` 이 comptime 으로 이 함수를 고른다.
+pub fn isWslCommand(cmd: [*:0]const WCHAR) bool {
+    return wslCdInsertion(std.mem.span(cmd)).is_wsl;
+}
+
 /// #265 — 명령줄이 WSL (`wsl` / `wsl.exe`) 인지 판정하고, WSL 이면 시작
 /// 디렉토리를 Linux 홈으로 만들 `--cd ~` 를 끼워 넣을 위치를 계산한다.
 /// Windows Terminal 의 `MangleStartingDirectoryForWSL` (microsoft/terminal
@@ -762,7 +835,7 @@ test "wslCdInsertion: wsl 판정 + 삽입 위치" {
 // 환경에서는 ConptyRuntimeUnavailable 로 skip 한다 (fallback 제거, #339).
 test "conpty create and destroy" {
     const shell = std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
-    var pty = ConPty.init(std.testing.allocator, 80, 24, shell, null) catch |err| switch (err) {
+    var pty = ConPty.init(std.testing.allocator, 80, 24, shell, null, null) catch |err| switch (err) {
         error.ConptyRuntimeUnavailable => return error.SkipZigTest,
         else => return err,
     };

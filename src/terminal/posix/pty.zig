@@ -66,6 +66,7 @@ pub const Pty = struct {
         rows: u16,
         shell: []const u8,
         extra_env: ?[]const EnvVar,
+        cwd: ?[]const u8,
     ) !Pty {
         const pair = try openPtyPair(cols, rows);
         errdefer posix.close(pair.master);
@@ -100,9 +101,23 @@ pub const Pty = struct {
         };
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(envp_buf.ptr);
 
+        // fork 후 자식은 allocator 를 쓸 수 없으니 (#366) 시작 디렉토리도 미리
+        // NUL-term 으로 만들어 둔다 — `shell_z` 와 같은 패턴.
+        const cwd_z: ?[:0]u8 = if (cwd) |dir|
+            allocator.dupeZ(u8, dir) catch return error.EnvBuildFailed
+        else
+            null;
+        defer if (cwd_z) |z| allocator.free(z);
+
         const pid = posix.fork() catch return error.ForkFailed;
         if (pid == 0) {
-            childExec(pair.master, pair.slave, shell_z.ptr, envp);
+            childExec(
+                pair.master,
+                pair.slave,
+                shell_z.ptr,
+                envp,
+                if (cwd_z) |z| z.ptr else null,
+            );
         }
 
         posix.close(pair.slave);
@@ -238,6 +253,7 @@ fn childExec(
     slave_fd: posix.fd_t,
     shell: [*:0]const u8,
     envp: [*:null]const ?[*:0]const u8,
+    cwd: ?[*:0]const u8,
 ) noreturn {
     posix.close(master_fd);
 
@@ -254,11 +270,22 @@ fn childExec(
         _ = login_tty(slave_fd);
     }
 
-    // 시작 디렉토리를 홈으로 (#265). 지정하지 않으면 부모 (앱) 의 현재
-    // 디렉토리를 물려받아 실행 경로 (런처 / Finder / 셸) 에 따라 달라진다.
-    // `HOME` 이 없거나 chdir 실패면 그대로 진행 (기존 동작).
-    if (posix.getenv("HOME")) |home| {
-        posix.chdir(home) catch {};
+    // 시작 디렉토리 — 호출자가 준 경로 (#366, 활성 탭이 OSC 7 로 알린 위치) 를
+    // 먼저 쓰고, 없거나 그리로 못 가면 홈 (#265) 으로 간다. `HOME` 까지 실패하면
+    // 그대로 진행 (#265 이전 동작).
+    //
+    // cwd 실패를 그냥 넘기지 않고 홈으로 되돌리는 이유: 아무 곳도 안 가면 부모
+    // (앱) 의 현재 디렉토리를 물려받아 실행 경로 (런처 / Finder / 셸) 에 따라 시작
+    // 위치가 달라진다 — #265 가 고친 문제가 그대로 되살아난다. 호출자가 spawn 전에
+    // 디렉토리 존재를 확인하지만 그 사이에 지워질 수 있다.
+    const moved = if (cwd) |dir| blk: {
+        posix.chdirZ(dir) catch break :blk false;
+        break :blk true;
+    } else false;
+    if (!moved) {
+        if (posix.getenv("HOME")) |home| {
+            posix.chdir(home) catch {};
+        }
     }
 
     // macOS 만 login shell (`-l`) — "Last login" + ~/.zprofile 로드,
@@ -375,7 +402,7 @@ test "pty — /bin/sh spawn·echo 왕복·extra_env 우선·exit" {
 
     // extra_env 의 SHELL 이 부모값을 override 하는지 (#118 정책) 함께 검증.
     const extra = [_]Pty.EnvVar{.{ .name = "SHELL", .value = "/tmp/tz-pty-test-sentinel" }};
-    var pty = try Pty.init(std.testing.allocator, 80, 24, "/bin/sh", &extra);
+    var pty = try Pty.init(std.testing.allocator, 80, 24, "/bin/sh", &extra, null);
     try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null);
 
     _ = try pty.write("echo pty_roundtrip_$SHELL\n");
@@ -395,4 +422,54 @@ test "pty — /bin/sh spawn·echo 왕복·extra_env 우선·exit" {
     try std.testing.expect(TestCollector.exited.load(.acquire));
 
     pty.deinit();
+}
+
+// `cwd` 를 넘겼을 때 셸이 정말 그 디렉토리에서 시작하는지, 그리고 그 경로로 갈 수
+// 없을 때 홈으로 되돌아오는지 (#366 의 실패 방어) 를 실제 spawn 으로 확인한다.
+//
+// 비교 대상으로 `/` 를 쓰는 이유: macOS 의 `/tmp` 는 `/private/tmp` 심볼릭 링크라
+// 셸의 `$PWD` (시작 시 `getcwd`, 물리 경로) 와 문자열이 어긋난다. `/` 는 어느 OS
+// 에서도 링크가 아니다.
+test "pty — cwd 지정 시 그 디렉토리에서 시작, 갈 수 없으면 홈 (#366)" {
+    const waitFor = struct {
+        fn f(needle: []const u8) bool {
+            var waited_ms: u64 = 0;
+            while (waited_ms < 5000) : (waited_ms += 20) {
+                if (TestCollector.contains(needle)) return true;
+                std.Thread.sleep(20 * std.time.ns_per_ms);
+            }
+            return false;
+        }
+    }.f;
+
+    {
+        TestCollector.reset();
+        var pty = try Pty.init(std.testing.allocator, 80, 24, "/bin/sh", null, "/");
+        defer pty.deinit();
+        try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null);
+
+        _ = try pty.write("[ \"$PWD\" = \"/\" ] && echo tz366_root_ok\n");
+        try std.testing.expect(waitFor("tz366_root_ok"));
+    }
+
+    {
+        TestCollector.reset();
+        // 존재하지 않는 경로 — 호출자가 spawn 전에 확인하지만 그 사이에 지워지는
+        // race 가 있고, 그때 앱의 현재 디렉토리를 물려받으면 #265 가 되살아난다.
+        var pty = try Pty.init(
+            std.testing.allocator,
+            80,
+            24,
+            "/bin/sh",
+            null,
+            "/tz366-does-not-exist",
+        );
+        defer pty.deinit();
+        try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null);
+
+        // 현재 위치를 기억한 뒤 홈으로 이동해 같은 곳인지 본다 ($HOME 이 심볼릭
+        // 링크여도 양쪽 모두 `getcwd` 결과라 문자열이 일치한다).
+        _ = try pty.write("P=$PWD; cd \"$HOME\"; [ \"$P\" = \"$PWD\" ] && echo tz366_home_ok\n");
+        try std.testing.expect(waitFor("tz366_home_ok"));
+    }
 }

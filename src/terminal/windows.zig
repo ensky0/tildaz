@@ -36,13 +36,31 @@ pub const Backend = struct {
         }
 
         const env_slice: ?[]const ConPty.EnvVar = if (n > 0) combined[0..n] else null;
+
+        // 시작 디렉토리 (#366) 도 utf-8 → utf-16. 변환에 실패하거나 버퍼를 넘치면
+        // 상속을 포기하고 홈에서 시작한다 (null).
+        var cwd_buf: [4200]u16 = undefined;
+        const cwd: ?[:0]const u16 = if (opts.cwd) |dir| blk: {
+            const len = std.unicode.utf8ToUtf16Le(&cwd_buf, dir) catch break :blk null;
+            if (len >= cwd_buf.len) break :blk null;
+            cwd_buf[len] = 0;
+            break :blk cwd_buf[0..len :0];
+        } else null;
+
         return .{
-            .pty = try ConPty.init(opts.allocator, opts.cols, opts.rows, opts.shell, env_slice),
+            .pty = try ConPty.init(opts.allocator, opts.cols, opts.rows, opts.shell, env_slice, cwd),
         };
     }
 
     pub fn deinit(self: *Backend) void {
         self.pty.deinit();
+    }
+
+    /// Windows 는 프로세스 cwd 조회를 하지 않으므로 (#366 — PowerShell 은 원리적으로
+    /// 불가, cmd 만 되는 PEB 읽기는 비공개 API) 쓰이지 않는 값이다. 시작 위치는 OSC 7
+    /// 주입으로 얻는다.
+    pub fn childPid(_: *Backend) i32 {
+        return 0;
     }
 
     pub fn write(self: *Backend, data: []const u8) !usize {
