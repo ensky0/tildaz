@@ -239,6 +239,10 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
+    // stress 하네스도 같은 런타임을 exe 옆에 두고 실행해야 하므로 (아래 stress 단계)
+    // install step 을 붙잡아 둡니다. Windows 아닌 target 에선 null 입니다.
+    var conpty_dll_install: ?*std.Build.Step.InstallFile = null;
+    var conpty_open_console_install: ?*std.Build.Step.InstallFile = null;
     if (is_windows_target) {
         // 번들 ConPTY 런타임(Microsoft.Windows.Console.ConPTY).
         // tildaz.exe 옆 `_internal\` 하위로 복사되어 conpty.dll 의
@@ -256,8 +260,12 @@ pub fn build(b: *std.Build) void {
         };
         const conpty_dll_path = b.fmt("{s}/conpty.dll", .{conpty_arch_dir});
         const open_console_path = b.fmt("{s}/OpenConsole.exe", .{conpty_arch_dir});
-        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(conpty_dll_path), "_internal/conpty.dll").step);
-        b.getInstallStep().dependOn(&b.addInstallBinFile(b.path(open_console_path), "_internal/OpenConsole.exe").step);
+        const dll_install = b.addInstallBinFile(b.path(conpty_dll_path), "_internal/conpty.dll");
+        const open_console_install = b.addInstallBinFile(b.path(open_console_path), "_internal/OpenConsole.exe");
+        b.getInstallStep().dependOn(&dll_install.step);
+        b.getInstallStep().dependOn(&open_console_install.step);
+        conpty_dll_install = dll_install;
+        conpty_open_console_install = open_console_install;
     }
 
     // 실행 단계
@@ -371,7 +379,29 @@ pub fn build(b: *std.Build) void {
         stress_exe.use_llvm = true;
         stress_exe.use_lld = true;
     }
-    const stress_run = b.addRunArtifact(stress_exe);
+    // 실행은 `addRunArtifact` 가 아니라 **install 된 `zig-out/bin` 경로**에서 한다.
+    // `addRunArtifact` 는 zig 캐시의 output 디렉토리에서 바로 띄우는데, Windows 의
+    // ConPTY 는 실행파일 옆 `_internal\conpty.dll` 이 필수라 (#339 에서 kernel32
+    // fallback 제거) 그 자리에서는 만들 수 없다 — 캐시 디렉토리는 내용이 hash 로
+    // 봉인돼 런타임을 끼워 넣을 자리가 아니다. Windows 실기에서 `--layer pty` ·
+    // `frame` · `scrollback` 이 전부 곧바로 `error.ConptyRuntimeUnavailable` 로
+    // 실패했다 (#371). `parser` 층만 PTY 를 안 써서 통과했다.
+    //
+    // platform 별로 갈라 두지 않는다 — 세 platform 이 같은 경로로 실행돼야 숫자를
+    // 나란히 둘 수 있고, exe 옆 레이아웃이 릴리즈 번들과 같아진다.
+    //
+    // producer 자식도 `std.fs.selfExePath` 로 자기 경로를 띄우므로 (`stress.zig` 의
+    // `ProducerSession.start`) 자식 역시 같은 디렉토리에서 돈다.
+    const stress_install = b.addInstallArtifact(stress_exe, .{});
+    const stress_run = b.addSystemCommand(&.{b.getInstallPath(.bin, stress_exe.out_filename)});
+    stress_run.step.dependOn(&stress_install.step);
+    if (conpty_dll_install) |s| stress_run.step.dependOn(&s.step);
+    if (conpty_open_console_install) |s| stress_run.step.dependOn(&s.step);
+    // 인자에 output file 이 없어 `infer_from_args` 로는 캐시 대상이 될 수 있다.
+    // 측정은 매번 실제로 돌아야 하므로 side-effects 를 명시한다 (`inherit` 은 그와
+    // 동시에 stdout 을 그대로 흘려 리포트가 보이게 하고, non-zero exit 을 실패로
+    // 만든다 — 잘못된 인자에 usage + exit 2 를 내는 동작이 그대로 유지된다).
+    stress_run.stdio = .inherit;
     if (b.args) |args| stress_run.addArgs(args);
     stress_step.dependOn(&stress_run.step);
 
