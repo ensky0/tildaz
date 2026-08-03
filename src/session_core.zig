@@ -481,16 +481,19 @@ pub const Tab = struct {
     }
 
     /// stress 하네스 전용 통로 (#371) — `drainFrame` 의 프레임 예산을 거치지 않고
-    /// output ring 을 끝까지 비운다. 소화한 chunk 수를 돌려준다. PTY 에서 온
-    /// 바이트를 VT 가 소화하는 속도의 상한을 재는 용도다.
+    /// output ring 에서 **한 덩어리**를 소화한다. 소화할 것이 있었으면 true.
+    ///
+    /// 한 덩어리씩 돌려주는 이유가 있다. "ring 이 빌 때까지" 도는 형태로 두었더니
+    /// 우리가 producer 보다 느린 워크로드 (CJK · emoji) 에서 **그 루프가 끝나지 않았다**
+    /// — 비우는 동안 read thread 가 계속 채우기 때문이다. 그래서 한 번 호출이 128 MiB
+    /// 를 다 먹고 반환해, 하네스가 중간에 구간을 나누거나 시각을 찍을 틈이 없었다.
+    /// 언제 멈출지는 하네스가 정해야 한다.
     ///
     /// 프레임 예산 아래의 체감 처리량을 잴 때는 이걸 쓰지 않고
     /// `SessionCore.drainOutputForRender` 를 프레임 루프처럼 부른다 — 그쪽이 실제
     /// 앱이 지나는 경로이고, 8 ms 예산이 걸린 값이 사용자가 겪는 값이다.
-    pub fn drainAllForStress(tab: *Tab) usize {
-        var chunks: usize = 0;
-        while (tab.drainOutputChunk()) chunks += 1;
-        return chunks;
+    pub fn drainChunkForStress(tab: *Tab) bool {
+        return tab.drainOutputChunk();
     }
 };
 

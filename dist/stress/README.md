@@ -24,7 +24,22 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame 
 
 # 워크로드 바꾸기
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --workload cjk
+
+# scrollback 이 쌓이는 동안 속도가 유지되는지 (#278 ①)
+zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 ```
+
+## 두 가지 명령
+
+| 명령 | 보는 것 | 판정 |
+|---|---|---|
+| `throughput` | 얼마나 빨리 소화하나 | 절대 속도 |
+| `scrollback` | scrollback 이 쌓여도 속도가 유지되나 | **구간 간 비교** — 뒤 구간이 느려지면 줄 수에 비례하지 않는 비용이 있다는 신호예요 |
+
+`scrollback` 은 출력을 구간으로 나눠 구간마다 처리 속도 · 총 줄 수 · 메모리 최고치를
+찍어요. 오래 켜 둔 터미널에서만 드러나는 종류의 회귀를 찾는 것이 목적이라 절대
+속도보다 **구간 사이의 변화**가 중요해요. 프레임 예산이 없는 경로로 돌려요 — 예산에
+눌린 상태에서는 구간 간 차이가 예산에 가려 안 보여요.
 
 | 옵션 | 값 | 기본값 |
 |---|---|---|
@@ -34,6 +49,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame 
 | `--cols` / `--rows` | 그리드 | `120` × `40` |
 | `--scrollback` | scrollback 줄 수 | config 기본값 (100,000) |
 | `--fps` | `frame` 층이 모사할 프레임 주기 | `60` |
+| `--segments` | `scrollback` 이 나눠 볼 구간 수 | `8` |
 
 ### 층
 
@@ -134,4 +150,7 @@ producer 파라미터는 인자가 아니라 환경변수 (`TILDAZ_STRESS_WORKLO
 - **Windows 는 실기 확인 전이에요.** 코드상 `CreateProcessW` 로 자식을 띄우니 될
   것으로 보지만, ConPTY 조합에서 확인하지 않았어요. ConPTY 는 자식 출력에 자기
   시퀀스를 끼워 넣을 수 있어서 `expected` 계산도 하지 않아요 (`null`).
-- 아직 없는 것: scrollback 누적, 다른 터미널과의 비교. #371 · #278 에서 이어서 다뤄요.
+- **scrollback 메모리는 줄당 약 1 KiB 예요** (120 열 기준, macOS 실측: 100만 줄 =
+  1,008 MiB, 기본값 10만 줄 = 120 MiB). 셀 하나가 8 byte 이고 page 가 고정 폭이라
+  `줄 수 × 열 수 × 8 byte` 에 가까워요. 열 수가 많은 창에서는 그만큼 늘어나요.
+- 아직 없는 것: 다른 터미널과의 비교. #371 에서 이어서 다뤄요.
