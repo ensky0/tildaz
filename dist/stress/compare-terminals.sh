@@ -160,14 +160,31 @@ if command -v wezterm >/dev/null 2>&1; then
         start -- sh -c "$(producer_cmd "$T")"
 fi
 
-# ghostty 는 macOS 에서 자동으로 띄우지 않는다 — 아래 "손으로 재는 터미널" 참고.
-# Linux 에서는 CLI 로 정상 동작하므로 자동으로 돌린다.
-if [ "$(uname)" != "Darwin" ] && command -v ghostty >/dev/null 2>&1; then
+# ghostty 는 창 크기를 **config 파일로** 준다. CLI 로 config key 옵션을 여러 개 주면
+# macOS 의 `open -na … --args` 경로에서 한 값으로 합쳐져 실패한다 (실측:
+# `window-width: invalid value "200 --window-height=60"`). `--config-file` 하나만 넘기면
+# 정상이라, 임시 config 를 만들어 쓰면 **사용자 설정을 건드리지 않는다.**
+#
+# `window-save-state = never` 가 필수다 — 없으면 이전 창 크기를 복원해서 아래 두 줄을
+# 무시한다 (kitty 의 `remember_window_size` 와 같은 성질). 값은 `false` 가 아니라
+# `default | never | always` 중 하나다.
+if [ -d /Applications/Ghostty.app ] || command -v ghostty >/dev/null 2>&1; then
+    GHOSTTY_CONF="$WORK_DIR/ghostty.conf"
+    cat > "$GHOSTTY_CONF" << EOF
+window-save-state = never
+window-width = $COLS
+window-height = $ROWS
+scrollback-limit = 100000
+EOF
     T="$WORK_DIR/ghostty.timing"
-    run_terminal ghostty ghostty \
-        "--window-width=$COLS" "--window-height=$ROWS" \
-        "--scrollback-limit=100000" \
-        -e sh -c "$(producer_cmd "$T")"
+    if [ -d /Applications/Ghostty.app ]; then
+        # macOS 는 CLI 로 터미널을 띄울 수 없어서 (`ghostty --help`) LaunchServices 를 거친다.
+        run_terminal ghostty open -na /Applications/Ghostty.app --args \
+            "--config-file=$GHOSTTY_CONF" -e sh -c "$(producer_cmd "$T")"
+    else
+        run_terminal ghostty ghostty \
+            "--config-file=$GHOSTTY_CONF" -e sh -c "$(producer_cmd "$T")"
+    fi
 fi
 
 # foot 은 Wayland 전용이라 Linux 에서만 있다.
@@ -217,19 +234,5 @@ echo "  결과: cat ~/tildaz.timing"
 echo "  그리드 맞추기: config 의 width_percent / height_percent 와 font.size"
 echo ""
 
-if [ "$(uname)" = "Darwin" ] && [ -d /Applications/Ghostty.app ]; then
-    echo "ghostty — macOS 에서는 CLI 로 터미널을 띄울 수 없고 (\`ghostty --help\` 참고),"
-    echo "  \`open -na --args\` 로는 옵션 여러 개가 한 값으로 합쳐져 창 크기를 못 정해요."
-    echo "  ghostty 를 직접 열고 아래 한 줄을 붙여넣어 주세요."
-    echo ""
-    echo "  $(producer_cmd "$HOME/ghostty.timing")"
-    echo ""
-    echo "  결과: cat ~/ghostty.timing"
-    echo "  그리드 맞추기: ~/.config/ghostty/config 에 아래 두 줄을 넣고 새 창을 열어요."
-    echo "      window-width = $COLS"
-    echo "      window-height = $ROWS"
-    echo ""
-fi
-
-echo "두 경우 모두 timing 파일의 cols/rows 가 ${COLS}x${ROWS} 인지 확인해 주세요 —"
-echo "다르면 그 숫자는 위 표와 비교할 수 없어요."
+echo "timing 파일의 cols/rows 가 ${COLS}x${ROWS} 인지 확인해 주세요 — 다르면 그 숫자는"
+echo "위 표와 비교할 수 없어요. 탭이 2 개 이상이면 탭바 (28 pt) 가 들어가 rows 가 줄어요."
