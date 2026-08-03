@@ -190,7 +190,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
-| Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Needed for bulk output, resize storms, tab close under load, WSL/nvim/mouse, CJK/emoji |
+| Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Harness skeleton and bulk-output throughput live in [`dist/stress/`](dist/stress/README.md); resize storms, tab create/close under load, WSL/nvim/mouse, and multi-worker recovery remain |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),
@@ -253,6 +253,15 @@ macOS has not yet been benchmarked with the same harness. Subjectively the
 Metal path is comparable to the Windows D3D11 path, but formal numbers should
 be collected under a dedicated performance issue before being treated as a
 published claim.
+
+Throughput of the PTY → VT path is measured by the stress harness in
+[`dist/stress/`](dist/stress/README.md) (`zig build stress`), which runs the same
+way on Linux, macOS, and Windows. It splits the path into a parser-only layer and
+a full PTY layer so the cost of PTY reads and the output ring can be separated
+without `perf`. Measured numbers belong in
+[#371](https://github.com/ensky0/tildaz/issues/371) together with the build mode,
+grid, workload, and machine — absolute values differ per machine, so the
+repository keeps no baseline.
 
 ## Linux Integration References
 

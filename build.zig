@@ -67,6 +67,9 @@ pub fn build(b: *std.Build) void {
     // 6-target cross-host check가 C++ toolchain/SDK까지 요구하지 않게 보존한다.
     const simd = b.option(bool, "simd", "ghostty VT stream SIMD 가속 활성화 (default: false; official release callers pass true)") orelse false;
     const simd_arg = if (simd) "true" else "false";
+    // stress 하네스가 리포트에 찍는다 (#371) — SIMD 는 정확히 ghostty-vt 의 VT stream
+    // 파서를 켜는 옵션이라, 어느 조합으로 잰 숫자인지 적지 않으면 비교가 성립하지 않는다.
+    build_opts.addOption(bool, "simd", simd);
 
     // ghostty 의 build.zig 는 macOS 타겟이면 기본적으로 xcframework / macOS app
     // 까지 빌드하려고 들어서 (`Config.zig` 의 `emit_xcframework` / `emit_macos_app`
@@ -315,6 +318,63 @@ pub fn build(b: *std.Build) void {
     const version_tests = b.addTest(.{ .root_module = version_test_mod });
     test_step.dependOn(&b.addRunArtifact(version_tests).step);
 
+    // stress / 처리량 하네스 단계 (#371 · #278).
+    //
+    //   zig build stress -- throughput --layer parser --mb 64 --workload plain
+    //   zig build stress -- throughput --layer pty    --mb 64 --workload ansi
+    //
+    // 창도 렌더러도 없이 PTY → VT 경로만 돌려서 대용량 출력 소화 속도를 잰다.
+    // Linux · macOS · Windows 에서 같은 명령이다 — 셸 스크립트를 쓰지 않는 이유는
+    // `src/stress.zig` 문서 주석과 #371 코멘트에 있다.
+    //
+    // 측정은 공식 릴리즈와 같은 조합으로 한다:
+    //   zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty
+    const stress_step = b.step("stress", "stress / 처리량 하네스 실행 (#371 · #278)");
+    const stress_mod = b.createModule(.{
+        .root_source_file = b.path("src/stress.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stress_mod.addOptions("build_options", build_opts);
+    if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .simd = simd,
+        .optimize = optimize,
+        .@"emit-lib-vt" = true,
+        .@"font-backend" = .freetype,
+    })) |dep| {
+        stress_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+    }
+    // 하네스는 창을 띄우지 않지만 `config.zig` 를 거쳐 dialog 경로가 그래프에 들어온다
+    // (기본 scrollback 값을 앱과 같게 쓰기 위해). 그래서 link spec 은 test_mod 와 같다.
+    if (is_linux_target) stress_mod.link_libc = true;
+    if (is_macos_target) {
+        stress_mod.linkSystemLibrary("objc", .{});
+        stress_mod.linkFramework("AppKit", .{});
+        stress_mod.linkFramework("Metal", .{});
+        stress_mod.linkFramework("QuartzCore", .{});
+        stress_mod.linkFramework("CoreGraphics", .{});
+        stress_mod.linkFramework("CoreFoundation", .{});
+        stress_mod.linkFramework("ApplicationServices", .{});
+
+        if (macos_sdk_root.len > 0) {
+            stress_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib", .{macos_sdk_root}) });
+            stress_mod.addSystemFrameworkPath(.{ .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{macos_sdk_root}) });
+        }
+    }
+    const stress_exe = b.addExecutable(.{
+        .name = "tildaz-stress",
+        .root_module = stress_mod,
+    });
+    if (is_linux_target) {
+        // 메인 exe 와 같은 이유 (self-hosted ELF 링커의 `.sframe` relocation 미지원).
+        stress_exe.use_llvm = true;
+        stress_exe.use_lld = true;
+    }
+    const stress_run = b.addRunArtifact(stress_exe);
+    if (b.args) |args| stress_run.addArgs(args);
+    stress_step.dependOn(&stress_run.step);
+
     // 6-target compile-only check 단계 (#201).
     //
     //   zig build check
@@ -337,37 +397,46 @@ pub fn build(b: *std.Build) void {
         .{ .name = "macos-x86_64", .query = .{ .os_tag = .macos, .cpu_arch = .x86_64 } },
         .{ .name = "macos-aarch64", .query = .{ .os_tag = .macos, .cpu_arch = .aarch64 } },
     };
+    // 검사 대상 root. 앱 본체와 stress 하네스는 진입점이 달라 서로의 컴파일 에러를
+    // 잡아주지 않는다 — 하네스도 세 platform 코드를 지나므로 (session_core · terminal
+    // · config) 같이 돌린다. 하네스 그래프는 renderer / host 를 안 물어서 앱보다 작다.
+    const check_roots = [_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "app", .path = "src/main.zig" },
+        .{ .name = "stress", .path = "src/stress.zig" },
+    };
     for (check_targets) |c| {
         const check_target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query));
-        const check_mod = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = check_target,
-            // Debug — safety check 활성. ReleaseFast 와의 codegen 차이로 일부
-            // type error 가 안 surface 되는 케이스 회피.
-            .optimize = .Debug,
-        });
-        check_mod.addOptions("build_options", build_opts);
-        if (b.lazyDependency("ghostty", .{
-            .target = check_target,
-            .simd = simd,
-            .optimize = .Debug,
-            .@"emit-lib-vt" = true,
-            // libxml2 회피 — 위 메인 빌드의 `font-backend` 주석 참고. check 는 linux
-            // 타겟도 도는데, linux 기본 font_backend 는 fontconfig_freetype 이라 더더욱 필요.
-            .@"font-backend" = .freetype,
-        })) |dep| {
-            check_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+        for (check_roots) |root| {
+            const check_mod = b.createModule(.{
+                .root_source_file = b.path(root.path),
+                .target = check_target,
+                // Debug — safety check 활성. ReleaseFast 와의 codegen 차이로 일부
+                // type error 가 안 surface 되는 케이스 회피.
+                .optimize = .Debug,
+            });
+            check_mod.addOptions("build_options", build_opts);
+            if (b.lazyDependency("ghostty", .{
+                .target = check_target,
+                .simd = simd,
+                .optimize = .Debug,
+                .@"emit-lib-vt" = true,
+                // libxml2 회피 — 위 메인 빌드의 `font-backend` 주석 참고. check 는 linux
+                // 타겟도 도는데, linux 기본 font_backend 는 fontconfig_freetype 이라 더더욱 필요.
+                .@"font-backend" = .freetype,
+            })) |dep| {
+                check_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+            }
+            // OS-specific link spec 도 declare. *compile-only* 라 link 안 함이지만
+            // host 코드의 일부 `extern` decl 이 module 의 link_libc / framework 마커를
+            // 검사하는 케이스 일관성. mac framework / windows resource 는 compile
+            // 자체엔 영향 없어 skip.
+            if (c.query.os_tag == .linux) check_mod.link_libc = true;
+            const check_obj = b.addObject(.{
+                .name = b.fmt("tildaz-check-{s}-{s}", .{ root.name, c.name }),
+                .root_module = check_mod,
+            });
+            check_step.dependOn(&check_obj.step);
         }
-        // OS-specific link spec 도 declare. *compile-only* 라 link 안 함이지만
-        // host 코드의 일부 `extern` decl 이 module 의 link_libc / framework 마커를
-        // 검사하는 케이스 일관성. mac framework / windows resource 는 compile
-        // 자체엔 영향 없어 skip.
-        if (c.query.os_tag == .linux) check_mod.link_libc = true;
-        const check_obj = b.addObject(.{
-            .name = b.fmt("tildaz-check-{s}", .{c.name}),
-            .root_module = check_mod,
-        });
-        check_step.dependOn(&check_obj.step);
     }
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
