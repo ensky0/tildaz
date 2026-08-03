@@ -45,6 +45,28 @@ pub fn cmdPrompt(buf: []u8, existing: []const u8) ?[]const u8 {
     return buf[0..total];
 }
 
+// ── WSL 안의 bash
+//
+// WSL 탭은 `wsl.exe` 를 spawn 하고 실제 셸은 VM 안에 있어서 프로세스 cwd 조회가 통하지
+// 않는다. 대신 `WSLENV` 로 환경변수를 VM 안까지 전달할 수 있으므로 (`COLORFGBG` 가 이미
+// 그 경로를 쓴다) bash 의 `PROMPT_COMMAND` 를 넘긴다 — WSL Debian 실기에서 rc 로드 뒤에도
+// 값이 남고 `cd` 를 따라오는 것을 확인했다 (#366).
+//
+// fish 는 기본으로 OSC 7 을 보내므로 아무것도 필요 없다. **zsh 는 `ZDOTDIR` 로 파일을
+// 끼워야 해서 WSL 안에는 지원하지 않는다** (Windows 쪽에서 VM 안에 파일을 만들어야 한다) —
+// 그 조합은 홈에서 시작한다.
+
+/// bash 의 `PROMPT_COMMAND` 값. 프롬프트를 그릴 때마다 실행된다.
+///
+/// **경로 앞에 `/` 를 넣지 않는다.** POSIX 의 `$PWD` 는 이미 `/` 로 시작하므로
+/// `kitty-shell-cwd://` 뒤에 바로 붙이면 host 가 빈 payload 가 된다. cmd 쪽 (`:///$P`)
+/// 과 슬래시 개수가 다른 이유가 이것이다 — Windows 경로는 `C:\` 로 시작한다.
+///
+/// `$HOSTNAME` 을 host 로 넣는다. WSL 의 기본 hostname 은 Windows 컴퓨터 이름과 같아서
+/// (실기 확인) 파서의 host 검사를 통과하고, 비어 있어도 빈 host 로 수락된다. 종료자는
+/// BEL (`\007`).
+pub const bash_prompt_command = "printf '\\033]7;kitty-shell-cwd://%s%s\\007' \"$HOSTNAME\" \"$PWD\"";
+
 // ── PowerShell
 //
 // `PROMPT` 같은 환경변수로는 PowerShell 의 프롬프트를 바꿀 수 없다 (`prompt` 함수가
@@ -301,6 +323,31 @@ test "shell_integration — PowerShell 이 보낼 payload 를 파서가 읽는�
             .style = .windows,
         }).?,
     );
+}
+
+test "shell_integration — WSL bash 가 보낼 payload 를 파서가 읽는다" {
+    var buf: [pwd_uri.max_path_len]u8 = undefined;
+    // WSL 의 기본 hostname 은 Windows 컴퓨터 이름과 같다 (실기 확인).
+    const opts: pwd_uri.Options = .{ .hostname = "DESKTOP-L12ESI0", .style = .posix };
+
+    try testing.expectEqualStrings(
+        "/home/me/proj",
+        pwd_uri.parse("kitty-shell-cwd://DESKTOP-L12ESI0/home/me/proj", &buf, opts).?,
+    );
+    // `$HOSTNAME` 이 비어 있어도 빈 host 로 수락된다.
+    try testing.expectEqualStrings(
+        "/home/me",
+        pwd_uri.parse("kitty-shell-cwd:///home/me", &buf, opts).?,
+    );
+    // WSL 안에서 Windows 쪽으로 `cd` 한 경우도 Linux 경로다.
+    try testing.expectEqualStrings(
+        "/mnt/c/Users/me",
+        pwd_uri.parse("kitty-shell-cwd://DESKTOP-L12ESI0/mnt/c/Users/me", &buf, opts).?,
+    );
+
+    // 슬래시 개수 — 명령이 `://` 뒤에 `$PWD` 를 바로 붙이므로 payload 는 셋이 된다.
+    // cmd 처럼 `:///` 를 썼다면 `//home/me` 가 되어 지저분한 경로가 나간다.
+    try testing.expect(std.mem.indexOf(u8, bash_prompt_command, "kitty-shell-cwd://%s%s") != null);
 }
 
 test "shell_integration — raw 스킴을 쓰는 이유: file:// 이면 % 가 든 경로가 깨진다" {

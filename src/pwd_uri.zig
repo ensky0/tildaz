@@ -106,7 +106,7 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
     if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
 
     return switch (opts.style) {
-        .posix => if (path.len > 0 and path[0] == '/') path else null,
+        .posix => if (path.len > 0 and path[0] == '/') squeezeLeadingSlashes(path) else null,
         .windows => toWindowsPath(path, out),
     };
 }
@@ -137,6 +137,21 @@ fn hostAccepted(host_raw: []const u8, hostname: []const u8, encoded: bool) bool 
     if (std.ascii.eqlIgnoreCase(host, "localhost")) return true;
     if (hostname.len == 0) return false;
     return std.ascii.eqlIgnoreCase(firstLabel(host), firstLabel(hostname));
+}
+
+/// 선행 슬래시가 겹친 경로를 하나로 줄인다 (`//home/me` → `/home/me`).
+///
+/// 보내는 쪽 템플릿의 실수를 흡수하는 방어다. 셸마다 경로 형태가 달라서 (`cmd` 의 `$P`
+/// 는 `C:\…`, POSIX 의 `$PWD` 는 `/…`) `kitty-shell-cwd://` 뒤에 슬래시를 몇 개 두어야
+/// 하는지가 갈리는데, 이걸 손으로 맞추다 틀리면 `//home/me` 같은 값이 나간다. POSIX 는
+/// 선행 `//` 를 구현 정의로 두지만 Linux · macOS 는 `/` 와 같게 취급하므로 축약이 안전하다.
+///
+/// 경로 **안쪽**의 중복은 건드리지 않는다 — 우리가 만들 수 있는 실수는 앞부분에서만
+/// 생기고, 안쪽까지 정규화하면 파서가 경로를 고쳐 쓰는 범위가 넓어진다.
+fn squeezeLeadingSlashes(path: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i + 1 < path.len and path[i] == '/' and path[i + 1] == '/') i += 1;
+    return path[i..];
 }
 
 fn firstLabel(host: []const u8) []const u8 {
@@ -196,6 +211,16 @@ test "pwd_uri — file:// 기본 형태" {
     try testing.expectEqualStrings("/home/me", parsePosix("file://localhost/home/me", "myhost").?);
     // 루트도 유효한 경로.
     try testing.expectEqualStrings("/", parsePosix("file://myhost/", "myhost").?);
+}
+
+test "pwd_uri — 선행 슬래시가 겹쳐도 경로가 깨지지 않는다" {
+    // 보내는 쪽 템플릿이 `:///` + `$PWD` 처럼 슬래시를 하나 더 두면 이런 값이 온다.
+    try testing.expectEqualStrings("/home/me", parsePosix("file://myhost//home/me", "myhost").?);
+    try testing.expectEqualStrings("/home/me", parsePosix("file://myhost///home/me", "myhost").?);
+    // 경로 안쪽 중복은 그대로 둔다 (파서가 경로를 고쳐 쓰는 범위를 앞부분으로 제한).
+    try testing.expectEqualStrings("/home//me", parsePosix("file://myhost/home//me", "myhost").?);
+    // 루트만 온 경우를 빈 문자열로 만들지 않는다.
+    try testing.expectEqualStrings("/", parsePosix("file://myhost//", "myhost").?);
 }
 
 test "pwd_uri — host 검사로 ssh 원격 경로를 거부" {
