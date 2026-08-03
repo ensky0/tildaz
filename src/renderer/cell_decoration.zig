@@ -32,7 +32,14 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const ui_metrics = @import("../ui_metrics.zig");
 
-/// 점선 · 파선의 조각 수 상한 (#374). 실제 개수는 [`pieceCount`] 가 정한다.
+/// 점선 · 파선의 **base 셀 하나**당 조각 수 상한 (#374). 실제 개수는
+/// [`pieceCount`] 가 정한다. wide char 는 base 셀의 배치를 `span` 번 되풀이하므로
+/// 셀 전체로는 `× span` (지금은 최대 2) 까지 나온다 — `14 × 2` 에 윗줄 · 취소선을
+/// 더해도 [`MAX_RECTS`] 안이다.
+///
+/// **상한을 `span` 으로 나누지 않는다.** 나누면 wide 만 조각이 줄어 "wide 는 narrow
+/// 의 정확히 2 배" 가 깨진다 — 이 파일이 한 번 겪은 버그가 그 형태였다 (아래
+/// `dotted` 분기 주석).
 pub const MAX_UNDERLINE_PIECES = 14;
 
 /// 한 셀이 만들 수 있는 최대 사각형 수.
@@ -169,30 +176,46 @@ pub fn rects(
             // | Lucida Console 15pt (`cell_w 10`) | 2.0 | 균일 (정수라서) |
             //
             // 정수 pitch 로 놓으면 폭과 간격이 **둘 다** 균일해진다. 대가는 셀 끝에 남는
-            // 여백만큼 **셀 경계의 간격이 좁아지는** 것인데, 조각 하나 폭보다 작은
+            // 여백만큼 **셀 경계의 간격이 달라지는** 것인데, 조각 하나 폭보다 작은
             // 잔여이므로 리듬이 깨져 보이지 않는다.
+            //
+            // **wide char 는 base 셀의 배치를 `span` 번 되풀이한다.** 셀 전체를 한 번에
+            // 나누지 않는 이유가 있다 — 그렇게 하면 아래 「셀 끝에 닿는 조각 버림」이
+            // `span` 을 모르는 채 셀당 한 번만 일어나서, 홀수 폭에서 narrow 는 5 중 1
+            // (20%) 을, wide 는 10 중 1 (10%) 을 버려 **밀도가 갈렸다** (2026-08-03
+            // Linux GL 실기: DejaVu Sans Mono 15pt `cell_w 9` 에서 narrow 4 / wide 9,
+            // 기대 8 — [#365](https://github.com/ensky0/tildaz/issues/365)). 되풀이하면
+            // wide 가 narrow 의 리듬을 글자 그대로 반복하므로 개수도 정확히 2 배고
+            // 한글 구간과 ASCII 구간이 같아 보인다. 물결이 `cycles = span` 으로 산을
+            // span 개 넣는 것과 같은 원리다.
             .dotted, .dashed => {
                 // 점선은 두께 기준으로 촘촘하게, 파선은 **셀 하나에 조각 하나**다.
                 // `4 × 두께` 로 뒀더니 15pt 셀(19px)에 2 개가 들어가 글자 한 칸에
                 // "칠·빔·칠·빔" 이 반복돼 너무 촘촘했다 (2026-08-03 실기, 사용자 지적).
-                const base_w = cell_w / @as(f32, @floatFromInt(@max(1, span)));
+                const sp = @max(1, span);
+                const base_w = cell_w / @as(f32, @floatFromInt(sp));
                 const slot_px = if (style.flags.underline == .dotted) 2 * t else base_w;
-                const count = pieceCount(cell_w, span, slot_px);
+                const per = pieceCount(base_w, slot_px);
                 // 정수 pitch — 최소 2 라야 칠한 칸과 빈 칸이 각각 1px 이상 남는다.
-                const pitch = @max(2, @round(cell_w / @as(f32, @floatFromInt(count))));
+                const pitch = @max(2, @round(base_w / @as(f32, @floatFromInt(per))));
                 const piece_w = @max(1, @round(pitch / 2));
                 const before = n;
-                for (0..count) |i| {
-                    const x0 = pitch * @as(f32, @floatFromInt(i));
-                    // 조각이 셀을 넘거나 **셀 끝에 딱 닿으면** 버린다.
-                    //
-                    // 넘는 것을 잘라 넣으면 폭이 다시 불균일해지고, 끝에 딱 닿게 두면
-                    // 다음 셀의 첫 조각과 **맞붙어** 원래 증상이 되돌아온다 (Cascadia
-                    // 15pt 는 `cell_w 9` · `pitch 2` 라 다섯째 조각이 `[8,9)` 로 정확히
-                    // 닿는다). 버리면 셀 경계 간격만 조각 하나 폭만큼 넓어진다.
-                    if (x0 + piece_w >= cell_w) break;
-                    out[n] = .{ .x = x0, .w = piece_w, .y = y, .h = t, .color = color };
-                    n += 1;
+                for (0..sp) |k| {
+                    const ox = base_w * @as(f32, @floatFromInt(k));
+                    for (0..per) |i| {
+                        const x0 = ox + pitch * @as(f32, @floatFromInt(i));
+                        // 조각이 base 셀을 넘거나 **base 셀 끝에 딱 닿으면** 버린다.
+                        //
+                        // 넘는 것을 잘라 넣으면 폭이 다시 불균일해지고, 끝에 딱 닿게 두면
+                        // 다음 base 셀의 첫 조각과 **맞붙어** 원래 증상이 되돌아온다
+                        // (Cascadia 15pt 는 `cell_w 9` · `pitch 2` 라 다섯째 조각이
+                        // `[8,9)` 로 정확히 닿는다). 버리면 그 자리 간격만 조각 하나
+                        // 폭만큼 넓어지고, 되풀이라 wide 의 모든 base 셀이 똑같이 버린다.
+                        if (x0 + piece_w >= ox + base_w) break;
+                        if (n >= MAX_RECTS) break;
+                        out[n] = .{ .x = x0, .w = piece_w, .y = y, .h = t, .color = color };
+                        n += 1;
+                    }
                 }
                 // 셀이 조각 하나도 못 담는 극단 (아주 작은 폰트) 에서는 최소 하나를
                 // 보장한다 — 밑줄이 통째로 사라지지 않게.
@@ -298,17 +321,18 @@ fn emitCov(
     n.* += 1;
 }
 
-/// 점선 · 파선의 조각 수. 셀을 이 수만큼 등분해 각 구간의 앞 절반을 칠한다.
+/// **base 셀 하나**의 점선 · 파선 조각 수. base 셀을 이 수만큼 등분해 각 구간의 앞
+/// 절반을 칠한다.
 ///
-/// **wide char 는 narrow 의 정확히 2 배**가 되도록 base 셀 기준으로 세고 `span` 을
-/// 곱한다 — 그냥 `round(셀폭 / slot)` 하면 반올림 때문에 2 배가 깨진다 (slot 8 일 때
-/// narrow 19 → 2 지만 wide 38 → 5). 밀도가 어긋나면 한글 구간에서 리듬이 달라진다.
-fn pieceCount(cell_w: f32, span: usize, slot: f32) usize {
-    const sp = @max(1, span);
-    const base = cell_w / @as(f32, @floatFromInt(sp));
-    const raw = @round(base / slot);
-    const per: usize = if (!(raw >= 1)) 1 else @intFromFloat(raw);
-    return @max(1, @min(per * sp, MAX_UNDERLINE_PIECES));
+/// wide char 를 여기서 곱하지 않는다 — 호출부가 이 배치를 `span` 번 **되풀이**해서
+/// 2 배를 만든다. 세는 단계에서 곱하면 셀 전체를 다시 나누게 되고, 그때 셀 경계
+/// 버림이 span 을 모르는 채 한 번만 일어나 밀도가 깨졌다 (아래 `dotted` 분기 주석).
+fn pieceCount(base_w: f32, slot: f32) usize {
+    const raw = @round(base_w / slot);
+    // 상한을 먼저 f32 에서 걸어 `@intFromFloat` 에 범위 밖 값이 들어가지 않게 한다.
+    const capped = @min(raw, @as(f32, @floatFromInt(MAX_UNDERLINE_PIECES)));
+    const per: usize = if (!(capped >= 1)) 1 else @intFromFloat(capped);
+    return @max(1, per);
 }
 
 /// 선이 셀 밖으로 나가지 않게 가둔다. 아래로 넘치면 셀 바닥에 붙이고, 셀이 두께보다
@@ -543,24 +567,39 @@ test "#374 dotted — **비정수 slot** 에서도 폭과 간격이 균일하다
     }
 }
 
-test "#374 dotted · dashed — wide char 는 조각 수가 정확히 2 배 (같은 밀도)" {
+test "#374 dotted · dashed — wide char 는 base 셀 배치를 되풀이한다 (같은 밀도 · 같은 리듬)" {
+    // **홀수 셀 폭이 핵심 케이스다.** 셀 전체를 한 번에 나누던 때는 셀 경계 버림이
+    // span 을 모르는 채 셀당 한 번만 일어나서, 홀수 폭에서 narrow 4 / wide 9 (기대 8)
+    // 로 밀도가 갈렸다 (2026-08-03 Linux GL 실기, #365). 짝수 폭 (`W = 8`) 만 검증하던
+    // 앞 버전이 그래서 놓쳤다.
+    const cases = [_]struct { name: []const u8, ascent: f32, base_w: f32 }{
+        .{ .name = "Menlo 14pt (짝수 8)", .ascent = A, .base_w = W },
+        // DejaVu Sans Mono 15pt (Linux) · Cascadia Code 15pt (Windows): t 1, 다섯째
+        // 조각이 `[8,9)` 로 base 셀 끝에 닿아 버려진다 → base 셀당 4.
+        .{ .name = "DejaVu/Cascadia 15pt (홀수 9)", .ascent = 14, .base_w = 9 },
+        // Menlo 15pt @2x (macOS): t 2, 마지막 조각이 `[16,18)` 로 살아남아 base 셀당 5.
+        .{ .name = "Menlo 15pt@2x (홀수 19)", .ascent = 28, .base_w = 19 },
+    };
     var narrow: [MAX_RECTS]Rect = undefined;
     var wide: [MAX_RECTS]Rect = undefined;
-    inline for (.{ .dotted, .dashed }) |kind| {
-        const style = ghostty.Style{ .flags = .{ .underline = kind } };
-        const n_narrow = rects(style, test_fg, &test_palette, A, W, H, 1, &narrow);
-        const n_wide = rects(style, test_fg, &test_palette, A, 2 * W, H, 2, &wide);
-        // 반올림 때문에 `round(2w/slot) != 2·round(w/slot)` 이 될 수 있어 `pieceCount`
-        // 가 base 셀 기준으로 세고 span 을 곱한다. 그 계약을 고정한다.
-        try std.testing.expectEqual(n_narrow * 2, n_wide);
-        // 간격과 조각 폭이 같다 — 한글 구간에서 리듬이 달라지지 않는다. 파선은
-        // narrow 가 1 조각이라 pitch 를 잴 수 없으므로 폭으로 확인한다.
-        try std.testing.expectEqual(narrow[0].w, wide[0].w);
-        if (n_narrow >= 2) {
-            try std.testing.expectEqual(narrow[1].x - narrow[0].x, wide[1].x - wide[0].x);
-        } else {
-            // 셀당 1 조각이면 wide 의 두 조각 간격이 base 셀 폭과 같아야 한다.
-            try std.testing.expectEqual(W, wide[1].x - wide[0].x);
+    for (cases) |c| {
+        inline for (.{ .dotted, .dashed }) |kind| {
+            const style = ghostty.Style{ .flags = .{ .underline = kind } };
+            const n_narrow = rects(style, test_fg, &test_palette, c.ascent, c.base_w, c.base_w * 2, 1, &narrow);
+            const n_wide = rects(style, test_fg, &test_palette, c.ascent, 2 * c.base_w, c.base_w * 2, 2, &wide);
+            // 개수가 정확히 2 배다 — 밀도가 유지된다.
+            std.testing.expectEqual(n_narrow * 2, n_wide) catch |err| {
+                std.debug.print("{s} {s}: narrow {d} / wide {d}\n", .{ c.name, @tagName(kind), n_narrow, n_wide });
+                return err;
+            };
+            // **리듬까지 같다** — wide 의 둘째 타일이 첫 타일을 `base_w` 만큼 옮긴 것과
+            // 같다. 개수만 맞고 조각이 다르게 놓이는 경우 (셀 끝에 큰 구멍) 를 막는다.
+            for (0..n_narrow) |i| {
+                try std.testing.expectEqual(narrow[i].x, wide[i].x);
+                try std.testing.expectEqual(narrow[i].w, wide[i].w);
+                try std.testing.expectEqual(narrow[i].x + c.base_w, wide[n_narrow + i].x);
+                try std.testing.expectEqual(narrow[i].w, wide[n_narrow + i].w);
+            }
         }
     }
 }
@@ -709,6 +748,22 @@ test "MAX_RECTS — 가장 큰 조합에서도 넘치지 않는다" {
         &out,
     );
     try std.testing.expect(n_dot <= MAX_RECTS);
+    try std.testing.expect(n_dot <= MAX_UNDERLINE_PIECES + 2); // 선 2 개 + base 셀 상한
+
+    // wide 는 base 셀 배치를 되풀이하므로 상한도 `× span` 이다. 상한을 span 으로
+    // 나누면 wide 만 조각이 줄어 밀도가 깨지므로 일부러 이렇게 둔다.
+    const n_dot_wide = rects(
+        .{ .flags = .{ .underline = .dotted, .strikethrough = true, .overline = true } },
+        test_fg,
+        &test_palette,
+        A,
+        8000,
+        H,
+        2,
+        &out,
+    );
+    try std.testing.expect(n_dot_wide <= MAX_RECTS);
+    try std.testing.expectEqual(MAX_UNDERLINE_PIECES * 2 + 2, n_dot_wide);
 
     // 이중 밑줄(2)은 상한 안에 들어가므로 별도 여유가 필요 없다.
     const dbl = collect(.{ .flags = .{ .underline = .double, .strikethrough = true, .overline = true } });
