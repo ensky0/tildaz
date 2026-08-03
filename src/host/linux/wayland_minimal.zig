@@ -25,6 +25,7 @@ const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
 const config_mod = @import("../../config.zig");
 const software_terminal = @import("software_terminal.zig");
+const run_options = @import("../../run_options.zig");
 const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
 const gbm = @import("gbm.zig");
@@ -1146,6 +1147,8 @@ const Client = struct {
     // heap stable address는 D-Bus filter user_data가 참조하며, dbus_session보다
     // 먼저 deinit해야 한다.
     kglobalaccel_client: ?*kglobalaccel.Client = null,
+    /// #382 — 측정용 실행 옵션. 셸 · 창 크기 · 표시 정책 · 핫키 등록이 이 값을 본다.
+    run_opts: run_options.RunOptions = .{},
     // KGlobalAccel filter 안에서는 Wayland roundtrip을 시작하지 않는다. Pressed
     // callback은 이 flag만 세우고 main loop가 D-Bus dispatch 반환 뒤 toggle한다.
     kglobalaccel_toggle_pending: bool = false,
@@ -1267,7 +1270,7 @@ const Client = struct {
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
 
-    fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !Client {
+    fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config, opts: run_options.RunOptions) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
         // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
@@ -1296,6 +1299,7 @@ const Client = struct {
             .stream = stream,
             .renderer = renderer,
             .config = cfg,
+            .run_opts = opts,
             .extra_env_storage = .{
                 .{ .name = "TERM", .value = "xterm-256color" },
                 // Linux 는 `C.UTF-8` — POSIX 표준 portable UTF-8 locale, 모든
@@ -2334,8 +2338,36 @@ const Client = struct {
         const sw_f: f32 = @floatFromInt(sw_i);
         const sh_f: f32 = @floatFromInt(sh_i);
         const off_pct = std.math.clamp(cfg.offset_percent, 0.0, 100.0);
-        const want_w: u32 = pctToPx(sw_f, cfg.width_percent);
-        const want_h: u32 = pctToPx(sh_f, cfg.height_percent);
+        var want_w: u32 = pctToPx(sw_f, cfg.width_percent);
+        var want_h: u32 = pctToPx(sh_f, cfg.height_percent);
+
+        // #382 — `-size COLSxROWS` 는 퍼센트를 무시하고 **셀 개수**로 창을 만든다. 셀 크기는
+        // 폰트에서 나오므로 renderer 가 준비된 뒤에만 유효하다 — 그 전 호출은 퍼센트로 두고,
+        // 준비 후 layout 을 다시 계산할 때 이 분기가 걸린다.
+        //
+        // 여기 계산은 **logical 단위**다 (layer-shell 의 native 단위). 셀 크기는 physical
+        // px 이라 scale 로 나눈다.
+        if (self.run_opts.grid) |want| {
+            // `gridSize` 가 쓰는 것과 같은 값들이다 — 그 함수의 역방향이라 같은 출처를
+            // 써야 창 크기와 격자가 어긋나지 않는다.
+            const cw = self.renderer.cellWidth();
+            const ch = self.renderer.cellHeight();
+            if (cw > 0 and ch > 0) {
+                const vp = ui_metrics.viewportForGrid(
+                    want.cols,
+                    want.rows,
+                    self.renderer.paddingPx(),
+                    self.renderer.scrollbarWPx(),
+                    0, // 측정은 탭 1 개 — 탭바가 없다 (`effectiveTabBarHeightPx` 가 0).
+                    cw,
+                    ch,
+                );
+                // 위 값들은 physical px 이고 layer-shell 은 logical 단위다.
+                const scale_f: f32 = if (self.renderer.scale > 0.0) self.renderer.scale else 1.0;
+                want_w = @intFromFloat(@min(sw_f, @ceil(@as(f32, @floatFromInt(vp.w)) / scale_f)));
+                want_h = @intFromFloat(@min(sh_f, @ceil(@as(f32, @floatFromInt(vp.h)) / scale_f)));
+            }
+        }
         const want_w_i: i32 = @intCast(@min(want_w, @as(u32, std.math.maxInt(i32))));
         const want_h_i: i32 = @intCast(@min(want_h, @as(u32, std.math.maxInt(i32))));
         // 점유율 100% 는 특수 분기가 필요 없다 (#351) — logical 로 계산하면
@@ -2895,7 +2927,8 @@ const Client = struct {
         const theme = self.config.theme orelse fallback_theme;
         self.session = session_core.SessionCore.init(
             self.allocator,
-            self.config.shell,
+            // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382).
+            self.run_opts.command orelse self.config.shell,
             self.config.max_scroll_lines,
             theme,
             &self.extra_env_storage,
@@ -7980,14 +8013,22 @@ fn linuxTabTerminate(host: *tab_actions.Host) void {
     client.shell_exited.store(true, .release);
 }
 
-pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Config) !void {
+pub fn runBaselineWindow(
+    allocator: std.mem.Allocator,
+    cfg: *const config_mod.Config,
+    opts: run_options.RunOptions,
+) !void {
     // #198 / #230 — single-instance. 이미 살아있는 인스턴스가 있으면 toggle 신호만
     // 보내고 종료해 기존 인스턴스를 보여준다. #267 이후 중복 재실행(앱 아이콘 /
     // autostart)은 launcher 의 advisory lock 이 먼저 차단하므로, 이 분기는 lock
     // 파일 훼손 같은 edge 에서만 도달하는 잔존 방어층이다. socket 을 빼앗지
     // 않으므로 orphan/hotkey 라우팅 깨짐 없음. Client.init(wayland 연결) *전에*
     // 검사 — 두 번째 인스턴스가 창을 안 만든다.
-    const listener_fd = single_instance.createListener() catch |err| switch (err) {
+    // #382 — 측정 모드는 single-instance 검사를 건너뛴다. 그러지 않으면 평소 쓰는
+    // TildaZ 가 이미 있을 때 toggle 만 보내고 종료해서 (아래 `AlreadyRunning` 분기)
+    // 측정용 창이 아예 뜨지 않는다. socket 도 만들지 않아 기존 인스턴스의 hotkey
+    // 라우팅을 건드리지 않는다.
+    const listener_fd: posix.fd_t = if (opts.isStressRun()) -1 else single_instance.createListener() catch |err| switch (err) {
         error.AlreadyRunning => {
             log.appendLine("toggle-ipc", "already running — sending toggle to existing instance + exiting", .{});
             single_instance.sendToggle(@import("../../instance_context.zig").requireWorkerIndex()) catch |e| {
@@ -8001,16 +8042,18 @@ pub fn runBaselineWindow(allocator: std.mem.Allocator, cfg: *const config_mod.Co
             break :blk @as(posix.fd_t, -1);
         },
     };
-    var client = try Client.init(allocator, cfg);
+    var client = try Client.init(allocator, cfg, opts);
     defer client.deinit();
     client.toggle_listener_fd = listener_fd;
     // #207 — toggle listener가 준비된 직후, sway 세션이면 `tildaz --toggle`을 sway의
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
-    sway_ipc.registerToggleIfSway(allocator, cfg);
+    // 측정 모드는 자기 단축키를 DE 에 등록하지 않는다 (#382) — 사용자의 기존 binding 을
+    // 덮어쓰면 측정이 끝난 뒤에도 그 상태가 남는다.
+    if (!opts.isStressRun()) sway_ipc.registerToggleIfSway(allocator, cfg);
     // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
     // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
-    gsettings_hotkey.registerToggleHotkey(allocator, cfg);
+    if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(allocator, cfg);
     try client.run();
 }
 

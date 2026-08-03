@@ -1,4 +1,5 @@
 const std = @import("std");
+const run_options = @import("../run_options.zig");
 const App = @import("../app_controller.zig").App;
 const SessionCore = @import("../session_core.zig").SessionCore;
 const RendererBackend = @import("../renderer.zig").RendererBackend;
@@ -14,6 +15,7 @@ const windows_pty = @import("../terminal/windows/pty.zig");
 const themes = @import("../themes.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
+const ui_metrics = @import("../ui_metrics.zig");
 const build_options = @import("build_options");
 
 const WCHAR = u16;
@@ -40,7 +42,7 @@ pub fn showFatalRunError(err: anyerror) void {
     dialog.showError(messages.error_title, text);
 }
 
-pub fn run() !void {
+pub fn run(opts: run_options.RunOptions) !void {
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -88,9 +90,16 @@ pub fn run() !void {
         .allocator = alloc,
         .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
     };
+    // #382 — `-e <실행파일>` 이면 셸 대신 그것을 띄운다. Windows 의 `ShellCommand` 는
+    // UTF-16 이라 변환한다 (`run()` 이 끝날 때까지 살아 있어야 해서 여기서 free 하지
+    // 않는다 — 프로세스 수명과 같다).
+    const stress_shell_w: ?[:0]const u16 = if (opts.command) |cmd|
+        std.unicode.utf8ToUtf16LeAllocZ(alloc, cmd) catch null
+    else
+        null;
     app.session = SessionCore.init(
         alloc,
-        config.windowsShellUtf16(),
+        if (stress_shell_w) |w| w.ptr else config.windowsShellUtf16(),
         config.max_scroll_lines,
         config.theme,
         buildExtraEnv(config.theme),
@@ -152,7 +161,15 @@ pub fn run() !void {
     // `createTab()` 까지 hwnd 를 다시 검사할 필요가 없다. `app_controller` 의
     // `getTerminalGridSize` 는 이 불변식을 assert 로만 밝히고 가짜 fallback 을
     // 두지 않는다.
-    try app.window.init(font_chain, terminal_font, config.opacity_alpha, config.hotkey.vkey, config.hotkey.modifiers);
+    try app.window.init(
+        font_chain,
+        terminal_font,
+        config.opacity_alpha,
+        // 측정 모드는 전역 핫키를 등록하지 않는다 (#382) — 평소 쓰는 TildaZ 와 같은
+        // 키에 두 프로세스가 반응한다. vkey 0 이 그 뜻이다 (`window.zig`).
+        if (opts.isStressRun()) 0 else config.hotkey.vkey,
+        config.hotkey.modifiers,
+    );
     log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,
         app.window.cell_width_px,
@@ -187,14 +204,39 @@ pub fn run() !void {
     log.appendLine("startup", "render_path={s}", .{app.renderer.?.renderPath()});
     defer if (app.renderer) |*r| r.deinit();
 
-    // Apply position from config
-    app.window.setPosition(config.dock_position, config.width_percent, config.height_percent, config.offset_percent);
+    // Apply position from config.
+    //
+    // #382 — `-size COLSxROWS` 는 퍼센트를 무시하고 셀 개수로 창을 만든다. 이 시점에
+    // `window.init` 이 이미 셀 크기를 확정했으므로 (위 로그의 `cell=WxH`) 바로 환산할
+    // 수 있다. 셀 절반을 여유로 더하는 이유는 `percentForPixels` 주석 참고.
+    var want_w_pct = config.width_percent;
+    var want_h_pct = config.height_percent;
+    if (opts.grid) |want| {
+        const cell_w: i64 = @intCast(app.window.cell_width_px);
+        const cell_h: i64 = @intCast(app.window.cell_height_px);
+        const vp = ui_metrics.viewportForGrid(
+            want.cols,
+            want.rows,
+            app.TERMINAL_PADDING,
+            app.SCROLLBAR_W,
+            0, // 측정은 탭 1 개 — 탭바가 없다 (`tabBarHeightPx` 는 count < 2 에서 0).
+            cell_w,
+            cell_h,
+        );
+        if (app.window.percentForPixels(vp.w + @divTrunc(cell_w, 2), vp.h + @divTrunc(cell_h, 2))) |pct| {
+            want_w_pct = pct.w;
+            want_h_pct = pct.h;
+        }
+    }
+    app.window.setPosition(config.dock_position, want_w_pct, want_h_pct, config.offset_percent);
 
     // Create initial tab
     try app.createTab();
     log.appendLine("startup", "initial tab created: count={d}", .{app.session.count()});
 
-    if (!config.hidden_start) {
+    // 측정 모드는 `hidden_start` 를 무시한다 (#382) — 숨겨져 있으면 렌더가 일어나지
+    // 않아 측정이 무의미하다.
+    if (!config.hidden_start or opts.isStressRun()) {
         log.appendLine("startup", "show window", .{});
         app.window.show();
     }

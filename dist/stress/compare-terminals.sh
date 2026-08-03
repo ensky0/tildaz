@@ -11,9 +11,9 @@
 #
 #   dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 #
-# TildaZ 자신은 CLI 로 명령을 주입할 방법이 없어서 (`--instance` / `--autostart` /
-# `--toggle` 만 받는다) **손으로 한 줄 붙여넣어야 한다.** 스크립트가 그 명령을 찍어 준다.
-# 다른 터미널과 같은 조건 (렌더 포함) 으로 재려면 그게 유일한 방법이다.
+# TildaZ 도 자동이다 — 측정 내부용 `-e` · `-size` 옵션을 쓴다 (#382). 그 인스턴스는
+# worker lock 을 잡지 않고 전역 핫키도 등록하지 않아서, 평소 쓰는 TildaZ 가 떠 있어도
+# 충돌하지 않는다.
 
 set -eu
 
@@ -187,6 +187,35 @@ EOF
     fi
 fi
 
+# TildaZ — `-e` · `-size` 로 자동 측정한다 (#382). 그 두 옵션은 **측정 내부용**이라
+# 문서화하지 않는다 (`src/run_options.zig`).
+#
+# 측정용 인스턴스는 worker lock 을 잡지 않고 전역 핫키도 등록하지 않으므로, 평소 쓰는
+# TildaZ 가 떠 있어도 충돌하지 않는다 (macOS 실측 확인). 명령이 끝나면 스스로 종료한다.
+#
+# 저장소 빌드본을 쓴다 — 설치본은 버전이 다를 수 있다.
+TILDAZ_BIN=""
+for candidate in \
+    "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" \
+    "$REPO_ROOT/zig-out/bin/tildaz" \
+    "$REPO_ROOT/zig-out/bin/tildaz.exe"
+do
+    [ -x "$candidate" ] && TILDAZ_BIN="$candidate" && break
+done
+
+if [ -n "$TILDAZ_BIN" ]; then
+    T="$WORK_DIR/tildaz.timing"
+    # producer 파라미터는 TildaZ 프로세스의 환경변수로 준다 — 자식(producer)이 상속한다.
+    # `-e` 는 실행파일 경로만 받는다 (POSIX 는 PTY 자식의 argv 가 고정이다).
+    run_terminal tildaz env \
+        "TILDAZ_STRESS_WORKLOAD=$WORKLOAD" \
+        "TILDAZ_STRESS_BYTES=$BYTES" \
+        "TILDAZ_STRESS_TIMING_FILE=$T" \
+        "$TILDAZ_BIN" -e "$PRODUCER" -size "${COLS}x${ROWS}"
+else
+    echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+fi
+
 # foot 은 Wayland 전용이라 Linux 에서만 있다.
 if command -v foot >/dev/null 2>&1; then
     T="$WORK_DIR/foot.timing"
@@ -216,23 +245,8 @@ while IFS="$(printf '\t')" read -r name ns cols rows cols0 rows0; do
     printf '%-14s %12s %10s %10s  %s\n' "$name" "$ms" "$rate" "${cols}x${rows}" "$note"
 done < "$RESULTS"
 
-# --- 손으로 재는 터미널 ---
-#
-# TildaZ 와 (macOS 의) ghostty 는 CLI 로 명령을 주입할 수 없다. 그래도 그리드는 producer
-# 가 스스로 기록하므로 공정성은 유지된다 — 창을 목표 그리드로 맞춰 열고 한 줄 붙여넣으면
-# 다른 터미널과 같은 조건 (렌더 포함) 이 된다.
+# --- 마무리 ---
 
 echo ""
-echo "=== 손으로 재는 터미널 ==="
-echo ""
-echo "TildaZ — CLI 로 명령을 주입할 방법이 없어요 (--instance / --autostart / --toggle 만 받아요)."
-echo "  창을 열고 아래 한 줄을 붙여넣어 주세요."
-echo ""
-echo "  $(producer_cmd "$HOME/tildaz.timing")"
-echo ""
-echo "  결과: cat ~/tildaz.timing"
-echo "  그리드 맞추기: config 의 width_percent / height_percent 와 font.size"
-echo ""
-
-echo "timing 파일의 cols/rows 가 ${COLS}x${ROWS} 인지 확인해 주세요 — 다르면 그 숫자는"
-echo "위 표와 비교할 수 없어요. 탭이 2 개 이상이면 탭바 (28 pt) 가 들어가 rows 가 줄어요."
+echo "timing 파일의 cols/rows 가 ${COLS}x${ROWS} 인지 표에서 확인해 주세요 — 다르면 그"
+echo "숫자는 비교할 수 없어요. 탭이 2 개 이상이면 탭바 (28 pt) 가 들어가 rows 가 줄어요."

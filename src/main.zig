@@ -12,6 +12,7 @@ const instance_context = @import("instance_context.zig");
 const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
 const messages = @import("messages.zig");
+const run_options = @import("run_options.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
 
 /// `std.log` 호출 (ghostty-vt 의 `unimplemented mode` 등) 을 우리 통합 로그로
@@ -49,6 +50,8 @@ pub fn main() void {
     var worker_index: ?u32 = null;
     var autostart_launch = false;
     var toggle_index: ?u32 = null;
+    // #382 — 측정용 내부 옵션. 문서화하지 않는다 (`run_options.zig` 참고).
+    var run_opts: run_options.RunOptions = .{};
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -56,6 +59,14 @@ pub fn main() void {
             if (i + 1 >= args.len) std.process.exit(2);
             i += 1;
             worker_index = std.fmt.parseInt(u32, args[i], 10) catch std.process.exit(2);
+        } else if (std.mem.eql(u8, arg, "-e")) {
+            if (i + 1 >= args.len) std.process.exit(2);
+            i += 1;
+            run_opts.command = args[i];
+        } else if (std.mem.eql(u8, arg, "-size")) {
+            if (i + 1 >= args.len) std.process.exit(2);
+            i += 1;
+            run_opts.grid = run_options.parseGrid(args[i]) orelse std.process.exit(2);
         } else if (std.mem.eql(u8, arg, "--autostart")) {
             autostart_launch = true;
         } else if (std.mem.eql(u8, arg, "--toggle")) {
@@ -92,6 +103,15 @@ pub fn main() void {
         }
     }
 
+    // #382 — 측정 모드. worker lock · launcher · 전역 핫키를 모두 건너뛴다. 그러지 않으면
+    // 평소 쓰는 TildaZ 의 lock 을 뺏거나 F1 이 두 프로세스에 걸린다. config 는 그대로
+    // 읽지만 (읽기 전용이라 안전) 창 크기는 `-size` 가 덮는다.
+    if (run_opts.isStressRun()) {
+        instance_context.setWorkerIndex(worker_index orelse 0);
+        host.run(run_opts) catch |err| host.showFatalRunError(err);
+        return;
+    }
+
     if (worker_index) |index| {
         instance_context.setWorkerIndex(index);
         var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -101,7 +121,7 @@ pub fn main() void {
             return;
         }) orelse return;
         defer worker_lock.deinit();
-        host.run() catch |err| host.showFatalRunError(err);
+        host.run(run_opts) catch |err| host.showFatalRunError(err);
         return;
     }
 
