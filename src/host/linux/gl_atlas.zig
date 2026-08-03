@@ -275,8 +275,8 @@ pub const Atlas = struct {
             self.cache.clearRetainingCapacity();
             surface.reset();
             // 사용자 로그에 남긴다 — 이 줄이 자주 보이면 `ATLAS_SIZE` 를 키울 근거다.
-            log.appendLine("gpu", "GL atlas {s} 가득 참 — 비우고 다시 채운다 (누적 {d} 회)", .{
-                if (is_color) "컬러" else "회색",
+            log.appendLine("gpu", "GL atlas {s} full — clearing and refilling (resets={d})", .{
+                if (is_color) "color" else "gray",
                 surface.resets,
             });
             break :blk atlas_common.packRow(

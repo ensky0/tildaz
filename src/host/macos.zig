@@ -1786,7 +1786,7 @@ fn syncGeometryAfterScreenChange() void {
     const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
     if (@as(f32, @floatCast(scale_pt)) != g_renderer.?.scale) {
         g_renderer.?.applyScale(@floatCast(scale_pt)) catch |err| {
-            log.appendLine("geom", "applyScale failed: {s} — cell 재측정 skip", .{@errorName(err)});
+            log.appendLine("geom", "applyScale failed: {s} — skipping cell re-measure", .{@errorName(err)});
         };
     }
     g_renderer.?.resize(vp_w_px, vp_h_px);

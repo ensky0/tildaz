@@ -19,6 +19,7 @@
 - `docs/` 의 GitHub Pages 사이트
 - **릴리즈 노트 (`dist/release-notes/*.md`)** — end-user 가 GitHub Release 페이지에서 직접 봄. 이전 v0.2.13 까지 한국어였지만 앞으로 영어.
 - 프로그램 안에서 사용자에게 직접 표시되는 메시지 (MessageBox, 오류 다이얼로그, About 다이얼로그 등 최종 사용자가 앱 안에서 보는 텍스트)
+- **로그 파일 (`tildaz_N.log`) 의 모든 메시지** — format string 과 **그 인자까지** 영어예요. 사용자가 이슈에 붙여 공유하는 진단 자료라서요. 로그 옆의 *주석*은 내부 기록이니 계속 한국어예요. (2026-08-03 에 이 규칙이 문서에 없어서 새 `[cwd]` 로그를 한국어로 적었고, 사용자 지적으로 점검하니 기존 코드 29곳도 한국어였어요 — 전부 영어로 고쳤어요.)
 
 공개 레포의 정문과 앱 UI 는 국제 방문자가 바로 읽을 수 있는 언어 (= 영어) 에 맞추는 게 기본값이고, 내부 기록은 한국어로 남겨서 두 역할을 분리해요. **이 구분은 "출력은 한국어" 규칙의 예외가 아니라 대상이 달라서예요** — 사용자에게 하는 말은 한국어, 저장소 방문자 / end-user 가 읽는 산출물은 영어.
 
@@ -380,13 +381,30 @@ Windows 경로는 `dist/windows/package.ps1`을 PowerShell로 호출하며 WSL/G
 UNC 경로를 사용해요. distro 이름을 `Debian`으로 가정하거나 `\\wsl.localhost\...` 경로를
 기본값으로 쓰지 않아요.
 
-**macOS 에서 앱을 띄울 때는 항상 `open` 으로 `.app` 번들을 열어요** (2026-08-03 사용자 지적).
-macOS 빌드 산출물은 CLI 바이너리가 아니라 `zig-out/TildaZ.app` 번들이고, 실행 방법이 두 가지인데
-**권한이 필요한 동작은 `open` 쪽만 정상이에요.**
+**macOS 빌드는 반드시 [`dist/macos/build_and_install.sh`](dist/macos/build_and_install.sh) 로 해요**
+(2026-08-03 사용자 지적). `zig build` 만 돌리면 **코드 서명이 붙지 않아서** 권한이 필요한 동작
+(전역 핫키 등) 이 안 먹어요.
 
 ```sh
-open ./zig-out/TildaZ.app                          # ✅ 이걸 써요
-./zig-out/TildaZ.app/Contents/MacOS/tildaz         # ⚠️ 권한 문제 — 아래 참고
+dist/macos/build_and_install.sh     # ✅ 빌드 + 서명 + /Applications 설치 + 서명 검증
+open /Applications/TildaZ.app       # ✅ 실행
+```
+
+스크립트가 하는 일:
+
+- **stable self-signed identity** (`TildazLocal`, `TILDAZ_SIGN_IDENTITY` 로 변경) 로 서명해요.
+  ad-hoc (`-`) 서명은 매 빌드마다 바이너리 해시가 바뀌어 *Input Monitoring* 권한이 stale 해지는데
+  ([#109](https://github.com/ensky0/tildaz/issues/109)), stable identity 는 그 문제가 없어요.
+- `-Doptimize=ReleaseFast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
+- `/Applications/TildaZ.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
+- identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
+
+**앱은 항상 `open` 으로 `.app` 번들을 열어요.** `zig-out/TildaZ.app` 은 서명 전 중간 산출물이라
+실행 대상이 아니고, 번들 안의 바이너리를 직접 띄우면 권한이 안 붙어요.
+
+```sh
+open /Applications/TildaZ.app                        # ✅ 이걸 써요
+/Applications/TildaZ.app/Contents/MacOS/tildaz       # ⚠️ 권한 문제 — 아래 참고
 ```
 
 - 터미널에서 바이너리를 직접 띄우면 그 프로세스의 권한 요청을 macOS 가 **부모 (터미널 앱) 기준**으로
