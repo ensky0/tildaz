@@ -130,14 +130,26 @@ producer 파라미터는 인자가 아니라 환경변수 (`TILDAZ_STRESS_WORKLO
 
 ## 알려진 것 / 아직 모르는 것
 
-- **PTY 층의 수신 바이트는 보낸 것보다 많아요.** `\n` 이 `\r\n` 으로 나오기 때문이고
-  (termios `ONLCR`), 리포트의 `expected … minimum` 이 그걸 계산한 값이에요. 실측에서는
-  그보다도 조금 더 받아요 — 줄 수에 정비례하고 (80 byte 줄 13,107 개에 +14), 터미널
-  폭 · 줄 길이 · write 조각 크기와 무관하며, 데이터 없이 `\n` 만 보내면 안 생겨요.
-  tty 드라이버의 출력 처리에서 오는 것으로 보이지만 **정확한 규칙은 확정하지
-  않았어요** (64 MiB 에서 819 byte = 0.0013 %). 그래서 판정은 한 방향으로만 써요 —
-  **모자라면 데이터 손실**이고 남는 건 정상이에요. 처리량은 실제 소화한 바이트로
-  계산해서 이 오차에 영향받지 않아요.
+### PTY 층의 수신 바이트는 보낸 것보다 많고, **그 성질이 platform 마다 달라요**
+
+`\n` 이 `\r\n` 으로 나오는 것 (termios `ONLCR`) 이 공통 원인이고, 리포트의
+`expected … minimum` 이 그것까지 계산한 값이에요. 그런데 그 위에 얹히는 초과분이
+platform 마다 전혀 달라요 (전부 실측이에요).
+
+| platform | 초과분 | 성질 |
+|---|---|---|
+| Linux | **`+0`** | `ONLCR` 변환 외에 아무것도 더하지 않아요. 예상값이 한 byte 도 안 어긋나요 |
+| macOS | 64 MiB 에서 **+819 byte** (0.0013 %) | 줄 수에 정비례하고, 터미널 폭 · 줄 길이 · write 조각 크기와 무관하며, 데이터 없이 `\n` 만 보내면 안 생겨요. tty 드라이버 출력 처리에서 오는 것으로 보이지만 **정확한 규칙은 확정하지 않았어요** |
+| Windows | `plain` +1.3 % · `ansi` +1.0 % · **`cjk` +25.6 %** | ConPTY 가 자기 시퀀스를 끼워 넣어요. wide char 에서 특히 심하고 `readloop` 호출 수도 1,026 → 6,922 로 뛰어요. **원인은 확인 필요** |
+
+그래서 두 가지를 이렇게 다뤄요.
+
+- **`expected` 판정은 한 방향으로만** 써요 — 모자라면 데이터 손실이고 남는 건 정상이에요.
+  Windows 는 위 표대로 예상값을 계산할 수 있는 종류가 아니라 `expected` 줄을 아예 안 찍어요.
+- **처리량을 두 줄로** 찍어요. 소화한 바이트 기준과 **보낸 바이트 기준**을 함께 내요.
+  소화 기준만 보면 부풀림이 큰 platform 이 유리하게 보여요 — Windows `cjk` 는 소화
+  기준 62.3 MiB/s 인데 보낸 기준으로는 49.6 MiB/s 예요. **platform 사이를 비교할 때는
+  보낸 바이트 기준 줄을 봐요.**
 - **`parser` 층의 숫자는 파서의 진짜 상한보다 낮을 수 있어요.** 같은 코어에서
   워크로드를 만들면서 파싱하므로 생성이 캐시를 밀어내요. 실측에서 `plain` 이
   `parser` 층 736 MiB/s 인데 `frame` 층의 `drain busy` 는 1,058 MiB/s 였어요 — 후자는
@@ -147,9 +159,21 @@ producer 파라미터는 인자가 아니라 환경변수 (`TILDAZ_STRESS_WORKLO
   읽기 전용이고 macOS · Linux 는 질의 응답용 effects 가 붙어요 (#266). 이 하네스의
   워크로드에는 응답이 필요한 질의가 없어서 파싱 비용이 같을 것으로 보지만 **직접 재서
   확인하지는 않았어요.**
-- **Windows 는 실기 확인 전이에요.** 코드상 `CreateProcessW` 로 자식을 띄우니 될
-  것으로 보지만, ConPTY 조합에서 확인하지 않았어요. ConPTY 는 자식 출력에 자기
-  시퀀스를 끼워 넣을 수 있어서 `expected` 계산도 하지 않아요 (`null`).
+- **`push` 의 `yields` 가 크면 우리가 못 따라가고 있다는 뜻이에요.** ring 이 가득 차서
+  read thread 가 양보한 횟수예요. 이 값이 크면 `push` 시간도 함께 커지고 (실측: macOS
+  `frame` cjk 에서 248 만 회 · 243 ms, Linux 는 `push` 가 `drain` 보다 컸어요) 압력이
+  producer 까지 전달돼요 — 실제 앱에서는 **셸이 느려지는 것**으로 나타나요.
+- **`readloop` 시간은 platform 사이를 비교하면 안 돼요.** POSIX 는 poll 대기를 빼고 read
+  복사만 재는데 Windows 는 유휴 대기를 포함해요 (#254 결정). 리포트가 어느 쪽인지
+  괄호로 적어 줘요.
+- **Windows 는 `zig build stress` 가 install 경로에서 실행돼야 해요.** ConPTY 는 실행파일
+  옆 `_internal\conpty.dll` 이 필수인데 (#339 에서 kernel32 fallback 제거) zig 캐시의
+  output 디렉토리에는 그것을 놓을 자리가 없어요. `build.zig` 가 `addInstallArtifact` +
+  `zig-out/bin` 실행으로 처리해요 — 이걸 `addRunArtifact` 로 되돌리면 Windows 에서
+  `parser` 층 말고 전부 `error.ConptyRuntimeUnavailable` 로 즉시 실패해요.
+- **ConPTY 가 우리가 모르는 시퀀스를 보내요.** PTY 를 쓰는 모든 Windows 실행에서
+  `CSI 1 t` (XTWINOPS de-iconify) 와 DEC private mode `9001` 경고가 나와요. 무해하게
+  무시되고 측정값에도 영향이 없지만 **실사용 앱도 같은 것을 받아요.**
 - **scrollback 메모리는 줄당 약 1 KiB 예요** (120 열 기준, macOS 실측: 100만 줄 =
   1,008 MiB, 기본값 10만 줄 = 120 MiB). 셀 하나가 8 byte 이고 page 가 고정 폭이라
   `줄 수 × 열 수 × 8 byte` 에 가까워요. 열 수가 많은 창에서는 그만큼 늘어나요.
