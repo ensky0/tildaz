@@ -28,12 +28,20 @@ pub const Backend = struct {
                 opts.rows,
                 opts.shell,
                 pty_env,
+                opts.cwd,
             ),
         };
     }
 
     pub fn deinit(self: *Backend) void {
         self.pty.deinit();
+    }
+
+    /// 자식 셸의 pid. 셸이 OSC 7 을 보내지 않을 때 OS 에 현재 디렉토리를 직접 묻는
+    /// 데 쓴다 (#366, `process_cwd.zig`). **foreground process 가 아니라 셸 자신**이라
+    /// `sudo` 같은 것에 흔들리지 않는다.
+    pub fn childPid(self: *Backend) i32 {
+        return self.pty.child_pid;
     }
 
     pub fn write(self: *Backend, data: []const u8) !usize {
