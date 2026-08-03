@@ -150,18 +150,27 @@ pub fn rects(
                 n += 1;
             },
 
-            // #374 — 점선 · 파선은 **같은 경로**다. 셀을 `count` 등분하고 각 구간의
-            // **앞 절반**을 칠한다 — 칠한 폭과 빈 폭이 같아지고, 구간 경계를 반올림해
-            // 이어 붙이므로 간격이 흔들리지 않는다. 둘의 차이는 구간 크기뿐이다
-            // (점선 `2 × 두께` → 정사각형 dot, 파선 `4 × 두께` → 그 두 배 길이).
+            // #374 — 점선 · 파선은 **같은 경로**다. 셀을 `count` 조각으로 나누고 각
+            // 조각의 앞 절반을 칠한다 (칠한 폭 = 빈 폭). 둘의 차이는 조각 크기뿐이다 —
+            // 점선은 `2 × 두께` (정사각형 dot), 파선은 **셀 폭** (셀당 1 조각).
             //
             // 셀 경계 위상을 따로 맞출 필요가 없다: 셀 폭이 모두 같으므로 셀마다 같은
             // 리듬이 되어 이웃 셀과 자연히 이어진다.
             //
-            // 처음에는 각각 다른 식을 썼는데 둘 다 고르지 않았다 (2026-08-03 실기,
-            // 사용자 지적). 점선은 dot 중심을 따로 반올림해 간격이 `4·4·3·4` 로
-            // 흔들렸고, 파선은 ghostty 식 (`dash = 셀폭/3 + 1`) 을 그대로 옮긴 탓에
-            // 셀 끝에서 잘린 조각이 다음 셀 조각과 맞붙어 `7 · 12 · 12 …` 가 됐다.
+            // **간격(pitch)을 정수로 고정한다.** 이전에는 조각 경계를 각각
+            // `@round(slot × i)` 로 구했는데, `slot = 셀폭 / 조각수` 가 정수가 아니면
+            // 조각마다 1px 씩 흔들렸다 (2026-08-03 Windows 실기에서 발견, macOS 실측으로
+            // 확인). 셀 폭에 따라 폭 또는 간격 한쪽으로 나타났다.
+            //
+            // | 폰트 · 셀 | slot | 증상 |
+            // |---|---|---|
+            // | Cascadia 15pt (`cell_w 9`, `t 1`) | 1.8 | 폭 `1,1,2,1` — 두 조각이 인접해 붙음 |
+            // | Menlo 15pt @2x (`cell_w 19`, `t 2`) | 3.8 | 간격 `2,2,1,2` |
+            // | Lucida Console 15pt (`cell_w 10`) | 2.0 | 균일 (정수라서) |
+            //
+            // 정수 pitch 로 놓으면 폭과 간격이 **둘 다** 균일해진다. 대가는 셀 끝에 남는
+            // 여백만큼 **셀 경계의 간격이 좁아지는** 것인데, 조각 하나 폭보다 작은
+            // 잔여이므로 리듬이 깨져 보이지 않는다.
             .dotted, .dashed => {
                 // 점선은 두께 기준으로 촘촘하게, 파선은 **셀 하나에 조각 하나**다.
                 // `4 × 두께` 로 뒀더니 15pt 셀(19px)에 2 개가 들어가 글자 한 칸에
@@ -169,18 +178,26 @@ pub fn rects(
                 const base_w = cell_w / @as(f32, @floatFromInt(@max(1, span)));
                 const slot_px = if (style.flags.underline == .dotted) 2 * t else base_w;
                 const count = pieceCount(cell_w, span, slot_px);
-                const slot = cell_w / @as(f32, @floatFromInt(count));
+                // 정수 pitch — 최소 2 라야 칠한 칸과 빈 칸이 각각 1px 이상 남는다.
+                const pitch = @max(2, @round(cell_w / @as(f32, @floatFromInt(count))));
+                const piece_w = @max(1, @round(pitch / 2));
+                const before = n;
                 for (0..count) |i| {
-                    const fi: f32 = @floatFromInt(i);
-                    const x0 = @round(slot * fi);
-                    const x1 = @round(slot * (fi + 0.5));
-                    out[n] = .{
-                        .x = x0,
-                        .w = @max(1, @min(x1 - x0, cell_w - x0)),
-                        .y = y,
-                        .h = t,
-                        .color = color,
-                    };
+                    const x0 = pitch * @as(f32, @floatFromInt(i));
+                    // 조각이 셀을 넘거나 **셀 끝에 딱 닿으면** 버린다.
+                    //
+                    // 넘는 것을 잘라 넣으면 폭이 다시 불균일해지고, 끝에 딱 닿게 두면
+                    // 다음 셀의 첫 조각과 **맞붙어** 원래 증상이 되돌아온다 (Cascadia
+                    // 15pt 는 `cell_w 9` · `pitch 2` 라 다섯째 조각이 `[8,9)` 로 정확히
+                    // 닿는다). 버리면 셀 경계 간격만 조각 하나 폭만큼 넓어진다.
+                    if (x0 + piece_w >= cell_w) break;
+                    out[n] = .{ .x = x0, .w = piece_w, .y = y, .h = t, .color = color };
+                    n += 1;
+                }
+                // 셀이 조각 하나도 못 담는 극단 (아주 작은 폰트) 에서는 최소 하나를
+                // 보장한다 — 밑줄이 통째로 사라지지 않게.
+                if (n == before) {
+                    out[n] = .{ .x = 0, .w = @max(1, @min(piece_w, cell_w)), .y = y, .h = t, .color = color };
                     n += 1;
                 }
             },
@@ -461,6 +478,68 @@ test "#374 dotted · dashed — 칠한 폭과 빈 폭이 같고 간격이 균일
         // 조각 폭과 같아야, 다음 셀 첫 조각과의 간격이 셀 안 간격과 같아진다.
         const last = got.r[got.n - 1];
         try std.testing.expectEqual(c.w, W - (last.x + last.w));
+    }
+}
+
+/// 점선 조각의 폭 목록과 간격 목록. 균일성 검사 전용.
+fn dotShape(ascent: f32, cell_w: f32, span: usize) struct { w: [16]f32, gap: [16]f32, n: usize } {
+    var out: [MAX_RECTS]Rect = undefined;
+    const n = rects(.{ .flags = .{ .underline = .dotted } }, test_fg, &test_palette, ascent, cell_w, cell_w * 2, span, &out);
+    var w: [16]f32 = @splat(0);
+    var gap: [16]f32 = @splat(0);
+    for (out[0..@min(n, 16)], 0..) |d, i| {
+        w[i] = d.w;
+        if (i > 0) gap[i - 1] = d.x - (out[i - 1].x + out[i - 1].w);
+    }
+    return .{ .w = w, .gap = gap, .n = n };
+}
+
+test "#374 dotted — **비정수 slot** 에서도 폭과 간격이 균일하다" {
+    // 2026-08-03 Windows 실기에서 발견한 회귀를 고정한다. 조각 경계를 각각
+    // `@round(slot × i)` 로 구하던 때는 `slot = 셀폭 / 조각수` 가 정수가 아니면
+    // 조각마다 1px 씩 흔들렸다. 아래 세 조합이 그 증거이고, 앞선 테스트는 `slot`
+    // 이 정수인 경우 (`W=8` → 2.0) 만 검증해서 놓쳤다.
+    const cases = [_]struct { name: []const u8, ascent: f32, cell_w: f32 }{
+        // Cascadia Code 15pt (Windows): cell_w 9, t 1 → slot 1.8. 폭이 `1,1,2,1` 로 갈렸다.
+        .{ .name = "Cascadia 15pt", .ascent = 13.92, .cell_w = 9 },
+        // Menlo 15pt @2x (macOS): cell_w 19, t 2 → slot 3.8. 간격이 `2,2,1,2` 로 갈렸다.
+        .{ .name = "Menlo 15pt@2x", .ascent = 28, .cell_w = 19 },
+        // Cascadia Code 30pt: cell_w 18, t 2 → slot 3.6. 폭이 `2,1,2,2,2` 로 갈렸다.
+        .{ .name = "Cascadia 30pt", .ascent = 27.83, .cell_w = 18 },
+        // Lucida Console 15pt: cell_w 10 → slot 2.0 (정수). 원래도 균일했다.
+        .{ .name = "Lucida 15pt", .ascent = 13.92, .cell_w = 10 },
+    };
+    for (cases) |c| {
+        const shape = dotShape(c.ascent, c.cell_w, 1);
+        try std.testing.expect(shape.n >= 1);
+        // 모든 조각의 폭이 같다.
+        for (shape.w[0..shape.n]) |w| {
+            std.testing.expectEqual(shape.w[0], w) catch |err| {
+                std.debug.print("{s}: 폭이 갈렸다 {any}\n", .{ c.name, shape.w[0..shape.n] });
+                return err;
+            };
+        }
+        // 셀 **안**의 간격이 모두 같다 (셀 경계 간격은 잔여 여백만큼 좁을 수 있다).
+        if (shape.n >= 3) {
+            for (shape.gap[0 .. shape.n - 1]) |g| {
+                std.testing.expectEqual(shape.gap[0], g) catch |err| {
+                    std.debug.print("{s}: 간격이 갈렸다 {any}\n", .{ c.name, shape.gap[0 .. shape.n - 1] });
+                    return err;
+                };
+            }
+        }
+        // 셀을 넘지 않고, **셀 끝에 딱 닿지도 않는다** — 닿으면 다음 셀의 첫 조각과
+        // 맞붙어 원래 증상이 되돌아온다.
+        var out: [MAX_RECTS]Rect = undefined;
+        const n = rects(.{ .flags = .{ .underline = .dotted } }, test_fg, &test_palette, c.ascent, c.cell_w, c.cell_w * 2, 1, &out);
+        for (out[0..n]) |d| try std.testing.expect(d.x + d.w <= c.cell_w);
+        if (n >= 2) {
+            const last = out[n - 1];
+            std.testing.expect(last.x + last.w < c.cell_w) catch |err| {
+                std.debug.print("{s}: 마지막 조각이 셀 끝에 닿는다 x={d} w={d} cell_w={d}\n", .{ c.name, last.x, last.w, c.cell_w });
+                return err;
+            };
+        }
     }
 }
 
