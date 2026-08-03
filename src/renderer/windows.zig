@@ -26,6 +26,7 @@ const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
 const block_element = @import("block_element.zig");
 const cell_color = @import("cell_color.zig");
+const font_constants = @import("../font/constants.zig");
 const cell_decoration = @import("cell_decoration.zig");
 const box_drawing = @import("../box_drawing.zig");
 const ligature_mod = @import("../font/ligature.zig");
@@ -1025,7 +1026,7 @@ pub const D3d11Renderer = struct {
                 };
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
-                        const result = c.self.tab_font.resolveGlyph(g.cp) orelse return;
+                        const result = c.self.tab_font.resolveGlyph(g.cp, .regular) orelse return;
                         const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
                             if (result.owned) _ = result.face.vtable.Release(result.face);
                             return;
@@ -1484,7 +1485,12 @@ pub const D3d11Renderer = struct {
                     text_count = 0;
                 }
 
-                const single = self.font.resolveGlyph(cp) orelse {
+                const single = self.font.resolveGlyph(
+                    cp,
+                    // #375 — SGR 1 / 3 이 요구하는 face 변종. 없는 family 는 폰트
+                    // 모듈이 regular 로 떨어뜨린다.
+                    font_constants.FaceStyle.from(style.flags.bold, style.flags.italic),
+                ) orelse {
                     x += 1;
                     continue;
                 };
@@ -1561,7 +1567,7 @@ pub const D3d11Renderer = struct {
             var utf8_iter = std.unicode.Utf8Iterator{ .bytes = preedit_utf8, .i = 0 };
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
-                const result = self.font.resolveGlyph(@intCast(cp)) orelse continue;
+                const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
                 const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
@@ -1762,7 +1768,7 @@ pub const D3d11Renderer = struct {
                 var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
-                    const result = r.tab_font.resolveGlyph(cp) orelse continue;
+                    const result = r.tab_font.resolveGlyph(cp, .regular) orelse continue;
                     const entry = r.tab_atlas.getOrInsert(result.face, result.index) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         continue;

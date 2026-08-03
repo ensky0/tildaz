@@ -9,6 +9,7 @@ const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
 const font_spec = @import("../../font/spec.zig");
+const font_constants = @import("../../font/constants.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
 const cell_color = @import("../../renderer/cell_color.zig");
@@ -166,6 +167,12 @@ pub const GlyphItem = struct {
     /// 마스크 글리프의 전경색. 컬러 글리프는 텍셀 색을 그대로 쓰므로 무시된다.
     /// 바탕색은 싣지 않는다 — 두 경로 모두 **프레임버퍼와** 섞는다 (#277 S2-4).
     fg: ghostty.color.RGB,
+    /// #375 — atlas 캐시 키를 가르기 위한 face 변종.
+    ///
+    /// **`codepoint` 경로는 face 정보가 키에 없다** (`gl_atlas.Key` 가 `face` 를
+    /// `0xFF` 로 고정한다). 이 값이 없으면 bold `A` 와 regular `A` 가 같은 칸을
+    /// 덮어쓴다. `indexed` 경로는 face index 가 이미 키에 있어 영향이 없다.
+    face_style: font_constants.FaceStyle = .regular,
 };
 
 /// #277 S2-5 — 아이콘 하나 (`< > + × …`). 폰트 글리프가 아니라 공통
@@ -985,9 +992,13 @@ pub const Renderer = struct {
                     }
                 }
 
+                // #375 — SGR 1 / 3 이 요구하는 face 변종. 없는 family 는 폰트 모듈이
+                // regular 로 떨어뜨린다.
+                const face_style = font_constants.FaceStyle.from(style.flags.bold, style.flags.italic);
                 appendGlyph(&self.layer.glyphs, allocator, .{
                     .ref = .{ .codepoint = cp },
-                    .glyph = self.font_ctx.glyph(cp),
+                    .glyph = self.font_ctx.glyph(cp, face_style),
+                    .face_style = face_style,
                     .cell_x = cell_x,
                     .cell_y = cell_y,
                     .cell_w = cell_w,
@@ -1143,7 +1154,7 @@ pub const Renderer = struct {
             }) catch {};
             appendGlyph(&self.layer.preedit_glyphs, allocator, .{
                 .ref = .{ .codepoint = cp },
-                .glyph = self.font_ctx.glyph(cp),
+                .glyph = self.font_ctx.glyph(cp, .regular),
                 .cell_x = cell_x,
                 .cell_y = pre_y,
                 .cell_w = cell_w,
@@ -1313,7 +1324,7 @@ pub const Renderer = struct {
                     // **픽셀 단위로 잘라** 안쪽만 그린다.
                     appendChromeGlyph(&c.renderer.layer.chrome_before, c.allocator, .{
                         .ref = .{ .codepoint = g.cp },
-                        .glyph = c.renderer.tab_font_ctx.glyph(g.cp),
+                        .glyph = c.renderer.tab_font_ctx.glyph(g.cp, .regular),
                         .pen_x = @intFromFloat(g.x),
                         .baseline = c.t.text_baseline,
                         .box_y = 0,
@@ -1596,7 +1607,7 @@ pub const Renderer = struct {
             const adv: i32 = cw * @as(i32, @intCast(display_width.codepointWidth(cp)));
             appendChromeGlyph(list, allocator, .{
                 .ref = .{ .codepoint = cp },
-                .glyph = self.tab_font_ctx.glyph(cp),
+                .glyph = self.tab_font_ctx.glyph(cp, .regular),
                 .pen_x = x,
                 .baseline = baseline,
                 .box_y = baseline - line_h,
@@ -1887,7 +1898,7 @@ pub const Renderer = struct {
             if (x >= fb_w) break;
             const cells = display_width.codepointWidth(@intCast(cp));
             const adv: i32 = cw * @as(i32, @intCast(cells));
-            const gl = font_ctx.glyph(cp);
+            const gl = font_ctx.glyph(cp, .regular);
             if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                 drawGlyphBgra(memory, fb_w, fb_h, stride, x, baseline_y - ch_metric, adv, ch_metric, gl, 0, fb_w);
             } else {
@@ -1944,6 +1955,8 @@ fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
 const GlyphPlacement = struct {
     ref: GlyphRef,
     glyph: *const font.Glyph,
+    /// #375 — atlas 키 구분용. `appendGlyph` 가 `GlyphItem` 으로 그대로 옮긴다.
+    face_style: font_constants.FaceStyle = .regular,
     cell_x: i32,
     cell_y: i32,
     cell_w: i32,
@@ -1980,6 +1993,7 @@ fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p:
             .w = p.cell_w,
             .h = p.cell_h,
             .fg = p.fg,
+            .face_style = p.face_style,
         }) catch return;
         return;
     }
@@ -1992,6 +2006,7 @@ fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p:
         .x = p.cell_x + center_off + glyph.bitmap_left + p.x_offset,
         .y = p.cell_y + p.ascent - glyph.bitmap_top - p.y_offset,
         .fg = p.fg,
+        .face_style = p.face_style,
     }) catch return;
 }
 

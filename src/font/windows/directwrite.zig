@@ -72,6 +72,11 @@ pub const DWRITE_FACTORY_TYPE_SHARED: u32 = 0;
 pub const DWRITE_FONT_WEIGHT_NORMAL: u32 = 400;
 pub const DWRITE_FONT_STRETCH_NORMAL: u32 = 5;
 pub const DWRITE_FONT_STYLE_NORMAL: u32 = 0;
+// #375 — SGR 1 / 3 이 요구하는 face 변종. `GetFirstMatchingFont` 은 요청과 가장
+// 근접한 face 를 돌려주므로 (실패하지 않는다) 해당 face 가 없는 family 는 자연히
+// regular 가 온다.
+pub const DWRITE_FONT_WEIGHT_BOLD: u32 = 700;
+pub const DWRITE_FONT_STYLE_ITALIC: u32 = 2;
 
 pub const DWRITE_MEASURING_MODE_NATURAL: u32 = 0;
 
