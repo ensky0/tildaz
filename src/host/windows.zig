@@ -230,7 +230,7 @@ fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
         var wslenv_buf: [768]u8 = undefined;
         var wslenv_len: usize = 0;
         var prompt_buf: [1024]u8 = undefined;
-        var vars: [3]terminal.ExtraEnv = undefined;
+        var vars: [4]terminal.ExtraEnv = undefined;
     };
 
     S.vars[0] = .{
@@ -251,7 +251,8 @@ fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
             pos += 1;
         }
     }
-    const suffix = "COLORFGBG";
+    // `PROMPT_COMMAND` 도 WSL 안까지 넘겨야 bash 가 OSC 7 을 보낸다 (#366).
+    const suffix = "COLORFGBG:PROMPT_COMMAND";
     if (pos + suffix.len <= S.wslenv_buf.len) {
         @memcpy(S.wslenv_buf[pos..][0..suffix.len], suffix);
         pos += suffix.len;
@@ -274,9 +275,16 @@ fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {
         const utf8_len = std.unicode.utf16LeToUtf8(&existing_storage, pbuf[0..existing_wide]) catch 0;
         existing = existing_storage[0..utf8_len];
     }
+    // PROMPT_COMMAND — WSL 안 bash 용 (#366). 위 WSLENV 가 이 이름을 넘기게 해 두었다.
+    // cmd / PowerShell 은 이 변수를 쓰지 않으므로 무해하다.
+    S.vars[2] = .{
+        .name = "PROMPT_COMMAND",
+        .value = shell_integration.bash_prompt_command,
+    };
+
     if (shell_integration.cmdPrompt(&S.prompt_buf, existing)) |value| {
-        S.vars[2] = .{ .name = "PROMPT", .value = value };
-        return S.vars[0..3];
+        S.vars[3] = .{ .name = "PROMPT", .value = value };
+        return S.vars[0..4];
     }
-    return S.vars[0..2];
+    return S.vars[0..3];
 }
