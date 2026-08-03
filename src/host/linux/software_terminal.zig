@@ -12,6 +12,7 @@ const font_spec = @import("../../font/spec.zig");
 const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
 const cell_color = @import("../../renderer/cell_color.zig");
+const cell_decoration = @import("../../renderer/cell_decoration.zig");
 const box_drawing = @import("../../box_drawing.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
@@ -752,6 +753,37 @@ pub const Renderer = struct {
                     }) catch {};
                 }
 
+                // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄). **글리프보다 먼저**
+                // 그려야 하므로 `overlay` (4번) 가 아니라 `cell_bg` (2번) 에 넣는다 —
+                // 색 밑줄이 글자를 가로지르지 않게 하는 ghostty 의 선택과 같다
+                // ([`cell_decoration`](../../renderer/cell_decoration.zig) 주석).
+                // 같은 셀 안에서 배경 다음에 넣으므로 배경에 가리지 않고, 셀끼리는
+                // 사각형이 자기 영역 안에만 있어 서로 덮지 않는다.
+                //
+                // **텍스트 유무와 무관하게** 여기서 만든다 — `\e[4m` 뒤의 공백에도
+                // 밑줄이 이어져야 하고, `spacer_head` 처럼 글자가 없는 셀도 배경과
+                // 같은 취급이다. 그래서 아래 텍스트 early-continue 보다 위에 둔다.
+                if (cell_decoration.hasDecoration(style)) {
+                    var deco: [cell_decoration.MAX_RECTS]cell_decoration.Rect = undefined;
+                    const dn = cell_decoration.rects(
+                        style,
+                        resolveFg(style, &raw, &colors, is_selected),
+                        &colors.palette,
+                        @floatFromInt(ascent),
+                        @floatFromInt(ch),
+                        &deco,
+                    );
+                    for (deco[0..dn]) |d| {
+                        self.layer.cell_bg.append(allocator, .{
+                            .x = cell_x,
+                            .y = cell_y + @as(i32, @intFromFloat(d.y)),
+                            .w = cell_w,
+                            .h = @intFromFloat(d.h),
+                            .color = d.color,
+                        }) catch {};
+                    }
+                }
+
                 // 여기부터 셀 텍스트.
                 if (text_skip > 0) {
                     text_skip -= 1;
@@ -762,6 +794,11 @@ pub const Renderer = struct {
                 // 직전 행 끝 cell) 는 배경만 있고 글자는 없다 (#282 B9) — 그 배경은
                 // 바로 위에서 이미 만들었다.
                 if (raw.wide == .spacer_head or !raw.hasText() or raw.codepoint() == 0) continue;
+
+                // #365 — `invisible` (SGR 8) 은 글리프를 내보내지 않는다. 선도 위에서
+                // 이미 걸렀다 (`hasDecoration` 이 false) — xterm · ghostty 와 같이
+                // "아무것도 안 보임" 이 SGR 8 의 의미다.
+                if (style.flags.invisible) continue;
 
                 const fg = resolveFg(style, &raw, &colors, is_selected);
                 const cp = raw.codepoint();

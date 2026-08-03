@@ -141,6 +141,70 @@ pub fn linePx(pt: anytype, scale: f32) f32 {
     return @max(1, @round(scaledPxF(pt, scale)));
 }
 
+// ── SGR 선 속성의 위치·두께 (#365) ──────────────────────────────────
+//
+// `underline` (single · double) · `strikethrough` · `overline` 이 쓰는 세 비율.
+// 조립은 [`renderer/cell_decoration.zig`](renderer/cell_decoration.zig) 가 하고
+// 여기에는 값만 둔다 (platform 별로 다시 정의하지 않는다).
+//
+// ## 왜 `linePx` 가 아니라 `ascent` 비율인가
+//
+// 탭바 구분선 같은 chrome 은 화면 배율에만 비례하면 되므로 pt 상수 + `linePx` 다.
+// 셀 안의 선은 **글자에 붙는 요소**라 폰트 크기에도 비례해야 한다 — pt 로 고정하면
+// `font.size_point` 를 키웠을 때 글자만 커지고 밑줄은 그대로라 상대적으로 가늘어진다.
+// 기준을 `ascent` 로 잡은 것은 세 renderer 가 **baseline = 셀 top + `ascent_px`**
+// 로 글리프를 놓기 때문이다 (macOS `emitTextInstance` · Windows
+// `emitClusterInstance` · Linux `appendGlyph` 모두 같은 식). 선을 같은 기준으로
+// 계산하면 글리프와 항상 일관되고, macOS 만 행 원점을 `top_pad_px` 만큼 올리는
+// 기존 차이도 자동으로 따라간다.
+//
+// ## 왜 폰트 metric 을 쓰지 않는가
+//
+// 밑줄 position / thickness 는 세 폰트 API 가 모두 주지만 **취소선과 x_height 는
+// Linux (FreeType `FT_FaceRec`) 와 macOS (CoreText) 에 없다** — OS/2 테이블을
+// 직접 읽어야 한다. 폰트값을 쓰면 *밑줄은 폰트값 · 취소선은 상수* 로 갈리고, 세
+// API 의 단위 변환·반올림 차이로 platform 간 1px 이 어긋날 여지가 생긴다.
+// #350 · #353 · #357 이 반복해 없애 온 종류의 갈래라 공통 상수로 간다
+// (2026-08-03 사용자 확정).
+//
+// ## 값의 근거 — macOS CoreText 실측 (2026-08-03)
+//
+// | 폰트 | 밑줄 위치 ÷ ascent | 두께 ÷ ascent | (x_height÷2) ÷ ascent |
+// |---|---|---|---|
+// | Menlo (macOS 기본) | 0.068 | 0.047 | 0.295 |
+// | Monaco | 0.038 | 0.076 | 0.273 |
+// | Courier New | 0.280 | 0.049 | 0.254 |
+// | DejaVu Sans Mono (Linux 기본) | 0.068 | 0.047 | 0.298 |
+//
+// Menlo 를 9 · 12 · 15 · 18 · 21 · 24 pt 로 재도 비율이 소수점 넷째 자리까지
+// 같았다 — 비율이 폰트 크기와 무관하다는 근거다. Cascadia Code (Windows 기본) 는
+// 측정 머신에 없어 system fallback 값이 나왔으므로 표에서 뺐다 (**확인 필요** —
+// Windows 실기에서 재야 한다).
+
+/// 셀 안 선(밑줄 · 취소선 · 윗줄)의 두께 비율 — `ascent` 대비. 실측 4종의
+/// 0.047~0.076 사이 값.
+pub const CELL_LINE_THICKNESS_RATIO: f32 = 0.06;
+
+/// 밑줄 top 이 baseline 아래로 내려가는 거리 — `ascent` 대비. Menlo · DejaVu 의
+/// 실측값 0.068 에 맞춘다.
+pub const UNDERLINE_GAP_RATIO: f32 = 0.07;
+
+/// 취소선 **중심**이 baseline 위로 올라가는 거리 — `ascent` 대비. 정석은
+/// `x_height / 2` (소문자 한가운데) 이고 실측 4종이 0.254~0.298 이다.
+pub const STRIKETHROUGH_CENTER_RATIO: f32 = 0.30;
+
+/// 셀 안 선의 두께 (physical px) — **정수 + 최소 1px**.
+///
+/// 정수여야 하는 이유는 [`linePx`](#linePx) 와 같다 (#357): 라스터화가
+/// `[round(top), round(top + t))` 를 칠하므로 `t` 가 정수여야 위치 소수부와 무관하게
+/// 두께가 보존된다. 소수 두께면 같은 화면 안 두 밑줄이 1px 씩 갈린다.
+///
+/// `ascent_px` 는 이미 화면 배율이 곱해진 physical px 다 (세 renderer 의
+/// `font.ascent_px` 가 그렇다) — 그래서 여기서 `scale` 을 다시 곱하지 않는다.
+pub fn cellLineThicknessPx(ascent_px: f32) f32 {
+    return @max(1, @round(ascent_px * CELL_LINE_THICKNESS_RATIO));
+}
+
 /// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
 /// 세 platform 모두 bar 커서로 통일 (이전: Windows/macOS full-cell block
 /// alpha 0.7, Linux 하단 2px underline — 제각각).

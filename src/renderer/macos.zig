@@ -25,6 +25,7 @@ const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
 const cell_color = @import("cell_color.zig");
+const cell_decoration = @import("cell_decoration.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_chrome = @import("../tab_chrome.zig");
 const ui_rect = @import("../ui_rect.zig");
@@ -700,23 +701,57 @@ pub const MetalRenderer = struct {
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
 
                 const is_custom_bg = is_selected or is_inverse or (style.bg(&raw, &colors.palette) != null);
-                if (!is_custom_bg) continue;
+                // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄) 도 이 pass 에서 만든다.
+                // **text pass 가 아니라 bg pass 인 것이 핵심** — 선이 글리프보다 먼저
+                // 그려져야 색 밑줄이 글자를 가로지르지 않는다 (ghostty 와 같은 선택,
+                // [`cell_decoration`](cell_decoration.zig) 주석). text pass 의
+                // `bg_buf` 에 넣으면 글리프 *위*로 올라가 정반대가 된다.
+                const has_deco = cell_decoration.hasDecoration(style);
+                if (!is_custom_bg and !has_deco) continue;
 
-                if (bg_count >= MAX_CELLS) {
-                    self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-                    bg_count = 0;
-                }
                 const width: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                 const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                 const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
-                const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, dbg_r, dbg_g, dbg_b);
-                bg_buf[bg_count] = .{
-                    .pos = .{ fx, fy },
-                    .size = .{ width, ch },
-                    .color = .{ cell_bg[0], cell_bg[1], cell_bg[2], 1 },
-                };
-                bg_count += 1;
+                if (is_custom_bg) {
+                    if (bg_count >= MAX_CELLS) {
+                        self.drawBgInstances(encoder, bg_buf[0..bg_count]);
+                        bg_count = 0;
+                    }
+                    const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, dbg_r, dbg_g, dbg_b);
+                    bg_buf[bg_count] = .{
+                        .pos = .{ fx, fy },
+                        .size = .{ width, ch },
+                        .color = .{ cell_bg[0], cell_bg[1], cell_bg[2], 1 },
+                    };
+                    bg_count += 1;
+                }
+
+                if (has_deco) {
+                    var deco: [cell_decoration.MAX_RECTS]cell_decoration.Rect = undefined;
+                    const dn = cell_decoration.rects(
+                        style,
+                        resolveFg(style, &raw, &colors, is_selected, is_inverse),
+                        &colors.palette,
+                        self.font.ascent_px,
+                        ch,
+                        &deco,
+                    );
+                    // 셀 하나가 최대 4 개를 만들므로 남은 자리를 미리 확인한다 —
+                    // box drawing 이 같은 이유로 `bg_count + bn` 을 검사한다.
+                    if (bg_count + dn > MAX_CELLS) {
+                        self.drawBgInstances(encoder, bg_buf[0..bg_count]);
+                        bg_count = 0;
+                    }
+                    for (deco[0..dn]) |d| {
+                        bg_buf[bg_count] = .{
+                            .pos = .{ fx, fy + d.y },
+                            .size = .{ width, d.h },
+                            .color = .{ colorF(d.color.r), colorF(d.color.g), colorF(d.color.b), 1 },
+                        };
+                        bg_count += 1;
+                    }
+                }
             }
         }
 
@@ -742,6 +777,15 @@ pub const MetalRenderer = struct {
 
                 const is_text = raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0;
                 if (!is_text) {
+                    x += 1;
+                    continue;
+                }
+
+                // #365 — `invisible` (SGR 8) 은 전경 요소를 하나도 내보내지 않는다.
+                // 글리프뿐 아니라 block element · box drawing 도 전경이라 여기서 함께
+                // 막는다. 선은 bg pass 가 이미 걸렀다 (`hasDecoration` 이 false).
+                // xterm · ghostty 와 같은 정책 — "아무것도 안 보임" 이 SGR 8 의 의미다.
+                if (raw.style_id != 0 and styles[x].flags.invisible) {
                     x += 1;
                     continue;
                 }
