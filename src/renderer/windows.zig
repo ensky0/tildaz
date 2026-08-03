@@ -1261,6 +1261,7 @@ pub const D3d11Renderer = struct {
                         self.font.ascent_px,
                         width,
                         ch,
+                        if (raw.wide == .wide) 2 else 1,
                         &deco,
                     );
                     // 셀 하나가 최대 4 개를 만들므로 남은 자리를 미리 확인한다 —
@@ -1269,11 +1270,21 @@ pub const D3d11Renderer = struct {
                         self.drawBgInstances(bg_buf[0..bg_count]);
                         bg_count = 0;
                     }
+                    // #374 — 물결은 곡선이라 가장자리 픽셀의 `cov` 가 1 미만이다.
+                    // box drawing 과 같은 처리 — 공통 `blendOverRgb` 로 셀 배경과
+                    // **미리** 합성해 알파 1.0 solid 로 그린다 (#353). `cov == 1` 인
+                    // 나머지 선은 합성 결과가 원래 색 그대로다.
+                    const deco_bg = cell_color.resolveBg(style, &raw, &colors, is_selected, is_inverse) orelse colors.background;
                     for (deco[0..dn]) |d| {
+                        const blended = ui_metrics.blendOverRgb(
+                            .{ d.color.r, d.color.g, d.color.b },
+                            .{ deco_bg.r, deco_bg.g, deco_bg.b },
+                            d.cov,
+                        );
                         bg_buf[bg_count] = .{
                             .pos = .{ fx + d.x, fy + d.y },
                             .size = .{ d.w, d.h },
-                            .color = .{ colorF(d.color.r), colorF(d.color.g), colorF(d.color.b), 1 },
+                            .color = .{ colorF(blended[0]), colorF(blended[1]), colorF(blended[2]), 1 },
                         };
                         bg_count += 1;
                     }

@@ -1,5 +1,5 @@
-//! SGR 선 속성 — `underline` (single · double) · `strikethrough` · `overline` 의
-//! 사각형 조립 (#365). 세 renderer (Linux software / macOS Metal / Windows d3d11)
+//! SGR 선 속성 — `underline` (5 종) · `strikethrough` · `overline` 의
+//! 사각형 조립 (#365 · #374). 세 renderer (Linux software / macOS Metal / Windows d3d11)
 //! 공통 정책. [`cell_color.zig`](cell_color.zig) · [`block_element.zig`](block_element.zig)
 //! 와 같은 패턴이다 — **정책은 여기 한 곳, platform 은 자기 목록에 넣는 것만.**
 //!
@@ -32,25 +32,34 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const ui_metrics = @import("../ui_metrics.zig");
 
-/// 밑줄 하나가 만들 수 있는 최대 조각 수. 점선 (#374) 이 가장 많고, 개수는
-/// `cell_w / (2 × thickness)` 로 정해진다 — 둘 다 폰트 크기에 비례하므로 **비율이
-/// 폰트 크기와 무관**하다. narrow 셀에서 4~5, **wide char 는 셀 폭이 2배라 그
-/// 2배**가 나온다 (Menlo 15pt narrow 5 · wide 10, 30pt narrow 6 · wide 12).
-/// 12 면 wide 까지 자르지 않고 들어가고, 그 이상은 [`dotCount`] 가 자른다.
-pub const MAX_UNDERLINE_PIECES = 12;
+/// 점선 · 파선의 조각 수 상한 (#374). 실제 개수는 [`pieceCount`] 가 정한다.
+pub const MAX_UNDERLINE_PIECES = 14;
 
-/// 한 셀이 만들 수 있는 최대 사각형 수 — 밑줄 조각 + 취소선 1 + 윗줄 1.
-/// 밑줄 스타일은 한 번에 하나뿐이라 이중 밑줄 (2) 은 점선 상한 안에 들어간다.
-pub const MAX_RECTS = MAX_UNDERLINE_PIECES + 2;
+/// 한 셀이 만들 수 있는 최대 사각형 수.
+///
+/// **물결 밑줄이 상한을 정한다** — 픽셀 열마다 coverage 사각형을 내므로
+/// `셀 폭 × (두께에 걸치는 행 수)` 만큼 나온다. [`box_drawing.MAX_RECTS`](../box_drawing.zig)
+/// 가 호·대각선 AA 때문에 384 를 쓰는 것과 같은 이유이고 값도 맞춘다 — 큰 폰트의
+/// wide char (셀 폭 74px × 5행) 까지 담긴다.
+pub const MAX_RECTS = 384;
 
 /// 선 하나. 좌표는 셀 좌상단 기준 상대 physical px (위 「좌표 계약」).
 pub const Rect = struct {
     x: f32,
     y: f32,
     w: f32,
-    /// 두께 (physical px). 항상 정수이고 1 이상이다.
+    /// 두께 (physical px).
     h: f32,
     color: ghostty.color.RGB,
+    /// 0~1 anti-alias coverage — [`box_drawing.Rect.cov`](../box_drawing.zig) 와
+    /// 같은 의미다. 직선 · 이중 · 점선 · 파선은 픽셀 격자에 맞아떨어져 언제나 1
+    /// (crisp) 이고, **물결만** 곡선이라 가장자리 픽셀이 1 미만이 된다.
+    ///
+    /// 호출부는 box drawing 과 똑같이 처리한다 — `ui_metrics.blendOverRgb` 로 셀
+    /// 배경과 미리 합성해 **알파 1.0 solid** 로 그린다 (#353: 합성은 공통 모듈이
+    /// 한 번만). `cov == 1` 이면 합성 결과가 `color` 그대로라 기존 선은 픽셀이
+    /// 바뀌지 않는다.
+    cov: f32 = 1,
 };
 
 /// 이 셀에 그릴 선이 있는가. 호출부가 셀을 빠르게 거르는 용도이고,
@@ -82,17 +91,12 @@ pub fn hasDecoration(style: ghostty.Style) bool {
 /// emulators, e.g. Alacritty, still render text decorations and only make the text
 /// itself invisible."* 비밀번호 입력처럼 "아무것도 안 보임" 이 SGR 8 의 의도에 가깝다.
 ///
-/// ## `curly` 만 아직 `single` 로 떨어뜨린다
+/// ## 밑줄 스타일 5 종을 모두 그린다
 ///
-/// `dotted` (`4:4`) · `dashed` (`4:5`) 는 [#374](https://github.com/ensky0/tildaz/issues/374)
-/// 로 구현했다. **`curly` (`4:3`) 만 남는다** — 사인파라 사각형으로 표현되지 않아
-/// 세 platform 의 셰이더와 CPU 래스터라이저를 모두 손대야 한다.
-///
-/// 그동안 아무것도 안 그리면 neovim 의 LSP 진단 밑줄이 **통째로 사라지므로** 최소한
-/// 직선으로는 보이게 한다. *ghostty 파서가 미지원 스타일을 `single` 로 떨어뜨리는
-/// 것과는 층위가 다르다* — 그쪽은 `4:6` 이상의 미정의 숫자에만 해당하고, `4:3` 은
-/// 파서가 `.curly` 로 정확히 넘긴 뒤 renderer 가 실제 곡선을 그린다. 우리는 파서가
-/// 준 `.curly` 를 **렌더 단계에서** 직선으로 낮추는 것이다.
+/// `single` · `double` (#365) 에 이어 `dotted` (`4:4`) · `dashed` (`4:5`) ·
+/// `curly` (`4:3`) 를 [#374](https://github.com/ensky0/tildaz/issues/374) 로
+/// 구현했다. ghostty 파서가 `4:6` 이상의 **미정의** 숫자를 `single` 로 떨어뜨리므로
+/// 이 모듈에 도달하는 값은 언제나 이 5 종 중 하나다.
 pub fn rects(
     style: ghostty.Style,
     fg: ghostty.color.RGB,
@@ -100,6 +104,10 @@ pub fn rects(
     ascent_px: f32,
     cell_w: f32,
     cell_h: f32,
+    /// 이 셀이 차지하는 격자 칸 수 — wide char (한글 · CJK) 는 2, 그 외 1.
+    /// 물결 밑줄이 파장을 narrow 셀 기준으로 유지하는 데만 쓴다 (wide 는 산 2 개).
+    /// 호출부가 이미 `raw.wide` 로 알고 있는 값이다.
+    span: usize,
     out: *[MAX_RECTS]Rect,
 ) usize {
     if (!hasDecoration(style)) return 0;
@@ -142,22 +150,33 @@ pub fn rects(
                 n += 1;
             },
 
-            // #374 — 셀을 `count` 등분해 각 구간 **중앙**에 정사각형 dot 을 놓는다.
-            // ghostty 와 같은 접근이고, 핵심은 **셀 경계 위상을 신경 쓸 필요가 없다**는
-            // 점이다: 셀 폭이 모두 같으므로 셀마다 같은 리듬이 되어 이웃 셀과 자연히
-            // 이어진다. 절대 x 좌표를 위상에 넣는 방식은 필요 없다.
+            // #374 — 점선 · 파선은 **같은 경로**다. 셀을 `count` 등분하고 각 구간의
+            // **앞 절반**을 칠한다 — 칠한 폭과 빈 폭이 같아지고, 구간 경계를 반올림해
+            // 이어 붙이므로 간격이 흔들리지 않는다. 둘의 차이는 구간 크기뿐이다
+            // (점선 `2 × 두께` → 정사각형 dot, 파선 `4 × 두께` → 그 두 배 길이).
             //
-            // ghostty 는 원을 그리고 지름을 `√2 × thickness` 로 키운다 ("otherwise
-            // dotted underlines look somewhat anemic") — 원이라 면적이 작기 때문이다.
-            // 우리는 사각형이라 `thickness` 정사각형이면 충분하다.
-            .dotted => {
-                const count = dotCount(cell_w, t);
+            // 셀 경계 위상을 따로 맞출 필요가 없다: 셀 폭이 모두 같으므로 셀마다 같은
+            // 리듬이 되어 이웃 셀과 자연히 이어진다.
+            //
+            // 처음에는 각각 다른 식을 썼는데 둘 다 고르지 않았다 (2026-08-03 실기,
+            // 사용자 지적). 점선은 dot 중심을 따로 반올림해 간격이 `4·4·3·4` 로
+            // 흔들렸고, 파선은 ghostty 식 (`dash = 셀폭/3 + 1`) 을 그대로 옮긴 탓에
+            // 셀 끝에서 잘린 조각이 다음 셀 조각과 맞붙어 `7 · 12 · 12 …` 가 됐다.
+            .dotted, .dashed => {
+                // 점선은 두께 기준으로 촘촘하게, 파선은 **셀 하나에 조각 하나**다.
+                // `4 × 두께` 로 뒀더니 15pt 셀(19px)에 2 개가 들어가 글자 한 칸에
+                // "칠·빔·칠·빔" 이 반복돼 너무 촘촘했다 (2026-08-03 실기, 사용자 지적).
+                const base_w = cell_w / @as(f32, @floatFromInt(@max(1, span)));
+                const slot_px = if (style.flags.underline == .dotted) 2 * t else base_w;
+                const count = pieceCount(cell_w, span, slot_px);
                 const slot = cell_w / @as(f32, @floatFromInt(count));
                 for (0..count) |i| {
-                    const center_x = slot * (@as(f32, @floatFromInt(i)) + 0.5);
+                    const fi: f32 = @floatFromInt(i);
+                    const x0 = @round(slot * fi);
+                    const x1 = @round(slot * (fi + 0.5));
                     out[n] = .{
-                        .x = clampX(@round(center_x - t / 2), t, cell_w),
-                        .w = t,
+                        .x = x0,
+                        .w = @max(1, @min(x1 - x0, cell_w - x0)),
                         .y = y,
                         .h = t,
                         .color = color,
@@ -166,19 +185,73 @@ pub fn rects(
                 }
             },
 
-            // #374 — ghostty 와 같은 식: `dash = 셀폭/3 + 1` 을 한 칸 걸러 놓아
-            // 셀당 2 개가 된다. 마지막 조각이 셀을 넘으면 잘라 낸다.
-            .dashed => {
-                const dash_w = @max(1, @floor(cell_w / 3) + 1);
-                var x: f32 = 0;
-                while (x < cell_w and n < MAX_RECTS) : (x += 2 * dash_w) {
-                    out[n] = .{ .x = x, .w = @min(dash_w, cell_w - x), .y = y, .h = t, .color = color };
-                    n += 1;
+            // #374 — 물결. 셀 하나에 **산 하나** (x=0 바닥 → 중앙 꼭대기 → x=셀폭
+            // 바닥) 를 넣는다. 이웃 셀이 같은 모양이라 셀 경계가 골이 되어 물결로
+            // 이어진다 — 점선 · 파선과 같은 원리라 절대 x 좌표가 필요 없다.
+            // wide char 는 셀 폭이 2배라 산을 2 개 넣어 파장을 narrow 와 맞춘다.
+            //
+            // **픽셀 열마다 coverage 사각형을 낸다** — [`box_drawing`](../box_drawing.zig)
+            // 이 호 · 대각선에 쓰는 방식 그대로다. 처음에는 굵은 계단 7 조각으로
+            // 근사했는데, 15pt 에서 반올림 후 실질 진폭이 3px 까지 줄어 거의 직선처럼
+            // 뭉개졌다 (2026-08-03 실기 비교 — ghostty · kitty · Alacritty 는 매끈한
+            // 사인파). 세로 AA 를 넣으면서 진폭도 ghostty 와 같은 `파장 / π` 로 올린다.
+            //
+            // `shade` 셰이더 채널을 쓰지 않는 이유는 그대로다 — 그쪽은 `discard` 이진
+            // 마스크라 **AA 가 아예 안 되고**, 셰이더 네 곳 (Metal · HLSL · Linux CPU ·
+            // Linux GL) 에 정점 구조와 varying 까지 손대야 한다.
+            .curly => {
+                const cycles: f32 = @floatFromInt(@max(1, span));
+                const wave_len = cell_w / cycles;
+                // ghostty 는 `파장 / π` (≈0.32×파장) 를 쓰지만 실기에서 나란히 보니
+                // 우리가 가장 출렁였다 — 물결 밴드가 TildaZ 8px · Alacritty 7px ·
+                // kitty 6px 였다 (2026-08-03, Menlo 15pt @2x). 밑줄은 정보 전달이지
+                // 장식이 아니라서 Alacritty 쪽으로 낮춘다 (사용자 선택).
+                const amp = wave_len * ui_metrics.CURLY_AMPLITUDE_RATIO;
+                // 파형 전체 (진폭 + 두께) 가 셀 안에 들어오도록 기준선을 당긴다.
+                // `mid` 는 **선의 중심**이 지나는 가장 높은 y (산꼭대기) 다.
+                const mid = @min(ascent_px + gap + t / 2, cell_h - amp - t / 2);
+                var px: f32 = 0;
+                while (px < cell_w and n + 3 <= MAX_RECTS) : (px += 1) {
+                    // 열 중앙에서 곡선의 중심 y. 파장마다 위상이 되풀이된다.
+                    //
+                    // **raised cosine 이어야 한다.** `sin(π·phase)` 를 쓰면 양 끝
+                    // (셀 경계) 에서 기울기가 최대라 골이 뾰족한 `V` 가 되고, 산만
+                    // 도드라져 `∩∩∩` 으로 보인다 (2026-08-03 실기에서 사용자 지적).
+                    // `(1 − cos(2π·phase)) / 2` 는 phase 0 · 0.5 · 1 **세 곳 모두
+                    // 접선이 수평**이라 이웃 셀과 만나는 지점이 둥근 골이 되어 `∿∿∿`
+                    // 이 된다. ghostty 가 베지어 제어점을 시작·끝점과 같은 y 에 둬서
+                    // (`curveTo(center*r, bottom, …)`) 얻는 모양과 같다.
+                    //
+                    // **셀 경계가 산, 중앙이 골이다** (`rise` 를 그대로 더한다).
+                    // 반대로 두면 (경계가 골, 중앙이 산) 물결이 밑줄 자리에서
+                    // *올라가며* 시작해 불안정해 보인다 — Alacritty 처럼 baseline 에
+                    // 가까운 높이에서 시작해 중앙으로 처지는 쪽이 글자와의 거리가
+                    // 일정하게 느껴진다 (2026-08-03 실기 비교, 사용자 지적).
+                    const phase = @mod(px + 0.5, wave_len) / wave_len;
+                    const rise = (1 - @cos(2 * std.math.pi * phase)) / 2;
+                    const cy = mid + amp * rise;
+                    const y_top = cy - t / 2;
+                    const y_bot = cy + t / 2;
+
+                    // 한 열은 **최대 3 조각**이다 — 위 가장자리(부분) · 가운데(완전)
+                    // · 아래 가장자리(부분). 완전히 덮인 행을 하나로 합치지 않고
+                    // 행마다 내면 두꺼운 선에서 조각이 몇 배로 늘어난다.
+                    const top_row = @floor(y_top);
+                    const bot_row = @floor(y_bot);
+                    if (top_row == bot_row) {
+                        emitCov(out, &n, px, top_row, 1, y_bot - y_top, cell_h, color);
+                    } else {
+                        emitCov(out, &n, px, top_row, 1, top_row + 1 - y_top, cell_h, color);
+                        const solid_h = bot_row - (top_row + 1);
+                        if (solid_h > 0) {
+                            emitCov(out, &n, px, top_row + 1, solid_h, 1, cell_h, color);
+                        }
+                        emitCov(out, &n, px, bot_row, 1, y_bot - bot_row, cell_h, color);
+                    }
                 }
             },
 
-            // `single` 과 아직 미지원인 `curly` 가 여기로 온다 (아래 주석).
-            .single, .curly => {
+            .single => {
                 out[n] = .{ .x = 0, .w = cell_w, .y = y, .h = t, .color = color };
                 n += 1;
             },
@@ -188,24 +261,43 @@ pub fn rects(
     return n;
 }
 
-/// 점선의 dot 개수. dot 과 그 사이 공백이 같은 폭이 되도록 주기를 `2 × thickness`
-/// 로 잡는다. `cell_w` 와 `thickness` 가 둘 다 폰트 크기에 비례하므로 결과는 폰트
-/// 크기와 거의 무관하고, wide char 는 셀 폭이 2배라 개수도 2배가 된다 (같은 밀도).
-fn dotCount(cell_w: f32, thickness: f32) usize {
-    const raw = @round(cell_w / (2 * thickness));
-    if (!(raw >= 1)) return 1; // NaN · 0 · 음수 방어
-    return @min(@as(usize, @intFromFloat(raw)), MAX_UNDERLINE_PIECES);
+/// 물결의 조각 하나. 셀 밖으로 나가거나 coverage 가 무시할 만큼 작으면 버린다.
+/// [`box_drawing`](../box_drawing.zig) 의 AA 헬퍼가 `cov <= 0.02` 를 버리는 것과
+/// 같은 기준이다.
+fn emitCov(
+    out: *[MAX_RECTS]Rect,
+    n: *usize,
+    x: f32,
+    y: f32,
+    h: f32,
+    cov: f32,
+    cell_h: f32,
+    color: ghostty.color.RGB,
+) void {
+    if (n.* >= MAX_RECTS) return;
+    if (cov <= 0.02 or h <= 0) return;
+    if (y < 0 or y + h > cell_h) return;
+    out[n.*] = .{ .x = x, .y = y, .w = 1, .h = h, .color = color, .cov = @min(1, cov) };
+    n.* += 1;
+}
+
+/// 점선 · 파선의 조각 수. 셀을 이 수만큼 등분해 각 구간의 앞 절반을 칠한다.
+///
+/// **wide char 는 narrow 의 정확히 2 배**가 되도록 base 셀 기준으로 세고 `span` 을
+/// 곱한다 — 그냥 `round(셀폭 / slot)` 하면 반올림 때문에 2 배가 깨진다 (slot 8 일 때
+/// narrow 19 → 2 지만 wide 38 → 5). 밀도가 어긋나면 한글 구간에서 리듬이 달라진다.
+fn pieceCount(cell_w: f32, span: usize, slot: f32) usize {
+    const sp = @max(1, span);
+    const base = cell_w / @as(f32, @floatFromInt(sp));
+    const raw = @round(base / slot);
+    const per: usize = if (!(raw >= 1)) 1 else @intFromFloat(raw);
+    return @max(1, @min(per * sp, MAX_UNDERLINE_PIECES));
 }
 
 /// 선이 셀 밖으로 나가지 않게 가둔다. 아래로 넘치면 셀 바닥에 붙이고, 셀이 두께보다
 /// 얇은 극단(작은 폰트 + 큰 두께)에서는 0 으로 떨어뜨려 음수 좌표를 만들지 않는다.
 fn clampY(y: f32, h: f32, cell_h: f32) f32 {
     return @max(0, @min(y, cell_h - h));
-}
-
-/// [`clampY`] 의 가로 판.
-fn clampX(x: f32, w: f32, cell_w: f32) f32 {
-    return @max(0, @min(x, cell_w - w));
 }
 
 // --- tests (순수 로직 — 세 platform 이 같은 값을 쓴다) ---
@@ -221,7 +313,7 @@ const H: f32 = 17.0;
 
 fn collect(style: ghostty.Style) struct { n: usize, r: [MAX_RECTS]Rect } {
     var out: [MAX_RECTS]Rect = undefined;
-    const n = rects(style, test_fg, &test_palette, A, W, H, &out);
+    const n = rects(style, test_fg, &test_palette, A, W, H, 1, &out);
     return .{ .n = n, .r = out };
 }
 
@@ -252,64 +344,146 @@ test "double 밑줄 — 단일 자리를 비우고 위아래로 두께만큼 (gh
     try std.testing.expectEqual(got.r[0].y + 2 * got.r[0].h, got.r[1].y);
 }
 
-test "#374 curly 는 아직 single 로 떨어진다 — 밑줄이 통째로 사라지지 않게" {
-    const single = collect(.{ .flags = .{ .underline = .single } });
-    const curly = collect(.{ .flags = .{ .underline = .curly } });
-    try std.testing.expectEqual(@as(usize, 1), curly.n);
-    try std.testing.expectEqual(single.r[0].y, curly.r[0].y);
-    try std.testing.expectEqual(single.r[0].w, curly.r[0].w);
+/// 물결의 각 픽셀 열에서 coverage 무게중심 y 를 구한다 — 계단이 아니라 **연속
+/// 곡선**인지 검사하는 데 쓴다.
+fn waveCenters(r: []const Rect, cell_w: f32) [64]f32 {
+    var sum: [64]f32 = @splat(0);
+    var wsum: [64]f32 = @splat(0);
+    for (r) |d| {
+        const col: usize = @intFromFloat(d.x);
+        if (col >= 64 or d.x >= cell_w) continue;
+        // 면적 = 높이 × coverage. 가운데 solid 조각은 높이가 1 보다 클 수 있다.
+        const weight = d.cov * d.h;
+        sum[col] += (d.y + d.h / 2) * weight;
+        wsum[col] += weight;
+    }
+    var out: [64]f32 = @splat(0);
+    for (0..64) |i| out[i] = if (wsum[i] > 0) sum[i] / wsum[i] else 0;
+    return out;
 }
 
-test "#374 dotted — 셀을 등분해 각 구간 중앙에 정사각형 dot" {
-    const got = collect(.{ .flags = .{ .underline = .dotted } });
-    // t = 1, cell_w = 8 → count = round(8 / 2) = 4. 구간 폭 2, 중앙 1·3·5·7.
-    try std.testing.expectEqual(@as(usize, 4), got.n);
-    const single_y = collect(.{ .flags = .{ .underline = .single } }).r[0].y;
-    for (got.r[0..got.n], 0..) |d, i| {
-        // 모든 dot 이 직선 밑줄과 같은 높이에 정사각형으로 놓인다.
-        try std.testing.expectEqual(single_y, d.y);
-        try std.testing.expectEqual(@as(f32, 1), d.h);
+test "#374 curly — 픽셀 열마다 coverage 로 AA 하고 셀 전체를 덮는다" {
+    const got = collect(.{ .flags = .{ .underline = .curly } });
+    try std.testing.expect(got.n > 0);
+
+    // 모든 열이 빠짐없이 채워진다 — 한 열이라도 비면 물결이 끊겨 보인다.
+    var seen: [64]bool = @splat(false);
+    for (got.r[0..got.n]) |d| {
+        try std.testing.expect(d.cov > 0 and d.cov <= 1);
         try std.testing.expectEqual(@as(f32, 1), d.w);
-        // 등간격 — i 번째 구간의 중앙.
-        try std.testing.expectEqual(@as(f32, @floatFromInt(1 + 2 * i)), d.x);
-        // 셀 밖으로 나가지 않는다.
-        try std.testing.expect(d.x >= 0 and d.x + d.w <= W);
+        try std.testing.expect(d.h >= 1);
+        try std.testing.expect(d.x >= 0 and d.x < W);
+        seen[@intFromFloat(d.x)] = true;
+    }
+    for (0..@as(usize, @intFromFloat(W))) |i| try std.testing.expect(seen[i]);
+
+    // **AA 가 실제로 걸린다** — 곡선이라 부분 coverage 픽셀이 반드시 생긴다.
+    var has_partial = false;
+    for (got.r[0..got.n]) |d| {
+        if (d.cov < 0.98) has_partial = true;
+    }
+    try std.testing.expect(has_partial);
+}
+
+test "#374 curly — 셀 경계가 산 · 중앙이 골이고 좌우 대칭이라 이웃 셀과 이어진다" {
+    const got = collect(.{ .flags = .{ .underline = .curly } });
+    const c = waveCenters(got.r[0..got.n], W);
+    const last: usize = @as(usize, @intFromFloat(W)) - 1;
+    const mid = last / 2;
+
+    // 가운데가 가장 **낮다** (y 는 아래로 증가) — 경계에서 시작해 중앙으로 처진다.
+    // 반대로 두면 밑줄 자리에서 올라가며 시작해 불안정해 보인다 (사용자 지적).
+    try std.testing.expect(c[mid] > c[0]);
+    try std.testing.expect(c[mid] > c[last]);
+    // 좌우 대칭 — 셀 경계 양쪽이 같은 높이라야 이웃과 매끄럽게 만난다.
+    try std.testing.expectApproxEqAbs(c[0], c[last], 0.35);
+
+    // **진폭이 살아 있다** — 계단 근사 때 15pt 에서 3px 까지 줄어 직선처럼 보였다.
+    // 열 **중앙**에서 재므로 끝 열의 위상이 0 이 아니라 `0.5 / 셀폭` 이고 그만큼
+    // 관측값이 작게 나온다. 그 손실을 감안한 하한이다.
+    try std.testing.expect(c[mid] - c[0] > W * ui_metrics.CURLY_AMPLITUDE_RATIO * 0.7);
+
+    // 연속 곡선이다 — 이웃 열의 중심 차이가 1px 을 크게 넘지 않는다.
+    for (0..last) |i| try std.testing.expect(@abs(c[i + 1] - c[i]) <= 1.5);
+}
+
+test "#374 curly — wide char 는 산 2 개로 파장을 narrow 와 맞춘다" {
+    var narrow: [MAX_RECTS]Rect = undefined;
+    var wide: [MAX_RECTS]Rect = undefined;
+    const style = ghostty.Style{ .flags = .{ .underline = .curly } };
+    const n_narrow = rects(style, test_fg, &test_palette, A, W, H, 1, &narrow);
+    const n_wide = rects(style, test_fg, &test_palette, A, 2 * W, H, 2, &wide);
+
+    const cn = waveCenters(narrow[0..n_narrow], W);
+    const cw = waveCenters(wide[0..n_wide], 2 * W);
+    const wi: usize = @intFromFloat(W);
+    // wide 의 앞 절반과 뒤 절반이 narrow 와 같은 파형 = 파장이 같다.
+    for (0..wi) |i| {
+        try std.testing.expectApproxEqAbs(cn[i], cw[i], 0.01);
+        try std.testing.expectApproxEqAbs(cn[i], cw[i + wi], 0.01);
     }
 }
 
-test "#374 dotted — wide char 는 셀 폭이 2배라 dot 도 2배 (같은 밀도)" {
+test "#374 curly — 파형 전체가 셀 안에 들어간다 (진폭 + 두께)" {
+    var out: [MAX_RECTS]Rect = undefined;
+    // descent 가 거의 없어 baseline 이 셀 바닥에 붙은 극단.
+    inline for (.{ .{ A, H }, .{ 20.0, 20.0 }, .{ 56.0, 77.0 } }) |c| {
+        const n = rects(.{ .flags = .{ .underline = .curly } }, test_fg, &test_palette, c[0], W, c[1], 1, &out);
+        for (out[0..n]) |r| {
+            try std.testing.expect(r.y >= 0);
+            try std.testing.expect(r.y + r.h <= c[1]);
+        }
+    }
+}
+
+test "#374 dotted · dashed — 칠한 폭과 빈 폭이 같고 간격이 균일하다" {
+    // W=8, t=1. 점선 slot=2 → 4 조각 [0,1) [2,3) [4,5) [6,7).
+    //          파선 slot=셀폭 → 1 조각 [0,4), 나머지 [4,8) 은 빈칸.
+    const cases = [_]struct { kind: @TypeOf(@as(ghostty.Style, undefined).flags.underline), n: usize, w: f32, pitch: f32 }{
+        .{ .kind = .dotted, .n = 4, .w = 1, .pitch = 2 },
+        .{ .kind = .dashed, .n = 1, .w = 4, .pitch = 8 },
+    };
+    for (cases) |c| {
+        const got = collect(.{ .flags = .{ .underline = c.kind } });
+        try std.testing.expectEqual(c.n, got.n);
+        const single_y = collect(.{ .flags = .{ .underline = .single } }).r[0].y;
+        for (got.r[0..got.n], 0..) |d, i| {
+            try std.testing.expectEqual(single_y, d.y); // 직선 밑줄과 같은 높이
+            // **모든 조각의 길이가 같다** — 이게 얼룩덜룩함의 원인이었다.
+            try std.testing.expectEqual(c.w, d.w);
+            // **등간격** — 구간 경계를 반올림해 이어 붙이므로 pitch 가 일정하다.
+            try std.testing.expectEqual(c.pitch * @as(f32, @floatFromInt(i)), d.x);
+            try std.testing.expect(d.x >= 0 and d.x + d.w <= W);
+        }
+        // 칠한 폭 == 빈 폭.
+        try std.testing.expectEqual(c.w, c.pitch - c.w);
+        // 셀 경계에서도 리듬이 이어진다 — 마지막 조각 끝에서 셀 끝까지 남은 빈 폭이
+        // 조각 폭과 같아야, 다음 셀 첫 조각과의 간격이 셀 안 간격과 같아진다.
+        const last = got.r[got.n - 1];
+        try std.testing.expectEqual(c.w, W - (last.x + last.w));
+    }
+}
+
+test "#374 dotted · dashed — wide char 는 조각 수가 정확히 2 배 (같은 밀도)" {
     var narrow: [MAX_RECTS]Rect = undefined;
     var wide: [MAX_RECTS]Rect = undefined;
-    const style = ghostty.Style{ .flags = .{ .underline = .dotted } };
-    const n_narrow = rects(style, test_fg, &test_palette, A, W, H, &narrow);
-    const n_wide = rects(style, test_fg, &test_palette, A, 2 * W, H, &wide);
-    try std.testing.expectEqual(n_narrow * 2, n_wide);
-    // 밀도가 같다 — wide 의 dot 간격이 narrow 와 같아야 셀 경계에서 리듬이 안 깨진다.
-    try std.testing.expectEqual(narrow[1].x - narrow[0].x, wide[1].x - wide[0].x);
-}
-
-test "#374 dotted — 개수는 MAX_UNDERLINE_PIECES 를 넘지 않는다" {
-    var out: [MAX_RECTS]Rect = undefined;
-    // 비현실적으로 넓은 셀 — 상한이 걸려야 버퍼가 넘치지 않는다.
-    const n = rects(.{ .flags = .{ .underline = .dotted } }, test_fg, &test_palette, A, 4000, H, &out);
-    try std.testing.expectEqual(@as(usize, MAX_UNDERLINE_PIECES), n);
-    // 셀이 두께보다 좁은 극단에서도 최소 1 개.
-    const n_tiny = rects(.{ .flags = .{ .underline = .dotted } }, test_fg, &test_palette, A, 1, H, &out);
-    try std.testing.expectEqual(@as(usize, 1), n_tiny);
-}
-
-test "#374 dashed — 한 칸 걸러 놓아 셀당 2 개, 마지막은 셀 폭에서 잘린다" {
-    const got = collect(.{ .flags = .{ .underline = .dashed } });
-    // dash_w = floor(8/3) + 1 = 3 → x = 0(w 3), x = 6(w min(3, 2) = 2).
-    try std.testing.expectEqual(@as(usize, 2), got.n);
-    try std.testing.expectEqual(@as(f32, 0), got.r[0].x);
-    try std.testing.expectEqual(@as(f32, 3), got.r[0].w);
-    try std.testing.expectEqual(@as(f32, 6), got.r[1].x);
-    try std.testing.expectEqual(@as(f32, 2), got.r[1].w);
-    // 두 조각 사이가 비어야 "파선" 이다.
-    try std.testing.expect(got.r[0].x + got.r[0].w < got.r[1].x);
-    // 셀 밖으로 나가지 않는다.
-    for (got.r[0..got.n]) |d| try std.testing.expect(d.x + d.w <= W);
+    inline for (.{ .dotted, .dashed }) |kind| {
+        const style = ghostty.Style{ .flags = .{ .underline = kind } };
+        const n_narrow = rects(style, test_fg, &test_palette, A, W, H, 1, &narrow);
+        const n_wide = rects(style, test_fg, &test_palette, A, 2 * W, H, 2, &wide);
+        // 반올림 때문에 `round(2w/slot) != 2·round(w/slot)` 이 될 수 있어 `pieceCount`
+        // 가 base 셀 기준으로 세고 span 을 곱한다. 그 계약을 고정한다.
+        try std.testing.expectEqual(n_narrow * 2, n_wide);
+        // 간격과 조각 폭이 같다 — 한글 구간에서 리듬이 달라지지 않는다. 파선은
+        // narrow 가 1 조각이라 pitch 를 잴 수 없으므로 폭으로 확인한다.
+        try std.testing.expectEqual(narrow[0].w, wide[0].w);
+        if (n_narrow >= 2) {
+            try std.testing.expectEqual(narrow[1].x - narrow[0].x, wide[1].x - wide[0].x);
+        } else {
+            // 셀당 1 조각이면 wide 의 두 조각 간격이 base 셀 폭과 같아야 한다.
+            try std.testing.expectEqual(W, wide[1].x - wide[0].x);
+        }
+    }
 }
 
 test "#374 점선·파선도 underline_color 를 따르고 취소선·윗줄과 공존한다" {
@@ -376,7 +550,7 @@ test "선은 셀을 벗어나지 않는다 — 큰 폰트·얇은 셀 경계" {
     // descent 가 거의 없어 baseline 이 셀 바닥에 붙은 극단. double 의 아래 선이
     // 밖으로 나가려 하므로 기준선이 당겨진다.
     var out: [MAX_RECTS]Rect = undefined;
-    inline for (.{ .double, .dotted, .dashed, .single }) |kind| {
+    inline for (.{ .double, .dotted, .dashed, .curly, .single }) |kind| {
         const n = rects(
             .{ .flags = .{ .underline = kind, .strikethrough = true, .overline = true } },
             test_fg,
@@ -384,6 +558,7 @@ test "선은 셀을 벗어나지 않는다 — 큰 폰트·얇은 셀 경계" {
             20.0, // ascent
             10.0, // cell_w
             20.0, // cell_h — baseline 이 곧 셀 바닥
+            1,
             &out,
         );
         for (out[0..n]) |r| {
@@ -406,30 +581,57 @@ test "두께는 폰트가 커지면 함께 굵어지고 항상 정수다" {
     };
     for (cases) |c| {
         var out: [MAX_RECTS]Rect = undefined;
-        const n = rects(.{ .flags = .{ .underline = .single } }, test_fg, &test_palette, c.ascent, c.ascent * 0.6, c.ascent * 1.3, &out);
+        const n = rects(.{ .flags = .{ .underline = .single } }, test_fg, &test_palette, c.ascent, c.ascent * 0.6, c.ascent * 1.3, 1, &out);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(c.expect_t, out[0].h);
         try std.testing.expectEqual(out[0].h, @round(out[0].h));
     }
 }
 
-test "MAX_RECTS 는 실제 최대치를 담는다 — 점선이 상한을 정한다" {
+test "MAX_RECTS — 가장 큰 조합에서도 넘치지 않는다" {
     var out: [MAX_RECTS]Rect = undefined;
-    // 가장 많이 나오는 조합 = 점선(상한) + 취소선 + 윗줄. 넘치면 버퍼가 깨진다.
-    const n = rects(
+    // 가장 많이 나오는 조합 = wide 물결 + 취소선 + 윗줄. 열마다 최대 3 조각이다.
+    // 28pt @2x 의 wide 셀 (74 × 77, ascent 56) — 실사용 중 큰 축에 속한다.
+    const n_big = rects(
+        .{ .flags = .{ .underline = .curly, .strikethrough = true, .overline = true } },
+        test_fg,
+        &test_palette,
+        56,
+        74,
+        77,
+        2, // wide
+        &out,
+    );
+    try std.testing.expect(n_big <= MAX_RECTS);
+    try std.testing.expect(n_big > 74); // 열마다 최소 한 조각은 나온다
+
+    // 상한을 넘길 만큼 극단적인 셀에서도 버퍼를 넘지 않는다 (잘릴 뿐).
+    const n_huge = rects(
+        .{ .flags = .{ .underline = .curly, .strikethrough = true, .overline = true } },
+        test_fg,
+        &test_palette,
+        200,
+        400,
+        280,
+        2,
+        &out,
+    );
+    try std.testing.expect(n_huge <= MAX_RECTS);
+
+    // 점선은 상한에 걸려도 그 안에 들어간다.
+    const n_dot = rects(
         .{ .flags = .{ .underline = .dotted, .strikethrough = true, .overline = true } },
         test_fg,
         &test_palette,
         A,
         4000, // dotCount 가 상한에 걸리는 넓은 셀
         H,
+        1,
         &out,
     );
-    try std.testing.expectEqual(@as(usize, MAX_RECTS), n);
-    try std.testing.expectEqual(@as(usize, MAX_UNDERLINE_PIECES + 2), MAX_RECTS);
+    try std.testing.expect(n_dot <= MAX_RECTS);
 
-    // 이중 밑줄(2)은 점선 상한 안에 들어가므로 별도 여유가 필요 없다.
-    try std.testing.expect(MAX_UNDERLINE_PIECES >= 2);
+    // 이중 밑줄(2)은 상한 안에 들어가므로 별도 여유가 필요 없다.
     const dbl = collect(.{ .flags = .{ .underline = .double, .strikethrough = true, .overline = true } });
     try std.testing.expectEqual(@as(usize, 4), dbl.n);
 }

@@ -786,15 +786,26 @@ pub const Renderer = struct {
                         @floatFromInt(ascent),
                         @floatFromInt(cell_w),
                         @floatFromInt(ch),
+                        if (raw.wide == .wide) 2 else 1,
                         &deco,
                     );
+                    // #374 — 물결은 곡선이라 가장자리 픽셀의 `cov` 가 1 미만이다.
+                    // box drawing 과 같은 처리 — 공통 `blendOverRgb` 로 셀 배경과
+                    // **미리** 합성해 불투명 rect 로 그린다 (#353). `cov == 1` 인
+                    // 나머지 선은 합성 결과가 원래 색 그대로다.
+                    const deco_bg = resolveBg(style, &raw, &colors, is_selected);
                     for (deco[0..dn]) |d| {
+                        const blended = ui_metrics.blendOverRgb(
+                            .{ d.color.r, d.color.g, d.color.b },
+                            .{ deco_bg.r, deco_bg.g, deco_bg.b },
+                            d.cov,
+                        );
                         self.layer.cell_bg.append(allocator, .{
                             .x = cell_x + @as(i32, @intFromFloat(d.x)),
                             .y = cell_y + @as(i32, @intFromFloat(d.y)),
                             .w = @intFromFloat(d.w),
                             .h = @intFromFloat(d.h),
-                            .color = d.color,
+                            .color = .{ .r = blended[0], .g = blended[1], .b = blended[2] },
                         }) catch {};
                     }
                 }
