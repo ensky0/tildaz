@@ -10,7 +10,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 
 test "aggregate root imports every common and native-host test module" {
-    // Cross-platform modules (31 files).
+    // Cross-platform modules (32 files).
     _ = @import("about.zig");
     _ = @import("box_drawing.zig");
     _ = @import("chrome_palette.zig");
@@ -35,6 +35,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("root.zig");
     _ = @import("scrollbar.zig");
     _ = @import("session_core.zig");
+    _ = @import("shell_integration.zig");
     _ = @import("shortcut_sync.zig");
     _ = @import("tab_icons.zig");
     _ = @import("tab_interaction.zig");
