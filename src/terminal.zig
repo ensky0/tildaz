@@ -43,7 +43,30 @@ pub const Options = struct {
     /// COLORFGBG / WSLENV (Windows) / 그 외 platform 자동 inject 와는 별개로
     /// 합쳐짐.
     extra_env: ?[]const ExtraEnv = null,
+    /// 셸의 시작 디렉토리 (#366). `null` 이면 홈 — [#265](https://github.com/ensky0/tildaz/issues/265)
+    /// 로 정한 기존 동작이다. 값이 있어도 그 경로로 시작하지 못하면 각 backend 가
+    /// 홈으로 열화한다 (경로가 spawn 직전에 사라질 수 있다).
+    ///
+    /// 표기는 **탭의 셸 기준**이다 — WSL 탭은 host 가 Windows 여도 Linux 경로다
+    /// (`isWslShell` 참조).
+    cwd: ?[]const u8 = null,
 };
+
+/// 이 셸 커맨드가 WSL 탭인지. WSL 안 셸은 Linux 경로를 보고하고 새 탭도
+/// `wsl --cd <Linux 경로>` 로 받으므로, OSC 7 경로의 표기 방식이 host OS 와 다르다
+/// (#366). Windows 아닌 platform 은 항상 false.
+///
+/// comptime 으로 고르는 이유: Windows 구현은 `wsl.exe` 명령줄 토큰을 UTF-16 으로
+/// 훑는 코드라 다른 platform 에서는 컴파일 자체가 안 된다 (`TerminalBackend` 와 같은
+/// 패턴).
+pub const isWslShell = if (builtin.os.tag == .windows)
+    @import("terminal/windows/pty.zig").isWslCommand
+else
+    struct {
+        fn notWsl(_: ShellCommand) bool {
+            return false;
+        }
+    }.notWsl;
 
 pub const TerminalBackend = switch (builtin.os.tag) {
     .windows => @import("terminal/windows.zig").Backend,
@@ -57,6 +80,10 @@ const UnsupportedTerminalBackend = struct {
     }
 
     pub fn deinit(_: *UnsupportedTerminalBackend) void {}
+
+    pub fn childPid(_: *UnsupportedTerminalBackend) i32 {
+        return 0;
+    }
 
     pub fn write(_: *UnsupportedTerminalBackend, _: []const u8) !usize {
         return error.UnsupportedTerminalBackend;

@@ -8,6 +8,9 @@ const terminal_interaction = @import("terminal_interaction.zig");
 const themes = @import("themes.zig");
 const perf = @import("perf.zig");
 const log = @import("log.zig");
+const pwd_uri = @import("pwd_uri.zig");
+const local_hostname = @import("local_hostname.zig");
+const process_cwd = @import("process_cwd.zig");
 
 /// Lock-free 링버퍼 (단일 생산자, 단일 소비자)
 const RingBuffer = struct {
@@ -247,6 +250,7 @@ pub const Tab = struct {
         max_scroll_lines: usize,
         theme: ?*const themes.Theme,
         extra_env: ?[]const terminal.ExtraEnv,
+        cwd: ?[]const u8,
         tab_exit_fn: SessionCore.TabExitNotify,
         tab_exit_userdata: ?*anyopaque,
     ) !*Tab {
@@ -287,6 +291,7 @@ pub const Tab = struct {
             .rows = rows,
             .shell = shell,
             .extra_env = extra_env,
+            .cwd = cwd,
         });
         errdefer backend.deinit();
         const title_clock = try std.time.Timer.start();
@@ -650,7 +655,72 @@ pub const SessionCore = struct {
         self.tabs.deinit(self.allocator);
     }
 
+    /// 새 탭이 물려받을 시작 디렉토리 (#366). 활성 탭의 셸이 OSC 7 로 알린 위치를
+    /// 쓴다. 값이 없거나 (셸이 OSC 7 을 안 보냄 / tmux 안이라 흡수됨 / ssh 원격
+    /// 경로라 거부됨) 그리로 들어갈 수 없으면 `null` — 각 backend 가 홈에서 시작한다
+    /// ([#265](https://github.com/ensky0/tildaz/issues/265) 의 기존 동작).
+    ///
+    /// 반환 slice 는 `buf` 안을 가리키므로 호출자의 `buf` 가 살아 있는 동안만 유효하다.
+    fn inheritedCwd(self: *SessionCore, buf: []u8) ?[]const u8 {
+        // 첫 탭은 물려받을 곳이 없다.
+        if (self.tabs.items.len == 0 or self.active_tab >= self.tabs.items.len) return null;
+        const tab = self.tabs.items[self.active_tab];
+
+        // 경로 표기는 **탭의 셸 기준** — WSL 탭은 host 가 Windows 여도 Linux 경로다.
+        const wsl = terminal.isWslShell(self.shell_command);
+        const style: pwd_uri.Style = if (builtin.os.tag == .windows and !wsl) .windows else .posix;
+
+        // ① 셸이 OSC 7 로 알린 위치. 셸의 논리 경로 (`$PWD`) 라 symlink 를 따라 들어간
+        //    사용자의 기대에 맞으므로 ② 보다 우선한다.
+        if (tab.terminal.getPwd()) |payload| {
+            var host_buf: [local_hostname.max_len]u8 = undefined;
+            const hostname = local_hostname.get(&host_buf);
+            if (pwd_uri.parse(payload, buf, .{ .hostname = hostname, .style = style })) |path| {
+                if (usableDir(path, wsl)) {
+                    log.appendLine("cwd", "새 탭 시작 위치 = {s} (셸이 알림)", .{path});
+                    return path;
+                }
+                log.appendLine("cwd", "셸이 알린 위치로 갈 수 없음. path={s}", .{path});
+            } else {
+                // 다른 머신 (ssh) 이거나 표기가 이 탭의 셸과 안 맞는 경우.
+                log.appendLine(
+                    "cwd",
+                    "셸이 알린 위치를 쓸 수 없음. payload={s} style={s} hostname={s}",
+                    .{ payload, @tagName(style), hostname },
+                );
+            }
+        }
+
+        // ② 셸이 알려주지 않으면 OS 에 직접 묻는다 (Linux · macOS 만 — Windows 는 항상
+        //    null 이라 OSC 7 주입에 의존한다). 셸 종류 / rc 구성과 무관하게 동작한다.
+        if (process_cwd.ofPid(tab.backend.childPid(), buf)) |path| {
+            if (usableDir(path, wsl)) {
+                log.appendLine("cwd", "새 탭 시작 위치 = {s} (프로세스 조회)", .{path});
+                return path;
+            }
+        }
+
+        log.appendLine("cwd", "물려받을 위치가 없어 홈에서 시작", .{});
+        return null;
+    }
+
+    /// 시작 디렉토리로 실제 쓸 수 있는지. `access` 는 **파일도 통과시켜** spawn 이
+    /// `ENOTDIR` 로 실패하므로 디렉토리로 열어 본다.
+    ///
+    /// WSL 탭만 예외로 확인 없이 통과시킨다 — 보고된 Linux 경로를 Windows 쪽에서 확인할
+    /// 방법이 없어서 `wsl --cd` 에 위임한다. 그 경로가 없으면 wsl 이 에러 한 줄을 찍고
+    /// 셸은 정상적으로 뜬다 (Windows 실기 확인, #366).
+    fn usableDir(path: []const u8, wsl: bool) bool {
+        if (builtin.os.tag == .windows and wsl) return true;
+        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
+        dir.close();
+        return true;
+    }
+
     pub fn createTab(self: *SessionCore, cols: u16, rows: u16) !void {
+        var cwd_buf: [pwd_uri.max_path_len]u8 = undefined;
+        const cwd = self.inheritedCwd(&cwd_buf);
+
         const tab = try Tab.init(
             self.allocator,
             cols,
@@ -659,6 +729,7 @@ pub const SessionCore = struct {
             self.max_scroll_lines,
             self.theme,
             self.extra_env,
+            cwd,
             self.tab_exit_fn,
             self.tab_exit_userdata,
         );
@@ -1186,6 +1257,68 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
         try std.testing.expect(session.tabAt(0).?.title_len > 0);
         try std.testing.expect(session.tabAt(1).?.title_len > 0);
         std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+}
+
+test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내려간다 (#366)" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    var session = SessionCore.init(
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+    try session.createTab(80, 24);
+
+    var cwd_buf: [pwd_uri.max_path_len]u8 = undefined;
+
+    // `/bin/sh` 는 OSC 7 을 보내지 않지만, POSIX 는 프로세스 조회 fallback 이 있어서
+    // 셸의 현재 위치를 얻는다. 구체적인 값은 spawn 타이밍 (자식이 `chdir` 하기 전일
+    // 수 있다) 에 따라 홈이거나 앱의 위치라 단정하지 않고, **절대 경로가 나온다**는
+    // 것만 본다.
+    {
+        const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
+        try std.testing.expect(std.fs.path.isAbsolute(probed));
+    }
+
+    // host 는 조회한 값을 그대로 써서 파서의 host 검사를 실제로 통과시킨다. 조회가
+    // 실패해 빈 문자열이면 `file:///…` 형태가 되고 그것도 수락 대상이다.
+    var host_buf: [local_hostname.max_len]u8 = undefined;
+    const host = local_hostname.get(&host_buf);
+    var payload: [local_hostname.max_len + 64]u8 = undefined;
+
+    const tab = session.tabAt(0).?;
+
+    // 셸이 알린 위치가 있으면 그것이 조회보다 우선한다. `/` 를 쓰는 이유는 어느 OS
+    // 에서도 심볼릭 링크가 아니고 항상 있기 때문이다.
+    tab.stream.nextSlice(try std.fmt.bufPrint(&payload, "\x1b]7;file://{s}/\x1b\\", .{host}));
+    try std.testing.expectEqualStrings("/", session.inheritedCwd(&cwd_buf).?);
+
+    // 파싱은 되지만 열 수 없는 경로 → 조회로 내려간다 (그 경로를 그대로 쓰지 않는다).
+    tab.stream.nextSlice(try std.fmt.bufPrint(
+        &payload,
+        "\x1b]7;file://{s}/tz366-does-not-exist\x1b\\",
+        .{host},
+    ));
+    {
+        const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
+        try std.testing.expect(!std.mem.eql(u8, probed, "/tz366-does-not-exist"));
+        try std.testing.expect(std.fs.path.isAbsolute(probed));
+    }
+
+    // 다른 머신 (ssh 원격) → 거부되고 조회로 내려간다.
+    tab.stream.nextSlice("\x1b]7;file://tz366-other-box/\x1b\\");
+    {
+        const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
+        try std.testing.expect(std.fs.path.isAbsolute(probed));
     }
 }
 
