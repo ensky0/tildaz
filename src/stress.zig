@@ -68,6 +68,10 @@ const total_timeout_ns: u64 = 120 * std.time.ns_per_s;
 
 const chunk_size = 64 * 1024;
 
+/// 앱이 한 프레임에 파싱에 쓸 수 있는 상한. `frame` 층이 예산을 넘긴 프레임을 세는
+/// 기준이고, 값은 앱과 같은 정의를 쓴다.
+const frame_budget_ns = session_core.SessionCore.DRAIN_FRAME_BUDGET_NS;
+
 pub fn main() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -94,6 +98,7 @@ pub fn main() !void {
     switch (opts.layer) {
         .parser => try runParser(alloc, opts),
         .pty => try runPty(alloc, opts),
+        .frame => try runFrame(alloc, opts),
     }
 }
 
@@ -136,7 +141,7 @@ fn produce(req: ProducerRequest) !void {
 
 // --- 옵션 ---
 
-const Layer = enum { parser, pty };
+const Layer = enum { parser, pty, frame };
 
 const Options = struct {
     layer: Layer = .parser,
@@ -147,6 +152,9 @@ const Options = struct {
     /// 앱 기본값과 같게 둔다 — scrollback 예산이 page 할당량을 정해서 파서 부하에
     /// 영향을 준다.
     scroll_lines: u32 = config.Defaults.max_scroll_lines,
+    /// `frame` 층이 모사할 프레임 주기. 실제 앱은 디스플레이 재생률에 맞춰 돌므로
+    /// 재는 화면의 재생률을 넣는다 (일반 화면 60, 고주사율 120 등).
+    fps: u32 = 60,
 };
 
 fn parseArgs(args: []const []const u8) !Options {
@@ -176,6 +184,9 @@ fn parseArgs(args: []const []const u8) !Options {
             if (opts.rows == 0) return error.Usage;
         } else if (std.mem.eql(u8, key, "--scrollback")) {
             opts.scroll_lines = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
+        } else if (std.mem.eql(u8, key, "--fps")) {
+            opts.fps = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
+            if (opts.fps == 0) return error.Usage;
         } else {
             return error.Usage;
         }
@@ -187,12 +198,13 @@ fn printUsage() !void {
     try std.fs.File.stdout().writeAll(
         \\usage: zig build stress -- throughput [options]
         \\
-        \\  --layer      parser | pty        (default: parser)
-        \\  --workload   plain | ansi | cjk  (default: plain)
-        \\  --mb         MiB to push         (default: 64)
-        \\  --cols       grid columns        (default: 120)
-        \\  --rows       grid rows           (default: 40)
-        \\  --scrollback scrollback lines    (default: config default)
+        \\  --layer      parser | pty | frame  (default: parser)
+        \\  --workload   plain | ansi | cjk    (default: plain)
+        \\  --mb         MiB to push           (default: 64)
+        \\  --cols       grid columns          (default: 120)
+        \\  --rows       grid rows             (default: 40)
+        \\  --scrollback scrollback lines      (default: config default)
+        \\  --fps        frame layer only      (default: 60)
         \\
         \\Grid size changes the parser's line-wrapping work, so always report it
         \\together with the numbers.
@@ -217,11 +229,20 @@ const Result = struct {
     /// parser 층에서만. 벽시계에는 하네스가 바이트를 만든 시간이 섞이므로 파서
     /// 상한을 보려면 갈라야 한다.
     parser_split: ?ParserSplit = null,
+    /// frame 층에서만.
+    frame_split: ?FrameSplit = null,
 };
 
 const ParserSplit = struct {
     parse_ns: u64,
     generate_ns: u64,
+};
+
+const FrameSplit = struct {
+    fps: u32,
+    frames: u64,
+    /// 프레임 예산 (8 ms) 을 넘긴 프레임 수. 실제 앱에서는 그만큼 vsync 를 놓친다.
+    over_budget: u64,
 };
 
 const Counters = struct {
@@ -310,35 +331,72 @@ fn onTabExit(_: usize, userdata: ?*anyopaque) void {
     state.exited.store(true, .release);
 }
 
+/// producer 를 PTY 자식으로 띄운 세션. `pty` 와 `frame` 층이 같은 준비 과정을 쓴다.
+///
+/// 힙에 두는 이유는 `extra_env` 가 자기 안의 `bytes_text` 를 가리키기 때문이다 —
+/// 스택에 두면 이 struct 를 옮기는 순간 그 포인터가 어긋난다.
+const ProducerSession = struct {
+    alloc: std.mem.Allocator,
+    shell_command: terminal.ShellCommand,
+    bytes_text: [24]u8 = undefined,
+    extra_env: [2]terminal.ExtraEnv = undefined,
+    state: ExitState = .{},
+    core: session_core.SessionCore = undefined,
+
+    fn start(alloc: std.mem.Allocator, opts: Options) !*ProducerSession {
+        const self = try alloc.create(ProducerSession);
+        errdefer alloc.destroy(self);
+        self.* = .{ .alloc = alloc, .shell_command = undefined };
+
+        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const exe_path = try std.fs.selfExePath(&exe_buf);
+        self.shell_command = try toShellCommand(alloc, exe_path);
+        errdefer freeShellCommand(alloc, self.shell_command);
+
+        const bytes_text = try std.fmt.bufPrint(&self.bytes_text, "{d}", .{opts.bytes});
+        self.extra_env = .{
+            .{ .name = env_workload, .value = @tagName(opts.workload_kind) },
+            .{ .name = env_bytes, .value = bytes_text },
+        };
+
+        self.core = session_core.SessionCore.init(
+            alloc,
+            self.shell_command,
+            opts.scroll_lines,
+            null,
+            &self.extra_env,
+            onTabExit,
+            &self.state,
+        );
+        errdefer self.core.deinit();
+
+        // 여기서 자식이 뜨고 곧바로 쓰기 시작한다 — 호출자는 바로 비우기 시작해야 한다.
+        try self.core.createTab(opts.cols, opts.rows);
+        return self;
+    }
+
+    fn deinit(self: *ProducerSession) void {
+        self.core.deinit();
+        freeShellCommand(self.alloc, self.shell_command);
+        self.alloc.destroy(self);
+    }
+
+    fn tab(self: *ProducerSession) !*session_core.Tab {
+        return self.core.activeTab() orelse error.NoTab;
+    }
+
+    fn exited(self: *ProducerSession) bool {
+        return self.state.exited.load(.acquire);
+    }
+};
+
 fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = try std.fs.selfExePath(&exe_buf);
-    const shell_command = try toShellCommand(alloc, exe_path);
-    defer freeShellCommand(alloc, shell_command);
-
-    var bytes_buf: [24]u8 = undefined;
-    const bytes_text = try std.fmt.bufPrint(&bytes_buf, "{d}", .{opts.bytes});
-    const extra_env = [_]terminal.ExtraEnv{
-        .{ .name = env_workload, .value = @tagName(opts.workload_kind) },
-        .{ .name = env_bytes, .value = bytes_text },
-    };
-
-    var state: ExitState = .{};
-    var core = session_core.SessionCore.init(
-        alloc,
-        shell_command,
-        opts.scroll_lines,
-        null,
-        &extra_env,
-        onTabExit,
-        &state,
-    );
-    defer core.deinit();
-
     resetCounters();
     var timer = try std.time.Timer.start();
-    try core.createTab(opts.cols, opts.rows);
-    const tab = core.activeTab() orelse return error.NoTab;
+
+    const session = try ProducerSession.start(alloc, opts);
+    defer session.deinit();
+    const tab = try session.tab();
 
     var first_data_ns: ?u64 = null;
     var last_data_ns: u64 = 0;
@@ -351,7 +409,7 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
             last_data_ns = now_ns;
         } else {
             // 자식이 끝났고 조용해진 뒤에야 종료한다 (`drain_quiet_ns` 주석 참고).
-            if (state.exited.load(.acquire) and now_ns - last_data_ns > drain_quiet_ns) break;
+            if (session.exited() and now_ns - last_data_ns > drain_quiet_ns) break;
             std.Thread.yield() catch {};
         }
 
@@ -368,6 +426,79 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
         .elapsed_ns = last_data_ns - start_ns,
         .spawn_ns = start_ns,
         .counters = counters,
+    });
+}
+
+// --- layer: frame ---
+
+/// 앱이 실제로 지나는 경로다. host 는 vsync 마다 `drainOutputForRender` 를 부르고,
+/// 그 안의 `drainFrame` 이 **한 프레임에 8 ms** 만 파싱한다
+/// (`session_core.SessionCore.DRAIN_FRAME_BUDGET_NS`). 그래서 사용자가 겪는 처리량은
+/// 파서 상한이 아니라 `예산 / 프레임 간격` 만큼으로 눌린다.
+///
+/// macOS 는 CADisplayLink (`NSWindow.displayLink`) 가 vsync 마다 main thread 에서
+/// 부르고, Linux 는 poll loop, Windows 는 app_controller 의 프레임 경로다. 여기서는
+/// 그 주기를 `--fps` 로 모사한다.
+///
+/// **렌더는 하지 않는다.** 이 층이 재는 것은 "프레임 예산이 파싱을 어디까지 누르는가"
+/// 이고, 실제 앱은 여기에 렌더 시간까지 더해진다. 즉 이 숫자는 체감의 **상한**이다.
+fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
+    resetCounters();
+    var timer = try std.time.Timer.start();
+
+    const session = try ProducerSession.start(alloc, opts);
+    defer session.deinit();
+
+    const frame_ns = std.time.ns_per_s / @as(u64, opts.fps);
+    var next_frame_ns: u64 = frame_ns;
+
+    var frames: u64 = 0;
+    var over_budget: u64 = 0;
+    var first_data_ns: ?u64 = null;
+    var last_data_ns: u64 = 0;
+
+    while (true) {
+        const before_ns = timer.read();
+        const had_output = session.core.drainOutputForRender();
+        const after_ns = timer.read();
+
+        frames += 1;
+        if (after_ns - before_ns > frame_budget_ns) over_budget += 1;
+
+        if (had_output) {
+            if (first_data_ns == null) first_data_ns = after_ns;
+            last_data_ns = after_ns;
+        } else if (session.exited() and after_ns - last_data_ns > drain_quiet_ns) {
+            break;
+        }
+
+        if (after_ns > total_timeout_ns) return error.StressTimeout;
+
+        // 다음 vsync 까지 기다린다. 예산을 넘겨 이미 늦었으면 따라잡지 않고 지금부터
+        // 다시 센다 — 실제 앱도 놓친 vsync 를 몰아서 그리지 않는다.
+        const now_ns = timer.read();
+        if (next_frame_ns > now_ns) {
+            std.Thread.sleep(next_frame_ns - now_ns);
+            next_frame_ns += frame_ns;
+        } else {
+            next_frame_ns = now_ns + frame_ns;
+        }
+    }
+
+    const counters = takeCounters();
+    const start_ns = first_data_ns orelse return error.NoOutput;
+
+    try report(opts, .{
+        .consumed = counters.drain[2],
+        .expected = expectedPtyBytes(opts),
+        .elapsed_ns = last_data_ns - start_ns,
+        .spawn_ns = start_ns,
+        .counters = counters,
+        .frame_split = .{
+            .fps = opts.fps,
+            .frames = frames,
+            .over_budget = over_budget,
+        },
     });
 }
 
@@ -501,6 +632,16 @@ fn report(opts: Options, result: Result) !void {
         }
         w.print("  generating  {d:.1} ms (하네스가 바이트를 만든 시간)\n", .{
             @as(f64, @floatFromInt(split.generate_ns)) / std.time.ns_per_ms,
+        });
+    }
+    if (result.frame_split) |split| {
+        w.print("  frames      {d} @ {d} fps 모사 (렌더는 하지 않음)\n", .{
+            split.frames,
+            split.fps,
+        });
+        w.print("  over budget {d} frames ({d} ms 예산 초과)\n", .{
+            split.over_budget,
+            frame_budget_ns / std.time.ns_per_ms,
         });
     }
     w.print("\n", .{});

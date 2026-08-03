@@ -646,7 +646,10 @@ pub const SessionCore = struct {
 
     /// 한 frame에서 VT parse가 UI thread를 점유할 수 있는 공통 상한.
     /// 활성/비활성 탭이 이 예산을 함께 쓰므로 탭 수가 늘어도 총 예산은 그대로다.
-    const DRAIN_FRAME_BUDGET_NS: u64 = 8 * std.time.ns_per_ms;
+    ///
+    /// stress 하네스 (#371) 가 이 값을 읽어 프레임당 예산 초과를 센다 — 하네스가 8 ms
+    /// 를 따로 적어 두면 여기만 바뀌었을 때 조용히 다른 기준으로 판정한다.
+    pub const DRAIN_FRAME_BUDGET_NS: u64 = 8 * std.time.ns_per_ms;
 
     const DrainFrameResult = struct {
         active_output: bool = false,
