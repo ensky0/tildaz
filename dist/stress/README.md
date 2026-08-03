@@ -177,4 +177,49 @@ platform 마다 전혀 달라요 (전부 실측이에요).
 - **scrollback 메모리는 줄당 약 1 KiB 예요** (120 열 기준, macOS 실측: 100만 줄 =
   1,008 MiB, 기본값 10만 줄 = 120 MiB). 셀 하나가 8 byte 이고 page 가 고정 폭이라
   `줄 수 × 열 수 × 8 byte` 에 가까워요. 열 수가 많은 창에서는 그만큼 늘어나요.
-- 아직 없는 것: 다른 터미널과의 비교. #371 에서 이어서 다뤄요.
+## 다른 터미널과 비교하기
+
+```sh
+dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
+```
+
+같은 producer 를 여러 터미널 안에서 돌리고 완료 시간을 모아요. producer 가 출력을 끝낸 뒤
+경과 시간과 **자기 그리드 크기**를 timing 파일에 적고, 스크립트가 그것을 표로 내요.
+
+**그리드를 함께 남기는 게 핵심이에요.** 터미널마다 폰트 크기 해석이 달라서 같은 창 크기를
+줘도 셀 수가 갈리고, 열 수가 다르면 줄바꿈 횟수가 달라져 파서 부하가 달라져요. 표의 grid
+열이 목표와 다르면 그 줄은 비교에 쓰지 않아요. 실제로 이 검증이 kitty 의 창 크기 옵션이
+무시되던 것과 ghostty 의 옵션 파싱 실패를 잡아냈어요.
+
+| 방식 | 대상 | 이유 |
+|---|---|---|
+| 자동 | alacritty · kitty · wezterm (+ Linux 의 ghostty · foot) | CLI 로 그리드를 정확히 지정할 수 있어요 |
+| **손으로** | **TildaZ** · **macOS 의 ghostty** | 아래 참고 |
+
+- **TildaZ** 는 CLI 로 명령을 주입할 수 없어요 (`--instance` / `--autostart` / `--toggle` 만
+  받아요). 스크립트가 붙여넣을 한 줄을 찍어 줘요.
+- **macOS 의 ghostty** 는 CLI 로 터미널을 띄울 수 없고 (`ghostty --help`: *"On macOS,
+  launching the terminal emulator from the CLI is not supported"*), `open -na … --args` 로는
+  옵션 여러 개가 **한 값으로 합쳐져** 전달돼서 창 크기를 정할 수 없어요 (실측: config 에러
+  다이얼로그가 떠요). Linux 의 ghostty 는 CLI 가 정상이라 자동으로 돌려요.
+
+손으로 재도 **그리드는 producer 가 스스로 기록**하니 공정성은 유지돼요. 창을 목표 그리드로
+맞춰 열고 한 줄 붙여넣으면 자동으로 잰 것과 같은 조건 (렌더 포함) 이 돼요.
+
+**터미널마다 창 크기 지정 방법이 달라요** (실측으로 확정한 것):
+
+| 터미널 | 그리드 지정 |
+|---|---|
+| kitty | `-o remember_window_size=no -o initial_window_width=120c -o initial_window_height=40c` — `remember_window_size` 를 끄지 않으면 **이전 세션 크기를 복원해서 옵션을 무시해요** |
+| alacritty | `-o window.dimensions.columns=120 -o window.dimensions.lines=40` |
+| wezterm | `--config initial_cols=120 --config initial_rows=40` — `--config` 는 **전역 옵션**이라 `start` **앞**에 와야 해요 |
+| ghostty (Linux) | `--window-width=120 --window-height=40` |
+| ghostty (macOS) | `~/.config/ghostty/config` 에 `window-width = 120` · `window-height = 40` |
+| TildaZ | config 의 `width_percent` / `height_percent` 와 `font.size` |
+
+**일부 터미널은 셸을 spawn 한 뒤 창 크기에 맞춰 resize 해요** (실측: ghostty · kitty).
+그래서 producer 는 그리드를 **출력 전후 두 번** 읽고 둘 다 기록해요. 표에 `측정 중 resize`
+가 뜨면 그 측정은 그리드가 흔들린 거예요.
+
+- 아직 없는 것: TildaZ · ghostty 의 macOS 수동 측정값, Linux 에서의 비교 (foot 포함).
+  #371 에서 이어서 다뤄요.
