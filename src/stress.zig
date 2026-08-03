@@ -56,6 +56,9 @@ pub const std_options: std.Options = .{
 /// producer 모드 진입 + 파라미터. 환경변수인 이유는 위 문서 주석 참고.
 const env_workload = "TILDAZ_STRESS_WORKLOAD";
 const env_bytes = "TILDAZ_STRESS_BYTES";
+/// 다른 터미널 안에서 producer 를 돌릴 때 결과를 돌려받는 통로 (#371 L4). 우리 하네스가
+/// 부모일 때는 쓰지 않는다.
+const env_timing_file = "TILDAZ_STRESS_TIMING_FILE";
 
 /// 자식이 죽은 뒤에도 read thread 가 아직 안 읽은 데이터가 남아 있을 수 있다 —
 /// `waitpid` 는 프로세스 종료만 알려주고 커널 버퍼가 비었는지는 말하지 않는다
@@ -110,11 +113,15 @@ pub fn main() !void {
 const ProducerRequest = struct {
     kind: workload.Kind,
     bytes: u64,
+    /// 있으면 출력을 끝낸 뒤 여기에 결과를 적는다 (#371 L4). 우리 하네스가 부모일
+    /// 때는 필요 없다 — 부모가 직접 재니까. **다른 터미널 안에서 돌 때** 결과를
+    /// 돌려받을 통로가 이것뿐이다.
+    timing_path: ?[]const u8 = null,
 };
 
-/// 환경변수가 둘 다 있고 값이 유효할 때만 producer 모드다. 하나라도 빠지거나
+/// 환경변수 두 개가 다 있고 값이 유효할 때만 producer 모드다. 하나라도 빠지거나
 /// 이상하면 일반 모드로 두어, 실수로 켜진 환경변수 때문에 조용히 다른 일을 하지
-/// 않게 한다.
+/// 않게 한다. timing 파일은 선택이다.
 fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
     const kind_name = std.process.getEnvVarOwned(alloc, env_workload) catch return null;
     defer alloc.free(kind_name);
@@ -123,16 +130,32 @@ fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
 
     const kind = workload.Kind.parse(kind_name) orelse return null;
     const bytes = std.fmt.parseInt(u64, bytes_text, 10) catch return null;
-    return .{ .kind = kind, .bytes = bytes };
+
+    // 호출자가 free 하지 않는다 — producer 는 이 값을 쓰고 곧 종료한다.
+    const timing_path = std.process.getEnvVarOwned(alloc, env_timing_file) catch null;
+
+    return .{ .kind = kind, .bytes = bytes, .timing_path = timing_path };
 }
 
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
-/// thread 가 그대로 받는다.
+/// thread (또는 우리를 띄운 다른 터미널) 가 그대로 받는다.
 fn produce(req: ProducerRequest) !void {
     var gen: workload.Generator = .{ .kind = req.kind };
     var buf: [chunk_size]u8 = undefined;
     const out = std.fs.File.stdout();
 
+    // 그리드를 **출력 전후 두 번** 읽는다. 한 번만 읽으면 어느 쪽이든 틀린다:
+    //
+    // - 시작 시점만 읽으면 **resize race** 에 걸린다. 일부 터미널 (실측: ghostty · kitty)
+    //   은 셸을 spawn 한 뒤 창 크기에 맞춰 PTY 를 resize 하므로, 그 전에 읽으면 초기값을
+    //   본다 (ghostty 에서 100x30 을 줬는데 50x6 으로 읽혔다). alacritty 는 spawn 전에
+    //   크기가 확정돼서 이 문제가 없다.
+    // - 끝 시점만 읽으면 창이 닫히는 중일 수 있다.
+    //
+    // 둘을 다 남기고 판정은 호출자에게 맡긴다. 다르면 그 측정은 그리드가 흔들린 것이다.
+    const grid_start = producerGrid();
+
+    var timer = try std.time.Timer.start();
     var left = req.bytes;
     while (left > 0) {
         const n = @min(buf.len, left);
@@ -140,6 +163,72 @@ fn produce(req: ProducerRequest) !void {
         try out.writeAll(buf[0..n]);
         left -= n;
     }
+    const elapsed_ns = timer.read();
+    const grid_end = producerGrid();
+
+    if (req.timing_path) |path| {
+        writeTiming(path, req, elapsed_ns, grid_start, grid_end) catch {};
+    }
+}
+
+const Grid = struct { cols: u16, rows: u16 };
+
+/// producer 가 자기 tty 의 그리드를 직접 읽는다. **이게 L4 비교의 전제다** — 터미널마다
+/// 폰트 크기 해석이 달라서 같은 창 크기를 줘도 셀 수가 갈리고, 열 수가 다르면 줄바꿈
+/// 횟수가 달라져 파서 부하가 달라진다. [#362](https://github.com/ensky0/tildaz/issues/362)
+/// 에서 그리드가 31 배 어긋난 채로 비교하려던 적이 있어서, 재는 쪽이 스스로 남긴다.
+///
+/// Windows 는 `null` 이다 — ConPTY 에는 이 ioctl 이 없고, L4 의 비교 대상 터미널이
+/// Windows 에 없어서 필요하지도 않다.
+fn producerGrid() ?Grid {
+    if (builtin.os.tag == .windows) return null;
+
+    var ws: std.posix.winsize = undefined;
+    const fd = std.fs.File.stdout().handle;
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        if (std.posix.errno(linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
+            return null;
+        }
+    } else {
+        if (std.c.ioctl(fd, std.c.T.IOCGWINSZ, @intFromPtr(&ws)) < 0) return null;
+    }
+    if (ws.col == 0 or ws.row == 0) return null;
+    return .{ .cols = ws.col, .rows = ws.row };
+}
+
+/// `key=value` 줄로 적는다 — 스크립트가 파싱하기 쉽고 사람도 읽을 수 있다.
+///
+/// **경과 시간의 의미**: producer 가 마지막 byte 를 `write` 한 시점까지다. 그 순간
+/// 터미널이 아직 남은 것을 파싱하고 있을 수 있다. `time cat <파일>` 로 재는 것과 같은
+/// 성질의 값이고 (이 이슈 본문이 제안한 방법), PTY 버퍼가 작아서 대개 근사가 된다.
+fn writeTiming(
+    path: []const u8,
+    req: ProducerRequest,
+    elapsed_ns: u64,
+    grid_start: ?Grid,
+    grid_end: ?Grid,
+) !void {
+    var buf: [512]u8 = undefined;
+    var w = Report{ .buf = &buf };
+    w.print("elapsed_ns={d}\n", .{elapsed_ns});
+    w.print("bytes={d}\n", .{req.bytes});
+    w.print("workload={s}\n", .{@tagName(req.kind)});
+    if (grid_start) |g| {
+        w.print("cols_start={d}\nrows_start={d}\n", .{ g.cols, g.rows });
+    } else {
+        w.print("cols_start=0\nrows_start=0\n", .{});
+    }
+    // 마지막 줄이 `rows` 다 — 읽는 쪽이 파일이 끝까지 쓰였는지 이 줄로 판단한다.
+    if (grid_end) |g| {
+        w.print("cols={d}\nrows={d}\n", .{ g.cols, g.rows });
+    } else {
+        w.print("cols=0\nrows=0\n", .{});
+    }
+
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+    try file.writeAll(w.slice());
 }
 
 // --- 옵션 ---
