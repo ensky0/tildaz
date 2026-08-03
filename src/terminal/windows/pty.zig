@@ -2,6 +2,7 @@ const std = @import("std");
 const windows = std.os.windows;
 const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
+const shell_integration = @import("../../shell_integration.zig");
 
 const HANDLE = windows.HANDLE;
 const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
@@ -462,34 +463,46 @@ pub const ConPty = struct {
         const L = std.unicode.utf8ToUtf16LeStringLiteral;
         const wsl_cd = wslCdInsertion(shell[0..shell_len]);
 
-        // WSL 탭에 끼워 넣을 인자 — 물려받은 경로가 있으면 그 경로, 없으면 Linux 홈.
-        // 공백이 있는 경로도 한 인자로 가도록 `"` 로 감싼다. 경로 안에 `"` 가 있으면
-        // 인용이 깨지므로 (그리고 Linux 파일 이름에 `"` 는 허용된다) 그때는 상속을
-        // 포기하고 홈으로 간다.
+        // 명령줄에 끼워 넣을 인자와 그 위치. 두 가지 경우가 있고 **첫 토큰이 다르므로
+        // 동시에 일어나지 않는다**:
+        //
+        //   - WSL 탭 → 첫 토큰 뒤에 `--cd "<경로>"` (위 문단).
+        //   - PowerShell 탭 → 맨 끝에 `-NoExit -EncodedCommand …` (#366). 프로필이
+        //     로드된 뒤 기존 `prompt` 를 감싸야 하고, `-EncodedCommand` 는 인자 하나만
+        //     받으므로 뒤에 다른 인자가 오지 않게 끝에 붙인다.
         var wsl_insert_buf: [wsl_insert_max]u16 = undefined;
-        const insert: []const u16 = blk: {
-            if (!wsl_cd.insert) break :blk &.{};
-            if (wsl_cd.is_wsl) if (cwd) |dir| {
-                const prefix = L(" --cd \"");
-                const total = prefix.len + dir.len + 1;
-                if (std.mem.indexOfScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
-                    @memcpy(wsl_insert_buf[0..prefix.len], prefix);
-                    @memcpy(wsl_insert_buf[prefix.len..][0..dir.len], dir);
-                    wsl_insert_buf[total - 1] = '"';
-                    break :blk wsl_insert_buf[0..total];
+        var insert: []const u16 = &.{};
+        var insert_at: usize = shell_len;
+        if (wsl_cd.insert) {
+            insert_at = wsl_cd.insert_at;
+            // 물려받은 경로가 있으면 그 경로, 없으면 Linux 홈. 공백이 있는 경로도 한
+            // 인자로 가도록 `"` 로 감싼다. 경로 안에 `"` 가 있으면 인용이 깨지므로
+            // (Linux 파일 이름에 `"` 는 허용된다) 그때는 상속을 포기하고 홈으로 간다.
+            insert = blk: {
+                if (cwd) |dir| {
+                    const prefix = L(" --cd \"");
+                    const total = prefix.len + dir.len + 1;
+                    if (std.mem.indexOfScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
+                        @memcpy(wsl_insert_buf[0..prefix.len], prefix);
+                        @memcpy(wsl_insert_buf[prefix.len..][0..dir.len], dir);
+                        wsl_insert_buf[total - 1] = '"';
+                        break :blk wsl_insert_buf[0..total];
+                    }
                 }
+                break :blk L(" --cd ~");
             };
-            break :blk L(" --cd ~");
-        };
+        } else if (shell_integration.psInjection(shell[0..shell_len]).inject) {
+            insert = shell_integration.ps_args_w;
+        }
 
         const cmd_len = shell_len + insert.len;
         const cmd_buf = try allocator.alloc(WCHAR, cmd_len + 1);
         defer allocator.free(cmd_buf);
-        @memcpy(cmd_buf[0..wsl_cd.insert_at], shell[0..wsl_cd.insert_at]);
-        @memcpy(cmd_buf[wsl_cd.insert_at..][0..insert.len], insert);
+        @memcpy(cmd_buf[0..insert_at], shell[0..insert_at]);
+        @memcpy(cmd_buf[insert_at..][0..insert.len], insert);
         @memcpy(
-            cmd_buf[wsl_cd.insert_at + insert.len ..][0 .. shell_len - wsl_cd.insert_at],
-            shell[wsl_cd.insert_at..shell_len],
+            cmd_buf[insert_at + insert.len ..][0 .. shell_len - insert_at],
+            shell[insert_at..shell_len],
         );
         cmd_buf[cmd_len] = 0;
 
