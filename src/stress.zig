@@ -248,8 +248,11 @@ const Options = struct {
     /// 영향을 준다.
     scroll_lines: u32 = config.Defaults.max_scroll_lines,
     /// `frame` 층이 모사할 프레임 주기. 실제 앱은 디스플레이 재생률에 맞춰 돌므로
-    /// 재는 화면의 재생률을 넣는다 (일반 화면 60, 고주사율 120 등).
+    /// **재는 화면의 재생률**을 넣는다 (일반 화면 60, ProMotion 등 고주사율 120).
     fps: u32 = 60,
+    /// `--fps` 를 명시했는지. 기본값 60 을 그대로 쓰면 고주사율 화면에서 숫자가 크게
+    /// 어긋나므로 (실측: 120 Hz 화면에서 ansi 가 103 → 138 MiB/s) 리포트가 경고한다.
+    fps_explicit: bool = false,
     /// `scrollback` 명령이 출력을 몇 구간으로 나눠 볼지. 구간마다 처리 속도를 따로
     /// 재서 뒤로 갈수록 느려지는지 본다.
     segments: u32 = 8,
@@ -286,6 +289,7 @@ fn parseArgs(args: []const []const u8) !Options {
         } else if (std.mem.eql(u8, key, "--fps")) {
             opts.fps = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
             if (opts.fps == 0) return error.Usage;
+            opts.fps_explicit = true;
         } else if (std.mem.eql(u8, key, "--segments")) {
             opts.segments = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
             if (opts.segments == 0 or opts.segments > max_segments) return error.Usage;
@@ -346,6 +350,7 @@ const ParserSplit = struct {
 
 const FrameSplit = struct {
     fps: u32,
+    fps_explicit: bool,
     frames: u64,
     /// 프레임 예산 (8 ms) 을 넘긴 프레임 수. 실제 앱에서는 그만큼 vsync 를 놓친다.
     over_budget: u64,
@@ -604,6 +609,7 @@ fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
         .counters = counters,
         .frame_split = .{
             .fps = opts.fps,
+            .fps_explicit = opts.fps_explicit,
             .frames = frames,
             .over_budget = over_budget,
         },
@@ -944,6 +950,17 @@ fn report(opts: Options, result: Result) !void {
             split.over_budget,
             frame_budget_ns / std.time.ns_per_ms,
         });
+        // 기본값을 그대로 쓰면 고주사율 화면에서 크게 어긋난다. 실측: 120 Hz 화면을 60 으로
+        // 모사했더니 ansi 가 103 MiB/s 로 나왔는데 (예산 초과 86 %), 120 으로 고치자
+        // 138 MiB/s · 초과 39 % 였고 실제 앱 값 (136 MiB/s) 과 거의 같았다. 120 Hz 는 프레임
+        // 간격이 8.33 ms 라 8 ms 예산이 프레임 전체에 가깝다 — 60 Hz 의 48 % 와 성질이 다르다.
+        if (!split.fps_explicit) {
+            w.print(
+                "  ⚠ --fps 를 안 줘서 {d} 으로 가정했어요. 재는 화면의 재생률과 다르면\n" ++
+                    "    숫자가 크게 어긋나요 (ProMotion 등 고주사율 화면은 120).\n",
+                .{split.fps},
+            );
+        }
     }
     w.print("\n", .{});
 
