@@ -257,33 +257,8 @@ pub const Tab = struct {
         const tab = try alloc.create(Tab);
         errdefer alloc.destroy(tab);
 
-        const term_colors = if (theme) |t| ghostty.Terminal.Colors{
-            .foreground = ghostty.color.DynamicRGB.init(t.foreground),
-            .background = ghostty.color.DynamicRGB.init(t.background),
-            .cursor = .unset,
-            .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
-        } else ghostty.Terminal.Colors.default;
-
-        var term = try ghostty.Terminal.init(alloc, .{
-            .cols = cols,
-            .rows = rows,
-            .max_scrollback = max_scroll_lines * blk: {
-                const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
-                    break :blk (@as(usize, cols) + 1) * 8;
-                break :blk ghostty.Page.layout(cap).total_size / cap.rows;
-            },
-            .colors = term_colors,
-        });
+        var term = try initVtTerminal(alloc, cols, rows, max_scroll_lines, theme);
         errdefer term.deinit(alloc);
-
-        // Mode 2027 (grapheme cluster) — VS-16 / skin tone modifier (U+1F3FB-FF)
-        // / ZWJ 시퀀스 (U+200D) 가 같은 cell 의 grapheme 으로 묶이게. 기본 OFF
-        // 라 ❤️ 가 [U+2764, U+FE0F] 두 cell 에 분리되고 cell 폭도 narrow 로
-        // 남음. ON 시 base cell 의 `cell.grapheme` 에 extras 가 저장 + VS-16
-        // 일 때 cell 자동으로 wide. renderer 는 이 grapheme 을 cluster 로 shape
-        // (#134 C3+). macOS session 의 동일 정책 (commit 0e18ab5) 과 cross-platform
-        // sync.
-        term.modes.set(.grapheme_cluster, true);
 
         var backend = try TerminalBackend.init(.{
             .allocator = alloc,
@@ -504,7 +479,63 @@ pub const Tab = struct {
         log.appendLine("tab", "shell exited: title={s}", .{tab.title[0..tab.title_len]});
         tab.tab_exit_fn(@intFromPtr(tab), tab.tab_exit_userdata);
     }
+
+    /// stress 하네스 전용 통로 (#371) — `drainFrame` 의 프레임 예산을 거치지 않고
+    /// output ring 을 끝까지 비운다. 소화한 chunk 수를 돌려준다. PTY 에서 온
+    /// 바이트를 VT 가 소화하는 속도의 상한을 재는 용도다.
+    ///
+    /// 프레임 예산 아래의 체감 처리량을 잴 때는 이걸 쓰지 않고
+    /// `SessionCore.drainOutputForRender` 를 프레임 루프처럼 부른다 — 그쪽이 실제
+    /// 앱이 지나는 경로이고, 8 ms 예산이 걸린 값이 사용자가 겪는 값이다.
+    pub fn drainAllForStress(tab: *Tab) usize {
+        var chunks: usize = 0;
+        while (tab.drainOutputChunk()) chunks += 1;
+        return chunks;
+    }
 };
+
+/// 한 탭의 VT 상태를 앱 설정대로 만든다. `Tab.init` 과 stress 하네스 (#371) 가
+/// **같은 정의**를 쓰도록 한 곳에 둔다 — 하네스가 이 구성을 베껴 쓰면 한쪽만
+/// 바뀌었을 때 앱과 다른 파서 설정을 재게 되고, 그 차이는 숫자에 조용히 섞인다.
+///
+/// scrollback 은 줄 수가 아니라 byte 예산이라 cols 에 따른 page 용량으로 환산한다.
+pub fn initVtTerminal(
+    alloc: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    max_scroll_lines: usize,
+    theme: ?*const themes.Theme,
+) !ghostty.Terminal {
+    const term_colors = if (theme) |t| ghostty.Terminal.Colors{
+        .foreground = ghostty.color.DynamicRGB.init(t.foreground),
+        .background = ghostty.color.DynamicRGB.init(t.background),
+        .cursor = .unset,
+        .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
+    } else ghostty.Terminal.Colors.default;
+
+    var term = try ghostty.Terminal.init(alloc, .{
+        .cols = cols,
+        .rows = rows,
+        .max_scrollback = max_scroll_lines * blk: {
+            const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
+                break :blk (@as(usize, cols) + 1) * 8;
+            break :blk ghostty.Page.layout(cap).total_size / cap.rows;
+        },
+        .colors = term_colors,
+    });
+    errdefer term.deinit(alloc);
+
+    // Mode 2027 (grapheme cluster) — VS-16 / skin tone modifier (U+1F3FB-FF)
+    // / ZWJ 시퀀스 (U+200D) 가 같은 cell 의 grapheme 으로 묶이게. 기본 OFF
+    // 라 ❤️ 가 [U+2764, U+FE0F] 두 cell 에 분리되고 cell 폭도 narrow 로
+    // 남음. ON 시 base cell 의 `cell.grapheme` 에 extras 가 저장 + VS-16
+    // 일 때 cell 자동으로 wide. renderer 는 이 grapheme 을 cluster 로 shape
+    // (#134 C3+). macOS session 의 동일 정책 (commit 0e18ab5) 과 cross-platform
+    // sync.
+    term.modes.set(.grapheme_cluster, true);
+
+    return term;
+}
 
 /// 고정 크기 탭 제목 버퍼에 유효한 UTF-8 prefix 만 복사한다. byte 한도에서
 /// 다중 바이트 codepoint 가 잘리거나 OSC payload 에 잘못된 byte 가 있으면 마지막
