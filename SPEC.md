@@ -1066,7 +1066,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | `8` / `28` | `invisible` / reset | ✅ 세 platform |
 | `4:4` / `4:5` | `dotted` / `dashed` | ✅ 세 platform ([#374](https://github.com/ensky0/tildaz/issues/374)) |
 | `4:3` | `curly` | ✅ 세 platform ([#374](https://github.com/ensky0/tildaz/issues/374)) |
-| `3` / `1` | `italic` / `bold` 굵기 | ⛔ [#375](https://github.com/ensky0/tildaz/issues/375) — 폰트 face 문제 |
+| `3` / `1` | `italic` / `bold` 굵기 | ✅ 세 platform (§12.5) |
 | `5` / `25` | `blink` | ⛔ [#376](https://github.com/ensky0/tildaz/issues/376) — 지원 여부 미결정 |
 
 **그리는 순서 = 글리프 *아래*.** 선을 글리프보다 먼저 그린다. `underline_color` 로 밑줄이 글자와 다른 색일 때 descender (`g` `y` `p` `j` `q`) 를 가로지르지 않게 하기 위해서다 (ghostty 와 같은 선택). 구현 위치가 platform 마다 다르지만 결과 순서는 같다 — Linux 는 `FrameLayer.cell_bg` (목록 2번, `glyphs` 3번보다 앞), macOS · Windows 는 **bg pass** 다. text pass 의 `bg_buf` 에 넣으면 글리프 *위*로 올라가 정반대가 되므로 주의.
@@ -1126,6 +1126,32 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 **절전을 깨지 않는 게이트.** 세 host 는 "tick 은 규칙적으로 돌고 게이트가 그릴 이유를 판정" 하는 구조다 (macOS CADisplayLink · Windows `SetTimer` 16ms · Linux poll 16ms). 게이트를 *"화면에 blink 셀이 있다"* 로 열면 매 tick 그려서 [#255](https://github.com/ensky0/tildaz/issues/255) 의 절전 이득이 사라진다. 그래서 **"위상이 직전 프레임과 달라졌다" × "직전 프레임에 blink 셀이 실제로 보였다"** 두 조건을 함께 본다 — 추가 렌더가 **초당 2프레임**이다. renderer 가 bg pass (Linux 는 단일 순회) 에서 `saw_blink_cell` 을 기록하고 host 가 그것을 읽는다.
 
 **끄는 수단을 두지 않는다.** 조사한 터미널은 모두 끌 수 있게 해 두었지만, 우리 config 는 **재시작할 때만 반영**되어 광과민성처럼 *지금 멈춰야 하는* 문제의 답이 되지 못한다. 필요해지면 config 키가 아니라 **command menu 항목 + 단축키** (즉시 반영) 로 넣는다 — 설계는 #376 에 기록해 두었고 구현은 보류다. OS 접근성 설정 존중은 Linux 에 표준이 없어 (GNOME GSettings / KDE 별도 키 / sway · Hyprland 는 개념 자체 없음) 세 platform 동등이 깨진다. 현재 사용자가 쓸 수 있는 수단은 표준 시퀀스다 — `\e[25m` (blink 해제) · `\e[0m` / `reset` / `tput sgr0`.
+
+### 12.5 SGR 1 · 3 — bold 굵기 · italic ([#375](https://github.com/ensky0/tildaz/issues/375))
+
+`\e[1m` 은 실제 굵은 face, `\e[3m` 은 실제 기울어진 face 로 그린다. 세 platform 동일.
+
+| 항목 | 사양 |
+|---|---|
+| face 선택 | **같은 family 에서 자동 style-match** — 각 OS 폰트 매칭 API 에 위임 |
+| config 키 | **없다.** `font.family_bold` 류를 두지 않는다 |
+| face 가 없는 family | **regular 로 떨어뜨린다.** synthetic (offset 두 번 그리기 · shear) 은 만들지 않는다 |
+| 적용 범위 | **셀 본문 글리프만.** grapheme cluster (emoji) · ligature · IME preedit · 탭 제목 · system fallback 은 regular |
+| `bold_is_bright` | 그대로 유지 — 굵기와 색 승격은 독립이다 |
+
+공통 축은 [`font/constants.zig`](src/font/constants.zig) 의 `FaceStyle` (regular / bold / italic / bold_italic) 하나다. renderer 세 곳이 `FaceStyle.from(flags.bold, flags.italic)` 만 부르므로 판정이 platform 별로 갈리지 않는다.
+
+| platform | face 획득 | 없는 family 처리 |
+|---|---|---|
+| macOS | `CTFontCreateCopyWithSymbolicTraits` | 함수가 **null 을 준다** → 그 결과가 곧 "이 family 에 bold 가 있나" 의 답. regular 를 `CFRetain` 해 소유권을 통일 |
+| Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 **가장 근접한 face** 를 준다 (실패하지 않는다) → 자연히 regular |
+| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 같은 파일이면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 |
+
+**Linux 는 변종 chain 을 lazy 로 만든다.** chain 이 최대 8 이라 즉시 로드하면 face 가 32 개가 되고, dialog 폰트를 lazy 로 돌린 것과 같은 이유로 시작이 느려진다 ([#368](https://github.com/ensky0/tildaz/issues/368) — 시작 시간의 절반). 실패해도 "시도했음" 을 기록해 매 프레임 fontconfig 왕복을 막는다.
+
+**Linux 는 atlas 키에 변종을 실어야 한다.** `gl_atlas.Key` 는 codepoint 경로에서 `face` 를 `0xFF` 로 고정해 face 정보가 키에 없다 — 그대로 두면 bold `A` 와 regular `A` 가 같은 칸을 덮어쓴다. codepoint 가 u21 이라 `value` (u32) 의 상위 비트에 변종을 싣는다. `indexed` 경로는 face index 가 이미 키에 있어 영향이 없다. [#362](https://github.com/ensky0/tildaz/issues/362) 의 `cp → 글리프` 캐시도 변종별로 나눈다.
+
+**한글 bold 가 붙는다.** chain 전체 (primary + `glyph_fallback`) 에 변종을 만들기 때문이다 — macOS 실기 비교에서 kitty · Alacritty 와 같고, ghostty 는 한글이 regular 로 남았다 (2026-08-03).
 
 ---
 
