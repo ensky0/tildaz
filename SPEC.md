@@ -1052,6 +1052,44 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 **Fallback**: shape API 미사용 환경 (HarfBuzz dlopen fail, TextAnalyzer 실패 등) → `ligaturePair` 등이 null 반환 → single-char path (자연 글자).
 
+### 12.3 SGR 선 속성 — 밑줄 · 취소선 · 윗줄 ([#365](https://github.com/ensky0/tildaz/issues/365))
+
+셀에 그리는 선 계열 SGR. 정책은 공통 모듈 [`src/renderer/cell_decoration.zig`](src/renderer/cell_decoration.zig) 한 곳에 있고 세 renderer 는 그 결과를 자기 사각형 목록에 넣기만 한다 (`block_element` · `cell_color` 와 같은 패턴).
+
+| SGR | 속성 | 상태 |
+|---|---|---|
+| `4` / `24` | `underline` single / reset | ✅ 세 platform |
+| `21` | `underline` double | ✅ 세 platform |
+| `9` / `29` | `strikethrough` / reset | ✅ 세 platform |
+| `53` / `55` | `overline` / reset | ✅ 세 platform |
+| `58` / `59` | `underline_color` / reset | ✅ 세 platform |
+| `8` / `28` | `invisible` / reset | ✅ 세 platform |
+| `4:3` / `4:4` / `4:5` | `curly` / `dotted` / `dashed` | ⛔ [#374](https://github.com/ensky0/tildaz/issues/374) — **`single` 로 fallback** (아래) |
+| `3` / `1` | `italic` / `bold` 굵기 | ⛔ [#375](https://github.com/ensky0/tildaz/issues/375) — 폰트 face 문제 |
+| `5` / `25` | `blink` | ⛔ [#376](https://github.com/ensky0/tildaz/issues/376) — 지원 여부 미결정 |
+
+**그리는 순서 = 글리프 *아래*.** 선을 글리프보다 먼저 그린다. `underline_color` 로 밑줄이 글자와 다른 색일 때 descender (`g` `y` `p` `j` `q`) 를 가로지르지 않게 하기 위해서다 (ghostty 와 같은 선택). 구현 위치가 platform 마다 다르지만 결과 순서는 같다 — Linux 는 `FrameLayer.cell_bg` (목록 2번, `glyphs` 3번보다 앞), macOS · Windows 는 **bg pass** 다. text pass 의 `bg_buf` 에 넣으면 글리프 *위*로 올라가 정반대가 되므로 주의.
+
+**위치와 두께는 `ascent` 비율 공통 상수** ([`src/ui_metrics.zig`](src/ui_metrics.zig)). 기준점은 세 renderer 공통인 **baseline = 셀 top + `ascent_px`** 다.
+
+| 항목 | 정의 |
+|---|---|
+| 두께 | `max(1, round(0.06 × ascent))` — 정수 px (위치 소수부와 무관하게 두께 보존, [#357](https://github.com/ensky0/tildaz/issues/357) 과 같은 이유) |
+| 밑줄 top | baseline + `round(0.07 × ascent)` |
+| 이중 밑줄 | 단일 밑줄 자리를 **비우고** 위아래로 두께만큼 (전체 3×두께) |
+| 취소선 **중심** | baseline − `0.30 × ascent` (정석 `x_height / 2` 의 근사) |
+| 윗줄 top | 셀 top (0) |
+
+폰트 metric 을 쓰지 않는 이유: 밑줄 position/thickness 는 세 폰트 API 가 모두 주지만 **취소선과 x_height 는 Linux (FreeType) 와 macOS (CoreText) 에 없어** OS/2 테이블을 직접 읽어야 한다. 폰트값을 쓰면 *밑줄은 폰트값 · 취소선은 상수* 로 갈리고 API 별 단위 변환 차이로 platform 간 1px 이 어긋난다.
+
+**선 색.** 밑줄은 `underline_color` (SGR 58) 가 있으면 그 색, 없으면 `fg`. 취소선과 윗줄은 `underline_color` 를 보지 않고 항상 `fg`. 여기서 `fg` 는 [`cell_color.resolveFg`](src/renderer/cell_color.zig) 의 결과라 selection / inverse 교환이 이미 반영돼 있다.
+
+**`invisible` (SGR 8) 은 선까지 전부 숨긴다.** 글리프뿐 아니라 block element · box drawing · 선을 모두 그리지 않는다. xterm · ghostty 와 같은 정책이고, Alacritty 처럼 "텍스트만 숨기고 선은 남기는" 방식과 갈리는 지점이다 (2026-08-03 결정).
+
+**미지원 밑줄 스타일은 `single` 로 떨어뜨린다.** `curly` / `dotted` / `dashed` 를 아무것도 안 그리면 neovim 의 LSP 진단 밑줄이 통째로 사라지므로 최소한 직선으로는 보이게 한다. ghostty 파서도 모르는 스타일을 `single` 로 떨어뜨린다.
+
+**선은 텍스트가 없는 셀에도 그린다** — `\e[4m` 뒤의 공백에 밑줄이 이어져야 하기 때문이다. 반대로 한 번도 쓰지 않은 셀은 `style_id` 가 0 이라 선이 생기지 않는다.
+
 ---
 
 ## 부록 A — 미구현 항목 (cross-platform 동등성 룰)
