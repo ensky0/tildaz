@@ -1259,6 +1259,7 @@ pub const D3d11Renderer = struct {
                         resolveFg(style, &raw, &colors, is_selected, is_inverse),
                         &colors.palette,
                         self.font.ascent_px,
+                        width,
                         ch,
                         &deco,
                     );
@@ -1270,8 +1271,8 @@ pub const D3d11Renderer = struct {
                     }
                     for (deco[0..dn]) |d| {
                         bg_buf[bg_count] = .{
-                            .pos = .{ fx, fy + d.y },
-                            .size = .{ width, d.h },
+                            .pos = .{ fx + d.x, fy + d.y },
+                            .size = .{ d.w, d.h },
                             .color = .{ colorF(d.color.r), colorF(d.color.g), colorF(d.color.b), 1 },
                         };
                         bg_count += 1;
