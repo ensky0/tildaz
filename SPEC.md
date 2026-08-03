@@ -1090,6 +1090,24 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 **선은 텍스트가 없는 셀에도 그린다** — `\e[4m` 뒤의 공백에 밑줄이 이어져야 하기 때문이다. 반대로 한 번도 쓰지 않은 셀은 `style_id` 가 0 이라 선이 생기지 않는다.
 
+### 12.4 SGR 5 — blink ([#376](https://github.com/ensky0/tildaz/issues/376))
+
+`\e[5m` 을 **지원한다**. 세 platform 동일 주기·동일 위상.
+
+| 항목 | 사양 |
+|---|---|
+| 주기 | **on 500ms + off 500ms** (1Hz). ECMA-48 의 "slow blink = 분당 150회 미만" 을 만족 |
+| off 상태 표현 | **faint (흐리게)** — 완전히 숨기지 않는다 |
+| SGR 5 vs 6 (rapid) | **구분하지 않는다** — ghostty 파서가 둘을 `.blink` 하나로 접어서 정보를 주지 않는다 |
+| 끄는 수단 | **없다** (아래) |
+| 위상 계산 | [`ui_metrics.blinkFaintPhase(now_ms)`](src/ui_metrics.zig) — `std.time.milliTimestamp()` 를 세 host 가 공통으로 넘긴다 |
+
+**off 를 faint 로 표현하는 이유.** 글자가 완전히 사라졌다 나타나는 것은 조사한 방식 중 가장 자극적이다. Windows Terminal 도 4-phase 중 2 를 faint 로 렌더하고, WezTerm 은 투명도를 이징한다. 구현도 이쪽이 깔끔하다 — [`cell_color.applyBlinkPhase`](src/renderer/cell_color.zig) 가 off 위상에서 style 의 `faint` 플래그를 세워 돌려주므로, fg 해석뿐 아니라 **§12.3 의 선 색까지 한 번에** 따라온다 (선은 `fg` 를 받아 그리기 때문). 이미 `faint` 인 셀에 blink 가 걸리면 off 위상에서 변화가 없다 — 알려진 귀결이다.
+
+**절전을 깨지 않는 게이트.** 세 host 는 "tick 은 규칙적으로 돌고 게이트가 그릴 이유를 판정" 하는 구조다 (macOS CADisplayLink · Windows `SetTimer` 16ms · Linux poll 16ms). 게이트를 *"화면에 blink 셀이 있다"* 로 열면 매 tick 그려서 [#255](https://github.com/ensky0/tildaz/issues/255) 의 절전 이득이 사라진다. 그래서 **"위상이 직전 프레임과 달라졌다" × "직전 프레임에 blink 셀이 실제로 보였다"** 두 조건을 함께 본다 — 추가 렌더가 **초당 2프레임**이다. renderer 가 bg pass (Linux 는 단일 순회) 에서 `saw_blink_cell` 을 기록하고 host 가 그것을 읽는다.
+
+**끄는 수단을 두지 않는다.** 조사한 터미널은 모두 끌 수 있게 해 두었지만, 우리 config 는 **재시작할 때만 반영**되어 광과민성처럼 *지금 멈춰야 하는* 문제의 답이 되지 못한다. 필요해지면 config 키가 아니라 **command menu 항목 + 단축키** (즉시 반영) 로 넣는다 — 설계는 #376 에 기록해 두었고 구현은 보류다. OS 접근성 설정 존중은 Linux 에 표준이 없어 (GNOME GSettings / KDE 별도 키 / sway · Hyprland 는 개념 자체 없음) 세 platform 동등이 깨진다. 현재 사용자가 쓸 수 있는 수단은 표준 시퀀스다 — `\e[25m` (blink 해제) · `\e[0m` / `reset` / `tput sgr0`.
+
 ---
 
 ## 부록 A — 미구현 항목 (cross-platform 동등성 룰)
