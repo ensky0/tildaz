@@ -1572,7 +1572,7 @@ const Client = struct {
             // drainOutputRecreate 보다 먼저 — mapped basis 전환은 여기서
             // pending_output_recreate 를 set 하고 아래 drain 이 같은 iteration 에 처리.
             self.drainSurfaceOutputs() catch |err| {
-                log.appendLineVerbose("wayland", "drainSurfaceOutputs 실패: {s}", .{@errorName(err)});
+                log.appendLineVerbose("wayland", "drainSurfaceOutputs failed: {s}", .{@errorName(err)});
             };
             // #241 — visible 상태 output topology 변화로 closed 된 경우의 재생성도
             // outer dispatchBuffered 밖에서(swapMainSurfaceSeamless 가 configure pump).
@@ -3031,25 +3031,25 @@ const Client = struct {
         // 바이너리로** software / GPU 두 경로를 각각 찍어 비교.
         if (posix.getenv("TILDAZ_DISABLE_GPU")) |value| {
             if (!std.mem.eql(u8, value, "0")) {
-                log.appendLine("gpu", "software 경로 — TILDAZ_DISABLE_GPU 로 비활성화", .{});
+                log.appendLine("gpu", "software path — disabled by TILDAZ_DISABLE_GPU", .{});
                 return;
             }
         }
         if (self.linux_dmabuf_id == 0) {
-            log.appendLineVerbose("gpu", "software 경로 — compositor 가 zwp_linux_dmabuf_v1 을 노출하지 않음", .{});
+            log.appendLineVerbose("gpu", "software path — compositor does not advertise zwp_linux_dmabuf_v1", .{});
             return;
         }
         var api = gbm.Api.load() catch |err| {
-            log.appendLineVerbose("gpu", "software 경로 — libgbm 로드 실패 ({s})", .{@errorName(err)});
+            log.appendLineVerbose("gpu", "software path — libgbm load failed ({s})", .{@errorName(err)});
             return;
         };
         const drm_fd = gbm.openRenderNode() orelse {
-            log.appendLineVerbose("gpu", "software 경로 — DRM render node 를 열 수 없음", .{});
+            log.appendLineVerbose("gpu", "software path — cannot open DRM render node", .{});
             api.deinit();
             return;
         };
         const device = api.createDevice(drm_fd) orelse {
-            log.appendLineVerbose("gpu", "software 경로 — gbm device 생성 실패", .{});
+            log.appendLineVerbose("gpu", "software path — gbm device creation failed", .{});
             posix.close(drm_fd);
             api.deinit();
             return;
@@ -3082,19 +3082,19 @@ const Client = struct {
                         if (gpuTimingRequested()) {
                             software_terminal.timing_enabled = true;
                             self.gpu_timer = egl.GpuTimer.create(gl_api);
-                            log.appendLine("gpu", "GPU 시간 계측 {s} (TILDAZ_GPU_TIMING)", .{
-                                if (self.gpu_timer != null) @as([]const u8, "켬") else "불가 — GL_EXT_disjoint_timer_query 없음",
+                            log.appendLine("gpu", "GPU timing {s} (TILDAZ_GPU_TIMING)", .{
+                                if (self.gpu_timer != null) @as([]const u8, "on") else "unavailable — no GL_EXT_disjoint_timer_query",
                             });
                         }
                         self.gl_render_enabled = true;
                         self.gpu_enabled = true;
-                        log.appendLine("gpu", "GL 렌더 활성 — modifier=0x{x:0>16}", .{self.gl_modifier.?});
+                        log.appendLine("gpu", "GL render enabled — modifier=0x{x:0>16}", .{self.gl_modifier.?});
                         return;
                     }
                     self.gl_batch.?.deinit(gl_api, self.allocator);
                     self.gl_batch = null;
                 }
-                log.appendLine("gpu", "셰이더 준비 실패 — GL 없이 기존 경로로", .{});
+                log.appendLine("gpu", "shader setup failed — continuing without GL", .{});
             }
         }
         // 여기까지 왔으면 GL 을 쓰지 않는다 — 협상용 context 를 놓는다.
@@ -3103,7 +3103,7 @@ const Client = struct {
         // 현재 그리기는 CPU 가 하므로 `gbm_bo_map` 이 되는 LINEAR 가 필요하다.
         // 없으면 GPU 자원을 놓고 software 로 돈다 (아직 쓸 데가 없으므로).
         if (!self.dmabuf_linear_supported) {
-            log.appendLineVerbose("gpu", "software 경로 — ARGB8888 + LINEAR modifier 미지원 (CPU 가 dma-buf 에 그려야 함)", .{});
+            log.appendLineVerbose("gpu", "software path — ARGB8888 + LINEAR modifier unsupported (CPU must draw into the dma-buf)", .{});
             if (self.gpu) |*gpu| {
                 gpu.deinit();
                 self.gpu = null;
@@ -3203,7 +3203,7 @@ const Client = struct {
             self.dmabuf_tranche_index += 1;
         }
         if (self.dmabuf_main_device != 0 and self.dmabuf_tranche_device != self.dmabuf_main_device) {
-            log.appendLineVerbose("gpu", "dmabuf tranche {d} 건너뜀 — 다른 device (0x{x} != 0x{x})", .{
+            log.appendLineVerbose("gpu", "dmabuf tranche {d} skipped — different device (0x{x} != 0x{x})", .{
                 self.dmabuf_tranche_index,
                 self.dmabuf_tranche_device,
                 self.dmabuf_main_device,
@@ -3221,7 +3221,7 @@ const Client = struct {
             self.dmabuf_tranche_ends[self.dmabuf_tranche_end_count] = self.dmabuf_mod_count;
             self.dmabuf_tranche_end_count += 1;
         }
-        log.appendLineVerbose("gpu", "dmabuf tranche {d}: ARGB8888 {d} 종{s}", .{
+        log.appendLineVerbose("gpu", "dmabuf tranche {d}: ARGB8888 modifiers={d}{s}", .{
             self.dmabuf_tranche_index,
             self.dmabuf_tranche_count,
             if (self.dmabuf_tranche_scanout) @as([]const u8, " (scanout)") else "",
@@ -3235,7 +3235,7 @@ const Client = struct {
             posix.munmap(@constCast(table));
             self.dmabuf_format_table = null;
         }
-        log.appendLine("gpu", "dmabuf feedback — main_device=0x{x} tranche {d} 개, ARGB8888 후보 {d} 종 (선호 순)", .{
+        log.appendLine("gpu", "dmabuf feedback — main_device=0x{x} tranches={d} ARGB8888 candidates={d} (preferred first)", .{
             self.dmabuf_main_device,
             self.dmabuf_tranche_index,
             self.dmabuf_mod_count,
@@ -3257,7 +3257,7 @@ const Client = struct {
         var owned_ctx: ?egl.Context = null;
         if (self.gl_context == null) {
             owned_ctx = egl.Context.create(gpu.device) orelse {
-                log.appendLine("gpu", "GLES 렌더러 불가 — EGL context 생성 실패", .{});
+                log.appendLine("gpu", "GLES renderer unavailable — EGL context creation failed", .{});
                 return;
             };
             self.gl_context = owned_ctx;
@@ -3293,9 +3293,9 @@ const Client = struct {
                 }
                 gpu.api.destroyBo(b);
             }
-            log.appendLine("gpu", "modifier 고정 요청 0x{x:0>16} — {s} (TILDAZ_GL_MODIFIER)", .{
+            log.appendLine("gpu", "modifier pin requested 0x{x:0>16} — {s} (TILDAZ_GL_MODIFIER)", .{
                 forced,
-                if (self.gl_modifier != null) @as([]const u8, "채택") else "실패, 협상으로",
+                if (self.gl_modifier != null) @as([]const u8, "accepted") else "failed, falling back to negotiation",
             });
             if (self.gl_modifier != null) {
                 self.gl_context = ctx;
@@ -3341,7 +3341,7 @@ const Client = struct {
                     break;
                 }
                 // 드라이버가 고른 것을 GL 이 못 받는다 — 빼고 다시 고르게 한다.
-                log.appendLineVerbose("gpu", "modifier 0x{x:0>16} (plane {d}) import 실패 — 후보에서 제외", .{ chosen, plane_count });
+                log.appendLineVerbose("gpu", "modifier 0x{x:0>16} (plane {d}) import failed — dropped from candidates", .{ chosen, plane_count });
                 var w: usize = 0;
                 for (pool[0..pool_len]) |m| {
                     if (m == chosen) continue;
@@ -3355,16 +3355,16 @@ const Client = struct {
         }
 
         if (self.gl_modifier) |modifier| {
-            log.appendLine("gpu", "GLES 렌더러 가능 — modifier=0x{x:0>16}{s} plane={d}{s} renderer={s} version={s}", .{
+            log.appendLine("gpu", "GLES renderer available — modifier=0x{x:0>16}{s} plane={d}{s} renderer={s} version={s}", .{
                 modifier,
                 if (modifier == gbm.MOD_LINEAR) @as([]const u8, " (LINEAR)") else " (tiled)",
                 self.gl_plane_count,
-                if (self.dmabuf_mods_ordered) @as([]const u8, " feedback-선호") else " v3-목록",
+                if (self.dmabuf_mods_ordered) @as([]const u8, " feedback-preferred") else " v3-list",
                 ctx.rendererName(),
                 ctx.versionName(),
             });
         } else {
-            log.appendLine("gpu", "GLES 렌더러 불가 — 공표 modifier {d} 종이 모두 FBO 실패", .{self.dmabuf_mod_count});
+            log.appendLine("gpu", "GLES renderer unavailable — all {d} advertised modifiers failed FBO", .{self.dmabuf_mod_count});
         }
         self.gl_context = ctx;
     }
@@ -3389,8 +3389,8 @@ const Client = struct {
         // 사실과 어긋나고 `render_path` 로그가 거짓을 말한다.
         const was_gl = self.gl_render_enabled;
         self.gl_render_enabled = false;
-        log.appendLine("gpu", "{s} 경로 중단 — {s}. software wl_shm 으로 되돌린다", .{
-            if (was_gl) @as([]const u8, "GL 렌더") else "dmabuf",
+        log.appendLine("gpu", "{s} path aborted — {s}. falling back to software wl_shm", .{
+            if (was_gl) @as([]const u8, "GL render") else "dmabuf",
             reason,
         });
     }
@@ -3416,7 +3416,7 @@ const Client = struct {
                 self.disableGpu("gbm 할당 실패");
                 return null;
             }
-            log.appendLine("gpu", "modifier 0x{x:0>16} 이 {d}x{d} 에서 할당 실패 — 이 크기로 재협상", .{ want_modifier, width, height });
+            log.appendLine("gpu", "modifier 0x{x:0>16} allocation failed at {d}x{d} — renegotiating for this size", .{ want_modifier, width, height });
             self.negotiateGlModifier(@intCast(width), @intCast(height));
             const retry_modifier = self.gl_modifier orelse {
                 self.disableGpu("이 크기에 쓸 수 있는 modifier 가 없다");
@@ -3791,7 +3791,7 @@ const Client = struct {
                     if (t.averageNs()) |avg| {
                         const rc = perf.snapshot(&perf.render);
                         const nf = @max(software_terminal.acc_frames, 1);
-                        log.appendLine("gpu", "프레임 CPU 평균 update={d:.1} collect={d:.1} µs (셀 순회 {d:.1}) (프레임 {d}) [전체 {d:.1} µs]", .{
+                        log.appendLine("gpu", "frame CPU avg update={d:.1} collect={d:.1} µs (cell walk {d:.1}) (frames {d}) [total {d:.1} µs]", .{
                             @as(f64, @floatFromInt(software_terminal.acc_update_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             @as(f64, @floatFromInt(software_terminal.acc_collect_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             @as(f64, @floatFromInt(software_terminal.acc_cells_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
@@ -3802,7 +3802,7 @@ const Client = struct {
                         software_terminal.acc_collect_ns = 0;
                         software_terminal.acc_cells_ns = 0;
                         software_terminal.acc_frames = 0;
-                        log.appendLine("gpu", "프레임 GPU 시간 평균 {d:.1} µs (표본 {d}, 버린 것 {d}, {d}x{d}, modifier=0x{x:0>16} plane={d})", .{
+                        log.appendLine("gpu", "frame GPU avg {d:.1} µs (samples {d}, discarded {d}, {d}x{d}, modifier=0x{x:0>16} plane={d})", .{
                             @as(f64, @floatFromInt(avg)) / 1000.0,
                             t.samples,
                             t.discarded,
@@ -6257,7 +6257,7 @@ const Client = struct {
         if (std.mem.eql(u8, interface, "wl_output")) {
             self.output_topology_pending = true;
             const slot = self.findOutputSlot(.{ .global_name = name }) orelse self.findOutputSlot(.empty) orelse {
-                log.appendLine("wayland", "wl_output name={} ignored — {} tracked outputs 초과 (#295)", .{ name, max_tracked_outputs });
+                log.appendLine("wayland", "wl_output name={} ignored — exceeds {} tracked outputs (#295)", .{ name, max_tracked_outputs });
                 return;
             };
             if (slot.global_name == 0) slot.* = .{ .global_name = name, .version = version };

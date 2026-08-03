@@ -30,7 +30,7 @@ var handling: bool = false;
 
 pub fn handle(allocator: std.mem.Allocator) void {
     if (handling) {
-        log.appendLine("new-instance", "재진입 요청 drop (프롬프트 진행 중) — #301", .{});
+        log.appendLine("new-instance", "dropped re-entrant request (prompt in progress) — #301", .{});
         return;
     }
     handling = true;

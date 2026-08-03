@@ -384,9 +384,9 @@ pub const D3d11Renderer = struct {
             const vis3: *d3d.IDCompositionVisual3 = @ptrCast(@alignCast(vis3_any.?));
             const hr_op = vis3.SetOpacity(@as(f32, @floatFromInt(opacity)) / 255.0);
             _ = vis3.Release();
-            if (hr_op < 0) log.appendLine("d3d", "DComp SetOpacity failed hr=0x{x} — opacity 미적용", .{@as(u32, @bitCast(hr_op))});
+            if (hr_op < 0) log.appendLine("d3d", "DComp SetOpacity failed hr=0x{x} — opacity not applied", .{@as(u32, @bitCast(hr_op))});
         } else {
-            log.appendLine("d3d", "IDCompositionVisual3 QI failed — opacity 미적용", .{});
+            log.appendLine("d3d", "IDCompositionVisual3 QI failed — opacity not applied", .{});
         }
 
         if (dcomp_target.*.?.SetRoot(vis) < 0) return false;

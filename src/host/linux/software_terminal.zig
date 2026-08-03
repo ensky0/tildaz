@@ -471,7 +471,7 @@ pub const Renderer = struct {
                 spec.cell_width_ratio,
                 spec.line_height_ratio,
             ) catch |err| blk: {
-                log.appendLine("font", "dialog 본문 폰트 생성 실패 ({s}) — 탭 폰트로 대신 그린다", .{@errorName(err)});
+                log.appendLine("font", "dialog body font creation failed ({s}) — drawing with the tab font", .{@errorName(err)});
                 break :blk null;
             };
         }
@@ -484,7 +484,7 @@ pub const Renderer = struct {
                 spec.cell_width_ratio,
                 spec.line_height_ratio,
             ) catch |err| blk: {
-                log.appendLine("font", "dialog 제목 폰트 생성 실패 ({s}) — 탭 폰트로 대신 그린다", .{@errorName(err)});
+                log.appendLine("font", "dialog title font creation failed ({s}) — drawing with the tab font", .{@errorName(err)});
                 break :blk null;
             };
         }
