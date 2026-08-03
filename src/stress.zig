@@ -95,10 +95,13 @@ pub fn main() !void {
         else => return err,
     };
 
-    switch (opts.layer) {
-        .parser => try runParser(alloc, opts),
-        .pty => try runPty(alloc, opts),
-        .frame => try runFrame(alloc, opts),
+    switch (opts.command) {
+        .throughput => switch (opts.layer) {
+            .parser => try runParser(alloc, opts),
+            .pty => try runPty(alloc, opts),
+            .frame => try runFrame(alloc, opts),
+        },
+        .scrollback => try runScrollback(alloc, opts),
     }
 }
 
@@ -141,9 +144,12 @@ fn produce(req: ProducerRequest) !void {
 
 // --- 옵션 ---
 
+const Command = enum { throughput, scrollback };
+
 const Layer = enum { parser, pty, frame };
 
 const Options = struct {
+    command: Command = .throughput,
     layer: Layer = .parser,
     workload_kind: workload.Kind = .plain,
     bytes: u64 = 64 * 1024 * 1024,
@@ -155,13 +161,17 @@ const Options = struct {
     /// `frame` 층이 모사할 프레임 주기. 실제 앱은 디스플레이 재생률에 맞춰 돌므로
     /// 재는 화면의 재생률을 넣는다 (일반 화면 60, 고주사율 120 등).
     fps: u32 = 60,
+    /// `scrollback` 명령이 출력을 몇 구간으로 나눠 볼지. 구간마다 처리 속도를 따로
+    /// 재서 뒤로 갈수록 느려지는지 본다.
+    segments: u32 = 8,
 };
 
 fn parseArgs(args: []const []const u8) !Options {
     if (args.len < 2) return error.Usage;
-    if (!std.mem.eql(u8, args[1], "throughput")) return error.Usage;
 
     var opts: Options = .{};
+    opts.command = std.meta.stringToEnum(Command, args[1]) orelse return error.Usage;
+
     var i: usize = 2;
     while (i < args.len) : (i += 2) {
         if (i + 1 >= args.len) return error.Usage;
@@ -187,6 +197,9 @@ fn parseArgs(args: []const []const u8) !Options {
         } else if (std.mem.eql(u8, key, "--fps")) {
             opts.fps = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
             if (opts.fps == 0) return error.Usage;
+        } else if (std.mem.eql(u8, key, "--segments")) {
+            opts.segments = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
+            if (opts.segments == 0 or opts.segments > max_segments) return error.Usage;
         } else {
             return error.Usage;
         }
@@ -196,15 +209,19 @@ fn parseArgs(args: []const []const u8) !Options {
 
 fn printUsage() !void {
     try std.fs.File.stdout().writeAll(
-        \\usage: zig build stress -- throughput [options]
+        \\usage: zig build stress -- <throughput | scrollback> [options]
         \\
-        \\  --layer      parser | pty | frame  (default: parser)
+        \\  throughput   how fast bulk output is consumed
+        \\  scrollback   whether the rate holds as scrollback accumulates (#278)
+        \\
+        \\  --layer      parser | pty | frame  (default: parser, throughput only)
         \\  --workload   plain | ansi | cjk    (default: plain)
         \\  --mb         MiB to push           (default: 64)
         \\  --cols       grid columns          (default: 120)
         \\  --rows       grid rows             (default: 40)
         \\  --scrollback scrollback lines      (default: config default)
         \\  --fps        frame layer only      (default: 60)
+        \\  --segments   scrollback only       (default: 8)
         \\
         \\Grid size changes the parser's line-wrapping work, so always report it
         \\together with the numbers.
@@ -401,10 +418,12 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
     var first_data_ns: ?u64 = null;
     var last_data_ns: u64 = 0;
     while (true) {
-        const chunks = tab.drainAllForStress();
+        // 한 덩어리씩 받는다 — `drainChunkForStress` 주석의 이유대로, 우리가 producer
+        // 보다 느리면 "빌 때까지" 도는 형태는 반환하지 않는다.
+        const had_data = tab.drainChunkForStress();
         const now_ns = timer.read();
 
-        if (chunks > 0) {
+        if (had_data) {
             if (first_data_ns == null) first_data_ns = now_ns;
             last_data_ns = now_ns;
         } else {
@@ -548,6 +567,175 @@ fn freeShellCommand(alloc: std.mem.Allocator, cmd: terminal.ShellCommand) void {
     } else {
         alloc.free(cmd);
     }
+}
+
+// --- command: scrollback ---
+
+/// 구간 수 상한. 리포트를 고정 버퍼에 쓰기 때문에 걸어 둔다.
+const max_segments = 32;
+
+const Segment = struct {
+    bytes: u64,
+    ns: u64,
+    /// 이 구간이 끝난 시점의 scrollback 줄 수 (화면 밖으로 밀려난 줄 포함).
+    scrollback_lines: usize,
+    peak_rss: ?u64,
+};
+
+/// 대량 출력을 구간으로 나눠 **구간마다 처리 속도를 따로** 잰다 (#278 ①).
+///
+/// 처리량 명령과 목적이 다르다 — 절대 속도가 아니라 **뒤로 갈수록 느려지는지**를
+/// 본다. scrollback 이 쌓이면서 소화 속도가 떨어지면 줄 수에 비례하지 않는 비용이
+/// 어딘가 있다는 뜻이고, 그건 오래 켜 둔 터미널에서만 드러나는 종류의 회귀다.
+/// 같은 이유로 메모리 최고치도 함께 본다.
+///
+/// 프레임 예산이 없는 경로 (`pty` 층과 같은 방식) 로 돌린다 — 예산에 눌린 상태에서는
+/// 구간 간 차이가 예산에 가려 안 보인다.
+fn runScrollback(alloc: std.mem.Allocator, opts: Options) !void {
+    var segments: [max_segments]Segment = undefined;
+    var segment_count: usize = 0;
+
+    resetCounters();
+    var timer = try std.time.Timer.start();
+
+    const session = try ProducerSession.start(alloc, opts);
+    defer session.deinit();
+    const tab = try session.tab();
+
+    // 구간 경계는 **바이트**로 잡는다. chunk 수로 잡으면 안 된다 — ring pop 은 그 순간
+    // ring 에 있는 만큼만 가져오므로 chunk 하나가 64 KiB 가 아니라 평균 1 KiB 정도다
+    // (우리가 producer 보다 빨라서 대개 조금씩 비운다). 실측에서 chunk 기준으로 나눴을
+    // 때 앞 8 구간이 550 KiB 씩이고 나머지 267 MiB 가 마지막 한 구간에 몰렸다.
+    //
+    // 누적 바이트는 `perf.drain` 카운터를 리셋하지 않고 읽는다. 원자 load 라 매 루프
+    // 읽어도 부담이 없고, 구간 값은 차분으로 낸다.
+    const bytes_per_segment = @max(opts.bytes / opts.segments, 1);
+
+    var segment_start_bytes: u64 = 0;
+    var segment_start_ns = timer.read();
+    var last_data_ns: u64 = 0;
+
+    while (true) {
+        const had_data = tab.drainChunkForStress();
+        const now_ns = timer.read();
+
+        if (had_data) {
+            last_data_ns = now_ns;
+
+            // 마지막 구간은 루프 밖에서 남은 전부를 담는다 — 여기서 닫으면 잔여가
+            // 작은 구간으로 따로 떨어져 나와 잡음이 된다.
+            const total_bytes = perf.drain.bytes.load(.monotonic);
+            if (total_bytes - segment_start_bytes >= bytes_per_segment and
+                segment_count + 1 < opts.segments)
+            {
+                segments[segment_count] = .{
+                    .bytes = total_bytes - segment_start_bytes,
+                    .ns = now_ns - segment_start_ns,
+                    .scrollback_lines = scrollbackLines(tab),
+                    .peak_rss = peakRssBytes(),
+                };
+                segment_count += 1;
+                segment_start_bytes = total_bytes;
+                segment_start_ns = now_ns;
+            }
+        } else {
+            if (session.exited() and now_ns - last_data_ns > drain_quiet_ns) break;
+            std.Thread.yield() catch {};
+        }
+
+        if (now_ns > total_timeout_ns) return error.StressTimeout;
+    }
+
+    const total_bytes = perf.drain.bytes.load(.monotonic);
+    if (total_bytes > segment_start_bytes and segment_count < max_segments) {
+        segments[segment_count] = .{
+            .bytes = total_bytes - segment_start_bytes,
+            .ns = last_data_ns - segment_start_ns,
+            .scrollback_lines = scrollbackLines(tab),
+            .peak_rss = peakRssBytes(),
+        };
+        segment_count += 1;
+    }
+
+    try reportScrollback(opts, segments[0..segment_count]);
+}
+
+/// 화면 밖으로 밀려난 줄까지 포함한 현재 총 줄 수. 앱의 스크롤바가 쓰는 것과 같은
+/// 값이라 (`app_controller.scrollbarHit` 등) 사용자가 보는 스크롤 범위와 일치한다.
+fn scrollbackLines(tab: *session_core.Tab) usize {
+    return tab.terminal.screens.active.pages.scrollbar().total;
+}
+
+/// 프로세스 메모리 최고치. `getrusage` 의 `maxrss` 는 **단위가 OS 마다 다르다** —
+/// macOS 는 byte, Linux 는 KiB 로 보고한다 (`getrusage(2)`).
+///
+/// Windows 는 `null` 이다. `GetProcessMemoryInfo` 를 따로 불러야 하는데, 이 하네스가
+/// Windows 에서 아직 검증되지 않았으므로 먼저 그것부터 확인한 뒤에 붙인다.
+fn peakRssBytes() ?u64 {
+    if (builtin.os.tag == .windows) return null;
+    const usage = std.posix.getrusage(std.posix.rusage.SELF);
+    if (usage.maxrss <= 0) return null;
+    const raw: u64 = @intCast(usage.maxrss);
+    return if (builtin.os.tag == .macos) raw else raw * 1024;
+}
+
+fn reportScrollback(opts: Options, segments: []const Segment) !void {
+    var buf: [8192]u8 = undefined;
+    var w = Report{ .buf = &buf };
+    const mib = 1024.0 * 1024.0;
+
+    w.print("=== tildaz stress: scrollback ===\n", .{});
+    w.print("workload      {s}\n", .{@tagName(opts.workload_kind)});
+    w.print("grid          {d}x{d}\n", .{ opts.cols, opts.rows });
+    w.print("scrollback    {d} lines (config limit)\n", .{opts.scroll_lines});
+    w.print("requested     {d} bytes ({d:.1} MiB)\n", .{
+        opts.bytes,
+        @as(f64, @floatFromInt(opts.bytes)) / mib,
+    });
+    w.print("build         {s} simd={} version={s}\n", .{
+        @tagName(builtin.mode),
+        build_options.simd,
+        build_options.version,
+    });
+    w.print("platform      {s} {s}\n", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
+    w.print("\n", .{});
+
+    w.print("segment  consumed      MiB/s    scrollback lines   peak RSS\n", .{});
+    var first_rate: f64 = 0;
+    var worst_rate: f64 = 0;
+    for (segments, 0..) |seg, i| {
+        const seconds = @as(f64, @floatFromInt(seg.ns)) / std.time.ns_per_s;
+        const rate = if (seconds > 0) (@as(f64, @floatFromInt(seg.bytes)) / mib) / seconds else 0;
+        if (i == 0) {
+            first_rate = rate;
+            worst_rate = rate;
+        } else if (rate < worst_rate) {
+            worst_rate = rate;
+        }
+
+        w.print("{d: <8} {d: <13} {d: <8.1} {d: <18} ", .{ i + 1, seg.bytes, rate, seg.scrollback_lines });
+        if (seg.peak_rss) |rss| {
+            w.print("{d:.1} MiB\n", .{@as(f64, @floatFromInt(rss)) / mib});
+        } else {
+            w.print("(unavailable)\n", .{});
+        }
+    }
+    w.print("\n", .{});
+
+    // 뒤 구간이 첫 구간보다 크게 느려지면 줄 수에 비례하지 않는 비용이 있다는 신호다.
+    // 다만 이 하네스는 같은 조건 재실행도 ±15 % 흔들리므로 한 번의 결과로 단정하지
+    // 않는다 — 여러 번 돌려 같은 방향이 나오는지 본다.
+    if (first_rate > 0) {
+        const ratio = worst_rate / first_rate;
+        w.print("slowest / first segment  {d:.2}x", .{ratio});
+        if (ratio < 0.7) {
+            w.print("  ← 뒤 구간이 크게 느려졌다. 여러 번 돌려 확인할 것\n", .{});
+        } else {
+            w.print("  (측정 흔들림 범위)\n", .{});
+        }
+    }
+
+    try std.fs.File.stdout().writeAll(w.slice());
 }
 
 // --- 리포트 ---
