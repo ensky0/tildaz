@@ -368,6 +368,27 @@ Windows 경로는 `dist/windows/package.ps1`을 PowerShell로 호출하며 WSL/G
 UNC 경로를 사용해요. distro 이름을 `Debian`으로 가정하거나 `\\wsl.localhost\...` 경로를
 기본값으로 쓰지 않아요.
 
+**macOS 에서 앱을 띄울 때는 항상 `open` 으로 `.app` 번들을 열어요** (2026-08-03 사용자 지적).
+macOS 빌드 산출물은 CLI 바이너리가 아니라 `zig-out/TildaZ.app` 번들이고, 실행 방법이 두 가지인데
+**권한이 필요한 동작은 `open` 쪽만 정상이에요.**
+
+```sh
+open ./zig-out/TildaZ.app                          # ✅ 이걸 써요
+./zig-out/TildaZ.app/Contents/MacOS/tildaz         # ⚠️ 권한 문제 — 아래 참고
+```
+
+- 터미널에서 바이너리를 직접 띄우면 그 프로세스의 권한 요청을 macOS 가 **부모 (터미널 앱) 기준**으로
+  평가해요. 그래서 TildaZ.app 자신에게 부여해 둔 *Input Monitoring* · *Accessibility* 권한을 쓰지
+  못하고, 전역 핫키 (CGEventTap, [`src/host/macos.zig`](src/host/macos.zig)) 가 안 먹어요. 권한
+  설정 절차는 [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 에 있어요.
+- `open` 은 LaunchServices 를 거치니 TildaZ.app 이 자기 identity 로 뜨고 `Info.plist` 키
+  (Accessory mode 등) 도 정상 적용돼요.
+- 터미널에 붙여서 로그를 보려고 직접 실행하는 건 **권한이 필요 없는 검증** (렌더링 / 파싱 / PTY 왕복)
+  에서만 써요. 로그는 `Shift+Cmd+L` 이나 `~/Library/Logs/tildaz_N.log` 로 봐요.
+- ad-hoc 서명은 매 빌드마다 바이너리 해시가 바뀌어서 Input Monitoring 권한이 stale 해져요 (#109).
+  핫키가 갑자기 안 들으면 시스템 설정에서 토글 OFF/ON 하거나 `tccutil reset All me.ensky0.tildaz`
+  로 초기화하고 다시 허용해요.
+
 **빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`-Clean` / `-Optimize` / `-Check` / `-Test` / `-NoSimd` 지원). 직접 호출 시:
 - 전체 빌드: `zig build -Doptimize=ReleaseFast -Dsimd=true`
 - Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true`
