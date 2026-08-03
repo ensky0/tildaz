@@ -1256,6 +1256,10 @@ const Client = struct {
     /// scrollback 까지 선택 연장. 선택 종료(button release)에서 0 으로.
     sel_autoscroll_dir: i8 = 0,
     sel_autoscroll_next_ms: i64 = 0,
+    /// #376 — 직전 tick 의 blink 위상. 이 값이 **바뀌는 tick 에만** redraw 를
+    /// 요청한다. "화면에 blink 셀이 있다" 로 열면 매 tick(16ms) 그리게 되지만,
+    /// 위상 전환은 1초에 두 번뿐이라 추가 렌더가 초당 2프레임이다.
+    last_blink_phase: bool = false,
     /// L12-γ-3 — tab drag-and-drop reorder state. cross-platform
     /// `tab_interaction.DragState` — mac / win 공유. `handleTabBarClick`
     /// 의 본체 single-click 에서 `begin`, `handlePointerMotion` 에서 `move`
@@ -1604,6 +1608,15 @@ const Client = struct {
                     self.requestRedraw();
                 }
             }
+            // #376 — blink 위상이 뒤집힌 **그 tick 에만**, 그리고 직전 프레임에
+            // blink 셀이 실제로 보였을 때만 요청한다. 둘을 함께 봐야 blink 이 없는
+            // 화면에서 공짜로 초당 2프레임을 낭비하지 않는다. dialog inner pump 는
+            // 터미널이 가려진 상태라 넣지 않는다 — 닫히면 이 루프가 다시 잡는다.
+            const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+            if (blink_phase_now != self.last_blink_phase and self.renderer.saw_blink_cell) {
+                self.requestRedraw();
+            }
+            self.last_blink_phase = blink_phase_now;
             try self.maybeRedraw();
             // #193 — command menu 열림/닫힘 등 state 변화 후 mouse 안 움직여도 즉시
             // cursor 갱신. cached `last_cursor_shape` 비교라 no-op 자주.

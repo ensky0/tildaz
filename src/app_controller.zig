@@ -34,6 +34,10 @@ pub const App = struct {
     shell: []const u8 = "",
     renderer: ?RendererBackend = null,
     last_render_ms: i64 = 0,
+    /// #376 — 직전 tick 의 blink 위상. 이 값이 **바뀌는 프레임에만** 렌더 게이트를
+    /// 연다. "화면에 blink 셀이 있다" 로 열면 매 tick(16ms) 그리게 되지만, 위상
+    /// 전환은 1초에 두 번뿐이라 추가 렌더가 초당 2프레임이다.
+    last_blink_phase: bool = false,
     /// 탭 drag-and-drop reorder state. cross-platform `tab_interaction.DragState`
     /// — macOS `g_drag` / Linux `tab_drag` 와 같은 모듈.
     tab_drag: tab_interaction.DragState = .{},
@@ -396,13 +400,20 @@ pub const App = struct {
             // 적용하면 typing 도중 preedit 안 보이거나 늦게 따라옴 (#164 회귀).
             const force_render = self.window.imePreeditSlice().len > 0;
 
+            // #376 — blink 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에
+            // blink 셀이 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는
+            // 화면에서 공짜로 초당 2프레임을 낭비하지 않는다.
+            const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+            const blink_tick = blink_phase_now != self.last_blink_phase and r.saw_blink_cell;
+            self.last_blink_phase = blink_phase_now;
+
             // #117 — 활성 탭이 viewport 에 보이도록 scroll 갱신. drag 중인 동안은
             // handleDragMove 가 직접 auto-scroll 하므로 skip. 사용자 화살표
             // override 중에도 skip — 활성 탭 변경 시 reset 되어 재가동.
             if (!self.tab_drag.active and !self.tab_scroll_user_override)
                 self.ensureActiveTabVisible();
 
-            if (should_render or force_render) {
+            if (should_render or force_render or blink_tick) {
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함).
                 // count<=1 이면 tab_bar_h=0 → 렌더러가 탭바 자체를 그리지 않고
                 // 터미널 영역만 (#127 — 단일 탭에서 cell 영역 reserve 안 함).

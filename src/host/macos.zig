@@ -350,6 +350,11 @@ var g_pending_close_mutex: std.Thread.Mutex = .{};
 /// init=true(첫 프레임). requestRender() 로 set, render 후 clear.
 var g_needs_render: bool = true;
 
+/// #376 — 직전 tick 의 blink 위상. 이 값이 **바뀌는 프레임에만** 렌더 게이트를
+/// 연다. "화면에 blink 셀이 있다" 로 열면 매 vsync 그리게 돼 #255 의 절전이
+/// 사라지지만, 위상 전환은 1초에 두 번뿐이라 추가 렌더가 초당 2프레임이다.
+var g_last_blink_phase: bool = false;
+
 /// #245 — drag-select auto-scroll (mac). 선택 드래그 중 포인터가 grid 위/아래 경계
 /// 밖이면 방향(-1=위/older, +1=아래/newer, 0=비활성) + 마지막 drag px 저장. 60fps
 /// 렌더 tick(renderFrameTick)이 이 동안 viewport 스크롤 + selection.update 재호출
@@ -3149,9 +3154,17 @@ fn renderFrameTick() void {
     // 반환값은 활성 탭 본문 또는 어느 탭이든 제목이 바뀌어 현재 화면 redraw가
     // 필요한지 나타낸다. 비활성 탭 본문만 바뀌면 parse하되 GPU render는 생략한다.
     const had_output = g_session.drainOutputForRender();
-    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ preedit/autoscroll.
+    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ preedit/autoscroll
+    // ④ blink 위상 전환 (#376).
     const force_render = g_preedit_len > 0 or did_autoscroll;
-    if (!had_output and !force_render and !g_needs_render) {
+    // #376 — 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에 blink 셀이
+    // 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는 화면에서 공짜로
+    // 초당 2프레임을 낭비하지 않는다.
+    const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+    const blink_tick = blink_phase_now != g_last_blink_phase and
+        (if (g_renderer) |r| r.saw_blink_cell else false);
+    g_last_blink_phase = blink_phase_now;
+    if (!had_output and !force_render and !g_needs_render and !blink_tick) {
         // 변화 없음(idle) → 비싼 render 작업(GPU encode/present) skip. displayLink
         // 는 계속 돌므로 다음 출력/입력은 다음 frame 이 즉시 잡는다(별도 wake 불필요).
         // 단 show 직후 화면 표시(합성)가 확정되기 *전* 이면 skip 하지 않고 정적

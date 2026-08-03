@@ -189,6 +189,10 @@ pub const D3d11Renderer = struct {
     /// 현재 DPI scale (dpi/96). pt → px 변환에 곱하는 단일 scale 값 — UI metric
     /// (탭바 아이콘 크기/두께 등) 이 이 값을 쓴다. init / DPI 변경 시 갱신.
     pixels_per_dip: f32 = 1.0,
+    /// #376 — 직전 프레임에 blink 셀이 화면에 있었나. host 의 렌더 게이트가 이
+    /// 값과 위상 전환을 **함께** 봐서, blink 이 실제로 보일 때만 초당 2프레임을
+    /// 추가로 그린다. "blink 셀이 있다" 만으로 게이트를 열면 매 tick 그리게 된다.
+    saw_blink_cell: bool = false,
     render_state: ghostty.RenderState = .empty,
     /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
     /// renderTerminal cell cursor 그리면서
@@ -1193,6 +1197,11 @@ pub const D3d11Renderer = struct {
         var text_buf: [MAX_CELLS]TextInstance = undefined;
         var text_count: u32 = 0;
 
+        // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
+        // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
+        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+        self.saw_blink_cell = false;
+
         // --- Background pass ---
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
@@ -1206,7 +1215,12 @@ pub const D3d11Renderer = struct {
                 const raw = raws[x];
                 if (raw.wide == .spacer_tail) continue;
 
-                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                // #376 — bg pass 는 **모든 셀**을 돌므로 blink 셀 존재 판정을 여기서
+                // 한다 (text pass 는 글자 있는 셀만 본다). 위상이 off 면 `faint` 를
+                // 세워 fg 해석과 선 색이 한 번에 흐려지게 한다.
+                const raw_style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                if (raw_style.flags.blink) self.saw_blink_cell = true;
+                const style = cell_color.applyBlinkPhase(raw_style, blink_faint);
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
@@ -1313,7 +1327,7 @@ pub const D3d11Renderer = struct {
                         self.drawBgInstances(bg_buf[0..block_count]);
                         block_count = 0;
                     }
-                    const style_b = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                    const style_b = cell_color.applyBlinkPhase(if (raw.style_id != 0) styles[x] else ghostty.Style{}, blink_faint);
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
@@ -1363,7 +1377,7 @@ pub const D3d11Renderer = struct {
                             self.drawBgInstances(bg_buf[0..block_count]);
                             block_count = 0;
                         }
-                        const style_x = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                        const style_x = cell_color.applyBlinkPhase(if (raw.style_id != 0) styles[x] else ghostty.Style{}, blink_faint);
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
@@ -1396,7 +1410,7 @@ pub const D3d11Renderer = struct {
                     }
                 }
 
-                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                const style = cell_color.applyBlinkPhase(if (raw.style_id != 0) styles[x] else ghostty.Style{}, blink_faint);
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
