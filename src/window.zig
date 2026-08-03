@@ -580,6 +580,14 @@ pub const Window = struct {
         // fatal dialog 로 종료 + config 파일 경로 + 알려진 reservation 안내.
         self.hotkey_vkey = hotkey_vkey;
         self.hotkey_modifiers = hotkey_modifiers;
+        // #382 — vkey 0 은 "등록하지 않는다" 는 뜻이다. 측정 모드가 쓰는 통로로,
+        // 등록하면 평소 쓰는 TildaZ 와 같은 키에 두 프로세스가 반응한다. 사용자
+        // config 로는 0 이 들어올 수 없다 (`config.zig` 가 hotkey 이름을 vkey 로
+        // 바꾸고 유효하지 않으면 fatal 이다).
+        if (hotkey_vkey == 0) {
+            log.appendLine("hotkey", "global hotkey not registered (stress run)", .{});
+            return;
+        }
         if (RegisterHotKey(self.hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
@@ -845,6 +853,24 @@ pub const Window = struct {
         self.offset_percent = offset_percent;
         self.position_set = true;
         self.applyDockedRect(dock, width_percent, height_percent, offset_percent, .cursor);
+    }
+
+    /// #382 — 셀 개수로 창을 잡을 때 쓰는 환산. 창 크기 경로는 퍼센트 기반이고 (DPI ·
+    /// 해상도 변경 시 그 값으로 재적용된다) 그 구조를 그대로 두는 게 안전하므로, 필요한
+    /// 픽셀을 현재 모니터 작업영역 대비 퍼센트로 바꿔 기존 경로에 넣는다.
+    ///
+    /// 호출자는 **여유를 더한 픽셀**을 넘겨야 한다. `viewportForGrid` 는 요청한 격자가
+    /// 나오는 *가장 작은* 크기를 내는데, 퍼센트 환산에서 1 px 이라도 줄면 격자가 한 칸
+    /// 줄어든다. 셀 크기의 절반을 더하면 내림이 흡수한다.
+    pub fn percentForPixels(self: *Window, w_px: i64, h_px: i64) ?struct { w: f32, h: f32 } {
+        const mi = self.monitorInfoFor(.cursor) orelse return null;
+        const sw: i64 = mi.rcWork.right - mi.rcWork.left;
+        const sh: i64 = mi.rcWork.bottom - mi.rcWork.top;
+        if (sw <= 0 or sh <= 0) return null;
+        return .{
+            .w = @min(100.0, @as(f32, @floatFromInt(w_px)) / @as(f32, @floatFromInt(sw)) * 100.0),
+            .h = @min(100.0, @as(f32, @floatFromInt(h_px)) / @as(f32, @floatFromInt(sh)) * 100.0),
+        };
     }
 
     fn applyDockedRect(

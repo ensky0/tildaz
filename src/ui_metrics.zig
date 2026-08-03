@@ -61,6 +61,67 @@ pub fn terminalRows(viewport_h: i64, tab_bar_h: i64, pad: i64, cell_h: i64) u16 
     return @intCast(@min(@divTrunc(usable, cell_h), @as(i64, std.math.maxInt(u16))));
 }
 
+/// `terminalCols` · `terminalRows` 의 **역함수** — 원하는 격자를 담는 viewport 크기를
+/// 낸다 ([#382](https://github.com/ensky0/tildaz/issues/382) 의 `-size` 옵션).
+///
+/// 앱은 보통 창 크기에서 격자를 구하지만, 측정할 때는 반대 방향이 필요하다. 터미널마다
+/// 폰트 해석이 달라 같은 창 크기가 다른 셀 수를 주므로, 다른 터미널과 비교하려면 **셀
+/// 수를 직접 맞춰야** 한다 ([#371](https://github.com/ensky0/tildaz/issues/371) L4).
+///
+/// 위 두 함수가 `@divTrunc` 로 내림하므로 그 결과가 정확히 `cols` · `rows` 가 되는 가장
+/// 작은 크기를 낸다. 인자 단위와 의미는 두 함수와 같다 (physical px).
+///
+/// 셀 크기는 폰트 metrics 에서 나오므로 **renderer 초기화 뒤에야** 알 수 있다. 즉 호출처는
+/// 창을 먼저 띄우고 그 뒤에 이 값으로 크기를 다시 맞춰야 한다.
+pub fn viewportForGrid(
+    cols: u16,
+    rows: u16,
+    pad: i64,
+    scrollbar_w: i64,
+    tab_bar_h: i64,
+    cell_w: i64,
+    cell_h: i64,
+) struct { w: i64, h: i64 } {
+    return .{
+        .w = @as(i64, cols) * cell_w + 2 * pad + scrollbar_w,
+        .h = @as(i64, rows) * cell_h + tab_bar_h + 2 * pad,
+    };
+}
+
+test "viewportForGrid 는 terminalCols/Rows 의 역함수다" {
+    // 실기에서 나온 값 (macOS: cell=19x39px, pad=12px, scrollbar=20px, 탭 1개라 탭바 0).
+    const pad: i64 = 12;
+    const sb: i64 = 20;
+    const tab: i64 = 0;
+    const cw: i64 = 19;
+    const ch: i64 = 39;
+
+    for ([_]u16{ 1, 40, 77, 120, 424 }) |cols| {
+        for ([_]u16{ 1, 24, 40, 113 }) |rows| {
+            const vp = viewportForGrid(cols, rows, pad, sb, tab, cw, ch);
+            try std.testing.expectEqual(cols, terminalCols(vp.w, pad, sb, cw));
+            try std.testing.expectEqual(rows, terminalRows(vp.h, tab, pad, ch));
+        }
+    }
+}
+
+test "viewportForGrid 는 가장 작은 크기를 낸다 — 1px 줄면 격자가 준다" {
+    const vp = viewportForGrid(120, 40, 12, 20, 0, 19, 39);
+    try std.testing.expectEqual(@as(u16, 120), terminalCols(vp.w, 12, 20, 19));
+    try std.testing.expectEqual(@as(u16, 119), terminalCols(vp.w - 1, 12, 20, 19));
+    try std.testing.expectEqual(@as(u16, 40), terminalRows(vp.h, 0, 12, 39));
+    try std.testing.expectEqual(@as(u16, 39), terminalRows(vp.h - 1, 0, 12, 39));
+}
+
+test "viewportForGrid 는 탭바 높이를 더한다" {
+    const without = viewportForGrid(120, 40, 12, 20, 0, 19, 39);
+    const with = viewportForGrid(120, 40, 12, 20, 56, 19, 39);
+    try std.testing.expectEqual(without.w, with.w);
+    try std.testing.expectEqual(without.h + 56, with.h);
+    // 탭바가 있는 창에서도 같은 rows 가 나와야 한다.
+    try std.testing.expectEqual(@as(u16, 40), terminalRows(with.h, 56, 12, 39));
+}
+
 // --- pt → px 변환 (#350) ---
 //
 // 이 모듈의 `*_PT` 상수는 logical point 단위이고, 그리는 쪽은 현재 화면 scale 을
