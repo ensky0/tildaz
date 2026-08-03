@@ -472,7 +472,12 @@ pub const Window = struct {
     const AUTOSCROLL_INTERVAL_MS: UINT = 40;
     const LayoutMonitorTarget = enum { cursor, window };
 
-    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, terminal_font: font_spec.Spec, opacity: u8, hotkey_vkey: u32, hotkey_modifiers: u32) !void {
+    /// 이 창이 무엇인가 (#382). 측정 인스턴스는 **worker 가 아니다** — worker lock 도
+    /// endpoint 상태도 갖지 않고, 전역 핫키도 등록하지 않는다. 창 타이틀이 그 구분을
+    /// 담는다 (`instances.window_title_prefix` vs `instances.stress_window_title`).
+    pub const Identity = enum { worker, stress };
+
+    pub fn init(self: *Window, identity: Identity, font_chain: []const [*:0]const WCHAR, terminal_font: font_spec.Spec, opacity: u8) !void {
         if (font_chain.len == 0) return error.EmptyFontChain;
         const hInstance = GetModuleHandleW(null);
 
@@ -521,7 +526,16 @@ pub const Window = struct {
 
         var title_buf: [32]u16 = undefined;
         var title_utf8_buf: [32]u8 = undefined;
-        const title_utf8 = @import("instances.zig").windowTitle(&title_utf8_buf, @import("instance_context.zig").requireWorkerIndex()) catch "TildaZ";
+        // #382 — 측정 인스턴스는 worker 의 타이틀을 쓰지 않는다. Windows 는 worker 창을
+        // **타이틀로** 찾기 때문이다 (`instance_request.send` 의 `FindWindowW(class,
+        // "TildaZ-0")` · `hotkey_capture.broadcast` 의 같은 조회) — 타이틀이 겹치면 새
+        // instance 요청이나 hotkey capture broadcast 가 worker 대신 측정 창으로 갈 수 있다.
+        // macOS (distributed notification) · Linux (Unix domain socket) 는 창을 타이틀로
+        // 찾지 않으므로 그 두 host 에는 같은 문제가 없다.
+        const title_utf8 = switch (identity) {
+            .worker => @import("instances.zig").windowTitle(&title_utf8_buf, @import("instance_context.zig").requireWorkerIndex()) catch "TildaZ",
+            .stress => @import("instances.zig").stress_window_title,
+        };
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title_utf8) catch 0;
         title_buf[title_len] = 0;
         // #89 — WS_EX_LAYERED 를 아예 쓰지 않는다. layered 창은 renderer 가
@@ -569,39 +583,6 @@ pub const Window = struct {
         const disable: BOOL = 1;
         _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
-        // Register global hotkey from config (default = F1, modifiers=0).
-        // 실패 사유 (시연 중 발견):
-        // - Windows OS 가 예약: F12 = kernel debugger 용 (MSDN RegisterHotKey 명시).
-        // - 다른 system shortcut 과 충돌: Win+Shift+S (Snip & Sketch) 등 일부 Win+Shift
-        //   조합은 Windows shell 이 먼저 가로채서 우리 hotkey 가 안 도달.
-        // - 다른 앱이 이미 같은 조합을 등록.
-        // 이 셋은 외부 표시 없이 silent fail 하는 게 사고 — drop-down 정체상 hotkey
-        // 가 없으면 토글 자체가 안 되어 사용자가 *왜 안 되는지* 모른 채 헤맴.
-        // fatal dialog 로 종료 + config 파일 경로 + 알려진 reservation 안내.
-        self.hotkey_vkey = hotkey_vkey;
-        self.hotkey_modifiers = hotkey_modifiers;
-        // #382 — vkey 0 은 "등록하지 않는다" 는 뜻이다. 측정 모드가 쓰는 통로로,
-        // 등록하면 평소 쓰는 TildaZ 와 같은 키에 두 프로세스가 반응한다. 사용자
-        // config 로는 0 이 들어올 수 없다 (`config.zig` 가 hotkey 이름을 vkey 로
-        // 바꾸고 유효하지 않으면 fatal 이다).
-        if (hotkey_vkey == 0) {
-            log.appendLine("hotkey", "global hotkey not registered (stress run)", .{});
-            return;
-        }
-        if (RegisterHotKey(self.hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
-            var alloc_buf: [4096]u8 = undefined;
-            var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-            const cfg_path = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
-            var msg_buf: [1024]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &msg_buf,
-                messages.hotkey_registration_failed_format,
-                .{ hotkey_vkey, hotkey_modifiers, cfg_path },
-            ) catch messages.hotkey_registration_failed_fallback_msg;
-            dialog.showFatal(messages.hotkey_registration_failed_title, msg);
-        }
-        self.hotkey_registered = true;
-
         // Remember font chain + font-creation parameters so `rebuildFontForDpi`
         // can recreate the font + re-measure cell metrics on DPI changes.
         const limit = @min(font_chain.len, self.font_chain.len);
@@ -618,6 +599,53 @@ pub const Window = struct {
 
         // Start render timer (60fps)
         _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
+    }
+
+    /// 전역 핫키 등록 (config 기본값 = F1, modifiers=0). 실패 사유 (시연 중 발견):
+    /// - Windows OS 가 예약: F12 = kernel debugger 용 (MSDN RegisterHotKey 명시).
+    /// - 다른 system shortcut 과 충돌: Win+Shift+S (Snip & Sketch) 등 일부 Win+Shift
+    ///   조합은 Windows shell 이 먼저 가로채서 우리 hotkey 가 안 도달.
+    /// - 다른 앱이 이미 같은 조합을 등록.
+    /// 이 셋은 외부 표시 없이 silent fail 하는 게 사고 — drop-down 정체상 hotkey 가
+    /// 없으면 토글 자체가 안 되어 사용자가 *왜 안 되는지* 모른 채 헤맴. fatal dialog 로
+    /// 종료 + config 파일 경로 + 알려진 reservation 안내.
+    ///
+    /// ## 왜 `init` 밖으로 분리했는가 (#382)
+    ///
+    /// 등록 여부는 **host 의 정책**이다 — 측정 모드는 등록하지 않는다 (평소 쓰는
+    /// TildaZ 와 같은 키에 두 프로세스가 반응하므로). 그 정책을 `init` 의 인자로
+    /// 넘기면서 `vkey 0` 을 "등록하지 않는다" 는 뜻으로 쓰고 `init` 한복판에서
+    /// `return` 했던 것이 사고였다: 그 `return` 이 뒤따르는 font chain 저장 · `GetDC` ·
+    /// `rebuildFontForDpi` · 렌더 타이머까지 함께 삼켜서, 측정 인스턴스가 **셀 메트릭을
+    /// 재지 않은 기본값** (`cell_width_px` / `cell_height_px` = 8x16) 으로 떴다
+    /// (Windows 실기: 같은 config 인데 정상 인스턴스 `cell=9x20` vs 측정 인스턴스
+    /// `cell=8x16`). 그 상태로 `-size` 가 창을 만들면 격자 *수*는 맞아도 셀당 픽셀이
+    /// 실제 폰트와 달라 (글리프 18px 이 16px 셀에 들어간다) "같은 격자 · 같은 폰트로
+    /// 다른 터미널과 비교" 라는 옵션의 목적이 깨진다.
+    ///
+    /// 그래서 (1) 매직 값을 없애고 (2) 등록을 별도 단계로 뒀다. host 가
+    /// `if (!opts.isStressRun()) window.registerGlobalHotkey(...)` 로 정책을 드러내며,
+    /// macOS 의 `installEventTap` · Linux 의 `sway_ipc.registerToggleIfSway` 와 같은
+    /// 형태다. 이제 이 정책 분기가 창 초기화를 삼킬 구조 자체가 없다.
+    pub fn registerGlobalHotkey(self: *Window, hotkey_vkey: u32, hotkey_modifiers: u32) void {
+        self.hotkey_vkey = hotkey_vkey;
+        self.hotkey_modifiers = hotkey_modifiers;
+        if (RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
+            var alloc_buf: [4096]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
+            const cfg_path = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
+            var msg_buf: [1024]u8 = undefined;
+            const msg = std.fmt.bufPrint(
+                &msg_buf,
+                messages.hotkey_registration_failed_format,
+                .{ hotkey_vkey, hotkey_modifiers, cfg_path },
+            ) catch messages.hotkey_registration_failed_fallback_msg;
+            dialog.showFatal(messages.hotkey_registration_failed_title, msg);
+        }
+        // 등록에 성공한 경로에만 세운다 — `deinit` 의 `UnregisterHotKey` 와
+        // `WM_HOTKEY_CAPTURE_BEGIN` / `_END` 가 이 flag 를 본다. 등록하지 않은
+        // 측정 인스턴스에서는 `false` 로 남아 세 곳 모두 no-op 이다.
+        self.hotkey_registered = true;
     }
 
     /// (Re)create the GDI font at `new_dpi` and re-measure cell metrics.

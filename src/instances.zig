@@ -18,6 +18,26 @@ pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
     return std.fmt.bufPrint(buf, window_title_prefix ++ "{d}", .{index});
 }
 
+/// 측정용 인스턴스 (#382 의 `-e`) 의 창 타이틀. **worker 의 타이틀과 절대 겹치지 않는
+/// 이름이어야 한다** — Windows 의 `instance_request.send` 와 `hotkey_capture.broadcast`
+/// 는 worker 창을 `FindWindowW(window_class_name, "TildaZ-<index>")` 로 찾으므로, 측정
+/// 창이 같은 타이틀을 쓰면 그 조회가 worker 대신 측정 창을 집을 수 있다. 측정 인스턴스는
+/// worker 가 아니다 — worker lock 도 endpoint 상태도 갖지 않는다.
+///
+/// index 를 붙이지 않는다. 측정은 한 번에 하나만 돌리고 (`compare-terminals.sh`), 어떤
+/// index 로 실행하든 (`--instance N` + `-e`) worker 조회에서 빠지는 것이 목적이다.
+pub const stress_window_title = window_title_prefix ++ "stress";
+
+test "측정 창 타이틀은 어떤 worker 타이틀과도 겹치지 않는다" {
+    // worker 타이틀은 prefix + 10진수라 숫자가 아닌 접미사와 만날 수 없다. 그 계약이
+    // 깨지면 `FindWindowW` 조회가 측정 창을 집는다.
+    var buf: [32]u8 = undefined;
+    for ([_]u32{ 0, 1, 7, 9, 10, 99, 4294967295 }) |index| {
+        try std.testing.expect(!std.mem.eql(u8, stress_window_title, try windowTitle(&buf, index)));
+    }
+    try std.testing.expect(std.mem.startsWith(u8, stress_window_title, window_title_prefix));
+}
+
 pub const ProcessLock = struct {
     file: std.fs.File,
     clear_pid_on_close: bool,
