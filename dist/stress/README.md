@@ -19,27 +19,41 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser
 # PTY 전체 — 자식 프로세스 → PTY → read thread → ring → VT 파서
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty --mb 64
 
+# 앱이 실제로 지나는 경로 — 프레임마다 8 ms 예산이 걸린다
+zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --mb 64
+
 # 워크로드 바꾸기
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty --workload cjk
+zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --workload cjk
 ```
 
 | 옵션 | 값 | 기본값 |
 |---|---|---|
-| `--layer` | `parser` · `pty` | `parser` |
+| `--layer` | `parser` · `pty` · `frame` | `parser` |
 | `--workload` | `plain` · `ansi` · `cjk` | `plain` |
 | `--mb` | 쏟아부을 MiB | `64` |
 | `--cols` / `--rows` | 그리드 | `120` × `40` |
 | `--scrollback` | scrollback 줄 수 | config 기본값 (100,000) |
+| `--fps` | `frame` 층이 모사할 프레임 주기 | `60` |
 
 ### 층
 
 | 층 | 지나는 경로 | 빠지는 것 |
 |---|---|---|
-| `parser` | 워크로드 → VT 파서 → grid | PTY · 자식 프로세스 · ring |
+| `parser` | 워크로드 → VT 파서 → grid | PTY · 자식 프로세스 · ring · 프레임 예산 |
 | `pty` | 자식 → PTY → read thread → ring → VT 파서 → grid | 렌더 · 프레임 예산 |
+| `frame` | 위와 같지만 **프레임마다 8 ms 예산**을 지킨다 | 렌더만 |
 
 `pty − parser` 가 PTY read 와 ring 층의 몫이에요. `perf` 를 쓸 수 없는 환경에서도
 시간이 어디서 가는지 가를 수 있어요.
+
+**`frame` 이 사용자가 겪는 값에 가장 가까워요.** host 는 vsync 마다
+`drainOutputForRender` 를 부르고 그 안의 `drainFrame` 이 한 프레임에 8 ms 만
+파싱해요 (`SessionCore.DRAIN_FRAME_BUDGET_NS`). 이 층은 그 주기를 `--fps` 로
+모사해요. 다만 **렌더를 하지 않으니 체감의 상한**이에요 — 실제 앱은 여기에 렌더
+시간이 더해져요.
+
+리포트의 `over budget` 이 예산을 넘긴 프레임 수예요. 실제 앱에서는 그 프레임마다
+vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈도예요.
 
 ### 워크로드
 
@@ -108,6 +122,11 @@ producer 파라미터는 인자가 아니라 환경변수 (`TILDAZ_STRESS_WORKLO
   않았어요** (64 MiB 에서 819 byte = 0.0013 %). 그래서 판정은 한 방향으로만 써요 —
   **모자라면 데이터 손실**이고 남는 건 정상이에요. 처리량은 실제 소화한 바이트로
   계산해서 이 오차에 영향받지 않아요.
+- **`parser` 층의 숫자는 파서의 진짜 상한보다 낮을 수 있어요.** 같은 코어에서
+  워크로드를 만들면서 파싱하므로 생성이 캐시를 밀어내요. 실측에서 `plain` 이
+  `parser` 층 736 MiB/s 인데 `frame` 층의 `drain busy` 는 1,058 MiB/s 였어요 — 후자는
+  바이트를 다른 프로세스가 만들어요. 그래서 `parser` 는 **하한에 가까운 값**으로
+  읽는 게 안전해요.
 - `parser` 층의 stream 은 응답 통로가 없는 읽기 전용이에요. 프로덕션은 Windows 만
   읽기 전용이고 macOS · Linux 는 질의 응답용 effects 가 붙어요 (#266). 이 하네스의
   워크로드에는 응답이 필요한 질의가 없어서 파싱 비용이 같을 것으로 보지만 **직접 재서
@@ -115,5 +134,4 @@ producer 파라미터는 인자가 아니라 환경변수 (`TILDAZ_STRESS_WORKLO
 - **Windows 는 실기 확인 전이에요.** 코드상 `CreateProcessW` 로 자식을 띄우니 될
   것으로 보지만, ConPTY 조합에서 확인하지 않았어요. ConPTY 는 자식 출력에 자기
   시퀀스를 끼워 넣을 수 있어서 `expected` 계산도 하지 않아요 (`null`).
-- 아직 없는 것: 프레임 예산 아래의 체감 처리량, scrollback 누적, 다른 터미널과의
-  비교. #371 · #278 에서 이어서 다뤄요.
+- 아직 없는 것: scrollback 누적, 다른 터미널과의 비교. #371 · #278 에서 이어서 다뤄요.
