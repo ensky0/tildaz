@@ -677,15 +677,15 @@ pub const SessionCore = struct {
             const hostname = local_hostname.get(&host_buf);
             if (pwd_uri.parse(payload, buf, .{ .hostname = hostname, .style = style })) |path| {
                 if (usableDir(path, wsl)) {
-                    log.appendLine("cwd", "새 탭 시작 위치 = {s} (셸이 알림)", .{path});
+                    log.appendLine("cwd", "new tab cwd={s} (shell reported)", .{path});
                     return path;
                 }
-                log.appendLine("cwd", "셸이 알린 위치로 갈 수 없음. path={s}", .{path});
+                log.appendLine("cwd", "shell-reported cwd unusable: {s}", .{path});
             } else {
                 // 다른 머신 (ssh) 이거나 표기가 이 탭의 셸과 안 맞는 경우.
                 log.appendLine(
                     "cwd",
-                    "셸이 알린 위치를 쓸 수 없음. payload={s} style={s} hostname={s}",
+                    "shell-reported pwd rejected: payload={s} style={s} hostname={s}",
                     .{ payload, @tagName(style), hostname },
                 );
             }
@@ -695,12 +695,12 @@ pub const SessionCore = struct {
         //    null 이라 OSC 7 주입에 의존한다). 셸 종류 / rc 구성과 무관하게 동작한다.
         if (process_cwd.ofPid(tab.backend.childPid(), buf)) |path| {
             if (usableDir(path, wsl)) {
-                log.appendLine("cwd", "새 탭 시작 위치 = {s} (프로세스 조회)", .{path});
+                log.appendLine("cwd", "new tab cwd={s} (process probe)", .{path});
                 return path;
             }
         }
 
-        log.appendLine("cwd", "물려받을 위치가 없어 홈에서 시작", .{});
+        log.appendLine("cwd", "no inheritable cwd, starting in home", .{});
         return null;
     }
 
