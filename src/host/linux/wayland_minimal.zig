@@ -1526,9 +1526,22 @@ const Client = struct {
         // 첫 toggle 은 handleActivatedToggle 가 surface_id==0 분기로 createShellObjects.
         const has_compositor_hotkey = compositorHotkeyEnv();
         const has_kde_hotkey = if (self.kglobalaccel_client) |client| client.registered() else false;
-        const hidden_at_start = self.config.hidden_start and (has_kde_hotkey or has_compositor_hotkey);
+        // #382 — 측정 모드는 `hidden_start` 를 무시하고 창을 표시한 채 시작한다. 숨겨져
+        // 있으면 렌더가 일어나지 않아 측정이 무의미하기 때문이고, Windows
+        // (`host/windows.zig` 의 `show window` 분기) · macOS (`host/macos.zig` 의
+        // `showWindow`) 와 같은 정책이다. 여기 빠져 있으면 `compositorHotkeyEnv()` 가
+        // 참인 환경 (sway `$SWAYSOCK` · Hyprland · COSMIC) 에서 측정 창이 숨은 채 떴고,
+        // 측정 모드는 toggle listener 를 만들지 않으므로 (`runBaselineWindow` 의
+        // `listener_fd = -1`) 띄울 경로조차 없다.
+        const hidden_at_start = self.config.hidden_start and
+            !self.run_opts.isStressRun() and
+            (has_kde_hotkey or has_compositor_hotkey);
         if (self.config.hidden_start and !hidden_at_start) {
-            log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/GNOME/Cinnamon/COSMIC/Hyprland/sway), showing on start", .{});
+            if (self.run_opts.isStressRun()) {
+                log.appendLine("startup", "hidden_start ignored (stress run) — the measurement needs the window rendering, showing on start", .{});
+            } else {
+                log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/GNOME/Cinnamon/COSMIC/Hyprland/sway), showing on start", .{});
+            }
         }
         if (hidden_at_start) {
             self.surface_hidden = true;
@@ -1548,7 +1561,13 @@ const Client = struct {
         // #304 — listener만 먼저 열린 시점이 아니라 Wayland globals, 입력,
         // renderer/첫 tab 또는 hidden-start 경로까지 준비된 뒤 endpoint 상태를
         // 공개한다. listener 실패는 terminal 실행을 막지 않고 unavailable로 남긴다.
-        try instances.recordEndpointState(
+        //
+        // #382 — 측정 인스턴스는 기록하지 않는다. Windows 실기에서 확인된 문제인데
+        // (`host/windows.zig` 의 같은 지점 주석) `instances.recordEndpointState` 가
+        // 공유 helper 라 세 host 에 똑같이 있었다. Linux 는 더 나쁘다 — 측정 모드는
+        // toggle listener 를 만들지 않으므로 (`runBaselineWindow` 의 `listener_fd = -1`)
+        // 여기서 worker 의 `ready` 를 **`unavailable` 로** 덮었다.
+        if (!self.run_opts.isStressRun()) try instances.recordEndpointState(
             self.allocator,
             instance_context.requireWorkerIndex(),
             if (self.toggle_listener_fd >= 0) .ready else .unavailable,

@@ -162,14 +162,27 @@ pub fn run(opts: run_options.RunOptions) !void {
     // `getTerminalGridSize` 는 이 불변식을 assert 로만 밝히고 가짜 fallback 을
     // 두지 않는다.
     try app.window.init(
+        // #382 — 측정 인스턴스는 worker 가 아니다. 창 타이틀이 그 구분을 담는다 —
+        // Windows 는 worker 창을 타이틀로 찾으므로 (`instance_request` ·
+        // `hotkey_capture`) 겹치면 그 조회가 측정 창을 집는다 (`window.zig` 의
+        // `Identity` 주석).
+        if (opts.isStressRun()) .stress else .worker,
         font_chain,
         terminal_font,
         config.opacity_alpha,
-        // 측정 모드는 전역 핫키를 등록하지 않는다 (#382) — 평소 쓰는 TildaZ 와 같은
-        // 키에 두 프로세스가 반응한다. vkey 0 이 그 뜻이다 (`window.zig`).
-        if (opts.isStressRun()) 0 else config.hotkey.vkey,
-        config.hotkey.modifiers,
     );
+    // 측정 모드는 전역 핫키를 등록하지 않는다 (#382) — 평소 쓰는 TildaZ 와 같은 키에
+    // 두 프로세스가 반응한다. **등록 여부는 host 의 정책이라 여기서 드러낸다** — 이전에는
+    // `init` 인자로 `vkey 0` 을 넘겨 "등록하지 않는다" 를 표현했고, 그 가드의 `return` 이
+    // 폰트 · DC · 렌더 타이머 초기화까지 삼켰다 (`window.registerGlobalHotkey` 주석).
+    // macOS 의 `if (!g_run_opts.isStressRun()) try installEventTap();` 와 같은 형태다.
+    if (!opts.isStressRun()) {
+        app.window.registerGlobalHotkey(config.hotkey.vkey, config.hotkey.modifiers);
+    } else {
+        // 건너뛴 사실을 로그에 남긴다 — 측정 실행이 사용자의 핫키를 건드리지 않았는지
+        // 확인하는 근거다 (세 host 의 `(stress run)` 로그와 같은 어휘).
+        log.appendLine("hotkey", "global hotkey not registered (stress run)", .{});
+    }
     log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{
         app.window.current_dpi,
         app.window.cell_width_px,
@@ -243,7 +256,16 @@ pub fn run(opts: run_options.RunOptions) !void {
 
     // #304 — HWND 생성만으로는 충분하지 않다. renderer와 첫 tab, 표시 정책을
     // 모두 적용한 뒤 message loop 진입 직전에 request endpoint를 ready로 공개한다.
-    try instances.recordEndpointState(alloc, instance_context.requireWorkerIndex(), .ready);
+    //
+    // #382 — 측정 인스턴스는 worker 가 아니다 (worker lock 도 잡지 않는다). 같은 index
+    // 의 endpoint 상태를 자기 PID 로 덮으면 lock 의 owner PID 와 snapshot PID 가 어긋나
+    // `instances.probeEndpointFiles` 가 계속 `.starting` 을 돌려주고, 측정 프로세스가
+    // 사라진 뒤에도 그 파일이 남는다 — 측정이 끝난 다음 사용자가 TildaZ 를 평소처럼
+    // 실행하면 10 초 뒤 `RequestEndpointReadyTimeout` 으로 실패한다 (Windows 실기 확인).
+    // 측정 인스턴스는 새 instance 요청을 받을 대상이 아니므로 아예 기록하지 않는다.
+    if (!opts.isStressRun()) {
+        try instances.recordEndpointState(alloc, instance_context.requireWorkerIndex(), .ready);
+    }
     log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();
     log.appendLine("startup", "message loop exited", .{});

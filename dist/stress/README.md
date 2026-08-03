@@ -216,13 +216,23 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 
 | 방식 | 대상 |
 |---|---|
-| 자동 | alacritty · kitty · wezterm · ghostty (+ Linux 의 foot) |
-| **손으로** | **TildaZ** |
+| 자동 | TildaZ · alacritty · kitty · wezterm · ghostty (+ Linux 의 foot) |
 
-**TildaZ 만 손으로 재요.** CLI 로 명령을 주입할 수 없어서예요 (`--instance` / `--autostart` /
-`--toggle` 만 받아요). 스크립트가 붙여넣을 한 줄을 찍어 줘요. 손으로 재도 **그리드는
-producer 가 스스로 기록**하니 공정성은 유지돼요 — 창을 목표 그리드로 맞춰 열고 붙여넣으면
-자동으로 잰 것과 같은 조건 (렌더 포함) 이 돼요.
+**전부 자동이에요.** TildaZ 도 스크립트가 직접 띄워요 — 측정용 실행 옵션 `-e <실행파일>` ·
+`-size <COLS>x<ROWS>` 를 [#382](https://github.com/ensky0/tildaz/issues/382) 에서 만들었어요.
+그 전에는 TildaZ 만 손으로 재야 했어요 (로그의 셀 크기로 퍼센트를 역산 → config 수정 →
+재시작 → F1 으로 열어 명령 붙여넣기 → config 되돌리기).
+
+**두 옵션은 측정 내부용이에요** — 사용자 문서 (`README` · `CONFIG.md` · `KEYBINDINGS.md`) 에
+넣지 않고 쓰는 곳은 이 스크립트 하나예요.
+
+측정용 인스턴스는 **평소 쓰는 TildaZ 를 건드리지 않아요.** worker lock 을 잡지 않고, 전역
+핫키를 등록하지 않고 (로그에 `global hotkey not registered (stress run)`), instance 요청
+endpoint 상태를 기록하지 않고, Windows 에서는 창 타이틀도 worker 와 다른 이름
+(`TildaZ-stress`) 을 써요 — 앞의 둘만 막았던 동안 나머지 둘이 사용자 인스턴스를 방해했어요
+([#382 의 Windows 실기 검증](https://github.com/ensky0/tildaz/issues/382#issuecomment-5172400255)).
+`hidden_start` 는 무시하고 창을 표시한 채 시작하고 (숨겨져 있으면 렌더가 일어나지 않아 측정이
+무의미해요), producer 가 끝나면 스스로 종료해요.
 
 macOS 의 ghostty 는 조건이 까다로워서 스크립트가 **임시 config 파일**을 만들어 넘겨요.
 CLI 로 터미널을 띄울 수 없고 (`ghostty --help`: *"On macOS, launching the terminal emulator

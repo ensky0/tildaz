@@ -3096,7 +3096,13 @@ pub fn run(opts: run_options.RunOptions) !void {
     // #304 — observer뿐 아니라 window, renderer, 첫 tab, display link까지 준비된
     // 시점이다. distributed notification center가 없으면 앱은 계속 실행하되
     // launcher가 요청을 보내지 않도록 unavailable을 기록한다.
-    try instances.recordEndpointState(
+    //
+    // #382 — 측정 인스턴스는 기록하지 않는다. Windows 실기에서 확인된 문제인데
+    // (`host/windows.zig` 의 같은 지점 주석) `instances.recordEndpointState` 가 공유
+    // helper 라 세 host 에 똑같이 있었다 — 측정 인스턴스가 worker 와 같은 index 의
+    // 상태를 자기 PID 로 덮으면, 측정이 끝난 뒤 사용자의 새 instance 요청이
+    // `RequestEndpointReadyTimeout` 으로 실패한다.
+    if (!g_run_opts.isStressRun()) try instances.recordEndpointState(
         allocator,
         instance_context.requireWorkerIndex(),
         if (g_new_instance_observer_registered) .ready else .unavailable,

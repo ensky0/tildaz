@@ -178,10 +178,27 @@ const Grid = struct { cols: u16, rows: u16 };
 /// 횟수가 달라져 파서 부하가 달라진다. [#362](https://github.com/ensky0/tildaz/issues/362)
 /// 에서 그리드가 31 배 어긋난 채로 비교하려던 적이 있어서, 재는 쪽이 스스로 남긴다.
 ///
-/// Windows 는 `null` 이다 — ConPTY 에는 이 ioctl 이 없고, L4 의 비교 대상 터미널이
-/// Windows 에 없어서 필요하지도 않다.
+/// host 마다 tty 크기를 묻는 API 가 다르다 — POSIX 는 `ioctl(TIOCGWINSZ)`, Windows 는
+/// console screen buffer info 다. **Windows 도 반드시 값을 내야 한다** — `-size` 가 실제로
+/// 그 격자를 만들었는지 확인하는 통로가 timing 파일의 이 값이기 때문이다
+/// ([#382](https://github.com/ensky0/tildaz/issues/382)). 예전에 Windows 를 `null` 로
+/// 두었을 때는 `cols=0 rows=0` 이 적혀서, 그 확인 절차 자체가 Windows 에서 성립하지
+/// 않았다 (실기 검증에서 창 크기를 밖에서 재는 우회가 필요했다).
 fn producerGrid() ?Grid {
-    if (builtin.os.tag == .windows) return null;
+    if (builtin.os.tag == .windows) {
+        // producer 의 stdout 은 우리 ConPTY 의 콘솔이라 console API 가 그대로 동작한다.
+        // **`dwSize` 가 아니라 `srWindow` 를 쓴다** — `dwSize` 는 스크롤백을 포함한 버퍼
+        // 크기이고, 우리가 재려는 것은 *보이는* 격자다 (ConPTY 는 버퍼 높이를 창 높이보다
+        // 크게 잡을 수 있어 행 수가 어긋난다).
+        const win = std.os.windows;
+        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        const handle = std.fs.File.stdout().handle;
+        if (win.kernel32.GetConsoleScreenBufferInfo(handle, &info) == 0) return null;
+        const cols: i32 = @as(i32, info.srWindow.Right) - info.srWindow.Left + 1;
+        const rows: i32 = @as(i32, info.srWindow.Bottom) - info.srWindow.Top + 1;
+        if (cols <= 0 or rows <= 0) return null;
+        return .{ .cols = @intCast(cols), .rows = @intCast(rows) };
+    }
 
     var ws: std.posix.winsize = undefined;
     const fd = std.fs.File.stdout().handle;
