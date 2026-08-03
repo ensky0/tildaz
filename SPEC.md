@@ -784,18 +784,54 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 - `setShortcutKeys`와 `shortcutKeys`의 각 `(ai)` QKeySequence는 항상 int 4개다. single key의 나머지 세 slot은 0이다.
 - 정상 종료에는 `unregister`가 아니라 `setInactive(as)`를 사용한다. `unregister`는 persistent action 자체를 제거하므로 config에서 사라진 numbered identity 정리에만 쓴다.
 
-### 7.2 셸 시작 디렉토리 ([#265](https://github.com/ensky0/tildaz/issues/265))
+### 7.2 셸 시작 디렉토리 ([#265](https://github.com/ensky0/tildaz/issues/265), [#366](https://github.com/ensky0/tildaz/issues/366) 2026-08-03 개정)
 
-새 탭의 셸은 모든 platform 에서 **홈 디렉토리에서 시작**한다. 지정하지 않으면 자식 셸이 부모 (앱) 의 현재 디렉토리를 물려받아, 앱을 어떻게 실행했는지 (Finder / 런처 / 개발 중 셸) 에 따라 시작 위치가 달라진다.
+새 탭은 **활성 탭 셸의 현재 위치에서 시작**한다. 그 위치를 알 수 없거나 그리로 들어갈 수 없으면 **홈 디렉토리**로 열화한다 (#265 의 기존 동작). config 옵션은 두지 않는다 — 상속이 항상 기본이고, 홈으로 가려면 새 탭에서 `cd ~` 한 번이면 된다 (반대 방향은 경로를 입력해야 하므로 복구 비용이 비대칭이다).
 
-| platform | 방법 | 구현 | 상태 |
+> **이전 사양의 "항상 홈에서 시작" 은 폐기됐다.** #265 는 시작 디렉토리를 *지정하지 않으면* 자식 셸이 부모 (앱) 의 현재 디렉토리를 물려받아 실행 경로 (Finder / 런처 / 개발 중 셸) 에 따라 위치가 달라지는 문제를 홈 고정으로 막았다. 그 문제 자체는 여전히 유효해서, 상속할 위치가 없을 때의 fallback 이 **앱의 cwd 가 아니라 홈**이라는 점은 그대로 유지한다.
+
+**위치를 얻는 순서** — 세 단계로 내려간다.
+
+| 순위 | 소스 | 특징 |
+|---|---|---|
+| ① | 셸이 보낸 **OSC 7** (`report_pwd`) | 셸의 논리 경로 (`$PWD`) 라 symlink 를 따라 들어간 사용자의 기대에 맞는다. `Terminal.pwd` 에 raw payload 로 보관되고 스킴 해석은 우리 몫이다 ([`src/pwd_uri.zig`](src/pwd_uri.zig)) |
+| ② | **프로세스 cwd 조회** | 셸 · rc 구성과 무관하게 동작한다. Linux · macOS 만 ([`src/process_cwd.zig`](src/process_cwd.zig)) |
+| ③ | 홈 | #265 의 동작 |
+
+**platform 별 처리** — 얻는 쪽과 쓰는 쪽이 다르다.
+
+| platform / 탭 | 위치를 얻는 방법 | 새 탭에 넘기는 방법 | 상태 |
 |---|---|---|---|
-| Windows — 일반 exe (`cmd.exe` / PowerShell 등) | `CreateProcessW` 의 `lpCurrentDirectory` 에 `%USERPROFILE%` (환경변수 없으면 null = 부모 디렉토리 상속) | [src/terminal/windows/pty.zig](src/terminal/windows/pty.zig) | ✅ |
-| Windows — 셸이 `wsl` / `wsl.exe` | 명령줄에 `--cd ~` 삽입 → **Linux 홈**에서 시작. Windows Terminal 의 `MangleStartingDirectoryForWSL` 과 동일 규칙 ([microsoft/terminal PR #9223](https://github.com/microsoft/terminal/pull/9223)) — 사용자가 이미 `--cd` 나 단독 `~` 인자를 넣었으면 삽입 안 함 (사용자 값이 이김) | 동일 파일 `wslCdInsertion` | ✅ |
-| macOS | fork 자식에서 `execve` 전 `chdir(getenv("HOME"))` — 실패 시 무시하고 진행 | 공통 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `childExec` | ✅ |
-| Linux | 동일 — `chdir(getenv("HOME"))` | 공통 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `childExec` | ✅ |
+| Linux | `readlink /proc/<셸 pid>/cwd` (셸이 OSC 7 을 보내면 그쪽 우선) | fork 자식에서 `execve` 전 `chdir` — 실패하면 홈으로 되돌린다 | ✅ |
+| macOS | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` (동일) | 동일 — 공통 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig) 의 `childExec` | ✅ |
+| Windows — 일반 exe (`cmd.exe` / PowerShell 등) | **OSC 7 뿐.** 프로세스 cwd 조회가 원리적으로 불가해서 셸에 주입한다 (아래) | `CreateProcessW` 의 `lpCurrentDirectory`. 그 디렉토리가 없으면 `CreateProcessW` 자체가 실패하므로 **홈으로 한 번 재시도**한다 (아니면 새 탭이 아예 안 열린다) | ✅ |
+| Windows — 셸이 `wsl` / `wsl.exe` | OSC 7 (WSL 안 셸이 보고하는 **Linux 경로**) | 명령줄에 `--cd "<경로>"` 삽입 → wsl 에게 위임. 없으면 `--cd ~` (Linux 홈). Windows Terminal 의 `MangleStartingDirectoryForWSL` 과 동일 규칙 ([microsoft/terminal PR #9223](https://github.com/microsoft/terminal/pull/9223)) — 사용자가 이미 `--cd` 나 단독 `~` 인자를 넣었으면 삽입하지 않는다 | ✅ |
 
 > Windows 에서 Linux 홈을 `lpCurrentDirectory` 로 지정할 수 없는 이유 (Windows 경로만 표현 가능 + Linux 홈 위치는 distro 안에서만 알 수 있음) 와 `\\wsl$\...` 대안이 기각된 근거는 [#265 코멘트](https://github.com/ensky0/tildaz/issues/265#issuecomment-4910677101) 참조.
+
+**경로 표기는 host OS 가 아니라 탭의 셸로 결정한다.** WSL 탭은 host 가 Windows 여도 Linux 경로 (`/home/me`) 를 주고받는다. 그래서 일반 Windows 탭에서 `wsl` 을 직접 실행한 경우처럼 표기가 어긋나면 파서가 거부하고 홈에서 시작한다 (Windows 실기 확인).
+
+**Windows 는 셸에 OSC 7 을 주입한다** — 프로세스 cwd 조회가 불가하기 때문이다. PowerShell 은 `Set-Location` 이 runspace 별 위치만 바꿔서 프로세스 cwd 가 시작값에 고정되고, `cmd` 만 되는 PEB 읽기는 MS 가 *"may be altered or unavailable in future versions"* 로 표기한 비공개 API 다. 조립은 [`src/shell_integration.zig`](src/shell_integration.zig) 가 한다.
+
+| 셸 | 주입 | 사용자 환경 보존 |
+|---|---|---|
+| `cmd` | `PROMPT` 환경변수 | 기존 `%PROMPT%` **앞에만** 덧붙여 프롬프트 모양을 유지한다. 값이 없으면 cmd 기본값 `$P$G` 를 명시해 이어 붙인다 |
+| PowerShell · pwsh | 명령줄 맨 끝에 `-NoExit -EncodedCommand` (UTF-16LE Base64) | **프로필 로드 뒤** 기존 `prompt` 를 감싼다. 사용자가 이미 `-Command` / `-EncodedCommand` / `-File` 을 지정했으면 주입하지 않는다. `$PWD.Provider.Name -eq 'FileSystem'` 일 때만 보고하므로 `HKLM:` 같은 레지스트리 위치는 알리지 않는다 |
+| WSL 안 bash | `WSLENV` 로 `PROMPT_COMMAND` 전달 | 사용자 rc 가 `PROMPT_COMMAND=` 로 **대입**하면 무력화된다 (rc 는 자식이 읽어 우리가 볼 수 없다) |
+| WSL 안 fish | 없음 — 기본으로 OSC 7 을 보낸다 | — |
+
+스킴은 `kitty-shell-cwd://` (raw) 를 쓴다. 셸의 프롬프트 기능으로는 퍼센트 인코딩을 할 수 없어서 `file://` 로 보내면 `C:\50%20x` 가 `C:\50 x` 로 잘못 디코딩된다. 경로를 URI 로 바꿔 주는 표준 라이브러리는 없다 — 조립이 셸이 프롬프트를 그리는 시점에 일어나기 때문이다 (VTE 는 이 때문에 `vte-urlencode-cwd` 헬퍼 바이너리를 따로 설치하고, ghostty · kitty 는 인코딩을 피하려고 이 raw 스킴을 만들었다).
+
+**동작하지 않는 조합** — 모두 홈 (또는 아래 tmux 처럼 옛 위치) 으로 열화하고, 탭 자체는 정상적으로 열린다.
+
+| 조합 | 결과 | 이유 |
+|---|---|---|
+| **tmux 안** | tmux 실행 **직전** 위치 ⚠️ | tmux 가 자체 터미널 에뮬레이터로서 OSC 7 을 흡수한다 (tmux 3.7b 실측). 프로세스 조회도 tmux 서버가 별도 프로세스 트리라 통하지 않는다. ghostty · kitty 도 같은 한계이고, tmux 자신은 `#{pane_current_path}` 로 따로 해결한다 |
+| **WSL 안 zsh** | 홈 | `ZDOTDIR` 로 파일을 끼워야 하는데 Windows 쪽에서 VM 안에 파일을 만들어야 한다 |
+| **ssh 원격** | 홈 | 원격 hostname 이 우리와 달라 파서가 거부한다. 우리 주입도 ssh 를 넘지 못한다 (ssh 는 기본적으로 환경변수를 전달하지 않는다) |
+| 지워진 디렉토리 · 디렉토리가 아닌 경로 | 홈 | spawn 전에 `openDirAbsolute` 로 확인한다 (`access` 는 파일도 통과시켜 spawn 이 `ENOTDIR` 로 실패한다) |
+
+어느 단계에서 걸렸는지는 로그 (`cwd` 카테고리) 에 새 탭 하나당 한 줄로 남는다.
 
 **셸 login 모드 — 각 OS 터미널 관례를 따르는 의도적 차이** (2026-07-12 결정, #282 D5). macOS 는 자식 셸을 **login shell** (`argv = {shell, "-l"}`) 로 띄우고 (Terminal.app / iTerm2 표준 — `~/.zprofile`·`~/.bash_profile` 로드; padding 비대칭 원인이던 non-login + `~/.hushlogin` 문제 해결, 커밋 d801d4c), Linux 는 **비-login** 으로 띄운다 (GNOME Terminal / Konsole 표준 — `~/.zshrc`·`~/.bashrc` 만 로드). 어느 dotfile 이 로드되는지가 platform 간 다르지만, 각 OS 터미널의 관례와 일치시킨 의도된 차이다 (cross-platform 동등성 룰의 명시 예외).
 
