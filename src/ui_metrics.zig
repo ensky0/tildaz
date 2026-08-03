@@ -205,6 +205,44 @@ pub fn cellLineThicknessPx(ascent_px: f32) f32 {
     return @max(1, @round(ascent_px * CELL_LINE_THICKNESS_RATIO));
 }
 
+// ── SGR 5 (blink) 의 주기 (#376) ─────────────────────────────────────
+//
+// ## 왜 완전히 숨기지 않고 faint 인가
+//
+// off 위상을 **faint (흐리게)** 로 표현한다. Windows Terminal 과 같은 선택이고
+// ([PR #7490](https://github.com/microsoft/terminal/pull/7490) — 4-phase 중 2 를
+// faint 로 렌더), WezTerm 도 딱딱 끄지 않고 투명도를 이징한다. 글자가 완전히
+// 사라졌다 나타나는 것은 조사한 방식 중 가장 자극적이고, 광과민성 관점에서
+// 굳이 택할 이유가 없다.
+//
+// 구현도 이쪽이 깔끔하다 — [`cell_color.resolveFg`](renderer/cell_color.zig) 가
+// 이미 `flags.faint` 를 `themes.faintBlend` 로 처리하므로 그 경로를 그대로 탄다.
+//
+// ## 왜 이 값이 절전을 깨지 않는가
+//
+// 세 host 는 "tick 은 규칙적으로 돌고 게이트가 그릴 이유를 판정" 하는 구조다
+// (macOS CADisplayLink · Windows `SetTimer` 16ms · Linux poll 16ms). 게이트를
+// "화면에 blink 셀이 **있다**" 로 열면 매 vsync 그려서 [#255](https://github.com/ensky0/tildaz/issues/255)
+// 의 절전 이득이 사라진다. **"phase 가 직전 프레임과 달라졌다"** 로 열면 1초에
+// 전환이 정확히 2회뿐이라 추가 렌더가 초당 2프레임이다.
+//
+// SGR 5 (slow) 와 6 (rapid) 은 구분하지 않는다 — 구분하고 싶어도 못 한다. pin 된
+// ghostty 파서가 둘을 모두 `.blink` 하나로 접어서 정보를 주지 않는다.
+
+/// blink 한 위상의 길이 (ms). on 500 + off 500 = 1Hz 로, ECMA-48 의 "slow blink =
+/// 분당 150회 미만" 을 만족하는 가장 흔한 값이다.
+pub const BLINK_HALF_PERIOD_MS: i64 = 500;
+
+/// 지금이 blink 셀을 **흐리게 그릴** 위상인가. `now_ms` 는
+/// `std.time.milliTimestamp()` — 세 host 가 같은 시계를 넘겨 위상을 맞춘다
+/// (autoscroll tick 이 이미 쓰는 함수).
+///
+/// 벽시계라 시스템 시간이 점프하면 위상이 한 번 튈 수 있다. 깜빡임 한 번이
+/// 어긋나는 것뿐이라 monotonic 시계를 따로 들이지 않았다.
+pub fn blinkFaintPhase(now_ms: i64) bool {
+    return @mod(@divFloor(now_ms, BLINK_HALF_PERIOD_MS), 2) != 0;
+}
+
 /// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
 /// 세 platform 모두 bar 커서로 통일 (이전: Windows/macOS full-cell block
 /// alpha 0.7, Linux 하단 2px underline — 제각각).
@@ -847,6 +885,38 @@ test "#357 정수 두께는 위치 소수부와 무관하게 두께가 보존된
     const t125 = linePx(TAB_SEPARATOR_W_PT, 1.25);
     try std.testing.expectEqual(@as(i32, 1), rows(100.375, t125));
     try std.testing.expectEqual(@as(i32, 1), rows(100.875, t125));
+}
+
+test "#376 blink 위상은 500ms 마다 뒤집히고 1초에 정확히 2번 전환된다" {
+    // 위상 경계 — 0~499 는 밝게(false), 500~999 는 흐리게(true).
+    try std.testing.expect(!blinkFaintPhase(0));
+    try std.testing.expect(!blinkFaintPhase(499));
+    try std.testing.expect(blinkFaintPhase(500));
+    try std.testing.expect(blinkFaintPhase(999));
+    try std.testing.expect(!blinkFaintPhase(1000));
+
+    // **절전의 근거** — 1초 동안 전환이 정확히 2번이어야 추가 렌더가 초당 2프레임이다.
+    var transitions: u32 = 0;
+    var prev = blinkFaintPhase(0);
+    var t: i64 = 1;
+    while (t < 1000) : (t += 1) {
+        const cur = blinkFaintPhase(t);
+        if (cur != prev) transitions += 1;
+        prev = cur;
+    }
+    // [0,1000) 구간 안에서는 500 에서 한 번. 다음 전환은 1000 에서 일어난다.
+    try std.testing.expectEqual(@as(u32, 1), transitions);
+    try std.testing.expect(blinkFaintPhase(999) != blinkFaintPhase(1000));
+
+    // 한 주기는 1Hz — 같은 위상이 1000ms 뒤에 돌아온다.
+    inline for (.{ 0, 123, 499, 500, 777, 999 }) |ms| {
+        try std.testing.expectEqual(blinkFaintPhase(ms), blinkFaintPhase(ms + 2 * BLINK_HALF_PERIOD_MS));
+        try std.testing.expect(blinkFaintPhase(ms) != blinkFaintPhase(ms + BLINK_HALF_PERIOD_MS));
+    }
+
+    // 벽시계라 실제 값은 크다 — 큰 수에서도 규칙이 유지되는지 (i64 오버플로 없음).
+    const big: i64 = 1_754_000_000_000; // 2025-08 무렵의 milliTimestamp
+    try std.testing.expect(blinkFaintPhase(big) != blinkFaintPhase(big + BLINK_HALF_PERIOD_MS));
 }
 
 test "#350 strokePx 는 최소 1px 을 보장하고 scaledPxF 는 소수를 유지한다" {

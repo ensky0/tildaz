@@ -302,6 +302,10 @@ pub const Renderer = struct {
     /// #277 S2-3/S2-4/S2-5 — 프레임마다 재사용하는 그리기 목록. `collectFrame` 이
     /// 채우고 CPU · GL 이 소비한다.
     layer: FrameLayer = .{},
+    /// #376 — 직전 프레임에 blink 셀이 화면에 있었나. host 의 poll 루프가 이 값과
+    /// 위상 전환을 **함께** 봐서, blink 이 실제로 보일 때만 초당 2프레임을 추가로
+    /// 그린다. "blink 셀이 있다" 만으로 열면 매 tick(16ms) 그리게 된다.
+    saw_blink_cell: bool = false,
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
     /// #368 — dialog 폰트는 **처음 dialog 를 열 때** 만든다. 대부분의 세션은 dialog 를
@@ -714,6 +718,11 @@ pub const Renderer = struct {
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
 
+        // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
+        // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
+        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+        self.saw_blink_cell = false;
+
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
             const cell_slice = all_cells[y].slice();
@@ -733,7 +742,12 @@ pub const Renderer = struct {
                 const raw = raws[x];
                 if (raw.wide == .spacer_tail) continue;
 
-                const style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                // #376 — 이 순회가 **모든 셀**을 보므로 blink 셀 존재 판정도 여기서
+                // 한다. 위상이 off 면 `faint` 를 세워 fg 해석과 선 색이 한 번에
+                // 흐려지게 한다 (macOS · Windows 와 같은 helper).
+                const raw_style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
+                if (raw_style.flags.blink) self.saw_blink_cell = true;
+                const style = cell_color.applyBlinkPhase(raw_style, blink_faint);
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
