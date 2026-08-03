@@ -191,20 +191,21 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 열이 목표와 다르면 그 줄은 비교에 쓰지 않아요. 실제로 이 검증이 kitty 의 창 크기 옵션이
 무시되던 것과 ghostty 의 옵션 파싱 실패를 잡아냈어요.
 
-| 방식 | 대상 | 이유 |
-|---|---|---|
-| 자동 | alacritty · kitty · wezterm (+ Linux 의 ghostty · foot) | CLI 로 그리드를 정확히 지정할 수 있어요 |
-| **손으로** | **TildaZ** · **macOS 의 ghostty** | 아래 참고 |
+| 방식 | 대상 |
+|---|---|
+| 자동 | alacritty · kitty · wezterm · ghostty (+ Linux 의 foot) |
+| **손으로** | **TildaZ** |
 
-- **TildaZ** 는 CLI 로 명령을 주입할 수 없어요 (`--instance` / `--autostart` / `--toggle` 만
-  받아요). 스크립트가 붙여넣을 한 줄을 찍어 줘요.
-- **macOS 의 ghostty** 는 CLI 로 터미널을 띄울 수 없고 (`ghostty --help`: *"On macOS,
-  launching the terminal emulator from the CLI is not supported"*), `open -na … --args` 로는
-  옵션 여러 개가 **한 값으로 합쳐져** 전달돼서 창 크기를 정할 수 없어요 (실측: config 에러
-  다이얼로그가 떠요). Linux 의 ghostty 는 CLI 가 정상이라 자동으로 돌려요.
+**TildaZ 만 손으로 재요.** CLI 로 명령을 주입할 수 없어서예요 (`--instance` / `--autostart` /
+`--toggle` 만 받아요). 스크립트가 붙여넣을 한 줄을 찍어 줘요. 손으로 재도 **그리드는
+producer 가 스스로 기록**하니 공정성은 유지돼요 — 창을 목표 그리드로 맞춰 열고 붙여넣으면
+자동으로 잰 것과 같은 조건 (렌더 포함) 이 돼요.
 
-손으로 재도 **그리드는 producer 가 스스로 기록**하니 공정성은 유지돼요. 창을 목표 그리드로
-맞춰 열고 한 줄 붙여넣으면 자동으로 잰 것과 같은 조건 (렌더 포함) 이 돼요.
+macOS 의 ghostty 는 조건이 까다로워서 스크립트가 **임시 config 파일**을 만들어 넘겨요.
+CLI 로 터미널을 띄울 수 없고 (`ghostty --help`: *"On macOS, launching the terminal emulator
+from the CLI is not supported"*), `open -na … --args` 로 config key 옵션을 **여러 개** 주면
+한 값으로 합쳐져 실패해요 (실측: `window-width: invalid value "200 --window-height=60"`).
+`--config-file` 하나만 넘기면 정상이라 그 길을 써요 — **사용자 설정은 건드리지 않아요.**
 
 **터미널마다 창 크기 지정 방법이 달라요** (실측으로 확정한 것):
 
@@ -213,9 +214,29 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 | kitty | `-o remember_window_size=no -o initial_window_width=120c -o initial_window_height=40c` — `remember_window_size` 를 끄지 않으면 **이전 세션 크기를 복원해서 옵션을 무시해요** |
 | alacritty | `-o window.dimensions.columns=120 -o window.dimensions.lines=40` |
 | wezterm | `--config initial_cols=120 --config initial_rows=40` — `--config` 는 **전역 옵션**이라 `start` **앞**에 와야 해요 |
-| ghostty (Linux) | `--window-width=120 --window-height=40` |
-| ghostty (macOS) | `~/.config/ghostty/config` 에 `window-width = 120` · `window-height = 40` |
-| TildaZ | config 의 `width_percent` / `height_percent` 와 `font.size` |
+| ghostty | 스크립트가 임시 config 파일을 만들어 `--config-file` 로 넘겨요. `window-save-state = never` 가 필수이고 값은 `false` 가 아니라 `default \| never \| always` 중 하나예요 |
+| TildaZ | `~/.config/tildaz/config_0.json` 의 `window.width_percent` / `window.height_percent` (아래 계산법) |
+
+### TildaZ 를 목표 그리드로 맞추는 법
+
+퍼센트로 지정하는 구조라 셀 크기를 알아야 해요. **로그가 그 값을 찍어 줘요.**
+
+```
+[startup] renderer init: vp=1512x1720px scale=2.00 cell=19x39px pad=12px font=Menlo
+[startup] initial tab created: cols=77 rows=43
+```
+
+`vp` 과 `cell` 은 물리 픽셀이에요. 여기서 역산해요 (실측으로 확인한 식이에요).
+
+```
+필요한 vp 폭  = 목표cols × cell_w + pad×2 + scrollbar(20px)
+필요한 vp 높이 = 목표rows × cell_h + pad×2
+새 퍼센트 = 현재 퍼센트 × (필요한 vp / 현재 vp)
+```
+
+위 로그 예시에서 120×40 을 만들면 `width_percent 50 → 77`, `height_percent 100 → 92` 예요.
+바꾼 뒤 **재시작**해야 반영되고 (config 은 시작할 때만 읽어요), 로그의 `initial tab created`
+줄로 확인해요. **탭은 1 개**로 재요 — 2 개 이상이면 탭바 28 pt 가 들어가 rows 가 줄어요.
 
 **일부 터미널은 셸을 spawn 한 뒤 창 크기에 맞춰 resize 해요** (실측: ghostty · kitty).
 그래서 producer 는 그리드를 **출력 전후 두 번** 읽고 둘 다 기록해요. 표에 `측정 중 resize`
