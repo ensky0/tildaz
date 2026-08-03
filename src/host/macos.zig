@@ -16,6 +16,7 @@
 //   #75 가 6번 시도해도 못 풀던 \"드래그 중 잔상\" 시나리오를 원천 회피.
 
 const std = @import("std");
+const run_options = @import("../run_options.zig");
 const build_options = @import("build_options");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
@@ -333,6 +334,10 @@ var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 /// 렌더링 + 입력 받으니 동일 — 단 closeTab 은 read thread 가 살아 있을 때
 /// 위험하므로 후속 milestone 에서 join 처리.
 var g_session: session_core.SessionCore = undefined;
+
+/// #382 — 측정용 실행 옵션. `run()` 이 받아 여기 저장하고, 아래 네 지점이 참조한다:
+/// 전역 핫키 등록 · 창 표시 · 창 크기 (`dockRect`) · 첫 탭의 셸.
+var g_run_opts: run_options.RunOptions = .{};
 /// PTY 자식 종료 시 read thread 가 enqueue, main thread (renderFrameTick) 가
 /// drain. session_core 의 tab_exit_fn 이 read thread context 에서 불리는데
 /// 거기서 closeTabByPtr 직접 호출하면 self-join deadlock — read thread 가
@@ -2697,7 +2702,8 @@ fn resolveShell(allocator: std.mem.Allocator) []const u8 {
     return allocator.dupe(u8, config.Defaults.shell) catch config.Defaults.shell;
 }
 
-pub fn run() !void {
+pub fn run(opts: run_options.RunOptions) !void {
+    g_run_opts = opts;
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
     // `~/Library/Logs/tildaz_N.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
@@ -2880,7 +2886,9 @@ pub fn run() !void {
     //    윈도우는 unmapped, F1 처음 눌렀을 때 첫 노출. Windows windows_host.run
     //    의 `if (!config.hidden_start) app.window.show();` 와 동등).
     repositionWindow();
-    if (!g_config.hidden_start) {
+    // 측정 모드는 `hidden_start` 를 무시한다 (#382) — 창이 숨겨져 있으면 렌더가
+    // 일어나지 않아 측정이 무의미하다.
+    if (!g_config.hidden_start or g_run_opts.isStressRun()) {
         showWindow();
     }
 
@@ -2914,7 +2922,8 @@ pub fn run() !void {
     // layer geometry 동기화. additionalSafeAreaInsets 로 시스템 inset 무력화
     // 했으므로 layer 가 cv_bounds 전체 (titlebar 영역 포함) 를 그대로 사용.
     const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
-    const cv_bounds = get_rect(content_view, objc.sel("bounds"));
+    // #382 — `-size` 가 있으면 renderer 초기화 뒤에 창을 격자에 맞추고 이 값을 다시 읽는다.
+    var cv_bounds = get_rect(content_view, objc.sel("bounds"));
     const set_layer_frame = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) void);
     set_layer_frame(layer, objc.sel("setFrame:"), cv_bounds);
 
@@ -2934,7 +2943,9 @@ pub fn run() !void {
     //    Carbon RegisterEventHotKey 는 우리 환경 (macOS Tahoe + ad-hoc sign) 에서
     //    silently fail 하므로 Apple DTS 권장 modern API 인 CGEventTap 사용.
     //    Input Monitoring 권한 필요 — 사용자가 시스템 설정에서 활성화.
-    try installEventTap();
+    // 측정 모드는 전역 핫키를 등록하지 않는다 (#382) — 평소 쓰는 TildaZ 와 F1 이
+    // 겹쳐 두 프로세스가 같은 키에 반응한다.
+    if (!g_run_opts.isStressRun()) try installEventTap();
 
     const allocator = g_gpa.allocator();
 
@@ -2975,6 +2986,19 @@ pub fn run() !void {
         },
         else => return err,
     };
+    // #382 — renderer 가 생겨 셀 크기를 알므로 여기서 `-size` 를 적용한다. 창을 격자에
+    // 맞추고 layer / drawable / bounds 를 새 크기로 되돌린다. 아래 `terminalGrid` 가 그
+    // 창에서 격자를 다시 계산하므로, 요청한 셀 수가 그대로 나오는지 그 값으로 확인된다.
+    if (g_run_opts.grid != null) {
+        repositionWindow();
+        cv_bounds = get_rect(content_view, objc.sel("bounds"));
+        set_layer_frame(layer, objc.sel("setFrame:"), cv_bounds);
+        set_drawable_size(layer, objc.sel("setDrawableSize:"), .{
+            .width = cv_bounds.size.width * scale_pt,
+            .height = cv_bounds.size.height * scale_pt,
+        });
+    }
+
     // viewport / cell metrics 모두 pixel 단위로 통일 — pt/px mixing 시 글리프
     // 가 cell 일부만 차지해 깨져 보이는 문제 회피 (#75 댓글 6 의 정정 패턴).
     const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
@@ -3025,7 +3049,9 @@ pub fn run() !void {
 
     g_session = session_core.SessionCore.init(
         allocator,
-        g_shell_path,
+        // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382). 인자는 넘길 수 없다 —
+        // POSIX 는 PTY 자식의 argv 가 고정이다 (`terminal/posix/pty.zig`).
+        g_run_opts.command orelse g_shell_path,
         g_config.max_scroll_lines,
         g_config.theme,
         &g_extra_env,
@@ -3484,8 +3510,32 @@ fn repositionWindow() void {
     const height_percent: f64 = @floatCast(g_config.height_percent);
     const offset_percent: f64 = @floatCast(g_config.offset_percent);
 
-    const w = sw * width_percent / 100.0;
-    const h = usable_height * height_percent / 100.0;
+    var w = sw * width_percent / 100.0;
+    var h = usable_height * height_percent / 100.0;
+
+    // #382 — `-size COLSxROWS` 는 config 의 퍼센트를 무시하고 **셀 개수**로 창을 만든다.
+    // 셀 크기는 폰트 metrics 에서 나오므로 renderer 초기화 뒤에만 계산할 수 있다. 그
+    // 전에 불린 호출은 퍼센트로 두고 (창이 잠깐 다른 크기로 뜬다), 초기화 직후 이 함수를
+    // 다시 불러 맞춘다 — `run()` 의 renderer init 뒤 블록이 그 일을 한다.
+    if (g_run_opts.grid) |want| {
+        if (g_renderer) |r| {
+            const backing = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+            const scale = backing(g_window, objc.sel("backingScaleFactor"));
+            const scale_f: f32 = @floatCast(scale);
+            const vp = ui_metrics.viewportForGrid(
+                want.cols,
+                want.rows,
+                ui_metrics.scaledPx(i64, TERMINAL_PADDING_PT, scale_f),
+                ui_metrics.scaledPx(i64, ui_metrics.SCROLLBAR_W_PT, scale_f),
+                tabBarHeightPx(scale_f),
+                r.font.cell_width_px,
+                r.font.cell_height_px,
+            );
+            // viewport 는 physical px, 창 frame 은 logical pt 다.
+            w = @as(f64, @floatFromInt(vp.w)) / scale;
+            h = @as(f64, @floatFromInt(vp.h)) / scale;
+        }
+    }
 
     // dock_position 별로 x / y 결정. macOS 의 bottom-up 좌표계 주의.
     const x: f64 = switch (g_config.dock_position) {

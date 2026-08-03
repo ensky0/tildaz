@@ -1,0 +1,75 @@
+//! 측정용 실행 옵션 ([#382](https://github.com/ensky0/tildaz/issues/382)).
+//!
+//! **내부용이다.** `README` · `CONFIG.md` · `KEYBINDINGS.md` 에 넣지 않고, 쓰는 곳은
+//! `dist/stress/compare-terminals.sh` 하나다. 사용자 기능으로 만들려면 "이미 떠 있는
+//! 인스턴스와의 관계", "drop-down 을 어떻게 표시하나", "탭을 더 열면 그 탭은 무엇인가"
+//! 를 다 정해야 하는데, 측정용으로 한정하면 그것들이 필요 없다.
+//!
+//! ## 왜 필요한가
+//!
+//! [#371](https://github.com/ensky0/tildaz/issues/371) 의 터미널 비교에서 우리만 손으로
+//! 재야 했다. 다른 넷은 명령 실행 옵션(`-e`)과 셀 단위 창 크기 지정을 갖고 있다.
+//! 그것이 없으면 측정 한 번에 config 를 고치고 재시작하고 명령을 붙여넣는 절차가 든다.
+
+const std = @import("std");
+
+pub const Grid = struct { cols: u16, rows: u16 };
+
+pub const RunOptions = struct {
+    /// `-e <실행파일>` — 셸 대신 이 실행파일을 띄우고, 그것이 끝나면 앱도 끝낸다.
+    ///
+    /// **인자를 넘길 수 없다.** POSIX 는 PTY 자식의 argv 가 `{shell}` 로 고정이라
+    /// (`terminal/posix/pty.zig`) 실행파일 경로 하나만 의미가 있다. 측정에는 충분하다 —
+    /// producer 가 파라미터를 환경변수로 받는다 (`src/stress.zig`).
+    command: ?[]const u8 = null,
+
+    /// `-size <COLS>x<ROWS>` — config 의 `window.width_percent` / `height_percent` 를
+    /// 무시하고 **셀 개수**로 창을 만든다. 다른 터미널이 모두 갖고 있는 방식이다
+    /// (kitty 의 `initial_window_width=120c`, ghostty 의 `window-width = 120`).
+    ///
+    /// 셀 크기는 폰트 metrics 에서 나오므로 renderer 초기화 뒤에야 안다. 그래서 각 host
+    /// 는 창을 먼저 띄우고 그 뒤에 `ui_metrics.viewportForGrid` 로 크기를 다시 맞춘다.
+    grid: ?Grid = null,
+
+    /// 측정 모드인가. `-e` 가 기준이다 — 그때만 아래를 건너뛴다.
+    ///
+    /// - **worker lock**: 잡으면 평소 쓰는 TildaZ 와 충돌한다.
+    /// - **전역 핫키 등록**: 등록하면 F1 이 두 프로세스에 걸린다.
+    /// - **launcher 경로**: 다른 worker 를 spawn 하거나 새 instance 를 요청하면 안 된다.
+    ///
+    /// 그리고 창을 **표시한 채** 시작한다 (`hidden_start` 무시) — 숨김이면 렌더가 일어나지
+    /// 않아 측정이 무의미하다.
+    pub fn isStressRun(self: RunOptions) bool {
+        return self.command != null;
+    }
+};
+
+/// `<COLS>x<ROWS>` 를 읽는다. 잘못된 형식이면 `null`.
+pub fn parseGrid(text: []const u8) ?Grid {
+    const sep = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const cols = std.fmt.parseInt(u16, text[0..sep], 10) catch return null;
+    const rows = std.fmt.parseInt(u16, text[sep + 1 ..], 10) catch return null;
+    if (cols == 0 or rows == 0) return null;
+    return .{ .cols = cols, .rows = rows };
+}
+
+test "parseGrid 는 COLSxROWS 를 읽는다" {
+    try std.testing.expectEqual(Grid{ .cols = 120, .rows = 40 }, parseGrid("120x40").?);
+    try std.testing.expectEqual(Grid{ .cols = 1, .rows = 1 }, parseGrid("1x1").?);
+    try std.testing.expectEqual(Grid{ .cols = 424, .rows = 113 }, parseGrid("424x113").?);
+}
+
+test "parseGrid 는 잘못된 형식을 거른다" {
+    for ([_][]const u8{
+        "", "120", "120x", "x40", "120x40x2", "0x40", "120x0",
+        "-1x40", "120 x 40", "abcxdef", "999999x40",
+    }) |bad| {
+        try std.testing.expectEqual(@as(?Grid, null), parseGrid(bad));
+    }
+}
+
+test "isStressRun 은 -e 를 기준으로 한다" {
+    try std.testing.expect(!(RunOptions{}).isStressRun());
+    try std.testing.expect(!(RunOptions{ .grid = .{ .cols = 120, .rows = 40 } }).isStressRun());
+    try std.testing.expect((RunOptions{ .command = "/bin/echo" }).isStressRun());
+}

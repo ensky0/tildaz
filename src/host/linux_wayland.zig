@@ -1,4 +1,5 @@
 const std = @import("std");
+const run_options = @import("../run_options.zig");
 const build_options = @import("build_options");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
@@ -63,7 +64,7 @@ pub fn showFatalRunError(err: anyerror) void {
     std.process.exit(1);
 }
 
-pub fn run() !void {
+pub fn run(opts: run_options.RunOptions) !void {
     log.logStart(build_options.version);
     defer log.logStop(build_options.version);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
@@ -105,7 +106,7 @@ pub fn run() !void {
         log.appendLine("autostart", "{s} + extension — hidden_start override (extension handles show/hide via minimize)", .{owner.displayName()});
     }
 
-    try wayland.runBaselineWindow(gpa.allocator(), &g_config.?);
+    try wayland.runBaselineWindow(gpa.allocator(), &g_config.?, opts);
 }
 
 fn runPtySmoke(allocator: std.mem.Allocator) !void {
