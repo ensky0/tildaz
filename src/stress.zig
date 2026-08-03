@@ -525,17 +525,25 @@ fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
 /// 나오므로 (termios `ONLCR`) 송신 바이트 + 송신 안의 `\n` 개수다. 워크로드가
 /// 결정적이라 다시 만들어 세면 정확히 나온다.
 ///
-/// **하한이지 정확값이 아니다.** macOS 실측에서 이 값보다 조금 더 받는다 — 줄 수에
-/// 정비례하고 (80 byte 줄 13,107 개에 +14, 40 byte 줄 26,214 개에 +28), 터미널 폭 ·
-/// 줄 길이 · write 조각 크기와 무관하며, 데이터 없이 `\n` 만 보내면 생기지 않는다.
-/// tty 드라이버의 출력 처리에서 오는 것으로 보이지만 **정확한 규칙은 확정하지
-/// 않았다** (64 MiB 에서 819 byte = 0.0013 %). Linux 도 같은지 미확인.
+/// **하한이지 정확값이 아니다.** platform 마다 그 위에 얹히는 초과분이 다르다 (실측):
+///
+/// - **Linux 는 `+0`** — `ONLCR` 변환 외에 아무것도 더하지 않아 예상값이 정확히 맞는다.
+/// - **macOS 는 조금 더 받는다** (64 MiB 에서 819 byte = 0.0013 %). 줄 수에 정비례하고,
+///   터미널 폭 · 줄 길이 · write 조각 크기와 무관하며, 데이터 없이 `\n` 만 보내면
+///   생기지 않는다. tty 드라이버 출력 처리에서 오는 것으로 보이지만 **정확한 규칙은
+///   확정하지 않았다.**
+///
+/// 그래서 판정은 한 방향으로만 쓴다 — **모자라면 데이터를 흘린 것**이고, 남는 것은
+/// 정상이다. 처리량은 소화한 바이트와 보낸 바이트 두 기준으로 모두 찍으므로 이 오차가
+/// platform 비교를 왜곡하지 않는다.
 ///
 /// 그래서 판정은 한 방향으로만 쓴다 — **모자라면 데이터를 흘린 것**이고, 남는 것은
 /// 정상이다. 처리량은 실제 소화한 바이트로 계산하므로 이 오차에 영향받지 않는다.
 ///
-/// Windows 는 `null` 이다 — ConPTY 는 자식 출력에 자기 시퀀스를 끼워 넣을 수 있어
-/// 이렇게 계산할 수 없다. (Windows 실기 확인 전이다.)
+/// Windows 는 `null` 이다 — ConPTY 가 자식 출력에 자기 시퀀스를 끼워 넣어서 이렇게
+/// 계산할 수 있는 종류가 아니다. 실측이 그것을 뒷받침한다: 초과분이 `plain` +1.3 % ·
+/// `ansi` +1.0 % 인데 **`cjk` 는 +25.6 %** 이고, `readloop` 호출 수도 1,026 → 6,922 로
+/// 뛴다 (wide char 에서 시퀀스를 훨씬 많이 끼워 넣고 조각도 잘게 쪼갠다 — 원인 미확정).
 fn expectedPtyBytes(opts: Options) ?u64 {
     if (builtin.os.tag == .windows) return null;
 
@@ -669,8 +677,9 @@ fn scrollbackLines(tab: *session_core.Tab) usize {
 /// 프로세스 메모리 최고치. `getrusage` 의 `maxrss` 는 **단위가 OS 마다 다르다** —
 /// macOS 는 byte, Linux 는 KiB 로 보고한다 (`getrusage(2)`).
 ///
-/// Windows 는 `null` 이다. `GetProcessMemoryInfo` 를 따로 불러야 하는데, 이 하네스가
-/// Windows 에서 아직 검증되지 않았으므로 먼저 그것부터 확인한 뒤에 붙인다.
+/// Windows 는 `null` 이다 — `GetProcessMemoryInfo` 를 따로 불러야 한다. 하네스 자체는
+/// Windows 실기에서 확인됐으므로 (#371) 이제 붙일 수 있는 조건이지만, 이 커밋의 범위가
+/// 아니라 후속으로 둔다. 리포트는 그 자리에 `(unavailable)` 을 찍는다.
 fn peakRssBytes() ?u64 {
     if (builtin.os.tag == .windows) return null;
     const usage = std.posix.getrusage(std.posix.rusage.SELF);
@@ -792,7 +801,22 @@ fn report(opts: Options, result: Result) !void {
         });
     }
     w.print("elapsed       {d:.1} ms (end to end)\n", .{elapsed_ms});
-    w.print("throughput    {d:.1} MiB/s (end to end)\n", .{throughput});
+    w.print("throughput    {d:.1} MiB/s (end to end, 소화한 바이트 기준)\n", .{throughput});
+
+    // PTY 를 지나면 소화한 바이트가 보낸 것보다 많다. 그 초과분이 platform 마다 성질이
+    // 전혀 달라서 (Linux 0 %, macOS 0.001 %, Windows 는 cjk 에서 25 %) 소화 기준 값만
+    // 찍으면 **초과가 큰 platform 이 유리하게 보인다.** 워크로드를 같게 준 것이 비교의
+    // 전제이므로 요청 기준 값도 함께 찍는다.
+    if (result.consumed > opts.bytes and seconds > 0) {
+        const requested_mib = @as(f64, @floatFromInt(opts.bytes)) / mib;
+        const inflation = (@as(f64, @floatFromInt(result.consumed - opts.bytes)) /
+            @as(f64, @floatFromInt(opts.bytes))) * 100.0;
+        w.print("              {d:.1} MiB/s (보낸 {d:.1} MiB 기준 — PTY 가 {d:.2} % 부풀림)\n", .{
+            requested_mib / seconds,
+            requested_mib,
+            inflation,
+        });
+    }
 
     // PTY 층의 벽시계에는 producer 가 다음 조각을 쓸 때까지 기다린 시간이 섞인다.
     // 그걸 가르지 않으면 "우리가 느리다" 와 "부하를 주는 쪽이 느리다" 를 구별할 수
@@ -838,10 +862,19 @@ fn report(opts: Options, result: Result) !void {
         // readloop 과 push 는 PTY read thread 에서 도므로 위 벽시계와 나란히 흐른다 —
         // drain / parse 와 더하면 안 된다. drain 은 ring pop + parse 를 모두 포함한다.
         w.print("--- perf counters (readloop/push 는 별 thread) ---\n", .{});
-        writeCounter(&w, "readloop", counters.readloop, true);
-        writeCounter(&w, "push", counters.push, true);
-        writeCounter(&w, "drain", counters.drain, true);
-        writeCounter(&w, "parse", counters.parse, false);
+
+        // readloop 의 시간은 **platform 간 비교가 안 된다.** POSIX 는 poll 대기를 빼고
+        // read 복사만 재는데 Windows 는 유휴 대기를 포함한다 (#254 결정,
+        // `terminal/posix/pty.zig` 의 readLoop 주석). 어느 쪽인지 옆에 적어 둔다.
+        writeCounter(&w, "readloop", counters.readloop, .{
+            .note = if (builtin.os.tag == .windows) "유휴 대기 포함" else "read 복사만",
+        });
+        // push 의 `extra` 는 ring 이 가득 차서 양보한 횟수다. 이 값이 크면 **우리가
+        // 소화보다 느려서 read thread 가 대기했다는 뜻** — producer 까지 압력이 갔다.
+        // 실측에서 Linux frame cjk 의 push 시간이 drain 보다 컸는데 그 정체가 이것이다.
+        writeCounter(&w, "push", counters.push, .{ .yields = counters.push[3] });
+        writeCounter(&w, "drain", counters.drain, .{});
+        writeCounter(&w, "parse", counters.parse, .{ .show_bytes = false });
     } else {
         w.print("--- perf counters ---\nnot instrumented on this layer\n", .{});
     }
@@ -849,15 +882,26 @@ fn report(opts: Options, result: Result) !void {
     try std.fs.File.stdout().writeAll(w.slice());
 }
 
-/// `show_bytes` 가 false 면 byte 칸을 비운다 — `parse` 는 시간만 재고 byte 를 세지
-/// 않아서 (`perf.addTimed`), 0 을 찍으면 "0 byte 를 파싱했다" 로 읽힌다.
-fn writeCounter(w: *Report, name: []const u8, c: [4]u64, show_bytes: bool) void {
+const CounterOpts = struct {
+    /// `parse` 는 시간만 재고 byte 를 세지 않아서 (`perf.addTimed`) 0 을 찍으면 "0 byte
+    /// 를 파싱했다" 로 읽힌다. 그때는 칸을 비운다.
+    show_bytes: bool = true,
+    /// ring 이 가득 차서 양보한 횟수 (`push` 만 의미가 있다).
+    yields: ?u64 = null,
+    /// 그 카운터를 읽는 방법에 조건이 있으면 적는다.
+    note: ?[]const u8 = null,
+};
+
+fn writeCounter(w: *Report, name: []const u8, c: [4]u64, opts: CounterOpts) void {
     const ms = @as(f64, @floatFromInt(c[1])) / std.time.ns_per_ms;
-    if (show_bytes) {
-        w.print("{s: <9} calls={d: <8} bytes={d: <12} ms={d:.3}\n", .{ name, c[0], c[2], ms });
+    if (opts.show_bytes) {
+        w.print("{s: <9} calls={d: <8} bytes={d: <12} ms={d:.3}", .{ name, c[0], c[2], ms });
     } else {
-        w.print("{s: <9} calls={d: <8} {s: <18} ms={d:.3}\n", .{ name, c[0], "", ms });
+        w.print("{s: <9} calls={d: <8} {s: <18} ms={d:.3}", .{ name, c[0], "", ms });
     }
+    if (opts.yields) |yields| w.print(" yields={d}", .{yields});
+    if (opts.note) |note| w.print("  ({s})", .{note});
+    w.print("\n", .{});
 }
 
 /// 고정 버퍼에 이어 쓰는 최소 writer. 리포트는 길이가 정해져 있어 넘칠 일이 없다.
