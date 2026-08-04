@@ -55,6 +55,20 @@ const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
 pub const WM_PTY_OUTPUT: UINT = WM_USER + 1;
 pub const WM_TAB_CLOSED: UINT = WM_USER + 2;
+/// #386 — 프레임 tick. clock 스레드가 화면 주사율 주기로 post 한다.
+///
+/// **메시지로 유지하는 것이 설계의 핵심**이다. 이전에는 `SetTimer` + `WM_TIMER` 였는데,
+/// `SetTimer` 의 elapse 는 시스템 틱 (15.625 ms) 격자에서만 서비스돼서 `16` 이 실측 25.8 ms
+/// (38.8 fps) 가 됐다. 주기만 타이머 밖으로 빼고 전달은 그대로 메시지로 두면, `MessageBoxW`
+/// 같은 **모달 펌프도 이 tick 을 dispatch** 해서 다이얼로그를 띄운 채로도 배경 터미널이 계속
+/// 그려지는 성질이 유지된다 (#282 C4 가 Linux 를 맞춘 기준이 이 성질이다).
+pub const WM_FRAME_TICK: UINT = WM_USER + 3;
+/// `WM_FRAME_TICK` 핸들러가 렌더 전에 비우는 입력 범위 (`pumpPendingInput`).
+const WM_KEYFIRST: UINT = 0x0100;
+const WM_KEYLAST: UINT = 0x0109;
+const WM_MOUSEFIRST: UINT = 0x0200;
+const WM_MOUSELAST: UINT = 0x020E;
+const PM_REMOVE: UINT = 0x0001;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
@@ -193,6 +207,7 @@ extern "user32" fn PostMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) BOOL;
 extern "user32" fn GetMessageW(*MSG, HWND, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn TranslateMessage(*const MSG) callconv(.c) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(.c) LRESULT;
+extern "user32" fn PeekMessageW(*MSG, HWND, UINT, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn BeginPaint(HWND, *PAINTSTRUCT) callconv(.c) HDC;
 extern "user32" fn EndPaint(HWND, *const PAINTSTRUCT) callconv(.c) BOOL;
 extern "user32" fn InvalidateRect(HWND, ?*const RECT, BOOL) callconv(.c) BOOL;
@@ -219,6 +234,22 @@ extern "user32" fn SetCursor(HCURSOR) callconv(.c) HCURSOR;
 extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.c) BOOL;
 extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
+// #386 — 프레임 clock. `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 은 `timeBeginPeriod(1)` 로
+// 시스템 전체 타이머 해상도를 올리지 않고도 정밀한 주기를 얻는 수단이다 (Win10 1803+).
+// `SetTimer` 를 못 쓰는 이유는 `WM_FRAME_TICK` 주석에 있다.
+extern "kernel32" fn CreateWaitableTimerExW(?*anyopaque, ?[*:0]const WCHAR, DWORD, DWORD) callconv(.c) ?*anyopaque;
+extern "kernel32" fn SetWaitableTimer(?*anyopaque, *const i64, LONG, ?*anyopaque, ?*anyopaque, BOOL) callconv(.c) BOOL;
+extern "kernel32" fn WaitForSingleObject(?*anyopaque, DWORD) callconv(.c) DWORD;
+extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) BOOL;
+extern "gdi32" fn GetDeviceCaps(HDC, c_int) callconv(.c) c_int;
+const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: DWORD = 0x0002;
+const TIMER_ALL_ACCESS: DWORD = 0x1F0003;
+const WAIT_INFINITE: DWORD = 0xFFFFFFFF;
+const WAIT_OBJECT_0: DWORD = 0;
+/// `GetDeviceCaps` index — 현재 디스플레이 모드의 세로 재생률 (Hz).
+const VREFRESH: c_int = 116;
+/// 재생률을 못 읽었을 때 (`GetDeviceCaps` 가 0 / 1 = unknown) 쓸 값.
+const FALLBACK_REFRESH_HZ: i64 = 60;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.c) BOOL;
 extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.c) BOOL;
 extern "user32" fn GetDC(HWND) callconv(.c) HDC;
@@ -342,6 +373,18 @@ pub const Window = struct {
     auto_scroll_active: bool = false,
     last_mouse_x: c_int = 0,
     last_mouse_y: c_int = 0,
+    /// #386 — 프레임 clock. 화면 주사율 주기로 `WM_FRAME_TICK` 을 post 하는 스레드와
+    /// 그 스레드가 기다리는 고해상도 waitable timer. `SetTimer` 를 쓰지 않는 이유는
+    /// `WM_FRAME_TICK` 주석에 있다.
+    frame_clock: ?std.Thread = null,
+    frame_timer: ?*anyopaque = null,
+    frame_clock_run: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// tick coalescing. UI 스레드가 앞의 tick 을 아직 처리하지 않았으면 새로 post 하지
+    /// 않는다 — 없으면 큐에 tick 이 쌓여 밀린 프레임을 몰아 그리게 된다. 하네스 `frame`
+    /// 층이 "놓친 vsync 를 따라잡지 않는다" 로 모사한 정책과 같다.
+    frame_tick_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// 한 프레임의 길이 (100ns 단위). `startFrameClock` 이 재생률로 계산한다.
+    frame_period_100ns: i64 = 0,
     /// 사용자가 윈도우 닫기를 요청 (Alt+F4 / 시스템 메뉴 / WM_CLOSE) 했을 때
     /// 호출. true 반환 = 종료 진행 (DestroyWindow), false 반환 = 종료 취소.
     /// macOS `applicationShouldTerminate:` 와 같은 역할 (#116). 다중 탭 confirm
@@ -591,8 +634,8 @@ pub const Window = struct {
         const init_dpi: UINT = if (dpi > 0) dpi else 96;
         self.rebuildFontForDpi(init_dpi);
 
-        // Start render timer (60fps)
-        _ = SetTimer(self.hwnd, RENDER_TIMER_ID, 16, null);
+        // #386 — 프레임 clock 시작 (이전엔 여기서 `SetTimer(…, 16, …)` 이었다).
+        self.startFrameClock();
     }
 
     /// 전역 핫키 등록 (config 기본값 = F1, modifiers=0). 실패 사유 (시연 중 발견):
@@ -749,7 +792,9 @@ pub const Window = struct {
         // panic 하면, 실패 처리 순서를 바꿀 때 곧바로 crash 가 된다. 이 검사는
         // 도달 불가 방어가 아니라 "만들어졌으면 정리한다" 는 계약이다.
         if (self.hwnd) |hwnd| {
-            _ = KillTimer(hwnd, RENDER_TIMER_ID);
+            // clock 스레드를 **창을 부수기 전에** join 한다 — 아니면 죽은 hwnd 로
+            // `PostMessageW` 가 갈 수 있다.
+            self.stopFrameClock();
             if (self.hotkey_registered) _ = UnregisterHotKey(hwnd, HOTKEY_ID);
             if (self.dc) |dc| _ = ReleaseDC(hwnd, dc);
             _ = DestroyWindow(hwnd);
@@ -832,7 +877,7 @@ pub const Window = struct {
         // idempotent 하게 재동기화.
         self.presentNow();
 
-        _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
+        self.startFrameClock();
     }
 
     /// F1 으로 호출되는 hide. `SW_HIDE` 로 Windows 가 창을 공식적으로 hidden
@@ -845,7 +890,7 @@ pub const Window = struct {
     pub fn hide(self: *Window) void {
         const hwnd = self.requireHwnd();
         self.breakMonitorFullscreenSurface();
-        _ = KillTimer(hwnd, RENDER_TIMER_ID);
+        self.stopFrameClock();
         self.visible = false;
         _ = ShowWindow(hwnd, SW_HIDE);
         _ = DwmFlush();
@@ -1166,6 +1211,148 @@ pub const Window = struct {
         if (self.resize_fn) |resize_fn| resize_fn(self.userdata);
     }
 
+    /// #386 — 렌더 전에 **우리 창의 입력을 먼저 비운다.**
+    ///
+    /// Windows 메시지 우선순위는 `sent → posted → 입력(하드웨어) → paint → timer` 다.
+    /// 이전의 `WM_TIMER` 는 최하위라 입력에 절대 앞서지 않았는데, `WM_FRAME_TICK` 은
+    /// **posted 라 입력보다 앞선다.** 프레임 작업이 한 주기를 다 채우면 큐에 항상 tick 이
+    /// 있어서 키 입력이 영원히 뒤로 밀린다 — 실측으로 `cjk` 폭포 중 Ctrl+Shift+F12 를
+    /// 10 번 보내 **0 번** 처리됐다 (같은 조건에서 `SetTimer` 빌드는 처리됐다). 폭포 중
+    /// Ctrl+C 가 안 먹는다는 뜻이라 그대로 둘 수 없다.
+    ///
+    /// 범위를 키 · 마우스로, 대상을 **우리 hwnd 로** 좁힌다. `null` hwnd 로 비우면 모달
+    /// 다이얼로그의 메시지까지 가로채서 그쪽 키보드 네비게이션 (`IsDialogMessage`) 이
+    /// 깨진다. 상한(`guard`)은 입력이 계속 쏟아질 때 렌더를 굶기지 않기 위한 것이다.
+    fn pumpPendingInput(self: *Window) void {
+        const ranges = [_][2]UINT{
+            .{ WM_KEYFIRST, WM_KEYLAST },
+            .{ WM_MOUSEFIRST, WM_MOUSELAST },
+        };
+        var msg: MSG = undefined;
+        for (ranges) |range| {
+            var guard: u32 = 0;
+            while (guard < 64 and PeekMessageW(&msg, self.hwnd, range[0], range[1], PM_REMOVE) != 0) : (guard += 1) {
+                _ = TranslateMessage(&msg);
+                _ = DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    /// #386 — 프레임 한 번. `WM_FRAME_TICK` (정상) 과 `WM_TIMER` (fallback) 이 공유한다.
+    fn renderFrameTick(self: *Window) void {
+        if (!self.visible or self.layout_transition_active) return;
+        if (self.render_fn) |render_fn| render_fn(self);
+    }
+
+    /// #386 — 프레임 clock 시작. `hide` 동안 깨어나지 않도록 `show` / create 에서만 켠다
+    /// (이전 `SetTimer` 와 같은 수명). 이미 돌고 있으면 no-op.
+    fn startFrameClock(self: *Window) void {
+        if (self.frame_clock != null) return;
+        const hwnd = self.hwnd orelse return;
+        // 이전 start 가 실패해 fallback 타이머가 붙어 있을 수 있다. 아래에서 clock 이
+        // 성공하면 그건 꺼야 하고, 또 실패하면 어차피 다시 무장한다.
+        _ = KillTimer(hwnd, RENDER_TIMER_ID);
+
+        // 재생률은 창이 올라가 있는 디스플레이 모드의 값이다. `GetDeviceCaps` 는 0 / 1 을
+        // "default / unknown" 으로 돌려주므로 (MSDN) 그때만 fallback 을 쓴다.
+        const refresh_hz: i64 = blk: {
+            const hz = if (self.dc) |dc| GetDeviceCaps(dc, VREFRESH) else 0;
+            if (hz > 1) break :blk @intCast(hz);
+            break :blk FALLBACK_REFRESH_HZ;
+        };
+        self.frame_period_100ns = @divTrunc(10_000_000, refresh_hz);
+
+        // 고해상도 타이머가 없으면 프레임이 아예 안 온다 — 그건 창이 멈추는 것이라
+        // 이전 방식으로 되돌린다. 주기는 부정확하지만 (#386 의 원인) 프레임이 없는 것보다 낫다.
+        const timer = CreateWaitableTimerExW(null, null, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS) orelse {
+            log.appendLine("startup", "frame clock: high-resolution timer unavailable — using WM_TIMER fallback", .{});
+            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
+            return;
+        };
+        // clock 스레드는 단조 시계로 deadline 을 누적한다. 여기서 한 번 확인해 두면
+        // 스레드 안에서 실패를 처리할 필요가 없다 (Windows 는 QPC 라 실패하지 않지만,
+        // 실패했을 때 프레임이 조용히 멈추는 것보다 fallback 이 낫다).
+        _ = std.time.Instant.now() catch {
+            log.appendLine("startup", "frame clock: monotonic clock unavailable — using WM_TIMER fallback", .{});
+            _ = CloseHandle(timer);
+            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
+            return;
+        };
+
+        self.frame_timer = timer;
+        self.frame_clock_run.store(true, .release);
+        self.frame_clock = std.Thread.spawn(.{}, frameClockThread, .{self}) catch |err| {
+            log.appendLine("startup", "frame clock: thread spawn failed ({s}) — using WM_TIMER fallback", .{@errorName(err)});
+            self.frame_clock_run.store(false, .release);
+            _ = CloseHandle(timer);
+            self.frame_timer = null;
+            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
+            return;
+        };
+        log.appendLine("startup", "frame clock started: refresh={d}Hz period={d:.2}ms", .{
+            refresh_hz,
+            @as(f64, @floatFromInt(self.frame_period_100ns)) / 10_000.0,
+        });
+    }
+
+    /// #386 — 프레임 clock 정지. `WM_TIMER` fallback 으로 돌고 있었을 수도 있으니 그쪽도
+    /// 함께 끈다.
+    fn stopFrameClock(self: *Window) void {
+        if (self.hwnd) |hwnd| _ = KillTimer(hwnd, RENDER_TIMER_ID);
+        const thread = self.frame_clock orelse return;
+        self.frame_clock_run.store(false, .release);
+        // 별도 stop 이벤트를 두지 않는다 — 스레드가 한 주기 (≤17 ms) 안에 루프 조건을
+        // 다시 보고 빠져나온다. 그만큼의 join 지연을 허용하는 대신 코드가 단순해진다.
+        thread.join();
+        self.frame_clock = null;
+        if (self.frame_timer) |t| {
+            _ = CloseHandle(t);
+            self.frame_timer = null;
+        }
+        self.frame_tick_pending.store(false, .release);
+    }
+
+    /// #386 — clock 스레드 본체. 한 주기 기다린 뒤 coalescing 을 거쳐 `WM_FRAME_TICK`
+    /// 을 post 한다. 이 스레드는 그리지 않는다 — 렌더는 그대로 UI 스레드가 한다.
+    ///
+    /// **기준 시각에서 누적한 deadline 으로 잔다.** 매번 "주기만큼" 상대 시간을 주면
+    /// 깨어나는 지연이 프레임마다 누적돼 주기가 길어진다 — 실측으로 60 Hz 요청이
+    /// 17.03 ms (58.7 fps) 로 나왔다 (프레임당 약 0.4 ms). 재생률이 높을수록 그 비율이
+    /// 커진다 (144 Hz 면 6 %). 누적 deadline 은 그 지연을 다음 잠으로 상쇄한다.
+    ///
+    /// vsync *위상* 에는 맞추지 않는다 — present 와 무관해야 유휴 skip (#386 ②) 과
+    /// 합쳐지므로 주기만 정확하면 된다.
+    fn frameClockThread(self: *Window) void {
+        const timer = self.frame_timer orelse return;
+        const period_ns: u64 = @intCast(self.frame_period_100ns * 100);
+        if (period_ns == 0) return;
+        var base = std.time.Instant.now() catch return;
+        var ticks: u64 = 0;
+        while (self.frame_clock_run.load(.acquire)) {
+            ticks += 1;
+            const now = std.time.Instant.now() catch break;
+            const elapsed = now.since(base);
+            const deadline = ticks *| period_ns;
+            if (deadline > elapsed) {
+                // 음수 = 상대 시간 (100ns 단위). one-shot 으로 매번 재장전한다 — 주기
+                // 인자 (`lPeriod`) 는 ms 정수라 16.67 ms 를 표현할 수 없다.
+                const due: i64 = -@as(i64, @intCast((deadline - elapsed) / 100));
+                if (SetWaitableTimer(timer, &due, 0, null, null, 0) == 0) break;
+                if (WaitForSingleObject(timer, WAIT_INFINITE) != WAIT_OBJECT_0) break;
+            } else {
+                // 이 스레드 자신이 밀렸다 (스케줄링). 밀린 만큼을 몰아 내지 않고 지금을
+                // 새 기준으로 삼는다 — 다음 iteration 은 정상적으로 잔다 (spin 아님).
+                base = now;
+                ticks = 0;
+            }
+            if (!self.frame_clock_run.load(.acquire)) break;
+            const hwnd = self.hwnd orelse break;
+            if (!self.frame_tick_pending.swap(true, .acq_rel)) {
+                _ = PostMessageW(hwnd, WM_FRAME_TICK, 0, 0);
+            }
+        }
+    }
+
     fn presentNow(self: *Window) void {
         if (!self.visible) return;
         if (self.render_fn) |render_fn| render_fn(self);
@@ -1297,12 +1484,22 @@ pub const Window = struct {
                 }
                 return 0;
             },
+            WM_FRAME_TICK => {
+                // coalescing 해제는 **렌더 전** 에 한다. 렌더 중에 도착한 tick 이 큐에
+                // 하나 들어와 바로 다음 프레임이 되게 하려는 것이다 — 렌더 뒤에 열면
+                // 프레임이 한 주기를 넘길 때마다 다음 tick 을 통째로 잃어 주기가 두 배로
+                // 뛴다 (#386 이 고치려는 바로 그 증상). coalescing 이 있으니 큐에 쌓이는
+                // tick 은 최대 하나라 "놓친 프레임을 몰아 그리는" 일은 생기지 않는다.
+                self.frame_tick_pending.store(false, .release);
+                // posted tick 이 입력을 굶기지 않게 — 위 `pumpPendingInput` 주석 참고.
+                self.pumpPendingInput();
+                self.renderFrameTick();
+                return 0;
+            },
             WM_TIMER => {
                 if (wParam == RENDER_TIMER_ID) {
-                    if (!self.visible or self.layout_transition_active) return 0;
-                    if (self.render_fn) |render_fn| {
-                        render_fn(self);
-                    }
+                    // #386 — 고해상도 타이머를 못 만들었을 때의 fallback 경로.
+                    self.renderFrameTick();
                 } else if (wParam == AUTOSCROLL_TIMER_ID) {
                     // #245 — 마지막 마우스 위치로 mouse_move(left_button=true) 재전송.
                     // app 의 updateTerminalSelection 이 다시 돌아 경계 밖이면 한 step
