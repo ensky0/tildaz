@@ -135,14 +135,6 @@ producer_cmd() {
         "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$PRODUCER"
 }
 
-# 같은 것을 **cmd 문법**으로. conhost 는 `sh` 대신 `cmd` 로 띄우기 때문이다 — `env` 는 Git
-# Bash 의 실행파일이라 cmd 가 보는 PATH 에 없을 수 있다. `set "VAR=값"` 형태여야 값 끝에
-# 공백이 붙지 않는다 (`set VAR=값 && …` 는 "값 " 이 된다).
-producer_cmd_cmdexe() {
-    printf 'set "TILDAZ_STRESS_WORKLOAD=%s" && set "TILDAZ_STRESS_BYTES=%s" && set "TILDAZ_STRESS_TIMING_FILE=%s" && "%s"' \
-        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$(native_path "$PRODUCER")"
-}
-
 # timing 파일이 생길 때까지 기다린다. 터미널을 background 로 띄우기 때문에 (그러지 않으면
 # 창이 닫히기를 기다리며 멈춘다) 완료 신호는 이 파일뿐이다.
 wait_for() {
@@ -188,9 +180,18 @@ run_terminal() {
         # 회차마다 지운다 — 이전 회차 파일이 남아 있으면 `wait_for` 가 즉시 통과해 같은
         # 값을 다시 읽는다.
         rm -f "$_timing"
-        # background 로 띄운다 — 창이 닫히기를 기다리면 멈춘다 (kitty 실측).
-        "$@" >/dev/null 2>&1 &
-        _pid=$!
+        # 보통은 background 로 띄운다 — 창이 닫히기를 기다리면 멈추기 때문이다 (kitty 실측).
+        # 단 conhost 는 foreground 로 띄운다: `&` 로 background 에 두면 conhost 가 새 콘솔에서
+        # producer 를 돌리지 못해 timing 이 안 생긴다 (Windows 실기: `&` 만 실패했고 redirect 는
+        # 무관했다). conhost 는 `cmd //c` 라 명령이 끝나면 창이 스스로 닫혀 foreground 여도
+        # 멈추지 않는다.
+        if [ "$_name" = conhost ]; then
+            "$@" >/dev/null 2>&1
+            _pid=""
+        else
+            "$@" >/dev/null 2>&1 &
+            _pid=$!
+        fi
         if wait_for "$_timing"; then
             _samples="$_samples $(sed -n 's/^elapsed_ns=//p' "$_timing")"
             _cols=$(sed -n 's/^cols=//p' "$_timing")
@@ -204,7 +205,7 @@ run_terminal() {
         # 창이 남아 있으면 정리한다. `kill $_pid` 만으로는 부족하다 — kitty 는 `--detach` 라
         # 그 pid 가 즉시 끝나는 부모이고, ghostty 는 실행 실패 화면을 띄운 채 기다린다.
         # `cleanup_terminals` 가 이 실행의 `WORK_DIR` 패턴으로 실제 창을 정리한다.
-        kill "$_pid" 2>/dev/null || true
+        [ -n "$_pid" ] && kill "$_pid" 2>/dev/null || true
         cleanup_terminals
         _run=$((_run + 1))
     done
@@ -218,6 +219,25 @@ run_terminal() {
     # 앞의 공백을 없애 awk 가 필드를 세기 쉽게 한다.
     _samples=$(printf '%s' "$_samples" | sed 's/^ *//')
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_name" "$_samples" "$_cols" "$_rows" "$_cols0" "$_rows0" >> "$RESULTS"
+}
+
+# Windows 전용 — producer 를 sh 로 감싸지 않고 직접 실행한다. env 는 이 함수가 subshell 안에서
+# export 해 자식(터미널 → producer)에게 상속시킨다. 두 가지를 함께 피하려는 것이다.
+#   - alacritty · wezterm 은 MSYS sh 를 ConPTY 로 띄우지 못한다 — `-e sh` 는 sh 진입 자체가 안
+#     되는데 (`-e ping` 은 정상) wt · conhost 는 sh 가 잘 돈다. 실기에서 확인했다.
+#   - sh -c 에 넘기면 native_path (cygpath -w) 의 백슬래시 경로 (C:\Users\…) 가 sh 의 escape 로
+#     뭉개져 (C:Users…) producer 가 timing 을 엉뚱한 상대경로에 쓴다.
+# tildaz 가 쓰는 방식과 같다 — 터미널이 받는 command 는 native producer 경로 하나뿐이다.
+# 회차마다 지우는 timing 경로는 run_terminal 이 `$_name` 으로 만드므로 여기 export 값과 같다.
+run_terminal_win() {
+    _wname="$1"
+    shift
+    (
+        export TILDAZ_STRESS_WORKLOAD="$WORKLOAD"
+        export TILDAZ_STRESS_BYTES="$BYTES"
+        export TILDAZ_STRESS_TIMING_FILE="$(native_path "$WORK_DIR/$_wname.timing")"
+        run_terminal "$_wname" "$@"
+    )
 }
 
 # --- 터미널별 실행 방법 ---
@@ -239,22 +259,46 @@ fi
 
 if command -v alacritty >/dev/null 2>&1; then
     T="$WORK_DIR/alacritty.timing"
-    run_terminal alacritty alacritty \
-        -o "window.dimensions.columns=$COLS" \
-        -o "window.dimensions.lines=$ROWS" \
-        -o "scrolling.history=100000" \
-        -e sh -c "$(producer_cmd "$T")"
+    if [ "$IS_WINDOWS" = 1 ]; then
+        run_terminal_win alacritty alacritty \
+            -o "window.dimensions.columns=$COLS" \
+            -o "window.dimensions.lines=$ROWS" \
+            -o "scrolling.history=100000" \
+            -e "$(native_path "$PRODUCER")"
+    else
+        run_terminal alacritty alacritty \
+            -o "window.dimensions.columns=$COLS" \
+            -o "window.dimensions.lines=$ROWS" \
+            -o "scrolling.history=100000" \
+            -e sh -c "$(producer_cmd "$T")"
+    fi
 fi
 
 if command -v wezterm >/dev/null 2>&1; then
     T="$WORK_DIR/wezterm.timing"
     # `--config` 는 **전역 옵션**이라 `start` 앞에 와야 한다 (`wezterm --help`).
     # `start` 뒤에 두면 실행 자체가 안 된다.
-    run_terminal wezterm wezterm \
-        --config "initial_cols=$COLS" \
-        --config "initial_rows=$ROWS" \
-        --config "scrollback_lines=100000" \
-        start -- sh -c "$(producer_cmd "$T")"
+    # `enable_tab_bar=false` — wezterm 은 탭바를 켜면 그 높이만큼 터미널 행이 줄어든다
+    # (Windows 실기: `initial_rows=40` 이 120x38 로 떴다). 탭바를 끄면 요청 격자가 그대로 나와
+    # 다른 터미널(탭바 없는 alacritty·wt)과 공정하게 비교된다. macOS 는 탭바를 네이티브 title
+    # bar 에 그려 원래 행을 안 먹지만, 꺼도 결과는 같다.
+    if [ "$IS_WINDOWS" = 1 ]; then
+        run_terminal_win wezterm wezterm \
+            --config "initial_cols=$COLS" \
+            --config "initial_rows=$ROWS" \
+            --config "scrollback_lines=100000" \
+            --config "enable_tab_bar=false" \
+            --config "window_padding={left=0,right=0,top=0,bottom=0}" \
+            start -- "$(native_path "$PRODUCER")"
+    else
+        run_terminal wezterm wezterm \
+            --config "initial_cols=$COLS" \
+            --config "initial_rows=$ROWS" \
+            --config "scrollback_lines=100000" \
+            --config "enable_tab_bar=false" \
+            --config "window_padding={left=0,right=0,top=0,bottom=0}" \
+            start -- sh -c "$(producer_cmd "$T")"
+    fi
 fi
 
 # ghostty 는 창 크기를 **config 파일로** 준다. CLI 로 config key 옵션을 여러 개 주면
@@ -331,11 +375,10 @@ fi
 # - `-w new` 가 필수다. 사용자의 `windowingBehavior` 가 `useAnyExisting` 이면 `wt` 가 **기존
 #   창에 탭으로** 붙어서 창 크기 옵션이 의미를 잃는다. `new` 는 항상 새 창이다.
 if [ "$IS_WINDOWS" = 1 ] && command -v wt >/dev/null 2>&1; then
-    T="$WORK_DIR/wt.timing"
     # 표 이름은 실행 파일명 `wt` 를 쓴다 — "windows-terminal" 은 표의 이름 칸 (14) 을 넘겨
     # 줄이 밀린다.
-    run_terminal wt wt -w new --size "$COLS,$ROWS" \
-        sh -c "$(producer_cmd "$T")"
+    run_terminal_win wt wt -w new --size "$COLS,$ROWS" \
+        "$(native_path "$PRODUCER")"
 fi
 
 # conhost — Windows 의 전통 콘솔 호스트 (`%windir%\System32\conhost.exe`). `cmd.exe` 는 UI 가
@@ -356,8 +399,22 @@ fi
 # 없다.** 다른 터미널에는 100000 줄을 주므로 conhost 값에는 스크롤백 관리 비용이 빠져 있다.
 if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
     T="$WORK_DIR/conhost.timing"
-    run_terminal conhost conhost cmd /c \
-        "mode con: cols=$COLS lines=$ROWS && $(producer_cmd_cmdexe "$T")"
+    # conhost 는 임시 `.cmd` 파일로 띄운다. 인라인 `cmd //c "… set \"VAR=값\" …"` 로 넘기면
+    # `set` 의 큰따옴표가 바깥 따옴표와 중첩돼 명령이 깨져 producer 가 안 돈다 (Windows 실기:
+    # timing 이 안 생겨 표에서 conhost 줄이 멈췄다). 파일이면 그 중첩이 없다. 두 가지가 더 있다.
+    #   - `/c` 가 아니라 `//c` 다 — MSYS 가 인자 `/c` 를 Windows 경로 `C:\` 로 자동 변환하므로
+    #     (tasklist `//v` 와 같은 회피).
+    #   - `.cmd` 는 CRLF 로 쓴다 (cmd 관습). producer stdout 은 리다이렉트하지 않는다 — 콘솔이
+    #     stdout 이라야 producer 가 `GetConsoleScreenBufferInfo` 로 격자를 읽는다.
+    _conhost_cmd="$WORK_DIR/conhost.cmd"
+    {
+        printf 'mode con: cols=%s lines=%s\r\n' "$COLS" "$ROWS"
+        printf 'set "TILDAZ_STRESS_WORKLOAD=%s"\r\n' "$WORKLOAD"
+        printf 'set "TILDAZ_STRESS_BYTES=%s"\r\n' "$BYTES"
+        printf 'set "TILDAZ_STRESS_TIMING_FILE=%s"\r\n' "$(native_path "$T")"
+        printf '"%s"\r\n' "$(native_path "$PRODUCER")"
+    } > "$_conhost_cmd"
+    run_terminal conhost conhost cmd //c "$(native_path "$_conhost_cmd")"
 fi
 
 # foot 은 Wayland 전용이라 Linux 에서만 있다.
