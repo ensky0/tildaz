@@ -2945,7 +2945,25 @@ const Client = struct {
     }
 
     fn ensureSessionGrid(self: *Client) !void {
-        const grid = self.gridSize();
+        var grid = self.gridSize();
+        // #382 — 측정 모드는 격자를 `-size` 로 **고정한다.** 창 크기에서 뽑은 `gridSize()` 를
+        // 그대로 쓰면 격자가 측정 중에 움직인다: 창 크기는 renderer 가 준비된 뒤에야 `-size` 로
+        // 맞춰지므로 (`computeLayerLayout` 의 같은 이슈 주석) 그 전에 도착한 첫 configure
+        // (config 퍼센트 크기) 가 격자를 그 값으로 끌고 갔다가 되돌아온다. Linux 실기에서
+        // `120x40 → 139x41 → 120x40` 왕복을 확인했고, producer 는 그 사이 SIGWINCH 를 두 번
+        // 받는다 — 줄바꿈 횟수가 달라져 측정이 오염되는데 **timing 파일은 시작과 끝만 남기므로
+        // 그 왕복이 보이지 않는다.**
+        if (self.run_opts.grid) |want| {
+            if (grid.cols < want.cols or grid.rows < want.rows) {
+                // 창이 요청 격자를 아직 (또는 끝까지) 담지 못한다 — configure 가 안 왔거나
+                // 요청이 화면보다 크다. 격자는 요청값을 유지한다 (측정의 기준이 그 값이다).
+                log.appendLineVerbose("stress", "window fits {}x{} — keeping requested grid {}x{}", .{
+                    grid.cols, grid.rows, want.cols, want.rows,
+                });
+            }
+            grid.cols = want.cols;
+            grid.rows = want.rows;
+        }
         if (self.session) |*session| {
             if (session.activeTab()) |tab| {
                 if (tab.terminal.cols != grid.cols or tab.terminal.rows != grid.rows) {
