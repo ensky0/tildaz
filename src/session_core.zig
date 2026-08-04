@@ -1039,20 +1039,36 @@ pub const SessionCore = struct {
         return result;
     }
 
-    pub fn prepareActiveFrame(self: *SessionCore, last_render_ms: *i64) bool {
-        var should_render = true;
+    /// `prepareActiveFrame` 의 결과.
+    ///
+    /// #386 ② — 이전에는 `should_render` 하나만 돌려줬는데, 그 값은 출력이 없을 때도
+    /// `true` 라 **"화면이 바뀌었나" 를 알 수 없었다.** 그래서 Windows 는 유휴에도 매
+    /// 프레임 그렸다 (macOS · Linux 는 각자 `g_needs_render` · `needs_redraw` 로 가렸다).
+    /// `had_output` 은 macOS `drainOutputForRender` 의 반환값과 같은 의미다.
+    pub const ActiveFrame = struct {
+        /// throttle 결과. 출력이 밀려 있는데 직전 렌더가 8 ms 안이면 false.
+        should_render: bool = true,
+        /// 이번 프레임에 화면을 바꿀 출력이 있었나 (본문 · 남은 출력 · 제목 변경).
+        had_output: bool = false,
+    };
+
+    pub fn prepareActiveFrame(self: *SessionCore, last_render_ms: *i64) ActiveFrame {
+        var result: ActiveFrame = .{};
         if (self.activeTab() != null) {
             const drained = self.drainFrame();
+            result.had_output = drained.active_output or
+                drained.active_output_pending or
+                drained.title_changed;
             if (drained.active_output_pending) {
                 const now = std.time.milliTimestamp();
                 if (now - last_render_ms.* < 8 and !drained.title_changed) {
-                    should_render = false;
+                    result.should_render = false;
                 } else {
                     last_render_ms.* = now;
                 }
             }
         }
-        return should_render;
+        return result;
     }
 
     /// macOS display link와 Linux poll loop가 render 필요 여부를 판단하는 공통 경로.
