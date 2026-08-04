@@ -85,13 +85,22 @@ WORK_DIR=$(mktemp -d)
 # `pkill` 을 쓰지 않는다 — **Git Bash (Windows) 에는 없다** (별도로 MSYS2 의 `procps-ng` 를
 # 설치해야 생긴다. 실기에서 확인했다). `ps` + `kill` 조합은 macOS · Linux 에서 확실하다.
 #
-# **Windows 는 이 정리를 건너뛴다.** MSYS `ps` 는 `-o` 를 지원하지 않고 (옵션이
-# `-a -e -f -h -l -p -s -u -v -W` 뿐이다), 무엇보다 **native Windows 프로세스가 목록에 아예
-# 올라오지 않는다.** Git Bash 실기에서 `ps -ef` 가 MSYS 프로세스 세 개 (`bash` · `mintty` ·
-# `ps` 자신) 만 보여줬다 — `wt.exe` 같은 창을 이 실행의 `WORK_DIR` 로 골라낼 방법이 없다는
-# 뜻이다 (`-W` 로 목록에 올려도 명령줄이 없고, 그 PID 도 부정확한 이슈가 있다 —
-# msys2/MSYS2-packages#1724). **Windows 에서 창이 실제로 남는지는 실기 확인이 필요하다**
-# (#371):
+# **Windows 는 당장 이 정리를 건너뛴다** — 필요한지, 어떻게 해야 하는지가 아직 확인되지 않았다.
+# Git Bash 실기에서 본 것과 아직 모르는 것을 갈라 적는다 (#371).
+#
+# 확인된 것:
+# - `ps -ef` 는 MSYS 프로세스만 보여준다 (`bash` · `mintty` · `ps` 자신). native Windows
+#   프로세스는 `ps -W` 로 올라온다.
+# - MSYS `ps` 는 `-o` 를 지원하지 않는다 (옵션이 `-a -e -f -h -l -p -s -u -v -W` 뿐이다).
+#
+# **확인 필요:** `ps -W` 의 COMMAND 에 **명령줄 인자가 나오는지.** 좁은 창에서는 exe 경로까지만
+# 보였는데, `ps` 가 터미널 폭에서 잘라 출력하므로 그것이 "인자가 없다" 는 근거는 되지 못한다.
+# 인자가 나온다면 아래 macOS · Linux 경로와 같은 방식 (`WORK_DIR` 패턴) 을 그대로 쓸 수 있고,
+# 나오지 않는다면 PowerShell 의 `Get-CimInstance Win32_Process` 로 `CommandLine` 을 필터해야
+# 한다. 이름 (`wt.exe`) 으로 죽이는 방법은 쓰지 않는다 — 사용자가 따로 열어 둔 창까지 죽는다.
+# (`ps -W` 의 PID 가 부정확한 이슈도 있다 — msys2/MSYS2-packages#1724.)
+#
+# 그리고 **정리가 필요한지부터 확인해야 한다:**
 # - 창이 남던 두 터미널 (kitty · ghostty) 은 Windows 판이 없어 이 문제의 대상이 아니다.
 # - `wt` 는 프로필의 `closeOnExit` 가 기본값 `automatic` 이면 exit 0 인 명령 뒤에 스스로 닫는다.
 #   사용자 프로필이 `never` 면 남을 수 있다.
