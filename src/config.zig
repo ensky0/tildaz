@@ -13,6 +13,7 @@ const windows = std.os.windows;
 const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const instance_context = @import("instance_context.zig");
 const paths = @import("paths.zig");
 const font_validate = @import("font/validate.zig");
 const font_constants = @import("font/constants.zig");
@@ -898,7 +899,13 @@ pub const Config = struct {
         defer allocator.free(path);
 
         const file = std.fs.openFileAbsolute(path, .{}) catch {
-            createDefault(allocator, path, shell_resolved);
+            // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
+            // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
+            // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
+            // 사용자 config 를 만드는 주체가 되는데, 그것은 launcher 의 일이다
+            // (`instances.createDefaultConfig` — auto_start · 단축키 동기화까지 함께 한다).
+            // 측정은 기본값을 메모리에서만 쓰고 지나간다.
+            if (!instance_context.isStress()) createDefault(allocator, path, shell_resolved);
             return defaultOwned(allocator, shell_resolved);
         };
         defer file.close();
