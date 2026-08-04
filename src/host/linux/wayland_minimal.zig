@@ -1459,7 +1459,16 @@ const Client = struct {
         self.initGpuIfAvailable();
         self.logCapabilities();
         self.logBootElapsed("bind globals");
-        self.tryConnectKGlobalAccel();
+        // #382 — 측정 인스턴스는 KDE 전역 단축키를 등록하지 않는다. 등록 정체가 worker
+        // index 파생이라 (`kglobalaccel.component` = `tildaz.instance0`, `action` =
+        // `toggle-0`) 사용자 worker 와 **같은 이름**으로 claim 하고, 종료할 때
+        // `Client.deinit` 의 `setInactive` 와 `cleanupLegacyIdentity` 가 그 등록을 실제로
+        // 건드린다 — 측정 한 번에 사용자의 F1 이 죽을 수 있다.
+        //
+        // 정체를 바꾸는 것으로는 부족하다 (창 타이틀 · app_id 와 다른 점이다). 이름을
+        // 달리해도 KDE 단축키 레지스트리에 측정용 항목이 남으므로 **등록 자체를 건너뛴다** —
+        // 같은 파일의 sway `bindsym` · GSettings 등록과 같은 형태다.
+        if (!self.run_opts.isStressRun()) self.tryConnectKGlobalAccel();
         self.logBootElapsed("KGlobalAccel");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
