@@ -9,6 +9,29 @@ pub fn appId(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintZ(buf, "tildaz.instance{d}", .{index});
 }
 
+/// 측정 인스턴스의 app_id ([#382](https://github.com/ensky0/tildaz/issues/382)).
+///
+/// **worker 의 `tildaz.instanceN` 과 겹치지 않아야 한다** — 우리가 배포하는 GNOME ·
+/// Cinnamon extension 이 창 타이틀 (`TildaZ-N`) 과 이 app_id 로 사용자의 드롭다운 창을
+/// 찾는다 (`dist/linux/gnome-extension/…/extension.js` 의 `workerIndex`). 측정 창이
+/// worker 정체를 쓰면 extension 이 그것을 사용자 창으로 오인해 config 퍼센트 크기로
+/// 옮기고 (`-size` 가 깨진다) `hidden_start: true` 면 minimize 한다 (렌더가 없어져 측정이
+/// 무의미해진다).
+///
+/// extension 이 이 창을 **아예 관리하지 않는 것이 의도한 결과**다 — 측정 창은 사용자의
+/// 드롭다운이 아니다.
+pub const stress_app_id: [:0]const u8 = "tildaz.stress";
+
+/// 현재 역할의 app_id. Wayland `xdg_toplevel.set_app_id` 와 KDE 단축키 component 가
+/// 같은 값을 써야 하므로 파생을 한 곳에 둔다.
+pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
+    const instance_context = @import("../../instance_context.zig");
+    return switch (instance_context.currentRole()) {
+        .worker => try appId(buf, instance_context.requireWorkerIndex()),
+        .stress => stress_app_id,
+    };
+}
+
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintZ(buf, "TildaZ_{d}", .{index});
 }

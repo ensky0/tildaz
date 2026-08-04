@@ -31,14 +31,33 @@ pub fn configPathFor(allocator: std.mem.Allocator, index: u32) ![]u8 {
 }
 
 pub fn logPath(allocator: std.mem.Allocator) ![]u8 {
-    return logPathFor(allocator, instance_context.workerIndex() orelse 0);
-}
-
-pub fn logPathFor(allocator: std.mem.Allocator, index: u32) ![]u8 {
     const dir = try logDir(allocator);
     defer allocator.free(dir);
     try ensureDir(dir);
-    return logPathFromDir(allocator, dir, index);
+    var name_buf: [32]u8 = undefined;
+    const name = try logFileName(
+        &name_buf,
+        instance_context.currentRole(),
+        instance_context.workerIndex() orelse 0,
+    );
+    return logPathFromDir(allocator, dir, name);
+}
+
+/// 로그 파일 이름. **측정 인스턴스는 worker 와 다른 파일에 쓴다**
+/// ([#382](https://github.com/ensky0/tildaz/issues/382)).
+///
+/// index 로만 이름을 만들면 측정 인스턴스 (index 0) 가 사용자 세션과 같은
+/// `tildaz_0.log` 에 append 한다. 줄이 섞이지는 않지만 pid 가 붙는 줄이 `boot` / `exit`
+/// 둘뿐이라, 사후에 어느 줄이 사용자 세션인지 가릴 수 없다 — #382 자체가 실기 로그로
+/// 진단된 사안인데 그 진단 채널이 측정으로 오염된다 (macOS 실기 검증에서 실제로 겪었다).
+pub fn logFileName(buf: []u8, role: instance_context.Role, index: u32) ![]const u8 {
+    return switch (role) {
+        .worker => try std.fmt.bufPrint(buf, "tildaz_{d}.log", .{index}),
+        // index 를 붙이지 않는다 — 창 타이틀 (`instances.stress_window_title`) 과 같은
+        // 이유다. 측정은 한 번에 하나만 돌리고, 어떤 index 로 실행하든 worker 의 파일에서
+        // 빠지는 것이 목적이다.
+        .stress => "tildaz_stress.log",
+    };
 }
 
 fn logDir(allocator: std.mem.Allocator) ![]u8 {
@@ -57,9 +76,9 @@ fn logDir(allocator: std.mem.Allocator) ![]u8 {
     }
 }
 
-fn logPathFromDir(allocator: std.mem.Allocator, dir: []const u8, index: u32) ![]u8 {
+fn logPathFromDir(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
     const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}tildaz_{d}.log", .{ dir, sep, index });
+    return std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ dir, sep, name });
 }
 
 pub fn configDir(allocator: std.mem.Allocator) ![]u8 {
@@ -221,11 +240,20 @@ pub fn writeFileIfChanged(allocator: std.mem.Allocator, path: []const u8, conten
     return true;
 }
 
-test "logPathFor 가 OS 표준 위치와 worker index 를 따른다" {
+test "logPath 가 OS 표준 위치와 worker index 를 따른다" {
     const allocator = std.testing.allocator;
     if (!std.process.hasEnvVarConstant(if (builtin.os.tag == .windows) "APPDATA" else "HOME"))
         return error.SkipZigTest;
-    const path = try logPathFor(allocator, 7);
+    const previous_role = instance_context.currentRole();
+    const previous_index = instance_context.workerIndex();
+    defer {
+        instance_context.setRole(previous_role);
+        if (previous_index) |index| instance_context.setWorkerIndex(index);
+    }
+
+    instance_context.setRole(.worker);
+    instance_context.setWorkerIndex(7);
+    const path = try logPath(allocator);
     defer allocator.free(path);
     try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
         .windows => "\\tildaz\\tildaz_7.log",
@@ -234,10 +262,26 @@ test "logPathFor 가 OS 표준 위치와 worker index 를 따른다" {
     }));
 }
 
+test "측정 인스턴스는 worker 의 로그 파일에 쓰지 않는다" {
+    // #382 — 같은 index 여도 파일이 갈려야 한다. 이 성질이 깨지면 측정 로그가 사용자
+    // 세션 로그에 섞여 진단이 어려워진다.
+    var buf: [32]u8 = undefined;
+    var stress_buf: [32]u8 = undefined;
+    const stress_name = try logFileName(&stress_buf, .stress, 0);
+    for ([_]u32{ 0, 1, 9, 42, 999 }) |index| {
+        const worker_name = try logFileName(&buf, .worker, index);
+        try std.testing.expect(!std.mem.eql(u8, worker_name, stress_name));
+    }
+    try std.testing.expectEqualStrings("tildaz_0.log", try logFileName(&buf, .worker, 0));
+    try std.testing.expectEqualStrings("tildaz_stress.log", stress_name);
+    // 어떤 index 로 실행해도 측정 로그 이름은 하나다 (`--instance N` + `-e`).
+    try std.testing.expectEqualStrings(stress_name, try logFileName(&buf, .stress, 9));
+}
+
 test "log path builder preserves paths beyond the old fixed limit" {
     const allocator = std.testing.allocator;
     const long_dir = "/base/" ++ ("가" ** 1200);
-    const path = try logPathFromDir(allocator, long_dir, 42);
+    const path = try logPathFromDir(allocator, long_dir, "tildaz_42.log");
     defer allocator.free(path);
 
     try std.testing.expect(path.len > 1024);

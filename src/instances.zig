@@ -28,14 +28,45 @@ pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
 /// index 로 실행하든 (`--instance N` + `-e`) worker 조회에서 빠지는 것이 목적이다.
 pub const stress_window_title = window_title_prefix ++ "stress";
 
+/// 현재 역할의 창 타이틀. **Windows 와 Linux 가 같은 함수를 쓴다** — 두 host 가 각자
+/// `switch (identity)` 를 두면 한쪽만 고쳐지고, 그것이 e5c7857 에서 실제로 일어났다
+/// (Windows 만 분리되고 Linux 의 `createXdgToplevel` 이 worker 타이틀을 계속 보냈다).
+pub fn windowTitleForCurrentRole(buf: []u8) ![]const u8 {
+    const instance_context = @import("instance_context.zig");
+    return switch (instance_context.currentRole()) {
+        .worker => try windowTitle(buf, instance_context.requireWorkerIndex()),
+        .stress => stress_window_title,
+    };
+}
+
 test "측정 창 타이틀은 어떤 worker 타이틀과도 겹치지 않는다" {
-    // worker 타이틀은 prefix + 10진수라 숫자가 아닌 접미사와 만날 수 없다. 그 계약이
-    // 깨지면 `FindWindowW` 조회가 측정 창을 집는다.
+    // 표본 몇 개를 비교하는 것으로는 계약이 지켜지지 않는다 — `stress_window_title` 을
+    // "TildaZ-5" 로 바꿔도 그 표본만 피하면 통과하면서, `FindWindowW(class, "TildaZ-5")`
+    // 가 측정 창을 집게 된다. 그래서 **접미사가 10진수가 아님을 단정한다.** worker 타이틀은
+    // prefix + 10진수뿐이므로 이 성질이 곧 "어떤 index 와도 겹치지 않는다" 다.
+    try std.testing.expect(std.mem.startsWith(u8, stress_window_title, window_title_prefix));
+    const suffix = stress_window_title[window_title_prefix.len..];
+    try std.testing.expect(suffix.len > 0);
+    try std.testing.expectError(error.InvalidCharacter, std.fmt.parseInt(u32, suffix, 10));
+
+    // 위 성질의 결과를 표본으로도 한 번 더 확인한다 (경계 index 포함).
     var buf: [32]u8 = undefined;
-    for ([_]u32{ 0, 1, 7, 9, 10, 99, 4294967295 }) |index| {
+    for ([_]u32{ 0, 1, 9, 10, 99, max_config_index, std.math.maxInt(u32) }) |index| {
         try std.testing.expect(!std.mem.eql(u8, stress_window_title, try windowTitle(&buf, index)));
     }
-    try std.testing.expect(std.mem.startsWith(u8, stress_window_title, window_title_prefix));
+}
+
+test "창 타이틀은 역할에서 갈린다" {
+    const instance_context = @import("instance_context.zig");
+    const previous_role = instance_context.currentRole();
+    defer instance_context.setRole(previous_role);
+
+    var buf: [32]u8 = undefined;
+    instance_context.setWorkerIndex(0);
+    instance_context.setRole(.worker);
+    try std.testing.expectEqualStrings("TildaZ-0", try windowTitleForCurrentRole(&buf));
+    instance_context.setRole(.stress);
+    try std.testing.expectEqualStrings(stress_window_title, try windowTitleForCurrentRole(&buf));
 }
 
 pub const ProcessLock = struct {

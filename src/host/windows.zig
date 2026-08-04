@@ -161,16 +161,10 @@ pub fn run(opts: run_options.RunOptions) !void {
     // `createTab()` 까지 hwnd 를 다시 검사할 필요가 없다. `app_controller` 의
     // `getTerminalGridSize` 는 이 불변식을 assert 로만 밝히고 가짜 fallback 을
     // 두지 않는다.
-    try app.window.init(
-        // #382 — 측정 인스턴스는 worker 가 아니다. 창 타이틀이 그 구분을 담는다 —
-        // Windows 는 worker 창을 타이틀로 찾으므로 (`instance_request` ·
-        // `hotkey_capture`) 겹치면 그 조회가 측정 창을 집는다 (`window.zig` 의
-        // `Identity` 주석).
-        if (opts.isStressRun()) .stress else .worker,
-        font_chain,
-        terminal_font,
-        config.opacity_alpha,
-    );
+    // 창 타이틀은 `instance_context.Role` 에서 나온다 (#382) — 측정 인스턴스는 worker 가
+    // 아니고, Windows 는 worker 창을 타이틀로 찾는다 (`instance_request` ·
+    // `hotkey_capture`). 역할은 `main.zig` 이 한 번 정하므로 여기서 넘기지 않는다.
+    try app.window.init(font_chain, terminal_font, config.opacity_alpha);
     // 측정 모드는 전역 핫키를 등록하지 않는다 (#382) — 평소 쓰는 TildaZ 와 같은 키에
     // 두 프로세스가 반응한다. **등록 여부는 host 의 정책이라 여기서 드러낸다** — 이전에는
     // `init` 인자로 `vkey 0` 을 넘겨 "등록하지 않는다" 를 표현했고, 그 가드의 `return` 이

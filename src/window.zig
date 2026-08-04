@@ -472,12 +472,7 @@ pub const Window = struct {
     const AUTOSCROLL_INTERVAL_MS: UINT = 40;
     const LayoutMonitorTarget = enum { cursor, window };
 
-    /// 이 창이 무엇인가 (#382). 측정 인스턴스는 **worker 가 아니다** — worker lock 도
-    /// endpoint 상태도 갖지 않고, 전역 핫키도 등록하지 않는다. 창 타이틀이 그 구분을
-    /// 담는다 (`instances.window_title_prefix` vs `instances.stress_window_title`).
-    pub const Identity = enum { worker, stress };
-
-    pub fn init(self: *Window, identity: Identity, font_chain: []const [*:0]const WCHAR, terminal_font: font_spec.Spec, opacity: u8) !void {
+    pub fn init(self: *Window, font_chain: []const [*:0]const WCHAR, terminal_font: font_spec.Spec, opacity: u8) !void {
         if (font_chain.len == 0) return error.EmptyFontChain;
         const hInstance = GetModuleHandleW(null);
 
@@ -526,16 +521,15 @@ pub const Window = struct {
 
         var title_buf: [32]u16 = undefined;
         var title_utf8_buf: [32]u8 = undefined;
-        // #382 — 측정 인스턴스는 worker 의 타이틀을 쓰지 않는다. Windows 는 worker 창을
-        // **타이틀로** 찾기 때문이다 (`instance_request.send` 의 `FindWindowW(class,
-        // "TildaZ-0")` · `hotkey_capture.broadcast` 의 같은 조회) — 타이틀이 겹치면 새
-        // instance 요청이나 hotkey capture broadcast 가 worker 대신 측정 창으로 갈 수 있다.
-        // macOS (distributed notification) · Linux (Unix domain socket) 는 창을 타이틀로
-        // 찾지 않으므로 그 두 host 에는 같은 문제가 없다.
-        const title_utf8 = switch (identity) {
-            .worker => @import("instances.zig").windowTitle(&title_utf8_buf, @import("instance_context.zig").requireWorkerIndex()) catch "TildaZ",
-            .stress => @import("instances.zig").stress_window_title,
-        };
+        // #382 — 타이틀은 이 프로세스의 **역할**에서 나온다 (`instance_context.Role`).
+        // Windows 는 worker 창을 타이틀로 찾으므로 (`instance_request.send` 의
+        // `FindWindowW(class, "TildaZ-0")` · `hotkey_capture.broadcast` 의 같은 조회)
+        // 측정 창이 worker 타이틀을 쓰면 그 조회가 측정 창을 집을 수 있다.
+        //
+        // Linux 도 같은 함수를 쓴다 — GNOME · Cinnamon extension 이 창 타이틀과 app_id 로
+        // worker 창을 찾기 때문이다 (`host/linux/wayland_minimal.zig` 의
+        // `createXdgToplevel`). host 마다 `switch` 를 두면 한쪽만 고쳐진다.
+        const title_utf8 = @import("instances.zig").windowTitleForCurrentRole(&title_utf8_buf) catch "TildaZ";
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title_utf8) catch 0;
         title_buf[title_len] = 0;
         // #89 — WS_EX_LAYERED 를 아예 쓰지 않는다. layered 창은 renderer 가
