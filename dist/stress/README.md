@@ -214,9 +214,16 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 열이 목표와 다르면 그 줄은 비교에 쓰지 않아요. 실제로 이 검증이 kitty 의 창 크기 옵션이
 무시되던 것과 ghostty 의 옵션 파싱 실패를 잡아냈어요.
 
-| 방식 | 대상 |
+**대상은 그 platform 에 설치된 것만 자동으로 골라요** (`command -v` 로 확인해요).
+
+| platform | 자동으로 도는 대상 |
 |---|---|
-| 자동 | TildaZ · alacritty · kitty · wezterm · ghostty (+ Linux 의 foot) |
+| Linux | TildaZ · alacritty · kitty · wezterm · ghostty · foot |
+| macOS | TildaZ · alacritty · kitty · wezterm · ghostty |
+| Windows | TildaZ · alacritty · wezterm · Windows Terminal (`wt`) |
+
+Windows 에 kitty · ghostty 판이 없고 foot 은 Wayland 전용이라, Windows 는 그 자리를
+Windows Terminal 이 채워요.
 
 **전부 자동이에요.** TildaZ 도 스크립트가 직접 띄워요 — 측정용 실행 옵션 `-e <실행파일>` ·
 `-size <COLS>x<ROWS>` 를 [#382](https://github.com/ensky0/tildaz/issues/382) 에서 만들었어요.
@@ -265,10 +272,43 @@ from the CLI is not supported"*), `open -na … --args` 로 config key 옵션을
 | kitty | `-o remember_window_size=no -o initial_window_width=120c -o initial_window_height=40c` — `remember_window_size` 를 끄지 않으면 **이전 세션 크기를 복원해서 옵션을 무시해요** |
 | alacritty | `-o window.dimensions.columns=120 -o window.dimensions.lines=40` |
 | wezterm | `--config initial_cols=120 --config initial_rows=40` — `--config` 는 **전역 옵션**이라 `start` **앞**에 와야 해요 |
+| Windows Terminal (`wt`) | `-w new --size 120,40` — 둘 다 필수예요 (아래 Windows 절) |
+| conhost | 창 크기 옵션이 없어서 `mode con: cols=120 lines=40` 으로 줘요 (아래 Windows 절) |
 | ghostty | 스크립트가 임시 config 파일을 만들어 `--config-file` 로 넘겨요. `window-save-state = never` 가 필수이고 값은 `false` 가 아니라 `default \| never \| always` 중 하나예요 |
-| TildaZ | `~/.config/tildaz/config_0.json` 의 `window.width_percent` / `window.height_percent` (아래 계산법) |
+| TildaZ | `-size 120x40` — 스크립트가 이걸 써요. config 퍼센트는 건드리지 않아요 |
 
-### TildaZ 를 목표 그리드로 맞추는 법
+### Windows 에서 돌리기
+
+**Git Bash 에서 같은 스크립트를 그대로 써요.** Git for Windows 에 항상 포함되니 따로 설치할
+게 없어요.
+
+```sh
+# Git Bash
+zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache
+zig build stress -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache -- throughput --layer parser --mb 1
+dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
+```
+
+Windows 만의 주의점이에요.
+
+| 무엇 | 왜 |
+|---|---|
+| **경로 변환** | 자식이 Windows 실행파일이라 timing 파일 · producer 경로를 `cygpath -w` 로 넘겨요. MSYS 는 명령줄 인자는 자동 변환하지만 **환경변수 값은 변환하지 않아요** — 그래서 producer 가 timing 파일을 못 열던 문제가 생겨요 |
+| **`wt` 는 `-w new` 가 필수** | 사용자의 `windowingBehavior` 가 `useAnyExisting` 이면 기존 창에 **탭으로** 붙어서 창 크기 옵션이 의미를 잃어요 |
+| **`wt --size` 가 무시될 수 있어요** | `launchMode` 가 `maximized` · `fullscreen` · focus 계열이면 무시돼요 ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/command-line-arguments)). 그때는 표의 grid 열이 목표와 달라지니 그 줄을 비교에 쓰지 않아요 |
+| **conhost 는 스크롤백이 없어요** | 창 크기 옵션이 없어 `mode con:` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어요. 다른 터미널에는 100000 줄을 주므로 **conhost 값에는 스크롤백 관리 비용이 빠져 있어요** — 같은 조건이 아니라는 뜻이에요 |
+| **kitty · ghostty · foot 은 없어요** | Windows 판이 없고 (foot 은 Wayland 전용) `command -v` 로 자동으로 빠져요 |
+
+**conhost 를 함께 재는 이유**는 두 가지예요. 하나는 legacy GDI 렌더러라 **하한 기준선**이라서고,
+다른 하나는 **ConPTY 오버헤드를 가늠할 단서**라서예요 — Windows Terminal · alacritty · TildaZ 는
+모두 ConPTY 를 쓰고 그 안에 headless conhost 가 있어요. 같은 producer 를 conhost 에 직접 돌린
+값과 비교하면 그 몫이 보여요 ([#371](https://github.com/ensky0/tildaz/issues/371) 의 `cjk`
+초과분 +25.6 % 가 그 후보예요).
+
+### TildaZ 를 손으로 목표 그리드에 맞추는 법
+
+스크립트는 `-size` 를 쓰니 이 절이 필요 없어요. **스크립트를 쓸 수 없는 상황** (옵션이 없던
+버전, 또는 config 퍼센트 자체를 확인할 때) 을 위한 기록이에요.
 
 퍼센트로 지정하는 구조라 셀 크기를 알아야 해요. **로그가 그 값을 찍어 줘요.**
 
