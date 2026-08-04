@@ -188,8 +188,11 @@ fn producerGrid() ?Grid {
     if (builtin.os.tag == .windows) {
         // producer 의 stdout 은 우리 ConPTY 의 콘솔이라 console API 가 그대로 동작한다.
         // **`dwSize` 가 아니라 `srWindow` 를 쓴다** — `dwSize` 는 스크롤백을 포함한 버퍼
-        // 크기이고, 우리가 재려는 것은 *보이는* 격자다 (ConPTY 는 버퍼 높이를 창 높이보다
-        // 크게 잡을 수 있어 행 수가 어긋난다).
+        // 크기이고, 우리가 재려는 것은 *보이는* 격자다. 우리는
+        // `CreatePseudoConsole(COORD{cols, rows})` 로 창 = 요청 격자를 넘기므로 두 값이
+        // 실제로 갈렸다는 관측은 아직 없다 (**추정** — ConPTY 가 버퍼 높이를 창보다 크게
+        // 잡을 수 있다는 문서 근거를 확인하지 않았다). 어느 쪽이든 *보이는* 격자를 원하니
+        // `srWindow` 가 맞는 선택이다.
         const win = std.os.windows;
         var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
         const handle = std.fs.File.stdout().handle;

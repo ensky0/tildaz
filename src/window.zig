@@ -637,8 +637,17 @@ pub const Window = struct {
             dialog.showFatal(messages.hotkey_registration_failed_title, msg);
         }
         // 등록에 성공한 경로에만 세운다 — `deinit` 의 `UnregisterHotKey` 와
-        // `WM_HOTKEY_CAPTURE_BEGIN` / `_END` 가 이 flag 를 본다. 등록하지 않은
-        // 측정 인스턴스에서는 `false` 로 남아 세 곳 모두 no-op 이다.
+        // `WM_HOTKEY_CAPTURE_BEGIN` / `_END` 가 이 flag 를 본다.
+        //
+        // 측정 인스턴스에서는 `false` 로 남는데, **세 곳이 다 no-op 은 아니다.**
+        // `WM_HOTKEY_CAPTURE_END` 는 `!hotkey_registered` 일 때 등록을 *시도*하고
+        // (`RegisterHotKey(hwnd, HOTKEY_ID, hotkey_modifiers, hotkey_vkey)`), 측정
+        // 인스턴스는 두 필드가 기본값 0 이라 그 호출이 실패해 `0` 을 돌려준다 (호출자는
+        // `HotkeyCaptureSyncFailed` 로 읽는다). 그러니까 `vkey 0` 의 의미가 인자에서
+        // **필드 기본값**으로 옮겨간 것이고, 오늘 이 경로에 도달하지 않는 이유는 이 flag 가
+        // 아니라 **창 타이틀이 분리돼 있어서** 다 — `hotkey_capture.broadcast` 는
+        // `FindWindowW` 로 worker 타이틀을 찾으므로 측정 창을 집지 않는다
+        // (`instances.windowTitleForCurrentRole`).
         self.hotkey_registered = true;
     }
 
