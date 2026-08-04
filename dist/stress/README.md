@@ -246,6 +246,11 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 열이 목표와 다르면 그 줄은 비교에 쓰지 않아요. 실제로 이 검증이 kitty 의 창 크기 옵션이
 무시되던 것과 ghostty 의 옵션 파싱 실패를 잡아냈어요.
 
+**일부 터미널은 셸을 spawn 한 뒤 창 크기에 맞춰 resize 해요** (실측: ghostty · kitty · foot).
+그래서 producer 는 그리드를 **출력 전후 두 번** 읽고 둘 다 timing 파일에 적어요. 표에
+`측정 중 resize (AxB → CxD)` 가 뜨면 producer 가 초반을 다른 열 수로 출력했다는 뜻이라 그
+회차는 비교에 쓸 수 없어요 — 열 수가 바뀌면 줄바꿈 횟수가 달라지니까요.
+
 **대상은 그 platform 에 설치된 것만 자동으로 골라요** (`command -v` 로 확인해요).
 
 | platform | 자동으로 도는 대상 |
@@ -336,34 +341,3 @@ Windows 만의 주의점이에요.
 모두 ConPTY 를 쓰고 그 안에 headless conhost 가 있어요. 같은 producer 를 conhost 에 직접 돌린
 값과 비교하면 그 몫이 보여요 ([#371](https://github.com/ensky0/tildaz/issues/371) 의 `cjk`
 초과분 +25.6 % 가 그 후보예요).
-
-### TildaZ 를 손으로 목표 그리드에 맞추는 법
-
-스크립트는 `-size` 를 쓰니 이 절이 필요 없어요. **스크립트를 쓸 수 없는 상황** (옵션이 없던
-버전, 또는 config 퍼센트 자체를 확인할 때) 을 위한 기록이에요.
-
-퍼센트로 지정하는 구조라 셀 크기를 알아야 해요. **로그가 그 값을 찍어 줘요.**
-
-```
-[startup] renderer init: vp=1512x1720px scale=2.00 cell=19x39px pad=12px font=Menlo
-[startup] initial tab created: cols=77 rows=43
-```
-
-`vp` 과 `cell` 은 물리 픽셀이에요. 여기서 역산해요 (실측으로 확인한 식이에요).
-
-```
-필요한 vp 폭  = 목표cols × cell_w + pad×2 + scrollbar(20px)
-필요한 vp 높이 = 목표rows × cell_h + pad×2
-새 퍼센트 = 현재 퍼센트 × (필요한 vp / 현재 vp)
-```
-
-위 로그 예시에서 120×40 을 만들면 `width_percent 50 → 77`, `height_percent 100 → 92` 예요.
-바꾼 뒤 **재시작**해야 반영되고 (config 은 시작할 때만 읽어요), 로그의 `initial tab created`
-줄로 확인해요. **탭은 1 개**로 재요 — 2 개 이상이면 탭바 28 pt 가 들어가 rows 가 줄어요.
-
-**일부 터미널은 셸을 spawn 한 뒤 창 크기에 맞춰 resize 해요** (실측: ghostty · kitty).
-그래서 producer 는 그리드를 **출력 전후 두 번** 읽고 둘 다 기록해요. 표에 `측정 중 resize`
-가 뜨면 그 측정은 그리드가 흔들린 거예요.
-
-- 아직 없는 것: TildaZ · ghostty 의 macOS 수동 측정값, Linux 에서의 비교 (foot 포함).
-  #371 에서 이어서 다뤄요.
