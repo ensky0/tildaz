@@ -140,6 +140,11 @@ fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
 /// thread (또는 우리를 띄운 다른 터미널) 가 그대로 받는다.
 fn produce(req: ProducerRequest) !void {
+    if (builtin.os.tag == .windows) {
+        // producer 의 stdout 은 ConPTY 콘솔이다. 출력 코드페이지를 UTF-8 로 맞춰 cjk 가
+        // 콘솔 기본 CP (CP949 등) 로 깨지지 않게 한다 (위 SetConsoleOutputCP 주석).
+        _ = SetConsoleOutputCP(65001);
+    }
     var gen: workload.Generator = .{ .kind = req.kind };
     var buf: [chunk_size]u8 = undefined;
     const out = std.fs.File.stdout();
@@ -172,6 +177,12 @@ fn produce(req: ProducerRequest) !void {
 }
 
 const Grid = struct { cols: u16, rows: u16 };
+
+// cjk 워크로드는 UTF-8 바이트다. producer 가 콘솔 출력 코드페이지를 UTF-8 로 맞추지 않으면
+// 콘솔 기본값 (한국어 Windows 는 CP949) 으로 깨져 렌더돼, 화면도 깨지고 cjk 처리량도 실제
+// wide-cell 부하가 아니게 된다 (Windows 실기: 다섯 터미널 모두 cjk 가 깨졌다). produce 가
+// 시작할 때 한 번 65001 로 맞춘다. `std.os.windows.kernel32` 에 없어 직접 선언한다.
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: c_uint) callconv(.c) c_int;
 
 /// producer 가 자기 tty 의 그리드를 직접 읽는다. **이게 L4 비교의 전제다** — 터미널마다
 /// 폰트 크기 해석이 달라서 같은 창 크기를 줘도 셀 수가 갈리고, 열 수가 다르면 줄바꿈
