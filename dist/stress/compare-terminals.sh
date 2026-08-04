@@ -36,7 +36,26 @@ done
 
 BYTES=$((MB * 1024 * 1024))
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+
+# --- platform ---
+#
+# Windows 는 **Git Bash** 에서 돌린다 (Git for Windows 에 항상 포함되므로 별도 설치가
+# 필요 없다). 릴리즈 패키징이 Git Bash 를 요구하지 않는 것과는 다른 이야기다 — 이건 측정용
+# 내부 도구다.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;;
+    *) IS_WINDOWS=0 ;;
+esac
+
+# 자식이 **Windows 실행파일**이면 경로를 Windows 형식으로 줘야 한다. MSYS 는 명령줄 인자를
+# 자동 변환하지만 **환경변수 값은 변환하지 않는다** — producer 가 timing 파일을 열지 못하는
+# 원인이 그것이다.
+native_path() {
+    if [ "$IS_WINDOWS" = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
+
 PRODUCER="$REPO_ROOT/zig-out/bin/tildaz-stress"
+[ "$IS_WINDOWS" = 1 ] && PRODUCER="$PRODUCER.exe"
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -57,7 +76,15 @@ echo ""
 # `exec` 로 셸을 대체해 셸이 남지 않게 한다.
 producer_cmd() {
     printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s %s' \
-        "$WORKLOAD" "$BYTES" "$1" "$PRODUCER"
+        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$PRODUCER"
+}
+
+# 같은 것을 **cmd 문법**으로. conhost 는 `sh` 대신 `cmd` 로 띄우기 때문이다 — `env` 는 Git
+# Bash 의 실행파일이라 cmd 가 보는 PATH 에 없을 수 있다. `set "VAR=값"` 형태여야 값 끝에
+# 공백이 붙지 않는다 (`set VAR=값 && …` 는 "값 " 이 된다).
+producer_cmd_cmdexe() {
+    printf 'set "TILDAZ_STRESS_WORKLOAD=%s" && set "TILDAZ_STRESS_BYTES=%s" && set "TILDAZ_STRESS_TIMING_FILE=%s" && "%s"' \
+        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$(native_path "$PRODUCER")"
 }
 
 # timing 파일이 생길 때까지 기다린다. 터미널을 background 로 띄우기 때문에 (그러지 않으면
@@ -212,10 +239,49 @@ if [ -n "$TILDAZ_BIN" ]; then
     run_terminal tildaz env \
         "TILDAZ_STRESS_WORKLOAD=$WORKLOAD" \
         "TILDAZ_STRESS_BYTES=$BYTES" \
-        "TILDAZ_STRESS_TIMING_FILE=$T" \
-        "$TILDAZ_BIN" -e "$PRODUCER" -size "${COLS}x${ROWS}"
+        "TILDAZ_STRESS_TIMING_FILE=$(native_path "$T")" \
+        "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}"
 else
     echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+fi
+
+# Windows Terminal 은 Windows 전용이다.
+#
+# - `--size <cols>,<rows>` 로 격자를 준다. **사용자의 `launchMode` 가 `maximized` ·
+#   `fullscreen` · `focus` 계열이면 이 옵션이 무시된다** (Microsoft Learn 의 command-line
+#   arguments 문서). 그때는 표의 grid 열이 목표와 달라지므로 그 줄을 비교에 쓰지 않는다 —
+#   kitty 의 `remember_window_size` 와 같은 성질이고, 스크립트는 producer 가 남긴 격자로
+#   그것을 걸러낸다.
+# - `-w new` 가 필수다. 사용자의 `windowingBehavior` 가 `useAnyExisting` 이면 `wt` 가 **기존
+#   창에 탭으로** 붙어서 창 크기 옵션이 의미를 잃는다. `new` 는 항상 새 창이다.
+if [ "$IS_WINDOWS" = 1 ] && command -v wt >/dev/null 2>&1; then
+    T="$WORK_DIR/wt.timing"
+    # 표 이름은 실행 파일명 `wt` 를 쓴다 — "windows-terminal" 은 표의 이름 칸 (14) 을 넘겨
+    # 줄이 밀린다.
+    run_terminal wt wt -w new --size "$COLS,$ROWS" \
+        sh -c "$(producer_cmd "$T")"
+fi
+
+# conhost — Windows 의 전통 콘솔 호스트 (`%windir%\System32\conhost.exe`). `cmd.exe` 는 UI 가
+# 없고 이 프로세스가 창 · 렌더링 · 입력을 담당한다.
+#
+# 두 가지 이유로 함께 잰다.
+# 1. **하한 기준선**이다 — legacy GDI 렌더러라 현대 터미널보다 크게 느리다.
+# 2. **ConPTY 오버헤드를 가늠할 단서**다. Windows Terminal · alacritty · TildaZ 처럼 ConPTY 를
+#    쓰는 터미널은 내부적으로 headless conhost 를 거치므로, 같은 producer 를 conhost 에 직접
+#    돌린 값과 비교하면 그 몫이 보인다 ([#371](https://github.com/ensky0/tildaz/issues/371) 의
+#    `cjk` 초과분 +25.6 % 가 그 후보다).
+#
+# `conhost.exe <명령>` 으로 그 명령을 legacy 콘솔 창에서 띄운다. 널리 쓰이는 방법이지만
+# **Microsoft 공식 문서에 인자 규격이 정리돼 있지 않다** (확인 필요).
+#
+# **조건이 완전히 같지 않다는 점을 감안해서 읽어야 한다.** conhost 는 창 크기 옵션이 없어서
+# `mode con` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어 **스크롤백이
+# 없다.** 다른 터미널에는 100000 줄을 주므로 conhost 값에는 스크롤백 관리 비용이 빠져 있다.
+if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
+    T="$WORK_DIR/conhost.timing"
+    run_terminal conhost conhost cmd /c \
+        "mode con: cols=$COLS lines=$ROWS && $(producer_cmd_cmdexe "$T")"
 fi
 
 # foot 은 Wayland 전용이라 Linux 에서만 있다.
