@@ -231,6 +231,20 @@ fn applicationDidBecomeActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
 }
 
 fn createNewInstance() void {
+    // #382 — 측정 인스턴스는 새 instance 요청을 처리하지 않는다. 처리하면
+    // `new_instance.handle` 이 launcher lock 을 잡고 프롬프트를 띄우며, 사용자가 키를
+    // 누르면 config 생성 · `shortcut_sync` · `autostart` · `spawnWorker` 까지 간다 —
+    // 측정 프로세스가 worker 를 spawn 하는 것은 그 자체로 잘못이다.
+    //
+    // **실기로 확인한 문제다** (macOS, 2026-08-04): 측정 인스턴스만 띄운 상태에서 새
+    // instance 알림을 보내니 측정 프로세스의 스택이 `dialog.promptHotkey` →
+    // `-[NSAlert runModal]` 이었다. worker 가 함께 떠 있을 때 드러나지 않았던 이유는
+    // worker 가 launcher lock 을 먼저 잡아 측정 쪽이 `acquireLauncherLock` 에서 대기만
+    // 했기 때문이다 — 조건이 조금 달라지면 측정 쪽이 프롬프트를 띄운다.
+    //
+    // 아래 observer 미등록과 중복이 아니다. 이 함수는 `applicationShouldHandleReopen`
+    // (Dock 클릭 · `open`) 으로도 불리고, 그 경로는 observer 와 무관하다.
+    if (@import("../instance_context.zig").isStress()) return;
     if (@import("../instance_context.zig").requireWorkerIndex() == 0) {
         repositionWindow();
         showWindow();
@@ -299,15 +313,24 @@ fn installAppDelegate() !void {
     const getCenter = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     if (getCenter(Center, objc.sel("defaultCenter"))) |center| {
         const addObserver = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id, objc.id) callconv(.c) void);
-        addObserver(
-            center,
-            objc.sel("addObserver:selector:name:object:"),
-            inst,
-            objc.sel("newInstanceNotification:"),
-            objc.nsString(@import("../instance_request/macos.zig").notification_name),
-            null,
-        );
-        g_new_instance_observer_registered = true;
+        // #382 — 측정 인스턴스는 이 알림을 **받지 않는다.** `instance_request.send` 는
+        // 세션 전역 이름으로 broadcast 하므로 (index 가 이름에 없다) 등록해 두면 worker 와
+        // 함께 받는다. Windows 는 창 타이틀로 찾아서 (`FindWindowW`) 정체 분리로 막히고
+        // Linux 는 socket listener 를 만들지 않아 막히는데, macOS 만 이 경로가 열려 있었다.
+        //
+        // `installAppDelegate` 을 통째로 건너뛰면 안 된다 — `applicationShouldTerminate`
+        // 훅 등 측정에도 필요한 것을 함께 설치한다. 그래서 등록 지점만 가드한다.
+        if (!instance_context.isStress()) {
+            addObserver(
+                center,
+                objc.sel("addObserver:selector:name:object:"),
+                inst,
+                objc.sel("newInstanceNotification:"),
+                objc.nsString(@import("../instance_request/macos.zig").notification_name),
+                null,
+            );
+            g_new_instance_observer_registered = true;
+        }
         const capture = @import("../hotkey_capture/macos.zig");
         addObserver(center, objc.sel("addObserver:selector:name:object:"), inst, objc.sel("hotkeyCaptureBeginNotification:"), objc.nsString(capture.begin_notification_name), null);
         addObserver(center, objc.sel("addObserver:selector:name:object:"), inst, objc.sel("hotkeyCaptureEndNotification:"), objc.nsString(capture.end_notification_name), null);
