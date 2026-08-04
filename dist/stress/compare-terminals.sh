@@ -11,9 +11,16 @@
 #
 #   dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 #
+# **기록으로 남길 수치는 `--repeat 5` 로 낸다** (#371 의 측정 프로토콜). 1 회 측정은 흔들림을
+# 알 수 없다 — macOS 실측에서 같은 조건 3 회가 115.0 / 124.2 / 128.7 MiB/s 였다. 반복하면
+# 대표값을 **min · max 를 뺀 나머지의 평균 (절사평균)** 으로 내고 `min~max` 를 함께 적는다.
+#
+#   dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
+#
 # TildaZ 도 자동이다 — 측정 내부용 `-e` · `-size` 옵션을 쓴다 (#382). 그 인스턴스는
 # worker lock 을 잡지 않고 전역 핫키도 등록하지 않아서, 평소 쓰는 TildaZ 가 떠 있어도
-# 충돌하지 않는다.
+# 충돌하지 않는다. 다만 **기록용 측정에서는 평소 쓰는 worker 를 종료한다** — 다른 터미널은
+# 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 CPU 를 나눠 쓴다.
 
 set -eu
 
@@ -22,6 +29,7 @@ WORKLOAD=plain
 COLS=120
 ROWS=40
 TIMEOUT=180
+REPEAT=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -30,9 +38,14 @@ while [ $# -gt 0 ]; do
         --cols) COLS="$2"; shift 2 ;;
         --rows) ROWS="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
+        --repeat) REPEAT="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+case "$REPEAT" in
+    ''|*[!0-9]*|0) echo "--repeat 은 1 이상의 정수여야 해요: $REPEAT" >&2; exit 2 ;;
+esac
 
 BYTES=$((MB * 1024 * 1024))
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -57,7 +70,40 @@ native_path() {
 PRODUCER="$REPO_ROOT/zig-out/bin/tildaz-stress"
 [ "$IS_WINDOWS" = 1 ] && PRODUCER="$PRODUCER.exe"
 WORK_DIR=$(mktemp -d)
-trap 'rm -rf "$WORK_DIR"' EXIT
+
+# 우리가 띄운 터미널만 정리한다. **명령줄에 이 실행의 `WORK_DIR` 경로가 들어 있으므로**
+# (timing 파일 · ghostty 임시 config) 그 패턴으로 우리 것만 골라 죽인다 — 사용자가 따로 열어
+# 둔 kitty · ghostty 창은 건드리지 않는다. 스크립트 자신의 명령줄에는 이 경로가 없다.
+#
+# 왜 필요한가: 명령이 끝나도 **kitty 와 ghostty 는 창이 남는다** (macOS 실측, `--repeat 3` 에서
+# 각 3 개씩 누적).
+# - kitty 는 `--detach` 로 띄우므로 `kill $!` 이 잡는 것은 즉시 끝나는 부모다.
+# - ghostty 는 `abnormal-command-exit-runtime` (기본 250 ms) 보다 빨리 끝난 명령을 실행 실패로
+#   보고 "Press any key to close" 화면을 띄운다. 아래 임시 config 에서 이 값을 0 으로 끄지만,
+#   그것과 무관하게 남는 경우까지 이 정리로 막는다.
+# 남은 창은 다음 회차와 CPU 를 나눠 쓰므로 반복 측정을 오염시킨다.
+# `pkill` 을 쓰지 않는다 — **Git Bash (Windows) 에는 없다** (별도로 MSYS2 의 `procps-ng` 를
+# 설치해야 생긴다. 실기에서 확인했다). `ps` + `kill` 조합은 macOS · Linux 에서 확실하다.
+#
+# **Windows 는 이 정리를 건너뛴다.** MSYS `ps` 는 `-o` 를 지원하지 않고 (옵션이
+# `-a -e -f -h -l -p -s -u -v -W` 뿐이다), 무엇보다 **native Windows 프로세스가 목록에 아예
+# 올라오지 않는다.** Git Bash 실기에서 `ps -ef` 가 MSYS 프로세스 세 개 (`bash` · `mintty` ·
+# `ps` 자신) 만 보여줬다 — `wt.exe` 같은 창을 이 실행의 `WORK_DIR` 로 골라낼 방법이 없다는
+# 뜻이다 (`-W` 로 목록에 올려도 명령줄이 없고, 그 PID 도 부정확한 이슈가 있다 —
+# msys2/MSYS2-packages#1724). **Windows 에서 창이 실제로 남는지는 실기 확인이 필요하다**
+# (#371):
+# - 창이 남던 두 터미널 (kitty · ghostty) 은 Windows 판이 없어 이 문제의 대상이 아니다.
+# - `wt` 는 프로필의 `closeOnExit` 가 기본값 `automatic` 이면 exit 0 인 명령 뒤에 스스로 닫는다.
+#   사용자 프로필이 `never` 면 남을 수 있다.
+# - alacritty · wezterm 은 macOS 실측에서 정상적으로 닫혔다 (같은 코드베이스).
+# 남는다고 확인되면 그때 Windows 전용 정리를 붙인다 — 확인 전에 추측으로 코드를 넣지 않는다.
+cleanup_terminals() {
+    [ "$IS_WINDOWS" = 1 ] && return 0
+    ps -eo pid,args 2>/dev/null | grep "$WORK_DIR" | grep -v grep | while read -r _p _rest; do
+        kill "$_p" 2>/dev/null || true
+    done
+}
+trap 'cleanup_terminals; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
@@ -69,6 +115,7 @@ echo "=== 터미널 처리량 비교 (#371 L4) ==="
 echo "workload   $WORKLOAD"
 echo "bytes      $BYTES ($MB MiB)"
 echo "목표 그리드 ${COLS}x${ROWS}"
+echo "반복       ${REPEAT} 회"
 echo "producer   $PRODUCER"
 echo ""
 
@@ -112,42 +159,56 @@ wait_for() {
 RESULTS="$WORK_DIR/results"
 : > "$RESULTS"
 
-record() {
-    _name="$1"
-    _file="$2"
-    if [ ! -s "$_file" ]; then
-        printf '%s\tskipped\t0\t0\t0\n' "$_name" >> "$RESULTS"
-        return
-    fi
-    _ns=$(sed -n 's/^elapsed_ns=//p' "$_file")
-    _cols=$(sed -n 's/^cols=//p' "$_file")
-    _rows=$(sed -n 's/^rows=//p' "$_file")
-    _cols0=$(sed -n 's/^cols_start=//p' "$_file")
-    _rows0=$(sed -n 's/^rows_start=//p' "$_file")
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_name" "$_ns" "$_cols" "$_rows" "$_cols0" "$_rows0" >> "$RESULTS"
-}
-
+# 한 터미널을 `REPEAT` 회 돌리고, 회차별 경과 시간을 한 줄에 모아 적는다.
+#
+# 형식: 이름 <TAB> "ns ns ns …" <TAB> cols <TAB> rows <TAB> cols_start <TAB> rows_start
+# 실패한 회차는 목록에서 빠진다 (한 회차도 못 얻으면 `skipped`).
 run_terminal() {
     _name="$1"
     shift
     _timing="$WORK_DIR/$_name.timing"
 
     printf '%-14s ' "$_name"
-    # background 로 띄운다 — 창이 닫히기를 기다리면 멈춘다 (kitty 실측).
-    "$@" >/dev/null 2>&1 &
-    _pid=$!
+    _samples=""
+    _cols=0
+    _rows=0
+    _cols0=0
+    _rows0=0
+    _run=1
+    while [ "$_run" -le "$REPEAT" ]; do
+        # 회차마다 지운다 — 이전 회차 파일이 남아 있으면 `wait_for` 가 즉시 통과해 같은
+        # 값을 다시 읽는다.
+        rm -f "$_timing"
+        # background 로 띄운다 — 창이 닫히기를 기다리면 멈춘다 (kitty 실측).
+        "$@" >/dev/null 2>&1 &
+        _pid=$!
+        if wait_for "$_timing"; then
+            _samples="$_samples $(sed -n 's/^elapsed_ns=//p' "$_timing")"
+            _cols=$(sed -n 's/^cols=//p' "$_timing")
+            _rows=$(sed -n 's/^rows=//p' "$_timing")
+            _cols0=$(sed -n 's/^cols_start=//p' "$_timing")
+            _rows0=$(sed -n 's/^rows_start=//p' "$_timing")
+            printf '.'
+        else
+            printf 'x'
+        fi
+        # 창이 남아 있으면 정리한다. `kill $_pid` 만으로는 부족하다 — kitty 는 `--detach` 라
+        # 그 pid 가 즉시 끝나는 부모이고, ghostty 는 실행 실패 화면을 띄운 채 기다린다.
+        # `cleanup_terminals` 가 이 실행의 `WORK_DIR` 패턴으로 실제 창을 정리한다.
+        kill "$_pid" 2>/dev/null || true
+        cleanup_terminals
+        _run=$((_run + 1))
+    done
 
-    if wait_for "$_timing"; then
-        _ns=$(sed -n 's/^elapsed_ns=//p' "$_timing")
-        _cols=$(sed -n 's/^cols=//p' "$_timing")
-        _rows=$(sed -n 's/^rows=//p' "$_timing")
-        printf 'ok  %sx%s\n' "$_cols" "$_rows"
-    else
-        printf 'timeout / 실행 안 됨\n'
+    if [ -z "$_samples" ]; then
+        printf ' timeout / 실행 안 됨\n'
+        printf '%s\tskipped\t0\t0\t0\t0\n' "$_name" >> "$RESULTS"
+        return
     fi
-    # 창이 남아 있으면 정리한다.
-    kill "$_pid" 2>/dev/null || true
-    record "$_name" "$_timing"
+    printf ' ok  %sx%s\n' "$_cols" "$_rows"
+    # 앞의 공백을 없애 awk 가 필드를 세기 쉽게 한다.
+    _samples=$(printf '%s' "$_samples" | sed 's/^ *//')
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_name" "$_samples" "$_cols" "$_rows" "$_cols0" "$_rows0" >> "$RESULTS"
 }
 
 # --- 터미널별 실행 방법 ---
@@ -197,11 +258,17 @@ fi
 # `default | never | always` 중 하나다.
 if [ -d /Applications/Ghostty.app ] || command -v ghostty >/dev/null 2>&1; then
     GHOSTTY_CONF="$WORK_DIR/ghostty.conf"
+    # `abnormal-command-exit-runtime = 0` — ghostty 는 이 값 (기본 250 ms) 보다 빨리 끝난 명령을
+    # **실행 실패로 보고** "Ghostty failed to launch the requested command … Press any key to
+    # close the window." 화면을 띄운 채 창을 유지한다. producer 는 정상 종료 (exit 0) 인데도
+    # 짧은 측정에서는 그 조건에 걸려서, 반복 측정 때 창이 회차만큼 쌓인다 (macOS 실측: 8 MiB
+    # 측정이 136 ms → `--repeat 3` 에서 창 3 개). 0 으로 두면 그 판정을 끈다.
     cat > "$GHOSTTY_CONF" << EOF
 window-save-state = never
 window-width = $COLS
 window-height = $ROWS
 scrollback-limit = 100000
+abnormal-command-exit-runtime = 0
 EOF
     T="$WORK_DIR/ghostty.timing"
     if [ -d /Applications/Ghostty.app ]; then
@@ -294,15 +361,47 @@ fi
 # --- 표 ---
 
 echo ""
-printf '%-14s %12s %10s %10s  %s\n' terminal ms MiB/s grid 비고
-printf '%s\n' "------------------------------------------------------------------"
-while IFS="$(printf '\t')" read -r name ns cols rows cols0 rows0; do
-    if [ "$ns" = "skipped" ] || [ "$ns" = "0" ] || [ -z "$ns" ]; then
-        printf '%-14s %12s %10s %10s  %s\n' "$name" - - - "측정 실패"
+# 대표값은 **min · max 를 뺀 나머지의 평균 (절사평균)** 이다 (#371 의 측정 프로토콜).
+# 5 회에서 중간값은 사실상 1 개 샘플이라 그 값 자체가 흔들리고, 단순 평균은 이상치 하나에
+# 끌려간다. `min~max` 를 함께 내는 것이 핵심이다 — 대표값만 보면 12 % 폭 안의 차이를 읽는
+# 사람이 유의미하다고 오해한다 (macOS 실측에서 같은 조건 3 회가 115.0 / 124.2 / 128.7 MiB/s).
+if [ "$REPEAT" -ge 3 ]; then
+    STAT_LABEL="절사평균 (min·max 제외 $((REPEAT - 2)) 개)"
+elif [ "$REPEAT" = 2 ]; then
+    STAT_LABEL="단순 평균 (2 회 — 절사할 수 없어요)"
+else
+    STAT_LABEL="1 회 측정 (반복 없음 — 흔들림을 알 수 없어요)"
+fi
+echo "대표값: $STAT_LABEL"
+printf '%-14s %12s %10s %17s %10s  %s\n' terminal ms MiB/s "min~max MiB/s" grid 비고
+printf '%s\n' "--------------------------------------------------------------------------------------"
+while IFS="$(printf '\t')" read -r name samples cols rows cols0 rows0; do
+    if [ "$samples" = "skipped" ] || [ -z "$samples" ]; then
+        printf '%-14s %12s %10s %17s %10s  %s\n' "$name" - - - - "측정 실패"
         continue
     fi
-    ms=$(awk "BEGIN{printf \"%.1f\", $ns/1000000}")
-    rate=$(awk "BEGIN{printf \"%.1f\", ($BYTES/1048576)/($ns/1000000000)}")
+    # 절사평균 · min · max 를 한 번에 낸다. 표본이 3 개 미만이면 절사하지 않는다 —
+    # **조용히 다른 통계로 바꾸지 않고** 위의 `STAT_LABEL` 이 그 사실을 적는다.
+    stats=$(printf '%s\n' "$samples" | awk -v bytes="$BYTES" '{
+        n = 0
+        for (i = 1; i <= NF; i++) v[n++] = $i
+        for (i = 0; i < n - 1; i++) for (j = 0; j < n - 1 - i; j++)
+            if (v[j] > v[j+1]) { t = v[j]; v[j] = v[j+1]; v[j+1] = t }
+        lo = 0; hi = n - 1
+        if (n >= 3) { lo = 1; hi = n - 2 }
+        sum = 0
+        for (i = lo; i <= hi; i++) sum += v[i]
+        mean_ns = sum / (hi - lo + 1)
+        mib = bytes / 1048576
+        # 시간이 길수록 MiB/s 는 작으므로 min / max 가 뒤집힌다.
+        printf "%.1f %.1f %.1f %.1f %d", mean_ns/1000000, mib/(mean_ns/1000000000), \
+            mib/(v[n-1]/1000000000), mib/(v[0]/1000000000), n
+    }')
+    ms=$(printf '%s' "$stats" | cut -d" " -f1)
+    rate=$(printf '%s' "$stats" | cut -d" " -f2)
+    rate_min=$(printf '%s' "$stats" | cut -d" " -f3)
+    rate_max=$(printf '%s' "$stats" | cut -d" " -f4)
+    got=$(printf '%s' "$stats" | cut -d" " -f5)
     note=""
     if [ "$cols" != "$COLS" ] || [ "$rows" != "$ROWS" ]; then
         note="그리드 불일치 — 비교 불가"
@@ -310,7 +409,12 @@ while IFS="$(printf '\t')" read -r name ns cols rows cols0 rows0; do
         # 출력 도중에 창 크기가 바뀌었다는 뜻이다 (터미널이 셸 spawn 뒤 resize).
         note="측정 중 resize (${cols0}x${rows0} → ${cols}x${rows})"
     fi
-    printf '%-14s %12s %10s %10s  %s\n' "$name" "$ms" "$rate" "${cols}x${rows}" "$note"
+    # 요청한 회차를 다 얻지 못했으면 그 사실을 적는다 (조용히 적은 표본으로 평균 내지 않는다).
+    if [ "$got" != "$REPEAT" ]; then
+        note="${note}${note:+ · }$got/$REPEAT 회만 성공"
+    fi
+    printf '%-14s %12s %10s %17s %10s  %s\n' \
+        "$name" "$ms" "$rate" "$rate_min~$rate_max" "${cols}x${rows}" "$note"
 done < "$RESULTS"
 
 # --- 마무리 ---
