@@ -242,6 +242,21 @@ extern "kernel32" fn SetWaitableTimer(?*anyopaque, *const i64, LONG, ?*anyopaque
 extern "kernel32" fn WaitForSingleObject(?*anyopaque, DWORD) callconv(.c) DWORD;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) BOOL;
 extern "gdi32" fn GetDeviceCaps(HDC, c_int) callconv(.c) c_int;
+/// #386 ② — 이 메시지들은 렌더 게이트를 **열지 않는다.** 그 밖의 모든 메시지는 연다
+/// (`wndProc` 참고 — 빠뜨려서 화면이 안 갱신되는 쪽보다 한 프레임 더 그리는 쪽이 낫다).
+///
+/// - 프레임 tick 두 개: 게이트를 여는 주체가 아니라 게이트를 *묻는* 주체다.
+/// - **`WM_IME_NOTIFY`**: 이게 없으면 게이트가 절대 닫히지 않는다. 우리는 렌더 끝에
+///   `imeSetCompositionPos` (`ImmSetCompositionWindow`) 를 부르는데, IMM 이 그 응답으로
+///   `WM_IME_NOTIFY` 를 보낸다 → 게이트가 열려 다음 프레임을 그리고 → 또 부르고… 로
+///   **자기 자신을 먹여 살리는 루프**가 된다 (실측: 유휴에 초당 120 회 = 프레임당 2 회).
+///   IME 후보 창은 **OS 가** 그리므로 이 알림은 우리 렌더와 무관하다. 조합 내용 자체는
+///   `WM_IME_COMPOSITION` (0x010F) 으로 오고 그건 게이트를 연다.
+fn isFrameGateExempt(msg: UINT) bool {
+    return msg == WM_FRAME_TICK or msg == WM_TIMER or msg == WM_IME_NOTIFY;
+}
+
+const WM_IME_NOTIFY: UINT = 0x0282;
 const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: DWORD = 0x0002;
 const TIMER_ALL_ACCESS: DWORD = 0x1F0003;
 const WAIT_INFINITE: DWORD = 0xFFFFFFFF;
@@ -385,6 +400,16 @@ pub const Window = struct {
     frame_tick_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// 한 프레임의 길이 (100ns 단위). `startFrameClock` 이 재생률로 계산한다.
     frame_period_100ns: i64 = 0,
+    /// #386 ② — 유휴 렌더 게이트. macOS `g_needs_render` · Linux `needs_redraw` 동등.
+    ///
+    /// **기본이 "그린다"** 이다 (`true` 로 시작하고 `wndProc` 이 프레임 tick 이 아닌 모든
+    /// 메시지에서 연다). macOS 처럼 20 여 곳에 `requestRender()` 를 흩으면 한 곳만 빠져도
+    /// 화면이 안 갱신되는 사용자 가시 버그가 되는데, Windows 는 입력이 전부 `wndProc` 을
+    /// 지나므로 **범위로 열고 tick 만 막는** 편이 안전하다. 한 프레임 더 그리는 쪽으로
+    /// 치우쳐도 유휴에는 tick 말고 오는 메시지가 없어서 절전 효과는 그대로다.
+    ///
+    /// 렌더한 프레임에서 `app_controller` 가 clear 한다.
+    needs_render: bool = true,
     /// 사용자가 윈도우 닫기를 요청 (Alt+F4 / 시스템 메뉴 / WM_CLOSE) 했을 때
     /// 호출. true 반환 = 종료 진행 (DestroyWindow), false 반환 = 종료 취소.
     /// macOS `applicationShouldTerminate:` 와 같은 역할 (#116). 다중 탭 confirm
@@ -875,6 +900,9 @@ pub const Window = struct {
         // `applyLayout` 의 SetWindowPos 가 현재 rect 과 동일해서 WM_SIZE
         // 를 생략한 경우 대비 safety net — swap chain / terminal grid 를
         // idempotent 하게 재동기화.
+        // #386 ② — show 는 wndProc 밖에서도 불린다 (핫키 · 새 instance 요청). 게이트를
+        // 직접 열어 두지 않으면 표시 직후 첫 프레임을 건너뛸 수 있다.
+        self.requestRender();
         self.presentNow();
 
         self.startFrameClock();
@@ -1211,6 +1239,11 @@ pub const Window = struct {
         if (self.resize_fn) |resize_fn| resize_fn(self.userdata);
     }
 
+    /// #386 ② — 다음 프레임을 그리게 한다. `needs_render` 주석 참고.
+    pub fn requestRender(self: *Window) void {
+        self.needs_render = true;
+    }
+
     /// #386 — 렌더 전에 **우리 창의 입력을 먼저 비운다.**
     ///
     /// Windows 메시지 우선순위는 `sent → posted → 입력(하드웨어) → paint → timer` 다.
@@ -1455,6 +1488,13 @@ pub const Window = struct {
     fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.c) LRESULT {
         const self = getSelf(hwnd) orelse return DefWindowProcW(hwnd, msg, wParam, lParam);
 
+        // #386 ② — 화면이 바뀔 수 있는 메시지면 렌더 게이트를 연다. 프레임 tick 만 막는다.
+        // 어떤 메시지를 빠뜨리면 "화면이 안 갱신된다" 는 사용자 가시 버그가 되므로, 한
+        // 프레임 더 그리는 쪽으로 치우치게 둔다. 유휴에는 tick 외에 오는 메시지가 없어서
+        // 이 정책으로도 유휴 렌더는 사라진다. (`WM_TIMER` 의 auto-scroll 분기는 화면을
+        // 바꾸므로 그 안에서 따로 연다.)
+        if (!isFrameGateExempt(msg)) self.requestRender();
+
         switch (msg) {
             WM_NEW_INSTANCE_REQUEST => {
                 if (@import("instance_context.zig").requireWorkerIndex() == 0) {
@@ -1501,6 +1541,8 @@ pub const Window = struct {
                     // #386 — 고해상도 타이머를 못 만들었을 때의 fallback 경로.
                     self.renderFrameTick();
                 } else if (wParam == AUTOSCROLL_TIMER_ID) {
+                    // #386 ② — 이 tick 은 viewport 를 움직이므로 게이트를 연다.
+                    self.requestRender();
                     // #245 — 마지막 마우스 위치로 mouse_move(left_button=true) 재전송.
                     // app 의 updateTerminalSelection 이 다시 돌아 경계 밖이면 한 step
                     // 더 스크롤 + 선택 갱신. 경계 안으로 돌아오면 그쪽에서 타이머 off.

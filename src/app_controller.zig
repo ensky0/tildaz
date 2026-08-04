@@ -394,7 +394,14 @@ pub const App = struct {
             const size = window.getClientSize();
 
             // VT 처리 (UI 스레드에서 — mutex 경합 없음)
-            const should_render = self.session.prepareActiveFrame(&self.last_render_ms);
+            const frame = self.session.prepareActiveFrame(&self.last_render_ms);
+            // #386 ② — 화면이 바뀌지 않았으면 GPU 작업 (render + present) 을 건너뛴다.
+            // macOS #255 Phase 2 동등. 이전에는 `prepareActiveFrame` 이 출력이 없을 때도
+            // `true` 를 줘서 **유휴에도 매 프레임 그렸다** — 출력 0 인 10 초 동안 588 프레임
+            // 전부 그린 것이 #386 의 ②다. `needs_render` 는 `wndProc` 이 프레임 tick 이
+            // 아닌 모든 메시지에서 연다 (window.zig).
+            const should_render = frame.should_render and
+                (frame.had_output or self.window.needs_render);
             // IME preedit 활성 시 throttle 우회 — preedit UI 는 PTY 출력과
             // 무관한 매 keystroke 즉시 화면 갱신 필요 (mac 동등). throttle 만
             // 적용하면 typing 도중 preedit 안 보이거나 늦게 따라옴 (#164 회귀).
@@ -414,6 +421,9 @@ pub const App = struct {
                 self.ensureActiveTabVisible();
 
             if (should_render or force_render or blink_tick) {
+                // 그리기로 했으니 게이트를 닫는다. 렌더 중에 도착한 메시지는 큐에 있다가
+                // 이 프레임 뒤에 처리되면서 다시 열므로 변화를 놓치지 않는다.
+                self.window.needs_render = false;
                 // 탭바 + 터미널 함께 렌더 (glClear는 renderTabBar에 포함).
                 // count<=1 이면 tab_bar_h=0 → 렌더러가 탭바 자체를 그리지 않고
                 // 터미널 영역만 (#127 — 단일 탭에서 cell 영역 reserve 안 함).
