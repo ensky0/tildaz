@@ -226,13 +226,31 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 **두 옵션은 측정 내부용이에요** — 사용자 문서 (`README` · `CONFIG.md` · `KEYBINDINGS.md`) 에
 넣지 않고 쓰는 곳은 이 스크립트 하나예요.
 
-측정용 인스턴스는 **평소 쓰는 TildaZ 를 건드리지 않아요.** worker lock 을 잡지 않고, 전역
-핫키를 등록하지 않고 (로그에 `global hotkey not registered (stress run)`), instance 요청
-endpoint 상태를 기록하지 않고, Windows 에서는 창 타이틀도 worker 와 다른 이름
-(`TildaZ-stress`) 을 써요 — 앞의 둘만 막았던 동안 나머지 둘이 사용자 인스턴스를 방해했어요
-([#382 의 Windows 실기 검증](https://github.com/ensky0/tildaz/issues/382#issuecomment-5172400255)).
+측정용 인스턴스는 **평소 쓰는 TildaZ 와 겹치지 않도록 두 가지를 나눠요** — *하지 않는 것*과
+*worker 와 다른 이름을 쓰는 것*이에요.
+
+| 무엇 | 어떻게 |
+|---|---|
+| worker lock | 잡지 않아요 |
+| 전역 핫키 · DE 단축키 등록 | 하지 않아요 (Windows `RegisterHotKey` · macOS event tap · Linux 의 sway `bindsym` · GSettings · KDE KGlobalAccel) |
+| 새 instance 요청 처리 | 하지 않아요 (macOS 는 broadcast 라 observer 자체를 등록하지 않아요) |
+| instance 요청 endpoint 상태 | 기록하지 않아요 |
+| config 파일 | **읽기만** 해요 — 같은 폰트 · 테마로 재야 비교가 성립하니 공유하지만, 파일이 없어도 만들지 않아요 |
+| 창 타이틀 · Wayland app_id | worker 와 다른 이름 (`TildaZ-stress` · `tildaz.stress`) — worker 창을 찾는 쪽이 (Windows 의 `FindWindowW`, GNOME · Cinnamon extension) 측정 창을 집지 않게요 |
+| 로그 파일 | `tildaz_stress.log` — 사용자 세션 로그 (`tildaz_N.log`) 와 섞이면 진단이 어려워요 |
+
 `hidden_start` 는 무시하고 창을 표시한 채 시작하고 (숨겨져 있으면 렌더가 일어나지 않아 측정이
 무의미해요), producer 가 끝나면 스스로 종료해요.
+
+이 목록은 한 번에 다 갖춰진 게 아니라 **실기 검증에서 빠진 것이 드러날 때마다 채워졌어요** —
+처음엔 lock 과 핫키뿐이었고, [Windows 실기](https://github.com/ensky0/tildaz/issues/382#issuecomment-5172400255)에서
+endpoint 상태와 창 타이틀이, [macOS 실기](https://github.com/ensky0/tildaz/issues/382#issuecomment-5173008405)와
+그 뒤의 코드 점검에서 나머지가 나왔어요.
+
+**로그로 확인할 때는 host 별 문구가 달라요.** `global hotkey not registered (stress run)` 은
+Windows 문구예요. Linux 는 다른 문장을 쓰고, macOS 는 이 항목에 로그를 남기지 않아요 — 그러니
+"그 줄이 없다" 를 결함으로 읽지 말고, macOS 에서는 측정 로그 파일이 따로 생기는지와 timing
+파일의 격자로 판정하세요.
 
 macOS 의 ghostty 는 조건이 까다로워서 스크립트가 **임시 config 파일**을 만들어 넘겨요.
 CLI 로 터미널을 띄울 수 없고 (`ghostty --help`: *"On macOS, launching the terminal emulator
