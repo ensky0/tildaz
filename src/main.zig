@@ -104,9 +104,18 @@ pub fn main() void {
     }
 
     // #382 — 측정 모드. worker lock · launcher · 전역 핫키를 모두 건너뛴다. 그러지 않으면
-    // 평소 쓰는 TildaZ 의 lock 을 뺏거나 F1 이 두 프로세스에 걸린다. config 는 그대로
-    // 읽지만 (읽기 전용이라 안전) 창 크기는 `-size` 가 덮는다.
+    // 평소 쓰는 TildaZ 의 lock 을 뺏거나 F1 이 두 프로세스에 걸린다. 창 크기는 `-size` 가
+    // 덮는다.
+    //
+    // config 는 worker 와 **공유한다** — 같은 폰트 · 테마로 재야 다른 터미널과의 비교가
+    // 성립한다. 단 파일이 없으면 만들지 않는다 (`config.zig` 의 `Config.load`): 측정이
+    // 사용자 설정을 만드는 주체가 되면 안 된다.
+    //
+    // index 는 그대로 쓰지만 **역할은 다르다** (`instance_context.Role`). 창 타이틀 ·
+    // app_id · 로그 파일 같은 이름은 그 역할에서 갈린다 — index 에서 파생하면 worker 를
+    // 찾는 쪽이 측정 창을 집는다.
     if (run_opts.isStressRun()) {
+        instance_context.setRole(.stress);
         instance_context.setWorkerIndex(worker_index orelse 0);
         host.run(run_opts) catch |err| host.showFatalRunError(err);
         return;

@@ -2048,11 +2048,15 @@ const Client = struct {
         try self.sendArgs(self.wm_base_id, 2, &.{ self.xdg_surface_id, self.surface_id });
         self.toplevel_id = self.allocId();
         try self.sendNewId(self.xdg_surface_id, 1, self.toplevel_id);
-        const index = instance_context.requireWorkerIndex();
+        // #382 — 타이틀 · app_id 는 이 프로세스의 **역할**에서 나온다
+        // (`instance_context.Role`). worker index 로만 만들면 측정 창이 `TildaZ-0` ·
+        // `tildaz.instance0` 을 쓰게 되고, 우리 GNOME · Cinnamon extension 이 그 둘로
+        // 사용자 드롭다운 창을 찾으므로 측정 창을 오인해 config 퍼센트로 리사이즈하거나
+        // (`-size` 가 깨진다) `hidden_start` 면 minimize 한다 (렌더가 없어진다).
         var title_buf: [32]u8 = undefined;
-        const title = try @import("../../instances.zig").windowTitle(&title_buf, index);
+        const title = try @import("../../instances.zig").windowTitleForCurrentRole(&title_buf);
         var app_id_buf: [32]u8 = undefined;
-        const app_id = try instance_identity.appId(&app_id_buf, index);
+        const app_id = try instance_identity.appIdForCurrentRole(&app_id_buf);
         try self.sendString(self.toplevel_id, 2, title);
         try self.sendString(self.toplevel_id, 3, app_id);
         try self.sendNoArgs(self.surface_id, 6);
