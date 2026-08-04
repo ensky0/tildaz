@@ -38,6 +38,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 const config = @import("config.zig");
+const instance_context = @import("instance_context.zig");
 const perf = @import("perf.zig");
 const session_core = @import("session_core.zig");
 const terminal = @import("terminal.zig");
@@ -76,6 +77,17 @@ const chunk_size = 64 * 1024;
 const frame_budget_ns = session_core.SessionCore.DRAIN_FRAME_BUDGET_NS;
 
 pub fn main() !void {
+    // 하네스는 **언제나** 측정이다. `main.zig` 는 `-e` 일 때만 이 역할을 세우지만
+    // (`run_opts.isStressRun()`) 여기는 조건이 없다.
+    //
+    // 이걸 빠뜨리면 역할이 기본값 `.worker` 로 남아 `paths.logPath` 가 사용자 세션의
+    // `tildaz_N.log` 를 고른다 — #382 가 막으려던 바로 그 오염이다. Windows 층별 측정
+    // (#381) 에서 실제로 `tildaz_0.log` 에 30 줄이 들어갔다. 하네스는 config 파일을
+    // 읽지도 창을 띄우지도 않으므로 이 호출이 바꾸는 것은 로그 파일 이름 하나다.
+    //
+    // producer 모드 판정보다 앞에 둔다 — producer 자식도 같은 실행파일이다.
+    instance_context.setRole(.stress);
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
