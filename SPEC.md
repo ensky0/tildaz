@@ -354,7 +354,7 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | 탭바 · command menu chrome 색 — **터미널 테마 배경에서 파생** ([#335](https://github.com/ensky0/tildaz/issues/335) 2026-07-28 확정) | `ui_metrics.zig` 의 chrome 색 9개는 **anchor** (= Tilda 순수 검정 배경에서의 값, #334/#342 시연 확정) 이고, 실제 색은 **config theme 의 배경**에서 파생한다 (OSC 11 런타임 배경이 아니라 config 값 — 2026-07-28 결정). 채널별 linear-light 에서 `C = k·bg + A` (dark) / `C = (bg − A)/k` (light, dark 의 **역함수**), `k = 1 + Y(A)/0.05`. 따라서 (1) Tilda 는 anchor 그대로 (2) `Y(C)+0.05 = k·(Y(bg)+0.05)` 항등이라 **요소 쌍의 대비비가 테마와 무관하게 상수** (탭바 1.33 / 구분선 1.93 / 제목 7.58 / hint 6.44 / hover 1.45·1.52) (3) `k·bg` 항이 테마 배경의 색상을 운반. 밝은 테마는 역함수라 탭바·구분선·제목이 모두 **어두워지는 방향**. `ctrl_active`(k=18.8) · `menu_label`(k=17.7) 은 chrome 이 밝아지면 목표 대비를 만들 흰색이 없어 **chrome→목표 방향 전체를 스케일백**한다 (채널별 클리핑은 hue 를 틀어서 쓰지 않음; 캡 후 대비는 최악 7.75). 출력 RGB 는 **8-bit 로 양자화**해 세 platform 이 정의상 같은 값을 받는다. **amber accent 는 파생하지 않는다** (브랜드 색 — 밝은 테마에서 밑줄 대비 1.35~1.46 은 알려진 귀결). `TAB_CTRL_HOVER_BG` 는 알파(흰색 12%)가 아니라 **합성 결과 solid** — 세 platform 블렌드가 모두 gamma space 라 값이 같다 | 공통 [`chrome_palette.zig`](src/chrome_palette.zig) → `D3d11Renderer.chrome` | 동일 → `MetalRenderer.chrome` | 동일 → `Renderer.chrome` (자유 함수엔 인자 전달) | ✅ | ✅ | ✅ |
 | 탭바 — drag reorder | 탭 본체 drag | `DragState` (5px 임계) → `reorderTabs` | 동일 (`g_drag`) | 동일 (L12-γ-3, [4f7e724](https://github.com/ensky0/tildaz/commit/4f7e724)) | ✅ | ✅ | ✅ |
 | 탭바 — drag follow 시각 | drag 중 탭 마우스 따라 이동 ([#297](https://github.com/ensky0/tildaz/issues/297) B3 결정. source 슬롯엔 탭바 배경이 남아 원위치 표시. z-order 최상위는 macOS 만 — Windows/Linux 는 그리기 순서대로) | `dragged_tab + drag_x` 인자 | 동일 (`TabDragView`, drag 탭 bg 마지막에 그려 z-top) | 동일 (#297 B3 — 이전의 source dim + drop indicator 방식 폐기) + 가장자리 auto-scroll | ✅ | ✅ | ✅ |
-| 탭바 — 셸 OSC 0/2 자동 제목 ([#269](https://github.com/ensky0/tildaz/issues/269), [#364](https://github.com/ensky0/tildaz/issues/364) 2026-08-02 개정) | 탭 제목. **새 탭은 생성 시점부터 `Tab N` 을 표시**하고, 셸이 OSC 0/2 로 제목을 보내면 교체한다 — 제목 자리가 비는 구간이 없다. **첫 제목은 debounce 없이 즉시 반영**하고 (화면에 `Tab N` 만 있어 밀어낼 중간 제목이 없다), 두 번째 제목부터 셸이 보낸 raw window title 이 150ms 동안 동일하게 유지되면 반영 (짧은 명령의 순간 왕복 억제). 빈 title 은 최초 `Tab N` 으로 복귀. **이전 사양의 "1초 유예 후 fallback" 은 폐기** — OSC 를 안 보내는 셸이 흔해서 (실측: Windows `cmd`·PowerShell 5.1·pwsh 7 은 10/10 미전송, Linux POSIX `sh`·rc 없는 zsh 도 미전송) 기본 사용자가 1초 빈 제목을 봤고, 유예를 200~300ms 로 줄이는 안은 제목을 늦게 보내는 셸 (Linux zsh+p10k 328~410ms, Windows Git Bash 200~241ms, WSL cold 2.2초) 때문에 실측으로 기각됐다. 활성 탭과 비활성 탭 출력을 공통 8ms frame 예산 안에서 번갈아 파싱하므로 탭 전환 없이 제목 갱신 | readonly VT parse 뒤 `Terminal.getTitle()` 동기화 (#266 의 ConPTY query-response 차단 유지) | `Effects.title_changed` → 공통 pending 제목 상태 | `Effects.title_changed` → 공통 pending 제목 상태 | ✅ | ✅ | ✅ |
+| 탭바 — 셸 OSC 0/2 자동 제목 ([#269](https://github.com/ensky0/tildaz/issues/269), [#364](https://github.com/ensky0/tildaz/issues/364) 2026-08-02 개정) | 탭 제목. **새 탭은 생성 시점부터 `Tab N` 을 표시**하고, 셸이 OSC 0/2 로 제목을 보내면 교체한다 — 제목 자리가 비는 구간이 없다. **첫 제목은 debounce 없이 즉시 반영**하고 (화면에 `Tab N` 만 있어 밀어낼 중간 제목이 없다), 두 번째 제목부터 셸이 보낸 raw window title 이 150ms 동안 동일하게 유지되면 반영 (짧은 명령의 순간 왕복 억제). 빈 title 은 최초 `Tab N` 으로 복귀. **이전 사양의 "1초 유예 후 fallback" 은 폐기** — OSC 를 안 보내는 셸이 흔해서 (실측: Windows `cmd`·PowerShell 5.1·pwsh 7 은 10/10 미전송, Linux POSIX `sh`·rc 없는 zsh 도 미전송) 기본 사용자가 1초 빈 제목을 봤고, 유예를 200~300ms 로 줄이는 안은 제목을 늦게 보내는 셸 (Linux zsh+p10k 328~410ms, Windows Git Bash 200~241ms, WSL cold 2.2초) 때문에 실측으로 기각됐다. 활성 탭과 비활성 탭 출력을 공통 드레인 예산 (§13) 안에서 번갈아 파싱하므로 탭 전환 없이 제목 갱신 | readonly VT parse 뒤 `Terminal.getTitle()` 동기화 (#266 의 ConPTY query-response 차단 유지) | `Effects.title_changed` → 공통 pending 제목 상태 | `Effects.title_changed` → 공통 pending 제목 상태 | ✅ | ✅ | ✅ |
 | 탭바 — 긴 확정 제목 truncate ([#271](https://github.com/ensky0/tildaz/issues/271)) | text 영역을 넘으면 glyph 경계에서 자르고 마지막에 U+2026 `…` 한 글자(1 cell) 표시. CJK wide glyph를 반으로 자르지 않으므로 최대 1 cell이 남을 수 있음 | 공통 `tab_layout.iterTabText` → 일반 Unicode glyph path | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 탭바 — `<` / `>` 화살표 클릭 | 탭바 양 끝 화살표 (#117) | `scrollTabsByArrow` — viewport 만 1 탭 너비씩 이동, **활성 탭 안 바뀜** + `tab_scroll_user_override=true` | 동일 (`scrollTabsByArrow`) | 동일 (L12-γ-1, [1eb51ee](https://github.com/ensky0/tildaz/commit/1eb51ee) — cross-platform `tab_layout`) | ✅ | ✅ | ✅ |
 | 탭바 — `+` 클릭 | control cluster 첫 버튼. 새 탭 생성 → 활성 → ensure가 viewport 우측 끝으로 정렬. 32-tab limit에서는 자리를 유지하고 비활성 색 + 클릭 noop ([#329](https://github.com/ensky0/tildaz/issues/329) 2026-07-22 결정 — 숨김 정책 대체. 단축키 경로 dialog 는 유지) | `handleNewTab` + `tab_layout.Layout.plus_enabled` | 동일 | 동일 | ✅ | ✅ | ✅ |
@@ -1177,15 +1177,15 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ## 13. VT 파싱 예산 — **응답성 상한이지 처리량 상한이 아니다** ([#387](https://github.com/ensky0/tildaz/issues/387))
 
-`SessionCore.DRAIN_FRAME_BUDGET_NS` (**8 ms**) 의 사양은 이것이다.
+`SessionCore.DRAIN_FRAME_BUDGET_NS` (**4 ms**) 의 사양은 이것이다.
 
-> **드레인 한 번이 UI 스레드를 8 ms 이상 점유하지 않는다.**
+> **드레인 한 번이 UI 스레드를 이 예산 이상 점유하지 않는다.**
 
-즉 8 ms 는 **최악 입력 지연 예산**이다. **얼마나 자주 드레인하는지는 이 예산이 정하지 않는다.**
+즉 이 값은 **최악 입력 지연 예산**이다. **얼마나 자주 드레인하는지는 이 예산이 정하지 않는다.**
 host 는 *입력을 굶기지 않는 한* 자주 드레인해야 하고, 특히 **프레임에 묶지 않는다.**
 
 **왜 이 사양인가** (2026-08-05 결정, #387 §1). 예산을 "프레임당 1 회" 로 해석하면 duty 상한이
-`8 ms / 프레임간격` 이 되어 **화면 주사율이 터미널 처리량을 결정**한다 — 같은 CPU·같은 앱인데
+`예산 / 프레임간격` 이 되어 **화면 주사율이 터미널 처리량을 결정**한다 — 같은 CPU·같은 앱인데
 60 Hz 사용자가 120 Hz 사용자의 절반만 소화한다. 화면에 보이는 것과 무관한 종속이라 사양이 아니다.
 처리량은 CPU 에만 의존해야 한다 (§0 #1 의 세 platform 동등과 같은 취지).
 
@@ -1205,26 +1205,45 @@ host 는 *입력을 굶기지 않는 한* 자주 드레인해야 하고, 특히 
 macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 뒤다. 유휴에는 드레인할 것이
 없어 각각 `WaitMessage` / run loop sleep 으로 내려가므로 **유휴 절전 (#255 · #386 ②) 이 유지된다.**
 
-### 13.2 실측 — Windows ① (Ryzen AI 7 350 · 외장 60 Hz · `cjk` 폭포 10 s)
-
-같은 화면 · 같은 커밋에서 드레인 지점 한 줄만 켜고/끈 대조다.
+### 13.2 실측 — 드레인 지점 한 줄만 켜고/끈 대조 (예산 8 ms 시점)
 
 | | 프레임당 1 회 (이전) | **사양대로** | |
 |---|---:|---:|---|
-| 프레임 주기 | 16.95 ms (59.0 fps) | 16.95 ms (59.0 fps) | **fps 손실 없음** |
-| duty | **50.2 %** | **90.7 %** | 8/16.95 = 47 % 상한이 풀린다 |
-| 처리량 | 33.3 MiB/s | **53.5 MiB/s** | **×1.61** |
-| drain / 프레임 | 8.51 ms (= 예산) | 15.37 ms | 프레임당 1 회가 풀린 증거 |
-| **폭포 중 입력 10 회** | — | **10 / 10** | 응답성 비용 없음 (Linux 도 10/10) |
+| **Windows ①** (Ryzen AI 7 350 · 외장 59 Hz) | duty 50.2 % · 33.3 MiB/s · 59.0 fps | duty **90.7 %** · **53.5 MiB/s** · 59.0 fps | **×1.61** · fps 손실 없음 |
+| **Windows ②** (i5-1240P · 내장 60 Hz) | duty 50.6~51.4 % · 29.3~30.2 MiB/s · 60.0 fps | duty **91.5~92.2 %** · **47.4~53.5 MiB/s** · 60.0 fps | **×1.61~1.77** |
+| **macOS** (M5 Pro · 외장 60 Hz) | duty 49.1 % · 60.7 MiB/s · 60.0 fps | duty **96.1 %** · **119.6 MiB/s** · 56.4 fps | **×1.97** |
+| **폭포 중 입력 10 회** | — | **10 / 10** (세 platform) | 응답성 비용 없음 |
 
-**주사율 종속이 사라진다.** 같은 기기 내장 패널 120 Hz 에서 프레임당 1 회일 때 duty 가 88 % 였는데,
-60 Hz 에서는 50.2 % 였다 — 사양대로 고친 뒤 60 Hz 가 90.7 % 로 올라 두 주사율이 같은 수준이 된다.
+`drain / 프레임` 이 판정 근거다 — 프레임당 1 회에서는 예산 + 청크 초과분 (8.4~8.6 ms) 이고,
+사양대로면 그보다 크다 (15 ms 대).
 
-### 13.3 예산 값을 바꿀 때
+**주사율 종속이 사라진다.** 프레임당 1 회일 때 Windows ① 내장 120 Hz 는 duty 88 % 인데 외장 60 Hz 는
+50.2 % 였다 — 사양대로 고친 뒤 60 Hz 가 90.7 % 로 올라 두 주사율이 같은 수준이 된다.
+
+### 13.3 예산 값 — 4 ms 인 이유
 
 `DRAIN_FRAME_BUDGET_NS` 는 **공유 상수라 세 platform 이 함께 바뀐다.** 값의 의미는 "입력이 최악
 얼마나 기다리나" 이므로, 바꾸려면 처리량이 아니라 **입력 지연**을 근거로 판단한다. 예산 검사가
-청크 사이에 있어 마지막 청크가 넘기므로 실측 점유는 8 ms 를 조금 초과한다 (실측 8.5 ms).
+청크 사이에 있어 마지막 청크가 넘기므로 실측 점유는 예산을 조금 초과한다 (4 ms 예산에서 4.4~4.5 ms).
+
+**8 → 4 ms** (2026-08-05 결정, #387). 사양 A 아래에서는 예산이 **처리량과 무관**해져서, 응답성을
+공짜로 절반 사는 거래가 됐다. 다섯 조건 실측:
+
+| platform · 화면 | 8 → 4 ms |
+|---|---|
+| **Windows ②** 60 Hz | fps 60.0 유지 · 처리량 유지 (−4.1~+1.8 %) · **프레임 tick 점유 9.7 → 5.8 ms** |
+| **Windows ①** 120 Hz | tick fps 103.3 → **120.0** · 처리량 유지 (62.53 → 62.60 MiB/s) |
+| **macOS** 60 Hz | fps 56.7 → **60.0** · 처리량 **+3.3 %** |
+| **macOS** 120 Hz | fps 40.7 → **99.6 (×2.4)** · 처리량 −2.6 % |
+| **Linux** 120 Hz | fps 60.0 → **109.4 (×1.82)** · 처리량 −1.2 % |
+
+**하한은 4 ms 다.** macOS 120 Hz 의 3 ms 에서 duty 포화가 96 → 73.7 % 로 깨져 처리량이 23 % 떨어졌다
+(호출당 고정비가 예산에 비해 커지는 지점으로 *추정* — 확인 안 함). 60 Hz 는 3 ms 에서도 포화가
+유지되므로 **하한은 주사율에 따라 다르고**, 4 ms 가 두 주사율에서 모두 안전한 값이다.
+
+**예산은 사양 A 가 있을 때만 줄일 수 있다.** 사양 A 를 끈 구조에서 8 → 4 ms 를 하면 duty 가 프레임
+상한에 붙어 처리량이 반토막난다 (Windows ② 60 Hz 실측: 29.3~30.2 → 15.1~15.2 MiB/s, ×0.50). 즉 예산은
+사양 A 아래에서 **응답성 손잡이**, 사양 A 없이는 **처리량 손잡이**다.
 
 ### 13.4 렌더 게이트는 "화면이 바뀌었나" 하나다 ([#388](https://github.com/ensky0/tildaz/issues/388))
 

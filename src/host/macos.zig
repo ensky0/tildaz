@@ -503,7 +503,7 @@ var g_metal_layer: objc.id = null;
 var g_renderer: ?renderer_module.RendererBackend = null;
 /// CADisplayLink (NSWindow.displayLink) — vsync render driver. null = 미생성.
 var g_display_link: objc.id = null;
-/// #387 — `kCFRunLoopBeforeWaiting` observer. 프레임 사이에도 VT 를 드레인해 8 ms 예산이
+/// #387 — `kCFRunLoopBeforeWaiting` observer. 프레임 사이에도 VT 를 드레인해 드레인 예산이
 /// 처리량 상한으로 굳지 않게 한다 (`idleDrainObserver` 주석). null = 미생성.
 ///
 /// 앱 수명 동안 유지되므로 remove 경로를 두지 않는다 — `g_runloop_source` (event tap) 는
@@ -3241,17 +3241,17 @@ fn requestRender() void {
     g_needs_render = true;
 }
 
-/// #387 — 사양 A ("한 번에 UI 를 8 ms 이상 잡지 않는다") 의 macOS 쪽 구현.
+/// #387 — 사양 A ("드레인 한 번이 UI 를 예산 이상 잡지 않는다") 의 macOS 쪽 구현.
 ///
-/// `DRAIN_FRAME_BUDGET_NS` (8 ms) 는 `drainFrame` **한 번의 호출**에 걸리는 응답성 상한이고
+/// `DRAIN_FRAME_BUDGET_NS` 는 `drainFrame` **한 번의 호출**에 걸리는 응답성 상한이고
 /// 처리량 상한이 아니다. 그런데 드레인이 `renderFrameTick` (displayLink 콜백) 안에만 있으면
-/// vsync 당 1 회로 묶여 duty 상한이 `8 ms / 프레임간격` 이 된다 — **화면 주사율이 처리량을
-/// 결정**한다 (Windows 실측: 60 Hz 48 % · 120 Hz 88 %). Linux 는 드레인이 poll loop 에 있어
-/// 주사율과 무관하다 (`cjk` duty 가 60 · 120 Hz 에서 77.8 / 77.9 %).
+/// vsync 당 1 회로 묶여 duty 상한이 `예산 / 프레임간격` 이 된다 — **화면 주사율이 처리량을
+/// 결정**한다 (Windows 실측, 당시 예산 8 ms: 60 Hz 48 % · 120 Hz 88 %). Linux 는 드레인이
+/// poll loop 에 있어 주사율과 무관하다 (`cjk` duty 가 60 · 120 Hz 에서 77.8 / 77.9 %).
 ///
 /// `kCFRunLoopBeforeWaiting` 은 run loop 이 잠들기 직전이라 **입력 · displayLink source 가
 /// 모두 처리된 뒤**다. 즉 Windows 의 `PeekMessage` 가 빈 순간과 같은 의미이고, 입력과 렌더가
-/// 항상 이 드레인보다 우선한다. 드레인 한 번은 8 ms 를 넘지 않으므로 입력 지연 상한도 그대로다.
+/// 항상 이 드레인보다 우선한다. 드레인 한 번은 예산을 넘지 않으므로 입력 지연 상한도 그대로다.
 ///
 /// **스핀하지 않는 근거**: `drainOutputForRender` 가 참이면 실제로 파싱했거나 ring 에 남아
 /// 있다는 뜻이고 (`drainOutputChunk` 은 `output_ring.pop() == 0` 이면 false), 남아 있으면

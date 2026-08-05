@@ -395,7 +395,7 @@ const FrameSplit = struct {
     fps: u32,
     fps_explicit: bool,
     frames: u64,
-    /// 프레임 예산 (8 ms) 을 넘긴 프레임 수. 실제 앱에서는 그만큼 vsync 를 놓친다.
+    /// 프레임 예산 (`DRAIN_FRAME_BUDGET_NS`) 을 넘긴 프레임 수. 리포트가 값을 함께 찍는다.
     over_budget: u64,
 };
 
@@ -587,10 +587,15 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
 
 // --- layer: frame ---
 
-/// 앱이 실제로 지나는 경로다. host 는 vsync 마다 `drainOutputForRender` 를 부르고,
-/// 그 안의 `drainFrame` 이 **한 프레임에 8 ms** 만 파싱한다
-/// (`session_core.SessionCore.DRAIN_FRAME_BUDGET_NS`). 그래서 사용자가 겪는 처리량은
-/// 파서 상한이 아니라 `예산 / 프레임 간격` 만큼으로 눌린다.
+/// 프레임당 1 회 드레인을 모사한다 — `drainOutputForRender` 를 `--fps` 주기로 한 번씩 부르고,
+/// 그 안의 `drainFrame` 이 `session_core.SessionCore.DRAIN_FRAME_BUDGET_NS` 만 파싱한다.
+/// 그래서 처리량이 파서 상한이 아니라 `예산 / 프레임 간격` 으로 눌린다.
+///
+/// ⚠️ **이 층은 더 이상 앱과 같지 않다.** 사양 A (#387) 이후 세 host 는 **프레임 사이에도**
+/// 드레인하므로 (SPEC §13.1) 실제 앱의 duty 는 이 층보다 훨씬 높다 (Windows ② 60 Hz 실측:
+/// 이 층에 해당하는 구조가 duty 50.6~51.4 %, 실제 앱은 91.5~92.2 %). 그러니 이 층의 숫자는
+/// **"프레임에 묶였을 때의 하한"** 으로 읽는다. 앱의 실제 배분은 perf 덤프
+/// (`Ctrl+Shift+F12` / `Shift+Cmd+F12`) 로 본다 — 후속 이슈에서 다룰 갭이다.
 ///
 /// macOS 는 CADisplayLink (`NSWindow.displayLink`) 가 vsync 마다 main thread 에서
 /// 부르고, Linux 는 poll loop, Windows 는 app_controller 의 프레임 경로다. 여기서는
@@ -993,10 +998,10 @@ fn report(opts: Options, result: Result) !void {
             split.over_budget,
             frame_budget_ns / std.time.ns_per_ms,
         });
-        // 기본값을 그대로 쓰면 고주사율 화면에서 크게 어긋난다. 실측: 120 Hz 화면을 60 으로
-        // 모사했더니 ansi 가 103 MiB/s 로 나왔는데 (예산 초과 86 %), 120 으로 고치자
-        // 138 MiB/s · 초과 39 % 였고 실제 앱 값 (136 MiB/s) 과 거의 같았다. 120 Hz 는 프레임
-        // 간격이 8.33 ms 라 8 ms 예산이 프레임 전체에 가깝다 — 60 Hz 의 48 % 와 성질이 다르다.
+        // 기본값을 그대로 쓰면 고주사율 화면에서 크게 어긋난다. 실측 (당시 예산 8 ms):
+        // 120 Hz 화면을 60 으로 모사했더니 ansi 가 103 MiB/s 로 나왔는데 (예산 초과 86 %),
+        // 120 으로 고치자 138 MiB/s · 초과 39 % 였다. 예산이 프레임 간격에서 차지하는 비율이
+        // `예산 / 프레임간격` 이라 주사율이 결과를 지배한다.
         if (!split.fps_explicit) {
             w.print(
                 "  ⚠ --fps 를 안 줘서 {d} 으로 가정했어요. 재는 화면의 재생률과 다르면\n" ++
