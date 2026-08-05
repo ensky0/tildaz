@@ -379,9 +379,14 @@ Windows 만의 주의점이에요.
 깔끔해요 (플래그는 없어요).
 
 ```sh
-FP=$(echo "$PATH" | tr ':' '\n' | grep -vi 'alacritty\|wezterm' | paste -sd: -)
+FP=$(echo "$PATH" | tr ':' '\n' | grep -vi 'alacritty' | paste -sd: -)
 PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --timeout 30
 ```
+
+⚠️ **wezterm 은 제외하지 마세요 — 정상 동작해요.** 위 멈춤은 **alacritty 에서만** 확인됐어요.
+처음에 둘을 한 묶음으로 빼서 wezterm 값을 통째로 잃은 적이 있어요 ([#381](https://github.com/ensky0/tildaz/issues/381)) —
+그리고 그 값이 중요했어요. grapheme 워크로드에서 **wezterm 이 우리보다 2.7~2.9 배 빨라서**, 빼 버리면
+"우리가 꼴찌" 라는 사실이 표에서 사라져요.
 
 **출력을 `| tail` 로 파이프하지 마세요** — 스크립트가 끝날 때까지 버퍼링돼서 진행이 하나도 안 보여요.
 파일로 받고 (`> out.txt 2>&1`) 그 파일을 읽어요.
