@@ -110,6 +110,19 @@ vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈�
 | `ansi` | SGR 색이 섞인 빌드 로그 모양 | escape sequence 파싱 |
 | `cjk` | 한글 · emoji · 스킨톤 · ZWJ 묶음 · block element | wide cell · grapheme cluster |
 
+**귀속용 세 개** ([#381](https://github.com/ensky0/tildaz/issues/381)) — `cjk` 가 섞어 쓰는 경로를
+하나씩만 태워요. **표시 열 수를 `cjk` 와 같은 80 열로 맞췄어요.**
+
+| 이름 | 내용 | 태우는 경로 |
+|---|---|---|
+| `hangul` | 한글만 | **wide cell 만** — BMP codepoint 하나가 셀 하나라 grapheme extras 를 안 지나요 |
+| `emoji_vs16` | `❤️` (U+2764 U+FE0F) 만 | **VS-16 경로** — codepoint 2 개가 한 grapheme, 셀이 wide 로 |
+| `zwj` | `👨‍👩‍👧` 만 | **ZWJ 묶음** — codepoint 5 개가 한 grapheme. extras 가 가장 깊어요 |
+
+⚠️ **이 셋은 MiB/s 를 그대로 비교하면 안 돼요.** 줄 byte 가 경로마다 달라요 (한글 116 ·
+VS-16 221 · ZWJ 641). **줄/초 = `MiB/s × 1048576 ÷ 줄 byte`** 로 환산해서 비교해요 — 줄 byte 는
+`zig test src/stress/workload.zig` 의 "귀속 워크로드는 줄 byte 가 고정" 이 못 박아 둬요.
+
 ## 부하를 만드는 쪽도 우리 자신이에요
 
 `--layer pty` 는 PTY 자식으로 셸이 아니라 **이 실행파일을 producer 모드로** 띄워요.
