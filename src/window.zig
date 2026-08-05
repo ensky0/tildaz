@@ -1979,6 +1979,19 @@ pub const Window = struct {
                 self.last_display_w = new_w;
                 self.last_display_h = new_h;
                 if (self.visible) self.applyLayout();
+                // ⚠️ 미구현 (#386 §2.4, 우선순위 낮음) — **프레임 주기를 다시 읽지 않는다.**
+                // `frame_period_100ns` 는 `startFrameClock` 이 `GetDeviceCaps(VREFRESH)` 로 한
+                // 번 정하고, 그 함수는 clock 이 이미 돌고 있으면 no-op 이다. 그래서 사용자가
+                // 재생률을 바꾸면 (120 → 60 Hz 등) 주기가 옛 값으로 남아, 화면보다 빠르게
+                // tick 을 post 하거나 (렌더 낭비 + 사양 A 의 드레인 시간을 빼앗음) 느리게
+                // post 한다 (성능 손실). 창을 다른 주사율 모니터로 **옮기는** 경우는 이
+                // 메시지가 아예 오지 않아 더 넓은 설계가 필요하다 (`WM_DPICHANGED` 는 DPI 가
+                // 다를 때만 온다).
+                //
+                // 고치는 방법은 `stopFrameClock(); startFrameClock();` 로 충분해 보인다 —
+                // stop 이 스레드를 join 하고 (≤ 한 주기) clock 스레드는 UI 스레드를 기다리지
+                // 않으므로 `wndProc` 안에서 불러도 deadlock 이 없다. **검증에는 재생률이 둘
+                // 이상인 환경이 필요하다** (Windows ② 는 59 Hz 고정이라 못 잼).
                 return 0;
             },
             WM_DPICHANGED => {

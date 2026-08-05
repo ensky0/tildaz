@@ -507,6 +507,10 @@ pub const App = struct {
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국
                 // IME 의 한자 후보 popup 이 cursor 옆 자연스럽게 추적 (#164 1d).
                 // renderer 가 cursor 그릴 때 last_cursor_px_* 갱신.
+                //
+                // 개선 후보 (#386 §2.4, 우선순위 낮음): 그리는 **매 프레임** IMM 을 부른다.
+                // 조합 중이 아니거나 위치가 안 바뀐 프레임은 건너뛸 수 있다. 폭포 중 프레임당
+                // 비용은 측정하지 않았다 — 하려면 조합 여부 · 좌표 변화로 가드를 두면 된다.
                 self.window.imeSetCompositionPos(r.last_cursor_px_x, r.last_cursor_px_y);
             } else {
                 perf.incExtra(&perf.onrender);
