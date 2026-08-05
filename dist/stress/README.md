@@ -373,6 +373,18 @@ Windows 만의 주의점이에요.
 | **`wt --size` 가 무시될 수 있어요** | `launchMode` 가 `maximized` · `fullscreen` · focus 계열이면 무시돼요 ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/command-line-arguments)). 그때는 표의 grid 열이 목표와 달라지니 그 줄을 비교에 쓰지 않아요 |
 | **conhost 는 스크롤백이 없어요** | 창 크기 옵션이 없어 `mode con:` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어요. 다른 터미널에는 100000 줄을 주므로 **conhost 값에는 스크롤백 관리 비용이 빠져 있어요** — 같은 조건이 아니라는 뜻이에요 |
 | **kitty · ghostty · foot 은 없어요** | Windows 판이 없고 (foot 은 Wayland 전용) `command -v` 로 자동으로 빠져요 |
+| **alacritty 에서 producer 가 `main` 전에 멈추는 회차가 있어요** | 실측 ([#381](https://github.com/ensky0/tildaz/issues/381)): producer 스레드가 `ThreadState=5`(Wait) · `KernelModeTime=0` · `UserModeTime=0` — **코드를 한 줄도 실행하지 않았어요.** 자식이 ConPTY 호스트에 붙는 콘솔 클라이언트 연결 단계에서 걸려요 (워크로드와 무관해요, `main` 전이니까). 기본 `--timeout 180` 이라 3 회 반복이면 9 분이 순수 대기예요 — `--timeout 30` 으로 줄이거나 아래처럼 제외해요 |
+
+**특정 터미널을 제외하려면 PATH 에서 빼요.** 스크립트가 `command -v` 로 대상을 고르므로 이게 가장
+깔끔해요 (플래그는 없어요).
+
+```sh
+FP=$(echo "$PATH" | tr ':' '\n' | grep -vi 'alacritty\|wezterm' | paste -sd: -)
+PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --timeout 30
+```
+
+**출력을 `| tail` 로 파이프하지 마세요** — 스크립트가 끝날 때까지 버퍼링돼서 진행이 하나도 안 보여요.
+파일로 받고 (`> out.txt 2>&1`) 그 파일을 읽어요.
 
 **conhost 를 함께 재는 이유**는 두 가지예요. 하나는 legacy GDI 렌더러라 **하한 기준선**이라서고,
 다른 하나는 **ConPTY 오버헤드를 가늠할 단서**라서예요 — Windows Terminal · alacritty · TildaZ 는
