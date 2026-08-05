@@ -181,10 +181,14 @@ run_terminal() {
         # 값을 다시 읽는다.
         rm -f "$_timing"
         # 보통은 background 로 띄운다 — 창이 닫히기를 기다리면 멈추기 때문이다 (kitty 실측).
-        # 단 conhost 는 foreground 로 띄운다: `&` 로 background 에 두면 conhost 가 새 콘솔에서
-        # producer 를 돌리지 못해 timing 이 안 생긴다 (Windows 실기: `&` 만 실패했고 redirect 는
-        # 무관했다). conhost 는 `cmd //c` 라 명령이 끝나면 창이 스스로 닫혀 foreground 여도
-        # 멈추지 않는다.
+        # 단 conhost 는 foreground 로 띄운다. 아래 conhost 절의 wrapper `.cmd` 안 `start` 가 이미
+        # 새 콘솔을 떼어 내므로 이 호출 자체는 곧바로 반환하고, background 로 둘 이유가 없다.
+        # 죽일 pid 도 없다 — 창을 소유한 것은 `start` 가 띄운 conhost 이고 이 `cmd` 는 그것을
+        # 띄우자마자 끝난다.
+        #
+        # (이전 주석은 원인을 `&` 로 적어 뒀는데 틀렸다 — `&` 가 아니라 **conhost 가 콘솔을
+        # 상속받는 것**이 원인이었다. foreground 로 우연히 성공한 회차는 conhost 가 새 창을
+        # 만든 것이 아니라 bash 콘솔 안에서 돈 것이라 conhost 창의 값도 아니었다. #382)
         if [ "$_name" = conhost ]; then
             "$@" >/dev/null 2>&1
             _pid=""
@@ -394,6 +398,12 @@ fi
 # `conhost.exe <명령>` 으로 그 명령을 legacy 콘솔 창에서 띄운다. 널리 쓰이는 방법이지만
 # **Microsoft 공식 문서에 인자 규격이 정리돼 있지 않다** (확인 필요).
 #
+# **`conhost.exe` 는 새 콘솔을 받아야 명령을 실행한다** (#382, Windows 실기). 호출한 프로세스의
+# 콘솔을 상속받으면 명령을 돌리지 않고 조용히 exit 0 으로 끝난다 — Git Bash 에서 `conhost` 를
+# 그냥 부르면 bash 의 콘솔을 물려받으므로 이 경로에 걸려서 timing 이 안 생기고, `wait_for` 가
+# `TIMEOUT` × `--repeat` 만큼 (기본값이면 15 분) 멈춰 있었다. 그래서 아래 wrapper `.cmd` 의
+# `start` 로 새 콘솔을 떼어 준다.
+#
 # **조건이 완전히 같지 않다는 점을 감안해서 읽어야 한다.** conhost 는 창 크기 옵션이 없어서
 # `mode con` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어 **스크롤백이
 # 없다.** 다른 터미널에는 100000 줄을 주므로 conhost 값에는 스크롤백 관리 비용이 빠져 있다.
@@ -405,7 +415,8 @@ if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
     #   - `/c` 가 아니라 `//c` 다 — MSYS 가 인자 `/c` 를 Windows 경로 `C:\` 로 자동 변환하므로
     #     (tasklist `//v` 와 같은 회피).
     #   - `.cmd` 는 CRLF 로 쓴다 (cmd 관습). producer stdout 은 리다이렉트하지 않는다 — 콘솔이
-    #     stdout 이라야 producer 가 `GetConsoleScreenBufferInfo` 로 격자를 읽는다.
+    #     stdout 이라야 producer 가 `GetConsoleScreenBufferInfo` 로 격자를 읽는다. 리다이렉트하면
+    #     그 호출이 실패해 timing 에 `cols=0 rows=0` 이 찍히고 격자 검증에서 버려진다.
     _conhost_cmd="$WORK_DIR/conhost.cmd"
     {
         printf 'mode con: cols=%s lines=%s\r\n' "$COLS" "$ROWS"
@@ -414,7 +425,20 @@ if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
         printf 'set "TILDAZ_STRESS_TIMING_FILE=%s"\r\n' "$(native_path "$T")"
         printf '"%s"\r\n' "$(native_path "$PRODUCER")"
     } > "$_conhost_cmd"
-    run_terminal conhost conhost cmd //c "$(native_path "$_conhost_cmd")"
+    # wrapper 한 겹 — `start` 가 conhost 에 새 콘솔을 준다 (위 문단). `.cmd` 파일에 두는 이유는
+    # 안쪽 `.cmd` 경로의 백슬래시와 따옴표가 bash → cmd 를 지나며 뭉개지지 않게 하려는 것으로,
+    # `_conhost_cmd` 를 파일로 두는 것과 같은 이유다.
+    #
+    # **`/wait` 는 쓰지 않는다.** 동작은 하지만 호출이 producer 가 끝날 때까지 블록되어 producer
+    # 가 멈추면 `wait_for` 의 타임아웃이 아예 작동하지 못한다 — 이 버그의 증상 (무한 대기) 을
+    # 다시 만드는 형태다. `start` 만 쓰면 호출이 곧바로 반환하고 타임아웃 책임이 `wait_for` 에
+    # 남아, 다른 네 터미널과 의미가 같아진다 (띄우고 timing 파일을 폴링).
+    _conhost_launch="$WORK_DIR/conhost-launch.cmd"
+    {
+        printf '@echo off\r\n'
+        printf 'start "" "%%windir%%\\system32\\conhost.exe" cmd /c "%s"\r\n' "$(native_path "$_conhost_cmd")"
+    } > "$_conhost_launch"
+    run_terminal conhost cmd //c "$(native_path "$_conhost_launch")"
 fi
 
 # foot 은 Wayland 전용이라 Linux 에서만 있다.
