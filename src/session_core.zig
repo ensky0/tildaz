@@ -1039,41 +1039,30 @@ pub const SessionCore = struct {
         return result;
     }
 
-    /// `prepareActiveFrame` 의 결과.
+    /// 세 host 가 render 필요 여부를 판단하는 **공통 경로**. 비활성 탭의 본문 출력만
+    /// 파싱한 경우 현재 화면은 변하지 않지만, 어느 탭이든 제목이 바뀌면 탭바를 다시
+    /// 그려야 한다.
     ///
-    /// #386 ② — 이전에는 `should_render` 하나만 돌려줬는데, 그 값은 출력이 없을 때도
-    /// `true` 라 **"화면이 바뀌었나" 를 알 수 없었다.** 그래서 Windows 는 유휴에도 매
-    /// 프레임 그렸다 (macOS · Linux 는 각자 `g_needs_render` · `needs_redraw` 로 가렸다).
-    /// `had_output` 은 macOS `drainOutputForRender` 의 반환값과 같은 의미다.
-    pub const ActiveFrame = struct {
-        /// throttle 결과. 출력이 밀려 있는데 직전 렌더가 8 ms 안이면 false.
-        should_render: bool = true,
-        /// 이번 프레임에 화면을 바꿀 출력이 있었나 (본문 · 남은 출력 · 제목 변경).
-        had_output: bool = false,
-    };
-
-    pub fn prepareActiveFrame(self: *SessionCore, last_render_ms: *i64) ActiveFrame {
-        var result: ActiveFrame = .{};
-        if (self.activeTab() != null) {
-            const drained = self.drainFrame();
-            result.had_output = drained.active_output or
-                drained.active_output_pending or
-                drained.title_changed;
-            if (drained.active_output_pending) {
-                const now = std.time.milliTimestamp();
-                if (now - last_render_ms.* < 8 and !drained.title_changed) {
-                    result.should_render = false;
-                } else {
-                    last_render_ms.* = now;
-                }
-            }
-        }
-        return result;
-    }
-
-    /// macOS display link와 Linux poll loop가 render 필요 여부를 판단하는 공통 경로.
-    /// 비활성 탭의 본문 출력만 파싱한 경우 현재 화면은 변하지 않지만, 어느 탭이든
-    /// 제목이 바뀌면 탭바를 다시 그려야 한다.
+    /// 반환값은 **"화면이 바뀌었나" 하나**다. *"출력이 밀렸으니 이 프레임은 건너뛴다"*
+    /// 는 판단을 여기서 하지 않는다 — 밀린 출력은 그릴 이유이지 안 그릴 이유가 아니다.
+    /// 렌더를 줄이는 게이트는 #386 ② 의 "안 바뀌면 안 그린다" 하나뿐이다 (host 쪽
+    /// `needs_render` / `g_needs_render` / `needs_redraw`).
+    ///
+    /// #388 — 이전에는 Windows 만 이 함수 대신 `prepareActiveFrame` 을 거쳤고, 그 안에
+    /// **밀린 출력이 있으면 직전 렌더 8 ms 안이면 렌더를 건너뛰는** throttle 이 있었다
+    /// ([`619fa44`](https://github.com/ensky0/tildaz/commit/619fa44) 이 근거 없이 200 → 8 ms
+    /// 로 바꾼 값). 지웠다. 근거:
+    ///
+    /// - **현행 예산에서 물릴 수 없었다.** throttle 은 `active_output_pending` 일 때만
+    ///   상담되는데 그건 실질적으로 "예산을 다 썼다" 와 같고 (일찍 끝나면 ring 이 비어
+    ///   pending 이 거짓), 그러면 `milliTimestamp` delta 가 예산 이상이라 문턱과 같은 값인
+    ///   8 을 넘는다. Windows ①·② 의 8 ms 폭포 측정이 모두 `skip=0` 이었다.
+    /// - **살아나면 거래가 나쁘다.** 문턱만 20 ms 로 올려 강제로 물린 실측(Windows ② ·
+    ///   60 Hz)에서 그린 fps 가 60.0 → 30.4 로 반토막인데 처리량은 +0.7~4.3 % 였다.
+    /// - **프레임 tick 만 막는 게 아니었다.** `render_fn` 은 `WM_SIZE` 즉시 렌더 ·
+    ///   Alt+Enter 전환에서도 불리는데 그것들까지 no-op 이 될 수 있었다.
+    /// - **Windows Terminal 도 터미널 렌더에 ms 게이트를 두지 않는다** — DXGI
+    ///   frame-latency waitable + `_redraw` 플래그로 pacing 한다.
     pub fn drainOutputForRender(self: *SessionCore) bool {
         const drained = self.drainFrame();
         return drained.active_output or drained.active_output_pending or drained.title_changed;

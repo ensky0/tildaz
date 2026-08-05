@@ -1191,8 +1191,9 @@ host 는 *입력을 굶기지 않는 한* 자주 드레인해야 하고, 특히 
 
 ### 13.1 host 별 드레인 지점
 
-세 host 가 **같은 공유 함수** (`SessionCore.drainOutputForRender` / `prepareActiveFrame` → `drainFrame`)
-를 쓰고, *부르는 지점*만 다르다. 예산 값과 `drainFrame` 자체는 공통이다.
+세 host 가 **같은 공유 함수** (`SessionCore.drainOutputForRender` → `drainFrame`) 를 쓰고, *부르는
+지점*만 다르다. 예산 값과 `drainFrame` 자체는 공통이다. (#388 이전에는 Windows 만 별도
+`prepareActiveFrame` 을 거쳤다 — §13.4.)
 
 | platform | 프레임 렌더 | **프레임과 별개의 드레인 지점** |
 |---|---|---|
@@ -1224,6 +1225,28 @@ macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 
 `DRAIN_FRAME_BUDGET_NS` 는 **공유 상수라 세 platform 이 함께 바뀐다.** 값의 의미는 "입력이 최악
 얼마나 기다리나" 이므로, 바꾸려면 처리량이 아니라 **입력 지연**을 근거로 판단한다. 예산 검사가
 청크 사이에 있어 마지막 청크가 넘기므로 실측 점유는 8 ms 를 조금 초과한다 (실측 8.5 ms).
+
+### 13.4 렌더 게이트는 "화면이 바뀌었나" 하나다 ([#388](https://github.com/ensky0/tildaz/issues/388))
+
+> **밀린 출력이 있다는 것은 그릴 이유이지 안 그릴 이유가 아니다.** 렌더를 줄이는 게이트는
+> "안 바뀌면 안 그린다" (#386 ② · #255) 하나뿐이고, **세 platform 공통**이다.
+
+즉 *"출력이 밀렸으니 이 프레임은 건너뛴다"* 류의 시간 기반 렌더 throttle 을 두지 않는다.
+프레임 pacing 은 각 host 의 vsync 계열 구동(`WM_FRAME_TICK` clock · `CADisplayLink` ·
+`wl_surface.frame`)이 하고, 처리량 조절은 §13 의 드레인 예산이 한다. 두 역할을 한 상수로
+섞지 않는다.
+
+**왜 사양으로 적는가.** Windows 에만 `prepareActiveFrame` 안에 *"활성 탭에 밀린 출력이 있고 직전
+렌더가 8 ms 안이면 렌더를 건너뛴다"* 는 throttle 이 있었다. 근거가 기록되지 않은 값이었고
+([`619fa44`](https://github.com/ensky0/tildaz/commit/619fa44) 가 대규모 리팩터 안에서 200 → 8 ms 로
+바꿨다), 드레인 예산과 **같은 숫자 8 인데 의미가 달라** 혼선의 원인이었다. #388 에서 지웠다.
+
+| 판정 | 근거 |
+|---|---|
+| 물릴 조건이 `문턱 > 프레임 사이클` 이라 **현행 예산에서는 물리지 않았다** | 드레인이 예산을 다 쓰면 `milliTimestamp` delta 가 예산 이상이다. Windows ①·② 의 8 ms 폭포 측정이 모두 `skip=0` |
+| 물리면 **거래가 나쁘다** | 문턱만 20 ms 로 올린 실측(Windows ② · 60 Hz): 그린 fps 60.0 → **30.4** 인데 처리량은 +0.7~4.3 % |
+| 프레임 tick 만 막는 게 아니었다 | `render_fn` 은 `WM_SIZE` 즉시 렌더 · Alt+Enter 전환에서도 불린다 |
+| 선례 | Windows Terminal 도 터미널 렌더에 ms 게이트가 없다 — DXGI frame-latency waitable + `_redraw` 플래그로 pacing (ms throttle 은 XAML 스크롤바 8 ms · regex 패턴 100 ms 처럼 부속 UI 에만) |
 
 ---
 
