@@ -404,6 +404,24 @@ Windows 경로는 `dist/windows/package.ps1`을 PowerShell로 호출하며 WSL/G
 UNC 경로를 사용해요. distro 이름을 `Debian`으로 가정하거나 `\\wsl.localhost\...` 경로를
 기본값으로 쓰지 않아요.
 
+**측정을 시작하기 전에 먼저 말하고 사용자 확인을 받아요** (2026-08-05 사용자 지시:
+*"테스트 하기 전에 말하고 해. 좀 전에도 내가 키보드 쳐서 오염되었어"*). 처리량 측정 · perf 덤프 ·
+합성 입력이 들어가는 검증은 **사용자가 그 시간 동안 기기를 건드리지 않아야** 값이 살아요. 조용히
+시작하면 사용자가 마우스 / 키보드를 쓰다 그 회차를 버리게 돼요 (실제로 두 번 발생). 그래서
+"지금부터 몇 초 동안 무엇을 재는지" 를 먼저 알리고, **확인을 받은 뒤에** 실행해요.
+
+**어느 화면에서 쟀는지도 함께 적어요.** 모니터가 여러 대면 창이 뜬 화면이 값을 정해요 —
+Windows 의 `startFrameClock` 은 *우리 창이 올라간 디스플레이* 의 DC 로 `GetDeviceCaps(VREFRESH)` 를
+읽으므로, 같은 기기에서도 내장 패널(120 Hz)과 외장 모니터(60 Hz)에서 프레임 주기가 갈려요.
+앱 로그의 `[startup] frame clock started: refresh=..Hz` 와 `window initialized: dpi=..` 를 근거로
+남겨요.
+
+**측정 때 종료한 평소 쓰는 TildaZ worker 는 다시 띄우지 않아요** (2026-08-05 사용자 지시:
+*"측정 위생 때문에 종료한 TildaZ를 다시 띄울 필요는 없어. 다시 묻지 마"*). 처리량 측정은
+[`dist/stress/README.md`](dist/stress/README.md) 의 "측정 위생" 대로 worker 를 내려야 하는데,
+측정이 끝난 뒤 **다시 띄울지 묻지도 말고 띄우지도 말아요** — 사용자가 필요할 때 직접 띄워요.
+worker 를 내리는 것 자체는 측정 절차의 일부라 그대로 진행해요.
+
 **macOS 빌드는 반드시 [`dist/macos/build_and_install.sh`](dist/macos/build_and_install.sh) 로 해요**
 (2026-08-03 사용자 지적). `zig build` 만 돌리면 **코드 서명이 붙지 않아서** 권한이 필요한 동작
 (전역 핫키 등) 이 안 먹어요.
