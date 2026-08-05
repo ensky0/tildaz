@@ -154,6 +154,30 @@ extern fn CFRunLoopAddSource(runloop: CFRunLoopRef, source: CFRunLoopSourceRef, 
 extern fn CFRunLoopRemoveSource(runloop: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
 extern fn CFMachPortInvalidate(port: CFMachPortRef) void;
 
+// #387 — 사양 A 의 macOS 쪽 지점. run loop 이 **잠들기 직전** (= 처리할 이벤트가 없다) 에
+// 밀린 PTY 출력을 한 번 더 파싱한다. Windows 의 "`PeekMessage` 가 비었다" 와 같은 의미이고,
+// `CADisplayLink` 는 run loop source 라 vsync 마다 먼저 서비스되므로 렌더가 굶지 않는다.
+const CFRunLoopObserverRef = ?*anyopaque;
+const CFOptionFlags = usize; // CFOptionFlags = unsigned long
+const CFIndex = isize; // CFIndex = signed long
+/// `CFRunLoopActivity` 의 `kCFRunLoopBeforeWaiting` (Apple 의 CFRunLoop.h — `1 << 5`).
+const kCFRunLoopBeforeWaiting: CFOptionFlags = 1 << 5;
+const CFRunLoopObserverCallBack = *const fn (
+    observer: CFRunLoopObserverRef,
+    activity: CFOptionFlags,
+    info: ?*anyopaque,
+) callconv(.c) void;
+extern fn CFRunLoopObserverCreate(
+    allocator: ?*anyopaque,
+    activities: CFOptionFlags,
+    repeats: u8, // CoreFoundation `Boolean` = unsigned char
+    order: CFIndex,
+    callout: CFRunLoopObserverCallBack,
+    context: ?*anyopaque,
+) CFRunLoopObserverRef;
+extern fn CFRunLoopAddObserver(runloop: CFRunLoopRef, observer: CFRunLoopObserverRef, mode: CFStringRef) void;
+extern fn CFRunLoopWakeUp(runloop: CFRunLoopRef) void;
+
 // GCD — 콜백 안에서 tap 자기 자신을 destroy 하기 위해 main run loop 의
 // 다음 turn 으로 작업 deferral. `dispatch_get_main_queue()` 는 macOS 헤더에
 // static inline 이라 link symbol 없음 — 실제 export 되는 `_dispatch_main_q`
@@ -479,6 +503,13 @@ var g_metal_layer: objc.id = null;
 var g_renderer: ?renderer_module.RendererBackend = null;
 /// CADisplayLink (NSWindow.displayLink) — vsync render driver. null = 미생성.
 var g_display_link: objc.id = null;
+/// #387 — `kCFRunLoopBeforeWaiting` observer. 프레임 사이에도 VT 를 드레인해 8 ms 예산이
+/// 처리량 상한으로 굳지 않게 한다 (`idleDrainObserver` 주석). null = 미생성.
+///
+/// 앱 수명 동안 유지되므로 remove 경로를 두지 않는다 — `g_runloop_source` (event tap) 는
+/// 재등록 / 해제가 있어 `CFRunLoopRemoveSource` 가 필요하지만, 이 observer 는 한 번 붙이면
+/// 프로세스가 끝날 때까지 그대로다.
+var g_idle_drain_observer: CFRunLoopObserverRef = null;
 // 터미널 영역 안쪽 padding — `ui_metrics.zig` 의 공통 상수. Windows /
 // macOS 동일 값으로 시각적 일관성 유지. pixel 변환은 init 시 retina scale 곱.
 const TERMINAL_PADDING_PT = ui_metrics.TERMINAL_PADDING_PT;
@@ -3115,6 +3146,26 @@ pub fn run(opts: run_options.RunOptions) !void {
         log.appendLine("startup", "CADisplayLink installed (vsync render driver)", .{});
     }
 
+    // #387 — 사양 A. run loop 이 잠들기 직전에 밀린 출력을 한 번 더 파싱한다
+    // (`idleDrainObserver` 주석에 근거). `g_session` 과 첫 탭이 준비된 뒤여야 하므로
+    // displayLink 설치와 같은 지점에 둔다 — displayLink 도 같은 전제로 여기 있다.
+    // common modes 로 등록해 리사이즈 / 모달 tracking 중에도 드레인이 이어진다.
+    {
+        // repeats=1 — 매번 부른다. order 는 다른 observer 와의 우선순위인데 우리 것만
+        // 있으므로 0.
+        g_idle_drain_observer = CFRunLoopObserverCreate(
+            null,
+            kCFRunLoopBeforeWaiting,
+            1,
+            0,
+            idleDrainObserver,
+            null,
+        );
+        if (g_idle_drain_observer == null) return error.RunLoopObserverCreateFailed;
+        CFRunLoopAddObserver(CFRunLoopGetMain(), g_idle_drain_observer, kCFRunLoopCommonModes);
+        log.appendLine("startup", "idle drain observer installed (frame-independent VT drain)", .{});
+    }
+
     // 7. 이벤트 루프.
     // #304 — observer뿐 아니라 window, renderer, 첫 tab, display link까지 준비된
     // 시점이다. distributed notification center가 없으면 앱은 계속 실행하되
@@ -3188,6 +3239,32 @@ fn displayLinkFire(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
 /// auto-scroll tick 유지), 이 플래그가 그 frame 에 *render 작업을 할지*만 가른다.
 fn requestRender() void {
     g_needs_render = true;
+}
+
+/// #387 — 사양 A ("한 번에 UI 를 8 ms 이상 잡지 않는다") 의 macOS 쪽 구현.
+///
+/// `DRAIN_FRAME_BUDGET_NS` (8 ms) 는 `drainFrame` **한 번의 호출**에 걸리는 응답성 상한이고
+/// 처리량 상한이 아니다. 그런데 드레인이 `renderFrameTick` (displayLink 콜백) 안에만 있으면
+/// vsync 당 1 회로 묶여 duty 상한이 `8 ms / 프레임간격` 이 된다 — **화면 주사율이 처리량을
+/// 결정**한다 (Windows 실측: 60 Hz 48 % · 120 Hz 88 %). Linux 는 드레인이 poll loop 에 있어
+/// 주사율과 무관하다 (`cjk` duty 가 60 · 120 Hz 에서 77.8 / 77.9 %).
+///
+/// `kCFRunLoopBeforeWaiting` 은 run loop 이 잠들기 직전이라 **입력 · displayLink source 가
+/// 모두 처리된 뒤**다. 즉 Windows 의 `PeekMessage` 가 빈 순간과 같은 의미이고, 입력과 렌더가
+/// 항상 이 드레인보다 우선한다. 드레인 한 번은 8 ms 를 넘지 않으므로 입력 지연 상한도 그대로다.
+///
+/// **스핀하지 않는 근거**: `drainOutputForRender` 가 참이면 실제로 파싱했거나 ring 에 남아
+/// 있다는 뜻이고 (`drainOutputChunk` 은 `output_ring.pop() == 0` 이면 false), 남아 있으면
+/// 다음 호출이 반드시 진행한다. ring 이 비면 참이 안 나와 `CFRunLoopWakeUp` 을 부르지 않고
+/// 그대로 잠들어 **#255 의 유휴 절전이 유지**된다.
+fn idleDrainObserver(_: CFRunLoopObserverRef, _: CFOptionFlags, _: ?*anyopaque) callconv(.c) void {
+    if (!g_session.drainOutputForRender()) return;
+    // 렌더는 여기서 하지 않는다 — 게이트만 열고 실제 그리기는 다음 vsync 의
+    // `renderFrameTick` 이 한다 (displayLink 의 규칙적 cadence 를 깨지 않기 위해).
+    requestRender();
+    // 남은 출력이 있으니 잠들지 말고 한 번 더 돌게 한다. 이 호출이 없으면 다음 vsync 까지
+    // 기다려서 프레임당 1 회로 되돌아간다 — 즉 이 줄이 사양 A 의 핵심이다.
+    CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
 /// render tick. 윈도우 hidden 이거나 renderer 미초기화면 skip. cell_w/h 는
