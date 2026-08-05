@@ -23,14 +23,35 @@ pub const Kind = enum {
     /// cluster 경로를 태운다 (#278 의 검증 범위 ⑤).
     cjk,
 
+    // --- 귀속용 (#381) — `cjk` 가 섞어 쓰는 경로를 하나씩만 태운다 ------------
+    //
+    // 셋 다 **표시 열 수가 `cjk` 와 같은 80 열**이다. 그래서 MiB/s 에서 줄 수를
+    // 역산하면 (`MiB/s ÷ 줄 byte`) 셀 기준으로 나란히 비교할 수 있다 — 줄마다
+    // byte 수는 경로마다 다르므로 (한글 3 · VS-16 emoji 6 · ZWJ 묶음 18 byte)
+    // MiB/s 를 그대로 비교하면 안 된다.
+
+    /// 한글만. **wide cell 은 태우고 grapheme extras 는 안 태운다** — BMP
+    /// codepoint 하나가 셀 하나라 `cell.grapheme` 저장 경로를 지나지 않는다.
+    hangul,
+    /// `❤️` (U+2764 U+FE0F) 만. **VS-16 경로** — codepoint 두 개가 한 grapheme 으로
+    /// 묶이고 셀이 wide 로 바뀐다.
+    emoji_vs16,
+    /// `👨‍👩‍👧` 만. **ZWJ 묶음 경로** — codepoint 다섯 개 (emoji 3 + ZWJ 2) 가 한
+    /// grapheme 이다. grapheme extras 가 가장 깊게 쌓이는 경로다.
+    zwj,
+
     pub fn parse(name: []const u8) ?Kind {
         return std.meta.stringToEnum(Kind, name);
     }
 };
 
-/// 한 줄이 넘지 않는 크기. `cjk` 가 가장 길다 (emoji 하나가 4 byte, ZWJ 묶음은
-/// 그 여러 배).
-const max_line = 512;
+/// 한 줄이 넘지 않는 크기. `zwj` 가 가장 길다 — 80 열을 ZWJ 묶음 (18 byte / 2 열)
+/// 으로 채우면 앞머리를 빼고 630 byte 다.
+const max_line = 1024;
+
+/// 귀속용 워크로드가 채우는 표시 열 수. `cjk` 한 줄과 같게 맞춘다 (#381).
+/// 앞머리 `{d:0>9} ` 가 10 열이고 나머지를 2 열짜리 항목 35 개로 채운다.
+const attr_items = 35;
 
 /// 줄을 이어서 내보내는 생성기. `read` 를 여러 번 불러 조각으로 받아도 전체
 /// 스트림은 한 번에 받은 것과 같다 — 조각 경계가 줄 중간이나 UTF-8 문자 중간에
@@ -71,7 +92,24 @@ fn renderLine(kind: Kind, line: usize, buf: []u8) usize {
         .plain => renderPlain(line, buf),
         .ansi => renderAnsi(line, buf),
         .cjk => renderCjk(line, buf),
+        .hangul => renderRepeat(line, buf, &.{ "가", "나", "다", "라", "한", "글" }),
+        .emoji_vs16 => renderRepeat(line, buf, &.{"❤️"}),
+        .zwj => renderRepeat(line, buf, &.{"👨‍👩‍👧"}),
     };
+}
+
+/// 귀속용 (#381) — 2 열짜리 항목 하나만 `attr_items` 개 반복해 `cjk` 와 같은 열 수를
+/// 채운다. `items` 가 여럿이면 줄마다 회전시켜 같은 내용이 반복되지 않게 한다
+/// (`renderPlain` 의 filler 회전과 같은 이유 — page 재사용 최적화가 우연히 유리하게
+/// 걸리지 않도록).
+fn renderRepeat(line: usize, buf: []u8, items: []const []const u8) usize {
+    var w = Writer{ .buf = buf };
+    w.print("{d:0>9} ", .{line});
+    for (0..attr_items) |i| {
+        w.str(items[(line + i) % items.len]);
+    }
+    w.byte('\n');
+    return w.len;
 }
 
 /// 80 열 ASCII. 뒤쪽 채움 문자를 줄마다 회전시켜 같은 내용이 반복되지 않게 한다.
@@ -156,7 +194,7 @@ const Writer = struct {
 };
 
 test "같은 kind 는 두 번 읽어도 같은 바이트" {
-    for ([_]Kind{ .plain, .ansi, .cjk }) |kind| {
+    for (std.enums.values(Kind)) |kind| {
         var a: Generator = .{ .kind = kind };
         var b: Generator = .{ .kind = kind };
         var buf_a: [8192]u8 = undefined;
@@ -170,7 +208,7 @@ test "같은 kind 는 두 번 읽어도 같은 바이트" {
 test "조각 크기가 달라도 스트림은 같다" {
     // 실제 PTY 는 임의 크기로 조각이 온다. 조각 경계가 줄 중간 / UTF-8 문자
     // 중간에 떨어져도 전체 스트림이 흔들리지 않아야 한다.
-    for ([_]Kind{ .plain, .ansi, .cjk }) |kind| {
+    for (std.enums.values(Kind)) |kind| {
         var whole: Generator = .{ .kind = kind };
         var piecewise: Generator = .{ .kind = kind };
 
@@ -192,7 +230,7 @@ test "조각 크기가 달라도 스트림은 같다" {
 }
 
 test "줄 단위로 모으면 유효한 UTF-8 이고 개행으로 끝난다" {
-    for ([_]Kind{ .plain, .ansi, .cjk }) |kind| {
+    for (std.enums.values(Kind)) |kind| {
         var buf: [max_line]u8 = undefined;
         for (0..200) |line| {
             const n = renderLine(kind, line, &buf);
@@ -208,6 +246,22 @@ test "plain 줄은 80 byte 로 고정" {
     var buf: [max_line]u8 = undefined;
     for (0..100) |line| {
         try std.testing.expectEqual(@as(usize, 80), renderPlain(line, &buf));
+    }
+}
+
+test "귀속 워크로드는 줄 byte 가 고정" {
+    // #381 의 분석이 이 값으로 MiB/s → 줄/초 를 역산한다. 바뀌면 그 수치가 조용히
+    // 어긋나므로 못 박아 둔다. 앞머리 10 + 항목 35 개 + 개행 1.
+    var buf: [max_line]u8 = undefined;
+    const cases = [_]struct { kind: Kind, len: usize }{
+        .{ .kind = .hangul, .len = 10 + 35 * 3 + 1 }, // 한글 3 byte
+        .{ .kind = .emoji_vs16, .len = 10 + 35 * 6 + 1 }, // U+2764 3 + U+FE0F 3
+        .{ .kind = .zwj, .len = 10 + 35 * 18 + 1 }, // emoji 4×3 + ZWJ 3×2
+    };
+    for (cases) |c| {
+        for (0..50) |line| {
+            try std.testing.expectEqual(c.len, renderLine(c.kind, line, &buf));
+        }
     }
 }
 
