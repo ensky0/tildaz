@@ -683,13 +683,20 @@ fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
 /// 그래서 판정은 한 방향으로만 쓴다 — **모자라면 데이터를 흘린 것**이고, 남는 것은
 /// 정상이다. 처리량은 실제 소화한 바이트로 계산하므로 이 오차에 영향받지 않는다.
 ///
-/// Windows 는 `null` 이다 — ConPTY 가 자식 출력에 자기 시퀀스를 끼워 넣어서 이렇게
-/// 계산할 수 있는 종류가 아니다. 실측이 그것을 뒷받침한다: 초과분이 `plain` +1.3 % ·
-/// `ansi` +1.0 % 인데 **`cjk` 는 +25.6 %** 이고, `readloop` 호출 수도 1,026 → 6,922 로
-/// 뛴다 (wide char 에서 시퀀스를 훨씬 많이 끼워 넣고 조각도 잘게 쪼갠다 — 원인 미확정).
+/// - **Windows 도 같은 공식이 맞는다** (#385 에서 실측으로 확정). ConPTY 콘솔이 `\n` 을
+///   `\r\n` 으로 바꾸는 것이 초과분의 대부분이고, 그 위에 **21~23 byte** 협상 preamble
+///   (`ESC[1t` 4 + `ESC[c` `ESC[?1004h` `ESC[?9001h` 19) 만 얹힌다. 64 KiB `cjk` 실측:
+///   producer 가 정확히 65,536 byte (`LF` 921 · `CR` 0) 를 쓰고 수신은 66,480 byte =
+///   `65,536 + 921 + 23` 으로 맞는다. 64 MiB 는 `plain` · `ansi` 가 `+23`, `cjk` 가 `+21`
+///   인데 그 **2 byte 차이는 확인하지 않았다** — `expected` 는 하한이라 판정에 무해하다.
+///
+///   이전 주석은 여기서 `null` 을 돌려주며 *"ConPTY 가 시퀀스를 끼워 넣어 계산할 수 없다"*
+///   고 했고 근거로 `cjk` +25.6 % · `readloop` 6,922 회를 들었는데, **그 측정은 producer 의
+///   콘솔 출력 코드페이지가 UTF-8 이 아니던 때의 것**이다 (한국어 Windows 는 CP949 →
+///   non-ASCII 가 재인코딩되며 부풀고 조각이 잘게 쪼개졌다). `944957a` 로 고친 뒤 재측정하니
+///   `cjk` +1.41 % · `readloop` 595 회로, `plain` +1.25 % · `ansi` +0.98 % 와 같은 수준이다.
+///   ASCII 는 코드페이지에 불변이라 그때도 `plain` · `ansi` 만 정상이던 것이 이 설명과 맞는다.
 fn expectedPtyBytes(opts: Options) ?u64 {
-    if (builtin.os.tag == .windows) return null;
-
     var gen: workload.Generator = .{ .kind = opts.workload_kind };
     var buf: [chunk_size]u8 = undefined;
     var newlines: u64 = 0;
@@ -946,15 +953,19 @@ fn report(opts: Options, result: Result) !void {
     w.print("elapsed       {d:.1} ms (end to end)\n", .{elapsed_ms});
     w.print("throughput    {d:.1} MiB/s (end to end, 소화한 바이트 기준)\n", .{throughput});
 
-    // PTY 를 지나면 소화한 바이트가 보낸 것보다 많다. 그 초과분이 platform 마다 성질이
-    // 전혀 달라서 (Linux 0 %, macOS 0.001 %, Windows 는 cjk 에서 25 %) 소화 기준 값만
-    // 찍으면 **초과가 큰 platform 이 유리하게 보인다.** 워크로드를 같게 준 것이 비교의
-    // 전제이므로 요청 기준 값도 함께 찍는다.
+    // PTY 를 지나면 소화한 바이트가 보낸 것보다 많다. 소화 기준 값만 찍으면 **초과가 큰
+    // platform 이 유리하게 보인다.** 워크로드를 같게 준 것이 비교의 전제이므로 요청 기준
+    // 값도 함께 찍는다.
+    //
+    // **초과분을 "PTY 가 부풀림" 이라고 부르지 않는다** (#385). 초과분의 대부분은 `\n` →
+    // `\r\n` 개행 변환이고 (POSIX `ONLCR`, Windows 는 ConPTY 콘솔), 그건 `expected` 줄이
+    // 이미 계산해 둔 몫이다. 예전 문구가 이 전부를 PTY 탓으로 돌려서, 개행 변환을
+    // "ConPTY 가 시퀀스를 끼워 넣는다" 로 읽게 만들었다 — 그것이 #385 의 출발점이었다.
     if (result.consumed > opts.bytes and seconds > 0) {
         const requested_mib = @as(f64, @floatFromInt(opts.bytes)) / mib;
         const inflation = (@as(f64, @floatFromInt(result.consumed - opts.bytes)) /
             @as(f64, @floatFromInt(opts.bytes))) * 100.0;
-        w.print("              {d:.1} MiB/s (보낸 {d:.1} MiB 기준 — PTY 가 {d:.2} % 부풀림)\n", .{
+        w.print("              {d:.1} MiB/s (보낸 {d:.1} MiB 기준 — 수신 초과 {d:.2} %: 개행 변환 + PTY preamble)\n", .{
             requested_mib / seconds,
             requested_mib,
             inflation,
@@ -1106,7 +1117,7 @@ test "인자 파싱 — 잘못된 입력은 usage" {
 }
 
 test "PTY 예상 바이트는 개행 변환을 센다" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // Windows 도 포함한다 — ConPTY 콘솔의 `\n` → `\r\n` 도 같은 공식이다 (#385 실측).
 
     // plain 은 80 byte 고정 줄이라 1 MiB 안의 개행 수를 손으로 계산할 수 있다.
     const opts: Options = .{ .workload_kind = .plain, .bytes = 80 * 1000 };
