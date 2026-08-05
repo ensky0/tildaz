@@ -191,6 +191,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
 | Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Harness skeleton and bulk-output throughput live in [`dist/stress/`](dist/stress/README.md); resize storms, tab create/close under load, WSL/nvim/mouse, and multi-worker recovery remain |
+| **Grapheme cluster throughput** | [#381](https://github.com/ensky0/tildaz/issues/381) | **Root cause located, fix not started.** We rank last of four terminals on cluster-heavy output while ranking first on ASCII — see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** add a cluster shaping cache (our code, largest win, three design decisions listed there); **(2)** re-measure and see how much of the parsing cost remains, then take it upstream to ghostty-vt if it does; **(3)** the wide-cell gap on `hangul` (80 % of Windows Terminal) is a third, separate item in parsing plus grid writes. Also unmeasured: the same six workloads on macOS and Linux — the workloads and `-scrollback` are cross-platform, so the run is the same command |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),
@@ -262,6 +263,43 @@ without `perf`. Measured numbers belong in
 [#371](https://github.com/ensky0/tildaz/issues/371) together with the build mode,
 grid, workload, and machine — absolute values differ per machine, so the
 repository keeps no baseline.
+
+### Grapheme clusters are the one path where we lose (#381)
+
+Measured on Windows with every terminal on the same scrollback (32,767 lines) and
+the same 120x40 grid. Ranks are out of the terminals that ran; the full tables and
+conditions are in [#381](https://github.com/ensky0/tildaz/issues/381).
+
+| Workload | Content | Our rank |
+|---|---|:--:|
+| `plain` | ASCII | **1st** — ahead of Windows Terminal |
+| `ansi` | SGR escapes | 2nd |
+| `hangul` | wide cells, no grapheme extras | 2nd (80 % of wt) |
+| `cjk` | above plus a few clusters per line | 2nd (59 % of wt) |
+| `emoji_vs16` | one VS-16 cluster per cell | **last** |
+| `zwj` | one ZWJ-family cluster per cell | **last** |
+
+Going from `cjk` to `zwj`, three of four terminals get *faster* (more bytes per
+cluster means less per-cell work per byte) while we get 7x slower. That asymmetry
+is the fingerprint of a per-cluster cost the others do not pay, and it has two
+layers:
+
+1. **Parsing** — a grapheme codepoint costs about 5x a non-grapheme one. This is
+   inside ghostty-vt (`Terminal.print` plus the per-page grapheme arena, which
+   starts at 8 KiB and doubles). Two independent workloads agree within 2.7 %, so
+   the cost scales with codepoints, not with clusters.
+2. **Rendering — no shaping cache.** `resolveGrapheme` has no memoization and the
+   renderer's cell loop calls it per cell per frame: about 84,000 DirectWrite
+   shaping calls per second for what is often a single distinct cluster on screen.
+   The GPU atlas caches *rasterized* glyphs, not the shaping result. The same gap
+   exists on all three platforms — Windows caches single codepoints
+   (`glyph_map`), macOS caches ligature pairs (`ligature_cache`), and neither
+   caches arbitrary clusters; macOS additionally builds a `CTLine` per call.
+
+Fixing (2) is the largest available win and it is our own code. It needs three
+decisions first: ownership of the cached face (`ClusterResult.owned` hands COM /
+CoreText lifetime to the cache), invalidation on font and DPI change, and a
+capacity / eviction policy.
 
 ## Linux Integration References
 
