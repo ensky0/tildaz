@@ -30,6 +30,16 @@ COLS=120
 ROWS=40
 TIMEOUT=180
 REPEAT=1
+# scrollback 을 **모든 대상에 같은 값으로** 준다 (#381). 기본값이 32767 인 이유는 그게
+# **Windows Terminal 의 `historySize` 최대값**이라서다 — wt 는 그 이상을 가질 수 없고 CLI
+# 로는 지정조차 안 되므로 (profile 설정), 맞출 수 있는 최댓값이 이 값이다. 우리 config
+# 기본값 100,000 으로 재면 우리만 불리하다: 파서 층 실측으로 `plain` 이 100,000 → 9,000
+# 에서 +45 % (294.6 → 427.8 MiB/s) 였다. 100,000 줄이면 작업 집합이 약 120 MB 다.
+#
+# **wt 는 이 값으로 맞출 수 없다** — `settings.json` 의 `profiles.defaults.historySize` 를
+# 직접 고쳐야 한다. 스크립트는 그것을 대신 하지 않고 (사용자 설정 파일이다) 아래에서
+# 안내만 한다. **conhost 는 아예 불가**다 (`mode con: lines` 가 창=버퍼).
+SCROLLBACK=32767
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,9 +49,14 @@ while [ $# -gt 0 ]; do
         --rows) ROWS="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --repeat) REPEAT="$2"; shift 2 ;;
+        --scrollback) SCROLLBACK="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+case "$SCROLLBACK" in
+    ''|*[!0-9]*) echo "--scrollback 은 0 이상의 정수여야 해요: $SCROLLBACK" >&2; exit 2 ;;
+esac
 
 case "$REPEAT" in
     ''|*[!0-9]*|0) echo "--repeat 은 1 이상의 정수여야 해요: $REPEAT" >&2; exit 2 ;;
@@ -112,7 +127,95 @@ cleanup_terminals() {
         kill "$_p" 2>/dev/null || true
     done
 }
-trap 'cleanup_terminals; rm -rf "$WORK_DIR"' EXIT
+# --- wt 의 scrollback 을 맞추기 위한 설정 파일 교체 (#381, Windows 전용) ---------------
+#
+# **wt 는 `historySize` 를 CLI 로 못 받는다** — profile 설정이라 `settings.json` 뿐이다. 그래서
+# 다른 대상과 scrollback 을 맞추려면 그 파일을 바꿔야 한다. 사용자 파일이므로 절차를 못 박는다.
+#
+#   1. 원본을 `<settings>.tildaz-compare-backup` 으로 **백업**
+#   2. 측정 전용 **최소 설정**으로 교체 (`historySize` = `--scrollback`)
+#   3. 끝나면 (`trap EXIT`) 백업에서 **복원**하고 백업 파일 삭제
+#
+# **crash 로 죽어도 복원된다** — 백업이 남아 있으면 다음 실행이 시작할 때 먼저 복원한다.
+# 백업을 `WORK_DIR` 이 아니라 설정 파일 옆에 두는 이유가 그것이다 (`WORK_DIR` 은 trap 이 지운다).
+#
+# 최소 설정을 쓰는 이유는 두 가지다. 사용자 파일을 JSON 파싱하지 않아도 되고 (주석이 섞여 있을
+# 수 있다), 폰트 · acrylic · 스킴 같은 사용자 커스터마이즈가 측정에 섞이지 않는다.
+#
+# ⚠ **wt 창이 열려 있으면 그 창의 설정도 잠시 바뀐다** (wt 가 파일 변경을 감시해 재적용한다).
+# 측정이 끝나면 복원되지만 눈에 보이므로 실행 시 경고한다.
+WT_SETTINGS=""
+WT_BACKUP=""
+
+wt_settings_find() {
+    [ "$IS_WINDOWS" = 1 ] || return 1
+    command -v wt >/dev/null 2>&1 || return 1
+    [ -n "${LOCALAPPDATA:-}" ] || return 1
+    _lad=$(cygpath -u "$LOCALAPPDATA" 2>/dev/null) || return 1
+    for _p in \
+        "$_lad/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json" \
+        "$_lad/Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json" \
+        "$_lad/Microsoft/Windows Terminal/settings.json"
+    do
+        if [ -f "$_p" ]; then echo "$_p"; return 0; fi
+    done
+    return 1
+}
+
+wt_settings_apply() {
+    WT_SETTINGS=$(wt_settings_find) || return 0
+    WT_BACKUP="$WT_SETTINGS.tildaz-compare-backup"
+
+    if [ -f "$WT_BACKUP" ]; then
+        echo "⚠ 이전 실행이 남긴 wt 설정 백업이 있어요 (그 회차가 비정상 종료) — 먼저 복원해요"
+        cp -f "$WT_BACKUP" "$WT_SETTINGS"
+    fi
+    cp -f "$WT_SETTINGS" "$WT_BACKUP" || { WT_BACKUP=""; return 0; }
+
+    # guid 는 이 스크립트 전용 고정값이다 (사용자 프로필 guid 에 의존하지 않는다).
+    cat > "$WT_SETTINGS" << EOF
+{
+    "\$schema": "https://aka.ms/terminal-profiles-schema",
+    "defaultProfile": "{d0c1f3a2-0000-4000-8000-000000000381}",
+    "actions": [],
+    "schemes": [],
+    "themes": [],
+    "profiles":
+    {
+        "defaults":
+        {
+            "historySize": $SCROLLBACK
+        },
+        "list":
+        [
+            {
+                "guid": "{d0c1f3a2-0000-4000-8000-000000000381}",
+                "name": "tildaz-compare",
+                "commandline": "cmd.exe",
+                "hidden": false
+            }
+        ]
+    }
+}
+EOF
+    echo "wt 설정을 측정용으로 교체했어요 (historySize=$SCROLLBACK). 끝나면 복원해요."
+    echo "  백업: $WT_BACKUP"
+    # wt 는 파일 변경을 감시해 재적용한다. 쓰기 직후 곧바로 띄우면 옛 설정으로 뜰 수 있다.
+    sleep 1
+}
+
+wt_settings_restore() {
+    [ -n "$WT_BACKUP" ] || return 0
+    [ -f "$WT_BACKUP" ] || return 0
+    if cp -f "$WT_BACKUP" "$WT_SETTINGS"; then
+        rm -f "$WT_BACKUP"
+        echo "wt 설정을 원래대로 복원했어요."
+    else
+        echo "⚠ wt 설정 복원 실패 — 백업이 여기 있어요: $WT_BACKUP" >&2
+    fi
+}
+
+trap 'cleanup_terminals; wt_settings_restore; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
@@ -124,8 +227,21 @@ echo "=== 터미널 처리량 비교 (#371 L4) ==="
 echo "workload   $WORKLOAD"
 echo "bytes      $BYTES ($MB MiB)"
 echo "목표 그리드 ${COLS}x${ROWS}"
+echo "scrollback ${SCROLLBACK} 줄 (모든 대상 동일 — 아래 예외 참고)"
 echo "반복       ${REPEAT} 회"
 echo "producer   $PRODUCER"
+if [ "$IS_WINDOWS" = 1 ]; then
+    # #381 — 맞출 수 없는 대상을 매 실행에서 알린다. 조용히 두면 표를 읽는 사람이 조건이
+    # 같다고 오해한다 (그게 #381 에서 실제로 일어난 일이다).
+    echo ""
+    echo "⚠ conhost 는 scrollback 이 없어요 (mode con: lines 가 창=버퍼) — 이 대상만 조건이 달라요."
+    if [ "$SCROLLBACK" -gt 32767 ]; then
+        echo "⚠ --scrollback $SCROLLBACK 은 wt 의 최대값 32767 을 넘어요 — wt 는 32767 로 잘려요."
+    fi
+fi
+echo ""
+# wt 설정 교체는 측정 직전에 (헤더를 찍은 뒤) 한다 — 실패해도 헤더는 남는다.
+wt_settings_apply
 echo ""
 
 # producer 를 셸 명령 한 줄로. 터미널마다 이 문자열을 자기 방식으로 실행한다.
@@ -257,7 +373,7 @@ if command -v kitty >/dev/null 2>&1; then
         -o remember_window_size=no \
         -o "initial_window_width=${COLS}c" \
         -o "initial_window_height=${ROWS}c" \
-        -o scrollback_lines=100000 \
+        -o "scrollback_lines=$SCROLLBACK" \
         sh -c "$(producer_cmd "$T")"
 fi
 
@@ -267,13 +383,13 @@ if command -v alacritty >/dev/null 2>&1; then
         run_terminal_win alacritty alacritty \
             -o "window.dimensions.columns=$COLS" \
             -o "window.dimensions.lines=$ROWS" \
-            -o "scrolling.history=100000" \
+            -o "scrolling.history=$SCROLLBACK" \
             -e "$(native_path "$PRODUCER")"
     else
         run_terminal alacritty alacritty \
             -o "window.dimensions.columns=$COLS" \
             -o "window.dimensions.lines=$ROWS" \
-            -o "scrolling.history=100000" \
+            -o "scrolling.history=$SCROLLBACK" \
             -e sh -c "$(producer_cmd "$T")"
     fi
 fi
@@ -290,7 +406,7 @@ if command -v wezterm >/dev/null 2>&1; then
         run_terminal_win wezterm wezterm \
             --config "initial_cols=$COLS" \
             --config "initial_rows=$ROWS" \
-            --config "scrollback_lines=100000" \
+            --config "scrollback_lines=$SCROLLBACK" \
             --config "enable_tab_bar=false" \
             --config "window_padding={left=0,right=0,top=0,bottom=0}" \
             start -- "$(native_path "$PRODUCER")"
@@ -298,7 +414,7 @@ if command -v wezterm >/dev/null 2>&1; then
         run_terminal wezterm wezterm \
             --config "initial_cols=$COLS" \
             --config "initial_rows=$ROWS" \
-            --config "scrollback_lines=100000" \
+            --config "scrollback_lines=$SCROLLBACK" \
             --config "enable_tab_bar=false" \
             --config "window_padding={left=0,right=0,top=0,bottom=0}" \
             start -- sh -c "$(producer_cmd "$T")"
@@ -324,7 +440,7 @@ if [ -d /Applications/Ghostty.app ] || command -v ghostty >/dev/null 2>&1; then
 window-save-state = never
 window-width = $COLS
 window-height = $ROWS
-scrollback-limit = 100000
+scrollback-limit = $SCROLLBACK
 abnormal-command-exit-runtime = 0
 EOF
     T="$WORK_DIR/ghostty.timing"
@@ -364,7 +480,8 @@ if [ -n "$TILDAZ_BIN" ]; then
         "TILDAZ_STRESS_WORKLOAD=$WORKLOAD" \
         "TILDAZ_STRESS_BYTES=$BYTES" \
         "TILDAZ_STRESS_TIMING_FILE=$(native_path "$T")" \
-        "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}"
+        "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}" \
+        -scrollback "$SCROLLBACK"
 else
     echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
 fi
@@ -406,7 +523,7 @@ fi
 #
 # **조건이 완전히 같지 않다는 점을 감안해서 읽어야 한다.** conhost 는 창 크기 옵션이 없어서
 # `mode con` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어 **스크롤백이
-# 없다.** 다른 터미널에는 100000 줄을 주므로 conhost 값에는 스크롤백 관리 비용이 빠져 있다.
+# 없다.** 다른 터미널에는 `--scrollback` 값을 주므로 conhost 값에는 스크롤백 관리 비용이 빠져 있다.
 if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
     T="$WORK_DIR/conhost.timing"
     # conhost 는 임시 `.cmd` 파일로 띄운다. 인라인 `cmd //c "… set \"VAR=값\" …"` 로 넘기면

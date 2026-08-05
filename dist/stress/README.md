@@ -386,19 +386,10 @@ PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --
 **출력을 `| tail` 로 파이프하지 마세요** — 스크립트가 끝날 때까지 버퍼링돼서 진행이 하나도 안 보여요.
 파일로 받고 (`> out.txt 2>&1`) 그 파일을 읽어요.
 
-### ⚠️ scrollback 이 안 맞는 대상이 있어요 — 우리에게 불리해요
+### scrollback 은 `--scrollback` 으로 모든 대상에 같은 값을 줘요 (기본 32,767)
 
-**우리 `max_scroll_lines` 는 100,000 인데 wt 는 맞출 수가 없어요.** 이건 모든 L4 표에 걸리는
-공정성 문제예요 ([#381](https://github.com/ensky0/tildaz/issues/381#issuecomment-5198052304) 실측).
-
-| 대상 | scrollback | 맞았나 |
-|---|---|---|
-| TildaZ | 100,000 (config) | 기준 |
-| alacritty · kitty | 스크립트가 100,000 을 줘요 | ✅ |
-| **wt** | **9,001** (기본값) · **최대 32,767** ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-advanced)) | ❌ **구조적으로 불가** |
-| **conhost** | 없어요 (`mode con` 이 창=버퍼) | ❌ |
-
-**그 몫이 워크로드마다 전혀 달라요** (파서 층 · 같은 배치 · 5 회 절사평균):
+**맞추지 않으면 우리가 불리해요.** 우리 config 기본값은 100,000 인데 그 몫이 작지 않아요
+(파서 층 · 같은 배치 · 5 회 절사평균, [#381](https://github.com/ensky0/tildaz/issues/381#issuecomment-5198052304)):
 
 | 워크로드 | scrollback 100,000 | 9,000 | 변화 |
 |---|---:|---:|---:|
@@ -406,8 +397,34 @@ PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --
 | `hangul` | 117.8 | 123.5 | +4.9 % |
 
 `plain` 은 초당 5.7 M 줄이라 **page 관리 비용이 지배**하고 (100,000 줄 = 작업 집합 ~120 MB → 캐시를
-밀어내요), 줄당 파싱 비용이 큰 `hangul` 은 그 몫이 묻혀요. **그래서 ASCII 계열 비교에서 wt · conhost 와
-나란히 둘 때는 `--scrollback` 을 맞춰 함께 재고 그 사실을 적어요.**
+밀어내요), 줄당 파싱 비용이 큰 `hangul` 은 그 몫이 묻혀요.
+
+**기본값이 32,767 인 이유**는 그게 **wt `historySize` 의 최대값**이라서예요
+([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-advanced) ·
+기본값 9,001). 맞출 수 있는 최댓값이 그 값이에요.
+
+| 대상 | 지정 방법 |
+|---|---|
+| TildaZ | `-scrollback N` — **config 를 건드리지 않아요** (측정용 내부 옵션, `run_options.zig`). 로그에 `scrollback override: N lines (config M)` 이 찍혀요 |
+| alacritty | `-o scrolling.history=N` |
+| wezterm | `--config scrollback_lines=N` |
+| kitty | `-o scrollback_lines=N` |
+| ghostty | 임시 config 의 `scrollback-limit = N` |
+| **wt** | **CLI 로 못 줘요** — profile 설정이라 `settings.json` 뿐이에요. 스크립트가 아래 절차로 처리해요 |
+| **conhost** | **불가** — `mode con: lines` 가 창=버퍼예요. **이 대상만 조건이 달라요** (스크립트가 매 실행에 경고해요) |
+
+**wt 는 스크립트가 설정 파일을 잠시 교체해요.**
+
+1. 원본을 `<settings>.tildaz-compare-backup` 으로 **백업**
+2. 측정 전용 **최소 설정**으로 교체 (`historySize` = `--scrollback`, 프로필 하나)
+3. 끝나면 (`trap EXIT`) 백업에서 **복원**하고 백업 파일 삭제
+
+**crash 로 죽어도 복원돼요** — 백업이 남아 있으면 다음 실행이 시작할 때 먼저 복원해요 (그래서 백업을
+`WORK_DIR` 이 아니라 설정 파일 옆에 둬요). 최소 설정을 쓰는 이유는 사용자 파일을 JSON 파싱하지 않아도
+되고 (주석이 섞여 있을 수 있어요) 폰트·acrylic·스킴 같은 커스터마이즈가 측정에 안 섞이기 때문이에요.
+
+⚠️ **wt 창이 열려 있으면 그 창의 설정도 잠시 바뀌어요** (wt 가 파일 변경을 감시해 재적용해요).
+측정이 끝나면 복원되지만 눈에 보여요.
 
 **conhost 를 함께 재는 이유**는 두 가지예요. 하나는 legacy GDI 렌더러라 **하한 기준선**이라서고,
 다른 하나는 **ConPTY 오버헤드를 가늠할 단서**라서예요 — Windows Terminal · alacritty · TildaZ 는

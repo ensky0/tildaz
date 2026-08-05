@@ -100,13 +100,20 @@ pub fn run(opts: run_options.RunOptions) !void {
     app.session = SessionCore.init(
         alloc,
         if (stress_shell_w) |w| w.ptr else config.windowsShellUtf16(),
-        config.max_scroll_lines,
+        // #381 — `-scrollback N` 이면 config 를 무시한다 (터미널 비교에서 scrollback 을
+        // 맞추기 위한 측정용 override, `run_options.zig` 참고).
+        opts.scrollLines(config.max_scroll_lines),
         config.theme,
         buildExtraEnv(config.theme),
         App.onSessionTabExit,
         &app,
     );
     defer app.session.deinit();
+    // #381 — override 가 먹었는지 로그로 확인할 수 있어야 한다. `config loaded:` 줄은 config
+    // 값을 찍으므로 그것만 보면 override 실패를 알 수 없다 (측정이 이 값에 걸려 있다).
+    if (opts.scrollback) |n| {
+        log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, config.max_scroll_lines });
+    }
     // tab_actions.Host 콜백 — &app 안정 후 한 번만. helper 가 user_data 통해
     // *App 으로 cast 후 invalidateRenderer / window.copyToClipboard
     // 등 instance 메서드 호출.

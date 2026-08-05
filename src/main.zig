@@ -67,6 +67,10 @@ pub fn main() void {
             if (i + 1 >= args.len) std.process.exit(2);
             i += 1;
             run_opts.grid = run_options.parseGrid(args[i]) orelse std.process.exit(2);
+        } else if (std.mem.eql(u8, arg, "-scrollback")) {
+            if (i + 1 >= args.len) std.process.exit(2);
+            i += 1;
+            run_opts.scrollback = std.fmt.parseInt(usize, args[i], 10) catch std.process.exit(2);
         } else if (std.mem.eql(u8, arg, "--autostart")) {
             autostart_launch = true;
         } else if (std.mem.eql(u8, arg, "--toggle")) {

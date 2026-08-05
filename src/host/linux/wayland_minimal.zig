@@ -2979,7 +2979,9 @@ const Client = struct {
             self.allocator,
             // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382).
             self.run_opts.command orelse self.config.shell,
-            self.config.max_scroll_lines,
+            // #381 — `-scrollback N` 이면 config 를 무시한다 (측정용 override). override 가
+            // 먹었는지 확인 가능하게 아래에서 로그도 남긴다 (Windows host 와 같은 이유).
+            self.run_opts.scrollLines(self.config.max_scroll_lines),
             theme,
             &self.extra_env_storage,
             linuxTabExit,
@@ -2987,6 +2989,9 @@ const Client = struct {
         );
         try self.session.?.createTab(grid.cols, grid.rows);
         log.appendLine("linux", "terminal session created cols={} rows={}", .{ grid.cols, grid.rows });
+        if (self.run_opts.scrollback) |n| {
+            log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, self.config.max_scroll_lines });
+        }
     }
 
     fn redraw(self: *Client) !bool {
