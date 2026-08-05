@@ -19,7 +19,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser
 # PTY 전체 — 자식 프로세스 → PTY → read thread → ring → VT 파서
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty --mb 64
 
-# 앱이 실제로 지나는 경로 — 프레임마다 8 ms 예산이 걸린다
+# 프레임에 묶인 드레인 — 프레임마다 예산이 걸린다 (앱의 하한, 아래 주의 참고)
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --mb 64
 
 # 워크로드 바꾸기
@@ -57,27 +57,31 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 |---|---|---|
 | `parser` | 워크로드 → VT 파서 → grid | PTY · 자식 프로세스 · ring · 프레임 예산 |
 | `pty` | 자식 → PTY → read thread → ring → VT 파서 → grid | 렌더 · 프레임 예산 |
-| `frame` | 위와 같지만 **프레임마다 8 ms 예산**을 지킨다 | 렌더만 |
+| `frame` | 위와 같지만 **프레임마다 드레인 예산**을 지킨다 | 렌더 · 프레임 사이 드레인 |
 
 `pty − parser` 가 PTY read 와 ring 층의 몫이에요. `perf` 를 쓸 수 없는 환경에서도
 시간이 어디서 가는지 가를 수 있어요.
 
-**`frame` 이 사용자가 겪는 값에 가장 가까워요.** host 는 vsync 마다
-`drainOutputForRender` 를 부르고 그 안의 `drainFrame` 이 한 프레임에 8 ms 만
-파싱해요 (`SessionCore.DRAIN_FRAME_BUDGET_NS`). 이 층은 그 주기를 `--fps` 로
-모사해요. 다만 **렌더를 하지 않으니 체감의 상한**이에요 — 실제 앱은 여기에 렌더
-시간이 더해져요.
+`frame` 층은 `drainOutputForRender` 를 `--fps` 주기로 **한 번씩** 부르고, 그 안의 `drainFrame`
+이 `SessionCore.DRAIN_FRAME_BUDGET_NS` (현재 **4 ms**) 만 파싱해요.
+
+⚠️ **이 층은 더 이상 앱과 같지 않아요.** 사양 A ([#387](https://github.com/ensky0/tildaz/issues/387),
+SPEC §13) 이후 세 host 는 **프레임 사이에도** 드레인해서 실제 앱의 duty 가 훨씬 높아요 — Windows ②
+60 Hz 실측으로 이 층에 해당하는 구조가 duty 50.6~51.4 % 인데 실제 앱은 **91.5~92.2 %** 였어요.
+그러니 이 층 숫자는 **"프레임에 묶였을 때의 하한"** 으로 읽고, 앱의 실제 배분은 perf 덤프
+(`Ctrl+Shift+F12` / `Shift+Cmd+F12`) 로 봐요. 아래 "실제 앱" 열도 사양 A 이전 값이에요.
+(이 갭은 후속 이슈로 다뤄요.)
 
 ⚠️ **`--fps` 를 재는 화면의 재생률로 반드시 지정해요.** 기본값 60 을 고주사율 화면에서
-그대로 쓰면 숫자가 크게 어긋나요. 8 ms 예산이 프레임 간격에서 차지하는 비율이 완전히
-달라지기 때문이에요.
+그대로 쓰면 숫자가 크게 어긋나요. 예산이 프레임 간격에서 차지하는 비율 (`예산 / 프레임간격`) 이
+완전히 달라지기 때문이에요.
 
-| 화면 | 프레임 간격 | 8 ms 예산의 비율 |
-|---|---|---|
-| 60 Hz | 16.67 ms | 48 % |
-| **120 Hz** (ProMotion 등) | **8.33 ms** | **96 %** — 예산이 프레임 전체에 가까워요 |
+| 화면 | 프레임 간격 | 4 ms 예산의 비율 | (예산 8 ms 였을 때) |
+|---|---|---|---|
+| 60 Hz | 16.67 ms | 24 % | 48 % |
+| **120 Hz** (ProMotion 등) | **8.33 ms** | **48 %** | 96 % |
 
-실측 사례예요. 120 Hz 화면을 60 으로 모사했을 때와 제대로 120 을 준 경우:
+실측 사례예요 (**예산 8 ms 시점**). 120 Hz 화면을 60 으로 모사했을 때와 제대로 120 을 준 경우:
 
 | 워크로드 | 60 으로 모사 | 120 (실제) | 같은 조건의 실제 앱 |
 |---|---:|---:|---:|
@@ -85,8 +89,8 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | ansi | 103 · 초과 38/44 (86 %) | 137.7 · 초과 25/64 (39 %) | 135.8 |
 | cjk | 63 · 초과 62/68 (91 %) | 128.7 · 초과 61/70 (87 %) | 101.0 |
 
-**120 으로 주면 실제 앱 값과 잘 맞아요** (ansi 는 137.7 vs 136 으로 거의 일치).
-`--fps` 를 안 주면 리포트가 경고해요.
+**120 으로 주면 실제 앱 값과 잘 맞았어요** (ansi 는 137.7 vs 136 으로 거의 일치) — 단 이건
+**사양 A 이전** 이라 그때는 앱도 프레임당 1 회였기 때문이에요. `--fps` 를 안 주면 리포트가 경고해요.
 
 macOS 에서 재생률을 확인하는 법: `CGDisplayModeGetRefreshRate` 를 부르거나, 시스템 설정의
 디스플레이 항목을 봐요 (`system_profiler SPDisplaysDataType` 에는 안 나와요).

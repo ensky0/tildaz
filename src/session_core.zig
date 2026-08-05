@@ -490,8 +490,9 @@ pub const Tab = struct {
     /// 언제 멈출지는 하네스가 정해야 한다.
     ///
     /// 프레임 예산 아래의 체감 처리량을 잴 때는 이걸 쓰지 않고
-    /// `SessionCore.drainOutputForRender` 를 프레임 루프처럼 부른다 — 그쪽이 실제
-    /// 앱이 지나는 경로이고, 8 ms 예산이 걸린 값이 사용자가 겪는 값이다.
+    /// `SessionCore.drainOutputForRender` 를 루프로 부른다 — 그쪽이 `DRAIN_FRAME_BUDGET_NS`
+    /// 를 지키는 경로다. 단 **프레임당 1 회로 부르면 앱과 다르다** — 사양 A (#387) 이후
+    /// host 는 프레임 사이에도 부른다 (SPEC §13.1).
     pub fn drainChunkForStress(tab: *Tab) bool {
         return tab.drainOutputChunk();
     }
@@ -647,12 +648,23 @@ pub const SessionCore = struct {
     inactive_drain_cursor: usize = 0,
     next_tab_id: usize = 1,
 
-    /// 한 frame에서 VT parse가 UI thread를 점유할 수 있는 공통 상한.
-    /// 활성/비활성 탭이 이 예산을 함께 쓰므로 탭 수가 늘어도 총 예산은 그대로다.
+    /// 드레인 **한 번**이 UI thread 를 점유할 수 있는 공통 상한 = **최악 입력 지연 예산**
+    /// (사양은 SPEC §13, #387). 처리량 상한이 아니다 — 얼마나 자주 드레인하는지는 host 가
+    /// 정한다. 활성/비활성 탭이 이 예산을 함께 쓰므로 탭 수가 늘어도 총 점유는 그대로다.
     ///
-    /// stress 하네스 (#371) 가 이 값을 읽어 프레임당 예산 초과를 센다 — 하네스가 8 ms
-    /// 를 따로 적어 두면 여기만 바뀌었을 때 조용히 다른 기준으로 판정한다.
-    pub const DRAIN_FRAME_BUDGET_NS: u64 = 8 * std.time.ns_per_ms;
+    /// **4 ms 인 이유** (#387, 2026-08-05 결정). 세 platform 실측이 8 → 4 ms 에서 처리량
+    /// 손실 없이 점유만 줄었다: Windows ② 60 Hz 는 처리량 유지(−4.1~+1.8 %)에 프레임 tick
+    /// 점유 9.7 → 5.8 ms, Windows ① 120 Hz 는 tick fps 103 → 120, macOS 60 Hz 는 fps
+    /// 56.7 → 60.0 · 처리량 +3.3 %, macOS 120 Hz 는 fps ×2.4, Linux 120 Hz 는 fps ×1.82.
+    /// **하한은 4 ms 다** — macOS 120 Hz 의 3 ms 에서 duty 포화가 깨져 처리량이 23 % 떨어졌다.
+    ///
+    /// 이 값이 처리량과 무관해진 것은 사양 A (프레임 사이에도 드레인) 덕이다. 사양 A 가
+    /// 꺼진 구조에서는 예산이 곧 처리량이라 (실측: 8 → 4 ms 에서 처리량 ×0.50) 값을 줄일
+    /// 수 없었다.
+    ///
+    /// stress 하네스 (#371) 가 이 값을 읽어 예산 초과 프레임을 센다 — 하네스가 숫자를
+    /// 따로 적어 두면 여기만 바뀌었을 때 조용히 다른 기준으로 판정한다.
+    pub const DRAIN_FRAME_BUDGET_NS: u64 = 4 * std.time.ns_per_ms;
 
     const DrainFrameResult = struct {
         active_output: bool = false,
@@ -1016,7 +1028,7 @@ pub const SessionCore = struct {
     }
 
     /// 활성 탭 한 chunk와 다음 비활성 탭 한 chunk를 번갈아 처리한다. 활성 탭은
-    /// 매 frame 첫 순서를 보장하되, 모든 탭이 하나의 8ms 예산을 공유해 탭 수가
+    /// 매 frame 첫 순서를 보장하되, 모든 탭이 하나의 `DRAIN_FRAME_BUDGET_NS` 예산을 공유해 탭 수가
     /// 늘어나도 UI thread 점유 시간이 비례해 늘지 않는다.
     fn drainFrame(self: *SessionCore) DrainFrameResult {
         const active = self.activeTab() orelse return .{};
