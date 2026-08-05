@@ -1267,6 +1267,22 @@ macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 
 | 프레임 tick 만 막는 게 아니었다 | `render_fn` 은 `WM_SIZE` 즉시 렌더 · Alt+Enter 전환에서도 불린다 |
 | 선례 | Windows Terminal 도 터미널 렌더에 ms 게이트가 없다 — DXGI frame-latency waitable + `_redraw` 플래그로 pacing (ms throttle 은 XAML 스크롤바 8 ms · regex 패턴 100 ms 처럼 부속 UI 에만) |
 
+### 13.5 알려진 platform 차이 — 폭포 중 fps 는 macOS 만 완전 유지가 아니다
+
+**사양 위반이 아니다** (사양은 드레인 한 번의 점유 상한이고 fps 유지는 사양이 아니다). 다만 세
+platform 이 갈리는 지점이라 기록해 둔다.
+
+| platform | 폭포 중 fps (예산 4 ms) | 구조상 이유 |
+|---|---|---|
+| **Windows** | **유지** (60 Hz 60.0 · 120 Hz 120.0) | 별도 clock 스레드가 `WM_FRAME_TICK` 을 post 하고 `PeekMessage` 가 드레인보다 우선이라 tick 이 밀리지 않는다 |
+| Linux | 120 Hz 109.4 | poll loop |
+| **macOS** | 60 Hz 60.0 · **120 Hz 99.6** | `CADisplayLink` 가 **run loop source** 라 `BeforeWaiting` 드레인에 발사가 밀린다 |
+
+예산 8 ms 시절 macOS 120 Hz 는 40.7 fps 까지 떨어졌고 (Windows 는 같은 조건에서 유지) 4 ms 로 99.6 까지
+회복했다. 남은 차이를 없애려면 macOS 의 드레인 지점을 손봐야 한다 — *아이디어 (미검증)*: `BeforeWaiting`
+안에서 다음 `CADisplayLink` 발사가 임박했는지 보고 양보하기. 근거와 macOS 열 네 점 실측은
+[#387](https://github.com/ensky0/tildaz/issues/387) 에 있다.
+
 ---
 
 ## 부록 A — 미구현 항목 (cross-platform 동등성 룰)
