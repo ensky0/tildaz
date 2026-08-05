@@ -69,6 +69,9 @@ const WM_KEYLAST: UINT = 0x0109;
 const WM_MOUSEFIRST: UINT = 0x0200;
 const WM_MOUSELAST: UINT = 0x020E;
 const PM_REMOVE: UINT = 0x0001;
+/// `PeekMessageW` 는 `GetMessageW` 처럼 반환값 0 으로 종료를 알리지 않으므로 (#387 의
+/// `messageLoop`) 직접 비교한다.
+const WM_QUIT: UINT = 0x0012;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
@@ -204,10 +207,12 @@ extern "user32" fn DestroyWindow(HWND) callconv(.c) BOOL;
 extern "user32" fn PostQuitMessage(c_int) callconv(.c) void;
 extern "user32" fn DefWindowProcW(HWND, UINT, WPARAM, LPARAM) callconv(.c) LRESULT;
 extern "user32" fn PostMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.c) BOOL;
-extern "user32" fn GetMessageW(*MSG, HWND, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn TranslateMessage(*const MSG) callconv(.c) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(.c) LRESULT;
 extern "user32" fn PeekMessageW(*MSG, HWND, UINT, UINT, UINT) callconv(.c) BOOL;
+/// #387 — 메시지 큐가 빌 때 블록한다. `messageLoop` 이 `GetMessageW` 대신 쓰는 이유는
+/// 그 함수 주석에 있다.
+extern "user32" fn WaitMessage() callconv(.c) BOOL;
 extern "user32" fn BeginPaint(HWND, *PAINTSTRUCT) callconv(.c) HDC;
 extern "user32" fn EndPaint(HWND, *const PAINTSTRUCT) callconv(.c) BOOL;
 extern "user32" fn InvalidateRect(HWND, ?*const RECT, BOOL) callconv(.c) BOOL;
@@ -383,6 +388,10 @@ pub const Window = struct {
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
+    /// #387 — 메시지 큐가 빈 순간에 밀린 PTY 출력을 한 번 더 파싱하는 host 콜백.
+    /// 반환값은 "더 할 일이 있나" — 참이면 `messageLoop` 이 블록하지 않고 다시 돈다.
+    /// `window.zig` 는 `SessionCore` 를 모르므로 `app_event_fn` 과 같은 콜백 패턴을 쓴다.
+    idle_drain_fn: ?*const fn (?*anyopaque) bool = null,
     /// #245 — drag-select auto-scroll 상태. 타이머 활성 여부 + 마지막 마우스 위치
     /// (타이머가 이 좌표로 synthetic mouse_move 재전송).
     auto_scroll_active: bool = false,
@@ -1477,11 +1486,41 @@ pub const Window = struct {
         return @as(i16, @bitCast(raw));
     }
 
-    pub fn messageLoop(_: *Window) void {
+    /// #387 — 사양 A ("한 번에 UI 를 8 ms 이상 잡지 않는다") 의 Windows 쪽 구현.
+    ///
+    /// `DRAIN_FRAME_BUDGET_NS` (8 ms) 는 `drainFrame` **한 번의 호출**에 걸리는 응답성
+    /// 상한이고 처리량 상한이 아니다. 그런데 이전에는 드레인이 프레임 tick 안에만 있어서
+    /// (`WM_FRAME_TICK` → `render_fn` → `App.onRender` → `prepareActiveFrame`) 프레임당
+    /// 1 회로 묶였고, 그러면 duty 상한이 `8 ms / 프레임간격` 이 된다 — **화면 주사율이
+    /// 처리량을 결정**했다 (60 Hz 48 % · 120 Hz 96 %, #386 실측). Linux 는 드레인이 poll
+    /// loop 에 있어 주사율과 무관했다 (`cjk` duty 가 60 · 120 Hz 에서 77.8 / 77.9 %).
+    ///
+    /// 그래서 **대기 중인 메시지가 없을 때** 한 번 더 드레인한다. 순서가 설계의 핵심이다:
+    ///
+    /// 1. `PeekMessage` 가 먼저다 → 입력 · 프레임 tick 이 **항상 드레인보다 우선**한다.
+    ///    Linux 는 iteration 마다 무조건 드레인하는데 이쪽은 "할 일이 없을 때만" 이다.
+    /// 2. 드레인 한 번은 8 ms 를 넘지 않으므로 입력 지연 상한이 그대로다 (= 사양 A).
+    /// 3. 둘 다 없으면 `WaitMessage` 로 블록해 **유휴 절전 (#386 ②) 을 유지**한다.
+    ///    `GetMessageW` 를 쓰면 메시지를 꺼내 버려서 1 번의 우선순위를 만들 수 없다.
+    ///
+    /// **스핀하지 않는 근거**: 콜백이 참이면 실제로 파싱했거나 ring 에 남아 있다는 뜻이다
+    /// (`drainOutputChunk` 은 `output_ring.pop() == 0` 이면 false). 남아 있으면 다음 호출이
+    /// 반드시 진행하므로 진행 없는 반복이 없다. 폭포 중에는 producer 가 계속 채워 루프가
+    /// 블록하지 않는데 그건 의도한 동작이고 (일이 있는 동안 일한다), ring 이 비면 참이 안
+    /// 나와 `WaitMessage` 로 내려간다.
+    pub fn messageLoop(self: *Window) void {
         var msg: MSG = undefined;
-        while (GetMessageW(&msg, null, 0, 0) != 0) {
-            _ = TranslateMessage(&msg);
-            _ = DispatchMessageW(&msg);
+        while (true) {
+            if (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0) {
+                if (msg.message == WM_QUIT) return;
+                _ = TranslateMessage(&msg);
+                _ = DispatchMessageW(&msg);
+                continue;
+            }
+            if (self.idle_drain_fn) |f| {
+                if (f(self.userdata)) continue;
+            }
+            _ = WaitMessage();
         }
     }
 

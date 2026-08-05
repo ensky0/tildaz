@@ -1175,6 +1175,58 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ---
 
+## 13. VT 파싱 예산 — **응답성 상한이지 처리량 상한이 아니다** ([#387](https://github.com/ensky0/tildaz/issues/387))
+
+`SessionCore.DRAIN_FRAME_BUDGET_NS` (**8 ms**) 의 사양은 이것이다.
+
+> **드레인 한 번이 UI 스레드를 8 ms 이상 점유하지 않는다.**
+
+즉 8 ms 는 **최악 입력 지연 예산**이다. **얼마나 자주 드레인하는지는 이 예산이 정하지 않는다.**
+host 는 *입력을 굶기지 않는 한* 자주 드레인해야 하고, 특히 **프레임에 묶지 않는다.**
+
+**왜 이 사양인가** (2026-08-05 결정, #387 §1). 예산을 "프레임당 1 회" 로 해석하면 duty 상한이
+`8 ms / 프레임간격` 이 되어 **화면 주사율이 터미널 처리량을 결정**한다 — 같은 CPU·같은 앱인데
+60 Hz 사용자가 120 Hz 사용자의 절반만 소화한다. 화면에 보이는 것과 무관한 종속이라 사양이 아니다.
+처리량은 CPU 에만 의존해야 한다 (§0 #1 의 세 platform 동등과 같은 취지).
+
+### 13.1 host 별 드레인 지점
+
+세 host 가 **같은 공유 함수** (`SessionCore.drainOutputForRender` / `prepareActiveFrame` → `drainFrame`)
+를 쓰고, *부르는 지점*만 다르다. 예산 값과 `drainFrame` 자체는 공통이다.
+
+| platform | 프레임 렌더 | **프레임과 별개의 드레인 지점** |
+|---|---|---|
+| Linux | `wl_surface.frame` → `maybeRedraw` | **poll loop iteration 마다** ([`wayland_minimal.zig`](src/host/linux/wayland_minimal.zig)) — 원래부터 이 사양 |
+| Windows | `WM_FRAME_TICK` → `App.onRender` | **`PeekMessage` 가 빈 순간** (`Window.messageLoop` → `App.onIdleDrain`) |
+| macOS | `CADisplayLink` → `renderFrameTick` | **`kCFRunLoopBeforeWaiting`** observer (`idleDrainObserver`) + `CFRunLoopWakeUp` |
+
+**입력이 항상 드레인보다 우선한다.** Windows 는 대기 중인 메시지가 하나라도 있으면 드레인하지 않고,
+macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 뒤다. 유휴에는 드레인할 것이
+없어 각각 `WaitMessage` / run loop sleep 으로 내려가므로 **유휴 절전 (#255 · #386 ②) 이 유지된다.**
+
+### 13.2 실측 — Windows ① (Ryzen AI 7 350 · 외장 60 Hz · `cjk` 폭포 10 s)
+
+같은 화면 · 같은 커밋에서 드레인 지점 한 줄만 켜고/끈 대조다.
+
+| | 프레임당 1 회 (이전) | **사양대로** | |
+|---|---:|---:|---|
+| 프레임 주기 | 16.95 ms (59.0 fps) | 16.95 ms (59.0 fps) | **fps 손실 없음** |
+| duty | **50.2 %** | **90.7 %** | 8/16.95 = 47 % 상한이 풀린다 |
+| 처리량 | 33.3 MiB/s | **53.5 MiB/s** | **×1.61** |
+| drain / 프레임 | 8.51 ms (= 예산) | 15.37 ms | 프레임당 1 회가 풀린 증거 |
+| **폭포 중 입력 10 회** | — | **10 / 10** | 응답성 비용 없음 (Linux 도 10/10) |
+
+**주사율 종속이 사라진다.** 같은 기기 내장 패널 120 Hz 에서 프레임당 1 회일 때 duty 가 88 % 였는데,
+60 Hz 에서는 50.2 % 였다 — 사양대로 고친 뒤 60 Hz 가 90.7 % 로 올라 두 주사율이 같은 수준이 된다.
+
+### 13.3 예산 값을 바꿀 때
+
+`DRAIN_FRAME_BUDGET_NS` 는 **공유 상수라 세 platform 이 함께 바뀐다.** 값의 의미는 "입력이 최악
+얼마나 기다리나" 이므로, 바꾸려면 처리량이 아니라 **입력 지연**을 근거로 판단한다. 예산 검사가
+청크 사이에 있어 마지막 청크가 넘기므로 실측 점유는 8 ms 를 조금 초과한다 (실측 8.5 ms).
+
+---
+
 ## 부록 A — 미구현 항목 (cross-platform 동등성 룰)
 
 원칙은 *Windows 가 reference, macOS 동등* 이지만 *macOS 만 있는 기능* 도 동일 룰로 *Windows 에 추가* 해야 cross-platform 동등 (사용자 명시 룰).

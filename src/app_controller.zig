@@ -385,6 +385,26 @@ pub const App = struct {
         self.applyDpiScale(window.current_dpi);
     }
 
+    /// #387 — 사양 A. 메시지 큐가 빈 순간에 밀린 PTY 출력을 한 번 더 파싱한다.
+    ///
+    /// 8 ms 예산은 `drainFrame` 한 번의 **응답성** 상한이지 처리량 상한이 아니다. 그런데
+    /// 드레인이 `onRender` 안에만 있으면 프레임당 1 회로 묶여 duty 상한이
+    /// `8 ms / 프레임간격` 이 되고, 그러면 **화면 주사율이 처리량을 결정**한다 (#386 실측:
+    /// 60 Hz 48 % · 120 Hz 88 %). Linux 는 드레인이 poll loop 에 있어 주사율과 무관하다.
+    ///
+    /// 호출 시점은 `Window.messageLoop` 이 정한다 — `PeekMessage` 가 비었을 때만이라
+    /// **입력과 프레임 tick 이 항상 이 드레인보다 우선**한다. 여기서는 렌더를 하지 않고
+    /// 게이트만 열어 두고, 실제 그리기는 다음 프레임 tick 의 `onRender` 가 한다.
+    ///
+    /// 반환값은 "더 할 일이 있나" — `messageLoop` 이 이 값으로 블록 여부를 정한다.
+    /// macOS · Linux 가 쓰는 것과 **같은 공유 함수** (`drainOutputForRender`) 를 부른다.
+    pub fn onIdleDrain(userdata: ?*anyopaque) bool {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        if (!self.session.drainOutputForRender()) return false;
+        self.window.requestRender();
+        return true;
+    }
+
     pub fn onRender(window: *Window) void {
         const self: *App = @ptrCast(@alignCast(window.userdata.?));
         const onrender_t0 = perf.now();
