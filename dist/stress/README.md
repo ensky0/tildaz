@@ -386,6 +386,29 @@ PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --
 **출력을 `| tail` 로 파이프하지 마세요** — 스크립트가 끝날 때까지 버퍼링돼서 진행이 하나도 안 보여요.
 파일로 받고 (`> out.txt 2>&1`) 그 파일을 읽어요.
 
+### ⚠️ scrollback 이 안 맞는 대상이 있어요 — 우리에게 불리해요
+
+**우리 `max_scroll_lines` 는 100,000 인데 wt 는 맞출 수가 없어요.** 이건 모든 L4 표에 걸리는
+공정성 문제예요 ([#381](https://github.com/ensky0/tildaz/issues/381#issuecomment-5198052304) 실측).
+
+| 대상 | scrollback | 맞았나 |
+|---|---|---|
+| TildaZ | 100,000 (config) | 기준 |
+| alacritty · kitty | 스크립트가 100,000 을 줘요 | ✅ |
+| **wt** | **9,001** (기본값) · **최대 32,767** ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-advanced)) | ❌ **구조적으로 불가** |
+| **conhost** | 없어요 (`mode con` 이 창=버퍼) | ❌ |
+
+**그 몫이 워크로드마다 전혀 달라요** (파서 층 · 같은 배치 · 5 회 절사평균):
+
+| 워크로드 | scrollback 100,000 | 9,000 | 변화 |
+|---|---:|---:|---:|
+| `plain` | 294.6 MiB/s | **427.8** | **+45.2 %** |
+| `hangul` | 117.8 | 123.5 | +4.9 % |
+
+`plain` 은 초당 5.7 M 줄이라 **page 관리 비용이 지배**하고 (100,000 줄 = 작업 집합 ~120 MB → 캐시를
+밀어내요), 줄당 파싱 비용이 큰 `hangul` 은 그 몫이 묻혀요. **그래서 ASCII 계열 비교에서 wt · conhost 와
+나란히 둘 때는 `--scrollback` 을 맞춰 함께 재고 그 사실을 적어요.**
+
 **conhost 를 함께 재는 이유**는 두 가지예요. 하나는 legacy GDI 렌더러라 **하한 기준선**이라서고,
 다른 하나는 **ConPTY 오버헤드를 가늠할 단서**라서예요 — Windows Terminal · alacritty · TildaZ 는
 모두 ConPTY 를 쓰고 그 안에 headless conhost 가 있어요. 같은 producer 를 conhost 에 직접 돌린
