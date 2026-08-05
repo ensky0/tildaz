@@ -1490,7 +1490,7 @@ pub const Window = struct {
     ///
     /// `DRAIN_FRAME_BUDGET_NS` (8 ms) 는 `drainFrame` **한 번의 호출**에 걸리는 응답성
     /// 상한이고 처리량 상한이 아니다. 그런데 이전에는 드레인이 프레임 tick 안에만 있어서
-    /// (`WM_FRAME_TICK` → `render_fn` → `App.onRender` → `prepareActiveFrame`) 프레임당
+    /// (`WM_FRAME_TICK` → `render_fn` → `App.onRender` → `drainOutputForRender`) 프레임당
     /// 1 회로 묶였고, 그러면 duty 상한이 `8 ms / 프레임간격` 이 된다 — **화면 주사율이
     /// 처리량을 결정**했다 (60 Hz 48 % · 120 Hz 96 %, #386 실측). Linux 는 드레인이 poll
     /// loop 에 있어 주사율과 무관했다 (`cjk` duty 가 60 · 120 Hz 에서 77.8 / 77.9 %).

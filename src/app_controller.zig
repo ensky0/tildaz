@@ -33,7 +33,6 @@ pub const App = struct {
     /// 재검증용 (startup `validateOrFatal` 과 같은 값). host(`windows.zig`)가 set.
     shell: []const u8 = "",
     renderer: ?RendererBackend = null,
-    last_render_ms: i64 = 0,
     /// #376 — 직전 tick 의 blink 위상. 이 값이 **바뀌는 프레임에만** 렌더 게이트를
     /// 연다. "화면에 blink 셀이 있다" 로 열면 매 tick(16ms) 그리게 되지만, 위상
     /// 전환은 1초에 두 번뿐이라 추가 렌더가 초당 2프레임이다.
@@ -413,18 +412,23 @@ pub const App = struct {
         if (self.renderer) |*r| {
             const size = window.getClientSize();
 
-            // VT 처리 (UI 스레드에서 — mutex 경합 없음)
-            const frame = self.session.prepareActiveFrame(&self.last_render_ms);
+            // VT 처리 (UI 스레드에서 — mutex 경합 없음). macOS · Linux 와 **같은 공유
+            // 함수** — #388 에서 Windows 전용 `prepareActiveFrame` 을 지우고 합쳤다.
+            const had_output = self.session.drainOutputForRender();
             // #386 ② — 화면이 바뀌지 않았으면 GPU 작업 (render + present) 을 건너뛴다.
-            // macOS #255 Phase 2 동등. 이전에는 `prepareActiveFrame` 이 출력이 없을 때도
-            // `true` 를 줘서 **유휴에도 매 프레임 그렸다** — 출력 0 인 10 초 동안 588 프레임
-            // 전부 그린 것이 #386 의 ②다. `needs_render` 는 `wndProc` 이 프레임 tick 이
-            // 아닌 모든 메시지에서 연다 (window.zig).
-            const should_render = frame.should_render and
-                (frame.had_output or self.window.needs_render);
-            // IME preedit 활성 시 throttle 우회 — preedit UI 는 PTY 출력과
-            // 무관한 매 keystroke 즉시 화면 갱신 필요 (mac 동등). throttle 만
-            // 적용하면 typing 도중 preedit 안 보이거나 늦게 따라옴 (#164 회귀).
+            // macOS #255 Phase 2 동등. 이전에는 출력이 없을 때도 `true` 라 **유휴에도 매
+            // 프레임 그렸다** — 출력 0 인 10 초 동안 588 프레임 전부 그린 것이 #386 의 ②다.
+            // `needs_render` 는 `wndProc` 이 프레임 tick 이 아닌 모든 메시지에서 연다
+            // (window.zig). **이것이 렌더를 줄이는 유일한 게이트다** (#388).
+            const should_render = had_output or self.window.needs_render;
+            // IME preedit 활성 시 게이트 우회 — preedit UI 는 PTY 출력과 무관하게 매
+            // keystroke 즉시 화면 갱신이 필요하다 (mac 동등).
+            //
+            // ⚠️ 이 우회가 막던 #164 회귀의 원인은 **throttle** 이었고 그건 #388 에서
+            // 지웠다. 지금 이 값이 넘는 것은 #386 ② 게이트뿐인데, `WM_IME_COMPOSITION`
+            // 이 `wndProc` 에서 `needs_render` 를 열어 주므로 **없어도 될 가능성이 있다.**
+            // 확인하지 않았으므로 그대로 둔다 — 지우려면 한글 · 일본어 IME 로 typing
+            // 중 preedit 이 즉시 따라오는지 실기 검증이 먼저다.
             const force_render = self.window.imePreeditSlice().len > 0;
 
             // #376 — blink 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에
