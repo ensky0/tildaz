@@ -31,6 +31,25 @@ pub const RunOptions = struct {
     /// 는 창을 먼저 띄우고 그 뒤에 `ui_metrics.viewportForGrid` 로 크기를 다시 맞춘다.
     grid: ?Grid = null,
 
+    /// `-scrollback <N>` — config 의 `max_scroll_lines` 를 무시하고 이 줄 수를 쓴다
+    /// ([#381](https://github.com/ensky0/tildaz/issues/381)).
+    ///
+    /// **왜 필요한가**: 터미널 비교에서 scrollback 을 맞추지 않으면 우리가 불리하다.
+    /// 우리 기본값은 100,000 인데 **Windows Terminal 은 `historySize` 최대가 32,767**
+    /// 이고 CLI 로는 지정할 수도 없다 (profile 설정이라 `settings.json` 뿐). 그리고 그
+    /// 차이가 작지 않다 — 파서 층 실측으로 `plain` 이 100,000 → 9,000 에서 **+45 %**
+    /// (294.6 → 427.8 MiB/s) 다. 100,000 줄이면 작업 집합이 약 120 MB 라 캐시를 밀어낸다.
+    ///
+    /// 다른 터미널은 전부 CLI 로 지정할 수 있어서 (alacritty `-o scrolling.history`,
+    /// wezterm `--config scrollback_lines`, kitty `-o scrollback_lines`) 우리만 없었다.
+    /// **사용자 config 를 고치지 않고** 맞추기 위한 옵션이다.
+    scrollback: ?usize = null,
+
+    /// config 값 위에 측정 override 를 얹는다. `-scrollback` 이 없으면 config 값 그대로.
+    pub fn scrollLines(self: RunOptions, config_value: usize) usize {
+        return self.scrollback orelse config_value;
+    }
+
     /// 측정 모드인가. `-e` 가 기준이다 — 그때만 아래를 건너뛴다.
     ///
     /// - **worker lock**: 잡으면 평소 쓰는 TildaZ 와 충돌한다.
@@ -66,6 +85,13 @@ test "parseGrid 는 잘못된 형식을 거른다" {
     }) |bad| {
         try std.testing.expectEqual(@as(?Grid, null), parseGrid(bad));
     }
+}
+
+test "scrollLines 는 -scrollback 이 있을 때만 config 를 덮는다" {
+    try std.testing.expectEqual(@as(usize, 100_000), (RunOptions{}).scrollLines(100_000));
+    try std.testing.expectEqual(@as(usize, 9001), (RunOptions{ .scrollback = 9001 }).scrollLines(100_000));
+    // 0 도 유효한 요청이다 (scrollback 없이 재는 경우) — `orelse` 가 아니라 값으로 판정한다.
+    try std.testing.expectEqual(@as(usize, 0), (RunOptions{ .scrollback = 0 }).scrollLines(100_000));
 }
 
 test "isStressRun 은 -e 를 기준으로 한다" {

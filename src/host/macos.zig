@@ -3106,7 +3106,8 @@ pub fn run(opts: run_options.RunOptions) !void {
         // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382). 인자는 넘길 수 없다 —
         // POSIX 는 PTY 자식의 argv 가 고정이다 (`terminal/posix/pty.zig`).
         g_run_opts.command orelse g_shell_path,
-        g_config.max_scroll_lines,
+        // #381 — `-scrollback N` 이면 config 를 무시한다 (측정용 override).
+        g_run_opts.scrollLines(g_config.max_scroll_lines),
         g_config.theme,
         &g_extra_env,
         onSessionTabExit,
@@ -3118,8 +3119,12 @@ pub fn run(opts: run_options.RunOptions) !void {
         shell_path,
         term_cols,
         term_rows,
-        g_config.max_scroll_lines,
+        g_run_opts.scrollLines(g_config.max_scroll_lines),
     });
+    // #381 — override 가 먹었는지 확인 가능하게 (Windows host 와 같은 이유).
+    if (g_run_opts.scrollback) |n| {
+        log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, g_config.max_scroll_lines });
+    }
 
     // CADisplayLink (#255) — vsync render driver. `NSWindow.displayLink`
     // (macOS 14+) 가 contentView(tildaz_view)의 displayLinkFire: 를 매 vsync
