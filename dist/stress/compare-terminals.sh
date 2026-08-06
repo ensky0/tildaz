@@ -41,6 +41,35 @@ REPEAT=1
 # 안내만 한다. **conhost 는 아예 불가**다 (`mode con: lines` 가 창=버퍼).
 SCROLLBACK=32767
 
+# `--capture [디렉터리]` — **smoke 확인용**이다 (#381). 각 회차의 측정이 끝난 순간 화면을
+# 찍어 `<디렉터리>/<이름>-<회차>.png` 로 남긴다. 창이 다른 창 뒤에 떠서 눈으로 확인할 수
+# 없을 때 (Windows 에서 wezterm · wt 가 그랬다) 쓰라고 만든 것이다.
+#
+# **경로는 선택이다** — 안 주면 `dist/stress/shots` 에 남는다 (스크립트 바로 옆이라 찾기 쉽다).
+# 모든 OS · 데스크톱 환경에서 같은 자리다.
+#
+# **이 옵션을 켜면 그 실행의 숫자는 기록용으로 쓰지 않는다.** 캡처 도구가 측정 직후에
+# CPU 를 쓰고, producer 가 `HOLD_MS` 만큼 더 살아 있어서 다음 회차와 겹칠 수 있다.
+# 기록용 측정 (`--repeat 5`) 은 이 옵션 없이 돈다.
+CAPTURE_DIR=""
+# 캡처가 끝날 때까지 producer 가 창을 붙들고 있는 시간. 고정값이고 **platform 을 안 가린다** —
+# 값을 나누려면 각 platform 의 캡처 시간을 실측해야 하는데 그러지 않았다. 4 초는 아래 둘이다.
+#   - 찍기 전 대기 `CAPTURE_DELAY` (2 초). timing 파일이 생긴 시점은 **측정이 끝난** 시점이지
+#     창이 화면에 올라온 시점이 아니다 — wezterm 은 GUI 시작이 느려서 8 MiB 측정 (111 ms) 이
+#     창보다 먼저 끝나는 회차가 있었고, 그 회차 캡처에 창이 아예 없었다 (macOS 실측).
+#   - 캡처 자체에 2 초. macOS 는 0.3 초쯤이다 (실측). **Windows 는 안 재 봤다** — PowerShell
+#     프로세스 시작과 `Add-Type` 의 C# 컴파일이 더 걸릴 수 있다. 모자라면 PNG 에 창이 안
+#     찍히므로 바로 드러난다. 그때 실측값으로 올린다.
+HOLD_MS=4000
+# 측정이 끝나고 찍기까지 기다리는 시간 (초). 위 `HOLD_MS` 주석 참고.
+CAPTURE_DELAY=2
+
+# `--capture` 기본 위치를 정하는 데 필요해서 옵션 파싱보다 먼저 구한다.
+REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# 경로를 안 주면 여기에 남긴다 — **스크립트 바로 옆**이라 찾기 쉽다. platform 을 안 가린다.
+# `.gitignore` 에 넣어 두어서 git 에는 안 잡힌다.
+CAPTURE_DEFAULT_DIR="$REPO_ROOT/dist/stress/shots"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --mb) MB="$2"; shift 2 ;;
@@ -50,6 +79,15 @@ while [ $# -gt 0 ]; do
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --repeat) REPEAT="$2"; shift 2 ;;
         --scrollback) SCROLLBACK="$2"; shift 2 ;;
+        # 경로는 선택이다. 안 주면 `dist/stress/shots`. 다음 인자가 `-` 로 시작하면 옵션이므로
+        # 경로로 보지 않는다.
+        --capture)
+            if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then
+                CAPTURE_DIR="$2"; shift 2
+            else
+                CAPTURE_DIR="$CAPTURE_DEFAULT_DIR"; shift 1
+            fi
+            ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -63,7 +101,6 @@ case "$REPEAT" in
 esac
 
 BYTES=$((MB * 1024 * 1024))
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
 # --- platform ---
 #
@@ -74,6 +111,13 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;;
     *) IS_WINDOWS=0 ;;
 esac
+
+# 캡처를 안 켜면 hold 는 0 이다 — producer 가 지금까지처럼 곧바로 끝난다.
+if [ -z "$CAPTURE_DIR" ]; then
+    HOLD_MS=0
+else
+    mkdir -p "$CAPTURE_DIR" || { echo "--capture 디렉터리를 만들 수 없어요: $CAPTURE_DIR" >&2; exit 2; }
+fi
 
 # 자식이 **Windows 실행파일**이면 경로를 Windows 형식으로 줘야 한다. MSYS 는 명령줄 인자를
 # 자동 변환하지만 **환경변수 값은 변환하지 않는다** — producer 가 timing 파일을 열지 못하는
@@ -230,6 +274,32 @@ echo "목표 그리드 ${COLS}x${ROWS}"
 echo "scrollback ${SCROLLBACK} 줄 (모든 대상 동일 — 아래 예외 참고)"
 echo "반복       ${REPEAT} 회"
 echo "producer   $PRODUCER"
+if [ -n "$CAPTURE_DIR" ]; then
+    echo "캡처       $CAPTURE_DIR (회차마다 화면 PNG · hold ${HOLD_MS} ms)"
+    echo ""
+    echo "⚠ --capture 를 켠 실행의 숫자는 기록용으로 쓰지 마세요 — 캡처가 측정 직후에 CPU 를 쓰고"
+    echo "  producer 가 창을 ${HOLD_MS} ms 더 붙들고 있어요. 기록용은 이 옵션 없이 --repeat 5 로 내요."
+    case "$(uname -s)" in
+        Darwin)
+            echo "  macOS 는 **화면 기록 권한**이 필요해요. 잠금 화면이면 캡처가 실패해요."
+            ;;
+        MINGW*|MSYS*|CYGWIN*) ;;
+        *)
+            # 리눅스는 compositor 마다 통로가 달라서, 없으면 미리 알린다 — 다 돌고 나서
+            # "한 장도 없다" 를 알게 되는 것보다 낫다.
+            if command -v grim >/dev/null 2>&1; then
+                echo "  캡처 도구: grim (wlroots 계열)"
+            elif command -v spectacle >/dev/null 2>&1; then
+                echo "  캡처 도구: spectacle (KDE Plasma)"
+            elif command -v gnome-screenshot >/dev/null 2>&1; then
+                echo "  캡처 도구: gnome-screenshot"
+            else
+                echo "  ⚠ 캡처 도구가 없어요 — grim (sway · Hyprland) 이나 spectacle (KDE) 을 설치해 주세요."
+                echo "    Wayland 는 client 가 화면을 읽을 수 없어서 compositor 별 도구가 필요해요."
+            fi
+            ;;
+    esac
+fi
 if [ "$IS_WINDOWS" = 1 ]; then
     # #381 — 맞출 수 없는 대상을 매 실행에서 알린다. 조용히 두면 표를 읽는 사람이 조건이
     # 같다고 오해한다 (그게 #381 에서 실제로 일어난 일이다).
@@ -247,8 +317,8 @@ echo ""
 # producer 를 셸 명령 한 줄로. 터미널마다 이 문자열을 자기 방식으로 실행한다.
 # `exec` 로 셸을 대체해 셸이 남지 않게 한다.
 producer_cmd() {
-    printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s %s' \
-        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$PRODUCER"
+    printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s TILDAZ_STRESS_HOLD_MS=%s %s' \
+        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$HOLD_MS" "$PRODUCER"
 }
 
 # timing 파일이 생길 때까지 기다린다. 터미널을 background 로 띄우기 때문에 (그러지 않으면
@@ -273,6 +343,152 @@ wait_for() {
     return 0
 }
 
+# --- 화면 캡처 (`--capture`) ---------------------------------------------------------
+#
+# **창 단위가 아니라 전체 화면**을 찍는다. 측정 중에는 대상 창이 하나만 떠 있어서 전체를
+# 찍어도 그 창이 보이고, 창 하나를 특정하는 코드는 platform 마다 방식이 갈리는 데다 사용자가
+# 따로 열어 둔 같은 앱 창과 구분하기가 어렵다. 아래 리눅스 도구들도 전체 화면이 기본이다.
+#
+# **Windows 만 찍기 직전에 대상 창을 앞으로 올린다** — 가려져 있으면 화면에 안 나오기 때문이다.
+# `SWP_NOACTIVATE` 라 키보드 포커스는 뺏지 않는다. 별도 옵션으로 두지 않는다 — 캡처가 되게
+# 하려는 수단이지 그 자체가 목적이 아니다.
+#
+# **리눅스는 하나로 다 되는 방법이 없다.** Wayland 는 client 가 화면을 읽을 수 없고 통로가
+# compositor 마다 다르다. 되는 것을 순서대로 시도한다.
+#   - `grim` — wlroots 계열 (sway · Hyprland). `zwlr_screencopy` 를 쓴다.
+#   - `spectacle -a` — KDE Plasma. KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이
+#     안 되고, `org.kde.KWin.ScreenShot2` 는 호출자를 검증해 직접 부를 수 없다. Spectacle 이
+#     정상 통로다 (KDE 기본 설치). **`-a` 는 활성 창 하나만 찍어서 화면 단위인 grim 과 다르다.**
+#   - `gnome-screenshot` — 있으면 쓴다 (GNOME 43 에서 빠졌다).
+# 셋 다 없으면 찍지 않고 그 사실을 알린다. `xdg-desktop-portal` 은 표준이지만 권한 대화상자가
+# 떠서 손 안 대고 도는 측정과 맞지 않는다.
+CAPTURE_PS1="$WORK_DIR/capture.ps1"
+
+# **macOS 는 창 단위로 찍는다.** 전체 화면을 찍으면 대상이 다른 창 뒤에 있을 때 안 보이는데,
+# 그게 이 옵션을 만든 이유 자체다. ScreenCaptureKit 은 **완전히 가려진 창의 내용도** 준다
+# (macOS 실측: 같은 자리에 창 둘을 겹쳐 놓고 아래 창을 찍어 확인했다 — 위 창이 아니라 아래
+# 창의 내용이 나왔다). `dist/macos/color-capture.m` 을 그대로 쓴다 (#349 의 색 실측용 도구).
+# clang 이 없거나 빌드가 안 되면 전체 화면으로 물러선다.
+MAC_CAPTURE=""
+if [ -n "$CAPTURE_DIR" ] && [ "$(uname -s)" = Darwin ] && command -v clang >/dev/null 2>&1 &&
+   [ -f "$REPO_ROOT/dist/macos/color-capture.m" ]
+then
+    if clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit \
+        -framework ImageIO -framework UniformTypeIdentifiers \
+        -o "$WORK_DIR/color-capture" "$REPO_ROOT/dist/macos/color-capture.m" >/dev/null 2>&1
+    then
+        MAC_CAPTURE="$WORK_DIR/color-capture"
+    fi
+fi
+
+# Windows 에서 그 대상의 창을 소유한 프로세스 이름. `wezterm` 은 실행 파일과 GUI 프로세스
+# 이름이 다르다. 모르는 이름이면 빈 값 — 그때는 창을 올리지 않고 화면만 찍는다.
+win_proc_name() {
+    case "$1" in
+        alacritty) printf 'alacritty' ;;
+        wezterm) printf 'wezterm-gui' ;;
+        tildaz) printf 'tildaz' ;;
+        wt) printf 'WindowsTerminal' ;;
+        conhost) printf 'conhost' ;;
+        *) printf '' ;;
+    esac
+}
+
+if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
+    # `Get-Process` 의 `StartTime` 으로 **이번 회차에 새로 뜬 창**만 고른다 — 사용자가 따로
+    # 열어 둔 같은 앱 창을 건드리지 않기 위해서다. 못 찾으면 창을 올리지 않고 화면만 찍는다
+    # (앞에 뜬 대상은 그래도 찍힌다).
+    cat > "$CAPTURE_PS1" << 'EOF'
+param([string]$Png, [string]$ProcName = "", [double]$SinceEpoch = 0)
+$ErrorActionPreference = "SilentlyContinue"
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TzWin {
+  [DllImport("user32.dll")]
+  public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  public static readonly IntPtr TOPMOST = new IntPtr(-1);
+  public static readonly IntPtr NOTOPMOST = new IntPtr(-2);
+  // SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE — z-order 만 바꾸고 포커스는 안 건드린다.
+  public const uint FLAGS = 0x0001 | 0x0002 | 0x0010;
+}
+"@
+$h = [IntPtr]::Zero
+if ($ProcName -ne "") {
+    $since = [DateTimeOffset]::FromUnixTimeSeconds([long]$SinceEpoch).LocalDateTime
+    $p = Get-Process -Name $ProcName |
+         Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.StartTime -gt $since } |
+         Sort-Object StartTime -Descending | Select-Object -First 1
+    if ($p) {
+        $h = $p.MainWindowHandle
+        [void][TzWin]::SetWindowPos($h, [TzWin]::TOPMOST, 0, 0, 0, 0, [TzWin]::FLAGS)
+        Start-Sleep -Milliseconds 200
+    }
+}
+$b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)
+$bmp.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose()
+$bmp.Dispose()
+if ($h -ne [IntPtr]::Zero) {
+    [void][TzWin]::SetWindowPos($h, [TzWin]::NOTOPMOST, 0, 0, 0, 0, [TzWin]::FLAGS)
+}
+EOF
+fi
+
+# 한 회차의 화면을 찍는다. 실패해도 측정을 멈추지 않는다 — 찍힌 게 없다는 사실은
+# 파일이 없는 것으로 알 수 있고, 표 옆에 표시도 남긴다.
+capture_screen() {
+    _png="$1"
+    _ctarget="$2"
+    _csince="$3"
+    case "$(uname -s)" in
+        Darwin)
+            # 창 목록에서 그 앱의 **가장 큰 windowID** 를 고른다 — windowID 는 단조 증가하므로
+            # 방금 뜬 창이다. 사용자가 따로 열어 둔 같은 앱의 창을 찍지 않기 위해서다.
+            # 앱 이름은 대상 이름과 대소문자만 다르다 (`WezTerm` · `Ghostty` · `TildaZ`).
+            _wid=""
+            if [ -n "$MAC_CAPTURE" ]; then
+                _wid=$("$MAC_CAPTURE" --list 2>/dev/null |
+                    awk -v t="$_ctarget" 'index(tolower($2), t) == 1 { print $1 }' |
+                    sort -n | tail -1)
+            fi
+            [ -n "$_wid" ] && { "$MAC_CAPTURE" --window "$_wid" "$_png" >/dev/null 2>&1 || true; }
+            # 창을 못 찾았으면 전체 화면으로 물러선다 — 가려져 있으면 안 보이지만 없는 것보다 낫다.
+            # `-x` 는 셔터음을 끈다. **화면 기록 권한**이 필요하고 잠금 화면이면 실패한다.
+            [ -s "$_png" ] || screencapture -x "$_png" >/dev/null 2>&1 || true
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            powershell -NoProfile -ExecutionPolicy Bypass -File "$(native_path "$CAPTURE_PS1")" \
+                -Png "$(native_path "$_png")" \
+                -ProcName "$(win_proc_name "$_ctarget")" \
+                -SinceEpoch "$_csince" >/dev/null 2>&1 || true
+            ;;
+        *)
+            if command -v grim >/dev/null 2>&1; then
+                grim "$_png" >/dev/null 2>&1 || true
+            elif command -v spectacle >/dev/null 2>&1; then
+                # KDE Plasma. **`-a` (활성 창) 라 창 단위로 찍힌다** — grim (화면 단위) 과 다르다.
+                # 방금 뜬 창이 포커스를 받으므로 대개 대상이 잡히고, 활성 창은 맨 앞이라 가려짐
+                # 문제도 없다. 대상이 활성이 아니면 엉뚱한 창이 찍히는데, 그건 PNG 을 보면 안다.
+                # 확실히 하려면 KWin 스크립팅 (`org.kde.KWin.Scripting.loadScript` → `workspace
+                # .activeWindow = w`) 으로 대상을 먼저 활성화해야 하는데, **정말 필요한지 확인
+                # 되기 전에는 넣지 않는다** (#381).
+                spectacle -b -n -a -o "$_png" >/dev/null 2>&1 || true
+            elif command -v gnome-screenshot >/dev/null 2>&1; then
+                gnome-screenshot -f "$_png" >/dev/null 2>&1 || true
+            fi
+            ;;
+    esac
+}
+
+# 캡처를 켰는데 PNG 이 안 만들어진 회차 수. 끝에서 한 번 안내한다.
+CAPTURE_FAILED=0
+
 RESULTS="$WORK_DIR/results"
 : > "$RESULTS"
 
@@ -296,6 +512,9 @@ run_terminal() {
         # 회차마다 지운다 — 이전 회차 파일이 남아 있으면 `wait_for` 가 즉시 통과해 같은
         # 값을 다시 읽는다.
         rm -f "$_timing"
+        # 캡처가 **이번 회차에 새로 뜬 창**만 고르도록 시작 시각을 남긴다 (Windows 에서만 쓴다).
+        # 1 초 빼는 이유는 `date +%s` 가 초 단위라, 같은 초에 뜬 창이 비교에서 빠질 수 있어서다.
+        _since=$(( $(date +%s) - 1 ))
         # 보통은 background 로 띄운다 — 창이 닫히기를 기다리면 멈추기 때문이다 (kitty 실측).
         # 단 conhost 는 foreground 로 띄운다. 아래 conhost 절의 wrapper `.cmd` 안 `start` 가 이미
         # 새 콘솔을 떼어 내므로 이 호출 자체는 곧바로 반환하고, background 로 둘 이유가 없다.
@@ -318,9 +537,25 @@ run_terminal() {
             _rows=$(sed -n 's/^rows=//p' "$_timing")
             _cols0=$(sed -n 's/^cols_start=//p' "$_timing")
             _rows0=$(sed -n 's/^rows_start=//p' "$_timing")
-            printf '.'
+            # producer 가 `HOLD_MS` 만큼 창을 붙들고 있는 동안 찍는다. 곧바로 찍지 않고
+            # `CAPTURE_DELAY` 만큼 기다린다 — timing 이 생긴 시점은 측정이 끝난 시점이지 창이
+            # 화면에 올라온 시점이 아니다 (위 `HOLD_MS` 주석).
+            if [ -n "$CAPTURE_DIR" ]; then
+                sleep "$CAPTURE_DELAY"
+                _png="$CAPTURE_DIR/$_name-$_run.png"
+                capture_screen "$_png" "$_name" "$_since"
+                if [ -s "$_png" ]; then printf '@'; else CAPTURE_FAILED=$((CAPTURE_FAILED + 1)); printf '!'; fi
+            else
+                printf '.'
+            fi
         else
             printf 'x'
+        fi
+        # 캡처를 켜면 producer 가 `HOLD_MS` 만큼 더 살아 있다. 그걸 중간에 죽이면 셸이
+        # `Terminated: 15` 를 표 위에 찍어 결과를 읽기 어렵게 만든다 (macOS 실측). 스스로
+        # 끝나기를 기다렸다가 정리한다 — 어차피 그때까지 창이 살아 있어야 캡처가 된다.
+        if [ -n "$CAPTURE_DIR" ] && [ -n "$_pid" ]; then
+            wait "$_pid" 2>/dev/null || true
         fi
         # 창이 남아 있으면 정리한다. `kill $_pid` 만으로는 부족하다 — kitty 는 `--detach` 라
         # 그 pid 가 즉시 끝나는 부모이고, ghostty 는 실행 실패 화면을 띄운 채 기다린다.
@@ -356,6 +591,7 @@ run_terminal_win() {
         export TILDAZ_STRESS_WORKLOAD="$WORKLOAD"
         export TILDAZ_STRESS_BYTES="$BYTES"
         export TILDAZ_STRESS_TIMING_FILE="$(native_path "$WORK_DIR/$_wname.timing")"
+        export TILDAZ_STRESS_HOLD_MS="$HOLD_MS"
         run_terminal "$_wname" "$@"
     )
 }
@@ -402,22 +638,43 @@ if command -v wezterm >/dev/null 2>&1; then
     # (Windows 실기: `initial_rows=40` 이 120x38 로 떴다). 탭바를 끄면 요청 격자가 그대로 나와
     # 다른 터미널(탭바 없는 alacritty·wt)과 공정하게 비교된다. macOS 는 탭바를 네이티브 title
     # bar 에 그려 원래 행을 안 먹지만, 꺼도 결과는 같다.
+    #
+    # **`--always-new-process` 가 필수다.** `wezterm start` 는 기본이 *이미 떠 있는 wezterm GUI
+    # 인스턴스에게 명령 실행을 요청* 하는 것이다 (`wezterm start --help`). 붙어 버리면 두 가지가
+    # 깨진다.
+    #   - 사용자가 열어 둔 창과 **같은 프로세스**를 쓰게 되어 CPU 를 나눠 쓴다. 반복 측정에서는
+    #     회차 사이에 프로세스가 재사용돼 wezterm 만 **워밍업된 상태**로 재게 된다 — 다른 넷은
+    #     매 회차 새 프로세스다.
+    #   - 위의 `--config` 오버라이드가 기존 인스턴스에는 안 먹을 수 있다.
+    # 이 플래그를 주면 이 호출이 producer 완료까지 블록되는데, `run_terminal` 이 background 로
+    # 띄우고 timing 파일을 폴링하므로 상관없다. 오히려 `kill $_pid` 가 실제 GUI 를 잡게 된다.
+    #
+    # Windows 만 `wezterm-gui` 를 직접 부른다 — `wezterm.exe` 는 콘솔용 런처라 GUI 를 **손자
+    # 프로세스**로 띄우는데, Win32 는 *foreground 프로세스가 직접 시작한 프로세스* 에만 창을 앞으로
+    # 낼 권한을 준다 ([SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)).
+    # 그래서 wezterm 창만 다른 창 뒤에 떠서 상태를 볼 수 없는 일이 생겼다 (#381 실기 관찰).
+    # 인자 규격은 `wezterm` 과 같다 (`wezterm-gui --help` — `--config` 전역 옵션 + `start`).
+    # 없는 환경이면 그대로 `wezterm` 을 쓴다.
+    WEZTERM_BIN=wezterm
+    if [ "$IS_WINDOWS" = 1 ] && command -v wezterm-gui >/dev/null 2>&1; then
+        WEZTERM_BIN=wezterm-gui
+    fi
     if [ "$IS_WINDOWS" = 1 ]; then
-        run_terminal_win wezterm wezterm \
+        run_terminal_win wezterm "$WEZTERM_BIN" \
             --config "initial_cols=$COLS" \
             --config "initial_rows=$ROWS" \
             --config "scrollback_lines=$SCROLLBACK" \
             --config "enable_tab_bar=false" \
             --config "window_padding={left=0,right=0,top=0,bottom=0}" \
-            start -- "$(native_path "$PRODUCER")"
+            start --always-new-process -- "$(native_path "$PRODUCER")"
     else
-        run_terminal wezterm wezterm \
+        run_terminal wezterm "$WEZTERM_BIN" \
             --config "initial_cols=$COLS" \
             --config "initial_rows=$ROWS" \
             --config "scrollback_lines=$SCROLLBACK" \
             --config "enable_tab_bar=false" \
             --config "window_padding={left=0,right=0,top=0,bottom=0}" \
-            start -- sh -c "$(producer_cmd "$T")"
+            start --always-new-process -- sh -c "$(producer_cmd "$T")"
     fi
 fi
 
@@ -480,6 +737,7 @@ if [ -n "$TILDAZ_BIN" ]; then
         "TILDAZ_STRESS_WORKLOAD=$WORKLOAD" \
         "TILDAZ_STRESS_BYTES=$BYTES" \
         "TILDAZ_STRESS_TIMING_FILE=$(native_path "$T")" \
+        "TILDAZ_STRESS_HOLD_MS=$HOLD_MS" \
         "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}" \
         -scrollback "$SCROLLBACK"
 else
@@ -540,6 +798,7 @@ if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
         printf 'set "TILDAZ_STRESS_WORKLOAD=%s"\r\n' "$WORKLOAD"
         printf 'set "TILDAZ_STRESS_BYTES=%s"\r\n' "$BYTES"
         printf 'set "TILDAZ_STRESS_TIMING_FILE=%s"\r\n' "$(native_path "$T")"
+        printf 'set "TILDAZ_STRESS_HOLD_MS=%s"\r\n' "$HOLD_MS"
         printf '"%s"\r\n' "$(native_path "$PRODUCER")"
     } > "$_conhost_cmd"
     # wrapper 한 겹 — `start` 가 conhost 에 새 콘솔을 준다 (위 문단). `.cmd` 파일에 두는 이유는
@@ -629,3 +888,15 @@ done < "$RESULTS"
 echo ""
 echo "timing 파일의 cols/rows 가 ${COLS}x${ROWS} 인지 표에서 확인해 주세요 — 다르면 그"
 echo "숫자는 비교할 수 없어요. 탭이 2 개 이상이면 탭바 (28 pt) 가 들어가 rows 가 줄어요."
+
+if [ -n "$CAPTURE_DIR" ]; then
+    echo ""
+    echo "캡처 (진행 표시의 @ = PNG 생성됨 · ! = 실패): $CAPTURE_DIR"
+    echo "⚠ @ 는 **파일이 생겼다**는 뜻이지 창이 찍혔다는 보장이 아니에요 — 전체 화면으로 물러선"
+    echo "  경우 (macOS 에서 창을 못 찾음 · 리눅스 전체) 대상이 다른 창 뒤에 있으면 안 보여요."
+    echo "  PNG 을 눈으로 확인해 주세요."
+    if [ "$CAPTURE_FAILED" -gt 0 ]; then
+        echo "⚠ ${CAPTURE_FAILED} 회차가 안 찍혔어요. 권한 (macOS 화면 기록) · 캡처 도구 유무 (리눅스) ·"
+        echo "  hold (${HOLD_MS} ms) 안에 캡처가 못 끝났는지를 보세요."
+    fi
+fi
