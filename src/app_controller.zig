@@ -1024,6 +1024,14 @@ pub const App = struct {
                 }
                 return false;
             },
+            .focus_lost => {
+                // #390 — 다른 앱으로 focus 가 넘어가면 열린 menu 를 닫는다
+                // (native menu 동등). 창 밖 클릭 자체는 우리에게 오지 않으므로
+                // focus 상실이 유일한 훅이다 (SPEC §5.3).
+                if (!self.command_menu_open) return false;
+                self.closeCommandMenu();
+                return true;
+            },
             .shortcut => |shortcut| {
                 // #329 — 단축키는 메뉴를 먼저 닫고 정상 실행 (toggle 로 hide
                 // 해도 열린 메뉴가 남지 않음).

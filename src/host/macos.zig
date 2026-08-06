@@ -245,6 +245,11 @@ fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
 /// 후보 띄울 때 `lowerWindowForImePanel` 재호출.
 fn applicationDidResignActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     if (!g_visible) return;
+    // #390 — z-order 양보와 같은 지점에서 열린 command menu 도 닫는다. 창 *밖*
+    // 클릭은 mouseDown 이 우리에게 오지 않으므로 (native menu 의 pointer grab 이
+    // 우리 overlay 에는 없다) focus 상실이 유일한 훅이다. 이 delegate 는 다른
+    // *앱* 활성화에만 오므로 (같은 앱의 NSAlert 는 안 옴) 오탐이 없다.
+    if (g_command_menu_open) closeCommandMenu();
     const NSNormalWindowLevel: c_int = 0;
     setMainWindowLevel(NSNormalWindowLevel);
 }
