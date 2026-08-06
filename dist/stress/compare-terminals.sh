@@ -61,9 +61,10 @@ CAPTURE_DIR=""
 #   - 찍기 전 대기 `CAPTURE_DELAY` (2 초). timing 파일이 생긴 시점은 **측정이 끝난** 시점이지
 #     창이 화면에 올라온 시점이 아니다 — wezterm 은 GUI 시작이 느려서 8 MiB 측정 (111 ms) 이
 #     창보다 먼저 끝나는 회차가 있었고, 그 회차 캡처에 창이 아예 없었다 (macOS 실측).
-#   - 캡처 자체에 2 초. macOS 는 0.3 초쯤이다 (실측). **Windows 는 안 재 봤다** — PowerShell
-#     프로세스 시작과 `Add-Type` 의 C# 컴파일이 더 걸릴 수 있다. 모자라면 PNG 에 창이 안
-#     찍히므로 바로 드러난다. 그때 실측값으로 올린다.
+#   - 캡처 자체에 2 초. **macOS 0.3 초 · Windows 0.73 초**다 (둘 다 실측 — Windows 값은
+#     PowerShell 프로세스 시작과 `Add-Type` 의 C# 컴파일을 포함한다). `PrintWindow` 가 실패해
+#     `ddagrab` 까지 가는 회차는 **1.18 초**다 (실측 · Intel i5-1240P). 그래도 2 초 예산 안이다.
+#     모자라면 PNG 에 창이 안 찍히므로 바로 드러난다.
 HOLD_MS=4000
 # 측정이 끝나고 찍기까지 기다리는 시간 (초). 위 `HOLD_MS` 주석 참고.
 CAPTURE_DELAY=2
@@ -129,6 +130,45 @@ fi
 native_path() {
     if [ "$IS_WINDOWS" = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi
 }
+
+# **Windows 는 창 단위 캡처 경로가 둘이다.** `PrintWindow` 를 먼저 쓰고, 그것이 안 되면 ffmpeg 의
+# `ddagrab` (Desktop Duplication API) 으로 **창 rect 만 잘라** 찍는다.
+#
+# 둘을 두는 이유는 `PrintWindow` 의 성패가 **환경마다 갈리기 때문**이다. 같은 앱이 머신에 따라
+# 뒤집힌다 — 두 머신 실측 ([#381](https://github.com/ensky0/tildaz/issues/381)):
+#
+# | 대상 | 노트북 AMD Ryzen AI 7 350 · 200 % | 노트북 Intel i5-1240P · 100 % |
+# |---|---|---|
+# | wezterm · tildaz | 실패 (전체 화면에도 창이 없었다) | **성공** |
+# | conhost | 창조차 못 잡음 | **성공** |
+# | alacritty | 성공 | **실패** |
+# | wt | 성공 | 성공 |
+#
+# 그래서 *"flip-model swapchain 으로 그리는 창은 GDI 가 못 읽는다"* 는 이전 설명은 **반증됐다** —
+# 그게 원인이라면 Intel 머신에서도 tildaz · wezterm 이 실패해야 한다. 무엇이 두 환경을 가르는지는
+# **아직 모른다** (GPU 드라이버 · 배율 · HDR 이 후보다).
+#
+# `ddagrab` 은 **DWM 이 합성한 화면**을 읽어서 GDI 두 경로와 통로가 다르다. Intel 머신에서
+# tildaz · wezterm 창을 rect 그대로 찍는 것을 확인했다. **AMD 머신에서도 되는지는 미검증이다.**
+#
+# ffmpeg 이 없으면 지금까지와 똑같이 동작한다 — **의존성은 선택이다** (리눅스가 grim · spectacle
+# 을 있으면 쓰는 것과 같다). 설치는 `winget install Gyan.FFmpeg`.
+WIN_FFMPEG=""
+if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
+    if command -v ffmpeg >/dev/null 2>&1; then
+        WIN_FFMPEG=$(command -v ffmpeg)
+    else
+        # 방금 winget 으로 깔았다면 **이미 떠 있는 셸의 PATH 에는 아직 없다** (winget 이 PATH 를
+        # 고쳐도 기존 프로세스에는 반영되지 않는다). winget 의 shim 디렉터리를 직접 본다.
+        _lad_ff=$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || true)
+        if [ -n "$_lad_ff" ] && [ -x "$_lad_ff/Microsoft/WinGet/Links/ffmpeg.exe" ]; then
+            WIN_FFMPEG="$_lad_ff/Microsoft/WinGet/Links/ffmpeg.exe"
+        fi
+    fi
+fi
+# PowerShell 에 넘길 native 경로. 회차마다 `cygpath` 를 부르지 않도록 한 번만 만든다.
+WIN_FFMPEG_NATIVE=""
+[ -n "$WIN_FFMPEG" ] && WIN_FFMPEG_NATIVE=$(native_path "$WIN_FFMPEG")
 
 PRODUCER="$REPO_ROOT/zig-out/bin/tildaz-stress"
 [ "$IS_WINDOWS" = 1 ] && PRODUCER="$PRODUCER.exe"
@@ -287,7 +327,15 @@ if [ -n "$CAPTURE_DIR" ]; then
         Darwin)
             echo "  macOS 는 **화면 기록 권한**이 필요해요. 잠금 화면이면 캡처가 실패해요."
             ;;
-        MINGW*|MSYS*|CYGWIN*) ;;
+        MINGW*|MSYS*|CYGWIN*)
+            # 창 단위 경로가 둘이라 어느 것까지 쓸 수 있는지 미리 알린다 (위 `WIN_FFMPEG` 주석).
+            if [ -n "$WIN_FFMPEG" ]; then
+                echo "  캡처 도구: PrintWindow → 실패 시 ddagrab ($WIN_FFMPEG)"
+            else
+                echo "  캡처 도구: PrintWindow 만 — 안 되는 환경이 있어요. ffmpeg 을 깔면 ddagrab 으로"
+                echo "    한 번 더 시도해요: winget install Gyan.FFmpeg"
+            fi
+            ;;
         *)
             # 리눅스는 compositor 마다 통로가 달라서, 없으면 미리 알린다 — 다 돌고 나서
             # "한 장도 없다" 를 알게 되는 것보다 낫다.
@@ -469,7 +517,13 @@ if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
     # `Get-Process` 의 `StartTime` 으로 **이번 회차에 새로 뜬 창**만 고른다 — 사용자가 따로
     # 열어 둔 같은 앱 창을 건드리지 않기 위해서다. 못 찾으면 창을 올리지 않고 화면만 찍는다
     # (앞에 뜬 대상은 그래도 찍힌다).
-    cat > "$CAPTURE_PS1" << 'EOF'
+    # **UTF-8 BOM 을 먼저 쓴다.** Windows PowerShell 5.1 은 BOM 이 없는 `.ps1` 을 **ANSI
+    # 코드페이지** (한국어 Windows 는 CP949) 로 읽는다. 이 스크립트는 UTF-8 이라 한글 주석의
+    # 바이트가 CP949 로 잘못 해독되고, 어떤 조합은 **토큰까지 깨뜨려 파싱이 통째로 실패**한다.
+    # 실제로 주석에 `①` 을 넣자 "예기치 않은 '}' 토큰" 으로 캡처가 다섯 대상 전부 `!` 가 됐다
+    # (#381 실기). BOM 이 있으면 UTF-8 로 읽으므로 그 계열의 사고가 아예 안 난다.
+    printf '\357\273\277' > "$CAPTURE_PS1"
+    cat >> "$CAPTURE_PS1" << 'EOF'
 param(
     [string]$Png = "",
     [string]$ProcName = "",
@@ -479,7 +533,10 @@ param(
     # 창을 찾아 배치만 하고 끝낸다 (찍지 않는다). 대상을 띄운 직후에 부른다.
     [switch]$PlaceOnly,
     # 창이 뜰 때까지 기다릴 시간. 0 이면 한 번만 찾아본다.
-    [int]$WaitMs = 0
+    [int]$WaitMs = 0,
+    # ffmpeg 경로. 있으면 `PrintWindow` 가 실패했을 때 `ddagrab` 으로 한 번 더 시도한다.
+    # 빈 값이면 곧바로 전체 화면으로 물러선다 (이전과 같은 동작).
+    [string]$Ffmpeg = ""
 )
 $ErrorActionPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Drawing
@@ -521,6 +578,8 @@ public class TzWin {
   public static readonly IntPtr PER_MONITOR_V2 = new IntPtr(-4);
   public const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77;
   public const int SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
+  // 주 모니터 크기. `ddagrab` 의 자를 영역이 이 안에 드는지 판정하는 데 쓴다.
+  public const int SM_CXSCREEN = 0, SM_CYSCREEN = 1;
   // `SetProcessDpiAwarenessContext` 는 Windows 10 1703+ 다. 그 전 버전에서는 export 가
   // 없어 EntryPointNotFoundException 이 나므로 구형 API 로 물러선다.
   public static void MakeDpiAware() {
@@ -603,55 +662,101 @@ function Test-Uniform($b) {
     return $true
 }
 
+# 이미 만들어진 PNG 파일이 **쓸 만한가** — 존재하고, 열리고, 단색이 아니면 true.
+# `ddagrab` 이 만든 파일을 검사하는 데 쓴다. 파일을 잠그지 않으려고 바이트로 읽어서 연다
+# (실패했을 때 같은 경로에 전체 화면을 덮어써야 한다).
+function Test-PngUsable($path) {
+    if (-not (Test-Path $path)) { return $false }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        if ($bytes.Length -eq 0) { return $false }
+        $ms = New-Object System.IO.MemoryStream(,$bytes)
+        $img = [System.Drawing.Image]::FromStream($ms)
+        $bmp = New-Object System.Drawing.Bitmap $img
+        $img.Dispose(); $ms.Dispose()
+        $uniform = Test-Uniform $bmp
+        $bmp.Dispose()
+        return (-not $uniform)
+    } catch { return $false }
+}
+
 # --- 찍기 --------------------------------------------------------------------
 #
 # **창 단위로 먼저 시도한다.** 가려짐 · 화면 밖으로 삐져나감 · 작업 표시줄 겹침을 한 번에
 # 없애 준다 (macOS 가 ScreenCaptureKit 으로 창 단위를 찍는 것과 같은 방향).
 #
-# ⚠ **둘 다 안 되는 창이 있다 — 미해결이다** (#381). Windows 실기에서 `wt` 만 창 단위로
-# 찍히고 tildaz · wezterm · conhost 는 `PrintWindow` 가 단색을 돌려주며, 전체 화면으로
-# 물러서도 PNG 에 그 창이 없다 (창은 **화면에 분명히 떠 있는데도** 그렇다 — 좌상단
-# 1000×1000 의 어두운 픽셀 비율이 wt 창 캡처 63 % 대 나머지 셋 0 % 였다).
+# 순서는 셋이다. 앞이 안 되면 다음으로 간다.
+#   ① `PrintWindow(PW_RENDERFULLCONTENT)` — 창에게 자기 DC 에 그리라고 시킨다. **가려져
+#      있어도** 되고 창 프레임 밖 그림자가 안 들어가서 제일 깨끗하다.
+#   ② `ddagrab` (ffmpeg · Desktop Duplication) 으로 **창 rect 만** 잘라 찍는다. 화면에 보이는
+#      것을 읽으므로 먼저 맨 앞으로 올린다. 통로가 GDI 와 달라서 ① 이 안 되는 환경에서 잡힌다.
+#   ③ 전체 화면 `CopyFromScreen`. 대상이 다른 창에 가리면 안 보이므로 마지막이다.
 #
-# 유력한 설명은 **GDI 두 경로가 모두 DWM redirection surface 를 읽는다**는 것이다 —
-# flip-model swapchain 으로 그리는 창은 그 표면에 내용이 들어가지 않는다. 그래서 화면을
-# 긁든 창에게 그리라고 시키든 똑같이 빈 결과가 나온다. **아직 측정으로 확정하지는 않았다.**
-# 확정된 반증은 있다: "최대화된 창이 화면을 덮어 direct flip 이 걸려서" 라는 가설은
-# 최대화를 푼 뒤에도 동일하게 재현되어 기각됐다.
-#
-# 제대로 고치려면 GDI 를 버리고 `Windows.Graphics.Capture` 를 써야 한다 — macOS 가
-# `dist/macos/color-capture.m` 를 clang 으로 빌드해 쓰는 것처럼, Windows 는 Zig 로 작은
-# helper 를 빌드하면 된다. 그때까지는 `wt` 외에는 전체 화면으로 물러서고 `~` 로 표시한다.
+# **① 의 성패는 환경마다 갈린다** — sh 쪽 `WIN_FFMPEG` 주석의 두 머신 실측 표를 보라. 같은 앱이
+# 머신에 따라 뒤집히고, 무엇이 그 차이를 만드는지는 아직 모른다. ② 를 둔 이유가 그것이다.
 $captured = $false
-if ($h -ne [IntPtr]::Zero) {
-    $r = New-Object TzWin+RECT
-    if ([TzWin]::GetWindowRect($h, [ref]$r)) {
-        $ww = $r.R - $r.L
-        $wh = $r.B - $r.T
-        if ($ww -gt 0 -and $wh -gt 0) {
-            $wb = New-Object System.Drawing.Bitmap $ww, $wh
-            $wg = [System.Drawing.Graphics]::FromImage($wb)
-            $hdc = $wg.GetHdc()
-            $ok = [TzWin]::PrintWindow($h, $hdc, [TzWin]::PW_RENDERFULLCONTENT)
-            $wg.ReleaseHdc($hdc)
-            $wg.Dispose()
-            # GPU 로 그리는 창은 `PrintWindow` 에 **단색**을 주기도 한다. 그때는 전체 화면으로
-            # 물러서야 하므로 단색이면 실패로 본다.
-            if ($ok -and -not (Test-Uniform $wb)) {
-                $wb.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
+# ② 로 찍혔나. 종료 코드로 sh 에 알려서 표 아래 요약에 적는다.
+$viaDda = $false
+$r = New-Object TzWin+RECT
+$ww = 0
+$wh = 0
+if ($h -ne [IntPtr]::Zero -and [TzWin]::GetWindowRect($h, [ref]$r)) {
+    $ww = $r.R - $r.L
+    $wh = $r.B - $r.T
+}
+
+# ① 창 단위 — PrintWindow
+if ($ww -gt 0 -and $wh -gt 0) {
+    $wb = New-Object System.Drawing.Bitmap $ww, $wh
+    $wg = [System.Drawing.Graphics]::FromImage($wb)
+    $hdc = $wg.GetHdc()
+    $ok = [TzWin]::PrintWindow($h, $hdc, [TzWin]::PW_RENDERFULLCONTENT)
+    $wg.ReleaseHdc($hdc)
+    $wg.Dispose()
+    # GPU 로 그리는 창은 `PrintWindow` 에 **단색**을 주기도 한다. 그때는 다음 경로로 가야
+    # 하므로 단색이면 실패로 본다.
+    if ($ok -and -not (Test-Uniform $wb)) {
+        $wb.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
+        $captured = $true
+    }
+    $wb.Dispose()
+}
+
+# ② · ③ 은 **화면에 보이는 것**을 읽으므로 대상을 맨 앞으로 올린 뒤에 한다.
+$raised = $false
+if (-not $captured -and $h -ne [IntPtr]::Zero) {
+    [void][TzWin]::SetWindowPos($h, [TzWin]::TOPMOST, 0, 0, 0, 0, [TzWin]::RAISE)
+    Start-Sleep -Milliseconds 200
+    $raised = $true
+}
+
+# ② 창 단위 — ddagrab 으로 창 rect 만
+if (-not $captured -and $Ffmpeg -ne "" -and $ww -gt 0 -and $wh -gt 0) {
+    $sx = [TzWin]::GetSystemMetrics([TzWin]::SM_CXSCREEN)
+    $sy = [TzWin]::GetSystemMetrics([TzWin]::SM_CYSCREEN)
+    # **창의 원점이 주 모니터 안에 있을 때만 쓴다.** `output_idx=0` 은 첫 DXGI 출력이라
+    # 보통 주 모니터인데, 대상이 다른 모니터에 있으면 엉뚱한 자리를 잘라서 "찍혔다" 로
+    # 오판한다. 다중 모니터에서 `output_idx` 를 골라 쓰는 것은 미검증이라 넣지 않았다.
+    if ($r.L -ge 0 -and $r.T -ge 0 -and $r.L -lt $sx -and $r.T -lt $sy) {
+        # 창이 화면 밖으로 삐져나가면 그만큼 줄여서 자른다 (화면 밖은 읽을 수 없다).
+        $cw = [Math]::Min($ww, $sx - $r.L)
+        $ch = [Math]::Min($wh, $sy - $r.T)
+        if ($cw -gt 0 -and $ch -gt 0) {
+            # `ddagrab` 은 D3D11 프레임을 내므로 `hwdownload` 로 CPU 메모리에 내린다.
+            # ⚠ HDR 화면은 미검증이다 — 기본 8 bit 요청이 안 먹으면 `output_fmt=10bit` +
+            # `format=x2bgr10` 이 다음 후보다. 실패하면 아래 ③ 으로 물러선다.
+            $filter = "ddagrab=output_idx=0:offset_x=$($r.L):offset_y=$($r.T):video_size=${cw}x${ch},hwdownload,format=bgra"
+            & $Ffmpeg -hide_banner -loglevel error -y -filter_complex $filter -frames:v 1 $Png 2>&1 | Out-Null
+            if (Test-PngUsable $Png) {
                 $captured = $true
+                $viaDda = $true
             }
-            $wb.Dispose()
         }
     }
 }
 
 if (-not $captured) {
-    # 물러서기 — 전체 화면. 이때는 대상이 다른 창에 가리지 않도록 맨 앞으로 올린다.
-    if ($h -ne [IntPtr]::Zero) {
-        [void][TzWin]::SetWindowPos($h, [TzWin]::TOPMOST, 0, 0, 0, 0, [TzWin]::RAISE)
-        Start-Sleep -Milliseconds 200
-    }
+    # ③ 물러서기 — 전체 화면.
     # 가상 화면 = 모니터 전부를 감싸는 사각형. 주 모니터 왼쪽 / 위에 다른 모니터가 있으면
     # 원점이 음수라 X · Y 도 함께 읽는다.
     $vx = [TzWin]::GetSystemMetrics([TzWin]::SM_XVIRTUALSCREEN)
@@ -664,19 +769,23 @@ if (-not $captured) {
     $bmp.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose()
     $bmp.Dispose()
-    if ($h -ne [IntPtr]::Zero) {
-        # z-order 만 되돌린다. 위치는 (0,0) 에 둔 채로 놔둔다 — producer 가 곧 끝나면서 창이
-        # 닫히므로 원래 자리로 되돌릴 이유가 없고, 되돌리려면 옮기기 전 rect 가 필요하다.
-        [void][TzWin]::SetWindowPos($h, [TzWin]::NOTOPMOST, 0, 0, 0, 0, [TzWin]::RESTORE)
-    }
+}
+
+# 올렸으면 되돌린다 — ② 로 찍었어도 topmost 로 둔 채 나가지 않는다.
+# z-order 만 되돌린다. 위치는 (0,0) 에 둔 채로 놔둔다 — producer 가 곧 끝나면서 창이 닫히므로
+# 원래 자리로 되돌릴 이유가 없고, 되돌리려면 옮기기 전 rect 가 필요하다.
+if ($raised) {
+    [void][TzWin]::SetWindowPos($h, [TzWin]::NOTOPMOST, 0, 0, 0, 0, [TzWin]::RESTORE)
 }
 
 # PNG 은 어느 경로로든 만들되 **무엇을 찍었는지**를 종료 코드로 알린다. 이 구분이 없어서
 # 창을 한 번도 못 잡고 있던 conhost 가 계속 성공처럼 보였다 (#381).
 #   3 = 대상 창을 못 찾음 (전체 화면만 찍힘 — 대상이 있다는 보장 없음)
 #   4 = 창은 찾았지만 창 단위 캡처 실패 → 전체 화면으로 물러섬
+#   5 = 창 단위로 찍었는데 `PrintWindow` 가 아니라 `ddagrab` 이었다 (성공이다)
 if ($h -eq [IntPtr]::Zero) { exit 3 }
 if (-not $captured)        { exit 4 }
+if ($viaDda)               { exit 5 }
 exit 0
 EOF
 fi
@@ -687,14 +796,17 @@ fi
 # Windows 는 무엇을 찍었는지를 두 플래그로 알린다. 다른 platform 은 이 구분이 없다 (`0`).
 #   `CAPTURE_NOWIN`    대상 창을 못 찾음 — 전체 화면만 찍혔고 대상이 있다는 보장이 없다.
 #   `CAPTURE_FELLBACK` 창은 찾았지만 창 단위 캡처가 안 돼서 전체 화면으로 물러섰다.
+#   `CAPTURE_VIA_DDA`  창 단위로 찍긴 했는데 `PrintWindow` 가 아니라 `ddagrab` 이었다.
 CAPTURE_NOWIN=0
 CAPTURE_FELLBACK=0
+CAPTURE_VIA_DDA=0
 capture_screen() {
     _png="$1"
     _ctarget="$2"
     _csince="$3"
     CAPTURE_NOWIN=0
     CAPTURE_FELLBACK=0
+    CAPTURE_VIA_DDA=0
     case "$(uname -s)" in
         Darwin)
             # 창 목록에서 그 앱의 **가장 큰 windowID** 를 고른다 — windowID 는 단조 증가하므로
@@ -719,6 +831,7 @@ capture_screen() {
                 -ProcName "$(win_proc_name "$_ctarget")" \
                 -WindowClass "$(win_window_class "$_ctarget")" \
                 -WindowTitle "$(win_window_title "$_ctarget")" \
+                -Ffmpeg "$WIN_FFMPEG_NATIVE" \
                 -SinceEpoch "$_csince" >/dev/null 2>&1
             then :; else
                 # `&&` 연쇄로 쓰면 마지막 검사가 거짓일 때 함수가 0 이 아닌 값을 돌려주고,
@@ -726,6 +839,7 @@ capture_screen() {
                 _rc=$?
                 if   [ "$_rc" -eq 3 ]; then CAPTURE_NOWIN=1
                 elif [ "$_rc" -eq 4 ]; then CAPTURE_FELLBACK=1
+                elif [ "$_rc" -eq 5 ]; then CAPTURE_VIA_DDA=1
                 fi
             fi
             ;;
@@ -770,12 +884,21 @@ place_window() {
         -SinceEpoch "$2" >/dev/null 2>&1 || true
 }
 
-# 캡처를 켰는데 PNG 이 안 만들어진 회차 수. 끝에서 한 번 안내한다.
-CAPTURE_FAILED=0
-# PNG 은 생겼지만 대상 창을 못 찾은 회차 수 (Windows 만 구분한다).
-CAPTURE_NOWIN_TOTAL=0
-# 창은 찾았지만 창 단위 캡처가 안 돼 전체 화면으로 물러선 회차 수.
-CAPTURE_FELLBACK_TOTAL=0
+# 회차별 캡처 결과를 **파일에** 한 줄씩 적는다 (`failed` · `nowin` · `fellback` · `dda` · `ok`).
+#
+# **셸 변수로 세면 안 된다** — `run_terminal_win` 이 `run_terminal` 을 서브셸 `( … )` 안에서
+# 부르므로 (환경변수를 이 실행에만 걸기 위해서다) 그 안에서 올린 변수는 밖에 안 남는다.
+# 그래서 alacritty · wezterm · wt 의 회차가 요약에서 통째로 빠져 있었다 — 다섯 대상이 전부
+# `!` 인데 "2 회차가 안 찍혔어요" 로 나왔다 (#381 실기, 212ec07 에서 표시를 넷으로 나눌 때부터
+# 있던 버그다). 파일은 서브셸에서 append 해도 남는다.
+CAPTURE_LOG="$WORK_DIR/capture-outcomes"
+: > "$CAPTURE_LOG"
+
+# 그 파일에서 한 종류의 회차 수를 센다. `grep -c` 는 0 건일 때 종료 코드가 1 이라 `set -e`
+# 아래서 다루기 번거로워 awk 를 쓴다.
+capture_count() {
+    awk -v k="$1" '$0 == k { n++ } END { print n + 0 }' "$CAPTURE_LOG"
+}
 
 RESULTS="$WORK_DIR/results"
 : > "$RESULTS"
@@ -840,14 +963,19 @@ run_terminal() {
                 # `~` 창은 찾았지만 창 단위가 안 돼서 전체 화면으로 물러섰다
                 # `?` 창을 아예 못 찾았다 — 화면에 대상이 있다는 보장이 없다
                 # `!` PNG 자체가 안 생겼다
+                #
+                # **`ddagrab` 으로 찍힌 것도 `@` 다** — 창 단위라는 결과가 같아서 표시를 나누지
+                # 않는다. 어느 경로였는지는 표 아래 요약에 회차 수로 적는다.
                 if [ ! -s "$_png" ]; then
-                    CAPTURE_FAILED=$((CAPTURE_FAILED + 1)); printf '!'
+                    echo failed >> "$CAPTURE_LOG"; printf '!'
                 elif [ "$CAPTURE_NOWIN" = 1 ]; then
-                    CAPTURE_NOWIN_TOTAL=$((CAPTURE_NOWIN_TOTAL + 1)); printf '?'
+                    echo nowin >> "$CAPTURE_LOG"; printf '?'
                 elif [ "$CAPTURE_FELLBACK" = 1 ]; then
-                    CAPTURE_FELLBACK_TOTAL=$((CAPTURE_FELLBACK_TOTAL + 1)); printf '~'
+                    echo fellback >> "$CAPTURE_LOG"; printf '~'
+                elif [ "$CAPTURE_VIA_DDA" = 1 ]; then
+                    echo dda >> "$CAPTURE_LOG"; printf '@'
                 else
-                    printf '@'
+                    echo ok >> "$CAPTURE_LOG"; printf '@'
                 fi
             else
                 printf '.'
@@ -1218,6 +1346,11 @@ echo "timing 파일의 cols/rows 가 ${COLS}x${ROWS} 인지 표에서 확인해 
 echo "숫자는 비교할 수 없어요. 탭이 2 개 이상이면 탭바 (28 pt) 가 들어가 rows 가 줄어요."
 
 if [ -n "$CAPTURE_DIR" ]; then
+    # 서브셸에서도 남는 파일에서 센다 (위 `CAPTURE_LOG` 주석).
+    CAPTURE_FAILED=$(capture_count failed)
+    CAPTURE_NOWIN_TOTAL=$(capture_count nowin)
+    CAPTURE_FELLBACK_TOTAL=$(capture_count fellback)
+    CAPTURE_DDA_TOTAL=$(capture_count dda)
     echo ""
     echo "캡처: $CAPTURE_DIR"
     echo "  @ = 대상 창을 창 단위로 찍음 · ~ = 창 단위 실패로 전체 화면 · ? = 창을 못 찾음 · ! = 실패"
@@ -1225,10 +1358,17 @@ if [ -n "$CAPTURE_DIR" ]; then
         echo "⚠ ${CAPTURE_NOWIN_TOTAL} 회차는 대상 창을 못 찾았어요 (?). 그 회차는 창을 앞으로 올리지도"
         echo "  (0,0) 으로 옮기지도 못했으니, PNG 에 대상이 있어도 우연이에요."
     fi
+    if [ "$CAPTURE_DDA_TOTAL" -gt 0 ]; then
+        echo "ℹ ${CAPTURE_DDA_TOTAL} 회차는 PrintWindow 가 안 돼 ddagrab (Desktop Duplication) 으로 창 rect 를"
+        echo "  찍었어요. 결과는 창 단위 (@) 로 같아요 — 이 환경에서 PrintWindow 가 안 된다는 기록이에요."
+    fi
     if [ "$CAPTURE_FELLBACK_TOTAL" -gt 0 ]; then
         echo "⚠ ${CAPTURE_FELLBACK_TOTAL} 회차는 창 단위 캡처가 안 돼 전체 화면으로 물러섰어요 (~)."
         echo "  GPU 로 그리는 창이 PrintWindow 에 단색을 주는 경우예요. 그 PNG 은 다른 창에 가리거나"
         echo "  최대화된 창 때문에 대상이 빠질 수 있으니 눈으로 확인해 주세요."
+        if [ "$IS_WINDOWS" = 1 ] && [ -z "$WIN_FFMPEG" ]; then
+            echo "  ffmpeg 을 깔면 ddagrab 으로 창 rect 를 한 번 더 시도해요: winget install Gyan.FFmpeg"
+        fi
     fi
     echo "⚠ 전체 화면으로 찍힌 PNG (~ · ? · macOS 에서 창 못 찾음 · 리눅스 전체) 은 대상이 다른 창"
     echo "  뒤에 있으면 안 보여요. PNG 을 눈으로 확인해 주세요."
