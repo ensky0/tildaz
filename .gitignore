@@ -9,6 +9,9 @@ zig-cache/
 .claude/
 build.zig.tmp.*
 
+# `compare-terminals.sh --capture` 가 남기는 화면 캡처 (#381). 측정 확인용이라 저장소에 넣지 않음.
+dist/stress/shots/
+
 # stray empty file 자꾸 생성됨 — root cause 미파악, 일단 ignore.
 -10.1194
 

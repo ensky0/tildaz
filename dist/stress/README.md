@@ -393,6 +393,51 @@ from the CLI is not supported"*), `open -na … --args` 로 config key 옵션을
 | ghostty | 스크립트가 임시 config 파일을 만들어 `--config-file` 로 넘겨요. `window-save-state = never` 가 필수이고 값은 `false` 가 아니라 `default \| never \| always` 중 하나예요 |
 | TildaZ | `-size 120x40` — 스크립트가 이걸 써요. config 퍼센트는 건드리지 않아요 |
 
+### 창이 안 보일 때 — `--capture` 로 찍어 둬요
+
+측정 중에는 키보드·마우스에 손을 대지 않아요 ([측정 위생](#측정-위생)). 그런데 **창이 다른 창
+뒤에 뜨면** 상태를 확인할 방법이 없어져요 (Windows 에서 wezterm · `wt` 가 그랬어요).
+
+```sh
+dist/stress/compare-terminals.sh --mb 8 --workload zwj --repeat 1 --timeout 30 --capture
+```
+
+**경로는 선택이에요.** 안 주면 **`dist/stress/shots/`** 에 남아요 — 스크립트 바로 옆이라 찾기
+쉽고, **모든 OS · 데스크톱 환경에서 같은 자리**예요 (`.gitignore` 에 있어서 git 에는 안 잡혀요).
+다른 곳에 두려면 `--capture /tmp/shots` 처럼 경로를 주면 돼요.
+
+회차마다 `<디렉터리>/<이름>-<회차>.png` 로 남겨요. 진행 표시가 `.` 대신 **`@`(PNG 생성됨) ·
+`!`(실패)** 로 바뀌어요.
+
+⚠️ **`@` 는 파일이 생겼다는 뜻이지 창이 찍혔다는 보장이 아니에요.** 전체 화면으로 물러선
+경우 (macOS 에서 창을 못 찾음 · 리눅스 전체) 대상이 다른 창 뒤에 있으면 안 보여요. **PNG 을
+눈으로 확인해 주세요.** 실제로 그렇게 한 장을 놓친 적이 있어요 (아래 "찍기 전에 기다려요").
+
+⚠️ **이 옵션을 켠 실행의 숫자는 기록용으로 쓰지 마세요.** 캡처 도구가 측정 직후에 CPU 를 쓰고,
+producer 가 창을 **4 초** 더 붙들고 있어요 (그래야 찍을 창이 남아요 — `TILDAZ_STRESS_HOLD_MS`).
+**smoke 확인용**이에요. 기록용은 이 옵션 없이 `--repeat 5` 로 내요.
+
+| platform | 쓰는 도구 | 범위 | 알아 둘 것 |
+|---|---|---|---|
+| **macOS** | [`dist/macos/color-capture.m`](../macos/color-capture.m) (ScreenCaptureKit) | **창 단위** | **완전히 가려진 창도 찍혀요** (실측: 같은 자리에 창 둘을 겹치고 아래 창을 찍으니 아래 창 내용이 나왔어요). 스크립트가 `clang` 으로 빌드해서 써요. **화면 기록 권한**이 필요하고 잠금 화면이면 실패해요. 창을 못 찾으면 `screencapture -x` 전체 화면으로 물러서요 |
+| **Windows** | PowerShell (`CopyFromScreen`) | 전체 화면 | 찍기 직전에 **대상 창을 앞으로 올려요** — 가려져 있으면 화면에 안 나오니까요. `SWP_NOACTIVATE` 라 키보드 포커스는 안 뺏어요. 이번 회차에 새로 뜬 창만 골라서 (`StartTime`) 따로 열어 둔 창은 안 건드려요 |
+| **Linux (sway · Hyprland)** | `grim` | 전체 화면 | wlroots 계열의 `zwlr_screencopy` 를 써요. **가려진 창은 못 찍어요** — Wayland 는 client 가 다른 창 내용을 읽을 수 없어요. 타일링이라 보통 안 가려져요 |
+| **Linux (KDE Plasma)** | `spectacle -b -n -a` | **활성 창** | KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이 안 돼요. `org.kde.KWin.ScreenShot2` 는 호출자를 검증해서 직접 부를 수 없고, **Spectacle 이 정상 통로**예요 (KDE 기본 설치). `-a` 라 **창 단위로 찍히고 가려짐 문제도 없어요** (활성 창은 맨 앞이니까요). 다만 방금 뜬 창이 활성이 아니면 엉뚱한 창이 찍혀요 — 확실히 하려면 KWin 스크립팅으로 대상을 활성화해야 하는데, 필요한지 확인되기 전엔 안 넣었어요 |
+| **Linux (GNOME)** | `gnome-screenshot` | 전체 화면 | GNOME 43 에서 빠졌어요. 없으면 캡처를 못 해요 |
+
+리눅스에 **하나로 다 되는 방법은 없어요** — Wayland 는 client 가 화면을 읽을 수 없고 통로가
+compositor 마다 달라요. 위 순서대로 시도하고, 하나도 없으면 시작할 때 그 사실을 알려요.
+`xdg-desktop-portal` 은 표준이지만 **권한 대화상자가 떠서** 손 안 대고 도는 측정과 안 맞아요.
+
+#### 찍기 전에 2 초 기다려요
+
+**timing 파일이 생긴 시점은 측정이 끝난 시점이지 창이 화면에 올라온 시점이 아니에요.** wezterm 은
+GUI 시작이 제일 느려서, 8 MiB 측정 (111 ms) 이 창보다 먼저 끝난 회차가 있었어요 — 그 회차 PNG 에는
+**wezterm 창이 아예 없었어요** (macOS 실측). 그래서 timing 을 본 뒤 2 초 기다렸다 찍어요.
+
+`TILDAZ_STRESS_HOLD_MS` 4 초는 이 2 초에 캡처 시간을 더한 값이에요. macOS 캡처는 0.3 초쯤이고
+(실측) **Windows 는 아직 안 재 봤어요** — 모자라면 PNG 에 창이 안 찍히니 바로 드러나요.
+
 ### Windows 에서 돌리기
 
 **Git Bash 에서 같은 스크립트를 그대로 써요.** Git for Windows 에 항상 포함되니 따로 설치할
@@ -414,6 +459,7 @@ Windows 만의 주의점이에요.
 | **`wt --size` 가 무시될 수 있어요** | `launchMode` 가 `maximized` · `fullscreen` · focus 계열이면 무시돼요 ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/command-line-arguments)). 그때는 표의 grid 열이 목표와 달라지니 그 줄을 비교에 쓰지 않아요 |
 | **conhost 는 스크롤백이 없어요** | 창 크기 옵션이 없어 `mode con:` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어요. 다른 터미널에는 100000 줄을 주므로 **conhost 값에는 스크롤백 관리 비용이 빠져 있어요** — 같은 조건이 아니라는 뜻이에요 |
 | **kitty · ghostty · foot 은 없어요** | Windows 판이 없고 (foot 은 Wayland 전용) `command -v` 로 자동으로 빠져요 |
+| **창이 다른 창 뒤에 뜰 수 있어요** | Win32 는 *foreground 프로세스가 **직접** 시작한 프로세스* 에만 창을 앞으로 낼 권한을 줘요 ([SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)). `wt` 는 실행 별칭이라 부모 관계가 끊기고, wezterm 은 GUI 를 손자 프로세스로 띄웠어요. **`wt` 는 Windows Terminal 자체의 버그** ([#18324](https://github.com/microsoft/terminal/issues/18324), Priority-1) 로 **1.23.10353.0 에서 고쳐졌어요** — `wt --version` 이 그보다 낮으면 업데이트하세요. wezterm 은 아래처럼 실행 방법을 바꿔서 해결했어요. 상태를 봐야 하면 `--capture` 를 쓰세요 |
 | **alacritty 에서 producer 가 `main` 전에 멈추는 회차가 있어요** | 실측 ([#381](https://github.com/ensky0/tildaz/issues/381)): producer 스레드가 `ThreadState=5`(Wait) · `KernelModeTime=0` · `UserModeTime=0` — **코드를 한 줄도 실행하지 않았어요.** 자식이 ConPTY 호스트에 붙는 콘솔 클라이언트 연결 단계에서 걸려요 (워크로드와 무관해요, `main` 전이니까). 기본 `--timeout 180` 이라 3 회 반복이면 9 분이 순수 대기예요 — `--timeout 30` 으로 줄이거나 아래처럼 제외해요 |
 
 **특정 터미널을 제외하려면 PATH 에서 빼요.** 스크립트가 `command -v` 로 대상을 고르므로 이게 가장
@@ -428,6 +474,19 @@ PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --
 처음에 둘을 한 묶음으로 빼서 wezterm 값을 통째로 잃은 적이 있어요 ([#381](https://github.com/ensky0/tildaz/issues/381)) —
 그리고 그 값이 중요했어요. grapheme 워크로드에서 **wezterm 이 우리보다 2.7~2.9 배 빨라서**, 빼 버리면
 "우리가 꼴찌" 라는 사실이 표에서 사라져요.
+
+**wezterm 은 `wezterm-gui start --always-new-process` 로 띄워요** (Windows). 두 가지를 함께
+해결해요.
+
+- `wezterm start` 는 기본이 *이미 떠 있는 GUI 인스턴스에게 요청* 이에요 ([`wezterm start`](https://wezterm.org/cli/start.html)).
+  붙어 버리면 사용자가 열어 둔 창과 **같은 프로세스**를 쓰게 되고, 반복 측정에서 wezterm 만
+  **워밍업된 프로세스**로 재게 돼요 — 다른 넷은 매 회차 새 프로세스예요. `--config` 오버라이드도
+  기존 인스턴스에는 안 먹을 수 있어요.
+- `wezterm.exe` 는 콘솔용 런처라 GUI 를 **손자 프로세스**로 띄워요. `wezterm-gui` 를 직접 부르면
+  Git Bash 의 직접 자식이 되어 위 표의 foreground 권한 조건을 맞출 수 있어요.
+
+macOS · Linux 는 `wezterm` 을 그대로 쓰되 `--always-new-process` 는 똑같이 줘요 — 프로세스
+재사용 문제는 platform 을 안 가려요 (macOS 에도 [같은 증상의 이슈](https://github.com/wezterm/wezterm/issues/5098)가 있어요).
 
 **출력을 `| tail` 로 파이프하지 마세요** — 스크립트가 끝날 때까지 버퍼링돼서 진행이 하나도 안 보여요.
 파일로 받고 (`> out.txt 2>&1`) 그 파일을 읽어요.

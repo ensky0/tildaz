@@ -60,6 +60,15 @@ const env_bytes = "TILDAZ_STRESS_BYTES";
 /// 다른 터미널 안에서 producer 를 돌릴 때 결과를 돌려받는 통로 (#371 L4). 우리 하네스가
 /// 부모일 때는 쓰지 않는다.
 const env_timing_file = "TILDAZ_STRESS_TIMING_FILE";
+/// 출력을 끝내고 이 밀리초만큼 살아 있는다 — 하네스의 `--capture` 가 창을 찍을 시간을
+/// 준다 (#381). producer 가 끝나면 터미널이 곧바로 창을 닫아서, 이게 없으면 찍을 창이
+/// 없다. **Windows 는 `sh -c "…; sleep 3"` 으로 대신할 수 없다** — alacritty · wezterm 이
+/// MSYS sh 를 ConPTY 로 띄우지 못해 하네스가 producer 를 직접 실행하기 때문이다
+/// (`dist/stress/compare-terminals.sh` 의 `run_terminal_win` 주석). 그래서 producer 안에 둔다.
+///
+/// 기다리는 것은 **timing 파일을 쓴 뒤**다. 하네스는 timing 파일을 보고 측정이 끝난 것을
+/// 알고 캡처를 시작하므로, 순서가 반대면 하네스가 창이 닫힌 뒤에 찍으러 온다.
+const env_hold_ms = "TILDAZ_STRESS_HOLD_MS";
 
 /// 자식이 죽은 뒤에도 read thread 가 아직 안 읽은 데이터가 남아 있을 수 있다 —
 /// `waitpid` 는 프로세스 종료만 알려주고 커널 버퍼가 비었는지는 말하지 않는다
@@ -129,6 +138,8 @@ const ProducerRequest = struct {
     /// 때는 필요 없다 — 부모가 직접 재니까. **다른 터미널 안에서 돌 때** 결과를
     /// 돌려받을 통로가 이것뿐이다.
     timing_path: ?[]const u8 = null,
+    /// timing 을 쓴 뒤 이만큼 더 살아 있는다 (`env_hold_ms`). 0 이면 곧바로 끝낸다.
+    hold_ms: u32 = 0,
 };
 
 /// 환경변수 두 개가 다 있고 값이 유효할 때만 producer 모드다. 하나라도 빠지거나
@@ -146,7 +157,15 @@ fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
     // 호출자가 free 하지 않는다 — producer 는 이 값을 쓰고 곧 종료한다.
     const timing_path = std.process.getEnvVarOwned(alloc, env_timing_file) catch null;
 
-    return .{ .kind = kind, .bytes = bytes, .timing_path = timing_path };
+    // 값이 이상하면 **0 으로 본다** — 기다리지 않는 쪽이 안전하다. 창이 남으면 다음 회차와
+    // CPU 를 나눠 써서 측정을 오염시킨다.
+    var hold_ms: u32 = 0;
+    if (std.process.getEnvVarOwned(alloc, env_hold_ms) catch null) |text| {
+        defer alloc.free(text);
+        hold_ms = std.fmt.parseInt(u32, text, 10) catch 0;
+    }
+
+    return .{ .kind = kind, .bytes = bytes, .timing_path = timing_path, .hold_ms = hold_ms };
 }
 
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
@@ -186,6 +205,9 @@ fn produce(req: ProducerRequest) !void {
     if (req.timing_path) |path| {
         writeTiming(path, req, elapsed_ns, grid_start, grid_end) catch {};
     }
+
+    // 하네스의 `--capture` 가 창을 찍을 시간. timing 을 쓴 **뒤**여야 한다 (`env_hold_ms`).
+    if (req.hold_ms > 0) std.Thread.sleep(@as(u64, req.hold_ms) * std.time.ns_per_ms);
 }
 
 const Grid = struct { cols: u16, rows: u16 };
