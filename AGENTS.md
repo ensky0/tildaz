@@ -406,6 +406,20 @@ Windows 경로는 `dist/windows/package.ps1`을 PowerShell로 호출하며 WSL/G
 UNC 경로를 사용해요. distro 이름을 `Debian`으로 가정하거나 `\\wsl.localhost\...` 경로를
 기본값으로 쓰지 않아요.
 
+**예외 — 터미널 비교 측정은 Windows 에서 Git Bash, Linux 에서 KDE Plasma 로 해요.**
+[`dist/stress/compare-terminals.sh`](dist/stress/compare-terminals.sh) 는 위의 "기본 셸은
+PowerShell" 규칙이 적용되지 않는 유일한 도구예요.
+
+| platform | 어디서 | 안 지키면 |
+|---|---|---|
+| **Windows** | **Git Bash** (필수) | PowerShell 로는 **아예 안 돌아요** — POSIX `sh` 스크립트이고, `uname -s` 의 `MINGW*`/`MSYS*`/`CYGWIN*` 로 platform 을 판별하고 `cygpath -w` 로 경로를 변환해요. Git for Windows 에 항상 들어 있어요 |
+| **Linux** | **KDE Plasma** (권장) | 스크립트 본체는 어느 DE 에서도 돌지만 `--capture` 가 갈려요 — KDE 만 창 단위로 확실히 잡히고 (`spectacle -a`), sway · Hyprland 는 전체 화면 (`grim`), **GNOME 43+ 는 경로가 아예 없어요** |
+| **macOS** | 아무 터미널 | 갈리는 게 없어요 |
+
+`zig build stress` **자체는 이 제약이 없어요** — Windows PowerShell 에서 그대로 돌아가요.
+Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 스크립트예요. 자세한 내용은
+[`dist/stress/README.md`](dist/stress/README.md) 의 "돌리는 환경" 절에 있어요.
+
 **측정을 시작하기 전에 먼저 말하고 사용자 확인을 받아요** (2026-08-05 사용자 지시:
 *"테스트 하기 전에 말하고 해. 좀 전에도 내가 키보드 쳐서 오염되었어"*). 처리량 측정 · perf 덤프 ·
 합성 입력이 들어가는 검증은 **사용자가 그 시간 동안 기기를 건드리지 않아야** 값이 살아요. 조용히
