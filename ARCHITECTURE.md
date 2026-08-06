@@ -191,7 +191,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
 | Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Harness skeleton and bulk-output throughput live in [`dist/stress/`](dist/stress/README.md); resize storms, tab create/close under load, WSL/nvim/mouse, and multi-worker recovery remain |
-| **Grapheme cluster throughput** | [#389](https://github.com/ensky0/tildaz/issues/389) (tools in [#381](https://github.com/ensky0/tildaz/issues/381)) | **Root cause located, fix not started.** We run at 114–130 % of Windows Terminal until a grapheme cluster lands in every cell, and then at 19–23 % of it — reproduced on two Windows machines and macOS, see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** cut the number of native shaping calls (our code, largest win — run batching or a cluster cache, gated on one measurement described there); **(2)** re-measure and see how much of the parsing cost remains, then take it upstream to ghostty-vt if it does. The `hangul` wide-cell gap that looked like a third item **inverts between machines** (80 % of wt on one, 117 % on another), so it is not tracked as its own gap. Also unmeasured: the same workloads on macOS and Linux, and the attribution pairs anywhere — the workloads and `-scrollback` are cross-platform, so the run is the same command |
+| **Grapheme cluster throughput** | [#389](https://github.com/ensky0/tildaz/issues/389) (tools in [#381](https://github.com/ensky0/tildaz/issues/381)) | **Root cause located, fix not started.** We run at 114–130 % of Windows Terminal until a grapheme cluster lands in every cell, and then at 19–23 % of it — reproduced on two Windows machines and macOS, see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** the parser, which the app's own counters put at 68-83 % of the time on cluster-heavy output — that is inside ghostty-vt, so profile first and take it upstream; **(2)** cut the number of native shaping calls (run batching, then a cluster cache on top) — the paired workloads showed batching is the necessary part, and the win is per-frame cost (4.35 ms/frame on `zwj`) rather than throughput. The `hangul` wide-cell gap that looked like a third item **inverts between machines** (80 % of wt on one, 117 % on another), so it is not tracked as its own gap. Also unmeasured: the same workloads on macOS and Linux, and the attribution pairs anywhere — the workloads and `-scrollback` are cross-platform, so the run is the same command |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),
@@ -312,8 +312,26 @@ pay, and it has two layers:
    (`glyph_map`), macOS caches ligature pairs (`ligature_cache`), and neither
    caches arbitrary clusters; macOS additionally builds a `CTLine` per call.
 
-Fixing (2) is the largest available win and it is our own code, but the shape of the
-fix is not settled. Reading the Windows Terminal source showed it has **no shaping
+**Which layer dominates depends on what you are measuring, and the app's own counters
+settle it.** Dumping `perf` (`Ctrl+Shift+F12`) after an 8 MiB run on the Intel laptop:
+
+| Workload | `parse` | `render` | `present` | frames drawn | parse share |
+|---|---:|---:|---:|---:|---:|
+| `plain` | 26.0 ms | 12.9 | 1.4 | 5 (155 skipped) | 64 % |
+| `cjk` | **139.9 ms** | 24.2 | 3.4 | 13 (148 skipped) | **83 %** |
+| `emoji_vs16` | **448.6 ms** | 92.5 | 8.4 | 36 (126 skipped) | **82 %** |
+| `zwj` | **296.7 ms** | 126.2 | 13.7 | 29 (133 skipped) | **68 %** |
+
+**Parsing dominates bulk throughput** — 68-83 % on cluster-heavy output — because
+parsing is paid per byte while rendering is paid per *frame*, and 8 MiB of output
+draws only 13-36 frames (the rest are skipped as idle, #386). So the throughput gap
+against Windows Terminal is mostly (1), not (2).
+
+**Rendering still matters, as per-frame cost.** `zwj` costs 4.35 ms per frame — 26 %
+of a 60 Hz budget and 52 % of 120 Hz. Fixing (2) buys responsiveness and frame
+stability, not the throughput ranking; size the expectation accordingly.
+
+Reading the Windows Terminal source showed it has **no shaping
 cache either** — the difference is the *call unit*. It maps one whole font-face run
 per `MapCharacters`, skips shaping altogether for simple text
 (`IDWriteTextAnalyzer::GetTextComplexity`), and shapes a whole script run with one
@@ -335,11 +353,27 @@ Two candidates, not mutually exclusive:
   font and DPI change, and a capacity / eviction policy.
 
 The measured cost is roughly a 3 µs fixed part plus 0.6 µs per UTF-16 unit, so call
-count dominates and (A) attacks it directly. The choice is gated on one measurement:
-the workloads above repeat a single cluster, which flatters a cache. Each has a
-paired `*_varied` workload that holds the code path and the line bytes and varies
-only the number of distinct kinds, so the gap within a pair is the share of the
-bottleneck that repetition explains.
+count dominates and (A) attacks it directly. **The paired `*_varied` workloads settled
+the choice: (A) first.** Each pair holds the code path and the line bytes and varies
+only the number of distinct kinds, so the gap within a pair is the share that
+repetition explains.
+
+| Pair | ours, repeated → varied | Windows Terminal, repeated → varied |
+|---|---:|---:|
+| `emoji_vs16` | 25.5 → 25.2 (**-1 %**) | 102.6 → 80.7 (-21 %) |
+| `skintone` | 30.5 → 28.7 (**-6 %**) | 101.1 → 83.6 (-17 %) |
+| `zwj` | 30.3 → 29.2 (**-4 %**) | 122.1 → 122.7 (+0.5 %) |
+
+Repetition buys us nothing, which is what "no cache" looks like — but a cache is not
+the answer either, because the gap survives where a cache cannot help: on
+`emoji_vs16_varied`, where every cluster is new, Windows Terminal still runs at 80.7
+against our 25.2. That residue is the call unit, so (A) is the necessary fix and (B)
+is an addition on top for the common case of few distinct clusters on screen. Parsing
+(1) remains the larger share of throughput either way.
+
+One more caveat the same run exposed: `hangul_varied` swings 17.2-88.0 MiB/s between
+repeats of one measurement. It walks all 11,172 precomposed syllables, so the pressure
+is on the glyph atlas and `glyph_map`, not on shaping — a separate thread to pull.
 
 ## Linux Integration References
 
