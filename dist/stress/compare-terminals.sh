@@ -42,8 +42,12 @@ REPEAT=1
 SCROLLBACK=32767
 
 # `--capture [디렉터리]` — **smoke 확인용**이다 (#381). 각 회차의 측정이 끝난 순간 화면을
-# 찍어 `<디렉터리>/<이름>-<회차>.png` 로 남긴다. 창이 다른 창 뒤에 떠서 눈으로 확인할 수
-# 없을 때 (Windows 에서 wezterm · wt 가 그랬다) 쓰라고 만든 것이다.
+# 찍어 `<디렉터리>/<워크로드>-<이름>-<회차>.png` 로 남긴다. 창이 다른 창 뒤에 떠서 눈으로
+# 확인할 수 없을 때 (Windows 에서 wezterm · wt 가 그랬다) 쓰라고 만든 것이다.
+#
+# **파일명이 워크로드로 시작하는 이유** — 워크로드를 바꿔 가며 같은 디렉터리에 여러 번 찍는 게
+# 정상 사용법인데 (`zwj` 로 한 번, `cjk` 로 한 번), 이름에 워크로드가 없으면 뒤 실행이 앞
+# 실행을 덮어써서 비교할 수가 없다. 이름순 정렬도 워크로드끼리 묶여서 보기 좋다.
 #
 # **경로는 선택이다** — 안 주면 `dist/stress/shots` 에 남는다 (스크립트 바로 옆이라 찾기 쉽다).
 # 모든 OS · 데스크톱 환경에서 같은 자리다.
@@ -310,6 +314,34 @@ if [ "$IS_WINDOWS" = 1 ]; then
     fi
 fi
 echo ""
+# 평소 쓰는 TildaZ worker 를 내린다 (README 의 "측정 위생").
+#
+# **자동으로 죽인다.** 이 스크립트는 사용자 프로세스를 이름으로 죽이지 않는 것이 원칙이지만
+# (`cleanup_terminals` 주석 — 사용자가 따로 열어 둔 터미널 창까지 죽기 때문), worker 만은
+# 예외다. 이유가 셋이다.
+#   - **안 내리면 우리에게 불리하다.** 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만
+#     worker 가 떠서 렌더 · CPU 를 나눠 쓴다. 공정성 문제라 "잊으면 그 회차를 버려야" 한다.
+#   - **실제로 잊는다.** README 에 규칙으로만 적어 두었더니 그대로 여러 회차를 돌린 적이
+#     있다 (#381).
+#   - **이 스크립트는 내부 측정 도구다.** 사용자 문서에 없고 쓰는 사람이 정해져 있어서,
+#     "모르는 사람의 창이 닫힌다" 는 위험이 없다.
+#
+# **끝나고 다시 띄우지 않는다** — 필요하면 사용자가 직접 띄운다 (AGENTS.md 의 명시 지시).
+kill_worker() {
+    if [ "$IS_WINDOWS" = 1 ]; then
+        # `//F` 는 MSYS 의 경로 변환을 피하려고 슬래시를 겹친 것 (`tasklist //v` 와 같은 회피).
+        taskkill //IM tildaz.exe //F >/dev/null 2>&1 || return 1
+    else
+        # `pkill` 은 Git Bash 에 없지만 POSIX 쪽에는 있다. `-x` 로 이름 전체가 일치할 때만.
+        command -v pkill >/dev/null 2>&1 || return 1
+        pkill -x tildaz >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+if kill_worker; then
+    echo "평소 쓰는 TildaZ worker 를 종료했어요 (측정 위생). 끝나도 다시 띄우지 않아요."
+fi
+
 # wt 설정 교체는 측정 직전에 (헤더를 찍은 뒤) 한다 — 실패해도 헤더는 남는다.
 wt_settings_apply
 echo ""
@@ -349,9 +381,10 @@ wait_for() {
 # 찍어도 그 창이 보이고, 창 하나를 특정하는 코드는 platform 마다 방식이 갈리는 데다 사용자가
 # 따로 열어 둔 같은 앱 창과 구분하기가 어렵다. 아래 리눅스 도구들도 전체 화면이 기본이다.
 #
-# **Windows 만 찍기 직전에 대상 창을 앞으로 올린다** — 가려져 있으면 화면에 안 나오기 때문이다.
-# `SWP_NOACTIVATE` 라 키보드 포커스는 뺏지 않는다. 별도 옵션으로 두지 않는다 — 캡처가 되게
-# 하려는 수단이지 그 자체가 목적이 아니다.
+# **Windows 만 찍기 직전에 대상 창을 앞으로 올리고 (0,0) 으로 옮긴다** — 가려져 있으면 화면에
+# 안 나오고, 창이 화면 아래로 삐져나가면 그만큼 잘리기 때문이다. `SWP_NOACTIVATE` 라 키보드
+# 포커스는 뺏지 않는다. 별도 옵션으로 두지 않는다 — 캡처가 되게 하려는 수단이지 그 자체가
+# 목적이 아니다.
 #
 # **리눅스는 하나로 다 되는 방법이 없다.** Wayland 는 client 가 화면을 읽을 수 없고 통로가
 # compositor 마다 다르다. 되는 것을 순서대로 시도한다.
@@ -381,15 +414,53 @@ then
     fi
 fi
 
+# conhost 창을 찾을 제목. `mode con:` 과 함께 `conhost.cmd` 안에서 `title` 로 박는다.
+CONHOST_TITLE="TildaZ-stress-conhost"
+# TildaZ 측정 창의 클래스와 제목. **소스의 단일 원본은 `src/instances.zig`** 다
+# (`window_class_name` = `TildaZWindow`, `stress_window_title` = `TildaZ-stress`). worker 는
+# `TildaZ-<번호>` 라서 제목이 겹치지 않는다 — 그 계약을 `instances.zig` 의 테스트가 지킨다.
+TILDAZ_CLASS="TildaZWindow"
+TILDAZ_TITLE="TildaZ-stress"
+
 # Windows 에서 그 대상의 창을 소유한 프로세스 이름. `wezterm` 은 실행 파일과 GUI 프로세스
 # 이름이 다르다. 모르는 이름이면 빈 값 — 그때는 창을 올리지 않고 화면만 찍는다.
+#
+# **우리가 정체를 아는 둘 (conhost · tildaz) 은 빈 값이다** — 아래 클래스 + 제목으로 찾는다.
+# 프로세스로 찾는 방법은 둘 다 실패한다.
+#
+# - **conhost**: 고전 콘솔 창의 주인은 `conhost.exe` 가 아니라 **클라이언트인 `cmd.exe`** 다.
+#   Windows 실기로 확인했다 (#381): `EnumWindows` 로 보면 `ConsoleWindowClass` 창의
+#   `GetWindowThreadProcessId` 가 cmd 의 pid 를 주고, `Get-Process -Name conhost` 는 **11 개
+#   전부 `MainWindowHandle = 0`** 이었다. `cmd` 로 바꾸는 것도 안 된다 — 이 스크립트 자신의
+#   wrapper `cmd` 가 같은 순간에 뜬다.
+# - **tildaz**: `Get-Process -Name tildaz` 의 `MainWindowHandle` 이 **간헐적으로 0** 이다
+#   (#381 실기: 같은 조건에서 어떤 회차는 잡히고 어떤 회차는 못 잡았다). drop-down 이라
+#   숨은 상태의 worker 는 원래 0 인데, 측정 인스턴스도 0 으로 나오는 순간이 있었다.
+#
+# 클래스 + 제목은 그런 흔들림이 없다. **`FindWindowW` 는 창을 직접 물으므로 프로세스 스냅숏의
+# 타이밍에 좌우되지 않는다.**
 win_proc_name() {
     case "$1" in
         alacritty) printf 'alacritty' ;;
         wezterm) printf 'wezterm-gui' ;;
-        tildaz) printf 'tildaz' ;;
         wt) printf 'WindowsTerminal' ;;
-        conhost) printf 'conhost' ;;
+        *) printf '' ;;
+    esac
+}
+
+# `FindWindowW(<클래스>, <제목>)` 로 찾을 대상의 창 클래스 / 제목. 둘 다 있어야 쓴다.
+win_window_class() {
+    case "$1" in
+        conhost) printf 'ConsoleWindowClass' ;;
+        tildaz) printf '%s' "$TILDAZ_CLASS" ;;
+        *) printf '' ;;
+    esac
+}
+
+win_window_title() {
+    case "$1" in
+        conhost) printf '%s' "$CONHOST_TITLE" ;;
+        tildaz) printf '%s' "$TILDAZ_TITLE" ;;
         *) printf '' ;;
     esac
 }
@@ -399,53 +470,231 @@ if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
     # 열어 둔 같은 앱 창을 건드리지 않기 위해서다. 못 찾으면 창을 올리지 않고 화면만 찍는다
     # (앞에 뜬 대상은 그래도 찍힌다).
     cat > "$CAPTURE_PS1" << 'EOF'
-param([string]$Png, [string]$ProcName = "", [double]$SinceEpoch = 0)
+param(
+    [string]$Png = "",
+    [string]$ProcName = "",
+    [string]$WindowClass = "",
+    [string]$WindowTitle = "",
+    [double]$SinceEpoch = 0,
+    # 창을 찾아 배치만 하고 끝낸다 (찍지 않는다). 대상을 띄운 직후에 부른다.
+    [switch]$PlaceOnly,
+    # 창이 뜰 때까지 기다릴 시간. 0 이면 한 번만 찾아본다.
+    [int]$WaitMs = 0
+)
 $ErrorActionPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class TzWin {
   [DllImport("user32.dll")]
   public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern IntPtr FindWindow(string cls, string title);
+  [DllImport("user32.dll")]
+  public static extern int GetSystemMetrics(int index);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  // 창 하나를 그 창의 DC 에 직접 그리게 한다. `PW_RENDERFULLCONTENT` (0x2, Windows 8.1+) 라야
+  // DWM 이 합성하는 최신 내용을 준다.
+  [DllImport("user32.dll")]
+  public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  public const uint PW_RENDERFULLCONTENT = 0x00000002;
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDPIAware();
   public static readonly IntPtr TOPMOST = new IntPtr(-1);
   public static readonly IntPtr NOTOPMOST = new IntPtr(-2);
-  // SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE — z-order 만 바꾸고 포커스는 안 건드린다.
-  public const uint FLAGS = 0x0001 | 0x0002 | 0x0010;
+  // HWND_TOP — topmost 밴드에 넣지 않고 보통 창들 중 맨 앞으로만 올린다. 배치 단계에서
+  // 쓴다. 측정이 도는 내내 topmost 로 박아 두면 사용자의 다른 창을 계속 덮는다.
+  public static readonly IntPtr TOP = IntPtr.Zero;
+  // 올리면서 (0,0) 으로 옮길 때. SWP_NOSIZE | SWP_NOACTIVATE — 크기와 포커스는 안 건드리고
+  // **위치는 건드린다** (`SWP_NOMOVE` 를 뺐다).
+  public const uint RAISE = 0x0001 | 0x0010;
+  // 되돌릴 때. SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE — z-order 만 바꾼다.
+  public const uint RESTORE = 0x0001 | 0x0002 | 0x0010;
+  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. 모니터마다 배율이 다를 수 있어서
+  // system-aware (한 배율로 고정) 가 아니라 per-monitor 를 쓴다.
+  public static readonly IntPtr PER_MONITOR_V2 = new IntPtr(-4);
+  public const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77;
+  public const int SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
+  // `SetProcessDpiAwarenessContext` 는 Windows 10 1703+ 다. 그 전 버전에서는 export 가
+  // 없어 EntryPointNotFoundException 이 나므로 구형 API 로 물러선다.
+  public static void MakeDpiAware() {
+    try { if (SetProcessDpiAwarenessContext(PER_MONITOR_V2)) { return; } } catch {}
+    try { SetProcessDPIAware(); } catch {}
+  }
 }
 "@
+# **화면 크기를 읽기 전에 제일 먼저 부른다.** Windows PowerShell 5.1 은 DPI-unaware 라
+# 그냥 두면 화면 metric 이 *논리* 크기로 나오는데 (200 % 배율의 2880x1800 화면에서 1440x900),
+# `CopyFromScreen` 은 **물리 픽셀을 1:1 로** 복사한다. 그래서 좌상단 1/4 만 찍혔다 (#381 실측:
+# 다섯 장 전부 1440x900 이고 작업 표시줄이 없고 창이 오른쪽에서 잘렸다). aware 로 만들면
+# metric 도 물리 픽셀이 되어 둘이 맞는다.
+[TzWin]::MakeDpiAware()
+
+# 대상 창 하나를 찾는다. 못 찾으면 `IntPtr::Zero`.
+#   - **클래스 + 제목을 아는 대상 (conhost · tildaz) 은 그것으로** 찾는다. 창을 직접 묻는
+#     방식이라 프로세스 스냅숏의 타이밍에 좌우되지 않는다 (sh 쪽 `win_proc_name` 주석에
+#     둘이 왜 프로세스로는 안 잡히는지 적어 뒀다).
+#   - 그 밖에는 프로세스로 찾되 **이번 회차에 새로 뜬 창**만 고른다 (`StartTime`) — 사용자가
+#     따로 열어 둔 같은 앱 창을 건드리지 않기 위해서다.
+function Find-Target {
+    if ($WindowTitle -ne "" -and $WindowClass -ne "") {
+        $c = [TzWin]::FindWindow($WindowClass, $WindowTitle)
+        if ($c -ne [IntPtr]::Zero) { return $c }
+    }
+    if ($ProcName -ne "") {
+        $since = [DateTimeOffset]::FromUnixTimeSeconds([long]$SinceEpoch).LocalDateTime
+        $p = Get-Process -Name $ProcName |
+             Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.StartTime -gt $since } |
+             Sort-Object StartTime -Descending | Select-Object -First 1
+        if ($p) { return $p.MainWindowHandle }
+    }
+    return [IntPtr]::Zero
+}
+
+# 창이 뜨기를 기다린다. 배치 단계에서는 대상을 막 띄운 참이라 아직 창이 없다.
 $h = [IntPtr]::Zero
-if ($ProcName -ne "") {
-    $since = [DateTimeOffset]::FromUnixTimeSeconds([long]$SinceEpoch).LocalDateTime
-    $p = Get-Process -Name $ProcName |
-         Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.StartTime -gt $since } |
-         Sort-Object StartTime -Descending | Select-Object -First 1
-    if ($p) {
-        $h = $p.MainWindowHandle
-        [void][TzWin]::SetWindowPos($h, [TzWin]::TOPMOST, 0, 0, 0, 0, [TzWin]::FLAGS)
-        Start-Sleep -Milliseconds 200
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+while ($true) {
+    $h = Find-Target
+    if ($h -ne [IntPtr]::Zero -or $sw.ElapsedMilliseconds -ge $WaitMs) { break }
+    Start-Sleep -Milliseconds 100
+}
+if ($h -ne [IntPtr]::Zero) {
+    # **맨 앞으로 올리면서 (0,0) 으로 옮긴다.** 올리기만 하면 창이 화면 아래로 삐져나간 만큼
+    # 잘린다 — Windows 가 창을 cascade 로 놓아서 y 가 0 이 아니고, 40 행짜리 창은 그 offset
+    # 만큼 아래가 작업 표시줄 밖으로 나간다 (#381 실기: alacritty 는 작업 표시줄에 가렸고
+    # wezterm 은 아래 20 px 이 잘렸다). (0,0) 은 주 모니터의 좌상단이라 항상 보이는 자리다.
+    #
+    # z-order 는 단계마다 다르다. **배치 단계는 `HWND_TOP`** — 측정이 도는 내내 topmost 로
+    # 박아 두면 사용자의 다른 창을 계속 덮는다. **찍기 직전에만 `HWND_TOPMOST`** 로 올려서
+    # 그 순간 확실히 보이게 한다.
+    #
+    # **창이 화면보다 크면 그래도 잘린다** — 그때는 `--rows` 를 줄여서 찍는다.
+    #
+    # **TildaZ 는 이 옮기기가 안 먹는다 — 의도된 것이다.** `src/window.zig` 의
+    # `WM_WINDOWPOSCHANGING` 핸들러가 `SWP_NOMOVE` 가 없는 외부 요청의 x/y 를
+    # `expected_x`/`expected_y` 로 되돌린다 (Display Fusion · FancyZones 류가 drop-down rect 를
+    # 건드리는 것을 막으려고 넣은 방어다). z-order 는 그대로 올라가고 위치만 무시된다.
+    # TildaZ 는 drop-down 이라 원래 y=0 에 붙어 있어서 잘릴 일이 없으니 문제가 아니다 —
+    # 여기서 예외 처리를 하지 않는 이유다.
+    [void][TzWin]::SetWindowPos($h, [TzWin]::TOP, 0, 0, 0, 0, [TzWin]::RAISE)
+    Start-Sleep -Milliseconds 200
+}
+
+# 배치만 하는 호출은 여기서 끝난다.
+if ($PlaceOnly) { exit 0 }
+
+# 성긴 격자로 훑어 **전부 같은 색**이면 true. `PrintWindow` 가 실패했는지 판정하는 데 쓴다.
+function Test-Uniform($b) {
+    $first = $b.GetPixel(0, 0)
+    $sx = [Math]::Max(1, [int]($b.Width / 16))
+    $sy = [Math]::Max(1, [int]($b.Height / 16))
+    for ($y = 0; $y -lt $b.Height; $y += $sy) {
+        for ($x = 0; $x -lt $b.Width; $x += $sx) {
+            if (-not $b.GetPixel($x, $y).Equals($first)) { return $false }
+        }
+    }
+    return $true
+}
+
+# --- 찍기 --------------------------------------------------------------------
+#
+# **창 단위로 먼저 시도한다.** 가려짐 · 화면 밖으로 삐져나감 · 작업 표시줄 겹침을 한 번에
+# 없애 준다 (macOS 가 ScreenCaptureKit 으로 창 단위를 찍는 것과 같은 방향).
+#
+# ⚠ **둘 다 안 되는 창이 있다 — 미해결이다** (#381). Windows 실기에서 `wt` 만 창 단위로
+# 찍히고 tildaz · wezterm · conhost 는 `PrintWindow` 가 단색을 돌려주며, 전체 화면으로
+# 물러서도 PNG 에 그 창이 없다 (창은 **화면에 분명히 떠 있는데도** 그렇다 — 좌상단
+# 1000×1000 의 어두운 픽셀 비율이 wt 창 캡처 63 % 대 나머지 셋 0 % 였다).
+#
+# 유력한 설명은 **GDI 두 경로가 모두 DWM redirection surface 를 읽는다**는 것이다 —
+# flip-model swapchain 으로 그리는 창은 그 표면에 내용이 들어가지 않는다. 그래서 화면을
+# 긁든 창에게 그리라고 시키든 똑같이 빈 결과가 나온다. **아직 측정으로 확정하지는 않았다.**
+# 확정된 반증은 있다: "최대화된 창이 화면을 덮어 direct flip 이 걸려서" 라는 가설은
+# 최대화를 푼 뒤에도 동일하게 재현되어 기각됐다.
+#
+# 제대로 고치려면 GDI 를 버리고 `Windows.Graphics.Capture` 를 써야 한다 — macOS 가
+# `dist/macos/color-capture.m` 를 clang 으로 빌드해 쓰는 것처럼, Windows 는 Zig 로 작은
+# helper 를 빌드하면 된다. 그때까지는 `wt` 외에는 전체 화면으로 물러서고 `~` 로 표시한다.
+$captured = $false
+if ($h -ne [IntPtr]::Zero) {
+    $r = New-Object TzWin+RECT
+    if ([TzWin]::GetWindowRect($h, [ref]$r)) {
+        $ww = $r.R - $r.L
+        $wh = $r.B - $r.T
+        if ($ww -gt 0 -and $wh -gt 0) {
+            $wb = New-Object System.Drawing.Bitmap $ww, $wh
+            $wg = [System.Drawing.Graphics]::FromImage($wb)
+            $hdc = $wg.GetHdc()
+            $ok = [TzWin]::PrintWindow($h, $hdc, [TzWin]::PW_RENDERFULLCONTENT)
+            $wg.ReleaseHdc($hdc)
+            $wg.Dispose()
+            # GPU 로 그리는 창은 `PrintWindow` 에 **단색**을 주기도 한다. 그때는 전체 화면으로
+            # 물러서야 하므로 단색이면 실패로 본다.
+            if ($ok -and -not (Test-Uniform $wb)) {
+                $wb.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
+                $captured = $true
+            }
+            $wb.Dispose()
+        }
     }
 }
-$b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)
-$bmp.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose()
-$bmp.Dispose()
-if ($h -ne [IntPtr]::Zero) {
-    [void][TzWin]::SetWindowPos($h, [TzWin]::NOTOPMOST, 0, 0, 0, 0, [TzWin]::FLAGS)
+
+if (-not $captured) {
+    # 물러서기 — 전체 화면. 이때는 대상이 다른 창에 가리지 않도록 맨 앞으로 올린다.
+    if ($h -ne [IntPtr]::Zero) {
+        [void][TzWin]::SetWindowPos($h, [TzWin]::TOPMOST, 0, 0, 0, 0, [TzWin]::RAISE)
+        Start-Sleep -Milliseconds 200
+    }
+    # 가상 화면 = 모니터 전부를 감싸는 사각형. 주 모니터 왼쪽 / 위에 다른 모니터가 있으면
+    # 원점이 음수라 X · Y 도 함께 읽는다.
+    $vx = [TzWin]::GetSystemMetrics([TzWin]::SM_XVIRTUALSCREEN)
+    $vy = [TzWin]::GetSystemMetrics([TzWin]::SM_YVIRTUALSCREEN)
+    $vw = [TzWin]::GetSystemMetrics([TzWin]::SM_CXVIRTUALSCREEN)
+    $vh = [TzWin]::GetSystemMetrics([TzWin]::SM_CYVIRTUALSCREEN)
+    $bmp = New-Object System.Drawing.Bitmap $vw, $vh
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($vx, $vy, 0, 0, $bmp.Size)
+    $bmp.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose()
+    $bmp.Dispose()
+    if ($h -ne [IntPtr]::Zero) {
+        # z-order 만 되돌린다. 위치는 (0,0) 에 둔 채로 놔둔다 — producer 가 곧 끝나면서 창이
+        # 닫히므로 원래 자리로 되돌릴 이유가 없고, 되돌리려면 옮기기 전 rect 가 필요하다.
+        [void][TzWin]::SetWindowPos($h, [TzWin]::NOTOPMOST, 0, 0, 0, 0, [TzWin]::RESTORE)
+    }
 }
+
+# PNG 은 어느 경로로든 만들되 **무엇을 찍었는지**를 종료 코드로 알린다. 이 구분이 없어서
+# 창을 한 번도 못 잡고 있던 conhost 가 계속 성공처럼 보였다 (#381).
+#   3 = 대상 창을 못 찾음 (전체 화면만 찍힘 — 대상이 있다는 보장 없음)
+#   4 = 창은 찾았지만 창 단위 캡처 실패 → 전체 화면으로 물러섬
+if ($h -eq [IntPtr]::Zero) { exit 3 }
+if (-not $captured)        { exit 4 }
+exit 0
 EOF
 fi
 
 # 한 회차의 화면을 찍는다. 실패해도 측정을 멈추지 않는다 — 찍힌 게 없다는 사실은
 # 파일이 없는 것으로 알 수 있고, 표 옆에 표시도 남긴다.
+#
+# Windows 는 무엇을 찍었는지를 두 플래그로 알린다. 다른 platform 은 이 구분이 없다 (`0`).
+#   `CAPTURE_NOWIN`    대상 창을 못 찾음 — 전체 화면만 찍혔고 대상이 있다는 보장이 없다.
+#   `CAPTURE_FELLBACK` 창은 찾았지만 창 단위 캡처가 안 돼서 전체 화면으로 물러섰다.
+CAPTURE_NOWIN=0
+CAPTURE_FELLBACK=0
 capture_screen() {
     _png="$1"
     _ctarget="$2"
     _csince="$3"
+    CAPTURE_NOWIN=0
+    CAPTURE_FELLBACK=0
     case "$(uname -s)" in
         Darwin)
             # 창 목록에서 그 앱의 **가장 큰 windowID** 를 고른다 — windowID 는 단조 증가하므로
@@ -463,10 +712,22 @@ capture_screen() {
             [ -s "$_png" ] || screencapture -x "$_png" >/dev/null 2>&1 || true
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            powershell -NoProfile -ExecutionPolicy Bypass -File "$(native_path "$CAPTURE_PS1")" \
+            # `|| true` 를 쓰지 않는다 — 종료 코드 3 · 4 를 읽어야 하기 때문이다.
+            # `set -e` 아래서는 `if` 문맥이라 0 이 아니어도 스크립트가 죽지 않는다.
+            if powershell -NoProfile -ExecutionPolicy Bypass -File "$(native_path "$CAPTURE_PS1")" \
                 -Png "$(native_path "$_png")" \
                 -ProcName "$(win_proc_name "$_ctarget")" \
-                -SinceEpoch "$_csince" >/dev/null 2>&1 || true
+                -WindowClass "$(win_window_class "$_ctarget")" \
+                -WindowTitle "$(win_window_title "$_ctarget")" \
+                -SinceEpoch "$_csince" >/dev/null 2>&1
+            then :; else
+                # `&&` 연쇄로 쓰면 마지막 검사가 거짓일 때 함수가 0 이 아닌 값을 돌려주고,
+                # `set -e` 아래서 호출부가 그걸 실패로 본다. `if` 로 쓴다.
+                _rc=$?
+                if   [ "$_rc" -eq 3 ]; then CAPTURE_NOWIN=1
+                elif [ "$_rc" -eq 4 ]; then CAPTURE_FELLBACK=1
+                fi
+            fi
             ;;
         *)
             if command -v grim >/dev/null 2>&1; then
@@ -486,8 +747,35 @@ capture_screen() {
     esac
 }
 
+# 대상을 **띄우자마자** 창을 찾아 (0,0) 으로 옮기고 맨 앞으로 올린다 (Windows · 캡처 켤 때만).
+#
+# 찍기 직전에만 옮기면 **도는 동안 내내** 창이 가려 있거나 화면 밖으로 나가 있어서 눈으로
+# 볼 수가 없다 — 눈으로 보는 게 `--capture` 를 만든 이유다 (#381 사용자 지적). 그래서 배치를
+# 앞으로 당기고, 찍기 직전의 올리기는 그대로 둔다 (그사이 다른 창이 앞에 올 수 있다).
+#
+# **background 로 던진다.** 창이 뜰 때까지 최대 `PLACE_WAIT_MS` 를 폴링하므로 여기서 기다리면
+# timing 파일 폴링이 그만큼 늦어진다. 실패해도 측정을 막지 않는다.
+#
+# 터미널이 주는 위치 옵션 (`wezterm --position` 등) 을 쓰지 않는 이유는 **문법이 대상마다 다르고
+# conhost 는 옵션 자체가 없어서**다. 창을 찾아 옮기는 방법 하나면 다섯 대상이 같은 코드로 처리된다.
+PLACE_WAIT_MS=5000
+
+place_window() {
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(native_path "$CAPTURE_PS1")" \
+        -PlaceOnly \
+        -WaitMs "$PLACE_WAIT_MS" \
+        -ProcName "$(win_proc_name "$1")" \
+        -WindowClass "$(win_window_class "$1")" \
+        -WindowTitle "$(win_window_title "$1")" \
+        -SinceEpoch "$2" >/dev/null 2>&1 || true
+}
+
 # 캡처를 켰는데 PNG 이 안 만들어진 회차 수. 끝에서 한 번 안내한다.
 CAPTURE_FAILED=0
+# PNG 은 생겼지만 대상 창을 못 찾은 회차 수 (Windows 만 구분한다).
+CAPTURE_NOWIN_TOTAL=0
+# 창은 찾았지만 창 단위 캡처가 안 돼 전체 화면으로 물러선 회차 수.
+CAPTURE_FELLBACK_TOTAL=0
 
 RESULTS="$WORK_DIR/results"
 : > "$RESULTS"
@@ -531,6 +819,10 @@ run_terminal() {
             "$@" >/dev/null 2>&1 &
             _pid=$!
         fi
+        # 창이 뜨는 대로 (0,0) 에 놓는다 (위 `place_window` 주석). background 다.
+        if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
+            place_window "$_name" "$_since" &
+        fi
         if wait_for "$_timing"; then
             _samples="$_samples $(sed -n 's/^elapsed_ns=//p' "$_timing")"
             _cols=$(sed -n 's/^cols=//p' "$_timing")
@@ -542,9 +834,21 @@ run_terminal() {
             # 화면에 올라온 시점이 아니다 (위 `HOLD_MS` 주석).
             if [ -n "$CAPTURE_DIR" ]; then
                 sleep "$CAPTURE_DELAY"
-                _png="$CAPTURE_DIR/$_name-$_run.png"
+                _png="$CAPTURE_DIR/$WORKLOAD-$_name-$_run.png"
                 capture_screen "$_png" "$_name" "$_since"
-                if [ -s "$_png" ]; then printf '@'; else CAPTURE_FAILED=$((CAPTURE_FAILED + 1)); printf '!'; fi
+                # `@` 대상 창을 창 단위로 찍었다 (가장 좋은 결과)
+                # `~` 창은 찾았지만 창 단위가 안 돼서 전체 화면으로 물러섰다
+                # `?` 창을 아예 못 찾았다 — 화면에 대상이 있다는 보장이 없다
+                # `!` PNG 자체가 안 생겼다
+                if [ ! -s "$_png" ]; then
+                    CAPTURE_FAILED=$((CAPTURE_FAILED + 1)); printf '!'
+                elif [ "$CAPTURE_NOWIN" = 1 ]; then
+                    CAPTURE_NOWIN_TOTAL=$((CAPTURE_NOWIN_TOTAL + 1)); printf '?'
+                elif [ "$CAPTURE_FELLBACK" = 1 ]; then
+                    CAPTURE_FELLBACK_TOTAL=$((CAPTURE_FELLBACK_TOTAL + 1)); printf '~'
+                else
+                    printf '@'
+                fi
             else
                 printf '.'
             fi
@@ -615,7 +919,24 @@ fi
 
 if command -v alacritty >/dev/null 2>&1; then
     T="$WORK_DIR/alacritty.timing"
-    if [ "$IS_WINDOWS" = 1 ]; then
+    # **Windows + ZWJ 계열은 돌리지 않는다 — alacritty 가 멈춘다.** 실기에서 재현 조건을
+    # 좁혔다 ([#381](https://github.com/ensky0/tildaz/issues/381), Ryzen AI 7 350 · Windows 11):
+    #
+    #   - 워크로드 11 종 × 8 MiB 를 한 번씩 돌려 **`zwj` 와 `zwj_varied` 둘만** 멈췄다
+    #     (나머지 9 종은 978~1,746 ms 로 완주). `cjk` 도 ZWJ 를 담지만 줄에 몇 개뿐이라
+    #     멀쩡하다 — **ZWJ 밀도**가 임계를 넘을 때만 난다.
+    #   - `zwj` 는 1 MiB 는 완주하고 **2 MiB 부터 멈춘다** (8 MiB 2/2 멈춤).
+    #   - 멈춘 회차의 producer 는 **CPU 시간이 0 이 아니다** (0.016~0.047 s) — 출력을 하다가
+    #     write 에서 막힌 것이다. 창에 입력 이벤트를 주면 조금 진행하고 다시 막힌다.
+    #     alacritty 가 back-pressure 상황에서 ConPTY 출력을 그만 소비하는 것으로 보인다.
+    #
+    # 예전 주석의 "`main` 진입 전에 멈춘다 · CPU 시간 0" 은 **틀렸다** (위 실측으로 반증).
+    #
+    # 30 초씩 기다렸다 버리느니 아예 빼고 그 사실을 표에 적는다. 다른 platform 은 영향 없다.
+    if [ "$IS_WINDOWS" = 1 ] && { [ "$WORKLOAD" = zwj ] || [ "$WORKLOAD" = zwj_varied ]; }; then
+        printf '%-14s %s\n' alacritty "건너뜀 (Windows + $WORKLOAD 은 alacritty 가 멈춰요)"
+        printf '%s\tunsupported\t0\t0\t0\t0\n' alacritty >> "$RESULTS"
+    elif [ "$IS_WINDOWS" = 1 ]; then
         run_terminal_win alacritty alacritty \
             -o "window.dimensions.columns=$COLS" \
             -o "window.dimensions.lines=$ROWS" \
@@ -794,6 +1115,9 @@ if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
     #     그 호출이 실패해 timing 에 `cols=0 rows=0` 이 찍히고 격자 검증에서 버려진다.
     _conhost_cmd="$WORK_DIR/conhost.cmd"
     {
+        # 캡처가 창을 찾을 수 있게 제목을 박는다 — 프로세스로는 못 찾기 때문이다
+        # (`win_proc_name` 의 conhost 주석). 제일 앞에 두어 창이 뜨자마자 식별되게 한다.
+        printf 'title %s\r\n' "$CONHOST_TITLE"
         printf 'mode con: cols=%s lines=%s\r\n' "$COLS" "$ROWS"
         printf 'set "TILDAZ_STRESS_WORKLOAD=%s"\r\n' "$WORKLOAD"
         printf 'set "TILDAZ_STRESS_BYTES=%s"\r\n' "$BYTES"
@@ -842,6 +1166,10 @@ echo "대표값: $STAT_LABEL"
 printf '%-14s %12s %10s %17s %10s  %s\n' terminal ms MiB/s "min~max MiB/s" grid 비고
 printf '%s\n' "--------------------------------------------------------------------------------------"
 while IFS="$(printf '\t')" read -r name samples cols rows cols0 rows0; do
+    if [ "$samples" = "unsupported" ]; then
+        printf '%-14s %12s %10s %17s %10s  %s\n' "$name" - - - - "측정 불가 — 위 안내 참고"
+        continue
+    fi
     if [ "$samples" = "skipped" ] || [ -z "$samples" ]; then
         printf '%-14s %12s %10s %17s %10s  %s\n' "$name" - - - - "측정 실패"
         continue
@@ -891,10 +1219,19 @@ echo "숫자는 비교할 수 없어요. 탭이 2 개 이상이면 탭바 (28 pt
 
 if [ -n "$CAPTURE_DIR" ]; then
     echo ""
-    echo "캡처 (진행 표시의 @ = PNG 생성됨 · ! = 실패): $CAPTURE_DIR"
-    echo "⚠ @ 는 **파일이 생겼다**는 뜻이지 창이 찍혔다는 보장이 아니에요 — 전체 화면으로 물러선"
-    echo "  경우 (macOS 에서 창을 못 찾음 · 리눅스 전체) 대상이 다른 창 뒤에 있으면 안 보여요."
-    echo "  PNG 을 눈으로 확인해 주세요."
+    echo "캡처: $CAPTURE_DIR"
+    echo "  @ = 대상 창을 창 단위로 찍음 · ~ = 창 단위 실패로 전체 화면 · ? = 창을 못 찾음 · ! = 실패"
+    if [ "$CAPTURE_NOWIN_TOTAL" -gt 0 ]; then
+        echo "⚠ ${CAPTURE_NOWIN_TOTAL} 회차는 대상 창을 못 찾았어요 (?). 그 회차는 창을 앞으로 올리지도"
+        echo "  (0,0) 으로 옮기지도 못했으니, PNG 에 대상이 있어도 우연이에요."
+    fi
+    if [ "$CAPTURE_FELLBACK_TOTAL" -gt 0 ]; then
+        echo "⚠ ${CAPTURE_FELLBACK_TOTAL} 회차는 창 단위 캡처가 안 돼 전체 화면으로 물러섰어요 (~)."
+        echo "  GPU 로 그리는 창이 PrintWindow 에 단색을 주는 경우예요. 그 PNG 은 다른 창에 가리거나"
+        echo "  최대화된 창 때문에 대상이 빠질 수 있으니 눈으로 확인해 주세요."
+    fi
+    echo "⚠ 전체 화면으로 찍힌 PNG (~ · ? · macOS 에서 창 못 찾음 · 리눅스 전체) 은 대상이 다른 창"
+    echo "  뒤에 있으면 안 보여요. PNG 을 눈으로 확인해 주세요."
     if [ "$CAPTURE_FAILED" -gt 0 ]; then
         echo "⚠ ${CAPTURE_FAILED} 회차가 안 찍혔어요. 권한 (macOS 화면 기록) · 캡처 도구 유무 (리눅스) ·"
         echo "  hold (${HOLD_MS} ms) 안에 캡처가 못 끝났는지를 보세요."

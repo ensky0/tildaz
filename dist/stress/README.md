@@ -111,7 +111,7 @@ vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈�
 | `cjk` | 한글 · emoji · 스킨톤 · ZWJ 묶음 · block element | wide cell · grapheme cluster |
 
 **귀속용 네 개** ([#381](https://github.com/ensky0/tildaz/issues/381)) — `cjk` 가 섞어 쓰는 경로를
-하나씩만 태워요. 넷 다 한 줄의 구조가 같아요 (앞머리 10 열 + 항목 18 개).
+하나씩만 태워요. 넷 다 한 줄의 구조가 같아요 (앞머리 10 열 + 항목 13 개).
 
 | 이름 | 내용 | 태우는 경로 |
 |---|---|---|
@@ -132,8 +132,8 @@ vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈�
 | `skintone_varied` | base 25 × 스킨톤 5 | **125** | 〃 |
 | `zwj_varied` | 3 인 가족 ZWJ 묶음 전부 | **12** | 〃 |
 
-한 화면 (40 행 × 18 항목) 에 동시에 올라오는 종류는 최대 **720** 개예요 — 줄마다 항목 색인이
-18 씩 전진해서요. `zig test src/stress/workload.zig` 의 "varied 워크로드는 한 화면에 여러 종류를
+한 화면 (40 행 × 13 항목) 에 동시에 올라오는 종류는 최대 **520** 개예요 — 줄마다 항목 색인이
+13 씩 전진해서요. `zig test src/stress/workload.zig` 의 "varied 워크로드는 한 화면에 여러 종류를
 올린다" 가 이 종류 수를 못 박아 둬요.
 
 ⚠️ **귀속 · varied 워크로드는 MiB/s 를 그대로 비교하면 안 돼요.** 줄 byte 가 경로마다 달라요.
@@ -142,27 +142,46 @@ vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈�
 
 | 짝 | 줄 byte |
 |---|---:|
-| `hangul` · `hangul_varied` | 65 |
-| `emoji_vs16` · `emoji_vs16_varied` | 119 |
-| `skintone` · `skintone_varied` | 155 |
-| `zwj` · `zwj_varied` | 335 |
+| `hangul` · `hangul_varied` | 50 |
+| `emoji_vs16` · `emoji_vs16_varied` | 89 |
+| `skintone` · `skintone_varied` | 105 |
+| `zwj` · `zwj_varied` | 245 |
 
-#### 항목 18 개는 **최악의 표시 폭**에서 나온 수예요
+#### 항목 13 개는 **최악의 표시 폭**에서 나온 수예요
 
-처음엔 항목 35 개로 `cjk` 와 같은 80 열을 맞췄는데, **그건 ZWJ 를 접는 터미널에서만 80 열**이었어요
-([#381](https://github.com/ensky0/tildaz/issues/381)).
+우리는 `👨‍👩‍👧` 를 한 grapheme 으로 접어 2 열에 그리지만, **안 접는 터미널은 구성원 emoji 세 개를
+따로 그려요.** 그때 한 항목이 몇 열이냐가 이 수를 정해요.
 
-| | `👨‍👩‍👧` 하나 | 항목 35 개 + 앞머리 10 | 120 열 격자에서 |
-|---|---:|---:|---|
-| ZWJ 를 한 grapheme 으로 접는 터미널 | 2 열 | 80 열 | 1 줄 |
-| **안 접는 터미널** — 구성원 emoji 를 따로 그려요 | **6 열** | **220 열** | **2 줄** |
+| 세는 방식 | 항목당 열 | 어디서 |
+|---|---:|---|
+| 한 grapheme 으로 접어요 | 2 | TildaZ · Windows Terminal |
+| 구성원만 세고 ZWJ 는 0 열 (`Cf` · default-ignorable 이니까) | 6 | — |
+| **구성원 + ZWJ 도 1 열씩** | **8** | **alacritty · wezterm (Windows 실측)** |
 
-구성원이 각각 East_Asian_Width=Wide 라 따로 그리면 2 열씩 먹어요 (ZWJ 자체는 `Cf` ·
-default-ignorable 이라 0 열). **줄이 접히면 대상마다 줄 수가 달라져 비교가 성립하지 않아요** —
-열 수가 줄바꿈 횟수를 바꾸기 때문이고, 아래 "측정 중 resize" 검사에는 안 걸리는 종류예요.
+**처음엔 가운데 줄(6 열)을 최악으로 보고 `110 ÷ 6 = 18` 을 썼는데 그게 틀렸어요.**
+Windows 실기에서 alacritty · wezterm 이 **ZWJ 를 1 열로 세는 것**이 확인됐어요
+([#381](https://github.com/ensky0/tildaz/issues/381)). 그러면 한 항목이
+`👨(2) + ZWJ(1) + 👩(2) + ZWJ(1) + 👧(2) = 8` 열이라 한 줄이 `10 + 18 × 8 = 154` 열이 되어 120 열
+격자를 넘어요.
 
-그래서 항목 수를 최악의 폭으로 정해요: `앞머리 10 + 항목당 최악 6 × N ≤ 120` → **N = 18**.
-접는 터미널에서 `10 + 18 × 2 = 46` 열로 격자보다 짧은 건 의도예요.
+넘는 지점이 하필 한 grapheme 한가운데라 **그 항목 하나가 앞뒤로 쪼개져 합성이 깨진 채** 그려졌어요.
+실제 출력이 계산과 정확히 맞았어요 — `10 + 13 × 8 = 114` 까지 온전하고, 남은 6 열에 `👨‍👩‍` (2+1+2+1)
+가 들어간 뒤 `👧` 가 다음 행으로 넘어갔어요.
+
+```
+000004694 👨‍👩‍👧 × 13 … 👨‍👩‍   ← 120 열에서 끊김
+          ‍👧👨‍👩‍👧 × 4        ← 다음 행
+```
+
+**줄이 접히면 대상마다 줄 수가 달라져 비교가 성립하지 않아요** — 열 수가 줄바꿈 횟수를 바꾸기
+때문이고, 아래 "측정 중 resize" 검사에는 안 걸리는 종류예요. 처음의 35 개 (= `cjk` 와 같은 80 열) 도
+같은 이유로 버렸어요 — 그건 **접는 터미널에서만** 80 열이었어요.
+
+그래서 최악을 8 열로 잡고 다시 풀어요: `앞머리 10 + 8 × N ≤ 120` → **N = 13**.
+접는 터미널에서 `10 + 13 × 2 = 36` 열로 격자보다 짧은 건 의도예요.
+
+⚠️ **ZWJ 를 2 열로 세는 터미널이 나오면 또 내려야 해요** (항목당 10 열 → N = 11). 판정은
+`--capture` 로 찍어 **번호 줄 사이에 조각 줄이 끼는지** 보면 돼요.
 
 ## 부하를 만드는 쪽도 우리 자신이에요
 
@@ -224,7 +243,7 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 |---|---|
 | 측정 중 창을 클릭하거나 포커스를 바꾸지 않아요 | 실측 중 키보드 · 마우스가 눌려 그 회차를 버렸어요 |
 | 이전 실행의 잔여 터미널 프로세스를 먼저 정리해요 | `kitty --detach` 와 ghostty 는 스크립트가 끝나도 남아서 다음 회차와 CPU 를 나눠요 |
-| **평소 쓰는 TildaZ worker 를 종료해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 공정성 문제예요 |
+| **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 공정성 문제예요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어서 ([#381](https://github.com/ensky0/tildaz/issues/381)) `compare-terminals.sh` 가 시작할 때 직접 내려요. **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
 | AC 전원에 연결하고 절전 · 화면 잠금을 꺼요 | 노트북은 배터리 · 열로 스로틀링이 걸려요 |
 | 수치는 **실기기**에서 내요 | VM 은 CPU · 메모리 대역폭 · 렌더 경로가 host 와 달라요. VM 은 동작 확인 용도예요 |
 
@@ -317,6 +336,28 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 ```
 
+### 돌리는 환경 — **Windows 는 Git Bash · Linux 는 KDE Plasma**
+
+`compare-terminals.sh` 는 platform 을 안 가리는 POSIX `sh` 스크립트지만, **셸과 데스크톱은
+가려요**. 잘못된 데서 시작하면 아예 안 돌거나 캡처만 조용히 비어요.
+
+| platform | 어디서 | 왜 |
+|---|---|---|
+| **Windows** | **Git Bash** (필수) | PowerShell 로는 **아예 안 돌아요** — `uname -s` 의 `MINGW*`/`MSYS*`/`CYGWIN*` 로 platform 을 판별하고, 자식이 Windows 실행파일이라 `cygpath -w` 로 경로를 변환해요. Git for Windows 에 항상 들어 있으니 따로 설치할 게 없어요. 아래 [Windows 에서 돌리기](#windows-에서-돌리기) 참고 |
+| **Linux** | **KDE Plasma** (권장) | 스크립트 본체는 어느 DE 에서도 돌아요. 갈리는 건 **`--capture` 뿐**이에요 — KDE 만 창 단위로 확실히 잡혀요 (아래 표) |
+| **macOS** | 아무 터미널 | 갈리는 게 없어요 |
+
+**`--capture` 를 안 쓰면 Linux 는 DE 를 안 가려요.** 캡처가 필요할 때만 아래가 걸려요.
+
+| Linux DE | 캡처 | |
+|---|---|---|
+| **KDE Plasma** | `spectacle -b -n -a` | ✅ **창 단위**. 실기 검증된 유일한 DE ([#381](https://github.com/ensky0/tildaz/issues/381), AMD Ryzen AI 7 350 · KDE Plasma Wayland) |
+| sway · Hyprland | `grim` | ⚠️ 돼요. 전체 화면이라 **가려진 창은 못 찍어요** (타일링이라 보통 안 가려지긴 해요) |
+| GNOME 43+ | — | ❌ `gnome-screenshot` 이 제거돼서 **경로가 없어요** |
+
+> **`zig build stress` 자체는 이 제약이 없어요.** Windows PowerShell 에서 그대로 돌아가요
+> (`## 쓰는 법`). Git Bash · KDE 가 필요한 건 **여러 터미널을 띄워 비교하는 이 스크립트**예요.
+
 같은 producer 를 여러 터미널 안에서 돌리고 완료 시간을 모아요. producer 가 출력을 끝낸 뒤
 경과 시간과 **자기 그리드 크기**를 timing 파일에 적고, 스크립트가 그것을 표로 내요.
 
@@ -406,8 +447,22 @@ dist/stress/compare-terminals.sh --mb 8 --workload zwj --repeat 1 --timeout 30 -
 쉽고, **모든 OS · 데스크톱 환경에서 같은 자리**예요 (`.gitignore` 에 있어서 git 에는 안 잡혀요).
 다른 곳에 두려면 `--capture /tmp/shots` 처럼 경로를 주면 돼요.
 
-회차마다 `<디렉터리>/<이름>-<회차>.png` 로 남겨요. 진행 표시가 `.` 대신 **`@`(PNG 생성됨) ·
-`!`(실패)** 로 바뀌어요.
+회차마다 `<디렉터리>/<워크로드>-<이름>-<회차>.png` 로 남겨요 (예: `zwj-alacritty-1.png`).
+진행 표시가 `.` 대신 아래 넷으로 바뀌어요.
+
+| 표시 | 뜻 |
+|---|---|
+| **`@`** | 대상 창을 **창 단위**로 찍었어요 (가장 좋은 결과) |
+| **`~`** | 창은 찾았지만 창 단위가 안 돼서 **전체 화면**으로 물러섰어요 |
+| **`?`** | 창을 **아예 못 찾았어요** — PNG 에 대상이 있어도 우연이에요 |
+| **`!`** | PNG 자체가 안 생겼어요 |
+
+이 구분이 없던 때 **창을 한 번도 못 잡던 conhost 가 계속 `@` 로 성공처럼 보였어요**
+([#381](https://github.com/ensky0/tildaz/issues/381)).
+
+**파일명이 워크로드로 시작해요.** 워크로드를 바꿔 가며 같은 디렉터리에 여러 번 찍는 게 정상
+사용법인데 (`zwj` 한 번, `cjk` 한 번), 이름에 워크로드가 없으면 **뒤 실행이 앞 실행을 덮어써서**
+비교할 수가 없어요. 이름순 정렬도 워크로드끼리 묶여요. 세 platform 공통이에요.
 
 ⚠️ **`@` 는 파일이 생겼다는 뜻이지 창이 찍혔다는 보장이 아니에요.** 전체 화면으로 물러선
 경우 (macOS 에서 창을 못 찾음 · 리눅스 전체) 대상이 다른 창 뒤에 있으면 안 보여요. **PNG 을
@@ -420,7 +475,7 @@ producer 가 창을 **4 초** 더 붙들고 있어요 (그래야 찍을 창이 �
 | platform | 쓰는 도구 | 범위 | 알아 둘 것 |
 |---|---|---|---|
 | **macOS** | [`dist/macos/color-capture.m`](../macos/color-capture.m) (ScreenCaptureKit) | **창 단위** | **완전히 가려진 창도 찍혀요** (실측: 같은 자리에 창 둘을 겹치고 아래 창을 찍으니 아래 창 내용이 나왔어요). 스크립트가 `clang` 으로 빌드해서 써요. **화면 기록 권한**이 필요하고 잠금 화면이면 실패해요. 창을 못 찾으면 `screencapture -x` 전체 화면으로 물러서요 |
-| **Windows** | PowerShell (`CopyFromScreen`) | 전체 화면 | 찍기 직전에 **대상 창을 앞으로 올려요** — 가려져 있으면 화면에 안 나오니까요. `SWP_NOACTIVATE` 라 키보드 포커스는 안 뺏어요. 이번 회차에 새로 뜬 창만 골라서 (`StartTime`) 따로 열어 둔 창은 안 건드려요 |
+| **Windows** | PowerShell (`PrintWindow` → 실패 시 `CopyFromScreen`) | **창 단위** (되는 대상만) | 창을 띄우자마자 **(0,0) 으로 옮기고 맨 앞으로** 올려요 (`SWP_NOACTIVATE` 라 포커스는 안 뺏어요). 찍을 땐 창 단위를 먼저 시도해요. **`wt` 만 되고 tildaz · wezterm · conhost 는 안 돼요 — 미해결** (아래 참고). **DPI 함정도 있어요 — 아래 참고** |
 | **Linux (sway · Hyprland)** | `grim` | 전체 화면 | wlroots 계열의 `zwlr_screencopy` 를 써요. **가려진 창은 못 찍어요** — Wayland 는 client 가 다른 창 내용을 읽을 수 없어요. 타일링이라 보통 안 가려져요 |
 | **Linux (KDE Plasma)** | `spectacle -b -n -a` | **활성 창** | KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이 안 돼요. `org.kde.KWin.ScreenShot2` 는 호출자를 검증해서 직접 부를 수 없고, **Spectacle 이 정상 통로**예요 (KDE 기본 설치). `-a` 라 **창 단위로 찍히고 가려짐 문제도 없어요** (활성 창은 맨 앞이니까요). 다만 방금 뜬 창이 활성이 아니면 엉뚱한 창이 찍혀요 — 확실히 하려면 KWin 스크립팅으로 대상을 활성화해야 하는데, 필요한지 확인되기 전엔 안 넣었어요 |
 | **Linux (GNOME)** | `gnome-screenshot` | 전체 화면 | GNOME 43 에서 빠졌어요. 없으면 캡처를 못 해요 |
@@ -435,8 +490,76 @@ compositor 마다 달라요. 위 순서대로 시도하고, 하나도 없으면 
 GUI 시작이 제일 느려서, 8 MiB 측정 (111 ms) 이 창보다 먼저 끝난 회차가 있었어요 — 그 회차 PNG 에는
 **wezterm 창이 아예 없었어요** (macOS 실측). 그래서 timing 을 본 뒤 2 초 기다렸다 찍어요.
 
-`TILDAZ_STRESS_HOLD_MS` 4 초는 이 2 초에 캡처 시간을 더한 값이에요. macOS 캡처는 0.3 초쯤이고
-(실측) **Windows 는 아직 안 재 봤어요** — 모자라면 PNG 에 창이 안 찍히니 바로 드러나요.
+`TILDAZ_STRESS_HOLD_MS` 4 초는 이 2 초에 캡처 시간을 더한 값이에요. **캡처 자체는 macOS 0.3 초 ·
+Windows 0.7 초**예요 (둘 다 실측 — Windows 는 `powershell` 프로세스 시작과 `Add-Type` 의 C#
+컴파일까지 포함한 값이에요). 남은 여유가 1.3 초라 지금은 넉넉해요.
+
+#### ⚠️ 미해결 — Windows 에서 swapchain 렌더 창이 캡처에 안 잡혀요
+
+**`wt` 만 창 단위로 찍혀요.** tildaz · wezterm · conhost 는 `PrintWindow` 가 단색을 돌려주고,
+전체 화면으로 물러서도 PNG 에 그 창이 없어요. **창은 화면에 분명히 떠 있는데도** 그래요 —
+창을 (0,0) 에 놓으므로 좌상단 1000×1000 의 어두운 픽셀 비율을 재 봤어요.
+
+| 대상 | PNG | 좌상단 어두운 비율 |
+|---|---|---|
+| wezterm · tildaz · conhost | 2880×1800 (전체 화면) | **0 %** (0/600) |
+| **wt** | 2372×1606 (창 단위) | **63 %** (379/600) |
+
+**유력한 설명** — GDI 두 경로가 모두 **DWM redirection surface** 를 읽는데, flip-model swapchain
+으로 그리는 창은 그 표면에 내용이 안 들어가요. 화면을 긁든 창에게 그리라고 시키든 똑같이 빈
+결과가 나오는 이유예요. GDI 화면 캡처가 현대 앱에 못 쓰이는 알려진 이유이기도 하고요.
+**다만 측정으로 확정하지는 않았어요.**
+
+확정된 반증은 있어요 — *"최대화된 창이 화면을 덮어 direct flip 이 걸려서"* 라는 가설은
+**최대화를 푼 뒤에도 동일하게 재현**되어 기각됐어요.
+
+**제대로 고치려면** GDI 를 버리고 `Windows.Graphics.Capture` 를 써야 해요 — macOS 가
+[`color-capture.m`](../macos/color-capture.m) 를 clang 으로 빌드해 쓰는 것처럼, Windows 는 Zig 로
+작은 helper 를 빌드하면 돼요. 그때까지는 `wt` 외에는 전체 화면으로 물러서고 `~` 로 표시해요.
+
+#### Windows 는 창을 (0,0) 으로 옮겨요
+
+**올리기만 하면 아래가 잘려요.** Windows 가 새 창을 cascade 로 놓아서 y 가 0 이 아닌데, 40 행짜리
+터미널 창은 그 offset 만큼 화면 아래로 삐져나가요. 실기에서 **alacritty 는 작업 표시줄에 가렸고
+wezterm 은 아래 20 px 이 잘렸어요** ([#381](https://github.com/ensky0/tildaz/issues/381), 2880×1800 ·
+200 % 노트북). 그래서 `SWP_NOMOVE` 를 빼고 (0,0) — 주 모니터 좌상단 — 으로 함께 옮겨요.
+**캡처는 측정이 끝난 뒤**라 숫자에는 영향이 없어요.
+
+**띄우자마자도 한 번 옮겨요.** 찍기 직전에만 옮기면 **도는 동안 내내** 창이 가려 있거나 화면 밖에
+있어서 눈으로 볼 수가 없어요 — 눈으로 보는 게 `--capture` 를 만든 이유인데요. 이때는 `HWND_TOP`
+(보통 창들 중 맨 앞) 만 써요. 측정이 도는 내내 topmost 로 박아 두면 다른 창을 계속 덮으니까요.
+
+⚠️ **창이 화면보다 크면 옮겨도 잘려요.** 그때는 `--rows` 를 줄여서 찍어요.
+
+**TildaZ 만 안 옮겨져요 — 의도된 거예요.** [`src/window.zig`](../../src/window.zig) 의
+`WM_WINDOWPOSCHANGING` 핸들러가 `SWP_NOMOVE` 없는 외부 요청의 x/y 를 `expected_x`/`expected_y` 로
+되돌려요 (Display Fusion · FancyZones 류가 drop-down rect 를 건드리는 걸 막는 방어예요). z-order 는
+그대로 올라가고 위치만 무시돼요. TildaZ 는 drop-down 이라 원래 y=0 이라서 잘릴 일이 없으니
+예외 처리를 넣지 않았어요.
+
+#### Windows 캡처는 DPI-aware 여야 해요 — 안 그러면 화면의 좌상단 1/4 만 찍혀요
+
+Windows PowerShell 5.1 은 **DPI-unaware** 라 화면 metric 을 *논리* 크기로 줘요. 그런데
+`CopyFromScreen` 은 **물리 픽셀을 1:1 로** 복사해요. 둘이 어긋나서 200 % 배율의 2880×1800
+화면에서 **좌상단 1440×900 만** 잘려 나왔어요.
+
+| | 값 |
+|---|---|
+| 물리 해상도 | 2880×1800 |
+| `SystemInformation.VirtualScreen` (unaware) | **1440×900** ← 비트맵 크기가 이걸 따라갔어요 |
+| `CopyFromScreen` 이 복사한 것 | (0,0) 부터 **물리** 1440×900 = 화면의 좌상단 1/4 |
+
+**배율 100 % 머신에서는 논리 = 물리라 멀쩡해 보여요.** 그래서 200 % 노트북에서만 드러났어요
+([#381](https://github.com/ensky0/tildaz/issues/381) 실측 — PNG 다섯 장이 전부 1440×900 이고,
+작업 표시줄이 auto-hide 가 아닌데 하단에 없고, 창이 오른쪽에서 잘렸어요).
+
+그래서 `capture.ps1` 이 **화면 크기를 읽기 전에 제일 먼저** `SetProcessDpiAwarenessContext
+(PER_MONITOR_AWARE_V2)` 를 불러요. 크기도 WinForms 대신 `GetSystemMetrics(SM_*VIRTUALSCREEN)`
+으로 직접 읽어요 — WinForms 가 값을 언제 캐시하는지에 기대지 않으려고요. Windows 10 1703
+이전에는 그 export 가 없어서 구형 `SetProcessDPIAware()` 로 물러서요.
+
+**macOS · Linux 에는 이 함정이 없어요.** ScreenCaptureKit · grim · spectacle 은 애초에 물리
+픽셀 기준이에요.
 
 ### Windows 에서 돌리기
 
@@ -460,7 +583,36 @@ Windows 만의 주의점이에요.
 | **conhost 는 스크롤백이 없어요** | 창 크기 옵션이 없어 `mode con:` 으로 격자를 주는데, `lines=N` 이 창과 버퍼를 함께 N 으로 만들어요. 다른 터미널에는 100000 줄을 주므로 **conhost 값에는 스크롤백 관리 비용이 빠져 있어요** — 같은 조건이 아니라는 뜻이에요 |
 | **kitty · ghostty · foot 은 없어요** | Windows 판이 없고 (foot 은 Wayland 전용) `command -v` 로 자동으로 빠져요 |
 | **창이 다른 창 뒤에 뜰 수 있어요** | Win32 는 *foreground 프로세스가 **직접** 시작한 프로세스* 에만 창을 앞으로 낼 권한을 줘요 ([SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)). `wt` 는 실행 별칭이라 부모 관계가 끊기고, wezterm 은 GUI 를 손자 프로세스로 띄웠어요. **`wt` 는 Windows Terminal 자체의 버그** ([#18324](https://github.com/microsoft/terminal/issues/18324), Priority-1) 로 **1.23.10353.0 에서 고쳐졌어요** — `wt --version` 이 그보다 낮으면 업데이트하세요. wezterm 은 아래처럼 실행 방법을 바꿔서 해결했어요. 상태를 봐야 하면 `--capture` 를 쓰세요 |
-| **alacritty 에서 producer 가 `main` 전에 멈추는 회차가 있어요** | 실측 ([#381](https://github.com/ensky0/tildaz/issues/381)): producer 스레드가 `ThreadState=5`(Wait) · `KernelModeTime=0` · `UserModeTime=0` — **코드를 한 줄도 실행하지 않았어요.** 자식이 ConPTY 호스트에 붙는 콘솔 클라이언트 연결 단계에서 걸려요 (워크로드와 무관해요, `main` 전이니까). 기본 `--timeout 180` 이라 3 회 반복이면 9 분이 순수 대기예요 — `--timeout 30` 으로 줄이거나 아래처럼 제외해요 |
+| **alacritty 는 `zwj` 계열을 소화하지 못해요 — 스크립트가 자동으로 빼요** | 바로 아래 절 참고. Windows + `zwj` / `zwj_varied` 조합만 해당해요 |
+
+#### alacritty 는 Windows 에서 `zwj` 계열을 못 돌려요 (자동 제외)
+
+워크로드 11 종을 8 MiB 로 한 번씩 돌려 범위를 좁혔어요 ([#381](https://github.com/ensky0/tildaz/issues/381),
+Ryzen AI 7 350 · Windows 11 · alacritty 0.17.0).
+
+| 워크로드 | 결과 | | 워크로드 | 결과 |
+|---|---|---|---|---|
+| `plain` | 완료 1,038 ms | | **`zwj`** | **멈춤** |
+| `ansi` | 완료 990 ms | | `hangul_varied` | 완료 1,644 ms |
+| `cjk` | 완료 1,336 ms | | `emoji_vs16_varied` | 완료 1,106 ms |
+| `hangul` | 완료 1,746 ms | | `skintone_varied` | 완료 985 ms |
+| `emoji_vs16` | 완료 978 ms | | **`zwj_varied`** | **멈춤** |
+| `skintone` | 완료 1,097 ms | | | |
+
+**`zwj` 계열 둘만 멈춰요.** `cjk` 도 ZWJ 를 담는데 멀쩡한 게 단서예요 — `cjk` 는 줄에 ZWJ 가 몇
+개뿐이고 `zwj` 계열은 **줄 전체가 ZWJ 묶음**이라, **ZWJ 밀도**가 임계를 넘을 때만 나요. 크기
+경계도 있어요: `zwj` 는 1 MiB 는 완주하고 **2 MiB 부터 멈춰요** (8 MiB 2/2 멈춤).
+
+멈춘 회차의 **producer CPU 시간은 0 이 아니에요** (0.047 s · 0.016 s). producer 는 시작해서 출력을
+하다가 **write 에서 막힌** 거예요. 창에 입력 이벤트를 주면 조금 진행하고 다시 막혀요 — alacritty 가
+back-pressure 상황에서 ConPTY 출력을 그만 소비하는 것으로 보여요. 포커스는 변수가 아니에요
+(포커스를 준 상태에서도 엔터 사이마다 다시 멈췄어요).
+
+> 이전 판 문서에 있던 *"`main` 진입 전에 멈춘다 · CPU 시간 0"* 은 **틀렸어요** — 위 실측으로 반증됐어요.
+
+그래서 **스크립트가 그 조합에서 alacritty 를 아예 띄우지 않고** 표에 `측정 불가` 로 적어요.
+30 초씩 기다렸다 버리는 것보다 낫고, 그 사실이 표에 남아요. 다른 platform · 다른 워크로드는
+영향 없어요.
 
 **특정 터미널을 제외하려면 PATH 에서 빼요.** 스크립트가 `command -v` 로 대상을 고르므로 이게 가장
 깔끔해요 (플래그는 없어요).
@@ -504,7 +656,7 @@ macOS · Linux 는 `wezterm` 을 그대로 쓰되 `--always-new-process` 는 똑
 `plain` 은 초당 5.7 M 줄이라 **page 관리 비용이 지배**하고 (100,000 줄 = 작업 집합 ~120 MB → 캐시를
 밀어내요), 줄당 파싱 비용이 큰 `hangul` 은 그 몫이 묻혀요.
 
-> `hangul` 의 두 절대값은 **항목 35 개 (줄 116 byte) 시절**이에요 — 지금은 18 개 (65 byte) 라 줄
+> `hangul` 의 두 절대값은 **항목 35 개 (줄 116 byte) 시절**이에요 — 지금은 13 개 (50 byte) 라 줄
 > 수가 달라서 MiB/s 를 직접 비교할 수 없어요. 여기서 읽을 것은 *변화율*이고 그건 그대로 유효해요.
 
 **기본값이 32,767 인 이유**는 그게 **wt `historySize` 의 최대값**이라서예요
