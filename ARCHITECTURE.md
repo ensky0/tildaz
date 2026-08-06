@@ -191,7 +191,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
 | Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Harness skeleton and bulk-output throughput live in [`dist/stress/`](dist/stress/README.md); resize storms, tab create/close under load, WSL/nvim/mouse, and multi-worker recovery remain |
-| **Grapheme cluster throughput** | [#381](https://github.com/ensky0/tildaz/issues/381) | **Root cause located, fix not started.** We rank last of four terminals on cluster-heavy output while ranking first on ASCII — see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** cut the number of native shaping calls (our code, largest win — run batching or a cluster cache, gated on one measurement described there); **(2)** re-measure and see how much of the parsing cost remains, then take it upstream to ghostty-vt if it does; **(3)** the wide-cell gap on `hangul` (80 % of Windows Terminal) is a third, separate item in parsing plus grid writes. Also unmeasured: the same eleven workloads on macOS and Linux — the workloads and `-scrollback` are cross-platform, so the run is the same command |
+| **Grapheme cluster throughput** | [#389](https://github.com/ensky0/tildaz/issues/389) (tools in [#381](https://github.com/ensky0/tildaz/issues/381)) | **Root cause located, fix not started.** We run at 114–130 % of Windows Terminal until a grapheme cluster lands in every cell, and then at 19–23 % of it — reproduced on two Windows machines and macOS, see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** cut the number of native shaping calls (our code, largest win — run batching or a cluster cache, gated on one measurement described there); **(2)** re-measure and see how much of the parsing cost remains, then take it upstream to ghostty-vt if it does. The `hangul` wide-cell gap that looked like a third item **inverts between machines** (80 % of wt on one, 117 % on another), so it is not tracked as its own gap. Also unmeasured: the same workloads on macOS and Linux, and the attribution pairs anywhere — the workloads and `-scrollback` are cross-platform, so the run is the same command |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),
@@ -267,28 +267,38 @@ repository keeps no baseline.
 ### Grapheme clusters are the one path where we lose (#381)
 
 Measured on Windows with every terminal on the same scrollback (32,767 lines) and
-the same 120x40 grid. Ranks are out of the terminals that ran; the full tables and
-conditions are in [#381](https://github.com/ensky0/tildaz/issues/381).
+the same 120x40 grid. **Read the ratio to Windows Terminal, not the rank** — how fast
+the other terminals run varies enormously per machine, so ranks move while the ratio
+does not. Full tables and conditions are in
+[#381](https://github.com/ensky0/tildaz/issues/381) and
+[#389](https://github.com/ensky0/tildaz/issues/389).
 
-| Workload | Content | Our rank |
-|---|---|:--:|
-| `plain` | ASCII | **1st** — ahead of Windows Terminal |
-| `ansi` | SGR escapes | 2nd |
-| `hangul` | wide cells, no grapheme extras | 2nd (80 % of wt) |
-| `cjk` | above plus a few clusters per line | 2nd (59 % of wt) |
-| `emoji_vs16` | one VS-16 cluster per cell | **last** |
-| `zwj` | one ZWJ-family cluster per cell | **last** |
+| Workload | Content | AMD laptop, 200 % | Intel laptop, 100 % |
+|---|---|:--:|:--:|
+| `plain` | ASCII | 1st | 1st — **130 %** of wt |
+| `ansi` | SGR escapes | 2nd | 1st — **114 %** |
+| `hangul` | wide cells, no grapheme extras | 2nd — 80 % of wt | 1st — **117 %** |
+| `cjk` | above plus a few clusters per line | 2nd — 59 % of wt | 1st — **115 %** |
+| `emoji_vs16` | one VS-16 cluster per cell | last | 3rd of 5 — **19 %** |
+| `zwj` | one ZWJ-family cluster per cell | last | 3rd of 4 — **23 %** |
 
-Those runs put 35 items on a line, which is 80 columns only in terminals that *fold*
-a ZWJ family into one cluster. Terminals that draw the members separately spend 6
-columns per item and wrapped onto a second row, and a differing row count makes the
-rates incomparable. The attribution workloads now carry 18 items for that reason, so
-ranks and ratios above still hold but absolute MiB/s from before the change does not.
+The cliff reproduces on both machines and on macOS: we are at or above Windows
+Terminal until a cluster lands in every cell, and then we are at a fifth of it. The
+`hangul` row is the one that *inverts* between machines, so the wide-cell gap seen on
+the AMD laptop is not a standing property of our code — the cluster gap is.
 
-Going from `cjk` to `zwj`, three of four terminals get *faster* (more bytes per
-cluster means less per-cell work per byte) while we get 7x slower. That asymmetry
-is the fingerprint of a per-cluster cost the others do not pay, and it has two
-layers:
+Line width is what makes these comparable at all. A ZWJ family is one cluster to
+terminals that fold it and up to 8 columns to terminals that do not (they count the
+ZWJ itself as a column), so a line sized for the folding case wraps in the others and
+a differing row count makes the rates incomparable. The attribution workloads carry
+**13 items** per line for that reason (`10 + 13 x 8 <= 120`); absolute MiB/s from
+before that change cannot be compared with numbers after it.
+
+Going from `cjk` to `zwj`, the other terminals get *faster* (more bytes per cluster
+means less per-cell work per byte) while we get slower — 7x on the AMD laptop, 2.8x on
+the Intel one, where the others gained 75 % (wt), 126 % (conhost), and 224 %
+(wezterm). That asymmetry is the fingerprint of a per-cluster cost the others do not
+pay, and it has two layers:
 
 1. **Parsing** — a grapheme codepoint costs about 5x a non-grapheme one. This is
    inside ghostty-vt (`Terminal.print` plus the per-page grapheme arena, which
