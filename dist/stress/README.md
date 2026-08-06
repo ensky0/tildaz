@@ -44,7 +44,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | 옵션 | 값 | 기본값 |
 |---|---|---|
 | `--layer` | `parser` · `pty` · `frame` | `parser` |
-| `--workload` | `plain` · `ansi` · `cjk` | `plain` |
+| `--workload` | 아래 "워크로드" 절의 열한 개 | `plain` |
 | `--mb` | 쏟아부을 MiB | `64` |
 | `--cols` / `--rows` | 그리드 | `120` × `40` |
 | `--scrollback` | scrollback 줄 수 | config 기본값 (100,000) |
@@ -100,7 +100,7 @@ vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈�
 
 ### 워크로드
 
-세 워크로드는 모두 **결정적이에요** — 같은 옵션이면 어느 platform 에서든 같은
+열한 워크로드는 모두 **결정적이에요** — 같은 옵션이면 어느 platform 에서든 같은
 바이트가 나와요. 난수 · 시각 · locale · 셸을 쓰지 않아요. 입력이 다르면 숫자를
 나란히 둘 수 없기 때문이에요.
 
@@ -110,18 +110,59 @@ vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈�
 | `ansi` | SGR 색이 섞인 빌드 로그 모양 | escape sequence 파싱 |
 | `cjk` | 한글 · emoji · 스킨톤 · ZWJ 묶음 · block element | wide cell · grapheme cluster |
 
-**귀속용 세 개** ([#381](https://github.com/ensky0/tildaz/issues/381)) — `cjk` 가 섞어 쓰는 경로를
-하나씩만 태워요. **표시 열 수를 `cjk` 와 같은 80 열로 맞췄어요.**
+**귀속용 네 개** ([#381](https://github.com/ensky0/tildaz/issues/381)) — `cjk` 가 섞어 쓰는 경로를
+하나씩만 태워요. 넷 다 한 줄의 구조가 같아요 (앞머리 10 열 + 항목 18 개).
 
 | 이름 | 내용 | 태우는 경로 |
 |---|---|---|
 | `hangul` | 한글만 | **wide cell 만** — BMP codepoint 하나가 셀 하나라 grapheme extras 를 안 지나요 |
 | `emoji_vs16` | `❤️` (U+2764 U+FE0F) 만 | **VS-16 경로** — codepoint 2 개가 한 grapheme, 셀이 wide 로 |
+| `skintone` | `👋🏻` (U+1F44B U+1F3FB) 만 | **스킨톤 modifier** — codepoint 2 개인데 base 가 non-BMP |
 | `zwj` | `👨‍👩‍👧` 만 | **ZWJ 묶음** — codepoint 5 개가 한 grapheme. extras 가 가장 깊어요 |
 
-⚠️ **이 셋은 MiB/s 를 그대로 비교하면 안 돼요.** 줄 byte 가 경로마다 달라요 (한글 116 ·
-VS-16 221 · ZWJ 641). **줄/초 = `MiB/s × 1048576 ÷ 줄 byte`** 로 환산해서 비교해요 — 줄 byte 는
-`zig test src/stress/workload.zig` 의 "귀속 워크로드는 줄 byte 가 고정" 이 못 박아 둬요.
+**종류 다양성 네 개** — 위 넷과 **짝**이에요. 같은 경로 · **같은 줄 byte** 인 채 항목 종류만
+늘려요. 위 넷은 항목이 한두 종류라 어떤 캐시에든 hit 율이 사실상 100 % 인 *최상 조건*이고,
+아래 넷이 반대쪽 극단이에요. **짝 사이의 차이가 곧 "조회 반복" 이 병목에서 차지하는 몫**이라,
+그 값이 shaping 호출 자체를 줄일지 (run 배칭) 결과를 캐시할지 (cluster 캐시) 를 갈라요.
+
+| 이름 | 항목 | 구별되는 종류 | 짝과 달라지는 것 |
+|---|---|---:|---|
+| `hangul_varied` | 완성형 `가`~`힣` 순회 | **11,172** | glyph atlas / rasterize |
+| `emoji_vs16_varied` | text presentation 기본 BMP 기호 + VS-16 | **20** | shaping 조회 반복 |
+| `skintone_varied` | base 25 × 스킨톤 5 | **125** | 〃 |
+| `zwj_varied` | 3 인 가족 ZWJ 묶음 전부 | **12** | 〃 |
+
+한 화면 (40 행 × 18 항목) 에 동시에 올라오는 종류는 최대 **720** 개예요 — 줄마다 항목 색인이
+18 씩 전진해서요. `zig test src/stress/workload.zig` 의 "varied 워크로드는 한 화면에 여러 종류를
+올린다" 가 이 종류 수를 못 박아 둬요.
+
+⚠️ **귀속 · varied 워크로드는 MiB/s 를 그대로 비교하면 안 돼요.** 줄 byte 가 경로마다 달라요.
+**줄/초 = `MiB/s × 1048576 ÷ 줄 byte`** 로 환산해서 비교해요 — 줄 byte 는 같은 파일의 "귀속
+워크로드는 줄 byte 가 고정" 이 못 박아 둬요.
+
+| 짝 | 줄 byte |
+|---|---:|
+| `hangul` · `hangul_varied` | 65 |
+| `emoji_vs16` · `emoji_vs16_varied` | 119 |
+| `skintone` · `skintone_varied` | 155 |
+| `zwj` · `zwj_varied` | 335 |
+
+#### 항목 18 개는 **최악의 표시 폭**에서 나온 수예요
+
+처음엔 항목 35 개로 `cjk` 와 같은 80 열을 맞췄는데, **그건 ZWJ 를 접는 터미널에서만 80 열**이었어요
+([#381](https://github.com/ensky0/tildaz/issues/381)).
+
+| | `👨‍👩‍👧` 하나 | 항목 35 개 + 앞머리 10 | 120 열 격자에서 |
+|---|---:|---:|---|
+| ZWJ 를 한 grapheme 으로 접는 터미널 | 2 열 | 80 열 | 1 줄 |
+| **안 접는 터미널** — 구성원 emoji 를 따로 그려요 | **6 열** | **220 열** | **2 줄** |
+
+구성원이 각각 East_Asian_Width=Wide 라 따로 그리면 2 열씩 먹어요 (ZWJ 자체는 `Cf` ·
+default-ignorable 이라 0 열). **줄이 접히면 대상마다 줄 수가 달라져 비교가 성립하지 않아요** —
+열 수가 줄바꿈 횟수를 바꾸기 때문이고, 아래 "측정 중 resize" 검사에는 안 걸리는 종류예요.
+
+그래서 항목 수를 최악의 폭으로 정해요: `앞머리 10 + 항목당 최악 6 × N ≤ 120` → **N = 18**.
+접는 터미널에서 `10 + 18 × 2 = 46` 열로 격자보다 짧은 건 의도예요.
 
 ## 부하를 만드는 쪽도 우리 자신이에요
 
@@ -403,6 +444,9 @@ PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --
 
 `plain` 은 초당 5.7 M 줄이라 **page 관리 비용이 지배**하고 (100,000 줄 = 작업 집합 ~120 MB → 캐시를
 밀어내요), 줄당 파싱 비용이 큰 `hangul` 은 그 몫이 묻혀요.
+
+> `hangul` 의 두 절대값은 **항목 35 개 (줄 116 byte) 시절**이에요 — 지금은 18 개 (65 byte) 라 줄
+> 수가 달라서 MiB/s 를 직접 비교할 수 없어요. 여기서 읽을 것은 *변화율*이고 그건 그대로 유효해요.
 
 **기본값이 32,767 인 이유**는 그게 **wt `historySize` 의 최대값**이라서예요
 ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-advanced) ·

@@ -191,7 +191,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
 | Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Harness skeleton and bulk-output throughput live in [`dist/stress/`](dist/stress/README.md); resize storms, tab create/close under load, WSL/nvim/mouse, and multi-worker recovery remain |
-| **Grapheme cluster throughput** | [#381](https://github.com/ensky0/tildaz/issues/381) | **Root cause located, fix not started.** We rank last of four terminals on cluster-heavy output while ranking first on ASCII — see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** add a cluster shaping cache (our code, largest win, three design decisions listed there); **(2)** re-measure and see how much of the parsing cost remains, then take it upstream to ghostty-vt if it does; **(3)** the wide-cell gap on `hangul` (80 % of Windows Terminal) is a third, separate item in parsing plus grid writes. Also unmeasured: the same six workloads on macOS and Linux — the workloads and `-scrollback` are cross-platform, so the run is the same command |
+| **Grapheme cluster throughput** | [#381](https://github.com/ensky0/tildaz/issues/381) | **Root cause located, fix not started.** We rank last of four terminals on cluster-heavy output while ranking first on ASCII — see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** cut the number of native shaping calls (our code, largest win — run batching or a cluster cache, gated on one measurement described there); **(2)** re-measure and see how much of the parsing cost remains, then take it upstream to ghostty-vt if it does; **(3)** the wide-cell gap on `hangul` (80 % of Windows Terminal) is a third, separate item in parsing plus grid writes. Also unmeasured: the same eleven workloads on macOS and Linux — the workloads and `-scrollback` are cross-platform, so the run is the same command |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),
@@ -279,6 +279,12 @@ conditions are in [#381](https://github.com/ensky0/tildaz/issues/381).
 | `emoji_vs16` | one VS-16 cluster per cell | **last** |
 | `zwj` | one ZWJ-family cluster per cell | **last** |
 
+Those runs put 35 items on a line, which is 80 columns only in terminals that *fold*
+a ZWJ family into one cluster. Terminals that draw the members separately spend 6
+columns per item and wrapped onto a second row, and a differing row count makes the
+rates incomparable. The attribution workloads now carry 18 items for that reason, so
+ranks and ratios above still hold but absolute MiB/s from before the change does not.
+
 Going from `cjk` to `zwj`, three of four terminals get *faster* (more bytes per
 cluster means less per-cell work per byte) while we get 7x slower. That asymmetry
 is the fingerprint of a per-cluster cost the others do not pay, and it has two
@@ -296,10 +302,34 @@ layers:
    (`glyph_map`), macOS caches ligature pairs (`ligature_cache`), and neither
    caches arbitrary clusters; macOS additionally builds a `CTLine` per call.
 
-Fixing (2) is the largest available win and it is our own code. It needs three
-decisions first: ownership of the cached face (`ClusterResult.owned` hands COM /
-CoreText lifetime to the cache), invalidation on font and DPI change, and a
-capacity / eviction policy.
+Fixing (2) is the largest available win and it is our own code, but the shape of the
+fix is not settled. Reading the Windows Terminal source showed it has **no shaping
+cache either** — the difference is the *call unit*. It maps one whole font-face run
+per `MapCharacters`, skips shaping altogether for simple text
+(`IDWriteTextAnalyzer::GetTextComplexity`), and shapes a whole script run with one
+`GetGlyphs`. A `zwj` line costs it 3-4 DirectWrite calls where it costs us 70-140,
+because our cell loop calls `resolveGrapheme` once per grapheme cell and the user
+font chain multiplies that (a face is rejected when *any* glyph in the cluster comes
+back `.notdef`, so each cluster walks the chain until one accepts). Non-grapheme
+cells never pay this — they hit the single-codepoint `glyph_map` — which is why the
+same renderer ranks first on ASCII.
+
+Two candidates, not mutually exclusive:
+
+- **(A) run batching** — helps always, including clusters seen for the first time,
+  but it restructures the cell loop into "collect run, shape once, distribute glyphs
+  back to cells".
+- **(B) cluster shaping cache** — stays inside `resolveGrapheme`, but only helps when
+  clusters repeat. It needs three decisions: ownership of the cached face
+  (`ClusterResult.owned` hands COM / CoreText lifetime to the cache), invalidation on
+  font and DPI change, and a capacity / eviction policy.
+
+The measured cost is roughly a 3 µs fixed part plus 0.6 µs per UTF-16 unit, so call
+count dominates and (A) attacks it directly. The choice is gated on one measurement:
+the workloads above repeat a single cluster, which flatters a cache. Each has a
+paired `*_varied` workload that holds the code path and the line bytes and varies
+only the number of distinct kinds, so the gap within a pair is the share of the
+bottleneck that repetition explains.
 
 ## Linux Integration References
 
