@@ -351,7 +351,13 @@ fn printUsage() !void {
         \\  scrollback   whether the rate holds as scrollback accumulates (#278)
         \\
         \\  --layer      parser | pty | frame  (default: parser, throughput only)
-        \\  --workload   plain | ansi | cjk    (default: plain)
+        \\  --workload   (default: plain)
+        \\                 plain | ansi | cjk
+        \\                 hangul | emoji_vs16 | skintone | zwj
+        \\                     one kind per line — best case for any cache
+        \\                 hangul_varied | emoji_vs16_varied |
+        \\                 skintone_varied | zwj_varied
+        \\                     same path and line bytes, many kinds — worst case
         \\  --mb         MiB to push           (default: 64)
         \\  --cols       grid columns          (default: 120)
         \\  --rows       grid rows             (default: 40)

@@ -25,10 +25,10 @@ pub const Kind = enum {
 
     // --- 귀속용 (#381) — `cjk` 가 섞어 쓰는 경로를 하나씩만 태운다 ------------
     //
-    // 셋 다 **표시 열 수가 `cjk` 와 같은 80 열**이다. 그래서 MiB/s 에서 줄 수를
-    // 역산하면 (`MiB/s ÷ 줄 byte`) 셀 기준으로 나란히 비교할 수 있다 — 줄마다
-    // byte 수는 경로마다 다르므로 (한글 3 · VS-16 emoji 6 · ZWJ 묶음 18 byte)
-    // MiB/s 를 그대로 비교하면 안 된다.
+    // 넷 다 한 줄의 구조가 같다 (앞머리 10 열 + 항목 `attr_items` 개). 그래서
+    // MiB/s 에서 줄 수를 역산하면 (`MiB/s ÷ 줄 byte`) 셀 기준으로 나란히 비교할 수
+    // 있다 — 줄마다 byte 수는 경로마다 다르므로 (한글 3 · VS-16 emoji 6 · 스킨톤 8 ·
+    // ZWJ 묶음 18 byte) MiB/s 를 그대로 비교하면 안 된다.
 
     /// 한글만. **wide cell 은 태우고 grapheme extras 는 안 태운다** — BMP
     /// codepoint 하나가 셀 하나라 `cell.grapheme` 저장 경로를 지나지 않는다.
@@ -36,22 +36,90 @@ pub const Kind = enum {
     /// `❤️` (U+2764 U+FE0F) 만. **VS-16 경로** — codepoint 두 개가 한 grapheme 으로
     /// 묶이고 셀이 wide 로 바뀐다.
     emoji_vs16,
+    /// `👋🏻` (U+1F44B U+1F3FB) 만. **스킨톤 modifier 경로** — non-BMP codepoint 두
+    /// 개가 한 grapheme 이다. `emoji_vs16` 과 codepoint 수는 같고 base 가 non-BMP 다.
+    skintone,
     /// `👨‍👩‍👧` 만. **ZWJ 묶음 경로** — codepoint 다섯 개 (emoji 3 + ZWJ 2) 가 한
     /// grapheme 이다. grapheme extras 가 가장 깊게 쌓이는 경로다.
     zwj,
+
+    // --- 종류 다양성 (#381) — 위 넷과 **짝**이다 ------------------------------
+    //
+    // 위 넷은 항목이 한두 종류라 캐시 hit 율이 사실상 100 % 다 — "캐시에 가장
+    // 유리한 극단" 이다. 아래 넷은 같은 경로 · 같은 줄 byte 인 채 **종류만** 늘려
+    // 반대쪽 극단을 만든다. 짝 사이의 차이가 곧 *조회 반복이 병목에서 차지하는 몫*
+    // 이고, 그 값이 shaping 호출 자체를 줄일지 (run 배칭) 결과를 캐시할지
+    // (cluster 캐시) 를 가른다.
+
+    /// 완성형 한글 음절 (`가`~`힣`) 을 순회한다. `hangul` 과 같은 경로이고
+    /// **glyph atlas / rasterize** 몫만 달라진다.
+    hangul_varied,
+    /// text presentation 이 기본인 BMP 기호 여러 종에 VS-16 을 붙인다.
+    emoji_vs16_varied,
+    /// base emoji 여러 종 × 스킨톤 다섯을 조합한다.
+    skintone_varied,
+    /// 3 인 가족 ZWJ 묶음 여러 종을 순회한다.
+    zwj_varied,
 
     pub fn parse(name: []const u8) ?Kind {
         return std.meta.stringToEnum(Kind, name);
     }
 };
 
-/// 한 줄이 넘지 않는 크기. `zwj` 가 가장 길다 — 80 열을 ZWJ 묶음 (18 byte / 2 열)
-/// 으로 채우면 앞머리를 빼고 630 byte 다.
-const max_line = 1024;
+/// 한 줄이 넘지 않는 크기. `zwj` 계열이 가장 길다 — 앞머리 10 + 18 byte × 18 개 +
+/// 개행 = 335 byte.
+const max_line = 512;
 
-/// 귀속용 워크로드가 채우는 표시 열 수. `cjk` 한 줄과 같게 맞춘다 (#381).
-/// 앞머리 `{d:0>9} ` 가 10 열이고 나머지를 2 열짜리 항목 35 개로 채운다.
-const attr_items = 35;
+/// 귀속용 워크로드 한 줄이 담는 항목 수. **최악의 표시 폭**으로 정한다 (#381).
+///
+/// 우리는 `👨‍👩‍👧` 를 한 grapheme 으로 접어 2 열에 그리지만, **ZWJ 를 안 접는
+/// 터미널은 구성원 emoji 세 개를 따로 그려 6 열**을 먹는다 (구성원이 각각
+/// East_Asian_Width=Wide 라 2 열씩. ZWJ 자체는 `Cf` · default-ignorable 이라 0 열).
+/// 비교 격자가 120 열이므로 앞머리 10 열을 빼면 `110 ÷ 6 = 18` 이 **어느 터미널에서도
+/// 줄이 안 접히는 상한**이다.
+///
+/// 접히면 대상마다 줄 수가 달라져 비교 자체가 성립하지 않는다 — 열 수가 줄바꿈
+/// 횟수를 바꾸기 때문이고, `측정 중 resize` 검사에는 안 걸리는 종류다. 처음엔 35 개
+/// (= `cjk` 와 같은 80 열) 였는데, 그건 **접는 터미널에서만** 80 열이었다.
+///
+/// 접는 터미널에서 `10 + 18 × 2 = 46` 열로 격자보다 짧은 것은 의도다.
+const attr_items = 18;
+
+/// `hangul` 이 도는 여섯 음절.
+const hangul_items = [_][]const u8{ "가", "나", "다", "라", "한", "글" };
+
+/// `hangul_varied` 가 훑는 완성형 한글 음절 (U+AC00 ~ U+D7A3). **전부 3 byte** 라
+/// 줄 byte 가 흔들리지 않는다.
+const hangul_first: u21 = 0xAC00;
+const hangul_count: usize = 11172;
+
+/// `emoji_vs16_varied` 의 기호들. **text presentation 이 기본인 BMP 기호**만 골랐다 —
+/// VS-16 이 실제로 표시를 바꾸는 것들이고, BMP 라 3 byte + U+FE0F 3 byte = 6 byte 로
+/// `emoji_vs16` 과 항목 byte 가 같다.
+const emoji_vs16_items = [_][]const u8{
+    "❤️", "☀️", "☁️", "☂️", "☃️", "☎️", "☘️", "☠️", "☢️", "☣️",
+    "☮️", "☯️", "♠️", "♣️", "♥️", "♦️", "♻️", "⚠️", "✈️", "✉️",
+};
+
+/// `zwj_varied` 의 3 인 가족 묶음. 구성원이 전부 non-BMP (4 byte) 라 항목이
+/// `4 × 3 + 3 × 2 = 18` byte 로 `zwj` 와 같다. **2 인 묶음을 섞으면 11 byte 라 줄
+/// byte 가 흔들린다** — 섞고 싶으면 별도 워크로드로 나눈다.
+const zwj_items = [_][]const u8{
+    "👨‍👩‍👦", "👨‍👩‍👧", "👨‍👨‍👦", "👨‍👨‍👧", "👩‍👩‍👦", "👩‍👩‍👧",
+    "👨‍👦‍👦", "👨‍👧‍👦", "👨‍👧‍👧", "👩‍👦‍👦", "👩‍👧‍👦", "👩‍👧‍👧",
+};
+
+/// `skintone_varied` 의 base emoji. **전부 non-BMP (4 byte)** 로만 골랐다 — 스킨톤을
+/// 받는 BMP 기호 (`✋` U+270B 등) 를 섞으면 항목이 7 byte 가 되어 줄 byte 가 흔들린다.
+const skintone_bases = [_][]const u8{
+    "👋", "🤚", "👌", "🤌", "🤏", "🤞", "🤟", "🤘", "🤙", "👈",
+    "👉", "👆", "👇", "👍", "👎", "👊", "🤛", "🤜", "👏", "🙌",
+    "👐", "🤲", "🙏", "💪", "🤳",
+};
+
+/// Fitzpatrick 스킨톤 modifier 다섯 (U+1F3FB ~ U+1F3FF). 각 4 byte.
+const skin_tone_first: u21 = 0x1F3FB;
+const skin_tone_count: usize = 5;
 
 /// 줄을 이어서 내보내는 생성기. `read` 를 여러 번 불러 조각으로 받아도 전체
 /// 스트림은 한 번에 받은 것과 같다 — 조각 경계가 줄 중간이나 UTF-8 문자 중간에
@@ -92,21 +160,80 @@ fn renderLine(kind: Kind, line: usize, buf: []u8) usize {
         .plain => renderPlain(line, buf),
         .ansi => renderAnsi(line, buf),
         .cjk => renderCjk(line, buf),
-        .hangul => renderRepeat(line, buf, &.{ "가", "나", "다", "라", "한", "글" }),
+
+        .hangul => renderRepeat(line, buf, &hangul_items),
         .emoji_vs16 => renderRepeat(line, buf, &.{"❤️"}),
+        .skintone => renderRepeat(line, buf, &.{"👋🏻"}),
         .zwj => renderRepeat(line, buf, &.{"👨‍👩‍👧"}),
+
+        .hangul_varied => renderVariedCp(line, buf, hangul_first, hangul_count),
+        .emoji_vs16_varied => renderVaried(line, buf, &emoji_vs16_items),
+        .skintone_varied => renderSkintoneVaried(line, buf),
+        .zwj_varied => renderVaried(line, buf, &zwj_items),
     };
 }
 
-/// 귀속용 (#381) — 2 열짜리 항목 하나만 `attr_items` 개 반복해 `cjk` 와 같은 열 수를
-/// 채운다. `items` 가 여럿이면 줄마다 회전시켜 같은 내용이 반복되지 않게 한다
-/// (`renderPlain` 의 filler 회전과 같은 이유 — page 재사용 최적화가 우연히 유리하게
-/// 걸리지 않도록).
+/// 귀속용 (#381) — 항목 하나를 `attr_items` 개 반복한다. `items` 가 여럿이면 줄마다
+/// 한 칸씩 회전시켜 같은 내용이 반복되지 않게 한다 (`renderPlain` 의 filler 회전과
+/// 같은 이유 — page 재사용 최적화가 우연히 유리하게 걸리지 않도록).
+///
+/// **종류가 적은 쪽 (`hangul` 6 · 나머지 1) 전용이다.** 종류가 많으면 이 회전으로는
+/// 한 화면에 종류가 거의 안 올라온다 (줄마다 1 칸이라 40 행에 `attr_items + 39` 종류)
+/// — 그래서 varied 쪽은 `renderVaried` 의 전역 색인을 쓴다.
 fn renderRepeat(line: usize, buf: []u8, items: []const []const u8) usize {
     var w = Writer{ .buf = buf };
     w.print("{d:0>9} ", .{line});
     for (0..attr_items) |i| {
         w.str(items[(line + i) % items.len]);
+    }
+    w.byte('\n');
+    return w.len;
+}
+
+/// varied 워크로드가 훑는 **전역 항목 색인**. 줄마다 `attr_items` 만큼 전진하므로 한
+/// 화면 (40 행) 에 `40 × attr_items` = 720 종류까지 동시에 올라온다. 재는 것이 캐시 ·
+/// atlas 의 hit 율이라 *화면에 동시에 있는 종류 수*가 핵심이다.
+///
+/// `renderRepeat` 의 회전 (`line + i`) 을 쓰면 안 된다 — 그건 줄마다 1 칸만 밀어서
+/// 종류가 많아도 화면에 74 종류밖에 안 올라온다. 반대로 종류가 적은 쪽에 이 색인을
+/// 쓰면 `attr_items % items.len == 0` 일 때 (예: 18 과 6) 모든 줄이 똑같아진다.
+inline fn globalIndex(line: usize, i: usize) usize {
+    return line *% attr_items +% i;
+}
+
+/// 종류가 많은 항목 집합을 전역 색인으로 훑는다.
+fn renderVaried(line: usize, buf: []u8, items: []const []const u8) usize {
+    var w = Writer{ .buf = buf };
+    w.print("{d:0>9} ", .{line});
+    for (0..attr_items) |i| {
+        w.str(items[globalIndex(line, i) % items.len]);
+    }
+    w.byte('\n');
+    return w.len;
+}
+
+/// 연속한 codepoint 범위를 전역 색인으로 훑는다 (`hangul_varied` 의 `가`~`힣`).
+/// 항목 표를 11,172 개 적어 두지 않기 위한 경로다.
+fn renderVariedCp(line: usize, buf: []u8, first: u21, count: usize) usize {
+    var w = Writer{ .buf = buf };
+    w.print("{d:0>9} ", .{line});
+    for (0..attr_items) |i| {
+        w.codepoint(first + @as(u21, @intCast(globalIndex(line, i) % count)));
+    }
+    w.byte('\n');
+    return w.len;
+}
+
+/// base emoji × 스킨톤 조합을 전역 색인으로 훑는다. base 가 먼저 돌고 한 바퀴마다
+/// 스킨톤이 넘어가서, `skintone_bases.len × skin_tone_count` = 125 종류가 다 나온다.
+fn renderSkintoneVaried(line: usize, buf: []u8) usize {
+    var w = Writer{ .buf = buf };
+    w.print("{d:0>9} ", .{line});
+    for (0..attr_items) |i| {
+        const k = globalIndex(line, i);
+        w.str(skintone_bases[k % skintone_bases.len]);
+        const tone = (k / skintone_bases.len) % skin_tone_count;
+        w.codepoint(skin_tone_first + @as(u21, @intCast(tone)));
     }
     w.byte('\n');
     return w.len;
@@ -186,6 +313,15 @@ const Writer = struct {
         self.len += n;
     }
 
+    /// codepoint 를 UTF-8 로 쓴다. 호출처가 넘기는 값은 컴파일 시점에 정해진 범위
+    /// (`hangul_first` · `skin_tone_first` 기준) 라 인코딩이 실패할 수 없다 —
+    /// 조용히 버리면 줄 byte 가 어긋나므로 여기서는 버리지 않는다.
+    fn codepoint(self: *Writer, c: u21) void {
+        var tmp: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(c, &tmp) catch unreachable;
+        self.str(tmp[0..n]);
+    }
+
     fn print(self: *Writer, comptime fmt: []const u8, args: anytype) void {
         const rest = self.buf[self.len..];
         const out = std.fmt.bufPrint(rest, fmt, args) catch return;
@@ -249,24 +385,69 @@ test "plain 줄은 80 byte 로 고정" {
     }
 }
 
+/// 귀속 워크로드의 항목 byte. 짝 (`X` · `X_varied`) 은 같은 값을 쓴다.
+const attr_cases = [_]struct { kind: Kind, item_bytes: usize, distinct: usize }{
+    // 한글 3 byte. 40 행 × 18 개 = 720 개를 연속으로 훑으므로 varied 는 720 종류다.
+    .{ .kind = .hangul, .item_bytes = 3, .distinct = hangul_items.len },
+    .{ .kind = .hangul_varied, .item_bytes = 3, .distinct = 40 * attr_items },
+    // U+2764 3 + U+FE0F 3.
+    .{ .kind = .emoji_vs16, .item_bytes = 6, .distinct = 1 },
+    .{ .kind = .emoji_vs16_varied, .item_bytes = 6, .distinct = emoji_vs16_items.len },
+    // base 4 + modifier 4.
+    .{ .kind = .skintone, .item_bytes = 8, .distinct = 1 },
+    .{ .kind = .skintone_varied, .item_bytes = 8, .distinct = skintone_bases.len * skin_tone_count },
+    // emoji 4×3 + ZWJ 3×2.
+    .{ .kind = .zwj, .item_bytes = 18, .distinct = 1 },
+    .{ .kind = .zwj_varied, .item_bytes = 18, .distinct = zwj_items.len },
+};
+
 test "귀속 워크로드는 줄 byte 가 고정" {
     // #381 의 분석이 이 값으로 MiB/s → 줄/초 를 역산한다. 바뀌면 그 수치가 조용히
-    // 어긋나므로 못 박아 둔다. 앞머리 10 + 항목 35 개 + 개행 1.
+    // 어긋나므로 못 박아 둔다. 앞머리 10 + 항목 `attr_items` 개 + 개행 1.
+    //
+    // **짝끼리 값이 같은 것도 여기서 지킨다** — `X` 와 `X_varied` 의 차이가 종류 수
+    // 하나로만 남아야 캐시 hit 율의 몫을 가릴 수 있다 (#381 의 (A)/(B) 판정).
     var buf: [max_line]u8 = undefined;
-    const cases = [_]struct { kind: Kind, len: usize }{
-        .{ .kind = .hangul, .len = 10 + 35 * 3 + 1 }, // 한글 3 byte
-        .{ .kind = .emoji_vs16, .len = 10 + 35 * 6 + 1 }, // U+2764 3 + U+FE0F 3
-        .{ .kind = .zwj, .len = 10 + 35 * 18 + 1 }, // emoji 4×3 + ZWJ 3×2
-    };
-    for (cases) |c| {
-        for (0..50) |line| {
-            try std.testing.expectEqual(c.len, renderLine(c.kind, line, &buf));
+    for (attr_cases) |c| {
+        const want = 10 + attr_items * c.item_bytes + 1;
+        // `hangul_varied` 의 범위 (11,172) 를 한 바퀴 넘게 돈다 — 범위 어디서도 항목
+        // byte 가 3 이라는 것까지 확인한다.
+        for (0..700) |line| {
+            try std.testing.expectEqual(want, renderLine(c.kind, line, &buf));
         }
+    }
+}
+
+test "varied 워크로드는 한 화면에 여러 종류를 올린다" {
+    // 이 워크로드들의 **존재 이유**가 종류 수다 (#381). 종류 수가 캐시 · atlas 의
+    // hit 율을 정하고, 그 hit 율이 shaping 호출을 줄일지 (run 배칭) 결과를 캐시할지
+    // (cluster 캐시) 를 가른다. 짝과 종류 수가 같아지면 판정이 불가능해진다.
+    const rows = 40; // 비교 격자의 행 수 (`--rows 40`)
+    var buf: [max_line]u8 = undefined;
+
+    for (attr_cases) |c| {
+        var seen = std.AutoHashMap([18]u8, void).init(std.testing.allocator);
+        defer seen.deinit();
+
+        for (0..rows) |line| {
+            const n = renderLine(c.kind, line, &buf);
+            try std.testing.expectEqual(10 + attr_items * c.item_bytes + 1, n);
+            for (0..attr_items) |i| {
+                // 항목이 고정 byte 라 앞머리 10 부터 잘라내면 된다. 짧은 항목은
+                // 0 으로 채워 키 길이를 맞춘다 (가장 긴 항목이 18 byte).
+                var key = [_]u8{0} ** 18;
+                @memcpy(key[0..c.item_bytes], buf[10 + i * c.item_bytes ..][0..c.item_bytes]);
+                try seen.put(key, {});
+            }
+        }
+        try std.testing.expectEqual(c.distinct, seen.count());
     }
 }
 
 test "kind 이름 파싱" {
     try std.testing.expectEqual(@as(?Kind, .plain), Kind.parse("plain"));
     try std.testing.expectEqual(@as(?Kind, .cjk), Kind.parse("cjk"));
+    try std.testing.expectEqual(@as(?Kind, .skintone), Kind.parse("skintone"));
+    try std.testing.expectEqual(@as(?Kind, .zwj_varied), Kind.parse("zwj_varied"));
     try std.testing.expectEqual(@as(?Kind, null), Kind.parse("nope"));
 }
