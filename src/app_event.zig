@@ -17,6 +17,11 @@ pub const Event = union(enum) {
     /// false 면 window 가 기존 즉시 paste 를 수행한다 — menu 가 pointer button
     /// 보다 우선하는 SPEC §5.3 라우팅용.
     mouse_right_down: void,
+    /// 창이 focus 를 잃었다 (#390 — Windows `WM_ACTIVATEAPP` wParam=0). 창 *밖*
+    /// 클릭은 OS 가 다른 창으로 라우팅해 pointer event 가 우리에게 오지 않으므로,
+    /// 열린 command menu 를 닫는 훅은 focus 상실뿐이다. menu 상태가 `App` 에 있어
+    /// `Window` 가 직접 닫을 수 없어 event 로 넘긴다. true 반환 = menu 를 닫았음.
+    focus_lost: void,
     tab_closed: usize,
 };
 

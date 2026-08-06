@@ -4719,6 +4719,21 @@ const Client = struct {
                     if (left_surface == self.last_keyboard_focus_surface_id) {
                         self.last_keyboard_focus_surface_id = 0;
                     }
+                    // #390 — main surface 가 focus 를 잃으면 열린 command menu 를
+                    // 닫는다. 창 *밖* 클릭은 compositor 가 다른 surface 로 라우팅해
+                    // pointer button 이 우리에게 오지 않으므로 (native menu 의
+                    // pointer grab 이 우리 overlay 에는 없다) focus 상실이 유일한
+                    // 훅이다. `wl_pointer.leave` 는 훅이 아니다 — 마우스만 창 밖으로
+                    // 움직여도 닫히면 native menu 와 다르다.
+                    //
+                    // main surface 로 게이팅하는 이유: `wl_keyboard.leave` 는 client
+                    // 전체 대상이라 *우리 자신의* dialog surface 가 focus 를 받아도
+                    // main 에 leave 가 온다. 지금은 `executeCommandMenu` 가 dialog
+                    // 를 띄우기 전에 이미 menu 를 닫아 실질 오탐이 없지만, 그 순서에
+                    // 기대지 않는다.
+                    if (left_surface == self.surface_id and self.command_menu_open) {
+                        self.closeCommandMenu();
+                    }
                 }
                 // L12-γ-5 — focus 떠나면 key repeat timer disarm (release event
                 // 못 받는 stuck 방지).
