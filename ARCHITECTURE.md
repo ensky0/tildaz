@@ -275,12 +275,12 @@ does not. Full tables and conditions are in
 
 | Workload | Content | AMD laptop, 200 % | Intel laptop, 100 % |
 |---|---|:--:|:--:|
-| `plain` | ASCII | 1st | 1st — **130 %** of wt |
-| `ansi` | SGR escapes | 2nd | 1st — **114 %** |
-| `hangul` | wide cells, no grapheme extras | 2nd — 80 % of wt | 1st — **117 %** |
-| `cjk` | above plus a few clusters per line | 2nd — 59 % of wt | 1st — **115 %** |
-| `emoji_vs16` | one VS-16 cluster per cell | last | 3rd of 5 — **19 %** |
-| `zwj` | one ZWJ-family cluster per cell | last | 3rd of 4 — **23 %** |
+| `plain` | ASCII | 1st | 1st — **131 %** of wt |
+| `ansi` | SGR escapes | 2nd | 1st — **110 %** |
+| `hangul` | wide cells, no grapheme extras | 2nd — 80 % of wt | 1st — **118 %** |
+| `cjk` | above plus a few clusters per line | 2nd — 59 % of wt | 1st — **114 %** |
+| `emoji_vs16` | one VS-16 cluster per cell | last | 3rd of 5 — **25 %** |
+| `zwj` | one ZWJ-family cluster per cell | last | 3rd of 4 — **25 %** |
 
 The cliff reproduces on both machines and on macOS: we are at or above Windows
 Terminal until a cluster lands in every cell, and then we are at a fifth of it. The
@@ -295,8 +295,8 @@ a differing row count makes the rates incomparable. The attribution workloads ca
 before that change cannot be compared with numbers after it.
 
 Going from `cjk` to `zwj`, the other terminals get *faster* (more bytes per cluster
-means less per-cell work per byte) while we get slower — 7x on the AMD laptop, 2.8x on
-the Intel one, where the others gained 75 % (wt), 126 % (conhost), and 224 %
+means less per-cell work per byte) while we get slower — 7x on the AMD laptop, 2.6x on
+the Intel one, where the others gained 74 % (wt), 135 % (conhost), and 228 %
 (wezterm). That asymmetry is the fingerprint of a per-cluster cost the others do not
 pay, and it has two layers:
 
