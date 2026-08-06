@@ -682,6 +682,25 @@ fn tildazAcceptsFirstResponder(_: objc.id, _: objc.SEL) callconv(.c) bool {
     return true;
 }
 
+/// #391 — 비활성 창의 첫 mouse-down 을 view 가 받는다 (click-through). AppKit
+/// 기본값은 NO 이고, 그러면 그 클릭은 창을 앞으로 가져와 key 로 만드는 데만 쓰이고
+/// view 로 오지 않는다 — 다른 앱에 focus 가 있을 때 탭바 `+`/`×`/`…` 가 두 번
+/// 눌러야 동작했던 이유다. Apple 문서가 override 예로 드는 것이 바로 창 title-bar
+/// 버튼의 click-through 다.
+///
+/// 탭바만이 아니라 **view 전체**에 YES 다. tildaz 는 focus 를 잃어도 숨지 않고
+/// visible 로 남는 drop-down 이라 (#195 — z-order 만 양보) "비활성인데 화면에
+/// 보이는 창" 이 정상 상태이고, 그 상태의 첫 클릭을 버리면 모든 클릭이 두 번이
+/// 된다. Linux 는 pointer event 가 keyboard focus 와 무관하게 커서 아래 surface
+/// 로 가고 Windows 는 `WM_MOUSEACTIVATE` 기본값 `MA_ACTIVATE` 가 클릭을
+/// 통과시키므로, 이 override 가 세 platform 동등을 만든다.
+///
+/// 좌클릭만 영향받는다 — 우클릭 paste (#119) 는 macOS 가 비활성 창에도
+/// `rightMouseDown:` 을 전달해 이 메서드를 거치지 않는다.
+fn tildazAcceptsFirstMouse(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) bool {
+    return true;
+}
+
 /// #317 — AppKit은 Command key equivalent를 keyDown:보다 먼저 key window의
 /// view hierarchy에 보낸다. terminal marked input이 Cmd+Q를 소비하기 전에 custom
 /// NSTextInputClient인 이 view가 공통 입력 정책을 적용한다. terminal marked-input
@@ -2675,6 +2694,9 @@ fn registerTildazViewClass() !objc.Class {
     if (!objc.class_addMethod(cls, objc.sel("acceptsFirstResponder"), @ptrCast(&tildazAcceptsFirstResponder), "B@:"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("performKeyEquivalent:"), @ptrCast(&tildazPerformKeyEquivalent), "B@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // #391 — "B@:@" = BOOL 반환, self + _cmd + NSEvent id (그 mouse-down event).
+    if (!objc.class_addMethod(cls, objc.sel("acceptsFirstMouse:"), @ptrCast(&tildazAcceptsFirstMouse), "B@:@"))
         return error.ViewSubclassAddMethodFailed;
     // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
