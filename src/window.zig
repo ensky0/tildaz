@@ -2191,6 +2191,10 @@ pub const Window = struct {
                 if (self.visible) {
                     const top = if (wParam == 0) HWND_NOTOPMOST else HWND_TOPMOST;
                     _ = SetWindowPos(hwnd, top, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    // #390 — z-order 양보와 같은 지점에서 열린 command menu 도
+                    // 닫는다. `WM_ACTIVATEAPP` 은 *다른 프로세스* 창 활성화에만
+                    // 오므로 (같은 스레드의 `MessageBoxW` 는 안 옴) 오탐이 없다.
+                    if (wParam == 0) _ = self.dispatchAppEvent(.{ .focus_lost = {} });
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
