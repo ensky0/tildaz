@@ -41,6 +41,16 @@ fn asciiSlot(cp: u21) ?usize {
     return cp - ASCII_LO;
 }
 
+/// #399 — 한 번의 shape 호출로 묶는 cluster 수 상한. 넘으면 caller 가 런을 끊고
+/// 다음 런이 이어받는다. Windows 판과 같은 값이다 (`MAX_RUN_CLUSTERS = 32`) — 이 값이
+/// shaping 작업 버퍼 크기를 정하는데, 32 면 codepoint 버퍼가 2 KB 로 지역 배열에 둘 만하다.
+pub const MAX_RUN_CLUSTERS = 32;
+
+/// cluster 하나가 가질 수 있는 codepoint 수 상한. 셀 루프의 개별 경로가 쓰는
+/// `cluster: [16]u21` (base 1 + extras 15) 과 **같은 값이어야** 배칭과 개별 경로가 같은
+/// cluster 를 본다.
+pub const MAX_CLUSTER_CPS = 16;
+
 // Cross-platform ligature 타입 re-export — caller (software_terminal.zig)
 // 가 `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
 pub const LigatureGlyph = ligature.LigatureGlyph;
@@ -130,6 +140,19 @@ pub const Context = struct {
     hb_api: ?harfbuzz.Api = null,
     /// shape 호출 사이 reuse 하는 buffer. shape 마다 clear_contents 호출 후 재사용.
     hb_buffer: ?*harfbuzz.hb_buffer_t = null,
+    /// #399 — cluster shaping 이 **직전에 성공한 face**. chain 순회를 이 face 부터
+    /// 시작한다.
+    ///
+    /// **이게 Linux 의 진짜 병목이었다.** mac (CoreText) · Win (DirectWrite) 은 호출당
+    /// 고정 비용 (`CTLine` 생성 · COM 왕복) 이 커서 런 배칭만으로 크게 줄었는데,
+    /// HarfBuzz 는 그 고정 비용이 작고 **codepoint 수에 비례**한다. 그래서 배칭해도
+    /// chain 앞쪽의 emoji 없는 face 들에서 런 전체를 shape 하고 버리는 작업량이 그대로
+    /// 남아, `zwj` 는 shape 호출이 11 배 줄었는데도 시간이 -0.4 % 였다 (실측).
+    ///
+    /// 터미널 화면은 같은 종류의 cluster 가 이어지는 것이 보통이라 (한 줄이 전부 emoji
+    /// 이거나 전부 한글), 직전 face 를 먼저 보면 대부분 한 번에 맞는다. 틀리면 기존대로
+    /// 전체를 돌므로 **결과는 바뀌지 않고 순서만 바뀐다.**
+    last_cluster_face: u8 = 0,
     /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
     ligature_cache: ligature.Cache,
     faces: [MAX_CHAIN]?Face,
@@ -698,7 +721,11 @@ pub const Context = struct {
 
         // codepoint array 를 u32 로 reinterpret (u21 → u32 동일 비트 layout 아님
         // → 명시 변환 buffer 사용).
-        var u32_buf: [64]u32 = undefined;
+        //
+        // #399 — 크기가 `MAX_RUN_CLUSTERS * 16` 이다. 런 배칭 (`resolveClusterRun`) 이
+        // cluster 들을 이어붙여 이 함수로 넘기므로, 예전 64 로는 한 줄이 조용히 잘렸다.
+        // 2 KB 짜리 지역 배열이라 프레임마다 불려도 부담이 아니다.
+        var u32_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]u32 = undefined;
         const n = @min(cps.len, u32_buf.len);
         for (cps[0..n], 0..) |cp, i| u32_buf[i] = @intCast(cp);
 
@@ -759,21 +786,141 @@ pub const Context = struct {
         return result;
     }
 
+    /// #399 — 연속된 grapheme cluster 를 **한 번의 shape 호출**로 묶는다.
+    /// mac `resolveGraphemeRun` · Win `resolveGraphemeRun` 과 같은 자리다.
+    ///
+    /// `render` 시간의 91.5 % 가 cluster shaping 이고 (#395) 그 대부분이 cluster 마다
+    /// chain 을 처음부터 순회하며 HarfBuzz 를 새로 부르는 **고정 비용**이다. 한 줄을
+    /// 묶으면 그만큼 준다.
+    ///
+    /// 성공하면 `clusters.len` 을, 하나라도 못 채우면 0 을 돌려준다 — caller 는 0 이면
+    /// 기존 개별 경로 (`resolveCluster`) 로 떨어진다. **렌더가 틀리느니 느린 게 낫다.**
+    pub fn resolveClusterRun(
+        self: *Context,
+        clusters: []const []const u21,
+        out: []LigatureGlyph,
+    ) usize {
+        const t0 = perf.now();
+        const n = self.resolveClusterRunInner(clusters, out);
+        perf.addTimed(&perf.shape, t0);
+        // **런 실패를 miss 로 세지 않는다.** 실패하면 caller 가 개별 경로로 떨어지고
+        // 거기서 cluster 마다 `resolveCluster` 가 chain miss 를 센다 — 여기서 또 세면
+        // 한 실패가 두 번 잡혀서, `miss` 가 배칭 전후로 **다른 의미**가 된다 (실측에서
+        // 180 → 1,133 으로 보여 실패가 6 배 는 것처럼 읽혔다). 이 카운터는 세 platform
+        // 에서 계속 "chain 이 못 맞춘 cluster 수" 하나만 뜻해야 비교가 성립한다.
+        return n;
+    }
+
+    fn resolveClusterRunInner(
+        self: *Context,
+        clusters: []const []const u21,
+        out: []LigatureGlyph,
+    ) usize {
+        if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
+        if (out.len < clusters.len) return 0;
+        if (self.face_count == 0 or self.hb_api == null) return 0;
+
+        // cluster 들을 이어붙이면서 **각자의 시작 offset** 을 적어 둔다.
+        //
+        // `shapeRunOnFace` 는 `hb_buffer_add_codepoints` 로 넣는데, 그때 HarfBuzz 가
+        // 매기는 cluster 번호가 **버퍼 안 codepoint 인덱스**다. 그래서 이 offset 표가
+        // 그대로 "글리프 → 우리 cluster" 매핑이 된다 — `hb_buffer_add` 를 새로 바인딩할
+        // 필요가 없다.
+        var cps_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]u21 = undefined;
+        var starts: [MAX_RUN_CLUSTERS]u32 = undefined;
+        var total: usize = 0;
+        for (clusters, 0..) |c, i| {
+            if (c.len == 0 or c.len > MAX_CLUSTER_CPS) return 0;
+            if (total + c.len > cps_buf.len) return 0;
+            starts[i] = @intCast(total);
+            @memcpy(cps_buf[total..][0..c.len], c);
+            total += c.len;
+        }
+
+        // #399 — 직전에 맞은 face 를 먼저 본다 (`last_cluster_face` 주석). 런은 codepoint
+        // 가 많아 (`zwj` 13 개면 65 개) 헛도는 face 하나가 그만큼 비싸다.
+        var shape_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]ShapedGlyph = undefined;
+        const hint = self.last_cluster_face;
+        var order: [MAX_CHAIN + 1]u8 = undefined;
+        var order_n: usize = 0;
+        if (hint < self.face_count) {
+            order[0] = hint;
+            order_n = 1;
+        }
+        for (0..self.face_count) |fi| {
+            const idx_u8: u8 = @intCast(fi);
+            if (order_n > 0 and idx_u8 == hint) continue; // 이미 앞에 넣었다
+            order[order_n] = idx_u8;
+            order_n += 1;
+        }
+
+        for (order[0..order_n]) |idx_u8| {
+            const n = self.shapeRunOnFace(idx_u8, cps_buf[0..total], &shape_buf);
+            // 글리프 수가 cluster 수와 다르면 이 face 는 우리 경계대로 합성하지 않은
+            // 것이다 (HarfBuzz 가 인접 cluster 둘을 하나로 합쳤거나, 합성이 안 돼
+            // codepoint 마다 글리프가 나왔거나).
+            if (n != clusters.len) continue;
+
+            var ok = true;
+            for (0..clusters.len) |i| {
+                // 개별 경로의 *clean single-glyph* 판정과 같은 기준이다.
+                if (shape_buf[i].glyph_index == 0) {
+                    ok = false;
+                    break;
+                }
+                // 경계가 어긋났거나 순서가 뒤집힌 경우를 함께 잡는다.
+                if (shape_buf[i].cluster != starts[i]) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
+
+            for (0..clusters.len) |i| {
+                out[i] = .{
+                    .face_idx = idx_u8,
+                    .glyph_index = shape_buf[i].glyph_index,
+                    .x_offset = shape_buf[i].x_offset,
+                    .y_offset = shape_buf[i].y_offset,
+                };
+            }
+            self.last_cluster_face = idx_u8;
+            return clusters.len;
+        }
+        return 0;
+    }
+
+    /// 한 face 로 cluster 하나를 시도한다. *clean single-glyph* (n==1 + glyph_index != 0)
+    /// 면 그 결과, 아니면 null — 판정은 예전 chain 루프와 같다.
+    fn tryClusterOnFace(self: *Context, face_idx: u8, cps: []const u21) ?LigatureGlyph {
+        var shape_buf: [MAX_CLUSTER_CPS]ShapedGlyph = undefined;
+        const n = self.shapeRunOnFace(face_idx, cps, &shape_buf);
+        if (n != 1) return null;
+        if (shape_buf[0].glyph_index == 0) return null;
+        return .{
+            .face_idx = face_idx,
+            .glyph_index = shape_buf[0].glyph_index,
+            .x_offset = shape_buf[0].x_offset,
+            .y_offset = shape_buf[0].y_offset,
+        };
+    }
+
     fn resolveClusterInner(self: *Context, cps: []const u21) ?LigatureGlyph {
         if (cps.len == 0 or self.face_count == 0 or self.hb_api == null) return null;
 
-        var shape_buf: [16]ShapedGlyph = undefined;
+        // #399 — 직전에 맞은 face 를 먼저 본다 (`last_cluster_face` 주석).
+        const hint = self.last_cluster_face;
+        if (hint < self.face_count) {
+            if (self.tryClusterOnFace(hint, cps)) |g| return g;
+        }
+
         for (0..self.face_count) |face_idx| {
             const idx_u8: u8 = @intCast(face_idx);
-            const n = self.shapeRunOnFace(idx_u8, cps, &shape_buf);
-            if (n != 1) continue;
-            if (shape_buf[0].glyph_index == 0) continue;
-            return .{
-                .face_idx = idx_u8,
-                .glyph_index = shape_buf[0].glyph_index,
-                .x_offset = shape_buf[0].x_offset,
-                .y_offset = shape_buf[0].y_offset,
-            };
+            if (idx_u8 == hint) continue; // 바로 위에서 이미 봤다
+            if (self.tryClusterOnFace(idx_u8, cps)) |g| {
+                self.last_cluster_face = idx_u8;
+                return g;
+            }
         }
         return null;
     }
