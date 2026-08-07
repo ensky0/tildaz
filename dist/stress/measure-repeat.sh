@@ -1,7 +1,6 @@
 #!/bin/sh
-# perf 스냅숏 반복 측정 (Linux · macOS) — 배분을 5 회 규칙대로 뜬다.
+# perf 스냅숏 반복 측정 (Linux · macOS · Windows) — 배분을 5 회 규칙대로 뜬다.
 #
-# [`measure-repeat.ps1`](measure-repeat.ps1) 의 POSIX 판이다. 같은 일을 하고 같은 표를 낸다.
 # `compare-terminals.sh` 와는 역할이 다르다 — 저쪽은 **여러 터미널을 나란히 놓고 처리량**을
 # 재고, 이쪽은 **우리 앱 하나**를 반복해 띄워 종료 시 자동 덤프 (#396) 로 남는
 # `parse` · `render` · `shape` 배분을 모은다.
@@ -19,9 +18,17 @@
 # 맡기면 회차를 통째로 버린다 — Windows 에서 AC · DRR 을 안 보고 40 회차를 날렸다 (#394).
 # #397 의 Linux 실기 검증 (2 커밋 x 2 워크로드 x 5 회 = 20 회차) 이 계기다.
 #
+# **Windows 도 이 파일로 돈다 — `measure-repeat.ps1` 은 없어졌다** (#381). 처음엔 PowerShell
+# 판을 따로 뒀지만 (Git Bash 를 요구하지 않으려고) **두 벌이 실제로 갈렸다**: `parse 비중`
+# 계산식이 표마다 달랐고 (#395, [65b1564](https://github.com/ensky0/tildaz/commit/65b1564))
+# 워크로드 목록 · 로그 파싱 정규식이 양쪽에 중복이었다. `compare-terminals.sh` 가 이미 Git
+# Bash 를 요구하고 그건 Git for Windows 에 항상 들어 있어서, 한 벌로 합치는 값이 더 크다.
+#
+# **Windows 는 Git Bash 에서 돌린다** (`compare-terminals.sh` 와 같은 제약이다).
+#
 # ⚠️ **macOS 경로는 아직 실기 검증하지 않았다** (2026-08-07 현재). Linux (KDE Plasma Wayland ·
-# Intel i5-1240P) 에서만 돌려 봤다. macOS 에서 처음 쓸 때는 `caffeinate` 가 실제로 붙었는지와
-# 로그 경로 (`~/Library/Logs/tildaz_stress.log`) 를 먼저 확인해요.
+# Intel i5-1240P) 와 Windows (같은 기기) 에서만 돌려 봤다. macOS 에서 처음 쓸 때는
+# `caffeinate` 가 실제로 붙었는지와 로그 경로 (`~/Library/Logs/tildaz_stress.log`) 를 먼저 확인해요.
 
 set -eu
 
@@ -70,19 +77,31 @@ while [ $# -gt 0 ]; do
 done
 
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-EXE="$REPO_ROOT/zig-out/bin/tildaz"
-STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress"
 [ -n "$OUT" ] || OUT="$REPO_ROOT/dist/stress/shots"
 
 # 측정 위생은 `compare-terminals.sh` 와 **같은 로직**을 쓴다.
 . "$REPO_ROOT/dist/stress/hygiene.sh"
+
+# 자식이 Windows 실행파일이면 경로를 native 로 바꿔 넘긴다 (`compare-terminals.sh` 와 같은
+# 함수다). MSYS 는 명령줄 인자를 자동 변환하기도 하지만 기대지 않는다.
+native_path() {
+    if [ "$HYG_PLATFORM" = windows ]; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
+
+EXE_SUFFIX=""
+[ "$HYG_PLATFORM" = windows ] && EXE_SUFFIX=".exe"
+EXE="$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
+STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress$EXE_SUFFIX"
 
 case "$HYG_PLATFORM" in
     # paths.zig 의 `logDir` 와 같은 규칙이다. 여기서 어긋나면 회차는 도는데 표가 비어서
     # 원인을 찾기 어려우니, 그 파일이 단일 출처라는 것을 기억해요.
     linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
     macos) LOG="$HOME/Library/Logs/tildaz_stress.log" ;;
-    *) echo "이 스크립트는 Linux · macOS 전용이에요. Windows 는 measure-repeat.ps1 을 써요." >&2; exit 2 ;;
+    # `$APPDATA` 는 `C:\Users\…\AppData\Roaming` 형태로 오므로 POSIX 경로로 바꿔서 쓴다 —
+    # 아래에서 `wc -c` · `tail -c` 로 직접 읽는 대상이기 때문이다.
+    windows) LOG="$(cygpath -u "$APPDATA")/tildaz/tildaz_stress.log" ;;
+    *) echo "모르는 platform 이에요 ($(uname -s)) — Linux · macOS · Windows(Git Bash) 만 돌아요." >&2; exit 2 ;;
 esac
 
 [ -x "$EXE" ] || { echo "tildaz 없음: $EXE  (먼저 zig build)" >&2; exit 1; }
@@ -153,7 +172,7 @@ while [ "$i" -le "$REPEAT" ]; do
         export TILDAZ_STRESS_WORKLOAD
         # 실패해도 남은 회차는 계속 돈다 — 한 회차가 죽었다고 나머지를 버리지 않는다.
         # 그 회차는 로그에 스냅숏을 안 남기므로 표의 회차 수로 드러난다.
-        $RUN_TIMEOUT "$EXE" -e "$STRESS" -size 120x40 -scrollback 32767 \
+        $RUN_TIMEOUT "$EXE" -e "$(native_path "$STRESS")" -size 120x40 -scrollback 32767 \
             >/dev/null 2>&1 || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
         sleep 1.5
     done

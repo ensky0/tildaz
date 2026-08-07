@@ -18,14 +18,20 @@
 # 터미널 정리 · 설정 복원 · `WORK_DIR` 삭제를 한다. 여기서 걸면 그것을 덮어쓴다. 그래서
 # 복원 함수만 제공하고 등록은 호출자에게 맡긴다. `hygiene_end` 는 여러 번 불러도 안전하다.
 #
-# ⚠️ **실기 검증은 Linux (KDE Plasma Wayland · Intel i5-1240P) 에서만 했다** (2026-08-07).
-# macOS · Windows 경로는 코드로만 맞춰 둔 것이라, 처음 쓸 때 아래를 확인해요.
+# **실기 검증 상태** — Linux (KDE Plasma Wayland · Intel i5-1240P, 2026-08-07) 와
+# Windows (같은 기기 · Windows 11 26200 · Git Bash, 2026-08-07) 는 확인했고 **macOS 는 아직**이다.
 #
-# | 확인할 것 | 왜 |
+# Windows 검증에서 **넷 중 하나만 맞았다** — 코드로만 맞춰 둔 경로는 실제로 틀려 있었다.
+# 자세한 내용은 각 항목 주석에 있다 ([#381](https://github.com/ensky0/tildaz/issues/381)).
+#
+# | 확인한 것 | 결과 |
 # |---|---|
-# | Windows: `kill` 이 powershell 홀더를 실제로 죽이는지 | Git Bash 의 MSYS PID 와 Windows PID 가 달라요. 안 죽어도 홀더는 24 시간 뒤 스스로 끝나요 |
-# | Windows: 고성능 구성표로 실제로 바뀌는지 | 최신 Windows 11 은 숨겨 두기도 해요. 실패하면 경고가 떠요 |
-# | macOS: `caffeinate` 가 붙는지 | 홀더 방식이라 프로세스가 남아 있어야 해요 |
+# | Windows: `kill` 이 powershell 홀더를 죽이는지 | ✅ 죽인다 (MSYS PID 와 Windows PID 가 다른데도) |
+# | Windows: CPU 를 최고 성능으로 | ❌ 레버가 틀렸다 — 구성표가 아니라 **전원 모드**다 (`hygiene_overlay_set`) |
+# | Windows: 배경 앱 최소화 | ❌ 아예 없었다 — `hygiene_minimize_win32` 로 넣었다 |
+# | Windows: `hygiene_check` 통과 | ❌ KDE 가 아니라는 이유만으로 **항상 실패**했다 (`hygiene_can_minimize`) |
+# | macOS: `caffeinate` 가 붙는지 | **미검증** — 홀더 방식이라 프로세스가 남아 있어야 해요 |
+# | macOS: 배경 앱 최소화 | **없다** — Windows 와 같은 갭이다. 그 머신에서 실기로 확인할 때 함께 넣어요 |
 
 # platform 판별 — `compare-terminals.sh` 와 같은 규칙이다 (Windows 는 Git Bash 라 `uname` 이
 # `MINGW*` / `MSYS*` / `CYGWIN*` 를 낸다).
@@ -38,19 +44,78 @@ esac
 
 HYG_INHIBIT_PID=""
 HYG_PROFILE_SAVED=""
-HYG_SCHEME_SAVED=""
+HYG_OVERLAY_SAVED=""
 HYG_MINIMIZED=0
 HYG_POWER="?"
 HYG_REFRESH="?"
 HYG_PROFILE="?"
 
-# KDE 인지. 창 최소화는 **KDE 만** 한다 (개발 중에 잠깐 쓰는 도구라 sway · Hyprland · GNOME
-# 까지 갖추지 않는다 — 사용자 결정). 그 환경에서는 조용히 넘어가지 않고 경고한다.
+# Windows 의 "최고 성능" 전원 모드 (overlay) GUID. 아래 `hygiene_overlay_set` 주석 참고.
+HYG_OVERLAY_MAX=ded574b5-45a0-4f42-8737-46345c09c238
+
+# KDE 인지. Linux 에서 창 최소화는 **KDE 만** 한다 (개발 중에 잠깐 쓰는 도구라 sway ·
+# Hyprland · GNOME 까지 갖추지 않는다 — 사용자 결정).
 hygiene_is_kde() {
     [ "$HYG_PLATFORM" = linux ] || return 1
     case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) ;; *) return 1 ;; esac
     command -v gdbus >/dev/null 2>&1 || return 1
     return 0
+}
+
+# 배경 앱을 **자동으로 내릴 수 있는 환경인지.** 여기서 1 이면 사람이 직접 내려야 하므로
+# `hygiene_check` 가 경고한다.
+#
+# Windows 를 빠뜨리면 `hygiene_check` 가 **구조적으로 항상 실패**한다 — AC 도 주사율도
+# 정상인데 "KDE 가 아니다" 하나로 걸려서, `compare-terminals.sh` 가 `--ignore-hygiene`
+# 없이는 아예 안 돈다. 그 플래그는 AC · 주사율 · worker 검사까지 통째로 끄니까 이 파일이
+# 막으려던 오염이 그대로 돌아온다 (#381 Windows 실기).
+hygiene_can_minimize() {
+    hygiene_is_kde && return 0
+    [ "$HYG_PLATFORM" = windows ] && return 0
+    return 1
+}
+
+# 평소 쓰는 worker 를 이름으로 죽인다. 떠 있지 않아도 성공으로 친다 (호출자가 매번
+# 분기하지 않게).
+#
+# `pkill` 을 POSIX 쪽에만 쓴다 — **Git Bash 에는 없다.** Windows 는 `taskkill` 이고,
+# `//IM` 은 MSYS 의 경로 변환을 피하려고 슬래시를 겹친 것이다 (한 겹이면 `/IM` 이
+# 경로로 바뀌어 인자가 통째로 안 먹는다 — `powercfg` 에서 실제로 그랬다).
+hygiene_kill_worker() {
+    if [ "$HYG_PLATFORM" = windows ]; then
+        _pids=$(powershell -NoProfile -Command "(Get-Process tildaz -ErrorAction SilentlyContinue).Id -join ' '" 2>/dev/null | tr -d '\r')
+        [ -n "$_pids" ] || return 0
+        taskkill //IM tildaz.exe //F >/dev/null 2>&1 || true
+    else
+        _pids=$(pgrep -x tildaz 2>/dev/null | tr '\n' ' ')
+        [ -n "$_pids" ] || return 0
+        command -v pkill >/dev/null 2>&1 && pkill -x tildaz >/dev/null 2>&1 || true
+    fi
+    echo "평소 쓰는 TildaZ worker 를 종료했어요 (pid $_pids · 측정 위생). 끝나도 다시 띄우지 않아요."
+}
+
+# Windows 의 전원 **모드** (overlay) 를 읽고 쓴다 — Linux 의 `powerprofilesctl get` / `set`
+# 에 대응한다. `powercfg` 를 쓰지 않는 이유가 둘이다 (#381 Windows 실기).
+#
+#   - **Windows 11 에는 고성능 전원 구성표가 없다.** `powercfg /list` 에 "균형 조정" 하나뿐이고
+#     예전 코드가 쓰던 GUID `8c5e7fda-…` 는 목록에 없다. 그래서 *"설정에서 직접 골라요"* 라는
+#     안내는 **존재하지 않는 항목**을 가리키고 있었다.
+#   - **`powercfg` 에 overlay 명령이 없다.** `/overlaylist` 는 `매개 변수가 잘못되었습니다` 로
+#     떨어지고 `powercfg /?` 에도 항목이 없다. 문서화되지 않은 `powrprof.dll` export 를 직접 부른다.
+#
+# 알려진 값: `00000000-…` 균형(기본) · `ded574b5-…` 최고 성능 · `961cc777-…` 최고의 전원 효율.
+hygiene_overlay_get() {
+    powershell -NoProfile -Command "Add-Type -Namespace H -Name G -MemberDefinition '[DllImport(\"powrprof.dll\")] public static extern uint PowerGetEffectiveOverlayScheme(out System.Guid g);'; \$g = [System.Guid]::Empty; if ([H.G]::PowerGetEffectiveOverlayScheme([ref] \$g) -eq 0) { \$g.ToString() }" 2>/dev/null | tr -d '\r\n '
+}
+
+hygiene_overlay_set() {
+    powershell -NoProfile -Command "Add-Type -Namespace H -Name S -MemberDefinition '[DllImport(\"powrprof.dll\")] public static extern uint PowerSetActiveOverlayScheme(System.Guid g);'; exit ([int][H.S]::PowerSetActiveOverlayScheme([System.Guid]'$1'))" >/dev/null 2>&1
+}
+
+# 열려 있는 창을 전부 최소화한다 (Windows). KDE 쪽 `hygiene_minimize_windows` 와 같은
+# 의미다. 예전 `measure-repeat.ps1` 이 자기 안에서 부르던 COM 호출을 여기로 들여왔다.
+hygiene_minimize_win32() {
+    powershell -NoProfile -Command "(New-Object -ComObject Shell.Application).MinimizeAll()" >/dev/null 2>&1
 }
 
 # --- 검사 -----------------------------------------------------------------
@@ -59,18 +124,6 @@ hygiene_is_kde() {
 # 호출자가 `--ignore-hygiene` 같은 우회를 줄지 결정한다.
 hygiene_check() {
     _warn=""
-
-    # 평소 쓰는 worker 가 떠 있으면 렌더 · CPU 를 나눠 쓴다. 측정 인스턴스는 worker lock 을
-    # 잡지 않아 충돌 없이 함께 뜨므로 (#382) 여기서 직접 봐야 한다.
-    if [ "$HYG_PLATFORM" = windows ]; then
-        _pids=$(powershell -NoProfile -Command "(Get-Process tildaz -ErrorAction SilentlyContinue).Id -join ' '" 2>/dev/null | tr -d '\r')
-    else
-        _pids=$(pgrep -x tildaz 2>/dev/null | tr '\n' ' ')
-    fi
-    if [ -n "$_pids" ]; then
-        echo "tildaz worker 가 떠 있어요 (pid $_pids) — 먼저 내려요" >&2
-        return 1
-    fi
 
     case "$HYG_PLATFORM" in
         linux)
@@ -141,11 +194,11 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
     esac
 
     # 창을 자동으로 못 내리는 환경에서는 **반드시 알린다.** 배경에서 그리는 앱이 있으면
-    # **우리 수치만** 최대 64 % 눌린다 (다른 넷은 +0.7~9 %). 자동화가 KDE 에만 있다고 해서
-    # 나머지 환경에서 이 함정이 사라지는 게 아니다 — 규칙으로만 남기면 잊는다.
-    if ! hygiene_is_kde; then
+    # **우리 수치만** 최대 64 % 눌린다 (다른 넷은 +0.7~9 %). 자동화가 일부 환경에만 있다고
+    # 해서 나머지에서 이 함정이 사라지는 게 아니다 — 규칙으로만 남기면 잊는다.
+    if ! hygiene_can_minimize; then
         _warn="$_warn
-배경 앱을 자동으로 못 내려요 (KDE 에서만 해요) — 브라우저 · 에디터를 직접 최소화해요 (우리 수치만 최대 64 % 눌려요)"
+배경 앱을 자동으로 못 내려요 (KDE · Windows 에서만 해요) — 브라우저 · 에디터를 직접 최소화해요 (우리 수치만 최대 64 % 눌려요)"
     fi
 
     if [ -n "$_warn" ]; then
@@ -162,6 +215,19 @@ hygiene_status() {
 
 # --- 준비 -----------------------------------------------------------------
 hygiene_begin() {
+    # ⓪ 평소 쓰는 worker 를 내린다. 측정 인스턴스는 worker lock 을 잡지 않아 충돌 없이 함께
+    #    뜨므로 (#382) 그냥 두면 **둘 다 떠 있는 채로** 재게 된다.
+    #
+    #    **검사가 아니라 종료다.** 예전에는 `hygiene_check` 가 발견하면 "먼저 내려요" 로
+    #    멈췄는데, 이유가 없었다 — 이 파일을 쓰는 세 도구가 전부 내부 측정 도구라 "모르는
+    #    사람의 창이 닫힌다" 는 위험이 없고, 규칙으로만 두면 실제로 잊는다 (#381 에서 그대로
+    #    여러 회차를 돌렸다). 터미널 비교에서는 다른 대상에 없는 백그라운드 인스턴스가 우리에게만
+    #    붙어 **공정성**이 깨지고, 배분 측정에서는 CPU · 렌더를 나눠 써 **값이 눌린다** — 형태가
+    #    다를 뿐 결론이 같다.
+    #
+    #    **끝나고 다시 띄우지 않는다** — 필요하면 사용자가 직접 띄운다 (AGENTS.md 명시 지시).
+    hygiene_kill_worker
+
     # ① 절전 · 잠금 차단. 잠금 화면이 뜨면 `render` 만 무너지고 `parse` 는 정상이라 결과
     #    표에 오염이 안 드러난다 (#396 에서 실제로 한 회차를 버렸다).
     #
@@ -210,15 +276,18 @@ hygiene_begin() {
             fi
             ;;
         windows)
-            HYG_SCHEME_SAVED=$(powercfg /getactivescheme 2>/dev/null | sed -n 's/.*GUID: \([0-9a-f-]*\).*/\1/p' | tr -d '\r')
-            # 고성능 전원 관리 옵션 (Microsoft 고정 GUID). 최신 Windows 11 은 이 구성표를
-            # 숨겨 두기도 해서 실패할 수 있다 — **조용히 넘기지 않는다.** 안 그러면 CPU 가
-            # 안 올라간 채로 통과해서, 정확히 이 파일이 막으려던 종류의 오염이 된다.
-            if powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >/dev/null 2>&1; then
-                HYG_PROFILE=high-performance
+            # 전원 **모드** 를 최고 성능으로. Linux 의 `powerprofilesctl` 과 같은 자리다.
+            # 실패는 **조용히 넘기지 않는다** — CPU 가 안 올라간 채로 통과하면 정확히 이
+            # 파일이 막으려던 종류의 오염이 된다.
+            HYG_OVERLAY_SAVED=$(hygiene_overlay_get)
+            if [ "$HYG_OVERLAY_SAVED" = "$HYG_OVERLAY_MAX" ]; then
+                HYG_OVERLAY_SAVED=""  # 원래 그랬으니 되돌릴 것이 없다
+                HYG_PROFILE=max-performance
+            elif [ -n "$HYG_OVERLAY_SAVED" ] && hygiene_overlay_set "$HYG_OVERLAY_MAX"; then
+                HYG_PROFILE=max-performance
             else
-                HYG_SCHEME_SAVED=""
-                echo "⚠ 고성능 전원 관리 옵션으로 못 바꿨어요 (숨겨진 구성표일 수 있어요) — 설정에서 직접 골라요" >&2
+                HYG_OVERLAY_SAVED=""
+                echo "⚠ 전원 모드를 최고 성능으로 못 바꿨어요 — 설정 → 시스템 → 전원 및 배터리 → 전원 모드 에서 직접 골라요" >&2
             fi
             ;;
         # macOS 에는 대응 경로가 없다. `?` 가 아니라 `n/a` 로 찍어서 **못 읽은 것**과
@@ -226,18 +295,31 @@ hygiene_begin() {
         macos) HYG_PROFILE=n/a ;;
     esac
 
-    # ③ 배경 앱 최소화 — KDE 만. 배경에서 그리는 앱이 있으면 **우리 수치만** 최대 64 %
-    #    눌린다 (다른 넷은 +0.7~9 %).
+    # ③ 배경 앱 최소화 — KDE · Windows. 배경에서 그리는 앱이 있으면 **우리 수치만** 최대
+    #    64 % 눌린다 (다른 넷은 +0.7~9 %). 그 함정이 실측된 머신이 Intel i5-1240P 이고,
+    #    Windows 와 Linux 를 같은 기기에서 재는 이상 양쪽 다 있어야 한다.
     #
-    #    **되돌리지 않는다** (사용자 결정). `measure-repeat.ps1` 의 `MinimizeAll` 도 같다 —
-    #    측정이 끝나면 창은 내려간 채로 두고 필요하면 직접 올린다.
+    #    **되돌리지 않는다** (사용자 결정) — 측정이 끝나면 창은 내려간 채로 두고 필요하면
+    #    직접 올린다.
+    #    최소화 실패는 **경고지 중단이 아니다.** 그런데 이 `if` 가 `hygiene_begin` 의 **마지막
+    #    문장**이라, 예전처럼 `f && HYG_MINIMIZED=1` 로 쓰면 실패한 순간 그 값이 함수 반환값이
+    #    되고 호출자의 `set -e` 가 **측정을 통째로 죽인다.** (같은 `&&` 라도 *최상위* 문장이면
+    #    안 죽는다 — POSIX 는 AND-OR 리스트의 마지막이 아닌 명령만 -e 에서 빼는데, 함수 반환값은
+    #    그 예외에 안 들어간다. 실측으로 갈라 확인했다.) 창이 안 내려간 건 사람이 직접 내리면
+    #    되는 일이라 여기서 멈출 이유가 없다.
     if hygiene_is_kde; then
-        hygiene_minimize_windows && HYG_MINIMIZED=1
+        if hygiene_minimize_windows; then HYG_MINIMIZED=1; else
+            echo "⚠ 창을 자동으로 못 내렸어요 (KWin 스크립팅 실패) — 직접 최소화해요" >&2
+        fi
+    elif [ "$HYG_PLATFORM" = windows ]; then
+        if hygiene_minimize_win32; then HYG_MINIMIZED=1; else
+            echo "⚠ 창을 자동으로 못 내렸어요 (MinimizeAll 실패) — 직접 최소화해요" >&2
+        fi
     fi
 }
 
-# 열려 있는 일반 창을 **하나씩 최소화**한다 (KWin 스크립팅). `measure-repeat.ps1` 의
-# `Shell.Application.MinimizeAll` 과 같은 의미다.
+# 열려 있는 일반 창을 **하나씩 최소화**한다 (KWin 스크립팅). Windows 쪽
+# `hygiene_minimize_win32` 의 `Shell.Application.MinimizeAll` 과 같은 의미다.
 #
 # **Show Desktop 을 쓰지 않는 이유** — 두 경로를 다 시험해서 버렸다.
 #   - `org.kde.KWin.showDesktop(bool)` 은 Plasma 6 Wayland 에서 **먹지 않는다**. 호출은
@@ -284,9 +366,9 @@ hygiene_end() {
         powerprofilesctl set "$HYG_PROFILE_SAVED" >/dev/null 2>&1 || true
         HYG_PROFILE_SAVED=""
     fi
-    if [ -n "$HYG_SCHEME_SAVED" ]; then
-        powercfg /setactive "$HYG_SCHEME_SAVED" >/dev/null 2>&1 || true
-        HYG_SCHEME_SAVED=""
+    if [ -n "$HYG_OVERLAY_SAVED" ]; then
+        hygiene_overlay_set "$HYG_OVERLAY_SAVED" || true
+        HYG_OVERLAY_SAVED=""
     fi
     # 창은 되돌리지 않는다 (`hygiene_begin` ③ 주석). CPU 프로파일은 되돌린다 — 그건
     # 남겨 두면 배터리를 계속 먹는다.

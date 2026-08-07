@@ -35,21 +35,20 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 |---|---|---|
 | `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
-| [`measure-repeat.ps1`](measure-repeat.ps1) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | Windows PowerShell |
-| [`measure-repeat.sh`](measure-repeat.sh) | 〃 (같은 옵션 · 같은 표) | Linux · macOS, 아무 셸 |
+| [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
 | [`hygiene.sh`](hygiene.sh) | 위 둘이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
-직접 검사해요 — worker 가 떠 있는지, AC 인지, 주사율이 그 화면의 최대와 같은지 (Windows 의 DRR ·
+직접 검사해요 — AC 인지, 주사율이 그 화면의 최대와 같은지 (Windows 의 DRR ·
 Linux 는 `kscreen-doctor`). 절전 · 잠금은 `SetThreadExecutionState` / `systemd-inhibit` /
 `caffeinate` 로 막아요.
 
-```powershell
-zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache
-dist/stress/measure-repeat.ps1 -Phase before
-dist/stress/measure-repeat.ps1 -Phase after -Workloads zwj,plain
-```
+**세 platform 이 이 한 벌이에요.** 예전에는 Windows 용 `measure-repeat.ps1` 이 따로 있었지만
+[#381](https://github.com/ensky0/tildaz/issues/381) 에서 없앴어요 — **두 벌이 실제로 갈렸거든요.**
+`parse 비중` 계산식이 표마다 달랐고 ([#395](https://github.com/ensky0/tildaz/issues/395)) 워크로드
+목록 · 로그 파싱 정규식이 양쪽에 중복이었어요. `compare-terminals.sh` 가 이미 Git Bash 를
+요구하고 그건 Git for Windows 에 항상 들어 있어서, 한 벌로 합치는 값이 더 컸어요.
 
 ```sh
 zig build -Doptimize=ReleaseFast -Dsimd=true
@@ -58,7 +57,7 @@ dist/stress/measure-repeat.sh --phase before
 dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
 ```
 
-`.sh` 는 **`zig build stress` 를 한 번 더 불러야** 해요 — 기본 `zig build` 는 `tildaz-stress` 를
+**`zig build stress` 를 한 번 더 불러야** 해요 — 기본 `zig build` 는 `tildaz-stress` 를
 `zig-out/bin` 에 install 하지 않아서, 예전에 빌드해 둔 producer 가 남아 있으면 그게 그대로 쓰여요.
 구버전 producer 는 새로 생긴 워크로드 이름을 몰라 **producer 모드로 진입하지 않고**, 창은 뜨는데
 폭포가 없는 껍데기 회차가 돼요 (실측: `emoji_vs16` · `zwj` 가 743 byte 만 읽혔어요). 뒤집어 말하면
@@ -279,11 +278,11 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 |---|---|
 | 측정 중 창을 클릭하거나 포커스를 바꾸지 않아요 | 실측 중 키보드 · 마우스가 눌려 그 회차를 버렸어요 |
 | 이전 실행의 잔여 터미널 프로세스를 먼저 정리해요 | `kitty --detach` 와 ghostty 는 스크립트가 끝나도 남아서 다음 회차와 CPU 를 나눠요 |
-| **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 공정성 문제예요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어서 ([#381](https://github.com/ensky0/tildaz/issues/381)) `compare-terminals.sh` 가 시작할 때 직접 내려요. **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
+| **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 터미널 비교에서는 **공정성**이 깨지고 배분 측정에서는 **값이 눌려요** — 형태가 다를 뿐 결론이 같아서 `hygiene.sh` 가 두 도구 모두에서 내려요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어요 ([#381](https://github.com/ensky0/tildaz/issues/381)). **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
 | AC 전원에 연결하고 절전 · **화면 잠금을 꺼요** — **잠금 차단은 스크립트가 해요** | 노트북은 배터리 · 열로 스로틀링이 걸려요. 그리고 잠금 화면이 뜨면 **`render` 만 무너지고 `parse` 는 정상이라 결과만 봐서는 티가 안 나요** — 아래 참고. AC 연결 자체는 사람이 해야 하고, 스크립트는 **검사해서 걸리면 멈춰요** |
-| **CPU 를 최고 성능으로 둬요** — **이제 스크립트가 해요** | AC 만 확인하고 전원 프로파일은 안 봤더니 `balanced` (EPP `balance_performance`) 인 채로 여러 세션을 쟀어요. Linux 는 `powerprofilesctl set performance` 로 **sudo 없이** 되고 끝나면 되돌려요 |
-| **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고. [`measure-repeat.ps1`](measure-repeat.ps1) 은 시작 전에 이걸 직접 검사하고 걸리면 멈춰요 |
-| **화면을 계속 다시 그리는 앱 (브라우저 · 에디터 · 채팅) 을 최소화해요** — **KDE 에서는 스크립트가 해요** | **우리 수치만 64 % 흔들려요** — 아래 참고. KDE 는 KWin 스크립팅으로 창을 **하나씩 최소화**하고 (**되돌리지 않아요** — 필요하면 직접 올려요), 그 밖의 데스크톱에서는 경고만 해요. Show Desktop 은 **측정 창이 뜨는 순간 해제돼서** 못 써요 (실측) |
+| **CPU 를 최고 성능으로 둬요** — **이제 스크립트가 해요** | AC 만 확인하고 전원 프로파일은 안 봤더니 `balanced` (EPP `balance_performance`) 인 채로 여러 세션을 쟀어요. Linux 는 `powerprofilesctl set performance` 로 **sudo 없이** 되고, Windows 는 **전원 모드(overlay)** 를 최고 성능으로 둬요 — 둘 다 끝나면 되돌려요. **Windows 는 전원 *구성표* 가 아니에요** — 아래 참고 |
+| **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고. `hygiene.sh` 가 시작 전에 이걸 직접 검사하고 걸리면 멈춰요 |
+| **화면을 계속 다시 그리는 앱 (브라우저 · 에디터 · 채팅) 을 최소화해요** — **KDE · Windows 에서는 스크립트가 해요** | **우리 수치만 64 % 흔들려요** — 아래 참고. KDE 는 KWin 스크립팅으로 창을 **하나씩 최소화**하고 Windows 는 `Shell.Application.MinimizeAll` 이에요 (**되돌리지 않아요** — 필요하면 직접 올려요). macOS 와 그 밖의 데스크톱에서는 경고만 해요. Show Desktop 은 **측정 창이 뜨는 순간 해제돼서** 못 써요 (실측) |
 | 수치는 **실기기**에서 내요 | VM 은 CPU · 메모리 대역폭 · 렌더 경로가 host 와 달라요. VM 은 동작 확인 용도예요 |
 
 #### 잠금 화면이 뜨면 `render` 만 무너져요 — 결과 표에는 안 보여요
@@ -338,6 +337,42 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 줘서 **고치기 전 코드도 손실이 없어 보여요** (Windows 는 `HOLD=3000` 에서 고침 전에도 16 byte 였고,
 macOS 는 `HOLD=5000` 에서 100 % 였어요). 배분 측정은 `HOLD` 없이 해요 — `measure-repeat` 의 기본값이
 0 인 이유예요.
+
+#### Windows 의 CPU 레버는 전원 *구성표* 가 아니라 전원 *모드* 예요
+
+`hygiene.sh` 는 처음에 **고성능 전원 관리 옵션** (`powercfg /setactive 8c5e7fda-…`) 을 켜려 했는데,
+Windows 실기 검증에서 **두 겹으로 틀린 것**이 드러났어요 ([#381](https://github.com/ensky0/tildaz/issues/381),
+Intel i5-1240P · Windows 11 26200).
+
+**① Git Bash 에서 `powercfg /…` 는 인자가 통째로 안 먹어요.** MSYS 가 `/getactivescheme` 을 경로로
+바꿔요. 같은 파일이 `taskkill //IM` 에서는 이 회피를 이미 쓰고 있었는데 `powercfg` 에만 안
+들어갔어요 — 그래서 코드가 **항상** 실패 경로로 갔어요.
+
+```sh
+$ powercfg /getactivescheme
+매개 변수가 잘못되었습니다. 도움말을 보려면 "/?"를 입력하십시오.
+$ powercfg //getactivescheme      # 슬래시를 겹치거나 `-getactivescheme`
+전원 구성표 GUID: 381b4222-…  (균형 조정)
+```
+
+**② 슬래시를 고쳐도 안 돼요 — Windows 11 에 그 구성표가 없어요.** `powercfg /list` 에 "균형 조정"
+하나뿐이고 고성능 GUID `8c5e7fda-…` 는 목록에 없어요. 그러니 예전 경고 문구의 *"설정에서 직접
+골라요"* 는 **존재하지 않는 항목**을 가리키고 있었어요.
+
+**실제 레버는 전원 모드(overlay) 예요.** `powercfg` 에는 명령이 없고 (`/overlaylist` 는 `매개 변수가
+잘못되었습니다`, `powercfg /?` 에도 항목이 없어요) `powrprof.dll` 의
+`PowerGetEffectiveOverlayScheme` / `PowerSetActiveOverlayScheme` 로 읽고 써요. Linux 의
+`powerprofilesctl get` / `set` 과 같은 자리예요.
+
+| GUID | 전원 모드 |
+|---|---|
+| `00000000-0000-0000-0000-000000000000` | 균형 (기본) |
+| **`ded574b5-45a0-4f42-8737-46345c09c238`** | **최고 성능** ← 측정용 |
+| `961cc777-2547-4f9d-8174-7d86181b8a7a` | 최고의 전원 효율 |
+
+읽어 보니 **이 머신은 이미 최고 성능**이었어요 — Linux 쪽에서 EPP 가 `balance_performance` 였던
+것과는 사정이 달라요. 그래도 검사·설정·복원은 그대로 걸어요. *"이미 맞을 것"* 이라고 넘기면
+다른 머신에서 조용히 눌린 값을 얻게 되니까요.
 
 #### Windows 의 동적 새로 고침 빈도(DRR)는 회차를 **두 무리로 갈라요**
 
