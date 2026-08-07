@@ -409,33 +409,13 @@ if [ "$REPEAT" -ge 5 ] && [ "$MB" -lt 64 ]; then
     echo "  기록용은 --mb 64 (기본값) 로 내세요."
     echo ""
 fi
-# 평소 쓰는 TildaZ worker 를 내린다 (README 의 "측정 위생").
+# 평소 쓰는 TildaZ worker 는 `hygiene_begin` 이 내린다 (`hygiene.sh` 의 ⓪).
 #
-# **자동으로 죽인다.** 이 스크립트는 사용자 프로세스를 이름으로 죽이지 않는 것이 원칙이지만
-# (`cleanup_terminals` 주석 — 사용자가 따로 열어 둔 터미널 창까지 죽기 때문), worker 만은
-# 예외다. 이유가 셋이다.
-#   - **안 내리면 우리에게 불리하다.** 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만
-#     worker 가 떠서 렌더 · CPU 를 나눠 쓴다. 공정성 문제라 "잊으면 그 회차를 버려야" 한다.
-#   - **실제로 잊는다.** README 에 규칙으로만 적어 두었더니 그대로 여러 회차를 돌린 적이
-#     있다 (#381).
-#   - **이 스크립트는 내부 측정 도구다.** 사용자 문서에 없고 쓰는 사람이 정해져 있어서,
-#     "모르는 사람의 창이 닫힌다" 는 위험이 없다.
-#
-# **끝나고 다시 띄우지 않는다** — 필요하면 사용자가 직접 띄운다 (AGENTS.md 의 명시 지시).
-kill_worker() {
-    if [ "$IS_WINDOWS" = 1 ]; then
-        # `//F` 는 MSYS 의 경로 변환을 피하려고 슬래시를 겹친 것 (`tasklist //v` 와 같은 회피).
-        taskkill //IM tildaz.exe //F >/dev/null 2>&1 || return 1
-    else
-        # `pkill` 은 Git Bash 에 없지만 POSIX 쪽에는 있다. `-x` 로 이름 전체가 일치할 때만.
-        command -v pkill >/dev/null 2>&1 || return 1
-        pkill -x tildaz >/dev/null 2>&1 || return 1
-    fi
-    return 0
-}
-if kill_worker; then
-    echo "평소 쓰는 TildaZ worker 를 종료했어요 (측정 위생). 끝나도 다시 띄우지 않아요."
-fi
+# **예전엔 여기에 `kill_worker` 가 있었는데 도달하지 못했다** — `hygiene_check` 가 worker 를
+# 발견하면 *"먼저 내려요"* 로 `exit 1` 시키는 자리가 이 코드보다 **위**여서, README 의
+# *"이제 스크립트가 자동으로 해요"* 가 실제로는 한 번도 실행되지 않았다 (#381 Windows 실기).
+# 종료를 `hygiene.sh` 로 옮겨 세 도구 (`compare-terminals.sh` · `measure-repeat.sh` · `.ps1`)
+# 가 같은 동작을 하게 했고, 그래서 그 순서 함정이 구조적으로 없어졌다.
 
 # wt 설정 교체는 측정 직전에 (헤더를 찍은 뒤) 한다 — 실패해도 헤더는 남는다.
 wt_settings_apply
