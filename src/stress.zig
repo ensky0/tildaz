@@ -1056,11 +1056,17 @@ fn report(opts: Options, result: Result) !void {
         // drain / parse 와 더하면 안 된다. drain 은 ring pop + parse 를 모두 포함한다.
         w.print("--- perf counters (readloop/push 는 별 thread) ---\n", .{});
 
-        // readloop 의 시간은 **platform 간 비교가 안 된다.** POSIX 는 poll 대기를 빼고
-        // read 복사만 재는데 Windows 는 유휴 대기를 포함한다 (#254 결정,
-        // `terminal/posix/pty.zig` 의 readLoop 주석). 어느 쪽인지 옆에 적어 둔다.
+        // #394 — 세 platform 모두 유휴 대기를 뺀 **read 복사 시간**이다 (Windows 도
+        // `ERROR_IO_PENDING` 대기를 계측 밖으로 뺐다 — `terminal/windows/pty.zig`).
+        // 그래도 **그대로 빼서 비교하면 안 된다.** Windows 의 pending 경로는 커널이
+        // 대기 중에 복사를 끝내 그 몫을 우리 스레드에서 잴 수 없어서, `calls` ·
+        // `bytes` 는 남고 `ns` 만 빠진다 — 같은 범위이되 Windows 가 과소 계상이다.
+        // 어느 쪽인지 옆에 적어 둔다.
         writeCounter(&w, "readloop", counters.readloop, .{
-            .note = if (builtin.os.tag == .windows) "유휴 대기 포함" else "read 복사만",
+            .note = if (builtin.os.tag == .windows)
+                "read 복사만 · pending 분은 커널이 복사해 미계상"
+            else
+                "read 복사만",
         });
         // push 의 `extra` 는 ring 이 가득 차서 양보한 횟수다. 이 값이 크면 **우리가
         // 소화보다 느려서 read thread 가 대기했다는 뜻** — producer 까지 압력이 갔다.

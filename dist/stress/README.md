@@ -245,6 +245,7 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 | 이전 실행의 잔여 터미널 프로세스를 먼저 정리해요 | `kitty --detach` 와 ghostty 는 스크립트가 끝나도 남아서 다음 회차와 CPU 를 나눠요 |
 | **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 공정성 문제예요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어서 ([#381](https://github.com/ensky0/tildaz/issues/381)) `compare-terminals.sh` 가 시작할 때 직접 내려요. **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
 | AC 전원에 연결하고 절전 · **화면 잠금을 꺼요** | 노트북은 배터리 · 열로 스로틀링이 걸려요. 그리고 잠금 화면이 뜨면 **`render` 만 무너지고 `parse` 는 정상이라 결과만 봐서는 티가 안 나요** — 아래 참고 |
+| **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고 |
 | **화면을 계속 다시 그리는 앱 (브라우저 · 에디터 · 채팅) 을 최소화하거나 닫아요** | **우리 수치만 64 % 흔들려요** — 아래 참고 |
 | 수치는 **실기기**에서 내요 | VM 은 CPU · 메모리 대역폭 · 렌더 경로가 host 와 달라요. VM 은 동작 확인 용도예요 |
 
@@ -275,6 +276,35 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 
 `onrender` 의 `skip` 은 paint 하지 못한 frame tick 수예요. 이게 대부분이면 **그리지 않은 회차**라
 `render` 값에 의미가 없어요. 회차 사이에 `render calls` 가 한 자릿수로 떨어지는 것도 같은 신호예요.
+
+#### Windows 의 동적 새로 고침 빈도(DRR)는 회차를 **두 무리로 갈라요**
+
+Windows 11 의 *동적 새로 고침 빈도* 는 화면 내용에 따라 주사율을 오르내려요. 그런데 앱은
+주사율을 **시작할 때 한 번만** 읽어서 (`[startup] frame clock started: refresh=..Hz`) 중간 변동을
+몰라요. 그래서 값이 한 중심 주위로 흩어지는 게 아니라 **두 무리로 갈려요**.
+
+같은 조건 (`zwj` · 64 MiB · 5 회 · 노트북 AMD Ryzen AI 7 350 · Windows) 을 DRR 만 바꿔 쟀어요
+([#394](https://github.com/ensky0/tildaz/issues/394)).
+
+| 지표 | **DRR 켜짐 + 배터리** | DRR 끔 + AC · 120 Hz |
+|---|---|---|
+| `render calls` | 311~321 **과** 552~561 (두 무리) | 410~441 (한 무리, 폭 7 %) |
+| `readloop ms` 폭 | 293~326 (11 %) · `plain` 은 398~721 (**81 %**) | 196~206 (5 %) · `plain` 267~285 (6 %) |
+| `drain ms` | 3494~3684 | 2209~2287 (**35 % 빨라요**) |
+
+**두 오염원이 겹쳐 있었어요.** DRR 이 프레임 수를 갈랐고, 배터리 스로틀링이 절대값을 눌렀어요.
+
+##### 판정법
+
+- 로그의 `refresh=..Hz` 가 그 화면의 실제 최대 주사율과 **다르면** DRR 을 의심해요. DRR 이
+  켜져 있으면 기본값 (대개 60) 으로 보고돼요.
+- 회차의 `render calls` 가 **한 중심 주위로 흩어지지 않고 두 무리로 갈리면** 거의 이것이에요.
+  배수가 주사율 비 (60 ↔ 120 이면 약 2 배) 에 가까운지 보면 확실해요.
+- 확인: `Get-CimInstance Win32_VideoController` 의 `CurrentRefreshRate` 가 `MaxRefreshRate` 와
+  같은지 봐요. **전원도 함께 봐요** — `Get-CimInstance Win32_Battery` 의 `BatteryStatus` 가
+  `2` 여야 AC 예요 (`1` = 배터리, 이때 패널이 60 Hz 로 강등되기도 해요).
+- 끄는 곳: **설정 → 시스템 → 디스플레이 → 고급 디스플레이 → 새로 고침 빈도** 에서 "동적" 이
+  아닌 고정 값을 골라요.
 
 #### 배경 앱이 그리고 있으면 **우리 수치만** 눌려요
 
@@ -396,9 +426,22 @@ Intel i5-1240P · `--repeat 5` · 배경 정리).
   read thread 가 양보한 횟수예요. 이 값이 크면 `push` 시간도 함께 커지고 (실측: macOS
   `frame` cjk 에서 248 만 회 · 243 ms, Linux 는 `push` 가 `drain` 보다 컸어요) 압력이
   producer 까지 전달돼요 — 실제 앱에서는 **셸이 느려지는 것**으로 나타나요.
-- **`readloop` 시간은 platform 사이를 비교하면 안 돼요.** POSIX 는 poll 대기를 빼고 read
-  복사만 재는데 Windows 는 유휴 대기를 포함해요 (#254 결정). 리포트가 어느 쪽인지
-  괄호로 적어 줘요.
+- **`readloop` 시간은 세 platform 이 이제 같은 범위예요** — 유휴 대기를 뺀 **read 복사 시간**
+  ([#394](https://github.com/ensky0/tildaz/issues/394)). Windows 도 `ERROR_IO_PENDING` 대기를
+  계측 밖으로 뺐어요. 예전의 *"Windows 만 유휴 대기 포함"* ([#254](https://github.com/ensky0/tildaz/issues/254)) 은
+  폐기예요 — 그 보류 근거였던 "overlapped I/O 재구성 필요" 가 이미 되어 있었어요.
+  **그래도 그대로 빼서 비교하면 안 돼요.** Windows 의 pending 경로는 커널이 대기 중에
+  복사를 끝내서 그 몫을 우리 스레드에서 잴 수 없어요 — `calls` · `bytes` 는 남고 `ns` 만
+  빠지므로 **Windows 가 과소 계상**이에요. 남는 값은 *전체 복사 시간*이 아니라 **그중
+  동기 완료로 걸린 몫**이라, 앱이 병목이냐에 따라 크기가 갈려요.
+
+  | 64 MiB 워크로드 | 파이프 상태 | 걸리는 경로 | `readloop ms` (고치기 전 → 후) |
+  |---|---|---|---:|
+  | `zwj` | 앱이 병목이라 데이터가 쌓여요 | **동기 완료가 섞여요** | 199 → **6.07** |
+  | `plain` | 앱이 빨라 파이프가 비어요 | **거의 pending** | 283 → **0.087** |
+
+  (노트북 AMD Ryzen AI 7 350 · Windows · **AC · 120 Hz** · 64 MiB · 5 회 절사평균.)
+  리포트가 어느 쪽인지 괄호로 적어 줘요.
 - **Windows 는 `zig build stress` 가 install 경로에서 실행돼야 해요.** ConPTY 는 실행파일
   옆 `_internal\conpty.dll` 이 필수인데 (#339 에서 kernel32 fallback 제거) zig 캐시의
   output 디렉토리에는 그것을 놓을 자리가 없어요. `build.zig` 가 `addInstallArtifact` +

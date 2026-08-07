@@ -722,12 +722,35 @@ pub const ConPty = struct {
         while (true) {
             var overlapped = OVERLAPPED{ .hEvent = read_event };
             var bytes_read: DWORD = 0;
-            const t0 = perf.now();
+            // #394 — 두 경로가 POSIX 와 대응한다. 동기 완료 (`ok != 0`) 는 파이프에
+            // 데이터가 이미 있어 그 자리에서 복사하는 것이라 `poll` 뒤의 `read()` 에
+            // 해당하고, `ERROR_IO_PENDING` 은 데이터를 기다리는 것이라 `poll` 대기에
+            // 해당한다. 그래서 대기는 계측 밖으로 뺀다 (`posix/pty.zig` 의 readLoop 과
+            // 같은 범위). 이전에는 대기까지 함께 계상해서 `readloop ms` 가 사실상
+            // **세션 길이**였다.
+            //
+            // 완전히 같지는 않다. pending 경로의 복사는 커널이 대기 중에 끝내서 우리
+            // 스레드에서 잴 수가 없다. `bytes` 는 throughput 지표라 두 경로 모두에서
+            // 계속 세고, pending 은 대기가 끝난 시점을 새 기준으로 잡아 `calls` ·
+            // `bytes` 는 남기고 `ns` 만 ~0 이 되게 한다.
+            //
+            // 그래서 남는 값의 크기는 **동기 완료가 얼마나 섞이느냐**로 갈린다.
+            // 64 MiB 실측 (노트북 AMD Ryzen AI 7 350 · Windows · AC · 120 Hz ·
+            // 5 회 절사평균) 은 이렇다.
+            //
+            //   `zwj`   앱이 병목 → 파이프에 쌓여 동기 완료가 섞임 → 199 ms -> 6.07 ms
+            //   `plain` 앱이 빠름 → 파이프가 빔 → 거의 pending      → 283 ms -> 0.087 ms
+            //
+            // 남는 값은 67 MB 를 다 복사한 시간이 **아니라** 그중 동기로 걸린 몫이다.
+            // `plain` 이 0.087 ms 까지 내려간 것은 그 경로가 거의 안 걸린다는 뜻이고,
+            // 그래서 이 칸을 platform 사이에서 그대로 빼서 비교하면 안 된다.
+            var t0 = perf.now();
             const ok = ReadFile(pipe, &buf, buf.len, &bytes_read, @ptrCast(&overlapped));
             if (ok == 0) {
                 const err = GetLastError();
                 if (err != ERROR_IO_PENDING) break;
                 if (GetOverlappedResult(pipe, &overlapped, &bytes_read, 1) == 0) break;
+                t0 = perf.now();
             }
             perf.addTimedBytes(&perf.readloop, t0, @intCast(bytes_read));
             if (bytes_read == 0) break;

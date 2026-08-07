@@ -343,7 +343,10 @@ fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCa
         if ((fds[1].revents & posix.POLL.IN) != 0) break;
         if ((fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0) {
             // #160/#254 — poll 대기 (idle) 는 계측 밖, read 복사 시간만.
-            // (Windows 는 유휴 대기 포함 — #254 결정.)
+            // #394 로 **Windows 도 같은 범위**다 (`terminal/windows/pty.zig` 의 readLoop
+            // 이 `ERROR_IO_PENDING` 대기를 계측 밖으로 뺐다). 다만 그쪽 pending 경로는
+            // 커널이 대기 중에 복사를 끝내 우리가 잴 수 없어서 `ns` 만 빠지고
+            // `calls` · `bytes` 는 남는다 — 같은 범위이되 Windows 가 과소 계상이다.
             const t0 = perf.now();
             const n = posix.read(master_fd, &buf) catch break;
             perf.addTimedBytes(&perf.readloop, t0, @intCast(n));
