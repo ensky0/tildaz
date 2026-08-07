@@ -3820,6 +3820,15 @@ const Client = struct {
         // GPU buffer 가 붙지 않는다.
         if (buffer.gl_target) |target| {
             const ctx = buffer.gl_ctx orelse return false;
+            // #393 — render(그리기, present 제외) 계측. 목록 생성부터 `glFlush`
+            // 까지가 범위이고, 이 자리는 Windows 의 마지막 draw 제출 ·
+            // macOS 의 `endEncoding` 과 같다 (표시는 `attachAndCommit` = present).
+            // `glFinish` 가 아니라 `flush` 라 GPU 실행 대기는 안 섞인다.
+            //
+            // #362 때는 `buildGlFrame` 만 GPU 타이밍 스위치에서 쟀다. 그러면 같은
+            // 이름의 카운터가 platform 마다 다른 것을 재고, 기본 설정 (GL 경로 +
+            // `TILDAZ_GPU_TIMING` 없음) 에서는 아예 안 찍힌다.
+            const render_t0 = perf.now();
             const theme = self.config.theme orelse fallback_theme;
 
             var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
@@ -3830,7 +3839,9 @@ const Client = struct {
             };
             if (self.session) |*session| {
                 if (session.activeTab()) |tab| {
-                    const collect_t0 = perf.now();
+                    // #362 의 "목록 생성 비용" 은 `TILDAZ_GPU_TIMING=1` 의 gpu 로그가
+                    // update / collect / cell walk 로 나눠 찍는다 (아래 블록) —
+                    // 여기서 따로 재지 않는다.
                     frame = self.renderer.buildGlFrame(self.allocator, self.frameInputs(
                         session,
                         tab,
@@ -3839,10 +3850,6 @@ const Client = struct {
                         &titles_storage,
                         &hotkey_hint_buf,
                     ));
-                    // #362 — 목록 생성 비용. GPU 로 옮긴 뒤 남은 CPU 의 어디가
-                    // 무거운지 보려면 이 값이 필요하다 (계측은 GPU 타이밍과 같은
-                    // 스위치로 켠다).
-                    if (self.gpu_timer != null) perf.addTimed(&perf.render, collect_t0);
                 }
             }
 
@@ -3884,20 +3891,23 @@ const Client = struct {
             // compositor 는 dma-buf 의 implicit fence 를 기다린다. glFinish 로
             // 동기 대기하면 그 비용이 프레임 시간에 섞이므로 flush 만 한다.
             ctx.api.flush();
+            perf.addTimed(&perf.render, render_t0);
             if (self.gpu_timer) |*t| {
                 t.end(&ctx.api);
                 self.gpu_timer_frames += 1;
                 // 120 프레임마다 한 줄. 매 프레임 찍으면 로그가 계측을 방해한다.
                 if (self.gpu_timer_frames % 120 == 0) {
                     if (t.averageNs()) |avg| {
-                        const rc = perf.snapshot(&perf.render);
                         const nf = @max(software_terminal.acc_frames, 1);
-                        log.appendLine("gpu", "frame CPU avg update={d:.1} collect={d:.1} µs (cell walk {d:.1}) (frames {d}) [total {d:.1} µs]", .{
+                        // #393 — 예전엔 `perf.render` 평균을 `[total]` 로 함께 찍었다.
+                        // 그런데 `perf.snapshot` 은 읽으면서 카운터를 0 으로 비우므로
+                        // (`swap(0)`) 덤프 (Ctrl+Shift+F12) 의 render 값을 120 프레임
+                        // 마다 깎았다. 값도 `update + collect` 와 중복이라 없앴다.
+                        log.appendLine("gpu", "frame CPU avg update={d:.1} collect={d:.1} µs (cell walk {d:.1}) (frames {d})", .{
                             @as(f64, @floatFromInt(software_terminal.acc_update_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             @as(f64, @floatFromInt(software_terminal.acc_collect_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             @as(f64, @floatFromInt(software_terminal.acc_cells_ns)) / @as(f64, @floatFromInt(nf)) / 1000.0,
                             software_terminal.acc_frames,
-                            if (rc[0] > 0) @as(f64, @floatFromInt(rc[1])) / @as(f64, @floatFromInt(rc[0])) / 1000.0 else 0.0,
                         });
                         software_terminal.acc_update_ns = 0;
                         software_terminal.acc_collect_ns = 0;
