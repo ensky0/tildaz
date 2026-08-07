@@ -261,6 +261,19 @@ pub const MetalRenderer = struct {
     // 넘어, 초과분 draw 가 silent drop 되어 선택과 무관한 box 선까지 사라졌었다.
     bg_capacity: u32 = MAX_INSTANCES,
     text_capacity: u32 = MAX_INSTANCES,
+
+    // #399 — cluster shaping 을 런 단위로 묶는 데 쓰는 작업 버퍼다. 셀 루프의 지역 변수로
+    // 두면 13 KB 가량이라 (cluster 당 최대 17 codepoint × 128) 프레임 스택에 부담이라
+    // renderer 가 들고 재사용한다. `render` 시간의 92 % 가 shaping 이고 cluster 마다
+    // `CTLine` 을 새로 만드는 고정 비용이 그 대부분이다.
+    /// 런 안 cluster 들의 codepoint 를 이어 담는다 (base 1 + extras 최대 16).
+    run_cps: [CoreTextFontContext.MAX_RUN_CLUSTERS * 17]u21 = undefined,
+    /// 위 버퍼를 cluster 단위로 가리키는 slice 들. `resolveGraphemeRun` 의 입력이다.
+    run_slices: [CoreTextFontContext.MAX_RUN_CLUSTERS][]const u21 = undefined,
+    /// 각 cluster 가 있던 셀의 x. 글리프를 되돌려 놓을 때 쓴다 (셀마다 색이 다르다).
+    run_cells: [CoreTextFontContext.MAX_RUN_CLUSTERS]u16 = undefined,
+    /// shaping 결과. cluster 당 하나다.
+    run_glyphs: [CoreTextFontContext.MAX_RUN_CLUSTERS]mac_font.GlyphResult = undefined,
     // 이번 frame 이 그리려 *요청한* 총 instance 수 (drop 포함). frame 시작에서
     // capacity 와 비교해 버퍼 확대 판단 후 0 reset. capacity 와 달리 drop 된 것도 셈.
     bg_needed: u32 = 0,
@@ -918,6 +931,70 @@ pub const MetalRenderer = struct {
                 // reduce. 일반 cell 은 빠른 single-codepoint path 또는 ligature
                 // lookahead 분기.
                 if (raw.hasGrapheme() and x < graphemes.len) {
+                    // #399 — **연속된 grapheme 셀을 모아 한 번에 shape 한다.** cluster 마다
+                    // `CTLine` 을 새로 만드는 고정 비용이 `render` 의 92 % 를 차지해서, 한 줄을
+                    // 묶으면 실측으로 3.1~8.3 배 싸다. 런이 2 개 미만이면 이득이 없어 아래
+                    // 개별 경로로 간다.
+                    //
+                    // 런 경계는 셋만 본다: 연속 grapheme 셀 · `spacer_tail` 은 **건너뛰고 이어감**
+                    // (wide cluster 뒤엔 항상 오므로 여기서 끊으면 런이 1 개씩 쪼개진다) ·
+                    // `invisible` 에서 끊음. **`style_id` 는 안 본다** — 글리프는 폰트에만
+                    // 의존하고 색은 셀마다 따로 계산한다.
+                    var run_n: usize = 0;
+                    var cps_used: usize = 0;
+                    var scan = x;
+                    while (scan < cols and scan < raws.len and run_n < CoreTextFontContext.MAX_RUN_CLUSTERS) {
+                        const rr = raws[scan];
+                        if (rr.wide == .spacer_tail) {
+                            scan += 1;
+                            continue;
+                        }
+                        if (!(rr.hasText() and rr.wide != .spacer_head and rr.codepoint() != 0)) break;
+                        if (!(rr.hasGrapheme() and scan < graphemes.len)) break;
+                        if (rr.style_id != 0 and styles[scan].flags.invisible) break;
+
+                        const ex = graphemes[scan];
+                        const ex_take = @min(ex.len, 16);
+                        if (cps_used + 1 + ex_take > self.run_cps.len) break;
+                        self.run_cps[cps_used] = rr.codepoint();
+                        @memcpy(self.run_cps[cps_used + 1 ..][0..ex_take], ex[0..ex_take]);
+                        self.run_slices[run_n] = self.run_cps[cps_used..][0 .. 1 + ex_take];
+                        self.run_cells[run_n] = @intCast(scan);
+                        cps_used += 1 + ex_take;
+                        run_n += 1;
+                        scan += 1;
+                    }
+
+                    if (run_n >= 2 and
+                        self.font.resolveGraphemeRun(self.run_slices[0..run_n], self.run_glyphs[0..run_n]) == run_n)
+                    {
+                        for (0..run_n) |i| {
+                            const cell_x = self.run_cells[i];
+                            const result = self.run_glyphs[i];
+                            const rr = raws[cell_x];
+                            // 색은 셀마다 다시 계산한다 — 런을 style 로 끊지 않기 때문이다.
+                            const st = cell_color.applyBlinkPhase(if (rr.style_id != 0) styles[cell_x] else ghostty.Style{}, blink_faint);
+                            const inv = st.flags.inverse;
+                            const sel = if (sel_range) |sr| (cell_x >= sr[0] and cell_x <= sr[1]) else false;
+                            const fg = resolveFg(st, &rr, &colors, sel, inv);
+
+                            if (text_count >= MAX_CELLS) {
+                                self.drawTextInstances(encoder, text_buf[0..text_count]);
+                                text_count = 0;
+                            }
+                            const entry_opt = self.atlas.getOrInsert(result.font, @intCast(result.index));
+                            if (result.owned) ct.CFRelease(result.font);
+                            if (entry_opt) |entry| {
+                                if (entry.w > 0 and entry.h > 0) {
+                                    emitTextInstance(text_buf[0..], &text_count, entry, cell_x, fy, cw, x_pad, self.font.ascent_px, fg, glyphCenterDx(entry, rr.wide == .wide, cw), 0);
+                                }
+                            }
+                        }
+                        x = scan;
+                        continue;
+                    }
+
+                    // 개별 경로 — 런이 1 개거나 배칭이 실패했을 때. 렌더가 틀리느니 느린 게 낫다.
                     if (text_count >= MAX_CELLS) {
                         self.drawTextInstances(encoder, text_buf[0..text_count]);
                         text_count = 0;

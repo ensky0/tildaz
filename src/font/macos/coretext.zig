@@ -224,6 +224,11 @@ pub extern "CoreText" fn CTRunGetAttributes(run: CTRunRef) CFDictionaryRef;
 // position 이라 spacer ligature 의 glyph-별 정확한 위치 알 수 있음.
 pub extern "CoreText" fn CTRunGetPositionsPtr(run: CTRunRef) ?[*]const CGPoint;
 pub extern "CoreText" fn CTRunGetPositions(run: CTRunRef, range: CFRange, buffer: [*]CGPoint) void;
+// glyph → 원본 문자열 위치 (UTF-16 index). run 배칭 (#389) 이 여러 cluster 를 한 CTLine 으로
+// shape 한 뒤 **어느 글리프가 어느 cluster 것인지** 되찾는 유일한 통로다. `Ptr` 변형은 위
+// glyph/position 과 같은 규칙 — null 이면 buffer 복사본을 쓴다.
+pub extern "CoreText" fn CTRunGetStringIndicesPtr(run: CTRunRef) ?[*]const CFIndex;
+pub extern "CoreText" fn CTRunGetStringIndices(run: CTRunRef, range: CFRange, buffer: [*]CFIndex) void;
 
 pub extern "CoreFoundation" fn CFDictionaryGetValue(dict: CFDictionaryRef, key: ?*const anyopaque) ?*const anyopaque;
 
