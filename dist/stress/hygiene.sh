@@ -18,11 +18,13 @@
 # 터미널 정리 · 설정 복원 · `WORK_DIR` 삭제를 한다. 여기서 걸면 그것을 덮어쓴다. 그래서
 # 복원 함수만 제공하고 등록은 호출자에게 맡긴다. `hygiene_end` 는 여러 번 불러도 안전하다.
 #
-# **실기 검증 상태** — Linux (KDE Plasma Wayland · Intel i5-1240P, 2026-08-07) 와
-# Windows (같은 기기 · Windows 11 26200 · Git Bash, 2026-08-07) 는 확인했고 **macOS 는 아직**이다.
+# **실기 검증 상태** — Linux (KDE Plasma Wayland · Intel i5-1240P, 2026-08-07) ·
+# Windows (같은 기기 · Windows 11 26200 · Git Bash, 2026-08-07) ·
+# macOS (MacBook Pro M5 Pro, 2026-08-08) 모두 확인했다.
 #
-# Windows 검증에서 **넷 중 하나만 맞았다** — 코드로만 맞춰 둔 경로는 실제로 틀려 있었다.
-# 자세한 내용은 각 항목 주석에 있다 ([#381](https://github.com/ensky0/tildaz/issues/381)).
+# Windows 검증에서 **넷 중 하나만 맞았고**, macOS 도 **둘 중 하나가 틀려 있었다** — 코드로만
+# 맞춰 둔 경로는 실제로 틀린다. 자세한 내용은 각 항목 주석에 있다
+# ([#381](https://github.com/ensky0/tildaz/issues/381)).
 #
 # | 확인한 것 | 결과 |
 # |---|---|
@@ -30,8 +32,8 @@
 # | Windows: CPU 를 최고 성능으로 | ❌ 레버가 틀렸다 — 구성표가 아니라 **전원 모드**다 (`hygiene_overlay_set`) |
 # | Windows: 배경 앱 최소화 | ❌ 아예 없었다 — `hygiene_minimize_win32` 로 넣었다 |
 # | Windows: `hygiene_check` 통과 | ❌ KDE 가 아니라는 이유만으로 **항상 실패**했다 (`hygiene_can_minimize`) |
-# | macOS: `caffeinate` 가 붙는지 | **미검증** — 홀더 방식이라 프로세스가 남아 있어야 해요 |
-# | macOS: 배경 앱 최소화 | **없다** — Windows 와 같은 갭이다. 그 머신에서 실기로 확인할 때 함께 넣어요 |
+# | macOS: `caffeinate` 가 붙는지 | ✅ 홀더가 살아 있고 `kill` 로 정리된다 |
+# | macOS: 배경 앱 최소화 | ❌ 아예 없었다 — `hygiene_minimize_macos` 로 넣었다. `hygiene_can_minimize` 에도 macOS 가 빠져 **Windows 와 똑같이 항상 실패**했다 |
 
 # platform 판별 — `compare-terminals.sh` 와 같은 규칙이다 (Windows 는 Git Bash 라 `uname` 이
 # `MINGW*` / `MSYS*` / `CYGWIN*` 를 낸다).
@@ -72,6 +74,7 @@ hygiene_is_kde() {
 hygiene_can_minimize() {
     hygiene_is_kde && return 0
     [ "$HYG_PLATFORM" = windows ] && return 0
+    [ "$HYG_PLATFORM" = macos ] && return 0
     return 1
 }
 
@@ -116,6 +119,25 @@ hygiene_overlay_set() {
 # 의미다. 예전 `measure-repeat.ps1` 이 자기 안에서 부르던 COM 호출을 여기로 들여왔다.
 hygiene_minimize_win32() {
     powershell -NoProfile -Command "(New-Object -ComObject Shell.Application).MinimizeAll()" >/dev/null 2>&1
+}
+
+# 보이는 앱을 전부 **숨긴다** (macOS). KDE 의 `minimized = true` · Windows 의 `MinimizeAll`
+# 과 같은 자리다.
+#
+# **최소화가 아니라 hide (Cmd+H) 인 이유** — 목적이 "창을 치우는 것" 이 아니라 **그리기를
+# 멈추는 것**이다. 숨긴 앱은 화면에 없으니 갱신하지 않는다. macOS 에서 창 단위 최소화는
+# 앱마다 창 목록을 뒤져야 하는데 hide 는 프로세스 단위 한 번이라 더 단순하기도 하다.
+#
+# **Mission Control 의 Show Desktop 을 쓰지 않는 이유는 KDE 와 같다** — 그건 상태 토글이라
+# 측정 창이 뜨는 순간 해제된다. hide 는 토글이 아니라 명령이라 새로 뜨는 창에 영향이 없다.
+#
+# `Finder` 는 뺀다. 데스크톱을 그리는 프로세스라 숨겨도 배경은 남고, 목록에 항상 있어서
+# 매번 헛일이 된다.
+#
+# **Automation 권한이 필요하다.** 없으면 osascript 가 실패하고 (-1743) 호출자가 경고를 낸다 —
+# 시스템 설정 → 개인정보 보호 및 보안 → 자동화 에서 이 터미널에 System Events 를 허용한다.
+hygiene_minimize_macos() {
+    osascript -e 'tell application "System Events" to set visible of (every process whose visible is true and name is not "Finder") to false' >/dev/null 2>&1
 }
 
 # --- 검사 -----------------------------------------------------------------
@@ -198,7 +220,7 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
     # 해서 나머지에서 이 함정이 사라지는 게 아니다 — 규칙으로만 남기면 잊는다.
     if ! hygiene_can_minimize; then
         _warn="$_warn
-배경 앱을 자동으로 못 내려요 (KDE · Windows 에서만 해요) — 브라우저 · 에디터를 직접 최소화해요 (우리 수치만 최대 64 % 눌려요)"
+배경 앱을 자동으로 못 내려요 (KDE · macOS · Windows 에서만 해요) — 브라우저 · 에디터를 직접 최소화해요 (우리 수치만 최대 64 % 눌려요)"
     fi
 
     if [ -n "$_warn" ]; then
@@ -314,6 +336,10 @@ hygiene_begin() {
     elif [ "$HYG_PLATFORM" = windows ]; then
         if hygiene_minimize_win32; then HYG_MINIMIZED=1; else
             echo "⚠ 창을 자동으로 못 내렸어요 (MinimizeAll 실패) — 직접 최소화해요" >&2
+        fi
+    elif [ "$HYG_PLATFORM" = macos ]; then
+        if hygiene_minimize_macos; then HYG_MINIMIZED=1; else
+            echo "⚠ 창을 자동으로 못 숨겼어요 (System Events 실패) — 시스템 설정 → 개인정보 보호 및 보안 → 자동화 에서 허용하거나 직접 숨겨요 (Cmd+Option+H)" >&2
         fi
     fi
 }

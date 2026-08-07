@@ -124,6 +124,12 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;;
     *) IS_WINDOWS=0 ;;
 esac
+# macOS 전용 대상 (iTerm2) 을 고르는 데 쓴다. Windows 의 `wt` · Linux 의 `foot` 과 같은
+# 자리다 — 그 platform 사람들이 실제로 쓰는 터미널이라 빠지면 비교가 개발자 취향 쪽으로만 쏠린다.
+case "$(uname -s)" in
+    Darwin) IS_MACOS=1 ;;
+    *) IS_MACOS=0 ;;
+esac
 
 # 캡처를 안 켜면 hold 는 0 이다 — producer 가 지금까지처럼 곧바로 끝난다.
 if [ -z "$CAPTURE_DIR" ]; then
@@ -311,10 +317,20 @@ wt_settings_restore() {
     fi
 }
 
+# iTerm2 는 **Dynamic Profiles** 로 준다 — 격자 · scrollback · 실행 명령을 JSON 하나에 담고
+# 사용자 설정 파일은 전혀 건드리지 않는다. `wt` 가 `settings.json` 을 통째로 갈아끼우고
+# 복원해야 하는 것과 대비되는 자리라, 여기서는 **우리가 만든 파일 하나만 지우면 끝**이다.
+ITERM_PROFILE_DIR="$HOME/Library/Application Support/iTerm2/DynamicProfiles"
+ITERM_PROFILE_FILE="$ITERM_PROFILE_DIR/tildaz-stress.json"
+iterm2_profile_remove() {
+    [ -f "$ITERM_PROFILE_FILE" ] || return 0
+    rm -f "$ITERM_PROFILE_FILE"
+}
+
 # ⚠️ 각 단계를 `|| true` 로 끊어 준다. `set -e` 아래에서는 앞 단계가 non-zero 를 돌려주면
 # **거기서 trap 이 끊겨** 뒤가 통째로 안 돈다 — 실제로 `hygiene_end` 가 실행되지 않아 창이
 # 내려간 채로 남았다 (실측). 복원은 하나라도 빠지면 사용자 환경이 바뀐 채 끝난다.
-trap 'cleanup_terminals || true; wt_settings_restore || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
+trap 'cleanup_terminals || true; wt_settings_restore || true; iterm2_profile_remove || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
@@ -1193,6 +1209,46 @@ EOF
         run_terminal ghostty ghostty \
             "--config-file=$GHOSTTY_CONF" -e sh -c "$(producer_cmd "$T")"
     fi
+fi
+
+# iTerm2 — macOS 전용. 다른 대상 (alacritty · kitty · wezterm · ghostty) 이 전부 개발자
+# 취향의 선택지라 **일반 macOS 사용자가 실제로 쓰는 터미널**이 비교에 없었다. Windows 의
+# `wt` · Linux 의 `foot` 과 같은 자리다 ([#381](https://github.com/ensky0/tildaz/issues/381)).
+#
+# **Dynamic Profiles 로 준다** — `~/Library/Application Support/iTerm2/DynamicProfiles/` 에
+# JSON 을 놓으면 iTerm2 가 파일 감시로 읽어 프로파일이 생긴다. 격자 · scrollback · 실행
+# 명령을 한 파일에 담을 수 있고 **사용자 설정을 건드리지 않는다.**
+#
+# 다른 길은 전부 막혔다 (macOS 실측, #381):
+#   - CLI (`open -na iTerm.app --args`) 에 격자 옵션이 없다.
+#   - AppleScript 로 창을 만든 뒤 크기를 바꾸면 **명령이 먼저 시작돼** 그 시점 격자로
+#     출력한다 — Terminal.app 에서 이 순서 문제를 실측했다 (AppleScript 는 120x40 이라
+#     보고하는데 shell 은 30x120 을 봤다). 프로파일이라야 처음부터 맞는다.
+#
+# `Close Sessions On End` 로 명령이 끝나면 세션이 닫힌다 — 회차마다 창이 쌓이지 않는다
+# (ghostty 의 `abnormal-command-exit-runtime = 0` 과 같은 목적).
+if [ "$IS_MACOS" = 1 ] && [ -d /Applications/iTerm.app ]; then
+    T="$WORK_DIR/iterm2.timing"
+    mkdir -p "$ITERM_PROFILE_DIR"
+    cat > "$ITERM_PROFILE_FILE" << EOF
+{
+  "Profiles": [{
+    "Name": "tildaz-stress",
+    "Guid": "tildaz-stress",
+    "Columns": $COLS,
+    "Rows": $ROWS,
+    "Scrollback Lines": $SCROLLBACK,
+    "Unlimited Scrollback": false,
+    "Custom Command": "Yes",
+    "Command": "$(producer_cmd "$T")",
+    "Close Sessions On End": true
+  }]
+}
+EOF
+    # 파일 감시로 읽으므로 반영을 기다린다. 바로 창을 만들면 프로파일이 없어서 실패한다.
+    sleep 2
+    run_terminal iterm2 osascript -e \
+        'tell application "iTerm" to create window with profile "tildaz-stress"'
 fi
 
 # TildaZ — `-e` · `-size` 로 자동 측정한다 (#382). 그 두 옵션은 **측정 내부용**이라
