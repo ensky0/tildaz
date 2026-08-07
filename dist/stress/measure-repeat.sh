@@ -90,7 +90,18 @@ native_path() {
 
 EXE_SUFFIX=""
 [ "$HYG_PLATFORM" = windows ] && EXE_SUFFIX=".exe"
-EXE="$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
+# **macOS 는 `.app` 번들 안에 있다** — `zig build` 산출물이 platform 마다 자리가 다르다.
+# `compare-terminals.sh` 와 같은 후보 순회를 쓴다. 이게 없으면 macOS 에서 `tildaz 없음` 으로
+# 즉시 죽는다 (#399 배칭 before/after 를 재려다 실측으로 드러났다 — 이 파일은 Linux · Windows
+# 에서만 검증됐었다).
+EXE=""
+for _cand in \
+    "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" \
+    "$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
+do
+    [ -x "$_cand" ] && EXE="$_cand" && break
+done
+[ -n "$EXE" ] || EXE="$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"   # 없으면 아래에서 안내가 나온다
 STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress$EXE_SUFFIX"
 
 case "$HYG_PLATFORM" in
