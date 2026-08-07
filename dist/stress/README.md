@@ -29,6 +29,25 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame 
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 ```
 
+## 세 가지 도구 — 무엇을 재느냐가 달라요
+
+| 도구 | 재는 것 | 셸 |
+|---|---|---|
+| `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
+| [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
+| [`measure-repeat.ps1`](measure-repeat.ps1) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | Windows PowerShell |
+
+`measure-repeat.ps1` 은 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
+로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
+직접 검사해요 — worker 가 떠 있는지, AC 인지, 주사율이 그 화면의 최대와 같은지 (DRR).
+Linux · macOS 는 같은 일을 `systemd-inhibit` / `caffeinate` 를 붙인 짧은 셸 루프로 해요.
+
+```powershell
+zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache
+dist/stress/measure-repeat.ps1 -Phase before
+dist/stress/measure-repeat.ps1 -Phase after -Workloads zwj,plain
+```
+
 ## 두 가지 명령
 
 | 명령 | 보는 것 | 판정 |
@@ -245,7 +264,7 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 | 이전 실행의 잔여 터미널 프로세스를 먼저 정리해요 | `kitty --detach` 와 ghostty 는 스크립트가 끝나도 남아서 다음 회차와 CPU 를 나눠요 |
 | **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 공정성 문제예요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어서 ([#381](https://github.com/ensky0/tildaz/issues/381)) `compare-terminals.sh` 가 시작할 때 직접 내려요. **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
 | AC 전원에 연결하고 절전 · **화면 잠금을 꺼요** | 노트북은 배터리 · 열로 스로틀링이 걸려요. 그리고 잠금 화면이 뜨면 **`render` 만 무너지고 `parse` 는 정상이라 결과만 봐서는 티가 안 나요** — 아래 참고 |
-| **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고 |
+| **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고. [`measure-repeat.ps1`](measure-repeat.ps1) 은 시작 전에 이걸 직접 검사하고 걸리면 멈춰요 |
 | **화면을 계속 다시 그리는 앱 (브라우저 · 에디터 · 채팅) 을 최소화하거나 닫아요** | **우리 수치만 64 % 흔들려요** — 아래 참고 |
 | 수치는 **실기기**에서 내요 | VM 은 CPU · 메모리 대역폭 · 렌더 경로가 host 와 달라요. VM 은 동작 확인 용도예요 |
 
