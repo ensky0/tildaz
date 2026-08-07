@@ -191,7 +191,7 @@ fallback if direct Wayland text-input or clipboard becomes unworkable.
 | Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
 | Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
 | Stress tests | [#278](https://github.com/ensky0/tildaz/issues/278) | Harness skeleton and bulk-output throughput live in [`dist/stress/`](dist/stress/README.md); resize storms, tab create/close under load, WSL/nvim/mouse, and multi-worker recovery remain |
-| **Grapheme cluster throughput** | [#389](https://github.com/ensky0/tildaz/issues/389) (tools in [#381](https://github.com/ensky0/tildaz/issues/381)) | **Root cause located, fix not started.** We lead on ASCII and sit just under Windows Terminal on wide cells, then fall to **a tenth of it** once a grapheme cluster lands in every cell — reproduced on two Windows machines and macOS, see [Performance Notes](#grapheme-clusters-are-the-one-path-where-we-lose-381). Next, in order: **(1)** the parser, which the app's own counters put at 68-83 % of the time on cluster-heavy output — that is inside ghostty-vt, so profile first and take it upstream; **(2)** cut the number of native shaping calls (run batching, then a cluster cache on top) — the paired workloads showed batching is the necessary part, and the win is per-frame cost (4.35 ms/frame on `zwj`) rather than throughput. The `hangul` wide-cell gap is consistent across both machines once payload size is right (80 % and 94 % of wt), so it is a smaller sibling of the same story rather than its own item. Also unmeasured: the same workloads on macOS and Linux, and the attribution pairs anywhere — the workloads and `-scrollback` are cross-platform, so the run is the same command |
+| **VT parser throughput** | [#389](https://github.com/ensky0/tildaz/issues/389) (tools in [#381](https://github.com/ensky0/tildaz/issues/381)) | **Root cause located, fix not started.** We lead on ASCII and sit just under Windows Terminal on wide cells, then fall to **a tenth of it** once a grapheme cluster lands in every cell — reproduced on two Windows machines and macOS. A second workload joined it: **SGR-heavy output (`ansi`) costs our parser 5~6x plain ASCII**, which stays hidden while the PTY is the bottleneck and surfaces on a slower CPU — 19 % of the fastest terminal on the Intel laptop under Linux, with **94 % of the time in `parse`**. See [Performance Notes](#what-decides-where-we-lose-our-parser-ceiling-versus-the-pty-ceiling-389). Next, in order: **(1)** the parser, which the app's own counters put at 68-83 % of the time on cluster-heavy output — that is inside ghostty-vt, so profile first and take it upstream; **(2)** cut the number of native shaping calls (run batching, then a cluster cache on top) — the paired workloads showed batching is the necessary part, and the win is per-frame cost (4.35 ms/frame on `zwj`) rather than throughput. The `hangul` wide-cell gap is consistent across both machines once payload size is right (80 % and 94 % of wt), so it is a smaller sibling of the same story rather than its own item. Linux is now measured (all eleven workloads, six terminals, 330 runs); the attribution pairs there agree with Windows within -1~-6 %, so run batching stays ahead of a cluster cache. Still unmeasured: the same tables on macOS |
 
 Completed cross-platform unification work is tracked in
 [#171](https://github.com/ensky0/tildaz/issues/171),
@@ -264,7 +264,32 @@ without `perf`. Measured numbers belong in
 grid, workload, and machine — absolute values differ per machine, so the
 repository keeps no baseline.
 
-### Grapheme clusters are the one path where we lose (#381)
+### What decides where we lose: our parser ceiling versus the PTY ceiling (#389)
+
+Two workloads beat us, and they are the two where our VT parser is slower than the
+PTY can deliver: **grapheme clusters** everywhere, and **SGR-heavy output** on a
+slower CPU. Which one shows up is not a property of the workload alone — a parser
+ceiling only becomes visible once it drops below the PTY ceiling on that machine.
+
+| Layer ceiling, 64 MiB | `plain` | `ansi` | `cjk` |
+|---|---:|---:|---:|
+| Parser, macOS M5 Pro | 736 | 149 | 119 |
+| Parser, Linux Intel i5-1240P | 278 | **48** | 40 |
+| PTY delivery, roughly | ~130 | ~130 | ~130 |
+
+On the M5 Pro the `ansi` parser runs at 149 MiB/s, above PTY delivery, so the PTY
+is the bottleneck and the app ranks first on that workload. On the Intel laptop the
+same parser runs at 48 MiB/s, below delivery, so it is exposed and the app drops to
+19 % of the fastest terminal. The app's own counters confirm the layer: `ansi`
+spends **94 % in `parse`**, and its per-frame `render` is *cheaper* than `plain`'s
+(0.44 vs 0.67 ms) because it has no clusters to shape. SGR parsing costs 5~6x plain
+ASCII for us on both platforms, while foot pays nothing for it (120.2 → 120.1
+MiB/s). That cost is inside ghostty-vt, the same place as (1) below.
+
+The cluster story below is measured on Windows; the `ansi` finding above is from
+Linux. Both are the same parser, so neither is host-specific.
+
+### Grapheme clusters (#381)
 
 Measured on Windows with every terminal on the same scrollback (32,767 lines) and
 the same 120x40 grid. **Read the ratio to Windows Terminal, not the rank** — how fast
