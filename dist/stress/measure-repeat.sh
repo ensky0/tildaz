@@ -54,37 +54,6 @@ usage() {
 USAGE
 }
 
-case "$(uname -s)" in
-    Linux) PLATFORM=linux ;;
-    Darwin) PLATFORM=macos ;;
-    *) echo "이 스크립트는 Linux · macOS 전용이에요. Windows 는 measure-repeat.ps1 을 써요." >&2; exit 2 ;;
-esac
-
-# `--help` 는 아래 절전 차단을 거칠 필요가 없어서 먼저 본다.
-for a in "$@"; do
-    case "$a" in -h|--help) usage; exit 0 ;; esac
-done
-
-# 절전 · 잠금 차단을 **루프 전체**에 건다. 잠금 화면이 뜨면 `render` 만 무너지고 `parse` 는
-# 정상이라 결과 표에 오염이 안 드러난다 (README "잠금 화면" 절, #396 에서 실제로 한 회차를
-# 버렸다). 자기 자신을 감싸 다시 실행하는 방식이라 아래 로직은 한 벌만 있으면 된다.
-#
-# ⚠️ **이 블록은 옵션 파싱보다 앞에 있어야 한다.** 뒤에 뒀더니 `while` 의 `shift` 가 `"$@"`
-# 를 이미 비운 뒤라, 재실행이 **인자 없이** = 기본값 (64 MiB x 4 워크로드 x 5 회) 으로
-# 돌았다. 잘못된 워크로드 이름을 주고 거절되는지 보려던 호출이 20 회차 측정을 통째로
-# 실행했다 (2026-08-07 실측, #397).
-if [ -z "${TILDAZ_MEASURE_INHIBITED:-}" ]; then
-    TILDAZ_MEASURE_INHIBITED=1
-    export TILDAZ_MEASURE_INHIBITED
-    if [ "$PLATFORM" = linux ] && command -v systemd-inhibit >/dev/null 2>&1; then
-        exec systemd-inhibit --what=idle:sleep --who=measure-repeat.sh \
-            --why="throughput measurement" "$0" "$@"
-    elif [ "$PLATFORM" = macos ] && command -v caffeinate >/dev/null 2>&1; then
-        exec caffeinate -dims "$0" "$@"
-    fi
-    echo "⚠ 절전 · 잠금을 차단할 도구가 없어요 (systemd-inhibit / caffeinate). 화면 잠금을 직접 꺼요."
-fi
-
 while [ $# -gt 0 ]; do
     case "$1" in
         --phase) PHASE="$2"; shift 2 ;;
@@ -105,11 +74,15 @@ EXE="$REPO_ROOT/zig-out/bin/tildaz"
 STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress"
 [ -n "$OUT" ] || OUT="$REPO_ROOT/dist/stress/shots"
 
-case "$PLATFORM" in
+# 측정 위생은 `compare-terminals.sh` 와 **같은 로직**을 쓴다.
+. "$REPO_ROOT/dist/stress/hygiene.sh"
+
+case "$HYG_PLATFORM" in
     # paths.zig 의 `logDir` 와 같은 규칙이다. 여기서 어긋나면 회차는 도는데 표가 비어서
     # 원인을 찾기 어려우니, 그 파일이 단일 출처라는 것을 기억해요.
     linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
     macos) LOG="$HOME/Library/Logs/tildaz_stress.log" ;;
+    *) echo "이 스크립트는 Linux · macOS 전용이에요. Windows 는 measure-repeat.ps1 을 써요." >&2; exit 2 ;;
 esac
 
 [ -x "$EXE" ] || { echo "tildaz 없음: $EXE  (먼저 zig build)" >&2; exit 1; }
@@ -127,69 +100,21 @@ for w in $WORKLOAD_LIST; do
     [ "$found" = 1 ] || { echo "모르는 워크로드 '$w' — 가능: $KNOWN" >&2; exit 2; }
 done
 
-# --- 측정 위생 사전 점검 ---------------------------------------------------
+# --- 측정 위생 --------------------------------------------------------------
 #
-# 배터리로 돌거나 주사율이 그 화면의 최대와 다르면 값이 조용히 오염된다. 자세한 내용은
-# README 의 "측정 위생" 을 봐요.
-WARN=""
-add_warn() { WARN="$WARN$1
-"; }
-
-# 평소 쓰는 worker 가 떠 있으면 렌더 · CPU 를 나눠 쓴다. 측정 인스턴스는 worker lock 을
-# 잡지 않아 충돌 없이 함께 뜨므로 (#382) 여기서 직접 봐야 한다.
-WORKER_PIDS=$(pgrep -x tildaz 2>/dev/null || true)
-if [ -n "$WORKER_PIDS" ]; then
-    echo "tildaz worker 가 떠 있어요 (pid $(echo "$WORKER_PIDS" | tr '\n' ' ')) — 먼저 내려요" >&2
-    exit 1
-fi
-
-REFRESH="?"
-POWER="?"
-if [ "$PLATFORM" = linux ]; then
-    ON_AC=0
-    for p in /sys/class/power_supply/*/; do
-        [ -r "$p/type" ] || continue
-        [ "$(cat "$p/type")" = Mains ] || continue
-        [ "$(cat "$p/online" 2>/dev/null || echo 0)" = 1 ] && ON_AC=1
-    done
-    POWER=$([ "$ON_AC" = 1 ] && echo AC || echo battery)
-    [ "$ON_AC" = 1 ] || add_warn "AC 미연결 — 배터리에서는 스로틀링이 걸리고 패널이 낮은 주사율로 강등되기도 해요"
-
-    # KDE 는 `kscreen-doctor` 로 현재 모드와 그 화면의 최대를 볼 수 있다. `*` 가 현재 모드다.
-    # 다른 DE 에는 이 도구가 없어서 그때는 확인을 건너뛴다 — **없는 것을 통과로 읽지 않도록**
-    # 아래에서 `?` 를 그대로 찍는다.
-    if command -v kscreen-doctor >/dev/null 2>&1; then
-        # ESC 를 sed 스크립트에 리터럴로 못 적는다 — `\033` 은 GNU sed 가 안 받고
-        # (`\x1b` 는 받지만 BSD sed 가 안 받는다), 그러면 색 코드가 남아
-        # `[0;0m1:1920x1080@60.00*!` 이 되어 앵커가 통째로 빗나간다. 실제로 첫 실행에서
-        # `refresh=?` 로 조용히 비었다.
-        ESC=$(printf '\033')
-        KS=$(kscreen-doctor -o 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g" || true)
-        CUR=$(echo "$KS" | tr ' ' '\n' | sed -n 's/^[0-9]*:[0-9x]*@\([0-9.]*\)\*.*$/\1/p' | head -1)
-        MAX=$(echo "$KS" | tr ' ' '\n' | sed -n 's/^[0-9]*:[0-9x]*@\([0-9.]*\).*$/\1/p' | sort -g | tail -1)
-        if [ -n "$CUR" ]; then
-            REFRESH="${CUR}Hz"
-            if [ -n "$MAX" ] && [ "$CUR" != "$MAX" ]; then
-                add_warn "주사율이 $CUR Hz 인데 이 화면의 최대는 $MAX Hz 예요 — 고정 최대값을 고르거나, 이 값으로 잰다고 기록해요"
-            fi
-        fi
-    fi
-else
-    # macOS: 전원만 본다. 주사율은 `system_profiler` 에 안 나오고 (README) 따로 부를
-    # API 가 셸에 없어서 확인하지 않는다 — 값을 기록할 때 사람이 적어요.
-    if pmset -g batt 2>/dev/null | grep -q "AC Power"; then POWER=AC; else
-        POWER=battery
-        add_warn "AC 미연결 — 배터리에서는 스로틀링이 걸려요"
-    fi
-fi
-
-if [ -n "$WARN" ]; then
-    echo "$WARN" | while IFS= read -r m; do [ -n "$m" ] && echo "⚠ $m" >&2; done
+# 검사도 준비도 `hygiene.sh` 가 한다. worker · AC · 주사율 · CPU 프로파일을 보고,
+# 절전 차단 · 성능 프로파일 · 배경 앱 최소화까지 걸고 끝나면 되돌린다.
+hygiene_check || {
     [ "$IGNORE_HYGIENE" = 1 ] || {
         echo "측정 위생 점검에 걸렸어요. 고치거나 --ignore-hygiene 로 강행해요." >&2
         exit 1
     }
-fi
+}
+
+# 복원은 어떤 경로로 끝나든 돌아야 한다 (Ctrl+C 포함) — 안 그러면 CPU 가 performance 인
+# 채로, 창이 내려간 채로 남는다.
+trap hygiene_end EXIT INT TERM
+hygiene_begin
 
 mkdir -p "$OUT"
 
@@ -202,7 +127,7 @@ TOTAL=0
 for w in $WORKLOAD_LIST; do TOTAL=$((TOTAL + REPEAT)); done
 
 echo "phase=$PHASE  mb=$MB  repeat=$REPEAT  hold_ms=$HOLD_MS  workloads=$WORKLOADS"
-echo "commit=$HEAD_SHA  dirty=$DIRTY  platform=$PLATFORM  power=$POWER  refresh=$REFRESH"
+echo "commit=$HEAD_SHA  dirty=$DIRTY  $(hygiene_status)"
 echo "log=$LOG  start_offset=$START_LEN"
 echo "회차 $TOTAL 개를 시작해요. 끝날 때까지 기기를 건드리지 마세요."
 

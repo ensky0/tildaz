@@ -69,8 +69,13 @@ HOLD_MS=4000
 # 측정이 끝나고 찍기까지 기다리는 시간 (초). 위 `HOLD_MS` 주석 참고.
 CAPTURE_DELAY=2
 
+# 위생 점검에 걸려도 강행할지 (`--ignore-hygiene`).
+IGNORE_HYGIENE=0
+
 # `--capture` 기본 위치를 정하는 데 필요해서 옵션 파싱보다 먼저 구한다.
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# 측정 위생은 `measure-repeat.sh` 와 **같은 로직**을 쓴다.
+. "$REPO_ROOT/dist/stress/hygiene.sh"
 # 경로를 안 주면 여기에 남긴다 — **스크립트 바로 옆**이라 찾기 쉽다. platform 을 안 가린다.
 # `.gitignore` 에 넣어 두어서 git 에는 안 잡힌다.
 CAPTURE_DEFAULT_DIR="$REPO_ROOT/dist/stress/shots"
@@ -93,6 +98,9 @@ while [ $# -gt 0 ]; do
                 CAPTURE_DIR="$CAPTURE_DEFAULT_DIR"; shift 1
             fi
             ;;
+        # 위생 점검 (worker · AC · 주사율 · 배경 앱) 에 걸려도 강행한다. 동작 확인용이고
+        # 기록용 측정에는 쓰지 않는다.
+        --ignore-hygiene) IGNORE_HYGIENE=1; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -303,7 +311,10 @@ wt_settings_restore() {
     fi
 }
 
-trap 'cleanup_terminals; wt_settings_restore; rm -rf "$WORK_DIR"' EXIT
+# ⚠️ 각 단계를 `|| true` 로 끊어 준다. `set -e` 아래에서는 앞 단계가 non-zero 를 돌려주면
+# **거기서 trap 이 끊겨** 뒤가 통째로 안 돈다 — 실제로 `hygiene_end` 가 실행되지 않아 창이
+# 내려간 채로 남았다 (실측). 복원은 하나라도 빠지면 사용자 환경이 바뀐 채 끝난다.
+trap 'cleanup_terminals || true; wt_settings_restore || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
@@ -367,10 +378,17 @@ echo ""
 # 8 MiB · `--repeat 5` · Intel i5-1240P). 우리 렌더 경로가 자원 경쟁에 약한 탓이라 **정리하지
 # 않으면 비교가 우리에게 불리해진다.**
 #
-# 죽이지는 않는다 — worker 와 달리 **사용자의 작업 창**이라 스크립트가 손대면 안 된다. 알리기만
-# 한다. 이 규칙은 README 의 "측정 위생" 에도 있다.
-echo "⚠ 브라우저 · 에디터처럼 화면을 계속 다시 그리는 앱은 최소화하거나 닫아 주세요."
-echo "  배경 렌더링이 있으면 **우리 수치만** 최대 64 % 눌려요 (#381 실측). 다른 넷은 거의 안 변해요."
+# 닫지는 않는다 — worker 와 달리 **사용자의 작업 창**이라 없애면 안 된다. 대신 **KDE 에서는
+# Show Desktop 으로 내렸다가 끝나면 되돌린다** (토글이라 복원이 실제로 된다). 그 밖의 환경은
+# 경고만 한다 — 규칙으로만 적어 뒀더니 실제로 잊고 30 회차를 돌렸다 (#381).
+hygiene_check || {
+    [ "$IGNORE_HYGIENE" = 1 ] || {
+        echo "측정 위생 점검에 걸렸어요. 고치거나 --ignore-hygiene 로 강행해요." >&2
+        exit 1
+    }
+}
+hygiene_begin
+echo "위생   $(hygiene_status)"
 echo ""
 # #381 — **작은 페이로드는 표를 통째로 뒤집는다.** 이 표의 시간은 producer 가 *쓰기를 끝낸*
 # 시점 기준인데, 터미널은 그 뒤로도 소화한다. 잔여는 대상의 읽기 버퍼 크기라 거의 고정이므로,
@@ -426,8 +444,8 @@ echo ""
 # producer 를 셸 명령 한 줄로. 터미널마다 이 문자열을 자기 방식으로 실행한다.
 # `exec` 로 셸을 대체해 셸이 남지 않게 한다.
 producer_cmd() {
-    printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s TILDAZ_STRESS_HOLD_MS=%s %s' \
-        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$HOLD_MS" "$PRODUCER"
+    printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s TILDAZ_STRESS_HOLD_MS=%s TILDAZ_STRESS_GRID=%s %s' \
+        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$HOLD_MS" "${COLS}x${ROWS}" "$PRODUCER"
 }
 
 # timing 파일이 생길 때까지 기다린다. 터미널을 background 로 띄우기 때문에 (그러지 않으면
@@ -947,6 +965,9 @@ run_terminal() {
     _rows=0
     _cols0=0
     _rows0=0
+    # 목표 그리드를 기다린 시간 중 **최댓값**. 한 회차라도 오래 걸렸으면 그 대상은 늦게
+    # resize 한다는 뜻이라, 평균으로 뭉개지 않는다.
+    _wait_max=0
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
         # 회차마다 지운다 — 이전 회차 파일이 남아 있으면 `wait_for` 가 즉시 통과해 같은
@@ -981,6 +1002,10 @@ run_terminal() {
             _rows=$(sed -n 's/^rows=//p' "$_timing")
             _cols0=$(sed -n 's/^cols_start=//p' "$_timing")
             _rows0=$(sed -n 's/^rows_start=//p' "$_timing")
+            # 예전 producer 는 이 줄을 안 쓴다 — 없으면 0 으로 둔다.
+            _wait=$(sed -n 's/^grid_wait_ms=//p' "$_timing")
+            [ -n "$_wait" ] || _wait=0
+            [ "$_wait" -gt "$_wait_max" ] && _wait_max=$_wait
             # producer 가 `HOLD_MS` 만큼 창을 붙들고 있는 동안 찍는다. 곧바로 찍지 않고
             # `CAPTURE_DELAY` 만큼 기다린다 — timing 이 생긴 시점은 측정이 끝난 시점이지 창이
             # 화면에 올라온 시점이 아니다 (위 `HOLD_MS` 주석).
@@ -1034,7 +1059,7 @@ run_terminal() {
     printf ' ok  %sx%s\n' "$_cols" "$_rows"
     # 앞의 공백을 없애 awk 가 필드를 세기 쉽게 한다.
     _samples=$(printf '%s' "$_samples" | sed 's/^ *//')
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_name" "$_samples" "$_cols" "$_rows" "$_cols0" "$_rows0" >> "$RESULTS"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_name" "$_samples" "$_cols" "$_rows" "$_cols0" "$_rows0" "$_wait_max" >> "$RESULTS"
 }
 
 # Windows 전용 — producer 를 sh 로 감싸지 않고 직접 실행한다. env 는 이 함수가 subshell 안에서
@@ -1053,6 +1078,7 @@ run_terminal_win() {
         export TILDAZ_STRESS_BYTES="$BYTES"
         export TILDAZ_STRESS_TIMING_FILE="$(native_path "$WORK_DIR/$_wname.timing")"
         export TILDAZ_STRESS_HOLD_MS="$HOLD_MS"
+        export TILDAZ_STRESS_GRID="${COLS}x${ROWS}"
         run_terminal "$_wname" "$@"
     )
 }
@@ -1216,6 +1242,7 @@ if [ -n "$TILDAZ_BIN" ]; then
         "TILDAZ_STRESS_BYTES=$BYTES" \
         "TILDAZ_STRESS_TIMING_FILE=$(native_path "$T")" \
         "TILDAZ_STRESS_HOLD_MS=$HOLD_MS" \
+        "TILDAZ_STRESS_GRID=${COLS}x${ROWS}" \
         "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}" \
         -scrollback "$SCROLLBACK"
 else
@@ -1280,6 +1307,7 @@ if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
         printf 'set "TILDAZ_STRESS_BYTES=%s"\r\n' "$BYTES"
         printf 'set "TILDAZ_STRESS_TIMING_FILE=%s"\r\n' "$(native_path "$T")"
         printf 'set "TILDAZ_STRESS_HOLD_MS=%s"\r\n' "$HOLD_MS"
+        printf 'set "TILDAZ_STRESS_GRID=%s"\r\n' "${COLS}x${ROWS}"
         printf '"%s"\r\n' "$(native_path "$PRODUCER")"
     } > "$_conhost_cmd"
     # wrapper 한 겹 — `start` 가 conhost 에 새 콘솔을 준다 (위 문단). `.cmd` 파일에 두는 이유는
@@ -1322,7 +1350,7 @@ fi
 echo "대표값: $STAT_LABEL"
 printf '%-14s %12s %10s %17s %10s  %s\n' terminal ms MiB/s "min~max MiB/s" grid 비고
 printf '%s\n' "--------------------------------------------------------------------------------------"
-while IFS="$(printf '\t')" read -r name samples cols rows cols0 rows0; do
+while IFS="$(printf '\t')" read -r name samples cols rows cols0 rows0 wait_max; do
     if [ "$samples" = "unsupported" ]; then
         printf '%-14s %12s %10s %17s %10s  %s\n' "$name" - - - - "측정 불가 — 위 안내 참고"
         continue
@@ -1357,8 +1385,15 @@ while IFS="$(printf '\t')" read -r name samples cols rows cols0 rows0; do
     if [ "$cols" != "$COLS" ] || [ "$rows" != "$ROWS" ]; then
         note="그리드 불일치 — 비교 불가"
     elif [ "$cols0" != "$cols" ] || [ "$rows0" != "$rows" ]; then
-        # 출력 도중에 창 크기가 바뀌었다는 뜻이다 (터미널이 셸 spawn 뒤 resize).
+        # 출력 도중에 창 크기가 바뀌었다는 뜻이다 (터미널이 셸 spawn 뒤 resize). producer 가
+        # 목표 그리드를 기다리게 된 뒤로는 (`TILDAZ_STRESS_GRID`) 여기 걸리는 것이 곧
+        # **상한까지 기다려도 목표에 도달하지 못했다**는 뜻이다.
         note="측정 중 resize (${cols0}x${rows0} → ${cols}x${rows})"
+    fi
+    # 목표 그리드를 기다린 시간. 오염은 아니지만 (기다린 만큼 출력은 온전하다) 그 대상이
+    # 얼마나 늦게 resize 하는지가 여기 드러난다.
+    if [ -n "${wait_max:-}" ] && [ "${wait_max:-0}" -gt 0 ]; then
+        note="${note}${note:+ · }그리드 대기 ${wait_max} ms"
     fi
     # 요청한 회차를 다 얻지 못했으면 그 사실을 적는다 (조용히 적은 표본으로 평균 내지 않는다).
     if [ "$got" != "$REPEAT" ]; then

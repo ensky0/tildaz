@@ -69,6 +69,8 @@ const env_timing_file = "TILDAZ_STRESS_TIMING_FILE";
 /// 기다리는 것은 **timing 파일을 쓴 뒤**다. 하네스는 timing 파일을 보고 측정이 끝난 것을
 /// 알고 캡처를 시작하므로, 순서가 반대면 하네스가 창이 닫힌 뒤에 찍으러 온다.
 const env_hold_ms = "TILDAZ_STRESS_HOLD_MS";
+/// producer 가 이 그리드가 될 때까지 기다렸다가 출력을 시작한다 (`ProducerRequest.target_grid`).
+const env_grid = "TILDAZ_STRESS_GRID";
 
 /// 자식이 죽은 뒤에도 read thread 가 아직 안 읽은 데이터가 남아 있을 수 있다 —
 /// `waitpid` 는 프로세스 종료만 알려주고 커널 버퍼가 비었는지는 말하지 않는다
@@ -140,7 +142,19 @@ const ProducerRequest = struct {
     timing_path: ?[]const u8 = null,
     /// timing 을 쓴 뒤 이만큼 더 살아 있는다 (`env_hold_ms`). 0 이면 곧바로 끝낸다.
     hold_ms: u32 = 0,
+    /// 있으면 tty 그리드가 이 값이 될 때까지 기다렸다가 출력을 시작한다 (`env_grid`).
+    ///
+    /// **왜 필요한가** — 일부 터미널은 셸을 spawn 한 **뒤에** 창 크기에 맞춰 PTY 를 resize
+    /// 한다. 실측으로 foot 은 80x24 로 시작해 120x40 이 되고 ghostty 는 119x39 로 시작한다.
+    /// 그러면 producer 가 초반을 다른 열 수로 출력해서 줄바꿈 횟수가 달라지고, 그 회차는
+    /// 다른 대상과 비교할 수 없다. 전후 그리드를 둘 다 남기는 것만으로는 **얼마나 오염됐는지**
+    /// 를 알 수 없다 (전환 시점이 없다) — 그래서 아예 기다린다.
+    target_grid: ?Grid = null,
 };
+
+/// `target_grid` 를 기다린 상한. 넘으면 그대로 진행하고 timing 에 대기 시간이 남는다 —
+/// 조용히 포기하지 않고, 어느 대상이 목표 그리드에 아예 도달하지 않는지 드러나게 한다.
+const grid_wait_limit_ms: u64 = 2000;
 
 /// 환경변수 두 개가 다 있고 값이 유효할 때만 producer 모드다. 하나라도 빠지거나
 /// 이상하면 일반 모드로 두어, 실수로 켜진 환경변수 때문에 조용히 다른 일을 하지
@@ -165,7 +179,46 @@ fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
         hold_ms = std.fmt.parseInt(u32, text, 10) catch 0;
     }
 
-    return .{ .kind = kind, .bytes = bytes, .timing_path = timing_path, .hold_ms = hold_ms };
+    // `120x40` 형식. 이상하면 **없는 것으로 본다** — 기다리지 않는 쪽이 안전하다.
+    var target_grid: ?Grid = null;
+    if (std.process.getEnvVarOwned(alloc, env_grid) catch null) |text| {
+        defer alloc.free(text);
+        target_grid = parseGrid(text);
+    }
+
+    return .{
+        .kind = kind,
+        .bytes = bytes,
+        .timing_path = timing_path,
+        .hold_ms = hold_ms,
+        .target_grid = target_grid,
+    };
+}
+
+fn parseGrid(text: []const u8) ?Grid {
+    const x = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const cols = std.fmt.parseInt(u16, text[0..x], 10) catch return null;
+    const rows = std.fmt.parseInt(u16, text[x + 1 ..], 10) catch return null;
+    if (cols == 0 or rows == 0) return null;
+    return .{ .cols = cols, .rows = rows };
+}
+
+/// 그리드가 `target` 이 될 때까지 기다리고, 기다린 시간 (ms) 을 돌려준다.
+///
+/// 상한 (`grid_wait_limit_ms`) 을 넘으면 그대로 진행한다. 도달하지 못하는 경우가 실제로
+/// 있어서다 — 창 크기 옵션이 무시되거나 폰트 때문에 셀 수가 목표와 다를 수 있다. 그때는
+/// 기존대로 `cols_start` / `cols` 비교가 그 회차를 걸러낸다.
+fn waitForGrid(target: Grid) u64 {
+    var timer = std.time.Timer.start() catch return 0;
+    const limit_ns = grid_wait_limit_ms * std.time.ns_per_ms;
+    while (true) {
+        const now = producerGrid() orelse break;
+        if (now.cols == target.cols and now.rows == target.rows) break;
+        if (timer.read() >= limit_ns) break;
+        // 5 ms 는 resize 가 도는 주기보다 충분히 짧다 (실측에서 대기가 수십 ms 규모다).
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    return timer.read() / std.time.ns_per_ms;
 }
 
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
@@ -189,6 +242,10 @@ fn produce(req: ProducerRequest) !void {
     // - 끝 시점만 읽으면 창이 닫히는 중일 수 있다.
     //
     // 둘을 다 남기고 판정은 호출자에게 맡긴다. 다르면 그 측정은 그리드가 흔들린 것이다.
+    //
+    // 목표 그리드를 받았으면 그 전에 **기다린다** (`target_grid` 주석). 기다린 뒤에 읽어야
+    // `grid_start` 가 실제로 출력한 그리드와 같다.
+    const grid_wait_ms = if (req.target_grid) |t| waitForGrid(t) else 0;
     const grid_start = producerGrid();
 
     var timer = try std.time.Timer.start();
@@ -203,7 +260,7 @@ fn produce(req: ProducerRequest) !void {
     const grid_end = producerGrid();
 
     if (req.timing_path) |path| {
-        writeTiming(path, req, elapsed_ns, grid_start, grid_end) catch {};
+        writeTiming(path, req, elapsed_ns, grid_start, grid_end, grid_wait_ms) catch {};
     }
 
     // 하네스의 `--capture` 가 창을 찍을 시간. timing 을 쓴 **뒤**여야 한다 (`env_hold_ms`).
@@ -273,6 +330,7 @@ fn writeTiming(
     elapsed_ns: u64,
     grid_start: ?Grid,
     grid_end: ?Grid,
+    grid_wait_ms: u64,
 ) !void {
     var buf: [512]u8 = undefined;
     var w = Report{ .buf = &buf };
@@ -284,6 +342,9 @@ fn writeTiming(
     } else {
         w.print("cols_start=0\nrows_start=0\n", .{});
     }
+    // 목표 그리드를 기다린 시간. 크면 그 대상이 늦게 resize 한다는 뜻이고, 상한
+    // (`grid_wait_limit_ms`) 에 붙어 있으면 목표에 아예 도달하지 못한 것이다.
+    w.print("grid_wait_ms={d}\n", .{grid_wait_ms});
     // 마지막 줄이 `rows` 다 — 읽는 쪽이 파일이 끝까지 쓰였는지 이 줄로 판단한다.
     if (grid_end) |g| {
         w.print("cols={d}\nrows={d}\n", .{ g.cols, g.rows });

@@ -37,6 +37,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.ps1`](measure-repeat.ps1) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | Windows PowerShell |
 | [`measure-repeat.sh`](measure-repeat.sh) | 〃 (같은 옵션 · 같은 표) | Linux · macOS, 아무 셸 |
+| [`hygiene.sh`](hygiene.sh) | 위 둘이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
@@ -279,9 +280,10 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 | 측정 중 창을 클릭하거나 포커스를 바꾸지 않아요 | 실측 중 키보드 · 마우스가 눌려 그 회차를 버렸어요 |
 | 이전 실행의 잔여 터미널 프로세스를 먼저 정리해요 | `kitty --detach` 와 ghostty 는 스크립트가 끝나도 남아서 다음 회차와 CPU 를 나눠요 |
 | **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 공정성 문제예요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어서 ([#381](https://github.com/ensky0/tildaz/issues/381)) `compare-terminals.sh` 가 시작할 때 직접 내려요. **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
-| AC 전원에 연결하고 절전 · **화면 잠금을 꺼요** | 노트북은 배터리 · 열로 스로틀링이 걸려요. 그리고 잠금 화면이 뜨면 **`render` 만 무너지고 `parse` 는 정상이라 결과만 봐서는 티가 안 나요** — 아래 참고 |
+| AC 전원에 연결하고 절전 · **화면 잠금을 꺼요** — **잠금 차단은 스크립트가 해요** | 노트북은 배터리 · 열로 스로틀링이 걸려요. 그리고 잠금 화면이 뜨면 **`render` 만 무너지고 `parse` 는 정상이라 결과만 봐서는 티가 안 나요** — 아래 참고. AC 연결 자체는 사람이 해야 하고, 스크립트는 **검사해서 걸리면 멈춰요** |
+| **CPU 를 최고 성능으로 둬요** — **이제 스크립트가 해요** | AC 만 확인하고 전원 프로파일은 안 봤더니 `balanced` (EPP `balance_performance`) 인 채로 여러 세션을 쟀어요. Linux 는 `powerprofilesctl set performance` 로 **sudo 없이** 되고 끝나면 되돌려요 |
 | **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고. [`measure-repeat.ps1`](measure-repeat.ps1) 은 시작 전에 이걸 직접 검사하고 걸리면 멈춰요 |
-| **화면을 계속 다시 그리는 앱 (브라우저 · 에디터 · 채팅) 을 최소화하거나 닫아요** | **우리 수치만 64 % 흔들려요** — 아래 참고 |
+| **화면을 계속 다시 그리는 앱 (브라우저 · 에디터 · 채팅) 을 최소화해요** — **KDE 에서는 스크립트가 해요** | **우리 수치만 64 % 흔들려요** — 아래 참고. KDE 는 KWin 스크립팅으로 창을 **하나씩 최소화**하고 (**되돌리지 않아요** — 필요하면 직접 올려요), 그 밖의 데스크톱에서는 경고만 해요. Show Desktop 은 **측정 창이 뜨는 순간 해제돼서** 못 써요 (실측) |
 | 수치는 **실기기**에서 내요 | VM 은 CPU · 메모리 대역폭 · 렌더 경로가 host 와 달라요. VM 은 동작 확인 용도예요 |
 
 #### 잠금 화면이 뜨면 `render` 만 무너져요 — 결과 표에는 안 보여요
@@ -553,6 +555,21 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 그래서 producer 는 그리드를 **출력 전후 두 번** 읽고 둘 다 timing 파일에 적어요. 표에
 `측정 중 resize (AxB → CxD)` 가 뜨면 producer 가 초반을 다른 열 수로 출력했다는 뜻이라 그
 회차는 비교에 쓸 수 없어요 — 열 수가 바뀌면 줄바꿈 횟수가 달라지니까요.
+
+**그래서 producer 가 목표 그리드를 기다렸다가 출력을 시작해요** (`TILDAZ_STRESS_GRID`, 상한
+2 초). 전후 두 값만으로는 *얼마나* 오염됐는지 알 수 없거든요 — 전환 시점이 없으니까요.
+기다린 시간은 timing 의 `grid_wait_ms` 와 표의 `그리드 대기 N ms` 로 남아서, **어느 대상이
+얼마나 늦게 resize 하는지가 그대로 드러나요.**
+
+| 대상 | 대기 | 기다리지 않으면 |
+|---|---:|---|
+| foot | **10~15 ms** | `80x24 → 120x40` — 초반을 80 열로 출력해요 |
+| ghostty | **51~56 ms** | `119x39 → 120x40` |
+| kitty · alacritty · wezterm · TildaZ | 0 | 시작부터 목표 그리드예요 |
+
+기다리게 한 뒤 foot 이 114.5 → **138.5 MiB/s** 로 올랐어요 (같은 조건 · 8 MiB smoke). 80 열
+구간은 줄바꿈이 더 많아서 **불리하게** 작용하고 있었어요. 상한까지 기다려도 목표에 도달하지
+못하면 그때는 예전처럼 `측정 중 resize` 가 떠서 그 회차가 걸러져요.
 
 **대상은 그 platform 에 설치된 것만 자동으로 골라요** (`command -v` 로 확인해요).
 
