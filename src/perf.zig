@@ -46,6 +46,7 @@ pub var push: Counter = .{}; // ring.push — extra = yield spins (full)
 pub var drain: Counter = .{}; // drainOutput — ns covers whole loop, bytes = popped
 pub var parse: Counter = .{}; // stream.nextSlice alone
 pub var render: Counter = .{}; // renderTerminal excluding Present
+pub var shape: Counter = .{}; // grapheme cluster shaping — subset of render, extra = chain miss
 pub var present: Counter = .{}; // swap_chain.Present
 pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count
 
@@ -124,6 +125,7 @@ pub fn dumpAndReset(label: []const u8) void {
     const dr = snapshot(&drain);
     const pa = snapshot(&parse);
     const re = snapshot(&render);
+    const sh = snapshot(&shape);
     const pr = snapshot(&present);
     const on = snapshot(&onrender);
 
@@ -136,19 +138,35 @@ pub fn dumpAndReset(label: []const u8) void {
             "drain    calls={d} bytes={d} ms={d:.3}\n" ++
             "parse    calls={d} ms={d:.3}\n" ++
             "render   calls={d} ms={d:.3}\n" ++
+            // #395 — render 의 부분집합. cluster shaping 이 render 몫의 얼마인지
+            // 가르려고 뽑는다. miss = chain 전체 미스 (base codepoint fallback).
+            "shape    calls={d} ms={d:.3} miss={d}\n" ++
             "present  calls={d} ms={d:.3}\n" ++
             "onrender calls={d} ms={d:.3} skip={d}\n",
         .{
-            label,                                        std.time.milliTimestamp(),
-            rl[0],                                        rl[2],
-            @as(f64, @floatFromInt(rl[1])) / 1_000_000.0, pu[0],
-            pu[2],                                        pu[3],
-            dr[0],                                        dr[2],
-            @as(f64, @floatFromInt(dr[1])) / 1_000_000.0, pa[0],
-            @as(f64, @floatFromInt(pa[1])) / 1_000_000.0, re[0],
-            @as(f64, @floatFromInt(re[1])) / 1_000_000.0, pr[0],
-            @as(f64, @floatFromInt(pr[1])) / 1_000_000.0, on[0],
-            @as(f64, @floatFromInt(on[1])) / 1_000_000.0, on[3],
+            label,
+            std.time.milliTimestamp(),
+            rl[0],
+            rl[2],
+            @as(f64, @floatFromInt(rl[1])) / 1_000_000.0,
+            pu[0],
+            pu[2],
+            pu[3],
+            dr[0],
+            dr[2],
+            @as(f64, @floatFromInt(dr[1])) / 1_000_000.0,
+            pa[0],
+            @as(f64, @floatFromInt(pa[1])) / 1_000_000.0,
+            re[0],
+            @as(f64, @floatFromInt(re[1])) / 1_000_000.0,
+            sh[0],
+            @as(f64, @floatFromInt(sh[1])) / 1_000_000.0,
+            sh[3],
+            pr[0],
+            @as(f64, @floatFromInt(pr[1])) / 1_000_000.0,
+            on[0],
+            @as(f64, @floatFromInt(on[1])) / 1_000_000.0,
+            on[3],
         },
     ) catch return;
 
