@@ -610,12 +610,51 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 
 | platform | 자동으로 도는 대상 |
 |---|---|
-| Linux | TildaZ · alacritty · kitty · wezterm · ghostty · foot |
-| macOS | TildaZ · alacritty · kitty · wezterm · ghostty |
-| Windows | TildaZ · alacritty · wezterm · Windows Terminal (`wt`) |
+| Linux | TildaZ · alacritty · kitty · wezterm · ghostty · **foot** |
+| macOS | TildaZ · alacritty · kitty · wezterm · ghostty · **iTerm2** |
+| Windows | TildaZ · alacritty · wezterm · **Windows Terminal (`wt`)** |
 
 Windows 에 kitty · ghostty 판이 없고 foot 은 Wayland 전용이라, Windows 는 그 자리를
 Windows Terminal 이 채워요.
+
+**굵은 자리는 "그 OS 사용자가 실제로 쓰는 것" 이에요.** 나머지 넷 (alacritty · kitty ·
+wezterm · ghostty) 은 개발자 취향의 선택지라 그것만 놓고 보면 그림이 왜곡돼요 — macOS
+기록용 측정에서 **iTerm2 가 `cjk` 에서 우리보다 19 배 느렸어요** (5.9 대 112.0 MiB/s).
+"우리가 cluster 에서 뒤진다" 는 이야기의 맥락이 달라지는 종류의 숫자인데, 개발자용만
+비교하던 때는 안 보였어요.
+
+#### iTerm2 는 Dynamic Profiles 로 넣어요
+
+`~/Library/Application Support/iTerm2/DynamicProfiles/` 에 JSON 을 놓으면 iTerm2 가 파일
+감시로 읽어서 프로파일이 생겨요. 격자 · scrollback · 실행 명령을 한 파일에 담을 수 있고
+**사용자 설정을 전혀 건드리지 않아요** — 끝나면 그 파일만 지워요 (`trap EXIT`). `wt` 가
+`settings.json` 을 통째로 백업·복원해야 하는 것과 대비되는 자리예요 (아래 Windows 절).
+
+다른 길은 전부 막혔어요 (실측):
+
+| 방법 | 결과 |
+|---|---|
+| CLI (`open -na iTerm.app --args`) | 격자 옵션이 없어요 |
+| AppleScript 로 창을 만든 뒤 크기 변경 | **명령이 먼저 시작돼서** 그 시점 격자로 출력해요 |
+
+#### Terminal.app 은 넣지 못했어요 — 세 방법이 다 막혔어요
+
+macOS 의 OS 기본 터미널이라 Windows 의 conhost 와 같은 자리인데, 넣으려다 접었어요.
+**다시 시도하는 분이 같은 길을 헤매지 않도록** 실패 셋을 남겨요 (전부 실측이에요).
+
+| 방법 | 결과 |
+|---|---|
+| AppleScript `do script` + 격자 설정 | ❌ 명령이 먼저 뜨고 격자가 나중이라 **셸이 30×120 을 봐요** — AppleScript 는 120×40 이라고 보고하는데도요 |
+| `defaults` 로 임시 프로파일 추가 | ❌ **실행 중인 앱이 안 읽어요** (`-1728`). 게다가 앱이 종료하며 자기 설정으로 덮어써서 **사용자 설정 손상 위험**이 있어요 |
+| `.terminal` 파일 + `open` | ❌ 프로파일은 추가되는데 **`CommandString` 이 실행되지 않아요** |
+
+근본 원인은 **Terminal.app 이 격자 · scrollback 을 오직 프로파일로만 받고, 그 프로파일이
+실행 중인 앱과 충돌한다**는 구조예요. 세 번 다 사용자 설정에 흔적이 남아서 매번 지워야
+했어요 (전부 원복 확인했어요).
+
+남은 길은 *"Terminal.app 을 완전히 종료한 상태에서 프로파일을 심고 → 실행 → 측정 → 종료 →
+제거"* 인데, 회차마다 앱 재시작이 필요하고 사용자가 Terminal 을 쓰고 있으면 방해돼요.
+**그래서 넣지 않아요.**
 
 **전부 자동이에요.** TildaZ 도 스크립트가 직접 띄워요 — 측정용 실행 옵션 `-e <실행파일>` ·
 `-size <COLS>x<ROWS>` 를 [#382](https://github.com/ensky0/tildaz/issues/382) 에서 만들었어요.
