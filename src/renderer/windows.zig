@@ -202,6 +202,19 @@ pub const D3d11Renderer = struct {
     last_cursor_px_x: c_int = 0,
     last_cursor_px_y: c_int = 0,
 
+    // #399 — cluster shaping 을 런 단위로 묶는 데 쓰는 작업 버퍼다. 셀 루프의 지역 변수로
+    // 두면 10 KB 가량이라 (`run_results` 만 7 KB) 프레임 스택에 부담이라 renderer 가 들고
+    // 재사용한다. `render` 시간의 대부분이 shaping 이고, cluster 마다 chain 을 처음부터
+    // 순회하며 `GetGlyphs` 를 새로 부르는 고정 비용이 그 대부분이다.
+    /// 런 안 cluster 들의 codepoint 를 이어 담는다 (base 1 + extras 최대 15).
+    run_cps: [DWriteFontContext.MAX_RUN_CLUSTERS * 16]u21 = undefined,
+    /// 위 버퍼를 cluster 단위로 가리키는 slice 들. `resolveGraphemeRun` 의 입력이다.
+    run_slices: [DWriteFontContext.MAX_RUN_CLUSTERS][]const u21 = undefined,
+    /// 각 cluster 가 있던 셀의 x. 글리프를 되돌려 놓을 때 쓴다 (셀마다 색이 다르다).
+    run_cells: [DWriteFontContext.MAX_RUN_CLUSTERS]u16 = undefined,
+    /// shaping 결과. cluster 당 하나이고 **multi-glyph 다** (#139).
+    run_results: [DWriteFontContext.MAX_RUN_CLUSTERS]dwrite_font.ClusterResult = undefined,
+
     // D3D11 core
     device: *d3d.ID3D11Device,
     ctx: *d3d.ID3D11DeviceContext,
@@ -1434,6 +1447,60 @@ pub const D3d11Renderer = struct {
                 // shape — single glyph (GSUB 합성 OK) 또는 multi-glyph (#139 ZWJ
                 // family 등 합성 안 되는 cluster). ligature lookahead 와 별개.
                 if (raw.hasGrapheme() and x < graphemes.len) {
+                    // #399 — **연속된 grapheme 셀을 모아 한 번에 shape 한다.** cluster 마다
+                    // chain 을 처음부터 순회하며 `GetGlyphs` · `GetGlyphPlacements` 를 새로
+                    // 부르는 고정 비용이 `render` 의 대부분이라, 한 줄을 묶으면 그만큼 준다.
+                    // 런이 2 개 미만이면 이득이 없어 아래 개별 경로로 간다.
+                    //
+                    // 런 경계는 셋만 본다: 연속 grapheme 셀 · `spacer_tail` 은 **건너뛰고 이어감**
+                    // (wide cluster 뒤엔 항상 오므로 여기서 끊으면 런이 1 개씩 쪼개진다) ·
+                    // `invisible` 에서 끊음. **`style_id` 는 안 본다** — 글리프는 폰트에만
+                    // 의존하고 색은 셀마다 따로 계산한다.
+                    var run_n: usize = 0;
+                    var cps_used: usize = 0;
+                    var scan = x;
+                    while (scan < cols and scan < raws.len and run_n < DWriteFontContext.MAX_RUN_CLUSTERS) {
+                        const rr = raws[scan];
+                        if (rr.wide == .spacer_tail) {
+                            scan += 1;
+                            continue;
+                        }
+                        if (!(rr.hasText() and rr.wide != .spacer_head and rr.codepoint() != 0)) break;
+                        if (!(rr.hasGrapheme() and scan < graphemes.len)) break;
+                        if (rr.style_id != 0 and styles[scan].flags.invisible) break;
+
+                        const ex = graphemes[scan];
+                        // 개별 경로의 `cluster[16]` 과 같은 상한이다 (base 1 + extras 15).
+                        const ex_take = @min(ex.len, 15);
+                        if (cps_used + 1 + ex_take > self.run_cps.len) break;
+                        self.run_cps[cps_used] = rr.codepoint();
+                        @memcpy(self.run_cps[cps_used + 1 ..][0..ex_take], ex[0..ex_take]);
+                        self.run_slices[run_n] = self.run_cps[cps_used..][0 .. 1 + ex_take];
+                        self.run_cells[run_n] = @intCast(scan);
+                        cps_used += 1 + ex_take;
+                        run_n += 1;
+                        scan += 1;
+                    }
+
+                    if (run_n >= 2 and
+                        self.font.resolveGraphemeRun(self.run_slices[0..run_n], self.run_results[0..run_n]) == run_n)
+                    {
+                        for (0..run_n) |i| {
+                            const cell_x: usize = self.run_cells[i];
+                            const rr = raws[cell_x];
+                            // 색은 셀마다 다시 계산한다 — 런을 style 로 끊지 않기 때문이다.
+                            const st = cell_color.applyBlinkPhase(if (rr.style_id != 0) styles[cell_x] else ghostty.Style{}, blink_faint);
+                            const inv = st.flags.inverse;
+                            const cx16: u16 = @intCast(cell_x);
+                            const sel = if (sel_range) |sr| (cx16 >= sr[0] and cx16 <= sr[1]) else false;
+                            const fg = resolveFg(st, &rr, &colors, sel, inv);
+                            emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, self.run_results[i], cell_x, fy, cw, x_pad, fg, if (rr.wide == .wide) 2.0 else 1.0, 0);
+                        }
+                        x = scan;
+                        continue;
+                    }
+
+                    // 개별 경로 — 런이 1 개거나 배칭이 실패했을 때. 렌더가 틀리느니 느린 게 낫다.
                     if (text_count >= MAX_CELLS) {
                         self.drawTextInstances(text_buf[0..text_count]);
                         text_count = 0;
