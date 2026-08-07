@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("log.zig");
+const instance_context = @import("instance_context.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const QueryUnbiasedInterruptTimePreciseFn = *const fn (*u64) callconv(.c) void;
@@ -171,6 +172,38 @@ pub fn dumpAndReset(label: []const u8) void {
     ) catch return;
 
     log.appendBlock(text);
+}
+
+/// #396 — 측정 인스턴스는 종료 직전에 스냅숏을 **자동으로 한 번** 남긴다. 손으로
+/// `Ctrl+Shift+F12` 를 누르던 절차는 세 가지가 문제였다.
+///
+/// 1. 측정 창에 키 입력을 넣어야 한다 — AGENTS.md 의 "측정 중 기기를 건드리지 않는다"
+///    와 정면으로 어긋난다.
+/// 2. `dumpAndReset` 이 읽으면서 리셋하므로 두 번 누르면 `parse ms=0.000` 껍데기가 나온다.
+/// 3. 무엇보다 `dist/stress/README.md` 의 5 회 반복을 사람이 지킬 수 없어서, 배분 측정이
+///    지금까지 전부 1 회였다 (#389 macOS · #395 Linux 둘 다).
+///
+/// worker 에서는 no-op 이다. 게이트가 *프로세스 역할* 이라 `RunOptions` 를 들고 다니지
+/// 않는 이 자리에서도 판정된다 (`instance_context.isStress` 의 doc 주석이 이 용도다).
+///
+/// 호출은 host 3 곳의 `log.logStop` **직전**이다 — 로그 파일이 닫히기 전이어야 한다.
+/// Linux · Windows 는 `defer` 가 LIFO 라 `defer log.logStop(...)` 아래에 두면 되고,
+/// macOS 는 Cmd+Q 가 `exit()` 직행이라 `atExitLogStop` 안에 둔다.
+pub fn dumpOnExit() void {
+    if (!instance_context.isStress()) return;
+
+    // 라벨에 워크로드를 넣어 5 회 반복 로그를 기계로 가를 수 있게 한다. 측정 인스턴스에
+    // 넘긴 환경변수 (`stress.zig` 의 `env_workload`) 를 그대로 읽는다. Windows 는
+    // `getEnvVarOwned` 가 key 의 WTF-16 변환에도 allocator 를 쓰므로 넉넉히 잡는다.
+    // 실패하면 그냥 `"stress"` — 라벨 하나 때문에 덤프 자체를 거르지 않는다.
+    var buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const label: []const u8 = if (std.process.getEnvVarOwned(
+        fba.allocator(),
+        "TILDAZ_STRESS_WORKLOAD",
+    )) |workload| workload else |_| "stress";
+
+    dumpAndReset(label);
 }
 
 test "working-time duration rejects reversed samples" {

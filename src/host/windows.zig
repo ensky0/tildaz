@@ -6,6 +6,7 @@ const RendererBackend = @import("../renderer.zig").RendererBackend;
 const config_mod = @import("../config.zig");
 const Config = config_mod.Config;
 const log = @import("../log.zig");
+const perf = @import("../perf.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const shell_integration = @import("../shell_integration.zig");
@@ -50,6 +51,10 @@ pub fn run(opts: run_options.RunOptions) !void {
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
     log.logStart(build_options.version);
     defer log.logStop(build_options.version);
+    // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
+    // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
+    // worker 는 no-op (게이트는 `instance_context.isStress`).
+    defer perf.dumpOnExit();
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
     log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
 
