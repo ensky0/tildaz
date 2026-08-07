@@ -211,6 +211,11 @@ extern "c" fn atexit(func: *const fn () callconv(.c) void) c_int;
 /// 직행하므로 run() 의 `defer logStop` 이 안 불린다. `atexit` 는 `exit()`
 /// 호출되면 동작하니 여기서 [exit] 라인 기록.
 fn atExitLogStop() callconv(.c) void {
+    // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. Linux · Windows 는
+    // `run()` 의 `defer` 로 같은 일을 하지만, 여기는 Cmd+Q 가 `exit()` 직행이라
+    // defer 가 안 불려서 이 핸들러 안에 둔다 — 이 함수가 존재하는 이유와 같다.
+    // 로그 파일이 닫히기 전이어야 하므로 `logStop` 앞이다. worker 는 no-op.
+    perf.dumpOnExit();
     log.logStop(build_options.version);
 }
 
