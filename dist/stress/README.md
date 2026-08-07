@@ -36,17 +36,33 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.ps1`](measure-repeat.ps1) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | Windows PowerShell |
+| [`measure-repeat.sh`](measure-repeat.sh) | 〃 (같은 옵션 · 같은 표) | Linux · macOS, 아무 셸 |
 
-`measure-repeat.ps1` 은 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
+`measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
-직접 검사해요 — worker 가 떠 있는지, AC 인지, 주사율이 그 화면의 최대와 같은지 (DRR).
-Linux · macOS 는 같은 일을 `systemd-inhibit` / `caffeinate` 를 붙인 짧은 셸 루프로 해요.
+직접 검사해요 — worker 가 떠 있는지, AC 인지, 주사율이 그 화면의 최대와 같은지 (Windows 의 DRR ·
+Linux 는 `kscreen-doctor`). 절전 · 잠금은 `SetThreadExecutionState` / `systemd-inhibit` /
+`caffeinate` 로 막아요.
 
 ```powershell
 zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache
 dist/stress/measure-repeat.ps1 -Phase before
 dist/stress/measure-repeat.ps1 -Phase after -Workloads zwj,plain
 ```
+
+```sh
+zig build -Doptimize=ReleaseFast -Dsimd=true
+zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser --mb 1
+dist/stress/measure-repeat.sh --phase before
+dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
+```
+
+`.sh` 는 **`zig build stress` 를 한 번 더 불러야** 해요 — 기본 `zig build` 는 `tildaz-stress` 를
+`zig-out/bin` 에 install 하지 않아서, 예전에 빌드해 둔 producer 가 남아 있으면 그게 그대로 쓰여요.
+구버전 producer 는 새로 생긴 워크로드 이름을 몰라 **producer 모드로 진입하지 않고**, 창은 뜨는데
+폭포가 없는 껍데기 회차가 돼요 (실측: `emoji_vs16` · `zwj` 가 743 byte 만 읽혔어요). 뒤집어 말하면
+**producer 를 일부러 고정할 수도** 있어요 — before / after 를 비교할 때 앱만 바꾸고 producer 를
+그대로 두면 양쪽이 완전히 같은 바이트를 받아요 (#397 의 Linux 검증이 그렇게 했어요).
 
 ## 두 가지 명령
 
@@ -283,10 +299,10 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 잠금 화면이 뜨면 compositor 가 우리 surface 에 frame callback 을 보내지 않아서 `redraw` 가 그리지
 않고 빠져나가요. 그래서 **처리량만 보는 표에서는 오염이 전혀 안 드러나요.**
 
-##### 회차 유효성은 이 둘로 판정해요
+##### 회차 유효성은 이 셋으로 판정해요
 
 perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동으로 남겨요 — `Ctrl+Shift+F12` 를 누를
-필요 없어요).
+필요 없어요). 앞의 둘은 **그렸는지**를, 셋째는 **다 소화했는지**를 봐요.
 
 | 지표 | 정상 (4 회차) | **오염 (5 회차)** |
 |---|---|---|
@@ -295,6 +311,31 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 
 `onrender` 의 `skip` 은 paint 하지 못한 frame tick 수예요. 이게 대부분이면 **그리지 않은 회차**라
 `render` 값에 의미가 없어요. 회차 사이에 `render calls` 가 한 자릿수로 떨어지는 것도 같은 신호예요.
+
+###### 셋째 — `readloop bytes − drain bytes` 가 수십 byte 이내여야 해요
+
+**`readloop bytes >= 요청 바이트` 로는 부분 파싱을 못 잡아요.** `readloop` 은 PTY 에서 *읽은* 양이라
+파싱과 무관하게 채워지거든요. #396 이 처음 정한 그 기준으로는 **실제로는 54 % 만 파싱한 회차도
+통과**했어요 ([#397](https://github.com/ensky0/tildaz/issues/397)). 봐야 할 것은 읽은 양과 **소화한**
+양의 차이예요.
+
+세 platform 실측이에요 (`HOLD` 없이, 고침은 [a131250](https://github.com/ensky0/tildaz/commit/a131250)).
+
+| platform · 머신 | 고침 전 손실 | 고침 후 |
+|---|---|---|
+| macOS · M5 Pro (8 MiB) | `zwj` **45.5 %** | **0** |
+| Linux · Intel i5-1240P (64 MiB) | `zwj` **6.1~6.2 %** (5/5) · `plain` **0.9~2.5 %** (5/5) | **0** (10/10) |
+| Windows · AMD Ryzen AI 7 350 (64 MiB) | `zwj` **6.3~6.5 %** (5/5) · `plain` 2/5 에서 265 KB~1.25 MB | **16 byte** |
+
+그래서 판정은 `== 0` 이 아니라 **수십 byte 이내**예요. **Windows 만** 고친 뒤에도 정확히 16 byte 가
+남아요 (크기 · 워크로드 · 커밋 · `HOLD` 를 바꿔도 항상 16 — 원인 미확정, #397). Linux · macOS 는
+0 이라 그 16 은 ConPTY 쪽 경로로 좁혀지고, 어느 쪽이든 실제 결함은 **수백 KB~수 MB** 규모라 이
+경계로 충분히 갈려요.
+
+⚠️ **`TILDAZ_STRESS_HOLD_MS` 를 주면 이 검사가 통째로 무의미해져요.** 유휴 시간이 드레인할 기회를
+줘서 **고치기 전 코드도 손실이 없어 보여요** (Windows 는 `HOLD=3000` 에서 고침 전에도 16 byte 였고,
+macOS 는 `HOLD=5000` 에서 100 % 였어요). 배분 측정은 `HOLD` 없이 해요 — `measure-repeat` 의 기본값이
+0 인 이유예요.
 
 #### Windows 의 동적 새로 고침 빈도(DRR)는 회차를 **두 무리로 갈라요**
 
