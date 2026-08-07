@@ -540,6 +540,205 @@ pub const DWriteFontContext = struct {
         return null;
     }
 
+    /// 런 배칭 상한 ([#399](https://github.com/ensky0/tildaz/issues/399)). 넘으면 호출자가
+    /// 런을 끊고 다음 런이 이어받으므로 이득이 사라지지 않고 여기서 멈출 뿐이다. 120 열에
+    /// wide cluster 는 최대 60 개지만, 이 값이 아래 shaping 버퍼 크기를 정하고 (합쳐 약 8 KB)
+    /// 실제 줄은 그보다 훨씬 짧아서 32 로 잡았다.
+    pub const MAX_RUN_CLUSTERS: usize = 32;
+    /// cluster 당 UTF-16 은 보통 2~8 unit 이다 (ZWJ family 가 8). 넘으면 0 을 돌려 개별 경로로.
+    const MAX_RUN_U16: usize = 256;
+    /// DirectWrite 권장값 `3 * textLength / 2 + 16`.
+    const MAX_RUN_GLYPHS: usize = 3 * MAX_RUN_U16 / 2 + 16;
+
+    /// **여러 cluster 를 `GetGlyphs` 한 번으로 shape 한다** (#399). 지금까지는 cluster 마다
+    /// `resolveGrapheme` 을 불러 chain 을 처음부터 순회하고 `GetGlyphs` · `GetGlyphPlacements`
+    /// 를 매번 새로 호출했는데, 그 **고정 비용이 지배적**이라 한 줄을 묶으면 크게 싸다.
+    /// `render` 의 91.5 % 가 이 경로다 (#395 Linux 실측, macOS 는 92.0 %).
+    ///
+    /// 반환은 **채운 cluster 수**다. `out` 은 `clusters` 와 같은 순서로 채워지고, 0 이면
+    /// 호출자가 기존 개별 경로로 떨어진다 — 렌더가 틀리느니 느린 게 낫다.
+    ///
+    /// **macOS 판과 갈리는 곳이 둘이다.**
+    ///   - 결과가 **multi-glyph** 다 (`ClusterResult`). Segoe UI Emoji 의 ZWJ family 는 GSUB 가
+    ///     단일 글리프로 합성하지 않고 여러 글리프를 advance / offset 으로 쌓아 그리도록
+    ///     설계돼 있다 (#139). CoreText 는 cluster 당 글리프 하나였다.
+    ///   - **face 를 우리가 고른다.** chain 을 순서대로 돌며 *한 face 로 런 전체* 를 shape 하고,
+    ///     `.notdef` 이 하나라도 있으면 그 face 를 버린다 (개별 경로와 같은 판정). 기본 chain 에
+    ///     `Segoe UI Emoji` 가 있어서 (`config.zig` 의 `glyph_fallback`) emoji 런도 chain 안에서
+    ///     풀린다.
+    ///
+    /// **system fallback (`MapCharacters`) 은 런에서 쓰지 않는다.** 런의 어느 codepoint 를
+    /// 기준으로 face 를 찾을지 애매하고, chain 이 전부 실패하는 경우는 드물다. 그때는 0 을
+    /// 돌려 **개별 경로가 fallback 을 하게** 둔다 — 정확성은 그대로고 그 런만 느려진다.
+    pub fn resolveGraphemeRun(
+        self: *DWriteFontContext,
+        clusters: []const []const u21,
+        out: []ClusterResult,
+    ) usize {
+        const t0 = perf.now();
+        const n = self.resolveGraphemeRunInner(clusters, out);
+        perf.addTimed(&perf.shape, t0);
+        // miss 는 **런 단위**로 센다 — 개별 경로로 떨어진 런의 수다.
+        if (n == 0) perf.incExtra(&perf.shape);
+        return n;
+    }
+
+    fn resolveGraphemeRunInner(
+        self: *DWriteFontContext,
+        clusters: []const []const u21,
+        out: []ClusterResult,
+    ) usize {
+        if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
+        if (out.len < clusters.len) return 0;
+        if (self.text_analyzer == null) return 0;
+
+        var u16_buf: [MAX_RUN_U16]WCHAR = undefined;
+        // cluster `i` 의 UTF-16 시작 위치. 끝에 센티넬 (= 전체 길이) 을 넣어 범위를
+        // `[cl_start[i], cl_start[i+1])` 로 읽는다. 이어붙인 뒤에는 길이 정보가 사라진다.
+        var cl_start: [MAX_RUN_CLUSTERS + 1]u16 = undefined;
+        var u16_len: dw.UINT32 = 0;
+
+        for (clusters, 0..) |cps, ci| {
+            if (cps.len == 0) return 0;
+            cl_start[ci] = @intCast(u16_len);
+            for (cps) |cp| {
+                if (cp <= 0xFFFF) {
+                    if (u16_len + 1 > MAX_RUN_U16) return 0;
+                    u16_buf[u16_len] = @intCast(cp);
+                    u16_len += 1;
+                } else {
+                    if (u16_len + 2 > MAX_RUN_U16) return 0;
+                    const off = cp - 0x10000;
+                    u16_buf[u16_len] = @intCast(0xD800 + (off >> 10));
+                    u16_buf[u16_len + 1] = @intCast(0xDC00 + (off & 0x3FF));
+                    u16_len += 2;
+                }
+            }
+        }
+        if (u16_len == 0) return 0;
+        cl_start[clusters.len] = @intCast(u16_len);
+
+        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
+            const face = maybe_face orelse continue;
+            if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], out))
+                return clusters.len;
+        }
+        return 0;
+    }
+
+    /// `face` 로 **런 전체**를 shape 하고 글리프를 cluster 별로 잘라 `out` 에 담는다.
+    /// 하나라도 어긋나면 false — 호출자가 다음 face 로 넘어간다.
+    ///
+    /// **글리프 → cluster 배분은 `cluster_map` 이 한다.** `GetGlyphs` 가 text index → glyph
+    /// index 표를 이미 돌려주는데 지금까지는 cluster 하나만 넘기느라 안 쓰고 있었다. cluster
+    /// `i` 의 글리프 범위는 `[cluster_map[s_i], cluster_map[s_{i+1}])` 이고 마지막은
+    /// `actual_count` 다.
+    fn shapeRunOnFace(
+        self: *DWriteFontContext,
+        face: *dw.IDWriteFontFace,
+        text: [*]const WCHAR,
+        text_len: dw.UINT32,
+        /// 길이가 cluster 수 + 1 이다 (마지막이 센티넬).
+        cl_start: []const u16,
+        out: []ClusterResult,
+    ) bool {
+        const analyzer = self.text_analyzer orelse return false;
+        const cluster_count = cl_start.len - 1;
+
+        var cluster_map: [MAX_RUN_U16]u16 = undefined;
+        var text_props: [MAX_RUN_U16]dw.DWRITE_SHAPING_TEXT_PROPERTIES = undefined;
+        var glyph_indices: [MAX_RUN_GLYPHS]u16 = undefined;
+        var glyph_props: [MAX_RUN_GLYPHS]dw.DWRITE_SHAPING_GLYPH_PROPERTIES = undefined;
+        var glyph_advances: [MAX_RUN_GLYPHS]dw.FLOAT = undefined;
+        var glyph_offsets: [MAX_RUN_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
+        var actual_count: dw.UINT32 = 0;
+
+        const sa = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
+        const locale_name = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
+
+        const hr = analyzer.GetGlyphs(
+            text,
+            text_len,
+            face,
+            0, // is_sideways
+            0, // is_right_to_left
+            &sa,
+            locale_name,
+            null, // number_substitution
+            null, // features
+            null,
+            0,
+            glyph_indices.len,
+            &cluster_map,
+            &text_props,
+            &glyph_indices,
+            &glyph_props,
+            &actual_count,
+        );
+        if (hr < 0 or actual_count == 0 or actual_count > glyph_indices.len) return false;
+
+        // `.notdef` 이 하나라도 있으면 이 face 는 런의 어떤 cluster 를 못 그린다는 뜻이다 —
+        // 개별 경로 (`shapeOnFaceMulti`) 와 같은 판정이라 chain 순회 결과가 달라지지 않는다.
+        for (glyph_indices[0..actual_count]) |gi| {
+            if (gi == 0) return false;
+        }
+
+        // placement 도 **런 전체에 한 번**이다. 실패하면 개별 경로처럼 0 으로 채운다 (#139 의
+        // left-pulled stack 은 못 그리지만 글리프 자체는 나온다).
+        const placed = analyzer.GetGlyphPlacements(
+            text,
+            &cluster_map,
+            &text_props,
+            text_len,
+            &glyph_indices,
+            &glyph_props,
+            actual_count,
+            face,
+            self.font_em_size,
+            0, // is_sideways
+            0, // is_right_to_left
+            &sa,
+            locale_name,
+            null,
+            null,
+            0,
+            &glyph_advances,
+            &glyph_offsets,
+        ) >= 0;
+
+        for (0..cluster_count) |ci| {
+            const s = cl_start[ci];
+            const e = cl_start[ci + 1];
+            if (s >= text_len or e > text_len or e <= s) return false;
+
+            const g0: dw.UINT32 = cluster_map[s];
+            // 마지막 cluster 의 끝은 `cluster_map[text_len]` 이 아니라 (범위 밖이다) 글리프 총수다.
+            const g1: dw.UINT32 = if (ci + 1 == cluster_count) actual_count else cluster_map[e];
+            // **범위가 비면 실패다.** DirectWrite 가 우리 cluster 둘을 자기 cluster 하나로
+            // 합치면 (ligature) 이렇게 되는데, 그러면 어느 셀에 무엇을 그릴지 정할 수 없다.
+            if (g1 <= g0 or g1 > actual_count) return false;
+            const n = g1 - g0;
+            if (n > MAX_CLUSTER_GLYPHS) return false;
+
+            out[ci] = .{
+                .face = face,
+                .indices = undefined,
+                .advances = undefined,
+                .offsets = undefined,
+                .count = @intCast(n),
+                // chain face 는 context 가 소유한다 (deinit 까지 안 놓는다) — 개별 경로의
+                // chain 성공 케이스와 같다.
+                .owned = false,
+            };
+            for (0..n) |k| {
+                out[ci].indices[k] = glyph_indices[g0 + k];
+                out[ci].advances[k] = if (placed) glyph_advances[g0 + k] else 0;
+                out[ci].offsets[k] = if (placed) glyph_offsets[g0 + k] else .{ .advanceOffset = 0, .ascenderOffset = 0 };
+            }
+        }
+        return true;
+    }
+
     /// 2-char ligature lookup (SPEC § 12.2). `cp0` + `cp1` 을 primary face 로
     /// shape (TextAnalyzer.GetGlyphs) 한 후 결과 glyph 들 vs natural
     /// (`GetGlyphIndices`) 비교로 `LigatureMatch` 판정 — 공유 `ligature.classify`
