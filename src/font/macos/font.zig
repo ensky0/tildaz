@@ -275,6 +275,157 @@ pub const CoreTextFontContext = struct {
         return result;
     }
 
+    /// 런 배칭 상한 ([#399](https://github.com/ensky0/tildaz/issues/399)). 한 줄이 120 열이라
+    /// cluster 가 최대 그만큼이고, cluster 하나가 UTF-16 으로 최대 32 unit (16 codepoint ×
+    /// surrogate) 이다. 넘으면 호출자가 런을 끊는다.
+    pub const MAX_RUN_CLUSTERS = 128;
+    const MAX_RUN_U16 = 4096;
+
+    /// **여러 cluster 를 `CTLine` 하나로 shape 한다** (#399). 지금까지는 cluster 마다
+    /// `resolveGrapheme` 을 불러 `CFString` · `CFDictionary` · `CFAttributedString` · `CTLine`
+    /// 을 매번 새로 만들었는데, 그 **고정 비용이 지배적**이라 한 줄을 묶으면 실측으로
+    /// 3.1~8.3 배 싸다 (#399 본문). `render` 의 92 % 가 이 경로다.
+    ///
+    /// 반환은 **채운 cluster 수**다. `out` 은 `clusters` 와 같은 순서로 채워지고, 0 이면
+    /// 호출자가 기존 개별 경로로 떨어진다 — 렌더가 틀리느니 느린 게 낫다.
+    ///
+    /// **매핑**: cluster 를 구분자 없이 이어붙여도 grapheme break 경계가 유지된다 (실측:
+    /// run 1 개 · 글리프가 cluster 당 정확히 1 개 · 항목 시작 위치에 정렬). `CTRunGetStringIndices`
+    /// 가 각 글리프의 원본 UTF-16 위치를 주므로, 그 위치를 cluster 번호로 바꾸는 역맵
+    /// (`u16_to_cluster`) 하나로 배분이 끝난다. cluster 길이가 제각각이라 나눗셈은 못 쓴다.
+    ///
+    /// **폰트 소유권**은 기존과 같다 (`owned = true`) — run 폰트를 cluster 마다 retain 하고
+    /// 호출자가 각각 release 한다. 그래야 셀 루프의 해제 흐름이 안 바뀐다.
+    pub fn resolveGraphemeRun(
+        self: *CoreTextFontContext,
+        clusters: []const []const u21,
+        out: []GlyphResult,
+    ) usize {
+        const t0 = perf.now();
+        const n = self.resolveGraphemeRunInner(clusters, out);
+        perf.addTimed(&perf.shape, t0);
+        // miss 는 **런 단위**로 센다 — 개별 경로로 떨어진 런의 수다.
+        if (n == 0) perf.incExtra(&perf.shape);
+        return n;
+    }
+
+    fn resolveGraphemeRunInner(
+        self: *CoreTextFontContext,
+        clusters: []const []const u21,
+        out: []GlyphResult,
+    ) usize {
+        if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
+        if (out.len < clusters.len) return 0;
+
+        var u16_buf: [MAX_RUN_U16]u16 = undefined;
+        // UTF-16 위치 → cluster 번호. 이어붙인 뒤에는 길이 정보가 사라지므로 여기에 남긴다.
+        var u16_to_cluster: [MAX_RUN_U16]u8 = undefined;
+        var u16_len: usize = 0;
+
+        for (clusters, 0..) |cps, ci| {
+            if (cps.len == 0) return 0;
+            for (cps) |cp| {
+                if (cp <= 0xFFFF) {
+                    if (u16_len + 1 > u16_buf.len) return 0;
+                    u16_buf[u16_len] = @intCast(cp);
+                    u16_to_cluster[u16_len] = @intCast(ci);
+                    u16_len += 1;
+                } else {
+                    if (u16_len + 2 > u16_buf.len) return 0;
+                    const offset = cp - 0x10000;
+                    u16_buf[u16_len] = @intCast(0xD800 + (offset >> 10));
+                    u16_buf[u16_len + 1] = @intCast(0xDC00 + (offset & 0x3FF));
+                    u16_to_cluster[u16_len] = @intCast(ci);
+                    u16_to_cluster[u16_len + 1] = @intCast(ci);
+                    u16_len += 2;
+                }
+            }
+        }
+        if (u16_len == 0) return 0;
+
+        const cf_str = ct.CFStringCreateWithCharacters(null, &u16_buf, @intCast(u16_len)) orelse return 0;
+        defer ct.CFRelease(cf_str);
+
+        const keys = [1]?*const anyopaque{@ptrCast(ct.kCTFontAttributeName)};
+        const values = [1]?*const anyopaque{@ptrCast(self.primary_font)};
+        const attrs = ct.CFDictionaryCreate(
+            null,
+            &keys,
+            &values,
+            1,
+            @ptrCast(&ct.kCFTypeDictionaryKeyCallBacks),
+            @ptrCast(&ct.kCFTypeDictionaryValueCallBacks),
+        ) orelse return 0;
+        defer ct.CFRelease(attrs);
+
+        const attr_str = ct.CFAttributedStringCreate(null, cf_str, attrs) orelse return 0;
+        defer ct.CFRelease(attr_str);
+
+        const line = ct.CTLineCreateWithAttributedString(attr_str) orelse return 0;
+        defer ct.CFRelease(line);
+
+        // cluster 마다 **첫 글리프만** 쓴다 (개별 경로와 같은 정책). 이미 채웠는지로 판정한다.
+        var filled = [_]bool{false} ** MAX_RUN_CLUSTERS;
+        var count: usize = 0;
+
+        const runs = ct.CTLineGetGlyphRuns(line);
+        const run_count = ct.CFArrayGetCount(runs);
+        var r: ct.CFIndex = 0;
+        while (r < run_count) : (r += 1) {
+            const run_ptr = ct.CFArrayGetValueAtIndex(runs, r) orelse continue;
+            const run: ct.CTRunRef = @constCast(run_ptr);
+            const glyph_count = ct.CTRunGetGlyphCount(run);
+            if (glyph_count <= 0) continue;
+
+            // run 이 실제로 쓴 폰트 — CT 가 fallback 으로 고른 것이다. run 마다 다를 수 있어
+            // (한 줄에 emoji 와 기호가 섞이는 경우) 여기서 읽는다.
+            const run_attrs = ct.CTRunGetAttributes(run);
+            const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
+            const run_font: ct.CTFontRef = @constCast(font_val);
+
+            const n: usize = @intCast(glyph_count);
+            var glyphs_buf: [MAX_RUN_CLUSTERS * 2]ct.CGGlyph = undefined;
+            var idx_buf: [MAX_RUN_CLUSTERS * 2]ct.CFIndex = undefined;
+            // 글리프가 버퍼보다 많으면 앞부분만 본다 — 우리는 cluster 당 첫 글리프만 쓰므로
+            // 뒤쪽은 어차피 버린다. 다만 그때는 뒤 cluster 가 안 채워져 아래에서 0 으로 떨어진다.
+            const take = @min(n, glyphs_buf.len);
+
+            const glyphs: [*]const ct.CGGlyph = if (ct.CTRunGetGlyphsPtr(run)) |p| p else blk: {
+                ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &glyphs_buf);
+                break :blk &glyphs_buf;
+            };
+            const indices: [*]const ct.CFIndex = if (ct.CTRunGetStringIndicesPtr(run)) |p| p else blk: {
+                ct.CTRunGetStringIndices(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &idx_buf);
+                break :blk &idx_buf;
+            };
+
+            var g: usize = 0;
+            while (g < take) : (g += 1) {
+                const glyph = glyphs[g];
+                if (glyph == 0) continue; // .notdef — 이 cluster 는 안 채워져 아래에서 실패한다
+                const si = indices[g];
+                if (si < 0 or si >= u16_len) continue;
+                const ci = u16_to_cluster[@intCast(si)];
+                if (ci >= clusters.len or filled[ci]) continue;
+                filled[ci] = true;
+                out[ci] = .{ .font = run_font, .index = glyph, .owned = true };
+                _ = ct.CFRetain(run_font);
+                count += 1;
+            }
+        }
+
+        // **하나라도 못 채우면 통째로 포기한다.** 부분 성공을 섞으면 어느 셀이 개별 경로로
+        // 가야 하는지 호출자가 알 수 없고, 그 분기가 셀 루프를 복잡하게 만든다. 런 전체를
+        // 개별 경로로 다시 도는 비용이 그보다 싸다 (실패는 드물다).
+        if (count != clusters.len) {
+            for (0..clusters.len) |i| {
+                if (filled[i]) ct.CFRelease(out[i].font);
+            }
+            return 0;
+        }
+        return count;
+    }
+
     fn resolveGraphemeInner(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (cps.len == 0) return null;
 
