@@ -10,6 +10,7 @@ const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
+const perf = @import("../../perf.zig");
 
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
@@ -259,7 +260,22 @@ pub const CoreTextFontContext = struct {
     /// 즉시 atlas getOrInsert 호출해 글리프 라스터 후 결과 사용 안 함.
     /// `owned = false` (CT 가 관리). 실패 시 null → caller 가 base codepoint 만
     /// 으로 fallback.
+    ///
+    /// #395 — 실제 구현은 `resolveGraphemeInner` 이고 여기서는 `perf.shape` 만 얹는다.
+    /// cluster 셀마다 · 프레임마다 불리는 경로라, render 안에서 shaping 이 차지하는
+    /// 몫을 이 카운터로 가른다. `return null` 경로가 여럿이라 본체를 건드리지 않도록
+    /// wrapper 로 분리했다. Linux `resolveCluster` · Win `resolveGrapheme` 과 같은 모양.
     pub fn resolveGrapheme(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
+        const t0 = perf.now();
+        const result = self.resolveGraphemeInner(cps);
+        perf.addTimed(&perf.shape, t0);
+        // miss — CT 가 cluster 를 글리프로 못 만든 경우. caller 가 base codepoint 로
+        // fallback 한다.
+        if (result == null) perf.incExtra(&perf.shape);
+        return result;
+    }
+
+    fn resolveGraphemeInner(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (cps.len == 0) return null;
 
         // UTF-16 buffer — 각 codepoint 가 1~2 unit. 최대 16 cp 까지 지원 (긴

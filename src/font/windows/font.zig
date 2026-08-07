@@ -7,6 +7,7 @@ const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
+const perf = @import("../../perf.zig");
 
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
@@ -452,7 +453,22 @@ pub const DWriteFontContext = struct {
     /// `cps[0]` 은 base codepoint, `cps[1..]` 은 modifier (VS-16 / skin tone /
     /// ZWJ + secondary base 등). chain 순회 → system fallback 순. 첫 face 가
     /// non-zero glyph 를 만들면 그걸 반환.
+    ///
+    /// #395 — 실제 구현은 `resolveGraphemeInner` 이고 여기서는 `perf.shape` 만 얹는다.
+    /// cluster 셀마다 · 프레임마다 불리는 경로라, render 안에서 shaping 이 차지하는
+    /// 몫을 이 카운터로 가른다. `return null` 경로가 여럿이라 본체를 건드리지 않도록
+    /// wrapper 로 분리했다. Linux `resolveCluster` · mac `resolveGrapheme` 과 같은 모양.
     pub fn resolveGrapheme(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
+        const t0 = perf.now();
+        const result = self.resolveGraphemeInner(cps);
+        perf.addTimed(&perf.shape, t0);
+        // miss — chain 도 system fallback 도 못 맞춘 경우. 이 경로가 가장 비싸다
+        // (chain 전체 순회 + `MapCharacters` + `CreateFontFace`).
+        if (result == null) perf.incExtra(&perf.shape);
+        return result;
+    }
+
+    fn resolveGraphemeInner(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
         if (cps.len == 0 or self.text_analyzer == null) return null;
 
         // UTF-21 codepoint slice → UTF-16 buffer (surrogate pair 처리).

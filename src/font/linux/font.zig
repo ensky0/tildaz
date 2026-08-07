@@ -17,6 +17,7 @@ const fontconfig = @import("fontconfig.zig");
 const freetype = @import("freetype.zig");
 const harfbuzz = @import("harfbuzz.zig");
 const log = @import("../../log.zig");
+const perf = @import("../../perf.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const font_spec = @import("../spec.zig");
@@ -743,7 +744,22 @@ pub const Context = struct {
     /// 결과 내면 그 face 결과 return. 그 외 (다중 glyph 또는 0-glyph) 는 다음
     /// face 시도. 모든 face 미매치면 null — caller 가 base codepoint chain
     /// lookup (`glyph(cp)`) 으로 fallback (cluster extras 무시되지만 base 표시).
+    ///
+    /// #395 — 실제 구현은 `resolveClusterInner` 이고 여기서는 `perf.shape` 만 얹는다.
+    /// cluster 셀마다 · 프레임마다 불리는 경로라, render 안에서 shaping 이 차지하는
+    /// 몫을 이 카운터로 가른다. `return null` 경로가 여럿이라 본체를 건드리지 않도록
+    /// wrapper 로 분리했다. mac · Win 의 `resolveGrapheme` 도 같은 모양이다.
     pub fn resolveCluster(self: *Context, cps: []const u21) ?LigatureGlyph {
+        const t0 = perf.now();
+        const result = self.resolveClusterInner(cps);
+        perf.addTimed(&perf.shape, t0);
+        // miss — chain 의 어느 face 도 못 맞춘 경우. caller 가 base codepoint 로
+        // fallback 한다. Windows 는 이때 system fallback 까지 돌아 가장 비싸다.
+        if (result == null) perf.incExtra(&perf.shape);
+        return result;
+    }
+
+    fn resolveClusterInner(self: *Context, cps: []const u21) ?LigatureGlyph {
         if (cps.len == 0 or self.face_count == 0 or self.hb_api == null) return null;
 
         var shape_buf: [16]ShapedGlyph = undefined;
