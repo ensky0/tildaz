@@ -11,6 +11,7 @@ const log = @import("log.zig");
 const pwd_uri = @import("pwd_uri.zig");
 const local_hostname = @import("local_hostname.zig");
 const process_cwd = @import("process_cwd.zig");
+const instance_context = @import("instance_context.zig");
 
 /// Lock-free 링버퍼 (단일 생산자, 단일 소비자)
 const RingBuffer = struct {
@@ -797,6 +798,14 @@ pub const SessionCore = struct {
         const remaining_len = self.tabs.items.len - 1;
         const next_active = nextActiveIndexAfterClose(self.active_tab, index, remaining_len);
         const tab = self.tabs.orderedRemove(index);
+        // #397 — 측정 인스턴스는 탭을 버리기 전에 ring 에 남은 출력을 마저 파싱한다.
+        // ring 은 Tab 소유라 아래 deinit 뒤에는 사라지고, 그 시점의 perf 스냅숏
+        // (#396 의 종료 시 자동 덤프) 은 파싱하다 만 값이 된다 — macOS 실측에서
+        // `drain` 이 `readloop` 의 54 % 였다. host 의 `terminate` 구현이 셋 다 달라
+        // (macOS 는 `exit()` 직행) 종료 뒤에 기대면 platform 마다 결과가 갈리므로
+        // 공통 경로인 여기서 끝낸다. `drainOutputChunk` 은 ring 이 비면 false 라
+        // 그 자체가 종료 조건이고, producer 는 이미 죽어 EOF 다. worker 는 no-op.
+        if (instance_context.isStress()) while (Tab.drainOutputChunk(tab)) {};
         defer tab.deinit(self.allocator);
 
         if (next_active) |active| {
