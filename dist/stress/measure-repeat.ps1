@@ -176,8 +176,12 @@ foreach ($w in $Workloads) {
     $g = @($rows | Where-Object workload -eq $w)
     if ($g.Count -eq 0) { Write-Output "$w : 회차 없음 (⚠ 실패)"; continue }
     $shapeRatio = [double[]]($g | ForEach-Object { if ($_.render -gt 0) { 100.0 * $_.shape / $_.render } else { 0 } })
-    $parseShare = [double[]]($g | ForEach-Object { 100.0 * $_.parse / ($_.parse + $_.render + $_.present) })
+    # `parse 비중` 은 **기존 표마다 계산식이 달랐다** — #389 의 Linux 표는 present 를 빼고
+    # macOS 표는 넣었다 (각 표의 숫자로 역산해 확인). 어느 쪽과 견주든 되게 둘 다 찍는다.
+    $parseShare = [double[]]($g | ForEach-Object { 100.0 * $_.parse / ($_.parse + $_.render) })
+    $parseShareP = [double[]]($g | ForEach-Object { 100.0 * $_.parse / ($_.parse + $_.render + $_.present) })
     $perFrame = [double[]]($g | ForEach-Object { $_.render / $_.render_calls })
+    $perShape = [double[]]($g | ForEach-Object { if ($_.shape_calls -gt 0) { 1000.0 * $_.shape / $_.shape_calls } else { 0 } })
     $lost = @($g | Where-Object { $_.lost_bytes -ne 0 })
     Write-Output ""
     Write-Output ("--- {0} ({1} 회차) ---" -f $w, $g.Count)
@@ -185,9 +189,14 @@ foreach ($w in $Workloads) {
         $v = [double[]]($g.$k)
         Write-Output ("{0,-9} {1,10:N3}   min~max {2:N3} ~ {3:N3}" -f $k, (Trimmed $v), ($v | Measure-Object -Minimum).Minimum, ($v | Measure-Object -Maximum).Maximum)
     }
-    Write-Output ("{0,-9} {1,10:N1}   min~max {2:N1} ~ {3:N1}" -f 'shape/render%', (Trimmed $shapeRatio), ($shapeRatio | Measure-Object -Minimum).Minimum, ($shapeRatio | Measure-Object -Maximum).Maximum)
-    Write-Output ("{0,-9} {1,10:N1}   min~max {2:N1} ~ {3:N1}" -f 'parse비중%', (Trimmed $parseShare), ($parseShare | Measure-Object -Minimum).Minimum, ($parseShare | Measure-Object -Maximum).Maximum)
-    Write-Output ("{0,-9} {1,10:N2}   min~max {2:N2} ~ {3:N2}" -f '프레임당render', (Trimmed $perFrame), ($perFrame | Measure-Object -Minimum).Minimum, ($perFrame | Measure-Object -Maximum).Maximum)
+    Write-Output ("{0,-13} {1,10:N1}   min~max {2:N1} ~ {3:N1}" -f 'shape/render%', (Trimmed $shapeRatio), ($shapeRatio | Measure-Object -Minimum).Minimum, ($shapeRatio | Measure-Object -Maximum).Maximum)
+    Write-Output ("{0,-13} {1,10:N1}   min~max {2:N1} ~ {3:N1}" -f 'parse비중% (P+R)', (Trimmed $parseShare), ($parseShare | Measure-Object -Minimum).Minimum, ($parseShare | Measure-Object -Maximum).Maximum)
+    Write-Output ("{0,-13} {1,10:N1}   min~max {2:N1} ~ {3:N1}" -f 'parse비중% (+pr)', (Trimmed $parseShareP), ($parseShareP | Measure-Object -Minimum).Minimum, ($parseShareP | Measure-Object -Maximum).Maximum)
+    Write-Output ("{0,-13} {1,10:N2}   min~max {2:N2} ~ {3:N2}" -f '프레임당render ms', (Trimmed $perFrame), ($perFrame | Measure-Object -Minimum).Minimum, ($perFrame | Measure-Object -Maximum).Maximum)
+    Write-Output ("{0,-13} {1,10:N2}   min~max {2:N2} ~ {3:N2}" -f '호출당shape us', (Trimmed $perShape), ($perShape | Measure-Object -Minimum).Minimum, ($perShape | Measure-Object -Maximum).Maximum)
+    Write-Output ("shape calls {0}~{1} · miss {2}~{3}" -f `
+        ($g.shape_calls | Measure-Object -Minimum).Minimum, ($g.shape_calls | Measure-Object -Maximum).Maximum, `
+        ($g.miss | Measure-Object -Minimum).Minimum, ($g.miss | Measure-Object -Maximum).Maximum)
     Write-Output ("그린 프레임 {0}~{1} · skip {2}~{3} / onrender {4}~{5} · yields {6}~{7}" -f `
         ($g.render_calls | Measure-Object -Minimum).Minimum, ($g.render_calls | Measure-Object -Maximum).Maximum, `
         ($g.skip | Measure-Object -Minimum).Minimum, ($g.skip | Measure-Object -Maximum).Maximum, `
