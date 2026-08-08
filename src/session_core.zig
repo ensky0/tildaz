@@ -25,10 +25,12 @@ const RingBuffer = struct {
 
     const SIZE = 4 * 1024 * 1024;
 
-    fn push(self: *RingBuffer, data: []const u8) void {
+    /// **실제로 ring 에 넣은 byte 수**를 돌려준다 (#398). `closed` 면 중간에 그만두므로
+    /// `data.len` 보다 작을 수 있고, 호출자는 이 값을 세야 카운터가 사실과 맞는다.
+    fn push(self: *RingBuffer, data: []const u8) usize {
         var i: usize = 0;
         while (i < data.len) {
-            if (self.closed.load(.acquire)) return;
+            if (self.closed.load(.acquire)) return i;
             const pos = self.head.load(.monotonic);
             const t = self.tail.load(.acquire);
             const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
@@ -46,6 +48,7 @@ const RingBuffer = struct {
             self.head.store((pos + batch) % SIZE, .release);
             i += batch;
         }
+        return i;
     }
 
     fn close(self: *RingBuffer) void {
@@ -471,8 +474,19 @@ pub const Tab = struct {
     fn onPtyOutput(data: []const u8, userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
         const t0 = perf.now();
-        tab.output_ring.push(data);
-        perf.addTimedBytes(&perf.push, t0, data.len);
+        // #398 — **넣은 양**을 센다. `closed` 면 `push` 가 중간에 그만두는데 예전에는
+        // `data.len` 을 그대로 세어서, 실제로는 한 byte 도 안 들어간 것까지 계상됐다.
+        //
+        // Windows 에서 `readloop bytes - drain bytes` 가 **항상 정확히 16** 이던 것이 이것이다.
+        // `Tab.deinit` 이 (deadlock 을 피하려고) `output_ring.close()` 를 먼저 부르고
+        // `backend.deinit()` 을 뒤에 하는데, 그 사이에 ConPTY 가 **teardown 시퀀스**
+        // `ESC[?1004l` + `ESC[?9001l` (8+8 = 16 byte) 를 보낸다 — 시작 때 보내는 협상
+        // preamble `…h` 의 짝이다 (#385). read thread 가 그것을 읽어 push 하지만 이미 closed 라
+        // 즉시 반환하고, 카운터만 16 이 올라갔다. ConPTY 가 없는 Linux · macOS 는 0 이었다.
+        //
+        // 그 16 byte 는 **손실이 아니다** — 창이 닫히는 참의 모드 해제라 파싱할 것이 없다.
+        const wrote = tab.output_ring.push(data);
+        perf.addTimedBytes(&perf.push, t0, wrote);
     }
 
     fn onPtyExit(userdata: ?*anyopaque) void {

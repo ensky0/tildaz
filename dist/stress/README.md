@@ -328,10 +328,27 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 | Linux · Intel i5-1240P (64 MiB) | `zwj` **6.1~6.2 %** (5/5) · `plain` **0.9~2.5 %** (5/5) | **0** (10/10) |
 | Windows · AMD Ryzen AI 7 350 (64 MiB) | `zwj` **6.3~6.5 %** (5/5) · `plain` 2/5 에서 265 KB~1.25 MB | **16 byte** |
 
-그래서 판정은 `== 0` 이 아니라 **수십 byte 이내**예요. **Windows 만** 고친 뒤에도 정확히 16 byte 가
-남아요 (크기 · 워크로드 · 커밋 · `HOLD` 를 바꿔도 항상 16 — 원인 미확정, #397). Linux · macOS 는
-0 이라 그 16 은 ConPTY 쪽 경로로 좁혀지고, 어느 쪽이든 실제 결함은 **수백 KB~수 MB** 규모라 이
+그래서 판정은 `== 0` 이 아니라 **수십 byte 이내**예요. 실제 결함은 **수백 KB~수 MB** 규모라 이
 경계로 충분히 갈려요.
+
+**Windows 의 16 byte 는 ConPTY teardown 이에요 — 결함이 아니에요**
+([#398](https://github.com/ensky0/tildaz/issues/398) 에서 확정). 자식이 끝날 때 ConPTY 가
+`ESC[?1004l` + `ESC[?9001l` (8+8 = **16 byte**) 를 보내요. 시작할 때 보내는 협상 preamble
+`…1004h` · `…9001h` 의 짝이고 ([#385](https://github.com/ensky0/tildaz/issues/385)), **창이 닫히는
+참의 모드 해제라 파싱할 것이 없어요.** ConPTY 가 없는 Linux · macOS 가 0 인 것도 이걸로 설명돼요.
+
+그래서 **`push bytes` 를 함께 봐요.**
+
+| 지표 | 뜻 | 정상값 |
+|---|---|---|
+| `readloop bytes` | PTY 에서 **읽은** 양 | teardown 16 을 포함해요 (Windows) |
+| `push bytes` | ring 에 **넣은** 양 | — |
+| `drain bytes` | **소화한** 양 | — |
+| **`push − drain`** | 진짜 손실 | **0 이어야 해요** |
+| `readloop − drain` | 위 + teardown | Windows 는 **16**, 나머지는 0 |
+
+`push` 가 예전에는 `data.len` 을 세어서 (실제로 넣은 양이 아니라) 이 구분이 안 됐어요 — 그때는
+`push bytes == readloop bytes` 라 teardown 이 손실처럼 보였어요.
 
 ⚠️ **`TILDAZ_STRESS_HOLD_MS` 를 주면 이 검사가 통째로 무의미해져요.** 유휴 시간이 드레인할 기회를
 줘서 **고치기 전 코드도 손실이 없어 보여요** (Windows 는 `HOLD=3000` 에서 고침 전에도 16 byte 였고,
