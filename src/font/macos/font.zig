@@ -8,6 +8,7 @@ const std = @import("std");
 const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const cluster_cache = @import("../cluster_cache.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
@@ -18,6 +19,15 @@ pub const GlyphResult = struct {
     /// true 면 caller 가 CFRelease 책임. fallback font 생성 후 cache 안 할 때.
     owned: bool,
 };
+
+/// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
+///
+/// **`owned` 인 것만 놓는다.** chain 폰트는 context 가 자기 수명 동안 들고 있고 (atlas cache
+/// key 가 폰트 포인터라 안정성이 필수다), CTLine 이 fallback 으로 고른 폰트만 우리가 retain
+/// 한다 — 그 구분이 곧 `owned` 다.
+fn releaseCluster(v: GlyphResult) void {
+    if (v.owned) ct.CFRelease(v.font);
+}
 
 pub const MAX_FALLBACK_FONTS = font_constants.MAX_CHAIN;
 
@@ -60,6 +70,17 @@ pub const CoreTextFontContext = struct {
     /// (synthetic 은 만들지 않는다는 결정의 자연스러운 귀결).
     styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef,
     ligature_cache: ligature.Cache,
+    /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
+    /// platform 별이다.
+    ///
+    /// **macOS 값에는 소유권이 있다** (Linux 의 face index 와 다르고 Windows 와 같다).
+    /// `resolveGrapheme` 은 CT 가 fallback 으로 고른 폰트를 `CFRetain` 해서 돌려주고
+    /// (`owned = true`) 셀 루프가 매 프레임 `CFRelease` 한다. 캐시에 담은 폰트를 그대로
+    /// `owned = true` 로 주면 그 release 가 캐시 안의 폰트를 죽인다. 그래서 캐시가 소유권을
+    /// 가져가고 caller 에게는 `owned = false` 로 준다.
+    ///
+    /// negative 도 담는다 — CT 가 못 만든 cluster 를 안 담으면 매 프레임 `CTLine` 을 헛 만든다.
+    cluster_cache: cluster_cache.ClusterCache(GlyphResult, releaseCluster),
 
     /// #375 — 요청한 변종의 chain. `regular` 는 기존 배열을 그대로 돌려주므로
     /// 이 기능이 들어와도 평시 경로의 동작이 바뀌지 않는다.
@@ -217,6 +238,7 @@ pub const CoreTextFontContext = struct {
             .fallback_count = fallback_count,
             .styled_fonts = styled_fonts,
             .ligature_cache = ligature.Cache.init(allocator),
+            .cluster_cache = cluster_cache.ClusterCache(GlyphResult, releaseCluster).init(allocator),
         };
     }
 
@@ -226,6 +248,13 @@ pub const CoreTextFontContext = struct {
 
     pub fn deinit(self: *CoreTextFontContext) void {
         self.ligature_cache.deinit();
+        // #399 — 담아 둔 fallback 폰트들을 여기서 놓는다 (`releaseCluster`).
+        //
+        // **따로 `clear()` 를 부를 자리는 없다.** 폰트 · scale 이 바뀌면 renderer 가
+        // `CoreTextFontContext.init` 으로 Context 를 새로 만들고 옛 것을 `deinit` 한다
+        // (`renderer/macos.zig` 의 `applyScale`) — 폰트만 갈아 끼우는 경로가 없어서,
+        // Linux 의 `freeFaces` 에 해당하는 무효화 지점이 이 자리 하나다. Windows 와 같다.
+        self.cluster_cache.deinit();
         for (self.fallback_fonts[0..self.fallback_count]) |f| {
             ct.CFRelease(f);
         }
@@ -304,8 +333,10 @@ pub const CoreTextFontContext = struct {
         const t0 = perf.now();
         const n = self.resolveGraphemeRunInner(clusters, out);
         perf.addTimed(&perf.shape, t0);
-        // miss 는 **런 단위**로 센다 — 개별 경로로 떨어진 런의 수다.
-        if (n == 0) perf.incExtra(&perf.shape);
+        // **여기서 miss 를 세지 않는다.** 런이 실패하면 호출자가 그 셀들을 개별 경로로 다시
+        // 도는데, 거기서 `resolveGrapheme` 이 같은 실패를 또 센다 — 한 실패가 두 번 잡혀
+        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 61c8795). 런 실패는 정상적인
+        // fallback 이지 shaping 실패가 아니다.
         return n;
     }
 
@@ -316,6 +347,25 @@ pub const CoreTextFontContext = struct {
     ) usize {
         if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
         if (out.len < clusters.len) return 0;
+
+        // #399 (B) — shape 하기 전에 런의 cluster 를 **전부** 캐시에서 찾는다. 다 있으면
+        // `CTLine` 없이 끝난다. `zwj` 처럼 한 줄이 같은 cluster 면 첫 런 이후 shape 가 0 이다.
+        //
+        // 하나라도 없으면 (또는 캐시된 결과가 실패면) 아래 기존 경로로 간다 — 부분만 쓰고
+        // 나머지를 shape 하는 식으로 섞지 않는다. 캐시가 계속 소유하므로 `owned = false` 다.
+        var all_hit = true;
+        for (clusters, 0..) |c, i| {
+            if (self.cluster_cache.get(c)) |cached| {
+                if (cached) |v| {
+                    out[i] = v;
+                    out[i].owned = false;
+                    continue;
+                }
+            }
+            all_hit = false;
+            break;
+        }
+        if (all_hit) return clusters.len;
 
         var u16_buf: [MAX_RUN_U16]u16 = undefined;
         // UTF-16 위치 → cluster 번호. 이어붙인 뒤에는 길이 정보가 사라지므로 여기에 남긴다.
@@ -423,10 +473,55 @@ pub const CoreTextFontContext = struct {
             }
             return 0;
         }
+
+        // #399 (B) — 다음 런이 shape 를 건너뛸 수 있게 담는다.
+        //
+        // ⚠️ **Windows 와 다른 자리다.** 거기는 런 결과가 전부 chain face (`owned = false`) 라
+        // 소유권 문제가 없었지만, macOS 는 위에서 cluster 마다 `CFRetain` 했다. 그래서 담을 수
+        // 있는 것만 담고 소유권을 캐시에 넘기며 (`owned = false`), **키 상한을 넘어 못 담는
+        // cluster 는 `owned = true` 그대로 둬서** 호출자가 release 하게 한다. `put` 이 못 담는
+        // 값을 그 자리에서 해제하기 때문에 (`cluster_cache.zig:78`) 이 판정을 건너뛰면 caller 가
+        // 죽은 폰트를 쓴다.
+        for (0..clusters.len) |i| {
+            if (clusters[i].len <= cluster_cache.MAX_KEY_CPS) {
+                self.cluster_cache.put(clusters[i], out[i]);
+                out[i].owned = false;
+            }
+        }
         return count;
     }
 
+    /// #399 (B) — 캐시를 씌운 층. shape 자체는 `resolveGraphemeUncached` 가 한다.
+    ///
+    /// **소유권이 이 함수의 핵심이다.** 셀 루프는 `result.owned` 면 매 프레임 `CFRelease` 하는데,
+    /// 캐시에 담은 폰트를 `owned = true` 로 돌려주면 그 release 가 캐시 안의 폰트를 죽인다
+    /// (use-after-free). 그래서 **캐시가 소유권을 가져가고 caller 에게는 `owned = false`** 로
+    /// 준다. 해제는 `releaseCluster` 가 퇴출 · 무효화 때 한다.
+    ///
+    /// ⚠️ **담지 못하는 cluster 는 소유권을 넘기면 안 된다.** `ClusterCache.put` 은 키 상한
+    /// (`MAX_KEY_CPS` = 8) 을 넘으면 담지 않고 **그 자리에서 값을 해제**한다 (소유권을 받았다고
+    /// 보기 때문이다). 그때도 `owned = false` 로 바꿔 주면 caller 가 이미 죽은 폰트를 쓴다.
+    /// 그래서 담을 수 있는지 **먼저 판정**하고, 못 담으면 원래 소유권 그대로 돌려준다
+    /// (Windows 에서 실제로 걸린 함정이다, 07ae715).
     fn resolveGraphemeInner(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
+        if (self.cluster_cache.get(cps)) |cached| {
+            const c = cached orelse return null; // negative hit — CTLine 을 다시 헛 만들지 않는다
+            var out = c;
+            out.owned = false; // 캐시가 계속 소유한다
+            return out;
+        }
+
+        const result = self.resolveGraphemeUncached(cps);
+        if (cps.len == 0 or cps.len > cluster_cache.MAX_KEY_CPS) return result;
+
+        self.cluster_cache.put(cps, result);
+        const r = result orelse return null;
+        var out = r;
+        out.owned = false;
+        return out;
+    }
+
+    fn resolveGraphemeUncached(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (cps.len == 0) return null;
 
         // UTF-16 buffer — 각 codepoint 가 1~2 unit. 최대 16 cp 까지 지원 (긴
