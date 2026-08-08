@@ -44,9 +44,16 @@ pub const LigatureMatch = ligature.LigatureMatch;
 /// 그 반환값만으로는 "오타 · 미설치" 와 "설치돼 있는데 family 가 다름" 을 가를 수 없다. 후자는
 /// config 에 PostScript 이름 (`.SF NS Mono`) 을 적었을 때 생긴다 — 폰트는 실재하므로 띄워야 하고,
 /// 전자는 조용히 넘어가면 안 되므로 막아야 한다.
+///
+/// ⚠️ **판정하지 못하면 `true` 를 돌려준다** (fail-open). 목록 조회가 실패했을 때 `false` 를
+/// 주면 정상 폰트까지 전부 미설치로 몰려 **앱이 아예 안 뜬다.** Linux 의 `FamilyAvailability`
+/// 가 `.unknown` 을 두고 *"미설치로 오판해 Font not found 를 내지 않는다"* 고 한 것과 같은
+/// 이유다 — 판정 불가는 거절 사유가 아니다. 폰트가 정말 못 쓰는 것이면 그 뒤 로드 경로가
+/// 자기 에러로 알린다.
 fn familyIsInstalled(family: []const u8) bool {
-    const names = ct.CTFontManagerCopyAvailableFontFamilyNames() orelse return false;
+    const names = ct.CTFontManagerCopyAvailableFontFamilyNames() orelse return true;
     defer ct.CFRelease(names);
+    if (ct.CFArrayGetCount(names) <= 0) return true;
 
     var buf: [256]u8 = undefined;
     const count = ct.CFArrayGetCount(names);
