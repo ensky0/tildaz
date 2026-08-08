@@ -37,6 +37,33 @@ pub const LigatureGlyph = ligature.LigatureGlyph;
 pub const LigatureSpacer = ligature.LigatureSpacer;
 pub const LigatureMatch = ligature.LigatureMatch;
 
+/// #406 — `family` 가 시스템에 **설치된 family 이름**인지. Linux 의 `FontconfigNoMatch` 판정에
+/// 해당한다.
+///
+/// `CTFontCreateWithName` 은 없는 이름에도 실패하지 않고 시스템 기본 폰트를 돌려주기 때문에,
+/// 그 반환값만으로는 "오타 · 미설치" 와 "설치돼 있는데 family 가 다름" 을 가를 수 없다. 후자는
+/// config 에 PostScript 이름 (`.SF NS Mono`) 을 적었을 때 생긴다 — 폰트는 실재하므로 띄워야 하고,
+/// 전자는 조용히 넘어가면 안 되므로 막아야 한다.
+fn familyIsInstalled(family: []const u8) bool {
+    const names = ct.CTFontManagerCopyAvailableFontFamilyNames() orelse return false;
+    defer ct.CFRelease(names);
+
+    var buf: [256]u8 = undefined;
+    const count = ct.CFArrayGetCount(names);
+    var i: ct.CFIndex = 0;
+    while (i < count) : (i += 1) {
+        const name_ptr = ct.CFArrayGetValueAtIndex(names, i) orelse continue;
+        const name: ct.CFStringRef = @constCast(name_ptr);
+        const n = ct.CFStringGetLength(name);
+        if (n <= 0) continue;
+        var used: ct.CFIndex = 0;
+        _ = ct.CFStringGetBytes(name, ct.CFRange{ .location = 0, .length = n }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
+        if (used <= 0) continue;
+        if (std.ascii.eqlIgnoreCase(family, buf[0..@intCast(used)])) return true;
+    }
+    return false;
+}
+
 pub const CoreTextFontContext = struct {
     primary_font: ct.CTFontRef,
     font_em_size: f32,
@@ -127,10 +154,8 @@ pub const CoreTextFontContext = struct {
             const actual_family = ct.CTFontCopyFamilyName(candidate);
             const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
             if (!matched) {
-                // #405 — **무엇으로 대체됐는지 알린다.** 이 이름을 버리면 사용자는 설치된
-                // 폰트가 왜 "not found" 인지 알 수 없다. macOS 에서 흔한 원인은 config 에
-                // PostScript 이름 (`.SF NS Mono` 등) 을 적은 경우다 — 폰트는 찾아지는데
-                // family 이름이 달라 여기 걸린다.
+                // #405 — **무엇으로 대체됐는지** 알린다. 이 이름을 버리면 사용자는 설치된
+                // 폰트가 왜 "not found" 인지 알 수 없다.
                 var sub_buf: [256]u8 = undefined;
                 const sub: ?[]const u8 = blk: {
                     const n = ct.CFStringGetLength(actual_family);
@@ -141,10 +166,22 @@ pub const CoreTextFontContext = struct {
                     break :blk sub_buf[0..@intCast(used)];
                 };
                 ct.CFRelease(actual_family);
-                ct.CFRelease(candidate);
-                @import("../validate.zig").showNotFoundFatalSub(family, font_families, sub);
+
+                // #406 — **설치돼 있는데 이름만 갈린 것이면 그 폰트로 띄운다.** 시작을 막는
+                // 것은 이름이 아예 없을 때 (오타 · 미설치) 뿐이다. Linux 가
+                // `FontconfigNoMatch` 로 가르는 것과 같은 정책인데, 여기서는
+                // `CTFontCreateWithName` 이 없는 이름에도 시스템 기본을 돌려주므로 설치 목록을
+                // 직접 봐야 가를 수 있다.
+                if (!familyIsInstalled(family)) {
+                    ct.CFRelease(candidate);
+                    @import("../validate.zig").showNotFoundFatalSub(family, font_families, sub);
+                }
+                log.appendLine("font", "chain[{d}] \"{s}\" resolved to \"{s}\" (system alias) — using it", .{
+                    fallback_count, family, sub orelse "?",
+                });
+            } else {
+                ct.CFRelease(actual_family);
             }
-            ct.CFRelease(actual_family);
             fallback_fonts[fallback_count] = candidate;
             if (fallback_count == 0) {
                 font = candidate;
