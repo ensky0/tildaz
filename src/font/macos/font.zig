@@ -126,11 +126,25 @@ pub const CoreTextFontContext = struct {
             };
             const actual_family = ct.CTFontCopyFamilyName(candidate);
             const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
-            ct.CFRelease(actual_family);
             if (!matched) {
+                // #405 — **무엇으로 대체됐는지 알린다.** 이 이름을 버리면 사용자는 설치된
+                // 폰트가 왜 "not found" 인지 알 수 없다. macOS 에서 흔한 원인은 config 에
+                // PostScript 이름 (`.SF NS Mono` 등) 을 적은 경우다 — 폰트는 찾아지는데
+                // family 이름이 달라 여기 걸린다.
+                var sub_buf: [256]u8 = undefined;
+                const sub: ?[]const u8 = blk: {
+                    const n = ct.CFStringGetLength(actual_family);
+                    if (n <= 0) break :blk null;
+                    var used: ct.CFIndex = 0;
+                    _ = ct.CFStringGetBytes(actual_family, ct.CFRange{ .location = 0, .length = n }, ct.kCFStringEncodingUTF8, 0, false, &sub_buf, @intCast(sub_buf.len), &used);
+                    if (used <= 0) break :blk null;
+                    break :blk sub_buf[0..@intCast(used)];
+                };
+                ct.CFRelease(actual_family);
                 ct.CFRelease(candidate);
-                @import("../validate.zig").showNotFoundFatal(family, font_families);
+                @import("../validate.zig").showNotFoundFatalSub(family, font_families, sub);
             }
+            ct.CFRelease(actual_family);
             fallback_fonts[fallback_count] = candidate;
             if (fallback_count == 0) {
                 font = candidate;
