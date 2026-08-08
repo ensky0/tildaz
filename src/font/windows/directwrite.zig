@@ -280,7 +280,16 @@ pub const IDWriteTextAnalyzer = extern struct {
         QueryInterface: *const fn (*IDWriteTextAnalyzer, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
         AddRef: *const fn (*IDWriteTextAnalyzer) callconv(.c) u32,
         Release: *const fn (*IDWriteTextAnalyzer) callconv(.c) u32,
-        AnalyzeScript: *const anyopaque,
+        // AnalyzeScript — cluster 의 script 를 판정해 `GetGlyphs` 에 넘긴다 (#416). 이걸
+        // 안 부르고 `script = 0` 을 넘기면 script 별 OpenType feature (Arabic 의 mark ·
+        // mkmk · init/medi/fina 등) 가 적용되지 않는다.
+        AnalyzeScript: *const fn (
+            *IDWriteTextAnalyzer,
+            analysis_source: *IDWriteTextAnalysisSource,
+            text_position: UINT32,
+            text_length: UINT32,
+            analysis_sink: *IDWriteTextAnalysisSink,
+        ) callconv(.c) HRESULT,
         AnalyzeBidi: *const anyopaque,
         AnalyzeNumberSubstitution: *const anyopaque,
         AnalyzeLineBreakpoints: *const anyopaque,
@@ -331,6 +340,16 @@ pub const IDWriteTextAnalyzer = extern struct {
 
     pub fn Release(self: *IDWriteTextAnalyzer) u32 {
         return self.vtable.Release(self);
+    }
+
+    pub fn AnalyzeScript(
+        self: *IDWriteTextAnalyzer,
+        analysis_source: *IDWriteTextAnalysisSource,
+        text_position: UINT32,
+        text_length: UINT32,
+        analysis_sink: *IDWriteTextAnalysisSink,
+    ) HRESULT {
+        return self.vtable.AnalyzeScript(self, analysis_source, text_position, text_length, analysis_sink);
     }
 
     pub fn GetGlyphPlacements(
@@ -1152,6 +1171,80 @@ pub const SimpleTextAnalysisSource = extern struct {
     fn getNumberSubstitution(this: *SimpleTextAnalysisSource, _: UINT32, text_length: *UINT32, sub: *?*IUnknown) callconv(.c) HRESULT {
         text_length.* = std.math.maxInt(UINT32);
         sub.* = this.number_sub;
+        return 0; // S_OK
+    }
+};
+
+// --- IDWriteTextAnalysisSink + ScriptSink ---
+// `AnalyzeScript` 결과를 받는 쪽. `SimpleTextAnalysisSource` 와 짝이다 (#416).
+
+pub const IDWriteTextAnalysisSink = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        QueryInterface: *const fn (*IDWriteTextAnalysisSink, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteTextAnalysisSink) callconv(.c) u32,
+        Release: *const fn (*IDWriteTextAnalysisSink) callconv(.c) u32,
+        SetScriptAnalysis: *const fn (*IDWriteTextAnalysisSink, UINT32, UINT32, *const DWRITE_SCRIPT_ANALYSIS) callconv(.c) HRESULT,
+        SetLineBreakpoints: *const fn (*IDWriteTextAnalysisSink, UINT32, UINT32, *const anyopaque) callconv(.c) HRESULT,
+        SetBidiLevel: *const fn (*IDWriteTextAnalysisSink, UINT32, UINT32, u8, u8) callconv(.c) HRESULT,
+        SetNumberSubstitution: *const fn (*IDWriteTextAnalysisSink, UINT32, UINT32, ?*anyopaque) callconv(.c) HRESULT,
+    };
+};
+
+/// `AnalyzeScript` 가 돌려주는 `DWRITE_SCRIPT_ANALYSIS` 만 받아 두는 stack sink (#416).
+///
+/// **한 run 의 script 하나만 본다.** 우리는 codepoint 하나 (cluster 의 base) 를 분석하므로
+/// `SetScriptAnalysis` 가 한 번만 불린다. 여러 번 불려도 마지막 것이 남는데, 그 경우는 애초에
+/// 호출자가 여러 script 를 한 번에 넘긴 것이라 run 을 쪼개는 것이 맞다.
+pub const ScriptSink = extern struct {
+    base: IDWriteTextAnalysisSink,
+    analysis: DWRITE_SCRIPT_ANALYSIS = .{ .script = 0, .shapes = 0 },
+    /// `SetScriptAnalysis` 가 한 번이라도 불렸는지. 0 이면 분석 실패로 보고 호출자가
+    /// 기존 동작 (`script = 0`) 으로 떨어진다.
+    got: u8 = 0,
+
+    const vtable_instance = IDWriteTextAnalysisSink.VTable{
+        .QueryInterface = @ptrCast(&queryInterface),
+        .AddRef = @ptrCast(&addRef),
+        .Release = @ptrCast(&release),
+        .SetScriptAnalysis = @ptrCast(&setScriptAnalysis),
+        .SetLineBreakpoints = @ptrCast(&setLineBreakpoints),
+        .SetBidiLevel = @ptrCast(&setBidiLevel),
+        .SetNumberSubstitution = @ptrCast(&setNumberSubstitution),
+    };
+
+    pub fn create() ScriptSink {
+        return .{ .base = .{ .vtable = &vtable_instance } };
+    }
+
+    fn queryInterface(_: *ScriptSink, _: *const GUID, _: *?*anyopaque) callconv(.c) HRESULT {
+        return @as(HRESULT, @bitCast(@as(u32, 0x80004002))); // E_NOINTERFACE
+    }
+
+    fn addRef(_: *ScriptSink) callconv(.c) u32 {
+        return 1; // stack-allocated, no ref counting
+    }
+
+    fn release(_: *ScriptSink) callconv(.c) u32 {
+        return 1; // stack-allocated, no ref counting
+    }
+
+    fn setScriptAnalysis(this: *ScriptSink, _: UINT32, _: UINT32, sa: *const DWRITE_SCRIPT_ANALYSIS) callconv(.c) HRESULT {
+        this.analysis = sa.*;
+        this.got = 1;
+        return 0; // S_OK
+    }
+
+    fn setLineBreakpoints(_: *ScriptSink, _: UINT32, _: UINT32, _: *const anyopaque) callconv(.c) HRESULT {
+        return 0; // S_OK — AnalyzeScript 는 부르지 않지만 vtable slot 은 채워야 한다
+    }
+
+    fn setBidiLevel(_: *ScriptSink, _: UINT32, _: UINT32, _: u8, _: u8) callconv(.c) HRESULT {
+        return 0; // S_OK
+    }
+
+    fn setNumberSubstitution(_: *ScriptSink, _: UINT32, _: UINT32, _: ?*anyopaque) callconv(.c) HRESULT {
         return 0; // S_OK
     }
 };
