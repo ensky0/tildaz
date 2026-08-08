@@ -125,6 +125,58 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 100,000 | 100,000 | 100,000 | Scrollback buffer (lines) |
 
+### Font names
+
+Every family in `font.family` and `font.glyph_fallback` must be installed, and the name must be
+**exactly** what the system calls it. A wrong name is fatal at startup, so it is worth checking
+before editing the config.
+
+**List the installed family names:**
+
+```sh
+# Linux
+fc-list : family | tr ',' '\n' | sort -u
+
+# macOS
+system_profiler SPFontsDataType | grep "Family:" | sort -u
+```
+
+```powershell
+# Windows
+[Reflection.Assembly]::LoadWithPartialName("System.Drawing")
+(New-Object System.Drawing.Text.InstalledFontCollection).Families | Select-Object -Expand Name
+```
+
+**Then confirm the name actually resolves to that font** — this second step matters more than it
+looks:
+
+```sh
+fc-match "Noto Color Emoji"          # Linux
+#   Noto Color Emoji  → correct
+#   twemoji.ttf       → this name cannot be used, see below
+```
+
+#### "Font not found" when the font *is* installed
+
+On Linux and macOS a font can be installed and still be unusable under the name you typed, because
+the system resolves that name to a **different** font. TildaZ rejects that case on purpose — silently
+drawing a different font than you asked for is worse — and the error dialog names the substitute:
+
+```
+Font not found: "Noto Color Emoji"
+...
+This family IS installed, but fontconfig resolves it to "Twemoji".
+A font package may have installed a system-wide alias rule.
+  check:  fc-match "Noto Color Emoji"
+  rules:  /etc/fonts/conf.d/
+```
+
+| Platform | Why it happens | Fix |
+|---|---|---|
+| **Linux** | An emoji font package (`ttf-twemoji`, `ttf-joypixels`, …) installs a system-wide fontconfig rule that claims emoji names. The rule file usually lives in `/etc/fonts/conf.d/` | Use the substitute's name instead, or disable the rule: `sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f` |
+| **macOS** | The name given is a **PostScript name** (`.SF NS Mono`) rather than a family name, so the font is found but its family differs | Use the family name shown in Font Book, or the one named in the dialog |
+| **Windows** | Not affected — family lookup is an exact match against the system font collection | — |
+
 ### Hotkey syntax
 
 `hotkey` accepts a single key optionally combined with modifiers, joined by `+`

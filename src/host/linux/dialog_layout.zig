@@ -407,6 +407,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         font_families[0],
         &font_families,
         "/home/example/.config/tildaz/config_98.json",
+        null,
     );
 
     var takeover_buf: [512]u8 = undefined;
