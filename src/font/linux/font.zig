@@ -20,6 +20,7 @@ const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const cluster_cache = @import("../cluster_cache.zig");
 const font_spec = @import("../spec.zig");
 
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
@@ -155,6 +156,12 @@ pub const Context = struct {
     last_cluster_face: u8 = 0,
     /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
     ligature_cache: ligature.Cache,
+    /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고
+    /// Linux 값은 `LigatureGlyph` (face index + glyph index) 라 소유권이 없어 `release`
+    /// 가 `null` 이다. **Linux 에서 이게 주 레버다** — HarfBuzz 는 호출당 고정 비용이 작아
+    /// 런 배칭이 준 것이 작았고 (`zwj` -0.4 %), 남은 비용은 shape 작업량 자체라 그것을
+    /// 통째로 건너뛰는 캐시가 듣는다.
+    cluster_cache: cluster_cache.ClusterCache(LigatureGlyph, null),
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `faces` 가 담당하므로
@@ -229,6 +236,7 @@ pub const Context = struct {
             .hb_api = hb_api,
             .hb_buffer = hb_buffer,
             .ligature_cache = ligature.Cache.init(allocator),
+            .cluster_cache = cluster_cache.ClusterCache(LigatureGlyph, null).init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
             .styled_faces = .{[_]?Face{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
@@ -405,6 +413,7 @@ pub const Context = struct {
         for (&self.resolved) |*m| m.deinit();
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
         self.ligature_cache.deinit();
+        self.cluster_cache.deinit();
         if (self.hb_api) |*api| {
             if (self.hb_buffer) |b| api.buffer_destroy(b);
             api.deinit();
@@ -420,6 +429,9 @@ pub const Context = struct {
         // 들고 있으면 안 된다 (#362).
         self.resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count;
         for (&self.resolved) |*m| m.clearRetainingCapacity();
+        // #399 — cluster 캐시도 같은 이유로 비운다. face 를 버리면 담아 둔 `face_idx` ·
+        // `glyph_index` 가 다른 폰트를 가리키게 된다.
+        self.cluster_cache.clear();
 
         const hb_api_ptr: ?*const harfbuzz.Api = if (self.hb_api) |*api| api else null;
         for (&self.faces) |*slot| {
@@ -826,6 +838,25 @@ pub const Context = struct {
         // 매기는 cluster 번호가 **버퍼 안 codepoint 인덱스**다. 그래서 이 offset 표가
         // 그대로 "글리프 → 우리 cluster" 매핑이 된다 — `hb_buffer_add` 를 새로 바인딩할
         // 필요가 없다.
+        // #399 (B) — shape 하기 전에 런의 cluster 를 **전부** 캐시에서 찾는다. 다 있으면
+        // shape 없이 끝난다. `zwj` 처럼 한 줄이 같은 cluster 면 첫 런 이후 shape 가 0 이 된다.
+        //
+        // 하나라도 없으면 (또는 캐시된 결과가 실패면) 아래 기존 경로로 간다 — 부분만 쓰고
+        // 나머지를 shape 하는 식으로 섞지 않는다. 런은 한 face 로 전체를 맞추는 것이 전제라
+        // 섞으면 그 전제가 깨진다.
+        var all_hit = true;
+        for (clusters, 0..) |c, i| {
+            if (self.cluster_cache.get(c)) |cached| {
+                if (cached) |g| {
+                    out[i] = g;
+                    continue;
+                }
+            }
+            all_hit = false;
+            break;
+        }
+        if (all_hit) return clusters.len;
+
         var cps_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]u21 = undefined;
         var starts: [MAX_RUN_CLUSTERS]u32 = undefined;
         var total: usize = 0;
@@ -883,6 +914,8 @@ pub const Context = struct {
                     .x_offset = shape_buf[i].x_offset,
                     .y_offset = shape_buf[i].y_offset,
                 };
+                // 다음 런이 shape 를 건너뛸 수 있게 담는다.
+                self.cluster_cache.put(clusters[i], out[i]);
             }
             self.last_cluster_face = idx_u8;
             return clusters.len;
@@ -908,10 +941,17 @@ pub const Context = struct {
     fn resolveClusterInner(self: *Context, cps: []const u21) ?LigatureGlyph {
         if (cps.len == 0 or self.face_count == 0 or self.hb_api == null) return null;
 
+        // #399 (B) — 캐시가 shape 자체를 건너뛴다. negative 도 담기므로 (`??` 의 안쪽
+        // null) chain 이 못 맞춘 cluster 가 매 프레임 chain 을 헛돌지 않는다.
+        if (self.cluster_cache.get(cps)) |cached| return cached;
+
         // #399 — 직전에 맞은 face 를 먼저 본다 (`last_cluster_face` 주석).
         const hint = self.last_cluster_face;
         if (hint < self.face_count) {
-            if (self.tryClusterOnFace(hint, cps)) |g| return g;
+            if (self.tryClusterOnFace(hint, cps)) |g| {
+                self.cluster_cache.put(cps, g);
+                return g;
+            }
         }
 
         for (0..self.face_count) |face_idx| {
@@ -919,9 +959,12 @@ pub const Context = struct {
             if (idx_u8 == hint) continue; // 바로 위에서 이미 봤다
             if (self.tryClusterOnFace(idx_u8, cps)) |g| {
                 self.last_cluster_face = idx_u8;
+                self.cluster_cache.put(cps, g);
                 return g;
             }
         }
+        // chain 전체 실패도 담는다 — 안 담으면 매 프레임 다시 헛돈다.
+        self.cluster_cache.put(cps, null);
         return null;
     }
 
