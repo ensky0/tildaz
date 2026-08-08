@@ -644,8 +644,8 @@ wezterm · ghostty) 은 개발자 취향의 선택지라 그것만 놓고 보면
 
 `~/Library/Application Support/iTerm2/DynamicProfiles/` 에 JSON 을 놓으면 iTerm2 가 파일
 감시로 읽어서 프로파일이 생겨요. 격자 · scrollback · 실행 명령을 한 파일에 담을 수 있고
-**사용자 설정을 전혀 건드리지 않아요** — 끝나면 그 파일만 지워요 (`trap EXIT`). `wt` 가
-`settings.json` 을 통째로 백업·복원해야 하는 것과 대비되는 자리예요 (아래 Windows 절).
+**사용자 설정을 전혀 건드리지 않아요** — 끝나면 그 파일만 지워요 (`trap EXIT`). `wt` 의 JSON
+fragment 도 같은 구조예요 (아래 Windows 절).
 
 다른 길은 전부 막혔어요 (실측):
 
@@ -1011,29 +1011,40 @@ macOS · Linux 는 `wezterm` 을 그대로 쓰되 `--always-new-process` 는 똑
 | wezterm | `--config scrollback_lines=N` |
 | kitty | `-o scrollback_lines=N` |
 | ghostty | 임시 config 의 `scrollback-limit = N` |
-| **wt** | **CLI 로 못 줘요** — profile 설정이라 `settings.json` 뿐이에요. 스크립트가 아래 절차로 처리해요 |
+| **wt** | **CLI 로 못 줘요** — profile 설정이에요. 스크립트가 **JSON fragment** 로 측정용 프로필을 더해서 거기에 담아요 (아래) |
 | **conhost** | **불가** — `mode con: lines` 가 창=버퍼예요. **이 대상만 조건이 달라요** (스크립트가 매 실행에 경고해요) |
 
-**wt 는 스크립트가 설정 파일을 잠시 교체해요.**
+**wt 는 JSON fragment 로 프로필을 더해요 — 사용자 `settings.json` 을 교체하지 않아요.**
 
-1. 원본을 `<settings>.tildaz-compare-backup` 으로 **백업**
-2. 측정 전용 **최소 설정**으로 교체 (`historySize` = `--scrollback`, 프로필 하나)
-3. 끝나면 (`trap EXIT`) 백업에서 **복원**하고 백업 파일 삭제
+[JSON fragment extension](https://learn.microsoft.com/en-us/windows/terminal/json-fragment-extensions)
+은 iTerm2 의 Dynamic Profiles 와 같은 자리예요. 아래 경로에 파일을 두면 wt 가 읽어서 프로필로
+더하고, 우리는 **우리가 만든 디렉터리 하나만 지우면** 돼요.
 
-**crash 로 죽어도 복원돼요** — 백업이 남아 있으면 다음 실행이 시작할 때 먼저 복원해요 (그래서 백업을
-`WORK_DIR` 이 아니라 설정 파일 옆에 둬요). 최소 설정을 쓰는 이유는 사용자 파일을 JSON 파싱하지 않아도
-되고 (주석이 섞여 있을 수 있어요) 폰트·acrylic·스킴 같은 커스터마이즈가 측정에 안 섞이기 때문이에요.
+```
+%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\tildaz-compare\measure.json
+wt -w new --size <C,R> -p tildaz-compare <producer>
+```
 
-**이 백업·복원은 "실행 1 회당 1 벌" 이 의도예요 — 걷어내지 마세요.** 여러 워크로드를 셸 루프로 돌리면
-그만큼 반복되는데 (6 워크로드 = 백업·복원 6 회) 그게 낭비처럼 보여도 **그 반복이 안전성이에요**: 어떤
-실행이 어떻게 죽어도 그 실행이 자기 뒤를 치워요. 백업·복원을 루프 바깥으로 빼면 "중간에 죽으면 사용자
-설정이 패치된 채 남는" 창이 생겨요. 비용은 6 분 측정에 약 6 초 (1.7 %) 예요.
+사용자의 키바인딩·테마·프로필이 **그대로 유지**돼요. 측정 중 사용자 wt 창의 설정이 눈에 보이게
+달라지던 것도 없어졌어요.
 
-반복이 정말 걸리면 방향은 **`--workload a,b,c` 를 받게 하는 것**이에요 (1 회 호출 → 백업 1 회). 다만
-터미널 실행부와 리포트를 워크로드 루프 안으로 들어내는 리팩터라, 안전장치를 없애는 것과는 다른 작업이에요.
+> **예전에는 `settings.json` 을 통째로 갈아끼우고 `trap` 으로 복원했어요.** 그 구조에서는 crash 로
+> 죽으면 사용자 설정이 임시본인 채 남아서, 백업을 설정 파일 옆에 두고 **다음 실행이 복원하는**
+> 안전장치까지 필요했어요. 덮어쓰지 않으면 지킬 게 없어서 그 세 겹이 통째로 사라졌어요
+> ([#381](https://github.com/ensky0/tildaz/issues/381)).
 
-⚠️ **wt 창이 열려 있으면 그 창의 설정도 잠시 바뀌어요** (wt 가 파일 변경을 감시해 재적용해요).
-측정이 끝나면 복원되지만 눈에 보여요.
+⚠️ **`--size` 는 `-p` 보다 앞에 와야 해요.** 뒤에 두면 파서가 서브커맨드 모드로 들어가서
+`The following argument was not expected: --size` 로 죽어요 (실측). wezterm 의 `--config` 가
+`start` 앞에 와야 하는 것과 같은 종류예요.
+
+⚠️ **fragment 파일은 UTF-8 이어야 해요.** PowerShell 로 만들면 기본이 UTF-16LE 라 wt 가 못 읽어요
+(공식 문서 경고). 셸 heredoc 은 문제없어요.
+
+**fragment 를 지워도 사용자 파일에 참조 스텁이 남아요** — wt 가 fragment·dynamic 프로필을 발견하면
+`{guid, name, source}` 를 자기 파일에 적고 (WSL·Azure 프로필이 목록에 있는 것과 같은 방식) **종료할
+때** 써요. `hidden: true` 여도 남고, fragment 를 지운 뒤 다시 띄워도 정리되지 않아요. 그래서
+스크립트가 `trap` 에서 그 블록만 들어내요 — **JSON 파싱은 안 해요** (wt 설정은 주석을 허용하는
+JSONC 라 파서 왕복이 사용자 주석을 날려요). 실측으로 **원본과 해시까지 같게** 복구돼요.
 
 **conhost 를 함께 재는 이유**는 두 가지예요. 하나는 legacy GDI 렌더러라 **하한 기준선**이라서고,
 다른 하나는 **ConPTY 오버헤드를 가늠할 단서**라서예요 — Windows Terminal · alacritty · TildaZ 는
