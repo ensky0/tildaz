@@ -307,11 +307,16 @@ pub const Context = struct {
         // 판단 + skip. 이름 내부의 부분 문자열은 설치 증거가 아니다.
         // (config 명시 chain 은 boot 검증 — `familyInstalled`, 같은 판정 규칙 —
         // 을 이미 통과했으므로 여기 skip 은 face 로드 실패류만 남는다, #289 B6.)
+        // #406 — 예전에는 여기서 skip 했지만 (`error.FontconfigFallbackSubstitution`) 이제
+        // **그 폰트로 로드한다.** 대체됐다는 것은 요청한 이름이 시스템에 없다는 뜻이 아니라
+        // (그건 위 `lookup` 이 `FontconfigNoMatch` 로 걸러 낸다) 별칭 규칙이 다른 폰트를
+        // 가리키게 했다는 뜻이다. 그 폰트는 실재하므로 글자는 그려진다.
+        //
+        // 사용자가 나중에 "왜 다른 폰트로 보이지" 를 추적할 수 있도록 로그를 남긴다.
         if (!matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) {
-            log.appendLine("font", "chain[{d}] skip family={s} (fontconfig substituted to {s})", .{
+            log.appendLine("font", "chain[{d}] \"{s}\" resolved to \"{s}\" (system alias) — using it", .{
                 log_idx, family, fc_result.family,
             });
-            return error.FontconfigFallbackSubstitution;
         }
 
         // 같은 path 가 chain 안 이미 있으면 dedup. log 인덱스 = 매치된 face 의
@@ -1119,6 +1124,11 @@ test "generic family resolution keeps fontconfig substitution" {
 /// `isFontAvailable` / macOS `CTFontCopyFamilyName` 검증과 동등.
 pub const FamilyAvailability = enum {
     installed,
+    /// #406 — 폰트는 **실재하는데** fontconfig 가 다른 family 로 해석한 경우. 시작을 막지
+    /// 않고 그 폰트로 띄운다 — 사용자 의도는 대개 "이 글자를 표시하고 싶다" 이지 "반드시 이
+    /// 이름이어야 한다" 가 아니다. 이름이 아예 없는 경우 (`missing`) 와는 갈라야 한다:
+    /// 그건 오타일 수 있어 조용히 넘어가면 다른 폰트로 그려진 것을 사용자가 모른다.
+    substituted,
     missing,
     /// libfontconfig 자체를 못 열거나 lookup 인프라 실패 — 미설치로 오판해
     /// "Font not found" 를 내지 않고 loader 의 기존 에러 경로에 맡긴다.
@@ -1158,7 +1168,7 @@ pub fn familyInstalledDetail(
         return .{ .availability = .installed, .substitute = null };
     }
 
-    // substitution 이다 — 무엇으로 바뀌었는지 남긴다.
+    // substitution 이다 — 무엇으로 바뀌었는지 남긴다. #406 이후 이것은 **시작을 막지 않는다**.
     var sub: ?[]const u8 = null;
     if (substitute_buf) |buf| {
         const n = @min(buf.len, fc_result.family.len);
@@ -1167,7 +1177,7 @@ pub fn familyInstalledDetail(
             sub = buf[0..n];
         }
     }
-    return .{ .availability = .missing, .substitute = sub };
+    return .{ .availability = .substituted, .substitute = sub };
 }
 
 /// 이름만 보는 기존 형태 — 대체 폰트가 필요 없는 호출처용.
