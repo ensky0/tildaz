@@ -355,8 +355,12 @@ pub const GlyphAtlas = struct {
         const key = ClusterKey{ .font_ptr = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
-        var entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse
-            self.rasterize(face, glyph_indices, advances, offsets) orelse return null;
+        // #415 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
+        var fixed_offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
+        const placed_offsets = self.placeUnplacedMarks(face, glyph_indices, advances, offsets, &fixed_offsets);
+
+        var entry = self.rasterizeColor(face, glyph_indices, advances, placed_offsets) orelse
+            self.rasterize(face, glyph_indices, advances, placed_offsets) orelse return null;
         // cluster advance = placements 합 (DIP) × DPI scale (#299).
         if (advances.len == glyph_indices.len) {
             var sum: f32 = 0;
@@ -365,6 +369,93 @@ pub const GlyphAtlas = struct {
         }
         self.cluster_cache.put(key, entry) catch return null;
         return entry;
+    }
+
+    /// [#415](https://github.com/ensky0/tildaz/issues/415) — **shaping 이 배치를 포기한 mark 를
+    /// base 잉크 중앙에 맞춘다.**
+    ///
+    /// ```
+    /// 맞춘다  ⟺  i > 0  ∧  advance == 0  ∧  advanceOffset == 0  ∧  앞에 advance≠0 인 base 가 있다
+    /// ```
+    ///
+    /// `advance == 0` 은 combining mark 라는 뜻이고, **`advanceOffset == 0` 이 "배치를 안 했다"
+    /// 는 신호**다. 배치했다면 pen (= base 의 advance 뒤) 에서 base 위로 당기는 음수 offset 이
+    /// 와야 한다. 0 이면 mark 가 base 오른쪽 advance 자리에 그대로 남는데, combining mark 가
+    /// 거기 있는 것은 어떤 폰트에서도 옳지 않다. GPOS 는 있는데 *이 조합의 anchor 만* 없는
+    /// 폰트에서 나며, 누락된 fallback 계층을 우리가 채우는 것이다.
+    ///
+    /// **맞출 자리는 잉크 중앙이지 원점이 아니다 (실측으로 갈랐다).** mark 글리프가 어디에
+    /// 그려지도록 설계됐는지는 폰트마다 다르다.
+    ///
+    /// | 폰트 | mark 글리프 | 원점에 맞추면 |
+    /// |---|---|---|
+    /// | `Segoe UI Symbol` 의 `U+0305` | `lsb = -6.01` · `inkW = 12.01` — 원점이 곧 잉크 중앙 | 잉크 중앙이 0 — base 중앙 3.62 에서 왼쪽으로 밀린다 |
+    /// | DejaVu Sans Mono 의 `U+0308` | `lsb = +3` · `inkW = 6` — 원점이 잉크 왼쪽 | 잉크 중앙이 6 — base 중앙 6 과 일치 |
+    ///
+    /// 그래서 "원점을 맞춘다" 는 **DejaVu 에서만 우연히 맞는 규칙**이고, 폰트에 무관하게 옳은
+    /// 것은 잉크 중앙 정렬이다 — HarfBuzz 가 GPOS 없는 폰트에 적용하는 fallback mark
+    /// positioning 과 같은 규칙이다 (`hb-ot-shape-fallback` 의 `position_mark`).
+    ///
+    /// **세로는 건드리지 않는다.** mark 글리프의 세로 위치는 자기 디자인 (윗줄 / 아랫줄) 에 이미
+    /// 들어 있다. 예외는 base 가 baseline 아래로 잉크를 갖는 경우인데 (Arabic `ب` 의 아래 점),
+    /// 거기서 아래 mark 를 한 단 더 쌓는 것은 GPOS `mark` / `mkmk` 의 일이고 우리가 흉내낼 것이
+    /// 아니다 — 별도 이슈로 다룬다.
+    ///
+    /// **advance 가 0 인 글리프 위에는 맞추지 않는다.** emoji ZWJ 의 stack 디자인 (`👨‍❤️‍👨` 은
+    /// 세 글리프가 모두 같은 원점에 겹치고 마지막 것만 advance 를 가진다) 이 이 경우인데, 거기서
+    /// 잉크 중앙을 맞추면 **폰트가 의도한 겹침이 어긋난다.** 진짜 base (advance ≠ 0) 가 앞에
+    /// 있을 때만 보정한다.
+    ///
+    /// `DWRITE_GLYPH_OFFSET.advanceOffset` 은 pen 에 더해지는 값이라 (글리프 i 는
+    /// `pen_i + off_i` 에 그려진다) 넣을 값이 `원하는 원점 − pen_i` 다.
+    ///
+    /// placements 가 없거나 metric 을 못 읽으면 입력을 그대로 돌려준다.
+    fn placeUnplacedMarks(
+        self: *GlyphAtlas,
+        face: *dw.IDWriteFontFace,
+        glyph_indices: []const u16,
+        advances: []const dw.FLOAT,
+        offsets: []const dw.DWRITE_GLYPH_OFFSET,
+        out: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
+    ) []const dw.DWRITE_GLYPH_OFFSET {
+        const count = glyph_indices.len;
+        if (advances.len != count or offsets.len != count or count > MAX_CLUSTER_GLYPHS) return offsets;
+
+        // 보정 대상이 하나도 없으면 metric 을 읽지 않는다 (흔한 경우 — emoji · 배치된 mark).
+        var needs_fix = false;
+        for (1..count) |i| {
+            if (advances[i] == 0 and offsets[i].advanceOffset == 0) needs_fix = true;
+        }
+        if (!needs_fix) return offsets;
+
+        var fm: dw.DWRITE_FONT_METRICS = undefined;
+        face.GetMetrics(&fm);
+        if (fm.designUnitsPerEm == 0) return offsets;
+        const to_dip = self.font_em_size / @as(f32, @floatFromInt(fm.designUnitsPerEm));
+
+        var indices: [MAX_CLUSTER_GLYPHS]dw.UINT16 = undefined;
+        for (glyph_indices, 0..) |gi, i| indices[i] = gi;
+        var gm: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_METRICS = undefined;
+        if (face.GetDesignGlyphMetrics(&indices, @intCast(count), &gm, 0) < 0) return offsets;
+
+        @memcpy(out[0..count], offsets);
+
+        var pen: f32 = 0;
+        var base_center: ?f32 = null; // 직전 base (advance ≠ 0) 잉크의 가로 중앙
+        for (0..count) |i| {
+            const lsb = @as(f32, @floatFromInt(gm[i].leftSideBearing)) * to_dip;
+            const rsb = @as(f32, @floatFromInt(gm[i].rightSideBearing)) * to_dip;
+            const design_adv = @as(f32, @floatFromInt(gm[i].advanceWidth)) * to_dip;
+            const ink_center = lsb + (design_adv - lsb - rsb) / 2; // 자기 원점 기준
+
+            if (i > 0 and advances[i] == 0 and offsets[i].advanceOffset == 0) {
+                if (base_center) |bc| out[i].advanceOffset = (bc - ink_center) - pen;
+            } else if (advances[i] != 0) {
+                base_center = pen + offsets[i].advanceOffset + ink_center;
+            }
+            pen += advances[i];
+        }
+        return out[0..count];
     }
 
     /// 탭바 컨트롤 아이콘 (`< > × +`) 을 `tab_icons` 로 rasterize 해 atlas 에
