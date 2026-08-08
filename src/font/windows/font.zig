@@ -567,43 +567,86 @@ pub const DWriteFontContext = struct {
             }
         }
 
-        // 2. system fallback — base codepoint 로 face 찾고 그 face 로 cluster shape.
-        if (self.font_fallback) |fallback| {
-            var source = dw.SimpleTextAnalysisSource.create(&u16_buf, u16_len, self.number_sub);
-            var mapped_length: dw.UINT32 = 0;
-            var mapped_font: ?*dw.IDWriteFont = null;
-            var scale: dw.FLOAT = 1.0;
-            const family_ptr: ?[*:0]const WCHAR = @ptrCast(&self.primary_family_name);
-            if (fallback.MapCharacters(
-                @ptrCast(&source),
-                0,
-                u16_len,
-                self.font_collection,
-                family_ptr,
-                dw.DWRITE_FONT_WEIGHT_NORMAL,
-                dw.DWRITE_FONT_STYLE_NORMAL,
-                dw.DWRITE_FONT_STRETCH_NORMAL,
-                &mapped_length,
-                &mapped_font,
-                &scale,
-            ) >= 0) {
-                if (mapped_font) |mf| {
-                    defer _ = mf.vtable.Release(mf);
-                    var face_ptr: ?*dw.IDWriteFontFace = null;
-                    if (mf.CreateFontFace(&face_ptr) >= 0) {
-                        if (face_ptr) |face| {
-                            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, sa, &indices_buf, &advances_buf, &offsets_buf);
-                            if (cnt > 0) {
-                                return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = true };
-                            }
-                            _ = face.vtable.Release(face);
-                        }
-                    }
-                }
+        // 2. system fallback — OS 폰트 매칭에 물어 face 를 얻고 그 face 로 cluster 를 shape.
+        //
+        // **두 번 물어본다 (#418).** `MapCharacters` 의 `baseFamilyName` 은 *"이 family 에 어울리게
+        // fallback 을 골라라"* 는 힌트인데, 그걸 주면 DirectWrite 가 **primary 서체를 지키려고
+        // cluster 를 쪼갠다** — `k` + `U+0336` (긴 취소선) 에서 `mapped_length = 1` 로 base 만
+        // 매핑하고 mark 는 포기해서, 그 face 로 shape 하면 `.notdef` 가 나와 실패했다. 결과는
+        // **mark 가 조용히 사라진 화면**이었다 (`k̶` 가 `k` 로 보인다 — base 만 그려지니 사용자는
+        // 입력이 무시된 것을 알 수 없다).
+        //
+        // `baseFamilyName = null` 로 물으면 힌트가 없으니 **cluster 전체를 덮는 폰트**를 찾아
+        // 준다 (실측: `mapped_length = 2` · 두 글리프 모두 유효). 그래서 힌트를 준 시도를 먼저 하고
+        // (서체 일관성이 그쪽이 낫다) 실패하면 힌트 없이 다시 묻는다.
+        //
+        // **폰트 이름을 코드에 박지 않는 것이 핵심이다** — OS 마다 설치 폰트가 다르고 우리는 폰트를
+        // 배포하지 않는다. 같은 해법이 세 platform 에 적용된다: Linux 는 fontconfig charset 매치
+        // (`system_fallback`), macOS 는 `CTFontCreateForString` 이 이 역할이다.
+        //
+        // cluster **중간 (mark) 위치**에서 `MapCharacters` 를 부르는 방법도 시도했는데
+        // `E_INVALIDARG` 다 — combining mark 는 run 의 시작이 될 수 없다.
+        //
+        // 비용은 miss 경로에만 붙는다. chain 이 전부 실패한 cluster 만 여기 오고, 성공 · 실패
+        // 모두 `cluster_cache` 에 담기므로 (negative 도 담는다) cluster 종류당 한 번이다.
+        if (self.font_fallback != null) {
+            const primary: ?[*:0]const WCHAR = @ptrCast(&self.primary_family_name);
+            const hints = [2]?[*:0]const WCHAR{ primary, null };
+            for (hints) |hint| {
+                if (self.shapeViaSystemFallback(&u16_buf, u16_len, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| return r;
             }
         }
 
         return null;
+    }
+
+    /// `MapCharacters` 로 face 를 얻어 **cluster 전체**를 shape 해 본다 (#418).
+    /// `base_family` 는 fallback 선택 힌트다 — `null` 이면 힌트 없이 고르게 둔다.
+    fn shapeViaSystemFallback(
+        self: *DWriteFontContext,
+        u16_buf: *const [32]WCHAR,
+        u16_len: dw.UINT32,
+        base_family: ?[*:0]const WCHAR,
+        sa: dw.DWRITE_SCRIPT_ANALYSIS,
+        indices_buf: *[MAX_CLUSTER_GLYPHS]u16,
+        advances_buf: *[MAX_CLUSTER_GLYPHS]dw.FLOAT,
+        offsets_buf: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
+    ) ?ClusterResult {
+        const fallback = self.font_fallback orelse return null;
+
+        var source = dw.SimpleTextAnalysisSource.create(u16_buf, u16_len, self.number_sub);
+        var mapped_length: dw.UINT32 = 0;
+        var mapped_font: ?*dw.IDWriteFont = null;
+        var scale: dw.FLOAT = 1.0;
+        if (fallback.MapCharacters(
+            @ptrCast(&source),
+            0,
+            u16_len,
+            self.font_collection,
+            base_family,
+            dw.DWRITE_FONT_WEIGHT_NORMAL,
+            dw.DWRITE_FONT_STYLE_NORMAL,
+            dw.DWRITE_FONT_STRETCH_NORMAL,
+            &mapped_length,
+            &mapped_font,
+            &scale,
+        ) < 0) return null;
+
+        const mf = mapped_font orelse return null;
+        defer _ = mf.vtable.Release(mf);
+
+        var face_ptr: ?*dw.IDWriteFontFace = null;
+        if (mf.CreateFontFace(&face_ptr) < 0) return null;
+        const face = face_ptr orelse return null;
+
+        // `mapped_length` 를 믿지 않는다 — shape 은 cluster **전체**로 하고 `.notdef` 판정에
+        // 맡긴다. 일부만 매핑된 face 는 거기서 걸러진다.
+        const cnt = self.shapeOnFaceMulti(face, u16_buf, u16_len, sa, indices_buf, advances_buf, offsets_buf);
+        if (cnt == 0) {
+            _ = face.vtable.Release(face);
+            return null;
+        }
+        return .{ .face = face, .indices = indices_buf.*, .advances = advances_buf.*, .offsets = offsets_buf.*, .count = cnt, .owned = true };
     }
 
     /// 런 배칭 상한 ([#399](https://github.com/ensky0/tildaz/issues/399)). 넘으면 호출자가
