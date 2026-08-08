@@ -548,7 +548,15 @@ pub const DWRITE_NO_PALETTE_INDEX: UINT16 = 0xFFFF;
 
 /// `TranslateColorGlyphRun` 이 *컬러 아닌* 글리프 run 에 대해 반환하는 HRESULT.
 /// caller 는 이 코드면 fall-through 해서 일반 alpha rasterize.
-pub const DWRITE_E_NOCOLOR: HRESULT = @bitCast(@as(u32, 0x88985003));
+///
+/// `dwrite.h` 의 `DWRITE_E_NOCOLOR` 는 **`0x8898500C`** 다. 예전 값 `0x88985003` 은
+/// `DWRITE_E_FILENOTFOUND` 라 완전히 다른 오류였다 — 이 상수를 쓰는 코드가 없어서
+/// (주석에서만 언급) 동작에는 영향이 없었지만 쓰는 순간 조용히 틀린다 (#401 에서 실측 확인:
+/// Cascadia Code 의 mono run 에 `TranslateColorGlyphRun` 이 `0x8898500C` 를 돌려줬다).
+///
+/// `desiredGlyphImageFormats` 에 `TRUETYPE` · `CFF` 를 함께 줘도 **컬러 테이블이 아예 없는
+/// 폰트면 그냥 이 코드가 온다** — outline layer 로 풀어 주지 않는다.
+pub const DWRITE_E_NOCOLOR: HRESULT = @bitCast(@as(u32, 0x8898500C));
 
 // `DWRITE_GLYPH_IMAGE_FORMATS` (dcommon.h) bitmask — Factory4.TranslateColorGlyphRun
 // 의 desiredGlyphImageFormats 인자 + DWRITE_COLOR_GLYPH_RUN1.glyphImageFormat.

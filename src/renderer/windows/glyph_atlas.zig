@@ -3,7 +3,9 @@
 // + `BIND_RENDER_TARGET`):
 //   - Mono / ClearType: `DWRITE_TEXTURE_CLEARTYPE_3x1` 3 bytes/pixel (subpixel
 //     R/G/B alpha) + `UpdateSubresource`. Atlas RGB = subpixel masks, A = 0xFF.
-//     Shader applies fg color via dual-source ClearType blend.
+//     Shader applies fg color via dual-source ClearType blend. **cluster 도 여기로
+//     온다 (#401)** — 결합 기호처럼 컬러 테이블 없는 폰트의 multi-glyph cluster 는
+//     `CreateGlyphRunAnalysis(glyphCount=N)` 이 한 비트맵으로 합성한다.
 //   - Color emoji (#134/#136/#137): atlas 자체에 D2D RT 만들어 (atlas init 시
 //     1번, `IDXGISurface` QI → `CreateDxgiSurfaceRenderTarget`) layer 별
 //     `DrawGlyphRun` (GRAYSCALE antialias + custom rendering params 일치). 매
@@ -15,6 +17,7 @@
 
 const std = @import("std");
 const dw = @import("../../font/windows/directwrite.zig");
+const dwrite_font = @import("../../font/windows/font.zig");
 const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
 const tab_icons = @import("../../tab_icons.zig");
@@ -22,16 +25,27 @@ const atlas_common = @import("../glyph_atlas_common.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
+/// cluster 하나가 가질 수 있는 글리프 수 — shaping 쪽 상한과 같은 값을 쓴다.
+const MAX_CLUSTER_GLYPHS = dwrite_font.MAX_CLUSTER_GLYPHS;
+
 // #282 G5 — AtlasEntry / GlyphKey / packing 은 macOS atlas 와 공통(라인 동일).
 pub const AtlasEntry = atlas_common.AtlasEntry;
 const GlyphKey = atlas_common.GlyphKey;
 
-/// Multi-glyph cluster (#139) cache key — glyph_indices hash 만. face_ptr 은
-/// system fallback (MapCharacters + CreateFontFace) 마다 새 instance 라 매번
-/// 다름 → key 에 넣으면 항상 cache miss. 같은 cluster 의 glyph indices 가 같은
-/// 시퀀스면 같은 visual 이라 face 무관하게 cache 가능. (collision 위험은 FNV-1a
-/// + multi-glyph hash 로 사실상 무시 가능.)
+/// Multi-glyph cluster (#139) cache key.
+///
+/// **face 를 함께 본다 (#401).** 예전에는 `indices_hash` 만 썼고, 근거는 *"system
+/// fallback 의 face 는 매번 새 instance 라 key 에 넣으면 항상 miss"* + *"같은 glyph
+/// index 시퀀스면 같은 그림"* 이었다. 앞의 것은 지금도 사실이 아니고 (아래), **뒤의 것이
+/// 틀렸다** — glyph index 는 폰트 안에서만 의미가 있어서 `Cascadia Code` 의 3054 번과
+/// `Segoe UI Symbol` 의 3054 번은 전혀 다른 글리프다. cluster 경로에 컬러 emoji 만 들어오던
+/// 동안에는 face 가 사실상 `Segoe UI Emoji` 하나라 드러나지 않았지만, 결합 기호까지 이
+/// 경로를 타면서 mono face 여럿이 같은 캐시를 공유하게 됐다.
+///
+/// miss 걱정도 없다 — `resolveGrapheme` 의 cluster 캐시가 face 를 **소유한 채 재사용**하므로
+/// (`releaseCluster` 는 퇴출 시에만 부른다) 같은 cluster 에 대해 포인터가 안정적이다.
 const ClusterKey = struct {
+    font_ptr: usize,
     indices_hash: u64,
 };
 
@@ -304,7 +318,7 @@ pub const GlyphAtlas = struct {
         const empty_advances = [_]dw.FLOAT{};
         const empty_offsets = [_]dw.DWRITE_GLYPH_OFFSET{};
         var entry = self.rasterizeColor(face, &single_indices, &empty_advances, &empty_offsets) orelse
-            self.rasterize(face, glyph_index) orelse return null;
+            self.rasterize(face, &single_indices, &empty_advances, &empty_offsets) orelse return null;
         entry.advance = self.designAdvancePx(face, glyph_index);
         self.cache.put(key, entry) catch return null;
         return entry;
@@ -323,20 +337,26 @@ pub const GlyphAtlas = struct {
             @as(f32, @floatFromInt(fm.designUnitsPerEm)) * self.font_em_size * self.pixels_per_dip;
     }
 
-    /// Multi-glyph cluster (#139, ZWJ family 등) atlas entry. GSUB 합성 안 된
-    /// cluster 의 모든 glyph 를 한 번에 D2D `DrawGlyphRun(glyphCount=N)` 으로
-    /// 라스터, single composite atlas entry 로 cache. count=1 이면 single
-    /// getOrInsert 로 redirect.
+    /// Multi-glyph cluster (#139, ZWJ family · 결합 기호 등) atlas entry. GSUB 합성 안 된
+    /// cluster 의 모든 glyph 를 한 번에 라스터, single composite atlas entry 로 cache.
+    /// count=1 이면 single getOrInsert 로 redirect.
+    ///
+    /// **컬러 · mono 를 모두 시도한다 (#401).** 예전에는 컬러 경로 하나뿐이었고 근거는
+    /// *"글자 cluster 는 single glyph 가 일반"* 이었는데, **결합 기호가 그 가정을 깬다** —
+    /// `a`+`U+0305` 는 어느 폰트에서도 base + mark 2 글리프이고 그 폰트는 mono 다. 컬러
+    /// 테이블이 없는 폰트에 `TranslateColorGlyphRun` 은 `DWRITE_E_NOCOLOR` 를 내므로
+    /// 컬러 경로가 null 을 돌려주고, 그러면 `emitClusterInstance` 가 **셀을 통째로 건너뛰어
+    /// base 까지 사라졌다.** 단일 글리프 경로 (`getOrInsert`) 에는 원래 있던 폴백을 여기에도 둔다.
     pub fn getOrInsertCluster(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_indices: []const u16, advances: []const dw.FLOAT, offsets: []const dw.DWRITE_GLYPH_OFFSET) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
         if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
+        if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
-        const key = ClusterKey{ .indices_hash = hashIndices(glyph_indices) };
+        const key = ClusterKey{ .font_ptr = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
-        // Color path 만 multi-glyph 지원 — mono ClearType 의 cluster 는 의미 작음
-        // (글자 cluster 는 single glyph 가 일반).
-        var entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse return null;
+        var entry = self.rasterizeColor(face, glyph_indices, advances, offsets) orelse
+            self.rasterize(face, glyph_indices, advances, offsets) orelse return null;
         // cluster advance = placements 합 (DIP) × DPI scale (#299).
         if (advances.len == glyph_indices.len) {
             var sum: f32 = 0;
@@ -414,17 +434,50 @@ pub const GlyphAtlas = struct {
         self.is_full = false;
     }
 
-    fn rasterize(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        // Create DWRITE_GLYPH_RUN for single glyph
-        const indices = [1]dw.UINT16{glyph_index};
-        const advances = [1]dw.FLOAT{0}; // not used for analysis
+    /// Mono / ClearType 라스터. **글리프 여러 개를 한 비트맵에 합성한다 (#401)** — 결합 기호처럼
+    /// 컬러 테이블이 없는 폰트의 cluster 가 여기로 온다.
+    ///
+    /// 합성을 우리가 하지 않는다는 점이 Linux · macOS 판과 다르다. `CreateGlyphRunAnalysis` 는
+    /// 원래 `glyphCount` · `glyphAdvances` · `glyphOffsets` 를 받는 multi-glyph API 라, 지금까지
+    /// `glyphCount = 1` · `glyphOffsets = null` 로 **좁게 부르고 있었을 뿐**이다. FreeType 이
+    /// 글리프 하나씩만 굽기 때문에 비트맵을 직접 합성해야 했던 Linux
+    /// ([`98eefc8`](https://github.com/ensky0/tildaz/commit/98eefc8)) 와 그 점이 갈린다.
+    ///
+    /// **스케일 규약이 `rasterizeColor` 와 다르다.** 저쪽은 atlas D2D RT 가 `SetUnitMode(PIXELS)`
+    /// 라 `em_px = font_em_size × pixels_per_dip` 을 쓰고 placements 도 같은 비율로 곱한다 (#149).
+    /// 여기는 `fontEmSize` 를 DIP 로 주고 `CreateGlyphRunAnalysis` 의 두 번째 인자로
+    /// `pixels_per_dip` 을 넘겨 DWrite 가 변환하게 하므로, **advances · offsets 도 DIP 그대로**
+    /// 넘긴다. 여기서 곱하면 고DPI 에서 cluster 간격이 어긋난다.
+    ///
+    /// `advances` · `offsets` 의 길이가 `glyph_indices` 와 다르면 placements 없이 그린다
+    /// (단일 글리프 경로가 그렇게 부른다 — 동작은 예전과 같다).
+    fn rasterize(
+        self: *GlyphAtlas,
+        face: *dw.IDWriteFontFace,
+        glyph_indices: []const u16,
+        in_advances: []const dw.FLOAT,
+        in_offsets: []const dw.DWRITE_GLYPH_OFFSET,
+    ) ?AtlasEntry {
+        if (glyph_indices.len == 0 or glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
+
+        var indices: [MAX_CLUSTER_GLYPHS]dw.UINT16 = undefined;
+        var advances: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
+        var offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
+        const has_placements = in_advances.len == glyph_indices.len and in_offsets.len == glyph_indices.len;
+        for (glyph_indices, 0..) |gi, i| {
+            indices[i] = gi;
+            // placements 가 없으면 advance 0 — 단일 글리프는 pen 이 움직일 일이 없다.
+            advances[i] = if (has_placements) in_advances[i] else 0;
+            offsets[i] = if (has_placements) in_offsets[i] else .{ .advanceOffset = 0, .ascenderOffset = 0 };
+        }
+
         const glyph_run = dw.DWRITE_GLYPH_RUN{
             .fontFace = face,
             .fontEmSize = self.font_em_size,
-            .glyphCount = 1,
+            .glyphCount = @intCast(glyph_indices.len),
             .glyphIndices = &indices,
             .glyphAdvances = &advances,
-            .glyphOffsets = null,
+            .glyphOffsets = if (has_placements) &offsets else null,
             .isSideways = 0,
             .bidiLevel = 0,
         };
@@ -557,15 +610,15 @@ pub const GlyphAtlas = struct {
         const atlas_dc4 = self.atlas_dc4 orelse return null;
         const brush = self.atlas_brush orelse return null;
         const factory4 = self.dw_factory4 orelse return null;
-        if (glyph_indices.len == 0 or glyph_indices.len > 16) return null;
+        if (glyph_indices.len == 0 or glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
         // multi-glyph cluster (#139) — ZWJ family 등 GSUB 가 합성 못 한 cluster 의
         // 모든 glyph 를 한 번에 D2D 에 전달. GetGlyphPlacements 로 받은 정확한
         // advances + offsets 을 사용해 emoji 가 visual family 로 결합되게 함.
         // single-glyph path 는 advances=0, offsets=null 으로 simple.
-        var indices_buf: [16]dw.UINT16 = undefined;
-        var advances_buf: [16]dw.FLOAT = undefined;
-        var offsets_buf: [16]dw.DWRITE_GLYPH_OFFSET = undefined;
+        var indices_buf: [MAX_CLUSTER_GLYPHS]dw.UINT16 = undefined;
+        var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
+        var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
         const has_placements = in_advances.len == glyph_indices.len and in_offsets.len == glyph_indices.len;
         // GetGlyphPlacements (`dwrite_font.zig:509`) 가 em=`font_em_size` (DIP)
         // 기준으로 advances/offsets 을 반환. atlas D2D RT 는 PIXEL mode 라
