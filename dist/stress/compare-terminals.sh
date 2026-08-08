@@ -977,6 +977,10 @@ place_window() {
 CAPTURE_LOG="$WORK_DIR/capture-outcomes"
 : > "$CAPTURE_LOG"
 
+# 이보다 작은 PNG 은 **사실상 빈 이미지**로 본다 (위 `_` 표시 주석). 실측 근거는 alacritty 의
+# 550 byte 단색 캡처이고, 같은 실행의 정상 캡처는 65~134 KB 였다 (#381).
+CAPTURE_MIN_BYTES=2048
+
 # 그 파일에서 한 종류의 회차 수를 센다. `grep -c` 는 0 건일 때 종료 코드가 1 이라 `set -e`
 # 아래서 다루기 번거로워 awk 를 쓴다.
 capture_count() {
@@ -1049,15 +1053,30 @@ run_terminal() {
                 sleep "$CAPTURE_DELAY"
                 _png="$CAPTURE_DIR/$WORKLOAD-$_name-$_run.png"
                 capture_screen "$_png" "$_name" "$_since"
-                # `@` 대상 창을 창 단위로 찍었다 (가장 좋은 결과)
+                # `@` 대상 창을 창 단위로 찍었고 **내용이 있다** (가장 좋은 결과)
+                # `_` PNG 은 생겼는데 **사실상 비어 있다** (단색) — 아래 참고
                 # `~` 창은 찾았지만 창 단위가 안 돼서 전체 화면으로 물러섰다
                 # `?` 창을 아예 못 찾았다 — 화면에 대상이 있다는 보장이 없다
                 # `!` PNG 자체가 안 생겼다
                 #
                 # **`ddagrab` 으로 찍힌 것도 `@` 다** — 창 단위라는 결과가 같아서 표시를 나누지
                 # 않는다. 어느 경로였는지는 표 아래 요약에 회차 수로 적는다.
+                #
+                # **빈 PNG 을 먼저 거른다.** `@` 는 지금까지 *"캡처 API 가 성공을 돌려줬다"* 는
+                # 뜻이었을 뿐이라, 창 단위로 찍었는데 **단색 이미지**가 나와도 성공으로 보였다
+                # (실측: alacritty 가 550 byte — 정상은 65~134 KB, #381). README 의 *"`@` 는 파일이
+                # 생겼다는 뜻이지 창이 찍혔다는 보장이 아니다"* 라는 경고가 바로 이것이고, 그
+                # 판정을 사람 눈이 아니라 스크립트가 한다.
+                #
+                # 판정은 **파일 크기**다. 단색 PNG 은 압축이 극단적으로 잘 돼 수백 byte 로 떨어지고
+                # 텍스트가 찬 터미널 화면은 그럴 수 없다. 이미지 라이브러리에 기대지 않아 세
+                # platform 이 같은 코드로 판정한다. 창을 아주 작게 (`--rows` 를 줄여) 찍으면 오탐이
+                # 날 수 있으므로 임계는 실측 (550 byte) 보다 넉넉히 잡되 정상값 (65 KB) 보다 훨씬
+                # 아래인 2 KiB 로 둔다.
                 if [ ! -s "$_png" ]; then
                     echo failed >> "$CAPTURE_LOG"; printf '!'
+                elif [ "$(wc -c < "$_png" | tr -d ' ')" -lt "$CAPTURE_MIN_BYTES" ]; then
+                    echo blank >> "$CAPTURE_LOG"; printf '_'
                 elif [ "$CAPTURE_NOWIN" = 1 ]; then
                     echo nowin >> "$CAPTURE_LOG"; printf '?'
                 elif [ "$CAPTURE_FELLBACK" = 1 ]; then
@@ -1504,9 +1523,18 @@ if [ -n "$CAPTURE_DIR" ]; then
     CAPTURE_NOWIN_TOTAL=$(capture_count nowin)
     CAPTURE_FELLBACK_TOTAL=$(capture_count fellback)
     CAPTURE_DDA_TOTAL=$(capture_count dda)
+    CAPTURE_BLANK_TOTAL=$(capture_count blank)
     echo ""
     echo "캡처: $CAPTURE_DIR"
-    echo "  @ = 대상 창을 창 단위로 찍음 · ~ = 창 단위 실패로 전체 화면 · ? = 창을 못 찾음 · ! = 실패"
+    echo "  @ = 창 단위로 찍었고 내용 있음 · _ = 찍혔지만 사실상 빈 이미지 · ~ = 창 단위 실패로"
+    echo "  전체 화면 · ? = 창을 못 찾음 · ! = 실패"
+    if [ "$CAPTURE_BLANK_TOTAL" -gt 0 ]; then
+        echo "⚠ ${CAPTURE_BLANK_TOTAL} 회차는 PNG 이 ${CAPTURE_MIN_BYTES} byte 미만이라 **사실상 비어 있어요** (_)."
+        echo "  캡처 API 는 성공을 돌려줬지만 단색이 나온 거예요 — 그 대상은 이 경로로 못 찍어요."
+        if [ "$IS_WINDOWS" = 1 ] && [ -z "$WIN_FFMPEG" ]; then
+            echo "  ffmpeg 을 깔면 ddagrab 으로 한 번 더 시도해요: winget install Gyan.FFmpeg"
+        fi
+    fi
     if [ "$CAPTURE_NOWIN_TOTAL" -gt 0 ]; then
         echo "⚠ ${CAPTURE_NOWIN_TOTAL} 회차는 대상 창을 못 찾았어요 (?). 그 회차는 창을 앞으로 올리지도"
         echo "  (0,0) 으로 옮기지도 못했으니, PNG 에 대상이 있어도 우연이에요."
