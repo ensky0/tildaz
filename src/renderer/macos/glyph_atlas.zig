@@ -85,6 +85,35 @@ pub const GlyphAtlas = struct {
         return entry;
     }
 
+    /// #401 — **cluster 가 글리프 여러 개일 때 하나의 비트맵으로 합성**한다.
+    ///
+    /// Apple Color Emoji 는 `👨‍❤️‍👨` 같은 `❤️` 조합을 글리프 2 개로 준다 (`👨‍👩‍👧` 는 1 개다).
+    /// 예전에는 첫 글리프만 그려서 `👨` 만 보였다. Windows 의 `getOrInsertCluster` 와 같은
+    /// 자리이고, 거기서 `advances` · `offsets` 를 넘기는 것이 여기서는 `positions` 다 — `CTRun`
+    /// 이 준 GPOS 적용 위치라 이대로 그려야 모양이 맞는다.
+    ///
+    /// 글리프가 하나면 기존 경로로 넘긴다 — 키가 `(font, index)` 라 캐시 적중률이 그쪽이 높다.
+    pub fn getOrInsertCluster(
+        self: *GlyphAtlas,
+        font: ct.CTFontRef,
+        glyphs: []const ct.CGGlyph,
+        positions: []const ct.CGPoint,
+    ) ?AtlasEntry {
+        if (glyphs.len == 0) return null;
+        if (glyphs.len == 1) return self.getOrInsert(font, glyphs[0]);
+
+        // 키는 글리프 인덱스들의 해시다. 같은 폰트 안에서 인덱스 조합이 같으면 결과가 같다
+        // (positions 는 그 조합에서 결정되므로 키에 안 넣는다).
+        var h = std.hash.Wyhash.init(0xC1_05_7E_47);
+        for (glyphs) |g| h.update(std.mem.asBytes(&g));
+        const key = GlyphKey{ .font_ptr = @intFromPtr(font), .index = @truncate(h.final()) };
+        if (self.cache.get(key)) |entry| return entry;
+
+        const entry = self.rasterizeCluster(font, glyphs, positions) orelse return null;
+        self.cache.put(key, entry) catch return null;
+        return entry;
+    }
+
     /// 탭바 컨트롤 아이콘 (`< > × +`) 을 `tab_icons` 로 rasterize 해 atlas 에
     /// 캐시 (#268). 폰트 글리프가 아니라 우리가 만든 알파 커버리지라 codepoint
     /// 대신 아이콘 enum 을 key 로 씀 (font=0 은 유효한 CTFontRef 아님). 커버리지
@@ -152,6 +181,125 @@ pub const GlyphAtlas = struct {
         self.dirty = true;
         self.dirty_min_y = 0;
         self.dirty_max_y = ATLAS_SIZE;
+    }
+
+    /// #401 — 여러 글리프를 `positions` 대로 한 비트맵에 그린다. `rasterize` 의 multi-glyph 판이라
+    /// 주석은 그쪽을 참고한다 (색 · smoothing · CTM scale · baseline 정렬 이유가 모두 같다).
+    ///
+    /// **다른 것은 bounding box 하나다.** 글리프마다 rect 를 받아 각자의 position 만큼 옮긴 뒤
+    /// 합집합을 낸다 — 그래야 겹쳐 쌓이는 글리프 (Apple Color Emoji 의 `❤️` 조합) 가 안 잘린다.
+    fn rasterizeCluster(
+        self: *GlyphAtlas,
+        font: ct.CTFontRef,
+        glyphs: []const ct.CGGlyph,
+        positions: []const ct.CGPoint,
+    ) ?AtlasEntry {
+        const n = glyphs.len;
+        if (n == 0 or n > 16 or positions.len < n) return null;
+
+        var rects: [16]ct.CGRect = undefined;
+        _ = ct.CTFontGetBoundingRectsForGlyphs(
+            font,
+            ct.kCTFontOrientationDefault,
+            glyphs.ptr,
+            @ptrCast(&rects),
+            @intCast(n),
+        );
+
+        // 각 글리프 rect 를 자기 position 만큼 옮겨 합집합. 여기가 단일 글리프판과 갈리는 곳이다.
+        var min_x = rects[0].origin.x + positions[0].x;
+        var min_y = rects[0].origin.y + positions[0].y;
+        var max_x = min_x + rects[0].size.width;
+        var max_y = min_y + rects[0].size.height;
+        for (1..n) |i| {
+            const rx = rects[i].origin.x + positions[i].x;
+            const ry = rects[i].origin.y + positions[i].y;
+            if (rx < min_x) min_x = rx;
+            if (ry < min_y) min_y = ry;
+            if (rx + rects[i].size.width > max_x) max_x = rx + rects[i].size.width;
+            if (ry + rects[i].size.height > max_y) max_y = ry + rects[i].size.height;
+        }
+
+        const traits = ct.CTFontGetSymbolicTraits(font);
+        const is_color = (traits & ct.kCTFontTraitColorGlyphs) != 0;
+
+        // advance 는 첫 글리프 것을 쓴다. cluster 는 셀 격자에 맞춰 그리므로 (renderer 가
+        // `glyphCenterDx` 로 가운데 정렬) 합계를 쓰면 오히려 어긋난다.
+        var adv = [1]ct.CGSize{.{ .width = 0, .height = 0 }};
+        var first = [1]ct.CGGlyph{glyphs[0]};
+        _ = ct.CTFontGetAdvancesForGlyphs(font, ct.kCTFontOrientationDefault, &first, &adv, 1);
+        const advance_px: f32 = @floatCast(adv[0].width * self.scale);
+
+        const s = self.scale;
+        const x0 = @floor(min_x * s);
+        const y0 = @floor(min_y * s);
+        const x1 = @ceil(max_x * s);
+        const y1 = @ceil(max_y * s);
+        const gw_f = x1 - x0;
+        const gh_f = y1 - y0;
+        if (gw_f <= 0 or gh_f <= 0) return null;
+
+        const gw: u32 = @intFromFloat(gw_f);
+        const gh: u32 = @intFromFloat(gh_f);
+        if (gw > 256 or gh > 256) return null; // temp_buf 한계.
+
+        const bytes_per_row = gw * 4;
+        const colorspace = ct.CGColorSpaceCreateDeviceRGB() orelse return null;
+        defer ct.CGColorSpaceRelease(colorspace);
+        const ctx = ct.CGBitmapContextCreate(
+            self.temp_buf.ptr,
+            gw,
+            gh,
+            8,
+            bytes_per_row,
+            colorspace,
+            ct.kCGImageAlphaPremultipliedFirst | ct.kCGBitmapByteOrder32Little,
+        ) orelse return null;
+        defer ct.CGContextRelease(ctx);
+
+        @memset(self.temp_buf[0 .. gw * gh * 4], 0);
+        ct.CGContextSetAllowsFontSmoothing(ctx, true);
+        ct.CGContextSetShouldSmoothFonts(ctx, true);
+        ct.CGContextSetShouldAntialias(ctx, true);
+        ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
+        ct.CGContextScaleCTM(ctx, @floatCast(s), @floatCast(s));
+
+        // 합집합 원점을 비트맵 (0,0) 에 맞추고, 각 글리프는 자기 position 을 더해 그린다.
+        // 원점 보정이 `floor(·*s)/s` 인 이유는 단일 글리프판과 같다 (#156 baseline jitter).
+        const base_x = -@floor(min_x * s) / s;
+        const base_y = -@floor(min_y * s) / s;
+        var draw_pos: [16]ct.CGPoint = undefined;
+        for (0..n) |i| {
+            draw_pos[i] = .{ .x = base_x + positions[i].x, .y = base_y + positions[i].y };
+        }
+        ct.CTFontDrawGlyphs(font, glyphs.ptr, &draw_pos, n, ctx);
+
+        const pos = self.packGlyph(gw, gh) orelse blk: {
+            self.reset();
+            break :blk self.packGlyph(gw, gh) orelse return null;
+        };
+        const atlas_x = pos[0];
+        const atlas_y = pos[1];
+        const atlas_row_bytes = ATLAS_SIZE * 4;
+        for (0..gh) |row| {
+            const src_off = row * bytes_per_row;
+            const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
+            @memcpy(self.pixels[dst_off..][0..bytes_per_row], self.temp_buf[src_off..][0..bytes_per_row]);
+        }
+        self.dirty = true;
+        if (atlas_y < self.dirty_min_y) self.dirty_min_y = atlas_y;
+        if (atlas_y + gh > self.dirty_max_y) self.dirty_max_y = atlas_y + gh;
+
+        return AtlasEntry{
+            .x = @intCast(atlas_x),
+            .y = @intCast(atlas_y),
+            .w = @intCast(gw),
+            .h = @intCast(gh),
+            .bearing_x = @intFromFloat(x0),
+            .bearing_y = @intFromFloat(y0),
+            .is_color = is_color,
+            .advance = advance_px,
+        };
     }
 
     fn rasterize(self: *GlyphAtlas, font: ct.CTFontRef, glyph_index: ct.CGGlyph) ?AtlasEntry {
