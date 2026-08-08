@@ -1094,11 +1094,36 @@ fn isGenericFamily(family: []const u8) bool {
 /// 의 skip 판정과 boot 검증 (`familyInstalled`) 이 공유하는 단일 규칙.
 /// generic family 는 substitution 이 의도이므로 항상 수용, specific family 는
 /// 반환 family/alias 중 한 항목과 대소문자 무시 exact match해야 한다.
+/// #406 — 이름 정규화. **macOS 판 (`font/macos/font.zig` 의 `normalizeFamily`) 과 같은 규칙**
+/// 이어야 두 platform 이 같은 이름을 받아 준다: 공백 · `-` · `_` 를 빼고 소문자로.
+///
+/// `DejaVuSansMono` · `dejavu sans mono` · `DejaVu-Sans-Mono` 가 모두 같아진다. 사용자가 폰트
+/// 이름을 어떤 표기로 적든 통과시키기 위한 것이다.
+fn normalizeFamily(name: []const u8, buf: []u8) []const u8 {
+    var n: usize = 0;
+    for (name) |c| {
+        if (c == ' ' or c == '-' or c == '_') continue;
+        if (n >= buf.len) break;
+        buf[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+fn normalizedEql(a: []const u8, b: []const u8) bool {
+    var buf_a: [128]u8 = undefined;
+    var buf_b: [128]u8 = undefined;
+    return std.mem.eql(u8, normalizeFamily(a, &buf_a), normalizeFamily(b, &buf_b));
+}
+
 fn matchResolvesFamily(requested: []const u8, primary_family: []const u8, additional_families: anytype) bool {
     if (isGenericFamily(requested)) return true;
-    if (std.ascii.eqlIgnoreCase(requested, primary_family)) return true;
+    // #406 — 정규화해서 본다. `DejaVuSansMono` 처럼 붙여 쓴 이름을 fontconfig 가 알아서
+    // `DejaVu Sans Mono` 로 맞춰 주는데, 예전에는 `eqlIgnoreCase` 라 그것을 **대체로 오분류**
+    // 해서 "(system alias)" 라는 사실과 다른 로그를 남겼다. macOS 판과 같은 규칙이다.
+    if (normalizedEql(requested, primary_family)) return true;
     for (additional_families) |family| {
-        if (std.ascii.eqlIgnoreCase(requested, family)) return true;
+        if (normalizedEql(requested, family)) return true;
     }
     return false;
 }
@@ -1167,6 +1192,19 @@ pub fn familyInstalledDetail(
     if (matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) {
         return .{ .availability = .installed, .substitute = null };
     }
+
+    // #406 — 여기부터가 "요청과 다른 폰트가 왔다" 인데, 두 경우가 섞여 있어서 갈라야 한다.
+    //
+    //   Noto Color Emoji -> Twemoji      : 설치돼 있는데 별칭 규칙이 가로챔 -> 띄운다
+    //   NoSuchFont12345  -> Noto Sans    : 아예 없음 -> fatal
+    //
+    // `FcFontMatch` 는 없는 이름에도 항상 무언가를 돌려주므로 (실측: 오타에도 `Noto Sans` 가
+    // 나왔다) 반환값만으로는 못 가른다. **설치 목록에 있는지**로 가른다.
+    //
+    // 목록을 못 얻으면 (`error.*`) 예전처럼 대체로 본다 — 판정 불가를 미설치로 오판해 사용자를
+    // 막지 않는다 (`.unknown` 주석과 같은 방향).
+    const listed = fontconfig.familyListed(family, normalizedEql) catch true;
+    if (!listed) return .{ .availability = .missing, .substitute = null };
 
     // substitution 이다 — 무엇으로 바뀌었는지 남긴다. #406 이후 이것은 **시작을 막지 않는다**.
     var sub: ?[]const u8 = null;
