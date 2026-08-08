@@ -177,6 +177,10 @@ pub const DWriteFontContext = struct {
     /// negative 도 담는다. chain 이 못 맞춘 cluster 를 안 담으면 매 프레임 chain 전체 +
     /// `MapCharacters` + `CreateFontFace` 를 헛도는데, **Windows 는 그 경로가 가장 비싸다.**
     cluster_cache: cluster_cache.ClusterCache(ClusterResult, releaseCluster),
+    /// #416 — base codepoint → `DWRITE_SCRIPT_ANALYSIS`. `AnalyzeScript` 를 cluster 마다
+    /// 부르면 shaping 의 hot path (#395 에서 `render` 의 91.5 %) 에 COM 왕복이 하나 더 붙으므로
+    /// 캐시한다. **폰트와 무관한 텍스트 속성**이라 face 가 키에 없다.
+    script_map: std.AutoHashMap(u21, dw.DWRITE_SCRIPT_ANALYSIS),
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -270,6 +274,7 @@ pub const DWriteFontContext = struct {
             .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
             .ligature_cache = ligature.Cache.init(alloc),
             .cluster_cache = cluster_cache.ClusterCache(ClusterResult, releaseCluster).init(alloc),
+            .script_map = std.AutoHashMap(u21, dw.DWRITE_SCRIPT_ANALYSIS).init(alloc),
         };
 
         // Store primary family name for MapCharacters fallback (system 의 fallback
@@ -349,6 +354,7 @@ pub const DWriteFontContext = struct {
         }
         self.glyph_map.deinit();
         self.ligature_cache.deinit();
+        self.script_map.deinit();
         // #399 — 담아 둔 `MapCharacters` face 들을 여기서 놓는다 (`releaseCluster`).
         //
         // **따로 `clear()` 를 부를 자리는 없다.** 폰트 · DPI 가 바뀌면 renderer 가
@@ -549,10 +555,13 @@ pub const DWriteFontContext = struct {
         var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
         var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
 
+        // #416 — cluster 의 script. base codepoint 로 판정하고 캐시한다.
+        const sa = self.scriptFor(cps[0]);
+
         // 1. user chain 순회 — face 별로 cluster shape 시도.
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
-            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
+            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, sa, &indices_buf, &advances_buf, &offsets_buf);
             if (cnt > 0) {
                 return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false };
             }
@@ -583,7 +592,7 @@ pub const DWriteFontContext = struct {
                     var face_ptr: ?*dw.IDWriteFontFace = null;
                     if (mf.CreateFontFace(&face_ptr) >= 0) {
                         if (face_ptr) |face| {
-                            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
+                            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, sa, &indices_buf, &advances_buf, &offsets_buf);
                             if (cnt > 0) {
                                 return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = true };
                             }
@@ -700,9 +709,20 @@ pub const DWriteFontContext = struct {
         if (u16_len == 0) return 0;
         cl_start[clusters.len] = @intCast(u16_len);
 
+        // #416 — 런 전체를 **하나의 script 로** shape 한다. 런은 원래 "한 face 로 전체를 맞추는
+        // 것" 이 전제인데 script 도 같은 성격이다 — `GetGlyphs` 가 script 를 런 단위로 받으므로
+        // 섞인 런에 하나를 골라 주면 나머지 cluster 가 틀린 feature 로 shape 된다. 그래서
+        // **다르면 0 을 돌려 개별 경로로 보낸다** (거기서는 cluster 마다 자기 script 를 쓴다).
+        // 한 줄에 Latin 과 Arabic 이 섞이는 것은 드물어서 배칭 이득이 실질적으로 줄지 않는다.
+        const sa = self.scriptFor(clusters[0][0]);
+        for (clusters[1..]) |cps| {
+            const s = self.scriptFor(cps[0]);
+            if (s.script != sa.script or s.shapes != sa.shapes) return 0;
+        }
+
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
-            if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], out)) {
+            if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], sa, out)) {
                 // 다음 런이 shape 를 건너뛸 수 있게 담는다. 전부 chain face 라 캐시가 해제할
                 // 것이 없고 (`owned = false`), 키에 안 들어가는 cluster 는 `put` 이 조용히
                 // 버린다 — 그때도 값에 소유권이 없어 안전하다.
@@ -727,6 +747,8 @@ pub const DWriteFontContext = struct {
         text_len: dw.UINT32,
         /// 길이가 cluster 수 + 1 이다 (마지막이 센티넬).
         cl_start: []const u16,
+        /// 런 전체의 script (#416). 호출자가 런 안에서 같은 것을 확인해 넘긴다.
+        sa: dw.DWRITE_SCRIPT_ANALYSIS,
         out: []ClusterResult,
     ) bool {
         const analyzer = self.text_analyzer orelse return false;
@@ -740,7 +762,6 @@ pub const DWriteFontContext = struct {
         var glyph_offsets: [MAX_RUN_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
         var actual_count: dw.UINT32 = 0;
 
-        const sa = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
         const locale_name = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
 
         const hr = analyzer.GetGlyphs(
@@ -887,7 +908,7 @@ pub const DWriteFontContext = struct {
         var indices_buf: [MAX_CLUSTER_GLYPHS]u16 = undefined;
         var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
         var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
-        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, &indices_buf, &advances_buf, &offsets_buf);
+        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, self.scriptFor(cps[0]), &indices_buf, &advances_buf, &offsets_buf);
         if (cnt == 0) return null;
 
         // ShapedSlot[] 구성. DWrite `DWRITE_GLYPH_OFFSET.advanceOffset` (=
@@ -911,11 +932,58 @@ pub const DWriteFontContext = struct {
         return ligature.classify(cps.len, slots[0..checked]);
     }
 
+    /// [#416](https://github.com/ensky0/tildaz/issues/416) — cluster 의 **script 를 판정한다.**
+    ///
+    /// `GetGlyphs` · `GetGlyphPlacements` 는 script 를 인자로 받고, 그 값으로 어떤 OpenType
+    /// feature 를 적용할지 정한다. 지금까지 `script = 0` 을 넘겼는데 그건 어떤 문자 체계도
+    /// 아니어서, **script 별 feature 가 통째로 안 걸렸다** — Arabic 의 `mark` (mark 를 base 의
+    /// 어디에 놓을지) · `init`/`medi`/`fina` (연결형) 가 그렇다. 실측에서 폰트를 그대로 두고 이
+    /// 값만 바꾸자 `Arial` · `Times New Roman` · `Courier New` 의 Arabic mark 배치가 전부
+    /// 살아났다. Latin · 한글은 결과가 완전히 동일했다.
+    ///
+    /// HarfBuzz 는 `hb_buffer_guess_segment_properties` 로 script 를 스스로 추론하지만
+    /// (그래서 Linux 는 이 증상이 없다) DirectWrite 는 그 판정을 호출자에게 맡긴다.
+    ///
+    /// **base codepoint 하나만 분석하고 캐시한다.** cluster 의 나머지는 combining mark 라
+    /// script 가 *inherited* — base 를 따라가므로 결과가 같다. shaping 은 `render` 의 91.5 %
+    /// (#395) 를 차지하는 hot path 라 cluster 마다 COM 왕복을 더할 수 없다.
+    ///
+    /// 분석에 실패하면 `script = 0` 을 돌려준다 — 예전 동작 그대로다.
+    fn scriptFor(self: *DWriteFontContext, base_cp: u21) dw.DWRITE_SCRIPT_ANALYSIS {
+        const none = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
+        if (self.script_map.get(base_cp)) |cached| return cached;
+
+        const analyzer = self.text_analyzer orelse return none;
+
+        var u16_buf: [2]WCHAR = undefined;
+        var u16_len: dw.UINT32 = 0;
+        if (base_cp <= 0xFFFF) {
+            u16_buf[0] = @intCast(base_cp);
+            u16_len = 1;
+        } else {
+            const off = base_cp - 0x10000;
+            u16_buf[0] = @intCast(0xD800 + (off >> 10));
+            u16_buf[1] = @intCast(0xDC00 + (off & 0x3FF));
+            u16_len = 2;
+        }
+
+        var source = dw.SimpleTextAnalysisSource.create(&u16_buf, u16_len, self.number_sub);
+        var sink = dw.ScriptSink.create();
+        const result = if (analyzer.AnalyzeScript(@ptrCast(&source), 0, u16_len, @ptrCast(&sink)) >= 0 and sink.got != 0)
+            sink.analysis
+        else
+            none;
+
+        // 캐시가 실패해도 동작은 같다 — 다음에 다시 분석할 뿐이다.
+        self.script_map.put(base_cp, result) catch {};
+        return result;
+    }
+
     /// `face` 로 cluster 를 OpenType shape — single glyph (가장 흔한 path) 또는
     /// multi-glyph cluster (#139, ZWJ family 등 GSUB 미합성). 결과는 indices array
     /// + count. .notdef 만 반환되면 null (다음 face / fallback).
     /// out_indices 는 `[MAX_CLUSTER_GLYPHS]u16`. 리턴 = count (0 = fail).
-    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
+    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, sa: dw.DWRITE_SCRIPT_ANALYSIS, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
         const analyzer = self.text_analyzer orelse return 0;
 
         var cluster_map: [32]u16 = undefined;
@@ -926,7 +994,6 @@ pub const DWriteFontContext = struct {
         var glyph_offsets: [64]dw.DWRITE_GLYPH_OFFSET = undefined;
         var actual_count: dw.UINT32 = 0;
 
-        const sa = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
         const locale_name = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
 
         const hr = analyzer.GetGlyphs(
