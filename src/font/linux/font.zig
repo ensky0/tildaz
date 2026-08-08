@@ -1282,6 +1282,56 @@ pub const Context = struct {
             }
         }
 
+        // #421 — **위 mark 를 폰트 ascender 에 맞춘다.** 같은 `U+0305` 가 글자마다 다른 높이에
+        // 놓이던 것을 없앤다.
+        //
+        // 폰트 · shaping 은 base 높이에 맞춰 mark 를 올린다 (실측 — `a` 위에서는 `y_offset` 이
+        // 0 인데 `b` 위에서는 +4 다). 겹치지 않으려는 동작이라 각각은 틀리지 않지만, 결과적으로
+        // `a̅b̅c̅d̅e̅f̅` 의 윗줄이 계단처럼 들쭉날쭉해진다. Windows 는 균일하고, 사용자가 균일한
+        // 쪽을 택했다.
+        //
+        // **cluster 안의 위 mark 전체를 같은 양만큼 평행이동**한다 — 그래야 연속 조합
+        // (`a`+301+308+323) 의 적층이 유지된다. 기준은 가장 아래에 있는 위 mark 이고, 그것의
+        // 잉크 top 이 ascender 가 되도록 옮긴다.
+        //
+        // ascender 위라 `b d f` 의 잉크와 겹치지 않는다 — "평평하게 하면 겹친다" 는 *base 잉크*
+        // 기준으로 평평하게 할 때의 이야기고, ascender 기준이면 성립하지 않는다.
+        //
+        // 관통 mark (바로 위) 와는 배타적이다 — 그쪽은 `overlay_only` 일 때만 도는데 여기는
+        // 위 mark 가 하나라도 있어야 돈다.
+        if (has_mark and !overlay_only and self.ascent_px > 0) {
+            // 잉크가 baseline 위에 **완전히** 있는 mark 만 위 mark 로 본다. 아래 mark (cedilla
+            // 등) 와 관통 mark 는 여기서 걸러진다.
+            //
+            // 기준은 **가장 위에 있는 mark** 다. 가장 아래 것을 ascender 에 맞추면 그 위에 쌓인
+            // mark 가 셀 밖으로 나간다 (실측 — Lao `ກິ່` 가 top +19 → +22 로 위 칸을 침범했다).
+            // 가장 위 것을 맞추면 cluster 전체가 셀 안에 들어오고, mark 가 하나뿐인 흔한 경우는
+            // 어차피 그 하나가 기준이라 평평해지는 결과가 같다.
+            var highest_top: ?i32 = null;
+            for (glyphs, 0..) |_, i| {
+                if (!marks[i]) continue;
+                const r = rasters[i];
+                if (r.width == 0 or r.height == 0) continue;
+                const top = -ys[i]; // baseline 기준 위가 양수
+                const bottom = top - @as(i32, @intCast(r.height));
+                if (bottom < 0) continue; // baseline 아래로 내려오면 위 mark 가 아니다
+                if (highest_top == null or top > highest_top.?) highest_top = top;
+            }
+            if (highest_top) |lt| {
+                const delta = @as(i32, @intCast(self.ascent_px)) - lt;
+                if (delta != 0) {
+                    for (glyphs, 0..) |_, i| {
+                        if (!marks[i]) continue;
+                        const r = rasters[i];
+                        if (r.width == 0 or r.height == 0) continue;
+                        const top = -ys[i];
+                        if (top - @as(i32, @intCast(r.height)) < 0) continue; // 위 mark 만
+                        ys[i] -= delta; // 화면 y 는 아래가 양수라 부호가 뒤집힌다
+                    }
+                }
+            }
+        }
+
         // 배치가 확정된 뒤에 사각형 합집합을 잡는다 (위 세로 보정이 `ys` 를 바꾼다).
         for (glyphs, 0..) |_, i| {
             const r = rasters[i];
