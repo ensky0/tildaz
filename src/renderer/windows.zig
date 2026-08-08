@@ -2026,7 +2026,7 @@ pub const D3d11Renderer = struct {
             self.drawTextInstances(text_buf[0..text_count.*]);
             text_count.* = 0;
         }
-        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
+        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
         if (entry_opt == null and self.atlas.is_full) {
             if (text_count.* > 0) {
                 self.drawTextInstances(text_buf[0..text_count.*]);
@@ -2037,7 +2037,7 @@ pub const D3d11Renderer = struct {
                 block_count.* = 0;
             }
             self.atlas.reset();
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count]);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
         }
         const entry = entry_opt orelse {
             if (result.owned) _ = result.face.vtable.Release(result.face);

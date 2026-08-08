@@ -40,7 +40,43 @@ pub const ClusterResult = struct {
     offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
     count: u8,
     owned: bool,
+    /// [#418](https://github.com/ensky0/tildaz/issues/418) — cluster 의 결합 기호가 **전부
+    /// overlay 류** (Unicode combining class 1, 글자를 관통하는 mark) 인지. renderer 가
+    /// 배치되지 않은 mark 를 **세로로도** base 잉크 중앙에 맞출지 정하는 데 쓴다.
+    ///
+    /// 이 판정은 codepoint 를 알아야 해서 폰트 층에서 한다 — atlas 는 glyph index 만 받는다.
+    /// **전부** overlay 일 때만 참이다. 위 mark 와 섞이면 (`a` + acute + stroke) 보수적으로
+    /// 거짓이 되어 세로 보정을 하지 않는다 — 위 mark 를 글자 가운데로 내리면 안 되기 때문이다.
+    overlay_marks: bool = false,
 };
+
+/// [#418](https://github.com/ensky0/tildaz/issues/418) — **글자를 관통하는 결합 기호**인지.
+///
+/// Unicode combining class **1 (Overlay)** 에 해당하는 codepoint 집합이다. 이 부류는 base 위나
+/// 아래가 아니라 **글자를 가로질러** 놓여야 하고, HarfBuzz 의 fallback mark positioning 도
+/// combining class 로 위 · 아래 · 관통을 갈라 세로 위치를 정한다
+/// (`hb-ot-shape-fallback` 의 `position_mark`).
+///
+/// 집합이 작고 고정이라 표로 둔다 — 이 때문에 Unicode 데이터 의존을 새로 들이지는 않는다
+/// (`font/windows/font.zig` 는 ghostty 비의존을 유지한다).
+fn isOverlayMark(cp: u21) bool {
+    return switch (cp) {
+        0x0334...0x0338 => true, // tilde · short stroke · long stroke · short solidus · long solidus
+        0x20D2, 0x20D3 => true, // combining long / short vertical line overlay
+        0x20E5, 0x20E6 => true, // reverse solidus · double vertical stroke overlay
+        0x20EB => true, // long double solidus overlay
+        else => false,
+    };
+}
+
+/// cluster 의 결합 기호가 전부 overlay 류인지 (`ClusterResult.overlay_marks`).
+fn clusterOverlayOnly(cps: []const u21) bool {
+    if (cps.len < 2) return false;
+    for (cps[1..]) |cp| {
+        if (!isOverlayMark(cp)) return false;
+    }
+    return true;
+}
 
 const CachedGlyph = struct {
     face: *dw.IDWriteFontFace,
@@ -557,13 +593,15 @@ pub const DWriteFontContext = struct {
 
         // #416 — cluster 의 script. base codepoint 로 판정하고 캐시한다.
         const sa = self.scriptFor(cps[0]);
+        // #418 — 결합 기호가 전부 관통 (overlay) 류인지. renderer 의 세로 보정 판단에 쓴다.
+        const overlay = clusterOverlayOnly(cps);
 
         // 1. user chain 순회 — face 별로 cluster shape 시도.
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
             const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, sa, &indices_buf, &advances_buf, &offsets_buf);
             if (cnt > 0) {
-                return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false };
+                return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
             }
         }
 
@@ -593,7 +631,11 @@ pub const DWriteFontContext = struct {
             const primary: ?[*:0]const WCHAR = @ptrCast(&self.primary_family_name);
             const hints = [2]?[*:0]const WCHAR{ primary, null };
             for (hints) |hint| {
-                if (self.shapeViaSystemFallback(&u16_buf, u16_len, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| return r;
+                if (self.shapeViaSystemFallback(&u16_buf, u16_len, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| {
+                    var result = r;
+                    result.overlay_marks = overlay;
+                    return result;
+                }
             }
         }
 
@@ -766,6 +808,9 @@ pub const DWriteFontContext = struct {
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
             if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], sa, out)) {
+                // #418 — 관통 mark 여부는 codepoint 를 봐야 알 수 있고 `shapeRunOnFace` 는
+                // UTF-16 만 받으므로 여기서 채운다 (캐시에 담기 전이어야 한다).
+                for (0..clusters.len) |i| out[i].overlay_marks = clusterOverlayOnly(clusters[i]);
                 // 다음 런이 shape 를 건너뛸 수 있게 담는다. 전부 chain face 라 캐시가 해제할
                 // 것이 없고 (`owned = false`), 키에 안 들어가는 cluster 는 `put` 이 조용히
                 // 버린다 — 그때도 값에 소유권이 없어 안전하다.

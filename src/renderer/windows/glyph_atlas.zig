@@ -347,7 +347,16 @@ pub const GlyphAtlas = struct {
     /// 테이블이 없는 폰트에 `TranslateColorGlyphRun` 은 `DWRITE_E_NOCOLOR` 를 내므로
     /// 컬러 경로가 null 을 돌려주고, 그러면 `emitClusterInstance` 가 **셀을 통째로 건너뛰어
     /// base 까지 사라졌다.** 단일 글리프 경로 (`getOrInsert`) 에는 원래 있던 폴백을 여기에도 둔다.
-    pub fn getOrInsertCluster(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_indices: []const u16, advances: []const dw.FLOAT, offsets: []const dw.DWRITE_GLYPH_OFFSET) ?AtlasEntry {
+    pub fn getOrInsertCluster(
+        self: *GlyphAtlas,
+        face: *dw.IDWriteFontFace,
+        glyph_indices: []const u16,
+        advances: []const dw.FLOAT,
+        offsets: []const dw.DWRITE_GLYPH_OFFSET,
+        /// #418 — cluster 의 결합 기호가 전부 관통 (overlay) 류인지. 폰트 층이 codepoint 로
+        /// 판정해 넘긴다 (atlas 는 glyph index 만 받아서 스스로는 알 수 없다).
+        overlay_marks: bool,
+    ) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
         if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
@@ -355,9 +364,9 @@ pub const GlyphAtlas = struct {
         const key = ClusterKey{ .font_ptr = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
-        // #415 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
+        // #415 · #418 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
         var fixed_offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
-        const placed_offsets = self.placeUnplacedMarks(face, glyph_indices, advances, offsets, &fixed_offsets);
+        const placed_offsets = self.placeUnplacedMarks(face, glyph_indices, advances, offsets, overlay_marks, &fixed_offsets);
 
         var entry = self.rasterizeColor(face, glyph_indices, advances, placed_offsets) orelse
             self.rasterize(face, glyph_indices, advances, placed_offsets) orelse return null;
@@ -396,10 +405,19 @@ pub const GlyphAtlas = struct {
     /// 것은 잉크 중앙 정렬이다 — HarfBuzz 가 GPOS 없는 폰트에 적용하는 fallback mark
     /// positioning 과 같은 규칙이다 (`hb-ot-shape-fallback` 의 `position_mark`).
     ///
-    /// **세로는 건드리지 않는다.** mark 글리프의 세로 위치는 자기 디자인 (윗줄 / 아랫줄) 에 이미
-    /// 들어 있다. 예외는 base 가 baseline 아래로 잉크를 갖는 경우인데 (Arabic `ب` 의 아래 점),
-    /// 거기서 아래 mark 를 한 단 더 쌓는 것은 GPOS `mark` / `mkmk` 의 일이고 우리가 흉내낼 것이
-    /// 아니다 — 별도 이슈로 다룬다.
+    /// **세로는 관통 (overlay) mark 만 맞춘다 (#418).** 위 · 아래 mark 의 세로 위치는 자기
+    /// 디자인에 이미 들어 있어 건드리면 안 된다 (acute 를 글자 가운데로 내리면 틀린다). 반면
+    /// **관통 mark 는 글자를 가로질러야** 하는데 그 높이는 GPOS 가 정하는 것이라, 배치가 없으면
+    /// 폰트의 기본 높이에 남는다 — `Segoe UI` 의 `U+0336` 은 baseline 높이여서
+    /// (`ink y = [-0.43, 0.45]`) `k` (`[0.00, 11.10]`) 의 맨 아래에 겹쳐 **화면에서 안 보였다.**
+    /// 그래서 관통 mark 는 잉크 중앙을 base 잉크의 **세로 중앙**에도 맞춘다.
+    ///
+    /// 위 · 아래 · 관통을 가르는 것은 Unicode combining class 이고 HarfBuzz 의 fallback 도 같은
+    /// 기준을 쓴다. 판정에 codepoint 가 필요해서 폰트 층이 `overlay_marks` 로 알려 준다.
+    ///
+    /// base 가 baseline 아래로 잉크를 갖는 경우 (Arabic `ب` 의 아래 점) 아래 mark 를 한 단 더
+    /// 쌓는 것은 여전히 하지 않는다 — 그건 GPOS `mark` / `mkmk` 의 일이다
+    /// ([#416](https://github.com/ensky0/tildaz/issues/416)).
     ///
     /// **advance 가 0 인 글리프 위에는 맞추지 않는다.** emoji ZWJ 의 stack 디자인 (`👨‍❤️‍👨` 은
     /// 세 글리프가 모두 같은 원점에 겹치고 마지막 것만 advance 를 가진다) 이 이 경우인데, 거기서
@@ -416,6 +434,7 @@ pub const GlyphAtlas = struct {
         glyph_indices: []const u16,
         advances: []const dw.FLOAT,
         offsets: []const dw.DWRITE_GLYPH_OFFSET,
+        overlay_marks: bool,
         out: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
     ) []const dw.DWRITE_GLYPH_OFFSET {
         const count = glyph_indices.len;
@@ -442,16 +461,33 @@ pub const GlyphAtlas = struct {
 
         var pen: f32 = 0;
         var base_center: ?f32 = null; // 직전 base (advance ≠ 0) 잉크의 가로 중앙
+        var base_center_y: f32 = 0; // 〃 세로 중앙 (baseline 기준, 위가 +)
         for (0..count) |i| {
             const lsb = @as(f32, @floatFromInt(gm[i].leftSideBearing)) * to_dip;
             const rsb = @as(f32, @floatFromInt(gm[i].rightSideBearing)) * to_dip;
             const design_adv = @as(f32, @floatFromInt(gm[i].advanceWidth)) * to_dip;
             const ink_center = lsb + (design_adv - lsb - rsb) / 2; // 자기 원점 기준
 
+            // 세로 잉크 (baseline 기준, 위가 +). `verticalOriginY` 는 baseline 에서 글리프
+            // 세로 원점까지의 거리이고 top/bottom side bearing 이 거기서 잉크까지의 여백이다.
+            const vorg = @as(f32, @floatFromInt(gm[i].verticalOriginY)) * to_dip;
+            const tsb = @as(f32, @floatFromInt(gm[i].topSideBearing)) * to_dip;
+            const bsb = @as(f32, @floatFromInt(gm[i].bottomSideBearing)) * to_dip;
+            const adv_h = @as(f32, @floatFromInt(gm[i].advanceHeight)) * to_dip;
+            const ink_center_y = ((vorg - tsb) + (vorg - (adv_h - bsb))) / 2; // 자기 원점 기준
+
             if (i > 0 and advances[i] == 0 and offsets[i].advanceOffset == 0) {
-                if (base_center) |bc| out[i].advanceOffset = (bc - ink_center) - pen;
+                if (base_center) |bc| {
+                    out[i].advanceOffset = (bc - ink_center) - pen;
+                    // 관통 mark 만 세로도 맞춘다. 이미 세로 배치가 있으면 (`ascenderOffset != 0`)
+                    // shaping 이 정한 것이므로 건드리지 않는다.
+                    if (overlay_marks and offsets[i].ascenderOffset == 0) {
+                        out[i].ascenderOffset = base_center_y - ink_center_y;
+                    }
+                }
             } else if (advances[i] != 0) {
                 base_center = pen + offsets[i].advanceOffset + ink_center;
+                base_center_y = offsets[i].ascenderOffset + ink_center_y;
             }
             pen += advances[i];
         }
