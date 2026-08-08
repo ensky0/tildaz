@@ -982,7 +982,9 @@ pub const MetalRenderer = struct {
                                 self.drawTextInstances(encoder, text_buf[0..text_count]);
                                 text_count = 0;
                             }
-                            const entry_opt = self.atlas.getOrInsert(result.font, @intCast(result.index));
+                            // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
+                            // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
+                            const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count]);
                             if (result.owned) ct.CFRelease(result.font);
                             if (entry_opt) |entry| {
                                 if (entry.w > 0 and entry.h > 0) {
@@ -1006,7 +1008,8 @@ pub const MetalRenderer = struct {
                     @memcpy(cluster[1..][0..take], extras[0..take]);
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |result| {
-                        const entry_opt = self.atlas.getOrInsert(result.font, @intCast(result.index));
+                        // #401 — 위 배칭 경로와 같은 이유로 multi-glyph 를 합성해 그린다.
+                        const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count]);
                         if (result.owned) ct.CFRelease(result.font);
                         if (entry_opt) |entry| {
                             if (entry.w > 0 and entry.h > 0) {

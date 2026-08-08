@@ -13,11 +13,28 @@ const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
 
+/// 한 cluster 가 낼 수 있는 글리프 수 상한. Windows `MAX_CLUSTER_GLYPHS` 와 같은 값이다.
+pub const MAX_CLUSTER_GLYPHS: usize = 16;
+
 pub const GlyphResult = struct {
     font: ct.CTFontRef,
+    /// 첫 글리프. `count == 1` 인 흔한 경우의 빠른 길이고, multi-glyph 여도 여기는 채워진다.
     index: ct.CGGlyph,
     /// true 면 caller 가 CFRelease 책임. fallback font 생성 후 cache 안 할 때.
     owned: bool,
+
+    /// #401 — **cluster 가 글리프 하나로 합성되지 않는 경우**를 위한 것이다.
+    ///
+    /// Apple Color Emoji 는 `👨‍❤️‍👨` 같은 `❤️` 조합을 **글리프 2 개**로 준다 (`👨‍👩‍👧` 는
+    /// 1 개다). 예전에는 첫 글리프만 쓰고 나머지를 버려서 `👨` 만 그려졌다. Windows 는 같은
+    /// 상황을 `advances` · `offsets` 로 겹쳐 그려 해결하고 있었고 (#139), 여기도 같은 구조다.
+    ///
+    /// `positions` 는 `CTRun` 이 준 값 그대로다 — GPOS 가 적용된 위치라 이대로 그려야 모양이
+    /// 맞는다. 첫 글리프 기준 상대 좌표다.
+    glyphs: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined,
+    positions: [MAX_CLUSTER_GLYPHS]ct.CGPoint = undefined,
+    /// 유효한 글리프 수. 1 이면 `index` 만 쓰면 된다.
+    count: u8 = 1,
 };
 
 /// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
@@ -741,20 +758,36 @@ pub const CoreTextFontContext = struct {
         const run_count = ct.CFArrayGetCount(runs);
         if (run_count == 0) return null;
 
-        // 첫 run — 대부분 grapheme cluster 가 1 run + 1 glyph 으로 shape 됨.
+        // 첫 run 을 쓴다. cluster 하나를 넘겼으므로 CT 가 run 을 나눌 일이 거의 없다 —
+        // 실측으로도 `❤️` 가 든 조합까지 전부 run 1 개였다 (#401).
         const run_ptr = ct.CFArrayGetValueAtIndex(runs, 0) orelse return null;
         const run: ct.CTRunRef = @constCast(run_ptr);
 
         const glyph_count = ct.CTRunGetGlyphCount(run);
-        if (glyph_count == 0) return null;
+        if (glyph_count <= 0) return null;
 
-        var glyph: ct.CGGlyph = 0;
+        // #401 — **글리프를 전부 가져온다.** 예전에는 첫 개만 쓰고 버렸는데, Apple Color Emoji
+        // 가 `👨‍❤️‍👨` 같은 `❤️` 조합을 글리프 2 개로 줘서 `👨` 만 그려졌다. 폰트가 1 개로
+        // 합성해 주는 cluster (`👨‍👩‍👧` 등) 는 아래 경로가 그대로 `count == 1` 이 된다.
+        const take: usize = @min(@as(usize, @intCast(glyph_count)), MAX_CLUSTER_GLYPHS);
+        var glyphs: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined;
+        var positions: [MAX_CLUSTER_GLYPHS]ct.CGPoint = undefined;
+
         if (ct.CTRunGetGlyphsPtr(run)) |ptr| {
-            glyph = ptr[0];
+            @memcpy(glyphs[0..take], ptr[0..take]);
         } else {
-            ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = 1 }, @ptrCast(&glyph));
+            ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &glyphs);
         }
-        if (glyph == 0) return null;
+        // 위치는 GPOS 가 적용된 값이라 이대로 그려야 모양이 맞는다. Windows 가 `advances` ·
+        // `offsets` 를 함께 넘기는 것과 같은 이유다 (#139).
+        if (ct.CTRunGetPositionsPtr(run)) |ptr| {
+            @memcpy(positions[0..take], ptr[0..take]);
+        } else {
+            ct.CTRunGetPositions(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &positions);
+        }
+
+        // `.notdef` 는 실패로 본다 — caller 가 base codepoint 로 fallback 한다.
+        if (glyphs[0] == 0) return null;
 
         // run 의 실제 사용 폰트 — CT 가 fallback 으로 골라준 것 (Apple Color Emoji 등).
         // GetAttributes 와 GetValue 는 non-owning reference 라 line 이 release 되면
@@ -766,7 +799,14 @@ pub const CoreTextFontContext = struct {
         const run_font: ct.CTFontRef = @constCast(font_val);
         _ = ct.CFRetain(run_font);
 
-        return .{ .font = run_font, .index = glyph, .owned = true };
+        return .{
+            .font = run_font,
+            .index = glyphs[0],
+            .owned = true,
+            .glyphs = glyphs,
+            .positions = positions,
+            .count = @intCast(take),
+        };
     }
 
     /// 2-char ligature lookup (SPEC § 12.2). `cp0` + `cp1` 을 primary font 로
