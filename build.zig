@@ -405,6 +405,32 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| stress_run.addArgs(args);
     stress_step.dependOn(&stress_run.step);
 
+    // 렌더 검증 화면 (#401 · #415 · #416 · #417 · #418).
+    //
+    //   zig build render-test
+    //   tildaz -e <zig-out/bin/render-test> -size 84x44
+    //
+    // **세 platform 이 같은 프로그램을 띄운다.** 셸 스크립트로 같은 화면을 내려면 `printf`
+    // 구현차 · cmd 의 CP949 · PowerShell 인코딩을 전부 맞춰야 하는데, 바이트를 프로그램
+    // 안에 두면 그 변수가 사라진다. 실행은 `zig build` 가 아니라 **tildaz 가** 한다 —
+    // 검증 대상이 tildaz 의 렌더 경로라서다. 그래서 run 단계 없이 install 만 한다.
+    const render_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/render_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const render_test_exe = b.addExecutable(.{
+        .name = "render-test",
+        .root_module = render_test_mod,
+    });
+    if (is_linux_target) {
+        // 메인 exe 와 같은 이유 (self-hosted ELF 링커의 `.sframe` relocation 미지원).
+        render_test_exe.use_llvm = true;
+        render_test_exe.use_lld = true;
+    }
+    const render_test_step = b.step("render-test", "결합 기호 · cluster 렌더 검증 화면 빌드 (tildaz -e 로 띄운다)");
+    render_test_step.dependOn(&b.addInstallArtifact(render_test_exe, .{}).step);
+
     // 6-target compile-only check 단계 (#201).
     //
     //   zig build check
