@@ -137,6 +137,10 @@ pub const SolidRect = struct {
 pub const GlyphRef = union(enum) {
     codepoint: u21,
     indexed: struct { face: u8, index: u32 },
+    /// #401 — cluster 하나를 여러 글리프로 합성해 구운 비트맵. `index` 는 FreeType glyph
+    /// index 가 아니라 합성 캐시 키다 (`Context.composedGlyph`). 같은 face 안에서도 키
+    /// 공간이 달라 `indexed` 와 구분해야 한다.
+    composed: struct { face: u8, key: u32 },
 };
 
 /// #277 S2-5 — 글리프를 어느 폰트에서 구웠는지. atlas 캐시 키의 일부다 — 터미널
@@ -324,8 +328,9 @@ pub const Renderer = struct {
     run_slices: [font.MAX_RUN_CLUSTERS][]const u21 = undefined,
     /// 각 cluster 가 있던 셀의 x. 글리프를 되돌려 놓을 때 쓴다 (셀마다 색이 다르다).
     run_cells: [font.MAX_RUN_CLUSTERS]u16 = undefined,
-    /// shaping 결과. cluster 당 하나이고 **single glyph 다** (Windows 와 갈리는 점 — #139).
-    run_results: [font.MAX_RUN_CLUSTERS]font.LigatureGlyph = undefined,
+    /// shaping 결과. cluster 당 하나다. #401 부터 그 하나가 **합성 비트맵일 수 있다** —
+    /// 폰트가 cluster 를 글리프 하나로 안 줄이면 여러 글리프를 겹쳐 구운 결과를 가리킨다.
+    run_results: [font.MAX_RUN_CLUSTERS]font.ClusterGlyph = undefined,
 
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
@@ -996,8 +1001,8 @@ pub const Renderer = struct {
                             const rsel = if (sel_range) |sr| (rx16 >= sr[0] and rx16 <= sr[1]) else false;
                             const cg = self.run_results[i];
                             appendGlyph(&self.layer.glyphs, allocator, .{
-                                .ref = .{ .indexed = .{ .face = cg.face_idx, .index = cg.glyph_index } },
-                                .glyph = self.font_ctx.glyphByIndex(cg.face_idx, cg.glyph_index),
+                                .ref = clusterRef(cg),
+                                .glyph = clusterGlyph(&self.font_ctx, cg),
                                 .cell_x = pad + @as(i32, @intCast(rx)) * cw,
                                 .cell_y = cell_y,
                                 .cell_w = if (rr.wide == .wide) cw * 2 else cw,
@@ -1025,8 +1030,8 @@ pub const Renderer = struct {
                     @memcpy(cluster[1..][0..take], extras[0..take]);
                     if (self.font_ctx.resolveCluster(cluster[0 .. 1 + take])) |cg| {
                         appendGlyph(&self.layer.glyphs, allocator, .{
-                            .ref = .{ .indexed = .{ .face = cg.face_idx, .index = cg.glyph_index } },
-                            .glyph = self.font_ctx.glyphByIndex(cg.face_idx, cg.glyph_index),
+                            .ref = clusterRef(cg),
+                            .glyph = clusterGlyph(&self.font_ctx, cg),
                             .cell_x = cell_x,
                             .cell_y = cell_y,
                             .cell_w = cell_w,
@@ -2073,6 +2078,23 @@ const GlyphPlacement = struct {
 /// 정렬한다. monospace 면 글리프 advance == cell width 라 offset = 0 (그대로).
 /// wide glyph 의 fallback (placeholder `?`) 도 cell-pair 가운데로.
 ///
+/// #401 — cluster 결과의 참조. 합성이면 `glyph_index` 가 FreeType glyph index 가 아니라
+/// 합성 캐시 키라 갈래가 다르다. 배칭 · 개별 두 경로가 같은 판단을 하도록 여기 한곳에 둔다.
+fn clusterRef(cg: font.ClusterGlyph) GlyphRef {
+    return if (cg.composed)
+        .{ .composed = .{ .face = cg.face_idx, .key = cg.glyph_index } }
+    else
+        .{ .indexed = .{ .face = cg.face_idx, .index = cg.glyph_index } };
+}
+
+/// #401 — cluster 결과의 raster. `clusterRef` 와 짝이다.
+fn clusterGlyph(ctx: *font.Context, cg: font.ClusterGlyph) *const font.Glyph {
+    return if (cg.composed)
+        ctx.composedGlyph(cg.face_idx, cg.glyph_index)
+    else
+        ctx.glyphByIndex(cg.face_idx, cg.glyph_index);
+}
+
 /// 보이지 않는 글리프 (공백 등) 는 목록에 넣지 않는다 — 두 경로 모두 그릴 것이 없다.
 fn appendGlyph(list: *std.ArrayList(GlyphItem), allocator: std.mem.Allocator, p: GlyphPlacement) void {
     const glyph = p.glyph;

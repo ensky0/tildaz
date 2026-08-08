@@ -66,6 +66,10 @@ const Key = struct {
                 .value = @as(u32, cp) | (@as(u32, @intCast(item.face_style.index())) << 21),
             },
             .indexed => |ix| .{ .source = source, .face = ix.face, .value = ix.index },
+            // #401 — 합성 글리프. 키가 FreeType glyph index 와 **같은 숫자여도 다른 그림**
+            // 이라 `source` 를 갈라 준다. cluster 합성은 터미널 폰트에서만 나오므로 (탭바는
+            // cluster shaping 을 하지 않는다) `source` 자리에 폰트 구분을 잃지 않는다.
+            .composed => |c| .{ .source = composed_source, .face = c.face, .value = c.key },
         };
     }
 
@@ -83,6 +87,8 @@ const Key = struct {
 
 const codepoint_face: u8 = 0xFF;
 const icon_source: u8 = 0xFE;
+/// #401 — 합성 cluster 글리프의 `source`. `FontId` 와 아이콘 어느 쪽과도 겹치지 않는다.
+const composed_source: u8 = 0xFD;
 
 /// 한 텍스처와 그 패킹 상태.
 const Surface = struct {
