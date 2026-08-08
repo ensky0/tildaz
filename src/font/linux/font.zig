@@ -1109,8 +1109,9 @@ pub const Context = struct {
         var ys: [MAX_CLUSTER_GLYPHS]i32 = undefined;
 
         var pen_x: i32 = 0;
-        // #415 — 직전 base 글리프가 시작한 pen. HarfBuzz 가 배치를 안 한 mark 를 되돌릴 자리다.
-        var base_x: i32 = 0;
+        // #415 — 직전 base 글리프 **잉크의 가로 중앙**. HarfBuzz 가 배치를 안 한 mark 를 여기에
+        // 맞춘다. `null` 이면 앞에 advance ≠ 0 인 base 가 없다는 뜻이라 보정하지 않는다.
+        var base_center: ?i32 = null;
         var pixel_mode: u8 = 0;
         var have_ink = false;
         var min_x: i32 = std.math.maxInt(i32);
@@ -1134,17 +1135,38 @@ pub const Context = struct {
             // 아무도 배치를 안 해 준다. 그 계층을 우리가 채운다 — 증상을 가리는 보정이 아니라
             // GPOS 가 불완전한 폰트에 같은 fallback 을 적용하는 것이다.
             //
-            // 되돌릴 자리는 직전 base 의 시작 pen 이다. mark 글리프는 자기 bearing 에 "base 위
-            // 중앙" 이 이미 들어 있어서 원점만 맞추면 정렬이 따라온다 (실측 — `a` 는 x 1~11 로
-            // 중앙이 6 이고 diaeresis 는 bearing 3 · 폭 6 이라 3~9 로 중앙이 6 이다).
+            // **맞출 자리는 잉크 중앙이지 원점이 아니다.** 처음에는 "직전 base 의 시작 pen 으로
+            // 되돌린다" 로 구현했고 근거를 *"mark 글리프는 자기 bearing 에 base 위 중앙이 이미
+            // 들어 있다"* 로 적었는데, 그것은 **DejaVu 에서만 맞는 말이었다.** mark 글리프를 어디에
+            // 그리도록 설계했는지가 폰트마다 다르다 (Windows 실측 — #415):
+            //
+            //   DejaVu Sans Mono  `U+0308`  bitmap_left=+3  width=6   → 원점이 잉크 왼쪽
+            //   Segoe UI Symbol   `U+0305`  bitmap_left=-6  width=12  → 원점이 곧 잉크 중앙
+            //
+            // 뒤쪽 폰트에서 원점을 맞추면 잉크 중앙이 0 이 되어 base 중앙에서 왼쪽으로 밀리고,
+            // 실기에서 앞 글자를 침범했다. 폰트에 무관하게 옳은 것은 **mark 의 잉크 중앙을 base 의
+            // 잉크 중앙에 맞추는 것**이고, 이것이 HarfBuzz 가 GPOS 없는 폰트에 적용하는 fallback
+            // mark positioning 과 같은 규칙이다 (`hb-ot-shape-fallback` 의 `position_mark`).
+            // DejaVu 에서는 두 규칙의 결과가 같다 (`a` 잉크 중앙 6 · diaeresis 잉크 중앙 6).
+            //
+            // **advance 가 0 인 글리프 위에는 맞추지 않는다** (`base_center == null`). emoji ZWJ 의
+            // stack 디자인은 글리프 여럿이 같은 원점에 겹치고 마지막 것만 advance 를 갖는데, 거기서
+            // 잉크 중앙을 맞추면 폰트가 의도한 겹침이 어긋난다.
+            //
+            // 세로는 건드리지 않는다 — mark 의 세로 위치는 자기 디자인에 이미 들어 있다.
             const unplaced_mark = i > 0 and g.x_advance == 0 and g.x_offset == 0;
-            const origin = if (unplaced_mark) base_x else pen_x;
+            // 글리프 잉크의 **자기 원점 기준** 가로 중앙.
+            const ink_center = r.bitmap_left + @divFloor(@as(i32, @intCast(r.width)), 2);
+            const origin = if (unplaced_mark and base_center != null)
+                base_center.? - ink_center
+            else
+                pen_x;
 
             // FreeType 은 baseline 기준 · 위쪽이 양수, 화면은 아래쪽이 양수라 부호가 뒤집힌다.
             xs[i] = origin + g.x_offset + r.bitmap_left;
             ys[i] = -g.y_offset - r.bitmap_top;
             if (g.x_advance != 0) {
-                base_x = pen_x;
+                base_center = pen_x + g.x_offset + ink_center;
                 pen_x += g.x_advance;
             }
 
