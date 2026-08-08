@@ -1128,18 +1128,51 @@ pub const FamilyAvailability = enum {
 /// `family` 가 시스템에 설치되어 있는지 — fontconfig lookup + substitution
 /// 판정 (`matchResolvesFamily`). caller (Linux host boot 검증) 는 `.missing`
 /// 일 때만 fatal.
-pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyAvailability {
-    const family_z = allocator.allocSentinel(u8, family.len, 0) catch return .unknown;
+///
+/// `substitute_buf` 를 주면 **substitution 때문에 `.missing` 인 경우** 그 자리에 fontconfig 가
+/// 실제로 돌려준 family 를 채우고 그 slice 를 돌려준다 (#405). 그러지 않으면 사용자는
+/// *"설치했는데 왜 not found 인가"* 를 알 길이 없다 — 파일도 있고 `fc-list` 에도 나오는데
+/// `/etc/fonts/conf.d/` 의 규칙이 다른 폰트로 바꿔치기한 상황이기 때문이다. 실제로
+/// `ttf-twemoji` 가 `Noto Color Emoji` 요청을 가로채 부팅이 막혔다.
+///
+/// 폰트가 아예 없어서 `.missing` 인 경우에는 채우지 않는다 (`null` 반환) — 그때는 이름이
+/// 틀렸거나 미설치라는 기존 안내가 맞다.
+pub fn familyInstalledDetail(
+    allocator: std.mem.Allocator,
+    family: []const u8,
+    substitute_buf: ?[]u8,
+) struct { availability: FamilyAvailability, substitute: ?[]const u8 } {
+    const family_z = allocator.allocSentinel(u8, family.len, 0) catch
+        return .{ .availability = .unknown, .substitute = null };
     defer allocator.free(family_z);
     @memcpy(family_z[0..family.len], family);
 
     const fc_result = fontconfig.lookup(allocator, family_z.ptr) catch |err| switch (err) {
         // 시스템에 매치가 아예 없는 경우만 미설치 확정.
-        error.FontconfigNoMatch => return .missing,
-        else => return .unknown,
+        error.FontconfigNoMatch => return .{ .availability = .missing, .substitute = null },
+        else => return .{ .availability = .unknown, .substitute = null },
     };
     defer fc_result.deinit(allocator);
-    return if (matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) .installed else .missing;
+
+    if (matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) {
+        return .{ .availability = .installed, .substitute = null };
+    }
+
+    // substitution 이다 — 무엇으로 바뀌었는지 남긴다.
+    var sub: ?[]const u8 = null;
+    if (substitute_buf) |buf| {
+        const n = @min(buf.len, fc_result.family.len);
+        if (n > 0) {
+            @memcpy(buf[0..n], fc_result.family[0..n]);
+            sub = buf[0..n];
+        }
+    }
+    return .{ .availability = .missing, .substitute = sub };
+}
+
+/// 이름만 보는 기존 형태 — 대체 폰트가 필요 없는 호출처용.
+pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyAvailability {
+    return familyInstalledDetail(allocator, family, null).availability;
 }
 
 /// face 의 per-cp cache 에서 lookup, 미스면 raster + insert. raster / OOM

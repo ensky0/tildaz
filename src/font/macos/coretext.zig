@@ -100,6 +100,20 @@ pub extern "CoreFoundation" fn CFStringCompare(
     compareOptions: u32,
 ) i32;
 
+// #405 — CFString 을 UTF-8 로 꺼낸다. 폰트 검증이 "요청한 이름이 실제로 어떤 family 로
+// 해석됐는지" 를 사용자 메시지에 실을 때 쓴다 (`CTFontCopyFamilyName` 결과가 CFString 이다).
+pub extern "CoreText" fn CFStringGetLength(theString: CFStringRef) CFIndex;
+pub extern "CoreText" fn CFStringGetBytes(
+    theString: CFStringRef,
+    range: CFRange,
+    encoding: CFStringEncoding,
+    lossByte: u8,
+    isExternalRepresentation: bool,
+    buffer: ?[*]u8,
+    maxBufLen: CFIndex,
+    usedBufLen: ?*CFIndex,
+) CFIndex;
+
 pub extern "CoreText" fn CTFontCreateForString(
     currentFont: CTFontRef,
     string: CFStringRef,

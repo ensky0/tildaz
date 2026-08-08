@@ -184,6 +184,16 @@ pub const font_not_found_format = "Font not found: \"{s}\"\n\n";
 pub const font_chain_header_msg = "config \"font.family\" chain (in order):\n";
 pub const font_chain_entry_format = "  - \"{s}\"{s}\n";
 pub const font_not_installed_marker = " ← not installed";
+
+/// #405 — 폰트가 **설치돼 있는데** fontconfig 가 다른 폰트로 바꿔치기해서 못 쓰는 경우.
+/// 이 줄이 없으면 사용자는 파일도 있고 `fc-list` 에도 나오는 폰트가 왜 "not found" 인지
+/// 알 수 없다 (실제로 `ttf-twemoji` 가 `Noto Color Emoji` 요청을 가로채 부팅이 막혔다).
+/// Linux 전용 — fontconfig 의 시스템 전역 별칭 주입이 원인이라 다른 platform 에는 없다.
+pub const font_substituted_format =
+    "\nThis family IS installed, but fontconfig resolves it to \"{s}\".\n" ++
+    "A font package may have installed a system-wide alias rule.\n" ++
+    "  check:  fc-match \"{s}\"\n" ++
+    "  rules:  /etc/fonts/conf.d/\n";
 pub const font_chain_footer_format =
     "\nAll families listed in font.family must be installed on the system.\n\nConfig path:\n{s}\n";
 
