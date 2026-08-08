@@ -1508,9 +1508,14 @@ const Client = struct {
             const chain = self.config.font_families[0..self.config.font_family_count];
             for (chain) |family| {
                 if (family.len == 0) continue;
-                if (font_linux.familyInstalled(self.allocator, family) != .missing) continue;
+                // #405 — 대체된 폰트 이름을 함께 받아 메시지에 싣는다. 설치는 됐는데
+                // fontconfig 규칙이 다른 폰트로 바꿔치기한 경우 (`ttf-twemoji` 등) 사용자가
+                // 원인을 찾을 수 있게 한다.
+                var sub_buf: [256]u8 = undefined;
+                const avail = font_linux.familyInstalledDetail(self.allocator, family, &sub_buf);
+                if (avail.availability != .missing) continue;
                 var font_msg_buf: [2048]u8 = undefined;
-                const msg = font_validate.notFoundMessage(&font_msg_buf, family, chain);
+                const msg = font_validate.notFoundMessageSub(&font_msg_buf, family, chain, avail.substitute);
                 log.userFacing("fatal", msg);
                 self.runFatalDialog(messages.config_error_title, msg);
                 std.process.exit(1);

@@ -52,24 +52,42 @@ fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []c
 /// config 의 font.family 전체 (UTF-8 raw). 본 함수는 dialog.showFatal 로
 /// process 종료.
 pub fn showNotFoundFatal(missing: []const u8, chain: []const []const u8) noreturn {
+    showNotFoundFatalSub(missing, chain, null);
+}
+
+/// #405 — `substitute` 는 **그 이름이 실제로 어떤 폰트로 해석됐는지**다. 있으면 "설치는 됐는데
+/// 다른 것으로 바뀐다" 를 함께 알린다.
+///
+/// 세 platform 중 **Linux · macOS 만** 이 값을 채운다. 둘은 요청 이름으로 조회한 뒤 *돌아온
+/// family 를 비교*하는 구조라 (Linux 는 fontconfig substitution, macOS 는
+/// `CTFontCreateWithName` 이 실패 대신 대체 폰트를 주는 성질) 대체가 실제로 일어난다. Windows 는
+/// `IDWriteFontCollection.FindFamilyName` 이 시스템 컬렉션에서 exact match 만 보므로 대체가
+/// 개입할 여지가 없어 `null` 이다.
+pub fn showNotFoundFatalSub(missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) noreturn {
     var msg_buf: [2048]u8 = undefined;
-    dialog.showFatal(messages.config_error_title, notFoundMessage(&msg_buf, missing, chain));
+    dialog.showFatal(messages.config_error_title, notFoundMessageSub(&msg_buf, missing, chain, substitute));
 }
 
 /// `showNotFoundFatal` 의 메시지 조립부 — 세 OS 공통 형식의 단일 정의.
 /// Linux host 는 boot 단계에서 자체 blocking overlay 로 표시해야 해서 dialog
 /// 호출과 분리해 이 함수만 쓴다 (#289 B6).
 pub fn notFoundMessage(msg_buf: []u8, missing: []const u8, chain: []const []const u8) []const u8 {
+    return notFoundMessageSub(msg_buf, missing, chain, null);
+}
+
+/// #405 — `substitute` 가 있으면 "설치는 됐는데 fontconfig 가 다른 폰트로 바꿨다" 를 함께
+/// 알린다. Linux host 만 채우고 (fontconfig 특유), 나머지 platform 은 `null` 로 기존 형식이다.
+pub fn notFoundMessageSub(msg_buf: []u8, missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) []const u8 {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
     const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
 
-    return notFoundMessageForPath(msg_buf, missing, chain, cfg_path);
+    return notFoundMessageForPath(msg_buf, missing, chain, cfg_path, substitute);
 }
 
 /// 경로 조회와 분리한 순수 formatter. dialog layout 같은 사용자 메시지 경계
 /// 테스트도 이 함수를 사용해 실제 producer와 다른 문구를 복제하지 않는다.
-pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8) []const u8 {
+pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8, substitute: ?[]const u8) []const u8 {
     var fbs = std.io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
     w.print(messages.font_not_found_format, .{missing}) catch {};
@@ -78,6 +96,13 @@ pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const
         if (fam.len == 0) continue;
         const marker = if (std.mem.eql(u8, fam, missing)) messages.font_not_installed_marker else "";
         w.print(messages.font_chain_entry_format, .{ fam, marker }) catch {};
+    }
+    // #405 — 설치는 됐는데 대체된 경우, 그 사실과 확인 방법을 알린다. 이게 없으면 사용자는
+    // 파일도 있고 목록에도 나오는 폰트가 왜 "not found" 인지 알 수 없다.
+    if (substitute) |sub| {
+        if (sub.len > 0 and !std.mem.eql(u8, sub, missing)) {
+            w.print(messages.font_substituted_format, .{ sub, missing }) catch {};
+        }
     }
     w.print(messages.font_chain_footer_format, .{cfg_path}) catch {};
     return fbs.getWritten();
@@ -104,6 +129,6 @@ test "font validation messages preserve runtime values and final newline" {
             "  - \"Noto Color Emoji\"\n" ++
             "\nAll families listed in font.family must be installed on the system.\n\n" ++
             "Config path:\n/tmp/config_3.json\n",
-        notFoundMessageForPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json"),
+        notFoundMessageForPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json", null),
     );
 }
