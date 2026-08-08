@@ -5,6 +5,7 @@ const std = @import("std");
 const dw = @import("directwrite.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
+const cluster_cache = @import("../cluster_cache.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
@@ -45,6 +46,15 @@ const CachedGlyph = struct {
     face: *dw.IDWriteFontFace,
     index: u16,
 };
+
+/// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
+///
+/// **`owned` 인 것만 놓는다.** chain face 는 context 가 process lifetime 동안 들고 있고
+/// (atlas cache key 가 face 포인터라 안정성이 필수다) `MapCharacters` 로 얻은 face 만
+/// 우리가 소유한다 — 그 구분이 곧 `owned` 다.
+fn releaseCluster(v: ClusterResult) void {
+    if (v.owned) _ = v.face.vtable.Release(v.face);
+}
 
 /// 정공 cell metric — DWrite design metric (ascent/descent/lineGap/advance) 으로
 /// 직접 산출. GDI tm 의 rounding / leading 영향 배제. 여기서는 실수 측정값을
@@ -157,6 +167,16 @@ pub const DWriteFontContext = struct {
     glyph_map: std.AutoHashMap(u21, CachedGlyph),
     /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
     ligature_cache: ligature.Cache,
+    /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
+    /// platform 별이다.
+    ///
+    /// **Windows 값에는 소유권이 있다** (Linux 의 face index 와 다른 점이다). 그래서
+    /// `release` 를 주입하고, 캐시가 소유권을 가져간 뒤 caller 에게는 `owned = false` 로
+    /// 넘긴다 — 안 그러면 셀 루프가 매 프레임 `Release` 해서 캐시 안의 face 가 죽는다.
+    ///
+    /// negative 도 담는다. chain 이 못 맞춘 cluster 를 안 담으면 매 프레임 chain 전체 +
+    /// `MapCharacters` + `CreateFontFace` 를 헛도는데, **Windows 는 그 경로가 가장 비싸다.**
+    cluster_cache: cluster_cache.ClusterCache(ClusterResult, releaseCluster),
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -249,6 +269,7 @@ pub const DWriteFontContext = struct {
             .cell_height_px = cell_h,
             .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
             .ligature_cache = ligature.Cache.init(alloc),
+            .cluster_cache = cluster_cache.ClusterCache(ClusterResult, releaseCluster).init(alloc),
         };
 
         // Store primary family name for MapCharacters fallback (system 의 fallback
@@ -328,6 +349,13 @@ pub const DWriteFontContext = struct {
         }
         self.glyph_map.deinit();
         self.ligature_cache.deinit();
+        // #399 — 담아 둔 `MapCharacters` face 들을 여기서 놓는다 (`releaseCluster`).
+        //
+        // **따로 `clear()` 를 부를 자리는 없다.** 폰트 · DPI 가 바뀌면 renderer 가
+        // `DWriteFontContext.init` 으로 Context 를 새로 만들고 옛 것을 `deinit` 한다
+        // (`renderer/windows.zig` 의 `recreateFontResources`) — face 만 갈아 끼우는
+        // 경로가 없어서, Linux 의 `freeFaces` 에 해당하는 무효화 지점이 이 자리 하나다.
+        self.cluster_cache.deinit();
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
@@ -468,7 +496,36 @@ pub const DWriteFontContext = struct {
         return result;
     }
 
+    /// #399 (B) — 캐시를 씌운 층. shape 자체는 `resolveGraphemeUncached` 가 한다.
+    ///
+    /// **소유권이 이 함수의 핵심이다.** 셀 루프는 `result.owned` 면 매 프레임 `Release` 하는데
+    /// (`renderer/windows.zig` 6 곳), 캐시에 담은 face 를 `owned = true` 로 돌려주면 그 Release
+    /// 가 캐시 안의 face 를 죽인다 (use-after-free). 그래서 **캐시가 소유권을 가져가고 caller
+    /// 에게는 `owned = false`** 로 준다. 해제는 `releaseCluster` 가 퇴출 · 무효화 때 한다.
+    ///
+    /// ⚠️ **담지 못하는 cluster 는 소유권을 넘기면 안 된다.** `ClusterCache.put` 은 키 상한
+    /// (`MAX_KEY_CPS` = 8) 을 넘으면 담지 않고 **그 자리에서 값을 해제**한다 (소유권을 받았다고
+    /// 보기 때문이다). 그때까지 `owned = false` 로 바꿔 주면 caller 가 이미 죽은 face 를 쓴다.
+    /// 그래서 담을 수 있는지 **먼저 판정**하고, 못 담으면 원래 소유권 그대로 돌려준다.
     fn resolveGraphemeInner(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
+        if (self.cluster_cache.get(cps)) |cached| {
+            const c = cached orelse return null; // negative hit — chain 을 다시 헛돌지 않는다
+            var out = c;
+            out.owned = false; // 캐시가 계속 소유한다
+            return out;
+        }
+
+        const result = self.resolveGraphemeUncached(cps);
+        if (cps.len == 0 or cps.len > cluster_cache.MAX_KEY_CPS) return result;
+
+        self.cluster_cache.put(cps, result);
+        const r = result orelse return null;
+        var out = r;
+        out.owned = false;
+        return out;
+    }
+
+    fn resolveGraphemeUncached(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
         if (cps.len == 0 or self.text_analyzer == null) return null;
 
         // UTF-21 codepoint slice → UTF-16 buffer (surrogate pair 처리).
@@ -578,8 +635,10 @@ pub const DWriteFontContext = struct {
         const t0 = perf.now();
         const n = self.resolveGraphemeRunInner(clusters, out);
         perf.addTimed(&perf.shape, t0);
-        // miss 는 **런 단위**로 센다 — 개별 경로로 떨어진 런의 수다.
-        if (n == 0) perf.incExtra(&perf.shape);
+        // **여기서 miss 를 세지 않는다.** 런이 실패하면 호출자가 그 셀들을 개별 경로로 다시
+        // 도는데, 거기서 `resolveGrapheme` 이 같은 실패를 또 센다 — 한 실패가 두 번 잡혀
+        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 61c8795). 런 실패는 정상적인
+        // fallback 이지 shaping 실패가 아니다.
         return n;
     }
 
@@ -591,6 +650,29 @@ pub const DWriteFontContext = struct {
         if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
         if (out.len < clusters.len) return 0;
         if (self.text_analyzer == null) return 0;
+
+        // #399 (B) — shape 하기 전에 런의 cluster 를 **전부** 캐시에서 찾는다. 다 있으면
+        // `GetGlyphs` 없이 끝난다. `zwj` 처럼 한 줄이 같은 cluster 면 첫 런 이후 shape 가 0 이다.
+        //
+        // 하나라도 없으면 (또는 캐시된 결과가 실패면) 아래 기존 경로로 간다 — 부분만 쓰고
+        // 나머지를 shape 하는 식으로 섞지 않는다. 런은 **한 face 로 전체를 맞추는 것이 전제**라
+        // 섞으면 그 전제가 깨진다.
+        //
+        // 여기서 담기는 값은 전부 chain face (`owned = false`) 라 소유권 문제가 없다 — 런
+        // 경로는 `MapCharacters` 를 쓰지 않는다.
+        var all_hit = true;
+        for (clusters, 0..) |c, i| {
+            if (self.cluster_cache.get(c)) |cached| {
+                if (cached) |v| {
+                    out[i] = v;
+                    out[i].owned = false;
+                    continue;
+                }
+            }
+            all_hit = false;
+            break;
+        }
+        if (all_hit) return clusters.len;
 
         var u16_buf: [MAX_RUN_U16]WCHAR = undefined;
         // cluster `i` 의 UTF-16 시작 위치. 끝에 센티넬 (= 전체 길이) 을 넣어 범위를
@@ -620,8 +702,13 @@ pub const DWriteFontContext = struct {
 
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
-            if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], out))
+            if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], out)) {
+                // 다음 런이 shape 를 건너뛸 수 있게 담는다. 전부 chain face 라 캐시가 해제할
+                // 것이 없고 (`owned = false`), 키에 안 들어가는 cluster 는 `put` 이 조용히
+                // 버린다 — 그때도 값에 소유권이 없어 안전하다.
+                for (0..clusters.len) |i| self.cluster_cache.put(clusters[i], out[i]);
                 return clusters.len;
+            }
         }
         return 0;
     }
