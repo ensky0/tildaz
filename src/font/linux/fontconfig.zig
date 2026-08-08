@@ -65,6 +65,22 @@ const FcPatternAddCharSet = *const fn (
     cs: *const FcCharSet,
 ) callconv(.c) c_int;
 
+// #406 — 설치된 family **목록**을 얻는다. `FcFontMatch` 는 요청한 이름이 시스템에 없어도
+// 항상 무언가를 돌려주므로 (오타 `NoSuchFont12345` 에도 `Noto Sans` 가 나온다) 그것만으로는
+// "설치돼 있는데 별칭이 가로챈 것" 과 "아예 없는 것" 을 가를 수 없다. 목록에 있는지로 가른다 —
+// macOS 의 `CTFontManagerCopyAvailableFontFamilyNames` 에 해당한다.
+const FcObjectSet = opaque {};
+const FcFontSet = extern struct {
+    nfont: c_int,
+    sfont: c_int,
+    fonts: ?[*]?*FcPattern,
+};
+const FcObjectSetCreate = *const fn () callconv(.c) ?*FcObjectSet;
+const FcObjectSetAdd = *const fn (os: *FcObjectSet, object: [*:0]const u8) callconv(.c) c_int;
+const FcObjectSetDestroy = *const fn (os: *FcObjectSet) callconv(.c) void;
+const FcFontList = *const fn (config: ?*anyopaque, p: *FcPattern, os: *FcObjectSet) callconv(.c) ?*FcFontSet;
+const FcFontSetDestroy = *const fn (s: *FcFontSet) callconv(.c) void;
+
 const Api = struct {
     handle: *anyopaque,
     init: FcInit,
@@ -81,6 +97,11 @@ const Api = struct {
     charset_destroy: FcCharSetDestroy,
     charset_add_char: FcCharSetAddChar,
     pattern_add_charset: FcPatternAddCharSet,
+    object_set_create: FcObjectSetCreate,
+    object_set_add: FcObjectSetAdd,
+    object_set_destroy: FcObjectSetDestroy,
+    font_list: FcFontList,
+    font_set_destroy: FcFontSetDestroy,
 
     fn load() !Api {
         const handle = std.c.dlopen("libfontconfig.so.1", .{ .LAZY = true }) orelse return error.FontconfigLibraryMissing;
@@ -102,6 +123,11 @@ const Api = struct {
             .charset_destroy = lookupSym(handle, FcCharSetDestroy, "FcCharSetDestroy") orelse return error.FontconfigSymbolMissing,
             .charset_add_char = lookupSym(handle, FcCharSetAddChar, "FcCharSetAddChar") orelse return error.FontconfigSymbolMissing,
             .pattern_add_charset = lookupSym(handle, FcPatternAddCharSet, "FcPatternAddCharSet") orelse return error.FontconfigSymbolMissing,
+            .object_set_create = lookupSym(handle, FcObjectSetCreate, "FcObjectSetCreate") orelse return error.FontconfigSymbolMissing,
+            .object_set_add = lookupSym(handle, FcObjectSetAdd, "FcObjectSetAdd") orelse return error.FontconfigSymbolMissing,
+            .object_set_destroy = lookupSym(handle, FcObjectSetDestroy, "FcObjectSetDestroy") orelse return error.FontconfigSymbolMissing,
+            .font_list = lookupSym(handle, FcFontList, "FcFontList") orelse return error.FontconfigSymbolMissing,
+            .font_set_destroy = lookupSym(handle, FcFontSetDestroy, "FcFontSetDestroy") orelse return error.FontconfigSymbolMissing,
         };
     }
 
@@ -169,6 +195,52 @@ fn sharedApi() !*Api {
         cached_api = api;
     }
     return &cached_api.?;
+}
+
+/// #406 — `family` 가 **설치된 family 목록에 있는지**. 이름 비교는 `eql` 이 판정한다
+/// (호출자가 정규화 규칙을 정한다 — 대소문자 · 띄어쓰기 무시 등).
+///
+/// **왜 목록을 보나** — `FcFontMatch` 는 요청 이름이 시스템에 없어도 항상 무언가를 돌려준다
+/// (오타 `NoSuchFont12345` 에도 `Noto Sans` 가 나온다). 그래서 그 반환값만으로는 아래 둘을
+/// 가를 수 없는데, 우리는 갈라야 한다.
+///
+///   - `Noto Color Emoji` -> `Twemoji`  : 설치돼 있는데 별칭 규칙이 가로챈 것 -> 띄운다
+///   - `NoSuchFont12345`  -> `Noto Sans`: 아예 없는 것 -> fatal
+///
+/// 목록 조회에 실패하면 `error.FontconfigListUnavailable` — 호출자는 **미설치로 오판하지 않고**
+/// 기존 경로에 맡긴다 (판정 불가는 거절 사유가 아니다).
+pub fn familyListed(
+    family: []const u8,
+    eql: *const fn (a: []const u8, b: []const u8) bool,
+) !bool {
+    var api = try Api.load();
+    defer api.deinit();
+    if (api.init() == 0) return error.FontconfigInitFailed;
+
+    const pattern = api.pattern_create() orelse return error.FontconfigListUnavailable;
+    defer api.pattern_destroy(pattern);
+
+    const os = api.object_set_create() orelse return error.FontconfigListUnavailable;
+    defer api.object_set_destroy(os);
+    if (api.object_set_add(os, "family") == 0) return error.FontconfigListUnavailable;
+
+    const set = api.font_list(null, pattern, os) orelse return error.FontconfigListUnavailable;
+    defer api.font_set_destroy(set);
+
+    const fonts = set.fonts orelse return error.FontconfigListUnavailable;
+    var i: usize = 0;
+    while (i < @as(usize, @intCast(set.nfont))) : (i += 1) {
+        const pat = fonts[i] orelse continue;
+        // 한 pattern 이 family 를 여러 개 가진다 (별칭 · 번역된 이름). 전부 본다.
+        var n: c_int = 0;
+        while (true) : (n += 1) {
+            var value: [*:0]FcChar8 = undefined;
+            if (api.pattern_get_string(pat, "family", n, &value) != 0) break;
+            const name = std.mem.span(@as([*:0]const u8, @ptrCast(value)));
+            if (eql(family, name)) return true;
+        }
+    }
+    return false;
 }
 
 pub fn lookup(allocator: std.mem.Allocator, family: [*:0]const u8) !MatchResult {
