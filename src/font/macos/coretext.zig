@@ -259,6 +259,20 @@ pub extern "CoreText" fn CTRunGetPositions(run: CTRunRef, range: CFRange, buffer
 // glyph/position 과 같은 규칙 — null 이면 buffer 복사본을 쓴다.
 pub extern "CoreText" fn CTRunGetStringIndicesPtr(run: CTRunRef) ?[*]const CFIndex;
 pub extern "CoreText" fn CTRunGetStringIndices(run: CTRunRef, range: CFRange, buffer: [*]CFIndex) void;
+// #401 — cluster 가 **실제로 차지하는 가로 폭**. 셀 안 가운데 정렬 (`glyphCenterDx`) 이 이
+// 값을 쓴다. `range` 로 run 의 일부만 물을 수 있어서 배칭 (여러 cluster 가 한 run) 에서도
+// cluster 별로 잰다.
+//
+// ⚠️ **advance 를 더하면 안 된다.** `CTRunGetAdvances` 를 합치면 combining mark 몫이 이중으로
+// 들어가 Arabic (`بِ`) 이 9.00 대신 11.42 로 나온다 (실측). CoreText 는 mark 에도 advance 를
+// 주고 그만큼 position 을 되돌리는 식이라, 폭을 알려면 이 함수를 물어야 한다.
+pub extern "CoreText" fn CTRunGetTypographicBounds(
+    run: CTRunRef,
+    range: CFRange,
+    ascent: ?*CGFloat,
+    descent: ?*CGFloat,
+    leading: ?*CGFloat,
+) f64;
 
 pub extern "CoreFoundation" fn CFDictionaryGetValue(dict: CFDictionaryRef, key: ?*const anyopaque) ?*const anyopaque;
 
