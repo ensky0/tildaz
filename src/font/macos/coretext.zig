@@ -102,6 +102,12 @@ pub extern "CoreFoundation" fn CFStringCompare(
 
 // #405 — CFString 을 UTF-8 로 꺼낸다. 폰트 검증이 "요청한 이름이 실제로 어떤 family 로
 // 해석됐는지" 를 사용자 메시지에 실을 때 쓴다 (`CTFontCopyFamilyName` 결과가 CFString 이다).
+// #406 — 설치된 font family 이름 목록. `CTFontCreateWithName` 이 **없는 이름에도 실패하지 않고
+// 시스템 기본 폰트를 돌려주기 때문에**, 그것만으로는 "오타 · 미설치" 와 "설치돼 있는데 family 가
+// 다름 (PostScript 이름을 적은 경우 등)" 을 가를 수 없다. 이 목록에 있는지로 가른다 — Linux 의
+// `FontconfigNoMatch` 에 해당하는 판정이다.
+pub extern "CoreText" fn CTFontManagerCopyAvailableFontFamilyNames() ?CFArrayRef;
+
 pub extern "CoreText" fn CFStringGetLength(theString: CFStringRef) CFIndex;
 pub extern "CoreText" fn CFStringGetBytes(
     theString: CFStringRef,

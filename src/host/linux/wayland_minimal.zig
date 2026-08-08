@@ -1513,6 +1513,9 @@ const Client = struct {
                 // 원인을 찾을 수 있게 한다.
                 var sub_buf: [256]u8 = undefined;
                 const avail = font_linux.familyInstalledDetail(self.allocator, family, &sub_buf);
+                // #406 — 대체된 것 (`.substituted`) 은 폰트가 실재하므로 막지 않는다. 로더가
+                // 그 폰트로 chain 을 만들고 로그를 남긴다. 시작을 막는 것은 이름이 아예
+                // 없을 때 (`.missing`) 뿐이다.
                 if (avail.availability != .missing) continue;
                 var font_msg_buf: [2048]u8 = undefined;
                 const msg = font_validate.notFoundMessageSub(&font_msg_buf, family, chain, avail.substitute);
