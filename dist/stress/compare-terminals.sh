@@ -36,9 +36,9 @@ REPEAT=1
 # 기본값 100,000 으로 재면 우리만 불리하다: 파서 층 실측으로 `plain` 이 100,000 → 9,000
 # 에서 +45 % (294.6 → 427.8 MiB/s) 였다. 100,000 줄이면 작업 집합이 약 120 MB 다.
 #
-# **wt 는 이 값으로 맞출 수 없다** — `settings.json` 의 `profiles.defaults.historySize` 를
-# 직접 고쳐야 한다. 스크립트는 그것을 대신 하지 않고 (사용자 설정 파일이다) 아래에서
-# 안내만 한다. **conhost 는 아예 불가**다 (`mode con: lines` 가 창=버퍼).
+# **wt 도 이 값으로 맞춘다** — `historySize` 가 profile 설정이라 CLI 로는 못 주지만, JSON
+# fragment 로 측정용 프로필을 더해 거기에 담는다 (아래 `wt_fragment_apply`). 사용자
+# `settings.json` 은 건드리지 않는다. **conhost 는 아예 불가**다 (`mode con: lines` 가 창=버퍼).
 SCROLLBACK=32767
 
 # `--capture [디렉터리]` — **smoke 확인용**이다 (#381). 각 회차의 측정이 끝난 순간 화면을
@@ -229,92 +229,132 @@ cleanup_terminals() {
         kill "$_p" 2>/dev/null || true
     done
 }
-# --- wt 의 scrollback 을 맞추기 위한 설정 파일 교체 (#381, Windows 전용) ---------------
+# --- wt 의 scrollback 을 맞추기 위한 fragment 프로필 (#381, Windows 전용) ---------------
 #
-# **wt 는 `historySize` 를 CLI 로 못 받는다** — profile 설정이라 `settings.json` 뿐이다. 그래서
-# 다른 대상과 scrollback 을 맞추려면 그 파일을 바꿔야 한다. 사용자 파일이므로 절차를 못 박는다.
+# **wt 는 `historySize` 를 CLI 로 못 받는다** — profile 설정이다. 그래서 다른 대상과 scrollback
+# 을 맞추려면 프로필을 하나 만들어야 하는데, **사용자 `settings.json` 을 건드리지 않고** 할 수
+# 있다: [JSON fragment extension](https://learn.microsoft.com/en-us/windows/terminal/json-fragment-extensions)
+# 이다. iTerm2 의 Dynamic Profiles 와 같은 자리이고, 아래 `iterm2_profile_*` 와 대칭이다.
 #
-#   1. 원본을 `<settings>.tildaz-compare-backup` 으로 **백업**
-#   2. 측정 전용 **최소 설정**으로 교체 (`historySize` = `--scrollback`)
-#   3. 끝나면 (`trap EXIT`) 백업에서 **복원**하고 백업 파일 삭제
+#   `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\{앱}\{파일}.json`
 #
-# **crash 로 죽어도 복원된다** — 백업이 남아 있으면 다음 실행이 시작할 때 먼저 복원한다.
-# 백업을 `WORK_DIR` 이 아니라 설정 파일 옆에 두는 이유가 그것이다 (`WORK_DIR` 은 trap 이 지운다).
+# 그 디렉터리의 `.json` 을 wt 가 전부 읽어 프로필로 더한다. 우리는 **우리가 만든 디렉터리
+# 하나만 지우면 끝**이다.
 #
-# 최소 설정을 쓰는 이유는 두 가지다. 사용자 파일을 JSON 파싱하지 않아도 되고 (주석이 섞여 있을
-# 수 있다), 폰트 · acrylic · 스킴 같은 사용자 커스터마이즈가 측정에 섞이지 않는다.
+# **`hidden: true` 가 핵심이다** (실측, #381):
 #
-# ⚠ **wt 창이 열려 있으면 그 창의 설정도 잠시 바뀐다** (wt 가 파일 변경을 감시해 재적용한다).
-# 측정이 끝나면 복원되지만 눈에 보이므로 실행 시 경고한다.
-WT_SETTINGS=""
-WT_BACKUP=""
+#   | `hidden` | `-p` 로 띄우기 | 사용자 `settings.json` |
+#   |---|---|---|
+#   | `false`  | 된다 | ❌ 참조 **스텁이 기록된다** (1,986 → 2,197 byte) |
+#   | `true`   | 된다 | ✅ **한 바이트도 안 바뀐다** (해시 동일) |
+#
+# wt 는 fragment 프로필을 발견하면 보통 사용자 파일에 `{guid, name, source}` 스텁을 남기는데
+# (WSL · Azure 프로필이 목록에 있는 것과 같은 방식), **`hidden: true` 면 그것조차 없다.** 그러면서
+# `-p` 로는 정상적으로 띄워진다.
+#
+# **예전에는 `settings.json` 을 통째로 갈아끼우고 `trap` 으로 복원했다.** 그 구조에서는 crash 로
+# 죽으면 사용자 설정이 임시본인 채로 남아서, 백업을 설정 파일 옆에 두고 다음 실행이 복원하는
+# 안전장치가 필요했다. 덮어쓰지 않으면 지킬 것이 없으므로 그 세 겹이 통째로 없어졌다.
+WT_FRAGMENT_DIR=""
+WT_PROFILE_NAME="tildaz-compare"
 
-wt_settings_find() {
-    [ "$IS_WINDOWS" = 1 ] || return 1
-    command -v wt >/dev/null 2>&1 || return 1
-    [ -n "${LOCALAPPDATA:-}" ] || return 1
-    _lad=$(cygpath -u "$LOCALAPPDATA" 2>/dev/null) || return 1
-    for _p in \
+wt_fragment_apply() {
+    [ "$IS_WINDOWS" = 1 ] || return 0
+    command -v wt >/dev/null 2>&1 || return 0
+    [ -n "${LOCALAPPDATA:-}" ] || return 0
+    _lad=$(cygpath -u "$LOCALAPPDATA" 2>/dev/null) || return 0
+
+    WT_FRAGMENT_DIR="$_lad/Microsoft/Windows Terminal/Fragments/tildaz-compare"
+    mkdir -p "$WT_FRAGMENT_DIR" || { WT_FRAGMENT_DIR=""; return 0; }
+
+    # ⚠ 파일은 **UTF-8** 이어야 한다 (공식 문서 경고 — PowerShell 로 만들면 기본이 UTF-16LE 라
+    # wt 가 못 읽는다). heredoc 은 셸이 그대로 쓰므로 문제없다.
+    #
+    # `commandline` 은 자리를 채우는 값이고 **실제 명령은 CLI 인자로 덮어쓴다** — producer 경로와
+    # 환경변수는 다른 대상과 같은 방식으로 넘어간다.
+    cat > "$WT_FRAGMENT_DIR/measure.json" << EOF
+{
+    "profiles":
+    [
+        {
+            "name": "$WT_PROFILE_NAME",
+            "commandline": "cmd.exe",
+            "historySize": $SCROLLBACK,
+            "hidden": true
+        }
+    ]
+}
+EOF
+    echo "wt 측정용 프로필을 fragment 로 추가했어요 (historySize=$SCROLLBACK · hidden)."
+    echo "  사용자 settings.json 은 건드리지 않아요. 끝나면 이 디렉터리만 지워요: $WT_FRAGMENT_DIR"
+    # wt 는 시작할 때 fragment 를 읽는다. 쓰기 직후 곧바로 띄우면 아직 못 본 채로 뜰 수 있다.
+    sleep 1
+}
+
+wt_fragment_remove() {
+    [ -n "$WT_FRAGMENT_DIR" ] || return 0
+    [ -d "$WT_FRAGMENT_DIR" ] || return 0
+    rm -rf "$WT_FRAGMENT_DIR"
+}
+
+# fragment 를 지워도 **사용자 `settings.json` 에는 참조 스텁이 남는다.**
+#
+#   { "guid": "...", "hidden": true, "name": "tildaz-compare", "source": "tildaz-compare" }
+#
+# wt 는 fragment · dynamic 프로필을 발견하면 이 스텁을 자기 파일에 적는다 (WSL · Azure 프로필이
+# 목록에 있는 것과 같은 방식이고, **종료할 때** 쓴다). fragment 를 지운 뒤 wt 를 다시 띄워도
+# **자동으로 정리되지 않는다** (실측, #381). `hidden: true` 라 사용자 눈에는 안 보이지만, 우리가
+# 만든 것이므로 우리가 지운다.
+#
+# **JSON 파싱을 하지 않는다.** wt 설정은 주석을 허용하는 JSONC 라 파서 왕복이 사용자 주석을
+# 날린다 — 사용자 파일을 통째로 갈아끼우지 않으려고 이 방식으로 온 마당에 그건 앞뒤가 안 맞는다.
+# 우리가 넣은 `source` 값으로 블록을 찾아 **그 범위만** 들어낸다.
+wt_stub_remove() {
+    [ "$IS_WINDOWS" = 1 ] || return 0
+    [ -n "${LOCALAPPDATA:-}" ] || return 0
+    _lad=$(cygpath -u "$LOCALAPPDATA" 2>/dev/null) || return 0
+    for _s in \
         "$_lad/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json" \
         "$_lad/Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json" \
         "$_lad/Microsoft/Windows Terminal/settings.json"
     do
-        if [ -f "$_p" ]; then echo "$_p"; return 0; fi
-    done
-    return 1
-}
-
-wt_settings_apply() {
-    WT_SETTINGS=$(wt_settings_find) || return 0
-    WT_BACKUP="$WT_SETTINGS.tildaz-compare-backup"
-
-    if [ -f "$WT_BACKUP" ]; then
-        echo "⚠ 이전 실행이 남긴 wt 설정 백업이 있어요 (그 회차가 비정상 종료) — 먼저 복원해요"
-        cp -f "$WT_BACKUP" "$WT_SETTINGS"
-    fi
-    cp -f "$WT_SETTINGS" "$WT_BACKUP" || { WT_BACKUP=""; return 0; }
-
-    # guid 는 이 스크립트 전용 고정값이다 (사용자 프로필 guid 에 의존하지 않는다).
-    cat > "$WT_SETTINGS" << EOF
-{
-    "\$schema": "https://aka.ms/terminal-profiles-schema",
-    "defaultProfile": "{d0c1f3a2-0000-4000-8000-000000000381}",
-    "actions": [],
-    "schemes": [],
-    "themes": [],
-    "profiles":
-    {
-        "defaults":
-        {
-            "historySize": $SCROLLBACK
-        },
-        "list":
-        [
-            {
-                "guid": "{d0c1f3a2-0000-4000-8000-000000000381}",
-                "name": "tildaz-compare",
-                "commandline": "cmd.exe",
-                "hidden": false
+        [ -f "$_s" ] || continue
+        grep -q "\"source\"[[:space:]]*:[[:space:]]*\"$WT_PROFILE_NAME\"" "$_s" || continue
+        _tmp="$_s.tildaz-clean"
+        # 우리 블록의 시작 (`{` 만 있는 줄) 과 끝 (`}` · `},`) 을 찾아 그 구간을 버린다.
+        # 우리 항목이 **목록의 마지막**이면 닫는 줄에 콤마가 없으므로, 바로 앞 블록의 `},` 에서
+        # 콤마를 떼어야 JSON 이 유효하다.
+        awk -v marker="$WT_PROFILE_NAME" '
+            { line[NR] = $0 }
+            END {
+                t = 0
+                for (i = 1; i <= NR; i++)
+                    if (line[i] ~ ("\"source\"[ \t]*:[ \t]*\"" marker "\"")) { t = i; break }
+                if (t == 0) { for (i = 1; i <= NR; i++) print line[i]; exit }
+                s = t; while (s > 1 && line[s] !~ /^[ \t]*\{[ \t]*$/) s--
+                e = t; while (e < NR && line[e] !~ /^[ \t]*\}[ \t]*,?[ \t]*$/) e++
+                if (line[e] !~ /,[ \t]*$/) {
+                    p = s - 1
+                    while (p > 1 && line[p] !~ /^[ \t]*\}[ \t]*,[ \t]*$/) p--
+                    if (p > 1) sub(/,[ \t]*$/, "", line[p])
+                }
+                for (i = 1; i <= NR; i++) { if (i >= s && i <= e) continue; print line[i] }
             }
-        ]
-    }
-}
-EOF
-    echo "wt 설정을 측정용으로 교체했어요 (historySize=$SCROLLBACK). 끝나면 복원해요."
-    echo "  백업: $WT_BACKUP"
-    # wt 는 파일 변경을 감시해 재적용한다. 쓰기 직후 곧바로 띄우면 옛 설정으로 뜰 수 있다.
-    sleep 1
-}
-
-wt_settings_restore() {
-    [ -n "$WT_BACKUP" ] || return 0
-    [ -f "$WT_BACKUP" ] || return 0
-    if cp -f "$WT_BACKUP" "$WT_SETTINGS"; then
-        rm -f "$WT_BACKUP"
-        echo "wt 설정을 원래대로 복원했어요."
-    else
-        echo "⚠ wt 설정 복원 실패 — 백업이 여기 있어요: $WT_BACKUP" >&2
-    fi
+        ' "$_s" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; continue; }
+        # wt 가 쓴 파일은 **끝 개행이 없다.** awk 는 마지막 줄에 개행을 붙이므로 그대로 두면
+        # 내용이 같아도 1 byte 가 커진다. 원본이 개행으로 끝나지 않았으면 맞춰 준다 —
+        # `$(cat …)` 이 trailing newline 을 떼므로 `printf '%s'` 로 다시 쓴다.
+        if [ -n "$(tail -c 1 "$_s")" ]; then
+            printf '%s' "$(cat "$_tmp")" > "$_tmp.n" && mv -f "$_tmp.n" "$_tmp"
+        fi
+        # 결과가 비었거나 마커가 그대로면 손대지 않는다 — 어설프게 쓰느니 스텁을 남긴다.
+        if [ -s "$_tmp" ] && ! grep -q "\"source\"[[:space:]]*:[[:space:]]*\"$WT_PROFILE_NAME\"" "$_tmp"; then
+            cp -f "$_tmp" "$_s" && echo "wt 설정에서 측정용 프로필 스텁을 지웠어요."
+        else
+            echo "⚠ wt 설정의 스텁을 못 지웠어요 — 직접 지워요 (\"name\": \"$WT_PROFILE_NAME\"): $_s" >&2
+        fi
+        rm -f "$_tmp"
+    done
 }
 
 # iTerm2 는 **Dynamic Profiles** 로 준다 — 격자 · scrollback · 실행 명령을 JSON 하나에 담고
@@ -330,7 +370,7 @@ iterm2_profile_remove() {
 # ⚠️ 각 단계를 `|| true` 로 끊어 준다. `set -e` 아래에서는 앞 단계가 non-zero 를 돌려주면
 # **거기서 trap 이 끊겨** 뒤가 통째로 안 돈다 — 실제로 `hygiene_end` 가 실행되지 않아 창이
 # 내려간 채로 남았다 (실측). 복원은 하나라도 빠지면 사용자 환경이 바뀐 채 끝난다.
-trap 'cleanup_terminals || true; wt_settings_restore || true; iterm2_profile_remove || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
+trap 'cleanup_terminals || true; wt_fragment_remove || true; wt_stub_remove || true; iterm2_profile_remove || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
@@ -434,7 +474,7 @@ fi
 # 가 같은 동작을 하게 했고, 그래서 그 순서 함정이 구조적으로 없어졌다.
 
 # wt 설정 교체는 측정 직전에 (헤더를 찍은 뒤) 한다 — 실패해도 헤더는 남는다.
-wt_settings_apply
+wt_fragment_apply
 echo ""
 
 # producer 를 셸 명령 한 줄로. 터미널마다 이 문자열을 자기 방식으로 실행한다.
@@ -1294,11 +1334,24 @@ fi
 #   그것을 걸러낸다.
 # - `-w new` 가 필수다. 사용자의 `windowingBehavior` 가 `useAnyExisting` 이면 `wt` 가 **기존
 #   창에 탭으로** 붙어서 창 크기 옵션이 의미를 잃는다. `new` 는 항상 새 창이다.
+# - `-p` 로 위 `wt_fragment_apply` 가 만든 측정용 프로필을 고른다. scrollback 이 거기서 온다.
+#
+# ⚠ **`--size` 는 `-p` 보다 앞에 와야 한다.** `-p` 를 주면 파서가 서브커맨드 모드로 들어가서
+#   뒤따르는 `--size` 를 못 받고 `The following argument was not expected: --size` 로 죽는다
+#   (실측, #381). wezterm 의 `--config` 가 `start` 앞에 와야 하는 것과 같은 종류다.
 if [ "$IS_WINDOWS" = 1 ] && command -v wt >/dev/null 2>&1; then
     # 표 이름은 실행 파일명 `wt` 를 쓴다 — "windows-terminal" 은 표의 이름 칸 (14) 을 넘겨
     # 줄이 밀린다.
-    run_terminal_win wt wt -w new --size "$COLS,$ROWS" \
-        "$(native_path "$PRODUCER")"
+    if [ -n "$WT_FRAGMENT_DIR" ]; then
+        run_terminal_win wt wt -w new --size "$COLS,$ROWS" -p "$WT_PROFILE_NAME" \
+            "$(native_path "$PRODUCER")"
+    else
+        # fragment 를 못 만든 경우 (LOCALAPPDATA 없음 등) — 기본 프로필로 돈다. 그때는
+        # scrollback 이 사용자 설정값이라 다른 대상과 조건이 다르다.
+        echo "⚠ wt 측정용 프로필을 못 만들었어요 — 기본 프로필로 돌아요 (scrollback 이 안 맞아요)"
+        run_terminal_win wt wt -w new --size "$COLS,$ROWS" \
+            "$(native_path "$PRODUCER")"
+    fi
 fi
 
 # conhost — Windows 의 전통 콘솔 호스트 (`%windir%\System32\conhost.exe`). `cmd.exe` 는 UI 가
