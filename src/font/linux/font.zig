@@ -1109,6 +1109,8 @@ pub const Context = struct {
         var ys: [MAX_CLUSTER_GLYPHS]i32 = undefined;
 
         var pen_x: i32 = 0;
+        // #415 — 직전 base 글리프가 시작한 pen. HarfBuzz 가 배치를 안 한 mark 를 되돌릴 자리다.
+        var base_x: i32 = 0;
         var pixel_mode: u8 = 0;
         var have_ink = false;
         var min_x: i32 = std.math.maxInt(i32);
@@ -1119,10 +1121,32 @@ pub const Context = struct {
         for (glyphs, 0..) |g, i| {
             const r = self.glyphByIndex(face_idx, g.glyph_index);
             rasters[i] = r;
+
+            // #415 — **HarfBuzz 가 mark 를 배치하지 못한 경우를 여기서 되돌린다.**
+            //
+            // combining mark (`x_advance == 0`) 인데 `x_offset` 까지 0 이면, mark 가 pen —
+            // 즉 base 의 advance 뒤 — 에 그대로 남는다는 뜻이다. 배치가 됐다면 base 위로
+            // 당기는 음수 offset 이 왔어야 한다. 그대로 그리면 mark 가 옆 셀로 나간다.
+            //
+            // HarfBuzz 는 `kerx` · `GPOS` · `kern` 이 **모두 없을 때만** 자체 fallback mark
+            // positioning 을 한다. DejaVu Sans Mono 처럼 GPOS 는 있는데 그 조합의 anchor 만
+            // 없는 폰트는 그 사이에 빠져서 (`a` + `U+0301` 이 `á` 로 합성된 뒤의 `U+0308`)
+            // 아무도 배치를 안 해 준다. 그 계층을 우리가 채운다 — 증상을 가리는 보정이 아니라
+            // GPOS 가 불완전한 폰트에 같은 fallback 을 적용하는 것이다.
+            //
+            // 되돌릴 자리는 직전 base 의 시작 pen 이다. mark 글리프는 자기 bearing 에 "base 위
+            // 중앙" 이 이미 들어 있어서 원점만 맞추면 정렬이 따라온다 (실측 — `a` 는 x 1~11 로
+            // 중앙이 6 이고 diaeresis 는 bearing 3 · 폭 6 이라 3~9 로 중앙이 6 이다).
+            const unplaced_mark = i > 0 and g.x_advance == 0 and g.x_offset == 0;
+            const origin = if (unplaced_mark) base_x else pen_x;
+
             // FreeType 은 baseline 기준 · 위쪽이 양수, 화면은 아래쪽이 양수라 부호가 뒤집힌다.
-            xs[i] = pen_x + g.x_offset + r.bitmap_left;
+            xs[i] = origin + g.x_offset + r.bitmap_left;
             ys[i] = -g.y_offset - r.bitmap_top;
-            pen_x += g.x_advance;
+            if (g.x_advance != 0) {
+                base_x = pen_x;
+                pen_x += g.x_advance;
+            }
 
             if (r.width == 0 or r.height == 0) continue; // space 등 잉크 없는 글리프
             if (pixel_mode == 0) {
