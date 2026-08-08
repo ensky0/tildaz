@@ -35,6 +35,16 @@ pub const GlyphResult = struct {
     positions: [MAX_CLUSTER_GLYPHS]ct.CGPoint = undefined,
     /// 유효한 글리프 수. 1 이면 `index` 만 쓰면 된다.
     count: u8 = 1,
+
+    /// #401 — cluster 가 차지하는 가로 폭 (pt). 셀 안 가운데 정렬이 이 값을 쓴다.
+    ///
+    /// **첫 글리프의 advance 로는 안 된다.** 앞에 오는 모음처럼 cluster 안 글리프가 **가로로
+    /// 늘어서는** 경우 (Devanagari `क्षि`) 첫 글리프가 4.09 pt 인데 cluster 는 15.33 pt 를
+    /// 차지한다. 그 차이만큼 글자가 오른쪽으로 밀려 옆 칸을 침범했다 (실측 14 px).
+    /// 겹쳐 그리는 cluster (emoji ZWJ · 결합 기호) 는 둘이 같아서 영향이 없다.
+    ///
+    /// 0 이면 모르는 것이고, atlas 가 단일 글리프 advance 로 물러선다.
+    advance: f32 = 0,
 };
 
 /// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
@@ -602,8 +612,17 @@ pub const CoreTextFontContext = struct {
         const line = ct.CTLineCreateWithAttributedString(attr_str) orelse return 0;
         defer ct.CFRelease(line);
 
-        // cluster 마다 **첫 글리프만** 쓴다 (개별 경로와 같은 정책). 이미 채웠는지로 판정한다.
+        // #401 — cluster 마다 **글리프를 전부** 모은다 (개별 경로와 같은 정책).
+        //
+        // 예전에는 첫 글리프만 담고 `glyphs` · `positions` · `count` 를 채우지 않았는데,
+        // 호출부는 그 셋을 읽는다. 그래서 **미정의 값으로 그렸고, 그 결과가 캐시에까지 들어가**
+        // 한 번 배칭을 탄 cluster 는 이후 개별 경로에서도 계속 깨졌다 (실기: `[áéíóú]` 가
+        // 두부 하나로). 개별 경로만 multi-glyph 로 옮기고 여기를 빠뜨린 회귀였다.
         var filled = [_]bool{false} ** MAX_RUN_CLUSTERS;
+        // 각 cluster 가 run 안에서 차지한 글리프 구간. 폭을 재고 (`CTRunGetTypographicBounds`)
+        // 구간이 연속인지 확인하는 데 쓴다.
+        var g_lo = [_]usize{0} ** MAX_RUN_CLUSTERS;
+        var g_hi = [_]usize{0} ** MAX_RUN_CLUSTERS;
         var count: usize = 0;
 
         const runs = ct.CTLineGetGlyphRuns(line);
@@ -624,8 +643,9 @@ pub const CoreTextFontContext = struct {
             const n: usize = @intCast(glyph_count);
             var glyphs_buf: [MAX_RUN_CLUSTERS * 2]ct.CGGlyph = undefined;
             var idx_buf: [MAX_RUN_CLUSTERS * 2]ct.CFIndex = undefined;
-            // 글리프가 버퍼보다 많으면 앞부분만 본다 — 우리는 cluster 당 첫 글리프만 쓰므로
-            // 뒤쪽은 어차피 버린다. 다만 그때는 뒤 cluster 가 안 채워져 아래에서 0 으로 떨어진다.
+            var pos_buf: [MAX_RUN_CLUSTERS * 2]ct.CGPoint = undefined;
+            // 글리프가 버퍼보다 많으면 앞부분만 본다. 그러면 뒤 cluster 가 안 채워져 아래에서
+            // 0 으로 떨어지고, 런 전체가 개별 경로로 간다.
             const take = @min(n, glyphs_buf.len);
 
             const glyphs: [*]const ct.CGGlyph = if (ct.CTRunGetGlyphsPtr(run)) |p| p else blk: {
@@ -636,6 +656,13 @@ pub const CoreTextFontContext = struct {
                 ct.CTRunGetStringIndices(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &idx_buf);
                 break :blk &idx_buf;
             };
+            const positions: [*]const ct.CGPoint = if (ct.CTRunGetPositionsPtr(run)) |p| p else blk: {
+                ct.CTRunGetPositions(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &pos_buf);
+                break :blk &pos_buf;
+            };
+
+            // 이 run 에서 채운 cluster 만 아래 후처리 대상이다 (run 이 여럿일 수 있다).
+            var touched = [_]bool{false} ** MAX_RUN_CLUSTERS;
 
             var g: usize = 0;
             while (g < take) : (g += 1) {
@@ -644,11 +671,63 @@ pub const CoreTextFontContext = struct {
                 const si = indices[g];
                 if (si < 0 or si >= u16_len) continue;
                 const ci = u16_to_cluster[@intCast(si)];
-                if (ci >= clusters.len or filled[ci]) continue;
-                filled[ci] = true;
-                out[ci] = .{ .font = run_font, .index = glyph, .owned = true };
-                _ = ct.CFRetain(run_font);
-                count += 1;
+                if (ci >= clusters.len) continue;
+                if (!filled[ci]) {
+                    filled[ci] = true;
+                    touched[ci] = true;
+                    g_lo[ci] = g;
+                    g_hi[ci] = g;
+                    // `index` 는 run 순서상 첫 글리프다 — 개별 경로와 같다.
+                    out[ci] = .{ .font = run_font, .index = glyph, .owned = true, .count = 0 };
+                    _ = ct.CFRetain(run_font);
+                    count += 1;
+                } else if (!touched[ci]) {
+                    // 앞선 run 이 이미 채운 cluster 다. 섞지 않는다.
+                    continue;
+                } else {
+                    if (g < g_lo[ci]) g_lo[ci] = g;
+                    if (g > g_hi[ci]) g_hi[ci] = g;
+                }
+                if (out[ci].count < MAX_CLUSTER_GLYPHS) {
+                    out[ci].glyphs[out[ci].count] = glyph;
+                    out[ci].positions[out[ci].count] = positions[g];
+                    out[ci].count += 1;
+                }
+            }
+
+            // cluster 별 후처리 — 위치를 cluster 안 상대 좌표로 바꾸고 폭을 잰다.
+            for (0..clusters.len) |ci| {
+                if (!touched[ci]) continue;
+                const cnt: usize = out[ci].count;
+
+                // 글리프 구간이 **연속이 아니면 이 런을 포기한다.** 다른 cluster 의 글리프가
+                // 사이에 끼었다는 뜻이라 폭을 범위로 잴 수 없고, 글리프를 놓쳤을 수도 있다
+                // (`MAX_CLUSTER_GLYPHS` 초과 · `.notdef` 섞임). 드문 경우이고 개별 경로가
+                // 정확히 처리하므로 그쪽에 맡긴다.
+                if (cnt == 0 or g_hi[ci] - g_lo[ci] + 1 != cnt) {
+                    ct.CFRelease(out[ci].font);
+                    filled[ci] = false;
+                    count -= 1;
+                    continue;
+                }
+
+                // **가장 왼쪽 글리프를 원점으로 삼는다.** run 좌표를 그대로 두면 cluster 의
+                // 절대 위치가 `bearing_x` 에 섞여 셀 밖으로 나간다. 첫 글리프가 아니라 최소
+                // `x` 인 이유는 RTL 때문이다 — Arabic 은 run 안 cluster 순서가 뒤집혀서
+                // (실측: `strIdx` 3,2,1,0) 첫 글리프가 왼쪽 끝이 아니다.
+                var min_x = out[ci].positions[0].x;
+                for (1..cnt) |k| {
+                    if (out[ci].positions[k].x < min_x) min_x = out[ci].positions[k].x;
+                }
+                for (0..cnt) |k| out[ci].positions[k].x -= min_x;
+
+                out[ci].advance = @floatCast(ct.CTRunGetTypographicBounds(
+                    run,
+                    ct.CFRange{ .location = @intCast(g_lo[ci]), .length = @intCast(cnt) },
+                    null,
+                    null,
+                    null,
+                ));
             }
         }
 
@@ -806,6 +885,14 @@ pub const CoreTextFontContext = struct {
             .glyphs = glyphs,
             .positions = positions,
             .count = @intCast(take),
+            // cluster 폭 — 이 CTLine 은 cluster 하나만 담으므로 run 전체가 곧 그 cluster 다.
+            .advance = @floatCast(ct.CTRunGetTypographicBounds(
+                run,
+                ct.CFRange{ .location = 0, .length = @intCast(take) },
+                null,
+                null,
+                null,
+            )),
         };
     }
 
