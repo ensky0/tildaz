@@ -336,6 +336,11 @@ pub const Renderer = struct {
     dialog_title_font_ctx: ?font.Context = null,
     /// 지연 생성에 필요한 것 — `Renderer.init` 이 받은 그대로 보관한다.
     font_chain: []const []const u8 = &.{},
+    /// #406 — dialog 를 **시스템 기본 고정폭**으로 그린다. 폰트 설정이 잘못됐다고 알리는
+    /// 화면이 바로 그 잘못된 설정으로 그려지면 안 되기 때문이다 — 실제로 `font.family` 에
+    /// 오타를 냈을 때 fallback 인 비례폭 폰트로 그려져 자간이 벌어졌다. 폰트 검증 실패
+    /// 경로가 dialog 를 띄우기 전에 세운다.
+    dialog_use_system_font: bool = false,
     scale_num: u32 = 120,
     scale_den: u32 = 120,
     /// L10-β — IME 조합 중 (preedit) 텍스트. host (wayland_minimal) 가 매
@@ -487,7 +492,11 @@ pub const Renderer = struct {
     /// 아예 못 뜨지만, 이 시점의 실패는 dialog 하나의 문제여야 한다.
     pub fn ensureDialogFonts(self: *Renderer, allocator: std.mem.Allocator) void {
         if (self.dialog_font_ctx != null and self.dialog_title_font_ctx != null) return;
-        const chain = self.font_chain;
+        // `monospace` 는 generic family 라 fontconfig 가 시스템 기본 고정폭으로 해석하는 것이
+        // **의도된 동작**이다 (`isGenericFamily`). 사용자 chain 을 못 믿는 상황에서 쓸 수 있는
+        // 유일한 이름이다.
+        const system_chain = [_][]const u8{"monospace"};
+        const chain: []const []const u8 = if (self.dialog_use_system_font) &system_chain else self.font_chain;
         if (self.dialog_font_ctx == null) {
             const spec = ui_metrics.dialogBodyFontSpec();
             self.dialog_font_ctx = font.Context.init(

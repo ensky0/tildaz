@@ -1517,6 +1517,9 @@ const Client = struct {
                 // 그 폰트로 chain 을 만들고 로그를 남긴다. 시작을 막는 것은 이름이 아예
                 // 없을 때 (`.missing`) 뿐이다.
                 if (avail.availability != .missing) continue;
+                // #406 — 이 dialog 는 **폰트 설정이 잘못됐다고 알리는 화면**이다. 그것을
+                // 그 설정으로 그리면 읽기 어려워진다 (실측: 비례폭 폰트로 자간이 벌어졌다).
+                self.renderer.dialog_use_system_font = true;
                 var font_msg_buf: [2048]u8 = undefined;
                 const msg = font_validate.notFoundMessageSub(&font_msg_buf, family, chain, avail.substitute);
                 log.userFacing("fatal", msg);
