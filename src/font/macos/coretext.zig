@@ -108,6 +108,16 @@ pub extern "CoreFoundation" fn CFStringCompare(
 // `FontconfigNoMatch` 에 해당하는 판정이다.
 pub extern "CoreText" fn CTFontManagerCopyAvailableFontFamilyNames() ?CFArrayRef;
 
+// #406 — 설치된 폰트의 **PostScript 이름** 목록을 얻는 경로. family 목록에는 `Menlo-Regular`
+// 같은 이름이 아예 없어서, 사용자가 그것을 적으면 미설치로 오판했다. 실측으로 family 256 개
+// 옆에 PostScript 699 개가 더 있다.
+pub const CTFontCollectionRef = *anyopaque;
+pub const CTFontDescriptorRef = *anyopaque;
+pub extern "CoreText" fn CTFontCollectionCreateFromAvailableFonts(options: ?CFDictionaryRef) ?CTFontCollectionRef;
+pub extern "CoreText" fn CTFontCollectionCreateMatchingFontDescriptors(collection: CTFontCollectionRef) ?CFArrayRef;
+pub extern "CoreText" fn CTFontDescriptorCopyAttribute(descriptor: CTFontDescriptorRef, attribute: CFStringRef) ?CFStringRef;
+pub extern "CoreText" const kCTFontNameAttribute: CFStringRef;
+
 pub extern "CoreText" fn CFStringGetLength(theString: CFStringRef) CFIndex;
 pub extern "CoreText" fn CFStringGetBytes(
     theString: CFStringRef,

@@ -185,15 +185,23 @@ pub const font_chain_header_msg = "config \"font.family\" chain (in order):\n";
 pub const font_chain_entry_format = "  - \"{s}\"{s}\n";
 pub const font_not_installed_marker = " ← not installed";
 
-/// #405 — 폰트가 **설치돼 있는데** fontconfig 가 다른 폰트로 바꿔치기해서 못 쓰는 경우.
-/// 이 줄이 없으면 사용자는 파일도 있고 `fc-list` 에도 나오는 폰트가 왜 "not found" 인지
-/// 알 수 없다 (실제로 `ttf-twemoji` 가 `Noto Color Emoji` 요청을 가로채 부팅이 막혔다).
-/// Linux 전용 — fontconfig 의 시스템 전역 별칭 주입이 원인이라 다른 platform 에는 없다.
+/// #405 — 요청한 이름이 **다른 폰트로 해석되는** 경우. 이 줄이 없으면 사용자는 파일도 있고
+/// 목록에도 나오는 폰트가 왜 "not found" 인지 알 수 없다 (Linux 실기: `ttf-twemoji` 가
+/// `Noto Color Emoji` 요청을 가로채 부팅이 막혔다).
+///
+/// **Linux 전용이 아니다** — macOS 도 PostScript 이름 (`Menlo-Regular`) · 시스템 UI 폰트
+/// (`.SF NS Mono`) 를 적으면 같은 자리에 온다 (#406 실기).
+///
+/// **세 platform 이 같은 문구를 쓴다.** 원인은 OS 마다 다르지만 (Linux 는 fontconfig 별칭,
+/// macOS 는 PostScript · 시스템 UI 이름) 사용자가 할 일은 *"정확한 family 이름을 쓰는 것"* 하나로
+/// 같다. OS 별 확인 명령은 `CONFIG.md` 의 "Font names" 절에 있으므로 여기서 반복하지 않는다.
+///
+/// 예전에는 Linux 문구 (`fc-match` · `/etc/fonts/conf.d/`) 가 하드코딩돼 있어서 **macOS 에서
+/// 없는 명령을 안내했다** ([#406](https://github.com/ensky0/tildaz/issues/406) 실기).
 pub const font_substituted_format =
-    "\nThis family IS installed, but fontconfig resolves it to \"{s}\".\n" ++
-    "A font package may have installed a system-wide alias rule.\n" ++
-    "  check:  fc-match \"{s}\"\n" ++
-    "  rules:  /etc/fonts/conf.d/\n";
+    "\nThis name resolves to \"{s}\" instead of \"{s}\".\n" ++
+    "Use the exact family name as installed on this system.\n" ++
+    "See CONFIG.md \"Font names\" for how to list them.\n";
 pub const font_chain_footer_format =
     "\nAll families listed in font.family must be installed on the system.\n\nConfig path:\n{s}\n";
 

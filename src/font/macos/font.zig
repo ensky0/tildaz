@@ -37,26 +37,38 @@ pub const LigatureGlyph = ligature.LigatureGlyph;
 pub const LigatureSpacer = ligature.LigatureSpacer;
 pub const LigatureMatch = ligature.LigatureMatch;
 
-/// #406 — `family` 가 시스템에 **설치된 family 이름**인지. Linux 의 `FontconfigNoMatch` 판정에
-/// 해당한다.
+/// #406 — 사용자가 적은 `family` 에 맞는 **설치된 이름의 정식 표기**를 찾아 `out` 에 담아
+/// 돌려준다. Linux 의 `FontconfigNoMatch` 판정에 해당한다.
 ///
 /// `CTFontCreateWithName` 은 없는 이름에도 실패하지 않고 시스템 기본 폰트를 돌려주기 때문에,
-/// 그 반환값만으로는 "오타 · 미설치" 와 "설치돼 있는데 family 가 다름" 을 가를 수 없다. 후자는
-/// config 에 PostScript 이름 (`.SF NS Mono`) 을 적었을 때 생긴다 — 폰트는 실재하므로 띄워야 하고,
-/// 전자는 조용히 넘어가면 안 되므로 막아야 한다.
+/// 그 반환값만으로는 "오타 · 미설치" 와 "설치돼 있는데 표기가 다름" 을 가를 수 없다. 그래서
+/// 설치 목록을 직접 본다. family 이름과 PostScript 이름 두 곳을 보며, 비교는 정규화
+/// (`normalizeFamily`) 후에 한다.
 ///
-/// ⚠️ **판정하지 못하면 `true` 를 돌려준다** (fail-open). 목록 조회가 실패했을 때 `false` 를
-/// 주면 정상 폰트까지 전부 미설치로 몰려 **앱이 아예 안 뜬다.** Linux 의 `FamilyAvailability`
-/// 가 `.unknown` 을 두고 *"미설치로 오판해 Font not found 를 내지 않는다"* 고 한 것과 같은
-/// 이유다 — 판정 불가는 거절 사유가 아니다. 폰트가 정말 못 쓰는 것이면 그 뒤 로드 경로가
-/// 자기 에러로 알린다.
-fn familyIsInstalled(family: []const u8) bool {
-    const names = ct.CTFontManagerCopyAvailableFontFamilyNames() orelse return true;
+/// **bool 이 아니라 이름을 돌려주는 이유** — `CTFontCreateWithName` 은 정규화를 모른다.
+/// `menloregular` 를 그대로 주면 Helvetica 가 오므로 (실측: cell_w 19 → 25), 매칭된 정식 이름
+/// (`Menlo-Regular`) 으로 **폰트를 다시 만들어야** 의도한 폰트가 나온다. 통과만 시키고 원래
+/// 문자열을 쓰면 엉뚱한 폰트로 조용히 그려진다.
+///
+/// `null` 이면 그런 이름이 없다 — 오타 · 미설치이고 호출부가 fatal 로 간다.
+///
+/// ⚠️ **판정하지 못하면 원래 이름을 그대로 돌려준다** (fail-open). 목록 조회가 실패했을 때
+/// `null` 을 주면 정상 폰트까지 전부 미설치로 몰려 **앱이 아예 안 뜬다.** Linux 의
+/// `FamilyAvailability` 가 `.unknown` 을 두고 *"미설치로 오판해 Font not found 를 내지 않는다"*
+/// 고 한 것과 같은 이유다 — 판정 불가는 거절 사유가 아니다. 폰트가 정말 못 쓰는 것이면 그 뒤
+/// 로드 경로가 자기 에러로 알린다.
+fn resolveInstalledName(family: []const u8, out: []u8) ?[]const u8 {
+    var want_buf: [256]u8 = undefined;
+    const want = normalizeFamily(family, &want_buf);
+    if (want.len == 0) return family;
+
+    const names = ct.CTFontManagerCopyAvailableFontFamilyNames() orelse return family;
     defer ct.CFRelease(names);
-    if (ct.CFArrayGetCount(names) <= 0) return true;
+    const count = ct.CFArrayGetCount(names);
+    if (count <= 0) return family;
 
     var buf: [256]u8 = undefined;
-    const count = ct.CFArrayGetCount(names);
+    var norm_buf: [256]u8 = undefined;
     var i: ct.CFIndex = 0;
     while (i < count) : (i += 1) {
         const name_ptr = ct.CFArrayGetValueAtIndex(names, i) orelse continue;
@@ -66,9 +78,71 @@ fn familyIsInstalled(family: []const u8) bool {
         var used: ct.CFIndex = 0;
         _ = ct.CFStringGetBytes(name, ct.CFRange{ .location = 0, .length = n }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
         if (used <= 0) continue;
-        if (std.ascii.eqlIgnoreCase(family, buf[0..@intCast(used)])) return true;
+        const got = buf[0..@intCast(used)];
+        if (std.mem.eql(u8, want, normalizeFamily(got, &norm_buf))) {
+            if (got.len > out.len) return family;
+            @memcpy(out[0..got.len], got);
+            return out[0..got.len];
+        }
     }
-    return false;
+    return postScriptNameFor(want, out);
+}
+
+/// PostScript 이름 (`Menlo-Regular`) 쪽에서 찾는다. `resolveInstalledName` 의 두 번째 경로다.
+///
+/// **family 목록에는 이 이름이 아예 없다** — 실측으로 family 256 개 옆에 PostScript 이름이
+/// 699 개 더 있었다. 그래서 사용자가 `Menlo-Regular` 를 적으면 폰트가 실재하는데도 미설치로
+/// 오판했다.
+///
+/// `want` 는 **이미 정규화된** 문자열이라 `menloregular` 처럼 하이픈 없이 적어도 맞는다.
+///
+/// ⚠️ **정규화가 family 이름과 겹치는 것은 문제가 아니다.** 실측에서 73 쌍이 겹쳤는데 전부
+/// *같은 폰트의 두 이름* 이었다 (`"Al Bayan"` ↔ `"AlBayan"` · `"Arial Black"` ↔ `"Arial-Black"`).
+/// 서로 다른 폰트가 뭉치는 경우는 없어서 어느 쪽에 맞아도 결과가 같다.
+fn postScriptNameFor(want: []const u8, out: []u8) ?[]const u8 {
+    const collection = ct.CTFontCollectionCreateFromAvailableFonts(null) orelse return null;
+    defer ct.CFRelease(collection);
+    const descs = ct.CTFontCollectionCreateMatchingFontDescriptors(collection) orelse return null;
+    defer ct.CFRelease(descs);
+
+    const count = ct.CFArrayGetCount(descs);
+    var buf: [256]u8 = undefined;
+    var norm_buf: [256]u8 = undefined;
+    var i: ct.CFIndex = 0;
+    while (i < count) : (i += 1) {
+        const d_ptr = ct.CFArrayGetValueAtIndex(descs, i) orelse continue;
+        const desc: ct.CTFontDescriptorRef = @constCast(d_ptr);
+        const ps = ct.CTFontDescriptorCopyAttribute(desc, ct.kCTFontNameAttribute) orelse continue;
+        defer ct.CFRelease(ps);
+        const n = ct.CFStringGetLength(ps);
+        if (n <= 0) continue;
+        var used: ct.CFIndex = 0;
+        _ = ct.CFStringGetBytes(ps, ct.CFRange{ .location = 0, .length = n }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
+        if (used <= 0) continue;
+        const got = buf[0..@intCast(used)];
+        if (std.mem.eql(u8, want, normalizeFamily(got, &norm_buf))) {
+            if (got.len > out.len) return null;
+            @memcpy(out[0..got.len], got);
+            return out[0..got.len];
+        }
+    }
+    return null;
+}
+
+/// 폰트 이름 비교용 정규화 — 소문자로 낮추고 공백 · 하이픈 · 밑줄을 뺀다.
+///
+/// 사용자가 `"apple color emoji"` · `"AppleColorEmoji"` 처럼 적는 것을 받아 주기 위한 것이다.
+/// **설치된 family 256 개를 전부 정규화해도 충돌이 0 건**이라 (macOS 실측, #406) 다른 폰트로
+/// 오인될 위험이 없다. 버퍼가 차면 거기서 끊는다 — 그만큼 긴 이름은 어차피 위 비교에서 갈린다.
+fn normalizeFamily(name: []const u8, buf: []u8) []const u8 {
+    var n: usize = 0;
+    for (name) |c| {
+        if (c == ' ' or c == '-' or c == '_') continue;
+        if (n >= buf.len) break;
+        buf[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return buf[0..n];
 }
 
 pub const CoreTextFontContext = struct {
@@ -155,14 +229,13 @@ pub const CoreTextFontContext = struct {
                 @import("../validate.zig").showNotFoundFatal(family, font_families);
             };
             defer ct.CFRelease(family_str);
-            const candidate = ct.CTFontCreateWithName(family_str, @floatCast(spec.size_logical), null) orelse {
+            var candidate = ct.CTFontCreateWithName(family_str, @floatCast(spec.size_logical), null) orelse {
                 @import("../validate.zig").showNotFoundFatal(family, font_families);
             };
             const actual_family = ct.CTFontCopyFamilyName(candidate);
             const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
             if (!matched) {
-                // #405 — **무엇으로 대체됐는지** 알린다. 이 이름을 버리면 사용자는 설치된
-                // 폰트가 왜 "not found" 인지 알 수 없다.
+                // 무엇으로 해석됐는지 — **로그에만** 쓴다. 아래 fatal 에는 넘기지 않는다.
                 var sub_buf: [256]u8 = undefined;
                 const sub: ?[]const u8 = blk: {
                     const n = ct.CFStringGetLength(actual_family);
@@ -174,18 +247,58 @@ pub const CoreTextFontContext = struct {
                 };
                 ct.CFRelease(actual_family);
 
-                // #406 — **설치돼 있는데 이름만 갈린 것이면 그 폰트로 띄운다.** 시작을 막는
-                // 것은 이름이 아예 없을 때 (오타 · 미설치) 뿐이다. Linux 가
-                // `FontconfigNoMatch` 로 가르는 것과 같은 정책인데, 여기서는
-                // `CTFontCreateWithName` 이 없는 이름에도 시스템 기본을 돌려주므로 설치 목록을
-                // 직접 봐야 가를 수 있다.
-                if (!familyIsInstalled(family)) {
+                // #406 — **찾을 수 있는 이름이면 그 폰트로 띄운다.** 시작을 막는 것은 이름이
+                // 아예 없을 때 (오타 · 미설치) 뿐이다. Linux 가 `FontconfigNoMatch` 로 가르는
+                // 것과 같은 정책인데, 여기서는 `CTFontCreateWithName` 이 없는 이름에도 시스템
+                // 기본을 돌려주므로 설치 목록을 직접 봐야 가를 수 있다.
+                var canon_buf: [256]u8 = undefined;
+                const canonical = resolveInstalledName(family, &canon_buf) orelse {
                     ct.CFRelease(candidate);
-                    @import("../validate.zig").showNotFoundFatalSub(family, font_families, sub);
+                    // ⚠️ **대체 이름을 넘기지 않는다** (`Sub` 아닌 쪽을 부른다). macOS 는
+                    // **어떤 오타에도** 대체본을 주므로 (`Menloo` → `Helvetica`) 그 이름이
+                    // 정보가 아니라 노이즈다 — "Helvetica 가 있으니 그걸 쓰나?" 로 읽힌다.
+                    // Linux 는 fontconfig 가 실제로 별칭을 주입했을 때만 값이 나와서 유용하다.
+                    @import("../validate.zig").showNotFoundFatal(family, font_families);
+                };
+
+                if (std.mem.eql(u8, canonical, family)) {
+                    // 사용자가 적은 그대로 설치된 이름이다. family 이름이 다르게 나오는 것은
+                    // PostScript 이름을 적었을 때 정상이다 (`Menlo-Regular` → family `Menlo`).
+                    log.appendLine("font", "chain[{d}] \"{s}\" is an installed font name (family \"{s}\") — using it", .{
+                        fallback_count, family, sub orelse "?",
+                    });
+                } else {
+                    // **정식 표기로 폰트를 다시 만든다.** `CTFontCreateWithName` 은 정규화를
+                    // 모르기 때문에, 검사만 통과시키고 사용자가 적은 문자열을 그대로 쓰면 엉뚱한
+                    // 폰트가 그려진다 — `menloregular` 를 그대로 주면 Helvetica 가 온다
+                    // (실측: cell_w 19 → 25). `Menlo-Regular` 로 다시 만들면 의도대로 나온다.
+                    var remade_ok = false;
+                    if (ct.CFStringCreateWithBytes(
+                        null,
+                        canonical.ptr,
+                        @intCast(canonical.len),
+                        ct.kCFStringEncodingUTF8,
+                        0,
+                    )) |canon_str| {
+                        defer ct.CFRelease(canon_str);
+                        if (ct.CTFontCreateWithName(canon_str, @floatCast(spec.size_logical), null)) |remade| {
+                            ct.CFRelease(candidate);
+                            candidate = remade;
+                            remade_ok = true;
+                        }
+                    }
+                    if (remade_ok) {
+                        log.appendLine("font", "chain[{d}] \"{s}\" matched installed \"{s}\" — using it", .{
+                            fallback_count, family, canonical,
+                        });
+                    } else {
+                        // 여기 오면 **엉뚱한 폰트로 그린다** (`sub`). 조용히 넘어가면 나중에
+                        // "글자 폭이 왜 다르지" 로만 보이므로 원인을 로그에 남긴다.
+                        log.appendLine("font", "chain[{d}] \"{s}\" matched installed \"{s}\" but re-create failed — falling back to \"{s}\"", .{
+                            fallback_count, family, canonical, sub orelse "?",
+                        });
+                    }
                 }
-                log.appendLine("font", "chain[{d}] \"{s}\" resolved to \"{s}\" (system alias) — using it", .{
-                    fallback_count, family, sub orelse "?",
-                });
             } else {
                 ct.CFRelease(actual_family);
             }
