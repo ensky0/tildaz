@@ -363,6 +363,76 @@ echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋�
 chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo 👋🏻👋🏼👋🏽👋🏾👋🏿 && echo 👨‍👩‍👧👨‍👨‍👦‍👦 && echo ABCDEFG abcdefg 0123456789 && echo 한글 ABC 가나다라마바사 && echo ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏ && echo ▐░▒▓▔▕ && echo.
 ```
 
+# Linux — 글리프 · cluster 렌더 실기 검증 방법
+
+폰트 / shaping / cluster 관련 변경 (#401 등) 을 검증하는 절차예요. **소스 판정 → 드라이버로
+수치 → 화면으로 눈** 순서로 좁혀요.
+
+## ① 판정만 볼 때 — 독립 드라이버 (레포 트리를 안 건드림)
+
+[`src/font/linux/font.zig`](src/font/linux/font.zig) 는 **ghostty 비의존**이에요 (fontconfig ·
+freetype · harfbuzz 를 전부 `dlopen` 하고 나머지 import 는 순수 모듈). `shapeRunOnFace` ·
+`resolveCluster` 가 `pub` 이라 **실기와 같은 chain 을 만들어 조합 수천 개를 직접 태울 수 있어요** —
+`tryClusterOnFace` 에 임시 로그를 심고 재빌드하는 것보다 빠르고 대상도 넓어요.
+
+```sh
+cp <scratchpad>/probe.zig src/probe.zig          # 상대 import 가 맞아야 해서 src/ 아래에 둬요
+zig run src/probe.zig -lc -O ReleaseSafe          # Debug 는 이 머신에서 .sframe 링커 에러
+rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 clean 확인
+```
+
+- chain 은 **실기 config 와 같게** 만들어요 — `Context.init(alloc, &.{"DejaVu Sans Mono",
+  "Noto Sans CJK KR", "Noto Color Emoji"}, 20, 1.0, 1.1)`. 기본값 (`config.zig` 의 `Defaults`) 과
+  같은 값이에요.
+- **판정 기준은 `.notdef` 예요. 글리프 개수가 아니에요** (#401). `n == cps.len` 이라도 notdef 가
+  없으면 폰트가 *겹쳐 그리라고 준 정상 결과*라, 개수로 거르면 진짜 증상을 놓쳐요.
+- `perf` / `log` 초기화 없이 쓰려면 `shapeRunOnFace` 만 부르고 chain 판정은 드라이버에서 직접
+  계산해요 (= 어느 face 든 notdef 없음).
+
+## ② 화면으로 볼 때 — 출력 전용 스크립트 + `-e`
+
+```sh
+./zig-out/bin/tildaz --instance 1 -e /path/show.sh -size 70x16 &
+```
+
+- **`-e` 는 인자를 못 넘겨요** (`run_options.zig` — POSIX PTY 의 argv 가 `{shell}` 로 고정).
+  그래서 출력할 내용을 담은 **스크립트 파일**을 만들어 넘겨요. 스크립트 끝에 `sleep` 을 둬야
+  창이 남아요 (`-e` 로 띄운 프로세스가 끝나면 앱도 끝나요).
+- **`--instance 1` 을 써요.** 평소 쓰는 daily 인스턴스 (`--instance 0`) 를 건드리지 않아요.
+- 입력은 **`printf` 로 UTF-8 byte 를 직접** 내요 — 편집기 · 클립보드가 cluster 를 정규화해
+  버리는 것을 피해요.
+- 화면 배치는 **`[cluster]` … `base [기본문자]` 좌우 대조**로 만들어요. **좌우가 같아 보이면
+  mark 가 사라진 것**이라 판정이 한눈에 돼요.
+
+## ③ 대조군 터미널 — foot
+
+우리만 그런지 가르려면 같은 입력을 foot 에 넣어요. **폰트와 크기를 맞춰야** 비교가 성립해요.
+
+```sh
+foot --font="DejaVu Sans Mono:size=15" -w 900x420 -e /path/show.sh &
+```
+
+## ④ 캡처 — KDE 는 `spectacle`
+
+```sh
+spectacle -b -n -f -o out.png                     # -b 배경 실행 · -n 알림 없음 · -f 전체 화면
+```
+
+- **`grim` 은 KDE 에서 안 돼요** (KWin 이 wlr-screencopy 를 지원하지 않아요). sway · Hyprland 는 반대.
+- **전체 화면 캡처라 사용자의 다른 창이 함께 담겨요.** 이슈에 올릴 때는 **반드시 터미널 창 영역만
+  crop** 해요.
+- **작은 화면에서는 mark 유무가 안 보여요.** 판정 · 공유 모두 확대본으로 해요.
+
+```sh
+magick out.png -crop 1152x560+2688+0 +repage -resize 200% crop.png   # 창 영역만 확대
+magick out.png -crop 130x62+3020+148 +repage -resize 500% one.png    # 글리프 한 칸만
+```
+
+## ⑤ 회귀 대조군
+
+cluster 경로를 건드리면 **한글 · ASCII · emoji ZWJ · precomposed 글자 (`é`)** 를 같은 화면에
+넣어요. 이 넷이 그대로면 흔한 경로에 회귀가 없다는 뜻이에요.
+
 # 도구 실행
 
 **모든 도구 호출에 timeout 은 1분 (60000ms) 을 명시적으로 걸어요.** Bash, PowerShell, Agent 같은 도구의 기본 timeout (2~10 분) 에 의존하지 말고 매 호출마다 `timeout: 60000` 을 직접 넣어요. 사용자가 1 분 넘게 아무 응답도 받지 못하는 상황을 피하기 위한 규칙.
