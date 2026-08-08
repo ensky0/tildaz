@@ -372,19 +372,19 @@ back `.notdef`, so each cluster walks the chain until one accepts). Non-grapheme
 cells never pay this — they hit the single-codepoint `glyph_map` — which is why the
 same renderer ranks first on ASCII.
 
-Two candidates, not mutually exclusive:
+Two fixes, not mutually exclusive — **both are now in on all three platforms**
+([#399](https://github.com/ensky0/tildaz/issues/399)):
 
-- **(A) run batching** — helps always, including clusters seen for the first time,
-  but it restructures the cell loop into "collect run, shape once, distribute glyphs
-  back to cells".
-- **(B) cluster shaping cache** — stays inside `resolveGrapheme`, but only helps when
-  clusters repeat. It needs three decisions: ownership of the cached face
-  (`ClusterResult.owned` hands COM / CoreText lifetime to the cache), invalidation on
-  font and DPI change, and a capacity / eviction policy.
+- **(A) run batching** — helps always, including clusters seen for the first time.
+  The cell loop collects a run of consecutive grapheme cells, shapes it with **one**
+  API call, and distributes the glyphs back per cell.
+- **(B) cluster shaping cache** — skips the shape call entirely when a cluster
+  repeats. Shared skeleton in [`src/font/cluster_cache.zig`](src/font/cluster_cache.zig),
+  per-platform value type.
 
 The measured cost is roughly a 3 µs fixed part plus 0.6 µs per UTF-16 unit, so call
 count dominates and (A) attacks it directly. **The paired `*_varied` workloads settled
-the choice: (A) first.** Each pair holds the code path and the line bytes and varies
+the order: (A) first.** Each pair holds the code path and the line bytes and varies
 only the number of distinct kinds, so the gap within a pair is the share that
 repetition explains.
 
@@ -398,12 +398,74 @@ These pairs were run at 8 MiB, so read the **within-pair** deltas, not the absol
 numbers or the cross-terminal ratio — both carry the payload bias described above. Both
 members of a pair were measured identically, so the delta is sound.
 
-Repetition buys us nothing, which is what "no cache" looks like — but a cache is not
-the answer either, because the gap survives where a cache cannot help: on
-`emoji_vs16_varied` every cluster is new, and Windows Terminal still comes out well
-ahead. That residue is the call unit, so (A) is the necessary fix and (B) is an
-addition on top for the common case of few distinct clusters on screen. Parsing (1)
-remains the larger share of throughput either way.
+Repetition bought us nothing before (A) — that is what "no cache" looks like — and a
+cache alone would not have closed the gap either, because it survives where a cache
+cannot help: on `emoji_vs16_varied` every cluster is new. That residue was the call
+unit, which is why (A) came first and (B) sits on top of it.
+
+### What each platform actually does
+
+The cell loop lives in three places, so **only the run-boundary rule is shared**; the
+shaping call and the glyph-to-cell mapping are per platform. The cache is the opposite
+— one shared skeleton, and only the value type and its release differ.
+
+| | shaping call | glyph → cluster mapping | font choice | cached value / release |
+|---|---|---|---|---|
+| **macOS** | CoreText `CTLine` | `CTRunGetStringIndices` | **CoreText picks** | `GlyphResult` / `CFRelease` |
+| **Windows** | DirectWrite `GetGlyphs` | `cluster_map` | we walk the chain | `ClusterResult` / COM `Release` |
+| **Linux** | HarfBuzz `shapeRunOnFace` | `hb_glyph_info_t.cluster` | we walk the chain | `LigatureGlyph` / **none** (index) |
+
+Two consequences worth knowing before touching this code:
+
+- **Windows and Linux need a per-face retry that macOS does not.** They pick the font
+  themselves, so shaping a whole run on one face can succeed for some clusters and
+  fail for others. macOS hands that job to CoreText. All three currently take the
+  simple policy: if any cluster in the run fails, the whole run falls back to the
+  per-cluster path.
+- **Ownership is the trap.** Where the cached value owns a font handle (macOS, Windows),
+  the cache takes ownership and hands callers `owned = false` — otherwise the cell
+  loop's per-frame release kills the cached font. And since `ClusterCache.put` frees
+  values it cannot store (over the 8-codepoint key limit), callers must check
+  *before* handing ownership over. macOS needs that check in the run path too, because
+  it retains per cluster there; Windows does not, because its run results are chain
+  faces it never owned.
+
+### Result
+
+`zwj`, 64 MiB, 5-run trimmed mean, ms. **Before = neither fix; after = both.**
+Hardware differs per row, so **read the deltas, not the absolute values** — only the
+Windows and Linux rows share a machine.
+
+| platform | render | shape | shape / render | per-frame render |
+|---|---|---|---|---|
+| **macOS** (M5 Pro) | 305.3 → **19.8** (**-93.5 %**) | 283.1 → **1.8** | 92.7 % → **9.2 %** | 2.86 → **0.18** |
+| **Windows** (i5-1240P) | 896.6 → **39.9** (**-95.6 %**) | — → **4.9** | 94.8 % → **11.7 %** | 4.37 → **0.25** |
+| **Linux** (i5-1240P) | 1354.2 → **285.4** (**-78.9 %**) | 1261.2 → **200.6** | — | — |
+
+**Shaping no longer dominates rendering on any platform.** How the two fixes split
+that total is the mirror of what each API costs per call:
+
+| | batching (`zwj` render) | caching (`zwj` shape) |
+|---|---|---|
+| macOS | **-67 %** | -97.9 % |
+| Windows | -46 % | **-99.1 %** |
+| Linux | **-0.6 %** | -84 % |
+
+- **Batching** cuts the *number* of calls, so it paid where per-call fixed cost is
+  high, and barely showed on Linux where HarfBuzz's per-call cost is already small.
+  Windows gains less than macOS on `zwj` because its ZWJ families shape to multiple
+  glyphs — distributing those and drawing a composite in the atlas is work batching
+  does not remove. On the single-glyph `emoji_vs16` it beat macOS (-71.9 % vs -63 %).
+- **Caching** removes the call itself, so it paid most where a call was most expensive:
+  Windows (chain walk plus COM round trips), then macOS (`CTLine` build), then Linux.
+
+Linux also carries a third step between the two — a **width hint** that cut `zwj`
+render 1345.5 → 1225.6 before the cache landed.
+
+With rendering fixed, `parse` is now essentially the whole frame budget on
+cluster-heavy output (`zwj` parse share 93 % → **98.6 %** on macOS, **98.5 %** on
+Windows). The remaining work is the parser, which is upstream — see
+[#389](https://github.com/ensky0/tildaz/issues/389).
 
 One more caveat the same run exposed: `hangul_varied` swings 17.2-88.0 MiB/s between
 repeats of one measurement. It walks all 11,172 precomposed syllables, so the pressure
