@@ -98,6 +98,9 @@ pub const GlyphAtlas = struct {
         font: ct.CTFontRef,
         glyphs: []const ct.CGGlyph,
         positions: []const ct.CGPoint,
+        /// cluster 가 차지하는 가로 폭 (pt). 0 이면 모르는 것이라 첫 글리프 advance 로 물러선다.
+        /// 폰트 층이 `CTRunGetTypographicBounds` 로 재서 넘긴다 (#401).
+        cluster_advance_pt: f32,
     ) ?AtlasEntry {
         if (glyphs.len == 0) return null;
         if (glyphs.len == 1) return self.getOrInsert(font, glyphs[0]);
@@ -109,7 +112,7 @@ pub const GlyphAtlas = struct {
         const key = GlyphKey{ .font_ptr = @intFromPtr(font), .index = @truncate(h.final()) };
         if (self.cache.get(key)) |entry| return entry;
 
-        const entry = self.rasterizeCluster(font, glyphs, positions) orelse return null;
+        const entry = self.rasterizeCluster(font, glyphs, positions, cluster_advance_pt) orelse return null;
         self.cache.put(key, entry) catch return null;
         return entry;
     }
@@ -193,6 +196,7 @@ pub const GlyphAtlas = struct {
         font: ct.CTFontRef,
         glyphs: []const ct.CGGlyph,
         positions: []const ct.CGPoint,
+        cluster_advance_pt: f32,
     ) ?AtlasEntry {
         const n = glyphs.len;
         if (n == 0 or n > 16 or positions.len < n) return null;
@@ -223,12 +227,18 @@ pub const GlyphAtlas = struct {
         const traits = ct.CTFontGetSymbolicTraits(font);
         const is_color = (traits & ct.kCTFontTraitColorGlyphs) != 0;
 
-        // advance 는 첫 글리프 것을 쓴다. cluster 는 셀 격자에 맞춰 그리므로 (renderer 가
-        // `glyphCenterDx` 로 가운데 정렬) 합계를 쓰면 오히려 어긋난다.
-        var adv = [1]ct.CGSize{.{ .width = 0, .height = 0 }};
-        var first = [1]ct.CGGlyph{glyphs[0]};
-        _ = ct.CTFontGetAdvancesForGlyphs(font, ct.kCTFontOrientationDefault, &first, &adv, 1);
-        const advance_px: f32 = @floatCast(adv[0].width * self.scale);
+        // cluster 가 차지하는 폭. renderer 가 이 값으로 셀 안 가운데 정렬을 한다
+        // (`glyphCenterDx`). 폰트 층이 재 준 값을 쓰고, 못 받았을 때만 첫 글리프 advance 로
+        // 물러선다 — 그 값은 **가로로 늘어서는 cluster 에서 틀린다** (Devanagari `क्षि` 는
+        // 첫 글리프 4.09 pt, cluster 15.33 pt. 실측으로 14 px 밀렸다, #401).
+        const advance_px: f32 = if (cluster_advance_pt > 0)
+            cluster_advance_pt * @as(f32, @floatCast(self.scale))
+        else blk: {
+            var adv = [1]ct.CGSize{.{ .width = 0, .height = 0 }};
+            var first = [1]ct.CGGlyph{glyphs[0]};
+            _ = ct.CTFontGetAdvancesForGlyphs(font, ct.kCTFontOrientationDefault, &first, &adv, 1);
+            break :blk @floatCast(adv[0].width * self.scale);
+        };
 
         const s = self.scale;
         const x0 = @floor(min_x * s);
