@@ -243,7 +243,7 @@
       <ul class="perf-notes">
         <li><strong>Read each column on its own.</strong> Linux and Windows are the same dual-boot laptop, so those two columns differ only in host implementation. macOS is a different machine, so reading straight across a row mixes in a CPU difference.</li>
         <li>v0.8.0, built ReleaseFast with SIMD. Each run pours 64 MiB into a 120x40 grid with a 32,767-line scrollback on AC power, and every figure is the trimmed mean of five runs.</li>
-        <li>The ANSI row on Linux and Windows is a regression we are tracking in <a href="https://github.com/ensky0/tildaz/issues/435" target="_blank" rel="noopener">issue #435</a>; macOS is unaffected. We will measure again once it is fixed.</li>
+        <li>ANSI is slow on Linux and Windows. On Windows that is a confirmed regression, tracked in <a href="https://github.com/ensky0/tildaz/issues/435" target="_blank" rel="noopener">issue #435</a>; on Linux we have not measured the earlier build yet. macOS is unaffected — there we measured both builds. New figures once it is fixed.</li>
         <li>Harness, workloads, and the full method: <a href="https://github.com/ensky0/tildaz/blob/main/dist/stress/README.md" target="_blank" rel="noopener">dist/stress</a>.</li>
       </ul>
     </section>
