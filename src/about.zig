@@ -13,11 +13,11 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const build_options = @import("build_options");
 const dialog = @import("dialog.zig");
 const log = @import("log.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
+const version = @import("version.zig");
 
 pub const Details = struct {
     version: []const u8,
@@ -79,7 +79,10 @@ pub fn showAboutDialog() void {
     };
 
     const msg = formatMessageAlloc(allocator, .{
-        .version = build_options.version,
+        // #383 — semver 뿐 아니라 빌드한 커밋까지 (`0.7.0 (d1ad1ff-dirty)`). 사용자가
+        // 이 다이얼로그를 그대로 복사해 이슈에 붙이므로, 어느 커밋인지가 여기 있어야
+        // 릴리즈 사이의 빌드를 되묻지 않는다. `--version` · 로그와 같은 문자열이다.
+        .version = version.string,
         .exe_path = exe_path,
         .pid = pid,
         .config_path = config_path,
@@ -101,6 +104,25 @@ extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
 fn getCurrentProcessIdWindows() u32 {
     if (builtin.os.tag != .windows) return 0;
     return GetCurrentProcessId();
+}
+
+test "#383 About 첫 줄은 `--version` · 로그와 같은 버전 문자열이다" {
+    // 세 표시 지점이 갈리지 않게 묶는다. About 만 `build_options.version` 을 그대로 쓰던
+    // 시절로 되돌아가면 (= 커밋이 빠지면) 여기서 잡힌다.
+    const msg = try formatMessageAlloc(std.testing.allocator, .{
+        .version = version.string,
+        .exe_path = "/usr/bin/tildaz",
+        .pid = 42,
+        .config_path = "/tmp/config_0.json",
+        .log_path = "/tmp/tildaz_0.log",
+        .open_config_key = "Ctrl+Shift+P",
+        .open_log_key = "Ctrl+Shift+L",
+    });
+    defer std.testing.allocator.free(msg);
+
+    var expected_buf: [256]u8 = undefined;
+    const expected_first_line = try std.fmt.bufPrint(&expected_buf, "TildaZ v{s}", .{version.string});
+    try std.testing.expect(std.mem.startsWith(u8, msg, expected_first_line));
 }
 
 test "#314 About formatter preserves content beyond the old 2048-byte limit" {

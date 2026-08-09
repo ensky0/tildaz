@@ -116,6 +116,50 @@ pub const request_endpoint_ready_timeout_msg =
 pub const toggle_unsupported_msg =
     "The --toggle option is only supported on Linux.";
 
+/// #383 — CLI 출력. 창을 띄우기 전에 콘솔로 나가는 유일한 텍스트 묶음이라 dialog 를
+/// 거치지 않고 `console.zig` 가 직접 쓴다.
+///
+/// `--help` 는 **사용자 옵션만** 싣는다. 측정용 `-e` · `-size` · `-scrollback` (#381 ·
+/// #382) 은 `run_options.zig` 의 문서 주석대로 내부용이라 여기 없다 — 사용자에게 노출하면
+/// "이미 떠 있는 인스턴스와의 관계" 같은 미정 사양을 전부 정해야 한다.
+///
+/// 이름은 `tildaz` (실행 파일 이름) 로 쓴다. About 다이얼로그의 `TildaZ` 는 제품 이름이고,
+/// 여기는 사용자가 방금 친 명령어와 같은 토큰이어야 복붙이 성립한다.
+pub const version_line_format = "tildaz {s}";
+
+pub const help_text =
+    \\TildaZ — drop-down terminal for Linux, macOS, and Windows.
+    \\
+    \\Usage:
+    \\  tildaz [options]
+    \\
+    \\Options:
+    \\  --instance <N>   Run instance N (default: 0). Each instance keeps its own
+    \\                   window, config file, and log file.
+    \\  --toggle [N]     Show or hide the running instance N (default: 0), then
+    \\                   exit. Linux only.
+    \\  --autostart      Start the way the desktop session starts TildaZ.
+    \\  -v, --version    Print the version, then exit.
+    \\  -h, --help       Print this help, then exit.
+    \\
+    \\Documentation: https://github.com/ensky0/tildaz
+;
+
+/// 인자 오류 세 갈래. 셋 다 `--help` 로 안내해 다음 행동이 한 줄로 이어지게 한다.
+/// #383 이전에는 세 경우 모두 아무 말 없이 `exit(2)` 였다 (모르는 옵션은 무시되어
+/// 창이 그냥 떴다) — 사용자가 오타를 알아챌 방법이 없었다.
+pub const unknown_option_format =
+    "tildaz: unknown option \"{s}\"\nRun \"tildaz --help\" to see the available options.";
+pub const option_needs_value_format =
+    "tildaz: \"{s}\" needs a value.\nRun \"tildaz --help\" to see the available options.";
+pub const option_invalid_value_format =
+    "tildaz: \"{s}\" is not a valid value for \"{s}\".\nRun \"tildaz --help\" to see the available options.";
+
+/// 위 세 format 의 bufPrint 가 실패할 때 (사용자가 준 인자가 버퍼보다 길 때) 쓴다.
+/// 값을 못 넣더라도 다음 행동은 알려 준다.
+pub const option_error_fallback_msg =
+    "tildaz: invalid command line.\nRun \"tildaz --help\" to see the available options.";
+
 /// run/launcher 오류를 세 platform에서 같은 사용자 문구로 변환한다.
 pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
     return switch (err) {
