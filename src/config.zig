@@ -14,6 +14,9 @@ const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const instance_context = @import("instance_context.zig");
+// #431 — 기동 시 인스턴스 간 핫키 중복 검사. `instances.zig` 도 이 모듈을 import 하지만
+// (`config.Hotkey`), 서로의 *값*에 의존하지 않아 순환 참조가 성립한다.
+const instances = @import("instances.zig");
 const paths = @import("paths.zig");
 const font_validate = @import("font/validate.zig");
 const font_constants = @import("font/constants.zig");
@@ -904,26 +907,60 @@ pub const Config = struct {
         };
         defer allocator.free(path);
 
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
-            // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
-            // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
-            // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
-            // 사용자 config 를 만드는 주체가 되는데, 그것은 launcher 의 일이다
-            // (`instances.createDefaultConfig` — auto_start · 단축키 동기화까지 함께 한다).
-            // 측정은 기본값을 메모리에서만 쓰고 지나간다.
-            if (!instance_context.isStress()) createDefault(allocator, path, shell_resolved);
-            return defaultOwned(allocator, shell_resolved);
-        };
-        defer file.close();
+        const loaded = blk: {
+            const file = std.fs.openFileAbsolute(path, .{}) catch {
+                // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
+                // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
+                // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
+                // 사용자 config 를 만드는 주체가 되는데, 그것은 launcher 의 일이다
+                // (`instances.createDefaultConfig` — auto_start · 단축키 동기화까지 함께 한다).
+                // 측정은 기본값을 메모리에서만 쓰고 지나간다.
+                if (!instance_context.isStress()) createDefault(allocator, path, shell_resolved);
+                break :blk defaultOwned(allocator, shell_resolved);
+            };
+            defer file.close();
 
-        const content = file.readToEndAlloc(allocator, 64 * 1024) catch {
-            return defaultOwned(allocator, shell_resolved);
-        };
-        defer allocator.free(content);
+            const content = file.readToEndAlloc(allocator, 64 * 1024) catch {
+                break :blk defaultOwned(allocator, shell_resolved);
+            };
+            defer allocator.free(content);
 
-        // disk 정상 — parse 가 JSON 의 shell 을 dupe 하므로 인자는 미사용. 누수 방지 free.
-        allocator.free(shell_resolved);
-        return parse(allocator, content, path);
+            // disk 정상 — parse 가 JSON 의 shell 을 dupe 하므로 인자는 미사용. 누수 방지 free.
+            allocator.free(shell_resolved);
+            break :blk parse(allocator, content, path);
+        };
+
+        // #431 — 핫키 중복 검사는 **여기 한 곳**이다. `parse` 안에 두면 위의 두 fallback
+        // (파일 없음 · 못 읽음) 이 구멍으로 남는데, 그 경로가 쓰는 `Defaults.hotkey` 는
+        // config_0 의 기본값과 **같은 키**라 오히려 겹치기 쉽다 (`tildaz --instance 9` 처럼
+        // config 없는 index 로 직접 띄우는 경우).
+        fatalIfHotkeyTakenByLowerIndex(allocator, loaded.hotkey, path);
+        return loaded;
+    }
+
+    /// **뒤에 있는 것이 양보한다** ([#431](https://github.com/ensky0/tildaz/issues/431)) —
+    /// 자기보다 낮은 index 가 같은 전역 핫키를 쓰면 이 인스턴스가 멈춘다. 겹친 두 인스턴스는
+    /// 양쪽 다 중복을 감지하므로, 규칙이 없으면 둘 다 안 뜬다.
+    ///
+    /// 세 platform 이 여기서 함께 덮인다. 전에는 Windows 만 `RegisterHotKey` 실패로 뒤늦게
+    /// 걸렸고 (원인이 자기 다른 인스턴스인지 알 수 없는 안내였다), macOS 는 `CGEventTap` 이
+    /// 배타 등록이 아니라 **두 인스턴스가 같은 키에 함께 반응**했다.
+    fn fatalIfHotkeyTakenByLowerIndex(allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) void {
+        // 측정 인스턴스는 전역 핫키를 등록하지 않는다 (#382). worker index 가 없으면
+        // (단위 테스트 등) 비교할 자기 자신이 없다.
+        if (instance_context.isStress()) return;
+        const self_index = instance_context.workerIndex() orelse return;
+        const owner = instances.lowerIndexHotkeyConflict(allocator, self_index, hotkey) orelse return;
+
+        // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
+        var key_buf: [64]u8 = undefined;
+        var msg_buf: [384]u8 = undefined;
+        const msg = std.fmt.bufPrint(
+            &msg_buf,
+            messages.config_hotkey_duplicate_format,
+            .{ hotkeyDisplay(&key_buf, hotkey), owner },
+        ) catch messages.config_hotkey_duplicate_fallback_msg;
+        showConfigFatalMsg(config_path, msg);
     }
 
     /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static

@@ -490,6 +490,84 @@ pub fn hotkeyOwner(allocator: std.mem.Allocator, indices: []const u32, candidate
     return null;
 }
 
+/// 기동 시 핫키 중복 판정에 쓰는 한 인스턴스의 상태. `hotkey` 가 `null` 이면 그 config 를
+/// 읽거나 파싱하지 못했다는 뜻이다.
+pub const HotkeyEntry = struct { index: u32, hotkey: ?config.Hotkey };
+
+/// **뒤에 있는 것이 양보한다** ([#431](https://github.com/ensky0/tildaz/issues/431)) —
+/// `self_index` 보다 **낮은** index 중 같은 핫키를 쓰는 가장 작은 index 를 돌려준다.
+///
+/// 이 방향이 필요한 이유: 겹친 두 인스턴스는 *양쪽 다* 중복을 감지한다. 규칙 없이 둘 다
+/// 멈추면 사용자는 아무 인스턴스도 못 쓴다. 낮은 쪽을 살려 두면 항상 정확히 한 쪽만 멈춘다.
+///
+/// `hotkey == null` 인 항목은 건너뛴다 — *남의* config 가 깨져서 내가 못 뜨는 일을 만들지
+/// 않는다. 같은 파일을 읽는 `hotkeyOwner` 가 `error.InvalidConfig` 를 전파하는 것과 정책이
+/// 반대인데, 그쪽은 사용자가 키를 **고르는 중**이라 "검사하지 못했다" 를 알려야 해서다
+/// (`dialog.HotkeyValidation.check_failed`).
+///
+/// I/O 가 없어 단위 테스트가 그대로 태울 수 있다 — 디스크를 읽는 부분은
+/// `lowerIndexHotkeyConflict` 가 맡는다.
+pub fn conflictingLowerIndex(entries: []const HotkeyEntry, self_index: u32, candidate: config.Hotkey) ?u32 {
+    var winner: ?u32 = null;
+    for (entries) |entry| {
+        if (entry.index >= self_index) continue;
+        const existing = entry.hotkey orelse continue;
+        if (!std.meta.eql(existing, candidate)) continue;
+        if (winner == null or entry.index < winner.?) winner = entry.index;
+    }
+    return winner;
+}
+
+/// 디스크의 다른 config 를 읽어 `conflictingLowerIndex` 에 넘긴다. 목록 자체를 못 얻거나
+/// 메모리가 없으면 `null` — **검사를 못 했다고 기동을 막지는 않는다** (전역 핫키 등록 실패는
+/// 그 뒤 단계에서 여전히 잡힌다).
+pub fn lowerIndexHotkeyConflict(allocator: std.mem.Allocator, self_index: u32, candidate: config.Hotkey) ?u32 {
+    const indices = listConfigIndices(allocator) catch return null;
+    defer allocator.free(indices);
+
+    const entries = allocator.alloc(HotkeyEntry, indices.len) catch return null;
+    defer allocator.free(entries);
+    for (indices, 0..) |index, i| {
+        const parsed: ?config.Hotkey = blk: {
+            const text = configHotkeyText(allocator, index) catch break :blk null;
+            defer allocator.free(text);
+            break :blk config.Hotkey.fromString(text);
+        };
+        entries[i] = .{ .index = index, .hotkey = parsed };
+    }
+    return conflictingLowerIndex(entries, self_index, candidate);
+}
+
+test "핫키 중복은 뒤에 있는 인스턴스가 양보한다 (#431)" {
+    const f1 = config.Hotkey.fromString("F1").?;
+    const f2 = config.Hotkey.fromString("F2").?;
+    const entries = [_]HotkeyEntry{
+        .{ .index = 0, .hotkey = f1 },
+        .{ .index = 3, .hotkey = f1 },
+        .{ .index = 5, .hotkey = f2 },
+        .{ .index = 7, .hotkey = null }, // 읽기·파싱 실패 — 건너뛴다
+        .{ .index = 9, .hotkey = f1 },
+    };
+
+    // 낮은 index 가 이미 쓰고 있으면 그 index. 여럿이면 가장 작은 것.
+    try std.testing.expectEqual(@as(?u32, 0), conflictingLowerIndex(&entries, 9, f1));
+    try std.testing.expectEqual(@as(?u32, 0), conflictingLowerIndex(&entries, 3, f1));
+
+    // 자기보다 높은 index 는 보지 않는다 — 양보는 뒤에 있는 쪽 몫이다.
+    try std.testing.expectEqual(@as(?u32, null), conflictingLowerIndex(&entries, 0, f1));
+    try std.testing.expectEqual(@as(?u32, null), conflictingLowerIndex(&entries, 5, f2));
+
+    // 같은 index (자기 자신) 도 충돌이 아니다.
+    try std.testing.expectEqual(@as(?u32, null), conflictingLowerIndex(entries[0..1], 0, f1));
+
+    // 겹치는 키가 없으면 null.
+    try std.testing.expectEqual(@as(?u32, null), conflictingLowerIndex(&entries, 9, config.Hotkey.fromString("F4").?));
+
+    // hotkey == null 인 항목은 어떤 후보와도 안 겹친다.
+    const only_null = [_]HotkeyEntry{.{ .index = 1, .hotkey = null }};
+    try std.testing.expectEqual(@as(?u32, null), conflictingLowerIndex(&only_null, 2, f1));
+}
+
 test "only canonical numbered config names are accepted" {
     try std.testing.expectEqual(@as(?u32, 0), parseConfigFileName("config_0.json"));
     try std.testing.expectEqual(@as(?u32, 42), parseConfigFileName("config_42.json"));
