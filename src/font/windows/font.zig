@@ -174,6 +174,9 @@ pub const DWriteFontContext = struct {
     /// 시퀀스를 OpenType GSUB 로 단일 cluster glyph 로 reduce. macOS 의 CTLine
     /// 동등.
     text_analyzer: ?*dw.IDWriteTextAnalyzer = null,
+    /// [#416](https://github.com/ensky0/tildaz/issues/416) — `GetScriptProperties` 하나를
+    /// 쓰려고 QueryInterface 해 둔 것. 없으면 (DirectWrite 1.0) script 를 그대로 쓴다.
+    text_analyzer1: ?*dw.IDWriteTextAnalyzer1 = null,
     /// font.family chain — `[0]` 이 primary (cell metric / MapCharacters 의 base).
     /// chain entry 마다 IDWriteFontFace 보관, resolveGlyph 가 codepoint 별로
     /// 순회해서 글리프 가진 첫 face 반환. 모든 face 는 process 전체 lifetime
@@ -377,6 +380,15 @@ pub const DWriteFontContext = struct {
         _ = factory.?.CreateTextAnalyzer(&analyzer);
         self.text_analyzer = analyzer;
 
+        // 9. IDWriteTextAnalyzer1 — script 특성 조회용 (#416). 실패해도 동작은 이어진다
+        //    (`scriptFor` 가 cursive 판정 없이 script 를 그대로 쓴다).
+        if (analyzer) |a| {
+            var a1: ?*anyopaque = null;
+            if (a.QueryInterface(&dw.IID_IDWriteTextAnalyzer1, &a1) >= 0) {
+                if (a1) |p| self.text_analyzer1 = @ptrCast(@alignCast(p));
+            }
+        }
+
         return self;
     }
 
@@ -401,6 +413,7 @@ pub const DWriteFontContext = struct {
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
+        if (self.text_analyzer1) |ta1| _ = ta1.Release();
         if (self.text_analyzer) |ta| _ = ta.Release();
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             if (maybe_face) |f| _ = f.vtable.Release(f);
@@ -1036,6 +1049,33 @@ pub const DWriteFontContext = struct {
     /// script 가 *inherited* — base 를 따라가므로 결과가 같다. shaping 은 `render` 의 91.5 %
     /// (#395) 를 차지하는 hot path 라 cluster 마다 COM 왕복을 더할 수 없다.
     ///
+    /// ## 예외 — **cursive script 에는 script 를 주지 않는다** (#416 · #417, 2026-08-09)
+    ///
+    /// 위 문단대로 script 를 넘긴 뒤 Windows 실기에서 Arabic 이 **더 나빠졌다.** cursive
+    /// script 의 shaper 는 *앞뒤 글자와의 연결*을 보고 글자 모양 (`isol`/`init`/`medi`/`fina`)
+    /// 을 고르는데, 터미널은 **셀 하나가 shaping 단위**라 그 문맥이 항상 없다. 그래서 shaper 가
+    /// 홀로 선 글자에 연결형을 골라 버린다.
+    ///
+    /// | `U+0628` (ب) · Cascadia Code · 15pt | 글리프 | advance 합 |
+    /// |---|---|---:|
+    /// | script 안 줌 | `726` 하나 — isolated form (잉크 폭 8.64) | **8.79** (셀 9px 에 맞음) |
+    /// | script = Arabic | `3125` (잉크 0) + `727` — final form (잉크 폭 12.82, `lsb = −6.52`) | **17.58** |
+    ///
+    /// [#417](https://github.com/ensky0/tildaz/issues/417) 이 *"Cascadia Code 의 Arabic 이
+    /// 17.6 px 로 셀을 넘는다"* 고 적은 값이 바로 이 17.58 이다 — **폰트 설계가 아니라 이
+    /// shaping 결과였다.** 게다가 글리프 순서가 시각 순서 (RTL) 로 뒤집혀 mark 가 배열 앞에
+    /// 오는 바람에, renderer 의 mark 보정 (`placeUnplacedMarks` 는 `i > 0` 인 advance 0 글리프를
+    /// mark 로 본다) 도 통째로 빗나갔다.
+    ///
+    /// **cursive 가 아닌 script 는 그대로 넘긴다.** Devanagari 는 script 가 있어야 conjunct 가
+    /// 합성된다 (`क्षि` 가 script 지정 시 2 글리프 · advance 14.66, 안 주면 4 글리프 · 25.94).
+    /// Hebrew · Thai · Lao · 한글 · 한자는 실측에서 script 유무가 **결과가 완전히 같았다.**
+    ///
+    /// 판정은 `IDWriteTextAnalyzer1.GetScriptProperties` 의 `isCursiveWriting` 이다 — script
+    /// 목록을 코드에 박지 않고 **OS 가 아는 값**을 쓴다. 실측에서 Arabic · Syriac · Nko ·
+    /// Mongolian 만 참이고 Latin · Hebrew · Hangul · Devanagari · Thai · Lao · Han · Hiragana 는
+    /// 거짓이었다.
+    ///
     /// 분석에 실패하면 `script = 0` 을 돌려준다 — 예전 동작 그대로다.
     fn scriptFor(self: *DWriteFontContext, base_cp: u21) dw.DWRITE_SCRIPT_ANALYSIS {
         const none = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
@@ -1057,14 +1097,28 @@ pub const DWriteFontContext = struct {
 
         var source = dw.SimpleTextAnalysisSource.create(&u16_buf, u16_len, self.number_sub);
         var sink = dw.ScriptSink.create();
-        const result = if (analyzer.AnalyzeScript(@ptrCast(&source), 0, u16_len, @ptrCast(&sink)) >= 0 and sink.got != 0)
+        const analyzed = if (analyzer.AnalyzeScript(@ptrCast(&source), 0, u16_len, @ptrCast(&sink)) >= 0 and sink.got != 0)
             sink.analysis
         else
             none;
 
+        // cursive script 는 `none` 으로 낮춘다 (위 doc comment 의 예외). 캐시에도 낮춘 값을
+        // 담아 codepoint 당 한 번만 물어본다.
+        const result = if (self.isCursiveScript(analyzed)) none else analyzed;
+
         // 캐시가 실패해도 동작은 같다 — 다음에 다시 분석할 뿐이다.
         self.script_map.put(base_cp, result) catch {};
         return result;
+    }
+
+    /// script 가 **문맥에 따라 글자 모양이 바뀌는 (cursive)** 부류인지 (#416).
+    /// `IDWriteTextAnalyzer1` 을 못 얻었으면 (DirectWrite 1.0) 거짓 — script 를 그대로 쓴다.
+    fn isCursiveScript(self: *DWriteFontContext, sa: dw.DWRITE_SCRIPT_ANALYSIS) bool {
+        if (sa.script == 0) return false;
+        const a1 = self.text_analyzer1 orelse return false;
+        var props = dw.DWRITE_SCRIPT_PROPERTIES{};
+        if (a1.GetScriptProperties(sa, &props) < 0) return false;
+        return props.isCursiveWriting();
     }
 
     /// `face` 로 cluster 를 OpenType shape — single glyph (가장 흔한 path) 또는
