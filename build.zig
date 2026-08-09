@@ -408,7 +408,11 @@ pub fn build(b: *std.Build) void {
     // 렌더 검증 화면 (#401 · #415 · #416 · #417 · #418).
     //
     //   zig build render-test
-    //   tildaz -e <zig-out/bin/render-test> -size 84x44
+    //   tildaz -e <zig-out/bin/render-test> -size 88x33
+    //
+    // **`-size` 를 이 값으로 쓴다.** 화면은 62 줄이지만 그만큼 창을 키우면 노트북에서 아래가
+    // 화면 밖으로 나간다 — 33 줄로 띄우고 스크롤로 본다. 폭 88 은 가장 긴 줄 기준이고, 줄이면
+    // 줄바꿈이 생겨 `|` 정렬 판정이 깨진다.
     //
     // **세 platform 이 같은 프로그램을 띄운다.** 셸 스크립트로 같은 화면을 내려면 `printf`
     // 구현차 · cmd 의 CP949 · PowerShell 인코딩을 전부 맞춰야 하는데, 바이트를 프로그램
