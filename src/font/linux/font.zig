@@ -1431,15 +1431,27 @@ pub const Context = struct {
             // advance 는 **base 글리프** 것이다. cluster 가 차지하는 가로는 base 가 정하고
             // mark 는 0 이라서다. 첫 글리프를 쓰면 RTL 에서 어긋난다 — Hebrew `אָ` 는 mark
             // (qamats) 가 먼저 와서 합성 advance 가 0 이 됐다 (#419 에서 실측).
+            // advance 는 **cluster 전체가 차지하는 가로**다 — shaping 이 준 `x_advance` 의 합.
+            //
+            // 한 글리프 것을 집으면 어긋난다. 처음엔 첫 글리프를 썼는데 RTL 에서 mark 가 먼저
+            // 와서 (Hebrew `אָ` = qamats → alef) 0 이 나왔고, 첫 *base* 글리프로 바꿨더니 이번엔
+            // Devanagari `क्षि` 가 5 를 냈다 — `ि` (short i) 가 **base 앞에 놓이는 모음**이라
+            // 첫 base 글리프가 그 조각이다. 렌더러는 이 값으로 셀 안 중앙정렬을 하므로 (#299)
+            // 작으면 글자가 오른쪽으로 밀린다 (실기에서 그렇게 보였다).
+            //
+            // mark 는 `x_advance` 가 0 이라 합에 기여하지 않으므로 따로 거를 필요가 없다.
             .advance = blk: {
-                // `marks[]` 를 쓰지 않는다 — 그 배열은 `i > 0` 을 함께 보는 **배치용** 판정이라
-                // 첫 글리프를 무조건 base 로 친다. RTL 은 mark 가 먼저 와서 (Hebrew `אָ` 는
-                // qamats → alef 순) 그 가정이 깨진다. 여기서는 위치와 무관하게 다시 본다.
-                for (glyphs, 0..) |g2, i| {
-                    if (self.glyphIsMark(cps, cluster_base, g2) or g2.x_advance == 0) continue;
-                    break :blk rasters[i].advance;
+                var sum: i32 = 0;
+                for (glyphs) |g2| {
+                    // mark 는 빼야 한다. 보통 `x_advance` 가 0 이라 저절로 빠지지만 관통
+                    // overlay 는 advance 를 갖고 (`DejaVu` 의 `U+0336` = 12) 그대로 더하면
+                    // `k̶` 의 advance 가 24 로 두 칸이 된다 — pen 을 안 미는 것과 같은 이유로
+                    // 폭에도 넣지 않는다 (#418).
+                    if (self.glyphIsMark(cps, cluster_base, g2)) continue;
+                    sum += g2.x_advance;
                 }
-                break :blk rasters[0].advance; // 전부 mark 인 경우 (드묾)
+                if (sum > 0) break :blk @intCast(sum);
+                break :blk rasters[0].advance; // 전부 zero-advance 인 경우 (드묾)
             },
             .pixel_mode = pixel_mode,
         };
