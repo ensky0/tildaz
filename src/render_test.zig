@@ -8,8 +8,12 @@
 //! **왜 셸 스크립트가 아니라 프로그램인가.** 같은 화면을 세 platform 에서 그대로 띄우려면
 //! 셸이 달라도 같은 바이트가 나와야 하는데, `printf` 는 구현마다 escape 해석이 다르고
 //! Windows 는 cmd 의 CP949 · PowerShell 인코딩까지 얽힌다. 바이트를 프로그램 안에 두면
-//! 그 변수가 전부 사라진다. `tildaz -e` 는 세 platform 모두 지원한다 (인자는 못 넘기므로
+//! **셸 쪽 변수**가 전부 사라진다. `tildaz -e` 는 세 platform 모두 지원한다 (인자는 못 넘기므로
 //! 프로그램이 화면을 전부 그리고 대기한다 — `run_options.zig`).
+//!
+//! **단 Windows 콘솔의 디코드 단계는 남는다** — 프로그램이 낸 바이트를 콘솔이 출력 코드페이지로
+//! 해석하므로 UTF-8 을 직접 선언해야 한다 (아래 `SetConsoleOutputCP`). 이걸 빼면 한국어 Windows
+//! 에서 화면 전체가 모지바케가 된다.
 //!
 //! **결합 문자를 소스에 직접 쓰지 않고 codepoint 배열로 둔다.** 편집기 · 클립보드 · git
 //! 이 NFD 를 NFC 로 합쳐 버리면 (`a`+`U+0301` → `á`) 테스트가 조용히 무력해진다 — 화면은
@@ -19,6 +23,16 @@
 //! #417 (advance 가 셀보다 큼) · #418 (관통 overlay).
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Windows 콘솔은 `WriteFile` 로 나간 바이트를 **콘솔 출력 코드페이지**로 디코드한 뒤
+/// UTF-16 으로 들고 있고, ConPTY 가 그것을 다시 UTF-8 로 인코딩해 터미널에 보낸다. 한국어
+/// Windows 의 기본값은 CP949 라 우리가 낸 UTF-8 바이트가 통째로 모지바케가 된다 (실측:
+/// `한글` → `議 고 빅`). **바이트를 프로그램 안에 둔 것만으로는 이 변수가 안 없어진다** —
+/// 위 doc comment 가 없앤 것은 셸의 `printf` 구현차이지 콘솔의 디코드 단계가 아니다.
+/// 그래서 출력 전에 코드페이지를 UTF-8 로 선언한다. `chcp 65001` 의 API 판이고, 이 프로세스의
+/// 콘솔에만 적용된다. Linux · macOS 는 PTY 가 바이트를 그대로 날라서 이 단계가 없다.
+extern "kernel32" fn SetConsoleOutputCP(code_page: c_uint) callconv(.winapi) c_int;
 
 // ── 출력 ───────────────────────────────────────────────────────────────────
 
@@ -366,6 +380,8 @@ fn sectionL(o: *Out) void {
 }
 
 pub fn main() !void {
+    if (builtin.os.tag == .windows) _ = SetConsoleOutputCP(65001);
+
     var storage: [1 << 16]u8 = undefined;
     var o = Out{ .buf = &storage };
 
