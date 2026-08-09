@@ -551,6 +551,58 @@ pub const DWriteFontContext = struct {
         return result;
     }
 
+    /// [#420](https://github.com/ensky0/tildaz/issues/420) — cluster 를 **한 face 로 못 맞췄을 때**
+    /// base 와 결합 기호를 각각 맞는 face 에서 얻는다.
+    ///
+    /// `resolveGrapheme` 은 cluster 전체를 한 face 로 shape 하고 `.notdef` 가 하나라도 나오면 그
+    /// face 를 통째로 버린다. 그래서 **base 와 mark 가 서로 다른 폰트에만 있는 조합**은 어느
+    /// face 도 통과하지 못하고 miss 가 된다. 실측 (Windows 11 · 2026-08-09):
+    ///
+    /// | cluster | Malgun Gothic | Segoe UI Symbol | 결과 |
+    /// |---|---|---|---|
+    /// | `U+AC00` (가) | ✅ | ✕ | 어느 face 도 둘 다 못 가짐 → **miss** |
+    /// | `U+0301` (acute) | ✕ | ✅ | 〃 |
+    ///
+    /// miss 가 되면 셀 루프가 base codepoint 로 떨어져 `가` 만 그리고 **결합 기호가 조용히
+    /// 사라진다.** system fallback (`MapCharacters`) 도 답이 아니다 — 문자열 전체를 한 폰트로
+    /// 매핑하려 하므로 같은 이유로 실패한다 (`mapped_length = 1`).
+    ///
+    /// 그래서 base 는 base 대로, mark 는 mark 대로 face 를 찾아 돌려준다. **합성은 renderer 가
+    /// 화면에서 한다** — atlas entry 는 face 하나짜리를 그대로 쓰고, mark 를 base 잉크 중앙에
+    /// 맞춰 한 번 더 그린다 (`placeUnplacedMarks` 와 같은 정렬 규칙이다).
+    ///
+    /// **마지막 수단이다.** `resolveGrapheme` 이 성공하면 그쪽이 이긴다 — 한 face 안에서
+    /// shaping 이 한 배치 (GPOS) 가 우리 fallback 정렬보다 항상 낫기 때문이다.
+    pub const SplitCluster = struct {
+        /// base codepoint 하나만으로 얻은 cluster (보통 글리프 1 개).
+        base: ClusterResult,
+        /// base 뒤의 결합 기호들. 못 찾은 것은 빠지므로 `cps.len - 1` 보다 적을 수 있다.
+        marks: [MAX_CLUSTER_GLYPHS - 1]GlyphResult = undefined,
+        mark_count: u8 = 0,
+    };
+
+    pub fn resolveGraphemeSplit(self: *DWriteFontContext, cps: []const u21) ?SplitCluster {
+        if (cps.len < 2) return null;
+
+        const base = self.resolveGrapheme(cps[0..1]) orelse return null;
+        var out = SplitCluster{ .base = base };
+
+        for (cps[1..]) |cp| {
+            if (out.mark_count == out.marks.len) break;
+            const g = self.resolveGlyph(cp, .regular) orelse continue;
+            out.marks[out.mark_count] = g;
+            out.mark_count += 1;
+        }
+
+        // mark 를 하나도 못 찾았으면 이 경로의 이득이 없다 — base 만 그리는 것은 호출자의
+        // 기존 fallback 과 같다. base 를 우리가 소유했다면 여기서 놓는다.
+        if (out.mark_count == 0) {
+            if (base.owned) _ = base.face.vtable.Release(base.face);
+            return null;
+        }
+        return out;
+    }
+
     /// #399 (B) — 캐시를 씌운 층. shape 자체는 `resolveGraphemeUncached` 가 한다.
     ///
     /// **소유권이 이 함수의 핵심이다.** 셀 루프는 `result.owned` 면 매 프레임 `Release` 하는데
