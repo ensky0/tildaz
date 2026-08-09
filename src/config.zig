@@ -707,7 +707,13 @@ pub const Defaults = struct {
     pub const hotkey: []const u8 = "F1";
     pub const auto_start: bool = true;
     pub const hidden_start: bool = false;
-    pub const max_scroll_lines: u32 = 100_000;
+    /// 100,000 은 다른 터미널의 10~100 배였다 (#425 조사 — 2 위 alacritty · GNOME Terminal
+    /// 이 10,000 이고 중앙값은 1,000~2,000, 우리가 자리를 물려받은 Tilda 는 5,000). 그 값이
+    /// `cols=120` 에서 130.5 MiB 라 앱의 `parse` 시간이 1.82 배 · `yields` 가 0 → 86 만이
+    /// 됐다 (실측). 활성 작업집합이 캐시를 넘어서 생기는 비용이고 (`instructions` 는 같은데
+    /// `cache-misses` 4,341 배) 로직 최적화로는 줄지 않는다. 최상위권 (ghostty 10 MB ·
+    /// Windows Terminal 9,001 · GNOME Terminal · alacritty 10,000) 에 맞춘다.
+    pub const max_scroll_lines: u32 = 10_000;
 
     /// Primary font — 단일 string. 시스템에 반드시 설치돼 있어야 함 (없으면
     /// startup 시 fatal). Windows: Cascadia Code (Win10 22H2+ / Win11 기본).
