@@ -62,11 +62,56 @@ fn cell(o: *Out, list: []const u21) void {
     o.raw("]|");
 }
 
+/// 문자열이 터미널에서 차지하는 **칸 수**. 한글 · 한자는 두 칸이다.
+///
+/// Zig 의 `{s: <N}` 패딩은 **바이트 기준**이라 한글이 든 라벨에서 열이 어긋난다 — `한자+U+0301`
+/// 은 13 바이트지만 화면에서는 11 칸이다. 라벨을 세로로 맞추려면 칸 수로 세야 한다.
+fn cellWidth(s: []const u8) usize {
+    var w: usize = 0;
+    const view = std.unicode.Utf8View.init(s) catch return s.len;
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        w += switch (cp) {
+            0x1100...0x115F,
+            0x2E80...0xA4CF,
+            0xAC00...0xD7A3,
+            0xF900...0xFAFF,
+            0xFE30...0xFE4F,
+            0xFF00...0xFF60,
+            0xFFE0...0xFFE6,
+            0x1F300...0x1FAFF,
+            => 2,
+            else => 1,
+        };
+    }
+    return w;
+}
+
+/// 라벨을 **칸 수** 기준으로 채운다.
+fn pad(o: *Out, label: []const u8, width: usize) void {
+    o.raw(label);
+    const w = cellWidth(label);
+    var i = w;
+    while (i < width) : (i += 1) o.raw(" ");
+}
+
 /// 라벨 + `[cluster]|` + `base [기본문자]|` 한 줄. **좌우가 같아 보이면 mark 소실**이다.
 fn row(o: *Out, label: []const u8, list: []const u21) void {
-    o.print("   {s: <22}", .{label});
+    rowGap(o, label, list, 2);
+}
+
+/// `row` 인데 `base` 앞 공백 수를 정한다.
+///
+/// cluster 가 셀보다 넓으면 (Devanagari `क्षि` 는 두 칸을 쓴다) 뒤가 한 칸 밀려 `base` 열이
+/// 어긋난다. 그 줄만 공백을 하나 줄여 세로를 맞춘다 — **폭이 넘친다는 사실 자체는 `]|` 가
+/// 이미 보여 주므로**, 라벨 열까지 흐트러뜨릴 이유가 없다.
+fn rowGap(o: *Out, label: []const u8, list: []const u21, gap: usize) void {
+    o.raw("   ");
+    pad(o, label, 22);
     cell(o, list);
-    o.raw("  base ");
+    var i: usize = 0;
+    while (i < gap) : (i += 1) o.raw(" ");
+    o.raw("base ");
     cell(o, list[0..1]);
     o.raw("\n");
 }
@@ -85,10 +130,14 @@ fn sweep(o: *Out, base: u21, marks: []const u21) void {
 /// 연속판 / 공백판 두 줄. **배칭 경로와 개별 경로가 같은 그림을 내야** 정상이라,
 /// 두 줄의 글자 모양이 같아야 한다 (간격만 다르다).
 fn batchPair(o: *Out, label: []const u8, items: []const []const u21) void {
-    o.print("   {s} 연속  [", .{label});
+    o.raw("   ");
+    pad(o, label, 6);
+    o.raw("연속  [");
     for (items) |it| o.cps(it);
     o.raw("]\n");
-    o.print("   {s} 공백  [", .{label});
+    o.raw("   ");
+    pad(o, label, 6);
+    o.raw("공백  [");
     for (items, 0..) |it, i| {
         if (i > 0) o.raw(" ");
         o.cps(it);
@@ -238,7 +287,8 @@ fn sectionG(o: *Out) void {
         o.raw("|");
     }
     o.raw("\n   ");
-    for (0..3) |_| {
+    // 위 줄과 **같은 칸 수**로 늘어놓는다 — `|` 가 세로로 맞는지 보려면 비교 대상이 있어야 한다.
+    for (0..4) |_| {
         o.cps(&DEVA_KSHI);
         o.raw("|");
     }
@@ -291,7 +341,7 @@ fn sectionK(o: *Out) void {
     row(o, "Arabic beh", &.{0x0628});
     row(o, "Arabic alef", &.{0x0627});
     row(o, "Devanagari ka", &.{0x0915});
-    row(o, "Devanagari kshi", &DEVA_KSHI);
+    rowGap(o, "Devanagari kshi", &DEVA_KSHI, 1);
     row(o, "Thai ko+2", &.{ 0x0E01, 0x0E34, 0x0E48 });
     row(o, "Hebrew alef+qamats", &.{ 0x05D0, 0x05B8 });
 }
