@@ -17,7 +17,7 @@
 
 const std = @import("std");
 const run_options = @import("../run_options.zig");
-const build_options = @import("build_options");
+const version = @import("../version.zig");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
 const ghostty = @import("ghostty-vt");
@@ -216,7 +216,7 @@ fn atExitLogStop() callconv(.c) void {
     // defer 가 안 불려서 이 핸들러 안에 둔다 — 이 함수가 존재하는 이유와 같다.
     // 로그 파일이 닫히기 전이어야 하므로 `logStop` 앞이다. worker 는 no-op.
     perf.dumpOnExit();
-    log.logStop(build_options.version);
+    log.logStop(version.string);
 }
 
 // NSApplication delegate — `applicationShouldTerminate:` 한 메서드만 구현.
@@ -2793,7 +2793,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
     // `~/Library/Logs/tildaz_N.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
-    log.logStart(build_options.version);
+    log.logStart(version.string);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
     log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.

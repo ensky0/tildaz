@@ -17,7 +17,7 @@ const themes = @import("../themes.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
 const ui_metrics = @import("../ui_metrics.zig");
-const build_options = @import("build_options");
+const version = @import("../version.zig");
 
 const WCHAR = u16;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const WCHAR, ?[*]WCHAR, u32) callconv(.c) u32;
@@ -49,8 +49,8 @@ pub fn run(opts: run_options.RunOptions) !void {
 
     // %APPDATA%\tildaz\tildaz_N.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
-    log.logStart(build_options.version);
-    defer log.logStop(build_options.version);
+    log.logStart(version.string);
+    defer log.logStop(version.string);
     // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
     // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
     // worker 는 no-op (게이트는 `instance_context.isStress`).

@@ -118,6 +118,41 @@ Common fields:
 Font fallback is capped at 8 families total: 1 primary `font.family` plus up to
 7 entries in `font.glyph_fallback`.
 
+## Command line
+
+TildaZ needs no arguments to start. These options are available:
+
+```bash
+tildaz --instance 1     # run instance 1, with its own window, config, and log
+tildaz --toggle         # show or hide the running instance, then exit (Linux only)
+tildaz --autostart      # start the way the desktop session starts TildaZ
+tildaz --version        # print the version, then exit
+tildaz --help           # print the option list, then exit
+```
+
+`--version` prints the release version, plus the commit it was built from when
+TildaZ was built from a git checkout:
+
+```
+$ tildaz --version
+tildaz 0.7.0 (d1ad1ff)
+```
+
+A `-dirty` suffix on the commit — `tildaz 0.7.0 (d1ad1ff-dirty)` — means the
+build had uncommitted local changes. Builds from a source archive with no git
+metadata print the version alone. The same string appears in the About dialog
+(`Ctrl+Shift+I`, or `Shift+Cmd+I` on macOS) and on the first line of the log
+file, so any of the three identifies a build exactly.
+
+`--toggle` is meant for a desktop shortcut: bind `tildaz --toggle` to a key in
+your desktop's keyboard settings, and it shows or hides the running instance.
+
+On macOS the executable lives inside the app bundle, so call it by path:
+
+```bash
+/Applications/TildaZ.app/Contents/MacOS/tildaz --version
+```
+
 ## Build
 
 Requirements:
