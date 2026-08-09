@@ -133,6 +133,9 @@ pub const Face = struct {
     family: []u8,
     /// 로딩 시 fontconfig 가 반환한 파일 path — chain 중복 제거에 사용.
     path: []u8,
+    /// #428 — 그 파일 안의 face index. `.ttc` 는 한 path 에 face 가 여러 벌이므로
+    /// **face 동일성은 path 만이 아니라 (path, index) 쌍**으로 판정해야 한다.
+    index: i32,
     /// codepoint → Glyph cache (단순 lookup path, `Context.glyph` 가 사용).
     ///
     /// **`Glyph` 를 값이 아니라 개별 할당한 포인터로 담는다** — 그래야 주소가
@@ -338,42 +341,41 @@ pub const Context = struct {
 
     /// 한 family 의 path 조회 + face 등록. 실패는 caller 가 잡고 skip (err return).
     fn tryLoadFamily(self: *Context, family: []const u8, log_idx: usize, pixel_height: u32) !void {
-        const family_z = try self.allocator.allocSentinel(u8, family.len, 0);
-        defer self.allocator.free(family_z);
-        @memcpy(family_z[0..family.len], family);
-
-        const fc_result = try fontconfig.lookup(self.allocator, family_z.ptr);
+        // #409 — 이름 해석은 boot 검증 (`familyInstalledDetail`) 과 **같은 함수**를 쓴다.
+        // 두 경로가 각자 판정하면 검증을 통과하고도 다른 폰트가 조용히 그려질 수 있다.
+        const resolved = try resolveRequested(self.allocator, family);
+        const fc_result = resolved.match;
         defer fc_result.deinitAdditionalFamilies(self.allocator);
         defer self.allocator.free(fc_result.family);
         var path_owned_by_face = false;
         defer if (!path_owned_by_face) self.allocator.free(fc_result.path);
 
-        // fontconfig 는 정확한 매치 없으면 fallback substitution 으로 다른 family
-        // 의 path 를 반환한다. generic family ("monospace" 등) 는 substitution 이
-        // 의도 — 시스템 default 매치. specific family 는 결과 family 명이 우리
-        // 요청과 반환 family/alias 항목이 exact match가 아니면 substitution으로
-        // 판단 + skip. 이름 내부의 부분 문자열은 설치 증거가 아니다.
-        // (config 명시 chain 은 boot 검증 — `familyInstalled`, 같은 판정 규칙 —
-        // 을 이미 통과했으므로 여기 skip 은 face 로드 실패류만 남는다, #289 B6.)
-        // #406 — 예전에는 여기서 skip 했지만 (`error.FontconfigFallbackSubstitution`) 이제
-        // **그 폰트로 로드한다.** 대체됐다는 것은 요청한 이름이 시스템에 없다는 뜻이 아니라
-        // (그건 위 `lookup` 이 `FontconfigNoMatch` 로 걸러 낸다) 별칭 규칙이 다른 폰트를
-        // 가리키게 했다는 뜻이다. 그 폰트는 실재하므로 글자는 그려진다.
-        //
-        // 사용자가 나중에 "왜 다른 폰트로 보이지" 를 추적할 수 있도록 로그를 남긴다.
-        if (!matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) {
-            log.appendLine("font", "chain[{d}] \"{s}\" resolved to \"{s}\" (system alias) — using it", .{
+        // 사용자가 나중에 "왜 다른 폰트로 보이지" 를 추적할 수 있도록, 적은 그대로 잡히지 않은
+        // 경우는 무엇으로 어떻게 잡혔는지 남긴다.
+        switch (resolved.how) {
+            .family => {},
+            .respelled => log.appendLine("font", "chain[{d}] \"{s}\" matched installed family \"{s}\" — using it", .{
                 log_idx, family, fc_result.family,
-            });
+            }),
+            .postscript => log.appendLine("font", "chain[{d}] \"{s}\" matched the PostScript name of family \"{s}\" — using it", .{
+                log_idx, family, fc_result.family,
+            }),
+            // #406 — 별칭이 가로챈 것은 요청한 이름이 시스템에 없다는 뜻이 아니라 시스템 규칙이
+            // 다른 폰트를 가리키게 했다는 뜻이다. 그 폰트는 실재하므로 그대로 로드한다.
+            .alias => log.appendLine("font", "chain[{d}] \"{s}\" resolved to \"{s}\" (system alias) — using it", .{
+                log_idx, family, fc_result.family,
+            }),
         }
 
-        // 같은 path 가 chain 안 이미 있으면 dedup. log 인덱스 = 매치된 face 의
+        // 같은 face 가 chain 안 이미 있으면 dedup. log 인덱스 = 매치된 face 의
         // 실제 index (자기 자신이 아니라).
+        // #428 — `.ttc` 는 한 path 에 face 가 여러 벌이라 path 만 보면 서로 다른 face 를
+        // 같은 것으로 오인한다 (`Noto Sans CJK KR` 과 `JP` 가 같은 파일이다).
         for (self.faces[0..self.face_count], 0..) |slot, idx| {
             const existing = slot orelse continue;
-            if (std.mem.eql(u8, existing.path, fc_result.path)) {
-                log.appendLineVerbose("font", "chain[{d}] dedup family={s} path={s} (same as chain[{d}])", .{
-                    log_idx, family, fc_result.path, idx,
+            if (std.mem.eql(u8, existing.path, fc_result.path) and existing.index == fc_result.index) {
+                log.appendLineVerbose("font", "chain[{d}] dedup family={s} path={s} index={d} (same as chain[{d}])", .{
+                    log_idx, family, fc_result.path, fc_result.index, idx,
                 });
                 return;
             }
@@ -384,7 +386,7 @@ pub const Context = struct {
         @memcpy(path_z[0..fc_result.path.len], fc_result.path);
 
         var ft_face: freetype.FT_Face = undefined;
-        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, 0, &ft_face) != 0) {
+        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, @intCast(fc_result.index), &ft_face) != 0) {
             return error.FreetypeNewFaceFailed;
         }
         errdefer _ = self.ft_api.done_face(ft_face);
@@ -405,7 +407,10 @@ pub const Context = struct {
             return error.NoLatinM;
         }
 
-        const family_owned = try self.allocator.dupe(u8, family);
+        // #409 — 사용자가 적은 원문이 아니라 **해석된 정식 family** 를 담는다. bold / italic
+        // 변종 조회 (`loadStyledFace`) 가 이 이름으로 가므로, PostScript 이름이나 다른 표기로
+        // 적힌 경우 원문을 그대로 두면 변종을 못 찾는다.
+        const family_owned = try self.allocator.dupe(u8, fc_result.family);
         errdefer self.allocator.free(family_owned);
 
         // HarfBuzz 가 advertise 됐으면 FT_Face 를 hb_font 로 wrap. `_referenced`
@@ -423,6 +428,7 @@ pub const Context = struct {
             .ft_face = ft_face,
             .family = family_owned,
             .path = fc_result.path,
+            .index = fc_result.index,
             .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
             .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
             .hb_font = hb_font,
@@ -432,7 +438,7 @@ pub const Context = struct {
 
         // #197 — chain detail (path 포함) 은 verbose. primary 의 path 도 여기 남고,
         // production 1줄 lifecycle 은 path 없이 cross-platform 동일 형식.
-        log.appendLineVerbose("font", "chain[{d}] family={s} path={s}", .{ log_idx, family, fc_result.path });
+        log.appendLineVerbose("font", "chain[{d}] family={s} path={s} index={d}", .{ log_idx, family, fc_result.path, fc_result.index });
 
         if (self.face_count == 1) {
             if (m_idx != 0 and self.ft_api.load_glyph(ft_face, m_idx, 0) == 0) {
@@ -627,14 +633,16 @@ pub const Context = struct {
         var path_owned_by_face = false;
         defer if (!path_owned_by_face) self.allocator.free(fc_result.path);
 
-        if (std.mem.eql(u8, fc_result.path, base.path)) return null;
+        // #428 — `.ttc` 는 같은 path 에 regular 와 변종이 함께 있을 수 있어 index 까지 봐야
+        // "같은 face" 를 바르게 판정한다.
+        if (std.mem.eql(u8, fc_result.path, base.path) and fc_result.index == base.index) return null;
 
         const path_z = try self.allocator.allocSentinel(u8, fc_result.path.len, 0);
         defer self.allocator.free(path_z);
         @memcpy(path_z[0..fc_result.path.len], fc_result.path);
 
         var ft_face: freetype.FT_Face = undefined;
-        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, 0, &ft_face) != 0) {
+        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, @intCast(fc_result.index), &ft_face) != 0) {
             return error.FreetypeNewFaceFailed;
         }
         errdefer _ = self.ft_api.done_face(ft_face);
@@ -659,6 +667,7 @@ pub const Context = struct {
             .ft_face = ft_face,
             .family = family_owned,
             .path = fc_result.path,
+            .index = fc_result.index,
             .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
             .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
             .hb_font = hb_font,
@@ -726,11 +735,12 @@ pub const Context = struct {
             self.allocator.free(fc_result.path);
         };
 
-        // 매치 path 가 기로드 face 와 같으면 그 face 는 위 pre-scan 에서 이미
+        // 매치된 face 가 기로드 face 와 같으면 그 face 는 위 pre-scan 에서 이미
         // cp 미보유 판정 — fontconfig charset metadata 와 cmap 의 불일치 케이스.
+        // #428 — `.ttc` 는 한 path 에 face 가 여러 벌이라 index 까지 같아야 같은 face 다.
         for (self.fallback_faces[0..self.fallback_count]) |slot| {
             const existing = slot orelse continue;
-            if (std.mem.eql(u8, existing.path, fc_result.path)) return null;
+            if (std.mem.eql(u8, existing.path, fc_result.path) and existing.index == fc_result.index) return null;
         }
 
         if (self.fallback_count >= MAX_FALLBACK) {
@@ -743,8 +753,8 @@ pub const Context = struct {
         @memcpy(path_z[0..fc_result.path.len], fc_result.path);
 
         var ft_face: freetype.FT_Face = undefined;
-        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, 0, &ft_face) != 0) {
-            log.appendLineVerbose("font", "system fallback new_face failed cp=U+{X} path={s}", .{ cp, fc_result.path });
+        if (self.ft_api.new_face(self.ft_lib, path_z.ptr, @intCast(fc_result.index), &ft_face) != 0) {
+            log.appendLineVerbose("font", "system fallback new_face failed cp=U+{X} path={s} index={d}", .{ cp, fc_result.path, fc_result.index });
             return null;
         }
         // set_pixel_sizes 실패 시 fixed-strike 선택 — `tryLoadFamily` 와 동일.
@@ -766,6 +776,7 @@ pub const Context = struct {
             .ft_face = ft_face,
             .family = fc_result.family,
             .path = fc_result.path,
+            .index = fc_result.index,
             .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
             .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
             .hb_font = null,
@@ -773,7 +784,7 @@ pub const Context = struct {
         owned_by_face = true;
         const idx: u8 = @intCast(self.fallback_count);
         self.fallback_count += 1;
-        log.appendLineVerbose("font", "system fallback[{d}] family={s} path={s} (cp=U+{X})", .{ idx, fc_result.family, fc_result.path, cp });
+        log.appendLineVerbose("font", "system fallback[{d}] family={s} path={s} index={d} (cp=U+{X})", .{ idx, fc_result.family, fc_result.path, fc_result.index, cp });
         return idx;
     }
 
@@ -1672,11 +1683,107 @@ test "explicit family resolution requires an exact family or alias" {
     try std.testing.expect(matchResolvesFamily("DejaVu Sans Condensed", "DejaVu Sans", &condensed_aliases));
 }
 
+test "resolution steps: why a PostScript name needs its own lookup" {
+    const no_aliases = [_][]const u8{};
+
+    // ① 은 정규화 exact 라, fontconfig 가 *맞는* family 를 돌려줘도 사용자가 적은 것이
+    // PostScript 이름이면 통과하지 못한다. 그래서 ③ (PostScript 조회) 이 따로 필요하다.
+    try std.testing.expect(!matchResolvesFamily("NotoSansCJKkr-Regular", "Noto Sans CJK KR", &no_aliases));
+    try std.testing.expect(!matchResolvesFamily("DejaVuSansMono-Bold", "DejaVu Sans Mono", &no_aliases));
+
+    // 반면 style 이 family 이름으로도 노출되는 폰트는 ② (정식 표기 재조회) 에서 잡힌다 —
+    // 우리 정규화는 `-` 와 공백을 함께 지우므로 두 표기가 같아진다.
+    try std.testing.expect(normalizedEql("NotoSerifKannada-Light", "Noto Serif Kannada Light"));
+    // 그런데 fontconfig 의 family 매칭은 공백 · 대소문자만 무시하고 `-` 는 유효 문자로 본다.
+    // 그래서 ① 이 못 잡고 ② 가 필요하다 (실측: `NotoSerifKannada-Light` 를 그대로 조회하면
+    // 무관한 `Noto Serif CJK KR` 이 왔다).
+    try std.testing.expect(!matchResolvesFamily("NotoSerifKannada-Light", "Noto Serif CJK KR", &no_aliases));
+}
+
 test "generic family resolution keeps fontconfig substitution" {
     const no_aliases = [_][]const u8{};
     try std.testing.expect(matchResolvesFamily("monospace", "Noto Sans Mono", &no_aliases));
     try std.testing.expect(matchResolvesFamily("SANS-SERIF", "Noto Sans", &no_aliases));
     try std.testing.expect(matchResolvesFamily("serif", "Noto Serif", &no_aliases));
+}
+
+/// #409 — 사용자가 `font.family` 에 적은 이름 하나를 **face 하나**로 해석한 결과.
+pub const Resolved = struct {
+    match: fontconfig.MatchResult,
+    how: How,
+
+    pub const How = enum {
+        /// 적은 그대로 family 이름으로 잡혔다 (generic family 포함).
+        family,
+        /// 같은 family 의 **정식 표기**로 다시 조회해 잡았다 — `NotoSerifKannada-Light` →
+        /// `Noto Serif Kannada Light`.
+        respelled,
+        /// family 가 아니라 **PostScript 이름**으로 잡았다 — `NotoSansCJKkr-Regular`.
+        postscript,
+        /// 요청한 이름은 설치돼 있는데 시스템 fontconfig 규칙이 다른 폰트를 가리켰다
+        /// (`Noto Color Emoji` → `Twemoji`). #406 이 정한 대로 그 폰트로 띄운다.
+        alias,
+    };
+};
+
+/// 이름 → face 해석의 **단일 진입점**. boot 검증 (`familyInstalledDetail`) 과 실제 로드
+/// (`tryLoadFamily`) 가 이 함수를 공유한다 — 둘이 각자 판정하면 검증을 통과하고도 다른 폰트가
+/// 조용히 그려질 수 있다.
+///
+/// 해석 순서는 **family 공간이 먼저, PostScript 는 그 다음**이다. 이 순서가 중요하다 —
+/// `Noto Color Emoji` 는 그 자체가 설치된 family 이면서 동시에 그 폰트의 PostScript 이름이기도
+/// 해서, PostScript 를 먼저 보면 시스템의 별칭 규칙 (`ttf-twemoji` 등) 을 **덮어 버린다.**
+/// 별칭은 시스템 관리자 · 사용자가 명시한 의도이므로 우리가 뒤집지 않는다 (#406).
+///
+///   ① 적은 이름 그대로 family 매치 → `.family`
+///   ② 설치된 family 목록에 있나
+///        - 표기만 다르면 정식 표기로 재조회 → `.respelled`
+///        - 표기가 같은데 다른 폰트가 왔으면 별칭이다 → `.alias`
+///   ③ family 가 아니면 PostScript 이름으로 조회 (자기검증 포함) → `.postscript`
+///   ④ 아무것도 아니면 `error.FamilyNotInstalled` — 오타 · 미설치다.
+///
+/// 목록 조회 자체가 안 되는 환경 (`error.FontconfigListUnavailable`) 은 **미설치로 몰지 않고**
+/// ② 의 별칭으로 취급한다 — 판정 불가는 거절 사유가 아니다.
+fn resolveRequested(allocator: std.mem.Allocator, name: []const u8) !Resolved {
+    const name_z = try allocator.allocSentinel(u8, name.len, 0);
+    defer allocator.free(name_z);
+    @memcpy(name_z[0..name.len], name);
+
+    // ① 적은 이름 그대로.
+    const first = try fontconfig.lookup(allocator, name_z.ptr);
+    errdefer first.deinit(allocator);
+    if (matchResolvesFamily(name, first.family, first.additional_families)) {
+        return .{ .match = first, .how = .family };
+    }
+
+    // ② 설치된 family 목록.
+    var canon_buf: [256]u8 = undefined;
+    const canonical = fontconfig.findInstalledFamily(name, normalizedEql, &canon_buf) catch {
+        return .{ .match = first, .how = .alias };
+    };
+    if (canonical) |canon| {
+        if (!std.mem.eql(u8, canon, name)) {
+            const canon_z = try allocator.dupeZ(u8, canon);
+            defer allocator.free(canon_z);
+            if (fontconfig.lookup(allocator, canon_z.ptr)) |again| {
+                if (matchResolvesFamily(canon, again.family, again.additional_families)) {
+                    first.deinit(allocator);
+                    return .{ .match = again, .how = .respelled };
+                }
+                again.deinit(allocator);
+            } else |_| {}
+        }
+        return .{ .match = first, .how = .alias };
+    }
+
+    // ③ PostScript 이름.
+    if (fontconfig.lookupPostScript(allocator, name_z, normalizedEql)) |ps| {
+        first.deinit(allocator);
+        return .{ .match = ps, .how = .postscript };
+    } else |_| {}
+
+    // ④ 오타 · 미설치.
+    return error.FamilyNotInstalled;
 }
 
 /// config font chain boot 검증용 가용성 판정 (#289 B6) — Windows
@@ -1711,45 +1818,33 @@ pub fn familyInstalledDetail(
     family: []const u8,
     substitute_buf: ?[]u8,
 ) struct { availability: FamilyAvailability, substitute: ?[]const u8 } {
-    const family_z = allocator.allocSentinel(u8, family.len, 0) catch
-        return .{ .availability = .unknown, .substitute = null };
-    defer allocator.free(family_z);
-    @memcpy(family_z[0..family.len], family);
-
-    const fc_result = fontconfig.lookup(allocator, family_z.ptr) catch |err| switch (err) {
-        // 시스템에 매치가 아예 없는 경우만 미설치 확정.
-        error.FontconfigNoMatch => return .{ .availability = .missing, .substitute = null },
+    // #409 — 실제 로드 (`tryLoadFamily`) 와 **같은 해석 함수**를 쓴다. 판정 규칙이 한 곳이라
+    // "검증은 통과했는데 다른 폰트가 그려진다" 가 구조적으로 생기지 않는다.
+    const resolved = resolveRequested(allocator, family) catch |err| switch (err) {
+        // 이름이 시스템 어디에도 없는 경우만 미설치 확정.
+        error.FamilyNotInstalled, error.FontconfigNoMatch => return .{ .availability = .missing, .substitute = null },
+        // libfontconfig 를 못 열거나 lookup 인프라가 실패한 경우 — 미설치로 오판하지 않는다.
         else => return .{ .availability = .unknown, .substitute = null },
     };
-    defer fc_result.deinit(allocator);
+    defer resolved.match.deinit(allocator);
 
-    if (matchResolvesFamily(family, fc_result.family, fc_result.additional_families)) {
-        return .{ .availability = .installed, .substitute = null };
+    switch (resolved.how) {
+        // 적은 표기가 다르더라도 **가리키는 폰트를 찾았으면** 설치된 것이다.
+        .family, .respelled, .postscript => return .{ .availability = .installed, .substitute = null },
+        // #406 — 설치돼 있는데 별칭 규칙이 가로챈 경우. 무엇으로 바뀌었는지 남기되
+        // **시작을 막지 않는다**.
+        .alias => {
+            var sub: ?[]const u8 = null;
+            if (substitute_buf) |buf| {
+                const n = @min(buf.len, resolved.match.family.len);
+                if (n > 0) {
+                    @memcpy(buf[0..n], resolved.match.family[0..n]);
+                    sub = buf[0..n];
+                }
+            }
+            return .{ .availability = .substituted, .substitute = sub };
+        },
     }
-
-    // #406 — 여기부터가 "요청과 다른 폰트가 왔다" 인데, 두 경우가 섞여 있어서 갈라야 한다.
-    //
-    //   Noto Color Emoji -> Twemoji      : 설치돼 있는데 별칭 규칙이 가로챔 -> 띄운다
-    //   NoSuchFont12345  -> Noto Sans    : 아예 없음 -> fatal
-    //
-    // `FcFontMatch` 는 없는 이름에도 항상 무언가를 돌려주므로 (실측: 오타에도 `Noto Sans` 가
-    // 나왔다) 반환값만으로는 못 가른다. **설치 목록에 있는지**로 가른다.
-    //
-    // 목록을 못 얻으면 (`error.*`) 예전처럼 대체로 본다 — 판정 불가를 미설치로 오판해 사용자를
-    // 막지 않는다 (`.unknown` 주석과 같은 방향).
-    const listed = fontconfig.familyListed(family, normalizedEql) catch true;
-    if (!listed) return .{ .availability = .missing, .substitute = null };
-
-    // substitution 이다 — 무엇으로 바뀌었는지 남긴다. #406 이후 이것은 **시작을 막지 않는다**.
-    var sub: ?[]const u8 = null;
-    if (substitute_buf) |buf| {
-        const n = @min(buf.len, fc_result.family.len);
-        if (n > 0) {
-            @memcpy(buf[0..n], fc_result.family[0..n]);
-            sub = buf[0..n];
-        }
-    }
-    return .{ .availability = .substituted, .substitute = sub };
 }
 
 /// 이름만 보는 기존 형태 — 대체 폰트가 필요 없는 호출처용.
