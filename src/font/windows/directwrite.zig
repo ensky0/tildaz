@@ -40,6 +40,16 @@ pub const IID_IDWriteFactory2 = GUID{
     .Data4 = .{ 0x8d, 0xee, 0x3a, 0x9a, 0xf7, 0xb7, 0x32, 0xec },
 };
 
+// IDWriteFactory3 — DirectWrite 1.3+ (dwrite_3.h, Win 10). `GetSystemFontSet` 하나 때문에
+// QueryInterface 한다 (#409) — PostScript 이름으로 face 를 찾는 유일한 경로다.
+// {9A1B41C3-D3BB-466A-87FC-FE67556A3B65}
+pub const IID_IDWriteFactory3 = GUID{
+    .Data1 = 0x9a1b41c3,
+    .Data2 = 0xd3bb,
+    .Data3 = 0x466a,
+    .Data4 = .{ 0x87, 0xfc, 0xfe, 0x67, 0x55, 0x6a, 0x3b, 0x65 },
+};
+
 // IDWriteFactory4 — DirectWrite 1.4+ (dwrite_3.h, Win 10 1607+).
 // {4B0B5BD3-0797-4549-8AC5-FE915CC53856}
 pub const IID_IDWriteFactory4 = GUID{
@@ -822,7 +832,7 @@ pub const IDWriteFontCollection = extern struct {
         GetFontFamilyCount: *const fn (*IDWriteFontCollection) callconv(.c) UINT32,
         GetFontFamily: *const fn (*IDWriteFontCollection, UINT32, *?*IDWriteFontFamily) callconv(.c) HRESULT,
         FindFamilyName: *const fn (*IDWriteFontCollection, [*:0]const WCHAR, *UINT32, *BOOL) callconv(.c) HRESULT,
-        GetFontFromFontFace: *const anyopaque,
+        GetFontFromFontFace: *const fn (*IDWriteFontCollection, *IDWriteFontFace, *?*IDWriteFont) callconv(.c) HRESULT,
     };
 
     pub fn Release(self: *IDWriteFontCollection) u32 {
@@ -833,8 +843,19 @@ pub const IDWriteFontCollection = extern struct {
         return self.vtable.FindFamilyName(self, family_name, index, exists);
     }
 
+    pub fn GetFontFamilyCount(self: *IDWriteFontCollection) UINT32 {
+        return self.vtable.GetFontFamilyCount(self);
+    }
+
     pub fn GetFontFamily(self: *IDWriteFontCollection, index: UINT32, family: *?*IDWriteFontFamily) HRESULT {
         return self.vtable.GetFontFamily(self, index, family);
+    }
+
+    /// #409 — face 하나에서 그것이 속한 family 를 되찾는다. PostScript 이름으로 잡은 face 는
+    /// `IDWriteFontFamily` 를 거치지 않고 오므로, bold / italic 변종을 조회하려면 이 경로로
+    /// family 를 얻어야 한다. face 가 이 컬렉션에 없으면 실패한다 (변종 없이 regular 만 쓴다).
+    pub fn GetFontFromFontFace(self: *IDWriteFontCollection, face: *IDWriteFontFace, font: *?*IDWriteFont) HRESULT {
+        return self.vtable.GetFontFromFontFace(self, face, font);
     }
 };
 
@@ -855,13 +876,20 @@ pub const IDWriteFontFamily = extern struct {
         GetFontCount: *const anyopaque,
         GetFont: *const anyopaque,
         // IDWriteFontFamily (3)
-        GetFamilyNames: *const anyopaque,
+        GetFamilyNames: *const fn (*IDWriteFontFamily, *?*IDWriteLocalizedStrings) callconv(.c) HRESULT,
         GetFirstMatchingFont: *const fn (*IDWriteFontFamily, u32, u32, u32, *?*IDWriteFont) callconv(.c) HRESULT,
         GetMatchingFonts: *const anyopaque,
     };
 
     pub fn Release(self: *IDWriteFontFamily) u32 {
         return self.vtable.Release(self);
+    }
+
+    /// #409 — family 의 이름 **전부** (로케일마다 다르다). `Malgun Gothic` 은 `맑은 고딕` 도
+    /// 갖고 있고 둘 다 `FindFamilyName` 으로 찾힌다 (실측), 그래서 붙여쓴 이름을 맞춰 볼 때
+    /// 목록 전체를 봐야 한국어 표기 (`맑은고딕`) 도 잡힌다.
+    pub fn GetFamilyNames(self: *IDWriteFontFamily, names: *?*IDWriteLocalizedStrings) HRESULT {
+        return self.vtable.GetFamilyNames(self, names);
     }
 
     pub fn GetFirstMatchingFont(self: *IDWriteFontFamily, weight: u32, stretch: u32, style: u32, font: *?*IDWriteFont) HRESULT {
@@ -882,7 +910,7 @@ pub const IDWriteFont = extern struct {
         AddRef: *const fn (*IDWriteFont) callconv(.c) u32,
         Release: *const fn (*IDWriteFont) callconv(.c) u32,
         // IDWriteFont (10)
-        GetFontFamily: *const anyopaque,
+        GetFontFamily: *const fn (*IDWriteFont, *?*IDWriteFontFamily) callconv(.c) HRESULT,
         GetWeight: *const anyopaque,
         GetStretch: *const anyopaque,
         GetStyle: *const anyopaque,
@@ -899,8 +927,217 @@ pub const IDWriteFont = extern struct {
         return self.vtable.Release(self);
     }
 
+    pub fn GetFontFamily(self: *IDWriteFont, family: *?*IDWriteFontFamily) HRESULT {
+        return self.vtable.GetFontFamily(self, family);
+    }
+
     pub fn CreateFontFace(self: *IDWriteFont, face: *?*IDWriteFontFace) HRESULT {
         return self.vtable.CreateFontFace(self, face);
+    }
+};
+
+// --- IDWriteLocalizedStrings ---
+// IDWriteLocalizedStrings : IUnknown — IUnknown (3) + 6 own = 9.
+// #409 — family 이름을 로케일별로 들고 있는 문자열 목록.
+
+pub const IDWriteLocalizedStrings = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const fn (*IDWriteLocalizedStrings, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteLocalizedStrings) callconv(.c) u32,
+        Release: *const fn (*IDWriteLocalizedStrings) callconv(.c) u32,
+        // IDWriteLocalizedStrings (6)
+        GetCount: *const fn (*IDWriteLocalizedStrings) callconv(.c) UINT32,
+        FindLocaleName: *const anyopaque,
+        GetLocaleNameLength: *const anyopaque,
+        GetLocaleName: *const anyopaque,
+        GetStringLength: *const fn (*IDWriteLocalizedStrings, UINT32, *UINT32) callconv(.c) HRESULT,
+        GetString: *const fn (*IDWriteLocalizedStrings, UINT32, [*]WCHAR, UINT32) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDWriteLocalizedStrings) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn GetCount(self: *IDWriteLocalizedStrings) UINT32 {
+        return self.vtable.GetCount(self);
+    }
+
+    pub fn GetStringLength(self: *IDWriteLocalizedStrings, index: UINT32, length: *UINT32) HRESULT {
+        return self.vtable.GetStringLength(self, index, length);
+    }
+
+    /// `size` 는 **null 종결자를 포함한** buffer 크기다 (SDK 규약).
+    pub fn GetString(self: *IDWriteLocalizedStrings, index: UINT32, buf: [*]WCHAR, size: UINT32) HRESULT {
+        return self.vtable.GetString(self, index, buf, size);
+    }
+};
+
+// --- IDWriteFontFaceReference (dwrite_3.h) ---
+// IDWriteFontFaceReference : IUnknown — IUnknown (3) + 14 own = 17.
+// #409 — `IDWriteFontSet` 이 돌려주는 face 핸들. 우리는 `CreateFontFace` 하나만 쓴다.
+
+pub const IDWriteFontFaceReference = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const fn (*IDWriteFontFaceReference, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteFontFaceReference) callconv(.c) u32,
+        Release: *const fn (*IDWriteFontFaceReference) callconv(.c) u32,
+        // IDWriteFontFaceReference (14) — 첫 슬롯만 쓴다.
+        CreateFontFace: *const fn (*IDWriteFontFaceReference, *?*IDWriteFontFace) callconv(.c) HRESULT,
+        CreateFontFaceWithSimulations: *const anyopaque,
+        Equals: *const anyopaque,
+        GetFontFaceIndex: *const anyopaque,
+        GetSimulations: *const anyopaque,
+        GetFontFile: *const anyopaque,
+        GetLocalFileSize: *const anyopaque,
+        GetFileSize: *const anyopaque,
+        GetFileTime: *const anyopaque,
+        GetLocality: *const anyopaque,
+        EnqueueFontDownloadRequest: *const anyopaque,
+        EnqueueCharacterDownloadRequest: *const anyopaque,
+        EnqueueGlyphDownloadRequest: *const anyopaque,
+        EnqueueFileFragmentDownloadRequest: *const anyopaque,
+    };
+
+    pub fn Release(self: *IDWriteFontFaceReference) u32 {
+        return self.vtable.Release(self);
+    }
+
+    /// SDK 는 `IDWriteFontFace3**` 를 돌려주는데 여기서는 `IDWriteFontFace` 로 받는다 —
+    /// `IDWriteFontFace3 : IDWriteFontFace2 : IDWriteFontFace1 : IDWriteFontFace` 라
+    /// vtable 앞부분이 그대로 `IDWriteFontFace` 이고 포인터도 같다 (COM 단일 상속).
+    /// 우리는 `IDWriteFontFace` 의 메서드만 쓰므로 파생 인터페이스를 따로 정의하지 않는다.
+    pub fn CreateFontFace(self: *IDWriteFontFaceReference, face: *?*IDWriteFontFace) HRESULT {
+        return self.vtable.CreateFontFace(self, face);
+    }
+};
+
+/// #409 — `IDWriteFontSet.GetMatchingFonts` 의 조회 키.
+/// 값은 dwrite_3.h 의 `DWRITE_FONT_PROPERTY_ID` 그대로다. 우리가 쓰는 것만 둔다.
+pub const DWRITE_FONT_PROPERTY_ID_POSTSCRIPT_NAME: u32 = 6;
+
+pub const DWRITE_FONT_PROPERTY = extern struct {
+    propertyId: u32,
+    propertyValue: [*:0]const WCHAR,
+    /// 빈 문자열이면 모든 로케일에서 찾는다.
+    localeName: [*:0]const WCHAR,
+};
+
+// --- IDWriteFontSet (dwrite_3.h) ---
+// IDWriteFontSet : IUnknown — IUnknown (3) + 10 own = 13.
+// #409 — 시스템의 모든 face 를 이름 속성으로 조회할 수 있는 집합. `IDWriteFontCollection` 이
+// family 이름만 받는 것과 달리 PostScript · full name 으로도 face 를 찾는다.
+//
+// `GetPropertyValues` 는 SDK 에 같은 이름의 overload 가 셋이라 mingw 헤더가 뒤 두 개에 `_` ·
+// `__` 를 붙여 구분한다 — 여기 slot 이름도 그 순서를 그대로 따랐다 (전부 미사용).
+
+pub const IDWriteFontSet = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const fn (*IDWriteFontSet, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
+        AddRef: *const fn (*IDWriteFontSet) callconv(.c) u32,
+        Release: *const fn (*IDWriteFontSet) callconv(.c) u32,
+        // IDWriteFontSet (10)
+        GetFontCount: *const fn (*IDWriteFontSet) callconv(.c) UINT32,
+        GetFontFaceReference: *const fn (*IDWriteFontSet, UINT32, *?*IDWriteFontFaceReference) callconv(.c) HRESULT,
+        FindFontFaceReference: *const anyopaque,
+        FindFontFace: *const anyopaque,
+        GetPropertyValues__: *const anyopaque,
+        GetPropertyValues_: *const anyopaque,
+        GetPropertyValues: *const anyopaque,
+        GetPropertyOccurrenceCount: *const anyopaque,
+        GetMatchingFonts_: *const anyopaque,
+        GetMatchingFonts: *const fn (*IDWriteFontSet, [*]const DWRITE_FONT_PROPERTY, UINT32, *?*IDWriteFontSet) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDWriteFontSet) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn GetFontCount(self: *IDWriteFontSet) UINT32 {
+        return self.vtable.GetFontCount(self);
+    }
+
+    pub fn GetFontFaceReference(self: *IDWriteFontSet, index: UINT32, ref: *?*IDWriteFontFaceReference) HRESULT {
+        return self.vtable.GetFontFaceReference(self, index, ref);
+    }
+
+    /// 조건에 맞는 face 만 담은 **새 set** 을 돌려준다. 맞는 것이 없으면 빈 set 이다 —
+    /// fontconfig 의 `FcFontMatch` 처럼 최선 폰트를 끼워 주지 않으므로 (실측: 없는 이름에
+    /// `GetFontCount() == 0`) 반환값을 되짚어 검증할 필요가 없다.
+    pub fn GetMatchingFonts(self: *IDWriteFontSet, props: [*]const DWRITE_FONT_PROPERTY, count: UINT32, filtered: *?*IDWriteFontSet) HRESULT {
+        return self.vtable.GetMatchingFonts(self, props, count, filtered);
+    }
+};
+
+// --- IDWriteFactory3 (dwrite_3.h) ---
+// IUnknown (3) + IDWriteFactory (21) + IDWriteFactory1 (2) + IDWriteFactory2 (5) +
+// IDWriteFactory3 (9) = 40 slot. `GetSystemFontSet` 하나만 쓴다 (#409).
+
+pub const IDWriteFactory3 = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (3)
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDWriteFactory3) callconv(.c) u32,
+        // IDWriteFactory (21)
+        GetSystemFontCollection: *const anyopaque,
+        CreateCustomFontCollection: *const anyopaque,
+        RegisterFontCollectionLoader: *const anyopaque,
+        UnregisterFontCollectionLoader: *const anyopaque,
+        CreateFontFileReference: *const anyopaque,
+        CreateCustomFontFileReference: *const anyopaque,
+        CreateFontFace: *const anyopaque,
+        CreateRenderingParams: *const anyopaque,
+        CreateMonitorRenderingParams: *const anyopaque,
+        CreateCustomRenderingParams: *const anyopaque,
+        RegisterFontFileLoader: *const anyopaque,
+        UnregisterFontFileLoader: *const anyopaque,
+        CreateTextFormat: *const anyopaque,
+        CreateTypography: *const anyopaque,
+        GetGdiInterop: *const anyopaque,
+        CreateTextLayout: *const anyopaque,
+        CreateGdiCompatibleTextLayout: *const anyopaque,
+        CreateEllipsisTrimmingSign: *const anyopaque,
+        CreateTextAnalyzer: *const anyopaque,
+        CreateNumberSubstitution: *const anyopaque,
+        CreateGlyphRunAnalysis: *const anyopaque,
+        // IDWriteFactory1 (2)
+        GetEudcFontCollection: *const anyopaque,
+        CreateCustomRenderingParams1: *const anyopaque,
+        // IDWriteFactory2 (5)
+        GetSystemFontFallback: *const anyopaque,
+        CreateFontFallbackBuilder: *const anyopaque,
+        TranslateColorGlyphRun: *const anyopaque,
+        CreateCustomRenderingParams2: *const anyopaque,
+        CreateGlyphRunAnalysis2: *const anyopaque,
+        // IDWriteFactory3 (9)
+        CreateGlyphRunAnalysis3: *const anyopaque,
+        CreateCustomRenderingParams3: *const anyopaque,
+        CreateFontFaceReference_: *const anyopaque,
+        CreateFontFaceReference: *const anyopaque,
+        GetSystemFontSet: *const fn (*IDWriteFactory3, *?*IDWriteFontSet) callconv(.c) HRESULT,
+        CreateFontSetBuilder: *const anyopaque,
+        CreateFontCollectionFromFontSet: *const anyopaque,
+        GetSystemFontCollection3: *const anyopaque,
+        GetFontDownloadQueue: *const anyopaque,
+    };
+
+    pub fn Release(self: *IDWriteFactory3) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn GetSystemFontSet(self: *IDWriteFactory3, font_set: *?*IDWriteFontSet) HRESULT {
+        return self.vtable.GetSystemFontSet(self, font_set);
     }
 };
 

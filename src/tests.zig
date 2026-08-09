@@ -74,8 +74,9 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("terminal/posix/pty.zig");
         },
         .windows => {
-            // Windows native modules (3 files).
+            // Windows native modules (4 files).
             _ = @import("dialog/windows.zig");
+            _ = @import("font/windows/font.zig");
             _ = @import("instance_request/windows.zig");
             _ = @import("terminal/windows/pty.zig");
         },

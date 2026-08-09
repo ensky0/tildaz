@@ -162,6 +162,314 @@ fn releaseCluster(v: ClusterResult) void {
     if (v.owned) _ = v.face.vtable.Release(v.face);
 }
 
+/// [#409](https://github.com/ensky0/tildaz/issues/409) — 이름 정규화. **Linux
+/// (`font/linux/font.zig`) · macOS (`font/macos/font.zig`) 의 `normalizeFamily` 와 같은 규칙**
+/// 이어야 세 platform 이 같은 이름을 받아 준다: 소문자로 바꾸고 공백 · `-` · `_` 를 뺀다.
+///
+/// 저쪽 둘은 UTF-8 byte 위에서 돌고 여기는 UTF-16 unit 위에서 돈다. 소문자 변환을 **ASCII 로만**
+/// 하는 것도 같다 — 한국어 family 이름 (`맑은 고딕`) 은 대소문자가 없어서 그대로 통과하고,
+/// 로케일별 대소문자 규칙에 판정이 흔들리지 않는다.
+fn normalizeFamilyW(name: []const WCHAR, buf: []WCHAR) []const WCHAR {
+    var n: usize = 0;
+    for (name) |c| {
+        if (c == ' ' or c == '-' or c == '_') continue;
+        if (n >= buf.len) break;
+        buf[n] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+fn normalizedEqlW(a: []const WCHAR, b: []const WCHAR) bool {
+    var buf_a: [128]WCHAR = undefined;
+    var buf_b: [128]WCHAR = undefined;
+    return std.mem.eql(WCHAR, normalizeFamilyW(a, &buf_a), normalizeFamilyW(b, &buf_b));
+}
+
+test "normalized family match accepts the spellings a font tool shows" {
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+
+    // #409 ② 가 받아야 하는 것들 — 실측에서 `FindFamilyName` 이 전부 거절한 표기다.
+    try std.testing.expect(normalizedEqlW(L("CascadiaCode"), L("Cascadia Code")));
+    try std.testing.expect(normalizedEqlW(L("Cascadia-Code"), L("Cascadia Code")));
+    try std.testing.expect(normalizedEqlW(L("cascadia_code"), L("Cascadia Code")));
+    try std.testing.expect(normalizedEqlW(L("MalgunGothic"), L("Malgun Gothic")));
+    // 한국어 이름은 대소문자가 없고 공백만 빠진다 — `맑은고딕` 과 `맑은 고딕`.
+    try std.testing.expect(normalizedEqlW(L("맑은고딕"), L("맑은 고딕")));
+
+    // 다른 폰트를 같은 것으로 보면 안 된다.
+    try std.testing.expect(!normalizedEqlW(L("Cascadia Code"), L("Cascadia Mono")));
+    try std.testing.expect(!normalizedEqlW(L("Consolas"), L("Consola")));
+}
+
+test "the normalization is not a substitute for a PostScript lookup" {
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+
+    // PostScript 이름은 정규화해도 family 와 같아지지 않는다 — 그래서 ③ 이 따로 필요하다.
+    // 실측한 실제 이름이다 (Cascadia 는 roman 계열과 italic 계열의 표기가 서로 다르다).
+    try std.testing.expect(!normalizedEqlW(L("CascadiaCodeRoman"), L("Cascadia Code")));
+    try std.testing.expect(!normalizedEqlW(L("CascadiaCodeRoman-Bold"), L("Cascadia Code")));
+    try std.testing.expect(!normalizedEqlW(L("Cascadia-Code-Italic"), L("Cascadia Code")));
+    try std.testing.expect(!normalizedEqlW(L("Consolas-Bold"), L("Consolas")));
+
+    // 반대로 `MalgunGothic` 은 PostScript 이름이면서 동시에 붙여쓴 family 이기도 하다.
+    // family 공간을 먼저 보는 순서 (② 가 ③ 보다 앞) 라서 이 이름은 ② 에서 잡힌다.
+    try std.testing.expect(normalizedEqlW(L("MalgunGothic"), L("Malgun Gothic")));
+}
+
+/// #409 — `font.family` 에 적은 이름 하나를 해석한 결과. **face 단위**다 — PostScript 이름은
+/// family 가 아니라 face 를 가리키기 때문이다 (`CascadiaCodeRoman-Bold`).
+pub const Resolved = struct {
+    /// 그 이름이 가리키는 face. **caller 가 소유한다.**
+    face: *dw.IDWriteFontFace,
+    /// 변종 (bold / italic) 을 조회할 family. **caller 가 소유한다.** face 가 시스템 컬렉션에
+    /// 없으면 `null` 이고, 그때는 변종 없이 regular 만 쓴다.
+    family: ?*dw.IDWriteFontFamily = null,
+    how: How,
+    /// 해석된 **정식 family 이름** (null 종결). `MapCharacters` 의 base family 힌트와 로그가
+    /// 사용자 원문 대신 이 값을 쓴다. family 를 못 얻었으면 길이 0 이다.
+    family_name: [64]WCHAR = undefined,
+    family_name_len: u32 = 0,
+
+    pub const How = enum {
+        /// 적은 그대로 family 로 잡혔다.
+        family,
+        /// 정규화가 같은 family 를 설치 목록에서 찾았다 — `CascadiaCode` · `맑은고딕`.
+        respelled,
+        /// family 가 아니라 **PostScript 이름**으로 잡았다 — `CascadiaCodeRoman-Bold`.
+        postscript,
+    };
+
+    pub fn familyName(self: *const Resolved) []const WCHAR {
+        return self.family_name[0..self.family_name_len];
+    }
+
+    /// face 는 계속 쓰고 family 만 놓을 때 (chain 로드 경로).
+    pub fn releaseFamily(self: *const Resolved) void {
+        if (self.family) |f| _ = f.Release();
+    }
+
+    /// face 까지 전부 놓을 때 (검증 · 측정 경로).
+    pub fn deinit(self: *const Resolved) void {
+        _ = self.face.vtable.Release(self.face);
+        self.releaseFamily();
+    }
+};
+
+/// `IDWriteLocalizedStrings` 의 `index` 번째 문자열. buffer 를 넘치면 `null` — config 에 적을
+/// 만한 폰트 이름이 그렇게 길 수 없다.
+fn localizedString(strings: *dw.IDWriteLocalizedStrings, index: dw.UINT32, buf: []WCHAR) ?[]const WCHAR {
+    var len: dw.UINT32 = 0;
+    if (strings.GetStringLength(index, &len) < 0) return null;
+    if (len == 0 or len + 1 > buf.len) return null;
+    if (strings.GetString(index, buf.ptr, len + 1) < 0) return null;
+    return buf[0..len];
+}
+
+/// family 의 정식 표기를 `out` 에 담고 길이를 돌려준다.
+///
+/// 이름이 여럿일 때 `[0]` 을 쓴다 (로케일마다 다른 이름이 있다 — `Malgun Gothic` / `맑은 고딕`).
+/// 실측에서 `[0]` 과 로케일 이름 **둘 다** `FindFamilyName` 으로 왕복했고 (91/91), `[0]` 은
+/// 로케일에 흔들리지 않아 로그와 `MapCharacters` 힌트에 쓰기 좋다.
+fn copyFamilyName(family: *dw.IDWriteFontFamily, out: *[64]WCHAR) u32 {
+    var names: ?*dw.IDWriteLocalizedStrings = null;
+    if (family.GetFamilyNames(&names) < 0) return 0;
+    const ns = names orelse return 0;
+    defer _ = ns.Release();
+
+    var buf: [128]WCHAR = undefined;
+    const name = localizedString(ns, 0, &buf) orelse return 0;
+    const n = @min(name.len, out.len - 1);
+    @memcpy(out[0..n], name[0..n]);
+    out[n] = 0;
+    return @intCast(n);
+}
+
+/// family `index` 의 이름들 (로케일마다 하나씩) 중 정규화가 `wanted` 와 같은 것이 있는지.
+fn familyHasName(collection: *dw.IDWriteFontCollection, index: dw.UINT32, wanted: []const WCHAR) bool {
+    var family: ?*dw.IDWriteFontFamily = null;
+    if (collection.GetFontFamily(index, &family) < 0) return false;
+    const fam = family orelse return false;
+    defer _ = fam.Release();
+
+    var names: ?*dw.IDWriteLocalizedStrings = null;
+    if (fam.GetFamilyNames(&names) < 0) return false;
+    const ns = names orelse return false;
+    defer _ = ns.Release();
+
+    var buf: [128]WCHAR = undefined;
+    const n = ns.GetCount();
+    var k: dw.UINT32 = 0;
+    while (k < n) : (k += 1) {
+        const name = localizedString(ns, k, &buf) orelse continue;
+        if (normalizedEqlW(wanted, name)) return true;
+    }
+    return false;
+}
+
+/// family 하나에서 regular face 를 열어 `Resolved` 를 만든다 (① · ② 공용).
+fn resolvedFromFamilyIndex(collection: *dw.IDWriteFontCollection, index: dw.UINT32, how: Resolved.How) !Resolved {
+    var family: ?*dw.IDWriteFontFamily = null;
+    if (collection.GetFontFamily(index, &family) < 0) return error.FontFamilyFailed;
+    const fam = family orelse return error.FontFamilyFailed;
+    errdefer _ = fam.Release();
+
+    var font: ?*dw.IDWriteFont = null;
+    if (fam.GetFirstMatchingFont(
+        dw.DWRITE_FONT_WEIGHT_NORMAL,
+        dw.DWRITE_FONT_STRETCH_NORMAL,
+        dw.DWRITE_FONT_STYLE_NORMAL,
+        &font,
+    ) < 0) return error.FontMatchFailed;
+    const f = font orelse return error.FontMatchFailed;
+    defer _ = f.Release();
+
+    var face: ?*dw.IDWriteFontFace = null;
+    if (f.CreateFontFace(&face) < 0) return error.FontFaceFailed;
+    const fc = face orelse return error.FontFaceFailed;
+
+    var out = Resolved{ .face = fc, .family = fam, .how = how };
+    out.family_name_len = copyFamilyName(fam, &out.family_name);
+    return out;
+}
+
+/// ③ — `IDWriteFontSet` 으로 **PostScript 이름** 조회 (#409).
+///
+/// `IDWriteFactory3` 를 못 얻는 환경에서는 `null` 을 돌려 ① ② 만으로 판정한다. 그 경우에도
+/// 붙여쓰기 (`CascadiaCode`) 는 ② 가 받아 주므로 기능이 통째로 사라지지는 않는다 — 컬렉션
+/// 열거는 DirectWrite 1.0 이라서다.
+fn resolveByPostScript(
+    factory: *dw.IDWriteFactory,
+    collection: *dw.IDWriteFontCollection,
+    requested: [*:0]const WCHAR,
+) ?Resolved {
+    var f3_raw: ?*anyopaque = null;
+    if (factory.QueryInterface(&dw.IID_IDWriteFactory3, &f3_raw) < 0) return null;
+    const f3: *dw.IDWriteFactory3 = @ptrCast(@alignCast(f3_raw orelse return null));
+    defer _ = f3.Release();
+
+    var set: ?*dw.IDWriteFontSet = null;
+    if (f3.GetSystemFontSet(&set) < 0) return null;
+    const s = set orelse return null;
+    defer _ = s.Release();
+
+    // locale 을 빈 문자열로 두면 모든 로케일의 값에서 찾는다.
+    const props = [_]dw.DWRITE_FONT_PROPERTY{.{
+        .propertyId = dw.DWRITE_FONT_PROPERTY_ID_POSTSCRIPT_NAME,
+        .propertyValue = requested,
+        .localeName = std.unicode.utf8ToUtf16LeStringLiteral(""),
+    }};
+    var filtered: ?*dw.IDWriteFontSet = null;
+    if (s.GetMatchingFonts(&props, props.len, &filtered) < 0) return null;
+    const fs = filtered orelse return null;
+    defer _ = fs.Release();
+    // 없는 이름이면 빈 set 이다 — fontconfig 와 달리 최선 폰트를 끼워 주지 않으므로 (실측)
+    // 돌아온 이름을 되짚어 검증할 필요가 없다.
+    if (fs.GetFontCount() == 0) return null;
+
+    var ref: ?*dw.IDWriteFontFaceReference = null;
+    if (fs.GetFontFaceReference(0, &ref) < 0) return null;
+    const r = ref orelse return null;
+    defer _ = r.Release();
+
+    var face: ?*dw.IDWriteFontFace = null;
+    if (r.CreateFontFace(&face) < 0) return null;
+    const fc = face orelse return null;
+
+    var out = Resolved{ .face = fc, .how = .postscript };
+
+    // 변종 (bold / italic) 조회용 family 를 face 로부터 되찾는다. **이 단계가 빠지면 SGR 1 · 3
+    // 이 죽는다** — PostScript 로 잡은 face 에는 `IDWriteFontFamily` 가 딸려 오지 않는다.
+    // Linux 에서 이 지점이 실제 구멍이었다 (`DejaVuSansMono-Bold` 의 bold 조회가 무관한
+    // `NotoSansCJK-Bold.ttc` 로 갔다). face 가 시스템 컬렉션에 없으면 `null` 로 남고 변종 없이
+    // regular 만 쓴다.
+    var font: ?*dw.IDWriteFont = null;
+    if (collection.GetFontFromFontFace(fc, &font) >= 0) {
+        if (font) |fo| {
+            defer _ = fo.Release();
+            var family: ?*dw.IDWriteFontFamily = null;
+            if (fo.GetFontFamily(&family) >= 0) {
+                if (family) |fam| {
+                    out.family = fam;
+                    out.family_name_len = copyFamilyName(fam, &out.family_name);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// #409 — 사용자가 적은 이름 **하나를 face 하나로** 해석하는 단일 진입점.
+///
+/// boot 검증 (`isFontAvailable`) · cell 측정 (`measureCell`) · 실제 로드
+/// (`DWriteFontContext.init`) 셋이 이 함수를 공유한다. 전에는 셋이 각자 `FindFamilyName` 을
+/// 불렀는데, 그러면 한쪽만 통과했을 때 **검증을 지나고도 다른 폰트가 조용히 그려질 수 있다.**
+/// Linux 의 `resolveRequested` 와 같은 형태다.
+///
+/// 해석 순서는 **family 공간이 먼저, PostScript 가 마지막**으로 세 platform 이 같다.
+///
+///   ① 적은 이름 그대로 family 조회 → `.family`
+///   ② 설치된 family 목록에 정규화가 같은 이름이 있으면 그 family → `.respelled`
+///   ③ PostScript 이름으로 face 조회 → `.postscript`
+///   ④ 셋 다 아니면 `error.FontNotFound` — 오타 · 미설치다
+///
+/// **Linux 의 `.alias` 에 해당하는 단계는 없다.** fontconfig 처럼 이름을 다른 폰트로 바꿔치기하는
+/// 시스템 규칙이 Windows 에는 없어서 (`FindFamilyName` 은 시스템 컬렉션 exact match) 대체가
+/// 개입할 여지가 없다 — `font/validate.zig` 이 Windows 의 `substitute` 를 `null` 로 두는 것과
+/// 같은 이유다.
+pub fn resolveFamily(
+    factory: *dw.IDWriteFactory,
+    collection: *dw.IDWriteFontCollection,
+    requested: [*:0]const WCHAR,
+) !Resolved {
+    // ① 적은 이름 그대로. 대소문자는 `FindFamilyName` 이 이미 무시한다.
+    var family_index: dw.UINT32 = 0;
+    var exists: BOOL = 0;
+    if (collection.FindFamilyName(requested, &family_index, &exists) >= 0 and exists != 0)
+        return resolvedFromFamilyIndex(collection, family_index, .family);
+
+    // ② 설치 목록의 정식 표기. `CascadiaCode` (붙여쓰기) · `Cascadia-Code` · `맑은고딕` 이
+    //    여기서 잡힌다. **PostScript 조회로는 안 잡히므로 이 단계가 꼭 필요하다** — 실측에서
+    //    `GetMatchingFonts(WIN32_FAMILY_NAME, "CascadiaCode")` 도 0 개였다.
+    const wanted = std.mem.span(requested);
+    const count = collection.GetFontFamilyCount();
+    var i: dw.UINT32 = 0;
+    while (i < count) : (i += 1) {
+        if (familyHasName(collection, i, wanted))
+            return resolvedFromFamilyIndex(collection, i, .respelled);
+    }
+
+    // ③ PostScript 이름.
+    if (resolveByPostScript(factory, collection, requested)) |r| return r;
+
+    // ④ 오타 · 미설치. 이 경로는 계속 fatal 이어야 한다 — 조용히 다른 폰트로 띄우면 사용자가
+    //    이름을 잘못 적은 것을 영영 모른다.
+    return error.FontNotFound;
+}
+
+/// #409 — 적은 그대로 잡히지 **않은** entry 만 무엇으로 어떻게 잡혔는지 남긴다. 사용자가
+/// 나중에 "왜 다른 폰트로 보이지" 를 추적하는 근거다.
+///
+/// **문구는 Linux (`font/linux/font.zig` 의 `tryLoadFamily`) 와 글자까지 같다** — 같은 상황을
+/// platform 마다 다르게 적으면 사용자가 이슈에 붙인 로그를 읽는 쪽이 두 벌을 알아야 하고,
+/// CONFIG.md 가 그 문구를 그대로 인용하고 있다. 로그는 공유되는 진단 자료라 인자까지 영어다.
+fn logChainEntry(index: u8, requested: [*:0]const WCHAR, resolved: Resolved) void {
+    if (resolved.how == .family) return;
+
+    var req_buf: [256]u8 = undefined;
+    var fam_buf: [256]u8 = undefined;
+    const req_len = std.unicode.utf16LeToUtf8(&req_buf, std.mem.span(requested)) catch 0;
+    const fam_len = std.unicode.utf16LeToUtf8(&fam_buf, resolved.familyName()) catch 0;
+    const req = req_buf[0..req_len];
+    const fam = fam_buf[0..fam_len];
+
+    switch (resolved.how) {
+        .family => unreachable,
+        .respelled => log.appendLine("font", "chain[{d}] \"{s}\" matched installed family \"{s}\" — using it", .{ index, req, fam }),
+        .postscript => log.appendLine("font", "chain[{d}] \"{s}\" matched the PostScript name of family \"{s}\" — using it", .{ index, req, fam }),
+    }
+}
+
 /// 정공 cell metric — DWrite design metric (ascent/descent/lineGap/advance) 으로
 /// 직접 산출. GDI tm 의 rounding / leading 영향 배제. 여기서는 실수 측정값을
 /// 그대로 반환하고 호출처가 ratio 까지 적용한 뒤 공통 정책으로 한 번만 ceil 한다.
@@ -186,30 +494,16 @@ pub fn measureCell(
     if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return error.FontCollectionFailed;
     defer _ = collection.?.vtable.Release(collection.?);
 
-    var family_index: dw.UINT32 = 0;
-    var exists: BOOL = 0;
-    if (collection.?.FindFamilyName(primary_family_w, &family_index, &exists) < 0 or exists == 0)
-        return error.FontNotFound;
-
-    var family_obj: ?*dw.IDWriteFontFamily = null;
-    if (collection.?.GetFontFamily(family_index, &family_obj) < 0) return error.FontFamilyFailed;
-    defer _ = family_obj.?.vtable.Release(family_obj.?);
-
-    var dw_font: ?*dw.IDWriteFont = null;
-    if (family_obj.?.GetFirstMatchingFont(
-        dw.DWRITE_FONT_WEIGHT_NORMAL,
-        dw.DWRITE_FONT_STRETCH_NORMAL,
-        dw.DWRITE_FONT_STYLE_NORMAL,
-        &dw_font,
-    ) < 0) return error.FontMatchFailed;
-    defer _ = dw_font.?.vtable.Release(dw_font.?);
-
-    var face: ?*dw.IDWriteFontFace = null;
-    if (dw_font.?.CreateFontFace(&face) < 0) return error.FontFaceFailed;
-    defer _ = face.?.vtable.Release(face.?);
+    // #409 — 실제 로드 (`DWriteFontContext.init`) 와 **같은 해석 함수**를 쓴다. 여기가 따로
+    // `FindFamilyName` 을 부르면 `CascadiaCodeRoman` 처럼 chain 은 열리는 이름에서 cell 측정만
+    // 실패해, 호출처가 GDI fallback (원문을 그대로 `CreateFontW` 에 넘겨 **조용히 대체되는**
+    // 경로) 으로 떨어진다.
+    const resolved = try resolveFamily(factory.?, collection.?, primary_family_w);
+    defer resolved.deinit();
+    const face = resolved.face;
 
     var metrics: dw.DWRITE_FONT_METRICS = undefined;
-    face.?.GetMetrics(&metrics);
+    face.GetMetrics(&metrics);
     const em: f32 = @floatFromInt(metrics.designUnitsPerEm);
     const asc: f32 = @floatFromInt(metrics.ascent);
     const desc: f32 = @floatFromInt(metrics.descent);
@@ -217,11 +511,11 @@ pub fn measureCell(
 
     var glyph_idx: dw.UINT16 = 0;
     const cp: dw.UINT32 = '0';
-    if (face.?.GetGlyphIndices(@ptrCast(&cp), 1, @ptrCast(&glyph_idx)) < 0)
+    if (face.GetGlyphIndices(@ptrCast(&cp), 1, @ptrCast(&glyph_idx)) < 0)
         return error.GlyphIndexFailed;
 
     var glyph_metrics: dw.DWRITE_GLYPH_METRICS = undefined;
-    if (face.?.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), 0) < 0)
+    if (face.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), 0) < 0)
         return error.GlyphMetricsFailed;
     const advance: f32 = @floatFromInt(glyph_metrics.advanceWidth);
 
@@ -323,53 +617,60 @@ pub const DWriteFontContext = struct {
             }
         }
 
+        // #409 — primary 의 **해석된 정식 family 이름**. `MapCharacters` 의 base family 힌트가
+        // 사용자 원문 대신 이 값을 쓴다 (아래 참고).
+        var primary_canon: [64]WCHAR = undefined;
+        var primary_canon_len: u32 = 0;
+
         const limit = @min(font_chain.len, MAX_CHAIN);
         for (font_chain[0..limit]) |family_w| {
-            var family_index: dw.UINT32 = 0;
-            var exists: BOOL = 0;
-            if (collection.?.FindFamilyName(family_w, &family_index, &exists) < 0 or exists == 0)
-                return error.FontNotFound;
+            // #409 — boot 검증 (`isFontAvailable`) · cell 측정 (`measureCell`) 과 **같은 해석
+            // 함수**다. 이름이 family 표기가 아니어도 (`CascadiaCode` · `CascadiaCodeRoman-Bold`)
+            // 여기서 face 로 풀린다.
+            const resolved = try resolveFamily(factory.?, collection.?, family_w);
+            // family 는 변종 조회에만 쓰고 여기서 놓는다. face 는 context 가 계속 들고 있는다.
+            defer resolved.releaseFamily();
 
-            var family_obj: ?*dw.IDWriteFontFamily = null;
-            if (collection.?.GetFontFamily(family_index, &family_obj) < 0) return error.FontFamilyFailed;
-            defer _ = family_obj.?.vtable.Release(family_obj.?);
-
-            var dw_font: ?*dw.IDWriteFont = null;
-            if (family_obj.?.GetFirstMatchingFont(
-                dw.DWRITE_FONT_WEIGHT_NORMAL,
-                dw.DWRITE_FONT_STRETCH_NORMAL,
-                dw.DWRITE_FONT_STYLE_NORMAL,
-                &dw_font,
-            ) < 0) return error.FontMatchFailed;
-            defer _ = dw_font.?.vtable.Release(dw_font.?);
-
-            var face: ?*dw.IDWriteFontFace = null;
-            if (dw_font.?.CreateFontFace(&face) < 0) return error.FontFaceFailed;
-            chain_faces[chain_count] = face.?;
+            chain_faces[chain_count] = resolved.face;
+            if (chain_count == 0) {
+                primary_canon = resolved.family_name;
+                primary_canon_len = resolved.family_name_len;
+            }
 
             // #375 — 같은 family 의 변종 face. weight / style 인자만 바꾼다.
-            inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
-                var styled_font: ?*dw.IDWriteFont = null;
-                if (family_obj.?.GetFirstMatchingFont(
-                    if (fs.isBold()) dw.DWRITE_FONT_WEIGHT_BOLD else dw.DWRITE_FONT_WEIGHT_NORMAL,
-                    dw.DWRITE_FONT_STRETCH_NORMAL,
-                    if (fs.isItalic()) dw.DWRITE_FONT_STYLE_ITALIC else dw.DWRITE_FONT_STYLE_NORMAL,
-                    &styled_font,
-                ) >= 0) {
-                    defer _ = styled_font.?.vtable.Release(styled_font.?);
-                    var styled_face: ?*dw.IDWriteFontFace = null;
-                    if (styled_font.?.CreateFontFace(&styled_face) >= 0) {
-                        styled_faces[fs.index() - 1][chain_count] = styled_face.?;
+            //
+            // #409 — 조회 키는 **해석된 family** 다. 사용자가 적은 원문으로 조회하면 엉뚱한
+            // 폰트의 변종이 온다. PostScript 이름으로 face 를 잡은 경우 family 가 `null` 일 수
+            // 있는데 (face 가 시스템 컬렉션에 없을 때), 그때는 변종을 만들지 않고 `chainFor` 가
+            // regular 로 떨어뜨린다.
+            if (resolved.family) |family_obj| {
+                inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
+                    var styled_font: ?*dw.IDWriteFont = null;
+                    if (family_obj.GetFirstMatchingFont(
+                        if (fs.isBold()) dw.DWRITE_FONT_WEIGHT_BOLD else dw.DWRITE_FONT_WEIGHT_NORMAL,
+                        dw.DWRITE_FONT_STRETCH_NORMAL,
+                        if (fs.isItalic()) dw.DWRITE_FONT_STYLE_ITALIC else dw.DWRITE_FONT_STYLE_NORMAL,
+                        &styled_font,
+                    ) >= 0) {
+                        defer _ = styled_font.?.vtable.Release(styled_font.?);
+                        var styled_face: ?*dw.IDWriteFontFace = null;
+                        if (styled_font.?.CreateFontFace(&styled_face) >= 0) {
+                            styled_faces[fs.index() - 1][chain_count] = styled_face.?;
+                        }
                     }
+                    // 실패하면 null 로 남고 `chainFor` 가 regular face 로 떨어뜨린다.
                 }
-                // 실패하면 null 로 남고 `chainFor` 가 regular face 로 떨어뜨린다.
             }
+
+            // #409 — 어느 이름이 무엇으로 풀렸는지 남긴다. Linux 의 chain 줄 (`chain[i] family=…
+            // path=… index=…`) 과 같은 자리로, 사용자가 적은 표기가 의도한 폰트로 갔는지 확인하는
+            // 근거가 된다.
+            logChainEntry(chain_count, family_w, resolved);
 
             chain_count += 1;
         }
 
         const primary_face = chain_faces[0].?;
-        const primary_family_w = font_chain[0];
 
         var self = DWriteFontContext{
             .alloc = alloc,
@@ -388,9 +689,18 @@ pub const DWriteFontContext = struct {
 
         // Store primary family name for MapCharacters fallback (system 의 fallback
         // chain 이 우리 primary 를 base 로 fallback 결정).
-        // #298 — null-term UTF-16 자체 복사 루프 → std.mem.span (primary_family_w 는
-        // [*:0]const WCHAR sentinel 포인터). 최대 63 units + null.
-        const fam = std.mem.span(primary_family_w);
+        //
+        // #409 — **해석된 정식 family 이름**을 쓴다. 사용자가 적은 원문이 아니다. 원문은
+        // `CascadiaCode` (붙여쓰기) 나 `CascadiaCodeRoman` (PostScript 이름) 일 수 있는데,
+        // 그것을 `MapCharacters` 의 base family 로 주면 DirectWrite 가 알아보지 못해 fallback
+        // 폰트 선택이 어긋난다 — 그 힌트는 *family 이름* 을 받는 자리다.
+        //
+        // family 를 못 되찾은 경우 (PostScript 로 잡은 face 가 시스템 컬렉션에 없을 때) 만
+        // 원문으로 떨어진다. 그때도 힌트일 뿐이라 fallback 품질만 영향받는다.
+        const fam: []const WCHAR = if (primary_canon_len > 0)
+            primary_canon[0..primary_canon_len]
+        else
+            std.mem.span(font_chain[0]);
         const fam_n = @min(fam.len, self.primary_family_name.len - 1);
         @memcpy(self.primary_family_name[0..fam_n], fam[0..fam_n]);
         self.primary_family_name[fam_n] = 0;
@@ -1365,6 +1675,11 @@ pub const DWriteFontContext = struct {
     }
 
     /// Check if a font family is installed on the system via DirectWrite.
+    ///
+    /// #409 — 실제 로드 (`DWriteFontContext.init`) 와 **같은 해석 함수**를 쓴다. 전에는 이쪽만
+    /// `FindFamilyName` 을 따로 불러서, 판정 규칙이 두 벌이면 검증을 통과하고도 다른 폰트가
+    /// 조용히 그려질 수 있었다. 해석에 성공하면 face 를 실제로 열어 본 것이므로 (`CreateFontFace`
+    /// 까지 통과) "설치돼 있다" 가 로드 가능과 같은 뜻이 된다.
     pub fn isFontAvailable(family: [*:0]const WCHAR) bool {
         var factory: ?*dw.IDWriteFactory = null;
         if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0) return false;
@@ -1374,9 +1689,8 @@ pub const DWriteFontContext = struct {
         if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return false;
         defer _ = collection.?.vtable.Release(collection.?);
 
-        var index: dw.UINT32 = 0;
-        var exists: std.os.windows.BOOL = 0;
-        if (collection.?.FindFamilyName(family, &index, &exists) < 0) return false;
-        return exists != 0;
+        const resolved = resolveFamily(factory.?, collection.?, family) catch return false;
+        resolved.deinit();
+        return true;
     }
 };
