@@ -69,6 +69,26 @@ fn isOverlayMark(cp: u21) bool {
     };
 }
 
+/// [#420](https://github.com/ensky0/tildaz/issues/420) — **폭을 차지하지 않아야 하는 결합 기호**인지.
+///
+/// Unicode 의 combining mark 전용 블록들이고 전부 nonspacing (`Mn`) / enclosing (`Me`) 이다.
+/// 이 codepoint 가 `advance ≠ 0` 인 글리프로 shaping 되면 그 face 는 결합 기호를 **spacing
+/// 글리프로 그리는 것**이라, base 뒤에 한 칸 밀려 그려지고 옆 칸을 덮는다 (실측: `漢`+acute 를
+/// CJK fallback face 가 `advance = 7.5` 로 줬다).
+///
+/// Hangul Jamo (`U+1100`~) · ZWJ (`U+200D`) · 가나 濁点 (`U+3099`) 은 **일부러 뺐다** — 그것들은
+/// 폭을 갖거나 GSUB 로 합성되는 것이 정상이라 같은 기준으로 판정하면 안 된다.
+fn isCombiningMark(cp: u21) bool {
+    return switch (cp) {
+        0x0300...0x036F => true, // Combining Diacritical Marks
+        0x1AB0...0x1AFF => true, // 〃 Extended
+        0x1DC0...0x1DFF => true, // 〃 Supplement
+        0x20D0...0x20F0 => true, // 〃 for Symbols
+        0xFE20...0xFE2F => true, // Combining Half Marks
+        else => false,
+    };
+}
+
 /// cluster 의 결합 기호가 전부 overlay 류인지 (`ClusterResult.overlay_marks`).
 fn clusterOverlayOnly(cps: []const u21) bool {
     if (cps.len < 2) return false;
@@ -664,7 +684,7 @@ pub const DWriteFontContext = struct {
         // 1. user chain 순회 — face 별로 cluster shape 시도.
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
-            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, sa, &indices_buf, &advances_buf, &offsets_buf);
+            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, cps, sa, &indices_buf, &advances_buf, &offsets_buf);
             if (cnt > 0) {
                 return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
             }
@@ -696,7 +716,7 @@ pub const DWriteFontContext = struct {
             const primary: ?[*:0]const WCHAR = @ptrCast(&self.primary_family_name);
             const hints = [2]?[*:0]const WCHAR{ primary, null };
             for (hints) |hint| {
-                if (self.shapeViaSystemFallback(&u16_buf, u16_len, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| {
+                if (self.shapeViaSystemFallback(&u16_buf, u16_len, cps, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| {
                     var result = r;
                     result.overlay_marks = overlay;
                     return result;
@@ -713,6 +733,7 @@ pub const DWriteFontContext = struct {
         self: *DWriteFontContext,
         u16_buf: *const [32]WCHAR,
         u16_len: dw.UINT32,
+        cps: []const u21,
         base_family: ?[*:0]const WCHAR,
         sa: dw.DWRITE_SCRIPT_ANALYSIS,
         indices_buf: *[MAX_CLUSTER_GLYPHS]u16,
@@ -748,7 +769,7 @@ pub const DWriteFontContext = struct {
 
         // `mapped_length` 를 믿지 않는다 — shape 은 cluster **전체**로 하고 `.notdef` 판정에
         // 맡긴다. 일부만 매핑된 face 는 거기서 걸러진다.
-        const cnt = self.shapeOnFaceMulti(face, u16_buf, u16_len, sa, indices_buf, advances_buf, offsets_buf);
+        const cnt = self.shapeOnFaceMulti(face, u16_buf, u16_len, cps, sa, indices_buf, advances_buf, offsets_buf);
         if (cnt == 0) {
             _ = face.vtable.Release(face);
             return null;
@@ -1061,7 +1082,7 @@ pub const DWriteFontContext = struct {
         var indices_buf: [MAX_CLUSTER_GLYPHS]u16 = undefined;
         var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
         var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
-        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, self.scriptFor(cps[0]), &indices_buf, &advances_buf, &offsets_buf);
+        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, cps, self.scriptFor(cps[0]), &indices_buf, &advances_buf, &offsets_buf);
         if (cnt == 0) return null;
 
         // ShapedSlot[] 구성. DWrite `DWRITE_GLYPH_OFFSET.advanceOffset` (=
@@ -1177,7 +1198,7 @@ pub const DWriteFontContext = struct {
     /// multi-glyph cluster (#139, ZWJ family 등 GSUB 미합성). 결과는 indices array
     /// + count. .notdef 만 반환되면 null (다음 face / fallback).
     /// out_indices 는 `[MAX_CLUSTER_GLYPHS]u16`. 리턴 = count (0 = fail).
-    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, sa: dw.DWRITE_SCRIPT_ANALYSIS, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
+    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, cps: []const u21, sa: dw.DWRITE_SCRIPT_ANALYSIS, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
         const analyzer = self.text_analyzer orelse return 0;
 
         var cluster_map: [32]u16 = undefined;
@@ -1257,6 +1278,26 @@ pub const DWriteFontContext = struct {
             while (i < out_count) : (i += 1) {
                 out_advances[i] = 0;
                 out_offsets[i] = .{ .advanceOffset = 0, .ascenderOffset = 0 };
+            }
+        }
+
+        // #420 — **결합 기호를 spacing 글리프로 그리는 face 는 거절한다.** 그런 face 로 그리면
+        // mark 가 base 뒤 pen 위치에 한 칸 밀려 그려져 옆 칸을 덮는다 (`漢`+acute 실측:
+        // CJK fallback face 가 `U+0301` 을 `advance = 7.5` 로 줬고 화면에서 글자 오른쪽 위로
+        // 나갔다). 거절하면 다음 face 로 넘어가고, 결국 `resolveGraphemeSplit` 이 base 와 mark 를
+        // 각각 맞는 face 에서 가져와 겹쳐 그린다.
+        //
+        // **cluster 가 합쳐진 경우는 건드리지 않는다.** `clusterMap` 은 codepoint 가 속한
+        // *cluster* 의 첫 글리프를 가리킬 뿐이라 mark 글리프를 짚지 못한다 (`漢`+acute 도
+        // `clusterMap = [0,0]` 이다). 대신 **글리프가 codepoint 와 1:1 로 나왔을 때만**
+        // (= GSUB 합성이 없었을 때) 뒤쪽 mark 자리를 본다. 합성됐으면 글리프 수가 줄어서
+        // 이 검사를 건너뛰고, 가나 `か`+濁点 처럼 한 글자가 된 경우가 여기 해당한다.
+        if (out_count == cps.len and cps.len >= 2) {
+            var tail: usize = 0;
+            while (tail < cps.len - 1 and isCombiningMark(cps[cps.len - 1 - tail])) tail += 1;
+            var k: usize = out_count - tail;
+            while (k < out_count) : (k += 1) {
+                if (glyph_advances[k] != 0) return 0;
             }
         }
 
