@@ -31,6 +31,13 @@ pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 /// 로그 1줄) — 기로드 face 는 계속 동작.
 const MAX_FALLBACK: usize = 8;
 
+/// #419 — `face_idx` 에서 **system fallback face 를 가리키는 구간**의 시작.
+///
+/// chain 은 최대 8 (`MAX_CHAIN`) 이라 `0x80` 위와 겹치지 않는다. index 공간을 나눠 두면
+/// `ClusterGlyph.face_idx` · `GlyphRef.indexed.face` · atlas key 가 전부 `u8` 그대로여도
+/// 두 종류를 구분할 수 있다 — 렌더러와 atlas 를 손대지 않아도 되는 이유다.
+const FALLBACK_FACE_BASE: u8 = 0x80;
+
 /// #362 — 해석 캐시의 배열 갈래가 덮는 범위 (`0x20`~`0x7E`, printable ASCII).
 /// 터미널 텍스트의 대부분이라 이 구간만 해시를 피해도 대부분을 피한다.
 const ASCII_LO: u21 = 0x20;
@@ -52,11 +59,43 @@ pub const MAX_RUN_CLUSTERS = 32;
 /// cluster 를 본다.
 pub const MAX_CLUSTER_CPS = 16;
 
+/// #401 — cluster 하나가 만들 수 있는 글리프 수 상한. codepoint 수보다 많을 수 있어
+/// (shaping 이 하나를 여럿으로 분해하는 경우) 여유를 둔다. Windows 판의
+/// `MAX_CLUSTER_GLYPHS` 와 같은 역할이다.
+pub const MAX_CLUSTER_GLYPHS = 32;
+
+/// #401 — 합성 비트맵 한 변의 상한 (px). 넘으면 합성을 포기한다 (caller 가 다음 face 로).
+/// 정상적인 cluster 는 셀 두어 개 크기를 넘지 않는다 — 이 값은 폰트가 비정상적으로 큰
+/// 글리프를 주거나 배치 계산이 어긋났을 때 메모리를 지키는 상한이다.
+const MAX_COMPOSED_PX: usize = 512;
+
 // Cross-platform ligature 타입 re-export — caller (software_terminal.zig)
 // 가 `font.LigatureMatch` 식으로 그대로 쓸 수 있게.
 pub const LigatureGlyph = ligature.LigatureGlyph;
 pub const LigatureSpacer = ligature.LigatureSpacer;
 pub const LigatureMatch = ligature.LigatureMatch;
+
+/// #401 — grapheme cluster 하나의 그리기 결과.
+///
+/// **cluster 가 글리프 하나로 합성되지 않는 경우가 있다.** 폰트에 precomposed 글리프가
+/// 없는 결합 기호 (`a` + `U+0305`) 가 대표적이고, 그때 HarfBuzz 는 base 와 mark 를 각각
+/// 돌려주며 offset 으로 겹쳐 그리라고 지시한다. 예전에는 그런 face 를 `n != 1` 로 거부해
+/// chain 전체가 미매치가 됐고, caller 가 base codepoint 로 fallback 해서 **악센트가 통째로
+/// 사라졌다** (#401 에서 실측 1,891 조합).
+///
+/// 그래서 `composed` 갈래를 둔다 — 여러 글리프를 한 비트맵으로 미리 구워 두고 그 캐시
+/// 키를 든다. Windows 의 `getOrInsertCluster` · macOS 의 `rasterizeCluster` 와 같은 자리다.
+pub const ClusterGlyph = struct {
+    /// chain index 의 face.
+    face_idx: u8 = 0,
+    /// `composed` 가 false 면 FreeType glyph index (`glyphByIndex` 로 raster),
+    /// true 면 합성 비트맵의 캐시 키 (`composedGlyph` 로 조회).
+    glyph_index: u32,
+    /// GPOS offset. 합성 글리프는 offset 이 비트맵 안에 이미 반영돼 있어 0 이다.
+    x_offset: i32 = 0,
+    y_offset: i32 = 0,
+    composed: bool = false,
+};
 
 pub const Glyph = struct {
     /// gray = width × height × 1 byte (alpha). BGRA = width × height × 4 byte
@@ -157,11 +196,19 @@ pub const Context = struct {
     /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고
-    /// Linux 값은 `LigatureGlyph` (face index + glyph index) 라 소유권이 없어 `release`
+    /// Linux 값은 `ClusterGlyph` (face index + glyph/합성 키) 라 소유권이 없어 `release`
     /// 가 `null` 이다. **Linux 에서 이게 주 레버다** — HarfBuzz 는 호출당 고정 비용이 작아
     /// 런 배칭이 준 것이 작았고 (`zwj` -0.4 %), 남은 비용은 shape 작업량 자체라 그것을
     /// 통째로 건너뛰는 캐시가 듣는다.
-    cluster_cache: cluster_cache.ClusterCache(LigatureGlyph, null),
+    cluster_cache: cluster_cache.ClusterCache(ClusterGlyph, null),
+    /// #401 — 여러 글리프를 한 비트맵으로 합성한 결과. 키는 `(face << 32) | 해시` 이고
+    /// 해시는 글리프 인덱스 · offset · advance 로 만든다 (macOS atlas 가 `Wyhash` 를
+    /// truncate 해 키로 쓰는 것과 같은 패턴).
+    ///
+    /// **`Face.glyph_by_index` 에 못 담는다** — 그 키는 glyph index 하나인데 합성 결과는
+    /// *글리프 조합*이라서다. `Glyph` 를 개별 할당한 포인터로 담는 것은 그쪽과 같은
+    /// 이유다 (#362 — 재해싱이 주소를 옮기면 프레임 목록의 포인터가 죽는다).
+    composed_glyphs: std.AutoHashMap(u64, *Glyph),
     faces: [MAX_CHAIN]?Face,
     face_count: usize,
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `faces` 가 담당하므로
@@ -236,7 +283,8 @@ pub const Context = struct {
             .hb_api = hb_api,
             .hb_buffer = hb_buffer,
             .ligature_cache = ligature.Cache.init(allocator),
-            .cluster_cache = cluster_cache.ClusterCache(LigatureGlyph, null).init(allocator),
+            .cluster_cache = cluster_cache.ClusterCache(ClusterGlyph, null).init(allocator),
+            .composed_glyphs = std.AutoHashMap(u64, *Glyph).init(allocator),
             .faces = [_]?Face{null} ** MAX_CHAIN,
             .face_count = 0,
             .styled_faces = .{[_]?Face{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
@@ -419,6 +467,7 @@ pub const Context = struct {
         if (self.placeholder.bitmap.len > 0) self.allocator.free(self.placeholder.bitmap);
         self.ligature_cache.deinit();
         self.cluster_cache.deinit();
+        self.composed_glyphs.deinit();
         if (self.hb_api) |*api| {
             if (self.hb_buffer) |b| api.buffer_destroy(b);
             api.deinit();
@@ -437,6 +486,9 @@ pub const Context = struct {
         // #399 — cluster 캐시도 같은 이유로 비운다. face 를 버리면 담아 둔 `face_idx` ·
         // `glyph_index` 가 다른 폰트를 가리키게 된다.
         self.cluster_cache.clear();
+        // #401 — 합성 비트맵도 같은 이유다. 그 face 의 글리프로 구운 것이라 face 가 바뀌면
+        // 다른 그림이 된다.
+        self.freeComposedGlyphs();
 
         const hb_api_ptr: ?*const harfbuzz.Api = if (self.hb_api) |*api| api else null;
         for (&self.faces) |*slot| {
@@ -458,6 +510,60 @@ pub const Context = struct {
             slot.* = null;
         }
         self.fallback_count = 0;
+    }
+
+    /// #401 — 합성 비트맵을 전부 버린다. 맵 자체는 남긴다 (`deinit` 이 마지막에 없앤다).
+    fn freeComposedGlyphs(self: *Context) void {
+        var it = self.composed_glyphs.valueIterator();
+        while (it.next()) |slot| {
+            if (slot.*.bitmap.len > 0) self.allocator.free(slot.*.bitmap);
+            self.allocator.destroy(slot.*);
+        }
+        self.composed_glyphs.clearRetainingCapacity();
+    }
+
+    /// #418 — 이 글리프가 **자리를 차지하지 않는 결합 문자**에서 왔는가.
+    ///
+    /// advance 로는 판정할 수 없다 — `DejaVu Sans Mono` 는 관통 overlay (`U+0335` · `U+0336` ·
+    /// `U+0338`) 에 advance 를 준다. **GDEF glyph class 로도 안 된다** — 같은 폰트가 그 셋을
+    /// `BASE_GLYPH` 로 분류해 두었다 (`U+0305` · `U+0308` 은 `MARK` 인데 overlay 만 base 다).
+    ///
+    /// 그래서 codepoint 를 본다. shaping 이 글리프를 합쳐 놓아도 (`a`+`U+0301` → `á`)
+    /// `ShapedGlyph.cluster` 가 **입력 codepoint 인덱스**라 되짚을 수 있다. 합쳐진 글리프는
+    /// cluster 가 base 를 가리키므로 mark 로 오인되지 않는다.
+    ///
+    /// `cluster_base` 는 런 배칭에서 여러 cluster 를 이어 붙였을 때의 시작 offset 이다
+    /// (개별 경로는 0).
+    fn glyphIsMark(self: *Context, cps: []const u21, cluster_base: u32, g: ShapedGlyph) bool {
+        const api = if (self.hb_api) |*a| a else return false;
+        if (g.cluster < cluster_base) return false;
+        const idx = g.cluster - cluster_base;
+        if (idx >= cps.len) return false;
+        return api.isNonSpacingMark(cps[idx]);
+    }
+
+    /// #418 — 이 글리프가 **관통 (overlay) 결합 기호**에서 왔는가 (Unicode combining class 1).
+    ///
+    /// 집합이 작고 고정이라 표로 둔다 — Windows 판과 같은 목록이다. 관통 mark 만 세로를 base
+    /// 잉크 중앙에 맞춘다 (위 · 아래 mark 는 자기 디자인 높이가 옳다).
+    fn glyphIsOverlayMark(self: *Context, cps: []const u21, cluster_base: u32, g: ShapedGlyph) bool {
+        _ = self;
+        if (g.cluster < cluster_base) return false;
+        const idx = g.cluster - cluster_base;
+        if (idx >= cps.len) return false;
+        return switch (cps[idx]) {
+            0x0334...0x0338, 0x20D2, 0x20D3, 0x20E5, 0x20E6, 0x20EB => true,
+            else => false,
+        };
+    }
+
+    /// #401 — 합성 글리프 조회. `ClusterGlyph.composed` 가 true 일 때 `glyph_index` 가
+    /// 여기의 키다. 없으면 placeholder — 합성은 `resolveCluster` 시점에 이미 끝나 있으므로
+    /// 정상 경로에서는 항상 있다.
+    pub fn composedGlyph(self: *Context, face_idx: u8, key: u32) *const Glyph {
+        const map_key = (@as(u64, face_idx) << 32) | @as(u64, key);
+        if (self.composed_glyphs.get(map_key)) |g| return g;
+        return &self.placeholder;
     }
 
     /// `cp` 의 글리프. **해석 결과를 codepoint 당 한 번만 구한다** (#362).
@@ -676,9 +782,32 @@ pub const Context = struct {
     /// `face_idx` + `glyph_index` 를 그대로 넣음. ZWJ family emoji cluster
     /// (NotoColorEmoji face) 등 face_idx > 0 에서 raster 되어야 BGRA 가
     /// 살아남는 케이스 대응.
+    /// #419 — chain face 와 system fallback face 를 **한 index 공간**으로 조회한다.
+    /// `FALLBACK_FACE_BASE` 위는 fallback, 아래는 chain 이다.
+    fn faceAt(self: *Context, face_idx: u8) ?*Face {
+        if (face_idx >= FALLBACK_FACE_BASE) {
+            const i: usize = face_idx - FALLBACK_FACE_BASE;
+            if (i >= self.fallback_count) return null;
+            return if (self.fallback_faces[i]) |*f| f else null;
+        }
+        if (face_idx >= self.face_count) return null;
+        return if (self.faces[face_idx]) |*f| f else null;
+    }
+
+    /// #419 — 그 face 의 hb_font 를 보장한다. system fallback face 는 `hb_font = null` 로
+    /// 만들어지므로 (단일 codepoint raster 만 쓰던 시절의 결정) 처음 shaping 할 때 여기서
+    /// 만든다. chain face 는 로드 시 이미 있어서 그대로 돌려준다.
+    fn ensureHbFont(self: *Context, face_idx: u8) ?*harfbuzz.hb_font_t {
+        const api = if (self.hb_api) |*a| a else return null;
+        const face = self.faceAt(face_idx) orelse return null;
+        if (face.hb_font) |f| return f;
+        const created = api.ft_font_create_referenced(face.ft_face);
+        face.hb_font = created;
+        return created;
+    }
+
     pub fn glyphByIndex(self: *Context, face_idx: u8, glyph_index: u32) *const Glyph {
-        if (face_idx >= self.face_count) return &self.placeholder;
-        const face = if (self.faces[face_idx]) |*f| f else return &self.placeholder;
+        const face = self.faceAt(face_idx) orelse return &self.placeholder;
         if (face.glyph_by_index.get(glyph_index)) |cached| return cached;
         const g = rasterByIndex(self.allocator, self.ft_api, face.ft_face, glyph_index) catch {
             return &self.placeholder;
@@ -720,7 +849,6 @@ pub const Context = struct {
     /// (cp → idx 1:1), 그 외 face 는 0 반환 (그 face 시도는 skip).
     pub fn shapeRunOnFace(self: *Context, face_idx: u8, cps: []const u21, out: []ShapedGlyph) usize {
         if (cps.len == 0 or out.len == 0 or self.face_count == 0) return 0;
-        if (face_idx >= self.face_count) return 0;
 
         const hb_api = if (self.hb_api) |*api| api else {
             if (face_idx == 0) return self.shapeRunFallback(cps, out);
@@ -730,8 +858,9 @@ pub const Context = struct {
             if (face_idx == 0) return self.shapeRunFallback(cps, out);
             return 0;
         };
-        const face = if (self.faces[face_idx]) |*f| f else return 0;
-        const hb_font = face.hb_font orelse {
+        // #419 — system fallback face 는 hb_font 없이 만들어진다 (단일 codepoint raster 만
+        // 쓸 생각이었다). cluster 를 태우려면 필요하므로 여기서 만들어 둔다.
+        const hb_font = self.ensureHbFont(face_idx) orelse {
             if (face_idx == 0) return self.shapeRunFallback(cps, out);
             return 0;
         };
@@ -747,6 +876,13 @@ pub const Context = struct {
         for (cps[0..n], 0..) |cp, i| u32_buf[i] = @intCast(cp);
 
         hb_api.buffer_clear_contents(hb_buf);
+        // #418 — **cluster 를 병합하지 않게 한다.** 기본값 `MONOTONE_GRAPHEMES` 는 base 와
+        // 뒤따르는 mark 를 한 cluster 로 묶어서 (실측 — `k`+`U+0336` 이 둘 다 `cluster=0`)
+        // 글리프가 어느 codepoint 에서 왔는지 되짚을 수 없다. 그 되짚기가 mark 판정의 근거다.
+        // 심볼이 없으면 그냥 건너뛴다 (병합된 채로 와서 advance 기준으로 degrade).
+        if (hb_api.buffer_set_cluster_level) |set_level| {
+            set_level(hb_buf, harfbuzz.HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
+        }
         hb_api.buffer_add_codepoints(hb_buf, &u32_buf, @intCast(n), 0, @intCast(n));
         // `guess_segment_properties` 가 direction / script / language 를 자동
         // 결정 — Latin 이면 LTR + Latn. 또는 명시 set 해도 OK.
@@ -793,7 +929,7 @@ pub const Context = struct {
     /// cluster 셀마다 · 프레임마다 불리는 경로라, render 안에서 shaping 이 차지하는
     /// 몫을 이 카운터로 가른다. `return null` 경로가 여럿이라 본체를 건드리지 않도록
     /// wrapper 로 분리했다. mac · Win 의 `resolveGrapheme` 도 같은 모양이다.
-    pub fn resolveCluster(self: *Context, cps: []const u21) ?LigatureGlyph {
+    pub fn resolveCluster(self: *Context, cps: []const u21) ?ClusterGlyph {
         const t0 = perf.now();
         const result = self.resolveClusterInner(cps);
         perf.addTimed(&perf.shape, t0);
@@ -815,7 +951,7 @@ pub const Context = struct {
     pub fn resolveClusterRun(
         self: *Context,
         clusters: []const []const u21,
-        out: []LigatureGlyph,
+        out: []ClusterGlyph,
     ) usize {
         const t0 = perf.now();
         const n = self.resolveClusterRunInner(clusters, out);
@@ -831,7 +967,7 @@ pub const Context = struct {
     fn resolveClusterRunInner(
         self: *Context,
         clusters: []const []const u21,
-        out: []LigatureGlyph,
+        out: []ClusterGlyph,
     ) usize {
         if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
         if (out.len < clusters.len) return 0;
@@ -892,33 +1028,70 @@ pub const Context = struct {
 
         for (order[0..order_n]) |idx_u8| {
             const n = self.shapeRunOnFace(idx_u8, cps_buf[0..total], &shape_buf);
-            // 글리프 수가 cluster 수와 다르면 이 face 는 우리 경계대로 합성하지 않은
-            // 것이다 (HarfBuzz 가 인접 cluster 둘을 하나로 합쳤거나, 합성이 안 돼
-            // codepoint 마다 글리프가 나왔거나).
-            if (n != clusters.len) continue;
+            // cluster 수보다 글리프가 적으면 HarfBuzz 가 인접 cluster 둘을 하나로 합친
+            // 것이다 — 우리 경계와 다르므로 이 face 는 쓸 수 없다.
+            if (n < clusters.len) continue;
 
+            // #401 — 글리프를 **cluster 별로 묶는다.** 예전에는 `n == clusters.len` 을
+            // 요구해 cluster 당 글리프가 정확히 하나여야 했는데, 결합 기호처럼 base +
+            // mark 로 나오는 cluster 가 섞이면 런 전체가 실패했다. `shape_buf[].cluster`
+            // 가 버퍼 안 codepoint 인덱스라 `starts` 표와 그대로 맞는다.
             var ok = true;
+            var gi: usize = 0;
+            var group_at: [MAX_RUN_CLUSTERS]usize = undefined;
+            var group_n: [MAX_RUN_CLUSTERS]usize = undefined;
             for (0..clusters.len) |i| {
-                // 개별 경로의 *clean single-glyph* 판정과 같은 기준이다.
-                if (shape_buf[i].glyph_index == 0) {
+                // 경계가 어긋났거나 순서가 뒤집힌 경우를 여기서 함께 잡는다.
+                if (gi >= n or shape_buf[gi].cluster != starts[i]) {
                     ok = false;
                     break;
                 }
-                // 경계가 어긋났거나 순서가 뒤집힌 경우를 함께 잡는다.
-                if (shape_buf[i].cluster != starts[i]) {
+                // **다음 cluster 가 시작되기 전까지**를 이 cluster 의 글리프로 본다.
+                // `== starts[i]` 로 비교하면 cluster 병합을 끈 뒤 (#418) mark 글리프가
+                // `starts[i]+1` 을 갖게 되어 그룹이 끊긴다. 이 비교는 병합 여부와 무관하게 옳다.
+                const next_start: u32 = if (i + 1 < clusters.len) starts[i + 1] else @intCast(total);
+                var end = gi + 1;
+                while (end < n and shape_buf[end].cluster < next_start) end += 1;
+                group_at[i] = gi;
+                group_n[i] = end - gi;
+                gi = end;
+            }
+            if (!ok or gi != n) continue;
+
+            // 개별 경로 (`tryClusterOnFace`) 와 같은 기준 — `.notdef` 만 거부한다.
+            for (shape_buf[0..n]) |g| {
+                if (g.glyph_index == 0) {
                     ok = false;
                     break;
                 }
             }
             if (!ok) continue;
 
+            // 결과를 먼저 다 만들고 나서 옮긴다. 합성이 하나라도 실패하면 이 face 를 통째로
+            // 넘겨야 한다 — 런은 **한 face 로 전체를 맞추는 것**이 전제라 일부만 쓰면 그
+            // 전제가 깨진다 (위 캐시 조회에서 부분 적중을 안 쓰는 것과 같은 이유다).
+            var built: [MAX_RUN_CLUSTERS]ClusterGlyph = undefined;
             for (0..clusters.len) |i| {
-                out[i] = .{
-                    .face_idx = idx_u8,
-                    .glyph_index = shape_buf[i].glyph_index,
-                    .x_offset = shape_buf[i].x_offset,
-                    .y_offset = shape_buf[i].y_offset,
-                };
+                const gs = shape_buf[group_at[i]..][0..group_n[i]];
+                if (gs.len == 1) {
+                    built[i] = .{
+                        .face_idx = idx_u8,
+                        .glyph_index = gs[0].glyph_index,
+                        .x_offset = gs[0].x_offset,
+                        .y_offset = gs[0].y_offset,
+                    };
+                } else {
+                    const key = self.composeCluster(idx_u8, clusters[i], starts[i], gs) orelse {
+                        ok = false;
+                        break;
+                    };
+                    built[i] = .{ .face_idx = idx_u8, .glyph_index = key, .composed = true };
+                }
+            }
+            if (!ok) continue;
+
+            for (0..clusters.len) |i| {
+                out[i] = built[i];
                 // 다음 런이 shape 를 건너뛸 수 있게 담는다.
                 self.cluster_cache.put(clusters[i], out[i]);
             }
@@ -928,22 +1101,363 @@ pub const Context = struct {
         return 0;
     }
 
-    /// 한 face 로 cluster 하나를 시도한다. *clean single-glyph* (n==1 + glyph_index != 0)
-    /// 면 그 결과, 아니면 null — 판정은 예전 chain 루프와 같다.
-    fn tryClusterOnFace(self: *Context, face_idx: u8, cps: []const u21) ?LigatureGlyph {
-        var shape_buf: [MAX_CLUSTER_CPS]ShapedGlyph = undefined;
+    /// 한 face 로 cluster 하나를 시도한다.
+    ///
+    /// #401 — **판정 기준은 `.notdef` 뿐이다. 글리프 개수는 보지 않는다.**
+    /// [`font/windows/font.zig`](../windows/font.zig) 의 `shapeOnFaceMulti` 와 같은 기준이다.
+    /// 예전에는 `n != 1` 이면 face 를 거부했는데, 그러면 폰트에 precomposed 글리프가 없는
+    /// 결합 기호 (`a` + `U+0305` → base + mark 2 글리프) 에서 chain 전체가 미매치가 되고
+    /// caller 가 base 로 fallback 해 **악센트가 사라졌다**. 글리프 수가 여럿인 것은 실패가
+    /// 아니라 *겹쳐 그리라는 폰트의 지시*다.
+    ///
+    /// 글리프가 하나면 그대로, 여럿이면 한 비트맵으로 합성해 그 키를 돌려준다.
+    fn tryClusterOnFace(self: *Context, face_idx: u8, cps: []const u21) ?ClusterGlyph {
+        var shape_buf: [MAX_CLUSTER_GLYPHS]ShapedGlyph = undefined;
         const n = self.shapeRunOnFace(face_idx, cps, &shape_buf);
-        if (n != 1) return null;
-        if (shape_buf[0].glyph_index == 0) return null;
+        if (n == 0) return null;
+        // 하나라도 `.notdef` 면 이 face 는 cluster 의 codepoint 를 다 갖지 못한 것이다 —
+        // 다음 face 로 넘긴다.
+        for (shape_buf[0..n]) |g| {
+            if (g.glyph_index == 0) return null;
+        }
+        if (n == 1) {
+            return .{
+                .face_idx = face_idx,
+                .glyph_index = shape_buf[0].glyph_index,
+                .x_offset = shape_buf[0].x_offset,
+                .y_offset = shape_buf[0].y_offset,
+            };
+        }
+        const key = self.composeCluster(face_idx, cps, 0, shape_buf[0..n]) orelse return null;
+        return .{ .face_idx = face_idx, .glyph_index = key, .composed = true };
+    }
+
+    /// #401 — 글리프 여러 개를 한 비트맵으로 굽고 캐시 키를 돌려준다.
+    ///
+    /// 배치는 HarfBuzz 가 준 값을 그대로 쓴다 — `x_advance` 로 pen 을 밀고 `x_offset` ·
+    /// `y_offset` 을 더한다. **결합 기호는 mark 의 `x_advance` 가 0** 이라 pen 이 안 움직여
+    /// base 위에 겹친다. 우리가 겹치라고 정하는 것이 아니라 폰트가 그렇게 지시하는 것이다
+    /// (Windows 가 `advances` · `offsets` 를, macOS 가 `positions` 를 넘기는 것과 같다 — #139).
+    fn composeCluster(self: *Context, face_idx: u8, cps: []const u21, cluster_base: u32, glyphs: []const ShapedGlyph) ?u32 {
+        if (glyphs.len < 2 or glyphs.len > MAX_CLUSTER_GLYPHS) return null;
+
+        // 키 — 같은 face 에서 (글리프 인덱스 + 배치) 가 같으면 그림이 같다.
+        var h = std.hash.Wyhash.init(0x40_1C_10_5E);
+        for (glyphs) |g| {
+            h.update(std.mem.asBytes(&g.glyph_index));
+            h.update(std.mem.asBytes(&g.x_offset));
+            h.update(std.mem.asBytes(&g.y_offset));
+            h.update(std.mem.asBytes(&g.x_advance));
+        }
+        // 0 은 `.notdef` 와 헷갈리지 않게 피한다 (키 공간이 달라 충돌은 없지만, 로그 ·
+        // 디버깅에서 0 이 "없음" 으로 읽히는 것을 막는다).
+        const key: u32 = blk: {
+            const v: u32 = @truncate(h.final());
+            break :blk if (v == 0) 1 else v;
+        };
+        const map_key = (@as(u64, face_idx) << 32) | @as(u64, key);
+        if (self.composed_glyphs.contains(map_key)) return key;
+
+        const composed = self.rasterizeCluster(face_idx, cps, cluster_base, glyphs) orelse return null;
+        const slot = self.allocator.create(Glyph) catch {
+            if (composed.bitmap.len > 0) self.allocator.free(composed.bitmap);
+            return null;
+        };
+        slot.* = composed;
+        self.composed_glyphs.put(map_key, slot) catch {
+            if (composed.bitmap.len > 0) self.allocator.free(composed.bitmap);
+            self.allocator.destroy(slot);
+            return null;
+        };
+        return key;
+    }
+
+    /// #401 — 합성 비트맵을 만든다. 각 글리프를 `glyphByIndex` 로 굽고 (그쪽 캐시를 그대로
+    /// 쓴다), 배치 사각형의 **합집합**을 새 비트맵으로 잡아 겹쳐 그린다.
+    ///
+    /// **픽셀 모드가 섞이면 포기한다** (null → caller 가 다음 face 로). 회색 마스크는 전경색으로
+    /// 칠해질 것을 전제로 한 커버리지고 컬러 비트맵은 자기 색을 갖는데, 둘을 한 비트맵에 담으면
+    /// 어느 쪽 규약으로도 읽을 수 없다. 한 face 는 보통 한 모드라 (DejaVu 는 전부 회색, Noto
+    /// Color Emoji 는 전부 BGRA) 실제로 섞이는 경우는 거의 없다.
+    fn rasterizeCluster(self: *Context, face_idx: u8, cps: []const u21, cluster_base: u32, glyphs: []const ShapedGlyph) ?Glyph {
+        var rasters: [MAX_CLUSTER_GLYPHS]*const Glyph = undefined;
+        var xs: [MAX_CLUSTER_GLYPHS]i32 = undefined;
+        var ys: [MAX_CLUSTER_GLYPHS]i32 = undefined;
+        // #418 — 세로 보정 단계에서 다시 봐야 해서 배치 루프의 판정을 남겨 둔다.
+        var marks: [MAX_CLUSTER_GLYPHS]bool = .{false} ** MAX_CLUSTER_GLYPHS;
+        var overlay_only = true; // 결합 기호가 **전부** 관통 류인가
+        var has_mark = false;
+
+        var pen_x: i32 = 0;
+        // #415 — 직전 base 글리프 **잉크의 가로 중앙**. HarfBuzz 가 배치를 안 한 mark 를 여기에
+        // 맞춘다. `null` 이면 앞에 advance ≠ 0 인 base 가 없다는 뜻이라 보정하지 않는다.
+        var base_center: ?i32 = null;
+        var pixel_mode: u8 = 0;
+        var have_ink = false;
+        var min_x: i32 = std.math.maxInt(i32);
+        var min_y: i32 = std.math.maxInt(i32);
+        var max_x: i32 = std.math.minInt(i32);
+        var max_y: i32 = std.math.minInt(i32);
+
+        for (glyphs, 0..) |g, i| {
+            const r = self.glyphByIndex(face_idx, g.glyph_index);
+            rasters[i] = r;
+
+            // #415 — **HarfBuzz 가 mark 를 배치하지 못한 경우를 여기서 되돌린다.**
+            //
+            // combining mark (`x_advance == 0`) 인데 `x_offset` 까지 0 이면, mark 가 pen —
+            // 즉 base 의 advance 뒤 — 에 그대로 남는다는 뜻이다. 배치가 됐다면 base 위로
+            // 당기는 음수 offset 이 왔어야 한다. 그대로 그리면 mark 가 옆 셀로 나간다.
+            //
+            // HarfBuzz 는 `kerx` · `GPOS` · `kern` 이 **모두 없을 때만** 자체 fallback mark
+            // positioning 을 한다. DejaVu Sans Mono 처럼 GPOS 는 있는데 그 조합의 anchor 만
+            // 없는 폰트는 그 사이에 빠져서 (`a` + `U+0301` 이 `á` 로 합성된 뒤의 `U+0308`)
+            // 아무도 배치를 안 해 준다. 그 계층을 우리가 채운다 — 증상을 가리는 보정이 아니라
+            // GPOS 가 불완전한 폰트에 같은 fallback 을 적용하는 것이다.
+            //
+            // **맞출 자리는 잉크 중앙이지 원점이 아니다.** 처음에는 "직전 base 의 시작 pen 으로
+            // 되돌린다" 로 구현했고 근거를 *"mark 글리프는 자기 bearing 에 base 위 중앙이 이미
+            // 들어 있다"* 로 적었는데, 그것은 **DejaVu 에서만 맞는 말이었다.** mark 글리프를 어디에
+            // 그리도록 설계했는지가 폰트마다 다르다 (Windows 실측 — #415):
+            //
+            //   DejaVu Sans Mono  `U+0308`  bitmap_left=+3  width=6   → 원점이 잉크 왼쪽
+            //   Segoe UI Symbol   `U+0305`  bitmap_left=-6  width=12  → 원점이 곧 잉크 중앙
+            //
+            // 뒤쪽 폰트에서 원점을 맞추면 잉크 중앙이 0 이 되어 base 중앙에서 왼쪽으로 밀리고,
+            // 실기에서 앞 글자를 침범했다. 폰트에 무관하게 옳은 것은 **mark 의 잉크 중앙을 base 의
+            // 잉크 중앙에 맞추는 것**이고, 이것이 HarfBuzz 가 GPOS 없는 폰트에 적용하는 fallback
+            // mark positioning 과 같은 규칙이다 (`hb-ot-shape-fallback` 의 `position_mark`).
+            // DejaVu 에서는 두 규칙의 결과가 같다 (`a` 잉크 중앙 6 · diaeresis 잉크 중앙 6).
+            //
+            // **advance 가 0 인 글리프 위에는 맞추지 않는다** (`base_center == null`). emoji ZWJ 의
+            // stack 디자인은 글리프 여럿이 같은 원점에 겹치고 마지막 것만 advance 를 갖는데, 거기서
+            // 잉크 중앙을 맞추면 폰트가 의도한 겹침이 어긋난다.
+            //
+            // 세로는 건드리지 않는다 — mark 의 세로 위치는 자기 디자인에 이미 들어 있다.
+            //
+            // #418 — **mark 판정은 advance 가 아니라 GDEF glyph class 로 한다.** advance 0 을
+            // mark 의 정의로 쓰면 관통 overlay (`U+0335` · `U+0336` · `U+0338`) 를 놓친다 —
+            // `DejaVu Sans Mono` 는 그것들에 advance 를 준다 (실측 `idx=702 adv=12`). 그대로
+            // 두면 pen 이 밀린 자리에 그려져 **mark 가 옆 칸을 덮는다.** 폰트가 mark 로 분류한
+            // 글리프는 advance 를 갖고 있어도 pen 을 밀지 않는 것이 맞다.
+            //
+            // GDEF 조회가 안 되는 환경 (심볼 없는 축소 libharfbuzz) 에서는 `false` 가 와서
+            // 예전과 같은 advance 기준으로 degrade 한다.
+            const is_mark = self.glyphIsMark(cps, cluster_base, g) or g.x_advance == 0;
+            marks[i] = is_mark and i > 0;
+            if (marks[i]) {
+                has_mark = true;
+                if (!self.glyphIsOverlayMark(cps, cluster_base, g)) overlay_only = false;
+            }
+            const unplaced_mark = i > 0 and is_mark and g.x_offset == 0;
+            // 글리프 잉크의 **자기 원점 기준** 가로 중앙.
+            const ink_center = r.bitmap_left + @divFloor(@as(i32, @intCast(r.width)), 2);
+            const origin = if (unplaced_mark and base_center != null)
+                base_center.? - ink_center
+            else
+                pen_x;
+
+            // FreeType 은 baseline 기준 · 위쪽이 양수, 화면은 아래쪽이 양수라 부호가 뒤집힌다.
+            xs[i] = origin + g.x_offset + r.bitmap_left;
+            ys[i] = -g.y_offset - r.bitmap_top;
+            // #418 — mark 는 pen 을 밀지 않는다. advance 를 가진 overlay mark 도 마찬가지다 —
+            // 그 advance 대로 전진하면 뒤따르는 글리프까지 한 칸씩 밀린다.
+            if (!is_mark) {
+                base_center = pen_x + g.x_offset + ink_center;
+                pen_x += g.x_advance;
+            }
+
+            if (r.width == 0 or r.height == 0) continue; // space 등 잉크 없는 글리프
+            if (pixel_mode == 0) {
+                pixel_mode = r.pixel_mode;
+            } else if (pixel_mode != r.pixel_mode) {
+                return null; // 모드 혼합 — 위 주석
+            }
+            have_ink = true;
+        }
+        if (!have_ink) return null;
+
+        // #418 — **관통 (overlay) mark 만 세로도 base 잉크 중앙에 맞춘다.**
+        //
+        // mark 의 세로 위치는 GPOS 가 정하는데, 배치가 없으면 폰트의 기본 높이에 남는다. 그
+        // 높이는 대개 소문자 기준이라 대문자 (`O` + `U+0337`) 나 획이 긴 글자에서 어긋난다.
+        // 관통 mark 는 **글자를 가로질러야** 의미가 살아서 base 잉크 중앙이 옳다.
+        //
+        // 위 · 아래 mark 는 건드리지 않는다 — acute 를 글자 가운데로 내리면 틀린다. 이 구분은
+        // Unicode combining class 이고 HarfBuzz 의 fallback mark positioning 도 같은 기준을 쓴다
+        // (`hb-ot-shape-fallback` 의 `position_mark`). Windows 판과 같은 규칙이다 (#418).
+        //
+        // 보수적으로 둘을 지킨다 — 결합 기호가 **전부** 관통 류일 때만 손대고, `y_offset` 이
+        // 이미 있으면 shaping 이 정한 것이므로 덮어쓰지 않는다.
+        if (has_mark and overlay_only) {
+            var base_top: i32 = std.math.maxInt(i32);
+            var base_bottom: i32 = std.math.minInt(i32);
+            for (glyphs, 0..) |_, i| {
+                if (marks[i]) continue;
+                const r = rasters[i];
+                if (r.width == 0 or r.height == 0) continue;
+                if (ys[i] < base_top) base_top = ys[i];
+                const b = ys[i] + @as(i32, @intCast(r.height));
+                if (b > base_bottom) base_bottom = b;
+            }
+            if (base_bottom > base_top) {
+                const base_cy = base_top + @divFloor(base_bottom - base_top, 2);
+                for (glyphs, 0..) |g, i| {
+                    if (!marks[i] or g.y_offset != 0) continue;
+                    const r = rasters[i];
+                    if (r.width == 0 or r.height == 0) continue;
+                    const mark_cy = ys[i] + @divFloor(@as(i32, @intCast(r.height)), 2);
+                    ys[i] += base_cy - mark_cy;
+                }
+            }
+        }
+
+        // #421 — **위 mark 를 폰트 ascender 에 맞춘다.** 같은 `U+0305` 가 글자마다 다른 높이에
+        // 놓이던 것을 없앤다.
+        //
+        // 폰트 · shaping 은 base 높이에 맞춰 mark 를 올린다 (실측 — `a` 위에서는 `y_offset` 이
+        // 0 인데 `b` 위에서는 +4 다). 겹치지 않으려는 동작이라 각각은 틀리지 않지만, 결과적으로
+        // `a̅b̅c̅d̅e̅f̅` 의 윗줄이 계단처럼 들쭉날쭉해진다. Windows 는 균일하고, 사용자가 균일한
+        // 쪽을 택했다.
+        //
+        // **cluster 안의 위 mark 전체를 같은 양만큼 평행이동**한다 — 그래야 연속 조합
+        // (`a`+301+308+323) 의 적층이 유지된다. 기준은 가장 아래에 있는 위 mark 이고, 그것의
+        // 잉크 top 이 ascender 가 되도록 옮긴다.
+        //
+        // ascender 위라 `b d f` 의 잉크와 겹치지 않는다 — "평평하게 하면 겹친다" 는 *base 잉크*
+        // 기준으로 평평하게 할 때의 이야기고, ascender 기준이면 성립하지 않는다.
+        //
+        // 관통 mark (바로 위) 와는 배타적이다 — 그쪽은 `overlay_only` 일 때만 도는데 여기는
+        // 위 mark 가 하나라도 있어야 돈다.
+        if (has_mark and !overlay_only and self.ascent_px > 0) {
+            // 잉크가 baseline 위에 **완전히** 있는 mark 만 위 mark 로 본다. 아래 mark (cedilla
+            // 등) 와 관통 mark 는 여기서 걸러진다.
+            //
+            // 기준은 **가장 위에 있는 mark** 다. 가장 아래 것을 ascender 에 맞추면 그 위에 쌓인
+            // mark 가 셀 밖으로 나간다 (실측 — Lao `ກິ່` 가 top +19 → +22 로 위 칸을 침범했다).
+            // 가장 위 것을 맞추면 cluster 전체가 셀 안에 들어오고, mark 가 하나뿐인 흔한 경우는
+            // 어차피 그 하나가 기준이라 평평해지는 결과가 같다.
+            var highest_top: ?i32 = null;
+            for (glyphs, 0..) |_, i| {
+                if (!marks[i]) continue;
+                const r = rasters[i];
+                if (r.width == 0 or r.height == 0) continue;
+                const top = -ys[i]; // baseline 기준 위가 양수
+                const bottom = top - @as(i32, @intCast(r.height));
+                if (bottom < 0) continue; // baseline 아래로 내려오면 위 mark 가 아니다
+                if (highest_top == null or top > highest_top.?) highest_top = top;
+            }
+            if (highest_top) |lt| {
+                const delta = @as(i32, @intCast(self.ascent_px)) - lt;
+                if (delta != 0) {
+                    for (glyphs, 0..) |_, i| {
+                        if (!marks[i]) continue;
+                        const r = rasters[i];
+                        if (r.width == 0 or r.height == 0) continue;
+                        const top = -ys[i];
+                        if (top - @as(i32, @intCast(r.height)) < 0) continue; // 위 mark 만
+                        ys[i] -= delta; // 화면 y 는 아래가 양수라 부호가 뒤집힌다
+                    }
+                }
+            }
+        }
+
+        // 배치가 확정된 뒤에 사각형 합집합을 잡는다 (위 세로 보정이 `ys` 를 바꾼다).
+        for (glyphs, 0..) |_, i| {
+            const r = rasters[i];
+            if (r.width == 0 or r.height == 0) continue;
+            if (xs[i] < min_x) min_x = xs[i];
+            if (ys[i] < min_y) min_y = ys[i];
+            const right = xs[i] + @as(i32, @intCast(r.width));
+            const bottom = ys[i] + @as(i32, @intCast(r.height));
+            if (right > max_x) max_x = right;
+            if (bottom > max_y) max_y = bottom;
+        }
+
+        const out_w: usize = @intCast(max_x - min_x);
+        const out_h: usize = @intCast(max_y - min_y);
+        if (out_w == 0 or out_h == 0) return null;
+        // 셀 몇 개 분량을 넘는 것은 우리 격자에 못 담는다 — 그런 결과는 안 그리는 편이 낫다.
+        if (out_w > MAX_COMPOSED_PX or out_h > MAX_COMPOSED_PX) return null;
+
+        const bpp: usize = if (pixel_mode == freetype.FT_PIXEL_MODE_BGRA) 4 else 1;
+        const buf = self.allocator.alloc(u8, out_w * out_h * bpp) catch return null;
+        @memset(buf, 0);
+
+        for (glyphs, 0..) |_, i| {
+            const r = rasters[i];
+            if (r.width == 0 or r.height == 0) continue;
+            const dx: usize = @intCast(xs[i] - min_x);
+            const dy: usize = @intCast(ys[i] - min_y);
+            const src_w: usize = @intCast(r.width);
+            const src_h: usize = @intCast(r.height);
+            var row: usize = 0;
+            while (row < src_h) : (row += 1) {
+                const dst_row = dy + row;
+                if (dst_row >= out_h) break;
+                var col: usize = 0;
+                while (col < src_w) : (col += 1) {
+                    const dst_col = dx + col;
+                    if (dst_col >= out_w) break;
+                    const s = (row * src_w + col) * bpp;
+                    const d = (dst_row * out_w + dst_col) * bpp;
+                    if (bpp == 1) {
+                        // 커버리지끼리는 더 진한 쪽을 남긴다 — base 와 mark 는 원래 겹치지
+                        // 않게 설계돼 있어 대부분 한쪽이 0 이다.
+                        if (r.bitmap[s] > buf[d]) buf[d] = r.bitmap[s];
+                    } else {
+                        // premultiplied BGRA over.
+                        const sa: u32 = r.bitmap[s + 3];
+                        if (sa == 0) continue;
+                        const inv: u32 = 255 - sa;
+                        for (0..4) |c| {
+                            const sv: u32 = r.bitmap[s + c];
+                            const dv: u32 = buf[d + c];
+                            buf[d + c] = @intCast(@min(255, sv + (dv * inv) / 255));
+                        }
+                    }
+                }
+            }
+        }
+
+        // advance 는 **첫 글리프 것**을 쓴다. cluster 는 셀 격자에 맞춰 그리므로 (renderer 가
+        // 셀 폭으로 중앙정렬) 합계를 쓰면 오히려 어긋난다 — macOS `rasterizeCluster` 와 같다.
         return .{
-            .face_idx = face_idx,
-            .glyph_index = shape_buf[0].glyph_index,
-            .x_offset = shape_buf[0].x_offset,
-            .y_offset = shape_buf[0].y_offset,
+            .bitmap = buf,
+            .width = @intCast(out_w),
+            .height = @intCast(out_h),
+            .bitmap_left = min_x,
+            .bitmap_top = -min_y,
+            // advance 는 **base 글리프** 것이다. cluster 가 차지하는 가로는 base 가 정하고
+            // mark 는 0 이라서다. 첫 글리프를 쓰면 RTL 에서 어긋난다 — Hebrew `אָ` 는 mark
+            // (qamats) 가 먼저 와서 합성 advance 가 0 이 됐다 (#419 에서 실측).
+            // advance 는 **cluster 전체가 차지하는 가로**다 — shaping 이 준 `x_advance` 의 합.
+            //
+            // 한 글리프 것을 집으면 어긋난다. 처음엔 첫 글리프를 썼는데 RTL 에서 mark 가 먼저
+            // 와서 (Hebrew `אָ` = qamats → alef) 0 이 나왔고, 첫 *base* 글리프로 바꿨더니 이번엔
+            // Devanagari `क्षि` 가 5 를 냈다 — `ि` (short i) 가 **base 앞에 놓이는 모음**이라
+            // 첫 base 글리프가 그 조각이다. 렌더러는 이 값으로 셀 안 중앙정렬을 하므로 (#299)
+            // 작으면 글자가 오른쪽으로 밀린다 (실기에서 그렇게 보였다).
+            //
+            // mark 는 `x_advance` 가 0 이라 합에 기여하지 않으므로 따로 거를 필요가 없다.
+            .advance = blk: {
+                var sum: i32 = 0;
+                for (glyphs) |g2| {
+                    // mark 는 빼야 한다. 보통 `x_advance` 가 0 이라 저절로 빠지지만 관통
+                    // overlay 는 advance 를 갖고 (`DejaVu` 의 `U+0336` = 12) 그대로 더하면
+                    // `k̶` 의 advance 가 24 로 두 칸이 된다 — pen 을 안 미는 것과 같은 이유로
+                    // 폭에도 넣지 않는다 (#418).
+                    if (self.glyphIsMark(cps, cluster_base, g2)) continue;
+                    sum += g2.x_advance;
+                }
+                if (sum > 0) break :blk @intCast(sum);
+                break :blk rasters[0].advance; // 전부 zero-advance 인 경우 (드묾)
+            },
+            .pixel_mode = pixel_mode,
         };
     }
 
-    fn resolveClusterInner(self: *Context, cps: []const u21) ?LigatureGlyph {
+    fn resolveClusterInner(self: *Context, cps: []const u21) ?ClusterGlyph {
         if (cps.len == 0 or self.face_count == 0 or self.hb_api == null) return null;
 
         // #399 (B) — 캐시가 shape 자체를 건너뛴다. negative 도 담기므로 (`??` 의 안쪽
@@ -968,7 +1482,27 @@ pub const Context = struct {
                 return g;
             }
         }
-        // chain 전체 실패도 담는다 — 안 담으면 매 프레임 다시 헛돈다.
+        // #419 — chain 이 다 놓쳤으면 **system fallback face** 로 한 번 더 본다.
+        //
+        // 단일 codepoint 는 예전부터 여기로 왔다 (`glyph` → `systemFallbackGlyph`, #289 B5).
+        // cluster 만 chain 에서 끝나서, Devanagari `क्षि` 처럼 chain 밖 스크립트는 **base 만
+        // 그려지고 결합이 빠졌다** — 같은 폰트를 한쪽 경로는 쓰고 다른 쪽은 안 쓰는 비대칭이었다.
+        // SPEC 은 fallback 을 하는 쪽이다 (*"chain 에 없는 codepoint 는 system fallback 이 자동
+        // 처리"*).
+        //
+        // face 는 **cluster 의 base codepoint** 로 고른다. mark 는 대개 base 와 같은 스크립트라
+        // 그 face 가 함께 갖고 있고, 아니면 아래 `tryClusterOnFace` 의 `.notdef` 검사가 걸러 준다.
+        if (self.loadFallbackForCp(cps[0])) |fb_idx| {
+            const face_idx = FALLBACK_FACE_BASE + fb_idx;
+            if (self.tryClusterOnFace(face_idx, cps)) |g| {
+                // `last_cluster_face` 에는 담지 않는다 — 그 값은 chain 순회의 시작점이라
+                // fallback index 를 넣으면 다음 cluster 가 엉뚱한 곳을 먼저 본다.
+                self.cluster_cache.put(cps, g);
+                return g;
+            }
+        }
+
+        // 전부 실패한 것도 담는다 — 안 담으면 매 프레임 다시 헛돈다.
         self.cluster_cache.put(cps, null);
         return null;
     }
