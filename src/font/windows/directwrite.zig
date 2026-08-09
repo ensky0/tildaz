@@ -49,6 +49,15 @@ pub const IID_IDWriteFactory4 = GUID{
     .Data4 = .{ 0x8a, 0xc5, 0xfe, 0x91, 0x5c, 0xc5, 0x38, 0x56 },
 };
 
+// IDWriteTextAnalyzer1 — DirectWrite 1.1+ (dwrite_1.h, Win 8 / Platform Update).
+// `GetScriptProperties` 하나 때문에 QueryInterface 한다 (#416).
+pub const IID_IDWriteTextAnalyzer1 = GUID{
+    .Data1 = 0x80dad800,
+    .Data2 = 0xe21f,
+    .Data3 = 0x4e83,
+    .Data4 = .{ 0x96, 0xce, 0xbf, 0xcc, 0xe5, 0x00, 0xdb, 0x7c },
+};
+
 // IDWriteColorGlyphRunEnumerator1 IID — Factory4.TranslateColorGlyphRun 의 결과.
 // {7C5F86DA-C7A1-4F05-B8E1-55A179FE5A35}
 pub const IID_IDWriteColorGlyphRunEnumerator1 = GUID{
@@ -254,6 +263,27 @@ pub const DWRITE_SCRIPT_ANALYSIS = extern struct {
     shapes: UINT32 = 0,
 };
 
+/// `dwrite_1.h` 의 `DWRITE_SCRIPT_PROPERTIES` — script 의 쓰기 특성.
+///
+/// 뒤쪽 7 개가 1-bit 필드 (`restrictCaretToClusters` / `usesWordDividers` /
+/// `isDiscreteWriting` / `isBlockWriting` / `isDistributedWithinCluster` /
+/// `isConnectedWriting` / `isCursiveWriting`) 인데, Zig 의 packed struct 로 두면
+/// C 비트필드 배치를 우리가 가정하게 되므로 **`u32` 하나로 받고 비트를 이름으로 읽는다.**
+pub const DWRITE_SCRIPT_PROPERTIES = extern struct {
+    isoScriptCode: UINT32 = 0,
+    isoScriptNumber: UINT32 = 0,
+    clusterLookahead: UINT32 = 0,
+    justificationCharacter: UINT32 = 0,
+    flags: UINT32 = 0,
+
+    /// **문맥에 따라 글자 모양이 바뀌는 script** 인지 (Arabic · Syriac · Nko · Mongolian).
+    /// 실측 (Windows 11 · 2026-08-09): 이 넷만 1 이고 Latin · Hebrew · Hangul ·
+    /// Devanagari · Thai · Lao · Han · Hiragana 는 0 이다.
+    pub fn isCursiveWriting(self: DWRITE_SCRIPT_PROPERTIES) bool {
+        return (self.flags & (1 << 6)) != 0;
+    }
+};
+
 /// 16 bits packed flags. `isShapedAlone:1` / `reserved1:1` / `canBreakShapingAfter:1` /
 /// `reserved:13`. 우리는 read-only, 0 으로 init.
 pub const DWRITE_SHAPING_TEXT_PROPERTIES = extern struct {
@@ -416,6 +446,53 @@ pub const IDWriteTextAnalyzer = extern struct {
             glyph_props,
             actual_glyph_count,
         );
+    }
+
+    pub fn QueryInterface(self: *IDWriteTextAnalyzer, riid: *const GUID, out: *?*anyopaque) HRESULT {
+        return self.vtable.QueryInterface(self, riid, out);
+    }
+};
+
+// --- IDWriteTextAnalyzer1 ---
+// IUnknown (3) + IDWriteTextAnalyzer (7) + ApplyCharacterSpacing · GetBaseline ·
+// AnalyzeVerticalGlyphOrientation · GetGlyphOrientationTransform (4) = 14 슬롯 뒤에
+// GetScriptProperties 가 온다. 우리는 그 하나만 쓴다 (#416).
+
+pub const IDWriteTextAnalyzer1 = extern struct {
+    vtable: *const VTable,
+
+    pub const VTable = extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDWriteTextAnalyzer1) callconv(.c) u32,
+        AnalyzeScript: *const anyopaque,
+        AnalyzeBidi: *const anyopaque,
+        AnalyzeNumberSubstitution: *const anyopaque,
+        AnalyzeLineBreakpoints: *const anyopaque,
+        GetGlyphs: *const anyopaque,
+        GetGlyphPlacements: *const anyopaque,
+        GetGdiCompatibleGlyphPlacements: *const anyopaque,
+        ApplyCharacterSpacing: *const anyopaque,
+        GetBaseline: *const anyopaque,
+        AnalyzeVerticalGlyphOrientation: *const anyopaque,
+        GetGlyphOrientationTransform: *const anyopaque,
+        GetScriptProperties: *const fn (
+            *IDWriteTextAnalyzer1,
+            script_analysis: DWRITE_SCRIPT_ANALYSIS,
+            script_properties: *DWRITE_SCRIPT_PROPERTIES,
+        ) callconv(.c) HRESULT,
+    };
+
+    pub fn Release(self: *IDWriteTextAnalyzer1) u32 {
+        return self.vtable.Release(self);
+    }
+
+    pub fn GetScriptProperties(
+        self: *IDWriteTextAnalyzer1,
+        script_analysis: DWRITE_SCRIPT_ANALYSIS,
+        script_properties: *DWRITE_SCRIPT_PROPERTIES,
+    ) HRESULT {
+        return self.vtable.GetScriptProperties(self, script_analysis, script_properties);
     }
 };
 
