@@ -153,6 +153,16 @@ system_profiler SPFontsDataType | grep "Family:" | sort -u
 (New-Object System.Drawing.Text.InstalledFontCollection).Families | Select-Object -Expand Name
 ```
 
+**List the PostScript names** (Linux · macOS) — there are more of these than families, because each
+face has its own:
+
+```sh
+# Linux
+fc-list -f '%{postscriptname}\n' | grep . | sort -u
+
+# macOS — Font Book shows it in the font's info panel (⌘I)
+```
+
 **Then confirm the name actually resolves to that font** — this second step matters more than it
 looks:
 

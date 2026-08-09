@@ -1173,7 +1173,9 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 |---|---|---|
 | macOS | `CTFontCreateCopyWithSymbolicTraits` | 함수가 **null 을 준다** → 그 결과가 곧 "이 family 에 bold 가 있나" 의 답. regular 를 `CFRetain` 해 소유권을 통일 |
 | Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 **가장 근접한 face** 를 준다 (실패하지 않는다) → 자연히 regular |
-| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 같은 파일이면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 |
+| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 (파일, index) 가 같으면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 ([#428](https://github.com/ensky0/tildaz/issues/428) — `.ttc` 는 한 파일에 face 가 여러 벌이라 path 만 보면 다른 face 를 같은 것으로 오인한다) |
+
+**Linux 는 변종 조회에 *해석된 정식 family* 를 쓴다** — 사용자가 적은 원문이 아니다 ([#409](https://github.com/ensky0/tildaz/issues/409)). `font.family` 에 PostScript 이름이나 다른 표기를 적었을 때 원문으로 조회하면 **엉뚱한 폰트의 변종**이 온다: 실측에서 `DejaVuSansMono-Bold` 의 bold 조회가 `NotoSansCJK-Bold.ttc` 로 갔고, `NotoSerifKannada-Light` 는 `NotoSerifCJK-Bold.ttc` 로 갔다. 그래서 `Face.family` 에 §7 의 이름 해석 결과 (정식 family) 를 담고 변종 조회는 그 이름으로 한다.
 
 **Linux 는 변종 chain 을 lazy 로 만든다.** chain 이 최대 8 이라 즉시 로드하면 face 가 32 개가 되고, dialog 폰트를 lazy 로 돌린 것과 같은 이유로 시작이 느려진다 ([#368](https://github.com/ensky0/tildaz/issues/368) — 시작 시간의 절반). 실패해도 "시도했음" 을 기록해 매 프레임 fontconfig 왕복을 막는다.
 
