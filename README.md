@@ -16,11 +16,10 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.7.0 — GPU rendering on Linux, and a command menu in every window.**
-> Linux now draws through the GPU instead of a software buffer, cutting CPU use
-> during scrolling and typing and making startup about three times faster.
-> Every window carries a small `[+][×][…]` strip whose `…` opens a command menu
-> listing the common actions with their shortcuts.
+> **v0.8.0 — Text finally looks the way your shell asked for it.**
+> Underlines, strikethrough, overline, blink, and real italic and bold faces
+> now render, a new tab opens in the active tab's directory, and emoji- and
+> CJK-heavy output draws far faster.
 
 ## Who is TildaZ for?
 
@@ -135,10 +134,10 @@ TildaZ was built from a git checkout:
 
 ```
 $ tildaz --version
-tildaz 0.7.0 (d1ad1ff)
+tildaz 0.8.0 (d1ad1ff)
 ```
 
-A `-dirty` suffix on the commit — `tildaz 0.7.0 (d1ad1ff-dirty)` — means the
+A `-dirty` suffix on the commit — `tildaz 0.8.0 (d1ad1ff-dirty)` — means the
 build had uncommitted local changes. Builds from a source archive with no git
 metadata print the version alone. The same string appears in the About dialog
 (`Ctrl+Shift+I`, or `Shift+Cmd+I` on macOS) and on the first line of the log
