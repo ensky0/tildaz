@@ -344,6 +344,16 @@ fn sectionK(o: *Out) void {
     rowGap(o, "Devanagari kshi", &DEVA_KSHI, 1);
     row(o, "Thai ko+2", &.{ 0x0E01, 0x0E34, 0x0E48 });
     row(o, "Hebrew alef+qamats", &.{ 0x05D0, 0x05B8 });
+    // 뒤에 글자를 **바로 붙여** 침범을 눈에 보이게 한다. `|` 하나만 두면 겹쳐도 애매하다 —
+    // `ABC` 의 `A` 가 가려지거나 뭉개지면 그 글자가 배정된 칸을 넘은 것이다 (#417).
+    o.raw("   ");
+    pad(o, "침범 확인 (A 가 온전한가)", 26);
+    o.cps(&DEVA_KSHI);
+    o.raw("ABC  ");
+    o.cps(&.{0x0915});
+    o.raw("ABC  ");
+    o.cps(&.{ 0x0E01, 0x0E34, 0x0E48 });
+    o.raw("ABC  aABC\n");
 }
 
 fn sectionL(o: *Out) void {
@@ -359,7 +369,7 @@ pub fn main() !void {
     var storage: [1 << 16]u8 = undefined;
     var o = Out{ .buf = &storage };
 
-    o.raw("===== TildaZ 렌더 검증 — #401 / #415 / #416 / #417 / #418 =====\n");
+    o.raw("===== TildaZ 렌더 검증 — #401 · #415~421  (현황판 #422) =====\n");
     sectionA(&o);
     sectionB(&o);
     sectionC(&o);
