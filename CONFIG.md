@@ -127,9 +127,15 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 
 ### Font names
 
-Every family in `font.family` and `font.glyph_fallback` must be installed, and the name must be
-**exactly** what the system calls it. A wrong name is fatal at startup, so it is worth checking
-before editing the config.
+Every family in `font.family` and `font.glyph_fallback` must be installed. The spelling is forgiving —
+case, spaces, hyphens and underscores are ignored, so `Cascadia Code`, `cascadia code` and
+`CascadiaCode` all name the same font. A name that matches no installed font is fatal at startup, so
+it is worth checking before editing the config.
+
+On Linux and macOS the **PostScript name** works too — the `NotoSansCJKkr-Regular` /
+`DejaVuSansMono-Bold` form that font tools such as Font Book show. A PostScript name identifies one
+face rather than a family, so a bold PostScript name loads the bold face. Windows accepts family
+names only for now ([#409](https://github.com/ensky0/tildaz/issues/409)).
 
 **List the installed family names:**
 
@@ -153,29 +159,31 @@ looks:
 ```sh
 fc-match "Noto Color Emoji"          # Linux
 #   Noto Color Emoji  → correct
-#   twemoji.ttf       → this name cannot be used, see below
+#   twemoji.ttf       → the system redirects this name, see below
 ```
 
-#### "Font not found" when the font *is* installed
+#### When the system hands you a different font
 
-On Linux and macOS a font can be installed and still be unusable under the name you typed, because
-the system resolves that name to a **different** font. TildaZ rejects that case on purpose — silently
-drawing a different font than you asked for is worse — and the error dialog names the substitute:
+A font can be installed and still bring up a *different* one, because the system resolves that name
+elsewhere. On Linux this is a fontconfig alias rule: an emoji font package (`ttf-twemoji`,
+`ttf-joypixels`, …) claims the emoji names system-wide, usually from a file in `/etc/fonts/conf.d/`.
+
+TildaZ starts anyway — the font it got is real, and the redirection is the system's own rule — and
+records what happened in the log (`tildaz_N.log`):
 
 ```
-Font not found: "Noto Color Emoji"
-...
-This family IS installed, but fontconfig resolves it to "Twemoji".
-A font package may have installed a system-wide alias rule.
-  check:  fc-match "Noto Color Emoji"
-  rules:  /etc/fonts/conf.d/
+[font] chain[2] "Noto Color Emoji" resolved to "Twemoji" (system alias) — using it
 ```
 
-| Platform | Why it happens | Fix |
-|---|---|---|
-| **Linux** | An emoji font package (`ttf-twemoji`, `ttf-joypixels`, …) installs a system-wide fontconfig rule that claims emoji names. The rule file usually lives in `/etc/fonts/conf.d/` | Use the substitute's name instead, or disable the rule: `sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f` |
-| **macOS** | The name given is a **PostScript name** (`.SF NS Mono`) rather than a family name, so the font is found but its family differs | Use the family name shown in Font Book, or the one named in the dialog |
-| **Windows** | Not affected — family lookup is an exact match against the system font collection | — |
+So when a glyph does not look like the font you picked, read the log first. To get the font you
+asked for, either name the substitute directly, or drop the rule:
+
+```sh
+sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f
+```
+
+Startup only fails when the name matches **no** installed font at all — a typo, or a font that is
+not installed.
 
 ### Hotkey syntax
 
