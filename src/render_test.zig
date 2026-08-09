@@ -303,7 +303,7 @@ fn sectionH(o: *Out) void {
         if (i > 0) o.raw(" ");
         o.cps(&.{ @intCast(c), 0x0305 });
     }
-    o.raw("]\n\n");
+    o.raw("]\n");
 }
 
 fn sectionI(o: *Out) void {
