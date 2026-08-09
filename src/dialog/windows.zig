@@ -255,6 +255,19 @@ fn dialogEditHorizontalInset(hinstance: HINSTANCE, parent_class: [*:0]const WCHA
     return scratch_w - format_w;
 }
 
+/// dialog 안쪽 여백 — **본문 폰트 크기에 비례**한다 (#407). 절대값을 박으면 폰트가
+/// 커져도 여백이 그대로라 답답해 보인다. 1.8 배 (예전 24 는 1.6 배였다).
+fn dialog_margin_px(dpi: UINT) c_int {
+    return scaled(@intCast(ui_metrics.DIALOG_BODY_FONT_PT * 9 / 5), dpi);
+}
+
+/// confirm / prompt 의 두 버튼 사이 간격 — 같은 기준으로 **폰트 크기의 1.6 배**다.
+/// 예전 8 은 0.53 배라 두 버튼이 붙어 보였고, 1.0 배도 좁다는 사용자 지적으로
+/// 넓혔다. Linux 의 `dialog_button_gap_pt` 와 같은 비율이다.
+fn dialog_button_gap_px(dpi: UINT) c_int {
+    return scaled(@intCast(ui_metrics.DIALOG_BODY_FONT_PT * 8 / 5), dpi);
+}
+
 fn dialogEditFormatWidth(control_w: c_int, horizontal_inset: c_int) c_int {
     return @max(1, control_w - horizontal_inset);
 }
@@ -633,7 +646,7 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     const screen_w = work.right - work.left;
     const screen_h = work.bottom - work.top;
     const viewport_margin = scaled(16, dpi);
-    const margin = scaled(24, dpi);
+    const margin = dialog_margin_px(dpi);
     const frame_style = WS_CAPTION | WS_SYSMENU;
     const frame_ex_style = WS_EX_TOPMOST;
     var frame = RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
@@ -816,7 +829,7 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
         std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"),
         std.unicode.utf8ToUtf16LeStringLiteral(messages.button_cancel),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        button_x - scaled(8, dpi) - button_w,
+        button_x - dialog_button_gap_px(dpi) - button_w,
         button_y,
         button_w,
         button_h,
@@ -1026,7 +1039,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const screen_w = work.right - work.left;
     const screen_h = work.bottom - work.top;
     const viewport_margin = scaled(16, dpi);
-    const margin = scaled(24, dpi);
+    const margin = dialog_margin_px(dpi);
     const gap = scaled(16, dpi);
     const frame_style = WS_CAPTION | WS_SYSMENU;
     const frame_ex_style = WS_EX_TOPMOST;
@@ -1104,7 +1117,7 @@ pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []
     const client_h = button_y + button_h + bottom;
     const client_w = margin + content_w + margin;
     const create_x = client_w - margin - button_w;
-    const cancel_x = create_x - scaled(8, dpi) - button_w;
+    const cancel_x = create_x - dialog_button_gap_px(dpi) - button_w;
 
     // client 사각형 → 창 전체 사각형 (title bar / 테두리 실제 DPI 반영).
     var wr = RECT{ .left = 0, .top = 0, .right = client_w, .bottom = client_h };

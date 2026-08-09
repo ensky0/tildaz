@@ -11,10 +11,38 @@ const ui_metrics = @import("../../ui_metrics.zig");
 
 pub const Kind = enum { info, about, confirm, prompt };
 
+/// 글자 폭 측정 (#407). 이 모듈은 renderer 객체를 못 부르므로 (파일 머리말) 폭을
+/// 재는 수단만 함수 포인터로 받는다. 실기는 `font.Context` 의 glyph advance 를,
+/// 테스트는 고정폭 측정기를 넘긴다 — **비례폭 dialog 와 고정폭 터미널이 같은
+/// 레이아웃 코드를 쓰되 측정만 갈리게** 하는 자리다.
+pub const Measure = struct {
+    ctx: *const anyopaque,
+    advanceFn: *const fn (ctx: *const anyopaque, cp: u21) i32,
+
+    pub fn advance(self: Measure, cp: u21) i32 {
+        return self.advanceFn(self.ctx, cp);
+    }
+
+    /// UTF-8 문자열의 픽셀 폭. 개행은 폭 0 으로 친다 (호출자가 줄 단위로 자른다).
+    pub fn width(self: Measure, text: []const u8) i32 {
+        var total: i32 = 0;
+        var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+        while (iter.nextCodepoint()) |cp| {
+            if (cp == '\n') continue;
+            total += self.advance(@intCast(cp));
+        }
+        return total;
+    }
+
+    /// 최소 폭을 "글자 몇 개" 로 적기 위한 기준 advance. 비례폭에서 대표 폭으로
+    /// 숫자 `0` 을 쓴다 (대부분의 폰트가 숫자를 고정폭으로 둔다).
+    pub fn refAdvance(self: Measure) i32 {
+        return @max(1, self.advance('0'));
+    }
+};
+
 pub const Metrics = struct {
-    body_cell_w: i32,
     body_cell_h: i32,
-    title_cell_w: i32,
     title_cell_h: i32,
     padding: i32,
     shadow_margin: i32,
@@ -34,7 +62,9 @@ pub const Size = struct { w: i32, h: i32 };
 
 pub const Layout = struct {
     size: Size,
-    wrap_cells: usize,
+    /// 본문을 접는 폭 (**픽셀**). 렌더러가 같은 값으로 `WrappedLines` 를 다시 돌려야
+    /// 측정과 그림이 일치한다.
+    wrap_width: i32,
     message_rows: usize,
     visible_message_rows: usize,
     message_scroll_max: usize,
@@ -42,19 +72,22 @@ pub const Layout = struct {
     fits: bool,
 };
 
+/// 본문을 `max_width` (**픽셀**) 안에서 접는 iterator. 레이아웃 계산과 렌더링이
+/// **같은 iterator 를 같은 폭으로** 돌려야 측정 행 수와 그린 행 수가 정확히 같다.
 pub const WrappedLines = struct {
     msg: []const u8,
-    max_cells: usize,
+    max_width: i32,
+    measure: Measure,
     pos: usize = 0,
 
     pub fn next(self: *WrappedLines) ?[]const u8 {
         if (self.pos >= self.msg.len) return null;
         const start = self.pos;
         var i = self.pos;
-        var width: usize = 0;
+        var width: i32 = 0;
         var last_space: ?usize = null;
         var last_space_end: usize = start;
-        const max_cells = @max(self.max_cells, 1);
+        const max_width = @max(self.max_width, 1);
         while (i < self.msg.len) {
             const b = self.msg[i];
             if (b == '\n') {
@@ -64,12 +97,12 @@ pub const WrappedLines = struct {
             const seq = std.unicode.utf8ByteSequenceLength(b) catch 1;
             const end = @min(i + seq, self.msg.len);
             const cp = std.unicode.utf8Decode(self.msg[i..end]) catch 0xFFFD;
-            const w: usize = display_width.codepointWidth(cp);
+            const w: i32 = self.measure.advance(cp);
             if (cp == ' ') {
                 last_space = i;
                 last_space_end = end;
             }
-            if (width + w > max_cells and i > start) {
+            if (width + w > max_width and i > start) {
                 if (last_space) |sp| {
                     self.pos = last_space_end;
                     return self.msg[start..sp];
@@ -87,30 +120,30 @@ pub const WrappedLines = struct {
 
 const Measurement = struct {
     rows: usize,
-    max_cells: usize,
+    max_width: i32,
 };
 
-fn longestExplicitLine(message: []const u8) usize {
-    var longest: usize = 0;
-    var current: usize = 0;
+fn longestExplicitLineWidth(message: []const u8, m: Measure) i32 {
+    var longest: i32 = 0;
+    var current: i32 = 0;
     var iter = std.unicode.Utf8Iterator{ .bytes = message, .i = 0 };
     while (iter.nextCodepoint()) |cp| {
         if (cp == '\n') {
             longest = @max(longest, current);
             current = 0;
         } else {
-            current += display_width.codepointWidth(@intCast(cp));
+            current += m.advance(@intCast(cp));
         }
     }
     return @max(longest, current);
 }
 
-fn measure(message: []const u8, wrap_cells: usize) Measurement {
-    var result = Measurement{ .rows = 0, .max_cells = 0 };
-    var lines = WrappedLines{ .msg = message, .max_cells = wrap_cells };
+fn measureMessage(message: []const u8, wrap_width: i32, m: Measure) Measurement {
+    var result = Measurement{ .rows = 0, .max_width = 0 };
+    var lines = WrappedLines{ .msg = message, .max_width = wrap_width, .measure = m };
     while (lines.next()) |line| {
         result.rows += 1;
-        result.max_cells = @max(result.max_cells, display_width.stringWidth(line));
+        result.max_width = @max(result.max_width, m.width(line));
     }
     if (result.rows == 0) result.rows = 1;
     return result;
@@ -121,9 +154,11 @@ pub fn compute(
     message: []const u8,
     kind: Kind,
     metrics: Metrics,
+    body_measure: Measure,
+    title_measure: Measure,
     viewport: Size,
 ) Layout {
-    return computeWithinSurface(title, message, kind, metrics, .{
+    return computeWithinSurface(title, message, kind, metrics, body_measure, title_measure, .{
         .w = @max(1, viewport.w - metrics.viewport_margin * 2),
         .h = @max(1, viewport.h - metrics.viewport_margin * 2),
     });
@@ -137,9 +172,11 @@ pub fn computeForSurface(
     message: []const u8,
     kind: Kind,
     metrics: Metrics,
+    body_measure: Measure,
+    title_measure: Measure,
     surface: Size,
 ) Layout {
-    return computeWithinSurface(title, message, kind, metrics, .{
+    return computeWithinSurface(title, message, kind, metrics, body_measure, title_measure, .{
         .w = @max(1, surface.w),
         .h = @max(1, surface.h),
     });
@@ -150,11 +187,11 @@ fn computeWithinSurface(
     message: []const u8,
     kind: Kind,
     metrics: Metrics,
+    body_measure: Measure,
+    title_measure: Measure,
     available_surface: Size,
 ) Layout {
-    std.debug.assert(metrics.body_cell_w > 0);
     std.debug.assert(metrics.body_cell_h > 0);
-    std.debug.assert(metrics.title_cell_w > 0);
     std.debug.assert(metrics.title_cell_h > 0);
     std.debug.assert(metrics.preferred_w > 0);
     std.debug.assert(metrics.max_w >= metrics.preferred_w);
@@ -164,20 +201,21 @@ fn computeWithinSurface(
         .h = available_surface.h,
     };
     const preferred_surface_w = @min(max_surface.w, metrics.preferred_w);
+    // 기준 advance — 최소 폭을 "글자 몇 개" 로 적기 위한 환산 단위다. 고정폭이던
+    // 시절의 `body_cell_w` 자리를 대신한다 (#407).
+    const ref_adv = body_measure.refAdvance();
     const preferred_content_room_w = @max(
-        metrics.body_cell_w,
+        ref_adv,
         preferred_surface_w - metrics.shadow_margin * 2 - metrics.padding * 2,
     );
     const max_content_room_w = @max(
-        metrics.body_cell_w,
+        ref_adv,
         max_surface.w - metrics.shadow_margin * 2 - metrics.padding * 2,
     );
-    const preferred_wrap_cells: usize = @intCast(@max(1, @divTrunc(preferred_content_room_w, metrics.body_cell_w)));
-    const max_wrap_cells: usize = @intCast(@max(1, @divTrunc(max_content_room_w, metrics.body_cell_w)));
-    const min_cells: usize = if (kind == .prompt) 42 else 30;
-    const natural_cells = longestExplicitLine(message);
-    var wrap_cells = @min(@max(natural_cells, min_cells), preferred_wrap_cells);
-    var measured = measure(message, wrap_cells);
+    const min_width: i32 = ref_adv * @as(i32, if (kind == .prompt) 42 else 30);
+    const natural_width = longestExplicitLineWidth(message, body_measure);
+    var wrap_width = @min(@max(natural_width, min_width), preferred_content_room_w);
+    var measured = measureMessage(message, wrap_width, body_measure);
 
     const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 3 else 0;
     const fixed_h = metrics.padding * 2 +
@@ -195,10 +233,10 @@ fn computeWithinSurface(
 
     // preferred 폭에서 자연 높이를 먼저 측정하고, 고정 chrome까지 합쳐 화면을
     // 넘을 때만 maximum 폭으로 다시 wrap한다.
-    if (fixed_h + rows_h + icon_h > max_surface.h and preferred_wrap_cells < max_wrap_cells) {
+    if (fixed_h + rows_h + icon_h > max_surface.h and preferred_content_room_w < max_content_room_w) {
         expanded_to_max = true;
-        wrap_cells = @min(@max(natural_cells, min_cells), max_wrap_cells);
-        measured = measure(message, wrap_cells);
+        wrap_width = @min(@max(natural_width, min_width), max_content_room_w);
+        measured = measureMessage(message, wrap_width, body_measure);
         rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
     }
 
@@ -211,12 +249,11 @@ fn computeWithinSurface(
     if (fixed_h + rows_h + icon_h > max_surface.h) {
         const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
         const scroll_content_room_w = @max(
-            metrics.body_cell_w,
+            ref_adv,
             max_content_room_w - scrollbar_room,
         );
-        const scroll_wrap_max: usize = @intCast(@max(1, @divTrunc(scroll_content_room_w, metrics.body_cell_w)));
-        wrap_cells = @min(@max(natural_cells, min_cells), scroll_wrap_max);
-        measured = measure(message, wrap_cells);
+        wrap_width = @min(@max(natural_width, min_width), scroll_content_room_w);
+        measured = measureMessage(message, wrap_width, body_measure);
         rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
         const row_room = max_surface.h - fixed_h - icon_h;
         visible_message_rows = @min(
@@ -227,8 +264,8 @@ fn computeWithinSurface(
     }
 
     const scroll_extra = if (message_scroll_max > 0) metrics.scrollbar_w + metrics.scrollbar_gap else 0;
-    const body_w = @as(i32, @intCast(measured.max_cells * @as(usize, @intCast(metrics.body_cell_w)))) + scroll_extra;
-    const title_w: i32 = @intCast(display_width.stringWidth(title) * @as(usize, @intCast(metrics.title_cell_w)));
+    const body_w = measured.max_width + scroll_extra;
+    const title_w: i32 = title_measure.width(title);
     const inner_w = @max(body_w, title_w);
     const buttons_w = switch (kind) {
         .info, .about => metrics.button_w,
@@ -249,7 +286,7 @@ fn computeWithinSurface(
             .w = @min(desired_w, width_limit),
             .h = @min(desired_h, max_surface.h),
         },
-        .wrap_cells = wrap_cells,
+        .wrap_width = wrap_width,
         .message_rows = measured.rows,
         .visible_message_rows = visible_message_rows,
         .message_scroll_max = message_scroll_max,
@@ -273,11 +310,12 @@ test "current config error fits 640x480 logical viewport" {
         \\Config path:
         \\/tmp/tildaz-306-current-home/.config/tildaz/config_98.json
     ;
-    const layout = compute("TildaZ Config Error", message, .info, testMetrics(100), .{ .w = 640, .h = 480 });
+    const f = testFonts(100);
+    const layout = compute("TildaZ Config Error", message, .info, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     if (!layout.fits) {
         std.debug.print(
-            "current config layout: fits={} size={}x{} rows={} wrap={} longest={}\n",
-            .{ layout.fits, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_cells, longestExplicitLine(message) },
+            "current config layout: fits={} size={}x{} rows={} wrap_px={} longest_px={}\n",
+            .{ layout.fits, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_width, longestExplicitLineWidth(message, f.body()) },
         );
     }
     try std.testing.expect(layout.fits);
@@ -289,11 +327,14 @@ test "same logical viewport fits at 1x 1.7x and 2x" {
     const message = "A moderately long dialog line that should keep the same logical layout at every output scale.";
     const scales = [_]u32{ 100, 170, 200 };
     for (scales) |scale_percent| {
+        const f = testFonts(scale_percent);
         const layout = compute(
             "TildaZ",
             message,
             .info,
             testMetrics(scale_percent),
+            f.body(),
+            f.title(),
             .{
                 .w = @divTrunc(640 * @as(i32, @intCast(scale_percent)), 100),
                 .h = @divTrunc(480 * @as(i32, @intCast(scale_percent)), 100),
@@ -307,28 +348,38 @@ test "wide viewport is not limited to 72 cells" {
     const message = "x" ** 100;
     // preferred 폭에서는 2행이라 화면을 넘고, maximum 폭의 100열 1행은
     // 들어오는 높이다. 과거 72-cell 상한이 되살아나면 이 경계가 실패한다.
-    const layout = compute("TildaZ", message, .info, testMetrics(100), .{ .w = 1280, .h = 264 });
+    const f = testFonts(100);
+    // 높이는 #407 로 넓어진 여백만큼 키웠다 (264 → 285). **경계가 좁다** — 낮으면
+    // 스크롤 경로로 빠져 scrollbar 폭만큼 wrap 이 좁아지고, 높으면 preferred 폭
+    // (2 행) 에서 이미 들어와 maximum 으로 확장하지 않는다. 둘 다 이 테스트의 의도
+    // (폭 상한이 없다) 와 무관한 이유로 실패한다. 현재 여백에서 유효 범위는
+    // 279~295 다.
+    const layout = compute("TildaZ", message, .info, testMetrics(100), f.body(), f.title(), .{ .w = 1280, .h = 285 });
     try std.testing.expect(layout.fits);
-    try std.testing.expectEqual(@as(usize, 100), layout.wrap_cells);
+    // 고정폭 측정기라 100 열 = 100 × 9 px 이다.
+    try std.testing.expectEqual(@as(i32, 100 * 9), layout.wrap_width);
     try std.testing.expectEqual(@as(usize, 1), layout.message_rows);
 }
 
 test "compact layout keeps branded icon and scrolls only the message" {
     const message = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve";
-    const layout = compute("TildaZ", message, .confirm, testMetrics(100), .{ .w = 640, .h = 400 });
+    const f = testFonts(100);
+    const layout = compute("TildaZ", message, .confirm, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 400 });
     try std.testing.expect(layout.fits);
     try std.testing.expect(layout.show_icon);
     try std.testing.expectEqual(@as(usize, 12), layout.message_rows);
-    try std.testing.expectEqual(@as(usize, 9), layout.visible_message_rows);
-    try std.testing.expectEqual(@as(usize, 3), layout.message_scroll_max);
+    // #407 로 여백이 넓어져 보이는 행이 9 → 8 이 됐다 (넘치는 행은 3 → 4).
+    try std.testing.expectEqual(@as(usize, 8), layout.visible_message_rows);
+    try std.testing.expectEqual(@as(usize, 4), layout.message_scroll_max);
 }
 
 test "final compositor surface size recomputes wrapping without viewport margin" {
     const message = "A compositor may configure a narrower final surface than the client initially requested for this dialog message.";
-    const initial = compute("TildaZ", message, .info, testMetrics(100), .{ .w = 1280, .h = 720 });
-    const configured = computeForSurface("TildaZ", message, .info, testMetrics(100), .{ .w = 480, .h = 448 });
+    const f = testFonts(100);
+    const initial = compute("TildaZ", message, .info, testMetrics(100), f.body(), f.title(), .{ .w = 1280, .h = 720 });
+    const configured = computeForSurface("TildaZ", message, .info, testMetrics(100), f.body(), f.title(), .{ .w = 480, .h = 448 });
     try std.testing.expect(configured.fits);
-    try std.testing.expect(configured.wrap_cells < initial.wrap_cells);
+    try std.testing.expect(configured.wrap_width < initial.wrap_width);
     try std.testing.expect(configured.message_rows > initial.message_rows);
     try std.testing.expect(configured.size.w <= 480);
     try std.testing.expect(configured.size.h <= 448);
@@ -440,11 +491,13 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.config_error_title, .message = parse_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = hotkey_invalid_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = theme_msg, .kind = .info },
-        .{ .title = messages.config_error_title, .message = shell_msg, .kind = .info },
+        // 여백을 폰트 비례로 넓히면서 (#407) 1.7x 에서만 2 행이 넘친다 — 고정 chrome
+        // 반올림이 그 배율에서 한 행을 더 먹는다 (font 오류 주석과 같은 이유).
+        .{ .title = messages.config_error_title, .message = shell_msg, .kind = .info, .standard_scroll_by_scale = .{ 0, 2, 0 } },
         .{ .title = messages.shell_new_tab_error_title, .message = new_tab_msg, .kind = .info },
         // 64pt branded icon을 고정하면 최대 8-entry font 오류는 640x480에서
-        // 본문만 3/4/3행 overflow한다. 1.7x는 고정 chrome 반올림으로 한 행 적다.
-        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 3, 4, 3 } },
+        // 본문만 overflow한다. 여백을 폰트 비례로 넓히며 (#407) 3/4/3 → 5/5/5 가 됐다.
+        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 5, 5, 5 } },
         .{ .title = messages.hotkey_takeover_title, .message = takeover_msg, .kind = .confirm },
         .{ .title = messages.new_instance_title, .message = prompt_msg, .kind = .prompt },
         .{ .title = messages.new_instance_title, .message = create_error_msg, .kind = .info },
@@ -468,12 +521,18 @@ fn expectFitsLogicalMinimum(
             testMetrics(scale_percent),
             testWideCellMetrics(scale_percent),
         };
-        for (metric_cases, 0..) |metrics, metric_index| {
+        const font_cases = [_]TestFonts{
+            testFonts(scale_percent),
+            testFontsWithCellWidths(scale_percent, 15, 18),
+        };
+        for (metric_cases, font_cases, 0..) |metrics, fonts, metric_index| {
             const layout = compute(
                 title,
                 message,
                 kind,
                 metrics,
+                fonts.body(),
+                fonts.title(),
                 .{
                     .w = @divTrunc(640 * @as(i32, @intCast(scale_percent)), 100),
                     .h = @divTrunc(480 * @as(i32, @intCast(scale_percent)), 100),
@@ -481,8 +540,8 @@ fn expectFitsLogicalMinimum(
             );
             if (!layout.fits) {
                 std.debug.print(
-                    "dialog does not fit: title={s} scale={d}% body_cell_w={} size={}x{} rows={} wrap={} message_len={} preview={s}\n",
-                    .{ title, scale_percent, metrics.body_cell_w, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_cells, message.len, message[0..@min(message.len, 80)] },
+                    "dialog does not fit: title={s} scale={d}% body_cw={} size={}x{} rows={} wrap_px={} message_len={} preview={s}\n",
+                    .{ title, scale_percent, fonts.body_cw, layout.size.w, layout.size.h, layout.message_rows, layout.wrap_width, message.len, message[0..@min(message.len, 80)] },
                 );
             }
             try std.testing.expect(layout.fits);
@@ -494,6 +553,40 @@ fn expectFitsLogicalMinimum(
     }
 }
 
+/// 테스트용 **고정폭** 측정기. 실기의 비례폭과 달리 `cell_w × display_width` 라
+/// 고정폭 시절과 같은 값이 나온다 — 그래서 아래 기대값들이 그대로 유효하다 (#407).
+fn fixedAdvance(ctx: *const anyopaque, cp: u21) i32 {
+    const cell_w: *const i32 = @ptrCast(@alignCast(ctx));
+    return cell_w.* * @as(i32, @intCast(display_width.codepointWidth(cp)));
+}
+
+const TestFonts = struct {
+    body_cw: i32,
+    title_cw: i32,
+
+    fn body(self: *const TestFonts) Measure {
+        return .{ .ctx = &self.body_cw, .advanceFn = fixedAdvance };
+    }
+    fn title(self: *const TestFonts) Measure {
+        return .{ .ctx = &self.title_cw, .advanceFn = fixedAdvance };
+    }
+};
+
+fn testScaleValue(v: i32, percent: u32) i32 {
+    return @divTrunc(v * @as(i32, @intCast(percent)) + 99, 100);
+}
+
+fn testFonts(scale_percent: u32) TestFonts {
+    return testFontsWithCellWidths(scale_percent, 9, 11);
+}
+
+fn testFontsWithCellWidths(scale_percent: u32, body_cw: i32, title_cw: i32) TestFonts {
+    return .{
+        .body_cw = testScaleValue(body_cw, scale_percent),
+        .title_cw = testScaleValue(title_cw, scale_percent),
+    };
+}
+
 fn testMetrics(scale_percent: u32) Metrics {
     return testMetricsWithCellWidths(scale_percent, 9, 11);
 }
@@ -503,24 +596,24 @@ fn testWideCellMetrics(scale_percent: u32) Metrics {
 }
 
 fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w: i32) Metrics {
+    _ = body_cell_w;
+    _ = title_cell_w;
     const scale = struct {
         fn value(v: i32, percent: u32) i32 {
             return @divTrunc(v * @as(i32, @intCast(percent)) + 99, 100);
         }
     }.value;
     return .{
-        .body_cell_w = scale(body_cell_w, scale_percent),
         .body_cell_h = scale(17, scale_percent),
-        .title_cell_w = scale(title_cell_w, scale_percent),
         .title_cell_h = scale(20, scale_percent),
-        .padding = scale(8, scale_percent),
+        .padding = scale(@intCast(ui_metrics.DIALOG_BODY_FONT_PT * 6 / 5), scale_percent),
         .shadow_margin = scale(12, scale_percent),
         .viewport_margin = scale(16, scale_percent),
         .icon_size = scale(@intCast(ui_metrics.DIALOG_ICON_SIZE_PT), scale_percent),
         .icon_gap = scale(@intCast(ui_metrics.DIALOG_ICON_GAP_PT), scale_percent),
         .button_w = scale(100, scale_percent),
         .button_h = scale(44, scale_percent),
-        .button_gap = scale(12, scale_percent),
+        .button_gap = scale(@intCast(ui_metrics.DIALOG_BODY_FONT_PT * 8 / 5), scale_percent),
         .preferred_w = scale(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), scale_percent),
         .max_w = scale(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), scale_percent),
         .scrollbar_w = scale(10, scale_percent),
@@ -530,13 +623,14 @@ fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w:
 
 test "dialogs use overflow rows only when content exceeds viewport" {
     const ordinary = "TildaZ v0.6.1\n\nexe: /home/example/tildaz\nconfig: /home/example/config.json";
-    const ordinary_layout = compute("About TildaZ", ordinary, .about, testMetrics(100), .{ .w = 640, .h = 480 });
+    const f = testFonts(100);
+    const ordinary_layout = compute("About TildaZ", ordinary, .about, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     try std.testing.expect(ordinary_layout.fits);
     try std.testing.expectEqual(@as(usize, 0), ordinary_layout.message_scroll_max);
     try std.testing.expectEqual(ordinary_layout.message_rows, ordinary_layout.visible_message_rows);
 
     const long_message = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
-    const overflow = compute("About TildaZ", long_message, .about, testMetrics(100), .{ .w = 640, .h = 480 });
+    const overflow = compute("About TildaZ", long_message, .about, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     try std.testing.expect(overflow.fits);
     try std.testing.expect(overflow.show_icon);
     try std.testing.expect(overflow.message_scroll_max > 0);
@@ -544,23 +638,26 @@ test "dialogs use overflow rows only when content exceeds viewport" {
     try std.testing.expect(overflow.size.w <= 640 - 32);
     try std.testing.expect(overflow.size.h <= 480 - 32);
 
-    const info_overflow = compute("TildaZ Error", long_message, .info, testMetrics(100), .{ .w = 640, .h = 480 });
+    const info_overflow = compute("TildaZ Error", long_message, .info, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     try std.testing.expect(info_overflow.fits);
     try std.testing.expect(info_overflow.show_icon);
     try std.testing.expect(info_overflow.message_scroll_max > 0);
 
-    const prompt_overflow = compute("TildaZ", long_message, .prompt, testMetrics(100), .{ .w = 640, .h = 480 });
+    const prompt_overflow = compute("TildaZ", long_message, .prompt, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     try std.testing.expect(prompt_overflow.fits);
     try std.testing.expect(prompt_overflow.show_icon);
     try std.testing.expect(prompt_overflow.message_scroll_max > 0);
 }
 
 test "dialogs use common preferred then maximum width in logical points" {
+    const f = testFonts(100);
     const compact = compute(
         "Quit TildaZ?",
         "1 terminal tab is still running. Quit TildaZ?",
         .confirm,
         testMetrics(100),
+        f.body(),
+        f.title(),
         .{ .w = 1400, .h = 900 },
     );
     try std.testing.expect(compact.size.w <= @as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)));
@@ -568,11 +665,14 @@ test "dialogs use common preferred then maximum width in logical points" {
     const message = "x" ** 2000;
     const scales = [_]u32{ 100, 170, 200 };
     for (scales) |scale_percent| {
+        const sf = testFonts(scale_percent);
         const layout = compute(
             "About TildaZ",
             message,
             .about,
             testMetrics(scale_percent),
+            sf.body(),
+            sf.title(),
             .{
                 .w = @divTrunc(2200 * @as(i32, @intCast(scale_percent)), 100),
                 // preferred 580pt에서는 넘지만 maximum 960pt에서는 자연
