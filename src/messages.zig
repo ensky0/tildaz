@@ -308,6 +308,15 @@ pub const config_field_integer_range_required_format = "Configuration: \"{s}\" m
 pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{s}\"\n\nAvailable themes:\n";
 pub const config_hotkey_invalid_format = "Configuration: failed to parse \"hotkey\" value \"{s}\".\n\nOnly F1-F12 may be used without modifiers. Other keys require Ctrl, Alt, Super, or Cmd.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
+/// #431 — 다른 TildaZ 인스턴스가 이미 쓰는 전역 핫키. 뒤에 있는 (index 가 큰) 쪽이 양보하므로
+/// 이 메시지는 그 인스턴스에만 나온다. **겹친 상대를 번호로 짚어 주는 것이 핵심이다** — 예전엔
+/// Windows 의 `RegisterHotKey` 실패 안내가 "Another app already registered the same combination"
+/// 이라고만 해서, 원인이 자기 다른 인스턴스라는 것도 몇 번인지도 알 수 없었다.
+pub const config_hotkey_duplicate_format =
+    "The hotkey \"{s}\" is already used by TildaZ {d}.\n\n" ++
+    "Each TildaZ instance needs its own global hotkey. Change \"hotkey\" in this instance's config and start it again.";
+pub const config_hotkey_duplicate_fallback_msg =
+    "This hotkey is already used by another TildaZ instance. Change \"hotkey\" in this instance's config and start it again.";
 pub const config_font_family_empty_msg = "Configuration: \"font.family\" must not be empty.";
 pub const config_font_chain_too_long_format = "Configuration: font.family + glyph_fallback total exceeds {d} entries.";
 pub const config_font_chain_too_long_fallback_msg = "Configuration: font chain too long";
