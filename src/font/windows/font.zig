@@ -69,6 +69,76 @@ fn isOverlayMark(cp: u21) bool {
     };
 }
 
+/// [#420](https://github.com/ensky0/tildaz/issues/420) — **폭을 차지하지 않아야 하는 결합 기호**인지.
+///
+/// Unicode 의 combining mark 전용 블록들이고 전부 nonspacing (`Mn`) / enclosing (`Me`) 이다.
+/// 이 codepoint 가 `advance ≠ 0` 인 글리프로 shaping 되면 그 face 는 결합 기호를 **spacing
+/// 글리프로 그리는 것**이라, base 뒤에 한 칸 밀려 그려지고 옆 칸을 덮는다 (실측: `漢`+acute 를
+/// CJK fallback face 가 `advance = 7.5` 로 줬다).
+///
+/// Hangul Jamo (`U+1100`~) · ZWJ (`U+200D`) · 가나 濁点 (`U+3099`) 은 **일부러 뺐다** — 그것들은
+/// 폭을 갖거나 GSUB 로 합성되는 것이 정상이라 같은 기준으로 판정하면 안 된다.
+fn isCombiningMark(cp: u21) bool {
+    return switch (cp) {
+        0x0300...0x036F => true, // Combining Diacritical Marks
+        0x1AB0...0x1AFF => true, // 〃 Extended
+        0x1DC0...0x1DFF => true, // 〃 Supplement
+        0x20D0...0x20F0 => true, // 〃 for Symbols
+        0xFE20...0xFE2F => true, // Combining Half Marks
+        else => false,
+    };
+}
+
+/// [#423](https://github.com/ensky0/tildaz/issues/423) — **조합형 한글 자모를 완성형 음절로
+/// 합친다** (Unicode 3.12 *Conjoining Jamo Behavior* 의 canonical composition).
+///
+/// DirectWrite 는 `ᄀ`+`ᅡ` (`U+1100 U+1161`) 를 **두 cluster 로 보고** (`clusterMap = [0,1]`)
+/// 합치지 않는다. 그래서 자모가 각각 `advance = 15` (full em) 로 나와 배정된 2 칸 (18 px) 을
+/// 넘고 옆 칸을 덮는다. script · locale (`ko-kr`) · `DWRITE_SCRIPT_SHAPES` · OpenType feature
+/// (`ljmo`/`vjmo`/`tjmo`) 를 **전부 줘 봐도 결과가 같았다** (Malgun Gothic 실측 2026-08-09).
+///
+/// **HarfBuzz 의 Hangul shaper 는 이 composition 을 표준대로 한다** (`hb-ot-shaper-hangul.cc`) —
+/// 그래서 Linux 는 무증상이고, CoreText 도 마찬가지다. DirectWrite 에만 없는 층이라 여기서
+/// 채운다. 조합형과 완성형은 Unicode 가 **정규화 동치**로 정의한 같은 글자다.
+///
+/// 표가 필요 없다 — 산술이 곧 표준이다. 완전한 `L+V` / `L+V+T` 만 합치고, 자모가 아니거나
+/// 시퀀스가 불완전하면 (V 로 시작 · L 만 · T 만) **입력을 그대로 돌려준다.** 합친 뒤 남는
+/// codepoint (결합 기호 등) 는 뒤에 그대로 잇는다.
+fn composeHangul(cps: []const u21, out: *[MAX_CLUSTER_GLYPHS]u21) []const u21 {
+    const L_BASE: u21 = 0x1100;
+    const V_BASE: u21 = 0x1161;
+    const T_BASE: u21 = 0x11A7; // T 는 1 부터 쓴다 (0 = 종성 없음)
+    const S_BASE: u21 = 0xAC00;
+    const L_COUNT: u21 = 19;
+    const V_COUNT: u21 = 21;
+    const T_COUNT: u21 = 28;
+
+    if (cps.len < 2) return cps;
+    const l = cps[0];
+    if (l < L_BASE or l >= L_BASE + L_COUNT) return cps;
+    const v = cps[1];
+    if (v < V_BASE or v >= V_BASE + V_COUNT) return cps;
+
+    var used: usize = 2;
+    var ti: u21 = 0;
+    if (cps.len >= 3) {
+        const t = cps[2];
+        if (t > T_BASE and t < T_BASE + T_COUNT) {
+            ti = t - T_BASE;
+            used = 3;
+        }
+    }
+
+    out[0] = S_BASE + ((l - L_BASE) * V_COUNT + (v - V_BASE)) * T_COUNT + ti;
+    var n: usize = 1;
+    for (cps[used..]) |cp| {
+        if (n >= out.len) break;
+        out[n] = cp;
+        n += 1;
+    }
+    return out[0..n];
+}
+
 /// cluster 의 결합 기호가 전부 overlay 류인지 (`ClusterResult.overlay_marks`).
 fn clusterOverlayOnly(cps: []const u21) bool {
     if (cps.len < 2) return false;
@@ -174,6 +244,9 @@ pub const DWriteFontContext = struct {
     /// 시퀀스를 OpenType GSUB 로 단일 cluster glyph 로 reduce. macOS 의 CTLine
     /// 동등.
     text_analyzer: ?*dw.IDWriteTextAnalyzer = null,
+    /// [#416](https://github.com/ensky0/tildaz/issues/416) — `GetScriptProperties` 하나를
+    /// 쓰려고 QueryInterface 해 둔 것. 없으면 (DirectWrite 1.0) script 를 그대로 쓴다.
+    text_analyzer1: ?*dw.IDWriteTextAnalyzer1 = null,
     /// font.family chain — `[0]` 이 primary (cell metric / MapCharacters 의 base).
     /// chain entry 마다 IDWriteFontFace 보관, resolveGlyph 가 codepoint 별로
     /// 순회해서 글리프 가진 첫 face 반환. 모든 face 는 process 전체 lifetime
@@ -377,6 +450,15 @@ pub const DWriteFontContext = struct {
         _ = factory.?.CreateTextAnalyzer(&analyzer);
         self.text_analyzer = analyzer;
 
+        // 9. IDWriteTextAnalyzer1 — script 특성 조회용 (#416). 실패해도 동작은 이어진다
+        //    (`scriptFor` 가 cursive 판정 없이 script 를 그대로 쓴다).
+        if (analyzer) |a| {
+            var a1: ?*anyopaque = null;
+            if (a.QueryInterface(&dw.IID_IDWriteTextAnalyzer1, &a1) >= 0) {
+                if (a1) |p| self.text_analyzer1 = @ptrCast(@alignCast(p));
+            }
+        }
+
         return self;
     }
 
@@ -401,6 +483,7 @@ pub const DWriteFontContext = struct {
         if (self.rendering_params) |rp| _ = rp.Release();
         if (self.font_fallback) |fb| _ = fb.vtable.Release(fb);
         if (self.number_sub) |ns| _ = ns.Release();
+        if (self.text_analyzer1) |ta1| _ = ta1.Release();
         if (self.text_analyzer) |ta| _ = ta.Release();
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             if (maybe_face) |f| _ = f.vtable.Release(f);
@@ -538,6 +621,58 @@ pub const DWriteFontContext = struct {
         return result;
     }
 
+    /// [#420](https://github.com/ensky0/tildaz/issues/420) — cluster 를 **한 face 로 못 맞췄을 때**
+    /// base 와 결합 기호를 각각 맞는 face 에서 얻는다.
+    ///
+    /// `resolveGrapheme` 은 cluster 전체를 한 face 로 shape 하고 `.notdef` 가 하나라도 나오면 그
+    /// face 를 통째로 버린다. 그래서 **base 와 mark 가 서로 다른 폰트에만 있는 조합**은 어느
+    /// face 도 통과하지 못하고 miss 가 된다. 실측 (Windows 11 · 2026-08-09):
+    ///
+    /// | cluster | Malgun Gothic | Segoe UI Symbol | 결과 |
+    /// |---|---|---|---|
+    /// | `U+AC00` (가) | ✅ | ✕ | 어느 face 도 둘 다 못 가짐 → **miss** |
+    /// | `U+0301` (acute) | ✕ | ✅ | 〃 |
+    ///
+    /// miss 가 되면 셀 루프가 base codepoint 로 떨어져 `가` 만 그리고 **결합 기호가 조용히
+    /// 사라진다.** system fallback (`MapCharacters`) 도 답이 아니다 — 문자열 전체를 한 폰트로
+    /// 매핑하려 하므로 같은 이유로 실패한다 (`mapped_length = 1`).
+    ///
+    /// 그래서 base 는 base 대로, mark 는 mark 대로 face 를 찾아 돌려준다. **합성은 renderer 가
+    /// 화면에서 한다** — atlas entry 는 face 하나짜리를 그대로 쓰고, mark 를 base 잉크 중앙에
+    /// 맞춰 한 번 더 그린다 (`placeUnplacedMarks` 와 같은 정렬 규칙이다).
+    ///
+    /// **마지막 수단이다.** `resolveGrapheme` 이 성공하면 그쪽이 이긴다 — 한 face 안에서
+    /// shaping 이 한 배치 (GPOS) 가 우리 fallback 정렬보다 항상 낫기 때문이다.
+    pub const SplitCluster = struct {
+        /// base codepoint 하나만으로 얻은 cluster (보통 글리프 1 개).
+        base: ClusterResult,
+        /// base 뒤의 결합 기호들. 못 찾은 것은 빠지므로 `cps.len - 1` 보다 적을 수 있다.
+        marks: [MAX_CLUSTER_GLYPHS - 1]GlyphResult = undefined,
+        mark_count: u8 = 0,
+    };
+
+    pub fn resolveGraphemeSplit(self: *DWriteFontContext, cps: []const u21) ?SplitCluster {
+        if (cps.len < 2) return null;
+
+        const base = self.resolveGrapheme(cps[0..1]) orelse return null;
+        var out = SplitCluster{ .base = base };
+
+        for (cps[1..]) |cp| {
+            if (out.mark_count == out.marks.len) break;
+            const g = self.resolveGlyph(cp, .regular) orelse continue;
+            out.marks[out.mark_count] = g;
+            out.mark_count += 1;
+        }
+
+        // mark 를 하나도 못 찾았으면 이 경로의 이득이 없다 — base 만 그리는 것은 호출자의
+        // 기존 fallback 과 같다. base 를 우리가 소유했다면 여기서 놓는다.
+        if (out.mark_count == 0) {
+            if (base.owned) _ = base.face.vtable.Release(base.face);
+            return null;
+        }
+        return out;
+    }
+
     /// #399 (B) — 캐시를 씌운 층. shape 자체는 `resolveGraphemeUncached` 가 한다.
     ///
     /// **소유권이 이 함수의 핵심이다.** 셀 루프는 `result.owned` 면 매 프레임 `Release` 하는데
@@ -567,8 +702,14 @@ pub const DWriteFontContext = struct {
         return out;
     }
 
-    fn resolveGraphemeUncached(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
-        if (cps.len == 0 or self.text_analyzer == null) return null;
+    fn resolveGraphemeUncached(self: *DWriteFontContext, cps_in: []const u21) ?ClusterResult {
+        if (cps_in.len == 0 or self.text_analyzer == null) return null;
+
+        // #423 — 조합형 한글 자모는 shaping 전에 완성형으로 합친다. DirectWrite 가 안 해 주는
+        // 층이고, 캐시 키는 바깥 (`resolveGraphemeInner`) 이 원본 codepoint 로 잡으므로 여기서
+        // 바꿔도 캐시가 어긋나지 않는다.
+        var composed: [MAX_CLUSTER_GLYPHS]u21 = undefined;
+        const cps = composeHangul(cps_in, &composed);
 
         // UTF-21 codepoint slice → UTF-16 buffer (surrogate pair 처리).
         var u16_buf: [32]WCHAR = undefined;
@@ -599,7 +740,7 @@ pub const DWriteFontContext = struct {
         // 1. user chain 순회 — face 별로 cluster shape 시도.
         for (self.chain_faces[0..self.chain_count]) |maybe_face| {
             const face = maybe_face orelse continue;
-            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, sa, &indices_buf, &advances_buf, &offsets_buf);
+            const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, cps, sa, &indices_buf, &advances_buf, &offsets_buf);
             if (cnt > 0) {
                 return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
             }
@@ -631,7 +772,7 @@ pub const DWriteFontContext = struct {
             const primary: ?[*:0]const WCHAR = @ptrCast(&self.primary_family_name);
             const hints = [2]?[*:0]const WCHAR{ primary, null };
             for (hints) |hint| {
-                if (self.shapeViaSystemFallback(&u16_buf, u16_len, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| {
+                if (self.shapeViaSystemFallback(&u16_buf, u16_len, cps, hint, sa, &indices_buf, &advances_buf, &offsets_buf)) |r| {
                     var result = r;
                     result.overlay_marks = overlay;
                     return result;
@@ -648,6 +789,7 @@ pub const DWriteFontContext = struct {
         self: *DWriteFontContext,
         u16_buf: *const [32]WCHAR,
         u16_len: dw.UINT32,
+        cps: []const u21,
         base_family: ?[*:0]const WCHAR,
         sa: dw.DWRITE_SCRIPT_ANALYSIS,
         indices_buf: *[MAX_CLUSTER_GLYPHS]u16,
@@ -683,7 +825,7 @@ pub const DWriteFontContext = struct {
 
         // `mapped_length` 를 믿지 않는다 — shape 은 cluster **전체**로 하고 `.notdef` 판정에
         // 맡긴다. 일부만 매핑된 face 는 거기서 걸러진다.
-        const cnt = self.shapeOnFaceMulti(face, u16_buf, u16_len, sa, indices_buf, advances_buf, offsets_buf);
+        const cnt = self.shapeOnFaceMulti(face, u16_buf, u16_len, cps, sa, indices_buf, advances_buf, offsets_buf);
         if (cnt == 0) {
             _ = face.vtable.Release(face);
             return null;
@@ -774,8 +916,12 @@ pub const DWriteFontContext = struct {
         var cl_start: [MAX_RUN_CLUSTERS + 1]u16 = undefined;
         var u16_len: dw.UINT32 = 0;
 
-        for (clusters, 0..) |cps, ci| {
-            if (cps.len == 0) return 0;
+        for (clusters, 0..) |cps_in, ci| {
+            if (cps_in.len == 0) return 0;
+            // #423 — 개별 경로 (`resolveGraphemeUncached`) 와 같은 composition 을 여기도 한다.
+            // 안 하면 배칭된 줄에서만 조합형이 안 합쳐져 같은 글자가 경로에 따라 달라진다.
+            var composed: [MAX_CLUSTER_GLYPHS]u21 = undefined;
+            const cps = composeHangul(cps_in, &composed);
             cl_start[ci] = @intCast(u16_len);
             for (cps) |cp| {
                 if (cp <= 0xFFFF) {
@@ -996,7 +1142,7 @@ pub const DWriteFontContext = struct {
         var indices_buf: [MAX_CLUSTER_GLYPHS]u16 = undefined;
         var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
         var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
-        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, self.scriptFor(cps[0]), &indices_buf, &advances_buf, &offsets_buf);
+        const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, cps, self.scriptFor(cps[0]), &indices_buf, &advances_buf, &offsets_buf);
         if (cnt == 0) return null;
 
         // ShapedSlot[] 구성. DWrite `DWRITE_GLYPH_OFFSET.advanceOffset` (=
@@ -1036,6 +1182,33 @@ pub const DWriteFontContext = struct {
     /// script 가 *inherited* — base 를 따라가므로 결과가 같다. shaping 은 `render` 의 91.5 %
     /// (#395) 를 차지하는 hot path 라 cluster 마다 COM 왕복을 더할 수 없다.
     ///
+    /// ## 예외 — **cursive script 에는 script 를 주지 않는다** (#416 · #417, 2026-08-09)
+    ///
+    /// 위 문단대로 script 를 넘긴 뒤 Windows 실기에서 Arabic 이 **더 나빠졌다.** cursive
+    /// script 의 shaper 는 *앞뒤 글자와의 연결*을 보고 글자 모양 (`isol`/`init`/`medi`/`fina`)
+    /// 을 고르는데, 터미널은 **셀 하나가 shaping 단위**라 그 문맥이 항상 없다. 그래서 shaper 가
+    /// 홀로 선 글자에 연결형을 골라 버린다.
+    ///
+    /// | `U+0628` (ب) · Cascadia Code · 15pt | 글리프 | advance 합 |
+    /// |---|---|---:|
+    /// | script 안 줌 | `726` 하나 — isolated form (잉크 폭 8.64) | **8.79** (셀 9px 에 맞음) |
+    /// | script = Arabic | `3125` (잉크 0) + `727` — final form (잉크 폭 12.82, `lsb = −6.52`) | **17.58** |
+    ///
+    /// [#417](https://github.com/ensky0/tildaz/issues/417) 이 *"Cascadia Code 의 Arabic 이
+    /// 17.6 px 로 셀을 넘는다"* 고 적은 값이 바로 이 17.58 이다 — **폰트 설계가 아니라 이
+    /// shaping 결과였다.** 게다가 글리프 순서가 시각 순서 (RTL) 로 뒤집혀 mark 가 배열 앞에
+    /// 오는 바람에, renderer 의 mark 보정 (`placeUnplacedMarks` 는 `i > 0` 인 advance 0 글리프를
+    /// mark 로 본다) 도 통째로 빗나갔다.
+    ///
+    /// **cursive 가 아닌 script 는 그대로 넘긴다.** Devanagari 는 script 가 있어야 conjunct 가
+    /// 합성된다 (`क्षि` 가 script 지정 시 2 글리프 · advance 14.66, 안 주면 4 글리프 · 25.94).
+    /// Hebrew · Thai · Lao · 한글 · 한자는 실측에서 script 유무가 **결과가 완전히 같았다.**
+    ///
+    /// 판정은 `IDWriteTextAnalyzer1.GetScriptProperties` 의 `isCursiveWriting` 이다 — script
+    /// 목록을 코드에 박지 않고 **OS 가 아는 값**을 쓴다. 실측에서 Arabic · Syriac · Nko ·
+    /// Mongolian 만 참이고 Latin · Hebrew · Hangul · Devanagari · Thai · Lao · Han · Hiragana 는
+    /// 거짓이었다.
+    ///
     /// 분석에 실패하면 `script = 0` 을 돌려준다 — 예전 동작 그대로다.
     fn scriptFor(self: *DWriteFontContext, base_cp: u21) dw.DWRITE_SCRIPT_ANALYSIS {
         const none = dw.DWRITE_SCRIPT_ANALYSIS{ .script = 0, .shapes = 0 };
@@ -1057,21 +1230,35 @@ pub const DWriteFontContext = struct {
 
         var source = dw.SimpleTextAnalysisSource.create(&u16_buf, u16_len, self.number_sub);
         var sink = dw.ScriptSink.create();
-        const result = if (analyzer.AnalyzeScript(@ptrCast(&source), 0, u16_len, @ptrCast(&sink)) >= 0 and sink.got != 0)
+        const analyzed = if (analyzer.AnalyzeScript(@ptrCast(&source), 0, u16_len, @ptrCast(&sink)) >= 0 and sink.got != 0)
             sink.analysis
         else
             none;
+
+        // cursive script 는 `none` 으로 낮춘다 (위 doc comment 의 예외). 캐시에도 낮춘 값을
+        // 담아 codepoint 당 한 번만 물어본다.
+        const result = if (self.isCursiveScript(analyzed)) none else analyzed;
 
         // 캐시가 실패해도 동작은 같다 — 다음에 다시 분석할 뿐이다.
         self.script_map.put(base_cp, result) catch {};
         return result;
     }
 
+    /// script 가 **문맥에 따라 글자 모양이 바뀌는 (cursive)** 부류인지 (#416).
+    /// `IDWriteTextAnalyzer1` 을 못 얻었으면 (DirectWrite 1.0) 거짓 — script 를 그대로 쓴다.
+    fn isCursiveScript(self: *DWriteFontContext, sa: dw.DWRITE_SCRIPT_ANALYSIS) bool {
+        if (sa.script == 0) return false;
+        const a1 = self.text_analyzer1 orelse return false;
+        var props = dw.DWRITE_SCRIPT_PROPERTIES{};
+        if (a1.GetScriptProperties(sa, &props) < 0) return false;
+        return props.isCursiveWriting();
+    }
+
     /// `face` 로 cluster 를 OpenType shape — single glyph (가장 흔한 path) 또는
     /// multi-glyph cluster (#139, ZWJ family 등 GSUB 미합성). 결과는 indices array
     /// + count. .notdef 만 반환되면 null (다음 face / fallback).
     /// out_indices 는 `[MAX_CLUSTER_GLYPHS]u16`. 리턴 = count (0 = fail).
-    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, sa: dw.DWRITE_SCRIPT_ANALYSIS, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
+    fn shapeOnFaceMulti(self: *DWriteFontContext, face: *dw.IDWriteFontFace, text: [*]const WCHAR, text_len: dw.UINT32, cps: []const u21, sa: dw.DWRITE_SCRIPT_ANALYSIS, out_indices: *[MAX_CLUSTER_GLYPHS]u16, out_advances: *[MAX_CLUSTER_GLYPHS]dw.FLOAT, out_offsets: *[MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET) u8 {
         const analyzer = self.text_analyzer orelse return 0;
 
         var cluster_map: [32]u16 = undefined;
@@ -1151,6 +1338,26 @@ pub const DWriteFontContext = struct {
             while (i < out_count) : (i += 1) {
                 out_advances[i] = 0;
                 out_offsets[i] = .{ .advanceOffset = 0, .ascenderOffset = 0 };
+            }
+        }
+
+        // #420 — **결합 기호를 spacing 글리프로 그리는 face 는 거절한다.** 그런 face 로 그리면
+        // mark 가 base 뒤 pen 위치에 한 칸 밀려 그려져 옆 칸을 덮는다 (`漢`+acute 실측:
+        // CJK fallback face 가 `U+0301` 을 `advance = 7.5` 로 줬고 화면에서 글자 오른쪽 위로
+        // 나갔다). 거절하면 다음 face 로 넘어가고, 결국 `resolveGraphemeSplit` 이 base 와 mark 를
+        // 각각 맞는 face 에서 가져와 겹쳐 그린다.
+        //
+        // **cluster 가 합쳐진 경우는 건드리지 않는다.** `clusterMap` 은 codepoint 가 속한
+        // *cluster* 의 첫 글리프를 가리킬 뿐이라 mark 글리프를 짚지 못한다 (`漢`+acute 도
+        // `clusterMap = [0,0]` 이다). 대신 **글리프가 codepoint 와 1:1 로 나왔을 때만**
+        // (= GSUB 합성이 없었을 때) 뒤쪽 mark 자리를 본다. 합성됐으면 글리프 수가 줄어서
+        // 이 검사를 건너뛰고, 가나 `か`+濁点 처럼 한 글자가 된 경우가 여기 해당한다.
+        if (out_count == cps.len and cps.len >= 2) {
+            var tail: usize = 0;
+            while (tail < cps.len - 1 and isCombiningMark(cps[cps.len - 1 - tail])) tail += 1;
+            var k: usize = out_count - tail;
+            while (k < out_count) : (k += 1) {
+                if (glyph_advances[k] != 0) return 0;
             }
         }
 
