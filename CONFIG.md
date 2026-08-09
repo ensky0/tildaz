@@ -44,7 +44,7 @@ user's `$SHELL` env (or
   "hotkey": "F1",
   "auto_start": true,
   "hidden_start": false,
-  "max_scroll_lines": 100000
+  "max_scroll_lines": 10000
 }
 ```
 
@@ -71,7 +71,7 @@ user's `$SHELL` env (or
   "hotkey": "F1",
   "auto_start": true,
   "hidden_start": false,
-  "max_scroll_lines": 100000
+  "max_scroll_lines": 10000
 }
 ```
 
@@ -98,7 +98,7 @@ user's `$SHELL` env (or
   "hotkey": "F1",
   "auto_start": true,
   "hidden_start": false,
-  "max_scroll_lines": 100000
+  "max_scroll_lines": 10000
 }
 ```
 
@@ -123,7 +123,7 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | "F1" | "F1" | "F1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
-| `max_scroll_lines` | int | 100–10,000,000 | 100,000 | 100,000 | 100,000 | Scrollback buffer (lines) |
+| `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
 
 ### Font names
 
