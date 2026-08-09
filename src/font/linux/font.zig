@@ -31,6 +31,13 @@ pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 /// 로그 1줄) — 기로드 face 는 계속 동작.
 const MAX_FALLBACK: usize = 8;
 
+/// #419 — `face_idx` 에서 **system fallback face 를 가리키는 구간**의 시작.
+///
+/// chain 은 최대 8 (`MAX_CHAIN`) 이라 `0x80` 위와 겹치지 않는다. index 공간을 나눠 두면
+/// `ClusterGlyph.face_idx` · `GlyphRef.indexed.face` · atlas key 가 전부 `u8` 그대로여도
+/// 두 종류를 구분할 수 있다 — 렌더러와 atlas 를 손대지 않아도 되는 이유다.
+const FALLBACK_FACE_BASE: u8 = 0x80;
+
 /// #362 — 해석 캐시의 배열 갈래가 덮는 범위 (`0x20`~`0x7E`, printable ASCII).
 /// 터미널 텍스트의 대부분이라 이 구간만 해시를 피해도 대부분을 피한다.
 const ASCII_LO: u21 = 0x20;
@@ -775,9 +782,32 @@ pub const Context = struct {
     /// `face_idx` + `glyph_index` 를 그대로 넣음. ZWJ family emoji cluster
     /// (NotoColorEmoji face) 등 face_idx > 0 에서 raster 되어야 BGRA 가
     /// 살아남는 케이스 대응.
+    /// #419 — chain face 와 system fallback face 를 **한 index 공간**으로 조회한다.
+    /// `FALLBACK_FACE_BASE` 위는 fallback, 아래는 chain 이다.
+    fn faceAt(self: *Context, face_idx: u8) ?*Face {
+        if (face_idx >= FALLBACK_FACE_BASE) {
+            const i: usize = face_idx - FALLBACK_FACE_BASE;
+            if (i >= self.fallback_count) return null;
+            return if (self.fallback_faces[i]) |*f| f else null;
+        }
+        if (face_idx >= self.face_count) return null;
+        return if (self.faces[face_idx]) |*f| f else null;
+    }
+
+    /// #419 — 그 face 의 hb_font 를 보장한다. system fallback face 는 `hb_font = null` 로
+    /// 만들어지므로 (단일 codepoint raster 만 쓰던 시절의 결정) 처음 shaping 할 때 여기서
+    /// 만든다. chain face 는 로드 시 이미 있어서 그대로 돌려준다.
+    fn ensureHbFont(self: *Context, face_idx: u8) ?*harfbuzz.hb_font_t {
+        const api = if (self.hb_api) |*a| a else return null;
+        const face = self.faceAt(face_idx) orelse return null;
+        if (face.hb_font) |f| return f;
+        const created = api.ft_font_create_referenced(face.ft_face);
+        face.hb_font = created;
+        return created;
+    }
+
     pub fn glyphByIndex(self: *Context, face_idx: u8, glyph_index: u32) *const Glyph {
-        if (face_idx >= self.face_count) return &self.placeholder;
-        const face = if (self.faces[face_idx]) |*f| f else return &self.placeholder;
+        const face = self.faceAt(face_idx) orelse return &self.placeholder;
         if (face.glyph_by_index.get(glyph_index)) |cached| return cached;
         const g = rasterByIndex(self.allocator, self.ft_api, face.ft_face, glyph_index) catch {
             return &self.placeholder;
@@ -819,7 +849,6 @@ pub const Context = struct {
     /// (cp → idx 1:1), 그 외 face 는 0 반환 (그 face 시도는 skip).
     pub fn shapeRunOnFace(self: *Context, face_idx: u8, cps: []const u21, out: []ShapedGlyph) usize {
         if (cps.len == 0 or out.len == 0 or self.face_count == 0) return 0;
-        if (face_idx >= self.face_count) return 0;
 
         const hb_api = if (self.hb_api) |*api| api else {
             if (face_idx == 0) return self.shapeRunFallback(cps, out);
@@ -829,8 +858,9 @@ pub const Context = struct {
             if (face_idx == 0) return self.shapeRunFallback(cps, out);
             return 0;
         };
-        const face = if (self.faces[face_idx]) |*f| f else return 0;
-        const hb_font = face.hb_font orelse {
+        // #419 — system fallback face 는 hb_font 없이 만들어진다 (단일 codepoint raster 만
+        // 쓸 생각이었다). cluster 를 태우려면 필요하므로 여기서 만들어 둔다.
+        const hb_font = self.ensureHbFont(face_idx) orelse {
             if (face_idx == 0) return self.shapeRunFallback(cps, out);
             return 0;
         };
@@ -1398,7 +1428,19 @@ pub const Context = struct {
             .height = @intCast(out_h),
             .bitmap_left = min_x,
             .bitmap_top = -min_y,
-            .advance = rasters[0].advance,
+            // advance 는 **base 글리프** 것이다. cluster 가 차지하는 가로는 base 가 정하고
+            // mark 는 0 이라서다. 첫 글리프를 쓰면 RTL 에서 어긋난다 — Hebrew `אָ` 는 mark
+            // (qamats) 가 먼저 와서 합성 advance 가 0 이 됐다 (#419 에서 실측).
+            .advance = blk: {
+                // `marks[]` 를 쓰지 않는다 — 그 배열은 `i > 0` 을 함께 보는 **배치용** 판정이라
+                // 첫 글리프를 무조건 base 로 친다. RTL 은 mark 가 먼저 와서 (Hebrew `אָ` 는
+                // qamats → alef 순) 그 가정이 깨진다. 여기서는 위치와 무관하게 다시 본다.
+                for (glyphs, 0..) |g2, i| {
+                    if (self.glyphIsMark(cps, cluster_base, g2) or g2.x_advance == 0) continue;
+                    break :blk rasters[i].advance;
+                }
+                break :blk rasters[0].advance; // 전부 mark 인 경우 (드묾)
+            },
             .pixel_mode = pixel_mode,
         };
     }
@@ -1428,7 +1470,27 @@ pub const Context = struct {
                 return g;
             }
         }
-        // chain 전체 실패도 담는다 — 안 담으면 매 프레임 다시 헛돈다.
+        // #419 — chain 이 다 놓쳤으면 **system fallback face** 로 한 번 더 본다.
+        //
+        // 단일 codepoint 는 예전부터 여기로 왔다 (`glyph` → `systemFallbackGlyph`, #289 B5).
+        // cluster 만 chain 에서 끝나서, Devanagari `क्षि` 처럼 chain 밖 스크립트는 **base 만
+        // 그려지고 결합이 빠졌다** — 같은 폰트를 한쪽 경로는 쓰고 다른 쪽은 안 쓰는 비대칭이었다.
+        // SPEC 은 fallback 을 하는 쪽이다 (*"chain 에 없는 codepoint 는 system fallback 이 자동
+        // 처리"*).
+        //
+        // face 는 **cluster 의 base codepoint** 로 고른다. mark 는 대개 base 와 같은 스크립트라
+        // 그 face 가 함께 갖고 있고, 아니면 아래 `tryClusterOnFace` 의 `.notdef` 검사가 걸러 준다.
+        if (self.loadFallbackForCp(cps[0])) |fb_idx| {
+            const face_idx = FALLBACK_FACE_BASE + fb_idx;
+            if (self.tryClusterOnFace(face_idx, cps)) |g| {
+                // `last_cluster_face` 에는 담지 않는다 — 그 값은 chain 순회의 시작점이라
+                // fallback index 를 넣으면 다음 cluster 가 엉뚱한 곳을 먼저 본다.
+                self.cluster_cache.put(cps, g);
+                return g;
+            }
+        }
+
+        // 전부 실패한 것도 담는다 — 안 담으면 매 프레임 다시 헛돈다.
         self.cluster_cache.put(cps, null);
         return null;
     }
