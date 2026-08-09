@@ -1,6 +1,7 @@
 const std = @import("std");
 const manifest = @import("build.zig.zon");
 const versioning = @import("build/version.zig");
+const git_version = @import("build/git_version.zig");
 
 // Ghostty는 Windows target query의 ABI가 null이면 내부 target만 MSVC로
 // 바꾼다. TildaZ root는 Zig가 이미 resolve한 GNU ABI를 계속 써서 두 module의
@@ -56,9 +57,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // 컴파일 타임 상수 — About 다이얼로그 / tildaz.log 의 boot 엔트리에서 사용.
+    // 컴파일 타임 상수 — About 다이얼로그 / `--version` / tildaz.log 의 boot 엔트리에서
+    // 사용. 세 값을 사람이 읽는 한 줄로 합치는 규칙은 `src/version.zig` 한 곳에 있다.
     const build_opts = b.addOptions();
     build_opts.addOption([]const u8, "version", app_version.full);
+    // #383 — 어느 커밋에서 빌드했나. git 이 없거나 `.git` 이 없는 소스 tarball 이면
+    // 빈 문자열이고 버전 문자열에서 통째로 빠진다 (`build/git_version.zig`).
+    const git = git_version.detect(b);
+    build_opts.addOption([]const u8, "commit", git.commit);
+    build_opts.addOption(bool, "commit_dirty", git.dirty);
     exe_mod.addOptions("build_options", build_opts);
 
     // #19 — 현재 Ghostty pin + Zig 0.15.2에서 Linux · macOS · Windows native

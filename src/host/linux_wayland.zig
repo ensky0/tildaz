@@ -1,6 +1,6 @@
 const std = @import("std");
 const run_options = @import("../run_options.zig");
-const build_options = @import("build_options");
+const version = @import("../version.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
 const messages = @import("../messages.zig");
@@ -66,8 +66,8 @@ pub fn showFatalRunError(err: anyerror) void {
 }
 
 pub fn run(opts: run_options.RunOptions) !void {
-    log.logStart(build_options.version);
-    defer log.logStop(build_options.version);
+    log.logStart(version.string);
+    defer log.logStop(version.string);
     // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
     // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
     // worker 는 no-op (게이트는 `instance_context.isStress`).

@@ -8,12 +8,14 @@ const host = switch (builtin.os.tag) {
 };
 const autostart = @import("autostart.zig");
 const config = @import("config.zig");
+const console = @import("console.zig");
 const instance_context = @import("instance_context.zig");
 const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
 const messages = @import("messages.zig");
 const run_options = @import("run_options.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
+const version = @import("version.zig");
 
 /// `std.log` 호출 (ghostty-vt 의 `unimplemented mode` 등) 을 우리 통합 로그로
 /// redirect — stdout/stderr 안 찍힘. macOS 는 `~/Library/Logs/tildaz_N.log`,
@@ -44,6 +46,28 @@ pub fn panic(msg: []const u8, st: ?*std.builtin.StackTrace, ret_addr: ?usize) no
     host.showPanic(msg, addr, st);
 }
 
+/// #383 — 인자 오류는 셋 다 stderr + `exit(2)` 이고, 다음 행동 (`--help`) 을 같이
+/// 안내한다. 종료 코드 2 는 기존 동작 그대로다 (bash 의 "잘못된 사용법" 관례).
+fn exitUnknownOption(arg: []const u8) noreturn {
+    printOptionError(messages.unknown_option_format, .{arg});
+}
+
+fn exitOptionNeedsValue(option: []const u8) noreturn {
+    printOptionError(messages.option_needs_value_format, .{option});
+}
+
+fn exitInvalidValue(option: []const u8, value: []const u8) noreturn {
+    printOptionError(messages.option_invalid_value_format, .{ value, option });
+}
+
+fn printOptionError(comptime fmt: []const u8, args: anytype) noreturn {
+    // 인자는 사용자가 준 문자열이라 길이 상한이 없다. 버퍼를 넘기면 (예: 아주 긴 경로를
+    // 옵션 자리에 넣은 경우) 값을 뺀 일반 안내로 떨어뜨린다 — 안내가 사라지는 것보다 낫다.
+    var buf: [1024]u8 = undefined;
+    console.errLine(std.fmt.bufPrint(&buf, fmt, args) catch messages.option_error_fallback_msg);
+    std.process.exit(2);
+}
+
 pub fn main() void {
     const args = std.process.argsAlloc(std.heap.page_allocator) catch std.process.exit(2);
     defer std.process.argsFree(std.heap.page_allocator, args);
@@ -52,25 +76,54 @@ pub fn main() void {
     var toggle_index: ?u32 = null;
     // #382 — 측정용 내부 옵션. 문서화하지 않는다 (`run_options.zig` 참고).
     var run_opts: run_options.RunOptions = .{};
+
+    // #383 — `--version` / `--help` 는 다른 인자보다 **먼저** 본다. 두 가지 이유다.
+    //
+    //  1. 창 · 전역 핫키 · worker lock 어느 것도 건드리지 않고 끝나야 한다. 버전만
+    //     보려는데 핫키가 등록되거나 lock 을 잡으면 평소 쓰는 인스턴스를 방해한다.
+    //  2. `tildaz --instance 1 --help` 처럼 다른 옵션과 섞여 와도 사용자의 의도는
+    //     "설명을 보여 달라" 이다. 위치와 무관하게 이긴다.
+    //
+    // 둘 다 있으면 `--help` 가 이긴다 — 옵션 목록 쪽이 더 많은 것을 알려 준다.
+    var show_help = false;
+    var show_version = false;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) show_help = true;
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) show_version = true;
+    }
+    if (show_help) {
+        console.outLine(messages.help_text);
+        std.process.exit(0);
+    }
+    if (show_version) {
+        var buf: [256]u8 = undefined;
+        // 버전 문자열은 `version.string` 하나에서 온다 — About 다이얼로그 · 로그의
+        // `[boot]` 줄과 같은 값이라야 사용자가 어디서 읽어 오든 같은 것을 말한다.
+        const line = std.fmt.bufPrint(&buf, messages.version_line_format, .{version.string}) catch
+            version.string;
+        console.outLine(line);
+        std.process.exit(0);
+    }
+
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--instance")) {
-            if (i + 1 >= args.len) std.process.exit(2);
+            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
             i += 1;
-            worker_index = std.fmt.parseInt(u32, args[i], 10) catch std.process.exit(2);
+            worker_index = std.fmt.parseInt(u32, args[i], 10) catch exitInvalidValue(arg, args[i]);
         } else if (std.mem.eql(u8, arg, "-e")) {
-            if (i + 1 >= args.len) std.process.exit(2);
+            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
             i += 1;
             run_opts.command = args[i];
         } else if (std.mem.eql(u8, arg, "-size")) {
-            if (i + 1 >= args.len) std.process.exit(2);
+            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
             i += 1;
-            run_opts.grid = run_options.parseGrid(args[i]) orelse std.process.exit(2);
+            run_opts.grid = run_options.parseGrid(args[i]) orelse exitInvalidValue(arg, args[i]);
         } else if (std.mem.eql(u8, arg, "-scrollback")) {
-            if (i + 1 >= args.len) std.process.exit(2);
+            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
             i += 1;
-            run_opts.scrollback = std.fmt.parseInt(usize, args[i], 10) catch std.process.exit(2);
+            run_opts.scrollback = std.fmt.parseInt(usize, args[i], 10) catch exitInvalidValue(arg, args[i]);
         } else if (std.mem.eql(u8, arg, "--autostart")) {
             autostart_launch = true;
         } else if (std.mem.eql(u8, arg, "--toggle")) {
@@ -81,6 +134,16 @@ pub fn main() void {
                     i += 1;
                 } else |_| {}
             }
+        } else if (builtin.os.tag == .macos and std.mem.startsWith(u8, arg, "-psn_")) {
+            // macOS LaunchServices 가 앱을 띄우며 붙일 수 있는 process serial number.
+            // 우리가 준 인자가 아니라서 아래 unknown 처리에 걸리면 `open TildaZ.app` 이
+            // 통째로 실패한다. Qt (`QCoreApplication`) · Chromium 도 같은 접두사로
+            // 걸러 낸다. 값은 쓰지 않고 버린다.
+        } else {
+            // #383 이전에는 여기가 없어서 **모르는 인자가 조용히 무시**됐다. `tildaz
+            // --versoin` 같은 오타가 아무 말 없이 평소처럼 창을 띄워서, 사용자가 뭘
+            // 잘못 쳤는지 알 방법이 없었다.
+            exitUnknownOption(arg);
         }
     }
 
@@ -102,7 +165,10 @@ pub fn main() void {
             @import("log.zig").appendLine("toggle-ipc", "--toggle sent to running instance", .{});
             std.process.exit(0);
         } else {
-            std.debug.print("{s}\n", .{messages.toggle_unsupported_msg});
+            // #383 — `std.debug.print` 는 Windows GUI subsystem 에서 아무 데도 나가지
+            // 않는다. 다른 CLI 출력과 같은 경로 (`console.zig`) 로 보내 부모 콘솔에
+            // 붙어서 찍는다.
+            console.errLine(messages.toggle_unsupported_msg);
             std.process.exit(2);
         }
     }
