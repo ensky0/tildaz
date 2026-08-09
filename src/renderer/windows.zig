@@ -13,6 +13,8 @@ const chrome_palette = @import("../chrome_palette.zig");
 const themes = @import("../themes.zig");
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = @import("windows/glyph_atlas.zig").GlyphAtlas;
+const AtlasEntry = @import("windows/glyph_atlas.zig").AtlasEntry;
+
 const ATLAS_SIZE = @import("windows/glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("../perf.zig");
 const log = @import("../log.zig");
@@ -1494,7 +1496,7 @@ pub const D3d11Renderer = struct {
                             const cx16: u16 = @intCast(cell_x);
                             const sel = if (sel_range) |sr| (cx16 >= sr[0] and cx16 <= sr[1]) else false;
                             const fg = resolveFg(st, &rr, &colors, sel, inv);
-                            emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, self.run_results[i], cell_x, fy, cw, x_pad, fg, if (rr.wide == .wide) 2.0 else 1.0, 0);
+                            _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, self.run_results[i], cell_x, fy, cw, x_pad, fg, if (rr.wide == .wide) 2.0 else 1.0, 0);
                         }
                         x = scan;
                         continue;
@@ -1510,9 +1512,19 @@ pub const D3d11Renderer = struct {
                     const extras = graphemes[x];
                     const take = @min(extras.len, cluster.len - 1);
                     @memcpy(cluster[1..][0..take], extras[0..take]);
+                    const span: f32 = if (raw.wide == .wide) 2.0 else 1.0;
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |r| {
-                        emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
+                        _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, r, x, fy, cw, x_pad, fg_rgb, span, 0);
+                        x += 1;
+                        continue;
+                    }
+                    // #420 — 한 face 가 cluster 를 다 못 가지는 조합 (`가` + acute 처럼 base 와
+                    // mark 가 서로 다른 폰트에만 있는 경우). base 와 mark 를 각각 찾아 겹쳐 그린다.
+                    // 여기까지 와야 하는 이유는 아래가 base codepoint 만 그리는 경로라, 그대로
+                    // 두면 결합 기호가 화면에서 조용히 사라지기 때문이다.
+                    if (self.font.resolveGraphemeSplit(cluster[0 .. 1 + take])) |split| {
+                        emitSplitCluster(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, split, x, fy, cw, x_pad, fg_rgb, span);
                         x += 1;
                         continue;
                     }
@@ -1573,7 +1585,7 @@ pub const D3d11Renderer = struct {
                     .count = 1,
                     .owned = single.owned,
                 };
-                emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
+                _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
                 x += 1;
             }
         }
@@ -2021,7 +2033,9 @@ pub const D3d11Renderer = struct {
         /// 추출, Fira Code `||=` 의 `=` 가 `||` 쪽으로 당겨지는 디자인 등).
         /// 일반 cluster / single-glyph 는 0.
         dx: f32,
-    ) void {
+        // 반환값 — 그린 glyph 의 atlas entry 와 셀 왼쪽 기준 x. **결합 기호를 그 위에 겹쳐
+        // 그리는 경로 (#420) 가 base 잉크 위치를 알아야 해서** 돌려준다. 안 쓰는 호출처는 버린다.
+    ) ?struct { entry: AtlasEntry, fx: f32 } {
         if (text_count.* >= text_buf.len) {
             self.drawTextInstances(text_buf[0..text_count.*]);
             text_count.* = 0;
@@ -2041,10 +2055,10 @@ pub const D3d11Renderer = struct {
         }
         const entry = entry_opt orelse {
             if (result.owned) _ = result.face.vtable.Release(result.face);
-            return;
+            return null;
         };
         if (result.owned) _ = result.face.vtable.Release(result.face);
-        if (entry.w == 0 or entry.h == 0) return;
+        if (entry.w == 0 or entry.h == 0) return null;
 
         const center: f32 = if (span_cells) |span| blk: {
             if (entry.advance <= 0) break :blk 0;
@@ -2062,6 +2076,93 @@ pub const D3d11Renderer = struct {
             .color_flag = if (entry.is_color) 1.0 else 0.0,
         };
         text_count.* += 1;
+        return .{ .entry = entry, .fx = fx };
+    }
+
+    /// [#420](https://github.com/ensky0/tildaz/issues/420) — **base 와 결합 기호의 face 가 갈리는
+    /// cluster** 를 그린다. base 를 그린 뒤 mark 를 그 위에 한 번 더 얹는다.
+    ///
+    /// `resolveGrapheme` 이 miss 난 뒤에만 온다 (`resolveGraphemeSplit` 참고). 한 face 가
+    /// cluster 를 다 가지면 그쪽 경로가 이기므로, 여기 오는 것은 *어느 폰트도 둘 다 갖지 않는*
+    /// 조합뿐이다 — 지금까지는 mark 가 조용히 사라지던 자리다.
+    ///
+    /// **가로는 `placeUnplacedMarks` 와 같은 규칙**이다 — mark 잉크 중앙을 base 잉크 중앙에
+    /// 맞춘다. atlas entry 의 `bearing_x` 는 잉크 왼쪽, `w` 는 잉크 폭이라 잉크 중앙이 곧
+    /// `bearing_x + w/2` 다.
+    ///
+    /// **세로는 base 잉크 바깥으로 밀어낸다** (#420 · #421 Linux 의 `d9ebedd` 와 같은 방향).
+    /// mark 를 자기 디자인 높이에 두면 라틴 base 에서는 맞지만 **한글 · 한자 위에서는 획과 겹쳐
+    /// 안 보인다** — `가` 의 잉크가 baseline 위로 셀을 거의 꽉 채우는데 Cascadia 의 acute 는
+    /// 라틴 소문자 높이 (11.1) 에 설계돼 있어서다 (실측: 겹쳐서 8 px 만 달랐다). 그래서 위
+    /// mark 는 base 잉크 꼭대기 위에, 아래 mark 는 base 잉크 바닥 아래에 얹는다.
+    ///
+    /// 위 · 아래 구분은 **mark 자신의 잉크가 baseline 의 어느 쪽에 있는지**로 한다. atlas 의
+    /// `bearing_y` 는 baseline 기준이고 위가 음수라, 잉크 바닥 (`bearing_y + h`) 이 0 이하면
+    /// 위 mark 다. combining class 표를 새로 들이지 않고 글리프 자체로 판정한다.
+    fn emitSplitCluster(
+        self: *D3d11Renderer,
+        text_buf: []TextInstance,
+        text_count: *u32,
+        bg_buf: []BgInstance,
+        block_count: *u32,
+        split: dwrite_font.DWriteFontContext.SplitCluster,
+        x: usize,
+        fy: f32,
+        cw: f32,
+        x_pad: f32,
+        fg_rgb: ghostty.color.RGB,
+        span_cells: ?f32,
+    ) void {
+        const base = emitClusterInstance(self, text_buf, text_count, bg_buf, block_count, split.base, x, fy, cw, x_pad, fg_rgb, span_cells, 0) orelse {
+            // base 조차 못 그렸으면 mark 만 띄우지 않는다 — 떠 있는 결합 기호가 더 나쁘다.
+            for (split.marks[0..split.mark_count]) |m| {
+                if (m.owned) _ = m.face.vtable.Release(m.face);
+            }
+            return;
+        };
+        const base_ink_center = @as(f32, @floatFromInt(base.entry.bearing_x)) + @as(f32, @floatFromInt(base.entry.w)) / 2.0;
+
+        for (split.marks[0..split.mark_count]) |m| {
+            const me = self.atlas.getOrInsert(m.face, m.index) orelse {
+                if (m.owned) _ = m.face.vtable.Release(m.face);
+                continue;
+            };
+            if (m.owned) _ = m.face.vtable.Release(m.face);
+            if (me.w == 0 or me.h == 0) continue;
+            if (text_count.* >= text_buf.len) {
+                self.drawTextInstances(text_buf[0..text_count.*]);
+                text_count.* = 0;
+            }
+            const mark_ink_center = @as(f32, @floatFromInt(me.bearing_x)) + @as(f32, @floatFromInt(me.w)) / 2.0;
+            const gx = base.fx + @as(f32, @floatFromInt(me.bearing_x)) + (base_ink_center - mark_ink_center);
+
+            // mark 잉크 바닥이 baseline 위면 (`bearing_y + h <= 0`) 위 mark 다.
+            const mark_ink_bottom: i32 = @as(i32, me.bearing_y) + @as(i32, @intCast(me.h));
+            const is_above = mark_ink_bottom <= 0;
+            const stacked: i32 = if (is_above)
+                @as(i32, base.entry.bearing_y) - @as(i32, @intCast(me.h))
+            else
+                @as(i32, base.entry.bearing_y) + @as(i32, @intCast(base.entry.h));
+            // **셀 밖으로는 내보내지 않는다.** 한글 · 한자는 잉크가 셀을 거의 꽉 채워서 mark 를
+            // 완전히 띄우려면 셀 위를 넘어야 하는데, 그러면 윗 줄을 덮는다 (실측 7 px). 그건
+            // #417 류의 문제를 새로 만드는 것이라 [#420](https://github.com/ensky0/tildaz/issues/420)
+            // 의 Linux 도 같은 이유로 여기서 멈췄다. 셀 경계까지만 올리면 겹침이 줄고 (한글에서
+            // 3 px 남는다) 윗 줄은 그대로다.
+            const top_limit: i32 = -@as(i32, @intFromFloat(self.font.ascent_px));
+            const cell_h: i32 = @intCast(self.font.cell_height_px);
+            const bottom_limit: i32 = cell_h + top_limit - @as(i32, @intCast(me.h));
+            const bearing_y = std.math.clamp(stacked, top_limit, bottom_limit);
+            const gy = fy + self.font.ascent_px + @as(f32, @floatFromInt(bearing_y));
+            text_buf[text_count.*] = .{
+                .pos = .{ gx, gy },
+                .size = .{ @floatFromInt(me.w), @floatFromInt(me.h) },
+                .uv_pos = .{ @floatFromInt(me.x), @floatFromInt(me.y) },
+                .uv_size = .{ @floatFromInt(me.w), @floatFromInt(me.h) },
+                .fg_color = .{ colorF(fg_rgb.r), colorF(fg_rgb.g), colorF(fg_rgb.b), 1 },
+                .color_flag = if (me.is_color) 1.0 else 0.0,
+            };
+            text_count.* += 1;
+        }
     }
 
     /// `LigatureMatch` switch — `.single` 은 1 glyph 을 base cell 에, `.spacer`
@@ -2123,7 +2224,7 @@ pub const D3d11Renderer = struct {
             .count = 1,
             .owned = false,
         };
-        self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb, null, dx);
+        _ = self.emitClusterInstance(text_buf, text_count, bg_buf, block_count, result, x, fy, cw, x_pad, fg_rgb, null, dx);
     }
 
     // --- Color helpers ---
