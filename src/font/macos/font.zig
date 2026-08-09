@@ -17,10 +17,14 @@ const perf = @import("../../perf.zig");
 pub const MAX_CLUSTER_GLYPHS: usize = 16;
 
 pub const GlyphResult = struct {
+    /// 첫 글리프의 폰트 (= `fonts[0]`). 단일 글리프 경로가 이것만 쓴다.
     font: ct.CTFontRef,
     /// 첫 글리프. `count == 1` 인 흔한 경우의 빠른 길이고, multi-glyph 여도 여기는 채워진다.
     index: ct.CGGlyph,
     /// true 면 caller 가 CFRelease 책임. fallback font 생성 후 cache 안 할 때.
+    ///
+    /// ⚠️ **`fonts[0..count]` 를 전부 놓아야 한다** (`releaseCluster`). #420 이후 cluster 안에서
+    /// 글리프마다 폰트가 다를 수 있다.
     owned: bool,
 
     /// #401 — **cluster 가 글리프 하나로 합성되지 않는 경우**를 위한 것이다.
@@ -33,6 +37,17 @@ pub const GlyphResult = struct {
     /// 맞는다. 첫 글리프 기준 상대 좌표다.
     glyphs: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined,
     positions: [MAX_CLUSTER_GLYPHS]ct.CGPoint = undefined,
+
+    /// #420 — **글리프마다 폰트가 다를 수 있다.**
+    ///
+    /// `가` + acute (`U+AC00 U+0301`) 를 넘기면 CoreText 가 base 를 `Apple SD Gothic Neo`,
+    /// mark 를 `Monaco` 로 배정해 **run 을 2 개로 나눈다** (실측 — 37 개 cluster 중 이 계열
+    /// 둘만 그렇다). 예전에는 첫 run 만 써서 **결합 기호가 통째로 사라졌다.**
+    ///
+    /// Windows 는 face 를 직접 찾아 붙여야 했지만 (`resolveGraphemeSplit`, #420) 여기서는
+    /// CoreText 가 폰트 배정과 위치를 **이미 다 계산해 준다** — 우리는 모아서 그리기만 한다.
+    fonts: [MAX_CLUSTER_GLYPHS]ct.CTFontRef = undefined,
+
     /// 유효한 글리프 수. 1 이면 `index` 만 쓰면 된다.
     count: u8 = 1,
 
@@ -52,8 +67,11 @@ pub const GlyphResult = struct {
 /// **`owned` 인 것만 놓는다.** chain 폰트는 context 가 자기 수명 동안 들고 있고 (atlas cache
 /// key 가 폰트 포인터라 안정성이 필수다), CTLine 이 fallback 으로 고른 폰트만 우리가 retain
 /// 한다 — 그 구분이 곧 `owned` 다.
-fn releaseCluster(v: GlyphResult) void {
-    if (v.owned) ct.CFRelease(v.font);
+pub fn releaseCluster(v: GlyphResult) void {
+    if (!v.owned) return;
+    // #420 — cluster 안에서 폰트가 갈릴 수 있으므로 **전부** 놓는다. 같은 폰트가 여러 번
+    // 들어 있어도 그만큼 retain 했으므로 짝이 맞는다.
+    for (v.fonts[0..v.count]) |f| ct.CFRelease(f);
 }
 
 pub const MAX_FALLBACK_FONTS = font_constants.MAX_CHAIN;
@@ -677,9 +695,9 @@ pub const CoreTextFontContext = struct {
                     touched[ci] = true;
                     g_lo[ci] = g;
                     g_hi[ci] = g;
-                    // `index` 는 run 순서상 첫 글리프다 — 개별 경로와 같다.
+                    // `index` 는 run 순서상 첫 글리프다 — 개별 경로와 같다. 폰트 retain 은
+                    // **글리프를 담을 때마다** 한다 (`releaseCluster` 가 `count` 만큼 놓는다).
                     out[ci] = .{ .font = run_font, .index = glyph, .owned = true, .count = 0 };
-                    _ = ct.CFRetain(run_font);
                     count += 1;
                 } else if (!touched[ci]) {
                     // 앞선 run 이 이미 채운 cluster 다. 섞지 않는다.
@@ -691,6 +709,8 @@ pub const CoreTextFontContext = struct {
                 if (out[ci].count < MAX_CLUSTER_GLYPHS) {
                     out[ci].glyphs[out[ci].count] = glyph;
                     out[ci].positions[out[ci].count] = positions[g];
+                    out[ci].fonts[out[ci].count] = run_font;
+                    _ = ct.CFRetain(run_font);
                     out[ci].count += 1;
                 }
             }
@@ -705,7 +725,7 @@ pub const CoreTextFontContext = struct {
                 // (`MAX_CLUSTER_GLYPHS` 초과 · `.notdef` 섞임). 드문 경우이고 개별 경로가
                 // 정확히 처리하므로 그쪽에 맡긴다.
                 if (cnt == 0 or g_hi[ci] - g_lo[ci] + 1 != cnt) {
-                    ct.CFRelease(out[ci].font);
+                    releaseCluster(out[ci]);
                     filled[ci] = false;
                     count -= 1;
                     continue;
@@ -721,6 +741,7 @@ pub const CoreTextFontContext = struct {
                 }
                 for (0..cnt) |k| out[ci].positions[k].x -= min_x;
 
+                out[ci].font = out[ci].fonts[0];
                 out[ci].advance = @floatCast(ct.CTRunGetTypographicBounds(
                     run,
                     ct.CFRange{ .location = @intCast(g_lo[ci]), .length = @intCast(cnt) },
@@ -736,7 +757,7 @@ pub const CoreTextFontContext = struct {
         // 개별 경로로 다시 도는 비용이 그보다 싸다 (실패는 드물다).
         if (count != clusters.len) {
             for (0..clusters.len) |i| {
-                if (filled[i]) ct.CFRelease(out[i].font);
+                if (filled[i]) releaseCluster(out[i]);
             }
             return 0;
         }
@@ -837,62 +858,82 @@ pub const CoreTextFontContext = struct {
         const run_count = ct.CFArrayGetCount(runs);
         if (run_count == 0) return null;
 
-        // 첫 run 을 쓴다. cluster 하나를 넘겼으므로 CT 가 run 을 나눌 일이 거의 없다 —
-        // 실측으로도 `❤️` 가 든 조합까지 전부 run 1 개였다 (#401).
-        const run_ptr = ct.CFArrayGetValueAtIndex(runs, 0) orelse return null;
-        const run: ct.CTRunRef = @constCast(run_ptr);
-
-        const glyph_count = ct.CTRunGetGlyphCount(run);
-        if (glyph_count <= 0) return null;
-
         // #401 — **글리프를 전부 가져온다.** 예전에는 첫 개만 쓰고 버렸는데, Apple Color Emoji
         // 가 `👨‍❤️‍👨` 같은 `❤️` 조합을 글리프 2 개로 줘서 `👨` 만 그려졌다. 폰트가 1 개로
         // 합성해 주는 cluster (`👨‍👩‍👧` 등) 는 아래 경로가 그대로 `count == 1` 이 된다.
-        const take: usize = @min(@as(usize, @intCast(glyph_count)), MAX_CLUSTER_GLYPHS);
+        //
+        // #420 — **run 도 전부 돈다.** 예전에는 첫 run 만 썼는데, `가` + acute 처럼 CoreText 가
+        // base 와 mark 를 다른 폰트로 배정하면 run 이 2 개가 되어 **mark 가 통째로 사라졌다**
+        // (실측 — `Apple SD Gothic Neo` + `Monaco`). 위치는 run 을 가로질러 이어지므로
+        // (`CTRunGetPositions` 는 line 좌표계다) 그대로 모으면 된다.
         var glyphs: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined;
         var positions: [MAX_CLUSTER_GLYPHS]ct.CGPoint = undefined;
+        var fonts: [MAX_CLUSTER_GLYPHS]ct.CTFontRef = undefined;
+        var take: usize = 0;
+        var advance: f64 = 0;
 
-        if (ct.CTRunGetGlyphsPtr(run)) |ptr| {
-            @memcpy(glyphs[0..take], ptr[0..take]);
-        } else {
-            ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &glyphs);
-        }
-        // 위치는 GPOS 가 적용된 값이라 이대로 그려야 모양이 맞는다. Windows 가 `advances` ·
-        // `offsets` 를 함께 넘기는 것과 같은 이유다 (#139).
-        if (ct.CTRunGetPositionsPtr(run)) |ptr| {
-            @memcpy(positions[0..take], ptr[0..take]);
-        } else {
-            ct.CTRunGetPositions(run, ct.CFRange{ .location = 0, .length = @intCast(take) }, &positions);
+        var r: ct.CFIndex = 0;
+        while (r < run_count and take < MAX_CLUSTER_GLYPHS) : (r += 1) {
+            const run_ptr = ct.CFArrayGetValueAtIndex(runs, r) orelse continue;
+            const run: ct.CTRunRef = @constCast(run_ptr);
+            const glyph_count = ct.CTRunGetGlyphCount(run);
+            if (glyph_count <= 0) continue;
+
+            // run 의 실제 사용 폰트 — CT 가 fallback 으로 골라준 것 (Apple Color Emoji 등).
+            // GetAttributes 와 GetValue 는 non-owning reference 라 line 이 release 되면
+            // 무효. CFRetain 으로 caller 에게 ownership 넘김 → `releaseCluster` 가 놓는다.
+            const run_attrs = ct.CTRunGetAttributes(run);
+            const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
+            const run_font: ct.CTFontRef = @constCast(font_val);
+
+            const n: usize = @min(@as(usize, @intCast(glyph_count)), MAX_CLUSTER_GLYPHS - take);
+            var gbuf: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined;
+            var pbuf: [MAX_CLUSTER_GLYPHS]ct.CGPoint = undefined;
+            if (ct.CTRunGetGlyphsPtr(run)) |ptr| {
+                @memcpy(gbuf[0..n], ptr[0..n]);
+            } else {
+                ct.CTRunGetGlyphs(run, ct.CFRange{ .location = 0, .length = @intCast(n) }, &gbuf);
+            }
+            // 위치는 GPOS 가 적용된 값이라 이대로 그려야 모양이 맞는다. Windows 가 `advances` ·
+            // `offsets` 를 함께 넘기는 것과 같은 이유다 (#139).
+            if (ct.CTRunGetPositionsPtr(run)) |ptr| {
+                @memcpy(pbuf[0..n], ptr[0..n]);
+            } else {
+                ct.CTRunGetPositions(run, ct.CFRange{ .location = 0, .length = @intCast(n) }, &pbuf);
+            }
+
+            for (0..n) |i| {
+                glyphs[take] = gbuf[i];
+                positions[take] = pbuf[i];
+                fonts[take] = run_font;
+                _ = ct.CFRetain(run_font);
+                take += 1;
+            }
+            // cluster 폭은 run 들의 폭을 더한다. run 이 하나면 곧 그 cluster 의 폭이다.
+            advance += ct.CTRunGetTypographicBounds(
+                run,
+                ct.CFRange{ .location = 0, .length = @intCast(n) },
+                null,
+                null,
+                null,
+            );
         }
 
         // `.notdef` 는 실패로 본다 — caller 가 base codepoint 로 fallback 한다.
-        if (glyphs[0] == 0) return null;
-
-        // run 의 실제 사용 폰트 — CT 가 fallback 으로 골라준 것 (Apple Color Emoji 등).
-        // GetAttributes 와 GetValue 는 non-owning reference 라 line 이 release 되면
-        // 무효. CFRetain 으로 caller 에게 ownership 넘김 → resolveGlyph 의 시스템
-        // fallback path (`owned = true`) 와 같은 패턴 → renderer 가 atlas
-        // getOrInsert 후 CFRelease.
-        const run_attrs = ct.CTRunGetAttributes(run);
-        const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse return null;
-        const run_font: ct.CTFontRef = @constCast(font_val);
-        _ = ct.CFRetain(run_font);
+        if (take == 0 or glyphs[0] == 0) {
+            for (fonts[0..take]) |f| ct.CFRelease(f);
+            return null;
+        }
 
         return .{
-            .font = run_font,
+            .font = fonts[0],
             .index = glyphs[0],
             .owned = true,
             .glyphs = glyphs,
             .positions = positions,
+            .fonts = fonts,
             .count = @intCast(take),
-            // cluster 폭 — 이 CTLine 은 cluster 하나만 담으므로 run 전체가 곧 그 cluster 다.
-            .advance = @floatCast(ct.CTRunGetTypographicBounds(
-                run,
-                ct.CFRange{ .location = 0, .length = @intCast(take) },
-                null,
-                null,
-                null,
-            )),
+            .advance = @floatCast(advance),
         };
     }
 
@@ -1068,7 +1109,7 @@ pub const CoreTextFontContext = struct {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
-                    return .{ .font = f, .index = glyphs[0], .owned = false };
+                    return .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS };
                 }
             }
         }
@@ -1084,7 +1125,7 @@ pub const CoreTextFontContext = struct {
         var fb_glyphs: [2]ct.CGGlyph = .{ 0, 0 };
         if (ct.CTFontGetGlyphsForCharacters(fallback_font.?, &utf16_buf, &fb_glyphs, @intCast(utf16_len))) {
             if (fb_glyphs[0] != 0) {
-                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true };
+                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = .{fallback_font.?} ** MAX_CLUSTER_GLYPHS };
             }
         }
 
