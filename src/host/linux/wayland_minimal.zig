@@ -569,7 +569,7 @@ pub const DialogOverlay = struct {
     status_buf: [256]u8 = undefined,
     status_len: usize = 0,
     prompt_available: bool = false,
-    wrap_cells: usize = 1,
+    wrap_width: i32 = 1,
     message_rows: usize = 1,
     visible_message_rows: usize = 1,
     message_scroll_row: usize = 0,
@@ -6740,7 +6740,7 @@ const Client = struct {
 
     fn applyCurrentDialogLayout(self: *Client) dialog_layout.Layout {
         const layout = self.computeCurrentDialogLayout();
-        self.dialog.wrap_cells = layout.wrap_cells;
+        self.dialog.wrap_width = layout.wrap_width;
         self.dialog.message_rows = layout.message_rows;
         self.dialog.visible_message_rows = layout.visible_message_rows;
         self.dialog.message_scroll_max = layout.message_scroll_max;
@@ -6758,7 +6758,7 @@ const Client = struct {
             surface.w,
             surface.h,
         );
-        self.dialog.wrap_cells = layout.wrap_cells;
+        self.dialog.wrap_width = layout.wrap_width;
         self.dialog.message_rows = layout.message_rows;
         self.dialog.visible_message_rows = layout.visible_message_rows;
         self.dialog.message_scroll_max = layout.message_scroll_max;
@@ -6806,11 +6806,11 @@ const Client = struct {
         }
 
         try self.sendNoArgs(self.dialog.surface_id, 6);
-        log.appendLine("dialog", "relayout source={s} logical={}x{} wrap_cells={} icon={} fits={}", .{
+        log.appendLine("dialog", "relayout source={s} logical={}x{} wrap_px={} icon={} fits={}", .{
             source,
             logical_w,
             logical_h,
-            layout.wrap_cells,
+            layout.wrap_width,
             layout.show_icon,
             layout.fits,
         });
@@ -7564,7 +7564,7 @@ const Client = struct {
             if (self.dialog.kind == .prompt) self.dialog.input() else null,
             if (self.dialog.kind == .prompt) self.dialog.status() else null,
             self.dialog.prompt_available,
-            self.dialog.wrap_cells,
+            self.dialog.wrap_width,
             self.dialog.message_rows,
             self.dialog.visible_message_rows,
             self.dialog.message_scroll_row,
@@ -7747,12 +7747,12 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.surface_id, 6);
         }
         self.dialog.configured = true;
-        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_cells={} rows={}/{} scroll_max={} icon={} fits={}", .{
+        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_px={} rows={}/{} scroll_max={} icon={} fits={}", .{
             w_logical,
             h_logical,
             physical.w,
             physical.h,
-            self.dialog.wrap_cells,
+            self.dialog.wrap_width,
             self.dialog.visible_message_rows,
             self.dialog.message_rows,
             self.dialog.message_scroll_max,

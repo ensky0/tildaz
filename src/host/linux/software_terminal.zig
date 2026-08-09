@@ -63,14 +63,19 @@ const dialog_disabled_button_text_color: ghostty.color.RGB = .{ .r = 0x78, .g = 
 /// 배경 + 검정 글자). OK 와 시각 구분.
 const dialog_cancel_color: ghostty.color.RGB = .{ .r = 0xD8, .g = 0xD8, .b = 0xD8 };
 const dialog_cancel_text_color: ghostty.color.RGB = .{ .r = 0x1A, .g = 0x1A, .b = 0x1A };
-/// 두 버튼 사이 간격 (PT). pad 와 무관한 작은 gap.
-const dialog_button_gap_pt: u32 = 12;
+/// 두 버튼 사이 간격 — **본문 폰트 크기에 비례**한다 (#407). 절대 pt 를 박으면
+/// 폰트가 커져도 간격이 그대로라 버튼이 붙어 보인다. 1.6 배 — 1.0 배도 좁다는
+/// 사용자 지적으로 넓혔다.
+const dialog_button_gap_pt: u32 = ui_metrics.DIALOG_BODY_FONT_PT * 8 / 5;
 
 /// #203 Phase C step 3.3 — dialog 상단 아이콘 크기 (PT, 논리 점). `docs/favicon.svg`
 /// 의 viewBox=64×64 를 그대로 줄여 그림. tildaz 의 monitor + `>_` 표지. 사용자
 /// 시연 발견 — 이전 48 physical 고정 + 1.7x 환경에서 *논리 28* 로 너무 작음.
 const dialog_icon_size_pt: u32 = ui_metrics.DIALOG_ICON_SIZE_PT;
-const dialog_padding_pt: u32 = 8;
+/// dialog 안쪽 여백 — **본문 폰트 크기에 비례**한다 (#407). 예전 8 pt 는 폰트의
+/// 0.53 배라 내용이 창 가장자리에 붙어 답답했다 (Windows 는 같은 자리가 1.6 배였다).
+/// 1.2 배로 둔다 — 더 키우면 640x480 최소 화면에서 본문 행을 잡아먹는다.
+const dialog_padding_pt: u32 = ui_metrics.DIALOG_BODY_FONT_PT * 6 / 5;
 const dialog_icon_gap_pt: u32 = ui_metrics.DIALOG_ICON_GAP_PT;
 const dialog_viewport_margin_pt: u32 = 16;
 
@@ -497,11 +502,14 @@ pub const Renderer = struct {
     /// 아예 못 뜨지만, 이 시점의 실패는 dialog 하나의 문제여야 한다.
     pub fn ensureDialogFonts(self: *Renderer, allocator: std.mem.Allocator) void {
         if (self.dialog_font_ctx != null and self.dialog_title_font_ctx != null) return;
-        // `monospace` 는 generic family 라 fontconfig 가 시스템 기본 고정폭으로 해석하는 것이
-        // **의도된 동작**이다 (`isGenericFamily`). 사용자 chain 을 못 믿는 상황에서 쓸 수 있는
-        // 유일한 이름이다.
-        const system_chain = [_][]const u8{"monospace"};
-        const chain: []const []const u8 = if (self.dialog_use_system_font) &system_chain else self.font_chain;
+        // **dialog 는 언제나 시스템 UI 폰트 (비례폭) 로 그린다** (#407). `sans-serif` 는
+        // `monospace` 와 같은 generic family 라 fontconfig 가 시스템 기본으로 해석하는 것이
+        // **의도된 동작**이고 (`isGenericFamily`), 사용자 chain 을 못 믿는 상황에서도 쓸 수
+        // 있다 (#406). 터미널 본문과 달리 dialog 는 고정폭일 이유가 없고, macOS · Windows 가
+        // OS 위젯을 쓰므로 이미 비례폭이라 **Linux 만 인상이 튀던 것**을 맞춘다.
+        const system_chain = [_][]const u8{"sans-serif"};
+        const chain: []const []const u8 = &system_chain;
+        _ = self.dialog_use_system_font;
         if (self.dialog_font_ctx == null) {
             const spec = ui_metrics.dialogBodyFontSpec();
             self.dialog_font_ctx = font.Context.init(
@@ -1744,7 +1752,7 @@ pub const Renderer = struct {
         prompt_input: ?[]const u8,
         prompt_status: ?[]const u8,
         prompt_available: bool,
-        wrap_cells: usize,
+        wrap_width: i32,
         message_rows: usize,
         visible_message_rows: usize,
         message_scroll_row: usize,
@@ -1810,7 +1818,11 @@ pub const Renderer = struct {
         const message_y = text_y;
         var row: usize = 0;
         var drawn_rows: usize = 0;
-        var wl = dialog_layout.WrappedLines{ .msg = message, .max_cells = wrap_cells };
+        var wl = dialog_layout.WrappedLines{
+            .msg = message,
+            .max_width = wrap_width,
+            .measure = self.dialogBodyMeasure(),
+        };
         while (wl.next()) |line| {
             if (row >= message_scroll_row and drawn_rows < visible_message_rows) {
                 self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, line, fg);
@@ -1883,8 +1895,11 @@ pub const Renderer = struct {
         const ok_fg = if (create_enabled) dialog_button_text_color else dialog_disabled_button_text_color;
         fillRoundedRect(memory, buffer_w, buffer_h, stride, ok_x, button_y, button_w, button_h, button_r, ok_bg);
         const ok_text = if (prompt_input != null) messages.button_create else messages.button_ok;
-        const ok_text_cells = display_width.stringWidth(ok_text);
-        const ok_text_w: i32 = @intCast(ok_text_cells * @as(usize, @intCast(cw)));
+        // **라벨 폭도 실제 advance 로 잰다** (#407). 예전에는 `cell_width × 글자수`
+        // 였는데 비례폭에서는 그 값이 실제보다 넓어서 **라벨이 버튼 안에서 왼쪽으로
+        // 밀렸다** (긴 라벨일수록 심해서 `Cancel` 이 `OK` 보다 눈에 띄었다).
+        const button_measure = self.dialogBodyMeasure();
+        const ok_text_w: i32 = button_measure.width(ok_text);
         const ok_text_x: i32 = ok_x + @divTrunc(button_w - ok_text_w, 2);
         const button_text_y: i32 = button_y + @divTrunc(button_h - ch, 2) + ascent;
         self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, ok_text_x, button_text_y, ok_text, ok_fg);
@@ -1895,8 +1910,7 @@ pub const Renderer = struct {
             self.last_dialog_cancel_rect = .{ .x = cancel_x, .y = button_y, .w = button_w, .h = button_h };
             fillRoundedRect(memory, buffer_w, buffer_h, stride, cancel_x, button_y, button_w, button_h, button_r, dialog_cancel_color);
             const cancel_text = messages.button_cancel;
-            const cancel_text_cells = display_width.stringWidth(cancel_text);
-            const cancel_text_w: i32 = @intCast(cancel_text_cells * @as(usize, @intCast(cw)));
+            const cancel_text_w: i32 = button_measure.width(cancel_text);
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
             self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color);
         } else {
@@ -1931,10 +1945,15 @@ pub const Renderer = struct {
         viewport_w: i32,
         viewport_h: i32,
     ) dialog_layout.Layout {
-        return dialog_layout.compute(title, message, kind, self.dialogLayoutMetrics(), .{
-            .w = viewport_w,
-            .h = viewport_h,
-        });
+        return dialog_layout.compute(
+            title,
+            message,
+            kind,
+            self.dialogLayoutMetrics(),
+            self.dialogBodyMeasure(),
+            self.dialogTitleMeasure(),
+            .{ .w = viewport_w, .h = viewport_h },
+        );
     }
 
     pub fn computeDialogLayoutForSurface(
@@ -1945,17 +1964,37 @@ pub const Renderer = struct {
         surface_w: i32,
         surface_h: i32,
     ) dialog_layout.Layout {
-        return dialog_layout.computeForSurface(title, message, kind, self.dialogLayoutMetrics(), .{
-            .w = surface_w,
-            .h = surface_h,
-        });
+        return dialog_layout.computeForSurface(
+            title,
+            message,
+            kind,
+            self.dialogLayoutMetrics(),
+            self.dialogBodyMeasure(),
+            self.dialogTitleMeasure(),
+            .{ .w = surface_w, .h = surface_h },
+        );
+    }
+
+    /// dialog 글자 폭 측정 (#407). `glyph` 는 glyph 캐시를 채우므로 mutable 를
+    /// 요구하지만 그것은 순수 memoization 이라 **측정에서 const 를 벗겨도 관측 가능한
+    /// 차이가 없다** — 같은 글리프를 어차피 그릴 때 채운다. 레이아웃 경로가
+    /// `*const Renderer` 인 것을 유지하려고 여기서만 벗긴다.
+    fn dialogFontAdvance(ctx: *const anyopaque, cp: u21) i32 {
+        const font_ctx: *font.Context = @constCast(@ptrCast(@alignCast(ctx)));
+        return @intCast(font_ctx.glyph(cp, .regular).advance);
+    }
+
+    fn dialogBodyMeasure(self: *const Renderer) dialog_layout.Measure {
+        return .{ .ctx = self.dialogFontConst(), .advanceFn = dialogFontAdvance };
+    }
+
+    fn dialogTitleMeasure(self: *const Renderer) dialog_layout.Measure {
+        return .{ .ctx = self.dialogTitleFontConst(), .advanceFn = dialogFontAdvance };
     }
 
     fn dialogLayoutMetrics(self: *const Renderer) dialog_layout.Metrics {
         return .{
-            .body_cell_w = @intCast(self.dialogFontConst().cell_width_px),
             .body_cell_h = @intCast(self.dialogFontConst().cell_height_px),
-            .title_cell_w = @intCast(self.dialogTitleFontConst().cell_width_px),
             .title_cell_h = @intCast(self.dialogTitleFontConst().cell_height_px),
             .padding = scaledPt(dialog_padding_pt, self.scale),
             .shadow_margin = scaledPt(dialog_shadow_margin_pt, self.scale),
@@ -1989,15 +2028,17 @@ pub const Renderer = struct {
         fg: ghostty.color.RGB,
     ) void {
         _ = self;
-        const cw: i32 = @intCast(font_ctx.cell_width_px);
         const ch_metric: i32 = @intCast(font_ctx.cell_height_px);
         var x: i32 = start_x;
         var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
         while (iter.nextCodepoint()) |cp| {
             if (x >= fb_w) break;
-            const cells = display_width.codepointWidth(@intCast(cp));
-            const adv: i32 = cw * @as(i32, @intCast(cells));
             const gl = font_ctx.glyph(cp, .regular);
+            // **글리프의 실제 advance 로 pen 을 민다** (#407). 예전에는
+            // `cell_width × display_width` 였는데, 그러면 비례폭 폰트를 줘도 글자가
+            // 균등 간격으로 놓여 문장이 성기게 보였다. 레이아웃도 같은 advance 로
+            // 재므로 (`dialog_layout.Measure`) 측정과 그림이 일치한다.
+            const adv: i32 = @intCast(gl.advance);
             if (gl.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) {
                 drawGlyphBgra(memory, fb_w, fb_h, stride, x, baseline_y - ch_metric, adv, ch_metric, gl, 0, fb_w);
             } else {
@@ -2975,7 +3016,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         null,
         null,
         false,
-        layout.wrap_cells,
+        layout.wrap_width,
         layout.message_rows,
         layout.visible_message_rows,
         0,
@@ -3015,7 +3056,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         null,
         null,
         false,
-        layout.wrap_cells,
+        layout.wrap_width,
         layout.message_rows,
         layout.visible_message_rows,
         0,
@@ -3080,7 +3121,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         null,
         null,
         false,
-        layout.wrap_cells,
+        layout.wrap_width,
         layout.message_rows,
         layout.visible_message_rows,
         0,
@@ -3101,7 +3142,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         null,
         null,
         false,
-        layout.wrap_cells,
+        layout.wrap_width,
         layout.message_rows,
         layout.visible_message_rows,
         layout.message_scroll_max,
