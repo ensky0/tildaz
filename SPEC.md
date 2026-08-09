@@ -683,7 +683,18 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 >
 > **명시 font chain 길이 제한** (#185): `font.family` 1개 + `font.glyph_fallback` 최대 7개 = 총 8개가 hard limit 이다. 코드 source of truth 는 `src/font/constants.zig` 의 `MAX_CHAIN = 8` 이며, config parser / Windows DirectWrite backend / macOS CoreText backend 는 이 상수를 공유한다. 이 값은 "primary + common fallback 한글 / 이모지 / 심볼 + 사용자 추가 여유" 를 주면서 font face lifetime / atlas key 안정성을 단순하게 유지하기 위한 고정 상한이다. 상한을 바꾸면 SPEC / CONFIG.md / README 의 chain limit 설명도 같이 갱신한다.
 >
-> 모든 명시 폰트 (primary + fallback) 가 system 에 register 되어 있어야 함 — 하나라도 없으면 fatal dialog (`font_validate` 의 공통 메시지, chain dump + 미설치 표시 + config 경로). macOS substitute font 회피 위해 `CTFontCopyFamilyName` 으로 *실제 family name* 검증, Windows 는 `DWriteFontCtx.isFontAvailable` 로 검증한다. Linux 는 boot 시 fontconfig가 반환한 `FC_FAMILY`의 모든 family/alias 항목을 순회한다. explicit family는 한 항목과 대소문자 무시 exact match일 때만 설치로 인정하고, `monospace` / `sans-serif` / `serif` generic family만 substitution을 허용한다 (`font_linux.familyInstalled`, 검증 시점·overlay 는 §7 startup shell 검증과 동일 C2 패턴; [#289](https://github.com/ensky0/tildaz/issues/289) B6, [#305](https://github.com/ensky0/tildaz/issues/305)). libfontconfig 자체를 못 여는 환경은 판정 불가로 두고 loader 의 에러 경로에 맡긴다 (미설치 오판 방지).
+> 모든 명시 폰트 (primary + fallback) 가 system 에 register 되어 있어야 함 — 하나라도 없으면 fatal dialog (`font_validate` 의 공통 메시지, chain dump + 미설치 표시 + config 경로). macOS substitute font 회피 위해 `CTFontCopyFamilyName` 으로 *실제 family name* 검증, Windows 는 `DWriteFontCtx.isFontAvailable` 로 검증한다. Linux 는 boot 시 `font_linux.familyInstalledDetail` 로 검증한다 (검증 시점·overlay 는 §7 startup shell 검증과 동일 C2 패턴; [#289](https://github.com/ensky0/tildaz/issues/289) B6, [#305](https://github.com/ensky0/tildaz/issues/305)). **검증과 실제 로드가 같은 해석 함수를 쓴다** (Linux `resolveRequested` · Windows `resolveFamily`) — 둘이 각자 판정하면 검증을 통과하고도 다른 폰트가 조용히 그려질 수 있다 ([#409](https://github.com/ensky0/tildaz/issues/409)). Windows 는 cell 측정 (`measureCell`) 도 같은 함수를 쓴다 — 거기만 따로 판정하면 chain 은 열리는데 측정만 실패해 GDI fallback (이름을 못 찾으면 **조용히 대체하는** 경로) 으로 떨어진다.
+>
+> 이름 하나를 face 하나로 해석하는 **순서는 세 platform 이 같다.** 이름 비교는 모두 정규화 (소문자 + 공백 · `-` · `_` 제거) 후 exact match 다.
+>
+> 1. 적은 이름 그대로 **family** 조회 — Linux 는 `FC_FAMILY` 매치 (반환된 primary family 와 alias 항목 중 하나와 맞으면 설치로 인정), Windows 는 `IDWriteFontCollection.FindFamilyName` (컬렉션 exact match, 대소문자 무시). `monospace` / `sans-serif` / `serif` generic family 는 substitution 이 의도이므로 Linux 에서 항상 통과.
+> 2. 설치된 family 목록에 정규화가 같은 이름이 있으면 **그 정식 표기로 다시 조회**한다. Linux 는 `FcFontList` (프로세스당 1 회) — fontconfig 의 family 매칭은 `-` 를 유효 문자로 보므로 `NotoSerifKannada-Light` 같은 표기는 1 에서 엉뚱한 폰트로 간다. Windows 는 `IDWriteFontCollection` 열거 + `GetFamilyNames` 로, **로케일별 이름까지 전부** 본다 (`Malgun Gothic` 은 `맑은 고딕` 도 갖고 둘 다 `FindFamilyName` 으로 왕복한다 — 그래서 `맑은고딕` 도 여기서 잡힌다). 이 단계가 곧 붙여쓰기 (`CascadiaCode`) 를 받는 경로이고, PostScript 조회로는 대신할 수 없다 (실측: `GetMatchingFonts(WIN32_FAMILY_NAME, "CascadiaCode")` 도 0 개). Linux 에서 정식 표기가 원문과 같은데도 다른 폰트가 왔으면 시스템 별칭 규칙이 가로챈 것이다 (`Noto Color Emoji` → `Twemoji`) — **시작을 막지 않고** 그 폰트로 띄우며 로그를 남긴다 ([#406](https://github.com/ensky0/tildaz/issues/406)). **Windows 에는 이 별칭 상태가 없다** — `FindFamilyName` 이 시스템 컬렉션 exact match 라 대체가 개입할 여지가 없고, 그래서 `font_validate` 의 `substitute` 가 Windows 에서 `null` 이다.
+> 3. family 가 아니면 **PostScript 이름**으로 조회한다. Linux 는 `FC_POSTSCRIPT_NAME` (`NotoSansCJKkr-Regular`), Windows 는 `IDWriteFontSet.GetMatchingFonts` 의 `DWRITE_FONT_PROPERTY_ID_POSTSCRIPT_NAME` (`CascadiaCodeRoman-Bold`). PostScript 이름은 family 가 아니라 **face** 를 가리키므로 bold PostScript 이름은 bold face 로 로드된다 — macOS `CTFontCreateWithName` 과 같은 의미다. **자기검증 필요 여부가 갈린다**: `FcFontMatch` 는 없는 이름에도 최선 폰트를 돌려주므로 Linux 는 반환된 `postscriptname` 을 되짚어 검증하지만, Windows 는 없는 이름에 빈 set 이 와서 (실측) 그 층이 없다. Windows 의 이 경로는 `IDWriteFactory3` 를 요구하고, 못 얻으면 1 · 2 만으로 판정한다 (컬렉션 열거는 DirectWrite 1.0 이라 붙여쓰기는 그래도 받는다).
+> 4. 셋 다 아니면 미설치 — fatal.
+>
+> **PostScript 를 마지막에 두는 순서가 중요하다.** 먼저 보면 family 이면서 동시에 그 폰트의 PostScript 이름이기도 한 경우 (`Noto Color Emoji`) 에 시스템 별칭 규칙을 덮어 버린다 — 별칭은 시스템 관리자·사용자가 명시한 의도라 우리가 뒤집지 않는다 (#406). Windows 에는 별칭이 없어 그 사고가 안 나지만 **순서는 세 platform 이 같게** 둔다.
+>
+> Linux 는 해석 결과의 `path` 와 함께 **face `index` 도 `FT_New_Face` 로 넘긴다** — `.ttc` / `.otc` 는 한 파일에 face 가 여러 벌이라 index 를 빼면 요청과 다른 face 가 열린다 (`Noto Sans CJK KR` 은 `NotoSansCJK-Regular.ttc` 의 index 1 이고 index 0 은 JP 다; [#428](https://github.com/ensky0/tildaz/issues/428)). 같은 이유로 face 동일성 판정 (chain dedup · styled 변종의 "regular 와 같은 파일" 검사) 도 (path, index) 쌍으로 한다. libfontconfig 자체를 못 여는 환경은 판정 불가로 두고 loader 의 에러 경로에 맡긴다 (미설치 오판 방지). **#428 은 Linux 전용이다** — macOS `CTFontCreateWithName` 과 Windows `FindFamilyName` → `CreateFontFace` 는 face 를 직접 받아, 파일 경로 + index 로 face 를 여는 곳이 Linux 의 FreeType 경로뿐이다.
 >
 > schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은 별도 fatal — `font_validate.showFamilyMustBeStringFatal` / `showGlyphFallbackMustBeListFatal`.
 
@@ -1166,7 +1177,13 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 |---|---|---|
 | macOS | `CTFontCreateCopyWithSymbolicTraits` | 함수가 **null 을 준다** → 그 결과가 곧 "이 family 에 bold 가 있나" 의 답. regular 를 `CFRetain` 해 소유권을 통일 |
 | Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 **가장 근접한 face** 를 준다 (실패하지 않는다) → 자연히 regular |
-| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 같은 파일이면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 |
+| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 (파일, index) 가 같으면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 ([#428](https://github.com/ensky0/tildaz/issues/428) — `.ttc` 는 한 파일에 face 가 여러 벌이라 path 만 보면 다른 face 를 같은 것으로 오인한다) |
+
+**Linux · Windows 는 변종 조회에 *해석된 정식 family* 를 쓴다** — 사용자가 적은 원문이 아니다 ([#409](https://github.com/ensky0/tildaz/issues/409)). `font.family` 에 PostScript 이름이나 다른 표기를 적었을 때 원문으로 조회하면 **엉뚱한 폰트의 변종**이 온다: Linux 실측에서 `DejaVuSansMono-Bold` 의 bold 조회가 `NotoSansCJK-Bold.ttc` 로 갔고, `NotoSerifKannada-Light` 는 `NotoSerifCJK-Bold.ttc` 로 갔다. 그래서 Linux 는 `Face.family` 에 §7 의 이름 해석 결과 (정식 family) 를 담고 변종 조회는 그 이름으로 한다.
+
+**Windows 는 그 family 를 face 에서 되찾는다.** PostScript 이름으로 잡은 face 에는 `IDWriteFontFamily` 가 딸려 오지 않아서, `IDWriteFontCollection.GetFontFromFontFace` → `IDWriteFont.GetFontFamily` 로 얻은 family 로 `GetFirstMatchingFont` 을 부른다. 실측에서 `CascadiaCodeRoman-Bold` 를 적으면 regular 자리에 Bold face 가 오면서도 변종은 `Cascadia Code` 안에서 맞게 나온다 (bold `CascadiaCodeRoman-Bold` · italic `Cascadia-Code-Italic`). face 가 시스템 컬렉션에 없어 family 를 못 얻으면 변종을 만들지 않고 regular 로 떨어뜨린다 — 위 표의 "없는 family 처리" 와 같은 결과다.
+
+Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴다. 그 인자는 *family 이름* 을 받는 자리라, 원문이 `CascadiaCode` 나 `CascadiaCodeRoman` 이면 DirectWrite 가 알아보지 못해 system fallback 선택이 어긋난다.
 
 **Linux 는 변종 chain 을 lazy 로 만든다.** chain 이 최대 8 이라 즉시 로드하면 face 가 32 개가 되고, dialog 폰트를 lazy 로 돌린 것과 같은 이유로 시작이 느려진다 ([#368](https://github.com/ensky0/tildaz/issues/368) — 시작 시간의 절반). 실패해도 "시도했음" 을 기록해 매 프레임 fontconfig 왕복을 막는다.
 
