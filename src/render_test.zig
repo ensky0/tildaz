@@ -71,7 +71,8 @@ fn row(o: *Out, label: []const u8, list: []const u21) void {
     o.raw("\n");
 }
 
-/// base 하나에 mark 여러 개를 각각 붙여 한 줄로. 각 칸 뒤에 `|` 가 붙는다.
+/// base 하나에 mark 를 하나씩 붙여 한 줄로 늘어놓는다. 각 칸 뒤의 `|` 가 **셀 경계 표시**다 —
+/// mark 가 셀을 넘으면 그 `|` 가 밀리거나 뭉개져서 눈에 띈다.
 fn sweep(o: *Out, base: u21, marks: []const u21) void {
     o.raw("   ");
     for (marks) |m| {
@@ -111,7 +112,7 @@ const ZWJ_COUPLE = [_]u21{ 0x1F468, 0x200D, 0x2764, 0xFE0F, 0x200D, 0x1F468 };
 const ZWJ_FAMILY = [_]u21{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467 };
 const DEVA_KSHI = [_]u21{ 0x0915, 0x094D, 0x0937, 0x093F };
 
-/// 결합 기호 sweep 에 쓰는 mark 들 — 위 · 아래 · 관통이 섞여 있다.
+/// 위 mark 와 아래 mark. (C) 절이 base 하나에 이것들을 차례로 붙여 셀 경계를 확인한다.
 const MARKS_ABOVE = [_]u21{ 0x0300, 0x0302, 0x0308, 0x0303, 0x0304, 0x0306, 0x0307, 0x030A, 0x030C, 0x0301, 0x030B, 0x0311 };
 const MARKS_BELOW = [_]u21{ 0x0323, 0x0327, 0x0328, 0x0331, 0x032E, 0x0330, 0x0324, 0x0325, 0x032D, 0x0326 };
 
@@ -168,7 +169,7 @@ fn sectionB(o: *Out) void {
 }
 
 fn sectionC(o: *Out) void {
-    o.raw("(C) 결합 기호 sweep — 각 칸 뒤에 | 가 붙어 있다. | 가 밀리면 셀 밖\n");
+    o.raw("(C) 같은 글자에 mark 를 차례로 — 칸 뒤 | 가 일정 간격이면 정상 (밀리면 셀 밖)\n");
     sweep(o, 'a', &MARKS_ABOVE);
     sweep(o, 'x', &MARKS_ABOVE);
     sweep(o, 'o', &MARKS_BELOW);
