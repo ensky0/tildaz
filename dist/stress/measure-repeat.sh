@@ -36,6 +36,10 @@ PHASE=run
 MB=64
 WORKLOADS="plain,cjk,emoji_vs16,zwj"
 REPEAT=5
+# 앱에 넘길 scrollback 줄 수. 기본 32,767 은 `compare-terminals.sh` 와 같은 값이라
+# 두 도구의 회차를 나란히 둘 수 있다 (다른 터미널의 상한에 맞춘 값이다). 처리량이
+# 이 값에 어떻게 반응하는지 보려면 바꾼다 (#425).
+SCROLLBACK=32767
 # #397 의 드레인 고침 이후 HOLD 는 필요 없다. 주면 출력이 끝난 뒤 idle 프레임이 섞여
 # `render` 가 낮게 나오고, 무엇보다 **#397 이 잡은 결함 자체를 가린다** — 유휴 시간이
 # 드레인할 기회를 줘서 고치기 전 커밋도 손실이 16 byte 로 보인다 (Windows 실측).
@@ -54,6 +58,7 @@ usage() {
   --mb <N>             회차당 쏟아부을 MiB (기본 64 — 기록용은 반드시 64, README 참고)
   --workloads <a,b>    쉼표로 구분 (기본 plain,cjk,emoji_vs16,zwj)
   --repeat <N>         반복 횟수 (기본 5 — 절사평균이 성립하는 최소값)
+  --scrollback <N>     앱에 넘길 scrollback 줄 수 (기본 32767 — compare-terminals.sh 와 같은 값)
   --hold-ms <N>        TILDAZ_STRESS_HOLD_MS (기본 0 — 위 주석 참고)
   --lead-in <초>       측정 시작 전 가라앉히는 시간 (기본 8)
   --out <디렉터리>     결과 위치 (기본 dist/stress/shots)
@@ -67,6 +72,7 @@ while [ $# -gt 0 ]; do
         --mb) MB="$2"; shift 2 ;;
         --workloads) WORKLOADS="$2"; shift 2 ;;
         --repeat) REPEAT="$2"; shift 2 ;;
+        --scrollback) SCROLLBACK="$2"; shift 2 ;;
         --hold-ms) HOLD_MS="$2"; shift 2 ;;
         --lead-in) LEAD_IN="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
@@ -183,7 +189,7 @@ while [ "$i" -le "$REPEAT" ]; do
         export TILDAZ_STRESS_WORKLOAD
         # 실패해도 남은 회차는 계속 돈다 — 한 회차가 죽었다고 나머지를 버리지 않는다.
         # 그 회차는 로그에 스냅숏을 안 남기므로 표의 회차 수로 드러난다.
-        $RUN_TIMEOUT "$EXE" -e "$(native_path "$STRESS")" -size 120x40 -scrollback 32767 \
+        $RUN_TIMEOUT "$EXE" -e "$(native_path "$STRESS")" -size 120x40 -scrollback "$SCROLLBACK" \
             >/dev/null 2>&1 || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
         sleep 1.5
     done
