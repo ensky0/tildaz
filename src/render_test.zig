@@ -1,9 +1,14 @@
 //! 결합 기호 · cluster 렌더 검증 화면 — **Linux · macOS · Windows 공용**.
 //!
 //! ```
-//! zig build render-test          # zig-out/bin/render-test 생성
-//! tildaz -e <그 경로> -size 84x44 # 세 platform 모두 같은 명령
+//! zig build render-test               # zig-out/bin/render-test 생성
+//! tildaz -e <그 경로> -size 88x33      # 세 platform 모두 같은 명령
 //! ```
+//!
+//! **창 높이를 화면에 맞춘다.** 화면은 62 줄인데 그만큼 창을 키우면 노트북에서 **아래가
+//! 화면 밖으로 나간다** (실기에서 걸렸다). 33 줄로 띄우고 **스크롤로 본다** — 절이 위아래로
+//! 이어져 있어서 스크롤이 판정을 방해하지 않는다. 폭 88 은 가장 긴 줄에 맞춘 값이라 줄이면
+//! 줄바꿈이 생겨 `|` 정렬 판정이 깨진다.
 //!
 //! **왜 셸 스크립트가 아니라 프로그램인가.** 같은 화면을 세 platform 에서 그대로 띄우려면
 //! 셸이 달라도 같은 바이트가 나와야 하는데, `printf` 는 구현마다 escape 해석이 다르고
@@ -310,7 +315,7 @@ fn sectionG(o: *Out) void {
 }
 
 fn sectionH(o: *Out) void {
-    o.raw("(H) overline 높이 — b d f 위만 높으면 정상 (위로 긴 글자를 피해 올라간다)\n   [");
+    o.raw("(H) overline 높이 — 여섯 개가 다 같은 높이여야 정상 (계단이면 실패)\n   [");
     for ("abcdef") |c| o.cps(&.{ @intCast(c), 0x0305 });
     o.raw("]\n   [");
     for ("abcdef", 0..) |c, i| {

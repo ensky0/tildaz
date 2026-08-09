@@ -389,7 +389,24 @@ rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 c
 - `perf` / `log` 초기화 없이 쓰려면 `shapeRunOnFace` 만 부르고 chain 판정은 드라이버에서 직접
   계산해요 (= 어느 face 든 notdef 없음).
 
-## ② 화면으로 볼 때 — 출력 전용 스크립트 + `-e`
+## ② 화면으로 볼 때 — `render-test` + `-e`
+
+**세 platform 공용 검증 화면이 있어요** ([`src/render_test.zig`](src/render_test.zig), #422).
+결합 기호 · cluster 관련 이슈 (#401 · #415~421) 를 (A)~(L) 열두 절로 한 번에 봐요.
+
+```sh
+zig build render-test
+tildaz --instance 1 -e <zig-out/bin/render-test> -size 88x33 &
+```
+
+⚠️ **`-size` 는 반드시 `88x33` 이에요.** 화면이 62 줄이라 그만큼 창을 키우면 **노트북 화면
+아래로 잘려서 안 보여요** (실기에서 여러 번 걸렸어요 — 68 줄로 띄웠다가 사용자가 못 봤어요).
+33 줄로 띄우고 **스크롤로** 봐요. 절이 위아래로 이어져 있어서 스크롤이 판정을 방해하지 않아요.
+**폭 88 도 줄이면 안 돼요** — 가장 긴 줄 기준이라 줄이면 줄바꿈이 생겨 `|` 정렬 판정이 깨져요.
+
+캡처로 판정할 때만 잠깐 크게 띄우되, **사용자에게 보여 줄 때는 다시 `88x33` 으로** 띄워요.
+
+직접 만든 화면이 필요하면 같은 방식으로 스크립트를 넘겨요.
 
 ```sh
 ./zig-out/bin/tildaz --instance 1 -e /path/show.sh -size 70x16 &
