@@ -214,6 +214,40 @@
       </div>
     </section>
 
+    <section id="performance" class="section perf">
+      <div class="section-heading">
+        <p class="eyebrow">Measured</p>
+        <h2>Numbers, not adjectives.</h2>
+      </div>
+      <p class="perf-lede">How much output TildaZ swallows per second when 64 MiB is poured into a 120x40 grid — parsed and drawn, end to end, in MiB/s. Higher is faster.</p>
+      <div class="table-wrap">
+        <table class="perf-table">
+          <thead>
+            <tr>
+              <th scope="col">Workload</th>
+              <th scope="col">Linux <span>Intel Core i5-1240P · KDE Plasma</span></th>
+              <th scope="col">macOS <span>Apple M5 Pro · MacBook Pro</span></th>
+              <th scope="col">Windows <span>Intel Core i5-1240P · Windows 11</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Plain ASCII</th><td>120.2</td><td>131.6</td><td>196.8</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td>22.9</td><td>142.7</td><td>37.3</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td>36.6</td><td>128.3</td><td>86.7</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td>16.3</td><td>115.6</td><td>46.5</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td>8.9</td><td>36.8</td><td>15.6</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td>11.6</td><td>46.9</td><td>20.8</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="perf-notes">
+        <li><strong>Read each column on its own.</strong> Linux and Windows are the same dual-boot laptop, so those two columns differ only in host implementation. macOS is a different machine, so reading straight across a row mixes in a CPU difference.</li>
+        <li>v0.8.0, built ReleaseFast with SIMD. Each run pours 64 MiB into a 120x40 grid with a 32,767-line scrollback on AC power, and every figure is the trimmed mean of five runs.</li>
+        <li>The ANSI row on Linux and Windows is a regression we are tracking in <a href="https://github.com/ensky0/tildaz/issues/435" target="_blank" rel="noopener">issue #435</a>; macOS is unaffected. We will measure again once it is fixed.</li>
+        <li>Harness, workloads, and the full method: <a href="https://github.com/ensky0/tildaz/blob/main/dist/stress/README.md" target="_blank" rel="noopener">dist/stress</a>.</li>
+      </ul>
+    </section>
+
     <section id="install" class="section install">
       <div class="section-heading">
         <p class="eyebrow">Get Started</p>
