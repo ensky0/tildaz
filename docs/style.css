@@ -570,6 +570,70 @@ td {
   color: var(--muted);
 }
 
+/* Throughput table: the figures are the content, so they take the mono face,
+   right alignment, and full ink instead of the muted tone prose tables use. */
+.perf-lede {
+  max-width: 760px;
+  margin: 0 0 22px;
+  color: var(--muted);
+}
+
+.perf-table thead th:not(:first-child),
+.perf-table td {
+  text-align: right;
+}
+
+/* Platform names are proper nouns (macOS), so this table opts out of the
+   uppercase header other tables use. */
+.perf-table thead th {
+  font-size: 0.9rem;
+  text-transform: none;
+}
+
+.perf-table thead th span {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.perf-table tbody tr:last-child th {
+  border-bottom: 0;
+}
+
+.perf-table th[scope="row"] {
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.perf-table td {
+  color: var(--ink);
+  font-family: var(--mono);
+}
+
+.perf-notes {
+  margin: 18px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.perf-notes li + li {
+  margin-top: 8px;
+}
+
+.perf-notes strong {
+  color: var(--ink);
+}
+
+.perf-notes a {
+  color: var(--forest);
+  text-decoration: underline;
+}
+
 .screenshot-frame {
   margin: 0;
   overflow: hidden;
