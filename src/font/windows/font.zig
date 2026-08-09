@@ -89,6 +89,56 @@ fn isCombiningMark(cp: u21) bool {
     };
 }
 
+/// [#423](https://github.com/ensky0/tildaz/issues/423) — **조합형 한글 자모를 완성형 음절로
+/// 합친다** (Unicode 3.12 *Conjoining Jamo Behavior* 의 canonical composition).
+///
+/// DirectWrite 는 `ᄀ`+`ᅡ` (`U+1100 U+1161`) 를 **두 cluster 로 보고** (`clusterMap = [0,1]`)
+/// 합치지 않는다. 그래서 자모가 각각 `advance = 15` (full em) 로 나와 배정된 2 칸 (18 px) 을
+/// 넘고 옆 칸을 덮는다. script · locale (`ko-kr`) · `DWRITE_SCRIPT_SHAPES` · OpenType feature
+/// (`ljmo`/`vjmo`/`tjmo`) 를 **전부 줘 봐도 결과가 같았다** (Malgun Gothic 실측 2026-08-09).
+///
+/// **HarfBuzz 의 Hangul shaper 는 이 composition 을 표준대로 한다** (`hb-ot-shaper-hangul.cc`) —
+/// 그래서 Linux 는 무증상이고, CoreText 도 마찬가지다. DirectWrite 에만 없는 층이라 여기서
+/// 채운다. 조합형과 완성형은 Unicode 가 **정규화 동치**로 정의한 같은 글자다.
+///
+/// 표가 필요 없다 — 산술이 곧 표준이다. 완전한 `L+V` / `L+V+T` 만 합치고, 자모가 아니거나
+/// 시퀀스가 불완전하면 (V 로 시작 · L 만 · T 만) **입력을 그대로 돌려준다.** 합친 뒤 남는
+/// codepoint (결합 기호 등) 는 뒤에 그대로 잇는다.
+fn composeHangul(cps: []const u21, out: *[MAX_CLUSTER_GLYPHS]u21) []const u21 {
+    const L_BASE: u21 = 0x1100;
+    const V_BASE: u21 = 0x1161;
+    const T_BASE: u21 = 0x11A7; // T 는 1 부터 쓴다 (0 = 종성 없음)
+    const S_BASE: u21 = 0xAC00;
+    const L_COUNT: u21 = 19;
+    const V_COUNT: u21 = 21;
+    const T_COUNT: u21 = 28;
+
+    if (cps.len < 2) return cps;
+    const l = cps[0];
+    if (l < L_BASE or l >= L_BASE + L_COUNT) return cps;
+    const v = cps[1];
+    if (v < V_BASE or v >= V_BASE + V_COUNT) return cps;
+
+    var used: usize = 2;
+    var ti: u21 = 0;
+    if (cps.len >= 3) {
+        const t = cps[2];
+        if (t > T_BASE and t < T_BASE + T_COUNT) {
+            ti = t - T_BASE;
+            used = 3;
+        }
+    }
+
+    out[0] = S_BASE + ((l - L_BASE) * V_COUNT + (v - V_BASE)) * T_COUNT + ti;
+    var n: usize = 1;
+    for (cps[used..]) |cp| {
+        if (n >= out.len) break;
+        out[n] = cp;
+        n += 1;
+    }
+    return out[0..n];
+}
+
 /// cluster 의 결합 기호가 전부 overlay 류인지 (`ClusterResult.overlay_marks`).
 fn clusterOverlayOnly(cps: []const u21) bool {
     if (cps.len < 2) return false;
@@ -652,8 +702,14 @@ pub const DWriteFontContext = struct {
         return out;
     }
 
-    fn resolveGraphemeUncached(self: *DWriteFontContext, cps: []const u21) ?ClusterResult {
-        if (cps.len == 0 or self.text_analyzer == null) return null;
+    fn resolveGraphemeUncached(self: *DWriteFontContext, cps_in: []const u21) ?ClusterResult {
+        if (cps_in.len == 0 or self.text_analyzer == null) return null;
+
+        // #423 — 조합형 한글 자모는 shaping 전에 완성형으로 합친다. DirectWrite 가 안 해 주는
+        // 층이고, 캐시 키는 바깥 (`resolveGraphemeInner`) 이 원본 codepoint 로 잡으므로 여기서
+        // 바꿔도 캐시가 어긋나지 않는다.
+        var composed: [MAX_CLUSTER_GLYPHS]u21 = undefined;
+        const cps = composeHangul(cps_in, &composed);
 
         // UTF-21 codepoint slice → UTF-16 buffer (surrogate pair 처리).
         var u16_buf: [32]WCHAR = undefined;
@@ -860,8 +916,12 @@ pub const DWriteFontContext = struct {
         var cl_start: [MAX_RUN_CLUSTERS + 1]u16 = undefined;
         var u16_len: dw.UINT32 = 0;
 
-        for (clusters, 0..) |cps, ci| {
-            if (cps.len == 0) return 0;
+        for (clusters, 0..) |cps_in, ci| {
+            if (cps_in.len == 0) return 0;
+            // #423 — 개별 경로 (`resolveGraphemeUncached`) 와 같은 composition 을 여기도 한다.
+            // 안 하면 배칭된 줄에서만 조합형이 안 합쳐져 같은 글자가 경로에 따라 달라진다.
+            var composed: [MAX_CLUSTER_GLYPHS]u21 = undefined;
+            const cps = composeHangul(cps_in, &composed);
             cl_start[ci] = @intCast(u16_len);
             for (cps) |cp| {
                 if (cp <= 0xFFFF) {
