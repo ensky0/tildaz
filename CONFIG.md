@@ -132,10 +132,10 @@ case, spaces, hyphens and underscores are ignored, so `Cascadia Code`, `cascadia
 `CascadiaCode` all name the same font. A name that matches no installed font is fatal at startup, so
 it is worth checking before editing the config.
 
-On Linux and macOS the **PostScript name** works too — the `NotoSansCJKkr-Regular` /
-`DejaVuSansMono-Bold` form that font tools such as Font Book show. A PostScript name identifies one
-face rather than a family, so a bold PostScript name loads the bold face. Windows accepts family
-names only for now ([#409](https://github.com/ensky0/tildaz/issues/409)).
+The **PostScript name** works too, on all three platforms — the `NotoSansCJKkr-Regular` /
+`CascadiaCodeRoman-Bold` form that font tools such as Font Book show. A PostScript name identifies
+one face rather than a family, so a bold PostScript name loads the bold face; bold and italic still
+come from the family that face belongs to, so `SGR 1` / `SGR 3` keep working either way.
 
 **List the installed family names:**
 
@@ -153,8 +153,8 @@ system_profiler SPFontsDataType | grep "Family:" | sort -u
 (New-Object System.Drawing.Text.InstalledFontCollection).Families | Select-Object -Expand Name
 ```
 
-**List the PostScript names** (Linux · macOS) — there are more of these than families, because each
-face has its own:
+**List the PostScript names** — there are more of these than families, because each face has its
+own:
 
 ```sh
 # Linux
@@ -162,6 +162,12 @@ fc-list -f '%{postscriptname}\n' | grep . | sort -u
 
 # macOS — Font Book shows it in the font's info panel (⌘I)
 ```
+
+Windows has no built-in way to list them, and you never need one there: the family name is always
+accepted, so a PostScript name only has to work for configs written elsewhere. Do not try to guess
+one either — a font's PostScript names need not follow its display name. Cascadia Code is
+`CascadiaCodeRoman` for Regular but `Cascadia-Code-Italic` for Italic, and `CascadiaCode-Regular`,
+the spelling the pattern suggests, is not a name that font has at all.
 
 **Then confirm the name actually resolves to that font** — this second step matters more than it
 looks:
