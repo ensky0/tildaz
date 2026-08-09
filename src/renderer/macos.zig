@@ -344,6 +344,9 @@ pub const MetalRenderer = struct {
 
         var glyph_atlas = try GlyphAtlas.init(alloc, terminal_font.size_logical, scale);
         errdefer glyph_atlas.deinit();
+        // #421 — 위 결합 기호를 여기에 맞춰 높이를 고른다. `ascent_px` 는 물리 픽셀이라
+        // atlas 가 쓰는 pt 단위로 되돌린다 (atlas 안에서 다시 `scale` 을 곱한다).
+        glyph_atlas.ascent_pt = font_ctx.ascent_px / font_ctx.retina_scale;
 
         const tab_spec = ui_metrics.tabLabelFontSpec();
         var tab_font_ctx = try CoreTextFontContext.init(
@@ -480,6 +483,7 @@ pub const MetalRenderer = struct {
         //    다음 render 에서 글리프가 새 scale 로 재라스터되고 dirty 로 재업로드됨.
         //    (atlas_texture 자체는 ATLAS_SIZE 고정이라 재사용.)
         self.atlas.scale = new_scale;
+        self.atlas.ascent_pt = self.font.ascent_px / self.font.retina_scale;
         self.atlas.reset();
         self.tab_atlas.scale = new_scale;
         self.tab_atlas.reset();
@@ -984,8 +988,8 @@ pub const MetalRenderer = struct {
                             }
                             // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
                             // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
-                            const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.advance);
-                            if (result.owned) ct.CFRelease(result.font);
+                            const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+                            mac_font.releaseCluster(result);
                             if (entry_opt) |entry| {
                                 if (entry.w > 0 and entry.h > 0) {
                                     emitTextInstance(text_buf[0..], &text_count, entry, cell_x, fy, cw, x_pad, self.font.ascent_px, fg, glyphCenterDx(entry, rr.wide == .wide, cw), 0);
@@ -1009,8 +1013,8 @@ pub const MetalRenderer = struct {
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |result| {
                         // #401 — 위 배칭 경로와 같은 이유로 multi-glyph 를 합성해 그린다.
-                        const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.advance);
-                        if (result.owned) ct.CFRelease(result.font);
+                        const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+                        mac_font.releaseCluster(result);
                         if (entry_opt) |entry| {
                             if (entry.w > 0 and entry.h > 0) {
                                 emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0);
@@ -1068,11 +1072,11 @@ pub const MetalRenderer = struct {
                     continue;
                 };
                 const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                    if (result.owned) ct.CFRelease(result.font);
+                    mac_font.releaseCluster(result);
                     x += 1;
                     continue;
                 };
-                if (result.owned) ct.CFRelease(result.font);
+                mac_font.releaseCluster(result);
 
                 if (entry.w == 0 or entry.h == 0) {
                     x += 1;
@@ -1162,10 +1166,10 @@ pub const MetalRenderer = struct {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
                 const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                    if (result.owned) ct.CFRelease(result.font);
+                    mac_font.releaseCluster(result);
                     continue;
                 };
-                if (result.owned) ct.CFRelease(result.font);
+                mac_font.releaseCluster(result);
 
                 const w_cells: f32 = @floatFromInt(display_width.codepointWidth(cp));
 
@@ -1315,10 +1319,10 @@ pub const MetalRenderer = struct {
                         if (c.text_n.* >= MAX_TEXT) return;
                         const result = c.self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
                         const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                            if (result.owned) ct.CFRelease(result.font);
+                            mac_font.releaseCluster(result);
                             return;
                         };
-                        if (result.owned) ct.CFRelease(result.font);
+                        mac_font.releaseCluster(result);
                         if (entry.w == 0 or entry.h == 0) return;
                         const gx = g.x + @as(f32, @floatFromInt(entry.bearing_x));
                         const gy = c.text_y_top + c.self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
@@ -1565,10 +1569,10 @@ pub const MetalRenderer = struct {
                     if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse continue;
                     const entry = r.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
-                        if (result.owned) ct.CFRelease(result.font);
+                        mac_font.releaseCluster(result);
                         continue;
                     };
-                    if (result.owned) ct.CFRelease(result.font);
+                    mac_font.releaseCluster(result);
                     if (entry.w > 0 and entry.h > 0) {
                         out[n.*] = .{
                             .pos = .{ x + @as(f32, @floatFromInt(entry.bearing_x)), text_top + r.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
