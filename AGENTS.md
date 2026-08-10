@@ -34,6 +34,10 @@
 5. **완료**: 검증이 끝나면 커밋해요. (릴리즈는 별도 타이밍 — 여러 작업을 모아 새 버전으로 내요.)
 6. **이슈 닫기**: 릴리즈가 아니라 **검증이 끝나 해결되면 바로** 이슈를 닫아요. 릴리즈 여부는 닫기를 막지 않아요.
 
+**코드 변경이 문서 서술을 바꾸면 같은 PR 에 담아요** (2026-08-10 사용자 지적: *"이미 pr만들어서 머지했는데 이제야 고치면 어떡해? 앞으로는 꼭 문서까지 다 고쳐서 pr해"*). 코드만 먼저 머지하고 `SPEC.md` / `AGENTS.md` / `CONFIG.md` 를 나중에 올리면, 그 사이 문서가 사실과 어긋난 채 main 에 남아요. PR 을 올리기 전에 **바꾼 동작을 서술한 문서가 있는지 grep 으로 먼저 확인**해요 (#442 에서 SPEC.md 두 줄과 AGENTS.md 를 놓쳤어요).
+
+**문서만 바뀌는 변경은 PR 없이 main 에 바로 push 해요** (2026-08-10 사용자 지시: *"이런건 그냥 main에 바로 넣어"*). 위의 "같은 PR 에 담아요" 와 충돌하지 않아요 — 코드와 함께 가는 문서는 그 PR 에, 문서만 있는 변경은 main 직행이에요.
+
 # 문서화
 
 문서는 항상 확인된 내용만 정확하게 작성해요.
@@ -291,6 +295,22 @@ amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝�
 5. **ghostty `selectWord` 가 wide char (한/中/日) 음절마다 끊음.** wide char 의 `spacer_tail` cell (글자의 right-half) 을 boundary 로 취급 → 음절 사이 클릭 시 null, 음절 위 클릭 시 음절 하나만. 해결: `terminal_interaction.selectWord` 직접 구현. 클릭이 spacer_tail 이면 wide cell (x-1) 정규화 + 확장 중 spacer_tail 만나면 boundary 검사 *skip*. 보너스: 시작이 boundary (공백/구두점) 면 false 반환 — iTerm2 / Terminal.app 동등.
 
 6. **`~/Library/LaunchAgents` root 소유 환경 (회사 노트북).** pulsesecure (회사 VPN) 같은 패키지가 root 권한으로 디렉토리 만들어 사용자 owner 빼앗음. LaunchAgent plist 작성 실패 (`AccessDenied`) — graceful fail 로 앱은 정상. 복구: `sudo chown -R $(whoami):staff ~/Library/LaunchAgents` (회사 plist owner 도 같이 바뀌니 신중).
+
+7. **launchd job 은 프로세스 하나가 아니라 자원 묶음이에요** ([#442](https://github.com/ensky0/tildaz/issues/442)). plist 가 지목한 프로세스가 그 job 의 본체이고, 본체가 끝나면 launchd 가 job 을 닫으며 **묶음 안의 다른 프로세스까지 정리**해요. 그래서 우리처럼 "낳고 바로 죽는" launcher 를 plist 가 직접 지목하면, launcher 가 `exit(0)` 하는 순간 방금 태어난 worker 가 함께 사라져요. 해결: plist 가 `/usr/bin/open -a <bundle> --args …` 를 지목해 앱을 LaunchServices 의 별개 job (`application.<bundle-id>.…`) 으로 띄워요 — 수동 실행에 이미 `open` 을 쓰는 규칙 (아래 `# 실행 환경`) 과 같은 이유예요.
+
+   자동 시작이 안 될 때 진단 순서:
+
+   ```sh
+   launchctl print gui/$(id -u)/com.tildaz.app        # job 이 등록됐는지 · coalition · minimum runtime
+   log show --predicate 'process == "launchd"' --start "YYYY-MM-DD HH:MM:SS" --info --debug \
+     | grep com.tildaz.app                            # spawn → exit → service inactive → removing child 흐름
+   tail -40 ~/Library/Logs/tildaz_0.log               # worker 가 어디까지 갔는지
+   ```
+
+   - **앱 로그에 `[boot]` 만 있고 `config loaded` 가 없으면** worker 가 밖에서 끊긴 거예요. 우리 코드가 죽은 게 아니라 job 정리에 끌려간 신호로 먼저 의심해요.
+   - `log show --start` 는 **소수점 초를 못 받아요** (`%Y-%m-%d %H:%M:%S%z`). 초 단위로 넣어요.
+   - `launchctl kickstart -k` 로 재현할 수 있어요. 단 `minimum runtime = 10` throttle 때문에 재시작이 10초 늦어질 수 있어요 — 실제 로그인에는 없는 지연이니 결론에 넣지 않아요.
+   - 로그인 직후 `pending spawn, domain in on-demand-only mode` 로 20~30초 늦게 뜨는 건 **정상**이에요. launchd 가 로그인 세션이 열릴 때까지 기다리는 구간이에요.
 
 # macOS — emoji 입력 테스트 방법
 
