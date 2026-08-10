@@ -5,10 +5,15 @@
 #   - login keychain 에 "TildazLocal" 인증서 + private key
 #   - System keychain 에 codeSign trust 등록 (sudo — 터미널에서 admin 비번)
 #   - codesign partition-list (best-effort; 회사 정책이 막으면 빌드 시 '항상 허용')
+#   - `~/.tildaz/` 에 p12 + crt 백업 — keychain 이 밀려도 되살릴 수 있게 (#444)
 #
 # 안정 signing identity + 고정 bundle id (me.ensky0.tildaz) → 코드 바꿔도 같은 앱
 # 으로 인식 → Input Monitoring / Accessibility(TCC) 권한 한 번 부여 후 유지.
 # ad-hoc 서명은 매 빌드 hash 가 바뀌어 TCC 가 매번 재요구 — 그걸 없애는 게 목적.
+#
+# **identity 가 사라졌을 때 이 스크립트를 먼저 쓰지 않아요.** 새로 만들면 서명 해시가
+# 바뀌어 TCC 권한을 다시 줘야 하고 CI 의 `MACOS_CERTIFICATE_SHA1` 도 갱신해야 해요.
+# 백업이 있으면 `restore-cert.sh` 로 **같은 인증서**를 되살려요 (#444).
 #
 # 이후 빌드:
 #   ./dist/macos/build_and_install.sh
@@ -17,27 +22,42 @@
 
 set -euo pipefail
 
-CERT_NAME="TildazLocal"
-KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
-SYSTEM_KEYCHAIN="/Library/Keychains/System.keychain"
-CERT_OUT="$HOME/.tildaz/${CERT_NAME}.crt"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=dist/macos/cert-common.sh
+source "$SCRIPT_DIR/cert-common.sh"
+
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # 이미 유효(trusted) codesigning identity 가 있으면 아무것도 안 함 (idempotent).
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$CERT_NAME\""; then
+if has_valid_identity; then
     echo "'$CERT_NAME' codesigning identity 가 이미 유효합니다 — 할 일 없음."
     echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ.app"
     exit 0
 fi
 
+# 백업이 있으면 새로 만들지 않는다 — 새 인증서는 TCC 권한 재부여 + secrets/CI 갱신을
+# 부르므로, 같은 인증서로 되살리는 쪽이 항상 싸다 (#444).
+if [[ -f "$P12_BACKUP" ]]; then
+    echo "백업된 인증서가 있습니다: $P12_BACKUP" >&2
+    echo "" >&2
+    echo "새로 만들면 서명 해시가 바뀌어 Input Monitoring / Accessibility 권한을 다시" >&2
+    echo "부여해야 하고, GitHub secrets 와 CI 의 MACOS_CERTIFICATE_SHA1 도 갱신해야 합니다." >&2
+    echo "먼저 같은 인증서로 되살려 보세요:" >&2
+    echo "" >&2
+    echo "    $SCRIPT_DIR/restore-cert.sh" >&2
+    echo "" >&2
+    echo "정말 새로 만들려면 백업을 옮기거나 지운 뒤 다시 실행하세요." >&2
+    exit 1
+fi
+
 # login password — unlock + partition-list 에 필요. osascript hidden input (로그 X).
-PW=$(osascript -e 'display dialog "TildaZ: macOS 로그인 password (codesign cert setup)" default answer "" with hidden answer with icon caution' -e 'return text returned of result' 2>/dev/null)
+PW=$(ask_login_password "codesign cert setup")
 if [[ -z "$PW" ]]; then
     echo "ERROR: password 입력 안 됨." >&2
     exit 1
 fi
-if ! security unlock-keychain -p "$PW" "$KEYCHAIN" 2>/dev/null; then
+if ! unlock_login_keychain "$PW"; then
     echo "ERROR: login keychain unlock 실패 — password 틀렸거나 경로 다름." >&2
     exit 1
 fi
@@ -56,35 +76,34 @@ openssl req -x509 -newkey rsa:2048 -keyout "$TMPDIR/key.pem" -out "$TMPDIR/crt.p
     -addext "keyUsage=critical,digitalSignature" \
     -addext "extendedKeyUsage=codeSigning" 2>&1 | tail -3
 openssl pkcs12 -export -inkey "$TMPDIR/key.pem" -in "$TMPDIR/crt.pem" \
-    -out "$TMPDIR/cert.p12" -password pass:tildaz -name "$CERT_NAME" 2>&1 | tail -2
+    -out "$TMPDIR/cert.p12" -password "pass:$P12_PASSWORD" -name "$CERT_NAME" 2>&1 | tail -2
 
 echo "--- 2. login keychain 에 import ---"
-security import "$TMPDIR/cert.p12" -P tildaz -A -T /usr/bin/codesign -k "$KEYCHAIN" 2>&1 | tail -3
-mkdir -p "$HOME/.tildaz"
-cp "$TMPDIR/crt.pem" "$CERT_OUT"
+import_p12 "$TMPDIR/cert.p12" 2>&1 | tail -3
 
-echo "--- 3. System keychain 에 codeSign trust 등록 (sudo — admin 비번) ---"
-if sudo security add-trusted-cert -d -r trustRoot -p codeSign -k "$SYSTEM_KEYCHAIN" "$CERT_OUT"; then
+echo "--- 3. 백업 저장 (keychain 이 밀려도 되살릴 수 있게) ---"
+save_backup "$TMPDIR/cert.p12" "$TMPDIR/crt.pem"
+
+echo "--- 4. System keychain 에 codeSign trust 등록 (sudo — admin 비번) ---"
+if register_trust "$CERT_BACKUP"; then
     echo "  trust 등록 완료."
 else
     echo "  경고: 자동 trust 실패 — 아래를 수동 실행:" >&2
-    echo "    sudo security add-trusted-cert -d -r trustRoot -p codeSign -k $SYSTEM_KEYCHAIN $CERT_OUT" >&2
+    echo "    sudo security add-trusted-cert -d -r trustRoot -p codeSign -k $SYSTEM_KEYCHAIN $CERT_BACKUP" >&2
 fi
 
-echo "--- 4. codesign partition-list (best-effort — 프롬프트 제거 시도) ---"
-if security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$KEYCHAIN" >/dev/null 2>&1; then
+echo "--- 5. codesign partition-list (best-effort — 프롬프트 제거 시도) ---"
+if allow_codesign_partition "$PW"; then
     echo "  OK — codesign 이 프롬프트 없이 '$CERT_NAME' 키 사용."
 else
     echo "  (partition-list 실패 — 회사 정책 등. 빌드 시 키체인 dialog 뜨면 '항상 허용' 한 번.)"
 fi
 
-echo ""
-echo "=== 결과 확인 ==="
-if security find-identity -v -p codesigning 2>/dev/null | grep "$CERT_NAME"; then
-    echo "성공 — 위에 '$CERT_NAME' 가 valid 로 보입니다."
-else
-    echo "아직 안 보임 — 3번 trust 단계가 실패했을 수 있음 (위 경고 확인)." >&2
-fi
+report_identity || true
 echo ""
 echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ.app"
 echo "       (codesign dialog 뜨면 '항상 허용'. 첫 실행 후 손쉬운 사용/입력 모니터링 권한 한 번.)"
+echo ""
+echo "새 인증서라면 아래도 갱신해야 해요 (#444):"
+echo "  - GitHub secrets: MACOS_CERTIFICATE_P12_BASE64 / MACOS_CERTIFICATE_PASSWORD"
+echo "  - .github/workflows/{macos-signing-check,release}.yml 의 MACOS_CERTIFICATE_SHA1"
