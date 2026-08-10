@@ -1215,13 +1215,27 @@ host 는 *입력을 굶기지 않는 한* 자주 드레인해야 하고, 특히 
 
 | platform | 프레임 렌더 | **프레임과 별개의 드레인 지점** |
 |---|---|---|
-| Linux | `wl_surface.frame` → `maybeRedraw` | **poll loop iteration 마다** ([`wayland_minimal.zig`](src/host/linux/wayland_minimal.zig)) — 원래부터 이 사양 |
+| Linux | `wl_surface.frame` → `maybeRedraw` | **poll loop iteration 마다** + 밀린 출력이 있으면 `poll` timeout 을 **0** 으로 두어 즉시 다음 iteration ([`wayland_minimal.zig`](src/host/linux/wayland_minimal.zig), [#436](https://github.com/ensky0/tildaz/issues/436)) |
 | Windows | `WM_FRAME_TICK` → `App.onRender` | **`PeekMessage` 가 빈 순간** (`Window.messageLoop` → `App.onIdleDrain`) |
 | macOS | `CADisplayLink` → `renderFrameTick` | **`kCFRunLoopBeforeWaiting`** observer (`idleDrainObserver`) + `CFRunLoopWakeUp` |
 
 **입력이 항상 드레인보다 우선한다.** Windows 는 대기 중인 메시지가 하나라도 있으면 드레인하지 않고,
 macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 뒤다. 유휴에는 드레인할 것이
 없어 각각 `WaitMessage` / run loop sleep 으로 내려가므로 **유휴 절전 (#255 · #386 ②) 이 유지된다.**
+Linux 도 밀린 출력이 없으면 timeout 이 `frame_poll_ms` 로 돌아가 같은 절전을 유지한다.
+
+**세 host 의 공통 구조는 "드레인이 진행하는 동안 스스로 재진입한다" 다** — Windows 는 `messageLoop`
+의 `if (f(userdata)) continue;`, macOS 는 `CFRunLoopWakeUp`, Linux 는 `poll` timeout 0 이 그 자리다.
+**어느 host 도 PTY 도착을 *통보* 받지 않는다** — 유휴에서 깨어나는 방식은 별개 축이고
+[#439](https://github.com/ensky0/tildaz/issues/439) 에서 다룬다.
+
+> ⚠️ **이전 문서는 Linux 를 *"원래부터 이 사양"* 으로 적었는데 사실이 아니었다**
+> ([#436](https://github.com/ensky0/tildaz/issues/436), 2026-08-10 실측). Linux 는 iteration 마다
+> 드레인하지만, **그 iteration 을 깨우는 것이 폭포 중에는 실질적으로 `wl_surface.frame` callback
+> 하나**였다 (`pollAndDispatch` 가 기다리는 fd 는 Wayland · toggle IPC 뿐이고 PTY 도착은 이 poll 을
+> 깨우지 않는다). 그래서 회전이 프레임에 묶여 **프레임당 약 1.45 회로 고정**됐고, duty 가
+> `프레임당 드레인 ÷ 프레임 간격` 이 되어 **주사율에 반비례**했다 — 이 절이 금지한 바로 그 종속이다.
+> timeout 0 재진입으로 고쳤고 실측은 §13.2 에 있다.
 
 ### 13.2 실측 — 드레인 지점 한 줄만 켜고/끈 대조 (예산 8 ms 시점)
 
@@ -1238,6 +1252,26 @@ macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 
 **주사율 종속이 사라진다.** 프레임당 1 회일 때 Windows ① 내장 120 Hz 는 duty 88 % 인데 외장 60 Hz 는
 50.2 % 였다 — 사양대로 고친 뒤 60 Hz 가 90.7 % 로 올라 두 주사율이 같은 수준이 된다.
 
+#### Linux — 같은 대조를 2026-08-10 에 처음 떴다 (예산 4 ms, [#436](https://github.com/ensky0/tildaz/issues/436))
+
+**위 표에 Linux 행이 없던 것은 재지 않았기 때문이고, 재 보니 종속이 남아 있었다.** 같은 기기에서
+**주사율만** 바꿔 대조했다 (노트북 AMD Ryzen AI 7 350 · KDE Plasma Wayland · 2880x1800 · scale 1.6 ·
+AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast -Dsimd=true` · 5 회 절사평균 ·
+손실 0). duty 의 분모는 총시간이다.
+
+| 워크로드 | 60 Hz 처리량 | 60 Hz duty | **`60÷120` 비** |
+|---|---|---|---|
+| `ansi` | 41.2 → **111.1** (+170 %) | 40.4 → **96.8 %** | 0.49 → **1.03** |
+| `hangul` | 53.5 → **122.8** (+130 %) | 39.7 → **80.9 %** | 0.46 → **1.01** |
+| `cjk` | 25.4 → **67.6** (+166 %) | 41.9 → **97.9 %** | 0.44 → **1.01** |
+| `emoji_vs16` | 12.0 → **25.9** (+116 %) | 48.4 → **98.7 %** | 0.50 → **1.00** |
+| `zwj` | 15.2 → **35.3** (+132 %) | 46.8 → **98.7 %** | 0.47 → **1.01** |
+| `plain` | 164.3 → 166.5 (+1 %) | 28.1 → 24.8 % | 1.01 → **1.02** |
+
+**`60÷120` 비가 0.44~0.50 에서 1.00~1.03 이 된 것이 판정이다.** `plain` · `hangul` 의 duty 가 낮은
+것은 PTY 가 병목이라 **드레인할 것이 없기** 때문이고, 둘 다 `pty` 층 상한의 100 % 를 쓴다. 이 fix 의
+거래 (120 Hz cluster 에서 fps 121 → 93~104) 는 §13.5 에 있다.
+
 ### 13.3 예산 값 — 4 ms 인 이유
 
 `DRAIN_FRAME_BUDGET_NS` 는 **공유 상수라 세 platform 이 함께 바뀐다.** 값의 의미는 "입력이 최악
@@ -1253,7 +1287,13 @@ macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 
 | **Windows ①** 120 Hz | tick fps 103.3 → **120.0** · 처리량 유지 (62.53 → 62.60 MiB/s) |
 | **macOS** 60 Hz | fps 56.7 → **60.0** · 처리량 **+3.3 %** |
 | **macOS** 120 Hz | fps 40.7 → **99.6 (×2.4)** · 처리량 −2.6 % |
-| **Linux** 120 Hz | fps 60.0 → **109.4 (×1.82)** · 처리량 −1.2 % |
+| **Linux** 120 Hz | fps 60.0 → **109.4 (×1.82)** · 처리량 −1.2 % ⚠️ **120 Hz 만 쟀다 — 아래 참고** |
+
+> ⚠️ **Linux 는 120 Hz 한 조건만 재서 종속을 놓쳤다** ([#436](https://github.com/ensky0/tildaz/issues/436)).
+> 위 `−1.2 %` 는 8 ms 에서 드레인이 프레임을 밀어내 fps 가 60 이던 것이 4 ms 에서 109.4 로 회복돼
+> **duty 가 우연히 유지된** 결과다. **60 Hz 는 fps 가 이미 패널 상한이라 회복할 여지가 없어 duty 가
+> 74 → 41 % 로 내려앉았고**, 그 사실이 2026-08-10 까지 드러나지 않았다. 그래서 **예산을 바꿀 때는
+> 주사율이 다른 두 조건을 함께 재야 한다** — 한 조건만 재면 "처리량 유지" 가 그 조건에서만 참일 수 있다.
 
 **하한은 4 ms 다.** macOS 120 Hz 의 3 ms 에서 duty 포화가 96 → 73.7 % 로 깨져 처리량이 23 % 떨어졌다
 (호출당 고정비가 예산에 비해 커지는 지점으로 *추정* — 확인 안 함). 60 Hz 는 3 ms 에서도 포화가
@@ -1285,7 +1325,7 @@ macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 
 | 프레임 tick 만 막는 게 아니었다 | `render_fn` 은 `WM_SIZE` 즉시 렌더 · Alt+Enter 전환에서도 불린다 |
 | 선례 | Windows Terminal 도 터미널 렌더에 ms 게이트가 없다 — DXGI frame-latency waitable + `_redraw` 플래그로 pacing (ms throttle 은 XAML 스크롤바 8 ms · regex 패턴 100 ms 처럼 부속 UI 에만) |
 
-### 13.5 알려진 platform 차이 — 폭포 중 fps 는 macOS 만 완전 유지가 아니다
+### 13.5 알려진 platform 차이 — 폭포 중 fps 는 Windows 만 완전 유지다
 
 **사양 위반이 아니다** (사양은 드레인 한 번의 점유 상한이고 fps 유지는 사양이 아니다). 다만 세
 platform 이 갈리는 지점이라 기록해 둔다.
@@ -1293,8 +1333,15 @@ platform 이 갈리는 지점이라 기록해 둔다.
 | platform | 폭포 중 fps (예산 4 ms) | 구조상 이유 |
 |---|---|---|
 | **Windows** | **유지** (60 Hz 60.0 · 120 Hz 120.0) | 별도 clock 스레드가 `WM_FRAME_TICK` 을 post 하고 `PeekMessage` 가 드레인보다 우선이라 tick 이 밀리지 않는다 |
-| Linux | 120 Hz 109.4 | poll loop |
+| **Linux** | 60 Hz **61~69 유지** · **120 Hz 93~104** (cluster) | 밀린 출력이 있으면 timeout 0 으로 계속 드레인하므로 (§13.1, [#436](https://github.com/ensky0/tildaz/issues/436)) 프레임당 드레인이 9.9~11.3 ms 로 **120 Hz 간격 8.33 ms 를 넘어** 프레임을 놓친다. 60 Hz 는 간격이 16.67 ms 라 유지된다 (오히려 62 → 65 로 올랐다) |
 | **macOS** | 60 Hz 60.0 · **120 Hz 99.6** | `CADisplayLink` 가 **run loop source** 라 `BeforeWaiting` 드레인에 발사가 밀린다 |
+
+**Linux 의 120 Hz 저하는 [#436](https://github.com/ensky0/tildaz/issues/436) 의 fix 가 만든 거래다.**
+드레인 재진입을 넣어 duty 가 86~91 → 97.5~98.5 % 로 오르고 처리량이 +8~27 % 됐는데, 그만큼 프레임당
+드레인이 길어져 120 Hz 간격을 넘었다. **예산 8 ms 시절과 비교하면 두 지표 모두 낫다** (그때는 프레임당
+≈12.4 ms · fps 60 · duty ≈74 %). 사양 위반이 아니고 (예산 4 ms 그대로) 60 Hz 는 영향이 없지만,
+121 → 93 은 기록해 둘 값이라 후속으로 볼 수 있다 — *아이디어 (미검증)*: 드레인 사이클 안에서 다음
+frame callback 이 도착했는지 보고 양보하기 (macOS 의 아래 아이디어와 같은 모양).
 
 예산 8 ms 시절 macOS 120 Hz 는 40.7 fps 까지 떨어졌고 (Windows 는 같은 조건에서 유지) 4 ms 로 99.6 까지
 회복했다. 남은 차이를 없애려면 macOS 의 드레인 지점을 손봐야 한다 — *아이디어 (미검증)*: `BeforeWaiting`
