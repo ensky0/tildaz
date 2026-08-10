@@ -57,17 +57,33 @@ static SCShareableContent *shareableContentOrDie(void) {
     return result;
 }
 
+/// `app` 열 옆에 **bundle identifier** 를 함께 낸다 (#414).
+///
+/// `applicationName` 은 **시스템 로케일로 번역된 표시 이름**이다. 한국어 macOS 에서
+/// Terminal.app 은 `터미널` 로 나오고 (`제어 센터` · `알림 센터` 도 마찬가지다), 이걸
+/// 영문 이름으로 찾으면 조용히 빗나간다 — `compare-terminals.sh --capture` 가 실제로
+/// Terminal.app 창을 못 찾아 전체 화면으로 물러섰다. bundle identifier 는 언어에 따라
+/// 바뀌지 않아 스크립트가 찾는 기준으로 쓸 수 있다.
+///
+/// 사람이 눈으로 읽을 때는 `app` 이 여전히 편하므로 **두 열을 같이 둔다.**
 static void listWindows(void) {
     SCShareableContent *content = shareableContentOrDie();
-    printf("%-8s %-24s %-12s %s\n", "id", "app", "크기(pt)", "제목");
+    printf("%-8s %-28s %-24s %-12s %s\n", "id", "bundle", "app", "크기(pt)", "제목");
     for (SCWindow *w in content.windows) {
         if (!w.onScreen) continue;
         char size[32];
         snprintf(size, sizeof(size), "%.0fx%.0f", w.frame.size.width,
                  w.frame.size.height);
-        printf("%-8u %-24s %-12s %s\n", (unsigned)w.windowID,
-               w.owningApplication.applicationName.UTF8String ?: "(?)", size,
-               w.title.UTF8String ?: "");
+        // **빈 문자열도 `-` 로 채운다.** `?:` 는 nil 만 걸러서, bundle identifier 가 빈
+        // 문자열인 앱은 그대로 통과해 **공백만 찍힌다.** 그러면 이 줄을 공백으로 쪼개 읽는
+        // 쪽 (`compare-terminals.sh` 의 awk) 에서 **열이 하나 통째로 밀려** 엉뚱한 값을 본다.
+        // CLI 로 띄운 alacritty 가 실제로 그랬다 (실측 — LaunchServices 를 안 거쳐서 그렇다).
+        const char *bundle = w.owningApplication.bundleIdentifier.UTF8String;
+        if (!bundle || !*bundle) bundle = "-";
+        const char *app = w.owningApplication.applicationName.UTF8String;
+        if (!app || !*app) app = "(?)";
+        printf("%-8u %-28s %-24s %-12s %s\n", (unsigned)w.windowID, bundle, app,
+               size, w.title.UTF8String ?: "");
     }
 }
 
