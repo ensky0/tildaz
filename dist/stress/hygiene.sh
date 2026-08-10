@@ -140,6 +140,46 @@ hygiene_minimize_macos() {
     osascript -e 'tell application "System Events" to set visible of (every process whose visible is true and name is not "Finder") to false' >/dev/null 2>&1
 }
 
+# 비교 대상 터미널 중 **지금 떠 있는 것**의 이름을 낸다 (#414). 없으면 빈 문자열이다.
+#
+# **왜 hide 로는 부족한가.** 배경 앱 최소화 (`hygiene_minimize_*`) 는 *그리기* 를 멈추는
+# 수단이지 프로세스를 없애는 게 아니다. 터미널은 사용자가 빌드 · 로그 같은 것을 띄워 둔 채
+# 두는 앱이라, 숨겨도 그 안의 프로그램은 계속 CPU 를 쓴다.
+#
+# **그리고 둘은 hide 로 아예 못 막는다.** `Terminal.app` (`do script`) 과 `iTerm2`
+# (`create window`) 는 **이미 떠 있는 앱 프로세스에 창을 붙이는** 방식이라, 우리 측정 창이
+# 사용자 창과 *같은 프로세스* 안에서 그려진다. 게다가 창을 만드는 순간 그 앱의 hide 가
+# 풀린다. 같은 함정을 wezterm 이 먼저 만났고 `--always-new-process` 로 피했다
+# (`compare-terminals.sh` 의 wezterm 절) — 그 플래그에 해당하는 것이 이 둘에는 없다.
+#
+# **이름은 각 앱의 실행 파일 이름이다.** 이 머신에서 `Terminal` · `iTerm2` 는 `pgrep -x` 로
+# 잡히는 것을 확인했고 (macOS, 2026-08-10), 나머지 넷은 각 앱의 표준 이름이라 **미검증**이다.
+# 틀리면 검사가 조용히 통과하므로, 대상을 늘릴 때는 실기에서 한 번 찍어 본다.
+#
+# **conhost 는 목록에 없다** — Windows 에서 이 스크립트를 돌리는 Git Bash 자신이 conhost
+# 안에서 돌아 **항상 걸린다.** conhost 측정은 회차마다 새 콘솔을 띄우므로 기존 창과 프로세스가
+# 갈린다.
+hygiene_running_terminals() {
+    case "$HYG_PLATFORM" in
+        macos)   _hyg_terms="Terminal iTerm2 kitty alacritty wezterm-gui ghostty" ;;
+        linux)   _hyg_terms="alacritty kitty wezterm-gui ghostty foot" ;;
+        windows) _hyg_terms="alacritty wezterm-gui WindowsTerminal" ;;
+        *)       return 0 ;;
+    esac
+    if [ "$HYG_PLATFORM" = windows ]; then
+        # 한 번에 묻는다 — 이름마다 powershell 을 띄우면 그것만으로 몇 초가 든다.
+        powershell -NoProfile -Command \
+            "(Get-Process $(echo "$_hyg_terms" | tr ' ' ',') -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique) -join ' '" \
+            2>/dev/null | tr -d '\r'
+    else
+        _hyg_found=""
+        for _hyg_t in $_hyg_terms; do
+            pgrep -x "$_hyg_t" >/dev/null 2>&1 && _hyg_found="$_hyg_found $_hyg_t"
+        done
+        printf '%s' "${_hyg_found# }"
+    fi
+}
+
 # --- 검사 -----------------------------------------------------------------
 #
 # 값을 `HYG_*` 에 채우고, 측정을 망칠 것이 있으면 경고를 stderr 로 내고 1 을 돌려준다.
@@ -221,6 +261,17 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
     if ! hygiene_can_minimize; then
         _warn="$_warn
 배경 앱을 자동으로 못 내려요 (KDE · macOS · Windows 에서만 해요) — 브라우저 · 에디터를 직접 최소화해요 (우리 수치만 최대 64 % 눌려요)"
+    fi
+
+    # 비교 대상 터미널은 **떠 있으면 안 된다** (#414). 이유는 `hygiene_running_terminals`
+    # 주석에 있다. 자동으로 닫지 않는다 — worker 와 달리 **사용자의 작업 창**이라 없애면
+    # 안 된다 (배경 앱을 최소화만 하고 닫지 않는 것과 같은 이유다).
+    _terms=$(hygiene_running_terminals)
+    if [ -n "$_terms" ]; then
+        _warn="$_warn
+비교 대상 터미널이 떠 있어요: $_terms — 측정 전에 종료해요 (숨기는 것으로는 부족해요)"
+        _warn="$_warn
+  이 스크립트는 대상이 아닌 터미널에서 돌려요 (VS Code 터미널 · SSH 등)"
     fi
 
     if [ -n "$_warn" ]; then

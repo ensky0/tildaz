@@ -279,6 +279,7 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 | 측정 중 창을 클릭하거나 포커스를 바꾸지 않아요 | 실측 중 키보드 · 마우스가 눌려 그 회차를 버렸어요 |
 | 이전 실행의 잔여 터미널 프로세스를 먼저 정리해요 | `kitty --detach` 와 ghostty 는 스크립트가 끝나도 남아서 다음 회차와 CPU 를 나눠요 |
 | **평소 쓰는 TildaZ worker 를 종료해요** — **이제 스크립트가 자동으로 해요** | 다른 터미널은 백그라운드 인스턴스가 없는데 TildaZ 만 worker 가 떠 있으면 렌더 · CPU 를 나눠 써요. 터미널 비교에서는 **공정성**이 깨지고 배분 측정에서는 **값이 눌려요** — 형태가 다를 뿐 결론이 같아서 `hygiene.sh` 가 두 도구 모두에서 내려요. 규칙으로만 적어 뒀더니 실제로 잊고 여러 회차를 돌린 적이 있어요 ([#381](https://github.com/ensky0/tildaz/issues/381)). **끝나도 다시 안 띄워요** — 필요하면 직접 띄우세요 |
+| **비교 대상 터미널을 종료해요** — **스크립트가 검사해서 걸리면 멈춰요** | 떠 있으면 그 앱이 사용자 창을 그리며 CPU 를 나눠 써요. **숨기는 것으로는 부족해요** — 터미널은 빌드 · 로그를 띄워 둔 채 두는 앱이라, 숨겨도 그 안의 프로그램은 계속 돌아요. 게다가 **Terminal.app · iTerm2 는 hide 로 아예 못 막아요**: 둘 다 *이미 떠 있는 앱 프로세스에 창을 붙이는* 방식이라 우리 측정 창이 사용자 창과 **같은 프로세스** 안에서 그려지고, 창을 만드는 순간 그 앱의 hide 가 풀려요. 같은 함정을 wezterm 이 먼저 만나 `--always-new-process` 로 피했는데 그 둘에는 그런 통로가 없어요 ([#414](https://github.com/ensky0/tildaz/issues/414)). **자동으로 닫지는 않아요** — 사용자의 작업 창이라서요. 그래서 **이 스크립트는 대상이 아닌 터미널에서 돌려요** (VS Code 터미널 · SSH 등) |
 | AC 전원에 연결하고 절전 · **화면 잠금을 꺼요** — **잠금 차단은 스크립트가 해요** | 노트북은 배터리 · 열로 스로틀링이 걸려요. 그리고 잠금 화면이 뜨면 **`render` 만 무너지고 `parse` 는 정상이라 결과만 봐서는 티가 안 나요** — 아래 참고. AC 연결 자체는 사람이 해야 하고, 스크립트는 **검사해서 걸리면 멈춰요** |
 | **CPU 를 최고 성능으로 둬요** — **이제 스크립트가 해요** | AC 만 확인하고 전원 프로파일은 안 봤더니 `balanced` (EPP `balance_performance`) 인 채로 여러 세션을 쟀어요. Linux 는 `powerprofilesctl set performance` 로 **sudo 없이** 되고, Windows 는 **전원 모드(overlay)** 를 최고 성능으로 둬요 — 둘 다 끝나면 되돌려요. **Windows 는 전원 *구성표* 가 아니에요** — 아래 참고 |
 | **Windows 노트북은 동적 새로 고침 빈도(DRR)를 꺼요** | 켜져 있으면 주사율이 측정 중에 바뀌어 **회차가 두 무리로 갈려요** — 아래 참고. `hygiene.sh` 가 시작 전에 이걸 직접 검사하고 걸리면 멈춰요 |
@@ -628,11 +629,13 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 | platform | 자동으로 도는 대상 |
 |---|---|
 | Linux | TildaZ · alacritty · kitty · wezterm · ghostty · **foot** |
-| macOS | TildaZ · alacritty · kitty · wezterm · ghostty · **iTerm2** |
-| Windows | TildaZ · alacritty · wezterm · **Windows Terminal (`wt`)** |
+| macOS | TildaZ · alacritty · kitty · wezterm · ghostty · **iTerm2** · **Terminal.app** |
+| Windows | TildaZ · alacritty · wezterm · **Windows Terminal (`wt`)** · **conhost** |
 
 Windows 에 kitty · ghostty 판이 없고 foot 은 Wayland 전용이라, Windows 는 그 자리를
 Windows Terminal 이 채워요.
+
+**OS 기본 터미널 둘 (Terminal.app · conhost) 만 설치 여부를 안 봐요** — 그 OS 에 항상 있으니까요.
 
 **굵은 자리는 "그 OS 사용자가 실제로 쓰는 것" 이에요.** 나머지 넷 (alacritty · kitty ·
 wezterm · ghostty) 은 개발자 취향의 선택지라 그것만 놓고 보면 그림이 왜곡돼요 — macOS
@@ -654,24 +657,82 @@ fragment 도 같은 구조예요 (아래 Windows 절).
 | CLI (`open -na iTerm.app --args`) | 격자 옵션이 없어요 |
 | AppleScript 로 창을 만든 뒤 크기 변경 | **명령이 먼저 시작돼서** 그 시점 격자로 출력해요 |
 
-#### Terminal.app 은 넣지 못했어요 — 세 방법이 다 막혔어요
+**측정 창은 스크립트가 닫아요** ([#414](https://github.com/ensky0/tildaz/issues/414)). 프로파일의
+`Close Sessions On End` 는 **세션만** 닫아서 **빈 창이 남거든요** — 회차마다 쌓이고, 다음 실행의
+위생 검사에도 계속 걸려요. 창 이름이 곧 프로파일 이름 (`tildaz-stress`) 이라 그걸로 우리 창만
+골라요. 사용자가 열어 둔 창은 이름이 달라서 후보에 안 들어가요.
 
-macOS 의 OS 기본 터미널이라 Windows 의 conhost 와 같은 자리인데, 넣으려다 접었어요.
-**다시 시도하는 분이 같은 길을 헤매지 않도록** 실패 셋을 남겨요 (전부 실측이에요).
+#### Terminal.app 은 escape sequence 로 넣어요
 
-| 방법 | 결과 |
+macOS 의 OS 기본 터미널이라 **Windows 의 conhost 와 같은 자리**예요 — 하한 기준선이자,
+시스템 기본 터미널이 어느 정도인지 보여 주는 대조군이에요.
+
+**격자는 `CSI 8 ; rows ; cols t` 로 줘요.** 셸이 자기 손으로 창을 리사이즈하니까 프로파일이
+필요 없고, 사용자 설정에 흔적이 남을 일도 없어요.
+
+```sh
+printf '\033[8;40;120t'      # 셸이 자기 창을 120 열 × 40 행으로 바꿔요
+```
+
+한동안 *"Terminal.app 은 격자를 프로파일로만 받는다"* 고 정리돼 있었어요
+([#381](https://github.com/ensky0/tildaz/issues/381#issuecomment-5220061290)). 그건 시도한 세
+방법이 **셋 다 같은 길**이었기 때문이에요 — 전부 *Terminal.app 에게 격자를 알려 주는* 통로를
+찾고 있었어요. escape sequence 는 방향이 반대라 그 구조에 아예 걸리지 않아요
+([#414](https://github.com/ensky0/tildaz/issues/414) 에서 실측 3/3 이 목표 격자와 일치).
+
+| 예전 방법 | 왜 막혔나 |
 |---|---|
-| AppleScript `do script` + 격자 설정 | ❌ 명령이 먼저 뜨고 격자가 나중이라 **셸이 30×120 을 봐요** — AppleScript 는 120×40 이라고 보고하는데도요 |
-| `defaults` 로 임시 프로파일 추가 | ❌ **실행 중인 앱이 안 읽어요** (`-1728`). 게다가 앱이 종료하며 자기 설정으로 덮어써서 **사용자 설정 손상 위험**이 있어요 |
-| `.terminal` 파일 + `open` | ❌ 프로파일은 추가되는데 **`CommandString` 이 실행되지 않아요** |
+| AppleScript `do script` + 격자 설정 | 창을 만든 **뒤** 격자를 바꿔요 |
+| `defaults` 로 임시 프로파일 | **프로파일**로 줘요 — 실행 중인 앱이 안 읽어요 (`-1728`) |
+| `.terminal` 파일 + `open` | **프로파일**로 줘요 — `CommandString` 이 실행되지 않아요 |
 
-근본 원인은 **Terminal.app 이 격자 · scrollback 을 오직 프로파일로만 받고, 그 프로파일이
-실행 중인 앱과 충돌한다**는 구조예요. 세 번 다 사용자 설정에 흔적이 남아서 매번 지워야
-했어요 (전부 원복 확인했어요).
+그때 기록된 *"셸이 30×120 을 봐요"* 는 뒤바뀐 격자가 아니었어요. **그 머신 기본 프로파일의
+120 열 × 30 행**이에요 — `stty size` 가 `rows cols` 순서로 찍은 값을 `cols×rows` 로 읽은
+거예요. 격자를 못 준 게 아니라 **애초에 안 바뀐 상태의 값**이었어요.
 
-남은 길은 *"Terminal.app 을 완전히 종료한 상태에서 프로파일을 심고 → 실행 → 측정 → 종료 →
-제거"* 인데, 회차마다 앱 재시작이 필요하고 사용자가 Terminal 을 쓰고 있으면 방해돼요.
-**그래서 넣지 않아요.**
+**명령은 `exec` 로 띄워요.** 이게 창 정리까지 함께 풀어요.
+
+```applescript
+do script "exec sh <wrapper>"     -- 로그인 셸 자체를 wrapper 로 대체해요
+```
+
+로그인 셸을 대체하니까 producer 가 끝나는 순간 그 창에 **실행 중인 프로세스가 없어요.**
+왜 그게 중요한지는 아래 함정에 적어요.
+
+##### ⚠ 실행 중인 셸이 있는 창은 닫히지 않아요 — 확인 시트
+
+`close` 를 불러도 **아무 반응 없이 창이 그대로**인 것처럼 보이는 때가 있어요. 인덱스로 바꿔도,
+네 번을 반복해도 그대로였어요 (실측). `System Events` 로 들여다보고서야 원인이 나왔어요.
+
+```
+[… TildaZ-stress-9999 … sheets=1] [… TildaZ-stress-terminal … sheets=1]
+```
+
+실행 중인 셸이 있는 창을 닫으려 하면 Terminal.app 이 **확인 시트 (`취소` / `종료`) 를 띄워요.**
+시트가 응답을 기다리는 동안 창은 안 닫히고, **그 뒤의 close 는 전부 무시돼요.** 시트를
+승인하려면 Accessibility 권한이 필요하고 버튼 이름이 로케일 의존이라 (`종료` / `Terminate`)
+자동화로 쓸 수 없어요.
+
+그래서 **순서가 정해져 있어요** — `cleanup_terminals` 가 프로세스를 먼저 죽이고, **그 뒤에**
+창을 닫아요. `exec` 로 로그인 셸까지 대체해 두면 남는 프로세스가 없어서 시트가 아예 안 떠요
+(실측: 닫기 전후 시트 0, 창이 깨끗이 닫혀요).
+
+##### 창은 태그로 찾아요
+
+`do script` 가 돌려주는 **tab** 에 `custom title` 로 태그 (`TildaZ-stress-<pid>`) 를 달고, 그
+태그로만 창을 닫아요. `front window` 로 잡지 않는 이유는 그 찰나에 사용자가 다른 창을 앞으로
+가져오면 **사용자 창에 태그가 붙어 나중에 닫히기 때문**이에요. pid 를 넣어서 앞선 실행이 남긴
+창도 안 건드려요.
+
+##### ❌ scrollback 은 못 맞춰요
+
+AppleScript 사전에 크기 속성이 아예 없어요 (있는 `history` 는 **내용 읽기 전용**이에요).
+그래서 사용자 프로파일 값이 그대로 쓰이고, **이 대상만 조건이 달라요.** 스크립트가 매 실행에서
+경고해요.
+
+conhost 와 같은 처지이긴 한데 **성격이 조금 달라요** — conhost 는 "스크롤백 없음" 으로 고정이라
+적어도 재현은 되는데, Terminal.app 은 **머신마다 값이 달라요.** 조건이 다를 뿐 아니라 재현성도
+떨어진다는 뜻이라, 이 대상의 숫자는 그 점을 알고 읽어야 해요.
 
 **전부 자동이에요.** TildaZ 도 스크립트가 직접 띄워요 — 측정용 실행 옵션 `-e <실행파일>` ·
 `-size <COLS>x<ROWS>` 를 [#382](https://github.com/ensky0/tildaz/issues/382) 에서 만들었어요.
@@ -752,6 +813,11 @@ dist/stress/compare-terminals.sh --mb 8 --workload zwj --repeat 1 --timeout 30 -
 이 구분이 없던 때 **창을 한 번도 못 잡던 conhost 가 계속 `@` 로 성공처럼 보였어요**
 ([#381](https://github.com/ensky0/tildaz/issues/381)).
 
+**macOS 도 이제 이 구분을 해요** ([#414](https://github.com/ensky0/tildaz/issues/414)). 예전에는
+`~` · `?` 를 Windows 만 갈라내고 macOS 는 전부 `@` 로 찍혀서, **전체 화면으로 물러선 회차를
+사람이 PNG 을 열어 봐야만** 알 수 있었어요. 실제로 Terminal.app · iTerm2 두 대상이 전체 화면으로
+찍혔는데 표에는 `@` 로 나왔고, 파일을 열어 보고서야 발견했어요.
+
 **`_` 도 같은 사유로 나중에 갈라낸 거예요.** `@` 는 *"캡처 API 가 성공을 돌려줬다"* 는 뜻이었을
 뿐이라, 창 단위로 찍었는데 **단색 이미지**가 나와도 성공으로 보였어요 — 실측으로 alacritty 가
 **550 byte** 였고 같은 실행의 정상 캡처는 65~134 KB 였어요. 판정은 **파일 크기** (2 KiB 미만) 로
@@ -774,7 +840,7 @@ producer 가 창을 **4 초** 더 붙들고 있어요 (그래야 찍을 창이 �
 
 | platform | 쓰는 도구 | 범위 | 알아 둘 것 |
 |---|---|---|---|
-| **macOS** | [`dist/macos/color-capture.m`](../macos/color-capture.m) (ScreenCaptureKit) | **창 단위** | **완전히 가려진 창도 찍혀요** (실측: 같은 자리에 창 둘을 겹치고 아래 창을 찍으니 아래 창 내용이 나왔어요). 스크립트가 `clang` 으로 빌드해서 써요. **화면 기록 권한**이 필요하고 잠금 화면이면 실패해요. 창을 못 찾으면 `screencapture -x` 전체 화면으로 물러서요 |
+| **macOS** | [`dist/macos/color-capture.m`](../macos/color-capture.m) (ScreenCaptureKit) | **창 단위** | **완전히 가려진 창도 찍혀요** (실측: 같은 자리에 창 둘을 겹치고 아래 창을 찍으니 아래 창 내용이 나왔어요). 스크립트가 `clang` 으로 빌드해서 써요. **화면 기록 권한**이 필요하고 잠금 화면이면 실패해요. 찾는 기준은 **bundle identifier** 예요 (`com.apple.Terminal` 등) — 앱 이름은 **시스템 언어로 번역**돼서 기준이 될 수 없어요 (아래 참고). 창을 못 찾으면 `screencapture -x` 전체 화면으로 물러서고 `?` 를 찍어요 |
 | **Windows** | PowerShell (`PrintWindow` → 실패 시 `CopyFromScreen`) | **창 단위** | 창을 띄우자마자 **(0,0) 으로 옮기고 맨 앞으로** 올려요 (`SWP_NOACTIVATE` 라 포커스는 안 뺏어요). `PrintWindow` 가 실패하는 흔한 원인은 **hold 가 모자라 창이 이미 닫힌 것**이라, 그 회차는 hold 를 늘려 다시 찍어요 (아래 참고). **DPI 함정도 있어요 — 아래 참고** |
 | **Linux (sway · Hyprland)** | `grim` | 전체 화면 | wlroots 계열의 `zwlr_screencopy` 를 써요. **가려진 창은 못 찍어요** — Wayland 는 client 가 다른 창 내용을 읽을 수 없어요. 타일링이라 보통 안 가려져요 |
 | **Linux (KDE Plasma)** | `spectacle -b -n -a` | **활성 창** | KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이 안 돼요. `org.kde.KWin.ScreenShot2` 는 호출자를 검증해서 직접 부를 수 없고, **Spectacle 이 정상 통로**예요 (KDE 기본 설치). `-a` 라 **창 단위로 찍히고 가려짐 문제도 없어요** (활성 창은 맨 앞이니까요). 다만 방금 뜬 창이 활성이 아니면 엉뚱한 창이 찍혀요 — 확실히 하려면 KWin 스크립팅으로 대상을 활성화해야 하는데, 필요한지 확인되기 전엔 안 넣었어요 |
@@ -782,6 +848,37 @@ producer 가 창을 **4 초** 더 붙들고 있어요 (그래야 찍을 창이 �
 
 리눅스에 **하나로 다 되는 방법은 없어요** — Wayland 는 client 가 화면을 읽을 수 없고 통로가
 compositor 마다 달라요. 위 순서대로 시도하고, 하나도 없으면 시작할 때 그 사실을 알려요.
+
+#### macOS 에서 창을 못 찾는 두 가지 이유 ([#414](https://github.com/ensky0/tildaz/issues/414))
+
+둘 다 실측으로 만났고, **증상이 똑같아요** — 그 회차만 전체 화면으로 찍혀요.
+
+**① 앱 이름이 시스템 언어로 번역돼요.** `color-capture --list` 의 `app` 열은
+`SCWindow.owningApplication.applicationName` 인데, 이건 **표시 이름**이라 한국어 macOS 에서는
+`Terminal` 이 `터미널` 로 나와요 (`제어 센터` · `알림 센터` 도 마찬가지예요).
+
+```
+91       com.apple.Terminal           터미널                757x479      tildaz — … — 80×24
+```
+
+그래서 찾는 기준을 **bundle identifier** 로 바꿨어요. 언어에 따라 바뀌지 않거든요. **언어별
+이름 표는 두지 않아요** — 언어가 늘 때마다 표를 늘려야 하고, 같은 언어라도 OS 판이 바뀌면
+표기가 달라져 조용히 빗나가요. 현지화되지 않는 대상들 (kitty · alacritty · wezterm · ghostty) 만
+우연히 멀쩡했던 것이라, OS 기본 앱을 대상에 넣자마자 드러났어요.
+
+**② hide 된 앱의 창은 목록에 아예 없어요.** `--list` 는 `onScreen` 인 창만 내요. 그런데 위생
+절차가 배경 앱을 hide 하는데 (`hygiene_minimize_macos`), **이미 떠 있던 Terminal.app · iTerm2 는
+그 hide 를 겪은 앱에 창을 붙이는** 방식이라 창이 `onScreen` 이 아니에요. 실측에서 iTerm2 가
+`visible=false` 인 채로 `--list` 에 없었고, 사용자가 다시 띄우자 바로 나타났어요.
+
+그래서 **스크립트가 측정 창을 만든 뒤 그 앱의 hide 를 풀어요** (`set visible to true`). hide 만
+풀고 **앞으로 가져오지는 않아서 포커스를 뺏지 않아요** (실측). 가려져 있어도 ScreenCaptureKit 은
+창 내용을 주니까 그걸로 충분해요.
+
+**이건 캡처만의 이야기가 아니에요.** hide 된 앱은 화면을 그리지 않으니, 그대로 두면 **그 회차만
+렌더 부하가 빠진 채** 측정돼요 — 새 프로세스로 떠서 화면에 올라오는 다른 대상들과 조건이 달라져
+그 대상에게 유리해져요. 위의 [측정 위생](#측정-위생)대로 **대상 터미널을 미리 종료**하면 애초에
+hide 를 겪지 않으니, 둘은 같은 문제의 앞뒤 대비책이에요.
 `xdg-desktop-portal` 은 표준이지만 **권한 대화상자가 떠서** 손 안 대고 도는 측정과 안 맞아요.
 
 #### 찍기 전에 2 초 기다려요
@@ -1019,6 +1116,7 @@ macOS · Linux 는 `wezterm` 을 그대로 쓰되 `--always-new-process` 는 똑
 | ghostty | 임시 config 의 `scrollback-limit = N` |
 | **wt** | **CLI 로 못 줘요** — profile 설정이에요. 스크립트가 **JSON fragment** 로 측정용 프로필을 더해서 거기에 담아요 (아래) |
 | **conhost** | **불가** — `mode con: lines` 가 창=버퍼예요. **이 대상만 조건이 달라요** (스크립트가 매 실행에 경고해요) |
+| **Terminal.app** | **불가** — AppleScript 에 크기 속성이 없어요 (`history` 는 내용 읽기 전용). **사용자 프로파일 값이 쓰여요** — conhost 와 달리 머신마다 값이 달라서 재현성도 떨어져요 (스크립트가 매 실행에 경고해요) |
 
 **wt 는 JSON fragment 로 프로필을 더해요 — 사용자 `settings.json` 을 교체하지 않아요.**
 

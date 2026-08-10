@@ -223,11 +223,85 @@ WORK_DIR=$(mktemp -d)
 #   사용자 프로필이 `never` 면 남을 수 있다.
 # - alacritty · wezterm 은 macOS 실측에서 정상적으로 닫혔다 (같은 코드베이스).
 # 남는다고 확인되면 그때 Windows 전용 정리를 붙인다 — 확인 전에 추측으로 코드를 넣지 않는다.
+# Terminal.app 측정 창에 붙이는 태그 (#414). 값은 아래 Terminal.app 절에서 채운다.
+# **비어 있으면 이 실행에서 Terminal.app 을 안 띄웠다는 뜻**이라 창을 닫으러 가지 않는다 —
+# 떠 있지도 않은 Terminal.app 을 osascript 가 깨우면 측정 도중에 앱 하나가 새로 뜬다.
+TERMINAL_APP_TAG=""
+
+# 우리가 태그를 붙인 Terminal.app 창만 닫는다.
+#
+# **닫기 전에 그 창의 프로세스가 죽어 있어야 한다.** 실행 중인 셸이 있는 창을 닫으려 하면
+# Terminal.app 이 확인 시트 (`취소` / `종료`) 를 띄우는데, 시트가 응답을 기다리는 동안 창은
+# 안 닫히고 **뒤따르는 close 가 전부 무시된다** (macOS 실측, #414 — 네 번을 반복해도 창이
+# 그대로였고 `System Events` 로 보고서야 시트가 원인인 것을 알았다). 시트를 승인하려면
+# Accessibility 권한이 필요하고 버튼 이름이 로케일 의존이라 자동화로 쓸 수 없다.
+#
+# 그래서 호출부인 `cleanup_terminals` 는 `ps` 로 프로세스를 먼저 죽인 **뒤에** 이걸 부른다.
+# 측정 창 자체도 `exec` 로 로그인 셸을 대체해 (아래 Terminal.app 절) producer 가 끝나면
+# 남는 프로세스가 없다.
+#
+# 태그로만 찾으므로 **사용자가 따로 열어 둔 창은 후보에 들어가지 않는다.**
+terminal_app_close() {
+    [ -n "$TERMINAL_APP_TAG" ] || return 0
+    osascript -e "tell application \"Terminal\" to close (every window whose custom title is \"$TERMINAL_APP_TAG\")" \
+        >/dev/null 2>&1 || true
+}
+
+# iTerm2 측정 창도 우리가 닫는다 (#414).
+#
+# 프로파일의 `Close Sessions On End` 는 **세션만** 닫아서 **빈 창이 남는다.** 회차마다 쌓이고,
+# 다음 실행의 위생 검사 (`hygiene_running_terminals`) 에도 계속 걸린다.
+#
+# 창 이름이 곧 프로파일 이름이라 그것으로 우리 창만 고른다 — 사용자가 열어 둔 창은 이름이
+# 달라서 후보에 안 들어간다 (실측: `[tildaz-stress]` 와 `[-bash]` 가 이름으로 갈렸다).
+#
+# **AppleScript 의 `windows` 목록에는 닫은 뒤에도 항목이 남을 수 있다.** 실제로 닫혔는지는
+# ScreenCaptureKit 의 창 목록으로 확인했다 (화면에서 사라진다). Terminal.app 도 같다.
+ITERM_WINDOW_OPENED=0
+# 프로파일 이름이자 **창 이름**이다 (iTerm2 가 프로파일 이름을 창 제목으로 쓴다). wt 의
+# `WT_PROFILE_NAME` 과 같은 자리이고, 아래 프로파일 JSON · 창 생성 · 창 정리가 모두 이 값을 쓴다.
+ITERM_PROFILE_NAME="tildaz-stress"
+iterm2_window_close() {
+    [ "$ITERM_WINDOW_OPENED" = 1 ] || return 0
+    osascript -e "tell application \"iTerm\" to close (every window whose name is \"$ITERM_PROFILE_NAME\")" \
+        >/dev/null 2>&1 || true
+}
+
+# 측정 창을 만든 **뒤** 그 앱의 hide 를 푼다 (#414). macOS 전용이다.
+#
+# 위생 절차가 배경 앱을 hide 하는데 (`hygiene.sh` 의 `hygiene_minimize_macos`), **이미 떠
+# 있던 앱에 창을 붙이는 두 대상 (Terminal.app · iTerm2) 은 그 hide 를 그대로 물려받는다.**
+# hide 된 앱의 창은 화면에 올라오지 않아서 두 가지가 깨진다.
+#
+#   - **캡처** — `--list` 는 `onScreen` 인 창만 낸다. 목록에 없으니 전체 화면으로 물러선다.
+#   - **측정 자체** — 그리지 않는 창은 렌더 부하가 빠진다. 새 프로세스로 떠서 화면에 올라오는
+#     다른 대상들과 조건이 달라지므로, 이 대상만 유리해진다.
+#
+# `set visible to true` 는 **hide 만 풀고 앞으로 가져오지는 않는다** — 포커스를 뺏지 않는다
+# (실측으로 확인). 가려져 있어도 ScreenCaptureKit 은 창 내용을 준다.
+#
+# Automation 권한이 없으면 조용히 실패하고 지금까지와 똑같이 동작한다.
+mac_app_unhide() {
+    osascript -e "tell application \"System Events\" to set visible of process \"$1\" to true" \
+        >/dev/null 2>&1 || true
+}
+
 cleanup_terminals() {
+    # 회차 정리는 그 대상 이름을 준다. EXIT trap 은 안 준다 (아래 참고).
+    _ct_name="${1:-}"
     [ "$IS_WINDOWS" = 1 ] && return 0
     ps -eo pid,args 2>/dev/null | grep "$WORK_DIR" | grep -v grep | while read -r _p _rest; do
         kill "$_p" 2>/dev/null || true
     done
+    # 이름이 없으면 (EXIT trap) 항상 시도한다 — 중단된 실행이 창을 남기지 않게 하는 안전망이다.
+    # 이름이 있으면 그 대상의 회차 정리이므로 Terminal.app 회차에서만 닫는다. 다른 대상의
+    # 회차마다 osascript 를 부르면 측정 사이에 쓸데없는 프로세스가 돈다.
+    if [ -z "$_ct_name" ] || [ "$_ct_name" = terminal ]; then
+        terminal_app_close
+    fi
+    if [ -z "$_ct_name" ] || [ "$_ct_name" = iterm2 ]; then
+        iterm2_window_close
+    fi
 }
 # --- wt 의 scrollback 을 맞추기 위한 fragment 프로필 (#381, Windows 전용) ---------------
 #
@@ -361,7 +435,7 @@ wt_stub_remove() {
 # 사용자 설정 파일은 전혀 건드리지 않는다. `wt` 가 `settings.json` 을 통째로 갈아끼우고
 # 복원해야 하는 것과 대비되는 자리라, 여기서는 **우리가 만든 파일 하나만 지우면 끝**이다.
 ITERM_PROFILE_DIR="$HOME/Library/Application Support/iTerm2/DynamicProfiles"
-ITERM_PROFILE_FILE="$ITERM_PROFILE_DIR/tildaz-stress.json"
+ITERM_PROFILE_FILE="$ITERM_PROFILE_DIR/$ITERM_PROFILE_NAME.json"
 iterm2_profile_remove() {
     [ -f "$ITERM_PROFILE_FILE" ] || return 0
     rm -f "$ITERM_PROFILE_FILE"
@@ -422,6 +496,14 @@ if [ "$IS_WINDOWS" = 1 ]; then
     if [ "$SCROLLBACK" -gt 32767 ]; then
         echo "⚠ --scrollback $SCROLLBACK 은 wt 의 최대값 32767 을 넘어요 — wt 는 32767 로 잘려요."
     fi
+fi
+if [ "$IS_MACOS" = 1 ]; then
+    # #414 — conhost 와 같은 이유로 매 실행에서 알린다. 다만 **성격이 다르다**: conhost 는
+    # "스크롤백 없음" 으로 고정이라 적어도 재현은 되는데, Terminal.app 은 사용자 프로파일
+    # 값이라 머신마다 다르다. 조건이 다를 뿐 아니라 재현성도 떨어진다는 뜻이다.
+    echo ""
+    echo "⚠ terminal (Terminal.app) 은 scrollback 을 못 맞춰요 — 사용자 프로파일 값이 쓰여요."
+    echo "  AppleScript 에 크기 속성이 없어서 통로가 없어요 (격자는 escape sequence 로 줘요)."
 fi
 echo ""
 # #381 — **배경에서 그리는 앱이 우리 수치만 누른다.** 같은 조건에서 VS Code · Edge 를 최소화하는
@@ -574,6 +656,28 @@ win_proc_name() {
         alacritty) printf 'alacritty' ;;
         wezterm) printf 'wezterm-gui' ;;
         wt) printf 'WindowsTerminal' ;;
+        *) printf '' ;;
+    esac
+}
+
+# macOS 에서 그 대상의 창을 찾을 **bundle identifier**. 위 `win_proc_name` 과 같은 자리다.
+#
+# **로케일과 무관한 유일한 식별자라서 쓴다** (#414). 앱 이름 (`applicationName`) 은 시스템
+# 언어로 번역돼서 (`Terminal` → `터미널`) 찾는 기준이 될 수 없다. 언어별 이름 표를 두는
+# 방법은 쓰지 않는다 — 언어가 늘 때마다 표를 늘려야 하고, 같은 언어에서도 OS 판이 바뀌면
+# 표기가 달라져 조용히 빗나간다.
+#
+# 값은 각 앱의 `Info.plist` 에서 직접 읽었다 (macOS, 2026-08-10). tildaz 는
+# [`dist/macos/Info.plist.in`](../macos/Info.plist.in) 이 원본이다.
+mac_bundle_id() {
+    case "$1" in
+        terminal) printf 'com.apple.Terminal' ;;
+        iterm2) printf 'com.googlecode.iterm2' ;;
+        kitty) printf 'net.kovidgoyal.kitty' ;;
+        alacritty) printf 'org.alacritty' ;;
+        wezterm) printf 'com.github.wez.wezterm' ;;
+        ghostty) printf 'com.mitchellh.ghostty' ;;
+        tildaz) printf 'me.ensky0.tildaz' ;;
         *) printf '' ;;
     esac
 }
@@ -838,15 +942,32 @@ capture_screen() {
         Darwin)
             # 창 목록에서 그 앱의 **가장 큰 windowID** 를 고른다 — windowID 는 단조 증가하므로
             # 방금 뜬 창이다. 사용자가 따로 열어 둔 같은 앱의 창을 찍지 않기 위해서다.
-            # 앱 이름은 대상 이름과 대소문자만 다르다 (`WezTerm` · `Ghostty` · `TildaZ`).
+            #
+            # **찾는 기준은 bundle identifier 다** (#414). 예전에는 앱 이름으로 찾았는데,
+            # `applicationName` 이 **시스템 로케일로 번역된 이름**이라 한국어 macOS 에서
+            # Terminal.app 이 `터미널` 로 나와 매칭이 통째로 빗나갔다 (실측 — 그 회차가 조용히
+            # 전체 화면으로 찍혔다). 현지화되지 않는 대상들 (kitty · alacritty · wezterm ·
+            # ghostty) 만 우연히 멀쩡했던 것이라, OS 기본 앱을 넣자마자 드러났다.
+            #
+            # **이름 매칭도 남겨 둔다.** bundle identifier 가 없는 창이 있고 (`-` 로 나온다),
+            # 번들 안 바이너리를 직접 띄우는 tildaz 가 그럴 수 있다. 둘 중 하나만 맞아도 고른다.
             _wid=""
             if [ -n "$MAC_CAPTURE" ]; then
                 _wid=$("$MAC_CAPTURE" --list 2>/dev/null |
-                    awk -v t="$_ctarget" 'index(tolower($2), t) == 1 { print $1 }' |
+                    awk -v b="$(mac_bundle_id "$_ctarget")" -v t="$_ctarget" \
+                        '(b != "" && $2 == b) || index(tolower($3), t) == 1 { print $1 }' |
                     sort -n | tail -1)
             fi
-            [ -n "$_wid" ] && { "$MAC_CAPTURE" --window "$_wid" "$_png" >/dev/null 2>&1 || true; }
-            # 창을 못 찾았으면 전체 화면으로 물러선다 — 가려져 있으면 안 보이지만 없는 것보다 낫다.
+            # 창을 못 찾았거나 창 단위 캡처가 실패하면 전체 화면으로 물러선다 — 가려져 있으면
+            # 안 보이지만 없는 것보다 낫다. **어느 쪽이었는지 표시를 남긴다** — 예전에는 macOS 가
+            # 이 구분 없이 전부 `@` 로 찍혀서, 전체 화면으로 물러선 회차를 **사람이 PNG 을 열어
+            # 봐야만** 알 수 있었다 (#414 에서 실제로 그렇게 발견됐다).
+            if [ -z "$_wid" ]; then
+                CAPTURE_NOWIN=1
+            else
+                "$MAC_CAPTURE" --window "$_wid" "$_png" >/dev/null 2>&1 || true
+                [ -s "$_png" ] || CAPTURE_FELLBACK=1
+            fi
             # `-x` 는 셔터음을 끈다. **화면 기록 권한**이 필요하고 잠금 화면이면 실패한다.
             [ -s "$_png" ] || screencapture -x "$_png" >/dev/null 2>&1 || true
             ;;
@@ -1067,7 +1188,7 @@ run_terminal() {
         # 그 pid 가 즉시 끝나는 부모이고, ghostty 는 실행 실패 화면을 띄운 채 기다린다.
         # `cleanup_terminals` 가 이 실행의 `WORK_DIR` 패턴으로 실제 창을 정리한다.
         [ -n "$_pid" ] && kill "$_pid" 2>/dev/null || true
-        cleanup_terminals
+        cleanup_terminals "$_name"
 
         # #413 — **hold 가 끝날 때까지 기다린 뒤에 다음으로 넘어간다.**
         #
@@ -1295,8 +1416,8 @@ if [ "$IS_MACOS" = 1 ] && [ -d /Applications/iTerm.app ]; then
     cat > "$ITERM_PROFILE_FILE" << EOF
 {
   "Profiles": [{
-    "Name": "tildaz-stress",
-    "Guid": "tildaz-stress",
+    "Name": "$ITERM_PROFILE_NAME",
+    "Guid": "$ITERM_PROFILE_NAME",
     "Columns": $COLS,
     "Rows": $ROWS,
     "Scrollback Lines": $SCROLLBACK,
@@ -1309,8 +1430,58 @@ if [ "$IS_MACOS" = 1 ] && [ -d /Applications/iTerm.app ]; then
 EOF
     # 파일 감시로 읽으므로 반영을 기다린다. 바로 창을 만들면 프로파일이 없어서 실패한다.
     sleep 2
-    run_terminal iterm2 osascript -e \
-        'tell application "iTerm" to create window with profile "tildaz-stress"'
+    # 회차 정리가 이 실행의 창을 닫도록 표시한다 (`iterm2_window_close`).
+    ITERM_WINDOW_OPENED=1
+    # 창을 만든 **뒤** hide 를 푼다 — 이유는 `mac_app_unhide` 주석에 있다. 순서가 중요하다:
+    # 창이 생기기 전에 풀면 그 뒤에 만들어진 창이 다시 안 보이는 상태로 남을 수 있다.
+    run_terminal iterm2 osascript \
+        -e "tell application \"iTerm\" to create window with profile \"$ITERM_PROFILE_NAME\"" \
+        -e 'tell application "System Events" to set visible of process "iTerm2" to true'
+fi
+
+# Terminal.app — macOS 의 OS 기본 터미널이라 **Windows 의 conhost 와 같은 자리**다 (#414).
+# 하한 기준선이자, 시스템 기본 터미널이 어느 정도인지 보여 주는 대조군이다.
+#
+# **격자는 escape sequence 로 준다** — `CSI 8 ; rows ; cols t` 로 **셸이 자기 손으로 창을
+# 리사이즈**한다. 프로파일이 필요 없고 사용자 설정에 흔적이 안 남는다.
+#
+# [#381](https://github.com/ensky0/tildaz/issues/381#issuecomment-5220061290) 에서 막혔던 세
+# 방법 (AppleScript 로 창을 만든 뒤 격자 변경 · `defaults` 임시 프로파일 · `.terminal` 파일)
+# 은 셋 다 *Terminal.app 에게 격자를 알려 주는* 통로를 찾고 있었다. 이건 방향이 반대라 그
+# 구조에 아예 걸리지 않는다 — macOS 실측 3/3 에서 `stty size` 가 목표 격자와 일치했다.
+#
+# **`exec` 가 중요하다.** 로그인 셸을 wrapper 로 대체하므로 producer 가 끝나는 순간 그 창에
+# 실행 중인 프로세스가 없다. 그래야 회차 정리가 확인 시트 없이 창을 닫는다
+# (`terminal_app_close` 주석). `exec` 없이 닫으려다 시트에 막히는 것을 실측했다.
+#
+# **scrollback 은 못 맞춘다** — AppleScript 사전에 크기 속성이 아예 없다 (있는 `history` 는
+# 내용 읽기 전용이다). 사용자 프로파일 값이 그대로 쓰이므로 **이 대상만 조건이 다르고**,
+# 위의 scrollback 경고가 매 실행에서 그 사실을 알린다.
+#
+# 앱은 `/System/Applications/Utilities/Terminal.app` 에 항상 있어서 존재 검사를 두지 않는다
+# (iTerm2 · ghostty 처럼 설치 여부가 갈리는 대상과 다르다).
+if [ "$IS_MACOS" = 1 ]; then
+    T="$WORK_DIR/terminal.timing"
+    # 태그에 pid 를 넣어 **이 실행이 만든 창만** 고른다. 앞선 실행이 남긴 창이 있어도 안 건드린다.
+    TERMINAL_APP_TAG="TildaZ-stress-$$"
+    TERMINAL_WRAPPER="$WORK_DIR/terminal-app.sh"
+    # heredoc 이 `\033` 은 리터럴로 두고 `${ROWS}` 만 확장한다 (unquoted heredoc 의 백슬래시는
+    # `$` · 백틱 · `\` · 개행 앞에서만 특수하다).
+    cat > "$TERMINAL_WRAPPER" << EOF
+#!/bin/sh
+printf '\033[8;${ROWS};${COLS}t'
+$(producer_cmd "$T")
+EOF
+    chmod +x "$TERMINAL_WRAPPER"
+    # `do script` 가 돌려주는 **tab** 에 태그를 단다. `front window` 로 잡으면 그 찰나에
+    # 사용자가 다른 창을 앞으로 가져왔을 때 **사용자 창에 태그가 붙어 나중에 닫히므로**
+    # 그렇게 하지 않는다.
+    run_terminal terminal osascript \
+        -e 'tell application "Terminal"' \
+        -e "set t to do script \"exec sh '$TERMINAL_WRAPPER'\"" \
+        -e "set custom title of t to \"$TERMINAL_APP_TAG\"" \
+        -e 'end tell' \
+        -e 'tell application "System Events" to set visible of process "Terminal" to true'
 fi
 
 # TildaZ — `-e` · `-size` 로 자동 측정한다 (#382). 그 두 옵션은 **측정 내부용**이라
