@@ -775,7 +775,7 @@ producer 가 창을 **4 초** 더 붙들고 있어요 (그래야 찍을 창이 �
 | platform | 쓰는 도구 | 범위 | 알아 둘 것 |
 |---|---|---|---|
 | **macOS** | [`dist/macos/color-capture.m`](../macos/color-capture.m) (ScreenCaptureKit) | **창 단위** | **완전히 가려진 창도 찍혀요** (실측: 같은 자리에 창 둘을 겹치고 아래 창을 찍으니 아래 창 내용이 나왔어요). 스크립트가 `clang` 으로 빌드해서 써요. **화면 기록 권한**이 필요하고 잠금 화면이면 실패해요. 창을 못 찾으면 `screencapture -x` 전체 화면으로 물러서요 |
-| **Windows** | PowerShell (`PrintWindow` → 실패 시 ffmpeg `ddagrab` → 실패 시 `CopyFromScreen`) | **창 단위** | 창을 띄우자마자 **(0,0) 으로 옮기고 맨 앞으로** 올려요 (`SWP_NOACTIVATE` 라 포커스는 안 뺏어요). **창 단위 경로가 둘인 이유는 `PrintWindow` 의 성패가 환경마다 갈리기 때문**이에요 (아래 참고). ffmpeg 은 선택이고 없으면 첫 경로만 써요. **DPI 함정도 있어요 — 아래 참고** |
+| **Windows** | PowerShell (`PrintWindow` → 실패 시 `CopyFromScreen`) | **창 단위** | 창을 띄우자마자 **(0,0) 으로 옮기고 맨 앞으로** 올려요 (`SWP_NOACTIVATE` 라 포커스는 안 뺏어요). `PrintWindow` 가 실패하는 흔한 원인은 **hold 가 모자라 창이 이미 닫힌 것**이라, 그 회차는 hold 를 늘려 다시 찍어요 (아래 참고). **DPI 함정도 있어요 — 아래 참고** |
 | **Linux (sway · Hyprland)** | `grim` | 전체 화면 | wlroots 계열의 `zwlr_screencopy` 를 써요. **가려진 창은 못 찍어요** — Wayland 는 client 가 다른 창 내용을 읽을 수 없어요. 타일링이라 보통 안 가려져요 |
 | **Linux (KDE Plasma)** | `spectacle -b -n -a` | **활성 창** | KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이 안 돼요. `org.kde.KWin.ScreenShot2` 는 호출자를 검증해서 직접 부를 수 없고, **Spectacle 이 정상 통로**예요 (KDE 기본 설치). `-a` 라 **창 단위로 찍히고 가려짐 문제도 없어요** (활성 창은 맨 앞이니까요). 다만 방금 뜬 창이 활성이 아니면 엉뚱한 창이 찍혀요 — 확실히 하려면 KWin 스크립팅으로 대상을 활성화해야 하는데, 필요한지 확인되기 전엔 안 넣었어요 |
 | **Linux (GNOME)** | `gnome-screenshot` | 전체 화면 | GNOME 43 에서 빠졌어요. 없으면 캡처를 못 해요 |
@@ -792,45 +792,42 @@ GUI 시작이 제일 느려서, 8 MiB 측정 (111 ms) 이 창보다 먼저 끝�
 
 `TILDAZ_STRESS_HOLD_MS` 4 초는 이 2 초에 캡처 시간을 더한 값이에요. **캡처 자체는 macOS 0.3 초 ·
 Windows 0.73 초**예요 (둘 다 실측 — Windows 는 `powershell` 프로세스 시작과 `Add-Type` 의 C#
-컴파일까지 포함한 값이에요). `PrintWindow` 가 실패해 **`ddagrab` 까지 가는 회차는 1.18 초**고
-(실측 · Intel i5-1240P), 그래도 2 초 예산 안이에요.
+컴파일까지 포함한 값이에요).
 
-#### Windows 는 창 단위 경로가 둘이에요 — `PrintWindow` 가 환경을 타요
+#### hold 가 모자라면 PNG 에 창이 없어요 — `--hold-ms` 와 자동 재시도
 
-**`PrintWindow` 의 성패는 앱이 아니라 환경이 정해요.** 같은 앱이 머신에 따라 뒤집혀요
-([#381](https://github.com/ensky0/tildaz/issues/381) 실측, 같은 워크로드 · 같은 격자):
+**화면이 크면 캡처가 그만큼 오래 걸려서 4 초 안에 못 끝나요.** 그러면 찍을 때 producer 가 이미
+창을 놓은 뒤라 **PNG 에 대상이 없어요.** [#413](https://github.com/ensky0/tildaz/issues/413) 에서
+실제로 걸렸어요 — 2880×1800 · 200 % 머신에서 tildaz 가 `~` 였는데, **`HOLD_MS` 만 늘리자 `@`** 가
+됐어요 (다른 건 아무것도 안 바꿨어요).
 
-| 대상 | 노트북 AMD Ryzen AI 7 350 · 2880×1800 · 200 % | 노트북 Intel i5-1240P · 1920×1080 · 100 % |
+| hold | 표본 (대상 × 회차) | `PrintWindow` 실패 |
 |---|---|---|
-| wezterm · tildaz | **실패** — 전체 화면으로 물러서도 PNG 에 창이 없었어요 | **성공** |
-| conhost | **창조차 못 잡음** | **성공** |
-| alacritty | 성공 | **실패** (회차마다 갈려요) |
-| wt | 성공 | 성공 |
+| 넉넉 (15 초) | 18 | **0 건** |
+| 기본 (4 초) | 5 | 1 건 |
 
-그래서 예전에 적어 둔 *"GDI 두 경로가 DWM redirection surface 를 읽는데 flip-model swapchain
-창은 그 표면에 안 들어간다"* 는 설명은 **반증됐어요.** 그게 원인이라면 Intel 머신에서도
-tildaz · wezterm 이 실패해야 하는데 둘 다 창 단위로 깨끗이 찍혀요. **무엇이 두 환경을 가르는지는
-아직 몰라요** — GPU 드라이버 · 배율 · HDR 이 후보예요. (더 앞선 가설이던 *"최대화된 창이 화면을
-덮어 direct flip 이 걸려서"* 는 최대화를 푼 뒤에도 재현되어 이미 기각됐어요.)
+그래서 두 가지를 뒀어요.
 
-**그래서 두 번째 창 단위 경로를 뒀어요** — ffmpeg 의 `ddagrab` (Desktop Duplication API) 으로
-**창 rect 만 잘라** 찍어요. `ddagrab` 은 DWM 이 합성한 화면을 읽어서 GDI 와 통로가 달라요.
+- **`--hold-ms <N>`** 으로 기본값 (4000) 을 바꿀 수 있어요. 표기는 `measure-repeat.sh` 와 같아요.
+- **실패한 회차는 hold 를 15 초로 늘려 한 번 다시 찍어요.** `~` (전체 화면으로 물러섬) 과 `_`
+  (빈 이미지) 만 대상이에요. 표시는 마지막 시도의 결과이고, 재시도한 회차 수는 표 아래 요약에
+  나와요. 자주 뜨면 `--hold-ms` 를 올려 두는 게 나아요.
 
-```sh
-winget install Gyan.FFmpeg     # 선택이에요. 없으면 PrintWindow 만 써요
-```
+**`?` (창을 못 찾음) 는 재시도하지 않아요.** 그건 타이밍이 아니라 창을 못 고른 거라 hold 를
+늘리면 **오히려 나빠져요** — 앞 회차 창이 오래 남으면 wt 는 `wt -w new` 가 기존 프로세스에 창을
+요청해서 새 프로세스가 안 뜨고, *"이번 회차에 새로 뜬 창만 고른다"* 는 `StartTime` 필터에 걸려요
+(#413 실측: hold 15 초에서 wt 3 회차 중 2 회차가 `?`. 기본 4 초에서는 안 났어요).
 
-- **PATH 에 없어도 찾아요** — 방금 깐 경우 이미 떠 있는 셸에는 PATH 가 반영되지 않아서,
-  winget 의 shim 디렉터리 (`%LOCALAPPDATA%\Microsoft\WinGet\Links`) 도 함께 봐요.
-- **`@` 로 같이 표시돼요** — 창 단위라는 결과가 같아서예요. 어느 경로였는지는 표 아래 요약이
-  회차 수로 알려 줘요 (`ℹ N 회차는 PrintWindow 가 안 돼 ddagrab …`).
-- **주 모니터에 있는 창만** 잘라요. `output_idx=0` 은 첫 DXGI 출력이라, 다른 모니터의 창을
-  자르면 엉뚱한 자리를 찍고도 성공으로 보여요. 창 원점이 주 모니터 밖이면 이 경로를 건너뛰어요.
-- **가려진 창은 못 찍어요** (화면을 읽는 방식이라서요). 찍기 직전에 창을 맨 앞으로 올려서 피해요.
-- **HDR 화면은 미검증**이에요. 기본 8 bit 요청이 안 먹으면 `output_fmt=10bit` + `format=x2bgr10`
-  이 다음 후보고, 그래도 안 되면 전체 화면으로 물러서요.
-- **AMD 머신에서 이게 실제로 고쳐 주는지는 아직 확인 못 했어요** — 검증은 Intel 머신에서만
-  했어요 (alacritty 를 강제로 `PrintWindow` 실패시켜 `ddagrab` 경로로 찍히는 것까지 확인).
+#### `ddagrab` 2 차 경로는 없앴어요
+
+예전에는 ffmpeg 의 `ddagrab` (Desktop Duplication API) 으로 창 rect 만 잘라 찍는 2 차 경로가
+있었어요. `PrintWindow` 가 환경에 따라 깨진다고 봤기 때문인데, **그 전제가 위 실측으로 반증됐어요**
+— 깨진 게 아니라 hold 가 모자랐던 거예요. 넉넉한 hold 에서는 다섯 대상이 전부 `PrintWindow` 로
+찍혀요.
+
+지우니 좋은 점이 셋이에요. **캡처가 빨라져 타임아웃 자체가 줄고** (그 경로가 1.18 초를 먹었어요),
+ffmpeg 의존이 사라지고, 딸려 있던 미검증 항목 (다중 모니터에서 `output_idx` 선택 · HDR 화면) 도
+함께 없어졌어요.
 
 #### Windows 는 창을 (0,0) 으로 옮겨요
 
