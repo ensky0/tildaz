@@ -1102,6 +1102,20 @@ pub const SessionCore = struct {
         const drained = self.drainFrame();
         return drained.active_output or drained.active_output_pending or drained.title_changed;
     }
+
+    /// 아직 파싱하지 않은 PTY 출력이 어느 탭에든 남아 있으면 true.
+    ///
+    /// #436 — host 가 *"지금 자도 되나"* 를 판단하는 데 쓴다. `drainOutputForRender` 는
+    /// **"화면이 바뀌었나" 하나**만 돌려주므로 (§13.4) 밀린 출력 여부를 알 수 없다.
+    ///
+    /// **활성 탭만 보지 않는다** — `drainFrame` 이 비활성 탭도 같은 예산 안에서 번갈아
+    /// 파싱하므로 (§13, 탭 제목 갱신), 비활성 탭에 밀린 것이 있어도 계속 돌아야 한다.
+    pub fn hasPendingOutput(self: *SessionCore) bool {
+        for (self.tabs.items) |tab| {
+            if (!tab.output_ring.isEmpty()) return true;
+        }
+        return false;
+    }
 };
 
 fn nextActiveIndexAfterClose(active_index: usize, closed_index: usize, remaining_len: usize) ?usize {
