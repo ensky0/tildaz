@@ -62,12 +62,22 @@ CAPTURE_DIR=""
 #     창이 화면에 올라온 시점이 아니다 — wezterm 은 GUI 시작이 느려서 8 MiB 측정 (111 ms) 이
 #     창보다 먼저 끝나는 회차가 있었고, 그 회차 캡처에 창이 아예 없었다 (macOS 실측).
 #   - 캡처 자체에 2 초. **macOS 0.3 초 · Windows 0.73 초**다 (둘 다 실측 — Windows 값은
-#     PowerShell 프로세스 시작과 `Add-Type` 의 C# 컴파일을 포함한다). `PrintWindow` 가 실패해
-#     `ddagrab` 까지 가는 회차는 **1.18 초**다 (실측 · Intel i5-1240P). 그래도 2 초 예산 안이다.
-#     모자라면 PNG 에 창이 안 찍히므로 바로 드러난다.
+#     PowerShell 프로세스 시작과 `Add-Type` 의 C# 컴파일을 포함한다).
+#
+# **이 값이 모자라면 PNG 에 창이 없다** — 찍을 때 producer 가 이미 창을 놓은 것이다. 화면이 크면
+# 캡처 비용이 그만큼 커져서 [#413](https://github.com/ensky0/tildaz/issues/413) 에서 실제로 걸렸다
+# (2880x1800 · 200 % 에서 tildaz 가 `~`. 이 값만 늘리자 `@` 가 됐다). 그래서 두 가지를 뒀다 —
+# `--hold-ms` 로 바꿀 수 있고, 실패하면 `CAPTURE_RETRY_HOLD_MS` 로 그 회차를 한 번 다시 찍는다.
 HOLD_MS=4000
 # 측정이 끝나고 찍기까지 기다리는 시간 (초). 위 `HOLD_MS` 주석 참고.
 CAPTURE_DELAY=2
+# 캡처가 `~` (전체 화면으로 물러섬) · `_` (빈 이미지) 로 끝난 회차를 다시 찍을 때 쓸 hold.
+#
+# **`?` (창을 못 찾음) 는 재시도하지 않는다.** 그건 타이밍이 아니라 **창을 못 고른** 것이라
+# hold 를 늘리면 오히려 나빠진다 — wt 는 `wt -w new` 가 기존 프로세스에 창을 요청하고 곧바로
+# 반환해서, 앞 회차 창이 오래 남아 있으면 새 프로세스가 안 뜨고 `StartTime` 필터에 걸린다
+# (#413 실측: hold 15 초에서 wt 3 회차 중 2 회차가 `?` 였다. 기본 4 초에서는 안 났다).
+CAPTURE_RETRY_HOLD_MS=15000
 
 # 위생 점검에 걸려도 강행할지 (`--ignore-hygiene`).
 IGNORE_HYGIENE=0
@@ -89,6 +99,8 @@ while [ $# -gt 0 ]; do
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --repeat) REPEAT="$2"; shift 2 ;;
         --scrollback) SCROLLBACK="$2"; shift 2 ;;
+        # 표기는 `measure-repeat.sh` 와 맞춘다 (그쪽에 이미 `--hold-ms` 가 있다).
+        --hold-ms) HOLD_MS="$2"; shift 2 ;;
         # 경로는 선택이다. 안 주면 `dist/stress/shots`. 다음 인자가 `-` 로 시작하면 옵션이므로
         # 경로로 보지 않는다.
         --capture)
@@ -136,6 +148,14 @@ if [ -z "$CAPTURE_DIR" ]; then
     HOLD_MS=0
 else
     mkdir -p "$CAPTURE_DIR" || { echo "--capture 디렉터리를 만들 수 없어요: $CAPTURE_DIR" >&2; exit 2; }
+    # hold 가 `CAPTURE_DELAY` 이하면 **찍으러 갈 때 창이 이미 없다** — 구조적으로 한 회차도
+    # 창 단위로 못 찍는다. 재시도가 있어도 첫 시도를 통째로 버리는 셈이라 미리 막는다.
+    # (실기에서 `--hold-ms 1500` 을 주고 다섯 대상이 전부 `?` 로 떨어지는 것을 봤다.)
+    if [ "$HOLD_MS" -le $(( CAPTURE_DELAY * 1000 )) ]; then
+        echo "--hold-ms 는 $(( CAPTURE_DELAY * 1000 + 1 )) 이상이어야 해요 (찍기 전 ${CAPTURE_DELAY} 초를 기다려요)." >&2
+        echo "  준 값: ${HOLD_MS} ms" >&2
+        exit 2
+    fi
 fi
 
 # 자식이 **Windows 실행파일**이면 경로를 Windows 형식으로 줘야 한다. MSYS 는 명령줄 인자를
@@ -145,44 +165,24 @@ native_path() {
     if [ "$IS_WINDOWS" = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi
 }
 
-# **Windows 는 창 단위 캡처 경로가 둘이다.** `PrintWindow` 를 먼저 쓰고, 그것이 안 되면 ffmpeg 의
-# `ddagrab` (Desktop Duplication API) 으로 **창 rect 만 잘라** 찍는다.
+# **Windows 창 단위 캡처는 `PrintWindow` 하나다.**
 #
-# 둘을 두는 이유는 `PrintWindow` 의 성패가 **환경마다 갈리기 때문**이다. 같은 앱이 머신에 따라
-# 뒤집힌다 — 두 머신 실측 ([#381](https://github.com/ensky0/tildaz/issues/381)):
+# 예전에는 ffmpeg 의 `ddagrab` (Desktop Duplication API) 으로 창 rect 만 잘라 찍는 2 차 경로가
+# 있었다. `PrintWindow` 가 환경에 따라 깨진다고 봤기 때문인데, 그 전제가
+# [#413](https://github.com/ensky0/tildaz/issues/413) 에서 **반증됐다** — 깨진 것이 아니라
+# **캡처가 `HOLD_MS` 를 넘겨 창이 이미 닫힌 뒤에 찍고 있었다.**
 #
-# | 대상 | 노트북 AMD Ryzen AI 7 350 · 200 % | 노트북 Intel i5-1240P · 100 % |
+# 근거 (AMD Ryzen AI 7 350 · 2880x1800 · 200 %, #413 코멘트 ②③):
+#
+# | hold | 표본 (대상 x 회차) | `PrintWindow` 실패 |
 # |---|---|---|
-# | wezterm · tildaz | 실패 (전체 화면에도 창이 없었다) | **성공** |
-# | conhost | 창조차 못 잡음 | **성공** |
-# | alacritty | 성공 | **실패** |
-# | wt | 성공 | 성공 |
+# | 넉넉 (15 초) | 18 | **0 건** |
+# | 기본 (4 초) | 5 | 1 건 |
 #
-# 그래서 *"flip-model swapchain 으로 그리는 창은 GDI 가 못 읽는다"* 는 이전 설명은 **반증됐다** —
-# 그게 원인이라면 Intel 머신에서도 tildaz · wezterm 이 실패해야 한다. 무엇이 두 환경을 가르는지는
-# **아직 모른다** (GPU 드라이버 · 배율 · HDR 이 후보다).
-#
-# `ddagrab` 은 **DWM 이 합성한 화면**을 읽어서 GDI 두 경로와 통로가 다르다. Intel 머신에서
-# tildaz · wezterm 창을 rect 그대로 찍는 것을 확인했다. **AMD 머신에서도 되는지는 미검증이다.**
-#
-# ffmpeg 이 없으면 지금까지와 똑같이 동작한다 — **의존성은 선택이다** (리눅스가 grim · spectacle
-# 을 있으면 쓰는 것과 같다). 설치는 `winget install Gyan.FFmpeg`.
-WIN_FFMPEG=""
-if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
-    if command -v ffmpeg >/dev/null 2>&1; then
-        WIN_FFMPEG=$(command -v ffmpeg)
-    else
-        # 방금 winget 으로 깔았다면 **이미 떠 있는 셸의 PATH 에는 아직 없다** (winget 이 PATH 를
-        # 고쳐도 기존 프로세스에는 반영되지 않는다). winget 의 shim 디렉터리를 직접 본다.
-        _lad_ff=$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || true)
-        if [ -n "$_lad_ff" ] && [ -x "$_lad_ff/Microsoft/WinGet/Links/ffmpeg.exe" ]; then
-            WIN_FFMPEG="$_lad_ff/Microsoft/WinGet/Links/ffmpeg.exe"
-        fi
-    fi
-fi
-# PowerShell 에 넘길 native 경로. 회차마다 `cygpath` 를 부르지 않도록 한 번만 만든다.
-WIN_FFMPEG_NATIVE=""
-[ -n "$WIN_FFMPEG" ] && WIN_FFMPEG_NATIVE=$(native_path "$WIN_FFMPEG")
+# 넉넉한 hold 에서는 다섯 대상이 전부 `PrintWindow` 로 찍힌다. 그래서 2 차 경로를 지웠다. 지우면
+# **캡처가 빨라져 타임아웃 자체가 줄고** (그 경로가 1.18 초를 먹었다), ffmpeg 의존 · 창을 맨 앞으로
+# 올리기 · 주 모니터 원점 가드 · 다중 모니터 미검증 · HDR 미검증이 함께 없어진다. 대신 hold 를
+# `--hold-ms` 로 조절하고, 실패한 회차는 `CAPTURE_RETRY_HOLD_MS` 로 한 번 다시 찍는다.
 
 PRODUCER="$REPO_ROOT/zig-out/bin/tildaz-stress"
 [ "$IS_WINDOWS" = 1 ] && PRODUCER="$PRODUCER.exe"
@@ -395,13 +395,8 @@ if [ -n "$CAPTURE_DIR" ]; then
             echo "  macOS 는 **화면 기록 권한**이 필요해요. 잠금 화면이면 캡처가 실패해요."
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            # 창 단위 경로가 둘이라 어느 것까지 쓸 수 있는지 미리 알린다 (위 `WIN_FFMPEG` 주석).
-            if [ -n "$WIN_FFMPEG" ]; then
-                echo "  캡처 도구: PrintWindow → 실패 시 ddagrab ($WIN_FFMPEG)"
-            else
-                echo "  캡처 도구: PrintWindow 만 — 안 되는 환경이 있어요. ffmpeg 을 깔면 ddagrab 으로"
-                echo "    한 번 더 시도해요: winget install Gyan.FFmpeg"
-            fi
+            # 실패하면 hold 를 늘려 그 회차를 다시 찍는다 (#413). 얼마로 늘리는지 미리 알린다.
+            echo "  캡처 도구: PrintWindow (실패한 회차는 hold ${CAPTURE_RETRY_HOLD_MS} ms 로 1 회 재시도)"
             ;;
         *)
             # 리눅스는 compositor 마다 통로가 달라서, 없으면 미리 알린다 — 다 돌고 나서
@@ -479,9 +474,13 @@ echo ""
 
 # producer 를 셸 명령 한 줄로. 터미널마다 이 문자열을 자기 방식으로 실행한다.
 # `exec` 로 셸을 대체해 셸이 남지 않게 한다.
+#
+# **`TILDAZ_STRESS_HOLD_MS` 는 여기서 안 준다** — `run_terminal` 이 시도마다 export 한다 (#413 의
+# 재시도). 이 문자열은 호출부에서 **한 번** 만들어지므로 여기에 값을 박으면 재시도가 늘린 hold 가
+# 반영되지 않는다. 자식은 환경에서 상속받는다.
 producer_cmd() {
-    printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s TILDAZ_STRESS_HOLD_MS=%s TILDAZ_STRESS_GRID=%s %s' \
-        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "$HOLD_MS" "${COLS}x${ROWS}" "$PRODUCER"
+    printf 'env TILDAZ_STRESS_WORKLOAD=%s TILDAZ_STRESS_BYTES=%s TILDAZ_STRESS_TIMING_FILE=%s TILDAZ_STRESS_GRID=%s %s' \
+        "$WORKLOAD" "$BYTES" "$(native_path "$1")" "${COLS}x${ROWS}" "$PRODUCER"
 }
 
 # timing 파일이 생길 때까지 기다린다. 터미널을 background 로 띄우기 때문에 (그러지 않으면
@@ -616,10 +615,7 @@ param(
     # 창을 찾아 배치만 하고 끝낸다 (찍지 않는다). 대상을 띄운 직후에 부른다.
     [switch]$PlaceOnly,
     # 창이 뜰 때까지 기다릴 시간. 0 이면 한 번만 찾아본다.
-    [int]$WaitMs = 0,
-    # ffmpeg 경로. 있으면 `PrintWindow` 가 실패했을 때 `ddagrab` 으로 한 번 더 시도한다.
-    # 빈 값이면 곧바로 전체 화면으로 물러선다 (이전과 같은 동작).
-    [string]$Ffmpeg = ""
+    [int]$WaitMs = 0
 )
 $ErrorActionPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Drawing
@@ -661,8 +657,6 @@ public class TzWin {
   public static readonly IntPtr PER_MONITOR_V2 = new IntPtr(-4);
   public const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77;
   public const int SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
-  // 주 모니터 크기. `ddagrab` 의 자를 영역이 이 안에 드는지 판정하는 데 쓴다.
-  public const int SM_CXSCREEN = 0, SM_CYSCREEN = 1;
   // `SetProcessDpiAwarenessContext` 는 Windows 10 1703+ 다. 그 전 버전에서는 export 가
   // 없어 EntryPointNotFoundException 이 나므로 구형 API 로 물러선다.
   public static void MakeDpiAware() {
@@ -745,41 +739,21 @@ function Test-Uniform($b) {
     return $true
 }
 
-# 이미 만들어진 PNG 파일이 **쓸 만한가** — 존재하고, 열리고, 단색이 아니면 true.
-# `ddagrab` 이 만든 파일을 검사하는 데 쓴다. 파일을 잠그지 않으려고 바이트로 읽어서 연다
-# (실패했을 때 같은 경로에 전체 화면을 덮어써야 한다).
-function Test-PngUsable($path) {
-    if (-not (Test-Path $path)) { return $false }
-    try {
-        $bytes = [System.IO.File]::ReadAllBytes($path)
-        if ($bytes.Length -eq 0) { return $false }
-        $ms = New-Object System.IO.MemoryStream(,$bytes)
-        $img = [System.Drawing.Image]::FromStream($ms)
-        $bmp = New-Object System.Drawing.Bitmap $img
-        $img.Dispose(); $ms.Dispose()
-        $uniform = Test-Uniform $bmp
-        $bmp.Dispose()
-        return (-not $uniform)
-    } catch { return $false }
-}
 
 # --- 찍기 --------------------------------------------------------------------
 #
 # **창 단위로 먼저 시도한다.** 가려짐 · 화면 밖으로 삐져나감 · 작업 표시줄 겹침을 한 번에
 # 없애 준다 (macOS 가 ScreenCaptureKit 으로 창 단위를 찍는 것과 같은 방향).
 #
-# 순서는 셋이다. 앞이 안 되면 다음으로 간다.
+# 순서는 둘이다. 앞이 안 되면 다음으로 간다.
 #   ① `PrintWindow(PW_RENDERFULLCONTENT)` — 창에게 자기 DC 에 그리라고 시킨다. **가려져
 #      있어도** 되고 창 프레임 밖 그림자가 안 들어가서 제일 깨끗하다.
-#   ② `ddagrab` (ffmpeg · Desktop Duplication) 으로 **창 rect 만** 잘라 찍는다. 화면에 보이는
-#      것을 읽으므로 먼저 맨 앞으로 올린다. 통로가 GDI 와 달라서 ① 이 안 되는 환경에서 잡힌다.
-#   ③ 전체 화면 `CopyFromScreen`. 대상이 다른 창에 가리면 안 보이므로 마지막이다.
+#   ② 전체 화면 `CopyFromScreen`. 대상이 다른 창에 가리면 안 보이므로 마지막이다.
 #
-# **① 의 성패는 환경마다 갈린다** — sh 쪽 `WIN_FFMPEG` 주석의 두 머신 실측 표를 보라. 같은 앱이
-# 머신에 따라 뒤집히고, 무엇이 그 차이를 만드는지는 아직 모른다. ② 를 둔 이유가 그것이다.
+# **① 이 실패하는 흔한 원인은 창이 이미 닫힌 것**이다 (#413). 그때는 여기서 할 수 있는 게 없고,
+# sh 쪽이 hold 를 늘려 그 회차를 다시 찍는다. `ddagrab` 2 차 경로는 그 오진 위에 있던 것이라
+# 지웠다 — sh 쪽 주석의 실측 표 참고.
 $captured = $false
-# ② 로 찍혔나. 종료 코드로 sh 에 알려서 표 아래 요약에 적는다.
-$viaDda = $false
 $r = New-Object TzWin+RECT
 $ww = 0
 $wh = 0
@@ -805,37 +779,12 @@ if ($ww -gt 0 -and $wh -gt 0) {
     $wb.Dispose()
 }
 
-# ② · ③ 은 **화면에 보이는 것**을 읽으므로 대상을 맨 앞으로 올린 뒤에 한다.
+# ② 는 **화면에 보이는 것**을 읽으므로 대상을 맨 앞으로 올린 뒤에 한다.
 $raised = $false
 if (-not $captured -and $h -ne [IntPtr]::Zero) {
     [void][TzWin]::SetWindowPos($h, [TzWin]::TOPMOST, 0, 0, 0, 0, [TzWin]::RAISE)
     Start-Sleep -Milliseconds 200
     $raised = $true
-}
-
-# ② 창 단위 — ddagrab 으로 창 rect 만
-if (-not $captured -and $Ffmpeg -ne "" -and $ww -gt 0 -and $wh -gt 0) {
-    $sx = [TzWin]::GetSystemMetrics([TzWin]::SM_CXSCREEN)
-    $sy = [TzWin]::GetSystemMetrics([TzWin]::SM_CYSCREEN)
-    # **창의 원점이 주 모니터 안에 있을 때만 쓴다.** `output_idx=0` 은 첫 DXGI 출력이라
-    # 보통 주 모니터인데, 대상이 다른 모니터에 있으면 엉뚱한 자리를 잘라서 "찍혔다" 로
-    # 오판한다. 다중 모니터에서 `output_idx` 를 골라 쓰는 것은 미검증이라 넣지 않았다.
-    if ($r.L -ge 0 -and $r.T -ge 0 -and $r.L -lt $sx -and $r.T -lt $sy) {
-        # 창이 화면 밖으로 삐져나가면 그만큼 줄여서 자른다 (화면 밖은 읽을 수 없다).
-        $cw = [Math]::Min($ww, $sx - $r.L)
-        $ch = [Math]::Min($wh, $sy - $r.T)
-        if ($cw -gt 0 -and $ch -gt 0) {
-            # `ddagrab` 은 D3D11 프레임을 내므로 `hwdownload` 로 CPU 메모리에 내린다.
-            # ⚠ HDR 화면은 미검증이다 — 기본 8 bit 요청이 안 먹으면 `output_fmt=10bit` +
-            # `format=x2bgr10` 이 다음 후보다. 실패하면 아래 ③ 으로 물러선다.
-            $filter = "ddagrab=output_idx=0:offset_x=$($r.L):offset_y=$($r.T):video_size=${cw}x${ch},hwdownload,format=bgra"
-            & $Ffmpeg -hide_banner -loglevel error -y -filter_complex $filter -frames:v 1 $Png 2>&1 | Out-Null
-            if (Test-PngUsable $Png) {
-                $captured = $true
-                $viaDda = $true
-            }
-        }
-    }
 }
 
 if (-not $captured) {
@@ -865,10 +814,8 @@ if ($raised) {
 # 창을 한 번도 못 잡고 있던 conhost 가 계속 성공처럼 보였다 (#381).
 #   3 = 대상 창을 못 찾음 (전체 화면만 찍힘 — 대상이 있다는 보장 없음)
 #   4 = 창은 찾았지만 창 단위 캡처 실패 → 전체 화면으로 물러섬
-#   5 = 창 단위로 찍었는데 `PrintWindow` 가 아니라 `ddagrab` 이었다 (성공이다)
 if ($h -eq [IntPtr]::Zero) { exit 3 }
 if (-not $captured)        { exit 4 }
-if ($viaDda)               { exit 5 }
 exit 0
 EOF
 fi
@@ -879,17 +826,14 @@ fi
 # Windows 는 무엇을 찍었는지를 두 플래그로 알린다. 다른 platform 은 이 구분이 없다 (`0`).
 #   `CAPTURE_NOWIN`    대상 창을 못 찾음 — 전체 화면만 찍혔고 대상이 있다는 보장이 없다.
 #   `CAPTURE_FELLBACK` 창은 찾았지만 창 단위 캡처가 안 돼서 전체 화면으로 물러섰다.
-#   `CAPTURE_VIA_DDA`  창 단위로 찍긴 했는데 `PrintWindow` 가 아니라 `ddagrab` 이었다.
 CAPTURE_NOWIN=0
 CAPTURE_FELLBACK=0
-CAPTURE_VIA_DDA=0
 capture_screen() {
     _png="$1"
     _ctarget="$2"
     _csince="$3"
     CAPTURE_NOWIN=0
     CAPTURE_FELLBACK=0
-    CAPTURE_VIA_DDA=0
     case "$(uname -s)" in
         Darwin)
             # 창 목록에서 그 앱의 **가장 큰 windowID** 를 고른다 — windowID 는 단조 증가하므로
@@ -914,7 +858,6 @@ capture_screen() {
                 -ProcName "$(win_proc_name "$_ctarget")" \
                 -WindowClass "$(win_window_class "$_ctarget")" \
                 -WindowTitle "$(win_window_title "$_ctarget")" \
-                -Ffmpeg "$WIN_FFMPEG_NATIVE" \
                 -SinceEpoch "$_csince" >/dev/null 2>&1
             then :; else
                 # `&&` 연쇄로 쓰면 마지막 검사가 거짓일 때 함수가 0 이 아닌 값을 돌려주고,
@@ -922,7 +865,6 @@ capture_screen() {
                 _rc=$?
                 if   [ "$_rc" -eq 3 ]; then CAPTURE_NOWIN=1
                 elif [ "$_rc" -eq 4 ]; then CAPTURE_FELLBACK=1
-                elif [ "$_rc" -eq 5 ]; then CAPTURE_VIA_DDA=1
                 fi
             fi
             ;;
@@ -977,6 +919,13 @@ place_window() {
 CAPTURE_LOG="$WORK_DIR/capture-outcomes"
 : > "$CAPTURE_LOG"
 
+# #413 — hold 를 늘려 다시 찍은 회차 수. `CAPTURE_LOG` 와 같은 이유로 파일에 쌓는다
+# (`run_terminal_win` 이 서브셸 안에서 `run_terminal` 을 부르므로 변수는 안 남는다).
+CAPTURE_RETRY_LOG="$WORK_DIR/capture-retries"
+: > "$CAPTURE_RETRY_LOG"
+# 옵션으로 정해진 hold. `run_terminal` 이 재시도 때 잠깐 올렸다가 이 값으로 되돌린다.
+CAPTURE_HOLD_MS="$HOLD_MS"
+
 # 이보다 작은 PNG 은 **사실상 빈 이미지**로 본다 (위 `_` 표시 주석). 실측 근거는 alacritty 의
 # 550 byte 단색 캡처이고, 같은 실행의 정상 캡처는 65~134 KB 였다 (#381).
 CAPTURE_MIN_BYTES=2048
@@ -1008,11 +957,26 @@ run_terminal() {
     # 목표 그리드를 기다린 시간 중 **최댓값**. 한 회차라도 오래 걸렸으면 그 대상은 늦게
     # resize 한다는 뜻이라, 평균으로 뭉개지 않는다.
     _wait_max=0
+    # 이 대상에서 hold 를 늘려 다시 찍은 회차 수. 표 아래 요약에 적는다.
+    _retried=0
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
+        # #413 — 한 회차를 최대 두 번 시도한다. **창 단위로 못 찍었으면** (`~` · `_` · `?`)
+        # 창이 이미 닫힌 뒤에 찍었을 가능성이 크므로, hold 를 늘려 그 회차를 통째로 다시
+        # 돌린다. 어느 표시가 대상인지는 아래 재시도 판정에 적어 뒀다.
+        #
+        # **PNG 만 다시 찍을 수는 없다** — hold 는 producer 안에 있고 그 시점엔 창이 없다.
+        # 그래서 회차를 다시 돌리고, timing 과 PNG 을 같은 시도의 것으로 함께 바꾼다.
+        _attempt=1
+        _hold_this="$HOLD_MS"
+        while :; do
         # 회차마다 지운다 — 이전 회차 파일이 남아 있으면 `wait_for` 가 즉시 통과해 같은
         # 값을 다시 읽는다.
         rm -f "$_timing"
+        # 이 시도에 쓸 hold. **launcher 들은 이 값을 명령 문자열에 박지 않고 환경에서
+        # 상속받는다** — 명령 문자열은 회차마다 다시 만들어지지 않기 때문이다 (#413).
+        HOLD_MS="$_hold_this"
+        export TILDAZ_STRESS_HOLD_MS="$_hold_this"
         # 캡처가 **이번 회차에 새로 뜬 창**만 고르도록 시작 시각을 남긴다 (Windows 에서만 쓴다).
         # 1 초 빼는 이유는 `date +%s` 가 초 단위라, 같은 초에 뜬 창이 비교에서 빠질 수 있어서다.
         _since=$(( $(date +%s) - 1 ))
@@ -1036,8 +1000,11 @@ run_terminal() {
         if [ -n "$CAPTURE_DIR" ] && [ "$IS_WINDOWS" = 1 ]; then
             place_window "$_name" "$_since" &
         fi
+        _mark=""
+        _word=""
+        _sample=""
         if wait_for "$_timing"; then
-            _samples="$_samples $(sed -n 's/^elapsed_ns=//p' "$_timing")"
+            _sample=$(sed -n 's/^elapsed_ns=//p' "$_timing")
             _cols=$(sed -n 's/^cols=//p' "$_timing")
             _rows=$(sed -n 's/^rows=//p' "$_timing")
             _cols0=$(sed -n 's/^cols_start=//p' "$_timing")
@@ -1059,8 +1026,8 @@ run_terminal() {
                 # `?` 창을 아예 못 찾았다 — 화면에 대상이 있다는 보장이 없다
                 # `!` PNG 자체가 안 생겼다
                 #
-                # **`ddagrab` 으로 찍힌 것도 `@` 다** — 창 단위라는 결과가 같아서 표시를 나누지
-                # 않는다. 어느 경로였는지는 표 아래 요약에 회차 수로 적는다.
+                # **표시는 이 시도의 결과이지 회차의 결과가 아니다.** `~` · `_` 이면 아래에서
+                # hold 를 늘려 회차를 다시 돌리므로, 최종 표시는 마지막 시도의 것이다.
                 #
                 # **빈 PNG 을 먼저 거른다.** `@` 는 지금까지 *"캡처 API 가 성공을 돌려줬다"* 는
                 # 뜻이었을 뿐이라, 창 단위로 찍었는데 **단색 이미지**가 나와도 성공으로 보였다
@@ -1074,23 +1041,21 @@ run_terminal() {
                 # 날 수 있으므로 임계는 실측 (550 byte) 보다 넉넉히 잡되 정상값 (65 KB) 보다 훨씬
                 # 아래인 2 KiB 로 둔다.
                 if [ ! -s "$_png" ]; then
-                    echo failed >> "$CAPTURE_LOG"; printf '!'
+                    _word=failed; _mark='!'
                 elif [ "$(wc -c < "$_png" | tr -d ' ')" -lt "$CAPTURE_MIN_BYTES" ]; then
-                    echo blank >> "$CAPTURE_LOG"; printf '_'
+                    _word=blank; _mark='_'
                 elif [ "$CAPTURE_NOWIN" = 1 ]; then
-                    echo nowin >> "$CAPTURE_LOG"; printf '?'
+                    _word=nowin; _mark='?'
                 elif [ "$CAPTURE_FELLBACK" = 1 ]; then
-                    echo fellback >> "$CAPTURE_LOG"; printf '~'
-                elif [ "$CAPTURE_VIA_DDA" = 1 ]; then
-                    echo dda >> "$CAPTURE_LOG"; printf '@'
+                    _word=fellback; _mark='~'
                 else
-                    echo ok >> "$CAPTURE_LOG"; printf '@'
+                    _word=ok; _mark='@'
                 fi
             else
-                printf '.'
+                _mark='.'
             fi
         else
-            printf 'x'
+            _mark='x'
         fi
         # 캡처를 켜면 producer 가 `HOLD_MS` 만큼 더 살아 있다. 그걸 중간에 죽이면 셸이
         # `Terminated: 15` 를 표 위에 찍어 결과를 읽기 어렵게 만든다 (macOS 실측). 스스로
@@ -1103,8 +1068,46 @@ run_terminal() {
         # `cleanup_terminals` 가 이 실행의 `WORK_DIR` 패턴으로 실제 창을 정리한다.
         [ -n "$_pid" ] && kill "$_pid" 2>/dev/null || true
         cleanup_terminals
+
+        # #413 — **hold 가 끝날 때까지 기다린 뒤에 다음으로 넘어간다.**
+        #
+        # `wait "$_pid"` 로는 부족하다. wt 는 `wt -w new` 가 기존 WindowsTerminal 프로세스에
+        # 창을 요청하고 **곧바로 반환**하고 (conhost 도 `start` 로 떼어 내 `_pid` 가 없다),
+        # 그러면 앞 창이 살아 있는 채로 다음 회차가 시작된다. 그 상태에서 `wt -w new` 를 또
+        # 부르면 새 프로세스가 안 뜨고 *"이번 회차에 새로 뜬 창만 고른다"* 는 `StartTime`
+        # 필터에 걸려 `?` 가 된다 (hold 15 초에서 wt 3 회차 중 2 회차가 그랬다).
+        #
+        # 캡처는 timing + `CAPTURE_DELAY` 에 했으므로 남은 시간은 그만큼 뺀 값이다.
+        if [ -n "$CAPTURE_DIR" ]; then
+            _settle=$(( _hold_this / 1000 - CAPTURE_DELAY ))
+            [ "$_settle" -gt 0 ] && sleep "$_settle"
+        fi
+
+        # 다시 찍을 값어치가 있나. **창 단위로 못 찍은 것은 전부 대상이다** (`~` · `_` · `?`).
+        #
+        # `?` 도 넣는 이유 — 원인이 둘인데 둘 다 재시도가 맞다. **창이 이미 닫혀서** 못 찾은
+        # 경우는 hold 를 늘리면 고쳐지고, **앞 창이 남아 프로세스가 재사용된** 경우는 바로 위
+        # settle 이 그 창을 없앤 뒤라 다시 뜬다. 처음엔 `?` 를 뺐다가, hold 를 `CAPTURE_DELAY`
+        # 보다 짧게 준 실기에서 다섯 대상이 전부 `?` 로 떨어지는데 재시도가 한 번도 안 걸려서
+        # 고쳤다.
+        if [ "$_attempt" = 1 ] && [ "$_mark" != '@' ] && [ "$_mark" != 'x' ] && [ "$_mark" != '.' ]; then
+            _attempt=2
+            _hold_this="$CAPTURE_RETRY_HOLD_MS"
+            _retried=$((_retried + 1))
+            continue
+        fi
+        break
+        done
+        # 이 회차의 최종 결과를 남긴다. 재시도했으면 마지막 시도의 것이다 — timing 과 PNG 이
+        # 같은 시도에서 나와야 짝이 맞는다.
+        [ -n "$_sample" ] && _samples="$_samples $_sample"
+        [ -n "$_word" ] && echo "$_word" >> "$CAPTURE_LOG"
+        printf '%s' "$_mark"
         _run=$((_run + 1))
     done
+    # 다음 대상이 기본값으로 시작하도록 되돌린다.
+    HOLD_MS="$CAPTURE_HOLD_MS"
+    [ "$_retried" -gt 0 ] && echo "$_retried" >> "$CAPTURE_RETRY_LOG"
 
     if [ -z "$_samples" ]; then
         printf ' timeout / 실행 안 됨\n'
@@ -1132,7 +1135,7 @@ run_terminal_win() {
         export TILDAZ_STRESS_WORKLOAD="$WORKLOAD"
         export TILDAZ_STRESS_BYTES="$BYTES"
         export TILDAZ_STRESS_TIMING_FILE="$(native_path "$WORK_DIR/$_wname.timing")"
-        export TILDAZ_STRESS_HOLD_MS="$HOLD_MS"
+        # `TILDAZ_STRESS_HOLD_MS` 는 `run_terminal` 이 시도마다 export 한다 (#413 재시도).
         export TILDAZ_STRESS_GRID="${COLS}x${ROWS}"
         run_terminal "$_wname" "$@"
     )
@@ -1336,7 +1339,6 @@ if [ -n "$TILDAZ_BIN" ]; then
         "TILDAZ_STRESS_WORKLOAD=$WORKLOAD" \
         "TILDAZ_STRESS_BYTES=$BYTES" \
         "TILDAZ_STRESS_TIMING_FILE=$(native_path "$T")" \
-        "TILDAZ_STRESS_HOLD_MS=$HOLD_MS" \
         "TILDAZ_STRESS_GRID=${COLS}x${ROWS}" \
         "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}" \
         -scrollback "$SCROLLBACK"
@@ -1414,7 +1416,9 @@ if [ "$IS_WINDOWS" = 1 ] && command -v conhost >/dev/null 2>&1; then
         printf 'set "TILDAZ_STRESS_WORKLOAD=%s"\r\n' "$WORKLOAD"
         printf 'set "TILDAZ_STRESS_BYTES=%s"\r\n' "$BYTES"
         printf 'set "TILDAZ_STRESS_TIMING_FILE=%s"\r\n' "$(native_path "$T")"
-        printf 'set "TILDAZ_STRESS_HOLD_MS=%s"\r\n' "$HOLD_MS"
+        # `TILDAZ_STRESS_HOLD_MS` 는 안 박는다 — `run_terminal` 이 시도마다 export 한 값을
+        # 이 `.cmd` 가 상속받는다 (#413 재시도). 여기 박으면 파일이 한 번만 쓰이므로 늘린
+        # hold 가 반영되지 않는다.
         printf 'set "TILDAZ_STRESS_GRID=%s"\r\n' "${COLS}x${ROWS}"
         printf '"%s"\r\n' "$(native_path "$PRODUCER")"
     } > "$_conhost_cmd"
@@ -1522,39 +1526,36 @@ if [ -n "$CAPTURE_DIR" ]; then
     CAPTURE_FAILED=$(capture_count failed)
     CAPTURE_NOWIN_TOTAL=$(capture_count nowin)
     CAPTURE_FELLBACK_TOTAL=$(capture_count fellback)
-    CAPTURE_DDA_TOTAL=$(capture_count dda)
     CAPTURE_BLANK_TOTAL=$(capture_count blank)
+    # 대상별로 한 줄씩 쌓인 재시도 횟수를 합친다.
+    CAPTURE_RETRY_TOTAL=$(awk '{ n += $1 } END { print n + 0 }' "$CAPTURE_RETRY_LOG")
     echo ""
     echo "캡처: $CAPTURE_DIR"
     echo "  @ = 창 단위로 찍었고 내용 있음 · _ = 찍혔지만 사실상 빈 이미지 · ~ = 창 단위 실패로"
     echo "  전체 화면 · ? = 창을 못 찾음 · ! = 실패"
+    if [ "$CAPTURE_RETRY_TOTAL" -gt 0 ]; then
+        echo "ℹ ${CAPTURE_RETRY_TOTAL} 회차는 첫 시도가 실패해 hold 를 ${CAPTURE_RETRY_HOLD_MS} ms 로 늘려 다시 찍었어요."
+        echo "  표시는 마지막 시도의 결과예요. 자주 뜨면 --hold-ms 를 올려 두는 게 나아요 (#413)."
+    fi
     if [ "$CAPTURE_BLANK_TOTAL" -gt 0 ]; then
         echo "⚠ ${CAPTURE_BLANK_TOTAL} 회차는 PNG 이 ${CAPTURE_MIN_BYTES} byte 미만이라 **사실상 비어 있어요** (_)."
-        echo "  캡처 API 는 성공을 돌려줬지만 단색이 나온 거예요 — 그 대상은 이 경로로 못 찍어요."
-        if [ "$IS_WINDOWS" = 1 ] && [ -z "$WIN_FFMPEG" ]; then
-            echo "  ffmpeg 을 깔면 ddagrab 으로 한 번 더 시도해요: winget install Gyan.FFmpeg"
-        fi
+        echo "  hold 를 늘려 다시 찍고도 그랬다면, 그 대상은 이 경로로 못 찍는 거예요."
     fi
     if [ "$CAPTURE_NOWIN_TOTAL" -gt 0 ]; then
         echo "⚠ ${CAPTURE_NOWIN_TOTAL} 회차는 대상 창을 못 찾았어요 (?). 그 회차는 창을 앞으로 올리지도"
         echo "  (0,0) 으로 옮기지도 못했으니, PNG 에 대상이 있어도 우연이에요."
-    fi
-    if [ "$CAPTURE_DDA_TOTAL" -gt 0 ]; then
-        echo "ℹ ${CAPTURE_DDA_TOTAL} 회차는 PrintWindow 가 안 돼 ddagrab (Desktop Duplication) 으로 창 rect 를"
-        echo "  찍었어요. 결과는 창 단위 (@) 로 같아요 — 이 환경에서 PrintWindow 가 안 된다는 기록이에요."
+        echo "  이건 hold 를 늘려도 안 고쳐져요 — 오히려 앞 회차 창이 오래 남아 wt 처럼 기존"
+        echo "  프로세스를 재사용하는 대상에서 더 자주 나요 (#413)."
     fi
     if [ "$CAPTURE_FELLBACK_TOTAL" -gt 0 ]; then
         echo "⚠ ${CAPTURE_FELLBACK_TOTAL} 회차는 창 단위 캡처가 안 돼 전체 화면으로 물러섰어요 (~)."
-        echo "  GPU 로 그리는 창이 PrintWindow 에 단색을 주는 경우예요. 그 PNG 은 다른 창에 가리거나"
-        echo "  최대화된 창 때문에 대상이 빠질 수 있으니 눈으로 확인해 주세요."
-        if [ "$IS_WINDOWS" = 1 ] && [ -z "$WIN_FFMPEG" ]; then
-            echo "  ffmpeg 을 깔면 ddagrab 으로 창 rect 를 한 번 더 시도해요: winget install Gyan.FFmpeg"
-        fi
+        echo "  hold 를 늘려 다시 찍고도 그랬다는 뜻이에요. 그 PNG 은 다른 창에 가리거나 최대화된"
+        echo "  창 때문에 대상이 빠질 수 있으니 눈으로 확인해 주세요."
     fi
     echo "⚠ 전체 화면으로 찍힌 PNG (~ · ? · macOS 에서 창 못 찾음 · 리눅스 전체) 은 대상이 다른 창"
     echo "  뒤에 있으면 안 보여요. PNG 을 눈으로 확인해 주세요."
     if [ "$CAPTURE_FAILED" -gt 0 ]; then
         echo "⚠ ${CAPTURE_FAILED} 회차가 안 찍혔어요. 권한 (macOS 화면 기록) · 캡처 도구 유무 (리눅스) ·"
-        echo "  hold (${HOLD_MS} ms) 안에 캡처가 못 끝났는지를 보세요."
+        echo "  hold (${CAPTURE_HOLD_MS} ms) 안에 캡처가 못 끝났는지를 보세요."
     fi
 fi
