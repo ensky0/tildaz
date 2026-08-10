@@ -50,6 +50,10 @@ pub var render: Counter = .{}; // renderTerminal excluding Present
 pub var shape: Counter = .{}; // grapheme cluster shaping — subset of render, extra = chain miss
 pub var present: Counter = .{}; // swap_chain.Present
 pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count
+/// #435 — swap chain 이 아직 다음 프레임을 못 받아서 건너뛴 frame tick 수 (extra).
+/// `onrender` 의 `skip` 과 **섞지 않는다** — 그쪽은 *"화면이 안 바뀌어서 안 그렸다"*
+/// (#386 ②) 라 뜻이 다르고, 한 칸에 합치면 그 게이트를 못 본다.
+pub var swapwait: Counter = .{};
 
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
 /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
@@ -129,6 +133,7 @@ pub fn dumpAndReset(label: []const u8) void {
     const sh = snapshot(&shape);
     const pr = snapshot(&present);
     const on = snapshot(&onrender);
+    const sw = snapshot(&swapwait);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -143,6 +148,9 @@ pub fn dumpAndReset(label: []const u8) void {
             // 가르려고 뽑는다. miss = chain 전체 미스 (base codepoint fallback).
             "shape    calls={d} ms={d:.3} miss={d}\n" ++
             "present  calls={d} ms={d:.3}\n" ++
+            // #435 — swap chain 이 안 받아서 건너뛴 tick. waitable 이 없는 경로 (legacy
+            // DISCARD · DirectComposition) 에서는 항상 0 이다.
+            "swapwait ticks={d}\n" ++
             "onrender calls={d} ms={d:.3} skip={d}\n",
         .{
             label,
@@ -165,6 +173,7 @@ pub fn dumpAndReset(label: []const u8) void {
             sh[3],
             pr[0],
             @as(f64, @floatFromInt(pr[1])) / 1_000_000.0,
+            sw[3],
             on[0],
             @as(f64, @floatFromInt(on[1])) / 1_000_000.0,
             on[3],
