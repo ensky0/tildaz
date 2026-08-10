@@ -101,14 +101,53 @@ codesign -dv zig-out/TildaZ.app 2>&1 | grep -i 'authority\|identifier'
 
 - 이미 유효한 `TildazLocal` identity 가 있으면 **즉시 종료** (몇 번 돌려도 안전).
 - 없으면: 옛 잔재 정리 → openssl 로 cert 생성 → login keychain import →
-  **`sudo add-trusted-cert` 를 스크립트가 직접** 실행 (system trust) → 결과 검증.
+  **`~/.tildaz/` 에 백업 저장** → **`sudo add-trusted-cert` 를 스크립트가 직접**
+  실행 (system trust) → 결과 검증.
 - 비번을 두 번 물어요: 로그인 비번(osascript 창, keychain unlock) + admin
   비번(터미널 `sudo`, system trust).
+- **백업이 이미 있으면 새로 만들지 않고 멈춰요.** 새 인증서는 서명 해시를 바꿔서
+  권한을 다시 부여해야 하니, 아래 "identity 가 사라졌어요" 절대로 되살리는 게 싸요.
+
+백업 파일은 두 개예요.
+
+| 파일 | 내용 | 권한 |
+|---|---|---|
+| `~/.tildaz/TildazLocal.p12` | 인증서 + **private key** — 서명에 쓸 수 있는 쪽 | `600` |
+| `~/.tildaz/TildazLocal.crt` | 공개 인증서 — trust 등록용 | `644` |
+
+p12 를 얻으면 `TildazLocal` 이름으로 서명할 수 있어요. 그래도 남기는 이유는
+self-signed 라 trust 등록이 **이 머신에만** 있고, 배포 바이너리는 CI 가 별도
+secret 으로 서명하기 때문이에요 (판단 근거는
+[#444](https://github.com/ensky0/tildaz/issues/444)). 머신을 공유하게 되면 백업을
+암호화 저장으로 옮겨야 해요.
 
 끝에 `find-identity` 에 `TildazLocal` 가 valid 로 나오면 성공. 이후 빌드·권한
 부여는 옵션 B 의 3·4 와 동일. CLI 가 막히면 옵션 B(GUI) 로 fallback.
 
 ## 문제 해결
+
+### identity 가 사라졌어요 (`find-identity` 가 0개 / 빌드가 서명에서 멈춤)
+
+login keychain 이 밀리면 인증서와 private key 가 함께 없어져요. macOS 가 login
+keychain 을 `login_renamed_N.keychain-db` 로 밀어내고 새로 만드는 경우예요 —
+2026-08-10 에 실제로 발생했고, 이 머신에서 **두 번째**였어요
+([#444](https://github.com/ensky0/tildaz/issues/444), 원인은 미확인).
+
+**백업에서 되살려요. 새로 만들지 않아요.**
+
+```bash
+./dist/macos/restore-cert.sh
+```
+
+`~/.tildaz/TildazLocal.p12` 로 **같은 인증서**를 되살리니 Input Monitoring /
+Accessibility 권한도, GitHub secrets 도, CI 의 `MACOS_CERTIFICATE_SHA1` 도 그대로예요.
+끝에 찍히는 SHA-1 지문이 워크플로우의 값과 같은지 확인하면 돼요.
+
+백업이 없으면 `setup-cert.sh` 로 새로 만들어야 하고, 그때는 아래도 함께 갱신해요.
+
+- 시스템 설정 → 개인정보 보호 및 보안 → **입력 모니터링 · 손쉬운 사용** 재허용 (F1 용)
+- GitHub secrets `MACOS_CERTIFICATE_P12_BASE64` · `MACOS_CERTIFICATE_PASSWORD`
+- `.github/workflows/{macos-signing-check,release}.yml` 의 `MACOS_CERTIFICATE_SHA1`
 
 ### 빌드 시 codesign 키체인 창이 계속 뜸
 

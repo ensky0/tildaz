@@ -568,6 +568,23 @@ open /Applications/TildaZ.app       # ✅ 실행
 - `/Applications/TildaZ.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
 
+**identity 가 사라졌으면 새로 만들지 말고 백업에서 되살려요** ([#444](https://github.com/ensky0/tildaz/issues/444)).
+login keychain 이 밀리면 (`login_renamed_N.keychain-db` 가 생기는 경우 — 2026-08-10 에 실제로
+겪었고 그 머신에서 두 번째였어요) 인증서와 private key 가 함께 없어져요. 새로 만들면 서명 해시가
+바뀌어 **Input Monitoring · Accessibility 권한 재부여 + GitHub secrets 2개 + 워크플로우의
+`MACOS_CERTIFICATE_SHA1` 갱신**이 따라와요.
+
+```sh
+security find-identity -v -p codesigning     # TildazLocal 이 안 보이면
+./dist/macos/restore-cert.sh                 # ~/.tildaz/TildazLocal.p12 로 같은 인증서 복구
+```
+
+- 백업은 `setup-cert.sh` 가 만들어요 — `~/.tildaz/TildazLocal.p12` (권한 600, private key 포함) +
+  `~/.tildaz/TildazLocal.crt`. 백업이 있으면 `setup-cert.sh` 는 새로 만들기를 **거부**해요.
+- 복구 끝에 찍히는 SHA-1 지문이 워크플로우의 `MACOS_CERTIFICATE_SHA1` 과 같으면 CI 쪽은 손댈 게 없어요.
+- 백업이 없어 새로 만들 수밖에 없다면 위의 갱신 목록을 전부 처리해요. 자세한 절차는
+  [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 의 "identity 가 사라졌어요" 절.
+
 **앱은 항상 `open` 으로 `.app` 번들을 열어요.** `zig-out/TildaZ.app` 은 서명 전 중간 산출물이라
 실행 대상이 아니고, 번들 안의 바이너리를 직접 띄우면 권한이 안 붙어요.
 
