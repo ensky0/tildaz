@@ -37,6 +37,7 @@ else
 fi
 CERT_NAME="TildazLocal"
 CERT_CRT="$HOME/.tildaz/${CERT_NAME}.crt"
+CERT_P12="$HOME/.tildaz/${CERT_NAME}.p12"        # private key 백업 (cert-common.sh, #444)
 SYSTEM_KEYCHAIN="/Library/Keychains/System.keychain"
 BUNDLE_ID="me.ensky0.tildaz"                                    # Info.plist / tccutil
 
@@ -89,12 +90,16 @@ if [[ "$PURGE" == "1" ]]; then
         echo "Removed: code-signing cert '$CERT_NAME' (login + System keychain)"
         removed=$((removed + 1))
     fi
-    if [[ -f "$CERT_CRT" ]]; then
-        rm -f "$CERT_CRT"
-        rmdir "$HOME/.tildaz" 2>/dev/null || true
-        echo "Removed: $CERT_CRT"
-        removed=$((removed + 1))
-    fi
+    # p12 는 private key 를 담은 복구용 백업 — 남겨 두면 인증서를 지웠다면서 서명 수단이
+    # 그대로 있는 셈이라 함께 지운다 (#444).
+    for f in "$CERT_CRT" "$CERT_P12"; do
+        if [[ -f "$f" ]]; then
+            rm -f "$f"
+            echo "Removed: $f"
+            removed=$((removed + 1))
+        fi
+    done
+    rmdir "$HOME/.tildaz" 2>/dev/null || true
 
     # --- TCC 권한 (손쉬운 사용 / 입력 모니터링) reset ---
     # ListenEvent = Input Monitoring, Accessibility = 손쉬운 사용.
