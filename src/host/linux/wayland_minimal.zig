@@ -1593,8 +1593,24 @@ const Client = struct {
             if (self.toggle_listener_fd >= 0) .ready else .unavailable,
         );
 
+        // #436 — 밀린 PTY 출력이 있으면 이 값이 0 이 되어 다음 회전을 기다리지 않는다.
+        // 사양 A (§13) 의 Linux 쪽 구현이다. 이 루프는 회전마다 드레인을 **한 번** 하므로,
+        // 회전을 무엇이 깨우느냐가 곧 duty 를 정한다. `pollAndDispatch` 가 기다리는 fd 는
+        // Wayland 와 toggle IPC 뿐이고 **PTY 도착은 이 poll 을 깨우지 않으므로** (read
+        // thread 가 ring 에 넣을 뿐), 폭포 중 실질적인 깨우기는 `wl_surface.frame`
+        // callback 이었다 — 회전이 프레임에 묶여 프레임당 1.45 회로 고정됐고, 그래서
+        // **duty 가 주사율에 반비례**했다 (같은 기기 실측: `cjk` 120 Hz 90.9 % ↔ 60 Hz 43.0 %,
+        // 처리량도 0.44~0.50 배). 그건 §13 이 사양으로 금지한 종속이다.
+        //
+        // Windows 는 `messageLoop` 이 `if (f(userdata)) continue;` 로, macOS 는
+        // `idleDrainObserver` 가 `CFRunLoopWakeUp` 으로 **같은 재진입**을 한다 (duty 91~96 %).
+        // 여기서는 poll timeout 0 이 그 `continue` 에 해당한다.
+        //
+        // 밀린 것이 없으면 `frame_poll_ms` 로 돌아가므로 **유휴 절전은 그대로**다 (#255 ·
+        // #386 ②). 유휴에서 첫 출력이 최대 16 ms 늦는 것은 별개 축이라 #439 에서 다룬다.
+        var poll_timeout: i32 = frame_poll_ms;
         while (self.running) {
-            try self.pollAndDispatch(frame_poll_ms);
+            try self.pollAndDispatch(poll_timeout);
             // #203 Phase C — dialog dismiss 가 pending 이면 *여기서* 실제 처리.
             // pointer button / dialog key / layer-surface closed handler 들은
             // dispatchBuffered 의 reentrant context 안이라 inner roundtrip 시
@@ -1650,6 +1666,13 @@ const Client = struct {
                 if (session.drainOutputForRender()) {
                     self.requestRedraw();
                 }
+                // #436 — 예산에 걸려 끊겼으면 ring 이 안 비어 있다. 그러면 다음 poll 을
+                // 기다리지 않고 즉시 회전해 계속 드레인한다 (루프 머리 주석 참고).
+                // **스핀이 아니다** — 참이면 ring 에 실제로 남아 있어 다음 드레인이 반드시
+                // 진행하고, 비면 이 값이 `frame_poll_ms` 로 돌아간다.
+                poll_timeout = if (session.hasPendingOutput()) 0 else frame_poll_ms;
+            } else {
+                poll_timeout = frame_poll_ms;
             }
             // #376 — blink 위상이 뒤집힌 **그 tick 에만**, 그리고 직전 프레임에
             // blink 셀이 실제로 보였을 때만 요청한다. 둘을 함께 봐야 blink 이 없는
