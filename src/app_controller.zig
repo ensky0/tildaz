@@ -445,7 +445,27 @@ pub const App = struct {
             if (!self.tab_drag.active and !self.tab_scroll_user_override)
                 self.ensureActiveTabVisible();
 
-            if (should_render or force_render or blink_tick) {
+            // #435 — swap chain 이 다음 프레임을 받을 준비가 됐나. 논블로킹 확인이라
+            // UI 스레드를 잡지 않는다. 준비가 안 됐으면 이번 tick 은 그리지 않고 넘겨,
+            // 곧장 `messageLoop` 으로 돌아가 유휴 드레인 (#387 사양 A) 을 계속한다.
+            //
+            // ⚠️ **순서가 중요하다 — 그릴 게 있을 때만 묻는다.** frame-latency waitable 은
+            // 세마포어라 **기다려서 통과하면 카운트를 소비**하고, 그 카운트는 `Present` 한
+            // 프레임이 물러날 때 돌아온다 (그래서 정석이 "기다린다 → 반드시 present 한다"
+            // 1:1 이다). 그릴지 정하기 전에 물으면 유휴 프레임이 카운트만 먹고 present 를
+            // 안 해서 카운트가 영영 안 돌아오고, 몇 프레임 뒤부터 화면이 멈춘다.
+            //
+            // **`needs_render` 를 지우지 않는 것도 핵심이다** — 아래 게이트를 통과했을
+            // 때만 닫는다. 여기서 닫으면 "그릴 이유가 있었는데 안 그린" 프레임의 이유가
+            // 사라져, 다음 출력이 올 때까지 화면이 멈춘다.
+            //
+            // waitable 이 없는 경로 (legacy DISCARD · DirectComposition) 는 `frameReady`
+            // 가 항상 true 라 동작이 이 이슈 이전과 완전히 같다.
+            const want_render = should_render or force_render or blink_tick;
+            const swap_ready = want_render and r.frameReady();
+            if (want_render and !swap_ready) perf.incExtra(&perf.swapwait);
+
+            if (swap_ready) {
                 // 그리기로 했으니 게이트를 닫는다. 렌더 중에 도착한 메시지는 큐에 있다가
                 // 이 프레임 뒤에 처리되면서 다시 열므로 변화를 놓치지 않는다.
                 self.window.needs_render = false;
@@ -512,7 +532,9 @@ pub const App = struct {
                 // 조합 중이 아니거나 위치가 안 바뀐 프레임은 건너뛸 수 있다. 폭포 중 프레임당
                 // 비용은 측정하지 않았다 — 하려면 조합 여부 · 좌표 변화로 가드를 두면 된다.
                 self.window.imeSetCompositionPos(r.last_cursor_px_x, r.last_cursor_px_y);
-            } else {
+            } else if (!want_render) {
+                // #386 ② 게이트가 닫힌 경우만 여기서 센다. swap chain 대기로 넘긴 tick 은
+                // 위에서 `perf.swapwait` 로 따로 세므로 두 이유가 한 칸에 섞이지 않는다.
                 perf.incExtra(&perf.onrender);
             }
         }
