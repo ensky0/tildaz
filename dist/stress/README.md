@@ -1014,6 +1014,7 @@ Windows 만의 주의점이에요.
 | **kitty · ghostty · foot 은 없어요** | Windows 판이 없고 (foot 은 Wayland 전용) `command -v` 로 자동으로 빠져요 |
 | **창이 다른 창 뒤에 뜰 수 있어요** | Win32 는 *foreground 프로세스가 **직접** 시작한 프로세스* 에만 창을 앞으로 낼 권한을 줘요 ([SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)). `wt` 는 실행 별칭이라 부모 관계가 끊기고, wezterm 은 GUI 를 손자 프로세스로 띄웠어요. **`wt` 는 Windows Terminal 자체의 버그** ([#18324](https://github.com/microsoft/terminal/issues/18324), Priority-1) 로 **1.23.10353.0 에서 고쳐졌어요** — `wt --version` 이 그보다 낮으면 업데이트하세요. wezterm 은 아래처럼 실행 방법을 바꿔서 해결했어요. 상태를 봐야 하면 `--capture` 를 쓰세요 |
 | **alacritty 는 `zwj` 계열을 소화하지 못해요 — 스크립트가 자동으로 빼요** | 바로 아래 절 참고. Windows + `zwj` / `zwj_varied` 조합만 해당해요 |
+| **alacritty 는 큰 출력 뒤에 안 닫혀요 — 스크립트가 상한을 두고 정리해요** | 아래 두 번째 절 참고. 워크로드를 안 가리고 (`plain` 에서도 나요) `--capture` 를 켠 실행에서만 드러나요 |
 
 #### alacritty 는 Windows 에서 `zwj` 계열을 못 돌려요 (자동 제외)
 
@@ -1070,6 +1071,40 @@ PATH="$FP" dist/stress/compare-terminals.sh --mb 64 --workload zwj --repeat 3 --
 처음에 둘을 한 묶음으로 빼서 wezterm 값을 통째로 잃은 적이 있어요 ([#381](https://github.com/ensky0/tildaz/issues/381)) —
 그리고 그 값이 중요했어요. grapheme 워크로드에서 **wezterm 이 우리보다 2.7~2.9 배 빨라서**, 빼 버리면
 "우리가 꼴찌" 라는 사실이 표에서 사라져요.
+
+#### alacritty 는 큰 출력을 끝낸 뒤 스스로 안 닫혀요 (상한을 두고 정리)
+
+위 `zwj` 절과 **다른 증상이에요.** 저건 출력 *도중* 진행이 막히는 것이고, 이건 **출력이 다 끝나고
+producer 가 정상 종료한 뒤** `alacritty.exe` 만 남는 거예요. 그래서 워크로드를 안 가려요 — `plain`
+에서 났어요 ([#414](https://github.com/ensky0/tildaz/issues/414), alacritty 0.17.0 (94e7c88) ·
+노트북 AMD Ryzen AI 7 350 · Windows 11 Pro 26200).
+
+**우리 스크립트 없이도 나요.** `alacritty -e <producer>` 만으로 재현돼요.
+
+| 출력량 | 결과 | | 출력량 | 결과 |
+|---|---|---|---|---|
+| 1 MiB | 3/3 스스로 종료 | | **16 MiB** | **2/3 멈춤** |
+| 8 MiB | 3/3 스스로 종료 | | **32 MiB** | **3/3 멈춤** |
+| | | | **64 MiB** | **3/3 멈춤** |
+
+**영구 멈춤이에요.** 64 MiB 를 180 초 기다려도 안 닫히고, 그동안 **CPU 시간이 늘지 않아요**
+(5.6 초에서 고정 · `Responding=True` · 자식 프로세스 없음) — 오래 걸리는 일을 하는 중이 아니라
+멈춘 거예요. producer 쪽은 매번 멀쩡해요 (timing 파일이 완전하고 프로세스가 안 남아요).
+
+**측정값은 유효해요.** 멈춤이 측정과 캡처가 **모두 끝난 뒤**에 일어나고, 값은 producer 가 쓴
+timing 파일에서 나와요. 그래서 `zwj` 처럼 대상에서 빼지 않아요.
+
+**스크립트는 그 시도의 hold 만큼만 기다리고 정리해요.** 기다림의 목적이 *producer 의 hold 가 끝나는
+것* 하나뿐이라 상한도 거기에 맞춘 거예요 — 재시도 회차는 hold 가 `CAPTURE_RETRY_HOLD_MS` 로
+늘어나므로 상한도 같이 늘어나요. 상한에 걸리면 표에 이렇게 남아요.
+
+```
+alacritty      @ ok  120x40
+               ⚠ alacritty — producer 가 끝난 뒤에도 안 닫혀서 1 회차를 강제로 정리했어요 (측정값은 유효해요).
+```
+
+**`--capture` 를 끄면 이 경로를 아예 안 타요** — 기다림 자체가 캡처 전용이고, 캡처가 없으면 곧바로
+정리해요. 기록용 실행 (`--capture` 없이 `--repeat 5`) 은 처음부터 영향이 없었어요.
 
 **wezterm 은 `wezterm-gui start --always-new-process` 로 띄워요** (Windows). 두 가지를 함께
 해결해요.

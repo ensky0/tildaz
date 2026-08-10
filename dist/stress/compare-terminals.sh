@@ -1060,6 +1060,16 @@ capture_count() {
 RESULTS="$WORK_DIR/results"
 : > "$RESULTS"
 
+# producer 가 끝난 뒤에도 안 닫혀 상한에 걸린 회차를 적는다 (#414). **없으면 아무것도 안 찍는다** —
+# 정상 실행의 표를 어지럽히지 않으려는 것이다.
+#
+# ⚠️ 진행 줄 (`printf '%-14s '` 로 시작해 `@` · `~` 를 이어 찍는 그 줄) 이 **개행으로 끝난 뒤에**
+# 불러야 한다. 중간에 부르면 표가 깨진다. 들여쓰기는 그 줄의 이름 칸 (14 자 + 공백) 에 맞춘 것이다.
+stuck_note() {
+    [ "$_stuck" -gt 0 ] || return 0
+    echo "               ⚠ $_name — producer 가 끝난 뒤에도 안 닫혀서 ${_stuck} 회차를 강제로 정리했어요 (측정값은 유효해요)."
+}
+
 # 한 터미널을 `REPEAT` 회 돌리고, 회차별 경과 시간을 한 줄에 모아 적는다.
 #
 # 형식: 이름 <TAB> "ns ns ns …" <TAB> cols <TAB> rows <TAB> cols_start <TAB> rows_start
@@ -1080,6 +1090,8 @@ run_terminal() {
     _wait_max=0
     # 이 대상에서 hold 를 늘려 다시 찍은 회차 수. 표 아래 요약에 적는다.
     _retried=0
+    # producer 가 끝난 뒤에도 터미널이 안 닫혀 상한에 걸린 회차 수 (#414). `stuck_note` 참고.
+    _stuck=0
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
         # #413 — 한 회차를 최대 두 번 시도한다. **창 단위로 못 찍었으면** (`~` · `_` · `?`)
@@ -1181,8 +1193,34 @@ run_terminal() {
         # 캡처를 켜면 producer 가 `HOLD_MS` 만큼 더 살아 있다. 그걸 중간에 죽이면 셸이
         # `Terminated: 15` 를 표 위에 찍어 결과를 읽기 어렵게 만든다 (macOS 실측). 스스로
         # 끝나기를 기다렸다가 정리한다 — 어차피 그때까지 창이 살아 있어야 캡처가 된다.
+        #
+        # **기다림에는 상한이 있다** (#414 Windows 실기). 기다리는 목적이 *producer 의 hold 가
+        # 끝나는 것* 하나뿐이라 상한도 **그 시도의 hold** (`_hold_this`) 다 — 그보다 오래
+        # 기다려서 얻는 것이 없다. 재시도 회차는 hold 가 `CAPTURE_RETRY_HOLD_MS` 로 늘어나므로
+        # (#413) 상한도 같이 늘어난다. 아래 settle 이 쓰는 값과 같은 변수를 쓴다.
+        # 상한이 없던 동안 alacritty 회차가 **영영 끝나지 않았다.** producer 는 정상 종료했는데
+        # (프로세스가 남지 않고 timing 도 완전하다) `alacritty.exe` 만 남았다. 우리 스크립트
+        # 없이 `alacritty -e <producer>` 만으로도 나고, 180 초를 기다려도 안 닫히며 그동안
+        # **CPU 시간이 늘지 않는다** — 오래 걸리는 일을 하는 중이 아니라 멈춘 것이다. 출력량
+        # 의존이라 8 MiB 이하는 멀쩡하다 (README 의 Windows 절에 실측 표가 있다).
+        #
+        # 상한이 지나면 **아래 `kill` 이 정리한다** (멈춘 alacritty 가 그 `kill` 하나로 창까지
+        # 사라지는 것을 실측했다). **그 회차의 값은 버리지 않는다** — 멈춤은 측정과 캡처가 모두
+        # 끝난 뒤에 일어나고, 값은 producer 가 쓴 timing 파일에서 나오기 때문이다.
         if [ -n "$CAPTURE_DIR" ] && [ -n "$_pid" ]; then
-            wait "$_pid" 2>/dev/null || true
+            # 0.2 초씩 센다 — 매 바퀴 `date` 를 부르지 않으려는 것이다. 그래서 이 값은 **하한**
+            # 이다: 한 바퀴가 `sleep` 이 자는 시간보다 길 수 있어서 (Git Bash 실측 316 ms — MSYS
+            # 는 프로세스 생성이 비싸다) 실제로는 조금 더 기다린다. 우리에게 필요한 보장이
+            # *"producer 의 hold 가 끝날 때까지는 기다린다"* 라 넉넉한 쪽이 안전하다.
+            _left=$(( ((_hold_this + 999) / 1000 + 3) * 5 ))
+            while [ "$_left" -gt 0 ] && kill -0 "$_pid" 2>/dev/null; do
+                sleep 0.2
+                _left=$((_left - 1))
+            done
+            # 상한에 걸렸으면 **조용히 넘기지 않는다** — 대상 줄 아래에 회차 수를 적는다.
+            if kill -0 "$_pid" 2>/dev/null; then
+                _stuck=$((_stuck + 1))
+            fi
         fi
         # 창이 남아 있으면 정리한다. `kill $_pid` 만으로는 부족하다 — kitty 는 `--detach` 라
         # 그 pid 가 즉시 끝나는 부모이고, ghostty 는 실행 실패 화면을 띄운 채 기다린다.
@@ -1232,10 +1270,12 @@ run_terminal() {
 
     if [ -z "$_samples" ]; then
         printf ' timeout / 실행 안 됨\n'
+        stuck_note
         printf '%s\tskipped\t0\t0\t0\t0\n' "$_name" >> "$RESULTS"
         return
     fi
     printf ' ok  %sx%s\n' "$_cols" "$_rows"
+    stuck_note
     # 앞의 공백을 없애 awk 가 필드를 세기 쉽게 한다.
     _samples=$(printf '%s' "$_samples" | sed 's/^ *//')
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_name" "$_samples" "$_cols" "$_rows" "$_cols0" "$_rows0" "$_wait_max" >> "$RESULTS"
