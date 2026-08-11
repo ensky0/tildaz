@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const windows = std.os.windows;
 const app_event = @import("app_event.zig");
 const dialog = @import("dialog.zig");
@@ -230,8 +231,12 @@ extern "user32" fn GetCursorPos(*POINT) callconv(.c) BOOL;
 extern "user32" fn MonitorFromPoint(POINT, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn GetMonitorInfoW(?*anyopaque, *MONITORINFO) callconv(.c) BOOL;
-extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.c) std.os.windows.HRESULT;
-extern "dwmapi" fn DwmFlush() callconv(.c) std.os.windows.HRESULT;
+// #451 — 0.16 이 `std.os.windows.HRESULT` 를 없앴다 (NtDll 이관 정리). 우리 코드가
+// 이미 두 곳에서 같은 정의를 쓰고 있어 (`font/windows/directwrite.zig` ·
+// `renderer/windows/d3d11.zig`) 같은 모양으로 여기에도 둔다.
+const HRESULT = c_long;
+extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.c) HRESULT;
+extern "dwmapi" fn DwmFlush() callconv(.c) HRESULT;
 extern "user32" fn SetWindowLongPtrW(HWND, c_int, isize) callconv(.c) isize;
 extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) HCURSOR;
@@ -371,6 +376,8 @@ pub const Window = struct {
     /// host (app) 가 — cell 영역만 알면 되고, 그 외는 `.other` 로 default arrow.
     pub const CursorRegion = enum { cell, other };
 
+    /// #451 — `Io` · 환경변수 묶음. host 의 `run(rt, …)` 이 창을 만들 때 넣는다.
+    rt: Runtime,
     owner_hwnd: HWND = null,
     hwnd: HWND = null,
     visible: bool = false,
@@ -704,7 +711,7 @@ pub const Window = struct {
         if (!RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey).toBool()) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-            const cfg_path = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
+            const cfg_path = paths.configPath(self.rt, fba.allocator()) catch messages.unknown_path_msg;
             var msg_buf: [1024]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &msg_buf,
@@ -1311,15 +1318,14 @@ pub const Window = struct {
             _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
             return;
         };
-        // clock 스레드는 단조 시계로 deadline 을 누적한다. 여기서 한 번 확인해 두면
-        // 스레드 안에서 실패를 처리할 필요가 없다 (Windows 는 QPC 라 실패하지 않지만,
-        // 실패했을 때 프레임이 조용히 멈추는 것보다 fallback 이 낫다).
-        _ = std.time.Instant.now() catch {
-            log.appendLine("startup", "frame clock: monotonic clock unavailable — using WM_TIMER fallback", .{});
-            _ = CloseHandle(timer);
-            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
-            return;
-        };
+        // clock 스레드는 단조 시계로 deadline 을 누적한다.
+        //
+        // #451 — 예전에는 여기서 `std.time.Instant.now()` 를 한 번 불러 단조 시계가
+        // 쓸 수 있는지 확인하고, 안 되면 `WM_TIMER` 로 물러났다. 0.16 의 `Io.Timestamp`
+        // 는 **조회가 실패하지 않는다** (해상도가 없으면 무한대로 취급하고, 필요하면
+        // `Io.Clock.resolution` 으로 따로 묻는다 — 릴리즈 노트 *Time*). 그래서 그 사전
+        // 검사가 표현할 대상이 없어져 지운다. `WM_TIMER` fallback 경로 자체는 아래
+        // thread spawn 실패에 그대로 남아 있다.
 
         self.frame_timer = timer;
         self.frame_clock_run.store(true, .release);
@@ -1368,12 +1374,14 @@ pub const Window = struct {
         const timer = self.frame_timer orelse return;
         const period_ns: u64 = @intCast(self.frame_period_100ns * 100);
         if (period_ns == 0) return;
-        var base = std.time.Instant.now() catch return;
+        // #451 — `std.time.Instant` ➡️ `Io.Timestamp` (`.awake` = 절전을 안 세는 단조
+        // 시계). `since` 대신 `durationTo` 로 두 시각의 차이를 얻는다.
+        var base = std.Io.Timestamp.now(self.rt.io, .awake);
         var ticks: u64 = 0;
         while (self.frame_clock_run.load(.acquire)) {
             ticks += 1;
-            const now = std.time.Instant.now() catch break;
-            const elapsed = now.since(base);
+            const now = std.Io.Timestamp.now(self.rt.io, .awake);
+            const elapsed: u64 = @intCast(@max(0, base.durationTo(now).nanoseconds));
             const deadline = ticks *| period_ns;
             if (deadline > elapsed) {
                 // 음수 = 상대 시간 (100ns 단위). one-shot 으로 매번 재장전한다 — 주기

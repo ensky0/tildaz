@@ -72,14 +72,14 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #218 — Config.load 가 owned shell 인수를 기대 (disk 경로서 free). Windows 는
     // $SHELL 컨벤션이 없어 Defaults.shell 을 owned dupe 로 전달.
     const shell_resolved = alloc.dupe(u8, config_mod.Defaults.shell) catch config_mod.Defaults.shell;
-    var config = Config.load(alloc, shell_resolved);
+    var config = Config.load(rt, alloc, shell_resolved);
     defer config.deinit(alloc);
     log.logConfigLoaded(config);
 
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
     // 뒤 generic 에러로 끝남 — 사용자에게 어디 고쳐야 할지 안내 안 됨.
-    shell_validate.validateOrFatal(alloc, config.shell);
+    shell_validate.validateOrFatal(rt, alloc, config.shell);
 
     // #339 — 번들 ConPTY 런타임(_internal\conpty.dll + OpenConsole.exe)은 Windows
     // 필수다. 하나라도 없으면 시스템 conhost 로 조용히 느리게 도는 대신 시작 시
@@ -93,7 +93,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     var app = App{
         .rt = rt,
         .session = undefined,
-        .window = .{},
+        .window = .{ .rt = rt },
         .allocator = alloc,
         .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
     };

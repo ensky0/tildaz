@@ -12,6 +12,7 @@
 //! 모듈 (`dialog.showAboutAlert`) 로 표시. exe 경로 / pid 만 platform-specific.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
 const log = @import("log.zig");
@@ -48,10 +49,11 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
 ///
 /// 표시 경로는 모두 절대 경로 (`~` / `%APPDATA%` 같은 단축 안 씀) — SPEC.md
 /// §11.3. 사용자가 그대로 vim / explorer 명령에 paste 가능 + 환경 ambiguity 제거.
-pub fn showAboutDialog() void {
+pub fn showAboutDialog(rt: Runtime) void {
     const allocator = std.heap.page_allocator;
 
-    const exe_path_owned = std.fs.selfExePathAlloc(allocator) catch null;
+    // #451 — `fs.selfExePathAlloc` ➡️ `std.process.executablePathAlloc` (릴리즈 노트).
+    const exe_path_owned = std.process.executablePathAlloc(rt.io, allocator) catch null;
     defer if (exe_path_owned) |path| allocator.free(path);
     const exe_path = exe_path_owned orelse messages.unknown_path_msg;
 
@@ -60,7 +62,7 @@ pub fn showAboutDialog() void {
         else => std.c.getpid(),
     });
 
-    const config_path_owned = paths.configPath(allocator) catch null;
+    const config_path_owned = paths.configPath(rt, allocator) catch null;
     defer if (config_path_owned) |path| allocator.free(path);
     const config_path = config_path_owned orelse messages.unknown_path_msg;
 
