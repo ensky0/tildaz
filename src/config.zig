@@ -8,6 +8,7 @@
 // unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const windows = std.os.windows;
 const themes = @import("themes.zig");
@@ -904,26 +905,27 @@ pub const Config = struct {
     /// 가 JSON 값을 dupe 하므로 안 쓰는 `shell_resolved` 를 free. 결과 Config 는
     /// 모든 경로에서 shell / font_families 가 owned → `deinit` 이 일관 free.
     /// 따라서 `shell_resolved` 는 호출처가 항상 *owned* 로 넘겨야 한다.
-    pub fn load(allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
-        const path = paths.configPath(allocator) catch {
+    pub fn load(rt: Runtime, allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
+        const path = paths.configPath(rt, allocator) catch {
             return defaultOwned(allocator, shell_resolved);
         };
         defer allocator.free(path);
 
         const loaded = blk: {
-            const file = std.fs.openFileAbsolute(path, .{}) catch {
+            const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch {
                 // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
                 // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
                 // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
                 // 사용자 config 를 만드는 주체가 되는데, 그것은 launcher 의 일이다
                 // (`instances.createDefaultConfig` — auto_start · 단축키 동기화까지 함께 한다).
                 // 측정은 기본값을 메모리에서만 쓰고 지나간다.
-                if (!instance_context.isStress()) createDefault(allocator, path, shell_resolved);
+                if (!instance_context.isStress()) createDefault(rt, allocator, path, shell_resolved);
                 break :blk defaultOwned(allocator, shell_resolved);
             };
-            defer file.close();
+            defer file.close(rt.io);
 
-            const content = file.readToEndAlloc(allocator, 64 * 1024) catch {
+            var file_reader = file.reader(rt.io, &.{});
+            const content = file_reader.interface.allocRemaining(allocator, .limited(64 * 1024)) catch {
                 break :blk defaultOwned(allocator, shell_resolved);
             };
             defer allocator.free(content);
@@ -999,12 +1001,12 @@ pub const Config = struct {
             if (root.object.get("font")) |fv_pre| {
                 if (fv_pre == .object) {
                     if (fv_pre.object.get("family")) |fam_v| {
-                        if (fam_v != .string) font_validate.showFamilyMustBeStringFatal();
+                        if (fam_v != .string) font_validate.showFamilyMustBeStringFatal(rt);
                     }
                     if (fv_pre.object.get("glyph_fallback")) |fb_v| {
-                        if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal();
+                        if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal(rt);
                         for (fb_v.array.items) |item| {
-                            if (item != .string) font_validate.showGlyphFallbackMustBeListFatal();
+                            if (item != .string) font_validate.showGlyphFallbackMustBeListFatal(rt);
                         }
                     }
                 }
@@ -1168,12 +1170,12 @@ pub const Config = struct {
         return config;
     }
 
-    fn createDefault(allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
-        const file = std.fs.createFileAbsolute(path, .{}) catch return;
-        defer file.close();
+    fn createDefault(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
+        const file = std.Io.Dir.createFileAbsolute(rt.io, path, .{}) catch return;
+        defer file.close(rt.io);
         const json_text = defaultConfigJson(allocator, shell_resolved) catch return;
         defer allocator.free(json_text);
-        file.writeAll(json_text) catch {};
+        file.writeStreamingAll(rt.io, json_text) catch {};
     }
 
     /// #218 — `load` 가 owned 로 정규화한 `shell` / `font_families` 해제. 모든

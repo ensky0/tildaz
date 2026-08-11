@@ -14,27 +14,28 @@
 //!   fire-and-forget `showFatal` 은 paint 전에 죽음).
 
 const std = @import("std");
+const Runtime = @import("../runtime.zig").Runtime;
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const paths = @import("../paths.zig");
 
 /// `font.family` 가 string 이 아닐 때 (예: 구 schema 의 array). 메시지 +
 /// runtime 에서 결정한 config path 한 줄.
-pub fn showFamilyMustBeStringFatal() noreturn {
-    showSchemaErrorFatal(messages.font_family_must_be_string_msg);
+pub fn showFamilyMustBeStringFatal(rt: Runtime) noreturn {
+    showSchemaErrorFatal(rt, messages.font_family_must_be_string_msg);
 }
 
 /// `font.glyph_fallback` 이 string 의 list 가 아닐 때 (다른 type, 또는 array
 /// element 가 string 아닌 경우).
-pub fn showGlyphFallbackMustBeListFatal() noreturn {
-    showSchemaErrorFatal(messages.font_glyph_fallback_must_be_list_msg);
+pub fn showGlyphFallbackMustBeListFatal(rt: Runtime) noreturn {
+    showSchemaErrorFatal(rt, messages.font_glyph_fallback_must_be_list_msg);
 }
 
 /// 단순 schema 위반 메시지 + Config path 라인 → fatal. 위 두 fn 의 공유 helper.
-fn showSchemaErrorFatal(line: []const u8) noreturn {
+fn showSchemaErrorFatal(rt: Runtime, line: []const u8) noreturn {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
+    const cfg_path: []const u8 = paths.configPath(rt, fba.allocator()) catch messages.unknown_path_msg;
 
     var msg_buf: [1024]u8 = undefined;
     dialog.showFatal(messages.config_error_title, schemaErrorMessage(&msg_buf, line, cfg_path));
@@ -51,8 +52,8 @@ fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []c
 /// `missing` 은 시스템에서 lookup 실패한 chain entry 이름. `chain` 은 사용자
 /// config 의 font.family 전체 (UTF-8 raw). 본 함수는 dialog.showFatal 로
 /// process 종료.
-pub fn showNotFoundFatal(missing: []const u8, chain: []const []const u8) noreturn {
-    showNotFoundFatalSub(missing, chain, null);
+pub fn showNotFoundFatal(rt: Runtime, missing: []const u8, chain: []const []const u8) noreturn {
+    showNotFoundFatalSub(rt, missing, chain, null);
 }
 
 /// #405 — `substitute` 는 **그 이름이 실제로 어떤 폰트로 해석됐는지**다. 있으면 "설치는 됐는데
@@ -63,24 +64,24 @@ pub fn showNotFoundFatal(missing: []const u8, chain: []const []const u8) noretur
 /// `CTFontCreateWithName` 이 실패 대신 대체 폰트를 주는 성질) 대체가 실제로 일어난다. Windows 는
 /// `IDWriteFontCollection.FindFamilyName` 이 시스템 컬렉션에서 exact match 만 보므로 대체가
 /// 개입할 여지가 없어 `null` 이다.
-pub fn showNotFoundFatalSub(missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) noreturn {
+pub fn showNotFoundFatalSub(rt: Runtime, missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) noreturn {
     var msg_buf: [2048]u8 = undefined;
-    dialog.showFatal(messages.config_error_title, notFoundMessageSub(&msg_buf, missing, chain, substitute));
+    dialog.showFatal(messages.config_error_title, notFoundMessageSub(rt, &msg_buf, missing, chain, substitute));
 }
 
 /// `showNotFoundFatal` 의 메시지 조립부 — 세 OS 공통 형식의 단일 정의.
 /// Linux host 는 boot 단계에서 자체 blocking overlay 로 표시해야 해서 dialog
 /// 호출과 분리해 이 함수만 쓴다 (#289 B6).
-pub fn notFoundMessage(msg_buf: []u8, missing: []const u8, chain: []const []const u8) []const u8 {
+pub fn notFoundMessage(rt: Runtime, msg_buf: []u8, missing: []const u8, chain: []const []const u8) []const u8 {
     return notFoundMessageSub(msg_buf, missing, chain, null);
 }
 
 /// #405 — `substitute` 가 있으면 "설치는 됐는데 fontconfig 가 다른 폰트로 바꿨다" 를 함께
 /// 알린다. Linux host 만 채우고 (fontconfig 특유), 나머지 platform 은 `null` 로 기존 형식이다.
-pub fn notFoundMessageSub(msg_buf: []u8, missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) []const u8 {
+pub fn notFoundMessageSub(rt: Runtime, msg_buf: []u8, missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) []const u8 {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-    const cfg_path: []const u8 = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
+    const cfg_path: []const u8 = paths.configPath(rt, fba.allocator()) catch messages.unknown_path_msg;
 
     return notFoundMessageForPath(msg_buf, missing, chain, cfg_path, substitute);
 }

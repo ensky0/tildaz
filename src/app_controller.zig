@@ -561,7 +561,7 @@ pub const App = struct {
     pub fn handleNewTab(self: *App) void {
         if (tab_actions.checkAtLimitAndDialog(&self.host)) return;
         // #248 — shell 이 런타임에 사라졌으면 조용히 죽는 대신 알림 후 취소.
-        if (!shell_validate.checkForNewTab(self.allocator, self.shell)) return;
+        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
         self.createTab() catch {};
     }
 
@@ -725,7 +725,7 @@ pub const App = struct {
             // 해제, 아니면 monitor 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => if (self.resolveRunAction(.fullscreen)) self.window.toggleFullscreenMode(if (self.window.fullscreen_mode != .none) self.window.fullscreen_mode else .monitor),
             .open_config => if (self.resolveRunAction(.open_config)) {
-                const path = paths.configPath(self.allocator) catch return;
+                const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
                 self.window.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.allocator, path);
@@ -734,7 +734,7 @@ pub const App = struct {
                 self.window.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.allocator, messages.keyboard_shortcuts_url);
             },
-            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(),
+            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt),
         }
         self.invalidateRenderer();
     }
@@ -1085,11 +1085,11 @@ pub const App = struct {
                         return true;
                     },
                     .show_about => {
-                        about.showAboutDialog();
+                        about.showAboutDialog(self.rt);
                         return true;
                     },
                     .open_config => {
-                        const path = paths.configPath(self.allocator) catch return true;
+                        const path = paths.configPath(self.rt, self.allocator) catch return true;
                         defer self.allocator.free(path);
                         // 우리 창은 WS_EX_TOPMOST 라 새로 launch 되는 editor 가
                         // 그 뒤로 가려져 사용자에겐 안 보임. topmost flag 만 잠시
