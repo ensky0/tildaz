@@ -1077,7 +1077,7 @@ pub const App = struct {
                         return true;
                     },
                     .dump_perf => {
-                        perf.dumpAndReset("snapshot");
+                        perf.dumpAndReset(rt, "snapshot");
                         return true;
                     },
                     .show_about => {
