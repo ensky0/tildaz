@@ -88,6 +88,26 @@ const chunk_size = 64 * 1024;
 /// 기준이고, 값은 앱과 같은 정의를 쓴다.
 const frame_budget_ns = session_core.SessionCore.DRAIN_FRAME_BUDGET_NS;
 
+/// Zig 0.16 의 `std.Io.Timestamp` 로 예전 `std.time.Timer` 를 대신한다 (#451).
+///
+/// 호출부가 `timer.read()` 를 여러 군데서 쓰므로 (경과 ns) 같은 모양을 유지한다. `Io` 는
+/// 진입점이 심은 것을 쓴다 — 하네스의 모든 측정은 `runtime.install` 뒤에 일어난다.
+const Timer = struct {
+    io: std.Io,
+    start_ts: std.Io.Timestamp,
+
+    fn start() Timer {
+        const io = runtime.ioRequired();
+        return .{ .io = io, .start_ts = .now(io, .awake) };
+    }
+
+    /// 시작 시점부터 지금까지의 경과 ns.
+    fn read(t: *Timer) u64 {
+        const ns = t.start_ts.durationTo(.now(t.io, .awake)).nanoseconds;
+        return if (ns < 0) 0 else @intCast(ns);
+    }
+};
+
 /// Zig 0.16 은 `main` 의 첫 인자로 `std.process.Init` 을 넘긴다 (#451). 하네스도 앱과
 /// 같은 진입점 규약을 쓴다 — 환경변수로 producer 모드를 판정하므로 `Environ` 이 필수다.
 pub fn main(init: std.process.Init) !void {
@@ -119,12 +139,14 @@ pub fn main(init: std.process.Init) !void {
     // 보면 테스트가 문자열 리터럴 배열을 그대로 넘길 수 있다.
     const argv: []const []const u8 = @ptrCast(args);
 
+    // `else` 를 두지 않는다 — 0.16 에서 argv 획득이 `init.minimal.args` 로 바뀌며
+    // `parseArgs` 의 error set 이 `error.Usage` 하나로 좁아졌고, 컴파일러가 도달 불가
+    // prong 을 오류로 잡는다 (#451).
     const opts = parseArgs(argv) catch |err| switch (err) {
         error.Usage => {
             try printUsage();
             std.process.exit(2);
         },
-        else => return err,
     };
 
     switch (opts.command) {
@@ -215,7 +237,9 @@ fn parseGrid(text: []const u8) ?Grid {
 /// 있어서다 — 창 크기 옵션이 무시되거나 폰트 때문에 셀 수가 목표와 다를 수 있다. 그때는
 /// 기존대로 `cols_start` / `cols` 비교가 그 회차를 걸러낸다.
 fn waitForGrid(target: Grid) u64 {
-    var timer = std.time.Timer.start() catch return 0;
+    // Zig 0.16 — `std.time.Timer` ➡️ `std.Io.Timestamp` (릴리즈 노트 upgrade guide).
+    // `.awake` 가 예전 monotonic 자리다 (Linux `CLOCK_MONOTONIC` · macOS `CLOCK_UPTIME_RAW`).
+    var timer = Timer.start();
     const limit_ns = grid_wait_limit_ms * std.time.ns_per_ms;
     while (true) {
         const now = producerGrid() orelse break;
@@ -254,7 +278,7 @@ fn produce(req: ProducerRequest) !void {
     const grid_wait_ms = if (req.target_grid) |t| waitForGrid(t) else 0;
     const grid_start = producerGrid();
 
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start();
     var left = req.bytes;
     while (left > 0) {
         const n = @min(buf.len, left);
@@ -433,7 +457,7 @@ fn parseArgs(args: []const []const u8) !Options {
 }
 
 fn printUsage() !void {
-    try std.Io.File.stdout().writeAll(
+    try std.Io.File.stdout().writeStreamingAll(runtime.ioRequired(), 
         \\usage: zig build stress -- <throughput | scrollback> [options]
         \\
         \\  throughput   how fast bulk output is consumed
@@ -538,7 +562,7 @@ fn runParser(alloc: std.mem.Allocator, opts: Options) !void {
     var gen: workload.Generator = .{ .kind = opts.workload_kind };
     var buf: [chunk_size]u8 = undefined;
 
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start();
 
     // 바이트를 만드는 시간과 파싱하는 시간을 따로 센다. 한 덩어리로 재면 하네스의
     // 생성 비용이 파서 숫자에 섞여 (실측에서 약 18 %) PTY 층의 소화 속도보다 파서
@@ -641,7 +665,7 @@ const ProducerSession = struct {
 
 fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
     resetCounters();
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start();
 
     const session = try ProducerSession.start(alloc, opts);
     defer session.deinit();
@@ -700,7 +724,7 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
 /// 이고, 실제 앱은 여기에 렌더 시간까지 더해진다. 즉 이 숫자는 체감의 **상한**이다.
 fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
     resetCounters();
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start();
 
     const session = try ProducerSession.start(alloc, opts);
     defer session.deinit();
@@ -849,7 +873,7 @@ fn runScrollback(alloc: std.mem.Allocator, opts: Options) !void {
     var segment_count: usize = 0;
 
     resetCounters();
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start();
 
     const session = try ProducerSession.start(alloc, opts);
     defer session.deinit();
@@ -989,7 +1013,7 @@ fn reportScrollback(opts: Options, segments: []const Segment) !void {
         }
     }
 
-    try std.Io.File.stdout().writeAll(w.slice());
+    try std.Io.File.stdout().writeStreamingAll(runtime.ioRequired(), w.slice());
 }
 
 // --- 리포트 ---
@@ -1145,7 +1169,7 @@ fn report(opts: Options, result: Result) !void {
         w.print("--- perf counters ---\nnot instrumented on this layer\n", .{});
     }
 
-    try std.Io.File.stdout().writeAll(w.slice());
+    try std.Io.File.stdout().writeStreamingAll(runtime.ioRequired(), w.slice());
 }
 
 const CounterOpts = struct {

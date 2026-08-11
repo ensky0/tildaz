@@ -2,6 +2,7 @@
 // Writes snapshots to the unified log file (`log.zig`) on dumpAndReset().
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const log = @import("log.zig");
 const instance_context = @import("instance_context.zig");
@@ -207,7 +208,7 @@ pub fn dumpOnExit() void {
     // 실패하면 그냥 `"stress"` — 라벨 하나 때문에 덤프 자체를 거르지 않는다.
     var buf: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const label: []const u8 = if (std.process.getEnvVarOwned(
+    const label: []const u8 = if (runtime.envAlloc(
         fba.allocator(),
         "TILDAZ_STRESS_WORKLOAD",
     )) |workload| workload else |_| "stress";

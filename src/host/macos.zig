@@ -382,7 +382,7 @@ var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: config.Config = .{};
-var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+var g_gpa: std.heap.DebugAllocator(.{}) = .init;
 /// 멀티탭 컬렉션 (#111 M11.1). 현재 단계는 데이터 모델만 도입 — 실제로는
 /// 단일 탭만 생성. PTY / Terminal / Stream / 마우스 selection 은 모두 활성
 /// 탭의 필드. host 코드는 `g_session.activeTab().?.{pty,terminal,...}` 로 access.

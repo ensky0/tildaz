@@ -18,6 +18,7 @@
 //! Linux 머신이라 실기 확인을 못 했다 — 실기에서 문제가 되면 런처 분리는 별도 이슈로 뗀다.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const windows = std.os.windows;
 
@@ -65,7 +66,10 @@ fn write(stream: Stream, text: []const u8) void {
             };
             // 파이프가 닫혔거나 (`tildaz --version | head`) 콘솔이 없으면 쓸 곳이 없다.
             // 버전을 못 찍었다고 종료 코드를 바꾸지는 않는다.
-            file.writeAll(text) catch {};
+            // Zig 0.16 — `fs.File.writeAll` ➡️ `Io.File.writeStreamingAll` (릴리즈 노트
+            // upgrade guide) 이고 `io` 를 받는다. 이 경로는 `--version` · `--help` 처럼
+            // 진입점이 `runtime.install` 을 부른 뒤에만 지나간다.
+            file.writeStreamingAll(runtime.ioRequired(), text) catch {};
         },
     }
 }
