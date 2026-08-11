@@ -2787,8 +2787,8 @@ fn registerTildazViewClass() !objc.Class {
 /// fail 경로서 `Config.shell` 로 보관, #218). fallback 도 dupe 해 항상 owned.
 /// (macOS 는 terminate 가 exit 직행이라 `Config.deinit` 미호출 — 그래도 load 의
 /// disk 경로 free 가 owned 를 기대하므로 dupe 필요.)
-fn resolveShell(allocator: std.mem.Allocator) []const u8 {
-    if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
+fn resolveShell(rt: Runtime, allocator: std.mem.Allocator) []const u8 {
+    if (rt.envAlloc(allocator, "SHELL") catch null) |s| return s;
     return allocator.dupe(u8, config.Defaults.shell) catch config.Defaults.shell;
 }
 
@@ -2821,8 +2821,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. `$SHELL` env 가
     // 있으면 사용자 환경값을 그대로, 없으면 `Defaults.shell` (= `/bin/bash`).
     // 이후 실행은 disk 의 명시값만 사용 — runtime fallback 분기 없음.
-    const shell_resolved = resolveShell(g_gpa.allocator());
-    g_config = config.Config.load(g_gpa.allocator(), shell_resolved);
+    const shell_resolved = resolveShell(rt, g_gpa.allocator());
+    g_config = config.Config.load(rt, g_gpa.allocator(), shell_resolved);
     log.logConfigLoaded(g_config);
 
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서

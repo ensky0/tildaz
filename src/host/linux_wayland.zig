@@ -91,7 +91,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
     // shell path 결정.
     const shell_resolved = resolveShell(gpa.allocator());
-    g_config = config_mod.Config.load(gpa.allocator(), shell_resolved);
+    g_config = config_mod.Config.load(rt, gpa.allocator(), shell_resolved);
     defer if (g_config) |*c| c.deinit(gpa.allocator());
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);

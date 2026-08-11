@@ -54,6 +54,7 @@ pub fn registerCallbacks(cb: Callbacks) void {
 }
 
 pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+    _ = rt;
     if (g_callbacks) |cb| return cb.prompt_hotkey(cb.ctx, allocator, title, message, validator);
     showStderr(.info, title, message);
     return null;
@@ -66,6 +67,7 @@ pub fn unregisterCallbacks() void {
 }
 
 pub fn show(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
+    _ = rt;
     if (g_callbacks) |cb| {
         cb.show_info(cb.ctx, severity, title, message);
         return;
@@ -78,10 +80,12 @@ pub fn show(rt: Runtime, severity: dialog.Severity, title: []const u8, message: 
 /// Config parsing은 Wayland backend 등록 전에 실행되므로 이 경로는 stderr·log에
 /// 동적 본문 전체를 남긴다. runtime fatal은 기존 overlay 경로를 사용한다 (#316).
 pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
+    _ = rt;
     show(.err, title, message);
 }
 
 pub fn showAboutAlert(rt: Runtime, title: []const u8, message: []const u8) void {
+    _ = rt;
     if (g_callbacks) |cb| {
         cb.show_about(cb.ctx, title, message);
         return;
@@ -93,6 +97,7 @@ pub fn showAboutAlert(rt: Runtime, title: []const u8, message: []const u8) void 
 /// event loop pump 로 사용자 선택 대기. 미가용 시 default Cancel (= false)
 /// — 실수 종료 방지 (#116).
 pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
+    _ = rt;
     if (g_callbacks) |cb| {
         const result = cb.show_confirm(cb.ctx, title, message);
         log.appendLine("dialog", "confirm title={s} result={s}", .{ title, if (result) "OK" else "Cancel" });

@@ -73,7 +73,7 @@ pub fn showNotFoundFatalSub(rt: Runtime, missing: []const u8, chain: []const []c
 /// Linux host 는 boot 단계에서 자체 blocking overlay 로 표시해야 해서 dialog
 /// 호출과 분리해 이 함수만 쓴다 (#289 B6).
 pub fn notFoundMessage(rt: Runtime, msg_buf: []u8, missing: []const u8, chain: []const []const u8) []const u8 {
-    return notFoundMessageSub(msg_buf, missing, chain, null);
+    return notFoundMessageSub(rt, msg_buf, missing, chain, null);
 }
 
 /// #405 — `substitute` 가 있으면 "설치는 됐는데 fontconfig 가 다른 폰트로 바꿨다" 를 함께

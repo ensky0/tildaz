@@ -1,6 +1,10 @@
 const std = @import("std");
 const run_options = @import("../run_options.zig");
 const Runtime = @import("../runtime.zig").Runtime;
+
+/// #451 — panic / fatal 경로는 호출 사슬 밖에서 불린다 (panic handler 는 인자를 못 받는다).
+/// `run` 이 심어 두고 그 두 자리에서만 읽는다 — macOS 의 `g_rt` 와 같은 이유다.
+var g_rt: Runtime = undefined;
 const App = @import("../app_controller.zig").App;
 const SessionCore = @import("../session_core.zig").SessionCore;
 const RendererBackend = @import("../renderer.zig").RendererBackend;
@@ -32,7 +36,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
-    dialog.showError(messages.crash_title, text);
+    dialog.showError(g_rt, messages.crash_title, text);
     std.process.exit(1);
 }
 
@@ -41,10 +45,11 @@ pub fn showFatalRunError(err: anyerror) void {
 
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
-    dialog.showError(messages.error_title, text);
+    dialog.showError(g_rt, messages.error_title, text);
 }
 
 pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
+    g_rt = rt;
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -87,7 +92,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 삭제 / AV 격리 등). showFatal 은 다이얼로그 표시 후 프로세스를 종료한다.
     if (!windows_pty.bundledRuntimeFilesPresent()) {
         log.appendLine("conpty", "bundled _internal runtime missing — cannot start", .{});
-        dialog.showFatal(messages.conpty_missing_title, messages.conpty_missing_msg);
+        dialog.showFatal(rt, messages.conpty_missing_title, messages.conpty_missing_msg);
     }
 
     var app = App{
@@ -222,7 +227,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
             @errorName(err),
             log.filePath() orelse messages.unknown_path_msg,
         }) catch messages.renderer_init_failed_fallback_msg;
-        dialog.showFatal(messages.renderer_init_failed_title, msg);
+        dialog.showFatal(rt, messages.renderer_init_failed_title, msg);
     };
     log.appendLine("startup", "render_path={s}", .{app.renderer.?.renderPath()});
     defer if (app.renderer) |*r| r.deinit();

@@ -1092,13 +1092,13 @@ fn showAboutText(title: []const u8, body: []const u8) bool {
 }
 
 pub fn showAboutAlert(rt: Runtime, title: []const u8, body: []const u8) void {
-    if (!showAboutText(title, body)) show(.info, title, body);
+    if (!showAboutText(title, body)) show(rt, .info, title, body);
 }
 
 /// fatal도 같은 branded NSAlert content를 사용하고, 화면을 넘을 때만 본문을
 /// scroll해 전체 경로와 마지막 줄을 보존한다 (#316, #237).
 pub fn showFatal(rt: Runtime, title: []const u8, body: []const u8) void {
-    show(.err, title, body);
+    show(rt, .err, title, body);
 }
 
 /// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=OK,
@@ -1166,6 +1166,7 @@ fn confirmOsascript(rt: Runtime, title: []const u8, message: []const u8) bool {
 }
 
 pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+    _ = rt;
     // #282 C6 — hotkey 캡처는 키 이벤트 modal 이라 osascript 로 대체 불가.
     // backend 미가용 시 조용히 null 대신 안내 로그 후 null (호출부가 기존
     // hotkey 유지 등 안전 처리).
