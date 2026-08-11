@@ -16,6 +16,7 @@
 //!   host 가 default config 생성 전에 끝내고, 이후 disk config 의 명시값만 사용.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
@@ -84,7 +85,7 @@ fn formatValidationFailure(
 /// 이 함수를 공유해 token / exists / 메시지 조립 로직을 한 곳에 둔다. Linux 는
 /// `dialog.showFatal` 이 fire-and-forget + 즉시 exit 이라 overlay 가 paint 전에 죽어
 /// (#282 F9), host 가 이 메시지를 받아 자체 blocking overlay 로 표시한 뒤 종료한다.
-pub fn validationMessage(allocator: std.mem.Allocator, shell: []const u8) ?ValidationMessage {
+pub fn validationMessage(rt: Runtime, allocator: std.mem.Allocator, shell: []const u8) ?ValidationMessage {
     const token = firstShellToken(shell);
     const failure: ValidationFailure = if (shell.len == 0)
         .empty
@@ -95,14 +96,14 @@ pub fn validationMessage(allocator: std.mem.Allocator, shell: []const u8) ?Valid
     else
         .executable_not_found;
 
-    const cfg_path_owned: ?[]u8 = paths.configPath(allocator) catch null;
+    const cfg_path_owned: ?[]u8 = paths.configPath(rt, allocator) catch null;
     defer if (cfg_path_owned) |p| allocator.free(p);
     const cfg_path: []const u8 = cfg_path_owned orelse "(unknown)";
     return formatValidationFailure(allocator, failure, shell, token, cfg_path);
 }
 
-pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
-    if (validationMessage(allocator, shell)) |message| {
+pub fn validateOrFatal(rt: Runtime, allocator: std.mem.Allocator, shell: []const u8) void {
+    if (validationMessage(rt, allocator, shell)) |message| {
         // showFatal은 process를 종료한다. owned 본문은 dialog가 닫힐 때까지
         // 유효하고 process 종료와 함께 회수된다.
         dialog.showFatal(messages.config_error_title, message.text);
@@ -115,11 +116,11 @@ pub fn validateOrFatal(allocator: std.mem.Allocator, shell: []const u8) void {
 /// 런타임에 사라졌을 때 새 탭이 *조용히* 죽던 것을 막고 사용자에게 원인을 알린다.
 /// 존재하면 `true` (정상 진행). startup 검증과 같은 `firstShellToken` /
 /// `executableExists` 를 공유해 판정 기준이 일관된다.
-pub fn checkForNewTab(allocator: std.mem.Allocator, shell: []const u8) bool {
+pub fn checkForNewTab(rt: Runtime, allocator: std.mem.Allocator, shell: []const u8) bool {
     const tok = firstShellToken(shell);
     if (tok.len != 0 and executableExists(allocator, tok)) return true;
 
-    const cfg_path_owned: ?[]u8 = paths.configPath(allocator) catch null;
+    const cfg_path_owned: ?[]u8 = paths.configPath(rt, allocator) catch null;
     defer if (cfg_path_owned) |p| allocator.free(p);
     const cfg_path: []const u8 = cfg_path_owned orelse "(unknown)";
 
@@ -266,5 +267,8 @@ test "valid shell returns null without preparing an error message" {
     const allocator = std.testing.allocator;
     const shell = if (builtin.os.tag == .windows) "cmd.exe" else "/bin/sh";
     if (!executableExists(allocator, shell)) return error.SkipZigTest;
-    try std.testing.expect(validationMessage(allocator, shell) == null);
+    // #451 — 유효한 셸이면 config 경로를 읽기 전에 `null` 로 빠져나오므로 환경변수가
+    // 필요 없다. `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    try std.testing.expect(validationMessage(rt, allocator, shell) == null);
 }
