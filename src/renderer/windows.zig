@@ -35,6 +35,11 @@ const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
 const MAX_INSTANCES: u32 = 32768;
+/// #435 — frame-latency waitable 을 논블로킹으로 확인 (`frameReady`) 하고, 다 쓰면 닫는다.
+extern "kernel32" fn WaitForSingleObject(?*anyopaque, u32) callconv(.c) u32;
+extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) i32;
+const WAIT_OBJECT_0: u32 = 0;
+
 extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 extern "user32" fn GetWindowLongPtrW(?*anyopaque, c_int) callconv(.c) isize;
 extern "user32" fn GetClientRect(?*anyopaque, *dw.RECT) callconv(.c) i32;
@@ -221,6 +226,17 @@ pub const D3d11Renderer = struct {
     device: *d3d.ID3D11Device,
     ctx: *d3d.ID3D11DeviceContext,
     swap_chain: *d3d.IDXGISwapChain,
+    /// #435 — frame-latency waitable. **flip-model + `CreateSwapChainForHwnd`
+    /// 경로에서만** 잡힌다 (layered / BitBlt 폴백 · DirectComposition 경로는 null).
+    /// null 이면 이 renderer 는 이 이슈 이전과 완전히 같게 동작한다.
+    frame_waitable: ?*anyopaque = null,
+    /// `Present` 의 sync interval. waitable 이 있으면 0 (vblank 대기를 `Present` 가
+    /// 하지 않는다 — 박자는 #386 프레임 클럭이 잡고, 백프레셔는 `frame_waitable` 이
+    /// 논블로킹으로 알려 준다). 없으면 1 로 기존 동작 유지.
+    present_sync: u32 = 1,
+    /// `ResizeBuffers` 가 되살려야 하는 생성 시 플래그. 0 을 넘기면 waitable 이
+    /// 떨어져 나가 `frame_waitable` 이 영영 신호되지 않는다.
+    swap_chain_flags: u32 = 0,
     /// #89 2단계 — 반투명(opacity<255) composition 경로의 DComp 객체.
     /// opacity 100% (hwnd flip-model) 또는 composition 실패 fallback 시 null.
     dcomp_device: ?*d3d.IDCompositionDesktopDevice = null,
@@ -463,6 +479,105 @@ pub const D3d11Renderer = struct {
         };
     }
 
+    /// #435 — 큐에 허용하는 프레임 수. **1 이면 안 된다** — 우리 frame tick 은 vblank 와
+    /// 위상이 독립이라 (드레인 4 ms → 렌더 → present 순서라 present 가 tick 후반부에 난다)
+    /// 직전 프레임이 아직 안 물러난 채로 다음 tick 이 온다. 예전 `Present(1, 0)` 은 vblank
+    /// 까지 블록하면서 루프 위상을 vblank 에 재정렬해 줬는데 sync 0 은 그게 없다.
+    ///
+    /// 1 로 뒀을 때 실측: 60 Hz `ansi` 에서 **tick 12 개 중 4 개 (33 %) 를 게이트가 버렸다**
+    /// (`swapwait ticks=4` · 그린 프레임 7 / onrender 12).
+    const MAX_FRAME_LATENCY: u32 = 2;
+    /// flip model 은 `BufferCount >= MaximumFrameLatency + 1` 이라야 실제로 그만큼 큐에 든다.
+    const WAITABLE_BUFFER_COUNT: u32 = MAX_FRAME_LATENCY + 1;
+
+    /// #435 — flip-model swap chain 을 `IDXGIFactory2::CreateSwapChainForHwnd` 로 만든다.
+    /// `D3D11CreateDeviceAndSwapChain` 과 갈리는 점은 하나다 — 이쪽만 `DESC1.Flags` 를
+    /// 받아서 `FRAME_LATENCY_WAITABLE_OBJECT` 를 걸 수 있다. 그 이벤트가 있어야
+    /// *"swap chain 이 다음 프레임을 받을 준비가 됐나"* 를 **블로킹 없이** 물어볼 수 있고,
+    /// 그래야 `Present` 를 sync 0 으로 두고도 큐가 차서 막히는 것을 앞에서 피한다.
+    ///
+    /// 성공하면 `device` · `ctx` · `swap_chain` · `waitable` · `flags_out` 을 채운다.
+    /// 실패는 HRESULT 로 반환하고, 정리는 **호출자의 폴백 루프**가 한다 (그쪽이 legacy
+    /// 경로 실패와 같은 자리에서 풀어야 재시도 순서가 어긋나지 않는다).
+    ///
+    /// `Width` / `Height` 를 0 으로 두면 DXGI 가 대상 창의 client 영역에서 가져온다 —
+    /// 기존 `DXGI_SWAP_CHAIN_DESC.BufferDesc` 가 0 이던 것과 같은 동작이다.
+    fn createWaitableHwndChain(
+        hwnd: ?*anyopaque,
+        driver_value: u32,
+        swap_effect: u32,
+        buffer_count: u32,
+        device: *?*d3d.ID3D11Device,
+        ctx: *?*d3d.ID3D11DeviceContext,
+        swap_chain: *?*d3d.IDXGISwapChain,
+        waitable: *?*anyopaque,
+        flags_out: *u32,
+    ) d3d.HRESULT {
+        const dev_hr = d3d.D3D11CreateDevice(
+            null,
+            driver_value,
+            null,
+            d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, // D2D interop 필요 (#136)
+            null,
+            0,
+            d3d.D3D11_SDK_VERSION,
+            device,
+            null,
+            ctx,
+        );
+        if (dev_hr < 0) return dev_hr;
+        const dev = device.* orelse return -1;
+
+        var factory_any: ?*anyopaque = null;
+        const fac_hr = d3d.CreateDXGIFactory1(&d3d.IID_IDXGIFactory2, &factory_any);
+        if (fac_hr < 0) return fac_hr;
+        const factory2: *d3d.IDXGIFactory2 = @ptrCast(@alignCast(factory_any orelse return -1));
+        defer _ = factory2.Release();
+
+        const flags = d3d.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        const desc1 = d3d.DXGI_SWAP_CHAIN_DESC1{
+            .Width = 0,
+            .Height = 0,
+            .Format = d3d.DXGI_FORMAT_B8G8R8A8_UNORM,
+            .SampleDesc = .{ .Count = 1 },
+            .BufferUsage = d3d.DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            .BufferCount = buffer_count,
+            .Scaling = d3d.DXGI_SCALING_STRETCH,
+            .SwapEffect = swap_effect,
+            // hwnd swap chain 은 per-pixel 알파를 쓰지 않는다 (반투명은 opacity<255 의
+            // DirectComposition 경로 담당 — #89 2단계).
+            .AlphaMode = d3d.DXGI_ALPHA_MODE_IGNORE,
+            .Flags = flags,
+        };
+        const sc_hr = factory2.CreateSwapChainForHwnd(@ptrCast(dev), hwnd, &desc1, null, null, swap_chain);
+        if (sc_hr < 0) return sc_hr;
+        if (swap_chain.* == null) return -1;
+        flags_out.* = flags;
+
+        // #89 — DXGI 내장 Alt+Enter 감시 차단. 이 경로는 factory 를 이미 들고 있어
+        // swap chain 의 `GetParent` 로 되찾을 필요가 없다.
+        const mwa_hr = factory2.MakeWindowAssociation(hwnd, d3d.DXGI_MWA_NO_WINDOW_CHANGES | d3d.DXGI_MWA_NO_ALT_ENTER);
+        log.appendLineVerbose("d3d", "MakeWindowAssociation(NO_WINDOW_CHANGES|NO_ALT_ENTER) hr=0x{x}", .{@as(u32, @bitCast(mwa_hr))});
+
+        // 큐 깊이는 `MAX_FRAME_LATENCY` 주석 참고 — 위상 어긋남을 흡수할 만큼만 두고
+        // 그 이상은 waitable 이 막는다. 더 키우면 입력 → 화면 지연이 그만큼 늘어난다.
+        var sc2_any: ?*anyopaque = null;
+        if (swap_chain.*.?.QueryInterface(&d3d.IID_IDXGISwapChain2, &sc2_any) >= 0) {
+            if (sc2_any) |p| {
+                const sc2: *d3d.IDXGISwapChain2 = @ptrCast(@alignCast(p));
+                defer _ = sc2.Release();
+                _ = sc2.SetMaximumFrameLatency(MAX_FRAME_LATENCY);
+                waitable.* = sc2.GetFrameLatencyWaitableObject();
+            }
+        }
+        // 여기서 실패해도 swap chain 자체는 쓸 수 있다. 다만 논블로킹 확인 수단이 없으니
+        // 호출자가 `present_sync` 를 1 로 남겨 예전(vsync present) 동작으로 돈다.
+        if (waitable.* == null) {
+            log.appendLine("d3d", "frame latency waitable unavailable — keeping vsync present", .{});
+        }
+        return sc_hr;
+    }
+
     /// 주어진 driver type 하나로 renderer 전체를 만든다. 하드웨어 → WARP 재시도는
     /// `init` 이 담당한다.
     ///
@@ -512,28 +627,57 @@ pub const D3d11Renderer = struct {
         const swap_effects: []const u32 = if (layered_window) &layered_swap_effects else &standard_swap_effects;
         var create_hr: d3d.HRESULT = if (composition_active) 0 else -1;
         var selected_swap_effect: u32 = if (composition_active) d3d.DXGI_SWAP_EFFECT_FLIP_DISCARD else d3d.DXGI_SWAP_EFFECT_DISCARD;
+        // #435 — flip-model 은 `CreateSwapChainForHwnd` 로 만들어 frame-latency waitable 을
+        // 건다. `D3D11CreateDeviceAndSwapChain` 은 `DESC1.Flags` 를 못 받아 이 플래그를
+        // 걸 방법이 없다. legacy `DISCARD` (layered 창 · flip 둘 다 실패한 폴백) 는 애초에
+        // waitable 이 없는 swap effect 라 예전 경로를 그대로 쓴다 — 그 경우 `frame_waitable`
+        // 이 null 로 남고 `present_sync` 가 1 이라 이 이슈 이전과 동작이 완전히 같다.
+        var frame_waitable: ?*anyopaque = null;
+        var swap_chain_flags: u32 = 0;
         if (composition_active) sc_desc.BufferCount = 2;
         for (if (composition_active) swap_effects[0..0] else swap_effects) |swap_effect| {
-            sc_desc.BufferCount = if (swap_effect == d3d.DXGI_SWAP_EFFECT_DISCARD) 1 else 2;
+            const buffer_count: u32 = if (swap_effect == d3d.DXGI_SWAP_EFFECT_DISCARD) 1 else WAITABLE_BUFFER_COUNT;
+            // 아래 생성 로그가 이 값을 읽는다. flip 경로는 `sc_desc` 를 쓰지 않지만
+            // 여기서 함께 맞춰 두지 않으면 로그의 `buffers=` 가 틀린 값을 찍는다.
+            sc_desc.BufferCount = buffer_count;
             sc_desc.SwapEffect = swap_effect;
-            create_hr = d3d.D3D11CreateDeviceAndSwapChain(
-                null,
-                driver_value,
-                null,
-                d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, // D2D interop 필요 (#136)
-                null,
-                0,
-                d3d.D3D11_SDK_VERSION,
-                &sc_desc,
-                &swap_chain,
-                &device,
-                null,
-                &ctx,
-            );
+            if (swap_effect == d3d.DXGI_SWAP_EFFECT_DISCARD) {
+                create_hr = d3d.D3D11CreateDeviceAndSwapChain(
+                    null,
+                    driver_value,
+                    null,
+                    d3d.D3D11_CREATE_DEVICE_BGRA_SUPPORT, // D2D interop 필요 (#136)
+                    null,
+                    0,
+                    d3d.D3D11_SDK_VERSION,
+                    &sc_desc,
+                    &swap_chain,
+                    &device,
+                    null,
+                    &ctx,
+                );
+            } else {
+                create_hr = createWaitableHwndChain(
+                    hwnd,
+                    driver_value,
+                    swap_effect,
+                    buffer_count,
+                    &device,
+                    &ctx,
+                    &swap_chain,
+                    &frame_waitable,
+                    &swap_chain_flags,
+                );
+            }
             if (create_hr >= 0) {
                 selected_swap_effect = swap_effect;
                 break;
             }
+            if (frame_waitable) |h| {
+                _ = CloseHandle(h);
+                frame_waitable = null;
+            }
+            swap_chain_flags = 0;
             if (ctx) |c| {
                 _ = c.Release();
                 ctx = null;
@@ -555,12 +699,16 @@ pub const D3d11Renderer = struct {
             });
             return error.D3D11CreateFailed;
         }
-        log.appendLineVerbose("d3d", "swap chain created: driver={s} layered={} composition={} effect={s} buffers={d}", .{
+        // #435 — `waitable` 이 이 빌드가 어느 경로로 떴는지 가르는 값이다. 회귀 판정에서
+        // *"waitable 이 안 걸린 채 sync 0 으로 도는"* 조합을 배제하는 근거라 로그로 남긴다.
+        log.appendLine("d3d", "swap chain created: driver={s} layered={} composition={} effect={s} buffers={d} waitable={} present_sync={d}", .{
             @tagName(driver_type),
             layered_window,
             composition_active,
             swapEffectName(selected_swap_effect),
             sc_desc.BufferCount,
+            frame_waitable != null,
+            @as(u32, if (frame_waitable != null) 0 else 1),
         });
 
         // #89 — DXGI 의 내장 Alt+Enter 감시 차단. DXGI 는 swap chain 이 붙은
@@ -572,7 +720,10 @@ pub const D3d11Renderer = struct {
         // 는 정상인데 taskbar 영역만 검정 + 클릭은 통과 — DXGI FS 전환의
         // 전형). NO_WINDOW_CHANGES 로 감시 자체를 끈다. (composition swap
         // chain 은 hwnd 연동 자체가 없어 해당 없음.)
-        if (!composition_active) {
+        // #435 — `createWaitableHwndChain` 을 지난 경우 (`swap_chain_flags != 0`) 는 그
+        // 안에서 이미 걸었다. 남는 것은 legacy `DISCARD` (layered · flip 전멸 폴백) 뿐이라
+        // 예전처럼 `GetParent` 로 factory 를 되찾는다.
+        if (!composition_active and swap_chain_flags == 0) {
             var factory_ptr: ?*anyopaque = null;
             if (swap_chain.?.GetParent(&d3d.IID_IDXGIFactory, &factory_ptr) >= 0) {
                 if (factory_ptr) |fp| {
@@ -592,6 +743,8 @@ pub const D3d11Renderer = struct {
             if (dcomp_visual) |v| _ = v.Release();
             if (dcomp_target) |t| _ = t.Release();
             if (dcomp_device) |dd| _ = dd.Release();
+            // #435 — waitable HANDLE 의 소유권은 우리에게 있다 (`GetFrameLatencyWaitableObject`).
+            if (frame_waitable) |h| _ = CloseHandle(h);
             _ = ctx.?.Release();
             _ = swap_chain.?.Release();
             _ = device.?.Release();
@@ -755,6 +908,11 @@ pub const D3d11Renderer = struct {
             .device = device.?,
             .ctx = ctx.?,
             .swap_chain = swap_chain.?,
+            .frame_waitable = frame_waitable,
+            // waitable 이 없으면 (legacy DISCARD · composition · QI 실패) sync 1 을 유지해
+            // 이 이슈 이전과 완전히 같게 둔다.
+            .present_sync = if (frame_waitable != null) 0 else 1,
+            .swap_chain_flags = swap_chain_flags,
             .dcomp_device = dcomp_device,
             .dcomp_target = dcomp_target,
             .dcomp_visual = dcomp_visual,
@@ -807,9 +965,25 @@ pub const D3d11Renderer = struct {
         if (self.dcomp_visual) |v| _ = v.Release();
         if (self.dcomp_target) |t| _ = t.Release();
         if (self.dcomp_device) |dd| _ = dd.Release();
+        // #435 — `GetFrameLatencyWaitableObject` 가 준 HANDLE 은 호출자 소유다.
+        if (self.frame_waitable) |h| {
+            _ = CloseHandle(h);
+            self.frame_waitable = null;
+        }
         _ = self.swap_chain.Release();
         _ = self.ctx.Release();
         _ = self.device.Release();
+    }
+
+    /// #435 — swap chain 이 다음 프레임을 받을 준비가 됐나. **블로킹하지 않는다**
+    /// (timeout 0). `false` 면 이번 프레임 tick 은 그리지 않고 넘긴다 — UI 스레드는
+    /// 곧장 메시지 루프로 돌아가 유휴 드레인 (#387 사양 A) 을 계속한다.
+    ///
+    /// waitable 이 없는 경로 (legacy `DISCARD` · DirectComposition · QI 실패) 는 항상
+    /// `true` 다. 그쪽은 `present_sync` 가 1 이라 `Present` 가 예전처럼 페이싱한다.
+    pub fn frameReady(self: *const D3d11Renderer) bool {
+        const h = self.frame_waitable orelse return true;
+        return WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
     }
 
     pub fn invalidate(self: *D3d11Renderer) void {
@@ -869,7 +1043,10 @@ pub const D3d11Renderer = struct {
         }
         // Unbind render target before resize
         self.ctx.OMSetRenderTargets(0, null, null);
-        _ = self.swap_chain.ResizeBuffers(0, width, height, 0, 0);
+        // #435 — 생성 시 플래그를 그대로 돌려줘야 한다. 0 을 넘기면 waitable 이 떨어져
+        // 나가 `frame_waitable` 이 영영 신호되지 않고, 그러면 `frameReady` 가 계속 false
+        // 라 창 크기를 바꾼 뒤로 화면이 멈춘다.
+        _ = self.swap_chain.ResizeBuffers(0, width, height, 0, self.swap_chain_flags);
         self.createRTV();
         self.vp_width = width;
         self.vp_height = height;
@@ -1719,8 +1896,13 @@ pub const D3d11Renderer = struct {
         perf.addTimed(&perf.render, render_t0);
 
         // Present
+        //
+        // #435 — waitable 경로는 sync 0 이다. vblank 대기를 여기서 하면 그동안 UI 스레드가
+        // 묶여 유휴 드레인 (#387 사양 A) 이 통째로 굶는다 — 그게 이 이슈의 상태 A 다.
+        // 박자는 #386 프레임 클럭이 잡고, 큐 포화는 `frameReady` 가 앞에서 막는다.
+        // waitable 이 없는 경로는 `present_sync` 가 1 이라 예전 그대로다.
         const present_t0 = perf.now();
-        _ = self.swap_chain.Present(1, 0);
+        _ = self.swap_chain.Present(self.present_sync, 0);
         perf.addTimed(&perf.present, present_t0);
     }
 
