@@ -69,7 +69,7 @@ fn parseDesktopFileName(name: []const u8) ?u32 {
 fn applicationsDir(allocator: std.mem.Allocator) ![]u8 {
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".local", "share", "applications" });
+    return std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "applications" });
 }
 
 fn containsIndex(indices: []const u32, index: u32) bool {
@@ -84,10 +84,10 @@ pub fn ensureDesktopEntry(allocator: std.mem.Allocator, index: u32) !void {
 
     const file_name = try std.fmt.allocPrint(allocator, "tildaz.instance{d}.desktop", .{index});
     defer allocator.free(file_name);
-    const path = try std.fs.path.join(allocator, &.{ dir, file_name });
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir, file_name });
     defer allocator.free(path);
 
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
     if (std.mem.indexOfAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 

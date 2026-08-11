@@ -16,6 +16,7 @@
 //   #75 가 6번 시도해도 못 풀던 \"드래그 중 잔상\" 시나리오를 원천 회피.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const run_options = @import("../run_options.zig");
 const version = @import("../version.zig");
 const objc = @import("../macos_objc.zig");
@@ -2795,7 +2796,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 바로 열람 가능.
     log.logStart(version.string);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(runtime.envHas("TILDAZ_VERBOSE"));
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 

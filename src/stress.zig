@@ -111,8 +111,9 @@ pub fn main(init: std.process.Init) !void {
     // producer 모드는 argv 가 아니라 환경변수로 판정한다 (위 문서 주석).
     if (try producerRequest(alloc)) |req| return produce(req);
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    // Zig 0.16 — `argsAlloc` 이 없어졌고 argv 는 진입점이 받는다 (#451). arena 는 process
+    // lifetime 이라 free 하지 않는다.
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     // `argsAlloc` 은 `[][:0]u8` 을 주는데 파싱에 sentinel 이 필요 없다. 느슨한 타입으로
     // 보면 테스트가 문자열 리터럴 배열을 그대로 넘길 수 있다.
@@ -236,7 +237,7 @@ fn produce(req: ProducerRequest) !void {
     }
     var gen: workload.Generator = .{ .kind = req.kind };
     var buf: [chunk_size]u8 = undefined;
-    const out = std.fs.File.stdout();
+    const out = std.Io.File.stdout();
 
     // 그리드를 **출력 전후 두 번** 읽는다. 한 번만 읽으면 어느 쪽이든 틀린다:
     //
@@ -302,7 +303,7 @@ fn producerGrid() ?Grid {
         // `srWindow` 가 맞는 선택이다.
         const win = std.os.windows;
         var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-        const handle = std.fs.File.stdout().handle;
+        const handle = std.Io.File.stdout().handle;
         if (win.kernel32.GetConsoleScreenBufferInfo(handle, &info) == 0) return null;
         const cols: i32 = @as(i32, info.srWindow.Right) - info.srWindow.Left + 1;
         const rows: i32 = @as(i32, info.srWindow.Bottom) - info.srWindow.Top + 1;
@@ -311,7 +312,7 @@ fn producerGrid() ?Grid {
     }
 
     var ws: std.posix.winsize = undefined;
-    const fd = std.fs.File.stdout().handle;
+    const fd = std.Io.File.stdout().handle;
     if (builtin.os.tag == .linux) {
         const linux = std.os.linux;
         if (std.posix.errno(linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
@@ -432,7 +433,7 @@ fn parseArgs(args: []const []const u8) !Options {
 }
 
 fn printUsage() !void {
-    try std.fs.File.stdout().writeAll(
+    try std.Io.File.stdout().writeAll(
         \\usage: zig build stress -- <throughput | scrollback> [options]
         \\
         \\  throughput   how fast bulk output is consumed
@@ -596,7 +597,7 @@ const ProducerSession = struct {
         errdefer alloc.destroy(self);
         self.* = .{ .alloc = alloc, .shell_command = undefined };
 
-        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const exe_path = try std.fs.selfExePath(&exe_buf);
         self.shell_command = try toShellCommand(alloc, exe_path);
         errdefer freeShellCommand(alloc, self.shell_command);
@@ -988,7 +989,7 @@ fn reportScrollback(opts: Options, segments: []const Segment) !void {
         }
     }
 
-    try std.fs.File.stdout().writeAll(w.slice());
+    try std.Io.File.stdout().writeAll(w.slice());
 }
 
 // --- 리포트 ---
@@ -1144,7 +1145,7 @@ fn report(opts: Options, result: Result) !void {
         w.print("--- perf counters ---\nnot instrumented on this layer\n", .{});
     }
 
-    try std.fs.File.stdout().writeAll(w.slice());
+    try std.Io.File.stdout().writeAll(w.slice());
 }
 
 const CounterOpts = struct {

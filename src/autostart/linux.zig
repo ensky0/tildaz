@@ -53,7 +53,7 @@ fn removeLegacyEntryIfDifferent(allocator: std.mem.Allocator, current_path: []co
 
 /// 현재 실행 중 binary 의 절대 경로. macOS `currentExePath` 동등.
 fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const slice = try std.fs.selfExePath(&buf);
     return allocator.dupe(u8, slice);
 }

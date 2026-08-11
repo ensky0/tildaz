@@ -47,7 +47,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
     };
 
     // 자기 실행 파일 절대 경로 — `exec` command 로 다시 `--toggle` 호출.
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
         log.appendLine("sway", "selfExePath failed: {s} — bindsym auto-register skipped", .{@errorName(err)});
         return;
@@ -58,7 +58,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
     const accel = buildAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers);
 
     // sway command — `exec` 인자는 sway 가 sh -c 로 실행하므로 path 를 따옴표로.
-    var cmd_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    var cmd_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
     const command = std.fmt.bufPrint(&cmd_buf, "bindsym --no-warn {s} exec \"{s}\" --toggle {d}", .{ accel, exe_path, instance_context.requireWorkerIndex() }) catch {
         log.appendLine("sway", "bindsym command too long — skip", .{});
         return;

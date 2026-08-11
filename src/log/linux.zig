@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const log_time = @import("../log_time.zig");
+const runtime = @import("../runtime.zig");
 
 pub const TimeFields = log_time.TimeFields;
 
@@ -35,17 +36,20 @@ extern "c" fn localtime_r(timep: *const time_t, result: *tm) ?*tm;
 
 pub fn currentLocalTime() TimeFields {
     // ms / sec 동일 시각에서 함께 가져옴 — 두 번 query 하면 boundary 에서 sec 가
-    // 한 칸 앞서가는 race (macOS 패턴 동일). `clock_gettime` 은 sec 와 nsec 를 한 번에
-    // 주므로 이 성질이 그대로 유지된다.
+    // 한 칸 앞서가는 race (macOS 패턴 동일).
     //
-    // Zig 0.16 — `std.time.milliTimestamp` 가 없어졌다 (#451). 시간이 `Io` 경유로
-    // 옮겨갔지만 이 함수는 로그 한 줄마다 불려 `io` 를 받을 자리가 없다. std 가 이미
-    // 감싸 둔 `std.c.clock_gettime` 을 쓴다 — 직접 `extern "c"` 선언하지 않는다.
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return log_time.fallback();
-    if (ts.sec < 0) return log_time.fallback();
-    const secs: time_t = @intCast(ts.sec);
-    const ms: u16 = @intCast(@divTrunc(ts.nsec, std.time.ns_per_ms));
+    // Zig 0.16 — `std.time.milliTimestamp` 가 없어졌다 (#451).
+    // 0.16 의 지정 대체는 `std.Io.Timestamp.now` 다 (릴리즈 노트의 upgrade guide:
+    // `std.time.timestamp` ➡️ `std.Io.Timestamp.now`). `.real` 이 Unix epoch 기준
+    // wall clock 이고, nanoseconds 하나로 오므로 sec 와 ms 가 같은 시각에서 나온다.
+    //
+    // `runtime.io()` 가 null 인 구간 (진입점의 `install` 전) 에는 시각을 알 방법이 없어
+    // fallback 으로 떨어뜨린다 — 로그가 안 남는 것보다 낫다.
+    const io = runtime.io() orelse return log_time.fallback();
+    const ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+    if (ns < 0) return log_time.fallback();
+    const secs: time_t = @intCast(@divTrunc(ns, std.time.ns_per_s));
+    const ms: u16 = @intCast(@divTrunc(@mod(ns, std.time.ns_per_s), std.time.ns_per_ms));
 
     var t: tm = undefined;
     if (localtime_r(&secs, &t) == null) return log_time.fallback();

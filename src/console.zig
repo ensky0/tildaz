@@ -8,7 +8,7 @@
 //! ## Windows 가 이 모듈이 존재하는 이유
 //!
 //! `tildaz.exe` 는 `subsystem = .Windows` 다 (`build.zig` 의 `exe.subsystem`) — 콘솔에
-//! 붙어 있지 않아서 `std.fs.File.stdout()` 이 PEB 의 빈 핸들을 돌려주고, 거기 쓴 글은
+//! 붙어 있지 않아서 `std.Io.File.stdout()` 이 PEB 의 빈 핸들을 돌려주고, 거기 쓴 글은
 //! **아무 데도 나타나지 않는다.** 그래서 Windows 만 (1) 상속받은 std handle 을 먼저 보고
 //! (2) 없으면 부모 콘솔에 붙어 `CONOUT$` 를 직접 연다.
 //!
@@ -59,7 +59,7 @@ fn write(stream: Stream, text: []const u8) void {
     switch (builtin.os.tag) {
         .windows => writeWindows(stream, text),
         else => {
-            const file: std.fs.File = switch (stream) {
+            const file: std.Io.File = switch (stream) {
                 .standard => .stdout(),
                 .diagnostic => .stderr(),
             };

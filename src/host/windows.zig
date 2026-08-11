@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const run_options = @import("../run_options.zig");
 const App = @import("../app_controller.zig").App;
 const SessionCore = @import("../session_core.zig").SessionCore;
@@ -56,7 +57,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // worker 는 no-op (게이트는 `instance_context.isStress`).
     defer perf.dumpOnExit();
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(runtime.envHas("TILDAZ_VERBOSE"));
 
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();

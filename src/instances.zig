@@ -70,7 +70,7 @@ test "창 타이틀은 역할에서 갈린다" {
 }
 
 pub const ProcessLock = struct {
-    file: std.fs.File,
+    file: std.Io.File,
     clear_pid_on_close: bool,
 
     pub fn deinit(self: *ProcessLock) void {
@@ -409,7 +409,7 @@ fn tryAcquireProcessLock(path: []const u8) !?ProcessLock {
     return .{ .file = file, .clear_pid_on_close = false };
 }
 
-fn writeOwnerPid(file: std.fs.File) !void {
+fn writeOwnerPid(file: std.Io.File) !void {
     var buf: [36]u8 = undefined;
     const text = try std.fmt.bufPrint(&buf, "\nv1 {d}\n", .{currentProcessId()});
     try file.setEndPos(0);
@@ -426,7 +426,7 @@ fn currentProcessId() u32 {
 }
 
 pub fn spawnWorker(allocator: std.mem.Allocator, index: u32) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
     const index_text = try std.fmt.allocPrint(allocator, "{d}", .{index});
     defer allocator.free(index_text);
@@ -595,7 +595,7 @@ test "process lock records pid and excludes a second owner" {
     const allocator = std.testing.allocator;
     const root = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(root);
-    const path = try std.fs.path.join(allocator, &.{ root, "instance7.lock" });
+    const path = try std.Io.Dir.path.join(allocator, &.{ root, "instance7.lock" });
     defer allocator.free(path);
 
     {
@@ -632,9 +632,9 @@ test "endpoint probe requires live lock and matching owner pid" {
     const allocator = std.testing.allocator;
     const root = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(root);
-    const lock_path = try std.fs.path.join(allocator, &.{ root, "instance0.lock" });
+    const lock_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance0.lock" });
     defer allocator.free(lock_path);
-    const endpoint_path = try std.fs.path.join(allocator, &.{ root, "instance0.endpoint" });
+    const endpoint_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance0.endpoint" });
     defer allocator.free(endpoint_path);
 
     const pid = currentProcessId();

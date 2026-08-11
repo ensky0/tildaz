@@ -58,7 +58,7 @@ fn plistPath(allocator: std.mem.Allocator) ![]u8 {
 /// 현재 .app 번들의 main 바이너리 절대경로 (`.../TildaZ.app/Contents/MacOS/tildaz`).
 /// `selfExePath` 가 ad-hoc sign 환경에서도 .app 안 경로를 그대로 돌려준다.
 fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const slice = try std.fs.selfExePath(&buf);
     return allocator.dupe(u8, slice);
 }
@@ -67,10 +67,10 @@ fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
 /// `.../TildaZ.app/Contents/MacOS/tildaz` → `.../TildaZ.app`.
 /// 번들 구조가 아니면 null (호출자가 직접 실행 fallback 을 쓴다).
 fn appBundlePath(exe: []const u8) ?[]const u8 {
-    const macos_dir = std.fs.path.dirname(exe) orelse return null;
+    const macos_dir = std.Io.Dir.path.dirname(exe) orelse return null;
     if (!std.mem.endsWith(u8, macos_dir, "/Contents/MacOS")) return null;
-    const contents_dir = std.fs.path.dirname(macos_dir) orelse return null;
-    const bundle = std.fs.path.dirname(contents_dir) orelse return null;
+    const contents_dir = std.Io.Dir.path.dirname(macos_dir) orelse return null;
+    const bundle = std.Io.Dir.path.dirname(contents_dir) orelse return null;
     if (!std.mem.endsWith(u8, bundle, ".app")) return null;
     return bundle;
 }

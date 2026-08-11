@@ -43,6 +43,19 @@ pub fn environ() std.process.Environ {
     return g_environ;
 }
 
+/// 파일 IO · 경로 생성처럼 **`install` 이후에만** 일어나는 연산용. `install` 전이면
+/// `std.Io.failing` 을 준다 — panic 하지 않고 그 연산만 실패하게 둔다. 진입점 전에 파일을
+/// 만지는 코드는 없어야 하고, 있으면 그 실패가 신호다.
+pub fn ioRequired() std.Io {
+    return g_io orelse std.Io.failing;
+}
+
+/// `std.process.hasEnvVarConstant` 자리 (0.16 에서 없어졌다). `Environ.contains` 는
+/// allocator 를 받는데 (Windows 는 WTF-16 변환이 필요하다) 호출부는 bool 만 원한다.
+pub fn envHas(key: []const u8) bool {
+    return g_environ.contains(std.heap.page_allocator, key) catch false;
+}
+
 /// `std.process.getEnvVarOwned` 자리. 0.16 에서 그 전역 함수가 없어졌고
 /// `Environ.getAlloc` 이 같은 일을 한다 — 호출부가 매번 `environ()` 을 거치지 않도록 감싼다.
 pub fn envAlloc(allocator: std.mem.Allocator, key: []const u8) ![]u8 {

@@ -1377,7 +1377,7 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
     // 것만 본다.
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 
     // host 는 조회한 값을 그대로 써서 파서의 host 검사를 실제로 통과시킨다. 조회가
@@ -1402,14 +1402,14 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
         try std.testing.expect(!std.mem.eql(u8, probed, "/tz366-does-not-exist"));
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 
     // 다른 머신 (ssh 원격) → 거부되고 조회로 내려간다.
     tab.stream.nextSlice("\x1b]7;file://tz366-other-box/\x1b\\");
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 }
 

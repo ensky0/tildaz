@@ -355,12 +355,12 @@ fn schemasPresent(api: *const Api, source: *c.GSettingsSchemaSource, v: Variant)
 /// 3단계 등록 (GNOME · Cinnamon 공통). 차이는 모두 `v` 에서 읽는다.
 fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *const config_mod.Config, v: Variant) void {
     // self exe path + command / accel 준비.
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
         log.appendLine("gsettings-hotkey", "selfExePath failed: {s} — skipped", .{@errorName(err)});
         return;
     };
-    var cmd_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
+    var cmd_buf: [std.Io.Dir.max_path_bytes + 16]u8 = undefined;
     const command = std.fmt.bufPrintZ(&cmd_buf, "{s} --toggle {d}", .{ exe_path, instance_context.requireWorkerIndex() }) catch return;
     var accel_buf: [96]u8 = undefined;
     const accel = buildGtkAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers) catch return;

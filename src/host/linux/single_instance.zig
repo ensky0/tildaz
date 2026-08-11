@@ -13,6 +13,7 @@
 //! 에선 둘 다 trigger 가능. fallback 안 함, 둘 다 active.
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const posix = std.posix;
 const log = @import("../../log.zig");
 const instance_context = @import("../../instance_context.zig");
@@ -28,7 +29,9 @@ pub const Command = enum { toggle, new_instance };
 /// 가 user session 마다 설정 (`/run/user/<uid>`) — 거의 모든 모던 Linux
 /// 데스크탑 환경 보장.
 fn socketPath(buf: []u8, index: u32) ![:0]const u8 {
-    if (std.posix.getenv("XDG_RUNTIME_DIR")) |runtime_dir| {
+    // Zig 0.16 — `posix.getenv` 가 없어졌다. 환경변수는 진입점이 받은 블록에서 읽는다
+    // (`runtime.zig`, #451). `getPosix` 는 POSIX 전용이고 이 파일은 Linux 전용이다.
+    if (runtime.environ().getPosix("XDG_RUNTIME_DIR")) |runtime_dir| {
         return std.fmt.bufPrintZ(buf, "{s}/tildaz-{d}.sock", .{ runtime_dir, index });
     }
     const uid = std.os.linux.getuid();

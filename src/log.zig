@@ -151,11 +151,11 @@ fn writeRaw(text: []const u8) void {
         // Zig 0.16 — `posix.open` 이 없어지고 `openat` 만 남았다 (#451). `AT.FDCWD` 를 주면
         // 상대경로 기준이 cwd 라 이전과 같은 의미이고, 우리는 절대경로를 넘긴다.
         const fd = posix.openat(posix.AT.FDCWD, path.utf8, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
-        defer posix.close(fd);
+        defer _ = posix.system.close(fd);
         // Zig 0.16 — `posix.write` 가 없어졌다 (#451). 파일 IO 가 `Io.File` 경유로 갔지만
         // 이 경로는 **O_APPEND 원자성**이 목적이라 raw fd 를 그대로 쓴다. std 가 이미 감싼
         // `std.c.write` 를 쓴다 — 직접 `extern "c"` 선언하지 않는다.
-        _ = std.c.write(fd, text.ptr, text.len);
+        _ = posix.system.write(fd, text.ptr, text.len);
     }
 }
 
@@ -202,8 +202,13 @@ pub fn appendBlock(text: []const u8) void {
 
 /// 부팅 시 `[boot] tildaz v<ver> pid=<pid> exe=<full path>` 한 줄.
 pub fn logStart(version: []const u8) void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe = std.fs.selfExePath(&exe_buf) catch "(unknown)";
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // Zig 0.16 — `fs.selfExePath` ➡️ `std.process.executablePath` (릴리즈 노트 upgrade
+    // guide). 길이를 돌려주므로 슬라이스로 잘라 쓴다.
+    const exe = if (std.process.executablePath(runtime.ioRequired(), &exe_buf)) |n|
+        exe_buf[0..n]
+    else |_|
+        "(unknown)";
     appendLine("boot", "tildaz v{s}  pid={d}  exe={s}", .{ version, impl.currentPid(), exe });
 }
 

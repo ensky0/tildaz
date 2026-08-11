@@ -106,7 +106,7 @@ fn stateHome(allocator: std.mem.Allocator) ![]u8 {
 
 fn xdgHome(allocator: std.mem.Allocator, env_name: []const u8, fallback_suffix: []const u8) ![]u8 {
     if (runtime.envAlloc(allocator, env_name) catch null) |dir| {
-        if (dir.len != 0 and std.fs.path.isAbsolute(dir)) return dir;
+        if (dir.len != 0 and std.Io.Dir.path.isAbsolute(dir)) return dir;
         allocator.free(dir);
     }
     const home = try runtime.envAlloc(allocator, "HOME");
@@ -122,7 +122,7 @@ fn resolveXdgHome(
     fallback_suffix: []const u8,
 ) ![]u8 {
     if (candidate) |dir| {
-        if (dir.len != 0 and std.fs.path.isAbsolute(dir)) return allocator.dupe(u8, dir);
+        if (dir.len != 0 and std.Io.Dir.path.isAbsolute(dir)) return allocator.dupe(u8, dir);
     }
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ home, fallback_suffix });
 }
@@ -152,11 +152,11 @@ pub fn lockDir(allocator: std.mem.Allocator) ![]u8 {
 
     if (runtime.envAlloc(allocator, "XDG_RUNTIME_DIR") catch null) |runtime_dir| {
         defer allocator.free(runtime_dir);
-        if (runtime_dir.len != 0 and std.fs.path.isAbsolute(runtime_dir)) return linuxLockDir(allocator, runtime_dir, null, "");
+        if (runtime_dir.len != 0 and std.Io.Dir.path.isAbsolute(runtime_dir)) return linuxLockDir(allocator, runtime_dir, null, "");
     }
     if (runtime.envAlloc(allocator, "XDG_CACHE_HOME") catch null) |cache_dir| {
         defer allocator.free(cache_dir);
-        if (cache_dir.len != 0 and std.fs.path.isAbsolute(cache_dir)) return linuxLockDir(allocator, null, cache_dir, "");
+        if (cache_dir.len != 0 and std.Io.Dir.path.isAbsolute(cache_dir)) return linuxLockDir(allocator, null, cache_dir, "");
     }
     const home = try runtime.envAlloc(allocator, "HOME");
     defer allocator.free(home);
@@ -202,7 +202,8 @@ pub fn launcherLockPath(allocator: std.mem.Allocator) ![]u8 {
 /// 절대경로 component 는 leading `/` 를 유지해 makeDir 이 dirfd 무시하고 그대로
 /// 생성. 다른 모듈 (`autostart/linux.zig`) 도 이걸 쓴다 — 자체 wrapper 금지 (#282 G7).
 pub fn ensureDir(dir: []const u8) !void {
-    try std.fs.cwd().makePath(dir);
+    // Zig 0.16 — `fs.cwd` ➡️ `std.Io.Dir.cwd`, `Dir.makePath` ➡️ `Io.Dir.createDirPath`.
+    try std.Io.Dir.cwd().createDirPath(runtime.ioRequired(), dir);
 }
 
 fn currentPid() u32 {

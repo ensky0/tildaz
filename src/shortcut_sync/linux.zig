@@ -29,7 +29,7 @@ fn desktopContains(name: []const u8) bool {
 }
 
 fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
 
     var desired: std.ArrayList(HyprlandDesired) = .empty;
@@ -258,10 +258,10 @@ test "Hyprland desired lookup distinguishes keep and changed command" {
 
 fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
     const home = std.posix.getenv("HOME") orelse return error.HomeNotSet;
-    const dir_path = try std.fs.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
+    const dir_path = try std.Io.Dir.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
     defer allocator.free(dir_path);
     try std.fs.cwd().makePath(dir_path);
-    const path = try std.fs.path.join(allocator, &.{ dir_path, "custom" });
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
     const content = blk: {
@@ -314,7 +314,7 @@ fn isTildazCosmicEntry(line: []const u8) bool {
 }
 
 fn appendCosmicEntries(output: *std.ArrayList(u8), allocator: std.mem.Allocator, indices: []const u32) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
     for (indices) |index| {
         const text = try instances.configHotkeyText(allocator, index);
