@@ -268,7 +268,18 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 | 5 회 반복 | 3 회는 절사하면 1 개만 남아요. 5 회면 3 개 평균이 되어 재현성이 생겨요 |
 | 대표값 = 절사평균 | 중간값은 5 회에서 **사실상 1 개 샘플**이라 그 값이 흔들려요. 단순 평균은 이상치 하나에 끌려가요. 양 극단 (운 좋은 실행 / 스로틀링 걸린 실행) 만 버리고 나머지를 다 쓰는 게 절사평균이에요 |
 | `min~max` 를 함께 적기 | 대표값만 적으면 버린 두 값이 사라져요. 흔들림 폭이 보여야 "이 차이가 유의미한가" 를 읽는 사람이 판단할 수 있어요 |
+| **회차별 값도 적기** (`--repeat` 2 이상) | `min~max` 는 폭이 *얼마인지*만 알려주고 **어떤 모양인지**는 안 알려줘요. 무작위 산포 · 두 무리로 갈림 (쌍안정) · 회차가 갈수록 느려짐 (열 · 전력 한계) 이 전부 같은 `min~max` 로 나와요. **정렬하지 않고 실행 순서 그대로** 적어요 — 단조 감소는 순서가 있어야 보여요 ([#449](https://github.com/ensky0/tildaz/issues/449)) |
 | 표본이 3 개 미만이면 | 절사하지 않고 단순 평균으로 떨어져요. 스크립트가 **그 사실을 표 위에 적어요** — 조용히 다른 통계로 바꾸지 않아요 |
+
+회차별 값은 이렇게 나와요. 폭이 큰 회차가 **어디에 몰렸는지**가 한눈에 보여요.
+
+```
+tildaz                843.4       75.9         71.0~91.1     120x40
+                 회차별: 74.2  91.1  71.0  75.9  76.5 MiB/s
+```
+
+[#449](https://github.com/ensky0/tildaz/issues/449) 의 진단이 이 값이 없어서 **두 번 막혔어요** —
+표본이 임시 디렉터리에만 있고 실행이 끝나면 지워져서, 세 모양을 구분할 데이터가 아예 안 남았어요.
 
 ### 측정 위생
 
@@ -587,11 +598,15 @@ dist/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 
 **`--capture` 를 안 쓰면 Linux 는 DE 를 안 가려요.** 캡처가 필요할 때만 아래가 걸려요.
 
-| Linux DE | 캡처 | |
-|---|---|---|
-| **KDE Plasma** | `spectacle -b -n -a` | ✅ **창 단위**. 실기 검증된 유일한 DE ([#381](https://github.com/ensky0/tildaz/issues/381), AMD Ryzen AI 7 350 · KDE Plasma Wayland) |
-| sway · Hyprland | `grim` | ⚠️ 돼요. 전체 화면이라 **가려진 창은 못 찍어요** (타일링이라 보통 안 가려지긴 해요) |
-| GNOME 43+ | — | ❌ `gnome-screenshot` 이 제거돼서 **경로가 없어요** |
+| Linux DE | 캡처 | 표시 | |
+|---|---|---|---|
+| **KDE Plasma** | `spectacle -b -n -a` | `@` | ✅ **창 단위**. 실기 검증된 유일한 DE ([#381](https://github.com/ensky0/tildaz/issues/381) AMD Ryzen AI 7 350 · [#413](https://github.com/ensky0/tildaz/issues/413) Intel Core i5-1240P, 둘 다 KDE Plasma Wayland) |
+| sway · Hyprland | `grim` | **`~`** | ⚠️ 돼요. 전체 화면이라 **가려진 창은 못 찍어요** (타일링이라 보통 안 가려지긴 해요). 창 단위 성공이 없으니 정상 결과도 `~` 예요 ([#448](https://github.com/ensky0/tildaz/issues/448)) |
+| GNOME 43+ | — | — | ❌ `gnome-screenshot` 이 제거돼서 **경로가 없어요** (있으면 `grim` 과 같이 전체 화면 · `~`) |
+
+**어느 도구든 찍기 전에 대상이 살아 있는지 먼저 봐요** ([#448](https://github.com/ensky0/tildaz/issues/448)).
+없으면 `?` 이고, 그 회차는 [#413](https://github.com/ensky0/tildaz/issues/413) 의 재시도가 hold 를
+늘려 다시 찍어요. 예전에는 Linux 만 이 판정이 없어서 **창이 이미 닫힌 회차도 `@` 로 통과**했어요.
 
 > **`zig build stress` 자체는 이 제약이 없어요.** Windows PowerShell 에서 그대로 돌아가요
 > (`## 쓰는 법`). Git Bash · KDE 가 필요한 건 **여러 터미널을 띄워 비교하는 이 스크립트**예요.
@@ -842,12 +857,34 @@ producer 가 창을 **4 초** 더 붙들고 있어요 (그래야 찍을 창이 �
 |---|---|---|---|
 | **macOS** | [`dist/macos/color-capture.m`](../macos/color-capture.m) (ScreenCaptureKit) | **창 단위** | **완전히 가려진 창도 찍혀요** (실측: 같은 자리에 창 둘을 겹치고 아래 창을 찍으니 아래 창 내용이 나왔어요). 스크립트가 `clang` 으로 빌드해서 써요. **화면 기록 권한**이 필요하고 잠금 화면이면 실패해요. 찾는 기준은 **bundle identifier** 예요 (`com.apple.Terminal` 등) — 앱 이름은 **시스템 언어로 번역**돼서 기준이 될 수 없어요 (아래 참고). 창을 못 찾으면 `screencapture -x` 전체 화면으로 물러서고 `?` 를 찍어요 |
 | **Windows** | PowerShell (`PrintWindow` → 실패 시 `CopyFromScreen`) | **창 단위** | 창을 띄우자마자 **(0,0) 으로 옮기고 맨 앞으로** 올려요 (`SWP_NOACTIVATE` 라 포커스는 안 뺏어요). `PrintWindow` 가 실패하는 흔한 원인은 **hold 가 모자라 창이 이미 닫힌 것**이라, 그 회차는 hold 를 늘려 다시 찍어요 (아래 참고). **DPI 함정도 있어요 — 아래 참고** |
-| **Linux (sway · Hyprland)** | `grim` | 전체 화면 | wlroots 계열의 `zwlr_screencopy` 를 써요. **가려진 창은 못 찍어요** — Wayland 는 client 가 다른 창 내용을 읽을 수 없어요. 타일링이라 보통 안 가려져요 |
-| **Linux (KDE Plasma)** | `spectacle -b -n -a` | **활성 창** | KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이 안 돼요. `org.kde.KWin.ScreenShot2` 는 호출자를 검증해서 직접 부를 수 없고, **Spectacle 이 정상 통로**예요 (KDE 기본 설치). `-a` 라 **창 단위로 찍히고 가려짐 문제도 없어요** (활성 창은 맨 앞이니까요). 다만 방금 뜬 창이 활성이 아니면 엉뚱한 창이 찍혀요 — 확실히 하려면 KWin 스크립팅으로 대상을 활성화해야 하는데, 필요한지 확인되기 전엔 안 넣었어요 |
-| **Linux (GNOME)** | `gnome-screenshot` | 전체 화면 | GNOME 43 에서 빠졌어요. 없으면 캡처를 못 해요 |
+| **Linux (sway · Hyprland)** | `grim` | 전체 화면 → **`~`** | wlroots 계열의 `zwlr_screencopy` 를 써요. **가려진 창은 못 찍어요** — Wayland 는 client 가 다른 창 내용을 읽을 수 없어요. 타일링이라 보통 안 가려져요. 창 단위 성공이 애초에 없으니 **정상 결과도 `~`** 예요 ([#448](https://github.com/ensky0/tildaz/issues/448)) |
+| **Linux (KDE Plasma)** | `spectacle -b -n -a` | **활성 창** → `@` | KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이 안 돼요. `org.kde.KWin.ScreenShot2` 는 호출자를 검증해서 직접 부를 수 없고, **Spectacle 이 정상 통로**예요 (KDE 기본 설치). `-a` 라 **창 단위로 찍히고 가려짐 문제도 없어요** (활성 창은 맨 앞이니까요). 다만 방금 뜬 창이 활성이 아니면 엉뚱한 창이 찍혀요 — 아래 참고 |
+| **Linux (GNOME)** | `gnome-screenshot` | 전체 화면 → **`~`** | GNOME 43 에서 빠졌어요. 없으면 캡처를 못 해요 |
 
 리눅스에 **하나로 다 되는 방법은 없어요** — Wayland 는 client 가 화면을 읽을 수 없고 통로가
 compositor 마다 달라요. 위 순서대로 시도하고, 하나도 없으면 시작할 때 그 사실을 알려요.
+
+#### 리눅스가 창 단위 실패를 표시하게 된 경위 ([#448](https://github.com/ensky0/tildaz/issues/448))
+
+예전에는 **Windows 만** `?` · `~` 를 찍었어요 (macOS 는 [#414](https://github.com/ensky0/tildaz/issues/414)
+에서 합류). 리눅스는 두 플래그가 `0` 고정이라 표시가 `!` · `_` · `@` 셋뿐이었고, 그래서 **창이 이미
+닫힌 회차도 `spectacle -a` 가 엉뚱한 활성 창을 찍어 2 KiB 를 넘기면 `@` 로 통과**했어요. 표시만의
+문제가 아니었어요 — [#413](https://github.com/ensky0/tildaz/issues/413) 의 재시도 루프가 `~` · `?` ·
+`_` 를 조건으로 도는데 리눅스에서 남는 게 `_` 하나뿐이라 **hold 가 모자라 창이 먼저 닫힌 회차를
+다시 찍지 않았어요.**
+
+**판정은 producer 의 생존이에요.** hold 를 붙드는 주체가 producer 이고 (`TILDAZ_STRESS_HOLD_MS` 가
+없으면 timing 을 쓴 직후 끝나요), 캡처는 timing + `CAPTURE_DELAY` 에 찍으니 **그 시점에 producer 가
+살아 있다는 것이 곧 찍을 창이 있었다**는 뜻이에요. 찾는 방법은 `cleanup_terminals` 와 같은
+`$WORK_DIR/<대상>.timing` 명령줄 패턴이라 **대상 이름 표가 필요 없어요** (#414 가 macOS 에서 거부한
+그 함정이에요).
+
+**남은 한계 — `@` 는 "대상이 찍혔다" 의 보장이 아니에요.** KDE 에서 대상이 살아 있어도 **다른 창이
+활성이었으면** 그 창이 찍혀요. 가르려면 대상을 먼저 활성화해야 하는데, `spectacle` 에 창을 지목하는
+옵션이 없어 (`-a` · `-u` 뿐) `org.kde.KWin /WindowsRunner` 의 `Match` + `Run` 으로 가야 하고 그
+매칭 키가 **resource class** 라 대상마다 형식이 갈려요 (`foot` · `kitty` · `Alacritty` ·
+`org.wezfurlong.wezterm` …). 이름 표를 다시 만드는 셈이라 **별개 결정으로 남겼어요.** 실행 요약이
+이 사실을 매번 한 줄로 알려요.
 
 #### macOS 에서 창을 못 찾는 두 가지 이유 ([#414](https://github.com/ensky0/tildaz/issues/414))
 
