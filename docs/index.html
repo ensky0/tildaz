@@ -231,19 +231,20 @@
             </tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td>120.2</td><td>131.6</td><td>196.8</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td>22.9</td><td>142.7</td><td>37.3</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td>36.6</td><td>128.3</td><td>86.7</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td>16.3</td><td>115.6</td><td>46.5</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td>8.9</td><td>36.8</td><td>15.6</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td>11.6</td><td>46.9</td><td>20.8</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td>120.2</td><td>131.6</td><td>177.6</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td>22.9</td><td>142.7</td><td>65.2</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td>36.6</td><td>128.3</td><td>83.1</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td>16.3</td><td>115.6</td><td>46.8</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td>8.9</td><td>36.8</td><td>15.5</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td>11.6</td><td>46.9</td><td>21.7</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="perf-notes">
         <li><strong>Read each column on its own.</strong> Linux and Windows are the same dual-boot laptop, so those two columns differ only in host implementation. macOS is a different machine, so reading straight across a row mixes in a CPU difference.</li>
-        <li>v0.8.0, built ReleaseFast with SIMD. Each run pours 64 MiB into a 120x40 grid with a 32,767-line scrollback on AC power, and every figure is the trimmed mean of five runs.</li>
-        <li>ANSI is slow on Linux and Windows. On Windows that is a confirmed regression, tracked in <a href="https://github.com/ensky0/tildaz/issues/435" target="_blank" rel="noopener">issue #435</a>; on Linux we have not measured the earlier build yet. macOS is unaffected — there we measured both builds. New figures once it is fixed.</li>
+        <li>Built ReleaseFast with SIMD. Each run pours 64 MiB into a 120x40 grid with a 32,767-line scrollback on AC power, and every figure is the trimmed mean of five runs. The Linux and macOS columns are v0.8.0; the Windows column is a later build that includes the fix below, and all six Windows figures come from one session.</li>
+        <li><strong>Windows ANSI is fixed.</strong> It used to land on one of two speeds from run to run, because the Direct3D present call held the thread that parses output. <a href="https://github.com/ensky0/tildaz/issues/435" target="_blank" rel="noopener">Issue #435</a> replaced it with a waitable swap chain: ANSI went 37.3 to 65.2 MiB/s, and the spread across five runs fell from 214% to 8%. macOS was never affected.</li>
+        <li><strong>Linux ANSI (22.9) is out of date.</strong> It was measured before <a href="https://github.com/ensky0/tildaz/issues/436" target="_blank" rel="noopener">issue #436</a> removed a similar coupling from the Linux drain loop, so that column will be re-measured on the next Linux session.</li>
         <li>Harness, workloads, and the full method: <a href="https://github.com/ensky0/tildaz/blob/main/dist/stress/README.md" target="_blank" rel="noopener">dist/stress</a>.</li>
       </ul>
     </section>
