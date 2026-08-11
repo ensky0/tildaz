@@ -161,15 +161,15 @@ fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]co
     if ((binding.modmask & ~hypr_supported_mods) != 0) return null;
     if (!managedToggleCommand(binding.arg, exe)) return null;
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
     if ((binding.modmask & hypr_mod_ctrl) != 0) writer.writeAll("CTRL ") catch return null;
     if ((binding.modmask & hypr_mod_shift) != 0) writer.writeAll("SHIFT ") catch return null;
     if ((binding.modmask & hypr_mod_alt) != 0) writer.writeAll("ALT ") catch return null;
     if ((binding.modmask & hypr_mod_super) != 0) writer.writeAll("SUPER ") catch return null;
     writer.writeByte(',') catch return null;
     writer.writeAll(binding.key) catch return null;
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
@@ -196,15 +196,15 @@ fn runHyprlandKeyword(allocator: std.mem.Allocator, keyword: []const u8, value: 
 }
 
 pub fn hyprlandAccel(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
     if ((hotkey.modifiers & config.Hotkey.MOD_CTRL) != 0) try writer.writeAll("CTRL ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SHIFT) != 0) try writer.writeAll("SHIFT ");
     if ((hotkey.modifiers & config.Hotkey.MOD_ALT) != 0) try writer.writeAll("ALT ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SUPER) != 0) try writer.writeAll("SUPER ");
     try writer.writeByte(',');
     try writer.writeAll(config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 test "managed Hyprland bindings are identified and reconstructed" {

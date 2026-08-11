@@ -70,3 +70,30 @@ pub const Runtime = struct {
         std.Io.sleep(rt.io, .{ .nanoseconds = @intCast(ns) }, .awake) catch {};
     }
 };
+
+/// `std.time.Timer` 자리 — 0.16 이 `Timer` 와 `Instant` 를 `Io.Timestamp` 하나로 합쳤다
+/// (릴리즈 노트 *Time* 절). 경과 시간만 재던 기존 호출부 모양 (`start` / `read` /
+/// `reset`) 을 그대로 두려고 얇게 감싼다.
+///
+/// 시계는 `.awake` 다 — 절전 구간을 세지 않는 단조 시계이고, 예전 `std.time.Timer` 의
+/// 성질과 같다. 벽시계 (`.real`) 로 재면 시스템 시각이 조정될 때 경과가 뒤로 갈 수 있다.
+pub const Timer = struct {
+    io: std.Io,
+    start_ns: i96,
+
+    /// 예전 `std.time.Timer.start()` 와 달리 **실패하지 않는다** — 0.16 은 시계 조회에
+    /// 오류가 없고, 해상도는 필요하면 `Io.Clock.resolution` 으로 따로 묻는다.
+    pub fn start(rt: Runtime) Timer {
+        return .{ .io = rt.io, .start_ns = std.Io.Timestamp.now(rt.io, .awake).nanoseconds };
+    }
+
+    /// 시작 이후 경과 나노초.
+    pub fn read(t: Timer) u64 {
+        const now = std.Io.Timestamp.now(t.io, .awake).nanoseconds;
+        return @intCast(@max(0, now - t.start_ns));
+    }
+
+    pub fn reset(t: *Timer) void {
+        t.start_ns = std.Io.Timestamp.now(t.io, .awake).nanoseconds;
+    }
+};

@@ -21,8 +21,8 @@ pub fn gtkName(keysym: u32) []const u8 {
 /// `Ctrl+Shift+T`, `Ctrl+\``, `Alt+F12`). backend 송신 형식이 아니라 dialog와
 /// log에만 사용한다.
 pub fn displayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
     if ((modifiers & 0x2) != 0) w.writeAll("Ctrl+") catch {};
     if ((modifiers & 0x4) != 0) w.writeAll("Shift+") catch {};
     if ((modifiers & 0x1) != 0) w.writeAll("Alt+") catch {};
@@ -57,7 +57,7 @@ pub fn displayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     } else {
         w.writeAll("?") catch {};
     }
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 test "Linux hotkey display string keeps Qt-friendly names" {

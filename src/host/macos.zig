@@ -3064,11 +3064,11 @@ pub fn run(opts: run_options.RunOptions) !void {
         // `font_not_found_format` 와 같은 의도, multi-font 메시지).
         error.FontCreateFailed => {
             var buf: [1024]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&buf);
-            const w = fbs.writer();
+            var fbs: std.Io.Writer = .fixed(&buf);
+            const w = &fbs;
             w.writeAll(messages.font_chain_all_failed_msg) catch {};
             for (font_family_slice) |fam| w.print("\n  - {s}", .{fam}) catch {};
-            dialog.showFatal(messages.config_error_title, fbs.getWritten());
+            dialog.showFatal(messages.config_error_title, fbs.buffered());
         },
         else => return err,
     };
