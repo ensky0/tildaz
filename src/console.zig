@@ -120,7 +120,10 @@ fn writeWindows(stream: Stream, text: []const u8) void {
     while (remaining.len != 0) {
         var written: windows.DWORD = 0;
         const chunk: windows.DWORD = @intCast(@min(remaining.len, std.math.maxInt(u32)));
-        if (WriteFile(handle, remaining.ptr, chunk, &written, null) == 0) return;
+        // #451 — 0.16 의 `windows.BOOL` 은 `Bool(c_int)` 열거형이라 정수 리터럴과 직접
+        // 비교되지 않는다. `TRUE` 와의 비교는 std 주석이 *"always a bug"* 라고 못박으므로
+        // (0 이 아닌 값이 모두 참) `toBool()` 로 읽는다.
+        if (!WriteFile(handle, remaining.ptr, chunk, &written, null).toBool()) return;
         if (written == 0) return; // 더 이상 진행되지 않는다 — 무한 루프 방지.
         remaining = remaining[written..];
     }
