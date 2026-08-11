@@ -965,7 +965,7 @@ pub const Config = struct {
             messages.config_hotkey_duplicate_format,
             .{ hotkeyDisplay(&key_buf, hotkey), owner },
         ) catch messages.config_hotkey_duplicate_fallback_msg;
-        showConfigFatalMsg(config_path, msg);
+        showConfigFatalMsg(rt, config_path, msg);
     }
 
     /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static
@@ -992,7 +992,7 @@ pub const Config = struct {
         defer parsed.deinit();
 
         const root = parsed.value;
-        if (root != .object) showConfigFatalMsg(config_path, messages.config_top_level_must_be_object_msg);
+        if (root != .object) showConfigFatalMsg(rt, config_path, messages.config_top_level_must_be_object_msg);
 
         // font.family / font.glyph_fallback 의 type 만 우선 사전 체크 —
         // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
@@ -1019,7 +1019,7 @@ pub const Config = struct {
         defer allocator.free(default_json);
         var default_parsed = std.json.parseFromSlice(std.json.Value, allocator, default_json, .{}) catch unreachable;
         defer default_parsed.deinit();
-        validateStructure(root, default_parsed.value, "(top-level)", config_path);
+        validateStructure(rt, root, default_parsed.value, "(top-level)", config_path);
 
         // window section
         if (root.object.get("window")) |wv| {
@@ -1033,27 +1033,27 @@ pub const Config = struct {
                         messages.config_dock_position_invalid_format,
                         .{v.string},
                     ) catch messages.config_dock_position_invalid_fallback_msg;
-                    showConfigFatalMsg(config_path, msg);
+                    showConfigFatalMsg(rt, config_path, msg);
                 }
             }
             if (wv.object.get("width_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.width_percent"});
-                if (f < 1.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.width_percent"});
+                if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
                 config.width_percent = f;
             }
             if (wv.object.get("height_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.height_percent"});
-                if (f < 1.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.height_percent"});
+                if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
                 config.height_percent = f;
             }
             if (wv.object.get("offset_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
-                if (f < 0.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
+                if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
                 config.offset_percent = f;
             }
             if (wv.object.get("opacity_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
-                if (f < 0.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
+                if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
                 config.opacity_alpha = @intFromFloat(@round(f * 255.0 / 100.0));
             }
         }
@@ -1071,7 +1071,7 @@ pub const Config = struct {
                         if (i > 0) w.writeAll(", ") catch {};
                         w.writeAll(t.name) catch {};
                     }
-                    showConfigFatalMsg(config_path, fbs.buffered());
+                    showConfigFatalMsg(rt, config_path, fbs.buffered());
                 }
             }
         }
@@ -1087,7 +1087,7 @@ pub const Config = struct {
                     messages.config_hotkey_invalid_format,
                     .{v.string},
                 ) catch messages.config_hotkey_invalid_fallback_msg;
-                showConfigFatalMsg(config_path, msg);
+                showConfigFatalMsg(rt, config_path, msg);
             }
         }
 
@@ -1107,7 +1107,7 @@ pub const Config = struct {
         // max_scroll_lines
         if (root.object.get("max_scroll_lines")) |v| {
             if (v.integer < 100 or v.integer > 10_000_000) {
-                showConfigFatal(config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
+                showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
             }
             config.max_scroll_lines = @intCast(v.integer);
         }
@@ -1118,18 +1118,18 @@ pub const Config = struct {
         const fv = root.object.get("font").?;
         if (fv.object.get("size_point")) |v| {
             if (v.integer < 8 or v.integer > 72) {
-                showConfigFatal(config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
+                showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
             }
             config.font_size_point = @intCast(v.integer);
         }
         if (fv.object.get("cell_width_ratio")) |v| {
-            const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
-            if (f < 0.5 or f > 2.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
+            const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
+            if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
             config.cell_width_ratio = f;
         }
         if (fv.object.get("line_height_ratio")) |v| {
-            const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
-            if (f < 0.5 or f > 2.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
+            const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
+            if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
             config.line_height_ratio = f;
         }
         // font.family — primary, single string. type 은 사전 체크에서 이미
@@ -1137,7 +1137,7 @@ pub const Config = struct {
         // 문자열만 reject + chain[0] 에 저장.
         var chain_count: usize = 0;
         if (fv.object.get("family")) |v| {
-            if (v.string.len == 0) showConfigFatalMsg(config_path, messages.config_font_family_empty_msg);
+            if (v.string.len == 0) showConfigFatalMsg(rt, config_path, messages.config_font_family_empty_msg);
             config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
             chain_count = 1;
         }
@@ -1156,7 +1156,7 @@ pub const Config = struct {
                         messages.config_font_chain_too_long_format,
                         .{MAX_FONT_FAMILIES},
                     ) catch messages.config_font_chain_too_long_fallback_msg;
-                    showConfigFatalMsg(config_path, msg);
+                    showConfigFatalMsg(rt, config_path, msg);
                 }
                 config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
                 chain_count += 1;
@@ -1256,16 +1256,16 @@ fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, co
     return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ message, config_path });
 }
 
-fn showConfigFatalMsg(config_path: []const u8, message: []const u8) noreturn {
+fn showConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u8) noreturn {
     const full_message = configErrorMessageAlloc(std.heap.page_allocator, message, config_path) catch
         messages.config_error_with_path_fallback_msg;
     dialog.showFatal(rt, messages.config_error_title, full_message);
 }
 
-fn showConfigFatal(config_path: []const u8, comptime fmt: []const u8, args: anytype) noreturn {
+fn showConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) noreturn {
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
-    showConfigFatalMsg(config_path, msg);
+    showConfigFatalMsg(rt, config_path, msg);
 }
 
 /// user config 의 구조가 default config 와 일치하는지 재귀 검증:
@@ -1274,7 +1274,7 @@ fn showConfigFatal(config_path: []const u8, comptime fmt: []const u8, args: anyt
 ///
 /// value range / 의미 검증은 caller (각 필드 별로 hardcoded — default 만으로는
 /// "1..100" 같은 range 표현 불가).
-fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8, config_path: []const u8) void {
+fn validateStructure(rt: Runtime, user: std.json.Value, def: std.json.Value, ctx: []const u8, config_path: []const u8) void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
     if (user_tag != def_tag) {
@@ -1287,7 +1287,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
                 messages.config_type_mismatch_format,
                 .{ ctx, @tagName(def_tag), @tagName(user_tag) },
             ) catch messages.config_type_mismatch_fallback_msg;
-            showConfigFatalMsg(config_path, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -1303,7 +1303,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
                 messages.config_missing_key_format,
                 .{ key, ctx },
             ) catch messages.config_missing_key_fallback_msg;
-            showConfigFatalMsg(config_path, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -1322,7 +1322,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
                 messages.config_unknown_key_format,
                 .{ key, ctx },
             ) catch messages.config_unknown_key_fallback_msg;
-            showConfigFatalMsg(config_path, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -1335,7 +1335,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
             std.fmt.bufPrint(&path_buf, "{s}", .{key}) catch key
         else
             std.fmt.bufPrint(&path_buf, "{s}.{s}", .{ ctx, key }) catch key;
-        validateStructure(u_val, entry.value_ptr.*, path, config_path);
+        validateStructure(rt, u_val, entry.value_ptr.*, path, config_path);
     }
 }
 
