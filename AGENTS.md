@@ -470,6 +470,32 @@ magick out.png -crop 130x62+3020+148 +repage -resize 500% one.png    # 글리프
 cluster 경로를 건드리면 **한글 · ASCII · emoji ZWJ · precomposed 글자 (`é`)** 를 같은 화면에
 넣어요. 이 넷이 그대로면 흔한 경로에 회귀가 없다는 뜻이에요.
 
+# 사이트 (`docs/`) 렌더 확인 — headless 브라우저
+
+`docs/` 의 페이지를 고치면 **눈으로 한 번 봐요.** 표 · 각주처럼 구조가 있는 변경은 HTML 파서로 태그
+균형만 봐서는 부족해요 — 열이 밀리거나 고유명사가 변형되는 것은 렌더에서만 보여요 ([#434](https://github.com/ensky0/tildaz/issues/434)
+에서 `macOS` 가 `MACOS` 로 나오던 것이 그랬어요. 그 표만 uppercase 를 끄는 것으로 고쳤어요).
+
+**Chromium 을 설치하지 않아도 돼요 — Firefox 로 됩니다** (2026-08-11 Linux 세션에서 확인).
+
+```sh
+PROF=$(mktemp -d)                                      # 사용자 프로필을 안 건드려요
+firefox --headless --profile "$PROF" --window-size=1280,9000 \
+        --screenshot /tmp/site.png "file://$PWD/docs/index.html"
+rm -rf "$PROF"
+magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절만 잘라요
+```
+
+- **`--window-size` 의 높이가 곧 캡처 높이예요** — 전체 페이지가 아니에요. 페이지 아래쪽 절 (예:
+  `#performance`) 을 보려면 넉넉히 (9000 px) 찍고 `magick -crop` 으로 잘라요. 3200 px 로 찍었다가
+  성능 절이 통째로 안 담긴 적이 있어요.
+- **URL 프래그먼트로는 스크롤이 안 돼요** — headless 는 맨 위에서 렌더해요. `…/index.html#performance`
+  를 줘도 맨 위가 찍혀요.
+- **임시 프로필을 써요** (`--profile $(mktemp -d)`). 사용자 Firefox 가 떠 있어도 안전하고 설정도 안
+  건드려요.
+- Chromium 계열도 같은 일을 해요 (`--headless --screenshot --window-size=W,H`). 설치가 필요하면
+  CachyOS 에서 `chromium` 은 공식 저장소이고 **`google-chrome` 은 AUR 전용**이에요.
+
 # 도구 실행
 
 **모든 도구 호출에 timeout 은 1분 (60000ms) 을 명시적으로 걸어요.** Bash, PowerShell, Agent 같은 도구의 기본 timeout (2~10 분) 에 의존하지 말고 매 호출마다 `timeout: 60000` 을 직접 넣어요. 사용자가 1 분 넘게 아무 응답도 받지 못하는 상황을 피하기 위한 규칙.
