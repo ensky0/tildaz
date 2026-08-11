@@ -1132,9 +1132,11 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
 /// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
 fn confirmOsascript(title: []const u8, message: []const u8) bool {
     const allocator = std.heap.page_allocator;
-    var script_buf: std.ArrayList(u8) = .empty;
-    defer script_buf.deinit(allocator);
-    const w = script_buf.writer(allocator);
+    // Zig 0.16 — `ArrayList.writer` 자리는 `Io.Writer.Allocating` 이다 (#451, 아래
+    // `showOsascript` 와 같은 이유).
+    var script_alloc: std.Io.Writer.Allocating = .init(allocator);
+    defer script_alloc.deinit();
+    const w = &script_alloc.writer;
     w.writeAll("display dialog \"") catch return false;
     appendEscaped(w, message) catch return false;
     w.writeAll("\" buttons {\"Cancel\", \"OK\"} default button \"OK\" cancel button \"Cancel\"") catch return false;
@@ -1144,7 +1146,7 @@ fn confirmOsascript(title: []const u8, message: []const u8) bool {
     w.writeAll(" with title \"") catch return false;
     appendEscaped(w, title) catch return false;
     w.writeAll("\"") catch return false;
-    const script = script_buf.items;
+    const script = script_alloc.written();
 
     var child = std.process.Child.init(
         &.{ "/usr/bin/osascript", "-e", script },
@@ -1267,9 +1269,12 @@ fn setButtonEsc(alert: objc.id, index: u64) void {
 fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     _ = severity;
     const allocator = std.heap.page_allocator;
-    var script_buf: std.ArrayList(u8) = .empty;
-    defer script_buf.deinit(allocator);
-    const w = script_buf.writer(allocator);
+    // Zig 0.16 — `ArrayList.writer` 가 없어졌다 (#451). 자라는 버퍼에 쓰는 writer 는
+    // `Io.Writer.Allocating` 이 그 자리다. 아래 헬퍼들은 `anytype` 이라 `*Writer` 를
+    // 그대로 받는다.
+    var script_alloc: std.Io.Writer.Allocating = .init(allocator);
+    defer script_alloc.deinit();
+    const w = &script_alloc.writer;
 
     w.writeAll("display dialog \"") catch return;
     appendEscaped(w, message) catch return;
@@ -1281,7 +1286,7 @@ fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const 
     appendEscaped(w, title) catch return;
     w.writeAll("\"") catch return;
 
-    const script = script_buf.items;
+    const script = script_alloc.written();
 
     var child = std.process.Child.init(
         &.{ "/usr/bin/osascript", "-e", script },

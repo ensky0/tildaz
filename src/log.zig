@@ -21,6 +21,7 @@ const builtin = @import("builtin");
 const log_time = @import("log_time.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
+const runtime = @import("runtime.zig");
 
 // #282 D1 — Windows 원자적 append 용 Win32 externs. Windows 에서만 참조되는
 // comptime 분기(writeRaw)에서만 쓰이므로 다른 platform 빌드엔 영향 없음.
@@ -73,15 +74,6 @@ else
 // 빠져나온다.
 var g_path_mutex: std.Io.Mutex = .init;
 
-/// 진입점이 런타임에게 받은 `Io` (`std.process.Init.io`). Zig 0.16 의 `Io.Mutex` 는
-/// `lock` · `unlock` 이 모두 `io` 를 받는데 이 로거는 전역이라 호출부마다 넘길 수 없어서,
-/// `main` 이 한 번 심어 둔다 (#451 의 안 A — `Io` 를 최소로만 들인다).
-var g_io: ?std.Io = null;
-
-/// `main` 의 **첫 줄**에서 부른다 — 그래야 위 `cachedPath` 의 "아직 스레드가 없다" 가 성립한다.
-pub fn setIo(io: std.Io) void {
-    g_io = io;
-}
 var g_path_attempted = false;
 var g_cached_path: ?CachedPath = null;
 
@@ -90,11 +82,11 @@ var g_cached_path: ?CachedPath = null;
 /// slice를 사용한다. 준비 실패는 로그 자체에 쓸 수 없으므로 stderr에 한 번
 /// 명시하고 이후 null을 반환한다.
 fn cachedPath() ?CachedPath {
-    // `g_io` 가 null 인 구간 — 진입점이 `setIo` 를 부르기 전이다. 그때는 아직 스레드를
-    // 만들지 않았으므로 (`setIo` 가 `main` 의 첫 줄에 있다) 경합할 상대가 없어 잠글 것이
-    // 없다. `tryLock` 으로 흉내내면 실패했을 때 **잠기지 않은 채 지나가는** 조용한 위험이
+    // `runtime.io()` 가 null 인 구간 — 진입점이 `runtime.install` 을 부르기 전이다. 그때는
+    // 아직 스레드를 만들지 않았으므로 (`install` 이 `main` 의 첫 줄에 있다) 경합할 상대가
+    // 없어 잠글 것이 없다. `tryLock` 으로 흉내내면 실패했을 때 **잠기지 않은 채 지나가는** 조용한 위험이
     // 생기므로, 아예 잠그지 않는다는 것을 드러내 둔다 (#451).
-    const io = g_io;
+    const io = runtime.io();
     if (io) |v| g_path_mutex.lockUncancelable(v);
     defer if (io) |v| g_path_mutex.unlock(v);
 
@@ -160,7 +152,10 @@ fn writeRaw(text: []const u8) void {
         // 상대경로 기준이 cwd 라 이전과 같은 의미이고, 우리는 절대경로를 넘긴다.
         const fd = posix.openat(posix.AT.FDCWD, path.utf8, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
         defer posix.close(fd);
-        _ = posix.write(fd, text) catch {};
+        // Zig 0.16 — `posix.write` 가 없어졌다 (#451). 파일 IO 가 `Io.File` 경유로 갔지만
+        // 이 경로는 **O_APPEND 원자성**이 목적이라 raw fd 를 그대로 쓴다. std 가 이미 감싼
+        // `std.c.write` 를 쓴다 — 직접 `extern "c"` 선언하지 않는다.
+        _ = std.c.write(fd, text.ptr, text.len);
     }
 }
 

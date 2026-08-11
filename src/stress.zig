@@ -35,6 +35,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const runtime = @import("runtime.zig");
 const build_options = @import("build_options");
 
 const config = @import("config.zig");
@@ -87,7 +88,11 @@ const chunk_size = 64 * 1024;
 /// 기준이고, 값은 앱과 같은 정의를 쓴다.
 const frame_budget_ns = session_core.SessionCore.DRAIN_FRAME_BUDGET_NS;
 
-pub fn main() !void {
+/// Zig 0.16 은 `main` 의 첫 인자로 `std.process.Init` 을 넘긴다 (#451). 하네스도 앱과
+/// 같은 진입점 규약을 쓴다 — 환경변수로 producer 모드를 판정하므로 `Environ` 이 필수다.
+pub fn main(init: std.process.Init) !void {
+    // **첫 줄이어야 한다** — 아래 `producerRequest` 가 환경변수를 읽고, 로거가 `Io` 를 쓴다.
+    runtime.install(init);
     // 하네스는 **언제나** 측정이다. `main.zig` 는 `-e` 일 때만 이 역할을 세우지만
     // (`run_opts.isStressRun()`) 여기는 조건이 없다.
     //
@@ -160,28 +165,28 @@ const grid_wait_limit_ms: u64 = 2000;
 /// 이상하면 일반 모드로 두어, 실수로 켜진 환경변수 때문에 조용히 다른 일을 하지
 /// 않게 한다. timing 파일은 선택이다.
 fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
-    const kind_name = std.process.getEnvVarOwned(alloc, env_workload) catch return null;
+    const kind_name = runtime.envAlloc(alloc, env_workload) catch return null;
     defer alloc.free(kind_name);
-    const bytes_text = std.process.getEnvVarOwned(alloc, env_bytes) catch return null;
+    const bytes_text = runtime.envAlloc(alloc, env_bytes) catch return null;
     defer alloc.free(bytes_text);
 
     const kind = workload.Kind.parse(kind_name) orelse return null;
     const bytes = std.fmt.parseInt(u64, bytes_text, 10) catch return null;
 
     // 호출자가 free 하지 않는다 — producer 는 이 값을 쓰고 곧 종료한다.
-    const timing_path = std.process.getEnvVarOwned(alloc, env_timing_file) catch null;
+    const timing_path = runtime.envAlloc(alloc, env_timing_file) catch null;
 
     // 값이 이상하면 **0 으로 본다** — 기다리지 않는 쪽이 안전하다. 창이 남으면 다음 회차와
     // CPU 를 나눠 써서 측정을 오염시킨다.
     var hold_ms: u32 = 0;
-    if (std.process.getEnvVarOwned(alloc, env_hold_ms) catch null) |text| {
+    if (runtime.envAlloc(alloc, env_hold_ms) catch null) |text| {
         defer alloc.free(text);
         hold_ms = std.fmt.parseInt(u32, text, 10) catch 0;
     }
 
     // `120x40` 형식. 이상하면 **없는 것으로 본다** — 기다리지 않는 쪽이 안전하다.
     var target_grid: ?Grid = null;
-    if (std.process.getEnvVarOwned(alloc, env_grid) catch null) |text| {
+    if (runtime.envAlloc(alloc, env_grid) catch null) |text| {
         defer alloc.free(text);
         target_grid = parseGrid(text);
     }

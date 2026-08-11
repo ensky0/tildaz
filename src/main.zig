@@ -14,6 +14,7 @@ const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
 const messages = @import("messages.zig");
 const run_options = @import("run_options.zig");
+const runtime = @import("runtime.zig");
 const shortcut_sync = @import("shortcut_sync.zig");
 const version = @import("version.zig");
 
@@ -68,9 +69,17 @@ fn printOptionError(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(2);
 }
 
-pub fn main() void {
-    const args = std.process.argsAlloc(std.heap.page_allocator) catch std.process.exit(2);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+/// Zig 0.16 은 `main` 의 첫 인자로 `std.process.Init` 을 넘긴다 (#451). 그 안에 런타임이
+/// 준비한 `io` · argv (`minimal.args`) · `arena` · `gpa` · `environ_map` 이 들어 있고,
+/// `std.process.argsAlloc` 은 없어졌다.
+pub fn main(init: std.process.Init) void {
+    // **첫 줄이어야 한다.** 전역 로거의 mutex 가 `Io` 를 받아야 하고 (`log.zig` 의
+    // `g_path_mutex`), 경로 계산이 환경변수를 읽는다 (`paths.zig`). 그 전 구간은 "아직
+    // 스레드가 없다" 는 전제로 잠금을 건너뛴다 (`runtime.zig` 참고).
+    runtime.install(init);
+    // arena 는 process lifetime 이라 (`std.process.Init` 주석) 따로 해제하지 않는다 —
+    // 이전 `argsFree` 가 하던 일이 없어진다.
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch std.process.exit(2);
     var worker_index: ?u32 = null;
     var autostart_launch = false;
     var toggle_index: ?u32 = null;

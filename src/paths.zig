@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const runtime = @import("runtime.zig");
 const instance_context = @import("instance_context.zig");
 
 pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
@@ -62,11 +63,11 @@ pub fn logFileName(buf: []u8, role: instance_context.Role, index: u32) ![]const 
 
 fn logDir(allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
-        const appdata = try std.process.getEnvVarOwned(allocator, "APPDATA");
+        const appdata = try runtime.envAlloc(allocator, "APPDATA");
         defer allocator.free(appdata);
         return std.fmt.allocPrint(allocator, "{s}\\tildaz", .{appdata});
     } else if (builtin.os.tag == .macos) {
-        const home = try std.process.getEnvVarOwned(allocator, "HOME");
+        const home = try runtime.envAlloc(allocator, "HOME");
         defer allocator.free(home);
         return std.fmt.allocPrint(allocator, "{s}/Library/Logs", .{home});
     } else {
@@ -83,7 +84,7 @@ fn logPathFromDir(allocator: std.mem.Allocator, dir: []const u8, name: []const u
 
 pub fn configDir(allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
-        const appdata = try std.process.getEnvVarOwned(allocator, "APPDATA");
+        const appdata = try runtime.envAlloc(allocator, "APPDATA");
         defer allocator.free(appdata);
         return std.fmt.allocPrint(allocator, "{s}\\tildaz", .{appdata});
     }
@@ -104,11 +105,11 @@ fn stateHome(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn xdgHome(allocator: std.mem.Allocator, env_name: []const u8, fallback_suffix: []const u8) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, env_name) catch null) |dir| {
+    if (runtime.envAlloc(allocator, env_name) catch null) |dir| {
         if (dir.len != 0 and std.fs.path.isAbsolute(dir)) return dir;
         allocator.free(dir);
     }
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    const home = try runtime.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     return resolveXdgHome(allocator, null, home, fallback_suffix);
 }
@@ -138,26 +139,26 @@ pub fn ensureConfigDir(allocator: std.mem.Allocator) !void {
 /// fallback한다.
 pub fn lockDir(allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
-        const local_appdata = try std.process.getEnvVarOwned(allocator, "LOCALAPPDATA");
+        const local_appdata = try runtime.envAlloc(allocator, "LOCALAPPDATA");
         defer allocator.free(local_appdata);
         return std.fmt.allocPrint(allocator, "{s}\\tildaz\\run", .{local_appdata});
     }
 
     if (builtin.os.tag == .macos) {
-        const home = try std.process.getEnvVarOwned(allocator, "HOME");
+        const home = try runtime.envAlloc(allocator, "HOME");
         defer allocator.free(home);
         return std.fmt.allocPrint(allocator, "{s}/Library/Caches/TildaZ", .{home});
     }
 
-    if (std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch null) |runtime_dir| {
+    if (runtime.envAlloc(allocator, "XDG_RUNTIME_DIR") catch null) |runtime_dir| {
         defer allocator.free(runtime_dir);
         if (runtime_dir.len != 0 and std.fs.path.isAbsolute(runtime_dir)) return linuxLockDir(allocator, runtime_dir, null, "");
     }
-    if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME") catch null) |cache_dir| {
+    if (runtime.envAlloc(allocator, "XDG_CACHE_HOME") catch null) |cache_dir| {
         defer allocator.free(cache_dir);
         if (cache_dir.len != 0 and std.fs.path.isAbsolute(cache_dir)) return linuxLockDir(allocator, null, cache_dir, "");
     }
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    const home = try runtime.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     return linuxLockDir(allocator, null, null, home);
 }
@@ -295,9 +296,11 @@ test "log path builder preserves paths beyond the old fixed limit" {
 test "Linux lock directory follows runtime then cache fallback order" {
     const allocator = std.testing.allocator;
 
-    const runtime = try linuxLockDir(allocator, "/run/user/1000", "/cache", "/home/test");
-    defer allocator.free(runtime);
-    try std.testing.expectEqualStrings("/run/user/1000/tildaz", runtime);
+    // 변수 이름이 `runtime` 이면 이 파일의 `runtime.zig` import 를 가린다 (#451 에서 그 import
+    // 를 넣으며 걸렸다). 무엇을 가리키는 경로인지 이름에 담는다.
+    const runtime_dir = try linuxLockDir(allocator, "/run/user/1000", "/cache", "/home/test");
+    defer allocator.free(runtime_dir);
+    try std.testing.expectEqualStrings("/run/user/1000/tildaz", runtime_dir);
 
     const cache = try linuxLockDir(allocator, null, "/cache", "/home/test");
     defer allocator.free(cache);
