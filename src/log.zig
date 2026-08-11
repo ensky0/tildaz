@@ -12,20 +12,44 @@
 //!   모든 platform 에서 local time 을 사용한다.
 //!
 //! Platform 모듈 (`log/{windows,macos,linux}.zig`) 은 시스템 의존 부분
-//! (local time 변환 / pid) 만 제공. 로그 파일 경로는 처음 사용할 때 실제
-//! 길이만큼 한 번 준비해 프로세스 수명 동안 보관하며, 기록 / About /
-//! Open Log가 이 값을 함께 쓴다. formatting / file IO 는 이 파일에서 단일 구현.
+//! (local time 변환 / pid) 만 제공. 로그 파일 경로는 **진입점이 `init` 으로 한 번
+//! 넘겨** 프로세스 수명 동안 보관하며, 기록 / About / Open Log가 이 값을 함께 쓴다
+//! (#451 — 예전의 lazy 준비를 대체. 아래 `init` 주석). formatting / file IO 는 이
+//! 파일에서 단일 구현.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const log_time = @import("log_time.zig");
 const messages = @import("messages.zig");
-const paths = @import("paths.zig");
 
 // #282 D1 — Windows 원자적 append 용 Win32 externs. Windows 에서만 참조되는
 // comptime 분기(writeRaw)에서만 쓰이므로 다른 platform 빌드엔 영향 없음.
+//
+// #451 — Zig 0.16 은 `std.os.windows` 의 중간 추상화를 걷어냈다. `OpenFile` 과
+// `PathSpace` 가 없어졌고 `kernel32` 에 남은 extern 은 `CreateProcessW` 하나뿐이다
+// (릴리즈 노트 *Completed Migration to NtDll*). 그래서 파일 열기도 여기서 직접
+// 선언한다 — 이 파일이 이미 `WriteFile` · `CloseHandle` 을 그렇게 쓰고 있었고,
+// 레포 전체가 같은 방식으로 kernel32 를 53 자리 선언한다.
 const win32 = if (builtin.os.tag == .windows) struct {
     const w = std.os.windows;
+
+    /// 매 write 를 OS 가 원자적으로 EOF 에 붙인다 — 이 파일의 존재 이유 (#282 D1).
+    pub const FILE_APPEND_DATA: w.DWORD = 0x0004;
+    /// 다른 인스턴스 (`tildaz --toggle` 자식 등) 가 같은 파일을 동시에 열 수 있어야 한다.
+    pub const FILE_SHARE_ALL: w.DWORD = 0x00000001 | 0x00000002 | 0x00000004;
+    /// 없으면 만들고 있으면 연다 (`O_CREAT` 상당, truncate 하지 않는다).
+    pub const OPEN_ALWAYS: w.DWORD = 4;
+    pub const FILE_ATTRIBUTE_NORMAL: w.DWORD = 0x80;
+
+    pub extern "kernel32" fn CreateFileW(
+        lpFileName: [*:0]const u16,
+        dwDesiredAccess: w.DWORD,
+        dwShareMode: w.DWORD,
+        lpSecurityAttributes: ?*anyopaque,
+        dwCreationDisposition: w.DWORD,
+        dwFlagsAndAttributes: w.DWORD,
+        hTemplateFile: ?w.HANDLE,
+    ) callconv(.winapi) w.HANDLE;
     pub extern "kernel32" fn WriteFile(
         hFile: w.HANDLE,
         lpBuffer: [*]const u8,
@@ -53,78 +77,76 @@ const impl = switch (builtin.os.tag) {
     },
 };
 
-const CachedPath = if (builtin.os.tag == .windows)
-    struct {
-        utf8: []const u8,
-        native: *const std.os.windows.PathSpace,
-    }
-else
-    struct {
-        utf8: []const u8,
-    };
+/// UTF-8 경로. `init` 전에는 null 이고 그동안의 기록은 조용히 버려진다 — 예전 lazy
+/// 준비도 실패하면 같은 결과였다.
+var g_path: ?[]const u8 = null;
+/// Windows 전용 — `CreateFileW` 에 넘길 WTF-16 경로. `init` 에서 한 번 만든다.
+var g_path_w: if (builtin.os.tag == .windows) ?[:0]const u16 else void =
+    if (builtin.os.tag == .windows) null else {};
 
-var g_path_mutex: std.Thread.Mutex = .{};
-var g_path_attempted = false;
-var g_cached_path: ?CachedPath = null;
-
-/// worker index 가 정해진 뒤 처음 호출될 때 경로를 동적으로 준비한다. 보관
-/// 메모리는 process lifetime 이며, 이후 로그 기록 / About / Open Log가 같은
-/// slice를 사용한다. 준비 실패는 로그 자체에 쓸 수 없으므로 stderr에 한 번
-/// 명시하고 이후 null을 반환한다.
-fn cachedPath() ?CachedPath {
-    g_path_mutex.lock();
-    defer g_path_mutex.unlock();
-
-    if (g_cached_path) |path| return path;
-    if (g_path_attempted) return null;
-    g_path_attempted = true;
-
-    g_cached_path = prepareCachedPath() catch |err| {
-        std.debug.print(messages.log_path_prepare_failed_format ++ "\n", .{@errorName(err)});
-        return null;
-    };
-    return g_cached_path;
-}
-
-fn prepareCachedPath() !CachedPath {
-    const allocator = std.heap.page_allocator;
-    const utf8 = try paths.logPath(allocator);
-    errdefer allocator.free(utf8);
-
+/// 로그 파일 경로를 프로세스에 한 번 심는다 ([#451](https://github.com/ensky0/tildaz/issues/451)).
+///
+/// **왜 진입점이 넘기나.** 예전에는 첫 기록에서 lazy 로 `paths.logPath` 를 불렀다.
+/// Zig 0.16 은 경로 계산이 `Io` 와 환경변수를 받아야 하는데 (`paths.zig`), 그러면
+/// `appendLine` 계열 **297 자리**가 전부 그 둘을 들고 다녀야 한다. 경로는 프로세스
+/// 수명 동안 **하나뿐**이라 진입점이 한 번 넘기면 그만이고, 그러면 기록 호출부는
+/// 시그니처가 하나도 안 바뀐다.
+///
+/// **경합이 없다.** 진입점이 worker index 를 정한 **직후**, 스레드를 만들기 전에
+/// 부른다. 예전 lazy 준비를 지키던 mutex 가 그래서 사라졌다 — 늦게 붙는 잠금이
+/// 아니라 아예 순서로 막는다.
+///
+/// `path` 는 프로세스 수명 동안 살아 있어야 한다 (호출자 소유, 여기서 해제하지 않는다).
+/// 준비 실패는 로그 자체에 쓸 수 없으므로 stderr 에 한 번 명시한다.
+pub fn init(allocator: std.mem.Allocator, path: []const u8) void {
+    g_path = path;
     if (comptime builtin.os.tag == .windows) {
-        const native = try allocator.create(std.os.windows.PathSpace);
-        errdefer allocator.destroy(native);
-        native.* = try std.os.windows.sliceToPrefixedFileW(null, utf8);
-        return .{ .utf8 = utf8, .native = native };
+        // `\\?\` 접두사 — Win32 `MAX_PATH` (260) 를 넘는 경로도 열린다. 예전
+        // `sliceToPrefixedFileW` 가 해 주던 일이고 (Zig 0.16 에서 `std.os.windows`
+        // 밖으로 나갔다), 우리 경로는 항상 drive 절대경로라 접두사 조건을 만족한다.
+        const prefixed = std.fmt.allocPrint(allocator, "\\\\?\\{s}", .{path}) catch |err| {
+            std.debug.print(messages.log_path_prepare_failed_format ++ "\n", .{@errorName(err)});
+            return;
+        };
+        defer allocator.free(prefixed);
+        g_path_w = std.unicode.wtf8ToWtf16LeAllocZ(allocator, prefixed) catch |err| {
+            std.debug.print(messages.log_path_prepare_failed_format ++ "\n", .{@errorName(err)});
+            return;
+        };
     }
-    return .{ .utf8 = utf8 };
 }
 
 /// 실제 기록 파일 경로. process lifetime borrowed slice이며 호출자가 해제하지
-/// 않는다. 기록 경로 준비가 실패한 경우에만 null.
+/// 않는다. `init` 전이거나 준비가 실패한 경우에만 null.
 pub fn filePath() ?[]const u8 {
-    const path = cachedPath() orelse return null;
-    return path.utf8;
+    return g_path;
 }
 
 fn writeRaw(text: []const u8) void {
-    const path = cachedPath() orelse return;
     if (builtin.os.tag == .windows) {
         // #282 D1 — POSIX 는 O_APPEND(아래)로 고쳤으나 Windows 는 createFile+seekFromEnd+
         // writeAll race 였다 (seek 와 write 사이 동시 writer 시 torn line). FILE_APPEND_DATA
         // 로 열면 OS 가 매 write 를 원자적으로 EOF 에 append — ConPty wait_thread(onPtyExit)
         // vs main thread 동시 write(shell exit 시점, post-mortem 로그 필요 순간)에도 줄이 안
         // 섞인다. 한 줄 단일 WriteFile — 작은 크기라 partial 없이 한 번에.
-        // `sliceToPrefixedFileW`가 만든 NT namespace 경로를 보관해 Win32
-        // MAX_PATH / 이전 520 UTF-16 배열에 의존하지 않는다. OpenFile은 이
-        // prefixed 경로를 그대로 NtCreateFile에 전달한다.
-        const w = std.os.windows;
-        const handle = w.OpenFile(path.native.span(), .{
-            .access_mask = w.FILE_APPEND_DATA | w.SYNCHRONIZE,
-            .creation = w.FILE_OPEN_IF,
-        }) catch return;
+        //
+        // #451 — 예전엔 `std.os.windows.OpenFile` 에 `sliceToPrefixedFileW` 결과를 넘겼다.
+        // Zig 0.16 에서 둘 다 `std.os.windows` 밖으로 나가서, `init` 이 만들어 둔 `\\?\`
+        // WTF-16 경로를 우리가 선언한 `CreateFileW` 에 그대로 넘긴다. 원자성의 근거는
+        // 그대로 FILE_APPEND_DATA 이고 MAX_PATH 비의존도 접두사로 유지된다.
+        const path_w = g_path_w orelse return;
+        const handle = win32.CreateFileW(
+            path_w.ptr,
+            win32.FILE_APPEND_DATA,
+            win32.FILE_SHARE_ALL,
+            null,
+            win32.OPEN_ALWAYS,
+            win32.FILE_ATTRIBUTE_NORMAL,
+            null,
+        );
+        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return;
         defer _ = win32.CloseHandle(handle);
-        var written: w.DWORD = undefined;
+        var written: std.os.windows.DWORD = undefined;
         _ = win32.WriteFile(handle, text.ptr, @intCast(text.len), &written, null);
     } else {
         // O_APPEND — 커널이 매 write 를 파일 끝에 원자적으로 append (한 줄 < PIPE_BUF).
@@ -132,10 +154,16 @@ fn writeRaw(text: []const u8) void {
         // 줄이 안 섞인다. 이전 createFile+seekFromEnd+writeAll 은 seek 와 write 사이
         // race 라 동시 writer 시 torn line 이 났다. 한 줄 단일 write — 작은 크기라
         // partial write 없이 한 번에 atomic append.
+        //
+        // #451 — 이 경로는 `Io` 로 올릴 수 없다. `Io.Dir` 의 파일 열기 옵션에 **append
+        // 모드가 없어서** (`OpenFileOptions` · `CreateFileOptions` 전수 확인) O_APPEND
+        // 원자성을 표현할 방법이 없다. 릴리즈 노트가 남긴 다른 길인 *"go lower: use
+        // `std.posix.system` directly"* 를 택한다.
+        const path = g_path orelse return;
         const posix = std.posix;
-        const fd = posix.open(path.utf8, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
-        defer posix.close(fd);
-        _ = posix.write(fd, text) catch {};
+        const fd = posix.openat(posix.AT.FDCWD, path, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
+        defer _ = posix.system.close(fd);
+        _ = posix.system.write(fd, text.ptr, text.len);
     }
 }
 
@@ -181,9 +209,17 @@ pub fn appendBlock(text: []const u8) void {
 }
 
 /// 부팅 시 `[boot] tildaz v<ver> pid=<pid> exe=<full path>` 한 줄.
-pub fn logStart(version: []const u8) void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe = std.fs.selfExePath(&exe_buf) catch "(unknown)";
+///
+/// #451 — 실행파일 경로 조회가 `Io` 를 받는다 (`fs.selfExePath` ➡️
+/// `std.process.executablePath`, 릴리즈 노트 upgrade guide). 기록 자체는 `Io` 를 안
+/// 타므로 (`writeRaw` 는 raw syscall) `io` 가 필요한 것은 이 함수뿐이고, host 진입점
+/// 세 곳에서만 부른다.
+pub fn logStart(io: std.Io, version: []const u8) void {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const exe = if (std.process.executablePath(io, &exe_buf)) |n|
+        exe_buf[0..n]
+    else |_|
+        "(unknown)";
     appendLine("boot", "tildaz v{s}  pid={d}  exe={s}", .{ version, impl.currentPid(), exe });
 }
 
