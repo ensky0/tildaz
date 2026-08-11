@@ -927,11 +927,47 @@ fi
 # 한 회차의 화면을 찍는다. 실패해도 측정을 멈추지 않는다 — 찍힌 게 없다는 사실은
 # 파일이 없는 것으로 알 수 있고, 표 옆에 표시도 남긴다.
 #
-# Windows 는 무엇을 찍었는지를 두 플래그로 알린다. 다른 platform 은 이 구분이 없다 (`0`).
+# **세 platform 이 무엇을 찍었는지를 두 플래그로 알린다** (#448 에서 Linux 가 합류했다).
 #   `CAPTURE_NOWIN`    대상 창을 못 찾음 — 전체 화면만 찍혔고 대상이 있다는 보장이 없다.
 #   `CAPTURE_FELLBACK` 창은 찾았지만 창 단위 캡처가 안 돼서 전체 화면으로 물러섰다.
+#
+# 예전엔 Windows 만 이 구분을 했고 (macOS 는 #414 에서 합류) **Linux 는 둘 다 `0` 이라 `?` · `~` 가
+# 구조적으로 안 나왔다.** 그래서 창이 이미 닫힌 회차도 `spectacle -a` 가 엉뚱한 활성 창을 찍어
+# 2 KiB 를 넘기면 `@` 로 통과했고, **판정이 조용히 성립하는** 상태였다 (#448). 표시만의 문제가
+# 아니었다 — #413 의 재시도 루프가 `~` · `?` · `_` 를 조건으로 도는데 Linux 에서 남는 것이 `_`
+# 하나뿐이라 **hold 가 모자라 창이 먼저 닫힌 회차를 다시 찍지 않았다.**
 CAPTURE_NOWIN=0
 CAPTURE_FELLBACK=0
+
+# 그 대상의 producer 가 **지금** 살아 있나 (Linux 판정용, #448).
+#
+# 왜 이걸로 판정이 되나: **hold 를 붙드는 주체가 producer** 다 (`stress.zig` 의 `env_hold_ms` —
+# 환경변수가 없으면 `hold_ms = 0` 이라 timing 을 쓴 직후 끝난다). 캡처는 timing + `CAPTURE_DELAY`
+# 에 찍으므로, 그 시점에 producer 가 살아 있다는 것이 곧 *찍을 창이 있었다*는 뜻이다.
+#
+# 패턴은 `cleanup_terminals` 가 *"우리가 띄운 것만"* 고를 때 쓰는 것과 같은 `WORK_DIR` 경로인데,
+# **대상 이름까지 붙여 그 대상만** 본다.
+#
+# **명령줄만 보면 안 된다 — tildaz 를 놓친다.** 처음에 `ps -eo args` 로 짰다가 검증에서 걸렸다.
+# 터미널 다섯은 `sh -c "env TILDAZ_STRESS_TIMING_FILE=… <producer>"` 를 인자로 받으니 명령줄에
+# 남는데, tildaz 는 `env "TILDAZ_STRESS_TIMING_FILE=…" <tildaz> -e <producer>` 형태라 **`env` 가
+# tildaz 를 exec 하면서 그 대입이 argv 에서 사라진다** (환경으로만 남는다). 그래서 명령줄 검사는
+# tildaz 회차를 매번 `?` 로 만들었다.
+#
+# 그래서 `/proc` 의 **`cmdline` 과 `environ` 을 함께** 본다. 둘 중 어디서든 이 경로가 보이면 그
+# 대상의 프로세스가 (터미널이든 producer 든) 아직 있다는 뜻이다. `environ` 쪽이 더 정확하다 —
+# producer 는 이 변수를 상속받아 갖고 있고, hold 를 붙드는 주체가 그 producer 다.
+#
+# **`pgrep -f` 를 안 쓴다** — 패턴에 든 `/tmp/…` 경로를 정규식으로 해석하고 자기 자신을 세는
+# 함정이 있다. `grep -aqF` 로 고정 문자열 비교를 한다 (`-a` 는 NUL 이 든 `cmdline` · `environ` 을
+# 텍스트로 읽게 한다).
+#
+# `/proc` 이 없으면 **판정하지 않는다** (`?` 를 안 찍는다). 없는 근거로 실패를 단정하면 그게 곧
+# 이 이슈가 고치려던 *조용한 오판*의 반대 방향 오판이다. Linux DE 에는 항상 있다.
+capture_target_alive() {
+    [ -r /proc/self/cmdline ] || return 0
+    grep -aqF "$WORK_DIR/$1.timing" /proc/[0-9]*/cmdline /proc/[0-9]*/environ 2>/dev/null
+}
 capture_screen() {
     _png="$1"
     _ctarget="$2"
@@ -990,18 +1026,35 @@ capture_screen() {
             fi
             ;;
         *)
+            # **찍기 전에 대상이 살아 있는지 본다** (#448). 어느 도구를 쓰든 같다 — 창이 이미
+            # 닫혔으면 무엇을 찍어도 대상이 아니므로, 도구 선택보다 이 판정이 먼저다.
+            capture_target_alive "$_ctarget" || CAPTURE_NOWIN=1
             if command -v grim >/dev/null 2>&1; then
+                # wlroots 계열 (sway · Hyprland). **화면 단위**라 창 단위 성공이 애초에 없다 —
+                # 그래서 정상 결과도 `~` 다 (#448). 전에는 `@` 로 찍혀서 Windows · macOS 의
+                # `@` (창 단위로 찍었다) 와 **같은 표시가 다른 뜻**이었다.
+                # 창 단위로 가려면 `grim -g` 에 geometry 를 줘야 하고 그건 compositor 질의
+                # (`swaymsg -t get_tree` · `hyprctl clients`) 가 필요한데, 이 기기가 KDE 라
+                # **검증할 수 없어서 넣지 않았다** — 별도 이슈 몫이다.
                 grim "$_png" >/dev/null 2>&1 || true
+                CAPTURE_FELLBACK=1
             elif command -v spectacle >/dev/null 2>&1; then
                 # KDE Plasma. **`-a` (활성 창) 라 창 단위로 찍힌다** — grim (화면 단위) 과 다르다.
                 # 방금 뜬 창이 포커스를 받으므로 대개 대상이 잡히고, 활성 창은 맨 앞이라 가려짐
-                # 문제도 없다. 대상이 활성이 아니면 엉뚱한 창이 찍히는데, 그건 PNG 을 보면 안다.
-                # 확실히 하려면 KWin 스크립팅 (`org.kde.KWin.Scripting.loadScript` → `workspace
-                # .activeWindow = w`) 으로 대상을 먼저 활성화해야 하는데, **정말 필요한지 확인
-                # 되기 전에는 넣지 않는다** (#381).
+                # 문제도 없다. 그래서 이 경로만 `@` 를 그대로 둔다.
+                #
+                # **남은 한계 — "대상은 살아 있는데 다른 창이 앞" 은 여전히 `@` 다.** 위 생존
+                # 검사는 *창이 없어진 것*만 잡는다. 그걸 가르려면 대상을 먼저 활성화해야 하는데
+                # (#381 이 보류한 KWin 경로), `spectacle` 에 창을 지목하는 옵션이 없어
+                # (`--help` 실측: `-a` · `-u` 뿐) `WindowsRunner.Match` + `.Run` 으로 가야 하고,
+                # 그 매칭 키가 resource class 라 대상마다 형식이 갈린다 (`foot` · `kitty` ·
+                # `Alacritty` · `org.wezfurlong.wezterm` …). #414 가 macOS 에서 *"언어별 이름 표는
+                # 두지 않는다"* 며 거부한 것과 같은 표가 필요해져서 **별개 결정으로 남겼다.**
                 spectacle -b -n -a -o "$_png" >/dev/null 2>&1 || true
             elif command -v gnome-screenshot >/dev/null 2>&1; then
+                # GNOME. grim 과 같이 **화면 단위**라 정상 결과도 `~` 다 (#448).
                 gnome-screenshot -f "$_png" >/dev/null 2>&1 || true
+                CAPTURE_FELLBACK=1
             fi
             ;;
     esac
@@ -1752,19 +1805,38 @@ if [ -n "$CAPTURE_DIR" ]; then
         echo "⚠ ${CAPTURE_BLANK_TOTAL} 회차는 PNG 이 ${CAPTURE_MIN_BYTES} byte 미만이라 **사실상 비어 있어요** (_)."
         echo "  hold 를 늘려 다시 찍고도 그랬다면, 그 대상은 이 경로로 못 찍는 거예요."
     fi
+    # `?` 의 **뜻과 처방이 platform 마다 다르다.** 한 문구로 적으면 반대로 안내한다 — Linux 가
+    # 이 표시를 내게 된 뒤 (#448) 실제로 그랬다. Windows 문구는 *"hold 를 늘려도 안 고쳐진다"*
+    # 인데 Linux 의 `?` 는 **창이 이미 닫힌 것**이라 hold 를 늘리는 게 바로 그 처방이다.
     if [ "$CAPTURE_NOWIN_TOTAL" -gt 0 ]; then
-        echo "⚠ ${CAPTURE_NOWIN_TOTAL} 회차는 대상 창을 못 찾았어요 (?). 그 회차는 창을 앞으로 올리지도"
-        echo "  (0,0) 으로 옮기지도 못했으니, PNG 에 대상이 있어도 우연이에요."
-        echo "  이건 hold 를 늘려도 안 고쳐져요 — 오히려 앞 회차 창이 오래 남아 wt 처럼 기존"
-        echo "  프로세스를 재사용하는 대상에서 더 자주 나요 (#413)."
+        echo "⚠ ${CAPTURE_NOWIN_TOTAL} 회차는 대상 창을 못 찾았어요 (?). PNG 에 대상이 있어도 우연이에요."
+        if [ "$IS_WINDOWS" = 1 ]; then
+            echo "  그 회차는 창을 앞으로 올리지도 (0,0) 으로 옮기지도 못했어요."
+            echo "  이건 hold 를 늘려도 안 고쳐져요 — 오히려 앞 회차 창이 오래 남아 wt 처럼 기존"
+            echo "  프로세스를 재사용하는 대상에서 더 자주 나요 (#413)."
+        elif [ "$IS_MACOS" = 1 ]; then
+            echo "  창 목록 (onScreen) 에서 대상을 못 찾아 전체 화면으로 물러섰어요. 배경 앱 숨김이"
+            echo "  안 풀렸거나 bundle identifier 가 안 맞는 경우예요 (#414)."
+        else
+            echo "  캡처 직전에 그 대상의 프로세스가 이미 없었어요 (#448) — **hold 가 모자라 창이"
+            echo "  먼저 닫힌 것**이 가장 흔한 원인이에요. 위 재시도가 hold 를 늘려 한 번 다시"
+            echo "  찍었는데도 ? 면 --hold-ms 를 더 올려 주세요."
+        fi
     fi
     if [ "$CAPTURE_FELLBACK_TOTAL" -gt 0 ]; then
         echo "⚠ ${CAPTURE_FELLBACK_TOTAL} 회차는 창 단위 캡처가 안 돼 전체 화면으로 물러섰어요 (~)."
-        echo "  hold 를 늘려 다시 찍고도 그랬다는 뜻이에요. 그 PNG 은 다른 창에 가리거나 최대화된"
-        echo "  창 때문에 대상이 빠질 수 있으니 눈으로 확인해 주세요."
+        echo "  그 PNG 은 다른 창에 가리거나 최대화된 창 때문에 대상이 빠질 수 있으니 눈으로"
+        echo "  확인해 주세요. 리눅스의 grim (sway · Hyprland) · gnome-screenshot 은 **원래 화면"
+        echo "  단위**라 정상 결과도 여기 들어와요 — 그 환경에서는 회차 수가 곧 전체 회차예요 (#448)."
     fi
-    echo "⚠ 전체 화면으로 찍힌 PNG (~ · ? · macOS 에서 창 못 찾음 · 리눅스 전체) 은 대상이 다른 창"
-    echo "  뒤에 있으면 안 보여요. PNG 을 눈으로 확인해 주세요."
+    echo "⚠ 전체 화면으로 찍힌 PNG (~ · ?) 은 대상이 다른 창 뒤에 있으면 안 보여요. PNG 을 눈으로"
+    echo "  확인해 주세요."
+    # KDE 는 창 단위로 찍히지만 **그 창이 대상이라는 보장까지는 없다** (#448 의 남은 한계).
+    # 이 사실을 요약에 적어 두지 않으면 `@` 를 *"대상이 찍혔다"* 로 읽게 된다.
+    if command -v spectacle >/dev/null 2>&1 && [ "$IS_WINDOWS" != 1 ] && [ "$IS_MACOS" != 1 ]; then
+        echo "ℹ 리눅스 KDE 의 @ 는 '대상이 살아 있었고 활성 창을 창 단위로 찍었다' 는 뜻이에요."
+        echo "  대상이 활성이 아니었으면 다른 창이 찍힐 수 있어요 (#448 — 대상 활성화는 미구현)."
+    fi
     if [ "$CAPTURE_FAILED" -gt 0 ]; then
         echo "⚠ ${CAPTURE_FAILED} 회차가 안 찍혔어요. 권한 (macOS 화면 기록) · 캡처 도구 유무 (리눅스) ·"
         echo "  hold (${CAPTURE_HOLD_MS} ms) 안에 캡처가 못 끝났는지를 보세요."
