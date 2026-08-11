@@ -12,8 +12,11 @@ const console = @import("console.zig");
 const instance_context = @import("instance_context.zig");
 const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
+const log = @import("log.zig");
 const messages = @import("messages.zig");
+const paths = @import("paths.zig");
 const run_options = @import("run_options.zig");
+const Runtime = @import("runtime.zig").Runtime;
 const shortcut_sync = @import("shortcut_sync.zig");
 const version = @import("version.zig");
 
@@ -68,9 +71,26 @@ fn printOptionError(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(2);
 }
 
-pub fn main() void {
-    const args = std.process.argsAlloc(std.heap.page_allocator) catch std.process.exit(2);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+/// worker index · 역할이 정해진 **직후** 로그 경로를 심는다 ([#451](https://github.com/ensky0/tildaz/issues/451)).
+///
+/// 예전에는 첫 기록에서 lazy 로 준비했는데, Zig 0.16 은 경로 계산이 `Io` 와 환경변수를
+/// 받아야 해서 (`paths.logPath`) 기록 호출부 297 자리가 그것을 들고 다녀야 했다. 대신
+/// 진입점이 한 번 넘긴다 — 경로는 프로세스 수명 동안 하나뿐이다.
+///
+/// arena 는 프로세스 수명이라 (`std.process.Init.arena`) 경로를 따로 해제하지 않는다.
+fn initLogging(rt: Runtime, arena: std.mem.Allocator) void {
+    const path = paths.logPath(rt, arena) catch return;
+    log.init(arena, path);
+}
+
+/// Zig 0.16 은 `main` 의 첫 인자로 `std.process.Init` 을 넘긴다 (릴리즈 노트 *"Juicy
+/// Main"*). 그 안에 런타임이 준비한 `io` · argv · `arena` · `gpa` · 환경변수가 있고,
+/// `std.process.argsAlloc` 은 없어졌다.
+pub fn main(init: std.process.Init) void {
+    const rt: Runtime = .fromInit(init);
+    const arena = init.arena.allocator();
+    // arena 는 process lifetime 이라 (`Init.arena` 주석) 예전 `argsFree` 가 하던 일이 없다.
+    const args = init.minimal.args.toSlice(arena) catch std.process.exit(2);
     var worker_index: ?u32 = null;
     var autostart_launch = false;
     var toggle_index: ?u32 = null;
@@ -154,15 +174,16 @@ pub fn main() void {
     if (toggle_index) |index| {
         if (builtin.os.tag == .linux) {
             instance_context.setWorkerIndex(index);
+            initLogging(rt, arena);
             const si = @import("host/linux/single_instance.zig");
             // 결과를 tildaz_N.log 에도 남긴다 — `tildaz --toggle N` 은 별 process 라
             // stderr 가 compositor 저널로 가 진단이 어렵다 (#230). 매 hotkey 마다
             // 기존 인스턴스에 닿았는지(sent) / 없는지(NoRunningInstance) 기록.
-            si.sendToggle(index) catch |err| {
-                @import("log.zig").appendLine("toggle-ipc", "--toggle send failed: {s} (no running instance / socket problem)", .{@errorName(err)});
+            si.sendToggle(rt, index) catch |err| {
+                log.appendLine("toggle-ipc", "--toggle send failed: {s} (no running instance / socket problem)", .{@errorName(err)});
                 std.process.exit(1);
             };
-            @import("log.zig").appendLine("toggle-ipc", "--toggle sent to running instance", .{});
+            log.appendLine("toggle-ipc", "--toggle sent to running instance", .{});
             std.process.exit(0);
         } else {
             // #383 — `std.debug.print` 는 Windows GUI subsystem 에서 아무 데도 나가지
@@ -187,37 +208,35 @@ pub fn main() void {
     if (run_opts.isStressRun()) {
         instance_context.setRole(.stress);
         instance_context.setWorkerIndex(worker_index orelse 0);
-        host.run(run_opts) catch |err| host.showFatalRunError(err);
+        initLogging(rt, arena);
+        host.run(rt, run_opts) catch |err| host.showFatalRunError(err);
         return;
     }
 
     if (worker_index) |index| {
         instance_context.setWorkerIndex(index);
-        var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-        defer _ = gpa.deinit();
-        var worker_lock = (instances.acquireWorkerLock(gpa.allocator(), index) catch |err| {
+        initLogging(rt, arena);
+        var worker_lock = (instances.acquireWorkerLock(rt, init.gpa, index) catch |err| {
             host.showFatalRunError(err);
             return;
         }) orelse return;
-        defer worker_lock.deinit();
-        host.run(run_opts) catch |err| host.showFatalRunError(err);
+        defer worker_lock.deinit(rt);
+        host.run(rt, run_opts) catch |err| host.showFatalRunError(err);
         return;
     }
 
-    runLauncher(autostart_launch) catch |err| host.showFatalRunError(err);
+    initLogging(rt, arena);
+    runLauncher(rt, init.gpa, autostart_launch) catch |err| host.showFatalRunError(err);
 }
 
-fn runLauncher(autostart_launch: bool) !void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool) !void {
 
     // #301 — Windows plain-launch burst는 blocking launcher_lock보다 먼저 대표
     // 하나를 선출한다. 대표가 동기 새-instance 처리를 끝낼 때까지 gate를 보유.
     // autostart는 prompt 요청이 아니므로 기존 launcher_lock 직렬화만 사용한다.
     var request_gate: ?instance_request.RequestGate = null;
     if (!autostart_launch) {
-        request_gate = try instance_request.tryAcquireGate();
+        request_gate = try instance_request.tryAcquireGate(rt);
         if (request_gate == null) return;
     }
     defer if (request_gate) |*gate| gate.deinit();
@@ -228,15 +247,15 @@ fn runLauncher(autostart_launch: bool) !void {
         // config discovery와 spawn/dialog 결정을 직렬화한다. spawn한 모든 worker가
         // index lock을 소유할 때까지 기다린 뒤 launcher lock을 풀어, 다음 launcher가
         // 중간 상태를 관찰하지 못하게 한다.
-        var launcher_lock = try instances.acquireLauncherLock(allocator);
-        defer launcher_lock.deinit();
+        var launcher_lock = try instances.acquireLauncherLock(rt, allocator);
+        defer launcher_lock.deinit(rt);
 
-        var indices = try instances.listConfigIndices(allocator);
+        var indices = try instances.listConfigIndices(rt, allocator);
         defer allocator.free(indices);
         if (indices.len == 0 or indices[0] != 0) {
-            const shell = try instances.defaultShell(allocator);
+            const shell = try instances.defaultShell(rt, allocator);
             defer allocator.free(shell);
-            try instances.createDefaultConfig(allocator, 0, shell, config.Defaults.hotkey);
+            try instances.createDefaultConfig(rt, allocator, 0, shell, config.Defaults.hotkey);
             const expanded = try allocator.alloc(u32, indices.len + 1);
             expanded[0] = 0;
             @memcpy(expanded[1..], indices);
@@ -246,20 +265,20 @@ fn runLauncher(autostart_launch: bool) !void {
 
         var any_auto_start = false;
         for (indices) |index| {
-            if (try instances.configAutoStart(allocator, index)) any_auto_start = true;
+            if (try instances.configAutoStart(rt, allocator, index)) any_auto_start = true;
         }
         if (!autostart_launch) {
-            if (any_auto_start) try autostart.enable(allocator) else autostart.disable(allocator);
+            if (any_auto_start) try autostart.enable(rt, allocator) else autostart.disable(rt, allocator);
         }
 
-        try shortcut_sync.sync(allocator, indices);
+        try shortcut_sync.sync(rt, allocator, indices);
 
         var spawned = false;
         for (indices) |index| {
-            if (autostart_launch and !try instances.configAutoStart(allocator, index)) continue;
-            if (!try instances.isRunning(allocator, index)) {
-                try instances.spawnWorker(allocator, index);
-                try instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s);
+            if (autostart_launch and !try instances.configAutoStart(rt, allocator, index)) continue;
+            if (!try instances.isRunning(rt, allocator, index)) {
+                try instances.spawnWorker(rt, allocator, index);
+                try instances.waitUntilRunning(rt, allocator, index, 10 * std.time.ns_per_s);
                 spawned = true;
             }
         }
@@ -268,12 +287,12 @@ fn runLauncher(autostart_launch: bool) !void {
         // config index별 TildaZ worker가 모두 실행 중일 때만 worker 0에 새 instance
         // 요청을 보낸다. 하나라도 빠졌다면 위 loop가 누락 worker를 전부 시작했다.
         if (comptime builtin.os.tag == .windows) break :launcher true;
-        try requestNewInstance(allocator);
+        try requestNewInstance(rt, allocator);
         break :launcher false;
     };
 
     if (send_after_unlock) {
-        try requestNewInstance(allocator);
+        try requestNewInstance(rt, allocator);
         // WndProc가 반환한 바로 이 지점이 burst 병합의 끝 경계. 이후 시작된
         // launcher는 즉시 다음 요청의 gate를 얻을 수 있게 성공 path에서 해제한다.
         if (request_gate) |*gate| gate.deinit();
@@ -281,9 +300,9 @@ fn runLauncher(autostart_launch: bool) !void {
     }
 }
 
-fn requestNewInstance(allocator: std.mem.Allocator) !void {
+fn requestNewInstance(rt: Runtime, allocator: std.mem.Allocator) !void {
     // #304 — lock+PID는 process 생존만 뜻한다. 실제 endpoint와 UI event loop가
     // 준비됐다는 같은 PID의 ready 상태를 확인한 뒤 한 번만 전송한다.
-    try instances.waitUntilEndpointReady(allocator, 0, 10 * std.time.ns_per_s);
-    try instance_request.send();
+    try instances.waitUntilEndpointReady(rt, allocator, 0, 10 * std.time.ns_per_s);
+    try instance_request.send(rt);
 }
