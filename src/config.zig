@@ -939,7 +939,7 @@ pub const Config = struct {
         // (파일 없음 · 못 읽음) 이 구멍으로 남는데, 그 경로가 쓰는 `Defaults.hotkey` 는
         // config_0 의 기본값과 **같은 키**라 오히려 겹치기 쉽다 (`tildaz --instance 9` 처럼
         // config 없는 index 로 직접 띄우는 경우).
-        fatalIfHotkeyTakenByLowerIndex(allocator, loaded.hotkey, path);
+        fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path);
         return loaded;
     }
 
@@ -950,12 +950,12 @@ pub const Config = struct {
     /// 세 platform 이 여기서 함께 덮인다. 전에는 Windows 만 `RegisterHotKey` 실패로 뒤늦게
     /// 걸렸고 (원인이 자기 다른 인스턴스인지 알 수 없는 안내였다), macOS 는 `CGEventTap` 이
     /// 배타 등록이 아니라 **두 인스턴스가 같은 키에 함께 반응**했다.
-    fn fatalIfHotkeyTakenByLowerIndex(allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) void {
+    fn fatalIfHotkeyTakenByLowerIndex(rt: Runtime, allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) void {
         // 측정 인스턴스는 전역 핫키를 등록하지 않는다 (#382). worker index 가 없으면
         // (단위 테스트 등) 비교할 자기 자신이 없다.
         if (instance_context.isStress()) return;
         const self_index = instance_context.workerIndex() orelse return;
-        const owner = instances.lowerIndexHotkeyConflict(allocator, self_index, hotkey) orelse return;
+        const owner = instances.lowerIndexHotkeyConflict(rt, allocator, self_index, hotkey) orelse return;
 
         // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
         var key_buf: [64]u8 = undefined;

@@ -40,13 +40,13 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
     // launcher의 config 열거/spawn 결정과 새 config 생성 transaction이 서로
     // 중간 상태를 관찰하지 않도록 같은 process lock으로 직렬화한다.
     var launcher_lock = instances.acquireLauncherLock(allocator) catch |err| {
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     defer launcher_lock.deinit();
 
     const indices = instances.listConfigIndices(allocator) catch |err| {
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     defer allocator.free(indices);
@@ -56,7 +56,7 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
     var validation_context = ValidationContext{ .allocator = allocator };
     const input_owned = blk: {
         var capture = hotkey_capture.begin(indices) catch |err| {
-            showCreateError(err);
+            showCreateError(rt, err);
             return;
         };
         defer capture.deinit();
@@ -73,44 +73,44 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
 
     const index = instances.nextConfigIndex(indices) catch |err| {
         allocator.free(input_owned);
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     const shell = instances.defaultShell(allocator) catch |err| {
         allocator.free(input_owned);
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     defer allocator.free(shell);
     instances.createDefaultConfig(allocator, index, shell, input) catch |err| {
         allocator.free(input_owned);
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     allocator.free(input_owned);
     var updated_indices = allocator.alloc(u32, indices.len + 1) catch |err| {
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     defer allocator.free(updated_indices);
     @memcpy(updated_indices[0..indices.len], indices);
     updated_indices[indices.len] = index;
     shortcut_sync.sync(allocator, updated_indices) catch |err| {
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     autostart.enable(allocator) catch |err| log.appendLine("autostart", "enable after instance create failed: {s}", .{@errorName(err)});
     instances.spawnWorker(allocator, index) catch |err| {
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
     instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s) catch |err| {
-        showCreateError(err);
+        showCreateError(rt, err);
         return;
     };
 }
 
-fn showCreateError(err: anyerror) void {
+fn showCreateError(rt: Runtime, err: anyerror) void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, messages.new_instance_create_failed_format, .{@errorName(err)}) catch messages.new_instance_create_failed_fallback_msg;
     dialog.showError(rt, messages.new_instance_title, msg);

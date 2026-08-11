@@ -752,7 +752,7 @@ pub const DWriteFontContext = struct {
         // 7. Create number substitution (for MapCharacters callback)
         const locale = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
         var number_sub: ?*dw.IUnknown = null;
-        _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, 0, &number_sub);
+        _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, .FALSE, &number_sub);
         self.number_sub = number_sub;
 
         // 8. Create text analyzer (for grapheme cluster shaping — #134).

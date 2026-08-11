@@ -883,11 +883,11 @@ pub const Window = struct {
         if (fg_hwnd != null and fg_hwnd != hwnd) {
             const fg_thread = GetWindowThreadProcessId(fg_hwnd, null);
             if (fg_thread != 0 and fg_thread != our_thread) {
-                _ = AttachThreadInput(our_thread, fg_thread, 1);
+                _ = AttachThreadInput(our_thread, fg_thread, .TRUE);
                 _ = BringWindowToTop(hwnd);
                 _ = SetForegroundWindow(hwnd);
                 _ = SetFocus(hwnd);
-                _ = AttachThreadInput(our_thread, fg_thread, 0);
+                _ = AttachThreadInput(our_thread, fg_thread, .FALSE);
                 return;
             }
         }
@@ -1387,7 +1387,7 @@ pub const Window = struct {
                 // 음수 = 상대 시간 (100ns 단위). one-shot 으로 매번 재장전한다 — 주기
                 // 인자 (`lPeriod`) 는 ms 정수라 16.67 ms 를 표현할 수 없다.
                 const due: i64 = -@as(i64, @intCast((deadline - elapsed) / 100));
-                if (!SetWaitableTimer(timer, &due, 0, null, null, 0).toBool()) break;
+                if (!SetWaitableTimer(timer, &due, 0, null, null, .FALSE).toBool()) break;
                 if (WaitForSingleObject(timer, WAIT_INFINITE) != WAIT_OBJECT_0) break;
             } else {
                 // 이 스레드 자신이 밀렸다 (스케줄링). 밀린 만큼을 몰아 내지 않고 지금을
