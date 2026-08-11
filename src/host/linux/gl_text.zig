@@ -116,8 +116,8 @@ pub const Batch = struct {
     gray_program: Program,
     color_program: Program,
     buffer: u32,
-    gray: std.ArrayList(Vertex) = .{},
-    color: std.ArrayList(Vertex) = .{},
+    gray: std.ArrayList(Vertex) = .empty,
+    color: std.ArrayList(Vertex) = .empty,
 
     pub fn create(api: *const egl.Api) ?Batch {
         const vs = compile(api, egl.GL_VERTEX_SHADER, vertex_src) orelse return null;

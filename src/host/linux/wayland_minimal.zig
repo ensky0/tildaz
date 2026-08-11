@@ -603,7 +603,7 @@ pub const DialogOverlay = struct {
     /// 받음 보장. 같은 output 가정상 main 의 preferred_scale 값과 동일.
     fractional_scale_id: u32 = 0,
     active_buffer: ?SurfaceBuffer = null,
-    retired_buffers: std.ArrayList(SurfaceBuffer) = .{},
+    retired_buffers: std.ArrayList(SurfaceBuffer) = .empty,
     /// configure event 가 알려준 buffer 크기 (physical px).
     buffer_w: i32 = 0,
     buffer_h: i32 = 0,
@@ -849,7 +849,7 @@ const Client = struct {
     caps: Capabilities = .{},
     input: [8192]u8 = undefined,
     input_len: usize = 0,
-    received_fds: std.ArrayList(posix.fd_t) = .{},
+    received_fds: std.ArrayList(posix.fd_t) = .empty,
     wait_callback_id: u32 = 0,
     wait_callback_done: bool = false,
     configured: bool = false,
@@ -876,7 +876,7 @@ const Client = struct {
     frame_callback_id: u32 = 0,
     awaiting_frame: bool = false,
     active_buffer: ?SurfaceBuffer = null,
-    retired_buffers: std.ArrayList(SurfaceBuffer) = .{},
+    retired_buffers: std.ArrayList(SurfaceBuffer) = .empty,
     compositor_id: u32 = 0,
     shm_id: u32 = 0,
     // #277 — `zwp_linux_dmabuf_v1`. 0 이면 compositor 가 노출하지 않은 것.
@@ -1110,7 +1110,7 @@ const Client = struct {
     // 호출. 동기 roundtrip 으로 wait.
     pending_activation_token_id: u32 = 0,
     pending_activation_token_done: bool = false,
-    pending_activation_token: std.ArrayList(u8) = .{},
+    pending_activation_token: std.ArrayList(u8) = .empty,
     // #193 — `set_shape(serial, shape)` 의 serial 은 *pointer enter event*
     // serial 이어야 함 (spec). `last_serial` 은 keyboard / button / pointer
     // 모든 종류의 최신 serial 이라 typing / click 직후엔 pointer-enter 가
@@ -1191,9 +1191,9 @@ const Client = struct {
     // L10-β. text-input-v3 는 enter/leave/preedit/commit/delete 가 batch 로
     // 오고 `done(serial)` 에서 한 번에 적용해야 한다 (spec). batch 안 누적용
     // pending buffer 두 개 + `done` 직후 renderer 가 가리킬 preedit storage.
-    pending_preedit: std.ArrayList(u8) = .{},
-    pending_commit: std.ArrayList(u8) = .{},
-    preedit_text: std.ArrayList(u8) = .{},
+    pending_preedit: std.ArrayList(u8) = .empty,
+    pending_commit: std.ArrayList(u8) = .empty,
+    preedit_text: std.ArrayList(u8) = .empty,
     // L10-γ — 마지막으로 server 에 알린 cursor rect (pixel, surface-relative).
     // paint 끝마다 비교해 변경 시만 set_cursor_rectangle + commit 보내 spam 회피.
     last_cursor_rect_x: i32 = -1,
@@ -1236,7 +1236,7 @@ const Client = struct {
     /// 면 다른 탭의 read thread join 시 deadlock 가능 + multi-tab 시 잘못된
     /// 종료 (모든 탭 cascade). macOS host (`g_pending_close_buf`) 와 동등
     /// 패턴 — read thread 는 buf 에 ptr append, main loop 가 drain.
-    pending_close_buf: std.ArrayList(usize) = .{},
+    pending_close_buf: std.ArrayList(usize) = .empty,
     pending_close_mutex: std.Thread.Mutex = .{},
     /// L12-γ — tab bar 의 가로 scroll 위치 (pixel, tab area 좌측 기준). 탭
     /// 폭 합이 viewport 폭 넘을 때만 의미. user override = false 면 매 paint
@@ -6153,7 +6153,7 @@ const Client = struct {
         // 없음 — 송신측이 close 하면 우리 read 0 반환.
         defer posix.close(read_fd);
         var buf: [4096]u8 = undefined;
-        var accumulated: std.ArrayList(u8) = .{};
+        var accumulated: std.ArrayList(u8) = .empty;
         defer accumulated.deinit(self.allocator);
         while (true) {
             const n = posix.read(read_fd, &buf) catch break;

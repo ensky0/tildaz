@@ -656,7 +656,7 @@ pub const SessionCore = struct {
     extra_env: ?[]const terminal.ExtraEnv,
     tab_exit_fn: TabExitNotify,
     tab_exit_userdata: ?*anyopaque,
-    tabs: std.ArrayList(*Tab) = .{},
+    tabs: std.ArrayList(*Tab) = .empty,
     active_tab: usize = 0,
     /// 비활성 탭 drain의 다음 시작 위치. 탭 close/reorder 뒤에는 drain 시점에
     /// 현재 길이로 정규화하므로 별도 인덱스 보정이 필요 없다.
