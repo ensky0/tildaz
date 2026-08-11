@@ -1,5 +1,6 @@
 const std = @import("std");
 const run_options = @import("../run_options.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 const App = @import("../app_controller.zig").App;
 const SessionCore = @import("../session_core.zig").SessionCore;
 const RendererBackend = @import("../renderer.zig").RendererBackend;
@@ -43,22 +44,22 @@ pub fn showFatalRunError(err: anyerror) void {
     dialog.showError(messages.error_title, text);
 }
 
-pub fn run(opts: run_options.RunOptions) !void {
+pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     // %APPDATA%\tildaz\tildaz_N.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
-    log.logStart(version.string);
+    log.logStart(rt.io, version.string);
     defer log.logStop(version.string);
     // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
     // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
     // worker 는 no-op (게이트는 `instance_context.isStress`).
-    defer perf.dumpOnExit();
+    defer perf.dumpOnExit(rt);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

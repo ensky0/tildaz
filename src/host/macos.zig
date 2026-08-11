@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const run_options = @import("../run_options.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 const version = @import("../version.zig");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
@@ -215,7 +216,7 @@ fn atExitLogStop() callconv(.c) void {
     // `run()` 의 `defer` 로 같은 일을 하지만, 여기는 Cmd+Q 가 `exit()` 직행이라
     // defer 가 안 불려서 이 핸들러 안에 둔다 — 이 함수가 존재하는 이유와 같다.
     // 로그 파일이 닫히기 전이어야 하므로 `logStop` 앞이다. worker 는 no-op.
-    perf.dumpOnExit();
+    perf.dumpOnExit(rt);
     log.logStop(version.string);
 }
 
@@ -381,7 +382,7 @@ var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: config.Config = .{};
-var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+var g_gpa: std.heap.DebugAllocator(.{}) = .init;
 /// 멀티탭 컬렉션 (#111 M11.1). 현재 단계는 데이터 모델만 도입 — 실제로는
 /// 단일 탭만 생성. PTY / Terminal / Stream / 마우스 selection 은 모두 활성
 /// 탭의 필드. host 코드는 `g_session.activeTab().?.{pty,terminal,...}` 로 access.
@@ -911,7 +912,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             .next_tab => tab_actions.nextTab(&g_host), // Shift+Cmd+]
             .reset_terminal => tab_actions.resetActive(&g_host), // Shift+Cmd+R (#162)
             .fullscreen => toggleFullscreenMode(if (shift) .workarea else .monitor), // Cmd/Shift+Cmd+Enter (#162)
-            .dump_perf => perf.dumpAndReset("snapshot"), // Shift+Cmd+F12 (#160)
+            .dump_perf => perf.dumpAndReset(rt, "snapshot"), // Shift+Cmd+F12 (#160)
             else => {}, // macOS keyDown 이 안 내는 나머지(show_about/config/log/quit=mainMenu)
         }
         return;
@@ -2788,14 +2789,14 @@ fn resolveShell(allocator: std.mem.Allocator) []const u8 {
     return allocator.dupe(u8, config.Defaults.shell) catch config.Defaults.shell;
 }
 
-pub fn run(opts: run_options.RunOptions) !void {
+pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     g_run_opts = opts;
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
     // `~/Library/Logs/tildaz_N.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
-    log.logStart(version.string);
+    log.logStart(rt.io, version.string);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 

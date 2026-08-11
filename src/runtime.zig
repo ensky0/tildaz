@@ -53,9 +53,15 @@ pub const Runtime = struct {
     }
 
     /// `std.process.hasEnvVarConstant` 자리. `Environ.contains` 가 allocator 를 받는 것은
-    /// Windows 가 WTF-16 변환을 해야 해서다 — 호출부는 bool 만 원하므로 감싼다.
-    pub fn envHas(rt: Runtime, allocator: std.mem.Allocator, key: []const u8) bool {
-        return rt.environ.contains(allocator, key) catch false;
+    /// Windows 가 key 를 WTF-16 으로 바꿔야 해서인데, 호출부는 bool 하나만 원한다.
+    ///
+    /// 그래서 **스택 버퍼**로 받는다 — 힙도 전역 allocator 도 끌어들이지 않는다. 환경변수
+    /// 이름은 우리 코드에 리터럴로 박혀 있고 (가장 긴 것이 `TILDAZ_VERBOSE`) 512 바이트는
+    /// 그 변환에 넉넉하다. 넘치면 `false` 인데, "그 변수는 없다" 와 같은 결론이라 안전하다.
+    pub fn envHas(rt: Runtime, key: []const u8) bool {
+        var buf: [512]u8 = undefined;
+        var fba: std.heap.FixedBufferAllocator = .init(&buf);
+        return rt.environ.contains(fba.allocator(), key) catch false;
     }
 
     /// `std.time.milliTimestamp` 자리. `.real` 이 Unix epoch wall clock 이다
