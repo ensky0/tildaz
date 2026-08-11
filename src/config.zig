@@ -987,7 +987,7 @@ pub const Config = struct {
                 messages.config_parse_failed_format,
                 .{ config_path, @errorName(err) },
             ) catch messages.config_parse_failed_fallback_msg;
-            dialog.showFatal(messages.config_error_title, msg);
+            dialog.showFatal(rt, messages.config_error_title, msg);
         };
         defer parsed.deinit();
 
@@ -1259,7 +1259,7 @@ fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, co
 fn showConfigFatalMsg(config_path: []const u8, message: []const u8) noreturn {
     const full_message = configErrorMessageAlloc(std.heap.page_allocator, message, config_path) catch
         messages.config_error_with_path_fallback_msg;
-    dialog.showFatal(messages.config_error_title, full_message);
+    dialog.showFatal(rt, messages.config_error_title, full_message);
 }
 
 fn showConfigFatal(config_path: []const u8, comptime fmt: []const u8, args: anytype) noreturn {

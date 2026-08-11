@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const config = @import("config.zig");
 const dialog = @import("dialog.zig");
 const instances = @import("instances.zig");
@@ -28,7 +29,7 @@ fn validateHotkey(ctx_ptr: *anyopaque, text: []const u8) dialog.HotkeyValidation
 /// 중첩 prompt/hang을 막는다. handle은 main/UI thread 단일 실행이라 plain bool로 충분.
 var handling: bool = false;
 
-pub fn handle(allocator: std.mem.Allocator) void {
+pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
     if (handling) {
         log.appendLine("new-instance", "dropped re-entrant request (prompt in progress) — #301", .{});
         return;
@@ -59,7 +60,7 @@ pub fn handle(allocator: std.mem.Allocator) void {
             return;
         };
         defer capture.deinit();
-        break :blk dialog.promptHotkey(allocator, messages.new_instance_title, input_prompt, .{
+        break :blk dialog.promptHotkey(rt, allocator, messages.new_instance_title, input_prompt, .{
             .ctx = &validation_context,
             .validate_fn = validateHotkey,
         }) orelse return;
@@ -112,5 +113,5 @@ pub fn handle(allocator: std.mem.Allocator) void {
 fn showCreateError(err: anyerror) void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, messages.new_instance_create_failed_format, .{@errorName(err)}) catch messages.new_instance_create_failed_fallback_msg;
-    dialog.showError(messages.new_instance_title, msg);
+    dialog.showError(rt, messages.new_instance_title, msg);
 }
