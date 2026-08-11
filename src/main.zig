@@ -51,23 +51,23 @@ pub fn panic(msg: []const u8, st: ?*std.builtin.StackTrace, ret_addr: ?usize) no
 
 /// #383 — 인자 오류는 셋 다 stderr + `exit(2)` 이고, 다음 행동 (`--help`) 을 같이
 /// 안내한다. 종료 코드 2 는 기존 동작 그대로다 (bash 의 "잘못된 사용법" 관례).
-fn exitUnknownOption(arg: []const u8) noreturn {
-    printOptionError(messages.unknown_option_format, .{arg});
+fn exitUnknownOption(io: std.Io, arg: []const u8) noreturn {
+    printOptionError(io, messages.unknown_option_format, .{arg});
 }
 
-fn exitOptionNeedsValue(option: []const u8) noreturn {
-    printOptionError(messages.option_needs_value_format, .{option});
+fn exitOptionNeedsValue(io: std.Io, option: []const u8) noreturn {
+    printOptionError(io, messages.option_needs_value_format, .{option});
 }
 
-fn exitInvalidValue(option: []const u8, value: []const u8) noreturn {
-    printOptionError(messages.option_invalid_value_format, .{ value, option });
+fn exitInvalidValue(io: std.Io, option: []const u8, value: []const u8) noreturn {
+    printOptionError(io, messages.option_invalid_value_format, .{ value, option });
 }
 
-fn printOptionError(comptime fmt: []const u8, args: anytype) noreturn {
+fn printOptionError(io: std.Io, comptime fmt: []const u8, args: anytype) noreturn {
     // 인자는 사용자가 준 문자열이라 길이 상한이 없다. 버퍼를 넘기면 (예: 아주 긴 경로를
     // 옵션 자리에 넣은 경우) 값을 뺀 일반 안내로 떨어뜨린다 — 안내가 사라지는 것보다 낫다.
     var buf: [1024]u8 = undefined;
-    console.errLine(std.fmt.bufPrint(&buf, fmt, args) catch messages.option_error_fallback_msg);
+    console.errLine(io, std.fmt.bufPrint(&buf, fmt, args) catch messages.option_error_fallback_msg);
     std.process.exit(2);
 }
 
@@ -112,7 +112,7 @@ pub fn main(init: std.process.Init) void {
         if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) show_version = true;
     }
     if (show_help) {
-        console.outLine(messages.help_text);
+        console.outLine(rt.io, messages.help_text);
         std.process.exit(0);
     }
     if (show_version) {
@@ -121,7 +121,7 @@ pub fn main(init: std.process.Init) void {
         // `[boot]` 줄과 같은 값이라야 사용자가 어디서 읽어 오든 같은 것을 말한다.
         const line = std.fmt.bufPrint(&buf, messages.version_line_format, .{version.string}) catch
             version.string;
-        console.outLine(line);
+        console.outLine(rt.io, line);
         std.process.exit(0);
     }
 
@@ -129,21 +129,21 @@ pub fn main(init: std.process.Init) void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--instance")) {
-            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
+            if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
             i += 1;
-            worker_index = std.fmt.parseInt(u32, args[i], 10) catch exitInvalidValue(arg, args[i]);
+            worker_index = std.fmt.parseInt(u32, args[i], 10) catch exitInvalidValue(rt.io, arg, args[i]);
         } else if (std.mem.eql(u8, arg, "-e")) {
-            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
+            if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
             i += 1;
             run_opts.command = args[i];
         } else if (std.mem.eql(u8, arg, "-size")) {
-            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
+            if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
             i += 1;
-            run_opts.grid = run_options.parseGrid(args[i]) orelse exitInvalidValue(arg, args[i]);
+            run_opts.grid = run_options.parseGrid(args[i]) orelse exitInvalidValue(rt.io, arg, args[i]);
         } else if (std.mem.eql(u8, arg, "-scrollback")) {
-            if (i + 1 >= args.len) exitOptionNeedsValue(arg);
+            if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
             i += 1;
-            run_opts.scrollback = std.fmt.parseInt(usize, args[i], 10) catch exitInvalidValue(arg, args[i]);
+            run_opts.scrollback = std.fmt.parseInt(usize, args[i], 10) catch exitInvalidValue(rt.io, arg, args[i]);
         } else if (std.mem.eql(u8, arg, "--autostart")) {
             autostart_launch = true;
         } else if (std.mem.eql(u8, arg, "--toggle")) {
@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) void {
             // #383 이전에는 여기가 없어서 **모르는 인자가 조용히 무시**됐다. `tildaz
             // --versoin` 같은 오타가 아무 말 없이 평소처럼 창을 띄워서, 사용자가 뭘
             // 잘못 쳤는지 알 방법이 없었다.
-            exitUnknownOption(arg);
+            exitUnknownOption(rt.io, arg);
         }
     }
 
@@ -189,7 +189,7 @@ pub fn main(init: std.process.Init) void {
             // #383 — `std.debug.print` 는 Windows GUI subsystem 에서 아무 데도 나가지
             // 않는다. 다른 CLI 출력과 같은 경로 (`console.zig`) 로 보내 부모 콘솔에
             // 붙어서 찍는다.
-            console.errLine(messages.toggle_unsupported_msg);
+            console.errLine(rt.io, messages.toggle_unsupported_msg);
             std.process.exit(2);
         }
     }

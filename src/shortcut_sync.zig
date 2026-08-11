@@ -1,15 +1,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const Runtime = @import("runtime.zig").Runtime;
 
 const impl = switch (builtin.os.tag) {
     .linux => @import("shortcut_sync/linux.zig"),
     else => struct {
-        pub fn sync(_: std.mem.Allocator, _: []const u32) !void {}
+        pub fn sync(_: Runtime, _: std.mem.Allocator, _: []const u32) !void {}
     },
 };
 
-pub fn sync(allocator: std.mem.Allocator, indices: []const u32) !void {
-    try impl.sync(allocator, indices);
+pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
+    try impl.sync(rt, allocator, indices);
 }
 
 test "platform shortcut synchronization helpers" {

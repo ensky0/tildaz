@@ -8,7 +8,7 @@
 //! ## Windows 가 이 모듈이 존재하는 이유
 //!
 //! `tildaz.exe` 는 `subsystem = .Windows` 다 (`build.zig` 의 `exe.subsystem`) — 콘솔에
-//! 붙어 있지 않아서 `std.fs.File.stdout()` 이 PEB 의 빈 핸들을 돌려주고, 거기 쓴 글은
+//! 붙어 있지 않아서 `std.Io.File.stdout()` 이 PEB 의 빈 핸들을 돌려주고, 거기 쓴 글은
 //! **아무 데도 나타나지 않는다.** 그래서 Windows 만 (1) 상속받은 std handle 을 먼저 보고
 //! (2) 없으면 부모 콘솔에 붙어 `CONOUT$` 를 직접 연다.
 //!
@@ -24,48 +24,50 @@ const windows = std.os.windows;
 const Stream = enum { standard, diagnostic };
 
 /// stdout. `--version` · `--help` 처럼 **요청한 결과**를 낸다.
-pub fn out(text: []const u8) void {
-    write(.standard, text);
+pub fn out(io: std.Io, text: []const u8) void {
+    write(io, .standard, text);
 }
 
 /// stderr. 인자 오류처럼 **요청이 실패한 이유**를 낸다. 리다이렉트로 결과만 갈무리하는
 /// 스크립트가 오류에 오염되지 않게 stdout 과 나눈다.
-pub fn err(text: []const u8) void {
-    write(.diagnostic, text);
+pub fn err(io: std.Io, text: []const u8) void {
+    write(io, .diagnostic, text);
 }
 
 /// 줄바꿈까지 붙여 한 번에 쓴다. 두 번 나눠 쓰면 다른 프로세스의 출력이 사이에 끼어든다.
-pub fn outLine(text: []const u8) void {
-    writeLine(.standard, text);
+pub fn outLine(io: std.Io, text: []const u8) void {
+    writeLine(io, .standard, text);
 }
 
-pub fn errLine(text: []const u8) void {
-    writeLine(.diagnostic, text);
+pub fn errLine(io: std.Io, text: []const u8) void {
+    writeLine(io, .diagnostic, text);
 }
 
-fn writeLine(stream: Stream, text: []const u8) void {
+fn writeLine(io: std.Io, stream: Stream, text: []const u8) void {
     var buf: [2048]u8 = undefined;
     const joined = std.fmt.bufPrint(&buf, "{s}\n", .{text}) catch {
         // 버퍼를 넘기는 긴 텍스트는 두 번에 나눠 쓴다. 줄이 갈릴 수 있지만 내용을
         // 버리지는 않는다.
-        write(stream, text);
-        write(stream, "\n");
+        write(io, stream, text);
+        write(io, stream, "\n");
         return;
     };
-    write(stream, joined);
+    write(io, stream, joined);
 }
 
-fn write(stream: Stream, text: []const u8) void {
+fn write(io: std.Io, stream: Stream, text: []const u8) void {
     switch (builtin.os.tag) {
+        // Windows 는 아래 이유 (GUI subsystem) 로 콘솔 핸들을 직접 다뤄서 `io` 를 안 쓴다.
         .windows => writeWindows(stream, text),
         else => {
-            const file: std.fs.File = switch (stream) {
+            // #451 — `fs.File` ➡️ `Io.File` · `writeAll` ➡️ `writeStreamingAll` (io 인자).
+            const file: std.Io.File = switch (stream) {
                 .standard => .stdout(),
                 .diagnostic => .stderr(),
             };
             // 파이프가 닫혔거나 (`tildaz --version | head`) 콘솔이 없으면 쓸 곳이 없다.
             // 버전을 못 찍었다고 종료 코드를 바꾸지는 않는다.
-            file.writeAll(text) catch {};
+            file.writeStreamingAll(io, text) catch {};
         },
     }
 }
@@ -76,7 +78,36 @@ const STD_OUTPUT_HANDLE: windows.DWORD = 0xFFFF_FFF5; // (DWORD)-11
 const STD_ERROR_HANDLE: windows.DWORD = 0xFFFF_FFF4; // (DWORD)-12
 const ATTACH_PARENT_PROCESS: windows.DWORD = 0xFFFF_FFFF; // (DWORD)-1
 
+// #451 — Zig 0.16 의 `std.os.windows.kernel32` 에 남은 extern 은 `CreateProcessW`
+// 하나뿐이다 (릴리즈 노트 *Completed Migration to NtDll*). 콘솔 핸들은 NtDll 로 다룰
+// 대상이 아니라 kernel32 콘솔 API 그 자체이므로, 우리가 직접 선언한다 — `AttachConsole`
+// 을 이미 그렇게 쓰고 있었고 레포 전체가 같은 방식이다.
 extern "kernel32" fn AttachConsole(dwProcessId: windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
+extern "kernel32" fn WriteFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: windows.DWORD,
+    lpNumberOfBytesWritten: ?*windows.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const u16,
+    dwDesiredAccess: windows.DWORD,
+    dwShareMode: windows.DWORD,
+    lpSecurityAttributes: ?*anyopaque,
+    dwCreationDisposition: windows.DWORD,
+    dwFlagsAndAttributes: windows.DWORD,
+    hTemplateFile: ?windows.HANDLE,
+) callconv(.winapi) windows.HANDLE;
+
+// 0.16 은 `GENERIC_READ` 등을 타입 있는 `ACCESS_MASK` 로 바꿔 네임스페이스 안으로
+// 옮겼다. 우리가 선언한 `CreateFileW` 는 raw `DWORD` 를 받으므로 값도 여기 둔다.
+const GENERIC_READ: windows.DWORD = 0x8000_0000;
+const GENERIC_WRITE: windows.DWORD = 0x4000_0000;
+const FILE_SHARE_READ: windows.DWORD = 0x0000_0001;
+const FILE_SHARE_WRITE: windows.DWORD = 0x0000_0002;
+const OPEN_EXISTING: windows.DWORD = 3;
 
 fn writeWindows(stream: Stream, text: []const u8) void {
     const handle = windowsHandle(stream) orelse return;
@@ -89,7 +120,7 @@ fn writeWindows(stream: Stream, text: []const u8) void {
     while (remaining.len != 0) {
         var written: windows.DWORD = 0;
         const chunk: windows.DWORD = @intCast(@min(remaining.len, std.math.maxInt(u32)));
-        if (windows.kernel32.WriteFile(handle, remaining.ptr, chunk, &written, null) == 0) return;
+        if (WriteFile(handle, remaining.ptr, chunk, &written, null) == 0) return;
         if (written == 0) return; // 더 이상 진행되지 않는다 — 무한 루프 방지.
         remaining = remaining[written..];
     }
@@ -103,7 +134,7 @@ fn windowsHandle(stream: Stream) ?windows.HANDLE {
         .standard => STD_OUTPUT_HANDLE,
         .diagnostic => STD_ERROR_HANDLE,
     };
-    if (windows.kernel32.GetStdHandle(id)) |handle| {
+    if (GetStdHandle(id)) |handle| {
         if (handle != windows.INVALID_HANDLE_VALUE) return handle;
     }
 
@@ -114,12 +145,12 @@ fn windowsHandle(stream: Stream) ?windows.HANDLE {
 
     // ③ 콘솔의 활성 출력 버퍼. stdout · stderr 모두 같은 이름을 쓴다 (`CONERR$` 는
     //    없다) — 콘솔로 떨어지는 시점에서 둘의 구분은 의미를 잃는다.
-    const handle = windows.kernel32.CreateFileW(
+    const handle = CreateFileW(
         std.unicode.utf8ToUtf16LeStringLiteral("CONOUT$"),
-        windows.GENERIC_READ | windows.GENERIC_WRITE,
-        windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         null,
-        windows.OPEN_EXISTING,
+        OPEN_EXISTING,
         0,
         null,
     );

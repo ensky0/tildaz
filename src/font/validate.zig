@@ -41,11 +41,11 @@ fn showSchemaErrorFatal(line: []const u8) noreturn {
 }
 
 fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []const u8 {
-    var fbs = std.io.fixedBufferStream(msg_buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(msg_buf);
+    const w = &fbs;
     w.writeAll(line) catch {};
     w.print(messages.font_schema_error_path_format, .{cfg_path}) catch {};
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 /// `missing` 은 시스템에서 lookup 실패한 chain entry 이름. `chain` 은 사용자
@@ -88,8 +88,8 @@ pub fn notFoundMessageSub(msg_buf: []u8, missing: []const u8, chain: []const []c
 /// 경로 조회와 분리한 순수 formatter. dialog layout 같은 사용자 메시지 경계
 /// 테스트도 이 함수를 사용해 실제 producer와 다른 문구를 복제하지 않는다.
 pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8, substitute: ?[]const u8) []const u8 {
-    var fbs = std.io.fixedBufferStream(msg_buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(msg_buf);
+    const w = &fbs;
     w.print(messages.font_not_found_format, .{missing}) catch {};
     w.writeAll(messages.font_chain_header_msg) catch {};
     for (chain) |fam| {
@@ -105,7 +105,7 @@ pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const
         }
     }
     w.print(messages.font_chain_footer_format, .{cfg_path}) catch {};
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 test "font validation messages preserve runtime values and final newline" {

@@ -419,14 +419,14 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     );
 
     var theme_buf: [512]u8 = undefined;
-    var theme_stream = std.io.fixedBufferStream(&theme_buf);
-    const theme_writer = theme_stream.writer();
+    var theme_stream: std.Io.Writer = .fixed(&theme_buf);
+    const theme_writer = &theme_stream;
     try theme_writer.print(messages.config_unknown_theme_header_format, .{"Not A Theme"});
     for (themes.themes, 0..) |theme, i| {
         if (i > 0) try theme_writer.writeAll(", ");
         try theme_writer.writeAll(theme.name);
     }
-    const theme_msg = theme_stream.getWritten();
+    const theme_msg = theme_stream.buffered();
 
     var shell_buf: [1024]u8 = undefined;
     const shell_msg = try std.fmt.bufPrint(&shell_buf, messages.shell_executable_not_found_format, .{
