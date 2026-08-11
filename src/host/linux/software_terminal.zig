@@ -5,6 +5,7 @@
 //! Glyph 는 fontconfig + FreeType 으로 raster (ASCII 만 pre-cached, [font/linux/font.zig](../../font/linux/font.zig)).
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
@@ -763,7 +764,7 @@ pub const Renderer = struct {
 
         // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
         // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
-        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+        const blink_faint = ui_metrics.blinkFaintPhase(runtime.nowMs());
         self.saw_blink_cell = false;
 
         for (0..rows) |y| {

@@ -3,6 +3,7 @@
 //! 값을 사용해 세 플랫폼 시각적 일관성 유지.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const font_spec = @import("font/spec.zig");
 
 /// 터미널 영역 안쪽 padding. 글자가 윈도우 모서리에 딱 붙지 않게.
@@ -308,7 +309,7 @@ pub fn cellLineThicknessPx(ascent_px: f32) f32 {
 pub const BLINK_HALF_PERIOD_MS: i64 = 500;
 
 /// 지금이 blink 셀을 **흐리게 그릴** 위상인가. `now_ms` 는
-/// `std.time.milliTimestamp()` — 세 host 가 같은 시계를 넘겨 위상을 맞춘다
+/// `runtime.nowMs()` — 세 host 가 같은 시계를 넘겨 위상을 맞춘다
 /// (autoscroll tick 이 이미 쓰는 함수).
 ///
 /// 벽시계라 시스템 시간이 점프하면 위상이 한 번 튈 수 있다. 깜빡임 한 번이

@@ -6,6 +6,7 @@
 //! shared-memory color buffer.
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const linux = std.os.linux;
 const posix = std.posix;
 const session_core = @import("../../session_core.zig");
@@ -1237,7 +1238,7 @@ const Client = struct {
     /// 종료 (모든 탭 cascade). macOS host (`g_pending_close_buf`) 와 동등
     /// 패턴 — read thread 는 buf 에 ptr append, main loop 가 drain.
     pending_close_buf: std.ArrayList(usize) = .{},
-    pending_close_mutex: std.Thread.Mutex = .{},
+    pending_close_mutex: std.Io.Mutex = .{},
     /// L12-γ — tab bar 의 가로 scroll 위치 (pixel, tab area 좌측 기준). 탭
     /// 폭 합이 viewport 폭 넘을 때만 의미. user override = false 면 매 paint
     /// 시 `ensureActiveVisible` 로 자동 보정 (활성 탭이 viewport 안 들어옴).
@@ -1678,7 +1679,7 @@ const Client = struct {
             // blink 셀이 실제로 보였을 때만 요청한다. 둘을 함께 봐야 blink 이 없는
             // 화면에서 공짜로 초당 2프레임을 낭비하지 않는다. dialog inner pump 는
             // 터미널이 가려진 상태라 넣지 않는다 — 닫히면 이 루프가 다시 잡는다.
-            const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+            const blink_phase_now = ui_metrics.blinkFaintPhase(runtime.nowMs());
             if (blink_phase_now != self.last_blink_phase and self.renderer.saw_blink_cell) {
                 self.requestRedraw();
             }
@@ -5294,7 +5295,7 @@ const Client = struct {
         // swap 했을 때만 cancel).
         if (state == wl_keyboard_key_state_pressed) {
             self.key_repeat_keycode = key;
-            self.key_repeat_next_ms = std.time.milliTimestamp() + @as(i64, self.key_repeat_delay_ms);
+            self.key_repeat_next_ms = runtime.nowMs() + @as(i64, self.key_repeat_delay_ms);
         } else if (state == 0 and self.key_repeat_keycode == key) {
             // released — same key disarm.
             self.key_repeat_keycode = 0;
@@ -5309,7 +5310,7 @@ const Client = struct {
     fn maybeRepeatKey(self: *Client) !void {
         if (self.key_repeat_keycode == 0) return;
         if (self.key_repeat_rate_hz <= 0) return;
-        const now = std.time.milliTimestamp();
+        const now = runtime.nowMs();
         if (now < self.key_repeat_next_ms) return;
         try self.processKeyEvent(self.last_serial, self.key_repeat_keycode);
         self.key_repeat_next_ms = now + @divTrunc(1000, @as(i64, self.key_repeat_rate_hz));
@@ -6318,7 +6319,7 @@ const Client = struct {
             self.sel_autoscroll_dir = 0;
             return;
         }
-        const now = std.time.milliTimestamp();
+        const now = runtime.nowMs();
         if (now < self.sel_autoscroll_next_ms) return;
         // scrollViewport: delta<0 = older(위로), >0 = newer(아래로).
         const delta: isize = if (self.sel_autoscroll_dir < 0) -sel_autoscroll_step else sel_autoscroll_step;
@@ -8311,9 +8312,10 @@ fn waylandSocketPath(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "WAYLAND_DISPLAY")) |display| {
         if (display.len > 0 and display[0] == '/') return display;
         errdefer allocator.free(display);
-        const runtime = try std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR");
-        defer allocator.free(runtime);
-        const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ runtime, display });
+        // 변수 이름을 `runtime` 으로 두면 이 파일의 `runtime.zig` import 를 가린다 (#451).
+        const runtime_dir = try runtime.envAlloc(allocator, "XDG_RUNTIME_DIR");
+        defer allocator.free(runtime_dir);
+        const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ runtime_dir, display });
         allocator.free(display);
         return path;
     } else |_| {

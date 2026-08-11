@@ -155,7 +155,7 @@ pub fn dumpAndReset(label: []const u8) void {
             "onrender calls={d} ms={d:.3} skip={d}\n",
         .{
             label,
-            std.time.milliTimestamp(),
+            runtime.nowMs(),
             rl[0],
             rl[2],
             @as(f64, @floatFromInt(rl[1])) / 1_000_000.0,
@@ -218,7 +218,7 @@ pub fn dumpOnExit() void {
 
 test "working-time duration rejects reversed samples" {
     const start = now() orelse return error.SkipZigTest;
-    std.Thread.sleep(5 * std.time.ns_per_ms);
+    runtime.sleepNs(5 * std.time.ns_per_ms);
     const end = now() orelse return error.SkipZigTest;
 
     try std.testing.expectEqual(@as(?u64, 0), elapsedNs(start, start));

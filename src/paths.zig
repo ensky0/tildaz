@@ -221,7 +221,7 @@ fn currentPid() u32 {
 /// / plist / 셸 확장 / cosmic 단축키 파일의 표준. autostart·instance_identity·
 /// shell_extension·cosmic sync 의 5벌 복제를 대체.
 pub fn writeFileIfChanged(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !bool {
-    if (std.fs.openFileAbsolute(path, .{})) |existing| {
+    if (std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{})) |existing| {
         defer existing.close();
         if (existing.readToEndAlloc(allocator, 4 * 1024 * 1024)) |old| {
             defer allocator.free(old);
@@ -231,9 +231,9 @@ pub fn writeFileIfChanged(allocator: std.mem.Allocator, path: []const u8, conten
 
     const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-{d}.tmp", .{ path, currentPid() });
     defer allocator.free(temp_path);
-    errdefer std.fs.deleteFileAbsolute(temp_path) catch {};
+    errdefer std.Io.Dir.deleteFileAbsolute(runtime.ioRequired(), temp_path) catch {};
     {
-        const temp = try std.fs.createFileAbsolute(temp_path, .{ .truncate = true, .mode = 0o644 });
+        const temp = try std.Io.Dir.createFileAbsolute(runtime.ioRequired(), temp_path, .{ .truncate = true, .mode = 0o644 });
         defer temp.close();
         try temp.writeAll(content);
         try temp.sync();

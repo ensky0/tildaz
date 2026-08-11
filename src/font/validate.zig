@@ -14,6 +14,7 @@
 //!   fire-and-forget `showFatal` 은 paint 전에 죽음).
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const paths = @import("../paths.zig");
@@ -41,7 +42,7 @@ fn showSchemaErrorFatal(line: []const u8) noreturn {
 }
 
 fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []const u8 {
-    var fbs = std.io.fixedBufferStream(msg_buf);
+    var fbs = std.Io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
     w.writeAll(line) catch {};
     w.print(messages.font_schema_error_path_format, .{cfg_path}) catch {};
@@ -88,7 +89,7 @@ pub fn notFoundMessageSub(msg_buf: []u8, missing: []const u8, chain: []const []c
 /// 경로 조회와 분리한 순수 formatter. dialog layout 같은 사용자 메시지 경계
 /// 테스트도 이 함수를 사용해 실제 producer와 다른 문구를 복제하지 않는다.
 pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8, substitute: ?[]const u8) []const u8 {
-    var fbs = std.io.fixedBufferStream(msg_buf);
+    var fbs = std.Io.fixedBufferStream(msg_buf);
     const w = fbs.writer();
     w.print(messages.font_not_found_format, .{missing}) catch {};
     w.writeAll(messages.font_chain_header_msg) catch {};

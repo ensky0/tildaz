@@ -5,6 +5,7 @@
 //! 공유한다. 등록 backend의 수명주기와 무관한 순수 formatting 책임만 둔다.
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const config_mod = @import("../../config.zig");
 const log = @import("../../log.zig");
 
@@ -21,7 +22,7 @@ pub fn gtkName(keysym: u32) []const u8 {
 /// `Ctrl+Shift+T`, `Ctrl+\``, `Alt+F12`). backend 송신 형식이 아니라 dialog와
 /// log에만 사용한다.
 pub fn displayString(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
+    var fbs = std.Io.fixedBufferStream(buf);
     const w = fbs.writer();
     if ((modifiers & 0x2) != 0) w.writeAll("Ctrl+") catch {};
     if ((modifiers & 0x4) != 0) w.writeAll("Shift+") catch {};

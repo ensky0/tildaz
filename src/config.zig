@@ -8,6 +8,7 @@
 // unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const windows = std.os.windows;
 const themes = @import("themes.zig");
@@ -213,7 +214,7 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
     const command_modifiers = CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
     if (!globalHotkeyAllowed(key_name, (modifiers & command_modifiers) != 0)) return null;
 
-    var fbs = std.io.fixedBufferStream(buf);
+    var fbs = std.Io.fixedBufferStream(buf);
     const writer = fbs.writer();
     const ModifierPart = struct { bit: u32, text: []const u8 };
     const modifier_parts = if (builtin.os.tag == .macos)
@@ -775,7 +776,7 @@ pub fn defaultConfigJsonWithHotkey(
     hotkey: []const u8,
 ) ![]const u8 {
     var fb_buf: [1024]u8 = undefined;
-    var fb_fbs = std.io.fixedBufferStream(&fb_buf);
+    var fb_fbs = std.Io.fixedBufferStream(&fb_buf);
     const fw = fb_fbs.writer();
     try fw.writeAll("[");
     for (Defaults.glyph_fallback, 0..) |f, i| {
@@ -908,7 +909,7 @@ pub const Config = struct {
         defer allocator.free(path);
 
         const loaded = blk: {
-            const file = std.fs.openFileAbsolute(path, .{}) catch {
+            const file = std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{}) catch {
                 // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
                 // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
                 // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
@@ -1059,7 +1060,7 @@ pub const Config = struct {
                 config.theme = themes.findTheme(v.string);
                 if (config.theme == null) {
                     var buf: [512]u8 = undefined;
-                    var fbs = std.io.fixedBufferStream(&buf);
+                    var fbs = std.Io.fixedBufferStream(&buf);
                     const w = fbs.writer();
                     w.print(messages.config_unknown_theme_header_format, .{v.string}) catch {};
                     for (themes.themes, 0..) |t, i| {
@@ -1166,7 +1167,7 @@ pub const Config = struct {
     }
 
     fn createDefault(allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
-        const file = std.fs.createFileAbsolute(path, .{}) catch return;
+        const file = std.Io.Dir.createFileAbsolute(runtime.ioRequired(), path, .{}) catch return;
         defer file.close();
         const json_text = defaultConfigJson(allocator, shell_resolved) catch return;
         defer allocator.free(json_text);

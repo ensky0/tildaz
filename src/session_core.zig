@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
@@ -84,7 +85,7 @@ const WriteQueue = struct {
     buf: [8 * 1024 * 1024]u8 = undefined,
     head: usize = 0,
     tail: usize = 0,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .{},
     event: std.Thread.ResetEvent = .{},
     closed: bool = false,
 
@@ -776,7 +777,7 @@ pub const SessionCore = struct {
     /// 셸은 정상적으로 뜬다 (Windows 실기 확인, #366).
     fn usableDir(path: []const u8, wsl: bool) bool {
         if (builtin.os.tag == .windows and wsl) return true;
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
+        var dir = std.Io.Dir.openDirAbsolute(runtime.ioRequired(), path, .{}) catch return false;
         dir.close();
         return true;
     }
@@ -1347,7 +1348,7 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
         _ = session.drainOutputForRender();
         try std.testing.expect(session.tabAt(0).?.title_len > 0);
         try std.testing.expect(session.tabAt(1).?.title_len > 0);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        runtime.sleepNs(10 * std.time.ns_per_ms);
     }
 }
 
@@ -1465,7 +1466,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
             "TILDAZ_OSC_TEST",
         );
         if (inactive_observed and active_observed) break;
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        runtime.sleepNs(10 * std.time.ns_per_ms);
     }
     try std.testing.expect(active_observed);
     try std.testing.expect(inactive_observed);
@@ -1510,7 +1511,7 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
     while (elapsed.read() < 1500 * std.time.ns_per_ms) {
         _ = session.drainOutputForRender();
         try std.testing.expect(session.activeTab().?.title_len > 0);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        runtime.sleepNs(10 * std.time.ns_per_ms);
     }
 }
 

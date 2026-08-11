@@ -17,6 +17,7 @@
 //! 보장하지만 (#282 검증 기록), 같은 코드가 돌아도 무해 + 방어 겸용.
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const builtin = @import("builtin");
 const posix = std.posix;
 const linux = std.os.linux;
@@ -144,7 +145,7 @@ pub const Pty = struct {
             var elapsed: u64 = 0;
             while (elapsed < grace_ms) : (elapsed += step_ms) {
                 if (self.child_exited.load(.acquire)) break;
-                std.Thread.sleep(step_ms * std.time.ns_per_ms);
+                runtime.sleepNs(step_ms * std.time.ns_per_ms);
             }
 
             if (!self.child_exited.load(.acquire)) {
@@ -372,7 +373,7 @@ fn processWaitLoop(
 // --- test — 실제 PTY roundtrip (POSIX 한정, 테스트 host 에서 실행) ---
 
 const TestCollector = struct {
-    var mu: std.Thread.Mutex = .{};
+    var mu: std.Io.Mutex = .{};
     var buf: [8192]u8 = undefined;
     var len: usize = 0;
     var exited = std.atomic.Value(bool).init(false);
@@ -412,7 +413,7 @@ test "pty — /bin/sh spawn·echo 왕복·extra_env 우선·exit" {
     var waited_ms: u64 = 0;
     while (waited_ms < 5000) : (waited_ms += 20) {
         if (TestCollector.contains("pty_roundtrip_/tmp/tz-pty-test-sentinel")) break;
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        runtime.sleepNs(20 * std.time.ns_per_ms);
     }
     try std.testing.expect(TestCollector.contains("pty_roundtrip_/tmp/tz-pty-test-sentinel"));
 
@@ -420,7 +421,7 @@ test "pty — /bin/sh spawn·echo 왕복·extra_env 우선·exit" {
     waited_ms = 0;
     while (waited_ms < 5000) : (waited_ms += 20) {
         if (TestCollector.exited.load(.acquire)) break;
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        runtime.sleepNs(20 * std.time.ns_per_ms);
     }
     try std.testing.expect(TestCollector.exited.load(.acquire));
 
@@ -439,7 +440,7 @@ test "pty — cwd 지정 시 그 디렉토리에서 시작, 갈 수 없으면 �
             var waited_ms: u64 = 0;
             while (waited_ms < 5000) : (waited_ms += 20) {
                 if (TestCollector.contains(needle)) return true;
-                std.Thread.sleep(20 * std.time.ns_per_ms);
+                runtime.sleepNs(20 * std.time.ns_per_ms);
             }
             return false;
         }

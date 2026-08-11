@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
 
@@ -116,7 +117,7 @@ pub fn listConfigIndices(allocator: std.mem.Allocator) ![]u32 {
     defer allocator.free(dir_path);
     try paths.ensureConfigDir(allocator);
 
-    var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
+    var dir = try std.Io.Dir.openDirAbsolute(runtime.ioRequired(), dir_path, .{ .iterate = true });
     defer dir.close();
     var indices: std.ArrayList(u32) = .empty;
     errdefer indices.deinit(allocator);
@@ -146,7 +147,7 @@ pub fn createDefaultConfig(
     const json = try config.defaultConfigJsonWithHotkey(allocator, shell_resolved, hotkey);
     defer allocator.free(json);
 
-    const file = try std.fs.createFileAbsolute(path, .{ .exclusive = true });
+    const file = try std.Io.Dir.createFileAbsolute(runtime.ioRequired(), path, .{ .exclusive = true });
     defer file.close();
     try file.writeAll(json);
 }
@@ -167,7 +168,7 @@ pub fn acquireWorkerLock(allocator: std.mem.Allocator, index: u32) !?ProcessLock
 pub fn acquireLauncherLock(allocator: std.mem.Allocator) !ProcessLock {
     const path = try paths.launcherLockPath(allocator);
     defer allocator.free(path);
-    const file = try std.fs.createFileAbsolute(path, .{
+    const file = try std.Io.Dir.createFileAbsolute(runtime.ioRequired(), path, .{
         .truncate = false,
         .read = true,
         .lock = .exclusive,
@@ -203,7 +204,7 @@ pub fn waitUntilRunning(allocator: std.mem.Allocator, index: u32, timeout_ns: u6
         // probe하면 launcher가 worker보다 먼저 lock을 잡는 race가 생기므로 metadata만
         // 확인한다. PID가 쓰인 뒤 실제 생존 판정은 다시 advisory lock으로 검증한다.
         if (ownerPidWritten(path) and try isRunning(allocator, index)) return;
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        runtime.sleepNs(10 * std.time.ns_per_ms);
     }
     return error.WorkerStartTimeout;
 }
@@ -264,7 +265,7 @@ const FileEndpointProbe = struct {
     }
 
     fn sleep(_: *@This(), duration_ns: u64) void {
-        std.Thread.sleep(duration_ns);
+        runtime.sleepNs(duration_ns);
     }
 };
 
@@ -323,7 +324,7 @@ const OwnerPid = union(enum) {
 };
 
 fn readOwnerPid(path: []const u8) !?OwnerPid {
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -366,7 +367,7 @@ fn ownerMatchesSnapshot(owner: OwnerPid, snapshot_pid: u32) bool {
 }
 
 fn readEndpointSnapshot(path: []const u8) !?EndpointSnapshot {
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -391,13 +392,13 @@ fn parseEndpointSnapshot(content: []const u8) !EndpointSnapshot {
 }
 
 fn ownerPidWritten(path: []const u8) bool {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
+    const file = std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{}) catch return false;
     defer file.close();
     return (file.getEndPos() catch return false) != 0;
 }
 
 fn tryAcquireProcessLock(path: []const u8) !?ProcessLock {
-    const file = std.fs.createFileAbsolute(path, .{
+    const file = std.Io.Dir.createFileAbsolute(runtime.ioRequired(), path, .{
         .truncate = false,
         .read = true,
         .lock = .exclusive,
@@ -444,7 +445,7 @@ pub fn defaultShell(allocator: std.mem.Allocator) ![]u8 {
 pub fn configAutoStart(allocator: std.mem.Allocator, index: u32) !bool {
     const path = try paths.configPathFor(allocator, index);
     defer allocator.free(path);
-    const file = try std.fs.openFileAbsolute(path, .{});
+    const file = try std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{});
     defer file.close();
     const content = try file.readToEndAlloc(allocator, 64 * 1024);
     defer allocator.free(content);
@@ -459,7 +460,7 @@ pub fn configAutoStart(allocator: std.mem.Allocator, index: u32) !bool {
 pub fn configHotkeyText(allocator: std.mem.Allocator, index: u32) ![]u8 {
     const path = try paths.configPathFor(allocator, index);
     defer allocator.free(path);
-    const file = try std.fs.openFileAbsolute(path, .{});
+    const file = try std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{});
     defer file.close();
     const content = try file.readToEndAlloc(allocator, 64 * 1024);
     defer allocator.free(content);
@@ -475,7 +476,7 @@ pub fn hotkeyOwner(allocator: std.mem.Allocator, indices: []const u32, candidate
     for (indices) |index| {
         const path = try paths.configPathFor(allocator, index);
         defer allocator.free(path);
-        const file = try std.fs.openFileAbsolute(path, .{});
+        const file = try std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{});
         defer file.close();
         const content = try file.readToEndAlloc(allocator, 64 * 1024);
         defer allocator.free(content);

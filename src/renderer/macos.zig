@@ -7,6 +7,7 @@
 // 우리 nullable `id` (?*opaque) 와 평면 모듈 구조에 맞춰 정리.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const objc = @import("../macos_objc.zig");
 const perf = @import("../perf.zig");
 const ct = @import("../font/macos/coretext.zig");
@@ -708,7 +709,7 @@ pub const MetalRenderer = struct {
 
         // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
         // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
-        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+        const blink_faint = ui_metrics.blinkFaintPhase(runtime.nowMs());
         self.saw_blink_cell = false;
 
         // --- Background pass ---

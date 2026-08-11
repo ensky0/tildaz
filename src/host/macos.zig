@@ -403,7 +403,7 @@ var g_run_opts: run_options.RunOptions = .{};
 /// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderFrameTick 가
 /// main thread 에서 매 frame drain).
 var g_pending_close_buf: std.ArrayList(usize) = .{};
-var g_pending_close_mutex: std.Thread.Mutex = .{};
+var g_pending_close_mutex: std.Io.Mutex = .{};
 /// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
 /// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainOutputForRender 반환)
 /// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ preedit/autoscroll(force_render).
@@ -1993,7 +1993,7 @@ fn maybeAutoScrollSelectionMac() bool {
         g_sel_autoscroll_dir = 0;
         return false;
     }
-    const now = std.time.milliTimestamp();
+    const now = runtime.nowMs();
     if (now < g_sel_autoscroll_next_ms) return false;
     const step: isize = 3;
     tab.terminal.scrollViewport(.{ .delta = if (g_sel_autoscroll_dir < 0) -step else step });
@@ -3065,7 +3065,7 @@ pub fn run(opts: run_options.RunOptions) !void {
         // `font_not_found_format` 와 같은 의도, multi-font 메시지).
         error.FontCreateFailed => {
             var buf: [1024]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&buf);
+            var fbs = std.Io.fixedBufferStream(&buf);
             const w = fbs.writer();
             w.writeAll(messages.font_chain_all_failed_msg) catch {};
             for (font_family_slice) |fam| w.print("\n  - {s}", .{fam}) catch {};
@@ -3330,7 +3330,7 @@ fn renderFrameTick() void {
     // #376 — 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에 blink 셀이
     // 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는 화면에서 공짜로
     // 초당 2프레임을 낭비하지 않는다.
-    const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+    const blink_phase_now = ui_metrics.blinkFaintPhase(runtime.nowMs());
     const blink_tick = blink_phase_now != g_last_blink_phase and
         (if (g_renderer) |r| r.saw_blink_cell else false);
     g_last_blink_phase = blink_phase_now;
@@ -3545,7 +3545,7 @@ fn eventTapCallback(
 ) callconv(.c) CGEventRef {
     if (event_type == kCGEventTapDisabledByTimeout or event_type == kCGEventTapDisabledByUserInput) {
         const REPEAT_WINDOW_MS: i64 = 30_000;
-        const now_ms = std.time.milliTimestamp();
+        const now_ms = runtime.nowMs();
         const recent = (now_ms - g_last_tap_disable_ms) < REPEAT_WINDOW_MS;
         g_last_tap_disable_ms = now_ms;
         if (recent) {

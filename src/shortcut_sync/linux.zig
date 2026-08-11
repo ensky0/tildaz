@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const config = @import("../config.zig");
 const instances = @import("../instances.zig");
 const log = @import("../log.zig");
@@ -161,7 +162,7 @@ fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]co
     if ((binding.modmask & ~hypr_supported_mods) != 0) return null;
     if (!managedToggleCommand(binding.arg, exe)) return null;
 
-    var fbs = std.io.fixedBufferStream(buf);
+    var fbs = std.Io.fixedBufferStream(buf);
     const writer = fbs.writer();
     if ((binding.modmask & hypr_mod_ctrl) != 0) writer.writeAll("CTRL ") catch return null;
     if ((binding.modmask & hypr_mod_shift) != 0) writer.writeAll("SHIFT ") catch return null;
@@ -196,7 +197,7 @@ fn runHyprlandKeyword(allocator: std.mem.Allocator, keyword: []const u8, value: 
 }
 
 pub fn hyprlandAccel(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
+    var fbs = std.Io.fixedBufferStream(buf);
     const writer = fbs.writer();
     if ((hotkey.modifiers & config.Hotkey.MOD_CTRL) != 0) try writer.writeAll("CTRL ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SHIFT) != 0) try writer.writeAll("SHIFT ");
@@ -265,7 +266,7 @@ fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
     defer allocator.free(path);
 
     const content = blk: {
-        const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        const file = std.Io.Dir.openFileAbsolute(runtime.ioRequired(), path, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk try allocator.dupe(u8, "{\n}\n"),
             else => return err,
         };

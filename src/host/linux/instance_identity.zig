@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const paths = @import("../../paths.zig");
 
 /// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
@@ -118,7 +119,7 @@ pub fn syncDesktopEntries(allocator: std.mem.Allocator, indices: []const u32) !v
 
     for (indices) |index| try ensureDesktopEntry(allocator, index);
 
-    var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
+    var dir = try std.Io.Dir.openDirAbsolute(runtime.ioRequired(), dir_path, .{ .iterate = true });
     defer dir.close();
     var it = dir.iterate();
     while (try it.next()) |entry| {

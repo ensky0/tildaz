@@ -27,6 +27,7 @@
 //! `g_settings_schema_source_lookup` 으로 schema 존재를 먼저 확인한 뒤 연다.
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
 const hotkey_format = @import("hotkey_format.zig");
@@ -502,7 +503,7 @@ fn desktopValueHasToken(value: []const u8, wanted: []const []const u8) bool {
 /// 이름은 공통 `hotkey_format.gtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
 fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     const H = config_mod.Hotkey;
-    var fbs = std.io.fixedBufferStream(buf);
+    var fbs = std.Io.fixedBufferStream(buf);
     const w = fbs.writer();
     if ((modifiers & H.MOD_CTRL) != 0) try w.writeAll("<Control>");
     if ((modifiers & H.MOD_SHIFT) != 0) try w.writeAll("<Shift>");

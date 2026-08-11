@@ -12,6 +12,7 @@
 //! 모듈 (`dialog.showAboutAlert`) 로 표시. exe 경로 / pid 만 platform-specific.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
 const log = @import("log.zig");
@@ -51,7 +52,7 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
 pub fn showAboutDialog() void {
     const allocator = std.heap.page_allocator;
 
-    const exe_path_owned = std.fs.selfExePathAlloc(allocator) catch null;
+    const exe_path_owned = std.process.executablePathAlloc(runtime.ioRequired(), allocator) catch null;
     defer if (exe_path_owned) |path| allocator.free(path);
     const exe_path = exe_path_owned orelse messages.unknown_path_msg;
 

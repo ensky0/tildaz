@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const run_options = @import("../run_options.zig");
 const version = @import("../version.zig");
 const log = @import("../log.zig");
@@ -129,7 +130,7 @@ fn runPtySmoke(allocator: std.mem.Allocator) !void {
 
     var elapsed_ms: u64 = 0;
     while (!done.load(.acquire) and elapsed_ms < 2000) : (elapsed_ms += 10) {
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        runtime.sleepNs(10 * std.time.ns_per_ms);
     }
 }
 

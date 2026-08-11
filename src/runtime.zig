@@ -1,7 +1,7 @@
 //! Zig 0.16 런타임 손잡이 — 진입점이 받은 `std.process.Init` 의 조각을 보관한다 ([#451]).
 //!
 //! Zig 0.16 은 환경변수 · 파일 IO · argv · 동기화를 **`Io` 와 `Environ` 경유**로 바꿨다.
-//! 예전에는 `std.process.getEnvVarOwned` · `std.time.milliTimestamp` · `std.Thread.Mutex`
+//! 예전에는 `std.process.getEnvVarOwned` · `std.time.milliTimestamp` · `std.Io.Mutex`
 //! 처럼 전역 함수로 아무 데서나 부를 수 있었는데, 이제 그 값을 가진 객체가 필요하다.
 //!
 //! **왜 전역인가.** 그 값을 필요로 하는 자리가 전역 로거 (`log.zig`) 와 경로 계산
@@ -60,4 +60,18 @@ pub fn envHas(key: []const u8) bool {
 /// `Environ.getAlloc` 이 같은 일을 한다 — 호출부가 매번 `environ()` 을 거치지 않도록 감싼다.
 pub fn envAlloc(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
     return g_environ.getAlloc(allocator, key);
+}
+
+/// `std.time.milliTimestamp` 자리 (0.16 에서 제거). Unix epoch 기준 밀리초.
+/// `install` 전이면 0 을 준다 — 호출부가 대개 로그 · 진단용이라 실패보다 0 이 덜 위험하다.
+pub fn nowMs() i64 {
+    const v = g_io orelse return 0;
+    const ns = std.Io.Timestamp.now(v, .real).nanoseconds;
+    return @intCast(@divTrunc(ns, std.time.ns_per_ms));
+}
+
+/// `std.Thread.sleep` 자리 (0.16 에서 제거 — `std.Io.sleep` 이 `io` 를 받는다).
+pub fn sleepNs(ns: u64) void {
+    const v = g_io orelse return;
+    std.Io.sleep(v, .{ .nanoseconds = @intCast(ns) }, .awake) catch {};
 }

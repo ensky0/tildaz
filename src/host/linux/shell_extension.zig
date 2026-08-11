@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const paths = @import("../../paths.zig");
 
 pub const Kind = enum {
@@ -49,11 +50,11 @@ pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
 
     const source_dir = try std.Io.Dir.path.join(allocator, &.{ resource_root, source_family, uuid });
     defer allocator.free(source_dir);
-    std.fs.accessAbsolute(source_dir, .{}) catch |err| switch (err) {
+    std.Io.Dir.accessAbsolute(runtime.ioRequired(), source_dir, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             const installed_entry = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "extension.js" });
             defer allocator.free(installed_entry);
-            std.fs.accessAbsolute(installed_entry, .{}) catch return false;
+            std.Io.Dir.accessAbsolute(runtime.ioRequired(), installed_entry, .{}) catch return false;
             return true;
         },
         else => return err,
@@ -79,7 +80,7 @@ pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
         const compiled = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "schemas", "gschemas.compiled" });
         defer allocator.free(compiled);
         const compiled_exists = blk: {
-            std.fs.accessAbsolute(compiled, .{}) catch break :blk false;
+            std.Io.Dir.accessAbsolute(runtime.ioRequired(), compiled, .{}) catch break :blk false;
             break :blk true;
         };
         if (changed or !compiled_exists) try compileGnomeSchemas(allocator, destination_dir);
@@ -88,7 +89,7 @@ pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
 }
 
 fn syncFile(allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
-    const source = try std.fs.openFileAbsolute(source_path, .{});
+    const source = try std.Io.Dir.openFileAbsolute(runtime.ioRequired(), source_path, .{});
     defer source.close();
     const content = try source.readToEndAlloc(allocator, 4 * 1024 * 1024);
     defer allocator.free(content);

@@ -246,7 +246,7 @@ fn waitForGrid(target: Grid) u64 {
         if (now.cols == target.cols and now.rows == target.rows) break;
         if (timer.read() >= limit_ns) break;
         // 5 ms 는 resize 가 도는 주기보다 충분히 짧다 (실측에서 대기가 수십 ms 규모다).
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        runtime.sleepNs(5 * std.time.ns_per_ms);
     }
     return timer.read() / std.time.ns_per_ms;
 }
@@ -294,7 +294,7 @@ fn produce(req: ProducerRequest) !void {
     }
 
     // 하네스의 `--capture` 가 창을 찍을 시간. timing 을 쓴 **뒤**여야 한다 (`env_hold_ms`).
-    if (req.hold_ms > 0) std.Thread.sleep(@as(u64, req.hold_ms) * std.time.ns_per_ms);
+    if (req.hold_ms > 0) runtime.sleepNs(@as(u64, req.hold_ms) * std.time.ns_per_ms);
 }
 
 const Grid = struct { cols: u16, rows: u16 };
@@ -758,7 +758,7 @@ fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
         // 다시 센다 — 실제 앱도 놓친 vsync 를 몰아서 그리지 않는다.
         const now_ns = timer.read();
         if (next_frame_ns > now_ns) {
-            std.Thread.sleep(next_frame_ns - now_ns);
+            runtime.sleepNs(next_frame_ns - now_ns);
             next_frame_ns += frame_ns;
         } else {
             next_frame_ns = now_ns + frame_ns;

@@ -18,6 +18,7 @@
 //! `Control+Shift+t` / `Alt+a` / `Super+a` 모두 수용). 상세 — issue #207 코멘트.
 
 const std = @import("std");
+const runtime = @import("../../runtime.zig");
 const builtin = @import("builtin");
 const posix = std.posix;
 const log = @import("../../log.zig");
@@ -91,7 +92,7 @@ fn isSwayDesktop() bool {
 /// 재사용 (XKB keysym name — sway bindsym 과 1:1, nested 시연 확인).
 fn buildAccel(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     const H = config_mod.Hotkey;
-    var fbs = std.io.fixedBufferStream(buf);
+    var fbs = std.Io.fixedBufferStream(buf);
     const w = fbs.writer();
     if ((modifiers & H.MOD_SHIFT) != 0) w.writeAll("Shift+") catch {};
     if ((modifiers & H.MOD_CTRL) != 0) w.writeAll("Ctrl+") catch {};

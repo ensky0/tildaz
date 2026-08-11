@@ -66,7 +66,7 @@ else
         utf8: []const u8,
     };
 
-// Zig 0.16 — `std.Thread.Mutex` 와 `std.once` 가 사라지고 동기화가 `std.Io.Mutex` 로 갔다
+// Zig 0.16 — `std.Io.Mutex` 와 `std.once` 가 사라지고 동기화가 `std.Io.Mutex` 로 갔다
 // (#451). `lock` / `lockUncancelable` 둘 다 `io` 를 받고 `tryLock` 만 io 없이 된다.
 //
 // **이 mutex 는 경로 캐싱 1 회용 가드**다 (아래 `cachedPath`). 로그를 쓰는 모든 스레드가

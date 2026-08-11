@@ -408,5 +408,5 @@ pub fn main() !void {
     try std.Io.File.stdout().writeStreamingAll(runtime.ioRequired(), o.slice());
 
     // `-e` 로 띄운 프로세스가 끝나면 앱도 함께 닫힌다. 화면을 보라고 띄운 것이므로 남긴다.
-    while (true) std.Thread.sleep(60 * std.time.ns_per_s);
+    while (true) runtime.sleepNs(60 * std.time.ns_per_s);
 }

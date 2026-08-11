@@ -17,6 +17,7 @@
 // 같은 내용이면 file 안 건드림 (timestamp 보존) — macOS 패턴 동등.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const paths = @import("../paths.zig");
 
 const ENTRY_NAME = "tildaz.desktop";
@@ -47,7 +48,7 @@ fn removeLegacyEntryIfDifferent(allocator: std.mem.Allocator, current_path: []co
     const legacy_path = legacyEntryPath(allocator) catch return;
     defer allocator.free(legacy_path);
     if (!std.mem.eql(u8, current_path, legacy_path)) {
-        std.fs.deleteFileAbsolute(legacy_path) catch {};
+        std.Io.Dir.deleteFileAbsolute(runtime.ioRequired(), legacy_path) catch {};
     }
 }
 
@@ -114,6 +115,6 @@ pub fn enable(allocator: std.mem.Allocator) !void {
 pub fn disable(allocator: std.mem.Allocator) void {
     const path = entryPath(allocator) catch return;
     defer allocator.free(path);
-    std.fs.deleteFileAbsolute(path) catch {};
+    std.Io.Dir.deleteFileAbsolute(runtime.ioRequired(), path) catch {};
     removeLegacyEntryIfDifferent(allocator, path);
 }

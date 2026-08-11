@@ -20,6 +20,7 @@
 // 살아남는다 — 같은 로그의 사용자 수동 실행 경로에서 대조 확인했다.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const paths = @import("../paths.zig");
 
 const LABEL = "com.tildaz.app";
@@ -126,7 +127,7 @@ pub fn enable(allocator: std.mem.Allocator) !void {
 pub fn disable(allocator: std.mem.Allocator) void {
     const path = plistPath(allocator) catch return;
     defer allocator.free(path);
-    std.fs.deleteFileAbsolute(path) catch {};
+    std.Io.Dir.deleteFileAbsolute(runtime.ioRequired(), path) catch {};
 }
 
 test "appBundlePath 는 .app 번들 root 만 인정한다" {
