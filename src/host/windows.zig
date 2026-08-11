@@ -91,6 +91,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     }
 
     var app = App{
+        .rt = rt,
         .session = undefined,
         .window = .{},
         .allocator = alloc,

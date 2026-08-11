@@ -701,7 +701,7 @@ pub const Window = struct {
     pub fn registerGlobalHotkey(self: *Window, hotkey_vkey: u32, hotkey_modifiers: u32) void {
         self.hotkey_vkey = hotkey_vkey;
         self.hotkey_modifiers = hotkey_modifiers;
-        if (RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
+        if (!RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey).toBool()) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
             const cfg_path = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
@@ -1147,7 +1147,7 @@ pub const Window = struct {
         };
         var mi: MONITORINFO = undefined;
         mi.cbSize = @sizeOf(MONITORINFO);
-        if (GetMonitorInfoW(monitor, &mi) == 0) return null;
+        if (!GetMonitorInfoW(monitor, &mi).toBool()) return null;
         return mi;
     }
 
@@ -1273,7 +1273,7 @@ pub const Window = struct {
         var msg: MSG = undefined;
         for (ranges) |range| {
             var guard: u32 = 0;
-            while (guard < 64 and PeekMessageW(&msg, self.hwnd, range[0], range[1], PM_REMOVE) != 0) : (guard += 1) {
+            while (guard < 64 and PeekMessageW(&msg, self.hwnd, range[0], range[1], PM_REMOVE).toBool()) : (guard += 1) {
                 _ = TranslateMessage(&msg);
                 _ = DispatchMessageW(&msg);
             }
@@ -1379,7 +1379,7 @@ pub const Window = struct {
                 // 음수 = 상대 시간 (100ns 단위). one-shot 으로 매번 재장전한다 — 주기
                 // 인자 (`lPeriod`) 는 ms 정수라 16.67 ms 를 표현할 수 없다.
                 const due: i64 = -@as(i64, @intCast((deadline - elapsed) / 100));
-                if (SetWaitableTimer(timer, &due, 0, null, null, 0) == 0) break;
+                if (!SetWaitableTimer(timer, &due, 0, null, null, 0).toBool()) break;
                 if (WaitForSingleObject(timer, WAIT_INFINITE) != WAIT_OBJECT_0) break;
             } else {
                 // 이 스레드 자신이 밀렸다 (스케줄링). 밀린 만큼을 몰아 내지 않고 지금을
@@ -1518,7 +1518,7 @@ pub const Window = struct {
     pub fn messageLoop(self: *Window) void {
         var msg: MSG = undefined;
         while (true) {
-            if (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0) {
+            if (PeekMessageW(&msg, null, 0, 0, PM_REMOVE).toBool()) {
                 if (msg.message == WM_QUIT) return;
                 _ = TranslateMessage(&msg);
                 _ = DispatchMessageW(&msg);
@@ -1552,14 +1552,14 @@ pub const Window = struct {
             },
             WM_HOTKEY_CAPTURE_BEGIN => {
                 if (self.hotkey_registered) {
-                    if (UnregisterHotKey(hwnd, HOTKEY_ID) == 0) return 0;
+                    if (!UnregisterHotKey(hwnd, HOTKEY_ID).toBool()) return 0;
                     self.hotkey_registered = false;
                 }
                 return 1;
             },
             WM_HOTKEY_CAPTURE_END => {
                 if (!self.hotkey_registered) {
-                    if (RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey) == 0) return 0;
+                    if (!RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey).toBool()) return 0;
                     self.hotkey_registered = true;
                 }
                 return 1;
@@ -2142,7 +2142,7 @@ pub const Window = struct {
                 if (hit_test == HTCLIENT) {
                     if (self.cursor_region_fn) |region_fn| {
                         var pt: POINT = .{ .x = 0, .y = 0 };
-                        if (GetCursorPos(&pt) != 0 and ScreenToClient(hwnd, &pt) != 0) {
+                        if (GetCursorPos(&pt).toBool() and ScreenToClient(hwnd, &pt).toBool()) {
                             const region = region_fn(@intCast(pt.x), @intCast(pt.y), self.userdata);
                             const handle: HCURSOR = switch (region) {
                                 .cell => self.cursor_ibeam,
@@ -2230,7 +2230,7 @@ pub const Window = struct {
     pub fn getClientSize(self: *const Window) struct { w: c_int, h: c_int } {
         const hwnd = self.requireHwnd();
         var rect: RECT = std.mem.zeroes(RECT);
-        if (GetClientRect(hwnd, &rect) == 0) return .{ .w = 0, .h = 0 };
+        if (!GetClientRect(hwnd, &rect).toBool()) return .{ .w = 0, .h = 0 };
         return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
     }
 
@@ -2406,7 +2406,7 @@ pub const Window = struct {
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
-        return ImmSetCompositionStringW(himc, SCS_SETSTR, utf16[0..written].ptr, @intCast(written * 2), null, 0) != 0;
+        return ImmSetCompositionStringW(himc, SCS_SETSTR, utf16[0..written].ptr, @intCast(written * 2), null, 0).toBool();
     }
 
     /// read-only action 앞에서 MS-IME가 이미 result/end를 낸 경우 그 결과를
@@ -2447,7 +2447,7 @@ pub const Window = struct {
         self.ime_complete_in_progress = true;
         self.ime_complete_result_ok = false;
         defer self.ime_complete_in_progress = false;
-        if (ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_COMPLETE, 0) == 0) return false;
+        if (!ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_COMPLETE, 0).toBool()) return false;
         return self.ime_complete_result_ok;
     }
 
@@ -2465,13 +2465,13 @@ pub const Window = struct {
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
-        const ok = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0) != 0;
+        const ok = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0).toBool();
         self.preedit_len = 0;
         return ok;
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
-        if (OpenClipboard(self.hwnd) == 0) return;
+        if (!OpenClipboard(self.hwnd).toBool()) return;
         defer _ = CloseClipboard();
 
         const handle = GetClipboardData(CF_UNICODETEXT) orelse return;
@@ -2511,7 +2511,7 @@ pub const Window = struct {
 
     pub fn copyToClipboard(self: *Window, text: [:0]const u8) void {
         if (text.len == 0) return;
-        if (OpenClipboard(self.hwnd) == 0) return;
+        if (!OpenClipboard(self.hwnd).toBool()) return;
         defer _ = CloseClipboard();
 
         _ = EmptyClipboard();
