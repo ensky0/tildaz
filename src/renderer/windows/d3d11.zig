@@ -379,7 +379,7 @@ pub const IDXGISwapChain = extern struct {
 
     const VTable = extern struct {
         // IUnknown (0-2)
-        QueryInterface: *const anyopaque,
+        QueryInterface: *const fn (*IDXGISwapChain, *const GUID, *?*anyopaque) callconv(.c) HRESULT,
         AddRef: *const anyopaque,
         Release: *const fn (*IDXGISwapChain) callconv(.c) u32,
         // IDXGIObject (3-6)
@@ -398,6 +398,9 @@ pub const IDXGISwapChain = extern struct {
         ResizeBuffers: *const fn (*IDXGISwapChain, u32, u32, u32, u32, u32) callconv(.c) HRESULT,
     };
 
+    pub fn QueryInterface(self: *IDXGISwapChain, riid: *const GUID, out: *?*anyopaque) HRESULT {
+        return self.vtable.QueryInterface(self, riid, out);
+    }
     pub fn Release(self: *IDXGISwapChain) u32 {
         return self.vtable.Release(self);
     }
@@ -805,6 +808,14 @@ pub const DXGI_SWAP_CHAIN_DESC1 = extern struct {
     Flags: u32 = 0,
 };
 
+/// #435 — swap chain 이 다음 프레임을 받을 준비가 됐는지 **논블로킹으로 물어볼 수 있는**
+/// 이벤트를 달아 준다. `IDXGIFactory2::CreateSwapChainFor*` 로 만들 때만 걸 수 있고
+/// `D3D11CreateDeviceAndSwapChain` 으로는 못 건다.
+///
+/// ⚠️ **`0x800` 과 헷갈리기 쉽다** — 그쪽은 `ALLOW_TEARING` 이다. 값은 zig 가 번들한
+/// MinGW-w64 `dxgi.h` 의 `DXGI_SWAP_CHAIN_FLAG` 로 확인했다.
+pub const DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT: u32 = 0x40;
+
 pub const IID_IDXGIFactory2 = GUID{
     .Data1 = 0x50c83a1c,
     .Data2 = 0xe072,
@@ -834,7 +845,7 @@ pub const IDXGIFactory2 = extern struct {
         GetParent: *const anyopaque,
         // IDXGIFactory (7-11)
         EnumAdapters: *const anyopaque,
-        MakeWindowAssociation: *const anyopaque,
+        MakeWindowAssociation: *const fn (*IDXGIFactory2, ?*anyopaque, u32) callconv(.c) HRESULT,
         GetWindowAssociation: *const anyopaque,
         CreateSwapChain: *const anyopaque,
         CreateSoftwareAdapter: *const anyopaque,
@@ -843,7 +854,7 @@ pub const IDXGIFactory2 = extern struct {
         IsCurrent: *const anyopaque,
         // IDXGIFactory2 (14-24)
         IsWindowedStereoEnabled: *const anyopaque,
-        CreateSwapChainForHwnd: *const anyopaque,
+        CreateSwapChainForHwnd: *const fn (*IDXGIFactory2, *anyopaque, ?*anyopaque, *const DXGI_SWAP_CHAIN_DESC1, ?*const anyopaque, ?*anyopaque, *?*IDXGISwapChain) callconv(.c) HRESULT,
         CreateSwapChainForCoreWindow: *const anyopaque,
         GetSharedResourceAdapterLuid: *const anyopaque,
         RegisterStereoStatusWindow: *const anyopaque,
@@ -862,6 +873,100 @@ pub const IDXGIFactory2 = extern struct {
     /// 상위 호환(선두 18 slot 동일)이라 기존 wrapper 로 그대로 사용.
     pub fn CreateSwapChainForComposition(self: *IDXGIFactory2, device: *anyopaque, desc: *const DXGI_SWAP_CHAIN_DESC1, restrict_out: ?*anyopaque, out: *?*IDXGISwapChain) HRESULT {
         return self.vtable.CreateSwapChainForComposition(self, device, desc, restrict_out, out);
+    }
+    /// #435 — hwnd 용. `D3D11CreateDeviceAndSwapChain` 과 달리 `DESC1.Flags` 를 받아서
+    /// frame-latency waitable 을 걸 수 있다. `fullscreen_desc` 는 null 이면 windowed.
+    /// 반환은 `CreateSwapChainForComposition` 과 같은 이유로 `IDXGISwapChain` 으로 받는다.
+    pub fn CreateSwapChainForHwnd(self: *IDXGIFactory2, device: *anyopaque, hwnd: ?*anyopaque, desc: *const DXGI_SWAP_CHAIN_DESC1, fullscreen_desc: ?*const anyopaque, restrict_out: ?*anyopaque, out: *?*IDXGISwapChain) HRESULT {
+        return self.vtable.CreateSwapChainForHwnd(self, device, hwnd, desc, fullscreen_desc, restrict_out, out);
+    }
+    /// #89 — DXGI 내장 Alt+Enter 감시 차단. 지금까지는 swap chain 의 `GetParent` 로
+    /// `IDXGIFactory` 를 다시 얻어 불렀는데, hwnd 경로는 factory 를 이미 들고 있다.
+    pub fn MakeWindowAssociation(self: *IDXGIFactory2, hwnd: ?*anyopaque, flags: u32) HRESULT {
+        return self.vtable.MakeWindowAssociation(self, hwnd, flags);
+    }
+};
+
+// --- IDXGISwapChain2 (#435) ---
+// IDXGISwapChain (0-17) + IDXGISwapChain1 (18-28) + IDXGISwapChain2 (29-35).
+// 선두 18 slot 이 IDXGISwapChain 과 같아 같은 포인터를 두 타입으로 볼 수 있지만,
+// 아래 두 메서드는 QueryInterface 로 얻은 IDXGISwapChain2 에서만 부른다.
+//
+// Slots (zig 번들 MinGW-w64 `dxgi1_3.h` 의 IDXGISwapChain2Vtbl 로 확인):
+// 18-28: IDXGISwapChain1 (GetDesc1, GetFullscreenDesc, GetHwnd, GetCoreWindow, Present1,
+//        IsTemporaryMonoSupported, GetRestrictToOutput, SetBackgroundColor,
+//        GetBackgroundColor, SetRotation, GetRotation)
+// 29:    SetSourceSize
+// 30:    GetSourceSize
+// 31:    SetMaximumFrameLatency
+// 32:    GetMaximumFrameLatency
+// 33:    GetFrameLatencyWaitableObject
+// 34-35: SetMatrixTransform, GetMatrixTransform
+
+pub const IID_IDXGISwapChain2 = GUID{
+    .Data1 = 0xa8be2ac4,
+    .Data2 = 0x199f,
+    .Data3 = 0x4946,
+    .Data4 = .{ 0xb3, 0x31, 0x79, 0x59, 0x9f, 0xb9, 0x8d, 0xe7 },
+};
+
+pub const IDXGISwapChain2 = extern struct {
+    vtable: *const VTable,
+
+    const VTable = extern struct {
+        // IUnknown (0-2)
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDXGISwapChain2) callconv(.c) u32,
+        // IDXGIObject (3-6)
+        SetPrivateData: *const anyopaque,
+        SetPrivateDataInterface: *const anyopaque,
+        GetPrivateData: *const anyopaque,
+        GetParent: *const anyopaque,
+        // IDXGIDeviceSubObject (7)
+        GetDevice: *const anyopaque,
+        // IDXGISwapChain (8-17)
+        Present: *const anyopaque,
+        GetBuffer: *const anyopaque,
+        SetFullscreenState: *const anyopaque,
+        GetFullscreenState: *const anyopaque,
+        GetDesc: *const anyopaque,
+        ResizeBuffers: *const anyopaque,
+        ResizeTarget: *const anyopaque,
+        GetContainingOutput: *const anyopaque,
+        GetFrameStatistics: *const anyopaque,
+        GetLastPresentCount: *const anyopaque,
+        // IDXGISwapChain1 (18-28)
+        GetDesc1: *const anyopaque,
+        GetFullscreenDesc: *const anyopaque,
+        GetHwnd: *const anyopaque,
+        GetCoreWindow: *const anyopaque,
+        Present1: *const anyopaque,
+        IsTemporaryMonoSupported: *const anyopaque,
+        GetRestrictToOutput: *const anyopaque,
+        SetBackgroundColor: *const anyopaque,
+        GetBackgroundColor: *const anyopaque,
+        SetRotation: *const anyopaque,
+        GetRotation: *const anyopaque,
+        // IDXGISwapChain2 (29-35)
+        SetSourceSize: *const anyopaque,
+        GetSourceSize: *const anyopaque,
+        SetMaximumFrameLatency: *const fn (*IDXGISwapChain2, u32) callconv(.c) HRESULT,
+        GetMaximumFrameLatency: *const anyopaque,
+        GetFrameLatencyWaitableObject: *const fn (*IDXGISwapChain2) callconv(.c) ?*anyopaque,
+        SetMatrixTransform: *const anyopaque,
+        GetMatrixTransform: *const anyopaque,
+    };
+
+    pub fn Release(self: *IDXGISwapChain2) u32 {
+        return self.vtable.Release(self);
+    }
+    pub fn SetMaximumFrameLatency(self: *IDXGISwapChain2, max_latency: u32) HRESULT {
+        return self.vtable.SetMaximumFrameLatency(self, max_latency);
+    }
+    /// 반환 HANDLE 의 소유권은 **호출자**에게 있다 — 다 쓰면 `CloseHandle`.
+    pub fn GetFrameLatencyWaitableObject(self: *IDXGISwapChain2) ?*anyopaque {
+        return self.vtable.GetFrameLatencyWaitableObject(self);
     }
 };
 
