@@ -1132,9 +1132,11 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
 /// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
 fn confirmOsascript(title: []const u8, message: []const u8) bool {
     const allocator = std.heap.page_allocator;
-    var script_buf: std.ArrayList(u8) = .empty;
-    defer script_buf.deinit(allocator);
-    const w = script_buf.writer(allocator);
+    // #451 — `ArrayList.writer` 가 없어졌다. 늘어나는 버퍼에 쓰는 자리는
+    // `Io.Writer.Allocating` 이다 (릴리즈 노트 *Io.Writer.Allocating Alignment Field*).
+    var script_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer script_buf.deinit();
+    const w = &script_buf.writer;
     w.writeAll("display dialog \"") catch return false;
     appendEscaped(w, message) catch return false;
     w.writeAll("\" buttons {\"Cancel\", \"OK\"} default button \"OK\" cancel button \"Cancel\"") catch return false;
@@ -1144,13 +1146,18 @@ fn confirmOsascript(title: []const u8, message: []const u8) bool {
     w.writeAll(" with title \"") catch return false;
     appendEscaped(w, title) catch return false;
     w.writeAll("\"") catch return false;
-    const script = script_buf.items;
+    const script = script_buf.written();
 
-    var child = std.process.Child.init(
-        &.{ "/usr/bin/osascript", "-e", script },
-        allocator,
-    );
-    const term = child.spawnAndWait() catch {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "/usr/bin/osascript", "-e", script },
+    }) catch {
+        log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
+        return false;
+    };
+    const term = child.wait(io) catch {
         log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
         return false;
     };
@@ -1264,12 +1271,19 @@ fn setButtonEsc(alert: objc.id, index: u64) void {
 }
 
 /// AppleScript fallback — NSApp 무관, config 에러 같이 부트스트랩 실패 시.
+///
+/// #451 — 이 fallback 두 개 (`confirmOsascript` · 여기) 는 자식 프로세스를 띄우느라
+/// `Io` 가 필요한데, `dialog.zig` 의 공개 API 는 `io` 를 받지 않는다 (호출부 53 자리).
+/// 릴리즈 노트가 *"if you find yourself without access to an `Io` instance"* 에 지정한
+/// 지역 `Io.Threaded` 를 쓴다 — **전역이 아니라 이 함수 안의 값**이고, osascript 로
+/// 떨어지는 드문 경로에만 산다. `dialog` 전체에 `Runtime` 을 흘려보내는 것은 별도 판단이
+/// 필요해 이슈에 남긴다.
 fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const u8) void {
     _ = severity;
     const allocator = std.heap.page_allocator;
-    var script_buf: std.ArrayList(u8) = .empty;
-    defer script_buf.deinit(allocator);
-    const w = script_buf.writer(allocator);
+    var script_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer script_buf.deinit();
+    const w = &script_buf.writer;
 
     w.writeAll("display dialog \"") catch return;
     appendEscaped(w, message) catch return;
@@ -1281,13 +1295,15 @@ fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const 
     appendEscaped(w, title) catch return;
     w.writeAll("\"") catch return;
 
-    const script = script_buf.items;
+    const script = script_buf.written();
 
-    var child = std.process.Child.init(
-        &.{ "/usr/bin/osascript", "-e", script },
-        allocator,
-    );
-    _ = child.spawnAndWait() catch {};
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "/usr/bin/osascript", "-e", script },
+    }) catch return;
+    _ = child.wait(io) catch {};
 }
 
 /// signed app bundle의 AppIcon.icns 절대경로. osascript fallback도 NSAlert와

@@ -25,12 +25,8 @@ pub fn tryAcquireGate(rt: Runtime) !?RequestGate {
 }
 
 pub fn send(rt: Runtime) !void {
-    // `rt` 를 쓰는 것은 Linux 경로뿐이다. comptime 분기 **안**에서 버려야 다른 platform
-    // 에서만 discard 가 살아 있고, Linux 빌드에서 "pointless discard" 가 되지 않는다.
-    if (comptime builtin.os.tag == .linux) {
-        return impl.sendNewInstanceRequest(rt);
-    } else {
-        _ = rt;
-        return impl.send();
-    }
+    // `rt` 를 쓰는 것은 Linux 경로뿐이지만, 그 참조 하나로 파라미터는 "쓰인 것" 이 된다 —
+    // 다른 platform 에서 `_ = rt;` 를 더하면 오히려 pointless discard 다.
+    if (comptime builtin.os.tag == .linux) return impl.sendNewInstanceRequest(rt);
+    return impl.send();
 }
