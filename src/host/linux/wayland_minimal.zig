@@ -5453,7 +5453,7 @@ const Client = struct {
                 if (session.resetActive()) self.requestRedraw();
             }
         } else if (sym == xkb_key_f12) {
-            perf.dumpAndReset("snapshot");
+            perf.dumpAndReset(rt, "snapshot");
         } else if (sym == xkb_key_f4) {
             self.pending_quit_request = true;
         } else if (sym == xkb_key_return) {

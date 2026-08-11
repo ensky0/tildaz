@@ -99,7 +99,7 @@ pub fn main() !void {
     // producer 모드 판정보다 앞에 둔다 — producer 자식도 같은 실행파일이다.
     instance_context.setRole(.stress);
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
