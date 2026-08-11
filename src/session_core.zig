@@ -1,4 +1,6 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
+const Runtime = runtime.Runtime;
 const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
@@ -229,7 +231,7 @@ pub const Tab = struct {
     backend: TerminalBackend,
     /// OSC title debounce 전용 monotonic elapsed clock. `nanoTimestamp`는
     /// CLOCK_REALTIME/system time이라 시계 보정 영향을 받으므로 쓰지 않는다.
-    title_clock: std.time.Timer,
+    title_clock: runtime.Timer,
     title: [64]u8 = undefined,
     title_len: usize = 0,
     /// OSC 0/2 빈 제목이 오면 최초 자동 이름으로 돌아가기 위한 stable id.
@@ -247,6 +249,7 @@ pub const Tab = struct {
     tab_exit_userdata: ?*anyopaque = null,
 
     fn init(
+        rt: Runtime,
         alloc: std.mem.Allocator,
         cols: u16,
         rows: u16,
@@ -261,7 +264,7 @@ pub const Tab = struct {
         const tab = try alloc.create(Tab);
         errdefer alloc.destroy(tab);
 
-        var term = try initVtTerminal(alloc, cols, rows, max_scroll_lines, theme);
+        var term = try initVtTerminal(rt, alloc, cols, rows, max_scroll_lines, theme);
         errdefer term.deinit(alloc);
 
         var backend = try TerminalBackend.init(.{
@@ -273,7 +276,7 @@ pub const Tab = struct {
             .cwd = cwd,
         });
         errdefer backend.deinit();
-        const title_clock = try std.time.Timer.start();
+        const title_clock: runtime.Timer = .start(rt);
 
         tab.* = .{
             .terminal = term,
@@ -519,6 +522,7 @@ pub const Tab = struct {
 ///
 /// scrollback 은 줄 수가 아니라 byte 예산이라 cols 에 따른 page 용량으로 환산한다.
 pub fn initVtTerminal(
+    rt: Runtime,
     alloc: std.mem.Allocator,
     cols: u16,
     rows: u16,
@@ -532,7 +536,9 @@ pub fn initVtTerminal(
         .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
     } else ghostty.Terminal.Colors.default;
 
-    var term = try ghostty.Terminal.init(alloc, .{
+    // #451 — ghostty main 의 `Terminal.init` 도 `std.Io` 를 첫 인자로 받는다 (upstream 이
+    // 같은 0.16 전환을 했다). 우리 `rt.io` 가 그대로 들어간다.
+    var term = try ghostty.Terminal.init(rt.io, alloc, .{
         .cols = cols,
         .rows = rows,
         .max_scrollback = max_scroll_lines * blk: {
