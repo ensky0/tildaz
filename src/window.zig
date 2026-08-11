@@ -718,7 +718,7 @@ pub const Window = struct {
                 messages.hotkey_registration_failed_format,
                 .{ hotkey_vkey, hotkey_modifiers, cfg_path },
             ) catch messages.hotkey_registration_failed_fallback_msg;
-            dialog.showFatal(messages.hotkey_registration_failed_title, msg);
+            dialog.showFatal(self.rt, messages.hotkey_registration_failed_title, msg);
         }
         // 등록에 성공한 경로에만 세운다 — `deinit` 의 `UnregisterHotKey` 와
         // `WM_HOTKEY_CAPTURE_BEGIN` / `_END` 가 이 flag 를 본다.

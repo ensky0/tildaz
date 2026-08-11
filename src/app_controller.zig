@@ -298,7 +298,7 @@ pub const App = struct {
         if (n == 0) return true;
         var msg_buf: [256]u8 = undefined;
         const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return true;
-        return dialog.showConfirm(messages.quit_confirm_title, msg);
+        return dialog.showConfirm(self.rt, messages.quit_confirm_title, msg);
     }
 
     /// F1 hide 직전 — 진행 중 preedit commit (#175). 모든 focus_loss = commit
@@ -559,7 +559,7 @@ pub const App = struct {
     }
 
     pub fn handleNewTab(self: *App) void {
-        if (tab_actions.checkAtLimitAndDialog(&self.host)) return;
+        if (tab_actions.checkAtLimitAndDialog(self.rt, &self.host)) return;
         // #248 — shell 이 런타임에 사라졌으면 조용히 죽는 대신 알림 후 취소.
         if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
         self.createTab() catch {};

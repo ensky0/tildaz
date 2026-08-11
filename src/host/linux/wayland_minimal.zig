@@ -6,6 +6,7 @@
 //! shared-memory color buffer.
 
 const std = @import("std");
+const Runtime = @import("../../runtime.zig").Runtime;
 const linux = std.os.linux;
 const posix = std.posix;
 const session_core = @import("../../session_core.zig");
@@ -840,6 +841,8 @@ fn kwinCompositor() bool {
 }
 
 const Client = struct {
+    /// #451 — 진입점이 만든 `Io` · 환경변수. `App` · `Window` 와 같은 자리다.
+    rt: Runtime,
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
     // #198 — native hotkey IPC. `tildaz --toggle` 보낸 두 번째 인스턴스의
@@ -1486,7 +1489,7 @@ const Client = struct {
         // 무관하게, 첫 탭 PTY 를 띄우기 전에 — blocking overlay 로 안내한 뒤 종료한다.
         // 연결 자체가 실패한 환경은 이 지점에 도달하지 못하고 상위에서 stderr fallback.
         {
-            if (shell_validate.validationMessage(self.allocator, self.config.shell)) |message| {
+            if (shell_validate.validationMessage(self.rt, self.allocator, self.config.shell)) |message| {
                 // 메시지를 stderr + log 에도 남긴다 — overlay 를 못 띄우는 환경(headless
                 // 등)에서도 원인이 남게. 그 뒤 blocking overlay 로 화면 안내.
                 log.userFacing("fatal", message.text);
@@ -1521,7 +1524,7 @@ const Client = struct {
                 // 그 설정으로 그리면 읽기 어려워진다 (실측: 비례폭 폰트로 자간이 벌어졌다).
                 self.renderer.dialog_use_system_font = true;
                 var font_msg_buf: [2048]u8 = undefined;
-                const msg = font_validate.notFoundMessageSub(&font_msg_buf, family, chain, avail.substitute);
+                const msg = font_validate.notFoundMessageSub(self.rt, &font_msg_buf, family, chain, avail.substitute);
                 log.userFacing("fatal", msg);
                 self.runFatalDialog(messages.config_error_title, msg);
                 std.process.exit(1);
@@ -2861,7 +2864,7 @@ const Client = struct {
                     try self.destroyShellObjects();
                     self.init_layer_closed = false;
                     if (attempt >= max_attempts) {
-                        dialog_mod.showError(messages.startup_layer_unmappable_title, messages.startup_layer_unmappable_msg);
+                        dialog_mod.showError(self.rt, messages.startup_layer_unmappable_title, messages.startup_layer_unmappable_msg);
                         return error.MainSurfaceUnmappable;
                     }
                     continue;
@@ -4822,9 +4825,9 @@ const Client = struct {
         if (self.session == null) return;
         self.commitPendingInput();
         var host = self.buildTabActionsHost();
-        if (tab_actions.checkAtLimitAndDialog(&host)) return;
+        if (tab_actions.checkAtLimitAndDialog(self.rt, &host)) return;
         // #248 — shell 이 런타임에 사라졌으면 (패키지 업데이트 등) 조용히 죽는 대신 알림.
-        if (!shell_validate.checkForNewTab(self.allocator, self.config.shell)) return;
+        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
         const active = self.activeTabOrNull() orelse return;
         self.session.?.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
             log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
@@ -5442,7 +5445,7 @@ const Client = struct {
             // #213 — About 은 reentrancy 밖 drainAboutRequest 가 열도록 flag 만.
             self.pending_about_request = true;
         } else if (sym == xkb_key_p_lower or sym == xkb_key_p_upper) {
-            const cfg_path = paths.configPath(self.allocator) catch return;
+            const cfg_path = paths.configPath(self.rt, self.allocator) catch return;
             defer self.allocator.free(cfg_path);
             system_open.openInDefaultApp(self.allocator, cfg_path);
         } else if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
@@ -5453,7 +5456,7 @@ const Client = struct {
                 if (session.resetActive()) self.requestRedraw();
             }
         } else if (sym == xkb_key_f12) {
-            perf.dumpAndReset(rt, "snapshot");
+            perf.dumpAndReset(self.rt, "snapshot");
         } else if (sym == xkb_key_f4) {
             self.pending_quit_request = true;
         } else if (sym == xkb_key_return) {
@@ -5477,7 +5480,7 @@ const Client = struct {
             // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),
             .open_config => {
-                const path = paths.configPath(self.allocator) catch return;
+                const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
                 system_open.openInDefaultApp(self.allocator, path);
             },
@@ -6984,7 +6987,7 @@ const Client = struct {
     fn drainAboutRequest(self: *Client) void {
         if (!self.pending_about_request) return;
         self.pending_about_request = false;
-        about.showAboutDialog();
+        about.showAboutDialog(self.rt);
     }
 
     /// #216 — KWin Alt+F4 `closed` 후 메인 surface 를 **깜박임 없이** 교체.

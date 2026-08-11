@@ -14,6 +14,7 @@
 //! 다른 옵션 비교 + 결정 흐름은 #203 / SPEC.md §6 참조.
 
 const std = @import("std");
+const Runtime = @import("../runtime.zig").Runtime;
 const dialog = @import("../dialog.zig");
 const log = @import("../log.zig");
 
@@ -52,7 +53,7 @@ pub fn registerCallbacks(cb: Callbacks) void {
     g_callbacks = cb;
 }
 
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
     if (g_callbacks) |cb| return cb.prompt_hotkey(cb.ctx, allocator, title, message, validator);
     showStderr(.info, title, message);
     return null;
@@ -64,7 +65,7 @@ pub fn unregisterCallbacks() void {
     g_callbacks = null;
 }
 
-pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
+pub fn show(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
     if (g_callbacks) |cb| {
         cb.show_info(cb.ctx, severity, title, message);
         return;
@@ -76,11 +77,11 @@ pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) v
 
 /// Config parsing은 Wayland backend 등록 전에 실행되므로 이 경로는 stderr·log에
 /// 동적 본문 전체를 남긴다. runtime fatal은 기존 overlay 경로를 사용한다 (#316).
-pub fn showFatal(title: []const u8, message: []const u8) void {
+pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
     show(.err, title, message);
 }
 
-pub fn showAboutAlert(title: []const u8, message: []const u8) void {
+pub fn showAboutAlert(rt: Runtime, title: []const u8, message: []const u8) void {
     if (g_callbacks) |cb| {
         cb.show_about(cb.ctx, title, message);
         return;
@@ -91,7 +92,7 @@ pub fn showAboutAlert(title: []const u8, message: []const u8) void {
 /// "되돌릴 수 없는 작업" 직전 확인. Host 콜백 가용 시 modal 그림 + inner
 /// event loop pump 로 사용자 선택 대기. 미가용 시 default Cancel (= false)
 /// — 실수 종료 방지 (#116).
-pub fn showConfirm(title: []const u8, message: []const u8) bool {
+pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     if (g_callbacks) |cb| {
         const result = cb.show_confirm(cb.ctx, title, message);
         log.appendLine("dialog", "confirm title={s} result={s}", .{ title, if (result) "OK" else "Cancel" });

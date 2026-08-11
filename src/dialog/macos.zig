@@ -25,6 +25,7 @@
 //! 결합 (host window 알아야 함) 비용은 있지만 panel 시각이 표준.
 
 const std = @import("std");
+const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const objc = @import("../macos_objc.zig");
 const dialog = @import("../dialog.zig");
@@ -449,11 +450,11 @@ fn runModalOverHost(alert: objc.id, keyboard_mode: KeyboardDismissMode) c_long {
     return runModal(alert, objc.sel("runModal"));
 }
 
-pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
+pub fn show(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
     if (nsapp_ready) {
         showNSAlert(severity, title, message);
     } else {
-        showOsascript(severity, title, message);
+        showOsascript(rt, severity, title, message);
     }
 }
 
@@ -1090,28 +1091,28 @@ fn showAboutText(title: []const u8, body: []const u8) bool {
     return true;
 }
 
-pub fn showAboutAlert(title: []const u8, body: []const u8) void {
+pub fn showAboutAlert(rt: Runtime, title: []const u8, body: []const u8) void {
     if (!showAboutText(title, body)) show(.info, title, body);
 }
 
 /// fatal도 같은 branded NSAlert content를 사용하고, 화면을 넘을 때만 본문을
 /// scroll해 전체 경로와 마지막 줄을 보존한다 (#316, #237).
-pub fn showFatal(title: []const u8, body: []const u8) void {
+pub fn showFatal(rt: Runtime, title: []const u8, body: []const u8) void {
     show(.err, title, body);
 }
 
 /// OK / Cancel 두 버튼의 확인 다이얼로그. #250 — 표준 매핑: Enter=OK,
 /// Esc=Cancel. Visible accessory button과 local monitor가 같은 modal response
 /// (1000/1001)를 사용한다. 반환: OK → true.
-pub fn showConfirm(title: []const u8, message: []const u8) bool {
+pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     // #282 C6 — bootstrap(NSApp 미준비) 단계에도 조용히 false 반환하지 않고
     // `show` 와 동일하게 osascript 로 실제 2-버튼 confirm 을 띄운다 (Windows
     // MessageBoxW / Linux overlay 처럼 backend 미가용에도 안내 후 사용자 선택).
-    if (!nsapp_ready) return confirmOsascript(title, message);
+    if (!nsapp_ready) return confirmOsascript(rt, title, message);
 
     const alert = newAlert() orelse {
         log.userFacing("dialog", "NSAlert 생성 실패 — confirm 을 osascript 로 대체");
-        return confirmOsascript(title, message);
+        return confirmOsascript(rt, title, message);
     };
     setMessage(alert, title);
     setStyle(alert, 1); // Informational
@@ -1130,7 +1131,7 @@ pub fn showConfirm(title: []const u8, message: []const u8) bool {
 
 /// osascript 2-버튼 confirm — OK → true, Cancel/닫기 → false (#282 C6).
 /// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
-fn confirmOsascript(title: []const u8, message: []const u8) bool {
+fn confirmOsascript(rt: Runtime, title: []const u8, message: []const u8) bool {
     const allocator = std.heap.page_allocator;
     // #451 — `ArrayList.writer` 가 없어졌다. 늘어나는 버퍼에 쓰는 자리는
     // `Io.Writer.Allocating` 이다 (릴리즈 노트 *Io.Writer.Allocating Alignment Field*).
@@ -1148,16 +1149,13 @@ fn confirmOsascript(title: []const u8, message: []const u8) bool {
     w.writeAll("\"") catch return false;
     const script = script_buf.written();
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    defer threaded.deinit();
-    const io = threaded.io();
-    var child = std.process.spawn(io, .{
+    var child = std.process.spawn(rt.io, .{
         .argv = &.{ "/usr/bin/osascript", "-e", script },
     }) catch {
         log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
         return false;
     };
-    const term = child.wait(io) catch {
+    const term = child.wait(rt.io) catch {
         log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
         return false;
     };
@@ -1167,7 +1165,7 @@ fn confirmOsascript(title: []const u8, message: []const u8) bool {
     };
 }
 
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
     // #282 C6 — hotkey 캡처는 키 이벤트 modal 이라 osascript 로 대체 불가.
     // backend 미가용 시 조용히 null 대신 안내 로그 후 null (호출부가 기존
     // hotkey 유지 등 안전 처리).
@@ -1272,13 +1270,10 @@ fn setButtonEsc(alert: objc.id, index: u64) void {
 
 /// AppleScript fallback — NSApp 무관, config 에러 같이 부트스트랩 실패 시.
 ///
-/// #451 — 이 fallback 두 개 (`confirmOsascript` · 여기) 는 자식 프로세스를 띄우느라
-/// `Io` 가 필요한데, `dialog.zig` 의 공개 API 는 `io` 를 받지 않는다 (호출부 53 자리).
-/// 릴리즈 노트가 *"if you find yourself without access to an `Io` instance"* 에 지정한
-/// 지역 `Io.Threaded` 를 쓴다 — **전역이 아니라 이 함수 안의 값**이고, osascript 로
-/// 떨어지는 드문 경로에만 산다. `dialog` 전체에 `Runtime` 을 흘려보내는 것은 별도 판단이
-/// 필요해 이슈에 남긴다.
-fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const u8) void {
+/// #451 — 이 fallback 두 개 (`confirmOsascript` · 여기) 는 자식 프로세스를 띄우므로
+/// `Io` 가 필요하다. `dialog` 의 공개 API 가 `rt` 를 받아 여기까지 흘려보낸다 — 프로세스
+/// 전체가 진입점이 만든 `Io` 하나를 쓴다.
+fn showOsascript(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
     _ = severity;
     const allocator = std.heap.page_allocator;
     var script_buf: std.Io.Writer.Allocating = .init(allocator);
@@ -1297,13 +1292,10 @@ fn showOsascript(severity: dialog.Severity, title: []const u8, message: []const 
 
     const script = script_buf.written();
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    defer threaded.deinit();
-    const io = threaded.io();
-    var child = std.process.spawn(io, .{
+    var child = std.process.spawn(rt.io, .{
         .argv = &.{ "/usr/bin/osascript", "-e", script },
     }) catch return;
-    _ = child.wait(io) catch {};
+    _ = child.wait(rt.io) catch {};
 }
 
 /// signed app bundle의 AppIcon.icns 절대경로. osascript fallback도 NSAlert와

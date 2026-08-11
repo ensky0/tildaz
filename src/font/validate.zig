@@ -38,7 +38,7 @@ fn showSchemaErrorFatal(rt: Runtime, line: []const u8) noreturn {
     const cfg_path: []const u8 = paths.configPath(rt, fba.allocator()) catch messages.unknown_path_msg;
 
     var msg_buf: [1024]u8 = undefined;
-    dialog.showFatal(messages.config_error_title, schemaErrorMessage(&msg_buf, line, cfg_path));
+    dialog.showFatal(rt, messages.config_error_title, schemaErrorMessage(&msg_buf, line, cfg_path));
 }
 
 fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []const u8 {
@@ -66,7 +66,7 @@ pub fn showNotFoundFatal(rt: Runtime, missing: []const u8, chain: []const []cons
 /// 개입할 여지가 없어 `null` 이다.
 pub fn showNotFoundFatalSub(rt: Runtime, missing: []const u8, chain: []const []const u8, substitute: ?[]const u8) noreturn {
     var msg_buf: [2048]u8 = undefined;
-    dialog.showFatal(messages.config_error_title, notFoundMessageSub(rt, &msg_buf, missing, chain, substitute));
+    dialog.showFatal(rt, messages.config_error_title, notFoundMessageSub(rt, &msg_buf, missing, chain, substitute));
 }
 
 /// `showNotFoundFatal` 의 메시지 조립부 — 세 OS 공통 형식의 단일 정의.
