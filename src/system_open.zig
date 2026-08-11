@@ -29,9 +29,9 @@ fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
 
 fn openSpawn(allocator: std.mem.Allocator, cmd: []const u8, path: []const u8) void {
     var child = std.process.Child.init(&.{ cmd, path }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
+    child.stdin_behavior = .ignore;
+    child.stdout_behavior = .ignore;
+    child.stderr_behavior = .ignore;
     _ = child.spawn() catch return;
     // detached — 자식 process 종료 안 기다림. open / xdg-open 은 즉시 fork.
 }

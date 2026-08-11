@@ -36,7 +36,7 @@ pub fn detect(b: *std.Build) Info {
     const hash_raw = b.runAllowFail(
         &.{ "git", "-C", root, "rev-parse", "--short", "HEAD" },
         &code,
-        .Ignore,
+        .ignore,
     ) catch return .{};
     const commit = std.mem.trim(u8, hash_raw, " \t\r\n");
     // 커밋이 하나도 없는 저장소 (`git init` 직후) 는 위에서 실패하지만, 방어적으로 본다.
@@ -52,7 +52,7 @@ pub fn detect(b: *std.Build) Info {
     const status = b.runAllowFail(
         &.{ "git", "-C", root, "status", "--porcelain", "--untracked-files=no" },
         &code,
-        .Ignore,
+        .ignore,
     ) catch return .{ .commit = commit };
 
     return .{

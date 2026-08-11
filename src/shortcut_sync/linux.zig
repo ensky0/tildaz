@@ -185,9 +185,9 @@ fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
 
 fn runHyprlandKeyword(allocator: std.mem.Allocator, keyword: []const u8, value: []const u8) !bool {
     var child = std.process.Child.init(&.{ "hyprctl", "keyword", keyword, value }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
+    child.stdin_behavior = .ignore;
+    child.stdout_behavior = .ignore;
+    child.stderr_behavior = .ignore;
     try child.spawn();
     return switch (try child.wait()) {
         .Exited => |code| code == 0,

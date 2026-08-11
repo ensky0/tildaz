@@ -56,14 +56,32 @@ const impl = switch (builtin.os.tag) {
 const CachedPath = if (builtin.os.tag == .windows)
     struct {
         utf8: []const u8,
-        native: *const std.os.windows.PathSpace,
+        // Zig 0.16 — `std.os.windows.PathSpace` 가 없어지고 새 Io 구현 안으로 들어갔다
+        // (#451). 타입 자체는 같은 역할 (WTF-16 경로 + 길이) 이다.
+        native: *const std.Io.Threaded.WindowsPathSpace,
     }
 else
     struct {
         utf8: []const u8,
     };
 
-var g_path_mutex: std.Thread.Mutex = .{};
+// Zig 0.16 — `std.Thread.Mutex` 와 `std.once` 가 사라지고 동기화가 `std.Io.Mutex` 로 갔다
+// (#451). `lock` / `lockUncancelable` 둘 다 `io` 를 받고 `tryLock` 만 io 없이 된다.
+//
+// **이 mutex 는 경로 캐싱 1 회용 가드**다 (아래 `cachedPath`). 로그를 쓰는 모든 스레드가
+// 지나가지만 실제 경합은 준비되기 전 한 번뿐이고, 그 뒤로는 `g_cached_path` 를 읽고 곧
+// 빠져나온다.
+var g_path_mutex: std.Io.Mutex = .init;
+
+/// 진입점이 런타임에게 받은 `Io` (`std.process.Init.io`). Zig 0.16 의 `Io.Mutex` 는
+/// `lock` · `unlock` 이 모두 `io` 를 받는데 이 로거는 전역이라 호출부마다 넘길 수 없어서,
+/// `main` 이 한 번 심어 둔다 (#451 의 안 A — `Io` 를 최소로만 들인다).
+var g_io: ?std.Io = null;
+
+/// `main` 의 **첫 줄**에서 부른다 — 그래야 위 `cachedPath` 의 "아직 스레드가 없다" 가 성립한다.
+pub fn setIo(io: std.Io) void {
+    g_io = io;
+}
 var g_path_attempted = false;
 var g_cached_path: ?CachedPath = null;
 
@@ -72,8 +90,13 @@ var g_cached_path: ?CachedPath = null;
 /// slice를 사용한다. 준비 실패는 로그 자체에 쓸 수 없으므로 stderr에 한 번
 /// 명시하고 이후 null을 반환한다.
 fn cachedPath() ?CachedPath {
-    g_path_mutex.lock();
-    defer g_path_mutex.unlock();
+    // `g_io` 가 null 인 구간 — 진입점이 `setIo` 를 부르기 전이다. 그때는 아직 스레드를
+    // 만들지 않았으므로 (`setIo` 가 `main` 의 첫 줄에 있다) 경합할 상대가 없어 잠글 것이
+    // 없다. `tryLock` 으로 흉내내면 실패했을 때 **잠기지 않은 채 지나가는** 조용한 위험이
+    // 생기므로, 아예 잠그지 않는다는 것을 드러내 둔다 (#451).
+    const io = g_io;
+    if (io) |v| g_path_mutex.lockUncancelable(v);
+    defer if (io) |v| g_path_mutex.unlock(v);
 
     if (g_cached_path) |path| return path;
     if (g_path_attempted) return null;
@@ -133,7 +156,9 @@ fn writeRaw(text: []const u8) void {
         // race 라 동시 writer 시 torn line 이 났다. 한 줄 단일 write — 작은 크기라
         // partial write 없이 한 번에 atomic append.
         const posix = std.posix;
-        const fd = posix.open(path.utf8, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
+        // Zig 0.16 — `posix.open` 이 없어지고 `openat` 만 남았다 (#451). `AT.FDCWD` 를 주면
+        // 상대경로 기준이 cwd 라 이전과 같은 의미이고, 우리는 절대경로를 넘긴다.
+        const fd = posix.openat(posix.AT.FDCWD, path.utf8, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true }, 0o644) catch return;
         defer posix.close(fd);
         _ = posix.write(fd, text) catch {};
     }

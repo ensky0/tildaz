@@ -1195,7 +1195,7 @@ pub const App = struct {
                 self.updateTabHover(mouse.x, mouse.y);
                 return true;
             },
-            .mouse_up => |_| {
+            .mouse_up => {
                 // #245 — 어떤 release 든 drag-select auto-scroll 타이머 정지.
                 self.window.setAutoScroll(false);
                 if (self.activeTabPtr()) |tab| {

@@ -30,10 +30,17 @@ pub const TimeFields = log_time.TimeFields;
 
 pub fn currentLocalTime() TimeFields {
     // ms / sec 동일 시각에서 함께 가져옴 — 두 번 query 하면 boundary 에서
-    // sec 가 한 칸 앞서가는 race.
-    const ms_total = std.time.milliTimestamp();
-    const secs: time_t = @intCast(@divTrunc(ms_total, 1000));
-    const ms: u16 = @intCast(@mod(ms_total, 1000));
+    // sec 가 한 칸 앞서가는 race. `clock_gettime` 은 sec 와 nsec 를 한 번에 주므로
+    // 이 성질이 그대로 유지된다.
+    //
+    // Zig 0.16 — `std.time.milliTimestamp` 가 없어졌다 (#451). 시간이 `Io` 경유로
+    // 옮겨갔지만 이 함수는 로그 한 줄마다 불려 `io` 를 받을 자리가 없다. std 가 이미
+    // 감싸 둔 `std.c.clock_gettime` 을 쓴다 — 직접 `extern "c"` 선언하지 않는다.
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return log_time.fallback();
+    if (ts.sec < 0) return log_time.fallback();
+    const secs: time_t = @intCast(ts.sec);
+    const ms: u16 = @intCast(@divTrunc(ts.nsec, std.time.ns_per_ms));
 
     var t: tm = undefined;
     if (localtime_r(&secs, &t) == null) {
