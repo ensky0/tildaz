@@ -14,6 +14,7 @@
 //! 호출처는 Host setup 한 번만 — 핸들러 구현은 한 줄.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const session_core = @import("session_core.zig");
 const SessionCore = session_core.SessionCore;
 const messages = @import("messages.zig");
@@ -55,12 +56,12 @@ pub const Host = struct {
 /// MAX_TABS 도달 검사 + dialog 표시 (도달 시). true 면 호출처가 새 탭 생성
 /// 진행 안 함. cross-platform dialog.zig 가 platform 별 dispatch — helper 가
 /// 직접 호출 (콜백 불필요).
-pub fn checkAtLimitAndDialog(host: *const Host) bool {
+pub fn checkAtLimitAndDialog(rt: Runtime, host: *const Host) bool {
     if (host.session.count() < session_core.MAX_TABS) return false;
     var buf: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
         messages.tab_limit_format;
-    dialog.showInfo(messages.tab_limit_title, msg);
+    dialog.showInfo(rt, messages.tab_limit_title, msg);
     return true;
 }
 

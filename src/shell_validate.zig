@@ -106,7 +106,7 @@ pub fn validateOrFatal(rt: Runtime, allocator: std.mem.Allocator, shell: []const
     if (validationMessage(rt, allocator, shell)) |message| {
         // showFatal은 process를 종료한다. owned 본문은 dialog가 닫힐 때까지
         // 유효하고 process 종료와 함께 회수된다.
-        dialog.showFatal(messages.config_error_title, message.text);
+        dialog.showFatal(rt, messages.config_error_title, message.text);
     }
 }
 
@@ -131,7 +131,7 @@ pub fn checkForNewTab(rt: Runtime, allocator: std.mem.Allocator, shell: []const 
         messages.shell_new_tab_not_found_fallback_msg,
     );
     defer message.deinit(allocator);
-    dialog.showInfo(messages.shell_new_tab_error_title, message.text);
+    dialog.showInfo(rt, messages.shell_new_tab_error_title, message.text);
     return false;
 }
 

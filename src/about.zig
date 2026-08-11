@@ -93,12 +93,12 @@ pub fn showAboutDialog(rt: Runtime) void {
         .open_log_key = open_log_key,
     }) catch |err| {
         log.appendLine("about", "About message allocation failed: {s}", .{@errorName(err)});
-        dialog.showAboutAlert(messages.about_title, messages.about_prepare_failed_msg);
+        dialog.showAboutAlert(rt, messages.about_title, messages.about_prepare_failed_msg);
         return;
     };
     defer allocator.free(msg);
 
-    dialog.showAboutAlert(messages.about_title, msg);
+    dialog.showAboutAlert(rt, messages.about_title, msg);
 }
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
