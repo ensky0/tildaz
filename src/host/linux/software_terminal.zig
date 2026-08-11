@@ -242,13 +242,13 @@ pub const ChromeGlyph = struct {
 ///
 /// 매 프레임 `clearRetainingCapacity` 로 비우므로 할당은 초반 몇 프레임에만 난다.
 pub const FrameLayer = struct {
-    chrome_before: std.ArrayList(ChromeItem) = .{},
-    cell_bg: std.ArrayList(SolidRect) = .{},
-    glyphs: std.ArrayList(GlyphItem) = .{},
-    overlay: std.ArrayList(SolidRect) = .{},
-    preedit_bg: std.ArrayList(SolidRect) = .{},
-    preedit_glyphs: std.ArrayList(GlyphItem) = .{},
-    chrome_after: std.ArrayList(ChromeItem) = .{},
+    chrome_before: std.ArrayList(ChromeItem) = .empty,
+    cell_bg: std.ArrayList(SolidRect) = .empty,
+    glyphs: std.ArrayList(GlyphItem) = .empty,
+    overlay: std.ArrayList(SolidRect) = .empty,
+    preedit_bg: std.ArrayList(SolidRect) = .empty,
+    preedit_glyphs: std.ArrayList(GlyphItem) = .empty,
+    chrome_after: std.ArrayList(ChromeItem) = .empty,
 
     fn clear(self: *FrameLayer) void {
         self.chrome_before.clearRetainingCapacity();

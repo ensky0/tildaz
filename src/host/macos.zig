@@ -402,7 +402,7 @@ var g_run_opts: run_options.RunOptions = .{};
 /// 자기 자신을 join 하게 됨. Windows 의 PostMessage 패턴과 같은 의도이지만
 /// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderFrameTick 가
 /// main thread 에서 매 frame drain).
-var g_pending_close_buf: std.ArrayList(usize) = .{};
+var g_pending_close_buf: std.ArrayList(usize) = .empty;
 var g_pending_close_mutex: std.Thread.Mutex = .{};
 /// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
 /// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainOutputForRender 반환)
@@ -1094,9 +1094,9 @@ const ImeRectPx = struct {
 };
 
 const ImeSnapshot = struct {
-    text: std.ArrayList(u8) = .{},
-    utf16_to_byte: std.ArrayList(usize) = .{},
-    positions: std.ArrayList(ImeRectPx) = .{},
+    text: std.ArrayList(u8) = .empty,
+    utf16_to_byte: std.ArrayList(usize) = .empty,
+    positions: std.ArrayList(ImeRectPx) = .empty,
     selected: NSRange = .{ .location = 0, .length = 0 },
 
     fn deinit(self: *ImeSnapshot, allocator: std.mem.Allocator) void {

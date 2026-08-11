@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
@@ -26,6 +27,9 @@ const command_menu = @import("command_menu.zig");
 const shell_validate = @import("shell_validate.zig");
 
 pub const App = struct {
+    /// #451 — 진입점이 만든 `Io` · 환경변수 묶음. 릴리즈 노트가 지정한 두 길 중
+    /// "context struct 에 담아 넘긴다" 로, host 의 `run(rt, …)` 이 여기 심는다.
+    rt: Runtime,
     session: SessionCore,
     window: Window,
     allocator: std.mem.Allocator,
@@ -435,7 +439,7 @@ pub const App = struct {
             // #376 — blink 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에
             // blink 셀이 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는
             // 화면에서 공짜로 초당 2프레임을 낭비하지 않는다.
-            const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+            const blink_phase_now = ui_metrics.blinkFaintPhase(self.rt.nowMs());
             const blink_tick = blink_phase_now != self.last_blink_phase and r.saw_blink_cell;
             self.last_blink_phase = blink_phase_now;
 
@@ -1077,7 +1081,7 @@ pub const App = struct {
                         return true;
                     },
                     .dump_perf => {
-                        perf.dumpAndReset(rt, "snapshot");
+                        perf.dumpAndReset(self.rt, "snapshot");
                         return true;
                     },
                     .show_about => {
