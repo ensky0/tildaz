@@ -1,6 +1,11 @@
 zig-out/
 zig-cache/
 .zig-cache/
+# Zig 0.16 은 의존성을 글로벌 캐시가 아니라 build root 옆 `zig-pkg/` 에 푼다
+# (릴리즈 노트 "Fetch Packages Into Project-Local Directory"). 안 막으면
+# `git add -A` 가 ghostty 트리 전체를 삼킨다 (#451). upstream ghostty 도 같은
+# 이유로 자기 gitignore 에 넣었다.
+zig-pkg/
 .DS_Store
 *.exe
 *.obj
