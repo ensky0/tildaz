@@ -213,8 +213,11 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
     const command_modifiers = CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
     if (!globalHotkeyAllowed(key_name, (modifiers & command_modifiers) != 0)) return null;
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    // #451 — `std.io.fixedBufferStream` 은 0.16 에서 삭제됐다 (릴리즈 노트 *Io: delete
+    // GenericReader, AnyReader, FixedBufferStream*). 고정 버퍼 쓰기는 `Io.Writer.fixed`
+    // 가 그 자리이고, 쓴 만큼은 `getWritten()` 대신 `buffered()` 로 얻는다.
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
     const ModifierPart = struct { bit: u32, text: []const u8 };
     const modifier_parts = if (builtin.os.tag == .macos)
         [_]ModifierPart{
@@ -234,7 +237,7 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
         if ((modifiers & part.bit) != 0) writer.writeAll(part.text) catch return null;
     }
     writer.writeAll(key_name) catch return null;
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 /// Parsed platform-native hotkey를 command menu에 표시할 canonical 문자열로
@@ -775,15 +778,15 @@ pub fn defaultConfigJsonWithHotkey(
     hotkey: []const u8,
 ) ![]const u8 {
     var fb_buf: [1024]u8 = undefined;
-    var fb_fbs = std.io.fixedBufferStream(&fb_buf);
-    const fw = fb_fbs.writer();
+    var fb_fbs: std.Io.Writer = .fixed(&fb_buf);
+    const fw = &fb_fbs;
     try fw.writeAll("[");
     for (Defaults.glyph_fallback, 0..) |f, i| {
         if (i > 0) try fw.writeAll(", ");
         try fw.print("\"{s}\"", .{f});
     }
     try fw.writeAll("]");
-    const glyph_fallback_json = fb_fbs.getWritten();
+    const glyph_fallback_json = fb_fbs.buffered();
 
     return try std.fmt.allocPrint(allocator,
         \\{{
@@ -1059,14 +1062,14 @@ pub const Config = struct {
                 config.theme = themes.findTheme(v.string);
                 if (config.theme == null) {
                     var buf: [512]u8 = undefined;
-                    var fbs = std.io.fixedBufferStream(&buf);
-                    const w = fbs.writer();
+                    var fbs: std.Io.Writer = .fixed(&buf);
+                    const w = &fbs;
                     w.print(messages.config_unknown_theme_header_format, .{v.string}) catch {};
                     for (themes.themes, 0..) |t, i| {
                         if (i > 0) w.writeAll(", ") catch {};
                         w.writeAll(t.name) catch {};
                     }
-                    showConfigFatalMsg(config_path, fbs.getWritten());
+                    showConfigFatalMsg(config_path, fbs.buffered());
                 }
             }
         }

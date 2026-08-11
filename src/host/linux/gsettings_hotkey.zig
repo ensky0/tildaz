@@ -502,15 +502,15 @@ fn desktopValueHasToken(value: []const u8, wanted: []const []const u8) bool {
 /// 이름은 공통 `hotkey_format.gtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
 fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     const H = config_mod.Hotkey;
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
     if ((modifiers & H.MOD_CTRL) != 0) try w.writeAll("<Control>");
     if ((modifiers & H.MOD_SHIFT) != 0) try w.writeAll("<Shift>");
     if ((modifiers & H.MOD_ALT) != 0) try w.writeAll("<Alt>");
     if ((modifiers & H.MOD_SUPER) != 0) try w.writeAll("<Super>");
     try w.writeAll(hotkey_format.gtkName(keysym));
     try w.writeByte(0);
-    const written = fbs.getWritten();
+    const written = fbs.buffered();
     return written[0 .. written.len - 1 :0];
 }
 
