@@ -1777,6 +1777,21 @@ while IFS="$(printf '\t')" read -r name samples cols rows cols0 rows0 wait_max; 
     fi
     printf '%-14s %12s %10s %17s %10s  %s\n' \
         "$name" "$ms" "$rate" "$rate_min~$rate_max" "${cols}x${rows}" "$note"
+    # **회차별 값을 실행 순서 그대로 적는다** (#449). `min~max` 만으로는 폭이 *어떤 모양*인지
+    # 알 수 없다 — 무작위 산포인지, 두 무리로 갈리는지 (쌍안정, #435 가 Windows 에서 그랬다),
+    # 회차가 갈수록 느려지는지 (열 · 전력 한계) 가 전부 같은 `min~max` 로 나온다. #449 의 진단이
+    # 이것 때문에 **두 번 막혔다** — 표본이 `$WORK_DIR/results` 에만 있고 EXIT trap 이 그 디렉터리를
+    # 지워서, 세 모양을 구분할 데이터가 아예 남지 않았다.
+    #
+    # **정렬하지 않는다.** 단조 감소를 보려면 실행 순서가 그대로여야 한다 (위 절사평균 계산은
+    # 자기 사본을 정렬하므로 영향 없다).
+    if [ "$REPEAT" -ge 2 ]; then
+        printf '%14s   회차별: %s MiB/s\n' "" \
+            "$(printf '%s\n' "$samples" | awk -v bytes="$BYTES" '{
+                mib = bytes / 1048576
+                for (i = 1; i <= NF; i++) printf "%s%.1f", (i > 1 ? "  " : ""), mib / ($i / 1000000000)
+            }')"
+    fi
 done < "$RESULTS"
 
 # --- 마무리 ---
