@@ -314,7 +314,9 @@ pub const Tab = struct {
             vt_handler.effects.xtversion = &vtXtversion;
             vt_handler.effects.color_scheme = &vtColorScheme;
             vt_handler.effects.title_changed = &vtTitleChanged;
-            tab.stream = .initAlloc(alloc, vt_handler);
+            // #451 — `Stream.initAlloc(alloc, handler)` 가 `init(Options)` 하나로 합쳐졌다.
+            // `allocator` 가 optional 이라, 넣으면 예전 `initAlloc` · 빼면 예전 `init` 이다.
+            tab.stream = .init(.{ .handler = vt_handler, .allocator = alloc });
         } else {
             tab.stream = tab.terminal.vtStream();
         }
@@ -1027,7 +1029,8 @@ pub const SessionCore = struct {
 
     pub fn resizeAll(self: *SessionCore, cols: u16, rows: u16) void {
         for (self.tabs.items) |tab| {
-            tab.terminal.resize(self.allocator, cols, rows) catch {};
+            // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
+            tab.terminal.resize(self.allocator, .{ .cols = cols, .rows = rows }) catch {};
             tab.backend.resize(cols, rows) catch {};
         }
     }

@@ -129,7 +129,10 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
             if (!rac.cell.hasText()) break :blk prev;
             const this_b = std.mem.findAny(u21, &word_boundaries, &.{rac.cell.content.codepoint.data}) != null;
             if (this_b != expect_boundary) break :blk prev;
-            if (p.x == p.node.data.size.cols - 1 and !rac.row.wrap) break :blk p;
+            // #451 — `Node.data` 가 `union { resident, compressed }` 로 바뀌었다 (offscreen
+            // scrollback LZ4 압축). 열 수는 메타데이터라 압축을 풀지 않는 `Node.cols()` 가
+            // 그 자리다 (`PageList.zig` 의 *"metadata functions"*).
+            if (p.x == p.node.cols() - 1 and !rac.row.wrap) break :blk p;
             prev = p;
         }
         break :blk prev;
@@ -145,7 +148,7 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
                 prev = p;
                 continue;
             }
-            if (p.x == p.node.data.size.cols - 1 and !rac.row.wrap) break :blk prev;
+            if (p.x == p.node.cols() - 1 and !rac.row.wrap) break :blk prev;
             if (!rac.cell.hasText()) break :blk prev;
             const this_b = std.mem.findAny(u21, &word_boundaries, &.{rac.cell.content.codepoint.data}) != null;
             if (this_b != expect_boundary) break :blk prev;
