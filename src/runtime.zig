@@ -48,20 +48,29 @@ pub const Runtime = struct {
 
     /// `std.process.getEnvVarOwned` 자리. 호출부가 `rt.environ` 을 매번 꺼내지 않게 감싼다.
     /// 반환 메모리는 호출자 소유다.
+    ///
+    /// **`getAlloc` 은 조회 한 번에 환경 전체를 할당한다** (`process/Environ.zig:691` 이
+    /// `createMap` 을 부른다). 우리 호출부는 시작 시점의 몇 번뿐이라 그대로 쓰지만, 뜨거운
+    /// 경로에 넣으면 안 된다 — 그럴 땐 할당이 없는 `rt.environ.getPosix` 를 쓴다 (POSIX 는
+    /// 블록을 그대로 훑고 이미 NUL 종단이다. 대신 반환값은 환경 블록을 가리키므로 소유하지
+    /// 않는다). 같은 성질 때문에 `envHas` 는 아래처럼 `containsConstant` 를 쓴다.
     pub fn envAlloc(rt: Runtime, allocator: std.mem.Allocator, key: []const u8) ![]u8 {
         return rt.environ.getAlloc(allocator, key);
     }
 
-    /// `std.process.hasEnvVarConstant` 자리. `Environ.contains` 가 allocator 를 받는 것은
-    /// Windows 가 key 를 WTF-16 으로 바꿔야 해서인데, 호출부는 bool 하나만 원한다.
+    /// `std.process.hasEnvVarConstant` 자리 — 0.16 의 `Environ.containsConstant` 다.
     ///
-    /// 그래서 **스택 버퍼**로 받는다 — 힙도 전역 allocator 도 끌어들이지 않는다. 환경변수
-    /// 이름은 우리 코드에 리터럴로 박혀 있고 (가장 긴 것이 `TILDAZ_VERBOSE`) 512 바이트는
-    /// 그 변환에 넉넉하다. 넘치면 `false` 인데, "그 변수는 없다" 와 같은 결론이라 안전하다.
-    pub fn envHas(rt: Runtime, key: []const u8) bool {
-        var buf: [512]u8 = undefined;
-        var fba: std.heap.FixedBufferAllocator = .init(&buf);
-        return rt.environ.contains(fba.allocator(), key) catch false;
+    /// **`Environ.contains` (allocator 를 받는 쪽) 를 쓰면 안 된다.** 그 함수는 안에서
+    /// `createMap` 으로 **환경 전체를 할당**한다 (`process/Environ.zig:542`). 처음에 이 자리를
+    /// 512 바이트 `FixedBufferAllocator` 로 감쌌다가 항상 `OutOfMemory` → `catch false` 가
+    /// 되어 **`TILDAZ_VERBOSE` 가 영영 안 켜졌다** (#451 sway 실기에서 발견). 컴파일도 테스트도
+    /// 통과하는 종류의 버그다.
+    ///
+    /// `containsConstant` 는 comptime key 를 받고 POSIX 에서는 `getPosix` 로 블록을 그대로
+    /// 훑어 **할당이 없다**. Windows 는 key 를 comptime 에 WTF-16 으로 바꾼다. 우리 호출부의
+    /// key 는 전부 리터럴이라 그대로 맞는다.
+    pub inline fn envHas(rt: Runtime, comptime key: []const u8) bool {
+        return rt.environ.containsConstant(key);
     }
 
     /// `std.time.milliTimestamp` 자리. `.real` 이 Unix epoch wall clock 이다
