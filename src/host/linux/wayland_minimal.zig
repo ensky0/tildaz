@@ -1273,7 +1273,7 @@ const Client = struct {
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
 
-    fn init(allocator: std.mem.Allocator, cfg: *const config_mod.Config, opts: run_options.RunOptions) !Client {
+    fn init(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config, opts: run_options.RunOptions) !Client {
         const path = try waylandSocketPath(allocator);
         defer allocator.free(path);
         // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
@@ -1298,6 +1298,7 @@ const Client = struct {
         };
         const theme = cfg.theme orelse fallback_theme;
         return .{
+            .rt = rt,
             .allocator = allocator,
             .stream = stream,
             .renderer = renderer,
@@ -1325,7 +1326,7 @@ const Client = struct {
         // 깨끗하게 bind 가능.
         if (self.toggle_listener_fd >= 0) {
             posix.close(self.toggle_listener_fd);
-            single_instance.cleanup();
+            single_instance.cleanup(self.rt);
             self.toggle_listener_fd = -1;
         }
         if (self.kglobalaccel_client) |client| {
@@ -3013,6 +3014,7 @@ const Client = struct {
 
         const theme = self.config.theme orelse fallback_theme;
         self.session = session_core.SessionCore.init(
+            self.rt,
             self.allocator,
             // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382).
             self.run_opts.command orelse self.config.shell,
@@ -8131,6 +8133,7 @@ fn linuxTabTerminate(host: *tab_actions.Host) void {
 }
 
 pub fn runBaselineWindow(
+    rt: Runtime,
     allocator: std.mem.Allocator,
     cfg: *const config_mod.Config,
     opts: run_options.RunOptions,
@@ -8145,10 +8148,10 @@ pub fn runBaselineWindow(
     // TildaZ 가 이미 있을 때 toggle 만 보내고 종료해서 (아래 `AlreadyRunning` 분기)
     // 측정용 창이 아예 뜨지 않는다. socket 도 만들지 않아 기존 인스턴스의 hotkey
     // 라우팅을 건드리지 않는다.
-    const listener_fd: posix.fd_t = if (opts.isStressRun()) -1 else single_instance.createListener() catch |err| switch (err) {
+    const listener_fd: posix.fd_t = if (opts.isStressRun()) -1 else single_instance.createListener(rt) catch |err| switch (err) {
         error.AlreadyRunning => {
             log.appendLine("toggle-ipc", "already running — sending toggle to existing instance + exiting", .{});
-            single_instance.sendToggle(@import("../../instance_context.zig").requireWorkerIndex()) catch |e| {
+            single_instance.sendToggle(rt, @import("../../instance_context.zig").requireWorkerIndex()) catch |e| {
                 log.appendLine("toggle-ipc", "delegate toggle failed: {s}", .{@errorName(e)});
             };
             return;
@@ -8159,7 +8162,7 @@ pub fn runBaselineWindow(
             break :blk @as(posix.fd_t, -1);
         },
     };
-    var client = try Client.init(allocator, cfg, opts);
+    var client = try Client.init(rt, allocator, cfg, opts);
     defer client.deinit();
     client.toggle_listener_fd = listener_fd;
     // #207 — toggle listener가 준비된 직후, sway 세션이면 `tildaz --toggle`을 sway의

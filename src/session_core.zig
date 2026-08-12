@@ -83,11 +83,17 @@ const RingBuffer = struct {
 /// 이고 즉시 PTY 로 빠져나가므로 메모리 압박 짧음. 8MB 초과는 여전히 yield
 /// 하지만 일반 사용 시나리오에서는 거의 발생 안 함.
 const WriteQueue = struct {
+    /// #451 — 0.16 은 동기화 primitive 를 `std.Io` 로 옮겼고 (릴리즈 노트 *Sync
+    /// Primitives*: `Thread.Mutex` ➡️ `Io.Mutex` · `Thread.ResetEvent` ➡️ `Io.Event`),
+    /// 그 API 는 lock / wait / set 마다 `Io` 를 받는다. 이 큐는 UI 스레드와 write
+    /// 스레드의 경계라 호출이 잦아, 매번 인자로 넘기는 대신 큐가 한 번 보관한다
+    /// (`Tab.init` 이 넣는다 — 기본값이 없어 빠뜨리면 컴파일이 잡는다).
+    io: std.Io,
     buf: [8 * 1024 * 1024]u8 = undefined,
     head: usize = 0,
     tail: usize = 0,
-    mutex: std.Thread.Mutex = .{},
-    event: std.Thread.ResetEvent = .{},
+    mutex: std.Io.Mutex = .init,
+    event: std.Io.Event = .unset,
     closed: bool = false,
 
     fn freeSpace(self: *const WriteQueue) usize {
@@ -100,15 +106,15 @@ const WriteQueue = struct {
     fn push(self: *WriteQueue, data: []const u8) void {
         var i: usize = 0;
         while (i < data.len) {
-            self.mutex.lock();
+            self.mutex.lockUncancelable(self.io);
             if (self.closed) {
-                self.mutex.unlock();
+                self.mutex.unlock(self.io);
                 return;
             }
 
             const free = self.freeSpace();
             if (free == 0) {
-                self.mutex.unlock();
+                self.mutex.unlock(self.io);
                 std.Thread.yield() catch {};
                 continue;
             }
@@ -120,15 +126,15 @@ const WriteQueue = struct {
                 @memcpy(self.buf[0 .. batch - first], data[i + first ..][0 .. batch - first]);
             }
             self.head = (self.head + batch) % self.buf.len;
-            self.mutex.unlock();
-            self.event.set();
+            self.mutex.unlock(self.io);
+            self.event.set(self.io);
             i += batch;
         }
     }
 
     fn pop(self: *WriteQueue, out: []u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         var n: usize = 0;
         while (self.tail != self.head and n < out.len) {
             out[n] = self.buf[self.tail];
@@ -139,25 +145,25 @@ const WriteQueue = struct {
     }
 
     fn close(self: *WriteQueue) void {
-        self.mutex.lock();
+        self.mutex.lockUncancelable(self.io);
         self.closed = true;
-        self.mutex.unlock();
-        self.event.set();
+        self.mutex.unlock(self.io);
+        self.event.set(self.io);
     }
 
     /// Pending data 즉시 폐기 — Ctrl+C interrupt 시 큐에 쌓인 paste data 등을
     /// 무효화. write_thread 가 spinning (queue full 시) 중이면 free 공간 생기게
     /// 하는 효과도 있어 main thread 의 다음 push 즉시 진행.
     fn reset(self: *WriteQueue) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.head = 0;
         self.tail = 0;
     }
 
     fn isClosed(self: *WriteQueue) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.closed;
     }
 };
@@ -243,7 +249,8 @@ pub const Tab = struct {
     /// 탭의 interaction 을 event/render 시점에 참조한다.
     interaction: terminal_interaction.TerminalInteraction = .{},
     output_ring: RingBuffer = .{},
-    write_queue: WriteQueue = .{},
+    /// #451 — `Io` 를 담아야 해서 기본값이 없다. `Tab.init` 이 `rt.io` 로 채운다.
+    write_queue: WriteQueue,
     write_thread: ?std.Thread = null,
     tab_exit_fn: SessionCore.TabExitNotify,
     tab_exit_userdata: ?*anyopaque = null,
@@ -283,6 +290,7 @@ pub const Tab = struct {
             .stream = undefined,
             .backend = backend,
             .title_clock = title_clock,
+            .write_queue = .{ .io = rt.io },
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
@@ -428,7 +436,10 @@ pub const Tab = struct {
     fn writeLoop(tab: *Tab) void {
         var buf: [256]u8 = undefined;
         while (true) {
-            tab.write_queue.event.wait();
+            // #451 — `Io.Event.wait` 은 취소점이라 `Cancelable!void` 다. 이 스레드는
+            // 취소를 쓰지 않으므로 (종료는 `closed` flag + `set` 으로 깨운다) 취소점을
+            // 만들지 않는 `waitUncancelable` 이 예전 `ResetEvent.wait` 과 같은 자리다.
+            tab.write_queue.event.waitUncancelable(tab.write_queue.io);
             tab.write_queue.event.reset();
             while (true) {
                 // close 후 pending data 처리 안 함 — 큰 paste 잔여 (수 MB) 가
@@ -653,6 +664,9 @@ fn flushAutomaticTitle(
 pub const MAX_TABS: usize = 32;
 
 pub const SessionCore = struct {
+    /// #451 — 탭 생성이 `Io` 를 타므로 (`ghostty.Terminal.init` · `WriteQueue`) 세션이
+    /// 들고 있다가 `Tab.init` 에 넘긴다. host 의 `run(rt, …)` 에서 내려온 값이다.
+    rt: Runtime,
     allocator: std.mem.Allocator,
     shell_command: terminal.ShellCommand,
     max_scroll_lines: usize,
@@ -701,6 +715,7 @@ pub const SessionCore = struct {
     };
 
     pub fn init(
+        rt: Runtime,
         allocator: std.mem.Allocator,
         shell_command: terminal.ShellCommand,
         max_scroll_lines: usize,
@@ -710,6 +725,7 @@ pub const SessionCore = struct {
         tab_exit_userdata: ?*anyopaque,
     ) SessionCore {
         return .{
+            .rt = rt,
             .allocator = allocator,
             .shell_command = shell_command,
             .max_scroll_lines = max_scroll_lines,
@@ -746,7 +762,7 @@ pub const SessionCore = struct {
             var host_buf: [local_hostname.max_len]u8 = undefined;
             const hostname = local_hostname.get(&host_buf);
             if (pwd_uri.parse(payload, buf, .{ .hostname = hostname, .style = style })) |path| {
-                if (usableDir(path, wsl)) {
+                if (usableDir(self.rt.io, path, wsl)) {
                     log.appendLine("cwd", "new tab cwd={s} (shell reported)", .{path});
                     return path;
                 }
@@ -764,7 +780,7 @@ pub const SessionCore = struct {
         // ② 셸이 알려주지 않으면 OS 에 직접 묻는다 (Linux · macOS 만 — Windows 는 항상
         //    null 이라 OSC 7 주입에 의존한다). 셸 종류 / rc 구성과 무관하게 동작한다.
         if (process_cwd.ofPid(tab.backend.childPid(), buf)) |path| {
-            if (usableDir(path, wsl)) {
+            if (usableDir(self.rt.io, path, wsl)) {
                 log.appendLine("cwd", "new tab cwd={s} (process probe)", .{path});
                 return path;
             }
@@ -780,10 +796,11 @@ pub const SessionCore = struct {
     /// WSL 탭만 예외로 확인 없이 통과시킨다 — 보고된 Linux 경로를 Windows 쪽에서 확인할
     /// 방법이 없어서 `wsl --cd` 에 위임한다. 그 경로가 없으면 wsl 이 에러 한 줄을 찍고
     /// 셸은 정상적으로 뜬다 (Windows 실기 확인, #366).
-    fn usableDir(path: []const u8, wsl: bool) bool {
+    fn usableDir(io: std.Io, path: []const u8, wsl: bool) bool {
         if (builtin.os.tag == .windows and wsl) return true;
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-        dir.close();
+        // #451 — `fs.openDirAbsolute` ➡️ `std.Io.Dir.openDirAbsolute` · `close(io)`.
+        var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+        dir.close(io);
         return true;
     }
 
@@ -792,6 +809,7 @@ pub const SessionCore = struct {
         const cwd = self.inheritedCwd(&cwd_buf);
 
         const tab = try Tab.init(
+            self.rt,
             self.allocator,
             cols,
             rows,
@@ -1315,6 +1333,12 @@ test "automatic title debounce supports default reset" {
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
 }
 
+/// #451 — 테스트는 `std.testing.io` 를 쓰고 환경변수는 안 본다 (세션은 셸 경로를
+/// 인자로 받는다). 값이 고정되니 기계마다 결과가 갈리지도 않는다.
+fn testRuntime() Runtime {
+    return .{ .io = std.testing.io, .environ = .empty };
+}
+
 test "POSIX: new tab shows Tab N from creation, before any shell output" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -1325,6 +1349,7 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
     // 있고 OSC 제목을 보내지 않으므로 (Linux 실측 5/5 미전송) 이 테스트는 어느
     // 머신의 rc 구성에도 흔들리지 않는다.
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         "/bin/sh",
         100,
@@ -1364,6 +1389,7 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
         fn notify(_: usize, _: ?*anyopaque) void {}
     };
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         "/bin/sh",
         100,
@@ -1429,6 +1455,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
         "cmd.exe /d /q /c \"title TILDAZ_OSC_TEST& ping -n 2 127.0.0.1 >nul\"",
     );
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         shell,
         100,
@@ -1488,6 +1515,7 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
         "cmd.exe /d /q /c \"ping -n 4 127.0.0.1 >nul\"",
     );
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         shell,
         100,
