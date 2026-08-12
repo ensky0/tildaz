@@ -332,7 +332,7 @@ pub const GlyphAtlas = struct {
         if (fm.designUnitsPerEm == 0) return 0;
         const idx = [1]dw.UINT16{glyph_index};
         var gm: [1]dw.DWRITE_GLYPH_METRICS = undefined;
-        if (face.GetDesignGlyphMetrics(&idx, 1, &gm, 0) < 0) return 0;
+        if (face.GetDesignGlyphMetrics(&idx, 1, &gm, .FALSE) < 0) return 0;
         return @as(f32, @floatFromInt(gm[0].advanceWidth)) /
             @as(f32, @floatFromInt(fm.designUnitsPerEm)) * self.font_em_size * self.pixels_per_dip;
     }
@@ -455,7 +455,7 @@ pub const GlyphAtlas = struct {
         var indices: [MAX_CLUSTER_GLYPHS]dw.UINT16 = undefined;
         for (glyph_indices, 0..) |gi, i| indices[i] = gi;
         var gm: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_METRICS = undefined;
-        if (face.GetDesignGlyphMetrics(&indices, @intCast(count), &gm, 0) < 0) return offsets;
+        if (face.GetDesignGlyphMetrics(&indices, @intCast(count), &gm, .FALSE) < 0) return offsets;
 
         @memcpy(out[0..count], offsets);
 
@@ -605,7 +605,7 @@ pub const GlyphAtlas = struct {
             .glyphIndices = &indices,
             .glyphAdvances = &advances,
             .glyphOffsets = if (has_placements) &offsets else null,
-            .isSideways = 0,
+            .isSideways = .FALSE,
             .bidiLevel = 0,
         };
 
@@ -775,7 +775,7 @@ pub const GlyphAtlas = struct {
             .glyphIndices = &indices_buf,
             .glyphAdvances = &advances_buf,
             .glyphOffsets = offsets_ptr,
-            .isSideways = 0,
+            .isSideways = .FALSE,
             .bidiLevel = 0,
         };
 
@@ -805,8 +805,8 @@ pub const GlyphAtlas = struct {
             if (tr1 < 0 or enum1 == null) return null;
             defer _ = enum1.?.Release();
             while (true) {
-                var has_run: dw.BOOL = 0;
-                if (enum1.?.MoveNext(&has_run) < 0 or has_run == 0) break;
+                var has_run: dw.BOOL = .FALSE;
+                if (enum1.?.MoveNext(&has_run) < 0 or !has_run.toBool()) break;
                 var cr1_ptr: ?*const dw.IDWriteColorGlyphRun1 = null;
                 if (enum1.?.GetCurrentRun1(&cr1_ptr) < 0) continue;
                 const cr1 = cr1_ptr orelse continue;
@@ -891,8 +891,8 @@ pub const GlyphAtlas = struct {
         ) >= 0 and enumerator != null) {
             defer _ = enumerator.?.Release();
             while (true) {
-                var has_run: dw.BOOL = 0;
-                if (enumerator.?.MoveNext(&has_run) < 0 or has_run == 0) break;
+                var has_run: dw.BOOL = .FALSE;
+                if (enumerator.?.MoveNext(&has_run) < 0 or !has_run.toBool()) break;
                 var cr1_ptr: ?*const dw.IDWriteColorGlyphRun1 = null;
                 if (enumerator.?.GetCurrentRun1(&cr1_ptr) < 0) continue;
                 const cr1 = cr1_ptr orelse continue;

@@ -21,6 +21,7 @@
 
 const std = @import("std");
 const paths = @import("../paths.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 
 const LABEL = "com.tildaz.app";
 
@@ -43,24 +44,24 @@ const PROGRAM_ARGS_DIRECT =
 ;
 
 /// `~/Library/LaunchAgents/com.tildaz.app.plist` 경로 (allocator-based).
-fn plistPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+fn plistPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     const dir = try std.fmt.allocPrint(allocator, "{s}/Library/LaunchAgents", .{home});
     defer allocator.free(dir);
-    std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    // #451 — `fs.makeDirAbsolute` ➡️ `Io.Dir.createDirAbsolute`. 공용 helper 를 쓴다
+    // (`paths.ensureDir` = `createDirPath`) — 이미 있으면 성공이라 분기가 사라진다.
+    try paths.ensureDir(rt, dir);
     return std.fmt.allocPrint(allocator, "{s}/{s}.plist", .{ dir, LABEL });
 }
 
 /// 현재 .app 번들의 main 바이너리 절대경로 (`.../TildaZ.app/Contents/MacOS/tildaz`).
 /// `selfExePath` 가 ad-hoc sign 환경에서도 .app 안 경로를 그대로 돌려준다.
-fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
+fn currentExePath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const slice = try std.fs.selfExePath(&buf);
-    return allocator.dupe(u8, slice);
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const n = try std.process.executablePath(rt.io, &buf);
+    return allocator.dupe(u8, buf[0..n]);
 }
 
 /// exe 경로에서 `.app` 번들 root 를 뽑는다 — `open -a` 가 지목할 대상.
@@ -107,26 +108,26 @@ fn renderPlist(allocator: std.mem.Allocator, exe: []const u8) ![]u8 {
 /// auto-start 활성화 — LaunchAgent plist 작성. 이미 같은 내용이면 건드리지
 /// 않는다. macOS 가 LaunchAgent 변경을 "background activity" 알림으로 보여줄
 /// 수 있어서, 실제 변경이 있을 때만 파일 timestamp 를 바꾼다.
-pub fn enable(allocator: std.mem.Allocator) !void {
-    const exe = try currentExePath(allocator);
+pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
+    const exe = try currentExePath(rt, allocator);
     defer allocator.free(exe);
 
-    const path = try plistPath(allocator);
+    const path = try plistPath(rt, allocator);
     defer allocator.free(path);
 
     const plist = try renderPlist(allocator, exe);
     defer allocator.free(plist);
 
-    _ = try paths.writeFileIfChanged(allocator, path, plist);
+    _ = try paths.writeFileIfChanged(rt, allocator, path, plist);
 }
 
 /// auto-start 비활성화 — plist 파일 삭제. 다음 로그인부터 효과 발생 (launchd 가
 /// plist 없으면 등록 안 함). 즉시 현재 세션 bootout 이 필요하면 수동:
 ///   `launchctl bootout gui/$(id -u)/com.tildaz.app`
-pub fn disable(allocator: std.mem.Allocator) void {
-    const path = plistPath(allocator) catch return;
+pub fn disable(rt: Runtime, allocator: std.mem.Allocator) void {
+    const path = plistPath(rt, allocator) catch return;
     defer allocator.free(path);
-    std.fs.deleteFileAbsolute(path) catch {};
+    std.Io.Dir.deleteFileAbsolute(rt.io, path) catch {};
 }
 
 test "appBundlePath 는 .app 번들 root 만 인정한다" {

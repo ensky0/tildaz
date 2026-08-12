@@ -658,7 +658,7 @@ pub const Window = struct {
         // "F1 눌렀는데 반화면이 잠깐 나타났다 사라짐" 으로 보임.
         // 이 속성을 켜면 DWM 이 transition 애니메이션을 건너뛰고 상태 전환이
         // 즉시 반영됨.
-        const disable: BOOL = 1;
+        const disable: BOOL = .TRUE;
         _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
         // Remember font chain + font-creation parameters so `rebuildFontForDpi`
@@ -1553,7 +1553,7 @@ pub const Window = struct {
             WM_NEW_INSTANCE_REQUEST => {
                 if (@import("instance_context.zig").requireWorkerIndex() == 0) {
                     self.show();
-                    @import("new_instance.zig").handle(std.heap.page_allocator);
+                    @import("new_instance.zig").handle(self.rt, std.heap.page_allocator);
                 }
                 // SendMessageW caller가 동기 처리 성공을 판별하는 protocol result.
                 return 1;

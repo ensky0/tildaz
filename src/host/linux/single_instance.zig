@@ -14,32 +14,23 @@
 //!
 //! ## Zig 0.16 — 왜 `std.posix.system` 인가 ([#451](https://github.com/ensky0/tildaz/issues/451))
 //!
-//! 0.16 은 `std.posix` 의 중간 추상화를 걷어냈다 (릴리즈 노트 *posix and os.windows
-//! removals*: *"Go higher: use `std.Io`" / "Go lower: use `std.posix.system` directly"*).
-//! 여기서 쓰던 `socket` · `connect` · `bind` · `listen` · `accept` · `read` · `write` ·
-//! `close` · `unlink` 가 **전부 없어졌고**, `std.net` 도 `std.Io.net` 으로 가면서
-//! `Address.initUnix` 가 하던 `sockaddr_un` 조립을 우리가 한다.
+//! 배관과 그 근거는 [`unix_socket.zig`](unix_socket.zig) 에 있다 (`wayland_minimal.zig`
+//! 과 공유한다). 이 파일 몫의 이유만 적으면:
 //!
-//! **위로 (`Io.net`) 갈 수 없다.** `std.Io.net.UnixAddress` 는 실제로 있지만 (`listen` ·
-//! `connect` · vtable 의 `netListenUnix` · `netConnectUnix`), **non-blocking accept 를
-//! 표현할 방법이 없다**:
-//!
-//! - `UnixAddress.ListenOptions` 에는 `kernel_backlog` 뿐이라 소켓을 non-blocking 으로
-//!   만들 수 없다 (`Io/Threaded.zig` 의 `openSocketPosix` 는 `mode | CLOEXEC` 만 붙인다).
-//! - `netAcceptPosix` 는 `EAGAIN` 을 `errnoBug` 로 넘기고, 그것은 debug 빌드에서
-//!   `std.debug.panic("programmer bug caused syscall error")` 다. `Server.AcceptError` 에
-//!   `WouldBlock` 이 **선언돼 있어도 POSIX 경로는 그것을 반환하지 않는다.**
-//!
-//! 우리 `acceptCommand` 는 Wayland poll 루프가 "읽을 게 있다" 고 할 때 불리고 `WouldBlock`
-//! 을 **정상 흐름**으로 쓴다 (spurious wakeup 이면 그냥 돌아간다). 위로 올리면 메인 루프가
-//! 통째로 블록되거나 패닉한다. 그래서 아래로 내려간다.
-//!
-//! **아래로 내려간 대가는 errno 판정이다.** `std.posix.system.*` 은 raw 반환값을 주므로
-//! 예전 std wrapper 가 하던 실패 판정을 이 파일이 한다 (`checkErr` 한 곳으로 모았다).
+//! **위로 (`Io.net`) 갈 수 없는 이유는 non-blocking accept 다.** 우리 `acceptCommand` 는
+//! Wayland poll 루프가 "읽을 게 있다" 고 할 때 불리고 `WouldBlock` 을 **정상 흐름**으로
+//! 쓴다 (spurious wakeup 이면 그냥 돌아간다). 그런데 `netAcceptPosix` 는 `EAGAIN` 을
+//! `errnoBug` 로 넘기고 그것은 debug 빌드에서 panic 이다. 위로 올리면 메인 루프가 통째로
+//! 블록되거나 패닉한다.
 
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
+const unix_socket = @import("unix_socket.zig");
+const checkErr = unix_socket.checkErr;
+const unixAddress = unix_socket.unixAddress;
+const openSocket = unix_socket.openSocket;
+const closeFd = unix_socket.closeFd;
 const Runtime = @import("../../runtime.zig").Runtime;
 const log = @import("../../log.zig");
 const instance_context = @import("../../instance_context.zig");
@@ -49,46 +40,6 @@ pub const cmd_toggle: u8 = 'T';
 pub const cmd_new_instance: u8 = 'N';
 
 pub const Command = enum { toggle, new_instance };
-
-/// `std.posix.system.*` 의 raw 반환값을 오류로 판정한다. 성공이면 `null`.
-/// 예전 std wrapper 가 하던 일이고, 이 파일의 모든 syscall 이 여기를 지난다.
-///
-/// **`anytype` 인 이유.** `std.posix.system` 은 libc 링크 여부로 갈린다 — libc 를 링크하면
-/// `std.c` (반환 `c_int` / `isize`), 아니면 `std.os.linux` (반환 `usize`) 다. `posix.errno`
-/// 자체가 `anytype` 을 받으므로 (`c.zig` 의 `fn errno(rc: anytype) E`) 여기도 열어 두면
-/// 두 구성에서 같은 코드가 컴파일된다.
-fn checkErr(rc: anytype) ?posix.E {
-    const e = posix.errno(rc);
-    return if (e == .SUCCESS) null else e;
-}
-
-/// `sockaddr_un` 조립 — 예전 `std.net.Address.initUnix` 자리.
-///
-/// 넘기는 길이는 `SUN_LEN` 관례다 — 구조체 전체가 아니라 **경로 길이 + NUL** 까지만
-/// 준다. filesystem socket 에서 커널이 경로 끝을 그렇게 읽는다.
-const UnixAddr = struct { addr: linux.sockaddr.un, len: posix.socklen_t };
-
-fn unixAddress(path: []const u8) error{PathTooLong}!UnixAddr {
-    var addr: linux.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-    // NUL 자리를 남겨야 하므로 `>=` 다.
-    if (path.len >= addr.path.len) return error.PathTooLong;
-    @memcpy(addr.path[0..path.len], path);
-    addr.path[path.len] = 0;
-    const len: posix.socklen_t = @intCast(@offsetOf(linux.sockaddr.un, "path") + path.len + 1);
-    return .{ .addr = addr, .len = len };
-}
-
-/// `extra_flags` 가 `comptime_int` 인 것도 위와 같은 이유다 — 두 구성의 인자 타입이
-/// (`c_int` vs `u32`) 달라서, 호출부의 comptime 상수를 그대로 흘려보내 coercion 을 맡긴다.
-fn openSocket(comptime extra_flags: comptime_int) error{SocketCreateFailed}!posix.fd_t {
-    const rc = posix.system.socket(posix.AF.UNIX, posix.SOCK.STREAM | extra_flags, 0);
-    if (checkErr(rc) != null) return error.SocketCreateFailed;
-    return @intCast(rc);
-}
-
-fn closeFd(fd: posix.fd_t) void {
-    _ = posix.system.close(fd);
-}
 
 /// Socket path. `$XDG_RUNTIME_DIR/tildaz-N.sock` (정상 표준) 또는
 /// fallback `/tmp/tildaz-<uid>-N.sock`. `$XDG_RUNTIME_DIR` 는 systemd / elogind

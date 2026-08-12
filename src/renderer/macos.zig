@@ -18,6 +18,7 @@ const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const chrome_palette = @import("../chrome_palette.zig");
 const themes = @import("../themes.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
@@ -226,6 +227,9 @@ const PendingTabs = struct {
 };
 
 pub const MetalRenderer = struct {
+    /// #451 — `applyScale` 이 나중에 폰트를 다시 만들 때도 폰트 미설치 fatal 경로를
+    /// 타므로, `alloc` · `font_families` 와 같은 자리에 함께 보관한다.
+    rt: Runtime,
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,
     atlas: GlyphAtlas,
@@ -322,6 +326,7 @@ pub const MetalRenderer = struct {
     }
 
     pub fn init(
+        rt: Runtime,
         alloc: std.mem.Allocator,
         device: objc.id,
         layer: objc.id,
@@ -335,6 +340,7 @@ pub const MetalRenderer = struct {
         const cmd_queue = objc.msgSend(device, objc.sel("newCommandQueue"));
 
         var font_ctx = try CoreTextFontContext.init(
+            rt,
             alloc,
             font_families,
             terminal_font,
@@ -350,6 +356,7 @@ pub const MetalRenderer = struct {
 
         const tab_spec = ui_metrics.tabLabelFontSpec();
         var tab_font_ctx = try CoreTextFontContext.init(
+            rt,
             alloc,
             font_families,
             tab_spec,
@@ -426,6 +433,7 @@ pub const MetalRenderer = struct {
         }
 
         return .{
+            .rt = rt,
             .alloc = alloc,
             .font = font_ctx,
             .atlas = glyph_atlas,
@@ -459,6 +467,7 @@ pub const MetalRenderer = struct {
 
         // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
         var new_font = try CoreTextFontContext.init(
+            self.rt,
             self.alloc,
             self.font_families,
             self.terminal_font,
@@ -467,6 +476,7 @@ pub const MetalRenderer = struct {
         errdefer new_font.deinit();
 
         var new_tab_font = try CoreTextFontContext.init(
+            self.rt,
             self.alloc,
             self.font_families,
             ui_metrics.tabLabelFontSpec(),
@@ -612,6 +622,10 @@ pub const MetalRenderer = struct {
         preedit_utf8: []const u8,
         menu_ui: command_menu.Ui,
         toggle_hotkey: []const u8,
+        /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
+        /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
+        /// 호출부의 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다.
+        blink_faint: bool,
     ) void {
         const encoder = self.current_encoder;
         if (encoder == null) return;
@@ -629,7 +643,7 @@ pub const MetalRenderer = struct {
         // sample하면 정적인 단일 탭 최초 frame의 icon이 투명하게 남았다.
         self.uploadTabAtlasIfDirty();
 
-        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, scrollbar_y_offset, padding, preedit_utf8);
+        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, scrollbar_y_offset, padding, preedit_utf8, blink_faint);
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
@@ -674,6 +688,8 @@ pub const MetalRenderer = struct {
         scrollbar_y_offset: i32,
         padding: i32,
         preedit_utf8: []const u8,
+        /// `renderTerminal` 이 받은 프레임 단위 blink 위상 (#376).
+        blink_faint: bool,
     ) void {
         self.render_state.update(self.alloc, terminal) catch return;
 
@@ -706,9 +722,6 @@ pub const MetalRenderer = struct {
         var text_buf: [MAX_CELLS]TextInstance = undefined;
         var text_count: u32 = 0;
 
-        // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
-        // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
-        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
         self.saw_blink_cell = false;
 
         // --- Background pass ---

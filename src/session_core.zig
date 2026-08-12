@@ -788,7 +788,7 @@ pub const SessionCore = struct {
 
         // ② 셸이 알려주지 않으면 OS 에 직접 묻는다 (Linux · macOS 만 — Windows 는 항상
         //    null 이라 OSC 7 주입에 의존한다). 셸 종류 / rc 구성과 무관하게 동작한다.
-        if (process_cwd.ofPid(tab.backend.childPid(), buf)) |path| {
+        if (process_cwd.ofPid(self.rt.io, tab.backend.childPid(), buf)) |path| {
             if (usableDir(self.rt.io, path, wsl)) {
                 log.appendLine("cwd", "new tab cwd={s} (process probe)", .{path});
                 return path;
@@ -1168,7 +1168,7 @@ test "next active index shifts when closing earlier tab" {
 }
 
 test "OSC 0 and 2 update automatic tab title and empty title restores default" {
-    var terminal_state = try ghostty.Terminal.init(std.testing.allocator, .{
+    var terminal_state = try ghostty.Terminal.init(std.testing.io, std.testing.allocator, .{
         .cols = 80,
         .rows = 24,
     });
@@ -1388,7 +1388,7 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
         _ = session.drainOutputForRender();
         try std.testing.expect(session.tabAt(0).?.title_len > 0);
         try std.testing.expect(session.tabAt(1).?.title_len > 0);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
 }
 
@@ -1508,7 +1508,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
             "TILDAZ_OSC_TEST",
         );
         if (inactive_observed and active_observed) break;
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
     try std.testing.expect(active_observed);
     try std.testing.expect(inactive_observed);
@@ -1550,11 +1550,11 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
     // 이후로도 제목 자리가 비지 않는다. 문자열을 고정하지 않는 이유: conhost 가
     // 종료 시점 등에 제목을 보낼지는 우리 계약이 아니라 환경 사실이다 (실측에서
     // cmd 는 10/10 미전송이었지만 그걸 테스트로 못 박지 않는다).
-    var elapsed = try std.time.Timer.start();
+    var elapsed: runtime.Timer = .start(testRuntime());
     while (elapsed.read() < 1500 * std.time.ns_per_ms) {
         _ = session.drainOutputForRender();
         try std.testing.expect(session.activeTab().?.title_len > 0);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
 }
 

@@ -283,9 +283,9 @@ fn createNewInstance() void {
     if (@import("../instance_context.zig").requireWorkerIndex() == 0) {
         repositionWindow();
         showWindow();
-        @import("../new_instance.zig").handle(g_gpa.allocator());
+        @import("../new_instance.zig").handle(g_rt, g_gpa.allocator());
     } else {
-        @import("../instance_request.zig").send() catch {};
+        @import("../instance_request.zig").send(g_rt) catch {};
     }
 }
 
@@ -406,7 +406,10 @@ var g_run_opts: run_options.RunOptions = .{};
 /// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderFrameTick 가
 /// main thread 에서 매 frame drain).
 var g_pending_close_buf: std.ArrayList(usize) = .empty;
-var g_pending_close_mutex: std.Thread.Mutex = .{};
+/// #451 — `Thread.Mutex` ➡️ `Io.Mutex` (릴리즈 노트 *Sync Primitives*). 잠그는 쪽이
+/// read thread 라 취소 개념이 없어 `lockUncancelable` 을 쓴다 — `g_rt.io` 는 진입점이
+/// 이미 채워 둔 값이다.
+var g_pending_close_mutex: std.Io.Mutex = .init;
 /// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
 /// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainOutputForRender 반환)
 /// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ preedit/autoscroll(force_render).
@@ -647,7 +650,7 @@ fn syncTerminalGeometry() void {
 
     for (g_session.tabs.items) |t| {
         if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
-        t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+        t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
             log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
             continue;
         };
@@ -1899,7 +1902,7 @@ fn syncGeometryAfterScreenChange() void {
     const active_terminal = tab.terminal;
     if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
         for (g_session.tabs.items) |t| {
-            t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+            t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
                 log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
                 continue;
             };
@@ -1996,7 +1999,7 @@ fn maybeAutoScrollSelectionMac() bool {
         g_sel_autoscroll_dir = 0;
         return false;
     }
-    const now = std.time.milliTimestamp();
+    const now = g_rt.nowMs();
     if (now < g_sel_autoscroll_next_ms) return false;
     const step: isize = 3;
     tab.terminal.scrollViewport(.{ .delta = if (g_sel_autoscroll_dir < 0) -step else step });
@@ -2108,7 +2111,7 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .fullscreen => toggleFullscreenMode(if (g_fullscreen_mode != .none) g_fullscreen_mode else .monitor),
         .open_config => {
             const allocator = g_gpa.allocator();
-            const path = @import("../paths.zig").configPath(allocator) catch return;
+            const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
             defer allocator.free(path);
             @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
         },
@@ -3045,7 +3048,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     //
     //    `TILDAZ_FONT` 환경변수로 config 보다 우선 — 빠르게 다른 폰트 시험.
     //    config.font.family 는 *glyph fallback chain* (codepoint 별로 chain 순회).
-    const tildaz_font_env = std.process.getEnvVarOwned(allocator, "TILDAZ_FONT") catch null;
+    const tildaz_font_env = g_rt.envAlloc(allocator, "TILDAZ_FONT") catch null;
     defer if (tildaz_font_env) |s| allocator.free(s);
     var env_chain: [1][]const u8 = undefined;
     const font_family_slice: []const []const u8 = if (tildaz_font_env) |s| blk: {
@@ -3057,6 +3060,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 정상 frame은 terminal의 현재 값(OSC 11 포함)을 renderTabBar에 전달한다.
     const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
     g_renderer = renderer_module.RendererBackend.init(
+        g_rt,
         allocator,
         device,
         layer,
@@ -3220,6 +3224,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 상태를 자기 PID 로 덮으면, 측정이 끝난 뒤 사용자의 새 instance 요청이
     // `RequestEndpointReadyTimeout` 으로 실패한다.
     if (!g_run_opts.isStressRun()) try instances.recordEndpointState(
+        g_rt,
         allocator,
         instance_context.requireWorkerIndex(),
         if (g_new_instance_observer_registered) .ready else .unavailable,
@@ -3235,8 +3240,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 /// .join 부름) → 글로벌 queue 에 enqueue 만 하고 main thread (renderFrameTick)
 /// 가 매 frame 시작 시 drain. Windows 의 PostMessage 패턴과 동등 의도.
 fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
-    g_pending_close_mutex.lock();
-    defer g_pending_close_mutex.unlock();
+    g_pending_close_mutex.lockUncancelable(g_rt.io);
+    defer g_pending_close_mutex.unlock(g_rt.io);
     g_pending_close_buf.append(g_gpa.allocator(), tab_ptr) catch {};
 }
 
@@ -3245,9 +3250,9 @@ fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
 /// `tab_actions.closeByPtr` 가 마지막 탭 → terminate 자동 호출 (#117 helper)
 /// — 호출처는 .changed 만 분기.
 fn drainExitedTabs() bool {
-    g_pending_close_mutex.lock();
+    g_pending_close_mutex.lockUncancelable(g_rt.io);
     const closes = g_pending_close_buf.toOwnedSlice(g_gpa.allocator()) catch &.{};
-    g_pending_close_mutex.unlock();
+    g_pending_close_mutex.unlock(g_rt.io);
     defer g_gpa.allocator().free(closes);
 
     var any_changed = false;
@@ -3335,7 +3340,7 @@ fn renderFrameTick() void {
     // #376 — 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에 blink 셀이
     // 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는 화면에서 공짜로
     // 초당 2프레임을 낭비하지 않는다.
-    const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+    const blink_phase_now = ui_metrics.blinkFaintPhase(g_rt.nowMs());
     const blink_tick = blink_phase_now != g_last_blink_phase and
         (if (g_renderer) |r| r.saw_blink_cell else false);
     g_last_blink_phase = blink_phase_now;
@@ -3410,6 +3415,9 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
+        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
+        // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+        blink_phase_now,
     );
 
     // #255 — 이번 frame draw 중 *처음 본* glyph 는 atlas 에 추가되지만(getOrInsert →
@@ -3550,7 +3558,7 @@ fn eventTapCallback(
 ) callconv(.c) CGEventRef {
     if (event_type == kCGEventTapDisabledByTimeout or event_type == kCGEventTapDisabledByUserInput) {
         const REPEAT_WINDOW_MS: i64 = 30_000;
-        const now_ms = std.time.milliTimestamp();
+        const now_ms = g_rt.nowMs();
         const recent = (now_ms - g_last_tap_disable_ms) < REPEAT_WINDOW_MS;
         g_last_tap_disable_ms = now_ms;
         if (recent) {
@@ -3815,7 +3823,7 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     _ = sender;
     applyShortcutInputPolicy(.open_config);
     const allocator = g_gpa.allocator();
-    const path = @import("../paths.zig").configPath(allocator) catch return;
+    const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
     defer allocator.free(path);
     @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
