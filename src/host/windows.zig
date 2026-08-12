@@ -110,6 +110,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     else
         null;
     app.session = SessionCore.init(
+        rt,
         alloc,
         if (stress_shell_w) |w| w.ptr else config.windowsShellUtf16(),
         // #381 — `-scrollback N` 이면 config 를 무시한다 (터미널 비교에서 scrollback 을

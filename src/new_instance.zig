@@ -39,13 +39,13 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
 
     // launcher의 config 열거/spawn 결정과 새 config 생성 transaction이 서로
     // 중간 상태를 관찰하지 않도록 같은 process lock으로 직렬화한다.
-    var launcher_lock = instances.acquireLauncherLock(allocator) catch |err| {
+    var launcher_lock = instances.acquireLauncherLock(rt, allocator) catch |err| {
         showCreateError(rt, err);
         return;
     };
-    defer launcher_lock.deinit();
+    defer launcher_lock.deinit(rt);
 
-    const indices = instances.listConfigIndices(allocator) catch |err| {
+    const indices = instances.listConfigIndices(rt, allocator) catch |err| {
         showCreateError(rt, err);
         return;
     };
@@ -76,13 +76,13 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
         showCreateError(rt, err);
         return;
     };
-    const shell = instances.defaultShell(allocator) catch |err| {
+    const shell = instances.defaultShell(rt, allocator) catch |err| {
         allocator.free(input_owned);
         showCreateError(rt, err);
         return;
     };
     defer allocator.free(shell);
-    instances.createDefaultConfig(allocator, index, shell, input) catch |err| {
+    instances.createDefaultConfig(rt, allocator, index, shell, input) catch |err| {
         allocator.free(input_owned);
         showCreateError(rt, err);
         return;
@@ -95,16 +95,16 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
     defer allocator.free(updated_indices);
     @memcpy(updated_indices[0..indices.len], indices);
     updated_indices[indices.len] = index;
-    shortcut_sync.sync(allocator, updated_indices) catch |err| {
+    shortcut_sync.sync(rt, allocator, updated_indices) catch |err| {
         showCreateError(rt, err);
         return;
     };
-    autostart.enable(allocator) catch |err| log.appendLine("autostart", "enable after instance create failed: {s}", .{@errorName(err)});
-    instances.spawnWorker(allocator, index) catch |err| {
+    autostart.enable(rt, allocator) catch |err| log.appendLine("autostart", "enable after instance create failed: {s}", .{@errorName(err)});
+    instances.spawnWorker(rt, allocator, index) catch |err| {
         showCreateError(rt, err);
         return;
     };
-    instances.waitUntilRunning(allocator, index, 10 * std.time.ns_per_s) catch |err| {
+    instances.waitUntilRunning(rt, allocator, index, 10 * std.time.ns_per_s) catch |err| {
         showCreateError(rt, err);
         return;
     };

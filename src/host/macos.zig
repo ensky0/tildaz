@@ -2612,7 +2612,7 @@ fn handleCloseActiveTab() void {
 fn handleNewTab() void {
     if (tab_actions.checkAtLimitAndDialog(g_rt, &g_host)) return;
     // #248 — shell 이 런타임에 사라졌으면 (brew 업데이트 등) 조용히 죽는 대신 알림.
-    if (!@import("../shell_validate.zig").checkForNewTab(g_gpa.allocator(), g_config.shell)) return;
+    if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
     const active = g_session.activeTab() orelse return;
     g_session.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
         log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
@@ -2828,7 +2828,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
-    @import("../shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
+    @import("../shell_validate.zig").validateOrFatal(g_rt, g_gpa.allocator(), g_config.shell);
 
     // macOS "Press and Hold" 기능 끔 — 영어 키 길게 눌러도 accent picker
     // (à á â) 안 뜨고 정상 key repeat 발생. 한글 자모는 IME 경로라 영향
@@ -3139,6 +3139,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     };
 
     g_session = session_core.SessionCore.init(
+        g_rt,
         allocator,
         // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382). 인자는 넘길 수 없다 —
         // POSIX 는 PTY 자식의 argv 가 고정이다 (`terminal/posix/pty.zig`).
