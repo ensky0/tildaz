@@ -79,7 +79,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     if (rt.envHas("TILDAZ_LINUX_PTY_SMOKE")) {
         var gpa: std.heap.DebugAllocator(.{}) = .init;
         defer _ = gpa.deinit();
-        try runPtySmoke(gpa.allocator());
+        try runPtySmoke(rt, gpa.allocator());
         return;
     }
 
@@ -115,9 +115,10 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     try wayland.runBaselineWindow(rt, gpa.allocator(), &g_config.?, opts);
 }
 
-fn runPtySmoke(allocator: std.mem.Allocator) !void {
+fn runPtySmoke(rt: Runtime, allocator: std.mem.Allocator) !void {
     var done = std.atomic.Value(bool).init(false);
     var backend = try terminal.TerminalBackend.init(.{
+        .rt = rt,
         .allocator = allocator,
         .cols = 80,
         .rows = 24,
@@ -130,7 +131,7 @@ fn runPtySmoke(allocator: std.mem.Allocator) !void {
 
     var elapsed_ms: u64 = 0;
     while (!done.load(.acquire) and elapsed_ms < 2000) : (elapsed_ms += 10) {
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        rt.sleepNs(10 * std.time.ns_per_ms);
     }
 }
 
