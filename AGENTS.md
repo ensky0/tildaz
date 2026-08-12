@@ -644,16 +644,17 @@ C++ toolchain/SDK를 모든 cross target에 요구하지 않도록 기본 false�
 진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 -NoSimd`를 사용해요. macOS package는
 `build.zig`이 이 값을 universal binary의 arm64/x86_64 내부 빌드 양쪽에 전달해요.
 
-**Windows target ABI (#19):** Zig 0.15.2는 ABI를 생략한 Windows target을 GNU로
-resolve하지만, Ghostty는 target query의 ABI가 null이면 [내부 target을 MSVC로
-바꿔요](https://github.com/ghostty-org/ghostty/blob/91f66da24527fa02d92b5fd0b41cd020f553a64c/src/build/Config.zig#L87-L97).
+**Windows target ABI (#19):** Zig는 ABI를 생략한 Windows target을 GNU로 resolve하지만,
+Ghostty는 target query의 ABI가 null이면 [내부 target을 MSVC로
+바꿔요](https://github.com/ghostty-org/ghostty/blob/94d775fefc21f74d9cc85a46b34c4e1d85318fd0/src/build/Config.zig#L96-L107)
+(그쪽 주석이 이유를 적어 둬요 — GNU ABI가 만드는 COMDAT section을 MSVC 링커가 거부해요, LNK1143).
 그러면 TildaZ root와 Ghostty SIMD C++ module의 ABI가 갈리므로, `build.zig`의
 `preserveResolvedWindowsAbi`가 이미 resolve된 ABI를 dependency query에도 명시해요.
 명시적으로 요청한 ABI는 건드리지 않아요.
 
 **캐시 두 종류 — 헷갈리지 않기.** zig 는 캐시가 둘이에요. (1) **로컬 캐시** = 빌드 산출물·중간물, `--cache-dir` 로 지정 (위 명령의 `C:/ziglang/tildaz-cache`). (2) **글로벌 캐시** = 받아온 의존성 패키지 (`ghostty` / `vaxis` / `uucode` 등, `p/` 디렉토리), `--global-cache-dir` 또는 `ZIG_GLOBAL_CACHE_DIR` 로 지정하고 기본은 `%LocalAppData%\zig`. 둘은 **별개라** `--cache-dir` 만 바꿔도 의존성은 글로벌 캐시에서 따로 관리돼요. 의존성 fetch 문제(아래 libxml2)는 *글로벌* 캐시에서 일어나요.
 
-**새 컴퓨터 첫 빌드 — Windows 는 개발자 모드 필수.** zig 는 `build.zig.zon` 의 `minimum_zig_version` (현재 **0.15.2**) 이상이 필요해요. 첫 빌드는 의존성을 자동 fetch 하는데, **Windows 에서는 먼저 개발자 모드 (Developer Mode) 를 켜야 해요**:
+**새 컴퓨터 첫 빌드 — Windows 는 개발자 모드 필수.** zig 는 `build.zig.zon` 의 `minimum_zig_version` (현재 **0.16.0**) 이상이 필요해요. 첫 빌드는 의존성을 자동 fetch 하는데, **Windows 에서는 먼저 개발자 모드 (Developer Mode) 를 켜야 해요**:
 
 - 켜는 법 (Windows 11): **설정 → 시스템 → 개발자용 (고급) → 개발자 모드 ON**. 재부팅 없이 바로 적용.
 - 이유: ghostty tarball 이 upstream [c09ade22](https://github.com/ghostty-org/ghostty/commit/c09ade22) (2026-05-29) 부터 `CLAUDE.md → AGENTS.md` **심볼릭 링크**를 담고 있어요. 우리 pin 은 [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d) (#266, 2026-07-08) 부터 해당. 심볼릭 링크 생성 권한이 없으면 fetch 가 `error: unable to unpack tarball ... unable to create symlink from 'CLAUDE.md' to 'AGENTS.md': AccessDenied` 로 실패해요 (Windows 실기에서 실측, 개발자 모드 ON 으로 해결 확인).

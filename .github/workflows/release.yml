@@ -64,10 +64,10 @@ jobs:
       # 에는 0.15.x 의 새 파일명 패턴 (`zig-x86_64-windows-...`) 미지원으로 깨졌으나
       # v2.2.0+ 에서 fix 됨. action 의 use-cache 는 false — 우리가 ZIG_GLOBAL_CACHE_DIR
       # 을 직접 D: 로 맞춰야 cross-drive convertPathArg assert 회피 가능 (아래 step).
-      - name: Setup Zig 0.15.2
+      - name: Setup Zig 0.16.0
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           use-cache: false
 
       # windows-2022 러너의 checkout 은 D:\ 에 떨어지는데 기본 zig global cache 는
@@ -245,10 +245,10 @@ jobs:
 
       # mlugg/setup-zig — community mirror list fallback 내장. Windows job 의
       # cross-drive 이슈는 macOS 에 없어 use-cache 도 default (true) 로 둠.
-      - name: Setup Zig 0.15.2
+      - name: Setup Zig 0.16.0
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Verify Zig
         run: zig version
@@ -409,10 +409,10 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
-      - name: Setup Zig 0.15.2
+      - name: Setup Zig 0.16.0
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Verify Zig
         run: zig version

@@ -156,7 +156,7 @@ On macOS the executable lives inside the app bundle, so call it by path:
 
 Requirements:
 
-- [Zig 0.15.2](https://ziglang.org/download/)
+- [Zig 0.16.0](https://ziglang.org/download/)
 - macOS: Xcode Command Line Tools (`xcode-select --install`)
 - Windows: no extra C/C++ toolchain; Zig provides clang + LLD for the MSVC ABI
 
