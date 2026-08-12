@@ -29,10 +29,10 @@ const cinnamon_resources = [_]Resource{
 /// executable; install.sh already copied those resources and this becomes a
 /// graceful no-op.
 pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
-    const exe_dir = std.fs.path.dirname(exe) orelse return error.ExecutableDirectoryNotFound;
-    const resource_root = try std.fs.path.join(allocator, &.{ exe_dir, "..", "share", "tildaz" });
+    const exe_dir = std.Io.Dir.path.dirname(exe) orelse return error.ExecutableDirectoryNotFound;
+    const resource_root = try std.Io.Dir.path.join(allocator, &.{ exe_dir, "..", "share", "tildaz" });
     defer allocator.free(resource_root);
 
     const source_family = switch (kind) {
@@ -42,16 +42,16 @@ pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
     const destination_dir = switch (kind) {
-        .gnome => try std.fs.path.join(allocator, &.{ home, ".local", "share", "gnome-shell", "extensions", uuid }),
-        .cinnamon => try std.fs.path.join(allocator, &.{ home, ".local", "share", "cinnamon", "extensions", uuid }),
+        .gnome => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "gnome-shell", "extensions", uuid }),
+        .cinnamon => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "cinnamon", "extensions", uuid }),
     };
     defer allocator.free(destination_dir);
 
-    const source_dir = try std.fs.path.join(allocator, &.{ resource_root, source_family, uuid });
+    const source_dir = try std.Io.Dir.path.join(allocator, &.{ resource_root, source_family, uuid });
     defer allocator.free(source_dir);
     std.fs.accessAbsolute(source_dir, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            const installed_entry = try std.fs.path.join(allocator, &.{ destination_dir, "extension.js" });
+            const installed_entry = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "extension.js" });
             defer allocator.free(installed_entry);
             std.fs.accessAbsolute(installed_entry, .{}) catch return false;
             return true;
@@ -67,16 +67,16 @@ pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
         .cinnamon => cinnamon_resources[0..],
     };
     for (resources) |resource| {
-        const source = try std.fs.path.join(allocator, &.{ source_dir, resource.relative_path });
+        const source = try std.Io.Dir.path.join(allocator, &.{ source_dir, resource.relative_path });
         defer allocator.free(source);
-        const destination = try std.fs.path.join(allocator, &.{ destination_dir, resource.relative_path });
+        const destination = try std.Io.Dir.path.join(allocator, &.{ destination_dir, resource.relative_path });
         defer allocator.free(destination);
-        if (std.fs.path.dirname(destination)) |parent| try std.fs.cwd().makePath(parent);
+        if (std.Io.Dir.path.dirname(destination)) |parent| try std.fs.cwd().makePath(parent);
         changed = (try syncFile(allocator, source, destination)) or changed;
     }
 
     if (kind == .gnome) {
-        const compiled = try std.fs.path.join(allocator, &.{ destination_dir, "schemas", "gschemas.compiled" });
+        const compiled = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "schemas", "gschemas.compiled" });
         defer allocator.free(compiled);
         const compiled_exists = blk: {
             std.fs.accessAbsolute(compiled, .{}) catch break :blk false;
@@ -97,11 +97,11 @@ fn syncFile(allocator: std.mem.Allocator, source_path: []const u8, destination_p
 }
 
 fn compileGnomeSchemas(allocator: std.mem.Allocator, extension_dir: []const u8) !void {
-    const schemas_dir = try std.fs.path.join(allocator, &.{ extension_dir, "schemas" });
+    const schemas_dir = try std.Io.Dir.path.join(allocator, &.{ extension_dir, "schemas" });
     defer allocator.free(schemas_dir);
     const temp_name = try std.fmt.allocPrint(allocator, ".tildaz-compile-{d}", .{std.c.getpid()});
     defer allocator.free(temp_name);
-    const temp_dir = try std.fs.path.join(allocator, &.{ schemas_dir, temp_name });
+    const temp_dir = try std.Io.Dir.path.join(allocator, &.{ schemas_dir, temp_name });
     defer allocator.free(temp_dir);
     try std.fs.cwd().makePath(temp_dir);
     defer std.fs.cwd().deleteTree(temp_dir) catch {};
@@ -116,9 +116,9 @@ fn compileGnomeSchemas(allocator: std.mem.Allocator, extension_dir: []const u8) 
         .Exited => |code| if (code != 0) return error.GlibCompileSchemasFailed,
         else => return error.GlibCompileSchemasFailed,
     }
-    const compiled_source = try std.fs.path.join(allocator, &.{ temp_dir, "gschemas.compiled" });
+    const compiled_source = try std.Io.Dir.path.join(allocator, &.{ temp_dir, "gschemas.compiled" });
     defer allocator.free(compiled_source);
-    const compiled_destination = try std.fs.path.join(allocator, &.{ schemas_dir, "gschemas.compiled" });
+    const compiled_destination = try std.Io.Dir.path.join(allocator, &.{ schemas_dir, "gschemas.compiled" });
     defer allocator.free(compiled_destination);
     _ = try syncFile(allocator, compiled_source, compiled_destination);
 }

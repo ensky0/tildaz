@@ -40,7 +40,7 @@ pub fn ofPid(pid: i32, buf: []u8) ?[]const u8 {
             const link = std.fmt.bufPrint(&link_buf, "/proc/{d}/cwd", .{pid}) catch return null;
             // `readLinkAbsolute` 는 슬라이스가 아니라 정확히 `*[max_path_bytes]u8` 를
             // 받으므로 (호출자 버퍼 크기와 무관) 따로 받아서 옮긴다.
-            var target: [std.fs.max_path_bytes]u8 = undefined;
+            var target: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const path = std.fs.readLinkAbsolute(link, &target) catch return null;
             if (path.len == 0 or path.len > buf.len) return null;
             @memcpy(buf[0..path.len], path);

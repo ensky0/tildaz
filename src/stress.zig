@@ -196,7 +196,7 @@ fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
 }
 
 fn parseGrid(text: []const u8) ?Grid {
-    const x = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const x = std.mem.findScalar(u8, text, 'x') orelse return null;
     const cols = std.fmt.parseInt(u16, text[0..x], 10) catch return null;
     const rows = std.fmt.parseInt(u16, text[x + 1 ..], 10) catch return null;
     if (cols == 0 or rows == 0) return null;
@@ -591,7 +591,7 @@ const ProducerSession = struct {
         errdefer alloc.destroy(self);
         self.* = .{ .alloc = alloc, .shell_command = undefined };
 
-        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const exe_path = try std.fs.selfExePath(&exe_buf);
         self.shell_command = try toShellCommand(alloc, exe_path);
         errdefer freeShellCommand(alloc, self.shell_command);

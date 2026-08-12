@@ -396,7 +396,7 @@ const TestCollector = struct {
     fn contains(needle: []const u8) bool {
         mu.lock();
         defer mu.unlock();
-        return std.mem.indexOf(u8, buf[0..len], needle) != null;
+        return std.mem.find(u8, buf[0..len], needle) != null;
     }
 };
 

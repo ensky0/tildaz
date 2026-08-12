@@ -70,7 +70,7 @@ pub const Options = struct {
 /// 거부 조건: 모르는 스킴 / host 가 다른 머신 (ssh) / 절대 경로가 아님 / NUL 포함 /
 /// `out` 부족.
 pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
-    const sep = std.mem.indexOf(u8, payload, "://") orelse return null;
+    const sep = std.mem.find(u8, payload, "://") orelse return null;
     const scheme = payload[0..sep];
     const rest = payload[sep + 3 ..];
 
@@ -84,7 +84,7 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
         return null;
 
     // host 는 첫 `/` 앞까지. `/` 가 없으면 경로가 아예 없는 payload 라 거부.
-    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+    const slash = std.mem.findScalar(u8, rest, '/') orelse return null;
     if (!hostAccepted(rest[0..slash], opts.hostname, encoded)) return null;
 
     const path_raw = rest[slash..];
@@ -103,7 +103,7 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
 
     // NUL 은 경로로 쓸 수 없다 (`chdir` / `lpCurrentDirectory` 모두 NUL 종단).
     // `%00` 으로 들어올 수 있어 디코딩 후에 검사한다.
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
+    if (std.mem.findScalar(u8, path, 0) != null) return null;
 
     return switch (opts.style) {
         .posix => if (path.len > 0 and path[0] == '/') squeezeLeadingSlashes(path) else null,
@@ -155,7 +155,7 @@ fn squeezeLeadingSlashes(path: []const u8) []const u8 {
 }
 
 fn firstLabel(host: []const u8) []const u8 {
-    const dot = std.mem.indexOfScalar(u8, host, '.') orelse return host;
+    const dot = std.mem.findScalar(u8, host, '.') orelse return host;
     return host[0..dot];
 }
 

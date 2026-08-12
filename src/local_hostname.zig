@@ -48,5 +48,5 @@ test "local_hostname — 조회가 실패해도 안전한 값을 돌려준다" {
     // 실행 환경에 따라 다르다).
     try std.testing.expect(name.len <= max_len);
     // NUL 이 섞여 들어오면 이후 경로 비교가 어긋난다.
-    try std.testing.expect(std.mem.indexOfScalar(u8, name, 0) == null);
+    try std.testing.expect(std.mem.findScalar(u8, name, 0) == null);
 }
