@@ -76,7 +76,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
     log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
-    if (std.process.hasEnvVarConstant("TILDAZ_LINUX_PTY_SMOKE")) {
+    if (rt.envHas("TILDAZ_LINUX_PTY_SMOKE")) {
         var gpa: std.heap.DebugAllocator(.{}) = .init;
         defer _ = gpa.deinit();
         try runPtySmoke(gpa.allocator());
@@ -112,7 +112,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         log.appendLine("autostart", "{s} + extension — hidden_start override (extension handles show/hide via minimize)", .{owner.displayName()});
     }
 
-    try wayland.runBaselineWindow(gpa.allocator(), &g_config.?, opts);
+    try wayland.runBaselineWindow(rt, gpa.allocator(), &g_config.?, opts);
 }
 
 fn runPtySmoke(allocator: std.mem.Allocator) !void {

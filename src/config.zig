@@ -932,7 +932,7 @@ pub const Config = struct {
 
             // disk 정상 — parse 가 JSON 의 shell 을 dupe 하므로 인자는 미사용. 누수 방지 free.
             allocator.free(shell_resolved);
-            break :blk parse(allocator, content, path);
+            break :blk parse(rt, allocator, content, path);
         };
 
         // #431 — 핫키 중복 검사는 **여기 한 곳**이다. `parse` 안에 두면 위의 두 fallback
@@ -979,7 +979,7 @@ pub const Config = struct {
         return c;
     }
 
-    fn parse(allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) Config {
+    fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) Config {
         var config = Config{};
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
             const msg = std.fmt.allocPrint(
@@ -1429,7 +1429,10 @@ test "explicit line height ratio is preserved when parsing" {
     const value_offset = offset + expected.len - 3;
     @memcpy(json_text[value_offset .. value_offset + 3], "0.9");
 
-    const config = Config.parse(allocator, json_text, "/tmp/config_0.json");
+    // #451 — 정상 JSON 이라 `parse` 가 fatal 경로 (config 경로 조회) 로 가지 않는다.
+    // 그래서 `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = Config.parse(rt, allocator, json_text, "/tmp/config_0.json");
     defer config.deinit(allocator);
     try std.testing.expectEqual(@as(f32, 0.9), config.line_height_ratio);
 }
