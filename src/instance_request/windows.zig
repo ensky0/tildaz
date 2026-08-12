@@ -36,7 +36,7 @@ pub const RequestGate = struct {
 pub fn tryAcquireGate() !?RequestGate {
     const handle = CreateMutexW(
         null,
-        0,
+        .FALSE,
         std.unicode.utf8ToUtf16LeStringLiteral("Local\\TildaZ-NewInstanceRequest-v1"),
     ) orelse return error.RequestGateCreateFailed;
     errdefer windows.CloseHandle(handle);

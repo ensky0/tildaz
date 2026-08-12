@@ -28,6 +28,7 @@
 //! #417 (advance 가 셀보다 큼) · #418 (관통 overlay).
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 
 /// Windows 콘솔은 `WriteFile` 로 나간 바이트를 **콘솔 출력 코드페이지**로 디코드한 뒤
@@ -384,7 +385,10 @@ fn sectionL(o: *Out) void {
     row(o, "가나 濁点", &.{ 0x304B, 0x3099 });
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    // #451 — 진입점이 `Io` 를 받는다 (릴리즈 노트 *"Juicy Main"*). 이 하네스는 stdout 쓰기와
+    // 대기밖에 하지 않으므로 `Runtime` 하나면 충분하다.
+    const rt: Runtime = .fromInit(init);
     if (builtin.os.tag == .windows) _ = SetConsoleOutputCP(65001);
 
     var storage: [1 << 16]u8 = undefined;
@@ -404,8 +408,8 @@ pub fn main() !void {
     sectionK(&o);
     sectionL(&o);
 
-    try std.fs.File.stdout().writeAll(o.slice());
+    try std.Io.File.stdout().writeStreamingAll(rt.io, o.slice());
 
     // `-e` 로 띄운 프로세스가 끝나면 앱도 함께 닫힌다. 화면을 보라고 띄운 것이므로 남긴다.
-    while (true) std.Thread.sleep(60 * std.time.ns_per_s);
+    while (true) rt.sleepNs(60 * std.time.ns_per_s);
 }

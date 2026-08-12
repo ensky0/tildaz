@@ -160,6 +160,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         const fam_w = config.windowsFontFamilyUtf16(idx);
         if (!DWriteFontCtx.isFontAvailable(fam_w)) {
             font_validate.showNotFoundFatal(
+                rt,
                 config.font_families[i],
                 config.font_families[0..config.font_family_count],
             );
@@ -280,7 +281,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 실행하면 10 초 뒤 `RequestEndpointReadyTimeout` 으로 실패한다 (Windows 실기 확인).
     // 측정 인스턴스는 새 instance 요청을 받을 대상이 아니므로 아예 기록하지 않는다.
     if (!opts.isStressRun()) {
-        try instances.recordEndpointState(alloc, instance_context.requireWorkerIndex(), .ready);
+        try instances.recordEndpointState(rt, alloc, instance_context.requireWorkerIndex(), .ready);
     }
     log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();

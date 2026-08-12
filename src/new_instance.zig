@@ -10,15 +10,17 @@ const shortcut_sync = @import("shortcut_sync.zig");
 const hotkey_capture = @import("hotkey_capture.zig");
 
 const ValidationContext = struct {
+    /// #451 — 검증이 다른 인스턴스의 config 를 읽으므로 (`instances.*`) `Io` 가 필요하다.
+    rt: Runtime,
     allocator: std.mem.Allocator,
 };
 
 fn validateHotkey(ctx_ptr: *anyopaque, text: []const u8) dialog.HotkeyValidation {
     const ctx: *ValidationContext = @ptrCast(@alignCast(ctx_ptr));
     const hotkey = config.Hotkey.fromString(text) orelse return .invalid;
-    const current_indices = instances.listConfigIndices(ctx.allocator) catch return .check_failed;
+    const current_indices = instances.listConfigIndices(ctx.rt, ctx.allocator) catch return .check_failed;
     defer ctx.allocator.free(current_indices);
-    const owner = instances.hotkeyOwner(ctx.allocator, current_indices, hotkey) catch return .check_failed;
+    const owner = instances.hotkeyOwner(ctx.rt, ctx.allocator, current_indices, hotkey) catch return .check_failed;
     return if (owner) |index| .{ .duplicate = index } else .available;
 }
 
@@ -53,7 +55,7 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
 
     var prompt_buf: [256]u8 = undefined;
     const input_prompt = std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{indices.len + 1}) catch return;
-    var validation_context = ValidationContext{ .allocator = allocator };
+    var validation_context = ValidationContext{ .rt = rt, .allocator = allocator };
     const input_owned = blk: {
         var capture = hotkey_capture.begin(indices) catch |err| {
             showCreateError(rt, err);

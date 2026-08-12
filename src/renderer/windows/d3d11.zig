@@ -110,7 +110,7 @@ pub const DXGI_SWAP_CHAIN_DESC = extern struct {
     BufferUsage: u32 = 0,
     BufferCount: u32 = 0,
     OutputWindow: HWND = null,
-    Windowed: BOOL = 1,
+    Windowed: BOOL = .TRUE,
     SwapEffect: u32 = 0,
     Flags: u32 = 0,
 };
@@ -169,7 +169,7 @@ pub const D3D11_VIEWPORT = extern struct {
 };
 
 pub const D3D11_RENDER_TARGET_BLEND_DESC = extern struct {
-    BlendEnable: BOOL = 0,
+    BlendEnable: BOOL = .FALSE,
     SrcBlend: u32 = D3D11_BLEND_ONE,
     DestBlend: u32 = D3D11_BLEND_ZERO,
     BlendOp: u32 = D3D11_BLEND_OP_ADD,
@@ -180,8 +180,8 @@ pub const D3D11_RENDER_TARGET_BLEND_DESC = extern struct {
 };
 
 pub const D3D11_BLEND_DESC = extern struct {
-    AlphaToCoverageEnable: BOOL = 0,
-    IndependentBlendEnable: BOOL = 0,
+    AlphaToCoverageEnable: BOOL = .FALSE,
+    IndependentBlendEnable: BOOL = .FALSE,
     RenderTarget: [8]D3D11_RENDER_TARGET_BLEND_DESC = [_]D3D11_RENDER_TARGET_BLEND_DESC{.{}} ** 8,
 };
 

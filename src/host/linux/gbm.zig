@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const unix_socket = @import("unix_socket.zig");
 
 /// DRM fourcc. `wl_shm` 의 format enum (`shm_format_argb8888` = 0) 과 값 체계가
 /// **다르다** — 같은 의미의 픽셀 포맷이지만 dmabuf 프로토콜은 fourcc 를 쓴다.
@@ -225,7 +226,8 @@ pub const Api = struct {
 
     pub fn closePlanes(planes: []const Plane) void {
         for (planes) |p| {
-            if (p.fd >= 0) posix.close(p.fd);
+            // #451 — `posix.close` 가 없어졌다 (릴리즈 노트 *posix and os.windows removals*).
+            if (p.fd >= 0) unix_socket.closeFd(p.fd);
         }
     }
 
@@ -256,8 +258,11 @@ pub fn openRenderNode() ?posix.fd_t {
     var index: u8 = 128;
     while (index < 136) : (index += 1) {
         var buf: [64]u8 = undefined;
-        const path = std.fmt.bufPrint(&buf, "/dev/dri/renderD{d}", .{index}) catch continue;
-        const fd = posix.open(path, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0) catch continue;
+        // #451 — `posix.open` 도 없어졌다. `Io.Dir.openFileAbsolute` 는 `O_RDWR` 를 표현하지
+        // 못하고 (읽기 전용 / 쓰기 전용만) 여기서 필요한 것은 DRM ioctl 용 raw fd 라
+        // *"Go lower"* 로 간다 — `posix.openat` 은 0.16 에도 남아 있다.
+        const path_z = std.fmt.bufPrintSentinel(&buf, "/dev/dri/renderD{d}", .{index}, 0) catch continue;
+        const fd = posix.openat(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0) catch continue;
         return fd;
     }
     return null;

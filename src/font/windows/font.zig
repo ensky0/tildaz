@@ -515,7 +515,7 @@ pub fn measureCell(
         return error.GlyphIndexFailed;
 
     var glyph_metrics: dw.DWRITE_GLYPH_METRICS = undefined;
-    if (face.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), 0) < 0)
+    if (face.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), .FALSE) < 0)
         return error.GlyphMetricsFailed;
     const advance: f32 = @floatFromInt(glyph_metrics.advanceWidth);
 
@@ -1312,8 +1312,8 @@ pub const DWriteFontContext = struct {
             text,
             text_len,
             face,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null, // number_substitution
@@ -1347,8 +1347,8 @@ pub const DWriteFontContext = struct {
             actual_count,
             face,
             self.font_em_size,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null,
@@ -1585,8 +1585,8 @@ pub const DWriteFontContext = struct {
             text,
             text_len,
             face,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null, // number_substitution
@@ -1628,8 +1628,8 @@ pub const DWriteFontContext = struct {
             actual_count,
             face,
             self.font_em_size,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null,

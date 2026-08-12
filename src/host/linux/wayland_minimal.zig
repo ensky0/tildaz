@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const Runtime = @import("../../runtime.zig").Runtime;
+const Timer = @import("../../runtime.zig").Timer;
 const linux = std.os.linux;
 const posix = std.posix;
 const session_core = @import("../../session_core.zig");
@@ -37,6 +38,12 @@ const gl_text = @import("gl_text.zig");
 const dbus = @import("dbus.zig");
 const kglobalaccel = @import("kglobalaccel.zig");
 const single_instance = @import("single_instance.zig");
+const unix_socket = @import("unix_socket.zig");
+/// #451 — `posix.close` 가 없어졌다 (릴리즈 노트 *posix and os.windows removals*).
+/// `unix_socket.zig` 이 이미 `posix.system.close` 를 감싸 두었으므로 그대로 쓴다 —
+/// 소켓 fd 뿐 아니라 memfd · pipe · DRM fd 도 닫는 방법은 같다.
+const closeFd = unix_socket.closeFd;
+const checkErr = unix_socket.checkErr;
 const sway_ipc = @import("sway_ipc.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const about = @import("../../about.zig");
@@ -514,7 +521,7 @@ const SurfaceBuffer = struct {
             return;
         }
         if (self.memory) |m| posix.munmap(m);
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) closeFd(self.fd);
     }
 };
 
@@ -539,7 +546,7 @@ const Gpu = struct {
 
     fn deinit(self: *Gpu) void {
         self.api.destroyDevice(self.device);
-        posix.close(self.drm_fd);
+        closeFd(self.drm_fd);
         self.api.deinit();
     }
 };
@@ -803,17 +810,19 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
 ///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — launcher 의
 ///     `shortcut_sync.syncCosmic` 이 RON custom shortcut(`Spawn("tildaz --toggle N")`)
 ///     파일을 동기화.
-fn compositorHotkeyEnv() bool {
-    if (posix.getenv("SWAYSOCK") != null) return true;
-    if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) return true;
-    if (cosmicCompositor()) return true;
+/// #451 — `posix.getenv` ➡️ `Environ.getPosix`. POSIX 에서는 블록을 그대로 훑어 **할당이
+/// 없으므로**, 이 판정 함수들이 아무것도 해제하지 않는 성질이 그대로 유지된다.
+fn compositorHotkeyEnv(rt: Runtime) bool {
+    if (rt.environ.getPosix("SWAYSOCK") != null) return true;
+    if (rt.environ.getPosix("HYPRLAND_INSTANCE_SIGNATURE") != null) return true;
+    if (cosmicCompositor(rt)) return true;
     return false;
 }
 
 /// `$XDG_CURRENT_DESKTOP` 에 `needle` (소문자) 가 들어있나. XDG 값은 ':' 다중
 /// 토큰일 수 있어 정확매칭 대신 substring + 대소문자 무관.
-fn currentDesktopContains(needle: []const u8) bool {
-    if (posix.getenv("XDG_CURRENT_DESKTOP")) |xcd| {
+fn currentDesktopContains(rt: Runtime, needle: []const u8) bool {
+    if (rt.environ.getPosix("XDG_CURRENT_DESKTOP")) |xcd| {
         var buf: [128]u8 = undefined;
         if (xcd.len <= buf.len) {
             const lower = std.ascii.lowerString(buf[0..xcd.len], xcd);
@@ -825,8 +834,8 @@ fn currentDesktopContains(needle: []const u8) bool {
 
 /// COSMIC (smithay `cosmic-comp`) 세션인지 — hotkey 를 RON custom shortcut
 /// (`Spawn("tildaz --toggle N")`) 으로 거는 환경 식별용 (`compositorHotkeyEnv`).
-fn cosmicCompositor() bool {
-    return currentDesktopContains("cosmic");
+fn cosmicCompositor(rt: Runtime) bool {
+    return currentDesktopContains(rt, "cosmic");
 }
 
 /// KWin (KDE Plasma) 세션인지. drop-down 재표시는 **기본이 destroy/recreate**
@@ -836,15 +845,18 @@ fn cosmicCompositor() bool {
 /// 워크어라운드를 쓴다. wlroots 는 remap 도 되지만 recreate 도 빠르고, smithay
 /// (cosmic-comp #230) 는 remap 미지원이라 recreate 가 정답 — 그래서 *예외는 KWin 한
 /// 곳* 으로 모은다 (워크어라운드를 그 버그가 있는 compositor 에만).
-fn kwinCompositor() bool {
-    return currentDesktopContains("kde");
+fn kwinCompositor(rt: Runtime) bool {
+    return currentDesktopContains(rt, "kde");
 }
 
 const Client = struct {
     /// #451 — 진입점이 만든 `Io` · 환경변수. `App` · `Window` 와 같은 자리다.
     rt: Runtime,
     allocator: std.mem.Allocator,
-    stream: std.net.Stream,
+    /// #451 — 예전 `std.net.Stream`. 0.16 의 `Io.net` 으로는 Wayland 를 태울 수 없어서
+    /// (`unix_socket.zig` 의 이유 절) raw fd 로 내렸다. `recvmsg` · `poll` 은 원래부터
+    /// 이 fd 를 직접 쓰고 있었으므로 (`:4214` · `:4256`) 소켓을 다루는 층이 하나로 모인다.
+    wayland_fd: posix.fd_t,
     // #198 — native hotkey IPC. `tildaz --toggle` 보낸 두 번째 인스턴스의
     // 신호를 받는 Unix domain socket listener. -1 = listener 생성 실패 (이미
     // 다른 인스턴스가 사용 중 — 정상). createListener 가 실패해도 시작은 계속.
@@ -1210,8 +1222,11 @@ const Client = struct {
     /// 는 `runBaselineWindow` 진입에 start, show path 는 매 `handleActivatedToggle`
     /// show 분기 시작에 reset. 사용자 *체감* 1-2 sec startup latency 가 어느
     /// phase 에 모이는지 확정 위한 진단 인프라 — fix 는 측정 결과 본 후.
-    boot_timer: ?std.time.Timer = null,
-    show_timer: ?std.time.Timer = null,
+    /// #451 — `time.Timer` ➡️ `runtime.Timer` (`Io.Timestamp` 기반). 시계 조회가 더 이상
+    /// 실패하지 않으므로 예전의 `catch null` 분기가 사라진다. `?` 는 그대로다 — "아직
+    /// 시작 안 함" 을 뜻하는 것이지 실패가 아니었다.
+    boot_timer: ?Timer = null,
+    show_timer: ?Timer = null,
     /// 자식 셸 extra env. Client.init 에서 config.shell + theme luminance 로
     /// 채워진다. SessionCore.init 에 slice 로 전달 — Client lifetime 안에서
     /// storage valid.
@@ -1240,7 +1255,9 @@ const Client = struct {
     /// 종료 (모든 탭 cascade). macOS host (`g_pending_close_buf`) 와 동등
     /// 패턴 — read thread 는 buf 에 ptr append, main loop 가 drain.
     pending_close_buf: std.ArrayList(usize) = .empty,
-    pending_close_mutex: std.Thread.Mutex = .{},
+    /// #451 — `Thread.Mutex` ➡️ `Io.Mutex` (릴리즈 노트 *Sync Primitives*). 잠그는 쪽 하나가
+    /// PTY read thread 라 취소 개념이 없어 `lockUncancelable` 을 쓴다.
+    pending_close_mutex: std.Io.Mutex = .init,
     /// L12-γ — tab bar 의 가로 scroll 위치 (pixel, tab area 좌측 기준). 탭
     /// 폭 합이 viewport 폭 넘을 때만 의미. user override = false 면 매 paint
     /// 시 `ensureActiveVisible` 로 자동 보정 (활성 탭이 viewport 안 들어옴).
@@ -1274,7 +1291,7 @@ const Client = struct {
     tab_drag: tab_interaction.DragState = .{},
 
     fn init(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config, opts: run_options.RunOptions) !Client {
-        const path = try waylandSocketPath(allocator);
+        const path = try waylandSocketPath(rt, allocator);
         defer allocator.free(path);
         // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
         // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 applyScale.
@@ -1286,21 +1303,21 @@ const Client = struct {
         );
         renderer.opacity_alpha = cfg.opacity_alpha;
         errdefer renderer.deinit(allocator);
-        const stream = std.net.connectUnixSocket(path) catch |err| {
-            // connectUnixSocket 의 `FileNotFound` / `AccessDenied` / `ConnectionRefused`
-            // 만 위로 올리면 사용자가 본 메시지가 "TildaZ failed to start. Error: FileNotFound"
+        const wayland_fd = connectWaylandSocket(path) catch |err| {
+            // `connectWaylandSocket` 의 `FileNotFound` / `AccessDenied` /
+            // `ConnectionRefused` 만 위로 올리면 사용자가 본 메시지가 "TildaZ failed to start. Error: FileNotFound"
             // 한 줄 — Wayland 세션인지 X11 세션인지조차 알 수 없다. 시도한 socket
             // path + WAYLAND_DISPLAY / XDG_SESSION_TYPE / XDG_RUNTIME_DIR raw 값을
             // log + stderr 양쪽에 같이 노출하고, caller 가 분기 가능한 의미 이름
             // (`WaylandSocketUnavailable`) 으로 변환.
-            reportWaylandSocketFailure(allocator, path, err);
+            reportWaylandSocketFailure(rt, allocator, path, err);
             return error.WaylandSocketUnavailable;
         };
         const theme = cfg.theme orelse fallback_theme;
         return .{
             .rt = rt,
             .allocator = allocator,
-            .stream = stream,
+            .wayland_fd = wayland_fd,
             .renderer = renderer,
             .config = cfg,
             .run_opts = opts,
@@ -1325,7 +1342,7 @@ const Client = struct {
         // #198 — toggle listener cleanup. socket file 도 unlink — 다음 인스턴스가
         // 깨끗하게 bind 가능.
         if (self.toggle_listener_fd >= 0) {
-            posix.close(self.toggle_listener_fd);
+            closeFd(self.toggle_listener_fd);
             single_instance.cleanup(self.rt);
             self.toggle_listener_fd = -1;
         }
@@ -1344,7 +1361,7 @@ const Client = struct {
         self.pending_commit.deinit(self.allocator);
         self.preedit_text.deinit(self.allocator);
         self.pending_activation_token.deinit(self.allocator);
-        for (self.received_fds.items) |fd| posix.close(fd);
+        for (self.received_fds.items) |fd| closeFd(fd);
         self.received_fds.deinit(self.allocator);
         if (self.active_buffer) |*buffer| {
             self.destroyBufferObject(buffer.id);
@@ -1417,13 +1434,13 @@ const Client = struct {
         // deinit 이 모든 PTY thread 를 join 한 뒤엔 더 이상 append 없으므로 안전.
         self.pending_close_buf.deinit(self.allocator);
         self.renderer.deinit(self.allocator);
-        self.stream.close();
+        closeFd(self.wayland_fd);
     }
 
     fn run(self: *Client) !void {
         // #205 — boot phase elapsed timer start. 사용자 *체감* 1-2 sec startup
         // latency 진단용. monotonic, ns_per_ms 단위로 log.
-        self.boot_timer = std.time.Timer.start() catch null;
+        self.boot_timer = .start(self.rt);
 
         // Linux 세션 식별 — 어느 로그가 어느 DE인지 구분 + tildaz 의 sway/Hyprland
         // 감지 진단용. server=display protocol(XDG_SESSION_TYPE), de=DE 이름
@@ -1431,10 +1448,10 @@ const Client = struct {
         // env($SWAYSOCK / $HYPRLAND_INSTANCE_SIGNATURE) — *있을 때만* 덧붙인다(평소
         // 깔끔, 어긋날 때만 튄다: 예 de=KDE 인데 swaysock=set = stale SWAYSOCK 버그).
         log.appendLine("startup", "session: server={s} de={s}{s}{s}", .{
-            posix.getenv("XDG_SESSION_TYPE") orelse "(unset)",
-            posix.getenv("XDG_CURRENT_DESKTOP") orelse "(unset)",
-            if (posix.getenv("SWAYSOCK") != null) " swaysock=set" else "",
-            if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) " hyprland=set" else "",
+            self.rt.environ.getPosix("XDG_SESSION_TYPE") orelse "(unset)",
+            self.rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse "(unset)",
+            if (self.rt.environ.getPosix("SWAYSOCK") != null) " swaysock=set" else "",
+            if (self.rt.environ.getPosix("HYPRLAND_INSTANCE_SIGNATURE") != null) " hyprland=set" else "",
         });
 
         // #203 Phase C — dialog backend host callback 등록. self pointer 가
@@ -1548,7 +1565,7 @@ const Client = struct {
         // hyprctl bind / RON shortcut 으로 single_instance socket toggle 연결 —
         // compositorHotkeyEnv 주석 참조).
         // 첫 toggle 은 handleActivatedToggle 가 surface_id==0 분기로 createShellObjects.
-        const has_compositor_hotkey = compositorHotkeyEnv();
+        const has_compositor_hotkey = compositorHotkeyEnv(self.rt);
         const has_kde_hotkey = if (self.kglobalaccel_client) |client| client.registered() else false;
         // #382 — 측정 모드는 `hidden_start` 를 무시하고 창을 표시한 채 시작한다. 숨겨져
         // 있으면 렌더가 일어나지 않아 측정이 무의미하기 때문이고, Windows
@@ -1592,6 +1609,7 @@ const Client = struct {
         // toggle listener 를 만들지 않으므로 (`runBaselineWindow` 의 `listener_fd = -1`)
         // 여기서 worker 의 `ready` 를 **`unavailable` 로** 덮었다.
         if (!self.run_opts.isStressRun()) try instances.recordEndpointState(
+            self.rt,
             self.allocator,
             instance_context.requireWorkerIndex(),
             if (self.toggle_listener_fd >= 0) .ready else .unavailable,
@@ -1682,7 +1700,7 @@ const Client = struct {
             // blink 셀이 실제로 보였을 때만 요청한다. 둘을 함께 봐야 blink 이 없는
             // 화면에서 공짜로 초당 2프레임을 낭비하지 않는다. dialog inner pump 는
             // 터미널이 가려진 상태라 넣지 않는다 — 닫히면 이 루프가 다시 잡는다.
-            const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+            const blink_phase_now = ui_metrics.blinkFaintPhase(self.rt.nowMs());
             if (blink_phase_now != self.last_blink_phase and self.renderer.saw_blink_cell) {
                 self.requestRedraw();
             }
@@ -2129,7 +2147,7 @@ const Client = struct {
         try msg.putU32(0);
         try msg.putU32(zwlr_layer_shell_layer_top);
         try msg.putString("tildaz");
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
 
         // #336 — 첫 commit 은 preferred_scale 확정 전이라 scale=1.0 로 물리 margin 을
         // logical 로 오해할 수 있다(낮은 height_percent + fractional 이면 유효 높이
@@ -2249,7 +2267,7 @@ const Client = struct {
             try margin_msg.putI32(0);
             try margin_msg.putI32(0);
             try margin_msg.putI32(0);
-            try margin_msg.send(self.stream);
+            try margin_msg.send(self.wayland_fd);
         } else {
             // #351 — margin 은 `computeLayerLayout` 이 이미 **logical** 로 계산했다.
             // 변환도 overscan 보정도 없다.
@@ -2267,7 +2285,7 @@ const Client = struct {
             try margin_msg.putI32(layout.margin_right);
             try margin_msg.putI32(layout.margin_bottom);
             try margin_msg.putI32(layout.margin_left);
-            try margin_msg.send(self.stream);
+            try margin_msg.send(self.wayland_fd);
         }
         // set_keyboard_interactivity(on_demand) — show 시 키보드 포커스를 받되 *독점
         // 안 함*. exclusive 는 떠 있는 동안 다른 창에 포커스를 못 줘서(특히 Hyprland 은
@@ -2815,7 +2833,7 @@ const Client = struct {
         // 기본 frame poll(16ms)보다 작아 극단에서 첫 poll 한 번이 상한을 넘겨버리지 않도록.
         const settle_budget_ns: u64 = 10 * std.time.ns_per_ms;
         const settle_poll_ms: i32 = 2;
-        var timer = try std.time.Timer.start();
+        var timer: Timer = .start(self.rt);
         while (!self.preferred_scale_received and !self.init_layer_closed and timer.read() < settle_budget_ns) {
             try self.pollAndDispatch(settle_poll_ms);
         }
@@ -3169,7 +3187,7 @@ const Client = struct {
         // 두 가지 용도가 있다 — (1) 사용자 문제 보고에서 렌더 경로를 원인
         // 후보에서 배제하고 재현, (2) #277 의 "픽셀 동일" 검증에서 **같은
         // 바이너리로** software / GPU 두 경로를 각각 찍어 비교.
-        if (posix.getenv("TILDAZ_DISABLE_GPU")) |value| {
+        if (self.rt.environ.getPosix("TILDAZ_DISABLE_GPU")) |value| {
             if (!std.mem.eql(u8, value, "0")) {
                 log.appendLine("gpu", "software path — disabled by TILDAZ_DISABLE_GPU", .{});
                 return;
@@ -3190,7 +3208,7 @@ const Client = struct {
         };
         const device = api.createDevice(drm_fd) orelse {
             log.appendLineVerbose("gpu", "software path — gbm device creation failed", .{});
-            posix.close(drm_fd);
+            closeFd(drm_fd);
             api.deinit();
             return;
         };
@@ -3208,7 +3226,7 @@ const Client = struct {
         // #277 S2 — GL 로 그린다 (기본). 켜지면 CPU 매핑이 필요 없으므로 LINEAR
         // 제약이 사라진다 — NVIDIA 처럼 LINEAR 를 공표하지 않는 환경이 이 경로로만
         // 열린다. 실패하면 아래 LINEAR 검사로 내려가 S1 또는 software 로 떨어진다.
-        if (self.gl_modifier != null and glRenderRequested()) {
+        if (self.gl_modifier != null and glRenderRequested(self.rt)) {
             // context 는 협상이 이미 열어 뒀다 (`negotiateGlModifier`).
             if (self.gl_context) |*ctx| {
                 // 셰이더 / 정점 버퍼 / atlas 는 context 와 수명을 같이 한다. 하나라도
@@ -3219,8 +3237,9 @@ const Client = struct {
                     if (gl_text.Batch.create(gl_api)) |text_batch| {
                         self.gl_text_batch = text_batch;
                         self.gl_atlas_store = gl_atlas.Atlas.create(gl_api, self.allocator);
-                        if (gpuTimingRequested()) {
+                        if (gpuTimingRequested(self.rt)) {
                             software_terminal.timing_enabled = true;
+                            software_terminal.timing_io = self.rt.io;
                             self.gpu_timer = egl.GpuTimer.create(gl_api);
                             log.appendLine("gpu", "GPU timing {s} (TILDAZ_GPU_TIMING)", .{
                                 if (self.gpu_timer != null) @as([]const u8, "on") else "unavailable — no GL_EXT_disjoint_timer_query",
@@ -3279,22 +3298,22 @@ const Client = struct {
     /// 둘을 나눠 둔 이유는 진단 축이 다르기 때문이다 — 전자는 "GL 래스터가 문제인가",
     /// 후자는 "dma-buf 배관이 문제인가" 를 가른다. 어느 쪽이든 화면은 나온다.
     /// #369 — `TILDAZ_GPU_TIMING=1` 이면 프레임 GPU 시간을 잰다.
-    fn gpuTimingRequested() bool {
-        const value = posix.getenv("TILDAZ_GPU_TIMING") orelse return false;
+    fn gpuTimingRequested(rt: Runtime) bool {
+        const value = rt.environ.getPosix("TILDAZ_GPU_TIMING") orelse return false;
         return !std.mem.eql(u8, value, "0");
     }
 
     /// #369 — `TILDAZ_GL_MODIFIER=<hex>` 로 modifier 를 고정한다 (A/B 측정용).
     /// 협상 결과를 무시하므로 **진단 전용**이다 — 그 modifier 로 할당·import 가
     /// 안 되면 평소 경로대로 software 로 떨어진다.
-    fn forcedModifier() ?u64 {
-        const value = posix.getenv("TILDAZ_GL_MODIFIER") orelse return null;
+    fn forcedModifier(rt: Runtime) ?u64 {
+        const value = rt.environ.getPosix("TILDAZ_GL_MODIFIER") orelse return null;
         const trimmed = if (std.mem.startsWith(u8, value, "0x")) value[2..] else value;
         return std.fmt.parseInt(u64, trimmed, 16) catch null;
     }
 
-    fn glRenderRequested() bool {
-        const value = posix.getenv("TILDAZ_GL_RENDER") orelse return true;
+    fn glRenderRequested(rt: Runtime) bool {
+        const value = rt.environ.getPosix("TILDAZ_GL_RENDER") orelse return true;
         return !std.mem.eql(u8, value, "0");
     }
 
@@ -3419,7 +3438,7 @@ const Client = struct {
         // 그래서 실제 크기를 아는 시점(첫 buffer 생성)에 다시 부른다.
 
         // #369 — 진단용 고정. A/B 측정에서 modifier 만 바꿔 같은 워크로드를 돌린다.
-        if (forcedModifier()) |forced| {
+        if (forcedModifier(self.rt)) |forced| {
             const bo = gpu.api.createWithModifier(gpu.device, forced, probe_w, probe_h);
             if (bo) |b| {
                 var planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
@@ -3638,7 +3657,7 @@ const Client = struct {
             try msg.putU32(plane.stride);
             try msg.putU32(@truncate(bo.modifier >> 32));
             try msg.putU32(@truncate(bo.modifier & 0xffff_ffff));
-            try msg.sendWithFd(self.stream, plane.fd);
+            try msg.sendWithFd(self.wayland_fd, plane.fd);
         }
         {
             // params.create (opcode 2) — (width, height, format, flags).
@@ -3647,7 +3666,7 @@ const Client = struct {
             try msg.putI32(@intCast(bo.height));
             try msg.putU32(gbm.FORMAT_ARGB8888);
             try msg.putU32(0);
-            try msg.send(self.stream);
+            try msg.send(self.wayland_fd);
         }
 
         self.pending_dmabuf_params = params_id;
@@ -4023,13 +4042,15 @@ const Client = struct {
         const new_buffer_id = self.allocId();
 
         const fd = try createMemfd("tildaz-wayland-buffer");
-        errdefer posix.close(fd);
-        try posix.ftruncate(fd, @intCast(size));
+        errdefer closeFd(fd);
+        // #451 — `posix.ftruncate` 가 없어졌다. `Io.File.setLength` 가 그 자리다
+        // (릴리즈 노트 *fs.File.setEndPos ➡️ std.Io.File.setLength*).
+        try (std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } }).setLength(self.rt.io, size);
 
         const memory = try posix.mmap(
             null,
             size,
-            linux.PROT.READ | linux.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             fd,
             0,
@@ -4118,6 +4139,9 @@ const Client = struct {
                 .fullscreen_workarea = self.fullscreen_mode == .avoid,
             },
             .toggle_hotkey = config_mod.hotkeyDisplay(hotkey_buf, self.config.hotkey),
+            // #376 — main loop 의 blink 게이트가 방금 갱신한 값을 그대로 내린다. 렌더러가
+            // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
+            .blink_faint = self.last_blink_phase,
         };
     }
 
@@ -4211,7 +4235,7 @@ const Client = struct {
         };
 
         while (true) {
-            const rc = linux.recvmsg(self.stream.handle, &msg, linux.MSG.CMSG_CLOEXEC);
+            const rc = linux.recvmsg(self.wayland_fd, &msg, linux.MSG.CMSG_CLOEXEC);
             switch (posix.errno(rc)) {
                 .SUCCESS => {
                     if ((msg.flags & linux.MSG.CTRUNC) != 0) return error.WaylandControlMessageTruncated;
@@ -4253,7 +4277,7 @@ const Client = struct {
         // -1 (생성 실패 또는 비활성) 이면 OS poll 이 자동 skip (POSIX 표준).
         var fds = [_]posix.pollfd{
             .{
-                .fd = self.stream.handle,
+                .fd = self.wayland_fd,
                 .events = posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP,
                 .revents = 0,
             },
@@ -4399,7 +4423,7 @@ const Client = struct {
                 0 => self.finishDmabufFeedback(),
                 1 => {
                     const fd = self.takeReceivedFd() catch return;
-                    defer posix.close(fd);
+                    defer closeFd(fd);
                     if (payload.len < 4) return;
                     const size: usize = @intCast(readU32(payload[0..4]));
                     if (size == 0) return;
@@ -4407,7 +4431,7 @@ const Client = struct {
                     self.dmabuf_format_table = posix.mmap(
                         null,
                         size,
-                        linux.PROT.READ,
+                        .{ .READ = true },
                         .{ .TYPE = .PRIVATE },
                         fd,
                         0,
@@ -4895,9 +4919,9 @@ const Client = struct {
     /// 탭) 면 shell_exited true → main loop 종료. `.changed` 면 redraw.
     fn drainExitedTabs(self: *Client) void {
         if (self.session == null) return;
-        self.pending_close_mutex.lock();
+        self.pending_close_mutex.lockUncancelable(self.rt.io);
         const closes = self.pending_close_buf.toOwnedSlice(self.allocator) catch &.{};
-        self.pending_close_mutex.unlock();
+        self.pending_close_mutex.unlock(self.rt.io);
         defer self.allocator.free(closes);
         if (closes.len == 0) return;
 
@@ -5099,7 +5123,7 @@ const Client = struct {
         try rect_msg.putI32(self.physicalToLogical(rect.y));
         try rect_msg.putI32(self.physicalToLogical(rect.w));
         try rect_msg.putI32(self.physicalToLogical(rect.h));
-        try rect_msg.send(self.stream);
+        try rect_msg.send(self.wayland_fd);
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
         self.text_input_enabled = true;
         self.last_cursor_rect_x = rect.x;
@@ -5158,7 +5182,7 @@ const Client = struct {
         try msg.putI32(self.physicalToLogical(rect.y));
         try msg.putI32(self.physicalToLogical(rect.w));
         try msg.putI32(self.physicalToLogical(rect.h));
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
         try self.sendNoArgs(self.text_input_id, text_input_request_commit);
         self.last_cursor_rect_x = rect.x;
         self.last_cursor_rect_y = rect.y;
@@ -5266,7 +5290,7 @@ const Client = struct {
         const format = readU32(payload[0..4]);
         const size_u32 = readU32(payload[4..8]);
         const fd = try self.takeReceivedFd();
-        defer posix.close(fd);
+        defer closeFd(fd);
 
         if (format != wl_keyboard_keymap_format_xkb_v1) {
             log.appendLine("wayland", "unsupported keyboard keymap format={}", .{format});
@@ -5278,7 +5302,7 @@ const Client = struct {
         const memory = try posix.mmap(
             null,
             size,
-            linux.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .PRIVATE },
             fd,
             0,
@@ -5299,7 +5323,7 @@ const Client = struct {
         // swap 했을 때만 cancel).
         if (state == wl_keyboard_key_state_pressed) {
             self.key_repeat_keycode = key;
-            self.key_repeat_next_ms = std.time.milliTimestamp() + @as(i64, self.key_repeat_delay_ms);
+            self.key_repeat_next_ms = self.rt.nowMs() + @as(i64, self.key_repeat_delay_ms);
         } else if (state == 0 and self.key_repeat_keycode == key) {
             // released — same key disarm.
             self.key_repeat_keycode = 0;
@@ -5314,7 +5338,7 @@ const Client = struct {
     fn maybeRepeatKey(self: *Client) !void {
         if (self.key_repeat_keycode == 0) return;
         if (self.key_repeat_rate_hz <= 0) return;
-        const now = std.time.milliTimestamp();
+        const now = self.rt.nowMs();
         if (now < self.key_repeat_next_ms) return;
         try self.processKeyEvent(self.last_serial, self.key_repeat_keycode);
         self.key_repeat_next_ms = now + @divTrunc(1000, @as(i64, self.key_repeat_rate_hz));
@@ -6136,7 +6160,10 @@ const Client = struct {
             return;
         }
 
-        const pipe_fds = posix.pipe() catch return;
+        // #451 — `posix.pipe` 가 없어졌다. raw syscall 로 내린다 — 이 fd 는 wayland 에게
+        // `SCM_RIGHTS` 로 넘길 것이라 `Io` 가 감싼 타입이 아니라 raw fd 여야 한다.
+        var pipe_fds: [2]posix.fd_t = undefined;
+        if (checkErr(posix.system.pipe2(&pipe_fds, .{})) != null) return;
         // read end 는 우리, write end 는 wayland 가 보낼 송신측.
         const read_fd = pipe_fds[0];
         const write_fd = pipe_fds[1];
@@ -6147,16 +6174,16 @@ const Client = struct {
             clipboard_mime_utf8,
             write_fd,
         ) catch {
-            posix.close(read_fd);
-            posix.close(write_fd);
+            closeFd(read_fd);
+            closeFd(write_fd);
             return;
         };
-        posix.close(write_fd); // 우리 쪽 write end 는 안 씀.
+        closeFd(write_fd); // 우리 쪽 write end 는 안 씀.
 
         // wayland 가 우리 송신 후 다른 쪽 fd 에 write 하기 시작. blocking read 로
         // 끝까지 (EOF) 받는다. text paste 가 일반적으로 짧고 fd 가 pipe 라 deadlock
         // 없음 — 송신측이 close 하면 우리 read 0 반환.
-        defer posix.close(read_fd);
+        defer closeFd(read_fd);
         var buf: [4096]u8 = undefined;
         var accumulated: std.ArrayList(u8) = .empty;
         defer accumulated.deinit(self.allocator);
@@ -6190,14 +6217,21 @@ const Client = struct {
     fn handleDataSourceSend(self: *Client, payload: []const u8) !void {
         _ = payload; // mime 문자열은 우리가 advertise 한 유일 mime 라 검사 생략.
         const fd = self.takeReceivedFd() catch return;
-        defer posix.close(fd);
+        defer closeFd(fd);
 
         const text = self.clipboard_text orelse return;
         // fd 가 pipe 이므로 한 번에 다 못 보낼 수 있다 — 짧은 selection 위주라
         // loop 으로 끝까지 시도. SIGPIPE 는 wayland 가 자기 reader 쪽에서 처리한다.
         var offset: usize = 0;
         while (offset < text.len) {
-            const n = posix.write(fd, text[offset..]) catch return;
+            // #451 — `posix.write` 가 없어졌다. 이 fd 는 wayland 가 넘겨준 pipe 라
+            // raw syscall 로 쓴다.
+            const rc = posix.system.write(fd, text.ptr + offset, text.len - offset);
+            if (checkErr(rc)) |e| switch (e) {
+                .INTR => continue,
+                else => return,
+            };
+            const n: usize = @intCast(rc);
             if (n == 0) break;
             offset += n;
         }
@@ -6323,7 +6357,7 @@ const Client = struct {
             self.sel_autoscroll_dir = 0;
             return;
         }
-        const now = std.time.milliTimestamp();
+        const now = self.rt.nowMs();
         if (now < self.sel_autoscroll_next_ms) return;
         // scrollViewport: delta<0 = older(위로), >0 = newer(아래로).
         const delta: isize = if (self.sel_autoscroll_dir < 0) -sel_autoscroll_step else sel_autoscroll_step;
@@ -6508,15 +6542,16 @@ const Client = struct {
     /// IPC를 호출하므로 worker에서 D-Bus hotkey client를 만들지 않는다.
     /// 연결·등록 실패는 fatal이 아니며 hidden_start는 즉시 표시로 fallback한다.
     fn tryConnectKGlobalAccel(self: *Client) void {
-        if (!kglobalaccel.isCurrentDesktop()) return;
+        if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey disabled", .{@errorName(err)});
             return;
         };
         self.dbus_session = session;
         // direct 등록이 성공한 뒤에만 hidden_start가 surface 생성을 미룬다.
-        kglobalaccel.cleanupLegacyIdentity(self.allocator, &self.dbus_session.?);
+        kglobalaccel.cleanupLegacyIdentity(self.rt, &self.dbus_session.?);
         const client = kglobalaccel.Client.create(
+            self.rt,
             self.allocator,
             &self.dbus_session.?,
             self.config.hotkey.keysym,
@@ -6588,7 +6623,7 @@ const Client = struct {
             // #205 — show phase elapsed timer. hotkey activation → first frame.
             // configure handler / ensureSessionGrid / redraw 가 후속 호출에서
             // 발생하므로 그 site 에 별도 logShowElapsed.
-            self.show_timer = std.time.Timer.start() catch null;
+            self.show_timer = .start(self.rt);
             self.surface_hidden = false;
             // 첫 show (hidden_start=true 의 첫 hotkey activation) 면 surface 아직
             // 안 만들어졌으므로 full create. 이후 hide/show cycle 은 unmap/remap
@@ -6618,7 +6653,7 @@ const Client = struct {
         // (wl_surface/layer_surface 유지) 워크어라운드를 쓴다 — 예외는 버그 있는 KWin
         // 한 곳뿐. (smithay/cosmic-comp 은 remap 미지원 #230, wlroots 는 recreate 도 빠름.)
         // 세션(PTY/shell)은 destroyShellObjects 가 안 건드림 → 재표시 후 그대로 유지.
-        if (kwinCompositor()) {
+        if (kwinCompositor(self.rt)) {
             try self.unmapShellObjects();
             self.surface_hidden = true;
             // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
@@ -6821,7 +6856,7 @@ const Client = struct {
             try margin.putI32(0);
             try margin.putI32(0);
             try margin.putI32(0);
-            try margin.send(self.stream);
+            try margin.send(self.wayland_fd);
         } else if (self.dialog.xdg_toplevel_id != 0) {
             try self.sendArgs(self.dialog.xdg_toplevel_id, 7, &.{ logical_w, logical_h });
             try self.sendArgs(self.dialog.xdg_toplevel_id, 8, &.{ logical_w, logical_h });
@@ -7025,7 +7060,7 @@ const Client = struct {
         self.xdg_surface_id = 0;
         self.toplevel_id = 0;
         self.active_buffer = null;
-        self.retired_buffers = .{};
+        self.retired_buffers = .empty;
         self.configured = false;
         self.mapped = false;
         self.frame_callback_id = 0;
@@ -7106,7 +7141,7 @@ const Client = struct {
         };
         // 다이얼로그 동안엔 KWin 이 옛 메인 frame 을 유지 → 터미널이 뒤에 보임
         // (원래 동작, Alt+F4 시점 깜박임 없음).
-        if (dialog_mod.showConfirm(messages.quit_confirm_title, msg)) {
+        if (dialog_mod.showConfirm(self.rt, messages.quit_confirm_title, msg)) {
             self.running = false;
             return;
         }
@@ -7206,7 +7241,7 @@ const Client = struct {
         var msg = Msg.init(self.xdg_activation_id, xdg_activation_v1_request_activate);
         try msg.putString(self.pending_activation_token.items);
         try msg.putU32(self.surface_id);
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
 
         // token object destroy.
         try self.sendNoArgs(token_id, xdg_activation_token_v1_request_destroy);
@@ -7425,7 +7460,7 @@ const Client = struct {
             try msg.putU32(0);
             try msg.putU32(zwlr_layer_shell_layer_overlay);
             try msg.putString("tildaz-dialog");
-            try msg.send(self.stream);
+            try msg.send(self.wayland_fd);
 
             try self.sendArgs(
                 self.dialog.layer_surface_id,
@@ -7444,7 +7479,7 @@ const Client = struct {
             try dlg_margin.putI32(0);
             try dlg_margin.putI32(0);
             try dlg_margin.putI32(0);
-            try dlg_margin.send(self.stream);
+            try dlg_margin.send(self.wayland_fd);
             // exclusive — modal 입력. 사용자가 main surface 클릭해도 키 입력은
             // 우리 dialog 로 옴.
             try self.sendArgs(
@@ -7663,13 +7698,15 @@ const Client = struct {
         const new_buffer_id = self.allocId();
 
         const fd = try createMemfd("tildaz-wayland-dialog-buffer");
-        errdefer posix.close(fd);
-        try posix.ftruncate(fd, @intCast(size));
+        errdefer closeFd(fd);
+        // #451 — `posix.ftruncate` 가 없어졌다. `Io.File.setLength` 가 그 자리다
+        // (릴리즈 노트 *fs.File.setEndPos ➡️ std.Io.File.setLength*).
+        try (std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } }).setLength(self.rt.io, size);
 
         const memory = try posix.mmap(
             null,
             size,
-            linux.PROT.READ | linux.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             fd,
             0,
@@ -7981,7 +8018,7 @@ const Client = struct {
             log.appendLine("dialog", "show main before new-instance prompt failed: {s}", .{@errorName(err)});
             return;
         };
-        @import("../../new_instance.zig").handle(self.allocator);
+        @import("../../new_instance.zig").handle(self.rt, self.allocator);
     }
 
     fn showMainBeforeNewInstancePrompt(self: *Client) !void {
@@ -7994,14 +8031,14 @@ const Client = struct {
         // sync로 remap request 처리 순서를 보장한 뒤, configure가 왔다면 redraw까지
         // 수행하고 prompt 생성으로 진행한다. 다른 compositor의 recreate path는 아래서
         // 실제 non-null buffer attach (`mapped=true`)를 계속 기다린다.
-        if (kwinCompositor() and self.layer_surface_id != 0) {
+        if (kwinCompositor(self.rt) and self.layer_surface_id != 0) {
             try self.roundtrip();
             try self.maybeRedraw();
             log.appendLine("dialog", "main remap processed before new-instance prompt (KWin)", .{});
             return;
         }
 
-        var timer = try std.time.Timer.start();
+        var timer: Timer = .start(self.rt);
         while (self.running and !self.mapped and timer.read() < 5 * std.time.ns_per_s) {
             try self.pollAndDispatch(frame_poll_ms);
             self.drainPendingDialogDismiss();
@@ -8058,43 +8095,43 @@ const Client = struct {
         try msg.putString(interface);
         try msg.putU32(version);
         try msg.putU32(new_id);
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
     }
 
     fn sendCreatePool(self: *Client, fd: posix.fd_t, size: i32, pool_id: u32) !void {
         var msg = Msg.init(self.shm_id, 0);
         try msg.putU32(pool_id);
         try msg.putI32(size);
-        try msg.sendWithFd(self.stream, fd);
+        try msg.sendWithFd(self.wayland_fd, fd);
     }
 
     fn sendStringWithFd(self: *Client, id: u32, opcode: u16, text: []const u8, fd: posix.fd_t) !void {
         var msg = Msg.init(id, opcode);
         try msg.putString(text);
-        try msg.sendWithFd(self.stream, fd);
+        try msg.sendWithFd(self.wayland_fd, fd);
     }
 
     fn sendNoArgs(self: *Client, id: u32, opcode: u16) !void {
         var msg = Msg.init(id, opcode);
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
     }
 
     fn sendNewId(self: *Client, id: u32, opcode: u16, new_id: u32) !void {
         var msg = Msg.init(id, opcode);
         try msg.putU32(new_id);
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
     }
 
     fn sendString(self: *Client, id: u32, opcode: u16, text: []const u8) !void {
         var msg = Msg.init(id, opcode);
         try msg.putString(text);
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
     }
 
     fn sendArgs(self: *Client, id: u32, opcode: u16, args: []const u32) !void {
         var msg = Msg.init(id, opcode);
         for (args) |arg| try msg.putU32(arg);
-        try msg.send(self.stream);
+        try msg.send(self.wayland_fd);
     }
 
     fn destroyBufferObject(self: *Client, id: u32) void {
@@ -8107,8 +8144,8 @@ const Client = struct {
 /// 패턴 동등 — buf 에 ptr append 만, main loop 의 `drainExitedTabs` 가 처리.
 fn linuxTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
     const client: *Client = @ptrCast(@alignCast(userdata.?));
-    client.pending_close_mutex.lock();
-    defer client.pending_close_mutex.unlock();
+    client.pending_close_mutex.lockUncancelable(client.rt.io);
+    defer client.pending_close_mutex.unlock(client.rt.io);
     client.pending_close_buf.append(client.allocator, tab_ptr) catch {};
 }
 
@@ -8169,7 +8206,7 @@ pub fn runBaselineWindow(
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     // 측정 모드는 자기 단축키를 DE 에 등록하지 않는다 (#382) — 사용자의 기존 binding 을
     // 덮어쓰면 측정이 끝난 뒤에도 그 상태가 남는다.
-    if (!opts.isStressRun()) sway_ipc.registerToggleIfSway(allocator, cfg);
+    if (!opts.isStressRun()) sway_ipc.registerToggleIfSway(rt, allocator, cfg);
     // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
     // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
@@ -8215,11 +8252,11 @@ const Msg = struct {
         return self.buf[0..self.len];
     }
 
-    fn send(self: *Msg, stream: std.net.Stream) !void {
-        try stream.writeAll(self.finish());
+    fn send(self: *Msg, wayland_fd: posix.fd_t) !void {
+        try unix_socket.writeAll(wayland_fd, self.finish());
     }
 
-    fn sendWithFd(self: *Msg, stream: std.net.Stream, fd: posix.fd_t) !void {
+    fn sendWithFd(self: *Msg, wayland_fd: posix.fd_t, fd: posix.fd_t) !void {
         const bytes = self.finish();
         var iov = [_]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
 
@@ -8245,8 +8282,11 @@ const Msg = struct {
             .controllen = control_len,
             .flags = 0,
         };
-        const sent = try posix.sendmsg(stream.handle, &msg, 0);
-        if (sent != bytes.len) return error.WaylandShortFdWrite;
+        // #451 — `posix.sendmsg` 도 없어졌다. `SCM_RIGHTS` 를 표현할 길이 `Io.net` 에
+        // 없으므로 (`unix_socket.zig`) raw syscall 로 내린다.
+        const rc = posix.system.sendmsg(wayland_fd, &msg, 0);
+        if (unix_socket.checkErr(rc) != null) return error.WaylandFdWriteFailed;
+        if (@as(usize, @intCast(rc)) != bytes.len) return error.WaylandShortFdWrite;
     }
 };
 
@@ -8280,21 +8320,34 @@ const Parser = struct {
     }
 };
 
-/// `connectUnixSocket` 실패 컨텍스트를 log + stderr 에 같이 남긴다. 사용자
+/// Wayland compositor 의 Unix 소켓에 연결한다 — 예전 `std.net.connectUnixSocket` 자리
+/// ([#451](https://github.com/ensky0/tildaz/issues/451)).
+///
+/// `CLOEXEC` 를 붙인다. 이 fd 는 PTY 자식에게 물려줄 이유가 없고, 새는 fd 는 compositor 가
+/// 연결이 닫힌 것을 늦게 알아채는 원인이 된다.
+fn connectWaylandSocket(path: []const u8) !posix.fd_t {
+    const fd = try unix_socket.openSocket(posix.SOCK.CLOEXEC);
+    errdefer unix_socket.closeFd(fd);
+    try unix_socket.connect(fd, path);
+    return fd;
+}
+
+/// `connectWaylandSocket` 실패 컨텍스트를 log + stderr 에 같이 남긴다. 사용자
 /// 메시지 텍스트는 `messages.linux_wayland_socket_unavailable_format` 단일
 /// 진입점 (AGENTS.md "사용자 표시 텍스트 / 다이얼로그" 정책). env 값은
 /// `(unset)` 로 정직하게 노출 — X11 세션일 때 `WAYLAND_DISPLAY=(unset)` /
 /// `XDG_SESSION_TYPE=x11` 가 보이면 즉시 원인 식별 가능.
 fn reportWaylandSocketFailure(
+    rt: Runtime,
     allocator: std.mem.Allocator,
     path: []const u8,
     err: anyerror,
 ) void {
-    const display_owned = std.process.getEnvVarOwned(allocator, "WAYLAND_DISPLAY") catch null;
+    const display_owned = rt.envAlloc(allocator, "WAYLAND_DISPLAY") catch null;
     defer if (display_owned) |s| allocator.free(s);
-    const session_owned = std.process.getEnvVarOwned(allocator, "XDG_SESSION_TYPE") catch null;
+    const session_owned = rt.envAlloc(allocator, "XDG_SESSION_TYPE") catch null;
     defer if (session_owned) |s| allocator.free(s);
-    const runtime_owned = std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch null;
+    const runtime_owned = rt.envAlloc(allocator, "XDG_RUNTIME_DIR") catch null;
     defer if (runtime_owned) |s| allocator.free(s);
 
     const display_str: []const u8 = if (display_owned) |s| s else "(unset)";
@@ -8313,17 +8366,17 @@ fn reportWaylandSocketFailure(
     log.userFacing("fatal", text);
 }
 
-fn waylandSocketPath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "WAYLAND_DISPLAY")) |display| {
+fn waylandSocketPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    if (rt.envAlloc(allocator, "WAYLAND_DISPLAY")) |display| {
         if (display.len > 0 and display[0] == '/') return display;
         errdefer allocator.free(display);
-        const runtime = try std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR");
+        const runtime = try rt.envAlloc(allocator, "XDG_RUNTIME_DIR");
         defer allocator.free(runtime);
         const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ runtime, display });
         allocator.free(display);
         return path;
     } else |_| {
-        const runtime = try std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR");
+        const runtime = try rt.envAlloc(allocator, "XDG_RUNTIME_DIR");
         defer allocator.free(runtime);
         return std.fmt.allocPrint(allocator, "{s}/wayland-0", .{runtime});
     }
