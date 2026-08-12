@@ -1151,7 +1151,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | off 상태 표현 | **faint (흐리게)** — 완전히 숨기지 않는다 |
 | SGR 5 vs 6 (rapid) | **구분하지 않는다** — ghostty 파서가 둘을 `.blink` 하나로 접어서 정보를 주지 않는다 |
 | 끄는 수단 | **없다** (아래) |
-| 위상 계산 | [`ui_metrics.blinkFaintPhase(now_ms)`](src/ui_metrics.zig) — `std.time.milliTimestamp()` 를 세 host 가 공통으로 넘긴다 |
+| 위상 계산 | [`ui_metrics.blinkFaintPhase(now_ms)`](src/ui_metrics.zig) — 세 host 가 [`Runtime.nowMs()`](src/runtime.zig) 를 공통으로 넘긴다 ([#451](https://github.com/ensky0/tildaz/issues/451) 에서 `std.time.milliTimestamp` 이 없어졌다). **프레임당 한 번만 부르고 그 값을 renderer 까지 인자로 내린다** — host 와 renderer 가 각각 시계를 읽으면 500ms 경계에서 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다 |
 
 **off 를 faint 로 표현하는 이유.** 글자가 완전히 사라졌다 나타나는 것은 조사한 방식 중 가장 자극적이다. Windows Terminal 도 4-phase 중 2 를 faint 로 렌더하고, WezTerm 은 투명도를 이징한다. 구현도 이쪽이 깔끔하다 — [`cell_color.applyBlinkPhase`](src/renderer/cell_color.zig) 가 off 위상에서 style 의 `faint` 플래그를 세워 돌려주므로, fg 해석뿐 아니라 **§12.3 의 선 색까지 한 번에** 따라온다 (선은 `fg` 를 받아 그리기 때문). 이미 `faint` 인 셀에 blink 가 걸리면 off 위상에서 변화가 없다 — 알려진 귀결이다.
 

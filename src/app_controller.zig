@@ -526,6 +526,9 @@ pub const App = struct {
                             .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
                         },
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
+                        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
+                        // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+                        blink_phase_now,
                     );
                 }
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국

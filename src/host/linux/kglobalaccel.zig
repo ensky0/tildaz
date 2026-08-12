@@ -9,6 +9,7 @@
 //! - https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml
 
 const std = @import("std");
+const Runtime = @import("../../runtime.zig").Runtime;
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
 const log = @import("../../log.zig");
@@ -90,9 +91,10 @@ fn unregisterShortcut(bus: *dbus.SessionBus, component_name: [*:0]const u8, acti
     log.appendLineVerbose("kglobalaccel", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component_name), std.mem.span(action_name) });
 }
 
-pub fn syncNumberedIdentities(allocator: std.mem.Allocator, indices: []const u32) void {
-    const desktop = std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch return;
-    defer allocator.free(desktop);
+pub fn syncNumberedIdentities(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) void {
+    // #451 — `process.getEnvVarOwned` ➡️ `Environ.getPosix` (= `rt.environ`). POSIX 는 블록을
+    // 그대로 훑어 **할당이 없다** — 예전의 `defer free` 가 필요 없어졌다.
+    const desktop = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return;
     if (!isKdeDesktopValue(desktop)) return;
 
     var bus = dbus.SessionBus.connect() catch |err| {
@@ -206,9 +208,8 @@ fn containsInstanceIndex(indices: []const u32, needle: u32) bool {
     return false;
 }
 
-pub fn cleanupLegacyIdentity(allocator: std.mem.Allocator, bus: *dbus.SessionBus) void {
-    const desktop = std.process.getEnvVarOwned(allocator, "XDG_CURRENT_DESKTOP") catch return;
-    defer allocator.free(desktop);
+pub fn cleanupLegacyIdentity(rt: Runtime, bus: *dbus.SessionBus) void {
+    const desktop = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return;
     if (!isKdeDesktopValue(desktop)) return;
 
     const legacy_component: [*:0]const u8 = "tildaz";
@@ -474,6 +475,9 @@ pub const PressedCallback = *const fn (user_data: ?*anyopaque, timestamp: i64) v
 /// KDE Plasma 전용 direct KGlobalAccel client. filter user_data가 가리키므로 caller가
 /// heap에서 stable address로 보관해야 한다. `create`가 이 규칙까지 책임진다.
 pub const Client = struct {
+    /// #451 — 핫키 충돌 인수 다이얼로그 (`claimKey` ➡️ `takeoverConflict`) 가 `Io` 를
+    /// 요구한다. 등록은 이 client 의 수명 동안 재시도될 수 있어 필드로 보관한다.
+    rt: Runtime,
     allocator: std.mem.Allocator,
     api: *const dbus.Api,
     conn: *dbus.DBusConnection,
@@ -489,6 +493,7 @@ pub const Client = struct {
     component_match_installed: bool = false,
 
     pub fn create(
+        rt: Runtime,
         allocator: std.mem.Allocator,
         bus: *dbus.SessionBus,
         keysym: u32,
@@ -505,6 +510,7 @@ pub const Client = struct {
         const self = try allocator.create(Client);
         errdefer allocator.destroy(self);
         self.* = .{
+            .rt = rt,
             .allocator = allocator,
             .api = &bus.api,
             .conn = bus.conn,
@@ -599,7 +605,7 @@ pub const Client = struct {
 
         var display_buf: [64]u8 = undefined;
         const display = hotkey_format.displayString(&display_buf, keysym, modifiers);
-        claimKey(self.allocator, self.api, self.conn, qt_key, display) catch |err| {
+        claimKey(self.rt, self.allocator, self.api, self.conn, qt_key, display) catch |err| {
             self.setInactiveNoAutostart();
             return err;
         };
@@ -707,7 +713,7 @@ fn getComponentPath(allocator: std.mem.Allocator, api: *const dbus.Api, conn: *d
     return allocator.dupe(u8, path);
 }
 
-fn claimKey(allocator: std.mem.Allocator, api: *const dbus.Api, conn: *dbus.DBusConnection, qt_key: i32, key_display: []const u8) !void {
+fn claimKey(rt: Runtime, allocator: std.mem.Allocator, api: *const dbus.Api, conn: *dbus.DBusConnection, qt_key: i32, key_display: []const u8) !void {
     var bus_view = dbus.SessionBus{ .api = api.*, .conn = conn, .unique_name = "" };
     var owner_opt = queryOwnerForKey(allocator, &bus_view, qt_key);
     defer if (owner_opt) |*owner| owner.deinit(allocator);
@@ -721,14 +727,14 @@ fn claimKey(allocator: std.mem.Allocator, api: *const dbus.Api, conn: *dbus.DBus
         owner.display_component,
         owner.display_action,
     }) catch return error.KGlobalAccelDialogFormatFailed;
-    if (!dialog.showConfirm(messages.hotkey_takeover_title, confirm_message)) {
+    if (!dialog.showConfirm(rt, messages.hotkey_takeover_title, confirm_message)) {
         log.appendLine("kglobalaccel", "takeover declined — owner={s}/{s} retained", .{ owner.component, owner.action });
         var declined_buf: [256]u8 = undefined;
         const declined_message = std.fmt.bufPrint(&declined_buf, messages.hotkey_takeover_declined_format, .{
             key_display,
             owner.display_component,
         }) catch messages.hotkey_takeover_declined_fallback_msg;
-        dialog.showInfo(messages.hotkey_takeover_declined_title, declined_message);
+        dialog.showInfo(rt, messages.hotkey_takeover_declined_title, declined_message);
         return error.KGlobalAccelTakeoverDeclined;
     }
 
@@ -859,8 +865,8 @@ pub fn isKdeDesktopValue(value: []const u8) bool {
     return false;
 }
 
-pub fn isCurrentDesktop() bool {
-    const value = std.posix.getenv("XDG_CURRENT_DESKTOP") orelse return false;
+pub fn isCurrentDesktop(rt: Runtime) bool {
+    const value = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return false;
     return isKdeDesktopValue(value);
 }
 

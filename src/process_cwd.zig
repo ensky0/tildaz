@@ -32,19 +32,23 @@ const builtin = @import("builtin");
 
 /// `pid` 셸의 현재 디렉토리를 `buf` 에 담아 돌려준다. 조회할 수 없으면 `null` —
 /// 호출자는 홈으로 안전하게 열화한다.
-pub fn ofPid(pid: i32, buf: []u8) ?[]const u8 {
+///
+/// #451 — Linux 경로의 `readlink` 가 `Io` 를 받는다. macOS 는 `proc_pidinfo` 라 안 쓰고,
+/// Windows 는 항상 `null` 이라 역시 안 쓴다 — 세 platform 시그니처를 맞추려고 받는다.
+pub fn ofPid(io: std.Io, pid: i32, buf: []u8) ?[]const u8 {
     switch (builtin.os.tag) {
         .linux => {
             // `/proc/<pid>/cwd` 는 실제 디렉토리를 가리키는 심볼릭 링크다.
             var link_buf: [64]u8 = undefined;
             const link = std.fmt.bufPrint(&link_buf, "/proc/{d}/cwd", .{pid}) catch return null;
-            // `readLinkAbsolute` 는 슬라이스가 아니라 정확히 `*[max_path_bytes]u8` 를
-            // 받으므로 (호출자 버퍼 크기와 무관) 따로 받아서 옮긴다.
+            // #451 — `fs.readLinkAbsolute` ➡️ `Io.Dir.readLinkAbsolute`. **길이를 돌려준다**
+            // (예전에는 슬라이스였다). 버퍼는 그대로 따로 받아서 옮긴다 — 호출자 버퍼가
+            // `max_path_bytes` 보다 작을 수 있고, 그 경우를 `null` 로 걸러야 한다.
             var target: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const path = std.fs.readLinkAbsolute(link, &target) catch return null;
-            if (path.len == 0 or path.len > buf.len) return null;
-            @memcpy(buf[0..path.len], path);
-            return buf[0..path.len];
+            const n = std.Io.Dir.readLinkAbsolute(io, link, &target) catch return null;
+            if (n == 0 or n > buf.len) return null;
+            @memcpy(buf[0..n], target[0..n]);
+            return buf[0..n];
         },
         .macos => {
             var info: ProcVnodePathInfo = undefined;
@@ -110,15 +114,16 @@ test "process_cwd — 자기 프로세스의 cwd 를 조회한다 (Windows 는 �
 
     if (comptime builtin.os.tag == .windows) {
         // Windows 는 OSC 7 주입으로 간다 — 조회는 항상 null.
-        try std.testing.expect(ofPid(0, &buf) == null);
+        try std.testing.expect(ofPid(std.testing.io, 0, &buf) == null);
         return;
     }
 
-    const probed = ofPid(std.c.getpid(), &buf) orelse return error.ProbeFailed;
-    // `getcwd` 도 물리 경로를 주므로 문자열이 그대로 일치해야 한다.
+    const probed = ofPid(std.testing.io, std.c.getpid(), &buf) orelse return error.ProbeFailed;
+    // #451 — `posix.getcwd` ➡️ `process.currentPath(io, buf)` (릴리즈 노트 *Current Directory
+    // API Renamed*). 이쪽도 물리 경로를 주므로 문자열이 그대로 일치해야 한다.
     var actual_buf: [4200]u8 = undefined;
-    const actual = try std.posix.getcwd(&actual_buf);
-    try std.testing.expectEqualStrings(actual, probed);
+    const actual_n = try std.process.currentPath(std.testing.io, &actual_buf);
+    try std.testing.expectEqualStrings(actual_buf[0..actual_n], probed);
 }
 
 test "process_cwd — 없는 pid 는 null" {
@@ -126,11 +131,11 @@ test "process_cwd — 없는 pid 는 null" {
     var buf: [4200]u8 = undefined;
     // pid 1 은 macOS 에서 EPERM (실측), Linux 에서도 readlink 가 막힌다. 어느 쪽이든
     // 조회 실패는 null 로 나와야 한다 (호출자가 홈으로 열화).
-    try std.testing.expect(ofPid(1, &buf) == null);
+    try std.testing.expect(ofPid(std.testing.io, 1, &buf) == null);
 }
 
 test "process_cwd — 버퍼가 모자라면 null" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     var small: [4]u8 = undefined;
-    try std.testing.expect(ofPid(std.c.getpid(), &small) == null);
+    try std.testing.expect(ofPid(std.testing.io, std.c.getpid(), &small) == null);
 }

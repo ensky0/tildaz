@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const windows = std.os.windows;
+const Runtime = @import("../runtime.zig").Runtime;
 
 const HKEY = ?*anyopaque;
 const DWORD = windows.DWORD;
@@ -42,9 +43,10 @@ extern "kernel32" fn GetModuleFileNameW(?HANDLE, [*]WCHAR, DWORD) callconv(.c) D
 /// 공백이 포함된 경로도 안전. 값이 이미 있으면 덮어쓰기.
 ///
 /// 호출 실패 시 error 반환 — 호출자가 로그 남기는 것을 권장.
-/// `_alloc` 은 cross-platform 시그니처 통일용 (macOS plist path 작성에 필요).
-/// Windows 는 fixed-buffer + Win32 API 만 사용해 allocator 안 씀.
-pub fn enable(_alloc: std.mem.Allocator) !void {
+/// `_rt` · `_alloc` 은 cross-platform 시그니처 통일용 (macOS plist path 작성에 필요).
+/// Windows 는 fixed-buffer + Win32 API 만 사용해 둘 다 안 씀.
+pub fn enable(_rt: Runtime, _alloc: std.mem.Allocator) !void {
+    _ = _rt;
     _ = _alloc;
     var path_buf: [300]WCHAR = undefined;
     const path_len = GetModuleFileNameW(null, &path_buf, path_buf.len);
@@ -73,8 +75,9 @@ pub fn enable(_alloc: std.mem.Allocator) !void {
 }
 
 /// Registry Run 엔트리 제거. 실패는 무시 (에러 전파 없음).
-/// `_alloc` 은 시그니처 통일용 (Windows 무시).
-pub fn disable(_alloc: std.mem.Allocator) void {
+/// `_rt` · `_alloc` 은 시그니처 통일용 (Windows 무시).
+pub fn disable(_rt: Runtime, _alloc: std.mem.Allocator) void {
+    _ = _rt;
     _ = _alloc;
     var hkey: HKEY = null;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &hkey) == ERROR_SUCCESS) {

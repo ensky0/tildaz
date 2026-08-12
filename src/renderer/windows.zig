@@ -596,7 +596,7 @@ pub const D3d11Renderer = struct {
             .SampleDesc = .{ .Count = 1 },
             .BufferUsage = d3d.DXGI_USAGE_RENDER_TARGET_OUTPUT,
             .OutputWindow = hwnd,
-            .Windowed = 1,
+            .Windowed = .TRUE,
         };
         var device: ?*d3d.ID3D11Device = null;
         var ctx: ?*d3d.ID3D11DeviceContext = null;
@@ -825,7 +825,7 @@ pub const D3d11Renderer = struct {
         // Alpha blend for backgrounds (standard SrcAlpha)
         var alpha_desc = d3d.D3D11_BLEND_DESC{};
         alpha_desc.RenderTarget[0] = .{
-            .BlendEnable = 1,
+            .BlendEnable = .TRUE,
             .SrcBlend = d3d.D3D11_BLEND_SRC_ALPHA,
             .DestBlend = d3d.D3D11_BLEND_INV_SRC_ALPHA,
             .BlendOp = d3d.D3D11_BLEND_OP_ADD,
@@ -844,7 +844,7 @@ pub const D3d11Renderer = struct {
         // ClearType: fg*ct + dst*(1-ct), color emoji: sample + dst*(1-alpha).
         var ct_desc = d3d.D3D11_BLEND_DESC{};
         ct_desc.RenderTarget[0] = .{
-            .BlendEnable = 1,
+            .BlendEnable = .TRUE,
             .SrcBlend = d3d.D3D11_BLEND_ONE,
             .DestBlend = d3d.D3D11_BLEND_INV_SRC1_COLOR,
             .BlendOp = d3d.D3D11_BLEND_OP_ADD,
@@ -1362,6 +1362,10 @@ pub const D3d11Renderer = struct {
         control_hover: tab_layout.Area,
         menu_ui: command_menu.Ui,
         toggle_hotkey: []const u8,
+        /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
+        /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
+        /// 호출부의 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다.
+        blink_faint: bool,
     ) void {
         const render_t0 = perf.now();
         self.render_state.update(self.alloc, terminal) catch return;
@@ -1390,9 +1394,6 @@ pub const D3d11Renderer = struct {
         var text_buf: [MAX_CELLS]TextInstance = undefined;
         var text_count: u32 = 0;
 
-        // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
-        // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
-        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
         self.saw_blink_cell = false;
 
         // --- Background pass ---

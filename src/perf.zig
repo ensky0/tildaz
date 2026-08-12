@@ -67,7 +67,8 @@ pub var swapwait: Counter = .{};
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
 /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
 /// 세 clock 모두 system sleep/hibernate를 세지 않는다. 이 모듈의 성능 진단에만
-/// 쓰며 기능 동작용 std.time.Timer의 elapsed-time 의미는 바꾸지 않는다.
+/// 쓰며 기능 동작용 `runtime.Timer` (`Io.Timestamp` 기반) 의 elapsed-time 의미는
+/// 바꾸지 않는다.
 pub const Timestamp = ?u64;
 
 pub fn now() Timestamp {
@@ -244,7 +245,9 @@ pub fn dumpOnExit(rt: Runtime) void {
 
 test "working-time duration rejects reversed samples" {
     const start = now() orelse return error.SkipZigTest;
-    std.Thread.sleep(5 * std.time.ns_per_ms);
+    // #451 — `Thread.sleep` ➡️ `Io.sleep` (`Runtime.sleepNs`). `.awake` 는 절전 구간을
+    // 세지 않는 단조 시계로, 위 `now()` 가 재는 working-time 과 같은 성질이다.
+    (Runtime{ .io = std.testing.io, .environ = .empty }).sleepNs(5 * std.time.ns_per_ms);
     const end = now() orelse return error.SkipZigTest;
 
     try std.testing.expectEqual(@as(?u64, 0), elapsedNs(start, start));
