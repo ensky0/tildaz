@@ -8173,7 +8173,7 @@ pub fn runBaselineWindow(
     // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
     // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
-    if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(allocator, cfg);
+    if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(rt, allocator, cfg);
     try client.run();
 }
 

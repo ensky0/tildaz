@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("../../runtime.zig").Runtime;
 const paths = @import("../../paths.zig");
 
 pub const Kind = enum {
@@ -28,9 +29,11 @@ const cinnamon_resources = [_]Resource{
 /// A repository/portable install may not have this directory next to the
 /// executable; install.sh already copied those resources and this becomes a
 /// graceful no-op.
-pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
+pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !bool {
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const exe = try std.fs.selfExePath(&exe_buf);
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
     const exe_dir = std.Io.Dir.path.dirname(exe) orelse return error.ExecutableDirectoryNotFound;
     const resource_root = try std.Io.Dir.path.join(allocator, &.{ exe_dir, "..", "share", "tildaz" });
     defer allocator.free(resource_root);
@@ -39,7 +42,7 @@ pub fn syncForCurrentUser(allocator: std.mem.Allocator, kind: Kind) !bool {
         .gnome => "gnome-extension",
         .cinnamon => "cinnamon-extension",
     };
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     const destination_dir = switch (kind) {
         .gnome => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "gnome-shell", "extensions", uuid }),
