@@ -658,7 +658,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
   config transaction을 위해 다시 획득한다. launcher가 lock을 쥔 채 worker의 처리를
   기다리는 순환 대기는 허용하지 않는다.
 
-> Zig 0.15.2 의 `std.json` 이 comptime allocator 를 지원 안 해 (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
+> Zig 의 `std.json` 이 comptime allocator 를 지원 안 해 (0.15.2 에서 확인 — 0.16 에서 재확인하지 않았다) (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
 
 | 필드 | 의미 | Windows default | macOS default | Linux default / 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
