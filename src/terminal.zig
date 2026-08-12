@@ -13,6 +13,7 @@
 //! (Linux · macOS 공용, #294 G2). 각 모듈은 동일 API 시그니처를 export.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 
 pub const ReadCallback = *const fn (data: []const u8, userdata: ?*anyopaque) void;
@@ -35,6 +36,9 @@ pub const ExtraEnv = struct {
 };
 
 pub const Options = struct {
+    /// #451 — PTY 생성이 환경변수 (자식 env 조립) 와 syscall 을 타므로 backend 로
+    /// 흘려보낸다. host 의 `run(rt, …)` 에서 내려온 값이다.
+    rt: Runtime,
     allocator: std.mem.Allocator,
     cols: u16,
     rows: u16,
