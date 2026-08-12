@@ -124,7 +124,7 @@ pub fn syncNumberedIdentities(allocator: std.mem.Allocator, indices: []const u32
         const component_z = allocator.dupeZ(u8, unique_name) catch continue;
         defer allocator.free(component_z);
         var stale_action_buf: [32]u8 = undefined;
-        const stale_action = std.fmt.bufPrintZ(&stale_action_buf, "toggle-{d}", .{index}) catch continue;
+        const stale_action = std.fmt.bufPrintSentinel(&stale_action_buf, "toggle-{d}", .{index}, 0) catch continue;
         unregisterShortcut(&bus, component_z.ptr, stale_action.ptr) catch |err| {
             log.appendLineVerbose("kglobalaccel", "stale KDE action cleanup skipped for instance {}: {s}", .{ index, @errorName(err) });
             continue;
@@ -218,7 +218,7 @@ pub fn cleanupLegacyIdentity(allocator: std.mem.Allocator, bus: *dbus.SessionBus
         };
     }
     var legacy_action_buf: [32]u8 = undefined;
-    const legacy_action = std.fmt.bufPrintZ(&legacy_action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}) catch return;
+    const legacy_action = std.fmt.bufPrintSentinel(&legacy_action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}, 0) catch return;
     unregisterShortcut(bus, legacy_component, legacy_action.ptr) catch |err| {
         log.appendLineVerbose("kglobalaccel", "legacy numbered KDE action cleanup skipped: {s}", .{@errorName(err)});
     };

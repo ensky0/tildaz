@@ -307,9 +307,9 @@ test "shell_integration — PowerShell 스크립트가 UTF-16LE Base64 로 정�
         try testing.expectEqual(@as(u8, 0), utf16_bytes[i * 2 + 1]);
     }
     // 스크립트가 실제로 우리 스킴과 provider 검사를 담고 있는지.
-    try testing.expect(std.mem.indexOf(u8, ps_script, "kitty-shell-cwd:///") != null);
-    try testing.expect(std.mem.indexOf(u8, ps_script, "FileSystem") != null);
-    try testing.expect(std.mem.indexOf(u8, ps_script, "$global:tzOrig") != null);
+    try testing.expect(std.mem.find(u8, ps_script, "kitty-shell-cwd:///") != null);
+    try testing.expect(std.mem.find(u8, ps_script, "FileSystem") != null);
+    try testing.expect(std.mem.find(u8, ps_script, "$global:tzOrig") != null);
 }
 
 test "shell_integration — PowerShell 이 보낼 payload 를 파서가 읽는다" {
@@ -347,7 +347,7 @@ test "shell_integration — WSL bash 가 보낼 payload 를 파서가 읽는다"
 
     // 슬래시 개수 — 명령이 `://` 뒤에 `$PWD` 를 바로 붙이므로 payload 는 셋이 된다.
     // cmd 처럼 `:///` 를 썼다면 `//home/me` 가 되어 지저분한 경로가 나간다.
-    try testing.expect(std.mem.indexOf(u8, bash_prompt_command, "kitty-shell-cwd://%s%s") != null);
+    try testing.expect(std.mem.find(u8, bash_prompt_command, "kitty-shell-cwd://%s%s") != null);
 }
 
 test "shell_integration — raw 스킴을 쓰는 이유: file:// 이면 % 가 든 경로가 깨진다" {

@@ -1425,7 +1425,7 @@ test "explicit line height ratio is preserved when parsing" {
     defer allocator.free(json_text);
 
     const expected = "\"line_height_ratio\": 1.1";
-    const offset = std.mem.indexOf(u8, json_text, expected) orelse return error.TestUnexpectedResult;
+    const offset = std.mem.find(u8, json_text, expected) orelse return error.TestUnexpectedResult;
     const value_offset = offset + expected.len - 3;
     @memcpy(json_text[value_offset .. value_offset + 3], "0.9");
 

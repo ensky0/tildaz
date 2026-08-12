@@ -142,10 +142,10 @@ fn firstShellToken(shell: []const u8) []const u8 {
     if (shell.len == 0) return shell;
     if (builtin.os.tag == .windows) {
         if (shell[0] == '"') {
-            const close = std.mem.indexOfScalarPos(u8, shell, 1, '"') orelse return shell[1..];
+            const close = std.mem.findScalarPos(u8, shell, 1, '"') orelse return shell[1..];
             return shell[1..close];
         }
-        const sp = std.mem.indexOfAnyPos(u8, shell, 0, " \t") orelse return shell;
+        const sp = std.mem.findAnyPos(u8, shell, 0, " \t") orelse return shell;
         return shell[0..sp];
     }
     // macOS / POSIX: spec 상 인자 없음. 따옴표만 strip.

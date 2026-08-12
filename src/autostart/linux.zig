@@ -70,7 +70,7 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
     // XDG Desktop Entry `Exec` 는 공백 포함 경로를 그대로 두면 인자 경계가 깨진다.
     // `instance_identity.ensureDesktopEntry` 와 같은 규칙 — 경로를 큰따옴표로 감싸
     // 공백을 보호하고, quoting 을 깨는 개행 / 큰따옴표가 든 경로는 거부한다.
-    if (std.mem.indexOfAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
+    if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
     const path = try entryPath(rt, allocator);
     defer allocator.free(path);

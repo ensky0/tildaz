@@ -29,10 +29,10 @@ pub const Command = enum { toggle, new_instance };
 /// 데스크탑 환경 보장.
 fn socketPath(buf: []u8, index: u32) ![:0]const u8 {
     if (std.posix.getenv("XDG_RUNTIME_DIR")) |runtime_dir| {
-        return std.fmt.bufPrintZ(buf, "{s}/tildaz-{d}.sock", .{ runtime_dir, index });
+        return std.fmt.bufPrintSentinel(buf, "{s}/tildaz-{d}.sock", .{ runtime_dir, index }, 0);
     }
     const uid = std.os.linux.getuid();
-    return std.fmt.bufPrintZ(buf, "/tmp/tildaz-{d}-{d}.sock", .{ uid, index });
+    return std.fmt.bufPrintSentinel(buf, "/tmp/tildaz-{d}-{d}.sock", .{ uid, index }, 0);
 }
 
 /// `tildaz --toggle N` 진입점 — 짧게 실행된 process가 worker N에 toggle 신호.

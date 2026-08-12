@@ -37,7 +37,7 @@ fn tildazLogFn(
     // ghostty-vt 의 noise 무시 — 새 탭 / shell prompt 마다 매번 찍혀 로그 오염.
     // `unimplemented mode` 류는 xterm DECSET 중 ghostty 가 안 구현한 것들 (예:
     // 1034 = 8th-bit input, bash readline 시작 시 보냄). terminal 기능에 영향 없음.
-    if (comptime std.mem.indexOf(u8, fmt, "unimplemented mode") != null) return;
+    if (comptime std.mem.find(u8, fmt, "unimplemented mode") != null) return;
 
     const cat = "std.log:" ++ @tagName(scope) ++ "/" ++ @tagName(level);
     @import("log.zig").appendLine(cat, fmt, args);

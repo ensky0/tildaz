@@ -482,7 +482,7 @@ pub const ConPty = struct {
                 if (cwd) |dir| {
                     const prefix = L(" --cd \"");
                     const total = prefix.len + dir.len + 1;
-                    if (std.mem.indexOfScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
+                    if (std.mem.findScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
                         @memcpy(wsl_insert_buf[0..prefix.len], prefix);
                         @memcpy(wsl_insert_buf[prefix.len..][0..dir.len], dir);
                         wsl_insert_buf[total - 1] = '"';
@@ -817,9 +817,9 @@ fn wslCdInsertion(cmd: []const u16) struct { is_wsl: bool, insert: bool, insert_
     if (!is_wsl) return .{ .is_wsl = false, .insert = false, .insert_at = insert_at };
 
     const args = cmd[@min(insert_at, cmd.len)..];
-    if (std.mem.indexOf(u16, args, L("--cd")) != null)
+    if (std.mem.find(u16, args, L("--cd")) != null)
         return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
-    if (std.mem.indexOfScalar(u16, args, '~')) |ti| {
+    if (std.mem.findScalar(u16, args, '~')) |ti| {
         if (ti + 1 == args.len or args[ti + 1] == ' ')
             return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
     }

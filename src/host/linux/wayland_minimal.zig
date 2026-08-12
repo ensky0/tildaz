@@ -817,7 +817,7 @@ fn currentDesktopContains(needle: []const u8) bool {
         var buf: [128]u8 = undefined;
         if (xcd.len <= buf.len) {
             const lower = std.ascii.lowerString(buf[0..xcd.len], xcd);
-            if (std.mem.indexOf(u8, lower, needle) != null) return true;
+            if (std.mem.find(u8, lower, needle) != null) return true;
         }
     }
     return false;

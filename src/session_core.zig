@@ -973,7 +973,7 @@ pub const SessionCore = struct {
     fn normalizePasteNewlines(alloc: std.mem.Allocator, data: []const u8, nl: u8) ?[]u8 {
         // nl 이 아닌 줄바꿈 문자(`other`)가 없으면 결과 == 입력 → 변환 생략.
         const other: u8 = if (nl == '\n') '\r' else '\n';
-        if (std.mem.indexOfScalar(u8, data, other) == null) return null;
+        if (std.mem.findScalar(u8, data, other) == null) return null;
 
         // CRLF만 2→1로 줄고, 단독 CR/LF와 나머지 byte는 모두 1→1이다.
         // 정확한 결과 길이로 할당해야 반환 slice를 그대로 free할 수 있다.
@@ -1383,7 +1383,7 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
     // 것만 본다.
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 
     // host 는 조회한 값을 그대로 써서 파서의 host 검사를 실제로 통과시킨다. 조회가
@@ -1408,14 +1408,14 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
         try std.testing.expect(!std.mem.eql(u8, probed, "/tz366-does-not-exist"));
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 
     // 다른 머신 (ssh 원격) → 거부되고 조회로 내려간다.
     tab.stream.nextSlice("\x1b]7;file://tz366-other-box/\x1b\\");
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 }
 

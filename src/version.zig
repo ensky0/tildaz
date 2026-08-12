@@ -78,7 +78,7 @@ test "string 은 이 빌드의 실제 값으로 조립된다" {
         try std.testing.expectEqualStrings(build_options.version, string);
     } else {
         try std.testing.expect(std.mem.endsWith(u8, string, ")"));
-        try std.testing.expect(std.mem.indexOf(u8, string, build_options.commit) != null);
+        try std.testing.expect(std.mem.find(u8, string, build_options.commit) != null);
         try std.testing.expectEqual(
             build_options.commit_dirty,
             std.mem.endsWith(u8, string, "-dirty)"),
