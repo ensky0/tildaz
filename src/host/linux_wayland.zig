@@ -16,8 +16,8 @@ var g_config: ?config_mod.Config = null;
 
 /// `$SHELL` env 우선, 없으면 `Defaults.shell` (= "/bin/bash"). POSIX 패턴 —
 /// macOS host 의 `resolveShell` 과 동등.
-fn resolveShell(allocator: std.mem.Allocator) []const u8 {
-    if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
+fn resolveShell(rt: Runtime, allocator: std.mem.Allocator) []const u8 {
+    if (rt.envAlloc(allocator, "SHELL") catch null) |s| return s;
     // #218 — Config.load 가 owned 인수를 기대 (disk 경로서 free) — fallback 도
     // dupe. OOM 시 static drift 는 극단 케이스(곧 종료).
     return allocator.dupe(u8, config_mod.Defaults.shell) catch config_mod.Defaults.shell;
@@ -90,7 +90,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // `tildaz/config_N.json` template 생성, 이후 실행은 disk 값 그대로. shell_resolved
     // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
     // shell path 결정.
-    const shell_resolved = resolveShell(gpa.allocator());
+    const shell_resolved = resolveShell(rt, gpa.allocator());
     g_config = config_mod.Config.load(rt, gpa.allocator(), shell_resolved);
     defer if (g_config) |*c| c.deinit(gpa.allocator());
     const cfg = &g_config.?;
@@ -99,7 +99,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
     // Sync and enable the current DE extension in the user session before the
     // GNOME lifecycle decision below reads enabled-extensions.
-    gsettings_hotkey.ensureShellExtensionReady(gpa.allocator());
+    gsettings_hotkey.ensureShellExtensionReady(rt, gpa.allocator());
 
     // GNOME/Cinnamon + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
     // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch
@@ -107,7 +107,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 은 extension 이 map 직후 minimize + skip_taskbar 로 처리한다.
     // in-memory 값만 바꾼다. extension 은 disk config 의 원래 hidden_start 를 다시
     // 읽어 최초 minimize 여부를 결정하므로 disk 에 false 를 쓰면 안 된다.
-    if (gsettings_hotkey.enabledShellExtensionOwner()) |owner| {
+    if (gsettings_hotkey.enabledShellExtensionOwner(rt)) |owner| {
         g_config.?.hidden_start = false;
         log.appendLine("autostart", "{s} + extension — hidden_start override (extension handles show/hide via minimize)", .{owner.displayName()});
     }

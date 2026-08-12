@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const instances = @import("../instances.zig");
 const log = @import("../log.zig");
@@ -7,9 +8,9 @@ const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
 const kglobalaccel = @import("../host/linux/kglobalaccel.zig");
 
-pub fn sync(allocator: std.mem.Allocator, indices: []const u32) !void {
+pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
     try instance_identity.syncDesktopEntries(allocator, indices);
-    gsettings_hotkey.syncNumberedEntries(allocator, indices);
+    gsettings_hotkey.syncNumberedEntries(rt, allocator, indices);
     kglobalaccel.syncNumberedIdentities(allocator, indices);
     if (desktopContains("hyprland")) syncHyprland(allocator, indices) catch |err| {
         log.appendLine("hyprland", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});
