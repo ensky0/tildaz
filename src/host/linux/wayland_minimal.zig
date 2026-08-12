@@ -5449,10 +5449,10 @@ const Client = struct {
         } else if (sym == xkb_key_p_lower or sym == xkb_key_p_upper) {
             const cfg_path = paths.configPath(self.rt, self.allocator) catch return;
             defer self.allocator.free(cfg_path);
-            system_open.openInDefaultApp(self.allocator, cfg_path);
+            system_open.openInDefaultApp(self.rt, self.allocator, cfg_path);
         } else if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
             const log_path = log.filePath() orelse return;
-            system_open.openInDefaultApp(self.allocator, log_path);
+            system_open.openInDefaultApp(self.rt, self.allocator, log_path);
         } else if (sym == xkb_key_r_lower or sym == xkb_key_r_upper) {
             if (self.session) |*session| {
                 if (session.resetActive()) self.requestRedraw();
@@ -5484,9 +5484,9 @@ const Client = struct {
             .open_config => {
                 const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
-                system_open.openInDefaultApp(self.allocator, path);
+                system_open.openInDefaultApp(self.rt, self.allocator, path);
             },
-            .keyboard_shortcuts => system_open.openInDefaultApp(self.allocator, messages.keyboard_shortcuts_url),
+            .keyboard_shortcuts => system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url),
             .about => self.pending_about_request = true,
         }
         self.needs_redraw = true;

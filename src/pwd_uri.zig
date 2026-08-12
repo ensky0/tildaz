@@ -125,7 +125,9 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
 /// 첫 라벨이 같은 경우 (`mymac` ↔ `mymac.example.com`) 를 수락할 수 있는데, 그건 호출자의
 /// 경로 존재 확인이 2차로 막는다 — 원격 경로가 이 머신에도 있어야 통과하기 때문이다.
 fn hostAccepted(host_raw: []const u8, hostname: []const u8, encoded: bool) bool {
-    var buf: [std.Uri.host_name_max]u8 = undefined;
+    // #451 — `std.Uri.host_name_max` 가 없어졌다. 같은 값 (255) 이 호스트 이름 타입 쪽으로
+    // 옮겨졌다 (`std.Io.net.HostName.max_len` — DNS 이름 상한).
+    var buf: [std.Io.net.HostName.max_len]u8 = undefined;
     if (host_raw.len > buf.len) return false;
     @memcpy(buf[buf.len - host_raw.len ..], host_raw);
     const host = if (encoded)
