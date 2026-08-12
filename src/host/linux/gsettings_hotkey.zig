@@ -27,6 +27,7 @@
 //! `g_settings_schema_source_lookup` 으로 schema 존재를 먼저 확인한 뒤 연다.
 
 const std = @import("std");
+const Runtime = @import("../../runtime.zig").Runtime;
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
 const hotkey_format = @import("hotkey_format.zig");
@@ -97,19 +98,21 @@ fn shellExtensionTargetForDesktopValue(value: []const u8) ?ShellExtensionTarget 
     return null;
 }
 
-fn currentShellExtensionTarget() ?ShellExtensionTarget {
-    const desktop = std.posix.getenv("XDG_CURRENT_DESKTOP") orelse return null;
+fn currentShellExtensionTarget(rt: Runtime) ?ShellExtensionTarget {
+    // #451 — `std.posix.getenv` 제거. `Environ.getPosix` 는 POSIX 블록을 그대로 훑어
+    // 할당이 없다 (릴리즈 노트 *Environment Variables … Become Non-Global*).
+    const desktop = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return null;
     return shellExtensionTargetForDesktopValue(desktop);
 }
 
 /// Packaged extension resources are synchronized into the current user's
 /// Shell extension directory before any startup/autostart decision reads the
 /// enabled list. Package installation itself must not modify per-user settings.
-pub fn ensureShellExtensionReady(allocator: std.mem.Allocator) void {
-    const target = currentShellExtensionTarget() orelse return;
+pub fn ensureShellExtensionReady(rt: Runtime, allocator: std.mem.Allocator) void {
+    const target = currentShellExtensionTarget(rt) orelse return;
     const label = target.owner.logCategory();
 
-    const extension_available = shell_extension.syncForCurrentUser(allocator, target.kind) catch |err| {
+    const extension_available = shell_extension.syncForCurrentUser(rt, allocator, target.kind) catch |err| {
         log.appendLine(label, "Shell extension resource sync failed: {s}", .{@errorName(err)});
         return;
     };
@@ -202,8 +205,8 @@ const Api = struct {
 /// keybinding 으로 자동 등록. 그 외 DE 거나 (schema 미설치 / libgio 없음) 등록
 /// 실패는 모두 graceful — log 만 남기고 반환. single_instance toggle listener 는
 /// 그대로 살아 있어 사용자 수동 등록도 가능.
-pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
-    const target = currentShellExtensionTarget() orelse return;
+pub fn registerToggleHotkey(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
+    const target = currentShellExtensionTarget(rt) orelse return;
     const de = target.owner;
 
     const api = Api.load() orelse {
@@ -272,8 +275,8 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
 /// launcher 단위 stale cleanup. 실제 값 등록/변경은 worker가 자기 index의
 /// `registerToggleHotkey`에서 담당하고, 여기서는 list actual에서 삭제된 config의
 /// TildaZ 항목만 제거한다. extension이 활성인 DE는 fallback 항목 전체가 stale이다.
-pub fn syncNumberedEntries(allocator: std.mem.Allocator, indices: []const u32) void {
-    const target = currentShellExtensionTarget() orelse return;
+pub fn syncNumberedEntries(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) void {
+    const target = currentShellExtensionTarget(rt) orelse return;
     const de = target.owner;
     const api = Api.load() orelse return;
     const source = api.schema_source_get_default() orelse return;
@@ -460,8 +463,8 @@ fn removeFromList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GS
 /// lifecycle owner를 반환한다. `host/linux_wayland.zig`은 이 경우 in-memory
 /// hidden_start만 false로 바꿔 surface를 항상 만들고, extension은 디스크 config의
 /// 원래 hidden_start를 읽어 map 직후 minimize한다. schema/API 부재는 null이다.
-pub fn enabledShellExtensionOwner() ?ShellExtensionOwner {
-    const target = currentShellExtensionTarget() orelse return null;
+pub fn enabledShellExtensionOwner(rt: Runtime) ?ShellExtensionOwner {
+    const target = currentShellExtensionTarget(rt) orelse return null;
     const api = Api.load() orelse return null;
     if (!isExtensionEnabledInSchema(&api, target.schema)) return null;
     return target.owner;
