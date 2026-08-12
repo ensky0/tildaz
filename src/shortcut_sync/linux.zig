@@ -132,7 +132,7 @@ fn readHyprlandBindings(allocator: std.mem.Allocator) !std.json.Parsed([]Hyprlan
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     switch (result.term) {
-        .Exited => |code| if (code != 0) return error.HyprctlFailed,
+        .exited => |code| if (code != 0) return error.HyprctlFailed,
         else => return error.HyprctlFailed,
     }
 
@@ -191,7 +191,7 @@ fn runHyprlandKeyword(allocator: std.mem.Allocator, keyword: []const u8, value: 
     child.stderr_behavior = .Ignore;
     try child.spawn();
     return switch (try child.wait()) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }

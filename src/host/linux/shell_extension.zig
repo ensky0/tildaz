@@ -52,17 +52,19 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
 
     const source_dir = try std.Io.Dir.path.join(allocator, &.{ resource_root, source_family, uuid });
     defer allocator.free(source_dir);
-    std.fs.accessAbsolute(source_dir, .{}) catch |err| switch (err) {
+    // #451 — `fs.accessAbsolute` ➡️ `std.Io.Dir.accessAbsolute` (릴리즈 노트 upgrade guide).
+    std.Io.Dir.accessAbsolute(rt.io, source_dir, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             const installed_entry = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "extension.js" });
             defer allocator.free(installed_entry);
-            std.fs.accessAbsolute(installed_entry, .{}) catch return false;
+            std.Io.Dir.accessAbsolute(rt.io, installed_entry, .{}) catch return false;
             return true;
         },
         else => return err,
     };
 
-    try std.fs.cwd().makePath(destination_dir);
+    // #451 — `fs.Dir.makePath` ➡️ `Io.Dir.createDirPath`. 공통 helper 를 쓴다 (#282 G7).
+    try paths.ensureDir(rt, destination_dir);
 
     var changed = false;
     const resources = switch (kind) {
@@ -74,56 +76,61 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         defer allocator.free(source);
         const destination = try std.Io.Dir.path.join(allocator, &.{ destination_dir, resource.relative_path });
         defer allocator.free(destination);
-        if (std.Io.Dir.path.dirname(destination)) |parent| try std.fs.cwd().makePath(parent);
-        changed = (try syncFile(allocator, source, destination)) or changed;
+        if (std.Io.Dir.path.dirname(destination)) |parent| try paths.ensureDir(rt, parent);
+        changed = (try syncFile(rt, allocator, source, destination)) or changed;
     }
 
     if (kind == .gnome) {
         const compiled = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "schemas", "gschemas.compiled" });
         defer allocator.free(compiled);
         const compiled_exists = blk: {
-            std.fs.accessAbsolute(compiled, .{}) catch break :blk false;
+            std.Io.Dir.accessAbsolute(rt.io, compiled, .{}) catch break :blk false;
             break :blk true;
         };
-        if (changed or !compiled_exists) try compileGnomeSchemas(allocator, destination_dir);
+        if (changed or !compiled_exists) try compileGnomeSchemas(rt, allocator, destination_dir);
     }
     return true;
 }
 
-fn syncFile(allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
-    const source = try std.fs.openFileAbsolute(source_path, .{});
-    defer source.close();
-    const content = try source.readToEndAlloc(allocator, 4 * 1024 * 1024);
+fn syncFile(rt: Runtime, allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
+    const source = try std.Io.Dir.openFileAbsolute(rt.io, source_path, .{});
+    defer source.close(rt.io);
+    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
+    var source_reader = source.reader(rt.io, &.{});
+    const content = try source_reader.interface.allocRemaining(allocator, .limited(4 * 1024 * 1024));
     defer allocator.free(content);
 
-    return paths.writeFileIfChanged(allocator, destination_path, content);
+    return paths.writeFileIfChanged(rt, allocator, destination_path, content);
 }
 
-fn compileGnomeSchemas(allocator: std.mem.Allocator, extension_dir: []const u8) !void {
+fn compileGnomeSchemas(rt: Runtime, allocator: std.mem.Allocator, extension_dir: []const u8) !void {
     const schemas_dir = try std.Io.Dir.path.join(allocator, &.{ extension_dir, "schemas" });
     defer allocator.free(schemas_dir);
     const temp_name = try std.fmt.allocPrint(allocator, ".tildaz-compile-{d}", .{std.c.getpid()});
     defer allocator.free(temp_name);
     const temp_dir = try std.Io.Dir.path.join(allocator, &.{ schemas_dir, temp_name });
     defer allocator.free(temp_dir);
-    try std.fs.cwd().makePath(temp_dir);
-    defer std.fs.cwd().deleteTree(temp_dir) catch {};
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    try paths.ensureDir(rt, temp_dir);
+    defer std.Io.Dir.cwd().deleteTree(rt.io, temp_dir) catch {};
+    // #451 — `std.process.Child.run` ➡️ `std.process.run(gpa, io, options)` (릴리즈 노트 *Process*).
+    const result = try std.process.run(allocator, rt.io, .{
         .argv = &.{ "glib-compile-schemas", "--targetdir", temp_dir, schemas_dir },
-        .max_output_bytes = 64 * 1024,
+        // #451 — `max_output_bytes` 가 `stdout_limit` · `stderr_limit` (`Io.Limit`) 으로
+        // 나뉘었다. 예전 한 값이 두 스트림의 합이 아니라 각각의 상한이었으므로 같은 값을 준다.
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     switch (result.term) {
-        .Exited => |code| if (code != 0) return error.GlibCompileSchemasFailed,
+        .exited => |code| if (code != 0) return error.GlibCompileSchemasFailed,
         else => return error.GlibCompileSchemasFailed,
     }
     const compiled_source = try std.Io.Dir.path.join(allocator, &.{ temp_dir, "gschemas.compiled" });
     defer allocator.free(compiled_source);
     const compiled_destination = try std.Io.Dir.path.join(allocator, &.{ schemas_dir, "gschemas.compiled" });
     defer allocator.free(compiled_destination);
-    _ = try syncFile(allocator, compiled_source, compiled_destination);
+    _ = try syncFile(rt, allocator, compiled_source, compiled_destination);
 }
 
 test "shell extension manifests contain required runtime files" {

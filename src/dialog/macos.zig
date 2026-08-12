@@ -1160,7 +1160,7 @@ fn confirmOsascript(rt: Runtime, title: []const u8, message: []const u8) bool {
         return false;
     };
     return switch (term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }
