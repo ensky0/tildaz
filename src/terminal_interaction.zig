@@ -111,7 +111,7 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
     // selection 의도가 아니라고 보고 무시. ghostty default 는 boundary 끼리도
     // 묶지만, 터미널 사용자가 expect 하는 동작은 "단어 본체만 선택" — iTerm2 /
     // Terminal.app 동등. 시작이 word body 인 경우만 양쪽 확장.
-    if (std.mem.indexOfAny(u21, &word_boundaries, &.{start_cp}) != null) return false;
+    if (std.mem.findAny(u21, &word_boundaries, &.{start_cp}) != null) return false;
     const expect_boundary = false;
 
     // forward — 양쪽으로 같은 boundary 상태인 cell 까지 확장.
@@ -127,7 +127,7 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
                 continue;
             }
             if (!rac.cell.hasText()) break :blk prev;
-            const this_b = std.mem.indexOfAny(u21, &word_boundaries, &.{rac.cell.content.codepoint}) != null;
+            const this_b = std.mem.findAny(u21, &word_boundaries, &.{rac.cell.content.codepoint}) != null;
             if (this_b != expect_boundary) break :blk prev;
             if (p.x == p.node.data.size.cols - 1 and !rac.row.wrap) break :blk p;
             prev = p;
@@ -147,7 +147,7 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
             }
             if (p.x == p.node.data.size.cols - 1 and !rac.row.wrap) break :blk prev;
             if (!rac.cell.hasText()) break :blk prev;
-            const this_b = std.mem.indexOfAny(u21, &word_boundaries, &.{rac.cell.content.codepoint}) != null;
+            const this_b = std.mem.findAny(u21, &word_boundaries, &.{rac.cell.content.codepoint}) != null;
             if (this_b != expect_boundary) break :blk prev;
             prev = p;
         }

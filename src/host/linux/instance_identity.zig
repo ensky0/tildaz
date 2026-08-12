@@ -6,7 +6,7 @@ const paths = @import("../../paths.zig");
 pub const max_index = @import("../../instances.zig").max_config_index;
 
 pub fn appId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "tildaz.instance{d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "tildaz.instance{d}", .{index}, 0);
 }
 
 /// 측정 인스턴스의 app_id ([#382](https://github.com/ensky0/tildaz/issues/382)).
@@ -33,19 +33,19 @@ pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
 }
 
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "TildaZ_{d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "TildaZ_{d}", .{index}, 0);
 }
 
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "toggle-{d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "toggle-{d}", .{index}, 0);
 }
 
 pub fn shortcutDescription(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "Show / hide TildaZ {d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "Show / hide TildaZ {d}", .{index}, 0);
 }
 
 pub fn scopeName(buf: []u8, index: u32, pid: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "app-tildaz.instance{d}-{d}.scope", .{ index, pid });
+    return std.fmt.bufPrintSentinel(buf, "app-tildaz.instance{d}-{d}.scope", .{ index, pid }, 0);
 }
 
 pub fn isScopeForIndex(leaf: []const u8, index: u32) bool {
@@ -69,7 +69,7 @@ fn parseDesktopFileName(name: []const u8) ?u32 {
 fn applicationsDir(allocator: std.mem.Allocator) ![]u8 {
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".local", "share", "applications" });
+    return std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "applications" });
 }
 
 fn containsIndex(indices: []const u32, index: u32) bool {
@@ -84,12 +84,12 @@ pub fn ensureDesktopEntry(allocator: std.mem.Allocator, index: u32) !void {
 
     const file_name = try std.fmt.allocPrint(allocator, "tildaz.instance{d}.desktop", .{index});
     defer allocator.free(file_name);
-    const path = try std.fs.path.join(allocator, &.{ dir, file_name });
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir, file_name });
     defer allocator.free(path);
 
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe = try std.fs.selfExePath(&exe_buf);
-    if (std.mem.indexOfAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
+    if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
     const content = try std.fmt.allocPrint(allocator,
         \\[Desktop Entry]

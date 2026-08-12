@@ -141,7 +141,7 @@ test "#314 About formatter preserves content beyond the old 2048-byte limit" {
     defer std.testing.allocator.free(msg);
 
     try std.testing.expect(msg.len > 2048);
-    try std.testing.expect(std.mem.indexOf(u8, msg, long_path) != null);
+    try std.testing.expect(std.mem.find(u8, msg, long_path) != null);
     try std.testing.expect(std.mem.endsWith(u8, msg, "https://github.com/ensky0/tildaz"));
 }
 
@@ -159,7 +159,7 @@ test "#314 About formatter preserves multibyte paths" {
     defer std.testing.allocator.free(msg);
 
     try std.testing.expect(std.unicode.utf8ValidateSlice(msg));
-    try std.testing.expect(std.mem.indexOf(u8, msg, config_path) != null);
+    try std.testing.expect(std.mem.find(u8, msg, config_path) != null);
 }
 
 test "#314 About formatter reports allocation failure" {

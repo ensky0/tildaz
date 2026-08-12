@@ -47,7 +47,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
     };
 
     // 자기 실행 파일 절대 경로 — `exec` command 로 다시 `--toggle` 호출.
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
         log.appendLine("sway", "selfExePath failed: {s} — bindsym auto-register skipped", .{@errorName(err)});
         return;
@@ -58,7 +58,7 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
     const accel = buildAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers);
 
     // sway command — `exec` 인자는 sway 가 sh -c 로 실행하므로 path 를 따옴표로.
-    var cmd_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    var cmd_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
     const command = std.fmt.bufPrint(&cmd_buf, "bindsym --no-warn {s} exec \"{s}\" --toggle {d}", .{ accel, exe_path, instance_context.requireWorkerIndex() }) catch {
         log.appendLine("sway", "bindsym command too long — skip", .{});
         return;
@@ -135,8 +135,8 @@ fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []co
     try readAll(fd, payload);
     // sway 의 wire 형식은 `[ { "success": true } ]` — 콜론 뒤 공백 포함 (swaymsg
     // CLI 의 compact 표시와 다름, nested 시연 확인). 공백 유무 둘 다 수용.
-    const ok = std.mem.indexOf(u8, payload, "\"success\": true") != null or
-        std.mem.indexOf(u8, payload, "\"success\":true") != null;
+    const ok = std.mem.find(u8, payload, "\"success\": true") != null or
+        std.mem.find(u8, payload, "\"success\":true") != null;
     if (!ok) log.appendLineVerbose("sway", "RUN_COMMAND resp(success=false)=[{s}]", .{payload});
     return ok;
 }
