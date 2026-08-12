@@ -2110,9 +2110,9 @@ fn executeCommandMenu(command: command_menu.Command) void {
             const allocator = g_gpa.allocator();
             const path = @import("../paths.zig").configPath(allocator) catch return;
             defer allocator.free(path);
-            @import("../system_open.zig").openInDefaultApp(allocator, path);
+            @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
         },
-        .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_gpa.allocator(), messages.keyboard_shortcuts_url),
+        .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url),
         .about => about.showAboutDialog(g_rt),
     }
     requestRender();
@@ -3817,7 +3817,7 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     const allocator = g_gpa.allocator();
     const path = @import("../paths.zig").configPath(allocator) catch return;
     defer allocator.free(path);
-    @import("../system_open.zig").openInDefaultApp(allocator, path);
+    @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
 
 /// Shift+Cmd+L — 현재 worker의 tildaz_N.log 를 default editor 로 열기 (#128).
@@ -3828,7 +3828,7 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     applyShortcutInputPolicy(.open_log);
     const allocator = g_gpa.allocator();
     const path = log.filePath() orelse return;
-    @import("../system_open.zig").openInDefaultApp(allocator, path);
+    @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
 
 /// Cmd+Q / Quit TildaZ menu action. 표준 `terminate:`를 menu item에 직접

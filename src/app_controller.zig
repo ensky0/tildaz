@@ -728,11 +728,11 @@ pub const App = struct {
                 const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
                 self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.allocator, path);
+                system_open.openInDefaultApp(self.rt, self.allocator, path);
             },
             .keyboard_shortcuts => if (self.resolveRunAction(.open_shortcuts)) {
                 self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.allocator, messages.keyboard_shortcuts_url);
+                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
             },
             .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt),
         }
@@ -1096,13 +1096,13 @@ pub const App = struct {
                         // 내려 → editor 가 자연스럽게 우리 위. 다음 F1 toggle 시
                         // show() 의 applyRect 가 HWND_TOPMOST 복귀.
                         self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.allocator, path);
+                        system_open.openInDefaultApp(self.rt, self.allocator, path);
                         return true;
                     },
                     .open_log => {
                         const path = log.filePath() orelse return true;
                         self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.allocator, path);
+                        system_open.openInDefaultApp(self.rt, self.allocator, path);
                         return true;
                     },
                     .switch_tab => |index| {
