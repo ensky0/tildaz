@@ -275,6 +275,7 @@ pub const Tab = struct {
         errdefer term.deinit(alloc);
 
         var backend = try TerminalBackend.init(.{
+            .rt = rt,
             .allocator = alloc,
             .cols = cols,
             .rows = rows,
@@ -531,7 +532,9 @@ pub const Tab = struct {
 /// **같은 정의**를 쓰도록 한 곳에 둔다 — 하네스가 이 구성을 베껴 쓰면 한쪽만
 /// 바뀌었을 때 앱과 다른 파서 설정을 재게 되고, 그 차이는 숫자에 조용히 섞인다.
 ///
-/// scrollback 은 줄 수가 아니라 byte 예산이라 cols 에 따른 page 용량으로 환산한다.
+/// #451 — scrollback 은 이제 **줄 수로 직접** 건넨다. 예전에는 ghostty 가 byte 예산만
+/// 받아서 우리 config 의 줄 수를 cols 에 따른 page 용량으로 환산했는데, upstream 이
+/// `max_scrollback_lines` 를 추가해 그 환산이 필요 없어졌다.
 pub fn initVtTerminal(
     rt: Runtime,
     alloc: std.mem.Allocator,
@@ -552,11 +555,15 @@ pub fn initVtTerminal(
     var term = try ghostty.Terminal.init(rt.io, alloc, .{
         .cols = cols,
         .rows = rows,
-        .max_scrollback = max_scroll_lines * blk: {
-            const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
-                break :blk (@as(usize, cols) + 1) * 8;
-            break :blk ghostty.Page.layout(cap).total_size / cap.rows;
-        },
+        // #451 — 우리 config 의 `max_scroll_lines` 와 **단위가 같다** (물리 줄 수).
+        // 예전의 page 용량 환산 (`page.std_capacity.adjust` + `Page.layout`) 은 ghostty 가
+        // byte 예산만 받던 시절의 우회였고, 이제 그 계산이 통째로 사라졌다.
+        .max_scrollback_lines = max_scroll_lines,
+        // **byte 제한은 명시로 끈다.** `Terminal.Options.max_scrollback_bytes` 의 기본값이
+        // `10_000` (10 KB) 이고, `PageList.Limits.exceeded` 는 bytes 와 lines 를 **독립적으로**
+        // 판정해 각각 page 를 prune 한다 (`PageList.zig` 의 `Limits`). 그대로 두면 10 KB 에서
+        // 먼저 잘려 줄 수 제한이 무의미해진다. `null` = 무제한이고, 상한은 줄 수가 정한다.
+        .max_scrollback_bytes = null,
         .colors = term_colors,
     });
     errdefer term.deinit(alloc);
