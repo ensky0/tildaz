@@ -582,6 +582,54 @@ pub fn initVtTerminal(
     return term;
 }
 
+test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled" {
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, 10_000, null);
+    defer term.deinit(std.testing.allocator);
+    try std.testing.expect(term.modes.get(.grapheme_cluster));
+
+    const Capture = struct {
+        var response: [128]u8 = undefined;
+        var len: usize = 0;
+        var calls: usize = 0;
+
+        fn reset() void {
+            len = 0;
+            calls = 0;
+        }
+
+        fn writePty(_: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+            @memcpy(response[0..data.len], data);
+            len = data.len;
+            calls += 1;
+        }
+
+        fn expect(expected: []const u8) !void {
+            try std.testing.expectEqual(@as(usize, 1), calls);
+            try std.testing.expectEqualStrings(expected, response[0..len]);
+            reset();
+        }
+    };
+    Capture.reset();
+
+    // 실제 Tab.init과 같은 effects stream이다. 여기서 응답이 나와야 Tab의
+    // `vtWritePty`가 받은 바이트를 PTY write queue로 보낼 수 있다.
+    var handler = term.vtHandler();
+    handler.effects.write_pty = &Capture.writePty;
+    var stream: ghostty.TerminalStream = .init(.{
+        .handler = handler,
+        .allocator = std.testing.allocator,
+    });
+    defer stream.deinit();
+
+    stream.nextSlice("\x1b[1m\x1bP$qm\x1b\\");
+    try Capture.expect("\x1bP1$r0;1m\x1b\\");
+
+    // XTGETTCAP `Co` (hex 43 6F) → 256 (hex 32 35 36).
+    stream.nextSlice("\x1bP+q436F\x1b\\");
+    try Capture.expect("\x1bP1+r436F=323536\x1b\\");
+}
+
 /// 고정 크기 탭 제목 버퍼에 유효한 UTF-8 prefix 만 복사한다. byte 한도에서
 /// 다중 바이트 codepoint 가 잘리거나 OSC payload 에 잘못된 byte 가 있으면 마지막
 /// 유효 경계까지만 사용해 renderer 에 invalid UTF-8 을 넘기지 않는다.

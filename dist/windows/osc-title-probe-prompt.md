@@ -57,7 +57,7 @@ Windows 에서 증상이 더 자주 보이는 이유는 지연이 더 길어서�
 ## 구현 지침
 
 - Linux 판 [`dist/linux/osc-title-probe.zig`](../linux/osc-title-probe.zig) 를 참고해줘. OSC / CSI / DCS 파서, 이벤트 기록, run 반복, 통계 출력, `--runs` / `--window-ms` / `--verbose` 인자 처리 구조를 그대로 가져오고 **PTY spawn 부분만 ConPTY 로 교체**하면 된다.
-- 파일은 `dist/windows/osc-title-probe.zig` — tildaz 본체 빌드에 넣지 않는 독립 측정 도구다 (`dist/linux/dmabuf-probe.zig` / `dist/macos/color-capture.m` 와 같은 위치의 물건). `build.zig` 는 건드리지 마.
+- 파일은 `dist/windows/osc-title-probe.zig` — tildaz 본체 빌드에 넣지 않는 독립 측정 도구다 (`dist/linux/dmabuf-probe.zig` / `dist/macos/color-capture.m` 와 같은 위치의 물건). 이후 #451에서 Zig API 호환을 놓치지 않도록 `zig build probe-check`의 compile-only 대상에는 포함됐다.
 - 빌드: `zig build-exe dist/windows/osc-title-probe.zig -O ReleaseSafe -lc --cache-dir C:/ziglang/tildaz-cache`. Debug 는 링커 문제를 피하려고 쓰지 않는다.
 - 파일 맨 위 doc comment 에 "Windows 전용 (ConPTY)" 와 `comptime` 가드를 넣어줘 (Linux 판과 같은 패턴).
 - 출력은 run 별 한 줄 + 마지막에 min / median / mean / max + **유예 후보별 판정** (1000 / 500 / 300 / 250 / 200 / 150 / 100 ms 각각에서 "첫 제목이 유예보다 늦은 run 수") 까지. Linux 판 출력 형식을 그대로 맞춰줘 — 두 platform 결과를 같은 표로 합쳐야 한다.
