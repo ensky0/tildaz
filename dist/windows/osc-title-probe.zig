@@ -29,7 +29,7 @@
 //!     유지하므로 (#266 / #269) 자식 질의의 수신자가 우리가 아니다. 응답하면 실제
 //!     앱보다 빠른 값이 나온다. 대신 어떤 질의가 언제 왔는지는 전부 기록한다.
 //!
-//! 빌드 / 실행 (본체 빌드에 들어가지 않는 독립 도구 — `build.zig` 무관):
+//! 빌드 / 실행 (본체 빌드에는 들어가지 않고 `zig build probe-check`가 호환만 확인):
 //! ```powershell
 //! zig build-exe dist/windows/osc-title-probe.zig -O ReleaseSafe -lc --cache-dir C:/ziglang/tildaz-cache
 //! .\osc-title-probe.exe --shell "cmd.exe" --runs 10 --verbose
@@ -59,12 +59,29 @@ const BOOL = windows.BOOL;
 const DWORD = windows.DWORD;
 const BYTE = windows.BYTE;
 const LPVOID = windows.LPVOID;
-const HRESULT = windows.HRESULT;
+// Zig 0.16은 `std.os.windows.HRESULT`를 제거했다. Win32의 HRESULT는 LONG이다.
+const HRESULT = c_long;
 const WCHAR = u16;
 const L = std.unicode.utf8ToUtf16LeStringLiteral;
 
 /// dark 배경 (기본 테마) → `COLORFGBG=15;0`. `themes.isDark` 가 판정하는 값과 같다.
 const colorfgbg = "15;0";
+
+/// Zig 0.16에서 제거된 `std.time.Timer`의 자리. tildaz의 `runtime.Timer`와 같이
+/// 절전 시간을 세지 않는 `.awake` 단조 시계로 경과 시간을 잰다.
+const Timer = struct {
+    io: std.Io,
+    start_ns: i96,
+
+    fn start(io: std.Io) Timer {
+        return .{ .io = io, .start_ns = std.Io.Timestamp.now(io, .awake).nanoseconds };
+    }
+
+    fn read(self: Timer) u64 {
+        const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+        return @intCast(@max(0, now - self.start_ns));
+    }
+};
 
 // ── Win32 선언 — `src/terminal/windows/pty.zig` 와 같은 집합 ────────────────
 
@@ -192,7 +209,7 @@ const Recorder = struct {
     events: [768]Event = undefined,
     count: usize = 0,
     dropped: usize = 0,
-    timer: std.time.Timer = undefined,
+    timer: Timer = undefined,
     total_bytes: usize = 0,
     /// 화면에 실제로 찍히는 첫 문자의 시각. Windows 의 「첫 출력 byte」는
     /// conhost 자신의 preamble (`CSI 1t` / DA1 질의 / `?1004h`) 이라 셸이 언제
@@ -328,19 +345,19 @@ const Parser = struct {
         switch (code) {
             0, 2 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch line[0..0]).len;
+                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
                 rec.add(.title, line[0..n]);
             },
             1 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch line[0..0]).len;
+                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
                 rec.add(.icon, line[0..n]);
             },
             // 색 질의 — Windows tildaz 는 응답하지 않는다 (#269). 기록만.
             10, 11, 12 => {
                 if (std.mem.eql(u8, payload, "?")) {
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query (무응답)", .{code}) catch line[0..0]).len;
+                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query (무응답)", .{code}) catch @as([]u8, line[0..0])).len;
                     rec.add(.ignored, line[0..n]);
                 }
             },
@@ -348,7 +365,7 @@ const Parser = struct {
                 if (std.mem.endsWith(u8, payload, "?")) {
                     const idx_end = std.mem.indexOfScalar(u8, payload, ';') orelse return;
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query (무응답)", .{payload[0..idx_end]}) catch line[0..0]).len;
+                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query (무응답)", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
                     rec.add(.ignored, line[0..n]);
                 }
             },
@@ -425,7 +442,7 @@ fn conptySource() []const u8 {
 }
 
 fn setSource(comptime fmt: []const u8, args: anytype) void {
-    const s = std.fmt.bufPrint(&conpty_source_buf, fmt, args) catch conpty_source_buf[0..0];
+    const s = std.fmt.bufPrint(&conpty_source_buf, fmt, args) catch @as([]u8, conpty_source_buf[0..0]);
     conpty_source_len = s.len;
 }
 
@@ -641,7 +658,7 @@ const ExtraEnv = struct {
     fn describe(self: *ExtraEnv, out: []u8) []const u8 {
         var tmp: [1024]u8 = undefined;
         const wslenv = std.unicode.utf16LeToUtf8(&tmp, self.values[1]) catch 0;
-        const s = std.fmt.bufPrint(out, "COLORFGBG={s} WSLENV={s}", .{ colorfgbg, tmp[0..wslenv] }) catch out[0..0];
+        const s = std.fmt.bufPrint(out, "COLORFGBG={s} WSLENV={s}", .{ colorfgbg, tmp[0..wslenv] }) catch @as([]u8, out[0..0]);
         return s;
     }
 };
@@ -650,7 +667,7 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
     // ── Input pipe (익명, sync): 우리 = write, conhost = read
     var pipe_in_read: HANDLE = undefined;
     var pipe_in_write: HANDLE = undefined;
-    if (CreatePipe(&pipe_in_read, &pipe_in_write, null, 0) == 0) return error.CreatePipeFailed;
+    if (!CreatePipe(&pipe_in_read, &pipe_in_write, null, 0).toBool()) return error.CreatePipeFailed;
     errdefer _ = CloseHandle(pipe_in_write);
 
     // ── Output pipe (named, 우리 쪽만 overlapped)
@@ -688,7 +705,7 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
         return error.CreatePipeFailed;
     }
 
-    const read_event = CreateEventW(null, 1, 0, null) orelse {
+    const read_event = CreateEventW(null, .TRUE, .FALSE, null) orelse {
         _ = CloseHandle(pipe_in_read);
         _ = CloseHandle(pipe_out_write);
         return error.CreateEventFailed;
@@ -708,7 +725,7 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
     errdefer conpty_close_fn.?(hpc);
 
     // Windows Terminal 의 ConptyConnection::Start() 와 같은 순서 — CreateProcessW 앞.
-    if (conpty_show_hide_fn) |f| _ = f(hpc, 1);
+    if (conpty_show_hide_fn) |f| _ = f(hpc, .TRUE);
 
     // ── STARTUPINFOEX + attribute list
     var attr_list_size: usize = 0;
@@ -716,8 +733,8 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
     const attr_list_buf = try alloc.alloc(u8, attr_list_size);
     errdefer alloc.free(attr_list_buf);
     const attr_list: LPPROC_THREAD_ATTRIBUTE_LIST = @ptrCast(attr_list_buf.ptr);
-    if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_list_size) == 0) return error.InitializeAttributeListFailed;
-    if (UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc, @sizeOf(HPCON), null, null) == 0) {
+    if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_list_size).toBool()) return error.InitializeAttributeListFailed;
+    if (!UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc, @sizeOf(HPCON), null, null).toBool()) {
         return error.UpdateProcThreadAttributeFailed;
     }
 
@@ -767,7 +784,7 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
         @ptrCast(cmd_buf[0..cmd_len :0].ptr),
         null,
         null,
-        0,
+        .FALSE,
         EXTENDED_STARTUPINFO_PRESENT,
         null,
         cwd,
@@ -775,7 +792,7 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
         &pi,
     );
     env.restore(alloc);
-    if (ok == 0) return error.CreateProcessFailed;
+    if (!ok.toBool()) return error.CreateProcessFailed;
 
     // ── DA1 pre-response — OpenConsole 의 WaitUntilDA1(3000) 을 즉시 풀어 준다.
     // 빼면 첫 프롬프트가 ~3.9 초 늦어 측정값이 통째로 밀린다 (pty.zig 주석).
@@ -814,6 +831,7 @@ const RunResult = struct {
 };
 
 fn runOnce(
+    io: std.Io,
     alloc: std.mem.Allocator,
     shell: []const u8,
     cols: u16,
@@ -826,7 +844,7 @@ fn runOnce(
     var sp = try spawnShell(alloc, shell, cols, rows, da1);
     // 시각 0 — tildaz 는 backend.init (ConPTY + CreateProcessW) 직후 title_clock 을
     // 시작한다 (session_core.zig 의 Tab.init).
-    var rec = Recorder{ .timer = try std.time.Timer.start() };
+    var rec = Recorder{ .timer = .start(io) };
     var parser = Parser{};
 
     var buf: [8192]u8 = undefined;
@@ -839,15 +857,15 @@ fn runOnce(
         _ = ResetEvent(sp.read_event);
         var ov = OVERLAPPED{ .hEvent = sp.read_event };
         var n: DWORD = 0;
-        if (ReadFile(sp.pipe_out_read, &buf, buf.len, &n, &ov) == 0) {
+        if (!ReadFile(sp.pipe_out_read, &buf, buf.len, &n, &ov).toBool()) {
             if (GetLastError() != ERROR_IO_PENDING) break;
             if (WaitForSingleObject(sp.read_event, remaining) != WAIT_OBJECT_0) {
                 _ = CancelIo(sp.pipe_out_read);
                 var discarded: DWORD = 0;
-                _ = GetOverlappedResult(sp.pipe_out_read, &ov, &discarded, 1);
+                _ = GetOverlappedResult(sp.pipe_out_read, &ov, &discarded, .TRUE);
                 break; // 관측 창 종료
             }
-            if (GetOverlappedResult(sp.pipe_out_read, &ov, &n, 0) == 0) break;
+            if (!GetOverlappedResult(sp.pipe_out_read, &ov, &n, .FALSE).toBool()) break;
         }
         if (n == 0) break; // pipe 종료 — 셸 종료
         if (first_byte_ns == null) first_byte_ns = rec.timer.read();
@@ -936,12 +954,9 @@ fn ms(v: u64) f64 {
     return @as(f64, @floatFromInt(v)) / @as(f64, std.time.ns_per_ms);
 }
 
-pub fn main() !void {
-    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_state.deinit();
-    const alloc = arena_state.allocator();
-
-    const args = try std.process.argsAlloc(alloc);
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(alloc);
     var shell: []const u8 = "cmd.exe";
     var runs: usize = 10;
     var window_ms: u64 = 3000;
@@ -1030,7 +1045,7 @@ pub fn main() !void {
 
     for (0..runs) |run| {
         if (verbose) std.debug.print("  run {d}:\n", .{run + 1});
-        const r = try runOnce(alloc, shell, cols, rows, window_ms, da1, verbose, dump and run == 0);
+        const r = try runOnce(init.io, alloc, shell, cols, rows, window_ms, da1, verbose, dump and run == 0);
         if (r.first_nonempty_ns) |t| {
             firsts[firsts_len] = t;
             firsts_len += 1;

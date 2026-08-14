@@ -5,7 +5,8 @@
 //! Intel 그래픽을 확인하려면 Intel GPU 가 달린 *Linux* 시스템이 필요하다.
 //!
 //! tildaz 본체 빌드에 들어가지 않는 독립 측정 도구다 (`dist/macos/color-capture.m`
-//! 와 같은 위치의 물건). 어떤 배포판 / 데스크톱 / GPU 드라이버에서든 **GPU 경로가
+//! 와 같은 위치의 물건). 단 Zig API 호환은 `zig build probe-check`가 compile-only로
+//! 확인한다. 어떤 배포판 / 데스크톱 / GPU 드라이버에서든 **GPU 경로가
 //! 성립하는지**를 한 번에 판정해서, 결과를 이슈에 그대로 붙일 수 있는 형태로 출력한다.
 //!
 //! 검사하는 것 — tildaz 가 실행 시점에 확인할 항목과 같은 순서다:
@@ -38,10 +39,31 @@ const builtin = @import("builtin");
 const posix = std.posix;
 const linux = std.os.linux;
 
+/// `std.posix.system` raw 반환값을 errno로 판정한다. Wayland는 Unix socket에서
+/// `SCM_RIGHTS`를 보내야 해 Zig 0.16의 `Io.net.Stream` reader/writer만으로는
+/// 완성할 수 없으므로, 연결 수명은 `Io.net`에 맡기고 wire I/O만 raw syscall을 쓴다.
+fn sysFailed(rc: anytype) bool {
+    return posix.errno(rc) != .SUCCESS;
+}
+
+fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const rc = posix.system.write(fd, bytes.ptr + offset, bytes.len - offset);
+        if (sysFailed(rc)) {
+            if (posix.errno(rc) == .INTR) continue;
+            return error.WriteFailed;
+        }
+        const n: usize = @intCast(rc);
+        if (n == 0) return error.WriteFailed;
+        offset += n;
+    }
+}
+
 // Linux 전용이다. Wayland wire protocol · GBM · dma-buf 를 직접 다루므로 다른
 // OS 에서는 성립하지 않는다 (Windows 는 Direct3D, macOS 는 Metal 로 그린다).
-// 가드가 없으면 `std.posix.getenv is unavailable for Windows …` 같은 std 내부
-// 에러가 나와 원인을 짐작하기 어렵다 — 실제로 겪었다.
+// 가드가 없으면 Linux 전용 Wayland/GBM 타입에서 연쇄 오류가 나와 원인을 짐작하기
+// 어렵다. 진단 대상이 아닌 OS는 첫 오류에서 용도를 바로 알 수 있게 한다.
 comptime {
     if (builtin.os.tag != .linux) @compileError(
         "dmabuf-probe 는 Linux 전용 진단 도구다 (Wayland + GBM + dma-buf). " ++
@@ -132,11 +154,11 @@ const Msg = struct {
         return self.buf[0..self.len];
     }
 
-    fn send(self: *Msg, stream: std.net.Stream) !void {
-        try stream.writeAll(self.finish());
+    fn send(self: *Msg, stream: std.Io.net.Stream) !void {
+        try writeAll(stream.socket.handle, self.finish());
     }
 
-    fn sendWithFd(self: *Msg, stream: std.net.Stream, fd: posix.fd_t) !void {
+    fn sendWithFd(self: *Msg, stream: std.Io.net.Stream, fd: posix.fd_t) !void {
         const bytes = self.finish();
         var iov = [_]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
 
@@ -162,7 +184,9 @@ const Msg = struct {
             .controllen = control_len,
             .flags = 0,
         };
-        const sent = try posix.sendmsg(stream.handle, &msg, 0);
+        const send_rc = posix.system.sendmsg(stream.socket.handle, &msg, 0);
+        if (sysFailed(send_rc)) return error.SendFdFailed;
+        const sent: usize = @intCast(send_rc);
         if (sent != bytes.len) return error.ShortFdWrite;
     }
 };
@@ -326,9 +350,11 @@ const Egl = struct {
             .makeCurrent = lib.lookup(@FieldType(Egl, "makeCurrent"), "eglMakeCurrent") orelse return error.MissingSymbol,
             .queryString = lib.lookup(@FieldType(Egl, "queryString"), "eglQueryString") orelse return error.MissingSymbol,
             .getError = lib.lookup(@FieldType(Egl, "getError"), "eglGetError") orelse return error.MissingSymbol,
-            .createImageKHR = @ptrCast(create_image),
-            .destroyImageKHR = @ptrCast(destroy_image),
-            .imageTargetTexture2DOES = @ptrCast(img_target),
+            // `eglGetProcAddress`는 정렬 1의 opaque pointer를 돌려준다. aarch64의
+            // 함수 포인터는 정렬 4라 ABI가 보장하는 proc 주소 정렬을 명시한다.
+            .createImageKHR = @ptrCast(@alignCast(create_image)),
+            .destroyImageKHR = @ptrCast(@alignCast(destroy_image)),
+            .imageTargetTexture2DOES = @ptrCast(@alignCast(img_target)),
             .genTextures = gles.lookup(@FieldType(Egl, "genTextures"), "glGenTextures") orelse return error.MissingSymbol,
             .bindTexture = gles.lookup(@FieldType(Egl, "bindTexture"), "glBindTexture") orelse return error.MissingSymbol,
             .texParameteri = gles.lookup(@FieldType(Egl, "texParameteri"), "glTexParameteri") orelse return error.MissingSymbol,
@@ -417,7 +443,8 @@ fn mark(ok: bool) []const u8 {
 const max_mods = 128;
 
 const State = struct {
-    stream: std.net.Stream,
+    io: std.Io,
+    stream: std.Io.net.Stream,
     next_id: u32 = registry_id + 1,
     in: [64 * 1024]u8 = undefined,
     in_len: usize = 0,
@@ -480,7 +507,13 @@ const State = struct {
 
     fn readAndDispatch(self: *State) !void {
         if (self.in_len == self.in.len) return error.ReadBufferFull;
-        const n = try self.stream.read(self.in[self.in_len..]);
+        const read_rc = posix.system.read(
+            self.stream.socket.handle,
+            self.in[self.in_len..].ptr,
+            self.in.len - self.in_len,
+        );
+        if (sysFailed(read_rc)) return error.ReadFailed;
+        const n: usize = @intCast(read_rc);
         if (n == 0) return error.ConnectionClosed;
         self.in_len += n;
         try self.dispatchBuffered();
@@ -658,10 +691,13 @@ const State = struct {
         try self.sendArgs(self.surface_id, 3, &.{self.frame_id}); // frame
         try self.sendNoArgs(self.surface_id, 6); // commit
 
-        const start = std.time.milliTimestamp();
-        var fds = [_]posix.pollfd{.{ .fd = self.stream.handle, .events = posix.POLL.IN, .revents = 0 }};
-        while (std.time.milliTimestamp() - start < hold_ms) {
-            const ready = posix.poll(&fds, 50) catch break;
+        const start_ns = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+        const hold_ns: i96 = @as(i96, hold_ms) * std.time.ns_per_ms;
+        var fds = [_]posix.pollfd{.{ .fd = self.stream.socket.handle, .events = posix.POLL.IN, .revents = 0 }};
+        while (std.Io.Timestamp.now(self.io, .awake).nanoseconds - start_ns < hold_ns) {
+            const poll_rc = posix.system.poll(&fds, fds.len, 50);
+            if (sysFailed(poll_rc)) break;
+            const ready: usize = @intCast(poll_rc);
             if (ready > 0 and (fds[0].revents & posix.POLL.IN) != 0) {
                 self.readAndDispatch() catch break;
             }
@@ -715,29 +751,34 @@ fn clearColorOf(argb: u32) [4]f32 {
 
 // ---------------------------------------------------------------------- main
 
-pub fn main() !u8 {
+pub fn main(init: std.process.Init) !u8 {
     var report = Report{};
-    report.desktop = posix.getenv("XDG_CURRENT_DESKTOP") orelse "(unset)";
+    const environ = init.minimal.environ;
+    report.desktop = environ.getPosix("XDG_CURRENT_DESKTOP") orelse "(unset)";
 
     std.debug.print("tildaz Linux GPU 경로 진단 (#277)\n\n", .{});
 
     // ---- Wayland 연결
-    const runtime_dir = posix.getenv("XDG_RUNTIME_DIR") orelse {
+    const runtime_dir = environ.getPosix("XDG_RUNTIME_DIR") orelse {
         std.debug.print("XDG_RUNTIME_DIR 이 없다 — Wayland 세션이 아니다.\n", .{});
         return 1;
     };
-    const wl_display = posix.getenv("WAYLAND_DISPLAY") orelse "wayland-0";
+    const wl_display = environ.getPosix("WAYLAND_DISPLAY") orelse "wayland-0";
     var path_buf: [512]u8 = undefined;
-    const sock_path: []const u8 = if (std.fs.path.isAbsolute(wl_display))
+    const sock_path: []const u8 = if (std.Io.Dir.path.isAbsolute(wl_display))
         wl_display
     else
         try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ runtime_dir, wl_display });
 
-    var state = State{ .stream = std.net.connectUnixSocket(sock_path) catch |err| {
+    const address = std.Io.net.UnixAddress.init(sock_path) catch |err| {
+        std.debug.print("Wayland 소켓 주소 실패 ({s}): {s}\n", .{ sock_path, @errorName(err) });
+        return 1;
+    };
+    var state = State{ .io = init.io, .stream = address.connect(init.io) catch |err| {
         std.debug.print("Wayland 소켓 연결 실패 ({s}): {s}\n", .{ sock_path, @errorName(err) });
         return 1;
     } };
-    defer state.stream.close();
+    defer state.stream.close(init.io);
 
     try state.sendArgs(display_id, 1, &.{registry_id});
     try state.roundtrip();
@@ -802,13 +843,15 @@ pub fn main() !u8 {
 
     const node = "/dev/dri/renderD128";
     report.render_node = node;
-    const drm_fd = posix.open(node, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0) catch |err| {
+    const drm_rc = posix.system.open(node, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, @as(posix.mode_t, 0));
+    if (sysFailed(drm_rc)) {
         report.failure_note = "DRM render node 를 열 수 없다 (권한 또는 GPU 없음)";
-        std.debug.print("  ({s}: {s})\n", .{ node, @errorName(err) });
+        std.debug.print("  ({s}: {s})\n", .{ node, @tagName(posix.errno(drm_rc)) });
         printReport(&report);
         return 1;
-    };
-    defer posix.close(drm_fd);
+    }
+    const drm_fd: posix.fd_t = @intCast(drm_rc);
+    defer _ = posix.system.close(drm_fd);
 
     const dev = gbm.create_device(drm_fd) orelse {
         report.failure_note = "gbm_create_device 실패";
@@ -854,7 +897,7 @@ pub fn main() !u8 {
         // CPU 경로는 정의상 단일 plane (LINEAR).
         const cpu_planes = [_]ProbePlane{.{ .index = 0, .fd = cpu_fd, .offset = cpu_offset, .stride = cpu_stride }};
         const buf = try state.createDmabufBuffer(&cpu_planes, w, h, cpu_mod);
-        posix.close(cpu_fd);
+        _ = posix.system.close(cpu_fd);
         if (buf) |bid| {
             report.cpu_buffer_created = true;
             report.cpu_frame_shown = try state.presentAndWait(bid, w, h, 2000);
@@ -1002,7 +1045,7 @@ fn runGlPhase(
 
     var fds: [MAX_PLANES]c_int = @splat(-1);
     defer for (fds) |f| {
-        if (f >= 0) posix.close(f);
+        if (f >= 0) _ = posix.system.close(f);
     };
     var img_attrs: [6 + MAX_PLANES * 10 + 1]i32 = undefined;
     const names = [MAX_PLANES][5]i32{
