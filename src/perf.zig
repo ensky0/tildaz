@@ -230,15 +230,22 @@ pub fn dumpOnExit(rt: Runtime) void {
     if (!instance_context.isStress()) return;
 
     // 라벨에 워크로드를 넣어 5 회 반복 로그를 기계로 가를 수 있게 한다. 측정 인스턴스에
-    // 넘긴 환경변수 (`stress.zig` 의 `env_workload`) 를 그대로 읽는다. Windows 는
-    // `getEnvVarOwned` 가 key 의 WTF-16 변환에도 allocator 를 쓰므로 넉넉히 잡는다.
+    // 넘긴 환경변수 (`stress.zig` 의 `env_workload`) 를 그대로 읽는다.
+    //
+    // 무할당 조회 (`getPosix` / `getWindows`) 를 쓴다 — `rt.envAlloc` (= `Environ.getAlloc`)
+    // 은 조회 한 번에 `createMap` 으로 **환경 전체를 할당**해서, 처음에 여기 있던 256 B
+    // `FixedBufferAllocator` 로는 항상 `OutOfMemory` → 라벨이 영영 fallback 이었다
+    // (#451 재검토에서 실측. `envHas` 를 `containsConstant` 로 고친 c49f6d1 과 같은 패턴).
     // 실패하면 그냥 `"stress"` — 라벨 하나 때문에 덤프 자체를 거르지 않는다.
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const label: []const u8 = if (rt.envAlloc(
-        fba.allocator(),
-        "TILDAZ_STRESS_WORKLOAD",
-    )) |workload| workload else |_| "stress";
+    var label_buf: [256]u8 = undefined;
+    const label: []const u8 = if (builtin.os.tag == .windows) blk: {
+        // `containsConstant` 와 같은 방식 — key 는 comptime 에 WTF-16 으로, 값은 스택
+        // 버퍼에 WTF-8 로 변환한다 (code unit 당 최대 3 바이트).
+        const key_w = comptime std.unicode.wtf8ToWtf16LeStringLiteral("TILDAZ_STRESS_WORKLOAD");
+        const val_w = rt.environ.getWindows(key_w) orelse break :blk "stress";
+        if (val_w.len * 3 > label_buf.len) break :blk "stress";
+        break :blk label_buf[0..std.unicode.wtf16LeToWtf8(&label_buf, val_w)];
+    } else rt.environ.getPosix("TILDAZ_STRESS_WORKLOAD") orelse "stress";
 
     dumpAndReset(rt, label);
 }
