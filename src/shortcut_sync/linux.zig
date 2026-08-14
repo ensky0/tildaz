@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const instances = @import("../instances.zig");
 const log = @import("../log.zig");
@@ -7,20 +8,21 @@ const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
 const kglobalaccel = @import("../host/linux/kglobalaccel.zig");
 
-pub fn sync(allocator: std.mem.Allocator, indices: []const u32) !void {
-    try instance_identity.syncDesktopEntries(allocator, indices);
-    gsettings_hotkey.syncNumberedEntries(allocator, indices);
-    kglobalaccel.syncNumberedIdentities(allocator, indices);
-    if (desktopContains("hyprland")) syncHyprland(allocator, indices) catch |err| {
+pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
+    try instance_identity.syncDesktopEntries(rt, allocator, indices);
+    gsettings_hotkey.syncNumberedEntries(rt, allocator, indices);
+    kglobalaccel.syncNumberedIdentities(rt, allocator, indices);
+    if (desktopContains(rt, "hyprland")) syncHyprland(rt, allocator, indices) catch |err| {
         log.appendLine("hyprland", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});
     };
-    if (desktopContains("cosmic")) syncCosmic(allocator, indices) catch |err| {
+    if (desktopContains(rt, "cosmic")) syncCosmic(rt, allocator, indices) catch |err| {
         log.appendLine("cosmic", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});
     };
 }
 
-fn desktopContains(name: []const u8) bool {
-    const value = std.posix.getenv("XDG_CURRENT_DESKTOP") orelse return false;
+/// #451 — `posix.getenv` ➡️ `Environ.getPosix`. POSIX 는 블록을 그대로 훑어 할당이 없다.
+fn desktopContains(rt: Runtime, name: []const u8) bool {
+    const value = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return false;
     var it = std.mem.tokenizeAny(u8, value, ":;");
     while (it.next()) |part| {
         if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, part, " \t"), name)) return true;
@@ -28,9 +30,11 @@ fn desktopContains(name: []const u8) bool {
     return false;
 }
 
-fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe = try std.fs.selfExePath(&exe_buf);
+fn syncHyprland(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
 
     var desired: std.ArrayList(HyprlandDesired) = .empty;
     defer {
@@ -38,7 +42,7 @@ fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
         desired.deinit(allocator);
     }
     for (indices) |index| {
-        const text = try instances.configHotkeyText(allocator, index);
+        const text = try instances.configHotkeyText(rt, allocator, index);
         defer allocator.free(text);
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
         var accel_buf: [96]u8 = undefined;
@@ -53,7 +57,7 @@ fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
         });
     }
 
-    const actual = try readHyprlandBindings(allocator);
+    const actual = try readHyprlandBindings(rt, allocator);
     defer actual.deinit();
     const present = try allocator.alloc(bool, desired.items.len);
     defer allocator.free(present);
@@ -77,7 +81,7 @@ fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
             }
         }
         if (containsString(removed_accels.items, accel)) continue;
-        _ = try runHyprlandKeyword(allocator, "unbind", accel);
+        _ = try runHyprlandKeyword(rt, "unbind", accel);
         try removed_accels.append(allocator, try allocator.dupe(u8, accel));
         removed += 1;
         // Hyprland unbind는 accelerator 단위라 같은 키의 desired binding도 함께
@@ -92,7 +96,7 @@ fn syncHyprland(allocator: std.mem.Allocator, indices: []const u32) !void {
         if (present[i]) continue;
         const binding = try std.fmt.allocPrint(allocator, "{s},exec,{s}", .{ item.accel, item.command });
         defer allocator.free(binding);
-        if (!try runHyprlandKeyword(allocator, "bind", binding)) return error.HyprctlFailed;
+        if (!try runHyprlandKeyword(rt, "bind", binding)) return error.HyprctlFailed;
         added += 1;
     }
     log.appendLine("hyprland", "numbered hotkeys synchronized desired={} kept={} removed={} added={}", .{ desired.items.len, kept, removed, added });
@@ -122,16 +126,19 @@ const hypr_mod_alt: u32 = 8;
 const hypr_mod_super: u32 = 64;
 const hypr_supported_mods = hypr_mod_shift | hypr_mod_ctrl | hypr_mod_alt | hypr_mod_super;
 
-fn readHyprlandBindings(allocator: std.mem.Allocator) !std.json.Parsed([]HyprlandBind) {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+fn readHyprlandBindings(rt: Runtime, allocator: std.mem.Allocator) !std.json.Parsed([]HyprlandBind) {
+    // #451 — `std.process.Child.run` ➡️ `std.process.run(gpa, io, options)` (릴리즈 노트 *Process*).
+    const result = try std.process.run(allocator, rt.io, .{
         .argv = &.{ "hyprctl", "-j", "binds" },
-        .max_output_bytes = 1024 * 1024,
+        // #451 — `max_output_bytes` 가 `stdout_limit` · `stderr_limit` (`Io.Limit`) 으로
+        // 나뉘었다. 예전 한 값이 두 스트림의 합이 아니라 각각의 상한이었으므로 같은 값을 준다.
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     switch (result.term) {
-        .Exited => |code| if (code != 0) return error.HyprctlFailed,
+        .exited => |code| if (code != 0) return error.HyprctlFailed,
         else => return error.HyprctlFailed,
     }
 
@@ -161,15 +168,15 @@ fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]co
     if ((binding.modmask & ~hypr_supported_mods) != 0) return null;
     if (!managedToggleCommand(binding.arg, exe)) return null;
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
     if ((binding.modmask & hypr_mod_ctrl) != 0) writer.writeAll("CTRL ") catch return null;
     if ((binding.modmask & hypr_mod_shift) != 0) writer.writeAll("SHIFT ") catch return null;
     if ((binding.modmask & hypr_mod_alt) != 0) writer.writeAll("ALT ") catch return null;
     if ((binding.modmask & hypr_mod_super) != 0) writer.writeAll("SUPER ") catch return null;
     writer.writeByte(',') catch return null;
     writer.writeAll(binding.key) catch return null;
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
@@ -183,28 +190,32 @@ fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
     return true;
 }
 
-fn runHyprlandKeyword(allocator: std.mem.Allocator, keyword: []const u8, value: []const u8) !bool {
-    var child = std.process.Child.init(&.{ "hyprctl", "keyword", keyword, value }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    return switch (try child.wait()) {
-        .Exited => |code| code == 0,
+fn runHyprlandKeyword(rt: Runtime, keyword: []const u8, value: []const u8) !bool {
+    // #451 — `process.Child.init` + `spawn` ➡️ `process.spawn(io, options)` (릴리즈 노트
+    // *Process*). stdio 값이 소문자로 바뀌었다 (`.Ignore` ➡️ `.ignore`). allocator 를 안
+    // 받으므로 예전 인자가 사라진다.
+    var child = try std.process.spawn(rt.io, .{
+        .argv = &.{ "hyprctl", "keyword", keyword, value },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    return switch (try child.wait(rt.io)) {
+        .exited => |code| code == 0,
         else => false,
     };
 }
 
 pub fn hyprlandAccel(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
     if ((hotkey.modifiers & config.Hotkey.MOD_CTRL) != 0) try writer.writeAll("CTRL ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SHIFT) != 0) try writer.writeAll("SHIFT ");
     if ((hotkey.modifiers & config.Hotkey.MOD_ALT) != 0) try writer.writeAll("ALT ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SUPER) != 0) try writer.writeAll("SUPER ");
     try writer.writeByte(',');
     try writer.writeAll(config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 test "managed Hyprland bindings are identified and reconstructed" {
@@ -256,21 +267,25 @@ test "Hyprland desired lookup distinguishes keep and changed command" {
     try std.testing.expectEqual(@as(?usize, null), findHyprlandDesired(&desired, ",F1", "/home/test/tildaz --toggle 9"));
 }
 
-fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotSet;
-    const dir_path = try std.fs.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
+fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
+    const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
+    const dir_path = try std.Io.Dir.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
     defer allocator.free(dir_path);
-    try std.fs.cwd().makePath(dir_path);
-    const path = try std.fs.path.join(allocator, &.{ dir_path, "custom" });
+    // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
+    try paths.ensureDir(rt, dir_path);
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
     const content = blk: {
-        const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk try allocator.dupe(u8, "{\n}\n"),
             else => return err,
         };
-        defer file.close();
-        break :blk try file.readToEndAlloc(allocator, 1024 * 1024);
+        defer file.close(rt.io);
+        // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader` 의 `allocRemaining`
+        // (릴리즈 노트 *fs.File.readToEndAlloc*).
+        var file_reader = file.reader(rt.io, &.{});
+        break :blk try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
     };
     defer allocator.free(content);
 
@@ -279,9 +294,9 @@ fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
     defer output.deinit(allocator);
     var offset: usize = 0;
     while (offset < content.len) {
-        const end = std.mem.indexOfScalarPos(u8, content, offset, '\n') orelse content.len;
+        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
         const line = content[offset..end];
-        if (offset == close_offset) try appendCosmicEntries(&output, allocator, indices);
+        if (offset == close_offset) try appendCosmicEntries(rt, &output, allocator, indices);
         if (!isTildazCosmicEntry(line)) {
             try output.appendSlice(allocator, line);
             try output.append(allocator, '\n');
@@ -289,7 +304,7 @@ fn syncCosmic(allocator: std.mem.Allocator, indices: []const u32) !void {
         offset = if (end < content.len) end + 1 else content.len;
     }
 
-    if (try paths.writeFileIfChanged(allocator, path, output.items)) {
+    if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
         log.appendLine("cosmic", "numbered hotkeys synchronized ({d})", .{indices.len});
     } else {
         log.appendLine("cosmic", "numbered hotkeys already synchronized ({d})", .{indices.len});
@@ -300,7 +315,7 @@ pub fn findClosingMapLine(content: []const u8) ?usize {
     var found: ?usize = null;
     var offset: usize = 0;
     while (offset < content.len) {
-        const end = std.mem.indexOfScalarPos(u8, content, offset, '\n') orelse content.len;
+        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
         if (std.mem.eql(u8, std.mem.trim(u8, content[offset..end], " \t\r"), "}")) found = offset;
         offset = if (end < content.len) end + 1 else content.len;
     }
@@ -308,16 +323,18 @@ pub fn findClosingMapLine(content: []const u8) ?usize {
 }
 
 fn isTildazCosmicEntry(line: []const u8) bool {
-    return std.mem.indexOf(u8, line, "description: Some(\"TildaZ instance ") != null or
-        (std.mem.indexOf(u8, line, "Spawn(\"") != null and
-            std.mem.indexOf(u8, line, "tildaz --toggle") != null);
+    return std.mem.find(u8, line, "description: Some(\"TildaZ instance ") != null or
+        (std.mem.find(u8, line, "Spawn(\"") != null and
+            std.mem.find(u8, line, "tildaz --toggle") != null);
 }
 
-fn appendCosmicEntries(output: *std.ArrayList(u8), allocator: std.mem.Allocator, indices: []const u32) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe = try std.fs.selfExePath(&exe_buf);
+fn appendCosmicEntries(rt: Runtime, output: *std.ArrayList(u8), allocator: std.mem.Allocator, indices: []const u32) !void {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
     for (indices) |index| {
-        const text = try instances.configHotkeyText(allocator, index);
+        const text = try instances.configHotkeyText(rt, allocator, index);
         defer allocator.free(text);
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
         try output.appendSlice(allocator, "    (modifiers: [");

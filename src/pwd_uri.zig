@@ -70,7 +70,7 @@ pub const Options = struct {
 /// 거부 조건: 모르는 스킴 / host 가 다른 머신 (ssh) / 절대 경로가 아님 / NUL 포함 /
 /// `out` 부족.
 pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
-    const sep = std.mem.indexOf(u8, payload, "://") orelse return null;
+    const sep = std.mem.find(u8, payload, "://") orelse return null;
     const scheme = payload[0..sep];
     const rest = payload[sep + 3 ..];
 
@@ -84,7 +84,7 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
         return null;
 
     // host 는 첫 `/` 앞까지. `/` 가 없으면 경로가 아예 없는 payload 라 거부.
-    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+    const slash = std.mem.findScalar(u8, rest, '/') orelse return null;
     if (!hostAccepted(rest[0..slash], opts.hostname, encoded)) return null;
 
     const path_raw = rest[slash..];
@@ -103,7 +103,7 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
 
     // NUL 은 경로로 쓸 수 없다 (`chdir` / `lpCurrentDirectory` 모두 NUL 종단).
     // `%00` 으로 들어올 수 있어 디코딩 후에 검사한다.
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
+    if (std.mem.findScalar(u8, path, 0) != null) return null;
 
     return switch (opts.style) {
         .posix => if (path.len > 0 and path[0] == '/') squeezeLeadingSlashes(path) else null,
@@ -125,7 +125,9 @@ pub fn parse(payload: []const u8, out: []u8, opts: Options) ?[]const u8 {
 /// 첫 라벨이 같은 경우 (`mymac` ↔ `mymac.example.com`) 를 수락할 수 있는데, 그건 호출자의
 /// 경로 존재 확인이 2차로 막는다 — 원격 경로가 이 머신에도 있어야 통과하기 때문이다.
 fn hostAccepted(host_raw: []const u8, hostname: []const u8, encoded: bool) bool {
-    var buf: [std.Uri.host_name_max]u8 = undefined;
+    // #451 — `std.Uri.host_name_max` 가 없어졌다. 같은 값 (255) 이 호스트 이름 타입 쪽으로
+    // 옮겨졌다 (`std.Io.net.HostName.max_len` — DNS 이름 상한).
+    var buf: [std.Io.net.HostName.max_len]u8 = undefined;
     if (host_raw.len > buf.len) return false;
     @memcpy(buf[buf.len - host_raw.len ..], host_raw);
     const host = if (encoded)
@@ -155,7 +157,7 @@ fn squeezeLeadingSlashes(path: []const u8) []const u8 {
 }
 
 fn firstLabel(host: []const u8) []const u8 {
-    const dot = std.mem.indexOfScalar(u8, host, '.') orelse return host;
+    const dot = std.mem.findScalar(u8, host, '.') orelse return host;
     return host[0..dot];
 }
 

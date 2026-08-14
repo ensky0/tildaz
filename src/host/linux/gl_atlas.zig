@@ -148,7 +148,7 @@ pub const Atlas = struct {
     color: Surface,
     cache: std.AutoHashMap(Key, AtlasEntry),
     /// 업로드용 임시 버퍼 (BGRA → RGBA 변환에 쓴다). 글리프마다 할당하지 않는다.
-    swizzle: std.ArrayList(u8) = .{},
+    swizzle: std.ArrayList(u8) = .empty,
 
     pub fn create(api: *const egl.Api, allocator: std.mem.Allocator) Atlas {
         // 1 byte 정렬 — 글리프 폭이 4 의 배수가 아닐 때 행이 밀리는 것을 막는다.

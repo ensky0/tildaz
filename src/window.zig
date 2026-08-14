@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const windows = std.os.windows;
 const app_event = @import("app_event.zig");
 const dialog = @import("dialog.zig");
@@ -230,8 +231,12 @@ extern "user32" fn GetCursorPos(*POINT) callconv(.c) BOOL;
 extern "user32" fn MonitorFromPoint(POINT, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn GetMonitorInfoW(?*anyopaque, *MONITORINFO) callconv(.c) BOOL;
-extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.c) std.os.windows.HRESULT;
-extern "dwmapi" fn DwmFlush() callconv(.c) std.os.windows.HRESULT;
+// #451 — 0.16 이 `std.os.windows.HRESULT` 를 없앴다 (NtDll 이관 정리). 우리 코드가
+// 이미 두 곳에서 같은 정의를 쓰고 있어 (`font/windows/directwrite.zig` ·
+// `renderer/windows/d3d11.zig`) 같은 모양으로 여기에도 둔다.
+const HRESULT = c_long;
+extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.c) HRESULT;
+extern "dwmapi" fn DwmFlush() callconv(.c) HRESULT;
 extern "user32" fn SetWindowLongPtrW(HWND, c_int, isize) callconv(.c) isize;
 extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) HCURSOR;
@@ -371,6 +376,8 @@ pub const Window = struct {
     /// host (app) 가 — cell 영역만 알면 되고, 그 외는 `.other` 로 default arrow.
     pub const CursorRegion = enum { cell, other };
 
+    /// #451 — `Io` · 환경변수 묶음. host 의 `run(rt, …)` 이 창을 만들 때 넣는다.
+    rt: Runtime,
     owner_hwnd: HWND = null,
     hwnd: HWND = null,
     visible: bool = false,
@@ -651,7 +658,7 @@ pub const Window = struct {
         // "F1 눌렀는데 반화면이 잠깐 나타났다 사라짐" 으로 보임.
         // 이 속성을 켜면 DWM 이 transition 애니메이션을 건너뛰고 상태 전환이
         // 즉시 반영됨.
-        const disable: BOOL = 1;
+        const disable: BOOL = .TRUE;
         _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
         // Remember font chain + font-creation parameters so `rebuildFontForDpi`
@@ -701,17 +708,17 @@ pub const Window = struct {
     pub fn registerGlobalHotkey(self: *Window, hotkey_vkey: u32, hotkey_modifiers: u32) void {
         self.hotkey_vkey = hotkey_vkey;
         self.hotkey_modifiers = hotkey_modifiers;
-        if (RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey) == 0) {
+        if (!RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey).toBool()) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-            const cfg_path = paths.configPath(fba.allocator()) catch messages.unknown_path_msg;
+            const cfg_path = paths.configPath(self.rt, fba.allocator()) catch messages.unknown_path_msg;
             var msg_buf: [1024]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &msg_buf,
                 messages.hotkey_registration_failed_format,
                 .{ hotkey_vkey, hotkey_modifiers, cfg_path },
             ) catch messages.hotkey_registration_failed_fallback_msg;
-            dialog.showFatal(messages.hotkey_registration_failed_title, msg);
+            dialog.showFatal(self.rt, messages.hotkey_registration_failed_title, msg);
         }
         // 등록에 성공한 경로에만 세운다 — `deinit` 의 `UnregisterHotKey` 와
         // `WM_HOTKEY_CAPTURE_BEGIN` / `_END` 가 이 flag 를 본다.
@@ -876,11 +883,11 @@ pub const Window = struct {
         if (fg_hwnd != null and fg_hwnd != hwnd) {
             const fg_thread = GetWindowThreadProcessId(fg_hwnd, null);
             if (fg_thread != 0 and fg_thread != our_thread) {
-                _ = AttachThreadInput(our_thread, fg_thread, 1);
+                _ = AttachThreadInput(our_thread, fg_thread, .TRUE);
                 _ = BringWindowToTop(hwnd);
                 _ = SetForegroundWindow(hwnd);
                 _ = SetFocus(hwnd);
-                _ = AttachThreadInput(our_thread, fg_thread, 0);
+                _ = AttachThreadInput(our_thread, fg_thread, .FALSE);
                 return;
             }
         }
@@ -1147,7 +1154,7 @@ pub const Window = struct {
         };
         var mi: MONITORINFO = undefined;
         mi.cbSize = @sizeOf(MONITORINFO);
-        if (GetMonitorInfoW(monitor, &mi) == 0) return null;
+        if (!GetMonitorInfoW(monitor, &mi).toBool()) return null;
         return mi;
     }
 
@@ -1273,7 +1280,7 @@ pub const Window = struct {
         var msg: MSG = undefined;
         for (ranges) |range| {
             var guard: u32 = 0;
-            while (guard < 64 and PeekMessageW(&msg, self.hwnd, range[0], range[1], PM_REMOVE) != 0) : (guard += 1) {
+            while (guard < 64 and PeekMessageW(&msg, self.hwnd, range[0], range[1], PM_REMOVE).toBool()) : (guard += 1) {
                 _ = TranslateMessage(&msg);
                 _ = DispatchMessageW(&msg);
             }
@@ -1311,15 +1318,14 @@ pub const Window = struct {
             _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
             return;
         };
-        // clock 스레드는 단조 시계로 deadline 을 누적한다. 여기서 한 번 확인해 두면
-        // 스레드 안에서 실패를 처리할 필요가 없다 (Windows 는 QPC 라 실패하지 않지만,
-        // 실패했을 때 프레임이 조용히 멈추는 것보다 fallback 이 낫다).
-        _ = std.time.Instant.now() catch {
-            log.appendLine("startup", "frame clock: monotonic clock unavailable — using WM_TIMER fallback", .{});
-            _ = CloseHandle(timer);
-            _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
-            return;
-        };
+        // clock 스레드는 단조 시계로 deadline 을 누적한다.
+        //
+        // #451 — 예전에는 여기서 `std.time.Instant.now()` 를 한 번 불러 단조 시계가
+        // 쓸 수 있는지 확인하고, 안 되면 `WM_TIMER` 로 물러났다. 0.16 의 `Io.Timestamp`
+        // 는 **조회가 실패하지 않는다** (해상도가 없으면 무한대로 취급하고, 필요하면
+        // `Io.Clock.resolution` 으로 따로 묻는다 — 릴리즈 노트 *Time*). 그래서 그 사전
+        // 검사가 표현할 대상이 없어져 지운다. `WM_TIMER` fallback 경로 자체는 아래
+        // thread spawn 실패에 그대로 남아 있다.
 
         self.frame_timer = timer;
         self.frame_clock_run.store(true, .release);
@@ -1368,18 +1374,20 @@ pub const Window = struct {
         const timer = self.frame_timer orelse return;
         const period_ns: u64 = @intCast(self.frame_period_100ns * 100);
         if (period_ns == 0) return;
-        var base = std.time.Instant.now() catch return;
+        // #451 — `std.time.Instant` ➡️ `Io.Timestamp` (`.awake` = 절전을 안 세는 단조
+        // 시계). `since` 대신 `durationTo` 로 두 시각의 차이를 얻는다.
+        var base = std.Io.Timestamp.now(self.rt.io, .awake);
         var ticks: u64 = 0;
         while (self.frame_clock_run.load(.acquire)) {
             ticks += 1;
-            const now = std.time.Instant.now() catch break;
-            const elapsed = now.since(base);
+            const now = std.Io.Timestamp.now(self.rt.io, .awake);
+            const elapsed: u64 = @intCast(@max(0, base.durationTo(now).nanoseconds));
             const deadline = ticks *| period_ns;
             if (deadline > elapsed) {
                 // 음수 = 상대 시간 (100ns 단위). one-shot 으로 매번 재장전한다 — 주기
                 // 인자 (`lPeriod`) 는 ms 정수라 16.67 ms 를 표현할 수 없다.
                 const due: i64 = -@as(i64, @intCast((deadline - elapsed) / 100));
-                if (SetWaitableTimer(timer, &due, 0, null, null, 0) == 0) break;
+                if (!SetWaitableTimer(timer, &due, 0, null, null, .FALSE).toBool()) break;
                 if (WaitForSingleObject(timer, WAIT_INFINITE) != WAIT_OBJECT_0) break;
             } else {
                 // 이 스레드 자신이 밀렸다 (스케줄링). 밀린 만큼을 몰아 내지 않고 지금을
@@ -1518,7 +1526,7 @@ pub const Window = struct {
     pub fn messageLoop(self: *Window) void {
         var msg: MSG = undefined;
         while (true) {
-            if (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0) {
+            if (PeekMessageW(&msg, null, 0, 0, PM_REMOVE).toBool()) {
                 if (msg.message == WM_QUIT) return;
                 _ = TranslateMessage(&msg);
                 _ = DispatchMessageW(&msg);
@@ -1545,21 +1553,21 @@ pub const Window = struct {
             WM_NEW_INSTANCE_REQUEST => {
                 if (@import("instance_context.zig").requireWorkerIndex() == 0) {
                     self.show();
-                    @import("new_instance.zig").handle(std.heap.page_allocator);
+                    @import("new_instance.zig").handle(self.rt, std.heap.page_allocator);
                 }
                 // SendMessageW caller가 동기 처리 성공을 판별하는 protocol result.
                 return 1;
             },
             WM_HOTKEY_CAPTURE_BEGIN => {
                 if (self.hotkey_registered) {
-                    if (UnregisterHotKey(hwnd, HOTKEY_ID) == 0) return 0;
+                    if (!UnregisterHotKey(hwnd, HOTKEY_ID).toBool()) return 0;
                     self.hotkey_registered = false;
                 }
                 return 1;
             },
             WM_HOTKEY_CAPTURE_END => {
                 if (!self.hotkey_registered) {
-                    if (RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey) == 0) return 0;
+                    if (!RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey).toBool()) return 0;
                     self.hotkey_registered = true;
                 }
                 return 1;
@@ -2142,7 +2150,7 @@ pub const Window = struct {
                 if (hit_test == HTCLIENT) {
                     if (self.cursor_region_fn) |region_fn| {
                         var pt: POINT = .{ .x = 0, .y = 0 };
-                        if (GetCursorPos(&pt) != 0 and ScreenToClient(hwnd, &pt) != 0) {
+                        if (GetCursorPos(&pt).toBool() and ScreenToClient(hwnd, &pt).toBool()) {
                             const region = region_fn(@intCast(pt.x), @intCast(pt.y), self.userdata);
                             const handle: HCURSOR = switch (region) {
                                 .cell => self.cursor_ibeam,
@@ -2230,7 +2238,7 @@ pub const Window = struct {
     pub fn getClientSize(self: *const Window) struct { w: c_int, h: c_int } {
         const hwnd = self.requireHwnd();
         var rect: RECT = std.mem.zeroes(RECT);
-        if (GetClientRect(hwnd, &rect) == 0) return .{ .w = 0, .h = 0 };
+        if (!GetClientRect(hwnd, &rect).toBool()) return .{ .w = 0, .h = 0 };
         return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
     }
 
@@ -2406,7 +2414,7 @@ pub const Window = struct {
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
-        return ImmSetCompositionStringW(himc, SCS_SETSTR, utf16[0..written].ptr, @intCast(written * 2), null, 0) != 0;
+        return ImmSetCompositionStringW(himc, SCS_SETSTR, utf16[0..written].ptr, @intCast(written * 2), null, 0).toBool();
     }
 
     /// read-only action 앞에서 MS-IME가 이미 result/end를 낸 경우 그 결과를
@@ -2447,7 +2455,7 @@ pub const Window = struct {
         self.ime_complete_in_progress = true;
         self.ime_complete_result_ok = false;
         defer self.ime_complete_in_progress = false;
-        if (ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_COMPLETE, 0) == 0) return false;
+        if (!ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_COMPLETE, 0).toBool()) return false;
         return self.ime_complete_result_ok;
     }
 
@@ -2465,13 +2473,13 @@ pub const Window = struct {
         const himc = ImmGetContext(hwnd);
         if (himc == null) return false;
         defer _ = ImmReleaseContext(hwnd, himc);
-        const ok = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0) != 0;
+        const ok = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0).toBool();
         self.preedit_len = 0;
         return ok;
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
-        if (OpenClipboard(self.hwnd) == 0) return;
+        if (!OpenClipboard(self.hwnd).toBool()) return;
         defer _ = CloseClipboard();
 
         const handle = GetClipboardData(CF_UNICODETEXT) orelse return;
@@ -2511,7 +2519,7 @@ pub const Window = struct {
 
     pub fn copyToClipboard(self: *Window, text: [:0]const u8) void {
         if (text.len == 0) return;
-        if (OpenClipboard(self.hwnd) == 0) return;
+        if (!OpenClipboard(self.hwnd).toBool()) return;
         defer _ = CloseClipboard();
 
         _ = EmptyClipboard();

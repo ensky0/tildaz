@@ -20,6 +20,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const unix_socket = @import("unix_socket.zig");
+const checkErr = unix_socket.checkErr;
+const Runtime = @import("../../runtime.zig").Runtime;
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
 const hotkey_format = @import("hotkey_format.zig");
@@ -36,29 +39,34 @@ const ipc_header_len = ipc_magic.len + 8; // magic(6) + len(4) + type(4)
 /// sway 가 아니거나 (`SWAYSOCK` 없음 + `XDG_CURRENT_DESKTOP` 에 sway 토큰 없음)
 /// 등록 실패는 모두 graceful — log 만 남기고 반환한다. single_instance toggle
 /// listener 는 그대로 살아 있어 사용자가 수동 등록도 가능.
-pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
+pub fn registerToggleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
     // sway 판별 — `SWAYSOCK` 존재가 가장 확실 (IPC 가능 == socket 있음).
     // `XDG_CURRENT_DESKTOP` 토큰은 보조 (SWAYSOCK 미설정 환경 hedge).
-    const sock_path = posix.getenv("SWAYSOCK") orelse {
-        if (isSwayDesktop()) {
+    //
+    // #451 — `posix.getenv` ➡️ `Environ.getPosix`. POSIX 에서는 블록을 그대로 훑어
+    // **할당이 없고** 이미 NUL 종단이라, 이 함수가 고정 버퍼만 쓰는 성질이 유지된다.
+    const sock_path = rt.environ.getPosix("SWAYSOCK") orelse {
+        if (isSwayDesktop(rt)) {
             log.appendLine("sway", "XDG_CURRENT_DESKTOP=sway but SWAYSOCK not set — bindsym auto-register skipped", .{});
         }
         return;
     };
 
     // 자기 실행 파일 절대 경로 — `exec` command 로 다시 `--toggle` 호출.
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
-        log.appendLine("sway", "selfExePath failed: {s} — bindsym auto-register skipped", .{@errorName(err)});
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = std.process.executablePath(rt.io, &exe_buf) catch |err| {
+        log.appendLine("sway", "executablePath failed: {s} — bindsym auto-register skipped", .{@errorName(err)});
         return;
     };
+    const exe_path = exe_buf[0..exe_len];
 
     // accel 문자열 (`Shift+Ctrl+Alt+Super+<key>`).
     var accel_buf: [96]u8 = undefined;
     const accel = buildAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers);
 
     // sway command — `exec` 인자는 sway 가 sh -c 로 실행하므로 path 를 따옴표로.
-    var cmd_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    var cmd_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
     const command = std.fmt.bufPrint(&cmd_buf, "bindsym --no-warn {s} exec \"{s}\" --toggle {d}", .{ accel, exe_path, instance_context.requireWorkerIndex() }) catch {
         log.appendLine("sway", "bindsym command too long — skip", .{});
         return;
@@ -77,8 +85,8 @@ pub fn registerToggleIfSway(allocator: std.mem.Allocator, cfg: *const config_mod
 }
 
 /// `XDG_CURRENT_DESKTOP` (콜론 구분 다중 토큰) 에 sway 토큰 포함 여부.
-fn isSwayDesktop() bool {
-    const de = posix.getenv("XDG_CURRENT_DESKTOP") orelse return false;
+fn isSwayDesktop(rt: Runtime) bool {
+    const de = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return false;
     var it = std.mem.tokenizeScalar(u8, de, ':');
     while (it.next()) |tok| {
         if (std.ascii.eqlIgnoreCase(tok, "sway")) return true;
@@ -91,26 +99,25 @@ fn isSwayDesktop() bool {
 /// 재사용 (XKB keysym name — sway bindsym 과 1:1, nested 시연 확인).
 fn buildAccel(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     const H = config_mod.Hotkey;
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
     if ((modifiers & H.MOD_SHIFT) != 0) w.writeAll("Shift+") catch {};
     if ((modifiers & H.MOD_CTRL) != 0) w.writeAll("Ctrl+") catch {};
     if ((modifiers & H.MOD_ALT) != 0) w.writeAll("Alt+") catch {};
     if ((modifiers & H.MOD_SUPER) != 0) w.writeAll("Super+") catch {};
     w.writeAll(hotkey_format.gtkName(keysym)) catch {};
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 /// `$SWAYSOCK` 에 i3-ipc RUN_COMMAND 송신 후 응답의 `"success":true` 여부 반환.
 /// connect / write / read 실패는 error. sway 가 command 를 거부하면 (false 반환)
 /// IPC 자체는 성공이므로 `false` 를 반환 (error 아님).
 fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []const u8) !bool {
-    const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
-    defer posix.close(fd);
-
-    // #298 — sockaddr_un 수동 조립 → std.net.Address.initUnix ($SWAYSOCK filesystem 경로).
-    const addr = std.net.Address.initUnix(sock_path) catch return error.PathTooLong;
-    try posix.connect(fd, &addr.any, addr.getOsSockLen());
+    // #451 — `posix.socket` · `posix.connect` · `std.net.Address.initUnix` 가 모두 없어졌다.
+    // `unix_socket.zig` 이 그 자리이고 `single_instance` · `wayland_minimal` 과 같은 배관이다.
+    const fd = try unix_socket.openSocket(posix.SOCK.CLOEXEC);
+    defer unix_socket.closeFd(fd);
+    try unix_socket.connect(fd, sock_path);
 
     // request — header(magic + len + type) + payload 한 번에.
     var req = try allocator.alloc(u8, ipc_header_len + command.len);
@@ -135,23 +142,24 @@ fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []co
     try readAll(fd, payload);
     // sway 의 wire 형식은 `[ { "success": true } ]` — 콜론 뒤 공백 포함 (swaymsg
     // CLI 의 compact 표시와 다름, nested 시연 확인). 공백 유무 둘 다 수용.
-    const ok = std.mem.indexOf(u8, payload, "\"success\": true") != null or
-        std.mem.indexOf(u8, payload, "\"success\":true") != null;
+    const ok = std.mem.find(u8, payload, "\"success\": true") != null or
+        std.mem.find(u8, payload, "\"success\":true") != null;
     if (!ok) log.appendLineVerbose("sway", "RUN_COMMAND resp(success=false)=[{s}]", .{payload});
     return ok;
 }
 
-fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
-    var off: usize = 0;
-    while (off < bytes.len) {
-        off += try posix.write(fd, bytes[off..]);
-    }
-}
+const writeAll = unix_socket.writeAll;
 
 fn readAll(fd: posix.fd_t, buf: []u8) !void {
     var off: usize = 0;
     while (off < buf.len) {
-        const n = try posix.read(fd, buf[off..]);
+        const rc = posix.system.read(fd, buf.ptr + off, buf.len - off);
+        if (checkErr(rc)) |e| switch (e) {
+            // 시그널에 끊긴 것은 실패가 아니다 — 이어서 다시 읽는다.
+            .INTR => continue,
+            else => return error.SwayIpcReadFailed,
+        };
+        const n: usize = @intCast(rc);
         if (n == 0) return error.SwayIpcEof;
         off += n;
     }

@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const run_options = @import("../run_options.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 const version = @import("../version.zig");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
@@ -48,7 +49,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
-    dialog.showError(messages.crash_title, text);
+    dialog.showError(g_rt, messages.crash_title, text);
     std.process.exit(1);
 }
 
@@ -56,7 +57,7 @@ pub fn showFatalRunError(err: anyerror) void {
     log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
-    dialog.showError(messages.error_title, text);
+    dialog.showError(g_rt, messages.error_title, text);
 }
 
 // AppKit / Metal 상수.
@@ -215,7 +216,7 @@ fn atExitLogStop() callconv(.c) void {
     // `run()` 의 `defer` 로 같은 일을 하지만, 여기는 Cmd+Q 가 `exit()` 직행이라
     // defer 가 안 불려서 이 핸들러 안에 둔다 — 이 함수가 존재하는 이유와 같다.
     // 로그 파일이 닫히기 전이어야 하므로 `logStop` 앞이다. worker 는 no-op.
-    perf.dumpOnExit();
+    perf.dumpOnExit(g_rt);
     log.logStop(version.string);
 }
 
@@ -236,7 +237,7 @@ fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
     if (n == 0) return NSTerminateNow;
     var msg_buf: [256]u8 = undefined;
     const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return NSTerminateNow;
-    return if (dialog.showConfirm(messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
+    return if (dialog.showConfirm(g_rt, messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
 }
 
 /// #195 — 다른 app 활성화 시 우리 NSWindow level 을 normal (0) 로 떨어뜨림.
@@ -282,9 +283,9 @@ fn createNewInstance() void {
     if (@import("../instance_context.zig").requireWorkerIndex() == 0) {
         repositionWindow();
         showWindow();
-        @import("../new_instance.zig").handle(g_gpa.allocator());
+        @import("../new_instance.zig").handle(g_rt, g_gpa.allocator());
     } else {
-        @import("../instance_request.zig").send() catch {};
+        @import("../instance_request.zig").send(g_rt) catch {};
     }
 }
 
@@ -381,7 +382,10 @@ var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: config.Config = .{};
-var g_gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+/// #451 — 진입점이 만든 `Io` · 환경변수. macOS host 는 Cocoa 콜백이 전역에서 도는
+/// 구조라 (`g_host` · `g_config` 와 같은 자리) 여기 보관한다. `run(rt, …)` 이 심는다.
+var g_rt: Runtime = undefined;
+var g_gpa: std.heap.DebugAllocator(.{}) = .init;
 /// 멀티탭 컬렉션 (#111 M11.1). 현재 단계는 데이터 모델만 도입 — 실제로는
 /// 단일 탭만 생성. PTY / Terminal / Stream / 마우스 selection 은 모두 활성
 /// 탭의 필드. host 코드는 `g_session.activeTab().?.{pty,terminal,...}` 로 access.
@@ -401,8 +405,11 @@ var g_run_opts: run_options.RunOptions = .{};
 /// 자기 자신을 join 하게 됨. Windows 의 PostMessage 패턴과 같은 의도이지만
 /// CFRunLoop 우회 — 단순 mutex-protected queue 로 충분 (renderFrameTick 가
 /// main thread 에서 매 frame drain).
-var g_pending_close_buf: std.ArrayList(usize) = .{};
-var g_pending_close_mutex: std.Thread.Mutex = .{};
+var g_pending_close_buf: std.ArrayList(usize) = .empty;
+/// #451 — `Thread.Mutex` ➡️ `Io.Mutex` (릴리즈 노트 *Sync Primitives*). 잠그는 쪽이
+/// read thread 라 취소 개념이 없어 `lockUncancelable` 을 쓴다 — `g_rt.io` 는 진입점이
+/// 이미 채워 둔 값이다.
+var g_pending_close_mutex: std.Io.Mutex = .init;
 /// #255 Phase 2 — visible-but-idle render skip. displayLink 가 vsync 마다 fire 해도
 /// 변화 없으면 그릴 게 없다. 렌더 필요 = ① PTY 출력(drainOutputForRender 반환)
 /// ② 로컬 UI 변화(키/마우스/창 — 이 플래그) ③ preedit/autoscroll(force_render).
@@ -643,7 +650,7 @@ fn syncTerminalGeometry() void {
 
     for (g_session.tabs.items) |t| {
         if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
-        t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+        t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
             log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
             continue;
         };
@@ -911,7 +918,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             .next_tab => tab_actions.nextTab(&g_host), // Shift+Cmd+]
             .reset_terminal => tab_actions.resetActive(&g_host), // Shift+Cmd+R (#162)
             .fullscreen => toggleFullscreenMode(if (shift) .workarea else .monitor), // Cmd/Shift+Cmd+Enter (#162)
-            .dump_perf => perf.dumpAndReset("snapshot"), // Shift+Cmd+F12 (#160)
+            .dump_perf => perf.dumpAndReset(g_rt, "snapshot"), // Shift+Cmd+F12 (#160)
             else => {}, // macOS keyDown 이 안 내는 나머지(show_about/config/log/quit=mainMenu)
         }
         return;
@@ -1093,9 +1100,9 @@ const ImeRectPx = struct {
 };
 
 const ImeSnapshot = struct {
-    text: std.ArrayList(u8) = .{},
-    utf16_to_byte: std.ArrayList(usize) = .{},
-    positions: std.ArrayList(ImeRectPx) = .{},
+    text: std.ArrayList(u8) = .empty,
+    utf16_to_byte: std.ArrayList(usize) = .empty,
+    positions: std.ArrayList(ImeRectPx) = .empty,
     selected: NSRange = .{ .location = 0, .length = 0 },
 
     fn deinit(self: *ImeSnapshot, allocator: std.mem.Allocator) void {
@@ -1895,7 +1902,7 @@ fn syncGeometryAfterScreenChange() void {
     const active_terminal = tab.terminal;
     if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
         for (g_session.tabs.items) |t| {
-            t.terminal.resize(g_gpa.allocator(), new_cols, new_rows) catch |err| {
+            t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
                 log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
                 continue;
             };
@@ -1992,7 +1999,7 @@ fn maybeAutoScrollSelectionMac() bool {
         g_sel_autoscroll_dir = 0;
         return false;
     }
-    const now = std.time.milliTimestamp();
+    const now = g_rt.nowMs();
     if (now < g_sel_autoscroll_next_ms) return false;
     const step: isize = 3;
     tab.terminal.scrollViewport(.{ .delta = if (g_sel_autoscroll_dir < 0) -step else step });
@@ -2104,12 +2111,12 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .fullscreen => toggleFullscreenMode(if (g_fullscreen_mode != .none) g_fullscreen_mode else .monitor),
         .open_config => {
             const allocator = g_gpa.allocator();
-            const path = @import("../paths.zig").configPath(allocator) catch return;
+            const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
             defer allocator.free(path);
-            @import("../system_open.zig").openInDefaultApp(allocator, path);
+            @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
         },
-        .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_gpa.allocator(), messages.keyboard_shortcuts_url),
-        .about => about.showAboutDialog(),
+        .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url),
+        .about => about.showAboutDialog(g_rt),
     }
     requestRender();
 }
@@ -2606,9 +2613,9 @@ fn handleCloseActiveTab() void {
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
 /// 가 1 → 2 전환 시 탭바 등장으로 줄어드는 cell 영역에 맞춰 모든 탭 resize.
 fn handleNewTab() void {
-    if (tab_actions.checkAtLimitAndDialog(&g_host)) return;
+    if (tab_actions.checkAtLimitAndDialog(g_rt, &g_host)) return;
     // #248 — shell 이 런타임에 사라졌으면 (brew 업데이트 등) 조용히 죽는 대신 알림.
-    if (!@import("../shell_validate.zig").checkForNewTab(g_gpa.allocator(), g_config.shell)) return;
+    if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
     const active = g_session.activeTab() orelse return;
     g_session.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
         log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
@@ -2783,19 +2790,20 @@ fn registerTildazViewClass() !objc.Class {
 /// fail 경로서 `Config.shell` 로 보관, #218). fallback 도 dupe 해 항상 owned.
 /// (macOS 는 terminate 가 exit 직행이라 `Config.deinit` 미호출 — 그래도 load 의
 /// disk 경로 free 가 owned 를 기대하므로 dupe 필요.)
-fn resolveShell(allocator: std.mem.Allocator) []const u8 {
-    if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
+fn resolveShell(rt: Runtime, allocator: std.mem.Allocator) []const u8 {
+    if (rt.envAlloc(allocator, "SHELL") catch null) |s| return s;
     return allocator.dupe(u8, config.Defaults.shell) catch config.Defaults.shell;
 }
 
-pub fn run(opts: run_options.RunOptions) !void {
+pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
+    g_rt = rt;
     g_run_opts = opts;
     // 통합 로그 파일에 boot/exit 라인을 남긴다 (`log.zig`). macOS 는
     // `~/Library/Logs/tildaz_N.log` — Console.app 이 자동 인덱싱해 GUI 에서
     // 바로 열람 가능.
-    log.logStart(version.string);
+    log.logStart(rt.io, version.string);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
     // Cmd+Q (NSApp terminate:) 는 `exit()` 직행 — defer 안 불림. atexit 등록.
     _ = atexit(&atExitLogStop);
 
@@ -2816,14 +2824,14 @@ pub fn run(opts: run_options.RunOptions) !void {
     // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. `$SHELL` env 가
     // 있으면 사용자 환경값을 그대로, 없으면 `Defaults.shell` (= `/bin/bash`).
     // 이후 실행은 disk 의 명시값만 사용 — runtime fallback 분기 없음.
-    const shell_resolved = resolveShell(g_gpa.allocator());
-    g_config = config.Config.load(g_gpa.allocator(), shell_resolved);
+    const shell_resolved = resolveShell(rt, g_gpa.allocator());
+    g_config = config.Config.load(rt, g_gpa.allocator(), shell_resolved);
     log.logConfigLoaded(g_config);
 
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
-    @import("../shell_validate.zig").validateOrFatal(g_gpa.allocator(), g_config.shell);
+    @import("../shell_validate.zig").validateOrFatal(g_rt, g_gpa.allocator(), g_config.shell);
 
     // macOS "Press and Hold" 기능 끔 — 영어 키 길게 눌러도 accent picker
     // (à á â) 안 뜨고 정상 key repeat 발생. 한글 자모는 IME 경로라 영향
@@ -3040,7 +3048,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     //
     //    `TILDAZ_FONT` 환경변수로 config 보다 우선 — 빠르게 다른 폰트 시험.
     //    config.font.family 는 *glyph fallback chain* (codepoint 별로 chain 순회).
-    const tildaz_font_env = std.process.getEnvVarOwned(allocator, "TILDAZ_FONT") catch null;
+    const tildaz_font_env = g_rt.envAlloc(allocator, "TILDAZ_FONT") catch null;
     defer if (tildaz_font_env) |s| allocator.free(s);
     var env_chain: [1][]const u8 = undefined;
     const font_family_slice: []const []const u8 = if (tildaz_font_env) |s| blk: {
@@ -3052,6 +3060,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 정상 frame은 terminal의 현재 값(OSC 11 포함)을 renderTabBar에 전달한다.
     const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
     g_renderer = renderer_module.RendererBackend.init(
+        g_rt,
         allocator,
         device,
         layer,
@@ -3064,11 +3073,11 @@ pub fn run(opts: run_options.RunOptions) !void {
         // `font_not_found_format` 와 같은 의도, multi-font 메시지).
         error.FontCreateFailed => {
             var buf: [1024]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&buf);
-            const w = fbs.writer();
+            var fbs: std.Io.Writer = .fixed(&buf);
+            const w = &fbs;
             w.writeAll(messages.font_chain_all_failed_msg) catch {};
             for (font_family_slice) |fam| w.print("\n  - {s}", .{fam}) catch {};
-            dialog.showFatal(messages.config_error_title, fbs.getWritten());
+            dialog.showFatal(g_rt, messages.config_error_title, fbs.buffered());
         },
         else => return err,
     };
@@ -3134,6 +3143,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     };
 
     g_session = session_core.SessionCore.init(
+        g_rt,
         allocator,
         // `-e <실행파일>` 이면 셸 대신 그것을 띄운다 (#382). 인자는 넘길 수 없다 —
         // POSIX 는 PTY 자식의 argv 가 고정이다 (`terminal/posix/pty.zig`).
@@ -3214,6 +3224,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 상태를 자기 PID 로 덮으면, 측정이 끝난 뒤 사용자의 새 instance 요청이
     // `RequestEndpointReadyTimeout` 으로 실패한다.
     if (!g_run_opts.isStressRun()) try instances.recordEndpointState(
+        g_rt,
         allocator,
         instance_context.requireWorkerIndex(),
         if (g_new_instance_observer_registered) .ready else .unavailable,
@@ -3229,8 +3240,8 @@ pub fn run(opts: run_options.RunOptions) !void {
 /// .join 부름) → 글로벌 queue 에 enqueue 만 하고 main thread (renderFrameTick)
 /// 가 매 frame 시작 시 drain. Windows 의 PostMessage 패턴과 동등 의도.
 fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
-    g_pending_close_mutex.lock();
-    defer g_pending_close_mutex.unlock();
+    g_pending_close_mutex.lockUncancelable(g_rt.io);
+    defer g_pending_close_mutex.unlock(g_rt.io);
     g_pending_close_buf.append(g_gpa.allocator(), tab_ptr) catch {};
 }
 
@@ -3239,9 +3250,9 @@ fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
 /// `tab_actions.closeByPtr` 가 마지막 탭 → terminate 자동 호출 (#117 helper)
 /// — 호출처는 .changed 만 분기.
 fn drainExitedTabs() bool {
-    g_pending_close_mutex.lock();
+    g_pending_close_mutex.lockUncancelable(g_rt.io);
     const closes = g_pending_close_buf.toOwnedSlice(g_gpa.allocator()) catch &.{};
-    g_pending_close_mutex.unlock();
+    g_pending_close_mutex.unlock(g_rt.io);
     defer g_gpa.allocator().free(closes);
 
     var any_changed = false;
@@ -3329,7 +3340,7 @@ fn renderFrameTick() void {
     // #376 — 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에 blink 셀이
     // 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는 화면에서 공짜로
     // 초당 2프레임을 낭비하지 않는다.
-    const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+    const blink_phase_now = ui_metrics.blinkFaintPhase(g_rt.nowMs());
     const blink_tick = blink_phase_now != g_last_blink_phase and
         (if (g_renderer) |r| r.saw_blink_cell else false);
     g_last_blink_phase = blink_phase_now;
@@ -3404,6 +3415,9 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
+        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
+        // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+        blink_phase_now,
     );
 
     // #255 — 이번 frame draw 중 *처음 본* glyph 는 atlas 에 추가되지만(getOrInsert →
@@ -3518,7 +3532,7 @@ fn recreateEventTapTrampoline(_: ?*anyopaque) callconv(.c) void {
 /// `dispatch_async_f` 트램폴린 — run loop 시작 후 권한 안내 다이얼로그 표시 (#249).
 /// 인자를 못 받아 메시지는 module-level `g_perm_msg_buf` 에서 읽는다.
 fn showPermDialogTrampoline(_: ?*anyopaque) callconv(.c) void {
-    dialog.showInfo(messages.macos_permission_required_title, g_perm_msg_buf[0..g_perm_msg_len]);
+    dialog.showInfo(g_rt, messages.macos_permission_required_title, g_perm_msg_buf[0..g_perm_msg_len]);
     // dialog 가 닫히면서 key window 를 우리 윈도우로 안 돌려줄 수 있어 강제 복원.
     showWindow();
 }
@@ -3544,7 +3558,7 @@ fn eventTapCallback(
 ) callconv(.c) CGEventRef {
     if (event_type == kCGEventTapDisabledByTimeout or event_type == kCGEventTapDisabledByUserInput) {
         const REPEAT_WINDOW_MS: i64 = 30_000;
-        const now_ms = std.time.milliTimestamp();
+        const now_ms = g_rt.nowMs();
         const recent = (now_ms - g_last_tap_disable_ms) < REPEAT_WINDOW_MS;
         g_last_tap_disable_ms = now_ms;
         if (recent) {
@@ -3798,7 +3812,7 @@ fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callcon
     _ = _sel;
     _ = sender;
     applyShortcutInputPolicy(.show_about);
-    about.showAboutDialog();
+    about.showAboutDialog(g_rt);
 }
 
 /// Shift+Cmd+P — 현재 worker의 config_N.json 을 default editor 로 열기 (#128). About 와 같은
@@ -3809,9 +3823,9 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     _ = sender;
     applyShortcutInputPolicy(.open_config);
     const allocator = g_gpa.allocator();
-    const path = @import("../paths.zig").configPath(allocator) catch return;
+    const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
     defer allocator.free(path);
-    @import("../system_open.zig").openInDefaultApp(allocator, path);
+    @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
 
 /// Shift+Cmd+L — 현재 worker의 tildaz_N.log 를 default editor 로 열기 (#128).
@@ -3822,7 +3836,7 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     applyShortcutInputPolicy(.open_log);
     const allocator = g_gpa.allocator();
     const path = log.filePath() orelse return;
-    @import("../system_open.zig").openInDefaultApp(allocator, path);
+    @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
 
 /// Cmd+Q / Quit TildaZ menu action. 표준 `terminate:`를 menu item에 직접

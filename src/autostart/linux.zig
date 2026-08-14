@@ -18,17 +18,18 @@
 
 const std = @import("std");
 const paths = @import("../paths.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 
 const ENTRY_NAME = "tildaz.desktop";
 
 /// XDG user autostart 경로. config base와 같은 `paths.configHome`을 사용해
 /// 본체 config와 autostart가 서로 다른 XDG 해석을 갖지 않게 한다.
-fn entryPath(allocator: std.mem.Allocator) ![]u8 {
-    const config_home = try paths.configHome(allocator);
+fn entryPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const config_home = try paths.configHome(rt, allocator);
     defer allocator.free(config_home);
     const dir = try std.fmt.allocPrint(allocator, "{s}/autostart", .{config_home});
     defer allocator.free(dir);
-    paths.ensureDir(dir) catch |err| switch (err) {
+    paths.ensureDir(rt, dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -37,39 +38,41 @@ fn entryPath(allocator: std.mem.Allocator) ![]u8 {
 
 /// XDG 지원 전 버전이 항상 쓴 기본 위치. custom XDG_CONFIG_HOME을 쓰는 경우
 /// 이 generated entry를 남기면 두 autostart directory에서 중복 실행된다.
-fn legacyEntryPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+fn legacyEntryPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     return std.fmt.allocPrint(allocator, "{s}/.config/autostart/{s}", .{ home, ENTRY_NAME });
 }
 
-fn removeLegacyEntryIfDifferent(allocator: std.mem.Allocator, current_path: []const u8) void {
-    const legacy_path = legacyEntryPath(allocator) catch return;
+fn removeLegacyEntryIfDifferent(rt: Runtime, allocator: std.mem.Allocator, current_path: []const u8) void {
+    const legacy_path = legacyEntryPath(rt, allocator) catch return;
     defer allocator.free(legacy_path);
     if (!std.mem.eql(u8, current_path, legacy_path)) {
-        std.fs.deleteFileAbsolute(legacy_path) catch {};
+        std.Io.Dir.deleteFileAbsolute(rt.io, legacy_path) catch {};
     }
 }
 
 /// 현재 실행 중 binary 의 절대 경로. macOS `currentExePath` 동등.
-fn currentExePath(allocator: std.mem.Allocator) ![]u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const slice = try std.fs.selfExePath(&buf);
+fn currentExePath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const n = try std.process.executablePath(rt.io, &buf);
+    const slice = buf[0..n];
     return allocator.dupe(u8, slice);
 }
 
 /// auto-start 활성화 — XDG autostart desktop entry 작성. 이미 같은 내용이면
 /// 건드리지 않음 (timestamp 보존).
-pub fn enable(allocator: std.mem.Allocator) !void {
-    const exe = try currentExePath(allocator);
+pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
+    const exe = try currentExePath(rt, allocator);
     defer allocator.free(exe);
 
     // XDG Desktop Entry `Exec` 는 공백 포함 경로를 그대로 두면 인자 경계가 깨진다.
     // `instance_identity.ensureDesktopEntry` 와 같은 규칙 — 경로를 큰따옴표로 감싸
     // 공백을 보호하고, quoting 을 깨는 개행 / 큰따옴표가 든 경로는 거부한다.
-    if (std.mem.indexOfAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
+    if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
-    const path = try entryPath(allocator);
+    const path = try entryPath(rt, allocator);
     defer allocator.free(path);
 
     // `StartupWMClass=tildaz` 는 launcher identity다. Worker 창은 번호별
@@ -106,14 +109,14 @@ pub fn enable(allocator: std.mem.Allocator) !void {
     , .{exe});
     defer allocator.free(entry);
 
-    _ = try paths.writeFileIfChanged(allocator, path, entry);
-    removeLegacyEntryIfDifferent(allocator, path);
+    _ = try paths.writeFileIfChanged(rt, allocator, path, entry);
+    removeLegacyEntryIfDifferent(rt, allocator, path);
 }
 
 /// auto-start 비활성화 — desktop entry 파일 삭제. 다음 로그인부터 효과.
-pub fn disable(allocator: std.mem.Allocator) void {
-    const path = entryPath(allocator) catch return;
+pub fn disable(rt: Runtime, allocator: std.mem.Allocator) void {
+    const path = entryPath(rt, allocator) catch return;
     defer allocator.free(path);
-    std.fs.deleteFileAbsolute(path) catch {};
-    removeLegacyEntryIfDifferent(allocator, path);
+    std.Io.Dir.deleteFileAbsolute(rt.io, path) catch {};
+    removeLegacyEntryIfDifferent(rt, allocator, path);
 }
