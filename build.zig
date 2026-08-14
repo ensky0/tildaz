@@ -68,7 +68,7 @@ pub fn build(b: *std.Build) void {
     build_opts.addOption(bool, "commit_dirty", git.dirty);
     exe_mod.addOptions("build_options", build_opts);
 
-    // #19 — 현재 Ghostty pin + Zig 0.15.2에서 Linux · macOS · Windows native
+    // #19 — 현재 Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
     // compile/link와 representative corpus 이득을 검증했다. 공식 ReleaseFast
     // pipeline은 `-Dsimd=true`를 명시한다. 기본 false는 Debug 개발 빌드와
     // 6-target cross-host check가 C++ toolchain/SDK까지 요구하지 않게 보존한다.
@@ -397,7 +397,7 @@ pub fn build(b: *std.Build) void {
     // platform 별로 갈라 두지 않는다 — 세 platform 이 같은 경로로 실행돼야 숫자를
     // 나란히 둘 수 있고, exe 옆 레이아웃이 릴리즈 번들과 같아진다.
     //
-    // producer 자식도 `std.fs.selfExePath` 로 자기 경로를 띄우므로 (`stress.zig` 의
+    // producer 자식도 `std.process.executablePath` 로 자기 경로를 띄우므로 (`stress.zig` 의
     // `ProducerSession.start`) 자식 역시 같은 디렉토리에서 돈다.
     const stress_install = b.addInstallArtifact(stress_exe, .{});
     const stress_run = b.addSystemCommand(&.{b.getInstallPath(.bin, stress_exe.out_filename)});
@@ -503,6 +503,39 @@ pub fn build(b: *std.Build) void {
                 .root_module = check_mod,
             });
             check_step.dependOn(&check_obj.step);
+        }
+    }
+
+    // 본체 빌드에 들어가지 않는 독립 진단 도구도 저장소가 안내하는 빌드 대상이다.
+    // #451의 0.16 이전에서 `src/`만 검사해 세 도구의 제거 API가 남았으므로, 기본
+    // `check`와 성격을 섞지 않고 전용 compile-only 단계에서 두 아키텍처를 확인한다.
+    const probe_check_step = b.step("probe-check", "독립 Linux/Windows 진단 도구 compile-only verify (#451)");
+    const probe_check_targets = [_]struct { name: []const u8, query: std.Target.Query }{
+        .{ .name = "linux-x86_64", .query = .{ .os_tag = .linux, .cpu_arch = .x86_64, .abi = .gnu } },
+        .{ .name = "linux-aarch64", .query = .{ .os_tag = .linux, .cpu_arch = .aarch64, .abi = .gnu } },
+        .{ .name = "windows-x86_64", .query = .{ .os_tag = .windows, .cpu_arch = .x86_64 } },
+        .{ .name = "windows-aarch64", .query = .{ .os_tag = .windows, .cpu_arch = .aarch64 } },
+    };
+    const probe_roots = [_]struct { name: []const u8, path: []const u8, os: std.Target.Os.Tag }{
+        .{ .name = "dmabuf", .path = "dist/linux/dmabuf-probe.zig", .os = .linux },
+        .{ .name = "osc-title", .path = "dist/linux/osc-title-probe.zig", .os = .linux },
+        .{ .name = "osc-title", .path = "dist/windows/osc-title-probe.zig", .os = .windows },
+    };
+    for (probe_check_targets) |c| {
+        for (probe_roots) |root| {
+            if (c.query.os_tag != root.os) continue;
+            const probe_mod = b.createModule(.{
+                .root_source_file = b.path(root.path),
+                .target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query)),
+                .optimize = .ReleaseSafe,
+            });
+            // 세 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
+            probe_mod.link_libc = true;
+            const probe_obj = b.addObject(.{
+                .name = b.fmt("tildaz-probe-{s}-{s}", .{ root.name, c.name }),
+                .root_module = probe_mod,
+            });
+            probe_check_step.dependOn(&probe_obj.step);
         }
     }
 

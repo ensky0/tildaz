@@ -19,7 +19,7 @@
 //!   - 터미널 질의 응답 = ghostty-vt 가 실제로 보내는 값 (#266). fish 는 DA1 응답을
 //!     기다리므로 이게 없으면 측정값이 수 초 왜곡된다.
 //!
-//! 빌드 / 실행 (본체 빌드에 들어가지 않는 독립 도구 — `build.zig` 무관):
+//! 빌드 / 실행 (본체 빌드에는 들어가지 않고 `zig build probe-check`가 호환만 확인):
 //! ```sh
 //! zig build-exe dist/linux/osc-title-probe.zig -O ReleaseSafe -lc
 //! ./osc-title-probe --shell /bin/bash --runs 10 --verbose
@@ -44,6 +44,17 @@ comptime {
 extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname_r(fd: c_int, buf: [*]u8, buflen: usize) c_int;
 
+/// Zig 0.16이 걷어낸 `std.posix` syscall wrapper 자리. 이 도구는 PTY의
+/// `fork`/`setsid`/`TIOCSCTTY`가 필요해 `std.process.spawn`으로 올릴 수 없으므로
+/// 앱의 POSIX PTY와 같이 `std.posix.system`으로 내려간다.
+fn sysFailed(rc: anytype) bool {
+    return posix.errno(rc) != .SUCCESS;
+}
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
 /// XTVERSION 응답에 쓰는 값 — tildaz 의 `vtXtversion` 과 같은 형식.
 const app_version = "0.6.2";
 /// Tilda 테마 (config 기본값) 의 fg / bg — OSC 10 / 11 질의 응답에 쓴다.
@@ -51,6 +62,22 @@ const theme_fg = "rgb:ffff/ffff/ffff";
 const theme_bg = "rgb:0000/0000/0000";
 /// dark 배경 → `COLORFGBG=15;0`, color scheme DSR 응답은 `\e[?997;1n` (dark).
 const colorfgbg = "15;0";
+
+/// Zig 0.16에서 제거된 `std.time.Timer`의 자리. 측정 구간은 절전 시간을 세지 않는
+/// `.awake` 단조 시계를 써서 tildaz의 `runtime.Timer`와 같은 의미를 유지한다.
+const Timer = struct {
+    io: std.Io,
+    start_ns: i96,
+
+    fn start(io: std.Io) Timer {
+        return .{ .io = io, .start_ns = std.Io.Timestamp.now(io, .awake).nanoseconds };
+    }
+
+    fn read(self: Timer) u64 {
+        const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+        return @intCast(@max(0, now - self.start_ns));
+    }
+};
 
 const Kind = enum {
     title, // OSC 0 / 2 (ghostty getTitle() 에 반영되는 것)
@@ -75,7 +102,7 @@ const Recorder = struct {
     count: usize = 0,
     dropped: usize = 0,
     master: posix.fd_t = -1,
-    timer: std.time.Timer = undefined,
+    timer: Timer = undefined,
     reply: bool = true,
     total_bytes: usize = 0,
 
@@ -93,7 +120,7 @@ const Recorder = struct {
 
     fn respond(self: *Recorder, data: []const u8) void {
         if (!self.reply) return;
-        _ = posix.write(self.master, data) catch {};
+        _ = posix.system.write(self.master, data.ptr, data.len);
     }
 };
 
@@ -209,12 +236,12 @@ const Parser = struct {
         switch (code) {
             0, 2 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch line[0..0]).len;
+                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
                 rec.add(.title, line[0..n]);
             },
             1 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch line[0..0]).len;
+                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
                 rec.add(.icon, line[0..n]);
             },
             // 색 질의 — ghostty-vt 가 terminal 의 현재 색으로 답한다.
@@ -225,7 +252,7 @@ const Parser = struct {
                     const resp = std.fmt.bufPrint(&out, "\x1b]{d};{s}\x1b\\", .{ code, color }) catch return;
                     rec.respond(resp);
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query -> {s}", .{ code, color }) catch line[0..0]).len;
+                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query -> {s}", .{ code, color }) catch @as([]u8, line[0..0])).len;
                     rec.add(.answered, line[0..n]);
                 }
             },
@@ -242,7 +269,7 @@ const Parser = struct {
                     ) catch return;
                     rec.respond(resp);
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query -> answered", .{payload[0..idx_end]}) catch line[0..0]).len;
+                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query -> answered", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
                     rec.add(.answered, line[0..n]);
                 }
             },
@@ -363,22 +390,48 @@ fn render(out: []u8, prefix: []const u8, s: []const u8) usize {
 
 const Spawn = struct { master: posix.fd_t, pid: posix.pid_t };
 
+/// `execve`가 받는 `KEY=VALUE` NUL-종단 배열. Zig 0.16에서는 부모 환경을
+/// `std.process.Init`의 `Environ`에서 받아 명시적으로 만든다.
+fn buildEnvp(
+    arena: std.mem.Allocator,
+    map: *const std.process.Environ.Map,
+) ![*:null]const ?[*:0]const u8 {
+    const buf = try arena.allocSentinel(?[*:0]const u8, map.count(), null);
+    for (map.keys(), map.values(), 0..) |key, value, i| {
+        buf[i] = (try std.fmt.allocPrintSentinel(arena, "{s}={s}", .{ key, value }, 0)).ptr;
+    }
+    return buf.ptr;
+}
+
 fn spawnShell(
     alloc: std.mem.Allocator,
+    environ: std.process.Environ,
     shell: []const u8,
     cols: u16,
     rows: u16,
     home_override: ?[]const u8,
 ) !Spawn {
-    const master_fd = try posix.openZ("/dev/ptmx", .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0);
-    errdefer posix.close(master_fd);
+    const master_rc = posix.system.open(
+        "/dev/ptmx",
+        .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true },
+        @as(posix.mode_t, 0),
+    );
+    if (sysFailed(master_rc)) return error.OpenPtyFailed;
+    const master_fd: posix.fd_t = @intCast(master_rc);
+    errdefer closeFd(master_fd);
     if (unlockpt(master_fd) != 0) return error.UnlockPtyFailed;
 
     var slave_path_buf: [64]u8 = undefined;
     if (ptsname_r(master_fd, &slave_path_buf, slave_path_buf.len) != 0) return error.ResolvePtySlaveFailed;
     const slave_path: [*:0]const u8 = @ptrCast(&slave_path_buf);
-    const slave_fd = try posix.openZ(slave_path, .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0);
-    errdefer posix.close(slave_fd);
+    const slave_rc = posix.system.open(
+        slave_path,
+        .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true },
+        @as(posix.mode_t, 0),
+    );
+    if (sysFailed(slave_rc)) return error.OpenPtyFailed;
+    const slave_fd: posix.fd_t = @intCast(slave_rc);
+    errdefer closeFd(slave_fd);
 
     var ws: posix.winsize = .{ .col = cols, .row = rows, .xpixel = 0, .ypixel = 0 };
     if (posix.errno(linux.ioctl(slave_fd, linux.T.IOCSWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
@@ -395,7 +448,7 @@ fn spawnShell(
     const shell_z = try alloc.dupeZ(u8, shell);
     defer alloc.free(shell_z);
 
-    var env_map = try std.process.getEnvMap(alloc);
+    var env_map = try environ.createMap(alloc);
     defer env_map.deinit();
     // tildaz 가 Linux 에서 넘기는 5종 (wayland_minimal.zig `extra_env_storage`).
     try env_map.put("TERM", "xterm-256color");
@@ -406,38 +459,42 @@ fn spawnShell(
     if (home_override) |h| try env_map.put("HOME", h);
     // 측정 프로세스 (agent 셸) 에서 흘러들어온 흔적은 제거 — 데스크톱 세션에서
     // 실행되는 tildaz 의 환경에는 없는 값이다.
-    env_map.remove("CLAUDECODE");
-    env_map.remove("CLAUDE_CODE_ENTRYPOINT");
+    _ = env_map.swapRemove("CLAUDECODE");
+    _ = env_map.swapRemove("CLAUDE_CODE_ENTRYPOINT");
 
     var env_arena = std.heap.ArenaAllocator.init(alloc);
     defer env_arena.deinit();
-    const envp_buf = try std.process.createNullDelimitedEnvMap(env_arena.allocator(), &env_map);
-    const envp: [*:null]const ?[*:0]const u8 = @ptrCast(envp_buf.ptr);
+    const envp = try buildEnvp(env_arena.allocator(), &env_map);
 
-    const home_z: ?[:0]u8 = if (home_override) |h| try alloc.dupeZ(u8, h) else null;
-    defer if (home_z) |h| alloc.free(h);
+    const home_z_owned: ?[:0]u8 = if (home_override) |h| try alloc.dupeZ(u8, h) else null;
+    defer if (home_z_owned) |h| alloc.free(h);
+    // fork 뒤에는 환경 조회나 할당을 하지 않는다. 부모의 환경 블록은 프로세스 수명이고
+    // `getPosix` 반환값은 이미 NUL-종단이라 그대로 `chdir`에 쓸 수 있다.
+    const home_z: ?[*:0]const u8 = if (home_z_owned) |h|
+        h.ptr
+    else if (environ.getPosix("HOME")) |h|
+        h.ptr
+    else
+        null;
 
-    const pid = try posix.fork();
+    const fork_rc = posix.system.fork();
+    if (sysFailed(fork_rc)) return error.ForkFailed;
+    const pid: posix.pid_t = @intCast(fork_rc);
     if (pid == 0) {
-        posix.close(master_fd);
-        if (linux.setsid() < 0) posix.exit(127);
-        if (posix.errno(linux.ioctl(slave_fd, linux.T.IOCSCTTY, 0)) != .SUCCESS) posix.exit(127);
-        posix.dup2(slave_fd, 0) catch posix.exit(127);
-        posix.dup2(slave_fd, 1) catch posix.exit(127);
-        posix.dup2(slave_fd, 2) catch posix.exit(127);
-        if (slave_fd > 2) posix.close(slave_fd);
-        if (home_z) |h| {
-            posix.chdir(h) catch {};
-        } else if (posix.getenv("HOME")) |home| {
-            posix.chdir(home) catch {};
-        }
+        closeFd(master_fd);
+        if (linux.setsid() < 0) posix.system._exit(127);
+        if (sysFailed(linux.ioctl(slave_fd, linux.T.IOCSCTTY, 0))) posix.system._exit(127);
+        if (sysFailed(posix.system.dup2(slave_fd, 0))) posix.system._exit(127);
+        if (sysFailed(posix.system.dup2(slave_fd, 1))) posix.system._exit(127);
+        if (sysFailed(posix.system.dup2(slave_fd, 2))) posix.system._exit(127);
+        if (slave_fd > 2) closeFd(slave_fd);
+        if (home_z) |home| _ = posix.system.chdir(home);
         const argv = [_:null]?[*:0]const u8{ shell_z.ptr, null };
-        switch (posix.execveZ(shell_z.ptr, &argv, envp)) {
-            else => posix.exit(127),
-        }
+        _ = posix.system.execve(shell_z.ptr, &argv, envp);
+        posix.system._exit(127);
     }
 
-    posix.close(slave_fd);
+    closeFd(slave_fd);
     return .{ .master = master_fd, .pid = pid };
 }
 
@@ -458,6 +515,8 @@ const RunResult = struct {
 };
 
 fn runOnce(
+    io: std.Io,
+    environ: std.process.Environ,
     alloc: std.mem.Allocator,
     shell: []const u8,
     window_ms: u64,
@@ -465,9 +524,9 @@ fn runOnce(
     home_override: ?[]const u8,
     verbose: bool,
 ) !RunResult {
-    const sp = try spawnShell(alloc, shell, 120, 30, home_override);
+    const sp = try spawnShell(alloc, environ, shell, 120, 30, home_override);
     // 시각 0 — tildaz 는 backend.init (fork) 직후 title_clock 을 시작한다.
-    var rec = Recorder{ .master = sp.master, .timer = try std.time.Timer.start(), .reply = reply };
+    var rec = Recorder{ .master = sp.master, .timer = .start(io), .reply = reply };
     var parser = Parser{};
 
     var buf: [8192]u8 = undefined;
@@ -476,10 +535,14 @@ fn runOnce(
         const elapsed_ms = rec.timer.read() / std.time.ns_per_ms;
         if (elapsed_ms >= window_ms) break;
         var fds = [_]posix.pollfd{.{ .fd = sp.master, .events = posix.POLL.IN, .revents = 0 }};
-        const ready = posix.poll(&fds, @intCast(window_ms - elapsed_ms)) catch break;
+        const ready_rc = posix.system.poll(&fds, fds.len, @intCast(window_ms - elapsed_ms));
+        if (sysFailed(ready_rc)) break;
+        const ready: usize = @intCast(ready_rc);
         if (ready == 0) continue;
         if (fds[0].revents & (posix.POLL.IN | posix.POLL.HUP) == 0) continue;
-        const n = posix.read(sp.master, &buf) catch break;
+        const read_rc = posix.system.read(sp.master, &buf, buf.len);
+        if (sysFailed(read_rc)) break;
+        const n: usize = @intCast(read_rc);
         if (n == 0) break; // EOF — 셸 종료
         if (first_byte_ns == null) first_byte_ns = rec.timer.read();
         rec.total_bytes += n;
@@ -487,8 +550,8 @@ fn runOnce(
     }
 
     posix.kill(-sp.pid, posix.SIG.KILL) catch {};
-    _ = posix.waitpid(sp.pid, 0);
-    posix.close(sp.master);
+    _ = posix.system.waitpid(sp.pid, null, 0);
+    closeFd(sp.master);
 
     // 결과 집계
     var result = RunResult{ .bytes = rec.total_bytes, .first_byte_ns = first_byte_ns };
@@ -555,12 +618,9 @@ fn ms(v: u64) f64 {
     return @as(f64, @floatFromInt(v)) / @as(f64, std.time.ns_per_ms);
 }
 
-pub fn main() !void {
-    var gpa_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer gpa_state.deinit();
-    const alloc = gpa_state.allocator();
-
-    const args = try std.process.argsAlloc(alloc);
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(alloc);
     var shell: []const u8 = "/bin/bash";
     var runs: usize = 10;
     var window_ms: u64 = 3000;
@@ -617,7 +677,7 @@ pub fn main() !void {
 
     for (0..runs) |run| {
         if (verbose) std.debug.print("  run {d}:\n", .{run + 1});
-        const r = try runOnce(alloc, shell, window_ms, reply, home_override, verbose);
+        const r = try runOnce(init.io, init.minimal.environ, alloc, shell, window_ms, reply, home_override, verbose);
         if (r.first_nonempty_ns) |t| {
             firsts[firsts_len] = t;
             firsts_len += 1;
