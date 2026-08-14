@@ -8,6 +8,7 @@
 // unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const windows = std.os.windows;
 const themes = @import("themes.zig");
@@ -213,8 +214,11 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
     const command_modifiers = CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
     if (!globalHotkeyAllowed(key_name, (modifiers & command_modifiers) != 0)) return null;
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    // #451 — `std.io.fixedBufferStream` 은 0.16 에서 삭제됐다 (릴리즈 노트 *Io: delete
+    // GenericReader, AnyReader, FixedBufferStream*). 고정 버퍼 쓰기는 `Io.Writer.fixed`
+    // 가 그 자리이고, 쓴 만큼은 `getWritten()` 대신 `buffered()` 로 얻는다.
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
     const ModifierPart = struct { bit: u32, text: []const u8 };
     const modifier_parts = if (builtin.os.tag == .macos)
         [_]ModifierPart{
@@ -234,7 +238,7 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
         if ((modifiers & part.bit) != 0) writer.writeAll(part.text) catch return null;
     }
     writer.writeAll(key_name) catch return null;
-    return fbs.getWritten();
+    return fbs.buffered();
 }
 
 /// Parsed platform-native hotkey를 command menu에 표시할 canonical 문자열로
@@ -775,15 +779,15 @@ pub fn defaultConfigJsonWithHotkey(
     hotkey: []const u8,
 ) ![]const u8 {
     var fb_buf: [1024]u8 = undefined;
-    var fb_fbs = std.io.fixedBufferStream(&fb_buf);
-    const fw = fb_fbs.writer();
+    var fb_fbs: std.Io.Writer = .fixed(&fb_buf);
+    const fw = &fb_fbs;
     try fw.writeAll("[");
     for (Defaults.glyph_fallback, 0..) |f, i| {
         if (i > 0) try fw.writeAll(", ");
         try fw.print("\"{s}\"", .{f});
     }
     try fw.writeAll("]");
-    const glyph_fallback_json = fb_fbs.getWritten();
+    const glyph_fallback_json = fb_fbs.buffered();
 
     return try std.fmt.allocPrint(allocator,
         \\{{
@@ -901,40 +905,41 @@ pub const Config = struct {
     /// 가 JSON 값을 dupe 하므로 안 쓰는 `shell_resolved` 를 free. 결과 Config 는
     /// 모든 경로에서 shell / font_families 가 owned → `deinit` 이 일관 free.
     /// 따라서 `shell_resolved` 는 호출처가 항상 *owned* 로 넘겨야 한다.
-    pub fn load(allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
-        const path = paths.configPath(allocator) catch {
+    pub fn load(rt: Runtime, allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
+        const path = paths.configPath(rt, allocator) catch {
             return defaultOwned(allocator, shell_resolved);
         };
         defer allocator.free(path);
 
         const loaded = blk: {
-            const file = std.fs.openFileAbsolute(path, .{}) catch {
+            const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch {
                 // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
                 // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
                 // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
                 // 사용자 config 를 만드는 주체가 되는데, 그것은 launcher 의 일이다
                 // (`instances.createDefaultConfig` — auto_start · 단축키 동기화까지 함께 한다).
                 // 측정은 기본값을 메모리에서만 쓰고 지나간다.
-                if (!instance_context.isStress()) createDefault(allocator, path, shell_resolved);
+                if (!instance_context.isStress()) createDefault(rt, allocator, path, shell_resolved);
                 break :blk defaultOwned(allocator, shell_resolved);
             };
-            defer file.close();
+            defer file.close(rt.io);
 
-            const content = file.readToEndAlloc(allocator, 64 * 1024) catch {
+            var file_reader = file.reader(rt.io, &.{});
+            const content = file_reader.interface.allocRemaining(allocator, .limited(64 * 1024)) catch {
                 break :blk defaultOwned(allocator, shell_resolved);
             };
             defer allocator.free(content);
 
             // disk 정상 — parse 가 JSON 의 shell 을 dupe 하므로 인자는 미사용. 누수 방지 free.
             allocator.free(shell_resolved);
-            break :blk parse(allocator, content, path);
+            break :blk parse(rt, allocator, content, path);
         };
 
         // #431 — 핫키 중복 검사는 **여기 한 곳**이다. `parse` 안에 두면 위의 두 fallback
         // (파일 없음 · 못 읽음) 이 구멍으로 남는데, 그 경로가 쓰는 `Defaults.hotkey` 는
         // config_0 의 기본값과 **같은 키**라 오히려 겹치기 쉽다 (`tildaz --instance 9` 처럼
         // config 없는 index 로 직접 띄우는 경우).
-        fatalIfHotkeyTakenByLowerIndex(allocator, loaded.hotkey, path);
+        fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path);
         return loaded;
     }
 
@@ -945,12 +950,12 @@ pub const Config = struct {
     /// 세 platform 이 여기서 함께 덮인다. 전에는 Windows 만 `RegisterHotKey` 실패로 뒤늦게
     /// 걸렸고 (원인이 자기 다른 인스턴스인지 알 수 없는 안내였다), macOS 는 `CGEventTap` 이
     /// 배타 등록이 아니라 **두 인스턴스가 같은 키에 함께 반응**했다.
-    fn fatalIfHotkeyTakenByLowerIndex(allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) void {
+    fn fatalIfHotkeyTakenByLowerIndex(rt: Runtime, allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) void {
         // 측정 인스턴스는 전역 핫키를 등록하지 않는다 (#382). worker index 가 없으면
         // (단위 테스트 등) 비교할 자기 자신이 없다.
         if (instance_context.isStress()) return;
         const self_index = instance_context.workerIndex() orelse return;
-        const owner = instances.lowerIndexHotkeyConflict(allocator, self_index, hotkey) orelse return;
+        const owner = instances.lowerIndexHotkeyConflict(rt, allocator, self_index, hotkey) orelse return;
 
         // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
         var key_buf: [64]u8 = undefined;
@@ -960,7 +965,7 @@ pub const Config = struct {
             messages.config_hotkey_duplicate_format,
             .{ hotkeyDisplay(&key_buf, hotkey), owner },
         ) catch messages.config_hotkey_duplicate_fallback_msg;
-        showConfigFatalMsg(config_path, msg);
+        showConfigFatalMsg(rt, config_path, msg);
     }
 
     /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static
@@ -974,7 +979,7 @@ pub const Config = struct {
         return c;
     }
 
-    fn parse(allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) Config {
+    fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) Config {
         var config = Config{};
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
             const msg = std.fmt.allocPrint(
@@ -982,12 +987,12 @@ pub const Config = struct {
                 messages.config_parse_failed_format,
                 .{ config_path, @errorName(err) },
             ) catch messages.config_parse_failed_fallback_msg;
-            dialog.showFatal(messages.config_error_title, msg);
+            dialog.showFatal(rt, messages.config_error_title, msg);
         };
         defer parsed.deinit();
 
         const root = parsed.value;
-        if (root != .object) showConfigFatalMsg(config_path, messages.config_top_level_must_be_object_msg);
+        if (root != .object) showConfigFatalMsg(rt, config_path, messages.config_top_level_must_be_object_msg);
 
         // font.family / font.glyph_fallback 의 type 만 우선 사전 체크 —
         // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
@@ -996,12 +1001,12 @@ pub const Config = struct {
             if (root.object.get("font")) |fv_pre| {
                 if (fv_pre == .object) {
                     if (fv_pre.object.get("family")) |fam_v| {
-                        if (fam_v != .string) font_validate.showFamilyMustBeStringFatal();
+                        if (fam_v != .string) font_validate.showFamilyMustBeStringFatal(rt);
                     }
                     if (fv_pre.object.get("glyph_fallback")) |fb_v| {
-                        if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal();
+                        if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal(rt);
                         for (fb_v.array.items) |item| {
-                            if (item != .string) font_validate.showGlyphFallbackMustBeListFatal();
+                            if (item != .string) font_validate.showGlyphFallbackMustBeListFatal(rt);
                         }
                     }
                 }
@@ -1014,7 +1019,7 @@ pub const Config = struct {
         defer allocator.free(default_json);
         var default_parsed = std.json.parseFromSlice(std.json.Value, allocator, default_json, .{}) catch unreachable;
         defer default_parsed.deinit();
-        validateStructure(root, default_parsed.value, "(top-level)", config_path);
+        validateStructure(rt, root, default_parsed.value, "(top-level)", config_path);
 
         // window section
         if (root.object.get("window")) |wv| {
@@ -1028,27 +1033,27 @@ pub const Config = struct {
                         messages.config_dock_position_invalid_format,
                         .{v.string},
                     ) catch messages.config_dock_position_invalid_fallback_msg;
-                    showConfigFatalMsg(config_path, msg);
+                    showConfigFatalMsg(rt, config_path, msg);
                 }
             }
             if (wv.object.get("width_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.width_percent"});
-                if (f < 1.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.width_percent"});
+                if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
                 config.width_percent = f;
             }
             if (wv.object.get("height_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.height_percent"});
-                if (f < 1.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.height_percent"});
+                if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
                 config.height_percent = f;
             }
             if (wv.object.get("offset_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
-                if (f < 0.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
+                if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
                 config.offset_percent = f;
             }
             if (wv.object.get("opacity_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
-                if (f < 0.0 or f > 100.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
+                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
+                if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
                 config.opacity_alpha = @intFromFloat(@round(f * 255.0 / 100.0));
             }
         }
@@ -1059,14 +1064,14 @@ pub const Config = struct {
                 config.theme = themes.findTheme(v.string);
                 if (config.theme == null) {
                     var buf: [512]u8 = undefined;
-                    var fbs = std.io.fixedBufferStream(&buf);
-                    const w = fbs.writer();
+                    var fbs: std.Io.Writer = .fixed(&buf);
+                    const w = &fbs;
                     w.print(messages.config_unknown_theme_header_format, .{v.string}) catch {};
                     for (themes.themes, 0..) |t, i| {
                         if (i > 0) w.writeAll(", ") catch {};
                         w.writeAll(t.name) catch {};
                     }
-                    showConfigFatalMsg(config_path, fbs.getWritten());
+                    showConfigFatalMsg(rt, config_path, fbs.buffered());
                 }
             }
         }
@@ -1082,7 +1087,7 @@ pub const Config = struct {
                     messages.config_hotkey_invalid_format,
                     .{v.string},
                 ) catch messages.config_hotkey_invalid_fallback_msg;
-                showConfigFatalMsg(config_path, msg);
+                showConfigFatalMsg(rt, config_path, msg);
             }
         }
 
@@ -1102,7 +1107,7 @@ pub const Config = struct {
         // max_scroll_lines
         if (root.object.get("max_scroll_lines")) |v| {
             if (v.integer < 100 or v.integer > 10_000_000) {
-                showConfigFatal(config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
+                showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
             }
             config.max_scroll_lines = @intCast(v.integer);
         }
@@ -1113,18 +1118,18 @@ pub const Config = struct {
         const fv = root.object.get("font").?;
         if (fv.object.get("size_point")) |v| {
             if (v.integer < 8 or v.integer > 72) {
-                showConfigFatal(config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
+                showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
             }
             config.font_size_point = @intCast(v.integer);
         }
         if (fv.object.get("cell_width_ratio")) |v| {
-            const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
-            if (f < 0.5 or f > 2.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
+            const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
+            if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
             config.cell_width_ratio = f;
         }
         if (fv.object.get("line_height_ratio")) |v| {
-            const f = parseFloat(v) orelse showConfigFatal(config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
-            if (f < 0.5 or f > 2.0) showConfigFatal(config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
+            const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
+            if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
             config.line_height_ratio = f;
         }
         // font.family — primary, single string. type 은 사전 체크에서 이미
@@ -1132,7 +1137,7 @@ pub const Config = struct {
         // 문자열만 reject + chain[0] 에 저장.
         var chain_count: usize = 0;
         if (fv.object.get("family")) |v| {
-            if (v.string.len == 0) showConfigFatalMsg(config_path, messages.config_font_family_empty_msg);
+            if (v.string.len == 0) showConfigFatalMsg(rt, config_path, messages.config_font_family_empty_msg);
             config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
             chain_count = 1;
         }
@@ -1151,7 +1156,7 @@ pub const Config = struct {
                         messages.config_font_chain_too_long_format,
                         .{MAX_FONT_FAMILIES},
                     ) catch messages.config_font_chain_too_long_fallback_msg;
-                    showConfigFatalMsg(config_path, msg);
+                    showConfigFatalMsg(rt, config_path, msg);
                 }
                 config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
                 chain_count += 1;
@@ -1165,12 +1170,12 @@ pub const Config = struct {
         return config;
     }
 
-    fn createDefault(allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
-        const file = std.fs.createFileAbsolute(path, .{}) catch return;
-        defer file.close();
+    fn createDefault(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
+        const file = std.Io.Dir.createFileAbsolute(rt.io, path, .{}) catch return;
+        defer file.close(rt.io);
         const json_text = defaultConfigJson(allocator, shell_resolved) catch return;
         defer allocator.free(json_text);
-        file.writeAll(json_text) catch {};
+        file.writeStreamingAll(rt.io, json_text) catch {};
     }
 
     /// #218 — `load` 가 owned 로 정규화한 `shell` / `font_families` 해제. 모든
@@ -1251,16 +1256,16 @@ fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, co
     return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ message, config_path });
 }
 
-fn showConfigFatalMsg(config_path: []const u8, message: []const u8) noreturn {
+fn showConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u8) noreturn {
     const full_message = configErrorMessageAlloc(std.heap.page_allocator, message, config_path) catch
         messages.config_error_with_path_fallback_msg;
-    dialog.showFatal(messages.config_error_title, full_message);
+    dialog.showFatal(rt, messages.config_error_title, full_message);
 }
 
-fn showConfigFatal(config_path: []const u8, comptime fmt: []const u8, args: anytype) noreturn {
+fn showConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) noreturn {
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
-    showConfigFatalMsg(config_path, msg);
+    showConfigFatalMsg(rt, config_path, msg);
 }
 
 /// user config 의 구조가 default config 와 일치하는지 재귀 검증:
@@ -1269,7 +1274,7 @@ fn showConfigFatal(config_path: []const u8, comptime fmt: []const u8, args: anyt
 ///
 /// value range / 의미 검증은 caller (각 필드 별로 hardcoded — default 만으로는
 /// "1..100" 같은 range 표현 불가).
-fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8, config_path: []const u8) void {
+fn validateStructure(rt: Runtime, user: std.json.Value, def: std.json.Value, ctx: []const u8, config_path: []const u8) void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
     if (user_tag != def_tag) {
@@ -1282,7 +1287,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
                 messages.config_type_mismatch_format,
                 .{ ctx, @tagName(def_tag), @tagName(user_tag) },
             ) catch messages.config_type_mismatch_fallback_msg;
-            showConfigFatalMsg(config_path, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -1298,7 +1303,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
                 messages.config_missing_key_format,
                 .{ key, ctx },
             ) catch messages.config_missing_key_fallback_msg;
-            showConfigFatalMsg(config_path, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -1317,7 +1322,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
                 messages.config_unknown_key_format,
                 .{ key, ctx },
             ) catch messages.config_unknown_key_fallback_msg;
-            showConfigFatalMsg(config_path, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -1330,7 +1335,7 @@ fn validateStructure(user: std.json.Value, def: std.json.Value, ctx: []const u8,
             std.fmt.bufPrint(&path_buf, "{s}", .{key}) catch key
         else
             std.fmt.bufPrint(&path_buf, "{s}.{s}", .{ ctx, key }) catch key;
-        validateStructure(u_val, entry.value_ptr.*, path, config_path);
+        validateStructure(rt, u_val, entry.value_ptr.*, path, config_path);
     }
 }
 
@@ -1420,11 +1425,14 @@ test "explicit line height ratio is preserved when parsing" {
     defer allocator.free(json_text);
 
     const expected = "\"line_height_ratio\": 1.1";
-    const offset = std.mem.indexOf(u8, json_text, expected) orelse return error.TestUnexpectedResult;
+    const offset = std.mem.find(u8, json_text, expected) orelse return error.TestUnexpectedResult;
     const value_offset = offset + expected.len - 3;
     @memcpy(json_text[value_offset .. value_offset + 3], "0.9");
 
-    const config = Config.parse(allocator, json_text, "/tmp/config_0.json");
+    // #451 — 정상 JSON 이라 `parse` 가 fatal 경로 (config 경로 조회) 로 가지 않는다.
+    // 그래서 `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = Config.parse(rt, allocator, json_text, "/tmp/config_0.json");
     defer config.deinit(allocator);
     try std.testing.expectEqual(@as(f32, 0.9), config.line_height_ratio);
 }

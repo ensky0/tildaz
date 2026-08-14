@@ -12,6 +12,7 @@
 //! 모듈 (`dialog.showAboutAlert`) 로 표시. exe 경로 / pid 만 platform-specific.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
 const log = @import("log.zig");
@@ -48,10 +49,11 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
 ///
 /// 표시 경로는 모두 절대 경로 (`~` / `%APPDATA%` 같은 단축 안 씀) — SPEC.md
 /// §11.3. 사용자가 그대로 vim / explorer 명령에 paste 가능 + 환경 ambiguity 제거.
-pub fn showAboutDialog() void {
+pub fn showAboutDialog(rt: Runtime) void {
     const allocator = std.heap.page_allocator;
 
-    const exe_path_owned = std.fs.selfExePathAlloc(allocator) catch null;
+    // #451 — `fs.selfExePathAlloc` ➡️ `std.process.executablePathAlloc` (릴리즈 노트).
+    const exe_path_owned = std.process.executablePathAlloc(rt.io, allocator) catch null;
     defer if (exe_path_owned) |path| allocator.free(path);
     const exe_path = exe_path_owned orelse messages.unknown_path_msg;
 
@@ -60,7 +62,7 @@ pub fn showAboutDialog() void {
         else => std.c.getpid(),
     });
 
-    const config_path_owned = paths.configPath(allocator) catch null;
+    const config_path_owned = paths.configPath(rt, allocator) catch null;
     defer if (config_path_owned) |path| allocator.free(path);
     const config_path = config_path_owned orelse messages.unknown_path_msg;
 
@@ -91,12 +93,12 @@ pub fn showAboutDialog() void {
         .open_log_key = open_log_key,
     }) catch |err| {
         log.appendLine("about", "About message allocation failed: {s}", .{@errorName(err)});
-        dialog.showAboutAlert(messages.about_title, messages.about_prepare_failed_msg);
+        dialog.showAboutAlert(rt, messages.about_title, messages.about_prepare_failed_msg);
         return;
     };
     defer allocator.free(msg);
 
-    dialog.showAboutAlert(messages.about_title, msg);
+    dialog.showAboutAlert(rt, messages.about_title, msg);
 }
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
@@ -139,7 +141,7 @@ test "#314 About formatter preserves content beyond the old 2048-byte limit" {
     defer std.testing.allocator.free(msg);
 
     try std.testing.expect(msg.len > 2048);
-    try std.testing.expect(std.mem.indexOf(u8, msg, long_path) != null);
+    try std.testing.expect(std.mem.find(u8, msg, long_path) != null);
     try std.testing.expect(std.mem.endsWith(u8, msg, "https://github.com/ensky0/tildaz"));
 }
 
@@ -157,7 +159,7 @@ test "#314 About formatter preserves multibyte paths" {
     defer std.testing.allocator.free(msg);
 
     try std.testing.expect(std.unicode.utf8ValidateSlice(msg));
-    try std.testing.expect(std.mem.indexOf(u8, msg, config_path) != null);
+    try std.testing.expect(std.mem.find(u8, msg, config_path) != null);
 }
 
 test "#314 About formatter reports allocation failure" {

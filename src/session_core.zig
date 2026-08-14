@@ -1,4 +1,6 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
+const Runtime = runtime.Runtime;
 const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
@@ -81,11 +83,17 @@ const RingBuffer = struct {
 /// 이고 즉시 PTY 로 빠져나가므로 메모리 압박 짧음. 8MB 초과는 여전히 yield
 /// 하지만 일반 사용 시나리오에서는 거의 발생 안 함.
 const WriteQueue = struct {
+    /// #451 — 0.16 은 동기화 primitive 를 `std.Io` 로 옮겼고 (릴리즈 노트 *Sync
+    /// Primitives*: `Thread.Mutex` ➡️ `Io.Mutex` · `Thread.ResetEvent` ➡️ `Io.Event`),
+    /// 그 API 는 lock / wait / set 마다 `Io` 를 받는다. 이 큐는 UI 스레드와 write
+    /// 스레드의 경계라 호출이 잦아, 매번 인자로 넘기는 대신 큐가 한 번 보관한다
+    /// (`Tab.init` 이 넣는다 — 기본값이 없어 빠뜨리면 컴파일이 잡는다).
+    io: std.Io,
     buf: [8 * 1024 * 1024]u8 = undefined,
     head: usize = 0,
     tail: usize = 0,
-    mutex: std.Thread.Mutex = .{},
-    event: std.Thread.ResetEvent = .{},
+    mutex: std.Io.Mutex = .init,
+    event: std.Io.Event = .unset,
     closed: bool = false,
 
     fn freeSpace(self: *const WriteQueue) usize {
@@ -98,15 +106,15 @@ const WriteQueue = struct {
     fn push(self: *WriteQueue, data: []const u8) void {
         var i: usize = 0;
         while (i < data.len) {
-            self.mutex.lock();
+            self.mutex.lockUncancelable(self.io);
             if (self.closed) {
-                self.mutex.unlock();
+                self.mutex.unlock(self.io);
                 return;
             }
 
             const free = self.freeSpace();
             if (free == 0) {
-                self.mutex.unlock();
+                self.mutex.unlock(self.io);
                 std.Thread.yield() catch {};
                 continue;
             }
@@ -118,15 +126,15 @@ const WriteQueue = struct {
                 @memcpy(self.buf[0 .. batch - first], data[i + first ..][0 .. batch - first]);
             }
             self.head = (self.head + batch) % self.buf.len;
-            self.mutex.unlock();
-            self.event.set();
+            self.mutex.unlock(self.io);
+            self.event.set(self.io);
             i += batch;
         }
     }
 
     fn pop(self: *WriteQueue, out: []u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         var n: usize = 0;
         while (self.tail != self.head and n < out.len) {
             out[n] = self.buf[self.tail];
@@ -137,25 +145,25 @@ const WriteQueue = struct {
     }
 
     fn close(self: *WriteQueue) void {
-        self.mutex.lock();
+        self.mutex.lockUncancelable(self.io);
         self.closed = true;
-        self.mutex.unlock();
-        self.event.set();
+        self.mutex.unlock(self.io);
+        self.event.set(self.io);
     }
 
     /// Pending data 즉시 폐기 — Ctrl+C interrupt 시 큐에 쌓인 paste data 등을
     /// 무효화. write_thread 가 spinning (queue full 시) 중이면 free 공간 생기게
     /// 하는 효과도 있어 main thread 의 다음 push 즉시 진행.
     fn reset(self: *WriteQueue) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.head = 0;
         self.tail = 0;
     }
 
     fn isClosed(self: *WriteQueue) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.closed;
     }
 };
@@ -229,7 +237,7 @@ pub const Tab = struct {
     backend: TerminalBackend,
     /// OSC title debounce 전용 monotonic elapsed clock. `nanoTimestamp`는
     /// CLOCK_REALTIME/system time이라 시계 보정 영향을 받으므로 쓰지 않는다.
-    title_clock: std.time.Timer,
+    title_clock: runtime.Timer,
     title: [64]u8 = undefined,
     title_len: usize = 0,
     /// OSC 0/2 빈 제목이 오면 최초 자동 이름으로 돌아가기 위한 stable id.
@@ -241,12 +249,14 @@ pub const Tab = struct {
     /// 탭의 interaction 을 event/render 시점에 참조한다.
     interaction: terminal_interaction.TerminalInteraction = .{},
     output_ring: RingBuffer = .{},
-    write_queue: WriteQueue = .{},
+    /// #451 — `Io` 를 담아야 해서 기본값이 없다. `Tab.init` 이 `rt.io` 로 채운다.
+    write_queue: WriteQueue,
     write_thread: ?std.Thread = null,
     tab_exit_fn: SessionCore.TabExitNotify,
     tab_exit_userdata: ?*anyopaque = null,
 
     fn init(
+        rt: Runtime,
         alloc: std.mem.Allocator,
         cols: u16,
         rows: u16,
@@ -261,10 +271,11 @@ pub const Tab = struct {
         const tab = try alloc.create(Tab);
         errdefer alloc.destroy(tab);
 
-        var term = try initVtTerminal(alloc, cols, rows, max_scroll_lines, theme);
+        var term = try initVtTerminal(rt, alloc, cols, rows, max_scroll_lines, theme);
         errdefer term.deinit(alloc);
 
         var backend = try TerminalBackend.init(.{
+            .rt = rt,
             .allocator = alloc,
             .cols = cols,
             .rows = rows,
@@ -273,13 +284,14 @@ pub const Tab = struct {
             .cwd = cwd,
         });
         errdefer backend.deinit();
-        const title_clock = try std.time.Timer.start();
+        const title_clock: runtime.Timer = .start(rt);
 
         tab.* = .{
             .terminal = term,
             .stream = undefined,
             .backend = backend,
             .title_clock = title_clock,
+            .write_queue = .{ .io = rt.io },
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
@@ -302,7 +314,9 @@ pub const Tab = struct {
             vt_handler.effects.xtversion = &vtXtversion;
             vt_handler.effects.color_scheme = &vtColorScheme;
             vt_handler.effects.title_changed = &vtTitleChanged;
-            tab.stream = .initAlloc(alloc, vt_handler);
+            // #451 — `Stream.initAlloc(alloc, handler)` 가 `init(Options)` 하나로 합쳐졌다.
+            // `allocator` 가 optional 이라, 넣으면 예전 `initAlloc` · 빼면 예전 `init` 이다.
+            tab.stream = .init(.{ .handler = vt_handler, .allocator = alloc });
         } else {
             tab.stream = tab.terminal.vtStream();
         }
@@ -425,7 +439,10 @@ pub const Tab = struct {
     fn writeLoop(tab: *Tab) void {
         var buf: [256]u8 = undefined;
         while (true) {
-            tab.write_queue.event.wait();
+            // #451 — `Io.Event.wait` 은 취소점이라 `Cancelable!void` 다. 이 스레드는
+            // 취소를 쓰지 않으므로 (종료는 `closed` flag + `set` 으로 깨운다) 취소점을
+            // 만들지 않는 `waitUncancelable` 이 예전 `ResetEvent.wait` 과 같은 자리다.
+            tab.write_queue.event.waitUncancelable(tab.write_queue.io);
             tab.write_queue.event.reset();
             while (true) {
                 // close 후 pending data 처리 안 함 — 큰 paste 잔여 (수 MB) 가
@@ -517,8 +534,11 @@ pub const Tab = struct {
 /// **같은 정의**를 쓰도록 한 곳에 둔다 — 하네스가 이 구성을 베껴 쓰면 한쪽만
 /// 바뀌었을 때 앱과 다른 파서 설정을 재게 되고, 그 차이는 숫자에 조용히 섞인다.
 ///
-/// scrollback 은 줄 수가 아니라 byte 예산이라 cols 에 따른 page 용량으로 환산한다.
+/// #451 — scrollback 은 이제 **줄 수로 직접** 건넨다. 예전에는 ghostty 가 byte 예산만
+/// 받아서 우리 config 의 줄 수를 cols 에 따른 page 용량으로 환산했는데, upstream 이
+/// `max_scrollback_lines` 를 추가해 그 환산이 필요 없어졌다.
 pub fn initVtTerminal(
+    rt: Runtime,
     alloc: std.mem.Allocator,
     cols: u16,
     rows: u16,
@@ -532,14 +552,20 @@ pub fn initVtTerminal(
         .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
     } else ghostty.Terminal.Colors.default;
 
-    var term = try ghostty.Terminal.init(alloc, .{
+    // #451 — ghostty main 의 `Terminal.init` 도 `std.Io` 를 첫 인자로 받는다 (upstream 이
+    // 같은 0.16 전환을 했다). 우리 `rt.io` 가 그대로 들어간다.
+    var term = try ghostty.Terminal.init(rt.io, alloc, .{
         .cols = cols,
         .rows = rows,
-        .max_scrollback = max_scroll_lines * blk: {
-            const cap = ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch
-                break :blk (@as(usize, cols) + 1) * 8;
-            break :blk ghostty.Page.layout(cap).total_size / cap.rows;
-        },
+        // #451 — 우리 config 의 `max_scroll_lines` 와 **단위가 같다** (물리 줄 수).
+        // 예전의 page 용량 환산 (`page.std_capacity.adjust` + `Page.layout`) 은 ghostty 가
+        // byte 예산만 받던 시절의 우회였고, 이제 그 계산이 통째로 사라졌다.
+        .max_scrollback_lines = max_scroll_lines,
+        // **byte 제한은 명시로 끈다.** `Terminal.Options.max_scrollback_bytes` 의 기본값이
+        // `10_000` (10 KB) 이고, `PageList.Limits.exceeded` 는 bytes 와 lines 를 **독립적으로**
+        // 판정해 각각 page 를 prune 한다 (`PageList.zig` 의 `Limits`). 그대로 두면 10 KB 에서
+        // 먼저 잘려 줄 수 제한이 무의미해진다. `null` = 무제한이고, 상한은 줄 수가 정한다.
+        .max_scrollback_bytes = null,
         .colors = term_colors,
     });
     errdefer term.deinit(alloc);
@@ -647,6 +673,9 @@ fn flushAutomaticTitle(
 pub const MAX_TABS: usize = 32;
 
 pub const SessionCore = struct {
+    /// #451 — 탭 생성이 `Io` 를 타므로 (`ghostty.Terminal.init` · `WriteQueue`) 세션이
+    /// 들고 있다가 `Tab.init` 에 넘긴다. host 의 `run(rt, …)` 에서 내려온 값이다.
+    rt: Runtime,
     allocator: std.mem.Allocator,
     shell_command: terminal.ShellCommand,
     max_scroll_lines: usize,
@@ -656,7 +685,7 @@ pub const SessionCore = struct {
     extra_env: ?[]const terminal.ExtraEnv,
     tab_exit_fn: TabExitNotify,
     tab_exit_userdata: ?*anyopaque,
-    tabs: std.ArrayList(*Tab) = .{},
+    tabs: std.ArrayList(*Tab) = .empty,
     active_tab: usize = 0,
     /// 비활성 탭 drain의 다음 시작 위치. 탭 close/reorder 뒤에는 drain 시점에
     /// 현재 길이로 정규화하므로 별도 인덱스 보정이 필요 없다.
@@ -695,6 +724,7 @@ pub const SessionCore = struct {
     };
 
     pub fn init(
+        rt: Runtime,
         allocator: std.mem.Allocator,
         shell_command: terminal.ShellCommand,
         max_scroll_lines: usize,
@@ -704,6 +734,7 @@ pub const SessionCore = struct {
         tab_exit_userdata: ?*anyopaque,
     ) SessionCore {
         return .{
+            .rt = rt,
             .allocator = allocator,
             .shell_command = shell_command,
             .max_scroll_lines = max_scroll_lines,
@@ -740,7 +771,7 @@ pub const SessionCore = struct {
             var host_buf: [local_hostname.max_len]u8 = undefined;
             const hostname = local_hostname.get(&host_buf);
             if (pwd_uri.parse(payload, buf, .{ .hostname = hostname, .style = style })) |path| {
-                if (usableDir(path, wsl)) {
+                if (usableDir(self.rt.io, path, wsl)) {
                     log.appendLine("cwd", "new tab cwd={s} (shell reported)", .{path});
                     return path;
                 }
@@ -757,8 +788,8 @@ pub const SessionCore = struct {
 
         // ② 셸이 알려주지 않으면 OS 에 직접 묻는다 (Linux · macOS 만 — Windows 는 항상
         //    null 이라 OSC 7 주입에 의존한다). 셸 종류 / rc 구성과 무관하게 동작한다.
-        if (process_cwd.ofPid(tab.backend.childPid(), buf)) |path| {
-            if (usableDir(path, wsl)) {
+        if (process_cwd.ofPid(self.rt.io, tab.backend.childPid(), buf)) |path| {
+            if (usableDir(self.rt.io, path, wsl)) {
                 log.appendLine("cwd", "new tab cwd={s} (process probe)", .{path});
                 return path;
             }
@@ -774,10 +805,11 @@ pub const SessionCore = struct {
     /// WSL 탭만 예외로 확인 없이 통과시킨다 — 보고된 Linux 경로를 Windows 쪽에서 확인할
     /// 방법이 없어서 `wsl --cd` 에 위임한다. 그 경로가 없으면 wsl 이 에러 한 줄을 찍고
     /// 셸은 정상적으로 뜬다 (Windows 실기 확인, #366).
-    fn usableDir(path: []const u8, wsl: bool) bool {
+    fn usableDir(io: std.Io, path: []const u8, wsl: bool) bool {
         if (builtin.os.tag == .windows and wsl) return true;
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-        dir.close();
+        // #451 — `fs.openDirAbsolute` ➡️ `std.Io.Dir.openDirAbsolute` · `close(io)`.
+        var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+        dir.close(io);
         return true;
     }
 
@@ -786,6 +818,7 @@ pub const SessionCore = struct {
         const cwd = self.inheritedCwd(&cwd_buf);
 
         const tab = try Tab.init(
+            self.rt,
             self.allocator,
             cols,
             rows,
@@ -967,7 +1000,7 @@ pub const SessionCore = struct {
     fn normalizePasteNewlines(alloc: std.mem.Allocator, data: []const u8, nl: u8) ?[]u8 {
         // nl 이 아닌 줄바꿈 문자(`other`)가 없으면 결과 == 입력 → 변환 생략.
         const other: u8 = if (nl == '\n') '\r' else '\n';
-        if (std.mem.indexOfScalar(u8, data, other) == null) return null;
+        if (std.mem.findScalar(u8, data, other) == null) return null;
 
         // CRLF만 2→1로 줄고, 단독 CR/LF와 나머지 byte는 모두 1→1이다.
         // 정확한 결과 길이로 할당해야 반환 slice를 그대로 free할 수 있다.
@@ -996,7 +1029,8 @@ pub const SessionCore = struct {
 
     pub fn resizeAll(self: *SessionCore, cols: u16, rows: u16) void {
         for (self.tabs.items) |tab| {
-            tab.terminal.resize(self.allocator, cols, rows) catch {};
+            // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
+            tab.terminal.resize(self.allocator, .{ .cols = cols, .rows = rows }) catch {};
             tab.backend.resize(cols, rows) catch {};
         }
     }
@@ -1134,7 +1168,7 @@ test "next active index shifts when closing earlier tab" {
 }
 
 test "OSC 0 and 2 update automatic tab title and empty title restores default" {
-    var terminal_state = try ghostty.Terminal.init(std.testing.allocator, .{
+    var terminal_state = try ghostty.Terminal.init(std.testing.io, std.testing.allocator, .{
         .cols = 80,
         .rows = 24,
     });
@@ -1309,6 +1343,12 @@ test "automatic title debounce supports default reset" {
     try std.testing.expectEqualStrings("Tab 7", title[0..title_len]);
 }
 
+/// #451 — 테스트는 `std.testing.io` 를 쓰고 환경변수는 안 본다 (세션은 셸 경로를
+/// 인자로 받는다). 값이 고정되니 기계마다 결과가 갈리지도 않는다.
+fn testRuntime() Runtime {
+    return .{ .io = std.testing.io, .environ = .empty };
+}
+
 test "POSIX: new tab shows Tab N from creation, before any shell output" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -1319,6 +1359,7 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
     // 있고 OSC 제목을 보내지 않으므로 (Linux 실측 5/5 미전송) 이 테스트는 어느
     // 머신의 rc 구성에도 흔들리지 않는다.
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         "/bin/sh",
         100,
@@ -1347,7 +1388,7 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
         _ = session.drainOutputForRender();
         try std.testing.expect(session.tabAt(0).?.title_len > 0);
         try std.testing.expect(session.tabAt(1).?.title_len > 0);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
 }
 
@@ -1358,6 +1399,7 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
         fn notify(_: usize, _: ?*anyopaque) void {}
     };
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         "/bin/sh",
         100,
@@ -1377,7 +1419,7 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
     // 것만 본다.
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 
     // host 는 조회한 값을 그대로 써서 파서의 host 검사를 실제로 통과시킨다. 조회가
@@ -1402,14 +1444,14 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
         try std.testing.expect(!std.mem.eql(u8, probed, "/tz366-does-not-exist"));
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 
     // 다른 머신 (ssh 원격) → 거부되고 조회로 내려간다.
     tab.stream.nextSlice("\x1b]7;file://tz366-other-box/\x1b\\");
     {
         const probed = session.inheritedCwd(&cwd_buf) orelse return error.FallbackMissing;
-        try std.testing.expect(std.fs.path.isAbsolute(probed));
+        try std.testing.expect(std.Io.Dir.path.isAbsolute(probed));
     }
 }
 
@@ -1423,6 +1465,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
         "cmd.exe /d /q /c \"title TILDAZ_OSC_TEST& ping -n 2 127.0.0.1 >nul\"",
     );
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         shell,
         100,
@@ -1465,7 +1508,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
             "TILDAZ_OSC_TEST",
         );
         if (inactive_observed and active_observed) break;
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
     try std.testing.expect(active_observed);
     try std.testing.expect(inactive_observed);
@@ -1482,6 +1525,7 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
         "cmd.exe /d /q /c \"ping -n 4 127.0.0.1 >nul\"",
     );
     var session = SessionCore.init(
+        testRuntime(),
         std.testing.allocator,
         shell,
         100,
@@ -1506,11 +1550,11 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
     // 이후로도 제목 자리가 비지 않는다. 문자열을 고정하지 않는 이유: conhost 가
     // 종료 시점 등에 제목을 보낼지는 우리 계약이 아니라 환경 사실이다 (실측에서
     // cmd 는 10/10 미전송이었지만 그걸 테스트로 못 박지 않는다).
-    var elapsed = try std.time.Timer.start();
+    var elapsed: runtime.Timer = .start(testRuntime());
     while (elapsed.read() < 1500 * std.time.ns_per_ms) {
         _ = session.drainOutputForRender();
         try std.testing.expect(session.activeTab().?.title_len > 0);
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
 }
 

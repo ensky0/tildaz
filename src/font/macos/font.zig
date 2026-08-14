@@ -12,6 +12,7 @@ const cluster_cache = @import("../cluster_cache.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
+const Runtime = @import("../../runtime.zig").Runtime;
 
 /// 한 cluster 가 낼 수 있는 글리프 수 상한. Windows `MAX_CLUSTER_GLYPHS` 와 같은 값이다.
 pub const MAX_CLUSTER_GLYPHS: usize = 16;
@@ -243,6 +244,9 @@ pub const CoreTextFontContext = struct {
     }
 
     pub fn init(
+        /// #451 — 폰트 미설치 fatal 다이얼로그가 이 안에서 뜬다 (Linux · Windows 는 host
+        /// 에서 미리 검증한다). 0.16 은 dialog 경로가 `Io` 를 요구하므로 여기까지 내려온다.
+        rt: Runtime,
         allocator: std.mem.Allocator,
         font_families: []const []const u8,
         spec: font_spec.Spec,
@@ -271,11 +275,11 @@ pub const CoreTextFontContext = struct {
                 ct.kCFStringEncodingUTF8,
                 0,
             ) orelse {
-                @import("../validate.zig").showNotFoundFatal(family, font_families);
+                @import("../validate.zig").showNotFoundFatal(rt, family, font_families);
             };
             defer ct.CFRelease(family_str);
             var candidate = ct.CTFontCreateWithName(family_str, @floatCast(spec.size_logical), null) orelse {
-                @import("../validate.zig").showNotFoundFatal(family, font_families);
+                @import("../validate.zig").showNotFoundFatal(rt, family, font_families);
             };
             const actual_family = ct.CTFontCopyFamilyName(candidate);
             const matched = ct.CFStringCompare(actual_family, family_str, 0) == 0;
@@ -303,7 +307,7 @@ pub const CoreTextFontContext = struct {
                     // **어떤 오타에도** 대체본을 주므로 (`Menloo` → `Helvetica`) 그 이름이
                     // 정보가 아니라 노이즈다 — "Helvetica 가 있으니 그걸 쓰나?" 로 읽힌다.
                     // Linux 는 fontconfig 가 실제로 별칭을 주입했을 때만 값이 나와서 유용하다.
-                    @import("../validate.zig").showNotFoundFatal(family, font_families);
+                    @import("../validate.zig").showNotFoundFatal(rt, family, font_families);
                 };
 
                 if (std.mem.eql(u8, canonical, family)) {

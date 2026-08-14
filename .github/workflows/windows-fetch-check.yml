@@ -23,10 +23,10 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup Zig 0.15.2
+      - name: Setup Zig 0.16.0
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
           use-cache: false
 
       # release.yml 과 동일 — 크로스 드라이브 cache 문제 회피.

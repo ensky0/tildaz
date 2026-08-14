@@ -5,6 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("log.zig");
 const instance_context = @import("instance_context.zig");
+const Runtime = @import("runtime.zig").Runtime;
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const QueryUnbiasedInterruptTimePreciseFn = *const fn (*u64) callconv(.c) void;
@@ -12,24 +13,32 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn LoadLibraryW([*:0]const u16) callconv(.c) ?*anyopaque;
     extern "kernel32" fn GetProcAddress(*anyopaque, [*:0]const u8) callconv(.c) ?*const anyopaque;
 
-    var query_unbiased_interrupt_time_precise: ?QueryUnbiasedInterruptTimePreciseFn = null;
-    var query_once = std.once(resolveQueryUnbiasedInterruptTimePrecise);
+    /// #451 — `std.once` 가 0.16 에서 제거됐다 (릴리즈 노트: *"avoid global variables, or
+    /// hand-roll the logic yourself"*). 여기서는 **배타 실행이 애초에 필요 없다** —
+    /// `LoadLibraryW` · `GetProcAddress` 는 멱등이라 여러 스레드가 동시에 찾아도 같은
+    /// 주소가 나온다. 그래서 lock 없이 결과만 원자적으로 발행한다.
+    ///
+    /// 상태 값: `0` = 아직 안 찾음 · `1` = 없음(확정) · 그 외 = 함수 주소.
+    var query_state: std.atomic.Value(usize) = .init(0);
 
-    fn resolveQueryUnbiasedInterruptTimePrecise() void {
+    fn resolveQueryUnbiasedInterruptTimePrecise() usize {
         // API-set contract를 사용해 실제 구현 DLL(KernelBase 등)의 위치와 분리한다.
         // Windows 10 10.0.10240부터 이 contract가 precise clock을 제공한다.
         const module_name = std.unicode.utf8ToUtf16LeStringLiteral("api-ms-win-core-realtime-l1-1-1.dll");
-        const module = LoadLibraryW(module_name) orelse return;
-        query_unbiased_interrupt_time_precise = @ptrCast(@alignCast(GetProcAddress(
-            module,
-            "QueryUnbiasedInterruptTimePrecise",
-        )));
+        const module = LoadLibraryW(module_name) orelse return 1;
+        const proc = GetProcAddress(module, "QueryUnbiasedInterruptTimePrecise") orelse return 1;
+        return @intFromPtr(proc);
     }
 
     /// Windows 10+ working-state clock. 100ns 단위이며 sleep/hibernate를 세지 않는다.
     fn queryUnbiasedInterruptTimePrecise(ticks_100ns: *u64) bool {
-        query_once.call();
-        const query = query_unbiased_interrupt_time_precise orelse return false;
+        var state = query_state.load(.acquire);
+        if (state == 0) {
+            state = resolveQueryUnbiasedInterruptTimePrecise();
+            query_state.store(state, .release);
+        }
+        if (state <= 1) return false;
+        const query: QueryUnbiasedInterruptTimePreciseFn = @ptrFromInt(state);
         query(ticks_100ns);
         return true;
     }
@@ -58,7 +67,8 @@ pub var swapwait: Counter = .{};
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
 /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
 /// 세 clock 모두 system sleep/hibernate를 세지 않는다. 이 모듈의 성능 진단에만
-/// 쓰며 기능 동작용 std.time.Timer의 elapsed-time 의미는 바꾸지 않는다.
+/// 쓰며 기능 동작용 `runtime.Timer` (`Io.Timestamp` 기반) 의 elapsed-time 의미는
+/// 바꾸지 않는다.
 pub const Timestamp = ?u64;
 
 pub fn now() Timestamp {
@@ -68,14 +78,32 @@ pub fn now() Timestamp {
         return ticks100nsToNs(ticks_100ns);
     }
 
-    const ts = if (comptime builtin.os.tag == .linux)
-        std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch return null
-    else if (comptime builtin.os.tag == .macos)
-        std.posix.clock_gettime(std.posix.CLOCK.UPTIME_RAW) catch return null
+    // #451 — `std.posix.clock_gettime` 이 제거됐다. 대체인 `Io.Timestamp.now` 는 `Io` 를
+    // 요구하는데 이 함수는 **계측 hot path** 라 인자를 늘릴 수 없다 (호출부가 프레임마다
+    // 돈다). 릴리즈 노트가 남긴 다른 길 *"go lower"* 로 libc 를 직접 부른다 — Windows 가
+    // 위에서 이미 kernel32 를 직접 쓰고 있어 방식이 일관된다.
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos) return null;
+    var ts: posix_time.timespec = undefined;
+    const clock_id: c_int = if (comptime builtin.os.tag == .linux)
+        posix_time.CLOCK_MONOTONIC
     else
-        return null;
-    return timePartsToNs(@intCast(ts.sec), @intCast(ts.nsec));
+        posix_time.CLOCK_UPTIME_RAW;
+    if (posix_time.clock_gettime(clock_id, &ts) != 0) return null;
+    return timePartsToNs(@intCast(ts.tv_sec), @intCast(ts.tv_nsec));
 }
+
+/// POSIX 단조 시계 — `now()` 전용 (위 주석 참고).
+const posix_time = if (builtin.os.tag == .linux or builtin.os.tag == .macos) struct {
+    pub const timespec = extern struct {
+        tv_sec: i64,
+        tv_nsec: c_long,
+    };
+    /// Linux `CLOCK_MONOTONIC`. sleep 은 세지 않는다.
+    pub const CLOCK_MONOTONIC: c_int = 1;
+    /// macOS `CLOCK_UPTIME_RAW`. Linux 의 MONOTONIC 과 같은 의미로 sleep 을 안 센다.
+    pub const CLOCK_UPTIME_RAW: c_int = 8;
+    pub extern "c" fn clock_gettime(clk_id: c_int, tp: *timespec) c_int;
+} else struct {};
 
 fn ticks100nsToNs(ticks: u64) ?u64 {
     return std.math.mul(u64, ticks, 100) catch null;
@@ -124,7 +152,7 @@ pub fn snapshot(c: *Counter) [4]u64 {
     };
 }
 
-pub fn dumpAndReset(label: []const u8) void {
+pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const rl = snapshot(&readloop);
     const pu = snapshot(&push);
     const dr = snapshot(&drain);
@@ -154,7 +182,7 @@ pub fn dumpAndReset(label: []const u8) void {
             "onrender calls={d} ms={d:.3} skip={d}\n",
         .{
             label,
-            std.time.milliTimestamp(),
+            rt.nowMs(),
             rl[0],
             rl[2],
             @as(f64, @floatFromInt(rl[1])) / 1_000_000.0,
@@ -198,26 +226,35 @@ pub fn dumpAndReset(label: []const u8) void {
 /// 호출은 host 3 곳의 `log.logStop` **직전**이다 — 로그 파일이 닫히기 전이어야 한다.
 /// Linux · Windows 는 `defer` 가 LIFO 라 `defer log.logStop(...)` 아래에 두면 되고,
 /// macOS 는 Cmd+Q 가 `exit()` 직행이라 `atExitLogStop` 안에 둔다.
-pub fn dumpOnExit() void {
+pub fn dumpOnExit(rt: Runtime) void {
     if (!instance_context.isStress()) return;
 
     // 라벨에 워크로드를 넣어 5 회 반복 로그를 기계로 가를 수 있게 한다. 측정 인스턴스에
-    // 넘긴 환경변수 (`stress.zig` 의 `env_workload`) 를 그대로 읽는다. Windows 는
-    // `getEnvVarOwned` 가 key 의 WTF-16 변환에도 allocator 를 쓰므로 넉넉히 잡는다.
+    // 넘긴 환경변수 (`stress.zig` 의 `env_workload`) 를 그대로 읽는다.
+    //
+    // 무할당 조회 (`getPosix` / `getWindows`) 를 쓴다 — `rt.envAlloc` (= `Environ.getAlloc`)
+    // 은 조회 한 번에 `createMap` 으로 **환경 전체를 할당**해서, 처음에 여기 있던 256 B
+    // `FixedBufferAllocator` 로는 항상 `OutOfMemory` → 라벨이 영영 fallback 이었다
+    // (#451 재검토에서 실측. `envHas` 를 `containsConstant` 로 고친 c49f6d1 과 같은 패턴).
     // 실패하면 그냥 `"stress"` — 라벨 하나 때문에 덤프 자체를 거르지 않는다.
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const label: []const u8 = if (std.process.getEnvVarOwned(
-        fba.allocator(),
-        "TILDAZ_STRESS_WORKLOAD",
-    )) |workload| workload else |_| "stress";
+    var label_buf: [256]u8 = undefined;
+    const label: []const u8 = if (builtin.os.tag == .windows) blk: {
+        // `containsConstant` 와 같은 방식 — key 는 comptime 에 WTF-16 으로, 값은 스택
+        // 버퍼에 WTF-8 로 변환한다 (code unit 당 최대 3 바이트).
+        const key_w = comptime std.unicode.wtf8ToWtf16LeStringLiteral("TILDAZ_STRESS_WORKLOAD");
+        const val_w = rt.environ.getWindows(key_w) orelse break :blk "stress";
+        if (val_w.len * 3 > label_buf.len) break :blk "stress";
+        break :blk label_buf[0..std.unicode.wtf16LeToWtf8(&label_buf, val_w)];
+    } else rt.environ.getPosix("TILDAZ_STRESS_WORKLOAD") orelse "stress";
 
-    dumpAndReset(label);
+    dumpAndReset(rt, label);
 }
 
 test "working-time duration rejects reversed samples" {
     const start = now() orelse return error.SkipZigTest;
-    std.Thread.sleep(5 * std.time.ns_per_ms);
+    // #451 — `Thread.sleep` ➡️ `Io.sleep` (`Runtime.sleepNs`). `.awake` 는 절전 구간을
+    // 세지 않는 단조 시계로, 위 `now()` 가 재는 working-time 과 같은 성질이다.
+    (Runtime{ .io = std.testing.io, .environ = .empty }).sleepNs(5 * std.time.ns_per_ms);
     const end = now() orelse return error.SkipZigTest;
 
     try std.testing.expectEqual(@as(?u64, 0), elapsedNs(start, start));

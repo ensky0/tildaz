@@ -242,13 +242,13 @@ pub const ChromeGlyph = struct {
 ///
 /// 매 프레임 `clearRetainingCapacity` 로 비우므로 할당은 초반 몇 프레임에만 난다.
 pub const FrameLayer = struct {
-    chrome_before: std.ArrayList(ChromeItem) = .{},
-    cell_bg: std.ArrayList(SolidRect) = .{},
-    glyphs: std.ArrayList(GlyphItem) = .{},
-    overlay: std.ArrayList(SolidRect) = .{},
-    preedit_bg: std.ArrayList(SolidRect) = .{},
-    preedit_glyphs: std.ArrayList(GlyphItem) = .{},
-    chrome_after: std.ArrayList(ChromeItem) = .{},
+    chrome_before: std.ArrayList(ChromeItem) = .empty,
+    cell_bg: std.ArrayList(SolidRect) = .empty,
+    glyphs: std.ArrayList(GlyphItem) = .empty,
+    overlay: std.ArrayList(SolidRect) = .empty,
+    preedit_bg: std.ArrayList(SolidRect) = .empty,
+    preedit_glyphs: std.ArrayList(GlyphItem) = .empty,
+    chrome_after: std.ArrayList(ChromeItem) = .empty,
 
     fn clear(self: *FrameLayer) void {
         self.chrome_before.clearRetainingCapacity();
@@ -286,6 +286,10 @@ pub const FrameInputs = struct {
     tab_hover: tab_layout.Area,
     menu_ui: command_menu.Ui,
     toggle_hotkey: []const u8,
+    /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
+    /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
+    /// 호출부의 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다.
+    blink_faint: bool,
 };
 
 /// #277 S2-3 — GL 경로가 한 프레임을 그리는 데 필요한 기술. `buildGlFrame` 이
@@ -302,6 +306,18 @@ pub const GlFrame = struct {
 /// `TILDAZ_GPU_TIMING=1` 일 때만 잰다 — 매 프레임 시계를 두 번 읽는 비용을 평소에
 /// 지불하지 않는다.
 pub var timing_enabled: bool = false;
+/// #451 — `std.time.nanoTimestamp` 이 없어졌다 (릴리즈 노트 *Time*: `time.Instant` ·
+/// `time.Timer` ➡️ `Io.Timestamp`). 시계를 읽으려면 `Io` 가 필요한데, 이 계측 machinery 는
+/// 이미 전부 module-level 전역이라 (`timing_enabled` · 아래 누적값들) 시계도 같은 자리에
+/// 둔다 — 프레임 데이터도 렌더러 상태도 아니기 때문이다. `timing_enabled` 를 켜는 쪽이
+/// 함께 채운다. 켜지 않으면 `null` 이고 아무도 읽지 않는다.
+pub var timing_io: ?std.Io = null;
+
+/// `.awake` 단조 시계의 현재 나노초. `timing_enabled` 가 참일 때만 불린다.
+fn timingNowNs() i128 {
+    const io = timing_io orelse return 0;
+    return std.Io.Timestamp.now(io, .awake).nanoseconds;
+}
 pub var last_update_ns: u64 = 0;
 pub var last_collect_ns: u64 = 0;
 /// 누적 — 한 프레임 표본은 스케줄링·캐시 상태에 크게 흔들린다. 평균으로 본다.
@@ -663,15 +679,15 @@ pub const Renderer = struct {
     /// render_state 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
     /// 화면이지만 CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
     pub fn buildGlFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) GlFrame {
-        const t_start = if (timing_enabled) std.time.nanoTimestamp() else 0;
+        const t_start = if (timing_enabled) timingNowNs() else 0;
         self.render_state.update(allocator, in.terminal) catch {
             self.layer.clear();
             return .{ .background = in.theme.background, .layer = &self.layer };
         };
-        const t_updated = if (timing_enabled) std.time.nanoTimestamp() else 0;
+        const t_updated = if (timing_enabled) timingNowNs() else 0;
         defer if (timing_enabled) {
             last_update_ns = @intCast(t_updated - t_start);
-            last_collect_ns = @intCast(std.time.nanoTimestamp() - t_updated);
+            last_collect_ns = @intCast(timingNowNs() - t_updated);
             acc_update_ns += last_update_ns;
             acc_collect_ns += last_collect_ns;
             acc_frames += 1;
@@ -705,9 +721,9 @@ pub const Renderer = struct {
 
         const tab_bar_h = self.tabBarHeightPx(in.tab_titles.len);
         self.collectTabBar(allocator, in, tab_bar_h);
-        const t_cells = if (timing_enabled) std.time.nanoTimestamp() else 0;
-        self.collectCells(allocator, tab_bar_h);
-        if (timing_enabled) acc_cells_ns += @intCast(std.time.nanoTimestamp() - t_cells);
+        const t_cells = if (timing_enabled) timingNowNs() else 0;
+        self.collectCells(allocator, tab_bar_h, in.blink_faint);
+        if (timing_enabled) acc_cells_ns += @intCast(timingNowNs() - t_cells);
         self.collectCursor(allocator, tab_bar_h);
         self.collectScrollbar(allocator, in);
         self.collectPreedit(allocator, tab_bar_h);
@@ -749,7 +765,7 @@ pub const Renderer = struct {
     /// 텍스트가 각자 전체 셀을 돌아 4K 에서 프레임마다 95,824 번 방문했다. 셀 방문
     /// 자체가 수집 비용의 대부분이라 (셀당 작업을 셋이나 꺼도 8% 밖에 안 줄었다)
     /// 한 번만 도는 것이 곧 성능이다 (#362).
-    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
+    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32, blink_faint: bool) void {
         const colors = self.render_state.colors;
         const cw = self.cellWidth();
         const ch = self.cellHeight();
@@ -763,7 +779,6 @@ pub const Renderer = struct {
 
         // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
         // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
-        const blink_faint = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
         self.saw_blink_cell = false;
 
         for (0..rows) |y| {
@@ -2868,8 +2883,8 @@ test "#362 — 줄 경계는 쓰인 칸을 절대 빼먹지 않는다" {
     // 여기서 고정하는 것은 **한쪽으로만 틀린다** 는 성질 — 넘치게 도는 것은
     // 괜찮고, 쓰인 칸을 건너뛰는 것은 화면이 틀리는 것이다.
     var cells: [40]ghostty.Cell = @splat(.{});
-    cells[3] = .{ .content_tag = .codepoint, .content = .{ .codepoint = 'A' } };
-    cells[20] = .{ .content_tag = .codepoint, .content = .{ .codepoint = 'B' } };
+    cells[3] = .{ .content_tag = .codepoint, .content = .{ .codepoint = .{ .data = 'A' } } };
+    cells[20] = .{ .content_tag = .codepoint, .content = .{ .codepoint = .{ .data = 'B' } } };
 
     // 마지막으로 쓰인 칸(20) 다음까지.
     try std.testing.expectEqual(@as(usize, 21), Renderer.rowLimit(&cells, 40, null));

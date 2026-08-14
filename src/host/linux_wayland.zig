@@ -1,5 +1,6 @@
 const std = @import("std");
 const run_options = @import("../run_options.zig");
+const Runtime = @import("../runtime.zig").Runtime;
 const version = @import("../version.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
@@ -15,8 +16,8 @@ var g_config: ?config_mod.Config = null;
 
 /// `$SHELL` env 우선, 없으면 `Defaults.shell` (= "/bin/bash"). POSIX 패턴 —
 /// macOS host 의 `resolveShell` 과 동등.
-fn resolveShell(allocator: std.mem.Allocator) []const u8 {
-    if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |s| return s;
+fn resolveShell(rt: Runtime, allocator: std.mem.Allocator) []const u8 {
+    if (rt.envAlloc(allocator, "SHELL") catch null) |s| return s;
     // #218 — Config.load 가 owned 인수를 기대 (disk 경로서 free) — fallback 도
     // dupe. OOM 시 static drift 는 극단 케이스(곧 종료).
     return allocator.dupe(u8, config_mod.Defaults.shell) catch config_mod.Defaults.shell;
@@ -65,32 +66,32 @@ pub fn showFatalRunError(err: anyerror) void {
     std.process.exit(1);
 }
 
-pub fn run(opts: run_options.RunOptions) !void {
-    log.logStart(version.string);
+pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
+    log.logStart(rt.io, version.string);
     defer log.logStop(version.string);
     // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
     // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
     // worker 는 no-op (게이트는 `instance_context.isStress`).
-    defer perf.dumpOnExit();
+    defer perf.dumpOnExit(rt);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
-    if (std.process.hasEnvVarConstant("TILDAZ_LINUX_PTY_SMOKE")) {
-        var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    if (rt.envHas("TILDAZ_LINUX_PTY_SMOKE")) {
+        var gpa: std.heap.DebugAllocator(.{}) = .init;
         defer _ = gpa.deinit();
-        try runPtySmoke(gpa.allocator());
+        try runPtySmoke(rt, gpa.allocator());
         return;
     }
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
 
     // L13-α — `Config.load` (cross-platform). 첫 실행 시 XDG config 아래
     // `tildaz/config_N.json` template 생성, 이후 실행은 disk 값 그대로. shell_resolved
     // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
     // shell path 결정.
-    const shell_resolved = resolveShell(gpa.allocator());
-    g_config = config_mod.Config.load(gpa.allocator(), shell_resolved);
+    const shell_resolved = resolveShell(rt, gpa.allocator());
+    g_config = config_mod.Config.load(rt, gpa.allocator(), shell_resolved);
     defer if (g_config) |*c| c.deinit(gpa.allocator());
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);
@@ -98,7 +99,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
     // Sync and enable the current DE extension in the user session before the
     // GNOME lifecycle decision below reads enabled-extensions.
-    gsettings_hotkey.ensureShellExtensionReady(gpa.allocator());
+    gsettings_hotkey.ensureShellExtensionReady(rt, gpa.allocator());
 
     // GNOME/Cinnamon + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
     // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch
@@ -106,17 +107,18 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 은 extension 이 map 직후 minimize + skip_taskbar 로 처리한다.
     // in-memory 값만 바꾼다. extension 은 disk config 의 원래 hidden_start 를 다시
     // 읽어 최초 minimize 여부를 결정하므로 disk 에 false 를 쓰면 안 된다.
-    if (gsettings_hotkey.enabledShellExtensionOwner()) |owner| {
+    if (gsettings_hotkey.enabledShellExtensionOwner(rt)) |owner| {
         g_config.?.hidden_start = false;
         log.appendLine("autostart", "{s} + extension — hidden_start override (extension handles show/hide via minimize)", .{owner.displayName()});
     }
 
-    try wayland.runBaselineWindow(gpa.allocator(), &g_config.?, opts);
+    try wayland.runBaselineWindow(rt, gpa.allocator(), &g_config.?, opts);
 }
 
-fn runPtySmoke(allocator: std.mem.Allocator) !void {
+fn runPtySmoke(rt: Runtime, allocator: std.mem.Allocator) !void {
     var done = std.atomic.Value(bool).init(false);
     var backend = try terminal.TerminalBackend.init(.{
+        .rt = rt,
         .allocator = allocator,
         .cols = 80,
         .rows = 24,
@@ -129,7 +131,7 @@ fn runPtySmoke(allocator: std.mem.Allocator) !void {
 
     var elapsed_ms: u64 = 0;
     while (!done.load(.acquire) and elapsed_ms < 2000) : (elapsed_ms += 10) {
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        rt.sleepNs(10 * std.time.ns_per_ms);
     }
 }
 

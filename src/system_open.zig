@@ -9,13 +9,15 @@
 // Windows) 가 호출. config / log path 는 `paths.zig` 참조.
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 
-pub fn openInDefaultApp(allocator: std.mem.Allocator, path: []const u8) void {
+pub fn openInDefaultApp(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) void {
     switch (builtin.os.tag) {
+        // Windows 는 `ShellExecuteW` 라 `Io` 를 안 탄다.
         .windows => openWindows(allocator, path),
-        .macos => openSpawn(allocator, "/usr/bin/open", path),
-        else => openSpawn(allocator, "xdg-open", path),
+        .macos => openSpawn(rt, "/usr/bin/open", path),
+        else => openSpawn(rt, "xdg-open", path),
     }
 }
 
@@ -27,12 +29,15 @@ fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
     _ = ShellExecuteW(null, verb_w, wpath.ptr, null, null, 1);
 }
 
-fn openSpawn(allocator: std.mem.Allocator, cmd: []const u8, path: []const u8) void {
-    var child = std.process.Child.init(&.{ cmd, path }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    _ = child.spawn() catch return;
+fn openSpawn(rt: Runtime, cmd: []const u8, path: []const u8) void {
+    // #451 — `Child.init` + 필드 설정 + `spawn` ➡️ `std.process.spawn(io, options)`
+    // (릴리즈 노트 *Process*). stdio 는 `.Ignore` → `.ignore` 로 이름만 바뀌었다.
+    _ = std.process.spawn(rt.io, .{
+        .argv = &.{ cmd, path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return;
     // detached — 자식 process 종료 안 기다림. open / xdg-open 은 즉시 fork.
 }
 

@@ -658,7 +658,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
   config transaction을 위해 다시 획득한다. launcher가 lock을 쥔 채 worker의 처리를
   기다리는 순환 대기는 허용하지 않는다.
 
-> Zig 0.15.2 의 `std.json` 이 comptime allocator 를 지원 안 해 (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
+> Zig 의 `std.json` 이 comptime allocator 를 지원 안 해 (0.15.2 에서 확인 — 0.16 에서 재확인하지 않았다) (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
 
 | 필드 | 의미 | Windows default | macOS default | Linux default / 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
@@ -676,7 +676,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/tildaz.desktop`, fallback `~/.config`), L11-α | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
-| `max_scroll_lines` | integer 100..10_000_000 | 100_000 | 100_000 default. ghostty `bytes_per_row × lines` 로 max byte 계산. | 동일 | ✅ | ✅ | ✅ |
+| `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty `max_scrollback_lines` 에 **줄 수를 그대로** 넘기고 byte 제한 (`max_scrollback_bytes`) 은 `null` 로 끈다 — 두 제한은 독립 판정이라 켜 두면 10 KB 에서 먼저 잘린다 ([#451](https://github.com/ensky0/tildaz/issues/451)). **정확한 상한이 아니라 heuristic 이다** — ghostty 가 *complete historical page* 단위로만 prune 하고 (`PageList.Limits.exceeded` 주석: *"complete historical pages are the smallest unit that enforcement removes"*), active 영역을 걸친 경계 page 는 통째로 남긴다. 그래서 실제 줄 수는 page 한 장만큼 톱니로 오르내리고, page 한 장보다 작은 값을 주면 **page 한 장이 하한**이 된다. 실측 (Linux, 80x24, #451): 제한 100 → 최대 588 · 500 → 최대 603 · 2000 → 최대 2013. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
 
 > **glyph fallback chain** (#135, v0.4.1 schema breaking): chain = `font.family` (primary, single string) + `font.glyph_fallback` (array of strings). codepoint 별로 chain 순회 → 글리프 가진 첫 폰트 사용. chain 에 없는 codepoint 는 양쪽 OS 모두 system fallback 이 자동 처리 — Windows DirectWrite `IDWriteFontFallback.MapCharacters`, macOS CoreText `CTFontCreateForString`. 사용자가 별도 폰트를 추가하고 싶으면 `glyph_fallback` 끝에 append.
@@ -1151,7 +1151,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | off 상태 표현 | **faint (흐리게)** — 완전히 숨기지 않는다 |
 | SGR 5 vs 6 (rapid) | **구분하지 않는다** — ghostty 파서가 둘을 `.blink` 하나로 접어서 정보를 주지 않는다 |
 | 끄는 수단 | **없다** (아래) |
-| 위상 계산 | [`ui_metrics.blinkFaintPhase(now_ms)`](src/ui_metrics.zig) — `std.time.milliTimestamp()` 를 세 host 가 공통으로 넘긴다 |
+| 위상 계산 | [`ui_metrics.blinkFaintPhase(now_ms)`](src/ui_metrics.zig) — 세 host 가 [`Runtime.nowMs()`](src/runtime.zig) 를 공통으로 넘긴다 ([#451](https://github.com/ensky0/tildaz/issues/451) 에서 `std.time.milliTimestamp` 이 없어졌다). **프레임당 한 번만 부르고 그 값을 renderer 까지 인자로 내린다** — host 와 renderer 가 각각 시계를 읽으면 500ms 경계에서 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다 |
 
 **off 를 faint 로 표현하는 이유.** 글자가 완전히 사라졌다 나타나는 것은 조사한 방식 중 가장 자극적이다. Windows Terminal 도 4-phase 중 2 를 faint 로 렌더하고, WezTerm 은 투명도를 이징한다. 구현도 이쪽이 깔끔하다 — [`cell_color.applyBlinkPhase`](src/renderer/cell_color.zig) 가 off 위상에서 style 의 `faint` 플래그를 세워 돌려주므로, fg 해석뿐 아니라 **§12.3 의 선 색까지 한 번에** 따라온다 (선은 `fg` 를 받아 그리기 때문). 이미 `faint` 인 셀에 blink 가 걸리면 off 위상에서 변화가 없다 — 알려진 귀결이다.
 

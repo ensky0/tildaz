@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("../../runtime.zig").Runtime;
 const paths = @import("../../paths.zig");
 
 /// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
@@ -6,7 +7,7 @@ const paths = @import("../../paths.zig");
 pub const max_index = @import("../../instances.zig").max_config_index;
 
 pub fn appId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "tildaz.instance{d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "tildaz.instance{d}", .{index}, 0);
 }
 
 /// 측정 인스턴스의 app_id ([#382](https://github.com/ensky0/tildaz/issues/382)).
@@ -33,19 +34,19 @@ pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
 }
 
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "TildaZ_{d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "TildaZ_{d}", .{index}, 0);
 }
 
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "toggle-{d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "toggle-{d}", .{index}, 0);
 }
 
 pub fn shortcutDescription(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "Show / hide TildaZ {d}", .{index});
+    return std.fmt.bufPrintSentinel(buf, "Show / hide TildaZ {d}", .{index}, 0);
 }
 
 pub fn scopeName(buf: []u8, index: u32, pid: u32) ![:0]u8 {
-    return std.fmt.bufPrintZ(buf, "app-tildaz.instance{d}-{d}.scope", .{ index, pid });
+    return std.fmt.bufPrintSentinel(buf, "app-tildaz.instance{d}-{d}.scope", .{ index, pid }, 0);
 }
 
 pub fn isScopeForIndex(leaf: []const u8, index: u32) bool {
@@ -66,10 +67,10 @@ fn parseDesktopFileName(name: []const u8) ?u32 {
     return if (index <= max_index) index else null;
 }
 
-fn applicationsDir(allocator: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+fn applicationsDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".local", "share", "applications" });
+    return std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "applications" });
 }
 
 fn containsIndex(indices: []const u32, index: u32) bool {
@@ -77,19 +78,22 @@ fn containsIndex(indices: []const u32, index: u32) bool {
     return false;
 }
 
-pub fn ensureDesktopEntry(allocator: std.mem.Allocator, index: u32) !void {
-    const dir = try applicationsDir(allocator);
+pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void {
+    const dir = try applicationsDir(rt, allocator);
     defer allocator.free(dir);
-    try std.fs.cwd().makePath(dir);
+    // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
+    try paths.ensureDir(rt, dir);
 
     const file_name = try std.fmt.allocPrint(allocator, "tildaz.instance{d}.desktop", .{index});
     defer allocator.free(file_name);
-    const path = try std.fs.path.join(allocator, &.{ dir, file_name });
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir, file_name });
     defer allocator.free(path);
 
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe = try std.fs.selfExePath(&exe_buf);
-    if (std.mem.indexOfAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
+    if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
     const content = try std.fmt.allocPrint(allocator,
         \\[Desktop Entry]
@@ -108,23 +112,25 @@ pub fn ensureDesktopEntry(allocator: std.mem.Allocator, index: u32) !void {
     , .{ index, index, exe, index, index });
     defer allocator.free(content);
 
-    _ = try paths.writeFileIfChanged(allocator, path, content);
+    _ = try paths.writeFileIfChanged(rt, allocator, path, content);
 }
 
-pub fn syncDesktopEntries(allocator: std.mem.Allocator, indices: []const u32) !void {
-    const dir_path = try applicationsDir(allocator);
+pub fn syncDesktopEntries(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
+    const dir_path = try applicationsDir(rt, allocator);
     defer allocator.free(dir_path);
-    try std.fs.cwd().makePath(dir_path);
+    try paths.ensureDir(rt, dir_path);
 
-    for (indices) |index| try ensureDesktopEntry(allocator, index);
+    for (indices) |index| try ensureDesktopEntry(rt, allocator, index);
 
-    var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
-    defer dir.close();
+    // #451 — `fs.openDirAbsolute` ➡️ `Io.Dir.openDirAbsolute`. 순회 (`Iterator.next`) 와
+    // `close` · `deleteFile` 도 모두 `io` 를 받는다.
+    var dir = try std.Io.Dir.openDirAbsolute(rt.io, dir_path, .{ .iterate = true });
+    defer dir.close(rt.io);
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(rt.io)) |entry| {
         if (entry.kind != .file) continue;
         const index = parseDesktopFileName(entry.name) orelse continue;
-        if (!containsIndex(indices, index)) try dir.deleteFile(entry.name);
+        if (!containsIndex(indices, index)) try dir.deleteFile(rt.io, entry.name);
     }
 }
 

@@ -23,6 +23,7 @@ pub const Backend = struct {
 
         return .{
             .pty = try Pty.init(
+                opts.rt,
                 opts.allocator,
                 opts.cols,
                 opts.rows,

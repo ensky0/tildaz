@@ -307,9 +307,11 @@ pub fn cellLineThicknessPx(ascent_px: f32) f32 {
 /// 분당 150회 미만" 을 만족하는 가장 흔한 값이다.
 pub const BLINK_HALF_PERIOD_MS: i64 = 500;
 
-/// 지금이 blink 셀을 **흐리게 그릴** 위상인가. `now_ms` 는
-/// `std.time.milliTimestamp()` — 세 host 가 같은 시계를 넘겨 위상을 맞춘다
-/// (autoscroll tick 이 이미 쓰는 함수).
+/// 지금이 blink 셀을 **흐리게 그릴** 위상인가. `now_ms` 는 `Runtime.nowMs()` — 세 host 가
+/// 같은 시계를 넘겨 위상을 맞춘다 (autoscroll tick 이 이미 쓰는 함수).
+///
+/// #451 — 호출은 **프레임마다 한 번**이다. 그 값을 렌더러까지 인자로 내려보내므로
+/// 게이트 판정과 화면이 500 ms 경계에서 갈리지 않는다.
 ///
 /// 벽시계라 시스템 시간이 점프하면 위상이 한 번 튈 수 있다. 깜빡임 한 번이
 /// 어긋나는 것뿐이라 monotonic 시계를 따로 들이지 않았다.

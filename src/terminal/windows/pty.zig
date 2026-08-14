@@ -10,7 +10,10 @@ const BOOL = windows.BOOL;
 const DWORD = windows.DWORD;
 const BYTE = windows.BYTE;
 const LPVOID = windows.LPVOID;
-const HRESULT = windows.HRESULT;
+// #451 — 0.16 이 `std.os.windows.HRESULT` 를 지웠다 (릴리즈 노트 *posix and os.windows
+// removals*). Win32 헤더의 `HRESULT` 는 `LONG` 이라 `c_long` 이 그대로 맞다.
+// `renderer/windows/d3d11.zig` 가 같은 이유로 이미 이렇게 두고 있다.
+const HRESULT = c_long;
 const WCHAR = u16;
 
 // Win32 API declarations
@@ -311,7 +314,7 @@ pub const ConPty = struct {
         // ── Input pipe (익명, sync): 우리 = write, conhost = read
         var pipe_in_read: HANDLE = undefined;
         var pipe_in_write: HANDLE = undefined;
-        if (CreatePipe(&pipe_in_read, &pipe_in_write, null, 0) == 0) return error.CreatePipeFailed;
+        if (!CreatePipe(&pipe_in_read, &pipe_in_write, null, 0).toBool()) return error.CreatePipeFailed;
         errdefer _ = CloseHandle(pipe_in_write);
         // pipe_in_read 는 CreatePseudoConsole 후에 닫음
 
@@ -365,7 +368,7 @@ pub const ConPty = struct {
         }
         // pipe_out_write 는 CreatePseudoConsole 후에 닫음
 
-        const read_event = CreateEventW(null, 1, 0, null) orelse {
+        const read_event = CreateEventW(null, .TRUE, .FALSE, null) orelse {
             _ = CloseHandle(pipe_in_read);
             _ = CloseHandle(pipe_out_write);
             return error.CreateEventFailed;
@@ -406,7 +409,7 @@ pub const ConPty = struct {
         // 적용한다. 호출하지 않으면 pseudo window 가 기본 hidden 상태로 남아
         // 일부 초기 처리가 지연될 수 있다.
         if (conpty_show_hide_fn) |f| {
-            _ = f(hpc, 1);
+            _ = f(hpc, .TRUE);
         }
 
         // ── STARTUPINFOEX + attribute list
@@ -417,11 +420,11 @@ pub const ConPty = struct {
         errdefer allocator.free(attr_list_buf);
 
         const attr_list: LPPROC_THREAD_ATTRIBUTE_LIST = @ptrCast(attr_list_buf.ptr);
-        if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_list_size) == 0) {
+        if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_list_size).toBool()) {
             return error.InitializeAttributeListFailed;
         }
 
-        if (UpdateProcThreadAttribute(
+        if (!UpdateProcThreadAttribute(
             attr_list,
             0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
@@ -429,7 +432,7 @@ pub const ConPty = struct {
             @sizeOf(HPCON),
             null,
             null,
-        ) == 0) {
+        ).toBool()) {
             return error.UpdateProcThreadAttributeFailed;
         }
 
@@ -482,7 +485,7 @@ pub const ConPty = struct {
                 if (cwd) |dir| {
                     const prefix = L(" --cd \"");
                     const total = prefix.len + dir.len + 1;
-                    if (std.mem.indexOfScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
+                    if (std.mem.findScalar(u16, dir, '"') == null and total <= wsl_insert_buf.len) {
                         @memcpy(wsl_insert_buf[0..prefix.len], prefix);
                         @memcpy(wsl_insert_buf[prefix.len..][0..dir.len], dir);
                         wsl_insert_buf[total - 1] = '"';
@@ -597,13 +600,13 @@ pub const ConPty = struct {
                     cmd,
                     null,
                     null,
-                    0,
+                    .FALSE,
                     EXTENDED_STARTUPINFO_PRESENT,
                     null,
                     dir,
                     si,
                     pi,
-                ) != 0;
+                ).toBool();
             }
         }.f;
 
@@ -696,13 +699,13 @@ pub const ConPty = struct {
 
     pub fn write(self: *ConPty, data: []const u8) !usize {
         var bytes_written: DWORD = 0;
-        if (WriteFile(
+        if (!WriteFile(
             self.pipe_in_write,
             data.ptr,
             @intCast(data.len),
             &bytes_written,
             null, // 익명 파이프, 동기
-        ) == 0) return error.WriteFailed;
+        ).toBool()) return error.WriteFailed;
         return @intCast(bytes_written);
     }
 
@@ -746,10 +749,10 @@ pub const ConPty = struct {
             // 그래서 이 칸을 platform 사이에서 그대로 빼서 비교하면 안 된다.
             var t0 = perf.now();
             const ok = ReadFile(pipe, &buf, buf.len, &bytes_read, @ptrCast(&overlapped));
-            if (ok == 0) {
+            if (!ok.toBool()) {
                 const err = GetLastError();
                 if (err != ERROR_IO_PENDING) break;
-                if (GetOverlappedResult(pipe, &overlapped, &bytes_read, 1) == 0) break;
+                if (!GetOverlappedResult(pipe, &overlapped, &bytes_read, .TRUE).toBool()) break;
                 t0 = perf.now();
             }
             perf.addTimedBytes(&perf.readloop, t0, @intCast(bytes_read));
@@ -817,9 +820,9 @@ fn wslCdInsertion(cmd: []const u16) struct { is_wsl: bool, insert: bool, insert_
     if (!is_wsl) return .{ .is_wsl = false, .insert = false, .insert_at = insert_at };
 
     const args = cmd[@min(insert_at, cmd.len)..];
-    if (std.mem.indexOf(u16, args, L("--cd")) != null)
+    if (std.mem.find(u16, args, L("--cd")) != null)
         return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
-    if (std.mem.indexOfScalar(u16, args, '~')) |ti| {
+    if (std.mem.findScalar(u16, args, '~')) |ti| {
         if (ti + 1 == args.len or args[ti + 1] == ' ')
             return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
     }

@@ -104,7 +104,7 @@ pub const Batch = struct {
     attr_color: u32 = 1,
     attr_shade: u32 = 2,
     uniform_viewport: i32,
-    vertices: std.ArrayList(Vertex) = .{},
+    vertices: std.ArrayList(Vertex) = .empty,
 
     pub fn create(api: *const egl.Api) ?Batch {
         const vs = compile(api, egl.GL_VERTEX_SHADER, vertex_src) orelse return null;

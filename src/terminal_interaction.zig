@@ -106,12 +106,12 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
     const start_rac = start_pin.rowAndCell();
     if (!start_rac.cell.hasText()) return false;
 
-    const start_cp = start_rac.cell.content.codepoint;
+    const start_cp = start_rac.cell.content.codepoint.data;
     // 시작 cell 이 boundary 문자 (공백 / 따옴표 / 구두점 등) 면 더블클릭 word
     // selection 의도가 아니라고 보고 무시. ghostty default 는 boundary 끼리도
     // 묶지만, 터미널 사용자가 expect 하는 동작은 "단어 본체만 선택" — iTerm2 /
     // Terminal.app 동등. 시작이 word body 인 경우만 양쪽 확장.
-    if (std.mem.indexOfAny(u21, &word_boundaries, &.{start_cp}) != null) return false;
+    if (std.mem.findAny(u21, &word_boundaries, &.{start_cp}) != null) return false;
     const expect_boundary = false;
 
     // forward — 양쪽으로 같은 boundary 상태인 cell 까지 확장.
@@ -127,9 +127,12 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
                 continue;
             }
             if (!rac.cell.hasText()) break :blk prev;
-            const this_b = std.mem.indexOfAny(u21, &word_boundaries, &.{rac.cell.content.codepoint}) != null;
+            const this_b = std.mem.findAny(u21, &word_boundaries, &.{rac.cell.content.codepoint.data}) != null;
             if (this_b != expect_boundary) break :blk prev;
-            if (p.x == p.node.data.size.cols - 1 and !rac.row.wrap) break :blk p;
+            // #451 — `Node.data` 가 `union { resident, compressed }` 로 바뀌었다 (offscreen
+            // scrollback LZ4 압축). 열 수는 메타데이터라 압축을 풀지 않는 `Node.cols()` 가
+            // 그 자리다 (`PageList.zig` 의 *"metadata functions"*).
+            if (p.x == p.node.cols() - 1 and !rac.row.wrap) break :blk p;
             prev = p;
         }
         break :blk prev;
@@ -145,9 +148,9 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
                 prev = p;
                 continue;
             }
-            if (p.x == p.node.data.size.cols - 1 and !rac.row.wrap) break :blk prev;
+            if (p.x == p.node.cols() - 1 and !rac.row.wrap) break :blk prev;
             if (!rac.cell.hasText()) break :blk prev;
-            const this_b = std.mem.indexOfAny(u21, &word_boundaries, &.{rac.cell.content.codepoint}) != null;
+            const this_b = std.mem.findAny(u21, &word_boundaries, &.{rac.cell.content.codepoint.data}) != null;
             if (this_b != expect_boundary) break :blk prev;
             prev = p;
         }
