@@ -12,8 +12,9 @@
 //!   - resize ioctl 호출 방법.
 //!
 //! read thread 의 종료 깨우기는 self-pipe — 이전 Linux 의 eventfd (#223) 를
-//! 이식 primitive 로 교체 (`std.posix.pipe2` 가 macOS 에선 pipe+fcntl 로
-//! fallback). macOS 는 XNU 가 session leader 종료 시 revoke 로 POLLHUP 을
+//! 이식 primitive 로 교체 (`openShutdownPipe` — Linux 는 `pipe2`, macOS 는
+//! `pipe`+`fcntl`. 그 fallback 을 해 주던 `std.posix.pipe2` wrapper 는 0.16 이
+//! 없앴다, #451). macOS 는 XNU 가 session leader 종료 시 revoke 로 POLLHUP 을
 //! 보장하지만 (#282 검증 기록), 같은 코드가 돌아도 무해 + 방어 겸용.
 
 const std = @import("std");
@@ -162,7 +163,9 @@ pub const Pty = struct {
         const home_z: ?[*:0]const u8 = if (rt.environ.getPosix("HOME")) |h| h.ptr else null;
 
         const fork_rc = posix.system.fork();
-        if (fork_rc < 0) return error.ForkFailed;
+        // `< 0` 비교가 아니라 `sysFailed` 다 — libc 없는 구성은 반환이 `usize` 라
+        // 음수 비교가 항상 거짓이 된다 (이 파일의 다른 syscall 판정과 같은 이유).
+        if (sysFailed(fork_rc)) return error.ForkFailed;
         const pid: posix.pid_t = @intCast(fork_rc);
         if (pid == 0) {
             childExec(
