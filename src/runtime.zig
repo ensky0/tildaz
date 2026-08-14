@@ -41,11 +41,6 @@ pub const Runtime = struct {
         return .{ .io = init.io, .environ = init.minimal.environ };
     }
 
-    /// `Init.Minimal` 만 받는 진입점용 (`arena` · `gpa` 가 필요 없는 하네스).
-    pub fn fromMinimal(minimal: std.process.Init.Minimal) Runtime {
-        return .{ .io = minimal.io, .environ = minimal.environ };
-    }
-
     /// `std.process.getEnvVarOwned` 자리. 호출부가 `rt.environ` 을 매번 꺼내지 않게 감싼다.
     /// 반환 메모리는 호출자 소유다.
     ///
