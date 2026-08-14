@@ -1,5 +1,10 @@
 const std = @import("std");
 const run_options = @import("../run_options.zig");
+const Runtime = @import("../runtime.zig").Runtime;
+
+/// #451 — panic / fatal 경로는 호출 사슬 밖에서 불린다 (panic handler 는 인자를 못 받는다).
+/// `run` 이 심어 두고 그 두 자리에서만 읽는다 — macOS 의 `g_rt` 와 같은 이유다.
+var g_rt: Runtime = undefined;
 const App = @import("../app_controller.zig").App;
 const SessionCore = @import("../session_core.zig").SessionCore;
 const RendererBackend = @import("../renderer.zig").RendererBackend;
@@ -31,7 +36,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
-    dialog.showError(messages.crash_title, text);
+    dialog.showError(g_rt, messages.crash_title, text);
     std.process.exit(1);
 }
 
@@ -40,25 +45,26 @@ pub fn showFatalRunError(err: anyerror) void {
 
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
-    dialog.showError(messages.error_title, text);
+    dialog.showError(g_rt, messages.error_title, text);
 }
 
-pub fn run(opts: run_options.RunOptions) !void {
+pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
+    g_rt = rt;
     // Enable per-monitor DPI awareness (must be before any window/GDI calls)
     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     // %APPDATA%\tildaz\tildaz_N.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
-    log.logStart(version.string);
+    log.logStart(rt.io, version.string);
     defer log.logStop(version.string);
     // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
     // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
     // worker 는 no-op (게이트는 `instance_context.isStress`).
-    defer perf.dumpOnExit();
+    defer perf.dumpOnExit(rt);
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
-    log.setVerbose(std.process.hasEnvVarConstant("TILDAZ_VERBOSE"));
+    log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -71,14 +77,14 @@ pub fn run(opts: run_options.RunOptions) !void {
     // #218 — Config.load 가 owned shell 인수를 기대 (disk 경로서 free). Windows 는
     // $SHELL 컨벤션이 없어 Defaults.shell 을 owned dupe 로 전달.
     const shell_resolved = alloc.dupe(u8, config_mod.Defaults.shell) catch config_mod.Defaults.shell;
-    var config = Config.load(alloc, shell_resolved);
+    var config = Config.load(rt, alloc, shell_resolved);
     defer config.deinit(alloc);
     log.logConfigLoaded(config);
 
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
     // 뒤 generic 에러로 끝남 — 사용자에게 어디 고쳐야 할지 안내 안 됨.
-    shell_validate.validateOrFatal(alloc, config.shell);
+    shell_validate.validateOrFatal(rt, alloc, config.shell);
 
     // #339 — 번들 ConPTY 런타임(_internal\conpty.dll + OpenConsole.exe)은 Windows
     // 필수다. 하나라도 없으면 시스템 conhost 로 조용히 느리게 도는 대신 시작 시
@@ -86,12 +92,13 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 삭제 / AV 격리 등). showFatal 은 다이얼로그 표시 후 프로세스를 종료한다.
     if (!windows_pty.bundledRuntimeFilesPresent()) {
         log.appendLine("conpty", "bundled _internal runtime missing — cannot start", .{});
-        dialog.showFatal(messages.conpty_missing_title, messages.conpty_missing_msg);
+        dialog.showFatal(rt, messages.conpty_missing_title, messages.conpty_missing_msg);
     }
 
     var app = App{
+        .rt = rt,
         .session = undefined,
-        .window = .{},
+        .window = .{ .rt = rt },
         .allocator = alloc,
         .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
     };
@@ -103,6 +110,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     else
         null;
     app.session = SessionCore.init(
+        rt,
         alloc,
         if (stress_shell_w) |w| w.ptr else config.windowsShellUtf16(),
         // #381 — `-scrollback N` 이면 config 를 무시한다 (터미널 비교에서 scrollback 을
@@ -152,6 +160,7 @@ pub fn run(opts: run_options.RunOptions) !void {
         const fam_w = config.windowsFontFamilyUtf16(idx);
         if (!DWriteFontCtx.isFontAvailable(fam_w)) {
             font_validate.showNotFoundFatal(
+                rt,
                 config.font_families[i],
                 config.font_families[0..config.font_family_count],
             );
@@ -220,7 +229,7 @@ pub fn run(opts: run_options.RunOptions) !void {
             @errorName(err),
             log.filePath() orelse messages.unknown_path_msg,
         }) catch messages.renderer_init_failed_fallback_msg;
-        dialog.showFatal(messages.renderer_init_failed_title, msg);
+        dialog.showFatal(rt, messages.renderer_init_failed_title, msg);
     };
     log.appendLine("startup", "render_path={s}", .{app.renderer.?.renderPath()});
     defer if (app.renderer) |*r| r.deinit();
@@ -272,7 +281,7 @@ pub fn run(opts: run_options.RunOptions) !void {
     // 실행하면 10 초 뒤 `RequestEndpointReadyTimeout` 으로 실패한다 (Windows 실기 확인).
     // 측정 인스턴스는 새 instance 요청을 받을 대상이 아니므로 아예 기록하지 않는다.
     if (!opts.isStressRun()) {
-        try instances.recordEndpointState(alloc, instance_context.requireWorkerIndex(), .ready);
+        try instances.recordEndpointState(rt, alloc, instance_context.requireWorkerIndex(), .ready);
     }
     log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();

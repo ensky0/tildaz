@@ -65,7 +65,7 @@ pub const RunOptions = struct {
 
 /// `<COLS>x<ROWS>` 를 읽는다. 잘못된 형식이면 `null`.
 pub fn parseGrid(text: []const u8) ?Grid {
-    const sep = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const sep = std.mem.findScalar(u8, text, 'x') orelse return null;
     const cols = std.fmt.parseInt(u16, text[0..sep], 10) catch return null;
     const rows = std.fmt.parseInt(u16, text[sep + 1 ..], 10) catch return null;
     if (cols == 0 or rows == 0) return null;

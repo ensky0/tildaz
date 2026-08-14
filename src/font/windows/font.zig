@@ -424,8 +424,8 @@ pub fn resolveFamily(
 ) !Resolved {
     // ① 적은 이름 그대로. 대소문자는 `FindFamilyName` 이 이미 무시한다.
     var family_index: dw.UINT32 = 0;
-    var exists: BOOL = 0;
-    if (collection.FindFamilyName(requested, &family_index, &exists) >= 0 and exists != 0)
+    var exists: BOOL = .FALSE;
+    if (collection.FindFamilyName(requested, &family_index, &exists) >= 0 and exists.toBool())
         return resolvedFromFamilyIndex(collection, family_index, .family);
 
     // ② 설치 목록의 정식 표기. `CascadiaCode` (붙여쓰기) · `Cascadia-Code` · `맑은고딕` 이
@@ -491,7 +491,7 @@ pub fn measureCell(
     defer _ = factory.?.vtable.Release(factory.?);
 
     var collection: ?*dw.IDWriteFontCollection = null;
-    if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return error.FontCollectionFailed;
+    if (factory.?.GetSystemFontCollection(&collection, .FALSE) < 0) return error.FontCollectionFailed;
     defer _ = collection.?.vtable.Release(collection.?);
 
     // #409 — 실제 로드 (`DWriteFontContext.init`) 와 **같은 해석 함수**를 쓴다. 여기가 따로
@@ -515,7 +515,7 @@ pub fn measureCell(
         return error.GlyphIndexFailed;
 
     var glyph_metrics: dw.DWRITE_GLYPH_METRICS = undefined;
-    if (face.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), 0) < 0)
+    if (face.GetDesignGlyphMetrics(@ptrCast(&glyph_idx), 1, @ptrCast(&glyph_metrics), .FALSE) < 0)
         return error.GlyphMetricsFailed;
     const advance: f32 = @floatFromInt(glyph_metrics.advanceWidth);
 
@@ -601,7 +601,7 @@ pub const DWriteFontContext = struct {
 
         // 2. Get system font collection
         var collection: ?*dw.IDWriteFontCollection = null;
-        if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return error.FontCollectionFailed;
+        if (factory.?.GetSystemFontCollection(&collection, .FALSE) < 0) return error.FontCollectionFailed;
         errdefer _ = collection.?.vtable.Release(collection.?);
 
         // 3. chain entry 마다 face 생성. caller 가 사전 검증 (windows_host 의
@@ -752,7 +752,7 @@ pub const DWriteFontContext = struct {
         // 7. Create number substitution (for MapCharacters callback)
         const locale = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
         var number_sub: ?*dw.IUnknown = null;
-        _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, 0, &number_sub);
+        _ = factory.?.CreateNumberSubstitution(dw.DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE, locale, .FALSE, &number_sub);
         self.number_sub = number_sub;
 
         // 8. Create text analyzer (for grapheme cluster shaping — #134).
@@ -1312,8 +1312,8 @@ pub const DWriteFontContext = struct {
             text,
             text_len,
             face,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null, // number_substitution
@@ -1347,8 +1347,8 @@ pub const DWriteFontContext = struct {
             actual_count,
             face,
             self.font_em_size,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null,
@@ -1585,8 +1585,8 @@ pub const DWriteFontContext = struct {
             text,
             text_len,
             face,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null, // number_substitution
@@ -1628,8 +1628,8 @@ pub const DWriteFontContext = struct {
             actual_count,
             face,
             self.font_em_size,
-            0, // is_sideways
-            0, // is_right_to_left
+            .FALSE, // is_sideways
+            .FALSE, // is_right_to_left
             &sa,
             locale_name,
             null,
@@ -1686,7 +1686,7 @@ pub const DWriteFontContext = struct {
         defer _ = factory.?.vtable.Release(factory.?);
 
         var collection: ?*dw.IDWriteFontCollection = null;
-        if (factory.?.GetSystemFontCollection(&collection, 0) < 0) return false;
+        if (factory.?.GetSystemFontCollection(&collection, .FALSE) < 0) return false;
         defer _ = collection.?.vtable.Release(collection.?);
 
         const resolved = resolveFamily(factory.?, collection.?, family) catch return false;

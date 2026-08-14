@@ -4,6 +4,7 @@
 //! `dialog.zig` 에서 comptime 으로 select.
 
 const std = @import("std");
+const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
@@ -460,7 +461,8 @@ test "Windows native and custom dialog icon metrics are branded and DPI-aware" {
     try std.testing.expect((dialogBodyEditStyle(true, false) & WS_VSCROLL) != 0);
 }
 
-pub fn show(severity: dialog.Severity, title: []const u8, message: []const u8) void {
+pub fn show(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
+    _ = rt;
     if (showScrollableText(title, message, false) == null) {
         showNative(severity, title, message);
     }
@@ -866,13 +868,15 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
 
 /// About은 본문 선택·복사를 위해 항상 custom text window를 사용한다. 짧으면
 /// 본문 자연 높이만 쓰고, 화면을 넘을 때만 OS scrollbar가 나타난다.
-pub fn showAboutAlert(title: []const u8, message: []const u8) void {
+pub fn showAboutAlert(rt: Runtime, title: []const u8, message: []const u8) void {
+    _ = rt;
     if (showScrollableText(title, message, false) == null) showNative(.info, title, message);
 }
 
 /// 모든 정상 fatal은 branded custom layout을 사용한다. custom window 생성 자체가
 /// 실패할 때만 native MessageBoxIndirectW로 메시지를 보존한다.
-pub fn showFatal(title: []const u8, message: []const u8) void {
+pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
+    _ = rt;
     if (showScrollableText(title, message, false) == null) showNative(.err, title, message);
 }
 
@@ -881,7 +885,8 @@ pub fn showFatal(title: []const u8, message: []const u8) void {
 /// Enter=OK. Esc 는 MB_OKCANCEL 에서 항상 Cancel. (#116 의 'Cancel 기본 — Enter
 /// 종료 방지' 폐기 — 다이얼로그 출현 자체가 speed bump.)
 /// 반환: OK → true, Cancel / 닫기 → false.
-pub fn showConfirm(title: []const u8, message: []const u8) bool {
+pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
+    _ = rt;
     if (showScrollableText(title, message, true)) |result| return result;
     // MessageBoxIndirectW 자체 실패(0 반환) 시 result != IDOK → false (안전 default).
     const result = messageBox(
@@ -1010,7 +1015,8 @@ fn ensurePromptClass(hinstance: HINSTANCE) bool {
     return true;
 }
 
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
+    _ = rt;
     const hinstance = GetModuleHandleW(null);
     if (!ensurePromptClass(hinstance)) return null;
     const temp_allocator = std.heap.page_allocator;

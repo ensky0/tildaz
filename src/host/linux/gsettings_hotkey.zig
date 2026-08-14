@@ -27,6 +27,7 @@
 //! `g_settings_schema_source_lookup` 으로 schema 존재를 먼저 확인한 뒤 연다.
 
 const std = @import("std");
+const Runtime = @import("../../runtime.zig").Runtime;
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
 const hotkey_format = @import("hotkey_format.zig");
@@ -97,19 +98,21 @@ fn shellExtensionTargetForDesktopValue(value: []const u8) ?ShellExtensionTarget 
     return null;
 }
 
-fn currentShellExtensionTarget() ?ShellExtensionTarget {
-    const desktop = std.posix.getenv("XDG_CURRENT_DESKTOP") orelse return null;
+fn currentShellExtensionTarget(rt: Runtime) ?ShellExtensionTarget {
+    // #451 — `std.posix.getenv` 제거. `Environ.getPosix` 는 POSIX 블록을 그대로 훑어
+    // 할당이 없다 (릴리즈 노트 *Environment Variables … Become Non-Global*).
+    const desktop = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return null;
     return shellExtensionTargetForDesktopValue(desktop);
 }
 
 /// Packaged extension resources are synchronized into the current user's
 /// Shell extension directory before any startup/autostart decision reads the
 /// enabled list. Package installation itself must not modify per-user settings.
-pub fn ensureShellExtensionReady(allocator: std.mem.Allocator) void {
-    const target = currentShellExtensionTarget() orelse return;
+pub fn ensureShellExtensionReady(rt: Runtime, allocator: std.mem.Allocator) void {
+    const target = currentShellExtensionTarget(rt) orelse return;
     const label = target.owner.logCategory();
 
-    const extension_available = shell_extension.syncForCurrentUser(allocator, target.kind) catch |err| {
+    const extension_available = shell_extension.syncForCurrentUser(rt, allocator, target.kind) catch |err| {
         log.appendLine(label, "Shell extension resource sync failed: {s}", .{@errorName(err)});
         return;
     };
@@ -202,8 +205,8 @@ const Api = struct {
 /// keybinding 으로 자동 등록. 그 외 DE 거나 (schema 미설치 / libgio 없음) 등록
 /// 실패는 모두 graceful — log 만 남기고 반환. single_instance toggle listener 는
 /// 그대로 살아 있어 사용자 수동 등록도 가능.
-pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
-    const target = currentShellExtensionTarget() orelse return;
+pub fn registerToggleHotkey(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
+    const target = currentShellExtensionTarget(rt) orelse return;
     const de = target.owner;
 
     const api = Api.load() orelse {
@@ -218,9 +221,9 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
     var gnome_path_buf: [128]u8 = undefined;
     var cinnamon_path_buf: [128]u8 = undefined;
     var cinnamon_id_buf: [32]u8 = undefined;
-    const gp = std.fmt.bufPrintZ(&gnome_path_buf, "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-{d}/", .{index}) catch return;
-    const cp = std.fmt.bufPrintZ(&cinnamon_path_buf, "/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-{d}/", .{index}) catch return;
-    const ci = std.fmt.bufPrintZ(&cinnamon_id_buf, "tildaz-{d}", .{index}) catch return;
+    const gp = std.fmt.bufPrintSentinel(&gnome_path_buf, "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-{d}/", .{index}, 0) catch return;
+    const cp = std.fmt.bufPrintSentinel(&cinnamon_path_buf, "/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-{d}/", .{index}, 0) catch return;
+    const ci = std.fmt.bufPrintSentinel(&cinnamon_id_buf, "tildaz-{d}", .{index}, 0) catch return;
     var gnome_instance = gnome_variant;
     gnome_instance.path = gp.ptr;
     gnome_instance.list_value = gp.ptr;
@@ -244,7 +247,7 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
                 log.appendLine("gnome", "tildaz extension active — gsettings hotkey skipped + removed existing custom-keybinding (extension handles hotkey)", .{});
                 return;
             }
-            registerWithVariant(allocator, &api, cfg, gnome_instance);
+            registerWithVariant(rt, allocator, &api, cfg, gnome_instance);
         },
         .cinnamon => {
             if (!schemasPresent(&api, source, cinnamon_instance)) {
@@ -264,7 +267,7 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
                 log.appendLine("cinnamon", "tildaz extension active — gsettings hotkey skipped + removed existing custom-keybinding (extension handles hotkey)", .{});
                 return;
             }
-            registerWithVariant(allocator, &api, cfg, cinnamon_instance);
+            registerWithVariant(rt, allocator, &api, cfg, cinnamon_instance);
         },
     }
 }
@@ -272,8 +275,8 @@ pub fn registerToggleHotkey(allocator: std.mem.Allocator, cfg: *const config_mod
 /// launcher 단위 stale cleanup. 실제 값 등록/변경은 worker가 자기 index의
 /// `registerToggleHotkey`에서 담당하고, 여기서는 list actual에서 삭제된 config의
 /// TildaZ 항목만 제거한다. extension이 활성인 DE는 fallback 항목 전체가 stale이다.
-pub fn syncNumberedEntries(allocator: std.mem.Allocator, indices: []const u32) void {
-    const target = currentShellExtensionTarget() orelse return;
+pub fn syncNumberedEntries(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) void {
+    const target = currentShellExtensionTarget(rt) orelse return;
     const de = target.owner;
     const api = Api.load() orelse return;
     const source = api.schema_source_get_default() orelse return;
@@ -353,15 +356,17 @@ fn schemasPresent(api: *const Api, source: *c.GSettingsSchemaSource, v: Variant)
 }
 
 /// 3단계 등록 (GNOME · Cinnamon 공통). 차이는 모두 `v` 에서 읽는다.
-fn registerWithVariant(allocator: std.mem.Allocator, api: *const Api, cfg: *const config_mod.Config, v: Variant) void {
+fn registerWithVariant(rt: Runtime, allocator: std.mem.Allocator, api: *const Api, cfg: *const config_mod.Config, v: Variant) void {
     // self exe path + command / accel 준비.
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
-        log.appendLine("gsettings-hotkey", "selfExePath failed: {s} — skipped", .{@errorName(err)});
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = std.process.executablePath(rt.io, &exe_buf) catch |err| {
+        log.appendLine("gsettings-hotkey", "executablePath failed: {s} — skipped", .{@errorName(err)});
         return;
     };
-    var cmd_buf: [std.fs.max_path_bytes + 16]u8 = undefined;
-    const command = std.fmt.bufPrintZ(&cmd_buf, "{s} --toggle {d}", .{ exe_path, instance_context.requireWorkerIndex() }) catch return;
+    const exe_path = exe_buf[0..exe_len];
+    var cmd_buf: [std.Io.Dir.max_path_bytes + 16]u8 = undefined;
+    const command = std.fmt.bufPrintSentinel(&cmd_buf, "{s} --toggle {d}", .{ exe_path, instance_context.requireWorkerIndex() }, 0) catch return;
     var accel_buf: [96]u8 = undefined;
     const accel = buildGtkAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers) catch return;
 
@@ -460,8 +465,8 @@ fn removeFromList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GS
 /// lifecycle owner를 반환한다. `host/linux_wayland.zig`은 이 경우 in-memory
 /// hidden_start만 false로 바꿔 surface를 항상 만들고, extension은 디스크 config의
 /// 원래 hidden_start를 읽어 map 직후 minimize한다. schema/API 부재는 null이다.
-pub fn enabledShellExtensionOwner() ?ShellExtensionOwner {
-    const target = currentShellExtensionTarget() orelse return null;
+pub fn enabledShellExtensionOwner(rt: Runtime) ?ShellExtensionOwner {
+    const target = currentShellExtensionTarget(rt) orelse return null;
     const api = Api.load() orelse return null;
     if (!isExtensionEnabledInSchema(&api, target.schema)) return null;
     return target.owner;
@@ -502,15 +507,15 @@ fn desktopValueHasToken(value: []const u8, wanted: []const []const u8) bool {
 /// 이름은 공통 `hotkey_format.gtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
 fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
     const H = config_mod.Hotkey;
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
     if ((modifiers & H.MOD_CTRL) != 0) try w.writeAll("<Control>");
     if ((modifiers & H.MOD_SHIFT) != 0) try w.writeAll("<Shift>");
     if ((modifiers & H.MOD_ALT) != 0) try w.writeAll("<Alt>");
     if ((modifiers & H.MOD_SUPER) != 0) try w.writeAll("<Super>");
     try w.writeAll(hotkey_format.gtkName(keysym));
     try w.writeByte(0);
-    const written = fbs.getWritten();
+    const written = fbs.buffered();
     return written[0 .. written.len - 1 :0];
 }
 

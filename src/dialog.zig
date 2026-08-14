@@ -13,6 +13,7 @@
 //!     if (dialog.showConfirm("Quit", "Quit?")) { ... }   // OK/Cancel
 
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const messages = @import("messages.zig");
 
@@ -74,25 +75,25 @@ test "quit confirm message handles singular plural and small buffers" {
     try std.testing.expect(quitConfirmMessage(&too_small, 2) == null);
 }
 
-pub fn showInfo(title: []const u8, message: []const u8) void {
-    impl.show(.info, title, message);
+pub fn showInfo(rt: Runtime, title: []const u8, message: []const u8) void {
+    impl.show(rt, .info, title, message);
 }
 
 /// 모든 dialog는 본문 자연 크기를 우선하고 화면을 넘을 때만 본문에 세로
 /// scroll을 제공한다. 제목·button·prompt input/status는 고정한다. About은
 /// 본문 selection/copy도 제공하므로 전용 진입점을 유지한다.
-pub fn showAboutAlert(title: []const u8, message: []const u8) void {
-    impl.showAboutAlert(title, message);
+pub fn showAboutAlert(rt: Runtime, title: []const u8, message: []const u8) void {
+    impl.showAboutAlert(rt, title, message);
 }
 
-pub fn showError(title: []const u8, message: []const u8) void {
-    impl.show(.err, title, message);
+pub fn showError(rt: Runtime, title: []const u8, message: []const u8) void {
+    impl.show(rt, .err, title, message);
 }
 
 /// 에러 다이얼로그 표시 후 즉시 종료. config 검증 실패 같은 fatal 상황. platform
 /// backend의 공통 overflow 정책을 따르며 Windows 저장 상한도 보존한다 (#316).
-pub fn showFatal(title: []const u8, message: []const u8) noreturn {
-    impl.showFatal(title, message);
+pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) noreturn {
+    impl.showFatal(rt, title, message);
     std.process.exit(1);
 }
 
@@ -101,12 +102,12 @@ pub fn showFatal(title: []const u8, message: []const u8) noreturn {
 /// 출현 자체가 speed bump 라 실수 방지엔 충분 (#116 의 'Cancel 기본' 폐기).
 ///
 /// 반환: OK (Quit) → true, Cancel / 닫기 → false.
-pub fn showConfirm(title: []const u8, message: []const u8) bool {
-    return impl.showConfirm(title, message);
+pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
+    return impl.showConfirm(rt, title, message);
 }
 
 /// 실제 key 조합을 캡처하는 modal dialog. Cancel / 닫기면 null, Create면
 /// allocator-owned canonical hotkey 문자열을 반환한다.
-pub fn promptHotkey(allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: HotkeyValidator) ?[]u8 {
-    return impl.promptHotkey(allocator, title, message, validator);
+pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: HotkeyValidator) ?[]u8 {
+    return impl.promptHotkey(rt, allocator, title, message, validator);
 }

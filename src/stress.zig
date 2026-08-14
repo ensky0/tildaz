@@ -43,6 +43,9 @@ const perf = @import("perf.zig");
 const session_core = @import("session_core.zig");
 const terminal = @import("terminal.zig");
 const workload = @import("stress/workload.zig");
+const runtime = @import("runtime.zig");
+const Runtime = runtime.Runtime;
+const Timer = runtime.Timer;
 
 /// ghostty-vt 는 `std.log` 의 info 레벨로 page 용량 조정을 알린다. 색이 많이 섞인
 /// 워크로드에서는 그 로그가 수만 줄이 되어 (`ansi` 64 MiB 에서 1.2 MB 출력) 리포트를
@@ -87,7 +90,8 @@ const chunk_size = 64 * 1024;
 /// 기준이고, 값은 앱과 같은 정의를 쓴다.
 const frame_budget_ns = session_core.SessionCore.DRAIN_FRAME_BUDGET_NS;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const rt: Runtime = .fromInit(init);
     // 하네스는 **언제나** 측정이다. `main.zig` 는 `-e` 일 때만 이 역할을 세우지만
     // (`run_opts.isStressRun()`) 여기는 조건이 없다.
     //
@@ -99,35 +103,37 @@ pub fn main() !void {
     // producer 모드 판정보다 앞에 둔다 — producer 자식도 같은 실행파일이다.
     instance_context.setRole(.stress);
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
     // producer 모드는 argv 가 아니라 환경변수로 판정한다 (위 문서 주석).
-    if (try producerRequest(alloc)) |req| return produce(req);
+    if (try producerRequest(rt, alloc)) |req| return produce(rt, req);
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    // #451 — `process.argsAlloc` ➡️ `Init.minimal.args.toSlice`. arena 는 프로세스 수명이라
+    // (`Init.arena` 주석) 예전 `argsFree` 가 하던 일이 없다.
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    // `argsAlloc` 은 `[][:0]u8` 을 주는데 파싱에 sentinel 이 필요 없다. 느슨한 타입으로
-    // 보면 테스트가 문자열 리터럴 배열을 그대로 넘길 수 있다.
+    // 파싱에 sentinel 이 필요 없다. 느슨한 타입으로 보면 테스트가 문자열 리터럴 배열을
+    // 그대로 넘길 수 있다.
     const argv: []const []const u8 = @ptrCast(args);
 
+    // #451 — `parseArgs` 의 에러 집합은 `error{Usage}` 하나다. 0.16 은 에러 switch 의
+    // 도달 불가 `else` 를 컴파일 오류로 잡는다 (릴리즈 노트 *switch* 절).
     const opts = parseArgs(argv) catch |err| switch (err) {
         error.Usage => {
-            try printUsage();
+            try printUsage(rt);
             std.process.exit(2);
         },
-        else => return err,
     };
 
     switch (opts.command) {
         .throughput => switch (opts.layer) {
-            .parser => try runParser(alloc, opts),
-            .pty => try runPty(alloc, opts),
-            .frame => try runFrame(alloc, opts),
+            .parser => try runParser(rt, alloc, opts),
+            .pty => try runPty(rt, alloc, opts),
+            .frame => try runFrame(rt, alloc, opts),
         },
-        .scrollback => try runScrollback(alloc, opts),
+        .scrollback => try runScrollback(rt, alloc, opts),
     }
 }
 
@@ -159,29 +165,29 @@ const grid_wait_limit_ms: u64 = 2000;
 /// 환경변수 두 개가 다 있고 값이 유효할 때만 producer 모드다. 하나라도 빠지거나
 /// 이상하면 일반 모드로 두어, 실수로 켜진 환경변수 때문에 조용히 다른 일을 하지
 /// 않게 한다. timing 파일은 선택이다.
-fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
-    const kind_name = std.process.getEnvVarOwned(alloc, env_workload) catch return null;
+fn producerRequest(rt: Runtime, alloc: std.mem.Allocator) !?ProducerRequest {
+    const kind_name = rt.envAlloc(alloc, env_workload) catch return null;
     defer alloc.free(kind_name);
-    const bytes_text = std.process.getEnvVarOwned(alloc, env_bytes) catch return null;
+    const bytes_text = rt.envAlloc(alloc, env_bytes) catch return null;
     defer alloc.free(bytes_text);
 
     const kind = workload.Kind.parse(kind_name) orelse return null;
     const bytes = std.fmt.parseInt(u64, bytes_text, 10) catch return null;
 
     // 호출자가 free 하지 않는다 — producer 는 이 값을 쓰고 곧 종료한다.
-    const timing_path = std.process.getEnvVarOwned(alloc, env_timing_file) catch null;
+    const timing_path = rt.envAlloc(alloc, env_timing_file) catch null;
 
     // 값이 이상하면 **0 으로 본다** — 기다리지 않는 쪽이 안전하다. 창이 남으면 다음 회차와
     // CPU 를 나눠 써서 측정을 오염시킨다.
     var hold_ms: u32 = 0;
-    if (std.process.getEnvVarOwned(alloc, env_hold_ms) catch null) |text| {
+    if (rt.envAlloc(alloc, env_hold_ms) catch null) |text| {
         defer alloc.free(text);
         hold_ms = std.fmt.parseInt(u32, text, 10) catch 0;
     }
 
     // `120x40` 형식. 이상하면 **없는 것으로 본다** — 기다리지 않는 쪽이 안전하다.
     var target_grid: ?Grid = null;
-    if (std.process.getEnvVarOwned(alloc, env_grid) catch null) |text| {
+    if (rt.envAlloc(alloc, env_grid) catch null) |text| {
         defer alloc.free(text);
         target_grid = parseGrid(text);
     }
@@ -196,7 +202,7 @@ fn producerRequest(alloc: std.mem.Allocator) !?ProducerRequest {
 }
 
 fn parseGrid(text: []const u8) ?Grid {
-    const x = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const x = std.mem.findScalar(u8, text, 'x') orelse return null;
     const cols = std.fmt.parseInt(u16, text[0..x], 10) catch return null;
     const rows = std.fmt.parseInt(u16, text[x + 1 ..], 10) catch return null;
     if (cols == 0 or rows == 0) return null;
@@ -208,22 +214,24 @@ fn parseGrid(text: []const u8) ?Grid {
 /// 상한 (`grid_wait_limit_ms`) 을 넘으면 그대로 진행한다. 도달하지 못하는 경우가 실제로
 /// 있어서다 — 창 크기 옵션이 무시되거나 폰트 때문에 셀 수가 목표와 다를 수 있다. 그때는
 /// 기존대로 `cols_start` / `cols` 비교가 그 회차를 걸러낸다.
-fn waitForGrid(target: Grid) u64 {
-    var timer = std.time.Timer.start() catch return 0;
+fn waitForGrid(rt: Runtime, target: Grid) u64 {
+    // #451 — `time.Timer` ➡️ `runtime.Timer` (`Io.Timestamp` 기반). 시계 조회가 더 이상
+    // 실패하지 않으므로 예전의 `catch return 0` 분기가 사라진다.
+    var timer: Timer = .start(rt);
     const limit_ns = grid_wait_limit_ms * std.time.ns_per_ms;
     while (true) {
         const now = producerGrid() orelse break;
         if (now.cols == target.cols and now.rows == target.rows) break;
         if (timer.read() >= limit_ns) break;
         // 5 ms 는 resize 가 도는 주기보다 충분히 짧다 (실측에서 대기가 수십 ms 규모다).
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        rt.sleepNs(5 * std.time.ns_per_ms);
     }
     return timer.read() / std.time.ns_per_ms;
 }
 
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
 /// thread (또는 우리를 띄운 다른 터미널) 가 그대로 받는다.
-fn produce(req: ProducerRequest) !void {
+fn produce(rt: Runtime, req: ProducerRequest) !void {
     if (builtin.os.tag == .windows) {
         // producer 의 stdout 은 ConPTY 콘솔이다. 출력 코드페이지를 UTF-8 로 맞춰 cjk 가
         // 콘솔 기본 CP (CP949 등) 로 깨지지 않게 한다 (위 SetConsoleOutputCP 주석).
@@ -231,7 +239,7 @@ fn produce(req: ProducerRequest) !void {
     }
     var gen: workload.Generator = .{ .kind = req.kind };
     var buf: [chunk_size]u8 = undefined;
-    const out = std.fs.File.stdout();
+    const out = std.Io.File.stdout();
 
     // 그리드를 **출력 전후 두 번** 읽는다. 한 번만 읽으면 어느 쪽이든 틀린다:
     //
@@ -245,26 +253,26 @@ fn produce(req: ProducerRequest) !void {
     //
     // 목표 그리드를 받았으면 그 전에 **기다린다** (`target_grid` 주석). 기다린 뒤에 읽어야
     // `grid_start` 가 실제로 출력한 그리드와 같다.
-    const grid_wait_ms = if (req.target_grid) |t| waitForGrid(t) else 0;
+    const grid_wait_ms = if (req.target_grid) |t| waitForGrid(rt, t) else 0;
     const grid_start = producerGrid();
 
-    var timer = try std.time.Timer.start();
+    var timer: Timer = .start(rt);
     var left = req.bytes;
     while (left > 0) {
         const n = @min(buf.len, left);
         _ = gen.read(buf[0..n]);
-        try out.writeAll(buf[0..n]);
+        try out.writeStreamingAll(rt.io, buf[0..n]);
         left -= n;
     }
     const elapsed_ns = timer.read();
     const grid_end = producerGrid();
 
     if (req.timing_path) |path| {
-        writeTiming(path, req, elapsed_ns, grid_start, grid_end, grid_wait_ms) catch {};
+        writeTiming(rt, path, req, elapsed_ns, grid_start, grid_end, grid_wait_ms) catch {};
     }
 
     // 하네스의 `--capture` 가 창을 찍을 시간. timing 을 쓴 **뒤**여야 한다 (`env_hold_ms`).
-    if (req.hold_ms > 0) std.Thread.sleep(@as(u64, req.hold_ms) * std.time.ns_per_ms);
+    if (req.hold_ms > 0) rt.sleepNs(@as(u64, req.hold_ms) * std.time.ns_per_ms);
 }
 
 const Grid = struct { cols: u16, rows: u16 };
@@ -274,6 +282,25 @@ const Grid = struct { cols: u16, rows: u16 };
 // wide-cell 부하가 아니게 된다 (Windows 실기: 다섯 터미널 모두 cjk 가 깨졌다). produce 가
 // 시작할 때 한 번 65001 로 맞춘다. `std.os.windows.kernel32` 에 없어 직접 선언한다.
 extern "kernel32" fn SetConsoleOutputCP(wCodePageID: c_uint) callconv(.c) c_int;
+
+// #451 — 0.16 이 `std.os.windows` 에서 `CONSOLE_SCREEN_BUFFER_INFO` 와 kernel32 래퍼를
+// 걷어냈다 (릴리즈 노트 *Completed Migration to NtDll* — std 에 남은 kernel32 extern 은
+// `CreateProcessW` 뿐이다). 릴리즈 노트가 지정한 두 방향 (*"Go higher: use std.Io"* /
+// *"Go lower"*) 중 아래쪽이다 — `Io` 에 콘솔 격자를 묻는 길이 없고, 이 파일이 이미 위의
+// `SetConsoleOutputCP` 를 같은 방식으로 선언하고 있다.
+const COORD = extern struct { X: i16, Y: i16 };
+const SMALL_RECT = extern struct { Left: i16, Top: i16, Right: i16, Bottom: i16 };
+const CONSOLE_SCREEN_BUFFER_INFO = extern struct {
+    dwSize: COORD,
+    dwCursorPosition: COORD,
+    wAttributes: u16,
+    srWindow: SMALL_RECT,
+    dwMaximumWindowSize: COORD,
+};
+extern "kernel32" fn GetConsoleScreenBufferInfo(
+    hConsoleOutput: std.os.windows.HANDLE,
+    lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO,
+) callconv(.c) std.os.windows.BOOL;
 
 /// producer 가 자기 tty 의 그리드를 직접 읽는다. **이게 L4 비교의 전제다** — 터미널마다
 /// 폰트 크기 해석이 달라서 같은 창 크기를 줘도 셀 수가 갈리고, 열 수가 다르면 줄바꿈
@@ -295,10 +322,9 @@ fn producerGrid() ?Grid {
         // 실제로 갈렸다는 관측은 아직 없다 (**추정** — ConPTY 가 버퍼 높이를 창보다 크게
         // 잡을 수 있다는 문서 근거를 확인하지 않았다). 어느 쪽이든 *보이는* 격자를 원하니
         // `srWindow` 가 맞는 선택이다.
-        const win = std.os.windows;
-        var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-        const handle = std.fs.File.stdout().handle;
-        if (win.kernel32.GetConsoleScreenBufferInfo(handle, &info) == 0) return null;
+        var info: CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        const handle = std.Io.File.stdout().handle;
+        if (!GetConsoleScreenBufferInfo(handle, &info).toBool()) return null;
         const cols: i32 = @as(i32, info.srWindow.Right) - info.srWindow.Left + 1;
         const rows: i32 = @as(i32, info.srWindow.Bottom) - info.srWindow.Top + 1;
         if (cols <= 0 or rows <= 0) return null;
@@ -306,7 +332,7 @@ fn producerGrid() ?Grid {
     }
 
     var ws: std.posix.winsize = undefined;
-    const fd = std.fs.File.stdout().handle;
+    const fd = std.Io.File.stdout().handle;
     if (builtin.os.tag == .linux) {
         const linux = std.os.linux;
         if (std.posix.errno(linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
@@ -325,6 +351,7 @@ fn producerGrid() ?Grid {
 /// 터미널이 아직 남은 것을 파싱하고 있을 수 있다. `time cat <파일>` 로 재는 것과 같은
 /// 성질의 값이고 (이 이슈 본문이 제안한 방법), PTY 버퍼가 작아서 대개 근사가 된다.
 fn writeTiming(
+    rt: Runtime,
     path: []const u8,
     req: ProducerRequest,
     elapsed_ns: u64,
@@ -352,9 +379,9 @@ fn writeTiming(
         w.print("cols=0\nrows=0\n", .{});
     }
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    try file.writeAll(w.slice());
+    const file = try std.Io.Dir.cwd().createFile(rt.io, path, .{});
+    defer file.close(rt.io);
+    try file.writeStreamingAll(rt.io, w.slice());
 }
 
 // --- 옵션 ---
@@ -426,8 +453,9 @@ fn parseArgs(args: []const []const u8) !Options {
     return opts;
 }
 
-fn printUsage() !void {
-    try std.fs.File.stdout().writeAll(
+fn printUsage(rt: Runtime) !void {
+    try std.Io.File.stdout().writeStreamingAll(
+        rt.io,
         \\usage: zig build stress -- <throughput | scrollback> [options]
         \\
         \\  throughput   how fast bulk output is consumed
@@ -522,8 +550,8 @@ fn takeCounters() Counters {
 /// 쓴다 (`session_core.Tab.init`, #266). 이 하네스의 워크로드에는 응답이 필요한
 /// 질의 시퀀스가 없으므로 파싱 비용이 같을 것으로 보지만 **직접 재서 확인하지는
 /// 않았다.**
-fn runParser(alloc: std.mem.Allocator, opts: Options) !void {
-    var term = try session_core.initVtTerminal(alloc, opts.cols, opts.rows, opts.scroll_lines, null);
+fn runParser(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
+    var term = try session_core.initVtTerminal(rt, alloc, opts.cols, opts.rows, opts.scroll_lines, null);
     defer term.deinit(alloc);
 
     var stream = term.vtStream();
@@ -532,7 +560,7 @@ fn runParser(alloc: std.mem.Allocator, opts: Options) !void {
     var gen: workload.Generator = .{ .kind = opts.workload_kind };
     var buf: [chunk_size]u8 = undefined;
 
-    var timer = try std.time.Timer.start();
+    var timer: Timer = .start(rt);
 
     // 바이트를 만드는 시간과 파싱하는 시간을 따로 센다. 한 덩어리로 재면 하네스의
     // 생성 비용이 파서 숫자에 섞여 (실측에서 약 18 %) PTY 층의 소화 속도보다 파서
@@ -556,7 +584,7 @@ fn runParser(alloc: std.mem.Allocator, opts: Options) !void {
     }
 
     const elapsed_ns = timer.read();
-    try report(opts, .{
+    try report(rt, opts, .{
         .consumed = opts.bytes,
         .elapsed_ns = elapsed_ns,
         .parser_split = .{ .parse_ns = parse_ns, .generate_ns = generate_ns },
@@ -586,14 +614,15 @@ const ProducerSession = struct {
     state: ExitState = .{},
     core: session_core.SessionCore = undefined,
 
-    fn start(alloc: std.mem.Allocator, opts: Options) !*ProducerSession {
+    fn start(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !*ProducerSession {
         const self = try alloc.create(ProducerSession);
         errdefer alloc.destroy(self);
         self.* = .{ .alloc = alloc, .shell_command = undefined };
 
-        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const exe_path = try std.fs.selfExePath(&exe_buf);
-        self.shell_command = try toShellCommand(alloc, exe_path);
+        var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+        const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+        self.shell_command = try toShellCommand(alloc, exe_buf[0..exe_len]);
         errdefer freeShellCommand(alloc, self.shell_command);
 
         const bytes_text = try std.fmt.bufPrint(&self.bytes_text, "{d}", .{opts.bytes});
@@ -603,6 +632,7 @@ const ProducerSession = struct {
         };
 
         self.core = session_core.SessionCore.init(
+            rt,
             alloc,
             self.shell_command,
             opts.scroll_lines,
@@ -633,11 +663,11 @@ const ProducerSession = struct {
     }
 };
 
-fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
+fn runPty(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     resetCounters();
-    var timer = try std.time.Timer.start();
+    var timer: Timer = .start(rt);
 
-    const session = try ProducerSession.start(alloc, opts);
+    const session = try ProducerSession.start(rt, alloc, opts);
     defer session.deinit();
     const tab = try session.tab();
 
@@ -664,7 +694,7 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
     const counters = takeCounters();
     const start_ns = first_data_ns orelse return error.NoOutput;
 
-    try report(opts, .{
+    try report(rt, opts, .{
         // drain 카운터의 bytes 가 우리가 VT 로 넘긴 실제 바이트다.
         .consumed = counters.drain[2],
         .expected = expectedPtyBytes(opts),
@@ -692,11 +722,11 @@ fn runPty(alloc: std.mem.Allocator, opts: Options) !void {
 ///
 /// **렌더는 하지 않는다.** 이 층이 재는 것은 "프레임 예산이 파싱을 어디까지 누르는가"
 /// 이고, 실제 앱은 여기에 렌더 시간까지 더해진다. 즉 이 숫자는 체감의 **상한**이다.
-fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
+fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     resetCounters();
-    var timer = try std.time.Timer.start();
+    var timer: Timer = .start(rt);
 
-    const session = try ProducerSession.start(alloc, opts);
+    const session = try ProducerSession.start(rt, alloc, opts);
     defer session.deinit();
 
     const frame_ns = std.time.ns_per_s / @as(u64, opts.fps);
@@ -728,7 +758,7 @@ fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
         // 다시 센다 — 실제 앱도 놓친 vsync 를 몰아서 그리지 않는다.
         const now_ns = timer.read();
         if (next_frame_ns > now_ns) {
-            std.Thread.sleep(next_frame_ns - now_ns);
+            rt.sleepNs(next_frame_ns - now_ns);
             next_frame_ns += frame_ns;
         } else {
             next_frame_ns = now_ns + frame_ns;
@@ -738,7 +768,7 @@ fn runFrame(alloc: std.mem.Allocator, opts: Options) !void {
     const counters = takeCounters();
     const start_ns = first_data_ns orelse return error.NoOutput;
 
-    try report(opts, .{
+    try report(rt, opts, .{
         .consumed = counters.drain[2],
         .expected = expectedPtyBytes(opts),
         .elapsed_ns = last_data_ns - start_ns,
@@ -838,14 +868,14 @@ const Segment = struct {
 ///
 /// 프레임 예산이 없는 경로 (`pty` 층과 같은 방식) 로 돌린다 — 예산에 눌린 상태에서는
 /// 구간 간 차이가 예산에 가려 안 보인다.
-fn runScrollback(alloc: std.mem.Allocator, opts: Options) !void {
+fn runScrollback(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     var segments: [max_segments]Segment = undefined;
     var segment_count: usize = 0;
 
     resetCounters();
-    var timer = try std.time.Timer.start();
+    var timer: Timer = .start(rt);
 
-    const session = try ProducerSession.start(alloc, opts);
+    const session = try ProducerSession.start(rt, alloc, opts);
     defer session.deinit();
     const tab = try session.tab();
 
@@ -904,7 +934,7 @@ fn runScrollback(alloc: std.mem.Allocator, opts: Options) !void {
         segment_count += 1;
     }
 
-    try reportScrollback(opts, segments[0..segment_count]);
+    try reportScrollback(rt, opts, segments[0..segment_count]);
 }
 
 /// 화면 밖으로 밀려난 줄까지 포함한 현재 총 줄 수. 앱의 스크롤바가 쓰는 것과 같은
@@ -927,7 +957,7 @@ fn peakRssBytes() ?u64 {
     return if (builtin.os.tag == .macos) raw else raw * 1024;
 }
 
-fn reportScrollback(opts: Options, segments: []const Segment) !void {
+fn reportScrollback(rt: Runtime, opts: Options, segments: []const Segment) !void {
     var buf: [8192]u8 = undefined;
     var w = Report{ .buf = &buf };
     const mib = 1024.0 * 1024.0;
@@ -983,12 +1013,12 @@ fn reportScrollback(opts: Options, segments: []const Segment) !void {
         }
     }
 
-    try std.fs.File.stdout().writeAll(w.slice());
+    try std.Io.File.stdout().writeStreamingAll(rt.io, w.slice());
 }
 
 // --- 리포트 ---
 
-fn report(opts: Options, result: Result) !void {
+fn report(rt: Runtime, opts: Options, result: Result) !void {
     var buf: [4096]u8 = undefined;
     var w = Report{ .buf = &buf };
 
@@ -1139,7 +1169,7 @@ fn report(opts: Options, result: Result) !void {
         w.print("--- perf counters ---\nnot instrumented on this layer\n", .{});
     }
 
-    try std.fs.File.stdout().writeAll(w.slice());
+    try std.Io.File.stdout().writeStreamingAll(rt.io, w.slice());
 }
 
 const CounterOpts = struct {

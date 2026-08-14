@@ -1,4 +1,5 @@
 const std = @import("std");
+const Runtime = @import("runtime.zig").Runtime;
 const ghostty = @import("ghostty-vt");
 const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
@@ -26,6 +27,9 @@ const command_menu = @import("command_menu.zig");
 const shell_validate = @import("shell_validate.zig");
 
 pub const App = struct {
+    /// #451 — 진입점이 만든 `Io` · 환경변수 묶음. 릴리즈 노트가 지정한 두 길 중
+    /// "context struct 에 담아 넘긴다" 로, host 의 `run(rt, …)` 이 여기 심는다.
+    rt: Runtime,
     session: SessionCore,
     window: Window,
     allocator: std.mem.Allocator,
@@ -294,7 +298,7 @@ pub const App = struct {
         if (n == 0) return true;
         var msg_buf: [256]u8 = undefined;
         const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return true;
-        return dialog.showConfirm(messages.quit_confirm_title, msg);
+        return dialog.showConfirm(self.rt, messages.quit_confirm_title, msg);
     }
 
     /// F1 hide 직전 — 진행 중 preedit commit (#175). 모든 focus_loss = commit
@@ -435,7 +439,7 @@ pub const App = struct {
             // #376 — blink 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에
             // blink 셀이 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는
             // 화면에서 공짜로 초당 2프레임을 낭비하지 않는다.
-            const blink_phase_now = ui_metrics.blinkFaintPhase(std.time.milliTimestamp());
+            const blink_phase_now = ui_metrics.blinkFaintPhase(self.rt.nowMs());
             const blink_tick = blink_phase_now != self.last_blink_phase and r.saw_blink_cell;
             self.last_blink_phase = blink_phase_now;
 
@@ -522,6 +526,9 @@ pub const App = struct {
                             .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
                         },
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
+                        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
+                        // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+                        blink_phase_now,
                     );
                 }
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국
@@ -555,9 +562,9 @@ pub const App = struct {
     }
 
     pub fn handleNewTab(self: *App) void {
-        if (tab_actions.checkAtLimitAndDialog(&self.host)) return;
+        if (tab_actions.checkAtLimitAndDialog(self.rt, &self.host)) return;
         // #248 — shell 이 런타임에 사라졌으면 조용히 죽는 대신 알림 후 취소.
-        if (!shell_validate.checkForNewTab(self.allocator, self.shell)) return;
+        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
         self.createTab() catch {};
     }
 
@@ -721,16 +728,16 @@ pub const App = struct {
             // 해제, 아니면 monitor 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => if (self.resolveRunAction(.fullscreen)) self.window.toggleFullscreenMode(if (self.window.fullscreen_mode != .none) self.window.fullscreen_mode else .monitor),
             .open_config => if (self.resolveRunAction(.open_config)) {
-                const path = paths.configPath(self.allocator) catch return;
+                const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
                 self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.allocator, path);
+                system_open.openInDefaultApp(self.rt, self.allocator, path);
             },
             .keyboard_shortcuts => if (self.resolveRunAction(.open_shortcuts)) {
                 self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.allocator, messages.keyboard_shortcuts_url);
+                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
             },
-            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(),
+            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt),
         }
         self.invalidateRenderer();
     }
@@ -1077,28 +1084,28 @@ pub const App = struct {
                         return true;
                     },
                     .dump_perf => {
-                        perf.dumpAndReset("snapshot");
+                        perf.dumpAndReset(self.rt, "snapshot");
                         return true;
                     },
                     .show_about => {
-                        about.showAboutDialog();
+                        about.showAboutDialog(self.rt);
                         return true;
                     },
                     .open_config => {
-                        const path = paths.configPath(self.allocator) catch return true;
+                        const path = paths.configPath(self.rt, self.allocator) catch return true;
                         defer self.allocator.free(path);
                         // 우리 창은 WS_EX_TOPMOST 라 새로 launch 되는 editor 가
                         // 그 뒤로 가려져 사용자에겐 안 보임. topmost flag 만 잠시
                         // 내려 → editor 가 자연스럽게 우리 위. 다음 F1 toggle 시
                         // show() 의 applyRect 가 HWND_TOPMOST 복귀.
                         self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.allocator, path);
+                        system_open.openInDefaultApp(self.rt, self.allocator, path);
                         return true;
                     },
                     .open_log => {
                         const path = log.filePath() orelse return true;
                         self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.allocator, path);
+                        system_open.openInDefaultApp(self.rt, self.allocator, path);
                         return true;
                     },
                     .switch_tab => |index| {
@@ -1195,7 +1202,7 @@ pub const App = struct {
                 self.updateTabHover(mouse.x, mouse.y);
                 return true;
             },
-            .mouse_up => |_| {
+            .mouse_up => {
                 // #245 — 어떤 release 든 drag-select auto-scroll 타이머 정지.
                 self.window.setAutoScroll(false);
                 if (self.activeTabPtr()) |tab| {

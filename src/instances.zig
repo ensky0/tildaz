@@ -1,6 +1,8 @@
 const std = @import("std");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
+const runtime = @import("runtime.zig");
+const Runtime = runtime.Runtime;
 
 pub const max_config_index: u32 = 999;
 
@@ -70,13 +72,14 @@ test "창 타이틀은 역할에서 갈린다" {
 }
 
 pub const ProcessLock = struct {
-    file: std.fs.File,
+    file: std.Io.File,
     clear_pid_on_close: bool,
 
-    pub fn deinit(self: *ProcessLock) void {
-        if (self.clear_pid_on_close) self.file.setEndPos(0) catch {};
-        self.file.unlock();
-        self.file.close();
+    pub fn deinit(self: *ProcessLock, rt: Runtime) void {
+        // #451 — `fs.File.setEndPos` ➡️ `Io.File.setLength` (릴리즈 노트 upgrade guide).
+        if (self.clear_pid_on_close) self.file.setLength(rt.io, 0) catch {};
+        self.file.unlock(rt.io);
+        self.file.close(rt.io);
     }
 };
 
@@ -111,17 +114,17 @@ pub fn parseConfigFileName(name: []const u8) ?u32 {
     return if (index <= max_config_index) index else null;
 }
 
-pub fn listConfigIndices(allocator: std.mem.Allocator) ![]u32 {
-    const dir_path = try paths.configDir(allocator);
+pub fn listConfigIndices(rt: Runtime, allocator: std.mem.Allocator) ![]u32 {
+    const dir_path = try paths.configDir(rt, allocator);
     defer allocator.free(dir_path);
-    try paths.ensureConfigDir(allocator);
+    try paths.ensureConfigDir(rt, allocator);
 
-    var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(rt.io, dir_path, .{ .iterate = true });
+    defer dir.close(rt.io);
     var indices: std.ArrayList(u32) = .empty;
     errdefer indices.deinit(allocator);
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(rt.io)) |entry| {
         if (entry.kind != .file) continue;
         if (parseConfigFileName(entry.name)) |index| try indices.append(allocator, index);
     }
@@ -136,94 +139,97 @@ pub fn nextConfigIndex(indices: []const u32) !u32 {
 }
 
 pub fn createDefaultConfig(
+    rt: Runtime,
     allocator: std.mem.Allocator,
     index: u32,
     shell_resolved: []const u8,
     hotkey: []const u8,
 ) !void {
-    const path = try paths.configPathFor(allocator, index);
+    const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
     const json = try config.defaultConfigJsonWithHotkey(allocator, shell_resolved, hotkey);
     defer allocator.free(json);
 
-    const file = try std.fs.createFileAbsolute(path, .{ .exclusive = true });
-    defer file.close();
-    try file.writeAll(json);
+    const file = try std.Io.Dir.createFileAbsolute(rt.io, path, .{ .exclusive = true });
+    defer file.close(rt.io);
+    try file.writeStreamingAll(rt.io, json);
 }
 
-pub fn acquireWorkerLock(allocator: std.mem.Allocator, index: u32) !?ProcessLock {
-    const path = try paths.instanceLockPath(allocator, index);
+pub fn acquireWorkerLock(rt: Runtime, allocator: std.mem.Allocator, index: u32) !?ProcessLock {
+    const path = try paths.instanceLockPath(rt, allocator, index);
     defer allocator.free(path);
-    var lock = (try tryAcquireProcessLock(path)) orelse return null;
-    errdefer lock.deinit();
+    var lock = (try tryAcquireProcessLock(rt, path)) orelse return null;
+    errdefer lock.deinit(rt);
     // 새 PID를 lock 파일에 공개하기 전에 이전 endpoint 상태를 starting으로
     // 원자 교체한다. PID가 재사용돼도 stale ready를 관찰할 틈이 없다.
-    try recordEndpointStateForPid(allocator, index, currentProcessId(), .starting);
-    try writeOwnerPid(lock.file);
+    try recordEndpointStateForPid(rt, allocator, index, currentProcessId(), .starting);
+    try writeOwnerPid(rt, lock.file);
     lock.clear_pid_on_close = true;
     return lock;
 }
 
-pub fn acquireLauncherLock(allocator: std.mem.Allocator) !ProcessLock {
-    const path = try paths.launcherLockPath(allocator);
+pub fn acquireLauncherLock(rt: Runtime, allocator: std.mem.Allocator) !ProcessLock {
+    const path = try paths.launcherLockPath(rt, allocator);
     defer allocator.free(path);
-    const file = try std.fs.createFileAbsolute(path, .{
+    const file = try std.Io.Dir.createFileAbsolute(rt.io, path, .{
         .truncate = false,
         .read = true,
         .lock = .exclusive,
     });
     var lock: ProcessLock = .{ .file = file, .clear_pid_on_close = false };
-    errdefer lock.deinit();
-    try writeOwnerPid(lock.file);
+    errdefer lock.deinit(rt);
+    try writeOwnerPid(rt, lock.file);
     lock.clear_pid_on_close = true;
     return lock;
 }
 
-pub fn isRunning(allocator: std.mem.Allocator, index: u32) !bool {
-    const path = try paths.instanceLockPath(allocator, index);
+pub fn isRunning(rt: Runtime, allocator: std.mem.Allocator, index: u32) !bool {
+    const path = try paths.instanceLockPath(rt, allocator, index);
     defer allocator.free(path);
-    return workerLockOwned(path);
+    return workerLockOwned(rt, path);
 }
 
-fn workerLockOwned(path: []const u8) !bool {
-    var lock = (try tryAcquireProcessLock(path)) orelse return true;
+fn workerLockOwned(rt: Runtime, path: []const u8) !bool {
+    var lock = (try tryAcquireProcessLock(rt, path)) orelse return true;
     // lock을 얻었다는 사실이 owner 부재를 증명한다. 이전 crash가 남긴 PID를
     // lock 아래에서 비워 다음 worker의 PID 기록을 startup acknowledgment로 쓴다.
-    try lock.file.setEndPos(0);
-    lock.deinit();
+    try lock.file.setLength(rt.io, 0);
+    lock.deinit(rt);
     return false;
 }
 
-pub fn waitUntilRunning(allocator: std.mem.Allocator, index: u32, timeout_ns: u64) !void {
-    const path = try paths.instanceLockPath(allocator, index);
+pub fn waitUntilRunning(rt: Runtime, allocator: std.mem.Allocator, index: u32, timeout_ns: u64) !void {
+    const path = try paths.instanceLockPath(rt, allocator, index);
     defer allocator.free(path);
-    var timer = try std.time.Timer.start();
+    var timer: runtime.Timer = .start(rt);
     while (timer.read() < timeout_ns) {
         // PID는 worker가 lock을 획득한 뒤 기록한다. 파일이 비어 있는 동안 lock을
         // probe하면 launcher가 worker보다 먼저 lock을 잡는 race가 생기므로 metadata만
         // 확인한다. PID가 쓰인 뒤 실제 생존 판정은 다시 advisory lock으로 검증한다.
-        if (ownerPidWritten(path) and try isRunning(allocator, index)) return;
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        if (ownerPidWritten(rt, path) and try isRunning(rt, allocator, index)) return;
+        rt.sleepNs(10 * std.time.ns_per_ms);
     }
     return error.WorkerStartTimeout;
 }
 
-pub fn recordEndpointState(allocator: std.mem.Allocator, index: u32, state: EndpointState) !void {
-    try recordEndpointStateForPid(allocator, index, currentProcessId(), state);
+pub fn recordEndpointState(rt: Runtime, allocator: std.mem.Allocator, index: u32, state: EndpointState) !void {
+    try recordEndpointStateForPid(rt, allocator, index, currentProcessId(), state);
 }
 
 fn recordEndpointStateForPid(
+    rt: Runtime,
     allocator: std.mem.Allocator,
     index: u32,
     pid: u32,
     state: EndpointState,
 ) !void {
-    const path = try paths.instanceEndpointStatePath(allocator, index);
+    const path = try paths.instanceEndpointStatePath(rt, allocator, index);
     defer allocator.free(path);
-    try writeEndpointSnapshot(allocator, path, pid, state);
+    try writeEndpointSnapshot(rt, allocator, path, pid, state);
 }
 
 fn writeEndpointSnapshot(
+    rt: Runtime,
     allocator: std.mem.Allocator,
     path: []const u8,
     pid: u32,
@@ -231,40 +237,42 @@ fn writeEndpointSnapshot(
 ) !void {
     var buf: [64]u8 = undefined;
     const content = try std.fmt.bufPrint(&buf, "v1 {d} {s}\n", .{ pid, @tagName(state) });
-    _ = try paths.writeFileIfChanged(allocator, path, content);
+    _ = try paths.writeFileIfChanged(rt, allocator, path, content);
 }
 
 /// 실제 worker 0 요청을 보내기 직전에만 사용한다. fixed retry 대신 worker가
 /// 기록한 endpoint 상태를 기다리며, unavailable/종료는 timeout 전에 반환한다.
-pub fn waitUntilEndpointReady(allocator: std.mem.Allocator, index: u32, timeout_ns: u64) !void {
-    const lock_path = try paths.instanceLockPath(allocator, index);
+pub fn waitUntilEndpointReady(rt: Runtime, allocator: std.mem.Allocator, index: u32, timeout_ns: u64) !void {
+    const lock_path = try paths.instanceLockPath(rt, allocator, index);
     defer allocator.free(lock_path);
-    const endpoint_path = try paths.instanceEndpointStatePath(allocator, index);
+    const endpoint_path = try paths.instanceEndpointStatePath(rt, allocator, index);
     defer allocator.free(endpoint_path);
 
     var probe = FileEndpointProbe{
+        .rt = rt,
         .lock_path = lock_path,
         .endpoint_path = endpoint_path,
-        .timer = try std.time.Timer.start(),
+        .timer = .start(rt),
     };
     try waitUntilEndpointReadyWithProbe(&probe, timeout_ns);
 }
 
 const FileEndpointProbe = struct {
+    rt: Runtime,
     lock_path: []const u8,
     endpoint_path: []const u8,
-    timer: std.time.Timer,
+    timer: runtime.Timer,
 
     fn poll(self: *@This()) !EndpointProbeResult {
-        return probeEndpointFiles(self.lock_path, self.endpoint_path);
+        return probeEndpointFiles(self.rt, self.lock_path, self.endpoint_path);
     }
 
     fn elapsedNs(self: *@This()) u64 {
         return self.timer.read();
     }
 
-    fn sleep(_: *@This(), duration_ns: u64) void {
-        std.Thread.sleep(duration_ns);
+    fn sleep(self: *@This(), duration_ns: u64) void {
+        self.rt.sleepNs(duration_ns);
     }
 };
 
@@ -284,23 +292,23 @@ fn waitUntilEndpointReadyWithProbe(probe: anytype, timeout_ns: u64) !void {
     return error.RequestEndpointReadyTimeout;
 }
 
-fn probeEndpointFiles(lock_path: []const u8, endpoint_path: []const u8) !EndpointProbeResult {
-    const snapshot = try readEndpointSnapshot(endpoint_path);
-    const owner_pid = try readOwnerPid(lock_path);
+fn probeEndpointFiles(rt: Runtime, lock_path: []const u8, endpoint_path: []const u8) !EndpointProbeResult {
+    const snapshot = try readEndpointSnapshot(rt, endpoint_path);
+    const owner_pid = try readOwnerPid(rt, lock_path);
 
     if (owner_pid == null) {
         // acquireWorkerLock은 lock을 가진 뒤 starting을 먼저 쓰고 PID를 쓴다.
         // 따라서 상태가 있으면 lock probe가 안전하며, free면 이미 종료한 것.
         if (snapshot != null) {
-            return if (try workerLockOwned(lock_path)) .starting else .worker_exited;
+            return if (try workerLockOwned(rt, lock_path)) .starting else .worker_exited;
         }
         return .starting;
     }
 
-    if (!try workerLockOwned(lock_path)) return .worker_exited;
+    if (!try workerLockOwned(rt, lock_path)) return .worker_exited;
 
     // lock 생존 판정 사이에 owner가 바뀌지 않았는지 다시 확인한다.
-    const confirmed_pid = (try readOwnerPid(lock_path)) orelse return .worker_exited;
+    const confirmed_pid = (try readOwnerPid(rt, lock_path)) orelse return .worker_exited;
     if (!std.meta.eql(confirmed_pid, owner_pid.?)) return .starting;
 
     const current = snapshot orelse return .starting;
@@ -322,19 +330,22 @@ const OwnerPid = union(enum) {
     },
 };
 
-fn readOwnerPid(path: []const u8) !?OwnerPid {
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+fn readOwnerPid(rt: Runtime, path: []const u8) !?OwnerPid {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer file.close();
+    defer file.close(rt.io);
     // Zig의 Windows File.lock은 byte 0을 잠근다. PID는 그 다음 byte부터
     // 보관해 launcher의 별도 handle이 lock 보유 중에도 읽을 수 있게 한다.
-    try file.seekTo(1);
+    //
+    // #451 — 예전엔 `seekTo(1)` + `readAll` 이었다. 0.16 의 `readPositionalAll` 은
+    // offset 을 직접 받아 (`fs.File.preadAll` 자리) 파일 위치를 건드리지 않는다 —
+    // 같은 handle 을 다른 곳에서 안 쓰더라도 seek 상태가 없는 쪽이 안전하다.
     var buf: [32]u8 = undefined;
-    const n = try file.readAll(&buf);
+    const n = try file.readPositionalAll(rt.io, &buf, 1);
     if (n == 0) return null;
-    if (n == buf.len and try file.getEndPos() > buf.len) return error.InvalidWorkerOwnerPid;
+    if (n == buf.len and try file.length(rt.io) > buf.len) return error.InvalidWorkerOwnerPid;
     const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
     if (std.mem.startsWith(u8, text, "v1 ")) {
         const pid = std.fmt.parseInt(u32, text[3..], 10) catch return error.InvalidWorkerOwnerPid;
@@ -365,15 +376,15 @@ fn ownerMatchesSnapshot(owner: OwnerPid, snapshot_pid: u32) bool {
     };
 }
 
-fn readEndpointSnapshot(path: []const u8) !?EndpointSnapshot {
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+fn readEndpointSnapshot(rt: Runtime, path: []const u8) !?EndpointSnapshot {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer file.close();
+    defer file.close(rt.io);
     var buf: [64]u8 = undefined;
-    const n = try file.readAll(&buf);
-    if (n == buf.len and try file.getEndPos() > buf.len) return error.InvalidEndpointState;
+    const n = try file.readPositionalAll(rt.io, &buf, 0);
+    if (n == buf.len and try file.length(rt.io) > buf.len) return error.InvalidEndpointState;
     return try parseEndpointSnapshot(buf[0..n]);
 }
 
@@ -390,14 +401,14 @@ fn parseEndpointSnapshot(content: []const u8) !EndpointSnapshot {
     return .{ .pid = pid, .state = state };
 }
 
-fn ownerPidWritten(path: []const u8) bool {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
-    defer file.close();
-    return (file.getEndPos() catch return false) != 0;
+fn ownerPidWritten(rt: Runtime, path: []const u8) bool {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch return false;
+    defer file.close(rt.io);
+    return (file.length(rt.io) catch return false) != 0;
 }
 
-fn tryAcquireProcessLock(path: []const u8) !?ProcessLock {
-    const file = std.fs.createFileAbsolute(path, .{
+fn tryAcquireProcessLock(rt: Runtime, path: []const u8) !?ProcessLock {
+    const file = std.Io.Dir.createFileAbsolute(rt.io, path, .{
         .truncate = false,
         .read = true,
         .lock = .exclusive,
@@ -409,12 +420,14 @@ fn tryAcquireProcessLock(path: []const u8) !?ProcessLock {
     return .{ .file = file, .clear_pid_on_close = false };
 }
 
-fn writeOwnerPid(file: std.fs.File) !void {
+fn writeOwnerPid(rt: Runtime, file: std.Io.File) !void {
     var buf: [36]u8 = undefined;
     const text = try std.fmt.bufPrint(&buf, "\nv1 {d}\n", .{currentProcessId()});
-    try file.setEndPos(0);
-    try file.seekTo(0);
-    try file.writeAll(text);
+    try file.setLength(rt.io, 0);
+    // #451 — `seekTo(0)` + `writeAll` 을 offset 0 의 positional write 로 대체한다
+    // (`fs.File.pwriteAll` 자리). 파일 위치를 남기지 않아 lock 을 공유하는 다른
+    // handle 의 읽기와 간섭하지 않는다.
+    try file.writePositionalAll(rt.io, text, 0);
 }
 
 fn currentProcessId() u32 {
@@ -425,28 +438,36 @@ fn currentProcessId() u32 {
     };
 }
 
-pub fn spawnWorker(allocator: std.mem.Allocator, index: u32) !void {
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe = try std.fs.selfExePath(&exe_buf);
+pub fn spawnWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void {
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다) ·
+    // `process.Child.init` + `spawn` ➡️ `std.process.spawn(io, options)` (릴리즈 노트
+    // *Process* 절). 기본 stdio 는 예전 `Child.init` 과 같은 상속이라 따로 안 적는다.
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
     const index_text = try std.fmt.allocPrint(allocator, "{d}", .{index});
     defer allocator.free(index_text);
-    var child = std.process.Child.init(&.{ exe, "--instance", index_text }, allocator);
-    try child.spawn();
+    // 자식을 기다리지 않는다 — worker 는 독립 프로세스이고, launcher 는 lock 파일로
+    // 기동을 확인한 뒤 (`waitUntilRunning`) 곧 끝난다. 예전 `Child.init` + `spawn` 도
+    // 같았다 (`wait` 를 부르지 않았다).
+    _ = try std.process.spawn(rt.io, .{ .argv = &.{ exe, "--instance", index_text } });
 }
 
-pub fn defaultShell(allocator: std.mem.Allocator) ![]u8 {
+pub fn defaultShell(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     if (@import("builtin").os.tag != .windows) {
-        if (std.process.getEnvVarOwned(allocator, "SHELL") catch null) |shell| return shell;
+        if (rt.envAlloc(allocator, "SHELL") catch null) |shell| return shell;
     }
     return allocator.dupe(u8, config.Defaults.shell);
 }
 
-pub fn configAutoStart(allocator: std.mem.Allocator, index: u32) !bool {
-    const path = try paths.configPathFor(allocator, index);
+pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !bool {
+    const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 64 * 1024);
+    const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
+    defer file.close(rt.io);
+    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
+    var file_reader = file.reader(rt.io, &.{});
+    const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
@@ -456,12 +477,14 @@ pub fn configAutoStart(allocator: std.mem.Allocator, index: u32) !bool {
     return value.bool;
 }
 
-pub fn configHotkeyText(allocator: std.mem.Allocator, index: u32) ![]u8 {
-    const path = try paths.configPathFor(allocator, index);
+pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
+    const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 64 * 1024);
+    const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
+    defer file.close(rt.io);
+    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
+    var file_reader = file.reader(rt.io, &.{});
+    const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
@@ -471,13 +494,14 @@ pub fn configHotkeyText(allocator: std.mem.Allocator, index: u32) ![]u8 {
     return allocator.dupe(u8, value.string);
 }
 
-pub fn hotkeyOwner(allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !?u32 {
+pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !?u32 {
     for (indices) |index| {
-        const path = try paths.configPathFor(allocator, index);
+        const path = try paths.configPathFor(rt, allocator, index);
         defer allocator.free(path);
-        const file = try std.fs.openFileAbsolute(path, .{});
-        defer file.close();
-        const content = try file.readToEndAlloc(allocator, 64 * 1024);
+        const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
+        defer file.close(rt.io);
+        var file_reader = file.reader(rt.io, &.{});
+        const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
         defer allocator.free(content);
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
         defer parsed.deinit();
@@ -521,15 +545,15 @@ pub fn conflictingLowerIndex(entries: []const HotkeyEntry, self_index: u32, cand
 /// 디스크의 다른 config 를 읽어 `conflictingLowerIndex` 에 넘긴다. 목록 자체를 못 얻거나
 /// 메모리가 없으면 `null` — **검사를 못 했다고 기동을 막지는 않는다** (전역 핫키 등록 실패는
 /// 그 뒤 단계에서 여전히 잡힌다).
-pub fn lowerIndexHotkeyConflict(allocator: std.mem.Allocator, self_index: u32, candidate: config.Hotkey) ?u32 {
-    const indices = listConfigIndices(allocator) catch return null;
+pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_index: u32, candidate: config.Hotkey) ?u32 {
+    const indices = listConfigIndices(rt, allocator) catch return null;
     defer allocator.free(indices);
 
     const entries = allocator.alloc(HotkeyEntry, indices.len) catch return null;
     defer allocator.free(entries);
     for (indices, 0..) |index, i| {
         const parsed: ?config.Hotkey = blk: {
-            const text = configHotkeyText(allocator, index) catch break :blk null;
+            const text = configHotkeyText(rt, allocator, index) catch break :blk null;
             defer allocator.free(text);
             break :blk config.Hotkey.fromString(text);
         };
@@ -589,30 +613,37 @@ test "current process id is available for lock diagnostics" {
     try std.testing.expect(currentProcessId() != 0);
 }
 
+/// #451 — 테스트는 `std.testing.io` 를 쓰고 환경변수는 안 본다 (여기 함수들은 경로를
+/// 인자로 받는다). `paths.zig` 처럼 합성 환경변수가 필요한 경우가 아니라 `.empty` 로 족하다.
+fn testRuntime() Runtime {
+    return .{ .io = std.testing.io, .environ = .empty };
+}
+
 test "process lock records pid and excludes a second owner" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const allocator = std.testing.allocator;
-    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
     defer allocator.free(root);
-    const path = try std.fs.path.join(allocator, &.{ root, "instance7.lock" });
+    const path = try std.Io.Dir.path.join(allocator, &.{ root, "instance7.lock" });
     defer allocator.free(path);
 
     {
-        var first = (try tryAcquireProcessLock(path)).?;
-        defer first.deinit();
-        try writeOwnerPid(first.file);
+        var first = (try tryAcquireProcessLock(rt, path)).?;
+        defer first.deinit(rt);
+        try writeOwnerPid(rt, first.file);
         first.clear_pid_on_close = true;
 
-        const owner = (try readOwnerPid(path)).?;
+        const owner = (try readOwnerPid(rt, path)).?;
         switch (owner) {
             .versioned => |pid| try std.testing.expectEqual(currentProcessId(), pid),
             .legacy_suffix => return error.TestUnexpectedResult,
         }
-        try std.testing.expect((try tryAcquireProcessLock(path)) == null);
+        try std.testing.expect((try tryAcquireProcessLock(rt, path)) == null);
     }
-    var next = (try tryAcquireProcessLock(path)).?;
-    next.deinit();
+    var next = (try tryAcquireProcessLock(rt, path)).?;
+    next.deinit(rt);
 }
 
 test "endpoint state parser requires version pid and known state" {
@@ -630,64 +661,64 @@ test "endpoint probe requires live lock and matching owner pid" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const allocator = std.testing.allocator;
-    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
     defer allocator.free(root);
-    const lock_path = try std.fs.path.join(allocator, &.{ root, "instance0.lock" });
+    const lock_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance0.lock" });
     defer allocator.free(lock_path);
-    const endpoint_path = try std.fs.path.join(allocator, &.{ root, "instance0.endpoint" });
+    const endpoint_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance0.endpoint" });
     defer allocator.free(endpoint_path);
 
     const pid = currentProcessId();
     const other_pid = if (pid == std.math.maxInt(u32)) pid - 1 else pid + 1;
     {
-        var worker_lock = (try tryAcquireProcessLock(lock_path)).?;
-        defer worker_lock.deinit();
+        var worker_lock = (try tryAcquireProcessLock(rt, lock_path)).?;
+        defer worker_lock.deinit(rt);
 
         // acquireWorkerLock의 실제 순서: lock 아래 starting이 owner PID보다 먼저다.
-        try writeEndpointSnapshot(allocator, endpoint_path, pid, .starting);
+        try writeEndpointSnapshot(rt, allocator, endpoint_path, pid, .starting);
         try std.testing.expectEqual(
             EndpointProbeResult.starting,
-            try probeEndpointFiles(lock_path, endpoint_path),
+            try probeEndpointFiles(rt, lock_path, endpoint_path),
         );
 
         // 수정 전 worker가 byte 0부터 쓴 PID도 endpoint의 전체 PID와 suffix를
         // 대조해 업그레이드 중인 launcher가 ready 상태를 계속 읽을 수 있다.
         var legacy_buf: [32]u8 = undefined;
         const legacy_text = try std.fmt.bufPrint(&legacy_buf, "{d}\n", .{pid});
-        try worker_lock.file.setEndPos(0);
-        try worker_lock.file.seekTo(0);
-        try worker_lock.file.writeAll(legacy_text);
-        try writeEndpointSnapshot(allocator, endpoint_path, pid, .ready);
+        try worker_lock.file.setLength(rt.io, 0);
+        try worker_lock.file.writePositionalAll(rt.io, legacy_text, 0);
+        try writeEndpointSnapshot(rt, allocator, endpoint_path, pid, .ready);
         try std.testing.expectEqual(
             EndpointProbeResult.ready,
-            try probeEndpointFiles(lock_path, endpoint_path),
+            try probeEndpointFiles(rt, lock_path, endpoint_path),
         );
 
-        try writeOwnerPid(worker_lock.file);
+        try writeOwnerPid(rt, worker_lock.file);
         worker_lock.clear_pid_on_close = true;
-        try writeEndpointSnapshot(allocator, endpoint_path, other_pid, .ready);
+        try writeEndpointSnapshot(rt, allocator, endpoint_path, other_pid, .ready);
         try std.testing.expectEqual(
             EndpointProbeResult.starting,
-            try probeEndpointFiles(lock_path, endpoint_path),
+            try probeEndpointFiles(rt, lock_path, endpoint_path),
         );
 
-        try writeEndpointSnapshot(allocator, endpoint_path, pid, .ready);
+        try writeEndpointSnapshot(rt, allocator, endpoint_path, pid, .ready);
         try std.testing.expectEqual(
             EndpointProbeResult.ready,
-            try probeEndpointFiles(lock_path, endpoint_path),
+            try probeEndpointFiles(rt, lock_path, endpoint_path),
         );
 
-        try writeEndpointSnapshot(allocator, endpoint_path, pid, .unavailable);
+        try writeEndpointSnapshot(rt, allocator, endpoint_path, pid, .unavailable);
         try std.testing.expectEqual(
             EndpointProbeResult.unavailable,
-            try probeEndpointFiles(lock_path, endpoint_path),
+            try probeEndpointFiles(rt, lock_path, endpoint_path),
         );
     }
 
     // clean exit 뒤 남은 endpoint 파일은 같은 PID여도 ready로 인정하지 않는다.
     try std.testing.expectEqual(
         EndpointProbeResult.worker_exited,
-        try probeEndpointFiles(lock_path, endpoint_path),
+        try probeEndpointFiles(rt, lock_path, endpoint_path),
     );
 }
 

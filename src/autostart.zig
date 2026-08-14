@@ -5,29 +5,30 @@
 //!   - macOS:   `~/Library/LaunchAgents/com.tildaz.app.plist` (launchd)
 //!   - Linux:   `$XDG_CONFIG_HOME/autostart/tildaz.desktop` (fallback `~/.config`)
 //!
-//! API 시그니처는 세 platform 동일 — `enable(allocator)` / `disable(allocator)`.
+//! API 시그니처는 세 platform 동일 — `enable(rt, allocator)` / `disable(rt, allocator)`.
 //! Windows 는 allocator 를 무시 (fixed buffer + Win32 API), macOS / Linux 는
-//! path 작성에 사용.
+//! path 작성에 사용. `rt` 는 #451 이후 파일 IO · 환경변수 통로다.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const Runtime = @import("runtime.zig").Runtime;
 
 const impl = switch (builtin.os.tag) {
     .windows => @import("autostart/windows.zig"),
     .macos => @import("autostart/macos.zig"),
     .linux => @import("autostart/linux.zig"),
     else => struct {
-        pub fn enable(_: std.mem.Allocator) !void {
+        pub fn enable(_: Runtime, _: std.mem.Allocator) !void {
             return error.AutostartUnsupportedPlatform;
         }
-        pub fn disable(_: std.mem.Allocator) void {}
+        pub fn disable(_: Runtime, _: std.mem.Allocator) void {}
     },
 };
 
-pub fn enable(allocator: std.mem.Allocator) !void {
-    return impl.enable(allocator);
+pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
+    return impl.enable(rt, allocator);
 }
 
-pub fn disable(allocator: std.mem.Allocator) void {
-    impl.disable(allocator);
+pub fn disable(rt: Runtime, allocator: std.mem.Allocator) void {
+    impl.disable(rt, allocator);
 }
