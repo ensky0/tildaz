@@ -512,7 +512,7 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 
 | 머신 | OS | 화면 |
 |---|---|---|
-| 노트북 · AMD Ryzen AI 7 350 (8C/16T) | **Windows · Linux 듀얼부트** | 2880x1800 · **120 Hz** (Linux scale 1.6 / Windows 200 %) |
+| 노트북 · AMD Ryzen AI 7 350 (8C/16T) | **Windows · Linux 듀얼부트** | 2880x1800 · **120 Hz** (Linux scale 1.6 / Windows **150 %**) |
 | 노트북 · Intel Core i5-1240P (12C/16T) | **Windows · Linux 듀얼부트** | 1920x1080 · **59.997 Hz** (100 %) |
 | 데스크탑 · AMD Ryzen 5 5700G | **Windows · Linux 듀얼부트** | (미기록) |
 | 미니PC · Firebat ZY-A8 · AMD Ryzen 7 8845HS (8C/16T) | **Windows · Linux 듀얼부트** (Linux 는 CachyOS) | 3840x2160 · **60 Hz** (Linux scale 1.7 → 논리 2259x1271) |
