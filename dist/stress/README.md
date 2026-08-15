@@ -41,7 +41,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
 | [`check-input-loss.sh`](check-input-loss.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
-| [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · Windows (Git Bash) |
+| [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · macOS · Windows (Git Bash) |
 | [`send-keys.ps1`](send-keys.ps1) | 위 도구의 **Windows 합성 입력** (`SendInput`) — Linux 의 `ydotool` 자리 | 〃 |
 | [`hygiene.sh`](hygiene.sh) | 위 넷이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
@@ -727,10 +727,21 @@ dist/stress/measure-input-latency.sh                      # idle · flood 둘 �
 dist/stress/measure-input-latency.sh --mode idle --presses 50
 ```
 
-**Linux · Windows 에서 돌아요.** 합성 입력이 platform 마다 달라요 — Linux 는 `ydotool` (uinput),
-Windows 는 `SendInput` ([`send-keys.ps1`](send-keys.ps1)) 이에요. **macOS 는 아직 없어요** —
-`CGEvent` 로 [#387](https://github.com/ensky0/tildaz/issues/387) 이 이미 쓴 경로를 옮겨오면 되지만
-안 했어요. **계측 자체는 세 platform 에 다 있어요** (`perf.input_latency`).
+**세 platform 에서 다 돌아요.** 합성 입력만 platform 마다 달라요.
+
+| | 합성 입력 | 창 포커스 | 덤프 · 종료 키 | 한/영 |
+|---|---|---|---|---|
+| **Linux** | `ydotool` (uinput) | 새 창이 자동으로 받아요 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | `fcitx5-remote` (전역) |
+| **macOS** | `CGEvent` ([`mac-input.m`](mac-input.m)) — 스크립트가 `clang` 으로 그 자리에서 빌드해요 | **클릭이 필요해요** (CGEvent 로 눌러요) | `Shift+Cmd+F12` · **`Cmd+W`** | `TISSelectInputSource` (전역) |
+| **Windows** | `SendInput` ([`send-keys.ps1`](send-keys.ps1)) | 키마다 확인 + 클릭으로 회수 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | 창별 IME conversion mode |
+
+**계측 자체도 세 platform 에 다 있어요** (`perf.input_latency`).
+
+**macOS 의 종료 키가 `Cmd+Q` 가 아닌 이유**는 확인창이에요. `Cmd+Q` 는 `applicationShouldTerminate` 가
+`count()==1` 을 보고 confirm 을 띄우는데, `Cmd+W` 는 `closeTab` 이 `orderedRemove` 로 탭을 **먼저 지운
+뒤** terminate 라 `count()==0` → confirm 을 건너뛰어요 ([`session_core.zig`](../../src/session_core.zig) ·
+[`host/macos.zig`](../../src/host/macos.zig)). Linux 가 `Alt+F4` 대신 `Ctrl+Shift+W` 를 쓰는 것과 같은
+이유예요.
 
 **Windows 는 Git Bash 에서 돌려요** (`compare-terminals.sh` · `measure-repeat.sh` 와 같은 제약이에요).
 PowerShell 판을 따로 두지 않는 이유는 `measure-repeat.sh` 헤더에 있어요 — #381 에서 두 벌이 실제로
@@ -749,34 +760,43 @@ DRR 이 켜져 있거나 배경 앱이 그리고 있으면 응답 시간도 처�
 
 ### 첫 수치 — **기기가 다르니 나란히 볼 때 주의해요**
 
-둘 다 5 회 절사평균 + min~max 이고 **주사율은 60 Hz 로 같아요.** 하지만 CPU 도 OS 도 달라서
-**절대값 차이를 전부 platform 몫으로 읽으면 안 돼요** (같은 기기에서 OS 만 바꿔 재는 것이 원칙이에요 —
-`AGENTS.md` 의 `# 실행 환경`).
+셋 다 5 회 절사평균 + min~max 예요. **기기도 주사율도 달라서 절대값 차이를 전부 platform 몫으로
+읽으면 안 돼요** (같은 기기에서 OS 만 바꿔 재는 것이 원칙이에요 — `AGENTS.md` 의 `# 실행 환경`).
 
-| | **Linux** · 미니PC Ryzen 7 8845HS · CachyOS · KDE Plasma | **Windows** · 노트북 Intel i5-1240P · Windows 11 26200 |
-|---|---|---|
-| 화면 | 60 Hz | 내장 1920x1080 · 로그 `refresh=60Hz period=16.67ms` |
-| **유휴** 평균 | **0.67 ms** (0.66~0.69) | **9.79 ms** (9.28~10.12) |
-| **유휴** 최악 | **12.35 ms** (12.30~12.38) | **19.85 ms** (16.56~25.83) |
-| **폭포 중** 평균 | **10.69 ms** (10.37~11.72) | **11.01 ms** (10.09~11.69) |
-| **폭포 중** 최악 | **18.64 ms** (18.24~19.14) | **17.62 ms** (16.25~19.79) |
+| | **Linux** · 미니PC Ryzen 7 8845HS · CachyOS · KDE Plasma | **macOS** · MacBook Pro M5 Pro · 26.6.1 | **Windows** · 노트북 Intel i5-1240P · Windows 11 26200 |
+|---|---|---|---|
+| 화면 | 60 Hz | 내장 3024x1964 · **120 Hz** (ProMotion) | 내장 1920x1080 · 로그 `refresh=60Hz period=16.67ms` |
+| **유휴** 평균 | **0.67 ms** (0.66~0.69) | **1.27 ms** (0.63~2.64) | **9.79 ms** (9.28~10.12) |
+| **유휴** 최악 | **12.35 ms** (12.30~12.38) | **4.05 ms** (0.79~**16.58**) | **19.85 ms** (16.56~25.83) |
+| **폭포 중** 평균 | **10.69 ms** (10.37~11.72) | **1.50 ms** (1.40~8.12) | **11.01 ms** (10.09~11.69) |
+| **폭포 중** 최악 | **18.64 ms** (18.24~19.14) | **4.26 ms** (2.01~8.24) | **17.62 ms** (16.25~19.79) |
 
-Windows 의 회차별 값 (실행 순서 그대로 — 위 "반복과 대표값" 규칙). **Linux 회차별 값은 남아 있지
+회차별 값 (실행 순서 그대로 — 위 "반복과 대표값" 규칙). **Linux 회차별 값은 남아 있지
 않아요** — 그때는 min~max 만 기록했어요 ([#441 코멘트](https://github.com/ensky0/tildaz/issues/441#issuecomment-5302521860)).
 
 ```
-유휴  평균 10.12  9.89  9.28  9.50  9.99 ms    최악 20.09 18.21 25.83 16.56 21.25 ms
-폭포  평균 10.45 11.49 11.69 10.09 11.10 ms    최악 17.80 17.64 17.43 16.25 19.79 ms
+macOS    유휴 평균  0.68  0.74  0.63  2.39  2.64 ms    최악  0.89  2.98  0.79 16.58  8.29 ms
+         폭포 평균  1.53  1.42  1.40  8.12  1.54 ms    최악  5.10  2.29  2.01  8.24  5.40 ms
+
+Windows  유휴 평균 10.12  9.89  9.28  9.50  9.99 ms    최악 20.09 18.21 25.83 16.56 21.25 ms
+         폭포 평균 10.45 11.49 11.69 10.09 11.10 ms    최악 17.80 17.64 17.43 16.25 19.79 ms
 ```
 
-**폭포 중 값은 두 platform 이 거의 같은데 (10.69 / 11.01 ms) 유휴가 15 배 갈려요.** 그래서
-"폭포가 흐르면 16 배 느려진다" 는 Linux 의 문장이 Windows 에서는 **+12 % 로 사라져요.**
+⚠️ **macOS 는 회차 폭이 커서 절사평균만 보면 안 돼요.** 앞 세 회차 (유휴 평균 0.63~0.74 ms) 와 뒤 두
+회차 (2.39 · 2.64 ms) 가 **두 무리로 갈려요.** 회차가 갈수록 나빠지는 모양이라 열 누적이 의심되지만
+**확인하지 않았어요.** 유휴 최악의 폭 (0.79~16.58 ms) 은 **Linux 값 12.35 ms 를 품어서**, 이 표만으로
+"macOS 가 유휴 최악에서 낫다" 고 말할 수 없어요.
+
+**폭포 중 값은 Linux · Windows 가 거의 같은데 (10.69 / 11.01 ms) 유휴가 15 배 갈려요.** 그래서
+"폭포가 흐르면 16 배 느려진다" 는 Linux 의 문장이 Windows 에서는 **+12 % 로 사라져요.** macOS 는
+유휴 · 폭포가 둘 다 낮아 또 다른 모양이에요 (0.63~2.64 → 1.40~8.12).
 
 #### 유휴 차이의 원인은 **렌더를 언제 시작하느냐**예요 (소스로 확인)
 
 | platform | 키가 온 뒤 | 근거 |
 |---|---|---|
 | **Linux** | **같은 poll 반복에서 바로 그려요** | 키 이벤트가 `needs_redraw` 를 켜고, 그 다음 줄의 `maybeRedraw` 가 그 자리에서 그려요 ([`wayland_minimal.zig`](../../src/host/linux/wayland_minimal.zig)) |
+| **macOS** | **다음 vsync 를 기다려요** (구조상) | `tildazKeyDown` 은 `requestRender()` 로 `g_needs_render` 만 켜고 ([`macos.zig`](../../src/host/macos.zig)), 실제 렌더는 CADisplayLink 콜백 `renderFrameTick` 이 해요 — **Windows 와 같은 모양이에요** |
 | **Windows** | **다음 frame tick 을 기다려요** | `wndProc` 는 `requestRender()` 로 게이트만 열고 (#386 ②), 실제 렌더는 프레임 클럭이 post 하는 `WM_FRAME_TICK` → `renderFrameTick()` 에서 해요 ([`window.zig`](../../src/window.zig)) |
 
 키가 프레임 주기 안 아무 때나 도착하니 Windows 유휴 평균은 **반 프레임 (16.67 / 2 = 8.3 ms) + 렌더 ·
@@ -787,20 +807,41 @@ present · 셸 왕복**이 되고, 실측 9.79 ms 가 그 값이에요. 최악�
 이건 *"Windows 가 느리다"* 가 아니라 **구조가 다르다**는 뜻이에요 — 유휴에 프레임을 안 그려 CPU 를
 아끼는 #386 ② 의 게이트가 응답 지연으로는 반 프레임을 얹어요. 바꿀지 말지는 별도 판단이에요.
 
+⚠️ **그런데 macOS 는 같은 구조인데 값이 이 설명과 안 맞아요.** 120 Hz 면 반 프레임이 4.17 ms 라
+유휴 평균이 그 언저리여야 하는데 **5 회가 전부 그보다 낮아요** (0.63 · 0.68 · 0.74 · 2.39 · 2.64 ms).
+튄 뒤 두 회차까지 포함해서요.
+
+그래서 **"게이트 구조가 반 프레임을 얹는다" 는 설명이 platform 을 가려요.** 이건
+[#473](https://github.com/ensky0/tildaz/issues/473) 이 *"macOS 는 어느 쪽인가"* 로 남겨 둔 물음의
+답이기도 해요 — 같은 게이트를 쓰는데 그 비용이 안 나와요.
+
+**원인은 확인하지 않았어요.** 키 이벤트 배달이 vsync 와 맞물려 CADisplayLink 발사 직전에 도착하는
+것으로 보이지만 (그러면 대기가 거의 없어요) 그건 WindowServer 안쪽이라 우리 소스로는 못 봐요.
+확인하려면 `markInput` · `completeInput` 시각을 프레임 경계와 함께 찍어 위상을 봐야 해요 — 안 했어요.
+
 **이 값으로 [#439](https://github.com/ensky0/tildaz/issues/439) 를 판정하면 안 돼요.** 그 이슈는
 *"유휴에서 **PTY 출력이 도착**했을 때"* 이고 이 측정은 **키를 눌러** 시작해요 — 키가 오면 앱이 즉시
 렌더를 요청하니 유휴 깨우기 경로를 아예 안 타요. 예산 4 ms 와의 직접 비교도 안 돼요 (그건 드레인
 한 번의 상한이고, 이 값은 거기에 셸 왕복 · 렌더 · present 가 누적된 것이에요).
 
-### ⚠ 입력기 — **Linux 는 표본이 비고 Windows 는 안 비어요**
+### ⚠ 입력기 — **Linux 만 표본이 비고 macOS · Windows 는 안 비어요**
 
-보내는 것이 **문자 키 `a`** 라서 입력기 상태가 측정 전제예요. 그런데 **두 platform 의 결과가 달라요**
-(둘 다 실측이에요).
+보내는 것이 **문자 키 `a`** 라서 입력기 상태가 측정 전제예요. 그런데 **세 platform 의 결과가 달라요**
+(전부 실측이에요).
 
 | platform | 한글 모드에서 문자 키 | 표본 | 도구가 하는 일 |
 |---|---|---|---|
 | **Linux** (fcitx5) | IME 가 조합용으로 가져가요 (`ㅁ` 이 찍혀요) — 앱 키 핸들러를 **안 타요** | **0 개** | `fcitx5-remote` 로 영문 전환 후 측정, 끝나면 복원 |
+| **macOS** (NSTextInputClient) | `keyDown:` 이 우리 뷰에 **먼저 오고** 앱이 `interpretKeyEvents:` 로 IME 에 넘겨요 — `markInput()` 이 `tildazKeyDown` 첫 줄이라 그대로 세어져요 | **정상** (실측 10/10) | `TISSelectInputSource` 로 영문 전환 후 측정, 끝나면 복원 |
 | **Windows** (IMM) | IME 가 쓰는데도 **`WM_KEYDOWN` 은 앱에 도달해요** (`VK_PROCESSKEY`) | **정상** (실측 11/11) | 그래도 영문으로 맞춰요 — 아래 참고 |
+
+macOS 실측 (`a` × 10, 같은 조건). **에코까지 정상이라 폐기 장치가 아예 안 걸려요** — 같은 자음을
+연달아 치면 IME 가 음절을 확정해 PTY 로 흘려보내기 때문이에요.
+
+| | 표본 | 에코 | 평균 | 최악 |
+|---|---:|---:|---:|---:|
+| 영문 | 10 | 10 B | 3.12 ms | 4.11 ms |
+| **한글** | 10 | **27 B** (`ㅁ` 9 개) | 4.33 ms | 5.20 ms |
 
 Windows 실측: 한국어 IME (`hkl=0x04120412`) 를 conversion mode 1 (한글) 로 두고 `a` 10 회를 보냈더니
 `input samples=11` 로 **그대로 잡혔어요.** 그러니 Windows 에서 표본이 비면 원인은 입력기가 아니에요.
@@ -816,11 +857,32 @@ preedit overlay 를 그리는 시간을 재게 돼서 영문 회차와 나란히
 Linux 는 한글 모드에서 preedit 이 그려지는데도 표본이 안 잡혀요 — 즉 그쪽 계측은 **영문 직접 입력
 경로만** 봐요. 한글 입력의 응답 지연을 재려면 계측 지점을 IME 경로에도 놓아야 해요.
 
+### ⚠ macOS 의 조용한 실패 둘 — 값이 그럴듯하게 나와요
+
+둘 다 실측에서 겪었고, **표본 수만 보면 정상으로 보여요.**
+
+| 증상 | 원인 | 막는 법 |
+|---|---|---|
+| 키가 하나도 안 나가요 | 보내는 쪽 (터미널 앱) 에 **손쉬운 사용 (Accessibility) 권한**이 없어요. `CGEventPost` 는 **성공을 반환하면서 아무 일도 안 해요** | `mac-input check` 가 `AXIsProcessTrusted()` 를 **키를 보내는 그 프로세스 안에서** 불러요 (권한은 자식이 아니라 부모에 붙어요). 회차를 돌기 전에 멈춰요 |
+| 표본은 다 차는데 **화면에 아무것도 안 찍혀요** | 이벤트 소스가 시스템 modifier 상태를 물려받아 직전 조합키의 Cmd 가 남아요. `a` 가 `Cmd+A` 로 읽히면 `macCmdShortcut` 이 인식 못 해 **그냥 return** 하는데, `markInput()` 은 `tildazKeyDown` 첫 줄이라 표본은 세어져요 (그때 평균이 0.33 ms 로 그럴듯했어요) | `mac-input` 이 flags 를 **0 이어도 항상 설정**하고 소스를 `kCGEventSourceStatePrivate` 로 만들어요. 그래도 새면 **에코 검사**가 잡아요 |
+
+**에코 검사가 두 번째를 잡는 장치예요.** macOS 회차만 문자 키 앞뒤를 덤프로 감싸서, 그 구간의
+`drain bytes` 가 곧 에코량이 되게 해요 (`dumpAndReset` 이 읽으면서 리셋하니까요). 키가 PTY 로 안 간
+회차는 **0 B** 로 드러나요 — 표본 수로는 절대 안 보여요.
+
+Linux · Windows 로 넓히지 않은 이유는 **기대 표본이 바뀌기 때문**이에요. 두 platform 은 지금
+`Ctrl+C` 의 modifier 까지 세어 `키 수 + 1` 이 정상인데, 이 배치에서는 정확히 `키 수` 가 돼요. 이미
+5 회씩 측정을 마친 값이 있어서 도구를 바꾸면 재측정이 필요해요 — 그 판단은 각 platform 머신 몫이에요.
+(폭포 모드에서는 에코가 폭포량에 묻혀 사실상 통과만 하므로 그쪽 오염은 표본 수로 봐요.)
+
 ### 회차가 폐기되면 자동으로 다시 돌아요
 
 표본이 기대치의 8 할 미만이면 그 회차는 폐기예요 (`--retries`, 기본 3 회 재시도). 폐기의 알려진
 원인은 **한글 입력기** (Linux 한정, 위에서 미리 막아요) 와 **측정 중 조작**이에요 — 합성 입력은
 포커스된 창으로 가므로 측정 중에 창을 바꾸면 키가 다른 앱으로 새요.
+
+**macOS 는 폐기 사유가 하나 더 있어요** — 에코가 키 수에 못 미치면 (`⚠ 에코 N B`) 표본이 다 차도
+폐기예요. 위 "조용한 실패 둘" 의 두 번째를 잡는 장치예요.
 
 #### ⚠ Windows — **알림 토스트가 뜨면 회차가 통째로 폐기돼요**
 
