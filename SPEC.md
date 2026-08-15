@@ -80,7 +80,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `arrow_w_px` | `Renderer.tabArrowWPx()` |
 | `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `plus_w_px` | `Renderer.tabPlusWPx()` |
 
-**`pt → px` 변환은 반올림이고 공통 함수만 쓴다** ([#350](https://github.com/ensky0/tildaz/issues/350) 2026-07-30 확정). 위 표의 각 `*_PT` 를 physical pixel 로 바꿀 때 세 platform 이 **같은 규칙**을 쓰고, 계산은 [`src/ui_metrics.zig`](src/ui_metrics.zig) 의 세 함수에만 있다. host / renderer 가 `@intFromFloat(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 적지 않는다.
+**`pt → px` 변환은 반올림이고 공통 함수만 쓴다** ([#350](https://github.com/ensky0/tildaz/issues/350) 2026-07-30 확정). 위 표의 각 `*_PT` 를 physical pixel 로 바꿀 때 세 platform 이 **같은 규칙**을 쓰고, 계산은 [`src/ui_metrics.zig`](src/ui_metrics.zig) 의 세 함수에만 있다. host / renderer 가 `@round(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 적지 않는다.
 
 | 함수 | 결과 | 쓰는 자리 |
 |---|---|---|

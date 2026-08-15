@@ -1798,8 +1798,8 @@ pub const D3d11Renderer = struct {
                     .color = cursor_color,
                 }};
                 self.drawBgInstances(&cursor_inst);
-                self.last_cursor_px_x = @intFromFloat(cx0);
-                self.last_cursor_px_y = @intFromFloat(cy0);
+                self.last_cursor_px_x = @trunc(cx0);
+                self.last_cursor_px_y = @trunc(cy0);
             }
         }
 
@@ -2331,7 +2331,7 @@ pub const D3d11Renderer = struct {
             // #417 류의 문제를 새로 만드는 것이라 [#420](https://github.com/ensky0/tildaz/issues/420)
             // 의 Linux 도 같은 이유로 여기서 멈췄다. 셀 경계까지만 올리면 겹침이 줄고 (한글에서
             // 3 px 남는다) 윗 줄은 그대로다.
-            const top_limit: i32 = -@as(i32, @intFromFloat(self.font.ascent_px));
+            const top_limit: i32 = -@as(i32, @trunc(self.font.ascent_px));
             const cell_h: i32 = @intCast(self.font.cell_height_px);
             const bottom_limit: i32 = cell_h + top_limit - @as(i32, @intCast(me.h));
             const bearing_y = std.math.clamp(stacked, top_limit, bottom_limit);
@@ -2456,8 +2456,9 @@ pub const D3d11Renderer = struct {
         const norm13: f32 = @floatCast(@as(f64, 0x10000) / (255.0 * 255.0) * 4.0);
         const norm24: f32 = @floatCast(@as(f64, 0x100) / 255.0 * 4.0);
 
-        // WT uses nearest-index rounding: clamp(gamma*10 + 0.5, 10, 22) - 10
-        const idx_raw = @as(i32, @intFromFloat(gamma * 10.0 + 0.5));
+        // WT uses nearest-index rounding: clamp(round(gamma*10), 10, 22) - 10
+        // (WT 원본은 `+ 0.5` 후 절단이지만 gamma 는 양수라 `@round` 와 결과가 같다.)
+        const idx_raw = @as(i32, @round(gamma * 10.0));
         const idx_clamped = @max(10, @min(22, idx_raw)) - 10;
         const idx: usize = @intCast(idx_clamped);
         const r = raw[idx];
