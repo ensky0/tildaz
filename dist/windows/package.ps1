@@ -10,7 +10,8 @@
 # 있어야 하고, tildaz.exe 는 <exe dir>\_internal\conpty.dll 을 절대경로로 로드해요.
 # 소스는 zig-out\bin (tildaz.exe) + zig-out\bin\_internal (런타임 2개)로, build.zig
 # install 단계가 같은 구조로 떨궈요. Windows PowerShell 5.1의 Compress-Archive /
-# Get-FileHash만 사용하므로 WSL과 Git Bash가 필요하지 않아요.
+# Get-FileHash만 사용하므로 WSL과 Git Bash가 필요하지 않아요. 그 두 cmdlet 이 부모 셸에
+# 따라 사라지지 않도록 스크립트 첫머리에서 PSModulePath를 정규화해요 (#455).
 #
 # 사용법:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File dist\windows\package.ps1 -Version 0.6.2
@@ -24,6 +25,37 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# 부모 사슬에 PowerShell 7 이 있으면 이 5.1 세션이 PS7 의 `PSModulePath` 를 그대로
+# 물려받아요. 그러면 5.1 이 PS7 쪽 `Microsoft.PowerShell.Utility` 를 물어서, 모듈은
+# 로드되는데 그 안의 cmdlet 은 못 쓰는 상태가 돼요 — `Get-FileHash` 가 사라져 zip 은
+# 만들어지고 `.sha256` 단계에서만 깨졌어요 (#455). `Compress-Archive` 도 같은 노출이라
+# 우연히 동작했을 뿐이에요.
+#
+# pwsh 는 `powershell.exe` 를 **자기가 직접** 띄울 때만 PS7 의 User / System / $PSHOME
+# 모듈 경로를 뺀 값 (`WinPSModulePath`) 을 자식에게 줘요 (about_PSModulePath 의
+# "Starting Windows PowerShell from PowerShell 7"). `zig build package` 는 사이에
+# `zig.exe` 가 끼어서 그 정리가 걸리지 않아요 — 그 전이 문제는 upstream 미해결이에요
+# (PowerShell/PowerShell#20804).
+#
+# 그래서 스크립트가 자기 전제를 스스로 세워요. 문서가 정의한 그 제거 규칙을 그대로
+# 적용하므로 build.zig 경유든 `-File` 직접 실행이든 같은 보호를 받아요. 5.1 (Desktop)
+# 에서만 해요 — PS7 자신으로 돌릴 때 PS7 경로를 지우면 오히려 그 세션이 깨져요.
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    $WinPSHomeModules = Join-Path $PSHOME "Modules"
+    $KeptModulePaths = @($env:PSModulePath -split ';' | Where-Object {
+        # `\PowerShell\` 는 PS7 경로 (`…\Documents\PowerShell\Modules`,
+        # `…\Program Files\PowerShell\7\Modules`) 에만 걸려요. 5.1 은
+        # `\WindowsPowerShell\` 이라 "PowerShell" 앞이 백슬래시가 아니에요.
+        # Store 설치본은 `…\WindowsApps\microsoft.powershell_7.6.4.0_…\Modules`
+        # 형태라 그 이름도 함께 걸러요.
+        $_ -and $_ -notmatch '(?i)\\PowerShell\\' -and $_ -notmatch '(?i)microsoft\.powershell_'
+    })
+    if ($KeptModulePaths -notcontains $WinPSHomeModules) {
+        $KeptModulePaths += $WinPSHomeModules
+    }
+    $env:PSModulePath = $KeptModulePaths -join ';'
+}
 
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {
     throw "Version must be a SemVer-compatible filename component (got '$Version')."
