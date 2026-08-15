@@ -849,6 +849,7 @@ fn macCmdShortcut(kc: c_ushort, shift: bool) ?input_policy.Shortcut {
 }
 
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
     requestRender(); // #255 Phase2 — 키 입력 → 렌더 (스크롤백/탭조작 등 출력 없는 변화 포함).
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
