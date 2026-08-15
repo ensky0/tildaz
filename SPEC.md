@@ -179,7 +179,7 @@ tildaz 는 **Wayland 전용** (X11 backend 없음 — §0 / ARCHITECTURE 의 Des
 | compositor 카테고리 | layer-shell drop-down | hotkey 자동 적용 메커니즘 | 대표 DE | 상태 |
 |---|---|---|---|---|
 | **KWin** | ✅ layer-shell | direct KGlobalAccel D-Bus 등록·Pressed signal | KDE Plasma | ✅완료 (실기 확인) |
-| **wlroots** | ✅ layer-shell | Hyprland = `hyprctl keyword bind`→`tildaz --toggle N`, sway = `bindsym` i3-ipc→`--toggle N` | Hyprland / sway (Wayfire / river / niri 동계열) | ✅완료 (Hyprland / sway 실기 확인) |
+| **wlroots** | Hyprland = ✅ layer-shell · sway = xdg_toplevel + i3 IPC 배치/scratchpad 토글 ([#454](https://github.com/ensky0/tildaz/issues/454) — sway 는 layer-shell `on_demand` 에서 map 시 keyboard focus 를 안 줌) | Hyprland = `hyprctl keyword bind`→`tildaz --toggle N`, sway = `bindsym` i3-ipc→`--toggle N` | Hyprland / sway (Wayfire / river / niri 동계열) | ✅완료 (Hyprland / sway 실기 확인) |
 | **mutter** | tildaz 전용 Shell extension (xdg-shell 창 배치) | gsettings custom keybinding (libgio) + extension 충돌 시 자동 skip | GNOME (Ubuntu / Budgie / Pantheon 동계열) | ✅완료 (실기 확인) |
 | **muffin** | tildaz 전용 Shell extension | gsettings custom keybinding (Cinnamon strv schema) + extension 충돌 skip | Cinnamon | ✅완료 (실기 확인) |
 | **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle N` | COSMIC | ✅완료 (실기 확인) |
@@ -205,13 +205,21 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   `tildaz.instanceN`인 항목만 비교해 config 에 없는 번호의 `toggle-N` action 을
   증분 해제한다. drop-down 재표시는 KWin 만 `#205` unmap/remap 워크어라운드(아래
   부록 B 참조).
-- **sway (wlroots).** `$SWAYSOCK`의 i3-ipc `RUN_COMMAND`로
-  `bindsym <accel> exec <self_exe> --toggle N`
-  를 런타임 등록. hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/tildaz-N.sock`).
+- **sway (wlroots).** drop-down 은 **layer-shell 이 아니라 xdg_toplevel + i3 IPC**
+  ([#454](https://github.com/ensky0/tildaz/issues/454)) — sway 는 layer-shell
+  `on_demand` 에서 map 시 keyboard focus 를 주지 않아 (spec 상 compositor 재량,
+  KWin·Hyprland·COSMIC 셋은 줌) 토글 직후 타이핑이 안 됐다. `SWAYSOCK` 이 잡히면
+  layer-shell 을 기록하지 않고 xdg fallback 으로 뜬 뒤, 배치는 `for_window` 규칙
+  (floating·sticky·border·크기 — **명령당 규칙 하나**, 콤마 체인은 sway 가 첫
+  명령까지만 규칙으로 받고 나머지를 focus 창에 즉시 실행) + map 후 `move`(ppt) 로,
+  토글은 scratchpad 로 한다 (sway 1.12 실기 확인). hotkey 는 `$SWAYSOCK`의 i3-ipc
+  `RUN_COMMAND`로 `bindsym <accel> exec <self_exe> --toggle N` 를 런타임 등록.
+  hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/tildaz-N.sock`).
   runtime-only 라 매 실행 등록 = config 가 source of truth. 단 sway IPC 는 현재
   binding 열거 요청을 제공하지 않아 세션 중 stale binding 증분 제거는 지원하지
   않는다. config 삭제/변경 전에 등록된 binding 은 sway 세션 재시작 때 사라진다.
-- **Hyprland (wlroots).** layer-shell drop-down 은 sway 와 같은 경로(코드 동일).
+- **Hyprland (wlroots).** layer-shell drop-down (KWin·COSMIC 과 같은 경로 —
+  sway 는 #454 로 xdg_toplevel + IPC 로 분리됨).
   hotkey는 실행 시 `hyprctl -j binds` actual과 config desired를
   비교해 TildaZ `--toggle N` binding 의 차이만 `unbind/bind`한다. `install.sh`는
   `~/.config/hypr/` config의
@@ -325,10 +333,10 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 전체화면 — taskbar/dock **덮음** | Alt+Enter | Cmd+Enter | Alt+Enter — layer-shell DE(KWin/sway/Hyprland/COSMIC)는 4-edge anchor + size 0 + `exclusive_zone=-1` 로 패널 위까지 덮음; GNOME/Cinnamon(layer-shell 부재)은 `xdg_toplevel.set_fullscreen` ([#87](https://github.com/ensky0/tildaz/issues/87)) | ✅ | ✅ | ✅ |
-| 전체화면 — taskbar/dock **회피** | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter — layer-shell 은 `exclusive_zone=0` (패널 유지); GNOME/Cinnamon 은 `xdg_toplevel.set_maximized` ([#87](https://github.com/ensky0/tildaz/issues/87)) | ✅ | ✅ | ✅ |
+| 전체화면 — taskbar/dock **덮음** | Alt+Enter | Cmd+Enter | Alt+Enter — layer-shell DE(KWin/Hyprland/COSMIC)는 4-edge anchor + size 0 + `exclusive_zone=-1` 로 패널 위까지 덮음; GNOME/Cinnamon(layer-shell 부재)과 sway(xdg_toplevel + IPC, [#454](https://github.com/ensky0/tildaz/issues/454))는 `xdg_toplevel.set_fullscreen` ([#87](https://github.com/ensky0/tildaz/issues/87)) | ✅ | ✅ | ✅ |
+| 전체화면 — taskbar/dock **회피** | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter — layer-shell 은 `exclusive_zone=0` (패널 유지); GNOME/Cinnamon 은 `xdg_toplevel.set_maximized` ([#87](https://github.com/ensky0/tildaz/issues/87)); sway 는 floating 창의 `set_maximized` 를 무시해 IPC 로 workspace 영역(패널 제외)을 채움 ([#454](https://github.com/ensky0/tildaz/issues/454), sway 1.12 실기) | ✅ | ✅ | ✅ |
 | 같은 키 재입력 → dock 복귀 / 다른 모드 → no-op | Alt+Enter↔Shift+Alt+Enter | Cmd+Enter↔Shift+Cmd+Enter | 동일 (`FullscreenMode {none,cover,avoid}` toggle 로직 — Win 동등) | ✅ | ✅ | ✅ |
-| 토글된 fullscreen **상태**가 F1 hide→show 간 유지 | ✅ | ✅ | layer-shell 은 `fullscreen_mode` 필드로 show 시 재적용; GNOME/Cinnamon 은 compositor 가 minimize↔복원 간 maximize/fullscreen 보존 | ✅ | ✅ | ✅ |
+| 토글된 fullscreen **상태**가 F1 hide→show 간 유지 | ✅ | ✅ | layer-shell 은 `fullscreen_mode` 필드로 show 시 재적용; GNOME/Cinnamon 은 compositor 가 minimize↔복원 간 maximize/fullscreen 보존; sway 는 scratchpad 이동이 fullscreen 을 해제하므로 show 때 `fullscreen_mode` 를 재적용 ([#454](https://github.com/ensky0/tildaz/issues/454)) | ✅ | ✅ | ✅ |
 
 > **숨김(hide) 상태에선 전체화면 토글 no-op** — 보이는 창에만 적용되는 윈도우 동작. Win/Mac 은 숨김 시 창이 keyboard focus 를 잃어 키 미수신으로 자연 보장. Linux layer-shell DE 도 hide 시 surface 를 파괴해 키가 안 와 동일 보장. GNOME/Cinnamon 은 mutter/muffin 이 sticky+above 인 tildaz 를 minimize 해도 focus 를 자동 이양하지 않으므로, extension 이 hide 시 keyboard focus 를 다른 창으로 넘겨 동일 보장한다 — 숨김 중엔 Alt+Enter 토글뿐 아니라 모든 키 입력이 tildaz 로 안 들어간다 ([#247](https://github.com/ensky0/tildaz/issues/247)).
 
@@ -582,7 +590,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | 짧으면 `MessageBoxW MB_OKCANCEL`, overflow면 고정 OK/Cancel + scroll 본문 — `app_controller.onQuitRequest` 가 호출 | 짧으면 NSAlert OK/Cancel, overflow면 고정 button + scroll 본문 — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X. | native dialog 또는 소유자 window를 disable한 overflow modal loop | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. overflow scrollbar drag 외 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
 | dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
-| Dialog 위치 | 현재 monitor 중앙 | overflow window와 prompt는 같은 TildaZ process의 foreground window를 owner로 삼고 그 monitor work area 중앙. 다른 process window는 owner로 사용하지 않음 | NSAlert의 OS modal 배치 | layer-shell 경로(KDE Plasma, COSMIC, Hyprland, sway)는 `anchor=0`으로 현재 output 중앙에 두며 main 창의 dock/width margin과 분리 ([#314](https://github.com/ensky0/tildaz/issues/314), KDE Plasma 1.7x 실기). xdg-toplevel fallback(GNOME, Cinnamon)은 Wayland에 절대 위치 지정 API가 없어 compositor의 transient 배치를 따름 | ✅ | ✅ | ✅ (layer-shell) / 🟨 (xdg compositor 배치) |
+| Dialog 위치 | 현재 monitor 중앙 | overflow window와 prompt는 같은 TildaZ process의 foreground window를 owner로 삼고 그 monitor work area 중앙. 다른 process window는 owner로 사용하지 않음 | NSAlert의 OS modal 배치 | layer-shell 경로(KDE Plasma, COSMIC, Hyprland)는 `anchor=0`으로 현재 output 중앙에 두며 main 창의 dock/width margin과 분리 ([#314](https://github.com/ensky0/tildaz/issues/314), KDE Plasma 1.7x 실기). xdg-toplevel fallback(GNOME, Cinnamon, sway [#454](https://github.com/ensky0/tildaz/issues/454))은 Wayland에 절대 위치 지정 API가 없어 compositor의 transient 배치를 따름 (sway 1.12 실기: floating 중앙 배치·Esc dismiss·focus 복귀 확인) | ✅ | ✅ | ✅ (layer-shell) / 🟨 (xdg compositor 배치) |
 | Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기 | overflow window는 현재 monitor DPI와 work area 사용, 최대 폭 960 logical pt | NSAlert native, overflow accessory 폭은 최대 580pt | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 현재 일반 메시지는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 scroll 없이 표시하고, 더 긴 본문은 종류와 무관하게 overflow viewport를 사용한다 ([#306](https://github.com/ensky0/tildaz/issues/306), [#318](https://github.com/ensky0/tildaz/issues/318)). About은 최대 폭 960 logical pt다 ([#314](https://github.com/ensky0/tildaz/issues/314)). config parse fatal은 Wayland 연결 전 stderr + log fallback이라 overlay 저장/화면 상한을 거치지 않는다 ([#316](https://github.com/ensky0/tildaz/issues/316)). | ✅ | ✅ | ✅ |
 
 ---
