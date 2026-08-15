@@ -967,8 +967,16 @@ onrender 진단 수치에만 적용한다. instance timeout이나 Linux startup/
 
 **메커니즘:**
 - Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.json` / `.log` 의 file association).
-- macOS: `[NSWorkspace openURL:]` 또는 `system("open <path>")` — Finder 가 file extension 따라 default app.
-- Linux: `xdg-open <path>` — XDG MIME database.
+- macOS: `/usr/bin/open <path>` 를 자식 process 로 — Finder 가 file extension 따라 default app.
+- Linux: `xdg-open <path>` 를 자식 process 로 — XDG MIME database.
+
+**자식 process 회수 (macOS · Linux)** — spawn 한 자식은 **그 pid 를 지목한 thread 가 `waitpid` 로
+거둔다** ([#457](https://github.com/ensky0/tildaz/issues/457)). 안 거두면 `[xdg-open] <defunct>` 가
+worker 수명 동안 상한 없이 쌓인다. 거둘 때 `SIGCHLD = SIG_IGN` 이나 `waitpid(-1)` 를 쓰지 않는
+이유는 §7 의 PTY 자식 관리와 충돌하기 때문이다 — 그 둘은 `processWaitLoop` 의
+`waitpid(child_pid, ...)` 를 자식이 죽기도 전에 `ECHILD` 로 반환시켜, 탭이 열리자마자 닫히고
+[#129](https://github.com/ensky0/tildaz/issues/129) 의 SIGHUP grace · SIGKILL fallback 이 무력화된다.
+Windows 는 `ShellExecuteW` 라 우리가 자식을 만들지 않아 이 문제가 없다.
 
 ### 11.3 About 다이얼로그 — 경로 표시 (모두 절대 경로) + Tip 라인
 
