@@ -63,6 +63,47 @@ pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count
 /// `onrender` 의 `skip` 과 **섞지 않는다** — 그쪽은 *"화면이 안 바뀌어서 안 그렸다"*
 /// (#386 ②) 라 뜻이 다르고, 한 칸에 합치면 그 게이트를 못 본다.
 pub var swapwait: Counter = .{};
+/// #441 축 ② — **키를 받은 순간부터 그 뒤 첫 present 가 끝날 때까지.** 위 카운터들이
+/// *처리량* 의 구간별 몫을 재는 것과 달리 이쪽은 **응답 지연**이다.
+///
+/// `calls` = 표본 수 · `ns` = 합 (평균은 나눠서) · `extra` = **최악값**. 평균만 보면
+/// 안 되는 값이라 최악을 따로 든다 — 예산 4 ms (SPEC §13.3) 가 상한이라는 주장은
+/// *평균*이 아니라 *최악*에 대한 주장이기 때문이다.
+pub var input_latency: Counter = .{};
+
+/// 대기 중인 키의 수신 시각(ns). 0 = 없음.
+///
+/// **이미 대기 중이면 덮지 않는다** (`markInput` 의 CAS). 폭포 중에는 키가 연달아
+/// 들어오는데, 덮으면 *가장 최근* 키의 지연만 남아 **가장 오래 기다린 키가 사라진다** —
+/// 최악값을 보려는 목적과 정반대가 된다.
+var pending_input_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// 키를 받은 자리에서 부른다 (세 host 의 키 진입점).
+///
+/// `now()` 가 0 을 돌려주면 그 표본은 버려진다 — 0 을 "없음" 으로 쓰기 때문이다.
+/// monotonic clock 이 부팅 직후 0 ns 를 낼 확률은 무시할 수준이고, 대신 sentinel 이
+/// 없는 구조 (별도 flag) 는 hot path 에 원자 연산을 하나 더 늘린다.
+pub fn markInput() void {
+    const t = now() orelse return;
+    if (t == 0) return;
+    _ = pending_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+}
+
+/// present 가 끝난 자리에서 부른다. 대기 중인 키가 있으면 지연을 적고 비운다.
+pub fn completeInput() void {
+    const start = pending_input_ns.swap(0, .acq_rel);
+    if (start == 0) return;
+    const t = now() orelse return;
+    if (t <= start) return;
+    const delta = t - start;
+    _ = input_latency.calls.fetchAdd(1, .monotonic);
+    _ = input_latency.ns.fetchAdd(delta, .monotonic);
+    // 최악값 갱신. 경합해도 더 큰 값이 이긴다.
+    var cur = input_latency.extra.load(.monotonic);
+    while (delta > cur) {
+        cur = input_latency.extra.cmpxchgWeak(cur, delta, .monotonic, .monotonic) orelse break;
+    }
+}
 
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
 /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
@@ -162,6 +203,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const pr = snapshot(&present);
     const on = snapshot(&onrender);
     const sw = snapshot(&swapwait);
+    const il = snapshot(&input_latency);
+    // 대기 중인 키는 스냅숏 경계를 넘기지 않는다 — 다음 구간에서 present 가 되면
+    // *이전 구간에 눌린* 키의 지연이 그쪽에 잡혀 구간 귀속이 어긋난다.
+    _ = pending_input_ns.swap(0, .acq_rel);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -179,7 +224,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             // #435 — swap chain 이 안 받아서 건너뛴 tick. waitable 이 없는 경로 (legacy
             // DISCARD · DirectComposition) 에서는 항상 0 이다.
             "swapwait ticks={d}\n" ++
-            "onrender calls={d} ms={d:.3} skip={d}\n",
+            "onrender calls={d} ms={d:.3} skip={d}\n" ++
+            // #441 축 ② — 키 수신 → 첫 present 완료. `max` 를 함께 내는 이유는
+            // 위 `input_latency` 주석 참고 (예산 주장은 평균이 아니라 최악에 대한 것).
+            "input    samples={d} ms={d:.3} max_ms={d:.3}\n",
         .{
             label,
             rt.nowMs(),
@@ -205,6 +253,9 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             on[0],
             @as(f64, @floatFromInt(on[1])) / 1_000_000.0,
             on[3],
+            il[0],
+            @as(f64, @floatFromInt(il[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(il[3])) / 1_000_000.0,
         },
     ) catch return;
 
