@@ -250,6 +250,9 @@ pub fn build(b: *std.Build) void {
     // install step 을 붙잡아 둡니다. Windows 아닌 target 에선 null 입니다.
     var conpty_dll_install: ?*std.Build.Step.InstallFile = null;
     var conpty_open_console_install: ?*std.Build.Step.InstallFile = null;
+    // 테스트 단계도 같은 런타임을 테스트 바이너리 옆에 두고 실행해야 하므로 (#459)
+    // arch 별 vendor 디렉토리를 붙잡아 둡니다. Windows 아닌 target 에선 null 입니다.
+    var conpty_arch_dir: ?[]const u8 = null;
     if (is_windows_target) {
         // 번들 ConPTY 런타임(Microsoft.Windows.Console.ConPTY).
         // tildaz.exe 옆 `_internal\` 하위로 복사되어 conpty.dll 의
@@ -260,13 +263,14 @@ pub fn build(b: *std.Build) void {
         //
         // target arch 별 native binary 선택 — PE32+ x86_64 / ARM64 별도 (PE loader
         // 가 arch mismatch 시 STATUS_INVALID_IMAGE_FORMAT 로 거부).
-        const conpty_arch_dir: []const u8 = switch (target.result.cpu.arch) {
+        const arch_dir: []const u8 = switch (target.result.cpu.arch) {
             .x86_64 => "vendor/conpty/x64",
             .aarch64 => "vendor/conpty/arm64",
             else => @panic("unsupported Windows arch — only x86_64 / aarch64 ConPTY bundle 제공"),
         };
-        const conpty_dll_path = b.fmt("{s}/conpty.dll", .{conpty_arch_dir});
-        const open_console_path = b.fmt("{s}/OpenConsole.exe", .{conpty_arch_dir});
+        conpty_arch_dir = arch_dir;
+        const conpty_dll_path = b.fmt("{s}/conpty.dll", .{arch_dir});
+        const open_console_path = b.fmt("{s}/OpenConsole.exe", .{arch_dir});
         const dll_install = b.addInstallBinFile(b.path(conpty_dll_path), "_internal/conpty.dll");
         const open_console_install = b.addInstallBinFile(b.path(open_console_path), "_internal/OpenConsole.exe");
         b.getInstallStep().dependOn(&dll_install.step);
@@ -321,7 +325,45 @@ pub fn build(b: *std.Build) void {
         exe_tests.use_llvm = true;
         exe_tests.use_lld = true;
     }
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    if (conpty_arch_dir) |arch_dir| {
+        // Windows — 테스트도 **install 된 경로에서** 실행한다 (#459). `addRunArtifact`
+        // 는 테스트 바이너리를 zig 캐시의 output 디렉토리에서 바로 띄우는데, ConPTY
+        // 경로는 실행파일 옆 `_internal\conpty.dll` 이 필수라 (#339 에서 kernel32
+        // fallback 제거) 그 자리에서는 만들 수 없다 — 캐시 디렉토리는 내용이 hash 로
+        // 봉인돼 런타임을 끼워 넣을 자리가 아니다. 그래서 `bundledRuntimeFilesPresent`
+        // (모듈 경로 옆을 본다 — CWD 가 아니다) 가 false 를 내고 conpty 테스트가
+        // `error.SkipZigTest` 로 빠져, Windows 에서도 그 테스트가 한 번도 검증되지
+        // 않았다. stress 단계가 같은 이유로 쓰는 패턴 (#371) 과 같은 형태다.
+        //
+        // 릴리즈 번들 디렉토리에 test.exe 가 섞이지 않도록 `zig-out/bin` 이 아니라
+        // 전용 `zig-out/test/` 로 install 한다.
+        const test_dir = "test";
+        const test_install = b.addInstallArtifact(exe_tests, .{
+            .dest_dir = .{ .override = .{ .custom = test_dir } },
+        });
+        const test_dll_install = b.addInstallFile(
+            b.path(b.fmt("{s}/conpty.dll", .{arch_dir})),
+            b.fmt("{s}/_internal/conpty.dll", .{test_dir}),
+        );
+        const test_open_console_install = b.addInstallFile(
+            b.path(b.fmt("{s}/OpenConsole.exe", .{arch_dir})),
+            b.fmt("{s}/_internal/OpenConsole.exe", .{test_dir}),
+        );
+        const test_run = b.addSystemCommand(&.{
+            b.getInstallPath(.{ .custom = test_dir }, exe_tests.out_filename),
+        });
+        test_run.step.dependOn(&test_install.step);
+        test_run.step.dependOn(&test_dll_install.step);
+        test_run.step.dependOn(&test_open_console_install.step);
+        // 인자에 output file 이 없어 `infer_from_args` 로는 캐시 대상이 될 수 있다.
+        // 테스트는 매번 실제로 돌아야 하므로 side-effects 를 명시한다 (`inherit` 은
+        // 그와 동시에 test runner 의 요약 / 실패 지점을 그대로 흘려보내고, non-zero
+        // exit 을 빌드 실패로 만든다).
+        test_run.stdio = .inherit;
+        test_step.dependOn(&test_run.step);
+    } else {
+        test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    }
 
     // package-manager / bundle / PE version 파생은 runtime source와 독립된 build
     // helper라 별도 test root로 수집한다. `zig build test`에서 항상 함께 실행.
