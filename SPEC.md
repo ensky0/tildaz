@@ -966,7 +966,7 @@ onrender 진단 수치에만 적용한다. instance timeout이나 Linux startup/
 [Windows unbiased interrupt time](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryunbiasedinterrupttimeprecise)).
 
 **메커니즘:**
-- Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.json` / `.log` 의 file association).
+- Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.json` / `.log` 의 file association). **연결이 없으면 `notepad.exe` 로 연다** ([#456](https://github.com/ensky0/tildaz/issues/456)). 확장자에 기본 앱이 없으면 Windows 는 아무 것도 열지 않으면서 `ShellExecuteW` 는 성공을 반환해서 (실측: 연결 있는 `.log` 과 연결 없는 `.json` 이 **둘 다 42**, 창은 한쪽만 뜸) 호출 결과로는 성패를 알 수 없다. 그래서 열기 **전에** 연결을 조회한다 — `UserChoice` → `HKCR\<ext>` 기본값 → 그 ProgId 의 `shell\open\command` 순. `AssocQueryString` 계열은 `OpenWithProgids` 후보까지 답해서 이 판정에 쓸 수 없다. 확실히 없을 때만 fallback 하고, 조회가 불확실하면 OS 에 맡긴다.
 - macOS: `/usr/bin/open <path>` 를 자식 process 로 — Finder 가 file extension 따라 default app.
 - Linux: `xdg-open <path>` 를 자식 process 로 — XDG MIME database.
 
