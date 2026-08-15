@@ -463,7 +463,7 @@ fn pctToPx(screen_dim: f32, pct: f32) u32 {
     const clamped = std.math.clamp(pct, 0.0, 100.0);
     const v = screen_dim * clamped / 100.0;
     if (v < 0.0) return 0;
-    return @intFromFloat(@round(v));
+    return @round(v);
 }
 
 /// L8-β — cross-axis margin 계산. `remaining = screen_dim - surface_dim` 의
@@ -471,7 +471,7 @@ fn pctToPx(screen_dim: f32, pct: f32) u32 {
 fn pxOffset(remaining: i32, off_pct: f32) i32 {
     if (remaining <= 0) return 0;
     const rem_f: f32 = @floatFromInt(remaining);
-    return @intFromFloat(@round(rem_f * off_pct / 100.0));
+    return @round(rem_f * off_pct / 100.0);
 }
 
 /// surface 에 attach 하는 buffer 하나. #277 이전엔 `wl_shm` 전용이었고 지금은
@@ -2452,8 +2452,11 @@ const Client = struct {
                 );
                 // 위 값들은 physical px 이고 layer-shell 은 logical 단위다.
                 const scale_f: f32 = if (self.renderer.scale > 0.0) self.renderer.scale else 1.0;
-                want_w = @intFromFloat(@min(sw_f, @ceil(@as(f32, @floatFromInt(vp.w)) / scale_f)));
-                want_h = @intFromFloat(@min(sh_f, @ceil(@as(f32, @floatFromInt(vp.h)) / scale_f)));
+                // `sw_f` · `sh_f` 는 화면 크기를 `@floatFromInt` 한 값이라 이미 정수다.
+                // 그래서 `@min` 을 `@ceil` 안으로 넣어도 결과가 같고, 0.16 에서는
+                // `@ceil` 하나가 곧 정수 변환이다.
+                want_w = @ceil(@min(sw_f, @as(f32, @floatFromInt(vp.w)) / scale_f));
+                want_h = @ceil(@min(sh_f, @as(f32, @floatFromInt(vp.h)) / scale_f));
             }
         }
         const want_w_i: i32 = @intCast(@min(want_w, @as(u32, std.math.maxInt(i32))));
@@ -3750,7 +3753,7 @@ const Client = struct {
             };
             const item_clip: [2]i32 = switch (item) {
                 .glyph => |g| .{ g.clip_x0, g.clip_x1 },
-                else => .{ 0, @intFromFloat(viewport_w) },
+                else => .{ 0, @trunc(viewport_w) },
             };
             if (kind != .none and (item_kind != kind or !std.mem.eql(i32, &item_clip, &clip))) {
                 self.glFlushChrome(ctx, rect_batch, text_batch, atlas, kind == .rect, clip, viewport_w, viewport_h);
@@ -3800,10 +3803,10 @@ const Client = struct {
         viewport_h: f32,
     ) void {
         _ = self;
-        const clipped = clip[0] > 0 or clip[1] < @as(i32, @intFromFloat(viewport_w));
+        const clipped = clip[0] > 0 or clip[1] < @as(i32, @trunc(viewport_w));
         if (clipped) {
             ctx.api.enable(egl.GL_SCISSOR_TEST);
-            ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @intFromFloat(viewport_h));
+            ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @trunc(viewport_h));
         }
         if (is_rect) {
             rect_batch.flush(&ctx.api, viewport_w, viewport_h);
@@ -5025,7 +5028,7 @@ const Client = struct {
                 // 의 `finish` 가 null 반환 → reorder 일어나지 않음.
                 const world_x: f32 = px_f - layout.tab_area_x + self.tab_scroll_x;
                 const tab_w_int: c_int = @intCast(tab_w_px);
-                _ = self.tab_drag.begin(@intFromFloat(world_x), tab_w_int, session.count());
+                _ = self.tab_drag.begin(@trunc(world_x), tab_w_int, session.count());
             },
             .none => {},
         }
@@ -5072,7 +5075,7 @@ const Client = struct {
         // DragState.move 는 world_x (idx 0 의 left edge 부터 측정) — `begin`
         // 과 같은 좌표계. surface_x - tab_area_x + scroll_x.
         const world_x: f32 = px_f - layout.tab_area_x + self.tab_scroll_x;
-        _ = self.tab_drag.move(@intFromFloat(world_x));
+        _ = self.tab_drag.move(@trunc(world_x));
         self.needs_redraw = true;
     }
 
@@ -5545,18 +5548,18 @@ const Client = struct {
         // 어긋나 경계에 ~1px dead band 가 생겼다 (pointer 는 정수 px).
         const scale = self.renderer.scale;
         const v = self.commandMenuView();
-        const mx: i32 = @intFromFloat(@round(v.rect.x * scale));
-        const my: i32 = @intFromFloat(@round(v.rect.y * scale));
-        const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
-        const mh: i32 = @intFromFloat(@round(v.rect.h * scale));
+        const mx: i32 = @round(v.rect.x * scale);
+        const my: i32 = @round(v.rect.y * scale);
+        const mw: i32 = @round(v.rect.w * scale);
+        const mh: i32 = @round(v.rect.h * scale);
         if (x < mx or x >= mx + mw or y < my or y >= my + mh) return null;
         for (v.first..v.first + v.count) |i| {
             const command = command_menu.entries[i] orelse continue;
             const r = command_menu.entryRect(v, i).?;
-            const ix: i32 = @intFromFloat(@round(r.x * scale));
-            const iy: i32 = @intFromFloat(@round(r.y * scale));
-            const iw: i32 = @intFromFloat(@round(r.w * scale));
-            const ih: i32 = @intFromFloat(@round(r.h * scale));
+            const ix: i32 = @round(r.x * scale);
+            const iy: i32 = @round(r.y * scale);
+            const iw: i32 = @round(r.w * scale);
+            const ih: i32 = @round(r.h * scale);
             if (x >= ix and x < ix + iw and y >= iy and y < iy + ih) return command;
         }
         return null;

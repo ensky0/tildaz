@@ -832,10 +832,10 @@ pub const GlyphAtlas = struct {
         // 마진을 양쪽으로 1px 씩 추가해서 글리프가 cell 외곽으로 빠질 위험. round
         // 가 outline 의 visual center 에 가장 가까운 정수.
         const bounds = dw.RECT{
-            .left = @intFromFloat(@round(fbounds.left)),
-            .top = @intFromFloat(@round(fbounds.top)),
-            .right = @intFromFloat(@round(fbounds.right)),
-            .bottom = @intFromFloat(@round(fbounds.bottom)),
+            .left = @round(fbounds.left),
+            .top = @round(fbounds.top),
+            .right = @round(fbounds.right),
+            .bottom = @round(fbounds.bottom),
         };
 
         const gw: i32 = bounds.right - bounds.left;

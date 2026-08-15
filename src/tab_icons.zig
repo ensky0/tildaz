@@ -127,7 +127,7 @@ pub fn rasterize(icon: Icon, size: u32, stroke_px: f32, out: []u8) void {
                 if (d < min_d) min_d = d;
             }
             const cov = std.math.clamp(half + 0.5 - min_d, 0.0, 1.0);
-            out[y * size + x] = @intFromFloat(cov * 255.0 + 0.5);
+            out[y * size + x] = @round(cov * 255.0);
         }
     }
 }
@@ -161,7 +161,7 @@ test "rasterize — chevron 은 한쪽으로 열린 꺾쇠" {
     const size: u32 = 20;
     rasterize(.chevron_left, size, 2.0, &buf);
     // `<` 의 꼭짓점은 좌측 중앙 (x≈0.3*span) → 채움.
-    const apex_x: u32 = @intFromFloat(1.0 + 0.3 * (@as(f32, @floatFromInt(size)) - 2.0));
+    const apex_x: u32 = @trunc(1.0 + 0.3 * (@as(f32, @floatFromInt(size)) - 2.0));
     try std.testing.expect(buf[(size / 2) * size + apex_x] > 150);
     // 우상단 모서리 안쪽(열린 쪽)은 비어야.
     try std.testing.expectEqual(@as(u8, 0), buf[(size / 2) * size + 1]);

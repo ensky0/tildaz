@@ -126,7 +126,7 @@ test "viewportForGrid 는 탭바 높이를 더한다" {
 //
 // 이 모듈의 `*_PT` 상수는 logical point 단위이고, 그리는 쪽은 현재 화면 scale 을
 // 곱해 physical px 로 바꿔 쓴다. **그 변환은 여기 세 함수에만 있다** — 호출처가
-// `@intFromFloat(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 쓰지 않는다.
+// `@trunc(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 쓰지 않는다.
 //
 // 한 곳에 모은 이유. 이전에는 같은 변환이 세 platform 에 61곳으로 복붙돼 있었고
 // **규칙이 갈렸다** — Linux(`scaledPt`) 와 Windows(`app_controller`) 는 `@round`,
@@ -150,7 +150,7 @@ test "viewportForGrid 는 탭바 높이를 더한다" {
 /// 음수 결과는 없다 (`pt` · `scale` 모두 음수가 아니므로). `T` 가 부호 없는
 /// 타입이어도 안전하다.
 pub fn scaledPx(comptime T: type, pt: anytype, scale: f32) T {
-    return @intFromFloat(@round(scaledPxF(pt, scale)));
+    return @round(scaledPxF(pt, scale));
 }
 
 /// `pt × scale` 을 f32 physical px 로 — 정수 스냅 없이 소수를 유지한다. 그리기
@@ -368,7 +368,7 @@ pub fn blendOverU8(src: u8, dst: u8, alpha: f32) u8 {
     const s: f64 = @floatFromInt(src);
     const d: f64 = @floatFromInt(dst);
     const mixed = s * a + d * (1.0 - a);
-    return @intFromFloat(@round(@max(0.0, @min(255.0, mixed))));
+    return @round(@max(0.0, @min(255.0, mixed)));
 }
 
 /// [`blendOverU8`] 을 3 채널에 적용. 합성은 채널 독립이다.
@@ -935,14 +935,14 @@ test "#357 정수 두께는 위치 소수부와 무관하게 두께가 보존된
     // `[round(top), round(top + t))` — `ui_rect.snap` 과 GPU 가 같다.
     const rows = struct {
         fn n(top: f32, t: f32) i32 {
-            return @as(i32, @intFromFloat(@round(top + t))) - @as(i32, @intFromFloat(@round(top)));
+            return @as(i32, @round(top + t)) - @as(i32, @round(top));
         }
     }.n;
 
     // 정수 두께 — 위치 소수부 전부에서 정확히 t 픽셀.
     inline for (.{ 1.0, 2.0, 3.0 }) |t| {
         inline for (.{ 0.0, 0.05, 0.25, 0.45, 0.5, 0.55, 0.75, 0.85, 0.95 }) |frac| {
-            try std.testing.expectEqual(@as(i32, @intFromFloat(t)), rows(100.0 + frac, t));
+            try std.testing.expectEqual(@as(i32, @trunc(t)), rows(100.0 + frac, t));
         }
     }
 
@@ -1007,7 +1007,7 @@ test "#350 strokePx 는 최소 1px 을 보장하고 scaledPxF 는 소수를 유�
 
     // scaledPx 는 scaledPxF 를 반올림한 것과 같다 (한 정의에서 파생).
     inline for (.{ 1.0, 1.25, 1.5, 1.7, 2.0 }) |s| {
-        const expect: u32 = @intFromFloat(@round(scaledPxF(SCROLLBAR_W_PT, s)));
+        const expect: u32 = @round(scaledPxF(SCROLLBAR_W_PT, s));
         try std.testing.expectEqual(expect, scaledPx(u32, SCROLLBAR_W_PT, s));
     }
 }
