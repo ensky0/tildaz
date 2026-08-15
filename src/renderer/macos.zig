@@ -670,6 +670,8 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid1(self.current_cmd_buf, objc.sel("presentDrawable:"), self.current_drawable);
         objc.msgSendVoid(self.current_cmd_buf, objc.sel("commit"));
         perf.addTimed(&perf.present, present_t0);
+        // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
+        perf.completeInput();
 
         // Frame end — state reset.
         self.current_encoder = null;
