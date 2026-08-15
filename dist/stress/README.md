@@ -41,7 +41,8 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
 | [`check-input-loss.sh`](check-input-loss.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
-| [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux |
+| [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · Windows (Git Bash) |
+| [`send-keys.ps1`](send-keys.ps1) | 위 도구의 **Windows 합성 입력** (`SendInput`) — Linux 의 `ydotool` 자리 | 〃 |
 | [`hygiene.sh`](hygiene.sh) | 위 넷이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
@@ -726,9 +727,17 @@ dist/stress/measure-input-latency.sh                      # idle · flood 둘 �
 dist/stress/measure-input-latency.sh --mode idle --presses 50
 ```
 
-**Linux 전용이에요.** 합성 입력이 platform 마다 달라요 — Windows 는 `SendInput`, macOS 는
-`CGEvent` 로 [#387](https://github.com/ensky0/tildaz/issues/387) 이 이미 썼으니 그 경로를 옮겨오면
-되지만 아직 안 했어요. **계측 자체는 세 platform 에 다 있어요** (`perf.input_latency`).
+**Linux · Windows 에서 돌아요.** 합성 입력이 platform 마다 달라요 — Linux 는 `ydotool` (uinput),
+Windows 는 `SendInput` ([`send-keys.ps1`](send-keys.ps1)) 이에요. **macOS 는 아직 없어요** —
+`CGEvent` 로 [#387](https://github.com/ensky0/tildaz/issues/387) 이 이미 쓴 경로를 옮겨오면 되지만
+안 했어요. **계측 자체는 세 platform 에 다 있어요** (`perf.input_latency`).
+
+**Windows 는 Git Bash 에서 돌려요** (`compare-terminals.sh` · `measure-repeat.sh` 와 같은 제약이에요).
+PowerShell 판을 따로 두지 않는 이유는 `measure-repeat.sh` 헤더에 있어요 — #381 에서 두 벌이 실제로
+갈렸어요. platform 마다 진짜로 다른 것은 **합성 입력 하나**라 그것만 `.ps1` 로 뺐어요.
+
+**위생 검사가 걸려요** (`hygiene_check` / `hygiene_begin`, `--ignore-hygiene` 로 우회).
+DRR 이 켜져 있거나 배경 앱이 그리고 있으면 응답 시간도 처리량과 같은 오염을 받아요.
 
 ### 재는 구간
 
@@ -738,41 +747,92 @@ dist/stress/measure-input-latency.sh --mode idle --presses 50
 
 못 재는 것: `present → 실제 화면 발광` (외부 장비 필요) 과 `키 눌림 → 앱 수신` (compositor 몫).
 
-### 첫 수치 (미니PC · Ryzen 7 8845HS · CachyOS · KDE Plasma · 60 Hz)
+### 첫 수치 — **기기가 다르니 나란히 볼 때 주의해요**
 
-5 회 절사평균 + min~max.
+둘 다 5 회 절사평균 + min~max 이고 **주사율은 60 Hz 로 같아요.** 하지만 CPU 도 OS 도 달라서
+**절대값 차이를 전부 platform 몫으로 읽으면 안 돼요** (같은 기기에서 OS 만 바꿔 재는 것이 원칙이에요 —
+`AGENTS.md` 의 `# 실행 환경`).
 
-| 상황 | 평균 | 최악 |
+| | **Linux** · 미니PC Ryzen 7 8845HS · CachyOS · KDE Plasma | **Windows** · 노트북 Intel i5-1240P · Windows 11 26200 |
 |---|---|---|
-| **유휴** | **0.67 ms** (0.66~0.69) | **12.35 ms** (12.30~12.38) |
-| **폭포 중** | **10.69 ms** (10.37~11.72) | **18.64 ms** (18.24~19.14) |
+| 화면 | 60 Hz | 내장 1920x1080 · 로그 `refresh=60Hz period=16.67ms` |
+| **유휴** 평균 | **0.67 ms** (0.66~0.69) | **9.79 ms** (9.28~10.12) |
+| **유휴** 최악 | **12.35 ms** (12.30~12.38) | **19.85 ms** (16.56~25.83) |
+| **폭포 중** 평균 | **10.69 ms** (10.37~11.72) | **11.01 ms** (10.09~11.69) |
+| **폭포 중** 최악 | **18.64 ms** (18.24~19.14) | **17.62 ms** (16.25~19.79) |
 
-**폭포가 흐르면 평균 응답이 16 배 느려져요.** 재현성도 좋아요 — 유휴 최악은 5 회가 0.08 ms 폭
-안에 들어왔어요.
+Windows 의 회차별 값 (실행 순서 그대로 — 위 "반복과 대표값" 규칙). **Linux 회차별 값은 남아 있지
+않아요** — 그때는 min~max 만 기록했어요 ([#441 코멘트](https://github.com/ensky0/tildaz/issues/441#issuecomment-5302521860)).
+
+```
+유휴  평균 10.12  9.89  9.28  9.50  9.99 ms    최악 20.09 18.21 25.83 16.56 21.25 ms
+폭포  평균 10.45 11.49 11.69 10.09 11.10 ms    최악 17.80 17.64 17.43 16.25 19.79 ms
+```
+
+**폭포 중 값은 두 platform 이 거의 같은데 (10.69 / 11.01 ms) 유휴가 15 배 갈려요.** 그래서
+"폭포가 흐르면 16 배 느려진다" 는 Linux 의 문장이 Windows 에서는 **+12 % 로 사라져요.**
+
+#### 유휴 차이의 원인은 **렌더를 언제 시작하느냐**예요 (소스로 확인)
+
+| platform | 키가 온 뒤 | 근거 |
+|---|---|---|
+| **Linux** | **같은 poll 반복에서 바로 그려요** | 키 이벤트가 `needs_redraw` 를 켜고, 그 다음 줄의 `maybeRedraw` 가 그 자리에서 그려요 ([`wayland_minimal.zig`](../../src/host/linux/wayland_minimal.zig)) |
+| **Windows** | **다음 frame tick 을 기다려요** | `wndProc` 는 `requestRender()` 로 게이트만 열고 (#386 ②), 실제 렌더는 프레임 클럭이 post 하는 `WM_FRAME_TICK` → `renderFrameTick()` 에서 해요 ([`window.zig`](../../src/window.zig)) |
+
+키가 프레임 주기 안 아무 때나 도착하니 Windows 유휴 평균은 **반 프레임 (16.67 / 2 = 8.3 ms) + 렌더 ·
+present · 셸 왕복**이 되고, 실측 9.79 ms 가 그 값이에요. 최악이 한 주기를 넘는 것 (19.85 ms) 도 같은
+설명이에요. **폭포 중에는 tick 마다 그릴 것이 이미 있어서** 이 대기가 값에서 사라져 두 platform 이
+붙어요.
+
+이건 *"Windows 가 느리다"* 가 아니라 **구조가 다르다**는 뜻이에요 — 유휴에 프레임을 안 그려 CPU 를
+아끼는 #386 ② 의 게이트가 응답 지연으로는 반 프레임을 얹어요. 바꿀지 말지는 별도 판단이에요.
 
 **이 값으로 [#439](https://github.com/ensky0/tildaz/issues/439) 를 판정하면 안 돼요.** 그 이슈는
 *"유휴에서 **PTY 출력이 도착**했을 때"* 이고 이 측정은 **키를 눌러** 시작해요 — 키가 오면 앱이 즉시
 렌더를 요청하니 유휴 깨우기 경로를 아예 안 타요. 예산 4 ms 와의 직접 비교도 안 돼요 (그건 드레인
 한 번의 상한이고, 이 값은 거기에 셸 왕복 · 렌더 · present 가 누적된 것이에요).
 
-### ⚠ 입력기가 한글이면 표본이 안 잡혀요
+### ⚠ 입력기 — **Linux 는 표본이 비고 Windows 는 안 비어요**
 
-보내는 것이 **문자 키 `a`** 라서, 한글 모드에서는 IME 가 그것을 조합용으로 가져가요 (`ㅁ` 이 찍혀요).
-그러면 앱의 키 핸들러를 안 타서 `markInput()` 이 안 불리고 표본이 비어요. 스크립트가
-`fcitx5-remote` 로 **영문으로 바꿨다가 끝나면 되돌려요.**
+보내는 것이 **문자 키 `a`** 라서 입력기 상태가 측정 전제예요. 그런데 **두 platform 의 결과가 달라요**
+(둘 다 실측이에요).
 
-**단축키는 달라요** — `Ctrl+Shift+F12` 는 한글 모드에서도 앱에 도달해요
+| platform | 한글 모드에서 문자 키 | 표본 | 도구가 하는 일 |
+|---|---|---|---|
+| **Linux** (fcitx5) | IME 가 조합용으로 가져가요 (`ㅁ` 이 찍혀요) — 앱 키 핸들러를 **안 타요** | **0 개** | `fcitx5-remote` 로 영문 전환 후 측정, 끝나면 복원 |
+| **Windows** (IMM) | IME 가 쓰는데도 **`WM_KEYDOWN` 은 앱에 도달해요** (`VK_PROCESSKEY`) | **정상** (실측 11/11) | 그래도 영문으로 맞춰요 — 아래 참고 |
+
+Windows 실측: 한국어 IME (`hkl=0x04120412`) 를 conversion mode 1 (한글) 로 두고 `a` 10 회를 보냈더니
+`input samples=11` 로 **그대로 잡혔어요.** 그러니 Windows 에서 표본이 비면 원인은 입력기가 아니에요.
+
+**그래도 `send-keys.ps1` 은 영문으로 맞추고 끝나면 되돌려요** (`-KeepImeMode` 로 끌 수 있어요).
+표본이 잡히더라도 **재는 경로가 달라지기 때문**이에요 — 한글 모드에서는 셸 에코 왕복이 아니라
+preedit overlay 를 그리는 시간을 재게 돼서 영문 회차와 나란히 둘 수 없어요.
+
+**단축키는 또 달라요** — `Ctrl+Shift+F12` 는 Linux 에서도 한글 모드에서 앱에 도달해요
 ([#465](https://github.com/ensky0/tildaz/issues/465)). 위 "입력 손실 검사" 의 ①이 한글 모드에서도
 되는 것과 모순이 아니에요. **키 종류가 다른 거예요.**
 
-곁가지로, 한글 모드에서 preedit 은 화면에 그려지는데 표본은 안 잡혀요 — 즉 지금 계측은
-**영문 직접 입력 경로만** 봐요. 한글 입력의 응답 지연을 재려면 계측 지점을 IME 경로에도 놓아야 해요.
+Linux 는 한글 모드에서 preedit 이 그려지는데도 표본이 안 잡혀요 — 즉 그쪽 계측은 **영문 직접 입력
+경로만** 봐요. 한글 입력의 응답 지연을 재려면 계측 지점을 IME 경로에도 놓아야 해요.
 
 ### 회차가 폐기되면 자동으로 다시 돌아요
 
 표본이 기대치의 8 할 미만이면 그 회차는 폐기예요 (`--retries`, 기본 3 회 재시도). 폐기의 알려진
-원인은 **한글 입력기** (위에서 미리 막아요) 와 **측정 중 조작**이에요 — 합성 입력은 포커스된 창으로
-가므로 측정 중에 창을 바꾸면 키가 다른 앱으로 새요.
+원인은 **한글 입력기** (Linux 한정, 위에서 미리 막아요) 와 **측정 중 조작**이에요 — 합성 입력은
+포커스된 창으로 가므로 측정 중에 창을 바꾸면 키가 다른 앱으로 새요.
+
+#### ⚠ Windows — **알림 토스트가 뜨면 회차가 통째로 폐기돼요**
+
+`send-keys.ps1` 은 키 하나마다 `GetForegroundWindow()` 를 확인하고 어긋나면 **키를 안 보내요**
+(안 그러면 사용자가 보던 창에 그대로 타이핑돼요 — 예전 시연에서 실제로 일어났어요). 그런데 Windows
+알림 (`Windows.UI.Core.CoreWindow` · "새 알림") 이 foreground 를 쥐면 `SetForegroundWindow` 가 **조용히
+거부**돼서, 첫 측정에서 회차가 세 번 연속 폐기됐어요. 앱은 정상으로 떴는데 **활성이 못 된 것**이에요.
+
+그래서 거부되면 **창 client 한가운데를 실제로 클릭해 포커스를 회수**해요 (사용자가 하는 것과 같은
+행위라 foreground lock 이 안 걸려요). 회수가 쓰이면 회차 줄에 *"포커스를 클릭으로 회수했어요"* 가
+붙어요 — 5 회차 실측 (idle · flood 각 5 회) 에서 **10 회차 중 9 회**가 그랬어요. 즉 이 회수 경로가
+없으면 그 측정은 거의 전부 폐기됐을 거예요.
 
 ## 다른 터미널과 비교하기
 
