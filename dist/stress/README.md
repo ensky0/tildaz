@@ -40,8 +40,9 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
-| [`check-input-loss.sh`](check-input-loss.sh) | **응답성** — 폭포 중 입력이 먹히는지 (처리량이 아니에요, 아래 절) | Linux · macOS |
-| [`hygiene.sh`](hygiene.sh) | 위 셋이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
+| [`check-input-loss.sh`](check-input-loss.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
+| [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux |
+| [`hygiene.sh`](hygiene.sh) | 위 넷이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
@@ -716,13 +717,62 @@ exec "$SHELL"                              # 폭포 후 셸 — 같은 PTY slave
    (PowerShell 이면 `ni $env:TEMP\tz-ok`).
 4. `%APPDATA%\tildaz\tildaz_stress.log` 에서 `=== snapshot` 블록 수를 세고 파일 생성을 확인해요.
 
-### 아직 없는 것 — 응답 **시간** (축 ②)
+## 응답 **시간** 측정 ([#441](https://github.com/ensky0/tildaz/issues/441) 축 ②)
 
-이 절은 *"먹었나"* 만 봐요. **얼마나 늦게 반영되는지는 전혀 못 봐요.** 예산 4 ms 가 실제 체감
-지연으로 얼마인지 우리는 한 번도 재지 않았어요. 방법 후보 (앱 계측 · 합성 입력 · PTY 왕복) 와
-걸림돌은 [#441](https://github.com/ensky0/tildaz/issues/441) 에 정리돼 있어요 — Linux Wayland 의
-합성 입력이 걸려요. [#439](https://github.com/ensky0/tildaz/issues/439) (유휴 깨우기) 를 *가설*이
-아니라 숫자로 판정하려면 그 축이 필요해요.
+위 절이 *"먹었나"* 를 본다면 이쪽은 **"얼마나 늦게 반영되나"** 예요.
+
+```sh
+dist/stress/measure-input-latency.sh                      # idle · flood 둘 다
+dist/stress/measure-input-latency.sh --mode idle --presses 50
+```
+
+**Linux 전용이에요.** 합성 입력이 platform 마다 달라요 — Windows 는 `SendInput`, macOS 는
+`CGEvent` 로 [#387](https://github.com/ensky0/tildaz/issues/387) 이 이미 썼으니 그 경로를 옮겨오면
+되지만 아직 안 했어요. **계측 자체는 세 platform 에 다 있어요** (`perf.input_latency`).
+
+### 재는 구간
+
+앱이 `perf.markInput()` (키 수신) 부터 `perf.completeInput()` (그 뒤 첫 present 완료) 까지를 재요.
+그래서 **키 → PTY write → 셸 에코 → PTY read → parse → render → present** 가 전부 들어가요.
+셸 왕복이 섞이지만 **그게 사용자가 실제로 기다리는 시간**이에요.
+
+못 재는 것: `present → 실제 화면 발광` (외부 장비 필요) 과 `키 눌림 → 앱 수신` (compositor 몫).
+
+### 첫 수치 (미니PC · Ryzen 7 8845HS · CachyOS · KDE Plasma · 60 Hz)
+
+5 회 절사평균 + min~max.
+
+| 상황 | 평균 | 최악 |
+|---|---|---|
+| **유휴** | **0.67 ms** (0.66~0.69) | **12.35 ms** (12.30~12.38) |
+| **폭포 중** | **10.69 ms** (10.37~11.72) | **18.64 ms** (18.24~19.14) |
+
+**폭포가 흐르면 평균 응답이 16 배 느려져요.** 재현성도 좋아요 — 유휴 최악은 5 회가 0.08 ms 폭
+안에 들어왔어요.
+
+**이 값으로 [#439](https://github.com/ensky0/tildaz/issues/439) 를 판정하면 안 돼요.** 그 이슈는
+*"유휴에서 **PTY 출력이 도착**했을 때"* 이고 이 측정은 **키를 눌러** 시작해요 — 키가 오면 앱이 즉시
+렌더를 요청하니 유휴 깨우기 경로를 아예 안 타요. 예산 4 ms 와의 직접 비교도 안 돼요 (그건 드레인
+한 번의 상한이고, 이 값은 거기에 셸 왕복 · 렌더 · present 가 누적된 것이에요).
+
+### ⚠ 입력기가 한글이면 표본이 안 잡혀요
+
+보내는 것이 **문자 키 `a`** 라서, 한글 모드에서는 IME 가 그것을 조합용으로 가져가요 (`ㅁ` 이 찍혀요).
+그러면 앱의 키 핸들러를 안 타서 `markInput()` 이 안 불리고 표본이 비어요. 스크립트가
+`fcitx5-remote` 로 **영문으로 바꿨다가 끝나면 되돌려요.**
+
+**단축키는 달라요** — `Ctrl+Shift+F12` 는 한글 모드에서도 앱에 도달해요
+([#465](https://github.com/ensky0/tildaz/issues/465)). 위 "입력 손실 검사" 의 ①이 한글 모드에서도
+되는 것과 모순이 아니에요. **키 종류가 다른 거예요.**
+
+곁가지로, 한글 모드에서 preedit 은 화면에 그려지는데 표본은 안 잡혀요 — 즉 지금 계측은
+**영문 직접 입력 경로만** 봐요. 한글 입력의 응답 지연을 재려면 계측 지점을 IME 경로에도 놓아야 해요.
+
+### 회차가 폐기되면 자동으로 다시 돌아요
+
+표본이 기대치의 8 할 미만이면 그 회차는 폐기예요 (`--retries`, 기본 3 회 재시도). 폐기의 알려진
+원인은 **한글 입력기** (위에서 미리 막아요) 와 **측정 중 조작**이에요 — 합성 입력은 포커스된 창으로
+가므로 측정 중에 창을 바꾸면 키가 다른 앱으로 새요.
 
 ## 다른 터미널과 비교하기
 
