@@ -6,6 +6,7 @@ const dialog = @import("dialog.zig");
 const log = @import("log.zig");
 const messages = @import("messages.zig");
 const paths = @import("paths.zig");
+const perf = @import("perf.zig");
 const dwrite_font = @import("font/windows/font.zig");
 const font_spec = @import("font/spec.zig");
 
@@ -1766,6 +1767,7 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYDOWN => {
+                perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
                 // Ctrl keydown이 먼저 끝낸 composition result는 modifier keydown을
                 // 건너뛰어 실제 chord key까지 유지한다. leave 정책이 필요한
                 // C(copy/interrupt), Ctrl+Shift+V(paste), F12(perf)는 app resolver가

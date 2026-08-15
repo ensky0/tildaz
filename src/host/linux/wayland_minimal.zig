@@ -4174,6 +4174,11 @@ const Client = struct {
         // #160 — present(attach + damage + commit) 계측. Windows present(swap) 동등.
         const present_t0 = perf.now();
         defer perf.addTimed(&perf.present, present_t0);
+        // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
+        // `defer` 는 LIFO 라 이 줄이 위의 `addTimed` 보다 먼저 돌지만, 둘 다 attach +
+        // commit 을 마친 함수 종료 시점이라 present 이후인 것은 같다. `completeInput`
+        // 은 자기가 `now()` 를 다시 부르므로 순서 차이가 값에 섞이지 않는다.
+        defer perf.completeInput();
         // wl_surface.attach (opcode 1) — (buffer_id, x=0, y=0).
         try self.sendArgs(self.surface_id, 1, &.{ buffer.id, 0, 0 });
         // wl_surface.damage_buffer (opcode 9) — viewport 적용된 surface 에서는
@@ -5321,6 +5326,8 @@ const Client = struct {
         const serial = readU32(payload[0..4]);
         const key = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
+        // #441 축 ② — 응답 지연은 **눌림**에서 시작한다 (뗌은 화면을 안 바꾼다).
+        if (state == wl_keyboard_key_state_pressed) perf.markInput();
         // L12-γ-5 — pressed 면 repeat timer arm, released 면 disarm (같은
         // key 한정 — 다른 key 가 이미 repeat 중이면 그건 새 key 의 press 가
         // swap 했을 때만 cancel).
