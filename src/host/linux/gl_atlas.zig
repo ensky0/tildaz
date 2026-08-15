@@ -76,7 +76,7 @@ const Key = struct {
     /// 아이콘 키 — 같은 종류라도 크기 · 굵기가 다르면 다른 그림이다. 굵기는
     /// 1/16 px 로 양자화해 넣는다 (그보다 미세한 차이는 래스터 결과가 같다).
     fn fromIcon(kind: tab_icons.Icon, size: u32, stroke: f32) Key {
-        const stroke_q: u32 = @intFromFloat(@max(0.0, @round(stroke * 16.0)));
+        const stroke_q: u32 = @round(@max(0.0, stroke * 16.0));
         return .{
             .source = icon_source,
             .face = @intFromEnum(kind),

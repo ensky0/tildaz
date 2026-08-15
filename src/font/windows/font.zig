@@ -728,7 +728,7 @@ pub const DWriteFontContext = struct {
         const fam_len = std.unicode.utf16LeToUtf8(&fam_buf, self.primary_family_name[0..self.primary_family_len]) catch 0;
         log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
             fam_buf[0..fam_len],                             self.cell_width_px,                               self.cell_height_px,
-            @as(u32, @intFromFloat(@round(self.ascent_px))), @as(u32, @intFromFloat(@round(self.descent_px))),
+            @as(u32, @round(self.ascent_px)), @as(u32, @round(self.descent_px)),
         });
 
         // 5. Get IDWriteFactory2 for system font fallback
@@ -1469,7 +1469,7 @@ pub const DWriteFontContext = struct {
             slots[i] = .{
                 .glyph_index = indices_buf[i],
                 .natural_glyph_index = natural[cp_idx],
-                .x_offset = @intFromFloat(@round(offsets_buf[i].advanceOffset)),
+                .x_offset = @round(offsets_buf[i].advanceOffset),
                 .y_offset = 0,
             };
         }

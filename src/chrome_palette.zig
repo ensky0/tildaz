@@ -146,7 +146,7 @@ fn linearToSrgb(v: f64) f64 {
 }
 
 fn quant(v: f32) u8 {
-    return @intFromFloat(std.math.clamp(@round(v * 255.0), 0.0, 255.0));
+    return @round(std.math.clamp(v * 255.0, 0.0, 255.0));
 }
 
 fn toColor(l: [3]f64) [4]f32 {
