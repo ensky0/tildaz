@@ -837,7 +837,7 @@ pub fn defaultConfigJsonWithHotkey(
 // 변환 (DockPosition enum / Hotkey struct / Theme pointer / alpha u8).
 const default_dock_position: DockPosition = DockPosition.fromString(Defaults.dock_position) orelse unreachable;
 /// JSON 은 percent (0..100, f32), 메모리는 alpha (0..255 u8). `100.0` percent → `255` alpha.
-const default_opacity_alpha: u8 = @intFromFloat(@round(Defaults.opacity_percent * 255.0 / 100.0));
+const default_opacity_alpha: u8 = @round(Defaults.opacity_percent * 255.0 / 100.0);
 const default_theme: ?*const themes.Theme = themes.findTheme(Defaults.theme);
 const default_hotkey: Hotkey = Hotkey.fromString(Defaults.hotkey) orelse unreachable;
 const default_font_size_point: u8 = Defaults.font_size_point;
@@ -1054,7 +1054,7 @@ pub const Config = struct {
             if (wv.object.get("opacity_percent")) |v| {
                 const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
                 if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
-                config.opacity_alpha = @intFromFloat(@round(f * 255.0 / 100.0));
+                config.opacity_alpha = @round(f * 255.0 / 100.0);
             }
         }
 

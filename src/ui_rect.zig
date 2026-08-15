@@ -79,10 +79,10 @@ pub fn snap(r: Rect) IRect {
     const x1 = @round(r.x + r.w);
     const y1 = @round(r.y + r.h);
     return .{
-        .x = @intFromFloat(x0),
-        .y = @intFromFloat(y0),
-        .w = @max(1, @as(i32, @intFromFloat(x1 - x0))),
-        .h = @max(1, @as(i32, @intFromFloat(y1 - y0))),
+        .x = @trunc(x0),
+        .y = @trunc(y0),
+        .w = @max(1, @as(i32, @trunc(x1 - x0))),
+        .h = @max(1, @as(i32, @trunc(y1 - y0))),
     };
 }
 
@@ -124,10 +124,10 @@ test "#357 snapped 뒤에는 snap 이 no-op 이다 (#277 대비)" {
     const c = [4]f32{ 0, 0, 0, 1 };
     const r = snapped(.{ .x = 40.8, .y = 0.6, .w = 187.5, .h = 47.6, .color = c });
     const i = snap(r);
-    try testing.expectEqual(@as(i32, @intFromFloat(r.x)), i.x);
-    try testing.expectEqual(@as(i32, @intFromFloat(r.w)), i.w);
-    try testing.expectEqual(@as(i32, @intFromFloat(r.y)), i.y);
-    try testing.expectEqual(@as(i32, @intFromFloat(r.h)), i.h);
+    try testing.expectEqual(@as(i32, @trunc(r.x)), i.x);
+    try testing.expectEqual(@as(i32, @trunc(r.w)), i.w);
+    try testing.expectEqual(@as(i32, @trunc(r.y)), i.y);
+    try testing.expectEqual(@as(i32, @trunc(r.h)), i.h);
 }
 
 test "#343 clipX — 경계에 걸친 조각만 남기고 UV 이동량을 준다" {

@@ -239,7 +239,7 @@ pub const App = struct {
         const inputs = self.tabBarLayoutInputs();
         const layout = tab_layout.compute(inputs);
         const new_sx = tab_layout.ensureActiveVisible(inputs, layout, @intCast(self.session.activeIndex()));
-        self.tab_scroll_x = @intFromFloat(new_sx);
+        self.tab_scroll_x = @trunc(new_sx);
     }
 
     /// 화살표 클릭으로 viewport 한 step (= 1 탭 너비) 이동 (#117). 양 끝 clamp.
@@ -249,7 +249,7 @@ pub const App = struct {
         const inputs = self.tabBarLayoutInputs();
         const layout = tab_layout.compute(inputs);
         if (tab_layout.scrollByArrow(inputs, layout, dir)) |sx| {
-            self.tab_scroll_x = @intFromFloat(sx);
+            self.tab_scroll_x = @trunc(sx);
             self.tab_scroll_user_override = true;
             self.invalidateRenderer();
         }
@@ -822,7 +822,7 @@ pub const App = struct {
         // #117 — tab_area 안에서 mouse_x → world 좌표. 탭 viewport 시작 x 가
         // tab_area_x (화살표 있을 때 ARROW_W) 에 오프셋. world_x = (mouse_x -
         // tab_area_x) + scroll_x.
-        const local_x = mouse_x - @as(c_int, @intFromFloat(layout.tab_area_x));
+        const local_x = mouse_x - @as(c_int, @trunc(layout.tab_area_x));
         const world_x = local_x + self.tab_scroll_x;
         const tab_index_raw = @divTrunc(world_x, self.TAB_WIDTH);
         if (tab_index_raw < 0) return;
@@ -843,7 +843,7 @@ pub const App = struct {
         // #117 — DragState 는 world 좌표. 탭 영역 좌표계: world_x = (mouse_x -
         // tab_area_x) + scroll_x. tab_area_x = 화살표 있으면 ARROW_W, 없으면 0.
         const layout = self.tabBarLayout();
-        const world_x = (mouse_x - @as(c_int, @intFromFloat(layout.tab_area_x))) + self.tab_scroll_x;
+        const world_x = (mouse_x - @as(c_int, @trunc(layout.tab_area_x))) + self.tab_scroll_x;
         _ = self.tab_drag.begin(world_x, self.TAB_WIDTH, self.session.count());
     }
 
@@ -852,8 +852,8 @@ pub const App = struct {
         // scroll 한 step 이동 후 drag.move 에 *갱신된* world 좌표 전달.
         const layout = self.tabBarLayout();
         const total = self.tabBarTotalWidth();
-        const tab_area_x_int: c_int = @intFromFloat(layout.tab_area_x);
-        const vp: c_int = @intFromFloat(layout.tab_area_w);
+        const tab_area_x_int: c_int = @trunc(layout.tab_area_x);
+        const vp: c_int = @trunc(layout.tab_area_w);
         if (vp > 0 and total > vp) {
             const max_sx = total - vp;
             const edge: c_int = 32;
