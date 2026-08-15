@@ -5,6 +5,10 @@
 [#278](https://github.com/ensky0/tildaz/issues/278) (stress test harness) 이 함께
 쓰는 도구예요.
 
+**처리량 말고 응답성도 여기 있어요** — 폭포가 흐르는 동안 입력이 먹히는지 보는 검사는
+아래 "[응답성 — 입력 손실 검사](#응답성--입력-손실-검사-441-축-)" 절이에요. 드레인을 건드리는
+변경은 두 축이 거래 관계라 한쪽만 재면 판정이 반쪽이에요.
+
 **Linux · macOS · Windows 에서 같은 명령으로 돌아요.** 셸 스크립트가 아니라 Zig
 프로그램인 이유는 [#371 코멘트 1 절](https://github.com/ensky0/tildaz/issues/371#issuecomment-5163867655)
 에 있어요 — 요약하면 부하를 주는 층과 시간을 재는 층이 platform 마다 갈려서, 셸로
@@ -36,7 +40,8 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
-| [`hygiene.sh`](hygiene.sh) | 위 둘이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
+| [`check-input-loss.sh`](check-input-loss.sh) | **응답성** — 폭포 중 입력이 먹히는지 (처리량이 아니에요, 아래 절) | Linux · macOS |
+| [`hygiene.sh`](hygiene.sh) | 위 셋이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
@@ -579,6 +584,141 @@ Intel i5-1240P · `--repeat 5` · 배경 정리).
 - **scrollback 메모리는 줄당 약 1 KiB 예요** (120 열 기준, macOS 실측: 100만 줄 =
   1,008 MiB, 기본값 10만 줄 = 120 MiB). 셀 하나가 8 byte 이고 page 가 고정 폭이라
   `줄 수 × 열 수 × 8 byte` 에 가까워요. 열 수가 많은 창에서는 그만큼 늘어나요.
+## 응답성 — 입력 손실 검사 ([#441](https://github.com/ensky0/tildaz/issues/441) 축 ①)
+
+여기까지가 *얼마나 빨리 소화하나* 였다면, 이 절은 **그 동안 사용자를 잃지 않나** 예요.
+
+**드레인 구조를 건드리는 변경은 전부 처리량과 응답성의 거래예요** — 사양 A ([#387](https://github.com/ensky0/tildaz/issues/387)),
+예산 8 → 4 ms (SPEC §13.3), Windows waitable swapchain ([#435](https://github.com/ensky0/tildaz/issues/435)),
+Linux poll timeout ([#436](https://github.com/ensky0/tildaz/issues/436)), 유휴 깨우기
+([#439](https://github.com/ensky0/tildaz/issues/439)). 처리량 쪽만 도구가 있으면 *"처리량은 숫자로,
+응답성은 괜찮아 보인다로"* 남아요. #436 의 거래 (120 Hz cluster fps 121 → 93~104) 를 판단할 때
+이 비대칭이 그대로 걸렸어요.
+
+```sh
+dist/stress/check-input-loss.sh                 # 기본 — 10 회 · plain · 2 GiB
+dist/stress/check-input-loss.sh --presses 20
+```
+
+**Linux · macOS 전용이에요.** Windows 는 아래 "Windows 에서는 손으로" 를 보세요.
+
+### ⚠ 분량은 처리량 측정의 64 MiB 를 쓰면 안 돼요
+
+기록용 처리량은 64 MiB 로 내지만 (위 "기록용은 64 MiB"), **이 검사에서 그 값은 못 써요.** Linux 에서
+plain 은 200 MB/s 급이라 **0.3 초면 끝나서** 누를 시간이 없어요. 그러면 폭포가 없는 상태에서 누른
+것이 되고, ①은 당연히 다 먹고 ②는 버퍼에 쌓일 이유조차 없어요 — **판정이 성립하지 않는데 결과는
+`10 / 10` 으로 보여요.** 첫 회차에서 실제로 그렇게 나왔어요 (#441). 기본을 2 GiB 로 두는 이유예요.
+
+### ⚠ 입력기(IME)를 영문 모드로 두세요
+
+**한글 모드면 ①②가 둘 다 0 으로 나와요** (#441 실측 — 미니PC · CachyOS · KDE Plasma · fcitx5).
+타이핑은 한글로 조합돼 `touch` 가 명령이 되지 않고, 키 이벤트도 IME 를 먼저 지나가서
+`Ctrl+Shift+F12` 가 앱까지 오지 않아요. 폭포는 정상으로 흘렀는데 (2.17 GB · drain 21.9 초)
+로그에 `=== snapshot` 이 하나도 없는 회차가 그것이었어요.
+
+스크립트가 이 조합 (`폭포 ✅` + `① 0` + `② 실패`) 을 만나면 IME 를 의심하라고 알려 줘요.
+
+### 폭포 중이었는지를 함께 판정해요 — 개수만 세면 속아요
+
+그래서 **`=== snapshot` 개수만 세지 않아요.** 각 스냅숏의 `drain bytes` 를 함께 봐요.
+
+`dumpAndReset` 은 읽으면서 카운터를 리셋하니, 한 스냅숏의 bytes 는 *직전 스냅숏 이후* 의 몫이에요.
+**0 이면 그 사이에 아무것도 안 흘렀다** = 폭포 밖에서 눌렀다는 뜻이에요. 통과 조건은 "눌린 횟수" 가
+아니라 **"폭포 중에 눌린 횟수"** 예요.
+
+```
+==================== 결과 ====================
+ 폭포                      ✅ 2013 MiB 흘렀어요
+ ① 앱 단축키 · 앱이 소비   ✅ 10 / 10   (전체 눌림 10)
+ ② PTY 전달 · 타이핑       ✅ 성공 (파일 생성됨)
+==============================================
+```
+
+producer 가 안 돌면 `폭포` 줄이 `❌ 231 byte 뿐` 으로 나와요. 그 회차는 나머지 판정이 무의미하니
+버려요.
+
+### producer 는 **환경변수 두 개로만** 켜져요
+
+`stress.zig` 의 `producerRequest` 가 `TILDAZ_STRESS_WORKLOAD` 와 `TILDAZ_STRESS_BYTES` 를 **둘 다**
+요구하고, 하나라도 빠지면 조용히 일반 모드로 둬요. 그리고 **인자를 주면 안 돼요** — 인자가 있으면
+`throughput` 같은 *독립 측정* 모드라 자기 안에서 재고 끝나서, 앱 PTY 로는 폭포가 흐르지 않아요.
+(첫 회차의 실수가 정확히 이것이었어요.)
+
+### 두 경로를 따로 봐요 — 하나로 뭉치면 판정이 안 돼요
+
+| # | 경로 | 어떻게 판정하나 | 왜 되나 |
+|---|---|---|---|
+| **①** | **앱 단축키** (앱이 소비) | 폭포 중 `Ctrl+Shift+F12` (macOS 는 `Shift+Cmd+F12`) 를 N 회 누르고 로그의 `=== snapshot` 블록 수를 센다 | 처리되면 블록이 **정확히 하나** 남아요. 화면을 볼 필요가 없고 개수가 곧 손실률이에요 |
+| **②** | **PTY 전달** (타이핑) | 폭포 중 `touch /tmp/tz-ok` 를 타이핑하고, 폭포가 끝난 뒤 그 파일이 생겼는지 본다 | producer 가 **foreground** 라 셸이 stdin 을 읽지 않아 입력이 termios 버퍼에 남고, 폭포가 끝나는 순간 실행돼요 |
+
+**둘 다 필요해요** — ①은 `Ctrl+Shift` 분기에서 앱이 소비하므로 **PTY write 경로를 지나지 않아요.**
+②가 그 경로를 봐요. 그리고 ②의 배치는 **Ctrl+C 검사도 함께 성립**시켜요 (producer 가 foreground 라
+SIGINT 를 받아요).
+
+`=== snapshot` 만 세면 되는 이유는 **두 덤프가 라벨로 갈리기** 때문이에요. 단축키는
+[`perf.zig`](../../src/perf.zig) 의 `dumpAndReset(rt, "snapshot")` 이고, 종료 시 자동 덤프
+([#396](https://github.com/ensky0/tildaz/issues/396)) 는 `dumpOnExit` 이 **워크로드 이름**을 라벨로 써요.
+
+### `-e` 에 러너 스크립트를 넘겨요 — 그냥 producer 를 넘기면 ②가 성립 안 해요
+
+`measure-repeat.sh` 처럼 `-e <producer>` 로 띄우면 **폭포가 끝날 때 앱이 함께 종료돼서, 버퍼에 쌓인
+입력을 실행할 셸이 없어요.** 그래서 스크립트가 이런 러너를 만들어 넘겨요.
+
+```sh
+#!/bin/sh
+"$STRESS" throughput --layer pty --mb 64   # foreground 폭포 (stdin 을 안 읽어요)
+exec "$SHELL"                              # 폭포 후 셸 — 같은 PTY slave 를 물려받아 버퍼를 읽어요
+```
+
+`-e` 가 인자를 못 받는 것도 같은 이유예요 (`run_options.zig` — POSIX PTY 의 argv 가 `{shell}` 로 고정).
+
+### 로그는 `tildaz_stress.log` 로 가요
+
+`-e` 로 띄운 회차는 stress run 으로 판정돼 (`instance_context.isStress`) 평소의 `tildaz_N.log` 가
+아니라 **`tildaz_stress.log`** 에 남아요. 판정이 안 나올 때 이걸 먼저 확인해요 — 다른 작업에서도
+`tildaz_1.log` 가 비어 있어 한참 헤맨 적이 있어요.
+
+| platform | 경로 |
+|---|---|
+| Linux | `${XDG_STATE_HOME:-~/.local/state}/tildaz/tildaz_stress.log` |
+| macOS | `~/Library/Logs/tildaz_stress.log` |
+| Windows | `%APPDATA%\tildaz\tildaz_stress.log` |
+
+### ❌ 이렇게는 판정이 안 돼요 — 다시 만들지 않으려고 적어 둬요
+
+| 안 되는 방법 | 왜 |
+|---|---|
+| 폭포 중 에코를 **눈으로** 보기 | 초당 100 MiB 넘게 흐르면 1 초에 수만 줄이 지나가서, 에코된 글자가 나타난 순간 이미 스크롤 위로 밀려요. **"안 보인다" 와 "안 먹는다" 가 구분되지 않아요** |
+| 백그라운드 job (`( … ) &`) 에 **Ctrl+C** | SIGINT 는 foreground process group (셸) 에만 가요. 앱과 무관하게 **원래 안 멈춰요** |
+
+첫 시연이 이 둘을 겹쳐 놓아서 판정이 아예 불가능한 설계였어요 ([#436 코멘트](https://github.com/ensky0/tildaz/issues/436#issuecomment-5236928407)).
+
+### 위생은 처리량만큼 안 따져요
+
+`hygiene_check` 를 부르지 않아요. 판정이 *"먹었나 / 안 먹었나"* 라는 **이산값**이라 AC · 주사율 ·
+배경 앱이 결과를 뒤집지 않아요 (나쁘면 폭포가 느려질 뿐이에요). 처리량 표를 낼 때의 규칙
+(위 "측정 위생") 과는 요구가 다르다는 뜻이에요.
+
+### Windows 에서는 손으로
+
+`-e` 에 러너 스크립트를 넘길 수 없어요 — `CreateProcess` 가 `.cmd` 를 직접 실행하지 않아요.
+절차는 같으니 손으로 해요.
+
+1. `zig build stress` 로 `tildaz-stress.exe` 를 만들어요.
+2. TildaZ 를 평소대로 띄우고 탭에서 producer 를 **foreground** 로 실행해요
+   (`zig-out\bin\tildaz-stress.exe throughput --layer pty --mb 64`).
+3. 폭포 중 `Ctrl+Shift+F12` 를 10 회 누르고, 결과가 파일로 남는 명령을 타이핑해요
+   (PowerShell 이면 `ni $env:TEMP\tz-ok`).
+4. `%APPDATA%\tildaz\tildaz_stress.log` 에서 `=== snapshot` 블록 수를 세고 파일 생성을 확인해요.
+
+### 아직 없는 것 — 응답 **시간** (축 ②)
+
+이 절은 *"먹었나"* 만 봐요. **얼마나 늦게 반영되는지는 전혀 못 봐요.** 예산 4 ms 가 실제 체감
+지연으로 얼마인지 우리는 한 번도 재지 않았어요. 방법 후보 (앱 계측 · 합성 입력 · PTY 왕복) 와
+걸림돌은 [#441](https://github.com/ensky0/tildaz/issues/441) 에 정리돼 있어요 — Linux Wayland 의
+합성 입력이 걸려요. [#439](https://github.com/ensky0/tildaz/issues/439) (유휴 깨우기) 를 *가설*이
+아니라 숫자로 판정하려면 그 축이 필요해요.
+
 ## 다른 터미널과 비교하기
 
 ```sh
