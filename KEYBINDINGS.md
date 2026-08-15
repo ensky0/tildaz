@@ -24,10 +24,13 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 
 On Linux the drop-down is normally sized from config (`dock_position` /
 `width_percent` / `height_percent`). Fullscreen is delegated to the compositor:
-layer-shell desktops (KDE Plasma, sway, Hyprland, COSMIC) re-anchor the surface
+layer-shell desktops (KDE Plasma, Hyprland, COSMIC) re-anchor the surface
 to all four edges — Alt+Enter covers the panels (`exclusive_zone = -1`),
 Shift+Alt+Enter keeps them visible (`exclusive_zone = 0`); GNOME and Cinnamon
-(no layer-shell) use `xdg_toplevel.set_fullscreen` / `set_maximized`. The toggle
+(no layer-shell) use `xdg_toplevel.set_fullscreen` / `set_maximized`; sway uses
+a regular window placed over i3 IPC (#454) — Alt+Enter is
+`xdg_toplevel.set_fullscreen`, Shift+Alt+Enter fills the workspace area (panels
+stay visible) via IPC. The toggle
 applies only while the terminal is visible, and the fullscreen state is
 preserved across F1 hide/show. Each fullscreen mode is exited only by its own
 shortcut: pressing the *other* combination while fullscreen is ignored on all

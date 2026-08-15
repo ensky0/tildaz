@@ -401,7 +401,14 @@ const Capabilities = struct {
     // #277 — GPU (dma-buf) 렌더 경로. 미advertise 면 software `wl_shm` 으로 돈다.
     linux_dmabuf: Global = .{},
 
-    fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32) void {
+    /// `skip_layer_shell` 은 sway 전용이다 ([#454](https://github.com/ensky0/tildaz/issues/454)).
+    /// sway 는 layer-shell 의 `on_demand` 에서 **map 시 keyboard focus 를 주지 않아**
+    /// 토글 직후 타이핑이 안 된다 (spec 이 compositor 재량으로 남긴 자리라 sway 는
+    /// 버그가 아니다 — 다만 KWin · Hyprland · COSMIC 셋은 자동으로 준다). 그래서 sway
+    /// 에서는 layer-shell 을 **아예 못 본 것으로 두고**, GNOME · Cinnamon 이 이미 쓰는
+    /// xdg_toplevel fallback 경로로 보낸 뒤 배치 · 토글을 i3 IPC 로 한다.
+    fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32, skip_layer_shell: bool) void {
+        if (skip_layer_shell and std.mem.eql(u8, interface, "zwlr_layer_shell_v1")) return;
         if (std.mem.eql(u8, interface, "wl_compositor")) {
             self.compositor = .{ .name = name, .version = version };
         } else if (std.mem.eql(u8, interface, "wl_shm")) {
@@ -852,6 +859,10 @@ fn kwinCompositor(rt: Runtime) bool {
 const Client = struct {
     /// #451 — 진입점이 만든 `Io` · 환경변수. `App` · `Window` 와 같은 자리다.
     rt: Runtime,
+    /// #454 — sway 세션인가. layer-shell 을 건너뛰고 xdg_toplevel + i3 IPC 로 가는
+    /// 분기 하나에만 쓴다. 부팅에서 한 번 계산해 둔다 (registry 이벤트마다 환경변수를
+    /// 다시 읽지 않으려고).
+    is_sway: bool,
     allocator: std.mem.Allocator,
     /// #451 — 예전 `std.net.Stream`. 0.16 의 `Io.net` 으로는 Wayland 를 태울 수 없어서
     /// (`unix_socket.zig` 의 이유 절) raw fd 로 내렸다. `recvmsg` · `poll` 은 원래부터
@@ -1316,6 +1327,7 @@ const Client = struct {
         const theme = cfg.theme orelse fallback_theme;
         return .{
             .rt = rt,
+            .is_sway = sway_ipc.isSwaySession(rt),
             .allocator = allocator,
             .wayland_fd = wayland_fd,
             .renderer = renderer,
@@ -1597,6 +1609,9 @@ const Client = struct {
             self.logBootElapsed("first frame");
 
             log.appendLine("linux", "Wayland terminal window mapped", .{});
+            // #454 — sway 는 크기를 `for_window` 가 잡고 **위치는 map 후**에 준다
+            // (`sway_ipc.moveWindowIfSway` 주석). sway 가 아니면 no-op 이다.
+            sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
         }
 
         // #304 — listener만 먼저 열린 시점이 아니라 Wayland globals, 입력,
@@ -2342,11 +2357,13 @@ const Client = struct {
     /// #87 — Alt+Enter (cover) / Shift+Alt+Enter (avoid) fullscreen 토글.
     /// Win `toggleFullscreenMode` 동등 — 같은 모드 키 = dock 복귀(none), none →
     /// 그 모드, 다른 모드 = no-op.
-    ///   • layer-shell(KWin/sway/Hyprland/COSMIC): sendLayerSurfaceLayout 가
+    ///   • layer-shell(KWin/Hyprland/COSMIC): sendLayerSurfaceLayout 가
     ///     anchor/size/exclusive_zone 를 재전송 → configure → resize + redraw.
     ///   • xdg-shell fallback(GNOME/Cinnamon): 위치/크기를 Shell 확장이 잡으므로
     ///     layer 식 재배치 불가. xdg_toplevel 표준 상태 요청을 compositor 에 위임
     ///     (cover=set_fullscreen, avoid=set_maximized) — applyXdgFullscreen 참조.
+    ///   • sway(#454, xdg_toplevel + IPC): cover 는 xdg set_fullscreen, avoid 는
+    ///     IPC workspace 채우기 — applySwayFullscreen 참조.
     fn toggleFullscreen(self: *Client, mode: FullscreenMode) void {
         const prev = self.fullscreen_mode;
         const next: FullscreenMode = if (prev == mode)
@@ -2363,7 +2380,13 @@ const Client = struct {
                 return;
             };
         } else if (self.toplevel_id != 0) {
-            self.applyXdgFullscreen(prev, next) catch |err| {
+            const apply = if (self.is_sway)
+                // #454 — sway 는 floating 창의 set_maximized 를 무시하므로 avoid 를
+                // IPC 로 구현한다 (applySwayFullscreen). cover 는 xdg 표준이 먹는다.
+                self.applySwayFullscreen(prev, next)
+            else
+                self.applyXdgFullscreen(prev, next);
+            apply catch |err| {
                 log.appendLine("wayland", "fullscreen xdg request failed: {s}", .{@errorName(err)});
                 return;
             };
@@ -2392,6 +2415,29 @@ const Client = struct {
         }
         // wl_surface.commit (opcode 6) — 상태 요청 반영.
         try self.sendNoArgs(self.surface_id, 6);
+    }
+
+    /// #454 sway 경로 — cover 는 xdg `set_fullscreen` 을 그대로 쓰고 (sway 가 floating
+    /// 창에도 정상 적용, 실기 확인), avoid 만 IPC 배치로 바꾼다: sway 는 floating 창의
+    /// `set_maximized` 를 무시해서 (실기 sway 1.12 — 요청 후 rect 무변화) xdg 경로의
+    /// avoid 가 no-op 이 된다. `sway_ipc.applyAvoidLayoutIfSway` 주석 참조.
+    fn applySwayFullscreen(self: *Client, prev: FullscreenMode, next: FullscreenMode) !void {
+        switch (prev) {
+            .cover => {
+                try self.sendNoArgs(self.toplevel_id, xdg_toplevel_request_unset_fullscreen);
+                try self.sendNoArgs(self.surface_id, 6);
+            },
+            .avoid => sway_ipc.restoreDockLayoutIfSway(self.rt, self.allocator, self.config),
+            .none => {},
+        }
+        switch (next) {
+            .cover => {
+                try self.sendArgs(self.toplevel_id, xdg_toplevel_request_set_fullscreen, &.{0});
+                try self.sendNoArgs(self.surface_id, 6);
+            },
+            .avoid => _ = sway_ipc.applyAvoidLayoutIfSway(self.rt, self.allocator),
+            .none => {},
+        }
     }
 
     /// #351 — layout 계산의 기준이 되는 **logical work-area**. 우선순위:
@@ -6455,7 +6501,7 @@ const Client = struct {
         var p = Parser{ .buf = payload[4..] };
         const interface = try p.readString();
         const version = try p.readU32();
-        self.caps.record(name, interface, version);
+        self.caps.record(name, interface, version, self.is_sway);
         // #241/#295 — wl_output 의 global 추가(모니터 연결/재구성). 이번 batch
         // 안에서 들어오는 layer-surface closed 는 사용자 Alt+F4 가 아니라 output
         // re-home 이다 → drain 단계에서 quit 대신 recreate 로 전환(batch-local 판정).
@@ -6639,6 +6685,36 @@ const Client = struct {
             // 안 만들어졌으므로 full create. 이후 hide/show cycle 은 unmap/remap
             // path (#205 — wl_surface + layer_surface 유지가 ~165ms → ~16ms 줄임,
             // KWin Bug 503121 의 kitty workaround pattern).
+            // #454 — sway 는 surface 를 유지한 채 scratchpad 로 숨겼다. 그래서 show 도
+            // 재생성이 아니라 scratchpad 에서 꺼내는 것이다 (`sway_ipc.showFromScratchpad`).
+            // 첫 show (hidden_start) 는 아직 surface 가 없으므로 아래 create 로 간다.
+            if (self.is_sway and self.surface_id != 0) {
+                // #454 — sway 는 scratchpad 로 옮기는 순간 fullscreen 을 해제한다 (실기
+                // 확인 — hide 중 트리의 fullscreen_mode 가 0 으로 떨어짐). 앱의
+                // fullscreen_mode 는 그대로이므로 show 때 같은 상태를 재적용해
+                // hide/show 간 유지 (SPEC §2.8) 와 상태 동기화를 함께 지킨다.
+                //
+                // cover 는 **scratchpad show 보다 먼저** 상태를 세워야 맵 configure 가
+                // 전체화면 크기로 온다 — show 후에 보내면 (xdg 든 IPC 든) 전환
+                // 트랜잭션과 겹쳐 configure 가 유실된다. `fullscreenEnableIfSway` 주석.
+                if (self.fullscreen_mode == .cover)
+                    _ = sway_ipc.fullscreenEnableIfSway(self.rt, self.allocator);
+                // cover 는 reposition 금지 — move 가 전체화면 컨테이너를 dock 위치로
+                // 밀어낸다 (`showFromScratchpad` 주석). floating 저장 위치는 유지된다.
+                _ = sway_ipc.showFromScratchpad(
+                    self.rt,
+                    self.allocator,
+                    self.config,
+                    self.fullscreen_mode != .cover,
+                );
+                // avoid 는 일반 배치 명령이라 전환 트랜잭션 문제가 없다 — show 후
+                // 재적용이 실기에서 그대로 먹는다 (2차 재검증 [2]).
+                if (self.fullscreen_mode == .avoid)
+                    _ = sway_ipc.applyAvoidLayoutIfSway(self.rt, self.allocator);
+                self.logShowElapsed("scratchpad show");
+                log.appendLineVerbose("toggle", "show — scratchpad show (#454 sway)", .{});
+                return;
+            }
             if (self.surface_id == 0) {
                 try self.createShellObjects();
                 self.logShowElapsed("createShellObjects (first show)");
@@ -6663,6 +6739,14 @@ const Client = struct {
         // (wl_surface/layer_surface 유지) 워크어라운드를 쓴다 — 예외는 버그 있는 KWin
         // 한 곳뿐. (smithay/cosmic-comp 은 remap 미지원 #230, wlroots 는 recreate 도 빠름.)
         // 세션(PTY/shell)은 destroyShellObjects 가 안 건드림 → 재표시 후 그대로 유지.
+        // #454 — sway 는 surface 를 **살려 둔 채** scratchpad 로 보낸다. destroy/recreate 로
+        // 가면 xdg_toplevel 경로에서 창이 돌아오지 않는다 (`sway_ipc.hideToScratchpad`).
+        if (self.is_sway) {
+            _ = sway_ipc.hideToScratchpad(self.rt, self.allocator);
+            self.surface_hidden = true;
+            log.appendLineVerbose("toggle", "hide — moved to scratchpad (#454 sway)", .{});
+            return;
+        }
         if (kwinCompositor(self.rt)) {
             try self.unmapShellObjects();
             self.surface_hidden = true;
@@ -8217,6 +8301,10 @@ pub fn runBaselineWindow(
     // 측정 모드는 자기 단축키를 DE 에 등록하지 않는다 (#382) — 사용자의 기존 binding 을
     // 덮어쓰면 측정이 끝난 뒤에도 그 상태가 남는다.
     if (!opts.isStressRun()) sway_ipc.registerToggleIfSway(rt, allocator, cfg);
+    // #454 — sway 면 창 규칙(`for_window`)을 **창을 만들기 전에** 등록한다. layer-shell 을
+    // 쓰지 않는 대신 배치를 이 규칙이 맡는다. `client.run()` 안에서 창이 뜨므로 순서가
+    // 여기서 보장된다. 측정 인스턴스는 제외 — 사용자의 드롭다운이 아니다 (#382).
+    if (!opts.isStressRun()) sway_ipc.registerWindowRuleIfSway(rt, allocator, cfg);
     // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
     // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
