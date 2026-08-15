@@ -408,7 +408,7 @@ pub fn hitTab(
     const local_x = px - layout.tab_area_x;
     const world_x = local_x + scroll_x;
     if (world_x < 0) return null;
-    const tab_index = @as(usize, @intFromFloat(world_x / tab_w));
+    const tab_index = @as(usize, @trunc(world_x / tab_w));
     if (tab_index >= tab_count) return null;
     return tab_index;
 }

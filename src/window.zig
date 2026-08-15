@@ -1024,18 +1024,18 @@ pub const Window = struct {
         // width = always horizontal %, height = always vertical %.
         // f32 percent → pixel: round 후 c_int. 정수 나눗셈 보다 정확한 세밀 조정
         // (예: 33.3% 가 sw=1920 일 때 639.36 → 639 px).
-        const w: c_int = @intFromFloat(@round(sw_f * width_percent / 100.0));
-        const h: c_int = @intFromFloat(@round(sh_f * height_percent / 100.0));
+        const w: c_int = @round(sw_f * width_percent / 100.0);
+        const h: c_int = @round(sh_f * height_percent / 100.0);
 
         const x: c_int = switch (dock) {
             .left => sx,
             .right => sx + sw - w,
-            .top, .bottom => sx + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(sw - w)) * offset_percent / 100.0))),
+            .top, .bottom => sx + @as(c_int, @round(@as(f32, @floatFromInt(sw - w)) * offset_percent / 100.0)),
         };
         const y: c_int = switch (dock) {
             .top => sy,
             .bottom => sy + sh - h,
-            .left, .right => sy + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(sh - h)) * offset_percent / 100.0))),
+            .left, .right => sy + @as(c_int, @round(@as(f32, @floatFromInt(sh - h)) * offset_percent / 100.0)),
         };
 
         return .{

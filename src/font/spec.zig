@@ -36,7 +36,7 @@ pub const Spec = struct {
 
 pub fn ceilPositivePx(value: anytype) u32 {
     const wide: f64 = @floatCast(value);
-    return @intFromFloat(@max(1.0, @ceil(wide)));
+    return @ceil(@max(1.0, wide));
 }
 
 pub fn scaledRatioCeilPx(base: f32, ratio: f32, scale: f32) u32 {

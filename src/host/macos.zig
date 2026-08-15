@@ -1882,8 +1882,8 @@ fn syncGeometryAfterScreenChange() void {
     //    이동하면 cell/glyph/UI metric 이 init scale 에 고정돼 글자·탭바가 배율만큼
     //    틀어지므로(Windows rebuildFontForDpi / Linux applyScale 동등) 여기서 보정.
     //    같은 scale 이동은 viewport 만 바꾸면 됨(atlas 재생성 낭비 회피).
-    const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
-    const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
+    const vp_w_px: u32 = @trunc(cv_bounds.size.width * scale_pt);
+    const vp_h_px: u32 = @trunc(cv_bounds.size.height * scale_pt);
     if (@as(f32, @floatCast(scale_pt)) != g_renderer.?.scale) {
         g_renderer.?.applyScale(@floatCast(scale_pt)) catch |err| {
             log.appendLine("geom", "applyScale failed: {s} — skipping cell re-measure", .{@errorName(err)});
@@ -1960,8 +1960,8 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
 
     const cols = tab.terminal.cols;
     const rows = tab.terminal.rows;
-    const col: u16 = @intCast(@min(@as(u32, @intFromFloat(col_f)), @as(u32, cols) - 1));
-    const row: u16 = @intCast(@min(@as(u32, @intFromFloat(row_f)), @as(u32, rows) - 1));
+    const col: u16 = @intCast(@min(@as(u32, @trunc(col_f)), @as(u32, cols) - 1));
+    const row: u16 = @intCast(@min(@as(u32, @trunc(row_f)), @as(u32, rows) - 1));
     return .{ .col = col, .row = row };
 }
 
@@ -1977,8 +1977,8 @@ fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, d
     const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale);
     const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
     const cell_top_px = pad_px + tab_bar_px;
-    const col_i: i32 = @intFromFloat(@floor((x - pad_px) / @as(f32, @floatFromInt(cell_w_px))));
-    const row_i: i32 = @intFromFloat(@floor((y - cell_top_px) / @as(f32, @floatFromInt(cell_h_px))));
+    const col_i: i32 = @floor((x - pad_px) / @as(f32, @floatFromInt(cell_w_px)));
+    const row_i: i32 = @floor((y - cell_top_px) / @as(f32, @floatFromInt(cell_h_px)));
     return .{
         .cell = terminal_interaction.clampCell(col_i, row_i, tab.terminal.cols, tab.terminal.rows),
         .dir = terminal_interaction.edgeScrollDir(row_i, tab.terminal.rows),
@@ -2345,7 +2345,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                     g_tab_scroll_user_override = false;
                     const tab_w_int: c_int = ui_metrics.scaledPx(c_int, ui_metrics.TAB_WIDTH_PT, g_renderer.?.scale);
                     const world_x: f32 = (xy.x - layout.tab_area_x) + g_tab_scroll_x_px;
-                    _ = g_drag.begin(@intFromFloat(world_x), tab_w_int, g_session.count());
+                    _ = g_drag.begin(@trunc(world_x), tab_w_int, g_session.count());
                     return;
                 }
                 // tab_area 안인데 탭에는 안 맞음 (마지막 탭 우측 빈 공간 등). 무시.
@@ -2422,7 +2422,7 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
             }
         }
         const world_x = (xy.x - layout.tab_area_x) + g_tab_scroll_x_px;
-        _ = g_drag.move(@intFromFloat(world_x));
+        _ = g_drag.move(@trunc(world_x));
         return;
     }
 
@@ -2672,7 +2672,7 @@ fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void 
         if (g_renderer == null) return;
         const step_unit: f64 = 12.0;
         g_command_menu_scroll_accum += delta_y;
-        var steps: i64 = @intFromFloat(@divTrunc(g_command_menu_scroll_accum, step_unit));
+        var steps: i64 = @trunc(@divTrunc(g_command_menu_scroll_accum, step_unit));
         g_command_menu_scroll_accum -= @as(f64, @floatFromInt(steps)) * step_unit;
         while (steps != 0) {
             const down = steps < 0; // deltaY 음수 = 아래로 스크롤
@@ -2689,9 +2689,9 @@ fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void 
     // 평소 trackpad 사용감 기준 multiplier ~2.
     const scaled = delta_y * 2.0;
     const lines: isize = if (scaled > 0)
-        @as(isize, @intFromFloat(@ceil(scaled)))
+        @as(isize, @ceil(scaled))
     else
-        @as(isize, @intFromFloat(@floor(scaled)));
+        @as(isize, @floor(scaled));
     if (lines == 0) return;
 
     // delta 부호: 양수 deltaY (위로) → scrollback 위쪽 (older) = delta 음수
@@ -3096,8 +3096,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 
     // viewport / cell metrics 모두 pixel 단위로 통일 — pt/px mixing 시 글리프
     // 가 cell 일부만 차지해 깨져 보이는 문제 회피 (#75 댓글 6 의 정정 패턴).
-    const vp_w_px: u32 = @intFromFloat(cv_bounds.size.width * scale_pt);
-    const vp_h_px: u32 = @intFromFloat(cv_bounds.size.height * scale_pt);
+    const vp_w_px: u32 = @trunc(cv_bounds.size.width * scale_pt);
+    const vp_h_px: u32 = @trunc(cv_bounds.size.height * scale_pt);
     g_renderer.?.resize(vp_w_px, vp_h_px);
 
     const cell_w_px: u32 = g_renderer.?.font.cell_width_px;

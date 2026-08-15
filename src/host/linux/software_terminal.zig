@@ -859,10 +859,10 @@ pub const Renderer = struct {
                             d.cov,
                         );
                         self.layer.cell_bg.append(allocator, .{
-                            .x = cell_x + @as(i32, @intFromFloat(d.x)),
-                            .y = cell_y + @as(i32, @intFromFloat(d.y)),
-                            .w = @intFromFloat(d.w),
-                            .h = @intFromFloat(d.h),
+                            .x = cell_x + @as(i32, @trunc(d.x)),
+                            .y = cell_y + @as(i32, @trunc(d.y)),
+                            .w = @trunc(d.w),
+                            .h = @trunc(d.h),
                             .color = .{ .r = blended[0], .g = blended[1], .b = blended[2] },
                         }) catch {};
                     }
@@ -909,10 +909,10 @@ pub const Renderer = struct {
                     );
                     const cw_f: f32 = @floatFromInt(cell_w);
                     const ch_f: f32 = @floatFromInt(ch);
-                    const bx0: i32 = cell_x + @as(i32, @intFromFloat(br.x0 * cw_f));
-                    const by0: i32 = cell_y + @as(i32, @intFromFloat(br.y0 * ch_f));
-                    const bx1: i32 = cell_x + @as(i32, @intFromFloat(br.x1 * cw_f));
-                    const by1: i32 = cell_y + @as(i32, @intFromFloat(br.y1 * ch_f));
+                    const bx0: i32 = cell_x + @as(i32, @trunc(br.x0 * cw_f));
+                    const by0: i32 = cell_y + @as(i32, @trunc(br.y0 * ch_f));
+                    const bx1: i32 = cell_x + @as(i32, @trunc(br.x1 * cw_f));
+                    const by1: i32 = cell_y + @as(i32, @trunc(br.y1 * ch_f));
                     self.layer.overlay.append(allocator, .{
                         .x = bx0,
                         .y = by0,
@@ -945,10 +945,10 @@ pub const Renderer = struct {
                                 br.cov,
                             );
                             self.layer.overlay.append(allocator, .{
-                                .x = cell_x + @as(i32, @intFromFloat(br.x)),
-                                .y = cell_y + @as(i32, @intFromFloat(br.y)),
-                                .w = @as(i32, @intFromFloat(br.w)),
-                                .h = @as(i32, @intFromFloat(br.h)),
+                                .x = cell_x + @as(i32, @trunc(br.x)),
+                                .y = cell_y + @as(i32, @trunc(br.y)),
+                                .w = @as(i32, @trunc(br.w)),
+                                .h = @as(i32, @trunc(br.h)),
                                 .color = .{ .r = cov_blend[0], .g = cov_blend[1], .b = cov_blend[2] },
                             }) catch {};
                         }
@@ -1201,7 +1201,7 @@ pub const Renderer = struct {
         self.layer.overlay.append(allocator, .{
             .x = cx,
             .y = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch,
-            .w = @intFromFloat(ui_metrics.cursorBarWidthPx(self.scale)),
+            .w = @trunc(ui_metrics.cursorBarWidthPx(self.scale)),
             .h = ch,
             .color = self.render_state.colors.cursor orelse .{ .r = 180, .g = 180, .b = 180 },
         }) catch {};
@@ -1324,11 +1324,11 @@ pub const Renderer = struct {
         const ascent: i32 = @intCast(self.tab_font_ctx.ascent_px);
         const descent: i32 = @intCast(self.tab_font_ctx.descent_px);
         const text_baseline: i32 = @divFloor(tab_bar_h + ascent - descent, 2);
-        const tab_x_inset: i32 = @intFromFloat(@round(ui_metrics.tabGapPx(scale).tab_horizontal_inset));
+        const tab_x_inset: i32 = @round(ui_metrics.tabGapPx(scale).tab_horizontal_inset);
         // max_text_w — #268 per-tab close 제거로 탭 전체 (양쪽 padding 제외).
         const max_text_w: i32 = tab_w - tab_pad * 2;
-        const tab_area_x: i32 = @intFromFloat(in.layout.tab_area_x);
-        const tab_area_end: i32 = tab_area_x + @as(i32, @intFromFloat(in.layout.tab_area_w));
+        const tab_area_x: i32 = @trunc(in.layout.tab_area_x);
+        const tab_area_end: i32 = tab_area_x + @as(i32, @trunc(in.layout.tab_area_w));
 
         // --- 각 탭의 제목 (tab_area 안에서 clipping) ---
         // 탭 x 와 화면 밖 판정도 공통 모듈(`tabX` / `tabClip`) 을 쓴다 — 밑줄과
@@ -1336,7 +1336,7 @@ pub const Renderer = struct {
         for (in.tab_titles, 0..) |title, i| {
             // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
             if (built.deferred_title) |d| if (d == i) continue;
-            const tab_screen_x: i32 = @intFromFloat(tab_chrome.tabX(i, chrome_in));
+            const tab_screen_x: i32 = @trunc(tab_chrome.tabX(i, chrome_in));
             switch (tab_chrome.tabClip(
                 @floatFromInt(tab_screen_x),
                 @floatFromInt(tab_w),
@@ -1370,7 +1370,7 @@ pub const Renderer = struct {
         // 없으므로 이것만은 지오메트리가 아니라 layer 순서로 표현한다.
         if (built.deferred_title) |di| {
             if (di < in.tab_titles.len) {
-                const dx: i32 = @intFromFloat(tab_chrome.tabX(di, chrome_in));
+                const dx: i32 = @trunc(tab_chrome.tabX(di, chrome_in));
                 if (tab_chrome.tabClip(
                     @floatFromInt(dx),
                     @floatFromInt(tab_w),
@@ -1447,10 +1447,10 @@ pub const Renderer = struct {
                     appendChromeGlyph(&c.renderer.layer.chrome_before, c.allocator, .{
                         .ref = .{ .codepoint = g.cp },
                         .glyph = c.renderer.tab_font_ctx.glyph(g.cp, .regular),
-                        .pen_x = @intFromFloat(g.x),
+                        .pen_x = @trunc(g.x),
                         .baseline = c.t.text_baseline,
                         .box_y = 0,
-                        .box_w = @intFromFloat(g.advance),
+                        .box_w = @trunc(g.advance),
                         .box_h = c.t.tab_bar_h,
                         .fg = c.t.text_color,
                         .clip_x0 = c.viewport_left,
@@ -1484,14 +1484,14 @@ pub const Renderer = struct {
         const more_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, scale);
 
         if (layout.arrows_visible) {
-            const arrow_w: i32 = @intFromFloat(layout.arrow_w);
-            self.appendIcon(allocator, list, .chevron_left, @intFromFloat(layout.left_arrow_x), arrow_w, bar_h, size, stroke, if (layout.left_enabled) active_color else disabled_color);
-            self.appendIcon(allocator, list, .chevron_right, @intFromFloat(layout.right_arrow_x), arrow_w, bar_h, size, stroke, if (layout.right_enabled) active_color else disabled_color);
+            const arrow_w: i32 = @trunc(layout.arrow_w);
+            self.appendIcon(allocator, list, .chevron_left, @trunc(layout.left_arrow_x), arrow_w, bar_h, size, stroke, if (layout.left_enabled) active_color else disabled_color);
+            self.appendIcon(allocator, list, .chevron_right, @trunc(layout.right_arrow_x), arrow_w, bar_h, size, stroke, if (layout.right_enabled) active_color else disabled_color);
         }
-        self.appendIcon(allocator, list, .plus, @intFromFloat(layout.plus_x), @intFromFloat(layout.plus_w), bar_h, size, stroke, if (layout.plus_enabled) active_color else disabled_color);
+        self.appendIcon(allocator, list, .plus, @trunc(layout.plus_x), @trunc(layout.plus_w), bar_h, size, stroke, if (layout.plus_enabled) active_color else disabled_color);
         // #268 — 우측 끝 활성 탭 닫기 버튼.
-        self.appendIcon(allocator, list, .close, @intFromFloat(layout.close_x), @intFromFloat(layout.close_w), bar_h, size, stroke, active_color);
-        self.appendIcon(allocator, list, .more, @intFromFloat(layout.more_x), @intFromFloat(layout.more_w), bar_h, size, more_stroke, active_color);
+        self.appendIcon(allocator, list, .close, @trunc(layout.close_x), @trunc(layout.close_w), bar_h, size, stroke, active_color);
+        self.appendIcon(allocator, list, .more, @trunc(layout.more_x), @trunc(layout.more_w), bar_h, size, more_stroke, active_color);
     }
 
     /// 아이콘을 box 가운데에 놓는다.
@@ -1645,8 +1645,8 @@ pub const Renderer = struct {
             @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
             ui.first_visible,
         );
-        const mx: i32 = @intFromFloat(@round(v.rect.x * scale));
-        const mw: i32 = @intFromFloat(@round(v.rect.w * scale));
+        const mx: i32 = @round(v.rect.x * scale);
+        const mw: i32 = @round(v.rect.w * scale);
         const fg = rgbFromMetrics(self.chrome.menu_label);
         const hint_fg = rgbFromMetrics(self.chrome.menu_hint);
         const list = &self.layer.chrome_after;
@@ -1666,8 +1666,8 @@ pub const Renderer = struct {
             const disabled_fg = rgbFromMetrics(self.chrome.arrow_disabled);
             const sz_i: i32 = @intCast(ind_size);
             const ind_cx: i32 = mx + @divTrunc(mw - sz_i, 2);
-            const up_y: i32 = @intFromFloat(@round((v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5));
-            const down_y: i32 = @intFromFloat(@round((v.rect.y + v.rect.h - command_menu.PADDING_PT - command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5));
+            const up_y: i32 = @round((v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5);
+            const down_y: i32 = @round((v.rect.y + v.rect.h - command_menu.PADDING_PT - command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - @as(f32, @floatFromInt(sz_i)) * 0.5);
             const pairs = [2]struct { kind: tab_icons.Icon, y: i32, enabled: bool }{
                 .{ .kind = .chevron_up, .y = up_y, .enabled = v.can_scroll_up },
                 .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
@@ -1689,10 +1689,10 @@ pub const Renderer = struct {
         for (v.first..v.first + v.count) |i| {
             const command = command_menu.entries[i] orelse continue; // 구분선은 위에서
             const item = command_menu.entryRect(v, i).?;
-            const ix: i32 = @intFromFloat(@round(item.x * scale));
-            const iw: i32 = @intFromFloat(@round(item.w * scale));
-            const ih: i32 = @intFromFloat(@round(item.h * scale));
-            const iy: i32 = @intFromFloat(@round(item.y * scale));
+            const ix: i32 = @round(item.x * scale);
+            const iw: i32 = @round(item.w * scale);
+            const ih: i32 = @round(item.h * scale);
+            const iy: i32 = @round(item.y * scale);
             const baseline = iy + @divFloor(ih - ch, 2) + @as(i32, @intCast(self.tab_font_ctx.ascent_px));
             const label = command_menu.label(command);
             self.collectChromeText(allocator, list, ix + scaledPt(8, scale), baseline, ch, label, fg, in.width);
@@ -1868,8 +1868,8 @@ pub const Renderer = struct {
                 // #344 — terminal scrollbar 와 같은 공통 스냅. dialog track 도
                 // 위·아래 여백이 같아야 한다.
                 const t = scrollbar.thumbPx(@floatFromInt(message_y), g);
-                const thumb_y: i32 = @intFromFloat(t.top);
-                const thumb_h: i32 = @intFromFloat(t.h);
+                const thumb_y: i32 = @trunc(t.top);
+                const thumb_h: i32 = @trunc(t.h);
                 // Terminal scrollbar의 white/30%는 dark theme용이다. 밝은 dialog
                 // 배경에 blend하면 RGB 242→246이라 thumb가 사실상 사라진다.
                 // 중립 회색을 써 가시 대비를 유지하고 제목 accent와 분리한다.
@@ -2100,9 +2100,9 @@ fn tabClipDecision(
 /// 구분, 탭 경계는 세로 구분선 (Tilda 문법, mac/win 동등).
 fn rgbFromMetrics(c: [4]f32) ghostty.color.RGB {
     return .{
-        .r = @intFromFloat(@max(0.0, @min(255.0, c[0] * 255.0))),
-        .g = @intFromFloat(@max(0.0, @min(255.0, c[1] * 255.0))),
-        .b = @intFromFloat(@max(0.0, @min(255.0, c[2] * 255.0))),
+        .r = @trunc(@max(0.0, @min(255.0, c[0] * 255.0))),
+        .g = @trunc(@max(0.0, @min(255.0, c[1] * 255.0))),
+        .b = @trunc(@max(0.0, @min(255.0, c[2] * 255.0))),
     };
 }
 
@@ -2302,8 +2302,8 @@ pub fn colorGlyphFit(cell_w: i32, cell_h: i32, glyph_w: u32, glyph_h: u32) ?Colo
         @as(f64, @floatFromInt(cell_w)) / gw_f,
         @as(f64, @floatFromInt(cell_h)) / gh_f,
     );
-    const w: i32 = @intFromFloat(gw_f * scale);
-    const h: i32 = @intFromFloat(gh_f * scale);
+    const w: i32 = @trunc(gw_f * scale);
+    const h: i32 = @trunc(gh_f * scale);
     if (w <= 0 or h <= 0) return null;
     return .{
         .off_x = @divFloor(cell_w - w, 2),
@@ -2438,9 +2438,9 @@ fn fillRoundedRect(
                 const er: f32 = @floatFromInt((existing >> 16) & 0xff);
                 const eg: f32 = @floatFromInt((existing >> 8) & 0xff);
                 const eb: f32 = @floatFromInt(existing & 0xff);
-                const br: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.r)) * coverage + er * inv));
-                const bg_: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.g)) * coverage + eg * inv));
-                const bb: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.b)) * coverage + eb * inv));
+                const br: u32 = @round(@as(f32, @floatFromInt(color.r)) * coverage + er * inv);
+                const bg_: u32 = @round(@as(f32, @floatFromInt(color.g)) * coverage + eg * inv);
+                const bb: u32 = @round(@as(f32, @floatFromInt(color.b)) * coverage + eb * inv);
                 const blended: u32 = (br << 16) | (bg_ << 8) | bb;
                 std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
             }
@@ -2471,10 +2471,10 @@ fn drawThickLine(
     const len_sq: f32 = dx * dx + dy * dy;
     if (len_sq < 0.0001) return;
 
-    const min_x: i32 = @intFromFloat(@floor(@min(x1, x2) - half_t - 1.0));
-    const max_x: i32 = @intFromFloat(@ceil(@max(x1, x2) + half_t + 1.0));
-    const min_y: i32 = @intFromFloat(@floor(@min(y1, y2) - half_t - 1.0));
-    const max_y: i32 = @intFromFloat(@ceil(@max(y1, y2) + half_t + 1.0));
+    const min_x: i32 = @floor(@min(x1, x2) - half_t - 1.0);
+    const max_x: i32 = @ceil(@max(x1, x2) + half_t + 1.0);
+    const min_y: i32 = @floor(@min(y1, y2) - half_t - 1.0);
+    const max_y: i32 = @ceil(@max(y1, y2) + half_t + 1.0);
 
     const packed_color = pack(color);
 
@@ -2506,9 +2506,9 @@ fn drawThickLine(
                 const er: f32 = @floatFromInt((existing >> 16) & 0xff);
                 const eg: f32 = @floatFromInt((existing >> 8) & 0xff);
                 const eb: f32 = @floatFromInt(existing & 0xff);
-                const br: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.r)) * coverage + er * inv));
-                const bg_: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.g)) * coverage + eg * inv));
-                const bb: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(color.b)) * coverage + eb * inv));
+                const br: u32 = @round(@as(f32, @floatFromInt(color.r)) * coverage + er * inv);
+                const bg_: u32 = @round(@as(f32, @floatFromInt(color.g)) * coverage + eg * inv);
+                const bb: u32 = @round(@as(f32, @floatFromInt(color.b)) * coverage + eb * inv);
                 const blended: u32 = (br << 16) | (bg_ << 8) | bb;
                 std.mem.writeInt(u32, memory[off..][0..4], blended, .little);
             }
@@ -2535,7 +2535,7 @@ fn drawDialogIcon(
             return vb * s;
         }
         fn i(s: f32, vb: f32) i32 {
-            return @intFromFloat(@round(vb * s));
+            return @round(vb * s);
         }
     };
     const fx: f32 = @floatFromInt(icon_x);
@@ -2688,12 +2688,12 @@ fn applyShadowAndMask(
                 const r0: f32 = @floatFromInt(memory[off + 2]);
                 const g0: f32 = @floatFromInt(memory[off + 1]);
                 const b0: f32 = @floatFromInt(memory[off + 0]);
-                memory[off + 2] = @intFromFloat(@round(r0 * rgb_keep));
-                memory[off + 1] = @intFromFloat(@round(g0 * rgb_keep));
-                memory[off + 0] = @intFromFloat(@round(b0 * rgb_keep));
+                memory[off + 2] = @round(r0 * rgb_keep);
+                memory[off + 1] = @round(g0 * rgb_keep);
+                memory[off + 0] = @round(b0 * rgb_keep);
             }
 
-            memory[off + 3] = @intFromFloat(@round(total_alpha));
+            memory[off + 3] = @round(total_alpha);
         }
     }
 }
@@ -2781,8 +2781,10 @@ fn drawGlyphBgra(
     while (dy < fit.h) : (dy += 1) {
         var dx: i32 = 0;
         while (dx < fit.w) : (dx += 1) {
-            const src_x: u32 = @intFromFloat((@as(f64, @floatFromInt(dx)) + 0.5) * gw_f / tw_f);
-            const src_y: u32 = @intFromFloat((@as(f64, @floatFromInt(dy)) + 0.5) * gh_f / th_f);
+            // 여기 `+ 0.5` 는 반올림 보정이 아니라 **목적 픽셀의 중심**을 원본 좌표로
+            // 옮기는 nearest-neighbor 샘플링이다 (`@round` 로 바꾸면 샘플 위치가 어긋난다).
+            const src_x: u32 = @trunc((@as(f64, @floatFromInt(dx)) + 0.5) * gw_f / tw_f);
+            const src_y: u32 = @trunc((@as(f64, @floatFromInt(dy)) + 0.5) * gh_f / th_f);
             if (src_x >= glyph.width or src_y >= glyph.height) continue;
             const src_off: usize = (@as(usize, src_y) * glyph.width + src_x) * 4;
             const b = glyph.bitmap[src_off];

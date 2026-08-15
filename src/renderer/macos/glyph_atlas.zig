@@ -301,8 +301,8 @@ pub const GlyphAtlas = struct {
         const gh_f = y1 - y0;
         if (gw_f <= 0 or gh_f <= 0) return null;
 
-        const gw: u32 = @intFromFloat(gw_f);
-        const gh: u32 = @intFromFloat(gh_f);
+        const gw: u32 = @trunc(gw_f);
+        const gh: u32 = @trunc(gh_f);
         if (gw > 256 or gh > 256) return null; // temp_buf 한계.
 
         const bytes_per_row = gw * 4;
@@ -366,8 +366,8 @@ pub const GlyphAtlas = struct {
             .y = @intCast(atlas_y),
             .w = @intCast(gw),
             .h = @intCast(gh),
-            .bearing_x = @intFromFloat(x0),
-            .bearing_y = @intFromFloat(y0),
+            .bearing_x = @trunc(x0),
+            .bearing_y = @trunc(y0),
             .is_color = is_color,
             .advance = advance_px,
         };
@@ -411,15 +411,15 @@ pub const GlyphAtlas = struct {
                 .y = 0,
                 .w = 0,
                 .h = 0,
-                .bearing_x = @intFromFloat(x0),
-                .bearing_y = @intFromFloat(y0),
+                .bearing_x = @trunc(x0),
+                .bearing_y = @trunc(y0),
                 .is_color = is_color,
                 .advance = advance_px,
             };
         }
 
-        const gw: u32 = @intFromFloat(gw_f);
-        const gh: u32 = @intFromFloat(gh_f);
+        const gw: u32 = @trunc(gw_f);
+        const gh: u32 = @trunc(gh_f);
 
         if (gw > 256 or gh > 256) return null; // temp_buf 한계.
 
@@ -509,8 +509,8 @@ pub const GlyphAtlas = struct {
             .y = @intCast(atlas_y),
             .w = @intCast(gw),
             .h = @intCast(gh),
-            .bearing_x = @intFromFloat(x0),
-            .bearing_y = @intFromFloat(y0),
+            .bearing_x = @trunc(x0),
+            .bearing_y = @trunc(y0),
             .is_color = is_color,
             .advance = advance_px,
         };
