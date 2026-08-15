@@ -11,6 +11,8 @@
 const std = @import("std");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
+const posix = std.posix;
+const log = @import("log.zig");
 
 pub fn openInDefaultApp(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) void {
     switch (builtin.os.tag) {
@@ -32,13 +34,35 @@ fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
 fn openSpawn(rt: Runtime, cmd: []const u8, path: []const u8) void {
     // #451 — `Child.init` + 필드 설정 + `spawn` ➡️ `std.process.spawn(io, options)`
     // (릴리즈 노트 *Process*). stdio 는 `.Ignore` → `.ignore` 로 이름만 바뀌었다.
-    _ = std.process.spawn(rt.io, .{
+    const child = std.process.spawn(rt.io, .{
         .argv = &.{ cmd, path },
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     }) catch return;
-    // detached — 자식 process 종료 안 기다림. open / xdg-open 은 즉시 fork.
+
+    // #457 — 자식을 거두지 않으면 `[xdg-open] <defunct>` 가 worker 수명 동안 상한
+    // 없이 쌓인다. `open` / `xdg-open` 은 편집기를 띄우고 곧 끝나므로 이 thread 도
+    // 금방 사라진다.
+    //
+    // 거두는 대상을 **이 pid 하나로 지목**하는 것이 핵심이다. PTY 는 자식마다
+    // `processWaitLoop` 에서 `waitpid(child_pid, ...)` 로 블로킹하고 그 반환을 신호로
+    // `child_exited` 를 세운 뒤 `exit_cb` 를 부르는데 (`terminal/posix/pty.zig`),
+    // `SIGCHLD = SIG_IGN` 이나 `waitpid(-1)` 로 거두면 그 `waitpid` 가 자식이 죽기도
+    // 전에 `ECHILD` 로 반환한다 — 탭이 열리자마자 닫히고 #129 의 SIGHUP grace 와
+    // SIGKILL fallback 이 무력화된다. pid 를 지목하면 대상이 겹치지 않는다.
+    const pid = child.id orelse return;
+    const thread = std.Thread.spawn(.{}, reapChild, .{pid}) catch |err| {
+        // 좀비가 하나 남을 뿐 열기 자체는 이미 성공했다. 조용히 넘기지 않고 남긴다.
+        log.appendLine("open", "reap thread spawn failed: {s} (pid={d})", .{ @errorName(err), pid });
+        return;
+    };
+    thread.detach();
+}
+
+/// spawn 한 자식 하나만 거둔다. 다른 자식 (PTY) 을 건드리지 않으려고 pid 를 지목한다.
+fn reapChild(pid: posix.pid_t) void {
+    _ = posix.system.waitpid(pid, null, 0);
 }
 
 // Windows-only — `extern` 은 platform 분기와 무관하게 syntactic 으로 항상
