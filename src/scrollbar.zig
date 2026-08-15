@@ -97,7 +97,7 @@ pub fn grabOffset(g: Geom, mouse_rel_y: f64) f64 {
 pub fn targetOffset(total: usize, len: usize, g: Geom, mouse_rel_y: f64, grab: f64) usize {
     const thumb_top = std.math.clamp(mouse_rel_y - grab, 0, g.available);
     const ratio = thumb_top / g.available;
-    return @intFromFloat(ratio * @as(f64, @floatFromInt(total - len)));
+    return @trunc(ratio * @as(f64, @floatFromInt(total - len)));
 }
 
 /// 렌더러·hit-test 공용 단일 진입점. track + geom 을 한 번에 구해 thumb 위치(그리기)

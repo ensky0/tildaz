@@ -329,9 +329,9 @@ fn emitCov(
 /// 버림이 span 을 모르는 채 한 번만 일어나 밀도가 깨졌다 (아래 `dotted` 분기 주석).
 fn pieceCount(base_w: f32, slot: f32) usize {
     const raw = @round(base_w / slot);
-    // 상한을 먼저 f32 에서 걸어 `@intFromFloat` 에 범위 밖 값이 들어가지 않게 한다.
+    // 상한을 먼저 f32 에서 걸어 `@trunc` 의 정수 변환에 범위 밖 값이 들어가지 않게 한다.
     const capped = @min(raw, @as(f32, @floatFromInt(MAX_UNDERLINE_PIECES)));
-    const per: usize = if (!(capped >= 1)) 1 else @intFromFloat(capped);
+    const per: usize = if (!(capped >= 1)) 1 else @trunc(capped);
     return @max(1, per);
 }
 
@@ -391,7 +391,7 @@ fn waveCenters(r: []const Rect, cell_w: f32) [64]f32 {
     var sum: [64]f32 = @splat(0);
     var wsum: [64]f32 = @splat(0);
     for (r) |d| {
-        const col: usize = @intFromFloat(d.x);
+        const col: usize = @trunc(d.x);
         if (col >= 64 or d.x >= cell_w) continue;
         // 면적 = 높이 × coverage. 가운데 solid 조각은 높이가 1 보다 클 수 있다.
         const weight = d.cov * d.h;
@@ -414,9 +414,9 @@ test "#374 curly — 픽셀 열마다 coverage 로 AA 하고 셀 전체를 덮�
         try std.testing.expectEqual(@as(f32, 1), d.w);
         try std.testing.expect(d.h >= 1);
         try std.testing.expect(d.x >= 0 and d.x < W);
-        seen[@intFromFloat(d.x)] = true;
+        seen[@trunc(d.x)] = true;
     }
-    for (0..@as(usize, @intFromFloat(W))) |i| try std.testing.expect(seen[i]);
+    for (0..@as(usize, @trunc(W))) |i| try std.testing.expect(seen[i]);
 
     // **AA 가 실제로 걸린다** — 곡선이라 부분 coverage 픽셀이 반드시 생긴다.
     var has_partial = false;
@@ -429,7 +429,7 @@ test "#374 curly — 픽셀 열마다 coverage 로 AA 하고 셀 전체를 덮�
 test "#374 curly — 셀 경계가 산 · 중앙이 골이고 좌우 대칭이라 이웃 셀과 이어진다" {
     const got = collect(.{ .flags = .{ .underline = .curly } });
     const c = waveCenters(got.r[0..got.n], W);
-    const last: usize = @as(usize, @intFromFloat(W)) - 1;
+    const last: usize = @as(usize, @trunc(W)) - 1;
     const mid = last / 2;
 
     // 가운데가 가장 **낮다** (y 는 아래로 증가) — 경계에서 시작해 중앙으로 처진다.
@@ -457,7 +457,7 @@ test "#374 curly — wide char 는 산 2 개로 파장을 narrow 와 맞춘다" 
 
     const cn = waveCenters(narrow[0..n_narrow], W);
     const cw = waveCenters(wide[0..n_wide], 2 * W);
-    const wi: usize = @intFromFloat(W);
+    const wi: usize = @trunc(W);
     // wide 의 앞 절반과 뒤 절반이 narrow 와 같은 파형 = 파장이 같다.
     for (0..wi) |i| {
         try std.testing.expectApproxEqAbs(cn[i], cw[i], 0.01);

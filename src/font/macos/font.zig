@@ -429,8 +429,8 @@ pub const CoreTextFontContext = struct {
             font_family,
             cell_w_px,
             cell_h_px,
-            @as(u32, @intFromFloat(@round(ascent * retina_scale))),
-            @as(u32, @intFromFloat(@round(descent * retina_scale))),
+            @as(u32, @round(ascent * retina_scale)),
+            @as(u32, @round(descent * retina_scale)),
         });
 
         // #375 — 변종 chain. `CTFontCreateCopyWithSymbolicTraits` 는 해당 face 가
@@ -1079,7 +1079,7 @@ pub const CoreTextFontContext = struct {
             slots[i] = .{
                 .glyph_index = glyphs_buf[i],
                 .natural_glyph_index = natural[cp_idx],
-                .x_offset = @intFromFloat(@round(offset_x)),
+                .x_offset = @round(offset_x),
                 .y_offset = 0,
             };
         }
