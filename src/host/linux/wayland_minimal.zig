@@ -873,6 +873,21 @@ const Client = struct {
     // 신호를 받는 Unix domain socket listener. -1 = listener 생성 실패 (이미
     // 다른 인스턴스가 사용 중 — 정상). createListener 가 실패해도 시작은 계속.
     toggle_listener_fd: posix.fd_t = -1,
+    /// #439 — PTY read thread 가 "출력이 ring 에 들어갔다" 고 알리는 `eventfd`.
+    ///
+    /// 이것이 없던 동안 유휴에서는 `poll` 의 `frame_poll_ms` (16 ms) timeout 이 유일한
+    /// 깨우기였고, 그래서 그 timeout 이 그대로 응답 지연이 됐다 (실측 평균 8.71 ms ·
+    /// 최악 16.39 ms). 이제 도착 즉시 `poll` 이 깨어난다.
+    ///
+    /// `-1` 이면 (생성 실패) `poll` 이 그 항목을 자동으로 건너뛰어 (POSIX 표준)
+    /// **예전 동작 그대로** 돌아간다 — `toggle_listener_fd` 와 같은 처리다.
+    output_eventfd: posix.fd_t = -1,
+    /// #439 — 출력 통보 coalescing. `eventfd` 는 카운터라 여러 번 써도 깨우기는 한 번이지만
+    /// **`write` 자체가 syscall** 이라, 폭포에서 초당 10 만 번 (실측: 회차당 `readloop calls`
+    /// 103 만) 부르면 read thread 가 그만큼 커널을 드나든다. macOS 에서 같은 폭주가 프레임
+    /// 파이프라인을 무너뜨린 것이 실측으로 확인돼 (`macOutputWake` 주석) 세 host 를 같은
+    /// 모양으로 맞춘다. 미처리분이 있으면 더 쓰지 않는다.
+    output_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     caps: Capabilities = .{},
     input: [8192]u8 = undefined,
     input_len: usize = 0,
@@ -1333,6 +1348,16 @@ const Client = struct {
             .is_sway = sway_ipc.isSwayCompositor(rt, wayland_fd),
             .allocator = allocator,
             .wayland_fd = wayland_fd,
+            // #439 — 유휴 깨우기용 `eventfd`. 실패해도 진행한다 (필드 주석 참고).
+            // `NONBLOCK` 이라 비었을 때의 read 가 막히지 않고, `CLOEXEC` 라 자식 셸에
+            // 새지 않는다.
+            .output_eventfd = blk: {
+                const rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
+                break :blk switch (posix.errno(rc)) {
+                    .SUCCESS => @intCast(rc),
+                    else => -1,
+                };
+            },
             .renderer = renderer,
             .config = cfg,
             .run_opts = opts,
@@ -1440,6 +1465,15 @@ const Client = struct {
         if (self.session) |*session| {
             session.deinit();
             self.session = null;
+        }
+        // #439 — 유휴 깨우기 eventfd 도 **session.deinit 뒤에** 닫는다. 이 fd 에 쓰는 것이
+        // PTY read thread 라, 먼저 닫으면 살아 있는 thread 가 닫힌 번호에 write 한다 —
+        // 그 사이 다른 fd 가 같은 번호를 받으면 엉뚱한 곳에 쓰게 된다. `session.deinit` 이
+        // 모든 PTY thread 를 join 한 뒤라야 안전하다 (바로 아래 `pending_close_buf` 와 같은
+        // 이유이고, 위쪽 `toggle_listener_fd` 는 read thread 와 무관해 먼저 닫아도 된다).
+        if (self.output_eventfd >= 0) {
+            closeFd(self.output_eventfd);
+            self.output_eventfd = -1;
         }
         // #212 — `pending_close_buf` 는 *session.deinit 뒤에* 해제. session.deinit
         // 이 각 Tab 의 backend.deinit (master_fd close) → PTY read/wait thread 가
@@ -3106,6 +3140,15 @@ const Client = struct {
             linuxTabExit,
             self,
         );
+        // #439 — 첫 탭을 만들기 전에 배선한다 (`setOutputWake` 는 이미 있는 탭에도
+        // 전파하지만, 여기서 먼저 걸면 첫 탭이 태어날 때부터 통보가 붙는다).
+        self.session.?.setOutputWake(linuxOutputWake, self);
+        if (self.output_eventfd >= 0) {
+            log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+        } else {
+            // eventfd 를 못 만들어도 앱은 정상이다 — 유휴 응답이 예전처럼 `poll` timeout 을 기다릴 뿐이다.
+            log.appendLine("startup", "output wake unavailable — idle output waits for poll timeout", .{});
+        }
         try self.session.?.createTab(grid.cols, grid.rows);
         log.appendLine("linux", "terminal session created cols={} rows={}", .{ grid.cols, grid.rows });
         if (self.run_opts.scrollback) |n| {
@@ -4354,12 +4397,31 @@ const Client = struct {
                 .events = posix.POLL.IN,
                 .revents = 0,
             },
+            // #439 — PTY 출력 도착 통보. 이것이 없으면 유휴에서 `timeout_ms` 가 유일한
+            // 깨우기라 그 값이 그대로 응답 지연이 된다.
+            .{
+                .fd = self.output_eventfd,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            },
         };
         const n = try posix.poll(&fds, timeout_ms);
         if (n == 0) return;
         if ((fds[0].revents & posix.POLL.NVAL) != 0) return error.WaylandConnectionClosed;
         if ((fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
             try self.readAndDispatch();
+        }
+        // #439 — 출력 통보. **비우기만 한다** — 드레인과 렌더는 이 함수를 부른 메인 루프가
+        // iteration 마다 이미 하므로 (`drainOutputForRender` → `maybeRedraw`), 여기서 할 일은
+        // 카운터를 0 으로 되돌려 다음 도착이 다시 깨울 수 있게 하는 것뿐이다. 그래서 Linux 는
+        // 렌더 경로를 건드리지 않는다 (Windows · macOS 는 렌더가 프레임 tick 에만 묶여 있어
+        // 사정이 다르다).
+        if (self.output_eventfd >= 0 and (fds[2].revents & posix.POLL.IN) != 0) {
+            // coalescing 해제는 **비우기 전** 에 한다 — 이 사이에 도착한 출력이 다음 통보를
+            // 만들 수 있어야 한다. 반대로 두면 그 창에 들어온 출력이 통보를 잃는다.
+            self.output_wake_pending.store(false, .release);
+            var counter: u64 = undefined;
+            _ = posix.read(self.output_eventfd, std.mem.asBytes(&counter)) catch {};
         }
         if (self.toggle_listener_fd >= 0 and (fds[1].revents & posix.POLL.IN) != 0) {
             // #198 — `tildaz --toggle` 두 번째 인스턴스로부터 toggle 신호.
@@ -8255,6 +8317,23 @@ fn linuxTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
     client.pending_close_mutex.lockUncancelable(client.rt.io);
     defer client.pending_close_mutex.unlock(client.rt.io);
     client.pending_close_buf.append(client.allocator, tab_ptr) catch {};
+}
+
+/// #439 — PTY 출력이 ring 에 들어갔다는 통보. **PTY read thread 에서 불린다.**
+///
+/// `write(2)` 하나뿐이라 다른 스레드에서 불러도 안전하다 (`eventfd` 는 커널이 카운터를
+/// 원자적으로 더한다). 카운터가 넘칠 일은 없다 — 최대값이 `u64` 최대 - 1 이고 메인 루프가
+/// 매 iteration 비운다. 넘치더라도 `NONBLOCK` 이라 막히지 않고 `EAGAIN` 으로 떨어지는데,
+/// 그때는 이미 통보가 밀려 있다는 뜻이라 잃을 것이 없다.
+fn linuxOutputWake(userdata: ?*anyopaque) void {
+    const client: *Client = @ptrCast(@alignCast(userdata.?));
+    if (client.output_eventfd < 0) return;
+    if (client.output_wake_pending.swap(true, .acq_rel)) return;
+    // #451 — `posix.write` 가 없어져 raw syscall 을 쓴다 (같은 파일의 clipboard 쓰기와
+    // 같은 처리). `eventfd` 는 8 byte 를 원자적으로 더하므로 부분 쓰기가 없고, 실패해도
+    // (`EAGAIN` = 카운터 포화) 이미 통보가 밀려 있다는 뜻이라 잃을 것이 없다.
+    const one: u64 = 1;
+    _ = posix.system.write(client.output_eventfd, std.mem.asBytes(&one), @sizeOf(u64));
 }
 
 // L12-β — tab_actions.Host callbacks. `user_data` 가 `*Client`. 모두 module-
