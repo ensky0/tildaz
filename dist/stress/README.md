@@ -1288,7 +1288,8 @@ sudo dist/stress/measure-idle-power.sh           # 패키지 전력 (RAPL·turbo
 그 깨우기 빈도가 host 를 가리지 않아요 — Linux 초당 **61 회** (`frame_poll_ms` 16 ms) 와
 Windows 초당 약 **58 회** (`WM_FRAME_TICK`, [위 절의 `onrender` 실측](#곁가지--windows-의-유휴-깨우기-빈도도-잡혔어요))
 가 거의 같아요. 같은 빈도의 깨우기라면 전력 대가도 같은 자릿수라, platform 마다 다시 재도
-**방향 결정 ((d) 타이머 정지) 을 바꿀 새 정보가 나오지 않아요.**
+**방향 결정 ((d) 타이머 정지) 을 바꿀 새 정보가 나오지 않아요.** 그 방향은 2026-08-16 에
+**하지 않는 것으로 확정**됐어요 (#439 · `SPEC.md` §13.1.1) — 이 절의 판단이 그대로 유효해요.
 
 그래서 `Get-Counter` (Windows) · `powermetrics` (macOS) 대응 도구는 **만들지 않아요.** Windows 는
 RAPL 을 읽으려면 커널 드라이버가 필요해서 비용도 제일 커요. 나중에 방향이 바뀌어 platform 별
