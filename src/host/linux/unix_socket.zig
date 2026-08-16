@@ -85,6 +85,31 @@ pub fn closeFd(fd: posix.fd_t) void {
     _ = posix.system.close(fd);
 }
 
+/// `SO_PEERCRED` — 연결된 Unix 소켓 상대편 프로세스의 PID. 실패면 `null`.
+///
+/// [#454](https://github.com/ensky0/tildaz/issues/454) 의 sway 판별에 쓴다 — "`SWAYSOCK`
+/// 의 주인"과 "지금 그리기로 연결한 compositor"가 **같은 프로세스**인지를 커널에게 직접
+/// 묻는다. 환경변수는 세션 전환 후에도 systemd user 환경에 남을 수 있어 (sway 세션의
+/// `import-environment` 를 로그아웃이 안 지움 — KDE 실기에서 확정) 존재 여부만으로는
+/// 판별이 안 된다.
+pub fn peerPid(fd: posix.fd_t) ?posix.pid_t {
+    // `std.os.linux.ucred` 와 같은 배치 — libc 구성 (`std.c`) 에는 이 구조체가 없어서
+    // 여기 정의를 둔다 (`getsockopt` 자체는 두 구성 모두 있다).
+    const Ucred = extern struct { pid: posix.pid_t, uid: posix.uid_t, gid: posix.gid_t };
+    var cred: Ucred = undefined;
+    var len: posix.socklen_t = @sizeOf(Ucred);
+    const rc = posix.system.getsockopt(
+        fd,
+        posix.SOL.SOCKET,
+        posix.SO.PEERCRED,
+        @as([*]u8, @ptrCast(&cred)),
+        &len,
+    );
+    if (checkErr(rc) != null) return null;
+    if (len != @sizeOf(Ucred) or cred.pid <= 0) return null;
+    return cred.pid;
+}
+
 /// 열려 있는 fd 를 `path` 의 Unix 소켓에 연결한다. 실패는 errno 를 그대로 돌려준다 —
 /// 호출부마다 의미 있는 이름이 달라서다 (`NoRunningInstance` vs Wayland 진단 메시지).
 pub fn connect(fd: posix.fd_t, path: []const u8) error{ PathTooLong, ConnectFailed }!void {
