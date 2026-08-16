@@ -672,6 +672,7 @@ pub const MetalRenderer = struct {
         perf.addTimed(&perf.present, present_t0);
         // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
         perf.completeInput();
+        perf.completeOutput();
 
         // Frame end — state reset.
         self.current_encoder = null;
