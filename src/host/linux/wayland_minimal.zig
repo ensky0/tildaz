@@ -1327,7 +1327,9 @@ const Client = struct {
         const theme = cfg.theme orelse fallback_theme;
         return .{
             .rt = rt,
-            .is_sway = sway_ipc.isSwaySession(rt),
+            // #454 — SWAYSOCK 존재가 아니라 peer PID 비교다: stale 환경변수가 KDE 에서
+            // sway 경로를 오발동시킨 회귀의 fix (`sway_ipc.isSwayCompositor` 주석).
+            .is_sway = sway_ipc.isSwayCompositor(rt, wayland_fd),
             .allocator = allocator,
             .wayland_fd = wayland_fd,
             .renderer = renderer,
@@ -1610,8 +1612,10 @@ const Client = struct {
 
             log.appendLine("linux", "Wayland terminal window mapped", .{});
             // #454 — sway 는 크기를 `for_window` 가 잡고 **위치는 map 후**에 준다
-            // (`sway_ipc.moveWindowIfSway` 주석). sway 가 아니면 no-op 이다.
-            sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
+            // (`sway_ipc.moveWindowIfSway` 주석). gate 는 `is_sway` (peer PID 비교) —
+            // 함수 내부의 SWAYSOCK 존재 확인만 믿으면 stale 변수가 남은 세션에서
+            // 무의미한 IPC 가 나가고, 응답 없는 소켓이면 map 직후 hang 이다.
+            if (self.is_sway) sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
         }
 
         // #304 — listener만 먼저 열린 시점이 아니라 Wayland globals, 입력,
@@ -8300,11 +8304,17 @@ pub fn runBaselineWindow(
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     // 측정 모드는 자기 단축키를 DE 에 등록하지 않는다 (#382) — 사용자의 기존 binding 을
     // 덮어쓰면 측정이 끝난 뒤에도 그 상태가 남는다.
-    if (!opts.isStressRun()) sway_ipc.registerToggleIfSway(rt, allocator, cfg);
+    // #454 — 이 호출도 `client.is_sway` (peer PID 비교) 뒤에 있어야 한다. 렌더링하지
+    // 않는 compositor 에 bindsym 을 등록하는 것은 무의미하고, 무엇보다 stale `SWAYSOCK`
+    // 이 **응답 없는 소켓**을 가리키면 `runCommand` 의 read 가 부팅을 영원히 막는다
+    // (KDE 실기 — mute 소켓 시뮬레이션에서 boot 로그 후 hang 확정).
+    if (!opts.isStressRun() and client.is_sway) sway_ipc.registerToggleIfSway(rt, allocator, cfg);
     // #454 — sway 면 창 규칙(`for_window`)을 **창을 만들기 전에** 등록한다. layer-shell 을
     // 쓰지 않는 대신 배치를 이 규칙이 맡는다. `client.run()` 안에서 창이 뜨므로 순서가
     // 여기서 보장된다. 측정 인스턴스는 제외 — 사용자의 드롭다운이 아니다 (#382).
-    if (!opts.isStressRun()) sway_ipc.registerWindowRuleIfSway(rt, allocator, cfg);
+    // gate 는 `client.is_sway` (peer PID 비교) 다 — SWAYSOCK 존재만 보면 stale 변수가
+    // 남은 KDE 세션에서 무의미한 IPC 시도가 나간다 (`isSwayCompositor` 주석).
+    if (!opts.isStressRun() and client.is_sway) sway_ipc.registerWindowRuleIfSway(rt, allocator, cfg);
     // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
     // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
