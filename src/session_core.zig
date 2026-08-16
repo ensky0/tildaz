@@ -504,6 +504,9 @@ pub const Tab = struct {
         // 그 16 byte 는 **손실이 아니다** — 창이 닫히는 참의 모드 해제라 파싱할 것이 없다.
         const wrote = tab.output_ring.push(data);
         perf.addTimedBytes(&perf.push, t0, wrote);
+        // #439 — 유휴 응답 지연의 시작점. 여기부터 present 까지가 *"출력이 화면에 닿는
+        // 시간"* 이다. 한 byte 도 안 들어간 경우 (닫히는 중) 는 잴 것이 없다.
+        if (wrote > 0) perf.markOutput();
     }
 
     fn onPtyExit(userdata: ?*anyopaque) void {
