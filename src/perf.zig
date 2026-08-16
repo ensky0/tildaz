@@ -105,6 +105,48 @@ pub fn completeInput() void {
     }
 }
 
+/// #439 — **PTY 출력이 도착한 순간부터 그 뒤 첫 present 가 끝날 때까지.**
+///
+/// `input_latency` 와 구간이 다르다. 그쪽은 *키* 에서 시작하는데, 키가 오면 앱이 즉시
+/// 렌더를 요청하므로 **유휴 깨우기 경로를 아예 안 탄다** (#441 에서 유휴 평균이 0.67 ms
+/// 로 낮게 나온 이유다). 이쪽은 입력 없이 출력만 도착하는 상황을 재므로 *"유휴에서 첫
+/// 출력이 한 프레임 늦는다"* 는 #439 의 가설을 직접 판정한다.
+///
+/// `calls` = 표본 수 · `ns` = 합 · `extra` = 최악값. 최악을 따로 드는 이유는
+/// `input_latency` 와 같다 — 프레임 주기가 상한이라는 주장은 평균이 아니라 최악에 대한 것이다.
+pub var output_latency: Counter = .{};
+
+/// 대기 중인 출력의 도착 시각(ns). 0 = 없음.
+///
+/// `pending_input_ns` 와 같은 이유로 **이미 대기 중이면 덮지 않는다** — 폭포처럼 연달아
+/// 들어올 때 덮으면 가장 오래 기다린 조각이 사라진다.
+var pending_output_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// PTY 에서 읽은 바이트를 ring 에 넣는 자리에서 부른다.
+///
+/// **read thread 에서 불린다.** 원자 연산뿐이라 안전하고, 여기서 하는 일은 CAS 하나다 —
+/// 이 함수가 무거워지면 read 경로 전체가 느려진다.
+pub fn markOutput() void {
+    const t = now() orelse return;
+    if (t == 0) return;
+    _ = pending_output_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+}
+
+/// present 가 끝난 자리에서 부른다 (`completeInput` 과 같은 자리).
+pub fn completeOutput() void {
+    const start = pending_output_ns.swap(0, .acq_rel);
+    if (start == 0) return;
+    const t = now() orelse return;
+    if (t <= start) return;
+    const delta = t - start;
+    _ = output_latency.calls.fetchAdd(1, .monotonic);
+    _ = output_latency.ns.fetchAdd(delta, .monotonic);
+    var cur = output_latency.extra.load(.monotonic);
+    while (delta > cur) {
+        cur = output_latency.extra.cmpxchgWeak(cur, delta, .monotonic, .monotonic) orelse break;
+    }
+}
+
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
 /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
 /// 세 clock 모두 system sleep/hibernate를 세지 않는다. 이 모듈의 성능 진단에만
@@ -204,9 +246,11 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const on = snapshot(&onrender);
     const sw = snapshot(&swapwait);
     const il = snapshot(&input_latency);
+    const ol = snapshot(&output_latency);
     // 대기 중인 키는 스냅숏 경계를 넘기지 않는다 — 다음 구간에서 present 가 되면
     // *이전 구간에 눌린* 키의 지연이 그쪽에 잡혀 구간 귀속이 어긋난다.
     _ = pending_input_ns.swap(0, .acq_rel);
+    _ = pending_output_ns.swap(0, .acq_rel);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -227,7 +271,9 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             "onrender calls={d} ms={d:.3} skip={d}\n" ++
             // #441 축 ② — 키 수신 → 첫 present 완료. `max` 를 함께 내는 이유는
             // 위 `input_latency` 주석 참고 (예산 주장은 평균이 아니라 최악에 대한 것).
-            "input    samples={d} ms={d:.3} max_ms={d:.3}\n",
+            "input    samples={d} ms={d:.3} max_ms={d:.3}\n" ++
+            // #439 — PTY 도착 → present. `input` 과 시작점이 다르다 (위 주석).
+            "output   samples={d} ms={d:.3} max_ms={d:.3}\n",
         .{
             label,
             rt.nowMs(),
@@ -256,6 +302,9 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             il[0],
             @as(f64, @floatFromInt(il[1])) / 1_000_000.0,
             @as(f64, @floatFromInt(il[3])) / 1_000_000.0,
+            ol[0],
+            @as(f64, @floatFromInt(ol[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(ol[3])) / 1_000_000.0,
         },
     ) catch return;
 

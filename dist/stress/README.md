@@ -43,7 +43,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`check-input-loss.sh`](check-input-loss.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
 | [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · macOS · Windows (Git Bash) |
 | [`send-keys.ps1`](send-keys.ps1) | 위 도구의 **Windows 합성 입력** (`SendInput`) — Linux 의 `ydotool` 자리 | 〃 |
-| [`hygiene.sh`](hygiene.sh) | 위 넷이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
+| [`hygiene.sh`](hygiene.sh) | 위 다섯이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
@@ -898,6 +898,248 @@ Linux · Windows 로 넓히지 않은 이유는 **기대 표본이 바뀌기 때
 행위라 foreground lock 이 안 걸려요). 회수가 쓰이면 회차 줄에 *"포커스를 클릭으로 회수했어요"* 가
 붙어요 — 5 회차 실측 (idle · flood 각 5 회) 에서 **10 회차 중 9 회**가 그랬어요. 즉 이 회수 경로가
 없으면 그 측정은 거의 전부 폐기됐을 거예요.
+
+## 유휴 지연 측정 ([#439](https://github.com/ensky0/tildaz/issues/439))
+
+앞의 두 절이 *사용자 입력* 을 다룬다면, 이쪽은 **입력 없이 PTY 출력만 도착**하는 상황이에요.
+
+```sh
+dist/stress/measure-idle-latency.sh                 # 20 회 · 간격 2 초
+dist/stress/measure-idle-latency.sh --samples 40 --gap 3
+```
+
+### 왜 따로 필요한가 — 입력 측정으로는 못 봐요
+
+`measure-input-latency.sh` 는 **키** 에서 시작하는데, **키가 오면 앱이 즉시 렌더를 요청해서
+유휴 깨우기 경로를 아예 안 타요.** 그래서 유휴 평균이 0.67 ms 로 낮게 나와요. 이 스크립트는
+입력을 아예 보내지 않아요 — 그래서 **합성 입력도 필요 없어요** (`ydotool` · 포커스 · IME 무관).
+
+| | 시작 | 재는 것 |
+|---|---|---|
+| `measure-input-latency.sh` | 키 수신 | 사용자 입력의 왕복 |
+| **`measure-idle-latency.sh`** | **PTY 도착** | **유휴 깨우기 지연** |
+
+### Windows 는 러너가 갈려요 — `.cmd` 예요
+
+**Windows 의 `-e` 는 인자를 받아요.** POSIX 는 PTY 자식의 argv 가 실행파일 하나로 고정이지만
+(`run_options.zig`), Windows 는 `CreateProcessW` 의 `lpCommandLine` 이라
+([`host/windows.zig`](../../src/host/windows.zig) 의 `stress_shell_w`) `cmd.exe /c <배치>` 가
+그대로 서요. 그래서 POSIX `.sh` 러너를 그대로 넘기면 **아예 안 떠요.** 스크립트가 platform 을
+보고 갈라요 (`measure-input-latency.sh` 와 같은 처리예요).
+
+- 러너는 **`%TEMP%` 아래**에 만들어요 — Git Bash 의 `/tmp` 는 설치 경로 안이라
+  (`C:\Program Files\Git\tmp`) 공백이 섞이고, 그러면 `cmd /c "…"` 인용이 갈려요
+- 대기는 **`ping -n <간격+1> 127.0.0.1 >nul`** 이에요. `timeout` 은 stdin 이 리다이렉트되면
+  `ERROR: Input redirection is not supported` 로 떨어져요
+- 배치는 **CRLF + `for /L` 한 줄**로 써요. 여러 줄 괄호 블록을 LF 만으로 쓰면 `cmd.exe` 가
+  블록을 잘못 읽을 수 있어요 (`compare-terminals.sh` 의 `conhost.cmd` 도 CRLF 로 써요)
+- 실행 파일 탐지에 **`.exe`** 를 붙여요 (안 붙이면 `[ -x ]` 가 전부 실패해 `tildaz 없음` 으로 끝나요)
+
+#### ⚠ Windows 는 표본이 **N + 1** 로 잡혀요 — 오염이 아니에요
+
+`output` 계측은 프로세스 시작부터 누적되는데 **ConPTY 가 시작할 때 자체 출력을 한 번 내요**
+(`ESC [ { 1 } t` — 로그에 `ignoring CSI t` 경고로 남아요). 그래서 표본 20 을 요청하면 21 이
+나와요. **표본 0 대조군**으로 그 몫만 따로 재 보면 `samples=1 ms=7.311` 이라, 그 표본도
+*같은 유휴 프레임 대기*예요 (60 Hz 의 균등분포 [0, 16.67] 한가운데). 평균을 끌어내리는 편향이
+아니라서 그대로 둬요. Linux 는 PTY 가 시작 출력을 안 내서 정확히 N 이에요.
+
+### 기록 수치 ① — Linux (노트북 · Intel i5-1240P · CachyOS · KDE Plasma · 60 Hz · 측정 위생 적용)
+
+5 회 절사평균 + min~max — 회차당 표본 20 · 간격 2 초, 전 회차 `input` 표본 0.
+
+| | 절사평균 | min~max |
+|---|---|---|
+| 평균 | **8.71 ms** | 7.64~9.57 |
+| **최악** | **16.39 ms** | 15.77~17.19 |
+
+**Linux 의 `frame_poll_ms` 가 16 ms 예요.** 최악값 5 회가 전부 그 언저리 (15.77~17.19 ms) 라서,
+**`poll` timeout 이 그대로 지연이 된다**는 것이 확인됐어요 (#439 의 가설). 첫 실측 (미니PC ·
+Ryzen 7 8845HS · 60 Hz — **위생 미적용**, 평소 worker 가 떠 있었어요) 도 평균 9.11 / 최악
+16.14 ms 로 같은 모양이었어요. timeout 상수가 값을 지배해서 기기 차이가 거의 안 보여요.
+
+같은 유휴 상태인데 키 → 화면 (`input_latency`) 은 출력 → 화면과 **15 배** 갈려요 (미니PC 동일
+기기 비교: 키 0.67 ms vs 출력 9.11 ms) — 키는 즉시 렌더를 요청해 깨우기 경로를 안 타기
+때문이에요.
+
+### 기록 수치 ② — Windows (**같은 노트북**의 다른 OS · 내장 패널 1920x1080 · 60 Hz · 측정 위생 적용)
+
+위 Linux 회차와 **같은 하드웨어**예요 (Intel Core i5-1240P 듀얼부트). CPU · 패널이 고정이라
+host 구현 차이만 남아요. 주사율 근거는 앱 로그의
+`[startup] frame clock started: refresh=60Hz period=16.67ms` 이고, `window initialized: dpi=96`
+(배율 100 %) · D3D `render_path=hardware` 였어요. 회차당 표본 20 (+ ConPTY 시작 1) · 간격 2 초,
+전 회차 `input` 표본 0.
+
+| | 절사평균 | min~max |
+|---|---|---|
+| 평균 | **8.40 ms** | 7.50~10.78 |
+| **최악** | **18.37 ms** | 16.63~22.25 |
+
+회차별 최악: `16.63 · 18.74 · 17.77 · 22.25 · 18.61`
+
+**평균은 Linux 와 사실상 같은데 (8.40 vs 8.71) 원인이 달라요.** Linux 는 `poll` timeout 상수
+16 ms 고, Windows 는 `frameClockThread` 가 무조건 post 하는 `WM_FRAME_TICK` 의 주기 16.67 ms
+예요. 서로 다른 장치가 거의 같은 값을 내요.
+
+#### ⚠ 최악값이 프레임 주기보다 커요 — 예상과 달라요
+
+예상은 *"최악 ≈ 프레임 주기 (16.67 ms)"* 였는데, 실측 최악 절사평균은 **18.37 ms 로 1.7 ms
+더 커요.** 5 회 중 4 회가 16.67 ms 를 넘었어요.
+
+`completeOutput()` 은 **present 가 끝난 자리**라 (`perf.zig`) 재는 구간이
+`tick 대기 (≤ 16.67) + render + present` 예요 — 상한은 프레임 주기가 아니라 **프레임 주기 +
+render/present** 예요. 같은 회차 덤프의 `render` · `present` 가 합쳐 **0.83~1.00 ms/회**
+(예: `render 11.285/23` + `present 11.643/23`) 라 초과분과 자릿수가 맞아요. 같은 구조가 Linux
+에도 있어요 — 최악 16.39 ms 가 `poll` timeout 16 ms 를 0.39 ms 넘었어요. 다만 **Windows 의
+초과분이 4 배 이상 커요** (1.70 vs 0.39 ms).
+
+회차 4 의 **22.25 ms** 는 초과분이 5.6 ms 라 render/present 로는 설명이 안 돼요 — tick 이 한 번
+밀렸거나 present 가 걸린 것으로 보이지만 **원인 미확정**이에요 (5 회 중 1 회).
+
+#### 곁가지 — Windows 의 유휴 깨우기 빈도도 잡혔어요
+
+같은 덤프의 `onrender calls≈2500 · skip≈2480` (회차당 약 43 초) = **초당 약 58 회**, 그중
+**99 % 가 렌더 skip** 이에요. #439 가 적어 둔 *"유휴에도 주사율만큼 깨어나 게이트만 확인한다"*
+가 Windows 에서 숫자로 확인됐어요. 다만 **전력 대가는 안 쟀어요** — 아래 절전 도구는 Linux
+전용이에요.
+
+### 기록 수치 ③ — macOS (MacBook Pro M5 Pro · macOS 26.6.1 · 내장 Liquid Retina XDR · **120 Hz** · 측정 위생 적용)
+
+**하네스는 손댈 게 없었어요** — macOS 는 POSIX 라 러너가 Linux 와 같고, 로그 경로
+(`~/Library/Logs/tildaz_stress.log`) · EXE 후보 (`zig-out/TildaZ.app/Contents/MacOS/tildaz`) ·
+`hygiene_minimize_macos` 가 이미 다 있어요. 위 Windows 절 같은 platform 분기가 필요 없어요.
+
+빌드는 `zig build -Doptimize=ReleaseFast -Dsimd=true` 예요 (Linux · Windows 회차와 같은 조합).
+**서명 설치 (`build_and_install.sh`) 는 필요 없어요** — 이 측정은 합성 입력을 안 보내서
+*Input Monitoring* 권한을 아예 안 쓰거든요. 회차당 표본 20 · 간격 2 초, 전 회차 `input` 표본 0.
+
+| | 절사평균 | min~max |
+|---|---|---|
+| 평균 | **5.83 ms** | 5.55~6.29 |
+| **최악** | **9.51 ms** | 8.61~11.11 |
+
+회차별 평균 `6.29 · 5.90 · 5.55 · 5.92 · 5.67` / 회차별 최악 `10.98 · 8.89 · 8.66 · 8.61 · 11.11`
+
+#### 주사율은 로그로 **실측**할 수 있어요 (추정 아님)
+
+macOS 는 Windows 의 `[startup] frame clock started: refresh=..Hz` 같은 로그가 없어요 (깨우기가
+`CADisplayLink` 라서요). 그래서 [`hygiene.sh`](hygiene.sh) 도 macOS 주사율은 확인하지 않고
+*"기록할 때 사람이 적는다"* 로 둬요. 그런데 **`onrender` 가 [`displayLinkFire`](../../src/host/macos.zig)
+마다 세지므로** 덤프에서 역산할 수 있어요.
+
+```sh
+# 같은 회차의 [boot] · [exit] 타임스탬프 차이로 나눠요
+onrender calls ÷ 앱 수명(초) = displayLink fire 주파수
+```
+
+5 회 전부 **119.7 회/s** 로 나왔어요 — **ProMotion 은 완전 유휴에도 120 Hz 를 유지하고 낮추지
+않아요.** 적응형 주사율이 값을 흔들었을 가능성을 이 숫자가 직접 배제해요. 그중 **99.3 % 가 렌더
+skip** ([#255](https://github.com/ensky0/tildaz/issues/255)) 이라, #439 가 적어 둔 *"유휴에도 주사율만큼
+깨어나 게이트만 확인한다"* 가 macOS 에서도 숫자로 확인됐어요 (Windows 의 초당 약 58 회와 같은 모양).
+
+#### 상한이 여기서 가장 정확히 맞았어요
+
+Windows 절이 찾아낸 *"상한은 주기가 아니라 **주기 + render + present**"* 를 그대로 대 보면:
+
+| | 프레임 주기 | 그 회차 `render`+`present` | 이론 상한 | **실측 최악 (절사평균)** |
+|---|---|---|---|---|
+| 절사평균 기준 | 8.33 ms | 1.23 ms/회 | **9.57 ms** | **9.51 ms** |
+
+**0.06 ms 차이로 맞아요.** 5 회 중 3 회 (8.61 · 8.66 · 8.89) 는 주기 8.33 ms 를 **0.28~0.56 ms** 만
+넘었고, 이건 Linux 의 초과분 (+0.39 ms) 과 같은 크기이고 Windows (+1.70 ms) 보다 작아요.
+
+#### 세 host 를 나란히 두면 — 서로 다른 장치가 각자의 주기를 따라가요
+
+| | 깨우기 장치 | 그 주기 | 실측 평균 | 주기÷2 + 꼬리 |
+|---|---|---|---|---|
+| Linux 60 Hz | `poll` timeout 상수 (`frame_poll_ms`) | 16.00 ms | **8.71** | 8.71 |
+| **macOS 120 Hz** | **`CADisplayLink`** | **8.33 ms** | **5.83** | 5.40 |
+| Windows 60 Hz | `frameClockThread` 의 `WM_FRAME_TICK` | 16.67 ms | **8.40** | 8.40 |
+
+**세 host 가 서로 다른 장치를 쓰는데 값이 각자의 주기를 따라가고, 주기가 절반인 macOS 만 지연도
+내려갔어요.** 60 Hz 두 host 만으로는 *"주기가 지연"* 과 *"어쩌다 8 ms 대"* 를 못 가르는데,
+주기가 다른 세 번째 host 가 그 둘을 갈라요 — #439 본문 가설의 가장 강한 형태의 증거예요.
+
+#### ⚠ 이상치 2 회는 설명이 안 돼요
+
+회차 1 · 5 의 최악 (**10.98 · 11.11 ms**) 은 그 회차의 이론 상한 (9.67 · 9.64 ms) 을
+**1.3~1.5 ms** 넘어요. Windows 회차 4 의 22.25 ms 와 같은 성격 (tick 이 밀렸거나 present 가
+걸림) 으로 보이지만 **원인 미확정**이에요 (5 회 중 2 회). 절사평균은 이 둘 중 위쪽 하나를
+잘라내지만, 나머지 하나가 남아 최악 절사평균 9.51 ms 를 끌어올린 값이에요.
+
+### ⚠ 측정 중 창을 건드리면 오염돼요
+
+입력이 렌더를 유발해 깨우기 경로를 건너뛰기 때문이에요. 스크립트가 같은 덤프의 `input` 표본
+수를 함께 세어 **0 이 아니면 회차 폐기**로 표시해요.
+
+### ⚠ 이 수치는 **모든 출력**에 붙는 값이 아니에요 — 타이핑 에코는 안 늦어요
+
+위 표의 5.83~8.71 ms 를 *"화면에 뭔가 나올 때마다 붙는 지연"* 으로 읽으면 틀려요. **입력이
+유발하지 않은 출력에만** 붙어요.
+
+`measure-input-latency.sh --mode idle` (실제 셸 + 키 30 회) 을 `output_latency` 계측이 있는
+빌드로 돌려 같은 덤프에서 둘을 나란히 재 봤어요 (macOS · 120 Hz · 5 회).
+
+| | 표본 | 평균 | 최악 |
+|---|---|---|---|
+| **유휴 출력** (입력 없이 도착) | 5 회 × 20 | **5.83 ms** | 9.51 ms |
+| **에코 출력** (키에 딸려 도착) | 5 회 × 30 | **0.39 ms** | 0.54 ms |
+
+`output` 표본은 **30 / 30 으로 다 잡혀요** (에코도 `markOutput()` 을 지나요). 그런데 값이 15 배
+작아요. 같은 회차의 `input` 평균 0.632 ms − `output` 평균 0.393 ms = **0.239 ms 가 PTY 왕복**
+(키 write → 셸 에코 → read) 인데, 이게 **프레임 주기 8.33 ms 보다 35 배 짧아요.** 키가 오면
+`requestRender()` 가 이미 렌더를 예약하고, 에코는 0.24 ms 뒤에 도착하니 **그 예약된 프레임에
+그대로 편승**해요.
+
+| 붙는 것 | 안 붙는 것 |
+|---|---|
+| 명령 결과가 나오기 시작하는 첫 출력 · 빌드 / 로그 스트림 시작 · `tail -f` · 백그라운드 출력 · htop / watch 자동 갱신 | 타이핑 글자 (셸 에코) — **실측**. TUI 키 반응도 같은 구조지만 **직접 재지는 않았어요** |
+
+곁가지로 [#441](https://github.com/ensky0/tildaz/issues/441#issuecomment-5302808426) 이 미해결로
+남긴 *"macOS 유휴 `input` 이 반 프레임보다 낮다"* 도 이 값으로 설명돼요 — 키 직후의 present 는
+아직 아무 글자도 안 그린 프레임이고, 합성 키가 `displayLink` fire 직전에 배달되는 것으로 보여요
+(**추정** — WindowServer 안쪽 위상은 우리 소스로 못 봐요). 자세한 것은
+[#439 코멘트](https://github.com/ensky0/tildaz/issues/439#issuecomment-5306808465)에 있어요.
+
+## 유휴 절전 대가 측정 ([#439](https://github.com/ensky0/tildaz/issues/439) ② · Linux 전용)
+
+위 절이 유휴 깨우기의 **지연** 대가라면, 이쪽은 **절전** 대가예요 — 완전 유휴 (출력도 입력도
+없음, 깨우기는 `frame_poll_ms` 16 ms 의 초당 62 회뿐) 인 TildaZ 1대가 전력으로 얼마인지를
+**ABAB 4 구간** (기준선 → TildaZ → 기준선 → TildaZ, 배경 요동 상쇄) 으로 재요.
+
+```sh
+dist/stress/measure-idle-cstates.sh              # root 불필요 — core-idle 잔류율 (경향만)
+sudo dist/stress/measure-idle-power.sh           # 패키지 전력 (RAPL·turbostat) — 판정은 이쪽
+```
+
+- **`hygiene_begin` 을 일부러 안 써요** — performance 프로파일 강제는 유휴 전력 자체를
+  바꿔요. 재는 대상이 *평소 구성*의 유휴 대가라서, worker 종료만 하고 프로파일은 그대로
+  둬요. 대신 AC · 화면 상태를 결과에 함께 적어요.
+- 측정 중 무입력이에요 — 배경 앱의 CPU 사용도 A/B 한쪽에만 얹히면 비교가 깨져요.
+
+### 실측 (노트북 · Intel i5-1240P · CachyOS · KDE Plasma · AC · balanced · 화면 켬, 2026-08-16)
+
+| | 기준선 ×2 | TildaZ 유휴 ×2 | 차이 |
+|---|---|---|---|
+| PkgWatt | 3.87 · 3.88 W | 3.98 · 3.95 W | **+0.07~0.11 W** |
+| SysWatt | 11.55 · 11.48 W | 11.79 · 11.67 W | **+0.19~0.24 W (~+2 %)** |
+| Pkg%pc8 | 4.08 · 3.71 % | 1.68 · 1.85 % | **잔류율 절반** |
+| IRQ | 1,619~1,635 /s | 1,711~1,717 /s | +82~85 /s (≈ 깨우기 61 /s) |
+
+**core-idle 지표 (`measure-idle-cstates.sh`) 로는 이 대가가 잡음 아래예요** — 시스템 전체
+유휴 진입 (~700~830 회/s) 의 요동이 TildaZ 몫 (61 회/s) 보다 커요. 패키지 수준에서만 보여요.
+상세와 배터리 환산 (~시간당 완충의 0.3 %p) 은 [#439 의 확정 코멘트](https://github.com/ensky0/tildaz/issues/439#issuecomment-5306404629)에 있어요.
+
+### Windows · macOS 판은 만들지 않기로 했어요 (2026-08-16 사용자 결정)
+
+**② 판정은 위 Linux 실측으로 충분해요.** ② 가 재려는 것은 *"주기적 깨우기 한 대가 얼마"* 인데,
+그 깨우기 빈도가 host 를 가리지 않아요 — Linux 초당 **61 회** (`frame_poll_ms` 16 ms) 와
+Windows 초당 약 **58 회** (`WM_FRAME_TICK`, [위 절의 `onrender` 실측](#곁가지--windows-의-유휴-깨우기-빈도도-잡혔어요))
+가 거의 같아요. 같은 빈도의 깨우기라면 전력 대가도 같은 자릿수라, platform 마다 다시 재도
+**방향 결정 ((d) 타이머 정지) 을 바꿀 새 정보가 나오지 않아요.**
+
+그래서 `Get-Counter` (Windows) · `powermetrics` (macOS) 대응 도구는 **만들지 않아요.** Windows 는
+RAPL 을 읽으려면 커널 드라이버가 필요해서 비용도 제일 커요. 나중에 방향이 바뀌어 platform 별
+절대값이 꼭 필요해지면 그때 이 결정을 다시 봐요.
 
 ## 다른 터미널과 비교하기
 
