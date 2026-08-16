@@ -45,6 +45,7 @@ const unix_socket = @import("unix_socket.zig");
 const closeFd = unix_socket.closeFd;
 const checkErr = unix_socket.checkErr;
 const sway_ipc = @import("sway_ipc.zig");
+const signal_exit = @import("../../signal_exit.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
@@ -1700,6 +1701,14 @@ const Client = struct {
             // #245 — drag-select auto-scroll tick (포인터가 grid 경계 밖에 머물면 연속).
             self.maybeAutoScrollSelection();
             if (self.shell_exited.load(.acquire)) {
+                self.running = false;
+                break;
+            }
+            // #458 — SIGTERM 을 받았으면 평소의 종료 경로로 빠진다. 그래야 `deinit` 이
+            // 돌아 PTY 자식 정리 (#129) 가 실행된다. 시그널이 `poll` 을 EINTR 로 깨우므로
+            // 대기 중이어도 곧 이 검사에 닿는다.
+            if (signal_exit.requested()) {
+                log.appendLine("exit", "SIGTERM received — shutting down cleanly", .{});
                 self.running = false;
                 break;
             }
@@ -8304,6 +8313,12 @@ pub fn runBaselineWindow(
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     // 측정 모드는 자기 단축키를 DE 에 등록하지 않는다 (#382) — 사용자의 기존 binding 을
     // 덮어쓰면 측정이 끝난 뒤에도 그 상태가 남는다.
+    // #458 — SIGTERM 을 정상 종료로 바꾼다. **검사하는 쪽과 같은 자리에서 건다** —
+    // 핸들러만 걸고 아무도 플래그를 안 보면 SIGTERM 이 무시돼 앱이 안 죽는다 (기본 동작을
+    // 없앤 셈이라 지금보다 나쁘다). Linux 는 아래 main loop 가 `signal_exit.requested()` 를
+    // 매 바퀴 검사하므로 여기서 거는 것이 안전하다. macOS · Windows 는 loop 구조가 달라
+    // 각자의 host 가 검사를 갖출 때 함께 건다.
+    signal_exit.install();
     // #454 — 이 호출도 `client.is_sway` (peer PID 비교) 뒤에 있어야 한다. 렌더링하지
     // 않는 compositor 에 bindsym 을 등록하는 것은 무의미하고, 무엇보다 stale `SWAYSOCK`
     // 이 **응답 없는 소켓**을 가리키면 `runCommand` 의 read 가 부팅을 영원히 막는다
