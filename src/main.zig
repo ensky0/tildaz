@@ -88,6 +88,7 @@ fn initLogging(rt: Runtime, arena: std.mem.Allocator) void {
 /// `std.process.argsAlloc` 은 없어졌다.
 pub fn main(init: std.process.Init) void {
     const rt: Runtime = .fromInit(init);
+
     const arena = init.arena.allocator();
     // arena 는 process lifetime 이라 (`Init.arena` 주석) 예전 `argsFree` 가 하던 일이 없다.
     const args = init.minimal.args.toSlice(arena) catch std.process.exit(2);
