@@ -88,14 +88,25 @@ pub fn registerToggleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: *con
 /// 이 세션에서 sway 의 xdg_toplevel + IPC 경로를 쓸 것인가
 /// ([#454](https://github.com/ensky0/tildaz/issues/454)).
 ///
-/// 판정은 **`SWAYSOCK` 존재 하나**다. 이 경로는 layer-shell 을 버리는 대신 배치 ·
-/// 토글을 전부 i3 IPC 로 하므로, IPC 가 불가능하면 layer-shell 유지가 항상 낫다 —
-/// `XDG_CURRENT_DESKTOP` 에 sway 토큰이 있어도 `SWAYSOCK` 이 없으면 배치 없는
-/// 기본 창만 남는다. 반대 방향은 걱정할 것이 없다: nested sway 는
-/// `XDG_CURRENT_DESKTOP` 이 부모 것 (`KDE`) 이지만 `SWAYSOCK` 은 잡히고 (실측),
-/// 실기 sway 세션은 둘 다 잡힌다.
-pub fn isSwaySession(rt: Runtime) bool {
-    return rt.environ.getPosix("SWAYSOCK") != null;
+/// 판정: `SWAYSOCK` 이 있고, 그 소켓의 주인 (`SO_PEERCRED` PID) 이 **지금 그리기로
+/// 연결한 Wayland compositor 와 같은 프로세스**일 때만 true. 이 경로는 layer-shell 을
+/// 버리는 대신 배치 · 토글을 전부 그 IPC 로 하므로, "IPC 상대 = 내 compositor" 가
+/// 성립하지 않으면 layer-shell 유지가 항상 낫다.
+///
+/// **존재 여부만으로는 오판한다** (KDE Plasma 실기 회귀로 확정): sway 세션이
+/// `import-environment` 로 넣은 `SWAYSOCK` 은 로그아웃해도 systemd user 환경에 남아,
+/// 다음 KDE 세션의 autostart 앱이 죽은 소켓을 물려받는다 — 그 상태로 sway 경로를
+/// 타면 KWin 에서 배치 없는 기본 창이 된다. peer PID 비교는 네 경우를 전부 가른다:
+/// 죽은 소켓 (connect 실패 → false) · 다른 VT 에 살아 있는 sway (PID 다름 → false) ·
+/// nested sway (같음 → true) · 실기 sway 세션 (같음 → true).
+pub fn isSwayCompositor(rt: Runtime, wayland_fd: posix.fd_t) bool {
+    const sock_path = rt.environ.getPosix("SWAYSOCK") orelse return false;
+    const fd = unix_socket.openSocket(posix.SOCK.CLOEXEC) catch return false;
+    defer unix_socket.closeFd(fd);
+    unix_socket.connect(fd, sock_path) catch return false;
+    const sway_pid = unix_socket.peerPid(fd) orelse return false;
+    const compositor_pid = unix_socket.peerPid(wayland_fd) orelse return false;
+    return sway_pid == compositor_pid;
 }
 
 /// #454 — sway 전용 창 규칙을 **창이 뜨기 전에** 등록한다.
