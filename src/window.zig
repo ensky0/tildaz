@@ -55,6 +55,16 @@ pub const WM_HOTKEY_CAPTURE_END: UINT = 0x8000 + 269;
 const WM_TIMER: UINT = 0x0113;
 const WM_SIZE: UINT = 0x0005;
 const WM_USER: UINT = 0x0400;
+/// #439 — PTY 출력이 ring 에 들어갔다는 통보. **read thread 가 post 한다.**
+///
+/// 이것이 없던 동안 유휴 UI 스레드는 `WaitMessage` 로 자다가 `WM_FRAME_TICK` 이 와야
+/// 비로소 ring 을 봤고, 그래서 프레임 주기가 그대로 응답 지연이 됐다 (실측 평균 8.40 ms ·
+/// 최악 18.37 ms). 이 메시지가 그 대기를 끊는다.
+///
+/// **핸들러가 `renderFrameTick` 을 부른다.** Windows 는 렌더가 `WM_FRAME_TICK` /
+/// `WM_TIMER` 에만 묶여 있어서, 깨우기만으로는 드레인만 되고 화면은 다음 tick 을 기다린다.
+/// tick 은 vsync 위상과 무관한 순수 타이머라 (`frameClockThread` 주석) tick 밖에서 그려도
+/// cadence 가 깨지지 않는다.
 pub const WM_PTY_OUTPUT: UINT = WM_USER + 1;
 pub const WM_TAB_CLOSED: UINT = WM_USER + 2;
 /// #386 — 프레임 tick. clock 스레드가 화면 주사율 주기로 post 한다.
@@ -415,6 +425,13 @@ pub const Window = struct {
     /// 않는다 — 없으면 큐에 tick 이 쌓여 밀린 프레임을 몰아 그리게 된다. 하네스 `frame`
     /// 층이 "놓친 vsync 를 따라잡지 않는다" 로 모사한 정책과 같다.
     frame_tick_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// #439 — `WM_PTY_OUTPUT` coalescing. `frame_tick_pending` 과 같은 이유다 — 폭포 중에는
+    /// read thread 가 초당 수천 번 통보하는데, 그대로 post 하면 메시지 큐가 그만큼 쌓여
+    /// 정작 입력이 뒤로 밀린다. 미처리분이 있으면 더 넣지 않는다.
+    output_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// #439 — 직전 프레임이 **그릴 것이 없어 건너뛰었는가** (= 유휴인가). `App.onRender` 가
+    /// 갱신하고 read thread 가 읽어 통보 여부를 정한다 (`notifyPtyOutput`).
+    frame_idle: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// 한 프레임의 길이 (100ns 단위). `startFrameClock` 이 재생률로 계산한다.
     frame_period_100ns: i64 = 0,
     /// #386 ② — 유휴 렌더 게이트. macOS `g_needs_render` · Linux `needs_redraw` 동등.
@@ -1289,9 +1306,31 @@ pub const Window = struct {
     }
 
     /// #386 — 프레임 한 번. `WM_FRAME_TICK` (정상) 과 `WM_TIMER` (fallback) 이 공유한다.
+    /// #439 — `WM_PTY_OUTPUT` (출력 통보) 도 여기로 들어온다.
     fn renderFrameTick(self: *Window) void {
         if (!self.visible or self.layout_transition_active) return;
         if (self.render_fn) |render_fn| render_fn(self);
+    }
+
+    /// #439 — PTY read thread 가 부르는 통보. **다른 스레드에서 불린다** — `PostMessageW` 는
+    /// thread-safe 하고, `hwnd` 가 아직 없으면 (창 생성 전) 조용히 흘린다. 그때는 볼 화면도
+    /// 없고, 창이 서면 첫 tick 이 ring 을 집는다.
+    ///
+    /// ⚠ **유휴일 때만 보낸다 (`frame_idle`). 이것이 없으면 폭포에서 크게 느려진다.**
+    ///
+    /// `messageLoop` 은 `PeekMessage` 가 빈 순간에만 `idle_drain_fn` (#387 사양 A) 을 부른다.
+    /// 그런데 폭포에서 이 메시지를 계속 post 하면 큐가 비지 않아 **그 드레인이 굶고**, 프레임
+    /// 밖에서 하던 일이 통째로 `WM_FRAME_TICK` 안으로 밀려든다. macOS 에서 같은 구조
+    /// (`kCFRunLoopBeforeWaiting` 이 안 옴) 로 폭포 중 입력 지연이 **1.5 → 8.2 ms** 로
+    /// 나빠지는 것을 실측 A/B 로 확인했다 (`host/macos.zig` 의 `macOutputWake` 주석).
+    ///
+    /// 타이머가 이미 매 프레임 그리고 있으면 통보는 할 일이 없다 — 다음 tick 이 어차피 즉시
+    /// 집는다. 통보가 필요한 것은 *아무도 안 깨우는* 유휴뿐이다.
+    pub fn notifyPtyOutput(self: *Window) void {
+        if (!self.frame_idle.load(.acquire)) return;
+        const hwnd = self.hwnd orelse return;
+        if (self.output_wake_pending.swap(true, .acq_rel)) return;
+        _ = PostMessageW(hwnd, WM_PTY_OUTPUT, 0, 0);
     }
 
     /// #386 — 프레임 clock 시작. `hide` 동안 깨어나지 않도록 `show` / create 에서만 켠다
@@ -1588,6 +1627,15 @@ pub const Window = struct {
                 self.frame_tick_pending.store(false, .release);
                 // posted tick 이 입력을 굶기지 않게 — 위 `pumpPendingInput` 주석 참고.
                 self.pumpPendingInput();
+                self.renderFrameTick();
+                return 0;
+            },
+            // #439 — PTY 출력 도착. 유휴에서 `WaitMessage` 를 끊는 것이 이 메시지의 본래
+            // 목적이고, 여기서 바로 그려야 지연이 준다 (`WM_PTY_OUTPUT` 주석).
+            WM_PTY_OUTPUT => {
+                // `WM_FRAME_TICK` 과 같은 이유로 **렌더 전** 에 연다 — 그리는 동안 도착한
+                // 출력이 다음 통보를 만들 수 있어야 한다.
+                self.output_wake_pending.store(false, .release);
                 self.renderFrameTick();
                 return 0;
             },

@@ -1245,8 +1245,33 @@ Linux 도 밀린 출력이 없으면 timeout 이 `frame_poll_ms` 로 돌아가 �
 
 **세 host 의 공통 구조는 "드레인이 진행하는 동안 스스로 재진입한다" 다** — Windows 는 `messageLoop`
 의 `if (f(userdata)) continue;`, macOS 는 `CFRunLoopWakeUp`, Linux 는 `poll` timeout 0 이 그 자리다.
-**어느 host 도 PTY 도착을 *통보* 받지 않는다** — 유휴에서 깨어나는 방식은 별개 축이고
-[#439](https://github.com/ensky0/tildaz/issues/439) 에서 다룬다.
+
+### 13.1.1 유휴 깨우기 — PTY 도착을 통보한다 ([#439](https://github.com/ensky0/tildaz/issues/439))
+
+위 재진입은 *이미 깨어 있는* 동안의 이야기다. **유휴에서 무엇이 깨우는가**는 별개 축이고, 예전에는
+세 host 모두 프레임 타이머뿐이어서 **깨우기 주기가 그대로 응답 지연**이 됐다 (실측 평균 Linux
+8.71 · macOS 5.83 · Windows 8.40 ms — 상한은 `주기 + render + present`).
+
+이제 `SessionCore.pushOutput` 이 ring 에 넣은 자리에서 host 를 깨운다 (`output_wake_fn`).
+
+| platform | 깨우는 법 | 깨어난 뒤 |
+|---|---|---|
+| Linux | `eventfd` 를 `poll` 배열에 추가, read thread 가 write | 기존 iteration 이 그대로 드레인 + `maybeRedraw` (**렌더 경로 변경 없음**) |
+| Windows | `WM_PTY_OUTPUT` 을 `PostMessageW` | 그 핸들러가 `renderFrameTick` |
+| macOS | version 0 `CFRunLoopSource` signal + `CFRunLoopWakeUp` | `perform` 콜백이 `renderFrameTick` |
+
+**통보는 유휴일 때만 보낸다** (`frame_idle` / `g_frame_idle` — 직전 프레임이 그릴 것이 없어 건너뛰었나).
+타이머가 이미 매 프레임 그리고 있으면 통보는 할 일이 없고, **보내면 오히려 느려진다** — 위 §13.1 표의
+*"프레임과 별개의 드레인 지점"* 이 Windows 는 *"`PeekMessage` 가 빈 순간"*, macOS 는
+*"`BeforeWaiting`(= run loop 이 잠들기 직전)"* 이라, 폭포에서 통보를 계속 보내면 큐가 비지 않고 run
+loop 이 잠들지 않아 **그 드레인이 굶는다.** 그러면 프레임 밖에서 하던 일이 통째로 프레임 안으로
+밀려들어 폭포 중 입력 지연이 1.5 → 8.2 ms 로 나빠진다 (macOS 실측 A/B). Linux 는 드레인이 poll loop
+iteration 마다라 *자리*가 바뀌지 않아 이 위험이 없다 — **Linux 실측 A/B 가 이 판정을 확인했다**
+(2026-08-16 · KDE Plasma 60 Hz): 회귀의 지문인 `onrender` 회당 시간이 0.147 → 0.142 ms 로 늘지 않았고
+`drain` · `render` 총 시간과 처리량도 그대로다. 같은 회차에서 유휴 지연은 8.80 → 0.64 ms 다.
+
+**(d) 유휴 타이머 정지는 아직 하지 않았다** — 통보가 생겼으므로 가능해졌지만 절전 이득 (~0.2 W) 과
+위험 (판정이 틀리면 화면이 멈춤) 을 따로 판단한다 (#439).
 
 > ⚠️ **이전 문서는 Linux 를 *"원래부터 이 사양"* 으로 적었는데 사실이 아니었다**
 > ([#436](https://github.com/ensky0/tildaz/issues/436), 2026-08-10 실측). Linux 는 iteration 마다

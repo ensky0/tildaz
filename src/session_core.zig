@@ -254,6 +254,15 @@ pub const Tab = struct {
     write_thread: ?std.Thread = null,
     tab_exit_fn: SessionCore.TabExitNotify,
     tab_exit_userdata: ?*anyopaque = null,
+    /// #439 — PTY 출력이 ring 에 들어갔다는 것을 host 에 알린다 (유휴 깨우기).
+    ///
+    /// **read thread 에서 불린다** — 구현은 다른 스레드에서 불러도 되는 것만 써야 한다
+    /// (`eventfd` write · `PostMessageW` · `CFRunLoopSourceSignal`).
+    ///
+    /// `null` 이면 알리지 않고, 그때는 host 의 프레임 타이머가 지금까지처럼 다음 주기에
+    /// 집는다 — host 없이 도는 경로 (stress 하네스 · 단위 테스트) 의 정상 값이다.
+    output_wake_fn: ?SessionCore.OutputWakeNotify = null,
+    output_wake_userdata: ?*anyopaque = null,
 
     fn init(
         rt: Runtime,
@@ -506,7 +515,16 @@ pub const Tab = struct {
         perf.addTimedBytes(&perf.push, t0, wrote);
         // #439 — 유휴 응답 지연의 시작점. 여기부터 present 까지가 *"출력이 화면에 닿는
         // 시간"* 이다. 한 byte 도 안 들어간 경우 (닫히는 중) 는 잴 것이 없다.
-        if (wrote > 0) perf.markOutput();
+        if (wrote > 0) {
+            perf.markOutput();
+            // #439 — 유휴 host 를 깨운다. **계측과 분리해 둔다** — `perf` 는 진단이라
+            // 언제든 빠질 수 있고, 기능 동작이 거기 매달리면 안 된다.
+            //
+            // 넣은 것이 없으면 (`wrote == 0`) 깨우지 않는다. ring 이 꽉 차 `push` 가
+            // 기다리는 중이면 그건 유휴가 아니라 폭포라, host 는 이미 자기 주기로 돌며
+            // 드레인하고 있다.
+            if (tab.output_wake_fn) |wake| wake(tab.output_wake_userdata);
+        }
     }
 
     fn onPtyExit(userdata: ?*anyopaque) void {
@@ -736,6 +754,10 @@ pub const SessionCore = struct {
     extra_env: ?[]const terminal.ExtraEnv,
     tab_exit_fn: TabExitNotify,
     tab_exit_userdata: ?*anyopaque,
+    /// #439 — host 깨우기. `setOutputWake` 로 넣는다 (`init` 인자가 아니다 — Windows 의
+    /// `HWND` 와 macOS 의 `CFRunLoopSource` 는 세션보다 **뒤에** 준비된다).
+    output_wake_fn: ?OutputWakeNotify = null,
+    output_wake_userdata: ?*anyopaque = null,
     tabs: std.ArrayList(*Tab) = .empty,
     active_tab: usize = 0,
     /// 비활성 탭 drain의 다음 시작 위치. 탭 close/reorder 뒤에는 drain 시점에
@@ -768,6 +790,8 @@ pub const SessionCore = struct {
     };
 
     pub const TabExitNotify = *const fn (usize, ?*anyopaque) void;
+    /// #439 — "PTY 출력이 ring 에 들어갔다" 는 host 통보. `Tab.output_wake_fn` 주석 참고.
+    pub const OutputWakeNotify = *const fn (?*anyopaque) void;
     pub const CloseResult = enum {
         none,
         changed,
@@ -794,6 +818,20 @@ pub const SessionCore = struct {
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
         };
+    }
+
+    /// #439 — 유휴 깨우기 통보를 배선한다. host 가 자기 깨우기 장치를 만든 **뒤에**
+    /// 부른다 (Windows `HWND` · macOS `CFRunLoopSource` 는 세션보다 뒤에 준비된다).
+    ///
+    /// 이미 만들어진 탭에도 전파한다 — 첫 탭은 보통 이 호출보다 먼저 생기는데, 거기만
+    /// 통보가 없으면 *"첫 탭에서만 유휴 응답이 느린"* 조용한 비대칭이 된다.
+    pub fn setOutputWake(self: *SessionCore, wake_fn: ?OutputWakeNotify, userdata: ?*anyopaque) void {
+        self.output_wake_fn = wake_fn;
+        self.output_wake_userdata = userdata;
+        for (self.tabs.items) |tab| {
+            tab.output_wake_fn = wake_fn;
+            tab.output_wake_userdata = userdata;
+        }
     }
 
     pub fn deinit(self: *SessionCore) void {
@@ -885,6 +923,10 @@ pub const SessionCore = struct {
 
         tab.beginInitialTitle(self.next_tab_id);
         self.next_tab_id += 1;
+        // #439 — read thread 가 돌기 **전에** 배선한다. 이 뒤에 대입하면 첫 바이트가
+        // 통보 없이 지나갈 수 있다.
+        tab.output_wake_fn = self.output_wake_fn;
+        tab.output_wake_userdata = self.output_wake_userdata;
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
         try self.tabs.append(self.allocator, tab);
         self.active_tab = self.tabs.items.len - 1;
