@@ -179,6 +179,37 @@ extern fn CFRunLoopObserverCreate(
 extern fn CFRunLoopAddObserver(runloop: CFRunLoopRef, observer: CFRunLoopObserverRef, mode: CFStringRef) void;
 extern fn CFRunLoopWakeUp(runloop: CFRunLoopRef) void;
 
+// #439 — PTY 출력 도착을 main run loop 에 알리는 **version 0 custom source**.
+//
+// 이것이 없던 동안 유휴에서는 `CADisplayLink` 의 vsync fire 가 유일한 깨우기였고, 그래서
+// 프레임 주기가 그대로 응답 지연이 됐다 (실측 평균 5.83 ms · 최악 9.51 ms · 120 Hz).
+//
+// **`CFRunLoopSourceSignal` + `CFRunLoopWakeUp` 은 다른 스레드에서 불러도 된다** (Apple 의
+// CFRunLoop.h 가 CFRunLoop 계열 중 이 둘을 thread-safe 로 명시한다). 그래서 PTY read thread
+// 가 직접 부를 수 있고, 실제 처리는 main thread 의 `perform` 콜백에서 일어난다.
+//
+// version 0 source 는 `signal` 된 뒤 run loop 이 한 번 돌 때 `perform` 이 불리고 자동으로
+// 신호가 내려간다 — 우리가 따로 지울 것이 없고, 연달아 signal 해도 perform 은 한 번이라
+// **coalescing 이 공짜**다 (Windows 는 `output_wake_pending` 으로 직접 해야 했다).
+const CFRunLoopSourceContext = extern struct {
+    version: CFIndex = 0,
+    info: ?*anyopaque = null,
+    retain: ?*const fn (?*const anyopaque) callconv(.c) ?*const anyopaque = null,
+    release: ?*const fn (?*const anyopaque) callconv(.c) void = null,
+    copyDescription: ?*const fn (?*const anyopaque) callconv(.c) CFStringRef = null,
+    equal: ?*const fn (?*const anyopaque, ?*const anyopaque) callconv(.c) u8 = null,
+    hash: ?*const fn (?*const anyopaque) callconv(.c) usize = null,
+    schedule: ?*const fn (?*anyopaque, CFRunLoopRef, CFStringRef) callconv(.c) void = null,
+    cancel: ?*const fn (?*anyopaque, CFRunLoopRef, CFStringRef) callconv(.c) void = null,
+    perform: ?*const fn (?*anyopaque) callconv(.c) void = null,
+};
+extern fn CFRunLoopSourceCreate(
+    allocator: ?*anyopaque,
+    order: CFIndex,
+    context: *CFRunLoopSourceContext,
+) CFRunLoopSourceRef;
+extern fn CFRunLoopSourceSignal(source: CFRunLoopSourceRef) void;
+
 // GCD — 콜백 안에서 tap 자기 자신을 destroy 하기 위해 main run loop 의
 // 다음 turn 으로 작업 deferral. `dispatch_get_main_queue()` 는 macOS 헤더에
 // static inline 이라 link symbol 없음 — 실제 export 되는 `_dispatch_main_q`
@@ -520,6 +551,15 @@ var g_metal_layer: objc.id = null;
 var g_renderer: ?renderer_module.RendererBackend = null;
 /// CADisplayLink (NSWindow.displayLink) — vsync render driver. null = 미생성.
 var g_display_link: objc.id = null;
+/// #439 — PTY 출력 도착 통보 source. `null` = 미설치 (그때는 `CADisplayLink` 가 지금까지
+/// 처럼 다음 vsync 에 집는다 — 예전 동작 그대로라 회귀가 아니다).
+var g_output_source: CFRunLoopSourceRef = null;
+/// #439 — 직전 프레임 tick 이 **그릴 것이 없어 skip 했는가** (= 유휴인가). `renderFrameTick`
+/// 이 갱신하고 read thread 가 읽어 통보 여부를 정한다 (`macOutputWake` — 폭포에서 통보하면
+/// 오히려 크게 느려진다).
+var g_frame_idle: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+/// #439 — 출력 통보 coalescing. 유휴에서도 여러 탭이 동시에 통보할 수 있어 한 번으로 줄인다.
+var g_output_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 /// #387 — `kCFRunLoopBeforeWaiting` observer. 프레임 사이에도 VT 를 드레인해 드레인 예산이
 /// 처리량 상한으로 굳지 않게 한다 (`idleDrainObserver` 주석). null = 미생성.
 ///
@@ -3194,6 +3234,22 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         log.appendLine("startup", "CADisplayLink installed (vsync render driver)", .{});
     }
 
+    // #439 — PTY 출력 도착 통보 source. displayLink 와 같은 자리에 두는 이유도 같다 —
+    // `g_session` 과 첫 탭이 준비된 뒤여야 한다. common modes 로 등록해 리사이즈 / 모달
+    // tracking 중에도 통보가 이어진다 (그 구간에도 셸 출력은 계속 온다).
+    {
+        var ctx = CFRunLoopSourceContext{ .perform = outputWakePerform };
+        g_output_source = CFRunLoopSourceCreate(null, 0, &ctx);
+        if (g_output_source) |source| {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+            g_session.setOutputWake(macOutputWake, null);
+            log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+        } else {
+            // 만들지 못해도 앱은 정상이다 — 유휴 응답이 예전처럼 다음 vsync 를 기다릴 뿐이다.
+            log.appendLine("startup", "output wake unavailable — idle output waits for vsync", .{});
+        }
+    }
+
     // #387 — 사양 A. run loop 이 잠들기 직전에 밀린 출력을 한 번 더 파싱한다
     // (`idleDrainObserver` 주석에 근거). `g_session` 과 첫 탭이 준비된 뒤여야 하므로
     // displayLink 설치와 같은 지점에 둔다 — displayLink 도 같은 전제로 여기 있다.
@@ -3283,6 +3339,44 @@ fn displayLinkFire(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     renderFrameTick();
 }
 
+/// #439 — 출력 통보의 main thread 쪽 처리. `CFRunLoopSourceSignal` 로 예약되고 run loop 이
+/// 서비스할 때 불린다 — 여기부터는 `displayLinkFire` 와 같은 main thread 다.
+fn outputWakePerform(_: ?*anyopaque) callconv(.c) void {
+    // coalescing 해제는 **렌더 전** 에 한다 (Windows `WM_PTY_OUTPUT` 핸들러와 같은 이유) —
+    // 그리는 동안 도착한 출력이 다음 통보를 만들 수 있어야 한다.
+    g_output_wake_pending.store(false, .release);
+    renderFrameTick();
+}
+
+/// #439 — PTY 출력이 ring 에 들어갔다는 통보. **PTY read thread 에서 불린다.**
+///
+/// `CFRunLoopSourceSignal` 과 `CFRunLoopWakeUp` 은 다른 스레드에서 불러도 되는 둘이라
+/// (위 `CFRunLoopSourceContext` 주석) 여기서 바로 부른다. 실제 드레인 · 렌더는 main thread
+/// 의 `outputWakePerform` 이 한다.
+///
+/// ⚠ **유휴일 때만 보낸다 (`g_frame_idle`). 이것이 없으면 폭포에서 크게 느려진다.**
+///
+/// `kCFRunLoopBeforeWaiting` 은 run loop 이 **잠들기 직전**에만 발생하는데, source 가 signal
+/// 되어 있으면 run loop 은 처리할 일이 있다고 보아 잠들지 않는다. 그러면 #387 사양 A 의
+/// [`idleDrainObserver`](이 파일의 `installIdleDrainObserver`) 가 돌지 못하고, 프레임 밖에서
+/// 하던 드레인이 통째로 `renderFrameTick` 안으로 밀려든다. 실측 A/B 에서 폭포 중
+/// `onrender` 총 시간이 **272 → 7212 ms** (회당 0.31 → 8.3 ms) 로 뛰었고 입력 지연이
+/// **1.5 → 8.2 ms** 로 나빠졌다 (`render` · `drain` 총 시간은 둘 다 그대로였다 — 일이 는 게
+/// 아니라 *자리가 바뀐* 것이다).
+///
+/// coalescing (`g_output_wake_pending`) 만으로는 못 막는다 — 프레임당 한 번만 보내도 그
+/// 한 번이 `BeforeWaiting` 을 막기 때문이다 (그것도 실측으로 확인했다).
+///
+/// 그래서 **타이머가 이미 매 프레임 그리고 있으면 통보하지 않는다.** 그때는 통보가 할 일이
+/// 없다 — 다음 vsync 가 어차피 즉시 집는다. 통보가 필요한 것은 *아무도 안 깨우는* 유휴뿐이다.
+fn macOutputWake(_: ?*anyopaque) void {
+    if (!g_frame_idle.load(.acquire)) return;
+    const source = g_output_source orelse return;
+    if (g_output_wake_pending.swap(true, .acq_rel)) return;
+    CFRunLoopSourceSignal(source);
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
 /// #255 Phase 2 — "그릴 게 생겼다" 신호 (main thread 전용, 입력/창 핸들러가 호출).
 /// displayLink 는 visible 동안 계속 vsync 로 돌고(규칙적 cadence → 깜빡임 없음 +
 /// auto-scroll tick 유지), 이 플래그가 그 frame 에 *render 작업을 할지*만 가른다.
@@ -3354,12 +3448,17 @@ fn renderFrameTick() void {
         // 확정되면 그때부터 idle skip 시작.
         if (mac_renderer.frameWasPresented()) {
             perf.incExtra(&perf.onrender); // #255 — idle skip frame (render 안 함).
+            // #439 — 이 프레임에 그릴 것이 없었다 = 유휴다. 다음 PTY 출력은 통보로 깨워야
+            // 화면에 빨리 닿는다 (`macOutputWake`).
+            g_frame_idle.store(true, .release);
             return;
         }
         // 표시 미확정 → fall through 해 한 프레임 더 그림(present handler 재부착).
     } else {
         g_needs_render = false;
     }
+    // #439 — 여기부터는 실제로 그린다 = 타이머가 이미 화면을 몰고 있다. 통보를 멈춘다.
+    g_frame_idle.store(false, .release);
 
     if (!g_visible) return;
     if (g_renderer == null) return;
@@ -3428,6 +3527,7 @@ fn renderFrameTick() void {
     // 없애면 처음 보는 문자(`"`,`(`,`N` 등)가 빈칸으로 남는다. atlas 가 아직 dirty 면
     // 한 frame 더 요청해 업로드+재draw 시킨다(빈칸은 1 frame, Phase 1 과 동일).
     if (g_renderer.?.atlas.dirty or g_renderer.?.tabAtlasDirty()) g_needs_render = true;
+
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
