@@ -7,6 +7,7 @@ const Runtime = @import("../runtime.zig").Runtime;
 var g_rt: Runtime = undefined;
 const App = @import("../app_controller.zig").App;
 const SessionCore = @import("../session_core.zig").SessionCore;
+const Window = @import("../window.zig").Window;
 const RendererBackend = @import("../renderer.zig").RendererBackend;
 const config_mod = @import("../config.zig");
 const Config = config_mod.Config;
@@ -147,6 +148,10 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     app.window.before_hide_fn = App.onBeforeHide;
     app.window.scroll_to_bottom_fn = App.onImeCompositionStart;
     app.window.cursor_region_fn = App.cursorRegion;
+    // #439 — PTY 출력 도착을 UI 스레드에 알린다. 이것이 없으면 유휴에서 `WaitMessage` 가
+    // 다음 `WM_FRAME_TICK` 까지 자고, 그 주기가 그대로 응답 지연이 된다.
+    app.session.setOutputWake(onOutputWake, &app.window);
+    log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
     const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system. 하나라도 미설치면 즉시
@@ -303,6 +308,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 ///     이 변수를 쓰지 않고 (별도 주입), WSLENV 에 넣지 않으므로 WSL 안 셸에도 전달되지
 ///     않는다 — cmd 탭에만 효과가 있다.
 ///
+/// #439 — PTY 출력이 ring 에 들어갔다는 통보. **PTY read thread 에서 불린다.**
+///
+/// 하는 일은 `PostMessageW` 하나뿐이고 (thread-safe), coalescing 과 `hwnd` 검사는
+/// `Window.notifyPtyOutput` 안에 있다. Linux 의 `linuxOutputWake` 와 같은 자리다.
+fn onOutputWake(userdata: ?*anyopaque) void {
+    const window: *Window = @ptrCast(@alignCast(userdata.?));
+    window.notifyPtyOutput();
+}
+
 /// Buffer lifetime: process lifetime static (다음 호출 시 덮어쓰지만 SessionCore
 /// 가 슬라이스를 들고 있는 동안 유효).
 fn buildExtraEnv(theme: ?*const themes.Theme) ?[]const terminal.ExtraEnv {

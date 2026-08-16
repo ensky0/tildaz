@@ -466,6 +466,9 @@ pub const App = struct {
             // waitable 이 없는 경로 (legacy DISCARD · DirectComposition) 는 `frameReady`
             // 가 항상 true 라 동작이 이 이슈 이전과 완전히 같다.
             const want_render = should_render or force_render or blink_tick;
+            // #439 — 그릴 것이 없으면 유휴다. read thread 가 이 값을 보고 통보 여부를 정한다
+            // (`Window.notifyPtyOutput` — 폭포에서 통보하면 사양 A 드레인이 굶는다).
+            self.window.frame_idle.store(!want_render, .release);
             const swap_ready = want_render and r.frameReady();
             if (want_render and !swap_ready) perf.incExtra(&perf.swapwait);
 

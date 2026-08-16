@@ -189,15 +189,30 @@ hygiene_check() {
 
     case "$HYG_PLATFORM" in
         linux)
+            # **배터리가 있는 기기에서만 AC 를 따진다.** 데스크탑 · 미니PC 는
+            # `/sys/class/power_supply/` 가 아예 비어 있어서 (Firebat ZY-A8 에서 실측)
+            # Mains 를 못 찾고 `battery` 로 판정했고, 그 오탐 하나로 `hygiene_check` 가
+            # **구조적으로 항상 실패**했다 — Windows 가 목록에서 빠져 있던 것
+            # (`hygiene_can_minimize`) 과 같은 종류의 함정이다. 경고의 취지는 *"배터리
+            # 스로틀링 · 패널 강등"* 인데 배터리가 없으면 그 위험 자체가 없다.
             _ac=0
+            _batt_seen=0
             for _p in /sys/class/power_supply/*/; do
                 [ -r "$_p/type" ] || continue
-                [ "$(cat "$_p/type")" = Mains ] || continue
+                case "$(cat "$_p/type")" in
+                    Battery) _batt_seen=1; continue ;;
+                    Mains) ;;
+                    *) continue ;;
+                esac
                 [ "$(cat "$_p/online" 2>/dev/null || echo 0)" = 1 ] && _ac=1
             done
-            HYG_POWER=$([ "$_ac" = 1 ] && echo AC || echo battery)
-            [ "$_ac" = 1 ] || _warn="$_warn
+            if [ "$_batt_seen" = 0 ]; then
+                HYG_POWER="AC (배터리 없음)"
+            else
+                HYG_POWER=$([ "$_ac" = 1 ] && echo AC || echo battery)
+                [ "$_ac" = 1 ] || _warn="$_warn
 AC 미연결 — 배터리에서는 스로틀링이 걸리고 패널이 낮은 주사율로 강등되기도 해요"
+            fi
 
             if command -v powerprofilesctl >/dev/null 2>&1; then
                 HYG_PROFILE=$(powerprofilesctl get 2>/dev/null || echo "?")
@@ -213,7 +228,14 @@ AC 미연결 — 배터리에서는 스로틀링이 걸리고 패널이 낮은 �
                 _esc=$(printf '\033')
                 _ks=$(kscreen-doctor -o 2>/dev/null | sed "s/${_esc}\[[0-9;]*m//g" || true)
                 _cur=$(echo "$_ks" | tr ' ' '\n' | sed -n 's/^[0-9]*:[0-9x]*@\([0-9.]*\)\*.*$/\1/p' | head -1)
-                _max=$(echo "$_ks" | tr ' ' '\n' | sed -n 's/^[0-9]*:[0-9x]*@\([0-9.]*\).*$/\1/p' | sort -g | tail -1)
+                # **최대는 "지금 쓰는 해상도" 안에서만 찾는다.** 모든 모드에서 찾으면
+                # 저해상도 모드가 최대가 되어 늘 걸린다 — 3840x2160@60 인 화면이
+                # `1280x1024@75.03` 때문에 *"최대는 75 Hz"* 로 잡혔다 (Firebat ZY-A8 실측).
+                # 해상도를 바꾸는 건 측정 조건을 바꾸는 것이라 경고의 해법이 될 수 없다.
+                _res=$(echo "$_ks" | tr ' ' '\n' | sed -n 's/^[0-9]*:\([0-9]*x[0-9]*\)@[0-9.]*\*.*$/\1/p' | head -1)
+                _max=""
+                [ -n "$_res" ] && _max=$(echo "$_ks" | tr ' ' '\n' |
+                    sed -n "s/^[0-9]*:${_res}@\([0-9.]*\).*\$/\1/p" | sort -g | tail -1)
                 if [ -n "$_cur" ]; then
                     HYG_REFRESH="${_cur}Hz"
                     if [ -n "$_max" ] && [ "$_cur" != "$_max" ]; then
