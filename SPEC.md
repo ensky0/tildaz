@@ -208,8 +208,11 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
 - **sway (wlroots).** drop-down 은 **layer-shell 이 아니라 xdg_toplevel + i3 IPC**
   ([#454](https://github.com/ensky0/tildaz/issues/454)) — sway 는 layer-shell
   `on_demand` 에서 map 시 keyboard focus 를 주지 않아 (spec 상 compositor 재량,
-  KWin·Hyprland·COSMIC 셋은 줌) 토글 직후 타이핑이 안 됐다. `SWAYSOCK` 이 잡히면
-  layer-shell 을 기록하지 않고 xdg fallback 으로 뜬 뒤, 배치는 `for_window` 규칙
+  KWin·Hyprland·COSMIC 셋은 줌) 토글 직후 타이핑이 안 됐다. 판별은 `SWAYSOCK` 의
+  주인과 현재 Wayland compositor 의 `SO_PEERCRED` PID 가 **같은 프로세스**일 때만이다
+  — 존재만 보면 sway 세션이 systemd user 환경에 남긴 stale 변수가 다음 KDE 세션에서
+  sway 경로를 오발동시킨다 (KDE 실기 회귀로 확정). 성립하면 layer-shell 을 기록하지
+  않고 xdg fallback 으로 뜬 뒤, 배치는 `for_window` 규칙
   (floating·sticky·border·크기 — **명령당 규칙 하나**, 콤마 체인은 sway 가 첫
   명령까지만 규칙으로 받고 나머지를 focus 창에 즉시 실행) + map 후 `move`(ppt) 로,
   토글은 scratchpad 로 한다 (sway 1.12 실기 확인). hotkey 는 `$SWAYSOCK`의 i3-ipc
