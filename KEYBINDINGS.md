@@ -10,8 +10,8 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | New tab | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T |
 | Close active tab | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
-| Previous tab | Ctrl+Shift+[ | Shift+Cmd+[ | Ctrl+Shift+[ |
-| Next tab | Ctrl+Shift+] | Shift+Cmd+] | Ctrl+Shift+] |
+| Previous tab | Ctrl+Shift+[ *or* Ctrl+PgUp | Shift+Cmd+[ *or* Cmd+PgUp | Ctrl+Shift+[ *or* Ctrl+PgUp |
+| Next tab | Ctrl+Shift+] *or* Ctrl+PgDn | Shift+Cmd+] *or* Cmd+PgDn | Ctrl+Shift+] *or* Ctrl+PgDn |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R |
@@ -41,6 +41,27 @@ platforms.
 ## Quit confirmation
 
 Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+
+## Keyboard layouts
+
+The bracket bindings follow the US layout. On layouts where `[` and `]` need
+AltGr — French AZERTY, for instance, where `[` is AltGr+5 — `Ctrl+Shift+[` would
+mean pressing Ctrl+Shift+AltGr+5, which is not usable. **`Ctrl+PgUp` / `Ctrl+PgDn`
+(`Cmd+PgUp` / `Cmd+PgDn` on macOS) do the same thing and work on every layout**,
+since PgUp and PgDn are single physical keys everywhere. They match what GNOME
+Terminal, Konsole, and Windows Terminal use.
+
+Switching tabs by index also used to fail on AZERTY: the digit row needs Shift
+there, so `Alt+1` is physically Alt+Shift+the `&1` key, and TildaZ was requiring
+Shift *not* to be held. It now accepts either, on every layout.
+
+Mac laptops have no dedicated PgUp / PgDn keys — they are Fn+Up / Fn+Down. The
+existing `Shift+Cmd+[` / `]` and `Cmd+1`–`9` bindings are unchanged, so nothing is
+lost; `Cmd+PgUp` / `Cmd+PgDn` is an addition for people who use the same reflex
+on more than one OS.
+
+`Shift+PgUp` / `Shift+PgDn` still scroll the scrollback, and unmodified PgUp /
+PgDn still go to the program running in the terminal.
 
 ## Tab bar controls
 
