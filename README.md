@@ -123,7 +123,7 @@ TildaZ needs no arguments to start. These options are available:
 
 ```bash
 tildaz --instance 1     # run instance 1, with its own window, config, and log
-tildaz --toggle         # show or hide the running instance, then exit (Linux only)
+tildaz --toggle         # show or hide the instance, starting it if needed (Linux only)
 tildaz --autostart      # start the way the desktop session starts TildaZ
 tildaz --version        # print the version, then exit
 tildaz --help           # print the option list, then exit
@@ -144,7 +144,15 @@ metadata print the version alone. The same string appears in the About dialog
 file, so any of the three identifies a build exactly.
 
 `--toggle` is meant for a desktop shortcut: bind `tildaz --toggle` to a key in
-your desktop's keyboard settings, and it shows or hides the running instance.
+your desktop's keyboard settings, and it shows or hides the instance. If that
+instance is not running yet, `--toggle` starts it — so the shortcut works from a
+cold start without turning on `auto_start`.
+
+Exit codes, for scripting: `0` when the instance was toggled or started, `3` when
+the instance is running but its toggle socket cannot be reached (nothing is done
+in that case — starting a second one would be wrong), and `2` on macOS and
+Windows, where `--toggle` does not apply because the global hotkey is registered
+with the OS directly.
 
 On macOS the executable lives inside the app bundle, so call it by path:
 
