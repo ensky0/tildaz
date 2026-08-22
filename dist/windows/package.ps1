@@ -65,6 +65,8 @@ $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $SourceBin = Join-Path $RepoRoot "zig-out\bin"
 $SourceInternal = Join-Path $SourceBin "_internal"
 $SourceReadme = Join-Path $PSScriptRoot "README.txt"
+$SourceLicense = Join-Path $RepoRoot "LICENSE"
+$SourceNotices = Join-Path $RepoRoot "THIRD-PARTY-NOTICES.md"
 $ReleaseRoot = Join-Path $RepoRoot "zig-out\release"
 
 # 삭제 가능한 경계를 고정된 repo/zig-out/release 아래로 제한해요.
@@ -72,6 +74,16 @@ $RepoPrefix = $RepoRoot.TrimEnd('\') + '\'
 $ReleaseRootFull = [System.IO.Path]::GetFullPath($ReleaseRoot)
 if (-not $ReleaseRootFull.StartsWith($RepoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Release path escaped the repository: $ReleaseRootFull"
+}
+
+# LICENSE + THIRD-PARTY-NOTICES.md 는 배포 zip 에 반드시 들어가야 해요 (#486).
+# 배포 바이너리는 정적 링크라 uucode (MIT) 와 Google Highway (Apache-2.0) 의
+# 컴파일된 코드를 담고 있고, MIT 는 사본 배포 시 저작권 고지 포함을 Apache-2.0
+# §4(a) 는 라이선스 사본 제공을 요구해요. 조용히 건너뛰지 않고 세워요.
+foreach ($LegalPath in @($SourceLicense, $SourceNotices)) {
+    if (-not (Test-Path -LiteralPath $LegalPath -PathType Leaf)) {
+        throw "Legal document missing at $LegalPath"
+    }
 }
 
 # 최상위 exe 와 _internal\ 하위 런타임을 나눠 검증. (PE arch 검사 대상이기도 함.)
@@ -172,6 +184,8 @@ foreach ($FileName in $InternalFiles) {
     Copy-Item -LiteralPath (Join-Path $SourceInternal $FileName) -Destination (Join-Path $StageInternal $FileName)
 }
 Copy-Item -LiteralPath $SourceReadme -Destination (Join-Path $Stage "README.txt")
+Copy-Item -LiteralPath $SourceLicense -Destination (Join-Path $Stage "LICENSE")
+Copy-Item -LiteralPath $SourceNotices -Destination (Join-Path $Stage "THIRD-PARTY-NOTICES.md")
 Get-ChildItem -LiteralPath $Stage | Format-Table Mode, Length, Name
 Get-ChildItem -LiteralPath $StageInternal | Format-Table Mode, Length, Name
 
@@ -181,6 +195,8 @@ Write-Host "--- Creating $Zip ---"
 $ArchiveInputs = @(
     (Join-Path $Stage "tildaz.exe"),
     (Join-Path $Stage "README.txt"),
+    (Join-Path $Stage "LICENSE"),
+    (Join-Path $Stage "THIRD-PARTY-NOTICES.md"),
     $StageInternal
 )
 Compress-Archive -LiteralPath $ArchiveInputs -DestinationPath $Zip -CompressionLevel Optimal
