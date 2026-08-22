@@ -118,6 +118,22 @@ mkdir "$DMG_STAGING"
 cp -R "$UNIVERSAL_APP" "$DMG_STAGING/"
 ln -s /Applications "$DMG_STAGING/Applications"
 
+# LICENSE + THIRD-PARTY-NOTICES.md 를 DMG 루트에 둔다 (#486).
+#
+# .app 번들 안 (Contents/Resources) 이 아니라 번들 *밖* 인 이유가 두 가지다.
+# (1) 위 4단계가 lipo 후 universal .app 을 다시 codesign 하므로, 그 뒤에 번들
+#     안으로 파일을 넣으면 서명이 깨진다. 순서 의존을 만들지 않는다.
+# (2) 마운트하면 .app 과 나란히 바로 보인다 — 고지의 목적에 맞다.
+#
+# 조용한 skip 을 두지 않는다: 고지 없는 아티팩트는 라이선스 준수 결함이다.
+for legal_src in "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD-PARTY-NOTICES.md"; do
+    if [[ ! -f "$legal_src" ]]; then
+        echo "ERROR: legal document missing at $legal_src" >&2
+        exit 1
+    fi
+    install -m 644 "$legal_src" "$DMG_STAGING/$(basename "$legal_src")"
+done
+
 echo "--- 6. hdiutil create DMG ($DMG) ---"
 mkdir -p "$RELEASE_ROOT"
 rm -f "$DMG" "$SHA256"
