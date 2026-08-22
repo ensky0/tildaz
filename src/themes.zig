@@ -1,3 +1,37 @@
+//! 내장 색상 테마.
+//!
+//! 팔레트 값 출처 (#485 에서 값 대조로 확인, 2026-08-22):
+//!
+//! - 서드파티 테마 15 개 중 12 개의 팔레트가 iTerm2-Color-Schemes
+//!   (https://github.com/mbadolato/iTerm2-Color-Schemes, MIT,
+//!   Copyright (c) 2011 to Present Mark Badolato) 의 값과 일치한다.
+//!   경유 경로는 ghostty 의 테마 목록일 가능성이 높다 — 그 팩이 같은
+//!   컬렉션의 이식본이다.
+//!
+//!   *변형판*의 값과 일치하는 게 출처를 특정하는 근거다. `Solarized Dark`
+//!   는 정식 Solarized 가 아니라 `Solarized Dark Higher Contrast` 와,
+//!   `Kanagawa` 는 `Kanagawa Wave` 와, `Everforest Dark` 는
+//!   `Everforest Dark Hard` 와 일치한다. `Monokai Soda` 는 애초에 원
+//!   프로젝트가 없고 그 컬렉션 안에서 만들어진 변형판이다. 원 프로젝트에서
+//!   직접 가져왔다면 정식 팔레트가 나오지 변형판 값이 나올 수 없다.
+//!   (`Catppuccin Mocha` / `Catppuccin Latte` 2 개는 값이 다르다.)
+//!
+//! - 각 테마의 디자인 원저작은 iTerm2-Color-Schemes 가 아니라 개별
+//!   프로젝트다 — Catppuccin, Dracula, Everforest, Gruvbox, Kanagawa,
+//!   Monokai, Nord, One Half (sonph/onehalf), Rosé Pine,
+//!   Solarized (Ethan Schoonover), Tokyo Night.
+//!
+//! - `Windows Terminal` 은 microsoft/terminal `defaults.json` 의 Campbell
+//!   팔레트 (MIT). a97167c 커밋 메시지에 원래부터 출처가 적혀 있었다.
+//!
+//! - `Tilda` / `Ghostty` 는 자체 제작.
+//!
+//! 배포물에 실리는 고지는 THIRD-PARTY-NOTICES.md 에 있다. 테마 이름은 그
+//! 팔레트를 가리키는 식별자로 쓰는 것이고, 각 프로젝트와의 제휴 / 승인 관계나
+//! 이름 / 상표에 대한 권리를 주장하지 않는다.
+//!
+//! 아래 목록의 순서는 인기순 의도 (d9e435e) 지만 그 근거 데이터는 기록이 없다.
+
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const RGB = ghostty.color.RGB;
