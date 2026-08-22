@@ -46,6 +46,7 @@
         "dist",
         "src",
         "LICENSE",
+        "THIRD-PARTY-NOTICES.md",
         "README.md",
         "SECURITY.md",
     },
