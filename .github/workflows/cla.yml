@@ -1,0 +1,69 @@
+# 외부 기여자에게 CLA 서명을 요구하는 workflow (#485).
+#
+# 배경: tildaz 는 AGPL-3.0-or-later 이고 현재 커밋 전부가 단독 저작이라
+# 재라이선스 권한이 온전하다. 외부 PR 을 CLA 없이 한 번 머지하면 그 순간부터
+# 기여자 코드가 AGPL 로만 들어와 코드베이스 전체의 재라이선스 (상용 이중
+# 라이선스 포함) 가 막힌다. 이 workflow 가 그 시점을 방어한다. 배경과 판단
+# 근거는 #485 에 정리.
+#
+# hosted cla-assistant.io 를 쓰지 않는 이유: 그건 서드파티 OAuth 앱에 저장소
+# 권한을 주는 외부 호스팅 서비스다. Action 방식은 서명 기록이 이 저장소 안
+# 파일 (signatures/version1/cla.json) 에 남고 외부 서비스 의존이 없다.
+#
+# 동작: 외부 PR 이 열리면 봇이 CLA.md 서명을 요청하는 코멘트를 달고, 기여자가
+# 정해진 문장을 코멘트하면 서명으로 기록한 뒤 status check 를 통과시킨다.
+# 서명은 1 회로 이후 모든 PR 에 유효하다.
+
+name: cla-check
+
+on:
+  # 서명 코멘트를 받기 위함 ("I have read the CLA Document ..." / "recheck").
+  issue_comment:
+    types: [created]
+  # fork PR 에도 코멘트 / status 를 쓸 수 있어야 하므로 pull_request 가 아니라
+  # pull_request_target 이다. 이 job 은 PR 의 코드를 checkout 하지도 실행하지도
+  # 않으므로 (action 하나만 돌린다) pull_request_target 의 통상적인 위험
+  # ("신뢰되지 않는 코드가 쓰기 권한 토큰과 같은 문맥에서 실행됨") 에 해당하지
+  # 않는다. 여기에 checkout 이나 빌드 step 을 추가하면 안 된다.
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CLA check
+        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/ensky0/tildaz/blob/main/CLA.md
+          path-to-signatures: signatures/version1/cla.json
+          branch: main
+
+          # 메인테이너 본인 PR 과 봇에는 요구하지 않는다.
+          allowlist: ensky0,dependabot[bot],dependabot
+
+          # 기본값은 true 로 머지 후 PR 을 잠근다 — 머지 뒤 후속 논의를 막으므로
+          # 끈다.
+          lock-pullrequest-aftermerge: false
+
+          # 저장소 최상단 문서 / 외부 기여자가 읽는 텍스트라 영어
+          # (AGENTS.md 언어 규칙).
+          custom-notsigned-prcomment: >
+            Thank you for the pull request. Before it can be merged, please
+            read the [Contributor License Agreement](https://github.com/ensky0/tildaz/blob/main/CLA.md)
+            and sign it by posting the sentence below as a comment on this
+            pull request. You only need to do this once — the signature
+            covers all of your future contributions.
+          custom-allsigned-prcomment: >
+            All contributors have signed the CLA. Thank you.
+          create-file-commit-message: "chore(cla): CLA 서명 기록 파일을 만든다 (#485)"
+          signed-commit-message: "chore(cla): $contributorName 의 CLA 서명을 기록한다 (@$owner/$repo#$pullRequestNo)"

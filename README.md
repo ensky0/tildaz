@@ -186,6 +186,7 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 | Keyboard and mouse shortcuts | [KEYBINDINGS.md](KEYBINDINGS.md) |
 | Current code structure | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Security reporting | [SECURITY.md](SECURITY.md) |
+| Contributor License Agreement | [CLA.md](CLA.md) |
 | Release notes | [`dist/release-notes/`](dist/release-notes/) |
 
 ## Known Limitations
@@ -219,6 +220,13 @@ TildaZ has no telemetry, analytics, auto-update check, crash reporter, or
 network request path. It stores only local config and log files. Child shells
 (`cmd`, PowerShell, WSL, bash, zsh, etc.) are independent processes governed by
 the user's shell and OS configuration.
+
+## Contributing
+
+Pull requests are welcome. Before your first one is merged you will be asked
+to sign the [Contributor License Agreement](CLA.md) — an automated check
+posts the instructions on your pull request. You sign once, and you keep the
+copyright to your work.
 
 ## License
 
