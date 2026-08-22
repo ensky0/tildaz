@@ -1929,6 +1929,23 @@ pub const Window = struct {
                         return 0;
                     }
                 }
+                // #482 — Ctrl+PgUp / Ctrl+PgDn 으로 이전 / 다음 탭 (Shift 미동반).
+                // Windows Terminal 과 같은 조합이고, Linux 는 AZERTY 에서 쓸 수 없는
+                // `Ctrl+Shift+[` / `]` 의 layout 무관 대안으로 같은 키를 받는다
+                // (`wayland_minimal.classifyInput`). Windows 는 `VK_OEM_4` 가 물리
+                // 위치라 layout 문제 자체는 없지만, 세 platform 이 같은 반사를 갖게
+                // 맞춘다. Shift+PgUp / PgDn (scrollback) 과 맨 PgUp / PgDn (PTY) 은
+                // 아래 경로 그대로다.
+                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
+                    if (wParam == 0x21) { // VK_PRIOR (Page Up)
+                        _ = self.dispatchAppEvent(.{ .shortcut = .prev_tab });
+                        return 0;
+                    }
+                    if (wParam == 0x22) { // VK_NEXT (Page Down)
+                        _ = self.dispatchAppEvent(.{ .shortcut = .next_tab });
+                        return 0;
+                    }
+                }
 
                 const vk_prior: WPARAM = 0x21; // Page Up
                 const vk_next: WPARAM = 0x22; // Page Down
