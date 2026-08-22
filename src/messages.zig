@@ -306,6 +306,17 @@ pub const config_field_number_required_format = "Configuration: \"{s}\" must be 
 pub const config_field_range_required_format = "Configuration: \"{s}\" must be in {s}.";
 pub const config_field_integer_range_required_format = "Configuration: \"{s}\" must be an integer in {s}.";
 pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{s}\"\n\nAvailable themes:\n";
+/// #484 — 거부 이유가 둘인데 메시지가 하나였다. `ctrl+twosuperior` 는 이미 modifier 가
+/// 있는데도 "Other keys require Ctrl, Alt, Super, or Cmd" 를 받아, 신고자가 modifier 를
+/// 더해 보고도 같은 안내를 다시 받았다. 실제 원인 (모르는 key 이름) 을 알 방법이 없었다.
+/// 이제 원인별로 갈라 보낸다 — `config.HotkeyFailure` 참고.
+///
+/// key 이름을 못 알아본 경우. **받는 key 목록을 함께 준다** — 안 되는 이유만 알려 주고
+/// 무엇이 되는지 안 알려 주면 사용자가 또 추측해야 한다.
+pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`)\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses an unrecognized key";
+/// key 는 유효하지만 modifier 가 없어 전역 등록이 위험한 경우 (일상 입력을 OS 전체에서
+/// 가로챈다). 이쪽은 기존 안내가 정확했다.
 pub const config_hotkey_invalid_format = "Configuration: failed to parse \"hotkey\" value \"{s}\".\n\nOnly F1-F12 may be used without modifiers. Other keys require Ctrl, Alt, Super, or Cmd.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
 /// #431 — 다른 TildaZ 인스턴스가 이미 쓰는 전역 핫키. 뒤에 있는 (index 가 큰) 쪽이 양보하므로
