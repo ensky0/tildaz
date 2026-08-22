@@ -882,6 +882,15 @@ fn macCmdShortcut(kc: c_ushort, shift: bool) ?input_policy.Shortcut {
     if (keycodeToTabIndex(kc) != null) return .switch_tab; // Cmd+1..9
     if (shift and kc == 0x21) return .prev_tab; // Shift+Cmd+[
     if (shift and kc == 0x1E) return .next_tab; // Shift+Cmd+]
+    // #482 — Cmd+PgUp / Cmd+PgDn 으로 이전 / 다음 탭. Linux · Windows 의
+    // Ctrl+PgUp / PgDn 에 대응하는 조합이다 (이 프로젝트의 Ctrl→Cmd 매핑).
+    // AZERTY 문제 자체는 macOS 에 없다 — `kVK_ANSI_*` 는 물리 위치라 layout 과
+    // 무관하다. 세 platform 이 같은 반사를 갖게 맞추는 것이 목적이고, 기존
+    // Shift+Cmd+[ / ] 와 Cmd+1..9 는 그대로 남는다 (추가이지 교체가 아니다).
+    // Mac 노트북엔 전용 PgUp / PgDn 키가 없어 Fn+↑ / Fn+↓ 가 되지만, 기존
+    // 바인딩을 그대로 두므로 잃는 것이 없다.
+    if (!shift and kc == 116) return .prev_tab; // Cmd+PageUp
+    if (!shift and kc == 121) return .next_tab; // Cmd+PageDown
     if (shift and kc == 0x0F) return .reset_terminal; // Shift+Cmd+R
     if (kc == 0x24) return .fullscreen; // Cmd+Enter / Shift+Cmd+Enter
     if (shift and kc == 0x6F) return .dump_perf; // Shift+Cmd+F12
@@ -955,8 +964,8 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             .new_tab => handleNewTab(), // Cmd+T
             .close_tab => handleCloseActiveTab(), // Cmd+W
             .switch_tab => tab_actions.switchTab(&g_host, keycodeToTabIndex(kc).?), // Cmd+1..9
-            .prev_tab => tab_actions.prevTab(&g_host), // Shift+Cmd+[
-            .next_tab => tab_actions.nextTab(&g_host), // Shift+Cmd+]
+            .prev_tab => tab_actions.prevTab(&g_host), // Shift+Cmd+[ / Cmd+PageUp
+            .next_tab => tab_actions.nextTab(&g_host), // Shift+Cmd+] / Cmd+PageDown
             .reset_terminal => tab_actions.resetActive(&g_host), // Shift+Cmd+R (#162)
             .fullscreen => toggleFullscreenMode(if (shift) .workarea else .monitor), // Cmd/Shift+Cmd+Enter (#162)
             .dump_perf => perf.dumpAndReset(g_rt, "snapshot"), // Shift+Cmd+F12 (#160)
