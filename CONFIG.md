@@ -214,9 +214,15 @@ invalid value shows an error dialog and exits):
   digit, or `Space` with no modifier is rejected.
 - **`Shift` alone is not a valid trigger modifier** — combine it with
   `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
-- Key names cover letters, digits, `Space`, `` ` `` (backtick / grave), and
-  `F1`–`F12`. macOS and Windows accept a slightly narrower modifier-alias set
-  than Linux; the tokens above work on all three.
+- **Accepted keys**, in full: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`,
+  `Escape` (`Esc`), `Return` (`Enter`), and `` ` `` — writable as `` ` ``,
+  `Grave`, or `Backquote`. Letter case does not matter.
+- **Any other key is rejected**, and that includes layout-specific keys such as
+  `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
+  it is the set every platform's native hotkey backend is known to map the same
+  way. Widening it means verifying real key codes on Linux, macOS, and Windows,
+  which has not been done yet. A rejected value shows an error dialog naming the
+  accepted keys rather than failing silently.
 
 ### New tab working directory
 

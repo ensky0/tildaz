@@ -120,7 +120,35 @@ const ParsedHotkey = struct {
     key: HotkeyKeyToken,
 };
 
-fn parseHotkeyString(s: []const u8) ?ParsedHotkey {
+/// hotkey 문자열이 거부된 **이유**. 원인이 둘인데 메시지가 하나여서 사용자를 막다른
+/// 길로 보내고 있었다 (#484): `ctrl+twosuperior` 는 이미 modifier 가 있는데도
+/// "Other keys require Ctrl, Alt, Super, or Cmd" 라고 안내했다. 신고자는 modifier 를
+/// 더해 보고도 같은 메시지를 받아 실제 원인 (모르는 key 이름) 을 알 수 없었다.
+pub const HotkeyFailure = enum {
+    /// key 자리의 이름을 못 알아봤다 — 또는 key 토큰이 아예 없다.
+    unknown_key,
+    /// key 는 유효하지만 modifier 없이 전역 등록할 수 없는 키다 (F1~F12 만 허용).
+    modifier_required,
+};
+
+/// `Hotkey.fromString` 이 왜 null 이었는지. **판정을 재현하지 않고** 같은
+/// `parseHotkeyString` 을 쓴다 — 두 곳에 규칙을 두면 갈라진다 (#484 의 원인이
+/// writer/matcher 가 갈라진 것이었다).
+pub fn hotkeyFailure(s: []const u8) ?HotkeyFailure {
+    return switch (parseHotkeyString(s)) {
+        .ok => null,
+        .unknown_key => .unknown_key,
+        .modifier_required => .modifier_required,
+    };
+}
+
+const HotkeyParse = union(enum) {
+    ok: ParsedHotkey,
+    unknown_key,
+    modifier_required,
+};
+
+fn parseHotkeyString(s: []const u8) HotkeyParse {
     var ctrl = false;
     var shift = false;
     var alt = false;
@@ -142,10 +170,12 @@ fn parseHotkeyString(s: []const u8) ?ParsedHotkey {
             // = Qt Logo. 사용자 친숙한 표기 어떤 것이든 받음.
             super = true;
         } else {
-            key = hotkeyKeyFromName(tok) orelse return null;
+            key = hotkeyKeyFromName(tok) orelse return .unknown_key;
         }
     }
-    const resolved = key orelse return null;
+    // key 토큰이 아예 없는 경우 (예: `"ctrl"` 하나만) 도 "모르는 key" 로 묶는다 —
+    // 사용자가 받아야 하는 안내가 같다 (받는 key 목록).
+    const resolved = key orelse return .unknown_key;
     // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
     // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
     // 허용하는 키는 F1~F12뿐 — capturedHotkeyText 와 동일 규칙.
@@ -156,8 +186,8 @@ fn parseHotkeyString(s: []const u8) ?ParsedHotkey {
         },
         .char => false,
     };
-    if (!(ctrl or alt or super) and !is_function_key) return null;
-    return .{ .ctrl = ctrl, .shift = shift, .alt = alt, .super = super, .key = resolved };
+    if (!(ctrl or alt or super) and !is_function_key) return .modifier_required;
+    return .{ .ok = .{ .ctrl = ctrl, .shift = shift, .alt = alt, .super = super, .key = resolved } };
 }
 
 /// 키 이름 토큰 → 정규화된 key. 두 표기 모두 받음 (사용자 친화):
@@ -294,7 +324,10 @@ const LinuxHotkey = struct {
     pub const MOD_SUPER: u32 = 0x8; // Win key / Super / `cmd` 토큰.
 
     pub fn fromString(s: []const u8) ?LinuxHotkey {
-        const parsed = parseHotkeyString(s) orelse return null;
+        const parsed = switch (parseHotkeyString(s)) {
+            .ok => |p| p,
+            else => return null,
+        };
         var modifiers: u32 = 0;
         if (parsed.alt) modifiers |= MOD_ALT;
         if (parsed.ctrl) modifiers |= MOD_CTRL;
@@ -414,6 +447,42 @@ test "config parser rejects unsafe global hotkeys" {
     }
 }
 
+test "hotkey rejection reports the cause, not one blanket message" {
+    // #484 — 원인이 둘인데 메시지가 하나여서 `ctrl+twosuperior` 처럼 **이미 modifier 가
+    // 있는** 값에도 "modifier 를 달라" 고 안내했다. 신고자는 modifier 를 더해 보고도
+    // 같은 안내를 다시 받아 실제 원인을 알 수 없었다.
+
+    // 모르는 key 이름 — modifier 유무와 무관하게 `unknown_key` 다.
+    try std.testing.expectEqual(HotkeyFailure.unknown_key, hotkeyFailure("twosuperior").?);
+    try std.testing.expectEqual(HotkeyFailure.unknown_key, hotkeyFailure("ctrl+twosuperior").?);
+    try std.testing.expectEqual(HotkeyFailure.unknown_key, hotkeyFailure("ctrl+minus").?);
+    try std.testing.expectEqual(HotkeyFailure.unknown_key, hotkeyFailure("ctrl+shift+f13").?);
+    // key 토큰이 아예 없는 경우도 같은 안내를 받아야 한다 (받는 key 목록).
+    try std.testing.expectEqual(HotkeyFailure.unknown_key, hotkeyFailure("ctrl").?);
+    try std.testing.expectEqual(HotkeyFailure.unknown_key, hotkeyFailure("ctrl+shift").?);
+
+    // key 는 유효하지만 modifier 없이 전역 등록할 수 없는 경우 — 기존 안내가 맞다.
+    try std.testing.expectEqual(HotkeyFailure.modifier_required, hotkeyFailure("t").?);
+    try std.testing.expectEqual(HotkeyFailure.modifier_required, hotkeyFailure("shift+t").?);
+    try std.testing.expectEqual(HotkeyFailure.modifier_required, hotkeyFailure("space").?);
+    try std.testing.expectEqual(HotkeyFailure.modifier_required, hotkeyFailure("grave").?);
+    try std.testing.expectEqual(HotkeyFailure.modifier_required, hotkeyFailure("5").?);
+
+    // 통과하는 값은 실패 이유가 없다 — `fromString` 과 판정이 갈리지 않는지 함께 본다.
+    const accepted = [_][]const u8{ "f1", "f12", "ctrl+space", "shift+cmd+t", "super+grave", "alt+3" };
+    for (accepted) |text| {
+        try std.testing.expect(hotkeyFailure(text) == null);
+        try std.testing.expect(Hotkey.fromString(text) != null);
+    }
+
+    // 거부되는 값은 반드시 이유가 있다 (둘의 판정이 어긋나면 메시지가 사라진다).
+    const rejected = [_][]const u8{ "twosuperior", "ctrl+minus", "t", "shift+t", "ctrl", "" };
+    for (rejected) |text| {
+        try std.testing.expect(Hotkey.fromString(text) == null);
+        try std.testing.expect(hotkeyFailure(text) != null);
+    }
+}
+
 // 파서 3벌은 OS API 비의존 순수 로직이라 어느 테스트 호스트에서도 세 OS 분을
 // 전부 검증할 수 있다 (#294 G1).
 
@@ -485,7 +554,10 @@ const WindowsHotkey = struct {
     modifiers: u32 = 0,
 
     pub fn fromString(s: []const u8) ?WindowsHotkey {
-        const parsed = parseHotkeyString(s) orelse return null;
+        const parsed = switch (parseHotkeyString(s)) {
+            .ok => |p| p,
+            else => return null,
+        };
         var modifiers: u32 = 0;
         if (parsed.alt) modifiers |= 0x1; // MOD_ALT
         if (parsed.ctrl) modifiers |= 0x2; // MOD_CONTROL
@@ -559,7 +631,10 @@ const MacHotkey = struct {
     modifiers: u64 = 0,
 
     pub fn fromString(s: []const u8) ?MacHotkey {
-        const parsed = parseHotkeyString(s) orelse return null;
+        const parsed = switch (parseHotkeyString(s)) {
+            .ok => |p| p,
+            else => return null,
+        };
         var modifiers: u64 = 0;
         if (parsed.shift) modifiers |= 0x00020000; // kCGEventFlagMaskShift
         if (parsed.ctrl) modifiers |= 0x00040000; // kCGEventFlagMaskControl
@@ -1081,12 +1156,16 @@ pub const Config = struct {
             if (Hotkey.fromString(v.string)) |h| {
                 config.hotkey = h;
             } else {
-                var buf: [384]u8 = undefined;
-                const msg = std.fmt.bufPrint(
-                    &buf,
-                    messages.config_hotkey_invalid_format,
-                    .{v.string},
-                ) catch messages.config_hotkey_invalid_fallback_msg;
+                // #484 — 거부 이유별로 다른 안내를 보낸다. 한 메시지로 묶으면
+                // modifier 를 이미 준 사용자에게 "modifier 를 달라" 고 말하게 된다.
+                // `bufPrint` 의 format 은 comptime 이라 분기 안에서 각각 포맷한다.
+                var buf: [512]u8 = undefined;
+                const msg = if (hotkeyFailure(v.string) == .unknown_key)
+                    std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
+                        messages.config_hotkey_unknown_key_fallback_msg
+                else
+                    std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
+                        messages.config_hotkey_invalid_fallback_msg;
                 showConfigFatalMsg(rt, config_path, msg);
             }
         }
