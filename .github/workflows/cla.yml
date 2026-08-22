@@ -13,6 +13,12 @@
 # 동작: 외부 PR 이 열리면 봇이 CLA.md 서명을 요청하는 코멘트를 달고, 기여자가
 # 정해진 문장을 코멘트하면 서명으로 기록한 뒤 status check 를 통과시킨다.
 # 서명은 1 회로 이후 모든 PR 에 유효하다.
+#
+# 알려진 동작 — **첫 실행은 실패한다.** 서명 기록 파일 (signatures/version1/cla.json)
+# 이 아직 없으면 action 이 그 파일을 만들어 main 에 커밋하고 (38baa0f), 그 회차는
+# "Committers of pull request N have to sign the CLA" 로 실패한다. allowlist 에 있는
+# 사용자여도 그렇다. 재실행하면 통과한다 (PR #487 에서 확인 — 첫 회차 FAILURE,
+# 재실행 success). 파일이 생긴 뒤로는 정상이므로 이 부트스트랩 1 회만 해당한다.
 
 name: cla-check
 
