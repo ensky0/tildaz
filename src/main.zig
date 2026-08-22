@@ -181,8 +181,33 @@ pub fn main(init: std.process.Init) void {
             // stderr 가 compositor 저널로 가 진단이 어렵다 (#230). 매 hotkey 마다
             // 기존 인스턴스에 닿았는지(sent) / 없는지(NoRunningInstance) 기록.
             si.sendToggle(rt, index) catch |err| {
-                log.appendLine("toggle-ipc", "--toggle send failed: {s} (no running instance / socket problem)", .{@errorName(err)});
-                std.process.exit(1);
+                // #489 — 전달 실패의 원인이 둘이고, 올바른 동작이 서로 반대다.
+                // `connect` 실패는 두 경우를 모두 포함하므로 (socket 만 보면 영원히
+                // 못 가른다) **lock 파일** 로 가른다 — `flock` 신호는 socket 과
+                // 독립이다 (#484 조사에서 실측).
+                const running = instances.isRunning(rt, init.gpa, index) catch |probe_err| {
+                    // lock 을 못 읽으면 워커 생존을 단정할 수 없다. 띄우는 쪽이 더
+                    // 위험하므로 (중복 창) 아무것도 하지 않고 알린다.
+                    log.appendLine("toggle-ipc", "--toggle send failed: {s}, and the instance lock could not be read: {s}", .{ @errorName(err), @errorName(probe_err) });
+                    std.process.exit(3);
+                };
+                if (running) {
+                    // 워커는 살아있는데 socket 에 닿지 못한다. **띄우면 안 된다** —
+                    // lock 때문에 중복 워커는 안 생기지만 런처가 "모든 워커가 이미
+                    // 떠 있다" 를 새 인스턴스 요청으로 읽어 Create 다이얼로그를
+                    // 띄운다 (#489 의 증상). 단축키를 눌렀을 때 나올 화면이 아니다.
+                    log.appendLine("toggle-ipc", "--toggle send failed: {s} — instance {d} is alive but its socket is unreachable; not starting a second one", .{ @errorName(err), index });
+                    std.process.exit(3);
+                }
+                // 워커가 없다. 예전에는 여기서 exit 1 이라 **단축키가 완전히 무반응**
+                // 이었다 (autostart 를 켜지 않으면). 드롭다운 단축키로 기대되는 동작은
+                // "없으면 띄우고 보여 준다" 이므로 아래 런처로 흘려보낸다 — 없는 워커를
+                // 띄우는 검증된 경로다. lock 이 비어 있으니 Create 다이얼로그로 빠지지도
+                // 않는다.
+                log.appendLine("toggle-ipc", "--toggle found no running instance {d} — starting it", .{index});
+                initLogging(rt, arena);
+                runLauncher(rt, init.gpa, autostart_launch) catch |launch_err| host.showFatalRunError(launch_err);
+                return;
             };
             log.appendLine("toggle-ipc", "--toggle sent to running instance", .{});
             std.process.exit(0);
