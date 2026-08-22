@@ -190,6 +190,35 @@ jobs:
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+      # zip 을 열어 고지 파일을 확인한다 (#486). runner 의 bash 에 unzip 이 없어
+      # 공용 dist/verify-legal-docs.sh 대신 PowerShell 로 직접 본다.
+      - name: Verify legal documents in zip
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $Zip = [System.IO.Path]::GetFullPath("${{ steps.verify.outputs.zip }}")
+          $Archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
+          try {
+              $Names = $Archive.Entries | ForEach-Object { $_.FullName }
+          } finally {
+              $Archive.Dispose()
+          }
+          $Missing = @()
+          foreach ($Want in @("LICENSE", "THIRD-PARTY-NOTICES.md")) {
+              if ($Names -contains $Want) {
+                  Write-Host "  OK      $Want"
+              } else {
+                  Write-Host "  MISSING $Want"
+                  $Missing += $Want
+              }
+          }
+          if ($Missing.Count -gt 0) {
+              Write-Host "--- zip contents ---"
+              $Names | ForEach-Object { Write-Host "  $_" }
+              throw "Legal documents missing from zip: $($Missing -join ', ')"
+          }
+          Write-Host "  -> LICENSE + THIRD-PARTY-NOTICES.md confirmed"
+
       # 두 matrix 작업이 *같은 release tag* 에 artifact append.
       # action-gh-release 는 동일 tag 의 release 가 이미 있으면 metadata
       # (name / body / prerelease) 갱신 + files 만 추가. 두 작업이 순서
@@ -318,6 +347,13 @@ jobs:
             "$MACOS_CERTIFICATE_SHA1"
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      # DMG 를 마운트해 루트의 고지 파일을 확인한다 (#486).
+      - name: Verify legal documents in DMG
+        run: |
+          dist/verify-legal-docs.sh \
+            --artifact "${{ steps.verify.outputs.dmg }}" \
+            --format dmg
 
       # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
       # softprops/action-gh-release 의 default 동작.
@@ -524,6 +560,15 @@ jobs:
           fi
           echo "artifact : $P ($(stat -c %s "$P") bytes)"
           echo "sha256   : $(cat "$S")"
+
+      # 아티팩트를 실제로 열어 LICENSE / THIRD-PARTY-NOTICES.md 를 확인한다 (#486).
+      # 패키징 스크립트의 파일 복사만으론 회귀를 못 막는다 — 리팩터링에서 조용히
+      # 빠져도 릴리즈가 그대로 나가기 때문이다.
+      - name: Verify legal documents in artifact
+        run: |
+          dist/verify-legal-docs.sh \
+            --artifact "${{ steps.artifact.outputs.path }}" \
+            --format "${{ matrix.format }}"
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v3
