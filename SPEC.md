@@ -229,6 +229,24 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   autostart만 관리한다. drop-down 은 `on_demand`
   keyboard interactivity 로 클릭-어웨이 허용. XDG autostart 미지원이라 autostart 도
   config 의 `exec-once` 로.
+- **`tildaz --toggle N` 의 계약** ([#489](https://github.com/ensky0/tildaz/issues/489)).
+  아래 DE 들이 등록하는 단축키 명령이 전부 이것이라, 세 상태의 동작을 여기서 고정한다.
+  판정은 **socket 과 lock 두 신호**를 함께 본다 — `connect` 실패는 "워커 없음" 과
+  "워커는 있는데 socket 에 못 닿음" 을 모두 포함해서 socket 만으로는 영원히 못 가르고,
+  `flock` 기반 instance lock 은 socket 과 독립이다.
+
+  | 상태 | 동작 | exit |
+  |---|---|---|
+  | socket 도달 가능 | toggle 전달 | 0 |
+  | lock 비어 있음 (워커 없음) | **런처 경로로 넘어가 워커를 띄운다** | 0 |
+  | lock 잡힘 + socket 도달 불가 | 로그만 남기고 **아무것도 하지 않는다** | 3 |
+
+  세 번째에서 띄우면 안 된다: lock 때문에 중복 워커는 안 생기지만, 런처가 "모든 워커가
+  이미 떠 있다" 를 새 인스턴스 요청으로 읽어 **Create 다이얼로그**를 띄운다 — 단축키를
+  눌렀을 때 나올 화면이 아니다. 두 번째가 exit 1 이던 시절에는 autostart 를 켜지 않으면
+  **단축키가 완전히 무반응**이었다. 이 계약 덕에 DE 단축키 명령은 `--toggle N` 하나로
+  충분하다 (셸 fallback `|| tildaz` 가 필요 없다 — `||` 는 0 이 아니면 전부 실행해서
+  세 번째 상태를 표현할 수 없다).
 - **COSMIC (smithay).** layer-shell drop-down. hotkey 는 RON custom shortcut
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
   `Spawn("tildaz --toggle N")`로 원자적 갱신하되, 기존 bytes 와 같으면 write/rename 을
