@@ -359,6 +359,9 @@ const xkb_key_w_lower: u32 = 0x77;
 const xkb_key_w_upper: u32 = 0x57;
 // `[` 과 Shift 의 `{` 가 keymap 별로 다른 keysym — 둘 다 매치. `]` / `}` 도
 // 동일.
+// #482 — QWERTY 에서 Alt+Shift+1 이 내는 keysym. Shift 가 keysym 자체를 바꾸므로
+// 숫자 완화가 그 layout 에서 새 조합을 잡지 않음을 테스트로 고정하는 데 쓴다.
+const xkb_key_exclam: u32 = 0x21;
 const xkb_key_bracketleft: u32 = 0x5b;
 const xkb_key_braceleft: u32 = 0x7b;
 // SPEC §2.2 — Alt+1..9 탭 인덱스 점프. xkb keysym = ASCII '1'..'9'.
@@ -692,6 +695,21 @@ fn classifyInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_policy.Inp
             else => null,
         };
     }
+    // #482 — Ctrl+PgUp / Ctrl+PgDn 으로 이전 / 다음 탭. `Ctrl+Shift+[` / `]` 가
+    // AZERTY 에서 쓸 수 없어 추가한 **layout 무관** 대안이다: 그 layout 에서 `[` 는
+    // AltGr+5 라서 조합이 Ctrl+Shift+AltGr+5 가 된다 (손가락 네 개). PgUp / PgDn 은
+    // 어느 layout 에나 있는 단일 물리 키다.
+    //
+    // `Ctrl+Tab` 을 쓰지 않은 이유: 현대 키보드 프로토콜 (kitty / CSI-u) 에서 그건
+    // 구별 가능한 시퀀스라 TUI 앱이 정당하게 바인딩한다. 터미널이 삼키면 사용자가
+    // 통과시킬 방법이 없다. 반면 Ctrl+PgUp / PgDn 은 GNOME Terminal · Konsole ·
+    // Windows Terminal 이 탭 전환에 쓰는 — 터미널이 관습적으로 소유하는 — 조합이다.
+    //
+    // 아래 Shift+PgUp / PgDn (scrollback) 과 맨 PgUp / PgDn (PTY) 은 그대로다.
+    if (ctrl and !shift and !alt) {
+        if (sym == xkb_key_page_up) return .{ .shortcut = .prev_tab };
+        if (sym == xkb_key_page_down) return .{ .shortcut = .next_tab };
+    }
     // Ctrl+C (Shift 없음) — SIGINT(line abort). preedit 자모 discard 는 best-effort:
     // fcitx5 는 Ctrl+C 에서 자모를 먼저 확정해 `가^C`(취소된 줄이라 무해, §5.1).
     if (ctrl and !shift and !alt and (sym == xkb_key_c_lower or sym == xkb_key_c_upper)) return .interrupt;
@@ -699,7 +717,18 @@ fn classifyInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_policy.Inp
     if (alt and !ctrl) {
         if (sym == xkb_key_return) return .{ .shortcut = .fullscreen };
         if (!shift and sym == xkb_key_f4) return .{ .shortcut = .quit };
-        if (!shift and sym >= xkb_key_1 and sym <= xkb_key_9) return .{ .shortcut = .switch_tab };
+        // #482 — `!shift` 를 요구하지 않는다. AZERTY (fr) 등에서 숫자열은 **Shift 를
+        // 눌러야 숫자가 나온다** (무시프트는 `&é"'(-è_çà`). 그래서 keysym `1`~`9` 가
+        // 항상 Shift 와 함께 도착해 `!shift` 가 전부 걸러 냈다 — 인덱스 탭 전환이
+        // 그 layout 에서 아예 동작하지 않았다.
+        //
+        // QWERTY 에는 영향이 없다: Shift 가 keysym 자체를 바꿔서 Alt+Shift+1 은
+        // `exclam` (0x21) 로 도착하고 `xkb_key_1` 과 매칭되지 않는다. 즉 이 조건을
+        // 풀어도 QWERTY 에서 새로 잡히는 조합이 없다.
+        //
+        // Windows (`VK_1`) 와 macOS (`kVK_ANSI_1`) 는 **물리 위치**로 매칭해서 애초에
+        // 이 문제가 없다. keysym 으로 매칭하는 Linux 만의 결함이었다.
+        if (sym >= xkb_key_1 and sym <= xkb_key_9) return .{ .shortcut = .switch_tab };
     }
     // 그 외는 정책 대상 아님(일반 문자 / 터미널 control char / preedit-Ctrl
     // commit / scroll) → 기존 PTY 경로.
@@ -728,6 +757,27 @@ test "#296 classifyInput — native xkb → 공통 Input 분류" {
     try T.expectEqual(@as(?I, .{ .shortcut = .quit }), C(xkb_key_f4, false, false, true));
     try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_1, false, false, true));
     try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_9, false, false, true));
+    // #482 — AZERTY (fr) 는 숫자열에 Shift 가 필요해 keysym `1`~`9` 가 **항상 Shift 와
+    // 함께** 도착한다. 예전 `!shift` 조건이 그것을 전부 걸러 인덱스 탭 전환이 그 layout
+    // 에서 아예 동작하지 않았다.
+    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_1, false, true, true));
+    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_9, false, true, true));
+    // QWERTY 에서는 Alt+Shift+1 이 `exclam` 으로 도착하므로 위 완화가 새로 잡는 조합이
+    // 없다 — 이 keysym 은 정책 대상이 아니다.
+    try T.expectEqual(@as(?I, null), C(xkb_key_exclam, false, true, true));
+    // Ctrl 동반은 여전히 Alt 계열이 아니다 (첫 블록의 Ctrl+Shift 와 충돌 방지).
+    try T.expectEqual(@as(?I, null), C(xkb_key_1, true, false, true));
+
+    // #482 — Ctrl+PgUp / PgDn 으로 이전 / 다음 탭 (layout 무관 대안).
+    try T.expectEqual(@as(?I, .{ .shortcut = .prev_tab }), C(xkb_key_page_up, true, false, false));
+    try T.expectEqual(@as(?I, .{ .shortcut = .next_tab }), C(xkb_key_page_down, true, false, false));
+    // Shift+PgUp / PgDn 은 scrollback 이라 정책 대상이 아니고, Ctrl+Shift 조합도
+    // 탭 전환으로 잡지 않는다 — 기존 동작을 건드리지 않았음을 고정한다.
+    try T.expectEqual(@as(?I, null), C(xkb_key_page_down, false, true, false));
+    try T.expectEqual(@as(?I, null), C(xkb_key_page_up, true, true, false));
+    // 맨 PgUp / PgDn 은 PTY 로 간다.
+    try T.expectEqual(@as(?I, null), C(xkb_key_page_up, false, false, false));
+    try T.expectEqual(@as(?I, null), C(xkb_key_page_down, false, false, false));
     // Ctrl+C (Shift 없음) → interrupt
     try T.expectEqual(@as(?I, .interrupt), C(xkb_key_c_lower, true, false, false));
     // 미분류(null → 기존 PTY 경로):
@@ -738,7 +788,12 @@ test "#296 classifyInput — native xkb → 공통 Input 분류" {
     try T.expectEqual(@as(?I, null), C(xkb_key_e_lower, true, false, false)); // Ctrl+E = 터미널 \x05
     try T.expectEqual(@as(?I, null), C(xkb_key_page_up, false, true, false)); // Shift+PgUp = scroll
     try T.expectEqual(@as(?I, null), C(xkb_key_t_lower, true, false, false)); // Ctrl+T = shell transpose
-    try T.expectEqual(@as(?I, null), C(xkb_key_1, false, true, true)); // Alt+Shift+숫자
+    // #482 — 예전엔 여기에 `C(xkb_key_1, false, true, true)` 가 null 로 있었다. 그
+    // 조합 (keysym `1` + Shift) 은 **QWERTY 에서 발생 자체가 불가능하다** — Shift 가
+    // keysym 을 `exclam` 으로 바꾼다. 숫자열에 Shift 가 필요한 layout (AZERTY 등) 에서만
+    // 나오므로, 그 assertion 은 인덱스 탭 전환이 그 layout 에서 안 되는 **버그를 고정**
+    // 하고 있었다. 이제 shortcut 이고 위쪽 Alt 계열 테스트에서 확인한다. QWERTY 쪽
+    // 대응물인 `exclam` 은 계속 정책 대상이 아니다 (바로 위에서 확인).
     try T.expectEqual(@as(?I, null), C(xkb_key_return, true, false, true)); // Ctrl+Alt+Enter
 }
 

@@ -297,8 +297,24 @@ minimize/restore.
 | 새 탭 | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T (L12-β) | ✅ | ✅ | ✅ |
 | 활성 탭 닫기 | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W (L12-β) | ✅ | ✅ | ✅ |
 | 인덱스 점프 (1..9) | Alt+1..9 ([`Window.wndProc`의 `WM_SYSKEYDOWN`](src/window.zig)) | Cmd+1..9 | Alt+1..9 ([a60fb8e](https://github.com/ensky0/tildaz/commit/a60fb8e)) | ✅ | ✅ | ✅ |
-| 이전 탭 | Ctrl+Shift+[ | Shift+Cmd+[ | Ctrl+Shift+[ (L12-β) | ✅ | ✅ | ✅ |
-| 다음 탭 | Ctrl+Shift+] | Shift+Cmd+] | Ctrl+Shift+] (L12-β) | ✅ | ✅ | ✅ |
+| 이전 탭 | Ctrl+Shift+[ **또는 Ctrl+PgUp** | Shift+Cmd+[ **또는 Cmd+PgUp** | Ctrl+Shift+[ (L12-β) **또는 Ctrl+PgUp** | ✅ | ✅ | ✅ |
+| 다음 탭 | Ctrl+Shift+] **또는 Ctrl+PgDn** | Shift+Cmd+] **또는 Cmd+PgDn** | Ctrl+Shift+] (L12-β) **또는 Ctrl+PgDn** | ✅ | ✅ | ✅ |
+
+**keyboard layout 독립성** ([#482](https://github.com/ensky0/tildaz/issues/482)). 세 platform 이
+단축키를 매칭하는 대상이 다르다 — Windows 는 virtual-key (`VK_1`, `VK_OEM_4`), macOS 는
+`kVK_ANSI_*` 로 **물리 위치**를 보고, Linux 는 **xkb keysym** 으로 *눌러서 나오는 문자*를 본다.
+그래서 layout 종속 결함은 Linux 에만 생긴다.
+
+- **인덱스 점프**는 Linux 에서 `!shift` 를 요구하지 않는다. AZERTY (fr) 등은 숫자열에 Shift 가
+  필요해 keysym `1`~`9` 가 **항상 Shift 와 함께** 도착하고, 예전 조건이 그것을 전부 걸러 그
+  layout 에서 인덱스 전환이 아예 동작하지 않았다. QWERTY 에는 영향이 없다 — Shift 가 keysym 을
+  `exclam` 으로 바꿔 애초에 매칭되지 않는다.
+- **PgUp / PgDn 조합**은 `[` / `]` 가 AltGr 를 요구하는 layout (AZERTY 는 `[` = AltGr+5 →
+  조합이 Ctrl+Shift+AltGr+5) 을 위한 layout 무관 대안이다. 기존 bracket 조합을 **대체하지 않고
+  추가**한다. `Ctrl+Tab` 은 쓰지 않는다 — kitty / CSI-u 에서 구별 가능한 시퀀스라 TUI 앱이
+  정당하게 바인딩하는데 터미널이 삼키면 통과시킬 방법이 없다. PgUp / PgDn 은 GNOME Terminal ·
+  Konsole · Windows Terminal 이 탭 전환에 쓰는, 터미널이 관습적으로 소유하는 조합이다.
+- **기존 PgUp / PgDn 경로는 그대로다** — Shift 동반은 scrollback (§2.5), 맨 키는 PTY.
 
 ### 2.3 클립보드
 
@@ -418,7 +434,7 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 > **`<` / `>` 화살표 vs 활성 탭 — Firefox 패턴 (#117):**
 >
 > 1. `<` / `>` 클릭은 *viewport 스크롤 전용* — 활성 탭은 절대 안 바뀜. 사용자가 "다른 탭 *목록* 을 보러 왔다" 는 명시 의도이지 활성 전환 의도 아님.
-> 2. 활성 변경 트리거는 **탭 클릭 / Alt+숫자 / Ctrl+Shift+[ / Ctrl+Shift+] (Win) / Cmd+숫자 / Shift+Cmd+[ / Shift+Cmd+] (mac) / `+` (새 탭)** 만.
+> 2. 활성 변경 트리거는 **탭 클릭 / Alt+숫자 / Ctrl+Shift+[ / Ctrl+Shift+] / Ctrl+PgUp / Ctrl+PgDn (Win · Linux) / Cmd+숫자 / Shift+Cmd+[ / Shift+Cmd+] / Cmd+PgUp / Cmd+PgDn (mac) / `+` (새 탭)** 만.
 > 3. `<` / `>` 누르는 순간 `tab_scroll_user_override = true` set → 매 frame `ensureActiveTabVisible` skip → 활성 탭이 viewport 밖이어도 그대로. 활성 변경 / 새 탭 / drag reorder 끝나는 시점에 false 로 reset 되어 ensure 재가동.
 > 4. 활성 변경 시 viewport 동작: 활성 탭이 이미 보이면 그대로 (색깔만 변경), 안 보이면 보이는 가장 가까운 위치로 *minimum* 이동 (Chrome / Firefox 동등).
 >
