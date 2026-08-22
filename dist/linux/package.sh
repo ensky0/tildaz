@@ -78,6 +78,8 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 ICON_SRC="$REPO_ROOT/docs/favicon.svg"
+LICENSE_SRC="$REPO_ROOT/LICENSE"
+NOTICES_SRC="$REPO_ROOT/THIRD-PARTY-NOTICES.md"
 DESKTOP_TEMPLATE="$SCRIPT_DIR/tildaz.desktop"
 GNOME_EXT_SRC="$SCRIPT_DIR/gnome-extension/tildaz@ensky0.github.io"
 CINNAMON_EXT_SRC="$SCRIPT_DIR/cinnamon-extension/tildaz@ensky0.github.io"
@@ -133,6 +135,40 @@ validate_extension_resources() {
     done
 }
 
+# LICENSE + THIRD-PARTY-NOTICES.md 를 배포물에 싣는다 (#486).
+#
+# 조용한 skip 을 두지 않는다. 배포 바이너리는 정적 링크라 uucode (MIT) 와
+# Google Highway (Apache-2.0) 의 컴파일된 코드를 담고 있고, MIT 는 사본 배포 시
+# 저작권 고지 포함을 Apache-2.0 §4(a) 는 라이선스 사본 제공을 요구한다. 고지가
+# 빠진 아티팩트는 준수 결함이므로 소스가 없으면 빌드를 세운다 — 이전에 deb 이
+# `if [[ -f LICENSE ]]` 로 감싸 조용히 넘어가던 게 이 상태가 방치된 이유다.
+install_legal_docs() {
+    local dest="$1"
+    local src
+    for src in "$LICENSE_SRC" "$NOTICES_SRC"; do
+        if [[ ! -f "$src" ]]; then
+            echo "ERROR: legal document missing at $src" >&2
+            exit 1
+        fi
+    done
+    mkdir -p "$dest"
+    install -m 644 "$LICENSE_SRC" "$dest/LICENSE"
+    install -m 644 "$NOTICES_SRC" "$dest/THIRD-PARTY-NOTICES.md"
+}
+
+# install_legal_docs 가 실제로 남겼는지 확인. 첫 인자는 디렉터리, 이후 인자는
+# 그 안에서 기대하는 파일명 (deb 은 LICENSE 를 `copyright` 로 두므로 이름이 다르다).
+validate_legal_docs() {
+    local root="$1"; shift
+    local name
+    for name in "$@"; do
+        if [[ ! -s "$root/$name" ]]; then
+            echo "ERROR: legal document missing or empty in artifact: $root/$name" >&2
+            exit 1
+        fi
+    done
+}
+
 #-----------------------------------------------------------------------
 # Format: tar.gz — portable, distro 독립. extract → install.sh.
 #-----------------------------------------------------------------------
@@ -154,6 +190,8 @@ build_tar_gz() {
     cp "$SCRIPT_DIR/uninstall.sh" "$STAGE/uninstall.sh" 2>/dev/null || true
     install_extension_resources "$STAGE"
     validate_extension_resources "$STAGE"
+    install_legal_docs "$STAGE"
+    validate_legal_docs "$STAGE" LICENSE THIRD-PARTY-NOTICES.md
     chmod 755 "$STAGE/install.sh"
     [[ -f "$STAGE/uninstall.sh" ]] && chmod 755 "$STAGE/uninstall.sh"
 
@@ -173,6 +211,9 @@ re-run:
 
 Uninstall:
   ./uninstall.sh
+
+License: LICENSE (AGPL-3.0-or-later)
+         THIRD-PARTY-NOTICES.md (bundled component notices)
 
 Config: \$XDG_CONFIG_HOME/tildaz/config_0.json (fallback: ~/.config/tildaz)
 Log:    \$XDG_STATE_HOME/tildaz/tildaz_0.log (fallback: ~/.local/state/tildaz)
@@ -241,9 +282,19 @@ build_deb() {
     install -m 644 "$ICON_SRC" "$STAGE/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
     install_extension_resources "$STAGE/usr/share/tildaz"
     validate_extension_resources "$STAGE/usr/share/tildaz"
-    if [[ -f "$REPO_ROOT/LICENSE" ]]; then
-        install -m 644 "$REPO_ROOT/LICENSE" "$STAGE/usr/share/doc/tildaz/copyright"
+    # Debian 관례상 라이선스 본문은 `copyright` 라는 이름으로 둔다. 서드파티
+    # 고지는 그 옆에 별도 파일 (#486 — 7 포맷 구조 통일). 조건부 skip 없음.
+    if [[ ! -f "$LICENSE_SRC" ]]; then
+        echo "ERROR: legal document missing at $LICENSE_SRC" >&2
+        exit 1
     fi
+    if [[ ! -f "$NOTICES_SRC" ]]; then
+        echo "ERROR: legal document missing at $NOTICES_SRC" >&2
+        exit 1
+    fi
+    install -m 644 "$LICENSE_SRC" "$STAGE/usr/share/doc/tildaz/copyright"
+    install -m 644 "$NOTICES_SRC" "$STAGE/usr/share/doc/tildaz/THIRD-PARTY-NOTICES.md"
+    validate_legal_docs "$STAGE/usr/share/doc/tildaz" copyright THIRD-PARTY-NOTICES.md
 
     local INSTALLED_SIZE
     INSTALLED_SIZE=$(du -sk --apparent-size "$STAGE/usr" | cut -f1)
@@ -326,6 +377,7 @@ build_rpm() {
     render_system_desktop "$RPMTREE/SOURCES/tildaz.desktop"
     install_extension_resources "$RPMTREE/SOURCES/tildaz-resources"
     validate_extension_resources "$RPMTREE/SOURCES/tildaz-resources"
+    install_legal_docs "$RPMTREE/SOURCES"
 
     cat > "$RPMTREE/SPECS/tildaz.spec" << END
 Name:           tildaz
@@ -356,6 +408,8 @@ install -D -m 0644 %{_sourcedir}/tildaz.desktop %{buildroot}/usr/share/applicati
 install -D -m 0644 %{_sourcedir}/tildaz.svg   %{buildroot}/usr/share/icons/hicolor/scalable/apps/tildaz.svg
 mkdir -p %{buildroot}/usr/share/tildaz
 cp -a %{_sourcedir}/tildaz-resources/. %{buildroot}/usr/share/tildaz/
+install -D -m 0644 %{_sourcedir}/LICENSE %{buildroot}/usr/share/licenses/tildaz/LICENSE
+install -D -m 0644 %{_sourcedir}/THIRD-PARTY-NOTICES.md %{buildroot}/usr/share/doc/tildaz/THIRD-PARTY-NOTICES.md
 
 %post
 if [ -x /usr/bin/update-desktop-database ]; then
@@ -380,6 +434,8 @@ fi
 /usr/share/applications/tildaz.desktop
 /usr/share/icons/hicolor/scalable/apps/tildaz.svg
 /usr/share/tildaz
+%license /usr/share/licenses/tildaz/LICENSE
+%doc /usr/share/doc/tildaz/THIRD-PARTY-NOTICES.md
 END
 
     # Ubuntu runner 환경에선 dist tag 가 안 붙어 출력 이름이 tildaz-<ver>-1.<arch>.rpm.
@@ -442,6 +498,8 @@ build_appimage() {
     install -m 644 "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
     install_extension_resources "$APPDIR/usr/share/tildaz"
     validate_extension_resources "$APPDIR/usr/share/tildaz"
+    install_legal_docs "$APPDIR/usr/share/doc/tildaz"
+    validate_legal_docs "$APPDIR/usr/share/doc/tildaz" LICENSE THIRD-PARTY-NOTICES.md
 
     # AppImage 가 root 의 .desktop / icon symlink 자동 인식. Exec 은 단순
     # "tildaz" — AppRun 이 PATH 에 usr/bin 추가하거나 직접 호출.
@@ -529,6 +587,7 @@ build_pkg() {
     validate_extension_resources "$BUILD/shell-extensions"
     tar -C "$BUILD/shell-extensions" -czf "$BUILD/shell-extensions.tar.gz" .
     rm -rf "$BUILD/shell-extensions"
+    install_legal_docs "$BUILD"
 
     # 의존성은 deb/rpm 과 동일 정책: core(키보드/폰트) hard depends, ligature/
     # native hotkey용 library는 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
@@ -546,8 +605,9 @@ depends=('libxkbcommon' 'freetype2' 'fontconfig')
 optdepends=('harfbuzz: ligature rendering'
             'dbus: KDE Plasma KGlobalAccel global hotkey'
             'glib2: GNOME/Cinnamon gsettings global hotkey')
-source=('tildaz' 'tildaz.desktop' 'tildaz.svg' 'shell-extensions.tar.gz')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+source=('tildaz' 'tildaz.desktop' 'tildaz.svg' 'shell-extensions.tar.gz'
+        'LICENSE' 'THIRD-PARTY-NOTICES.md')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 options=('!strip' '!debug')
 package() {
   install -Dm755 "\$srcdir/tildaz"         "\$pkgdir/usr/bin/tildaz"
@@ -555,6 +615,8 @@ package() {
   install -Dm644 "\$srcdir/tildaz.svg"     "\$pkgdir/usr/share/icons/hicolor/scalable/apps/tildaz.svg"
   install -d "\$pkgdir/usr/share/tildaz"
   cp -R "\$srcdir/gnome-extension" "\$srcdir/cinnamon-extension" "\$pkgdir/usr/share/tildaz/"
+  install -Dm644 "\$srcdir/LICENSE"                "\$pkgdir/usr/share/licenses/tildaz/LICENSE"
+  install -Dm644 "\$srcdir/THIRD-PARTY-NOTICES.md" "\$pkgdir/usr/share/licenses/tildaz/THIRD-PARTY-NOTICES.md"
 }
 END
 

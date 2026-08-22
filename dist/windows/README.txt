@@ -21,6 +21,8 @@ PACKAGE CONTENTS
 
     tildaz.exe            TildaZ application - run this
     README.txt            This file
+    LICENSE               TildaZ license (AGPL-3.0-or-later)
+    THIRD-PARTY-NOTICES.md  Bundled component notices
     _internal\            Bundled Microsoft runtime (do not run)
         conpty.dll        Bundled ConPTY runtime (Microsoft, MIT)
         OpenConsole.exe   Bundled PTY host (Microsoft, MIT)
@@ -62,11 +64,16 @@ LICENSES
 
     TildaZ                         AGPL-3.0-or-later
     libghostty-vt                  MIT
+    uucode                         MIT
+    Highway                        Apache-2.0
     OpenConsole.exe / conpty.dll   MIT
 
-The TildaZ license text is available in the repository:
+The TildaZ license text is in LICENSE, next to this file.
 
-    https://github.com/ensky0/tildaz/blob/main/LICENSE
+tildaz.exe is statically linked and contains compiled code from
+libghostty-vt, uucode, and Highway. Their copyright notices and
+full license texts are in THIRD-PARTY-NOTICES.md, next to this
+file, along with attribution for the built-in color themes.
 
 The bundled Microsoft binaries come from
 Microsoft.Windows.Console.ConPTY and are redistributed under MIT.
