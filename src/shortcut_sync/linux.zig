@@ -257,6 +257,80 @@ test "Hyprland binds JSON keeps the fields needed for cleanup" {
     try std.testing.expectEqualStrings(",F3", managedHyprlandAccel(&buf, parsed.value[0], "/home/test/tildaz").?);
 }
 
+test "COSMIC entries are identified by our own description marker, not the command" {
+    // writer(`appendCosmicEntries`)가 만드는 형태.
+    try std.testing.expect(isTildazCosmicEntry(
+        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+    ));
+
+    // #484 회귀 — 바이너리 **이름**이 `tildaz` 가 아니면 이전 구현은 자기 항목을 못
+    // 알아봤다. `tildaz-dev --toggle 0` 에는 `tildaz --toggle` 이라는 연속 문자열이
+    // 없다 (하이픈이 끼어서). 못 지우고 하나 더 써서 같은 맵 키가 중복되고, 중복 키가
+    // 있는 RON 은 COSMIC 이 파일 전체를 버린다 — 사용자 단축키까지 사라졌다.
+    try std.testing.expect(isTildazCosmicEntry(
+        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/opt/bin/tildaz-dev --toggle 0\"),",
+    ));
+    // 경로만 바뀐 경우도 같이 고정한다.
+    try std.testing.expect(isTildazCosmicEntry(
+        "    (modifiers: [Ctrl, Shift], key: \"F2\", description: Some(\"TildaZ_3\")): Spawn(\"/home/u/bin/tz --toggle 3\"),",
+    ));
+    // 여러 자리 index.
+    try std.testing.expect(isTildazCosmicEntry(
+        "    (modifiers: [Super], key: \"grave\", description: Some(\"TildaZ_12\")): Spawn(\"/usr/bin/tildaz --toggle 12\"),",
+    ));
+
+    // #484 거울상 — 사용자 항목의 **명령**에 `tildaz --toggle` 이 들어 있으면 이전
+    // 구현은 우리 것으로 착각해 조용히 지웠다. 이제 남의 항목은 건드리지 않는다.
+    try std.testing.expect(!isTildazCosmicEntry(
+        "    (modifiers: [Super], key: \"t\", description: Some(\"My wrapper\")): Spawn(\"sh -c 'tildaz --toggle 0; notify-send hi'\"),",
+    ));
+
+    // 표식을 흉내낸 남의 이름 — 번호 자리가 정수가 아니면 우리 것이 아니다.
+    try std.testing.expect(!isTildazCosmicEntry(
+        "    (modifiers: [Super], key: \"b\", description: Some(\"TildaZ_backup\")): Spawn(\"/usr/bin/backup\"),",
+    ));
+    // 번호 자리가 비어 있는 경우.
+    try std.testing.expect(!isTildazCosmicEntry(
+        "    (modifiers: [Super], key: \"n\", description: Some(\"TildaZ_\")): Spawn(\"/usr/bin/x\"),",
+    ));
+    // 음수는 index 가 아니다 (`u32`).
+    try std.testing.expect(!isTildazCosmicEntry(
+        "    (modifiers: [Super], key: \"m\", description: Some(\"TildaZ_-1\")): Spawn(\"/usr/bin/x\"),",
+    ));
+
+    // 전혀 무관한 사용자 항목.
+    try std.testing.expect(!isTildazCosmicEntry(
+        "    (modifiers: [Super], key: \"e\", description: Some(\"My file manager\")): Spawn(\"nautilus\"),",
+    ));
+    // 맵 경계 줄.
+    try std.testing.expect(!isTildazCosmicEntry("{"));
+    try std.testing.expect(!isTildazCosmicEntry("}"));
+
+    // 죽어 있던 옛 표식(`TildaZ instance `)은 writer 가 쓴 적이 없으므로 인식 대상이
+    // 아니다 — 살릴 것은 그 절의 *의도* 였고 문자열이 아니다.
+    try std.testing.expect(!isTildazCosmicEntry(
+        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ instance 0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+    ));
+}
+
+test "COSMIC closing map line is the last one" {
+    // `syncCosmic` 은 이 offset 직전에 자기 항목을 끼워 넣는다.
+    try std.testing.expectEqual(@as(?usize, 2), findClosingMapLine("{\n}\n"));
+    try std.testing.expect(findClosingMapLine("{\n") == null);
+
+    // 중첩된 `}` 가 있으면 **마지막** 것이 맵의 끝이다.
+    const nested =
+        "{\n" ++
+        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"x\"),\n" ++
+        "}\n";
+    const offset = findClosingMapLine(nested).?;
+    try std.testing.expectEqualStrings("}", nested[offset .. offset + 1]);
+
+    // 들여쓰기 / CR 이 붙어도 닫는 줄로 인정한다 (`trim` 대상).
+    try std.testing.expectEqual(@as(?usize, 2), findClosingMapLine("{\n  }  \n"));
+    try std.testing.expectEqual(@as(?usize, 2), findClosingMapLine("{\n}\r\n"));
+}
+
 test "Hyprland desired lookup distinguishes keep and changed command" {
     const desired = [_]HyprlandDesired{
         .{ .accel = ",F1", .command = "/home/test/tildaz --toggle 0" },
@@ -322,11 +396,41 @@ pub fn findClosingMapLine(content: []const u8) ?usize {
     return found;
 }
 
+/// COSMIC custom shortcut 한 줄이 **우리가 쓴 것**인지 판정한다.
+///
+/// 근거는 `appendCosmicEntries` 가 직접 쓰는 description 표식
+/// (`description: Some("TildaZ_<index>")`) 하나다. 명령 문자열을 보지 않는 이유가
+/// [#484](https://github.com/ensky0/tildaz/issues/484) 다 — 이전 구현은
+/// `Spawn("` + `tildaz --toggle` 부분 일치였고, 명령에는 바이너리 경로와 이름이
+/// 들어가서 **사용자가 바꿀 수 있는 값**을 판정 근거로 삼고 있었다. 양방향으로 틀렸다.
+///
+/// - 이름을 바꾸면 (`tildaz-dev --toggle 0`) `tildaz --toggle` 이라는 연속 문자열이
+///   사라져 자기 항목을 못 알아봤다. 지우지 못한 채 하나 더 쓰니 **같은 맵 키가
+///   중복**되고, 중복 키가 있는 RON 은 깨진 데이터라 COSMIC 이 파일 전체를 버린다 —
+///   사용자 단축키까지 함께 사라진다. 신고된 "cosmic resets all" 의 기전이다.
+/// - 반대로 사용자 항목의 명령에 `tildaz --toggle` 이 들어 있으면 (래퍼 스크립트 등)
+///   우리 것으로 착각해 **조용히 지웠다.**
+///
+/// 표식은 경로 · 이름과 무관하므로 두 방향이 함께 사라진다.
+///
+/// **접두 매칭**인 이유는 `syncCosmic` 이 "자기 항목 전부 삭제 후 현재 config 목록대로
+/// 재작성" 구조라서다 — config 를 지운 인스턴스의 유령 항목도 정리돼야 한다. 단 번호
+/// 자리가 정말 정수인지 확인해 `TildaZ_backup` 같은 남의 이름을 집지 않는다 (Hyprland
+/// 쪽 `managedToggleCommand` 와 같은 엄격함).
 fn isTildazCosmicEntry(line: []const u8) bool {
-    return std.mem.find(u8, line, "description: Some(\"TildaZ instance ") != null or
-        (std.mem.find(u8, line, "Spawn(\"") != null and
-            std.mem.find(u8, line, "tildaz --toggle") != null);
+    const start = std.mem.find(u8, line, cosmic_entry_marker) orelse return false;
+    const rest = line[start + cosmic_entry_marker.len ..];
+    // 표식 뒤는 `<index>")` 형태다. 닫는 큰따옴표까지가 index 자리.
+    const end = std.mem.findScalar(u8, rest, '"') orelse return false;
+    _ = std.fmt.parseInt(u32, rest[0..end], 10) catch return false;
+    return true;
 }
+
+/// `appendCosmicEntries` 의 writer 와 `isTildazCosmicEntry` 의 matcher 가 **같은**
+/// 표식을 쓰게 묶어 둔다. 이 둘이 갈라진 게 #484 의 원인이었다 — matcher 는
+/// `TildaZ instance ` 를 찾는데 writer 는 `TildaZ_<index>` 를 써서 그 절이 죽어 있었고,
+/// 그래서 명령 문자열 매칭으로 떨어졌다.
+const cosmic_entry_marker = "description: Some(\"TildaZ_";
 
 fn appendCosmicEntries(rt: Runtime, output: *std.ArrayList(u8), allocator: std.mem.Allocator, indices: []const u32) !void {
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -353,7 +457,9 @@ fn appendCosmicEntries(rt: Runtime, output: *std.ArrayList(u8), allocator: std.m
         }
         try output.appendSlice(allocator, "], key: \"");
         try output.appendSlice(allocator, config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
-        const description = try std.fmt.allocPrint(allocator, "\", description: Some(\"TildaZ_{d}\")): Spawn(\"", .{index});
+        // 표식은 `cosmic_entry_marker` 를 그대로 쓴다 — matcher 와 문자열이 갈라지면
+        // 자기 항목을 못 알아본다 (#484 의 원인이 정확히 그것이었다).
+        const description = try std.fmt.allocPrint(allocator, "\", " ++ cosmic_entry_marker ++ "{d}\")): Spawn(\"", .{index});
         defer allocator.free(description);
         try output.appendSlice(allocator, description);
         try appendRonString(output, allocator, exe);
