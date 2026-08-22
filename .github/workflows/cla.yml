@@ -14,11 +14,17 @@
 # 정해진 문장을 코멘트하면 서명으로 기록한 뒤 status check 를 통과시킨다.
 # 서명은 1 회로 이후 모든 PR 에 유효하다.
 #
-# 알려진 동작 — **첫 실행은 실패한다.** 서명 기록 파일 (signatures/version1/cla.json)
-# 이 아직 없으면 action 이 그 파일을 만들어 main 에 커밋하고 (38baa0f), 그 회차는
-# "Committers of pull request N have to sign the CLA" 로 실패한다. allowlist 에 있는
-# 사용자여도 그렇다. 재실행하면 통과한다 (PR #487 에서 확인 — 첫 회차 FAILURE,
-# 재실행 success). 파일이 생긴 뒤로는 정상이므로 이 부트스트랩 1 회만 해당한다.
+# 부트스트랩 1 회 실패 — **이미 지나갔다. 지금은 해당 없다.**
+#
+# 서명 기록 파일 (signatures/version1/cla.json) 이 없는 상태의 첫 회차는 action 이
+# 그 파일을 만들어 커밋하고 (38baa0f) 그 회차 자체는 실패한다 — allowlist 에 있는
+# 사용자여도 "Committers of pull request N have to sign the CLA" 로 죽는다. PR #487
+# 에서 실제로 겪었다 (첫 회차 FAILURE → 재실행 success).
+#
+# 그 파일이 생긴 뒤로는 재현되지 않는다. **되살아나는 조건은 하나뿐이다** —
+# signatures/version1/cla.json 을 지우거나 아래 path-to-signatures 를 아직 파일이
+# 없는 경로로 바꾸는 것. 그럴 일이 있으면 봇에 맡기지 말고 파일을 손으로 먼저
+# 만들어 두면 (`{"signedContributors": []}`) 이 실패를 건너뛴다.
 
 name: cla-check
 
