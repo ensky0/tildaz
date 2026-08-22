@@ -187,6 +187,7 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 | Current code structure | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Security reporting | [SECURITY.md](SECURITY.md) |
 | Contributor License Agreement | [CLA.md](CLA.md) |
+| Third-party licenses and attribution | [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) |
 | Release notes | [`dist/release-notes/`](dist/release-notes/) |
 
 ## Known Limitations
@@ -238,3 +239,8 @@ Bundled / linked components:
 |---|---|---|
 | `libghostty-vt` | MIT | https://github.com/ghostty-org/ghostty |
 | `OpenConsole.exe` / `conpty.dll` | MIT | https://github.com/microsoft/terminal |
+
+The binary is statically linked and also contains `uucode` (MIT) and Highway
+(Apache-2.0) by way of `libghostty-vt`. Full copyright notices, license texts,
+and color theme attribution are in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
