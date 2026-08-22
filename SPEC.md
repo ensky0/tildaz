@@ -233,6 +233,14 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
   `Spawn("tildaz --toggle N")`로 원자적 갱신하되, 기존 bytes 와 같으면 write/rename 을
   생략한다. XDG autostart는 지원.
+  - **"TildaZ 전용 항목" 의 판정 근거는 우리가 쓰는 description 표식
+    (`description: Some("TildaZ_<index>")`) 하나다** — 명령 문자열이 아니다
+    ([#484](https://github.com/ensky0/tildaz/issues/484)). 이 파일에는 사용자가 만든
+    단축키가 함께 들어 있어서, 판정을 틀리면 양방향으로 깨진다: 자기 항목을 못
+    알아보면 중복 맵 키가 쌓여 COSMIC 이 **파일 전체를 버리고**(사용자 단축키까지
+    사라진다), 남의 항목을 자기 것으로 착각하면 **조용히 지운다**. 명령에는 바이너리
+    경로와 이름이 들어가 사용자가 바꿀 수 있으므로 판정 근거가 될 수 없다. 표식 뒤의
+    번호가 정수인지도 확인한다.
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
   xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
