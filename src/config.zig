@@ -24,6 +24,7 @@ const font_validate = @import("font/validate.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
+const input_policy = @import("input_policy.zig");
 const PhysicalCode = physical_key.PhysicalCode;
 
 const WCHAR = u16;
@@ -626,8 +627,19 @@ test "#493 lookup is exact — no shift-insensitive fallback" {
 
     // Shift 가 더 붙은 조합은 **일치하지 않는다.** 완화 조회를 뺀 결과이고 의도된
     // 동작이다 — `shift+alt+f4` 가 `alt+f4` 를 발동시키는 일이 없다.
-    try std.testing.expect(lookupAction(bindings, try hk("shift+alt+1"), null) == null);
     try std.testing.expect(lookupAction(bindings, try hk("ctrl+alt+return"), null) == null);
+    try std.testing.expect(lookupAction(bindings, try hk("shift+alt+return"), null).? == .fullscreen_workarea);
+
+    // **숫자만 예외다** (#482). AZERTY 에서 숫자열은 Shift 를 눌러야 숫자가 나오므로
+    // `Alt+1` 이 항상 `Alt+Shift+1` 로 도착한다. 이 예외가 없으면 세 platform 모두
+    // 그 layout 에서 인덱스 탭 전환이 죽는다 — 세 host 가 이미 Shift 를 안 본다
+    // (`isDigitBinding` 주석 참고). 확대가 아니라 현행 유지다.
+    try std.testing.expect(lookupAction(bindings, try hk("shift+alt+1"), null).? == .switch_tab1);
+    // 예외는 숫자에서 멈춘다 — 다른 키는 여전히 엄격하다.
+    try add(&buf, &n, "alt+f4", .quit);
+    const with_quit = buf[0..n];
+    try std.testing.expect(lookupAction(with_quit, try hk("shift+alt+f4"), null) == null);
+    try std.testing.expect(lookupAction(with_quit, try hk("alt+f4"), null).? == .quit);
 }
 
 test "#496 위치 binding 은 라벨과 무관하게 자리로 매칭한다" {
@@ -1427,13 +1439,53 @@ fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
 ///
 /// 이름을 바꾸면 기존 사용자 config 의 그 키가 "모르는 키" 가 된다 — 결정 8 의
 /// 삭제 대상이 되므로 이름 변경은 비가산적 변경이다.
-/// #493 — 액션별 기본 키. platform 마다 다른 것은 `cmd` 토큰이 흡수한다
-/// (`parseHotkeyString` 이 Linux Super / Windows Win / macOS Cmd 를 같은 값으로
-/// 본다) — 그래서 한 표가 세 platform 을 덮는다.
+/// #493 — 액션별 기본 키.
 ///
-/// `KeyAction` 에 variant 를 추가하면 이 표도 채워야 한다. 빠지면
+/// **한 표로 세 platform 을 덮을 수 없다.** 처음엔 `cmd` 토큰이 차이를 흡수한다고
+/// 적었는데 (Linux Super = Windows Win = macOS Command) 그것으로는 부족하다 —
+/// macOS 는 modifier 만 다른 것이 아니라 **Shift 의 유무가 다르다.** Apple HIG 를
+/// 따르는 관습이 `Cmd+T` 인데 PC 쪽은 `Ctrl+Shift+T` 다. `KEYBINDINGS.md` 의 표가
+/// 그 차이를 이미 기록하고 있고, 3-c 배선에서 그 표를 그대로 재현해야 한다.
+/// `cmd` 로만 치환하면 macOS 사용자의 모든 단축키가 `Control+Shift+*` 로 바뀐다.
+///
+/// `KeyAction` 에 variant 를 추가하면 **두 표를 다** 채워야 한다. 빠지면
 /// `defaultKeysToml` 이 컴파일 시점에 잡는다 (exhaustive switch).
 pub fn defaultBindings(action: KeyAction) []const []const u8 {
+    return if (is_macos) macDefaultBindings(action) else pcDefaultBindings(action);
+}
+
+/// macOS 기본 bindings — `KEYBINDINGS.md` 의 macOS 열과 1:1. Apple HIG 순서
+/// (`Shift+Cmd`) 를 따른다.
+fn macDefaultBindings(action: KeyAction) []const []const u8 {
+    return switch (action) {
+        .new_tab => &.{"cmd+t"},
+        .close_tab => &.{"cmd+w"},
+        .prev_tab => &.{ "shift+cmd+[", "cmd+pageup" },
+        .next_tab => &.{ "shift+cmd+]", "cmd+pagedown" },
+        .switch_tab1 => &.{"cmd+1"},
+        .switch_tab2 => &.{"cmd+2"},
+        .switch_tab3 => &.{"cmd+3"},
+        .switch_tab4 => &.{"cmd+4"},
+        .switch_tab5 => &.{"cmd+5"},
+        .switch_tab6 => &.{"cmd+6"},
+        .switch_tab7 => &.{"cmd+7"},
+        .switch_tab8 => &.{"cmd+8"},
+        .switch_tab9 => &.{"cmd+9"},
+        .copy_selection => &.{"cmd+c"},
+        .paste => &.{"cmd+v"},
+        .fullscreen => &.{"cmd+return"},
+        .fullscreen_workarea => &.{"shift+cmd+return"},
+        .quit => &.{"cmd+q"},
+        .reset_terminal => &.{"shift+cmd+r"},
+        .show_about => &.{"shift+cmd+i"},
+        .open_config => &.{"shift+cmd+p"},
+        .open_log => &.{"shift+cmd+l"},
+        .dump_perf => &.{"shift+cmd+f12"},
+    };
+}
+
+/// Linux · Windows 기본 bindings — `KEYBINDINGS.md` 의 두 열과 1:1 (그 둘은 같다).
+fn pcDefaultBindings(action: KeyAction) []const []const u8 {
     return switch (action) {
         .new_tab => &.{"ctrl+shift+t"},
         .close_tab => &.{"ctrl+shift+w"},
@@ -1576,20 +1628,154 @@ pub const KeyAction = enum {
 /// binding 쪽 `code` 가 non-null 이면 위치로, null 이면 라벨로 판정한다. 한 binding 이
 /// 두 기준을 동시에 갖지 않으므로 "왜 이 키가 이 동작을 했는가" 가 항상 한 가지로
 /// 설명된다.
+/// #493 3-c — Linux: 도착한 keysym 을 **binding 쪽 표현**으로 옮긴다.
+///
+/// Linux 는 세 platform 중 유일하게 **라벨 (keysym) 로 매칭한다.** 그래서 Shift 가
+/// keysym 자체를 바꾸는 것이 문제가 된다: binding `ctrl+shift+c` 는 keysym `c`
+/// (0x63) 로 저장되는데 실제로 도착하는 것은 `C` (0x43) 다. 예전 하드코딩 매처가
+/// 두 값을 나란히 적어 (`xkb_key_c_lower, xkb_key_c_upper`) 해결하던 자리이고,
+/// 그것을 규칙 하나로 옮긴 것이 이 함수다.
+///
+/// **Shift 비트는 건드리지 않는다.** 키 값만 무시프트 표현으로 되돌리므로
+/// `ctrl+shift+c` 와 `ctrl+c` 가 여전히 다른 조합이다 — Shift 를 선택적으로 만드는
+/// 완화가 아니다 (그것은 #493 에서 명시적으로 거부했다).
+///
+/// 수용 집합 안에서 Shift 가 값을 바꾸는 키만 다룬다. 숫자는 **일부러 빼 놓았다**:
+/// QWERTY 에서 `Shift+1` 은 `exclam` 인데 그것을 `1` 로 되돌리면 `Alt+Shift+1` 이
+/// 탭 전환이 되어 동작이 넓어진다. AZERTY 의 숫자 문제는 값이 아니라 Shift 비트
+/// 쪽이라 `isDigitBinding` 예외가 담당한다.
+pub fn normalizeLinuxKeysym(sym: u32) u32 {
+    // 대문자 latin → 소문자. binding 은 항상 소문자로 저장된다
+    // (`hotkeyKeyFromName` 이 정규화한다).
+    if (sym >= 'A' and sym <= 'Z') return sym + 0x20;
+    return switch (sym) {
+        0x7b => 0x5b, // braceleft  -> bracketleft
+        0x7d => 0x5d, // braceright -> bracketright
+        0x7e => 0x60, // asciitilde -> grave
+        else => sym,
+    };
+}
+
+test "#493 3-c — Linux keysym 정규화는 값만 되돌리고 Shift 를 건드리지 않는다" {
+    // 대문자 → 소문자. `ctrl+shift+c` binding 이 도착한 `C` 와 만나는 자리다.
+    try std.testing.expectEqual(@as(u32, 0x63), normalizeLinuxKeysym(0x43)); // C -> c
+    try std.testing.expectEqual(@as(u32, 0x77), normalizeLinuxKeysym(0x57)); // W -> w
+    // Shift 가 값을 바꾸는 기호 — 예전 매처가 두 값을 나란히 적던 자리.
+    try std.testing.expectEqual(@as(u32, 0x5b), normalizeLinuxKeysym(0x7b)); // { -> [
+    try std.testing.expectEqual(@as(u32, 0x5d), normalizeLinuxKeysym(0x7d)); // } -> ]
+    try std.testing.expectEqual(@as(u32, 0x60), normalizeLinuxKeysym(0x7e)); // ~ -> `
+    // 이미 무시프트인 값은 그대로.
+    try std.testing.expectEqual(@as(u32, 0x63), normalizeLinuxKeysym(0x63));
+    try std.testing.expectEqual(@as(u32, 0xffbe), normalizeLinuxKeysym(0xffbe)); // F1
+    // 숫자는 건드리지 않는다 — `exclam` 이 `1` 이 되면 동작이 넓어진다.
+    try std.testing.expectEqual(@as(u32, 0x21), normalizeLinuxKeysym(0x21)); // ! 그대로
+    try std.testing.expectEqual(@as(u32, 0x31), normalizeLinuxKeysym(0x31)); // 1 그대로
+}
+
+/// #493 3-c — config 액션을 런타임 입력으로 옮긴다. **세 host 가 이 한 표를 쓴다** —
+/// host 마다 매핑을 두면 갈라진다 (#296 이 정확히 그래서 만들어졌다).
+///
+/// `KeyAction` 과 `input_policy.Shortcut` 이 1:1 이 아니라서 이 표가 필요하다:
+///
+///   - `switch_tab1`~`9` 는 config 에서 9 개, 런타임은 `switch_tab` 하나 + 인덱스다.
+///     **인덱스의 출처가 액션 이름이 된다** — 예전엔 host 마다 native 키 코드에서
+///     뽑았다 (macOS `keycodeToTabIndex`, Linux `sym - xkb_key_1`, Windows
+///     `wParam - 0x31`). 액션을 다 펼쳐 적기로 한 결정의 값을 여기서 돌려받는다.
+///   - `paste` 는 `Shortcut` 이 아니라 `Input.paste` 다 (preedit commit 정책이
+///     다르다).
+pub const ActionInput = struct {
+    input: input_policy.Input,
+    /// `switch_tab` 일 때 0-based 탭 인덱스. 그 외에는 null.
+    tab_index: ?usize = null,
+};
+
+pub fn inputForAction(action: KeyAction) ActionInput {
+    return switch (action) {
+        .new_tab => .{ .input = .{ .shortcut = .new_tab } },
+        .close_tab => .{ .input = .{ .shortcut = .close_tab } },
+        .prev_tab => .{ .input = .{ .shortcut = .prev_tab } },
+        .next_tab => .{ .input = .{ .shortcut = .next_tab } },
+        .switch_tab1 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 0 },
+        .switch_tab2 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 1 },
+        .switch_tab3 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 2 },
+        .switch_tab4 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 3 },
+        .switch_tab5 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 4 },
+        .switch_tab6 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 5 },
+        .switch_tab7 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 6 },
+        .switch_tab8 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 7 },
+        .switch_tab9 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 8 },
+        .copy_selection => .{ .input = .{ .shortcut = .copy_selection } },
+        .paste => .{ .input = .paste },
+        .fullscreen => .{ .input = .{ .shortcut = .fullscreen } },
+        .fullscreen_workarea => .{ .input = .{ .shortcut = .fullscreen_workarea } },
+        .quit => .{ .input = .{ .shortcut = .quit } },
+        .reset_terminal => .{ .input = .{ .shortcut = .reset_terminal } },
+        .show_about => .{ .input = .{ .shortcut = .show_about } },
+        .open_config => .{ .input = .{ .shortcut = .open_config } },
+        .open_log => .{ .input = .{ .shortcut = .open_log } },
+        .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
+    };
+}
+
 pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?PhysicalCode) ?KeyAction {
     std.debug.assert(hotkey.code == null);
     for (bindings) |b| {
+        const mods_match = b.hotkey.modifiers == hotkey.modifiers or
+            (isDigitBinding(b.hotkey) and
+                b.hotkey.modifiers == (hotkey.modifiers & ~@as(@TypeOf(hotkey.modifiers), Hotkey.MOD_SHIFT)));
+        if (!mods_match) continue;
         if (b.hotkey.code) |want| {
-            // 위치 binding — modifier 는 같아야 하고 자리가 일치해야 한다. 라벨 쪽
-            // 값 (keysym / vkey / keycode) 은 보지 않는다.
-            if (b.hotkey.modifiers != hotkey.modifiers) continue;
+            // 위치 binding — 자리가 일치해야 한다. 라벨 쪽 값 (keysym / vkey /
+            // keycode) 은 보지 않는다.
             const got = code orelse continue;
             if (got == want) return b.action;
             continue;
         }
-        if (std.meta.eql(b.hotkey, hotkey)) return b.action;
+        if (b.hotkey.code == null and hotkey.code == null and modifiersAside(b.hotkey) == modifiersAside(hotkey)) {
+            return b.action;
+        }
     }
     return null;
+}
+
+/// modifier 를 뺀 라벨 쪽 키 값. `std.meta.eql` 로 통째로 비교하면 Shift 예외를
+/// 표현할 수 없어 (아래) 키 값만 따로 꺼낸다.
+fn modifiersAside(h: Hotkey) u32 {
+    if (is_windows) return h.vkey;
+    if (is_macos) return h.keycode;
+    return h.keysym;
+}
+
+/// #482 — **숫자 binding 은 Shift 를 무시한다.** 일반 규칙이 아니라 숫자에만 두는
+/// 좁은 예외이고, 이유가 layout 에 있다: AZERTY (fr) 등에서 숫자열은 **Shift 를
+/// 눌러야 숫자가 나온다** (무시프트는 `&é"'(-è_çà`). 그래서 `Alt+1` 이 그 layout
+/// 에서 항상 `Alt+Shift+1` 로 도착하고, 엄격히 비교하면 인덱스 탭 전환이 그
+/// layout 에서 아예 동작하지 않는다.
+///
+/// **이것은 동작 확대가 아니다** — 세 platform 이 이미 그렇게 동작한다. Windows 는
+/// `wParam >= 0x31 and wParam <= 0x39` 로 Shift 를 아예 안 보고 (`window.zig`),
+/// macOS 는 `keycodeToTabIndex(kc) != null` 로 역시 안 보며 (`host/macos.zig`),
+/// Linux 도 #482 에서 `!shift` 요구를 걷어냈다. 3-c 가 그 셋을 한 규칙으로 모을 때
+/// 이 예외를 빼면 세 platform 모두 AZERTY 에서 퇴행한다.
+///
+/// QWERTY 에는 영향이 없다: 그쪽에서 `Alt+Shift+1` 은 keysym 이 `exclam` 이라
+/// 라벨 비교 자체가 실패한다. Windows / macOS 는 위치 기반이어서 오늘도 잡히므로
+/// 역시 변화가 없다.
+fn isDigitBinding(h: Hotkey) bool {
+    if (h.code) |c| {
+        return switch (c) {
+            .digit0, .digit1, .digit2, .digit3, .digit4, .digit5, .digit6, .digit7, .digit8, .digit9 => true,
+            else => false,
+        };
+    }
+    // 라벨 쪽은 platform 값에서 되짚는다 — 세 표 모두 숫자를 ASCII 그대로 (Linux
+    // keysym · Windows vkey) 쓰거나 `kVK_ANSI_0`~`9` 로 쓴다.
+    const v = modifiersAside(h);
+    if (is_macos) return physical_key.fromMacKeyCode(v) != null and switch (physical_key.fromMacKeyCode(v).?) {
+        .digit0, .digit1, .digit2, .digit3, .digit4, .digit5, .digit6, .digit7, .digit8, .digit9 => true,
+        else => false,
+    };
+    return v >= '0' and v <= '9';
 }
 
 /// 한 액션에 키를 여러 개 줄 수 있다 (결정 3). 런타임 조회 방향은 **키 → 액션**
