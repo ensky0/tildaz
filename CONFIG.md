@@ -203,7 +203,38 @@ sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f
 Startup only fails when the name matches **no** installed font at all — a typo, or a font that is
 not installed.
 
-### Hotkey syntax
+### Keyboard shortcuts
+
+The `[keys]` table binds an action to one or more key combinations. Every action
+appears in the file, so you can see the whole set without consulting the docs.
+
+```toml
+[keys]
+new_tab  = ["ctrl+shift+t"]
+prev_tab = ["ctrl+shift+[", "ctrl+pageup"]
+quit     = []
+```
+
+- **A list, not a single value** — an action can have several keys. `prev_tab`
+  ships with two because the bracket form is unusable on some layouts (see
+  KEYBINDINGS.md).
+- **An empty list unbinds the action.** That is the only way to express "no
+  key"; the entry itself always stays in the file.
+- **Every key may trigger only one action.** Binding the same combination twice
+  is an error at startup, and the message names both actions.
+- `cmd` resolves per platform (Super on Linux, Win on Windows, Command on
+  macOS), so one file works on all three.
+
+**Scrolling is not in `[keys]`.** `Shift+PgUp` / `Shift+PgDn` scroll the
+scrollback, and scrolling is not a shortcut — it is the same action as the mouse
+wheel, just driven from the keyboard. TildaZ does not let you rebind the mouse
+wheel either. Those two combinations are fixed.
+
+The global `hotkey` is also separate, and for a different reason: it is
+registered with the operating system rather than handled inside TildaZ, so it
+lives at the top level and takes a single value.
+
+## Hotkey syntax
 
 `hotkey` accepts a single key optionally combined with modifiers, joined by `+`
 (e.g. `"F1"`, `"Ctrl+Space"`, `"Shift+Cmd+T"`). Rules (validated at startup — an
