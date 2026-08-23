@@ -543,6 +543,45 @@ test "#493 [keys] scope accepts what the defaults need, and still guards typing"
     try std.testing.expect(parseHotkeyString("f5", .global_hotkey) == .ok);
 }
 
+test "#493 lookup is exact — no shift-insensitive fallback" {
+    // 이 테스트가 `lookupAction` 을 실제로 호출해 **세 platform 에서 컴파일 검증**
+    // 되게 한다 (Zig 는 호출되지 않는 함수 본문을 분석하지 않는다).
+    var buf: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    var n: usize = 0;
+    const add = struct {
+        fn f(list: []KeyBinding, count: *usize, text: []const u8, action: KeyAction) !void {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            list[count.*] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+            count.* += 1;
+        }
+    }.f;
+    try add(&buf, &n, "alt+return", .fullscreen);
+    try add(&buf, &n, "shift+alt+return", .fullscreen_workarea);
+    try add(&buf, &n, "alt+1", .switch_tab1);
+    const bindings = buf[0..n];
+
+    const hk = struct {
+        fn f(text: []const u8) !Hotkey {
+            return switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| Hotkey.fromParsed(v),
+                else => error.TestUnexpectedResult,
+            };
+        }
+    }.f;
+
+    try std.testing.expectEqual(KeyAction.fullscreen, lookupAction(bindings, try hk("alt+return")).?);
+    try std.testing.expectEqual(KeyAction.fullscreen_workarea, lookupAction(bindings, try hk("shift+alt+return")).?);
+    try std.testing.expectEqual(KeyAction.switch_tab1, lookupAction(bindings, try hk("alt+1")).?);
+
+    // Shift 가 더 붙은 조합은 **일치하지 않는다.** 완화 조회를 뺀 결과이고 의도된
+    // 동작이다 — `shift+alt+f4` 가 `alt+f4` 를 발동시키는 일이 없다.
+    try std.testing.expect(lookupAction(bindings, try hk("shift+alt+1")) == null);
+    try std.testing.expect(lookupAction(bindings, try hk("ctrl+alt+return")) == null);
+}
+
 test "#493 default [keys] has no conflicting bindings" {
     // 액션 → 키 방향을 택한 대가로 충돌 감지가 우리 몫이다 (키 → 액션이면 TOML 이
     // 중복 키로 잡아 준다). 기본값끼리 충돌하면 첫 실행부터 fatal 이므로 고정한다.
@@ -566,8 +605,8 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 25 개 + prev_tab / next_tab 이 2 개씩 = 27.
-    try std.testing.expectEqual(@as(usize, 27), count);
+    // 액션 23 개 + prev_tab / next_tab 이 2 개씩 = 25.
+    try std.testing.expectEqual(@as(usize, 25), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -703,12 +742,19 @@ const WindowsHotkey = struct {
         return fromParsed(parsed);
     }
 
+    /// `RegisterHotKey` 의 modifier 비트. #493 3-c 의 `lookupAction` 이 platform 과
+    /// 무관하게 `Hotkey.MOD_SHIFT` 를 참조하므로 세 타입이 같은 이름을 갖는다.
+    pub const MOD_ALT: u32 = 0x1;
+    pub const MOD_CTRL: u32 = 0x2;
+    pub const MOD_SHIFT: u32 = 0x4;
+    pub const MOD_SUPER: u32 = 0x8;
+
     pub fn fromParsed(parsed: ParsedHotkey) WindowsHotkey {
         var modifiers: u32 = 0;
-        if (parsed.alt) modifiers |= 0x1; // MOD_ALT
-        if (parsed.ctrl) modifiers |= 0x2; // MOD_CONTROL
-        if (parsed.shift) modifiers |= 0x4; // MOD_SHIFT
-        if (parsed.super) modifiers |= 0x8; // MOD_WIN
+        if (parsed.alt) modifiers |= MOD_ALT;
+        if (parsed.ctrl) modifiers |= MOD_CTRL;
+        if (parsed.shift) modifiers |= MOD_SHIFT;
+        if (parsed.super) modifiers |= MOD_SUPER;
         return .{ .vkey = vkeyFromKey(parsed.key), .modifiers = modifiers };
     }
 
@@ -790,12 +836,19 @@ const MacHotkey = struct {
         return fromParsed(parsed);
     }
 
+    /// `kCGEventFlagMask*`. #493 3-c 의 `lookupAction` 이 platform 과 무관하게
+    /// `Hotkey.MOD_SHIFT` 를 참조하므로 세 타입이 같은 이름을 갖는다.
+    pub const MOD_SHIFT: u64 = 0x00020000;
+    pub const MOD_CTRL: u64 = 0x00040000;
+    pub const MOD_ALT: u64 = 0x00080000;
+    pub const MOD_SUPER: u64 = 0x00100000;
+
     pub fn fromParsed(parsed: ParsedHotkey) MacHotkey {
         var modifiers: u64 = 0;
-        if (parsed.shift) modifiers |= 0x00020000; // kCGEventFlagMaskShift
-        if (parsed.ctrl) modifiers |= 0x00040000; // kCGEventFlagMaskControl
-        if (parsed.alt) modifiers |= 0x00080000; // kCGEventFlagMaskAlternate
-        if (parsed.super) modifiers |= 0x00100000; // kCGEventFlagMaskCommand
+        if (parsed.shift) modifiers |= MOD_SHIFT;
+        if (parsed.ctrl) modifiers |= MOD_CTRL;
+        if (parsed.alt) modifiers |= MOD_ALT;
+        if (parsed.super) modifiers |= MOD_SUPER;
         return .{ .keycode = keycodeFromKey(parsed.key), .modifiers = modifiers };
     }
 
@@ -1144,7 +1197,12 @@ fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
 ///   - `fullscreen_workarea` 는 별 `Shortcut` 이 없다 — 런타임은 `fullscreen` +
 ///     Shift 여부로 갈린다. config 에서는 두 동작이 별 항목이어야 각각 바인딩할 수
 ///     있다.
-///   - `scroll_page_*` 는 `Shortcut` 에 아예 없다 (host 가 직접 처리).
+///
+/// **스크롤백 (`Shift+PgUp` / `Shift+PgDn`) 은 일부러 없다.** 그것은 단축키가 아니라
+/// **스크롤**이다 — `app_event.Event` 에서도 `shortcut` 이 아니라 `scroll` 범주이고,
+/// 마우스 휠과 같은 자리다. 세 platform 모두 매처 밖에서 처리한다 (Linux
+/// `wayland_minimal` · Windows `wndProc` · macOS `tildazKeyDown`). 마우스 스크롤을
+/// 재바인딩하지 않는 것과 같은 이유로 설정 대상이 아니다.
 ///
 /// 그래서 이 enum 이 config 의 단일 출처이고, 런타임 매핑은 3-c 단계에서 붙인다.
 ///
@@ -1178,10 +1236,6 @@ pub fn defaultBindings(action: KeyAction) []const []const u8 {
         .fullscreen => &.{"alt+return"},
         .fullscreen_workarea => &.{"shift+alt+return"},
         .quit => &.{"alt+f4"},
-        // Shift 단독이지만 PageUp / PageDown 은 글자를 내지 않아 타이핑을 훔치지
-        // 않는다 — `HotkeyScope.app_binding` 규칙이 이것을 허용한다.
-        .scroll_page_up => &.{"shift+pageup"},
-        .scroll_page_down => &.{"shift+pagedown"},
         .reset_terminal => &.{"ctrl+shift+r"},
         .show_about => &.{"ctrl+shift+i"},
         .open_config => &.{"ctrl+shift+p"},
@@ -1216,7 +1270,6 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
         .{ .title = "클립보드", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "창", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
-        .{ .title = "스크롤백", .actions = &.{ .scroll_page_up, .scroll_page_down } },
         .{ .title = "도구", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
     };
     for (groups) |g| {
@@ -1260,8 +1313,6 @@ pub const KeyAction = enum {
     fullscreen,
     fullscreen_workarea,
     quit,
-    scroll_page_up,
-    scroll_page_down,
     reset_terminal,
     show_about,
     open_config,
@@ -1274,6 +1325,25 @@ pub const KeyAction = enum {
         return @tagName(self);
     }
 };
+
+/// #493 3-c — 키 이벤트에서 만든 `Hotkey` 로 액션을 찾는다. **정확히 일치만** 본다.
+///
+/// Shift 를 무시하는 완화 조회를 두었다가 뺐다. AZERTY 처럼 숫자열에 Shift 가 필요한
+/// layout 에서 `Alt+1` 이 `Alt+Shift+(&1 키)` 로 도착하는 문제를 매칭 쪽에서 풀려고
+/// 했는데, 그러면
+///
+///   - `Shift+Alt+F4` 도 `alt+f4` (quit) 로 잡히는 등 **의도하지 않은 조합이 발동**하고,
+///   - QWERTY 에서 `Shift+[` 는 keysym 이 `{` 라서 정규화 표가 따로 필요해지고,
+///   - 무엇보다 "이 키가 왜 저 동작을 하는가" 를 사용자가 설명할 수 없게 된다.
+///
+/// layout 때문에 특정 조합을 누를 수 없다면 **그 layout 에서 다른 키로 바꾸는 것**이
+/// 답이다 — `[keys]` 를 설정 가능하게 만든 이유가 그것이다.
+pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey) ?KeyAction {
+    for (bindings) |b| {
+        if (std.meta.eql(b.hotkey, hotkey)) return b.action;
+    }
+    return null;
+}
 
 /// 한 액션에 키를 여러 개 줄 수 있다 (결정 3). 런타임 조회 방향은 **키 → 액션**
 /// 이므로 (키 이벤트를 받아 "무슨 액션인가" 를 묻는다) 평면 배열로 보관한다.
