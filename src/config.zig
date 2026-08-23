@@ -1096,12 +1096,12 @@ pub fn defaultConfigTomlWithHotkey(
     const head = try std.fmt.allocPrint(allocator,
         \\# TildaZ config
         \\#
-        \\# v0.9.0 부터 config 는 TOML 입니다. 이전 JSON 설정을 쓰고 있었다면
-        \\# 같은 폴더의 config_N.json 에 그대로 남아 있습니다 (더는 읽지 않습니다).
+        \\# Since v0.9.0 this file is TOML. If you had a JSON config, it is still
+        \\# next to this file as config_N.json -- TildaZ no longer reads it.
         \\#
-        \\# 값의 의미와 허용 범위: CONFIG.md
+        \\# Field meanings and accepted ranges: CONFIG.md
         \\
-        \\# 전역 핫키 — TildaZ 가 떠 있지 않아도 OS 가 받습니다.
+        \\# Global hotkey -- the OS delivers this even when TildaZ is not focused.
         \\hotkey           = "{s}"
         \\
         \\shell            = "{s}"
@@ -1250,27 +1250,30 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\
         \\# ─────────────────────────────────────────────────────────────────────────
-        \\# 단축키
+        \\# Keyboard shortcuts
         \\#
-        \\# 액션 하나에 키를 여러 개 줄 수 있습니다. 빈 리스트 [] 는 단축키 없음입니다.
+        \\# An action may have several keys. An empty list [] means "no shortcut".
         \\#
-        \\# `cmd` 는 OS 마다 알맞게 풀립니다 — Linux Super / Windows Win / macOS
-        \\# Command. 그래서 이 파일을 세 OS 에서 그대로 쓸 수 있습니다.
+        \\# `cmd` resolves per OS -- Super on Linux, Win on Windows, Command on
+        \\# macOS -- so this file works unchanged on all three.
         \\#
-        \\# 받는 키: F1-F12, A-Z, 0-9, space, tab, escape, return, grave(`),
-        \\#          pageup, pagedown
+        \\# Accepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return,
+        \\#                grave(`), pageup, pagedown, [, ]
+        \\#
+        \\# See CONFIG.md for the full syntax and KEYBINDINGS.md if your keyboard
+        \\# layout is not US QWERTY.
         \\# ─────────────────────────────────────────────────────────────────────────
         \\
         \\[keys]
         \\
-        \\# 탭
+        \\# Tabs
         \\
     );
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
-        .{ .title = "클립보드", .actions = &.{ .copy_selection, .paste } },
-        .{ .title = "창", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
-        .{ .title = "도구", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
+        .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
+        .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
+        .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
     };
     for (groups) |g| {
         if (g.title) |t| {

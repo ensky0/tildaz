@@ -644,22 +644,23 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 같은 nested schema, default 만 OS-specific. *Single source of truth* 패턴 — [`src/config.zig`](src/config.zig) 의 `Defaults` struct (Win/Mac 분기, 같은 필드 순서로 나란히) 한 곳에 모든 default 값. 이로부터:
 
-1. **`defaultConfigJson(allocator, shell_resolved)`** 이 runtime `allocPrint` 로 default JSON 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.json`에 저장 + parse() 의 `validateStructure` 검증 ground truth.
+1. **`defaultConfigToml(allocator, shell_resolved)`** 이 runtime `allocPrint` 로 default TOML 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.toml`에 저장 + parse() 의 `validateStructure` 검증 ground truth.
 2. **`Config` struct field initializer** 가 참조하는 `default_*` const 모두 같은 `Defaults` 에서 derive — 디스크 default 와 메모리 fallback 자동 sync.
 
-이전엔 default 값이 6+ 곳 (JSON literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
+이전엔 default 값이 6+ 곳 (config literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
 
 ### 7.1 번호별 config / process 정책 (#267)
 
-- 활성 설정은 `config_0.json`, `config_1.json`, ... 형식만 인식한다. 기존
-  `config.json`은 읽기·변환·수정·삭제하지 않는다.
-- `config_N.json` 하나가 worker process 하나, global hotkey 하나, `tildaz_N.log`
+- 활성 설정은 `config_0.toml`, `config_1.toml`, ... 형식만 인식한다. 기존
+  `config.json` 도, TOML 전환 전의 `config_N.json` 도 읽기·변환·수정·삭제하지
+  않는다 — 디스크에 그대로 남고 읽지 않는다 (#493).
+- `config_N.toml` 하나가 worker process 하나, global hotkey 하나, `tildaz_N.log`
   하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
   중복 실행을 막는다.
 - 일반 실행은 config index별 실행 상태를 확인하고 빠진 TildaZ worker를 한 번에 모두
-  복구한 뒤 launcher가 종료한다. `config_0.json`이 없으면 다른 번호의 config 존재
+  복구한 뒤 launcher가 종료한다. `config_0.toml`이 없으면 다른 번호의 config 존재
   여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라
-  `config_<N>.json` ↔ worker N 대응으로 판정한다.
+  `config_<N>.toml` ↔ worker N 대응으로 판정한다.
 - 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 영역을
   한 다이얼로그에 표시한다. prompt 전에 worker 0을 show/restore/activate하며, 표시가
   반영된 뒤 alert를 연다. 실제 key 조합을 캡처하기 전에는 **Create**가 비활성이다.
@@ -711,7 +712,7 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
   config transaction을 위해 다시 획득한다. launcher가 lock을 쥔 채 worker의 처리를
   기다리는 순환 대기는 허용하지 않는다.
 
-> Zig 의 `std.json` 이 comptime allocator 를 지원 안 해 (0.15.2 에서 확인 — 0.16 에서 재확인하지 않았다) (FixedBufferAllocator 의 `@intFromPtr` runtime-only) JSON → Zig 방향 derive 는 불가. 반대로 Zig `Defaults` struct → JSON 방향 생성이 우리 패턴 — shell 이 runtime 결정값(`resolveShell`)이 되면서 `comptimePrint` 대신 `defaultConfigJson` 의 runtime `allocPrint` 로 생성한다.
+> 방향은 **Zig `Defaults` struct → TOML** 이고 그 반대가 아니다. shell 이 runtime 결정값(`resolveShell`)이라 comptime 생성이 불가능하므로 `comptimePrint` 대신 `defaultConfigToml` 의 runtime `allocPrint` 로 만든다. 파싱은 `sam701/zig-toml` 의 value tree (`toml.Table` / `toml.Value`) 를 쓰고 struct 매핑은 쓰지 않는다 — `validateStructure` 가 default 문서와 user 문서를 같은 표현으로 비교해야 하기 때문이다.
 
 | 필드 | 의미 | Windows default | macOS default | Linux default / 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
@@ -753,13 +754,13 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 > **schema strict 검증** (Windows + macOS 동일, v0.4.1 통일 — #118 후속):
 > - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지).
-> - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 단 `_` prefix key (예: `_note`, `_disabled_*`) 는 *사용자 주석* 으로 인정 — schema 검사 skip (#173). JSON 표준에 주석 없지만 정식 key 는 `_` 안 붙으니 충돌 없는 convention.
+> - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 예외는 없다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할 이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다).
 > - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
-> - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigJson(allocator, shell_resolved)` 결과와 user config 를 비교.
+> - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigToml(allocator, shell_resolved)` 결과와 user config 를 비교.
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. `config_0.json` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 GSettings·Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
+**Schema**: `string`. `config_0.toml` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 GSettings·Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
 
 **잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:962-974](src/config.zig#L962-L974), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux native backend 변환 가능 여부는 아래 *Key 토큰 표*를 따른다.
 
@@ -767,15 +768,15 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 
 **예제** (모든 platform 동일 문법):
 
-```json
-"hotkey": "F1"                  // 기본
-"hotkey": "ctrl+space"          // 흔한 toggle
-"hotkey": "ctrl+shift+t"        // ✅ KDE 테스트 통과
-"hotkey": "alt+f12"             // ✅ KDE 테스트 통과
-"hotkey": "super+a"             // ✅ KDE — plasmashell next activity 충돌 → takeover dialog
-"hotkey": "ctrl+f7"             // ✅ KDE — kwin ExposeClass 충돌 → takeover dialog
-"hotkey": "shift+cmd+t"         // mac 친숙 표기 (`cmd` = `super` = `meta` 모두 동일 키)
-"hotkey": "ctrl+grave"          // backtick — `grave` 또는 `` ` `` 둘 다 가능
+```toml
+hotkey = "F1"                   # 기본
+hotkey = "ctrl+space"           # 흔한 toggle
+hotkey = "ctrl+shift+t"         # ✅ KDE 테스트 통과
+hotkey = "alt+f12"              # ✅ KDE 테스트 통과
+hotkey = "super+a"              # ✅ KDE — plasmashell next activity 충돌 → takeover dialog
+hotkey = "ctrl+f7"              # ✅ KDE — kwin ExposeClass 충돌 → takeover dialog
+hotkey = "shift+cmd+t"          # mac 친숙 표기 (`cmd` = `super` = `meta` 모두 동일 키)
+hotkey = "ctrl+grave"           # backtick — `grave` 또는 `` ` `` 둘 다 가능
 ```
 
 **Modifier 토큰** (대소문자 무관, `+` 분리, 임의 개수 결합):
@@ -795,8 +796,10 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ |
 | Digit | `0` ~ `9` | ✅ |
 | Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
+| Page key | `pageup` / `pgup`, `pagedown` / `pgdn` | ✅ — 어느 layout 에나 있는 단일 물리 키 ([#482](https://github.com/ensky0/tildaz/issues/482)) |
+| Bracket | `bracketleft` / `[`, `bracketright` / `]` | ✅ — `[keys]` 의 `prev_tab` / `next_tab` 기본값이 쓴다 ([#493](https://github.com/ensky0/tildaz/issues/493)) |
 | Backtick | `grave` / `backquote` (이름) 또는 `` ` `` (글자) | ✅ |
-| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `[` `]` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString`이 명시 reject(#208). caller가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)`로 즉시 알린다. 수용 범위 확대는 모든 native backend의 실제 key-code mapping 검증 후 별도 진행한다. |
+| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString`이 명시 reject(#208). caller가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)`로 즉시 알린다. 수용 범위 확대는 모든 native backend의 실제 key-code mapping 검증 후 별도 진행한다. |
 
 **KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 
@@ -838,7 +841,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 
 **Wayland hotkey capture inhibitor**: Linux prompt surface가 focus를 가진 동안 compositor가 `zwp_keyboard_shortcuts_inhibit_manager_v1`을 client에게 노출하면 `zwp_keyboard_shortcuts_inhibitor_v1`을 생성한다. 따라서 기존 compositor binding이 있는 F-key도 prompt가 직접 받는다. Create / Cancel / Esc / surface 종료 시 inhibitor를 surface보다 먼저 파괴해 일반 shortcut routing을 즉시 복구한다. protocol을 노출하지 않는 compositor는 기존 입력 경로를 유지한다. sway에서 `--inhibited`로 등록한 특수 binding은 compositor 정책상 예외로 계속 실행될 수 있다([Wayland protocol](https://wayland.app/protocols/keyboard-shortcuts-inhibit-unstable-v1), [sway inhibitor 동작](https://man.archlinux.org/man/sway.5.en)).
 
-**Hyprland — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.json` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
+**Hyprland — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.toml` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
 
 **KDE Plasma / GNOME / Cinnamon — persistent binding 증분 정리**: launcher는 KDE Plasma에서 KGlobalAccel `allComponents()`와 Component `uniqueName`을 조회해 config에서 사라진 `tildaz.instanceN`의 `toggle-N`만 `unregister`한다([KGlobalAccel D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml), [Component interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml)). GNOME/Cinnamon의 GSettings fallback도 custom keybinding 목록에서 TildaZ numbered entry만 식별해 사라진 번호를 제거하며 사용자 항목은 보존한다. GNOME/Cinnamon Shell extension은 config directory monitor로 변경을 받고 동일 index/accelerator는 유지한다.
 
@@ -971,7 +974,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
-| **config** | `%APPDATA%\tildaz\config_N.json` (Microsoft 표준) | `$XDG_CONFIG_HOME/tildaz/config_N.json` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/tildaz/config_N.json` (fallback `~/.config`) |
+| **config** | `%APPDATA%\tildaz\config_N.toml` (Microsoft 표준) | `$XDG_CONFIG_HOME/tildaz/config_N.toml` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/tildaz/config_N.toml` (fallback `~/.config`) |
 | **log** | `%APPDATA%\tildaz\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱) | `$XDG_STATE_HOME/tildaz/tildaz_N.log` (fallback `~/.local/state`) |
 | **process / endpoint state** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`, `instanceN.endpoint`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
 
@@ -1019,7 +1022,7 @@ onrender 진단 수치에만 적용한다. instance timeout이나 Linux startup/
 [Windows unbiased interrupt time](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryunbiasedinterrupttimeprecise)).
 
 **메커니즘:**
-- Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.json` / `.log` 의 file association). **연결이 없으면 `notepad.exe` 로 연다** ([#456](https://github.com/ensky0/tildaz/issues/456)). 확장자에 기본 앱이 없으면 Windows 는 아무 것도 열지 않으면서 `ShellExecuteW` 는 성공을 반환해서 (실측: 연결 있는 `.log` 과 연결 없는 `.json` 이 **둘 다 42**, 창은 한쪽만 뜸) 호출 결과로는 성패를 알 수 없다. 그래서 열기 **전에** 연결을 조회한다 — `UserChoice` → `HKCR\<ext>` 기본값 → 그 ProgId 의 `shell\open\command` 순. `AssocQueryString` 계열은 `OpenWithProgids` 후보까지 답해서 이 판정에 쓸 수 없다. 확실히 없을 때만 fallback 하고, 조회가 불확실하면 OS 에 맡긴다.
+- Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.toml` / `.log` 의 file association). **연결이 없으면 `notepad.exe` 로 연다** ([#456](https://github.com/ensky0/tildaz/issues/456)). 확장자에 기본 앱이 없으면 Windows 는 아무 것도 열지 않으면서 `ShellExecuteW` 는 성공을 반환해서 (실측: 연결 있는 `.log` 과 연결 없는 `.json` 이 **둘 다 42**, 창은 한쪽만 뜸 — config 가 JSON 이던 시절의 측정이고, `.toml` 도 연결 없는 확장자라 상황은 같다) 호출 결과로는 성패를 알 수 없다. 그래서 열기 **전에** 연결을 조회한다 — `UserChoice` → `HKCR\<ext>` 기본값 → 그 ProgId 의 `shell\open\command` 순. `AssocQueryString` 계열은 `OpenWithProgids` 후보까지 답해서 이 판정에 쓸 수 없다. 확실히 없을 때만 fallback 하고, 조회가 불확실하면 OS 에 맡긴다.
 - macOS: `/usr/bin/open <path>` 를 자식 process 로 — Finder 가 file extension 따라 default app.
 - Linux: `xdg-open <path>` 를 자식 process 로 — XDG MIME database.
 
@@ -1045,8 +1048,8 @@ TildaZ v0.3.0
 exe   : /Applications/TildaZ.app/Contents/MacOS/tildaz   (mac)
         C:\Users\<u>\...\tildaz.exe                       (win)
 pid   : 12345
-config: /Users/<u>/.config/tildaz/config_0.json            (mac)
-        C:\Users\<u>\AppData\Roaming\tildaz\config_0.json   (win)
+config: /Users/<u>/.config/tildaz/config_0.toml            (mac)
+        C:\Users\<u>\AppData\Roaming\tildaz\config_0.toml   (win)
 log   : /Users/<u>/Library/Logs/tildaz_0.log               (mac)
         C:\Users\<u>\AppData\Roaming\tildaz\tildaz_0.log    (win)
 
@@ -1067,7 +1070,7 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 ### 11.4 config error 시 dialog 경로 안내
 
-잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, JSON parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
 
 Windows는 짧은 본문을 기존 `MessageBoxW`로 표시하고 화면 또는 4096 UTF-16 변환 상한을 넘을 때만 read-only multiline EDIT window로 전환한다. macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 전체 동적 본문을 stderr + log fallback으로 출력한다. **현재 상태: 구현·자동 검증 완료, Linux · macOS · Windows 묶음 실기 대기 (#316).**
 
