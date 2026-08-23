@@ -289,12 +289,21 @@ pub const config_read_failed_format =
 ;
 
 pub const config_parse_failed_format =
-    \\Failed to parse config JSON.
+    \\Failed to parse config file.
     \\
     \\Path: {s}
     \\Error: {s}
 ;
-pub const config_parse_failed_fallback_msg = "Failed to parse config JSON.";
+/// #493 — TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
+/// 어디를 고쳐야 하는지 알 수 있어야 사용자가 스스로 해결한다.
+pub const config_parse_failed_at_format =
+    \\Failed to parse config file.
+    \\
+    \\Path: {s}
+    \\Line {d}, column {d}
+    \\Error: {s}
+;
+pub const config_parse_failed_fallback_msg = "Failed to parse config file.";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
 pub const config_error_with_path_format = "{s}\n\nConfig path:\n  {s}";

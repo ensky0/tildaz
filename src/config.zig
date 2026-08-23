@@ -1,13 +1,14 @@
 // Cross-platform config_N.json schema + parser. Windows + macOS 같은 nested
 // schema, default 만 OS-specific (font.family / font.size / shell / hotkey
-// 등). `Defaults` struct + `defaultConfigJson(alloc, shell_resolved)` 가 schema
+// 등). `Defaults` struct + `defaultConfigToml(alloc, shell_resolved)` 가 schema
 // single source — createDefault 가 그대로 파일에 저장 + parse 시 user config
 // 와 비교 (`validateStructure`) 검증의 ground truth.
 //
-// 새 필드 추가 시 *Defaults + defaultConfigJson 한 곳만* update 하면 required /
+// 새 필드 추가 시 *Defaults + defaultConfigToml 한 곳만* update 하면 required /
 // unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
+const toml = @import("toml");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const windows = std.os.windows;
@@ -756,7 +757,7 @@ fn eqIc(a: []const u8, b: []const u8) bool {
 // 나란히 두어서 한눈에 비교 / 편집 가능.
 //
 // 이 한 곳만 고치면:
-//   (a) `defaultConfigJson(alloc, shell_resolved)` — Defaults 값 그대로 JSON
+//   (a) `defaultConfigToml(alloc, shell_resolved)` — Defaults 값 그대로 TOML
 //       템플릿 생성. 첫 실행 시 디스크의 `config_0.json`
 //       에 저장됨 + parse() 의 `validateStructure` 가 schema 검증 ground
 //       truth 로 사용. shell 만 host 가 첫 실행 시점에 resolveShell 로 결정해
@@ -841,14 +842,26 @@ pub const Defaults = struct {
 ///   - macOS: `$SHELL` env 가 있으면 그 값, 없으면 `Defaults.shell` (= `/bin/bash`).
 /// 이렇게 disk 에 명시값으로 적어두면 이후 실행은 disk 그대로 사용 — host 의
 /// runtime fallback 분기 없음 (config 가 단일 source of truth).
-pub fn defaultConfigJson(
+/// 기본 config 문서 (TOML). 두 곳에서 쓴다:
+///   (a) 첫 실행 시 `config_N.toml` 생성
+///   (b) `parse` 의 schema 검증 — 이 문서를 파싱해 key set / 구조 / 타입의 기준으로 삼는다
+///
+/// 그래서 **새 필드를 추가할 때 `Defaults` 와 이 함수 두 곳만** 고치면 required key
+/// 검증까지 따라온다.
+///
+/// 키 순서와 빈 줄 묶음은 의도된 것이다 (#493 결정 10) — **부르는 법 → 안에서 도는 것
+/// → 언제 뜨는가 → 어떻게 보이는가 → 한계**. TOML 은 파싱이 순서와 무관하므로 순전히
+/// 읽는 사람을 위한 배치다.
+///
+/// TOML 제약: **최상위 스칼라는 테이블 헤더보다 먼저** 와야 한다. `[window]` 뒤에
+/// `theme` 을 두면 `window.theme` 으로 해석된다.
+pub fn defaultConfigToml(
     allocator: std.mem.Allocator,
     shell_resolved: []const u8,
 ) ![]const u8 {
-    return defaultConfigJsonWithHotkey(allocator, shell_resolved, Defaults.hotkey);
+    return defaultConfigTomlWithHotkey(allocator, shell_resolved, Defaults.hotkey);
 }
-
-pub fn defaultConfigJsonWithHotkey(
+pub fn defaultConfigTomlWithHotkey(
     allocator: std.mem.Allocator,
     shell_resolved: []const u8,
     hotkey: []const u8,
@@ -862,49 +875,58 @@ pub fn defaultConfigJsonWithHotkey(
         try fw.print("\"{s}\"", .{f});
     }
     try fw.writeAll("]");
-    const glyph_fallback_json = fb_fbs.buffered();
+    const glyph_fallback_toml = fb_fbs.buffered();
 
     return try std.fmt.allocPrint(allocator,
-        \\{{
-        \\  "window": {{
-        \\    "dock_position": "{s}",
-        \\    "width_percent": {d:.1},
-        \\    "height_percent": {d:.1},
-        \\    "offset_percent": {d:.1},
-        \\    "opacity_percent": {d:.1}
-        \\  }},
-        \\  "font": {{
-        \\    "family": "{s}",
-        \\    "glyph_fallback": {s},
-        \\    "size_point": {d},
-        \\    "cell_width_ratio": {d:.1},
-        \\    "line_height_ratio": {d:.1}
-        \\  }},
-        \\  "theme": "{s}",
-        \\  "shell": "{s}",
-        \\  "hotkey": "{s}",
-        \\  "auto_start": {},
-        \\  "hidden_start": {},
-        \\  "max_scroll_lines": {d}
-        \\}}
+        \\# TildaZ config
+        \\#
+        \\# v0.9.0 부터 config 는 TOML 입니다. 이전 JSON 설정을 쓰고 있었다면
+        \\# 같은 폴더의 config_N.json 에 그대로 남아 있습니다 (더는 읽지 않습니다).
+        \\#
+        \\# 값의 의미와 허용 범위: CONFIG.md
+        \\
+        \\# 전역 핫키 — TildaZ 가 떠 있지 않아도 OS 가 받습니다.
+        \\hotkey           = "{s}"
+        \\
+        \\shell            = "{s}"
+        \\
+        \\auto_start       = {}
+        \\hidden_start     = {}
+        \\
+        \\theme            = "{s}"
+        \\max_scroll_lines = {d}
+        \\
+        \\[window]
+        \\dock_position   = "{s}"   # top | bottom | left | right
+        \\width_percent   = {d:.1}
+        \\height_percent  = {d:.1}
+        \\offset_percent  = {d:.1}
+        \\opacity_percent = {d:.1}
+        \\
+        \\[font]
+        \\family            = "{s}"
+        \\glyph_fallback    = {s}
+        \\size_point        = {d}
+        \\cell_width_ratio  = {d:.1}
+        \\line_height_ratio = {d:.1}
         \\
     , .{
+        hotkey,
+        shell_resolved,
+        Defaults.auto_start,
+        Defaults.hidden_start,
+        Defaults.theme,
+        Defaults.max_scroll_lines,
         Defaults.dock_position,
         Defaults.width_percent,
         Defaults.height_percent,
         Defaults.offset_percent,
         Defaults.opacity_percent,
         Defaults.font_family,
-        glyph_fallback_json,
+        glyph_fallback_toml,
         Defaults.font_size_point,
         Defaults.cell_width_ratio,
         Defaults.line_height_ratio,
-        Defaults.theme,
-        shell_resolved,
-        hotkey,
-        Defaults.auto_start,
-        Defaults.hidden_start,
-        Defaults.max_scroll_lines,
     });
 }
 
@@ -1056,8 +1078,26 @@ pub const Config = struct {
 
     fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) Config {
         var config = Config{};
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
-            const msg = std.fmt.allocPrint(
+        // #493 — TOML. `toml.Table` 로 받아 **값 트리**를 직접 훑는다. 구조체 매핑을
+        // 쓰지 않는 이유는 아래 필드별 오류 메시지다 — 매핑에 맡기면 "어느 필드가 왜
+        // 틀렸는지" 가 파서의 일반 오류로 퇴화한다.
+        var parser: toml.Parser(toml.Table) = .init(allocator);
+        defer parser.deinit();
+        var parsed = parser.parseString(content) catch |err| {
+            // TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
+            // 사용자가 어디를 고쳐야 할지 알 수 있게 line / col 을 함께 보여 준다.
+            const msg = if (parser.error_info) |info| switch (info) {
+                .parse => |pos| std.fmt.allocPrint(
+                    std.heap.page_allocator,
+                    messages.config_parse_failed_at_format,
+                    .{ config_path, pos.line, pos.pos, @errorName(err) },
+                ) catch messages.config_parse_failed_fallback_msg,
+                .struct_mapping => std.fmt.allocPrint(
+                    std.heap.page_allocator,
+                    messages.config_parse_failed_format,
+                    .{ config_path, @errorName(err) },
+                ) catch messages.config_parse_failed_fallback_msg,
+            } else std.fmt.allocPrint(
                 std.heap.page_allocator,
                 messages.config_parse_failed_format,
                 .{ config_path, @errorName(err) },
@@ -1066,19 +1106,20 @@ pub const Config = struct {
         };
         defer parsed.deinit();
 
-        const root = parsed.value;
-        if (root != .object) showConfigFatalMsg(rt, config_path, messages.config_top_level_must_be_object_msg);
+        // TOML 문서의 최상위는 **항상 테이블**이라 JSON 의 "top-level must be object"
+        // 검사가 필요 없다. 그 자리를 파서가 문법으로 보장한다.
+        const root: toml.Value = .{ .table = &parsed.value };
 
         // font.family / font.glyph_fallback 의 type 만 우선 사전 체크 —
         // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
         // 의도 (primary single string + glyph fallback list) 를 명확히 안내.
-        if (root == .object) {
-            if (root.object.get("font")) |fv_pre| {
-                if (fv_pre == .object) {
-                    if (fv_pre.object.get("family")) |fam_v| {
+        if (true) {
+            if (root.table.get("font")) |fv_pre| {
+                if (fv_pre == .table) {
+                    if (fv_pre.table.get("family")) |fam_v| {
                         if (fam_v != .string) font_validate.showFamilyMustBeStringFatal(rt);
                     }
-                    if (fv_pre.object.get("glyph_fallback")) |fb_v| {
+                    if (fv_pre.table.get("glyph_fallback")) |fb_v| {
                         if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal(rt);
                         for (fb_v.array.items) |item| {
                             if (item != .string) font_validate.showGlyphFallbackMustBeListFatal(rt);
@@ -1088,17 +1129,20 @@ pub const Config = struct {
             }
         }
 
-        // Schema 검증 — `defaultConfigJson` 과 비교 (key set + nested 구조 + type).
+        // Schema 검증 — `defaultConfigToml` 과 비교 (key set + nested 구조 + type).
         // shell 인자는 schema 검증 시 *값* 무관 — `Defaults.shell` 한 번 사용.
-        const default_json = defaultConfigJson(allocator, Defaults.shell) catch unreachable;
-        defer allocator.free(default_json);
-        var default_parsed = std.json.parseFromSlice(std.json.Value, allocator, default_json, .{}) catch unreachable;
+        const default_doc = defaultConfigToml(allocator, Defaults.shell) catch unreachable;
+        defer allocator.free(default_doc);
+        var default_parser: toml.Parser(toml.Table) = .init(allocator);
+        defer default_parser.deinit();
+        var default_parsed = default_parser.parseString(default_doc) catch unreachable;
         defer default_parsed.deinit();
-        validateStructure(rt, root, default_parsed.value, "(top-level)", config_path);
+        const default_root: toml.Value = .{ .table = &default_parsed.value };
+        validateStructure(rt, root, default_root, "(top-level)", config_path);
 
         // window section
-        if (root.object.get("window")) |wv| {
-            if (wv.object.get("dock_position")) |v| {
+        if (root.table.get("window")) |wv| {
+            if (wv.table.get("dock_position")) |v| {
                 if (DockPosition.fromString(v.string)) |dp| {
                     config.dock_position = dp;
                 } else {
@@ -1111,22 +1155,22 @@ pub const Config = struct {
                     showConfigFatalMsg(rt, config_path, msg);
                 }
             }
-            if (wv.object.get("width_percent")) |v| {
+            if (wv.table.get("width_percent")) |v| {
                 const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.width_percent"});
                 if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
                 config.width_percent = f;
             }
-            if (wv.object.get("height_percent")) |v| {
+            if (wv.table.get("height_percent")) |v| {
                 const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.height_percent"});
                 if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
                 config.height_percent = f;
             }
-            if (wv.object.get("offset_percent")) |v| {
+            if (wv.table.get("offset_percent")) |v| {
                 const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
                 if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
                 config.offset_percent = f;
             }
-            if (wv.object.get("opacity_percent")) |v| {
+            if (wv.table.get("opacity_percent")) |v| {
                 const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
                 if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
                 config.opacity_alpha = @round(f * 255.0 / 100.0);
@@ -1134,7 +1178,7 @@ pub const Config = struct {
         }
 
         // theme
-        if (root.object.get("theme")) |v| {
+        if (root.table.get("theme")) |v| {
             if (v.string.len > 0) {
                 config.theme = themes.findTheme(v.string);
                 if (config.theme == null) {
@@ -1152,7 +1196,7 @@ pub const Config = struct {
         }
 
         // hotkey
-        if (root.object.get("hotkey")) |v| {
+        if (root.table.get("hotkey")) |v| {
             if (Hotkey.fromString(v.string)) |h| {
                 config.hotkey = h;
             } else {
@@ -1171,7 +1215,7 @@ pub const Config = struct {
         }
 
         // shell
-        if (root.object.get("shell")) |v| {
+        if (root.table.get("shell")) |v| {
             if (v.string.len > 0) {
                 config.shell = allocator.dupe(u8, v.string) catch v.string;
             } else {
@@ -1180,11 +1224,11 @@ pub const Config = struct {
         }
 
         // auto_start / hidden_start
-        if (root.object.get("auto_start")) |v| config.auto_start = v.bool;
-        if (root.object.get("hidden_start")) |v| config.hidden_start = v.bool;
+        if (root.table.get("auto_start")) |v| config.auto_start = v.boolean;
+        if (root.table.get("hidden_start")) |v| config.hidden_start = v.boolean;
 
         // max_scroll_lines
-        if (root.object.get("max_scroll_lines")) |v| {
+        if (root.table.get("max_scroll_lines")) |v| {
             if (v.integer < 100 or v.integer > 10_000_000) {
                 showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
             }
@@ -1194,19 +1238,19 @@ pub const Config = struct {
         // font section — schema validateStructure 로 family / size_point /
         // cell_width_ratio / line_height_ratio 모두 required + type 검증 끝남.
         // 여기서는 value range + parse.
-        const fv = root.object.get("font").?;
-        if (fv.object.get("size_point")) |v| {
+        const fv = root.table.get("font").?;
+        if (fv.table.get("size_point")) |v| {
             if (v.integer < 8 or v.integer > 72) {
                 showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
             }
             config.font_size_point = @intCast(v.integer);
         }
-        if (fv.object.get("cell_width_ratio")) |v| {
+        if (fv.table.get("cell_width_ratio")) |v| {
             const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
             if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
             config.cell_width_ratio = f;
         }
-        if (fv.object.get("line_height_ratio")) |v| {
+        if (fv.table.get("line_height_ratio")) |v| {
             const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
             if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
             config.line_height_ratio = f;
@@ -1215,7 +1259,7 @@ pub const Config = struct {
         // 보장됨 (위 font_validate.showFamilyMustBeStringFatal). 여기서는 빈
         // 문자열만 reject + chain[0] 에 저장.
         var chain_count: usize = 0;
-        if (fv.object.get("family")) |v| {
+        if (fv.table.get("family")) |v| {
             if (v.string.len == 0) showConfigFatalMsg(rt, config_path, messages.config_font_family_empty_msg);
             config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
             chain_count = 1;
@@ -1225,7 +1269,7 @@ pub const Config = struct {
         // 체크 보장. 빈 array 는 허용 (system fallback 만 의존). chain[1..] 에
         // 저장. chain 총 길이 (1 + fallback) 가 MAX_FONT_FAMILIES 초과 시 fatal —
         // silent truncate 방지.
-        if (fv.object.get("glyph_fallback")) |v| {
+        if (fv.table.get("glyph_fallback")) |v| {
             for (v.array.items) |item| {
                 if (item.string.len == 0) continue;
                 if (chain_count >= MAX_FONT_FAMILIES) {
@@ -1252,7 +1296,7 @@ pub const Config = struct {
     fn createDefault(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
         const file = std.Io.Dir.createFileAbsolute(rt.io, path, .{}) catch return;
         defer file.close(rt.io);
-        const json_text = defaultConfigJson(allocator, shell_resolved) catch return;
+        const json_text = defaultConfigToml(allocator, shell_resolved) catch return;
         defer allocator.free(json_text);
         file.writeStreamingAll(rt.io, json_text) catch {};
     }
@@ -1323,7 +1367,7 @@ pub const Config = struct {
 
 // --- Helpers ---
 
-fn parseFloat(v: std.json.Value) ?f32 {
+fn parseFloat(v: toml.Value) ?f32 {
     return switch (v) {
         .integer => |i| @floatFromInt(i),
         .float => |f| @floatCast(f),
@@ -1353,7 +1397,10 @@ fn showConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u
 ///
 /// value range / 의미 검증은 caller (각 필드 별로 hardcoded — default 만으로는
 /// "1..100" 같은 range 표현 불가).
-fn validateStructure(rt: Runtime, user: std.json.Value, def: std.json.Value, ctx: []const u8, config_path: []const u8) void {
+/// #493 — `std.json.Value` 트리 비교에서 `toml.Value` 트리 비교로 옮겼다. 구조는
+/// 그대로다: 사용자 문서와 `defaultConfigToml` 을 파싱한 기준 문서를 같은 자리에서
+/// 비교해 key set · 중첩 · 타입을 검사한다.
+fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []const u8, config_path: []const u8) void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
     if (user_tag != def_tag) {
@@ -1370,12 +1417,12 @@ fn validateStructure(rt: Runtime, user: std.json.Value, def: std.json.Value, ctx
         }
     }
 
-    if (user_tag != .object) return;
+    if (user_tag != .table) return;
 
-    var def_iter = def.object.iterator();
+    var def_iter = def.table.iterator();
     while (def_iter.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (user.object.get(key) == null) {
+        if (user.table.get(key) == null) {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
@@ -1386,10 +1433,10 @@ fn validateStructure(rt: Runtime, user: std.json.Value, def: std.json.Value, ctx
         }
     }
 
-    var user_iter = user.object.iterator();
+    var user_iter = user.table.iterator();
     while (user_iter.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (def.object.get(key) == null) {
+        if (def.table.get(key) == null) {
             // `_` prefix key 는 사용자 주석 — 알 수 없는 key 라도 무시 (#173).
             // JSON 표준 자체엔 주석 없지만 convention. schema 의 정식 key 는
             // 모두 `_` 안 붙으니 기존 검증과 충돌 X. type / 재귀 검사도 모두
@@ -1405,10 +1452,10 @@ fn validateStructure(rt: Runtime, user: std.json.Value, def: std.json.Value, ctx
         }
     }
 
-    var rec_iter = def.object.iterator();
+    var rec_iter = def.table.iterator();
     while (rec_iter.next()) |entry| {
         const key = entry.key_ptr.*;
-        const u_val = user.object.get(key).?;
+        const u_val = user.table.get(key).?;
         var path_buf: [256]u8 = undefined;
         const path = if (std.mem.eql(u8, ctx, "(top-level)"))
             std.fmt.bufPrint(&path_buf, "{s}", .{key}) catch key
@@ -1485,33 +1532,51 @@ test "terminal font defaults use the cross-platform logical size contract" {
     try std.testing.expectEqual(@as(f32, 1.1), spec.line_height_ratio);
 }
 
-test "default config JSON uses the common terminal font defaults" {
+test "default config TOML uses the common terminal font defaults" {
     const allocator = std.testing.allocator;
-    const json_text = try defaultConfigJson(allocator, Defaults.shell);
-    defer allocator.free(json_text);
+    const doc = try defaultConfigToml(allocator, Defaults.shell);
+    defer allocator.free(doc);
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_text, .{});
+    var parser: toml.Parser(toml.Table) = .init(allocator);
+    defer parser.deinit();
+    var parsed = try parser.parseString(doc);
     defer parsed.deinit();
 
-    const font = parsed.value.object.get("font").?.object;
+    const font = parsed.value.get("font").?.table;
     try std.testing.expectEqual(@as(i64, 15), font.get("size_point").?.integer);
     try std.testing.expectEqual(@as(f64, 1.1), font.get("line_height_ratio").?.float);
+
+    // #493 — 확정한 키 순서 (결정 10) 를 문서 자체로 고정한다. 순서가 흐트러지면
+    // "부르는 법 → 안에서 도는 것 → 언제 뜨는가 → 어떻게 보이는가 → 한계" 의 의도가
+    // 사라진다. TOML 은 파싱이 순서와 무관하므로 파싱 결과로는 잡히지 않는다.
+    const order = [_][]const u8{
+        "hotkey", "shell", "auto_start", "hidden_start", "theme", "max_scroll_lines",
+        "[window]", "[font]",
+    };
+    var at: usize = 0;
+    for (order) |needle| {
+        const found = std.mem.findPos(u8, doc, at, needle) orelse return error.TestUnexpectedResult;
+        at = found + needle.len;
+    }
+    // 최상위 스칼라가 테이블 헤더보다 뒤에 오면 TOML 이 그 테이블 소속으로 해석한다.
+    const first_header = std.mem.find(u8, doc, "[window]").?;
+    try std.testing.expect(std.mem.find(u8, doc, "max_scroll_lines").? < first_header);
 }
 
 test "explicit line height ratio is preserved when parsing" {
     const allocator = std.testing.allocator;
-    const json_text = @constCast(try defaultConfigJson(allocator, Defaults.shell));
+    const json_text = @constCast(try defaultConfigToml(allocator, Defaults.shell));
     defer allocator.free(json_text);
 
-    const expected = "\"line_height_ratio\": 1.1";
+    const expected = "line_height_ratio = 1.1";
     const offset = std.mem.find(u8, json_text, expected) orelse return error.TestUnexpectedResult;
     const value_offset = offset + expected.len - 3;
     @memcpy(json_text[value_offset .. value_offset + 3], "0.9");
 
-    // #451 — 정상 JSON 이라 `parse` 가 fatal 경로 (config 경로 조회) 로 가지 않는다.
+    // #451 — 정상 문서라 `parse` 가 fatal 경로 (config 경로 조회) 로 가지 않는다.
     // 그래서 `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
     const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
-    const config = Config.parse(rt, allocator, json_text, "/tmp/config_0.json");
+    const config = Config.parse(rt, allocator, json_text, "/tmp/config_0.toml");
     defer config.deinit(allocator);
     try std.testing.expectEqual(@as(f32, 0.9), config.line_height_ratio);
 }
