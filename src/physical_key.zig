@@ -15,12 +15,23 @@
 //! Hyprland, `bindcode 25` — i3 · sway), **숫자를 쓰는 쪽은 `xev` / `wev` 로 값을
 //! 찾아야 한다.** 이름을 쓰는 VS Code 방식만 config 를 읽어서 이해할 수 있다.
 //!
-//! ## 수용 범위는 라벨 집합과 1:1 이다
+//! ## 수용 범위 — 자판의 모든 키를 담는다
 //!
-//! 라벨로 쓸 수 있는 키의 **위치만** 담는다 — F1~F12 · A~Z · 0~9 · backquote ·
-//! bracket · space · tab · escape · enter · pageup · pagedown. `-` `=` `\` `;`
-//! `'` `,` `.` `/` 의 위치는 **일부러 없다**: 라벨 쪽이 그것을 거부하는데 (#208)
-//! 위치 쪽만 받으면 수용 집합이 조용히 넓어진다. 확대는 별 결정 사항이다 (#493).
+//! 라벨 집합보다 **넓다.** 처음엔 1:1 로 맞췄는데 (라벨이 거부하는 것을 위치만
+//! 받으면 수용 집합이 조용히 넓어지므로) 그 제약을 명시적으로 걷었다.
+//!
+//! 근거는 두 집합의 **의미가 다르다**는 것이다. 라벨을 넓히려면 `-` 에 어떤 값을
+//! 줄지 정해야 하는데, `VK_OEM_MINUS` / `kVK_ANSI_Minus` 는 라벨이 아니라 "US 자판
+//! 에서 `-` 가 있는 자리" 다. 그것을 라벨로 받으면 Linux 는 라벨로, Windows ·
+//! macOS 는 US 위치로 잡아 #496 의 세 갈래 불일치가 더 깊어진다. 라벨을 정직하게
+//! 넓히려면 live layout 조회가 필요하다 (macOS `UCKeyTranslate`, Windows
+//! `VkKeyScanEx`) — #496 항목 2 다.
+//!
+//! 위치 쪽은 그 문제가 없다. `[Minus]` 는 처음부터 "그 자리" 이고 세 platform 에
+//! 고정값이 있다. 그래서 **자판에 있는 키는 위치로 다 쓸 수 있게** 한다.
+//!
+//! 아직 없는 것: numpad · media 키 · JIS 전용 키 (`IntlYen` · `IntlRo`). 값 검증이
+//! 안 됐고 요청도 없었다. 필요하면 표에 행을 더하면 된다.
 //!
 //! ## 세 platform 값
 //!
@@ -98,6 +109,16 @@ pub const PhysicalCode = enum {
     backquote,
     bracket_left,
     bracket_right,
+    minus,
+    equal,
+    semicolon,
+    quote,
+    backslash,
+    comma,
+    period,
+    slash,
+    /// ISO 자판에만 있는 키 (AZERTY 의 `<>`, QWERTZ 의 `<>|`). US ANSI 에는 없다.
+    intl_backslash,
 
     space,
     tab,
@@ -183,6 +204,23 @@ const table = [_]Entry{
     .{ .code = .backquote, .name = "Backquote", .evdev = 41, .scan = 0x29, .mac = 0x32 },
     .{ .code = .bracket_left, .name = "BracketLeft", .evdev = 26, .scan = 0x1A, .mac = 0x21 },
     .{ .code = .bracket_right, .name = "BracketRight", .evdev = 27, .scan = 0x1B, .mac = 0x1E },
+
+    // ASCII 기호 자리. 라벨 집합에는 없지만 (#208) 위치로는 받는다 — 위 정책 문단
+    // 참고. `-` 와 `_` 처럼 Shift 로 갈리는 두 글자가 **한 자리**이므로 이름이
+    // 무시프트 글자 기준이다 (W3C 규칙).
+    .{ .code = .minus, .name = "Minus", .evdev = 12, .scan = 0x0C, .mac = 0x1B },
+    .{ .code = .equal, .name = "Equal", .evdev = 13, .scan = 0x0D, .mac = 0x18 },
+    .{ .code = .semicolon, .name = "Semicolon", .evdev = 39, .scan = 0x27, .mac = 0x29 },
+    .{ .code = .quote, .name = "Quote", .evdev = 40, .scan = 0x28, .mac = 0x27 },
+    .{ .code = .backslash, .name = "Backslash", .evdev = 43, .scan = 0x2B, .mac = 0x2A },
+    .{ .code = .comma, .name = "Comma", .evdev = 51, .scan = 0x33, .mac = 0x2B },
+    .{ .code = .period, .name = "Period", .evdev = 52, .scan = 0x34, .mac = 0x2F },
+    .{ .code = .slash, .name = "Slash", .evdev = 53, .scan = 0x35, .mac = 0x2C },
+    // ISO 자판의 추가 키 — US ANSI 에는 **없다.** AZERTY 의 `<>`, QWERTZ 의 `<>|`
+    // 자리다. `KEY_102ND` / 102-key 자판의 그 키이고, macOS 는 `kVK_ISO_Section`
+    // 이라는 다른 이름을 쓴다. 이 키가 있어야 그 자판 사용자가 "내 키보드의 모든
+    // 키" 를 실제로 다 쓸 수 있다.
+    .{ .code = .intl_backslash, .name = "IntlBackslash", .evdev = 86, .scan = 0x56, .mac = 0x0A },
 
     .{ .code = .space, .name = "Space", .evdev = 57, .scan = 0x39, .mac = 0x31 },
     .{ .code = .tab, .name = "Tab", .evdev = 15, .scan = 0x0F, .mac = 0x30 },
@@ -283,11 +321,15 @@ test "이름 왕복" {
     try std.testing.expectEqual(PhysicalCode.key_w, fromName("keyw").?);
     try std.testing.expectEqual(PhysicalCode.key_w, fromName("KEYW").?);
     try std.testing.expectEqual(PhysicalCode.bracket_left, fromName("bracketleft").?);
-    // 라벨 집합에 없는 위치는 받지 않는다 — 수용 집합이 조용히 넓어지지 않게.
-    try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("Minus"));
-    try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("Slash"));
-    try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("Backslash"));
+    // 라벨 집합에 없는 자리도 위치로는 받는다 — 자판에 있는 키를 다 쓸 수 있게.
+    try std.testing.expectEqual(PhysicalCode.minus, fromName("Minus").?);
+    try std.testing.expectEqual(PhysicalCode.slash, fromName("Slash").?);
+    try std.testing.expectEqual(PhysicalCode.backslash, fromName("Backslash").?);
+    try std.testing.expectEqual(PhysicalCode.intl_backslash, fromName("IntlBackslash").?);
+    // 표에 없는 이름은 여전히 거부한다 — 오타가 조용히 통과하면 안 된다.
     try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("F13"));
+    try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("Numpad0"));
+    try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("IntlYen"));
     try std.testing.expectEqual(@as(?PhysicalCode, null), fromName(""));
 }
 

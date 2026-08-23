@@ -729,14 +729,15 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
             @as(u32, physical_key.macKeyCode(pair.code)),
         );
     }
-    // 두 집합의 크기가 맞아야 한다 — 위치 집합은 named 라벨 전부 + 글자 26 + 숫자 10
-    // 이다. 한쪽에만 키를 더하면 위 `pairs` 표가 조용히 불완전해지므로 여기서 막는다.
-    try std.testing.expectEqual(
-        @typeInfo(HotkeyNamedKey).@"enum".fields.len + 26 + 10,
-        @typeInfo(PhysicalCode).@"enum".fields.len,
-    );
-    // 그리고 `pairs` 가 named 라벨을 빠짐없이 덮어야 한다.
+    // `pairs` 가 named 라벨을 **빠짐없이** 덮어야 한다. 라벨을 하나 더하면 여기서
+    // 걸리고, 그때 위 표에 대응 위치를 적어야 한다.
     try std.testing.expectEqual(@typeInfo(HotkeyNamedKey).@"enum".fields.len, pairs.len);
+    // 방향은 한쪽뿐이다 — **모든 라벨에는 위치가 있지만 그 반대는 아니다.** 위치
+    // 집합이 더 넓다: 라벨이 거부하는 ASCII 기호 자리와 ISO 추가 키를 담는다
+    // (`physical_key.zig` 의 정책 문단 참고). 그래서 등호가 아니라 부등호다.
+    try std.testing.expect(
+        @typeInfo(PhysicalCode).@"enum".fields.len >= pairs.len + 26 + 10,
+    );
 }
 
 test "#496 위치 표기 파싱" {
@@ -761,10 +762,15 @@ test "#496 위치 표기 파싱" {
     try std.testing.expect(position.key == .code);
     try std.testing.expectEqual(PhysicalCode.bracket_left, position.key.code);
 
-    // 라벨 집합에 없는 자리는 위치로도 받지 않는다 — 수용 집합이 조용히 넓어지지
-    // 않게 한다 (`physical_key.zig` 의 같은 정책).
-    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[Minus]", .app_binding));
-    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[Slash]", .app_binding));
+    // 라벨이 거부하는 기호 자리도 **위치로는 받는다** — 자판에 있는 키를 다 쓸 수
+    // 있게 한 결정이다 (`physical_key.zig` 의 정책 문단). 라벨 쪽은 그대로 좁다:
+    // 고정표로 라벨을 넓히면 그건 라벨이 아니라 US 위치가 되기 때문이다.
+    try std.testing.expect(parseHotkeyString("ctrl+[Minus]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+[Slash]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+[IntlBackslash]", .app_binding) == .ok);
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+minus", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+slash", .app_binding));
+    // 표에 없는 이름은 여전히 거부한다.
     try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[NotAKey]", .app_binding));
     try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[]", .app_binding));
 
