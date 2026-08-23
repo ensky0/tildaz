@@ -217,8 +217,9 @@ invalid value shows an error dialog and exits):
 - **`Shift` alone is not a valid trigger modifier** — combine it with
   `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
 - **Accepted keys**, in full: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`,
-  `Escape` (`Esc`), `Return` (`Enter`), and `` ` `` — writable as `` ` ``,
-  `Grave`, or `Backquote`. Letter case does not matter.
+  `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
+  `` ` `` (also `Grave` / `Backquote`), `[` (also `BracketLeft`), and `]` (also
+  `BracketRight`). Letter case does not matter.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same

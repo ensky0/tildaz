@@ -322,7 +322,23 @@ pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{
 ///
 /// key 이름을 못 알아본 경우. **받는 key 목록을 함께 준다** — 안 되는 이유만 알려 주고
 /// 무엇이 되는지 안 알려 주면 사용자가 또 추측해야 한다.
-pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`)\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+/// #493 — `[keys]` 의 같은 키가 두 액션에 걸린 경우. **양쪽 액션을 다 짚는다** —
+/// 한쪽만 알려주면 사용자가 나머지를 찾아 헤맨다 (#484 의 hotkey 메시지 교훈).
+/// 바인딩 총량 상한. 조용히 잘라 버리면 사용자가 적은 단축키가 이유 없이 안 먹는다.
+pub const config_key_too_many_format = "Configuration: too many key bindings in [keys] (limit {d}).";
+pub const config_key_too_many_fallback_msg = "Configuration: too many key bindings in [keys]";
+pub const config_key_conflict_format = "Configuration: \"{s}\" is bound to both \"{s}\" and \"{s}\" in [keys].\n\nEach key may trigger only one action. Remove it from one of them.";
+pub const config_key_conflict_fallback_msg = "Configuration: the same key is bound to two actions in [keys]";
+/// `[keys]` 의 값이 리스트가 아닌 경우.
+pub const config_key_not_list_format = "Configuration: \"keys.{s}\" must be a list of key combinations.\n\nExample: {s} = [\"ctrl+shift+t\"]\nUse an empty list [] to leave the action unbound.";
+pub const config_key_not_list_fallback_msg = "Configuration: a [keys] entry must be a list";
+/// `[keys]` 의 키 문자열을 파싱하지 못한 경우. `hotkey` 와 달리 액션 이름을 함께 짚는다.
+pub const config_key_invalid_format = "Configuration: \"keys.{s}\" contains a key TildaZ does not recognize: \"{s}\".\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.";
+pub const config_key_invalid_fallback_msg = "Configuration: a [keys] entry uses an unrecognized key";
+/// 글자를 내는 키를 modifier 없이 바인딩한 경우 — 그 글자를 터미널에 칠 수 없게 된다.
+pub const config_key_needs_modifier_format = "Configuration: \"keys.{s}\" binds \"{s}\" without Ctrl, Alt, or Cmd.\n\nThat key types text, so binding it alone would make it impossible to type in the terminal. Keys that do not type text (F1-F12, PageUp, PageDown) may be bound without a modifier.";
+pub const config_key_needs_modifier_fallback_msg = "Configuration: a [keys] entry needs a modifier";
+pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses an unrecognized key";
 /// key 는 유효하지만 modifier 가 없어 전역 등록이 위험한 경우 (일상 입력을 OS 전체에서
 /// 가로챈다). 이쪽은 기존 안내가 정확했다.

@@ -105,6 +105,10 @@ const HotkeyNamedKey = enum {
     tab,
     escape,
     @"return",
+    page_up,
+    page_down,
+    bracket_left,
+    bracket_right,
 };
 
 const HotkeyKeyToken = union(enum) {
@@ -136,7 +140,7 @@ pub const HotkeyFailure = enum {
 /// `parseHotkeyString` 을 쓴다 — 두 곳에 규칙을 두면 갈라진다 (#484 의 원인이
 /// writer/matcher 가 갈라진 것이었다).
 pub fn hotkeyFailure(s: []const u8) ?HotkeyFailure {
-    return switch (parseHotkeyString(s)) {
+    return switch (parseHotkeyString(s, .global_hotkey)) {
         .ok => null,
         .unknown_key => .unknown_key,
         .modifier_required => .modifier_required,
@@ -149,7 +153,16 @@ const HotkeyParse = union(enum) {
     modifier_required,
 };
 
-fn parseHotkeyString(s: []const u8) HotkeyParse {
+/// 파싱 규칙이 쓰임새에 따라 다르다 (#493). `parseHotkeyString` 참고.
+pub const HotkeyScope = enum {
+    /// `hotkey` — OS 에 등록하는 전역 핫키. modifier 없는 일반 키를 허용하면 OS
+    /// 전체의 타이핑을 가로챈다.
+    global_hotkey,
+    /// `[keys]` — 앱 내부 단축키. 터미널 focus 중에만 유효하므로 위험 범위가 좁다.
+    app_binding,
+};
+
+fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     var ctrl = false;
     var shift = false;
     var alt = false;
@@ -187,7 +200,34 @@ fn parseHotkeyString(s: []const u8) HotkeyParse {
         },
         .char => false,
     };
-    if (!(ctrl or alt or super) and !is_function_key) return .modifier_required;
+    if (scope == .global_hotkey) {
+        if (!(ctrl or alt or super) and !is_function_key) return .modifier_required;
+    } else {
+        // #493 — `[keys]` (앱 내부 단축키) 는 규칙이 다르다. 전역 핫키의 제약은 *OS
+        // 전체의 입력을 가로채는* 것을 막기 위한 것이고, 앱 내부 단축키는 터미널이
+        // focus 를 가진 동안만 유효하다. 그래서 위험의 성질이 다르다.
+        //
+        // 여기서 막아야 하는 것은 **타이핑을 훔치는 것**이다. `shift+t` 를 허용하면
+        // 터미널에 `T` 를 칠 수 없다. 반면 `shift+pageup` 은 PageUp 이 글자를 내는
+        // 키가 아니라 무해하다 — 그리고 기본 bindings 가 그것을 쓴다.
+        //
+        // 그래서 판정 기준을 "modifier 유무" 가 아니라 **그 키가 글자를 내는가** 로
+        // 둔다. 글자를 내지 않는 키 (F1~F12 · PageUp · PageDown) 는 modifier 없이도
+        // 안전하고, 글자를 내는 키는 ctrl / alt / super 중 하나가 필요하다.
+        const types_text = switch (resolved) {
+            .char => true,
+            .named => |n| switch (n) {
+                .space, .tab, .@"return" => true,
+                .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => false,
+                .page_up, .page_down => false,
+                .escape => false,
+                // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
+                // 없게 된다.
+                .grave, .bracket_left, .bracket_right => true,
+            },
+        };
+        if (types_text and !(ctrl or alt or super)) return .modifier_required;
+    }
     return .{ .ok = .{ .ctrl = ctrl, .shift = shift, .alt = alt, .super = super, .key = resolved } };
 }
 
@@ -214,6 +254,14 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         .{ .name = "backquote", .key = .grave },  .{ .name = "tab", .key = .tab },
         .{ .name = "escape", .key = .escape },    .{ .name = "esc", .key = .escape },
         .{ .name = "return", .key = .@"return" }, .{ .name = "enter", .key = .@"return" },
+        // #493 — `[keys]` 의 기본 bindings 가 쓴다 (scroll_page_up / prev_tab 등).
+        // 어느 layout 에나 있는 단일 물리 키라 layout 종속 문제가 없다 (#482).
+        .{ .name = "pageup", .key = .page_up },   .{ .name = "pgup", .key = .page_up },
+        .{ .name = "pagedown", .key = .page_down }, .{ .name = "pgdn", .key = .page_down },
+        // #493 — 기본 bindings 의 `prev_tab` / `next_tab` 이 쓴다. 세 platform 의 키
+        // 값이 이미 기존 매처에 있어 추측이 아니다 (아래 각 map 의 주석 참고).
+        .{ .name = "bracketleft", .key = .bracket_left },
+        .{ .name = "bracketright", .key = .bracket_right },
     };
     for (map) |entry| {
         if (eqIc(name, entry.name)) return .{ .named = entry.key };
@@ -224,6 +272,8 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         if (c >= 'a' and c <= 'z') return .{ .char = c };
         if (c >= '0' and c <= '9') return .{ .char = c };
         if (c == '`') return .{ .named = .grave };
+        if (c == '[') return .{ .named = .bracket_left };
+        if (c == ']') return .{ .named = .bracket_right };
     }
     return null;
 }
@@ -325,10 +375,16 @@ const LinuxHotkey = struct {
     pub const MOD_SUPER: u32 = 0x8; // Win key / Super / `cmd` 토큰.
 
     pub fn fromString(s: []const u8) ?LinuxHotkey {
-        const parsed = switch (parseHotkeyString(s)) {
+        const parsed = switch (parseHotkeyString(s, .global_hotkey)) {
             .ok => |p| p,
             else => return null,
         };
+        return fromParsed(parsed);
+    }
+
+    /// #493 — `[keys]` 파싱이 같은 변환을 쓴다. `fromString` 안에 두면 scope 마다
+    /// 복제해야 하고, 복제하면 갈라진다 (#484 의 교훈).
+    pub fn fromParsed(parsed: ParsedHotkey) LinuxHotkey {
         var modifiers: u32 = 0;
         if (parsed.alt) modifiers |= MOD_ALT;
         if (parsed.ctrl) modifiers |= MOD_CTRL;
@@ -360,6 +416,11 @@ const LinuxHotkey = struct {
                 .tab => 0xff09,
                 .escape => 0xff1b,
                 .@"return" => 0xff0d,
+                .page_up => 0xff55,
+                .page_down => 0xff56,
+                // `wayland_minimal.xkb_key_bracketleft` / `..right` 와 같은 값.
+                .bracket_left => 0x5b,
+                .bracket_right => 0x5d,
             },
         };
     }
@@ -381,6 +442,10 @@ pub fn linuxKeysymName(keysym: u32) ?[]const u8 {
         0xffc7 => "F10",
         0xffc8 => "F11",
         0xffc9 => "F12",
+        0xff55 => "Page_Up",
+        0xff56 => "Page_Down",
+        0x5b => "bracketleft",
+        0x5d => "bracketright",
         0xff09 => "Tab",
         0xff0d => "Return",
         0xff1b => "Escape",
@@ -446,6 +511,82 @@ test "config parser rejects unsafe global hotkeys" {
         try std.testing.expect(Hotkey.fromString("ctrl+t") != null);
         try std.testing.expect(Hotkey.fromString("ctrl+shift+t") != null);
     }
+}
+
+test "#493 [keys] scope accepts what the defaults need, and still guards typing" {
+    // 기본 bindings 가 실제로 파싱되는지 — 이게 깨지면 첫 실행부터 fatal 이다.
+    // (`ctrl+shift+[` 가 수용 집합에 없어 여기서 잡혔던 적이 있다.)
+    for (std.enums.values(KeyAction)) |action| {
+        for (defaultBindings(action)) |text| {
+            const parsed = parseHotkeyString(text, .app_binding);
+            if (parsed != .ok) {
+                std.debug.print("기본 binding 이 파싱 실패: {s} = \"{s}\" ({s})\n", .{ action.configName(), text, @tagName(parsed) });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+
+    // `[keys]` 는 글자를 내지 않는 키를 modifier 없이 허용한다 — 기본값이 쓴다.
+    try std.testing.expect(parseHotkeyString("shift+pageup", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("pageup", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("f5", .app_binding) == .ok);
+
+    // 글자를 내는 키는 여전히 modifier 가 필요하다 — 없으면 터미널에 그 글자를
+    // 칠 수 없게 된다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("t", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("shift+t", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("[", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("shift+space", .app_binding));
+
+    // 전역 핫키 규칙은 더 엄격하다 — Shift 는 trigger modifier 가 아니다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("shift+pageup", .global_hotkey));
+    try std.testing.expect(parseHotkeyString("f5", .global_hotkey) == .ok);
+}
+
+test "#493 default [keys] has no conflicting bindings" {
+    // 액션 → 키 방향을 택한 대가로 충돌 감지가 우리 몫이다 (키 → 액션이면 TOML 이
+    // 중복 키로 잡아 준다). 기본값끼리 충돌하면 첫 실행부터 fatal 이므로 고정한다.
+    var seen: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    var count: usize = 0;
+    for (std.enums.values(KeyAction)) |action| {
+        for (defaultBindings(action)) |text| {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            const hk = Hotkey.fromParsed(parsed);
+            for (seen[0..count]) |prev| {
+                if (std.meta.eql(prev.hotkey, hk)) {
+                    std.debug.print("기본 binding 충돌: \"{s}\" — {s} vs {s}\n", .{ text, prev.action.configName(), action.configName() });
+                    return error.TestUnexpectedResult;
+                }
+            }
+            try std.testing.expect(count < MAX_KEY_BINDINGS);
+            seen[count] = .{ .hotkey = hk, .action = action };
+            count += 1;
+        }
+    }
+    // 액션 25 개 + prev_tab / next_tab 이 2 개씩 = 27.
+    try std.testing.expectEqual(@as(usize, 27), count);
+}
+
+test "#493 generated config carries every action so none is silently missing" {
+    const allocator = std.testing.allocator;
+    const doc = try defaultConfigToml(allocator, Defaults.shell);
+    defer allocator.free(doc);
+
+    // "모든 액션을 항상 파일에 적는다" 가 결정 3 이다. 하나라도 빠지면 사용자가
+    // 읽어서 발견하거나 바꿀 수 없다.
+    for (std.enums.values(KeyAction)) |action| {
+        const name = action.configName();
+        if (std.mem.find(u8, doc, name) == null) {
+            std.debug.print("생성된 config 에 액션이 없음: {s}\n", .{name});
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expect(std.mem.find(u8, doc, "[keys]") != null);
+    // `[keys]` 는 테이블이라 최상위 스칼라보다 뒤에 와야 한다.
+    try std.testing.expect(std.mem.find(u8, doc, "max_scroll_lines").? < std.mem.find(u8, doc, "[keys]").?);
 }
 
 test "hotkey rejection reports the cause, not one blanket message" {
@@ -555,10 +696,14 @@ const WindowsHotkey = struct {
     modifiers: u32 = 0,
 
     pub fn fromString(s: []const u8) ?WindowsHotkey {
-        const parsed = switch (parseHotkeyString(s)) {
+        const parsed = switch (parseHotkeyString(s, .global_hotkey)) {
             .ok => |p| p,
             else => return null,
         };
+        return fromParsed(parsed);
+    }
+
+    pub fn fromParsed(parsed: ParsedHotkey) WindowsHotkey {
         var modifiers: u32 = 0;
         if (parsed.alt) modifiers |= 0x1; // MOD_ALT
         if (parsed.ctrl) modifiers |= 0x2; // MOD_CONTROL
@@ -590,6 +735,12 @@ const WindowsHotkey = struct {
                 .tab => 0x09,
                 .escape => 0x1B,
                 .@"return" => 0x0D,
+                // #493 — `VK_PRIOR` / `VK_NEXT`. #482 의 `wndProc` 이 쓰는 값과 같다.
+                .page_up => 0x21,
+                .page_down => 0x22,
+                // `VK_OEM_4` / `VK_OEM_6`. `window.zig` 의 prev/next tab 이 쓰는 값.
+                .bracket_left => 0xDB,
+                .bracket_right => 0xDD,
             },
         };
     }
@@ -632,10 +783,14 @@ const MacHotkey = struct {
     modifiers: u64 = 0,
 
     pub fn fromString(s: []const u8) ?MacHotkey {
-        const parsed = switch (parseHotkeyString(s)) {
+        const parsed = switch (parseHotkeyString(s, .global_hotkey)) {
             .ok => |p| p,
             else => return null,
         };
+        return fromParsed(parsed);
+    }
+
+    pub fn fromParsed(parsed: ParsedHotkey) MacHotkey {
         var modifiers: u64 = 0;
         if (parsed.shift) modifiers |= 0x00020000; // kCGEventFlagMaskShift
         if (parsed.ctrl) modifiers |= 0x00040000; // kCGEventFlagMaskControl
@@ -665,6 +820,14 @@ const MacHotkey = struct {
                 .tab => 0x30,
                 .escape => 0x35,
                 .@"return" => 0x24,
+                // #493 — `kVK_PageUp` / `kVK_PageDown`. #482 의 `host/macos.zig` 가
+                // 쓰는 값과 같다 (116 / 121 십진).
+                .page_up => 0x74,
+                .page_down => 0x79,
+                // `kVK_ANSI_LeftBracket` / `..RightBracket`. `host/macos.zig` 의
+                // prev/next tab 이 쓰는 값.
+                .bracket_left => 0x21,
+                .bracket_right => 0x1E,
             },
             // kVK_ANSI_* — parseHotkeyString 의 char 는 소문자 letter / digit 만.
             .char => |c| switch (c) {
@@ -877,7 +1040,7 @@ pub fn defaultConfigTomlWithHotkey(
     try fw.writeAll("]");
     const glyph_fallback_toml = fb_fbs.buffered();
 
-    return try std.fmt.allocPrint(allocator,
+    const head = try std.fmt.allocPrint(allocator,
         \\# TildaZ config
         \\#
         \\# v0.9.0 부터 config 는 TOML 입니다. 이전 JSON 설정을 쓰고 있었다면
@@ -928,6 +1091,22 @@ pub fn defaultConfigTomlWithHotkey(
         Defaults.cell_width_ratio,
         Defaults.line_height_ratio,
     });
+    defer allocator.free(head);
+
+    // `[keys]` 는 액션 수가 많아 별 helper 로 조립한다. **최상위 스칼라 뒤, 테이블
+    // 뒤**에 온다 — TOML 은 테이블 헤더 다음의 키를 그 테이블 소속으로 읽으므로
+    // 순서를 바꿀 수 없다.
+    // 액션 25 개 × 한 줄 ~60 byte + 그룹 주석. 고정 버퍼로 충분하고 (이 코드베이스의
+    // `Io.Writer.fixed` 패턴) 넘치면 `writeAll` 이 오류를 낸다 — 조용히 잘리지 않는다.
+    var keys_buf: [4096]u8 = undefined;
+    var keys_fbs: std.Io.Writer = .fixed(&keys_buf);
+    try appendKeysSection(&keys_fbs);
+    const keys = keys_fbs.buffered();
+
+    const out = try allocator.alloc(u8, head.len + keys.len);
+    @memcpy(out[0..head.len], head);
+    @memcpy(out[head.len..], keys);
+    return out;
 }
 
 // `Defaults` 의 string / float 값을 Config struct 가 보관하는 native type 으로
@@ -954,6 +1133,157 @@ fn defaultFontFamiliesArray() [MAX_FONT_FAMILIES][]const u8 {
     while (i < MAX_FONT_FAMILIES) : (i += 1) arr[i] = "";
     return arr;
 }
+
+/// #493 — `[keys]` 에서 바인딩할 수 있는 액션. **`input_policy.Shortcut` 과 1:1 이
+/// 아니다** — 그쪽은 런타임 dispatch 용이고 이쪽은 config 표면이다. 차이가 셋 있다:
+///
+///   - `switch_tab1`~`9` 는 config 에서 9 개지만 런타임은 `Shortcut.switch_tab`
+///     하나 + 인덱스다. 사람이 읽는 파일에서 "몇 번 탭" 이 이름에 있어야 한다.
+///   - `paste` 는 `Shortcut` 이 아니라 `Input.paste` 다 (preedit commit 정책이 달라
+///     분리돼 있다). config 표면에서는 다른 단축키와 나란히 있어야 자연스럽다.
+///   - `fullscreen_workarea` 는 별 `Shortcut` 이 없다 — 런타임은 `fullscreen` +
+///     Shift 여부로 갈린다. config 에서는 두 동작이 별 항목이어야 각각 바인딩할 수
+///     있다.
+///   - `scroll_page_*` 는 `Shortcut` 에 아예 없다 (host 가 직접 처리).
+///
+/// 그래서 이 enum 이 config 의 단일 출처이고, 런타임 매핑은 3-c 단계에서 붙인다.
+///
+/// 이름을 바꾸면 기존 사용자 config 의 그 키가 "모르는 키" 가 된다 — 결정 8 의
+/// 삭제 대상이 되므로 이름 변경은 비가산적 변경이다.
+/// #493 — 액션별 기본 키. platform 마다 다른 것은 `cmd` 토큰이 흡수한다
+/// (`parseHotkeyString` 이 Linux Super / Windows Win / macOS Cmd 를 같은 값으로
+/// 본다) — 그래서 한 표가 세 platform 을 덮는다.
+///
+/// `KeyAction` 에 variant 를 추가하면 이 표도 채워야 한다. 빠지면
+/// `defaultKeysToml` 이 컴파일 시점에 잡는다 (exhaustive switch).
+pub fn defaultBindings(action: KeyAction) []const []const u8 {
+    return switch (action) {
+        .new_tab => &.{"ctrl+shift+t"},
+        .close_tab => &.{"ctrl+shift+w"},
+        // #482 — bracket 조합은 AZERTY 에서 쓸 수 없어 (`[` = AltGr+5) PgUp / PgDn
+        // 을 layout 무관 대안으로 함께 둔다.
+        .prev_tab => &.{ "ctrl+shift+[", "ctrl+pageup" },
+        .next_tab => &.{ "ctrl+shift+]", "ctrl+pagedown" },
+        .switch_tab1 => &.{"alt+1"},
+        .switch_tab2 => &.{"alt+2"},
+        .switch_tab3 => &.{"alt+3"},
+        .switch_tab4 => &.{"alt+4"},
+        .switch_tab5 => &.{"alt+5"},
+        .switch_tab6 => &.{"alt+6"},
+        .switch_tab7 => &.{"alt+7"},
+        .switch_tab8 => &.{"alt+8"},
+        .switch_tab9 => &.{"alt+9"},
+        .copy_selection => &.{"ctrl+shift+c"},
+        .paste => &.{"ctrl+shift+v"},
+        .fullscreen => &.{"alt+return"},
+        .fullscreen_workarea => &.{"shift+alt+return"},
+        .quit => &.{"alt+f4"},
+        // Shift 단독이지만 PageUp / PageDown 은 글자를 내지 않아 타이핑을 훔치지
+        // 않는다 — `HotkeyScope.app_binding` 규칙이 이것을 허용한다.
+        .scroll_page_up => &.{"shift+pageup"},
+        .scroll_page_down => &.{"shift+pagedown"},
+        .reset_terminal => &.{"ctrl+shift+r"},
+        .show_about => &.{"ctrl+shift+i"},
+        .open_config => &.{"ctrl+shift+p"},
+        .open_log => &.{"ctrl+shift+l"},
+        .dump_perf => &.{"ctrl+shift+f12"},
+    };
+}
+
+/// `[keys]` 섹션 본문. 그룹 주석과 순서는 의도된 것이다 (#493 결정 10) — 파일을
+/// 읽는 사람이 묶음을 알아볼 수 있어야 한다.
+fn appendKeysSection(w: *std.Io.Writer) !void {
+    try w.writeAll(
+        \\
+        \\# ─────────────────────────────────────────────────────────────────────────
+        \\# 단축키
+        \\#
+        \\# 액션 하나에 키를 여러 개 줄 수 있습니다. 빈 리스트 [] 는 단축키 없음입니다.
+        \\#
+        \\# `cmd` 는 OS 마다 알맞게 풀립니다 — Linux Super / Windows Win / macOS
+        \\# Command. 그래서 이 파일을 세 OS 에서 그대로 쓸 수 있습니다.
+        \\#
+        \\# 받는 키: F1-F12, A-Z, 0-9, space, tab, escape, return, grave(`),
+        \\#          pageup, pagedown
+        \\# ─────────────────────────────────────────────────────────────────────────
+        \\
+        \\[keys]
+        \\
+        \\# 탭
+        \\
+    );
+    const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
+        .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
+        .{ .title = "클립보드", .actions = &.{ .copy_selection, .paste } },
+        .{ .title = "창", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
+        .{ .title = "스크롤백", .actions = &.{ .scroll_page_up, .scroll_page_down } },
+        .{ .title = "도구", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
+    };
+    for (groups) |g| {
+        if (g.title) |t| {
+            try w.writeAll("\n# ");
+            try w.writeAll(t);
+            try w.writeAll("\n");
+        }
+        for (g.actions) |a| {
+            const name = a.configName();
+            try w.writeAll(name);
+            // 값 열을 맞춘다 — 가장 긴 이름 (`fullscreen_workarea`, 19) 기준.
+            var pad: usize = 19 + 1;
+            while (pad > name.len) : (pad -= 1) try w.writeAll(" ");
+            try w.writeAll("= [");
+            for (defaultBindings(a), 0..) |k, i| {
+                if (i > 0) try w.writeAll(", ");
+                try w.print("\"{s}\"", .{k});
+            }
+            try w.writeAll("]\n");
+        }
+    }
+}
+
+pub const KeyAction = enum {
+    new_tab,
+    close_tab,
+    prev_tab,
+    next_tab,
+    switch_tab1,
+    switch_tab2,
+    switch_tab3,
+    switch_tab4,
+    switch_tab5,
+    switch_tab6,
+    switch_tab7,
+    switch_tab8,
+    switch_tab9,
+    copy_selection,
+    paste,
+    fullscreen,
+    fullscreen_workarea,
+    quit,
+    scroll_page_up,
+    scroll_page_down,
+    reset_terminal,
+    show_about,
+    open_config,
+    open_log,
+    dump_perf,
+
+    /// config 파일에 쓰는 이름. enum tag 그대로다 — 파일과 코드가 갈라지지 않게
+    /// 별 문자열 표를 두지 않는다 (#484 의 writer/matcher 교훈).
+    pub fn configName(self: KeyAction) []const u8 {
+        return @tagName(self);
+    }
+};
+
+/// 한 액션에 키를 여러 개 줄 수 있다 (결정 3). 런타임 조회 방향은 **키 → 액션**
+/// 이므로 (키 이벤트를 받아 "무슨 액션인가" 를 묻는다) 평면 배열로 보관한다.
+pub const KeyBinding = struct {
+    hotkey: Hotkey,
+    action: KeyAction,
+};
+
+/// 액션 25 개 × 대개 1~2 개. 넉넉히 잡아 할당을 없앤다 (`font_families` 와 같은 방식).
+pub const MAX_KEY_BINDINGS = 64;
 
 pub const Config = struct {
     dock_position: DockPosition = default_dock_position,
@@ -985,6 +1315,9 @@ pub const Config = struct {
     /// chain[1..] 은 glyph fallback 순서. host / renderer 가 한 개의 array 로 받음.
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
     font_family_count: u8 = DEFAULT_FONT_CHAIN_COUNT,
+    /// #493 — `[keys]` 파싱 결과. 키 → 액션 방향으로 평면 보관한다.
+    key_bindings: [MAX_KEY_BINDINGS]KeyBinding = undefined,
+    key_binding_count: u8 = 0,
 
     pub fn terminalFontSpec(self: *const Config) font_spec.Spec {
         return .{
@@ -1290,7 +1623,111 @@ pub const Config = struct {
         while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
         config.font_family_count = @intCast(chain_count);
 
+        parseKeys(rt, root, config_path, &config);
+
         return config;
+    }
+
+    /// #493 — `[keys]` 파싱. 액션 → 키 리스트를 읽어 **키 → 액션** 평면 배열로
+    /// 뒤집는다 (런타임 조회 방향이 그쪽이다).
+    ///
+    /// 액션 → 키 방향을 택한 대가로 **충돌 감지가 우리 몫**이다. 키 → 액션이었다면
+    /// 같은 키가 두 번 나오는 순간 TOML 파서가 중복 키로 잡지만, 이 방향에서는
+    /// `new_tab` 과 `open_config` 에 둘 다 `ctrl+shift+t` 를 적어도 문법상 정상이다.
+    ///
+    /// `[keys]` 자체가 없거나 특정 액션이 빠져 있으면 **기본값으로 채운다** (결정 2).
+    /// 정상 상태에서는 생성기가 모든 액션을 적으므로 이 경로는 버전 업그레이드 뒤의
+    /// 안전망이다.
+    fn parseKeys(rt: Runtime, root: toml.Value, config_path: []const u8, config: *Config) void {
+        const keys_table: ?*toml.Table = if (root.table.get("keys")) |kv|
+            (if (kv == .table) kv.table else null)
+        else
+            null;
+
+        var count: usize = 0;
+        for (std.enums.values(KeyAction)) |action| {
+            const name = action.configName();
+
+            // 이 액션의 키 목록. 파일에 있으면 그것을, 없으면 기본값을 쓴다.
+            var from_file: ?*toml.ValueList = null;
+            if (keys_table) |kt| {
+                if (kt.get(name)) |v| {
+                    if (v != .array) {
+                        var buf: [512]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, messages.config_key_not_list_format, .{ name, name }) catch
+                            messages.config_key_not_list_fallback_msg;
+                        showConfigFatalMsg(rt, config_path, msg);
+                    }
+                    from_file = v.array;
+                }
+            }
+
+            if (from_file) |list| {
+                for (list.items) |item| {
+                    if (item != .string) {
+                        var buf: [512]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, messages.config_key_not_list_format, .{ name, name }) catch
+                            messages.config_key_not_list_fallback_msg;
+                        showConfigFatalMsg(rt, config_path, msg);
+                    }
+                    count = addBinding(rt, config, count, action, item.string, config_path);
+                }
+            } else {
+                for (defaultBindings(action)) |text| {
+                    count = addBinding(rt, config, count, action, text, config_path);
+                }
+            }
+        }
+        config.key_binding_count = @intCast(count);
+    }
+
+    /// 키 문자열 하나를 파싱해 배열에 넣는다. 이미 같은 키가 있으면 **양쪽 액션을
+    /// 짚어** fatal.
+    fn addBinding(
+        rt: Runtime,
+        config: *Config,
+        count: usize,
+        action: KeyAction,
+        text: []const u8,
+        config_path: []const u8,
+    ) usize {
+        const parsed = switch (parseHotkeyString(text, .app_binding)) {
+            .ok => |v| v,
+            .unknown_key => {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.config_key_invalid_format, .{ action.configName(), text }) catch
+                    messages.config_key_invalid_fallback_msg;
+                showConfigFatalMsg(rt, config_path, msg);
+            },
+            .modifier_required => {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.config_key_needs_modifier_format, .{ action.configName(), text }) catch
+                    messages.config_key_needs_modifier_fallback_msg;
+                showConfigFatalMsg(rt, config_path, msg);
+            },
+        };
+        const hotkey = Hotkey.fromParsed(parsed);
+
+        for (config.key_bindings[0..count]) |existing| {
+            if (std.meta.eql(existing.hotkey, hotkey)) {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.config_key_conflict_format, .{
+                    text,
+                    existing.action.configName(),
+                    action.configName(),
+                }) catch messages.config_key_conflict_fallback_msg;
+                showConfigFatalMsg(rt, config_path, msg);
+            }
+        }
+
+        if (count >= MAX_KEY_BINDINGS) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, messages.config_key_too_many_format, .{MAX_KEY_BINDINGS}) catch
+                messages.config_key_too_many_fallback_msg;
+            showConfigFatalMsg(rt, config_path, msg);
+        }
+        config.key_bindings[count] = .{ .hotkey = hotkey, .action = action };
+        return count + 1;
     }
 
     fn createDefault(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
@@ -1437,11 +1874,10 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
     while (user_iter.next()) |entry| {
         const key = entry.key_ptr.*;
         if (def.table.get(key) == null) {
-            // `_` prefix key 는 사용자 주석 — 알 수 없는 key 라도 무시 (#173).
-            // JSON 표준 자체엔 주석 없지만 convention. schema 의 정식 key 는
-            // 모두 `_` 안 붙으니 기존 검증과 충돌 X. type / 재귀 검사도 모두
-            // skip — caller 가 자유로운 형식의 주석 사용 가능.
-            if (key.len > 0 and key[0] == '_') continue;
+            // #493 — `_` prefix key 를 주석 대용으로 허용하던 예외를 없앴다 (#173).
+            // JSON 에 주석이 없어서 두었던 우회인데, TOML 은 `#` 으로 진짜 주석을
+            // 쓸 수 있으므로 필요가 사라졌다. 남겨 두면 `_shell` 같은 오타가 조용히
+            // 무시돼 "왜 설정이 안 먹지" 가 된다 — 모르는 key 는 전부 알린다.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
