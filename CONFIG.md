@@ -17,91 +17,100 @@ hotkey is captured. Each `config_N.toml` owns one TildaZ process. A legacy
 user's `$SHELL` env (or
 `/bin/bash`) into newly created configs.
 
-> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
+> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
 >
 > Note that commenting a field **out** is not the same as leaving it at its default: every field listed in the table above is required, so removing one is an error rather than a fallback. To go back to a default, set the value explicitly.
 
-## Linux example
+## Examples
 
-```json
-{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 50.0,
-    "height_percent": 100.0,
-    "offset_percent": 100.0,
-    "opacity_percent": 100.0
-  },
-  "font": {
-    "family": "DejaVu Sans Mono",
-    "glyph_fallback": ["Noto Sans CJK KR", "Noto Color Emoji"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tilda",
-  "shell": "/bin/bash",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}
+Every field below is required, so a real config also carries the `[keys]`
+table -- see [Keyboard shortcuts](#keyboard-shortcuts). The examples omit it
+only to stay readable; TildaZ writes the whole file for you on first launch.
+
+### Linux
+
+```toml
+hotkey           = "F1"
+
+shell            = "/bin/bash"
+
+auto_start       = true
+hidden_start     = false
+
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"   # top | bottom | left | right
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "DejaVu Sans Mono"
+glyph_fallback    = ["Noto Sans CJK KR", "Noto Color Emoji"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
 ```
 
-## macOS example
+### macOS
 
-```json
-{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 50.0,
-    "height_percent": 100.0,
-    "offset_percent": 100.0,
-    "opacity_percent": 100.0
-  },
-  "font": {
-    "family": "Menlo",
-    "glyph_fallback": ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tilda",
-  "shell": "/bin/zsh",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}
+```toml
+hotkey           = "F1"
+
+shell            = "/bin/zsh"
+
+auto_start       = true
+hidden_start     = false
+
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"   # top | bottom | left | right
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "Menlo"
+glyph_fallback    = ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
 ```
 
-## Windows example
+### Windows
 
-```json
-{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 50.0,
-    "height_percent": 100.0,
-    "offset_percent": 100.0,
-    "opacity_percent": 100.0
-  },
-  "font": {
-    "family": "Cascadia Code",
-    "glyph_fallback": ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tilda",
-  "shell": "cmd.exe",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}
+```toml
+hotkey           = "F1"
+
+shell            = "cmd.exe"
+
+auto_start       = true
+hidden_start     = false
+
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"   # top | bottom | left | right
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "Cascadia Code"
+glyph_fallback    = ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
 ```
 
 ## Field reference
