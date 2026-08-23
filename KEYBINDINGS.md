@@ -20,7 +20,7 @@ Cross-platform shortcut convention: each platform follows its native modifier (A
 | Open log in editor | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L |
 | Perf snapshot to log | Ctrl+Shift+F12 | Shift+Cmd+F12 | Ctrl+Shift+F12 |
 | Quit | Alt+F4 (or close last tab) | Cmd+Q | Alt+F4 (or close last tab) |
-| Scrollback page up / down | Shift+PgUp / PgDn | Shift+PgUp / PgDn | Shift+PgUp / PgDn |
+| Scrollback page up / down *(fixed)* | Shift+PgUp / PgDn | Shift+PgUp / PgDn | Shift+PgUp / PgDn |
 
 On Linux the drop-down is normally sized from config (`dock_position` /
 `width_percent` / `height_percent`). Fullscreen is delegated to the compositor:
@@ -41,6 +41,11 @@ platforms.
 ## Quit confirmation
 
 Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+
+Everything in the table above except the scrollback row can be rebound in
+`config_N.toml` — see the `[keys]` section in [CONFIG.md](CONFIG.md). Scrolling
+the scrollback is fixed, because it is scrolling rather than a shortcut: the same
+action as the mouse wheel, which is also not rebindable.
 
 ## Keyboard layouts
 
