@@ -338,6 +338,14 @@ pub const config_key_invalid_fallback_msg = "Configuration: a [keys] entry uses 
 /// 글자를 내는 키를 modifier 없이 바인딩한 경우 — 그 글자를 터미널에 칠 수 없게 된다.
 pub const config_key_needs_modifier_format = "Configuration: \"keys.{s}\" binds \"{s}\" without Ctrl, Alt, or Cmd.\n\nThat key types text, so binding it alone would make it impossible to type in the terminal. Keys that do not type text (F1-F12, PageUp, PageDown) may be bound without a modifier.";
 pub const config_key_needs_modifier_fallback_msg = "Configuration: a [keys] entry needs a modifier";
+/// #496 — 위치 표기를 macOS 에서 쓸 수 없는 두 경우. 안내가 갈리는 이유는 원인이
+/// 다르기 때문이다 — 하나는 **키가 다른 이름으로 보고되는 것**이고 다른 하나는
+/// **정말 없는 것**이다. 한 메시지로 묶으면 앞쪽 사용자에게 "쓸 수 없다" 고 말하게
+/// 되는데 실제로는 이름만 바꾸면 되는 상황이다 (#484 의 교훈).
+pub const config_key_position_aliased_format = "Configuration: \"keys.{s}\" uses {s}, and macOS reports that key under a different name.\n\nOn a PC keyboard attached to a Mac, PrintScreen, ScrollLock and Pause arrive as F13, F14 and F15 -- Apple's extended keyboard puts those function keys in the same spots.\n\nUse [F13], [F14] or [F15] instead.";
+pub const config_key_position_aliased_fallback_msg = "Configuration: on macOS use [F13] / [F14] / [F15] for PrintScreen / ScrollLock / Pause";
+pub const config_key_position_absent_format = "Configuration: \"keys.{s}\" uses {s}, which macOS does not provide.\n\nApple's key codes stop at F20, and the Japanese input-switching keys (Convert, NonConvert, KanaMode) are handled by the input method rather than delivered as keys.\n\nPick a different key for this action, or leave it unbound with an empty list [].";
+pub const config_key_position_absent_fallback_msg = "Configuration: that key position does not exist on macOS";
 pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses an unrecognized key";
 /// key 는 유효하지만 modifier 가 없어 전역 등록이 위험한 경우 (일상 입력을 OS 전체에서
