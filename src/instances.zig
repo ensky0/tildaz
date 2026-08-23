@@ -1,4 +1,5 @@
 const std = @import("std");
+const toml = @import("toml");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
 const runtime = @import("runtime.zig");
@@ -107,8 +108,11 @@ const EndpointProbeResult = enum {
 const endpoint_poll_interval_ns = 10 * std.time.ns_per_ms;
 
 pub fn parseConfigFileName(name: []const u8) ?u32 {
-    if (!std.mem.startsWith(u8, name, "config_") or !std.mem.endsWith(u8, name, ".json")) return null;
-    const digits = name["config_".len .. name.len - ".json".len];
+    // #493 — config 포맷이 TOML 이다. `.json` 은 인식하지 않는다: 남아 있어도 읽지
+    // 않고 인스턴스로 세지도 않는다 (마이그레이션 없음 — 릴리스 노트와 기본 template
+    // 주석으로만 안내한다).
+    if (!std.mem.startsWith(u8, name, "config_") or !std.mem.endsWith(u8, name, ".toml")) return null;
+    const digits = name["config_".len .. name.len - ".toml".len];
     if (digits.len == 0 or (digits.len > 1 and digits[0] == '0')) return null;
     const index = std.fmt.parseInt(u32, digits, 10) catch return null;
     return if (index <= max_config_index) index else null;
@@ -147,7 +151,7 @@ pub fn createDefaultConfig(
 ) !void {
     const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const json = try config.defaultConfigJsonWithHotkey(allocator, shell_resolved, hotkey);
+    const json = try config.defaultConfigTomlWithHotkey(allocator, shell_resolved, hotkey);
     defer allocator.free(json);
 
     const file = try std.Io.Dir.createFileAbsolute(rt.io, path, .{ .exclusive = true });
@@ -469,12 +473,16 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
     var file_reader = file.reader(rt.io, &.{});
     const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
+    var parser: toml.Parser(toml.Table) = .init(allocator);
+    defer parser.deinit();
+    // 파싱 오류는 **그대로 전파**한다. `error.InvalidConfig` 로 뭉개면 런처가
+    // 보여 주는 문구가 "InvalidConfig" 하나로 줄어 원인을 못 알린다 (#495).
+    var parsed = try parser.parseString(content);
     defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidConfig;
-    const value = parsed.value.object.get("auto_start") orelse return error.InvalidConfig;
-    if (value != .bool) return error.InvalidConfig;
-    return value.bool;
+    const value = parsed.value.get("auto_start") orelse return error.InvalidConfig;
+    if (value != .boolean) return error.InvalidConfig;
+    return value.boolean;
 }
 
 pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
@@ -486,10 +494,12 @@ pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) !
     var file_reader = file.reader(rt.io, &.{});
     const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
+    var parser: toml.Parser(toml.Table) = .init(allocator);
+    defer parser.deinit();
+    var parsed = try parser.parseString(content);
     defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidConfig;
-    const value = parsed.value.object.get("hotkey") orelse return error.InvalidConfig;
+    const value = parsed.value.get("hotkey") orelse return error.InvalidConfig;
     if (value != .string) return error.InvalidConfig;
     return allocator.dupe(u8, value.string);
 }
@@ -503,10 +513,12 @@ pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u
         var file_reader = file.reader(rt.io, &.{});
         const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
         defer allocator.free(content);
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+        // #493 — TOML. 최상위는 문법상 항상 테이블이다.
+        var parser: toml.Parser(toml.Table) = .init(allocator);
+        defer parser.deinit();
+        var parsed = try parser.parseString(content);
         defer parsed.deinit();
-        if (parsed.value != .object) return error.InvalidConfig;
-        const value = parsed.value.object.get("hotkey") orelse return error.InvalidConfig;
+        const value = parsed.value.get("hotkey") orelse return error.InvalidConfig;
         if (value != .string) return error.InvalidConfig;
         const existing = config.Hotkey.fromString(value.string) orelse return error.InvalidConfig;
         if (std.meta.eql(existing, candidate)) return index;
@@ -593,13 +605,18 @@ test "핫키 중복은 뒤에 있는 인스턴스가 양보한다 (#431)" {
 }
 
 test "only canonical numbered config names are accepted" {
-    try std.testing.expectEqual(@as(?u32, 0), parseConfigFileName("config_0.json"));
-    try std.testing.expectEqual(@as(?u32, 42), parseConfigFileName("config_42.json"));
-    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config.json"));
-    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config0.json"));
-    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_01.json"));
-    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config-1.json"));
-    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_1000.json"));
+    try std.testing.expectEqual(@as(?u32, 0), parseConfigFileName("config_0.toml"));
+    try std.testing.expectEqual(@as(?u32, 42), parseConfigFileName("config_42.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config0.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_01.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config-1.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_1000.toml"));
+    // #493 — 남아 있는 `.json` 은 인스턴스로 세지 않는다. 마이그레이션이 없으므로
+    // 옛 파일이 그대로 남는데, 그것을 인스턴스로 오인하면 없는 config 를 띄우려 한다.
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_0.json"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_3.json"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_0.toml.bak"));
 }
 
 test "next config index follows the greatest existing index" {

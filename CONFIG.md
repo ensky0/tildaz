@@ -4,22 +4,24 @@ Config file path (per OS standard):
 
 | OS | Path |
 |---|---|
-| Linux | `~/.config/tildaz/config_N.json` (XDG) |
-| macOS | `~/.config/tildaz/config_N.json` (XDG, Ghostty / Alacritty pattern) |
-| Windows | `%APPDATA%\tildaz\config_N.json` |
+| Linux | `~/.config/tildaz/config_N.toml` (XDG) |
+| macOS | `~/.config/tildaz/config_N.toml` (XDG, Ghostty / Alacritty pattern) |
+| Windows | `%APPDATA%\tildaz\config_N.toml` |
 
-The first launch creates `config_0.json` with defaults. Launching TildaZ while
+The first launch creates `config_0.toml` with defaults. Launching TildaZ while
 all configured instances are already running shows the resulting instance count
 and a hotkey capture dialog before writing the next numbered file. Press the
 desired key combination; **Create** remains disabled until a valid, unused
-hotkey is captured. Each `config_N.json` owns one TildaZ process. A legacy
-`config.json` is not loaded, converted, or deleted. Linux and macOS insert the
+hotkey is captured. Each `config_N.toml` owns one TildaZ process. A legacy
+`config.json` is not loaded, converted, or deleted. Neither is a `config_N.json` left over from before TildaZ used TOML — it stays on disk, unread. Linux and macOS insert the
 user's `$SHELL` env (or
 `/bin/bash`) into newly created configs.
 
 > **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
-> **Comment keys** — any key starting with `_` (e.g. `_note`, `_disabled_test_font`) is treated as a user comment and skipped from schema validation. Use this to annotate your config or temporarily disable a field by renaming it (e.g. `"shell": "/bin/zsh"` → `"_shell": "/bin/zsh"`). The `_` prefix convention is not part of JSON itself but is convenient here since the official schema never uses it.
+> **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
+>
+> Note that commenting a field **out** is not the same as leaving it at its default: every field listed in the table above is required, so removing one is an error rather than a fallback. To go back to a default, set the value explicitly.
 
 ## Linux example
 
