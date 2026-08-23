@@ -104,6 +104,13 @@ pub fn build(b: *std.Build) void {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
 
+    // TOML config 파서 (#493). ghostty 와 달리 lazy 가 아니다 — config 파싱은
+    // 조건 없이 항상 필요하다 (ghostty 의 `uucode` 와 같은 성격).
+    exe_mod.addImport("toml", b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("toml"));
+
     if (is_windows_target) {
         // PE VERSIONINFO 리소스 (Explorer 속성 / Task Manager 에서 버전 표시).
         const windows_resource = b.addConfigHeader(.{
@@ -305,6 +312,11 @@ pub fn build(b: *std.Build) void {
     })) |dep| {
         test_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
+
+    test_mod.addImport("toml", b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("toml"));
     if (is_linux_target) test_mod.link_libc = true;
     if (is_macos_target) {
         test_mod.linkSystemLibrary("objc", .{});
@@ -402,6 +414,11 @@ pub fn build(b: *std.Build) void {
     })) |dep| {
         stress_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
+
+    stress_mod.addImport("toml", b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("toml"));
     // 하네스는 창을 띄우지 않지만 `config.zig` 를 거쳐 dialog 경로가 그래프에 들어온다
     // (기본 scrollback 값을 앱과 같게 쓰기 위해). 그래서 link spec 은 test_mod 와 같다.
     if (is_linux_target) stress_mod.link_libc = true;
@@ -535,6 +552,11 @@ pub fn build(b: *std.Build) void {
             })) |dep| {
                 check_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
             }
+
+            check_mod.addImport("toml", b.dependency("toml", .{
+                .target = target,
+                .optimize = optimize,
+            }).module("toml"));
             // OS-specific link spec 도 declare. *compile-only* 라 link 안 함이지만
             // host 코드의 일부 `extern` decl 이 module 의 link_libc / framework 마커를
             // 검사하는 케이스 일관성. mac framework / windows resource 는 compile

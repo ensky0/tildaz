@@ -38,6 +38,19 @@
             .url = "https://github.com/ghostty-org/ghostty/archive/94d775fefc21f74d9cc85a46b34c4e1d85318fd0.tar.gz",
             .hash = "ghostty-1.3.2-dev-5UdBCyCSPwV-Pp82UMGLutqeo0gckMrI0GfbUbUY0-Jt",
         },
+        // TOML config 파서 (#493). MIT.
+        //
+        // **`zig-0.16` 브랜치 커밋으로 고정한다.** upstream `main` 은 Zig 0.16 에서
+        // 컴파일이 깨진다 — `struct_mapping.zig` 의 `@fromBackingInt` builtin 이
+        // 0.16 에 없다. 이 브랜치는 `parseFile` 이 `std.Io` 를 받는 등 0.16 의 새
+        // 인터페이스에 맞춰져 있다. upstream 이 main 에 병합하면 그때 옮긴다.
+        //
+        // ghostty 와 같은 이유로 커밋 고정 — 브랜치 tarball 은 움직이면 CI
+        // 프리페치가 해시 불일치로 실패한다.
+        .toml = .{
+            .url = "https://github.com/sam701/zig-toml/archive/8685923e32e8b8a795eb2715684236975a70faed.tar.gz",
+            .hash = "toml-0.3.0-bV14BRmKAQAWR0FT0KUKFwVJTImaFhWjSe6HfSMtNZOH",
+        },
     },
     .paths = .{
         "build.zig",
