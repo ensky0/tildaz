@@ -344,6 +344,12 @@ pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses a
 /// 가로챈다). 이쪽은 기존 안내가 정확했다.
 pub const config_hotkey_invalid_format = "Configuration: failed to parse \"hotkey\" value \"{s}\".\n\nOnly F1-F12 may be used without modifiers. Other keys require Ctrl, Alt, Super, or Cmd.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
+/// #496 — 위치 표기 (`[KeyW]`) 를 전역 `hotkey` 에 쓴 경우. `config_hotkey_invalid`
+/// 로 묶으면 "Only F1-F12 may be used without modifiers" 를 받는데, 사용자는 modifier
+/// 를 이미 줬으므로 #484 와 똑같이 막다른 길이 된다. 무엇이 안 되는지와 **대신 할 수
+/// 있는 것**을 같이 준다.
+pub const config_hotkey_position_format = "Configuration: \"hotkey\" value \"{s}\" uses the position form (in square brackets).\n\nThe position form works in [keys] but not for the global hotkey: TildaZ has to register that one with the desktop, and every path it uses (sway, Hyprland, COSMIC, KDE) accepts only a character.\n\nUse a key name instead -- a function key is the safest choice because it is the same on every keyboard layout.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+pub const config_hotkey_position_fallback_msg = "Configuration: hotkey cannot use the position form";
 /// #431 — 다른 TildaZ 인스턴스가 이미 쓰는 전역 핫키. 뒤에 있는 (index 가 큰) 쪽이 양보하므로
 /// 이 메시지는 그 인스턴스에만 나온다. **겹친 상대를 번호로 짚어 주는 것이 핵심이다** — 예전엔
 /// Windows 의 `RegisterHotKey` 실패 안내가 "Another app already registered the same combination"

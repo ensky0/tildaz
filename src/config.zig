@@ -23,6 +23,8 @@ const paths = @import("paths.zig");
 const font_validate = @import("font/validate.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
+const physical_key = @import("physical_key.zig");
+const PhysicalCode = physical_key.PhysicalCode;
 
 const WCHAR = u16;
 
@@ -115,6 +117,9 @@ const HotkeyKeyToken = union(enum) {
     named: HotkeyNamedKey,
     /// 소문자 latin letter 또는 digit (ASCII).
     char: u8,
+    /// #496 — **물리 위치** (`[KeyW]`). 라벨이 아니므로 layout 을 갈아도 같은 자리다.
+    /// 비라틴 layout 에서 글자 단축키를 쓸 수 있는 유일한 방법이다.
+    code: PhysicalCode,
 };
 
 const ParsedHotkey = struct {
@@ -134,6 +139,11 @@ pub const HotkeyFailure = enum {
     unknown_key,
     /// key 는 유효하지만 modifier 없이 전역 등록할 수 없는 키다 (F1~F12 만 허용).
     modifier_required,
+    /// #496 — 위치 표기 (`[KeyW]`) 를 전역 `hotkey` 에 썼다. 아직 `[keys]` 에서만
+    /// 받는다: 전역 핫키는 OS / compositor 에 *등록* 해야 하고 그 4 경로가 모두
+    /// 문자 기반이라 (sway `bindsym` · Hyprland keysym · COSMIC RON · KGlobalAccel
+    /// `qtKey`) 위치를 넘길 자리가 없다. 조용히 keysym 0 을 등록하는 대신 거부한다.
+    position_in_global_hotkey,
 };
 
 /// `Hotkey.fromString` 이 왜 null 이었는지. **판정을 재현하지 않고** 같은
@@ -144,6 +154,7 @@ pub fn hotkeyFailure(s: []const u8) ?HotkeyFailure {
         .ok => null,
         .unknown_key => .unknown_key,
         .modifier_required => .modifier_required,
+        .position_in_global_hotkey => .position_in_global_hotkey,
     };
 }
 
@@ -151,6 +162,7 @@ const HotkeyParse = union(enum) {
     ok: ParsedHotkey,
     unknown_key,
     modifier_required,
+    position_in_global_hotkey,
 };
 
 /// 파싱 규칙이 쓰임새에 따라 다르다 (#493). `parseHotkeyString` 참고.
@@ -190,6 +202,8 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     // key 토큰이 아예 없는 경우 (예: `"ctrl"` 하나만) 도 "모르는 key" 로 묶는다 —
     // 사용자가 받아야 하는 안내가 같다 (받는 key 목록).
     const resolved = key orelse return .unknown_key;
+    // #496 — 위치 표기는 아직 `[keys]` 전용이다 (`HotkeyFailure` 주석 참고).
+    if (scope == .global_hotkey and resolved == .code) return .position_in_global_hotkey;
     // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
     // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
     // 허용하는 키는 F1~F12뿐 — capturedHotkeyText 와 동일 규칙.
@@ -199,6 +213,9 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
             else => false,
         },
         .char => false,
+        // `global_hotkey` 는 위 분기에서 이미 돌아갔으므로 여기 오는 위치는
+        // `app_binding` 뿐이고, 그 판정은 아래 `types_text` 가 한다.
+        .code => false,
     };
     if (scope == .global_hotkey) {
         if (!(ctrl or alt or super) and !is_function_key) return .modifier_required;
@@ -224,6 +241,13 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
                 // 없게 된다.
                 .grave, .bracket_left, .bracket_right => true,
+            },
+            // #496 — 위치도 같은 기준이다. 그 *자리* 가 글자를 내는지로 본다: 어떤
+            // layout 에서든 `KeyW` 자리는 글자를 내고 `F5` 자리는 내지 않는다.
+            .code => |c| switch (c) {
+                .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => false,
+                .page_up, .page_down, .escape => false,
+                else => true,
             },
         };
         if (types_text and !(ctrl or alt or super)) return .modifier_required;
@@ -265,6 +289,17 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
     };
     for (map) |entry| {
         if (eqIc(name, entry.name)) return .{ .named = entry.key };
+    }
+    // #496 — 위치 표기 `[KeyW]`. VS Code 와 같은 대괄호이고 안의 이름은 W3C
+    // `KeyboardEvent.code` 값이다 (`physical_key.zig`).
+    //
+    // `[` 와 `]` 는 **라벨로도** 받는 키라 (`prev_tab` 기본값이 `ctrl+shift+[`)
+    // 표기가 겹쳐 보인다. 구분은 길이로 명확하다 — 1 자 `[` 는 라벨, `[...]` 는
+    // 위치다. VS Code 도 같은 상황을 안고 배포한다 (기본값에 `ctrl+[` 가 있다).
+    // 아래 `name.len == 1` 분기보다 **먼저** 봐야 한다.
+    if (name.len >= 3 and name[0] == '[' and name[name.len - 1] == ']') {
+        const inner = name[1 .. name.len - 1];
+        return .{ .code = physical_key.fromName(inner) orelse return null };
     }
     if (name.len == 1) {
         const c = name[0];
@@ -369,6 +404,12 @@ const LinuxHotkey = struct {
     /// 가 이를 `<Control><Shift>...` 같은 prefix 로 변환.
     modifiers: u32 = 0,
 
+    /// #496 — non-null 이면 이 binding 은 **물리 위치**로 매칭한다 (`[KeyW]`).
+    /// 그때 라벨 쪽 값 (`keysym`) 은 의미가 없다. `lookupAction` 이 이 필드로
+    /// 어느 기준을 볼지 고른다 — 두 기준을 한 값에 눌러 담을 수 없어서 (같은
+    /// event 가 라벨 binding 과 위치 binding 에 동시에 걸려야 한다) 필드를 나눈다.
+    code: ?PhysicalCode = null,
+
     pub const MOD_ALT: u32 = 0x1;
     pub const MOD_CTRL: u32 = 0x2;
     pub const MOD_SHIFT: u32 = 0x4;
@@ -390,7 +431,11 @@ const LinuxHotkey = struct {
         if (parsed.ctrl) modifiers |= MOD_CTRL;
         if (parsed.shift) modifiers |= MOD_SHIFT;
         if (parsed.super) modifiers |= MOD_SUPER;
-        return .{ .keysym = keysymFromKey(parsed.key), .modifiers = modifiers };
+        return .{
+            .keysym = keysymFromKey(parsed.key),
+            .modifiers = modifiers,
+            .code = if (parsed.key == .code) parsed.key.code else null,
+        };
     }
 
     /// 정규화된 key → xkb keysym. `xkbcommon/xkbcommon-keysyms.h` 의
@@ -398,6 +443,9 @@ const LinuxHotkey = struct {
     fn keysymFromKey(key: HotkeyKeyToken) u32 {
         return switch (key) {
             .char => |c| c,
+            // 위치 binding 은 keysym 으로 매칭하지 않는다 — `code` 필드가 기준이다.
+            // 0 은 어떤 실제 keysym 과도 겹치지 않는 sentinel 이다.
+            .code => 0,
             .named => |n| switch (n) {
                 .f1 => 0xffbe,
                 .f2 => 0xffbf,
@@ -572,14 +620,157 @@ test "#493 lookup is exact — no shift-insensitive fallback" {
         }
     }.f;
 
-    try std.testing.expectEqual(KeyAction.fullscreen, lookupAction(bindings, try hk("alt+return")).?);
-    try std.testing.expectEqual(KeyAction.fullscreen_workarea, lookupAction(bindings, try hk("shift+alt+return")).?);
-    try std.testing.expectEqual(KeyAction.switch_tab1, lookupAction(bindings, try hk("alt+1")).?);
+    try std.testing.expectEqual(KeyAction.fullscreen, lookupAction(bindings, try hk("alt+return"), null).?);
+    try std.testing.expectEqual(KeyAction.fullscreen_workarea, lookupAction(bindings, try hk("shift+alt+return"), null).?);
+    try std.testing.expectEqual(KeyAction.switch_tab1, lookupAction(bindings, try hk("alt+1"), null).?);
 
     // Shift 가 더 붙은 조합은 **일치하지 않는다.** 완화 조회를 뺀 결과이고 의도된
     // 동작이다 — `shift+alt+f4` 가 `alt+f4` 를 발동시키는 일이 없다.
-    try std.testing.expect(lookupAction(bindings, try hk("shift+alt+1")) == null);
-    try std.testing.expect(lookupAction(bindings, try hk("ctrl+alt+return")) == null);
+    try std.testing.expect(lookupAction(bindings, try hk("shift+alt+1"), null) == null);
+    try std.testing.expect(lookupAction(bindings, try hk("ctrl+alt+return"), null) == null);
+}
+
+test "#496 위치 binding 은 라벨과 무관하게 자리로 매칭한다" {
+    const parse = struct {
+        fn f(text: []const u8) !Hotkey {
+            return switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| Hotkey.fromParsed(v),
+                else => error.TestUnexpectedResult,
+            };
+        }
+    }.f;
+
+    var buf: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    var n: usize = 0;
+    // 라벨 binding 하나, 위치 binding 하나 — 한 조회가 둘 다 상대한다.
+    buf[n] = .{ .hotkey = try parse("ctrl+shift+t"), .action = .new_tab };
+    n += 1;
+    buf[n] = .{ .hotkey = try parse("ctrl+shift+[KeyW]"), .action = .close_tab };
+    n += 1;
+    const bindings = buf[0..n];
+
+    // 위치 binding 은 라벨을 보지 않는다. 키릴 layout 에서 그 자리를 누르면 라벨은
+    // `ц` 라서 라벨 표현이 무엇이든 상관없이 자리로 잡혀야 한다 — 여기서는 라벨
+    // 표현을 일부러 엉뚱한 것 (`ctrl+shift+f9`) 으로 주고 자리만 맞춘다.
+    try std.testing.expectEqual(
+        KeyAction.close_tab,
+        lookupAction(bindings, try parse("ctrl+shift+f9"), .key_w).?,
+    );
+    // modifier 가 다르면 자리가 맞아도 매칭하지 않는다.
+    try std.testing.expect(lookupAction(bindings, try parse("ctrl+f9"), .key_w) == null);
+    // 자리를 모르는 event (표에 없는 키) 는 위치 binding 을 발동시키지 않는다.
+    try std.testing.expect(lookupAction(bindings, try parse("ctrl+shift+f9"), null) == null);
+    // 라벨 binding 은 자리 정보가 있어도 라벨로 판정한다 — 위치를 엉뚱하게 줘도
+    // 라벨이 맞으면 잡힌다.
+    try std.testing.expectEqual(
+        KeyAction.new_tab,
+        lookupAction(bindings, try parse("ctrl+shift+t"), .key_z).?,
+    );
+}
+
+test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
+    // `physical_key.zig` 의 `mac` 열과 `MacHotkey.keycodeFromKey` 는 **같은 US 위치
+    // 표** 다. 두 곳에 값을 두는 것은 어쩔 수 없다 (한쪽은 라벨 → 위치, 한쪽은 위치
+    // 이름 → 위치) — 그래서 갈라지지 않는다는 것을 여기서 고정한다. 표가 갈라지면
+    // `[KeyW]` 와 라벨 `w` 가 macOS 에서 다른 키가 되고, 그 증상은 조용하다.
+    var name_buf: [16]u8 = undefined;
+
+    for ('a'..'z' + 1) |c| {
+        const letter: u8 = @intCast(c);
+        const name = std.fmt.bufPrint(&name_buf, "Key{c}", .{std.ascii.toUpper(letter)}) catch unreachable;
+        const code = physical_key.fromName(name).?;
+        try std.testing.expectEqual(
+            MacHotkey.keycodeFromKey(.{ .char = letter }),
+            @as(u32, physical_key.macKeyCode(code)),
+        );
+    }
+    for ('0'..'9' + 1) |c| {
+        const digit: u8 = @intCast(c);
+        const name = std.fmt.bufPrint(&name_buf, "Digit{c}", .{digit}) catch unreachable;
+        const code = physical_key.fromName(name).?;
+        try std.testing.expectEqual(
+            MacHotkey.keycodeFromKey(.{ .char = digit }),
+            @as(u32, physical_key.macKeyCode(code)),
+        );
+    }
+
+    const pairs = [_]struct { named: HotkeyNamedKey, code: PhysicalCode }{
+        .{ .named = .f1, .code = .f1 },       .{ .named = .f2, .code = .f2 },
+        .{ .named = .f3, .code = .f3 },       .{ .named = .f4, .code = .f4 },
+        .{ .named = .f5, .code = .f5 },       .{ .named = .f6, .code = .f6 },
+        .{ .named = .f7, .code = .f7 },       .{ .named = .f8, .code = .f8 },
+        .{ .named = .f9, .code = .f9 },       .{ .named = .f10, .code = .f10 },
+        .{ .named = .f11, .code = .f11 },     .{ .named = .f12, .code = .f12 },
+        .{ .named = .space, .code = .space }, .{ .named = .tab, .code = .tab },
+        .{ .named = .escape, .code = .escape },
+        // 라벨은 `return`, W3C 이름은 `Enter` 다 — 같은 키다.
+        .{ .named = .@"return", .code = .enter },
+        .{ .named = .grave, .code = .backquote },
+        .{ .named = .page_up, .code = .page_up },
+        .{ .named = .page_down, .code = .page_down },
+        .{ .named = .bracket_left, .code = .bracket_left },
+        .{ .named = .bracket_right, .code = .bracket_right },
+    };
+    for (pairs) |pair| {
+        try std.testing.expectEqual(
+            MacHotkey.keycodeFromKey(.{ .named = pair.named }),
+            @as(u32, physical_key.macKeyCode(pair.code)),
+        );
+    }
+    // 두 집합의 크기가 맞아야 한다 — 위치 집합은 named 라벨 전부 + 글자 26 + 숫자 10
+    // 이다. 한쪽에만 키를 더하면 위 `pairs` 표가 조용히 불완전해지므로 여기서 막는다.
+    try std.testing.expectEqual(
+        @typeInfo(HotkeyNamedKey).@"enum".fields.len + 26 + 10,
+        @typeInfo(PhysicalCode).@"enum".fields.len,
+    );
+    // 그리고 `pairs` 가 named 라벨을 빠짐없이 덮어야 한다.
+    try std.testing.expectEqual(@typeInfo(HotkeyNamedKey).@"enum".fields.len, pairs.len);
+}
+
+test "#496 위치 표기 파싱" {
+    // 대괄호 안은 W3C `KeyboardEvent.code` 이름이고 대소문자 무관이다.
+    try std.testing.expect(parseHotkeyString("ctrl+shift+[KeyW]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+shift+[keyw]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+[BracketLeft]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("[F5]", .app_binding) == .ok);
+
+    // 1 자 `[` 는 여전히 **라벨**이다 — 표기가 겹쳐 보이지만 길이로 갈린다.
+    const label = switch (parseHotkeyString("ctrl+shift+[", .app_binding)) {
+        .ok => |v| v,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expect(label.key == .named);
+    try std.testing.expectEqual(HotkeyNamedKey.bracket_left, label.key.named);
+
+    const position = switch (parseHotkeyString("ctrl+shift+[BracketLeft]", .app_binding)) {
+        .ok => |v| v,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expect(position.key == .code);
+    try std.testing.expectEqual(PhysicalCode.bracket_left, position.key.code);
+
+    // 라벨 집합에 없는 자리는 위치로도 받지 않는다 — 수용 집합이 조용히 넓어지지
+    // 않게 한다 (`physical_key.zig` 의 같은 정책).
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[Minus]", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[Slash]", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[NotAKey]", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[]", .app_binding));
+
+    // 글자를 내는 자리는 modifier 가 필요하고, 내지 않는 자리는 필요 없다 — 라벨과
+    // 같은 기준이다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("[KeyW]", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("shift+[KeyW]", .app_binding));
+    try std.testing.expect(parseHotkeyString("[PageUp]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("shift+[PageUp]", .app_binding) == .ok);
+
+    // 전역 `hotkey` 는 아직 위치를 받지 않는다 (1-b 미구현). 조용히 keysym 0 을
+    // 등록하는 대신 원인이 분명한 실패를 낸다.
+    try std.testing.expectEqual(
+        HotkeyParse.position_in_global_hotkey,
+        parseHotkeyString("ctrl+[KeyW]", .global_hotkey),
+    );
+    try std.testing.expectEqual(HotkeyFailure.position_in_global_hotkey, hotkeyFailure("ctrl+[KeyW]").?);
+    try std.testing.expectEqual(@as(?Hotkey, null), Hotkey.fromString("ctrl+[KeyW]"));
 }
 
 test "#493 default [keys] has no conflicting bindings" {
@@ -734,6 +925,12 @@ const WindowsHotkey = struct {
     vkey: u32 = 0x70, // VK_F1
     modifiers: u32 = 0,
 
+    /// #496 — non-null 이면 이 binding 은 **물리 위치**로 매칭한다 (`[KeyW]`).
+    /// 그때 라벨 쪽 값 (`vkey`) 은 의미가 없다. `lookupAction` 이 이 필드로
+    /// 어느 기준을 볼지 고른다 — 두 기준을 한 값에 눌러 담을 수 없어서 (같은
+    /// event 가 라벨 binding 과 위치 binding 에 동시에 걸려야 한다) 필드를 나눈다.
+    code: ?PhysicalCode = null,
+
     pub fn fromString(s: []const u8) ?WindowsHotkey {
         const parsed = switch (parseHotkeyString(s, .global_hotkey)) {
             .ok => |p| p,
@@ -755,7 +952,11 @@ const WindowsHotkey = struct {
         if (parsed.ctrl) modifiers |= MOD_CTRL;
         if (parsed.shift) modifiers |= MOD_SHIFT;
         if (parsed.super) modifiers |= MOD_SUPER;
-        return .{ .vkey = vkeyFromKey(parsed.key), .modifiers = modifiers };
+        return .{
+            .vkey = vkeyFromKey(parsed.key),
+            .modifiers = modifiers,
+            .code = if (parsed.key == .code) parsed.key.code else null,
+        };
     }
 
     /// 정규화된 key → virtual-key code. letter / digit 은 대문자 ASCII 값
@@ -763,6 +964,9 @@ const WindowsHotkey = struct {
     fn vkeyFromKey(key: HotkeyKeyToken) u32 {
         return switch (key) {
             .char => |c| std.ascii.toUpper(c),
+            // 위치 binding 은 scan code 로 매칭한다 — `code` 필드가 기준이고 vkey 는
+            // 보지 않는다. 0 은 유효한 virtual-key 가 아니라 sentinel 로 안전하다.
+            .code => 0,
             .named => |n| switch (n) {
                 .f1 => 0x70,
                 .f2 => 0x71,
@@ -828,6 +1032,12 @@ const MacHotkey = struct {
     /// CGEventFlags (`kCGEventFlagMask*`). u64 — bit 16..23 사용.
     modifiers: u64 = 0,
 
+    /// #496 — non-null 이면 이 binding 은 **물리 위치**로 매칭한다 (`[KeyW]`).
+    /// 그때 라벨 쪽 값 (`keycode`) 은 의미가 없다. `lookupAction` 이 이 필드로
+    /// 어느 기준을 볼지 고른다 — 두 기준을 한 값에 눌러 담을 수 없어서 (같은
+    /// event 가 라벨 binding 과 위치 binding 에 동시에 걸려야 한다) 필드를 나눈다.
+    code: ?PhysicalCode = null,
+
     pub fn fromString(s: []const u8) ?MacHotkey {
         const parsed = switch (parseHotkeyString(s, .global_hotkey)) {
             .ok => |p| p,
@@ -849,12 +1059,21 @@ const MacHotkey = struct {
         if (parsed.ctrl) modifiers |= MOD_CTRL;
         if (parsed.alt) modifiers |= MOD_ALT;
         if (parsed.super) modifiers |= MOD_SUPER;
-        return .{ .keycode = keycodeFromKey(parsed.key), .modifiers = modifiers };
+        return .{
+            .keycode = keycodeFromKey(parsed.key),
+            .modifiers = modifiers,
+            .code = if (parsed.key == .code) parsed.key.code else null,
+        };
     }
 
     /// 정규화된 key → `kVK_*` keycode.
     fn keycodeFromKey(key: HotkeyKeyToken) u32 {
         return switch (key) {
+            // macOS 는 `keycode` 자체가 물리 위치라 위치 binding 도 같은 표현이 된다
+            // — sentinel 이 필요 없다. 그래서 라벨 `w` 와 `[KeyW]` 가 이 platform 에서
+            // 완전히 같은 값을 낸다 (#496 항목 2 의 뿌리이기도 하다: 라벨 쪽이 live
+            // layout 을 보지 않고 US 위치를 준다).
+            .code => |c| physical_key.macKeyCode(c),
             .named => |n| switch (n) {
                 .f1 => 0x7A,
                 .f2 => 0x78,
@@ -1341,8 +1560,33 @@ pub const KeyAction = enum {
 ///
 /// layout 때문에 특정 조합을 누를 수 없다면 **그 layout 에서 다른 키로 바꾸는 것**이
 /// 답이다 — `[keys]` 를 설정 가능하게 만든 이유가 그것이다.
-pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey) ?KeyAction {
+///
+/// ## 두 기준
+///
+/// #496 — binding 은 라벨로도 (`ctrl+shift+w`) 위치로도 (`ctrl+shift+[KeyW]`) 적을 수
+/// 있고, 한 event 가 두 종류의 binding 모두와 겨뤄야 한다. 그래서 호출자는 같은
+/// key event 를 **두 표현으로** 넘긴다:
+///
+///   - `hotkey` — 라벨 표현. platform 이 주는 keysym / vkey / keycode 로 만든다.
+///     `hotkey.code` 는 **반드시 null** 이어야 한다 (event 는 binding 이 아니다).
+///   - `code` — 물리 위치. Linux evdev keycode · Windows scan code · macOS keyCode 를
+///     `physical_key.fromEvdev` / `..fromScanCode` / `..fromMacKeyCode` 로 옮긴 값.
+///     표에 없는 키면 null 이고, 그때 위치 binding 은 아무것도 매칭하지 않는다.
+///
+/// binding 쪽 `code` 가 non-null 이면 위치로, null 이면 라벨로 판정한다. 한 binding 이
+/// 두 기준을 동시에 갖지 않으므로 "왜 이 키가 이 동작을 했는가" 가 항상 한 가지로
+/// 설명된다.
+pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?PhysicalCode) ?KeyAction {
+    std.debug.assert(hotkey.code == null);
     for (bindings) |b| {
+        if (b.hotkey.code) |want| {
+            // 위치 binding — modifier 는 같아야 하고 자리가 일치해야 한다. 라벨 쪽
+            // 값 (keysym / vkey / keycode) 은 보지 않는다.
+            if (b.hotkey.modifiers != hotkey.modifiers) continue;
+            const got = code orelse continue;
+            if (got == want) return b.action;
+            continue;
+        }
         if (std.meta.eql(b.hotkey, hotkey)) return b.action;
     }
     return null;
@@ -1609,13 +1853,17 @@ pub const Config = struct {
                 // #484 — 거부 이유별로 다른 안내를 보낸다. 한 메시지로 묶으면
                 // modifier 를 이미 준 사용자에게 "modifier 를 달라" 고 말하게 된다.
                 // `bufPrint` 의 format 은 comptime 이라 분기 안에서 각각 포맷한다.
-                var buf: [512]u8 = undefined;
-                const msg = if (hotkeyFailure(v.string) == .unknown_key)
-                    std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
-                        messages.config_hotkey_unknown_key_fallback_msg
-                else
-                    std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
-                        messages.config_hotkey_invalid_fallback_msg;
+                var buf: [768]u8 = undefined;
+                const msg = switch (hotkeyFailure(v.string).?) {
+                    .unknown_key => std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
+                        messages.config_hotkey_unknown_key_fallback_msg,
+                    // #496 — 원인이 셋이 됐다. 위치 표기를 "modifier 를 달라" 로
+                    // 안내하면 #484 와 같은 막다른 길이 된다.
+                    .position_in_global_hotkey => std.fmt.bufPrint(&buf, messages.config_hotkey_position_format, .{v.string}) catch
+                        messages.config_hotkey_position_fallback_msg,
+                    .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
+                        messages.config_hotkey_invalid_fallback_msg,
+                };
                 showConfigFatalMsg(rt, config_path, msg);
             }
         }
@@ -1778,6 +2026,10 @@ pub const Config = struct {
                     messages.config_key_needs_modifier_fallback_msg;
                 showConfigFatalMsg(rt, config_path, msg);
             },
+            // `app_binding` scope 는 이 값을 내지 않는다 (`parseHotkeyString` 이
+            // `global_hotkey` 에서만 낸다). exhaustive switch 를 유지하려고 둔다 —
+            // scope 별 규칙이 바뀌어 여기 도달하면 조용히 넘기지 말고 멈춰야 한다.
+            .position_in_global_hotkey => unreachable,
         };
         const hotkey = Hotkey.fromParsed(parsed);
 
