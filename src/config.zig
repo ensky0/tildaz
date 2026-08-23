@@ -145,6 +145,14 @@ pub const HotkeyFailure = enum {
     /// 문자 기반이라 (sway `bindsym` · Hyprland keysym · COSMIC RON · KGlobalAccel
     /// `qtKey`) 위치를 넘길 자리가 없다. 조용히 keysym 0 을 등록하는 대신 거부한다.
     position_in_global_hotkey,
+    /// #496 — macOS 가 이 자리를 **다른 이름으로 보고**한다. `PrintScreen` ·
+    /// `ScrollLock` · `Pause` 를 PC 자판에서 누르면 `F13` · `F14` · `F15` 로 온다
+    /// (Apple 확장 자판이 그 자리에 F13~F15 를 둔다). 키가 없는 것이 아니므로
+    /// 안내가 "쓸 수 없다" 가 아니라 "저 이름을 쓰라" 여야 한다.
+    position_aliased_on_macos,
+    /// #496 — macOS 에 이 자리가 정말로 없다. `F21`~`F24` (Apple 의 `kVK_*` 가 F20
+    /// 에서 멈춘다) 와 JIS 입력 전환 키 (`Convert` · `NonConvert` · `KanaMode`).
+    position_absent_on_macos,
 };
 
 /// `Hotkey.fromString` 이 왜 null 이었는지. **판정을 재현하지 않고** 같은
@@ -156,6 +164,8 @@ pub fn hotkeyFailure(s: []const u8) ?HotkeyFailure {
         .unknown_key => .unknown_key,
         .modifier_required => .modifier_required,
         .position_in_global_hotkey => .position_in_global_hotkey,
+        .position_aliased_on_macos => .position_aliased_on_macos,
+        .position_absent_on_macos => .position_absent_on_macos,
     };
 }
 
@@ -164,6 +174,8 @@ const HotkeyParse = union(enum) {
     unknown_key,
     modifier_required,
     position_in_global_hotkey,
+    position_aliased_on_macos,
+    position_absent_on_macos,
 };
 
 /// 파싱 규칙이 쓰임새에 따라 다르다 (#493). `parseHotkeyString` 참고.
@@ -205,6 +217,14 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     const resolved = key orelse return .unknown_key;
     // #496 — 위치 표기는 아직 `[keys]` 전용이다 (`HotkeyFailure` 주석 참고).
     if (scope == .global_hotkey and resolved == .code) return .position_in_global_hotkey;
+    // #496 — 이 platform 에서 값이 없는 자리는 거부한다. 조용히 미동작으로 두면
+    // 사용자가 config 를 몇 번이고 다시 읽게 된다 (#208 이 막으려던 것).
+    if (is_macos and resolved == .code and !physical_key.availableOnThisPlatform(resolved.code)) {
+        return if (physical_key.macAlias(resolved.code) != null)
+            .position_aliased_on_macos
+        else
+            .position_absent_on_macos;
+    }
     // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
     // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
     // 허용하는 키는 F1~F12뿐 — capturedHotkeyText 와 동일 규칙.
@@ -245,8 +265,18 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
             },
             // #496 — 위치도 같은 기준이다. 그 *자리* 가 글자를 내는지로 본다: 어떤
             // layout 에서든 `KeyW` 자리는 글자를 내고 `F5` 자리는 내지 않는다.
+            //
+            // 방향키 · `Home` · `End` · `Delete` 등은 글자를 내지 않지만 **터미널로
+            // escape sequence 를 보낸다.** modifier 없이 바인딩하면 그 키를 TUI 앱에
+            // 넘길 방법이 없어지므로 여기서는 "글자를 내는 것" 과 같이 취급한다 —
+            // `else => true` 가 그 뜻이다. 예전부터 맨 `PageUp` / `PageDown` /
+            // `Escape` 를 허용해 온 것은 유지한다 (그 셋은 라벨 쪽 규칙과 짝이다).
             .code => |c| switch (c) {
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => false,
+                .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20 => false,
+                .f21, .f22, .f23, .f24 => false,
+                .print_screen, .scroll_lock, .pause, .context_menu => false,
+                .num_lock, .caps_lock => false,
                 .page_up, .page_down, .escape => false,
                 else => true,
             },
@@ -680,6 +710,40 @@ test "#496 위치 binding 은 라벨과 무관하게 자리로 매칭한다" {
     );
 }
 
+test "#496 macOS 에 값이 없는 자리는 그 platform 에서만 거부한다" {
+    // 거부는 **platform 조건**이다. Linux / Windows 에서 `[PrintScreen]` 은 정상
+    // 이므로, 한 config 를 세 OS 에서 쓰는 사용자는 macOS 에서만 안내를 받는다.
+    if (is_macos) {
+        try std.testing.expectEqual(
+            HotkeyParse.position_aliased_on_macos,
+            parseHotkeyString("ctrl+[PrintScreen]", .app_binding),
+        );
+        try std.testing.expectEqual(
+            HotkeyParse.position_absent_on_macos,
+            parseHotkeyString("ctrl+[F21]", .app_binding),
+        );
+        // 안내가 가리키는 대체 자리는 실제로 받아야 한다 — 그러지 않으면 막다른
+        // 길이 된다 (#484).
+        try std.testing.expect(parseHotkeyString("ctrl+[F13]", .app_binding) == .ok);
+    } else {
+        try std.testing.expect(parseHotkeyString("ctrl+[PrintScreen]", .app_binding) == .ok);
+        try std.testing.expect(parseHotkeyString("ctrl+[F21]", .app_binding) == .ok);
+    }
+    // 메뉴 키는 세 platform 모두 값이 있다 — 한 번 "macOS 에 없다" 고 적었던
+    // 자리이므로 못을 박는다.
+    try std.testing.expect(parseHotkeyString("ctrl+[ContextMenu]", .app_binding) == .ok);
+
+    // 방향키 · 편집 패드는 글자를 내지 않지만 터미널로 escape sequence 를 보낸다.
+    // modifier 없이 바인딩하면 TUI 앱에 그 키를 넘길 방법이 없어지므로 요구한다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("[ArrowUp]", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("[Home]", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("[Numpad5]", .app_binding));
+    try std.testing.expect(parseHotkeyString("ctrl+[ArrowUp]", .app_binding) == .ok);
+    // 기능 키 자리는 modifier 없이도 안전하다 (글자도 sequence 도 아니다).
+    try std.testing.expect(parseHotkeyString("[F13]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("[NumLock]", .app_binding) == .ok);
+}
+
 test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     // `physical_key.zig` 의 `mac` 열과 `MacHotkey.keycodeFromKey` 는 **같은 US 위치
     // 표** 다. 두 곳에 값을 두는 것은 어쩔 수 없다 (한쪽은 라벨 → 위치, 한쪽은 위치
@@ -693,7 +757,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         const code = physical_key.fromName(name).?;
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .char = letter }),
-            @as(u32, physical_key.macKeyCode(code)),
+            @as(u32, physical_key.macKeyCode(code).?),
         );
     }
     for ('0'..'9' + 1) |c| {
@@ -702,7 +766,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         const code = physical_key.fromName(name).?;
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .char = digit }),
-            @as(u32, physical_key.macKeyCode(code)),
+            @as(u32, physical_key.macKeyCode(code).?),
         );
     }
 
@@ -726,7 +790,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     for (pairs) |pair| {
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .named = pair.named }),
-            @as(u32, physical_key.macKeyCode(pair.code)),
+            @as(u32, physical_key.macKeyCode(pair.code).?),
         );
     }
     // `pairs` 가 named 라벨을 **빠짐없이** 덮어야 한다. 라벨을 하나 더하면 여기서
@@ -1091,7 +1155,10 @@ const MacHotkey = struct {
             // — sentinel 이 필요 없다. 그래서 라벨 `w` 와 `[KeyW]` 가 이 platform 에서
             // 완전히 같은 값을 낸다 (#496 항목 2 의 뿌리이기도 하다: 라벨 쪽이 live
             // layout 을 보지 않고 US 위치를 준다).
-            .code => |c| physical_key.macKeyCode(c),
+            // 파싱이 `availableOnThisPlatform` 으로 이미 거부했으므로 macOS 에서
+            // null 이 여기 도달할 수 없다. 조용히 0 을 쓰면 #208 이 막던 silent
+            // failure 로 되돌아가므로 값을 꾸미지 않는다.
+            .code => |c| physical_key.macKeyCode(c) orelse unreachable,
             .named => |n| switch (n) {
                 .f1 => 0x7A,
                 .f2 => 0x78,
@@ -2055,6 +2122,9 @@ pub const Config = struct {
                         messages.config_hotkey_position_fallback_msg,
                     .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
                         messages.config_hotkey_invalid_fallback_msg,
+                    // 전역 `hotkey` 는 위치 표기를 아예 안 받으므로 그 전에 걸린다 —
+                    // 이 둘은 `[keys]` 쪽 경로에서만 나온다.
+                    .position_aliased_on_macos, .position_absent_on_macos => unreachable,
                 };
                 showConfigFatalMsg(rt, config_path, msg);
             }
@@ -2222,6 +2292,19 @@ pub const Config = struct {
             // `global_hotkey` 에서만 낸다). exhaustive switch 를 유지하려고 둔다 —
             // scope 별 규칙이 바뀌어 여기 도달하면 조용히 넘기지 말고 멈춰야 한다.
             .position_in_global_hotkey => unreachable,
+            // #496 — macOS 에서만 나온다. 겹침 / 부재를 갈라 다른 안내를 준다.
+            .position_aliased_on_macos => {
+                var buf: [640]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.config_key_position_aliased_format, .{ action.configName(), text }) catch
+                    messages.config_key_position_aliased_fallback_msg;
+                showConfigFatalMsg(rt, config_path, msg);
+            },
+            .position_absent_on_macos => {
+                var buf: [640]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.config_key_position_absent_format, .{ action.configName(), text }) catch
+                    messages.config_key_position_absent_fallback_msg;
+                showConfigFatalMsg(rt, config_path, msg);
+            },
         };
         const hotkey = Hotkey.fromParsed(parsed);
 
