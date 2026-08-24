@@ -141,6 +141,13 @@ fn lookup(handle: *anyopaque, comptime T: type, name: [*:0]const u8) ?T {
 }
 
 pub const Keyboard = struct {
+    /// #496 1-a — 마지막으로 받은 layout group (`wl_keyboard.modifiers` 의 `group`).
+    /// **라틴 fallback 판정이 이 값을 봐야 한다** — 매처는 활성 group 이 내는 keysym 만
+    /// 보기 때문이다. 처음엔 모든 group 을 훑었는데, 그러면 `us,ru` 사용자가 ru group
+    /// 으로 전환했을 때 "us group 이 `w` 를 낼 수 있다" 는 이유로 fallback 을 만들지
+    /// 않아 단축키가 죽었다 (실측: group1 에서 `sym@KeyW=0x6c3` 인데
+    /// `canProduceKeysym('w')` 가 true 였다).
+    active_group: u32 = 0,
     api: ?Api = null,
     context: ?*xkb_context = null,
     keymap: ?*xkb_keymap = null,
@@ -192,6 +199,9 @@ pub const Keyboard = struct {
         locked_mods: u32,
         group: u32,
     ) void {
+        // #496 1-a — 판정이 활성 group 을 봐야 하므로 기억한다. keymap 이 없어 아래에서
+        // 돌아가더라도 값은 남긴다 — 다음 keymap 이 오면 그 group 으로 판정한다.
+        self.active_group = group;
         const api = if (self.api) |*api| api else return;
         const state = self.state orelse return;
         _ = api.state_update_mask(
@@ -205,12 +215,16 @@ pub const Keyboard = struct {
         );
     }
 
-    /// #496 1-a — **현재 keymap 의 어느 키라도 이 keysym 을 낼 수 있는가.**
+    /// #496 1-a — **활성 layout group 의 어느 키라도 이 keysym 을 낼 수 있는가.**
     ///
-    /// layout (group) 과 level 을 전수로 훑는다. modifier 상태를 보지 않는 것이
-    /// 요점이다 — "Shift 를 눌러야 나오는 문자" 도 *낼 수 있는* 것으로 세야 하고,
-    /// 사용자가 여러 layout 을 들고 있으면 (`us,ru` 처럼 흔하다) 그중 하나에만 있어도
-    /// 된다.
+    /// **group 을 전수로 훑지 않는다.** 매처는 활성 group 이 내는 keysym 만 보므로
+    /// 판정도 같은 group 을 봐야 한다. 처음엔 모든 group 을 훑었고, 그래서 `us,ru`
+    /// 사용자가 ru group 으로 전환하면 — 도착하는 것은 `Cyrillic_tse` 인데 "us group
+    /// 이 `w` 를 낼 수 있다" 는 이유로 fallback 을 만들지 않아 — 단축키가 죽었다.
+    /// 비라틴 사용자의 **가장 흔한 설정**이 그것이라 정작 다수 사례를 놓쳤다.
+    ///
+    /// level 은 전수로 훑는다. modifier 상태를 보지 않는 것이 요점이다 — "Shift 를
+    /// 눌러야 나오는 문자" 도 *낼 수 있는* 것으로 세야 한다.
     ///
     /// null = 판정할 수 없다 (libxkbcommon 이 필요한 심볼을 안 내주거나 keymap 이
     /// 없다). **false 와 구분해야 한다** — 판정 불가일 때 "낼 수 없다" 로 읽으면
@@ -225,17 +239,18 @@ pub const Keyboard = struct {
         var key: c_uint = min;
         while (key <= max) : (key += 1) {
             const layouts = scan.num_layouts_for_key(keymap, key);
-            var layout: c_uint = 0;
-            while (layout < layouts) : (layout += 1) {
-                const levels = scan.num_levels_for_key(keymap, key, layout);
-                var level: c_uint = 0;
-                while (level < levels) : (level += 1) {
-                    var syms: [*]const c_uint = undefined;
-                    const count = scan.key_get_syms_by_level(keymap, key, layout, level, &syms);
-                    if (count <= 0) continue;
-                    for (syms[0..@intCast(count)]) |sym| {
-                        if (sym == keysym) return true;
-                    }
+            if (layouts == 0) continue;
+            // xkb 규칙 — 그 키의 layout 수보다 group 이 크면 wrap 한다. 키마다 layout
+            // 수가 다를 수 있어 (`num_layouts_for_key` 가 키별이다) 나눗셈이 필요하다.
+            const layout: c_uint = @intCast(self.active_group % layouts);
+            const levels = scan.num_levels_for_key(keymap, key, layout);
+            var level: c_uint = 0;
+            while (level < levels) : (level += 1) {
+                var syms: [*]const c_uint = undefined;
+                const count = scan.key_get_syms_by_level(keymap, key, layout, level, &syms);
+                if (count <= 0) continue;
+                for (syms[0..@intCast(count)]) |sym| {
+                    if (sym == keysym) return true;
                 }
             }
         }
@@ -305,6 +320,20 @@ pub const Keyboard = struct {
     }
 };
 
+test "#496 1-a canProduceKeysym 은 활성 group 만 본다 — 기본 group 은 0" {
+    // 이 결함을 두 번 내지 않기 위한 못이다. keymap 이 없으면 판정 자체가 불가라
+    // (`null`) 값 검사는 못 하지만, **`updateMask` 가 group 을 기억한다**는 계약은
+    // 여기서 고정할 수 있다 — 그것이 group 인지 판정의 입력이다.
+    var kb: Keyboard = .{};
+    defer kb.deinit();
+    try std.testing.expectEqual(@as(u32, 0), kb.active_group);
+    // keymap / api 가 없어도 group 은 남는다 — 다음 keymap 이 그 group 으로 판정한다.
+    kb.updateMask(0, 0, 0, 1);
+    try std.testing.expectEqual(@as(u32, 1), kb.active_group);
+    kb.updateMask(0, 0, 0, 0);
+    try std.testing.expectEqual(@as(u32, 0), kb.active_group);
+}
+
 test "#496 1-a canProduceKeysym — 판정 불가는 false 가 아니라 null 이다" {
     // keymap 이 없으면 (또는 libxkbcommon 이 조회 심볼을 안 내주면) **null 이다.**
     // false 로 주면 호출자가 "이 라벨은 낼 수 없다" 로 읽어 없어도 되는 라틴 fallback
@@ -318,17 +347,22 @@ test "#496 1-a canProduceKeysym — 판정 불가는 false 가 아니라 null �
 // 으로 뽑은 실제 keymap 을 넣어 확인한 값이다 — keymap 은 하나에 70 KB 대라 fixture
 // 로 커밋하지 않았다.
 //
-// | layout  | `w` 를 낼 수 있나 | US `w` 자리 (evdev 17) 가 내는 keysym |
-// |---------|------------------|--------------------------------------|
-// | `us`    | true             | `0x77` (`w`)                          |
-// | `ru`    | **false**        | `0x6c3` (`Cyrillic_tse`)              |
-// | `us,ru` | true             | `0x77`                                |
+// | layout · 활성 group | `w` 를 낼 수 있나 | US `w` 자리 (evdev 17) 가 내는 keysym |
+// |---------------------|------------------|--------------------------------------|
+// | `us`                | true             | `0x77` (`w`)                          |
+// | `ru`                | **false**        | `0x6c3` (`Cyrillic_tse`)              |
+// | `us,ru` · group 0   | true             | `0x77`                                |
+// | `us,ru` · group 1   | **false**        | `0x6c3`                               |
 //
-// 세 줄이 이 기능의 설계를 그대로 보여 준다:
+// **마지막 줄이 이 함수를 다시 쓴 이유다.** 처음 구현은 group 을 전수로 훑어서
+// `us,ru` · group 1 에서도 `true` 를 냈다 — 도착하는 것은 `Cyrillic_tse` 인데
+// fallback 을 만들지 않아 단축키가 죽었다. 비라틴 사용자의 가장 흔한 설정이 그것이라
+// 정작 다수 사례를 놓쳤다.
+//
+// 나머지 줄이 보여 주는 것:
 //
 //   - `ru` 단독 → 라벨이 닿지 않으므로 fallback 이 생기고 글자 단축키가 살아난다.
-//   - `us,ru` → `w` 가 닿으므로 fallback 이 **생기지 않는다.** GTK 가 "영어 layout 이
-//     설정돼 있어야 한다" 고 요구하는 것과 같은 결과인데, 우리는 사용자에게 요구하지
-//     않고 keymap 을 보고 스스로 판정한다.
+//   - `us,ru` · group 0 → `w` 가 닿으므로 fallback 이 생기지 않고, 라벨 매칭이 그대로
+//     맞는다. group 을 전환하면 `wl_keyboard.modifiers` 가 오고 다시 푼다.
 //   - 도착하는 keysym 이 Unicode 형 (`0x01000426`) 이 아니라 **이름 있는 Cyrillic
 //     keysym** (`0x6c3`) 이다. xkb 의 `ru` 는 Cyrillic 블록 keysym 을 쓴다.

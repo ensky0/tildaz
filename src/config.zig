@@ -144,9 +144,14 @@ pub const HotkeyFailure = enum {
     /// key 는 유효하지만 modifier 없이 전역 등록할 수 없는 키다 (F1~F12 만 허용).
     modifier_required,
     /// #496 — 위치 표기 (`[KeyW]`) 를 전역 `hotkey` 에 썼다. 아직 `[keys]` 에서만
-    /// 받는다: 전역 핫키는 OS / compositor 에 *등록* 해야 하고 그 4 경로가 모두
-    /// 문자 기반이라 (sway `bindsym` · Hyprland keysym · COSMIC RON · KGlobalAccel
-    /// `qtKey`) 위치를 넘길 자리가 없다. 조용히 keysym 0 을 등록하는 대신 거부한다.
+    /// 받는다: 전역 핫키는 OS / compositor 에 *등록* 해야 하고 우리가 쓰는 **다섯**
+    /// 경로가 모두 문자 기반이라 위치를 넘길 자리가 없다 — sway `bindsym` · Hyprland
+    /// keysym · GNOME / Cinnamon GTK accelerator · COSMIC RON `key:` · KGlobalAccel
+    /// `qtKey`. (처음에 "4 경로" 로 적었는데 GNOME · Cinnamon 이 빠져 있었다.)
+    ///
+    /// 조용히 keysym 0 을 등록하는 대신 거부한다. 다섯 중 위치를 *받아 주는* 것이
+    /// 넷이라 (sway `bindcode` · Hyprland `code:` · GNOME / Cinnamon `0xNN`) 1-b 에서
+    /// 그쪽부터 푼다. COSMIC · KDE 는 API 자체가 keysym 만 받는다.
     position_in_global_hotkey,
     /// #496 — macOS 가 이 자리를 **다른 이름으로 보고**한다. `PrintScreen` ·
     /// `ScrollLock` · `Pause` 를 PC 자판에서 누르면 `F13` · `F14` · `F15` 로 온다
