@@ -116,9 +116,32 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 | # | 동작 | 기대 | 왜 |
 |---|---|---|---|
 | M1 | 우클릭한 채 드래그 | 출력 0건 | macOS 는 `rightMouseDragged:` 미등록이라 그 경로가 없다는 판정을 실측으로 확인 |
-| M2 | 가운데 버튼 클릭 · 드래그 | `Cb` 1 / 33 | `otherMouseDown:`/`otherMouseDragged:`/`otherMouseUp:` 경로. Cocoa 는 버튼별 selector 라 가운데 드래그가 `mouseDragged:` 로 오지 않는다 — `otherMouseDragged:` 는 #502 실기 중 소스 점검으로 **누락이 발견되어 추가**됐고 **macOS 실기 미검증**이다. `Cb 33` 이 안 나오면 그 등록을 먼저 본다. **트랙패드엔 가운데 버튼이 없어 실물 마우스 필요** |
+| M2 | 가운데 버튼 클릭 · 드래그 | `Cb` 1 / 33 | `otherMouseDown:`/`otherMouseDragged:`/`otherMouseUp:` 경로. Cocoa 는 버튼별 selector 라 가운데 드래그가 `mouseDragged:` 로 오지 않는다 — `otherMouseDragged:` 는 #502 에서 누락이 발견되어 추가됐고 macOS 실기로 확인했다. `Cb 33` 이 안 나오면 그 등록을 먼저 본다. **트랙패드엔 가운데 버튼이 없다** — 실물 마우스가 없으면 아래 「합성 입력」 으로 만든다 |
 | M3 | Cmd+클릭 | `Cb` = 0 | Cmd 는 프로토콜에 자리가 없어 싣지 않는다. 4·8·16 이 붙으면 버그 |
-| M4 | 트랙패드 두 손가락 스크롤 | 64/65 가 과도하게 쏟아지지 않음 | 연속 delta 를 notch 로 환산 (multiplier 2). 한 번 훑을 때 수십 줄이면 조정 필요 |
+| M4 | 실물 마우스 휠 한 칸 | `Cb` 64 **1 건** (또는 65) | `1 notch = 보고 1 건` (Linux · Windows 와 같다). 2 건이 나오면 `hasPreciseScrollingDeltas` 분기가 깨진 것이다 — tick 에 트랙패드용 배율이 곱해진다 |
+| M5 | 트랙패드 두 손가락 스크롤 | 이동 **거리에 비례** (살짝 움직이면 0~1 건) | 연속 delta (논리 pt) 를 누적해 **cell 높이당 1 notch**, 나머지는 보존. 살짝 움직였는데도 여러 건이 나오거나 한 번 훑기가 수백 건이면 누적이 깨진 것이다 |
+| M6 | `?1007` — alt screen 에서 휠 한 칸 | 화살표 **3 개** | notch 당 3 줄 (SPEC §3 · Linux `n * 3`). `less` 로 본다 |
+
+### 합성 입력으로 가운데 버튼 · 휠 만들기 (macOS)
+
+실물 마우스가 없어도 `CGEventPost` 로 A5 · A9 · M2 · M4 를 만들 수 있어요
+([#502](https://github.com/ensky0/tildaz/issues/502) macOS 검증에서 이렇게 했어요).
+선례는 [`dist/stress/mac-input.m`](../stress/mac-input.m) 예요.
+
+- 가운데 버튼은 `kCGEventOtherMouseDown`/`Dragged`/`Up` + `kCGMouseEventButtonNumber = 2` 예요.
+- 휠은 `CGEventCreateScrollWheelEvent2` 로 만들고 **단위가 그대로 장치 구분이 돼요** —
+  `kCGScrollEventUnitLine` 은 `hasPreciseScrollingDeltas = false` (마우스 휠, delta = tick 수),
+  `kCGScrollEventUnitPixel` 은 `true` (트랙패드, delta = 논리 pt) 로 들어와요 (실측 확인).
+  scroll 이벤트는 위치를 안 실으니 `CGEventSetLocation` 으로 지정해요.
+- hover (`?1003`) 는 `CGWarpMouseCursorPosition` 만으로는 안 걸려요 — `kCGEventMouseMoved` 를
+  실제로 보내야 해요.
+- **권한은 보내는 쪽에 필요해요.** 없으면 `CGEventPost` 가 *성공을 반환하면서 아무 일도 하지
+  않아요.* 같은 프로세스에서 `AXIsProcessTrusted()` 로 먼저 판정해요. TildaZ 는 받는 쪽이라
+  이 권한이 필요 없어요.
+- 소스는 `kCGEventSourceStatePrivate` 로 만들고 **flags 는 0 이어도 반드시 설정**해요 —
+  직전 조합의 modifier 가 남아 엉뚱한 `Cb` 가 돼요.
+- **트랙패드 체감 (M5) 은 합성으로 대신할 수 없어요.** 관성 · `phase` 가 재현되지 않아서
+  거리 감각은 사람 손으로 봐요.
 
 ## C. Windows 고유
 
