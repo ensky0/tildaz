@@ -149,9 +149,19 @@ A few positions do not exist on macOS — `[PrintScreen]`, `[ScrollLock]` and
 ### The global hotkey is different
 
 `hotkey` is registered with the desktop rather than handled inside TildaZ, and
-every path TildaZ uses for that (sway, Hyprland, COSMIC, KDE) accepts only a
-character — so it does **not** take the position form. A function key is the
-safest choice: `F1`–`F12` are identical on every layout.
+every path TildaZ uses for that — sway, Hyprland, GNOME, Cinnamon, COSMIC, KDE —
+accepts only a character, so it does **not** take the position form.
+
+Most desktops paper over this for you: GNOME (since 3.28), Cinnamon (since 5.4),
+COSMIC and KDE all translate a Latin-letter shortcut back to the key you actually
+pressed on a Cyrillic or Greek layout. GNOME and Cinnamon do it even if a Latin
+layout is not among the ones you have configured; COSMIC and KDE need one.
+**sway and Hyprland do not do it at all.**
+
+**A function key is the safest choice**: `F1`–`F12` are identical on every layout,
+which is why the default is `F1`. Punctuation is the worst choice — a `grave`
+hotkey has no key to bind to on a German layout, and GNOME's fallback does not
+cover that case because it only triggers when the *alphabet* is missing.
 
 ### What stays fixed
 
