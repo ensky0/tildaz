@@ -313,9 +313,12 @@ modifier 차이를 흡수하지만 macOS 는 **Shift 의 유무까지 다르다*
 
 **keyboard layout 독립성** ([#482](https://github.com/ensky0/tildaz/issues/482) ·
 [#496](https://github.com/ensky0/tildaz/issues/496)). 세 platform 이 단축키를 매칭하는 대상이
-다르다 — Windows 는 virtual-key (`VK_1`, `VK_OEM_4`), macOS 는 `kVK_ANSI_*` 로 **물리 위치**를
-보고, Linux 는 **xkb keysym** 으로 *눌러서 나오는 문자*를 본다. 그래서 layout 종속 결함의 모양이
-platform 마다 다르다.
+다르다 — Windows 는 virtual-key (`VK_1`, `VK_OEM_4`) 로 **물리 위치**를 보고, macOS · Linux 는
+*눌러서 나오는 문자* (**라벨**) 를 본다. macOS 는 `NSEvent charactersByApplyingModifiers:`,
+Linux 는 **xkb keysym** 이다. **macOS 가 라벨로 바뀐 것은 #496 항목 2 이고, 그전에는
+`kVK_ANSI_*` (물리 위치) 였다** — 그래서 AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac
+의 Safari (Cocoa 메뉴 `keyEquivalent` = 문자 비교) 와 다른 키를 요구했다. 그래서 layout 종속
+결함의 모양이 platform 마다 다르다.
 
 - **비라틴 layout (키릴 · 그리스 · 아랍 ...) 에서는 글자 단축키를 라벨로 적을 수 없다.**
   `xkbcli how-to-type --layout ru 'w'` 가 빈 결과다 — 그 자판의 어느 키도 `w` 를 내지 않으므로
@@ -324,9 +327,11 @@ platform 마다 다르다.
   이름은 [W3C `KeyboardEvent.code`](https://www.w3.org/TR/uievents-code/) 값이고 (2025 년
   Recommendation) 표기는 VS Code 와 같은 대괄호다. 세 platform 값의 단일 출처는
   `src/physical_key.zig` 다.
-- **그리고 기본값이 그대로 동작하도록 라틴 fallback 을 둔다** (1-a, Linux 전용).
-  각 라벨 binding 에 대해 **활성 layout group 이 그 문자를 낼 수 있는지** 묻고
-  (`xkb.canProduceKeysym`), 낼 수 없으면 그 문자가 US 자판에서 있던 자리로 매칭한다.
+- **그리고 기본값이 그대로 동작하도록 라틴 fallback 을 둔다** (1-a, **Linux · macOS**).
+  각 라벨 binding 에 대해 **지금 layout 이 그 문자를 낼 수 있는지** 묻고, 낼 수 없으면 그 문자가
+  US 자판에서 있던 자리로 매칭한다. 묻는 방법은 platform 마다 다르다 — Linux 는 활성 group 에
+  `xkb.canProduceKeysym` 으로 묻고, macOS 는 keycode `0..127` 을 훑어 라벨 표를 만든다
+  (`host/macos.zig` 의 `macRebuildLayoutLabels`).
   - **판정은 활성 group 만 본다.** 처음에 group 을 전수로 훑었는데 그것이 결함이었다 —
     매처는 활성 group 이 내는 keysym 만 보므로 판정도 같은 group 을 봐야 한다. 실측
     (`us,ru` keymap): group 0 은 `sym@KeyW=0x77`, group 1 은 `0x6c3`
@@ -340,6 +345,17 @@ platform 마다 다르다.
     한다. 키마다 layout 수가 달라 유효 layout 은 `group % num_layouts_for_key` 다.
   - **닿지 않을 때만 만든다.** 무조건 2 차 pass 를 돌리면 AZERTY 에서 `Z` 라 인쇄된
     키 (US `w` 자리) 가 `close_tab` 을 발동시켜 한 동작에 키가 둘 생긴다.
+  - **macOS 의 재해석 트리거는 `NSTextInputContext.selectedKeyboardInputSource` 다.** 헤더가
+    *"The ID corresponds to the kTISPropertyInputSourceID attribute"* 라고 적는 값이고,
+    **Carbon 을 링크하지 않고** 현재 layout 을 식별할 수 있다. 키 이벤트마다 그 문자열을
+    비교해 바뀌었을 때만 표를 다시 만든다 (대개 비교 한 번으로 끝난다).
+  - **macOS 는 라벨을 뽑을 때 Shift 만 반영한다.** AZERTY 는 숫자열이 Shift 를 눌러야 숫자가
+    나오므로 (무시프트는 `&é"'(-è_çà`) Shift 까지 빼고 뽑으면 `cmd+1` 이 그 layout 에서 영영
+    매칭되지 않는다 (#482 의 숫자 예외가 무력해진다). 라벨 표에도 base 와 shift 두 벌을 담는다.
+  - **`charactersByApplyingModifiers:` 는 modifier keycode 에서 죽는다.** `0x36`–`0x3F`
+    (`kVK_RightCommand` ~ `kVK_Function`) 를 넘기면 헤더 서술 (*"will return nil"*) 과 달리
+    `NSAssertionHandler` 를 거쳐 `abort()` 다 (실측, macOS 26.6.2 · SDK 26.5). 거르지 않으면
+    **Shift 를 누르는 것만으로 앱이 죽는다.**
   - **판정 불가 (`null`) 와 false 를 구분한다.** libxkbcommon 이 keymap 조회 심볼을
     안 내주면 fallback 을 만들지 않는다 — false 로 읽으면 없어도 되는 fallback 이
     생긴다. 그 심볼 다섯은 **optional** 이다: 기존 심볼처럼 묶으면 오래된
