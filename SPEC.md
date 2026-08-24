@@ -1119,6 +1119,20 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
 
+**경로는 첫 줄이고 형식이 하나다** ([#495](https://github.com/ensky0/tildaz/issues/495)).
+
+```
+Config: /home/user/.config/tildaz/config_0.toml
+
+Configuration: missing required key "window" in (top-level).
+```
+
+예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 (`missing required key "window"`) 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
+
+조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `showConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
+
+`allocPrint` 실패 시 fallback 도 **경로 자리를 비우지 않는다** (`Config: (unknown)`). 예전 파싱 쪽 fallback 은 경로를 아예 잃어서, 정작 가장 도움이 필요한 상황에서 가장 적은 정보를 줬다.
+
 Windows는 짧은 본문을 기존 `MessageBoxW`로 표시하고 화면 또는 4096 UTF-16 변환 상한을 넘을 때만 read-only multiline EDIT window로 전환한다. macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 전체 동적 본문을 stderr + log fallback으로 출력한다. **현재 상태: 구현·자동 검증 완료, Linux · macOS · Windows 묶음 실기 대기 (#316).**
 
 ---

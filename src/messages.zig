@@ -267,6 +267,14 @@ pub const font_family_must_be_string_msg = "Invalid config: font.family must be 
 /// 라인을 붙여 표시.
 pub const font_glyph_fallback_must_be_list_msg = "Invalid config: font.glyph_fallback must be a list of strings (fallback font names).";
 
+// #495 에서 확인 — 아래 셋은 **배선된 적이 없다.** `Config.createDefault` 가 세 실패를
+// 모두 삼키고 (`catch return` · `catch {}`) `Config.load` 의 읽기 실패도 조용히 기본값
+// 으로 떨어진다. 그래서 첫 실행에서 config 를 못 만들면 사용자는 아무 안내도 못 받고
+// 기본값으로 도는 인스턴스를 얻는다.
+//
+// 지우지 않고 남긴다 — 이 문안이 그 경로에 필요한 것이고, 지우면 나중에 다시 써야
+// 한다. 배선 자체는 결정이 필요해서 (읽기 전용 디렉터리에서 시작을 거부할 것인가,
+// 기본값으로 돌 것인가) 별 이슈로 뺐다 — #501.
 pub const config_dir_create_failed_format =
     \\Failed to create config directory.
     \\
@@ -288,10 +296,12 @@ pub const config_read_failed_format =
     \\Error: {s}
 ;
 
+/// #495 — **경로를 담지 않는다.** `showConfigFatalMsg` 가 모든 config 오류 앞에 한
+/// 번 붙인다. 예전엔 파싱 오류만 본문 셋째 줄에 `Path:` 를 넣고 의미 오류는 맨 끝에
+/// 넣어, 같은 다이얼로그에서 경로 위치가 오류 종류에 따라 달랐다.
 pub const config_parse_failed_format =
     \\Failed to parse config file.
     \\
-    \\Path: {s}
     \\Error: {s}
 ;
 /// #493 — TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
@@ -299,16 +309,24 @@ pub const config_parse_failed_format =
 pub const config_parse_failed_at_format =
     \\Failed to parse config file.
     \\
-    \\Path: {s}
     \\Line {d}, column {d}
     \\Error: {s}
 ;
 pub const config_parse_failed_fallback_msg = "Failed to parse config file.";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
-pub const config_error_with_path_format = "{s}\n\nConfig path:\n  {s}";
-pub const config_error_with_path_fallback_msg = "Configuration is invalid.\n\nConfig path:\n  (unknown)";
-pub const config_top_level_must_be_object_msg = "Configuration: top-level must be a JSON object.";
+/// #495 — **경로가 첫 줄이다.** 사용자가 오류 내용을 읽기 *전에* 눈에 들어와야 한다.
+/// 예전엔 맨 끝이었고, 읽는 순서상 "오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를
+/// 닫은 뒤" 경로가 필요해졌다. 위쪽 문구가 명확할수록 (`missing required key
+/// "window"`) 더 빨리 닫으므로 더 잘 놓쳤다. 실제로 사용자가 겪었다 (2026-08-22).
+///
+/// 그리고 **모든 config 오류가 이 한 형식을 지난다** — 파싱 오류든 의미 오류든.
+/// 형식이 두 갈래였던 것이 위치 불일치의 원인이었다.
+pub const config_error_with_path_format = "Config: {s}\n\n{s}";
+/// `allocPrint` 실패 시. **경로 자리를 비우지 않는다** — 예전 파싱 쪽 fallback 은
+/// 경로를 아예 잃어서 (`"Failed to parse config JSON."`) 정작 가장 도움이 필요한
+/// 상황에서 가장 적은 정보를 줬다.
+pub const config_error_with_path_fallback_msg = "Config: (unknown)\n\nConfiguration is invalid.";
 pub const config_dock_position_invalid_format = "Configuration: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right";
 pub const config_dock_position_invalid_fallback_msg = "Configuration: window.dock_position invalid";
 pub const config_field_number_required_format = "Configuration: \"{s}\" must be a number.";
