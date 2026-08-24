@@ -385,8 +385,9 @@ invalid value shows an error dialog and exits):
 
 Letters are usually fine: GNOME, Cinnamon, COSMIC and KDE all translate a
 Latin-letter shortcut back to the key you actually pressed on a Cyrillic or Greek
-layout. On sway and Hyprland they do not, so a letter hotkey can stop working
-there while a non-Latin layout is active.
+layout, and on sway TildaZ registers the hotkey by physical key position so the
+same thing happens. **Hyprland is the exception** — a letter hotkey can stop
+working there while a non-Latin layout is active.
 
 **Punctuation is the riskier choice**, and not only on non-Latin layouts. German
 and Spanish cannot type `` ` `` at all — the key in that position is a dead accent
