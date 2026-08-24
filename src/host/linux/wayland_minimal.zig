@@ -6390,7 +6390,7 @@ const Client = struct {
             const usable_h = @max(0, self.window_height - self.effectiveTabBarHeightPx() - self.renderer.paddingPx() * 2);
             const rows_i32 = @divTrunc(usable_h, ch);
             const visible_rows: u16 = if (rows_i32 <= 0) 1 else @intCast(@min(rows_i32, std.math.maxInt(u16)));
-            const did = session.scrollActive(.{ .wheel = wheel_i16 }, visible_rows);
+            const did = session.scrollActive(.{ .wheel = .{ .delta = wheel_i16 } }, visible_rows);
             if (did) self.requestRedraw();
         }
     }
