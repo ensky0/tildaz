@@ -99,7 +99,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     var app = App{
         .rt = rt,
         .session = undefined,
-        .window = .{ .rt = rt },
+        // #493 3-c — `[keys]` 를 window 의 키 경로에 넘긴다. `config` 는 이 함수의
+        // 지역이고 `app` 보다 먼저 선언되므로 slice 가 window 보다 오래 산다.
+        .window = .{ .rt = rt, .key_bindings = config.key_bindings[0..config.key_binding_count] },
         .allocator = alloc,
         .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
     };
