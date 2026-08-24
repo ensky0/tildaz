@@ -9,6 +9,8 @@ const paths = @import("paths.zig");
 const perf = @import("perf.zig");
 const dwrite_font = @import("font/windows/font.zig");
 const font_spec = @import("font/spec.zig");
+const config_mod = @import("config.zig");
+const physical_key = @import("physical_key.zig");
 
 const BOOL = windows.BOOL;
 const DWORD = windows.DWORD;
@@ -313,6 +315,8 @@ const VK_CONTROL: c_int = 0x11;
 const VK_SHIFT: c_int = 0x10;
 const VK_MENU: c_int = 0x12; // Alt
 const VK_LBUTTON: c_int = 0x01;
+const VK_LWIN: c_int = 0x5B;
+const VK_RWIN: c_int = 0x5C;
 
 // GDI functions
 extern "gdi32" fn CreateFontW(c_int, c_int, c_int, c_int, c_int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, [*:0]const WCHAR) callconv(.c) HFONT;
@@ -403,6 +407,10 @@ pub const Window = struct {
     /// `getTerminalGridSize` 로 다시 계산했다. 계약에서 격자를 빼면 그 함수와 그 안의
     /// 가짜 fallback 이 함께 사라진다.
     resize_fn: ?*const fn (?*anyopaque) void = null,
+    /// #493 3-c — `[keys]` 의 바인딩. `host/windows.zig` 의 `run()` 이 config 수명
+    /// 동안 유효한 slice 를 넣는다. 비어 있으면 단축키가 하나도 없는 상태이고,
+    /// 그것은 사용자가 `[keys]` 를 전부 `[]` 로 둔 경우와 같다.
+    key_bindings: []const config_mod.KeyBinding = &.{},
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
@@ -1868,83 +1876,13 @@ pub const Window = struct {
                         return 0;
                     }
                 }
-                // Ctrl+Shift shortcuts
-                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) < 0) {
-                    // Ctrl+Shift+C: copy current selection (#120)
-                    if (wParam == 0x43) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .copy_selection });
-                        return 0;
-                    }
-                    // Ctrl+Shift+T: new tab
-                    if (wParam == 0x54) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .new_tab });
-                        return 0;
-                    }
-                    // Ctrl+Shift+W: close active tab
-                    if (wParam == 0x57) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .close_active_tab });
-                        return 0;
-                    }
-                    // Ctrl+Shift+V: paste from clipboard
-                    if (wParam == 0x56) {
-                        if (self.write_fn) |write_fn| {
-                            self.pasteClipboard(write_fn);
-                        }
-                        return 0;
-                    }
-                    // Ctrl+Shift+R: reset terminal
-                    if (wParam == 0x52) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .reset_terminal });
-                        return 0;
-                    }
-                    // Ctrl+Shift+P: open config in default editor (#128)
-                    if (wParam == 0x50) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .open_config });
-                        return 0;
-                    }
-                    // Ctrl+Shift+L: open log in default editor (#128)
-                    if (wParam == 0x4C) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .open_log });
-                        return 0;
-                    }
-                    // Ctrl+Shift+F12: dump perf snapshot (dev tool — moved
-                    // from Ctrl+Shift+P which is now Open Config #128)
-                    if (wParam == 0x7B) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .dump_perf });
-                        return 0;
-                    }
-                    // Ctrl+Shift+I: show About dialog
-                    if (wParam == 0x49) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .show_about });
-                        return 0;
-                    }
-                    // Ctrl+Shift+[ (VK_OEM_4) / Ctrl+Shift+] (VK_OEM_6):
-                    // 이전 / 다음 탭 (#125 — macOS Shift+Cmd+[ / ] 와 동등 키 pair).
-                    if (wParam == 0xDB) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .prev_tab });
-                        return 0;
-                    }
-                    if (wParam == 0xDD) {
-                        _ = self.dispatchAppEvent(.{ .shortcut = .next_tab });
-                        return 0;
-                    }
-                }
-                // #482 — Ctrl+PgUp / Ctrl+PgDn 으로 이전 / 다음 탭 (Shift 미동반).
-                // Windows Terminal 과 같은 조합이고, Linux 는 AZERTY 에서 쓸 수 없는
-                // `Ctrl+Shift+[` / `]` 의 layout 무관 대안으로 같은 키를 받는다
-                // (`wayland_minimal.classifyInput`). Windows 는 `VK_OEM_4` 가 물리
-                // 위치라 layout 문제 자체는 없지만, 세 platform 이 같은 반사를 갖게
-                // 맞춘다. Shift+PgUp / PgDn (scrollback) 과 맨 PgUp / PgDn (PTY) 은
-                // 아래 경로 그대로다.
-                if (GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
-                    if (wParam == 0x21) { // VK_PRIOR (Page Up)
-                        _ = self.dispatchAppEvent(.{ .shortcut = .prev_tab });
-                        return 0;
-                    }
-                    if (wParam == 0x22) { // VK_NEXT (Page Down)
-                        _ = self.dispatchAppEvent(.{ .shortcut = .next_tab });
-                        return 0;
-                    }
+                // #493 3-c — 여기부터는 `[keys]` 가 정한다. 예전엔 `Ctrl+Shift+*`
+                // 열두 개와 `Ctrl+PgUp` / `Ctrl+PgDn` 이 `wParam` 상수로 하드코딩돼
+                // 있었다. `Ctrl+C` (interrupt) 만 위에서 먼저 보고, 아래 Shift+PgUp
+                // (scrollback) 과 PTY 경로는 config 대상이 아니라 그대로 남는다.
+                if (self.lookupKeyAction(wParam, lParam)) |action| {
+                    self.runKeyAction(action);
+                    return 0;
                 }
 
                 const vk_prior: WPARAM = 0x21; // Page Up
@@ -2136,25 +2074,15 @@ pub const Window = struct {
                 return 0;
             },
             WM_SYSKEYDOWN => {
-                // Alt+Enter => monitor fullscreen.
-                // Shift+Alt+Enter => work-area fullscreen that keeps taskbar visible.
-                // Alt+Enter: fullscreen 토글. `DefWindowProcW` 로 위임하지
-                // 않음 — Windows 기본 경로가 어떤 SC_ 명령을 생성하든 우리가
-                // 정의한 동작 (현재 모니터 `rcWork` ↔ 저장된 dock) 으로 가게.
-                if (wParam == VK_RETURN) {
-                    const workarea = GetAsyncKeyState(VK_SHIFT) < 0;
-                    if (!self.dispatchAppEvent(.{ .shortcut = .{ .fullscreen = workarea } })) {
-                        self.toggleFullscreenMode(if (workarea) .workarea else .monitor);
-                    }
-                    return 0;
-                }
-                // Alt+1 ~ Alt+9: 탭 전환.
-                if (wParam >= 0x31 and wParam <= 0x39) {
-                    _ = self.dispatchAppEvent(.{
-                        .shortcut = .{
-                            .switch_tab = wParam - 0x31,
-                        },
-                    });
+                // #493 3-c — Alt 조합은 Windows 가 `WM_SYSKEYDOWN` 으로 보내므로
+                // 여기서도 같은 `[keys]` 조회를 한다. 예전엔 `VK_RETURN` (fullscreen,
+                // Shift 를 다시 읽어 workarea 판정) 과 `0x31`~`0x39` (탭 전환) 가
+                // 하드코딩돼 있었다.
+                //
+                // `DefWindowProcW` 로 위임하지 않는 것은 그대로다 — Windows 기본
+                // 경로가 어떤 `SC_` 명령을 만들든 우리가 정의한 동작으로 가게 한다.
+                if (self.lookupKeyAction(wParam, lParam)) |action| {
+                    self.runKeyAction(action);
                     return 0;
                 }
                 // #282 A7 — F10 은 Windows 가 메뉴 활성 키로 WM_SYSKEYDOWN 을 보낸다
@@ -2543,6 +2471,88 @@ pub const Window = struct {
         const ok = ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0).toBool();
         self.preedit_len = 0;
         return ok;
+    }
+
+    /// #493 3-c — `[keys]` 조회. `WM_KEYDOWN` 과 `WM_SYSKEYDOWN` 이 **같은 판정**을
+    /// 쓴다 (Alt 조합만 후자로 오므로 예전엔 두 곳에 따로 적혀 있었다).
+    ///
+    /// Windows 는 문자 키에서 **라벨** 기반이다 — `VK_W` 는 Shift 여부와 무관하게
+    /// 0x57 이고 `VK_OEM_4` 도 그렇다. 그래서 Linux 와 달리 정규화가 필요 없다.
+    ///
+    /// `lParam` 에서 scan code 와 extended 비트를 꺼내 **물리 위치**도 함께 넘긴다
+    /// (#496) — 위치로 적은 binding (`ctrl+shift+[KeyW]`) 이 그것으로 매칭된다.
+    /// extended 비트가 없으면 control pad 와 numpad 가 구분되지 않는다
+    /// (`physical_key.zig` 의 충돌 표).
+    fn lookupKeyAction(self: *Window, wParam: WPARAM, lParam: LPARAM) ?config_mod.KeyAction {
+        var modifiers: u32 = 0;
+        if (GetKeyState(VK_CONTROL) < 0) modifiers |= config_mod.Hotkey.MOD_CTRL;
+        if (GetKeyState(VK_SHIFT) < 0) modifiers |= config_mod.Hotkey.MOD_SHIFT;
+        if (GetKeyState(VK_MENU) < 0) modifiers |= config_mod.Hotkey.MOD_ALT;
+        if (GetKeyState(VK_LWIN) < 0 or GetKeyState(VK_RWIN) < 0) modifiers |= config_mod.Hotkey.MOD_SUPER;
+
+        const bits: usize = @bitCast(lParam);
+        const scan: u32 = @intCast((bits >> 16) & 0xFF);
+        const extended = ((bits >> 24) & 1) != 0;
+        const code = physical_key.fromScanCode(scan, extended);
+
+        return config_mod.lookupAction(
+            self.key_bindings,
+            .{ .vkey = @intCast(wParam), .modifiers = modifiers },
+            code,
+        );
+    }
+
+    /// #493 3-c — 액션 실행. 예전엔 `wParam` 으로 다시 분기했다 (분류와 실행 두 곳에
+    /// 같은 키 표가 있었다는 뜻이고, 그 이중 기술이 갈라지는 것이 #484 의 원인이었다).
+    fn runKeyAction(self: *Window, action: config_mod.KeyAction) void {
+        const mapped = config_mod.inputForAction(action);
+        // `paste` 는 `app_event.Shortcut` 에 없다 — 클립보드 읽기가 host 쪽 일이고
+        // preedit commit 정책도 달라서 (`Input.paste`) 따로 처리한다.
+        if (mapped.input == .paste) {
+            if (self.write_fn) |write_fn| self.pasteClipboard(write_fn);
+            return;
+        }
+        const shortcut: app_event.Shortcut = switch (mapped.input.shortcut) {
+            .new_tab => .new_tab,
+            .close_tab => .close_active_tab,
+            .next_tab => .next_tab,
+            .prev_tab => .prev_tab,
+            // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). 예전엔 여기서
+            // `wParam - 0x31` 로 뽑았다.
+            .switch_tab => .{ .switch_tab = mapped.tab_index orelse return },
+            .reset_terminal => .reset_terminal,
+            .show_about => .show_about,
+            .open_config => .open_config,
+            .open_log => .open_log,
+            .copy_selection => .copy_selection,
+            .dump_perf => .dump_perf,
+            // #493 3-c — 두 fullscreen 이 별 액션이 됐다. 예전엔 `GetAsyncKeyState`
+            // 로 Shift 를 다시 읽어 갈랐는데, 사용자가 `fullscreen_workarea` 에
+            // Shift 없는 조합을 줄 수도 있으므로 그 규칙으로는 안 된다.
+            .fullscreen => .{ .fullscreen = false },
+            .fullscreen_workarea => .{ .fullscreen = true },
+            .quit => {
+                // Alt+F4 는 원래 `DefWindowProcW` 가 `SC_CLOSE` → `WM_CLOSE` 로
+                // 처리했다. 이제 액션으로 잡으므로 같은 메시지를 직접 보낸다 —
+                // `onQuitRequest` 의 확인 다이얼로그 경로가 그대로 이어진다.
+                //
+                // 사용자가 `quit` 을 다른 키로 옮겨도 Alt+F4 자체는 OS 가 계속
+                // 닫는다. 그것을 막으려면 `SC_CLOSE` 를 가로채야 하는데, 시스템
+                // 메뉴의 닫기까지 무력화되므로 하지 않는다.
+                _ = PostMessageW(self.requireHwnd(), WM_CLOSE, 0, 0);
+                return;
+            },
+            // 이 host 의 키 경로가 내지 않는 것들 — toggle 은 전역 핫키가, menu 는
+            // 마우스가 진입점이다.
+            .toggle_visibility, .open_command_menu, .open_shortcuts => return,
+        };
+        if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
+            // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).
+            switch (shortcut) {
+                .fullscreen => |workarea| self.toggleFullscreenMode(if (workarea) .workarea else .monitor),
+                else => {},
+            }
+        }
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {

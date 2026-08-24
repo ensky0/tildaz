@@ -1837,11 +1837,12 @@ fn modifiersAside(h: Hotkey) u32 {
 /// 에서 항상 `Alt+Shift+1` 로 도착하고, 엄격히 비교하면 인덱스 탭 전환이 그
 /// layout 에서 아예 동작하지 않는다.
 ///
-/// **이것은 동작 확대가 아니다** — 세 platform 이 이미 그렇게 동작한다. Windows 는
-/// `wParam >= 0x31 and wParam <= 0x39` 로 Shift 를 아예 안 보고 (`window.zig`),
-/// macOS 는 `keycodeToTabIndex(kc) != null` 로 역시 안 보며 (`host/macos.zig`),
-/// Linux 도 #482 에서 `!shift` 요구를 걷어냈다. 3-c 가 그 셋을 한 규칙으로 모을 때
-/// 이 예외를 빼면 세 platform 모두 AZERTY 에서 퇴행한다.
+/// **이것은 동작 확대가 아니다** — 3-c 이전의 세 host 가 이미 그렇게 동작했다.
+/// Windows 는 `wParam >= 0x31 and wParam <= 0x39` 로 Shift 를 아예 보지 않았고
+/// (`window.zig`), macOS 는 `keycodeToTabIndex(kc) != null` 로 역시 보지 않았으며
+/// (`host/macos.zig`), Linux 도 #482 에서 `!shift` 요구를 걷어냈다. 그 셋을 한 규칙
+/// (`lookupAction`) 으로 모을 때 이 예외를 빼면 세 platform 모두 AZERTY 에서
+/// 퇴행한다. 세 곳의 하드코딩은 3-c 에서 사라졌고 근거만 여기 남는다.
 ///
 /// QWERTY 에는 영향이 없다: 그쪽에서 `Alt+Shift+1` 은 keysym 이 `exclam` 이라
 /// 라벨 비교 자체가 실패한다. Windows / macOS 는 위치 기반이어서 오늘도 잡히므로
