@@ -420,6 +420,38 @@ magick out.png -format "%[pixel:p{40,40}]\n" info:     # 값 읽기
 
 Linux 는 software renderer + 프로파일 없는 캡처라 이 절차가 아예 없고, Windows 는 swapchain 이 `DXGI_FORMAT_B8G8R8A8_UNORM` 이라 raw 픽셀이 곧 앱 출력이에요. **macOS 만 이 절차가 필요해요.**
 
+# macOS — 키보드 layout 조회 실측 방법
+
+단축키를 **라벨**로 매칭할지 **위치**로 매칭할지 ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2) 를 다룰 때, 활성 keyboard layout 이 **어느 키에 어느 글자를 두는지** 실기로 재는 도구예요. [`dist/macos/layout-probe.m`](dist/macos/layout-probe.m) 이 keycode `0..127` 을 네 방식으로 번역해 나란히 덤프해요.
+
+```sh
+clang -fobjc-arc -framework AppKit -framework Carbon -framework CoreGraphics \
+      -framework CoreFoundation -o /tmp/layout-probe dist/macos/layout-probe.m
+/tmp/layout-probe                          # 현재 layout 전체 표 + dlopen 판정
+/tmp/layout-probe --list-sources French    # 설치된 입력 소스의 표시 이름 · ID · 추가 여부
+/tmp/layout-probe --watch-runloop 15 24    # 한 프로세스로 24 회 — 그 사이 입력 소스를 바꿔요
+```
+
+**실측으로 확정된 네 경로** (2026-08-25 · MacBook Pro M5 Pro · macOS 26.6.2 · SDK 26.5 — [#496 코멘트](https://github.com/ensky0/tildaz/issues/496#issuecomment-5402521698)):
+
+| 경로 | live layout 추종 | dead key | Carbon |
+|---|---|---|---|
+| (A) `TIS*` + `UCKeyTranslate` | ✅ | ✅ | 링크 필요 |
+| (B) HIToolbox `dlopen` | ✅ | ✅ | 불필요 |
+| (C) `CGEventKeyboardGetUnicodeString` | ❌ **프로세스 시작 시점에 고정** | ❌ 빈 문자열 | 불필요 |
+| (D) `NSEvent charactersByApplyingModifiers:` | ✅ | ✅ | 불필요 |
+
+`UCKeyTranslate` 는 HIToolbox 가 아니라 **CoreServices/CarbonCore** 에 있어요 (`dladdr` 로 확인). Carbon 링크가 필요한 건 `TIS*` 계열뿐이에요.
+
+**함정 네 가지 — 빠뜨리면 반대 결론이 나와요.**
+
+- **단발 실행으로는 "layout 고정" 을 못 재요.** 매 회가 새 프로세스라 항상 최신으로 보여요. `--watch-runloop` 로 **한 프로세스를 살려 둔 채** 입력 소스를 바꿔야 드러나요.
+- **run loop 를 안 돌리면 `TIS` 도 낡은 layout 을 봐요.** `TISCopyCurrentKeyboardLayoutInputSource` 를 매 호출마다 새로 불러도 그래요 — `sleep` 으로 기다린 프로세스는 10 분 내내 시작 시점 layout 을 냈어요. 앱은 AppKit run loop 가 있어 해당 없지만, 진단 도구에서는 오판의 원인이에요.
+- **경로 D 는 modifier keycode 에서 죽어요.** `0x36`–`0x3F` (`kVK_RightCommand` ~ `kVK_Function`) 를 넘기면 헤더 서술(*"will return nil"*) 과 달리 `NSAssertionHandler` 를 거쳐 `abort()` 예요. 쓴다면 걸러야 해요.
+- **SDK 헤더가 ISO-8859 라 `grep` 이 조용히 실패해요.** `TextInputSources.h` 를 `grep` 하면 **에러 없이 매치 0 건**으로 나와요. `iconv -f ISO-8859-1 -t UTF-8` 로 바꿔서 읽어요.
+
+**입력 소스 전환은 사용자가 직접 해야 해요.** 한국어 UI 는 설정 앱의 항목 이름이 영어 문서와 달라 보이니, `--list-sources` 로 **그 기기에 실제로 표시되는 이름**을 뽑아서 안내해요 (예: `Russian – Phonetic` 이 이 기기에서는 `Russian – QWERTY` 로 보였어요). 그리고 이 측정도 위 `# 실행 환경` 의 규칙대로 **시작 전에 알리고 확인을 받아요.**
+
 # 터미널 시각 회귀 테스트 (한 줄)
 
 색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
