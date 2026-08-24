@@ -25,7 +25,9 @@ const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
 const input_policy = @import("input_policy.zig");
-const PhysicalCode = physical_key.PhysicalCode;
+/// #496 — host 가 key event 의 물리 위치를 넘길 때 쓴다 (`lookupAction` 의 3 번째
+/// 인자). config 표면의 타입이므로 여기서 다시 노출한다.
+pub const PhysicalCode = physical_key.PhysicalCode;
 
 const WCHAR = u16;
 
@@ -1743,6 +1745,16 @@ test "#493 3-c — Linux keysym 정규화는 값만 되돌리고 Shift 를 건�
     // 숫자는 건드리지 않는다 — `exclam` 이 `1` 이 되면 동작이 넓어진다.
     try std.testing.expectEqual(@as(u32, 0x21), normalizeLinuxKeysym(0x21)); // ! 그대로
     try std.testing.expectEqual(@as(u32, 0x31), normalizeLinuxKeysym(0x31)); // 1 그대로
+}
+
+/// #493 3-c — `[keys]` 문법의 키 문자열 하나를 `Hotkey` 로. host 의 테스트와 설정
+/// UI 가 쓴다. 실패 원인이 필요하면 `parseHotkeyString` 을 직접 쓴다 — 여기서는
+/// "되면 값, 안 되면 null" 만 준다.
+pub fn appBindingHotkey(text: []const u8) ?Hotkey {
+    return switch (parseHotkeyString(text, .app_binding)) {
+        .ok => |p| Hotkey.fromParsed(p),
+        else => null,
+    };
 }
 
 /// #493 3-c — config 액션을 런타임 입력으로 옮긴다. **세 host 가 이 한 표를 쓴다** —
