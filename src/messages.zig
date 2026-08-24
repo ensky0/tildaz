@@ -267,34 +267,51 @@ pub const font_family_must_be_string_msg = "Invalid config: font.family must be 
 /// 라인을 붙여 표시.
 pub const font_glyph_fallback_must_be_list_msg = "Invalid config: font.glyph_fallback must be a list of strings (fallback font names).";
 
-// #495 에서 확인 — 아래 셋은 **배선된 적이 없다.** `Config.createDefault` 가 세 실패를
-// 모두 삼키고 (`catch return` · `catch {}`) `Config.load` 의 읽기 실패도 조용히 기본값
-// 으로 떨어진다. 그래서 첫 실행에서 config 를 못 만들면 사용자는 아무 안내도 못 받고
-// 기본값으로 도는 인스턴스를 얻는다.
-//
-// 지우지 않고 남긴다 — 이 문안이 그 경로에 필요한 것이고, 지우면 나중에 다시 써야
-// 한다. 배선 자체는 결정이 필요해서 (읽기 전용 디렉터리에서 시작을 거부할 것인가,
-// 기본값으로 돌 것인가) 별 이슈로 뺐다 — #501.
-pub const config_dir_create_failed_format =
-    \\Failed to create config directory.
+/// #501 — config 를 읽지 못하거나 만들지 못했을 때. **fatal 이 아니다.**
+///
+/// 시작을 거부하면 사용자가 스스로 잠긴다 — config 를 고치려면 편집기가 필요하고
+/// 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다.
+/// 그래서 안내하고 기본값으로 계속 돈다.
+///
+/// **"그래서 지금 어떤 상태인가" 를 반드시 말한다.** 오류만 알려 주고 결과를 안
+/// 알려 주면 사용자는 자기 설정이 적용됐는지 아닌지 모른 채 쓰게 된다 — 그것이
+/// 이 이슈의 원래 증상 (조용한 기본값 동작) 과 사실상 같다.
+///
+/// 경로는 본문에 없다 — `configErrorMessageAlloc` 이 첫 줄로 붙인다 (#495).
+pub const config_read_failed_format =
+    \\Failed to read the config file.
     \\
-    \\Path: {s}
     \\Error: {s}
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\Fix the file above, then start TildaZ again.
+;
+
+pub const config_dir_create_failed_format =
+    \\Failed to create the config file.
+    \\
+    \\Error: {s}
+    \\
+    \\TildaZ started with default settings. There is no file to edit yet -- check
+    \\the permissions on that folder, then start TildaZ again.
 ;
 
 pub const config_default_write_failed_format =
-    \\Failed to write default config file.
+    \\Failed to write the config file.
     \\
-    \\Path: {s}
     \\Error: {s}
+    \\
+    \\TildaZ started with default settings. The file may be missing or incomplete
+    \\-- check the permissions on that folder, then start TildaZ again.
 ;
 
-pub const config_read_failed_format =
-    \\Failed to read config file.
-    \\
-    \\Path: {s}
-    \\Error: {s}
-;
+/// #501 — 이 안내는 fatal 이 아니므로 제목도 "error" 가 아니다. 사용자가 지금 쓰고
+/// 있는 인스턴스는 정상 동작하고, 다만 설정이 반영되지 않았다.
+///
+/// 세 경우 (못 읽음 · 못 만듦 · 못 씀) 를 한 제목으로 덮는다. 각각을 따로 두면
+/// "Not Loaded" 가 만들기 실패에 어색해지는데 (애초에 읽을 것이 없었다), 사용자에게
+/// 중요한 것은 원인이 아니라 **지금 기본값으로 돌고 있다**는 사실이다.
+pub const config_not_loaded_title = "TildaZ — Using Default Settings";
 
 /// #495 — **경로를 담지 않는다.** `showConfigFatalMsg` 가 모든 config 오류 앞에 한
 /// 번 붙인다. 예전엔 파싱 오류만 본문 셋째 줄에 `Path:` 를 넣고 의미 오류는 맨 끝에

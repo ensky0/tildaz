@@ -1133,6 +1133,29 @@ Configuration: missing required key "window" in (top-level).
 
 `allocPrint` 실패 시 fallback 도 **경로 자리를 비우지 않는다** (`Config: (unknown)`). 예전 파싱 쪽 fallback 은 경로를 아예 잃어서, 정작 가장 도움이 필요한 상황에서 가장 적은 정보를 줬다.
 
+### 11.5 config 를 읽지 못하거나 만들지 못했을 때 ([#501](https://github.com/ensky0/tildaz/issues/501))
+
+**fatal 이 아니다 — 안내하고 기본값으로 계속 돈다.** 내용이 틀린 config (§11.4) 와 정책이 다르며, 그 차이가 의도적이다.
+
+| 상황 | 결과 상태 | 한 문장으로 설명되는가 | 정책 |
+|---|---|---|---|
+| 파일이 없거나 못 읽음 / 못 만듦 | **전부** 기본값 | ✅ "설정을 하나도 읽지 못했다" | 안내 + 계속 |
+| 파일은 읽혔는데 내용이 틀림 | **부분** 적용 | ❌ 어느 필드가 살고 어느 필드가 죽었나 | fatal (§11.4) |
+
+시작을 거부하면 **사용자가 스스로 잠긴다** — config 를 고치려면 편집기가 필요하고 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다. 원인이 사용자 잘못이 아닐 수도 있다 (권한 · 디스크 오류 · 홈이 읽기 전용인 컨테이너). 반면 내용이 틀린 경우는 부분 적용이 되어 "테마는 먹었는데 핫키는 안 먹은" 상태를 설명할 수 없으므로 fatal 이 정직하다.
+
+**안내는 창이 뜬 뒤에 한 번 나온다.** config 로드 시점에 띄우지 않는 이유는 Linux 다 — 그때는 Wayland backend 가 없어 다이얼로그가 stderr · log 로만 가고 (`dialog/linux.zig`), 데스크톱 아이콘이나 autostart 로 띄운 사용자에게는 보이지 않는다. Windows (`MessageBoxW`) 와 macOS (`osascript display dialog`) 는 그 시점에도 보이지만, 그쪽만 즉시로 두면 세 platform 의 시점이 갈리고 안내가 두 번 뜰 수 있어 한 곳으로 모았다.
+
+| host | 호출 지점 |
+|---|---|
+| Linux | 이벤트 loop 의 `drainConfigNotice` — 다른 다이얼로그가 떠 있으면 다음 iteration 으로 **미룬다** (버리지 않는다) |
+| Windows | `window.init` 직후 |
+| macOS | `NSWindow` 생성 직후 |
+
+안내 문안은 **"그래서 지금 어떤 상태인가" 를 반드시 말한다.** 오류만 알려 주고 결과를 빼면 사용자는 자기 설정이 적용됐는지 모른 채 쓰게 되고, 그것은 이 이슈가 고치려는 증상 (조용한 기본값 동작) 과 사실상 같다. 형식은 §11.4 와 같다 — 경로가 첫 줄이다.
+
+측정 인스턴스는 예외다 ([#382](https://github.com/ensky0/tildaz/issues/382)) — **일부러** 사용자 config 를 만들지 않으므로 안내도 없다.
+
 Windows는 짧은 본문을 기존 `MessageBoxW`로 표시하고 화면 또는 4096 UTF-16 변환 상한을 넘을 때만 read-only multiline EDIT window로 전환한다. macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 전체 동적 본문을 stderr + log fallback으로 출력한다. **현재 상태: 구현·자동 검증 완료, Linux · macOS · Windows 묶음 실기 대기 (#316).**
 
 ---
