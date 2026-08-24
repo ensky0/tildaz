@@ -300,21 +300,68 @@ minimize/restore.
 | 이전 탭 | Ctrl+Shift+[ **또는 Ctrl+PgUp** | Shift+Cmd+[ **또는 Cmd+PgUp** | Ctrl+Shift+[ (L12-β) **또는 Ctrl+PgUp** | ✅ | ✅ | ✅ |
 | 다음 탭 | Ctrl+Shift+] **또는 Ctrl+PgDn** | Shift+Cmd+] **또는 Cmd+PgDn** | Ctrl+Shift+] (L12-β) **또는 Ctrl+PgDn** | ✅ | ✅ | ✅ |
 
-**keyboard layout 독립성** ([#482](https://github.com/ensky0/tildaz/issues/482)). 세 platform 이
-단축키를 매칭하는 대상이 다르다 — Windows 는 virtual-key (`VK_1`, `VK_OEM_4`), macOS 는
-`kVK_ANSI_*` 로 **물리 위치**를 보고, Linux 는 **xkb keysym** 으로 *눌러서 나오는 문자*를 본다.
-그래서 layout 종속 결함은 Linux 에만 생긴다.
+**이 표는 기본값이다** ([#493](https://github.com/ensky0/tildaz/issues/493) 3-c 이후).
+scrollback 쌍과 `Ctrl+C` 를 뺀 모든 조합은 config 의 `[keys]` 로 바꿀 수 있고, 세 platform 의
+판정이 `config.lookupAction` 한 곳에서 일어난다. 그 전에는 host 마다 하드코딩된 키 표가 있었고
+**분류부와 실행부에 같은 표가 두 번** 적혀 있었다 — 그 이중 기술이 갈라지는 것이
+[#484](https://github.com/ensky0/tildaz/issues/484) 의 원인이었다.
 
-- **인덱스 점프**는 Linux 에서 `!shift` 를 요구하지 않는다. AZERTY (fr) 등은 숫자열에 Shift 가
-  필요해 keysym `1`~`9` 가 **항상 Shift 와 함께** 도착하고, 예전 조건이 그것을 전부 걸러 그
-  layout 에서 인덱스 전환이 아예 동작하지 않았다. QWERTY 에는 영향이 없다 — Shift 가 keysym 을
-  `exclam` 으로 바꿔 애초에 매칭되지 않는다.
+기본값 표는 **platform 별로 둘이다** (`macDefaultBindings` / `pcDefaultBindings`). `cmd` 토큰이
+modifier 차이를 흡수하지만 macOS 는 **Shift 의 유무까지 다르다** — PC 쪽 `Ctrl+Shift+T` 에
+대응하는 Apple HIG 관습이 `Cmd+T` 다. 한 표로 덮으면 macOS 사용자의 모든 단축키가
+`Control+Shift+*` 가 된다.
+
+**keyboard layout 독립성** ([#482](https://github.com/ensky0/tildaz/issues/482) ·
+[#496](https://github.com/ensky0/tildaz/issues/496)). 세 platform 이 단축키를 매칭하는 대상이
+다르다 — Windows 는 virtual-key (`VK_1`, `VK_OEM_4`), macOS 는 `kVK_ANSI_*` 로 **물리 위치**를
+보고, Linux 는 **xkb keysym** 으로 *눌러서 나오는 문자*를 본다. 그래서 layout 종속 결함의 모양이
+platform 마다 다르다.
+
+- **비라틴 layout (키릴 · 그리스 · 아랍 ...) 에서는 글자 단축키를 라벨로 적을 수 없다.**
+  `xkbcli how-to-type --layout ru 'w'` 가 빈 결과다 — 그 자판의 어느 키도 `w` 를 내지 않으므로
+  `ctrl+shift+w` 는 영원히 발동하지 않고, **다른 글자로 재바인딩해도 해결되지 않는다** (라틴
+  알파벳 전체가 없다). 그래서 키를 **물리 위치**로도 적을 수 있게 했다 — `"ctrl+shift+[KeyW]"`.
+  이름은 [W3C `KeyboardEvent.code`](https://www.w3.org/TR/uievents-code/) 값이고 (2025 년
+  Recommendation) 표기는 VS Code 와 같은 대괄호다. 세 platform 값의 단일 출처는
+  `src/physical_key.zig` 다.
+- **수용 집합은 라벨 쪽이 좁고 위치 쪽이 넓다.** 의도한 비대칭이다. 라벨을 넓히려면 `-` 에
+  값을 줘야 하는데 쓸 수 있는 고정값 (`VK_OEM_MINUS` · `kVK_ANSI_Minus`) 은 라벨이 아니라 "US
+  자판에서 `-` 가 있는 자리" 다. 그것을 라벨이라 부르면 같은 config 가 platform 마다 다른 키를
+  뜻한다. 위치는 처음부터 자리이므로 그 문제가 없어 자판이 낼 수 있는 키를 다 담는다.
+  라벨을 정직하게 넓히는 것은 live layout 조회 (macOS `UCKeyTranslate` · Windows
+  `VkKeyScanExW`) 가 전제다.
+- **Linux 는 라벨 매칭이라 Shift 가 바꾼 키 값을 되돌린다** (`normalizeLinuxKeysym`).
+  `ctrl+shift+c` binding 은 keysym `c` 로 저장되는데 실제로는 `C` 가 도착하고, `ctrl+shift+[` 는
+  `{` 로 도착한다. 예전 매처가 두 값을 나란히 적어 (`xkb_key_c_lower, xkb_key_c_upper`) 풀던
+  자리다. **Shift 비트는 건드리지 않는다** — 값만 되돌리므로 `ctrl+shift+c` 와 `ctrl+c` 는 여전히
+  다른 조합이다. 숫자는 일부러 제외한다: `exclam` → `1` 로 되돌리면 QWERTY 에서 `Alt+Shift+1` 이
+  탭 전환이 되어 동작이 넓어진다.
+- **인덱스 점프는 숫자 binding 에서 Shift 를 무시한다** (`isDigitBinding`). AZERTY (fr) 등은
+  숫자열에 Shift 가 필요해 keysym / VK `1`~`9` 가 **항상 Shift 와 함께** 도착한다. 확대가 아니라
+  현행 유지다 — 3-c 이전의 세 host 가 모두 Shift 를 보지 않았다 (Windows
+  `wParam >= 0x31 and wParam <= 0x39`, macOS `keycodeToTabIndex(kc) != null`, Linux 는 #482 에서
+  `!shift` 요구 제거). 예외는 **숫자에서 멈춘다** — `shift+alt+f4` 는 `alt+f4` 를 발동시키지
+  않는다. QWERTY 에는 영향이 없다: Shift 가 keysym 을 `exclam` 으로 바꿔 애초에 매칭되지 않는다.
 - **PgUp / PgDn 조합**은 `[` / `]` 가 AltGr 를 요구하는 layout (AZERTY 는 `[` = AltGr+5 →
   조합이 Ctrl+Shift+AltGr+5) 을 위한 layout 무관 대안이다. 기존 bracket 조합을 **대체하지 않고
   추가**한다. `Ctrl+Tab` 은 쓰지 않는다 — kitty / CSI-u 에서 구별 가능한 시퀀스라 TUI 앱이
   정당하게 바인딩하는데 터미널이 삼키면 통과시킬 방법이 없다. PgUp / PgDn 은 GNOME Terminal ·
   Konsole · Windows Terminal 이 탭 전환에 쓰는, 터미널이 관습적으로 소유하는 조합이다.
 - **기존 PgUp / PgDn 경로는 그대로다** — Shift 동반은 scrollback (§2.5), 맨 키는 PTY.
+- **전역 `hotkey` 는 위치 표기를 받지 않는다.** OS / compositor 에 *등록* 해야 하고 그 4 경로가
+  모두 문자 기반이다 (sway `bindsym` · Hyprland keysym · COSMIC RON `key:` · KGlobalAccel
+  `qtKey`). 조용히 keysym 0 을 등록하는 대신 원인이 분명한 실패를 낸다 —
+  [#496](https://github.com/ensky0/tildaz/issues/496) 1-b 가 그 제약을 다룬다.
+- **macOS 에 없는 위치가 있다.** `PrintScreen` · `ScrollLock` · `Pause` 는 **없는 것이 아니라
+  `F13` · `F14` · `F15` 로 보고된다** (Apple 확장 자판이 그 자리에 F13~F15 를 둔다). `F21`~`F24`
+  와 JIS 입력 전환 키 3 개는 정말 없다. 두 경우의 안내가 다르다 — 앞쪽은 "그 이름을 쓰라",
+  뒤쪽은 "이 platform 에 없다". 어느 쪽이든 **파싱 단계에서 거부한다**: 조용히 미동작으로 두면
+  [#208](https://github.com/ensky0/tildaz/issues/208) 이 막던 silent failure 로 되돌아간다.
+
+**재바인딩할 수 없는 것 둘.** `Shift+PgUp` / `Shift+PgDn` 은 단축키가 아니라 **스크롤**이고
+(`app_event` 에서도 `scroll` 범주로, 마우스 휠과 같은 자리다) `Ctrl+C` 는 SIGINT 다. 둘 다
+config 로 가릴 수 있게 하면 실수 한 번으로 터미널의 기본 기능을 잃는다. 그래서 `Ctrl+C` 는
+config 조회보다 **먼저** 판정한다.
 
 ### 2.3 클립보드
 
