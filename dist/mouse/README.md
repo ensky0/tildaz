@@ -14,9 +14,21 @@ TUI 앱에게 마우스를 전달하는 경로 ([#502](https://github.com/ensky0
 git fetch origin && git checkout <브랜치>
 ```
 
-**항상 `--instance 1` 로 띄워요** — daily 인스턴스 (`--instance 0`) 를 안 건드려요.
-핫키 충돌 다이얼로그가 뜨면 **`Cancel`** 이에요 (daily 가 핫키를 지켜야 해요). 테스트
-인스턴스는 전역 핫키가 없으니 창을 숨기지 말아요.
+**항상 `--instance 1` 로 띄워요** — daily 인스턴스 (`--instance 0`) 를 안 건드려요. daily 의
+핫키는 그대로 두고, 테스트 인스턴스에는 **아래처럼 비어 있는 조합을 따로 줘요** (그래야
+창을 숨겨도 다시 불러올 수 있어요).
+
+**먼저 `config_1` 의 핫키를 비어 있는 조합으로 바꿔요.** 기본 핫키가 index 와 무관한
+상수 `F1` 이라 daily 와 충돌해요 ([#510](https://github.com/ensky0/tildaz/issues/510) —
+근본 해결은 index 에서 파생하는 것). **Windows 는 그 등록 실패가 fatal 이라**
+`Hotkey Registration Failed` 안내창 (버튼 `OK` 하나) 을 띄운 뒤 **종료돼요** — 예전 판의
+"충돌 다이얼로그가 뜨면 `Cancel`" 은 이 다이얼로그와 맞지 않아요. 한 번 띄워서
+`config_1.toml` 이 생기게 한 다음 `hotkey` 를 예를 들어 `"ctrl+alt+f9"` 로 바꾸고 다시
+띄워요. mac · Linux 는 종료되지 않지만 두 인스턴스가 같은 키에 함께 반응할 수 있어서
+(#510) 똑같이 바꿔 두는 게 좋아요.
+
+**검증이 끝나면 `config_1.toml` 을 지워요** — 남겨 두면 사용자가 평소 TildaZ 를 띄울 때
+그 인스턴스가 같이 떠요.
 
 | platform | 빌드 | 실행 |
 |---|---|---|
@@ -36,8 +48,18 @@ sh dist/mouse/mouse-probe.sh 1000         # motion 없음 — 누름/뗌만
 sh dist/mouse/mouse-probe.sh 9 1006       # x10 — 누름만, modifier 없음, 좌표 223 상한
 ```
 
-**Windows 는 PowerShell 이 아니라 Git Bash** 로 돌려요 (POSIX sh). TildaZ 의
-PowerShell 탭에서 `bash dist/mouse/mouse-probe.sh` 로 실행해도 돼요.
+**Windows 는 PowerShell 이 아니라 Git Bash** 로 돌려요 (POSIX sh). 두 가지를 주의해요.
+
+- **`bash` 를 그냥 치면 Git Bash 가 아닐 수 있어요.** Git for Windows 는 PATH 에 `Git\cmd`
+  만 넣고 `bash.exe` 는 `Git\bin` 에 있어서, PATH 의 `bash` 가 **WSL 스텁**
+  (`%LocalAppData%\Microsoft\WindowsApps\bash.exe`) 으로 잡히는 경우가 많아요.
+- **탭 셸의 cwd 는 레포 루트가 아니에요** (`%USERPROFILE%`) — 상대 경로가 안 맞아요.
+
+둘 다 전체 경로로 피해요 (TildaZ 의 cmd · PowerShell 탭 어디서든).
+
+```
+"C:\Program Files\Git\bin\bash.exe" C:/Users/<you>/tildaz/dist/mouse/mouse-probe.sh
+```
 
 종료는 **`q` 또는 `Ctrl+C`** — 프로브가 mode 를 끄고 나가요. `q` 는 마우스 보고에
 나오지 않는 글자라 종료 키로 안전해요. (`exit` 를 치면 셸이 닫혀 앱까지 같이 닫혀요.)
@@ -58,18 +80,27 @@ PowerShell 탭에서 `bash dist/mouse/mouse-probe.sh` 로 실행해도 돼요.
 | A7 | 우클릭 | **출력 0건** + 클립보드 paste |
 | A8 | 우클릭한 채 드래그 | **출력 0건** — 오른쪽은 motion 도 안 보낸다 |
 | A9 | 가운데 누른 채 드래그 | `Cb` = 33 (1 + 32) |
+| A10 | 왼쪽 / 가운데를 누른 채 **창 밖으로** 끌기 | 좌표가 가장자리에 clamp 된 채 `Cb` 32 / 33 이 **계속 나옴**, 창 밖에서 떼도 뗌이 옴 |
 
 `1003` 으로 다시 띄우면 **버튼 없이 움직이기만** 해도 `Cb` 35 (3 + 32) 가 나와야 해요.
 **탭바 위에서 움직일 때는 안 나와야** 정상이에요 — viewport 밖이라 인코더가 걸러요
 (탭 2개 이상 필요).
 `1000` 이면 드래그해도 motion 이 안 나오고, `9` 면 누름만 나오고 modifier 가 안 실려요.
 
+**A10 이 왜 있나** — host 가 창 밖으로 나간 드래그의 이벤트를 계속 받아야 (Windows
+`SetCapture` · macOS 는 자동 · Linux 는 Wayland implicit grab) 인코더의 "뗌은 어디서 놓든
+항상 보고한다" 가 성립해요. 빠지면 motion 이 끊기고 **창 밖에서 뗀 뗌이 유실돼서 앱이 그
+버튼을 영원히 눌린 것으로** 알아요. #502 Windows 실기에서 가운데 버튼이 그랬어요 (A9 는
+드래그가 창 안에서 끝나 이 경로를 지나가지 않아요). 창 밖에서 뗄 때는 **커서 아래에 있는
+창을 조심해요** — capture 가 안 걸린 상태라면 그 클릭이 그 창으로 가요 (가운데 클릭이
+브라우저 · 편집기의 탭을 닫을 수 있어요). 빈 데스크톱 위에서 떼는 게 안전해요.
+
 ## B. macOS 고유
 
 | # | 동작 | 기대 | 왜 |
 |---|---|---|---|
 | M1 | 우클릭한 채 드래그 | 출력 0건 | macOS 는 `rightMouseDragged:` 미등록이라 그 경로가 없다는 판정을 실측으로 확인 |
-| M2 | 가운데 버튼 클릭 · 드래그 | `Cb` 1 / 33 | `otherMouseDown:`/`otherMouseUp:` 경로. **트랙패드엔 가운데 버튼이 없어 실물 마우스 필요** |
+| M2 | 가운데 버튼 클릭 · 드래그 | `Cb` 1 / 33 | `otherMouseDown:`/`otherMouseDragged:`/`otherMouseUp:` 경로. Cocoa 는 버튼별 selector 라 가운데 드래그가 `mouseDragged:` 로 오지 않는다 — `otherMouseDragged:` 는 #502 실기 중 소스 점검으로 **누락이 발견되어 추가**됐고 **macOS 실기 미검증**이다. `Cb 33` 이 안 나오면 그 등록을 먼저 본다. **트랙패드엔 가운데 버튼이 없어 실물 마우스 필요** |
 | M3 | Cmd+클릭 | `Cb` = 0 | Cmd 는 프로토콜에 자리가 없어 싣지 않는다. 4·8·16 이 붙으면 버그 |
 | M4 | 트랙패드 두 손가락 스크롤 | 64/65 가 과도하게 쏟아지지 않음 | 연속 delta 를 notch 로 환산 (multiplier 2). 한 번 훑을 때 수십 줄이면 조정 필요 |
 
@@ -77,7 +108,7 @@ PowerShell 탭에서 `bash dist/mouse/mouse-probe.sh` 로 실행해도 돼요.
 
 | # | 동작 | 기대 | 왜 |
 |---|---|---|---|
-| W1 | 휠을 화면 여러 위치에서 | `Cb 64` 의 `COL;ROW` 가 포인터 위치와 일치 | `WM_MOUSEWHEEL` 의 `lParam` 은 **screen 좌표**라 `ScreenToClient` 변환이 필요. 빠지면 엉뚱한 큰 수가 나온다 |
+| W1 | 휠을 화면 여러 위치에서 | `Cb 64` 의 `COL;ROW` 가 포인터 위치를 따라 **제대로 변한다** | `WM_MOUSEWHEEL` 의 `lParam` 은 **screen 좌표**라 `ScreenToClient` 변환이 필요. 인코더가 좌표를 `@min(…, cols−1)` 로 clamp 하므로 변환이 빠져도 "엉뚱한 큰 수" 가 아니라 **마지막 열에 고정**되거나 행이 일정량 밀린다 — *값이 위치에 따라 변하는지*로 판정한다. 창이 화면 위쪽이면 `screen y == client y` 라 **y 축을 못 가른다**: `dock_position` 을 `bottom` 으로 바꿔 한 번 더 본다 |
 | W2 | 가운데 버튼 클릭 · 드래그 | `Cb` 1 / 33 | `WM_MBUTTONDOWN`/`UP` 경로 |
 | W3 | Alt+클릭 | `Cb` = 8 | Alt 는 `wParam` 에 없어 `GetKeyState(VK_MENU)` 로 읽는다 |
 | W4 | 우클릭한 채 드래그 | 출력 0건 | Linux 와 같은 경로 (`heldButton`) 라 함께 확인 |
