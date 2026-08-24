@@ -388,11 +388,14 @@ Latin-letter shortcut back to the key you actually pressed on a Cyrillic or Gree
 layout. On sway and Hyprland they do not, so a letter hotkey can stop working
 there while a non-Latin layout is active.
 
-**Punctuation is the riskier choice**, and not only on non-Latin layouts. A
-`grave` hotkey has no key to bind to on a German layout — that layout has no
-`grave` character at all — and GNOME's fallback does not cover it, because the
-fallback only triggers when the layout is missing the Latin *alphabet*. The
-binding is then accepted and simply never fires.
+**Punctuation is the riskier choice**, and not only on non-Latin layouts. German
+and Spanish cannot type `` ` `` at all — the key in that position is a dead accent
+— so a ``Ctrl+` `` hotkey is silently dead there. GNOME's fallback does not rescue
+it either, because that fallback only triggers when the layout is missing the
+Latin *alphabet*.
+
+KEYBINDINGS.md has a measured table of which layouts can type which keys, and the
+sway / Hyprland limitation it matters most for.
 
 ### New tab working directory
 

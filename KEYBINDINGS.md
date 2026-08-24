@@ -163,6 +163,46 @@ which is why the default is `F1`. Punctuation is the worst choice — a `grave`
 hotkey has no key to bind to on a German layout, and GNOME's fallback does not
 cover that case because it only triggers when the *alphabet* is missing.
 
+### Known limitation: the global hotkey on sway and Hyprland
+
+Every other desktop translates a hotkey back to the key you actually pressed when
+your layout cannot type its character. **sway and Hyprland do not.** There, the
+hotkey is matched against the character the active layout produces, so it stops
+working while a layout that cannot type that character is active — and starts
+working again when you switch back.
+
+The binding is registered successfully either way. Nothing warns you; it just
+does not fire.
+
+**So on sway or Hyprland, do not use a letter or punctuation for `hotkey` if you
+type in any of the layouts below. Use a function key.** `F1`–`F12` are the same
+on every layout, which is why the default is `F1`.
+
+Measured with `xkbcli how-to-type` — ✅ means that layout can type the character,
+so a hotkey using it keeps working:
+
+| Layout | `A`–`Z` | `0`–`9` | `` ` `` | `[` `]` |
+|---|:--:|:--:|:--:|:--:|
+| US, UK, French, Italian, Japanese | ✅ | ✅ | ✅ | ✅ |
+| **German, Spanish** | ✅ | ✅ | **❌** | ✅ |
+| Greek, Arabic | ❌ | ✅ | ✅ | ✅ |
+| Ukrainian, Bulgarian, Hebrew | ❌ | ✅ | ❌ | ✅ |
+| **Russian** | ❌ | ✅ | ❌ | **❌** |
+| **Thai** | ❌ | **❌** | ❌ | ❌ |
+
+Three of those are easy to get wrong:
+
+- **German and Spanish cannot type `` ` ``** even though they are Latin layouts.
+  A ``Ctrl+` `` hotkey is dead there. Their key in that position is a dead
+  accent, not a backtick.
+- **Greek and Arabic can**, so ``Ctrl+` `` survives on those while letters do not.
+- **Thai cannot type digits**, so even `Alt+1` is dead — the only layout here
+  where a digit hotkey fails.
+
+This affects the **global hotkey only**. Shortcuts inside TildaZ (`[keys]`) are
+matched by TildaZ itself and fall back to the physical key position, so they keep
+working on every layout above.
+
 ### What stays fixed
 
 `Shift+PgUp` / `Shift+PgDn` scroll the scrollback and cannot be rebound —
