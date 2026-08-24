@@ -1,12 +1,12 @@
-// 사용자 데이터 파일 (config_N.json / tildaz_N.log) 의 absolute 절대 경로 — OS
+// 사용자 데이터 파일 (config_N.toml / tildaz_N.log) 의 absolute 절대 경로 — OS
 // 표준 위치를 따른다 (SPEC.md §11.1, AGENTS.md "platform native first").
-// 로그 파일명은 config 파일명 (config_N.json) 과 같은 `이름_번호` 형식.
+// 로그 파일명은 config 파일명 (config_N.toml) 과 같은 `이름_번호` 형식.
 //
-//   Windows: %APPDATA%\tildaz\config_N.json   (Microsoft 표준)
+//   Windows: %APPDATA%\tildaz\config_N.toml   (Microsoft 표준)
 //            %APPDATA%\tildaz\tildaz_N.log
-//   macOS:   $XDG_CONFIG_HOME/tildaz/config_N.json (fallback: $HOME/.config)
+//   macOS:   $XDG_CONFIG_HOME/tildaz/config_N.toml (fallback: $HOME/.config)
 //            $HOME/Library/Logs/tildaz_N.log    (Apple HIG — Console.app 인덱싱)
-//   Linux:   $XDG_CONFIG_HOME/tildaz/config_N.json (fallback: $HOME/.config)
+//   Linux:   $XDG_CONFIG_HOME/tildaz/config_N.toml (fallback: $HOME/.config)
 //            $XDG_STATE_HOME/tildaz/tildaz_N.log (fallback: $HOME/.local/state)
 //
 // 모두 allocator-based — 호출처가 free 책임. 부모 디렉토리는 자동 생성
@@ -31,7 +31,7 @@ pub fn configPathFor(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u
     defer allocator.free(dir);
     try ensureDir(rt, dir);
     const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}config_{d}.json", .{ dir, sep, index });
+    return std.fmt.allocPrint(allocator, "{s}{c}config_{d}.toml", .{ dir, sep, index });
 }
 
 pub fn logPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
