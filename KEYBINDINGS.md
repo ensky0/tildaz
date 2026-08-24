@@ -163,20 +163,25 @@ which is why the default is `F1`. Punctuation is the worst choice — a `grave`
 hotkey has no key to bind to on a German layout, and GNOME's fallback does not
 cover that case because it only triggers when the *alphabet* is missing.
 
-### Known limitation: the global hotkey on sway and Hyprland
+### Known limitation: the global hotkey on Hyprland
 
-Every other desktop translates a hotkey back to the key you actually pressed when
-your layout cannot type its character. **sway and Hyprland do not.** There, the
-hotkey is matched against the character the active layout produces, so it stops
-working while a layout that cannot type that character is active — and starts
-working again when you switch back.
+Every desktop except Hyprland gets this right, by one route or another:
 
-The binding is registered successfully either way. Nothing warns you; it just
-does not fire.
+| Desktop | How the hotkey survives a layout it cannot type |
+|---|---|
+| GNOME (3.28+), Cinnamon (5.4+) | the compositor falls back to a US layout it compiles itself |
+| COSMIC, KDE | the compositor falls back to another layout you have configured |
+| **sway** | **TildaZ registers it by physical key position** (`bindcode`) |
+| **Hyprland** | — nothing |
 
-**So on sway or Hyprland, do not use a letter or punctuation for `hotkey` if you
-type in any of the layouts below. Use a function key.** `F1`–`F12` are the same
-on every layout, which is why the default is `F1`.
+On Hyprland the hotkey is matched against the character the active layout
+produces, so it stops working while a layout that cannot type that character is
+active, and starts working again when you switch back. The binding is registered
+successfully either way. Nothing warns you; it just does not fire.
+
+**So on Hyprland, do not use a letter or punctuation for `hotkey` if you type in
+any of the layouts below. Use a function key.** `F1`–`F12` are the same on every
+layout, which is why the default is `F1`.
 
 Measured with `xkbcli how-to-type` — ✅ means that layout can type the character,
 so a hotkey using it keeps working:
@@ -199,9 +204,14 @@ Three of those are easy to get wrong:
 - **Thai cannot type digits**, so even `Alt+1` is dead — the only layout here
   where a digit hotkey fails.
 
-This affects the **global hotkey only**. Shortcuts inside TildaZ (`[keys]`) are
-matched by TildaZ itself and fall back to the physical key position, so they keep
-working on every layout above.
+This affects the **global hotkey on Hyprland only**. Shortcuts inside TildaZ
+(`[keys]`) are matched by TildaZ itself and fall back to the physical key
+position, so they keep working on every layout above — on every desktop.
+
+TildaZ could do the same for Hyprland, but its hotkeys are written from the
+launcher, before any keyboard exists, so there is no keymap to ask which physical
+key types your hotkey. sway is different only because TildaZ registers there from
+inside the running terminal, after the keymap has arrived.
 
 ### What stays fixed
 
