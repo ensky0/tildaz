@@ -372,6 +372,26 @@ invalid value shows an error dialog and exits):
   way. Widening it means verifying real key codes on Linux, macOS, and Windows,
   which has not been done yet. A rejected value shows an error dialog naming the
   accepted keys rather than failing silently.
+- **The position form is not accepted here.** `hotkey` is registered with your
+  desktop, and every path TildaZ uses for that takes a character rather than a
+  key position. A value like `"ctrl+[KeyW]"` is rejected with a message saying so,
+  rather than being registered as something that never fires.
+
+#### Prefer a function key
+
+`F1`–`F12` are the same on every keyboard layout, which is why the default is
+`F1`. Letters and punctuation are not, and the failure is quiet.
+
+Letters are usually fine: GNOME, Cinnamon, COSMIC and KDE all translate a
+Latin-letter shortcut back to the key you actually pressed on a Cyrillic or Greek
+layout. On sway and Hyprland they do not, so a letter hotkey can stop working
+there while a non-Latin layout is active.
+
+**Punctuation is the riskier choice**, and not only on non-Latin layouts. A
+`grave` hotkey has no key to bind to on a German layout — that layout has no
+`grave` character at all — and GNOME's fallback does not cover it, because the
+fallback only triggers when the layout is missing the Latin *alphabet*. The
+binding is then accepted and simply never fires.
 
 ### New tab working directory
 
