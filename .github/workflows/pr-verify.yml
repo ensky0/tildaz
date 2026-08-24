@@ -1,0 +1,73 @@
+# PR 회귀 감지 (#499). 이 workflow 가 생기기 전까지 PR 에서 도는 검사는 CLA 봇
+# 하나뿐이었고, 빌드가 깨진 PR 도 green 으로 보였다.
+#
+# **Linux 러너 하나로 세 platform 을 본다.** `zig build check` 가 cross-compile
+# compile-only 검증이라 러너 매트릭스가 필요 없다 (#201 에서 "Linux dev 머신에서
+# mac compile 에러를 조기 발견" 하려고 만든 step 을 그대로 쓴다).
+#
+# 이 검사가 잡는 것의 실례: #498 에서 `lookupAction` 을 도입할 때 `Hotkey.MOD_SHIFT`
+# 가 Windows / macOS 타입에 없었다. Zig 는 **호출되지 않는 함수 본문을 분석하지
+# 않으므로** 그 함수를 부르는 테스트를 넣기 전까지 native 빌드가 조용히 통과했다.
+# 6 타깃 compile-only 검사만이 그 부류를 잡는다.
+#
+# native Windows / macOS 빌드는 여기 없다 — #266 (ghostty tarball 심볼릭 링크) ·
+# cross-drive zig cache 등 러너별 걸림돌이 있고 `release.yml` 이 그 우회를 담고
+# 있다. step 을 복제하지 않고 재사용할 방법과 함께 별도로 본다 (#499 참고).
+name: pr-verify
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Node.js 20 deprecation (2026-09-16 제거 예정) 회피. `release.yml` ·
+# `macos-signing-check.yml` 과 같은 이유로 둔다 — checkout(@v7) 은 Node 24 native
+# 인데 `mlugg/setup-zig@v2` 와 `actions/cache@v4` 가 아직 Node 20 번들이라 runner 가
+# 강제 Node 24 로 실행하게 한다. upstream 이 Node 24 버전을 내면 제거 (#257).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+# 같은 PR 에 새 커밋이 오면 이전 실행을 취소한다 — 마지막 커밋 결과만 의미가 있다.
+concurrency:
+  group: pr-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      # `release.yml` 과 같은 action · 같은 버전을 쓴다. 버전은 `build.zig.zon` 의
+      # `.minimum_zig_version` 과 맞춰야 한다 — 두 곳에 적혀 있으므로 한쪽만 올리면
+      # 갈라진다 (#499 에 한 곳에서 읽는 방법을 남겨 뒀다).
+      - name: Setup Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # Zig 0.16 은 의존성을 글로벌 캐시가 아니라 build root 옆 `zig-pkg/` 에 푼다.
+      # ghostty tarball 이 커서 이 캐시가 실행 시간을 지배한다. 키는 `build.zig.zon`
+      # 내용이다 — 의존성이 바뀌면 (URL / hash) 자동으로 새로 받는다.
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+
+      # 세 platform × 두 arch compile-only. **가장 먼저 돈다** — cross-platform
+      # 회귀가 이 workflow 의 주된 존재 이유이고, native 빌드보다 빠르다.
+      - name: Compile-only verify (6 targets)
+        run: zig build check
+
+      - name: Test
+        run: zig build test
+
+      # 로컬 검증이 이 플래그로 돌므로 CI 도 같은 조합을 본다 — 기본값과 codegen 이
+      # 다르다.
+      - name: Build (simd)
+        run: zig build -Dsimd=true
