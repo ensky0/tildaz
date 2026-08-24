@@ -1149,6 +1149,12 @@ const Client = struct {
     /// 의 `input_len - offset` 뺄셈이 underflow → integer overflow panic (#213).
     /// quit / dismiss 와 동일하게 deferred 로 reentrancy 제거.
     pending_about_request: bool = false,
+    /// #501 — config 를 읽지 못했거나 만들지 못한 안내. **loop 안에서** 보여준다 —
+    /// config 로드 시점에는 Wayland backend 가 없어 다이얼로그가 stderr / log 로만
+    /// 가고, 데스크톱 아이콘이나 autostart 로 띄운 사용자에게는 보이지 않는다
+    /// (`dialog/linux.zig` 참고). 문자열은 `Config` 소유이고 그쪽이 우리보다 오래
+    /// 산다. non-null 이면 아직 안 보여준 것이다.
+    pending_config_notice: ?[]const u8 = null,
     /// #282 C1 — info/error dialog 도 About 과 같은 deferred. `showInfo` 는
     /// 탭 한도(Ctrl+Shift+T)·shell 소실 알림에서 `handleNewTab`(= processKeyEvent
     /// reentrant) 를 통해 동기 호출되는데, `openInfoDialog` → `createDialogSurface`
@@ -1466,6 +1472,9 @@ const Client = struct {
             },
             .renderer = renderer,
             .config = cfg,
+            // #501 — 로드 실패 안내를 loop 로 넘긴다. `Config` 가 문자열을 소유하고
+            // 우리보다 오래 산다.
+            .pending_config_notice = cfg.load_notice,
             .run_opts = opts,
             .extra_env_storage = .{
                 .{ .name = "TERM", .value = "xterm-256color" },
@@ -1829,6 +1838,7 @@ const Client = struct {
             // roundtrip 을 outer dispatchBuffered 밖에서 돌려 buffer corrupt 회피.
             self.drainAboutRequest();
             self.drainInfoRequest();
+            self.drainConfigNotice();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -8171,6 +8181,16 @@ const Client = struct {
     /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
     /// 다른 dialog 가 이미 떠 있으면(About/confirm 등) 이번 info 는 버린다
     /// (advisory 알림 — 탭 한도/shell 소실). fire-and-forget 이라 pump 불필요.
+    /// #501 — 로드 실패 안내를 한 번 보여준다. **fatal 이 아니다** — 기본값으로 계속
+    /// 돈다. 다른 다이얼로그가 떠 있으면 다음 iteration 으로 미룬다 (info 경로처럼
+    /// 그냥 버리지 않는다 — 이 안내는 사용자가 놓치면 증상만 남는다).
+    fn drainConfigNotice(self: *Client) void {
+        const notice = self.pending_config_notice orelse return;
+        if (self.dialog.active()) return;
+        self.pending_config_notice = null;
+        config_mod.showLoadNoticeText(self.rt, notice);
+    }
+
     fn drainInfoRequest(self: *Client) void {
         if (!self.pending_info_request) return;
         self.pending_info_request = false;

@@ -2961,6 +2961,11 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         false,
     ) orelse return error.NSWindowInitFailed;
 
+    // #501 — config 를 읽지 못했거나 만들지 못했으면 여기서 한 번 알린다. **fatal 이
+    // 아니다** — 기본값으로 계속 돈다. 창이 만들어진 뒤인 것은 세 platform 을 같은
+    // 시점으로 맞추기 위함이다 (Linux 는 그 전에 다이얼로그가 보이지 않는다).
+    config.showLoadNotice(rt, &g_config);
+
     // 사용자 드래그 / 이동 OS 차단.
     const setMovable = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     setMovable(g_window, objc.sel("setMovable:"), false);
