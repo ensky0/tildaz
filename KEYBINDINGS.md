@@ -80,10 +80,10 @@ config changes: you press the same key a US user presses.
 
 Two details worth knowing:
 
-- **It only kicks in when the label is unreachable.** If you have a Latin layout
-  configured alongside — `us,ru` is the common setup — `w` is reachable, so
-  nothing changes and the label keeps working as usual. That also means the
-  shortcut follows the *label* on that setup, which is what you want.
+- **It only kicks in when the label is unreachable in the layout you are
+  currently typing in.** With `us,ru` — the common setup — nothing changes while
+  you are on `us`, and the fallback takes over the moment you switch to `ru`. It
+  is re-evaluated on every layout switch, so you never have to restart.
 - **It is Linux-only, because only Linux needs it.** Windows non-Latin layouts
   assign Latin virtual keys to the physical spots (`KBDRU` puts `VK_W` on the
   `w` position), and macOS matches physical key codes to begin with, so letter
@@ -149,9 +149,59 @@ A few positions do not exist on macOS — `[PrintScreen]`, `[ScrollLock]` and
 ### The global hotkey is different
 
 `hotkey` is registered with the desktop rather than handled inside TildaZ, and
-every path TildaZ uses for that (sway, Hyprland, COSMIC, KDE) accepts only a
-character — so it does **not** take the position form. A function key is the
-safest choice: `F1`–`F12` are identical on every layout.
+every path TildaZ uses for that — sway, Hyprland, GNOME, Cinnamon, COSMIC, KDE —
+accepts only a character, so it does **not** take the position form.
+
+Most desktops paper over this for you: GNOME (since 3.28), Cinnamon (since 5.4),
+COSMIC and KDE all translate a Latin-letter shortcut back to the key you actually
+pressed on a Cyrillic or Greek layout. GNOME and Cinnamon do it even if a Latin
+layout is not among the ones you have configured; COSMIC and KDE need one.
+**sway and Hyprland do not do it at all.**
+
+**A function key is the safest choice**: `F1`–`F12` are identical on every layout,
+which is why the default is `F1`. Punctuation is the worst choice — a `grave`
+hotkey has no key to bind to on a German layout, and GNOME's fallback does not
+cover that case because it only triggers when the *alphabet* is missing.
+
+### Known limitation: the global hotkey on sway and Hyprland
+
+Every other desktop translates a hotkey back to the key you actually pressed when
+your layout cannot type its character. **sway and Hyprland do not.** There, the
+hotkey is matched against the character the active layout produces, so it stops
+working while a layout that cannot type that character is active — and starts
+working again when you switch back.
+
+The binding is registered successfully either way. Nothing warns you; it just
+does not fire.
+
+**So on sway or Hyprland, do not use a letter or punctuation for `hotkey` if you
+type in any of the layouts below. Use a function key.** `F1`–`F12` are the same
+on every layout, which is why the default is `F1`.
+
+Measured with `xkbcli how-to-type` — ✅ means that layout can type the character,
+so a hotkey using it keeps working:
+
+| Layout | `A`–`Z` | `0`–`9` | `` ` `` | `[` `]` |
+|---|:--:|:--:|:--:|:--:|
+| US, UK, French, Italian, Japanese | ✅ | ✅ | ✅ | ✅ |
+| **German, Spanish** | ✅ | ✅ | **❌** | ✅ |
+| Greek, Arabic | ❌ | ✅ | ✅ | ✅ |
+| Ukrainian, Bulgarian, Hebrew | ❌ | ✅ | ❌ | ✅ |
+| **Russian** | ❌ | ✅ | ❌ | **❌** |
+| **Thai** | ❌ | **❌** | ❌ | ❌ |
+
+Three of those are easy to get wrong:
+
+- **German and Spanish cannot type `` ` ``** even though they are Latin layouts.
+  A ``Ctrl+` `` hotkey is dead there. Their key in that position is a dead
+  accent, not a backtick.
+- **Greek and Arabic can**, so ``Ctrl+` `` survives on those while letters do not.
+- **Thai cannot type digits**, so even `Alt+1` is dead — the only layout here
+  where a digit hotkey fails.
+
+This affects the **global hotkey only**. Shortcuts inside TildaZ (`[keys]`) are
+matched by TildaZ itself and fall back to the physical key position, so they keep
+working on every layout above.
 
 ### What stays fixed
 

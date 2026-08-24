@@ -271,8 +271,9 @@ Positions and labels can be mixed freely, including within one action's list.
 When TildaZ loads a keymap it checks whether the current layout can produce each
 binding's label at all; if nothing can, it falls back to the physical spot that
 character has on a US keyboard. So the defaults work on a Cyrillic layout
-untouched. The fallback applies only to bindings whose label is unreachable, so a
-`us,ru` setup keeps matching by label. KEYBINDINGS.md has the details.
+untouched. The check follows the layout you are currently typing in, so a `us,ru`
+setup matches by label while you are on `us` and falls back the moment you switch
+to `ru`. KEYBINDINGS.md has the details.
 
 #### Accepted keys
 
@@ -372,6 +373,29 @@ invalid value shows an error dialog and exits):
   way. Widening it means verifying real key codes on Linux, macOS, and Windows,
   which has not been done yet. A rejected value shows an error dialog naming the
   accepted keys rather than failing silently.
+- **The position form is not accepted here.** `hotkey` is registered with your
+  desktop, and every path TildaZ uses for that takes a character rather than a
+  key position. A value like `"ctrl+[KeyW]"` is rejected with a message saying so,
+  rather than being registered as something that never fires.
+
+#### Prefer a function key
+
+`F1`–`F12` are the same on every keyboard layout, which is why the default is
+`F1`. Letters and punctuation are not, and the failure is quiet.
+
+Letters are usually fine: GNOME, Cinnamon, COSMIC and KDE all translate a
+Latin-letter shortcut back to the key you actually pressed on a Cyrillic or Greek
+layout. On sway and Hyprland they do not, so a letter hotkey can stop working
+there while a non-Latin layout is active.
+
+**Punctuation is the riskier choice**, and not only on non-Latin layouts. German
+and Spanish cannot type `` ` `` at all — the key in that position is a dead accent
+— so a ``Ctrl+` `` hotkey is silently dead there. GNOME's fallback does not rescue
+it either, because that fallback only triggers when the layout is missing the
+Latin *alphabet*.
+
+KEYBINDINGS.md has a measured table of which layouts can type which keys, and the
+sway / Hyprland limitation it matters most for.
 
 ### New tab working directory
 
