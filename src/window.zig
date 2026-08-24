@@ -93,6 +93,10 @@ const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_RBUTTONDOWN: UINT = 0x0204;
 const WM_MOUSEWHEEL: UINT = 0x020A;
+// #502 — 가운데 버튼은 mouse reporting 이 실을 버튼 하나 (`Cb` 1). 이전에 우클릭
+// paste 로 대체되며 빠졌던 메시지 (#119) 를 reporting 전용으로 되살린다.
+const WM_MBUTTONDOWN: UINT = 0x0207;
+const WM_MBUTTONUP: UINT = 0x0208;
 const WM_DISPLAYCHANGE: UINT = 0x007E;
 const WM_DPICHANGED: UINT = 0x02E0;
 const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
@@ -110,6 +114,10 @@ const HTCLIENT: u16 = 1;
 const WM_ACTIVATEAPP: UINT = 0x001C;
 const SPI_SETWORKAREA: WPARAM = 0x002F;
 const MK_LBUTTON: WPARAM = 0x0001;
+const MK_RBUTTON: WPARAM = 0x0002;
+const MK_SHIFT: WPARAM = 0x0004;
+const MK_CONTROL: WPARAM = 0x0008;
+const MK_MBUTTON: WPARAM = 0x0010;
 
 // Other constants
 const SW_SHOW: c_int = 5;
@@ -315,6 +323,7 @@ const VK_CONTROL: c_int = 0x11;
 const VK_SHIFT: c_int = 0x10;
 const VK_MENU: c_int = 0x12; // Alt
 const VK_LBUTTON: c_int = 0x01;
+const VK_MBUTTON: c_int = 0x04;
 const VK_LWIN: c_int = 0x5B;
 const VK_RWIN: c_int = 0x5C;
 
@@ -1542,6 +1551,41 @@ pub const Window = struct {
         return @as(i16, @bitCast(raw));
     }
 
+    /// #502 — 마우스 메시지의 modifier. Shift · Ctrl 은 `wParam` 에 있지만 **Alt 는
+    /// 없어서** `GetKeyState(VK_MENU)` 로 읽는다. `GetKeyState` (비동기 아님) 는
+    /// 큐에서 처리된 메시지 기준의 논리 상태라 이 메시지 시점과 일관된다.
+    fn mouseMods(wParam: WPARAM) app_event.MouseMods {
+        return .{
+            .shift = (wParam & MK_SHIFT) != 0,
+            .ctrl = (wParam & MK_CONTROL) != 0,
+            .alt = GetKeyState(VK_MENU) < 0,
+        };
+    }
+
+    /// #502 — capture 는 **스레드당 하나**다. 그래서 뗌 하나가 무조건 놓아 버리면
+    /// 아직 눌려 있는 다른 버튼의 드래그가 끊긴다 (왼쪽 + 가운데를 함께 누른 뒤
+    /// 한쪽만 떼는 경우). 보고 대상 버튼이 하나도 안 남았을 때만 놓는다.
+    ///
+    /// 오른쪽은 대상이 아니다 — press · release 를 보고하지 않고 motion 도
+    /// `mouse_report.motionReportable` 이 걸러낸다 (우클릭 = paste, #119).
+    ///
+    /// `GetKeyState` (비동기 아님) 는 큐에서 처리된 메시지 기준의 **논리** 버튼이라
+    /// 이 메시지 시점과 일관되고, 좌우 스왑 사용자에게도 올바르다 —
+    /// `WM_LBUTTONDOWN` 의 capture 판정과 같은 이유다 (#329).
+    fn releaseCaptureIfNoReportedButtonHeld() void {
+        if (GetKeyState(VK_LBUTTON) < 0 or GetKeyState(VK_MBUTTON) < 0) return;
+        _ = ReleaseCapture();
+    }
+
+    /// 휠 메시지의 client 좌표. `WM_MOUSEWHEEL` 의 `lParam` 은 **screen** 좌표라
+    /// (버튼 메시지와 다르다) `ScreenToClient` 변환이 필요하다 — 빼면 reporting 이
+    /// 창 밖 좌표를 보낸다.
+    fn wheelClientPos(hwnd: HWND, lParam: LPARAM) POINT {
+        var pt: POINT = .{ .x = getMouseX(lParam), .y = getMouseY(lParam) };
+        _ = ScreenToClient(hwnd, &pt);
+        return pt;
+    }
+
     /// #387 — 사양 A ("드레인 한 번이 UI 를 예산 이상 잡지 않는다") 의 Windows 쪽 구현.
     ///
     /// `DRAIN_FRAME_BUDGET_NS` 는 `drainFrame` **한 번의 호출**에 걸리는 응답성 상한이고
@@ -2099,6 +2143,8 @@ pub const Window = struct {
                     .mouse_down = .{
                         .x = getMouseX(lParam),
                         .y = getMouseY(lParam),
+                        .button = .left,
+                        .mods = mouseMods(wParam),
                     },
                 });
                 // capture 는 drag(selection / tab / scrollbar) 추적용 — 버튼이
@@ -2118,6 +2164,8 @@ pub const Window = struct {
                     .mouse_double_click = .{
                         .x = getMouseX(lParam),
                         .y = getMouseY(lParam),
+                        .button = .left,
+                        .mods = mouseMods(wParam),
                     },
                 });
                 return 0;
@@ -2131,6 +2179,9 @@ pub const Window = struct {
                         .x = self.last_mouse_x,
                         .y = self.last_mouse_y,
                         .left_button = (wParam & MK_LBUTTON) != 0,
+                        .middle_button = (wParam & MK_MBUTTON) != 0,
+                        .right_button = (wParam & MK_RBUTTON) != 0,
+                        .mods = mouseMods(wParam),
                     },
                 });
                 return 0;
@@ -2163,17 +2214,57 @@ pub const Window = struct {
                     .mouse_up = .{
                         .x = getMouseX(lParam),
                         .y = getMouseY(lParam),
+                        .button = .left,
+                        .mods = mouseMods(wParam),
                     },
                 });
-                _ = ReleaseCapture();
+                releaseCaptureIfNoReportedButtonHeld();
                 return 0;
             },
             WM_MOUSEWHEEL => {
+                const pt = wheelClientPos(hwnd, lParam);
                 _ = self.dispatchAppEvent(.{
                     .scroll = .{
-                        .wheel = getWheelDelta(wParam),
+                        .wheel = .{
+                            .delta = getWheelDelta(wParam),
+                            .x = pt.x,
+                            .y = pt.y,
+                            .mods = mouseMods(wParam),
+                        },
                     },
                 });
+                return 0;
+            },
+            // #502 — 가운데 버튼은 chrome 에 쓰이지 않으므로 (우클릭 paste 로
+            // 대체되며 빠졌음, #119) mouse reporting 전용 경로다. reporting 이
+            // 꺼져 있으면 app_controller 가 그냥 무시한다.
+            WM_MBUTTONDOWN => {
+                _ = self.dispatchAppEvent(.{
+                    .mouse_down = .{
+                        .x = getMouseX(lParam),
+                        .y = getMouseY(lParam),
+                        .button = .middle,
+                        .mods = mouseMods(wParam),
+                    },
+                });
+                // 왼쪽과 같은 이유로 capture 를 잡는다 — 없으면 창 밖으로 끌고 나간
+                // 드래그의 motion 이 끊기고, **창 밖에서 뗀 release 가 우리에게 오지
+                // 않아** 앱이 가운데 버튼을 영원히 눌린 것으로 안다
+                // (`mouse_report` 가 "뗌은 어디서 놓든 항상 보고한다" 로 막으려는
+                // 상태인데, 이벤트 자체가 안 오면 인코더가 손쓸 수 없다).
+                if (GetKeyState(VK_MBUTTON) < 0) _ = SetCapture(hwnd);
+                return 0;
+            },
+            WM_MBUTTONUP => {
+                _ = self.dispatchAppEvent(.{
+                    .mouse_up = .{
+                        .x = getMouseX(lParam),
+                        .y = getMouseY(lParam),
+                        .button = .middle,
+                        .mods = mouseMods(wParam),
+                    },
+                });
+                releaseCaptureIfNoReportedButtonHeld();
                 return 0;
             },
             // 우클릭 paste (#119) — cmd.exe console 표준 패턴. 이전 가운데 버튼
