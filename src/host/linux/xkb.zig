@@ -229,7 +229,27 @@ pub const Keyboard = struct {
     /// null = 판정할 수 없다 (libxkbcommon 이 필요한 심볼을 안 내주거나 keymap 이
     /// 없다). **false 와 구분해야 한다** — 판정 불가일 때 "낼 수 없다" 로 읽으면
     /// 없어도 되는 fallback 을 만들어 동작을 넓힌다.
-    pub fn canProduceKeysym(self: *Keyboard, keysym: u32) ?bool {
+    /// #496 1-b — **활성 group 에서 이 keysym 을 내는 물리 키의 evdev keycode.**
+    ///
+    /// 전역 핫키를 위치로 등록할 때 쓴다 (sway `bindcode`). 반환값은 **evdev** 이고,
+    /// compositor 에 넘길 때 `+ 8` 을 해야 한다 — sway 와 Hyprland 둘 다 xkb keycode
+    /// (= evdev + 8) 를 받는다 (sway 2018 커밋 *"Use XKB keycode numbering for
+    /// bindcode"*, Hyprland `// "code:NN" binds store the xkb keycode`). 그 둘은
+    /// 잘못된 숫자를 거부하지 않으므로 off-by-8 이면 조용히 옆 키에 붙는다.
+    ///
+    /// null = 못 찾았거나 판정할 수 없다. 호출자가 US 위치표로 떨어지거나 keysym 등록을
+    /// 유지한다.
+    pub fn evdevKeycodeForKeysym(self: *Keyboard, keysym: u32) ?u16 {
+        const xkb_code = self.findKeycode(keysym) orelse return null;
+        // xkb keycode 는 evdev + 8 이다. 8 미만은 나올 수 없지만 방어한다.
+        if (xkb_code < 8) return null;
+        return @intCast(xkb_code - 8);
+    }
+
+    /// 활성 group 에서 `keysym` 을 내는 첫 xkb keycode. `canProduceKeysym` 과
+    /// `evdevKeycodeForKeysym` 이 같은 순회를 쓰게 한다 — 둘이 갈라지면 "닿는다고
+    /// 했는데 keycode 는 못 찾는" 모순이 생긴다.
+    fn findKeycode(self: *Keyboard, keysym: u32) ?c_uint {
         const api = if (self.api) |*a| a else return null;
         const scan = api.keymap_scan orelse return null;
         const keymap = self.keymap orelse return null;
@@ -250,11 +270,19 @@ pub const Keyboard = struct {
                 const count = scan.key_get_syms_by_level(keymap, key, layout, level, &syms);
                 if (count <= 0) continue;
                 for (syms[0..@intCast(count)]) |sym| {
-                    if (sym == keysym) return true;
+                    if (sym == keysym) return key;
                 }
             }
         }
-        return false;
+        return null;
+    }
+
+    pub fn canProduceKeysym(self: *Keyboard, keysym: u32) ?bool {
+        // 판정 불가 (심볼 / keymap 없음) 와 "못 찾았다" 를 갈라야 한다.
+        if (self.api == null) return null;
+        if (self.api.?.keymap_scan == null) return null;
+        if (self.keymap == null) return null;
+        return self.findKeycode(keysym) != null;
     }
 
     pub fn oneSym(self: *Keyboard, key: u32) ?u32 {

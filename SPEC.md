@@ -382,7 +382,23 @@ platform 마다 다르다.
   제약을 다룬다.
   - **DE 넷은 이미 스스로 라틴 fallback 을 한다** — GNOME (Mutter 3.28+) · Cinnamon (Muffin
     5.4+) · COSMIC (2026-02+) · KDE (Plasma 5.22+). 그래서 1-b 가 손댈 곳은 그것을 하지 않는
-    sway · Hyprland 다.
+    sway · Hyprland 였다.
+  - **sway 는 `bindcode` 로 등록한다** (1-b). 자리를 고르는 규칙이 1-a 와 같다 — 활성
+    layout 이 그 문자를 내면 그 키, 못 내면 US 자판에서 그 문자가 있던 자리. 판정할 수
+    없으면 `bindsym` 으로 되돌아간다 (핫키를 아예 잃는 것보다 낫다).
+    - **숫자는 evdev 가 아니라 xkb keycode (= evdev + 8)** 다. sway 는 2018 년 커밋
+      *"Use XKB keycode numbering for bindcode"* 로 evdev 를 일부러 뺐고, **잘못된 숫자를
+      거부하지 않는다** (`xkb_keycode_is_legal_ext` 가 `XKB_KEYCODE_MAX` 까지 통과) — off-by-8
+      이면 조용히 옆 키에 붙는다. `sway_ipc.zig` 의 test 가 그 +8 을 고정한다.
+    - **등록을 keymap 도착 뒤로 미룬다.** 위치로 등록하려면 "이 문자를 내는 키가 어디인가" 를
+      알아야 하는데 `client.run()` 앞에는 keymap 이 없다. 미루는 창은 밀리초 단위다 (keymap 은
+      seat 의 keyboard capability 가 생길 때 오고 focus 와 무관하다).
+    - **재등록이 없다.** 한 번 자리에 고정하면 group 전환에 영향받지 않는다 — 그것이 위치
+      등록을 고른 이유다. `bindsym` 은 활성 layout 이 바뀔 때마다 죽었다 살았다 한다.
+  - **Hyprland 는 남는다** (known limitation). 그쪽 등록은 launcher 단계 (`shortcut_sync`)
+    라 keyboard 자체가 없어 물어볼 keymap 이 없다. sway 가 되는 이유는 등록이 *떠 있는
+    터미널 안*에서 일어나기 때문이다. 덮으려면 `hyprctl getoption input:kb_layout` 조회 +
+    `xkb_keymap_new_from_names` 심볼 추가 + host 재동기화 배관이 필요하다.
   - 다만 **비라틴 단독 layout** 에서는 갈린다. Mutter · Muffin 은 `us` keymap 을 즉석에
     컴파일해 (`create_us_layout()`) 라틴 layout 이 없어도 동작하고, COSMIC · KDE 는 *사용자의
     다른 xkb group* 을 훑으므로 `ru` 단독이면 실패한다. 그 둘은 API 가 keysym 만 받아
