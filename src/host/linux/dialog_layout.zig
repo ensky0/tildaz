@@ -399,16 +399,20 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         "0.6.1",
         "/home/example/.local/bin/tildaz",
         123456,
-        "/home/example/.config/tildaz/config_0.json",
+        "/home/example/.config/tildaz/config_0.toml",
         "/home/example/.local/state/tildaz/tildaz0.log",
         "Ctrl+Shift+P",
         "Ctrl+Shift+L",
     });
 
+    // #495 — 경로는 이 본문에 없다. `showConfigFatalMsg` 가 모든 config 오류 앞에
+    // 한 번 붙이므로, 레이아웃 검사도 그 조립 결과를 흉내내야 실제와 같은 높이가 된다.
     var parse_buf: [512]u8 = undefined;
-    const parse_msg = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_format, .{
-        "/home/example/.config/tildaz/config_0.json",
-        "SyntaxError",
+    const parse_body = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_format, .{"SyntaxError"});
+    var parse_full_buf: [640]u8 = undefined;
+    const parse_msg = try std.fmt.bufPrint(&parse_full_buf, messages.config_error_with_path_format, .{
+        "/home/example/.config/tildaz/config_0.toml",
+        parse_body,
     });
 
     var hotkey_invalid_buf: [384]u8 = undefined;
