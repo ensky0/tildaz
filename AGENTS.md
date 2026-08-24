@@ -49,6 +49,16 @@ git rebase origin/main
 - **merge 가 아니라 rebase 예요.** PR 브랜치에 main 을 merge 하면 무관한 merge commit 이 섞여 리뷰가 흐려져요. merge commit 은 GitHub 이 PR 을 머지할 때 하나만 생기는 게 맞아요.
 - rebase 뒤 force push 는 자유롭게 해요 — 아래 `# 커밋 메시지` 의 규칙과 같아요 (검증이 끝난 뒤에).
 - 충돌이 문서 (`SPEC.md` · `AGENTS.md` · `CONFIG.md`) 에서 나면 *양쪽 서술을 다시 읽고* 합쳐요. 한쪽을 통째로 고르면 다른 PR 이 쓴 사실이 조용히 사라져요.
+- **공유 브랜치를 rebase 할 때는 원격 tip 을 base 로 삼아요.** 여러 머신 · 여러 세션이 같은 브랜치에 올리므로, 내 로컬이 뒤처진 상태에서 rebase 해 force push 하면 **원격에만 있던 남의 커밋이 조용히 사라져요.** `--force-with-lease` 로도 막히지 않아요 — fetch 를 한 뒤 *자기 옛 로컬*을 rebase 하면 lease 검사는 통과해요.
+
+    ```sh
+    git fetch origin
+    git rebase origin/<브랜치>                 # ① 원격 tip 을 먼저 따라잡고
+    git rebase origin/main                     # ② 그다음 main 위로
+    git log --oneline origin/<브랜치>..HEAD    # ③ push 전 — 떨어진 커밋이 없는지 확인
+    ```
+
+    2026-08-24 [#502](https://github.com/ensky0/tildaz/issues/502) 에서 실제로 겪었어요. 한 세션의 로컬이 한 커밋 뒤처진 상태에서 rebase 해 force push 하는 바람에 원격에 있던 문서 커밋 하나가 사라졌어요. 추적은 `git reflog show origin/<브랜치>` 의 `forced-update` 항목으로 했어요 — 그 줄 앞뒤의 커밋 수를 비교하면 무엇이 떨어졌는지 바로 보여요.
 
 # 문서화
 
