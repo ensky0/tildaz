@@ -46,6 +46,22 @@ sh dist/mouse/mouse-probe.sh              # ?1002 + ?1006 — 기본
 sh dist/mouse/mouse-probe.sh 1003         # hover (버튼 없는 이동) 까지
 sh dist/mouse/mouse-probe.sh 1000         # motion 없음 — 누름/뗌만
 sh dist/mouse/mouse-probe.sh 9 1006       # x10 — 누름만, modifier 없음, 좌표 223 상한
+sh dist/mouse/mouse-probe.sh --log /tmp/m.log   # 화면 + 파일 (자동 판정용)
+```
+
+**`--log <경로>` 는 받은 바이트를 파일에도 그대로 써요.** 화면 출력은 그대로예요.
+화면에만 찍으면 **출력이 화면을 넘치는 순간 앞 항목이 사라져요** — [#502](https://github.com/ensky0/tildaz/issues/502)
+macOS 실기에서 실제로 그랬어요 (휠 결함으로 한 번 훑기에 보고가 66~86 건 나와서 그 앞의
+A1~A3 이 스크롤로 밀려 올라갔어요). 파일로 함께 받으면 사람 검증과 자동 판정이 같은
+프로브를 써요. 쓰기는 `>>` 라 **매 글자가 버퍼링 없이 바로** 들어가요.
+
+`-e` 로 띄울 때는 인자를 못 넘기니 (`run_options.zig` — argv 가 `{shell}` 고정) 한 줄
+래퍼를 만들어 넘겨요.
+
+```sh
+printf '#!/usr/bin/env bash\nexec sh %s/dist/mouse/mouse-probe.sh 1002 1006 --log /tmp/m.log\n' "$PWD" > /tmp/wrap.sh
+chmod +x /tmp/wrap.sh
+open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33   # macOS
 ```
 
 **Windows 는 PowerShell 이 아니라 Git Bash** 로 돌려요 (POSIX sh). 두 가지를 주의해요.
@@ -156,3 +172,15 @@ E 회귀: 전부 OK
 
 실패는 **무엇을 했을 때 무엇이 나왔는지** 를 그대로 남겨요. `Cb` 값만 있어도 어느
 규칙이 깨졌는지 좁혀져요 (버튼 비트 · modifier 비트 · motion 비트가 분리돼 있어요).
+
+`--log` 를 쓰면 로그 파일에서 바로 세어 판정할 수 있어요. 항목 사이에 표식을 넣어 두면
+구간이 갈려요 (`printf '\n>>>A1\n' >> /tmp/m.log`).
+
+```sh
+cat -v /tmp/m.log | sed 's/\^\[\[</ CSI</g'          # 사람이 읽는 형태로
+grep -o $'\x1b\[<' /tmp/m.log | wc -l                 # 보고 건수 (휠 notch 판정)
+```
+
+**판정은 좌표 절대값이 아니라 `Cb` 값과 press/release 짝으로** 해요 — 창 위치 · 배율 ·
+cell 크기가 머신마다 달라서 좌표는 환경에 딸려 가요. 좌표는 *칸이 바뀌었는지* / *가장자리에
+clamp 됐는지* 같은 상대 판정에 써요.
