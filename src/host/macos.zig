@@ -23,6 +23,7 @@ const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
 const physical_key = @import("../physical_key.zig");
 const ghostty = @import("ghostty-vt");
+const mouse_report = @import("../mouse_report.zig");
 const display_width = @import("../font/display_width.zig");
 const renderer_module = @import("../renderer.zig");
 // macOS 전용 host — render present/합성 게이트(#255 Phase 2) free 함수 직접 접근.
@@ -2083,6 +2084,191 @@ fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, d
     };
 }
 
+/// #502 — mouse reporting 의 macOS 기하. 계산은 cross-platform
+/// `terminal_interaction.reportEvent` 한 곳 (세 host 공용) 이고 여기서는 macOS 의
+/// 값만 채운다.
+fn reportGeometryMac() ?terminal_interaction.ReportGeometry {
+    if (g_renderer == null) return null;
+    const tab = g_session.activeTab() orelse return null;
+    const scale = g_renderer.?.scale;
+    return .{
+        .cell_w = @intCast(g_renderer.?.font.cell_width_px),
+        .cell_h = @intCast(g_renderer.?.font.cell_height_px),
+        .cols = @intCast(tab.terminal.cols),
+        .rows = @intCast(tab.terminal.rows),
+        .pad = @intFromFloat(ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale)),
+        .tab_bar_h = tabBarHeightPx(scale),
+    };
+}
+
+/// NSEvent 의 modifier → 인코더 `Cb` modifier. Command 는 프로토콜에 자리가 없어
+/// 싣지 않는다 (xterm 의 shift / meta / ctrl 3 비트만 존재).
+fn eventMouseMods(event: objc.id) mouse_report.Mods {
+    if (event == null) return .{};
+    const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
+    const flags = get_flags(event, objc.sel("modifierFlags"));
+    return .{
+        .shift = (flags & (1 << 17)) != 0,
+        .ctrl = (flags & (1 << 18)) != 0,
+        .alt = (flags & (1 << 19)) != 0,
+    };
+}
+
+/// 셀 영역 pointer 이벤트를 앱에 보낼지 결정하고, 보낼 것이면 PTY 로 보낸다.
+/// 반환값 = **우리 기존 동작을 계속해야 하는지** (Windows `routeMouseToApp` 동등).
+fn routeMouseMac(
+    action: mouse_report.Action,
+    button: ?mouse_report.Button,
+    x: f32,
+    y: f32,
+    mods: mouse_report.Mods,
+    any_button: bool,
+) bool {
+    const tab = g_session.activeTab() orelse return true;
+    const geom = reportGeometryMac() orelse return true;
+    const ev = terminal_interaction.reportEvent(
+        action,
+        button,
+        mods,
+        @intFromFloat(x),
+        @intFromFloat(y),
+        geom,
+        any_button,
+    );
+    var buf: [mouse_report.max_len]u8 = undefined;
+    return switch (terminal_interaction.routeMouse(&buf, &tab.terminal, &tab.interaction, ev)) {
+        .local => true,
+        .swallow => false,
+        .report => |bytes| blk: {
+            tab.queueWrite(bytes);
+            break :blk false;
+        },
+    };
+}
+
+/// #502 — 휠 notch 누적. 연속 delta (트랙패드) 와 tick (마우스 휠) 은 단위가 달라
+/// 따로 모은다. 나머지를 보존해야 작은 delta 가 버려지지도 부풀려지지도 않는다
+/// (command menu 의 wheel 처리 · Linux `report_wheel_accum` 과 같은 패턴).
+var g_report_wheel_accum_pt: f64 = 0;
+var g_report_wheel_accum_tick: f64 = 0;
+
+/// 이벤트 하나가 만드는 notch 수. 남는 값은 다음 이벤트로 넘긴다.
+///
+/// **`hasPreciseScrollingDeltas` 로 갈라야 한다.** 트랙패드는 `scrollingDeltaY` 가
+/// **논리 pt** 로, 마우스 휠은 **tick 수** 로 온다 (실측: `line` 1 notch → 1.0 ·
+/// `pixel` 10 → 10.0). 구분 없이 한 배율을 곱하면 한쪽이 반드시 어긋난다 — 이전 판은
+/// 둘 다 `* 2.0` + `ceil` 이라 **마우스 휠 한 칸이 2 notch**, **트랙패드 한 번
+/// 훑기가 수십 notch** 였다 (#502 macOS 실기에서 66~86 개).
+fn wheelNotches(delta_y: f64, precise: bool, cell_h_pt: f64) i64 {
+    if (precise) {
+        // 트랙패드 — cell 높이만큼 손가락이 움직이면 한 줄. pt 단위로 비교해야
+        // HiDPI 에서도 같은 손놀림이 같은 줄 수가 된다 (delta 는 논리 pt).
+        g_report_wheel_accum_pt += delta_y;
+        const n = @trunc(g_report_wheel_accum_pt / cell_h_pt);
+        g_report_wheel_accum_pt -= n * cell_h_pt;
+        return @intFromFloat(n);
+    }
+    // 마우스 휠 — macOS 는 non-precision 이벤트의 크기도 스크롤 속도에 따라 줄여서,
+    // 아주 느리게 한 칸 돌리면 `0.1` 처럼 온다. 최소 한 tick 으로 올려 **한 칸이
+    // 반드시 한 notch** 가 되게 한다 (ghostty `Surface.zig` 의 macOS 특례와 같은 이유).
+    const ticks = if (delta_y > 0) @max(delta_y, 1.0) else @min(delta_y, -1.0);
+    g_report_wheel_accum_tick += ticks;
+    const n = @trunc(g_report_wheel_accum_tick);
+    g_report_wheel_accum_tick -= n;
+    return @intFromFloat(n);
+}
+
+/// 휠을 앱이 가져가야 하면 보내고 true. false 면 기존 scrollback 스크롤.
+///
+/// notch 는 `wheelNotches` 가 장치 단위에 맞춰 센다. **아래 scrollback 경로의
+/// multiplier 2 와는 다르다** — 그 값은 우리 화면을 굴리는 체감용이고, 앱에게는
+/// `1 notch = 보고 1 건` 으로 보내야 Linux · Windows 와 같아진다 (SPEC §3).
+fn routeWheelMac(delta_y: f64, precise: bool, x: f32, y: f32, mods: mouse_report.Mods) bool {
+    const tab = g_session.activeTab() orelse return false;
+    if (delta_y == 0) return false;
+
+    const tracking = terminal_interaction.reportTracking(&tab.terminal);
+    const alt_scroll = tracking == .none and
+        tab.terminal.screens.active_key == .alternate and
+        tab.terminal.modes.get(.mouse_alternate_scroll);
+    if (tracking == .none and !alt_scroll) return false;
+
+    // Shift bypass — Shift+휠은 우리 scrollback 스크롤로 남긴다.
+    if (mods.shift and terminal_interaction.reportShiftCapture(&tab.terminal) != .app) return false;
+
+    // 앱 것으로 판정된 뒤라 여기서 false 를 주면 우리 스크롤로 새어 나간다 —
+    // 아래 `reportGeometryMac() orelse return true` 와 같은 방향으로 소비한다.
+    if (g_renderer == null) return true;
+    const cell_h_pt: f64 = @as(f64, @floatFromInt(g_renderer.?.font.cell_height_px)) /
+        @as(f64, g_renderer.?.scale);
+    const steps = wheelNotches(delta_y, precise, cell_h_pt);
+    // 앱 것이지만 아직 한 notch 가 안 찼다 — 소비하고 우리 스크롤도 하지 않는다.
+    if (steps == 0) return true;
+    const n: usize = @intCast(@abs(steps));
+    const up = steps > 0;
+
+    if (alt_scroll) {
+        // xterm 은 notch 당 3 줄을 보낸다 (SPEC §3 · Linux `routeWheelLinux` 와 동일).
+        const key = mouse_report.alternateScrollKey(up, tab.terminal.modes.get(.cursor_keys));
+        var i: usize = 0;
+        while (i < n * 3) : (i += 1) tab.queueWrite(key);
+        return true;
+    }
+
+    const geom = reportGeometryMac() orelse return true;
+    var buf: [mouse_report.max_len]u8 = undefined;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const ev = terminal_interaction.reportEvent(
+            .press,
+            if (up) .wheel_up else .wheel_down,
+            mods,
+            @intFromFloat(x),
+            @intFromFloat(y),
+            geom,
+            false,
+        );
+        switch (terminal_interaction.routeMouse(&buf, &tab.terminal, &tab.interaction, ev)) {
+            .report => |bytes| tab.queueWrite(bytes),
+            .local, .swallow => {},
+        }
+    }
+    return true;
+}
+
+/// #502 — 가운데 버튼 (`otherMouseDown:` / `otherMouseDragged:` / `otherMouseUp:`).
+/// chrome 에 역할이 없어 reporting 전용이다. `buttonNumber` 2 = 가운데, 그 밖
+/// (뒤로/앞으로 등) 은 무시.
+///
+/// Cocoa 는 버튼별로 다른 selector 를 보낸다 — 가운데 드래그는 `mouseDragged:` 가
+/// 아니라 **`otherMouseDragged:`** 로만 온다. 그래서 이것을 등록하지 않으면 A9 /
+/// M2 의 `Cb 33` (1 + 32) 이 아예 나오지 않는다. 오른쪽 (`rightMouseDragged:`) 을
+/// 등록하지 않는 것은 *의도*지만 (우클릭은 motion 도 보내지 않는다 — M1) 가운데는
+/// 보내야 한다.
+fn tildazOtherMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    otherMouseReport(self_view, event, .press);
+}
+
+fn tildazOtherMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    otherMouseReport(self_view, event, .motion);
+}
+
+fn tildazOtherMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    otherMouseReport(self_view, event, .release);
+}
+
+fn otherMouseReport(self_view: objc.id, event: objc.id, action: mouse_report.Action) void {
+    if (event == null) return;
+    const get_button = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
+    if (get_button(event, objc.sel("buttonNumber")) != 2) return;
+    const xy = eventToWindowPx(self_view, event);
+    requestRender();
+    // `any_button_pressed` — motion 도 **버튼이 눌린 상태**다 (드래그 중에만 온다).
+    // 이 값이 false 면 인코더가 viewport 밖 motion 을 버려서 (창 밖으로 끌고 나간
+    // 드래그를 앱이 못 본다) `.release` 만 false 여야 한다.
+    _ = routeMouseMac(action, .middle, xy.x, xy.y, eventMouseMods(event), action != .release);
+}
+
 /// #245 — drag-select auto-scroll tick (mac, renderFrameTick 에서 매 frame 호출).
 /// 포인터가 grid 경계 밖(dir!=0)이고 선택 활성이면 40ms 마다 viewport 한 step
 /// 스크롤 + 마지막 drag px(clamp cell)로 selection.update → 멈춰 있어도 연속.
@@ -2471,6 +2657,13 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     }
 
     const cell = eventToCell(self_view, event) orelse return;
+    // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다. Shift 를 누르면
+    // 우리 selection 으로 돌아온다 (bypass). 더블클릭의 *의미* 도 앱이 정하므로
+    // word selection 으로 가로채지 않는다 (Windows mouse_double_click 동등).
+    {
+        const px = eventToWindowPx(self_view, event);
+        if (!routeMouseMac(.press, .left, px.x, px.y, eventMouseMods(event), true)) return;
+    }
     // double-click → word selection + 자동 copy (Windows `selectWordAt` 와 동등).
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     const click_count = get_count(event, objc.sel("clickCount"));
@@ -2524,7 +2717,13 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
         return;
     }
 
-    if (!tab.interaction.selection.active) return;
+    if (!tab.interaction.selection.active) {
+        // #502 — 우리 pointer mode 가 아무것도 아닌 드래그는 앱의 드래그다 (press 를
+        // 앱이 가져갔다는 뜻).
+        const px = eventToWindowPx(self_view, event);
+        _ = routeMouseMac(.motion, .left, px.x, px.y, eventMouseMods(event), true);
+        return;
+    }
     // #245 — 경계 밖이어도 clamp cell 로 선택 연장 + 위/아래 경계면 auto-scroll arm.
     // 마지막 drag px 저장 (렌더-타이머 tick 이 멈춰 있어도 연속 스크롤에 사용).
     const xy = eventToWindowPx(self_view, event);
@@ -2538,7 +2737,7 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     }
 }
 
-fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     requestRender(); // #255 Phase2
     const tab = g_session.activeTab() orelse return;
     // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
@@ -2565,6 +2764,13 @@ fn tildazMouseUp(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
             g_drag.reset();
         }
         return;
+    }
+
+    // #502 — 뗌은 앱에게 먼저. viewport 밖에서 놓아도 항상 보내야 앱이 버튼 상태를
+    // 잃지 않는다 (그 규칙은 인코더가 갖는다).
+    if (event != null) {
+        const px = eventToWindowPx(self_view, event);
+        if (!routeMouseMac(.release, .left, px.x, px.y, eventMouseMods(event), false)) return;
     }
 
     // 셀 selection finish — Windows `selection.finish()` → `copyToClipboard`
@@ -2608,6 +2814,13 @@ fn tildazMouseMoved(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c
     if (new_hover != g_tab_hover) {
         g_tab_hover = new_hover;
         requestRender();
+    }
+
+    // #502 — 버튼 없는 hover 는 `?1003` (any) 만 받는다. 그 판정과 같은 cell 중복
+    // 제거는 인코더가 하고, 탭바 위 hover 는 viewport 밖이라 저절로 걸러진다.
+    {
+        const px = eventToWindowPx(self_view, event);
+        _ = routeMouseMac(.motion, null, px.x, px.y, eventMouseMods(event), false);
     }
 }
 
@@ -2735,7 +2948,7 @@ fn handlePaste() void {
     tab_actions.routePaste(&g_host, cstr[0..len]);
 }
 
-fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+fn tildazScrollWheel(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     requestRender(); // #255 Phase2 — 휠 스크롤 → 렌더 (viewport 변경, 출력 없음).
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
@@ -2764,6 +2977,17 @@ fn tildazScrollWheel(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void 
             steps += if (down) @as(i64, 1) else -1;
         }
         return;
+    }
+
+    // #502 — 앱이 tracking 을 켰으면 휠은 앱 것 (`Cb` 64/65). 안 켰지만 alt screen
+    // + `?1007` 이면 화살표 키로 바꿔 보낸다 (alt screen 은 scrollback 이 없어서
+    // 그대로 두면 휠이 무동작이다).
+    {
+        const px = eventToWindowPx(self_view, event);
+        // 트랙패드 (연속 pt) 와 마우스 휠 (tick) 은 delta 의 단위가 다르다.
+        const get_bool = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
+        const precise = get_bool(event, objc.sel("hasPreciseScrollingDeltas"));
+        if (routeWheelMac(delta_y, precise, px.x, px.y, eventMouseMods(event))) return;
     }
 
     // ceil/floor 로 작은 값도 1 line 으로. multiplier 1.0 이면 약간 느려서
@@ -2805,6 +3029,15 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     // 우클릭 paste (#119) — cmd.exe console 표준 패턴.
     if (!objc.class_addMethod(cls, objc.sel("rightMouseDown:"), @ptrCast(&tildazRightMouseDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // #502 — 가운데 버튼은 chrome 에 역할이 없어 mouse reporting 전용.
+    if (!objc.class_addMethod(cls, objc.sel("otherMouseDown:"), @ptrCast(&tildazOtherMouseDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // 가운데 드래그는 `mouseDragged:` 가 아니라 이 selector 로만 온다 — 빠지면
+    // `Cb 33` 이 안 나온다. `rightMouseDragged:` 미등록은 의도 (M1).
+    if (!objc.class_addMethod(cls, objc.sel("otherMouseDragged:"), @ptrCast(&tildazOtherMouseDragged), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("otherMouseUp:"), @ptrCast(&tildazOtherMouseUp), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     // #268 2b — 탭바 컨트롤 버튼 hover 추적. NSTrackingArea (아래 attach) 가
     // mouseMoved: / mouseExited: 를 보내준다.
