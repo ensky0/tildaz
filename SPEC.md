@@ -324,6 +324,23 @@ platform 마다 다르다.
   이름은 [W3C `KeyboardEvent.code`](https://www.w3.org/TR/uievents-code/) 값이고 (2025 년
   Recommendation) 표기는 VS Code 와 같은 대괄호다. 세 platform 값의 단일 출처는
   `src/physical_key.zig` 다.
+- **그리고 기본값이 그대로 동작하도록 라틴 fallback 을 둔다** (1-a, Linux 전용).
+  keymap 을 받을 때마다 (`wl_keyboard.keymap` — layout 을 바꿔도 다시 온다) 각 라벨
+  binding 에 대해 **현재 keymap 이 그 문자를 낼 수 있는지** 묻고
+  (`xkb.canProduceKeysym` — layout group × level 전수 조회, modifier 상태를 보지
+  않는다), 낼 수 없으면 그 문자가 US 자판에서 있던 자리로 매칭한다. 실측: `ru` 단독은
+  `w` 를 못 내고 (`us w` 자리가 `0x6c3` `Cyrillic_tse` 를 낸다), `us,ru` 는 낼 수 있다.
+  - **닿지 않을 때만 만든다.** 무조건 2 차 pass 를 돌리면 AZERTY 에서 `Z` 라 인쇄된
+    키 (US `w` 자리) 가 `close_tab` 을 발동시켜 한 동작에 키가 둘 생긴다.
+  - **판정 불가 (`null`) 와 false 를 구분한다.** libxkbcommon 이 keymap 조회 심볼을
+    안 내주면 fallback 을 만들지 않는다 — false 로 읽으면 없어도 되는 fallback 이
+    생긴다. 그 심볼 다섯은 **optional** 이다: 기존 심볼처럼 묶으면 오래된
+    libxkbcommon 에서 키보드가 통째로 죽는데 그것은 이 기능이 감당할 대가가 아니다.
+  - **라벨이 먼저다.** 라벨로 잡히는 event 가 fallback 때문에 다른 액션이 되면
+    사용자가 설명할 수 없다.
+  - GTK 는 같은 문제를 "영어 layout 이 첫 layout 으로 설정돼 있어야 한다" 는 *요구*로
+    푼다. 우리는 요구하지 않고 keymap 을 보고 스스로 판정한다 — `us,ru` 사용자에게는
+    결과가 같고, `ru` 단독 사용자에게는 다르다.
 - **수용 집합은 라벨 쪽이 좁고 위치 쪽이 넓다.** 의도한 비대칭이다. 라벨을 넓히려면 `-` 에
   값을 줘야 하는데 쓸 수 있는 고정값 (`VK_OEM_MINUS` · `kVK_ANSI_Minus`) 은 라벨이 아니라 "US
   자판에서 `-` 가 있는 자리" 다. 그것을 라벨이라 부르면 같은 config 가 platform 마다 다른 키를

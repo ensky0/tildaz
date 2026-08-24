@@ -261,11 +261,18 @@ Use a position when a label cannot reach the key you want:
 
 | Situation | Why the label fails | Position form |
 |---|---|---|
-| Cyrillic, Greek, Arabic, Hebrew… | no key produces a Latin letter | `ctrl+shift+[KeyW]` |
+| Cyrillic, Greek, Arabic, Hebrew… | no key produces a Latin letter — but see below, TildaZ already handles this on Linux | `ctrl+shift+[KeyW]` |
 | French AZERTY brackets | `[` is AltGr+5, so the label needs four fingers | `ctrl+shift+[BracketLeft]` |
 | Keys outside the label set | `-` `=` `\` `;` `'` `,` `.` `/`, numpad, arrows | `ctrl+[Minus]` |
 
 Positions and labels can be mixed freely, including within one action's list.
+
+**On Linux you usually do not need the position form for non-Latin layouts.**
+When TildaZ loads a keymap it checks whether the current layout can produce each
+binding's label at all; if nothing can, it falls back to the physical spot that
+character has on a US keyboard. So the defaults work on a Cyrillic layout
+untouched. The fallback applies only to bindings whose label is unreachable, so a
+`us,ru` setup keeps matching by label. KEYBINDINGS.md has the details.
 
 #### Accepted keys
 

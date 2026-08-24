@@ -696,6 +696,9 @@ test "#314 dialog drag repaint requests coalesce to the latest row" {
 /// 쓸 수 있는 유일한 길이다.
 fn classifyInput(
     bindings: []const config_mod.KeyBinding,
+    /// #496 1-a — 라벨이 현재 layout 으로 닿지 않는 binding 의 대체 위치. 빈 slice 면
+    /// fallback 없이 라벨 · 위치만 본다.
+    fallbacks: []const ?config_mod.PhysicalCode,
     sym: u32,
     code: ?config_mod.PhysicalCode,
     ctrl: bool,
@@ -720,7 +723,7 @@ fn classifyInput(
         .keysym = config_mod.normalizeLinuxKeysym(sym),
         .modifiers = modifiers,
     };
-    const action = config_mod.lookupAction(bindings, hotkey, code) orelse return null;
+    const action = config_mod.lookupActionWithFallback(bindings, fallbacks, hotkey, code) orelse return null;
     return config_mod.inputForAction(action);
 }
 
@@ -748,7 +751,7 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
     // 기본 binding 이 전부 라벨이기 때문이다 (위치 매칭은 config.zig 쪽 test).
     const C = struct {
         fn f(bindings: []const config_mod.KeyBinding, sym: u32, ctrl: bool, shift: bool, alt: bool) ?A {
-            return classifyInput(bindings, sym, null, ctrl, shift, alt, false);
+            return classifyInput(bindings, &.{}, sym, null, ctrl, shift, alt, false);
         }
     }.f;
 
@@ -821,10 +824,11 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
 
 test "#496 위치로 적은 binding 이 라벨과 무관하게 잡힌다 (Linux)" {
     const T = std.testing;
-    // 키릴 layout 을 흉내낸다: `Ctrl+Shift+`(KeyW 자리) 를 누르면 keysym 은 `Ц`
-    // (U+0426 → xkb Unicode keysym) 로 도착하고 어떤 라벨 binding 과도 맞지 않는다.
-    // 위치로 적은 binding 만 그것을 잡는다.
-    const cyrillic_tse: u32 = 0x01000426;
+    // 키릴 layout 실측값이다 — `ru` keymap 에서 US `w` 자리 (evdev 17) 가 내는 keysym 이
+    // `0x6c3` (`Cyrillic_tse`) 다. Unicode 형 (`0x01000426`) 이 아니다: xkb 의 `ru` 는
+    // Cyrillic 블록 keysym 을 쓴다 (`xkb.zig` 의 실측 표 참고). 어떤 라벨 binding 과도
+    // 맞지 않고, 위치로 적은 binding 만 이것을 잡는다.
+    const cyrillic_tse: u32 = 0x6c3;
     var buf: [4]config_mod.KeyBinding = undefined;
     buf[0] = .{
         .hotkey = config_mod.appBindingHotkey("ctrl+shift+w").?,
@@ -837,14 +841,59 @@ test "#496 위치로 적은 binding 이 라벨과 무관하게 잡힌다 (Linux)
     const b = buf[0..2];
 
     // 라벨 binding 은 키릴 keysym 을 못 잡는다 — 이것이 #496 의 버그 자체다.
-    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, cyrillic_tse, .key_w, true, true, false, false));
+    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, &.{}, cyrillic_tse, .key_w, true, true, false, false));
     // 위치 binding 은 잡는다. 라벨이 무엇이든 자리가 맞으면 된다.
     try T.expectEqual(
         @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .new_tab } }),
-        classifyInput(b, cyrillic_tse, .key_t, true, true, false, false),
+        classifyInput(b, &.{}, cyrillic_tse, .key_t, true, true, false, false),
     );
     // 자리를 모르는 event (표에 없는 키) 는 위치 binding 을 발동시키지 않는다.
-    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, cyrillic_tse, null, true, true, false, false));
+    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, &.{}, cyrillic_tse, null, true, true, false, false));
+}
+
+test "#496 1-a 라틴 fallback — 라벨이 닿지 않을 때만 자리로 잡는다" {
+    const T = std.testing;
+    var buf: [4]config_mod.KeyBinding = undefined;
+    buf[0] = .{ .hotkey = config_mod.appBindingHotkey("ctrl+shift+w").?, .action = .close_tab };
+    buf[1] = .{ .hotkey = config_mod.appBindingHotkey("ctrl+shift+t").?, .action = .new_tab };
+    const b = buf[0..2];
+
+    // 키릴 layout 실측값 — `ru` 의 US `w` 자리가 내는 keysym (`Cyrillic_tse`).
+    const cyrillic_tse: u32 = 0x6c3;
+
+    // fallback 이 **없으면** 오늘의 버그 그대로다.
+    try T.expectEqual(
+        @as(?config_mod.ActionInput, null),
+        classifyInput(b, &.{}, cyrillic_tse, .key_w, true, true, false, false),
+    );
+
+    // `close_tab` 의 라벨 `w` 가 이 layout 으로 닿지 않는다고 판정된 상태.
+    // `new_tab` 은 후보가 아니다 (닿는다고 가정) — 그래서 null 로 둔다.
+    const fallbacks = [_]?config_mod.PhysicalCode{ .key_w, null };
+    try T.expectEqual(
+        @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .close_tab } }),
+        classifyInput(b, &fallbacks, cyrillic_tse, .key_w, true, true, false, false),
+    );
+
+    // **fallback 이 있는 binding 만 대상이다.** `KeyT` 자리를 눌러도 `new_tab` 의
+    // fallback 이 null 이므로 잡히지 않는다 — 이것이 AZERTY 에서 한 동작에 키가 둘
+    // 생기지 않게 하는 장치다.
+    try T.expectEqual(
+        @as(?config_mod.ActionInput, null),
+        classifyInput(b, &fallbacks, cyrillic_tse, .key_t, true, true, false, false),
+    );
+
+    // modifier 는 여전히 엄격하다.
+    try T.expectEqual(
+        @as(?config_mod.ActionInput, null),
+        classifyInput(b, &fallbacks, cyrillic_tse, .key_w, true, false, false, false),
+    );
+
+    // **라벨이 먼저다.** 라벨로 잡히는 event 는 fallback 이 있어도 라벨 결과를 낸다.
+    try T.expectEqual(
+        @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .new_tab } }),
+        classifyInput(b, &fallbacks, xkb_key_t_lower, .key_w, true, true, false, false),
+    );
 }
 
 
@@ -1155,6 +1204,12 @@ const Client = struct {
     /// (`dialog/linux.zig` 참고). 문자열은 `Config` 소유이고 그쪽이 우리보다 오래
     /// 산다. non-null 이면 아직 안 보여준 것이다.
     pending_config_notice: ?[]const u8 = null,
+    /// #496 1-a — 라벨 binding 이 현재 keymap 으로 **닿지 않을 때** 쓸 대체 위치.
+    /// `config.key_bindings` 와 같은 인덱스다. keymap 이 바뀔 때마다 다시 계산한다
+    /// (`wl_keyboard.keymap` 은 layout 을 바꿔도 다시 온다) — layout 종속 판정이라
+    /// 로드 시점에 한 번 굳히면 사용자가 layout 을 바꾼 뒤 틀린다.
+    binding_fallbacks: [config_mod.MAX_KEY_BINDINGS]?config_mod.PhysicalCode =
+        [_]?config_mod.PhysicalCode{null} ** config_mod.MAX_KEY_BINDINGS,
     /// #282 C1 — info/error dialog 도 About 과 같은 deferred. `showInfo` 는
     /// 탭 한도(Ctrl+Shift+T)·shell 소실 알림에서 `handleNewTab`(= processKeyEvent
     /// reentrant) 를 통해 동기 호출되는데, `openInfoDialog` → `createDialogSurface`
@@ -5557,6 +5612,8 @@ const Client = struct {
 
         try self.keyboard.setKeymap(self.allocator, memory);
         log.appendLineVerbose("wayland", "keyboard keymap loaded size={}", .{size});
+        // #496 1-a — layout 이 바뀌면 이 event 가 다시 온다. 그래서 매번 다시 푼다.
+        self.resolveBindingFallbacks();
     }
 
     fn handleKeyboardKey(self: *Client, payload: []const u8) !void {
@@ -5641,7 +5698,8 @@ const Client = struct {
             const code = physical_key.fromEvdev(key);
             const super = self.keyboard.superActive();
             const bindings = self.config.key_bindings[0..self.config.key_binding_count];
-            if (classifyInput(bindings, sym, code, ctrl, shift, alt, super)) |classified| {
+            const fallbacks = self.binding_fallbacks[0..self.config.key_binding_count];
+            if (classifyInput(bindings, fallbacks, sym, code, ctrl, shift, alt, super)) |classified| {
                 // #333 — paste 는 우클릭 / command menu 와 공통 semantic helper(requestPaste)
                 // 로 정책을 정확히 한 번 적용한다. generic resolve/switch 보다 먼저 분기해
                 // 이중 commit 을 막는다.
@@ -8181,6 +8239,37 @@ const Client = struct {
     /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
     /// 다른 dialog 가 이미 떠 있으면(About/confirm 등) 이번 info 는 버린다
     /// (advisory 알림 — 탭 한도/shell 소실). fire-and-forget 이라 pump 불필요.
+    /// #496 1-a — **비라틴 layout 에서 글자 단축키를 살린다.**
+    ///
+    /// 키릴 · 그리스 · 아랍 layout 에서는 그 자판의 어느 키도 라틴 글자를 내지 않아
+    /// `ctrl+shift+w` 가 영원히 발동하지 않고, **다른 글자로 재바인딩해도 해결되지
+    /// 않는다** (라틴 알파벳 전체가 없다). 그럴 때만 US 자판에서 그 글자가 있던
+    /// **자리**로 대신 매칭하게 표를 채운다.
+    ///
+    /// **"그럴 때만" 이 요점이다.** 현재 keymap 이 그 글자를 낼 수 있으면 항목을
+    /// 만들지 않는다 — AZERTY 는 `w` 를 낼 수 있으므로 fallback 이 없고, 따라서 `Z` 라
+    /// 인쇄된 키 (US `w` 자리) 가 `close_tab` 을 발동시키지 않는다. 무조건 2 차 pass 를
+    /// 돌리면 그 layout 에서 한 동작에 키가 둘 생기고 사용자가 설명할 수 없다.
+    ///
+    /// 판정할 수 없으면 (libxkbcommon 이 keymap 조회 심볼을 안 내준다) **아무것도
+    /// 만들지 않는다.** "낼 수 없다" 로 읽으면 없어도 되는 fallback 이 생긴다.
+    fn resolveBindingFallbacks(self: *Client) void {
+        const bindings = self.config.key_bindings[0..self.config.key_binding_count];
+        var resolved: usize = 0;
+        for (bindings, 0..) |b, i| {
+            self.binding_fallbacks[i] = null;
+            const candidate = config_mod.fallbackCandidate(b.hotkey) orelse continue;
+            const reachable = self.keyboard.canProduceKeysym(candidate.keysym) orelse continue;
+            if (reachable) continue;
+            self.binding_fallbacks[i] = candidate.code;
+            resolved += 1;
+        }
+        if (resolved > 0) {
+            // 이 로그가 있어야 "왜 이 키가 저 동작을 했는가" 를 사후에 설명할 수 있다.
+            log.appendLine("keys", "latin fallback active for {d} binding(s) — layout cannot type their labels", .{resolved});
+        }
+    }
+
     /// #501 — 로드 실패 안내를 한 번 보여준다. **fatal 이 아니다** — 기본값으로 계속
     /// 돈다. 다른 다이얼로그가 떠 있으면 다음 iteration 으로 미룬다 (info 경로처럼
     /// 그냥 버리지 않는다 — 이 안내는 사용자가 놓치면 증상만 남는다).
