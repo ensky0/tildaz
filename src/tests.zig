@@ -66,6 +66,7 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("host/linux/shell_extension.zig");
             _ = @import("host/linux/software_terminal.zig");
             _ = @import("host/linux/wayland_minimal.zig");
+            _ = @import("host/linux/xkb.zig");
             _ = @import("shortcut_sync/linux.zig");
             _ = @import("terminal/posix/pty.zig");
         },
