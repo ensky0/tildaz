@@ -755,6 +755,71 @@ test "#496 macOS 에 값이 없는 자리는 그 platform 에서만 거부한다
     try std.testing.expect(parseHotkeyString("[NumLock]", .app_binding) == .ok);
 }
 
+test "#496 항목 2 — macOS 라벨 binding 은 이벤트가 낸 글자로 매칭한다" {
+    // macOS 가 라벨 매칭으로 바뀐 뒤의 계약을 고정한다. 이 테스트가 없으면 "AZERTY
+    // 에서 어느 키가 잡히는가" 가 실기로만 확인되고, 되돌아가도 조용하다.
+    if (!is_macos) return;
+
+    const parse = struct {
+        fn f(text: []const u8) !Hotkey {
+            return switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| Hotkey.fromParsed(v),
+                else => error.TestUnexpectedResult,
+            };
+        }
+    }.f;
+
+    // (1) 라벨 binding 은 `label` 을 갖고 위치 binding 은 갖지 않는다.
+    const label_w = try parse("cmd+w");
+    try std.testing.expectEqual(@as(u32, 'w'), label_w.label);
+    try std.testing.expectEqual(@as(?PhysicalCode, null), label_w.code);
+
+    const position_w = try parse("cmd+[KeyW]");
+    try std.testing.expectEqual(@as(u32, 0), position_w.label);
+    try std.testing.expect(position_w.code != null);
+
+    // (2) layout 무관 키는 라벨을 쓰지 않고, layout 에 따라 글자가 바뀌는 기호는 쓴다.
+    try std.testing.expectEqual(@as(u32, 0), (try parse("cmd+f1")).label);
+    try std.testing.expectEqual(@as(u32, 0), (try parse("cmd+space")).label);
+    try std.testing.expectEqual(@as(u32, 0x60), (try parse("cmd+grave")).label);
+    try std.testing.expectEqual(@as(u32, 0x5B), (try parse("cmd+[")).label);
+
+    var buf: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    buf[0] = .{ .hotkey = label_w, .action = .close_tab };
+    const bindings = buf[0..1];
+
+    const cmd = Hotkey.MOD_SUPER;
+    const kvk_w: u32 = 0x0D; // kVK_ANSI_W — AZERTY 에서 `z` 를 낸다
+    const kvk_z: u32 = 0x06; // kVK_ANSI_Z — AZERTY 에서 `w` 를 낸다
+
+    // (3) AZERTY — `W` 라 인쇄된 키 (US `Z` 자리) 가 잡혀야 한다. Safari 와 같은 키다.
+    try std.testing.expectEqual(@as(?KeyAction, .close_tab), lookupAction(
+        bindings,
+        .{ .keycode = kvk_z, .modifiers = cmd, .label = 'w' },
+        physical_key.fromMacKeyCode(kvk_z),
+    ));
+    // (4) 같은 자판에서 US `W` 자리는 라벨이 `z` 라 잡히면 **안 된다** (예전 동작).
+    try std.testing.expectEqual(@as(?KeyAction, null), lookupAction(
+        bindings,
+        .{ .keycode = kvk_w, .modifiers = cmd, .label = 'z' },
+        physical_key.fromMacKeyCode(kvk_w),
+    ));
+
+    // (5) 라틴을 한 자도 못 내는 layout (키릴 · 한글) 은 fallback 후보를 갖는다.
+    const candidate = fallbackCandidate(label_w) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 'w'), candidate.keysym);
+    try std.testing.expectEqual(physical_key.fromName("KeyW").?, candidate.code);
+
+    // (6) 그 fallback 이 켜지면 US `w` 자리가 잡힌다 — 한글에서 지금까지의 동작 그대로다.
+    var fallbacks = [_]?PhysicalCode{candidate.code};
+    try std.testing.expectEqual(@as(?KeyAction, .close_tab), lookupActionWithFallback(
+        bindings,
+        &fallbacks,
+        .{ .keycode = kvk_w, .modifiers = cmd, .label = 0 },
+        physical_key.fromMacKeyCode(kvk_w),
+    ));
+}
+
 test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     // `physical_key.zig` 의 `mac` 열과 `MacHotkey.keycodeFromKey` 는 **같은 US 위치
     // 표** 다. 두 곳에 값을 두는 것은 어쩔 수 없다 (한쪽은 라벨 → 위치, 한쪽은 위치
@@ -1131,6 +1196,21 @@ const MacHotkey = struct {
     /// event 가 라벨 binding 과 위치 binding 에 동시에 걸려야 한다) 필드를 나눈다.
     code: ?PhysicalCode = null,
 
+    /// #496 항목 2 — **라벨** binding 이 기다리는 글자 (유니코드 코드포인트).
+    /// `0` 은 "라벨로 매칭하지 않는다" 는 뜻이고, 그때는 `keycode` 로 매칭한다.
+    ///
+    /// 이 필드가 없던 시절 macOS 는 라벨 binding (`w`) 도 `keycode` (= US 위치)
+    /// 로 저장했다. 그래서 AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였다 — 비교할
+    /// 라벨 값 자체가 없었던 것이 원인이다.
+    ///
+    /// **layout 에 따라 글자가 바뀌는 키만** 채운다:
+    ///   - 글자 · 숫자 (`w` · `1`)
+    ///   - `` ` `` · `[` · `]` — AZERTY 에서 `<` · `^` · `$` 로 바뀐다 (실측)
+    /// `F1` · `space` 처럼 어느 자판에나 같은 자리에 있는 키는 `0` 이다. 그런 키에
+    /// 라벨 매칭을 쓰면 `NSEvent` 의 private codepoint (`0xF700`~) 에 기대게 되어
+    /// 이득 없이 취약해진다.
+    label: u32 = 0,
+
     pub fn fromString(s: []const u8) ?MacHotkey {
         const parsed = switch (parseHotkeyString(s, .global_hotkey)) {
             .ok => |p| p,
@@ -1156,6 +1236,26 @@ const MacHotkey = struct {
             .keycode = keycodeFromKey(parsed.key),
             .modifiers = modifiers,
             .code = if (parsed.key == .code) parsed.key.code else null,
+            .label = labelFromKey(parsed.key),
+        };
+    }
+
+    /// 정규화된 key → **라벨** (유니코드 코드포인트). `0` = 라벨 매칭 안 함.
+    /// 무엇을 채우고 무엇을 비우는지는 `label` 필드 주석에 있다.
+    fn labelFromKey(key: HotkeyKeyToken) u32 {
+        return switch (key) {
+            // 위치 표기는 라벨과 무관하다 — `code` 필드가 매칭을 맡는다.
+            .code => 0,
+            // parseHotkeyString 의 char 는 소문자 letter / digit 만이라 그대로 쓴다.
+            .char => |c| c,
+            .named => |n| switch (n) {
+                .grave => 0x60,
+                .bracket_left => 0x5B,
+                .bracket_right => 0x5D,
+                // 나머지는 layout 무관 — keycode 로 매칭한다.
+                .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
+                .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
+            },
         };
     }
 
@@ -1846,20 +1946,30 @@ pub fn inputForAction(action: KeyAction) ActionInput {
 /// 생기지 않고, 따라서 `Z` 라 인쇄된 키 (US `w` 자리) 가 `close_tab` 을 발동시키지
 /// **않는다.** 무조건 두 번째 pass 를 돌리면 그 layout 에서 한 동작에 키가 둘 생긴다.
 pub const FallbackCandidate = struct {
-    /// 이 binding 이 기다리는 라벨 keysym. 호출자가 keymap 에 물어볼 값이다.
+    /// 이 binding 이 기다리는 라벨. 호출자가 "지금 layout 이 이 글자를 낼 수 있나"
+    /// 를 물어볼 값이다. Linux 에서는 keysym, **macOS 에서는 `MacHotkey.label`**
+    /// 이고 라틴 글자 범위에서는 둘이 같은 값 (ASCII) 이라 이름을 나누지 않았다.
     keysym: u32,
     /// 그 글자가 US 자판에서 있던 자리.
     code: PhysicalCode,
 };
 
 pub fn fallbackCandidate(hotkey: Hotkey) ?FallbackCandidate {
-    // Linux 만이 라벨 (keysym) 로 매칭한다. Windows 는 비라틴 layout DLL 이 물리
-    // 위치에 라틴 VK 를 배정하고 (`KBDRU` 의 scancode 0x11 → `VK_W`) macOS 는
-    // `kVK_ANSI_*` 가 애초에 위치라, 두 platform 은 키릴에서도 이미 동작한다.
-    if (is_windows or is_macos) return null;
+    // Windows 는 fallback 이 필요 없다 — 비라틴 layout DLL 이 물리 위치에 라틴 VK 를
+    // 배정하므로 (`KBDRU` 의 scancode 0x11 → `VK_W`) OS 가 이미 해 준다.
+    //
+    // **macOS 는 #496 항목 2 부터 필요하다.** 그전에는 `kVK_ANSI_*` (위치) 로
+    // 매칭해서 키릴에서도 그냥 동작했지만, 라벨 매칭으로 바꾸면 키릴 · 한글처럼
+    // **라틴 글자를 한 자도 못 내는 layout** 에서 글자 단축키가 전부 죽는다
+    // (실측: `ru` · 2-Set Korean 모두 라틴 0 개). Linux 와 같은 fallback 이 그것을 막는다.
+    if (is_windows) return null;
     if (hotkey.code != null) return null;
-    const code = usPositionForKeysym(hotkey.keysym) orelse return null;
-    return .{ .keysym = hotkey.keysym, .code = code };
+    const label = if (is_macos) hotkey.label else hotkey.keysym;
+    // macOS 의 `label == 0` 은 "라벨로 매칭하지 않는 키" (`F1` 등) 다 — layout 과
+    // 무관하므로 fallback 도 필요 없다.
+    if (label == 0) return null;
+    const code = usPositionForKeysym(label) orelse return null;
+    return .{ .keysym = label, .code = code };
 }
 
 /// keysym → US 자판에서 그 글자가 있던 자리. `LinuxHotkey.keysymFromKey` 의 역방향
@@ -1925,6 +2035,27 @@ pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?Physica
             if (got == want) return b.action;
             continue;
         }
+        if (is_macos) {
+            // #496 항목 2 — macOS 는 binding 마다 비교 대상이 갈린다.
+            //
+            //   `label != 0`  라벨 binding (`w` · `` ` ``). **이벤트가 실제로 낸
+            //                 글자**와 비교한다. 그래서 AZERTY 에서는 `W` 라 인쇄된
+            //                 키가, US 에서는 같은 자리가 걸린다.
+            //   `label == 0`  layout 무관 키 (`F1` · `space` …). keycode 로 본다.
+            //
+            // 이벤트가 라벨을 못 낸 경우 (modifier 키 · function 키) `hotkey.label`
+            // 이 0 이라 라벨 binding 에 걸리지 않는다 — 그게 맞다.
+            //
+            // 다른 두 platform 처럼 `modifiersAside` 하나로 비교할 수 없다. 그쪽은
+            // 라벨 값 하나 (keysym / vkey) 로 모든 키를 표현하지만 macOS 의 `keycode`
+            // 는 위치라서, 라벨과 위치를 같은 칸에 넣을 수 없다.
+            if (b.hotkey.label != 0) {
+                if (hotkey.label != 0 and hotkey.label == b.hotkey.label) return b.action;
+            } else if (hotkey.keycode == b.hotkey.keycode) {
+                return b.action;
+            }
+            continue;
+        }
         if (b.hotkey.code == null and hotkey.code == null and modifiersAside(b.hotkey) == modifiersAside(hotkey)) {
             return b.action;
         }
@@ -1936,6 +2067,9 @@ pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?Physica
 /// 표현할 수 없어 (아래) 키 값만 따로 꺼낸다.
 fn modifiersAside(h: Hotkey) u32 {
     if (is_windows) return h.vkey;
+    // macOS 는 위의 `lookupAction` 이 먼저 갈라져서 여기 오지 않는다 (#496 항목 2).
+    // 값을 남겨 두는 것은 `Hotkey` 가 comptime 으로 갈리는 타입이라 세 분기가 다
+    // 컴파일되어야 하기 때문이다.
     if (is_macos) return h.keycode;
     return h.keysym;
 }

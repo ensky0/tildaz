@@ -261,19 +261,24 @@ Use a position when a label cannot reach the key you want:
 
 | Situation | Why the label fails | Position form |
 |---|---|---|
-| Cyrillic, Greek, Arabic, Hebrew… | no key produces a Latin letter — but see below, TildaZ already handles this on Linux | `ctrl+shift+[KeyW]` |
+| Cyrillic, Greek, Arabic, Hebrew… | no key produces a Latin letter — but see below, TildaZ already handles this on Linux and macOS | `ctrl+shift+[KeyW]` |
 | French AZERTY brackets | `[` is AltGr+5, so the label needs four fingers | `ctrl+shift+[BracketLeft]` |
 | Keys outside the label set | `-` `=` `\` `;` `'` `,` `.` `/`, numpad, arrows | `ctrl+[Minus]` |
 
 Positions and labels can be mixed freely, including within one action's list.
 
-**On Linux you usually do not need the position form for non-Latin layouts.**
-When TildaZ loads a keymap it checks whether the current layout can produce each
-binding's label at all; if nothing can, it falls back to the physical spot that
-character has on a US keyboard. So the defaults work on a Cyrillic layout
-untouched. The check follows the layout you are currently typing in, so a `us,ru`
-setup matches by label while you are on `us` and falls back the moment you switch
-to `ru`. KEYBINDINGS.md has the details.
+**On Linux and macOS you usually do not need the position form for non-Latin
+layouts.** TildaZ checks whether the layout you are currently typing in can
+produce each binding's label at all; if nothing can, it falls back to the
+physical spot that character has on a US keyboard. So the defaults work on a
+Cyrillic layout — or a Korean, Japanese, or Chinese input source — untouched.
+The check follows the live layout, so a `us,ru` setup matches by label while you
+are on `us` and falls back the moment you switch to `ru`. KEYBINDINGS.md has the
+details.
+
+**Windows does not need it either**, for a different reason: a non-Latin layout
+DLL assigns Latin virtual-keys to the physical spots, so the OS has already done
+the equivalent work.
 
 #### Accepted keys
 
