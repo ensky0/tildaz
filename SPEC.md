@@ -325,11 +325,19 @@ platform 마다 다르다.
   Recommendation) 표기는 VS Code 와 같은 대괄호다. 세 platform 값의 단일 출처는
   `src/physical_key.zig` 다.
 - **그리고 기본값이 그대로 동작하도록 라틴 fallback 을 둔다** (1-a, Linux 전용).
-  keymap 을 받을 때마다 (`wl_keyboard.keymap` — layout 을 바꿔도 다시 온다) 각 라벨
-  binding 에 대해 **현재 keymap 이 그 문자를 낼 수 있는지** 묻고
-  (`xkb.canProduceKeysym` — layout group × level 전수 조회, modifier 상태를 보지
-  않는다), 낼 수 없으면 그 문자가 US 자판에서 있던 자리로 매칭한다. 실측: `ru` 단독은
-  `w` 를 못 내고 (`us w` 자리가 `0x6c3` `Cyrillic_tse` 를 낸다), `us,ru` 는 낼 수 있다.
+  각 라벨 binding 에 대해 **활성 layout group 이 그 문자를 낼 수 있는지** 묻고
+  (`xkb.canProduceKeysym`), 낼 수 없으면 그 문자가 US 자판에서 있던 자리로 매칭한다.
+  - **판정은 활성 group 만 본다.** 처음에 group 을 전수로 훑었는데 그것이 결함이었다 —
+    매처는 활성 group 이 내는 keysym 만 보므로 판정도 같은 group 을 봐야 한다. 실측
+    (`us,ru` keymap): group 0 은 `sym@KeyW=0x77`, group 1 은 `0x6c3`
+    (`Cyrillic_tse`) 인데 전수 조회는 양쪽에서 `canProduceKeysym('w') = true` 를 낸다.
+    그래서 ru group 으로 전환한 사용자는 fallback 을 받지 못해 단축키가 죽었고, 그것이
+    비라틴 사용자의 **가장 흔한 설정**이라 정작 다수 사례를 놓쳤다.
+  - **재해석 트리거가 둘이다.** keymap 교체는 `wl_keyboard.keymap`, **group 전환은
+    `wl_keyboard.modifiers` 의 `group` 필드**로 온다. 후자를 빠뜨리면 위 결함이 된다.
+    Mutter 도 `keymap-changed` 와 `keymap-layout-group-changed` 둘 다 훅한다.
+  - level 은 전수로 훑는다 — "Shift 를 눌러야 나오는 문자" 도 낼 수 있는 것으로 세야
+    한다. 키마다 layout 수가 달라 유효 layout 은 `group % num_layouts_for_key` 다.
   - **닿지 않을 때만 만든다.** 무조건 2 차 pass 를 돌리면 AZERTY 에서 `Z` 라 인쇄된
     키 (US `w` 자리) 가 `close_tab` 을 발동시켜 한 동작에 키가 둘 생긴다.
   - **판정 불가 (`null`) 와 false 를 구분한다.** libxkbcommon 이 keymap 조회 심볼을
@@ -339,8 +347,9 @@ platform 마다 다르다.
   - **라벨이 먼저다.** 라벨로 잡히는 event 가 fallback 때문에 다른 액션이 되면
     사용자가 설명할 수 없다.
   - GTK 는 같은 문제를 "영어 layout 이 첫 layout 으로 설정돼 있어야 한다" 는 *요구*로
-    푼다. 우리는 요구하지 않고 keymap 을 보고 스스로 판정한다 — `us,ru` 사용자에게는
-    결과가 같고, `ru` 단독 사용자에게는 다르다.
+    푼다. 우리는 요구하지 않고 활성 group 을 보고 스스로 판정하므로 `us,ru` · `ru` 단독
+    양쪽에서 동작한다. Mutter 는 `us` keymap 을 즉석 컴파일해 같은 결과를 얻는다
+    (`create_us_layout()`) — 우리는 내장 W3C 위치표가 그 자리를 대신한다.
 - **수용 집합은 라벨 쪽이 좁고 위치 쪽이 넓다.** 의도한 비대칭이다. 라벨을 넓히려면 `-` 에
   값을 줘야 하는데 쓸 수 있는 고정값 (`VK_OEM_MINUS` · `kVK_ANSI_Minus`) 은 라벨이 아니라 "US
   자판에서 `-` 가 있는 자리" 다. 그것을 라벨이라 부르면 같은 config 가 platform 마다 다른 키를
@@ -365,10 +374,22 @@ platform 마다 다르다.
   정당하게 바인딩하는데 터미널이 삼키면 통과시킬 방법이 없다. PgUp / PgDn 은 GNOME Terminal ·
   Konsole · Windows Terminal 이 탭 전환에 쓰는, 터미널이 관습적으로 소유하는 조합이다.
 - **기존 PgUp / PgDn 경로는 그대로다** — Shift 동반은 scrollback (§2.5), 맨 키는 PTY.
-- **전역 `hotkey` 는 위치 표기를 받지 않는다.** OS / compositor 에 *등록* 해야 하고 그 4 경로가
-  모두 문자 기반이다 (sway `bindsym` · Hyprland keysym · COSMIC RON `key:` · KGlobalAccel
-  `qtKey`). 조용히 keysym 0 을 등록하는 대신 원인이 분명한 실패를 낸다 —
-  [#496](https://github.com/ensky0/tildaz/issues/496) 1-b 가 그 제약을 다룬다.
+- **전역 `hotkey` 는 위치 표기를 받지 않는다.** OS / compositor 에 *등록* 해야 하고 우리가 쓰는
+  **다섯** 경로가 모두 문자 기반이다 — sway `bindsym` · Hyprland keysym · GNOME / Cinnamon
+  GTK accelerator (`buildGtkAccel`) · COSMIC RON `key:` · KGlobalAccel `qtKey`. (처음에
+  "4 경로" 로 적었는데 GNOME · Cinnamon 이 빠져 있었다.) 조용히 keysym 0 을 등록하는 대신
+  원인이 분명한 실패를 낸다 — [#496](https://github.com/ensky0/tildaz/issues/496) 1-b 가 그
+  제약을 다룬다.
+  - **DE 넷은 이미 스스로 라틴 fallback 을 한다** — GNOME (Mutter 3.28+) · Cinnamon (Muffin
+    5.4+) · COSMIC (2026-02+) · KDE (Plasma 5.22+). 그래서 1-b 가 손댈 곳은 그것을 하지 않는
+    sway · Hyprland 다.
+  - 다만 **비라틴 단독 layout** 에서는 갈린다. Mutter · Muffin 은 `us` keymap 을 즉석에
+    컴파일해 (`create_us_layout()`) 라틴 layout 이 없어도 동작하고, COSMIC · KDE 는 *사용자의
+    다른 xkb group* 을 훑으므로 `ru` 단독이면 실패한다. 그 둘은 API 가 keysym 만 받아
+    **우리가 고칠 수 없다.**
+  - **COSMIC 의 RON `keycode:` 필드는 쓰면 안 된다.** 파싱은 되는데 cosmic-comp 가 값을 읽지
+    않고, `key:` 가 없으면 matcher 가 *modifier 전용 바인딩* 으로 취급해 modifier 를 뗄 때
+    발동한다. cosmic-settings 자신이 저장 전에 그 필드를 지운다.
 - **macOS 에 없는 위치가 있다.** `PrintScreen` · `ScrollLock` · `Pause` 는 **없는 것이 아니라
   `F13` · `F14` · `F15` 로 보고된다** (Apple 확장 자판이 그 자리에 F13~F15 를 둔다). `F21`~`F24`
   와 JIS 입력 전환 키 3 개는 정말 없다. 두 경우의 안내가 다르다 — 앞쪽은 "그 이름을 쓰라",
@@ -842,6 +863,16 @@ hotkey = "ctrl+f7"              # ✅ KDE — kwin ExposeClass 충돌 → takeov
 hotkey = "shift+cmd+t"          # mac 친숙 표기 (`cmd` = `super` = `meta` 모두 동일 키)
 hotkey = "ctrl+grave"           # backtick — `grave` 또는 `` ` `` 둘 다 가능
 ```
+
+> **전역 핫키에 punctuation 을 권하지 않는다** ([#496](https://github.com/ensky0/tildaz/issues/496)
+> 1-b 조사). Mutter 의 `needs_secondary_layout()` 은 `a`–`z` 만 보고 라틴 fallback 여부를
+> 정하는데, **라틴이지만 US 가 아닌 layout** 에는 그 문자가 아예 없을 수 있다 — `de` 에는
+> `grave` keysym 이 없다. 그러면 fallback 을 받지 못한 채 바인딩이 keycode 0 개로 해석돼
+> **조용히 죽는다** (`meta_display_grab_accelerator` 가 `ACTION_NONE` 을 낸다). GNOME 자신은
+> 같은 문제를 `grave` 대신 위치 토큰 `Above_Tab` 을 써서 피한다.
+>
+> 위 예제에서 `ctrl+grave` 는 **US 자판 기준의 예시**로만 읽어야 한다. 어느 자판에서나
+> 안전한 것은 **함수 키** (`F1`~`F12`) 다 — 기본값이 `F1` 인 이유이기도 하다.
 
 **Modifier 토큰** (대소문자 무관, `+` 분리, 임의 개수 결합):
 

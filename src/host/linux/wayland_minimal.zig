@@ -5935,12 +5935,19 @@ const Client = struct {
 
     fn handleKeyboardModifiers(self: *Client, payload: []const u8) void {
         if (payload.len < 20) return;
+        const group = readU32(payload[16..20]);
+        // #496 1-a — **layout group 전환이 여기로 온다** (`keymap` event 가 아니다).
+        // 라틴 fallback 판정이 활성 group 종속이므로 바뀔 때마다 다시 푼다. 이것이
+        // 없으면 `us,ru` 사용자가 ru group 으로 전환했을 때 fallback 이 생기지 않아
+        // 글자 단축키가 죽는다 — 비라틴 사용자의 가장 흔한 설정이다.
+        const group_changed = group != self.keyboard.active_group;
         self.keyboard.updateMask(
             readU32(payload[4..8]),
             readU32(payload[8..12]),
             readU32(payload[12..16]),
-            readU32(payload[16..20]),
+            group,
         );
+        if (group_changed) self.resolveBindingFallbacks();
     }
 
     fn handleKeyboardRepeatInfo(self: *Client, payload: []const u8) void {
