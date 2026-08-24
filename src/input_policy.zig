@@ -48,6 +48,12 @@ pub const Shortcut = enum {
     dump_perf,
     toggle_visibility,
     fullscreen,
+    /// #493 3-c — 패널을 가리지 않는 fullscreen. 예전엔 `fullscreen` 하나에 host 별로
+    /// "Shift 가 눌렸으면 workarea" 라는 암묵 규칙이 붙어 있었다. `[keys]` 가 두
+    /// 동작을 각각 바인딩할 수 있게 되면서 그 규칙을 없애고 variant 를 나눈다 —
+    /// 사용자가 `fullscreen_workarea` 에 Shift 없는 조합을 줄 수도 있으므로 Shift 로
+    /// 갈라서는 안 된다.
+    fullscreen_workarea,
     quit,
     /// `…` 버튼으로 command menu 를 여는 순간 (#329). outside click 과 같은
     /// 상태 변경 — pending 입력(terminal preedit)을 먼저 commit 한다.
@@ -128,7 +134,7 @@ fn expectDisp(input: Input, state: State, pending: Pending, target: Target) !voi
 test "SPEC §4.1 — preedit 중 action 단축키는 commit 후 실행" {
     // 상태를 바꾸는 단축키(탭/reset/about/config/log/fullscreen/quit)는 focus-loss 로
     // preedit 을 확정한 뒤 실행.
-    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .quit, .open_command_menu, .open_shortcuts }) |sc| {
+    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .fullscreen_workarea, .quit, .open_command_menu, .open_shortcuts }) |sc| {
         try expectDisp(.{ .shortcut = sc }, preedit, .commit, .run_action);
     }
 }

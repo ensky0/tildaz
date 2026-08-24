@@ -26,6 +26,7 @@ const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
 const config_mod = @import("../../config.zig");
+const physical_key = @import("../../physical_key.zig");
 const software_terminal = @import("software_terminal.zig");
 const run_options = @import("../../run_options.zig");
 const dialog_layout = @import("dialog_layout.zig");
@@ -677,125 +678,175 @@ test "#314 dialog drag repaint requests coalesce to the latest row" {
 /// 분류. null = 정책 대상 아님(일반 문자 / 터미널 control char / preedit-Ctrl
 /// commit / scroll 등) → processKeyEvent 의 기존 PTY 경로로. 상태(preedit)에
 /// 따른 "그래서 무엇을 할지" 결정은 여기가 아니라 `input_policy.resolve` 가 한다.
-fn classifyInput(sym: u32, ctrl: bool, shift: bool, alt: bool) ?input_policy.Input {
-    // Ctrl+Shift+* — 클립보드 / 탭 / About / Open Config·Log / reset / perf.
-    if (ctrl and shift and !alt) {
-        return switch (sym) {
-            xkb_key_c_lower, xkb_key_c_upper => .{ .shortcut = .copy_selection },
-            xkb_key_v_lower, xkb_key_v_upper => .paste,
-            xkb_key_t_lower, xkb_key_t_upper => .{ .shortcut = .new_tab },
-            xkb_key_w_lower, xkb_key_w_upper => .{ .shortcut = .close_tab },
-            xkb_key_bracketright, xkb_key_braceright => .{ .shortcut = .next_tab },
-            xkb_key_bracketleft, xkb_key_braceleft => .{ .shortcut = .prev_tab },
-            xkb_key_i_lower, xkb_key_i_upper => .{ .shortcut = .show_about },
-            xkb_key_p_lower, xkb_key_p_upper => .{ .shortcut = .open_config },
-            xkb_key_l_lower, xkb_key_l_upper => .{ .shortcut = .open_log },
-            xkb_key_r_lower, xkb_key_r_upper => .{ .shortcut = .reset_terminal },
-            xkb_key_f12 => .{ .shortcut = .dump_perf },
-            else => null,
-        };
+/// #493 3-c — native 입력을 `[keys]` config 와 맞춰 공통 `Input` 으로 분류한다.
+///
+/// 예전엔 이 함수가 하드코딩된 keysym switch 였다 (`Ctrl+Shift+*` 묶음, `Alt` 묶음,
+/// 숫자 범위 ...). 이제 스스로 판정하는 것은 하나뿐이고 나머지는 config 가 정한다.
+///
+/// **Ctrl+C (interrupt) 는 재바인딩 대상이 아니다.** `[keys]` 로 가릴 수 있게 하면
+/// 사용자가 실수 한 번으로 터미널의 SIGINT 를 잃는다 — scrollback 을 고정으로 둔
+/// 것과 같은 이유다. 그래서 config 조회보다 **먼저** 본다.
+///
+/// Linux 는 세 platform 중 유일하게 라벨 (keysym) 로 매칭하므로 Shift 가 바꿔 놓은
+/// 키 값을 `normalizeLinuxKeysym` 으로 되돌려 넘긴다 (`C`→`c`, `{`→`[`). 예전 매처가
+/// 두 값을 나란히 적던 (`xkb_key_c_lower, xkb_key_c_upper`) 자리다.
+///
+/// `code` 는 같은 event 의 **물리 위치**다 (#496). 위치로 적은 binding
+/// (`ctrl+shift+[KeyW]`) 이 그것으로 매칭된다 — 비라틴 layout 에서 글자 단축키를
+/// 쓸 수 있는 유일한 길이다.
+fn classifyInput(
+    bindings: []const config_mod.KeyBinding,
+    sym: u32,
+    code: ?config_mod.PhysicalCode,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    super: bool,
+) ?config_mod.ActionInput {
+    // Ctrl+C — SIGINT (line abort). preedit 자모 discard 는 best-effort: fcitx5 는
+    // Ctrl+C 에서 자모를 먼저 확정해 `가^C` (취소된 줄이라 무해, §5.1).
+    if (ctrl and !shift and !alt and !super and
+        (sym == xkb_key_c_lower or sym == xkb_key_c_upper))
+    {
+        return .{ .input = .interrupt };
     }
-    // #482 — Ctrl+PgUp / Ctrl+PgDn 으로 이전 / 다음 탭. `Ctrl+Shift+[` / `]` 가
-    // AZERTY 에서 쓸 수 없어 추가한 **layout 무관** 대안이다: 그 layout 에서 `[` 는
-    // AltGr+5 라서 조합이 Ctrl+Shift+AltGr+5 가 된다 (손가락 네 개). PgUp / PgDn 은
-    // 어느 layout 에나 있는 단일 물리 키다.
-    //
-    // `Ctrl+Tab` 을 쓰지 않은 이유: 현대 키보드 프로토콜 (kitty / CSI-u) 에서 그건
-    // 구별 가능한 시퀀스라 TUI 앱이 정당하게 바인딩한다. 터미널이 삼키면 사용자가
-    // 통과시킬 방법이 없다. 반면 Ctrl+PgUp / PgDn 은 GNOME Terminal · Konsole ·
-    // Windows Terminal 이 탭 전환에 쓰는 — 터미널이 관습적으로 소유하는 — 조합이다.
-    //
-    // 아래 Shift+PgUp / PgDn (scrollback) 과 맨 PgUp / PgDn (PTY) 은 그대로다.
-    if (ctrl and !shift and !alt) {
-        if (sym == xkb_key_page_up) return .{ .shortcut = .prev_tab };
-        if (sym == xkb_key_page_down) return .{ .shortcut = .next_tab };
-    }
-    // Ctrl+C (Shift 없음) — SIGINT(line abort). preedit 자모 discard 는 best-effort:
-    // fcitx5 는 Ctrl+C 에서 자모를 먼저 확정해 `가^C`(취소된 줄이라 무해, §5.1).
-    if (ctrl and !shift and !alt and (sym == xkb_key_c_lower or sym == xkb_key_c_upper)) return .interrupt;
-    // Alt+Enter(fullscreen) / Alt+F4(quit) / Alt+1..9(탭 전환). Ctrl 미동반.
-    if (alt and !ctrl) {
-        if (sym == xkb_key_return) return .{ .shortcut = .fullscreen };
-        if (!shift and sym == xkb_key_f4) return .{ .shortcut = .quit };
-        // #482 — `!shift` 를 요구하지 않는다. AZERTY (fr) 등에서 숫자열은 **Shift 를
-        // 눌러야 숫자가 나온다** (무시프트는 `&é"'(-è_çà`). 그래서 keysym `1`~`9` 가
-        // 항상 Shift 와 함께 도착해 `!shift` 가 전부 걸러 냈다 — 인덱스 탭 전환이
-        // 그 layout 에서 아예 동작하지 않았다.
-        //
-        // QWERTY 에는 영향이 없다: Shift 가 keysym 자체를 바꿔서 Alt+Shift+1 은
-        // `exclam` (0x21) 로 도착하고 `xkb_key_1` 과 매칭되지 않는다. 즉 이 조건을
-        // 풀어도 QWERTY 에서 새로 잡히는 조합이 없다.
-        //
-        // Windows (`VK_1`) 와 macOS (`kVK_ANSI_1`) 는 **물리 위치**로 매칭해서 애초에
-        // 이 문제가 없다. keysym 으로 매칭하는 Linux 만의 결함이었다.
-        if (sym >= xkb_key_1 and sym <= xkb_key_9) return .{ .shortcut = .switch_tab };
-    }
-    // 그 외는 정책 대상 아님(일반 문자 / 터미널 control char / preedit-Ctrl
-    // commit / scroll) → 기존 PTY 경로.
-    return null;
+
+    var modifiers: u32 = 0;
+    if (ctrl) modifiers |= config_mod.Hotkey.MOD_CTRL;
+    if (shift) modifiers |= config_mod.Hotkey.MOD_SHIFT;
+    if (alt) modifiers |= config_mod.Hotkey.MOD_ALT;
+    if (super) modifiers |= config_mod.Hotkey.MOD_SUPER;
+    const hotkey: config_mod.Hotkey = .{
+        .keysym = config_mod.normalizeLinuxKeysym(sym),
+        .modifiers = modifiers,
+    };
+    const action = config_mod.lookupAction(bindings, hotkey, code) orelse return null;
+    return config_mod.inputForAction(action);
 }
 
-test "#296 classifyInput — native xkb → 공통 Input 분류" {
+/// 기본 `[keys]` 를 파싱해 테스트용 binding 배열을 만든다. **기본값을 그대로 쓰는
+/// 것이 요점이다** — 하드코딩 매처를 config 로 옮긴 뒤에도 기본 사용자가 보는 동작이
+/// 같아야 하고, 그 동등성을 여기서 검사한다.
+fn testDefaultBindings(buf: []config_mod.KeyBinding) []const config_mod.KeyBinding {
+    var n: usize = 0;
+    for (std.enums.values(config_mod.KeyAction)) |action| {
+        for (config_mod.defaultBindings(action)) |text| {
+            buf[n] = .{ .hotkey = config_mod.appBindingHotkey(text).?, .action = action };
+            n += 1;
+        }
+    }
+    return buf[0..n];
+}
+
+test "#296 · #493 3-c classifyInput — native xkb → config binding → 공통 Input" {
     const T = std.testing;
-    const C = classifyInput;
-    const I = input_policy.Input;
-    // Ctrl+Shift+* → shortcut / paste
-    try T.expectEqual(@as(?I, .{ .shortcut = .copy_selection }), C(xkb_key_c_lower, true, true, false));
-    try T.expectEqual(@as(?I, .paste), C(xkb_key_v_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .new_tab }), C(xkb_key_t_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .close_tab }), C(xkb_key_w_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .next_tab }), C(xkb_key_bracketright, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .prev_tab }), C(xkb_key_bracketleft, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .show_about }), C(xkb_key_i_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .open_config }), C(xkb_key_p_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .open_log }), C(xkb_key_l_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .reset_terminal }), C(xkb_key_r_lower, true, true, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .dump_perf }), C(xkb_key_f12, true, true, false));
-    // Alt 계열 (fullscreen 은 shift 로 cover/avoid — 분류는 동일)
-    try T.expectEqual(@as(?I, .{ .shortcut = .fullscreen }), C(xkb_key_return, false, false, true));
-    try T.expectEqual(@as(?I, .{ .shortcut = .fullscreen }), C(xkb_key_return, false, true, true));
-    try T.expectEqual(@as(?I, .{ .shortcut = .quit }), C(xkb_key_f4, false, false, true));
-    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_1, false, false, true));
-    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_9, false, false, true));
+    var buf: [config_mod.MAX_KEY_BINDINGS]config_mod.KeyBinding = undefined;
+    const b = testDefaultBindings(&buf);
+    const A = config_mod.ActionInput;
+
+    // 위치 인자를 매번 쓰지 않도록 감싼다. 위치 (`code`) 는 이 test 에서 null 이다 —
+    // 기본 binding 이 전부 라벨이기 때문이다 (위치 매칭은 config.zig 쪽 test).
+    const C = struct {
+        fn f(bindings: []const config_mod.KeyBinding, sym: u32, ctrl: bool, shift: bool, alt: bool) ?A {
+            return classifyInput(bindings, sym, null, ctrl, shift, alt, false);
+        }
+    }.f;
+
+    // Ctrl+Shift+* → shortcut / paste. **대문자 keysym 으로도 잡혀야 한다** — Shift 가
+    // 눌려 있으므로 실제로 도착하는 것은 대문자다.
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy_selection } }), C(b, xkb_key_c_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy_selection } }), C(b, xkb_key_c_upper, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .paste }), C(b, xkb_key_v_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .paste }), C(b, xkb_key_v_upper, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .new_tab } }), C(b, xkb_key_t_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .close_tab } }), C(b, xkb_key_w_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .show_about } }), C(b, xkb_key_i_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .open_config } }), C(b, xkb_key_p_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .open_log } }), C(b, xkb_key_l_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .reset_terminal } }), C(b, xkb_key_r_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .dump_perf } }), C(b, xkb_key_f12, true, true, false));
+
+    // bracket — Shift 로 `{` / `}` 가 되어 도착한다. 예전엔 매처가 네 값을 나란히
+    // 적었고, 지금은 `normalizeLinuxKeysym` 이 되돌린다.
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .prev_tab } }), C(b, xkb_key_bracketleft, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .next_tab } }), C(b, xkb_key_bracketright, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .prev_tab } }), C(b, xkb_key_braceleft, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .next_tab } }), C(b, xkb_key_braceright, true, true, false));
+
+    // Alt 계열. **fullscreen 과 fullscreen_workarea 가 이제 다른 변종이다** (#493 3-c)
+    // — 예전엔 `fullscreen` 하나를 내고 host 가 "Shift 면 workarea" 로 갈랐다. 이제
+    // config 의 두 액션이 각각 잡히므로 그 암묵 규칙이 사라진다.
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .fullscreen } }), C(b, xkb_key_return, false, false, true));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .fullscreen_workarea } }), C(b, xkb_key_return, false, true, true));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .quit } }), C(b, xkb_key_f4, false, false, true));
+
+    // 인덱스 탭 전환 — **인덱스가 액션 이름에서 온다** (`switch_tab1` → 0). 예전엔
+    // host 가 `sym - xkb_key_1` 로 뽑았다.
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 0 }), C(b, xkb_key_1, false, false, true));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 8 }), C(b, xkb_key_9, false, false, true));
     // #482 — AZERTY (fr) 는 숫자열에 Shift 가 필요해 keysym `1`~`9` 가 **항상 Shift 와
-    // 함께** 도착한다. 예전 `!shift` 조건이 그것을 전부 걸러 인덱스 탭 전환이 그 layout
-    // 에서 아예 동작하지 않았다.
-    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_1, false, true, true));
-    try T.expectEqual(@as(?I, .{ .shortcut = .switch_tab }), C(xkb_key_9, false, true, true));
-    // QWERTY 에서는 Alt+Shift+1 이 `exclam` 으로 도착하므로 위 완화가 새로 잡는 조합이
-    // 없다 — 이 keysym 은 정책 대상이 아니다.
-    try T.expectEqual(@as(?I, null), C(xkb_key_exclam, false, true, true));
-    // Ctrl 동반은 여전히 Alt 계열이 아니다 (첫 블록의 Ctrl+Shift 와 충돌 방지).
-    try T.expectEqual(@as(?I, null), C(xkb_key_1, true, false, true));
+    // 함께** 도착한다. `lookupAction` 의 숫자 예외가 그것을 받는다.
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 0 }), C(b, xkb_key_1, false, true, true));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 8 }), C(b, xkb_key_9, false, true, true));
+    // QWERTY 에서 Alt+Shift+1 은 `exclam` 으로 도착하므로 위 예외가 새로 잡는 조합이
+    // 없다 — 이 keysym 은 어느 binding 과도 맞지 않는다.
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_exclam, false, true, true));
+    // Ctrl 동반은 숫자 binding 과 맞지 않는다 (`alt+1` 에 Ctrl 이 없다).
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_1, true, false, true));
 
     // #482 — Ctrl+PgUp / PgDn 으로 이전 / 다음 탭 (layout 무관 대안).
-    try T.expectEqual(@as(?I, .{ .shortcut = .prev_tab }), C(xkb_key_page_up, true, false, false));
-    try T.expectEqual(@as(?I, .{ .shortcut = .next_tab }), C(xkb_key_page_down, true, false, false));
-    // Shift+PgUp / PgDn 은 scrollback 이라 정책 대상이 아니고, Ctrl+Shift 조합도
-    // 탭 전환으로 잡지 않는다 — 기존 동작을 건드리지 않았음을 고정한다.
-    try T.expectEqual(@as(?I, null), C(xkb_key_page_down, false, true, false));
-    try T.expectEqual(@as(?I, null), C(xkb_key_page_up, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .prev_tab } }), C(b, xkb_key_page_up, true, false, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .next_tab } }), C(b, xkb_key_page_down, true, false, false));
+    // Shift+PgUp / PgDn 은 scrollback 이라 `[keys]` 에 없고, Ctrl+Shift 조합도 탭
+    // 전환으로 잡지 않는다 — 기존 동작을 건드리지 않았음을 고정한다.
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_down, false, true, false));
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_up, true, true, false));
     // 맨 PgUp / PgDn 은 PTY 로 간다.
-    try T.expectEqual(@as(?I, null), C(xkb_key_page_up, false, false, false));
-    try T.expectEqual(@as(?I, null), C(xkb_key_page_down, false, false, false));
-    // Ctrl+C (Shift 없음) → interrupt
-    try T.expectEqual(@as(?I, .interrupt), C(xkb_key_c_lower, true, false, false));
-    // 미분류(null → 기존 PTY 경로):
-    try T.expectEqual(@as(?I, null), C(xkb_key_t_lower, false, false, false)); // 일반 문자
-    try T.expectEqual(@as(?I, null), C(xkb_key_return, false, false, false)); // Enter
-    try T.expectEqual(@as(?I, null), C(xkb_key_up, false, false, false)); // nav 키
-    try T.expectEqual(@as(?I, null), C(xkb_key_a_lower, true, false, false)); // Ctrl+A = 터미널 \x01
-    try T.expectEqual(@as(?I, null), C(xkb_key_e_lower, true, false, false)); // Ctrl+E = 터미널 \x05
-    try T.expectEqual(@as(?I, null), C(xkb_key_page_up, false, true, false)); // Shift+PgUp = scroll
-    try T.expectEqual(@as(?I, null), C(xkb_key_t_lower, true, false, false)); // Ctrl+T = shell transpose
-    // #482 — 예전엔 여기에 `C(xkb_key_1, false, true, true)` 가 null 로 있었다. 그
-    // 조합 (keysym `1` + Shift) 은 **QWERTY 에서 발생 자체가 불가능하다** — Shift 가
-    // keysym 을 `exclam` 으로 바꾼다. 숫자열에 Shift 가 필요한 layout (AZERTY 등) 에서만
-    // 나오므로, 그 assertion 은 인덱스 탭 전환이 그 layout 에서 안 되는 **버그를 고정**
-    // 하고 있었다. 이제 shortcut 이고 위쪽 Alt 계열 테스트에서 확인한다. QWERTY 쪽
-    // 대응물인 `exclam` 은 계속 정책 대상이 아니다 (바로 위에서 확인).
-    try T.expectEqual(@as(?I, null), C(xkb_key_return, true, false, true)); // Ctrl+Alt+Enter
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_up, false, false, false));
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_down, false, false, false));
+
+    // Ctrl+C (Shift 없음) → interrupt. **config 조회보다 먼저 본다** — 재바인딩으로
+    // 가릴 수 없다.
+    try T.expectEqual(@as(?A, .{ .input = .interrupt }), C(b, xkb_key_c_lower, true, false, false));
+    try T.expectEqual(@as(?A, .{ .input = .interrupt }), C(b, xkb_key_c_upper, true, false, false));
+
+    // 미분류 (null → 기존 PTY 경로):
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_t_lower, false, false, false)); // 일반 문자
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_return, false, false, false)); // Enter
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_up, false, false, false)); // nav 키
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_a_lower, true, false, false)); // Ctrl+A = 터미널 \x01
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_e_lower, true, false, false)); // Ctrl+E = 터미널 \x05
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_t_lower, true, false, false)); // Ctrl+T = shell transpose
 }
+
+test "#496 위치로 적은 binding 이 라벨과 무관하게 잡힌다 (Linux)" {
+    const T = std.testing;
+    // 키릴 layout 을 흉내낸다: `Ctrl+Shift+`(KeyW 자리) 를 누르면 keysym 은 `Ц`
+    // (U+0426 → xkb Unicode keysym) 로 도착하고 어떤 라벨 binding 과도 맞지 않는다.
+    // 위치로 적은 binding 만 그것을 잡는다.
+    const cyrillic_tse: u32 = 0x01000426;
+    var buf: [4]config_mod.KeyBinding = undefined;
+    buf[0] = .{
+        .hotkey = config_mod.appBindingHotkey("ctrl+shift+w").?,
+        .action = .close_tab,
+    };
+    buf[1] = .{
+        .hotkey = config_mod.appBindingHotkey("ctrl+shift+[KeyT]").?,
+        .action = .new_tab,
+    };
+    const b = buf[0..2];
+
+    // 라벨 binding 은 키릴 keysym 을 못 잡는다 — 이것이 #496 의 버그 자체다.
+    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, cyrillic_tse, .key_w, true, true, false, false));
+    // 위치 binding 은 잡는다. 라벨이 무엇이든 자리가 맞으면 된다.
+    try T.expectEqual(
+        @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .new_tab } }),
+        classifyInput(b, cyrillic_tse, .key_t, true, true, false, false),
+    );
+    // 자리를 모르는 event (표에 없는 키) 는 위치 binding 을 발동시키지 않는다.
+    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, cyrillic_tse, null, true, true, false, false));
+}
+
 
 fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
     return switch (sym) {
@@ -5574,15 +5625,21 @@ const Client = struct {
         // 정책 대상이 아니면(일반 문자 / 터미널 control char / preedit-Ctrl
         // commit / scroll) 아래 기존 PTY 경로로 흘린다.
         if (sym_opt) |sym| {
-            if (classifyInput(sym, ctrl, shift, alt)) |input| {
+            // #493 3-c — 분류의 기준이 config 다. #496 — 같은 event 의 물리 위치를
+            // 함께 넘겨 위치로 적은 binding 도 매칭되게 한다. `key` 는 wl_keyboard 가
+            // 준 raw evdev keycode 다 (xkb 는 여기에 8 을 더한 값을 쓴다).
+            const code = physical_key.fromEvdev(key);
+            const super = self.keyboard.superActive();
+            const bindings = self.config.key_bindings[0..self.config.key_binding_count];
+            if (classifyInput(bindings, sym, code, ctrl, shift, alt, super)) |classified| {
                 // #333 — paste 는 우클릭 / command menu 와 공통 semantic helper(requestPaste)
                 // 로 정책을 정확히 한 번 적용한다. generic resolve/switch 보다 먼저 분기해
                 // 이중 commit 을 막는다.
-                if (input == .paste) {
+                if (classified.input == .paste) {
                     self.requestPaste();
                     return;
                 }
-                const disp = input_policy.resolve(input, .{
+                const disp = input_policy.resolve(classified.input, .{
                     .terminal_preedit_active = self.preedit_text.items.len > 0,
                 });
                 switch (disp.pending) {
@@ -5601,7 +5658,9 @@ const Client = struct {
                 }
                 switch (disp.target) {
                     .run_action => {
-                        self.runShortcutForKey(sym, shift);
+                        // `.paste` 는 위에서 돌아갔고 `.interrupt` 의 target 은 `.pty`
+                        // 이므로 여기 오는 것은 `.shortcut` 뿐이다.
+                        self.runShortcut(classified.input.shortcut, classified.tab_index);
                         return;
                     },
                     // interrupt \x03 는 아래 escape / utf8 로. paste 는 위에서 처리.
@@ -5643,39 +5702,48 @@ const Client = struct {
 
     /// #296 — resolve 가 run_action 으로 판정한 전역 단축키 실행. pending
     /// (preedit) commit 은 resolve 의 `.commit` 이 이미 처리하므로 여기선 action 만.
-    fn runShortcutForKey(self: *Client, sym: u32, shift: bool) void {
-        if (sym == xkb_key_c_lower or sym == xkb_key_c_upper) {
-            self.copyActiveSelection();
-        } else if (sym == xkb_key_t_lower or sym == xkb_key_t_upper) {
-            self.handleNewTab();
-        } else if (sym == xkb_key_w_lower or sym == xkb_key_w_upper) {
-            self.handleCloseTab();
-        } else if (sym == xkb_key_bracketright or sym == xkb_key_braceright) {
-            self.handleNextTab();
-        } else if (sym == xkb_key_bracketleft or sym == xkb_key_braceleft) {
-            self.handlePrevTab();
-        } else if (sym == xkb_key_i_lower or sym == xkb_key_i_upper) {
+    ///
+    /// #493 3-c — 예전엔 keysym 으로 다시 분기했다 (`sym == xkb_key_t_lower` ...).
+    /// 즉 어느 키가 어느 동작인지를 **분류와 실행 두 곳**에 적고 있었고, 그 둘이
+    /// 갈라지는 것이 #484 의 원인이기도 했다. 이제 분류가 이미 `Shortcut` 을 줬으므로
+    /// 여기서는 그것만 보고 실행한다.
+    fn runShortcut(self: *Client, shortcut: input_policy.Shortcut, tab_index: ?usize) void {
+        switch (shortcut) {
+            .copy_selection => self.copyActiveSelection(),
+            .new_tab => self.handleNewTab(),
+            .close_tab => self.handleCloseTab(),
+            .next_tab => self.handleNextTab(),
+            .prev_tab => self.handlePrevTab(),
+            // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). 예전엔 여기서
+            // `sym - xkb_key_1` 로 뽑았다.
+            .switch_tab => self.handleSwitchTab(@intCast(tab_index orelse return)),
             // #213 — About 은 reentrancy 밖 drainAboutRequest 가 열도록 flag 만.
-            self.pending_about_request = true;
-        } else if (sym == xkb_key_p_lower or sym == xkb_key_p_upper) {
-            const cfg_path = paths.configPath(self.rt, self.allocator) catch return;
-            defer self.allocator.free(cfg_path);
-            system_open.openInDefaultApp(self.rt, self.allocator, cfg_path);
-        } else if (sym == xkb_key_l_lower or sym == xkb_key_l_upper) {
-            const log_path = log.filePath() orelse return;
-            system_open.openInDefaultApp(self.rt, self.allocator, log_path);
-        } else if (sym == xkb_key_r_lower or sym == xkb_key_r_upper) {
-            if (self.session) |*session| {
-                if (session.resetActive()) self.requestRedraw();
-            }
-        } else if (sym == xkb_key_f12) {
-            perf.dumpAndReset(self.rt, "snapshot");
-        } else if (sym == xkb_key_f4) {
-            self.pending_quit_request = true;
-        } else if (sym == xkb_key_return) {
-            self.toggleFullscreen(if (shift) .avoid else .cover);
-        } else if (sym >= xkb_key_1 and sym <= xkb_key_9) {
-            self.handleSwitchTab(@intCast(sym - xkb_key_1));
+            .show_about => self.pending_about_request = true,
+            .open_config => {
+                const cfg_path = paths.configPath(self.rt, self.allocator) catch return;
+                defer self.allocator.free(cfg_path);
+                system_open.openInDefaultApp(self.rt, self.allocator, cfg_path);
+            },
+            .open_log => {
+                const log_path = log.filePath() orelse return;
+                system_open.openInDefaultApp(self.rt, self.allocator, log_path);
+            },
+            .reset_terminal => {
+                if (self.session) |*session| {
+                    if (session.resetActive()) self.requestRedraw();
+                }
+            },
+            .dump_perf => perf.dumpAndReset(self.rt, "snapshot"),
+            .quit => self.pending_quit_request = true,
+            // #493 3-c — 두 fullscreen 이 이제 별 변종이다. 예전엔 `fullscreen` 하나에
+            // "Shift 가 눌렸으면 avoid" 라는 암묵 규칙이 붙어 있었는데, 사용자가
+            // `fullscreen_workarea` 에 Shift 없는 조합을 줄 수도 있으므로 그 규칙으로는
+            // 안 된다.
+            .fullscreen => self.toggleFullscreen(.cover),
+            .fullscreen_workarea => self.toggleFullscreen(.avoid),
+            // 이 host 의 키 경로가 내지 않는 것들 — command menu 와 toggle 은 다른
+            // 진입점 (마우스 · 전역 핫키) 이 처리한다.
+            .toggle_visibility, .open_command_menu, .open_shortcuts => {},
         }
     }
 

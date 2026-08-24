@@ -20,7 +20,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues |
 | Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig` | Tab switching, close paths, drag, hit testing |
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
-| Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, `_` comment keys, current `config_N.json` / `tildaz_N.log` paths |
+| Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, TOML parse via `sam701/zig-toml`, current `config_N.toml` / `tildaz_N.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
 | Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape. Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
@@ -161,9 +161,10 @@ selection behavior, config schema, dialogs, and child shell environment. OS
 conventions remain native: Windows uses Ctrl/Alt patterns; macOS uses Cmd/Shift
 Cmd patterns and AppKit input callbacks.
 
-**Strict config.** `src/config.zig` is the source of truth for the JSON schema
-and defaults. Unknown keys are fatal except `_`-prefixed comment keys. Numeric
-fields include their units (`_percent`, `_point`, `_ratio`).
+**Strict config.** `src/config.zig` is the source of truth for the TOML schema
+and defaults. Every key is required and unknown keys are fatal, with no
+exception -- TOML has real `#` comments, so there is no need for comment-shaped
+keys. Numeric fields include their units (`_percent`, `_point`, `_ratio`).
 
 **Wayland-only on Linux.** Wayland is where modern Linux desktops are heading,
 which matches the goal of behaving well on current desktop managers. X11 is not

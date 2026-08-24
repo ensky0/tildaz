@@ -21,6 +21,7 @@ const Runtime = @import("../runtime.zig").Runtime;
 const version = @import("../version.zig");
 const objc = @import("../macos_objc.zig");
 const config = @import("../config.zig");
+const physical_key = @import("../physical_key.zig");
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const renderer_module = @import("../renderer.zig");
@@ -873,28 +874,76 @@ fn applyPasteInputPolicy() void {
     }
 }
 
-/// #296 — macOS Cmd+keyCode 를 입력 정책 Shortcut 으로 분류. 인식 못한 조합은
-/// null (→ mainMenu Cmd+Q 등). `tildazKeyDown` 의 dispatch switch 와 정확히 일치.
-fn macCmdShortcut(kc: c_ushort, shift: bool) ?input_policy.Shortcut {
-    if (kc == 8) return .copy_selection; // Cmd+C
-    if (kc == 0x11 and !shift) return .new_tab; // Cmd+T
-    if (kc == 0x0D and !shift) return .close_tab; // Cmd+W
-    if (keycodeToTabIndex(kc) != null) return .switch_tab; // Cmd+1..9
-    if (shift and kc == 0x21) return .prev_tab; // Shift+Cmd+[
-    if (shift and kc == 0x1E) return .next_tab; // Shift+Cmd+]
-    // #482 — Cmd+PgUp / Cmd+PgDn 으로 이전 / 다음 탭. Linux · Windows 의
-    // Ctrl+PgUp / PgDn 에 대응하는 조합이다 (이 프로젝트의 Ctrl→Cmd 매핑).
-    // AZERTY 문제 자체는 macOS 에 없다 — `kVK_ANSI_*` 는 물리 위치라 layout 과
-    // 무관하다. 세 platform 이 같은 반사를 갖게 맞추는 것이 목적이고, 기존
-    // Shift+Cmd+[ / ] 와 Cmd+1..9 는 그대로 남는다 (추가이지 교체가 아니다).
-    // Mac 노트북엔 전용 PgUp / PgDn 키가 없어 Fn+↑ / Fn+↓ 가 되지만, 기존
-    // 바인딩을 그대로 두므로 잃는 것이 없다.
-    if (!shift and kc == 116) return .prev_tab; // Cmd+PageUp
-    if (!shift and kc == 121) return .next_tab; // Cmd+PageDown
-    if (shift and kc == 0x0F) return .reset_terminal; // Shift+Cmd+R
-    if (kc == 0x24) return .fullscreen; // Cmd+Enter / Shift+Cmd+Enter
-    if (shift and kc == 0x6F) return .dump_perf; // Shift+Cmd+F12
-    return null;
+/// #493 3-c — NSEvent 의 keyCode + modifier flags 를 `[keys]` 와 맞춘다. 예전엔
+/// `macCmdShortcut` 이 `kc == 8` 같은 상수 열두 줄로 같은 일을 했다.
+///
+/// macOS 는 `keyCode` 자체가 **물리 위치**다. 그래서 이 platform 은 위치로 적은
+/// binding (`[KeyW]`) 과 라벨 binding (`w`) 이 같은 값을 내고, 둘 다 자연히 잡힌다
+/// — 그 대가로 AZERTY 사용자는 `Z` 라고 새겨진 키를 눌러야 `close_tab` 이 되는
+/// 것이고 (#496 항목 2), 그것은 이 커밋의 범위가 아니다.
+///
+/// modifier 비트가 우연히 같다: `MacHotkey.MOD_*` 는 `kCGEventFlagMask*` 값이고
+/// `NSEventModifierFlag*` 도 같은 비트 자리를 쓴다 (shift 1<<17 · control 1<<18 ·
+/// option 1<<19 · command 1<<20). 그래도 마스크를 명시해 옮긴다 — 두 상수 집합이
+/// 같다는 사실에 조용히 기대지 않는다.
+fn macLookupAction(kc: c_ushort, flags: c_ulong) ?config.KeyAction {
+    const ns_shift: c_ulong = 1 << 17;
+    const ns_control: c_ulong = 1 << 18;
+    const ns_option: c_ulong = 1 << 19;
+    const ns_command: c_ulong = 1 << 20;
+
+    var modifiers: u64 = 0;
+    if ((flags & ns_shift) != 0) modifiers |= config.Hotkey.MOD_SHIFT;
+    if ((flags & ns_control) != 0) modifiers |= config.Hotkey.MOD_CTRL;
+    if ((flags & ns_option) != 0) modifiers |= config.Hotkey.MOD_ALT;
+    if ((flags & ns_command) != 0) modifiers |= config.Hotkey.MOD_SUPER;
+
+    return config.lookupAction(
+        g_config.key_bindings[0..g_config.key_binding_count],
+        .{ .keycode = kc, .modifiers = modifiers },
+        physical_key.fromMacKeyCode(kc),
+    );
+}
+
+/// #493 3-c — 액션 실행. 예전엔 `tildazKeyDown` 의 switch 가 `keyCode` 를 다시 읽어
+/// (`keycodeToTabIndex(kc).?`, `if (shift) .workarea`) 분기했다. 분류와 실행 두 곳에
+/// 같은 키 표가 있었다는 뜻이고, 그 이중 기술이 갈라지는 것이 #484 의 원인이었다.
+///
+/// `true` = 소비했다. `false` 면 호출자가 기존 경로로 흘린다.
+fn runKeyAction(action: config.KeyAction) bool {
+    const mapped = config.inputForAction(action);
+    // #282 A3 / #340 — paste 는 조합을 먼저 확정하고 payload 를 잇는다. pending 적용은
+    // 우클릭과 공통 helper 한 곳이다.
+    if (mapped.input == .paste) {
+        applyPasteInputPolicy();
+        handlePaste();
+        return true;
+    }
+    const shortcut = mapped.input.shortcut;
+    applyShortcutInputPolicy(shortcut);
+    switch (shortcut) {
+        .copy_selection => handleCopy(),
+        .new_tab => handleNewTab(),
+        .close_tab => handleCloseActiveTab(),
+        // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). `keycodeToTabIndex` 가
+        // 하던 일이다.
+        .switch_tab => tab_actions.switchTab(&g_host, mapped.tab_index orelse return false),
+        .prev_tab => tab_actions.prevTab(&g_host),
+        .next_tab => tab_actions.nextTab(&g_host),
+        .reset_terminal => tab_actions.resetActive(&g_host),
+        .dump_perf => perf.dumpAndReset(g_rt, "snapshot"),
+        // #493 3-c — 두 fullscreen 이 별 액션이 됐다. 예전엔 여기서 Shift 를 다시 읽어
+        // 갈랐는데, 사용자가 `fullscreen_workarea` 에 Shift 없는 조합을 줄 수도 있으므로
+        // 그 규칙으로는 안 된다.
+        .fullscreen => toggleFullscreenMode(.monitor),
+        .fullscreen_workarea => toggleFullscreenMode(.workarea),
+        // macOS 는 이 넷을 mainMenu 가 소유한다 (Cmd+Q / About / Config / Log). 메뉴
+        // 항목과 단축키가 둘 다 살아 있으면 어느 쪽이 이겼는지 알 수 없으므로 키
+        // 경로에서는 소비하지 않고 흘린다 — 메뉴가 받는다.
+        .quit, .show_about, .open_config, .open_log => return false,
+        .toggle_visibility, .open_command_menu, .open_shortcuts => return false,
+    }
+    return true;
 }
 
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
@@ -940,36 +989,20 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     if (cmd) {
         const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const kc = get_kc(event, objc.sel("keyCode"));
-        const NSEventModifierFlagShift: c_ulong = 1 << 17;
-        const shift = (flags & NSEventModifierFlagShift) != 0;
 
-        // #296 — Cmd 단축키의 preedit commit 여부는 입력 정책(input_policy.
-        // resolve) 한 곳에서 결정. copy(Cmd+C)/perf(Shift+Cmd+F12)는 read-only,
-        // 터미널 preedit 은 자모 보존 위해 flush. 그 외 단축키는 commit 후 실행
-        // (SPEC §4.1).
+        // #296 — 단축키의 preedit commit 여부는 입력 정책 (`input_policy.resolve`)
+        // 한 곳에서 결정한다. copy / perf 는 read-only 라 터미널 preedit 을 자모
+        // 보존 위해 flush 하고, 그 외 단축키는 commit 후 실행한다 (SPEC §4.1).
+        // `runKeyAction` 이 그 helper 를 부른다.
         //
-        // #282 A3 / #340 — Cmd+V(paste): 조합을 먼저 확정하고 payload 를 잇는다.
-        // pending 적용은 우클릭과 공통 helper(applyPasteInputPolicy) 한 곳.
-        if (kc == 9) {
-            applyPasteInputPolicy();
-            handlePaste();
-            return;
-        }
-
-        // Cmd+kc → 입력 정책 Shortcut 분류. 인식 못한 Cmd+key 는 mainMenu(Cmd+Q 등).
-        const shortcut = macCmdShortcut(kc, shift) orelse return;
-        applyShortcutInputPolicy(shortcut);
-        switch (shortcut) {
-            .copy_selection => handleCopy(), // Cmd+C (kc 8)
-            .new_tab => handleNewTab(), // Cmd+T
-            .close_tab => handleCloseActiveTab(), // Cmd+W
-            .switch_tab => tab_actions.switchTab(&g_host, keycodeToTabIndex(kc).?), // Cmd+1..9
-            .prev_tab => tab_actions.prevTab(&g_host), // Shift+Cmd+[ / Cmd+PageUp
-            .next_tab => tab_actions.nextTab(&g_host), // Shift+Cmd+] / Cmd+PageDown
-            .reset_terminal => tab_actions.resetActive(&g_host), // Shift+Cmd+R (#162)
-            .fullscreen => toggleFullscreenMode(if (shift) .workarea else .monitor), // Cmd/Shift+Cmd+Enter (#162)
-            .dump_perf => perf.dumpAndReset(g_rt, "snapshot"), // Shift+Cmd+F12 (#160)
-            else => {}, // macOS keyDown 이 안 내는 나머지(show_about/config/log/quit=mainMenu)
+        // #493 3-c — 어느 조합이 어느 액션인지는 `[keys]` 가 정한다. Shift 를 여기서
+        // 따로 읽지 않는다 — 예전엔 `fullscreen` 하나를 놓고 Shift 로 workarea 를
+        // 갈랐지만 이제 두 액션이 별 항목이다.
+        //
+        // 인식 못한 Cmd+key 는 mainMenu (Cmd+Q 등) 로 가야 하므로 소비하지 않고
+        // `return` 한다 — 기존 동작이다.
+        if (macLookupAction(kc, flags)) |action| {
+            if (runKeyAction(action)) return;
         }
         return;
     }
@@ -979,6 +1012,21 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const shift = (flags & NSEventModifierFlagShift) != 0;
     const option = (flags & NSEventModifierFlagOption) != 0;
     const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+
+    // #493 3-c — Cmd 없는 조합도 `[keys]` 를 본다. 이것이 없으면 사용자가 `[keys]` 에
+    // 적은 `ctrl+shift+t` 같은 binding 이 macOS 에서만 **조용히 무동작**이 된다 —
+    // 세 platform 이 한 config 를 공유하는데 한 곳만 말없이 무시하는 것은 #208 이
+    // 막으려던 종류의 실패다.
+    //
+    // config 가 아래 macOS 고유 경로보다 **앞선다.** 그래서 사용자가 `alt+return` 을
+    // 바인딩하면 Option+Enter 한자 재변환이 가려진다. 의도한 우선순위다 — Linux ·
+    // Windows 도 config 가 먼저이고, 무엇이 이겼는지 설명할 수 있어야 한다.
+    // 기본 macOS config 는 전부 `cmd` 조합이라 기본 사용자에게는 변화가 없다.
+    if (flags & (NSEventModifierFlagShift | NSEventModifierFlagOption | (1 << 18)) != 0) {
+        if (macLookupAction(get_keycode(event, objc.sel("keyCode")), flags)) |action| {
+            if (runKeyAction(action)) return;
+        }
+    }
     const keycode = get_keycode(event, objc.sel("keyCode"));
 
     if (option and keycode == 0x24) {
@@ -2630,23 +2678,6 @@ fn scrollbarScrollToY(mouse_y_px: f32) void {
     }
 }
 
-/// macOS keycode (kVK_ANSI_*) 의 1..9 → 0-base 탭 인덱스. 1 → 0, 2 → 1 식.
-/// 키보드 row 가 keycode 순서가 아니라 매핑이 비균일 (`0x12, 0x13, 0x14,
-/// 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19`).
-fn keycodeToTabIndex(kc: c_ushort) ?usize {
-    return switch (kc) {
-        0x12 => 0, // 1
-        0x13 => 1, // 2
-        0x14 => 2, // 3
-        0x15 => 3, // 4
-        0x17 => 4, // 5
-        0x16 => 5, // 6
-        0x1A => 6, // 7
-        0x1C => 7, // 8
-        0x19 => 8, // 9
-        else => null,
-    };
-}
 
 /// Cmd+W — 활성 탭을 즉시 정리. PTY 자식이 살아 있어도 deinit 의 SIGHUP +
 /// fd close 로 정상 hangup 후 종료. 마지막 탭이 닫혔는지는 다음 frame 의

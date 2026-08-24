@@ -4,102 +4,113 @@ Config file path (per OS standard):
 
 | OS | Path |
 |---|---|
-| Linux | `~/.config/tildaz/config_N.json` (XDG) |
-| macOS | `~/.config/tildaz/config_N.json` (XDG, Ghostty / Alacritty pattern) |
-| Windows | `%APPDATA%\tildaz\config_N.json` |
+| Linux | `~/.config/tildaz/config_N.toml` (XDG) |
+| macOS | `~/.config/tildaz/config_N.toml` (XDG, Ghostty / Alacritty pattern) |
+| Windows | `%APPDATA%\tildaz\config_N.toml` |
 
-The first launch creates `config_0.json` with defaults. Launching TildaZ while
+The first launch creates `config_0.toml` with defaults. Launching TildaZ while
 all configured instances are already running shows the resulting instance count
 and a hotkey capture dialog before writing the next numbered file. Press the
 desired key combination; **Create** remains disabled until a valid, unused
-hotkey is captured. Each `config_N.json` owns one TildaZ process. A legacy
-`config.json` is not loaded, converted, or deleted. Linux and macOS insert the
+hotkey is captured. Each `config_N.toml` owns one TildaZ process. A legacy
+`config.json` is not loaded, converted, or deleted. Neither is a `config_N.json` left over from before TildaZ used TOML — it stays on disk, unread. Linux and macOS insert the
 user's `$SHELL` env (or
 `/bin/bash`) into newly created configs.
 
-> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigJson` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
+> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
-> **Comment keys** — any key starting with `_` (e.g. `_note`, `_disabled_test_font`) is treated as a user comment and skipped from schema validation. Use this to annotate your config or temporarily disable a field by renaming it (e.g. `"shell": "/bin/zsh"` → `"_shell": "/bin/zsh"`). The `_` prefix convention is not part of JSON itself but is convenient here since the official schema never uses it.
+> **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
+>
+> Note that commenting a field **out** is not the same as leaving it at its default: every field listed in the table above is required, so removing one is an error rather than a fallback. To go back to a default, set the value explicitly.
 
-## Linux example
+## Examples
 
-```json
-{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 50.0,
-    "height_percent": 100.0,
-    "offset_percent": 100.0,
-    "opacity_percent": 100.0
-  },
-  "font": {
-    "family": "DejaVu Sans Mono",
-    "glyph_fallback": ["Noto Sans CJK KR", "Noto Color Emoji"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tilda",
-  "shell": "/bin/bash",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}
+Every field below is required, so a real config also carries the `[keys]`
+table -- see [Keyboard shortcuts](#keyboard-shortcuts). The examples omit it
+only to stay readable; TildaZ writes the whole file for you on first launch.
+
+### Linux
+
+```toml
+hotkey           = "F1"
+
+shell            = "/bin/bash"
+
+auto_start       = true
+hidden_start     = false
+
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"   # top | bottom | left | right
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "DejaVu Sans Mono"
+glyph_fallback    = ["Noto Sans CJK KR", "Noto Color Emoji"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
 ```
 
-## macOS example
+### macOS
 
-```json
-{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 50.0,
-    "height_percent": 100.0,
-    "offset_percent": 100.0,
-    "opacity_percent": 100.0
-  },
-  "font": {
-    "family": "Menlo",
-    "glyph_fallback": ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tilda",
-  "shell": "/bin/zsh",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}
+```toml
+hotkey           = "F1"
+
+shell            = "/bin/zsh"
+
+auto_start       = true
+hidden_start     = false
+
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"   # top | bottom | left | right
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "Menlo"
+glyph_fallback    = ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
 ```
 
-## Windows example
+### Windows
 
-```json
-{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 50.0,
-    "height_percent": 100.0,
-    "offset_percent": 100.0,
-    "opacity_percent": 100.0
-  },
-  "font": {
-    "family": "Cascadia Code",
-    "glyph_fallback": ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tilda",
-  "shell": "cmd.exe",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}
+```toml
+hotkey           = "F1"
+
+shell            = "cmd.exe"
+
+auto_start       = true
+hidden_start     = false
+
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"   # top | bottom | left | right
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "Cascadia Code"
+glyph_fallback    = ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
 ```
 
 ## Field reference
@@ -201,7 +212,137 @@ sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f
 Startup only fails when the name matches **no** installed font at all — a typo, or a font that is
 not installed.
 
-### Hotkey syntax
+### Keyboard shortcuts
+
+The `[keys]` table binds an action to one or more key combinations. Every action
+appears in the file, so you can see the whole set without consulting the docs.
+
+```toml
+[keys]
+new_tab   = ["ctrl+shift+t"]
+prev_tab  = ["ctrl+shift+[", "ctrl+pageup"]
+close_tab = ["ctrl+shift+[KeyW]"]
+quit      = []
+```
+
+- **A list, not a single value** — an action can have several keys.
+- **An empty list unbinds the action.** That is the only way to express "no
+  key"; the entry itself always stays in the file.
+- **Every key may trigger only one action.** Binding the same combination twice
+  is an error at startup, and the message names both actions.
+- **The defaults are not the same on every OS.** macOS follows Apple's
+  convention (`Cmd+T`, `Shift+Cmd+[`), Linux and Windows use `Ctrl+Shift+T`.
+  A modifier swap is not enough to express that, so the two default tables are
+  separate. See KEYBINDINGS.md for the full list.
+- `cmd` resolves per platform (Super on Linux, Win on Windows, Command on
+  macOS), so a combination you write yourself works on all three.
+
+#### Two ways to name a key
+
+```toml
+close_tab = ["ctrl+shift+w"]         # by label   -- the letter printed on the key
+close_tab = ["ctrl+shift+[KeyW]"]    # by position -- the physical spot, any layout
+```
+
+**A label is what the key types.** It is the natural way to write a shortcut and
+it is what the defaults use. It only works if your layout can actually produce
+that character: on a Cyrillic or Greek layout no key produces `w`, so
+`ctrl+shift+w` can never fire.
+
+**A position is a physical spot on the keyboard**, independent of layout. The
+names are [W3C `KeyboardEvent.code` values][w3c] — the same vocabulary browsers
+use, and the same notation VS Code uses in its keybindings. `[KeyW]` means "the
+key where a US QWERTY keyboard has `w`", whatever that key prints on your
+layout.
+
+[w3c]: https://www.w3.org/TR/uievents-code/
+
+Use a position when a label cannot reach the key you want:
+
+| Situation | Why the label fails | Position form |
+|---|---|---|
+| Cyrillic, Greek, Arabic, Hebrew… | no key produces a Latin letter | `ctrl+shift+[KeyW]` |
+| French AZERTY brackets | `[` is AltGr+5, so the label needs four fingers | `ctrl+shift+[BracketLeft]` |
+| Keys outside the label set | `-` `=` `\` `;` `'` `,` `.` `/`, numpad, arrows | `ctrl+[Minus]` |
+
+Positions and labels can be mixed freely, including within one action's list.
+
+#### Accepted keys
+
+**By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
+`Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `` ` `` (also
+`Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`).
+Case does not matter. Anything else is an error at startup — including
+layout-specific characters such as `²` on French AZERTY.
+
+The label set is deliberately narrow. Widening it would mean giving `-` a value,
+and the only fixed values available (`VK_OEM_MINUS`, `kVK_ANSI_Minus`) are not
+labels at all — they are "the spot where US QWERTY has `-`". Calling that a
+label would make the same config mean different keys on different platforms.
+Positions are honest about being positions, so that is where the extra keys
+live.
+
+**By position**: every key a keyboard can send, in square brackets.
+
+| Group | Names |
+|---|---|
+| Function | `[F1]`–`[F24]` |
+| Letters | `[KeyA]`–`[KeyZ]` |
+| Digit row | `[Digit0]`–`[Digit9]` |
+| Symbols | `[Backquote]` `[Minus]` `[Equal]` `[BracketLeft]` `[BracketRight]` `[Backslash]` `[Semicolon]` `[Quote]` `[Comma]` `[Period]` `[Slash]` |
+| Non-US keys | `[IntlBackslash]` (the extra key on ISO keyboards — `<>` on AZERTY), `[IntlYen]`, `[IntlRo]` |
+| Editing | `[Space]` `[Tab]` `[Escape]` `[Enter]` `[Backspace]` `[Insert]` `[Delete]` `[Home]` `[End]` `[PageUp]` `[PageDown]` |
+| Arrows | `[ArrowUp]` `[ArrowDown]` `[ArrowLeft]` `[ArrowRight]` |
+| Numpad | `[NumLock]` `[Numpad0]`–`[Numpad9]` `[NumpadDivide]` `[NumpadMultiply]` `[NumpadSubtract]` `[NumpadAdd]` `[NumpadEnter]` `[NumpadDecimal]` `[NumpadEqual]` |
+| Other | `[CapsLock]` `[PrintScreen]` `[ScrollLock]` `[Pause]` `[ContextMenu]` `[Lang1]` `[Lang2]` `[Convert]` `[NonConvert]` `[KanaMode]` |
+
+Modifier keys themselves (`[ShiftLeft]`, `[ControlLeft]`, …) are not accepted:
+in this syntax a modifier is a prefix, not a key.
+
+**A few positions do not exist on macOS.** `[PrintScreen]`, `[ScrollLock]` and
+`[Pause]` arrive there as `[F13]`, `[F14]` and `[F15]` — Apple's extended
+keyboard puts those function keys in the same spots, so use those names instead.
+`[F21]`–`[F24]`, `[Convert]`, `[NonConvert]` and `[KanaMode]` have no macOS
+equivalent at all. TildaZ reports this at startup rather than leaving the
+binding quietly dead, and only on macOS: the same config is fine on Linux and
+Windows.
+
+#### Modifiers
+
+`Ctrl`, `Alt` (also `Option` / `Opt`), `Shift`, and the platform key written as
+`Cmd` (also `Command` / `Super` / `Win` / `Meta` / `Logo`).
+
+**A key that types text needs `Ctrl`, `Alt`, or `Cmd`** — binding it with no
+modifier, or with `Shift` alone, would make that character impossible to type in
+the terminal. Keys that type nothing may be bound bare: `F1`–`F24`, `PageUp`,
+`PageDown`, `Escape`, `NumLock`, `CapsLock`. Arrow and editing keys count as
+typing keys even though they produce no character, because they send escape
+sequences that programs in the terminal expect to receive.
+
+**Digit bindings ignore Shift.** On layouts where the digit row needs Shift —
+French AZERTY, where the unshifted row is `&é"'(-è_çà` — `Alt+1` physically
+arrives as Alt+Shift+the `&1` key. Without this exception, switching tabs by
+index would be dead on those layouts. It applies to digits only: `Shift+Alt+F4`
+still does not trigger a binding on `Alt+F4`.
+
+#### Two things are not in `[keys]`
+
+**Scrolling.** `Shift+PgUp` / `Shift+PgDn` scroll the scrollback, and scrolling
+is not a shortcut — it is the same action as the mouse wheel, driven from the
+keyboard. TildaZ does not let you rebind the wheel either. Those two
+combinations are fixed.
+
+**`Ctrl+C`.** It sends SIGINT to the program in the terminal. Letting a config
+file shadow it would mean one typo costs you the ability to interrupt a command.
+
+The global `hotkey` is separate for a different reason: it is registered with the
+operating system rather than handled inside TildaZ, so it lives at the top level
+and takes a single value. It does **not** accept the position form — every path
+TildaZ registers it through (sway, Hyprland, COSMIC, KDE) accepts only a
+character. A function key is the safest choice there, being identical on every
+layout.
+
+## Hotkey syntax
 
 `hotkey` accepts a single key optionally combined with modifiers, joined by `+`
 (e.g. `"F1"`, `"Ctrl+Space"`, `"Shift+Cmd+T"`). Rules (validated at startup — an
@@ -215,8 +356,9 @@ invalid value shows an error dialog and exits):
 - **`Shift` alone is not a valid trigger modifier** — combine it with
   `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
 - **Accepted keys**, in full: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`,
-  `Escape` (`Esc`), `Return` (`Enter`), and `` ` `` — writable as `` ` ``,
-  `Grave`, or `Backquote`. Letter case does not matter.
+  `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
+  `` ` `` (also `Grave` / `Backquote`), `[` (also `BracketLeft`), and `]` (also
+  `BracketRight`). Letter case does not matter.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same
