@@ -2146,9 +2146,44 @@ fn routeMouseMac(
     };
 }
 
+/// #502 — 휠 notch 누적. 연속 delta (트랙패드) 와 tick (마우스 휠) 은 단위가 달라
+/// 따로 모은다. 나머지를 보존해야 작은 delta 가 버려지지도 부풀려지지도 않는다
+/// (command menu 의 wheel 처리 · Linux `report_wheel_accum` 과 같은 패턴).
+var g_report_wheel_accum_pt: f64 = 0;
+var g_report_wheel_accum_tick: f64 = 0;
+
+/// 이벤트 하나가 만드는 notch 수. 남는 값은 다음 이벤트로 넘긴다.
+///
+/// **`hasPreciseScrollingDeltas` 로 갈라야 한다.** 트랙패드는 `scrollingDeltaY` 가
+/// **논리 pt** 로, 마우스 휠은 **tick 수** 로 온다 (실측: `line` 1 notch → 1.0 ·
+/// `pixel` 10 → 10.0). 구분 없이 한 배율을 곱하면 한쪽이 반드시 어긋난다 — 이전 판은
+/// 둘 다 `* 2.0` + `ceil` 이라 **마우스 휠 한 칸이 2 notch**, **트랙패드 한 번
+/// 훑기가 수십 notch** 였다 (#502 macOS 실기에서 66~86 개).
+fn wheelNotches(delta_y: f64, precise: bool, cell_h_pt: f64) i64 {
+    if (precise) {
+        // 트랙패드 — cell 높이만큼 손가락이 움직이면 한 줄. pt 단위로 비교해야
+        // HiDPI 에서도 같은 손놀림이 같은 줄 수가 된다 (delta 는 논리 pt).
+        g_report_wheel_accum_pt += delta_y;
+        const n = @trunc(g_report_wheel_accum_pt / cell_h_pt);
+        g_report_wheel_accum_pt -= n * cell_h_pt;
+        return @intFromFloat(n);
+    }
+    // 마우스 휠 — macOS 는 non-precision 이벤트의 크기도 스크롤 속도에 따라 줄여서,
+    // 아주 느리게 한 칸 돌리면 `0.1` 처럼 온다. 최소 한 tick 으로 올려 **한 칸이
+    // 반드시 한 notch** 가 되게 한다 (ghostty `Surface.zig` 의 macOS 특례와 같은 이유).
+    const ticks = if (delta_y > 0) @max(delta_y, 1.0) else @min(delta_y, -1.0);
+    g_report_wheel_accum_tick += ticks;
+    const n = @trunc(g_report_wheel_accum_tick);
+    g_report_wheel_accum_tick -= n;
+    return @intFromFloat(n);
+}
+
 /// 휠을 앱이 가져가야 하면 보내고 true. false 면 기존 scrollback 스크롤.
-/// notch 환산은 아래 scrollback 경로와 **같은 multiplier 2** 를 써서 체감을 맞춘다.
-fn routeWheelMac(delta_y: f64, x: f32, y: f32, mods: mouse_report.Mods) bool {
+///
+/// notch 는 `wheelNotches` 가 장치 단위에 맞춰 센다. **아래 scrollback 경로의
+/// multiplier 2 와는 다르다** — 그 값은 우리 화면을 굴리는 체감용이고, 앱에게는
+/// `1 notch = 보고 1 건` 으로 보내야 Linux · Windows 와 같아진다 (SPEC §3).
+fn routeWheelMac(delta_y: f64, precise: bool, x: f32, y: f32, mods: mouse_report.Mods) bool {
     const tab = g_session.activeTab() orelse return false;
     if (delta_y == 0) return false;
 
@@ -2161,16 +2196,22 @@ fn routeWheelMac(delta_y: f64, x: f32, y: f32, mods: mouse_report.Mods) bool {
     // Shift bypass — Shift+휠은 우리 scrollback 스크롤로 남긴다.
     if (mods.shift and terminal_interaction.reportShiftCapture(&tab.terminal) != .app) return false;
 
-    const scaled = delta_y * 2.0;
-    const steps: f64 = if (scaled > 0) @ceil(scaled) else @floor(scaled);
-    const n: usize = @intFromFloat(@abs(steps));
-    if (n == 0) return true;
+    // 앱 것으로 판정된 뒤라 여기서 false 를 주면 우리 스크롤로 새어 나간다 —
+    // 아래 `reportGeometryMac() orelse return true` 와 같은 방향으로 소비한다.
+    if (g_renderer == null) return true;
+    const cell_h_pt: f64 = @as(f64, @floatFromInt(g_renderer.?.font.cell_height_px)) /
+        @as(f64, g_renderer.?.scale);
+    const steps = wheelNotches(delta_y, precise, cell_h_pt);
+    // 앱 것이지만 아직 한 notch 가 안 찼다 — 소비하고 우리 스크롤도 하지 않는다.
+    if (steps == 0) return true;
+    const n: usize = @intCast(@abs(steps));
     const up = steps > 0;
 
     if (alt_scroll) {
+        // xterm 은 notch 당 3 줄을 보낸다 (SPEC §3 · Linux `routeWheelLinux` 와 동일).
         const key = mouse_report.alternateScrollKey(up, tab.terminal.modes.get(.cursor_keys));
         var i: usize = 0;
-        while (i < n) : (i += 1) tab.queueWrite(key);
+        while (i < n * 3) : (i += 1) tab.queueWrite(key);
         return true;
     }
 
@@ -2943,7 +2984,10 @@ fn tildazScrollWheel(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.
     // 그대로 두면 휠이 무동작이다).
     {
         const px = eventToWindowPx(self_view, event);
-        if (routeWheelMac(delta_y, px.x, px.y, eventMouseMods(event))) return;
+        // 트랙패드 (연속 pt) 와 마우스 휠 (tick) 은 delta 의 단위가 다르다.
+        const get_bool = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
+        const precise = get_bool(event, objc.sel("hasPreciseScrollingDeltas"));
+        if (routeWheelMac(delta_y, precise, px.x, px.y, eventMouseMods(event))) return;
     }
 
     // ceil/floor 로 작은 값도 1 line 으로. multiplier 1.0 이면 약간 느려서
