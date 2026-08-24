@@ -1455,9 +1455,10 @@ pub fn defaultConfigTomlWithHotkey(
     // `[keys]` 는 액션 수가 많아 별 helper 로 조립한다. **최상위 스칼라 뒤, 테이블
     // 뒤**에 온다 — TOML 은 테이블 헤더 다음의 키를 그 테이블 소속으로 읽으므로
     // 순서를 바꿀 수 없다.
-    // 액션 25 개 × 한 줄 ~60 byte + 그룹 주석. 고정 버퍼로 충분하고 (이 코드베이스의
-    // `Io.Writer.fixed` 패턴) 넘치면 `writeAll` 이 오류를 낸다 — 조용히 잘리지 않는다.
-    var keys_buf: [4096]u8 = undefined;
+    // 액션 23 개 × 한 줄 ~60 byte + 안내 주석 (라벨 / 위치 두 표기 설명이 들어가
+    // 커졌다). 고정 버퍼로 충분하고 (이 코드베이스의 `Io.Writer.fixed` 패턴) 넘치면
+    // `writeAll` 이 오류를 낸다 — 조용히 잘리지 않는다.
+    var keys_buf: [8192]u8 = undefined;
     var keys_fbs: std.Io.Writer = .fixed(&keys_buf);
     try appendKeysSection(&keys_fbs);
     const keys = keys_fbs.buffered();
@@ -1601,13 +1602,29 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         \\# An action may have several keys. An empty list [] means "no shortcut".
         \\#
         \\# `cmd` resolves per OS -- Super on Linux, Win on Windows, Command on
-        \\# macOS -- so this file works unchanged on all three.
+        \\# macOS -- so a combination you write yourself works on all three.
         \\#
-        \\# Accepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return,
-        \\#                grave(`), pageup, pagedown, [, ]
+        \\# A key can be named two ways:
         \\#
-        \\# See CONFIG.md for the full syntax and KEYBINDINGS.md if your keyboard
-        \\# layout is not US QWERTY.
+        \\#   by label      "ctrl+shift+w"        the letter printed on the key
+        \\#   by position   "ctrl+shift+[KeyW]"   the physical spot, any layout
+        \\#
+        \\# Labels are simpler and are what these defaults use. Use a position when
+        \\# a label cannot reach the key -- on a Cyrillic or Greek layout no key
+        \\# produces `w`, so "ctrl+shift+w" can never fire. Position names are W3C
+        \\# KeyboardEvent.code values: https://www.w3.org/TR/uievents-code/
+        \\#
+        \\# Accepted labels: F1-F12, A-Z, 0-9, space, tab, escape, return,
+        \\#                  grave(`), pageup, pagedown, [, ]
+        \\# Accepted positions: every key a keyboard can send -- letters, digits,
+        \\#                  symbols, numpad, arrows, F13-F24. See CONFIG.md.
+        \\#
+        \\# Scrolling (shift+pageup / shift+pagedown) and ctrl+c are not here: the
+        \\# first is the mouse wheel driven from the keyboard, the second sends
+        \\# SIGINT. Neither can be rebound.
+        \\#
+        \\# CONFIG.md has the full syntax; KEYBINDINGS.md has worked examples for
+        \\# AZERTY and non-Latin keyboards.
         \\# ─────────────────────────────────────────────────────────────────────────
         \\
         \\[keys]

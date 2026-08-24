@@ -2,6 +2,11 @@
 
 Cross-platform shortcut convention: each platform follows its native modifier (Apple HIG order Shift+Cmd on macOS; Ctrl+Shift on Linux and Windows).
 
+These are the **defaults**. Every row except the scrollback pair can be changed in
+the `[keys]` table of your config — see [CONFIG.md](CONFIG.md#keyboard-shortcuts)
+for the syntax, and [Keyboard layouts](#keyboard-layouts) below if your keyboard
+is not US QWERTY.
+
 | Action | Linux | macOS | Windows |
 |--------|-------|-------|---------|
 | Toggle terminal show/hide | F1 (configurable) | F1 (configurable) | F1 (configurable) |
@@ -49,24 +54,91 @@ action as the mouse wheel, which is also not rebindable.
 
 ## Keyboard layouts
 
-The bracket bindings follow the US layout. On layouts where `[` and `]` need
-AltGr — French AZERTY, for instance, where `[` is AltGr+5 — `Ctrl+Shift+[` would
-mean pressing Ctrl+Shift+AltGr+5, which is not usable. **`Ctrl+PgUp` / `Ctrl+PgDn`
-(`Cmd+PgUp` / `Cmd+PgDn` on macOS) do the same thing and work on every layout**,
-since PgUp and PgDn are single physical keys everywhere. They match what GNOME
-Terminal, Konsole, and Windows Terminal use.
+Every binding above can be changed in `[keys]` (see CONFIG.md). This section is
+about the cases where the *default* bindings cannot be typed at all, and what to
+write instead.
 
-Switching tabs by index also used to fail on AZERTY: the digit row needs Shift
-there, so `Alt+1` is physically Alt+Shift+the `&1` key, and TildaZ was requiring
-Shift *not* to be held. It now accepts either, on every layout.
+### Non-Latin layouts: letter shortcuts cannot work by label
 
-Mac laptops have no dedicated PgUp / PgDn keys — they are Fn+Up / Fn+Down. The
-existing `Shift+Cmd+[` / `]` and `Cmd+1`–`9` bindings are unchanged, so nothing is
-lost; `Cmd+PgUp` / `Cmd+PgDn` is an addition for people who use the same reflex
-on more than one OS.
+On a Cyrillic, Greek, Arabic, or Hebrew layout, **no key produces a Latin
+letter**. `Ctrl+Shift+W` is therefore unreachable — not awkward, unreachable.
+The keyboard has no `w` to press:
 
-`Shift+PgUp` / `Shift+PgDn` still scroll the scrollback, and unmodified PgUp /
-PgDn still go to the program running in the terminal.
+```
+$ xkbcli how-to-type --layout ru 'w'
+(nothing)
+```
+
+Rebinding to another letter does not help, because the problem is the whole
+Latin alphabet. The fix is to name the key by **position** instead of by label:
+
+```toml
+[keys]
+new_tab        = ["ctrl+shift+[KeyT]"]
+close_tab      = ["ctrl+shift+[KeyW]"]
+copy_selection = ["ctrl+shift+[KeyC]"]
+paste          = ["ctrl+shift+[KeyV]"]
+prev_tab       = ["ctrl+shift+[BracketLeft]", "ctrl+pageup"]
+next_tab       = ["ctrl+shift+[BracketRight]", "ctrl+pagedown"]
+```
+
+`[KeyW]` means "the key where a US QWERTY keyboard has `w`". You press the same
+physical key a US user presses; what it prints does not matter. The names are
+W3C `KeyboardEvent.code` values — the full list is in CONFIG.md.
+
+### French AZERTY
+
+Letters are fine on AZERTY (it is a Latin layout), but two of the defaults are
+not.
+
+**Brackets.** `[` is AltGr+5, so `Ctrl+Shift+[` means Ctrl+Shift+AltGr+5 — four
+fingers. Two ways out, and the second is already bound by default:
+
+```toml
+prev_tab = ["ctrl+shift+[BracketLeft]", "ctrl+pageup"]
+```
+
+`[BracketLeft]` is the physical spot, which on AZERTY is the `^` key next to
+`P` — reachable with no AltGr. And **`Ctrl+PgUp` / `Ctrl+PgDn` work on every
+layout** because PgUp and PgDn are single physical keys everywhere; they match
+what GNOME Terminal, Konsole, and Windows Terminal use.
+
+**The digit row.** AZERTY needs Shift for digits (unshifted it is `&é"'(-è_çà`),
+so `Alt+1` physically arrives as Alt+Shift+the `&1` key. TildaZ accepts that:
+digit bindings ignore Shift, on every layout. Nothing to change.
+
+**The extra ISO key.** AZERTY has a `<>` key that US keyboards do not have. It
+is `[IntlBackslash]` if you want to bind it.
+
+### macOS
+
+macOS reports the physical key, so a shortcut lands on the same *spot* on every
+layout. That is Apple's convention and it cuts both ways: an AZERTY user's
+`Cmd+W` is the key printed `Z`, because that spot is where US QWERTY has `w`.
+Nothing to configure — but worth knowing if the letter in the menu does not
+match the key you press.
+
+Mac laptops have no dedicated PgUp / PgDn keys; they are Fn+Up / Fn+Down. The
+`Shift+Cmd+[` / `]` and `Cmd+1`–`9` defaults are unchanged, so nothing is lost.
+`Cmd+PgUp` / `Cmd+PgDn` is an addition for people who use the same reflex on more
+than one OS.
+
+A few positions do not exist on macOS — `[PrintScreen]`, `[ScrollLock]` and
+`[Pause]` arrive as `[F13]`, `[F14]`, `[F15]`. CONFIG.md has the details.
+
+### The global hotkey is different
+
+`hotkey` is registered with the desktop rather than handled inside TildaZ, and
+every path TildaZ uses for that (sway, Hyprland, COSMIC, KDE) accepts only a
+character — so it does **not** take the position form. A function key is the
+safest choice: `F1`–`F12` are identical on every layout.
+
+### What stays fixed
+
+`Shift+PgUp` / `Shift+PgDn` scroll the scrollback and cannot be rebound —
+scrolling is the mouse wheel's action driven from the keyboard, and the wheel is
+not rebindable either. Unmodified PgUp / PgDn go to the program running in the
+terminal. `Ctrl+C` always sends SIGINT.
 
 ## Tab bar controls
 
