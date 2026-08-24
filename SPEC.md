@@ -325,11 +325,19 @@ platform 마다 다르다.
   Recommendation) 표기는 VS Code 와 같은 대괄호다. 세 platform 값의 단일 출처는
   `src/physical_key.zig` 다.
 - **그리고 기본값이 그대로 동작하도록 라틴 fallback 을 둔다** (1-a, Linux 전용).
-  keymap 을 받을 때마다 (`wl_keyboard.keymap` — layout 을 바꿔도 다시 온다) 각 라벨
-  binding 에 대해 **현재 keymap 이 그 문자를 낼 수 있는지** 묻고
-  (`xkb.canProduceKeysym` — layout group × level 전수 조회, modifier 상태를 보지
-  않는다), 낼 수 없으면 그 문자가 US 자판에서 있던 자리로 매칭한다. 실측: `ru` 단독은
-  `w` 를 못 내고 (`us w` 자리가 `0x6c3` `Cyrillic_tse` 를 낸다), `us,ru` 는 낼 수 있다.
+  각 라벨 binding 에 대해 **활성 layout group 이 그 문자를 낼 수 있는지** 묻고
+  (`xkb.canProduceKeysym`), 낼 수 없으면 그 문자가 US 자판에서 있던 자리로 매칭한다.
+  - **판정은 활성 group 만 본다.** 처음에 group 을 전수로 훑었는데 그것이 결함이었다 —
+    매처는 활성 group 이 내는 keysym 만 보므로 판정도 같은 group 을 봐야 한다. 실측
+    (`us,ru` keymap): group 0 은 `sym@KeyW=0x77`, group 1 은 `0x6c3`
+    (`Cyrillic_tse`) 인데 전수 조회는 양쪽에서 `canProduceKeysym('w') = true` 를 낸다.
+    그래서 ru group 으로 전환한 사용자는 fallback 을 받지 못해 단축키가 죽었고, 그것이
+    비라틴 사용자의 **가장 흔한 설정**이라 정작 다수 사례를 놓쳤다.
+  - **재해석 트리거가 둘이다.** keymap 교체는 `wl_keyboard.keymap`, **group 전환은
+    `wl_keyboard.modifiers` 의 `group` 필드**로 온다. 후자를 빠뜨리면 위 결함이 된다.
+    Mutter 도 `keymap-changed` 와 `keymap-layout-group-changed` 둘 다 훅한다.
+  - level 은 전수로 훑는다 — "Shift 를 눌러야 나오는 문자" 도 낼 수 있는 것으로 세야
+    한다. 키마다 layout 수가 달라 유효 layout 은 `group % num_layouts_for_key` 다.
   - **닿지 않을 때만 만든다.** 무조건 2 차 pass 를 돌리면 AZERTY 에서 `Z` 라 인쇄된
     키 (US `w` 자리) 가 `close_tab` 을 발동시켜 한 동작에 키가 둘 생긴다.
   - **판정 불가 (`null`) 와 false 를 구분한다.** libxkbcommon 이 keymap 조회 심볼을
@@ -339,8 +347,9 @@ platform 마다 다르다.
   - **라벨이 먼저다.** 라벨로 잡히는 event 가 fallback 때문에 다른 액션이 되면
     사용자가 설명할 수 없다.
   - GTK 는 같은 문제를 "영어 layout 이 첫 layout 으로 설정돼 있어야 한다" 는 *요구*로
-    푼다. 우리는 요구하지 않고 keymap 을 보고 스스로 판정한다 — `us,ru` 사용자에게는
-    결과가 같고, `ru` 단독 사용자에게는 다르다.
+    푼다. 우리는 요구하지 않고 활성 group 을 보고 스스로 판정하므로 `us,ru` · `ru` 단독
+    양쪽에서 동작한다. Mutter 는 `us` keymap 을 즉석 컴파일해 같은 결과를 얻는다
+    (`create_us_layout()`) — 우리는 내장 W3C 위치표가 그 자리를 대신한다.
 - **수용 집합은 라벨 쪽이 좁고 위치 쪽이 넓다.** 의도한 비대칭이다. 라벨을 넓히려면 `-` 에
   값을 줘야 하는데 쓸 수 있는 고정값 (`VK_OEM_MINUS` · `kVK_ANSI_Minus`) 은 라벨이 아니라 "US
   자판에서 `-` 가 있는 자리" 다. 그것을 라벨이라 부르면 같은 config 가 platform 마다 다른 키를
