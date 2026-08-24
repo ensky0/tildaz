@@ -70,7 +70,27 @@ $ xkbcli how-to-type --layout ru 'w'
 ```
 
 Rebinding to another letter does not help, because the problem is the whole
-Latin alphabet. The fix is to name the key by **position** instead of by label:
+Latin alphabet.
+
+**TildaZ handles this for you.** When it loads a keymap it checks, for every
+label binding, whether the current keymap can produce that character at all. If
+nothing can, it matches that binding by the physical spot the character occupies
+on a US keyboard instead. So the defaults work on a Cyrillic layout with no
+config changes: you press the same key a US user presses.
+
+Two details worth knowing:
+
+- **It only kicks in when the label is unreachable.** If you have a Latin layout
+  configured alongside — `us,ru` is the common setup — `w` is reachable, so
+  nothing changes and the label keeps working as usual. That also means the
+  shortcut follows the *label* on that setup, which is what you want.
+- **It is Linux-only, because only Linux needs it.** Windows non-Latin layouts
+  assign Latin virtual keys to the physical spots (`KBDRU` puts `VK_W` on the
+  `w` position), and macOS matches physical key codes to begin with, so letter
+  shortcuts already work there.
+
+You can still name a key by **position** explicitly, which is useful if you want
+a shortcut pinned to a spot regardless of layout:
 
 ```toml
 [keys]

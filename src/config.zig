@@ -1820,6 +1820,89 @@ pub fn inputForAction(action: KeyAction) ActionInput {
     };
 }
 
+/// #496 1-a — 이 binding 이 **라틴 fallback 후보인가.**
+///
+/// 비라틴 layout (키릴 · 그리스 · 아랍 ...) 에서는 그 자판의 어느 키도 라틴 글자를
+/// 내지 않으므로 `ctrl+shift+w` 가 영원히 발동하지 않는다. 그럴 때 **US 자판에서 그
+/// 글자가 있던 자리**로 대신 매칭해 준다 — GTK · i3 · sway · VS Code 가 하는 것과 같다.
+///
+/// 후보 조건은 **layout 에 따라 달라지는 라벨**이라는 것이다:
+///
+///   - 위치로 적은 binding 은 후보가 아니다 (이미 layout 무관하다).
+///   - `F1` · `PageUp` 처럼 layout 과 무관한 named 키는 후보가 아니다 — 어느 자판에나
+///     그 키가 있으므로 라벨 매칭이 실패할 이유가 없다.
+///   - 글자 · 숫자 · `` ` `` · `[` · `]` 만 후보다.
+///
+/// **실제로 fallback 을 만들지는 호출자가 정한다** — 현재 keymap 이 그 글자를 낼 수
+/// 있으면 만들지 않는다. 그것이 중요하다: AZERTY 는 `w` 를 낼 수 있으므로 fallback 이
+/// 생기지 않고, 따라서 `Z` 라 인쇄된 키 (US `w` 자리) 가 `close_tab` 을 발동시키지
+/// **않는다.** 무조건 두 번째 pass 를 돌리면 그 layout 에서 한 동작에 키가 둘 생긴다.
+pub const FallbackCandidate = struct {
+    /// 이 binding 이 기다리는 라벨 keysym. 호출자가 keymap 에 물어볼 값이다.
+    keysym: u32,
+    /// 그 글자가 US 자판에서 있던 자리.
+    code: PhysicalCode,
+};
+
+pub fn fallbackCandidate(hotkey: Hotkey) ?FallbackCandidate {
+    // Linux 만이 라벨 (keysym) 로 매칭한다. Windows 는 비라틴 layout DLL 이 물리
+    // 위치에 라틴 VK 를 배정하고 (`KBDRU` 의 scancode 0x11 → `VK_W`) macOS 는
+    // `kVK_ANSI_*` 가 애초에 위치라, 두 platform 은 키릴에서도 이미 동작한다.
+    if (is_windows or is_macos) return null;
+    if (hotkey.code != null) return null;
+    const code = usPositionForKeysym(hotkey.keysym) orelse return null;
+    return .{ .keysym = hotkey.keysym, .code = code };
+}
+
+/// keysym → US 자판에서 그 글자가 있던 자리. `LinuxHotkey.keysymFromKey` 의 역방향
+/// 이고 **char 계열만** 다룬다 (named 키는 layout 무관이라 fallback 이 필요 없다).
+fn usPositionForKeysym(keysym: u32) ?PhysicalCode {
+    var name_buf: [8]u8 = undefined;
+    if (keysym >= 'a' and keysym <= 'z') {
+        const name = std.fmt.bufPrint(&name_buf, "Key{c}", .{std.ascii.toUpper(@intCast(keysym))}) catch return null;
+        return physical_key.fromName(name);
+    }
+    if (keysym >= '0' and keysym <= '9') {
+        const name = std.fmt.bufPrint(&name_buf, "Digit{c}", .{@as(u8, @intCast(keysym))}) catch return null;
+        return physical_key.fromName(name);
+    }
+    return switch (keysym) {
+        0x60 => .backquote,
+        0x5b => .bracket_left,
+        0x5d => .bracket_right,
+        else => null,
+    };
+}
+
+/// #496 1-a — 라벨 조회가 실패했을 때 **대체 위치**로 한 번 더 본다.
+///
+/// `fallbacks` 는 `bindings` 와 **같은 인덱스**다. non-null 인 항목만 2 차 pass 의
+/// 대상이고, 그것은 호출자가 "이 라벨은 현재 keymap 으로 낼 수 없다" 고 판정한
+/// binding 뿐이다 (`fallbackCandidate` 주석 참고).
+///
+/// 순서가 중요하다 — **라벨이 먼저다.** 라벨로 잡히는 event 가 fallback 때문에 다른
+/// 액션이 되면 사용자가 설명할 수 없다.
+pub fn lookupActionWithFallback(
+    bindings: []const KeyBinding,
+    fallbacks: []const ?PhysicalCode,
+    hotkey: Hotkey,
+    code: ?PhysicalCode,
+) ?KeyAction {
+    if (lookupAction(bindings, hotkey, code)) |action| return action;
+    const got = code orelse return null;
+    for (bindings, 0..) |b, i| {
+        if (i >= fallbacks.len) break;
+        const want = fallbacks[i] orelse continue;
+        if (want != got) continue;
+        // modifier 규칙은 1 차 pass 와 같다 — 숫자 예외까지 포함해서다 (#482).
+        const shift_bit: @TypeOf(hotkey.modifiers) = Hotkey.MOD_SHIFT;
+        const mods_match = b.hotkey.modifiers == hotkey.modifiers or
+            (isDigitBinding(b.hotkey) and b.hotkey.modifiers == (hotkey.modifiers & ~shift_bit));
+        if (mods_match) return b.action;
+    }
+    return null;
+}
+
 pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?PhysicalCode) ?KeyAction {
     std.debug.assert(hotkey.code == null);
     for (bindings) |b| {
