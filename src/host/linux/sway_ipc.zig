@@ -40,7 +40,29 @@ const ipc_header_len = ipc_magic.len + 8; // magic(6) + len(4) + type(4)
 /// sway 가 아니거나 (`SWAYSOCK` 없음 + `XDG_CURRENT_DESKTOP` 에 sway 토큰 없음)
 /// 등록 실패는 모두 graceful — log 만 남기고 반환한다. single_instance toggle
 /// listener 는 그대로 살아 있어 사용자가 수동 등록도 가능.
-pub fn registerToggleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config) void {
+/// #496 1-b — 전역 핫키를 **물리 위치**로 등록한다.
+///
+/// sway 는 `bindsym` 을 **활성 layout 의 keysym** 에 맞춘다. 그래서 사용자가 `hotkey`
+/// 를 글자 조합으로 바꾸면 비라틴 layout 으로 전환했을 때 조용히 안 먹는다 — 등록은
+/// 성공하고 경고도 없다. 나머지 DE 는 자기가 라틴 fallback 을 하는데 (GNOME 3.28+ ·
+/// Cinnamon 5.4+ · COSMIC · KDE) sway 와 Hyprland 는 하지 않는다.
+///
+/// `keycode` 가 있으면 `bindcode` 로 등록해 **자리에 고정**한다. 한 번 고정하면 group
+/// 전환에 영향받지 않으므로 재등록이 필요 없다 — 그것이 위치 등록의 요점이다.
+///
+/// **숫자는 evdev 가 아니라 xkb keycode (= evdev + 8) 다.** sway 는 2018 년 커밋
+/// *"Use XKB keycode numbering for bindcode"* 로 evdev 를 일부러 뺐고, 잘못된 숫자를
+/// **거부하지 않는다** (`xkb_keycode_is_legal_ext` 가 `XKB_KEYCODE_MAX` 까지 통과).
+/// off-by-8 이면 조용히 옆 키에 붙는다.
+///
+/// `keycode` 가 null 이면 예전처럼 `bindsym` 으로 등록한다 — libxkbcommon 이 keymap
+/// 조회 심볼을 안 내주는 환경에서 핫키를 아예 잃는 것보다 낫다.
+pub fn registerToggleIfSway(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    cfg: *const config_mod.Config,
+    keycode: ?u16,
+) void {
     // sway 판별 — `SWAYSOCK` 존재가 가장 확실 (IPC 가능 == socket 있음).
     // `XDG_CURRENT_DESKTOP` 토큰은 보조 (SWAYSOCK 미설정 환경 hedge).
     //
@@ -62,26 +84,30 @@ pub fn registerToggleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: *con
     };
     const exe_path = exe_buf[0..exe_len];
 
-    // accel 문자열 (`Shift+Ctrl+Alt+Super+<key>`).
+    // accel 문자열 (`Shift+Ctrl+Alt+Super+<key>`). 위치 등록이면 key 자리가 숫자다.
     var accel_buf: [96]u8 = undefined;
-    const accel = buildAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers);
+    const accel = if (keycode) |code|
+        buildCodeAccel(&accel_buf, code, cfg.hotkey.modifiers)
+    else
+        buildAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers);
+    const verb = if (keycode == null) "bindsym" else "bindcode";
 
     // sway command — `exec` 인자는 sway 가 sh -c 로 실행하므로 path 를 따옴표로.
     var cmd_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
-    const command = std.fmt.bufPrint(&cmd_buf, "bindsym --no-warn {s} exec \"{s}\" --toggle {d}", .{ accel, exe_path, instance_context.requireWorkerIndex() }) catch {
-        log.appendLine("sway", "bindsym command too long — skip", .{});
+    const command = std.fmt.bufPrint(&cmd_buf, "{s} --no-warn {s} exec \"{s}\" --toggle {d}", .{ verb, accel, exe_path, instance_context.requireWorkerIndex() }) catch {
+        log.appendLine("sway", "bind command too long — skip", .{});
         return;
     };
 
     log.appendLineVerbose("sway", "RUN_COMMAND payload=[{s}] (sock={s})", .{ command, sock_path });
     const ok = runCommand(allocator, sock_path, command) catch |err| {
-        log.appendLine("sway", "bindsym IPC failed: {s} — single_instance toggle retained (user can register manually)", .{@errorName(err)});
+        log.appendLine("sway", "{s} IPC failed: {s} — single_instance toggle retained (user can register manually)", .{ verb, @errorName(err) });
         return;
     };
     if (ok) {
-        log.appendLine("sway", "bindsym auto-registered OK — {s} → tildaz --toggle (runtime, refreshed each launch)", .{accel});
+        log.appendLine("sway", "{s} auto-registered OK — {s} → tildaz --toggle (runtime, refreshed each launch)", .{ verb, accel });
     } else {
-        log.appendLine("sway", "bindsym auto-register rejected (sway success=false) — accel={s}", .{accel});
+        log.appendLine("sway", "{s} auto-register rejected (sway success=false) — accel={s}", .{ verb, accel });
     }
 }
 
@@ -326,6 +352,22 @@ fn isSwayDesktop(rt: Runtime) bool {
 /// `config.hotkey` → sway accel 문자열. modifier prefix 는 sway 가 수용하는
 /// 친화 이름 (`Shift` / `Ctrl` / `Alt` / `Super`), key 이름은 공통 `hotkey_format.gtkName`
 /// 재사용 (XKB keysym name — sway bindsym 과 1:1, nested 시연 확인).
+/// #496 1-b — `bindcode` 용 accel. modifier 표기는 `bindsym` 과 같고 key 자리만
+/// 숫자다 (sway 는 둘을 같은 파서로 처리한다 — `cmd_bindsym_or_bindcode`).
+///
+/// **evdev + 8 을 쓴다.** 그 이유와 위험은 `registerToggleIfSway` 주석 참고.
+fn buildCodeAccel(buf: []u8, evdev_keycode: u16, modifiers: u32) []const u8 {
+    const H = config_mod.Hotkey;
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
+    if ((modifiers & H.MOD_SHIFT) != 0) w.writeAll("Shift+") catch {};
+    if ((modifiers & H.MOD_CTRL) != 0) w.writeAll("Ctrl+") catch {};
+    if ((modifiers & H.MOD_ALT) != 0) w.writeAll("Alt+") catch {};
+    if ((modifiers & H.MOD_SUPER) != 0) w.writeAll("Super+") catch {};
+    w.print("{d}", .{@as(u32, evdev_keycode) + 8}) catch {};
+    return fbs.buffered();
+}
+
 fn buildAccel(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     const H = config_mod.Hotkey;
     var fbs: std.Io.Writer = .fixed(buf);
@@ -399,4 +441,36 @@ fn readAll(fd: posix.fd_t, buf: []u8) !void {
         if (n == 0) return error.SwayIpcEof;
         off += n;
     }
+}
+
+test "#496 1-b bindcode accel 은 evdev + 8 을 쓴다" {
+    const H = config_mod.Hotkey;
+    var buf: [96]u8 = undefined;
+
+    // `KeyT` = evdev 20 → xkb 28. sway 는 xkb keycode 를 받는다 (2018 커밋
+    // "Use XKB keycode numbering for bindcode"). **이 +8 이 틀리면 sway 가 거부하지
+    // 않고 조용히 옆 키에 붙는다** — `xkb_keycode_is_legal_ext` 가 거의 다 통과시킨다.
+    try std.testing.expectEqualStrings("28", buildCodeAccel(&buf, 20, 0));
+    try std.testing.expectEqualStrings(
+        "Shift+Ctrl+28",
+        buildCodeAccel(&buf, 20, H.MOD_SHIFT | H.MOD_CTRL),
+    );
+    // modifier 표기와 순서는 `bindsym` 쪽과 같아야 한다 — sway 가 둘을 같은 파서로
+    // 처리하므로 (`cmd_bindsym_or_bindcode`) 갈라 둘 이유가 없다.
+    try std.testing.expectEqualStrings(
+        "Shift+Ctrl+Alt+Super+28",
+        buildCodeAccel(&buf, 20, H.MOD_SHIFT | H.MOD_CTRL | H.MOD_ALT | H.MOD_SUPER),
+    );
+    // `KeyW` = evdev 17 → 25, `Digit1` = evdev 2 → 10.
+    try std.testing.expectEqualStrings("Super+25", buildCodeAccel(&buf, 17, H.MOD_SUPER));
+    try std.testing.expectEqualStrings("Alt+10", buildCodeAccel(&buf, 2, H.MOD_ALT));
+}
+
+test "#496 1-b physical_key 의 evdev 값이 위 기대치와 맞는다" {
+    // 위 test 의 20 · 17 · 2 는 손으로 적은 값이다. 표와 어긋나면 test 가 스스로
+    // 거짓이 되므로 여기서 묶는다.
+    const pk = @import("../../physical_key.zig");
+    try std.testing.expectEqual(@as(u16, 20), pk.evdev(.key_t));
+    try std.testing.expectEqual(@as(u16, 17), pk.evdev(.key_w));
+    try std.testing.expectEqual(@as(u16, 2), pk.evdev(.digit1));
 }
