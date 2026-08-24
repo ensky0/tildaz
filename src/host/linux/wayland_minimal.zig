@@ -13,6 +13,7 @@ const posix = std.posix;
 const session_core = @import("../../session_core.zig");
 const terminal_backend = @import("../../terminal.zig");
 const terminal_interaction = @import("../../terminal_interaction.zig");
+const mouse_report = @import("../../mouse_report.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
@@ -297,6 +298,8 @@ const clipboard_mime_text_plain: []const u8 = "text/plain";
 
 // Linux input-event-codes BTN_RIGHT (좌 = 0x110 위에서 정의).
 const wl_pointer_button_right: u32 = 0x111;
+// #502 — BTN_MIDDLE. chrome 에 역할이 없어 mouse reporting 전용.
+const wl_pointer_button_middle: u32 = 0x112;
 // 더블클릭 인식 시간 — macOS / Windows / GTK / Qt 의 표준 ~500ms 와 동일.
 const double_click_threshold_ms: u32 = 500;
 
@@ -1450,6 +1453,16 @@ const Client = struct {
     command_menu_first: usize = 0,
     /// wheel fixed(1/256) 값 누적 — notch(2560) 단위 menu scroll (dialog 동일 패턴).
     command_menu_axis_remainder: i64 = 0,
+    /// #502 — mouse reporting / alternate scroll 의 휠 notch 누적 (`WHEEL_DELTA`
+    /// 눈금). 정밀 휠 · 터치패드는 한 이벤트가 한 notch 에 못 미쳐서 누적 없이는
+    /// 아무것도 안 나간다. 나머지는 보존한다.
+    report_wheel_accum: i32 = 0,
+    /// #502 — 눌려 있는 버튼. Wayland `wl_pointer.motion` 은 버튼 상태를 싣지
+    /// 않아서 (Windows `WM_MOUSEMOVE` 의 `MK_*` 와 다르다) 직접 추적해야 드래그를
+    /// 보고할 수 있다.
+    pointer_left_down: bool = false,
+    pointer_middle_down: bool = false,
+    pointer_right_down: bool = false,
     /// L12-β — read thread → main thread pending close queue. shell process
     /// 가 exit (PTY EOF) 시 read thread 가 `linuxTabExit` 호출 → 직접 close
     /// 면 다른 탭의 read thread join 시 deadlock 가능 + multi-tab 시 잘못된
@@ -6066,7 +6079,17 @@ const Client = struct {
             self.scrollToY(self.pointer_y_px);
             return;
         }
-        if (!tab.interaction.selection.active) return;
+        if (!tab.interaction.selection.active) {
+            // #502 — 우리 pointer mode 가 아무것도 아니면 앱의 드래그 / hover 다.
+            // 버튼 없는 hover 는 `?1003` (any) 만 받고, 탭바 위 hover 는 viewport
+            // 밖이라 인코더가 걸러 낸다.
+            if (self.pointerHeldButton()) |held| {
+                _ = self.routeMouseLinux(.motion, held, true);
+            } else {
+                _ = self.routeMouseLinux(.motion, null, false);
+            }
+            return;
+        }
         // #245 — 경계 밖이어도 null 대신 clamp 된 cell 로 선택 연장 + 위/아래 경계면
         // auto-scroll 방향 arm. pixelToCell(클릭용, 범위 밖 null)과 분리.
         const sc = self.selectionCellAndDir(tab);
@@ -6085,6 +6108,18 @@ const Client = struct {
         const time_ms = readU32(payload[4..8]);
         const button = readU32(payload[8..12]);
         const state = readU32(payload[12..16]);
+
+        // #502 — 눌린 버튼 추적. Wayland motion 은 버튼 상태를 싣지 않아 여기서
+        // 기억해야 드래그를 보고할 수 있다. 물리 상태라 dialog 분기보다 먼저 둔다.
+        {
+            const down = state == wl_pointer_button_state_pressed;
+            switch (button) {
+                wl_pointer_button_left => self.pointer_left_down = down,
+                wl_pointer_button_middle => self.pointer_middle_down = down,
+                wl_pointer_button_right => self.pointer_right_down = down,
+                else => {},
+            }
+        }
 
         // #203 Phase C — dialog 활성 시 모든 클릭 무시 (modal). 단 *dialog
         // surface 위 + OK / Cancel 버튼 좌표 안* 의 누름만 dismiss 트리거이고,
@@ -6152,6 +6187,13 @@ const Client = struct {
             // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /
             // macOS 와 같은 정책. SPEC.md §3). #333 — preedit 정책은 requestPaste.
             if (state == wl_pointer_button_state_pressed) self.requestPaste();
+            return;
+        }
+        // #502 — 가운데 버튼은 chrome 에 역할이 없어 reporting 전용이다. reporting 이
+        // 꺼져 있으면 아무 일도 하지 않는다.
+        if (button == wl_pointer_button_middle) {
+            const down = state == wl_pointer_button_state_pressed;
+            _ = self.routeMouseLinux(if (down) .press else .release, .middle, down);
             return;
         }
         if (button != wl_pointer_button_left) return;
@@ -6228,6 +6270,11 @@ const Client = struct {
 
                 const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
 
+                // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다.
+                // Shift 를 누르면 우리 selection 으로 돌아온다 (bypass). 더블클릭의
+                // *의미* 도 앱이 정하므로 word selection 으로 가로채지 않는다.
+                if (!self.routeMouseLinux(.press, .left, true)) return;
+
                 // 더블클릭 검출 — 같은 cell + threshold 이내 두 번째 좌클릭.
                 // wayland `wl_pointer.button` event 에는 click count 정보가 없어
                 // 직접 추적. SPEC.md §3 더블클릭 word selection.
@@ -6284,6 +6331,9 @@ const Client = struct {
                     tab.interaction.scrollbar.end();
                     return;
                 }
+                // #502 — 뗌은 앱에게 먼저. viewport 밖에서 놓아도 항상 보내야 앱이
+                // 버튼 상태를 잃지 않는다 (그 규칙은 인코더가 갖는다).
+                if (!self.routeMouseLinux(.release, .left, false)) return;
                 if (tab.interaction.selection.finish()) {
                     self.copyActiveSelection();
                     self.requestRedraw();
@@ -6382,6 +6432,10 @@ const Client = struct {
         const wheel_i32: i32 = -@divTrunc(value_fixed * 120, 2560);
         if (wheel_i32 == 0) return;
         const wheel_i16: i16 = @intCast(std.math.clamp(wheel_i32, -32768, 32767));
+
+        // #502 — 앱이 tracking 을 켰으면 휠은 앱 것 (`Cb` 64/65). 안 켰지만 alt screen
+        // + `?1007` 이면 화살표 키로 바꿔 보낸다.
+        if (self.routeWheelLinux(wheel_i16)) return;
 
         if (self.session) |*session| {
             // SessionCore.scrollActive 의 visible_rows 인자 — page scroll 계산용.
@@ -6646,6 +6700,124 @@ const Client = struct {
     /// surface pixel → grid cell. tab bar / padding 영역 / grid 범위 밖이면
     /// null. L12-α — grid 영역이 tab_bar_height_px + padding 만큼 아래로
     /// 밀려있으므로 py 의 origin 도 같이 보정.
+    /// #502 — mouse reporting 의 Linux 기하. 계산은 cross-platform
+    /// `terminal_interaction.reportEvent` 한 곳 (세 host 공용) 이고 여기서는 Linux 의
+    /// 값만 채운다.
+    fn reportGeometryLinux(self: *Client) ?terminal_interaction.ReportGeometry {
+        const tab = self.activeTabOrNull() orelse return null;
+        return .{
+            .cell_w = self.renderer.cellWidth(),
+            .cell_h = self.renderer.cellHeight(),
+            .cols = @intCast(tab.terminal.cols),
+            .rows = @intCast(tab.terminal.rows),
+            .pad = self.renderer.paddingPx(),
+            .tab_bar_h = self.effectiveTabBarHeightPx(),
+        };
+    }
+
+    /// 인코더 `Cb` modifier. keyboard 쪽 상태를 그대로 쓴다 — Wayland 는 pointer
+    /// 이벤트에 modifier 를 싣지 않고 `wl_keyboard.modifiers` 로만 알린다.
+    fn pointerMods(self: *Client) mouse_report.Mods {
+        return .{
+            .shift = self.keyboard.shiftActive(),
+            .ctrl = self.keyboard.ctrlActive(),
+            .alt = self.keyboard.altActive(),
+        };
+    }
+
+    /// motion 에 실을 버튼 하나. 여러 개가 눌려 있으면 왼 > 가운데 > 오른쪽 —
+    /// 프로토콜이 버튼 하나만 담는다 (`app_event.MouseMoveEvent.heldButton` 동등).
+    fn pointerHeldButton(self: *const Client) ?mouse_report.Button {
+        if (self.pointer_left_down) return .left;
+        if (self.pointer_middle_down) return .middle;
+        if (self.pointer_right_down) return .right;
+        return null;
+    }
+
+    /// 셀 영역 pointer 이벤트를 앱에 보낼지 결정하고, 보낼 것이면 PTY 로 보낸다.
+    /// 반환값 = **우리 기존 동작을 계속해야 하는지** (Windows `routeMouseToApp` 동등).
+    fn routeMouseLinux(
+        self: *Client,
+        action: mouse_report.Action,
+        button: ?mouse_report.Button,
+        any_button: bool,
+    ) bool {
+        const tab = self.activeTabOrNull() orelse return true;
+        const geom = self.reportGeometryLinux() orelse return true;
+        const ev = terminal_interaction.reportEvent(
+            action,
+            button,
+            self.pointerMods(),
+            self.pointer_x_px,
+            self.pointer_y_px,
+            geom,
+            any_button,
+        );
+        var buf: [mouse_report.max_len]u8 = undefined;
+        return switch (terminal_interaction.routeMouse(&buf, &tab.terminal, &tab.interaction, ev)) {
+            .local => true,
+            .swallow => false,
+            .report => |bytes| blk: {
+                tab.queueWrite(bytes);
+                break :blk false;
+            },
+        };
+    }
+
+    /// 휠을 앱이 가져가야 하면 보내고 true. false 면 기존 scrollback 스크롤.
+    /// `wheel_delta` 는 `WHEEL_DELTA` (120 = 한 notch) 눈금 · 양수 = 위로.
+    fn routeWheelLinux(self: *Client, wheel_delta: i16) bool {
+        const tab = self.activeTabOrNull() orelse return false;
+        if (wheel_delta == 0) return false;
+
+        const tracking = terminal_interaction.reportTracking(&tab.terminal);
+        const alt_scroll = tracking == .none and
+            tab.terminal.screens.active_key == .alternate and
+            tab.terminal.modes.get(.mouse_alternate_scroll);
+        if (tracking == .none and !alt_scroll) return false;
+
+        // Shift bypass — Shift+휠은 우리 scrollback 스크롤로 남긴다.
+        const mods = self.pointerMods();
+        if (mods.shift and terminal_interaction.reportShiftCapture(&tab.terminal) != .app) return false;
+
+        self.report_wheel_accum += wheel_delta;
+        const steps = @divTrunc(self.report_wheel_accum, 120);
+        self.report_wheel_accum -= steps * 120;
+        // 앱 것이지만 아직 한 notch 가 안 찼다 — 소비하고 우리 스크롤도 안 한다.
+        if (steps == 0) return true;
+
+        const up = steps > 0;
+        const n: usize = @intCast(@abs(steps));
+
+        if (alt_scroll) {
+            // xterm 은 notch 당 3 줄을 보낸다.
+            const key = mouse_report.alternateScrollKey(up, tab.terminal.modes.get(.cursor_keys));
+            var i: usize = 0;
+            while (i < n * 3) : (i += 1) tab.queueWrite(key);
+            return true;
+        }
+
+        const geom = self.reportGeometryLinux() orelse return true;
+        var buf: [mouse_report.max_len]u8 = undefined;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const ev = terminal_interaction.reportEvent(
+                .press,
+                if (up) .wheel_up else .wheel_down,
+                mods,
+                self.pointer_x_px,
+                self.pointer_y_px,
+                geom,
+                false,
+            );
+            switch (terminal_interaction.routeMouse(&buf, &tab.terminal, &tab.interaction, ev)) {
+                .report => |bytes| tab.queueWrite(bytes),
+                .local, .swallow => {},
+            }
+        }
+        return true;
+    }
+
     fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
         const pad = self.renderer.paddingPx();
         const grid_top: i32 = self.effectiveTabBarHeightPx() + pad;
