@@ -80,8 +80,15 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 종료는 **`q` 또는 `Ctrl+C`** — 프로브가 mode 를 끄고 나가요. `q` 는 마우스 보고에
 나오지 않는 글자라 종료 키로 안전해요. (`exit` 를 치면 셸이 닫혀 앱까지 같이 닫혀요.)
 
-**탭바 hover 를 확인하려면 먼저 `Ctrl+Shift+T` 로 탭을 2개 이상 만들어요** — 탭바는
-탭 2개부터 그려져요 (단일 탭에서는 그 영역이 없어서 판정할 수 없어요).
+**탭바 hover 를 확인할 때만 `-size` 를 빼고 띄워요.** 탭바는 탭 2개부터 그려지니
+`Ctrl+Shift+T` 로 탭을 하나 더 만들어야 하는데, `-size` 로 격자를 고정한 창에서 탭을
+만들면 맨 아래 행이 창 밖으로 밀려요 ([#506](https://github.com/ensky0/tildaz/issues/506)
+— 마우스와 무관한 검증 전용 경로의 제약이에요). `-size` 없이 띄우면 격자가 탭바 높이를
+반영해 다시 계산되므로 문제가 없어요.
+
+```sh
+./zig-out/bin/tildaz --instance 1 &        # -size 없이 (탭바 테스트용)
+```
 
 ## A. 공통 시나리오 (세 platform)
 
@@ -100,7 +107,7 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 
 `1003` 으로 다시 띄우면 **버튼 없이 움직이기만** 해도 `Cb` 35 (3 + 32) 가 나와야 해요.
 **탭바 위에서 움직일 때는 안 나와야** 정상이에요 — viewport 밖이라 인코더가 걸러요
-(탭 2개 이상 필요).
+(탭 2개 이상 필요 — 위의 `-size` 주의 참고).
 `1000` 이면 드래그해도 motion 이 안 나오고, `9` 면 누름만 나오고 modifier 가 안 실려요.
 
 **A10 이 왜 있나** — host 가 창 밖으로 나간 드래그의 이벤트를 계속 받아야 (Windows
