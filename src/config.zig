@@ -2025,23 +2025,29 @@ pub const Config = struct {
         var parsed = parser.parseString(content) catch |err| {
             // TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
             // 사용자가 어디를 고쳐야 할지 알 수 있게 line / col 을 함께 보여 준다.
+            //
+            // #495 — 경로는 본문에 넣지 않는다. `showConfigFatalMsg` 가 모든 config
+            // 오류 앞에 한 번 붙이므로 여기서 넣으면 두 번 나온다. 그리고 그 함수를
+            // 지나는 것 자체가 요점이다 — 예전엔 이 경로만 `dialog.showFatal` 을 직접
+            // 불러 형식이 갈라졌다.
+            var buf: [256]u8 = undefined;
             const msg = if (parser.error_info) |info| switch (info) {
-                .parse => |pos| std.fmt.allocPrint(
-                    std.heap.page_allocator,
+                .parse => |pos| std.fmt.bufPrint(
+                    &buf,
                     messages.config_parse_failed_at_format,
-                    .{ config_path, pos.line, pos.pos, @errorName(err) },
+                    .{ pos.line, pos.pos, @errorName(err) },
                 ) catch messages.config_parse_failed_fallback_msg,
-                .struct_mapping => std.fmt.allocPrint(
-                    std.heap.page_allocator,
+                .struct_mapping => std.fmt.bufPrint(
+                    &buf,
                     messages.config_parse_failed_format,
-                    .{ config_path, @errorName(err) },
+                    .{@errorName(err)},
                 ) catch messages.config_parse_failed_fallback_msg,
-            } else std.fmt.allocPrint(
-                std.heap.page_allocator,
+            } else std.fmt.bufPrint(
+                &buf,
                 messages.config_parse_failed_format,
-                .{ config_path, @errorName(err) },
+                .{@errorName(err)},
             ) catch messages.config_parse_failed_fallback_msg;
-            dialog.showFatal(rt, messages.config_error_title, msg);
+            showConfigFatalMsg(rt, config_path, msg);
         };
         defer parsed.deinit();
 
@@ -2442,8 +2448,11 @@ fn parseFloat(v: toml.Value) ?f32 {
     };
 }
 
+/// #495 — 모든 config 오류 메시지의 **단일 조립 지점.** 경로가 첫 줄로 붙는다.
+/// 예전엔 파싱 오류가 이 함수를 지나지 않고 자기 본문에 `Path:` 를 직접 넣어,
+/// 오류 종류에 따라 경로 위치가 달랐다 (파싱은 셋째 줄, 의미 오류는 맨 끝).
 fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, config_path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ message, config_path });
+    return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ config_path, message });
 }
 
 fn showConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u8) noreturn {
@@ -2533,25 +2542,28 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
 
 // --- Tests ---
 
-test "#316 semantic config error appends the actual path exactly once" {
+test "#316 · #495 config 오류는 경로를 첫 줄에 정확히 한 번 담는다" {
     const message = try configErrorMessageAlloc(
         std.testing.allocator,
         messages.config_font_family_empty_msg,
-        "/home/user/.config/tildaz/config_7.json",
+        "/home/user/.config/tildaz/config_7.toml",
     );
     defer std.testing.allocator.free(message);
 
+    // #495 — 경로가 **첫 줄**이다. 사용자가 오류 내용을 읽기 전에 눈에 들어와야 한다.
     try std.testing.expectEqualStrings(
-        "Configuration: \"font.family\" must not be empty.\n\n" ++
-            "Config path:\n  /home/user/.config/tildaz/config_7.json",
+        "Config: /home/user/.config/tildaz/config_7.toml\n\n" ++
+            "Configuration: \"font.family\" must not be empty.",
         message,
     );
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message, "/home/user/.config/tildaz/config_7.json"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message, "/home/user/.config/tildaz/config_7.toml"));
 }
 
-test "#316 semantic config error preserves platform and long paths" {
+test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
     const bodies = [_][]const u8{
-        messages.config_top_level_must_be_object_msg,
+        // 파싱 오류도 이제 같은 형식을 지난다 — 예전엔 자기 본문에 `Path:` 를 넣었다.
+        "Failed to parse config file.\n\nLine 12, column 3\nError: UnexpectedToken",
+        "Failed to parse config file.\n\nError: UnexpectedToken",
         "Configuration: failed to parse \"hotkey\" value \"plain-t\".",
         "Configuration: \"window.width_percent\" must be a number.",
         "Configuration: unknown theme \"Missing\"\n\nAvailable themes:\nTilda",
@@ -2559,26 +2571,30 @@ test "#316 semantic config error preserves platform and long paths" {
         "Configuration: unknown key \"extra\" in (top-level).",
     };
     const config_paths = [_][]const u8{
-        "/home/user/.config/tildaz/config_0.json",
-        "/Users/user/.config/tildaz/config_3.json",
-        "C:\\Users\\user\\AppData\\Roaming\\tildaz\\config_12.json",
+        "/home/user/.config/tildaz/config_0.toml",
+        "/Users/user/.config/tildaz/config_3.toml",
+        "C:\\Users\\user\\AppData\\Roaming\\tildaz\\config_12.toml",
     };
 
     for (bodies) |body| {
         for (config_paths) |config_path| {
             const message = try configErrorMessageAlloc(std.testing.allocator, body, config_path);
             defer std.testing.allocator.free(message);
-            try std.testing.expect(std.mem.startsWith(u8, message, body));
-            try std.testing.expect(std.mem.endsWith(u8, message, config_path));
+            // 경로가 앞, 본문이 뒤 — 순서가 뒤집혔다 (#495).
+            try std.testing.expect(std.mem.startsWith(u8, message, "Config: "));
+            try std.testing.expect(std.mem.endsWith(u8, message, body));
             try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message, config_path));
         }
     }
 
+    // 긴 경로도 잘리지 않는다 — 조립이 `allocPrint` 라 상한이 없다. 경로가 앞으로
+    // 옮겨졌으므로 이제 `startsWith` 로 본다 (#495).
     var long_path: [5000]u8 = undefined;
     @memset(&long_path, 'x');
     const long_message = try configErrorMessageAlloc(std.testing.allocator, messages.config_error_fallback_msg, &long_path);
     defer std.testing.allocator.free(long_message);
-    try std.testing.expect(std.mem.endsWith(u8, long_message, &long_path));
+    try std.testing.expect(std.mem.startsWith(u8, long_message, "Config: " ++ ("x" ** 5000)));
+    try std.testing.expect(std.mem.endsWith(u8, long_message, messages.config_error_fallback_msg));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, long_message, &long_path));
 }
 
