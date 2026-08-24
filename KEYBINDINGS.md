@@ -80,10 +80,10 @@ config changes: you press the same key a US user presses.
 
 Two details worth knowing:
 
-- **It only kicks in when the label is unreachable.** If you have a Latin layout
-  configured alongside — `us,ru` is the common setup — `w` is reachable, so
-  nothing changes and the label keeps working as usual. That also means the
-  shortcut follows the *label* on that setup, which is what you want.
+- **It only kicks in when the label is unreachable in the layout you are
+  currently typing in.** With `us,ru` — the common setup — nothing changes while
+  you are on `us`, and the fallback takes over the moment you switch to `ru`. It
+  is re-evaluated on every layout switch, so you never have to restart.
 - **It is Linux-only, because only Linux needs it.** Windows non-Latin layouts
   assign Latin virtual keys to the physical spots (`KBDRU` puts `VK_W` on the
   `w` position), and macOS matches physical key codes to begin with, so letter

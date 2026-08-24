@@ -271,8 +271,9 @@ Positions and labels can be mixed freely, including within one action's list.
 When TildaZ loads a keymap it checks whether the current layout can produce each
 binding's label at all; if nothing can, it falls back to the physical spot that
 character has on a US keyboard. So the defaults work on a Cyrillic layout
-untouched. The fallback applies only to bindings whose label is unreachable, so a
-`us,ru` setup keeps matching by label. KEYBINDINGS.md has the details.
+untouched. The check follows the layout you are currently typing in, so a `us,ru`
+setup matches by label while you are on `us` and falls back the moment you switch
+to `ru`. KEYBINDINGS.md has the details.
 
 #### Accepted keys
 
