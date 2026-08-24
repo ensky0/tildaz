@@ -49,6 +49,26 @@ const XkbStateModNameIsActive = *const fn (
     component: c_uint,
 ) callconv(.c) c_int;
 
+// #496 1-a — keymap 전수 조회용. **비라틴 layout 에서 "이 문자를 낼 수 있는 키가
+// 하나도 없다" 를 판정**하는 데 쓴다. state 가 아니라 keymap 을 보는 이유는 현재
+// modifier / layout 과 무관하게 물어야 하기 때문이다 — `xkb_state_key_get_one_sym`
+// 은 지금 눌린 modifier 와 활성 group 만 본다.
+//
+// **이 다섯은 optional 이다.** 없으면 fallback 기능만 끄고 키보드는 정상 동작한다.
+// 기존 심볼처럼 `error.XkbSymbolMissing` 으로 묶으면 오래된 libxkbcommon 에서
+// 키보드가 통째로 죽는데, 그것은 이 기능이 감당할 대가가 아니다.
+const XkbKeymapMinKeycode = *const fn (keymap: *xkb_keymap) callconv(.c) c_uint;
+const XkbKeymapMaxKeycode = *const fn (keymap: *xkb_keymap) callconv(.c) c_uint;
+const XkbKeymapNumLayoutsForKey = *const fn (keymap: *xkb_keymap, key: c_uint) callconv(.c) c_uint;
+const XkbKeymapNumLevelsForKey = *const fn (keymap: *xkb_keymap, key: c_uint, layout: c_uint) callconv(.c) c_uint;
+const XkbKeymapKeyGetSymsByLevel = *const fn (
+    keymap: *xkb_keymap,
+    key: c_uint,
+    layout: c_uint,
+    level: c_uint,
+    syms_out: *[*]const c_uint,
+) callconv(.c) c_int;
+
 // libxkbcommon `enum xkb_state_component`. MODS_EFFECTIVE = (1 << 3).
 // 처음에 (1 << 7) = LAYOUT_EFFECTIVE 로 잘못 적어 mod_name_is_active 가
 // modifier component 를 안 보고 항상 0 반환 → 단축키 분기 fail (1차 시연 발견).
@@ -66,6 +86,9 @@ const Api = struct {
     state_key_get_utf8: XkbStateKeyGetUtf8,
     state_key_get_one_sym: XkbStateKeyGetOneSym,
     state_mod_name_is_active: XkbStateModNameIsActive,
+    // #496 1-a — optional. 하나라도 없으면 `keymapScan` 이 null 이 되고 fallback 이
+    // 꺼진다 (위 주석 참고).
+    keymap_scan: ?KeymapScan = null,
 
     fn load() !Api {
         const handle = std.c.dlopen("libxkbcommon.so.0", .{ .LAZY = true }) orelse return error.XkbLibraryMissing;
@@ -83,11 +106,32 @@ const Api = struct {
             .state_key_get_utf8 = lookup(handle, XkbStateKeyGetUtf8, "xkb_state_key_get_utf8") orelse return error.XkbSymbolMissing,
             .state_key_get_one_sym = lookup(handle, XkbStateKeyGetOneSym, "xkb_state_key_get_one_sym") orelse return error.XkbSymbolMissing,
             .state_mod_name_is_active = lookup(handle, XkbStateModNameIsActive, "xkb_state_mod_name_is_active") orelse return error.XkbSymbolMissing,
+            .keymap_scan = KeymapScan.load(handle),
         };
     }
 
     fn deinit(self: *Api) void {
         _ = std.c.dlclose(self.handle);
+    }
+};
+
+/// #496 1-a — keymap 전수 조회에 필요한 심볼 묶음. **다 있어야 의미가 있으므로 묶어서
+/// all-or-nothing 으로 다룬다** — 넷만 있으면 부분 조회가 되어 오히려 잘못된 답을 낸다.
+const KeymapScan = struct {
+    min_keycode: XkbKeymapMinKeycode,
+    max_keycode: XkbKeymapMaxKeycode,
+    num_layouts_for_key: XkbKeymapNumLayoutsForKey,
+    num_levels_for_key: XkbKeymapNumLevelsForKey,
+    key_get_syms_by_level: XkbKeymapKeyGetSymsByLevel,
+
+    fn load(handle: *anyopaque) ?KeymapScan {
+        return .{
+            .min_keycode = lookup(handle, XkbKeymapMinKeycode, "xkb_keymap_min_keycode") orelse return null,
+            .max_keycode = lookup(handle, XkbKeymapMaxKeycode, "xkb_keymap_max_keycode") orelse return null,
+            .num_layouts_for_key = lookup(handle, XkbKeymapNumLayoutsForKey, "xkb_keymap_num_layouts_for_key") orelse return null,
+            .num_levels_for_key = lookup(handle, XkbKeymapNumLevelsForKey, "xkb_keymap_num_levels_for_key") orelse return null,
+            .key_get_syms_by_level = lookup(handle, XkbKeymapKeyGetSymsByLevel, "xkb_keymap_key_get_syms_by_level") orelse return null,
+        };
     }
 };
 
@@ -161,6 +205,43 @@ pub const Keyboard = struct {
         );
     }
 
+    /// #496 1-a — **현재 keymap 의 어느 키라도 이 keysym 을 낼 수 있는가.**
+    ///
+    /// layout (group) 과 level 을 전수로 훑는다. modifier 상태를 보지 않는 것이
+    /// 요점이다 — "Shift 를 눌러야 나오는 문자" 도 *낼 수 있는* 것으로 세야 하고,
+    /// 사용자가 여러 layout 을 들고 있으면 (`us,ru` 처럼 흔하다) 그중 하나에만 있어도
+    /// 된다.
+    ///
+    /// null = 판정할 수 없다 (libxkbcommon 이 필요한 심볼을 안 내주거나 keymap 이
+    /// 없다). **false 와 구분해야 한다** — 판정 불가일 때 "낼 수 없다" 로 읽으면
+    /// 없어도 되는 fallback 을 만들어 동작을 넓힌다.
+    pub fn canProduceKeysym(self: *Keyboard, keysym: u32) ?bool {
+        const api = if (self.api) |*a| a else return null;
+        const scan = api.keymap_scan orelse return null;
+        const keymap = self.keymap orelse return null;
+
+        const min = scan.min_keycode(keymap);
+        const max = scan.max_keycode(keymap);
+        var key: c_uint = min;
+        while (key <= max) : (key += 1) {
+            const layouts = scan.num_layouts_for_key(keymap, key);
+            var layout: c_uint = 0;
+            while (layout < layouts) : (layout += 1) {
+                const levels = scan.num_levels_for_key(keymap, key, layout);
+                var level: c_uint = 0;
+                while (level < levels) : (level += 1) {
+                    var syms: [*]const c_uint = undefined;
+                    const count = scan.key_get_syms_by_level(keymap, key, layout, level, &syms);
+                    if (count <= 0) continue;
+                    for (syms[0..@intCast(count)]) |sym| {
+                        if (sym == keysym) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     pub fn oneSym(self: *Keyboard, key: u32) ?u32 {
         const api = if (self.api) |*api| api else return null;
         const state = self.state orelse return null;
@@ -223,3 +304,31 @@ pub const Keyboard = struct {
         }
     }
 };
+
+test "#496 1-a canProduceKeysym — 판정 불가는 false 가 아니라 null 이다" {
+    // keymap 이 없으면 (또는 libxkbcommon 이 조회 심볼을 안 내주면) **null 이다.**
+    // false 로 주면 호출자가 "이 라벨은 낼 수 없다" 로 읽어 없어도 되는 라틴 fallback
+    // 을 만들고, 그러면 라틴 자판에서 한 동작에 키가 둘 생긴다 (#496 1-a).
+    var kb: Keyboard = .{};
+    defer kb.deinit();
+    try std.testing.expectEqual(@as(?bool, null), kb.canProduceKeysym('w'));
+}
+
+// 실측 확인 (2026-08-24, 이 개발 머신 · libxkbcommon.so.0). `xkbcli compile-keymap`
+// 으로 뽑은 실제 keymap 을 넣어 확인한 값이다 — keymap 은 하나에 70 KB 대라 fixture
+// 로 커밋하지 않았다.
+//
+// | layout  | `w` 를 낼 수 있나 | US `w` 자리 (evdev 17) 가 내는 keysym |
+// |---------|------------------|--------------------------------------|
+// | `us`    | true             | `0x77` (`w`)                          |
+// | `ru`    | **false**        | `0x6c3` (`Cyrillic_tse`)              |
+// | `us,ru` | true             | `0x77`                                |
+//
+// 세 줄이 이 기능의 설계를 그대로 보여 준다:
+//
+//   - `ru` 단독 → 라벨이 닿지 않으므로 fallback 이 생기고 글자 단축키가 살아난다.
+//   - `us,ru` → `w` 가 닿으므로 fallback 이 **생기지 않는다.** GTK 가 "영어 layout 이
+//     설정돼 있어야 한다" 고 요구하는 것과 같은 결과인데, 우리는 사용자에게 요구하지
+//     않고 keymap 을 보고 스스로 판정한다.
+//   - 도착하는 keysym 이 Unicode 형 (`0x01000426`) 이 아니라 **이름 있는 Cyrillic
+//     keysym** (`0x6c3`) 이다. xkb 의 `ru` 는 Cyrillic 블록 keysym 을 쓴다.
