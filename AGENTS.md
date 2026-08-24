@@ -38,6 +38,18 @@
 
 **문서만 바뀌는 변경은 PR 없이 main 에 바로 push 해요** (2026-08-10 사용자 지시: *"이런건 그냥 main에 바로 넣어"*). 위의 "같은 PR 에 담아요" 와 충돌하지 않아요 — 코드와 함께 가는 문서는 그 PR 에, 문서만 있는 변경은 main 직행이에요.
 
+**PR 을 올리기 전에 `main` 을 rebase 해요** (2026-08-24 사용자 지시). 브랜치를 딴 뒤에 main 이 움직이면 우리가 돌린 검증은 *그 시점의 main* 기준이라, 그대로 머지하면 텍스트 충돌이 없어도 동작이 깨질 수 있어요 (semantic conflict). 하루에 여러 PR 이 머지되는 저장소라 base 는 거의 항상 움직여 있어요.
+
+```sh
+git fetch origin
+git rebase origin/main
+```
+
+- **rebase 뒤에 검증을 다시 돌려요.** rebase 전에 통과한 `zig build check` / `zig build test` 는 base 가 바뀐 순간 무효예요. 충돌 없이 조용히 rebase 되면 "이미 통과했다" 고 착각하기 쉬운데, 그러면 rebase 가 만든 어긋남을 CI 가 처음 발견해요.
+- **merge 가 아니라 rebase 예요.** PR 브랜치에 main 을 merge 하면 무관한 merge commit 이 섞여 리뷰가 흐려져요. merge commit 은 GitHub 이 PR 을 머지할 때 하나만 생기는 게 맞아요.
+- rebase 뒤 force push 는 자유롭게 해요 — 아래 `# 커밋 메시지` 의 규칙과 같아요 (검증이 끝난 뒤에).
+- 충돌이 문서 (`SPEC.md` · `AGENTS.md` · `CONFIG.md`) 에서 나면 *양쪽 서술을 다시 읽고* 합쳐요. 한쪽을 통째로 고르면 다른 PR 이 쓴 사실이 조용히 사라져요.
+
 # 문서화
 
 문서는 항상 확인된 내용만 정확하게 작성해요.
