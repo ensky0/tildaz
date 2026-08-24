@@ -1144,7 +1144,7 @@ pub const SessionCore = struct {
                 const rows: isize = @intCast(visible_rows);
                 break :blk if (dir == .up) rows else -rows;
             },
-            .wheel => |raw| @divTrunc(@as(isize, raw), 40),
+            .wheel => |raw| @divTrunc(@as(isize, raw.delta), 40),
         };
         tab.terminal.scrollViewport(.{ .delta = -delta });
         return true;

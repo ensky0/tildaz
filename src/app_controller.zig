@@ -11,6 +11,7 @@ const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_actions = @import("tab_actions.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const mouse_report = @import("mouse_report.zig");
 const Window = @import("window.zig").Window;
 const renderer_backend = @import("renderer.zig");
 const RendererBackend = renderer_backend.RendererBackend;
@@ -73,6 +74,10 @@ pub const App = struct {
     /// #334 — 메뉴 wheel delta 누적 (WHEEL_DELTA=120 미만 정밀 휠도 스크롤
     /// 되게 나머지 보존 — Linux 의 fixed 누적과 같은 패턴).
     command_menu_wheel_accum: i32 = 0,
+    /// #502 — mouse reporting / alternate scroll 의 휠 notch 누적. 정밀 휠 ·
+    /// 터치패드는 이벤트당 `WHEEL_DELTA` 미만이 와서 (#334 와 같은 문제) 누적
+    /// 없이는 한 notch 도 안 나간다. 나머지는 보존한다.
+    report_wheel_accum: i32 = 0,
     toggle_hotkey_hint: [64]u8 = [_]u8{0} ** 64,
     toggle_hotkey_hint_len: usize = 0,
     /// `tab_actions.Host` 인스턴스 — App member (session / override flag) 를
@@ -882,6 +887,126 @@ pub const App = struct {
         }
     }
 
+    /// Windows `WHEEL_DELTA`. 세 host 가 자기 휠 단위를 이 눈금으로 올린다.
+    const WHEEL_DELTA: i32 = 120;
+
+    fn reportButton(button: app_event.MouseButton) mouse_report.Button {
+        return switch (button) {
+            .left => .left,
+            .middle => .middle,
+            .right => .right,
+        };
+    }
+
+    /// 셀 영역 pointer 이벤트를 인코더 입력으로. 계산은 cross-platform
+    /// `terminal_interaction.reportEvent` 한 곳에 있고 (세 host 공용) 여기서는
+    /// Windows 의 기하 값만 채운다.
+    fn reportEvent(
+        self: *const App,
+        action: mouse_report.Action,
+        button: ?mouse_report.Button,
+        mods: app_event.MouseMods,
+        mouse_x: c_int,
+        mouse_y: c_int,
+        any_button: bool,
+    ) mouse_report.Event {
+        const grid = self.getTerminalGridSize();
+        return terminal_interaction.reportEvent(
+            action,
+            button,
+            .{ .shift = mods.shift, .alt = mods.alt, .ctrl = mods.ctrl },
+            @intCast(mouse_x),
+            @intCast(mouse_y),
+            .{
+                .cell_w = @intCast(self.window.cell_width_px),
+                .cell_h = @intCast(self.window.cell_height_px),
+                .cols = grid.cols,
+                .rows = grid.rows,
+                .pad = @intCast(self.TERMINAL_PADDING),
+                .tab_bar_h = @intCast(self.effectiveTabBarHeight()),
+            },
+            any_button,
+        );
+    }
+
+    /// 셀 영역 이벤트를 앱에 보낼지 우리가 처리할지 결정하고, 보낼 것이면 PTY 로
+    /// 보낸다. 반환값 = **우리 chrome 이 이 이벤트를 계속 처리해야 하는지**.
+    fn routeMouseToApp(self: *App, ev: mouse_report.Event) bool {
+        const tab = self.activeTabPtr() orelse return true;
+        var buf: [mouse_report.max_len]u8 = undefined;
+        const decision = terminal_interaction.routeMouse(&buf, &tab.terminal, &tab.interaction, ev);
+        return switch (decision) {
+            .local => true,
+            .swallow => false,
+            .report => |bytes| blk: {
+                tab.queueWrite(bytes);
+                break :blk false;
+            },
+        };
+    }
+
+    /// 휠을 앱이 가져가야 하면 보내고 true. false 면 기존 scrollback 스크롤.
+    ///
+    /// tracking 이 켜져 있으면 휠도 보고 (`Cb` 64/65) 로 나간다. 안 켜져 있고
+    /// **alt screen + `?1007`** 이면 xterm 관례대로 화살표 키로 바꿔 보낸다 —
+    /// alt screen 은 scrollback 이 없어서 그대로 두면 휠이 무동작이다.
+    fn routeWheel(self: *App, wheel: app_event.WheelEvent) bool {
+        const tab = self.activeTabPtr() orelse return false;
+        if (wheel.delta == 0) return false;
+
+        const tracking = terminal_interaction.reportTracking(&tab.terminal);
+        const alt_scroll = tracking == .none and
+            tab.terminal.screens.active_key == .alternate and
+            tab.terminal.modes.get(.mouse_alternate_scroll);
+        if (tracking == .none and !alt_scroll) return false;
+
+        // Shift bypass — Shift+휠은 우리 scrollback 스크롤로 남긴다 (클릭·드래그의
+        // Shift bypass 와 같은 정책). 앱이 Shift 를 명시로 요구한 경우만 넘긴다.
+        if (wheel.mods.shift and terminal_interaction.reportShiftCapture(&tab.terminal) != .app) return false;
+
+        self.report_wheel_accum += wheel.delta;
+        const steps = @divTrunc(self.report_wheel_accum, WHEEL_DELTA);
+        self.report_wheel_accum -= steps * WHEEL_DELTA;
+        // 앱 것이지만 아직 한 notch 가 안 찼다 — 소비하고 우리 스크롤도 안 한다.
+        if (steps == 0) return true;
+
+        const up = steps > 0;
+        const n: usize = @intCast(@abs(steps));
+
+        if (alt_scroll) {
+            // xterm 은 notch 당 3 줄을 보낸다.
+            const key = mouse_report.alternateScrollKey(up, tab.terminal.modes.get(.cursor_keys));
+            var i: usize = 0;
+            while (i < n * 3) : (i += 1) tab.queueWrite(key);
+            return true;
+        }
+
+        var buf: [mouse_report.max_len]u8 = undefined;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const ev = self.reportEvent(
+                .press,
+                if (up) .wheel_up else .wheel_down,
+                wheel.mods,
+                wheel.x,
+                wheel.y,
+                false,
+            );
+            switch (mouse_report.route(
+                &buf,
+                ev,
+                tracking,
+                terminal_interaction.reportFormat(&tab.terminal),
+                terminal_interaction.reportShiftCapture(&tab.terminal),
+                null,
+            )) {
+                .report => |bytes| tab.queueWrite(bytes),
+                .local, .swallow => {},
+            }
+        }
+        return true;
+    }
+
     fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) terminal_interaction.Cell {
         const cw = self.window.cell_width_px;
         const ch = self.window.cell_height_px;
@@ -1141,6 +1266,20 @@ pub const App = struct {
                 }
             },
             .mouse_down => |mouse| {
+                // #502 — 가운데 / 오른쪽 버튼은 chrome 에 역할이 없다. reporting 이
+                // 켜져 있으면 앱으로 보내고 아니면 무시한다 — chrome 체인을 타게
+                // 두면 가운데 클릭이 탭 전환 / 탭 닫기로 오인된다.
+                if (mouse.button != .left) {
+                    _ = self.routeMouseToApp(self.reportEvent(
+                        .press,
+                        reportButton(mouse.button),
+                        mouse.mods,
+                        mouse.x,
+                        mouse.y,
+                        true,
+                    ));
+                    return true;
+                }
                 if (self.command_menu_open) {
                     // #334 — 스크롤 표시 행 클릭 = 한 entry 스크롤, 메뉴 유지.
                     const menu_view = self.commandMenuView();
@@ -1180,6 +1319,16 @@ pub const App = struct {
                 }
                 self.tab_drag.reset();
                 if (self.activeTabPtr()) |tab| tab.interaction.scrollbar.end();
+                // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다.
+                // Shift 를 누르면 우리 selection 으로 돌아온다 (bypass).
+                if (!self.routeMouseToApp(self.reportEvent(
+                    .press,
+                    .left,
+                    mouse.mods,
+                    mouse.x,
+                    mouse.y,
+                    true,
+                ))) return true;
                 self.startTerminalSelection(mouse.x, mouse.y);
                 return true;
             },
@@ -1187,6 +1336,17 @@ pub const App = struct {
                 if (self.singleControlHit(mouse.x, mouse.y) != .none) return true;
                 // 탭바 더블클릭은 소비만 (rename 은 #341 로 제거).
                 if (mouse.y >= self.effectiveTabBarHeight()) {
+                    // #502 — reporting 중이면 두 번째 클릭도 press 로 보낸다. 더블
+                    // 클릭의 *의미* 는 앱이 정하므로 (앱마다 다르다) 우리가 word
+                    // selection 으로 가로채지 않는다.
+                    if (!self.routeMouseToApp(self.reportEvent(
+                        .press,
+                        .left,
+                        mouse.mods,
+                        mouse.x,
+                        mouse.y,
+                        true,
+                    ))) return true;
                     self.selectWordAt(mouse.x, mouse.y);
                 }
                 return true;
@@ -1200,12 +1360,58 @@ pub const App = struct {
                         self.handleDragMove(mouse.x);
                     } else if (tab_opt != null and tab_opt.?.interaction.selection.active) {
                         self.updateTerminalSelection(mouse.x, mouse.y);
+                    } else {
+                        // #502 — 우리 pointer mode 가 아무것도 아닌 왼쪽 드래그는
+                        // 앱의 드래그다 (press 를 앱이 가져갔다는 뜻).
+                        _ = self.routeMouseToApp(self.reportEvent(
+                            .motion,
+                            .left,
+                            mouse.mods,
+                            mouse.x,
+                            mouse.y,
+                            true,
+                        ));
                     }
+                } else if (mouse.heldButton()) |held| {
+                    // 가운데 / 오른쪽 드래그 — chrome 에 역할이 없어 전부 앱 몫.
+                    _ = self.routeMouseToApp(self.reportEvent(
+                        .motion,
+                        reportButton(held),
+                        mouse.mods,
+                        mouse.x,
+                        mouse.y,
+                        true,
+                    ));
+                } else {
+                    // 버튼 없는 hover — `?1003` (any) 만 보낸다. 그 판정과 같은
+                    // cell 중복 제거는 인코더가 한다. 탭바 위 hover 는 viewport
+                    // 밖이라 저절로 걸러진다.
+                    _ = self.routeMouseToApp(self.reportEvent(
+                        .motion,
+                        null,
+                        mouse.mods,
+                        mouse.x,
+                        mouse.y,
+                        false,
+                    ));
                 }
                 self.updateTabHover(mouse.x, mouse.y);
                 return true;
             },
-            .mouse_up => {
+            .mouse_up => |mouse| {
+                // #502 — 가운데 / 오른쪽 뗌은 chrome 에 역할이 없다. 앱이 press 를
+                // 받았으면 뗌도 받아야 버튼이 눌린 채로 남지 않는다.
+                if (mouse.button != .left) {
+                    _ = self.routeMouseToApp(self.reportEvent(
+                        .release,
+                        reportButton(mouse.button),
+                        mouse.mods,
+                        mouse.x,
+                        mouse.y,
+                        false,
+                    ));
+                    return true;
+                }
                 // #245 — 어떤 release 든 drag-select auto-scroll 타이머 정지.
                 self.window.setAutoScroll(false);
                 if (self.activeTabPtr()) |tab| {
@@ -1217,6 +1423,16 @@ pub const App = struct {
                 if (self.tab_drag.active) {
                     self.handleDragEnd();
                 } else {
+                    // #502 — 뗌은 앱에게 먼저. viewport 밖에서 놓아도 항상 보내야
+                    // 앱이 버튼 상태를 잃지 않는다 (인코더가 그 규칙을 갖는다).
+                    if (!self.routeMouseToApp(self.reportEvent(
+                        .release,
+                        .left,
+                        mouse.mods,
+                        mouse.x,
+                        mouse.y,
+                        false,
+                    ))) return true;
                     self.finishTerminalSelection();
                 }
                 return true;
@@ -1230,7 +1446,7 @@ pub const App = struct {
                             // #334 — 정밀 휠/터치패드(delta<120)도 스크롤되게
                             // 누적 + 나머지 보존 (재감사 발견 — divTrunc 단독은
                             // 120 미만에서 항상 0).
-                            self.command_menu_wheel_accum += wheel;
+                            self.command_menu_wheel_accum += wheel.delta;
                             var steps = @divTrunc(self.command_menu_wheel_accum, 120);
                             self.command_menu_wheel_accum -= steps * 120;
                             while (steps != 0) {
@@ -1245,6 +1461,12 @@ pub const App = struct {
                         .page => {},
                     }
                     return true;
+                }
+                // #502 — 앱이 tracking 을 켰으면 휠은 앱 것 (`Cb` 64/65). 안 켰지만
+                // alt screen + `?1007` 이면 화살표 키로 바꿔 보낸다.
+                switch (scroll_event) {
+                    .wheel => |wheel| if (self.routeWheel(wheel)) return true,
+                    .page => {},
                 }
                 self.handleScroll(scroll_event);
                 return true;
