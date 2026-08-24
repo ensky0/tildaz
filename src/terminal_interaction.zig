@@ -1,5 +1,6 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
+const mouse_report = @import("mouse_report.zig");
 
 pub const Cell = struct {
     col: u16,
@@ -78,12 +79,132 @@ pub const ScrollbarDragState = struct {
 pub const TerminalInteraction = struct {
     selection: SelectionState = .{},
     scrollbar: ScrollbarDragState = .{},
+    /// #502 — mouse reporting 의 motion 중복 제거 상태. 같은 cell 안에서 픽셀만
+    /// 움직인 motion 을 앱에 다시 보내지 않는다. 탭별 상태라 여기에 둔다.
+    report_last_cell: ?mouse_report.Cell = null,
 
     pub fn cancelPointerModes(self: *TerminalInteraction) void {
         self.selection.cancel();
         self.scrollbar.end();
+        // 다음 드래그가 첫 motion 부터 보고되도록 초기화 — 남겨 두면 새 드래그의
+        // 첫 cell 이 이전 드래그의 마지막 cell 과 같을 때 통째로 삼켜진다.
+        self.report_last_cell = null;
     }
 };
+
+/// #502 — mouse reporting 의 *ghostty 연결* 과 *좌표 계산*. 세 host (Windows
+/// `app_controller` · macOS `host/macos.zig` · Linux `wayland_minimal.zig`) 가 각자
+/// 라우팅을 갖고 있어서, 판정에 들어가는 값은 이 함수들로 수렴시킨다. 인코딩 자체는
+/// ghostty 비의존 순수 모듈 `mouse_report.zig` 가 한다.
+///
+/// ghostty 가 DECSET 을 해석해 `Terminal.flags` 에 넣어 둔 mode 를 인코더 enum 으로
+/// 옮긴다. **exhaustive switch** 라 upstream 이 variant 를 추가하면 컴파일 에러로
+/// 드러난다 (인코더를 ghostty 비의존으로 둔 대가).
+pub fn reportTracking(t: *const ghostty.Terminal) mouse_report.Tracking {
+    return switch (t.flags.mouse_event) {
+        .none => .none,
+        .x10 => .x10,
+        .normal => .normal,
+        .button => .button,
+        .any => .any,
+    };
+}
+
+pub fn reportFormat(t: *const ghostty.Terminal) mouse_report.Format {
+    return switch (t.flags.mouse_format) {
+        .x10 => .x10,
+        .utf8 => .utf8,
+        .sgr => .sgr,
+        .urxvt => .urxvt,
+        .sgr_pixels => .sgr_pixels,
+    };
+}
+
+/// XTSHIFTESCAPE (`CSI > Ps s`). ghostty 의 3-상태를 우리 정책 enum 으로. `.true` =
+/// 터미널이 Shift 를 가져가도 좋다는 앱의 허용, `.false` = 앱이 Shift 조합을 자기가
+/// 받겠다는 요청.
+pub fn reportShiftCapture(t: *const ghostty.Terminal) mouse_report.ShiftCapture {
+    return switch (t.flags.mouse_shift_capture) {
+        .null => .unset,
+        .true => .terminal,
+        .false => .app,
+    };
+}
+
+/// 셀 영역 좌표 계산에 필요한 host 기하. 단위는 **물리 픽셀** — 각 host 가 자기
+/// 단위 (Windows `c_int` / macOS `f32` / Linux `i32`) 를 i32 px 로 변환해 넘긴다
+/// (`scrollbar.zig` 와 같은 계약).
+pub const ReportGeometry = struct {
+    cell_w: i32,
+    cell_h: i32,
+    cols: u16,
+    rows: u16,
+    /// `TERMINAL_PADDING` 상당.
+    pad: i32,
+    /// 탭바 높이 (단일 탭에서 0 일 수 있다).
+    tab_bar_h: i32,
+};
+
+/// pointer 픽셀 좌표를 인코더 입력으로. cell 은 grid 안으로 clamp 하지만
+/// **`in_viewport` 판정은 clamp 전 원좌표로** 한다 — clamp 된 값만 보면 창 밖
+/// 드래그가 언제나 가장자리 cell "안" 으로 보여서, 뗌만 보내야 하는 규칙이 깨진다.
+pub fn reportEvent(
+    action: mouse_report.Action,
+    button: ?mouse_report.Button,
+    mods: mouse_report.Mods,
+    x: i32,
+    y: i32,
+    geom: ReportGeometry,
+    any_button_pressed: bool,
+) mouse_report.Event {
+    const term_x = x - geom.pad;
+    const term_y = y - geom.tab_bar_h - geom.pad;
+    const cols: i32 = @intCast(geom.cols);
+    const rows: i32 = @intCast(geom.rows);
+    const col: u32 = if (geom.cell_w > 0 and term_x >= 0)
+        @intCast(@min(@divTrunc(term_x, geom.cell_w), cols - 1))
+    else
+        0;
+    const row: u32 = if (geom.cell_h > 0 and term_y >= 0)
+        @intCast(@min(@divTrunc(term_y, geom.cell_h), rows - 1))
+    else
+        0;
+    return .{
+        .action = action,
+        .button = button,
+        .mods = mods,
+        .cell = .{ .col = col, .row = row },
+        .pixel = .{ .x = term_x, .y = term_y },
+        .in_viewport = term_x >= 0 and term_y >= 0 and
+            term_x < geom.cell_w * cols and term_y < geom.cell_h * rows,
+        .any_button_pressed = any_button_pressed,
+    };
+}
+
+/// 이벤트를 앱에 보낼지 우리가 처리할지 결정한다. host 는 `.report` 면 그 바이트를
+/// PTY 로 쓰고, `.local` 이면 기존 동작을 계속하고, `.swallow` 면 아무것도 하지
+/// 않는다 (앱이 마우스를 소유하는데 이 이벤트만 안 보내는 경우 — 우리 selection 을
+/// 시작하면 앱 화면 위에 겹쳐 그려진다).
+///
+/// PTY 전송에 `queueInputToActive` 를 쓰지 않는다 — 그 경로는 write 뒤
+/// `scrollViewport(.bottom)` 을 강제해서 매 motion 마다 viewport 가 끝으로 당겨진다
+/// (primary screen 에서 scrollback 을 올려 둔 채 드래그하면 화면이 튄다). 마우스
+/// 보고는 사용자 입력이 아니라 좌표 통보라 viewport 를 건드리지 않는 게 맞다.
+pub fn routeMouse(
+    buf: []u8,
+    t: *const ghostty.Terminal,
+    state: *TerminalInteraction,
+    ev: mouse_report.Event,
+) mouse_report.Decision {
+    return mouse_report.route(
+        buf,
+        ev,
+        reportTracking(t),
+        reportFormat(t),
+        reportShiftCapture(t),
+        &state.report_last_cell,
+    );
+}
 
 /// 더블클릭 word selection — ghostty 의 `selectWord` 가 wide char (한/中/日 등)
 /// 의 spacer_tail cell (글자의 right-half) 을 boundary 로 취급해 (i) 음절 사이
