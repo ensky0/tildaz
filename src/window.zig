@@ -323,6 +323,7 @@ const VK_CONTROL: c_int = 0x11;
 const VK_SHIFT: c_int = 0x10;
 const VK_MENU: c_int = 0x12; // Alt
 const VK_LBUTTON: c_int = 0x01;
+const VK_MBUTTON: c_int = 0x04;
 const VK_LWIN: c_int = 0x5B;
 const VK_RWIN: c_int = 0x5C;
 
@@ -1561,6 +1562,21 @@ pub const Window = struct {
         };
     }
 
+    /// #502 — capture 는 **스레드당 하나**다. 그래서 뗌 하나가 무조건 놓아 버리면
+    /// 아직 눌려 있는 다른 버튼의 드래그가 끊긴다 (왼쪽 + 가운데를 함께 누른 뒤
+    /// 한쪽만 떼는 경우). 보고 대상 버튼이 하나도 안 남았을 때만 놓는다.
+    ///
+    /// 오른쪽은 대상이 아니다 — press · release 를 보고하지 않고 motion 도
+    /// `mouse_report.motionReportable` 이 걸러낸다 (우클릭 = paste, #119).
+    ///
+    /// `GetKeyState` (비동기 아님) 는 큐에서 처리된 메시지 기준의 **논리** 버튼이라
+    /// 이 메시지 시점과 일관되고, 좌우 스왑 사용자에게도 올바르다 —
+    /// `WM_LBUTTONDOWN` 의 capture 판정과 같은 이유다 (#329).
+    fn releaseCaptureIfNoReportedButtonHeld() void {
+        if (GetKeyState(VK_LBUTTON) < 0 or GetKeyState(VK_MBUTTON) < 0) return;
+        _ = ReleaseCapture();
+    }
+
     /// 휠 메시지의 client 좌표. `WM_MOUSEWHEEL` 의 `lParam` 은 **screen** 좌표라
     /// (버튼 메시지와 다르다) `ScreenToClient` 변환이 필요하다 — 빼면 reporting 이
     /// 창 밖 좌표를 보낸다.
@@ -2202,7 +2218,7 @@ pub const Window = struct {
                         .mods = mouseMods(wParam),
                     },
                 });
-                _ = ReleaseCapture();
+                releaseCaptureIfNoReportedButtonHeld();
                 return 0;
             },
             WM_MOUSEWHEEL => {
@@ -2231,6 +2247,12 @@ pub const Window = struct {
                         .mods = mouseMods(wParam),
                     },
                 });
+                // 왼쪽과 같은 이유로 capture 를 잡는다 — 없으면 창 밖으로 끌고 나간
+                // 드래그의 motion 이 끊기고, **창 밖에서 뗀 release 가 우리에게 오지
+                // 않아** 앱이 가운데 버튼을 영원히 눌린 것으로 안다
+                // (`mouse_report` 가 "뗌은 어디서 놓든 항상 보고한다" 로 막으려는
+                // 상태인데, 이벤트 자체가 안 오면 인코더가 손쓸 수 없다).
+                if (GetKeyState(VK_MBUTTON) < 0) _ = SetCapture(hwnd);
                 return 0;
             },
             WM_MBUTTONUP => {
@@ -2242,6 +2264,7 @@ pub const Window = struct {
                         .mods = mouseMods(wParam),
                     },
                 });
+                releaseCaptureIfNoReportedButtonHeld();
                 return 0;
             },
             // 우클릭 paste (#119) — cmd.exe console 표준 패턴. 이전 가운데 버튼

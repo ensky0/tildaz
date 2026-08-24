@@ -2195,10 +2195,21 @@ fn routeWheelMac(delta_y: f64, x: f32, y: f32, mods: mouse_report.Mods) bool {
     return true;
 }
 
-/// #502 — 가운데 버튼 (`otherMouseDown:` / `otherMouseUp:`). chrome 에 역할이 없어
-/// reporting 전용이다. `buttonNumber` 2 = 가운데, 그 밖 (뒤로/앞으로 등) 은 무시.
+/// #502 — 가운데 버튼 (`otherMouseDown:` / `otherMouseDragged:` / `otherMouseUp:`).
+/// chrome 에 역할이 없어 reporting 전용이다. `buttonNumber` 2 = 가운데, 그 밖
+/// (뒤로/앞으로 등) 은 무시.
+///
+/// Cocoa 는 버튼별로 다른 selector 를 보낸다 — 가운데 드래그는 `mouseDragged:` 가
+/// 아니라 **`otherMouseDragged:`** 로만 온다. 그래서 이것을 등록하지 않으면 A9 /
+/// M2 의 `Cb 33` (1 + 32) 이 아예 나오지 않는다. 오른쪽 (`rightMouseDragged:`) 을
+/// 등록하지 않는 것은 *의도*지만 (우클릭은 motion 도 보내지 않는다 — M1) 가운데는
+/// 보내야 한다.
 fn tildazOtherMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     otherMouseReport(self_view, event, .press);
+}
+
+fn tildazOtherMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    otherMouseReport(self_view, event, .motion);
 }
 
 fn tildazOtherMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
@@ -2211,7 +2222,10 @@ fn otherMouseReport(self_view: objc.id, event: objc.id, action: mouse_report.Act
     if (get_button(event, objc.sel("buttonNumber")) != 2) return;
     const xy = eventToWindowPx(self_view, event);
     requestRender();
-    _ = routeMouseMac(action, .middle, xy.x, xy.y, eventMouseMods(event), action == .press);
+    // `any_button_pressed` — motion 도 **버튼이 눌린 상태**다 (드래그 중에만 온다).
+    // 이 값이 false 면 인코더가 viewport 밖 motion 을 버려서 (창 밖으로 끌고 나간
+    // 드래그를 앱이 못 본다) `.release` 만 false 여야 한다.
+    _ = routeMouseMac(action, .middle, xy.x, xy.y, eventMouseMods(event), action != .release);
 }
 
 /// #245 — drag-select auto-scroll tick (mac, renderFrameTick 에서 매 frame 호출).
@@ -2974,6 +2988,10 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     // #502 — 가운데 버튼은 chrome 에 역할이 없어 mouse reporting 전용.
     if (!objc.class_addMethod(cls, objc.sel("otherMouseDown:"), @ptrCast(&tildazOtherMouseDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // 가운데 드래그는 `mouseDragged:` 가 아니라 이 selector 로만 온다 — 빠지면
+    // `Cb 33` 이 안 나온다. `rightMouseDragged:` 미등록은 의도 (M1).
+    if (!objc.class_addMethod(cls, objc.sel("otherMouseDragged:"), @ptrCast(&tildazOtherMouseDragged), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("otherMouseUp:"), @ptrCast(&tildazOtherMouseUp), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
