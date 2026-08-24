@@ -1372,11 +1372,15 @@ pub const App = struct {
                             true,
                         ));
                     }
-                } else if (mouse.heldButton()) |held| {
-                    // 가운데 / 오른쪽 드래그 — chrome 에 역할이 없어 전부 앱 몫.
+                } else if (mouse.heldButton()) |held| blk: {
+                    // 가운데 드래그는 앱 몫. **오른쪽은 제외** — 우클릭은 paste 로
+                    // 남기므로 press · release 를 안 보내는데 motion 만 보내면 앱의
+                    // 드래그 상태가 갇힌다 (`mouse_report.motionReportable`).
+                    const b = reportButton(held);
+                    if (!mouse_report.motionReportable(b)) break :blk;
                     _ = self.routeMouseToApp(self.reportEvent(
                         .motion,
-                        reportButton(held),
+                        b,
                         mouse.mods,
                         mouse.x,
                         mouse.y,

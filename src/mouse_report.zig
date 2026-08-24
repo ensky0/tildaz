@@ -243,6 +243,19 @@ fn buttonBase(b: Button) u8 {
     };
 }
 
+/// 오른쪽 버튼 motion 을 앱에 보내도 되는지. **안 된다** — 우클릭은 우리 paste 로
+/// 남기는 정책 (SPEC §3) 이라 press · release 를 보내지 않는데, motion 만 보내면 앱은
+/// *누른 적 없는 버튼이 움직이고 뗌도 오지 않는* 상태가 된다. 드래그 상태가 갇혀서
+/// 그 뒤 클릭이 먹지 않는다.
+///
+/// 2026-08-24 Linux 실기에서 `Cb` 34 (= 2 오른쪽 + 32 motion) 로 발견했다. Windows
+/// `heldButton()` · Linux `pointerHeldButton()` 두 경로가 해당했고, macOS 는
+/// `rightMouseDragged:` 를 등록하지 않아 영향이 없었다. 정책이 host 마다 흩어지지
+/// 않게 판정을 여기 한 곳에 둔다.
+pub fn motionReportable(b: Button) bool {
+    return b != .right;
+}
+
 /// Shift bypass 정책 상태. 앱이 XTSHIFTESCAPE (`CSI > Ps s`) 로 요청할 수 있다.
 /// ghostty `Terminal.flags.mouse_shift_capture` 의 3-상태와 같은 모델.
 pub const ShiftCapture = enum {
@@ -540,4 +553,10 @@ test "alternate scroll: DECCKM 에 따라 CSI / SS3" {
     try testing.expectEqualStrings("\x1b[B", alternateScrollKey(false, false));
     try testing.expectEqualStrings("\x1bOA", alternateScrollKey(true, true));
     try testing.expectEqualStrings("\x1bOB", alternateScrollKey(false, true));
+}
+
+test "오른쪽 버튼 motion 은 보내지 않는다 — 우클릭 paste 정책" {
+    try testing.expect(motionReportable(.left));
+    try testing.expect(motionReportable(.middle));
+    try testing.expect(!motionReportable(.right));
 }

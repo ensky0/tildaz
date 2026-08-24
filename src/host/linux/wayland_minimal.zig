@@ -6083,8 +6083,13 @@ const Client = struct {
             // #502 — 우리 pointer mode 가 아무것도 아니면 앱의 드래그 / hover 다.
             // 버튼 없는 hover 는 `?1003` (any) 만 받고, 탭바 위 hover 는 viewport
             // 밖이라 인코더가 걸러 낸다.
+            // **오른쪽은 motion 도 안 보낸다** — 우클릭은 paste 로 남기므로 press ·
+            // release 를 안 보내는데 motion 만 보내면 앱의 드래그 상태가 갇힌다
+            // (`mouse_report.motionReportable` — 2026-08-24 Linux 실기 발견).
             if (self.pointerHeldButton()) |held| {
-                _ = self.routeMouseLinux(.motion, held, true);
+                if (mouse_report.motionReportable(held)) {
+                    _ = self.routeMouseLinux(.motion, held, true);
+                }
             } else {
                 _ = self.routeMouseLinux(.motion, null, false);
             }
