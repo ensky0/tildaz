@@ -15,6 +15,7 @@ const windows = std.os.windows;
 const themes = @import("themes.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
+const log = @import("log.zig");
 const instance_context = @import("instance_context.zig");
 // #431 — 기동 시 인스턴스 간 핫키 중복 검사. `instances.zig` 도 이 모듈을 import 하지만
 // (`config.Hotkey`), 서로의 *값*에 의존하지 않아 순환 참조가 성립한다.
@@ -1892,6 +1893,17 @@ pub const KeyBinding = struct {
 pub const MAX_KEY_BINDINGS = 64;
 
 pub const Config = struct {
+    /// #501 — config 를 읽지 못하거나 만들지 못한 사실. **fatal 이 아니다** — 시작을
+    /// 거부하면 사용자가 스스로 잠긴다 (config 를 고칠 터미널이 tildaz 뿐일 수 있다).
+    ///
+    /// 여기 조립된 문장을 그대로 담는다 (경로 포함, #495 형식). 구조체로 들고 가서
+    /// 나중에 포맷하지 않는 이유는 **경로**다 — `load` 가 연 path 는 그 함수를 벗어나면
+    /// 해제되고, 다시 조회하면 instance 번호와 실제 파일이 갈릴 수 있다 (#316 의 교훈).
+    ///
+    /// host 가 **창이 뜬 뒤** 한 번 보여준다. 로드 시점에 바로 띄우지 않는 이유는
+    /// Linux 에서 그때는 Wayland backend 가 없어 다이얼로그가 stderr / log 로만
+    /// 가기 때문이다 — 데스크톱 아이콘으로 띄운 사용자에게는 보이지 않는다.
+    load_notice: ?[]const u8 = null,
     dock_position: DockPosition = default_dock_position,
     /// 화면 가로 점유율 percent (1..100, f32). 실수 허용 — 세밀 조정용.
     width_percent: f32 = Defaults.width_percent,
@@ -1954,15 +1966,25 @@ pub const Config = struct {
                 // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
                 // 사용자 config 를 만드는 주체가 되는데, 그것은 launcher 의 일이다
                 // (`instances.createDefaultConfig` — auto_start · 단축키 동기화까지 함께 한다).
-                // 측정은 기본값을 메모리에서만 쓰고 지나간다.
-                if (!instance_context.isStress()) createDefault(rt, allocator, path, shell_resolved);
-                break :blk defaultOwned(allocator, shell_resolved);
+                // 측정은 기본값을 메모리에서만 쓰고 지나간다. **그래서 안내도 없다** —
+                // 만들지 않은 것이 정상 동작이다 (#501).
+                var fallback = defaultOwned(allocator, shell_resolved);
+                if (!instance_context.isStress()) {
+                    fallback.load_notice = createDefault(rt, allocator, path, shell_resolved);
+                }
+                break :blk fallback;
             };
             defer file.close(rt.io);
 
             var file_reader = file.reader(rt.io, &.{});
-            const content = file_reader.interface.allocRemaining(allocator, .limited(64 * 1024)) catch {
-                break :blk defaultOwned(allocator, shell_resolved);
+            const content = file_reader.interface.allocRemaining(allocator, .limited(64 * 1024)) catch |err| {
+                // #501 — 파일이 **있는데 못 읽은 것**이다. 예전에는 파일이 없는 경우와
+                // 결과가 같았고 (조용히 기본값) 사용자는 자기 설정이 무시된 이유를 알
+                // 방법이 없었다. 64 KiB 상한 초과가 특히 그렇다 — 조용한 절단도 아니고
+                // 조용한 **무시** 다.
+                var fallback = defaultOwned(allocator, shell_resolved);
+                fallback.load_notice = loadNoticeAlloc(allocator, messages.config_read_failed_format, path, err);
+                break :blk fallback;
             };
             defer allocator.free(content);
 
@@ -2366,12 +2388,34 @@ pub const Config = struct {
         return count + 1;
     }
 
-    fn createDefault(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, shell_resolved: []const u8) void {
-        const file = std.Io.Dir.createFileAbsolute(rt.io, path, .{}) catch return;
+    /// #501 — 실패를 **삼키지 않는다.** 예전에는 세 실패가 모두 `catch return` /
+    /// `catch {}` 였고, 그래서 첫 실행에서 config 를 못 만든 사용자는 아무 안내도 없이
+    /// 기본값으로 도는 인스턴스를 얻었다. 다음 실행에도 파일이 없으니 같은 일이
+    /// 반복되고, 증상은 "설정을 고쳐도 저장되지 않는다" 로 보인다.
+    ///
+    /// 반환값 = 사용자에게 보여줄 문장 (owned) 또는 null (성공). 여기서 다이얼로그를
+    /// 띄우지 않는 이유는 `Config.load_notice` 주석 참고 — Linux 에서 이 시점의
+    /// 다이얼로그는 보이지 않는다.
+    fn createDefault(
+        rt: Runtime,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        shell_resolved: []const u8,
+    ) ?[]const u8 {
+        const file = std.Io.Dir.createFileAbsolute(rt.io, path, .{}) catch |err| {
+            // 파일 생성 실패의 대개는 디렉터리가 없거나 쓸 수 없는 것이다
+            // (`paths.configPath` 가 `createDirPath` 를 이미 시도한 뒤다).
+            return loadNoticeAlloc(allocator, messages.config_dir_create_failed_format, path, err);
+        };
         defer file.close(rt.io);
-        const json_text = defaultConfigToml(allocator, shell_resolved) catch return;
-        defer allocator.free(json_text);
-        file.writeStreamingAll(rt.io, json_text) catch {};
+        const doc = defaultConfigToml(allocator, shell_resolved) catch |err| {
+            return loadNoticeAlloc(allocator, messages.config_default_write_failed_format, path, err);
+        };
+        defer allocator.free(doc);
+        file.writeStreamingAll(rt.io, doc) catch |err| {
+            return loadNoticeAlloc(allocator, messages.config_default_write_failed_format, path, err);
+        };
+        return null;
     }
 
     /// #218 — `load` 가 owned 로 정규화한 `shell` / `font_families` 해제. 모든
@@ -2379,6 +2423,9 @@ pub const Config = struct {
     /// host loop 종료 후 호출 (Linux `run` / Windows `main`). macOS 는 terminate
     /// 가 exit 직행이라 미호출 — at-exit OS 회수 (leak detect 미작동).
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
+        // #501 — `showLoadNotice` 는 필드만 비우고 해제하지 않는다 (host 마다 호출
+        // 시점이 달라 이중 해제 위험). 여기서 한 번 해제한다.
+        if (self.load_notice) |n| allocator.free(n);
         if (self.shell.len > 0) allocator.free(self.shell);
         for (self.font_families[0..self.font_family_count]) |f| {
             if (f.len > 0) allocator.free(f);
@@ -2453,6 +2500,46 @@ fn parseFloat(v: toml.Value) ?f32 {
 /// 오류 종류에 따라 경로 위치가 달랐다 (파싱은 셋째 줄, 의미 오류는 맨 끝).
 fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, config_path: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ config_path, message });
+}
+
+/// #501 — 로드 실패 안내 한 줄을 조립한다. 실패해도 null 을 주고 넘어간다 — 안내를
+/// 만들다 실패해서 시작을 막으면 이 이슈가 고치려는 것과 같은 종류의 실패가 된다.
+/// 형식은 #495 와 같다 (경로가 첫 줄).
+fn loadNoticeAlloc(
+    allocator: std.mem.Allocator,
+    comptime fmt: []const u8,
+    config_path: []const u8,
+    err: anyerror,
+) ?[]const u8 {
+    var buf: [512]u8 = undefined;
+    const body = std.fmt.bufPrint(&buf, fmt, .{@errorName(err)}) catch return null;
+    return configErrorMessageAlloc(allocator, body, config_path) catch null;
+}
+
+/// #501 — host 가 **창이 뜬 뒤** 한 번 부른다. 안내가 없으면 아무 일도 하지 않는다.
+///
+/// 로드 시점에 바로 띄우지 않는 이유는 Linux 다 — 그때는 Wayland backend 가 없어
+/// `dialog.showError` 가 stderr / log 로만 가고, 데스크톱 아이콘이나 autostart 로
+/// 띄운 사용자에게는 보이지 않는다. Windows (`MessageBoxW`) 와 macOS
+/// (`osascript display dialog`) 는 그 시점에도 보이지만, 그쪽만 즉시로 두면 세
+/// platform 의 시점이 갈리고 안내가 두 번 뜰 수 있다. 한 곳으로 모은다 (#296 이
+/// 입력 정책을 모은 것과 같은 이유).
+///
+/// **fatal 이 아니다** — 보여주고 계속 돈다. `showError` 는 반환한다.
+pub fn showLoadNotice(rt: Runtime, config: *Config) void {
+    const notice = config.load_notice orelse return;
+    // 한 번만 보여준다. 소유권은 `deinit` 이 계속 들고 있다 — 여기서 free 하면
+    // host 마다 호출 시점이 달라 이중 해제 위험이 생긴다.
+    config.load_notice = null;
+    showLoadNoticeText(rt, notice);
+}
+
+/// Linux host 는 `*const Config` 를 들고 있어 위 함수의 "필드를 비운다" 를 할 수
+/// 없다. 대신 자기 one-shot flag 로 한 번만 부른다 — 문안과 로그는 여기 한 곳이라
+/// 세 platform 이 같은 안내를 낸다.
+pub fn showLoadNoticeText(rt: Runtime, notice: []const u8) void {
+    log.appendLine("config", "load failed — running with defaults", .{});
+    dialog.showError(rt, messages.config_not_loaded_title, notice);
 }
 
 fn showConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u8) noreturn {
@@ -2541,6 +2628,47 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
 }
 
 // --- Tests ---
+
+test "#501 config 를 만들지 못하면 안내를 만들고 시작을 막지 않는다" {
+    const allocator = std.testing.allocator;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+
+    // 존재하지 않는 디렉터리 아래 — `createFileAbsolute` 가 실패한다. 실제 config
+    // 경로를 건드리지 않으므로 이 test 는 사용자 파일에 영향이 없다.
+    const path = "/tildaz-test-nonexistent-dir-9f3a/config_0.toml";
+    const notice = Config.createDefault(rt, allocator, path, "/bin/bash");
+
+    // **안내가 만들어져야 한다.** 예전에는 `catch return` 으로 삼켜서 사용자가 아무
+    // 것도 못 받았고, 다음 실행에도 같은 일이 반복됐다.
+    try std.testing.expect(notice != null);
+    defer allocator.free(notice.?);
+
+    // #495 형식 — 경로가 첫 줄이다.
+    try std.testing.expect(std.mem.startsWith(u8, notice.?, "Config: " ++ path));
+    // **결과 상태를 말해야 한다.** 오류만 알려 주고 "그래서 지금 어떤 상태인가" 를
+    // 빼면 사용자는 자기 설정이 적용됐는지 모른 채 쓰게 된다 — 이 이슈의 원래 증상과
+    // 사실상 같아진다.
+    try std.testing.expect(std.mem.indexOf(u8, notice.?, "default settings") != null);
+}
+
+test "#501 안내는 Config 소유이고 deinit 이 정확히 한 번 해제한다" {
+    const allocator = std.testing.allocator;
+
+    // `Config{}` 를 그대로 deinit 할 수 없다 — 기본값이 comptime 리터럴이라 `deinit`
+    // 이 static 메모리를 free 한다. `load` 경로는 `defaultOwned` 로 owned 로 만든
+    // 뒤에만 deinit 대상이 된다 (그 함수 주석의 "모든 load 경로가 owned").
+    const shell = try allocator.dupe(u8, "/bin/bash");
+    var config = Config.defaultOwned(allocator, shell);
+    config.load_notice = try allocator.dupe(u8, "Config: /x");
+
+    // `showLoadNotice` 는 필드만 비우고 **해제하지 않는다** — host 마다 호출 시점이
+    // 달라 거기서 해제하면 이중 해제 위험이 생긴다. 해제는 `deinit` 한 곳이다.
+    // testing allocator 가 leak 과 double-free 를 잡으므로 이 test 가 그 계약을
+    // 고정한다.
+    allocator.free(config.load_notice.?);
+    config.load_notice = null;
+    config.deinit(allocator);
+}
 
 test "#316 · #495 config 오류는 경로를 첫 줄에 정확히 한 번 담는다" {
     const message = try configErrorMessageAlloc(

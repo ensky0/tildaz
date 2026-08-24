@@ -212,6 +212,10 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         app.window.cell_width_px,
         app.window.cell_height_px,
     });
+    // #501 — config 를 읽지 못했거나 만들지 못했으면 여기서 한 번 알린다. **fatal 이
+    // 아니다** — 기본값으로 계속 돈다. 창이 뜬 뒤인 것은 세 platform 을 같은 시점으로
+    // 맞추기 위함이다 (Linux 는 그 전에 다이얼로그가 보이지 않는다).
+    config_mod.showLoadNotice(rt, &config);
     defer app.window.deinit();
 
     // Scale tab bar / scrollbar / padding constants by the startup DPI.
