@@ -1210,6 +1210,13 @@ const Client = struct {
     /// 로드 시점에 한 번 굳히면 사용자가 layout 을 바꾼 뒤 틀린다.
     binding_fallbacks: [config_mod.MAX_KEY_BINDINGS]?config_mod.PhysicalCode =
         [_]?config_mod.PhysicalCode{null} ** config_mod.MAX_KEY_BINDINGS,
+    /// #496 1-b — sway 전역 핫키 등록을 **keymap 이 온 뒤로** 미룬다. 등록을 위치
+    /// (`bindcode`) 로 하려면 "이 문자를 내는 키가 어디인가" 를 알아야 하는데,
+    /// `client.run()` 앞에서는 `wl_keyboard.keymap` 이 아직 오지 않았다.
+    ///
+    /// 미루는 창은 밀리초 단위다 — keymap 은 seat 의 keyboard capability 가 생길 때
+    /// 오고 focus 와 무관하다. 그 사이 핫키가 없지만, 그 시점엔 창도 막 뜨는 중이다.
+    pending_sway_toggle_register: bool = false,
     /// #282 C1 — info/error dialog 도 About 과 같은 deferred. `showInfo` 는
     /// 탭 한도(Ctrl+Shift+T)·shell 소실 알림에서 `handleNewTab`(= processKeyEvent
     /// reentrant) 를 통해 동기 호출되는데, `openInfoDialog` → `createDialogSurface`
@@ -1894,6 +1901,7 @@ const Client = struct {
             self.drainAboutRequest();
             self.drainInfoRequest();
             self.drainConfigNotice();
+            self.drainSwayToggleRegister();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -8246,6 +8254,38 @@ const Client = struct {
     /// #282 C1 — deferred info dialog 를 reentrancy 밖(main loop)에서 연다.
     /// 다른 dialog 가 이미 떠 있으면(About/confirm 등) 이번 info 는 버린다
     /// (advisory 알림 — 탭 한도/shell 소실). fire-and-forget 이라 pump 불필요.
+    /// #496 1-b — sway 전역 핫키를 **물리 위치**로 등록한다. keymap 이 온 뒤에 한 번만
+    /// 돈다 (`pending_sway_toggle_register` 주석 참고).
+    ///
+    /// 자리를 고르는 규칙이 1-a 와 같다 — 활성 layout 이 그 문자를 내면 **그 키**,
+    /// 못 내면 US 자판에서 그 문자가 있던 자리. 판정할 수 없으면 (libxkbcommon 이
+    /// keymap 조회 심볼을 안 내준다) 위치를 포기하고 예전처럼 keysym 으로 등록한다 —
+    /// 핫키를 아예 잃는 것보다 낫다.
+    ///
+    /// **한 번 자리에 고정하면 group 전환에 영향받지 않는다.** 그래서 재등록이 없다 —
+    /// 그것이 위치 등록을 고른 이유다. `bindsym` 으로 두면 활성 layout 이 바뀔 때마다
+    /// 죽었다 살았다 한다.
+    fn drainSwayToggleRegister(self: *Client) void {
+        if (!self.pending_sway_toggle_register) return;
+        if (self.keyboard.keymap == null) return;
+        self.pending_sway_toggle_register = false;
+
+        const keysym = self.config.hotkey.keysym;
+        const keycode: ?u16 = switch (self.keyboard.canProduceKeysym(keysym) orelse return sway_ipc.registerToggleIfSway(
+            self.rt,
+            self.allocator,
+            self.config,
+            null,
+        )) {
+            true => self.keyboard.evdevKeycodeForKeysym(keysym),
+            false => blk: {
+                const code = config_mod.fallbackCandidate(self.config.hotkey) orelse break :blk null;
+                break :blk physical_key.evdev(code.code);
+            },
+        };
+        sway_ipc.registerToggleIfSway(self.rt, self.allocator, self.config, keycode);
+    }
+
     /// #496 1-a — **비라틴 layout 에서 글자 단축키를 살린다.**
     ///
     /// 키릴 · 그리스 · 아랍 layout 에서는 그 자판의 어느 키도 라틴 글자를 내지 않아
@@ -8642,7 +8682,9 @@ pub fn runBaselineWindow(
     // 않는 compositor 에 bindsym 을 등록하는 것은 무의미하고, 무엇보다 stale `SWAYSOCK`
     // 이 **응답 없는 소켓**을 가리키면 `runCommand` 의 read 가 부팅을 영원히 막는다
     // (KDE 실기 — mute 소켓 시뮬레이션에서 boot 로그 후 hang 확정).
-    if (!opts.isStressRun() and client.is_sway) sway_ipc.registerToggleIfSway(rt, allocator, cfg);
+    // #496 1-b — 등록을 loop 로 미룬다. 위치 (`bindcode`) 로 등록하려면 keymap 이
+    // 필요한데 여기서는 아직 오지 않았다 (`pending_sway_toggle_register` 주석).
+    if (!opts.isStressRun() and client.is_sway) client.pending_sway_toggle_register = true;
     // #454 — sway 면 창 규칙(`for_window`)을 **창을 만들기 전에** 등록한다. layer-shell 을
     // 쓰지 않는 대신 배치를 이 규칙이 맡는다. `client.run()` 안에서 창이 뜨므로 순서가
     // 여기서 보장된다. 측정 인스턴스는 제외 — 사용자의 드롭다운이 아니다 (#382).
