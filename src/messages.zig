@@ -289,12 +289,21 @@ pub const config_read_failed_format =
 ;
 
 pub const config_parse_failed_format =
-    \\Failed to parse config JSON.
+    \\Failed to parse config file.
     \\
     \\Path: {s}
     \\Error: {s}
 ;
-pub const config_parse_failed_fallback_msg = "Failed to parse config JSON.";
+/// #493 — TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
+/// 어디를 고쳐야 하는지 알 수 있어야 사용자가 스스로 해결한다.
+pub const config_parse_failed_at_format =
+    \\Failed to parse config file.
+    \\
+    \\Path: {s}
+    \\Line {d}, column {d}
+    \\Error: {s}
+;
+pub const config_parse_failed_fallback_msg = "Failed to parse config file.";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
 pub const config_error_with_path_format = "{s}\n\nConfig path:\n  {s}";
@@ -313,12 +322,42 @@ pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{
 ///
 /// key 이름을 못 알아본 경우. **받는 key 목록을 함께 준다** — 안 되는 이유만 알려 주고
 /// 무엇이 되는지 안 알려 주면 사용자가 또 추측해야 한다.
-pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`)\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+/// #493 — `[keys]` 의 같은 키가 두 액션에 걸린 경우. **양쪽 액션을 다 짚는다** —
+/// 한쪽만 알려주면 사용자가 나머지를 찾아 헤맨다 (#484 의 hotkey 메시지 교훈).
+/// 바인딩 총량 상한. 조용히 잘라 버리면 사용자가 적은 단축키가 이유 없이 안 먹는다.
+pub const config_key_too_many_format = "Configuration: too many key bindings in [keys] (limit {d}).";
+pub const config_key_too_many_fallback_msg = "Configuration: too many key bindings in [keys]";
+pub const config_key_conflict_format = "Configuration: \"{s}\" is bound to both \"{s}\" and \"{s}\" in [keys].\n\nEach key may trigger only one action. Remove it from one of them.";
+pub const config_key_conflict_fallback_msg = "Configuration: the same key is bound to two actions in [keys]";
+/// `[keys]` 의 값이 리스트가 아닌 경우.
+pub const config_key_not_list_format = "Configuration: \"keys.{s}\" must be a list of key combinations.\n\nExample: {s} = [\"ctrl+shift+t\"]\nUse an empty list [] to leave the action unbound.";
+pub const config_key_not_list_fallback_msg = "Configuration: a [keys] entry must be a list";
+/// `[keys]` 의 키 문자열을 파싱하지 못한 경우. `hotkey` 와 달리 액션 이름을 함께 짚는다.
+pub const config_key_invalid_format = "Configuration: \"keys.{s}\" contains a key TildaZ does not recognize: \"{s}\".\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.";
+pub const config_key_invalid_fallback_msg = "Configuration: a [keys] entry uses an unrecognized key";
+/// 글자를 내는 키를 modifier 없이 바인딩한 경우 — 그 글자를 터미널에 칠 수 없게 된다.
+pub const config_key_needs_modifier_format = "Configuration: \"keys.{s}\" binds \"{s}\" without Ctrl, Alt, or Cmd.\n\nThat key types text, so binding it alone would make it impossible to type in the terminal. Keys that do not type text (F1-F12, PageUp, PageDown) may be bound without a modifier.";
+pub const config_key_needs_modifier_fallback_msg = "Configuration: a [keys] entry needs a modifier";
+/// #496 — 위치 표기를 macOS 에서 쓸 수 없는 두 경우. 안내가 갈리는 이유는 원인이
+/// 다르기 때문이다 — 하나는 **키가 다른 이름으로 보고되는 것**이고 다른 하나는
+/// **정말 없는 것**이다. 한 메시지로 묶으면 앞쪽 사용자에게 "쓸 수 없다" 고 말하게
+/// 되는데 실제로는 이름만 바꾸면 되는 상황이다 (#484 의 교훈).
+pub const config_key_position_aliased_format = "Configuration: \"keys.{s}\" uses {s}, and macOS reports that key under a different name.\n\nOn a PC keyboard attached to a Mac, PrintScreen, ScrollLock and Pause arrive as F13, F14 and F15 -- Apple's extended keyboard puts those function keys in the same spots.\n\nUse [F13], [F14] or [F15] instead.";
+pub const config_key_position_aliased_fallback_msg = "Configuration: on macOS use [F13] / [F14] / [F15] for PrintScreen / ScrollLock / Pause";
+pub const config_key_position_absent_format = "Configuration: \"keys.{s}\" uses {s}, which macOS does not provide.\n\nApple's key codes stop at F20, and the Japanese input-switching keys (Convert, NonConvert, KanaMode) are handled by the input method rather than delivered as keys.\n\nPick a different key for this action, or leave it unbound with an empty list [].";
+pub const config_key_position_absent_fallback_msg = "Configuration: that key position does not exist on macOS";
+pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses an unrecognized key";
 /// key 는 유효하지만 modifier 가 없어 전역 등록이 위험한 경우 (일상 입력을 OS 전체에서
 /// 가로챈다). 이쪽은 기존 안내가 정확했다.
 pub const config_hotkey_invalid_format = "Configuration: failed to parse \"hotkey\" value \"{s}\".\n\nOnly F1-F12 may be used without modifiers. Other keys require Ctrl, Alt, Super, or Cmd.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
+/// #496 — 위치 표기 (`[KeyW]`) 를 전역 `hotkey` 에 쓴 경우. `config_hotkey_invalid`
+/// 로 묶으면 "Only F1-F12 may be used without modifiers" 를 받는데, 사용자는 modifier
+/// 를 이미 줬으므로 #484 와 똑같이 막다른 길이 된다. 무엇이 안 되는지와 **대신 할 수
+/// 있는 것**을 같이 준다.
+pub const config_hotkey_position_format = "Configuration: \"hotkey\" value \"{s}\" uses the position form (in square brackets).\n\nThe position form works in [keys] but not for the global hotkey: TildaZ has to register that one with the desktop, and every path it uses (sway, Hyprland, COSMIC, KDE) accepts only a character.\n\nUse a key name instead -- a function key is the safest choice because it is the same on every keyboard layout.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
+pub const config_hotkey_position_fallback_msg = "Configuration: hotkey cannot use the position form";
 /// #431 — 다른 TildaZ 인스턴스가 이미 쓰는 전역 핫키. 뒤에 있는 (index 가 큰) 쪽이 양보하므로
 /// 이 메시지는 그 인스턴스에만 나온다. **겹친 상대를 번호로 짚어 주는 것이 핵심이다** — 예전엔
 /// Windows 의 `RegisterHotKey` 실패 안내가 "Another app already registered the same combination"

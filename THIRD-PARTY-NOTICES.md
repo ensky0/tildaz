@@ -14,6 +14,7 @@ dependency, `ghostty`; the rest arrive transitively through it.
 |---|---|---|
 | `libghostty-vt` (Ghostty) | MIT | Always |
 | `uucode` | MIT | Always — Ghostty's VT module uses it for grapheme break support |
+| `zig-toml` | MIT | Always — parses the TOML config file |
 | Highway | Apache-2.0 (also available under BSD-3-Clause) | Builds with `-Dsimd=true`, which official releases use |
 | `OpenConsole.exe` / `conpty.dll` (ConPTY) | MIT | Windows builds only — shipped as separate files, not linked |
 
@@ -33,6 +34,12 @@ Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
 
 ```
 Copyright (c) 2026 Jacob Sandlund
+```
+
+**zig-toml** — https://github.com/sam701/zig-toml
+
+```
+Copyright (c) 2022-present Alexei Samokvalov & Contributors
 ```
 
 **Highway** — https://github.com/google/highway
@@ -89,9 +96,9 @@ their names or trademarks.
 
 ## MIT License
 
-Applies to `libghostty-vt`, `uucode`, ConPTY, iTerm2-Color-Schemes, and the
-Campbell palette from `microsoft/terminal`, under the respective copyright
-notices above.
+Applies to `libghostty-vt`, `uucode`, `zig-toml`, ConPTY,
+iTerm2-Color-Schemes, and the Campbell palette from `microsoft/terminal`, under
+the respective copyright notices above.
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining a copy

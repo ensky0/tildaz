@@ -32,13 +32,13 @@ you do not.
 - **You need a Wayland drop-down terminal.** TildaZ has real drop-down and global
   hotkey paths across KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway.
 - **You want familiar config everywhere.** Config paths differ by platform, but
-  the JSON schema, themes, hotkey, font, shell, opacity, and geometry settings
+  the TOML schema, themes, hotkey, font, shell, opacity, and geometry settings
   stay familiar.
 
 ## Why TildaZ
 
 - **One key between thought and shell.** Drop the terminal over your current workspace, run the command, and hide it again before your flow cools off.
-- **Same reflex, every OS.** The same drop-down terminal on Linux, macOS, and Windows — one JSON config shape, one muscle memory.
+- **Same reflex, every OS.** The same drop-down terminal on Linux, macOS, and Windows — one TOML config shape, one muscle memory.
 - **Familiar config everywhere.** Config paths differ by platform, but the schema, themes, hotkey, font, shell, opacity, and geometry settings stay familiar.
 - **Wayland coverage that matters.** KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway all get a real drop-down and global hotkey path.
 - **Native where it counts.** No Electron, no GTK or Qt runtime dependency — direct Wayland on Linux, GPU rendering on all three, and the fast `libghostty-vt` core.
@@ -77,9 +77,9 @@ First launch creates the default config:
 
 | Platform | Config | Log |
 |---|---|---|
-| Linux | `$XDG_CONFIG_HOME/tildaz/config_0.json` | `$XDG_STATE_HOME/tildaz/tildaz_0.log` |
-| macOS | `$XDG_CONFIG_HOME/tildaz/config_0.json` | `~/Library/Logs/tildaz_0.log` |
-| Windows | `%APPDATA%\tildaz\config_0.json` | `%APPDATA%\tildaz\tildaz_0.log` |
+| Linux | `$XDG_CONFIG_HOME/tildaz/config_0.toml` | `$XDG_STATE_HOME/tildaz/tildaz_0.log` |
+| macOS | `$XDG_CONFIG_HOME/tildaz/config_0.toml` | `~/Library/Logs/tildaz_0.log` |
+| Windows | `%APPDATA%\tildaz\config_0.toml` | `%APPDATA%\tildaz\tildaz_0.log` |
 
 On Linux and macOS, `XDG_CONFIG_HOME` defaults to `~/.config`. On Linux,
 `XDG_STATE_HOME` defaults to `~/.local/state`. Empty or relative XDG values use
@@ -99,11 +99,12 @@ window control shortcuts.
 
 ## Configure
 
-Edit `config_0.json`; the schema is documented in [CONFIG.md](CONFIG.md). Launch
+Edit `config_0.toml`; the schema is documented in [CONFIG.md](CONFIG.md). Launch
 TildaZ again while every configured instance is running to create another one.
-Press its global hotkey and choose **Create**; TildaZ writes `config_1.json`,
-`config_2.json`, and so on. Each config owns one process, hotkey, and log file.
-Legacy `config.json` files are left untouched and are not loaded.
+Press its global hotkey and choose **Create**; TildaZ writes `config_1.toml`,
+`config_2.toml`, and so on. Each config owns one process, hotkey, and log file.
+Legacy `config.json` files, and any `config_N.json` from before TildaZ used TOML,
+are left untouched and are not loaded.
 
 Common fields:
 
