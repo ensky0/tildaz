@@ -392,6 +392,18 @@ pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
 // dead key 이거나 글자를 안 내는 경우) 그것은 **파싱이 아니라 등록 시점**에만 알 수
 // 있어 다이얼로그가 아니라 로그로 알린다 — config 를 읽는 시점에는 사용자의 자판이
 // 무엇을 내는지 모른다.
+
+/// #496 1-c — **macOS 의 자리 거부는 전역 `hotkey` 에도 온다.** 위치 표기를 받기
+/// 시작하면서 생긴 경로다 — 그전에는 위치 표기가 파싱 앞단에서 막혀 이 둘이 `[keys]`
+/// 에서만 났고, 그래서 hotkey 쪽 config 로드부가 `unreachable` 로 두고 있었다.
+///
+/// 그 `unreachable` 은 ReleaseFast 에서 안전 검사가 없어 **`modifier_required` 안내로
+/// 떨어졌다** (macOS 실기 확인). `ctrl` 을 이미 준 사용자에게 "modifier 를 달라" 고
+/// 말하는 것이라, #484 가 "거부 이유별로 다른 안내를 보낸다" 로 막으려던 실패 그대로다.
+pub const config_hotkey_position_aliased_format = "Configuration: \"hotkey\" value \"{s}\" uses a key position that macOS reports under a different name.\n\nOn a PC keyboard attached to a Mac, PrintScreen, ScrollLock and Pause arrive as F13, F14 and F15 -- Apple's extended keyboard puts those function keys in the same spots.\n\nUse [F13], [F14] or [F15] instead.";
+pub const config_hotkey_position_aliased_fallback_msg = "Configuration: on macOS use [F13] / [F14] / [F15] for PrintScreen / ScrollLock / Pause";
+pub const config_hotkey_position_absent_format = "Configuration: \"hotkey\" value \"{s}\" uses a key position that macOS does not provide.\n\nApple's key codes stop at F20, and the Japanese input-switching keys (Convert, NonConvert, KanaMode) are handled by the input method rather than delivered as keys.\n\nPick a different key for the hotkey.";
+pub const config_hotkey_position_absent_fallback_msg = "Configuration: that key position does not exist on macOS";
 /// #431 — 다른 TildaZ 인스턴스가 이미 쓰는 전역 핫키. 뒤에 있는 (index 가 큰) 쪽이 양보하므로
 /// 이 메시지는 그 인스턴스에만 나온다. **겹친 상대를 번호로 짚어 주는 것이 핵심이다** — 예전엔
 /// Windows 의 `RegisterHotKey` 실패 안내가 "Another app already registered the same combination"
