@@ -312,13 +312,28 @@ modifier 차이를 흡수하지만 macOS 는 **Shift 의 유무까지 다르다*
 `Control+Shift+*` 가 된다.
 
 **keyboard layout 독립성** ([#482](https://github.com/ensky0/tildaz/issues/482) ·
-[#496](https://github.com/ensky0/tildaz/issues/496)). 세 platform 이 단축키를 매칭하는 대상이
-다르다 — Windows 는 virtual-key (`VK_1`, `VK_OEM_4`) 로 **물리 위치**를 보고, macOS · Linux 는
-*눌러서 나오는 문자* (**라벨**) 를 본다. macOS 는 `NSEvent charactersByApplyingModifiers:`,
-Linux 는 **xkb keysym** 이다. **macOS 가 라벨로 바뀐 것은 #496 항목 2 이고, 그전에는
-`kVK_ANSI_*` (물리 위치) 였다** — 그래서 AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac
-의 Safari (Cocoa 메뉴 `keyEquivalent` = 문자 비교) 와 다른 키를 요구했다. 그래서 layout 종속
-결함의 모양이 platform 마다 다르다.
+[#496](https://github.com/ensky0/tildaz/issues/496)). **글자 키에서는 세 platform 이 매칭하는
+대상이 모두 라벨** — *눌러서 나오는 문자* — 로 모였다. Linux 는 **xkb keysym**, macOS 는
+`NSEvent charactersByApplyingModifiers:`, Windows 는 **virtual-key** 다.
+**macOS 가 라벨로 바뀐 것은 #496 항목 2 이고, 그전에는 `kVK_ANSI_*` (물리 위치) 였다** — 그래서
+AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac 의 Safari (Cocoa 메뉴 `keyEquivalent` =
+문자 비교) 와 다른 키를 요구했다.
+
+**Windows 의 VK 는 layout DLL 이 배정한다** — 우리가 고른 것이 아니라 OS 가 정하는 값이라 성질이
+둘로 갈린다 ([실측](https://github.com/ensky0/tildaz/issues/496#issuecomment-5404000121)).
+
+- **글자 키는 라틴 layout 에서 라벨을 따라간다** — AZERTY 에서 scancode `0x1E` 가 `VK_Q` 다. 그
+  자리는 `Q` 라고 인쇄돼 있다.
+- **비라틴 layout 에서는 US 위치로 떨어진다** — Russian 의 `0x11` 이 `VK_W` 다. 키릴 라벨에
+  대응하는 VK 가 없어서다. **그래서 Windows 만 라틴 fallback 이 필요 없다** (아래 1-a 가 Linux ·
+  macOS 뿐인 이유). 한국어 · 일본어는 layout DLL 수준에서 그냥 US QWERTY 라 애초에 해당이 없다.
+- **기호 키는 라벨도 위치도 아니다.** `VK_OEM_*` 은 layout DLL 이 배정하는 **슬롯**이라 자리가
+  움직인다 — 같은 `VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` (`ù`) · 독일어 `0x27` (`ö`) 다.
+  그래서 `grave` 바인딩은 AZERTY 에서 `` ` `` 도 `²` 도 아닌 **`ù` 키**를 잡는다 (실기 확정).
+  이 부류의 답은 라벨을 넓히는 것이 아니라 위치 표기다 — 라벨로 통일하면 `ctrl+grave` 가 AZERTY
+  에서 `Ctrl+AltGr+7` (게다가 dead key) 이 되어 **누를 수 없는 조합**이 된다.
+
+그래서 layout 종속 결함의 모양이 platform 마다 다르다.
 
 - **비라틴 layout (키릴 · 그리스 · 아랍 ...) 에서는 글자 단축키를 라벨로 적을 수 없다.**
   `xkbcli how-to-type --layout ru 'w'` 가 빈 결과다 — 그 자판의 어느 키도 `w` 를 내지 않으므로
@@ -367,11 +382,13 @@ Linux 는 **xkb keysym** 이다. **macOS 가 라벨로 바뀐 것은 #496 항목
     양쪽에서 동작한다. Mutter 는 `us` keymap 을 즉석 컴파일해 같은 결과를 얻는다
     (`create_us_layout()`) — 우리는 내장 W3C 위치표가 그 자리를 대신한다.
 - **수용 집합은 라벨 쪽이 좁고 위치 쪽이 넓다.** 의도한 비대칭이다. 라벨을 넓히려면 `-` 에
-  값을 줘야 하는데 쓸 수 있는 고정값 (`VK_OEM_MINUS` · `kVK_ANSI_Minus`) 은 라벨이 아니라 "US
-  자판에서 `-` 가 있는 자리" 다. 그것을 라벨이라 부르면 같은 config 가 platform 마다 다른 키를
-  뜻한다. 위치는 처음부터 자리이므로 그 문제가 없어 자판이 낼 수 있는 키를 다 담는다.
-  라벨을 정직하게 넓히는 것은 live layout 조회 (macOS `UCKeyTranslate` · Windows
-  `VkKeyScanExW`) 가 전제다.
+  값을 줘야 하는데, Windows 에서 쓸 수 있는 고정값 (`VK_OEM_MINUS`) 은 라벨이 아니라 layout DLL
+  이 배정한 슬롯이다. 그것을 라벨이라 부르면 같은 config 가 layout 마다 다른 키를 뜻한다. 위치는
+  처음부터 자리이므로 그 문제가 없어 자판이 낼 수 있는 키를 다 담는다.
+  - **남은 전제는 Windows 뿐이다.** Linux 와 macOS 는 라벨을 **문자 그대로** (keysym · 유니코드
+    코드포인트) 담고 이벤트가 낸 문자와 견주므로, 새 라벨 이름은 값을 더 주지 않아도 매칭된다.
+    Windows 만 라벨을 VK 로 바꿔야 해서 live layout 조회 (`VkKeyScanExW` 로 로드 시 해석 +
+    `WM_INPUTLANGCHANGE` 로 재해석) 가 전제다. #496 항목 2 가 macOS 쪽을 이미 없앴다.
 - **Linux 는 라벨 매칭이라 Shift 가 바꾼 키 값을 되돌린다** (`normalizeLinuxKeysym`).
   `ctrl+shift+c` binding 은 keysym `c` 로 저장되는데 실제로는 `C` 가 도착하고, `ctrl+shift+[` 는
   `{` 로 도착한다. 예전 매처가 두 값을 나란히 적어 (`xkb_key_c_lower, xkb_key_c_upper`) 풀던
