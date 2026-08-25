@@ -912,18 +912,26 @@ hotkey = "alt+f12"              # ✅ KDE 테스트 통과
 hotkey = "super+a"              # ✅ KDE — plasmashell next activity 충돌 → takeover dialog
 hotkey = "ctrl+f7"              # ✅ KDE — kwin ExposeClass 충돌 → takeover dialog
 hotkey = "shift+cmd+t"          # mac 친숙 표기 (`cmd` = `super` = `meta` 모두 동일 키)
-hotkey = "ctrl+grave"           # backtick — `grave` 또는 `` ` `` 둘 다 가능
+hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자판에서나 같은 키다
 ```
 
-> **전역 핫키에 punctuation 을 권하지 않는다** ([#496](https://github.com/ensky0/tildaz/issues/496)
-> 1-b 조사). Mutter 의 `needs_secondary_layout()` 은 `a`–`z` 만 보고 라틴 fallback 여부를
-> 정하는데, **라틴이지만 US 가 아닌 layout** 에는 그 문자가 아예 없을 수 있다 — `de` 에는
-> `grave` keysym 이 없다. 그러면 fallback 을 받지 못한 채 바인딩이 keycode 0 개로 해석돼
-> **조용히 죽는다** (`meta_display_grab_accelerator` 가 `ACTION_NONE` 을 낸다). GNOME 자신은
-> 같은 문제를 `grave` 대신 위치 토큰 `Above_Tab` 을 써서 피한다.
+> **전역 핫키에 punctuation 을 권하지 않는다** ([#496](https://github.com/ensky0/tildaz/issues/496)).
+> 위 예제에 punctuation 이 하나도 없는 것은 의도다 — 예전에는 `ctrl+grave` 가 있었는데, 그 조합이
+> 자판마다 **다르게 깨진다**는 것이 두 platform 에서 확인됐다.
 >
-> 위 예제에서 `ctrl+grave` 는 **US 자판 기준의 예시**로만 읽어야 한다. 어느 자판에서나
-> 안전한 것은 **함수 키** (`F1`~`F12`) 다 — 기본값이 `F1` 인 이유이기도 하다.
+> - **Linux · GNOME** — Mutter 의 `needs_secondary_layout()` 은 `a`–`z` 만 보고 라틴 fallback
+>   여부를 정하는데, **라틴이지만 US 가 아닌 layout** 에는 그 문자가 아예 없을 수 있다 — `de` 에는
+>   `grave` keysym 이 없다. 그러면 fallback 을 받지 못한 채 바인딩이 keycode 0 개로 해석돼
+>   **조용히 죽는다** (`meta_display_grab_accelerator` 가 `ACTION_NONE` 을 낸다). GNOME 자신은
+>   같은 문제를 `grave` 대신 위치 토큰 `Above_Tab` 을 써서 피한다.
+> - **Windows** — 죽지는 않지만 **다른 키가 걸린다.** `grave` 는 `VK_OEM_3` 이고 그것은 layout
+>   DLL 이 배정하는 슬롯이라 자리가 움직인다. 프랑스어 legacy AZERTY 에서 `ctrl+grave` 는 각인
+>   `` ` `` 키 (그 자판의 `²`) 가 아니라 **`ù` 키**를 잡는다
+>   ([실기 확정](https://github.com/ensky0/tildaz/issues/496#issuecomment-5404000121)).
+>
+> 어느 자판에서나 안전한 것은 **함수 키** (`F1`~`F12`) 다 — 기본값이 `F1` 인 이유이기도 하다.
+> 자리로 고정하고 싶으면 `[keys]` 처럼 위치 표기를 쓰는 길이 있는데, 전역 `hotkey` 는 아직
+> 받지 않는다 (#496 1-c).
 
 **Modifier 토큰** (대소문자 무관, `+` 분리, 임의 개수 결합):
 
