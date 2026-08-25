@@ -690,7 +690,7 @@ Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모�
 
 세션 중 시도한 접근 둘이 폐기됨. 이후 다른 agent/유지보수자가 동일 함정 빠지지 않게 기록.
 
-**1. Paragraph selectors 매핑 (commit 320cd09 → df4c8d5 로 amend 교체)**
+**1. Paragraph selectors 매핑 (commit 320cd09 → c7ae2fd 로 amend 교체)**
 
 Apple `StandardKeyBinding.dict` (시스템 표준 키바인딩 정의) 에 따르면:
 
@@ -1055,7 +1055,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 
 어느 단계에서 걸렸는지는 로그 (`cwd` 카테고리) 에 새 탭 하나당 한 줄로 남는다.
 
-**셸 login 모드 — 각 OS 터미널 관례를 따르는 의도적 차이** (2026-07-12 결정, #282 D5). macOS 는 자식 셸을 **login shell** (`argv = {shell, "-l"}`) 로 띄우고 (Terminal.app / iTerm2 표준 — `~/.zprofile`·`~/.bash_profile` 로드; padding 비대칭 원인이던 non-login + `~/.hushlogin` 문제 해결, 커밋 d801d4c), Linux 는 **비-login** 으로 띄운다 (GNOME Terminal / Konsole 표준 — `~/.zshrc`·`~/.bashrc` 만 로드). 어느 dotfile 이 로드되는지가 platform 간 다르지만, 각 OS 터미널의 관례와 일치시킨 의도된 차이다 (cross-platform 동등성 룰의 명시 예외).
+**셸 login 모드 — 각 OS 터미널 관례를 따르는 의도적 차이** (2026-07-12 결정, #282 D5). macOS 는 자식 셸을 **login shell** (`argv = {shell, "-l"}`) 로 띄우고 (Terminal.app / iTerm2 표준 — `~/.zprofile`·`~/.bash_profile` 로드; padding 비대칭 원인이던 non-login + `~/.hushlogin` 문제 해결, 커밋 0572ab8), Linux 는 **비-login** 으로 띄운다 (GNOME Terminal / Konsole 표준 — `~/.zshrc`·`~/.bashrc` 만 로드). 어느 dotfile 이 로드되는지가 platform 간 다르지만, 각 OS 터미널의 관례와 일치시킨 의도된 차이다 (cross-platform 동등성 룰의 명시 예외).
 
 ---
 
