@@ -731,6 +731,30 @@ test "#496 macOS 에 값이 없는 자리는 그 platform 에서만 거부한다
         // 안내가 가리키는 대체 자리는 실제로 받아야 한다 — 그러지 않으면 막다른
         // 길이 된다 (#484).
         try std.testing.expect(parseHotkeyString("ctrl+[F13]", .app_binding) == .ok);
+
+        // #496 1-c — **전역 `hotkey` scope 에서도 같은 거부가 난다.** 위치 표기를 받기
+        // 시작하면서 생긴 경로이고, config 로드부는 이것을 `unreachable` 로 두고 있었다.
+        // ReleaseFast 는 안전 검사가 없어 크래시 대신 `modifier_required` 안내로
+        // 떨어졌고, `ctrl` 을 이미 준 사용자에게 "modifier 를 달라" 고 말했다 (macOS
+        // 실기 확인). 여기서 고정해 두면 그 전제가 다시 깨질 때 테스트가 잡는다.
+        try std.testing.expectEqual(
+            HotkeyParse.position_aliased_on_macos,
+            parseHotkeyString("ctrl+[PrintScreen]", .global_hotkey),
+        );
+        try std.testing.expectEqual(
+            HotkeyParse.position_absent_on_macos,
+            parseHotkeyString("ctrl+[F21]", .global_hotkey),
+        );
+        // config 로드부는 `parseHotkeyString` 이 아니라 `hotkeyFailure` 로 분기하므로
+        // 그쪽도 같은 값을 내야 한다.
+        try std.testing.expectEqual(
+            HotkeyFailure.position_aliased_on_macos,
+            hotkeyFailure("ctrl+[PrintScreen]").?,
+        );
+        try std.testing.expectEqual(
+            HotkeyFailure.position_absent_on_macos,
+            hotkeyFailure("ctrl+[F21]").?,
+        );
     } else {
         try std.testing.expect(parseHotkeyString("ctrl+[PrintScreen]", .app_binding) == .ok);
         try std.testing.expect(parseHotkeyString("ctrl+[F21]", .app_binding) == .ok);
@@ -2406,9 +2430,16 @@ pub const Config = struct {
                         messages.config_hotkey_unknown_key_fallback_msg,
                     .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
                         messages.config_hotkey_invalid_fallback_msg,
-                    // 전역 `hotkey` 는 위치 표기를 아예 안 받으므로 그 전에 걸린다 —
-                    // 이 둘은 `[keys]` 쪽 경로에서만 나온다.
-                    .position_aliased_on_macos, .position_absent_on_macos => unreachable,
+                    // #496 1-c — **여기는 `unreachable` 이었다.** 전역 `hotkey` 가 위치
+                    // 표기를 아예 안 받던 시절의 전제였는데 1-c 가 그것을 받게 하면서
+                    // 깨졌다. ReleaseFast 는 안전 검사가 없어 크래시 대신 위의
+                    // `modifier_required` 안내로 떨어졌고, `ctrl` 을 이미 준 사용자에게
+                    // "modifier 를 달라" 고 말했다 (macOS 실기 확인) — 바로 위 주석이
+                    // 막으려던 실패다.
+                    .position_aliased_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
+                        messages.config_hotkey_position_aliased_fallback_msg,
+                    .position_absent_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
+                        messages.config_hotkey_position_absent_fallback_msg,
                 };
                 showConfigFatalMsg(rt, config_path, msg);
             }
