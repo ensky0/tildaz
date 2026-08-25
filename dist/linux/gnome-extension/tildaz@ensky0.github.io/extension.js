@@ -9,7 +9,7 @@
  * 이 번호별 창을 잡아 배치/토글한다. tildaz.desktop은 launcher 전용이라 앱 아이콘
  * 재클릭도 기존 창 activate가 아니라 launcher Exec을 호출한다.
  *
- * config = single source of truth: $XDG_CONFIG_HOME/tildaz/config_N.json
+ * config = single source of truth: $XDG_CONFIG_HOME/tildaz/config_N.toml
  * (fallback: ~/.config/tildaz) 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} 를 읽는다.
  *
@@ -49,6 +49,72 @@ function workerIndex(win) {
   const ci = win.get_wm_class_instance?.();
   const matches = value => typeof value === "string" && value.toLowerCase() === expected;
   return matches(c) || matches(ci) ? index : null;
+}
+
+/**
+ * TOML 의 **아주 좁은 부분집합** 파서 — 최상위 스칼라와 `[window]` 같은 한 단계
+ * 테이블, 문자열 · 숫자 · 참거짓만 본다.
+ *
+ * GJS 에 TOML 파서가 없어서 직접 둔다. 읽을 파일은 `src/config.zig` 가 만든 템플릿
+ * 하나뿐이라 (사용자 편집 포함) 문법 범위가 좁다. 배열 (`glyph_fallback` ·
+ * `[keys]` 의 값들) · 여러 줄 문자열 · 점 표기 키는 값을 건너뛴다 — 우리가 읽는
+ * 키에는 그런 값이 없다.
+ *
+ * 주석은 **문자열 밖에서만** 자른다. 안 그러면 `hotkey = "ctrl+#"` 같은 값이 잘린다.
+ */
+function parseTomlSubset(text) {
+  const root = {};
+  let table = root;
+  for (const rawLine of String(text).split("\n")) {
+    const line = tomlStripComment(rawLine).trim();
+    if (!line) continue;
+    const section = /^\[([A-Za-z0-9_]+)\]$/.exec(line);
+    if (section) {
+      if (typeof root[section[1]] !== "object" || root[section[1]] === null) root[section[1]] = {};
+      table = root[section[1]];
+      continue;
+    }
+    const pair = /^([A-Za-z0-9_-]+)\s*=\s*(.*)$/.exec(line);
+    if (!pair) continue;
+    const value = tomlValue(pair[2].trim());
+    if (value !== undefined) table[pair[1]] = value;
+  }
+  return root;
+}
+
+function tomlStripComment(line) {
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+function tomlValue(text) {
+  if (text.startsWith('"')) {
+    let out = "";
+    for (let i = 1; i < text.length; i++) {
+      const c = text[i];
+      if (c === "\\") {
+        const next = text[++i];
+        out += next === "n" ? "\n" : next === "t" ? "\t" : next;
+      } else if (c === '"') {
+        return out;
+      } else {
+        out += c;
+      }
+    }
+    return undefined; // 닫히지 않은 문자열
+  }
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/.test(text)) return Number(text);
+  return undefined; // 배열 등 — 우리가 안 읽는 값
 }
 
 /**
@@ -245,7 +311,7 @@ export default class TildazExtension extends Extension {
     this._dialogIdleIds = null;
   }
 
-  /** XDG config의 config_N.json 읽기 (실패 시 해당 항목 제외). */
+  /** XDG config의 config_N.toml 읽기 (실패 시 해당 항목 제외). */
   _readConfig(index) {
     const out = {
       accel: "<Super>grave",
@@ -259,11 +325,11 @@ export default class TildazExtension extends Extension {
     try {
       const path = GLib.build_filenamev([
         configDirPath(),
-        `config_${index}.json`,
+        `config_${index}.toml`,
       ]);
       const [ok, bytes] = GLib.file_get_contents(path);
       if (ok) {
-        const j = JSON.parse(new TextDecoder().decode(bytes));
+        const j = parseTomlSubset(new TextDecoder().decode(bytes));
         if (typeof j.hotkey === "string") {
           // **못 읽으면 기본값으로 떨어지지 않는다.** config 가 source of truth 인데
           // `<Super>grave` 로 조용히 바뀌면 사용자가 적지 않은 조합이 걸린다 — 위치
@@ -292,7 +358,7 @@ export default class TildazExtension extends Extension {
       const dir = GLib.Dir.open(dirPath, 0);
       let name;
       while ((name = dir.read_name()) !== null) {
-        const match = /^config_(0|[1-9][0-9]*)\.json$/.exec(name);
+        const match = /^config_(0|[1-9][0-9]*)\.toml$/.exec(name);
         if (match) configs.set(Number(match[1]), this._readConfig(Number(match[1])));
       }
       dir.close();
@@ -496,7 +562,7 @@ export default class TildazExtension extends Extension {
       if (index === null) return;
 
       // tildaz 가 뜰 때마다 config 를 다시 읽는다 (config = single source of truth).
-      // 사용자가 config_N.json 의 hidden_start / 위치(dock/width/...) 를 바꾸고 tildaz 만
+      // 사용자가 config_N.toml 의 hidden_start / 위치(dock/width/...) 를 바꾸고 tildaz 만
       // 재실행해도 extension reload 없이 반영된다. (hotkey 는 enable 의 gschema 바인딩
       // 이라 예외 — 바꾸면 extension reload/relogin 이 필요하다.)
       const cfg = this._readConfig(index);
