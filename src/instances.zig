@@ -5,21 +5,28 @@ const paths = @import("paths.zig");
 const runtime = @import("runtime.zig");
 const Runtime = runtime.Runtime;
 
-/// 허용하는 config index 의 최대값 — **0 … 11 = 인스턴스 12 개**
+/// 허용하는 config index 의 최대값 — **0 … 9 = 인스턴스 10 개**
 /// ([#510](https://github.com/ensky0/tildaz/issues/510)).
 ///
 /// 예전 값 `999` 는 다중 인스턴스 최초 커밋 `2f3511a` (#267) 에서 주석도 근거도 없이
 /// 들어왔다. 파일명 3자리 파싱 가드로 읽히고 제품 상한을 고민한 흔적이 없었다.
 ///
-/// **`11` 인 이유는 기본 핫키다.** `config.Defaults.hotkeyFor` 가 instance N 에 `F(N+1)`
-/// 을 주는데, index 가 0-based 라 상한 11 이 정확히 `F12` 에서 끝난다. 12 로 두면 index
-/// 12 에 줄 `F13` 이 없어 "핫키 없는 instance" 라는 예외 상태가 생긴다 — `11` 은 그
-/// 분기를 아예 없앤다. (`config.zig` 의 `index_hotkeys` 가 이 값과 길이를 comptime 에
-/// 대조한다.)
+/// **`9` 는 제품 결정이다 — 동시에 쓸 인스턴스 10 개.** `config.Defaults.hotkeyFor` 가
+/// instance N 에 `F(N+1)` 을 주므로 기본 핫키는 `F1` … `F10` 이고, 표가 `0 … 9` 를
+/// 빠짐없이 덮어 "핫키 없는 instance" 라는 예외 상태가 생기지 않는다. (`config.zig` 의
+/// `index_hotkeys` 가 이 값과 길이가 같은지를 comptime 에 대조한다.)
+///
+/// **한때 `11` 이었다 — Windows 실측으로 물렸다.** F 키가 12 개라 `0…11` 과 두 끝이
+/// 맞는다는 이유였는데, **Windows 는 modifier 없는 `F12` 를 전역 핫키로 내주지 않는다**
+/// (`RegisterHotKey` 가 `ERROR_HOTKEY_ALREADY_REGISTERED` (1409) — 커널 디버거가 쥐고
+/// 있다). 그래서 index 11 은 기본 config 로 아예 뜨지 못했다. 이 이슈가 고치려던 증상
+/// 그대로였다. 실측: 노트북 i5-1240P · Windows 11 Education 10.0.26200 에서 bare `F1`
+/// … `F11` 은 등록되고 bare `F12` 만 실패, `ctrl+alt+F12` 는 성공
+/// ([#510 코멘트](https://github.com/ensky0/tildaz/issues/510)).
 ///
 /// 인식 상한이기도 하다 — `parseConfigFileName` 과
 /// `instance_identity.parseDesktopFileName` 이 이 값을 넘는 번호를 거절한다.
-pub const max_config_index: u32 = 11;
+pub const max_config_index: u32 = 9;
 
 /// #282 G12 — instance 창 식별자 단일 소스. Windows 는 이 값들로 worker 창을
 /// IPC 조회한다: `instance_request` 가 FindWindowW 로 coordinator 를 찾고,
@@ -155,7 +162,7 @@ pub fn listConfigIndices(rt: Runtime, allocator: std.mem.Allocator) ![]u32 {
 ///
 /// 예전에는 `가장 높은 index + 1` 이라 빈 자리를 재사용하지 않았다. 그러면 상한이
 /// *동시 인스턴스 수* 가 아니라 ***누적 생성 횟수*** 에 걸린다. 999 일 때는 눈에 띄지
-/// 않았지만 상한이 11 로 내려온 이상 회귀다 — 만들고 지우기를 12 번 반복하면 실제로 2 개만
+/// 않았지만 상한이 9 로 내려온 이상 회귀다 — 만들고 지우기를 10 번 반복하면 실제로 2 개만
 /// 쓰고 있어도 `TooManyConfigs` 가 난다.
 ///
 /// 기본 핫키가 index 파생이 된 것과도 맞물린다: instance 1 을 지우면 `F2` 가 다시 비고
@@ -641,9 +648,10 @@ test "only canonical numbered config names are accepted" {
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config0.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_01.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config-1.toml"));
-    // #510 — 상한이 11 이다. 12 부터는 이름이 정규 형식이어도 인식하지 않는다.
-    try std.testing.expectEqual(@as(?u32, 11), parseConfigFileName("config_11.toml"));
-    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_12.toml"));
+    // #510 — 상한이 9 다. 10 부터는 이름이 정규 형식이어도 인식하지 않는다.
+    try std.testing.expectEqual(@as(?u32, 9), parseConfigFileName("config_9.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_10.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_11.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_42.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_1000.toml"));
     // #493 — 남아 있는 `.json` 은 인스턴스로 세지 않는다. 마이그레이션이 없으므로
@@ -657,7 +665,7 @@ test "#510 다음 index 는 비어 있는 가장 낮은 번호다" {
     try std.testing.expectEqual(@as(u32, 0), try nextConfigIndex(&.{}));
     try std.testing.expectEqual(@as(u32, 1), try nextConfigIndex(&.{0}));
 
-    // 빈 자리 재사용 — 예전 구현은 `8` 을 돌려줬다. 상한이 11 로 내려온 이상 그 동작은
+    // 빈 자리 재사용 — 예전 구현은 `8` 을 돌려줬다. 상한이 9 로 내려온 이상 그 동작은
     // 누적 생성 횟수에 상한이 걸리는 회귀다.
     try std.testing.expectEqual(@as(u32, 1), try nextConfigIndex(&.{ 0, 3, 7 }));
     try std.testing.expectEqual(@as(u32, 2), try nextConfigIndex(&.{ 0, 1, 3 }));
@@ -666,7 +674,7 @@ test "#510 다음 index 는 비어 있는 가장 낮은 번호다" {
     // 앞이 빈틈없이 차 있으면 그 다음 번호.
     try std.testing.expectEqual(@as(u32, 3), try nextConfigIndex(&.{ 0, 1, 2 }));
 
-    // 상한까지 꽉 찼을 때만 `TooManyConfigs` — 동시 인스턴스 12 개다.
+    // 상한까지 꽉 찼을 때만 `TooManyConfigs` — 동시 인스턴스 10 개다.
     var full: [max_config_index + 1]u32 = undefined;
     for (&full, 0..) |*slot, i| slot.* = @intCast(i);
     try std.testing.expectError(error.TooManyConfigs, nextConfigIndex(&full));

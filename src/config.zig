@@ -1490,7 +1490,7 @@ pub const Defaults = struct {
     pub const shell: []const u8 = if (is_windows) "cmd.exe" else "/bin/bash";
 
     /// **instance N 의 기본 전역 핫키는 `F(N+1)`** ([#510](https://github.com/ensky0/tildaz/issues/510)).
-    /// index 0 → `F1`, 1 → `F2`, … 11 → `F12`.
+    /// index 0 → `F1`, 1 → `F2`, … 9 → `F10`.
     ///
     /// 예전에는 index 와 무관한 상수 하나 (`"F1"`) 였다. config 경로 (`config_N.toml`)
     /// 와 로그 경로 (`tildaz_N.log`) 는 이미 index 파생인데 **인스턴스마다 고유해야 하는
@@ -1498,9 +1498,14 @@ pub const Defaults = struct {
     /// config_0 과 **같은 `F1`** 이 적힌 파일이 생겼고, Windows 실기에서 `RegisterHotKey`
     /// 가 실패해 **앱이 아예 안 떴다** (#510).
     ///
-    /// **예외 분기가 없다.** 상한이 `instances.max_config_index` (= 11) 라 index 12 는
-    /// 존재할 수 없고, F12 가 마지막이라 두 끝이 정확히 맞는다. "핫키 없는 instance" 라는
-    /// 상태 자체가 생기지 않으므로 규칙이 이 한 줄로 끝난다.
+    /// **예외 분기가 없다.** 상한이 `instances.max_config_index` (= 9) 라 index 10 은
+    /// 존재할 수 없고, 표가 그 상한을 덮으므로 "핫키 없는 instance" 라는 상태 자체가
+    /// 생기지 않는다. 규칙이 이 한 줄로 끝난다.
+    ///
+    /// **표를 `F12` 까지 채우지 않는 이유는 Windows 다.** modifier 없는 `F12` 는 전역
+    /// 핫키로 등록되지 않아서 (`ERROR_HOTKEY_ALREADY_REGISTERED` — 커널 디버거가 쥐고
+    /// 있다) 그 칸을 쓰면 그 index 가 기본 config 로 뜨지 못한다. 근거와 실측은
+    /// `instances.max_config_index` 주석에 있다.
     ///
     /// 새로 **만드는** 파일에만 적용된다 — 이미 있는 config 는 읽은 값 그대로다.
     pub fn hotkeyFor(index: u32) []const u8 {
@@ -1508,12 +1513,16 @@ pub const Defaults = struct {
         return index_hotkeys[index];
     }
 
-    /// 상한과 길이가 어긋나면 컴파일이 멈춘다 — 위 주석의 "두 끝이 정확히 맞는다" 를
+    /// 상한과 길이가 어긋나면 컴파일이 멈춘다 — 위 주석의 "표가 상한을 덮는다" 를
     /// 주석이 아니라 컴파일러가 지키게 한다.
+    ///
+    /// **`F11` · `F12` 를 여기 더하지 않는다.** 표를 늘리면 `max_config_index` 도 함께
+    /// 올려야 이 검사를 통과하는데, 그러면 bare `F12` 를 쓰는 index 가 다시 생겨
+    /// Windows 에서 그 인스턴스가 뜨지 못한다 (위 `hotkeyFor` 주석).
     const index_hotkeys = blk: {
         const names = [_][]const u8{
-            "F1",  "F2",  "F3", "F4",  "F5",  "F6",
-            "F7",  "F8",  "F9", "F10", "F11", "F12",
+            "F1", "F2", "F3", "F4", "F5",
+            "F6", "F7", "F8", "F9", "F10",
         };
         if (names.len != instances.max_config_index + 1) {
             @compileError("Defaults.hotkeyFor 의 표가 instances.max_config_index 와 어긋난다");

@@ -842,11 +842,17 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 - `config_N.toml` 하나가 worker process 하나, global hotkey 하나, `tildaz_N.log`
   하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
   중복 실행을 막는다.
-- **N 은 0 … 11 (인스턴스 12 개) 이다** (#510). 상한의 근거는 기본 hotkey 다 — TildaZ 가
-  **생성하는** config 의 `hotkey` 기본값은 `F(N+1)` 이라 index 0 → `F1`, 11 → `F12` 로
-  두 끝이 정확히 맞는다. 그래서 "hotkey 없는 instance" 예외가 생기지 않는다. 상한을 넘는
-  `--instance N` 은 범위를 안내하고 거절한다. 같은 상한을 `config_N.toml` ·
-  `tildaz.instanceN.desktop` 의 이름 인식에도 적용한다.
+- **N 은 0 … 9 (인스턴스 10 개) 이다** (#510). TildaZ 가 **생성하는** config 의 `hotkey`
+  기본값은 `F(N+1)` 이라 index 0 → `F1`, 9 → `F10` 이고, 그 표가 `0 … 9` 를 빠짐없이
+  덮으므로 "hotkey 없는 instance" 예외가 생기지 않는다. 상한을 넘는 `--instance N` 은 범위를
+  안내하고 거절한다. 같은 상한을 `config_N.toml` · `tildaz.instanceN.desktop` 의 이름
+  인식에도 적용한다.
+- **표가 `F12` 까지 가지 않는 이유는 Windows 다.** modifier 없는 `F12` 는 커널 디버거
+  예약이라 `RegisterHotKey` 가 `ERROR_HOTKEY_ALREADY_REGISTERED` 로 거절한다 (실측:
+  bare `F1`…`F11` 은 등록되고 `F12` 만 실패, `ctrl+alt+F12` 는 성공). 기본값이 `F12` 로
+  떨어지는 index 가 있으면 그 인스턴스는 **생성된 config 로 아예 기동하지 못한다** — 이
+  이슈가 없애려던 증상 그대로다. 사용자가 직접 `hotkey = "F12"` 로 적는 것은 여전히
+  유효한 표기이며, 실패하면 기동 시점에 안내 후 종료한다 (§2.1).
 - 기본 hotkey 가 index 파생인 것은 **새로 만드는 파일에만** 적용된다. 이미 있는
   `config_N.toml` 은 적힌 값 그대로 읽고 `hotkey` 를 고쳐 쓰지 않는다.
 - 다음 config 번호는 **비어 있는 가장 낮은 index** 다 (#510). 최고값+1 이 아니라서
