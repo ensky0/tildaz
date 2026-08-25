@@ -359,3 +359,27 @@ test "XDG home accepts only absolute non-empty values" {
     defer allocator.free(state);
     try std.testing.expectEqualStrings("/home/test/.local/state", state);
 }
+
+test "#496 1-c the Shell extensions read the same config filename we write" {
+    // GNOME · Cinnamon 확장은 zig 를 안 거치고 config 를 직접 읽는다. #493 이 파일을
+    // TOML 로 옮길 때 그 두 벌이 남겨져 **확장이 아무 config 도 못 봤다** — 등록 대상
+    // 0 개라 GNOME 에서 hotkey 가 하나도 안 걸렸다 (실기 확인, GNOME 50.4). 눈에 띄지
+    // 않은 이유는 이관 전의 `config_0.json` 이 디스크에 남아 있었기 때문이다.
+    const sources = [_]struct { label: []const u8, js: []const u8 }{
+        .{ .label = "gnome", .js = @embedFile("gnome_extension_js") },
+        .{ .label = "cinnamon", .js = @embedFile("cinnamon_extension_js") },
+    };
+    for (sources) |source| {
+        // 한 파일을 열 때 (`config_9.toml`) 와 디렉터리를 훑을 때 (`^config_N\.toml$`)
+        // 두 자리가 있고, 둘 다 이 확장자여야 한다.
+        if (std.mem.indexOf(u8, source.js, "config_${index}.toml") == null) {
+            std.debug.print("{s} extension 이 config_{{index}}.toml 을 안 읽는다\n", .{source.label});
+            return error.ExtensionConfigNameOutOfSync;
+        }
+        if (std.mem.indexOf(u8, source.js, "config_(0|[1-9][0-9]*)\\.toml$") == null) {
+            std.debug.print("{s} extension 의 디렉터리 훑기가 .toml 이 아니다\n", .{source.label});
+            return error.ExtensionConfigNameOutOfSync;
+        }
+        try std.testing.expect(std.mem.indexOf(u8, source.js, "config_${index}.json") == null);
+    }
+}

@@ -46,7 +46,7 @@
  *     화면 중앙에 그리므로(드롭다운 밖), extension 이 잡아 managed 터미널 위 중앙으로
  *     옮긴다(SPEC §6 "main 위 modal" 실현).
  *
- * config = single source of truth: $XDG_CONFIG_HOME/tildaz/config_N.json
+ * config = single source of truth: $XDG_CONFIG_HOME/tildaz/config_N.toml
  * (fallback: ~/.config/tildaz) 의 hotkey 와
  * window.{dock_position,width_percent,height_percent,offset_percent} + hidden_start.
  *
@@ -279,17 +279,17 @@ function disable() {
   st = null;
 }
 
-/** XDG config의 config_N.json 읽기 (실패 시 해당 항목 제외). */
+/** XDG config의 config_N.toml 읽기 (실패 시 해당 항목 제외). */
 function readConfig(index) {
   const out = { accel: "", dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
   try {
     const path = GLib.build_filenamev([
       configDirPath(),
-      `config_${index}.json`,
+      `config_${index}.toml`,
     ]);
     const [ok, bytes] = GLib.file_get_contents(path);
     if (ok) {
-      const j = JSON.parse(new TextDecoder().decode(bytes));
+      const j = parseTomlSubset(new TextDecoder().decode(bytes));
       if (typeof j.hotkey === "string") {
         const a = toAccel(j.hotkey);
         if (a) out.accel = a;
@@ -314,7 +314,7 @@ function readConfigs() {
     const dir = GLib.Dir.open(path, 0);
     let name;
     while ((name = dir.read_name()) !== null) {
-      const match = /^config_(0|[1-9][0-9]*)\.json$/.exec(name);
+      const match = /^config_(0|[1-9][0-9]*)\.toml$/.exec(name);
       if (match) configs.set(Number(match[1]), readConfig(Number(match[1])));
     }
     dir.close();
@@ -350,6 +350,72 @@ function syncHotkeys(nextConfigs) {
   }
   st.configs = nextConfigs;
   for (const [index, cfg] of nextConfigs) registerHotkey(index, cfg);
+}
+
+/**
+ * TOML 의 **아주 좁은 부분집합** 파서 — 최상위 스칼라와 `[window]` 같은 한 단계
+ * 테이블, 문자열 · 숫자 · 참거짓만 본다.
+ *
+ * GJS 에 TOML 파서가 없어서 직접 둔다. 읽을 파일은 `src/config.zig` 가 만든 템플릿
+ * 하나뿐이라 (사용자 편집 포함) 문법 범위가 좁다. 배열 (`glyph_fallback` ·
+ * `[keys]` 의 값들) · 여러 줄 문자열 · 점 표기 키는 값을 건너뛴다 — 우리가 읽는
+ * 키에는 그런 값이 없다.
+ *
+ * 주석은 **문자열 밖에서만** 자른다. 안 그러면 `hotkey = "ctrl+#"` 같은 값이 잘린다.
+ */
+function parseTomlSubset(text) {
+  const root = {};
+  let table = root;
+  for (const rawLine of String(text).split("\n")) {
+    const line = tomlStripComment(rawLine).trim();
+    if (!line) continue;
+    const section = /^\[([A-Za-z0-9_]+)\]$/.exec(line);
+    if (section) {
+      if (typeof root[section[1]] !== "object" || root[section[1]] === null) root[section[1]] = {};
+      table = root[section[1]];
+      continue;
+    }
+    const pair = /^([A-Za-z0-9_-]+)\s*=\s*(.*)$/.exec(line);
+    if (!pair) continue;
+    const value = tomlValue(pair[2].trim());
+    if (value !== undefined) table[pair[1]] = value;
+  }
+  return root;
+}
+
+function tomlStripComment(line) {
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+function tomlValue(text) {
+  if (text.startsWith('"')) {
+    let out = "";
+    for (let i = 1; i < text.length; i++) {
+      const c = text[i];
+      if (c === "\\") {
+        const next = text[++i];
+        out += next === "n" ? "\n" : next === "t" ? "\t" : next;
+      } else if (c === '"') {
+        return out;
+      } else {
+        out += c;
+      }
+    }
+    return undefined; // 닫히지 않은 문자열
+  }
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/.test(text)) return Number(text);
+  return undefined; // 배열 등 — 우리가 안 읽는 값
 }
 
 /**
