@@ -71,6 +71,12 @@ const XkbKeymapKeyGetSymsByLevel = *const fn (
 
 /// #496 1-c — `xkb_keysym_get_name(keysym, buffer, size)`. 이름 길이를 돌려주고
 /// 버퍼가 모자라면 필요한 길이를 준다 (음수는 실패).
+/// #496 1-c — `xkb_keysym_to_utf32(keysym)`. 문자를 내지 않는 keysym 은 0 이다.
+/// **legacy 국가별 keysym 을 값만으로는 알 수 없어서** 필요하다 — `Cyrillic_io` 는
+/// `0x06b3` 이라 Latin-1 구간도, modern 유니코드 keysym (`0x01000000 | cp`) 도 아니다.
+/// 그 블록을 손으로 나열하려다 실기에서 키릴이 통째로 빠진 것을 발견했다.
+const XkbKeysymToUtf32 = *const fn (keysym: c_uint) callconv(.c) u32;
+
 const XkbKeysymGetName = *const fn (
     keysym: c_uint,
     buffer: [*]u8,
@@ -134,6 +140,7 @@ const KeymapScan = struct {
     /// *함께* 있어야 한다. 하나만 있으면 자리는 풀되 이름을 못 만들어 결국 등록을 못
     /// 하므로, 갈라 두면 실패 경로만 늘어난다.
     keysym_get_name: XkbKeysymGetName,
+    keysym_to_utf32: XkbKeysymToUtf32,
     min_keycode: XkbKeymapMinKeycode,
     max_keycode: XkbKeymapMaxKeycode,
     num_layouts_for_key: XkbKeymapNumLayoutsForKey,
@@ -143,6 +150,7 @@ const KeymapScan = struct {
     fn load(handle: *anyopaque) ?KeymapScan {
         return .{
             .keysym_get_name = lookup(handle, XkbKeysymGetName, "xkb_keysym_get_name") orelse return null,
+            .keysym_to_utf32 = lookup(handle, XkbKeysymToUtf32, "xkb_keysym_to_utf32") orelse return null,
             .min_keycode = lookup(handle, XkbKeymapMinKeycode, "xkb_keymap_min_keycode") orelse return null,
             .max_keycode = lookup(handle, XkbKeymapMaxKeycode, "xkb_keymap_max_keycode") orelse return null,
             .num_layouts_for_key = lookup(handle, XkbKeymapNumLayoutsForKey, "xkb_keymap_num_layouts_for_key") orelse return null,
@@ -345,6 +353,15 @@ pub const Keyboard = struct {
         // 값을 파일에 남기게 되므로 실패로 다룬다.
         if (len >= buf.len) return null;
         return buf[0..len];
+    }
+
+    /// #496 1-c — keysym 이 내는 유니코드 코드포인트. 문자를 안 내면 null.
+    pub fn keysymToUtf32(self: *Keyboard, keysym: u32) ?u21 {
+        const api = if (self.api) |*a| a else return null;
+        const scan = api.keymap_scan orelse return null;
+        const cp = scan.keysym_to_utf32(@intCast(keysym));
+        if (cp == 0 or cp > 0x10ffff) return null;
+        return @intCast(cp);
     }
 
     pub fn oneSym(self: *Keyboard, key: u32) ?u32 {

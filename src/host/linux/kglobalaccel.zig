@@ -22,6 +22,16 @@ const destination: [*:0]const u8 = "org.kde.kglobalaccel";
 const root_path: [*:0]const u8 = "/kglobalaccel";
 const root_interface: [*:0]const u8 = "org.kde.KGlobalAccel";
 const component_interface: [*:0]const u8 = "org.kde.kglobalaccel.Component";
+/// #496 1-c — KWin 의 키보드 배열 전환 통지. **포커스와 무관하게** 온다는 것이 요점이다.
+///
+/// Wayland 의 group 전환 (`wl_keyboard.modifiers`) 은 **포커스한 client 에게만** 가는데,
+/// 드롭다운 터미널은 대개 숨어 있다. 그 상태에서 layout 을 바꾸면 위치 표기 hotkey 가 옛
+/// 글자로 등록된 채 남고, 그 hotkey 가 창을 부르는 유일한 수단이라 **스스로 빠져나올 수
+/// 없다.** 실기에서 확인한 함정이다 (French 로 바꿔도 `Ctrl+\`` 그대로였고 창을 띄우자
+/// `Ctrl+²` 로 바뀌었다).
+const layout_interface: [*:0]const u8 = "org.kde.KeyboardLayouts";
+const layout_changed: [*:0]const u8 = "layoutChanged";
+const layout_match: [:0]const u8 = "type='signal',interface='org.kde.KeyboardLayouts',member='layoutChanged'";
 const component_pressed: [*:0]const u8 = "globalShortcutPressed";
 const dbus_interface: [*:0]const u8 = "org.freedesktop.DBus";
 const dbus_name_owner_changed: [*:0]const u8 = "NameOwnerChanged";
@@ -66,28 +76,28 @@ fn appendStringArray(api: *const dbus.Api, iter: *dbus.DBusMessageIter, values: 
     if (api.iter_close_container(iter, &array) == 0) return error.KGlobalAccelAppendFailed;
 }
 
-fn unregisterShortcut(bus: *dbus.SessionBus, component_name: [*:0]const u8, action_name: [*:0]const u8) !void {
-    const call = bus.api.message_new_method_call(destination, root_path, root_interface, "unregister") orelse return error.KGlobalAccelMessageAllocFailed;
-    defer bus.api.message_unref(call);
+fn unregisterShortcut(api: *const dbus.Api, conn: *dbus.DBusConnection, component_name: [*:0]const u8, action_name: [*:0]const u8) !void {
+    const call = api.message_new_method_call(destination, root_path, root_interface, "unregister") orelse return error.KGlobalAccelMessageAllocFailed;
+    defer api.message_unref(call);
 
     var iter: dbus.DBusMessageIter = .{};
-    bus.api.iter_init_append(call, &iter);
+    api.iter_init_append(call, &iter);
     var component_var: [*:0]const u8 = component_name;
-    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&component_var)) == 0) return error.KGlobalAccelAppendFailed;
+    if (api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&component_var)) == 0) return error.KGlobalAccelAppendFailed;
     var action_var: [*:0]const u8 = action_name;
-    if (bus.api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&action_var)) == 0) return error.KGlobalAccelAppendFailed;
+    if (api.iter_append_basic(&iter, dbus.dbus_type_string, @ptrCast(&action_var)) == 0) return error.KGlobalAccelAppendFailed;
 
     var err: dbus.DBusError = .{};
-    bus.api.error_init(&err);
-    defer bus.api.error_free(&err);
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
-        if (bus.api.error_is_set(&err) != 0) {
+    api.error_init(&err);
+    defer api.error_free(&err);
+    const reply = api.send_with_reply_and_block(conn, call, method_call_timeout_ms, &err) orelse {
+        if (api.error_is_set(&err) != 0) {
             const msg = if (err.message) |value| std.mem.span(value) else "(no message)";
             log.appendLine("kglobalaccel", "kglobalaccel unregister failed: {s}", .{msg});
         }
         return error.KGlobalAccelMethodCallFailed;
     };
-    defer bus.api.message_unref(reply);
+    defer api.message_unref(reply);
     log.appendLineVerbose("kglobalaccel", "kglobalaccel unregister succeeded — component={s} action={s}", .{ std.mem.span(component_name), std.mem.span(action_name) });
 }
 
@@ -127,7 +137,7 @@ pub fn syncNumberedIdentities(rt: Runtime, allocator: std.mem.Allocator, indices
         defer allocator.free(component_z);
         var stale_action_buf: [32]u8 = undefined;
         const stale_action = std.fmt.bufPrintSentinel(&stale_action_buf, "toggle-{d}", .{index}, 0) catch continue;
-        unregisterShortcut(&bus, component_z.ptr, stale_action.ptr) catch |err| {
+        unregisterShortcut(&bus.api, bus.conn, component_z.ptr, stale_action.ptr) catch |err| {
             log.appendLineVerbose("kglobalaccel", "stale KDE action cleanup skipped for instance {}: {s}", .{ index, @errorName(err) });
             continue;
         };
@@ -214,13 +224,13 @@ pub fn cleanupLegacyIdentity(rt: Runtime, bus: *dbus.SessionBus) void {
 
     const legacy_component: [*:0]const u8 = "tildaz";
     if (instance_context.requireWorkerIndex() == 0) {
-        unregisterShortcut(bus, legacy_component, "toggle") catch |err| {
+        unregisterShortcut(&bus.api, bus.conn, legacy_component, "toggle") catch |err| {
             log.appendLineVerbose("kglobalaccel", "legacy KDE action cleanup skipped: {s}", .{@errorName(err)});
         };
     }
     var legacy_action_buf: [32]u8 = undefined;
     const legacy_action = std.fmt.bufPrintSentinel(&legacy_action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}, 0) catch return;
-    unregisterShortcut(bus, legacy_component, legacy_action.ptr) catch |err| {
+    unregisterShortcut(&bus.api, bus.conn, legacy_component, legacy_action.ptr) catch |err| {
         log.appendLineVerbose("kglobalaccel", "legacy numbered KDE action cleanup skipped: {s}", .{@errorName(err)});
     };
 }
@@ -236,7 +246,7 @@ pub fn cleanupLegacyIdentity(rt: Runtime, bus: *dbus.SessionBus) void {
 /// **dead keysym 은 거부한다.** 실측에서 `Qt::Key_Dead_Circumflex` 를 주니 KDE 가
 /// 엉뚱한 문자 (`ោ`) 로 적었다. 독일어 자판의 `[Backquote]` 자리가 `dead_circumflex`
 /// 라 실제로 닿는 경로다 (#496 1-c 계획 코멘트의 실측 표).
-pub fn qtKey(keysym: u32, modifiers: u32) ?i32 {
+pub fn qtKey(keysym: u32, modifiers: u32, codepoint: ?u21) ?i32 {
     var key: i32 = 0;
     if ((modifiers & 0x4) != 0) key |= 0x02000000;
     if ((modifiers & 0x2) != 0) key |= 0x04000000;
@@ -246,7 +256,20 @@ pub fn qtKey(keysym: u32, modifiers: u32) ?i32 {
     // dead key — 위 주석 참고. 범위는 `xkbcommon-keysyms.h` 의 `XKB_KEY_dead_*` 다.
     if (keysym >= 0xfe50 and keysym <= 0xfe93) return null;
 
-    const key_code: i32 = switch (keysym) {
+    // ① 전용 Qt 값이 있는 키 — 글자를 내지 않아 코드포인트로 표현할 수 없다.
+    if (specialQtKey(keysym)) |code| return key | code;
+
+    // ② 나머지는 **문자**다. 코드포인트를 알면 그것으로, 모르면 keysym 값에서 유도한다.
+    const cp = codepoint orelse codepointFromKeysym(keysym) orelse return null;
+    if (cp < 0x20) return null;
+    // Qt 는 글자 키를 대문자로 센다. ASCII 밖의 대소문자 규칙은 만들지 않는다 — 실측에서
+    // KDE 가 소문자 `Cyrillic_io` 를 받아 스스로 `Ё` 로 정규화했다.
+    const upper: u32 = if (cp >= 'a' and cp <= 'z') @as(u32, cp) - 0x20 else @as(u32, cp);
+    return key | @as(i32, @intCast(upper));
+}
+
+fn specialQtKey(keysym: u32) ?i32 {
+    return switch (keysym) {
         0xffbe => 0x01000030,
         0xffbf => 0x01000031,
         0xffc0 => 0x01000032,
@@ -262,21 +285,25 @@ pub fn qtKey(keysym: u32, modifiers: u32) ?i32 {
         0xff09 => 0x01000001,
         0xff0d => 0x01000004,
         0xff1b => 0x01000000,
-        0x0020 => 0x20,
-        0x0060 => 0x60,
-        '0'...'9' => @intCast(keysym),
-        'a'...'z' => @intCast(keysym - 0x20),
-        // #496 1-c — Latin-1 keysym 은 값이 곧 유니코드 코드포인트이고, Qt 의 key 값도
-        // 그 구간에서는 코드포인트와 같다 (`Qt::Key_twosuperior` = 0xB2). 실측에서 KDE 가
-        // `178` 을 `²` 로, `Ctrl+178` 을 `Ctrl+²` 로 받았다.
-        0x00a0...0x00ff => @intCast(keysym),
-        // X11 이 Latin-1 밖의 문자를 담는 방식 — `0x01000000 | codepoint`. 실측에서
-        // `Cyrillic_io` (U+0451) 를 KDE 가 `Ё` 로 받았다 (대문자 정규화는 KDE 가 한다).
-        0x01000100...0x0110ffff => @intCast(keysym & 0x00ffffff),
-        // 표에 없는 keysym 은 **0 을 내지 않고 실패**로 만든다. 위 주석 참고.
-        else => return null,
+        else => null,
     };
-    return key | key_code;
+}
+
+/// keysym 값만으로 알 수 있는 코드포인트. **여기서 알 수 있는 것은 두 구간뿐이다.**
+///
+/// - Latin-1 (`0x20`~`0xff`) — X11 이 그 구간을 코드포인트와 같은 값으로 둔다.
+/// - modern 유니코드 keysym (`0x01000000 | cp`).
+///
+/// **legacy 국가별 keysym 은 여기 없다.** `Cyrillic_io` 는 `0x06b3`, 그리스 · 히브리 ·
+/// 아랍도 각자 블록이 따로다. 그 값들은 libxkbcommon 에 물어야 알 수 있어서 호출부가
+/// `codepoint` 로 넘긴다 — 이 함수는 그것을 못 받았을 때의 fallback 이다.
+///
+/// 처음에 이 두 구간을 손으로 나열하고 끝냈다가 **실기에서 러시아어가 통째로 실패**했다
+/// (#496 1-c 검증). 이 이슈가 정면으로 다루는 layout 부류였다.
+fn codepointFromKeysym(keysym: u32) ?u21 {
+    if (keysym >= 0x20 and keysym <= 0xff) return @intCast(keysym);
+    if (keysym >= 0x01000020 and keysym <= 0x0110ffff) return @intCast(keysym & 0x00ffffff);
+    return null;
 }
 
 const OwnerActionId = struct {
@@ -510,6 +537,12 @@ pub const Client = struct {
     component_path: ?[]u8 = null,
     is_registered: bool = false,
     owner_restart_pending: bool = false,
+    /// #496 1-c — `layoutChanged` 가 준 layout index. **KDE 의 index 가 곧 xkb group 이다**
+    /// — 하나의 keymap 에 group 이 여러 개 실리고 그 순서가 `LayoutList` 순서다. 포커스가
+    /// 없으면 `wl_keyboard.modifiers` 가 안 와서 우리 `active_group` 이 낡으므로, 이 값을
+    /// 그 자리에 대신 쓴다.
+    pending_layout_index: ?u32 = null,
+    layout_match_installed: bool = false,
     filter_installed: bool = false,
     owner_match_installed: bool = false,
     component_match_installed: bool = false,
@@ -520,6 +553,9 @@ pub const Client = struct {
         bus: *dbus.SessionBus,
         keysym: u32,
         modifiers: u32,
+        /// #496 1-c — 위치 표기 hotkey 는 keysym 만으로 문자를 알 수 없어 (legacy 국가별
+        /// 블록) 호출부가 libxkbcommon 에 물어 넘긴다. 라벨 binding 은 null 이다.
+        codepoint: ?u21,
         callback: PressedCallback,
         user_data: ?*anyopaque,
     ) !*Client {
@@ -544,13 +580,18 @@ pub const Client = struct {
         if (bus.api.add_filter(bus.conn, signalFilter, self, null) == 0) {
             return error.KGlobalAccelAddFilterFailed;
         }
+
+        // #496 1-c — 실패해도 계속한다. 이 match 가 없으면 포커스를 얻을 때 따라가는
+        // 예전 경로로 떨어질 뿐이고, hotkey 등록 자체는 성립한다.
+        self.addMatch(layout_match, "layout") catch {};
+        self.layout_match_installed = true;
         self.filter_installed = true;
         errdefer self.removeFilterAndMatches();
 
         try self.addMatch(owner_rule, "NameOwnerChanged");
         self.owner_match_installed = true;
 
-        self.register(keysym, modifiers) catch |err| {
+        self.register(keysym, modifiers, codepoint) catch |err| {
             self.setInactiveNoAutostart();
             return err;
         };
@@ -572,17 +613,38 @@ pub const Client = struct {
         return self.is_registered;
     }
 
+    /// #496 1-c — `layoutChanged` 로 온 layout index 를 꺼내 간다 (한 번만).
+    pub fn takeLayoutChange(self: *Client) ?u32 {
+        const index = self.pending_layout_index orelse return null;
+        self.pending_layout_index = null;
+        return index;
+    }
+
     /// NameOwnerChanged filter는 D-Bus dispatch 안에서 이 flag만 세운다. 실제
     /// synchronous method call과 match 교체는 main loop가 callback 밖에서 수행한다.
-    pub fn drainOwnerRestart(self: *Client, keysym: u32, modifiers: u32) void {
+    pub fn drainOwnerRestart(self: *Client, keysym: u32, modifiers: u32, codepoint: ?u21) void {
         if (!self.owner_restart_pending) return;
         self.owner_restart_pending = false;
-        self.register(keysym, modifiers) catch |err| {
+        self.register(keysym, modifiers, codepoint) catch |err| {
             self.is_registered = false;
             log.appendLine("kglobalaccel", "daemon restart re-registration failed: {s}", .{@errorName(err)});
             return;
         };
         log.appendLine("kglobalaccel", "daemon restart re-registration completed", .{});
+    }
+
+    /// #496 1-c — 등록을 **거둔다.** 그 자리가 지금 layout 에서 글자를 못 낼 때 쓴다
+    /// (dead key 등).
+    ///
+    /// 남겨 두면 직전 layout 의 글자가 KDE 단축키 목록에 그대로 남는다. 발동하지는 않지만
+    /// (그 자판에 그 글자를 내는 키가 없다) 사용자에게는 **죽은 항목**으로 보이므로 거둔다.
+    /// 되살아날 때는 `rebind` 가 `doRegister` 부터 다시 하므로 복구에 문제가 없다.
+    pub fn unbind(self: *Client) void {
+        self.is_registered = false;
+        unregisterShortcut(self.api, self.conn, component(), action()) catch |err| {
+            log.appendLine("kglobalaccel", "unbind failed: {s}", .{@errorName(err)});
+            return;
+        };
     }
 
     /// #496 1-c — layout 이 바뀌어 **그 자리가 내는 글자**가 달라졌을 때 다시 등록한다.
@@ -593,8 +655,8 @@ pub const Client = struct {
     /// **재등록은 사용자 설정을 어지럽히지 않는다** — 서로 다른 키로 5 회 재등록한 뒤
     /// `kglobalshortcutsrc` 전체 diff 가 우리 블록 한 줄 덮어쓰기뿐이었다 (실측,
     /// KWin 6.7.4). 그 확인이 이 경로를 고른 근거다.
-    pub fn rebind(self: *Client, keysym: u32, modifiers: u32) void {
-        self.register(keysym, modifiers) catch |err| {
+    pub fn rebind(self: *Client, keysym: u32, modifiers: u32, codepoint: ?u21) void {
+        self.register(keysym, modifiers, codepoint) catch |err| {
             self.is_registered = false;
             log.appendLine("kglobalaccel", "layout change re-registration failed: {s}", .{@errorName(err)});
             return;
@@ -602,9 +664,9 @@ pub const Client = struct {
         log.appendLine("kglobalaccel", "layout changed -- global hotkey re-registered keysym=0x{x}", .{keysym});
     }
 
-    fn register(self: *Client, keysym: u32, modifiers: u32) !void {
+    fn register(self: *Client, keysym: u32, modifiers: u32, codepoint: ?u21) !void {
         self.is_registered = false;
-        const qt_key = qtKey(keysym, modifiers) orelse return error.KGlobalAccelUnsupportedKey;
+        const qt_key = qtKey(keysym, modifiers, codepoint) orelse return error.KGlobalAccelUnsupportedKey;
 
         try callActionIdVoid(self.api, self.conn, "doRegister", true);
         const new_path = try getComponentPath(self.allocator, self.api, self.conn);
@@ -679,6 +741,7 @@ pub const Client = struct {
     fn removeFilterAndMatches(self: *Client) void {
         self.removeComponentMatch();
         if (self.owner_match_installed) {
+            if (self.layout_match_installed) removeMatch(self.api, self.conn, layout_match);
             removeMatch(self.api, self.conn, self.owner_match_rule);
             self.owner_match_installed = false;
         }
@@ -875,6 +938,19 @@ fn signalFilter(conn: *dbus.DBusConnection, message: *dbus.DBusMessage, user_dat
         return dbus.dbus_handler_result_handled;
     }
 
+    if (self.api.message_is_signal(message, layout_interface, layout_changed) != 0) {
+        var iter: dbus.DBusMessageIter = .{};
+        if (self.api.iter_init(message, &iter) == 0) return dbus.dbus_handler_result_not_yet_handled;
+        if (self.api.iter_get_arg_type(&iter) != dbus.dbus_type_uint32) return dbus.dbus_handler_result_not_yet_handled;
+        var index: u32 = 0;
+        self.api.iter_get_basic(&iter, @ptrCast(&index));
+        // filter 안에서는 flag 만 세운다. 실제 재등록은 main loop 가 callback 밖에서
+        // 한다 — `owner_restart_pending` 과 같은 규칙이다 (동기 method call 을 filter
+        // 안에서 하면 안 된다).
+        self.pending_layout_index = index;
+        return dbus.dbus_handler_result_handled;
+    }
+
     if (self.api.message_is_signal(message, dbus_interface, dbus_name_owner_changed) != 0) {
         var iter: dbus.DBusMessageIter = .{};
         if (self.api.iter_init(message, &iter) == 0) return dbus.dbus_handler_result_not_yet_handled;
@@ -926,13 +1002,13 @@ test "KDE desktop token is exact and case insensitive" {
 }
 
 test "XKB to Qt key conversion keeps function offsets and modifiers" {
-    try std.testing.expectEqual(@as(?i32, 0x01000030), qtKey(0xffbe, 0));
-    try std.testing.expectEqual(@as(?i32, 0x01000035), qtKey(0xffc3, 0));
-    try std.testing.expectEqual(@as(?i32, 0x01000036), qtKey(0xffc4, 0));
-    try std.testing.expectEqual(@as(?i32, 0x0100003b), qtKey(0xffc9, 0));
-    try std.testing.expectEqual(@as(?i32, 0x16000054), qtKey('t', 0x2 | 0x4 | 0x8));
-    try std.testing.expectEqual(@as(?i32, 0x20), qtKey(' ', 0));
-    try std.testing.expectEqual(@as(?i32, 0x60), qtKey('`', 0));
+    try std.testing.expectEqual(@as(?i32, 0x01000030), qtKey(0xffbe, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x01000035), qtKey(0xffc3, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x01000036), qtKey(0xffc4, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x0100003b), qtKey(0xffc9, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x16000054), qtKey('t', 0x2 | 0x4 | 0x8, null));
+    try std.testing.expectEqual(@as(?i32, 0x20), qtKey(' ', 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x60), qtKey('`', 0, null));
 
     // #496 1-c — 위치 표기가 들어오면서 임의의 keysym 이 온다. 아래 세 값은 이 머신
     // (CachyOS · KWin 6.7.4) 에서 `gdbus` 로 실제 등록해 확인한 것이다.
@@ -940,17 +1016,27 @@ test "XKB to Qt key conversion keeps function offsets and modifiers" {
     //   `twosuperior` (fr 자판의 `[Backquote]`) → `²`
     //   `Ctrl+twosuperior`                      → `Ctrl+²`
     //   `Cyrillic_io`  (ru 자판의 같은 자리)     → `Ё`
-    try std.testing.expectEqual(@as(?i32, 0xb2), qtKey(0xb2, 0));
-    try std.testing.expectEqual(@as(?i32, 0x040000b2), qtKey(0xb2, 0x2));
-    try std.testing.expectEqual(@as(?i32, 0x451), qtKey(0x01000451, 0));
+    try std.testing.expectEqual(@as(?i32, 0xb2), qtKey(0xb2, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x040000b2), qtKey(0xb2, 0x2, null));
+    try std.testing.expectEqual(@as(?i32, 0x451), qtKey(0x01000451, 0, null));
+
+    // **legacy 국가별 keysym 은 값만으로 못 푼다.** `Cyrillic_io` = `0x06b3` 은 Latin-1 도
+    // modern 유니코드 keysym 도 아니라 fallback 이 null 을 낸다 — 그래서 호출부가
+    // libxkbcommon 에서 받은 코드포인트를 넘긴다. 실기에서 이것을 놓쳐 러시아어 등록이
+    // 통째로 실패했다 (#496 1-c 검증).
+    try std.testing.expectEqual(@as(?i32, null), qtKey(0x06b3, 0x2, null));
+    try std.testing.expectEqual(@as(?i32, 0x04000451), qtKey(0x06b3, 0x2, 0x451));
+
+    // ASCII 구두점도 코드포인트가 곧 Qt key 다 (`Qt::Key_Minus` = 0x2D).
+    try std.testing.expectEqual(@as(?i32, 0x0400002d), qtKey('-', 0x2, null));
 
     // dead keysym 은 거부한다 — KDE 가 엉뚱한 문자로 적는 것을 실측했다. 독일어
     // 자판의 `[Backquote]` 자리가 `dead_circumflex` 라 실제로 닿는 경로다.
-    try std.testing.expectEqual(@as(?i32, null), qtKey(0xfe52, 0x2));
+    try std.testing.expectEqual(@as(?i32, null), qtKey(0xfe52, 0x2, null));
 
     // 표에 없는 keysym 은 0 이 아니라 실패다. 0 을 내면 KDE 에 modifier 만의
     // 단축키가 등록돼 `Ctrl` 을 뗄 때 발동한다.
-    try std.testing.expectEqual(@as(?i32, null), qtKey(0xffe1, 0x2));
+    try std.testing.expectEqual(@as(?i32, null), qtKey(0xffe1, 0x2, null));
 }
 
 test "conflict takeover removes only an exact one-chord key sequence" {
