@@ -1740,7 +1740,7 @@ const Client = struct {
         // **앞이라** 동작이 달라지지 않는다 — 미룬 등록이 늦어 `has_kde_hotkey` 가 false
         // 로 읽히면 숨은 채 시작해야 할 창이 뜬다.
         if (!self.run_opts.isStressRun() and self.config.hotkey.code == null)
-            self.tryConnectKGlobalAccel(self.config.hotkey.keysym);
+            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, null);
         self.logBootElapsed("KGlobalAccel");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
@@ -1932,6 +1932,7 @@ const Client = struct {
             self.drainInfoRequest();
             self.drainConfigNotice();
             self.drainSwayToggleRegister();
+            self.drainKdeLayoutChange();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -7079,7 +7080,7 @@ const Client = struct {
     /// 등록한다. 다른 desktop은 launcher/extension/compositor가 `--toggle N`
     /// IPC를 호출하므로 worker에서 D-Bus hotkey client를 만들지 않는다.
     /// 연결·등록 실패는 fatal이 아니며 hidden_start는 즉시 표시로 fallback한다.
-    fn tryConnectKGlobalAccel(self: *Client, keysym: u32) void {
+    fn tryConnectKGlobalAccel(self: *Client, keysym: u32, codepoint: ?u21) void {
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey disabled", .{@errorName(err)});
@@ -7094,6 +7095,7 @@ const Client = struct {
             &self.dbus_session.?,
             keysym,
             self.config.hotkey.modifiers,
+            codepoint,
             onKGlobalAccelPressed,
             self,
         ) catch |err| {
@@ -7124,7 +7126,11 @@ const Client = struct {
                 self.config.hotkey.keysym
             else
                 self.kde_position_keysym;
-            client.drainOwnerRestart(keysym, self.config.hotkey.modifiers);
+            const codepoint: ?u21 = if (self.config.hotkey.code == null)
+                null
+            else
+                self.keyboard.keysymToUtf32(keysym);
+            client.drainOwnerRestart(keysym, self.config.hotkey.modifiers, codepoint);
         }
         if (self.kglobalaccel_toggle_pending) {
             self.kglobalaccel_toggle_pending = false;
@@ -7204,7 +7210,24 @@ const Client = struct {
             return;
         }
         self.kde_position_keysym = keysym;
-        self.tryConnectKGlobalAccel(keysym);
+        self.tryConnectKGlobalAccel(keysym, self.keyboard.keysymToUtf32(keysym));
+    }
+
+    /// #496 1-c — KDE 가 D-Bus 로 알려 준 layout 전환을 처리한다.
+    ///
+    /// **포커스가 없어도 온다는 것이 이 경로의 전부다.** Wayland 의 group 전환은 포커스한
+    /// client 에게만 가는데 드롭다운은 대개 숨어 있고, 그때 layout 을 바꾸면 hotkey 가 옛
+    /// 글자로 남아 **창을 부를 수단이 사라진다** (실기 확인).
+    ///
+    /// `active_group` 을 여기서 직접 세우는 이유도 같다 — `wl_keyboard.modifiers` 가 오지
+    /// 않았으므로 그 값이 낡아 있고, 그대로 조회하면 옛 글자를 다시 등록한다. KDE 의
+    /// layout index 가 곧 xkb group 이라 그 자리에 쓸 수 있다.
+    fn drainKdeLayoutChange(self: *Client) void {
+        const client = self.kglobalaccel_client orelse return;
+        const index = client.takeLayoutChange() orelse return;
+        if (self.config.hotkey.code == null) return;
+        self.keyboard.active_group = index;
+        self.refreshKdePositionHotkey();
     }
 
     /// #496 1-c — layout 이 바뀌면 그 자리가 내는 글자도 바뀌므로 다시 등록한다.
@@ -7217,7 +7240,18 @@ const Client = struct {
         const keysym = self.positionHotkeyKeysym() orelse return;
         if (keysym == self.kde_position_keysym) return;
         self.kde_position_keysym = keysym;
-        client.rebind(keysym, self.config.hotkey.modifiers);
+        // **가드가 여기에도 있어야 한다.** 처음엔 등록 경로에만 뒀는데, 실기에서 독일어로
+        // 전환하니 dead key 가 그대로 `rebind` 로 흘러 일반 실패
+        // (`KGlobalAccelUnsupportedKey`) 로 끝났다 — 결과는 "등록 안 됨" 으로 같지만
+        // 원인이 로그에 남지 않아 진단이 어렵다 (#496 1-c 검증).
+        if (isDeadKeysym(keysym)) {
+            // 직전 등록을 거둔다. 남겨 두면 옛 layout 의 글자가 KDE 단축키 목록에 죽은
+            // 항목으로 남는다 (실기에서 독일어로 바꾼 뒤 `Ctrl+Ё` 가 그대로 남았다).
+            client.unbind();
+            log.appendLine("kglobalaccel", "layout changed -- position is a dead key now, hotkey unregistered", .{});
+            return;
+        }
+        client.rebind(keysym, self.config.hotkey.modifiers, self.keyboard.keysymToUtf32(keysym));
     }
 
     fn onKGlobalAccelPressed(user_data: ?*anyopaque, timestamp: i64) void {
