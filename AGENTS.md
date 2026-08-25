@@ -685,6 +685,42 @@ echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋�
 chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo 👋🏻👋🏼👋🏽👋🏾👋🏿 && echo 👨‍👩‍👧👨‍👨‍👦‍👦 && echo ABCDEFG abcdefg 0123456789 && echo 한글 ABC 가나다라마바사 && echo ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏ && echo ▐░▒▓▔▕ && echo.
 ```
 
+# 측정 인스턴스 (`-e`) 에는 창 안 단축키가 없어요
+
+`-e <셸경로>` 로 띄운 측정 인스턴스는 **`Ctrl+Shift+T` · `Ctrl+Shift+W` · `Cmd+T` 같은 창 안
+단축키가 하나도 안 먹어요.** 세 platform 공통이고, 버그가 아니라 두 규칙이 맞물린 결과예요.
+
+- 측정 인스턴스는 **일부러 config 를 만들지 않아요** ([#382](https://github.com/ensky0/tildaz/issues/382)
+  — *"측정이 사용자 설정을 만드는 주체가 되면 안 된다"*). `config.zig` 의 `Config.load` 주석에
+  적혀 있어요.
+- 그런데 **config 파일이 없는 경로가 `[keys]` 를 채우지 않아요.** `Config.load` 는 파일이 없으면
+  `defaultOwned` 로 가는데 그 함수가 `key_bindings` · `key_binding_count` 를 건드리지 않아서
+  `Config{}` 의 기본값 `key_binding_count = 0` 이 그대로 남아요. 바인딩을 채우는 것은 `parse`
+  안의 루프뿐이고, 그 안의 `defaultBindings(action)` fallback 도 **파일을 파싱하는 경로에만**
+  있어요.
+
+그래서 그 기계에 `config_N.toml` 이 **없으면** 단축키가 0 개인 채로 돌아요. 있으면 정상이에요 —
+`-e` 가 config 를 *읽는* 것은 막지 않아요.
+
+**합성 입력 문제로 오진하기 쉬워요.** 2026-08-26 [#506](https://github.com/ensky0/tildaz/issues/506)
+Windows 검증에서 VK-only · VK+scancode · scancode-only 세 방식으로 `SendInput` 을 보내도
+무반응이라 injection 을 의심하며 시간을 썼어요. 같은 회차의 macOS 에서도 `Cmd+T` 가 안 먹어
+사용자가 `+` 를 클릭했어요 — 원인은 같아요.
+
+**탭 수를 바꾸는 다른 진입점이 있어요.** 창 오른쪽 위 컨트롤 스트립이 `+` (새 탭) · `×` (활성 탭
+닫기) · `⋯` (메뉴) 순서라, 마우스 클릭으로 탭을 만들고 닫을 수 있어요. 탭 수 변화를 보는 검증
+(예: `-size` 가 탭바만큼 창을 키우는지) 에는 단축키와 동등해요.
+
+단축키 자체를 써야 하면 **`-e` 없이 한 번 띄워 config 를 만든 뒤** 측정 인스턴스를 띄워요.
+
+```sh
+tildaz --instance 9              # config_9.toml 생성 (뜬 뒤 바로 내려요)
+tildaz --instance 9 -e /bin/bash -size 88x33 &
+```
+
+⚠️ 이렇게 만든 `config_9.toml` 은 **끝나면 지워요** — 안 지우면 사용자 로그온 때 그 인스턴스가
+같이 떠요 (위 `# Windows — 키보드 layout 조회 실측 방법` 절의 같은 주의).
+
 # Linux — 글리프 · cluster 렌더 실기 검증 방법
 
 폰트 / shaping / cluster 관련 변경 (#401 등) 을 검증하는 절차예요. **소스 판정 → 드라이버로
@@ -738,6 +774,8 @@ tildaz --instance 1 -e <zig-out/bin/render-test> -size 88x33 &
   그래서 출력할 내용을 담은 **스크립트 파일**을 만들어 넘겨요. 스크립트 끝에 `sleep` 을 둬야
   창이 남아요 (`-e` 로 띄운 프로세스가 끝나면 앱도 끝나요).
 - **`--instance 1` 을 써요.** 평소 쓰는 daily 인스턴스 (`--instance 0`) 를 건드리지 않아요.
+- **단축키는 안 먹어요** — 위 `# 측정 인스턴스 (-e) 에는 창 안 단축키가 없어요` 절. 탭을
+  만들거나 닫아야 하면 컨트롤 스트립의 `+` / `×` 를 클릭해요.
 - 입력은 **`printf` 로 UTF-8 byte 를 직접** 내요 — 편집기 · 클립보드가 cluster 를 정규화해
   버리는 것을 피해요.
 - 화면 배치는 **`[cluster]` … `base [기본문자]` 좌우 대조**로 만들어요. **좌우가 같아 보이면
