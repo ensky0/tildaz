@@ -134,7 +134,7 @@ pub const help_text =
     \\  tildaz [options]
     \\
     \\Options:
-    \\  --instance <N>   Run instance N, 0 to 11 (default: 0). Each instance keeps
+    \\  --instance <N>   Run instance N, 0 to 9 (default: 0). Each instance keeps
     \\                   its own window, config file, log file, and hotkey. A new
     \\                   config defaults to F1 for instance 0, F2 for 1, and so on.
     \\  --toggle [N]     Show or hide the running instance N (default: 0), then
@@ -156,11 +156,11 @@ pub const option_needs_value_format =
 pub const option_invalid_value_format =
     "tildaz: \"{s}\" is not a valid value for \"{s}\".\nRun \"tildaz --help\" to see the available options.";
 
-/// #510 — `--instance N` 의 상한. `option_invalid_value_format` 으로 대신하면 "12 가 왜
-/// 안 되는지" 를 알 방법이 없다. 그 숫자는 파일명 규칙이 아니라 **기본 핫키가 F1‑F12 라서**
-/// 나온 것이라, 범위와 이유를 같이 적는다.
+/// #510 — `--instance N` 의 상한. `option_invalid_value_format` 으로 대신하면 "10 이 왜
+/// 안 되는지" 를 알 방법이 없다. 그 숫자는 파일명 규칙이 아니라 **인스턴스마다 기본 핫키를
+/// 하나씩 주기 때문에** 나온 것이라, 범위와 이유를 같이 적는다.
 pub const option_instance_out_of_range_format =
-    "tildaz: \"{s}\" is out of range for \"--instance\" — pick 0 to {d}.\nEach instance gets its own default hotkey, F1 through F12.\nRun \"tildaz --help\" to see the available options.";
+    "tildaz: \"{s}\" is out of range for \"--instance\" — pick 0 to {d}.\nEach instance gets its own default hotkey, F1 through F10.\nRun \"tildaz --help\" to see the available options.";
 
 /// 위 세 format 의 bufPrint 가 실패할 때 (사용자가 준 인자가 버퍼보다 길 때) 쓴다.
 /// 값을 못 넣더라도 다음 행동은 알려 준다.
