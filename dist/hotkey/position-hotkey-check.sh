@@ -31,8 +31,14 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TILDAZ=${TILDAZ:-$ROOT/zig-out/bin/tildaz}
 [ -x "$TILDAZ" ] || { echo "빌드가 없다: $TILDAZ  (zig build -Doptimize=ReleaseSafe)" >&2; exit 1; }
 
-CONFIG_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/tildaz
+XDG_CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
+CONFIG_DIR=$XDG_CONFIG/tildaz
 STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/tildaz
+# 등록 자리는 **인스턴스별**이다 — `tildaz-9`. 예전엔 조회만 `tildaz/` 로 고정돼 있어
+# 늘 빈 값이 나왔다 (#496 1-c 검증에서 걸렸다).
+GNOME_PATH=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-$INSTANCE/
+CINNAMON_PATH=/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-$INSTANCE/
+COSMIC_RON=$XDG_CONFIG/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
 CONFIG=$CONFIG_DIR/config_$INSTANCE.toml
 LOG=$STATE_DIR/tildaz_$INSTANCE.log
 
@@ -60,6 +66,33 @@ kill_instance() {
     done
 }
 
+# 등록은 데스크톱마다 **다른 곳에 남는다** — KDE 는 D-Bus 데몬, GNOME · Cinnamon 은
+# dconf, COSMIC 은 RON 파일이다. 하나라도 빠뜨리면 사용자 단축키 목록에 우리 항목이
+# 죽은 채로 남는다 (#496 1-c 검증에서 dconf 를 손으로 치웠다).
+gsettings_list_drop() {
+    # $1 schema · $2 key (strv) · $3 지울 값
+    command -v gsettings >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    TZ_DROP="$3" python3 - "$1" "$2" 2>/dev/null <<'PY' || true
+import ast, os, subprocess, sys
+
+schema, key = sys.argv[1], sys.argv[2]
+got = subprocess.run(["gsettings", "get", schema, key], capture_output=True, text=True)
+if got.returncode != 0:
+    raise SystemExit(0)
+raw = got.stdout.strip()
+if raw.startswith("@as "):          # 빈 strv 는 `@as []` 로 온다
+    raw = raw[4:]
+try:
+    items = ast.literal_eval(raw)
+except (ValueError, SyntaxError):
+    raise SystemExit(0)
+kept = [item for item in items if item != os.environ["TZ_DROP"]]
+if len(kept) != len(items):
+    subprocess.run(["gsettings", "set", schema, key, repr(kept)])
+PY
+}
+
 cleanup() {
     [ "$KEEP" = "1" ] && { echo; echo "--keep — 남겨 둔다: $CONFIG"; return; }
     kill_instance
@@ -70,7 +103,20 @@ cleanup() {
         --dest org.kde.kglobalaccel --object-path /kglobalaccel \
         --method org.kde.KGlobalAccel.unregister \
         "tildaz.instance$INSTANCE" "toggle-$INSTANCE" >/dev/null 2>&1 || true
-    echo; echo "정리 완료 — config · 로그 · KDE 등록"
+    # GNOME · Cinnamon — dconf 에 **항목과 목록** 두 군데가 남는다.
+    if command -v dconf >/dev/null 2>&1; then
+        dconf reset -f "$GNOME_PATH" 2>/dev/null || true
+        dconf reset -f "$CINNAMON_PATH" 2>/dev/null || true
+    fi
+    gsettings_list_drop org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$GNOME_PATH"
+    gsettings_list_drop org.cinnamon.desktop.keybindings custom-list "tildaz-$INSTANCE"
+    # COSMIC — RON 파일의 우리 줄. `mv` 는 mktemp 의 0600 을 옮기므로 내용만 덮어쓴다.
+    if [ -f "$COSMIC_RON" ] && grep -q "TildaZ_$INSTANCE" "$COSMIC_RON"; then
+        tmp=$(mktemp)
+        grep -v "\"TildaZ_$INSTANCE\"" "$COSMIC_RON" > "$tmp" && cat "$tmp" > "$COSMIC_RON"
+        rm -f "$tmp"
+    fi
+    echo; echo "정리 완료 — config · 로그 · KDE · GNOME/Cinnamon · COSMIC 등록"
 }
 trap cleanup EXIT INT TERM
 
@@ -100,7 +146,7 @@ sleep 6
 
 echo
 echo "③ 등록 결과"
-grep -iE '\[(kglobalaccel|sway|hyprland|cosmic|gsettings)\]' "$LOG" 2>/dev/null | sed 's/^/   /' || true
+grep -iE '\[(kglobalaccel|sway|hyprland|cosmic|gsettings-hotkey|gnome|cinnamon)\]' "$LOG" 2>/dev/null | sed 's/^/   /' || true
 
 case "$DE" in
     *KDE*|*kde*|*plasma*|*Plasma*)
@@ -110,11 +156,11 @@ case "$DE" in
         ;;
     *GNOME*|*gnome*|*ubuntu*)
         echo "   --- GSettings (GNOME) ---"
-        gsettings get org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz/ binding 2>&1 | sed 's/^/   /'
+        gsettings get "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$GNOME_PATH" binding 2>&1 | sed 's/^/   /'
         ;;
     *Cinnamon*|*cinnamon*|*X-Cinnamon*)
         echo "   --- GSettings (Cinnamon) ---"
-        gsettings get org.cinnamon.desktop.keybindings.custom-keybinding:/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz/ binding 2>&1 | sed 's/^/   /'
+        gsettings get "org.cinnamon.desktop.keybindings.custom-keybinding:$CINNAMON_PATH" binding 2>&1 | sed 's/^/   /'
         ;;
     *Hyprland*|*hyprland*)
         echo "   --- hyprctl binds ---"
@@ -132,7 +178,7 @@ for b in d:
         ;;
     *COSMIC*|*cosmic*)
         echo "   --- COSMIC RON ---"
-        grep -n 'TildaZ_' "${XDG_CONFIG_HOME:-$HOME/.config}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom" 2>/dev/null | sed 's/^/   /' \
+        grep -n "TildaZ_$INSTANCE" "$COSMIC_RON" 2>/dev/null | sed 's/^/   /' \
             || echo "   (항목 없음 — 워커가 keymap 을 받은 뒤에 쓴다)"
         ;;
 esac
@@ -147,7 +193,11 @@ cat <<'MSG'
    Hyprland        keycode=49, key 는 빈 값
    GNOME/Cinnamon  <Control>0x31       (0x31 = 49)
    KDE             us: Ctrl+`   fr: Ctrl+²   ru: Ctrl+Ё   de: 등록 안 됨 (dead key)
-   COSMIC          key: "grave" / "twosuperior" / "Cyrillic_io" / de 는 안 씀
+   COSMIC          key: "grave" / "twosuperior" / "Cyrillic_io" / de 는 등록 안 됨
+
+   ⚠️ GNOME · Cinnamon 은 **확장이 켜져 있으면 위 GSettings 값이 안 나온다.** 확장이
+   hotkey 를 전담하고 gsettings 등록은 건너뛰기 때문이다 (로그의 `extension active`).
+   그때의 근거는 셸 로그다 — `journalctl --user -b -o cat | grep tildaz`.
 
    layout 을 바꿔 가며 보려면 KDE 에서는 아래로 전환할 수 있다 (배열을 먼저 추가해 둔다).
    전환은 **창을 띄우지 않고** 해야 D-Bus 통지 경로가 검증된다.
