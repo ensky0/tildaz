@@ -317,6 +317,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("toml"));
+
+    // #496 1-c — GNOME · Cinnamon Shell extension 의 위치 표를 `physical_key.zig` 와
+    // 견주는 test 가 원본을 읽어야 한다. `@embedFile` 은 package path 를 벗어나지
+    // 못하므로 (`src/` 밖) 익명 import 로 넘긴다.
+    test_mod.addAnonymousImport("gnome_extension_js", .{
+        .root_source_file = b.path("dist/linux/gnome-extension/tildaz@ensky0.github.io/extension.js"),
+    });
+    test_mod.addAnonymousImport("cinnamon_extension_js", .{
+        .root_source_file = b.path("dist/linux/cinnamon-extension/tildaz@ensky0.github.io/extension.js"),
+    });
     if (is_linux_target) test_mod.link_libc = true;
     if (is_macos_target) {
         test_mod.linkSystemLibrary("objc", .{});
