@@ -146,6 +146,15 @@ extern fn CGEventTapEnable(tap: CFMachPortRef, enable: bool) void;
 extern fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) i64;
 extern fn CGEventGetFlags(event: CGEventRef) u64;
 
+// #496 항목 2 — 라벨 표를 만들 때 keycode 마다 이벤트를 하나씩 지어 `NSEvent` 로
+// 바꾼다. `CGEventKeyboardGetUnicodeString` 은 쓰지 않는다 — 그쪽은 **프로세스가
+// 시작할 때의 layout 에 고정**되어 전환을 못 따라온다 (실측). 우리가 쓰는
+// `charactersByApplyingModifiers:` 는 이벤트가 어느 source 에서 났든 *지금* layout
+// 으로 번역하므로, 여기서 만든 source 가 낡아도 결과가 맞다.
+const kCGEventSourceStateHIDSystemState: u32 = 1;
+extern fn CGEventSourceCreate(state_id: u32) ?*anyopaque;
+extern fn CGEventCreateKeyboardEvent(source: ?*anyopaque, virtual_key: u16, key_down: bool) CGEventRef;
+
 extern fn CFMachPortCreateRunLoopSource(
     allocator: ?*anyopaque,
     port: CFMachPortRef,
@@ -415,6 +424,32 @@ var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: config.Config = .{};
+
+// --- #496 항목 2 — 라벨 매칭이 쓰는 layout 상태 ---
+//
+// 라벨 binding (`cmd+w`) 은 *지금 layout 이 그 자리에 둔 글자*와 비교한다. 그런데
+// 키릴 · 한글처럼 **라틴 글자를 한 자도 못 내는** layout 에서는 비교 대상이 아예
+// 없어서 글자 단축키가 전부 죽는다 (실측: `ru` · 2-Set Korean 모두 라틴 0 개).
+// 그래서 Linux 와 같은 라틴 fallback 을 둔다 — 그 layout 에서만 US 자리로 매칭한다.
+//
+// 판정에 쓰는 표는 layout 이 바뀔 때만 다시 만든다. 바뀌었는지는
+// `NSTextInputContext.selectedKeyboardInputSource` 로 안다 — 헤더가 *"The ID
+// corresponds to the kTISPropertyInputSourceID attribute"* 라고 적는 값이고,
+// **Carbon 을 링크하지 않고** 현재 layout 을 식별할 수 있는 유일한 길이다.
+
+/// 마지막으로 본 입력 소스 ID (`com.apple.keylayout.French` 등).
+var g_layout_id: [192]u8 = undefined;
+var g_layout_id_len: usize = 0;
+/// 한 번이라도 표를 만들었는가. ID 조회가 실패해도 첫 회에는 표를 만들어야 한다.
+var g_layout_table_built: bool = false;
+
+/// 지금 layout 이 낼 수 있는 라벨 (인쇄 가능 ASCII, 소문자 정규화). **Shift 를 눌러야
+/// 나오는 글자도 담는다** — AZERTY 숫자열이 그렇다 (무시프트는 `&é"'(-è_çà`).
+var g_layout_labels: [128]bool = [_]bool{false} ** 128;
+
+/// binding 별 라틴 fallback 자리. `null` = fallback 없음 (= 그 라벨을 낼 수 있는 layout).
+var g_binding_fallbacks: [config.MAX_KEY_BINDINGS]?config.PhysicalCode =
+    [_]?config.PhysicalCode{null} ** config.MAX_KEY_BINDINGS;
 /// #451 — 진입점이 만든 `Io` · 환경변수. macOS host 는 Cocoa 콜백이 전역에서 도는
 /// 구조라 (`g_host` · `g_config` 와 같은 자리) 여기 보관한다. `run(rt, …)` 이 심는다.
 var g_rt: Runtime = undefined;
@@ -878,16 +913,21 @@ fn applyPasteInputPolicy() void {
 /// #493 3-c — NSEvent 의 keyCode + modifier flags 를 `[keys]` 와 맞춘다. 예전엔
 /// `macCmdShortcut` 이 `kc == 8` 같은 상수 열두 줄로 같은 일을 했다.
 ///
-/// macOS 는 `keyCode` 자체가 **물리 위치**다. 그래서 이 platform 은 위치로 적은
-/// binding (`[KeyW]`) 과 라벨 binding (`w`) 이 같은 값을 내고, 둘 다 자연히 잡힌다
-/// — 그 대가로 AZERTY 사용자는 `Z` 라고 새겨진 키를 눌러야 `close_tab` 이 되는
-/// 것이고 (#496 항목 2), 그것은 이 커밋의 범위가 아니다.
+/// macOS 는 `keyCode` 자체가 **물리 위치**다. 예전에는 그것 하나로 매칭해서 위치
+/// binding (`[KeyW]`) 과 라벨 binding (`w`) 이 같은 값을 냈고, 그 대가로 AZERTY
+/// 사용자는 `Z` 라고 새겨진 키를 눌러야 `close_tab` 이 됐다. **#496 항목 2 에서
+/// 갈랐다** — 라벨 binding 은 `macEventLabel` 이 뽑은 *지금 layout 의 글자*와,
+/// 위치 binding 은 `PhysicalCode` 와 비교한다.
 ///
 /// modifier 비트가 우연히 같다: `MacHotkey.MOD_*` 는 `kCGEventFlagMask*` 값이고
 /// `NSEventModifierFlag*` 도 같은 비트 자리를 쓴다 (shift 1<<17 · control 1<<18 ·
 /// option 1<<19 · command 1<<20). 그래도 마스크를 명시해 옮긴다 — 두 상수 집합이
 /// 같다는 사실에 조용히 기대지 않는다.
-fn macLookupAction(kc: c_ushort, flags: c_ulong) ?config.KeyAction {
+fn macLookupAction(view: objc.id, event: objc.id, kc: c_ushort, flags: c_ulong) ?config.KeyAction {
+    // layout 이 바뀌었으면 라벨 표와 fallback 을 다시 만든다 (대개는 문자열 비교
+    // 한 번으로 끝난다).
+    macSyncLayout(view);
+
     const ns_shift: c_ulong = 1 << 17;
     const ns_control: c_ulong = 1 << 18;
     const ns_option: c_ulong = 1 << 19;
@@ -899,11 +939,159 @@ fn macLookupAction(kc: c_ushort, flags: c_ulong) ?config.KeyAction {
     if ((flags & ns_option) != 0) modifiers |= config.Hotkey.MOD_ALT;
     if ((flags & ns_command) != 0) modifiers |= config.Hotkey.MOD_SUPER;
 
-    return config.lookupAction(
+    return config.lookupActionWithFallback(
         g_config.key_bindings[0..g_config.key_binding_count],
-        .{ .keycode = kc, .modifiers = modifiers },
+        g_binding_fallbacks[0..g_config.key_binding_count],
+        .{ .keycode = kc, .modifiers = modifiers, .label = macEventLabel(event, flags, kc) },
         physical_key.fromMacKeyCode(kc),
     );
+}
+
+/// #496 항목 2 — keycode 하나가 지금 layout 에서 내는 라벨. 라벨 표를 만들 때만 쓴다
+/// (실제 키 이벤트는 `macEventLabel` 이 그 이벤트를 직접 본다).
+fn macLabelForKeycode(source: ?*anyopaque, kc: u16, shift: c_ulong) u32 {
+    const cg = CGEventCreateKeyboardEvent(source, kc, true) orelse return 0;
+    defer CFRelease(cg);
+    const ns_event_class = objc.getClass("NSEvent");
+    const with_cg = objc.objcSend(fn (objc.Class, objc.SEL, CGEventRef) callconv(.c) objc.id);
+    const ns = with_cg(ns_event_class, objc.sel("eventWithCGEvent:"), cg);
+    if (ns == null) return 0;
+    return macEventLabel(ns, shift, @intCast(kc));
+}
+
+/// 지금 layout 이 낼 수 있는 라벨을 전부 모은다. `Shift` 를 눌러야 나오는 글자도
+/// 담는 것이 중요하다 — AZERTY 는 숫자열이 그렇고, 안 담으면 `cmd+1` 이 그 layout
+/// 에서 "낼 수 없는 라벨" 로 잘못 판정돼 쓸데없는 fallback 이 생긴다.
+fn macRebuildLayoutLabels() void {
+    g_layout_labels = [_]bool{false} ** 128;
+
+    const source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    defer if (source) |src| CFRelease(src);
+
+    const NSEventModifierFlagShiftTable: c_ulong = 1 << 17;
+    var kc: u16 = 0;
+    while (kc < 128) : (kc += 1) {
+        // modifier 자리는 `macEventLabel` 이 어차피 거른다 (넘기면 abort 한다).
+        if (kc >= 0x36 and kc <= 0x3F) continue;
+        const base = macLabelForKeycode(source, kc, 0);
+        if (base != 0 and base < g_layout_labels.len) g_layout_labels[base] = true;
+        const shifted = macLabelForKeycode(source, kc, NSEventModifierFlagShiftTable);
+        if (shifted != 0 and shifted < g_layout_labels.len) g_layout_labels[shifted] = true;
+    }
+}
+
+/// binding 별로 라틴 fallback 을 둘지 정한다. Linux 의 `resolveBindingFallbacks` 와
+/// 같은 규칙이다.
+///
+/// **"낼 수 없을 때만" 이 요점이다.** 지금 layout 이 그 글자를 낼 수 있으면 항목을
+/// 만들지 않는다 — AZERTY 는 `w` 를 내므로 fallback 이 없고, 따라서 US `w` 자리
+/// (`Z` 라 인쇄된 키) 가 `close_tab` 을 발동시키지 **않는다.** 무조건 2 차 pass 를
+/// 돌리면 그 layout 에서 한 동작에 키가 둘 생기고 사용자가 설명할 수 없다.
+fn macResolveBindingFallbacks() void {
+    const bindings = g_config.key_bindings[0..g_config.key_binding_count];
+    var resolved: usize = 0;
+    for (bindings, 0..) |b, i| {
+        if (i >= g_binding_fallbacks.len) break;
+        g_binding_fallbacks[i] = null;
+        const candidate = config.fallbackCandidate(b.hotkey) orelse continue;
+        if (candidate.keysym < g_layout_labels.len and g_layout_labels[candidate.keysym]) continue;
+        g_binding_fallbacks[i] = candidate.code;
+        resolved += 1;
+    }
+    if (resolved > 0) {
+        // 이 로그가 있어야 "왜 이 키가 저 동작을 했는가" 를 사후에 설명할 수 있다.
+        log.appendLine("keys", "latin fallback active for {d} binding(s) — layout cannot type their labels", .{resolved});
+    }
+}
+
+/// 입력 소스가 바뀌었으면 라벨 표와 fallback 을 다시 만든다.
+///
+/// `NSTextInputContext.selectedKeyboardInputSource` 는 헤더가 *"The ID corresponds to
+/// the kTISPropertyInputSourceID attribute"* 라고 적는 값이다 — **Carbon 을 링크하지
+/// 않고** 현재 layout 을 식별할 수 있다. 값이 그대로면 문자열 비교 한 번으로 끝나므로
+/// 키 이벤트마다 불러도 싸다.
+fn macSyncLayout(view: objc.id) void {
+    var id_buf: [192]u8 = undefined;
+    var id_len: usize = 0;
+
+    const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    const ic = get_ic(view, objc.sel("inputContext"));
+    if (ic != null) {
+        const get_source = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        const src = get_source(ic, objc.sel("selectedKeyboardInputSource"));
+        if (src != null) {
+            const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) ?[*:0]const u8);
+            if (get_utf8(src, objc.sel("UTF8String"))) |cstr| {
+                const text = std.mem.span(cstr);
+                id_len = @min(text.len, id_buf.len);
+                @memcpy(id_buf[0..id_len], text[0..id_len]);
+            }
+        }
+    }
+
+    // ID 를 못 읽었으면 표를 유지한다. "바뀌었다" 로 읽으면 키를 누를 때마다 이벤트
+    // 128 개를 다시 지어 헛돈다. 단 **첫 회에는 만들어야 한다** — 표가 비어 있으면
+    // 모든 라벨이 "낼 수 없음" 이 되어 fallback 이 전부 켜진다.
+    if (g_layout_table_built and id_len == 0) return;
+    if (g_layout_table_built and id_len == g_layout_id_len and
+        std.mem.eql(u8, g_layout_id[0..g_layout_id_len], id_buf[0..id_len]))
+    {
+        return;
+    }
+
+    if (id_len > 0) @memcpy(g_layout_id[0..id_len], id_buf[0..id_len]);
+    g_layout_id_len = id_len;
+    macRebuildLayoutLabels();
+    macResolveBindingFallbacks();
+    g_layout_table_built = true;
+    log.appendLine("keys", "keyboard layout changed: {s}", .{g_layout_id[0..g_layout_id_len]});
+}
+
+/// #496 항목 2 — 이 이벤트가 **지금 활성 layout 에서 실제로 내는 글자**. 라벨
+/// binding (`w` · `` ` ``) 은 이 값과 비교한다. `0` 은 "쓸 라벨이 없다" 는 뜻이고,
+/// 그때 `lookupAction` 은 keycode 로 매칭한다 (`F1` 같은 layout 무관 키가 그렇다).
+///
+/// `charactersByApplyingModifiers:` 를 쓴다. `UnicodeUtilities.h` 가 `UCKeyTranslate`
+/// 대신 권하는 API 이고, 실측에서 **`TIS` + `UCKeyTranslate` 와 128 개 중 118 개가
+/// 일치**했다 (차이는 아래 modifier 범위뿐). Carbon 을 링크하지 않아도 되고, dead key
+/// 자리도 제대로 낸다.
+///
+/// **Shift 는 반영하고 나머지 modifier 는 뺀다.** Linux 가 비교하는 keysym 과 같은
+/// 상태를 만들기 위해서다. AZERTY 는 숫자열이 Shift 를 눌러야 숫자가 나오므로
+/// (무시프트는 `&é"'(-è_çà`) Shift 까지 빼고 뽑으면 `cmd+1` 이 그 layout 에서 영영
+/// 매칭되지 않는다 — #482 가 둔 숫자 예외가 무력해진다.
+fn macEventLabel(event: objc.id, flags: c_ulong, kc: c_ushort) u32 {
+    // ⚠️ `charactersByApplyingModifiers:` 는 **modifier keycode 를 넘기면 죽는다.**
+    // `NSEvent.h` 는 *"If there is invalid data in this event, ... will return nil"*
+    // 이라고 적지만, 실기에서는 nil 이 아니라 `NSAssertionHandler` 를 거쳐 `abort()`
+    // 다 (#496 실측, macOS 26.6.2 · SDK 26.5). `kVK_RightCommand`(0x36) ~
+    // `kVK_Function`(0x3F) 이 그 범위다. 여기서 거르지 않으면 **Shift 를 누르는 것만
+    // 으로 앱이 죽는다.**
+    if (kc >= 0x36 and kc <= 0x3F) return 0;
+
+    const NSEventModifierFlagShiftLabel: c_ulong = 1 << 17;
+    const shift_only = flags & NSEventModifierFlagShiftLabel;
+
+    const apply = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) objc.id);
+    const text = apply(event, objc.sel("charactersByApplyingModifiers:"), shift_only);
+    if (text == null) return 0;
+
+    // 라벨은 글자 하나다. 두 글자 이상이 나오는 자리 (일부 layout 의 합자) 는 우리
+    // 라벨 집합에 없으므로 keycode 매칭으로 넘긴다.
+    const get_len = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
+    if (get_len(text, objc.sel("length")) != 1) return 0;
+
+    const char_at = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) u16);
+    const unit = char_at(text, objc.sel("characterAtIndex:"), 0);
+
+    // 라벨로 쓸 수 있는 것은 인쇄 가능한 ASCII 뿐이다. function key 는 `NSEvent` 가
+    // private 영역 (`0xF700`~) 을 내는데, 그런 키는 layout 무관이라 keycode 로
+    // 매칭하는 편이 맞다 (`config.MacHotkey.label` 주석).
+    if (unit < 0x20 or unit > 0x7E) return 0;
+
+    // 대소문자는 소문자로 모은다 — binding 쪽 라벨이 소문자이고, `shift+w` 는 이
+    // 함수가 `W` 를 내기 때문이다. Linux 도 대소문자 두 keysym 을 모두 본다.
+    return std.ascii.toLower(@intCast(unit));
 }
 
 /// #493 3-c — 액션 실행. 예전엔 `tildazKeyDown` 의 switch 가 `keyCode` 를 다시 읽어
@@ -1002,7 +1190,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         //
         // 인식 못한 Cmd+key 는 mainMenu (Cmd+Q 등) 로 가야 하므로 소비하지 않고
         // `return` 한다 — 기존 동작이다.
-        if (macLookupAction(kc, flags)) |action| {
+        if (macLookupAction(self_view, event, kc, flags)) |action| {
             if (runKeyAction(action)) return;
         }
         return;
@@ -1024,7 +1212,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // Windows 도 config 가 먼저이고, 무엇이 이겼는지 설명할 수 있어야 한다.
     // 기본 macOS config 는 전부 `cmd` 조합이라 기본 사용자에게는 변화가 없다.
     if (flags & (NSEventModifierFlagShift | NSEventModifierFlagOption | (1 << 18)) != 0) {
-        if (macLookupAction(get_keycode(event, objc.sel("keyCode")), flags)) |action| {
+        if (macLookupAction(self_view, event, get_keycode(event, objc.sel("keyCode")), flags)) |action| {
             if (runKeyAction(action)) return;
         }
     }
