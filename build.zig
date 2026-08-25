@@ -584,6 +584,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "dmabuf", .path = "dist/linux/dmabuf-probe.zig", .os = .linux },
         .{ .name = "osc-title", .path = "dist/linux/osc-title-probe.zig", .os = .linux },
         .{ .name = "osc-title", .path = "dist/windows/osc-title-probe.zig", .os = .windows },
+        .{ .name = "layout", .path = "dist/windows/layout-probe.zig", .os = .windows },
     };
     for (probe_check_targets) |c| {
         for (probe_roots) |root| {
@@ -593,7 +594,7 @@ pub fn build(b: *std.Build) void {
                 .target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query)),
                 .optimize = .ReleaseSafe,
             });
-            // 세 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
+            // 네 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
             probe_mod.link_libc = true;
             const probe_obj = b.addObject(.{
                 .name = b.fmt("tildaz-probe-{s}-{s}", .{ root.name, c.name }),

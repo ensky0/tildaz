@@ -452,6 +452,40 @@ clang -fobjc-arc -framework AppKit -framework Carbon -framework CoreGraphics \
 
 **입력 소스 전환은 사용자가 직접 해야 해요.** 한국어 UI 는 설정 앱의 항목 이름이 영어 문서와 달라 보이니, `--list-sources` 로 **그 기기에 실제로 표시되는 이름**을 뽑아서 안내해요 (예: `Russian – Phonetic` 이 이 기기에서는 `Russian – QWERTY` 로 보였어요). 그리고 이 측정도 위 `# 실행 환경` 의 규칙대로 **시작 전에 알리고 확인을 받아요.**
 
+# Windows — 키보드 layout 조회 실측 방법
+
+위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`dist/windows/layout-probe.zig`](dist/windows/layout-probe.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
+
+```powershell
+zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
+.\layout-probe.exe                       # 전체 표 + 판정 + 경계값. 덤프 파일도 함께 써요
+.\layout-probe.exe --watch 60            # 창을 띄우고 60 초 — 그 사이 입력 언어를 바꿔요
+.\layout-probe.exe --only 0000040c       # 한 layout 만 올려서 hkl=NULL 의 뜻을 가려요
+.\layout-probe.exe --unload-session      # 앞선 실행이 세션에 남긴 layout 을 치워요
+```
+
+**macOS 보다 유리한 점 — 전환 없이 여러 layout 을 한 번에 재요.** `LoadKeyboardLayoutW("0000040C", 0)` 로 얻은 `hkl` 을 위 API 에 넘기면 돼요. 그 값이 *실제 활성 layout* 과 같은지는 `--watch` 로 한 번 대조해요 (실측에서 일치했어요).
+
+**실측으로 확정된 것** (2026-08-25 · 노트북 i5-1240P · Windows 11 Education 10.0.26200 · zig 0.16.0 — [#496 코멘트](https://github.com/ensky0/tildaz/issues/496)):
+
+| | Windows 의 매칭 기준 |
+|---|---|
+| 문자 키 · 라틴 layout | **라벨** — AZERTY 에서 sc `0x1E` 가 `VK_Q` |
+| 문자 키 · 비라틴 layout | **US 위치** — Russian sc `0x11` 이 `VK_W`. 그래서 라틴 fallback 이 필요 없어요 |
+| **기호 키** | **layout DLL 이 배정하는 슬롯** — 라벨도 위치도 아니에요. `VK_OEM_3` 이 US `0x29` · FR legacy `0x28`(`ù`) · German `0x27`(`ö`) 로 **자리가 움직여요** |
+| 한국어 · 일본어 | layout DLL 수준에서는 **그냥 US QWERTY** (라틴 26/26). macOS 와 정반대예요 |
+
+**함정 넷 — 빠뜨리면 반대 결론이 나와요.**
+
+- **`hkl = NULL` 이 두 API 에서 뜻이 달라요.** `MapVirtualKeyExW` 는 *마지막에 로드한* layout 을, `ToUnicodeEx` 는 *활성* layout 을 써요. 섞으면 vk 는 A layout, 라벨은 B layout 인 표가 나와요. **항상 `GetKeyboardLayout(0)` 을 명시해요.**
+- **`LoadKeyboardLayoutW` 의 부작용이 프로세스보다 오래 살아요.** 올린 layout 은 프로세스가 죽어도 세션에 남고, `Get-WinUserLanguageList` 에는 안 보이지만 **`Win+Space` 전환 목록에는 나타나** 측정 중 사용자의 입력 전환을 바꿔요. 프로브가 끝에 되돌리고 `--watch` 는 아예 로드하지 않지만, 중단된 실행 뒤에는 `--unload-session` 으로 확인해요.
+- **`ToUnicodeEx` 의 dead key 오염은 `wFlags` bit 2 로 막아요.** 빼면 FR 의 dead `^` 다음 글자가 `î` 로 오염돼요. macOS 경로 C 가 같은 병으로 탈락했는데 Windows 에는 문서화된 해법이 있고 실제로 들어요.
+- **layout 은 스레드별이라 백그라운드 창은 전환을 즉시 못 받아요.** 남의 창에서 바꾸면 우리 스레드 값은 그대로고, **포커스를 얻을 때** `WM_INPUTLANGCHANGE` 로 통보돼요 (실측: 26 초 동안 안 바뀌다가 창을 클릭하자 바뀌었어요).
+
+**입력 언어 추가와 전환은 사용자가 직접 해야 해요.** 한국어 UI 는 항목 이름이 영어 문서와 다르니 레지스트리(`HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layouts\<KLID>` 의 `Layout Display Name` 을 `SHLoadIndirectString` 으로 푼 값)로 **그 기기에 실제로 표시되는 이름**을 먼저 뽑아서 안내해요 — Windows 11 은 French 가 `프랑스어(레거시, AZERTY)`(`0000040C`) 와 `프랑스어(표준, AZERTY)`(`0001040C`) 로 갈려 있고 **`²` 는 레거시에만** 있어요. 이 측정도 위 `# 실행 환경` 의 규칙대로 **시작 전에 알리고 확인을 받아요.**
+
+**tildaz 본체를 함께 검증할 때는 `--instance 9` 로 띄워요.** 사용자의 `config_0` 을 건드리지 않고 별 config 로 테스트할 수 있어요. 그 config 에 **`auto_start = false`** 를 넣고, 끝나면 `config_9.toml` · `tildaz_9.log` · `instance9*` 를 지워요 — 안 지우면 사용자 로그온 때 그 인스턴스가 같이 떠요.
+
 # 터미널 시각 회귀 테스트 (한 줄)
 
 색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
