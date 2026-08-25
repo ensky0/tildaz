@@ -496,23 +496,39 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 ./dist/hotkey/position-hotkey-check.sh --keep           # 남겨 두고 직접 눌러 볼 때
 ```
 
-`--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 config · 로그 · KDE 등록을 스스로 지워요.
+`--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 만든 것을 스스로 지워요 — config · 로그 · KDE (D-Bus) · GNOME/Cinnamon (dconf 항목 **과 목록**) · COSMIC (RON 줄).
 
 | 데스크톱 | 받는 것 | 기대값 (`[Backquote]`) |
 |---|---|---|
-| sway · Hyprland · GNOME · Cinnamon | **자리** | `49` = evdev 41 + 8 (`0x31`) |
+| sway · Hyprland | **자리** | `49` = evdev 41 + 8 (`bindcode 49` · `keycode=49`) |
+| GNOME · Cinnamon | **자리** | `0x31`. 확장이 켜져 있으면 **확장이** `grab_accelerator("<Control>0x31")`, 없으면 gsettings `binding=<Control>0x31` |
 | KDE · COSMIC | **그 자리가 지금 내는 글자** | us `` ` `` · fr `²` · ru `Ё` · **de 는 등록 안 함** (dead key) |
 | Windows | 지금 layout 의 **VK** | `WM_INPUTLANGCHANGE` 로 재등록 |
 | macOS | 자리 (`kVK_*`) | 변화 없음 |
 
-**실측 완료** (2026-08-25 · 미니PC Firebat ZY-A8 · CachyOS · KWin 6.7.4): KDE (us · fr · ru · de + 해제/복구 왕복) · sway (`bindcode Ctrl+49`) · Hyprland (`keycode=49`). GNOME · Cinnamon · COSMIC · Windows 는 미검증이에요.
+**실측 완료** (2026-08-25):
 
-**함정 넷 — 스크립트가 이미 피하지만 손으로 할 때 걸려요.**
+| 환경 | 결과 | 기기 |
+|---|---|---|
+| KDE (KWin 6.7.4) | us · fr · ru · de + 해제/복구 왕복 | 미니PC Firebat ZY-A8 · CachyOS |
+| sway 1.12 | `bindcode Ctrl+49` | 같은 기기 (nested) |
+| Hyprland 0.56.2 | `keycode=49` | 같은 기기 (nested) |
+| GNOME 50.4 | gsettings `<Control>0x31` + **확장 경로** `action != 0` · fr 단독에서 자리 유지 | 노트북 i5-1240P |
+| COSMIC 1.0.0 | us `grave` · fr `twosuperior` · ru `Cyrillic_io` · de 거둠 · 복구 | 같은 노트북 |
+
+**Cinnamon · Windows · macOS 는 미검증이에요.** Cinnamon 은 확장 코드가 GNOME 과 한 test 로 묶여 있지만 세션에서 돌려 보지 않았어요.
+
+**GNOME 은 gsettings 가 주 경로가 아니에요.** tildaz 가 부팅 때 Shell extension 을 스스로 켜고 (`ensureShellExtensionReady`), 켜져 있으면 gsettings 등록을 건너뛰어요 (`extension active — gsettings hotkey skipped`). 그래서 **스크립트의 GSettings 조회가 `''` 인 것이 정상**이고, 그때의 근거는 셸 로그예요 (`journalctl --user -b -o cat | grep tildaz`). gsettings 값을 직접 보려면 확장을 끄고 `~/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io` 를 옮겨 둬야 해요 (설치돼 있으면 tildaz 가 다시 켜요).
+
+**함정 일곱 — 앞의 넷은 스크립트가 이미 피하고, 뒤의 셋은 손으로 잴 때 걸려요.**
 
 - **`XDG_CURRENT_DESKTOP` 이 비면 등록 경로를 통째로 건너뛰어요.** tty · ssh 셸에는 대개 없고, 그러면 로그가 `de=(unset)` 이 되며 아무 데도 등록하지 않아요 — "등록이 안 된다" 로 오해하기 쉬워요.
 - **config 를 만들려고 그냥 띄우면 기본값 `F1` 이 사용자의 instance 0 과 충돌해요.** 그 충돌 다이얼로그는 **모달이라 부팅을 막고** 로그가 빈 채로 남아요. `env -u XDG_CURRENT_DESKTOP` 으로 한 번 띄워 config 만 만든 뒤 hotkey 를 바꿔요.
 - **`pkill -f 'instance 9'` 는 자기 명령줄을 매치해 셸을 죽여요** (그 문자열이 명령에도 들어 있어서요). `pgrep -x tildaz` 로 좁히고 `/proc/PID/cmdline` 에서 인자를 확인해요.
 - **layout 전환은 창을 띄우지 않고 해요.** Wayland 의 group 전환은 *포커스한 client* 에게만 가므로, 창을 띄우면 그 경로로 통과해 버려 D-Bus 통지 경로 (#496 1-c 의 ③) 가 검증되지 않아요.
+- **uinput 으로 가상 키보드를 새로 꽂으면 keymap 이 잠깐 바뀌어요.** cosmic-comp 실측에서 장치를 만든 직후 client 가 받은 keymap 이 `grave` → `twosuperior` 로 두 번 왔고, 그 사이에 키를 보내면 **발동하지 않아 거짓 실패**가 나요. 장치를 만든 뒤 **5 초쯤 두고** 눌러요 (`SETTLE`).
+- **GNOME 확장은 파일을 고쳐도 `disable`/`enable` 로 다시 안 읽어요.** ESM import 캐시라 셸이 새로 떠야 해요. 계측 로그를 심어 재려면 **nested 로 새로 띄워요** — 로그인 세션을 건드리지 않아요.
+- **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
 
 **KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). 추가한 뒤에는 D-Bus 로 전환해요.
 
@@ -528,7 +544,26 @@ gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
 ```sh
 WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=sway sway -c <config>
 env -u XDG_CURRENT_DESKTOP WAYLAND_DISPLAY=wayland-0 Hyprland -c <config>
+
+# GNOME 은 `--devkit` 이 nested 예요 (`--nested` 는 50 에서 없어졌어요). 자기 세션
+# 버스가 필요해서 `dbus-run-session` 으로 감싸요.
+XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
+  gnome-shell --devkit --wayland --wayland-display=wayland-9
+
+# COSMIC 은 `WAYLAND_DISPLAY` 가 있으면 스스로 중첩해요.
+WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=COSMIC cosmic-comp
 ```
+
+**COSMIC 에서 layout 전환하기.** `~/.config/cosmic/com.system76.CosmicComp/v1/xkb_config` 의 `layout` 을 고치면 cosmic-comp 가 바로 읽어요 (KDE 처럼 재시작이 필요하지 않아요).
+
+```ron
+(
+    rules: "", model: "pc105", layout: "fr", variant: "",
+    options: Some("grp:alt_shift_toggle"), repeat_delay: 600, repeat_rate: 25,
+)
+```
+
+**GNOME 에서 layout 전환하기.** `gsettings set org.gnome.desktop.input-sources sources "[('xkb','fr')]"` 예요. **대조군은 layout 을 하나만 켜고 재요** — 둘 이상 켜면 Mutter 가 keysym 을 모든 group 에서 찾아 걸어 주므로 라벨 표기도 되는 것처럼 보여, 위치 표기와 갈리지 않아요 (실측).
 
 # 터미널 시각 회귀 테스트 (한 줄)
 
