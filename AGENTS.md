@@ -486,6 +486,50 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 
 **tildaz 본체를 함께 검증할 때는 `--instance 9` 로 띄워요.** 사용자의 `config_0` 을 건드리지 않고 별 config 로 테스트할 수 있어요. 그 config 에 **`auto_start = false`** 를 넣고, 끝나면 `config_9.toml` · `tildaz_9.log` · `instance9*` 를 지워요 — 안 지우면 사용자 로그온 때 그 인스턴스가 같이 떠요.
 
+# 전역 hotkey 의 위치 표기 검증 — 데스크톱마다 받는 것이 다르다
+
+`hotkey = "ctrl+[Backquote]"` 같은 **위치 표기** ([#496](https://github.com/ensky0/tildaz/issues/496) 1-c) 는 데스크톱마다 등록 방식이 갈려요. 자리를 그대로 받는 곳, 그 자리가 *지금 내는 글자* 로 바꿔야 하는 곳, VK 로 바꿔야 하는 곳이 있어서 **한 환경에서 통과해도 다른 환경을 보장하지 못해요.** 그래서 어느 머신에서든 같은 절차로 돌리는 도구를 뒀어요.
+
+```sh
+./dist/hotkey/position-hotkey-check.sh                  # 기본 ctrl+[Backquote]
+./dist/hotkey/position-hotkey-check.sh --hotkey 'ctrl+[KeyT]'
+./dist/hotkey/position-hotkey-check.sh --keep           # 남겨 두고 직접 눌러 볼 때
+```
+
+`--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 config · 로그 · KDE 등록을 스스로 지워요.
+
+| 데스크톱 | 받는 것 | 기대값 (`[Backquote]`) |
+|---|---|---|
+| sway · Hyprland · GNOME · Cinnamon | **자리** | `49` = evdev 41 + 8 (`0x31`) |
+| KDE · COSMIC | **그 자리가 지금 내는 글자** | us `` ` `` · fr `²` · ru `Ё` · **de 는 등록 안 함** (dead key) |
+| Windows | 지금 layout 의 **VK** | `WM_INPUTLANGCHANGE` 로 재등록 |
+| macOS | 자리 (`kVK_*`) | 변화 없음 |
+
+**실측 완료** (2026-08-25 · 미니PC Firebat ZY-A8 · CachyOS · KWin 6.7.4): KDE (us · fr · ru · de + 해제/복구 왕복) · sway (`bindcode Ctrl+49`) · Hyprland (`keycode=49`). GNOME · Cinnamon · COSMIC · Windows 는 미검증이에요.
+
+**함정 넷 — 스크립트가 이미 피하지만 손으로 할 때 걸려요.**
+
+- **`XDG_CURRENT_DESKTOP` 이 비면 등록 경로를 통째로 건너뛰어요.** tty · ssh 셸에는 대개 없고, 그러면 로그가 `de=(unset)` 이 되며 아무 데도 등록하지 않아요 — "등록이 안 된다" 로 오해하기 쉬워요.
+- **config 를 만들려고 그냥 띄우면 기본값 `F1` 이 사용자의 instance 0 과 충돌해요.** 그 충돌 다이얼로그는 **모달이라 부팅을 막고** 로그가 빈 채로 남아요. `env -u XDG_CURRENT_DESKTOP` 으로 한 번 띄워 config 만 만든 뒤 hotkey 를 바꿔요.
+- **`pkill -f 'instance 9'` 는 자기 명령줄을 매치해 셸을 죽여요** (그 문자열이 명령에도 들어 있어서요). `pgrep -x tildaz` 로 좁히고 `/proc/PID/cmdline` 에서 인자를 확인해요.
+- **layout 전환은 창을 띄우지 않고 해요.** Wayland 의 group 전환은 *포커스한 client* 에게만 가므로, 창을 띄우면 그 경로로 통과해 버려 D-Bus 통지 경로 (#496 1-c 의 ③) 가 검증되지 않아요.
+
+**KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). 추가한 뒤에는 D-Bus 로 전환해요.
+
+```sh
+gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
+  --method org.kde.KeyboardLayouts.getLayoutsList
+gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
+  --method org.kde.KeyboardLayouts.setLayout 1        # 목록 순서의 index
+```
+
+**nested 로도 돼요** — sway · Hyprland 는 KDE 안에서 중첩 실행해 잴 수 있어요. 단 **자식 세션이 부모의 `XDG_CURRENT_DESKTOP` 을 물려받으므로** 그 값을 명시해야 해요 (안 하면 `de=KDE` 인 채로 돌아 Hyprland 경로가 안 탑니다).
+
+```sh
+WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=sway sway -c <config>
+env -u XDG_CURRENT_DESKTOP WAYLAND_DISPLAY=wayland-0 Hyprland -c <config>
+```
+
 # 터미널 시각 회귀 테스트 (한 줄)
 
 색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
