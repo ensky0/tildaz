@@ -72,11 +72,11 @@ $ xkbcli how-to-type --layout ru 'w'
 Rebinding to another letter does not help, because the problem is the whole
 Latin alphabet.
 
-**TildaZ handles this for you.** When it loads a keymap it checks, for every
-label binding, whether the current keymap can produce that character at all. If
-nothing can, it matches that binding by the physical spot the character occupies
-on a US keyboard instead. So the defaults work on a Cyrillic layout with no
-config changes: you press the same key a US user presses.
+**TildaZ handles this for you.** It checks, for every label binding, whether the
+layout you are currently typing in can produce that character at all. If nothing
+can, it matches that binding by the physical spot the character occupies on a US
+keyboard instead. So the defaults work on a Cyrillic layout with no config
+changes: you press the same key a US user presses.
 
 Two details worth knowing:
 
@@ -84,10 +84,12 @@ Two details worth knowing:
   currently typing in.** With `us,ru` — the common setup — nothing changes while
   you are on `us`, and the fallback takes over the moment you switch to `ru`. It
   is re-evaluated on every layout switch, so you never have to restart.
-- **It is Linux-only, because only Linux needs it.** Windows non-Latin layouts
-  assign Latin virtual keys to the physical spots (`KBDRU` puts `VK_W` on the
-  `w` position), and macOS matches physical key codes to begin with, so letter
-  shortcuts already work there.
+- **Linux and macOS both do this; Windows does not need it.** A Windows
+  non-Latin layout DLL assigns Latin virtual keys to the physical spots (`KBDRU`
+  puts `VK_W` on the `w` position), so the OS has already done the equivalent
+  work. On macOS the fallback also covers Korean, Japanese, and Chinese input
+  sources — those keyboard layouts produce no Latin letters either, so the same
+  rule keeps their shortcuts working.
 
 You can still name a key by **position** explicitly, which is useful if you want
 a shortcut pinned to a spot regardless of layout:
@@ -132,11 +134,17 @@ is `[IntlBackslash]` if you want to bind it.
 
 ### macOS
 
-macOS reports the physical key, so a shortcut lands on the same *spot* on every
-layout. That is Apple's convention and it cuts both ways: an AZERTY user's
-`Cmd+W` is the key printed `Z`, because that spot is where US QWERTY has `w`.
-Nothing to configure — but worth knowing if the letter in the menu does not
-match the key you press.
+**Letter shortcuts match the letter printed on the key**, the same way Safari and
+other Mac apps do. On AZERTY, `Cmd+W` is the key printed `W`. If your layout
+produces no Latin letters at all — Cyrillic, Greek, or a Korean / Japanese /
+Chinese input source — the Latin fallback above takes over and you press the spot
+a US user presses. Nothing to configure either way.
+
+This is a change: TildaZ used to match the physical *spot* on macOS, so an AZERTY
+user's `Cmd+W` was the key printed `Z` — a different key from the one Safari
+wanted on the same Mac ([#496](https://github.com/ensky0/tildaz/issues/496)).
+**Dvorak and Colemak users are affected by the same change**: shortcuts now
+follow the letters printed on your keys rather than the US spots.
 
 Mac laptops have no dedicated PgUp / PgDn keys; they are Fn+Up / Fn+Down. The
 `Shift+Cmd+[` / `]` and `Cmd+1`–`9` defaults are unchanged, so nothing is lost.
@@ -151,6 +159,14 @@ A few positions do not exist on macOS — `[PrintScreen]`, `[ScrollLock]` and
 `hotkey` is registered with the desktop rather than handled inside TildaZ, and
 every path TildaZ uses for that — sway, Hyprland, GNOME, Cinnamon, COSMIC, KDE —
 accepts only a character, so it does **not** take the position form.
+
+**On macOS the global hotkey matches by position, not by label.** It is caught by
+an event tap before any layout translation, so `hotkey` and `[keys]` use
+different criteria there. The default `F1` is layout-independent, so this stays
+invisible unless you change `hotkey` to a letter combination *and* use a non-US
+layout — then the global hotkey wants the US spot while a `[keys]` binding for
+the same letter wants the printed key. Unifying the two is tracked in
+[#496](https://github.com/ensky0/tildaz/issues/496) (item 1-c).
 
 Most desktops paper over this for you: GNOME (since 3.28), Cinnamon (since 5.4),
 COSMIC and KDE all translate a Latin-letter shortcut back to the key you actually
