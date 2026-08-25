@@ -528,7 +528,7 @@ pub const GlyphAtlas = struct {
 /// **cluster 안의 위 mark 전체를 같은 양만큼** 옮긴다 — 그래야 연속 조합
 /// (`a`+301+308+323) 의 적층 간격이 유지된다. 기준은 **가장 위에 있는 mark** 다. 가장 아래
 /// 것에 맞추면 그 위에 쌓인 mark 가 셀 밖으로 나간다 (Linux 에서 Lao 가 위 칸을 침범해 실측으로
-/// 잡혔다, 55ffd46).
+/// 잡혔다, bf4f7be).
 fn alignAboveMarks(rects: []const ct.CGRect, pos: []ct.CGPoint, ascent_pt: f32) void {
     const n = rects.len;
     if (n < 2 or pos.len < n) return;

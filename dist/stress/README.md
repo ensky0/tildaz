@@ -1155,7 +1155,7 @@ Linux 에는 그 게이트가 없어요 — 메인 루프가 iteration
 (배율 100 %) · D3D `render_path=hardware` 였어요. (`hygiene_status` 는 같은 패널을 `refresh=59Hz`
 로 보고해요 — Windows API 두 곳의 반올림 차이이고 결론에 영향이 없어요.)
 
-**대조군은 `git stash` 가 아니라 부모 커밋 (`ff86b7a`) 을 detach 해서 빌드했어요** — 이 세션에서는
+**대조군은 `git stash` 가 아니라 부모 커밋 (`ed0a167`) 을 detach 해서 빌드했어요** — 이 세션에서는
 fix 가 이미 커밋돼 있어 stash 로는 빠지지 않거든요. 나머지는 macOS 회차와 같아요 (같은 세션 ·
 같은 빌드 옵션 · `hygiene_begin`).
 
