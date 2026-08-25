@@ -515,8 +515,11 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 | Hyprland 0.56.2 | `keycode=49` | 같은 기기 (nested) |
 | GNOME 50.4 | gsettings `<Control>0x31` + **확장 경로** `action != 0` · fr 단독에서 자리 유지 | 노트북 i5-1240P |
 | COSMIC 1.0.0 | us `grave` · fr `twosuperior` · ru `Cyrillic_io` · de 거둠 · 복구 | 같은 노트북 |
+| Cinnamon 6.6.9 (Muffin) | 확장 `<Control>0x31` grab · fallback gsettings `['<Control>0x31']` · fr · ru 단독에서 자리 유지 | 같은 노트북 |
 
-**Cinnamon · Windows · macOS 는 미검증이에요.** Cinnamon 은 확장 코드가 GNOME 과 한 test 로 묶여 있지만 세션에서 돌려 보지 않았어요.
+**Windows · macOS 는 미검증이에요.**
+
+**확장 경로는 `TILDAZ_VERBOSE=1` 로 계측 없이 관측해요.** GNOME · Cinnamon 의 확장은 창을 minimize/unminimize 로 토글하므로 앱이 남기는 lifecycle 로그가 없어요. verbose 를 켜면 `[wayland] drainSurfaceOutputs entered=[] …` (숨김) 과 `entered=[11 ] …` (복귀) 가 그대로 보여서, 확장에 로그를 심지 않고도 왕복을 확인할 수 있어요.
 
 **GNOME 은 gsettings 가 주 경로가 아니에요.** tildaz 가 부팅 때 Shell extension 을 스스로 켜고 (`ensureShellExtensionReady`), 켜져 있으면 gsettings 등록을 건너뛰어요 (`extension active — gsettings hotkey skipped`). 그래서 **스크립트의 GSettings 조회가 `''` 인 것이 정상**이고, 그때의 근거는 셸 로그예요 (`journalctl --user -b -o cat | grep tildaz`). gsettings 값을 직접 보려면 확장을 끄고 `~/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io` 를 옮겨 둬야 해요 (설치돼 있으면 tildaz 가 다시 켜요).
 
@@ -561,6 +564,21 @@ WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=COSMIC cosmic-comp
     rules: "", model: "pc105", layout: "fr", variant: "",
     options: Some("grp:alt_shift_toggle"), repeat_delay: 600, repeat_rate: 25,
 )
+```
+
+**Cinnamon 에서 layout 전환하기.** 스키마가 **`org.cinnamon.desktop.input-sources`** 예요 — `org.gnome.desktop.input-sources` 도 `org.gnome.libgnomekbd.keyboard layouts` 도 **값만 바뀌고 아무 일도 안 일어나요** (`csd-keyboard` 가 전자를 읽기는 하지만 Wayland 에서 keymap 을 세우는 것은 `keyboardManager.js` 의 `Meta.get_backend().set_keymap` 이고, 그쪽은 cinnamon 스키마를 봐요). 이걸로 30 분 헤맸어요.
+
+```sh
+gsettings set org.cinnamon.desktop.input-sources sources "[('xkb','fr')]"
+```
+
+**적용됐는지는 앱 로그로 확인해요** — `ru` 로 바꾸면 `[keys] latin fallback active for N binding(s)` 이 떠요. `setxkbmap -query` 는 **쓸 수 없어요**: Cinnamon · COSMIC 둘 다 Xwayland 에 layout 을 안 내려서 늘 `us` 로 보여요.
+
+**Cinnamon 은 `org.Cinnamon.Eval` 이 열려 있어요** (GNOME 과 달라요). 셸 상태를 물어볼 때 씁니다 — 다만 `imports.ui` 는 막혀 있어요.
+
+```sh
+gdbus call --session --dest org.Cinnamon --object-path /org/Cinnamon \
+  --method org.Cinnamon.Eval '1+1'
 ```
 
 **GNOME 에서 layout 전환하기.** `gsettings set org.gnome.desktop.input-sources sources "[('xkb','fr')]"` 예요. **대조군은 layout 을 하나만 켜고 재요** — 둘 이상 켜면 Mutter 가 keysym 을 모든 group 에서 찾아 걸어 주므로 라벨 표기도 되는 것처럼 보여, 위치 표기와 갈리지 않아요 (실측).
