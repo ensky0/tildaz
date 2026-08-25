@@ -6,6 +6,7 @@ const log = @import("../log.zig");
 const paths = @import("../paths.zig");
 const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
+const physical_key = @import("../physical_key.zig");
 const kglobalaccel = @import("../host/linux/kglobalaccel.zig");
 
 pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
@@ -214,8 +215,46 @@ pub fn hyprlandAccel(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
     if ((hotkey.modifiers & config.Hotkey.MOD_ALT) != 0) try writer.writeAll("ALT ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SUPER) != 0) try writer.writeAll("SUPER ");
     try writer.writeByte(',');
+    // #496 1-c — 위치 표기는 `code:NN` 으로 그대로 넘긴다. **keymap 을 물어볼 필요가
+    // 없어서** 이 launcher 단계에서도 된다 (COSMIC 은 keysym 만 받아 그렇지 못하다).
+    //
+    // **숫자는 xkb keycode (= evdev + 8) 다.** Hyprland 위키가 `code:28` 을 `t` 키의
+    // 예로 드는데 `t` 는 evdev 20 이다. sway `bindcode` 와 같은 번호 체계다.
+    if (hotkey.code) |code| {
+        try writer.print("code:{d}", .{physical_key.evdev(code) + 8});
+        return fbs.buffered();
+    }
     try writer.writeAll(config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
     return fbs.buffered();
+}
+
+test "#496 1-c Hyprland takes a position as code:NN in xkb numbering" {
+    var buf: [64]u8 = undefined;
+
+    // **evdev + 8 이다.** Hyprland 위키가 `code:28` 을 `t` 키의 예로 드는데 `t` 는
+    // evdev 20 이다. sway `bindcode` 와 같은 번호 체계이고, 틀려도 Hyprland 가 거부하지
+    // 않아 **조용히 옆 키에 붙으므로** 값을 test 로 고정한다.
+    try std.testing.expectEqualStrings(
+        "CTRL ,code:28",
+        try hyprlandAccel(&buf, config.Hotkey.fromString("ctrl+[KeyT]").?),
+    );
+    // `[Backquote]` = evdev 41 → 49. `xkbcli how-to-type --layout fr '²'` 가 같은
+    // 자리를 keycode 49 로 보고한다.
+    try std.testing.expectEqualStrings(
+        "CTRL ,code:49",
+        try hyprlandAccel(&buf, config.Hotkey.fromString("ctrl+[Backquote]").?),
+    );
+    // 라벨 binding 은 예전 그대로다.
+    try std.testing.expectEqualStrings(
+        "CTRL ,F3",
+        try hyprlandAccel(&buf, config.Hotkey.fromString("ctrl+f3").?),
+    );
+}
+
+test "#496 1-c the position table stays in step with the numbers above" {
+    // 위 test 의 28 · 49 는 손으로 적은 값이라 표가 바뀌면 스스로 거짓이 된다.
+    try std.testing.expectEqual(@as(u16, 20), physical_key.evdev(.key_t));
+    try std.testing.expectEqual(@as(u16, 41), physical_key.evdev(.backquote));
 }
 
 test "managed Hyprland bindings are identified and reconstructed" {
@@ -371,7 +410,14 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
         const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
         const line = content[offset..end];
         if (offset == close_offset) try appendCosmicEntries(rt, &output, allocator, indices);
-        if (!isTildazCosmicEntry(line)) {
+        // #496 1-c — 우리 줄은 지우고 다시 쓰는 구조다. 그런데 **위치 표기 인스턴스의
+        // 줄은 워커가 쓴 것**이라 여기서 지우면 launcher 가 돌 때마다 사라진다. 그래서
+        // 그 인스턴스의 줄만 남긴다.
+        const keep = if (tildazCosmicEntryIndex(line)) |idx|
+            cosmicDeferredToWorker(rt, allocator, idx)
+        else
+            true;
+        if (keep) {
             try output.appendSlice(allocator, line);
             try output.append(allocator, '\n');
         }
@@ -418,12 +464,30 @@ pub fn findClosingMapLine(content: []const u8) ?usize {
 /// 자리가 정말 정수인지 확인해 `TildaZ_backup` 같은 남의 이름을 집지 않는다 (Hyprland
 /// 쪽 `managedToggleCommand` 와 같은 엄격함).
 fn isTildazCosmicEntry(line: []const u8) bool {
-    const start = std.mem.find(u8, line, cosmic_entry_marker) orelse return false;
+    return tildazCosmicEntryIndex(line) != null;
+}
+
+/// 우리 항목이면 그 instance index. #496 1-c 가 필요로 한다 — **어느 인스턴스의 줄인지**
+/// 알아야 위치 표기 인스턴스의 줄을 지우지 않고 남길 수 있다.
+fn tildazCosmicEntryIndex(line: []const u8) ?u32 {
+    const start = std.mem.find(u8, line, cosmic_entry_marker) orelse return null;
     const rest = line[start + cosmic_entry_marker.len ..];
     // 표식 뒤는 `<index>")` 형태다. 닫는 큰따옴표까지가 index 자리.
-    const end = std.mem.findScalar(u8, rest, '"') orelse return false;
-    _ = std.fmt.parseInt(u32, rest[0..end], 10) catch return false;
-    return true;
+    const end = std.mem.findScalar(u8, rest, '"') orelse return null;
+    return std.fmt.parseInt(u32, rest[0..end], 10) catch null;
+}
+
+/// #496 1-c — 이 인스턴스의 hotkey 가 **위치 표기**인가.
+///
+/// 그렇다면 launcher 는 COSMIC 항목을 쓰지 못한다. COSMIC 의 RON `key:` 는 글자만 받는데
+/// 자리를 글자로 바꾸려면 keymap 이 있어야 하고, launcher 에는 keyboard 자체가 없다
+/// (Hyprland 가 1-b 에서 막혔던 그 자리다. 그쪽은 `code:` 로 자리를 그대로 받아 통과한다).
+/// 그래서 그 인스턴스의 항목은 **워커가 keymap 을 받은 뒤에** 쓴다.
+fn cosmicDeferredToWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32) bool {
+    const text = instances.configHotkeyText(rt, allocator, index) catch return false;
+    defer allocator.free(text);
+    const hotkey = config.Hotkey.fromString(text) orelse return false;
+    return hotkey.code != null;
 }
 
 /// `appendCosmicEntries` 의 writer 와 `isTildazCosmicEntry` 의 matcher 가 **같은**
@@ -441,6 +505,8 @@ fn appendCosmicEntries(rt: Runtime, output: *std.ArrayList(u8), allocator: std.m
         const text = try instances.configHotkeyText(rt, allocator, index);
         defer allocator.free(text);
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
+        // #496 1-c — 위치 표기는 워커가 쓴다 (`cosmicDeferredToWorker` 주석).
+        if (hotkey.code != null) continue;
         try output.appendSlice(allocator, "    (modifiers: [");
         var first = true;
         const mods = [_]struct { bit: u32, name: []const u8 }{
@@ -457,15 +523,103 @@ fn appendCosmicEntries(rt: Runtime, output: *std.ArrayList(u8), allocator: std.m
         }
         try output.appendSlice(allocator, "], key: \"");
         try output.appendSlice(allocator, config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
-        // 표식은 `cosmic_entry_marker` 를 그대로 쓴다 — matcher 와 문자열이 갈라지면
-        // 자기 항목을 못 알아본다 (#484 의 원인이 정확히 그것이었다).
-        const description = try std.fmt.allocPrint(allocator, "\", " ++ cosmic_entry_marker ++ "{d}\")): Spawn(\"", .{index});
-        defer allocator.free(description);
-        try output.appendSlice(allocator, description);
-        try appendRonString(output, allocator, exe);
-        const suffix = try std.fmt.allocPrint(allocator, " --toggle {d}\"),\n", .{index});
-        defer allocator.free(suffix);
-        try output.appendSlice(allocator, suffix);
+        try appendCosmicEntryTail(output, allocator, exe, index);
+    }
+}
+
+/// 엔트리의 `key:` 뒤쪽. **writer 를 한 곳으로 묶어 둔다** — 표식이 matcher 와 갈라지면
+/// 자기 항목을 못 알아보고 중복 키를 써서 COSMIC 이 파일을 통째로 버린다 (#484 의 기전).
+/// #496 1-c 가 워커 쪽 writer 를 하나 더 만들면서 그 위험이 두 배가 되므로 뽑아 둔다.
+fn appendCosmicEntryTail(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    exe: []const u8,
+    index: u32,
+) !void {
+    const description = try std.fmt.allocPrint(allocator, "\", " ++ cosmic_entry_marker ++ "{d}\")): Spawn(\"", .{index});
+    defer allocator.free(description);
+    try output.appendSlice(allocator, description);
+    try appendRonString(output, allocator, exe);
+    const suffix = try std.fmt.allocPrint(allocator, " --toggle {d}\"),\n", .{index});
+    defer allocator.free(suffix);
+    try output.appendSlice(allocator, suffix);
+}
+
+/// #496 1-c — **워커가** 자기 인스턴스의 COSMIC 항목을 쓴다. 위치 표기 hotkey 전용이다.
+///
+/// launcher 가 못 하는 이유는 `cosmicDeferredToWorker` 주석에 있다 — 자리를 글자로
+/// 바꾸려면 keymap 이 필요한데 그 시점엔 keyboard 가 없다. 여기서는 `key_name` 을
+/// 이미 푼 상태로 받는다 (`xkb_keysym_get_name` 의 결과).
+///
+/// **대가 하나** — 그 인스턴스를 한 번은 직접 띄워야 항목이 생긴다. RON 은 파일이라 한
+/// 번 쓰이면 남으므로 그 뒤로는 정상이고, sway 가 매 실행 `bindcode` 를 다시 거는 것과
+/// 같은 성질이다.
+pub fn writeCosmicPositionEntry(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    index: u32,
+    key_name: []const u8,
+    modifiers: u32,
+) !void {
+    const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
+    const dir_path = try std.Io.Dir.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
+    defer allocator.free(dir_path);
+    try paths.ensureDir(rt, dir_path);
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
+    defer allocator.free(path);
+
+    const content = blk: {
+        const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk try allocator.dupe(u8, "{\n}\n"),
+            else => return err,
+        };
+        defer file.close(rt.io);
+        var file_reader = file.reader(rt.io, &.{});
+        break :blk try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    };
+    defer allocator.free(content);
+
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
+
+    const close_offset = findClosingMapLine(content) orelse return error.UnsupportedCosmicShortcutFormat;
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    var offset: usize = 0;
+    while (offset < content.len) {
+        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
+        const line = content[offset..end];
+        if (offset == close_offset) {
+            try output.appendSlice(allocator, "    (modifiers: [");
+            var first = true;
+            const mods = [_]struct { bit: u32, name: []const u8 }{
+                .{ .bit = config.Hotkey.MOD_SUPER, .name = "Super" },
+                .{ .bit = config.Hotkey.MOD_CTRL, .name = "Ctrl" },
+                .{ .bit = config.Hotkey.MOD_ALT, .name = "Alt" },
+                .{ .bit = config.Hotkey.MOD_SHIFT, .name = "Shift" },
+            };
+            for (mods) |mod| {
+                if ((modifiers & mod.bit) == 0) continue;
+                if (!first) try output.appendSlice(allocator, ", ");
+                try output.appendSlice(allocator, mod.name);
+                first = false;
+            }
+            try output.appendSlice(allocator, "], key: \"");
+            try output.appendSlice(allocator, key_name);
+            try appendCosmicEntryTail(&output, allocator, exe, index);
+        }
+        // **내 인스턴스의 줄만** 지운다. 남의 인스턴스는 launcher 소관이다.
+        const mine = if (tildazCosmicEntryIndex(line)) |idx| idx == index else false;
+        if (!mine) {
+            try output.appendSlice(allocator, line);
+            try output.append(allocator, '\n');
+        }
+        offset = if (end < content.len) end + 1 else content.len;
+    }
+
+    if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
+        log.appendLine("cosmic", "position hotkey entry written key={s}", .{key_name});
     }
 }
 

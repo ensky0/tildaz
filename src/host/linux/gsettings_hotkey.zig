@@ -31,6 +31,7 @@ const Runtime = @import("../../runtime.zig").Runtime;
 const log = @import("../../log.zig");
 const config_mod = @import("../../config.zig");
 const hotkey_format = @import("hotkey_format.zig");
+const physical_key = @import("../../physical_key.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
 const shell_extension = @import("shell_extension.zig");
@@ -368,7 +369,7 @@ fn registerWithVariant(rt: Runtime, allocator: std.mem.Allocator, api: *const Ap
     var cmd_buf: [std.Io.Dir.max_path_bytes + 16]u8 = undefined;
     const command = std.fmt.bufPrintSentinel(&cmd_buf, "{s} --toggle {d}", .{ exe_path, instance_context.requireWorkerIndex() }, 0) catch return;
     var accel_buf: [96]u8 = undefined;
-    const accel = buildGtkAccel(&accel_buf, cfg.hotkey.keysym, cfg.hotkey.modifiers) catch return;
+    const accel = buildGtkAccel(&accel_buf, cfg.hotkey) catch return;
 
     // ⚠️ 순서 중요 — name/command/binding 을 **먼저** set 하고, 리스트 추가를
     // **마지막**에 한다. Cinnamon 은 `changed::custom-list` 를 런타임에 감시해 새
@@ -505,18 +506,57 @@ fn desktopValueHasToken(value: []const u8, wanted: []const []const u8) bool {
 /// `config.hotkey` → GTK accelerator (GNOME `binding` 형식, Cinnamon strv 의 원소).
 /// modifier 는 `<Control><Shift><Alt><Super>` (gtk_accelerator_parse 표준), key
 /// 이름은 공통 `hotkey_format.gtkName` 재사용 (`F1` / `a` / `space` / `grave` 등).
-fn buildGtkAccel(buf: []u8, keysym: u32, modifiers: u32) ![:0]const u8 {
+/// GTK accelerator 문자열. GNOME (Mutter) · Cinnamon (Muffin) 이 GSettings 에서 읽는다.
+///
+/// #496 1-c — 위치 표기는 **`0xNN` (하드웨어 keycode)** 으로 넘긴다. GTK 의
+/// `is_keycode()` 가 `0x` + **정확히 두 자리 hex** 만 그 형태로 인정하고 (`memcpy` 로
+/// 4 바이트를 떼어 본다), Mutter 는 그 값을 `combo->keycode` 에 **변환 없이** 넣는다.
+/// 그래서 우리가 주는 숫자는 Mutter 가 입력에서 만드는 것과 같은 **xkb keycode
+/// (= evdev + 8)** 여야 한다 (`meta_xkb_evdev_to_keycode`) — sway `bindcode` ·
+/// Hyprland `code:` 와 같은 번호다.
+///
+/// **두 자리에 들어가는지는 표가 보장한다** — `physical_key.zig` 의 최대 evdev 가
+/// 194 (`F24`) 라 +8 해도 `0xCA` 다. 세 자리가 되면 GTK 는 앞 두 자리만 읽고 Mutter 는
+/// 전체를 읽어 **둘이 다른 키를 가리키므로**, 표가 넓어지면 이 가정을 다시 봐야 한다.
+fn buildGtkAccel(buf: []u8, hotkey: config_mod.Hotkey) ![:0]const u8 {
     const H = config_mod.Hotkey;
     var fbs: std.Io.Writer = .fixed(buf);
     const w = &fbs;
-    if ((modifiers & H.MOD_CTRL) != 0) try w.writeAll("<Control>");
-    if ((modifiers & H.MOD_SHIFT) != 0) try w.writeAll("<Shift>");
-    if ((modifiers & H.MOD_ALT) != 0) try w.writeAll("<Alt>");
-    if ((modifiers & H.MOD_SUPER) != 0) try w.writeAll("<Super>");
-    try w.writeAll(hotkey_format.gtkName(keysym));
+    if ((hotkey.modifiers & H.MOD_CTRL) != 0) try w.writeAll("<Control>");
+    if ((hotkey.modifiers & H.MOD_SHIFT) != 0) try w.writeAll("<Shift>");
+    if ((hotkey.modifiers & H.MOD_ALT) != 0) try w.writeAll("<Alt>");
+    if ((hotkey.modifiers & H.MOD_SUPER) != 0) try w.writeAll("<Super>");
+    if (hotkey.code) |code| {
+        const xkb_code = @as(u32, physical_key.evdev(code)) + 8;
+        if (xkb_code > 0xff) return error.PositionKeycodeTooWide;
+        try w.print("0x{x:0>2}", .{xkb_code});
+    } else {
+        try w.writeAll(hotkey_format.gtkName(hotkey.keysym));
+    }
     try w.writeByte(0);
     const written = fbs.buffered();
     return written[0 .. written.len - 1 :0];
+}
+
+test "#496 1-c GNOME takes a position as 0xNN in xkb numbering" {
+    var buf: [96]u8 = undefined;
+
+    // GTK 의 `is_keycode()` 는 `0x` + **정확히 두 자리** hex 만 keycode 로 인정하고
+    // (`memcpy` 로 4 바이트를 뗀다), Mutter 는 그 값을 변환 없이 `combo->keycode` 에
+    // 넣어 xkb keycode (= evdev + 8) 와 견준다. 그래서 자리수와 번호 둘 다 고정한다.
+    try std.testing.expectEqualStrings(
+        "<Control><Shift>0x31",
+        try buildGtkAccel(&buf, config_mod.Hotkey.fromString("ctrl+shift+[Backquote]").?),
+    );
+    try std.testing.expectEqualStrings(
+        "<Control>0x1c",
+        try buildGtkAccel(&buf, config_mod.Hotkey.fromString("ctrl+[KeyT]").?),
+    );
+    // 라벨 binding 은 예전 그대로다.
+    try std.testing.expectEqualStrings(
+        "<Control><Shift>t",
+        try buildGtkAccel(&buf, config_mod.Hotkey.fromString("ctrl+shift+t").?),
+    );
 }
 
 test "Shell extension target follows exact GNOME and Cinnamon desktop tokens" {

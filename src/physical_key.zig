@@ -24,9 +24,13 @@
 //! 줄지 정해야 하는데, `VK_OEM_MINUS` / `kVK_ANSI_Minus` 는 라벨이 아니라 "US 자판
 //! 에서 `-` 가 있는 자리" 다. 그것을 라벨로 받으면 Linux 는 라벨로, Windows ·
 //! macOS 는 US 위치로 잡아 #496 의 세 갈래 불일치가 더 깊어진다. 라벨을 정직하게
-//! 넓히려면 live layout 조회가 필요하다 (macOS `UCKeyTranslate`, Windows
-//! `VkKeyScanExW`) — #496 항목 2 이고, 그것이 끝나면 라벨 집합은 "위치로 해석할
-//! 이름" 이 되어 이 표에 흡수된다.
+//! 넓히려면 live layout 조회가 필요하다 — #496 항목 2 다.
+//!
+//! **항목 2 는 그렇게 끝나지 않았다.** macOS 는 `NSEvent charactersByApplyingModifiers:`
+//! 로 라벨을 live layout 에서 해석하게 됐고 (Carbon 도 `UCKeyTranslate` 도 쓰지 않는다),
+//! Windows 는 layout DLL 이 이미 라벨을 따라가 손댈 것이 없었다. 그래서 **라벨 집합은
+//! 이 표에 흡수되지 않았고** 좁은 채로 남아 있다 — 넓히는 대신 이 부류의 답을 위치 표기로
+//! 정했기 때문이다. 남은 전제는 Windows 뿐이다 (거기만 라벨을 VK 로 바꿔야 한다).
 //!
 //! 위치 쪽은 그 문제가 없다. `[Minus]` 는 처음부터 "그 자리" 이고 세 platform 에
 //! 고정값이 있다. 그래서 기호 · numpad · 방향 · 편집 패드 · `F13`~`F24` · ISO / JIS
