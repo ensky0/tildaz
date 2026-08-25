@@ -225,12 +225,26 @@ pub fn cleanupLegacyIdentity(rt: Runtime, bus: *dbus.SessionBus) void {
     };
 }
 
-pub fn qtKey(keysym: u32, modifiers: u32) i32 {
+/// keysym → Qt key. **못 만들면 `null`** 이다.
+///
+/// #496 1-c 이전에는 `i32` 를 돌려주며 모르는 keysym 에 **0** 을 냈다. 그 값은 KDE 에
+/// 그대로 등록되는데, key 자리가 0 이면 **modifier 만의 단축키**가 되어 `Ctrl` 을 뗄
+/// 때 발동한다 — 이슈가 COSMIC 의 `keycode:` 함정으로 적어 둔 것과 같은 종류의 조용한
+/// 오동작이다. 라벨 집합이 좁을 때는 모든 값이 표에 있어 드러나지 않았지만, 위치 표기가
+/// 전역 hotkey 에 들어오면서 **임의의 keysym** 이 오게 됐다. 그래서 실패를 값으로 만든다.
+///
+/// **dead keysym 은 거부한다.** 실측에서 `Qt::Key_Dead_Circumflex` 를 주니 KDE 가
+/// 엉뚱한 문자 (`ោ`) 로 적었다. 독일어 자판의 `[Backquote]` 자리가 `dead_circumflex`
+/// 라 실제로 닿는 경로다 (#496 1-c 계획 코멘트의 실측 표).
+pub fn qtKey(keysym: u32, modifiers: u32) ?i32 {
     var key: i32 = 0;
     if ((modifiers & 0x4) != 0) key |= 0x02000000;
     if ((modifiers & 0x2) != 0) key |= 0x04000000;
     if ((modifiers & 0x1) != 0) key |= 0x08000000;
     if ((modifiers & 0x8) != 0) key |= 0x10000000;
+
+    // dead key — 위 주석 참고. 범위는 `xkbcommon-keysyms.h` 의 `XKB_KEY_dead_*` 다.
+    if (keysym >= 0xfe50 and keysym <= 0xfe93) return null;
 
     const key_code: i32 = switch (keysym) {
         0xffbe => 0x01000030,
@@ -252,7 +266,15 @@ pub fn qtKey(keysym: u32, modifiers: u32) i32 {
         0x0060 => 0x60,
         '0'...'9' => @intCast(keysym),
         'a'...'z' => @intCast(keysym - 0x20),
-        else => 0,
+        // #496 1-c — Latin-1 keysym 은 값이 곧 유니코드 코드포인트이고, Qt 의 key 값도
+        // 그 구간에서는 코드포인트와 같다 (`Qt::Key_twosuperior` = 0xB2). 실측에서 KDE 가
+        // `178` 을 `²` 로, `Ctrl+178` 을 `Ctrl+²` 로 받았다.
+        0x00a0...0x00ff => @intCast(keysym),
+        // X11 이 Latin-1 밖의 문자를 담는 방식 — `0x01000000 | codepoint`. 실측에서
+        // `Cyrillic_io` (U+0451) 를 KDE 가 `Ё` 로 받았다 (대문자 정규화는 KDE 가 한다).
+        0x01000100...0x0110ffff => @intCast(keysym & 0x00ffffff),
+        // 표에 없는 keysym 은 **0 을 내지 않고 실패**로 만든다. 위 주석 참고.
+        else => return null,
     };
     return key | key_code;
 }
@@ -563,10 +585,26 @@ pub const Client = struct {
         log.appendLine("kglobalaccel", "daemon restart re-registration completed", .{});
     }
 
+    /// #496 1-c — layout 이 바뀌어 **그 자리가 내는 글자**가 달라졌을 때 다시 등록한다.
+    ///
+    /// 위치 표기 hotkey 에서만 쓴다. KDE 는 keysym 만 받으므로 자리를 고정할 수 없고,
+    /// 그래서 sway `bindcode` 와 달리 layout 을 따라다녀야 한다.
+    ///
+    /// **재등록은 사용자 설정을 어지럽히지 않는다** — 서로 다른 키로 5 회 재등록한 뒤
+    /// `kglobalshortcutsrc` 전체 diff 가 우리 블록 한 줄 덮어쓰기뿐이었다 (실측,
+    /// KWin 6.7.4). 그 확인이 이 경로를 고른 근거다.
+    pub fn rebind(self: *Client, keysym: u32, modifiers: u32) void {
+        self.register(keysym, modifiers) catch |err| {
+            self.is_registered = false;
+            log.appendLine("kglobalaccel", "layout change re-registration failed: {s}", .{@errorName(err)});
+            return;
+        };
+        log.appendLine("kglobalaccel", "layout changed -- global hotkey re-registered keysym=0x{x}", .{keysym});
+    }
+
     fn register(self: *Client, keysym: u32, modifiers: u32) !void {
         self.is_registered = false;
-        const qt_key = qtKey(keysym, modifiers);
-        if (qt_key == 0) return error.KGlobalAccelUnsupportedKey;
+        const qt_key = qtKey(keysym, modifiers) orelse return error.KGlobalAccelUnsupportedKey;
 
         try callActionIdVoid(self.api, self.conn, "doRegister", true);
         const new_path = try getComponentPath(self.allocator, self.api, self.conn);
@@ -888,13 +926,31 @@ test "KDE desktop token is exact and case insensitive" {
 }
 
 test "XKB to Qt key conversion keeps function offsets and modifiers" {
-    try std.testing.expectEqual(@as(i32, 0x01000030), qtKey(0xffbe, 0));
-    try std.testing.expectEqual(@as(i32, 0x01000035), qtKey(0xffc3, 0));
-    try std.testing.expectEqual(@as(i32, 0x01000036), qtKey(0xffc4, 0));
-    try std.testing.expectEqual(@as(i32, 0x0100003b), qtKey(0xffc9, 0));
-    try std.testing.expectEqual(@as(i32, 0x16000054), qtKey('t', 0x2 | 0x4 | 0x8));
-    try std.testing.expectEqual(@as(i32, 0x20), qtKey(' ', 0));
-    try std.testing.expectEqual(@as(i32, 0x60), qtKey('`', 0));
+    try std.testing.expectEqual(@as(?i32, 0x01000030), qtKey(0xffbe, 0));
+    try std.testing.expectEqual(@as(?i32, 0x01000035), qtKey(0xffc3, 0));
+    try std.testing.expectEqual(@as(?i32, 0x01000036), qtKey(0xffc4, 0));
+    try std.testing.expectEqual(@as(?i32, 0x0100003b), qtKey(0xffc9, 0));
+    try std.testing.expectEqual(@as(?i32, 0x16000054), qtKey('t', 0x2 | 0x4 | 0x8));
+    try std.testing.expectEqual(@as(?i32, 0x20), qtKey(' ', 0));
+    try std.testing.expectEqual(@as(?i32, 0x60), qtKey('`', 0));
+
+    // #496 1-c — 위치 표기가 들어오면서 임의의 keysym 이 온다. 아래 세 값은 이 머신
+    // (CachyOS · KWin 6.7.4) 에서 `gdbus` 로 실제 등록해 확인한 것이다.
+    //
+    //   `twosuperior` (fr 자판의 `[Backquote]`) → `²`
+    //   `Ctrl+twosuperior`                      → `Ctrl+²`
+    //   `Cyrillic_io`  (ru 자판의 같은 자리)     → `Ё`
+    try std.testing.expectEqual(@as(?i32, 0xb2), qtKey(0xb2, 0));
+    try std.testing.expectEqual(@as(?i32, 0x040000b2), qtKey(0xb2, 0x2));
+    try std.testing.expectEqual(@as(?i32, 0x451), qtKey(0x01000451, 0));
+
+    // dead keysym 은 거부한다 — KDE 가 엉뚱한 문자로 적는 것을 실측했다. 독일어
+    // 자판의 `[Backquote]` 자리가 `dead_circumflex` 라 실제로 닿는 경로다.
+    try std.testing.expectEqual(@as(?i32, null), qtKey(0xfe52, 0x2));
+
+    // 표에 없는 keysym 은 0 이 아니라 실패다. 0 을 내면 KDE 에 modifier 만의
+    // 단축키가 등록돼 `Ctrl` 을 뗄 때 발동한다.
+    try std.testing.expectEqual(@as(?i32, null), qtKey(0xffe1, 0x2));
 }
 
 test "conflict takeover removes only an exact one-chord key sequence" {

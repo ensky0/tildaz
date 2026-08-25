@@ -387,12 +387,11 @@ pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses a
 /// 가로챈다). 이쪽은 기존 안내가 정확했다.
 pub const config_hotkey_invalid_format = "Configuration: failed to parse \"hotkey\" value \"{s}\".\n\nOnly F1-F12 may be used without modifiers. Other keys require Ctrl, Alt, Super, or Cmd.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
-/// #496 — 위치 표기 (`[KeyW]`) 를 전역 `hotkey` 에 쓴 경우. `config_hotkey_invalid`
-/// 로 묶으면 "Only F1-F12 may be used without modifiers" 를 받는데, 사용자는 modifier
-/// 를 이미 줬으므로 #484 와 똑같이 막다른 길이 된다. 무엇이 안 되는지와 **대신 할 수
-/// 있는 것**을 같이 준다.
-pub const config_hotkey_position_format = "Configuration: \"hotkey\" value \"{s}\" uses the position form (in square brackets).\n\nThe position form works in [keys] but not for the global hotkey: TildaZ has to register that one with the desktop, and every path it uses (sway, Hyprland, COSMIC, KDE) accepts only a character.\n\nUse a key name instead -- a function key is the safest choice because it is the same on every keyboard layout.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
-pub const config_hotkey_position_fallback_msg = "Configuration: hotkey cannot use the position form";
+// #496 1-c — 위치 표기를 전역 `hotkey` 에서 거부하던 안내 두 개가 여기 있었다. 이제
+// 받으므로 지웠다. 등록이 실패할 수 있는 자리는 남아 있지만 (그 layout 에서 그 자리가
+// dead key 이거나 글자를 안 내는 경우) 그것은 **파싱이 아니라 등록 시점**에만 알 수
+// 있어 다이얼로그가 아니라 로그로 알린다 — config 를 읽는 시점에는 사용자의 자판이
+// 무엇을 내는지 모른다.
 /// #431 — 다른 TildaZ 인스턴스가 이미 쓰는 전역 핫키. 뒤에 있는 (index 가 큰) 쪽이 양보하므로
 /// 이 메시지는 그 인스턴스에만 나온다. **겹친 상대를 번호로 짚어 주는 것이 핵심이다** — 예전엔
 /// Windows 의 `RegisterHotKey` 실패 안내가 "Another app already registered the same combination"
@@ -498,6 +497,26 @@ pub const hotkey_registration_failed_format =
     \\{s}
 ;
 pub const hotkey_registration_failed_fallback_msg = "Failed to register the global hotkey. Edit this instance's config file and restart.";
+
+/// #496 1-c — a position hotkey is matched by physical key, so it needs a low-level
+/// keyboard hook rather than the OS hotkey table. The failure causes are different
+/// enough from `RegisterHotKey` that reusing that text would misdirect the user.
+pub const hotkey_hook_failed_format =
+    \\Failed to install the keyboard hook for the global hotkey (position [{s}], modifiers=0x{x}).
+    \\
+    \\A position hotkey such as "ctrl+[Backquote]" matches the physical key, which requires a
+    \\low-level keyboard hook. The OS hotkey table cannot express it: it stores a virtual-key,
+    \\and each keyboard layout assigns virtual-keys to different physical keys.
+    \\
+    \\Common causes:
+    \\• Security software blocks low-level keyboard hooks
+    \\• The session denies the hook
+    \\
+    \\Writing the key by label instead (for example "ctrl+space" or "F1") uses the OS hotkey
+    \\table and does not need the hook. Edit the config and restart:
+    \\{s}
+;
+pub const hotkey_hook_failed_fallback_msg = "Failed to install the keyboard hook for the global hotkey. Edit this instance's config file and restart.";
 
 pub const new_instance_title = "Create TildaZ Instance";
 pub const new_instance_hotkey_prompt_format =

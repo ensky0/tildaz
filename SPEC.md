@@ -407,12 +407,18 @@ AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac 의 Safari (Co
   정당하게 바인딩하는데 터미널이 삼키면 통과시킬 방법이 없다. PgUp / PgDn 은 GNOME Terminal ·
   Konsole · Windows Terminal 이 탭 전환에 쓰는, 터미널이 관습적으로 소유하는 조합이다.
 - **기존 PgUp / PgDn 경로는 그대로다** — Shift 동반은 scrollback (§2.5), 맨 키는 PTY.
-- **전역 `hotkey` 는 위치 표기를 받지 않는다.** OS / compositor 에 *등록* 해야 하고 우리가 쓰는
-  **다섯** 경로가 모두 문자 기반이다 — sway `bindsym` · Hyprland keysym · GNOME / Cinnamon
-  GTK accelerator (`buildGtkAccel`) · COSMIC RON `key:` · KGlobalAccel `qtKey`. (처음에
-  "4 경로" 로 적었는데 GNOME · Cinnamon 이 빠져 있었다.) 조용히 keysym 0 을 등록하는 대신
-  원인이 분명한 실패를 낸다 — [#496](https://github.com/ensky0/tildaz/issues/496) 1-b 가 그
-  제약을 다룬다.
+- **전역 `hotkey` 도 위치 표기를 받는다** ([#496](https://github.com/ensky0/tildaz/issues/496)
+  1-c). 다만 `[keys]` 와 달리 **OS / compositor 에 *등록* 해야** 해서 경로마다 담을 수 있는 것이
+  다르고, 그것이 이 절 아래의 갈림들이다. 등록 경로는 **다섯**이다 — sway `bindcode` · Hyprland
+  keysym · GNOME / Cinnamon GTK accelerator (`buildGtkAccel`) · COSMIC RON `key:` ·
+  KGlobalAccel `qtKey`. (처음에 "4 경로" 로 적었는데 GNOME · Cinnamon 이 빠져 있었다.)
+  - **Windows 는 `RegisterHotKey` 가 아니라 저수준 훅으로 잡는다.** 그 API 는 VK 만 받는데 VK 는
+    layout DLL 이 배정하는 슬롯이라 자판마다 자리가 움직인다 (`VK_OEM_3` 이 US `0x29` · 프랑스어
+    legacy `0x28` · 독일어 `0x27`). 자리를 VK 로 풀어 캐시하면 layout 이 바뀔 때 **핫키가 다른
+    물리 키로 옮겨간다** (실측). `WM_INPUTLANGCHANGE` 로 갱신하는 길은 그 메시지가 스레드별 ·
+    포커스 의존이라 숨은 드롭다운에서 닫히지 않는다 — 핫키가 먹어야 포커스를 얻는 순환이다.
+    `WH_KEYBOARD_LL` 의 `scanCode` 는 layout 이 개입하지 않은 raw 값이라 변환도 캐시도 없다.
+    **라벨 표기는 계속 `RegisterHotKey`** 다 (라벨을 layout 으로 푸는 것은 OS 의 몫이다).
   - **DE 넷은 이미 스스로 라틴 fallback 을 한다** — GNOME (Mutter 3.28+) · Cinnamon (Muffin
     5.4+) · COSMIC (2026-02+) · KDE (Plasma 5.22+). 그래서 1-b 가 손댈 곳은 그것을 하지 않는
     sway · Hyprland 였다.
@@ -930,8 +936,9 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 >   ([실기 확정](https://github.com/ensky0/tildaz/issues/496#issuecomment-5404000121)).
 >
 > 어느 자판에서나 안전한 것은 **함수 키** (`F1`~`F12`) 다 — 기본값이 `F1` 인 이유이기도 하다.
-> 자리로 고정하고 싶으면 `[keys]` 처럼 위치 표기를 쓰는 길이 있는데, 전역 `hotkey` 는 아직
-> 받지 않는다 (#496 1-c).
+> 자리로 고정하고 싶으면 위치 표기를 쓴다 — 전역 `hotkey` 도 받는다 (#496 1-c). 다만
+> COSMIC · KDE 는 자리를 못 받아 *그 자리가 지금 layout 에서 내는 글자* 로 등록되므로,
+> 그 자리가 dead key 인 layout (독일어의 `[Backquote]`) 에서는 등록되지 않는다.
 
 **Modifier 토큰** (대소문자 무관, `+` 분리, 임의 개수 결합):
 

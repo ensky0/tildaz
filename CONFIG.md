@@ -350,10 +350,8 @@ file shadow it would mean one typo costs you the ability to interrupt a command.
 
 The global `hotkey` is separate for a different reason: it is registered with the
 operating system rather than handled inside TildaZ, so it lives at the top level
-and takes a single value. It does **not** accept the position form — every path
-TildaZ registers it through (sway, Hyprland, COSMIC, KDE) accepts only a
-character. A function key is the safest choice there, being identical on every
-layout.
+and takes a single value. It accepts both forms, but a function key is still the
+safest choice there, being identical on every layout.
 
 ## Hotkey syntax
 
@@ -378,10 +376,20 @@ invalid value shows an error dialog and exits):
   way. Widening it means verifying real key codes on Linux, macOS, and Windows,
   which has not been done yet. A rejected value shows an error dialog naming the
   accepted keys rather than failing silently.
-- **The position form is not accepted here.** `hotkey` is registered with your
-  desktop, and every path TildaZ uses for that takes a character rather than a
-  key position. A value like `"ctrl+[KeyW]"` is rejected with a message saying so,
-  rather than being registered as something that never fires.
+- **The position form works here too**, with one caveat below. TildaZ registers
+  the hotkey with your desktop, and the desktops differ in what they accept.
+  sway, Hyprland, GNOME and Cinnamon take a key position directly. COSMIC and KDE
+  take only a character, so TildaZ registers **whatever that position types on
+  your current layout** — on a French layout `"ctrl+[Backquote]"` becomes `Ctrl+²`.
+  It re-registers when you switch layouts while TildaZ is running.
+- **The caveat is dead keys.** If the position you picked is a dead key on your
+  layout — the `[Backquote]` spot is `dead_circumflex` on a German layout — COSMIC
+  and KDE cannot express it, and TildaZ logs that instead of registering something
+  that would fire the wrong key. The other desktops are unaffected, because they
+  take the position itself.
+- **On COSMIC the entry appears once TildaZ has run.** Resolving a position to a
+  character needs the keyboard layout, which only the running terminal knows, so
+  the shortcut is written on first launch rather than by the installer.
 
 #### Prefer a function key
 

@@ -69,6 +69,14 @@ const XkbKeymapKeyGetSymsByLevel = *const fn (
     syms_out: *[*]const c_uint,
 ) callconv(.c) c_int;
 
+/// #496 1-c — `xkb_keysym_get_name(keysym, buffer, size)`. 이름 길이를 돌려주고
+/// 버퍼가 모자라면 필요한 길이를 준다 (음수는 실패).
+const XkbKeysymGetName = *const fn (
+    keysym: c_uint,
+    buffer: [*]u8,
+    size: usize,
+) callconv(.c) c_int;
+
 // libxkbcommon `enum xkb_state_component`. MODS_EFFECTIVE = (1 << 3).
 // 처음에 (1 << 7) = LAYOUT_EFFECTIVE 로 잘못 적어 mod_name_is_active 가
 // modifier component 를 안 보고 항상 0 반환 → 단축키 분기 fail (1차 시연 발견).
@@ -118,6 +126,14 @@ const Api = struct {
 /// #496 1-a — keymap 전수 조회에 필요한 심볼 묶음. **다 있어야 의미가 있으므로 묶어서
 /// all-or-nothing 으로 다룬다** — 넷만 있으면 부분 조회가 되어 오히려 잘못된 답을 낸다.
 const KeymapScan = struct {
+    /// #496 1-c — keysym → 이름 (`twosuperior` · `Cyrillic_io`). COSMIC 의 RON `key:` 가
+    /// 이름 문자열을 받으므로 필요하다. 우리 고정표 (`config.linuxKeysymName`) 는 라벨
+    /// 집합만 알아서 위치 표기가 닿는 임의의 keysym 을 이름으로 만들지 못한다.
+    ///
+    /// **이 묶음에 넣는 이유** — 위치 표기 hotkey 를 처리하려면 조회 심볼과 이 심볼이
+    /// *함께* 있어야 한다. 하나만 있으면 자리는 풀되 이름을 못 만들어 결국 등록을 못
+    /// 하므로, 갈라 두면 실패 경로만 늘어난다.
+    keysym_get_name: XkbKeysymGetName,
     min_keycode: XkbKeymapMinKeycode,
     max_keycode: XkbKeymapMaxKeycode,
     num_layouts_for_key: XkbKeymapNumLayoutsForKey,
@@ -126,6 +142,7 @@ const KeymapScan = struct {
 
     fn load(handle: *anyopaque) ?KeymapScan {
         return .{
+            .keysym_get_name = lookup(handle, XkbKeysymGetName, "xkb_keysym_get_name") orelse return null,
             .min_keycode = lookup(handle, XkbKeymapMinKeycode, "xkb_keymap_min_keycode") orelse return null,
             .max_keycode = lookup(handle, XkbKeymapMaxKeycode, "xkb_keymap_max_keycode") orelse return null,
             .num_layouts_for_key = lookup(handle, XkbKeymapNumLayoutsForKey, "xkb_keymap_num_layouts_for_key") orelse return null,
@@ -283,6 +300,51 @@ pub const Keyboard = struct {
         if (self.api.?.keymap_scan == null) return null;
         if (self.keymap == null) return null;
         return self.findKeycode(keysym) != null;
+    }
+
+    /// #496 1-c — 그 **자리**가 지금 layout 에서 내는 keysym (level 0).
+    /// `findKeycode` 의 반대 방향이고 group 규칙도 같다 (`active_group % layouts`).
+    ///
+    /// **level 0 만 본다.** 전역 hotkey 의 modifier 는 따로 실려 가므로 (`Ctrl+Shift+T`
+    /// 가 keysym `t` + Shift 비트로 등록된다) 우리가 알아야 하는 것은 그 자리의 *기본*
+    /// 문자다. Shift 레벨을 뽑으면 `Ctrl+Shift+[Digit1]` 이 `!` 로 등록돼 어긋난다.
+    ///
+    /// **`oneSym` 을 쓰지 않는 이유** — 그쪽은 `xkb_state` 를 보므로 *지금 눌려 있는*
+    /// modifier 가 결과를 바꾼다. 등록은 부팅 · layout 전환 시점에 일어나 대개 아무 키도
+    /// 안 눌려 있지만, 그 우연에 기대면 사용자가 키를 누른 채 layout 을 바꿀 때 조용히
+    /// 다른 값이 등록된다.
+    ///
+    /// 판정 불가 (심볼 / keymap 없음) 와 "그 자리에 keysym 이 없다" 를 **가르지 않는다**
+    /// — 호출부의 처리가 같기 때문이다 (등록하지 않고 알린다). 1-a 에서 둘을 가른 것은
+    /// 거기서는 결과가 달랐기 때문이다 (fallback 을 만드느냐 마느냐).
+    pub fn keysymAtEvdev(self: *Keyboard, evdev: u16) ?u32 {
+        const api = if (self.api) |*a| a else return null;
+        const scan = api.keymap_scan orelse return null;
+        const keymap = self.keymap orelse return null;
+
+        const key: c_uint = @as(c_uint, evdev) + 8; // xkb keycode = evdev + 8
+        if (key < scan.min_keycode(keymap) or key > scan.max_keycode(keymap)) return null;
+        const layouts = scan.num_layouts_for_key(keymap, key);
+        if (layouts == 0) return null;
+        const layout: c_uint = @intCast(self.active_group % layouts);
+        var syms: [*]const c_uint = undefined;
+        const count = scan.key_get_syms_by_level(keymap, key, layout, 0, &syms);
+        if (count <= 0) return null;
+        return @intCast(syms[0]);
+    }
+
+    /// #496 1-c — keysym → xkb 이름 (`twosuperior` · `Cyrillic_io` · `grave`).
+    /// COSMIC RON 의 `key:` 가 이 이름을 받는다. 버퍼에 담아 slice 로 돌려준다.
+    pub fn keysymName(self: *Keyboard, keysym: u32, buf: []u8) ?[]const u8 {
+        const api = if (self.api) |*a| a else return null;
+        const scan = api.keymap_scan orelse return null;
+        const n = scan.keysym_get_name(@intCast(keysym), buf.ptr, buf.len);
+        if (n <= 0) return null;
+        const len: usize = @intCast(n);
+        // 버퍼가 모자라면 필요한 길이를 돌려준다 — 잘린 이름을 쓰면 COSMIC 이 못 읽는
+        // 값을 파일에 남기게 되므로 실패로 다룬다.
+        if (len >= buf.len) return null;
+        return buf[0..len];
     }
 
     pub fn oneSym(self: *Keyboard, key: u32) ?u32 {
