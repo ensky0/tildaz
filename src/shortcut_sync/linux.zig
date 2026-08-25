@@ -561,6 +561,33 @@ pub fn writeCosmicPositionEntry(
     key_name: []const u8,
     modifiers: u32,
 ) !void {
+    return rewriteCosmicPositionEntry(rt, allocator, index, key_name, modifiers);
+}
+
+/// #496 1-c — 이 인스턴스의 위치 표기 항목을 RON 에서 **거둔다.**
+///
+/// 그 자리가 지금 layout 에서 글자를 못 낼 때 쓴다 (dead key). KDE 쪽
+/// `KGlobalAccelClient.unbind` 와 같은 역할이고 이유도 같다 — 남겨 두면 직전 layout 의
+/// 글자가 COSMIC 단축키 목록에 **죽은 항목**으로 남는다. 실기에서 fr → de 로 바꾸니
+/// `key: "twosuperior"` 가 그대로 남았다 (#496 1-c 검증, cosmic-comp 1.0.0).
+///
+/// 발동하지는 않는다 — 독일어 자판에서 `²` 가 나는 자리 (`Ctrl+AltGr+2`) 를 눌러도
+/// cosmic-comp 가 걸어 주지 않는 것까지 같은 실측에서 확인했다. 그래도 사용자 눈에는
+/// 남으므로 거둔다.
+pub fn removeCosmicPositionEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void {
+    return rewriteCosmicPositionEntry(rt, allocator, index, null, 0);
+}
+
+/// `key_name` 이 `null` 이면 우리 줄을 지우기만 한다 (거두기), 값이 있으면 그 값으로 다시
+/// 쓴다. 두 경로가 **같은 한 줄 규칙**을 쓰게 묶어 둔다 — 지우는 쪽과 쓰는 쪽이 갈리면
+/// 같은 map 키가 둘 생기고, 중복 키가 있는 RON 은 COSMIC 이 파일 전체를 버린다 (#484).
+fn rewriteCosmicPositionEntry(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    index: u32,
+    key_name: ?[]const u8,
+    modifiers: u32,
+) !void {
     const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
     const dir_path = try std.Io.Dir.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
     defer allocator.free(dir_path);
@@ -583,31 +610,98 @@ pub fn writeCosmicPositionEntry(
     const exe_len = try std.process.executablePath(rt.io, &exe_buf);
     const exe = exe_buf[0..exe_len];
 
-    const close_offset = findClosingMapLine(content) orelse return error.UnsupportedCosmicShortcutFormat;
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(allocator);
+    try renderCosmicPositionRon(&output, allocator, content, exe, index, key_name, modifiers);
+
+    if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
+        if (key_name) |name| {
+            log.appendLine("cosmic", "position hotkey entry written key={s}", .{name});
+        } else {
+            log.appendLine("cosmic", "position hotkey entry withdrawn", .{});
+        }
+    }
+}
+
+test "#496 1-c dead key layout withdraws the previous position entry" {
+    // 실기 (cosmic-comp 1.0.0): fr 에서 `twosuperior` 로 쓰인 뒤 de 로 바꾸면 그 줄이
+    // 그대로 남아 사용자 단축키 목록에 죽은 항목이 됐다. 거두는 쪽이 사용자 항목과 남의
+    // 인스턴스는 건드리지 않는 것까지 함께 고정한다.
+    const before =
+        \\{
+        \\    (modifiers: [], key: "F1"): Spawn("/usr/bin/tildaz --toggle 0"),
+        \\    (modifiers: [Ctrl], key: "twosuperior", description: Some("TildaZ_9")): Spawn("/usr/bin/tildaz --toggle 9"),
+        \\    (modifiers: [Super], key: "b", description: Some("TildaZ_3")): Spawn("/usr/bin/tildaz --toggle 3"),
+        \\}
+        \\
+    ;
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try renderCosmicPositionRon(&output, std.testing.allocator, before, "/usr/bin/tildaz", 9, null, 0);
+    try std.testing.expectEqualStrings(
+        \\{
+        \\    (modifiers: [], key: "F1"): Spawn("/usr/bin/tildaz --toggle 0"),
+        \\    (modifiers: [Super], key: "b", description: Some("TildaZ_3")): Spawn("/usr/bin/tildaz --toggle 3"),
+        \\}
+        \\
+    , output.items);
+}
+
+test "#496 1-c rewriting a position entry replaces our line instead of adding one" {
+    // 같은 map 키가 둘 생기면 COSMIC 이 파일 전체를 버린다 (#484). 재등록이 layout 마다
+    // 도는 경로라 이 성질이 특히 중요하다 — 실기에서 us · fr · ru · de 를 오갔다.
+    const before =
+        \\{
+        \\    (modifiers: [Ctrl], key: "grave", description: Some("TildaZ_9")): Spawn("/usr/bin/tildaz --toggle 9"),
+        \\}
+        \\
+    ;
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try renderCosmicPositionRon(&output, std.testing.allocator, before, "/usr/bin/tildaz", 9, "twosuperior", config.Hotkey.MOD_CTRL);
+    try std.testing.expectEqualStrings(
+        \\{
+        \\    (modifiers: [Ctrl], key: "twosuperior", description: Some("TildaZ_9")): Spawn("/usr/bin/tildaz --toggle 9"),
+        \\}
+        \\
+    , output.items);
+}
+
+/// 파일 내용 → 파일 내용. I/O 를 걷어 낸 순수부라 test 가 두 경로를 다 밟을 수 있다.
+fn renderCosmicPositionRon(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    content: []const u8,
+    exe: []const u8,
+    index: u32,
+    key_name: ?[]const u8,
+    modifiers: u32,
+) !void {
+    const close_offset = findClosingMapLine(content) orelse return error.UnsupportedCosmicShortcutFormat;
     var offset: usize = 0;
     while (offset < content.len) {
         const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
         const line = content[offset..end];
         if (offset == close_offset) {
-            try output.appendSlice(allocator, "    (modifiers: [");
-            var first = true;
-            const mods = [_]struct { bit: u32, name: []const u8 }{
-                .{ .bit = config.Hotkey.MOD_SUPER, .name = "Super" },
-                .{ .bit = config.Hotkey.MOD_CTRL, .name = "Ctrl" },
-                .{ .bit = config.Hotkey.MOD_ALT, .name = "Alt" },
-                .{ .bit = config.Hotkey.MOD_SHIFT, .name = "Shift" },
-            };
-            for (mods) |mod| {
-                if ((modifiers & mod.bit) == 0) continue;
-                if (!first) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, mod.name);
-                first = false;
+            if (key_name) |name| {
+                try output.appendSlice(allocator, "    (modifiers: [");
+                var first = true;
+                const mods = [_]struct { bit: u32, name: []const u8 }{
+                    .{ .bit = config.Hotkey.MOD_SUPER, .name = "Super" },
+                    .{ .bit = config.Hotkey.MOD_CTRL, .name = "Ctrl" },
+                    .{ .bit = config.Hotkey.MOD_ALT, .name = "Alt" },
+                    .{ .bit = config.Hotkey.MOD_SHIFT, .name = "Shift" },
+                };
+                for (mods) |mod| {
+                    if ((modifiers & mod.bit) == 0) continue;
+                    if (!first) try output.appendSlice(allocator, ", ");
+                    try output.appendSlice(allocator, mod.name);
+                    first = false;
+                }
+                try output.appendSlice(allocator, "], key: \"");
+                try output.appendSlice(allocator, name);
+                try appendCosmicEntryTail(output, allocator, exe, index);
             }
-            try output.appendSlice(allocator, "], key: \"");
-            try output.appendSlice(allocator, key_name);
-            try appendCosmicEntryTail(&output, allocator, exe, index);
         }
         // **내 인스턴스의 줄만** 지운다. 남의 인스턴스는 launcher 소관이다.
         const mine = if (tildazCosmicEntryIndex(line)) |idx| idx == index else false;
@@ -616,10 +710,6 @@ pub fn writeCosmicPositionEntry(
             try output.append(allocator, '\n');
         }
         offset = if (end < content.len) end + 1 else content.len;
-    }
-
-    if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
-        log.appendLine("cosmic", "position hotkey entry written key={s}", .{key_name});
     }
 }
 

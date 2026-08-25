@@ -7175,6 +7175,22 @@ const Client = struct {
             return;
         };
         if (isDeadKeysym(keysym)) {
+            // **직전 등록을 거둔다.** KDE 의 같은 자리 (`drainKdeLayoutChange`) 와 짝이다 —
+            // 남겨 두면 옛 layout 의 글자가 COSMIC 단축키 목록에 죽은 항목으로 남는다
+            // (실기: fr → de 로 바꾸니 `key: "twosuperior"` 가 그대로 남았다).
+            //
+            // `cosmic_position_keysym` 을 보지 않고 항상 부르는 이유는 **부팅 경로** 때문이다.
+            // 그 값은 매 실행 0 에서 시작하는데 RON 은 파일이라 지난 실행의 줄이 남아 있다.
+            // dead key layout 에서 tildaz 를 켜면 여기가 유일한 정리 시점이다. 실제 쓰기는
+            // `writeFileIfChanged` 가 거르므로 keymap 이벤트마다 파일이 바뀌지는 않는다.
+            self.cosmic_position_keysym = 0;
+            shortcut_sync_linux.removeCosmicPositionEntry(
+                self.rt,
+                self.allocator,
+                instance_context.requireWorkerIndex(),
+            ) catch |err| {
+                log.appendLine("cosmic", "position hotkey entry removal failed: {s}", .{@errorName(err)});
+            };
             log.appendLine("cosmic", "position hotkey is a dead key on this layout -- not registered (use a function key)", .{});
             return;
         }
