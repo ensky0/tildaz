@@ -1544,8 +1544,39 @@ pub fn defaultConfigTomlWithHotkey(
         \\# Field meanings and accepted ranges: CONFIG.md
         \\
         \\# Global hotkey -- the OS delivers this even when TildaZ is not focused.
-        \\# Takes a label ("ctrl+space") or a position ("ctrl+[Backquote]"). A
-        \\# function key is the safest: it is the same on every keyboard layout.
+        \\#
+        \\# Two ways to name the key:
+        \\#   label      "ctrl+space"        the character the key types
+        \\#   position   "ctrl+[Backquote]"  the physical spot, whatever it prints
+        \\#
+        \\# A function key is the safest choice: F1-F12 sit in the same place on
+        \\# every layout. Function-key positions are also the only ones accepted
+        \\# without a modifier -- "[F13]" is valid, "[KeyW]" is not.
+        \\#
+        \\# Reach for a position when the key you want prints something different
+        \\# from one layout to the next. The key left of 1 is the clearest case;
+        \\# these are measured, not guessed:
+        \\#
+        \\#   layout                      that key prints
+        \\#   US QWERTY                   `      (same on all three platforms)
+        \\#   French   (Linux)            ²
+        \\#   French   (Windows legacy)   ²
+        \\#   French   (Windows standard) @
+        \\#   French   (macOS)            <
+        \\#   Russian  (Linux, Windows)   ё
+        \\#   Russian  (macOS)            ]
+        \\#   German   (Linux)            a dead key -- refused, with a message
+        \\#
+        \\# "ctrl+[Backquote]" means that one physical key on every row above. A
+        \\# label such as "ctrl+grave" only fires where the layout types a backtick.
+        \\#
+        \\# More positions worth knowing:
+        \\#   "ctrl+[BracketLeft]"   [ on US. On French it needs AltGr, so the
+        \\#                          label form would be a four-finger chord.
+        \\#   "[F13]"                On a PC keyboard attached to a Mac this is
+        \\#                          the PrintScreen spot -- macOS reports F13.
+        \\#
+        \\# Position names are W3C KeyboardEvent.code values. Full list: CONFIG.md
         \\hotkey           = "{s}"
         \\
         \\shell            = "{s}"
