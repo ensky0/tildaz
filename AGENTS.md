@@ -503,8 +503,19 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 | sway · Hyprland | **자리** | `49` = evdev 41 + 8 (`bindcode 49` · `keycode=49`) |
 | GNOME · Cinnamon | **자리** | `0x31`. 확장이 켜져 있으면 **확장이** `grab_accelerator("<Control>0x31")`, 없으면 gsettings `binding=<Control>0x31` |
 | KDE · COSMIC | **그 자리가 지금 내는 글자** | us `` ` `` · fr `²` · ru `Ё` · **de 는 등록 안 함** (dead key) |
-| Windows | 지금 layout 의 **VK** | `WM_INPUTLANGCHANGE` 로 재등록 |
+| Windows | **자리** (raw scan code) | `0x29`. `RegisterHotKey` 가 아니라 `WH_KEYBOARD_LL` 훅으로 잡아요 — 아래 |
 | macOS | 자리 (`kVK_*`) | 변화 없음 |
+
+**Windows 는 `RegisterHotKey` 로 위치 표기를 담을 수 없어요 — 실측으로 확정.** 그 API 는 VK 만 받는데 VK 는 layout DLL 이 배정하는 값이라 자판마다 자리가 움직여요 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27`). 그래서 자리를 VK 로 한 번 풀어 등록하면 그 값은 *그 layout 에서만* 맞아요. 처음 구현은 그 파생값을 캐시하고 `WM_INPUTLANGCHANGE` 에서 다시 풀었는데, **숨은 채 layout 이 바뀌면 핫키가 다른 물리 키로 옮겨갔어요** (실측: `[Backquote]` 로 적었는데 `1` 왼쪽 키는 죽고 `'` 키가 창을 띄웠어요 — [#512 코멘트](https://github.com/ensky0/tildaz/pull/512#issuecomment-5412301433)). 그 메시지가 **스레드별이고 포커스를 얻을 때** 와서, 핫키가 먹어야 포커스를 얻고 포커스를 얻어야 갱신되는 순환이라 그 구조로는 창을 좁힐 수만 있고 닫을 수 없어요.
+
+그래서 **위치 표기만 `WH_KEYBOARD_LL` 훅**으로 잡아요. `KBDLLHOOKSTRUCT.scanCode` 가 layout 이 개입하지 않은 raw 값이고 위치 표기가 뜻하는 것이 정확히 그 값이라, 변환도 캐시도 갱신도 없어져요. **라벨 표기는 계속 `RegisterHotKey`** 예요 — 라벨은 OS 가 keypress 시점에 layout DLL 로 풀어 주는 게 옳은 동작이고, 그래서 훅의 대가는 위치 표기를 쓴 사용자에게만 발생해요.
+
+훅을 만질 때 지킬 것:
+
+- **콜백에서 블로킹하지 않아요.** `LowLevelHooksTimeout` (기본 300 ms) 을 넘기면 **훅이 조용히 제거돼요** — 오류도 로그도 없이 핫키가 죽어요. 비교만 하고 실제 작업은 `PostMessageW(WM_HOTKEY)` 로 창의 메시지 큐에 넘겨요 (라벨 경로와 처리부가 하나로 남는 이점도 있어요).
+- **modifier 는 `GetAsyncKeyState` 로 읽고 "요구한 것만" 을 확인해요.** 훅은 modifier 상태를 주지 않아요. `RegisterHotKey` 는 여분 modifier 가 있으면 발동하지 않으므로 (`Ctrl+Alt+X` 가 `ctrl+x` 를 안 잡아요) 그 규칙을 훅 쪽에서도 그대로 만들어야 두 표기가 같은 config 로 같게 동작해요.
+- **injected 입력을 걸러내지 않아요** (`LLKHF_INJECTED`). `RegisterHotKey` 가 합성 입력에도 반응하므로 (실측) 맞춰요. 덕분에 `SendInput` 으로 핫키 검증을 자동화할 수 있어요.
+- **`extended` 를 함께 비교해요.** `0xE0` prefix 가 없으면 control pad 와 numpad 가 같은 하위 바이트를 써서 섞여요 (`physical_key.zig` 헤더).
 
 **실측 완료** (2026-08-25):
 
