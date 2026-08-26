@@ -4547,7 +4547,9 @@ const Client = struct {
     ) software_terminal.FrameInputs {
         const tabs = session.tabsSlice();
         const count = @min(tabs.len, titles_storage.len);
-        for (tabs[0..count], 0..) |t, i| {
+        for (tabs[0..count], 0..) |group, i| {
+            // #483 3단계 — 탭바 제목은 그 탭의 활성 pane 의 것.
+            const t = group.activeTab();
             titles_storage[i] = t.title[0..t.title_len];
         }
         // L12-γ — tab_layout.compute 로 arrow/plus/tab area 영역 분할. override 가
@@ -5645,7 +5647,7 @@ const Client = struct {
     fn activeRenderState(self: *const Client) ?*const ghostty.RenderState {
         const sess = if (self.session) |*s| s else return null;
         if (sess.active_tab >= sess.tabs.items.len) return null;
-        return &sess.tabs.items[sess.active_tab].render_state;
+        return &sess.tabs.items[sess.active_tab].activeTab().render_state;
     }
 
     /// IME cursor rectangle 의 named 형 — `updateCursorRectangle` 용.
