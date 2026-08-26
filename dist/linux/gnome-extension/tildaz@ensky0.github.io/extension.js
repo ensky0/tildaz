@@ -39,6 +39,61 @@ function configDirPath() {
   return GLib.build_filenamev([base, "tildaz"]);
 }
 
+/**
+ * #510 — worker 가 부팅 때 읽는 hotkey grab 결과 파일이 놓이는 디렉터리.
+ *
+ * **zig 의 `paths.lockDir` 와 규칙이 같아야 한다.** 한쪽만 바뀌면 worker 가 파일을 못
+ * 찾고, 그러면 grab 실패가 다시 조용해진다 (증상은 "가끔 안 잡힌다" 로 보인다).
+ * 순서: `$XDG_RUNTIME_DIR/tildaz` → `$XDG_CACHE_HOME/tildaz/run` → `~/.cache/tildaz/run`.
+ *
+ * **config 디렉터리에 두지 않는 이유**는 이 확장 자신이 그 디렉터리를 `FileMonitor` 로
+ * 감시하기 때문이다 — 거기 쓰면 감시가 깨어나 config 재독 → 재등록 → 재실패 → 재기록의
+ * 자가 루프가 된다.
+ */
+function hotkeyStateDirPath() {
+  const runtime = GLib.getenv("XDG_RUNTIME_DIR");
+  if (runtime && GLib.path_is_absolute(runtime))
+    return GLib.build_filenamev([runtime, "tildaz"]);
+  const cache = GLib.getenv("XDG_CACHE_HOME");
+  if (cache && GLib.path_is_absolute(cache))
+    return GLib.build_filenamev([cache, "tildaz", "run"]);
+  return GLib.build_filenamev([GLib.get_home_dir(), ".cache", "tildaz", "run"]);
+}
+
+function hotkeyStatePath(index) {
+  return GLib.build_filenamev([hotkeyStateDirPath(), `instance${index}.hotkey`]);
+}
+
+/**
+ * #510 — grab 결과를 worker 가 읽을 수 있게 남긴다. 형식은 `v1 <ok|failed> <hotkey>`
+ * 한 줄이고, hotkey 는 **config 에 적힌 원문 그대로**다 — worker 가 그 값으로 "이 기록이
+ * 지금 config 의 것인가" 를 판정해 stale 파일에 속지 않는다.
+ *
+ * 성공도 적는다. 실패 파일만 두면 지운 뒤에 남는 창이 생기고, 그 사이에 뜬 worker 가
+ * 옛 실패를 읽는다.
+ */
+function writeHotkeyState(index, hotkey, ok) {
+  if (typeof hotkey !== "string" || hotkey.length === 0) return;
+  try {
+    GLib.mkdir_with_parents(hotkeyStateDirPath(), 0o700);
+    GLib.file_set_contents(
+      hotkeyStatePath(index),
+      `v1 ${ok ? "ok" : "failed"} ${hotkey}\n`
+    );
+  } catch (e) {
+    console.log(`[tildaz] could not record hotkey state for index ${index}: ${e}`);
+  }
+}
+
+/** #510 — 확장이 물러나면 기록도 거둔다. 남겨 두면 worker 가 없는 실패를 읽는다. */
+function clearHotkeyState(index) {
+  try {
+    GLib.unlink(hotkeyStatePath(index));
+  } catch (e) {
+    console.log(`[tildaz] could not clear hotkey state for index ${index}: ${e}`);
+  }
+}
+
 function workerIndex(win) {
   if (!win) return null;
   const match = /^TildaZ-(0|[1-9][0-9]*)$/.exec(win.get_title?.() || "");
@@ -227,7 +282,13 @@ export default class TildazExtension extends Extension {
 
   _registerAccelerators() {
     for (const [index, cfg] of this._configs) {
-      if (!cfg.accel) continue;
+      if (!cfg.accel) {
+        // #510 — accel 로 옮기지 못한 것도 "hotkey 를 못 잡았다" 다 (알 수 없는 위치
+        // 이름 등). 셸에서는 grab 을 시도조차 못 하므로 여기서 실패로 기록한다.
+        console.log(`[tildaz] no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
+        writeHotkeyState(index, cfg.hotkey, false);
+        continue;
+      }
       const action = global.display.grab_accelerator(cfg.accel, Meta.KeyBindingFlags.NONE);
       if (action && action !== Meta.KeyBindingAction.NONE) {
         this._accelerators.set(action, index);
@@ -235,11 +296,16 @@ export default class TildazExtension extends Extension {
           Meta.external_binding_name_for_action(action),
           Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW | Shell.ActionMode.POPUP
         );
+        writeHotkeyState(index, cfg.hotkey, true);
       } else {
         // **실패가 조용하면 진단이 안 된다.** #496 1-c 검증에서 위치 표기가
         // `<Control>[backquote]` 로 흘러 grab 이 0 을 냈는데, 로그가 없어 nested
         // GNOME 에 계측을 심고서야 원인을 봤다. 그 한 줄을 여기 남긴다.
+        //
+        // #510 — 로그는 셸 journal 이라 tildaz 가 못 읽는다. 같은 사실을 worker 가
+        // 읽을 수 있는 자리에도 남긴다. 그래야 "부를 수 없는 창" 대신 안내 후 종료가 된다.
         console.log(`[tildaz] accelerator grab failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+        writeHotkeyState(index, cfg.hotkey, false);
       }
     }
   }
@@ -247,6 +313,11 @@ export default class TildazExtension extends Extension {
   _unregisterAccelerators() {
     for (const action of this._accelerators?.keys() || []) global.display.ungrab_accelerator(action);
     this._accelerators = new Map();
+  }
+
+  /** #510 — 확장이 hotkey 를 더는 맡지 않으면 기록도 거둔다 (`disable`). */
+  _clearHotkeyStates() {
+    for (const index of this._configs?.keys() || []) clearHotkeyState(index);
   }
 
   disable() {
@@ -264,6 +335,8 @@ export default class TildazExtension extends Extension {
     }
     if (this._acceleratorSignalId) global.display.disconnect(this._acceleratorSignalId);
     this._unregisterAccelerators();
+    // #510 — grab 기록도 함께 거둔다. `_configs` 를 아래에서 비우므로 그 전에 해야 한다.
+    this._clearHotkeyStates();
     if (this._configMonitorId) this._configMonitor.disconnect(this._configMonitorId);
     if (this._configMonitor) this._configMonitor.cancel();
     if (this._configReloadId) GLib.source_remove(this._configReloadId);
@@ -315,6 +388,9 @@ export default class TildazExtension extends Extension {
   _readConfig(index) {
     const out = {
       accel: "<Super>grave",
+      // #510 — config 에 적힌 **원문**. worker 가 grab 결과 기록의 stale 여부를 이 값으로
+      // 판정하므로 `accel` 로 변환하기 전 문자열이 그대로 필요하다.
+      hotkey: null,
       dock: "top",
       wp: 50,
       hp: 100,
@@ -336,6 +412,7 @@ export default class TildazExtension extends Extension {
           // 표기를 받으면서 이 경로가 처음 닿게 됐다 (#496 1-c). Cinnamon 쪽은
           // 기본값이 빈 문자열이라 이미 이렇게 동작한다.
           out.accel = this._toAccel(j.hotkey);
+          out.hotkey = j.hotkey;
         }
         const w = j.window || {};
         if (typeof w.dock_position === "string") out.dock = w.dock_position;
