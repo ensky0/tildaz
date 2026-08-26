@@ -49,6 +49,13 @@ const XkbStateModNameIsActive = *const fn (
     component: c_uint,
 ) callconv(.c) c_int;
 
+// #513 — 진단용. **받은 keymap 이 어느 layout 인지**를 로그에 남긴다. COSMIC 에서
+// 키보드를 꽂으면 위치 표기 hotkey 가 직전 layout 의 글자로 재등록되는데, 로그만으로는
+// *compositor 가 옛 keymap 을 보낸 것*인지 *우리가 잘못 읽은 것*인지 구분할 수 없었다
+// ([#513](https://github.com/ensky0/tildaz/issues/513)).
+const XkbKeymapNumLayouts = *const fn (keymap: *xkb_keymap) callconv(.c) c_uint;
+const XkbKeymapLayoutGetName = *const fn (keymap: *xkb_keymap, layout: c_uint) callconv(.c) ?[*:0]const u8;
+
 // #496 1-a — keymap 전수 조회용. **비라틴 layout 에서 "이 문자를 낼 수 있는 키가
 // 하나도 없다" 를 판정**하는 데 쓴다. state 가 아니라 keymap 을 보는 이유는 현재
 // modifier / layout 과 무관하게 물어야 하기 때문이다 — `xkb_state_key_get_one_sym`
@@ -103,6 +110,8 @@ const Api = struct {
     // #496 1-a — optional. 하나라도 없으면 `keymapScan` 이 null 이 되고 fallback 이
     // 꺼진다 (위 주석 참고).
     keymap_scan: ?KeymapScan = null,
+    // #513 — optional. 진단 로그 전용이라 없으면 그 줄에서 layout 이름만 빠진다.
+    layout_names: ?LayoutNames = null,
 
     fn load() !Api {
         const handle = std.c.dlopen("libxkbcommon.so.0", .{ .LAZY = true }) orelse return error.XkbLibraryMissing;
@@ -121,6 +130,7 @@ const Api = struct {
             .state_key_get_one_sym = lookup(handle, XkbStateKeyGetOneSym, "xkb_state_key_get_one_sym") orelse return error.XkbSymbolMissing,
             .state_mod_name_is_active = lookup(handle, XkbStateModNameIsActive, "xkb_state_mod_name_is_active") orelse return error.XkbSymbolMissing,
             .keymap_scan = KeymapScan.load(handle),
+            .layout_names = LayoutNames.load(handle),
         };
     }
 
@@ -156,6 +166,21 @@ const KeymapScan = struct {
             .num_layouts_for_key = lookup(handle, XkbKeymapNumLayoutsForKey, "xkb_keymap_num_layouts_for_key") orelse return null,
             .num_levels_for_key = lookup(handle, XkbKeymapNumLevelsForKey, "xkb_keymap_num_levels_for_key") orelse return null,
             .key_get_syms_by_level = lookup(handle, XkbKeymapKeyGetSymsByLevel, "xkb_keymap_key_get_syms_by_level") orelse return null,
+        };
+    }
+};
+
+/// #513 — keymap 의 layout 이름 조회. `KeymapScan` 과 갈라 두는 이유는 **쓰임이 다르기
+/// 때문**이다 — 그쪽은 없으면 라틴 fallback 기능이 꺼지지만, 이쪽은 진단 로그 한 줄이
+/// 짧아질 뿐이다. 한 묶음으로 합치면 없는 쪽 하나가 다른 쪽 기능까지 끈다.
+const LayoutNames = struct {
+    num_layouts: XkbKeymapNumLayouts,
+    layout_get_name: XkbKeymapLayoutGetName,
+
+    fn load(handle: *anyopaque) ?LayoutNames {
+        return .{
+            .num_layouts = lookup(handle, XkbKeymapNumLayouts, "xkb_keymap_num_layouts") orelse return null,
+            .layout_get_name = lookup(handle, XkbKeymapLayoutGetName, "xkb_keymap_layout_get_name") orelse return null,
         };
     }
 };
@@ -343,6 +368,33 @@ pub const Keyboard = struct {
 
     /// #496 1-c — keysym → xkb 이름 (`twosuperior` · `Cyrillic_io` · `grave`).
     /// COSMIC RON 의 `key:` 가 이 이름을 받는다. 버퍼에 담아 slice 로 돌려준다.
+    /// #513 — 지금 keymap 이 담고 있는 layout 이름들을 `", "` 로 이어 돌려준다
+    /// (`"English (US), Korean"`). 심볼이 없거나 keymap 이 없으면 `null`.
+    ///
+    /// **어느 keymap 을 받았는지가 곧 판정 근거다.** 위치 표기 hotkey 가 엉뚱한 글자로
+    /// 등록될 때, 이 이름이 직전 layout 이면 compositor 가 옛 keymap 을 보낸 것이고 지금
+    /// layout 이면 우리 쪽 처리가 틀린 것이다.
+    pub fn layoutNames(self: *Keyboard, buf: []u8) ?[]const u8 {
+        const api = self.api orelse return null;
+        const names = api.layout_names orelse return null;
+        const keymap = self.keymap orelse return null;
+        const count = names.num_layouts(keymap);
+        var out: usize = 0;
+        var layout: c_uint = 0;
+        while (layout < count) : (layout += 1) {
+            const name = names.layout_get_name(keymap, layout) orelse continue;
+            const text = std.mem.span(name);
+            const separator: []const u8 = if (out == 0) "" else ", ";
+            // 버퍼가 모자라면 거기서 끊는다 — 진단 줄이라 자르는 편이 낫다.
+            if (out + separator.len + text.len > buf.len) break;
+            @memcpy(buf[out..][0..separator.len], separator);
+            out += separator.len;
+            @memcpy(buf[out..][0..text.len], text);
+            out += text.len;
+        }
+        return buf[0..out];
+    }
+
     pub fn keysymName(self: *Keyboard, keysym: u32, buf: []u8) ?[]const u8 {
         const api = if (self.api) |*a| a else return null;
         const scan = api.keymap_scan orelse return null;
