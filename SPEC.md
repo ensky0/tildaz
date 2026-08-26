@@ -662,6 +662,23 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 
 (탭 inline rename 과 그 focus_loss commit 표는 [#341](https://github.com/ensky0/tildaz/issues/341) 로 제거 — 과거 표는 그 이슈와 git 이력 참조.)
 
+### 4.2 화면 분할 (pane) — [#483](https://github.com/ensky0/tildaz/issues/483)
+
+탭 하나 = pane 그룹 (`session_core.TabGroup`), pane = 터미널 하나 (`Tab`). 배치는 분할 트리 (`pane_layout.Tree`) 이고 격자 계산 · hit-test · 이웃 찾기는 순수 모듈 [`pane_layout.zig`](src/pane_layout.zig) 한 곳이다. 확정 설계는 이슈 첫 댓글, 단축키 표는 [KEYBINDINGS.md](KEYBINDINGS.md#split-panes). 2026-08-27 4단계에 Linux 먼저 배선했다 — `[keys]` 의 액션 · 기본 bindings · `SessionCore` 연산은 세 platform 에 다 들어 있고, macOS · Windows 의 host 배선은 5단계다.
+
+| 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
+|---|---|---|---|---|---|---|---|
+| 분할 | 활성 pane 을 방향키 쪽으로 반씩 가르고 새 pane (새 셸, 활성 pane 의 cwd 상속 규칙은 새 탭과 같다) 을 그쪽에 놓아 활성으로. 분할선은 앞 pane 의 셀 경계에 두고 남는 px 는 뒤 pane 에 (1단계 결정 2) | 5단계 | 5단계 | `ctrl+shift+방향키` → `SessionCore.splitActive` | ⬜ | ⬜ | ✅ |
+| 상한 · 최소 크기 | 탭당 pane **16** (`MAX_PANES_PER_TAB`, 탭 32 와 독립 — 1단계 결정 1) · pane 최소 **20×5** 셀 (`MIN_PANE_COLS/ROWS`). 넘으면 트리를 바꾸지 않고 거부 + dialog (`messages.pane_limit_*` / `pane_too_small_*`) — 단축키에는 시각 피드백이 없어 탭 한도와 같은 방식 | 5단계 | 5단계 | `handleSplit` | ⬜ | ⬜ | ✅ |
+| 포커스 이동 | **기하 기반** 이웃 (`pane_layout.neighbor`) — 활성 pane 의 커서 행/열에서 그 방향으로 쏴 처음 만나는 pane (3 분할 이상에서 트리 형제가 아닌 화면상 이웃으로 간다). 창 가장자리면 무시. 떠나는 pane 의 진행 중 선택 · 드래그는 탭 전환과 같이 정리 | 5단계 | 5단계 | `alt+방향키` → `SessionCore.focusPane` | ⬜ | ⬜ | ✅ |
+| 크기 조절 · 균등 | 활성 pane 에 닿은 분할선을 한 셀 옮김 (`Tree.resize` — 그쪽 변이 창 가장자리면 반대쪽 분할선). 균등은 **모든 pane 의 넓이가 같아지게** — 분할마다 양쪽 leaf 수에 비례 (1 : 2 → 1/3 : 2/3, `Tree.equalize`, tmux `select-layout even-*` 와 같은 정의; "분할마다 반씩" 이 아니다). 최소 크기 아래로 내려가면 무시 | 5단계 | 5단계 | `shift+alt+방향키` · `shift+alt+0` | ⬜ | ⬜ | ✅ |
+| 닫기 | `close_tab` = pane 이 여럿이면 **활성 pane 만** (형제가 자리를 이어받고 포커스는 맞닿아 있던 pane), 마지막이면 탭. pane 의 PTY 종료도 같은 규칙 (`closeTabByPtr`) | `tab_actions.closeActive` → `SessionCore.closeActivePane` (pane 하나라 동작은 이전과 같다) | 동일 | 동일 + `ensureSessionGrid` 로 남은 pane 격자 | ✅ | ✅ | ✅ |
+| 표시 | 회색 분할선 **1 pt** (`PANE_SEPARATOR_W_PT`, 색은 탭 구분선과 같은 `chrome.separator` — 테마 파생) + 활성 pane 의 padding 안쪽 amber **1 pt** (`PANE_FOCUS_LINE_PT`, `TAB_ACCENT_COLOR`) — **다른 pane 과 맞닿는 변에만**, 창 가장자리 변은 없음 (1단계 결정 3). **비활성 pane dim 없음** (2026-08-27 사용자 결정 — 다른 pane 도 또렷히 보는 것이 분할의 목적) | 5단계 | 5단계 | `software_terminal.collectPaneChrome` | ⬜ | ⬜ | ✅ |
+| 마우스 | 좌클릭 = 그 pane 포커스 + 그 자리에서 선택 시작 (한 클릭) · **비활성 pane 우클릭 = 포커스만, 붙여넣기 X** · scrollbar hit-test · 휠 · Shift+PgUp/PgDn 은 활성 pane 기준 · 분할선 위 클릭은 무시 (드래그는 4c) | 5단계 | 5단계 | `focusPaneUnderPointer` · `pointerInActiveScrollbarColumn` | ⬜ | ⬜ | ✅ |
+| 격자 | 창 · 탭바 · 폰트가 바뀌면 모든 탭의 pane 을 layout 결과로 resize (`SessionCore.applyLayouts`, 같은 격자면 건너뜀). `-size` 측정 인스턴스는 pane 하나에 요청 격자 그대로 (#382) | `resizeAll` (5단계에서 교체) | 동일 | `ensureSessionGrid` → `applyLayouts` | ⬜ | ⬜ | ✅ |
+| IME · 컨트롤 스트립 | preedit inline 표시 · IME 커서 rect · mouse reporting 좌표는 활성 pane 의 격자 원점 기준 (`terminal_interaction.ReportGeometry.grid_x/grid_y`). 단일 탭 컨트롤 스트립 (#329) 의 scrollbar inset 은 오른쪽 위 pane 만 | 원점 = `pad` · `tab_bar_h + pad` (pane 하나) | 동일 | `frameInputs` · `activeGridOrigin` | ✅ | ✅ | ✅ |
+| 미구현 | `…` 메뉴 항목 · `+` Alt+클릭 · 분할선 드래그 · 최대화 토글 (4c) · 비활성 pane 스크롤바 조작 · pane 별 출력 드레인 우선순위 (6단계) | | | | ⬜ | ⬜ | ⬜ |
+
 ---
 
 ## 5. IME 동작 (한국어 / 일본어 / 중국어 — 양쪽 동일 spec)

@@ -305,7 +305,8 @@ the equivalent work.
 #### Accepted keys
 
 **By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
-`Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `` ` `` (also
+`Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
+`Up` / `Down` (the arrow keys — the split-pane defaults use them), `` ` `` (also
 `Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`).
 Case does not matter. Anything else is an error at startup — including
 layout-specific characters such as `²` on French AZERTY.
